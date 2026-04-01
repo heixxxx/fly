@@ -38,6 +38,13 @@ ifneq ($(KEYWORD_IMPL),)
     endif
 endif
 
+# Support profiling with gperftools
+# PROFILING=1 enables CPU profiling support (link with -lprofiler)
+ifeq ($(PROFILING),1)
+    CXXFLAGS += -O2 -g
+    PROFLIB = -lprofiler
+endif
+
 .SUFFIXES: $(SUFFIXES) .cpp
 
 
@@ -100,7 +107,7 @@ $(LIBTARGET): $(LIBOBJS)
 
 $(BINTARGET): $(BINOBJS) $(LIBTARGET) $(LDLIBS)
 	rm -f $(BINTARGET)
-	$(LINK.cc) -o $(BINTARGET) $(BINOBJS) $(LIBTARGET) $(LDLIBS) $(BIN_LINK_FLAGS)
+	$(LINK.cc) -o $(BINTARGET) $(BINOBJS) $(LIBTARGET) $(LDLIBS) $(BIN_LINK_FLAGS) $(PROFLIB)
 
 clean doclean:
 	rm -f $(LIBTARGET) $(LIBOBJS) $(BINTARGET) $(BINOBJS) $(INSTALLED_LIB) \

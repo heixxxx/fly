@@ -2586,5 +2586,17 @@ long long defrLongLineNumber() {
     return (long  long) 0; 
 }
 
+void defrSetSkipComponents(int skip) {
+    defContext.settings->SkipComponentsSection = skip;
+}
+
+void defrSetSkipNets(int skip) {
+    defContext.settings->SkipNetsSection = skip;
+}
+
+void defrSetSkipSpecialNets(int skip) {
+    defContext.settings->SkipSpecialNetsSection = skip;
+}
+
 END_LEFDEF_PARSER_NAMESPACE
 

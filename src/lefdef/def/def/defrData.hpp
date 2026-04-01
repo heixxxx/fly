@@ -41,7 +41,9 @@
 
 #define CURRENT_VERSION 6.0
 #define RING_SIZE 10
-#define IN_BUF_SIZE 16384
+// Performance optimization: increased from 16KB to 256KB to reduce I/O syscalls
+// Profiling shows ~2.6% time in __libc_read, larger buffer reduces syscall frequency
+#define IN_BUF_SIZE (256 * 1024)
 #define TOKEN_SIZE 4096
 #define MSG_SIZE 100
 
@@ -126,10 +128,12 @@ public:
     inline void         print_lines(long long lines);
     const char *        lines2str(long long lines);
     static inline void  IncCurPos(char **curPos, char **buffer, int *bufferSize);
+    static inline void  IncCurPosN(char **curPos, char **buffer, int *bufferSize, int n);
     int                 DefGetToken(char **buffer, int *bufferSize);
     static void         uc_array(char *source, char *dest);
     int                 defyylex(YYSTYPE *pYylval);
     int                 sublex(YYSTYPE *pYylval);
+    void                skip_section(const char* end_keyword);
     void                defError(int msgNum, const char *s);
     void                defyyerror(const char *s);
     void                defInfo(int msgNum, const char *s);
@@ -341,6 +345,32 @@ public:
     int                   ownConfig;
     const char            *init_call_func;
 };
+
+inline void  
+defrData::IncCurPos(char **curPos, char **buffer, int *bufferSize)
+{
+    (*curPos)++;
+    if (*curPos - *buffer < *bufferSize) {
+        return;
+    }
+
+    long offset = *curPos - *buffer;
+    *bufferSize *= 2;
+    *buffer = (char*) realloc(*buffer, *bufferSize);
+    *curPos = *buffer + offset;
+}
+
+inline void  
+defrData::IncCurPosN(char **curPos, char **buffer, int *bufferSize, int n)
+{
+    *curPos += n;
+    while (*curPos - *buffer >= *bufferSize) {
+        long offset = *curPos - *buffer;
+        *bufferSize *= 2;
+        *buffer = (char*) realloc(*buffer, *bufferSize);
+        *curPos = *buffer + offset;
+    }
+}
 
 int 
 defrData::checkErrors()

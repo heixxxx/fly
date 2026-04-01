@@ -112,6 +112,12 @@ public:
     int reader_case_sensitive_set;
     int AllowVer60Plus;
 
+    // Section skip flags - for performance optimization
+    // When set, the parser will skip the corresponding section
+    int SkipComponentsSection;      // Skip COMPONENTS section
+    int SkipNetsSection;            // Skip NETS section
+    int SkipSpecialNetsSection;     // Skip SPECIALNETS section
+
 
     DEFI_READ_FUNCTION ReadFunction;
     DEFI_LOG_FUNCTION ErrorLogFunction;

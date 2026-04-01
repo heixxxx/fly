@@ -750,6 +750,13 @@ extern void defrSetTotalMsgLimit(int totNumMsgs);
 extern void defrSetTotalNumErrorsParsed(int totNumErrors);
 extern void defrSetLimitPerMsg(int msgId, int numMsg);
 
+// Section skip functions - for performance optimization
+// When a skip flag is set, the parser will skip the corresponding section
+// This allows efficient parsing of specific sections without processing others
+extern void defrSetSkipComponents(int skip);
+extern void defrSetSkipNets(int skip);
+extern void defrSetSkipSpecialNets(int skip);
+
 // Return codes for the user callbacks.
 //The user should return one of these values. 
 #define PARSE_OK 0      // continue parsing 

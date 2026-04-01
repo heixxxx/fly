@@ -79,6 +79,9 @@ defrSettings::defrSettings()
   DisPropStrProcess(0),
   LogFileAppend(0),
 
+  SkipComponentsSection(0),
+  SkipNetsSection(0),
+  SkipSpecialNetsSection(0),
 
   ReadFunction(NULL),
   ErrorLogFunction(NULL),

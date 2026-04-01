@@ -132,17 +132,16 @@ defrData::reload_buffer() {
          nb = (int) fread(buffer, 1, IN_BUF_SIZE, File);
    }
     
-   if (nb <= 0) {
+if (nb <= 0) {
       next = NULL;
-   } else {
-      next = buffer;
-      last = buffer + nb - 1;
-   }
+    } else {
+       next = buffer;
+       last = buffer + nb - 1;
+    }
 }   
 
 int 
- defrData::GETC() {
-   // Remove '\r' symbols from Windows streams.
+defrData::GETC() {
     for(;;) {
        if (next > last)
           reload_buffer();
@@ -181,12 +180,62 @@ defrData::ringCopy(const char* string)
       ring[ringPlace] = (char*)malloc(len);
       ringSizes[ringPlace] = len;
    }
-   strcpy(ring[ringPlace], string);
-   return ring[ringPlace];
+strcpy(ring[ringPlace], string);
+    return ring[ringPlace];
+}
+
+void
+defrData::skip_section(const char* end_keyword)
+{
+    int ch;
+    char token_buf[128];
+    int token_len = 0;
+    int found_end = 0;
+    
+    while ((ch = GETC()) != EOF) {
+        if (ch == '\n') {
+            print_lines(++nlines);
+            if (token_len > 0) {
+                token_buf[token_len] = '\0';
+                if (found_end && strcmp(token_buf, end_keyword) == 0) {
+                    UNGETC(ch);  // Put back newline for parser
+                    return;  // Found END <keyword>, let parser handle it
+                }
+                if (strcmp(token_buf, "END") == 0) {
+                    found_end = 1;
+                } else {
+                    found_end = 0;
+                }
+            } else {
+                found_end = 0;
+            }
+            token_len = 0;
+        } else if (ch == ' ' || ch == '\t') {
+            if (token_len > 0) {
+                token_buf[token_len] = '\0';
+                if (found_end && strcmp(token_buf, end_keyword) == 0) {
+                    return;  // Found END <keyword>, let parser handle it
+                }
+                if (strcmp(token_buf, "END") == 0) {
+                    found_end = 1;
+                } else {
+                    found_end = 0;
+                }
+                token_len = 0;
+            }
+        } else if (ch == ';') {
+            found_end = 0;
+            token_len = 0;
+        } else {
+            if (token_len < 127) {
+                token_buf[token_len++] = ch;
+            }
+        }
+    }
 }
 
  void 
-defrData::print_lines(long long lines) 
+defrData::print_lines(long long lines)
 {
     if (lines % settings->defiDeltaNumberLines) {
         return;
@@ -215,24 +264,6 @@ defrData::lines2str(long long lines)
 #endif 
 
     return lineBuffer;
-}
-
-
-// Increment current position of buffer pointer. 
-// Double buffer size if curPos is out of boundary.
-void  
-defrData::IncCurPos(char **curPos, char **buffer, int *bufferSize)
-{
-    (*curPos)++;
-    if (*curPos - *buffer < *bufferSize) {
-        return;
-    }
-
-    long offset = *curPos - *buffer;
-
-    *bufferSize *= 2;
-    *buffer = (char*) realloc(*buffer, *bufferSize);
-    *curPos = *buffer + offset;
 }
 
 
@@ -773,9 +804,24 @@ defrData::sublex(YYSTYPE *pYylval)
                   }
                }
             }
-            History_text.push_back('\0');
-         }
-         return result;        /* YES, return its value */
+History_text.push_back('\0');
+          }
+          
+          // Section skip optimization: skip sections that are not needed
+          if (settings->SkipComponentsSection && result == K_COMPS) {
+              skip_section("COMPONENTS");
+              return sublex(pYylval);  // Recursively get next token
+          }
+          if (settings->SkipNetsSection && result == K_NETS) {
+              skip_section("NETS");
+              return sublex(pYylval);
+          }
+          if (settings->SkipSpecialNetsSection && result == K_SNETS) {
+              skip_section("SPECIALNETS");
+              return sublex(pYylval);
+          }
+          
+          return result;        /* YES, return its value */
       } else {  /* we don't have a keyword.  */
          pYylval->string = ringCopy(deftoken);  /* NO, it's a string */
          return T_STRING;
