@@ -36,11 +36,6 @@
 #include <string>
 #include <map>
 
-#if defined(DEF_KEYWORD_UNORDERED_MAP)
-#include <unordered_map>
-#include <string_view>
-#endif
-
 #define  DEF_DEBUG_IDS 100
 #define  defMaxOxides 32
 
@@ -53,13 +48,7 @@ struct defCompareCStrings
     }
 };
 
-#if defined(DEF_KEYWORD_UNORDERED_MAP)
-typedef std::unordered_map<std::string_view, int> defKeywordMap;
-#elif defined(DEF_KEYWORD_STD_MAP)
 typedef std::map<const char*, int, defCompareCStrings>  defKeywordMap;
-#else
-typedef std::map<const char*, int, defCompareCStrings>  defKeywordMap;
-#endif
 
 class defrSettings {
 public:

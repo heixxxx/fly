@@ -25,6 +25,19 @@ ifeq ($(OS_TYPE),Linux)
     CC=gcc
 endif
 
+# Support keyword implementation selection via KEYWORD_IMPL
+# KEYWORD_IMPL=std_map       - Use std::map
+# KEYWORD_IMPL=unordered_map - Use std::unordered_map
+# KEYWORD_IMPL=gperf         - Use gperf perfect hash (default)
+ifneq ($(KEYWORD_IMPL),)
+    ifeq ($(KEYWORD_IMPL),std_map)
+        CXXFLAGS += -DDEF_KEYWORD_STD_MAP
+    endif
+    ifeq ($(KEYWORD_IMPL),unordered_map)
+        CXXFLAGS += -DDEF_KEYWORD_UNORDERED_MAP
+    endif
+endif
+
 .SUFFIXES: $(SUFFIXES) .cpp
 
 

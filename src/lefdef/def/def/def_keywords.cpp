@@ -57,17 +57,41 @@ BEGIN_LEFDEF_PARSER_NAMESPACE
 #include "def.tab.h"
 
 
+// Keyword lookup implementation selection:
+// DEF_KEYWORD_STD_MAP      - Use std::map (original, O(log n))
+// DEF_KEYWORD_UNORDERED_MAP - Use std::unordered_map (O(1) average)
+// DEF_KEYWORD_GPERF        - Use gperf perfect hash (O(1) guaranteed)
+// Default: DEF_KEYWORD_GPERF
+
+#if defined(DEF_KEYWORD_STD_MAP) || defined(DEF_KEYWORD_UNORDERED_MAP)
+
 int defrData::defGetKeyword(const char* name, int *result) 
 { 
-    map<const char*, int, defCompareCStrings>::const_iterator search = settings->Keyword_set.find(name);
-
-    if ( search != settings->Keyword_set.end()) {
+    defKeywordMap::const_iterator search = settings->Keyword_set.find(name);
+    if (search != settings->Keyword_set.end()) {
         *result = search->second;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+#else // DEF_KEYWORD_GPERF (default)
+
+#include "def_keyword_hash.hpp"
+
+int defrData::defGetKeyword(const char* name, int *result) 
+{ 
+    const DefKeywordEntry* entry = defFindKeyword(name, strlen(name));
+    
+    if (entry) {
+        *result = entry->token;
         return TRUE;
     }
 
     return FALSE;
 }
+
+#endif
 
 // lex.cpph starts here
 /* User defined if log file should be in append from the previous run */
@@ -392,7 +416,11 @@ defrData::sublex(YYSTYPE *pYylval)
    double numVal;
    char*  outMsg;
 
-   pv_deftoken = (char*)realloc(pv_deftoken, deftokenLength);
+   // Optimize: only realloc if capacity is insufficient
+   if (pv_deftoken_capacity < deftokenLength) {
+       pv_deftoken_capacity = deftokenLength * 2;  // exponential growth
+       pv_deftoken = (char*)realloc(pv_deftoken, pv_deftoken_capacity);
+   }
    strcpy(pv_deftoken, deftoken);
 
    for (;;) {
@@ -400,7 +428,12 @@ defrData::sublex(YYSTYPE *pYylval)
          return 0;
       }
       fc = deftoken[0];
-      uc_token = (char*)realloc(uc_token, deftokenLength);
+      
+      // Optimize: only realloc if capacity is insufficient
+      if (uc_token_capacity < deftokenLength) {
+          uc_token_capacity = deftokenLength * 2;  // exponential growth
+          uc_token = (char*)realloc(uc_token, uc_token_capacity);
+      }
 
       if (fc == settings->CommentChar) {
          // The code isn't work in correct way, no way to fix it exits 

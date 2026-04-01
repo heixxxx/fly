@@ -174,12 +174,10 @@ public:
     char*  defMsg; 
     char*  deftoken; 
     char*  uc_token;
-    int    uc_token_capacity;  // capacity of uc_token buffer
     char*  last; 
     char*  magic; 
     char*  next; 
     char*  pv_deftoken; 
-    int    pv_deftoken_capacity;  // capacity of pv_deftoken buffer
     char*  rowName; // to hold the rowName for message
     char*  shieldName; // to hold the shieldNetName
     char*  shiftBuf; 
