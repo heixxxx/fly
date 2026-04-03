@@ -234,6 +234,34 @@ defrData::skip_section(const char* end_keyword)
     }
 }
 
+void
+defrData::skip_net_body(int is_special_net)
+{
+    int ch;
+    int paren_depth = 0;
+    int in_quote = 0;
+    
+    // Skip until we find ';' at paren_depth 0 (not inside parens or quotes)
+    // Also handle finding next '-' for next net or 'END' for section end
+    while ((ch = GETC()) != EOF) {
+        if (ch == '\n') {
+            print_lines(++nlines);
+        } else if (ch == '"' && paren_depth == 0) {
+            in_quote = !in_quote;
+        } else if (!in_quote) {
+            if (ch == '(') {
+                paren_depth++;
+            } else if (ch == ')') {
+                paren_depth--;
+            } else if (ch == ';' && paren_depth == 0) {
+                // Found end of net, put back for parser
+                UNGETC(ch);
+                return;
+            }
+        }
+    }
+}
+
  void 
 defrData::print_lines(long long lines)
 {

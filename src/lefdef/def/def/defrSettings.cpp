@@ -83,6 +83,9 @@ defrSettings::defrSettings()
   SkipNetsSection(0),
   SkipSpecialNetsSection(0),
 
+  SkipNetDetails(0),
+  SkipSNetDetails(0),
+
   ReadFunction(NULL),
   ErrorLogFunction(NULL),
   WarningLogFunction(NULL),

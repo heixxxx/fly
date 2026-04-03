@@ -757,6 +757,12 @@ extern void defrSetSkipComponents(int skip);
 extern void defrSetSkipNets(int skip);
 extern void defrSetSkipSpecialNets(int skip);
 
+// Net detail skip functions - for fast net name extraction
+// When set, only net name is captured via NetNameCbk, net body is skipped
+// This is much faster than full net parsing when only net names are needed
+extern void defrSetSkipNetDetails(int skip);
+extern void defrSetSkipSNetDetails(int skip);
+
 // Return codes for the user callbacks.
 //The user should return one of these values. 
 #define PARSE_OK 0      // continue parsing 

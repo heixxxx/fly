@@ -134,6 +134,7 @@ public:
     int                 defyylex(YYSTYPE *pYylval);
     int                 sublex(YYSTYPE *pYylval);
     void                skip_section(const char* end_keyword);
+    void                skip_net_body(int is_special_net);
     void                defError(int msgNum, const char *s);
     void                defyyerror(const char *s);
     void                defInfo(int msgNum, const char *s);

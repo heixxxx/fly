@@ -118,6 +118,11 @@ public:
     int SkipNetsSection;            // Skip NETS section
     int SkipSpecialNetsSection;     // Skip SPECIALNETS section
 
+    // Net detail skip flags - for fast net name extraction
+    // When set, only net name is captured via NetNameCbk, net body is skipped
+    int SkipNetDetails;             // Skip net body (pins, wires, routes, etc.)
+    int SkipSNetDetails;            // Skip special net body
+
 
     DEFI_READ_FUNCTION ReadFunction;
     DEFI_LOG_FUNCTION ErrorLogFunction;

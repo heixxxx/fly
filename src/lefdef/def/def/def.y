@@ -2864,6 +2864,11 @@ net_name: T_STRING
             defData->Net->setName($1);
           if (defData->callbacks->NetNameCbk)
             CALLBACK(defData->callbacks->NetNameCbk, defrNetNameCbkType, $1);
+          // Skip net body if flag is set
+          if ((defData->settings->SkipNetDetails && (defData->netOsnet==1)) ||
+              (defData->settings->SkipSNetDetails && (defData->netOsnet==2))) {
+              defData->skip_net_body(defData->netOsnet);
+          }
         } net_connections
         | K_MUSTJOIN '(' T_STRING {defData->dumb_mode = 1; defData->no_num = 1;} T_STRING ')'
         {

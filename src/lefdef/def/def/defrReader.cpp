@@ -2598,5 +2598,13 @@ void defrSetSkipSpecialNets(int skip) {
     defContext.settings->SkipSpecialNetsSection = skip;
 }
 
+void defrSetSkipNetDetails(int skip) {
+    defContext.settings->SkipNetDetails = skip;
+}
+
+void defrSetSkipSNetDetails(int skip) {
+    defContext.settings->SkipSNetDetails = skip;
+}
+
 END_LEFDEF_PARSER_NAMESPACE
 

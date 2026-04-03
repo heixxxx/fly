@@ -25,6 +25,10 @@ ifeq ($(OS_TYPE),Linux)
     CC=gcc
 endif
 
+# Optimization level (default -O2, use OPT_LEVEL=3 for -O3)
+OPT_LEVEL ?= 2
+CXXFLAGS += -O$(OPT_LEVEL)
+
 # Support keyword implementation selection via KEYWORD_IMPL
 # KEYWORD_IMPL=std_map       - Use std::map
 # KEYWORD_IMPL=unordered_map - Use std::unordered_map
