@@ -383,6 +383,14 @@ defrData::DefGetToken(char **buf, int *bufferSize)
           if (ch == ' ' || ch == '\t' || ch == '\n' || ch == EOF)
              break;
 
+          if (settings->ProcessEscapeInTString && ch == '\\') {
+             ch = GETC();
+             if ((ch == '\n') || (ch == EOF)) {
+                 *s = '\0';
+                 return FALSE;
+             }
+          }
+
           *s = ch;
           IncCurPos(&s, buf, bufferSize);        
        }
@@ -400,6 +408,14 @@ defrData::DefGetToken(char **buf, int *bufferSize)
 
           if (ch == ' ' || ch == '\t' || ch == '\n' || ch == EOF)
              break;
+
+          if (settings->ProcessEscapeInTString && ch == '\\') {
+             ch = GETC();
+             if ((ch == '\n') || (ch == EOF)) {
+                 *s = '\0';
+                 return FALSE;
+             }
+          }
 
           *s = (ch >= 'a' && ch <= 'z')? (ch -'a' + 'A') : ch;            
           IncCurPos(&s, buf, bufferSize);

@@ -763,7 +763,9 @@ extern void defrSetSkipSpecialNets(int skip);
 extern void defrSetSkipNetDetails(int skip);
 extern void defrSetSkipSNetDetails(int skip);
 
-// Return codes for the user callbacks.
+extern void defrSetProcessEscapeInTString(int process);
+
+// Return codes for user callbacks.
 //The user should return one of these values. 
 #define PARSE_OK 0      // continue parsing 
 #define STOP_PARSE 1    // stop parsing with no error message 

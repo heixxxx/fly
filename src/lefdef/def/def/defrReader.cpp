@@ -2606,5 +2606,9 @@ void defrSetSkipSNetDetails(int skip) {
     defContext.settings->SkipSNetDetails = skip;
 }
 
+void defrSetProcessEscapeInTString(int process) {
+    defContext.settings->ProcessEscapeInTString = process;
+}
+
 END_LEFDEF_PARSER_NAMESPACE
 

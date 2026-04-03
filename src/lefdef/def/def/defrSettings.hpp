@@ -123,6 +123,11 @@ public:
     int SkipNetDetails;             // Skip net body (pins, wires, routes, etc.)
     int SkipSNetDetails;            // Skip special net body
 
+    // Escape processing flags
+    // When set, escape sequences like \/ are processed in T_STRING tokens
+    // Default is 0 (disabled) for backward compatibility
+    int ProcessEscapeInTString;    // Process escape in T_STRING
+
 
     DEFI_READ_FUNCTION ReadFunction;
     DEFI_LOG_FUNCTION ErrorLogFunction;
