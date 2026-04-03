@@ -126,7 +126,7 @@ public:
     // Escape processing flags
     // When set, escape sequences like \/ are processed in T_STRING tokens
     // Default is 0 (disabled) for backward compatibility
-    int ProcessEscapeInTString;    // Process escape in T_STRING
+    int RemoveBackslash;             // Remove backslash in T_STRING
 
 
     DEFI_READ_FUNCTION ReadFunction;

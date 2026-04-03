@@ -383,7 +383,7 @@ defrData::DefGetToken(char **buf, int *bufferSize)
           if (ch == ' ' || ch == '\t' || ch == '\n' || ch == EOF)
              break;
 
-          if (settings->ProcessEscapeInTString && ch == '\\') {
+          if (settings->RemoveBackslash && ch == '\\') {
              ch = GETC();
              if ((ch == '\n') || (ch == EOF)) {
                  *s = '\0';
@@ -409,7 +409,7 @@ defrData::DefGetToken(char **buf, int *bufferSize)
           if (ch == ' ' || ch == '\t' || ch == '\n' || ch == EOF)
              break;
 
-          if (settings->ProcessEscapeInTString && ch == '\\') {
+          if (settings->RemoveBackslash && ch == '\\') {
              ch = GETC();
              if ((ch == '\n') || (ch == EOF)) {
                  *s = '\0';

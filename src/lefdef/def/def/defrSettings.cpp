@@ -86,7 +86,7 @@ defrSettings::defrSettings()
   SkipNetDetails(0),
   SkipSNetDetails(0),
 
-  ProcessEscapeInTString(0),
+  RemoveBackslash(0),
 
   ReadFunction(NULL),
   ErrorLogFunction(NULL),

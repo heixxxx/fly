@@ -763,7 +763,7 @@ extern void defrSetSkipSpecialNets(int skip);
 extern void defrSetSkipNetDetails(int skip);
 extern void defrSetSkipSNetDetails(int skip);
 
-extern void defrSetProcessEscapeInTString(int process);
+extern void defrSetRemoveBackslash(int remove);
 
 // Return codes for user callbacks.
 //The user should return one of these values. 
