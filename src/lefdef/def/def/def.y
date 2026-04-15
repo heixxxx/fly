@@ -3259,10 +3259,17 @@ paths:
             defData->startPath();
         }
     }
-    path   // not necessary to do partial callback for net yet
+    path
     {
         if (defData->callbacks->NetCbk) {
-            defData->finishPath(0, &defData->needNPCbk);
+            if (defData->needNPCbk && defData->callbacks->NetPartialPathCbk) {
+                CALLBACK(defData->callbacks->NetPartialPathCbk, defrNetPartialPathCbkType, defData->Net);
+                defData->needNPCbk = 0;
+                defData->finishPath(1, &defData->needNPCbk);
+                defData->Net->clearRectPolyNPath();
+            } else {
+                defData->finishPath(0, &defData->needNPCbk);
+            }
             defData->PathObj = NULL;
         }
     }
@@ -3281,7 +3288,14 @@ new_path: K_NEW
     path
     {
         if (defData->callbacks->NetCbk) {
-            defData->finishPath(0, &defData->needNPCbk);
+            if (defData->needNPCbk && defData->callbacks->NetPartialPathCbk) {
+                CALLBACK(defData->callbacks->NetPartialPathCbk, defrNetPartialPathCbkType, defData->Net);
+                defData->needNPCbk = 0;
+                defData->finishPath(1, &defData->needNPCbk);
+                defData->Net->clearRectPolyNPath();
+            } else {
+                defData->finishPath(0, &defData->needNPCbk);
+            }
             defData->PathObj = NULL;
         }
     }

@@ -63,6 +63,7 @@ typedef enum {
   defrNetNonDefaultRuleCbkType = 18,
   defrNetSubnetNameCbkType = 19,
   defrNetEndCbkType = 20,
+  defrNetPartialPathCbkType = 70,
   defrPathCbkType = 21,
   defrVersionCbkType = 22,
   defrVersionStrCbkType = 23,

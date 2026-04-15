@@ -64,6 +64,7 @@ typedef enum {
   defrNetNonDefaultRuleCbkType,
   defrNetSubnetNameCbkType,
   defrNetEndCbkType,
+  defrNetPartialPathCbkType,
   defrPathCbkType, // Obsoleted.
   defrVersionCbkType,
   defrVersionStrCbkType,
