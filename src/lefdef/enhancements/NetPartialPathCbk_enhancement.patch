@@ -1,0 +1,5764 @@
+From c24864088c159bc32cbbe8de44f0372d754912ad Mon Sep 17 00:00:00 2001
+From: blank <583957236@qq.com>
+Date: Wed, 15 Apr 2026 16:59:03 +0800
+Subject: [PATCH] feat(def): implement NetPartialPathCbk for memory control in
+ normal NETS
+
+- Add defrNetPartialPathCbkType enum (value 70)
+- Implement callback trigger in paths/new_path grammar rules
+- Trigger callback when Wire path count reaches allocation limit
+- Clear Wire paths and Net rect/poly data after callback
+- Similar pattern to existing SNetPartialPathCbk for SPECIALNETS
+
+This allows users to process net wiring data in batches,
+reducing peak memory for nets with large amounts of paths.
+---
+ def/cdef/defrReader.h    |    1 +
+ def/def/def.tab.cpp      | 1898 +++++++++++++++++++-------------------
+ def/def/def.y            |   20 +-
+ def/def/defrReader.hpp   |    1 +
+ def/include/defrReader.h |  665 +++++++++++++
+ 5 files changed, 1640 insertions(+), 945 deletions(-)
+ create mode 100755 def/include/defrReader.h
+
+diff --git a/def/cdef/defrReader.h b/def/cdef/defrReader.h
+index 38d6d0c..703c0c3 100755
+--- a/def/cdef/defrReader.h
++++ b/def/cdef/defrReader.h
+@@ -63,6 +63,7 @@ typedef enum {
+   defrNetNonDefaultRuleCbkType = 18,
+   defrNetSubnetNameCbkType = 19,
+   defrNetEndCbkType = 20,
++  defrNetPartialPathCbkType = 70,
+   defrPathCbkType = 21,
+   defrVersionCbkType = 22,
+   defrVersionStrCbkType = 23,
+diff --git a/def/def/def.tab.cpp b/def/def/def.tab.cpp
+index c31b4eb..21c0680 100644
+--- a/def/def/def.tab.cpp
++++ b/def/def/def.tab.cpp
+@@ -1564,65 +1564,65 @@ static const yytype_int16 yyrline[] =
+     3043,  3054,  3056,  3057,  3056,  3087,  3098,  3108,  3086,  3123,
+     3122,  3131,  3137,  3139,  3141,  3143,  3145,  3149,  3148,  3159,
+     3159,  3172,  3173,  3173,  3176,  3177,  3180,  3182,  3184,  3187,
+-    3192,  3197,  3202,  3216,  3216,  3236,  3237,  3256,  3256,  3269,
+-    3273,  3272,  3291,  3312,  3290,  3331,  3348,  3366,  3368,  3373,
+-    3384,  3399,  3407,  3419,  3443,  3474,  3503,  3527,  3528,  3530,
+-    3529,  3544,  3545,  3555,  3566,  3567,  3579,  3589,  3598,  3607,
+-    3615,  3625,  3635,  3645,  3656,  3666,  3675,  3684,  3694,  3703,
+-    3704,  3707,  3708,  3708,  3708,  3713,  3712,  3734,  3747,  3758,
+-    3758,  3770,  3794,  3795,  3799,  3807,  3835,  3834,  3857,  3856,
+-    3874,  3887,  3889,  3891,  3893,  3895,  3897,  3899,  3901,  3917,
+-    3919,  3929,  3931,  3934,  3937,  3938,  3942,  3961,  3962,  3966,
+-    3966,  3967,  3967,  3971,  3970,  3983,  3988,  3996,  3995,  4004,
+-    4005,  4004,  4067,  4067,  4136,  4137,  4136,  4188,  4199,  4202,
+-    4205,  4205,  4216,  4219,  4222,  4232,  4235,  4248,  4251,  4257,
+-    4263,  4269,  4269,  4282,  4283,  4287,  4287,  4296,  4296,  4314,
+-    4315,  4314,  4322,  4323,  4328,  4329,  4333,  4343,  4345,  4347,
+-    4358,  4368,  4370,  4372,  4383,  4384,  4384,  4447,  4447,  4484,
+-    4488,  4487,  4531,  4540,  4530,  4560,  4567,  4580,  4592,  4595,
+-    4601,  4602,  4605,  4611,  4611,  4622,  4623,  4626,  4633,  4634,
+-    4637,  4639,  4639,  4642,  4642,  4644,  4649,  4663,  4662,  4680,
+-    4679,  4697,  4696,  4713,  4714,  4717,  4724,  4725,  4728,  4735,
+-    4736,  4739,  4746,  4756,  4761,  4762,  4765,  4776,  4785,  4795,
+-    4796,  4799,  4807,  4815,  4824,  4831,  4835,  4838,  4852,  4866,
+-    4867,  4870,  4871,  4881,  4894,  4894,  4899,  4899,  4904,  4909,
+-    4915,  4916,  4918,  4920,  4920,  4929,  4930,  4933,  4934,  4937,
+-    4942,  4947,  4952,  4958,  4969,  4980,  4983,  4989,  4990,  4993,
+-    4999,  4999,  5008,  5009,  5014,  5015,  5018,  5018,  5026,  5025,
+-    5040,  5039,  5053,  5053,  5060,  5060,  5069,  5069,  5089,  5096,
+-    5100,  5095,  5126,  5127,  5126,  5150,  5151,  5160,  5174,  5175,
+-    5179,  5178,  5188,  5189,  5202,  5223,  5254,  5255,  5259,  5260,
+-    5264,  5267,  5264,  5282,  5283,  5296,  5317,  5349,  5350,  5353,
+-    5362,  5365,  5376,  5377,  5380,  5386,  5386,  5392,  5393,  5397,
+-    5402,  5407,  5412,  5413,  5412,  5421,  5428,  5429,  5427,  5435,
+-    5436,  5436,  5442,  5443,  5449,  5449,  5451,  5457,  5463,  5469,
+-    5470,  5473,  5474,  5473,  5478,  5480,  5483,  5485,  5487,  5489,
+-    5492,  5493,  5497,  5496,  5500,  5499,  5504,  5505,  5507,  5507,
+-    5509,  5509,  5512,  5516,  5523,  5524,  5527,  5528,  5527,  5536,
+-    5536,  5544,  5544,  5552,  5558,  5559,  5558,  5564,  5564,  5570,
+-    5577,  5580,  5587,  5588,  5591,  5597,  5597,  5603,  5604,  5611,
+-    5612,  5614,  5618,  5619,  5621,  5624,  5625,  5628,  5628,  5634,
+-    5634,  5640,  5640,  5646,  5646,  5652,  5652,  5658,  5658,  5663,
+-    5671,  5670,  5674,  5675,  5678,  5683,  5689,  5690,  5693,  5694,
+-    5696,  5698,  5700,  5702,  5706,  5707,  5710,  5713,  5716,  5719,
+-    5723,  5727,  5728,  5731,  5731,  5740,  5741,  5746,  5747,  5750,
+-    5749,  5767,  5767,  5770,  5772,  5774,  5776,  5779,  5781,  5796,
+-    5797,  5800,  5804,  5805,  5808,  5809,  5808,  5818,  5819,  5821,
+-    5821,  5825,  5826,  5829,  5840,  5849,  5859,  5861,  5865,  5869,
+-    5870,  5873,  5882,  5883,  5882,  5902,  5901,  5919,  5920,  5923,
+-    5949,  5976,  5983,  5983,  5995,  6008,  6007,  6027,  6032,  6032,
+-    6051,  6075,  6096,  6114,  6145,  6171,  6172,  6177,  6177,  6195,
+-    6195,  6208,  6207,  6227,  6245,  6263,  6301,  6320,  6361,  6378,
+-    6379,  6382,  6388,  6387,  6413,  6415,  6426,  6431,  6432,  6435,
+-    6443,  6444,  6443,  6451,  6452,  6455,  6461,  6460,  6473,  6475,
+-    6479,  6483,  6484,  6487,  6488,  6487,  6502,  6503,  6502,  6522,
+-    6523,  6526,  6540,  6539,  6566,  6567,  6569,  6570,  6571,  6576,
+-    6595,  6601,  6607,  6608,  6612,  6615,  6626,  6627,  6630,  6631,
+-    6632,  6636,  6635,  6657,  6656,  6679,  6699,  6709,  6719,  6722,
+-    6740,  6744,  6745,  6748,  6749,  6748,  6759,  6760,  6763,  6768,
+-    6770,  6768,  6777,  6777,  6783,  6783,  6789,  6789,  6795,  6798,
+-    6799,  6802,  6808,  6814,  6822,  6822,  6826,  6827,  6830,  6841,
+-    6850,  6861,  6863,  6884,  6888,  6889,  6893,  6892
++    3192,  3197,  3202,  3216,  3216,  3236,  3237,  3256,  3256,  3276,
++    3280,  3279,  3305,  3326,  3304,  3345,  3362,  3380,  3382,  3387,
++    3398,  3413,  3421,  3433,  3457,  3488,  3517,  3541,  3542,  3544,
++    3543,  3558,  3559,  3569,  3580,  3581,  3593,  3603,  3612,  3621,
++    3629,  3639,  3649,  3659,  3670,  3680,  3689,  3698,  3708,  3717,
++    3718,  3721,  3722,  3722,  3722,  3727,  3726,  3748,  3761,  3772,
++    3772,  3784,  3808,  3809,  3813,  3821,  3849,  3848,  3871,  3870,
++    3888,  3901,  3903,  3905,  3907,  3909,  3911,  3913,  3915,  3931,
++    3933,  3943,  3945,  3948,  3951,  3952,  3956,  3975,  3976,  3980,
++    3980,  3981,  3981,  3985,  3984,  3997,  4002,  4010,  4009,  4018,
++    4019,  4018,  4081,  4081,  4150,  4151,  4150,  4202,  4213,  4216,
++    4219,  4219,  4230,  4233,  4236,  4246,  4249,  4262,  4265,  4271,
++    4277,  4283,  4283,  4296,  4297,  4301,  4301,  4310,  4310,  4328,
++    4329,  4328,  4336,  4337,  4342,  4343,  4347,  4357,  4359,  4361,
++    4372,  4382,  4384,  4386,  4397,  4398,  4398,  4461,  4461,  4498,
++    4502,  4501,  4545,  4554,  4544,  4574,  4581,  4594,  4606,  4609,
++    4615,  4616,  4619,  4625,  4625,  4636,  4637,  4640,  4647,  4648,
++    4651,  4653,  4653,  4656,  4656,  4658,  4663,  4677,  4676,  4694,
++    4693,  4711,  4710,  4727,  4728,  4731,  4738,  4739,  4742,  4749,
++    4750,  4753,  4760,  4770,  4775,  4776,  4779,  4790,  4799,  4809,
++    4810,  4813,  4821,  4829,  4838,  4845,  4849,  4852,  4866,  4880,
++    4881,  4884,  4885,  4895,  4908,  4908,  4913,  4913,  4918,  4923,
++    4929,  4930,  4932,  4934,  4934,  4943,  4944,  4947,  4948,  4951,
++    4956,  4961,  4966,  4972,  4983,  4994,  4997,  5003,  5004,  5007,
++    5013,  5013,  5022,  5023,  5028,  5029,  5032,  5032,  5040,  5039,
++    5054,  5053,  5067,  5067,  5074,  5074,  5083,  5083,  5103,  5110,
++    5114,  5109,  5140,  5141,  5140,  5164,  5165,  5174,  5188,  5189,
++    5193,  5192,  5202,  5203,  5216,  5237,  5268,  5269,  5273,  5274,
++    5278,  5281,  5278,  5296,  5297,  5310,  5331,  5363,  5364,  5367,
++    5376,  5379,  5390,  5391,  5394,  5400,  5400,  5406,  5407,  5411,
++    5416,  5421,  5426,  5427,  5426,  5435,  5442,  5443,  5441,  5449,
++    5450,  5450,  5456,  5457,  5463,  5463,  5465,  5471,  5477,  5483,
++    5484,  5487,  5488,  5487,  5492,  5494,  5497,  5499,  5501,  5503,
++    5506,  5507,  5511,  5510,  5514,  5513,  5518,  5519,  5521,  5521,
++    5523,  5523,  5526,  5530,  5537,  5538,  5541,  5542,  5541,  5550,
++    5550,  5558,  5558,  5566,  5572,  5573,  5572,  5578,  5578,  5584,
++    5591,  5594,  5601,  5602,  5605,  5611,  5611,  5617,  5618,  5625,
++    5626,  5628,  5632,  5633,  5635,  5638,  5639,  5642,  5642,  5648,
++    5648,  5654,  5654,  5660,  5660,  5666,  5666,  5672,  5672,  5677,
++    5685,  5684,  5688,  5689,  5692,  5697,  5703,  5704,  5707,  5708,
++    5710,  5712,  5714,  5716,  5720,  5721,  5724,  5727,  5730,  5733,
++    5737,  5741,  5742,  5745,  5745,  5754,  5755,  5760,  5761,  5764,
++    5763,  5781,  5781,  5784,  5786,  5788,  5790,  5793,  5795,  5810,
++    5811,  5814,  5818,  5819,  5822,  5823,  5822,  5832,  5833,  5835,
++    5835,  5839,  5840,  5843,  5854,  5863,  5873,  5875,  5879,  5883,
++    5884,  5887,  5896,  5897,  5896,  5916,  5915,  5933,  5934,  5937,
++    5963,  5990,  5997,  5997,  6009,  6022,  6021,  6041,  6046,  6046,
++    6065,  6089,  6110,  6128,  6159,  6185,  6186,  6191,  6191,  6209,
++    6209,  6222,  6221,  6241,  6259,  6277,  6315,  6334,  6375,  6392,
++    6393,  6396,  6402,  6401,  6427,  6429,  6440,  6445,  6446,  6449,
++    6457,  6458,  6457,  6465,  6466,  6469,  6475,  6474,  6487,  6489,
++    6493,  6497,  6498,  6501,  6502,  6501,  6516,  6517,  6516,  6536,
++    6537,  6540,  6554,  6553,  6580,  6581,  6583,  6584,  6585,  6590,
++    6609,  6615,  6621,  6622,  6626,  6629,  6640,  6641,  6644,  6645,
++    6646,  6650,  6649,  6671,  6670,  6693,  6713,  6723,  6733,  6736,
++    6754,  6758,  6759,  6762,  6763,  6762,  6773,  6774,  6777,  6782,
++    6784,  6782,  6791,  6791,  6797,  6797,  6803,  6803,  6809,  6812,
++    6813,  6816,  6822,  6828,  6836,  6836,  6840,  6841,  6844,  6855,
++    6864,  6875,  6877,  6898,  6902,  6903,  6907,  6906
+ };
+ #endif
+ 
+@@ -7991,21 +7991,28 @@ yyreduce:
+ #line 3263 "def.y"
+     {
+         if (defData->callbacks->NetCbk) {
+-            defData->finishPath(0, &defData->needNPCbk);
++            if (defData->needNPCbk && defData->callbacks->NetPartialPathCbk) {
++                CALLBACK(defData->callbacks->NetPartialPathCbk, defrNetPartialPathCbkType, defData->Net);
++                defData->needNPCbk = 0;
++                defData->finishPath(1, &defData->needNPCbk);
++                defData->Net->clearRectPolyNPath();
++            } else {
++                defData->finishPath(0, &defData->needNPCbk);
++            }
+             defData->PathObj = NULL;
+         }
+     }
+-#line 7999 "def.tab.c"
++#line 8006 "def.tab.c"
+     break;
+ 
+   case 529: /* paths: paths new_path  */
+-#line 3270 "def.y"
++#line 3277 "def.y"
+     { }
+-#line 8005 "def.tab.c"
++#line 8012 "def.tab.c"
+     break;
+ 
+   case 530: /* $@99: %empty  */
+-#line 3273 "def.y"
++#line 3280 "def.y"
+     {
+         defData->dumb_mode = 1;
+ 
+@@ -8014,22 +8021,29 @@ yyreduce:
+             defData->startPath();
+         }
+     }
+-#line 8018 "def.tab.c"
++#line 8025 "def.tab.c"
+     break;
+ 
+   case 531: /* new_path: K_NEW $@99 path  */
+-#line 3282 "def.y"
++#line 3289 "def.y"
+     {
+         if (defData->callbacks->NetCbk) {
+-            defData->finishPath(0, &defData->needNPCbk);
++            if (defData->needNPCbk && defData->callbacks->NetPartialPathCbk) {
++                CALLBACK(defData->callbacks->NetPartialPathCbk, defrNetPartialPathCbkType, defData->Net);
++                defData->needNPCbk = 0;
++                defData->finishPath(1, &defData->needNPCbk);
++                defData->Net->clearRectPolyNPath();
++            } else {
++                defData->finishPath(0, &defData->needNPCbk);
++            }
+             defData->PathObj = NULL;
+         }
+     }
+-#line 8029 "def.tab.c"
++#line 8043 "def.tab.c"
+     break;
+ 
+   case 532: /* $@100: %empty  */
+-#line 3291 "def.y"
++#line 3305 "def.y"
+       {
+         if ((strcmp((yyvsp[0].string), "TAPER") == 0) || (strcmp((yyvsp[0].string), "TAPERRULE") == 0)) {
+           if (defData->callbacks->NetCbk) {
+@@ -8050,11 +8064,11 @@ yyreduce:
+           defData->dumb_mode = 0; defData->no_num = 0;
+         }
+       }
+-#line 8054 "def.tab.c"
++#line 8068 "def.tab.c"
+     break;
+ 
+   case 533: /* $@101: %empty  */
+-#line 3312 "def.y"
++#line 3326 "def.y"
+       { defData->dumb_mode = DEF_MAX_INT; defData->by_is_keyword = TRUE; defData->do_is_keyword = TRUE;
+ /*
+        dumb_mode = 1; by_is_keyword = TRUE; do_is_keyword = TRUE;
+@@ -8067,18 +8081,18 @@ yyreduce:
+         defData->rect_is_keyword = TRUE;
+         defData->width_is_keyword = TRUE;
+       }
+-#line 8071 "def.tab.c"
++#line 8085 "def.tab.c"
+     break;
+ 
+   case 534: /* path: T_STRING $@100 opt_taper_style_s path_pt $@101 path_item_list_opt  */
+-#line 3327 "def.y"
++#line 3341 "def.y"
+       { defData->dumb_mode = 0;   defData->virtual_is_keyword = FALSE; defData->mask_is_keyword = FALSE,
+        defData->rect_is_keyword = FALSE; }
+-#line 8078 "def.tab.c"
++#line 8092 "def.tab.c"
+     break;
+ 
+   case 535: /* virtual_statement: K_VIRTUAL virtual_pt  */
+-#line 3332 "def.y"
++#line 3346 "def.y"
+     {
+       if (defData->VersionNum < 5.8) {
+               if (defData->callbacks->SNetCbk) {
+@@ -8093,11 +8107,11 @@ yyreduce:
+               }
+           }
+     }
+-#line 8097 "def.tab.c"
++#line 8111 "def.tab.c"
+     break;
+ 
+   case 536: /* rect_statement: K_RECT rect_pts  */
+-#line 3349 "def.y"
++#line 3363 "def.y"
+     {
+       if (defData->VersionNum < 5.8) {
+               if (defData->callbacks->SNetCbk) {
+@@ -8112,24 +8126,24 @@ yyreduce:
+               }
+       }
+     }
+-#line 8116 "def.tab.c"
++#line 8130 "def.tab.c"
+     break;
+ 
+   case 537: /* path_item_list_opt: %empty  */
+-#line 3366 "def.y"
++#line 3380 "def.y"
+     {
+     }
+-#line 8123 "def.tab.c"
++#line 8137 "def.tab.c"
+     break;
+ 
+   case 538: /* path_item_list_opt: path_item_list_opt path_item  */
+-#line 3369 "def.y"
++#line 3383 "def.y"
+     {}
+-#line 8129 "def.tab.c"
++#line 8143 "def.tab.c"
+     break;
+ 
+   case 539: /* path_item: T_STRING  */
+-#line 3374 "def.y"
++#line 3388 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+@@ -8140,11 +8154,11 @@ yyreduce:
+             }
+         }
+     }
+-#line 8144 "def.tab.c"
++#line 8158 "def.tab.c"
+     break;
+ 
+   case 540: /* path_item: K_MASK NUMBER T_STRING  */
+-#line 3385 "def.y"
++#line 3399 "def.y"
+     {
+         if (defData->validateMaskInput((int)(yyvsp[-1].dval), defData->sNetWarnings,
+                                        defData->settings->SNetWarnings)) {
+@@ -8159,11 +8173,11 @@ yyreduce:
+             }
+         }
+     }
+-#line 8163 "def.tab.c"
++#line 8177 "def.tab.c"
+     break;
+ 
+   case 541: /* path_item: T_STRING orient  */
+-#line 3400 "def.y"
++#line 3414 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+@@ -8171,11 +8185,11 @@ yyreduce:
+             defData->PathObj->addViaRotation((yyvsp[0].integer));
+         }
+     }
+-#line 8175 "def.tab.c"
++#line 8189 "def.tab.c"
+     break;
+ 
+   case 542: /* path_item: K_MASK NUMBER T_STRING orient  */
+-#line 3408 "def.y"
++#line 3422 "def.y"
+     { 
+         if (defData->validateMaskInput((int)(yyvsp[-2].dval), defData->sNetWarnings,
+                                        defData->settings->SNetWarnings)) {
+@@ -8187,11 +8201,11 @@ yyreduce:
+             }
+         }
+     }
+-#line 8191 "def.tab.c"
++#line 8205 "def.tab.c"
+     break;
+ 
+   case 543: /* path_item: K_MASK NUMBER T_STRING K_DO NUMBER K_BY NUMBER K_STEP NUMBER NUMBER  */
+-#line 3420 "def.y"
++#line 3434 "def.y"
+     {
+         if (defData->validateMaskInput((int)(yyvsp[-8].dval), defData->sNetWarnings,
+                                        defData->settings->SNetWarnings)) {      
+@@ -8215,11 +8229,11 @@ yyreduce:
+             }
+         }
+     }
+-#line 8219 "def.tab.c"
++#line 8233 "def.tab.c"
+     break;
+ 
+   case 544: /* path_item: T_STRING K_DO NUMBER K_BY NUMBER K_STEP NUMBER NUMBER  */
+-#line 3444 "def.y"
++#line 3458 "def.y"
+     {
+         if ((defData->VersionNum < 5.5)
+             && defData->callbacks->SNetCbk
+@@ -8250,11 +8264,11 @@ yyreduce:
+             }
+         }
+     }
+-#line 8254 "def.tab.c"
++#line 8268 "def.tab.c"
+     break;
+ 
+   case 545: /* path_item: T_STRING orient K_DO NUMBER K_BY NUMBER K_STEP NUMBER NUMBER  */
+-#line 3475 "def.y"
++#line 3489 "def.y"
+     {
+         if ((defData->VersionNum < 5.5)
+             && defData->callbacks->SNetCbk
+@@ -8283,11 +8297,11 @@ yyreduce:
+             }
+         }
+     }
+-#line 8287 "def.tab.c"
++#line 8301 "def.tab.c"
+     break;
+ 
+   case 546: /* path_item: K_MASK NUMBER T_STRING orient K_DO NUMBER K_BY NUMBER K_STEP NUMBER NUMBER  */
+-#line 3504 "def.y"
++#line 3518 "def.y"
+     {
+         if (defData->validateMaskInput((int)(yyvsp[-9].dval), defData->sNetWarnings,
+                                        defData->settings->SNetWarnings)) {
+@@ -8311,19 +8325,19 @@ yyreduce:
+             }
+         }
+     }
+-#line 8315 "def.tab.c"
++#line 8329 "def.tab.c"
+     break;
+ 
+   case 549: /* $@102: %empty  */
+-#line 3530 "def.y"
++#line 3544 "def.y"
+     {
+         defData->dumb_mode = 6;
+     }
+-#line 8323 "def.tab.c"
++#line 8337 "def.tab.c"
+     break;
+ 
+   case 550: /* path_item: K_MASK NUMBER K_RECT $@102 '(' NUMBER NUMBER NUMBER NUMBER ')'  */
+-#line 3534 "def.y"
++#line 3548 "def.y"
+     {
+         if (defData->validateMaskInput((int)(yyvsp[-8].dval), defData->sNetWarnings,
+                                        defData->settings->SNetWarnings)) {
+@@ -8334,11 +8348,11 @@ yyreduce:
+             }
+         }
+     }
+-#line 8338 "def.tab.c"
++#line 8352 "def.tab.c"
+     break;
+ 
+   case 552: /* path_item: wire_width path_pt  */
+-#line 3546 "def.y"
++#line 3560 "def.y"
+     {
+        // reset defData->dumb_mode to 1 just incase the next token is a via of the path
+         // 2/5/2004 - pcr 686781
+@@ -8346,11 +8360,11 @@ yyreduce:
+         defData->new_is_keyword = TRUE; defData->step_is_keyword = TRUE;
+         defData->orient_is_keyword = TRUE;
+     }
+-#line 8350 "def.tab.c"
++#line 8364 "def.tab.c"
+     break;
+ 
+   case 553: /* mask_number: K_MASK NUMBER  */
+-#line 3556 "def.y"
++#line 3570 "def.y"
+     {
+         if (defData->validateMaskInput((int)(yyvsp[0].dval), defData->sNetWarnings,
+                                        defData->settings->SNetWarnings)) {
+@@ -8360,11 +8374,11 @@ yyreduce:
+             }
+         }  
+     }
+-#line 8364 "def.tab.c"
++#line 8378 "def.tab.c"
+     break;
+ 
+   case 555: /* wire_width: K_WIDTH NUMBER  */
+-#line 3568 "def.y"
++#line 3582 "def.y"
+     {
+         if (defData->VersionNum < 6.0 - 0.0001) {
+             if (defData->def60NewSyntaxError("NETS ... ( x y [extValue] ) [MASK maskNum] [WIDTH width] ( x y [extValue] )")) {
+@@ -8374,11 +8388,11 @@ yyreduce:
+             defData->PathObj->addWidth((yyvsp[0].dval));
+         } 
+     }
+-#line 8378 "def.tab.c"
++#line 8392 "def.tab.c"
+     break;
+ 
+   case 556: /* path_pt: '(' NUMBER NUMBER ')'  */
+-#line 3580 "def.y"
++#line 3594 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+@@ -8388,11 +8402,11 @@ yyreduce:
+         defData->save_x = (yyvsp[-2].dval);
+         defData->save_y = (yyvsp[-1].dval); 
+     }
+-#line 8392 "def.tab.c"
++#line 8406 "def.tab.c"
+     break;
+ 
+   case 557: /* path_pt: '(' '*' NUMBER ')'  */
+-#line 3590 "def.y"
++#line 3604 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+@@ -8401,11 +8415,11 @@ yyreduce:
+ 
+         defData->save_y = (yyvsp[-1].dval);
+       }
+-#line 8405 "def.tab.c"
++#line 8419 "def.tab.c"
+     break;
+ 
+   case 558: /* path_pt: '(' NUMBER '*' ')'  */
+-#line 3599 "def.y"
++#line 3613 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet==1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet==2))) {
+@@ -8414,11 +8428,11 @@ yyreduce:
+ 
+         defData->save_x = (yyvsp[-2].dval);
+     }
+-#line 8418 "def.tab.c"
++#line 8432 "def.tab.c"
+     break;
+ 
+   case 559: /* path_pt: '(' '*' '*' ')'  */
+-#line 3608 "def.y"
++#line 3622 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+@@ -8426,11 +8440,11 @@ yyreduce:
+                                        ROUND(defData->save_y));
+         }
+     }
+-#line 8430 "def.tab.c"
++#line 8444 "def.tab.c"
+     break;
+ 
+   case 560: /* path_pt: '(' NUMBER NUMBER NUMBER ')'  */
+-#line 3616 "def.y"
++#line 3630 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+@@ -8440,11 +8454,11 @@ yyreduce:
+         defData->save_x = (yyvsp[-3].dval);
+         defData->save_y = (yyvsp[-2].dval);
+     }
+-#line 8444 "def.tab.c"
++#line 8458 "def.tab.c"
+     break;
+ 
+   case 561: /* path_pt: '(' '*' NUMBER NUMBER ')'  */
+-#line 3626 "def.y"
++#line 3640 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+@@ -8454,11 +8468,11 @@ yyreduce:
+ 
+         defData->save_y = (yyvsp[-2].dval);
+     }
+-#line 8458 "def.tab.c"
++#line 8472 "def.tab.c"
+     break;
+ 
+   case 562: /* path_pt: '(' NUMBER '*' NUMBER ')'  */
+-#line 3636 "def.y"
++#line 3650 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+@@ -8468,11 +8482,11 @@ yyreduce:
+ 
+         defData->save_x = (yyvsp[-3].dval);
+     }
+-#line 8472 "def.tab.c"
++#line 8486 "def.tab.c"
+     break;
+ 
+   case 563: /* path_pt: '(' '*' '*' NUMBER ')'  */
+-#line 3646 "def.y"
++#line 3660 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet==1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet==2))) {
+@@ -8481,11 +8495,11 @@ yyreduce:
+                                            ROUND((yyvsp[-1].dval)));
+         }
+     }
+-#line 8485 "def.tab.c"
++#line 8499 "def.tab.c"
+     break;
+ 
+   case 564: /* virtual_pt: '(' NUMBER NUMBER ')'  */
+-#line 3657 "def.y"
++#line 3671 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+@@ -8495,11 +8509,11 @@ yyreduce:
+         defData->save_x = (yyvsp[-2].dval);
+         defData->save_y = (yyvsp[-1].dval);
+     }
+-#line 8499 "def.tab.c"
++#line 8513 "def.tab.c"
+     break;
+ 
+   case 565: /* virtual_pt: '(' '*' NUMBER ')'  */
+-#line 3667 "def.y"
++#line 3681 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+@@ -8508,11 +8522,11 @@ yyreduce:
+ 
+         defData->save_y = (yyvsp[-1].dval);
+     }
+-#line 8512 "def.tab.c"
++#line 8526 "def.tab.c"
+     break;
+ 
+   case 566: /* virtual_pt: '(' NUMBER '*' ')'  */
+-#line 3676 "def.y"
++#line 3690 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+@@ -8521,11 +8535,11 @@ yyreduce:
+ 
+         defData->save_x = (yyvsp[-2].dval);
+     }
+-#line 8525 "def.tab.c"
++#line 8539 "def.tab.c"
+     break;
+ 
+   case 567: /* virtual_pt: '(' '*' '*' ')'  */
+-#line 3685 "def.y"
++#line 3699 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+              || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+@@ -8533,30 +8547,30 @@ yyreduce:
+                                               ROUND(defData->save_y));
+         }
+     }
+-#line 8537 "def.tab.c"
++#line 8551 "def.tab.c"
+     break;
+ 
+   case 568: /* rect_pts: '(' NUMBER NUMBER NUMBER NUMBER ')'  */
+-#line 3695 "def.y"
++#line 3709 "def.y"
+     {
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+             defData->PathObj->addViaRect((yyvsp[-4].dval), (yyvsp[-3].dval), (yyvsp[-2].dval), (yyvsp[-1].dval)); 
+         }    
+     }
+-#line 8548 "def.tab.c"
++#line 8562 "def.tab.c"
+     break;
+ 
+   case 575: /* $@103: %empty  */
+-#line 3713 "def.y"
++#line 3727 "def.y"
+     { 
+         defData->dumb_mode = 2; 
+     }
+-#line 8556 "def.tab.c"
++#line 8570 "def.tab.c"
+     break;
+ 
+   case 576: /* opt_prop: K_PROPERTY $@103 prop_name_value  */
+-#line 3717 "def.y"
++#line 3731 "def.y"
+     {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("NETS regularWiring: layerName + PROPERTY propName propValue ... routingPoints")) {
+@@ -8573,11 +8587,11 @@ yyreduce:
+ 
+         delete (yyvsp[0].prop);
+     }
+-#line 8577 "def.tab.c"
++#line 8591 "def.tab.c"
+     break;
+ 
+   case 577: /* opt_shield: K_SHIELD  */
+-#line 3735 "def.y"
++#line 3749 "def.y"
+     {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("NETS regularWiring: layerName + SHIELD ... routingPoints")) {
+@@ -8589,11 +8603,11 @@ yyreduce:
+             }
+         }
+     }
+-#line 8593 "def.tab.c"
++#line 8607 "def.tab.c"
+     break;
+ 
+   case 578: /* opt_taper: K_TAPER  */
+-#line 3748 "def.y"
++#line 3762 "def.y"
+     {
+         if (defData->VersionNum >= 6.0 - 0.00001) {
+             if (defData->def60ObsoletedError("NETS ... layerName ... [TAPER]")) {
+@@ -8604,17 +8618,17 @@ yyreduce:
+             defData->PathObj->setTaper(); 
+         }
+     }
+-#line 8608 "def.tab.c"
++#line 8622 "def.tab.c"
+     break;
+ 
+   case 579: /* $@104: %empty  */
+-#line 3758 "def.y"
++#line 3772 "def.y"
+                 { defData->dumb_mode = 1; }
+-#line 8614 "def.tab.c"
++#line 8628 "def.tab.c"
+     break;
+ 
+   case 580: /* opt_taper: K_TAPERRULE $@104 T_STRING  */
+-#line 3759 "def.y"
++#line 3773 "def.y"
+     {
+         if (defData->VersionNum >= 6.0 - 0.00001) {
+             if (defData->def60ObsoletedError("NETS ... layerName ... [TAPERRULE ruleName]")) {
+@@ -8625,11 +8639,11 @@ yyreduce:
+             defData->PathObj->addTaperRule((yyvsp[0].string)); 
+         }
+     }
+-#line 8629 "def.tab.c"
++#line 8643 "def.tab.c"
+     break;
+ 
+   case 581: /* opt_style: K_STYLE NUMBER  */
+-#line 3771 "def.y"
++#line 3785 "def.y"
+     { 
+         if (defData->VersionNum < 5.6) {
+             if (defData->callbacks->NetCbk || defData->callbacks->SNetCbk) {
+@@ -8652,22 +8666,22 @@ yyreduce:
+             defData->PathObj->addStyle((int)(yyvsp[0].dval));
+         }
+     }
+-#line 8656 "def.tab.c"
++#line 8670 "def.tab.c"
+     break;
+ 
+   case 584: /* opt_shape_style_prop: '+' K_SHAPE shape_type  */
+-#line 3800 "def.y"
++#line 3814 "def.y"
+     {  
+         if ((defData->callbacks->NetCbk && (defData->netOsnet == 1))
+             || (defData->callbacks->SNetCbk && (defData->netOsnet == 2))) {
+             defData->PathObj->addShape((yyvsp[0].string)); 
+         }
+     }
+-#line 8667 "def.tab.c"
++#line 8681 "def.tab.c"
+     break;
+ 
+   case 585: /* opt_shape_style_prop: '+' K_STYLE NUMBER  */
+-#line 3808 "def.y"
++#line 3822 "def.y"
+     {
+         if (defData->VersionNum >= 6.0 - 0.00001) {
+             if (defData->def60ObsoletedError("SPECIALNETS specialWiring: layerName routeWidth ... + STYLE styleType")) {
+@@ -8693,19 +8707,19 @@ yyreduce:
+             }
+         }
+     }
+-#line 8697 "def.tab.c"
++#line 8711 "def.tab.c"
+     break;
+ 
+   case 586: /* $@105: %empty  */
+-#line 3835 "def.y"
++#line 3849 "def.y"
+     { 
+         defData->dumb_mode = 2; 
+     }
+-#line 8705 "def.tab.c"
++#line 8719 "def.tab.c"
+     break;
+ 
+   case 587: /* opt_shape_style_prop: '+' K_PROPERTY $@105 prop_name_value  */
+-#line 3839 "def.y"
++#line 3853 "def.y"
+     {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("SPECIALNETS specialWiring: layerName routeWidth + PROPERTY propName propValue ... routingPoints")) {
+@@ -8722,20 +8736,20 @@ yyreduce:
+         
+         delete (yyvsp[0].prop);
+     }
+-#line 8726 "def.tab.c"
++#line 8740 "def.tab.c"
+     break;
+ 
+   case 588: /* $@106: %empty  */
+-#line 3857 "def.y"
++#line 3871 "def.y"
+     { 
+         defData->dumb_mode = 1; 
+         defData->no_num = 1; 
+     }
+-#line 8735 "def.tab.c"
++#line 8749 "def.tab.c"
+     break;
+ 
+   case 589: /* opt_shape_style_prop: '+' K_SHIELD $@106 T_STRING  */
+-#line 3862 "def.y"
++#line 3876 "def.y"
+     {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("SPECIALNETS specialWiring: layerName routeWidth + SHIELD shieldNetName ... routingPoints")) {
+@@ -8747,11 +8761,11 @@ yyreduce:
+             }
+         }    
+     }
+-#line 8751 "def.tab.c"
++#line 8765 "def.tab.c"
+     break;
+ 
+   case 590: /* end_nets: K_END K_NETS  */
+-#line 3875 "def.y"
++#line 3889 "def.y"
+     {
+         if (defData->callbacks->NetEndCbk) {
+             CALLBACK(defData->callbacks->NetEndCbk, defrNetEndCbkType, 0);
+@@ -8763,53 +8777,53 @@ yyreduce:
+         delete defData->Net;
+         defData->Net = NULL;
+     }
+-#line 8767 "def.tab.c"
++#line 8781 "def.tab.c"
+     break;
+ 
+   case 591: /* shape_type: K_RING  */
+-#line 3888 "def.y"
++#line 3902 "def.y"
+             { (yyval.string) = (char*)"RING"; }
+-#line 8773 "def.tab.c"
++#line 8787 "def.tab.c"
+     break;
+ 
+   case 592: /* shape_type: K_STRIPE  */
+-#line 3890 "def.y"
++#line 3904 "def.y"
+             { (yyval.string) = (char*)"STRIPE"; }
+-#line 8779 "def.tab.c"
++#line 8793 "def.tab.c"
+     break;
+ 
+   case 593: /* shape_type: K_FOLLOWPIN  */
+-#line 3892 "def.y"
++#line 3906 "def.y"
+             { (yyval.string) = (char*)"FOLLOWPIN"; }
+-#line 8785 "def.tab.c"
++#line 8799 "def.tab.c"
+     break;
+ 
+   case 594: /* shape_type: K_IOWIRE  */
+-#line 3894 "def.y"
++#line 3908 "def.y"
+             { (yyval.string) = (char*)"IOWIRE"; }
+-#line 8791 "def.tab.c"
++#line 8805 "def.tab.c"
+     break;
+ 
+   case 595: /* shape_type: K_COREWIRE  */
+-#line 3896 "def.y"
++#line 3910 "def.y"
+             { (yyval.string) = (char*)"COREWIRE"; }
+-#line 8797 "def.tab.c"
++#line 8811 "def.tab.c"
+     break;
+ 
+   case 596: /* shape_type: K_BLOCKWIRE  */
+-#line 3898 "def.y"
++#line 3912 "def.y"
+             { (yyval.string) = (char*)"BLOCKWIRE"; }
+-#line 8803 "def.tab.c"
++#line 8817 "def.tab.c"
+     break;
+ 
+   case 597: /* shape_type: K_FILLWIRE  */
+-#line 3900 "def.y"
++#line 3914 "def.y"
+             { (yyval.string) = (char*)"FILLWIRE"; }
+-#line 8809 "def.tab.c"
++#line 8823 "def.tab.c"
+     break;
+ 
+   case 598: /* shape_type: K_FILLWIREOPC  */
+-#line 3902 "def.y"
++#line 3916 "def.y"
+             {
+               if (defData->VersionNum < 5.7) {
+                  if (defData->callbacks->NetCbk || defData->callbacks->SNetCbk) {
+@@ -8825,17 +8839,17 @@ yyreduce:
+               }
+               (yyval.string) = (char*)"FILLWIREOPC";
+             }
+-#line 8829 "def.tab.c"
++#line 8843 "def.tab.c"
+     break;
+ 
+   case 599: /* shape_type: K_DRCFILL  */
+-#line 3918 "def.y"
++#line 3932 "def.y"
+             { (yyval.string) = (char*)"DRCFILL"; }
+-#line 8835 "def.tab.c"
++#line 8849 "def.tab.c"
+     break;
+ 
+   case 600: /* shape_type: K_BLOCKAGEWIRE  */
+-#line 3920 "def.y"
++#line 3934 "def.y"
+             { 
+                 if (defData->VersionNum >= 6.0 - 0.00001) {
+                     if (defData->def60ObsoletedError("SPECIALNETS ... + SHAPE BLOCKAGEWIRE")) {
+@@ -8845,23 +8859,23 @@ yyreduce:
+                 
+                 (yyval.string) = (char*)"BLOCKAGEWIRE"; 
+             }
+-#line 8849 "def.tab.c"
++#line 8863 "def.tab.c"
+     break;
+ 
+   case 601: /* shape_type: K_PADRING  */
+-#line 3930 "def.y"
++#line 3944 "def.y"
+             { (yyval.string) = (char*)"PADRING"; }
+-#line 8855 "def.tab.c"
++#line 8869 "def.tab.c"
+     break;
+ 
+   case 602: /* shape_type: K_BLOCKRING  */
+-#line 3932 "def.y"
++#line 3946 "def.y"
+             { (yyval.string) = (char*)"BLOCKRING"; }
+-#line 8861 "def.tab.c"
++#line 8875 "def.tab.c"
+     break;
+ 
+   case 606: /* snet_rule: net_and_connections snet_options ';'  */
+-#line 3943 "def.y"
++#line 3957 "def.y"
+     { 
+         defData->routeStatus = (char*)"ROUTED";
+         defData->shieldName = NULL;
+@@ -8879,18 +8893,18 @@ yyreduce:
+ 
+         defData->cleanProps();
+      }
+-#line 8883 "def.tab.c"
++#line 8897 "def.tab.c"
+     break;
+ 
+   case 608: /* snet_options: snet_options snet_option  */
+-#line 3963 "def.y"
++#line 3977 "def.y"
+         {
+         }
+-#line 8890 "def.tab.c"
++#line 8904 "def.tab.c"
+     break;
+ 
+   case 613: /* $@107: %empty  */
+-#line 3971 "def.y"
++#line 3985 "def.y"
+     {
+         if (defData->callbacks->SNetCbk) {
+             defData->setPropsDataTypes("SPECIAL NET", defData->session->SNetProp);
+@@ -8899,58 +8913,58 @@ yyreduce:
+ 
+         defData->cleanProps();       
+     }
+-#line 8903 "def.tab.c"
++#line 8917 "def.tab.c"
+     break;
+ 
+   case 614: /* snet_other_option: '+' snet_type $@107 opt_swire  */
+-#line 3980 "def.y"
++#line 3994 "def.y"
+     {
+     }
+-#line 8910 "def.tab.c"
++#line 8924 "def.tab.c"
+     break;
+ 
+   case 615: /* snet_other_option: '+' K_SHAPE shape_type  */
+-#line 3984 "def.y"
++#line 3998 "def.y"
+     {  
+       defData->shapeType = (yyvsp[0].string);
+     }
+-#line 8918 "def.tab.c"
++#line 8932 "def.tab.c"
+     break;
+ 
+   case 616: /* snet_other_option: '+' K_MASK NUMBER  */
+-#line 3989 "def.y"
++#line 4003 "def.y"
+     {
+       if (defData->validateMaskInput((int)(yyvsp[0].dval), defData->sNetWarnings, defData->settings->SNetWarnings)) {
+           defData->specialWire_mask = (yyvsp[0].dval);
+       }     
+     }
+-#line 8928 "def.tab.c"
++#line 8942 "def.tab.c"
+     break;
+ 
+   case 617: /* $@108: %empty  */
+-#line 3996 "def.y"
++#line 4010 "def.y"
+     {
+       defData->dumb_mode = DEF_MAX_INT;
+     }
+-#line 8936 "def.tab.c"
++#line 8950 "def.tab.c"
+     break;
+ 
+   case 618: /* snet_other_option: '+' K_PROPERTY $@108 net_prop_name_values  */
+-#line 4000 "def.y"
++#line 4014 "def.y"
+     {
+       defData->dumb_mode = 0;
+     }
+-#line 8944 "def.tab.c"
++#line 8958 "def.tab.c"
+     break;
+ 
+   case 619: /* $@109: %empty  */
+-#line 4004 "def.y"
++#line 4018 "def.y"
+                   { defData->dumb_mode = 1; }
+-#line 8950 "def.tab.c"
++#line 8964 "def.tab.c"
+     break;
+ 
+   case 620: /* $@110: %empty  */
+-#line 4005 "def.y"
++#line 4019 "def.y"
+     {
+       if (defData->VersionNum < 5.6) {
+         if (defData->callbacks->SNetCbk) {
+@@ -8967,11 +8981,11 @@ yyreduce:
+ 
+       defData->Geometries.Reset();
+     }
+-#line 8971 "def.tab.c"
++#line 8985 "def.tab.c"
+     break;
+ 
+   case 621: /* snet_other_option: '+' K_POLYGON $@109 T_STRING $@110 firstPt nextPt nextPt otherPts  */
+-#line 4023 "def.y"
++#line 4037 "def.y"
+     {
+       defrProps* polyProps = NULL;
+ 
+@@ -9015,17 +9029,17 @@ yyreduce:
+       defData->routeStatus = (char*)"ROUTED";
+       defData->shapeType = NULL;
+     }
+-#line 9019 "def.tab.c"
++#line 9033 "def.tab.c"
+     break;
+ 
+   case 622: /* $@111: %empty  */
+-#line 4067 "def.y"
++#line 4081 "def.y"
+                { defData->dumb_mode = 1; }
+-#line 9025 "def.tab.c"
++#line 9039 "def.tab.c"
+     break;
+ 
+   case 623: /* snet_other_option: '+' K_RECT $@111 T_STRING pt pt  */
+-#line 4068 "def.y"
++#line 4082 "def.y"
+     {
+         defrProps* rectProps = NULL;
+ 
+@@ -9094,17 +9108,17 @@ yyreduce:
+         defData->routeStatus = (char*)"ROUTED";
+         defData->shapeType = NULL;
+     }
+-#line 9098 "def.tab.c"
++#line 9112 "def.tab.c"
+     break;
+ 
+   case 624: /* $@112: %empty  */
+-#line 4136 "def.y"
++#line 4150 "def.y"
+               { defData->dumb_mode = 1; }
+-#line 9104 "def.tab.c"
++#line 9118 "def.tab.c"
+     break;
+ 
+   case 625: /* $@113: %empty  */
+-#line 4137 "def.y"
++#line 4151 "def.y"
+     {
+       if (defData->VersionNum < 5.8) {
+           if (defData->callbacks->SNetCbk) {
+@@ -9119,11 +9133,11 @@ yyreduce:
+           }
+       }
+     }
+-#line 9123 "def.tab.c"
++#line 9137 "def.tab.c"
+     break;
+ 
+   case 626: /* snet_other_option: '+' K_VIA $@112 T_STRING orient_pt $@113 firstPt otherPts  */
+-#line 4152 "def.y"
++#line 4166 "def.y"
+     {
+       defrProps* viaProps = NULL;
+ 
+@@ -9159,11 +9173,11 @@ yyreduce:
+         defData->routeStatus = (char*)"ROUTED";
+         defData->shapeType = NULL;
+     }
+-#line 9163 "def.tab.c"
++#line 9177 "def.tab.c"
+     break;
+ 
+   case 627: /* snet_other_option: '+' K_SOURCE source_type  */
+-#line 4189 "def.y"
++#line 4203 "def.y"
+     { 
+         if (defData->VersionNum >= 6.0 - 0.00001) {
+             if (defData->def60ObsoletedError("SPECIALNETS ... netName ... + SOURCE DIST|NETLIST|TEST|TIMING|USER")) {
+@@ -9173,29 +9187,29 @@ yyreduce:
+             defData->Net->setSource((yyvsp[0].string)); 
+         }
+     }
+-#line 9177 "def.tab.c"
++#line 9191 "def.tab.c"
+     break;
+ 
+   case 628: /* snet_other_option: '+' K_FIXEDBUMP  */
+-#line 4200 "def.y"
++#line 4214 "def.y"
+     { if (defData->callbacks->SNetCbk) defData->Net->setFixedbump(); }
+-#line 9183 "def.tab.c"
++#line 9197 "def.tab.c"
+     break;
+ 
+   case 629: /* snet_other_option: '+' K_FREQUENCY NUMBER  */
+-#line 4203 "def.y"
++#line 4217 "def.y"
+     { if (defData->callbacks->SNetCbk) defData->Net->setFrequency((yyvsp[0].dval)); }
+-#line 9189 "def.tab.c"
++#line 9203 "def.tab.c"
+     break;
+ 
+   case 630: /* $@114: %empty  */
+-#line 4205 "def.y"
++#line 4219 "def.y"
+                    {defData->dumb_mode = 1; defData->no_num = 1;}
+-#line 9195 "def.tab.c"
++#line 9209 "def.tab.c"
+     break;
+ 
+   case 631: /* snet_other_option: '+' K_ORIGINAL $@114 T_STRING  */
+-#line 4206 "def.y"
++#line 4220 "def.y"
+     { 
+         if (defData->VersionNum >= 6.0 - 0.00001) {
+             if (defData->def60ObsoletedError("SPECIALNETS ... netName ... + ORIGINAL netName")) {
+@@ -9205,23 +9219,23 @@ yyreduce:
+             defData->Net->setOriginal((yyvsp[0].string)); 
+         }
+     }
+-#line 9209 "def.tab.c"
++#line 9223 "def.tab.c"
+     break;
+ 
+   case 632: /* snet_other_option: '+' K_PATTERN snets_pattern_type  */
+-#line 4217 "def.y"
++#line 4231 "def.y"
+     { if (defData->callbacks->SNetCbk) defData->Net->setPattern((yyvsp[0].string)); }
+-#line 9215 "def.tab.c"
++#line 9229 "def.tab.c"
+     break;
+ 
+   case 633: /* snet_other_option: '+' K_WEIGHT NUMBER  */
+-#line 4220 "def.y"
++#line 4234 "def.y"
+     { if (defData->callbacks->SNetCbk) defData->Net->setWeight(ROUND((yyvsp[0].dval))); }
+-#line 9221 "def.tab.c"
++#line 9235 "def.tab.c"
+     break;
+ 
+   case 634: /* snet_other_option: '+' K_ESTCAP NUMBER  */
+-#line 4223 "def.y"
++#line 4237 "def.y"
+     { 
+         // 11/12/2002 - this is obsolete in 5.5, & will be ignored 
+         if (defData->VersionNum < 5.5) {
+@@ -9230,17 +9244,17 @@ yyreduce:
+             }
+         }
+     }
+-#line 9234 "def.tab.c"
++#line 9248 "def.tab.c"
+     break;
+ 
+   case 635: /* snet_other_option: '+' K_USE use_type  */
+-#line 4233 "def.y"
++#line 4247 "def.y"
+     { if (defData->callbacks->SNetCbk) defData->Net->setUse((yyvsp[0].string)); }
+-#line 9240 "def.tab.c"
++#line 9254 "def.tab.c"
+     break;
+ 
+   case 636: /* snet_other_option: '+' K_STYLE NUMBER  */
+-#line 4236 "def.y"
++#line 4250 "def.y"
+     { 
+         if (defData->VersionNum >= 6.0 - 0.00001) {
+             if (defData->def60ObsoletedError("SPECIALNETS ... [STYLE styleNum]")) {
+@@ -9252,53 +9266,53 @@ yyreduce:
+             defData->Net->setStyle((int)(yyvsp[0].dval)); 
+         }
+     }
+-#line 9256 "def.tab.c"
++#line 9270 "def.tab.c"
+     break;
+ 
+   case 637: /* snet_other_option: extension_stmt  */
+-#line 4249 "def.y"
++#line 4263 "def.y"
+     { CALLBACK(defData->callbacks->NetExtCbk, defrNetExtCbkType, &defData->History_text[0]); }
+-#line 9262 "def.tab.c"
++#line 9276 "def.tab.c"
+     break;
+ 
+   case 638: /* snet_type: K_FIXED  */
+-#line 4252 "def.y"
++#line 4266 "def.y"
+         { 
+             defData->shieldName = NULL;
+             defData->routeStatus = (char*)"FIXED"; 
+             defData->dumb_mode = 1; 
+         }
+-#line 9272 "def.tab.c"
++#line 9286 "def.tab.c"
+     break;
+ 
+   case 639: /* snet_type: K_COVER  */
+-#line 4258 "def.y"
++#line 4272 "def.y"
+         { 
+             defData->shieldName = NULL;
+             defData->routeStatus = (char*)"COVER"; 
+             defData->dumb_mode = 1; 
+         }
+-#line 9282 "def.tab.c"
++#line 9296 "def.tab.c"
+     break;
+ 
+   case 640: /* snet_type: K_ROUTED  */
+-#line 4264 "def.y"
++#line 4278 "def.y"
+         { 
+             defData->shieldName = NULL;
+             defData->routeStatus = (char*)"ROUTED"; 
+             defData->dumb_mode = 1; 
+         }
+-#line 9292 "def.tab.c"
++#line 9306 "def.tab.c"
+     break;
+ 
+   case 641: /* $@115: %empty  */
+-#line 4269 "def.y"
++#line 4283 "def.y"
+                     { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 9298 "def.tab.c"
++#line 9312 "def.tab.c"
+     break;
+ 
+   case 642: /* snet_type: K_SHIELD $@115 T_STRING  */
+-#line 4270 "def.y"
++#line 4284 "def.y"
+         {
+             if (defData->VersionNum < 6.0 - 0.00001) {
+                 defData->routeStatus = (char*)"SHIELD";
+@@ -9309,29 +9323,29 @@ yyreduce:
+ 
+             defData->shieldName = (yyvsp[0].string);
+         }
+-#line 9313 "def.tab.c"
++#line 9327 "def.tab.c"
+     break;
+ 
+   case 643: /* orient_pt: %empty  */
+-#line 4282 "def.y"
++#line 4296 "def.y"
+         { (yyval.integer) = 0; }
+-#line 9319 "def.tab.c"
++#line 9333 "def.tab.c"
+     break;
+ 
+   case 644: /* orient_pt: orient  */
+-#line 4284 "def.y"
++#line 4298 "def.y"
+         { (yyval.integer) = (yyvsp[0].integer); }
+-#line 9325 "def.tab.c"
++#line 9339 "def.tab.c"
+     break;
+ 
+   case 645: /* $@116: %empty  */
+-#line 4287 "def.y"
++#line 4301 "def.y"
+                         { defData->dumb_mode = 1; }
+-#line 9331 "def.tab.c"
++#line 9345 "def.tab.c"
+     break;
+ 
+   case 646: /* snet_width: '+' K_WIDTH $@116 T_STRING NUMBER  */
+-#line 4288 "def.y"
++#line 4302 "def.y"
+             {
+               // 11/12/2002 - this is obsolete in 5.5, & will be ignored 
+               if (defData->VersionNum < 5.5)
+@@ -9339,17 +9353,17 @@ yyreduce:
+               else
+                  defData->defWarning(7026, "The WIDTH statement is obsolete in version 5.5 and later.\nThe DEF parser will ignore this statement.");
+             }
+-#line 9343 "def.tab.c"
++#line 9357 "def.tab.c"
+     break;
+ 
+   case 647: /* $@117: %empty  */
+-#line 4296 "def.y"
++#line 4310 "def.y"
+                              { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 9349 "def.tab.c"
++#line 9363 "def.tab.c"
+     break;
+ 
+   case 648: /* snet_voltage: '+' K_VOLTAGE $@117 T_STRING  */
+-#line 4297 "def.y"
++#line 4311 "def.y"
+             {
+               if (defrData::numIsInt((yyvsp[0].string))) {
+                  if (defData->callbacks->SNetCbk) defData->Net->setVoltage(atoi((yyvsp[0].string)));
+@@ -9366,46 +9380,46 @@ yyreduce:
+                  }
+               }
+             }
+-#line 9370 "def.tab.c"
++#line 9384 "def.tab.c"
+     break;
+ 
+   case 649: /* $@118: %empty  */
+-#line 4314 "def.y"
++#line 4328 "def.y"
+                             { defData->dumb_mode = 1; }
+-#line 9376 "def.tab.c"
++#line 9390 "def.tab.c"
+     break;
+ 
+   case 650: /* $@119: %empty  */
+-#line 4315 "def.y"
++#line 4329 "def.y"
+             {
+               if (defData->callbacks->SNetCbk) defData->Net->setSpacing((yyvsp[-1].string),(yyvsp[0].dval));
+             }
+-#line 9384 "def.tab.c"
++#line 9398 "def.tab.c"
+     break;
+ 
+   case 651: /* snet_spacing: '+' K_SPACING $@118 T_STRING NUMBER $@119 opt_snet_range  */
+-#line 4319 "def.y"
++#line 4333 "def.y"
+             {
+             }
+-#line 9391 "def.tab.c"
++#line 9405 "def.tab.c"
+     break;
+ 
+   case 653: /* opt_snet_range: K_RANGE NUMBER NUMBER  */
+-#line 4324 "def.y"
++#line 4338 "def.y"
+             {
+               if (defData->callbacks->SNetCbk) defData->Net->setRange((yyvsp[-1].dval),(yyvsp[0].dval));
+             }
+-#line 9399 "def.tab.c"
++#line 9413 "def.tab.c"
+     break;
+ 
+   case 655: /* opt_range: K_RANGE NUMBER NUMBER  */
+-#line 4330 "def.y"
++#line 4344 "def.y"
+             { defData->Prop.setRange((yyvsp[-1].dval), (yyvsp[0].dval)); }
+-#line 9405 "def.tab.c"
++#line 9419 "def.tab.c"
+     break;
+ 
+   case 656: /* nets_pattern_type: K_BALANCED  */
+-#line 4334 "def.y"
++#line 4348 "def.y"
+             { 
+                 if (defData->VersionNum >= 6.0 - 0.00001) {
+                     if (defData->def60ObsoletedError("NETS ... netName ... + PATTERN BALANCED")) {
+@@ -9415,23 +9429,23 @@ yyreduce:
+ 
+                 (yyval.string) = (char*)"BALANCED"; 
+               }
+-#line 9419 "def.tab.c"
++#line 9433 "def.tab.c"
+     break;
+ 
+   case 657: /* nets_pattern_type: K_STEINER  */
+-#line 4344 "def.y"
++#line 4358 "def.y"
+             { (yyval.string) = (char*)"STEINER"; }
+-#line 9425 "def.tab.c"
++#line 9439 "def.tab.c"
+     break;
+ 
+   case 658: /* nets_pattern_type: K_TRUNK  */
+-#line 4346 "def.y"
++#line 4360 "def.y"
+             { (yyval.string) = (char*)"TRUNK"; }
+-#line 9431 "def.tab.c"
++#line 9445 "def.tab.c"
+     break;
+ 
+   case 659: /* nets_pattern_type: K_WIREDLOGIC  */
+-#line 4348 "def.y"
++#line 4362 "def.y"
+             { 
+                 if (defData->VersionNum >= 6.0 - 0.00001) {
+                     if (defData->def60ObsoletedError("NETS ... netName ... + PATTERN WIREDLOGIC")) {
+@@ -9441,11 +9455,11 @@ yyreduce:
+                 
+                 (yyval.string) = (char*)"WIREDLOGIC"; 
+              }
+-#line 9445 "def.tab.c"
++#line 9459 "def.tab.c"
+     break;
+ 
+   case 660: /* snets_pattern_type: K_BALANCED  */
+-#line 4359 "def.y"
++#line 4373 "def.y"
+             { 
+                 if (defData->VersionNum >= 6.0 - 0.00001) {
+                     if (defData->def60ObsoletedError("SPECIALNETS ... netName ... + PATTERN BALANCED")) {
+@@ -9455,23 +9469,23 @@ yyreduce:
+ 
+                 (yyval.string) = (char*)"BALANCED"; 
+             }
+-#line 9459 "def.tab.c"
++#line 9473 "def.tab.c"
+     break;
+ 
+   case 661: /* snets_pattern_type: K_STEINER  */
+-#line 4369 "def.y"
++#line 4383 "def.y"
+             { (yyval.string) = (char*)"STEINER"; }
+-#line 9465 "def.tab.c"
++#line 9479 "def.tab.c"
+     break;
+ 
+   case 662: /* snets_pattern_type: K_TRUNK  */
+-#line 4371 "def.y"
++#line 4385 "def.y"
+             { (yyval.string) = (char*)"TRUNK"; }
+-#line 9471 "def.tab.c"
++#line 9485 "def.tab.c"
+     break;
+ 
+   case 663: /* snets_pattern_type: K_WIREDLOGIC  */
+-#line 4373 "def.y"
++#line 4387 "def.y"
+             { 
+                 if (defData->VersionNum >= 6.0 - 0.00001) {
+                     if (defData->def60ObsoletedError("SPECIALNETS ... netName ... + PATTERN WIREDLOGIC")) {
+@@ -9481,11 +9495,11 @@ yyreduce:
+                 
+                 (yyval.string) = (char*)"WIREDLOGIC"; 
+              }
+-#line 9485 "def.tab.c"
++#line 9499 "def.tab.c"
+     break;
+ 
+   case 665: /* $@120: %empty  */
+-#line 4384 "def.y"
++#line 4398 "def.y"
+     {
+         if (defData->callbacks->SNetCbk) {
+             if ((defData->VersionNum < 5.4)
+@@ -9511,11 +9525,11 @@ yyreduce:
+             }
+         }
+     }
+-#line 9515 "def.tab.c"
++#line 9529 "def.tab.c"
+     break;
+ 
+   case 666: /* opt_swire: $@120 spaths  */
+-#line 4410 "def.y"
++#line 4424 "def.y"
+     {
+         if (defData->callbacks->SNetCbk) {
+             if (defData->callbacks->WireInSNetCbk
+@@ -9551,22 +9565,22 @@ yyreduce:
+         defData->Shield = NULL;
+         defData->Wire = NULL;
+      }
+-#line 9555 "def.tab.c"
++#line 9569 "def.tab.c"
+     break;
+ 
+   case 667: /* $@121: %empty  */
+-#line 4447 "def.y"
++#line 4461 "def.y"
+     {
+         if (defData->callbacks->SNetCbk) {
+             defData->PathObj = new defiPath(defData);
+             defData->startPath();
+         }
+     }
+-#line 9566 "def.tab.c"
++#line 9580 "def.tab.c"
+     break;
+ 
+   case 668: /* spaths: $@121 spath  */
+-#line 4454 "def.y"
++#line 4468 "def.y"
+     {
+         if (defData->callbacks->SNetCbk) {
+             if (defData->callbacks->PathInSNetWireCbk
+@@ -9597,17 +9611,17 @@ yyreduce:
+             defData->PathObj = NULL;
+         }
+     }
+-#line 9601 "def.tab.c"
++#line 9615 "def.tab.c"
+     break;
+ 
+   case 669: /* spaths: spaths snew_path  */
+-#line 4485 "def.y"
++#line 4499 "def.y"
+     { }
+-#line 9607 "def.tab.c"
++#line 9621 "def.tab.c"
+     break;
+ 
+   case 670: /* $@122: %empty  */
+-#line 4488 "def.y"
++#line 4502 "def.y"
+     {
+         defData->dumb_mode = 1;
+ 
+@@ -9616,11 +9630,11 @@ yyreduce:
+             defData->startPath();
+         }
+     }
+-#line 9620 "def.tab.c"
++#line 9634 "def.tab.c"
+     break;
+ 
+   case 671: /* snew_path: K_NEW $@122 spath  */
+-#line 4497 "def.y"
++#line 4511 "def.y"
+     {
+         if (defData->callbacks->SNetCbk) {
+             if (defData->callbacks->PathInSNetWireCbk
+@@ -9652,11 +9666,11 @@ yyreduce:
+             defData->PathObj = NULL;
+         }
+     }
+-#line 9656 "def.tab.c"
++#line 9670 "def.tab.c"
+     break;
+ 
+   case 672: /* $@123: %empty  */
+-#line 4531 "def.y"
++#line 4545 "def.y"
+     {
+         if (defData->callbacks->SNetCbk) {
+             defData->PathObj->addLayer((yyvsp[0].string));
+@@ -9665,11 +9679,11 @@ yyreduce:
+         defData->dumb_mode = 0;
+         defData->no_num = 0;
+     }
+-#line 9669 "def.tab.c"
++#line 9683 "def.tab.c"
+     break;
+ 
+   case 673: /* $@124: %empty  */
+-#line 4540 "def.y"
++#line 4554 "def.y"
+     {
+         defData->dumb_mode = DEF_MAX_INT;
+         defData->by_is_keyword = TRUE;
+@@ -9681,32 +9695,32 @@ yyreduce:
+         defData->mask_is_keyword = TRUE; 
+         defData->virtual_is_keyword = TRUE;
+     }
+-#line 9685 "def.tab.c"
++#line 9699 "def.tab.c"
+     break;
+ 
+   case 674: /* spath: T_STRING $@123 width opt_spaths path_pt $@124 path_item_list_opt  */
+-#line 4552 "def.y"
++#line 4566 "def.y"
+     {
+         defData->dumb_mode = 0;
+         defData->rect_is_keyword = FALSE;
+         defData->mask_is_keyword = FALSE;
+         defData->virtual_is_keyword = FALSE;
+     }
+-#line 9696 "def.tab.c"
++#line 9710 "def.tab.c"
+     break;
+ 
+   case 675: /* width: NUMBER  */
+-#line 4561 "def.y"
++#line 4575 "def.y"
+     {
+         if (defData->callbacks->SNetCbk) {
+             defData->PathObj->addWidth(ROUND((yyvsp[0].dval)));
+         }
+     }
+-#line 9706 "def.tab.c"
++#line 9720 "def.tab.c"
+     break;
+ 
+   case 676: /* start_snets: K_SNETS NUMBER ';'  */
+-#line 4568 "def.y"
++#line 4582 "def.y"
+     { 
+         defData->Net = new defiNet(defData);
+ 
+@@ -9718,11 +9732,11 @@ yyreduce:
+ 
+         defData->netOsnet = 2;
+     }
+-#line 9722 "def.tab.c"
++#line 9736 "def.tab.c"
+     break;
+ 
+   case 677: /* end_snets: K_END K_SNETS  */
+-#line 4581 "def.y"
++#line 4595 "def.y"
+     { 
+         if (defData->callbacks->SNetEndCbk) {
+             CALLBACK(defData->callbacks->SNetEndCbk, defrSNetEndCbkType, 0);
+@@ -9733,35 +9747,35 @@ yyreduce:
+         delete defData->Net;
+         defData->Net = NULL;
+     }
+-#line 9737 "def.tab.c"
++#line 9751 "def.tab.c"
+     break;
+ 
+   case 679: /* groups_start: K_GROUPS NUMBER ';'  */
+-#line 4596 "def.y"
++#line 4610 "def.y"
+       {
+         if (defData->callbacks->GroupsStartCbk)
+            CALLBACK(defData->callbacks->GroupsStartCbk, defrGroupsStartCbkType, ROUND((yyvsp[-1].dval)));
+       }
+-#line 9746 "def.tab.c"
++#line 9760 "def.tab.c"
+     break;
+ 
+   case 682: /* group_rule: start_group group_members group_options ';'  */
+-#line 4606 "def.y"
++#line 4620 "def.y"
+       {
+         if (defData->callbacks->GroupCbk)
+            CALLBACK(defData->callbacks->GroupCbk, defrGroupCbkType, &defData->Group);
+       }
+-#line 9755 "def.tab.c"
++#line 9769 "def.tab.c"
+     break;
+ 
+   case 683: /* $@125: %empty  */
+-#line 4611 "def.y"
++#line 4625 "def.y"
+                  { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 9761 "def.tab.c"
++#line 9775 "def.tab.c"
+     break;
+ 
+   case 684: /* start_group: '-' $@125 T_STRING  */
+-#line 4612 "def.y"
++#line 4626 "def.y"
+       {
+         defData->dumb_mode = DEF_MAX_INT;
+         defData->no_num = DEF_MAX_INT;
+@@ -9771,66 +9785,66 @@ yyreduce:
+         if (defData->callbacks->GroupNameCbk)
+            CALLBACK(defData->callbacks->GroupNameCbk, defrGroupNameCbkType, (yyvsp[0].string));
+       }
+-#line 9775 "def.tab.c"
++#line 9789 "def.tab.c"
+     break;
+ 
+   case 686: /* group_members: group_members group_member  */
+-#line 4624 "def.y"
++#line 4638 "def.y"
+       {  }
+-#line 9781 "def.tab.c"
++#line 9795 "def.tab.c"
+     break;
+ 
+   case 687: /* group_member: T_STRING  */
+-#line 4627 "def.y"
++#line 4641 "def.y"
+       {
+         // if (defData->callbacks->GroupCbk) defData->Group.addMember($1); 
+         if (defData->callbacks->GroupMemberCbk)
+           CALLBACK(defData->callbacks->GroupMemberCbk, defrGroupMemberCbkType, (yyvsp[0].string));
+       }
+-#line 9791 "def.tab.c"
++#line 9805 "def.tab.c"
+     break;
+ 
+   case 690: /* group_option: '+' K_SOFT group_soft_options  */
+-#line 4638 "def.y"
++#line 4652 "def.y"
+       { }
+-#line 9797 "def.tab.c"
++#line 9811 "def.tab.c"
+     break;
+ 
+   case 691: /* $@126: %empty  */
+-#line 4639 "def.y"
++#line 4653 "def.y"
+                            { defData->dumb_mode = DEF_MAX_INT; }
+-#line 9803 "def.tab.c"
++#line 9817 "def.tab.c"
+     break;
+ 
+   case 692: /* group_option: '+' K_PROPERTY $@126 group_prop_list  */
+-#line 4641 "def.y"
++#line 4655 "def.y"
+       { defData->dumb_mode = 0; }
+-#line 9809 "def.tab.c"
++#line 9823 "def.tab.c"
+     break;
+ 
+   case 693: /* $@127: %empty  */
+-#line 4642 "def.y"
++#line 4656 "def.y"
+                          { defData->dumb_mode = 1;  defData->no_num = 1; }
+-#line 9815 "def.tab.c"
++#line 9829 "def.tab.c"
+     break;
+ 
+   case 694: /* group_option: '+' K_REGION $@127 group_region  */
+-#line 4643 "def.y"
++#line 4657 "def.y"
+       { }
+-#line 9821 "def.tab.c"
++#line 9835 "def.tab.c"
+     break;
+ 
+   case 695: /* group_option: extension_stmt  */
+-#line 4645 "def.y"
++#line 4659 "def.y"
+       { 
+         if (defData->callbacks->GroupMemberCbk)
+           CALLBACK(defData->callbacks->GroupExtCbk, defrGroupExtCbkType, &defData->History_text[0]);
+       }
+-#line 9830 "def.tab.c"
++#line 9844 "def.tab.c"
+     break;
+ 
+   case 696: /* group_option: '+' K_POWERDOMAIN  */
+-#line 4650 "def.y"
++#line 4664 "def.y"
+       {
+          if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("GROUPS ... - groupName ... + POWERDOMAIN")) {
+@@ -9842,20 +9856,20 @@ yyreduce:
+             }
+           }      
+       }
+-#line 9846 "def.tab.c"
++#line 9860 "def.tab.c"
+     break;
+ 
+   case 697: /* $@128: %empty  */
+-#line 4663 "def.y"
++#line 4677 "def.y"
+       {
+          defData->dumb_mode = DEF_MAX_INT; 
+          defData->no_num = DEF_MAX_INT;
+       }
+-#line 9855 "def.tab.c"
++#line 9869 "def.tab.c"
+     break;
+ 
+   case 698: /* group_option: '+' K_HINSTS $@128 group_hinsts  */
+-#line 4668 "def.y"
++#line 4682 "def.y"
+       { 
+         defData->dumb_mode = 0; 
+         defData->no_num = 0;
+@@ -9866,20 +9880,20 @@ yyreduce:
+             }
+         } 
+       }
+-#line 9870 "def.tab.c"
++#line 9884 "def.tab.c"
+     break;
+ 
+   case 699: /* $@129: %empty  */
+-#line 4680 "def.y"
++#line 4694 "def.y"
+       {
+          defData->dumb_mode = DEF_MAX_INT; 
+          defData->no_num = DEF_MAX_INT;
+       }
+-#line 9879 "def.tab.c"
++#line 9893 "def.tab.c"
+     break;
+ 
+   case 700: /* group_option: '+' K_COMPS $@129 group_components  */
+-#line 4685 "def.y"
++#line 4699 "def.y"
+       { 
+         defData->dumb_mode = 0; 
+         defData->no_num = 0;
+@@ -9890,20 +9904,20 @@ yyreduce:
+             }
+         } 
+       }
+-#line 9894 "def.tab.c"
++#line 9908 "def.tab.c"
+     break;
+ 
+   case 701: /* $@130: %empty  */
+-#line 4697 "def.y"
++#line 4711 "def.y"
+       {
+          defData->dumb_mode = DEF_MAX_INT; 
+          defData->no_num = DEF_MAX_INT;
+       }
+-#line 9903 "def.tab.c"
++#line 9917 "def.tab.c"
+     break;
+ 
+   case 702: /* group_option: '+' K_GROUPS $@130 group_groups  */
+-#line 4702 "def.y"
++#line 4716 "def.y"
+       { 
+         defData->dumb_mode = 0; 
+         defData->no_num = 0;
+@@ -9914,59 +9928,59 @@ yyreduce:
+             }
+         } 
+       }
+-#line 9918 "def.tab.c"
++#line 9932 "def.tab.c"
+     break;
+ 
+   case 704: /* group_hinsts: group_hinst  */
+-#line 4715 "def.y"
++#line 4729 "def.y"
+       {}
+-#line 9924 "def.tab.c"
++#line 9938 "def.tab.c"
+     break;
+ 
+   case 705: /* group_hinst: T_STRING  */
+-#line 4718 "def.y"
++#line 4732 "def.y"
+       {
+         if (defData->callbacks->GroupCbk) {
+                 defData->Group.addHinst((yyvsp[0].string));
+         }
+       }
+-#line 9934 "def.tab.c"
++#line 9948 "def.tab.c"
+     break;
+ 
+   case 707: /* group_components: group_component  */
+-#line 4726 "def.y"
++#line 4740 "def.y"
+       {}
+-#line 9940 "def.tab.c"
++#line 9954 "def.tab.c"
+     break;
+ 
+   case 708: /* group_component: T_STRING  */
+-#line 4729 "def.y"
++#line 4743 "def.y"
+       {
+         if (defData->callbacks->GroupCbk) {
+             defData->Group.addComponent((yyvsp[0].string));
+         }
+       }
+-#line 9950 "def.tab.c"
++#line 9964 "def.tab.c"
+     break;
+ 
+   case 710: /* group_groups: group_group  */
+-#line 4737 "def.y"
++#line 4751 "def.y"
+       {}
+-#line 9956 "def.tab.c"
++#line 9970 "def.tab.c"
+     break;
+ 
+   case 711: /* group_group: T_STRING  */
+-#line 4740 "def.y"
++#line 4754 "def.y"
+       {
+         if (defData->callbacks->GroupCbk) {
+             defData->Group.addGroup((yyvsp[0].string));
+         }
+       }
+-#line 9966 "def.tab.c"
++#line 9980 "def.tab.c"
+     break;
+ 
+   case 712: /* group_region: pt pt  */
+-#line 4747 "def.y"
++#line 4761 "def.y"
+       {
+         // 11/12/2002 - this is obsolete in 5.5, & will be ignored 
+         if (defData->VersionNum < 5.5) {
+@@ -9976,19 +9990,19 @@ yyreduce:
+         else
+           defData->defWarning(7027, "The GROUP REGION pt pt statement is obsolete in version 5.5 and later.\nThe DEF parser will ignore this statement.");
+       }
+-#line 9980 "def.tab.c"
++#line 9994 "def.tab.c"
+     break;
+ 
+   case 713: /* group_region: T_STRING  */
+-#line 4757 "def.y"
++#line 4771 "def.y"
+       { if (defData->callbacks->GroupCbk)
+           defData->Group.setRegionName((yyvsp[0].string));
+       }
+-#line 9988 "def.tab.c"
++#line 10002 "def.tab.c"
+     break;
+ 
+   case 716: /* group_prop: T_STRING NUMBER  */
+-#line 4766 "def.y"
++#line 4780 "def.y"
+       {
+         if (defData->callbacks->GroupCbk) {
+           char propTp;
+@@ -9999,11 +10013,11 @@ yyreduce:
+           defData->Group.addNumProperty((yyvsp[-1].string), (yyvsp[0].dval), str, propTp);
+         }
+       }
+-#line 10003 "def.tab.c"
++#line 10017 "def.tab.c"
+     break;
+ 
+   case 717: /* group_prop: T_STRING QSTRING  */
+-#line 4777 "def.y"
++#line 4791 "def.y"
+       {
+         if (defData->callbacks->GroupCbk) {
+           char propTp;
+@@ -10012,11 +10026,11 @@ yyreduce:
+           defData->Group.addProperty((yyvsp[-1].string), (yyvsp[0].string), propTp);
+         }
+       }
+-#line 10016 "def.tab.c"
++#line 10030 "def.tab.c"
+     break;
+ 
+   case 718: /* group_prop: T_STRING T_STRING  */
+-#line 4786 "def.y"
++#line 4800 "def.y"
+       {
+         if (defData->callbacks->GroupCbk) {
+           char propTp;
+@@ -10025,17 +10039,17 @@ yyreduce:
+           defData->Group.addProperty((yyvsp[-1].string), (yyvsp[0].string), propTp);
+         }
+       }
+-#line 10029 "def.tab.c"
++#line 10043 "def.tab.c"
+     break;
+ 
+   case 720: /* group_soft_options: group_soft_options group_soft_option  */
+-#line 4797 "def.y"
++#line 4811 "def.y"
+       { }
+-#line 10035 "def.tab.c"
++#line 10049 "def.tab.c"
+     break;
+ 
+   case 721: /* group_soft_option: K_MAXX NUMBER  */
+-#line 4800 "def.y"
++#line 4814 "def.y"
+       {
+         // 11/12/2002 - this is obsolete in 5.5, & will be ignored 
+         if (defData->VersionNum < 5.5)
+@@ -10043,11 +10057,11 @@ yyreduce:
+         else
+           defData->defWarning(7028, "The GROUP SOFT MAXX statement is obsolete in version 5.5 and later.\nThe DEF parser will ignore this statement.");
+       }
+-#line 10047 "def.tab.c"
++#line 10061 "def.tab.c"
+     break;
+ 
+   case 722: /* group_soft_option: K_MAXY NUMBER  */
+-#line 4808 "def.y"
++#line 4822 "def.y"
+       { 
+         // 11/12/2002 - this is obsolete in 5.5, & will be ignored 
+         if (defData->VersionNum < 5.5)
+@@ -10055,11 +10069,11 @@ yyreduce:
+         else
+           defData->defWarning(7029, "The GROUP SOFT MAXY statement is obsolete in version 5.5 and later.\nThe DEF parser will ignore this statement.");
+       }
+-#line 10059 "def.tab.c"
++#line 10073 "def.tab.c"
+     break;
+ 
+   case 723: /* group_soft_option: K_MAXHALFPERIMETER NUMBER  */
+-#line 4816 "def.y"
++#line 4830 "def.y"
+       { 
+         // 11/12/2002 - this is obsolete in 5.5, & will be ignored 
+         if (defData->VersionNum < 5.5)
+@@ -10067,20 +10081,20 @@ yyreduce:
+         else
+           defData->defWarning(7030, "The GROUP SOFT MAXHALFPERIMETER statement is obsolete in version 5.5 and later.\nThe DEF parser will ignore this statement.");
+       }
+-#line 10071 "def.tab.c"
++#line 10085 "def.tab.c"
+     break;
+ 
+   case 724: /* groups_end: K_END K_GROUPS  */
+-#line 4825 "def.y"
++#line 4839 "def.y"
+       { 
+         if (defData->callbacks->GroupsEndCbk)
+           CALLBACK(defData->callbacks->GroupsEndCbk, defrGroupsEndCbkType, 0);
+       }
+-#line 10080 "def.tab.c"
++#line 10094 "def.tab.c"
+     break;
+ 
+   case 727: /* assertions_start: K_ASSERTIONS NUMBER ';'  */
+-#line 4839 "def.y"
++#line 4853 "def.y"
+       {
+         if ((defData->VersionNum < 5.4) && (defData->callbacks->AssertionsStartCbk)) {
+           CALLBACK(defData->callbacks->AssertionsStartCbk, defrAssertionsStartCbkType,
+@@ -10093,11 +10107,11 @@ yyreduce:
+         if (defData->callbacks->AssertionCbk)
+           defData->Assertion.setAssertionMode();
+       }
+-#line 10097 "def.tab.c"
++#line 10111 "def.tab.c"
+     break;
+ 
+   case 728: /* constraints_start: K_CONSTRAINTS NUMBER ';'  */
+-#line 4853 "def.y"
++#line 4867 "def.y"
+       {
+         if ((defData->VersionNum < 5.4) && (defData->callbacks->ConstraintsStartCbk)) {
+           CALLBACK(defData->callbacks->ConstraintsStartCbk, defrConstraintsStartCbkType,
+@@ -10110,11 +10124,11 @@ yyreduce:
+         if (defData->callbacks->ConstraintCbk)
+           defData->Assertion.setConstraintMode();
+       }
+-#line 10114 "def.tab.c"
++#line 10128 "def.tab.c"
+     break;
+ 
+   case 732: /* constraint_rule: wiredlogic_rule  */
+-#line 4872 "def.y"
++#line 4886 "def.y"
+       {
+         if ((defData->VersionNum < 5.4) && (defData->callbacks->ConstraintCbk || defData->callbacks->AssertionCbk)) {
+           if (defData->Assertion.isConstraint()) 
+@@ -10123,11 +10137,11 @@ yyreduce:
+             CALLBACK(defData->callbacks->AssertionCbk, defrAssertionCbkType, &defData->Assertion);
+         }
+       }
+-#line 10127 "def.tab.c"
++#line 10141 "def.tab.c"
+     break;
+ 
+   case 733: /* operand_rule: '-' operand delay_specs ';'  */
+-#line 4882 "def.y"
++#line 4896 "def.y"
+       { 
+         if ((defData->VersionNum < 5.4) && (defData->callbacks->ConstraintCbk || defData->callbacks->AssertionCbk)) {
+           if (defData->Assertion.isConstraint()) 
+@@ -10139,128 +10153,128 @@ yyreduce:
+         // reset all the flags and everything
+         defData->Assertion.clear();
+       }
+-#line 10143 "def.tab.c"
++#line 10157 "def.tab.c"
+     break;
+ 
+   case 734: /* $@131: %empty  */
+-#line 4894 "def.y"
++#line 4908 "def.y"
+                { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 10149 "def.tab.c"
++#line 10163 "def.tab.c"
+     break;
+ 
+   case 735: /* operand: K_NET $@131 T_STRING  */
+-#line 4895 "def.y"
++#line 4909 "def.y"
+       {
+          if (defData->callbacks->ConstraintCbk || defData->callbacks->AssertionCbk)
+            defData->Assertion.addNet((yyvsp[0].string));
+       }
+-#line 10158 "def.tab.c"
++#line 10172 "def.tab.c"
+     break;
+ 
+   case 736: /* $@132: %empty  */
+-#line 4899 "def.y"
++#line 4913 "def.y"
+                {defData->dumb_mode = 4; defData->no_num = 4;}
+-#line 10164 "def.tab.c"
++#line 10178 "def.tab.c"
+     break;
+ 
+   case 737: /* operand: K_PATH $@132 T_STRING T_STRING T_STRING T_STRING  */
+-#line 4900 "def.y"
++#line 4914 "def.y"
+       {
+          if (defData->callbacks->ConstraintCbk || defData->callbacks->AssertionCbk)
+            defData->Assertion.addPath((yyvsp[-3].string), (yyvsp[-2].string), (yyvsp[-1].string), (yyvsp[0].string));
+       }
+-#line 10173 "def.tab.c"
++#line 10187 "def.tab.c"
+     break;
+ 
+   case 738: /* operand: K_SUM '(' operand_list ')'  */
+-#line 4905 "def.y"
++#line 4919 "def.y"
+       {
+         if (defData->callbacks->ConstraintCbk || defData->callbacks->AssertionCbk)
+            defData->Assertion.setSum();
+       }
+-#line 10182 "def.tab.c"
++#line 10196 "def.tab.c"
+     break;
+ 
+   case 739: /* operand: K_DIFF '(' operand_list ')'  */
+-#line 4910 "def.y"
++#line 4924 "def.y"
+       {
+         if (defData->callbacks->ConstraintCbk || defData->callbacks->AssertionCbk)
+            defData->Assertion.setDiff();
+       }
+-#line 10191 "def.tab.c"
++#line 10205 "def.tab.c"
+     break;
+ 
+   case 741: /* operand_list: operand_list operand  */
+-#line 4917 "def.y"
++#line 4931 "def.y"
+       { }
+-#line 10197 "def.tab.c"
++#line 10211 "def.tab.c"
+     break;
+ 
+   case 743: /* $@133: %empty  */
+-#line 4920 "def.y"
++#line 4934 "def.y"
+                                   { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 10203 "def.tab.c"
++#line 10217 "def.tab.c"
+     break;
+ 
+   case 744: /* wiredlogic_rule: '-' K_WIREDLOGIC $@133 T_STRING opt_plus K_MAXDIST NUMBER ';'  */
+-#line 4922 "def.y"
++#line 4936 "def.y"
+       {
+         if (defData->callbacks->ConstraintCbk || defData->callbacks->AssertionCbk)
+           defData->Assertion.setWiredlogic((yyvsp[-4].string), (yyvsp[-1].dval));
+       }
+-#line 10212 "def.tab.c"
++#line 10226 "def.tab.c"
+     break;
+ 
+   case 745: /* opt_plus: %empty  */
+-#line 4929 "def.y"
++#line 4943 "def.y"
+       { (yyval.string) = (char*)""; }
+-#line 10218 "def.tab.c"
++#line 10232 "def.tab.c"
+     break;
+ 
+   case 746: /* opt_plus: '+'  */
+-#line 4931 "def.y"
++#line 4945 "def.y"
+       { (yyval.string) = (char*)"+"; }
+-#line 10224 "def.tab.c"
++#line 10238 "def.tab.c"
+     break;
+ 
+   case 749: /* delay_spec: '+' K_RISEMIN NUMBER  */
+-#line 4938 "def.y"
++#line 4952 "def.y"
+       {
+         if (defData->callbacks->ConstraintCbk || defData->callbacks->AssertionCbk)
+           defData->Assertion.setRiseMin((yyvsp[0].dval));
+       }
+-#line 10233 "def.tab.c"
++#line 10247 "def.tab.c"
+     break;
+ 
+   case 750: /* delay_spec: '+' K_RISEMAX NUMBER  */
+-#line 4943 "def.y"
++#line 4957 "def.y"
+       {
+         if (defData->callbacks->ConstraintCbk || defData->callbacks->AssertionCbk)
+           defData->Assertion.setRiseMax((yyvsp[0].dval));
+       }
+-#line 10242 "def.tab.c"
++#line 10256 "def.tab.c"
+     break;
+ 
+   case 751: /* delay_spec: '+' K_FALLMIN NUMBER  */
+-#line 4948 "def.y"
++#line 4962 "def.y"
+       {
+         if (defData->callbacks->ConstraintCbk || defData->callbacks->AssertionCbk)
+           defData->Assertion.setFallMin((yyvsp[0].dval));
+       }
+-#line 10251 "def.tab.c"
++#line 10265 "def.tab.c"
+     break;
+ 
+   case 752: /* delay_spec: '+' K_FALLMAX NUMBER  */
+-#line 4953 "def.y"
++#line 4967 "def.y"
+       {
+         if (defData->callbacks->ConstraintCbk || defData->callbacks->AssertionCbk)
+           defData->Assertion.setFallMax((yyvsp[0].dval));
+       }
+-#line 10260 "def.tab.c"
++#line 10274 "def.tab.c"
+     break;
+ 
+   case 753: /* constraints_end: K_END K_CONSTRAINTS  */
+-#line 4959 "def.y"
++#line 4973 "def.y"
+       { if ((defData->VersionNum < 5.4) && defData->callbacks->ConstraintsEndCbk) {
+           CALLBACK(defData->callbacks->ConstraintsEndCbk, defrConstraintsEndCbkType, 0);
+         } else {
+@@ -10270,11 +10284,11 @@ yyreduce:
+           }
+         }
+       }
+-#line 10274 "def.tab.c"
++#line 10288 "def.tab.c"
+     break;
+ 
+   case 754: /* assertions_end: K_END K_ASSERTIONS  */
+-#line 4970 "def.y"
++#line 4984 "def.y"
+       { if ((defData->VersionNum < 5.4) && defData->callbacks->AssertionsEndCbk) {
+           CALLBACK(defData->callbacks->AssertionsEndCbk, defrAssertionsEndCbkType, 0);
+         } else {
+@@ -10284,41 +10298,41 @@ yyreduce:
+           }
+         }
+       }
+-#line 10288 "def.tab.c"
++#line 10302 "def.tab.c"
+     break;
+ 
+   case 756: /* scanchain_start: K_SCANCHAINS NUMBER ';'  */
+-#line 4984 "def.y"
++#line 4998 "def.y"
+       { if (defData->callbacks->ScanchainsStartCbk)
+           CALLBACK(defData->callbacks->ScanchainsStartCbk, defrScanchainsStartCbkType,
+                    ROUND((yyvsp[-1].dval)));
+       }
+-#line 10297 "def.tab.c"
++#line 10311 "def.tab.c"
+     break;
+ 
+   case 758: /* scanchain_rules: scanchain_rules scan_rule  */
+-#line 4991 "def.y"
++#line 5005 "def.y"
+       {}
+-#line 10303 "def.tab.c"
++#line 10317 "def.tab.c"
+     break;
+ 
+   case 759: /* scan_rule: start_scan scan_members ';'  */
+-#line 4994 "def.y"
++#line 5008 "def.y"
+       { 
+         if (defData->callbacks->ScanchainCbk)
+           CALLBACK(defData->callbacks->ScanchainCbk, defrScanchainCbkType, &defData->Scanchain);
+       }
+-#line 10312 "def.tab.c"
++#line 10326 "def.tab.c"
+     break;
+ 
+   case 760: /* $@134: %empty  */
+-#line 4999 "def.y"
++#line 5013 "def.y"
+                 {defData->dumb_mode = 1; defData->no_num = 1;}
+-#line 10318 "def.tab.c"
++#line 10332 "def.tab.c"
+     break;
+ 
+   case 761: /* start_scan: '-' $@134 T_STRING  */
+-#line 5000 "def.y"
++#line 5014 "def.y"
+       {
+         if (defData->callbacks->ScanchainCbk) {
+           defData->Scanchain.closeOrderedList();
+@@ -10326,49 +10340,49 @@ yyreduce:
+         }
+         defData->bit_is_keyword = TRUE;
+       }
+-#line 10330 "def.tab.c"
++#line 10344 "def.tab.c"
+     break;
+ 
+   case 764: /* opt_pin: %empty  */
+-#line 5014 "def.y"
++#line 5028 "def.y"
+       { (yyval.string) = (char*)""; }
+-#line 10336 "def.tab.c"
++#line 10350 "def.tab.c"
+     break;
+ 
+   case 765: /* opt_pin: T_STRING  */
+-#line 5016 "def.y"
++#line 5030 "def.y"
+       { (yyval.string) = (yyvsp[0].string); }
+-#line 10342 "def.tab.c"
++#line 10356 "def.tab.c"
+     break;
+ 
+   case 766: /* $@135: %empty  */
+-#line 5018 "def.y"
++#line 5032 "def.y"
+                          {defData->dumb_mode = 2; defData->no_num = 2;}
+-#line 10348 "def.tab.c"
++#line 10362 "def.tab.c"
+     break;
+ 
+   case 767: /* scan_member: '+' K_START $@135 T_STRING opt_pin  */
+-#line 5019 "def.y"
++#line 5033 "def.y"
+       { 
+         if (defData->callbacks->ScanchainCbk) {
+           defData->Scanchain.closeOrderedList();
+           defData->Scanchain.setStart((yyvsp[-1].string), (yyvsp[0].string));
+         }
+       }
+-#line 10359 "def.tab.c"
++#line 10373 "def.tab.c"
+     break;
+ 
+   case 768: /* $@136: %empty  */
+-#line 5026 "def.y"
++#line 5040 "def.y"
+       {
+          defData->dumb_mode = DEF_MAX_INT; 
+          defData->no_num = DEF_MAX_INT;      
+       }
+-#line 10368 "def.tab.c"
++#line 10382 "def.tab.c"
+     break;
+ 
+   case 769: /* scan_member: '+' K_FLOATING $@136 floating_inst_list  */
+-#line 5031 "def.y"
++#line 5045 "def.y"
+       { 
+         if (defData->callbacks->ScanchainCbk) {
+            defData->Scanchain.closeOrderedList();     
+@@ -10377,11 +10391,11 @@ yyreduce:
+         defData->dumb_mode = 0; 
+         defData->no_num = 0; 
+       }
+-#line 10381 "def.tab.c"
++#line 10395 "def.tab.c"
+     break;
+ 
+   case 770: /* $@137: %empty  */
+-#line 5040 "def.y"
++#line 5054 "def.y"
+       {
+          if (defData->callbacks->ScanchainCbk) {
+            defData->Scanchain.startOrderedList();
+@@ -10390,43 +10404,43 @@ yyreduce:
+          defData->dumb_mode = DEF_MAX_INT; 
+          defData->no_num = DEF_MAX_INT;
+       }
+-#line 10394 "def.tab.c"
++#line 10408 "def.tab.c"
+     break;
+ 
+   case 771: /* scan_member: '+' K_ORDERED $@137 ordered_inst_list_opt  */
+-#line 5049 "def.y"
++#line 5063 "def.y"
+       {         
+          defData->dumb_mode = 0; 
+          defData->no_num = 0; 
+       }
+-#line 10403 "def.tab.c"
++#line 10417 "def.tab.c"
+     break;
+ 
+   case 772: /* $@138: %empty  */
+-#line 5053 "def.y"
++#line 5067 "def.y"
+                    {defData->dumb_mode = 2; defData->no_num = 2; }
+-#line 10409 "def.tab.c"
++#line 10423 "def.tab.c"
+     break;
+ 
+   case 773: /* scan_member: '+' K_STOP $@138 T_STRING opt_pin  */
+-#line 5054 "def.y"
++#line 5068 "def.y"
+       { 
+         if (defData->callbacks->ScanchainCbk) {
+           defData->Scanchain.setStop((yyvsp[-1].string), (yyvsp[0].string));
+           defData->Scanchain.closeOrderedList();
+         }
+       }
+-#line 10420 "def.tab.c"
++#line 10434 "def.tab.c"
+     break;
+ 
+   case 774: /* $@139: %empty  */
+-#line 5060 "def.y"
++#line 5074 "def.y"
+                              { defData->dumb_mode = 10; defData->no_num = 10; }
+-#line 10426 "def.tab.c"
++#line 10440 "def.tab.c"
+     break;
+ 
+   case 775: /* scan_member: '+' K_COMMONSCANPINS $@139 opt_common_pins  */
+-#line 5061 "def.y"
++#line 5075 "def.y"
+       { 
+         if (defData->callbacks->ScanchainCbk) {
+             defData->Scanchain.closeOrderedList();
+@@ -10435,17 +10449,17 @@ yyreduce:
+         defData->dumb_mode = 0;  
+         defData->no_num = 0; 
+       }
+-#line 10439 "def.tab.c"
++#line 10453 "def.tab.c"
+     break;
+ 
+   case 776: /* $@140: %empty  */
+-#line 5069 "def.y"
++#line 5083 "def.y"
+                         { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 10445 "def.tab.c"
++#line 10459 "def.tab.c"
+     break;
+ 
+   case 777: /* scan_member: '+' K_PARTITION $@140 T_STRING partition_maxbits  */
+-#line 5071 "def.y"
++#line 5085 "def.y"
+       {
+         if (defData->VersionNum < 5.5) {
+           if (defData->callbacks->ScanchainCbk) {
+@@ -10464,29 +10478,29 @@ yyreduce:
+           defData->Scanchain.setPartition((yyvsp[-1].string), (yyvsp[0].integer));
+         }
+       }
+-#line 10468 "def.tab.c"
++#line 10482 "def.tab.c"
+     break;
+ 
+   case 778: /* scan_member: extension_stmt  */
+-#line 5090 "def.y"
++#line 5104 "def.y"
+       {
+         if (defData->callbacks->ScanChainExtCbk) {
+           CALLBACK(defData->callbacks->ScanChainExtCbk, defrScanChainExtCbkType, &defData->History_text[0]);
+         }
+       }
+-#line 10478 "def.tab.c"
++#line 10492 "def.tab.c"
+     break;
+ 
+   case 779: /* $@141: %empty  */
+-#line 5096 "def.y"
++#line 5110 "def.y"
+       { 
+         defData->dumb_mode = 2; 
+       }
+-#line 10486 "def.tab.c"
++#line 10500 "def.tab.c"
+     break;
+ 
+   case 780: /* $@142: %empty  */
+-#line 5100 "def.y"
++#line 5114 "def.y"
+       {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("SCANCHAINS ... + PROPERTY propName propValue")) {
+@@ -10508,26 +10522,26 @@ yyreduce:
+         defData->dumb_mode = DEF_MAX_INT; 
+         defData->no_num = DEF_MAX_INT;
+       }
+-#line 10512 "def.tab.c"
++#line 10526 "def.tab.c"
+     break;
+ 
+   case 781: /* scan_member: '+' K_PROPERTY $@141 prop_name_value $@142 ordered_inst_list_opt  */
+-#line 5122 "def.y"
++#line 5136 "def.y"
+       {
+          defData->dumb_mode = 0; 
+          defData->no_num = 0;       
+       }
+-#line 10521 "def.tab.c"
++#line 10535 "def.tab.c"
+     break;
+ 
+   case 782: /* $@143: %empty  */
+-#line 5126 "def.y"
++#line 5140 "def.y"
+                    { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 10527 "def.tab.c"
++#line 10541 "def.tab.c"
+     break;
+ 
+   case 783: /* $@144: %empty  */
+-#line 5127 "def.y"
++#line 5141 "def.y"
+       {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("SCANCHAINS ... + ORDERED ... + NAME orderName")) {
+@@ -10544,26 +10558,26 @@ yyreduce:
+         defData->dumb_mode = DEF_MAX_INT; 
+         defData->no_num = DEF_MAX_INT;
+       }
+-#line 10548 "def.tab.c"
++#line 10562 "def.tab.c"
+     break;
+ 
+   case 784: /* scan_member: '+' K_NAME $@143 T_STRING $@144 ordered_inst_list_opt  */
+-#line 5144 "def.y"
++#line 5158 "def.y"
+       {
+          defData->dumb_mode = 0; 
+          defData->no_num = 0;       
+       }
+-#line 10557 "def.tab.c"
++#line 10571 "def.tab.c"
+     break;
+ 
+   case 785: /* opt_common_pins: %empty  */
+-#line 5150 "def.y"
++#line 5164 "def.y"
+       { }
+-#line 10563 "def.tab.c"
++#line 10577 "def.tab.c"
+     break;
+ 
+   case 786: /* opt_common_pins: '(' T_STRING T_STRING ')'  */
+-#line 5152 "def.y"
++#line 5166 "def.y"
+       {
+         if (defData->callbacks->ScanchainCbk) {
+           if (strcmp((yyvsp[-2].string), "IN") == 0 || strcmp((yyvsp[-2].string), "in") == 0)
+@@ -10572,11 +10586,11 @@ yyreduce:
+             defData->Scanchain.setCommonOut((yyvsp[-1].string));
+         }
+       }
+-#line 10576 "def.tab.c"
++#line 10590 "def.tab.c"
+     break;
+ 
+   case 787: /* opt_common_pins: '(' T_STRING T_STRING ')' '(' T_STRING T_STRING ')'  */
+-#line 5161 "def.y"
++#line 5175 "def.y"
+       {
+         if (defData->callbacks->ScanchainCbk) {
+           if (strcmp((yyvsp[-6].string), "IN") == 0 || strcmp((yyvsp[-6].string), "in") == 0)
+@@ -10589,33 +10603,33 @@ yyreduce:
+             defData->Scanchain.setCommonOut((yyvsp[-1].string));
+         }
+       }
+-#line 10593 "def.tab.c"
++#line 10607 "def.tab.c"
+     break;
+ 
+   case 790: /* $@145: %empty  */
+-#line 5179 "def.y"
++#line 5193 "def.y"
+       {
+         if (defData->callbacks->ScanchainCbk) {
+           defData->Scanchain.addFloatingInst((yyvsp[0].string));
+         }
+       }
+-#line 10603 "def.tab.c"
++#line 10617 "def.tab.c"
+     break;
+ 
+   case 791: /* one_floating_inst: T_STRING $@145 floating_pins  */
+-#line 5185 "def.y"
++#line 5199 "def.y"
+       {}
+-#line 10609 "def.tab.c"
++#line 10623 "def.tab.c"
+     break;
+ 
+   case 792: /* floating_pins: %empty  */
+-#line 5188 "def.y"
++#line 5202 "def.y"
+       {}
+-#line 10615 "def.tab.c"
++#line 10629 "def.tab.c"
+     break;
+ 
+   case 793: /* floating_pins: '(' T_STRING T_STRING ')'  */
+-#line 5190 "def.y"
++#line 5204 "def.y"
+       {
+         if (defData->callbacks->ScanchainCbk) {
+           if (strcmp((yyvsp[-2].string), "IN") == 0 || strcmp((yyvsp[-2].string), "in") == 0)
+@@ -10628,11 +10642,11 @@ yyreduce:
+           }
+         }
+       }
+-#line 10632 "def.tab.c"
++#line 10646 "def.tab.c"
+     break;
+ 
+   case 794: /* floating_pins: '(' T_STRING T_STRING ')' '(' T_STRING T_STRING ')'  */
+-#line 5203 "def.y"
++#line 5217 "def.y"
+       {
+         if (defData->callbacks->ScanchainCbk) {
+           if (strcmp((yyvsp[-6].string), "IN") == 0 || strcmp((yyvsp[-6].string), "in") == 0)
+@@ -10653,11 +10667,11 @@ yyreduce:
+           }
+         }
+       }
+-#line 10657 "def.tab.c"
++#line 10671 "def.tab.c"
+     break;
+ 
+   case 795: /* floating_pins: '(' T_STRING T_STRING ')' '(' T_STRING T_STRING ')' '(' T_STRING T_STRING ')'  */
+-#line 5225 "def.y"
++#line 5239 "def.y"
+       {
+         if (defData->callbacks->ScanchainCbk) {
+           if (strcmp((yyvsp[-10].string), "IN") == 0 || strcmp((yyvsp[-10].string), "in") == 0)
+@@ -10686,31 +10700,31 @@ yyreduce:
+           }
+         }
+       }
+-#line 10690 "def.tab.c"
++#line 10704 "def.tab.c"
+     break;
+ 
+   case 797: /* ordered_inst_list_opt: ordered_inst_list  */
+-#line 5256 "def.y"
++#line 5270 "def.y"
+       { 
+       }
+-#line 10697 "def.tab.c"
++#line 10711 "def.tab.c"
+     break;
+ 
+   case 799: /* ordered_inst_list: one_ordered_inst  */
+-#line 5261 "def.y"
++#line 5275 "def.y"
+       {}
+-#line 10703 "def.tab.c"
++#line 10717 "def.tab.c"
+     break;
+ 
+   case 800: /* $@146: %empty  */
+-#line 5264 "def.y"
++#line 5278 "def.y"
+       { 
+       }
+-#line 10710 "def.tab.c"
++#line 10724 "def.tab.c"
+     break;
+ 
+   case 801: /* $@147: %empty  */
+-#line 5267 "def.y"
++#line 5281 "def.y"
+       { 
+         if (defData->callbacks->ScanchainCbk) {
+             if (!defData->Scanchain.hasOpenedOrderedList()) {
+@@ -10722,18 +10736,18 @@ yyreduce:
+             }
+         }
+       }
+-#line 10726 "def.tab.c"
++#line 10740 "def.tab.c"
+     break;
+ 
+   case 802: /* one_ordered_inst: $@146 T_STRING $@147 ordered_pins  */
+-#line 5279 "def.y"
++#line 5293 "def.y"
+       { 
+       }
+-#line 10733 "def.tab.c"
++#line 10747 "def.tab.c"
+     break;
+ 
+   case 804: /* ordered_pins: '(' T_STRING T_STRING ')'  */
+-#line 5284 "def.y"
++#line 5298 "def.y"
+       {
+         if (defData->callbacks->ScanchainCbk && defData->Scanchain.hasOpenedOrderedList()) {
+           if (strcmp((yyvsp[-2].string), "IN") == 0 || strcmp((yyvsp[-2].string), "in") == 0)
+@@ -10746,11 +10760,11 @@ yyreduce:
+          }
+         }
+       }
+-#line 10750 "def.tab.c"
++#line 10764 "def.tab.c"
+     break;
+ 
+   case 805: /* ordered_pins: '(' T_STRING T_STRING ')' '(' T_STRING T_STRING ')'  */
+-#line 5297 "def.y"
++#line 5311 "def.y"
+       {
+         if (defData->callbacks->ScanchainCbk && defData->Scanchain.hasOpenedOrderedList()) {
+           if (strcmp((yyvsp[-6].string), "IN") == 0 || strcmp((yyvsp[-6].string), "in") == 0)
+@@ -10771,11 +10785,11 @@ yyreduce:
+           }
+         }
+       }
+-#line 10775 "def.tab.c"
++#line 10789 "def.tab.c"
+     break;
+ 
+   case 806: /* ordered_pins: '(' T_STRING T_STRING ')' '(' T_STRING T_STRING ')' '(' T_STRING T_STRING ')'  */
+-#line 5319 "def.y"
++#line 5333 "def.y"
+       {
+         if (defData->callbacks->ScanchainCbk && defData->Scanchain.hasOpenedOrderedList()) {
+           if (strcmp((yyvsp[-10].string), "IN") == 0 || strcmp((yyvsp[-10].string), "in") == 0)
+@@ -10804,34 +10818,34 @@ yyreduce:
+           }
+         }
+       }
+-#line 10808 "def.tab.c"
++#line 10822 "def.tab.c"
+     break;
+ 
+   case 807: /* partition_maxbits: %empty  */
+-#line 5349 "def.y"
++#line 5363 "def.y"
+       { (yyval.integer) = -1; }
+-#line 10814 "def.tab.c"
++#line 10828 "def.tab.c"
+     break;
+ 
+   case 808: /* partition_maxbits: K_MAXBITS NUMBER  */
+-#line 5351 "def.y"
++#line 5365 "def.y"
+       { (yyval.integer) = ROUND((yyvsp[0].dval)); }
+-#line 10820 "def.tab.c"
++#line 10834 "def.tab.c"
+     break;
+ 
+   case 809: /* scanchain_end: K_END K_SCANCHAINS  */
+-#line 5354 "def.y"
++#line 5368 "def.y"
+       { 
+         if (defData->callbacks->ScanchainsEndCbk)
+           CALLBACK(defData->callbacks->ScanchainsEndCbk, defrScanchainsEndCbkType, 0);
+         defData->bit_is_keyword = FALSE;
+         defData->dumb_mode = 0; defData->no_num = 0;
+       }
+-#line 10831 "def.tab.c"
++#line 10845 "def.tab.c"
+     break;
+ 
+   case 811: /* iotiming_start: K_IOTIMINGS NUMBER ';'  */
+-#line 5366 "def.y"
++#line 5380 "def.y"
+       {
+         if (defData->VersionNum < 5.4 && defData->callbacks->IOTimingsStartCbk) {
+           CALLBACK(defData->callbacks->IOTimingsStartCbk, defrIOTimingsStartCbkType, ROUND((yyvsp[-1].dval)));
+@@ -10841,294 +10855,294 @@ yyreduce:
+               defData->defWarning(7035, "The IOTIMINGS statement is obsolete in version 5.4 and later.\nThe DEF parser will ignore this statement.");
+         }
+       }
+-#line 10845 "def.tab.c"
++#line 10859 "def.tab.c"
+     break;
+ 
+   case 813: /* iotiming_rules: iotiming_rules iotiming_rule  */
+-#line 5378 "def.y"
++#line 5392 "def.y"
+       { }
+-#line 10851 "def.tab.c"
++#line 10865 "def.tab.c"
+     break;
+ 
+   case 814: /* iotiming_rule: start_iotiming iotiming_members ';'  */
+-#line 5381 "def.y"
++#line 5395 "def.y"
+       { 
+         if (defData->VersionNum < 5.4 && defData->callbacks->IOTimingCbk)
+           CALLBACK(defData->callbacks->IOTimingCbk, defrIOTimingCbkType, &defData->IOTiming);
+       }
+-#line 10860 "def.tab.c"
++#line 10874 "def.tab.c"
+     break;
+ 
+   case 815: /* $@148: %empty  */
+-#line 5386 "def.y"
++#line 5400 "def.y"
+                         {defData->dumb_mode = 2; defData->no_num = 2; }
+-#line 10866 "def.tab.c"
++#line 10880 "def.tab.c"
+     break;
+ 
+   case 816: /* start_iotiming: '-' '(' $@148 T_STRING T_STRING ')'  */
+-#line 5387 "def.y"
++#line 5401 "def.y"
+       {
+         if (defData->callbacks->IOTimingCbk)
+           defData->IOTiming.setName((yyvsp[-2].string), (yyvsp[-1].string));
+       }
+-#line 10875 "def.tab.c"
++#line 10889 "def.tab.c"
+     break;
+ 
+   case 819: /* iotiming_member: '+' risefall K_VARIABLE NUMBER NUMBER  */
+-#line 5398 "def.y"
++#line 5412 "def.y"
+       {
+         if (defData->callbacks->IOTimingCbk) 
+           defData->IOTiming.setVariable((yyvsp[-3].string), (yyvsp[-1].dval), (yyvsp[0].dval));
+       }
+-#line 10884 "def.tab.c"
++#line 10898 "def.tab.c"
+     break;
+ 
+   case 820: /* iotiming_member: '+' risefall K_SLEWRATE NUMBER NUMBER  */
+-#line 5403 "def.y"
++#line 5417 "def.y"
+       {
+         if (defData->callbacks->IOTimingCbk) 
+           defData->IOTiming.setSlewRate((yyvsp[-3].string), (yyvsp[-1].dval), (yyvsp[0].dval));
+       }
+-#line 10893 "def.tab.c"
++#line 10907 "def.tab.c"
+     break;
+ 
+   case 821: /* iotiming_member: '+' K_CAPACITANCE NUMBER  */
+-#line 5408 "def.y"
++#line 5422 "def.y"
+       {
+         if (defData->callbacks->IOTimingCbk) 
+           defData->IOTiming.setCapacitance((yyvsp[0].dval));
+       }
+-#line 10902 "def.tab.c"
++#line 10916 "def.tab.c"
+     break;
+ 
+   case 822: /* $@149: %empty  */
+-#line 5412 "def.y"
++#line 5426 "def.y"
+                         {defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 10908 "def.tab.c"
++#line 10922 "def.tab.c"
+     break;
+ 
+   case 823: /* $@150: %empty  */
+-#line 5413 "def.y"
++#line 5427 "def.y"
+       {
+         if (defData->callbacks->IOTimingCbk) 
+           defData->IOTiming.setDriveCell((yyvsp[0].string));
+       }
+-#line 10917 "def.tab.c"
++#line 10931 "def.tab.c"
+     break;
+ 
+   case 825: /* iotiming_member: extension_stmt  */
+-#line 5422 "def.y"
++#line 5436 "def.y"
+       {
+         if (defData->VersionNum < 5.4 && defData->callbacks->IoTimingsExtCbk)
+           CALLBACK(defData->callbacks->IoTimingsExtCbk, defrIoTimingsExtCbkType, &defData->History_text[0]);
+       }
+-#line 10926 "def.tab.c"
++#line 10940 "def.tab.c"
+     break;
+ 
+   case 826: /* $@151: %empty  */
+-#line 5428 "def.y"
++#line 5442 "def.y"
+               {defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 10932 "def.tab.c"
++#line 10946 "def.tab.c"
+     break;
+ 
+   case 827: /* $@152: %empty  */
+-#line 5429 "def.y"
++#line 5443 "def.y"
+       {
+         if (defData->callbacks->IOTimingCbk) 
+           defData->IOTiming.setTo((yyvsp[0].string));
+       }
+-#line 10941 "def.tab.c"
++#line 10955 "def.tab.c"
+     break;
+ 
+   case 830: /* $@153: %empty  */
+-#line 5436 "def.y"
++#line 5450 "def.y"
+                   {defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 10947 "def.tab.c"
++#line 10961 "def.tab.c"
+     break;
+ 
+   case 831: /* iotiming_frompin: K_FROMPIN $@153 T_STRING  */
+-#line 5437 "def.y"
++#line 5451 "def.y"
+       {
+         if (defData->callbacks->IOTimingCbk)
+           defData->IOTiming.setFrom((yyvsp[0].string));
+       }
+-#line 10956 "def.tab.c"
++#line 10970 "def.tab.c"
+     break;
+ 
+   case 833: /* iotiming_parallel: K_PARALLEL NUMBER  */
+-#line 5444 "def.y"
++#line 5458 "def.y"
+       {
+         if (defData->callbacks->IOTimingCbk)
+           defData->IOTiming.setParallel((yyvsp[0].dval));
+       }
+-#line 10965 "def.tab.c"
++#line 10979 "def.tab.c"
+     break;
+ 
+   case 834: /* risefall: K_RISE  */
+-#line 5449 "def.y"
++#line 5463 "def.y"
+                  { (yyval.string) = (char*)"RISE"; }
+-#line 10971 "def.tab.c"
++#line 10985 "def.tab.c"
+     break;
+ 
+   case 835: /* risefall: K_FALL  */
+-#line 5449 "def.y"
++#line 5463 "def.y"
+                                                   { (yyval.string) = (char*)"FALL"; }
+-#line 10977 "def.tab.c"
++#line 10991 "def.tab.c"
+     break;
+ 
+   case 836: /* iotiming_end: K_END K_IOTIMINGS  */
+-#line 5452 "def.y"
++#line 5466 "def.y"
+       {
+         if (defData->VersionNum < 5.4 && defData->callbacks->IOTimingsEndCbk)
+           CALLBACK(defData->callbacks->IOTimingsEndCbk, defrIOTimingsEndCbkType, 0);
+       }
+-#line 10986 "def.tab.c"
++#line 11000 "def.tab.c"
+     break;
+ 
+   case 837: /* floorplan_contraints_section: fp_start fp_stmts K_END K_FPC  */
+-#line 5458 "def.y"
++#line 5472 "def.y"
+       { 
+         if (defData->callbacks->FPCEndCbk)
+           CALLBACK(defData->callbacks->FPCEndCbk, defrFPCEndCbkType, 0);
+       }
+-#line 10995 "def.tab.c"
++#line 11009 "def.tab.c"
+     break;
+ 
+   case 838: /* fp_start: K_FPC NUMBER ';'  */
+-#line 5464 "def.y"
++#line 5478 "def.y"
+       {
+         if (defData->callbacks->FPCStartCbk)
+           CALLBACK(defData->callbacks->FPCStartCbk, defrFPCStartCbkType, ROUND((yyvsp[-1].dval)));
+       }
+-#line 11004 "def.tab.c"
++#line 11018 "def.tab.c"
+     break;
+ 
+   case 840: /* fp_stmts: fp_stmts fp_stmt  */
+-#line 5471 "def.y"
++#line 5485 "def.y"
+       {}
+-#line 11010 "def.tab.c"
++#line 11024 "def.tab.c"
+     break;
+ 
+   case 841: /* $@154: %empty  */
+-#line 5473 "def.y"
++#line 5487 "def.y"
+              { defData->dumb_mode = 1; defData->no_num = 1;  }
+-#line 11016 "def.tab.c"
++#line 11030 "def.tab.c"
+     break;
+ 
+   case 842: /* $@155: %empty  */
+-#line 5474 "def.y"
++#line 5488 "def.y"
+       { if (defData->callbacks->FPCCbk) defData->FPC.setName((yyvsp[-1].string), (yyvsp[0].string)); }
+-#line 11022 "def.tab.c"
++#line 11036 "def.tab.c"
+     break;
+ 
+   case 843: /* fp_stmt: '-' $@154 T_STRING h_or_v $@155 constraint_type constrain_what_list ';'  */
+-#line 5476 "def.y"
++#line 5490 "def.y"
+       { if (defData->callbacks->FPCCbk) CALLBACK(defData->callbacks->FPCCbk, defrFPCCbkType, &defData->FPC); }
+-#line 11028 "def.tab.c"
++#line 11042 "def.tab.c"
+     break;
+ 
+   case 844: /* h_or_v: K_HORIZONTAL  */
+-#line 5479 "def.y"
++#line 5493 "def.y"
+       { (yyval.string) = (char*)"HORIZONTAL"; }
+-#line 11034 "def.tab.c"
++#line 11048 "def.tab.c"
+     break;
+ 
+   case 845: /* h_or_v: K_VERTICAL  */
+-#line 5481 "def.y"
++#line 5495 "def.y"
+       { (yyval.string) = (char*)"VERTICAL"; }
+-#line 11040 "def.tab.c"
++#line 11054 "def.tab.c"
+     break;
+ 
+   case 846: /* constraint_type: K_ALIGN  */
+-#line 5484 "def.y"
++#line 5498 "def.y"
+       { if (defData->callbacks->FPCCbk) defData->FPC.setAlign(); }
+-#line 11046 "def.tab.c"
++#line 11060 "def.tab.c"
+     break;
+ 
+   case 847: /* constraint_type: K_MAX NUMBER  */
+-#line 5486 "def.y"
++#line 5500 "def.y"
+       { if (defData->callbacks->FPCCbk) defData->FPC.setMax((yyvsp[0].dval)); }
+-#line 11052 "def.tab.c"
++#line 11066 "def.tab.c"
+     break;
+ 
+   case 848: /* constraint_type: K_MIN NUMBER  */
+-#line 5488 "def.y"
++#line 5502 "def.y"
+       { if (defData->callbacks->FPCCbk) defData->FPC.setMin((yyvsp[0].dval)); }
+-#line 11058 "def.tab.c"
++#line 11072 "def.tab.c"
+     break;
+ 
+   case 849: /* constraint_type: K_EQUAL NUMBER  */
+-#line 5490 "def.y"
++#line 5504 "def.y"
+       { if (defData->callbacks->FPCCbk) defData->FPC.setEqual((yyvsp[0].dval)); }
+-#line 11064 "def.tab.c"
++#line 11078 "def.tab.c"
+     break;
+ 
+   case 852: /* $@156: %empty  */
+-#line 5497 "def.y"
++#line 5511 "def.y"
+       { if (defData->callbacks->FPCCbk) defData->FPC.setDoingBottomLeft(); }
+-#line 11070 "def.tab.c"
++#line 11084 "def.tab.c"
+     break;
+ 
+   case 854: /* $@157: %empty  */
+-#line 5500 "def.y"
++#line 5514 "def.y"
+       { if (defData->callbacks->FPCCbk) defData->FPC.setDoingTopRight(); }
+-#line 11076 "def.tab.c"
++#line 11090 "def.tab.c"
+     break;
+ 
+   case 858: /* $@158: %empty  */
+-#line 5507 "def.y"
++#line 5521 "def.y"
+                          {defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 11082 "def.tab.c"
++#line 11096 "def.tab.c"
+     break;
+ 
+   case 859: /* row_or_comp: '(' K_ROWS $@158 T_STRING ')'  */
+-#line 5508 "def.y"
++#line 5522 "def.y"
+       { if (defData->callbacks->FPCCbk) defData->FPC.addRow((yyvsp[-1].string)); }
+-#line 11088 "def.tab.c"
++#line 11102 "def.tab.c"
+     break;
+ 
+   case 860: /* $@159: %empty  */
+-#line 5509 "def.y"
++#line 5523 "def.y"
+                        {defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 11094 "def.tab.c"
++#line 11108 "def.tab.c"
+     break;
+ 
+   case 861: /* row_or_comp: '(' K_COMPS $@159 T_STRING ')'  */
+-#line 5510 "def.y"
++#line 5524 "def.y"
+       { if (defData->callbacks->FPCCbk) defData->FPC.addComps((yyvsp[-1].string)); }
+-#line 11100 "def.tab.c"
++#line 11114 "def.tab.c"
+     break;
+ 
+   case 863: /* timingdisables_start: K_TIMINGDISABLES NUMBER ';'  */
+-#line 5517 "def.y"
++#line 5531 "def.y"
+       { 
+         if (defData->callbacks->TimingDisablesStartCbk)
+           CALLBACK(defData->callbacks->TimingDisablesStartCbk, defrTimingDisablesStartCbkType,
+                    ROUND((yyvsp[-1].dval)));
+       }
+-#line 11110 "def.tab.c"
++#line 11124 "def.tab.c"
+     break;
+ 
+   case 865: /* timingdisables_rules: timingdisables_rules timingdisables_rule  */
+-#line 5525 "def.y"
++#line 5539 "def.y"
+       {}
+-#line 11116 "def.tab.c"
++#line 11130 "def.tab.c"
+     break;
+ 
+   case 866: /* $@160: %empty  */
+-#line 5527 "def.y"
++#line 5541 "def.y"
+                                    { defData->dumb_mode = 2; defData->no_num = 2;  }
+-#line 11122 "def.tab.c"
++#line 11136 "def.tab.c"
+     break;
+ 
+   case 867: /* $@161: %empty  */
+-#line 5528 "def.y"
++#line 5542 "def.y"
+                        { defData->dumb_mode = 2; defData->no_num = 2;  }
+-#line 11128 "def.tab.c"
++#line 11142 "def.tab.c"
+     break;
+ 
+   case 868: /* timingdisables_rule: '-' K_FROMPIN $@160 T_STRING T_STRING K_TOPIN $@161 T_STRING T_STRING ';'  */
+-#line 5529 "def.y"
++#line 5543 "def.y"
+       {
+         if (defData->callbacks->TimingDisableCbk) {
+           defData->TimingDisable.setFromTo((yyvsp[-6].string), (yyvsp[-5].string), (yyvsp[-2].string), (yyvsp[-1].string));
+@@ -11136,17 +11150,17 @@ yyreduce:
+                 &defData->TimingDisable);
+         }
+       }
+-#line 11140 "def.tab.c"
++#line 11154 "def.tab.c"
+     break;
+ 
+   case 869: /* $@162: %empty  */
+-#line 5536 "def.y"
++#line 5550 "def.y"
+                       {defData->dumb_mode = 2; defData->no_num = 2; }
+-#line 11146 "def.tab.c"
++#line 11160 "def.tab.c"
+     break;
+ 
+   case 870: /* timingdisables_rule: '-' K_THRUPIN $@162 T_STRING T_STRING ';'  */
+-#line 5537 "def.y"
++#line 5551 "def.y"
+       {
+         if (defData->callbacks->TimingDisableCbk) {
+           defData->TimingDisable.setThru((yyvsp[-2].string), (yyvsp[-1].string));
+@@ -11154,17 +11168,17 @@ yyreduce:
+                    &defData->TimingDisable);
+         }
+       }
+-#line 11158 "def.tab.c"
++#line 11172 "def.tab.c"
+     break;
+ 
+   case 871: /* $@163: %empty  */
+-#line 5544 "def.y"
++#line 5558 "def.y"
+                     {defData->dumb_mode = 1; defData->no_num = 1;}
+-#line 11164 "def.tab.c"
++#line 11178 "def.tab.c"
+     break;
+ 
+   case 872: /* timingdisables_rule: '-' K_MACRO $@163 T_STRING td_macro_option ';'  */
+-#line 5545 "def.y"
++#line 5559 "def.y"
+       {
+         if (defData->callbacks->TimingDisableCbk) {
+           defData->TimingDisable.setMacro((yyvsp[-2].string));
+@@ -11172,386 +11186,386 @@ yyreduce:
+                 &defData->TimingDisable);
+         }
+       }
+-#line 11176 "def.tab.c"
++#line 11190 "def.tab.c"
+     break;
+ 
+   case 873: /* timingdisables_rule: '-' K_REENTRANTPATHS ';'  */
+-#line 5553 "def.y"
++#line 5567 "def.y"
+       { if (defData->callbacks->TimingDisableCbk)
+           defData->TimingDisable.setReentrantPathsFlag();
+       }
+-#line 11184 "def.tab.c"
++#line 11198 "def.tab.c"
+     break;
+ 
+   case 874: /* $@164: %empty  */
+-#line 5558 "def.y"
++#line 5572 "def.y"
+                            {defData->dumb_mode = 1; defData->no_num = 1;}
+-#line 11190 "def.tab.c"
++#line 11204 "def.tab.c"
+     break;
+ 
+   case 875: /* $@165: %empty  */
+-#line 5559 "def.y"
++#line 5573 "def.y"
+       {defData->dumb_mode=1; defData->no_num = 1;}
+-#line 11196 "def.tab.c"
++#line 11210 "def.tab.c"
+     break;
+ 
+   case 876: /* td_macro_option: K_FROMPIN $@164 T_STRING K_TOPIN $@165 T_STRING  */
+-#line 5560 "def.y"
++#line 5574 "def.y"
+       {
+         if (defData->callbacks->TimingDisableCbk)
+           defData->TimingDisable.setMacroFromTo((yyvsp[-3].string),(yyvsp[0].string));
+       }
+-#line 11205 "def.tab.c"
++#line 11219 "def.tab.c"
+     break;
+ 
+   case 877: /* $@166: %empty  */
+-#line 5564 "def.y"
++#line 5578 "def.y"
+                          {defData->dumb_mode=1; defData->no_num = 1;}
+-#line 11211 "def.tab.c"
++#line 11225 "def.tab.c"
+     break;
+ 
+   case 878: /* td_macro_option: K_THRUPIN $@166 T_STRING  */
+-#line 5565 "def.y"
++#line 5579 "def.y"
+       {
+         if (defData->callbacks->TimingDisableCbk)
+           defData->TimingDisable.setMacroThru((yyvsp[0].string));
+       }
+-#line 11220 "def.tab.c"
++#line 11234 "def.tab.c"
+     break;
+ 
+   case 879: /* timingdisables_end: K_END K_TIMINGDISABLES  */
+-#line 5571 "def.y"
++#line 5585 "def.y"
+       { 
+         if (defData->callbacks->TimingDisablesEndCbk)
+           CALLBACK(defData->callbacks->TimingDisablesEndCbk, defrTimingDisablesEndCbkType, 0);
+       }
+-#line 11229 "def.tab.c"
++#line 11243 "def.tab.c"
+     break;
+ 
+   case 881: /* partitions_start: K_PARTITIONS NUMBER ';'  */
+-#line 5581 "def.y"
++#line 5595 "def.y"
+       {
+         if (defData->callbacks->PartitionsStartCbk)
+           CALLBACK(defData->callbacks->PartitionsStartCbk, defrPartitionsStartCbkType,
+                    ROUND((yyvsp[-1].dval)));
+       }
+-#line 11239 "def.tab.c"
++#line 11253 "def.tab.c"
+     break;
+ 
+   case 883: /* partition_rules: partition_rules partition_rule  */
+-#line 5589 "def.y"
++#line 5603 "def.y"
+       { }
+-#line 11245 "def.tab.c"
++#line 11259 "def.tab.c"
+     break;
+ 
+   case 884: /* partition_rule: start_partition partition_members ';'  */
+-#line 5592 "def.y"
++#line 5606 "def.y"
+       { 
+         if (defData->callbacks->PartitionCbk)
+           CALLBACK(defData->callbacks->PartitionCbk, defrPartitionCbkType, &defData->Partition);
+       }
+-#line 11254 "def.tab.c"
++#line 11268 "def.tab.c"
+     break;
+ 
+   case 885: /* $@167: %empty  */
+-#line 5597 "def.y"
++#line 5611 "def.y"
+                      { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 11260 "def.tab.c"
++#line 11274 "def.tab.c"
+     break;
+ 
+   case 886: /* start_partition: '-' $@167 T_STRING turnoff  */
+-#line 5598 "def.y"
++#line 5612 "def.y"
+       {
+         if (defData->callbacks->PartitionCbk)
+           defData->Partition.setName((yyvsp[-1].string));
+       }
+-#line 11269 "def.tab.c"
++#line 11283 "def.tab.c"
+     break;
+ 
+   case 888: /* turnoff: K_TURNOFF turnoff_setup turnoff_hold  */
+-#line 5605 "def.y"
++#line 5619 "def.y"
+       {
+         if (defData->callbacks->PartitionCbk)
+           defData->Partition.addTurnOff((yyvsp[-1].string), (yyvsp[0].string));
+       }
+-#line 11278 "def.tab.c"
++#line 11292 "def.tab.c"
+     break;
+ 
+   case 889: /* turnoff_setup: %empty  */
+-#line 5611 "def.y"
++#line 5625 "def.y"
+       { (yyval.string) = (char*)" "; }
+-#line 11284 "def.tab.c"
++#line 11298 "def.tab.c"
+     break;
+ 
+   case 890: /* turnoff_setup: K_SETUPRISE  */
+-#line 5613 "def.y"
++#line 5627 "def.y"
+       { (yyval.string) = (char*)"R"; }
+-#line 11290 "def.tab.c"
++#line 11304 "def.tab.c"
+     break;
+ 
+   case 891: /* turnoff_setup: K_SETUPFALL  */
+-#line 5615 "def.y"
++#line 5629 "def.y"
+       { (yyval.string) = (char*)"F"; }
+-#line 11296 "def.tab.c"
++#line 11310 "def.tab.c"
+     break;
+ 
+   case 892: /* turnoff_hold: %empty  */
+-#line 5618 "def.y"
++#line 5632 "def.y"
+       { (yyval.string) = (char*)" "; }
+-#line 11302 "def.tab.c"
++#line 11316 "def.tab.c"
+     break;
+ 
+   case 893: /* turnoff_hold: K_HOLDRISE  */
+-#line 5620 "def.y"
++#line 5634 "def.y"
+       { (yyval.string) = (char*)"R"; }
+-#line 11308 "def.tab.c"
++#line 11322 "def.tab.c"
+     break;
+ 
+   case 894: /* turnoff_hold: K_HOLDFALL  */
+-#line 5622 "def.y"
++#line 5636 "def.y"
+       { (yyval.string) = (char*)"F"; }
+-#line 11314 "def.tab.c"
++#line 11328 "def.tab.c"
+     break;
+ 
+   case 897: /* $@168: %empty  */
+-#line 5628 "def.y"
++#line 5642 "def.y"
+                                      {defData->dumb_mode=2; defData->no_num = 2;}
+-#line 11320 "def.tab.c"
++#line 11334 "def.tab.c"
+     break;
+ 
+   case 898: /* partition_member: '+' K_FROMCLOCKPIN $@168 T_STRING T_STRING risefall minmaxpins  */
+-#line 5630 "def.y"
++#line 5644 "def.y"
+       {
+         if (defData->callbacks->PartitionCbk)
+           defData->Partition.setFromClockPin((yyvsp[-3].string), (yyvsp[-2].string));
+       }
+-#line 11329 "def.tab.c"
++#line 11343 "def.tab.c"
+     break;
+ 
+   case 899: /* $@169: %empty  */
+-#line 5634 "def.y"
++#line 5648 "def.y"
+                           {defData->dumb_mode=2; defData->no_num = 2; }
+-#line 11335 "def.tab.c"
++#line 11349 "def.tab.c"
+     break;
+ 
+   case 900: /* partition_member: '+' K_FROMCOMPPIN $@169 T_STRING T_STRING risefallminmax2_list  */
+-#line 5636 "def.y"
++#line 5650 "def.y"
+       {
+         if (defData->callbacks->PartitionCbk)
+           defData->Partition.setFromCompPin((yyvsp[-2].string), (yyvsp[-1].string));
+       }
+-#line 11344 "def.tab.c"
++#line 11358 "def.tab.c"
+     break;
+ 
+   case 901: /* $@170: %empty  */
+-#line 5640 "def.y"
++#line 5654 "def.y"
+                         {defData->dumb_mode=1; defData->no_num = 1; }
+-#line 11350 "def.tab.c"
++#line 11364 "def.tab.c"
+     break;
+ 
+   case 902: /* partition_member: '+' K_FROMIOPIN $@170 T_STRING risefallminmax1_list  */
+-#line 5642 "def.y"
++#line 5656 "def.y"
+       {
+         if (defData->callbacks->PartitionCbk)
+           defData->Partition.setFromIOPin((yyvsp[-1].string));
+       }
+-#line 11359 "def.tab.c"
++#line 11373 "def.tab.c"
+     break;
+ 
+   case 903: /* $@171: %empty  */
+-#line 5646 "def.y"
++#line 5660 "def.y"
+                          {defData->dumb_mode=2; defData->no_num = 2; }
+-#line 11365 "def.tab.c"
++#line 11379 "def.tab.c"
+     break;
+ 
+   case 904: /* partition_member: '+' K_TOCLOCKPIN $@171 T_STRING T_STRING risefall minmaxpins  */
+-#line 5648 "def.y"
++#line 5662 "def.y"
+       {
+         if (defData->callbacks->PartitionCbk)
+           defData->Partition.setToClockPin((yyvsp[-3].string), (yyvsp[-2].string));
+       }
+-#line 11374 "def.tab.c"
++#line 11388 "def.tab.c"
+     break;
+ 
+   case 905: /* $@172: %empty  */
+-#line 5652 "def.y"
++#line 5666 "def.y"
+                         {defData->dumb_mode=2; defData->no_num = 2; }
+-#line 11380 "def.tab.c"
++#line 11394 "def.tab.c"
+     break;
+ 
+   case 906: /* partition_member: '+' K_TOCOMPPIN $@172 T_STRING T_STRING risefallminmax2_list  */
+-#line 5654 "def.y"
++#line 5668 "def.y"
+       {
+         if (defData->callbacks->PartitionCbk)
+           defData->Partition.setToCompPin((yyvsp[-2].string), (yyvsp[-1].string));
+       }
+-#line 11389 "def.tab.c"
++#line 11403 "def.tab.c"
+     break;
+ 
+   case 907: /* $@173: %empty  */
+-#line 5658 "def.y"
++#line 5672 "def.y"
+                       {defData->dumb_mode=1; defData->no_num = 2; }
+-#line 11395 "def.tab.c"
++#line 11409 "def.tab.c"
+     break;
+ 
+   case 908: /* partition_member: '+' K_TOIOPIN $@173 T_STRING risefallminmax1_list  */
+-#line 5659 "def.y"
++#line 5673 "def.y"
+       {
+         if (defData->callbacks->PartitionCbk)
+           defData->Partition.setToIOPin((yyvsp[-1].string));
+       }
+-#line 11404 "def.tab.c"
++#line 11418 "def.tab.c"
+     break;
+ 
+   case 909: /* partition_member: extension_stmt  */
+-#line 5664 "def.y"
++#line 5678 "def.y"
+       { 
+         if (defData->callbacks->PartitionsExtCbk)
+           CALLBACK(defData->callbacks->PartitionsExtCbk, defrPartitionsExtCbkType,
+                    &defData->History_text[0]);
+       }
+-#line 11414 "def.tab.c"
++#line 11428 "def.tab.c"
+     break;
+ 
+   case 910: /* $@174: %empty  */
+-#line 5671 "def.y"
++#line 5685 "def.y"
+       { defData->dumb_mode = DEF_MAX_INT; defData->no_num = DEF_MAX_INT; }
+-#line 11420 "def.tab.c"
++#line 11434 "def.tab.c"
+     break;
+ 
+   case 911: /* minmaxpins: min_or_max_list K_PINS $@174 pin_list  */
+-#line 5672 "def.y"
++#line 5686 "def.y"
+       { defData->dumb_mode = 0; defData->no_num = 0; }
+-#line 11426 "def.tab.c"
++#line 11440 "def.tab.c"
+     break;
+ 
+   case 913: /* min_or_max_list: min_or_max_list min_or_max_member  */
+-#line 5676 "def.y"
++#line 5690 "def.y"
+       { }
+-#line 11432 "def.tab.c"
++#line 11446 "def.tab.c"
+     break;
+ 
+   case 914: /* min_or_max_member: K_MIN NUMBER NUMBER  */
+-#line 5679 "def.y"
++#line 5693 "def.y"
+       {
+         if (defData->callbacks->PartitionCbk)
+           defData->Partition.setMin((yyvsp[-1].dval), (yyvsp[0].dval));
+       }
+-#line 11441 "def.tab.c"
++#line 11455 "def.tab.c"
+     break;
+ 
+   case 915: /* min_or_max_member: K_MAX NUMBER NUMBER  */
+-#line 5684 "def.y"
++#line 5698 "def.y"
+       {
+         if (defData->callbacks->PartitionCbk)
+           defData->Partition.setMax((yyvsp[-1].dval), (yyvsp[0].dval));
+       }
+-#line 11450 "def.tab.c"
++#line 11464 "def.tab.c"
+     break;
+ 
+   case 917: /* pin_list: pin_list T_STRING  */
+-#line 5691 "def.y"
++#line 5705 "def.y"
+       { if (defData->callbacks->PartitionCbk) defData->Partition.addPin((yyvsp[0].string)); }
+-#line 11456 "def.tab.c"
++#line 11470 "def.tab.c"
+     break;
+ 
+   case 920: /* risefallminmax1: K_RISEMIN NUMBER  */
+-#line 5697 "def.y"
++#line 5711 "def.y"
+       { if (defData->callbacks->PartitionCbk) defData->Partition.addRiseMin((yyvsp[0].dval)); }
+-#line 11462 "def.tab.c"
++#line 11476 "def.tab.c"
+     break;
+ 
+   case 921: /* risefallminmax1: K_FALLMIN NUMBER  */
+-#line 5699 "def.y"
++#line 5713 "def.y"
+       { if (defData->callbacks->PartitionCbk) defData->Partition.addFallMin((yyvsp[0].dval)); }
+-#line 11468 "def.tab.c"
++#line 11482 "def.tab.c"
+     break;
+ 
+   case 922: /* risefallminmax1: K_RISEMAX NUMBER  */
+-#line 5701 "def.y"
++#line 5715 "def.y"
+       { if (defData->callbacks->PartitionCbk) defData->Partition.addRiseMax((yyvsp[0].dval)); }
+-#line 11474 "def.tab.c"
++#line 11488 "def.tab.c"
+     break;
+ 
+   case 923: /* risefallminmax1: K_FALLMAX NUMBER  */
+-#line 5703 "def.y"
++#line 5717 "def.y"
+       { if (defData->callbacks->PartitionCbk) defData->Partition.addFallMax((yyvsp[0].dval)); }
+-#line 11480 "def.tab.c"
++#line 11494 "def.tab.c"
+     break;
+ 
+   case 926: /* risefallminmax2: K_RISEMIN NUMBER NUMBER  */
+-#line 5711 "def.y"
++#line 5725 "def.y"
+       { if (defData->callbacks->PartitionCbk)
+           defData->Partition.addRiseMinRange((yyvsp[-1].dval), (yyvsp[0].dval)); }
+-#line 11487 "def.tab.c"
++#line 11501 "def.tab.c"
+     break;
+ 
+   case 927: /* risefallminmax2: K_FALLMIN NUMBER NUMBER  */
+-#line 5714 "def.y"
++#line 5728 "def.y"
+       { if (defData->callbacks->PartitionCbk)
+           defData->Partition.addFallMinRange((yyvsp[-1].dval), (yyvsp[0].dval)); }
+-#line 11494 "def.tab.c"
++#line 11508 "def.tab.c"
+     break;
+ 
+   case 928: /* risefallminmax2: K_RISEMAX NUMBER NUMBER  */
+-#line 5717 "def.y"
++#line 5731 "def.y"
+       { if (defData->callbacks->PartitionCbk)
+           defData->Partition.addRiseMaxRange((yyvsp[-1].dval), (yyvsp[0].dval)); }
+-#line 11501 "def.tab.c"
++#line 11515 "def.tab.c"
+     break;
+ 
+   case 929: /* risefallminmax2: K_FALLMAX NUMBER NUMBER  */
+-#line 5720 "def.y"
++#line 5734 "def.y"
+       { if (defData->callbacks->PartitionCbk)
+           defData->Partition.addFallMaxRange((yyvsp[-1].dval), (yyvsp[0].dval)); }
+-#line 11508 "def.tab.c"
++#line 11522 "def.tab.c"
+     break;
+ 
+   case 930: /* partitions_end: K_END K_PARTITIONS  */
+-#line 5724 "def.y"
++#line 5738 "def.y"
+       { if (defData->callbacks->PartitionsEndCbk)
+           CALLBACK(defData->callbacks->PartitionsEndCbk, defrPartitionsEndCbkType, 0); }
+-#line 11515 "def.tab.c"
++#line 11529 "def.tab.c"
+     break;
+ 
+   case 932: /* comp_names: comp_names comp_name  */
+-#line 5729 "def.y"
++#line 5743 "def.y"
+       { }
+-#line 11521 "def.tab.c"
++#line 11535 "def.tab.c"
+     break;
+ 
+   case 933: /* $@175: %empty  */
+-#line 5731 "def.y"
++#line 5745 "def.y"
+                {defData->dumb_mode=2; defData->no_num = 2; }
+-#line 11527 "def.tab.c"
++#line 11541 "def.tab.c"
+     break;
+ 
+   case 934: /* comp_name: '(' $@175 T_STRING T_STRING subnet_opt_syn ')'  */
+-#line 5733 "def.y"
++#line 5747 "def.y"
+       {
+         // note that the defData->first T_STRING could be the keyword VPIN 
+         if (defData->callbacks->NetCbk)
+           defData->Subnet->addPin((yyvsp[-3].string), (yyvsp[-2].string), (yyvsp[-1].integer));
+       }
+-#line 11537 "def.tab.c"
++#line 11551 "def.tab.c"
+     break;
+ 
+   case 935: /* subnet_opt_syn: %empty  */
+-#line 5740 "def.y"
++#line 5754 "def.y"
+       { (yyval.integer) = 0; }
+-#line 11543 "def.tab.c"
++#line 11557 "def.tab.c"
+     break;
+ 
+   case 936: /* subnet_opt_syn: '+' K_SYNTHESIZED  */
+-#line 5742 "def.y"
++#line 5756 "def.y"
+       { 
+         (yyval.integer) = 1; 
+       }
+-#line 11551 "def.tab.c"
++#line 11565 "def.tab.c"
+     break;
+ 
+   case 939: /* $@176: %empty  */
+-#line 5750 "def.y"
++#line 5764 "def.y"
+       {
+         if (defData->callbacks->NetCbk) {
+             defData->Wire = new defiWire(defData);
+@@ -11559,11 +11573,11 @@ yyreduce:
+             defData->Subnet->addWire(defData->Wire);
+         }
+       }
+-#line 11563 "def.tab.c"
++#line 11577 "def.tab.c"
+     break;
+ 
+   case 940: /* subnet_option: subnet_type $@176 paths  */
+-#line 5758 "def.y"
++#line 5772 "def.y"
+       {  
+         defData->by_is_keyword = FALSE;
+         defData->do_is_keyword = FALSE;
+@@ -11573,47 +11587,47 @@ yyreduce:
+         defData->needNPCbk = 0;
+         defData->Wire = NULL;
+       }
+-#line 11577 "def.tab.c"
++#line 11591 "def.tab.c"
+     break;
+ 
+   case 941: /* $@177: %empty  */
+-#line 5767 "def.y"
++#line 5781 "def.y"
+                          { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 11583 "def.tab.c"
++#line 11597 "def.tab.c"
+     break;
+ 
+   case 942: /* subnet_option: K_NONDEFAULTRULE $@177 T_STRING  */
+-#line 5768 "def.y"
++#line 5782 "def.y"
+       { if (defData->callbacks->NetCbk) defData->Subnet->setNonDefault((yyvsp[0].string)); }
+-#line 11589 "def.tab.c"
++#line 11603 "def.tab.c"
+     break;
+ 
+   case 943: /* subnet_type: K_FIXED  */
+-#line 5771 "def.y"
++#line 5785 "def.y"
+       { (yyval.string) = (char*)"FIXED"; defData->dumb_mode = 1; }
+-#line 11595 "def.tab.c"
++#line 11609 "def.tab.c"
+     break;
+ 
+   case 944: /* subnet_type: K_COVER  */
+-#line 5773 "def.y"
++#line 5787 "def.y"
+       { (yyval.string) = (char*)"COVER"; defData->dumb_mode = 1; }
+-#line 11601 "def.tab.c"
++#line 11615 "def.tab.c"
+     break;
+ 
+   case 945: /* subnet_type: K_ROUTED  */
+-#line 5775 "def.y"
++#line 5789 "def.y"
+       { (yyval.string) = (char*)"ROUTED"; defData->dumb_mode = 1; }
+-#line 11607 "def.tab.c"
++#line 11621 "def.tab.c"
+     break;
+ 
+   case 946: /* subnet_type: K_NOSHIELD  */
+-#line 5777 "def.y"
++#line 5791 "def.y"
+       { (yyval.string) = (char*)"NOSHIELD"; defData->dumb_mode = 1; }
+-#line 11613 "def.tab.c"
++#line 11627 "def.tab.c"
+     break;
+ 
+   case 948: /* begin_pin_props: K_PINPROPERTIES NUMBER opt_semi  */
+-#line 5782 "def.y"
++#line 5796 "def.y"
+       { 
+         if (defData->VersionNum >= 6.0 - 0.00001) {
+             if (defData->def60ObsoletedError("PINPROPERTIES num ; ... END PINPROPERTIES")) {
+@@ -11625,65 +11639,65 @@ yyreduce:
+             CALLBACK(defData->callbacks->PinPropStartCbk, defrPinPropStartCbkType, ROUND((yyvsp[-1].dval))); 
+         }
+       }
+-#line 11629 "def.tab.c"
++#line 11643 "def.tab.c"
+     break;
+ 
+   case 949: /* opt_semi: %empty  */
+-#line 5796 "def.y"
++#line 5810 "def.y"
+       { }
+-#line 11635 "def.tab.c"
++#line 11649 "def.tab.c"
+     break;
+ 
+   case 950: /* opt_semi: ';'  */
+-#line 5798 "def.y"
++#line 5812 "def.y"
+       { }
+-#line 11641 "def.tab.c"
++#line 11655 "def.tab.c"
+     break;
+ 
+   case 951: /* end_pin_props: K_END K_PINPROPERTIES  */
+-#line 5801 "def.y"
++#line 5815 "def.y"
+       { if (defData->callbacks->PinPropEndCbk)
+           CALLBACK(defData->callbacks->PinPropEndCbk, defrPinPropEndCbkType, 0); }
+-#line 11648 "def.tab.c"
++#line 11662 "def.tab.c"
+     break;
+ 
+   case 954: /* $@178: %empty  */
+-#line 5808 "def.y"
++#line 5822 "def.y"
+                        { defData->dumb_mode = 2; defData->no_num = 2; }
+-#line 11654 "def.tab.c"
++#line 11668 "def.tab.c"
+     break;
+ 
+   case 955: /* $@179: %empty  */
+-#line 5809 "def.y"
++#line 5823 "def.y"
+       { if (defData->callbacks->PinPropCbk) defData->PinProp.setName((yyvsp[-1].string), (yyvsp[0].string)); }
+-#line 11660 "def.tab.c"
++#line 11674 "def.tab.c"
+     break;
+ 
+   case 956: /* pin_prop_terminal: '-' $@178 T_STRING T_STRING $@179 pin_prop_options ';'  */
+-#line 5811 "def.y"
++#line 5825 "def.y"
+       { if (defData->callbacks->PinPropCbk) {
+           CALLBACK(defData->callbacks->PinPropCbk, defrPinPropCbkType, &defData->PinProp);
+          // reset the property number
+          defData->PinProp.clear();
+         }
+       }
+-#line 11671 "def.tab.c"
++#line 11685 "def.tab.c"
+     break;
+ 
+   case 959: /* $@180: %empty  */
+-#line 5821 "def.y"
++#line 5835 "def.y"
+                          { defData->dumb_mode = DEF_MAX_INT; }
+-#line 11677 "def.tab.c"
++#line 11691 "def.tab.c"
+     break;
+ 
+   case 960: /* pin_prop: '+' K_PROPERTY $@180 pin_prop_name_value_list  */
+-#line 5823 "def.y"
++#line 5837 "def.y"
+       { defData->dumb_mode = 0; }
+-#line 11683 "def.tab.c"
++#line 11697 "def.tab.c"
+     break;
+ 
+   case 963: /* pin_prop_name_value: T_STRING NUMBER  */
+-#line 5830 "def.y"
++#line 5844 "def.y"
+       {
+         if (defData->callbacks->PinPropCbk) {
+           char propTp;
+@@ -11694,11 +11708,11 @@ yyreduce:
+           defData->PinProp.addNumProperty((yyvsp[-1].string), (yyvsp[0].dval), str, propTp);
+         }
+       }
+-#line 11698 "def.tab.c"
++#line 11712 "def.tab.c"
+     break;
+ 
+   case 964: /* pin_prop_name_value: T_STRING QSTRING  */
+-#line 5841 "def.y"
++#line 5855 "def.y"
+       {
+         if (defData->callbacks->PinPropCbk) {
+           char propTp;
+@@ -11707,11 +11721,11 @@ yyreduce:
+           defData->PinProp.addProperty((yyvsp[-1].string), (yyvsp[0].string), propTp);
+         }
+       }
+-#line 11711 "def.tab.c"
++#line 11725 "def.tab.c"
+     break;
+ 
+   case 965: /* pin_prop_name_value: T_STRING T_STRING  */
+-#line 5850 "def.y"
++#line 5864 "def.y"
+       {
+         if (defData->callbacks->PinPropCbk) {
+           char propTp;
+@@ -11720,42 +11734,42 @@ yyreduce:
+           defData->PinProp.addProperty((yyvsp[-1].string), (yyvsp[0].string), propTp);
+         }
+       }
+-#line 11724 "def.tab.c"
++#line 11738 "def.tab.c"
+     break;
+ 
+   case 967: /* blockage_start: K_BLOCKAGES NUMBER ';'  */
+-#line 5862 "def.y"
++#line 5876 "def.y"
+       { if (defData->callbacks->BlockageStartCbk)
+           CALLBACK(defData->callbacks->BlockageStartCbk, defrBlockageStartCbkType, ROUND((yyvsp[-1].dval))); }
+-#line 11731 "def.tab.c"
++#line 11745 "def.tab.c"
+     break;
+ 
+   case 968: /* blockage_end: K_END K_BLOCKAGES  */
+-#line 5866 "def.y"
++#line 5880 "def.y"
+       { if (defData->callbacks->BlockageEndCbk)
+           CALLBACK(defData->callbacks->BlockageEndCbk, defrBlockageEndCbkType, 0); }
+-#line 11738 "def.tab.c"
++#line 11752 "def.tab.c"
+     break;
+ 
+   case 971: /* blockage_def: blockage_rule rectPoly_blockage rectPoly_blockage_rules ';'  */
+-#line 5875 "def.y"
++#line 5889 "def.y"
+       {
+         if (defData->callbacks->BlockageCbk) {
+           CALLBACK(defData->callbacks->BlockageCbk, defrBlockageCbkType, &defData->Blockage);
+           defData->Blockage.clear();
+         }
+       }
+-#line 11749 "def.tab.c"
++#line 11763 "def.tab.c"
+     break;
+ 
+   case 972: /* $@181: %empty  */
+-#line 5882 "def.y"
++#line 5896 "def.y"
+                            { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 11755 "def.tab.c"
++#line 11769 "def.tab.c"
+     break;
+ 
+   case 973: /* $@182: %empty  */
+-#line 5883 "def.y"
++#line 5897 "def.y"
+       {
+         if (defData->callbacks->BlockageCbk) {
+           if (defData->Blockage.hasPlacement() != 0) {
+@@ -11771,11 +11785,11 @@ yyreduce:
+         defData->hasBlkLayerSpac = 0;
+         defData->hasBlkLayerTypeComp = 0;
+       }
+-#line 11775 "def.tab.c"
++#line 11789 "def.tab.c"
+     break;
+ 
+   case 975: /* $@183: %empty  */
+-#line 5902 "def.y"
++#line 5916 "def.y"
+       {
+         if (defData->callbacks->BlockageCbk) {
+           if (defData->Blockage.hasLayer() != 0) {
+@@ -11791,11 +11805,11 @@ yyreduce:
+         defData->hasBlkPlaceTypeComp = 0;
+         defData->hasDef60BlkPlaceTypeComp = 0;
+       }
+-#line 11795 "def.tab.c"
++#line 11809 "def.tab.c"
+     break;
+ 
+   case 979: /* layer_blockage_rule: '+' K_SPACING NUMBER  */
+-#line 5924 "def.y"
++#line 5938 "def.y"
+       {
+         if (defData->VersionNum < 5.6) {
+           if (defData->callbacks->BlockageCbk) {
+@@ -11821,11 +11835,11 @@ yyreduce:
+           defData->hasBlkLayerSpac = 1;
+         }
+       }
+-#line 11825 "def.tab.c"
++#line 11839 "def.tab.c"
+     break;
+ 
+   case 980: /* layer_blockage_rule: '+' K_DESIGNRULEWIDTH NUMBER  */
+-#line 5950 "def.y"
++#line 5964 "def.y"
+       {
+         if (defData->VersionNum >= 6.0 - 0.00001) {
+             if (defData->def60ObsoletedError("BLOCKAGES ... - LAYER ... DESIGNRULEWIDTH effectiveWidth")) {
+@@ -11851,27 +11865,27 @@ yyreduce:
+           defData->hasBlkLayerSpac = 1;
+         }
+       }
+-#line 11855 "def.tab.c"
++#line 11869 "def.tab.c"
+     break;
+ 
+   case 981: /* layer_blockage_rule: '+' K_MASK NUMBER  */
+-#line 5977 "def.y"
++#line 5991 "def.y"
+       {      
+         if (defData->validateMaskInput((int)(yyvsp[0].dval), defData->blockageWarnings, defData->settings->BlockageWarnings)) {
+           defData->Blockage.setMask((int)(yyvsp[0].dval));
+         }
+       }
+-#line 11865 "def.tab.c"
++#line 11879 "def.tab.c"
+     break;
+ 
+   case 982: /* $@184: %empty  */
+-#line 5983 "def.y"
++#line 5997 "def.y"
+                    { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 11871 "def.tab.c"
++#line 11885 "def.tab.c"
+     break;
+ 
+   case 983: /* layer_blockage_rule: '+' K_NAME $@184 T_STRING  */
+-#line 5984 "def.y"
++#line 5998 "def.y"
+       { 
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("BLOCKAGES ... - LAYER layerName ... + NAME name")) {
+@@ -11883,11 +11897,11 @@ yyreduce:
+             }
+         }
+       }
+-#line 11887 "def.tab.c"
++#line 11901 "def.tab.c"
+     break;
+ 
+   case 984: /* layer_blockage_rule: '+' K_PARTIAL NUMBER  */
+-#line 5996 "def.y"
++#line 6010 "def.y"
+       {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("BLOCKAGES ... - LAYER layerName ... + PARTIAL density")) {
+@@ -11899,19 +11913,19 @@ yyreduce:
+             }
+         }
+       }
+-#line 11903 "def.tab.c"
++#line 11917 "def.tab.c"
+     break;
+ 
+   case 985: /* $@185: %empty  */
+-#line 6008 "def.y"
++#line 6022 "def.y"
+       { 
+         defData->dumb_mode = 2; 
+       }
+-#line 11911 "def.tab.c"
++#line 11925 "def.tab.c"
+     break;
+ 
+   case 986: /* layer_blockage_rule: '+' K_PROPERTY $@185 prop_name_value  */
+-#line 6012 "def.y"
++#line 6026 "def.y"
+       {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("BLOCKAGES ... - LAYER layerName ... + PROPERTY propName propVal")) {
+@@ -11927,17 +11941,17 @@ yyreduce:
+ 
+         delete (yyvsp[0].prop);
+       }
+-#line 11931 "def.tab.c"
++#line 11945 "def.tab.c"
+     break;
+ 
+   case 988: /* $@186: %empty  */
+-#line 6032 "def.y"
++#line 6046 "def.y"
+                       { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 11937 "def.tab.c"
++#line 11951 "def.tab.c"
+     break;
+ 
+   case 989: /* comp_blockage_rule: '+' K_COMPONENT $@186 T_STRING  */
+-#line 6033 "def.y"
++#line 6047 "def.y"
+       {
+         if (defData->hasBlkLayerComp) {
+           if (defData->callbacks->BlockageCbk) {
+@@ -11955,11 +11969,11 @@ yyreduce:
+           }
+         }
+       }
+-#line 11959 "def.tab.c"
++#line 11973 "def.tab.c"
+     break;
+ 
+   case 990: /* comp_blockage_rule: '+' K_SLOTS  */
+-#line 6052 "def.y"
++#line 6066 "def.y"
+       {
+         if (defData->VersionNum >= 6.0 - 0.00001) {
+             if (defData->def60ObsoletedError("BLOCKAGES ... - LAYER ... + COMPONENT compName + SLOTS")) {
+@@ -11983,11 +11997,11 @@ yyreduce:
+           }
+         }
+       }
+-#line 11987 "def.tab.c"
++#line 12001 "def.tab.c"
+     break;
+ 
+   case 991: /* comp_blockage_rule: '+' K_FILLS  */
+-#line 6076 "def.y"
++#line 6090 "def.y"
+       {
+         if (defData->hasBlkLayerComp || defData->hasBlkLayerTypeComp) {
+           if (defData->callbacks->BlockageCbk) {
+@@ -12008,11 +12022,11 @@ yyreduce:
+           }
+         }
+       }
+-#line 12012 "def.tab.c"
++#line 12026 "def.tab.c"
+     break;
+ 
+   case 992: /* comp_blockage_rule: '+' K_PUSHDOWN  */
+-#line 6097 "def.y"
++#line 6111 "def.y"
+       {
+         if (defData->hasBlkLayerComp) {
+           if (defData->callbacks->BlockageCbk) {
+@@ -12030,11 +12044,11 @@ yyreduce:
+           }
+         }
+       }
+-#line 12034 "def.tab.c"
++#line 12048 "def.tab.c"
+     break;
+ 
+   case 993: /* comp_blockage_rule: '+' K_EXCEPTPGNET  */
+-#line 6115 "def.y"
++#line 6129 "def.y"
+       {
+         if (defData->VersionNum < 5.7) {
+            if (defData->callbacks->BlockageCbk) {
+@@ -12065,11 +12079,11 @@ yyreduce:
+            }
+         }
+       }
+-#line 12069 "def.tab.c"
++#line 12083 "def.tab.c"
+     break;
+ 
+   case 994: /* comp_blockage_rule: '+' K_ONLYPGNET  */
+-#line 6146 "def.y"
++#line 6160 "def.y"
+       {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("BLOCKAGES ... - LAYER layerName ... + ONLYPGNET")) {
+@@ -12094,17 +12108,17 @@ yyreduce:
+            }
+         }
+       }
+-#line 12098 "def.tab.c"
++#line 12112 "def.tab.c"
+     break;
+ 
+   case 997: /* $@187: %empty  */
+-#line 6177 "def.y"
++#line 6191 "def.y"
+                       { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 12104 "def.tab.c"
++#line 12118 "def.tab.c"
+     break;
+ 
+   case 998: /* placement_comp_rule: '+' K_COMPONENT $@187 T_STRING  */
+-#line 6178 "def.y"
++#line 6192 "def.y"
+       {
+         if (defData->hasBlkPlaceComp) {
+           if (defData->callbacks->BlockageCbk) {
+@@ -12122,17 +12136,17 @@ yyreduce:
+           }
+         }
+       }
+-#line 12126 "def.tab.c"
++#line 12140 "def.tab.c"
+     break;
+ 
+   case 999: /* $@188: %empty  */
+-#line 6195 "def.y"
++#line 6209 "def.y"
+                    { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 12132 "def.tab.c"
++#line 12146 "def.tab.c"
+     break;
+ 
+   case 1000: /* placement_comp_rule: '+' K_NAME $@188 T_STRING  */
+-#line 6196 "def.y"
++#line 6210 "def.y"
+       { 
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("BLOCKAGES ... - PLACEMENT ... + NAME name")) {
+@@ -12144,19 +12158,19 @@ yyreduce:
+             }
+         }
+       }
+-#line 12148 "def.tab.c"
++#line 12162 "def.tab.c"
+     break;
+ 
+   case 1001: /* $@189: %empty  */
+-#line 6208 "def.y"
++#line 6222 "def.y"
+       { 
+         defData->dumb_mode = 2; 
+       }
+-#line 12156 "def.tab.c"
++#line 12170 "def.tab.c"
+     break;
+ 
+   case 1002: /* placement_comp_rule: '+' K_PROPERTY $@189 prop_name_value  */
+-#line 6212 "def.y"
++#line 6226 "def.y"
+       {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("BLOCKAGES ... - PLACEMENT ... + PROPERTY propName propVal")) {
+@@ -12172,11 +12186,11 @@ yyreduce:
+ 
+         delete (yyvsp[0].prop);
+       }
+-#line 12176 "def.tab.c"
++#line 12190 "def.tab.c"
+     break;
+ 
+   case 1003: /* placement_comp_rule: '+' K_ONLYBLOCKS  */
+-#line 6228 "def.y"
++#line 6242 "def.y"
+       {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("BLOCKAGES ... - PLACEMENT ... + ONLYBLOCKS")) {
+@@ -12194,11 +12208,11 @@ yyreduce:
+             defData->hasDef60BlkPlaceTypeComp = 1;
+         }
+       }
+-#line 12198 "def.tab.c"
++#line 12212 "def.tab.c"
+     break;
+ 
+   case 1004: /* placement_comp_rule: '+' K_PUSHDOWN  */
+-#line 6246 "def.y"
++#line 6260 "def.y"
+       {
+         if (defData->hasBlkPlaceComp) {
+           if (defData->callbacks->BlockageCbk) {
+@@ -12216,11 +12230,11 @@ yyreduce:
+           }
+         }
+       }
+-#line 12220 "def.tab.c"
++#line 12234 "def.tab.c"
+     break;
+ 
+   case 1005: /* placement_comp_rule: '+' K_SOFT  */
+-#line 6264 "def.y"
++#line 6278 "def.y"
+       {
+         if (defData->VersionNum >= 6.0 - 0.00001) {
+             if (defData->def60ObsoletedError("BLOCKAGES ... - PLACEMENT ... + SOFT ...")) {
+@@ -12258,11 +12272,11 @@ yyreduce:
+            }
+         }
+       }
+-#line 12262 "def.tab.c"
++#line 12276 "def.tab.c"
+     break;
+ 
+   case 1006: /* placement_comp_rule: '+' K_SOFT NUMBER  */
+-#line 6302 "def.y"
++#line 6316 "def.y"
+       {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("BLOCKAGES ... - PLACEMENT ... + SOFT maxDensity")) {
+@@ -12280,11 +12294,11 @@ yyreduce:
+             defData->hasDef60BlkPlaceTypeComp = 1;
+         }      
+       }
+-#line 12284 "def.tab.c"
++#line 12298 "def.tab.c"
+     break;
+ 
+   case 1007: /* placement_comp_rule: '+' K_PARTIAL NUMBER  */
+-#line 6321 "def.y"
++#line 6335 "def.y"
+       {
+         if (defData->VersionNum < 5.7) {
+            if (defData->callbacks->BlockageCbk) {
+@@ -12324,11 +12338,11 @@ yyreduce:
+            }
+          }
+       }
+-#line 12328 "def.tab.c"
++#line 12342 "def.tab.c"
+     break;
+ 
+   case 1008: /* placement_comp_rule: '+' K_PARTIAL NUMBER K_NOFLOPS  */
+-#line 6362 "def.y"
++#line 6376 "def.y"
+       {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("BLOCKAGES ... - PLACEMENT ... + K_PARTIAL maxDensity K_NOFLOPS")) {
+@@ -12344,30 +12358,30 @@ yyreduce:
+ 
+         defData->hasDef60BlkPlaceTypeComp = 1;
+       }
+-#line 12348 "def.tab.c"
++#line 12362 "def.tab.c"
+     break;
+ 
+   case 1011: /* rectPoly_blockage: K_RECT pt pt  */
+-#line 6383 "def.y"
++#line 6397 "def.y"
+       {
+         if (defData->callbacks->BlockageCbk)
+           defData->Blockage.addRect((yyvsp[-1].pt).x, (yyvsp[-1].pt).y, (yyvsp[0].pt).x, (yyvsp[0].pt).y);
+       }
+-#line 12357 "def.tab.c"
++#line 12371 "def.tab.c"
+     break;
+ 
+   case 1012: /* $@190: %empty  */
+-#line 6388 "def.y"
++#line 6402 "def.y"
+       {
+         if (defData->callbacks->BlockageCbk) {
+             defData->Geometries.Reset();
+         }
+       }
+-#line 12367 "def.tab.c"
++#line 12381 "def.tab.c"
+     break;
+ 
+   case 1013: /* rectPoly_blockage: K_POLYGON $@190 firstPt nextPt nextPt otherPts  */
+-#line 6394 "def.y"
++#line 6408 "def.y"
+       {
+         if (defData->callbacks->BlockageCbk) {
+           if (defData->VersionNum >= 5.6) {  // only 5.6 and beyond
+@@ -12385,11 +12399,11 @@ yyreduce:
+           }
+         }
+       }
+-#line 12389 "def.tab.c"
++#line 12403 "def.tab.c"
+     break;
+ 
+   case 1015: /* slot_start: K_SLOTS NUMBER ';'  */
+-#line 6416 "def.y"
++#line 6430 "def.y"
+       { 
+         if (defData->VersionNum >= 6.0 - 0.00001) {
+             if (defData->def60ObsoletedError("SLOTS ... END SLOTS")) {
+@@ -12399,106 +12413,106 @@ yyreduce:
+             CALLBACK(defData->callbacks->SlotStartCbk, defrSlotStartCbkType, ROUND((yyvsp[-1].dval))); 
+         }
+       }
+-#line 12403 "def.tab.c"
++#line 12417 "def.tab.c"
+     break;
+ 
+   case 1016: /* slot_end: K_END K_SLOTS  */
+-#line 6427 "def.y"
++#line 6441 "def.y"
+       { if (defData->callbacks->SlotEndCbk)
+           CALLBACK(defData->callbacks->SlotEndCbk, defrSlotEndCbkType, 0); 
+       }
+-#line 12411 "def.tab.c"
++#line 12425 "def.tab.c"
+     break;
+ 
+   case 1019: /* slot_def: slot_rule geom_slot_rules ';'  */
+-#line 6436 "def.y"
++#line 6450 "def.y"
+       {
+         if (defData->callbacks->SlotCbk) {
+           CALLBACK(defData->callbacks->SlotCbk, defrSlotCbkType, &defData->Slot);
+           defData->Slot.clear();
+         }
+       }
+-#line 12422 "def.tab.c"
++#line 12436 "def.tab.c"
+     break;
+ 
+   case 1020: /* $@191: %empty  */
+-#line 6443 "def.y"
++#line 6457 "def.y"
+                        { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 12428 "def.tab.c"
++#line 12442 "def.tab.c"
+     break;
+ 
+   case 1021: /* $@192: %empty  */
+-#line 6444 "def.y"
++#line 6458 "def.y"
+       {
+         if (defData->callbacks->SlotCbk) {
+           defData->Slot.setLayer((yyvsp[0].string));
+           defData->Slot.clearPoly();     // free poly, if any
+         }
+       }
+-#line 12439 "def.tab.c"
++#line 12453 "def.tab.c"
+     break;
+ 
+   case 1025: /* geom_slot: K_RECT pt pt  */
+-#line 6456 "def.y"
++#line 6470 "def.y"
+       {
+         if (defData->callbacks->SlotCbk)
+           defData->Slot.addRect((yyvsp[-1].pt).x, (yyvsp[-1].pt).y, (yyvsp[0].pt).x, (yyvsp[0].pt).y);
+       }
+-#line 12448 "def.tab.c"
++#line 12462 "def.tab.c"
+     break;
+ 
+   case 1026: /* $@193: %empty  */
+-#line 6461 "def.y"
++#line 6475 "def.y"
+       {
+           defData->Geometries.Reset();
+       }
+-#line 12456 "def.tab.c"
++#line 12470 "def.tab.c"
+     break;
+ 
+   case 1027: /* geom_slot: K_POLYGON $@193 firstPt nextPt nextPt otherPts  */
+-#line 6465 "def.y"
++#line 6479 "def.y"
+       {
+         if (defData->VersionNum >= 5.6) {  // only 5.6 and beyond
+           if (defData->callbacks->SlotCbk)
+             defData->Slot.addPolygon(&defData->Geometries);
+         }
+       }
+-#line 12467 "def.tab.c"
++#line 12481 "def.tab.c"
+     break;
+ 
+   case 1029: /* fill_start: K_FILLS NUMBER ';'  */
+-#line 6476 "def.y"
++#line 6490 "def.y"
+       { if (defData->callbacks->FillStartCbk)
+           CALLBACK(defData->callbacks->FillStartCbk, defrFillStartCbkType, ROUND((yyvsp[-1].dval))); }
+-#line 12474 "def.tab.c"
++#line 12488 "def.tab.c"
+     break;
+ 
+   case 1030: /* fill_end: K_END K_FILLS  */
+-#line 6480 "def.y"
++#line 6494 "def.y"
+       { if (defData->callbacks->FillEndCbk)
+           CALLBACK(defData->callbacks->FillEndCbk, defrFillEndCbkType, 0); }
+-#line 12481 "def.tab.c"
++#line 12495 "def.tab.c"
+     break;
+ 
+   case 1033: /* $@194: %empty  */
+-#line 6487 "def.y"
++#line 6501 "def.y"
+                       { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 12487 "def.tab.c"
++#line 12501 "def.tab.c"
+     break;
+ 
+   case 1034: /* $@195: %empty  */
+-#line 6488 "def.y"
++#line 6502 "def.y"
+       {
+         if (defData->callbacks->FillCbk) {
+             defData->Fill.setLayer((yyvsp[0].string));
+             defData->Fill.clearShapes();    // Free shapes, if any.
+         }
+       }
+-#line 12498 "def.tab.c"
++#line 12512 "def.tab.c"
+     break;
+ 
+   case 1035: /* fill_def: '-' K_LAYER $@194 T_STRING $@195 fill_layer_mask_opc_opt geom_fill geom_fill_rules ';'  */
+-#line 6495 "def.y"
++#line 6509 "def.y"
+       {
+         if (defData->callbacks->FillCbk) {
+             CALLBACK(defData->callbacks->FillCbk, defrFillCbkType, &defData->Fill);
+@@ -12506,17 +12520,17 @@ yyreduce:
+             defData->Fill.Init();
+         }
+       }
+-#line 12510 "def.tab.c"
++#line 12524 "def.tab.c"
+     break;
+ 
+   case 1036: /* $@196: %empty  */
+-#line 6502 "def.y"
++#line 6516 "def.y"
+                   { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 12516 "def.tab.c"
++#line 12530 "def.tab.c"
+     break;
+ 
+   case 1037: /* $@197: %empty  */
+-#line 6503 "def.y"
++#line 6517 "def.y"
+       {
+         if (defData->callbacks->FillCbk) {
+           defData->Fill.setVia((yyvsp[0].string));
+@@ -12525,11 +12539,11 @@ yyreduce:
+           defData->Orients.clear();
+         }
+       }
+-#line 12529 "def.tab.c"
++#line 12543 "def.tab.c"
+     break;
+ 
+   case 1038: /* fill_def: '-' K_VIA $@196 T_STRING $@197 fill_via_mask_opc_opt firstViaPt otherViaPts ';'  */
+-#line 6512 "def.y"
++#line 6526 "def.y"
+       {
+         if (defData->callbacks->FillCbk) {
+           defData->Fill.addPts(&defData->Geometries, &defData->Orients);
+@@ -12539,11 +12553,11 @@ yyreduce:
+         defData->Fill.clear();
+         defData->Orients.clear();
+       }
+-#line 12543 "def.tab.c"
++#line 12557 "def.tab.c"
+     break;
+ 
+   case 1041: /* geom_fill: K_RECT pt pt  */
+-#line 6527 "def.y"
++#line 6541 "def.y"
+       {
+         if (defData->callbacks->FillCbk) {
+             defData->Fill.addRect((yyvsp[-1].pt).x, (yyvsp[-1].pt).y, (yyvsp[0].pt).x, (yyvsp[0].pt).y);
+@@ -12556,19 +12570,19 @@ yyreduce:
+             defData->Fill.clearShapes();
+         }
+       }
+-#line 12560 "def.tab.c"
++#line 12574 "def.tab.c"
+     break;
+ 
+   case 1042: /* $@198: %empty  */
+-#line 6540 "def.y"
++#line 6554 "def.y"
+       {
+         defData->Geometries.Reset();
+       }
+-#line 12568 "def.tab.c"
++#line 12582 "def.tab.c"
+     break;
+ 
+   case 1043: /* geom_fill: K_POLYGON $@198 firstPt nextPt nextPt otherPts  */
+-#line 6544 "def.y"
++#line 6558 "def.y"
+       {
+         if (defData->VersionNum >= 5.6) {  // only 5.6 and beyond
+             if (defData->callbacks->FillCbk) {
+@@ -12590,11 +12604,11 @@ yyreduce:
+             CHKERR();
+         }
+       }
+-#line 12594 "def.tab.c"
++#line 12608 "def.tab.c"
+     break;
+ 
+   case 1049: /* fill_layer_opc: '+' K_OPC  */
+-#line 6577 "def.y"
++#line 6591 "def.y"
+       {
+         if (defData->VersionNum < 5.7) {
+            if (defData->callbacks->FillCbk) {
+@@ -12612,37 +12626,37 @@ yyreduce:
+              defData->Fill.setLayerOpc();
+         }
+       }
+-#line 12616 "def.tab.c"
++#line 12630 "def.tab.c"
+     break;
+ 
+   case 1050: /* firstViaPt: fill_via_orient pt  */
+-#line 6596 "def.y"
++#line 6610 "def.y"
+           { 
+             defData->Geometries.startList((yyvsp[0].pt).x, (yyvsp[0].pt).y); 
+             defData->Orients.push_back((yyvsp[-1].integer));
+           }
+-#line 12625 "def.tab.c"
++#line 12639 "def.tab.c"
+     break;
+ 
+   case 1051: /* nextViaPt: fill_via_orient pt  */
+-#line 6602 "def.y"
++#line 6616 "def.y"
+           { 
+             defData->Geometries.addToList((yyvsp[0].pt).x, (yyvsp[0].pt).y); 
+             defData->Orients.push_back((yyvsp[-1].integer));
+           }
+-#line 12634 "def.tab.c"
++#line 12648 "def.tab.c"
+     break;
+ 
+   case 1054: /* fill_via_orient: %empty  */
+-#line 6612 "def.y"
++#line 6626 "def.y"
+     {
+         (yyval.integer) = 0;
+     }
+-#line 12642 "def.tab.c"
++#line 12656 "def.tab.c"
+     break;
+ 
+   case 1055: /* fill_via_orient: orient  */
+-#line 6616 "def.y"
++#line 6630 "def.y"
+     {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("FILLS ... - VIA ... orient pt  ...")) {
+@@ -12652,19 +12666,19 @@ yyreduce:
+ 
+         (yyval.integer) = (yyvsp[0].integer);
+     }
+-#line 12656 "def.tab.c"
++#line 12670 "def.tab.c"
+     break;
+ 
+   case 1061: /* $@199: %empty  */
+-#line 6636 "def.y"
++#line 6650 "def.y"
+     { 
+         defData->dumb_mode = 2; 
+     }
+-#line 12664 "def.tab.c"
++#line 12678 "def.tab.c"
+     break;
+ 
+   case 1062: /* fill_via_prop: '+' K_PROPERTY $@199 prop_name_value  */
+-#line 6640 "def.y"
++#line 6654 "def.y"
+     {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("FILLS: ... + VIA ... + PROPERTY propName propValue")) {
+@@ -12680,19 +12694,19 @@ yyreduce:
+ 
+         delete (yyvsp[0].prop);
+     }
+-#line 12684 "def.tab.c"
++#line 12698 "def.tab.c"
+     break;
+ 
+   case 1063: /* $@200: %empty  */
+-#line 6657 "def.y"
++#line 6671 "def.y"
+     {
+         defData->dumb_mode = 2; 
+     }
+-#line 12692 "def.tab.c"
++#line 12706 "def.tab.c"
+     break;
+ 
+   case 1064: /* fill_layer_prop: '+' K_PROPERTY $@200 prop_name_value  */
+-#line 6661 "def.y"
++#line 6675 "def.y"
+     {
+         if (defData->VersionNum < 6.0 - 0.00001) {
+             if (defData->def60NewSyntaxError("FILLS: ... + LAYER ... + PROPERTY propName propValue")) {
+@@ -12708,11 +12722,11 @@ yyreduce:
+ 
+         delete (yyvsp[0].prop);
+     }
+-#line 12712 "def.tab.c"
++#line 12726 "def.tab.c"
+     break;
+ 
+   case 1065: /* fill_via_opc: '+' K_OPC  */
+-#line 6680 "def.y"
++#line 6694 "def.y"
+       {
+         if (defData->VersionNum < 5.7) {
+            if (defData->callbacks->FillCbk) {
+@@ -12730,11 +12744,11 @@ yyreduce:
+              defData->Fill.setViaOpc();
+         }
+       }
+-#line 12734 "def.tab.c"
++#line 12748 "def.tab.c"
+     break;
+ 
+   case 1066: /* fill_mask: '+' K_MASK NUMBER  */
+-#line 6700 "def.y"
++#line 6714 "def.y"
+       { 
+         if (defData->validateMaskInput((int)(yyvsp[0].dval), defData->fillWarnings, defData->settings->FillWarnings)) {
+              if (defData->callbacks->FillCbk) {
+@@ -12742,11 +12756,11 @@ yyreduce:
+              }
+         }
+       }
+-#line 12746 "def.tab.c"
++#line 12760 "def.tab.c"
+     break;
+ 
+   case 1067: /* fill_viaMask: '+' K_MASK NUMBER  */
+-#line 6710 "def.y"
++#line 6724 "def.y"
+       { 
+         if (defData->validateMaskInput((int)(yyvsp[0].dval), defData->fillWarnings, defData->settings->FillWarnings)) {
+              if (defData->callbacks->FillCbk) {
+@@ -12754,11 +12768,11 @@ yyreduce:
+              }
+         }
+       }
+-#line 12758 "def.tab.c"
++#line 12772 "def.tab.c"
+     break;
+ 
+   case 1069: /* nondefault_start: K_NONDEFAULTRULES NUMBER ';'  */
+-#line 6723 "def.y"
++#line 6737 "def.y"
+       { 
+         if (defData->VersionNum < 5.6) {
+           if (defData->callbacks->NonDefaultStartCbk) {
+@@ -12775,158 +12789,158 @@ yyreduce:
+           CALLBACK(defData->callbacks->NonDefaultStartCbk, defrNonDefaultStartCbkType,
+                    ROUND((yyvsp[-1].dval)));
+       }
+-#line 12779 "def.tab.c"
++#line 12793 "def.tab.c"
+     break;
+ 
+   case 1070: /* nondefault_end: K_END K_NONDEFAULTRULES  */
+-#line 6741 "def.y"
++#line 6755 "def.y"
+       { if (defData->callbacks->NonDefaultEndCbk)
+           CALLBACK(defData->callbacks->NonDefaultEndCbk, defrNonDefaultEndCbkType, 0); }
+-#line 12786 "def.tab.c"
++#line 12800 "def.tab.c"
+     break;
+ 
+   case 1073: /* $@201: %empty  */
+-#line 6748 "def.y"
++#line 6762 "def.y"
+                     { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 12792 "def.tab.c"
++#line 12806 "def.tab.c"
+     break;
+ 
+   case 1074: /* $@202: %empty  */
+-#line 6749 "def.y"
++#line 6763 "def.y"
+       {
+         if (defData->callbacks->NonDefaultCbk) {
+           defData->NonDefault.clear(); 
+           defData->NonDefault.setName((yyvsp[0].string));
+         }
+       }
+-#line 12803 "def.tab.c"
++#line 12817 "def.tab.c"
+     break;
+ 
+   case 1075: /* nondefault_def: '-' $@201 T_STRING $@202 nondefault_options ';'  */
+-#line 6756 "def.y"
++#line 6770 "def.y"
+       { if (defData->callbacks->NonDefaultCbk)
+           CALLBACK(defData->callbacks->NonDefaultCbk, defrNonDefaultCbkType, &defData->NonDefault); }
+-#line 12810 "def.tab.c"
++#line 12824 "def.tab.c"
+     break;
+ 
+   case 1078: /* nondefault_option: '+' K_HARDSPACING  */
+-#line 6764 "def.y"
++#line 6778 "def.y"
+       {
+         if (defData->callbacks->NonDefaultCbk)
+           defData->NonDefault.setHardspacing();
+       }
+-#line 12819 "def.tab.c"
++#line 12833 "def.tab.c"
+     break;
+ 
+   case 1079: /* $@203: %empty  */
+-#line 6768 "def.y"
++#line 6782 "def.y"
+                     { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 12825 "def.tab.c"
++#line 12839 "def.tab.c"
+     break;
+ 
+   case 1080: /* $@204: %empty  */
+-#line 6770 "def.y"
++#line 6784 "def.y"
+       {
+         if (defData->callbacks->NonDefaultCbk) {
+           defData->NonDefault.addLayer((yyvsp[-2].string));
+           defData->NonDefault.addWidth((yyvsp[0].dval));
+         }
+       }
+-#line 12836 "def.tab.c"
++#line 12850 "def.tab.c"
+     break;
+ 
+   case 1082: /* $@205: %empty  */
+-#line 6777 "def.y"
++#line 6791 "def.y"
+                   { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 12842 "def.tab.c"
++#line 12856 "def.tab.c"
+     break;
+ 
+   case 1083: /* nondefault_option: '+' K_VIA $@205 T_STRING  */
+-#line 6778 "def.y"
++#line 6792 "def.y"
+       {
+         if (defData->callbacks->NonDefaultCbk) {
+           defData->NonDefault.addVia((yyvsp[0].string));
+         }
+       }
+-#line 12852 "def.tab.c"
++#line 12866 "def.tab.c"
+     break;
+ 
+   case 1084: /* $@206: %empty  */
+-#line 6783 "def.y"
++#line 6797 "def.y"
+                       { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 12858 "def.tab.c"
++#line 12872 "def.tab.c"
+     break;
+ 
+   case 1085: /* nondefault_option: '+' K_VIARULE $@206 T_STRING  */
+-#line 6784 "def.y"
++#line 6798 "def.y"
+       {
+         if (defData->callbacks->NonDefaultCbk) {
+           defData->NonDefault.addViaRule((yyvsp[0].string));
+         }
+       }
+-#line 12868 "def.tab.c"
++#line 12882 "def.tab.c"
+     break;
+ 
+   case 1086: /* $@207: %empty  */
+-#line 6789 "def.y"
++#line 6803 "def.y"
+                       { defData->dumb_mode = 1; defData->no_num = 1; }
+-#line 12874 "def.tab.c"
++#line 12888 "def.tab.c"
+     break;
+ 
+   case 1087: /* nondefault_option: '+' K_MINCUTS $@207 T_STRING NUMBER  */
+-#line 6790 "def.y"
++#line 6804 "def.y"
+       {
+         if (defData->callbacks->NonDefaultCbk) {
+           defData->NonDefault.addMinCuts((yyvsp[-1].string), (int)(yyvsp[0].dval));
+         }
+       }
+-#line 12884 "def.tab.c"
++#line 12898 "def.tab.c"
+     break;
+ 
+   case 1091: /* nondefault_layer_option: K_DIAGWIDTH NUMBER  */
+-#line 6803 "def.y"
++#line 6817 "def.y"
+       {
+         if (defData->callbacks->NonDefaultCbk) {
+           defData->NonDefault.addDiagWidth((yyvsp[0].dval));
+         }
+       }
+-#line 12894 "def.tab.c"
++#line 12908 "def.tab.c"
+     break;
+ 
+   case 1092: /* nondefault_layer_option: K_SPACING NUMBER  */
+-#line 6809 "def.y"
++#line 6823 "def.y"
+       {
+         if (defData->callbacks->NonDefaultCbk) {
+           defData->NonDefault.addSpacing((yyvsp[0].dval));
+         }
+       }
+-#line 12904 "def.tab.c"
++#line 12918 "def.tab.c"
+     break;
+ 
+   case 1093: /* nondefault_layer_option: K_WIREEXT NUMBER  */
+-#line 6815 "def.y"
++#line 6829 "def.y"
+       {
+         if (defData->callbacks->NonDefaultCbk) {
+           defData->NonDefault.addWireExt((yyvsp[0].dval));
+         }
+       }
+-#line 12914 "def.tab.c"
++#line 12928 "def.tab.c"
+     break;
+ 
+   case 1094: /* $@208: %empty  */
+-#line 6822 "def.y"
++#line 6836 "def.y"
+                                     { defData->dumb_mode = DEF_MAX_INT;  }
+-#line 12920 "def.tab.c"
++#line 12934 "def.tab.c"
+     break;
+ 
+   case 1095: /* nondefault_prop_opt: '+' K_PROPERTY $@208 nondefault_prop_list  */
+-#line 6824 "def.y"
++#line 6838 "def.y"
+       { defData->dumb_mode = 0; }
+-#line 12926 "def.tab.c"
++#line 12940 "def.tab.c"
+     break;
+ 
+   case 1098: /* nondefault_prop: T_STRING NUMBER  */
+-#line 6831 "def.y"
++#line 6845 "def.y"
+       {
+         if (defData->callbacks->NonDefaultCbk) {
+           char propTp;
+@@ -12937,11 +12951,11 @@ yyreduce:
+           defData->NonDefault.addNumProperty((yyvsp[-1].string), (yyvsp[0].dval), str, propTp);
+         }
+       }
+-#line 12941 "def.tab.c"
++#line 12955 "def.tab.c"
+     break;
+ 
+   case 1099: /* nondefault_prop: T_STRING QSTRING  */
+-#line 6842 "def.y"
++#line 6856 "def.y"
+       {
+         if (defData->callbacks->NonDefaultCbk) {
+           char propTp;
+@@ -12950,11 +12964,11 @@ yyreduce:
+           defData->NonDefault.addProperty((yyvsp[-1].string), (yyvsp[0].string), propTp);
+         }
+       }
+-#line 12954 "def.tab.c"
++#line 12968 "def.tab.c"
+     break;
+ 
+   case 1100: /* nondefault_prop: T_STRING T_STRING  */
+-#line 6851 "def.y"
++#line 6865 "def.y"
+       {
+         if (defData->callbacks->NonDefaultCbk) {
+           char propTp;
+@@ -12963,11 +12977,11 @@ yyreduce:
+           defData->NonDefault.addProperty((yyvsp[-1].string), (yyvsp[0].string), propTp);
+         }
+       }
+-#line 12967 "def.tab.c"
++#line 12981 "def.tab.c"
+     break;
+ 
+   case 1102: /* styles_start: K_STYLES NUMBER ';'  */
+-#line 6864 "def.y"
++#line 6878 "def.y"
+       {
+         if (defData->VersionNum < 5.6) {
+           if (defData->callbacks->StylesStartCbk) {
+@@ -12987,27 +13001,27 @@ yyreduce:
+         } else if (defData->callbacks->StylesStartCbk)
+           CALLBACK(defData->callbacks->StylesStartCbk, defrStylesStartCbkType, ROUND((yyvsp[-1].dval)));
+       }
+-#line 12991 "def.tab.c"
++#line 13005 "def.tab.c"
+     break;
+ 
+   case 1103: /* styles_end: K_END K_STYLES  */
+-#line 6885 "def.y"
++#line 6899 "def.y"
+       { if (defData->callbacks->StylesEndCbk)
+           CALLBACK(defData->callbacks->StylesEndCbk, defrStylesEndCbkType, 0); }
+-#line 12998 "def.tab.c"
++#line 13012 "def.tab.c"
+     break;
+ 
+   case 1106: /* $@209: %empty  */
+-#line 6893 "def.y"
++#line 6907 "def.y"
+       {
+         if (defData->callbacks->StylesCbk) defData->Styles.setStyle((int)(yyvsp[0].dval));
+         defData->Geometries.Reset();
+       }
+-#line 13007 "def.tab.c"
++#line 13021 "def.tab.c"
+     break;
+ 
+   case 1107: /* styles_rule: '-' K_STYLE NUMBER $@209 firstPt nextPt otherPts ';'  */
+-#line 6898 "def.y"
++#line 6912 "def.y"
+       {
+         if (defData->VersionNum >= 5.6) {  // only 5.6 and beyond will call the callback
+           if (defData->callbacks->StylesCbk) {
+@@ -13016,11 +13030,11 @@ yyreduce:
+           }
+         }
+       }
+-#line 13020 "def.tab.c"
++#line 13034 "def.tab.c"
+     break;
+ 
+ 
+-#line 13024 "def.tab.c"
++#line 13038 "def.tab.c"
+ 
+       default: break;
+     }
+@@ -13213,7 +13227,7 @@ yyreturnlab:
+   return yyresult;
+ }
+ 
+-#line 6908 "def.y"
++#line 6922 "def.y"
+ 
+ 
+ END_LEFDEF_PARSER_NAMESPACE
+diff --git a/def/def/def.y b/def/def/def.y
+index 6685a84..7313350 100755
+--- a/def/def/def.y
++++ b/def/def/def.y
+@@ -3259,10 +3259,17 @@ paths:
+             defData->startPath();
+         }
+     }
+-    path   // not necessary to do partial callback for net yet
++    path
+     {
+         if (defData->callbacks->NetCbk) {
+-            defData->finishPath(0, &defData->needNPCbk);
++            if (defData->needNPCbk && defData->callbacks->NetPartialPathCbk) {
++                CALLBACK(defData->callbacks->NetPartialPathCbk, defrNetPartialPathCbkType, defData->Net);
++                defData->needNPCbk = 0;
++                defData->finishPath(1, &defData->needNPCbk);
++                defData->Net->clearRectPolyNPath();
++            } else {
++                defData->finishPath(0, &defData->needNPCbk);
++            }
+             defData->PathObj = NULL;
+         }
+     }
+@@ -3281,7 +3288,14 @@ new_path: K_NEW
+     path
+     {
+         if (defData->callbacks->NetCbk) {
+-            defData->finishPath(0, &defData->needNPCbk);
++            if (defData->needNPCbk && defData->callbacks->NetPartialPathCbk) {
++                CALLBACK(defData->callbacks->NetPartialPathCbk, defrNetPartialPathCbkType, defData->Net);
++                defData->needNPCbk = 0;
++                defData->finishPath(1, &defData->needNPCbk);
++                defData->Net->clearRectPolyNPath();
++            } else {
++                defData->finishPath(0, &defData->needNPCbk);
++            }
+             defData->PathObj = NULL;
+         }
+     }
+diff --git a/def/def/defrReader.hpp b/def/def/defrReader.hpp
+index 67d2dfd..6a879a6 100755
+--- a/def/def/defrReader.hpp
++++ b/def/def/defrReader.hpp
+@@ -64,6 +64,7 @@ typedef enum {
+   defrNetNonDefaultRuleCbkType,
+   defrNetSubnetNameCbkType,
+   defrNetEndCbkType,
++  defrNetPartialPathCbkType,
+   defrPathCbkType, // Obsoleted.
+   defrVersionCbkType,
+   defrVersionStrCbkType,
+diff --git a/def/include/defrReader.h b/def/include/defrReader.h
+new file mode 100755
+index 0000000..703c0c3
+--- /dev/null
++++ b/def/include/defrReader.h
+@@ -0,0 +1,665 @@
++/* ************************************************************************** */
++/* ************************************************************************** */
++/* ATTENTION: THIS IS AN AUTO-GENERATED FILE. DO NOT CHANGE IT!               */
++/* ************************************************************************** */
++/* ************************************************************************** */
++/* Copyright 2013-2014, Cadence Design Systems                                */
++/*                                                                            */
++/* This  file  is  part  of  the  Cadence  LEF/DEF  Open   Source             */
++/* Distribution,  Product Version 5.8.                                        */
++/*                                                                            */
++/* Licensed under the Apache License, Version 2.0 (the "License");            */
++/*    you may not use this file except in compliance with the License.        */
++/*    You may obtain a copy of the License at                                 */
++/*                                                                            */
++/*        http://www.apache.org/licenses/LICENSE-2.0                          */
++/*                                                                            */
++/*    Unless required by applicable law or agreed to in writing, software     */
++/*    distributed under the License is distributed on an "AS IS" BASIS,       */
++/*    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or         */
++/*    implied. See the License for the specific language governing            */
++/*    permissions and limitations under the License.                          */
++/*                                                                            */
++/* For updates, support, or to become part of the LEF/DEF Community,          */
++/* check www.openeda.org for details.                                         */
++/*                                                                            */
++/*  $Author: icftcm $                                                           */
++/*  $Revision: #9 $                                                           */
++/*  $Date: 2021/01/25 $                                                       */
++/*  $State:  $                                                                */
++/* ************************************************************************** */
++/* ************************************************************************** */
++
++
++#ifndef CDEFRREADER_H
++#define CDEFRREADER_H
++
++#include <stdio.h>
++#include "defiTypedefs.h"
++
++#define DEF_MSGS 4013
++#define CBMAX 150    
++
++/* An enum describing all of the types of reader callbacks.                   */
++typedef enum {
++  defrUnspecifiedCbkType = 0,
++  defrDesignStartCbkType = 1,
++  defrTechNameCbkType = 2,
++  defrPropCbkType = 3,
++  defrPropDefEndCbkType = 4,
++  defrPropDefStartCbkType = 5,
++  defrFloorPlanNameCbkType = 6,
++  defrArrayNameCbkType = 7,
++  defrUnitsCbkType = 8,
++  defrDividerCbkType = 9,
++  defrBusBitCbkType = 10,
++  defrSiteCbkType = 11,
++  defrComponentStartCbkType = 12,
++  defrComponentCbkType = 13,
++  defrComponentEndCbkType = 14,
++  defrNetStartCbkType = 15,
++  defrNetCbkType = 16,
++  defrNetNameCbkType = 17,
++  defrNetNonDefaultRuleCbkType = 18,
++  defrNetSubnetNameCbkType = 19,
++  defrNetEndCbkType = 20,
++  defrNetPartialPathCbkType = 70,
++  defrPathCbkType = 21,
++  defrVersionCbkType = 22,
++  defrVersionStrCbkType = 23,
++  defrComponentExtCbkType = 24,
++  defrPinExtCbkType = 25,
++  defrViaExtCbkType = 26,
++  defrNetConnectionExtCbkType = 27,
++  defrNetExtCbkType = 28,
++  defrGroupExtCbkType = 29,
++  defrScanChainExtCbkType = 30,
++  defrIoTimingsExtCbkType = 31,
++  defrPartitionsExtCbkType = 32,
++  defrHistoryCbkType = 33,
++  defrDieAreaCbkType = 34,
++  defrCanplaceCbkType = 35,
++  defrCannotOccupyCbkType = 36,
++  defrPinCapCbkType = 37,
++  defrDefaultCapCbkType = 38,
++  defrStartPinsCbkType = 39,
++  defrPinCbkType = 40,
++  defrPinEndCbkType = 41,
++  defrRowCbkType = 42,
++  defrTrackCbkType = 43,
++  defrGcellGridCbkType = 44,
++  defrViaStartCbkType = 45,
++  defrViaCbkType = 46,
++  defrViaEndCbkType = 47,
++  defrRegionStartCbkType = 48,
++  defrRegionCbkType = 49,
++  defrRegionEndCbkType = 50,
++  defrSNetStartCbkType = 51,
++  defrSNetCbkType = 52,
++  defrSNetPartialPathCbkType = 53,
++  defrSNetWireCbkType = 54,
++  defrSNetEndCbkType = 55,
++  defrGroupsStartCbkType = 56,
++  defrGroupNameCbkType = 57,
++  defrGroupMemberCbkType = 58,
++  defrGroupCbkType = 59,
++  defrGroupsEndCbkType = 60,
++  defrAssertionsStartCbkType = 61,
++  defrAssertionCbkType = 62,
++  defrAssertionsEndCbkType = 63,
++  defrConstraintsStartCbkType = 64,
++  defrConstraintCbkType = 65,
++  defrConstraintsEndCbkType = 66,
++  defrScanchainsStartCbkType = 67,
++  defrScanchainCbkType = 68,
++  defrScanchainsEndCbkType = 69,
++  defrIOTimingsStartCbkType = 70,
++  defrIOTimingCbkType = 71,
++  defrIOTimingsEndCbkType = 72,
++  defrFPCStartCbkType = 73,
++  defrFPCCbkType = 74,
++  defrFPCEndCbkType = 75,
++  defrTimingDisablesStartCbkType = 76,
++  defrTimingDisableCbkType = 77,
++  defrTimingDisablesEndCbkType = 78,
++  defrPartitionsStartCbkType = 79,
++  defrPartitionCbkType = 80,
++  defrPartitionsEndCbkType = 81,
++  defrPinPropStartCbkType = 82,
++  defrPinPropCbkType = 83,
++  defrPinPropEndCbkType = 84,
++  defrBlockageStartCbkType = 85,
++  defrBlockageCbkType = 86,
++  defrBlockageEndCbkType = 87,
++  defrSlotStartCbkType = 88,
++  defrSlotCbkType = 89,
++  defrSlotEndCbkType = 90,
++  defrFillStartCbkType = 91,
++  defrFillCbkType = 92,
++  defrFillEndCbkType = 93,
++  defrCaseSensitiveCbkType = 94,
++  defrNonDefaultStartCbkType = 95,
++  defrNonDefaultCbkType = 96,
++  defrNonDefaultEndCbkType = 97,
++  defrStylesStartCbkType = 98,
++  defrStylesCbkType = 99,
++  defrStylesEndCbkType = 100,
++  defrExtensionCbkType = 101,
++
++  /* NEW CALLBACK - If you are creating a new callback, you must add          */
++  /* a unique item to this enum for each callback routine. When the           */
++  /* callback is called in def.y you have to supply this enum item            */
++  /* as an argument in the call.                                              */
++
++  defrComponentMaskShiftLayerCbkType = 102,
++  defrDesignEndCbkType = 103
++} defrCallbackType_e;
++
++/* Declarations of function signatures for each type of callback.             */
++/* These declarations are type-safe when compiling with ANSI C                */
++/* or C++; you will only be able to register a function pointer               */
++/* with the correct signature for a given type of callback.                   */
++/*                                                                            */
++/* Each callback function is expected to return 0 if successful.              */
++/* A non-zero return code will cause the reader to abort.                     */
++/*                                                                            */
++/* The defrDesignStart and defrDesignEnd callback is only called once.        */
++/* Other callbacks may be called multiple times, each time with a different   */
++/* set of data.                                                               */
++/*                                                                            */
++/* For each callback, the Def API will make the callback to the               */
++/* function supplied by the client, which should either make a copy           */
++/* of the Def object, or store the data in the client's own data structures.  */
++/* The Def API will delete or reuse each object after making the callback,    */
++/* so the client should not keep a pointer to it.                             */
++/*                                                                            */
++/* All callbacks pass the user data pointer provided in defrRead()            */
++/* or defrSetUserData() back to the client; this can be used by the           */
++/* client to obtain access to the rest of the client's data structures.       */
++/*                                                                            */
++/* The user data pointer is obtained using defrGetUserData() immediately      */
++/* prior to making each callback, so the client is free to change the         */
++/* user data on the fly if necessary.                                         */
++/*                                                                            */
++/* Callbacks with the same signature are passed a callback type               */
++/* parameter, which allows an application to write a single callback          */
++/* function, register that function for multiple callbacks, then              */
++/* switch based on the callback type to handle the appropriate type of        */
++/* data.                                                                      */
++
++/* A declaration of the signature of all callbacks that return nothing.       */
++typedef int (*defrVoidCbkFnType) (defrCallbackType_e, void* v, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a string.      */
++typedef int (*defrStringCbkFnType) (defrCallbackType_e, const char *string, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a integer.     */
++typedef int (*defrIntegerCbkFnType) (defrCallbackType_e, int number, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a double.      */
++typedef int (*defrDoubleCbkFnType) (defrCallbackType_e, double number, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiProp.    */
++typedef int (*defrPropCbkFnType) (defrCallbackType_e, defiProp *prop, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiSite.    */
++typedef int (*defrSiteCbkFnType) (defrCallbackType_e, defiSite *site, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defComponent */
++typedef int (*defrComponentCbkFnType) (defrCallbackType_e, defiComponent *comp, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defComponent */
++typedef int (*defrComponentMaskShiftLayerCbkFnType) (defrCallbackType_e, defiComponentMaskShiftLayer *comp, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defNet.      */
++typedef int (*defrNetCbkFnType) (defrCallbackType_e, defiNet *net, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defPath.     */
++typedef int (*defrPathCbkFnType) (defrCallbackType_e, defiPath *path, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiBox.     */
++typedef int (*defrBoxCbkFnType) (defrCallbackType_e, defiBox *box, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiPinCap.  */
++typedef int (*defrPinCapCbkFnType) (defrCallbackType_e, defiPinCap *pincap, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiPin.     */
++typedef int (*defrPinCbkFnType) (defrCallbackType_e, defiPin *pin, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiRow.     */
++typedef int (*defrRowCbkFnType) (defrCallbackType_e, defiRow *row, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiTrack.   */
++typedef int (*defrTrackCbkFnType) (defrCallbackType_e, defiTrack *track, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiGcellGri */
++typedef int (*defrGcellGridCbkFnType) (defrCallbackType_e, defiGcellGrid *grid, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiVia.     */
++typedef int (*defrViaCbkFnType) (defrCallbackType_e, defiVia *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiRegion.  */
++typedef int (*defrRegionCbkFnType) (defrCallbackType_e, defiRegion *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiGroup.   */
++typedef int (*defrGroupCbkFnType) (defrCallbackType_e, defiGroup *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiAssertio */
++typedef int (*defrAssertionCbkFnType) (defrCallbackType_e, defiAssertion *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiScanChai */
++typedef int (*defrScanchainCbkFnType) (defrCallbackType_e, defiScanchain *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiIOTiming */
++typedef int (*defrIOTimingCbkFnType) (defrCallbackType_e, defiIOTiming *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiFPC.     */
++typedef int (*defrFPCCbkFnType) (defrCallbackType_e, defiFPC *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiTimingDi */
++typedef int (*defrTimingDisableCbkFnType) (defrCallbackType_e, defiTimingDisable *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiPartitio */
++typedef int (*defrPartitionCbkFnType) (defrCallbackType_e, defiPartition *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiPinProp. */
++typedef int (*defrPinPropCbkFnType) (defrCallbackType_e, defiPinProp *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiBlockage */
++typedef int (*defrBlockageCbkFnType) (defrCallbackType_e, defiBlockage *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiSlot.    */
++typedef int (*defrSlotCbkFnType) (defrCallbackType_e, defiSlot *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiFill.    */
++typedef int (*defrFillCbkFnType) (defrCallbackType_e, defiFill *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiNonDefau */
++typedef int (*defrNonDefaultCbkFnType) (defrCallbackType_e, defiNonDefault *, defiUserData);
++
++/* A declaration of the signature of all callbacks that return a defiStyles.  */
++typedef int (*defrStylesCbkFnType) (defrCallbackType_e, defiStyles *, defiUserData);
++
++/* NEW CALLBACK - Each callback must return user data, enum, and              */
++/*   OUR-DATA item.  We must define a callback function type for              */
++/*   each type of OUR-DATA.  Some routines return a string, some              */
++/*   return an integer, and some return a pointer to a class.                 */
++/*   If you create a new class, then you must create a new function           */
++/*   type here to return that class to the user.                              */
++
++/* The reader initialization.  Must be called before defrRead().              */
++EXTERN int defrInit ();
++EXTERN int defrInitSession (int  startSession);
++
++/* obsoleted now.                                                             */
++EXTERN int defrReset ();
++
++/*Sets all parser memory into init state.                                     */
++EXTERN int defrClear ();
++
++/* Change the comment character in the DEF file.  The default                 */
++/* is '#'                                                                     */
++EXTERN void defrSetCommentChar (char  c);
++
++/* Functions to call to set specific actions in the parser.                   */
++EXTERN void defrSetAddPathToNet ();
++EXTERN void defrSetAllowComponentNets ();
++EXTERN int defrGetAllowComponentNets ();
++EXTERN void defrSetCaseSensitivity (int  caseSense);
++
++/* Functions to keep track of callbacks that the user did not                 */
++/* supply.  Normally all parts of the DEF file that the user                  */
++/* does not supply a callback for will be ignored.  These                     */
++/* routines tell the parser count the DEF constructs that are                 */
++/* present in the input file, but did not trigger a callback.                 */
++/* This should help you find any "important" DEF constructs that              */
++/* you are ignoring.                                                          */
++EXTERN void defrSetRegisterUnusedCallbacks ();
++EXTERN void defrPrintUnusedCallbacks (FILE*  log);
++
++/* Obsoleted now.                                                             */
++EXTERN int  defrReleaseNResetMemory ();
++
++/* The main reader function.                                                  */
++/* The file should already be opened.  This requirement allows                */
++/* the reader to be used with stdin or a pipe.  The file name                 */
++/* is only used for error messages.                                           */
++EXTERN int defrRead (FILE * file, const char * fileName, defiUserData  userData, int  case_sensitive);
++
++/* Set/get the client-provided user data.  defi doesn't look at               */
++/* this data at all, it simply passes the opaque defiUserData pointer         */
++/* back to the application with each callback.  The client can                */
++/* change the data at any time, and it will take effect on the                */
++/* next callback.  The defi reader and writer maintain separate               */
++/* user data pointers.                                                        */
++EXTERN void defrSetUserData (defiUserData p0);
++EXTERN defiUserData defrGetUserData ();
++
++/* Functions to call to register a callback function or get the function      */
++/*pointer after it has been registered.                                       */
++/*                                                                            */
++
++/* Register one function for all callbacks with the same signature            */
++EXTERN void defrSetArrayNameCbk (defrStringCbkFnType p0);
++EXTERN void defrSetAssertionCbk (defrAssertionCbkFnType p0);
++EXTERN void defrSetAssertionsStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetAssertionsEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetBlockageCbk (defrBlockageCbkFnType p0);
++EXTERN void defrSetBlockageStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetBlockageEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetBusBitCbk (defrStringCbkFnType p0);
++EXTERN void defrSetCannotOccupyCbk (defrSiteCbkFnType p0);
++EXTERN void defrSetCanplaceCbk (defrSiteCbkFnType p0);
++EXTERN void defrSetCaseSensitiveCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetComponentCbk (defrComponentCbkFnType p0);
++EXTERN void defrSetComponentExtCbk (defrStringCbkFnType p0);
++EXTERN void defrSetComponentStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetComponentEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetConstraintCbk (defrAssertionCbkFnType p0);
++EXTERN void defrSetConstraintsStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetConstraintsEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetDefaultCapCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetDesignCbk (defrStringCbkFnType p0);
++EXTERN void defrSetDesignEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetDieAreaCbk (defrBoxCbkFnType p0);
++EXTERN void defrSetDividerCbk (defrStringCbkFnType p0);
++EXTERN void defrSetExtensionCbk (defrStringCbkFnType p0);
++EXTERN void defrSetFillCbk (defrFillCbkFnType p0);
++EXTERN void defrSetFillStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetFillEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetFPCCbk (defrFPCCbkFnType p0);
++EXTERN void defrSetFPCStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetFPCEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetFloorPlanNameCbk (defrStringCbkFnType p0);
++EXTERN void defrSetGcellGridCbk (defrGcellGridCbkFnType p0);
++EXTERN void defrSetGroupNameCbk (defrStringCbkFnType p0);
++EXTERN void defrSetGroupMemberCbk (defrStringCbkFnType p0);
++EXTERN void defrSetComponentMaskShiftLayerCbk (defrComponentMaskShiftLayerCbkFnType p0);
++EXTERN void defrSetGroupCbk (defrGroupCbkFnType p0);
++EXTERN void defrSetGroupExtCbk (defrStringCbkFnType p0);
++EXTERN void defrSetGroupsStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetGroupsEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetHistoryCbk (defrStringCbkFnType p0);
++EXTERN void defrSetIOTimingCbk (defrIOTimingCbkFnType p0);
++EXTERN void defrSetIOTimingsStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetIOTimingsEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetIoTimingsExtCbk (defrStringCbkFnType p0);
++EXTERN void defrSetNetCbk (defrNetCbkFnType p0);
++EXTERN void defrSetNetNameCbk (defrStringCbkFnType p0);
++EXTERN void defrSetNetNonDefaultRuleCbk (defrStringCbkFnType p0);
++EXTERN void defrSetNetConnectionExtCbk (defrStringCbkFnType p0);
++EXTERN void defrSetNetExtCbk (defrStringCbkFnType p0);
++EXTERN void defrSetNetPartialPathCbk (defrNetCbkFnType p0);
++EXTERN void defrSetNetSubnetNameCbk (defrStringCbkFnType p0);
++EXTERN void defrSetNetStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetNetEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetNonDefaultCbk (defrNonDefaultCbkFnType p0);
++EXTERN void defrSetNonDefaultStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetNonDefaultEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetPartitionCbk (defrPartitionCbkFnType p0);
++EXTERN void defrSetPartitionsExtCbk (defrStringCbkFnType p0);
++EXTERN void defrSetPartitionsStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetPartitionsEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetPathCbk (defrPathCbkFnType p0);
++EXTERN void defrSetPinCapCbk (defrPinCapCbkFnType p0);
++EXTERN void defrSetPinCbk (defrPinCbkFnType p0);
++EXTERN void defrSetPinExtCbk (defrStringCbkFnType p0);
++EXTERN void defrSetPinPropCbk (defrPinPropCbkFnType p0);
++EXTERN void defrSetPinPropStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetPinPropEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetPropCbk (defrPropCbkFnType p0);
++EXTERN void defrSetPropDefEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetPropDefStartCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetRegionCbk (defrRegionCbkFnType p0);
++EXTERN void defrSetRegionStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetRegionEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetRowCbk (defrRowCbkFnType p0);
++EXTERN void defrSetSNetCbk (defrNetCbkFnType p0);
++EXTERN void defrSetSNetStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetSNetEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetSNetPartialPathCbk (defrNetCbkFnType p0);
++EXTERN void defrSetSNetWireCbk (defrNetCbkFnType p0);
++EXTERN void defrSetScanChainExtCbk (defrStringCbkFnType p0);
++EXTERN void defrSetScanchainCbk (defrScanchainCbkFnType p0);
++EXTERN void defrSetScanchainsStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetScanchainsEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetSiteCbk (defrSiteCbkFnType p0);
++EXTERN void defrSetSlotCbk (defrSlotCbkFnType p0);
++EXTERN void defrSetSlotStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetSlotEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetStartPinsCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetStylesCbk (defrStylesCbkFnType p0);
++EXTERN void defrSetStylesStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetStylesEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetPinEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetTechnologyCbk (defrStringCbkFnType p0);
++EXTERN void defrSetTimingDisableCbk (defrTimingDisableCbkFnType p0);
++EXTERN void defrSetTimingDisablesStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetTimingDisablesEndCbk (defrVoidCbkFnType p0);
++EXTERN void defrSetTrackCbk (defrTrackCbkFnType p0);
++EXTERN void defrSetUnitsCbk (defrDoubleCbkFnType p0);
++EXTERN void defrSetVersionCbk (defrDoubleCbkFnType p0);
++EXTERN void defrSetVersionStrCbk (defrStringCbkFnType p0);
++EXTERN void defrSetViaCbk (defrViaCbkFnType p0);
++EXTERN void defrSetViaExtCbk (defrStringCbkFnType p0);
++EXTERN void defrSetViaStartCbk (defrIntegerCbkFnType p0);
++EXTERN void defrSetViaEndCbk (defrVoidCbkFnType p0);
++
++/* NEW CALLBACK - For each new callback you create, you must                  */
++/* create a routine that allows the user to set it.  Add the                  */
++/* setting routines here.                                                     */
++
++/*Set all of the callbacks that have not yet been set to the following        */
++/*function.  This is especially useful if you want to check to see            */
++/*if you forgot anything.                                                     */
++EXTERN void defrUnsetCallbacks ();
++
++/* Functions to call to unregister a callback function.                       */
++EXTERN void defrUnsetArrayNameCbk ();
++EXTERN void defrUnsetAssertionCbk ();
++EXTERN void defrUnsetAssertionsStartCbk ();
++EXTERN void defrUnsetAssertionsEndCbk ();
++EXTERN void defrUnsetBlockageCbk ();
++EXTERN void defrUnsetBlockageStartCbk ();
++EXTERN void defrUnsetBlockageEndCbk ();
++EXTERN void defrUnsetBusBitCbk ();
++EXTERN void defrUnsetCannotOccupyCbk ();
++EXTERN void defrUnsetCanplaceCbk ();
++EXTERN void defrUnsetCaseSensitiveCbk ();
++EXTERN void defrUnsetComponentCbk ();
++EXTERN void defrUnsetComponentExtCbk ();
++EXTERN void defrUnsetComponentStartCbk ();
++EXTERN void defrUnsetComponentEndCbk ();
++EXTERN void defrUnsetConstraintCbk ();
++EXTERN void defrUnsetConstraintsStartCbk ();
++EXTERN void defrUnsetConstraintsEndCbk ();
++EXTERN void defrUnsetDefaultCapCbk ();
++EXTERN void defrUnsetDesignCbk ();
++EXTERN void defrUnsetDesignEndCbk ();
++EXTERN void defrUnsetDieAreaCbk ();
++EXTERN void defrUnsetDividerCbk ();
++EXTERN void defrUnsetExtensionCbk ();
++EXTERN void defrUnsetFillCbk ();
++EXTERN void defrUnsetFillStartCbk ();
++EXTERN void defrUnsetFillEndCbk ();
++EXTERN void defrUnsetFPCCbk ();
++EXTERN void defrUnsetFPCStartCbk ();
++EXTERN void defrUnsetFPCEndCbk ();
++EXTERN void defrUnsetFloorPlanNameCbk ();
++EXTERN void defrUnsetGcellGridCbk ();
++EXTERN void defrUnsetGroupCbk ();
++EXTERN void defrUnsetGroupExtCbk ();
++EXTERN void defrUnsetGroupMemberCbk ();
++EXTERN void defrUnsetComponentMaskShiftLayerCbk ();
++EXTERN void defrUnsetGroupNameCbk ();
++EXTERN void defrUnsetGroupsStartCbk ();
++EXTERN void defrUnsetGroupsEndCbk ();
++EXTERN void defrUnsetHistoryCbk ();
++EXTERN void defrUnsetIOTimingCbk ();
++EXTERN void defrUnsetIOTimingsStartCbk ();
++EXTERN void defrUnsetIOTimingsEndCbk ();
++EXTERN void defrUnsetIOTimingsExtCbk ();
++EXTERN void defrUnsetNetCbk ();
++EXTERN void defrUnsetNetNameCbk ();
++EXTERN void defrUnsetNetNonDefaultRuleCbk ();
++EXTERN void defrUnsetNetConnectionExtCbk ();
++EXTERN void defrUnsetNetExtCbk ();
++EXTERN void defrUnsetNetPartialPathCbk ();
++EXTERN void defrUnsetNetSubnetNameCbk ();
++EXTERN void defrUnsetNetStartCbk ();
++EXTERN void defrUnsetNetEndCbk ();
++EXTERN void defrUnsetNonDefaultCbk ();
++EXTERN void defrUnsetNonDefaultStartCbk ();
++EXTERN void defrUnsetNonDefaultEndCbk ();
++EXTERN void defrUnsetPartitionCbk ();
++EXTERN void defrUnsetPartitionsExtCbk ();
++EXTERN void defrUnsetPartitionsStartCbk ();
++EXTERN void defrUnsetPartitionsEndCbk ();
++EXTERN void defrUnsetPathCbk ();
++EXTERN void defrUnsetPinCapCbk ();
++EXTERN void defrUnsetPinCbk ();
++EXTERN void defrUnsetPinEndCbk ();
++EXTERN void defrUnsetPinExtCbk ();
++EXTERN void defrUnsetPinPropCbk ();
++EXTERN void defrUnsetPinPropStartCbk ();
++EXTERN void defrUnsetPinPropEndCbk ();
++EXTERN void defrUnsetPropCbk ();
++EXTERN void defrUnsetPropDefEndCbk ();
++EXTERN void defrUnsetPropDefStartCbk ();
++EXTERN void defrUnsetRegionCbk ();
++EXTERN void defrUnsetRegionStartCbk ();
++EXTERN void defrUnsetRegionEndCbk ();
++EXTERN void defrUnsetRowCbk ();
++EXTERN void defrUnsetScanChainExtCbk ();
++EXTERN void defrUnsetScanchainCbk ();
++EXTERN void defrUnsetScanchainsStartCbk ();
++EXTERN void defrUnsetScanchainsEndCbk ();
++EXTERN void defrUnsetSiteCbk ();
++EXTERN void defrUnsetSlotCbk ();
++EXTERN void defrUnsetSlotStartCbk ();
++EXTERN void defrUnsetSlotEndCbk ();
++EXTERN void defrUnsetSNetWireCbk ();
++EXTERN void defrUnsetSNetCbk ();
++EXTERN void defrUnsetSNetStartCbk ();
++EXTERN void defrUnsetSNetEndCbk ();
++EXTERN void defrUnsetSNetPartialPathCbk ();
++EXTERN void defrUnsetStartPinsCbk ();
++EXTERN void defrUnsetStylesCbk ();
++EXTERN void defrUnsetStylesStartCbk ();
++EXTERN void defrUnsetStylesEndCbk ();
++EXTERN void defrUnsetTechnologyCbk ();
++EXTERN void defrUnsetTimingDisableCbk ();
++EXTERN void defrUnsetTimingDisablesStartCbk ();
++EXTERN void defrUnsetTimingDisablesEndCbk ();
++EXTERN void defrUnsetTrackCbk ();
++EXTERN void defrUnsetUnitsCbk ();
++EXTERN void defrUnsetVersionCbk ();
++EXTERN void defrUnsetVersionStrCbk ();
++EXTERN void defrUnsetViaCbk ();
++EXTERN void defrUnsetViaExtCbk ();
++EXTERN void defrUnsetViaStartCbk ();
++EXTERN void defrUnsetViaEndCbk ();
++
++/* Routine to set all unused callbacks. This is useful for checking           */
++/*to see if you missed something.                                             */
++EXTERN void defrSetUnusedCallbacks (defrVoidCbkFnType  func);
++
++/* Return the current line number in the input file.                          */
++EXTERN int defrLineNumber ();
++EXTERN long long defrLongLineNumber ();
++
++/* Routine to set the message logging routine for errors                      */
++    typedef void (*DEFI_LOG_FUNCTION) (const char*);
++EXTERN void defrSetLogFunction (DEFI_LOG_FUNCTION p0);
++
++/* Routine to set the message logging routine for warnings                    */
++#ifndef DEFI_WARNING_LOG_FUNCTION
++    typedef void (*DEFI_WARNING_LOG_FUNCTION) (const char*);
++#endif
++EXTERN void defrSetWarningLogFunction (DEFI_WARNING_LOG_FUNCTION p0);
++
++/* Routine to set the user defined malloc routine                             */
++typedef void* (*DEFI_MALLOC_FUNCTION) (size_t);
++EXTERN void defrSetMallocFunction (DEFI_MALLOC_FUNCTION p0);
++
++/* Routine to set the user defined realloc routine                            */
++typedef void* (*DEFI_REALLOC_FUNCTION) (void*, size_t);
++EXTERN void defrSetReallocFunction (DEFI_REALLOC_FUNCTION p0);
++
++/* Routine to set the user defined free routine                               */
++typedef void (*DEFI_FREE_FUNCTION) (void *);
++EXTERN void defrSetFreeFunction (DEFI_FREE_FUNCTION p0);
++
++/* Routine to set the line number of the file that is parsing routine (takes  */
++typedef void (*DEFI_LINE_NUMBER_FUNCTION)  (int);
++EXTERN void defrSetLineNumberFunction (DEFI_LINE_NUMBER_FUNCTION p0);
++
++/* Routine to set the line number of the file that is parsing routine (takes  */
++typedef void (*DEFI_LONG_LINE_NUMBER_FUNCTION)  (long long);
++EXTERN void defrSetLongLineNumberFunction (DEFI_LONG_LINE_NUMBER_FUNCTION p0);
++
++/* Set the number of lines before calling the line function callback routine  */
++/* Default is 10000                                                           */
++EXTERN void defrSetDeltaNumberLines (int p0);
++
++/* Routine to set the read function                                           */
++typedef size_t (*DEFI_READ_FUNCTION)  (FILE*, char*, size_t);
++EXTERN void defrSetReadFunction (DEFI_READ_FUNCTION p0);
++EXTERN void defrUnsetReadFunction ();
++
++/* Routine to set the defrWarning.log to open as append instead for write     */
++/* New in 5.7                                                                 */
++EXTERN void defrSetOpenLogFileAppend ();
++EXTERN void defrUnsetOpenLogFileAppend ();
++
++/* Routine to set the magic comment found routine                             */
++typedef void (*DEFI_MAGIC_COMMENT_FOUND_FUNCTION) ();
++EXTERN void defrSetMagicCommentFoundFunction (DEFI_MAGIC_COMMENT_FOUND_FUNCTION p0);
++
++/* Routine to set the magic comment string                                    */
++EXTERN void defrSetMagicCommentString (char * p0);
++
++/* Routine to disable string property value process, default it will process  */
++/* the value string                                                           */
++EXTERN void defrDisablePropStrProcess ();
++
++/* Testing purposes only                                                      */
++EXTERN void defrSetNLines (long long  n);
++
++/* Routine to set the max number of warnings for a perticular section         */
++
++EXTERN void defrSetAssertionWarnings (int  warn);
++EXTERN void defrSetBlockageWarnings (int  warn);
++EXTERN void defrSetCaseSensitiveWarnings (int  warn);
++EXTERN void defrSetComponentWarnings (int  warn);
++EXTERN void defrSetConstraintWarnings (int  warn);
++EXTERN void defrSetDefaultCapWarnings (int  warn);
++EXTERN void defrSetGcellGridWarnings (int  warn);
++EXTERN void defrSetIOTimingWarnings (int  warn);
++EXTERN void defrSetNetWarnings (int  warn);
++EXTERN void defrSetNonDefaultWarnings (int  warn);
++EXTERN void defrSetPinExtWarnings (int  warn);
++EXTERN void defrSetPinWarnings (int  warn);
++EXTERN void defrSetRegionWarnings (int  warn);
++EXTERN void defrSetRowWarnings (int  warn);
++EXTERN void defrSetScanchainWarnings (int  warn);
++EXTERN void defrSetSNetWarnings (int  warn);
++EXTERN void defrSetStylesWarnings (int  warn);
++EXTERN void defrSetTrackWarnings (int  warn);
++EXTERN void defrSetUnitsWarnings (int  warn);
++EXTERN void defrSetVersionWarnings (int  warn);
++EXTERN void defrSetViaWarnings (int  warn);
++
++/* Handling output messages                                                   */
++EXTERN void defrDisableParserMsgs (int  nMsg, int*  msgs);
++EXTERN void defrEnableParserMsgs (int  nMsg, int*  msgs);
++EXTERN void defrEnableAllMsgs ();
++EXTERN void defrSetTotalMsgLimit (int  totNumMsgs);
++EXTERN void defrSetLimitPerMsg (int  msgId, int  numMsg);
++
++/* Return codes for the user callbacks.                                       */
++/*The user should return one of these values.                                 */
++#define PARSE_OK 0      
++#define STOP_PARSE 1    
++#define PARSE_ERROR 2   
++#endif
+-- 
+2.34.1
+
