@@ -766,6 +766,11 @@ extern void defrSetSkipSNetDetails(int skip);
 
 extern void defrSetRemoveBackslash(int remove);
 
+// Net Name Only mode - convenience function for fast net name extraction
+// Enables: SkipComponents + SkipNetDetails + SkipSNetDetails
+// Use with NetNameCbk for fastest net name extraction without full parsing
+extern void defrSetNetNameOnly(int mode);
+
 // Return codes for user callbacks.
 //The user should return one of these values. 
 #define PARSE_OK 0      // continue parsing 

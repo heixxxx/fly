@@ -2610,5 +2610,17 @@ void defrSetRemoveBackslash(int remove) {
     defContext.settings->RemoveBackslash = remove;
 }
 
+void defrSetNetNameOnly(int mode) {
+    if (mode) {
+        defContext.settings->SkipComponentsSection = 1;
+        defContext.settings->SkipNetDetails = 1;
+        defContext.settings->SkipSNetDetails = 1;
+    } else {
+        defContext.settings->SkipComponentsSection = 0;
+        defContext.settings->SkipNetDetails = 0;
+        defContext.settings->SkipSNetDetails = 0;
+    }
+}
+
 END_LEFDEF_PARSER_NAMESPACE
 

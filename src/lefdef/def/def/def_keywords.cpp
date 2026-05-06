@@ -242,7 +242,6 @@ defrData::skip_net_body(int is_special_net)
     int in_quote = 0;
     
     // Skip until we find ';' at paren_depth 0 (not inside parens or quotes)
-    // Also handle finding next '-' for next net or 'END' for section end
     while ((ch = GETC()) != EOF) {
         if (ch == '\n') {
             print_lines(++nlines);
