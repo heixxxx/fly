@@ -3229,6 +3229,17 @@ opt_wire:
     }
     opt_paths
     {
+        if (defData->callbacks->NetCbk
+            && defData->callbacks->NetPartialPathCbk
+            && !defData->Shield) {
+            // Wire ended: call NetPartialPathCbk regardless of threshold
+            // This ensures all paths in this wire are processed
+            CALLBACK(defData->callbacks->NetPartialPathCbk,
+                     defrNetPartialPathCbkType, defData->Net);
+            defData->Net->clearLastWire();
+            defData->Net->clearRectPolyNPath();
+        }
+
         defData->Shield = NULL;
         defData->Wire = NULL;
     }
@@ -4437,6 +4448,17 @@ opt_swire:
                     defData->Net->freeShield();
                 else
                     defData->Net->freeWire();
+            } else if (defData->callbacks->SNetPartialPathCbk
+                       && !defData->callbacks->WireInSNetCbk) {
+                // Wire ended: call SNetPartialPathCbk regardless of threshold
+                // This ensures all paths in this wire are processed
+                CALLBACK(defData->callbacks->SNetPartialPathCbk,
+                         defrSNetPartialPathCbkType,
+                         defData->Net);
+                // Clear the last wire to avoid duplicate data
+                defData->Net->clearLastWire();
+                defData->Net->clearRectPolyNPath();
+                defData->Net->clearVia();
             }
         }
 

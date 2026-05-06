@@ -806,7 +806,7 @@ void defiWire::addPath(defiPath* p, int reset, int netOsnet, int *needCbk) {
         break;
       default:
         bumpPaths(
-          pathsAllocated_ ? incNumber : 8);
+          pathsAllocated_ ? incNumber : 1000);
         break;
     }
   }
@@ -1512,6 +1512,17 @@ void defiNet::freeWire() {
 
   clearRectPoly();
   clearVia();
+}
+
+
+void defiNet::clearLastWire() {
+  if (numWires_ > 0) {
+    int lastIdx = numWires_ - 1;
+    wires_[lastIdx]->Destroy();
+    delete wires_[lastIdx];
+    wires_[lastIdx] = 0;
+    numWires_--;
+  }
 }
 
 

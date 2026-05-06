@@ -136,23 +136,24 @@ typedef enum {
   defrSlotEndCbkType = 91,
   defrFillStartCbkType = 92,
   defrFillCbkType = 93,
-  defrFillEndCbkType = 94,
-  defrCaseSensitiveCbkType = 95,
-  defrNonDefaultStartCbkType = 96,
-  defrNonDefaultCbkType = 97,
-  defrNonDefaultEndCbkType = 98,
-  defrStylesStartCbkType = 99,
-  defrStylesCbkType = 100,
-  defrStylesEndCbkType = 101,
-  defrExtensionCbkType = 102,
-
+  defrFillPartialCbkType = 94,
+  defrFillEndCbkType = 95,
+  defrCaseSensitiveCbkType = 96,
+  defrNonDefaultStartCbkType = 97,
+  defrNonDefaultCbkType = 98,
+  defrNonDefaultEndCbkType = 99,
+  defrStylesStartCbkType = 100,
+  defrStylesCbkType = 101,
+  defrStylesEndCbkType = 102,
+  defrExtensionCbkType = 103,
+  
   /* NEW CALLBACK - If you are creating a new callback, you must add          */
   /* a unique item to this enum for each callback routine. When the           */
   /* callback is called in def.y you have to supply this enum item            */
   /* as an argument in the call.                                              */
-
-  defrComponentMaskShiftLayerCbkType = 103,
-  defrDesignEndCbkType = 104,
+ 
+  defrComponentMaskShiftLayerCbkType = 104,
+  defrDesignEndCbkType = 105,
 } defrCallbackType_e;
 
 /* Declarations of function signatures for each type of callback.             */

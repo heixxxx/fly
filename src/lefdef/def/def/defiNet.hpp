@@ -571,6 +571,9 @@ public:
   void clearRectPoly();
   void clearVia();
 
+  // Clear the last wire from the wires_ array (for SNetPartialPathCbk)
+  void clearLastWire();
+
 
 protected:
   char*     name_;          // name.
