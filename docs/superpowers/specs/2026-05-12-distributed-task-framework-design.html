@@ -11,43 +11,16 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
     <style>
         :root {
-            --primary-color: #2563eb;
-            --secondary-color: #1e40af;
-            --bg-color: #0f172a;
-            --bg-secondary: #1e293b;
-            --text-color: #e2e8f0;
-            --text-muted: #94a3b8;
-            --border-color: #334155;
-            --code-bg: #0d1117;
-            --table-header-bg: #1e293b;
-            --table-row-bg: #0f172a;
-            --table-row-alt: #1e293b;
-            --success-color: #22c55e;
-            --warning-color: #f59e0b;
-            --error-color: #ef4444;
+            --primary-color: #2563eb; --secondary-color: #1e40af; --bg-color: #0f172a;
+            --bg-secondary: #1e293b; --text-color: #e2e8f0; --text-muted: #94a3b8;
+            --border-color: #334155; --code-bg: #0d1117; --table-header-bg: #1e293b;
+            --table-row-bg: #0f172a; --table-row-alt: #1e293b;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-color);
-            line-height: 1.7;
-            padding-left: 280px;
-        }
-        .sidebar {
-            position: fixed; left: 0; top: 0; width: 280px; height: 100vh;
-            background-color: var(--bg-secondary);
-            border-right: 1px solid var(--border-color);
-            overflow-y: auto; padding: 20px 0; z-index: 100;
-        }
-        .sidebar-title {
-            padding: 10px 20px; font-size: 18px; font-weight: 700;
-            color: var(--primary-color); border-bottom: 1px solid var(--border-color); margin-bottom: 10px;
-        }
-        .nav-link {
-            display: block; padding: 6px 20px; color: var(--text-muted);
-            text-decoration: none; font-size: 13px; transition: all 0.2s;
-        }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: var(--bg-color); color: var(--text-color); line-height: 1.7; padding-left: 280px; }
+        .sidebar { position: fixed; left: 0; top: 0; width: 280px; height: 100vh; background-color: var(--bg-secondary); border-right: 1px solid var(--border-color); overflow-y: auto; padding: 20px 0; z-index: 100; }
+        .sidebar-title { padding: 10px 20px; font-size: 18px; font-weight: 700; color: var(--primary-color); border-bottom: 1px solid var(--border-color); margin-bottom: 10px; }
+        .nav-link { display: block; padding: 6px 20px; color: var(--text-muted); text-decoration: none; font-size: 13px; transition: all 0.2s; }
         .nav-link:hover { color: var(--primary-color); background-color: rgba(37, 99, 235, 0.1); }
         .content { max-width: 900px; margin: 0 auto; padding: 40px 30px; }
         h1 { font-size: 2em; margin-bottom: 30px; color: #f8fafc; border-bottom: 2px solid var(--primary-color); padding-bottom: 15px; }
@@ -481,7 +454,11 @@ def next_task(db, name):
 <ul>
 <li><strong>默认策略</strong>: FIFO</li>
 <li><strong>Worker选择</strong>: 数据locality优先，尽量调度到数据所在的Worker</li>
+<li><strong>核心约束</strong>: Worker同一时刻最多执行一个任务。Master仅向<code>is_busy=false</code>的Worker派发任务，不向忙碌Worker发送TaskAssignMessage</li>
 </ul>
+<blockquote>
+<p><strong>为什么Worker不需要任务队列</strong>：由于Master不向忙碌Worker派发任务，Worker收到TaskAssignMessage时一定处于空闲状态。因此<code>task_slot_</code>（而非<code>task_queue_</code>）足以担任Main Thread与TaskExecutorThread之间的跨线程信号——最多存放1个任务，无需缓冲。</p>
+</blockquote>
 <hr />
 <h2 id="_9">六、存储层设计</h2>
 <h3 id="61">6.1 核心组件</h3>
@@ -893,8 +870,20 @@ public:
     void update_attributes(uint64_t worker_id, const UpdateAttributesMessage&amp; msg);
     WorkerInfo get_worker(uint64_t worker_id);
     std::vector&lt;WorkerInfo&gt; get_available_workers();
+    void mark_worker_busy(uint64_t worker_id, uint64_t task_id);
+    void mark_worker_free(uint64_t worker_id);
 private:
     std::map&lt;uint64_t, WorkerInfo&gt; workers_;
+};
+
+// Worker状态信息
+struct WorkerInfo {
+    uint64_t worker_id;
+    std::string role;                        // &quot;hybrid&quot; | &quot;storage_only&quot;
+    std::vector&lt;std::string&gt; attributes;
+    bool is_busy;                             // 是否正在执行任务
+    uint64_t current_task_id;                 // 正在执行的任务ID（0表示空闲）
+    double last_heartbeat;                    // 最近心跳时间戳
 };
 </code></pre>
 <h3 id="103-workeragent">10.3 WorkerAgent</h3>
@@ -1010,6 +999,7 @@ private:
 任务完成:
 ├─ TaskCompleteMessage到达Master
 ├─ dependency_graph_.remove_task(task_id)
+├─ workers_.mark_worker_free(worker_id)
 └─ 清理相关记录
 </code></pre>
 <h3 id="113-locality">11.3 Locality优化策略</h3>
@@ -1427,7 +1417,6 @@ PYBIND11_MODULE(cpp_module, m) {
 ├── master/             # Master节点模块
 │   ├── cpp/            # C++底层实现
 │   │   ├── dependency_graph.cpp
-│   │   ├── task_queue.cpp
 │   ├── export/         # pybind11导出
 │   │   ├── master_export.cpp
 │   ├── py/             # Python主循环
@@ -1801,6 +1790,7 @@ Force quitting...
 <li><strong>消息处理全在C++侧</strong>：Master和Worker的消息处理（解析、路由、元数据更新、调度决策）都是快速C++操作，不需要线程池</li>
 <li><strong>单线程事件循环</strong>：使用select/poll/epoll处理多连接，一个线程即可处理所有Worker的消息</li>
 <li><strong>唯一GIL线程</strong>：只有Worker的Python任务执行线程涉及GIL</li>
+<li><strong>任务单slot传递</strong>：Master不向忙碌Worker派发任务，Worker使用<code>task_slot_</code>（而非队列）传递任务至TaskExecutorThread</li>
 <li><strong>数据服务线程池</strong>：Worker的Data Server采用线程池模式，默认单线程，可通过Config配置线程数，以支持同时处理多个远程读请求</li>
 <li><strong>后台线程</strong>：心跳等定时器驱动模块使用独立线程</li>
 </ul>
@@ -1828,7 +1818,7 @@ Worker Node:
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │ Event Loop:                                                 ││
 │  │   1. recv Master消息 → 解析 → 路由处理                      ││
-│  │      - TaskAssign → 放入task_queue                          ││
+│  │      - TaskAssign → 设置task_slot_，通知TaskExec线程        ││
 │  │      - DataRequest → 加入read_request_queue                 ││
 │  │      - Shutdown → 设置running=false                         ││
 │  │   2. 回到1                                                  ││
@@ -1842,7 +1832,7 @@ Worker Node:
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────────┐│
 │  │ Task Execution Thread (Python)                                ││
-│  │ (唯一涉及GIL，从task_queue取任务执行)                         ││
+│  │ (唯一涉及GIL，从task_slot_取任务执行)                        ││
 │  └──────────────────────────────────────────────────────────────┘│
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────────┐│
@@ -1905,7 +1895,7 @@ Worker Node:
 </tr>
 <tr>
 <td>任务路由</td>
-<td>放入task_queue</td>
+<td>设置task_slot_，通知TaskExec线程</td>
 <td>不需要</td>
 </tr>
 <tr>
@@ -1924,7 +1914,8 @@ Worker Node:
 - Master Main Thread用<strong>select/poll/epoll</strong>处理多连接，一个线程处理所有Worker消息
 - Worker Main Thread仅做消息解析和路由，将DataRequest加入队列后立即返回
 - Data Server线程池从read_request_queue取请求执行，不阻塞主循环
-- 心跳（定时器）使用独立线程</p>
+- 心跳（定时器）使用独立线程
+- <strong>任务派发约束</strong>：Master仅向空闲Worker发送TaskAssignMessage，Worker收任务时必然空闲，task_slot_始终为0或1</p>
 <hr />
 <h2 id="reactorc">二十、Reactor核心实现（C++）</h2>
 <h3 id="201-reactor">20.1 Reactor基类</h3>
@@ -2001,10 +1992,10 @@ private:
     std::vector&lt;std::thread&gt; data_server_pool_;
     int data_server_thread_count_;  // 从Config读取，默认1
 
-    // Python任务队列
-    std::queue&lt;TaskAssignMessage&gt; task_queue_;
-    std::mutex task_queue_mutex_;
-    std::condition_variable task_queue_cv_;
+    // Python任务信号（单slot，Master不向忙碌Worker派发任务）
+    std::optional&lt;TaskAssignMessage&gt; task_slot_;
+    std::mutex task_slot_mutex_;
+    std::condition_variable task_slot_cv_;
 
     // 读请求队列（主线程生产，Data Server线程池消费）
     std::queue&lt;DataRequestMessage&gt; read_request_queue_;
@@ -2101,7 +2092,9 @@ class TaskExecutorThread(threading.Thread):
 
     def run(self):
         while True:
-            # 1. 从C++等待任务（阻塞，不涉及GIL）
+            # 1. 从C++等待任务（阻塞在task_slot_cv_，不涉及GIL）
+            #    Master保证仅向空闲Worker派发任务，因此task_slot_有值时
+            #    TaskExecutorThread必然处于等待状态
             task = self.reactor.wait_for_task()
 
             # 2. 设置执行上下文
@@ -2246,6 +2239,7 @@ process_data(db_b, &quot;file2&quot;)
 <li><strong>C++底层实现</strong>：存储、通信、消息处理、调度（避免GIL）</li>
 <li><strong>Reactor模式</strong>：Main Thread事件循环 + 后台线程（心跳/调度/数据服务）</li>
 <li><strong>唯一GIL线程</strong>：Worker的Python任务执行线程</li>
+<li><strong>任务单slot传递</strong>：Master不向忙碌Worker派发任务，task_slot_而非task_queue_</li>
 <li><strong>动态创建</strong>：Database轻量级，StorageManager按需创建writer</li>
 <li><strong>宏封装</strong>：序列化、导出均用宏，方便替换底层库</li>
 <li><strong>传输层抽象</strong>：TransportLayer接口支持未来替换TCP为UDP/RDMA</li>

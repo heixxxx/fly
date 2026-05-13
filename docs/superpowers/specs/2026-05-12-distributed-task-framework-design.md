@@ -301,6 +301,9 @@ def next_task(db, name):
 
 - **默认策略**: FIFO
 - **Worker选择**: 数据locality优先，尽量调度到数据所在的Worker
+- **核心约束**: Worker同一时刻最多执行一个任务。Master仅向`is_busy=false`的Worker派发任务，不向忙碌Worker发送TaskAssignMessage
+
+> **为什么Worker不需要任务队列**：由于Master不向忙碌Worker派发任务，Worker收到TaskAssignMessage时一定处于空闲状态。因此`task_slot_`（而非`task_queue_`）足以担任Main Thread与TaskExecutorThread之间的跨线程信号——最多存放1个任务，无需缓冲。
 
 ---
 
@@ -733,8 +736,20 @@ public:
     void update_attributes(uint64_t worker_id, const UpdateAttributesMessage& msg);
     WorkerInfo get_worker(uint64_t worker_id);
     std::vector<WorkerInfo> get_available_workers();
+    void mark_worker_busy(uint64_t worker_id, uint64_t task_id);
+    void mark_worker_free(uint64_t worker_id);
 private:
     std::map<uint64_t, WorkerInfo> workers_;
+};
+
+// Worker状态信息
+struct WorkerInfo {
+    uint64_t worker_id;
+    std::string role;                        // "hybrid" | "storage_only"
+    std::vector<std::string> attributes;
+    bool is_busy;                             // 是否正在执行任务
+    uint64_t current_task_id;                 // 正在执行的任务ID（0表示空闲）
+    double last_heartbeat;                    // 最近心跳时间戳
 };
 ```
 
@@ -864,6 +879,7 @@ private:
 任务完成:
 ├─ TaskCompleteMessage到达Master
 ├─ dependency_graph_.remove_task(task_id)
+├─ workers_.mark_worker_free(worker_id)
 └─ 清理相关记录
 ```
 
@@ -1290,7 +1306,6 @@ src/
 ├── master/             # Master节点模块
 │   ├── cpp/            # C++底层实现
 │   │   ├── dependency_graph.cpp
-│   │   ├── task_queue.cpp
 │   ├── export/         # pybind11导出
 │   │   ├── master_export.cpp
 │   ├── py/             # Python主循环
@@ -1635,6 +1650,7 @@ Force quitting...
 - **消息处理全在C++侧**：Master和Worker的消息处理（解析、路由、元数据更新、调度决策）都是快速C++操作，不需要线程池
 - **单线程事件循环**：使用select/poll/epoll处理多连接，一个线程即可处理所有Worker的消息
 - **唯一GIL线程**：只有Worker的Python任务执行线程涉及GIL
+- **任务单slot传递**：Master不向忙碌Worker派发任务，Worker使用`task_slot_`（而非队列）传递任务至TaskExecutorThread
 - **数据服务线程池**：Worker的Data Server采用线程池模式，默认单线程，可通过Config配置线程数，以支持同时处理多个远程读请求
 - **后台线程**：心跳等定时器驱动模块使用独立线程
 
@@ -1664,7 +1680,7 @@ Worker Node:
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │ Event Loop:                                                 ││
 │  │   1. recv Master消息 → 解析 → 路由处理                      ││
-│  │      - TaskAssign → 放入task_queue                          ││
+│  │      - TaskAssign → 设置task_slot_，通知TaskExec线程        ││
 │  │      - DataRequest → 加入read_request_queue                 ││
 │  │      - Shutdown → 设置running=false                         ││
 │  │   2. 回到1                                                  ││
@@ -1678,7 +1694,7 @@ Worker Node:
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────────┐│
 │  │ Task Execution Thread (Python)                                ││
-│  │ (唯一涉及GIL，从task_queue取任务执行)                         ││
+│  │ (唯一涉及GIL，从task_slot_取任务执行)                        ││
 │  └──────────────────────────────────────────────────────────────┘│
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────────┐│
@@ -1707,7 +1723,7 @@ Worker Node:
 | 操作 | 性质 | 是否需要多线程 |
 |------|------|---------------|
 | 消息解析/路由 | 快速C++操作 | 不需要 |
-| 任务路由 | 放入task_queue | 不需要 |
+| 任务路由 | 设置task_slot_，通知TaskExec线程 | 不需要 |
 | 远程数据读取 | 磁盘I/O + 网络传输，可能较慢 | **需要线程池** |
 
 **为什么Data Server需要线程池**：
@@ -1721,6 +1737,7 @@ Worker Node:
 - Worker Main Thread仅做消息解析和路由，将DataRequest加入队列后立即返回
 - Data Server线程池从read_request_queue取请求执行，不阻塞主循环
 - 心跳（定时器）使用独立线程
+- **任务派发约束**：Master仅向空闲Worker发送TaskAssignMessage，Worker收任务时必然空闲，task_slot_始终为0或1
 
 ---
 
@@ -1808,10 +1825,10 @@ private:
     std::vector<std::thread> data_server_pool_;
     int data_server_thread_count_;  // 从Config读取，默认1
     
-    // Python任务队列
-    std::queue<TaskAssignMessage> task_queue_;
-    std::mutex task_queue_mutex_;
-    std::condition_variable task_queue_cv_;
+    // Python任务信号（单slot，Master不向忙碌Worker派发任务）
+    std::optional<TaskAssignMessage> task_slot_;
+    std::mutex task_slot_mutex_;
+    std::condition_variable task_slot_cv_;
     
     // 读请求队列（主线程生产，Data Server线程池消费）
     std::queue<DataRequestMessage> read_request_queue_;
@@ -1923,7 +1940,9 @@ class TaskExecutorThread(threading.Thread):
     
     def run(self):
         while True:
-            # 1. 从C++等待任务（阻塞，不涉及GIL）
+            # 1. 从C++等待任务（阻塞在task_slot_cv_，不涉及GIL）
+            #    Master保证仅向空闲Worker派发任务，因此task_slot_有值时
+            #    TaskExecutorThread必然处于等待状态
             task = self.reactor.wait_for_task()
             
             # 2. 设置执行上下文
@@ -2085,7 +2104,8 @@ process_data(db_b, "file2")
 2. **C++底层实现**：存储、通信、消息处理、调度（避免GIL）
 3. **Reactor模式**：Main Thread事件循环 + 后台线程（心跳/调度/数据服务）
 4. **唯一GIL线程**：Worker的Python任务执行线程
-5. **动态创建**：Database轻量级，StorageManager按需创建writer
+5. **任务单slot传递**：Master不向忙碌Worker派发任务，task_slot_而非task_queue_
+6. **动态创建**：Database轻量级，StorageManager按需创建writer
 6. **宏封装**：序列化、导出均用宏，方便替换底层库
 7. **传输层抽象**：TransportLayer接口支持未来替换TCP为UDP/RDMA
 8. **Data Server线程池**：Worker数据服务采用线程池，默认单线程，可配置以支持高并发读请求
