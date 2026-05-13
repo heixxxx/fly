@@ -12,9 +12,11 @@
 
 ### 技术栈
 - **Python**: 流程控制、数据读写、任务定义
-- **C++**: 存储层实现、性能敏感算法
-- **pybind11**: C++与Python交互
+- **C++20**: 存储层实现、性能敏感算法（使用C++20 Modules `import`/`export module`机制）
+- **nanobind**: C++与Python交互（通过FLY_EXPORT_*宏封装，支持未来替换）
+- **zpp_bits**: 二进制序列化（通过FLY_SERIALIZE_*宏封装，支持未来替换）
 - **TCP Socket**: 节点间通信（通过TransportLayer抽象层，支持未来替换为UDP/RDMA等）
+- **Bazel**: 构建系统（支持C++20 Modules编译）
 
 ---
 
@@ -192,34 +194,41 @@ public:
         return config;
     }
     
-    void set(const py::kwargs& kwargs) {
+    void set_int(const std::string& key, int64_t value) {
         if (workers_launched_) {
             throw std::runtime_error("Config must be set before workers are launched");
         }
-        for (auto& item : kwargs) {
-            std::string key = std::string(py::str(item.first));
-            // 支持int和string两种类型
-            try {
-                int_values_[key] = py::cast<int64_t>(item.second);
-            } catch (...) {
-                str_values_[key] = py::cast<std::string>(item.second);
-            }
+        int_values_[key] = value;
+    }
+    
+    void set_str(const std::string& key, const std::string& value) {
+        if (workers_launched_) {
+            throw std::runtime_error("Config must be set before workers are launched");
         }
+        str_values_[key] = value;
     }
     
     int64_t get_int(const std::string& key) const {
         auto it = int_values_.find(key);
-        return it != int_values_.end() ? it->second : INT_DEFAULTS.at(key);
+        auto default_it = INT_DEFAULTS.find(key);
+        if (it != int_values_.end()) return it->second;
+        if (default_it != INT_DEFAULTS.end()) return default_it->second;
+        throw std::runtime_error("Unknown config key: " + key);
     }
     
     const std::string& get_str(const std::string& key) const {
         auto it = str_values_.find(key);
-        return it != str_values_.end() ? it->second : STR_DEFAULTS.at(key);
+        auto default_it = STR_DEFAULTS.find(key);
+        if (it != str_values_.end()) return it->second;
+        if (default_it != STR_DEFAULTS.end()) return default_it->second;
+        static const std::string empty = "";
+        return empty;
     }
     
-    void mark_workers_launched() {
-        workers_launched_ = true;
-    }
+    void mark_workers_launched() { workers_launched_ = true; }
+    bool is_workers_launched() const { return workers_launched_; }
+    
+    void reset();  // 测试用
     
 private:
     Config() { int_values_ = INT_DEFAULTS; str_values_ = STR_DEFAULTS; }
@@ -234,30 +243,17 @@ private:
     static const std::map<std::string, std::string> STR_DEFAULTS;
 };
 
-const std::map<std::string, int64_t> Config::INT_DEFAULTS = {
-    {"master_port", 8000},
-    {"heartbeat_timeout", 120},
-    {"heartbeat_interval", 5},
-    {"backup_threshold", 100},
-    {"aggregation_threshold", 1048576},
-    {"large_file_threshold", 10485760},
-    {"block_size", 134217728},
-    {"track_writes", 0},
-    {"data_server_threads", 1},
-};
-
-const std::map<std::string, std::string> Config::STR_DEFAULTS = {
-    {"transport_type", "tcp"},
-};
-
-// pybind11导出
-PYBIND11_MODULE(fly, m) {
-    m.def("get_config", []() { return &Config::instance(); });
-    
-    py::class_<Config>(m, "Config")
-        .def("set", &Config::set)
+// nanobind导出（通过FLY_EXPORT_*宏封装，方便后续替换）
+NB_MODULE(_fly_core, m) {
+    nb::class_<Config>(m, "Config")
+        .def(nb::init<>())
+        .def("set_int", &Config::set_int)
+        .def("set_str", &Config::set_str)
         .def("get_int", &Config::get_int)
-        .def("get_str", &Config::get_str);
+        .def("get_str", &Config::get_str)
+        .def("mark_workers_launched", &Config::mark_workers_launched);
+    
+    m.def("get_config", []() { return &Config::instance(); });
 }
 ```
 
@@ -1456,81 +1452,93 @@ def load_and_execute(task_name, task_module, serialized_args):
 | 场景 | 序列化方式 | 说明 |
 |------|-----------|------|
 | 任务参数 | pickle | Python对象，标准库 |
-| 通信消息 | cereal | C++结构体，通过宏封装 |
-| 存储对象 | cereal | C++对象，通过宏封装 |
+| 通信消息 | zpp_bits | C++结构体，通过FLY_SERIALIZE_*宏封装 |
+| 存储对象 | zpp_bits | C++对象，通过FLY_SERIALIZE_*宏封装 |
+
+> **设计原则**：所有C++序列化均通过FLY_SERIALIZE_*宏封装，底层使用zpp_bits实现。宏抽象确保未来可无缝替换为其他序列化库（如cereal、protobuf等），只需修改宏定义，不影响业务代码。
 
 ### 15.2 序列化宏定义
 
 ```cpp
 // fly/serialization_macros.h
+// 底层序列化库：zpp_bits（C++20原生，高性能二进制序列化）
+// 通过宏抽象，方便后续替换底层实现
+
+#pragma once
+
+#include <zpp_bits.h>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <map>
 
 // ==================== 序列化库配置 ====================
-#include <cereal/archives/binary.hpp>
-#include <cereal/types/string.hpp>
-#include <cereal/types/vector.hpp>
-#include <cereal/types/map.hpp>
+// zpp_bits: 单头文件C++20序列化库，使用constexpr + concepts
+// 替换序列化库时，只需修改此文件中的宏定义
 
 // ==================== 序列化宏 ====================
 
-// 序列化函数声明
+// 声明可序列化类型（使用zpp_bits的serialize函数模式）
+// 使用方式：在结构体中添加 FLY_SERIALIZE_DECLARE() { FLY_SERIALIZE_FIELDS(x, y, z); }
 #define FLY_SERIALIZE_DECLARE() \
-    template<class Archive> \
-    void serialize(Archive& ar)
+    constexpr static auto serialize(auto& archive)
 
 // 序列化多个字段
-#define FLY_SERIALIZE_FIELDS(...) ar(__VA_ARGS__);
+#define FLY_SERIALIZE_FIELDS(...) archive(__VA_ARGS__);
 
-// 序列化基类
+// 序列化基类（zpp_bits通过模板参数支持基类序列化）
 #define FLY_SERIALIZE_BASE(base_class) \
-    ar(cereal::base_class<base_class>(this));
+    archive(cereal::base_class<base_class>(this));
+// 注意：zpp_bits基类序列化不同于cereal，后续需适配
 
 // 编码消息为字符串
 #define FLY_ENCODE(msg, output) \
     do { \
-        std::ostringstream oss; \
-        cereal::BinaryOutputArchive archive(oss); \
-        archive(msg); \
-        output = oss.str(); \
+        auto [data, out] = zpp::bits::data_out(); \
+        out(msg).or_throw(); \
+        output = std::string(data.begin(), data.end()); \
     } while(0)
 
 // 解码消息从字符串
 #define FLY_DECODE(data, msg_type, output) \
     do { \
-        std::istringstream iss(data); \
-        cereal::BinaryInputArchive archive(iss); \
+        std::vector<unsigned char> buf(data.begin(), data.end()); \
+        auto in = zpp::bits::in(buf); \
         msg_type msg; \
-        archive(msg); \
-        output = msg; \
+        in(msg).or_throw(); \
+        output = std::move(msg); \
     } while(0)
 
 // 流式编码
 #define FLY_ENCODE_STREAM(file_stream, msg) \
     do { \
-        cereal::BinaryOutputArchive archive(file_stream); \
-        archive(msg); \
+        auto [data, out] = zpp::bits::data_out(); \
+        out(msg).or_throw(); \
+        file_stream.write(reinterpret_cast<const char*>(data.data()), data.size()); \
     } while(0)
 
 // 流式解码
 #define FLY_DECODE_STREAM(file_stream, msg_type, output) \
     do { \
-        cereal::BinaryInputArchive archive(file_stream); \
+        std::vector<unsigned char> buf; \
+        /* 读取数据并反序列化 */ \
+        auto in = zpp::bits::in(buf); \
         msg_type msg; \
-        archive(msg); \
-        output = msg; \
+        in(msg).or_throw(); \
+        output = std::move(msg); \
     } while(0)
 ```
 
 ### 15.3 消息结构体示例
 
 ```cpp
-// 使用宏定义消息结构体
+// 使用宏定义消息结构体（zpp_bits风格）
 struct RegisterMessage : MessageBase {
     uint64_t worker_id;
     std::string role;
     std::vector<std::string> attributes;
     
     FLY_SERIALIZE_DECLARE() {
-        FLY_SERIALIZE_BASE(MessageBase);
         FLY_SERIALIZE_FIELDS(worker_id, role, attributes);
     }
 };
@@ -1544,11 +1552,17 @@ struct TaskSubmitMessage : MessageBase {
     std::vector<std::string> required_attributes;
     
     FLY_SERIALIZE_DECLARE() {
-        FLY_SERIALIZE_BASE(MessageBase);
         FLY_SERIALIZE_FIELDS(task_id, task_name, task_module, serialized_args, inputs, required_attributes);
     }
 };
 ```
+
+> **zpp_bits vs cereal 对比**：
+> - **性能**：zpp_bits序列化速度约为cereal的14倍（benchmark: 733ms vs 10777ms）
+> - **体积**：zpp_bits生成的二进制更紧凑（8.4KB vs 10.4KB）
+> - **C++20原生**：zpp_bits使用concepts和constexpr，与C++20 Modules兼容
+> - **模块友好**：单头文件，无宏依赖，可轻松通过`import`或头文件方式引入
+> - **宏抽象保障**：FLY_SERIALIZE_*宏封装了所有序列化API调用，替换底层库只需修改宏定义文件
 
 ---
 
@@ -1558,21 +1572,33 @@ struct TaskSubmitMessage : MessageBase {
 
 ```cpp
 // fly/export_macros.h
+// 底层绑定库：nanobind（C++20兼容，pybind11继任者）
+// 通过宏抽象，方便后续替换底层实现
 
-#include <pybind11/pybind11.h>
-namespace py = pybind11;
+#pragma once
+
+#include <nanobind/nanobind.h>
+#include <nanobind/stl.h>
+#include <nanobind/stl/shared_ptr.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
+#include <nanobind/stl/map.h>
+#include <memory>
+#include <string>
+
+namespace nb = nanobind;
 
 // ==================== Pickle导出宏 ====================
 
 #define FLY_EXPORT_PICKLE(class_type) \
-    .def(py::pickle( \
+    .def(nb::pickle( \
         [](const class_type& obj) { \
             std::string serialized; \
             FLY_ENCODE(obj, serialized); \
-            return py::bytes(serialized); \
+            return nb::bytes(serialized); \
         }, \
-        [](py::bytes bytes) { \
-            std::string data = bytes; \
+        [](nb::bytes bytes) { \
+            std::string data = bytes.c_str(); \
             class_type obj; \
             FLY_DECODE(data, class_type, obj); \
             return obj; \
@@ -1580,14 +1606,14 @@ namespace py = pybind11;
     ))
 
 #define FLY_EXPORT_PICKLE_SHARED_PTR(class_type) \
-    .def(py::pickle( \
+    .def(nb::pickle( \
         [](const std::shared_ptr<class_type>& obj) { \
             std::string serialized; \
             FLY_ENCODE(*obj, serialized); \
-            return py::bytes(serialized); \
+            return nb::bytes(serialized); \
         }, \
-        [](py::bytes bytes) { \
-            std::string data = bytes; \
+        [](nb::bytes bytes) { \
+            std::string data = bytes.c_str(); \
             auto obj = std::make_shared<class_type>(); \
             FLY_DECODE(data, class_type, *obj); \
             return obj; \
@@ -1597,8 +1623,8 @@ namespace py = pybind11;
 // ==================== 类导出宏 ====================
 
 #define FLY_EXPORT_CLASS_WITH_NAME(module, class_type, export_name, ...) \
-    py::class_<class_type>(module, export_name) \
-        .def(py::init<>()) \
+    nb::class_<class_type>(module, export_name) \
+        .def(nb::init<>()) \
         __VA_ARGS__ \
         FLY_EXPORT_PICKLE(class_type)
 
@@ -1606,8 +1632,8 @@ namespace py = pybind11;
     FLY_EXPORT_CLASS_WITH_NAME(module, class_type, #class_type, __VA_ARGS__)
 
 #define FLY_EXPORT_CLASS_SHARED_PTR_WITH_NAME(module, class_type, export_name, ...) \
-    py::class_<class_type, std::shared_ptr<class_type>>(module, export_name) \
-        .def(py::init<>()) \
+    nb::class_<class_type, std::shared_ptr<class_type>>(module, export_name) \
+        .def(nb::init<>()) \
         __VA_ARGS__ \
         FLY_EXPORT_PICKLE_SHARED_PTR(class_type)
 
@@ -1617,17 +1643,31 @@ namespace py = pybind11;
 // ==================== 属性与方法导出宏 ====================
 
 #define FLY_EXPORT_ATTR(name, member) \
-    .def_readwrite(#name, member)
+    .def_rw(#name, member)
 
 #define FLY_EXPORT_ATTR_WITH_NAME(name, member) \
-    .def_readwrite(name, member)
+    .def_rw(name, member)
 
 #define FLY_EXPORT_METHOD(name, func) \
     .def(#name, func)
 
 #define FLY_EXPORT_METHOD_WITH_NAME(name, func) \
     .def(name, func)
+
+// ==================== 模块导出宏 ====================
+// nanobind使用NB_MODULE宏（module_避免C++20 module关键字冲突）
+
+#define FLY_EXPORT_MODULE_BEGIN(module_name) \
+    NB_MODULE(module_name, m)
+
+#define FLY_EXPORT_MODULE_END()
 ```
+
+> **nanobind vs pybind11 对比**：
+> - **C++20兼容**：nanobind使用`module_`类名（末尾下划线），避免与C++20 `module`关键字冲突
+> - **性能**：编译速度提升4x，二进制体积减少5x，运行时开销降低10x
+> - **API兼容**：与pybind11语法几乎相同，迁移成本低
+> - **宏抽象保障**：FLY_EXPORT_*宏封装了所有nanobind API调用，替换底层库只需修改宏定义文件
 
 ### 16.2 使用示例
 
@@ -1643,8 +1683,8 @@ struct MyData {
     }
 };
 
-// Python导出
-PYBIND11_MODULE(cpp_module, m) {
+// Python导出（使用nanobind宏）
+FLY_EXPORT_MODULE_BEGIN(_fly_example) {
     // 使用类名作为导出名称
     FLY_EXPORT_CLASS(m, MyData,
         FLY_EXPORT_ATTR(a, &MyData::a)
@@ -1664,6 +1704,7 @@ PYBIND11_MODULE(cpp_module, m) {
         FLY_EXPORT_METHOD(process, &BigData::process)
     );
 }
+FLY_EXPORT_MODULE_END()
 ```
 
 ---
@@ -2528,16 +2569,22 @@ db_a.freeze()  # 标记db_a为只读，触发Master后处理
 ### 24.2 核心设计原则
 
 1. **Python主进程**：用户脚本执行、任务定义、装饰器
-2. **C++底层实现**：存储、通信、消息处理、调度（避免GIL）
+2. **C++20底层实现**：存储、通信、消息处理、调度（使用C++20 Modules `import`机制）
 3. **Reactor模式**：Main Thread事件循环 + 后台线程（心跳/调度/数据服务）
 4. **唯一GIL线程**：Worker的Python任务执行线程
 5. **任务单slot传递**：Master不向忙碌Worker派发任务，task_slot_而非task_queue_
 6. **动态创建**：Database轻量级，StorageManager按需创建writer
 7. **Database Freeze**：db.freeze()触发只读冻结，Master后台合并idx，Worker数据不搬迁
 8. **双路径存储**：base_path共享路径+data_path本地路径，写入走本地、读取优先本地
-6. **宏封装**：序列化、导出均用宏，方便替换底层库
-7. **传输层抽象**：TransportLayer接口支持未来替换TCP为UDP/RDMA
-8. **Data Server线程池**：Worker数据服务采用线程池，默认单线程，可配置以支持高并发读请求
+9. **宏封装**：
+   - FLY_SERIALIZE_*宏封装zpp_bits序列化（支持未来替换为cereal/protobuf等）
+   - FLY_EXPORT_*宏封装nanobind绑定（支持未来替换为pybind11/CPython API等）
+10. **传输层抽象**：TransportLayer接口支持未来替换TCP为UDP/RDMA
+11. **Data Server线程池**：Worker数据服务采用线程池，默认单线程，可配置以支持高并发读请求
+12. **C++20 Modules友好架构**：
+   - zpp_bits：单头文件、C++20原生、module兼容
+   - nanobind：显式避开C++20 `module`关键字冲突
+   - Bazel 9.0+支持cc_library的module_interfaces属性
 
 ### 24.3 用户使用示例
 
