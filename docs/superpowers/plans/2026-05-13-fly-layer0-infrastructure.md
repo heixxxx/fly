@@ -2,18 +2,26 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 搭建Fly项目的Bazel构建系统、C++基础设施（Config单例、序列化宏、导出宏），确保每个模块的`cpp/`编译为独立`.a`/`.so`，`export/`编译为独立`.so`供Python运行时`import`加载。
+**Goal:** 搭建Fly项目的Bazel构建系统、C++基础设施（Config单例、序列化宏、导出宏），确保每个模块的`cpp/`和`export/`都编译为独立`.so`，Python运行时通过`import`动态加载。
 
-**Architecture:** Bazel workspace + 顶层BUILD文件管理C++和Python目标。每个模块三层结构：`cpp/`（纯C++库）→ `export/`（独立pybind11 `.so`模块）→ `py/`（Python包，通过`import _fly_xxx`加载`.so`）。Config为全局单例（C++实现+`_fly_core.so`导出）。序列化宏和导出宏为头文件only库。运行时Python通过`import _fly_core`动态加载C++模块。
+**Architecture:** Bazel workspace + 顶层BUILD文件管理C++和Python目标。每个模块三层结构：`cpp/`（纯C++ `.so`共享库）→ `export/`（独立pybind11 `.so`模块，链接`cpp/`的`.so`）→ `py/`（Python包，通过`import _fly_xxx`加载`.so`）。Config为全局单例（C++实现+`_fly_core.so`导出）。序列化宏和导出宏为头文件only库。运行时Python通过`import _fly_core`动态加载C++模块。
 
 **Module .so Naming Convention:**
-- `src/core/export/` → `_fly_core.so` (Config, Database, StorageManager等)
-- `src/master/export/` → `_fly_master.so` (MasterReactor等)
-- `src/worker/export/` → `_fly_worker.so` (WorkerReactor等)
-- `src/serialization/export/` → `_fly_serialization.so` (消息序列化)
+- `src/core/cpp/` → `libfly_core_cpp.so` (纯C++共享库，可被其他C++模块链接)
+- `src/core/export/` → `_fly_core.so` (pybind11模块，链接libfly_core_cpp.so)
+- `src/master/cpp/` → `libfly_master_cpp.so`
+- `src/master/export/` → `_fly_master.so`
+- `src/worker/cpp/` → `libfly_worker_cpp.so`
+- `src/worker/export/` → `_fly_worker.so`
+- `src/serialization/cpp/` → header-only (编译时通过hdrs依赖)
 - 每个模块的`py/__init__.py`负责`from _fly_xxx import *`
 
-**Tech Stack:** C++17, Bazel 7.x, gtest, pybind11, cereal
+**Tech Stack:** C++20 (传统头文件), Bazel 7.x, gtest, pybind11, cereal
+
+**C++20特性使用策略：**
+- ✅ 使用：concepts, ranges, std::format, std::span, std::source_location, 三向比较<=>, designated initializers, std::jthread, std::atomic_ref, std::stop_token
+- ❌ 不用：C++20 Modules（`import`/`export module`），pybind11和cereal不兼容
+- ❌ 不用：协程（coroutines），无必要收益
 
 ---
 
@@ -26,13 +34,13 @@ fly/
 ├── BUILD                         # 顶层BUILD
 ├── src/
 │   ├── core/                    # 核心基础模块
-│   │   ├── cpp/                  # 纯C++库 → libfly_core_cpp.a
+│   │   ├── cpp/                  # 纯C++共享库 → libfly_core_cpp.so
 │   │   │   ├── config.h         # Config单例类声明
 │   │   │   ├── config.cpp        # Config单例实现
-│   │   │   └── BUILD            # cc_library: fly_core_cpp
+│   │   │   └── BUILD            # cc_library: fly_core_cpp (linkstatic=0 → .so)
 │   │   ├── export/              # pybind11导出 → _fly_core.so
-│   │   │   ├── core_export.cpp   # pybind11导出Config等
-│   │   │   └── BUILD            # pybind11.cc_pybind_extension: _fly_core
+│   │   │   ├── core_export.cpp   # pybind11导出Config等，链接libfly_core_cpp.so
+│   │   │   └── BUILD            # pybind_extension: _fly_core
 │   │   ├── py/                  # Python包，import _fly_core
 │   │   │   ├── __init__.py      # from _fly_core import *
 │   │   │   └── BUILD
@@ -64,17 +72,20 @@ fly/
 
 **编译产物对应关系：**
 
-| 源目录 | C++库 | pybind11 .so | Python导入 |
-|--------|-------|-------------|-----------|
-| `src/core/cpp/` | `libfly_core_cpp.a` | — | — |
-| `src/core/export/` | — | `_fly_core.so` | `import _fly_core` |
+| 源目录 | C++ .so | pybind11 .so | Python导入 |
+|--------|---------|-------------|-----------|
+| `src/core/cpp/` | `libfly_core_cpp.so` | — | — |
+| `src/core/export/` | — | `_fly_core.so` (链接libfly_core_cpp.so) | `import _fly_core` |
 | `src/serialization/cpp/` | header-only | — | — |
-| `src/master/export/` (后续) | — | `_fly_master.so` | `import _fly_master` |
-| `src/worker/export/` (后续) | — | `_fly_worker.so` | `import _fly_worker` |
+| `src/master/cpp/` (后续) | `libfly_master_cpp.so` | — | — |
+| `src/master/export/` (后续) | — | `_fly_master.so` (链接libfly_master_cpp.so等) | `import _fly_master` |
+| `src/worker/cpp/` (后续) | `libfly_worker_cpp.so` | — | — |
+| `src/worker/export/` (后续) | — | `_fly_worker.so` (链接libfly_worker_cpp.so等) | `import _fly_worker` |
 
 **关键架构约束：**
-- `cpp/` 编译为 `.a` 静态库，不包含任何pybind11代码
-- `export/` 编译为独立 `.so`，仅包含pybind11绑定代码，链接对应的 `.a`
+- `cpp/` 编译为 `.so` 共享库（`linkstatic=0`），不包含任何pybind11代码，可被其他C++模块和`export/`链接
+- `export/` 编译为独立 `.so`，仅包含pybind11绑定代码，动态链接对应的 `cpp/ .so`
+- 各模块的 `cpp/ .so` 之间通过Bazel deps声明依赖关系（如master依赖core、serialization）
 - `py/__init__.py` 通过 `from _fly_xxx import *` 加载 `.so`，不包含核心逻辑
 - Python运行时按需 `import`，各 `.so` 独立加载
 
@@ -131,8 +142,8 @@ http_archive(
 
 ```
 # .bazelrc
-build --cxxopt=-std=c++17
-build --host_cxxopt=-std=c++17
+build --cxxopt=-std=c++20
+build --host_cxxopt=-std=c++20
 build --enable_bzlmod=false
 build --action_env=PATH
 test --test_output=errors
@@ -166,6 +177,7 @@ cc_library(
     name = "fly_core_cpp",
     srcs = ["config.cpp"],
     hdrs = ["config.h"],
+    linkstatic = 0,  # 编译为.so共享库
     deps = [
         "@com_google_googletest//:gtest",
     ],
