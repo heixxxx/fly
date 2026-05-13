@@ -70,10 +70,18 @@
     <a href="#62" class="nav-link">6.2 文件命名规则</a>
     <a href="#63" class="nav-link">6.3 索引文件结构</a>
     <a href="#64-database" class="nav-link">6.4 Database接口</a>
-    <a href="#65" class="nav-link">6.5 写入流程</a>
+    <a href="#66" class="nav-link">6.6 读取流程</a>
 <a href="#_10" class="nav-link">七、数据副本策略</a>
     <a href="#71" class="nav-link">7.1 副本配置</a>
     <a href="#72" class="nav-link">7.2 备份任务调度</a>
+<a href="#database-freeze" class="nav-link">七点五、Database Freeze与后处理</a>
+    <a href="#751" class="nav-link">7.5.1 概述</a>
+    <a href="#752-freeze" class="nav-link">7.5.2 freeze()流程</a>
+    <a href="#753" class="nav-link">7.5.3 只读约束</a>
+    <a href="#754" class="nav-link">7.5.4 新增消息类型</a>
+    <a href="#755-master" class="nav-link">7.5.5 后处理流程（Master后台执行）</a>
+    <a href="#756-idx" class="nav-link">7.5.6 远程idx收集</a>
+    <a href="#757" class="nav-link">7.5.7 使用示例</a>
 <a href="#_11" class="nav-link">八、容错机制</a>
     <a href="#81" class="nav-link">8.1 任务失败处理</a>
     <a href="#82-worker" class="nav-link">8.2 Worker失联处理</a>
@@ -138,9 +146,9 @@
     <a href="#221-taskexecutorthreadgil" class="nav-link">22.1 TaskExecutorThread（唯一涉及GIL）</a>
     <a href="#222" class="nav-link">22.2 启动入口</a>
 <a href="#database" class="nav-link">二十三、多Database支持</a>
-    <a href="#201-database" class="nav-link">20.1 Database轻量级设计</a>
-    <a href="#202-storagemanager" class="nav-link">20.2 StorageManager动态创建</a>
-    <a href="#203" class="nav-link">20.3 使用示例</a>
+    <a href="#231-database" class="nav-link">23.1 Database轻量级设计</a>
+    <a href="#232-storagemanager" class="nav-link">23.2 StorageManager动态创建</a>
+    <a href="#233" class="nav-link">23.3 使用示例</a>
 <a href="#_18" class="nav-link">二十四、设计完成总结</a>
     <a href="#241" class="nav-link">24.1 已完成模块</a>
     <a href="#242" class="nav-link">24.2 核心设计原则</a>
@@ -479,7 +487,7 @@ def next_task(db, name):
 </ul>
 <h3 id="62">6.2 文件命名规则</h3>
 <p>统一的聚合文件命名（小文件 + 大文件分块都存储在聚合文件中）：</p>
-<pre><code>存储目录结构：
+<pre><code>存储目录结构（base_path，共享文件系统）：
 /data/
 ├── aggregated_w1_001.dat      # Worker1的数据文件（可多个）
 ├── aggregated_w1_002.dat
@@ -487,6 +495,14 @@ def next_task(db, name):
 ├── aggregated_w2_001.dat      # Worker2的数据文件
 ├── aggregated_w2_002.dat
 ├── aggregated_w2.idx          # Worker2的唯一索引文件
+├── merged.idx                 # 合并后的聚合索引（freeze后生成）
+├── _FROZEN                    # 冻结标识文件（freeze时创建）
+└── ...
+
+本地存储目录结构（data_path，可选，Worker本地磁盘）：
+/local_ssd/
+├── aggregated_w1_001.dat      # Worker1写入的本地数据
+├── aggregated_w1.idx          # Worker1的本地索引
 └── ...
 </code></pre>
 <p><strong>关键设计</strong>：每个Worker只有一个索引文件（<code>.idx</code>），而不是每个数据文件对应一个索引文件。索引条目中包含 <code>file_name</code> 字段，指向该条目所属的数据文件。</p>
@@ -508,7 +524,7 @@ object_name (string) | file_name (string) | offset (int64) | size (int64) | is_l
 <h3 id="64-database">6.4 Database接口</h3>
 <pre><code class="language-cpp">class Database {
 public:
-    Database(const std::string&amp; storage_path);
+    Database(const std::string&amp; base_path, const std::string&amp; data_path = &quot;&quot;);
 
     std::shared_ptr&lt;Object&gt; read_object(const std::string&amp; path);
 
@@ -518,18 +534,73 @@ public:
         bool backup = false
     );
 
-    std::vector&lt;std::string&gt; get_written_objects();  // 当Config中track_writes启用时可用
+    // 数据库冻结：标记为只读，触发Master后处理
+    void freeze();
+
+    bool is_frozen() const { return is_frozen_; }
+
+    std::string get_db_id() const { return db_id_; }
+    std::string get_base_path() const { return base_path_; }
+    std::string get_data_path() const { return data_path_.empty() ? base_path_ : data_path_; }
+
+private:
+    std::string base_path_;   // 共享存储路径（所有节点可访问）
+    std::string data_path_;    // 本地存储路径（可选，用于高性能本地写入）
+    std::string db_id_;        // 路径本身作为唯一标识
+    bool is_frozen_ = false;   // 是否已冻结
 };
 </code></pre>
-<h3 id="65">6.5 写入流程</h3>
-<pre><code class="language-python">db.write_object(f&quot;output/{name}.result&quot;, result)
+<p><strong>双路径设计</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>路径</th>
+<th>说明</th>
+<th>必填</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>base_path</code></td>
+<td>共享存储路径，所有Master/Worker可访问。freeze后聚合idx写入此路径</td>
+<td>是</td>
+</tr>
+<tr>
+<td><code>data_path</code></td>
+<td>本地磁盘路径，可选。启用时write_object写入此路径，read_object优先查找此路径</td>
+<td>否</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>未设置<code>data_path</code>时：<code>data_path = base_path</code>，所有读写走共享路径</li>
+<li>设置<code>data_path</code>时：写入走本地路径（高性能），读取优先查本地路径再查共享路径</li>
+<li>freeze时：在<code>base_path</code>创建标识文件（所有节点可见），<code>data_path</code>上的数据文件不需搬迁</li>
+</ul>
+<pre><code>
+### 6.5 写入流程
+
+```python
+db.write_object(f&quot;output/{name}.result&quot;, result)
 </code></pre>
 <ol>
+<li>检查数据库是否已冻结：若<code>is_frozen_==true</code>则抛出异常</li>
 <li>对象序列化（支持shared_ptr零拷贝）</li>
 <li>判断大小：小于阈值聚合，大于阈值分块存储</li>
-<li>追加写入聚合文件（文件名含worker_id）</li>
-<li>更新索引文件</li>
+<li>写入<code>data_path</code>（若设置）或<code>base_path</code>的聚合文件（文件名含worker_id）</li>
+<li>更新<code>data_path</code>（若设置）或<code>base_path</code>的索引文件</li>
 <li>向Master发送数据就绪消息</li>
+</ol>
+<h3 id="66">6.6 读取流程</h3>
+<pre><code class="language-python">data = db.read_object(f&quot;output/{name}&quot;)
+</code></pre>
+<ol>
+<li>优先使用<code>merged.idx</code>（若存在，freeze后生成）</li>
+<li>若merged.idx不存在，回退到按Worker idx查找</li>
+<li>根据<code>file_name</code>定位数据文件：</li>
+<li>若设置了<code>data_path</code>，优先在<code>data_path</code>中查找</li>
+<li>若<code>data_path</code>中不存在，在<code>base_path</code>中查找</li>
+<li>按offset和size读取数据</li>
 </ol>
 <hr />
 <h2 id="_10">七、数据副本策略</h2>
@@ -544,6 +615,166 @@ public:
 <li>有专用存储Worker时：优先调度到专用Worker</li>
 <li>无专用Worker时：使用独立高优先级队列</li>
 </ul>
+<hr />
+<h2 id="database-freeze">七点五、Database Freeze与后处理</h2>
+<h3 id="751">7.5.1 概述</h3>
+<p>Database Freeze允许任务在所有数据写入完成后，将数据库标记为只读状态并触发后处理流程：
+1. 任务调用<code>db.freeze()</code>，数据库变为只读，创建标识文件
+2. Worker发送<code>DatabaseFreezeMessage</code>至Master
+3. Master在后台收集所有相关Worker的idx文件内容
+4. Master合并idx文件，写入db的<code>base_path</code>目录中
+5. 合并后的聚合idx简化后续<code>load db</code>流程</p>
+<h3 id="752-freeze">7.5.2 freeze()流程</h3>
+<pre><code class="language-python">db = Database(&quot;/data/project_a&quot;, data_path=&quot;/ssd/local_a&quot;)
+# ... 写入数据 ...
+db.freeze()  # 冻结数据库
+</code></pre>
+<p><strong>freeze()内部执行步骤</strong>：</p>
+<ol>
+<li>C++侧设置<code>is_frozen_ = true</code></li>
+<li>在<code>base_path</code>目录创建标识文件<code>_FROZEN</code>（所有节点可见），内容为冻结时间戳和db_id</li>
+<li>发送<code>DatabaseFreezeMessage</code>至Master，携带db_id和当前Worker的idx信息</li>
+<li>后续对<code>db.write_object()</code>的调用抛出<code>RuntimeError: Database is frozen</code></li>
+</ol>
+<p><strong>标识文件格式</strong>（<code>base_path/_FROZEN</code>）：</p>
+<pre><code>db_id=/data/project_a
+frozen_at=1715600000
+frozen_by_worker=1
+</code></pre>
+<h3 id="753">7.5.3 只读约束</h3>
+<ul>
+<li><code>db.freeze()</code>后，所有<code>write_object()</code>调用抛出异常</li>
+<li><code>db.read_object()</code>正常工作，允许后续任务读取冻结db中的数据</li>
+<li>标识文件<code>_FROZEN</code>在<code>base_path</code>中，所有节点可检测数据库是否已冻结</li>
+<li>Worker启动时扫描<code>base_path</code>中的<code>_FROZEN</code>文件，对已冻结db直接设置<code>is_frozen_=true</code></li>
+</ul>
+<h3 id="754">7.5.4 新增消息类型</h3>
+<pre><code>Worker → Master:
+├─ DatabaseFreezeMessage    (数据库冻结通知)
+
+Master → Worker:
+├─ IdxRequestMessage        (请求Worker的idx文件内容)
+
+Worker → Master:
+├─ IdxResponseMessage       (返回idx文件内容)
+</code></pre>
+<p><strong>消息结构体</strong>：</p>
+<pre><code class="language-cpp">// Worker通知Master数据库已冻结
+struct DatabaseFreezeMessage {
+    MessageHeader header;
+    uint64_t worker_id;
+    std::string db_id;              // 冻结的数据库标识
+    std::string base_path;          // 共享存储路径
+    std::string data_path;          // 实际数据存储路径（可能为本地路径）
+    std::string idx_file_path;      // 本Worker的idx文件路径
+    int64_t idx_entry_count;        // idx条目数量
+};
+
+// Master请求Worker发送idx文件内容
+struct IdxRequestMessage {
+    MessageHeader header;
+    std::string db_id;              // 请求的数据库标识
+};
+
+// Worker返回idx文件内容
+struct IdxResponseMessage {
+    MessageHeader header;
+    uint64_t worker_id;
+    std::string db_id;
+    std::string idx_content;        // idx文件完整内容（二进制）
+    int64_t entry_count;            // 条目数量
+};
+</code></pre>
+<h3 id="755-master">7.5.5 后处理流程（Master后台执行）</h3>
+<pre><code>db.freeze()触发后处理：
+
+Worker端：
+├─ db.freeze() 被调用
+├─ 设置 is_frozen_ = true
+├─ 在 base_path 创建 _FROZEN 标识文件
+├─ 发送 DatabaseFreezeMessage 到 Master
+└─ Worker后续对已冻结db的write_object()调用抛出异常
+
+Master端（后台任务）：
+├─ 收到 DatabaseFreezeMessage
+├─ 记录：db_id + 哪些Worker持有该db的数据
+├─ 依次向相关Worker发送 IdxRequestMessage
+├─ 收集所有 IdxResponseMessage
+├─ 合并所有Worker的idx条目到聚合idx：
+│   ├─ 读取每个Worker的idx内容
+│   ├─ 合并所有条目，按object_name排序
+│   └─ 修正file_name字段：保留原始文件名（含worker_id前缀）
+├─ 将聚合idx写入 base_path/merged.idx
+└─ 后处理完成
+</code></pre>
+<p><strong>聚合idx文件</strong>（<code>base_path/merged.idx</code>）：</p>
+<pre><code>合并后的索引结构（与单个Worker的idx条目格式相同）：
+object_name (string) | file_name (string) | offset (int64) | size (int64) | is_large (bool) | block_count (int)
+
+示例（merged.idx）：
+&quot;output/a.result&quot; | &quot;aggregated_w1_001.dat&quot; | 0          | 524288    | false | 0
+&quot;large_data.bin&quot;  | &quot;aggregated_w1_001.dat&quot; | 524288     | 134217728 | true  | 10
+&quot;output/c.result&quot; | &quot;aggregated_w2_001.dat&quot; | 0          | 8192      | false | 0
+&quot;output/d.result&quot; | &quot;aggregated_w3_001.dat&quot; | 0          | 4096      | false | 0
+</code></pre>
+<p><strong>关键设计</strong>：
+- 聚合idx仅添加，不删除原始idx文件
+- 后续<code>read_object</code>优先使用<code>merged.idx</code>（一次查找代替按Worker查找）
+- 若<code>merged.idx</code>不存在，回退到按Worker idx查找的原始流程
+- <code>merged.idx</code>写入<code>base_path</code>（共享路径），所有节点可读</p>
+<h3 id="756-idx">7.5.6 远程idx收集</h3>
+<p>当Worker位于不同机器时，<code>data_path</code>为本地磁盘，idx文件也在本地。Master通过消息机制收集：</p>
+<pre><code class="language-cpp">// Master端后处理伪代码
+void DatabaseFinalizer::finalize(const std::string&amp; db_id) {
+    // 1. 查询哪些Worker在该db上写入过数据
+    auto workers = metadata_-&gt;get_workers_with_db_data(db_id);
+
+    // 2. 请求每个Worker的idx内容
+    std::vector&lt;std::string&gt; idx_contents;
+    for (auto&amp; worker_id : workers) {
+        IdxRequestMessage req;
+        req.db_id = db_id;
+        send(worker_id, encode(req));
+
+        // 等待响应
+        auto resp = wait_for_response(worker_id, db_id);
+        idx_contents.push_back(resp.idx_content);
+    }
+
+    // 3. 合并idx
+    auto merged = merge_idx_entries(idx_contents);
+
+    // 4. 写入base_path（共享文件系统）
+    std::string base_path = get_db_base_path(db_id);
+    write_merged_idx(base_path + &quot;/merged.idx&quot;, merged);
+}
+</code></pre>
+<h3 id="757">7.5.7 使用示例</h3>
+<pre><code class="language-python">from fly import Database, get_config
+
+# 创建db，指定共享路径和本地路径
+db = Database(&quot;/shared/project_a&quot;, data_path=&quot;/local_ssd/project_a&quot;)
+
+@as_task(inputs=lambda db, name: [f&quot;input/{name}&quot;])
+def process(db, name):
+    raw = db.read_object(f&quot;input/{name}&quot;)
+    result = cpp_algorithm(raw)
+    db.write_object(f&quot;output/{name}&quot;, result, backup=True)
+
+# 阶段1：所有数据处理完成
+process(db, &quot;file1&quot;)
+process(db, &quot;file2&quot;)
+
+# 阶段2：冻结database，触发后处理
+# 必须确保所有写入该db的任务都已完成
+db.freeze()
+
+# 后续任务可以读取冻结db的数据，但不能写入
+@as_task(inputs=lambda db, name: [f&quot;output/{name}&quot;])
+def analyze(db, name):
+    data = db.read_object(f&quot;output/{name}&quot;)  # 正常工作
+    # db.write_object(...)  # RuntimeError: Database is frozen
+</code></pre>
 <hr />
 <h2 id="_11">八、容错机制</h2>
 <h3 id="81">8.1 任务失败处理</h3>
@@ -668,6 +899,8 @@ while (running_) {
 ├─ TaskFailedMessage      (任务失败)
 ├─ DataReadyMessage       (数据就绪)
 ├─ UpdateAttributesMessage (更新Worker属性)
+├─ DatabaseFreezeMessage  (数据库冻结通知)
+├─ IdxResponseMessage     (返回idx文件内容)
 └─ CleanupCompleteMessage (清理完成)
 
 Master → Worker:
@@ -676,6 +909,7 @@ Master → Worker:
 ├─ DataLocationMessage    (数据位置查询响应)
 ├─ BackupTaskMessage      (备份任务)
 ├─ CleanupTaskMessage     (清理任务)
+├─ IdxRequestMessage      (请求Worker的idx文件内容)
 └─ ShutdownMessage        (全局退出)
 
 Both Direction:
@@ -2169,24 +2403,29 @@ def start_master():
 </code></pre>
 <hr />
 <h2 id="database">二十三、多Database支持</h2>
-<h3 id="201-database">20.1 Database轻量级设计</h3>
+<h3 id="231-database">23.1 Database轻量级设计</h3>
 <pre><code class="language-cpp">// database.h
 class Database {
 public:
-    Database(const std::string&amp; base_path);
+    Database(const std::string&amp; base_path, const std::string&amp; data_path = &quot;&quot;);
 
     std::shared_ptr&lt;Object&gt; read_object(const std::string&amp; object_name);
     void write_object(const std::string&amp; object_name, std::shared_ptr&lt;Object&gt; data, ...);
+    void freeze();
 
+    bool is_frozen() const { return is_frozen_; }
     std::string get_db_id() const { return db_id_; }
     std::string get_base_path() const { return base_path_; }
+    std::string get_data_path() const { return data_path_.empty() ? base_path_ : data_path_; }
 
 private:
-    std::string base_path_;
-    std::string db_id_;  // 路径本身作为唯一标识
+    std::string base_path_;   // 共享存储路径（所有节点可访问）
+    std::string data_path_;    // 本地存储路径（可选，用于高性能本地写入）
+    std::string db_id_;        // 路径本身作为唯一标识
+    bool is_frozen_ = false;   // 是否已冻结
 };
 </code></pre>
-<h3 id="202-storagemanager">20.2 StorageManager动态创建</h3>
+<h3 id="232-storagemanager">23.2 StorageManager动态创建</h3>
 <pre><code class="language-cpp">// storage_manager.h
 class StorageManager {
 public:
@@ -2195,21 +2434,30 @@ public:
     void set_worker_id(uint64_t worker_id);
 
     WriteResult write(const std::string&amp; db_id, const std::string&amp; base_path, 
-                      const std::string&amp; object_name, const std::string&amp; data);
+                      const std::string&amp; object_name, const std::string&amp; data,
+                      const std::string&amp; data_path = &quot;&quot;);
 
     std::string read(const std::string&amp; db_id, const std::string&amp; base_path,
-                     const std::string&amp; object_name);
+                     const std::string&amp; object_name,
+                     const std::string&amp; data_path = &quot;&quot;);
+
+    // 数据库冻结相关
+    bool is_db_frozen(const std::string&amp; base_path);
+    void freeze_db(const std::string&amp; db_id, const std::string&amp; base_path);
 
 private:
     std::map&lt;std::string, std::unique_ptr&lt;DataWriter&gt;&gt; writers_;  // db_id -&gt; writer
+    std::set&lt;std::string&gt; frozen_dbs_;                              // 已冻结的db_id集合
 
-    DataWriter* get_or_create_writer(const std::string&amp; db_id, const std::string&amp; base_path);
+    DataWriter* get_or_create_writer(const std::string&amp; db_id, 
+                                      const std::string&amp; base_path,
+                                      const std::string&amp; data_path);
 };
 </code></pre>
-<h3 id="203">20.3 使用示例</h3>
+<h3 id="233">23.3 使用示例</h3>
 <pre><code class="language-python"># 创建多个Database（轻量级）
-db_a = Database(&quot;/data/project_a&quot;)
-db_b = Database(&quot;/data/project_b&quot;)
+db_a = Database(&quot;/data/project_a&quot;)                           # 仅共享路径
+db_b = Database(&quot;/data/project_b&quot;, data_path=&quot;/ssd/local_b&quot;) # 共享+本地路径
 
 # 任务中使用不同db
 @as_task(inputs=lambda db, name: [f&quot;input/{name}&quot;])
@@ -2220,6 +2468,9 @@ def process_data(db, name):
 
 process_data(db_a, &quot;file1&quot;)
 process_data(db_b, &quot;file2&quot;)
+
+# 所有数据处理完成后，冻结database
+db_a.freeze()  # 标记db_a为只读，触发Master后处理
 </code></pre>
 <hr />
 <h2 id="_18">二十四、设计完成总结</h2>
@@ -2237,6 +2488,7 @@ process_data(db_b, &quot;file2&quot;)
 <li>[x] 任务依赖图管理</li>
 <li>[x] Python侧任务注册机制</li>
 <li>[x] 多Database支持</li>
+<li>[x] Database Freeze与后处理（双路径、只读冻结、idx合并）</li>
 <li>[x] 备份任务管理（C++实现）</li>
 <li>[x] Reactor模式架构（规避GIL）</li>
 <li>[x] 数据副本策略</li>
@@ -2250,6 +2502,8 @@ process_data(db_b, &quot;file2&quot;)
 <li><strong>唯一GIL线程</strong>：Worker的Python任务执行线程</li>
 <li><strong>任务单slot传递</strong>：Master不向忙碌Worker派发任务，task_slot_而非task_queue_</li>
 <li><strong>动态创建</strong>：Database轻量级，StorageManager按需创建writer</li>
+<li><strong>Database Freeze</strong>：db.freeze()触发只读冻结，Master后台合并idx，Worker数据不搬迁</li>
+<li><strong>双路径存储</strong>：base_path共享路径+data_path本地路径，写入走本地、读取优先本地</li>
 <li><strong>宏封装</strong>：序列化、导出均用宏，方便替换底层库</li>
 <li><strong>传输层抽象</strong>：TransportLayer接口支持未来替换TCP为UDP/RDMA</li>
 <li><strong>Data Server线程池</strong>：Worker数据服务采用线程池，默认单线程，可配置以支持高并发读请求</li>
@@ -2281,10 +2535,13 @@ def process_data(db, name):
 
 # 创建Database并提交任务
 db_a = Database(&quot;/data/project_a&quot;)
-db_b = Database(&quot;/data/project_b&quot;)
+db_b = Database(&quot;/data/project_b&quot;, data_path=&quot;/ssd/local_b&quot;)
 
 process_data(db_a, &quot;file1&quot;)
 process_data(db_b, &quot;file2&quot;)
+
+# 数据处理完成后冻结
+db_a.freeze()
 </code></pre>
     </div>
     <script>hljs.highlightAll();</script>
