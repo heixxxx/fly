@@ -1,0 +1,12 @@
+# C++20 standard
+build --cxxopt=-std=c++20
+build --host_cxxopt=-std=c++20
+
+# Disable bzlmod (using WORKSPACE-style deps)
+build --enable_bzlmod=false
+
+# Preserve PATH for toolchain discovery
+build --action_env=PATH
+
+# Test output
+test --test_output=errors
