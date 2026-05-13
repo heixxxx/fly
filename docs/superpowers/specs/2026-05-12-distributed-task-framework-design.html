@@ -77,7 +77,9 @@
 <a href="#database-freeze" class="nav-link">七点五、Database Freeze与后处理</a>
     <a href="#751" class="nav-link">7.5.1 概述</a>
     <a href="#752-freeze" class="nav-link">7.5.2 freeze()流程</a>
-    <a href="#753" class="nav-link">7.5.3 只读约束</a>
+    <a href="#753" class="nav-link">7.5.3 数据库元信息持久化</a>
+    <a href="#754-worker" class="nav-link">7.5.4 已冻结数据库的加载与Worker自动启动</a>
+    <a href="#753_1" class="nav-link">7.5.3 只读约束</a>
     <a href="#754" class="nav-link">7.5.4 新增消息类型</a>
     <a href="#755-master" class="nav-link">7.5.5 后处理流程（Master后台执行）</a>
     <a href="#756-idx" class="nav-link">7.5.6 远程idx收集</a>
@@ -497,6 +499,7 @@ def next_task(db, name):
 ├── aggregated_w2.idx          # Worker2的唯一索引文件
 ├── merged.idx                 # 合并后的聚合索引（freeze后生成）
 ├── _FROZEN                    # 冻结标识文件（freeze时创建）
+├── _META                      # 数据库元信息（freeze时创建，含Worker信息和launch命令）
 └── ...
 
 本地存储目录结构（data_path，可选，Worker本地磁盘）：
@@ -539,6 +542,8 @@ public:
 
     bool is_frozen() const { return is_frozen_; }
 
+    // 元信息加载（用于已冻结Database的恢复）
+    DbMeta load_meta() const;               // 读取_META文件
     std::string get_db_id() const { return db_id_; }
     std::string get_base_path() const { return base_path_; }
     std::string get_data_path() const { return data_path_.empty() ? base_path_ : data_path_; }
@@ -548,6 +553,24 @@ private:
     std::string data_path_;    // 本地存储路径（可选，用于高性能本地写入）
     std::string db_id_;        // 路径本身作为唯一标识
     bool is_frozen_ = false;   // 是否已冻结
+};
+
+// 数据库元信息
+struct DbMeta {
+    std::string db_id;
+    std::string base_path;
+    int64_t created_at;
+    int64_t frozen_at;
+    struct WorkerInfo {
+        uint64_t worker_id;
+        std::string host;
+        std::string role;
+        std::string data_path;
+        std::string idx_file;
+        int64_t idx_entry_count;
+        std::string launch_command;
+    };
+    std::vector&lt;WorkerInfo&gt; workers;
 };
 </code></pre>
 <p><strong>双路径设计</strong>：</p>
@@ -641,7 +664,110 @@ db.freeze()  # 冻结数据库
 frozen_at=1715600000
 frozen_by_worker=1
 </code></pre>
-<h3 id="753">7.5.3 只读约束</h3>
+<h3 id="753">7.5.3 数据库元信息持久化</h3>
+<p>为保证freeze后的数据库可在下次运行时正确加载，<code>base_path</code>中保存元信息文件<code>_META</code>，记录该数据库涉及的所有Worker及其数据分布。</p>
+<p><strong><code>_META</code>文件格式</strong>（JSON，存储在<code>base_path/_META</code>）：</p>
+<pre><code class="language-json">{
+    &quot;db_id&quot;: &quot;/data/project_a&quot;,
+    &quot;base_path&quot;: &quot;/data/project_a&quot;,
+    &quot;created_at&quot;: 1715500000,
+    &quot;frozen_at&quot;: 1715600000,
+    &quot;workers&quot;: [
+        {
+            &quot;worker_id&quot;: 1,
+            &quot;host&quot;: &quot;192.168.1.10&quot;,
+            &quot;role&quot;: &quot;hybrid&quot;,
+            &quot;data_path&quot;: &quot;/ssd/local_a&quot;,
+            &quot;idx_file&quot;: &quot;aggregated_w1.idx&quot;,
+            &quot;idx_entry_count&quot;: 1500,
+            &quot;launch_command&quot;: &quot;ssh -i /path/to/key root@192.168.1.10 'nohup fly --worker_mode --master {addr} --role hybrid &gt; /dev/null 2&gt;&amp;1 &amp;'&quot;
+        },
+        {
+            &quot;worker_id&quot;: 2,
+            &quot;host&quot;: &quot;192.168.1.11&quot;,
+            &quot;role&quot;: &quot;hybrid&quot;,
+            &quot;data_path&quot;: &quot;/ssd/local_b&quot;,
+            &quot;idx_file&quot;: &quot;aggregated_w2.idx&quot;,
+            &quot;idx_entry_count&quot;: 800,
+            &quot;launch_command&quot;: &quot;ssh -i /path/to/key root@192.168.1.11 'nohup fly --worker_mode --master {addr} --role hybrid &gt; /dev/null 2&gt;&amp;1 &amp;'&quot;
+        }
+    ]
+}
+</code></pre>
+<p><strong>关键设计</strong>：
+- <code>_META</code>文件在freeze时由Master写入<code>base_path</code>（共享路径），所有节点可读
+- <code>launch_command</code>记录原始启动命令，下次运行时可复用这些命令启动Worker
+- <code>data_path</code>记录每个Worker的数据本地存储路径，便于后续读取时定位数据文件</p>
+<p><strong>元信息更新时机</strong>：
+1. <strong>Worker注册时</strong>：Master记录Worker的host、role等信息，不写入_META（仅内存）
+2. <strong>数据写入时</strong>：Master记录哪些Worker在该db上写入了数据（仅内存）
+3. <strong>freeze时</strong>：Master收集所有相关信息，一次性写入<code>base_path/_META</code></p>
+<h3 id="754-worker">7.5.4 已冻结数据库的加载与Worker自动启动</h3>
+<p>当程序打开一个已冻结的Database时（<code>_FROZEN</code>文件存在），系统需要根据<code>_META</code>中的信息自动启动所需Worker。</p>
+<p><strong>加载流程</strong>：</p>
+<pre><code>用户脚本打开已冻结Database：
+├─ Database(base_path) 构造函数检测到 _FROZEN 文件
+├─ 设置 is_frozen_ = true（只读模式）
+├─ 读取 _META 文件，获取数据分布信息
+├─ 读取 merged.idx（若存在）用于高效读取
+└─ 返回只读Database实例
+
+用户显式恢复冻结Database（可选）：
+├─ db = Database(base_path)
+├─ db.is_frozen() == True → 确认这是一个已冻结的db
+├─ master.launch_workers_for_db(db)
+│   ├─ 读取 _META 中的 workers 列表
+│   ├─ 对每个worker，使用其 launch_command 启动Worker
+│   ├─ Worker启动后，连接Master并注册
+│   └─ Worker的data_path（本地路径）上的数据文件仍可用
+└─ 后续任务可正常 read_object 从该db读取数据
+</code></pre>
+<p><strong>自动启动接口</strong>：</p>
+<pre><code class="language-python"># fly/master.py
+def launch_workers_for_db(db: Database) -&gt; None:
+    &quot;&quot;&quot;
+    根据已冻结Database的_META信息，自动启动所需Worker。
+    仅启动_META中记录的Worker，确保数据可达。
+
+    仅当db.is_frozen()为True时有效。
+    若_META文件不存在或格式错误，抛出异常。
+    &quot;&quot;&quot;
+    if not db.is_frozen():
+        raise RuntimeError(&quot;Database is not frozen, launch_workers_for_db only works on frozen databases&quot;)
+
+    meta = db.load_meta()  # 读取 _META 文件
+
+    for worker_info in meta['workers']:
+        if worker_info['host'] == 'localhost' or worker_info['host'] == '127.0.0.1':
+            # 本地Worker
+            subprocess.Popen(worker_info['launch_command'].format(addr=master_addr), shell=True)
+        else:
+            # 远程Worker，使用原始launch_command
+            subprocess.Popen(worker_info['launch_command'].format(addr=master_addr), shell=True)
+</code></pre>
+<p><strong>使用示例</strong>：</p>
+<pre><code class="language-python">from fly import Database, master
+
+# 场景1：首次运行，创建数据库并写入数据
+db = Database(&quot;/shared/project_a&quot;, data_path=&quot;/local_ssd/project_a&quot;)
+# ... 任务写入数据 ...
+db.freeze()  # 冻结，触发后处理（_META + merged.idx 生成）
+
+# 场景2：下次运行，打开已冻结数据库进行分析
+db = Database(&quot;/shared/project_a&quot;)
+if db.is_frozen():
+    # 自动启动拥有该db数据的Worker
+    master.launch_workers_for_db(db)
+
+    # 等待Worker连接就绪（心跳机制确认）
+    master.wait_for_workers(db.get_meta_worker_ids())
+
+# 后续任务可正常读取数据
+@as_task(inputs=lambda db, name: [f&quot;output/{name}&quot;])
+def analyze(db, name):
+    data = db.read_object(f&quot;output/{name}&quot;)  # 自动查找数据位置
+</code></pre>
+<h3 id="753_1">7.5.3 只读约束</h3>
 <ul>
 <li><code>db.freeze()</code>后，所有<code>write_object()</code>调用抛出异常</li>
 <li><code>db.read_object()</code>正常工作，允许后续任务读取冻结db中的数据</li>
@@ -705,6 +831,8 @@ Master端（后台任务）：
 │   ├─ 合并所有条目，按object_name排序
 │   └─ 修正file_name字段：保留原始文件名（含worker_id前缀）
 ├─ 将聚合idx写入 base_path/merged.idx
+├─ 收集所有Worker信息（host、role、data_path、launch_command等）
+├─ 将数据库元信息写入 base_path/_META
 └─ 后处理完成
 </code></pre>
 <p><strong>聚合idx文件</strong>（<code>base_path/merged.idx</code>）：</p>
@@ -2414,6 +2542,7 @@ public:
     void freeze();
 
     bool is_frozen() const { return is_frozen_; }
+    DbMeta load_meta() const;               // 读取_META文件（用于已冻结Database的恢复）
     std::string get_db_id() const { return db_id_; }
     std::string get_base_path() const { return base_path_; }
     std::string get_data_path() const { return data_path_.empty() ? base_path_ : data_path_; }
@@ -2423,6 +2552,24 @@ private:
     std::string data_path_;    // 本地存储路径（可选，用于高性能本地写入）
     std::string db_id_;        // 路径本身作为唯一标识
     bool is_frozen_ = false;   // 是否已冻结
+};
+
+// 数据库元信息
+struct DbMeta {
+    std::string db_id;
+    std::string base_path;
+    int64_t created_at;
+    int64_t frozen_at;
+    struct WorkerInfo {
+        uint64_t worker_id;
+        std::string host;
+        std::string role;
+        std::string data_path;
+        std::string idx_file;
+        int64_t idx_entry_count;
+        std::string launch_command;
+    };
+    std::vector&lt;WorkerInfo&gt; workers;
 };
 </code></pre>
 <h3 id="232-storagemanager">23.2 StorageManager动态创建</h3>
@@ -2488,7 +2635,7 @@ db_a.freeze()  # 标记db_a为只读，触发Master后处理
 <li>[x] 任务依赖图管理</li>
 <li>[x] Python侧任务注册机制</li>
 <li>[x] 多Database支持</li>
-<li>[x] Database Freeze与后处理（双路径、只读冻结、idx合并）</li>
+<li>[x] Database Freeze与后处理（双路径、只读冻结、idx合并、_META元信息持久化、Worker自动启动恢复）</li>
 <li>[x] 备份任务管理（C++实现）</li>
 <li>[x] Reactor模式架构（规避GIL）</li>
 <li>[x] 数据副本策略</li>
