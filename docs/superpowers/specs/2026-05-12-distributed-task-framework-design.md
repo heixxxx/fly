@@ -105,6 +105,7 @@ config.set(
     backup_threshold=100,
     aggregation_threshold=1024 * 1024,
     track_writes=1,           # 启用写入跟踪，记录每个任务写入的对象列表
+    data_server_threads=2,    # Data Server线程池大小，默认1
 )
 
 # Database指定存储路径
@@ -236,6 +237,7 @@ const std::map<std::string, int64_t> Config::INT_DEFAULTS = {
     {"large_file_threshold", 10485760},
     {"block_size", 134217728},
     {"track_writes", 0},
+    {"data_server_threads", 1},
 };
 
 const std::map<std::string, std::string> Config::STR_DEFAULTS = {
@@ -1633,7 +1635,8 @@ Force quitting...
 - **消息处理全在C++侧**：Master和Worker的消息处理（解析、路由、元数据更新、调度决策）都是快速C++操作，不需要线程池
 - **单线程事件循环**：使用select/poll/epoll处理多连接，一个线程即可处理所有Worker的消息
 - **唯一GIL线程**：只有Worker的Python任务执行线程涉及GIL
-- **后台线程**：心跳、数据服务器等需要独立socket的模块使用独立线程
+- **数据服务线程池**：Worker的Data Server采用线程池模式，默认单线程，可通过Config配置线程数，以支持同时处理多个远程读请求
+- **后台线程**：心跳等定时器驱动模块使用独立线程
 
 ### 19.2 整体架构
 
@@ -1662,43 +1665,62 @@ Worker Node:
 │  │ Event Loop:                                                 ││
 │  │   1. recv Master消息 → 解析 → 路由处理                      ││
 │  │      - TaskAssign → 放入task_queue                          ││
-│  │      - DataRequest → 从本地读取并发送                       ││
+│  │      - DataRequest → 加入read_request_queue                 ││
 │  │      - Shutdown → 设置running=false                         ││
-│  │   2. recv其他Worker数据请求 → 响应                          ││
-│  │   3. 回到1                                                  ││
+│  │   2. 回到1                                                  ││
 │  └─────────────────────────────────────────────────────────────┘│
 │                                                                  │
 │  ┌──────────────────┐  ┌──────────────────────────────────────┐│
-│  │ Heartbeat Thread │  │ Data Server Thread                    ││
+│  │ Heartbeat Thread │  │ Data Server Thread Pool                ││
 │  │ (心跳发送)       │  │ (响应其他Worker的数据请求)             ││
+│  │                  │  │ 默认1线程，可配置 (data_server_threads)││
 │  └──────────────────┘  └──────────────────────────────────────┘│
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────────┐│
 │  │ Task Execution Thread (Python)                                ││
 │  │ (唯一涉及GIL，从task_queue取任务执行)                         ││
 │  └──────────────────────────────────────────────────────────────┘│
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────────┐│
+│  │ Read Request Queue (C++)                                      ││
+│  │ DataRequest消息 → 排队 → Data Server线程池取请求执行         ││
+│  └──────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────┘
 
 总计：
   Master: 3线程（1 Main + 1 Heartbeat + 1 Scheduler）
-  Worker: 4线程（1 Main + 1 Heartbeat + 1 DataServer + 1 TaskExec）
+  Worker: 3 + N线程（1 Main + 1 Heartbeat + N DataServer + 1 TaskExec）
+          N默认为1（data_server_threads配置）
 ```
 
-### 19.3 为什么Master/Worker不需要消息处理线程池
+### 19.3 为什么Master不需要消息处理线程池
 
 | 操作 | 性质 | 是否需要多线程 |
 |------|------|---------------|
 | 消息解析 | 快速C++操作（反序列化+路由） | 不需要 |
 | 元数据更新 | 快速内存操作（map查找/插入） | 不需要 |
 | 调度决策 | 快速计算（依赖图查询+FIFO） | 不需要 |
-| 任务路由 | 放入队列 | 不需要 |
-| 数据读取 | 计算offset+读文件 | 单线程文件I/O更安全 |
 | 心跳处理 | 定时器驱动 | 独立线程，不在事件循环中 |
+
+### 19.4 Worker Data Server线程池设计
+
+| 操作 | 性质 | 是否需要多线程 |
+|------|------|---------------|
+| 消息解析/路由 | 快速C++操作 | 不需要 |
+| 任务路由 | 放入task_queue | 不需要 |
+| 远程数据读取 | 磁盘I/O + 网络传输，可能较慢 | **需要线程池** |
+
+**为什么Data Server需要线程池**：
+- 远程读请求涉及磁盘I/O和网络传输，处理时间不可控
+- 默认单线程可满足简单场景，配置多线程支持高并发读取
+- 主线程仅将DataRequest加入read_request_queue，不阻塞事件循环
+- Data Server线程池从队列取请求执行，线程数通过Config的`data_server_threads`配置
 
 **关键点**：
 - Master Main Thread用**select/poll/epoll**处理多连接，一个线程处理所有Worker消息
-- Worker Main Thread同理，一个线程处理Master消息
-- 需要独立线程的只有：心跳（定时器）、数据服务器（独立socket）、任务执行（GIL）
+- Worker Main Thread仅做消息解析和路由，将DataRequest加入队列后立即返回
+- Data Server线程池从read_request_queue取请求执行，不阻塞主循环
+- 心跳（定时器）使用独立线程
 
 ---
 
@@ -1781,22 +1803,51 @@ public:
 private:
     // 后台线程
     std::thread heartbeat_thread_;
-    std::thread data_server_thread_;
+    
+    // Data Server线程池
+    std::vector<std::thread> data_server_pool_;
+    int data_server_thread_count_;  // 从Config读取，默认1
     
     // Python任务队列
     std::queue<TaskAssignMessage> task_queue_;
     std::mutex task_queue_mutex_;
     std::condition_variable task_queue_cv_;
     
-    void heartbeat_loop();      // 心跳发送
-    void data_server_loop();    // 数据服务（独立socket）
+    // 读请求队列（主线程生产，Data Server线程池消费）
+    std::queue<DataRequestMessage> read_request_queue_;
+    std::mutex read_request_mutex_;
+    std::condition_variable read_request_cv_;
+    
+    void heartbeat_loop();           // 心跳发送
+    void data_server_worker();       // Data Server工作线程函数
     void init_handlers();
 };
 ```
 
----
+### 20.4 Data Server线程池工作流程
 
-## 二十一、备份任务管理（C++实现）
+```
+Worker主线程收到DataRequest消息：
+├─ 解析消息
+├─ 将DataRequest加入read_request_queue_
+├─ 通知read_request_cv_
+└─ 立即返回事件循环（不阻塞）
+
+Data Server线程池工作线程：
+├─ 等待read_request_cv_（阻塞直到有请求）
+├─ 从read_request_queue_取出一个DataRequest
+├─ 查询本地索引（LocalIndex）
+├─ 从磁盘读取数据
+├─ 通过TransportLayer发送DataResponse
+└─ 回到等待
+
+Config配置：
+├─ data_server_threads=1  （默认，单线程处理读请求）
+├─ data_server_threads=4  （高并发场景，4线程并行处理读请求）
+└─ data_server_threads=0  （不允许，至少1线程）
+```
+
+---
 
 ### 21.1 BackupManager
 
@@ -2037,6 +2088,7 @@ process_data(db_b, "file2")
 5. **动态创建**：Database轻量级，StorageManager按需创建writer
 6. **宏封装**：序列化、导出均用宏，方便替换底层库
 7. **传输层抽象**：TransportLayer接口支持未来替换TCP为UDP/RDMA
+8. **Data Server线程池**：Worker数据服务采用线程池，默认单线程，可配置以支持高并发读请求
 
 ### 24.3 用户使用示例
 
