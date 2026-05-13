@@ -1,0 +1,1699 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fly - 分布式任务执行框架设计文档</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/cpp.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --secondary-color: #1e40af;
+            --bg-color: #0f172a;
+            --bg-secondary: #1e293b;
+            --text-color: #e2e8f0;
+            --text-muted: #94a3b8;
+            --border-color: #334155;
+            --code-bg: #0d1117;
+            --table-header-bg: #1e293b;
+            --table-row-bg: #0f172a;
+            --table-row-alt: #1e293b;
+            --success-color: #22c55e;
+            --warning-color: #f59e0b;
+            --error-color: #ef4444;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.8;
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* Sidebar Navigation */
+        .sidebar {
+            width: 280px;
+            background-color: var(--bg-secondary);
+            border-right: 1px solid var(--border-color);
+            padding: 20px;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            top: 0;
+            left: 0;
+        }
+
+        .sidebar h2 {
+            color: var(--primary-color);
+            font-size: 1.5rem;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid var(--primary-color);
+        }
+
+        .sidebar-version {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            margin-bottom: 20px;
+        }
+
+        .nav-list {
+            list-style: none;
+        }
+
+        .nav-list li {
+            margin-bottom: 8px;
+        }
+
+        .nav-list a {
+            color: var(--text-muted);
+            text-decoration: none;
+            display: block;
+            padding: 8px 12px;
+            border-radius: 6px;
+            transition: all 0.2s ease;
+            font-size: 0.9rem;
+        }
+
+        .nav-list a:hover {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        .nav-list a.active {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        .nav-section {
+            font-weight: bold;
+            color: var(--text-color);
+            margin-top: 15px;
+            padding: 10px 12px 5px;
+            border-top: 1px solid var(--border-color);
+            font-size: 0.85rem;
+        }
+
+        .nav-subsection {
+            font-size: 0.85rem;
+            padding-left: 20px;
+        }
+
+        /* Main Content */
+        .main-content {
+            margin-left: 280px;
+            padding: 40px 60px;
+            max-width: 1200px;
+            width: 100%;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            color: var(--primary-color);
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 3px solid var(--primary-color);
+        }
+
+        h2 {
+            font-size: 1.8rem;
+            color: var(--text-color);
+            margin: 40px 0 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        h3 {
+            font-size: 1.3rem;
+            color: var(--primary-color);
+            margin: 30px 0 15px;
+        }
+
+        h4 {
+            font-size: 1.1rem;
+            color: var(--text-color);
+            margin: 20px 0 10px;
+        }
+
+        p {
+            margin-bottom: 15px;
+        }
+
+        ul, ol {
+            margin: 15px 0;
+            padding-left: 30px;
+        }
+
+        li {
+            margin-bottom: 8px;
+        }
+
+        /* Code Blocks */
+        pre {
+            background-color: var(--code-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            overflow-x: auto;
+            font-size: 0.9rem;
+        }
+
+        code {
+            font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
+        }
+
+        /* Inline Code */
+        p code, li code {
+            background-color: var(--bg-secondary);
+            color: var(--primary-color);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background-color: var(--bg-secondary);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        th {
+            background-color: var(--table-header-bg);
+            color: var(--text-color);
+            padding: 15px;
+            text-align: left;
+            font-weight: bold;
+            border-bottom: 2px solid var(--primary-color);
+        }
+
+        td {
+            padding: 12px 15px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        tr:nth-child(even) {
+            background-color: var(--table-row-alt);
+        }
+
+        tr:hover {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        /* ASCII Diagrams */
+        .diagram {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.85rem;
+            color: var(--primary-color);
+            overflow-x: auto;
+            white-space: pre;
+        }
+
+        /* Sections Separator */
+        hr {
+            border: none;
+            border-top: 1px solid var(--border-color);
+            margin: 40px 0;
+        }
+
+        /* Status Badges */
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+
+        .badge-success {
+            background-color: var(--success-color);
+            color: white;
+        }
+
+        .badge-warning {
+            background-color: var(--warning-color);
+            color: white;
+        }
+
+        .badge-info {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        /* Checklist */
+        .checklist {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .checklist li {
+            padding: 10px 15px;
+            background-color: var(--bg-secondary);
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
+
+        .checklist li::before {
+            content: '✓';
+            color: var(--success-color);
+            font-weight: bold;
+            margin-right: 10px;
+        }
+
+        /* Flow Diagrams */
+        .flow-diagram {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 15px 20px;
+            margin: 20px 0;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            overflow-x: auto;
+            white-space: pre;
+        }
+
+        /* Highlighted text */
+        strong {
+            color: var(--primary-color);
+        }
+
+        /* Scrollbar Styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-color);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--primary-color);
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .sidebar {
+                width: 200px;
+            }
+            .main-content {
+                margin-left: 200px;
+                padding: 30px;
+            }
+        }
+
+        @media (max-width: 768px) {
+            body {
+                flex-direction: column;
+            }
+            .sidebar {
+                width: 100%;
+                height: auto;
+                position: relative;
+                padding: 15px;
+            }
+            .main-content {
+                margin-left: 0;
+                padding: 20px;
+            }
+            h1 {
+                font-size: 1.8rem;
+            }
+            h2 {
+                font-size: 1.4rem;
+            }
+        }
+
+        /* Print Styles */
+        @media print {
+            .sidebar {
+                display: none;
+            }
+            .main-content {
+                margin-left: 0;
+                padding: 20px;
+            }
+            body {
+                background: white;
+                color: black;
+            }
+            pre {
+                background: #f5f5f5;
+                border: 1px solid #ddd;
+            }
+            table {
+                background: white;
+            }
+        }
+
+        /* Smooth scrolling */
+        html {
+            scroll-behavior: smooth;
+        }
+
+        /* Link styling */
+        a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        /* Feature cards */
+        .feature-card {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+            margin: 15px 0;
+        }
+
+        .feature-card h4 {
+            color: var(--primary-color);
+            margin-bottom: 10px;
+        }
+
+        /* Status table */
+        .status-table td:first-child {
+            width: 150px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar">
+        <h2>Fly 框架</h2>
+        <div class="sidebar-version">分布式任务执行框架设计文档</div>
+        
+        <ul class="nav-list">
+            <li><a href="#overview">一、概述</a></li>
+            <li class="nav-section">架构设计</li>
+            <li><a href="#architecture" class="nav-subsection">二、整体架构</a></li>
+            <li><a href="#startup" class="nav-subsection">三、启动流程</a></li>
+            <li><a href="#config" class="nav-subsection">四、配置管理</a></li>
+            <li><a href="#task-system" class="nav-subsection">五、任务系统</a></li>
+            <li><a href="#storage" class="nav-subsection">六、存储层</a></li>
+            <li><a href="#replica" class="nav-subsection">七、数据副本</a></li>
+            <li><a href="#fault-tolerance" class="nav-subsection">八、容错机制</a></li>
+            
+            <li class="nav-section">通信与调度</li>
+            <li><a href="#communication" class="nav-subsection">九、通信层</a></li>
+            <li><a href="#agent" class="nav-subsection">十、Agent架构</a></li>
+            <li><a href="#dependency" class="nav-subsection">十一、依赖图管理</a></li>
+            
+            <li class="nav-section">Python与C++交互</li>
+            <li><a href="#py-cpp" class="nav-subsection">十二、Python与C++交互</a></li>
+            <li><a href="#task-state" class="nav-subsection">十三、任务状态管理</a></li>
+            <li><a href="#task-registry" class="nav-subsection">十四、任务注册机制</a></li>
+            
+            <li class="nav-section">序列化与导出</li>
+            <li><a href="#serialization" class="nav-subsection">十五、序列化协议</a></li>
+            <li><a href="#export-macro" class="nav-subsection">十六、Python导出宏</a></li>
+            <li><a href="#module-structure" class="nav-subsection">十七、模块目录结构</a></li>
+            
+            <li class="nav-section">启动与退出</li>
+            <li><a href="#entry" class="nav-subsection">十八、程序入口</a></li>
+            
+            <li class="nav-section">Reactor模式</li>
+            <li><a href="#reactor" class="nav-subsection">十九、Reactor架构</a></li>
+            <li><a href="#reactor-impl" class="nav-subsection">二十、Reactor实现</a></li>
+            <li><a href="#backup" class="nav-subsection">二十一、备份管理</a></li>
+            <li><a href="#task-executor" class="nav-subsection">二十二、任务执行线程</a></li>
+            <li><a href="#multi-db" class="nav-subsection">二十三、多Database支持</a></li>
+            
+            <li class="nav-section">总结</li>
+            <li><a href="#summary" class="nav-subsection">二十四、设计总结</a></li>
+        </ul>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <h1 id="top">分布式任务执行框架设计</h1>
+        
+        <!-- Section 1: Overview -->
+        <section id="overview">
+            <h2>一、概述</h2>
+            
+            <h3>项目目标</h3>
+            <p>构建一个多机多进程分布式任务执行框架，支持：</p>
+            <ul>
+                <li>Master节点负责任务调度和数据元信息管理</li>
+                <li>Worker节点负责具体任务执行和数据存储</li>
+                <li>任务可在任意节点提交，支持递归任务提交</li>
+                <li>任务调度需满足数据依赖准备完毕</li>
+                <li>数据传递依靠分布式文件存储系统</li>
+            </ul>
+            
+            <h3>技术栈</h3>
+            <table>
+                <tr>
+                    <th>语言/工具</th>
+                    <th>用途</th>
+                </tr>
+                <tr>
+                    <td><strong>Python</strong></td>
+                    <td>流程控制、数据读写、任务定义</td>
+                </tr>
+                <tr>
+                    <td><strong>C++</strong></td>
+                    <td>存储层实现、性能敏感算法</td>
+                </tr>
+                <tr>
+                    <td><strong>pybind11</strong></td>
+                    <td>C++与Python交互</td>
+                </tr>
+                <tr>
+                    <td><strong>TCP Socket</strong></td>
+                    <td>节点间通信</td>
+                </tr>
+            </table>
+        </section>
+
+        <hr>
+
+        <!-- Section 2: Architecture -->
+        <section id="architecture">
+            <h2>二、整体架构</h2>
+            
+            <div class="diagram">
+┌─────────────────────────────────────────────────────────────────┐
+│                         Master Node                              │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
+│  │ Task Scheduler│  │ Metadata   │  │ Storage Metadata       │ │
+│  │ (FIFO+Locality)│  │ Manager    │  │ (Data blocks, replicas)│ │
+│  └─────────────┘  └─────────────┘  └─────────────────────────┘ │
+│         │                │                    │                 │
+│         └────────────────┼────────────────────┘                 │
+│                          │                                      │
+│                   ┌──────┴──────┐                               │
+│                   │ Message Hub │  ← TCP Server (Port 8000)    │
+│                   └─────────────┘                               │
+└───────────────────────────────┬─────────────────────────────────┘
+                                │
+          ┌─────────────────────┼─────────────────────┐
+          │                     │                     │
+          ▼                     ▼                     ▼
+┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+│   Worker 1      │  │   Worker 2      │  │   Worker 3      │
+│ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐ │
+│ │Task Executor│ │  │ │Task Executor│ │  │ │ (Storage     │ │
+│ └─────────────┘ │  │ └─────────────┘ │  │ │  Only Mode)  │ │
+│ ┌─────────────┐ │  │ ┌─────────────┐ │  │ └─────────────┘ │
+│ │Data Storage │ │  │ │Data Storage │ │  │ ┌─────────────┐ │
+│ │(Aggregator) │ │  │ │(Aggregator) │ │  │ │Data Storage │ │
+│ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘ │
+└─────────────────┘  └─────────────────┘  └─────────────────┘
+            </div>
+        </section>
+
+        <hr>
+
+        <!-- Section 3: Startup -->
+        <section id="startup">
+            <h2>三、启动流程与进程模型</h2>
+            
+            <h3>3.1 Binary启动方式</h3>
+            <p>统一使用 <code>fly</code> binary启动，通过参数区分Master/Worker模式：</p>
+            
+            <pre><code class="language-bash"># Master模式：直接传入用户脚本（无flag）
+fly user_tasks.py
+
+# Worker模式：使用--worker_mode区分
+fly --worker_mode --master master:8000 --role hybrid
+fly --worker_mode --master master:8000 --role storage_only
+            </code></pre>
+            
+            <h4>启动参数说明</h4>
+            <table>
+                <tr>
+                    <th>参数</th>
+                    <th>Master模式</th>
+                    <th>Worker模式</th>
+                </tr>
+                <tr>
+                    <td>positional arg</td>
+                    <td>用户Python脚本路径</td>
+                    <td>不适用</td>
+                </tr>
+                <tr>
+                    <td><code>--worker_mode</code></td>
+                    <td>不设置</td>
+                    <td>必须设置，标识Worker模式</td>
+                </tr>
+                <tr>
+                    <td><code>--master</code></td>
+                    <td>不设置（自己就是Master）</td>
+                    <td>Master地址</td>
+                </tr>
+                <tr>
+                    <td><code>--role</code></td>
+                    <td>不适用</td>
+                    <td>hybrid / storage_only</td>
+                </tr>
+            </table>
+            
+            <h3>3.2 launch_workers接口设计</h3>
+            <p>三个独立接口，支持多种启动方式：</p>
+            
+            <pre><code class="language-python"># user_tasks.py
+from fly import master, Database, get_config
+
+# 获取全局单例Config并设置参数（必须在启动worker前）
+config = get_config()
+config.set(
+    heartbeat_timeout=120,
+    backup_threshold=100,
+    aggregation_threshold=1024 * 1024,
+)
+
+# Database指定存储路径
+db = Database(storage_path="/data")
+
+# 1. SSH方式启动
+master.launch_ssh_workers(
+    workers=[
+        {"host": "192.168.1.10", "role": "hybrid"},
+        {"host": "192.168.1.11", "role": "hybrid"},
+    ],
+    ssh_user="root",
+    ssh_key="/path/to/key",
+)
+
+# 2. 本地方式启动
+master.launch_local_workers(
+    workers=[
+        {"role": "hybrid"},
+        {"role": "storage_only"},
+    ],
+)
+
+# 3. 自定义方式启动（bsub/srun等）
+master.launch_custom_workers(
+    workers=[
+        {"role": "hybrid"},
+    ],
+    submit_command="bsub -q normal -P my_project",
+)
+            </code></pre>
+            
+            <h4>启动命令生成逻辑</h4>
+            <table>
+                <tr>
+                    <th>接口</th>
+                    <th>生成的启动命令</th>
+                </tr>
+                <tr>
+                    <td><code>launch_ssh_workers</code></td>
+                    <td><code>ssh -i {key} {user}@{host} 'fly --worker_mode --master {addr} --role {role}'</code></td>
+                </tr>
+                <tr>
+                    <td><code>launch_local_workers</code></td>
+                    <td><code>subprocess.Popen(["fly", "--worker_mode", "--master", addr, "--role", role])</code></td>
+                </tr>
+                <tr>
+                    <td><code>launch_custom_workers</code></td>
+                    <td><code>{submit_command} 'fly --worker_mode --master {addr} --role {role}'</code></td>
+                </tr>
+            </table>
+        </section>
+
+        <hr>
+
+        <!-- Section 4: Config -->
+        <section id="config">
+            <h2>四、配置管理</h2>
+            
+            <h3>4.1 Config单例模式</h3>
+            <pre><code class="language-python">from fly import get_config
+
+# 获取全局单例Config（无需创建实例）
+config = get_config()  # 返回唯一单例实例
+
+# 设置参数（必须在启动worker前）
+config.set(
+    master_port=8000,
+    heartbeat_timeout=120,
+    heartbeat_interval=5,
+    backup_threshold=100,
+    aggregation_threshold=1048576,      # 1MB
+    large_file_threshold=10485760,      # 10MB
+    block_size=134217728,               # 128MB
+)
+
+# 再次调用get_config()返回同一个实例
+config2 = get_config()  # config2 == config
+            </code></pre>
+            
+            <h3>4.2 C++层Config实现</h3>
+            <pre><code class="language-cpp">class Config {
+public:
+    static Config& instance() {
+        static Config config;  // 静态局部变量，保证单例
+        return config;
+    }
+    
+    void set(const py::kwargs& kwargs) {
+        if (workers_launched_) {
+            throw std::runtime_error("Config must be set before workers are launched");
+        }
+        for (auto& item : kwargs) {
+            values_[std::string(py::str(item.first))] = py::cast&lt;int64_t&gt;(item.second);
+        }
+    }
+    
+    int64_t get(const std::string& key) const {
+        auto it = values_.find(key);
+        return it != values_.end() ? it-&gt;second : DEFAULTS.at(key);
+    }
+    
+private:
+    Config() { values_ = DEFAULTS; }
+    Config(const Config&) = delete;
+    Config& operator=(const Config&) = delete;
+    
+    std::map&lt;std::string, int64_t&gt; values_;
+    bool workers_launched_ = false;
+    
+    static const std::map&lt;std::string, int64_t&gt; DEFAULTS;
+};
+
+const std::map&lt;std::string, int64_t&gt; Config::DEFAULTS = {
+    {"master_port", 8000},
+    {"heartbeat_timeout", 120},
+    {"heartbeat_interval", 5},
+    {"backup_threshold", 100},
+    {"aggregation_threshold", 1048576},
+    {"large_file_threshold", 10485760},
+    {"block_size", 134217728},
+};
+            </code></pre>
+        </section>
+
+        <hr>
+
+        <!-- Section 5: Task System -->
+        <section id="task-system">
+            <h2>五、任务系统</h2>
+            
+            <h3>5.1 任务定义</h3>
+            <p>使用 <code>@as_task</code> 装饰器将普通函数包装为任务：</p>
+            
+            <pre><code class="language-python">@as_task(inputs=lambda db, name: [f"input/{name}"])
+def process_data(db, name):
+    raw = db.read_object(f"input/{name}")
+    result = cpp_algorithm(raw)
+    db.write_object(f"output/{name}.result", result)
+
+# 直接调用即可提交任务（异步，无返回值）
+process_data(db, "a.csv")
+            </code></pre>
+            
+            <h3>5.2 @as_task装饰器内部逻辑</h3>
+            <ul>
+                <li>拦截函数调用</li>
+                <li>打包函数引用 + 参数 + 依赖列表</li>
+                <li>发送消息至Master注册任务</li>
+                <li>立即返回（不阻塞）</li>
+            </ul>
+            
+            <h3>5.3 任务调度策略</h3>
+            <ul>
+                <li><strong>默认策略</strong>: FIFO</li>
+                <li><strong>Worker选择</strong>: 数据locality优先，尽量调度到数据所在的Worker</li>
+            </ul>
+        </section>
+
+        <hr>
+
+        <!-- Section 6: Storage -->
+        <section id="storage">
+            <h2>六、存储层设计</h2>
+            
+            <h3>6.1 核心组件</h3>
+            <ul>
+                <li><code>Database</code> 类：统一存储接口（C++实现 + pybind11导出）</li>
+                <li><code>DataWriter</code>：单线程写入聚合器</li>
+                <li><code>DataReader</code>：从聚合文件中提取数据</li>
+                <li><code>Serializer</code>：序列化模块（支持shared_ptr对象）</li>
+            </ul>
+            
+            <h3>6.2 文件命名规则</h3>
+            <p>统一的聚合文件命名（小文件 + 大文件分块都存储在聚合文件中）：</p>
+            
+            <div class="diagram">
+存储目录结构：
+/data/
+├── aggregated_w1_001.dat      # Worker1的数据文件
+├── aggregated_w1_001.idx      # Worker1的索引文件
+├── aggregated_w1_002.dat
+├── aggregated_w1_002.idx
+├── aggregated_w2_001.dat      # Worker2的数据文件
+├── aggregated_w2_001.idx
+└── ...
+            </div>
+            
+            <h3>6.3 Database接口</h3>
+            <pre><code class="language-cpp">class Database {
+public:
+    Database(const std::string& storage_path);
+    
+    std::shared_ptr&lt;Object&gt; read_object(const std::string& path);
+    
+    void write_object(
+        const std::string& path,
+        std::shared_ptr&lt;Object&gt; data,
+        bool need_backup = false,
+        bool track_writes = false
+    );
+    
+    std::vector&lt;std::string&gt; get_written_objects();  // debug用
+};
+            </code></pre>
+        </section>
+
+        <hr>
+
+        <!-- Section 7: Replica -->
+        <section id="replica">
+            <h2>七、数据副本策略</h2>
+            
+            <h3>7.1 副本配置</h3>
+            <ul>
+                <li>用户可在write_object时选择是否备份：<code>need_backup=True</code></li>
+                <li>Master检测高频访问数据，自动发起备份任务</li>
+            </ul>
+            
+            <h3>7.2 备份任务调度</h3>
+            <ul>
+                <li>有专用存储Worker时：优先调度到专用Worker</li>
+                <li>无专用Worker时：使用独立高优先级队列</li>
+            </ul>
+        </section>
+
+        <hr>
+
+        <!-- Section 8: Fault Tolerance -->
+        <section id="fault-tolerance">
+            <h2>八、容错机制</h2>
+            
+            <h3>8.1 任务失败处理</h3>
+            <table>
+                <tr>
+                    <th>错误类型</th>
+                    <th>处理方式</th>
+                </tr>
+                <tr>
+                    <td>可恢复错误（读文件失败等）</td>
+                    <td><span class="badge badge-warning">重试</span> 固定次数重试</td>
+                </tr>
+                <tr>
+                    <td>不可恢复错误（崩溃、算法错误）</td>
+                    <td><span class="badge badge-error" style="background-color: var(--error-color);">退出</span> 上报Master，全局退出</td>
+                </tr>
+            </table>
+            
+            <h3>8.2 Worker失联处理</h3>
+            <ul>
+                <li>心跳间隔：默认5秒，超时后逐步*2，最大30秒</li>
+                <li>超时判定：默认2分钟（可配置）</li>
+                <li>失联Worker上的任务重新调度到其他Worker</li>
+                <li>Worker标记为不可达</li>
+                <li>收到失联Worker消息后发送清理任务</li>
+                <li>清理完毕后Worker重新加入可调度节点</li>
+            </ul>
+        </section>
+
+        <hr>
+
+        <!-- Section 9: Communication -->
+        <section id="communication">
+            <h2>九、通信层设计</h2>
+            
+            <h3>9.1 通信协议</h3>
+            <ul>
+                <li>TCP Socket</li>
+                <li>消息通过定义结构体 + 序列化方式发送</li>
+                <li>复用存储层序列化方式，降低维护成本</li>
+            </ul>
+            
+            <h3>9.2 消息类型分类</h3>
+            <div class="diagram">
+Worker → Master:
+├─ RegisterMessage        (Worker注册)
+├─ HeartbeatMessage       (心跳)
+├─ TaskCompleteMessage    (任务完成)
+├─ TaskFailedMessage      (任务失败)
+├─ DataReadyMessage       (数据就绪)
+├─ UpdateAttributesMessage (更新Worker属性)
+└─ CleanupCompleteMessage (清理完成)
+
+Master → Worker:
+├─ RegisterAckMessage     (注册确认)
+├─ TaskAssignMessage      (任务分配)
+├─ DataLocationMessage    (数据位置查询响应)
+├─ BackupTaskMessage      (备份任务)
+├─ CleanupTaskMessage     (清理任务)
+└─ ShutdownMessage        (全局退出)
+
+Both Direction:
+├─ TaskSubmitMessage      (任务提交，任意节点→Master)
+└─ DataQueryMessage       (数据位置查询，任意节点→Master)
+
+Worker → Worker:
+├─ DataRequestMessage     (数据请求)
+└─ DataResponseMessage    (数据响应)
+            </div>
+        </section>
+
+        <hr>
+
+        <!-- Section 10: Agent -->
+        <section id="agent">
+            <h2>十、Agent架构设计</h2>
+            
+            <h3>10.1 架构分层</h3>
+            <div class="diagram">
+Shared Modules (复用):
+├─ Config          (全局配置)
+├─ Database        (存储层)
+├─ Serializer      (序列化器)
+├─ MessageProtocol (消息协议)
+├─ TCPConnection   (TCP连接基类)
+├─ TaskRegistry    (任务注册表)
+└─ Logger          (日志)
+
+MasterAgent:
+├─ TCPServer       (TCP服务端)
+├─ TaskScheduler   (任务调度)
+├─ MetadataManager (元数据管理)
+├─ HeartbeatMonitor (心跳监控)
+├─ WorkerManager   (Worker管理)
+├─ BackupManager   (备份管理)
+
+WorkerAgent:
+├─ TCPClient       (TCP客户端，连接Master)
+├─ TaskRunner      (任务执行)
+├─ LocalIndex      (本地索引)
+├─ HeartbeatSender (心跳发送)
+├─ WorkerContext   (Worker属性管理)
+├─ TCPDataServer   (数据传输服务端，响应其他Worker请求)
+            </div>
+        </section>
+
+        <hr>
+
+        <!-- Section 11: Dependency -->
+        <section id="dependency">
+            <h2>十一、任务依赖图管理</h2>
+            
+            <h3>11.1 DependencyGraph结构</h3>
+            <pre><code class="language-cpp">class DependencyGraph {
+public:
+    void add_task(uint64_t task_id, const std::vector&lt;std::string&gt;& inputs);
+    void mark_data_ready(const std::string& data_path);
+    std::vector&lt;uint64_t&gt; get_ready_tasks();
+    bool is_task_ready(uint64_t task_id);
+    void remove_task(uint64_t task_id);
+    
+private:
+    std::map&lt;uint64_t, std::vector&lt;std::string&gt;&gt; task_dependencies_;
+    std::map&lt;std::string, bool&gt; data_ready_status_;
+    std::map&lt;uint64_t, int&gt; pending_count_;  // 未满足依赖计数
+};
+            </code></pre>
+            
+            <h3>11.2 依赖图更新流程</h3>
+            <div class="flow-diagram">
+任务提交:
+├─ TaskSubmitMessage到达Master
+├─ scheduler.submit_task(msg)
+├─ dependency_graph_.add_task(task_id, inputs)
+├─ 计算每个依赖的就绪状态
+├─ 若全部就绪 → 加入ready_queue_
+└─ 否则 → 加入pending_，记录pending_count_
+
+数据就绪:
+├─ DataReadyMessage到达Master
+├─ dependency_graph_.mark_data_ready(data_path)
+├─ 查找依赖此数据的pending任务
+├─ 减少这些任务的pending_count_
+└─ 若pending_count_归零 → 加入ready_queue_
+            </div>
+        </section>
+
+        <hr>
+
+        <!-- Section 12: Python-C++ -->
+        <section id="py-cpp">
+            <h2>十二、Python与C++交互</h2>
+            
+            <h3>12.1 大对象传递</h3>
+            <ul>
+                <li>使用shared_ptr实现内存共享</li>
+                <li>一般对象都使用shared_ptr传递</li>
+                <li>小对象可使用拷贝方式导出</li>
+            </ul>
+            
+            <h3>12.2 存储层实现</h3>
+            <ul>
+                <li>C++实现存储层核心逻辑</li>
+                <li>通过pybind11导出Database接口</li>
+                <li>支持C++算法直接读写存储层</li>
+            </ul>
+        </section>
+
+        <hr>
+
+        <!-- Section 13: Task State -->
+        <section id="task-state">
+            <h2>十三、任务状态管理</h2>
+            
+            <h3>13.1 任务状态</h3>
+            <table>
+                <tr>
+                    <th>状态</th>
+                    <th>说明</th>
+                </tr>
+                <tr>
+                    <td><span class="badge badge-info">Pending</span></td>
+                    <td>任务已注册，等待依赖满足</td>
+                </tr>
+                <tr>
+                    <td><span class="badge badge-info">Ready</span></td>
+                    <td>依赖已满足，等待调度</td>
+                </tr>
+                <tr>
+                    <td><span class="badge badge-warning">Running</span></td>
+                    <td>已分配Worker，正在执行</td>
+                </tr>
+                <tr>
+                    <td><span class="badge badge-success">Completed</span></td>
+                    <td>执行成功完成</td>
+                </tr>
+                <tr>
+                    <td><span class="badge badge-warning">Failed</span></td>
+                    <td>执行失败（可恢复）</td>
+                </tr>
+                <tr>
+                    <td><span class="badge badge-error" style="background-color: var(--error-color);">Error</span></td>
+                    <td>不可恢复错误，触发全局退出</td>
+                </tr>
+            </table>
+        </section>
+
+        <hr>
+
+        <!-- Section 14: Task Registry -->
+        <section id="task-registry">
+            <h2>十四、Python侧任务注册机制</h2>
+            
+            <h3>14.1 TaskRegistry使用场景</h3>
+            <table>
+                <tr>
+                    <th>节点</th>
+                    <th>是否需要TaskRegistry</th>
+                    <th>作用</th>
+                </tr>
+                <tr>
+                    <td>Master</td>
+                    <td><span class="badge badge-error" style="background-color: var(--error-color);">不需要</span></td>
+                    <td>Master不执行任务，只负责调度</td>
+                </tr>
+                <tr>
+                    <td>Worker</td>
+                    <td><span class="badge badge-success">需要</span></td>
+                    <td>Worker收到TaskAssignMessage后，需根据task_name找到函数执行</td>
+                </tr>
+            </table>
+            
+            <h3>14.2 @as_task装饰器实现</h3>
+            <pre><code class="language-python"># fly/task.py
+def as_task(inputs=None):
+    def decorator(func):
+        task_name = getattr(func, '_fly_task_name', func.__name__)
+        module_name = func.__module__
+        
+        # 标记为任务函数
+        func._fly_is_task = True
+        func._fly_task_name = task_name
+        func._fly_inputs_func = inputs
+        
+        # 包装函数：拦截调用，立即发送到Master
+        def wrapper(*args, **kwargs):
+            deps = inputs(*args, **kwargs) if inputs else []
+            import pickle
+            serialized_args = pickle.dumps((args, kwargs))
+            
+            from fly import get_connection
+            get_connection().send_task_submit(
+                task_name=task_name,
+                task_module=module_name,
+                args=serialized_args,
+                inputs=deps,
+            )
+            return None
+        
+        wrapper._fly_is_task = True
+        wrapper._fly_task_name = task_name
+        wrapper._fly_module_name = module_name
+        wrapper._fly_original_func = func
+        
+        return wrapper
+    return decorator
+            </code></pre>
+        </section>
+
+        <hr>
+
+        <!-- Section 15: Serialization -->
+        <section id="serialization">
+            <h2>十五、序列化协议</h2>
+            
+            <h3>15.1 序列化场景</h3>
+            <table>
+                <tr>
+                    <th>场景</th>
+                    <th>序列化方式</th>
+                    <th>说明</th>
+                </tr>
+                <tr>
+                    <td>任务参数</td>
+                    <td><code>pickle</code></td>
+                    <td>Python对象，标准库</td>
+                </tr>
+                <tr>
+                    <td>通信消息</td>
+                    <td><code>cereal</code></td>
+                    <td>C++结构体，通过宏封装</td>
+                </tr>
+                <tr>
+                    <td>存储对象</td>
+                    <td><code>cereal</code></td>
+                    <td>C++对象，通过宏封装</td>
+                </tr>
+            </table>
+            
+            <h3>15.2 序列化宏定义</h3>
+            <pre><code class="language-cpp">// 序列化函数声明
+#define FLY_SERIALIZE_DECLARE() \
+    template&lt;class Archive&gt; \
+    void serialize(Archive& ar)
+
+// 序列化多个字段
+#define FLY_SERIALIZE_FIELDS(...) ar(__VA_ARGS__);
+
+// 编码消息为字符串
+#define FLY_ENCODE(msg, output) \
+    do { \
+        std::ostringstream oss; \
+        cereal::BinaryOutputArchive archive(oss); \
+        archive(msg); \
+        output = oss.str(); \
+    } while(0)
+
+// 解码消息从字符串
+#define FLY_DECODE(data, msg_type, output) \
+    do { \
+        std::istringstream iss(data); \
+        cereal::BinaryInputArchive archive(iss); \
+        msg_type msg; \
+        archive(msg); \
+        output = msg; \
+    } while(0)
+            </code></pre>
+        </section>
+
+        <hr>
+
+        <!-- Section 16: Export Macro -->
+        <section id="export-macro">
+            <h2>十六、Python导出宏</h2>
+            
+            <h3>16.1 导出宏定义</h3>
+            <pre><code class="language-cpp">// Pickle导出宏
+#define FLY_EXPORT_PICKLE(class_type) \
+    .def(py::pickle( \
+        [](const class_type& obj) { \
+            std::string serialized; \
+            FLY_ENCODE(obj, serialized); \
+            return py::bytes(serialized); \
+        }, \
+        [](py::bytes bytes) { \
+            std::string data = bytes; \
+            class_type obj; \
+            FLY_DECODE(data, class_type, obj); \
+            return obj; \
+        } \
+    ))
+
+// 类导出宏（支持自定义名称）
+#define FLY_EXPORT_CLASS_WITH_NAME(module, class_type, export_name, ...) \
+    py::class_&lt;class_type&gt;(module, export_name) \
+        .def(py::init&lt;&gt;()) \
+        __VA_ARGS__ \
+        FLY_EXPORT_PICKLE(class_type)
+
+#define FLY_EXPORT_CLASS(module, class_type, ...) \
+    FLY_EXPORT_CLASS_WITH_NAME(module, class_type, #class_type, __VA_ARGS__)
+            </code></pre>
+        </section>
+
+        <hr>
+
+        <!-- Section 17: Module Structure -->
+        <section id="module-structure">
+            <h2>十七、模块目录结构</h2>
+            
+            <h3>17.1 三层结构设计</h3>
+            <p>每个模块包含三个子目录：</p>
+            
+            <div class="diagram">
+src/
+├── core/               # 核心基础模块
+│   ├── cpp/            # C++类型定义和实现
+│   ├── export/         # pybind11导出
+│   ├── py/             # Python包
+│
+├── master/             # Master节点模块
+│   ├── cpp/            # C++底层实现
+│   ├── export/         # pybind11导出
+│   ├── py/             # Python主循环
+│
+├── worker/             # Worker节点模块
+│   ├── cpp/            # C++底层实现
+│   ├── export/         # pybind11导出
+│   ├── py/             # Python主循环
+│
+├── task/               # 任务定义模块
+│   ├── py/
+│
+├── serialization/      # 序列化模块
+│   ├── cpp/
+│   ├── export/
+│   ├── py/
+│
+├── export/             # 导出宏模块
+│   ├── cpp/
+│
+└── main.cpp            # 程序入口
+            </div>
+            
+            <h3>17.2 层次职责</h3>
+            <table>
+                <tr>
+                    <th>目录</th>
+                    <th>职责</th>
+                </tr>
+                <tr>
+                    <td><code>cpp/</code></td>
+                    <td>C++类型定义、核心算法实现，不直接操作py::object</td>
+                </tr>
+                <tr>
+                    <td><code>export/</code></td>
+                    <td>pybind11导出，将C++类/函数暴露给Python</td>
+                </tr>
+                <tr>
+                    <td><code>py/</code></td>
+                    <td>Python流程控制、主循环、消息解析</td>
+                </tr>
+            </table>
+        </section>
+
+        <hr>
+
+        <!-- Section 18: Entry Point -->
+        <section id="entry">
+            <h2>十八、程序入口与启动模式</h2>
+            
+            <h3>18.1 启动参数</h3>
+            <pre><code class="language-bash"># Master模式启动
+fly user_tasks.py              # 正常模式，执行完毕后自动退出
+fly -i user_tasks.py           # 交互模式，进入Python REPL
+
+# Worker模式启动
+fly --worker_mode --master addr:port --role hybrid
+fly --worker_mode --master addr:port --role storage_only
+            </code></pre>
+            
+            <table>
+                <tr>
+                    <th>参数</th>
+                    <th>说明</th>
+                </tr>
+                <tr>
+                    <td><code>-i</code></td>
+                    <td>Master交互模式，执行脚本后进入Python REPL</td>
+                </tr>
+                <tr>
+                    <td><code>--worker_mode</code></td>
+                    <td>Worker模式标识</td>
+                </tr>
+                <tr>
+                    <td><code>--master</code></td>
+                    <td>Master地址（Worker模式必填）</td>
+                </tr>
+                <tr>
+                    <td><code>--role</code></td>
+                    <td>Worker角色：hybrid / storage_only</td>
+                </tr>
+            </table>
+            
+            <h3>18.2 程序退出机制</h3>
+            <table class="status-table">
+                <tr>
+                    <th>模式</th>
+                    <th>退出条件</th>
+                    <th>行为</th>
+                </tr>
+                <tr>
+                    <td><strong>正常模式</strong></td>
+                    <td>用户脚本执行完毕 + 所有任务完成</td>
+                    <td>后处理 → 正常退出</td>
+                </tr>
+                <tr>
+                    <td><strong>交互模式</strong></td>
+                    <td>用户输入 <code>quit()</code></td>
+                    <td>退出REPL → 等待任务完成 → 后处理 → 正常退出</td>
+                </tr>
+                <tr>
+                    <td><strong>交互模式</strong></td>
+                    <td>用户输入 <code>force_quit()</code></td>
+                    <td>立即停止 → 退出（忽略未完成任务）</td>
+                </tr>
+            </table>
+        </section>
+
+        <hr>
+
+        <!-- Section 19: Reactor -->
+        <section id="reactor">
+            <h2>十九、Reactor模式架构</h2>
+            
+            <h3>19.1 整体架构</h3>
+            <div class="diagram">
+Master Node:
+┌─────────────────────────────────────────────────────────────────┐
+│  I/O Thread (C++)                                                │
+│  ├─ TCP Server (监听端口)                                        │
+│  ├─ Message Receiver → Dispatcher                                │
+│  ├─ Sender (发送响应/广播)                                        │
+│  └─────────────────────────────────────────────────────────────┘│
+│  Worker Thread Pool (C++)                                        │
+│  ├─ Handler 1, Handler 2, ... (消息处理，不涉及GIL)              │
+│  └─────────────────────────────────────────────────────────────┘│
+│  Background Threads (C++)                                        │
+│  ├─ Heartbeat Monitor Thread                                     │
+│  ├─ Periodic Scheduler Thread                                    │
+│  └─────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
+
+Worker Node:
+┌─────────────────────────────────────────────────────────────────┐
+│  I/O Thread (C++)                                                │
+│  ├─ TCP Client (连接Master)                                      │
+│  ├─ Message Receiver → Dispatcher                                │
+│  ├─ Sender                                                       │
+│  └─────────────────────────────────────────────────────────────┘│
+│  Worker Threads (C++)                                            │
+│  ├─ Handler (消息处理，不涉及GIL)                                 │
+│  └─────────────────────────────────────────────────────────────┘│
+│  Background Threads (C++)                                        │
+│  ├─ Heartbeat Sender Thread                                      │
+│  ├─ Data Server Thread (响应其他Worker请求)                      │
+│  └─────────────────────────────────────────────────────────────┘│
+│  Task Execution Thread (Python)                                  │
+│  ├─ 唯一涉及GIL的线程                                            │
+│  ├─ 执行Python任务函数                                            │
+│  └─────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
+            </div>
+            
+            <h3>19.2 GIL规避原则</h3>
+            <table>
+                <tr>
+                    <th>线程</th>
+                    <th>实现语言</th>
+                    <th>是否涉及GIL</th>
+                </tr>
+                <tr>
+                    <td>I/O Thread</td>
+                    <td>C++</td>
+                    <td><span class="badge badge-success">不涉及</span></td>
+                </tr>
+                <tr>
+                    <td>Worker Thread Pool</td>
+                    <td>C++</td>
+                    <td><span class="badge badge-success">不涉及</span></td>
+                </tr>
+                <tr>
+                    <td>Background Threads</td>
+                    <td>C++</td>
+                    <td><span class="badge badge-success">不涉及</span></td>
+                </tr>
+                <tr>
+                    <td>Task Execution Thread</td>
+                    <td>Python</td>
+                    <td><span class="badge badge-warning">涉及GIL（唯一）</span></td>
+                </tr>
+            </table>
+        </section>
+
+        <hr>
+
+        <!-- Section 20: Reactor Implementation -->
+        <section id="reactor-impl">
+            <h2>二十、Reactor核心实现（C++）</h2>
+            
+            <h3>20.1 Reactor基类</h3>
+            <pre><code class="language-cpp">class Reactor {
+public:
+    Reactor();
+    
+    void start();
+    void stop();
+    
+    void register_handler(MessageType type, 
+        std::function&lt;HandlerResult(const std::string&)&gt; handler);
+    
+    void send(uint64_t target_id, const std::string& msg_bytes);
+    void broadcast(const std::string& msg_bytes);
+
+private:
+    std::unique_ptr&lt;TCPTransport&gt; transport_;
+    std::thread io_thread_;
+    std::thread_pool worker_pool_;
+    
+    std::map&lt;MessageType, std::function&lt;HandlerResult(const std::string&)&gt;&gt; handlers_;
+    
+    std::queue&lt;MessageTask&gt; message_queue_;
+    std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+};
+            </code></pre>
+            
+            <h3>20.2 WorkerReactor</h3>
+            <pre><code class="language-cpp">class WorkerReactor : public Reactor {
+public:
+    WorkerReactor(const std::string& master_addr, const std::string& role,
+                  StorageManager*, LocalIndex*);
+    
+    void start_background_threads();
+    
+    // Python线程调用：等待任务
+    TaskAssignMessage wait_for_task();
+    
+    // Python线程调用：报告完成
+    void report_task_complete(const TaskCompleteMessage& msg);
+    void report_task_failed(const TaskFailedMessage& msg);
+
+private:
+    std::thread heartbeat_thread_;
+    std::thread data_server_thread_;
+    
+    std::queue&lt;TaskAssignMessage&gt; task_queue_;
+    std::mutex task_queue_mutex_;
+    std::condition_variable task_queue_cv_;
+};
+            </code></pre>
+        </section>
+
+        <hr>
+
+        <!-- Section 21: Backup -->
+        <section id="backup">
+            <h2>二十一、备份任务管理（C++实现）</h2>
+            
+            <h3>21.1 BackupManager</h3>
+            <pre><code class="language-cpp">class BackupManager {
+public:
+    BackupManager(WorkerManager* worker_manager, MetadataManager* metadata);
+    
+    void on_data_ready(const std::string& data_path, 
+                       const DataLocation& location, bool need_backup);
+    void record_access(const std::string& data_path);
+    void periodic_check(int threshold, int target_replicas);
+    uint64_t create_backup_task(const std::string& data_path, 
+                                const DataLocation& source_location);
+    void on_backup_complete(uint64_t task_id, const std::string& data_path,
+                            const DataLocation& location);
+    
+    std::vector&lt;BackupTaskInfo&gt; get_pending_tasks();
+
+private:
+    WorkerManager* worker_manager_;
+    MetadataManager* metadata_;
+    
+    std::map&lt;std::string, int&gt; access_count_;
+    std::map&lt;uint64_t, BackupTaskInfo&gt; backup_tasks_;
+};
+            </code></pre>
+        </section>
+
+        <hr>
+
+        <!-- Section 22: Task Executor -->
+        <section id="task-executor">
+            <h2>二十二、Python侧任务执行线程</h2>
+            
+            <h3>22.1 TaskExecutorThread（唯一涉及GIL）</h3>
+            <pre><code class="language-python">import threading
+import importlib
+import pickle
+
+class TaskExecutorThread(threading.Thread):
+    """唯一涉及GIL的Python线程"""
+    
+    def __init__(self, reactor, storage):
+        self.reactor = reactor
+        self.storage = storage
+        self.loaded_modules = {}
+    
+    def run(self):
+        while True:
+            # 1. 从C++等待任务（阻塞，不涉及GIL）
+            task = self.reactor.wait_for_task()
+            
+            # 2. 设置执行上下文
+            self.storage.clear_written_objects()
+            
+            # 3. 加载模块并执行（涉及GIL）
+            module = self._load_module(task.task_module)
+            func = getattr(module, task.task_name)._fly_original_func
+            args, kwargs = pickle.loads(task.serialized_args)
+            
+            # 4. 执行任务
+            success, error, recoverable = self._execute(func, args, kwargs)
+            
+            # 5. 报告完成（通知C++）
+            if success:
+                self.reactor.report_task_complete({...})
+            else:
+                self.reactor.report_task_failed({...})
+            </code></pre>
+        </section>
+
+        <hr>
+
+        <!-- Section 23: Multi-DB -->
+        <section id="multi-db">
+            <h2>二十三、多Database支持</h2>
+            
+            <h3>23.1 Database轻量级设计</h3>
+            <pre><code class="language-cpp">class Database {
+public:
+    Database(const std::string& base_path);
+    
+    std::shared_ptr&lt;Object&gt; read_object(const std::string& object_name);
+    void write_object(const std::string& object_name, 
+                      std::shared_ptr&lt;Object&gt; data, ...);
+    
+    std::string get_db_id() const { return db_id_; }
+    std::string get_base_path() const { return base_path_; }
+    
+private:
+    std::string base_path_;
+    std::string db_id_;  // 路径本身作为唯一标识
+};
+            </code></pre>
+            
+            <h3>23.2 StorageManager动态创建</h3>
+            <pre><code class="language-cpp">class StorageManager {
+public:
+    static StorageManager& instance();
+    
+    void set_worker_id(uint64_t worker_id);
+    
+    WriteResult write(const std::string& db_id, const std::string& base_path, 
+                      const std::string& object_name, const std::string& data);
+    
+private:
+    std::map&lt;std::string, std::unique_ptr&lt;DataWriter&gt;&gt; writers_;
+    
+    DataWriter* get_or_create_writer(const std::string& db_id, 
+                                      const std::string& base_path);
+};
+            </code></pre>
+            
+            <h3>23.3 使用示例</h3>
+            <pre><code class="language-python"># 创建多个Database（轻量级）
+db_a = Database("/data/project_a")
+db_b = Database("/data/project_b")
+
+# 任务中使用不同db
+@as_task(inputs=lambda db, name: [f"input/{name}"])
+def process_data(db, name):
+    raw = db.read_object(f"input/{name}")
+    result = cpp_algorithm(raw)
+    db.write_object(f"output/{name}.result", result)
+
+process_data(db_a, "file1")
+process_data(db_b, "file2")
+            </code></pre>
+        </section>
+
+        <hr>
+
+        <!-- Section 24: Summary -->
+        <section id="summary">
+            <h2>二十四、设计完成总结</h2>
+            
+            <h3>24.1 已完成模块</h3>
+            <ul class="checklist">
+                <li>整体架构设计</li>
+                <li>启动流程与进程模型</li>
+                <li>配置管理（单例模式）</li>
+                <li>任务系统（@as_task、@task_name装饰器）</li>
+                <li>存储层设计（小文件聚合、大文件分块）</li>
+                <li>通信层消息类型定义</li>
+                <li>序列化协议（cereal统一，宏封装）</li>
+                <li>Python导出宏（支持自定义名称）</li>
+                <li>Agent架构设计</li>
+                <li>任务依赖图管理</li>
+                <li>Python侧任务注册机制</li>
+                <li>多Database支持</li>
+                <li>备份任务管理（C++实现）</li>
+                <li>Reactor模式架构（规避GIL）</li>
+                <li>数据副本策略</li>
+                <li>容错机制</li>
+            </ul>
+            
+            <h3>24.2 核心设计原则</h3>
+            <div class="feature-card">
+                <ol>
+                    <li><strong>Python主进程</strong>：用户脚本执行、任务定义、装饰器</li>
+                    <li><strong>C++底层实现</strong>：存储、通信、消息处理、调度（避免GIL）</li>
+                    <li><strong>Reactor模式</strong>：I/O线程 + Worker线程池 + 后台线程</li>
+                    <li><strong>唯一GIL线程</strong>：Worker的Python任务执行线程</li>
+                    <li><strong>动态创建</strong>：Database轻量级，StorageManager按需创建writer</li>
+                    <li><strong>宏封装</strong>：序列化、导出均用宏，方便替换底层库</li>
+                </ol>
+            </div>
+            
+            <h3>24.3 用户使用示例</h3>
+            <pre><code class="language-python"># user_tasks.py
+from fly import master, Database, get_config
+from fly.task import as_task, task_name
+import cpp_module
+
+# 配置
+config = get_config()
+config.set(heartbeat_timeout=120)
+
+# 启动Workers
+master.launch_local_workers([
+    {"role": "hybrid"},
+    {"role": "storage_only"},
+])
+
+# 定义任务
+@as_task(inputs=lambda db, name: [f"input/{name}"])
+@task_name("processor")
+def process_data(db, name):
+    raw = db.read_object(f"input/{name}")
+    result = cpp_module.algorithm(raw)
+    db.write_object(f"output/{name}.result", result, need_backup=True)
+
+# 创建Database并提交任务
+db_a = Database("/data/project_a")
+db_b = Database("/data/project_b")
+
+process_data(db_a, "file1")
+process_data(db_b, "file2")
+            </code></pre>
+        </section>
+    </main>
+
+    <script>
+        // Initialize code highlighting
+        hljs.highlightAll();
+        
+        // Smooth scroll navigation
+        document.querySelectorAll('.nav-list a').forEach(link => {
+            link.addEventListener('click', function(e) {
+                e.preventDefault();
+                const targetId = this.getAttribute('href').substring(1);
+                const targetElement = document.getElementById(targetId);
+                if (targetElement) {
+                    targetElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    
+                    // Update active state
+                    document.querySelectorAll('.nav-list a').forEach(l => l.classList.remove('active'));
+                    this.classList.add('active');
+                }
+            });
+        });
+        
+        // Update active nav on scroll
+        window.addEventListener('scroll', () => {
+            const sections = document.querySelectorAll('section[id]');
+            let currentSection = '';
+            
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop;
+                if (window.pageYOffset >= sectionTop - 100) {
+                    currentSection = section.getAttribute('id');
+                }
+            });
+            
+            document.querySelectorAll('.nav-list a').forEach(link => {
+                link.classList.remove('active');
+                if (link.getAttribute('href') === '#' + currentSection) {
+                    link.classList.add('active');
+                }
+            });
+        });
+    </script>
+</body>
+</html>
