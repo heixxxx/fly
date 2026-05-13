@@ -14,7 +14,7 @@
 - **Python**: 流程控制、数据读写、任务定义
 - **C++**: 存储层实现、性能敏感算法
 - **pybind11**: C++与Python交互
-- **TCP Socket**: 节点间通信
+- **TCP Socket**: 节点间通信（通过TransportLayer抽象层，支持未来替换为UDP/RDMA等）
 
 ---
 
@@ -104,6 +104,7 @@ config.set(
     heartbeat_timeout=120,
     backup_threshold=100,
     aggregation_threshold=1024 * 1024,
+    track_writes=1,           # 启用写入跟踪，记录每个任务写入的对象列表
 )
 
 # Database指定存储路径
@@ -189,13 +190,24 @@ public:
             throw std::runtime_error("Config must be set before workers are launched");
         }
         for (auto& item : kwargs) {
-            values_[std::string(py::str(item.first))] = py::cast<int64_t>(item.second);
+            std::string key = std::string(py::str(item.first));
+            // 支持int和string两种类型
+            try {
+                int_values_[key] = py::cast<int64_t>(item.second);
+            } catch (...) {
+                str_values_[key] = py::cast<std::string>(item.second);
+            }
         }
     }
     
-    int64_t get(const std::string& key) const {
-        auto it = values_.find(key);
-        return it != values_.end() ? it->second : DEFAULTS.at(key);
+    int64_t get_int(const std::string& key) const {
+        auto it = int_values_.find(key);
+        return it != int_values_.end() ? it->second : INT_DEFAULTS.at(key);
+    }
+    
+    const std::string& get_str(const std::string& key) const {
+        auto it = str_values_.find(key);
+        return it != str_values_.end() ? it->second : STR_DEFAULTS.at(key);
     }
     
     void mark_workers_launched() {
@@ -203,17 +215,19 @@ public:
     }
     
 private:
-    Config() { values_ = DEFAULTS; }
+    Config() { int_values_ = INT_DEFAULTS; str_values_ = STR_DEFAULTS; }
     Config(const Config&) = delete;
     Config& operator=(const Config&) = delete;
     
-    std::map<std::string, int64_t> values_;
+    std::map<std::string, int64_t> int_values_;
+    std::map<std::string, std::string> str_values_;
     bool workers_launched_ = false;
     
-    static const std::map<std::string, int64_t> DEFAULTS;
+    static const std::map<std::string, int64_t> INT_DEFAULTS;
+    static const std::map<std::string, std::string> STR_DEFAULTS;
 };
 
-const std::map<std::string, int64_t> Config::DEFAULTS = {
+const std::map<std::string, int64_t> Config::INT_DEFAULTS = {
     {"master_port", 8000},
     {"heartbeat_timeout", 120},
     {"heartbeat_interval", 5},
@@ -221,6 +235,11 @@ const std::map<std::string, int64_t> Config::DEFAULTS = {
     {"aggregation_threshold", 1048576},
     {"large_file_threshold", 10485760},
     {"block_size", 134217728},
+    {"track_writes", 0},
+};
+
+const std::map<std::string, std::string> Config::STR_DEFAULTS = {
+    {"transport_type", "tcp"},
 };
 
 // pybind11导出
@@ -229,7 +248,8 @@ PYBIND11_MODULE(fly, m) {
     
     py::class_<Config>(m, "Config")
         .def("set", &Config::set)
-        .def("get", &Config::get);
+        .def("get_int", &Config::get_int)
+        .def("get_str", &Config::get_str);
 }
 ```
 
@@ -298,31 +318,34 @@ def next_task(db, name):
 ```
 存储目录结构：
 /data/
-├── aggregated_w1_001.dat      # Worker1的数据文件
-├── aggregated_w1_001.idx      # Worker1的索引文件
+├── aggregated_w1_001.dat      # Worker1的数据文件（可多个）
 ├── aggregated_w1_002.dat
-├── aggregated_w1_002.idx
+├── aggregated_w1.idx          # Worker1的唯一索引文件
 ├── aggregated_w2_001.dat      # Worker2的数据文件
-├── aggregated_w2_001.idx
+├── aggregated_w2_002.dat
+├── aggregated_w2.idx          # Worker2的唯一索引文件
 └── ...
 ```
 
+**关键设计**：每个Worker只有一个索引文件（`.idx`），而不是每个数据文件对应一个索引文件。索引条目中包含 `file_name` 字段，指向该条目所属的数据文件。
+
 ### 6.3 索引文件结构
 
-.idx文件记录所有对象的元信息（二进制格式）：
+每个Worker一个索引文件（二进制格式），记录该Worker所有数据文件中的所有对象：
 
 ```
 索引条目结构：
-object_name (string) | offset (int64) | size (int64) | is_large (bool) | block_count (int)
+object_name (string) | file_name (string) | offset (int64) | size (int64) | is_large (bool) | block_count (int)
 
-示例：
-"output/a.result" | 0          | 524288    | false | 0      # 小文件
-"large_data.bin" | 524288     | 134217728 | true  | 10     # 大文件分块存储
-"output/b.result" | 134742016  | 102400    | false | 0      # 小文件
+示例（aggregated_w1.idx）：
+"output/a.result" | "aggregated_w1_001.dat" | 0          | 524288    | false | 0      # 小文件
+"large_data.bin"  | "aggregated_w1_001.dat" | 524288     | 134217728 | true  | 10     # 大文件分块存储
+"output/b.result" | "aggregated_w1_002.dat" | 0          | 102400    | false | 0      # 另一个数据文件中的小文件
 ```
 
-- 小文件：直接从.dat按offset/size读取
-- 大文件：is_large=true，分块连续存储在.dat中
+- 小文件：按 `file_name` 找到对应 `.dat` 文件，再按 offset/size 读取
+- 大文件：is_large=true，分块连续存储在对应 `.dat` 文件中
+- 新数据文件滚动创建：当前 `.dat` 文件超过阈值时创建新的
 
 ### 6.4 Database接口
 
@@ -336,11 +359,10 @@ public:
     void write_object(
         const std::string& path,
         std::shared_ptr<Object> data,
-        bool need_backup = false,
-        bool track_writes = false
+        bool backup = false
     );
     
-    std::vector<std::string> get_written_objects();  // debug用
+    std::vector<std::string> get_written_objects();  // 当Config中track_writes启用时可用
 };
 ```
 
@@ -362,8 +384,9 @@ db.write_object(f"output/{name}.result", result)
 
 ### 7.1 副本配置
 
-- 用户可在write_object时选择是否备份：`need_backup=True`
+- 用户可在write_object时选择是否备份：`backup=True`
 - Master检测高频访问数据，自动发起备份任务
+- `track_writes`为全局配置（通过Config设置），启用后write_object自动记录写入对象列表
 
 ### 7.2 备份任务调度
 
@@ -400,11 +423,80 @@ db.write_object(f"output/{name}.result", result)
 
 ### 9.1 通信协议
 
-- TCP Socket
+- TransportLayer抽象层（支持未来替换TCP为UDP/RDMA等）
+- 默认使用TCP Socket实现
 - 消息通过定义结构体 + 序列化方式发送
 - 复用存储层序列化方式，降低维护成本
 
-### 9.2 消息类型分类
+### 9.2 TransportLayer抽象
+
+```cpp
+// src/core/cpp/transport.h
+
+// 传输层抽象接口
+class TransportLayer {
+public:
+    virtual ~TransportLayer() = default;
+    
+    // 服务端操作
+    virtual void listen(const std::string& address, int port) = 0;
+    virtual void accept() = 0;
+    
+    // 客户端操作
+    virtual void connect(const std::string& address, int port) = 0;
+    
+    // 数据收发
+    virtual ssize_t send(uint64_t conn_id, const std::string& data) = 0;
+    virtual ssize_t recv(uint64_t conn_id, std::string& buffer) = 0;
+    
+    // 连接管理
+    virtual void close(uint64_t conn_id) = 0;
+    virtual void close_all() = 0;
+    
+    // 轮询（用于事件循环）
+    virtual std::vector<TransportEvent> poll(int timeout_ms) = 0;
+};
+
+// 传输事件
+struct TransportEvent {
+    enum Type { CONNECT, DATA, DISCONNECT };
+    Type type;
+    uint64_t conn_id;
+    std::string data;
+};
+
+// 工厂函数：根据配置创建传输层实例
+std::unique_ptr<TransportLayer> create_transport(const std::string& type);
+
+// 默认TCP实现
+class TCPTransport : public TransportLayer {
+    // ... TCP Socket实现
+};
+```
+
+**使用方式**：
+
+```cpp
+// Reactor通过工厂函数创建传输层
+auto transport = create_transport(config.get("transport_type"));  // "tcp" / "udp" / "rdma"
+transport->listen("0.0.0.0", config.get("master_port"));
+
+// 事件循环中使用poll
+while (running_) {
+    auto events = transport->poll(100);  // 100ms超时
+    for (const auto& event : events) {
+        handle_event(event);
+    }
+}
+```
+
+**Config新增参数**：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `transport_type` | `"tcp"` | 传输层类型：tcp / udp / rdma |
+
+### 9.3 消息类型分类
 
 ```
 Worker → Master:
@@ -433,7 +525,7 @@ Worker → Worker:
 └─ DataResponseMessage    (数据响应)
 ```
 
-### 9.3 核心消息结构体
+### 9.4 核心消息结构体
 
 ```cpp
 // 消息头
@@ -485,8 +577,7 @@ struct TaskCompleteMessage {
     MessageHeader header;
     uint64_t task_id;
     uint64_t worker_id;
-    bool track_writes;
-    std::vector<std::string> written_objects;  // debug用
+    std::vector<std::string> written_objects;  // 当Config中track_writes启用时填充
 };
 
 // 任务失败消息
@@ -535,7 +626,7 @@ struct DataResponseMessage {
 };
 ```
 
-### 9.4 数据读取流程
+### 9.5 数据读取流程
 
 ```
 db.read_object("input/a.csv")：
@@ -566,12 +657,12 @@ Shared Modules (复用):
 ├─ Database        (存储层)
 ├─ Serializer      (序列化器)
 ├─ MessageProtocol (消息协议)
-├─ TCPConnection   (TCP连接基类)
+├─ TransportLayer  (传输层抽象，支持TCP/UDP/RDMA替换)
 ├─ TaskRegistry    (任务注册表)
 └─ Logger          (日志)
 
 MasterAgent:
-├─ TCPServer       (TCP服务端)
+├─ TransportLayer  (TCP传输层实例)
 ├─ TaskScheduler   (任务调度)
 ├─ MetadataManager (元数据管理)
 ├─ HeartbeatMonitor (心跳监控)
@@ -579,12 +670,12 @@ MasterAgent:
 ├─ BackupManager   (备份管理)
 
 WorkerAgent:
-├─ TCPClient       (TCP客户端，连接Master)
+├─ TransportLayer  (TCP传输层实例)
 ├─ TaskRunner      (任务执行)
 ├─ LocalIndex      (本地索引)
 ├─ HeartbeatSender (心跳发送)
 ├─ WorkerContext   (Worker属性管理)
-├─ TCPDataServer   (数据传输服务端，响应其他Worker请求)
+├─ TransportLayer  (数据传输服务，响应其他Worker请求)
 ```
 
 ### 10.2 MasterAgent
@@ -601,7 +692,7 @@ private:
     std::unique_ptr<Serializer> serializer_;
     std::unique_ptr<MessageProtocol> protocol_;
     
-    std::unique_ptr<TCPServer> server_;
+    std::unique_ptr<TransportLayer> transport_;  // 通过create_transport()创建
     std::unique_ptr<TaskScheduler> scheduler_;
     std::unique_ptr<MetadataManager> metadata_;
     std::unique_ptr<HeartbeatMonitor> heartbeat_;
@@ -660,12 +751,12 @@ private:
     std::unique_ptr<MessageProtocol> protocol_;
     std::unique_ptr<Database> database_;
     
-    std::unique_ptr<TCPClient> client_;
+    std::unique_ptr<TransportLayer> transport_;  // 通过create_transport()创建
     std::unique_ptr<TaskRunner> runner_;
     std::unique_ptr<LocalIndex> local_index_;
     std::unique_ptr<HeartbeatSender> heartbeat_;
     std::unique_ptr<WorkerContext> context_;
-    std::unique_ptr<TCPDataServer> data_server_;
+    std::unique_ptr<TransportLayer> data_transport_;  // Worker间数据传输
     
     void handle_message(const Message& msg);
     void execute_task(const TaskAssignMessage& msg);
@@ -680,12 +771,23 @@ public:
 private:
     uint64_t worker_id_;
     std::vector<std::string> attributes_;
-    TCPClient* client_;
+    TransportLayer* transport_;
+};
+
+class IndexEntry {
+public:
+    std::string object_name;
+    std::string file_name;  // 所属数据文件名
+    int64_t offset;
+    int64_t size;
+    bool is_large;
+    int block_count;
 };
 
 class LocalIndex {
 public:
-    void add_entry(const std::string& name, int64_t offset, int64_t size, bool is_large, int block_count);
+    void add_entry(const std::string& name, const std::string& file_name, 
+                   int64_t offset, int64_t size, bool is_large, int block_count);
     IndexEntry query(const std::string& name);
 private:
     std::map<std::string, IndexEntry> entries_;
@@ -1172,8 +1274,7 @@ src/
 │   │   ├── storage_manager.cpp
 │   │   ├── database.cpp
 │   │   ├── local_index.cpp
-│   │   ├── tcp_client.cpp
-│   │   ├── tcp_server.cpp
+│   │   ├── transport.cpp         # TransportLayer实现（TCP等）
 │   │   ├── serializer.cpp
 │   ├── export/         # pybind11导出
 │   │   ├── core_export.cpp
@@ -1451,12 +1552,11 @@ void MasterReactor::force_stop() {
     running_ = false;
     
     // 立即停止所有线程
-    if (io_thread_.joinable()) io_thread_.detach();
     if (heartbeat_thread_.joinable()) heartbeat_thread_.detach();
     if (scheduler_thread_.joinable()) scheduler_thread_.detach();
     
     // 关闭连接
-    server_->close();
+    transport_->close_all();
 }
 
 void MasterReactor::cleanup() {
@@ -1528,54 +1628,77 @@ Force quitting...
 
 ## 十九、Reactor模式架构
 
-### 19.1 整体架构
+### 19.1 线程模型设计原则
+
+- **消息处理全在C++侧**：Master和Worker的消息处理（解析、路由、元数据更新、调度决策）都是快速C++操作，不需要线程池
+- **单线程事件循环**：使用select/poll/epoll处理多连接，一个线程即可处理所有Worker的消息
+- **唯一GIL线程**：只有Worker的Python任务执行线程涉及GIL
+- **后台线程**：心跳、数据服务器等需要独立socket的模块使用独立线程
+
+### 19.2 整体架构
 
 ```
 Master Node:
 ┌─────────────────────────────────────────────────────────────────┐
-│  I/O Thread (C++)                                                │
-│  ├─ TCP Server (监听端口)                                        │
-│  ├─ Message Receiver → Dispatcher                                │
-│  ├─ Sender (发送响应/广播)                                        │
+│                    Main Thread (C++)                              │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │ Event Loop:                                                 ││
+│  │   1. accept新连接 (epoll/select)                            ││
+│  │   2. recv消息 → 解析 → 调用Handler处理                     ││
+│  │   3. send响应/广播                                          ││
+│  │   4. 回到1                                                  ││
 │  └─────────────────────────────────────────────────────────────┘│
-│  Worker Thread Pool (C++)                                        │
-│  ├─ Handler 1, Handler 2, ... (消息处理，不涉及GIL)              │
-│  └─────────────────────────────────────────────────────────────┘│
-│  Background Threads (C++)                                        │
-│  ├─ Heartbeat Monitor Thread                                     │
-│  ├─ Periodic Scheduler Thread                                    │
-│  └─────────────────────────────────────────────────────────────┘│
+│                                                                  │
+│  ┌──────────────────┐  ┌──────────────────────────────────────┐│
+│  │ Heartbeat Thread │  │ Scheduler Thread                      ││
+│  │ (心跳检测)       │  │ (定期备份检查/任务调度)               ││
+│  └──────────────────┘  └──────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────┘
 
 Worker Node:
 ┌─────────────────────────────────────────────────────────────────┐
-│  I/O Thread (C++)                                                │
-│  ├─ TCP Client (连接Master)                                      │
-│  ├─ Message Receiver → Dispatcher                                │
-│  ├─ Sender                                                       │
+│                    Main Thread (C++)                              │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │ Event Loop:                                                 ││
+│  │   1. recv Master消息 → 解析 → 路由处理                      ││
+│  │      - TaskAssign → 放入task_queue                          ││
+│  │      - DataRequest → 从本地读取并发送                       ││
+│  │      - Shutdown → 设置running=false                         ││
+│  │   2. recv其他Worker数据请求 → 响应                          ││
+│  │   3. 回到1                                                  ││
 │  └─────────────────────────────────────────────────────────────┘│
-│  Worker Threads (C++)                                            │
-│  ├─ Handler (消息处理，不涉及GIL)                                 │
-│  └─────────────────────────────────────────────────────────────┘│
-│  Background Threads (C++)                                        │
-│  ├─ Heartbeat Sender Thread                                      │
-│  ├─ Data Server Thread (响应其他Worker请求)                      │
-│  └─────────────────────────────────────────────────────────────┘│
-│  Task Execution Thread (Python)                                  │
-│  ├─ 唯一涉及GIL的线程                                            │
-│  ├─ 执行Python任务函数                                            │
-│  └─────────────────────────────────────────────────────────────┘│
+│                                                                  │
+│  ┌──────────────────┐  ┌──────────────────────────────────────┐│
+│  │ Heartbeat Thread │  │ Data Server Thread                    ││
+│  │ (心跳发送)       │  │ (响应其他Worker的数据请求)             ││
+│  └──────────────────┘  └──────────────────────────────────────┘│
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────────┐│
+│  │ Task Execution Thread (Python)                                ││
+│  │ (唯一涉及GIL，从task_queue取任务执行)                         ││
+│  └──────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────┘
+
+总计：
+  Master: 3线程（1 Main + 1 Heartbeat + 1 Scheduler）
+  Worker: 4线程（1 Main + 1 Heartbeat + 1 DataServer + 1 TaskExec）
 ```
 
-### 19.2 GIL规避原则
+### 19.3 为什么Master/Worker不需要消息处理线程池
 
-| 线程 | 实现语言 | 是否涉及GIL |
-|------|---------|-------------|
-| I/O Thread | C++ | 不涉及 |
-| Worker Thread Pool | C++ | 不涉及 |
-| Background Threads | C++ | 不涉及 |
-| Task Execution Thread | Python | **涉及GIL（唯一）** |
+| 操作 | 性质 | 是否需要多线程 |
+|------|------|---------------|
+| 消息解析 | 快速C++操作（反序列化+路由） | 不需要 |
+| 元数据更新 | 快速内存操作（map查找/插入） | 不需要 |
+| 调度决策 | 快速计算（依赖图查询+FIFO） | 不需要 |
+| 任务路由 | 放入队列 | 不需要 |
+| 数据读取 | 计算offset+读文件 | 单线程文件I/O更安全 |
+| 心跳处理 | 定时器驱动 | 独立线程，不在事件循环中 |
+
+**关键点**：
+- Master Main Thread用**select/poll/epoll**处理多连接，一个线程处理所有Worker消息
+- Worker Main Thread同理，一个线程处理Master消息
+- 需要独立线程的只有：心跳（定时器）、数据服务器（独立socket）、任务执行（GIL）
 
 ---
 
@@ -1587,10 +1710,10 @@ Worker Node:
 // src/core/cpp/reactor.h
 class Reactor {
 public:
-    Reactor();
+    Reactor(const std::string& transport_type = "tcp");
     
-    void start();
-    void stop();
+    void start();    // 启动主循环 + 后台线程
+    void stop();     // 停止所有线程
     
     void register_handler(MessageType type, 
         std::function<HandlerResult(const std::string&)> handler);
@@ -1599,18 +1722,15 @@ public:
     void broadcast(const std::string& msg_bytes);
 
 private:
-    std::unique_ptr<TCPTransport> transport_;
-    std::thread io_thread_;
-    std::thread_pool worker_pool_;
+    std::unique_ptr<TransportLayer> transport_;  // 通过create_transport()创建
+    std::unique_ptr<MessageProtocol> protocol_;
     
     std::map<MessageType, std::function<HandlerResult(const std::string&)>> handlers_;
     
-    std::queue<MessageTask> message_queue_;
-    std::mutex queue_mutex_;
-    std::condition_variable queue_cv_;
+    bool running_;
     
-    void io_loop();
-    void worker_loop();
+    // 主循环（事件循环，单线程处理所有消息）
+    void main_loop();
 };
 ```
 
@@ -1623,14 +1743,20 @@ public:
     MasterReactor(BackupManager*, MetadataManager*, WorkerManager*, 
                   TaskScheduler*, HeartbeatMonitor*);
     
-    void start_background_threads();
+    void start();  // 启动主循环 + 后台线程
+    void stop();
+    
+    void wait_for_all_tasks_complete();
+    void force_stop();
+    void cleanup();
 
 private:
-    std::thread heartbeat_check_thread_;
-    std::thread periodic_scheduler_thread_;
+    // 后台线程
+    std::thread heartbeat_thread_;
+    std::thread scheduler_thread_;
     
-    void heartbeat_check_loop();
-    void periodic_scheduler_loop();
+    void heartbeat_loop();     // 心跳检测
+    void scheduler_loop();    // 定期备份检查 + 任务调度
     void init_handlers();
 };
 ```
@@ -1644,25 +1770,26 @@ public:
     WorkerReactor(const std::string& master_addr, const std::string& role,
                   StorageManager*, LocalIndex*);
     
-    void start_background_threads();
+    void start();  // 启动主循环 + 后台线程
+    void stop();
     
-    // Python线程调用：等待任务
+    // Python线程调用
     TaskAssignMessage wait_for_task();
-    
-    // Python线程调用：报告完成
     void report_task_complete(const TaskCompleteMessage& msg);
     void report_task_failed(const TaskFailedMessage& msg);
 
 private:
+    // 后台线程
     std::thread heartbeat_thread_;
     std::thread data_server_thread_;
     
+    // Python任务队列
     std::queue<TaskAssignMessage> task_queue_;
     std::mutex task_queue_mutex_;
     std::condition_variable task_queue_cv_;
     
-    void heartbeat_loop();
-    void data_server_loop();
+    void heartbeat_loop();      // 心跳发送
+    void data_server_loop();    // 数据服务（独立socket）
     void init_handlers();
 };
 ```
@@ -1680,7 +1807,7 @@ public:
     BackupManager(WorkerManager* worker_manager, MetadataManager* metadata);
     
     void on_data_ready(const std::string& data_path, 
-                       const DataLocation& location, bool need_backup);
+                       const DataLocation& location, bool backup);
     void record_access(const std::string& data_path);
     void periodic_check(int threshold, int target_replicas);
     uint64_t create_backup_task(const std::string& data_path, 
@@ -1808,7 +1935,8 @@ def start_master():
     
     agent = MasterReactor()
     agent.start()
-    agent.run_main_loop()
+    agent.wait_for_all_tasks_complete()
+    agent.cleanup()
     agent.stop()
 ```
 
@@ -1904,10 +2032,11 @@ process_data(db_b, "file2")
 
 1. **Python主进程**：用户脚本执行、任务定义、装饰器
 2. **C++底层实现**：存储、通信、消息处理、调度（避免GIL）
-3. **Reactor模式**：I/O线程 + Worker线程池 + 后台线程
+3. **Reactor模式**：Main Thread事件循环 + 后台线程（心跳/调度/数据服务）
 4. **唯一GIL线程**：Worker的Python任务执行线程
 5. **动态创建**：Database轻量级，StorageManager按需创建writer
 6. **宏封装**：序列化、导出均用宏，方便替换底层库
+7. **传输层抽象**：TransportLayer接口支持未来替换TCP为UDP/RDMA
 
 ### 24.3 用户使用示例
 
@@ -1918,8 +2047,9 @@ from fly.task import as_task, task_name
 import cpp_module
 
 # 配置
+# 设置配置（track_writes启用写入跟踪）
 config = get_config()
-config.set(heartbeat_timeout=120)
+config.set(heartbeat_timeout=120, track_writes=1)
 
 # 启动Workers
 master.launch_local_workers([
@@ -1933,7 +2063,7 @@ master.launch_local_workers([
 def process_data(db, name):
     raw = db.read_object(f"input/{name}")
     result = cpp_module.algorithm(raw)
-    db.write_object(f"output/{name}.result", result, need_backup=True)
+    db.write_object(f"output/{name}.result", result, backup=True)
 
 # 创建Database并提交任务
 db_a = Database("/data/project_a")
