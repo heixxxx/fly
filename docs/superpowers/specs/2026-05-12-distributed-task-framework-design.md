@@ -92,7 +92,7 @@ fly --worker_mode --master master:8000 --role storage_only
 
 ### 3.4 launch_workers接口设计
 
-三个独立接口，支持多种启动方式：
+三个独立接口，支持多种启动方式。**所有接口均为异步非阻塞**：启动Worker进程后立即返回，不等待Worker连接或就绪。
 
 ```python
 # user_tasks.py
@@ -111,7 +111,7 @@ config.set(
 # Database指定存储路径
 db = Database(storage_path="/data")
 
-# 1. SSH方式启动
+# 1. SSH方式启动（非阻塞，立即返回）
 master.launch_ssh_workers(
     workers=[
         {"host": "192.168.1.10", "role": "hybrid"},
@@ -121,7 +121,7 @@ master.launch_ssh_workers(
     ssh_key="/path/to/key",
 )
 
-# 2. 本地方式启动
+# 2. 本地方式启动（非阻塞，立即返回）
 master.launch_local_workers(
     workers=[
         {"role": "hybrid"},
@@ -129,7 +129,7 @@ master.launch_local_workers(
     ],
 )
 
-# 3. 自定义方式启动（bsub/srun等）
+# 3. 自定义方式启动（非阻塞，立即返回）
 master.launch_custom_workers(
     workers=[
         {"role": "hybrid"},
@@ -141,13 +141,19 @@ master.launch_custom_workers(
 config.set(heartbeat_timeout=60)  # RuntimeError: Config must be set before workers are launched
 ```
 
-**启动命令生成逻辑**：
+**启动命令与异步策略**：
 
-| 接口 | 生成的启动命令 |
-|------|--------------|
-| `launch_ssh_workers` | `ssh -i {key} {user}@{host} 'fly --worker_mode --master {addr} --role {role}'` |
-| `launch_local_workers` | `subprocess.Popen(["fly", "--worker_mode", "--master", addr, "--role", role])` |
-| `launch_custom_workers` | `{submit_command} 'fly --worker_mode --master {addr} --role {role}'` |
+| 接口 | 生成的启动命令 | 异步策略 |
+|------|--------------|---------|
+| `launch_ssh_workers` | `ssh -i {key} {user}@{host} 'nohup fly --worker_mode --master {addr} --role {role} > /dev/null 2>&1 &'` | `subprocess.Popen` + SSH后台执行，立即返回 |
+| `launch_local_workers` | `subprocess.Popen(["fly", "--worker_mode", "--master", addr, "--role", role])` | `subprocess.Popen` 创建子进程，立即返回 |
+| `launch_custom_workers` | `subprocess.Popen(..., shell=True)` 执行 `{submit_command} 'fly --worker_mode --master {addr} --role {role}'` | `subprocess.Popen`，立即返回 |
+
+**关键点**：
+- 所有`launch_*`接口内部统一使用`subprocess.Popen`，创建子进程后立即返回，不等待子进程退出
+- SSH方式通过`nohup ... &`确保远程Worker在后台运行，SSH命令本身立即完成
+- Worker的注册就绪通过心跳机制确认，而非launch接口阻塞等待
+- Master的Reactor事件循环在launch接口返回后才启动
 
 ---
 

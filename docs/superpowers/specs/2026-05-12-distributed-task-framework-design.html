@@ -251,7 +251,7 @@ fly --worker_mode --master master:8000 --role storage_only
 <li>进入等待任务循环</li>
 </ol>
 <h3 id="34-launch_workers">3.4 launch_workers接口设计</h3>
-<p>三个独立接口，支持多种启动方式：</p>
+<p>三个独立接口，支持多种启动方式。<strong>所有接口均为异步非阻塞</strong>：启动Worker进程后立即返回，不等待Worker连接或就绪。</p>
 <pre><code class="language-python"># user_tasks.py
 from fly import master, Database, get_config
 
@@ -268,7 +268,7 @@ config.set(
 # Database指定存储路径
 db = Database(storage_path=&quot;/data&quot;)
 
-# 1. SSH方式启动
+# 1. SSH方式启动（非阻塞，立即返回）
 master.launch_ssh_workers(
     workers=[
         {&quot;host&quot;: &quot;192.168.1.10&quot;, &quot;role&quot;: &quot;hybrid&quot;},
@@ -278,7 +278,7 @@ master.launch_ssh_workers(
     ssh_key=&quot;/path/to/key&quot;,
 )
 
-# 2. 本地方式启动
+# 2. 本地方式启动（非阻塞，立即返回）
 master.launch_local_workers(
     workers=[
         {&quot;role&quot;: &quot;hybrid&quot;},
@@ -286,7 +286,7 @@ master.launch_local_workers(
     ],
 )
 
-# 3. 自定义方式启动（bsub/srun等）
+# 3. 自定义方式启动（非阻塞，立即返回）
 master.launch_custom_workers(
     workers=[
         {&quot;role&quot;: &quot;hybrid&quot;},
@@ -297,29 +297,38 @@ master.launch_custom_workers(
 # 启动worker后再设置config会报错
 config.set(heartbeat_timeout=60)  # RuntimeError: Config must be set before workers are launched
 </code></pre>
-<p><strong>启动命令生成逻辑</strong>：</p>
+<p><strong>启动命令与异步策略</strong>：</p>
 <table>
 <thead>
 <tr>
 <th>接口</th>
 <th>生成的启动命令</th>
+<th>异步策略</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><code>launch_ssh_workers</code></td>
-<td><code>ssh -i {key} {user}@{host} 'fly --worker_mode --master {addr} --role {role}'</code></td>
+<td><code>ssh -i {key} {user}@{host} 'nohup fly --worker_mode --master {addr} --role {role} &gt; /dev/null 2&gt;&amp;1 &amp;'</code></td>
+<td><code>subprocess.Popen</code> + SSH后台执行，立即返回</td>
 </tr>
 <tr>
 <td><code>launch_local_workers</code></td>
 <td><code>subprocess.Popen(["fly", "--worker_mode", "--master", addr, "--role", role])</code></td>
+<td><code>subprocess.Popen</code> 创建子进程，立即返回</td>
 </tr>
 <tr>
 <td><code>launch_custom_workers</code></td>
-<td><code>{submit_command} 'fly --worker_mode --master {addr} --role {role}'</code></td>
+<td><code>subprocess.Popen(..., shell=True)</code> 执行 <code>{submit_command} 'fly --worker_mode --master {addr} --role {role}'</code></td>
+<td><code>subprocess.Popen</code>，立即返回</td>
 </tr>
 </tbody>
 </table>
+<p><strong>关键点</strong>：
+- 所有<code>launch_*</code>接口内部统一使用<code>subprocess.Popen</code>，创建子进程后立即返回，不等待子进程退出
+- SSH方式通过<code>nohup ... &amp;</code>确保远程Worker在后台运行，SSH命令本身立即完成
+- Worker的注册就绪通过心跳机制确认，而非launch接口阻塞等待
+- Master的Reactor事件循环在launch接口返回后才启动</p>
 <hr />
 <h2 id="_7">四、配置管理</h2>
 <h3 id="41-config">4.1 Config单例模式</h3>
