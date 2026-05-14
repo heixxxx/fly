@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../cpp/export_macros.h"
+#include <export/cpp/export_macros.h>
 
 TEST(ExportMacrosTest, ModuleBeginEndSyntax) {
     EXPECT_TRUE(true);

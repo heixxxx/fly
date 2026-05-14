@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../cpp/config.h"
+#include <core/cpp/config.h>
 
 TEST(ConfigTest, SingletonReturnsSameInstance) {
     Config& c1 = Config::instance();

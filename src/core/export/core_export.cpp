@@ -1,6 +1,6 @@
-#include "../../export/cpp/export_macros.h"
-#include "../../serialization/cpp/serialization_macros.h"
-#include "../cpp/config.h"
+#include <export/cpp/export_macros.h>
+#include <serialization/cpp/serialization_macros.h>
+#include <core/cpp/config.h>
 
 FLY_EXPORT_MODULE_BEGIN(_fly_core)
 

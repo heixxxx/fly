@@ -2581,10 +2581,14 @@ db_a.freeze()  # 标记db_a为只读，触发Master后处理
    - FLY_EXPORT_*宏封装nanobind绑定（支持未来替换为pybind11/CPython API等）
 10. **传输层抽象**：TransportLayer接口支持未来替换TCP为UDP/RDMA
 11. **Data Server线程池**：Worker数据服务采用线程池，默认单线程，可配置以支持高并发读请求
-12. **C++20 Modules友好架构**：
-   - zpp_bits：单头文件、C++20原生、module兼容
-   - nanobind：显式避开C++20 `module`关键字冲突
-   - Bazel 9.0+支持cc_library的module_interfaces属性
+12. **C++20 技术决策**：
+    - **Python绑定模块**：使用传统 headers（nanobind 架构与 C++20 Modules 根本不兼容）
+      - Python C 扩展需要 `PyInit_*` 在共享库；C++20 Modules 生成 `.pcm` 文件
+      - `extern "C"` 链接与 C++20 module export 语义冲突
+      - 整个 Python 绑定生态（nanobind/pybind11/Boost.Python）均不支持 C++20 Modules
+    - **纯 C++ 模块**：后续可迁移至 C++20 Modules（需 Bazel 9.0+、Clang 17+）
+    - zpp_bits：单头文件、C++20 原生
+    - nanobind：`module_` 命名避开 C++20 关键字冲突（仅解决命名问题）
 
 ### 24.3 用户使用示例
 

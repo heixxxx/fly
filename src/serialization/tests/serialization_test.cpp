@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../cpp/serialization_macros.h"
+#include <serialization/cpp/serialization_macros.h>
 
 struct TestMessage {
     int32_t id;
