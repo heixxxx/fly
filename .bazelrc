@@ -10,3 +10,5 @@ build --action_env=PATH
 
 # Test output
 test --test_output=errors
+
+# GCC 12+ compatibility: allow absolute paths for built-in headers

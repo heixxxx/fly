@@ -18,12 +18,12 @@ http_archive(
     build_file = "@//third_party:nanobind.BUILD",
 )
 
-# zpp_bits - single-header C++20 serialization library
+# bitsery - header-only C++ serialization library with versioning support
 http_archive(
-    name = "zpp_bits",
-    strip_prefix = "zpp_bits-4.4.12",
-    urls = ["https://github.com/eyalz800/zpp_bits/archive/refs/tags/v4.4.12.tar.gz"],
-    build_file = "@//third_party:zpp_bits.BUILD",
+    name = "bitsery",
+    strip_prefix = "bitsery-5.2.4",
+    urls = ["https://github.com/fraillt/bitsery/archive/refs/tags/v5.2.4.tar.gz"],
+    build_file = "@//third_party:bitsery.BUILD",
 )
 
 # Google Test
