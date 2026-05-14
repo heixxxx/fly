@@ -19,7 +19,7 @@ namespace fly_export = nanobind;
         [](const class_type& obj) { \
             std::string serialized; \
             FLY_ENCODE(obj, serialized); \
-            return fly_export::bytes(serialized); \
+            return fly_export::bytes(serialized.data(), serialized.size()); \
         }, \
         [](fly_export::bytes bytes) { \
             std::string data = bytes.c_str(); \
@@ -34,7 +34,7 @@ namespace fly_export = nanobind;
         [](const std::shared_ptr<class_type>& obj) { \
             std::string serialized; \
             FLY_ENCODE(*obj, serialized); \
-            return fly_export::bytes(serialized); \
+            return fly_export::bytes(serialized.data(), serialized.size()); \
         }, \
         [](fly_export::bytes bytes) { \
             std::string data = bytes.c_str(); \
@@ -115,3 +115,15 @@ namespace fly_export = nanobind;
 #define FLY_EXPORT_ENUM_VALUE(enum_type, name) .value(#name, enum_type::name)
 
 #define FLY_EXPORT_ENUM_VALUE_WITH_NAME(enum_type, export_name, value) .value(export_name, enum_type::value)
+
+#define FLY_EXPORT_SERIALIZE(Cls) \
+    .def("__getstate__", [](const Cls& obj) -> fly_export::bytes { \
+        std::string serialized; \
+        FLY_ENCODE(obj, serialized); \
+        return fly_export::bytes(serialized.data(), serialized.size()); \
+    }) \
+    .def("__setstate__", [](Cls& obj, fly_export::bytes b) { \
+        std::string data(b.c_str(), b.size()); \
+        FLY_DECODE(data, Cls, obj); \
+    }) \
+    .def_prop_ro("is_cpp", [](const Cls&) { return true; })

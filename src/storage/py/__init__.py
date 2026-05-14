@@ -1,11 +1,12 @@
 from _fly_storage import (
-    Database, StorageManager,
+    StorageManager,
     IndexEntry, DbMeta, WorkerInfo,
     get_storage_manager, create_database,
 )
+from .database import FlyDatabase
 
 __all__ = [
-    'Database', 'StorageManager',
+    'FlyDatabase', 'StorageManager',
     'IndexEntry', 'DbMeta', 'WorkerInfo',
     'get_storage_manager', 'create_database',
 ]

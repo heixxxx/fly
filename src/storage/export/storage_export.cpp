@@ -7,6 +7,8 @@
 #include <storage/cpp/db_meta.h>
 #include <storage/cpp/compressor.h>
 #include <nanobind/operators.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/pair.h>
 
 FLY_EXPORT_MODULE_BEGIN(_fly_storage)
 
@@ -25,50 +27,19 @@ FLY_EXPORT_FUNCTION_WITH_NAME(m, "compression_name_from_type", [](CompressionTyp
 });
 
 fly_export::class_<Database>(m, "Database")
-    .def("write_object", [](Database& db, const CMString& name, fly_export::object obj) -> CMString {
-        auto state = obj.attr("__getstate__")();
-        auto bytes = fly_export::cast<fly_export::bytes>(state);
-        CMString data(bytes.c_str(), bytes.size());
-        auto type_obj = obj.type();
-        CMString py_name = fly_export::cast<CMString>(type_obj.attr("__name__"));
-        return db.write_object_typed(name, data, py_name);
+    .def("_write_typed", [](Database& db, const CMString& name,
+                             fly_export::bytes data, const CMString& py_name) -> CMString {
+        CMString str_data(data.c_str(), data.size());
+        return db.write_object_typed(name, str_data, py_name);
     })
-    .def("read_object", [](Database& db, const CMString& name) -> fly_export::object {
+    .def("_read_typed", [](Database& db, const CMString& name) -> fly_export::tuple {
         ReadResult result = db.read_object_typed(name);
-        if (!result.py_name.empty()) {
-            auto sys = fly_export::module_::import_("sys");
-            auto modules = sys.attr("modules");
-            fly_export::object cls = fly_export::none();
-            if (fly_export::hasattr(modules, "__contains__") &&
-                modules.attr("__contains__")("_fly_storage")) {
-                auto storage_mod = modules["_fly_storage"];
-                if (fly_export::hasattr(storage_mod, result.py_name.c_str())) {
-                    cls = storage_mod.attr(result.py_name.c_str());
-                }
-            }
-            if (cls.is_none()) {
-                auto items = modules.attr("items")();
-                for (auto item : items) {
-                    auto pair = fly_export::cast<fly_export::tuple>(item);
-                    auto mod = pair[1];
-                    if (fly_export::hasattr(mod, result.py_name.c_str())) {
-                        cls = mod.attr(result.py_name.c_str());
-                        break;
-                    }
-                }
-            }
-            if (!cls.is_none()) {
-                fly_export::object obj = cls.attr("__new__")(cls);
-                fly_export::bytes state_bytes(
-                    reinterpret_cast<const char*>(result.data_buffer.data()),
-                    result.data_buffer.size());
-                obj.attr("__setstate__")(state_bytes);
-                return obj;
-            }
-        }
-        return fly_export::bytes(
-            reinterpret_cast<const char*>(result.data_buffer.data()),
-            result.data_buffer.size());
+        return fly_export::make_tuple(
+            fly_export::bytes(
+                reinterpret_cast<const char*>(result.data_buffer.data()),
+                result.data_buffer.size()),
+            result.py_name
+        );
     })
     .def("write_object_raw", [](Database& db, const CMString& name, const CMString& data) -> CMString {
         return db.write_object(name, data);
@@ -101,15 +72,7 @@ fly_export::class_<IndexEntry>(m, "IndexEntry")
     .def_ro("is_large", &IndexEntry::is_large)
     .def_ro("block_count", &IndexEntry::block_count)
     .def_ro("compression_type", &IndexEntry::compression_type)
-    .def("__getstate__", [](const IndexEntry& obj) -> fly_export::bytes {
-        std::string serialized;
-        FLY_ENCODE(obj, serialized);
-        return fly_export::bytes(serialized.data(), serialized.size());
-    })
-    .def("__setstate__", [](IndexEntry& obj, fly_export::bytes b) {
-        std::string data(b.c_str(), b.size());
-        FLY_DECODE(data, IndexEntry, obj);
-    });
+    FLY_EXPORT_SERIALIZE(IndexEntry);
 
 fly_export::class_<DbMeta>(m, "DbMeta")
     .def(fly_export::init<>())
@@ -117,15 +80,7 @@ fly_export::class_<DbMeta>(m, "DbMeta")
     .def_ro("base_path", &DbMeta::base_path)
     .def_ro("created_at", &DbMeta::created_at)
     .def_ro("frozen_at", &DbMeta::frozen_at)
-    .def("__getstate__", [](const DbMeta& obj) -> fly_export::bytes {
-        std::string serialized;
-        FLY_ENCODE(obj, serialized);
-        return fly_export::bytes(serialized.data(), serialized.size());
-    })
-    .def("__setstate__", [](DbMeta& obj, fly_export::bytes b) {
-        std::string data(b.c_str(), b.size());
-        FLY_DECODE(data, DbMeta, obj);
-    });
+    FLY_EXPORT_SERIALIZE(DbMeta);
 
 fly_export::class_<WorkerInfo>(m, "WorkerInfo")
     .def(fly_export::init<>())
@@ -136,15 +91,7 @@ fly_export::class_<WorkerInfo>(m, "WorkerInfo")
     .def_ro("idx_file", &WorkerInfo::idx_file)
     .def_ro("idx_entry_count", &WorkerInfo::idx_entry_count)
     .def_ro("launch_command", &WorkerInfo::launch_command)
-    .def("__getstate__", [](const WorkerInfo& obj) -> fly_export::bytes {
-        std::string serialized;
-        FLY_ENCODE(obj, serialized);
-        return fly_export::bytes(serialized.data(), serialized.size());
-    })
-    .def("__setstate__", [](WorkerInfo& obj, fly_export::bytes b) {
-        std::string data(b.c_str(), b.size());
-        FLY_DECODE(data, WorkerInfo, obj);
-    });
+    FLY_EXPORT_SERIALIZE(WorkerInfo);
 
 FLY_EXPORT_FUNCTION_REF_WITH_NAME(m, "get_storage_manager", []() -> StorageManager& { return StorageManager::instance(); });
 
