@@ -32,3 +32,10 @@ http_archive(
     strip_prefix = "googletest-1.14.0",
     urls = ["https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz"],
 )
+
+# Hedron's bazel-compile-commands-extractor for clangd LSP support
+http_archive(
+    name = "hedron_compile_commands",
+    strip_prefix = "bazel-compile-commands-extractor-main",
+    urls = ["https://github.com/hedronvision/bazel-compile-commands-extractor/archive/refs/heads/main.tar.gz"],
+)
