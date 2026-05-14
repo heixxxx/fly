@@ -1,0 +1,22 @@
+# Bazel
+bazel-bin
+bazel-fly
+bazel-out
+bazel-testlogs
+.bazelrc.user
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.pytest_cache
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store

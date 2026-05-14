@@ -1,7 +1,4 @@
-# nanobind BUILD file
-# nanobind is a thin bindings library between C++ and Python
-
-load("@com_google_googletest//:gtest.bzl", "gtest_dep")  # not used, but available
+# nanobind BUILD file (overrides upstream BUILD.bazel)
 
 cc_library(
     name = "nanobind",
@@ -10,22 +7,33 @@ cc_library(
         "include/nanobind/**/*.inc",
     ]),
     includes = ["include"],
-    copts = ["-std=c++20"],
+    copts = [
+        "-std=c++20",
+        "-I/usr/include/python3.10",
+    ],
     visibility = ["//visibility:public"],
 )
 
-# nanobind also has src files for the runtime
 cc_library(
     name = "nanobind_src",
-    srcs = glob([
-        "src/**/*.cpp",
-        "src/**/*.h",
-    ]),
+    srcs = [
+        "src/nb_combined.cpp",
+    ],
     hdrs = glob([
         "include/nanobind/**/*.h",
         "include/nanobind/**/*.inc",
+        "src/*.h",
+        "src/*.cpp",
     ]),
     includes = ["include", "src"],
-    copts = ["-std=c++20", "-fno-exceptions"],
+    deps = ["@robin_map//:robin_map"],
+    copts = [
+        "-std=c++20",
+        "-I/usr/include/python3.10",
+        "-DNB_COMPACT_ASSERTIONS",
+    ],
+    linkopts = ["-lpython3.10"],
+    linkstatic = True,
+    alwayslink = True,
     visibility = ["//visibility:public"],
 )

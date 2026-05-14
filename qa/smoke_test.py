@@ -3,12 +3,19 @@ Layer 0 smoke test: Config + serialization + export integration
 Tests verify the C++ modules work correctly when imported from Python
 """
 
+import sys
+import os
 import pytest
+
+# Add bazel-bin output to path for extension module discovery
+_bazel_bin = os.path.join(os.path.dirname(__file__), '..', 'bazel-bin', 'src', 'core', 'export')
+if os.path.exists(_bazel_bin):
+    sys.path.insert(0, _bazel_bin)
 
 
 def test_config_singleton():
     """Verify Config is a singleton - same instance returned"""
-    from _fly_core import get_config
+    from _core import get_config
     c1 = get_config()
     c2 = get_config()
     assert c1 is c2
@@ -16,9 +23,9 @@ def test_config_singleton():
 
 def test_config_set_get_int():
     """Verify set_int and get_int work correctly"""
-    from _fly_core import get_config
+    from _core import get_config
     config = get_config()
-    config.reset()  # Reset to defaults for clean test
+    config.reset()
     
     config.set_int("heartbeat_timeout", 60)
     assert config.get_int("heartbeat_timeout") == 60
@@ -26,7 +33,7 @@ def test_config_set_get_int():
 
 def test_config_set_get_str():
     """Verify set_str and get_str work correctly"""
-    from _fly_core import get_config
+    from _core import get_config
     config = get_config()
     config.reset()
     
@@ -36,7 +43,7 @@ def test_config_set_get_str():
 
 def test_config_defaults():
     """Verify default values are correct"""
-    from _fly_core import get_config
+    from _core import get_config
     config = get_config()
     config.reset()
     
@@ -48,7 +55,7 @@ def test_config_defaults():
 
 def test_config_immutable_after_launch():
     """Verify Config throws RuntimeError when set after workers launched"""
-    from _fly_core import get_config
+    from _core import get_config
     config = get_config()
     config.reset()
     
@@ -63,7 +70,7 @@ def test_config_immutable_after_launch():
 
 def test_config_is_workers_launched():
     """Verify is_workers_launched returns correct state"""
-    from _fly_core import get_config
+    from _core import get_config
     config = get_config()
     config.reset()
     

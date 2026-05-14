@@ -2,6 +2,14 @@ workspace(name = "fly")
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
+# robin_map - hash map used by nanobind (need version >= 1.3.0, < 2.0.0)
+http_archive(
+    name = "robin_map",
+    strip_prefix = "robin-map-1.3.0",
+    urls = ["https://github.com/Tessil/robin-map/archive/refs/tags/v1.3.0.tar.gz"],
+    build_file = "@//third_party:robin_map.BUILD",
+)
+
 # nanobind - thin bindings between C++ and Python
 http_archive(
     name = "nanobind",
