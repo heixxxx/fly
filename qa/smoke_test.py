@@ -15,7 +15,7 @@ if os.path.exists(_bazel_bin):
 
 def test_config_singleton():
     """Verify Config is a singleton - same instance returned"""
-    from _core import get_config
+    from _fly_core import get_config
     c1 = get_config()
     c2 = get_config()
     assert c1 is c2
@@ -23,7 +23,7 @@ def test_config_singleton():
 
 def test_config_set_get_int():
     """Verify set_int and get_int work correctly"""
-    from _core import get_config
+    from _fly_core import get_config
     config = get_config()
     config.reset()
     
@@ -33,7 +33,7 @@ def test_config_set_get_int():
 
 def test_config_set_get_str():
     """Verify set_str and get_str work correctly"""
-    from _core import get_config
+    from _fly_core import get_config
     config = get_config()
     config.reset()
     
@@ -43,7 +43,7 @@ def test_config_set_get_str():
 
 def test_config_defaults():
     """Verify default values are correct"""
-    from _core import get_config
+    from _fly_core import get_config
     config = get_config()
     config.reset()
     
@@ -55,7 +55,7 @@ def test_config_defaults():
 
 def test_config_immutable_after_launch():
     """Verify Config throws RuntimeError when set after workers launched"""
-    from _core import get_config
+    from _fly_core import get_config
     config = get_config()
     config.reset()
     
@@ -70,7 +70,7 @@ def test_config_immutable_after_launch():
 
 def test_config_is_workers_launched():
     """Verify is_workers_launched returns correct state"""
-    from _core import get_config
+    from _fly_core import get_config
     config = get_config()
     config.reset()
     

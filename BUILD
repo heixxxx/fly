@@ -7,9 +7,9 @@ load("@hedron_compile_commands//:refresh_compile_commands.bzl", "refresh_compile
 refresh_compile_commands(
     name = "refresh_compile_commands",
     targets = {
-        "//src/core/cpp:config": "",
-        "//src/core/export:_core.so": "",
-        "//src/serialization/cpp:serialization_macros": "",
-        "//src/export/cpp:export_macros": "",
+        "//src/core/cpp:fly_core_cpp": "",
+        "//src/core/export:_fly_core.so": "",
+        "//src/serialization/cpp:fly_serialization_macros": "",
+        "//src/export/cpp:fly_export_macros": "",
     },
 )

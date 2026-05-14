@@ -12,11 +12,11 @@
 
 ### 技术栈
 - **Python**: 流程控制、数据读写、任务定义
-- **C++20**: 存储层实现、性能敏感算法（使用C++20 Modules `import`/`export module`机制）
+- **C++20**: 存储层实现、性能敏感算法（当前使用headers，后续可迁移至C++20 Modules）
 - **nanobind**: C++与Python交互（通过FLY_EXPORT_*宏封装，支持未来替换）
 - **zpp_bits**: 二进制序列化（通过FLY_SERIALIZE_*宏封装，支持未来替换）
 - **TCP Socket**: 节点间通信（通过TransportLayer抽象层，支持未来替换为UDP/RDMA等）
-- **Bazel**: 构建系统（支持C++20 Modules编译）
+- **Bazel**: 构建系统（C++20标准，未来支持C++20 Modules编译）
 
 ---
 

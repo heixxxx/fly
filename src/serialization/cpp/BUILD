@@ -1,9 +1,10 @@
-# Fly serialization macros (placeholder for Task 3)
+# Fly serialization macros
 
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
-    name = "serialization_macros",
+    name = "fly_serialization_macros",
     hdrs = ["serialization_macros.h"],
     copts = ["-std=c++20"],
+    deps = ["@zpp_bits//:zpp_bits"],
 )

@@ -4,11 +4,13 @@
 package(default_visibility = ["//visibility:public"])
 
 cc_binary(
-    name = "_core.so",
+    name = "_fly_core.so",
     srcs = ["core_export.cpp"],
     deps = [
         "@nanobind//:nanobind_src",
-        "//src/core/cpp:config",
+        "//src/core/cpp:fly_core_cpp",
+        "//src/export/cpp:fly_export_macros",
+        "//src/serialization/cpp:fly_serialization_macros",
     ],
     copts = [
         "-std=c++20",
