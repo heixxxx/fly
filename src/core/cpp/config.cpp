@@ -65,8 +65,12 @@ const CMMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"block_size", 134217728},
     {"track_writes", 0},
     {"data_server_threads", 1},
+    {"compression_level", 0},
+    {"compression_threshold", 128},
+    {"compression_stream_chunk_size", 4194304},
 };
 
 const CMMap<CMString, CMString> Config::STR_DEFAULTS = {
     {"transport_type", "tcp"},
+    {"compression_type", "lz4"},
 };
