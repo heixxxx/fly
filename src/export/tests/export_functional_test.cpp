@@ -79,6 +79,7 @@ TEST(ExportMacrosFunctionalTest, EnumMacroCompiles) {
 struct SerializeForExportClass {
     int32_t id = 0;
     CMVector<int32_t> values = {};
+    FLY_SERIALIZE(id, values)
 };
 
 TEST(ExportMacrosFunctionalTest, SerializeIntegration) {
