@@ -62,3 +62,79 @@ TEST(ConfigTest, ResetRestoresDefaults) {
     config.reset();
     EXPECT_EQ(config.get_int("master_port"), 8000);
 }
+
+TEST(ConfigTest, UnknownKeyThrowsException) {
+    Config& config = Config::instance();
+    config.reset();
+    
+    EXPECT_THROW(config.get_int("nonexistent_key"), std::runtime_error);
+}
+
+TEST(ConfigTest, EmptyStringKey) {
+    Config& config = Config::instance();
+    config.reset();
+    
+    config.set_str("empty_key", "");
+    EXPECT_EQ(config.get_str("empty_key"), "");
+}
+
+TEST(ConfigTest, OverwriteExistingKey) {
+    Config& config = Config::instance();
+    config.reset();
+    
+    config.set_int("overwrite_test", 100);
+    EXPECT_EQ(config.get_int("overwrite_test"), 100);
+    
+    config.set_int("overwrite_test", 200);
+    EXPECT_EQ(config.get_int("overwrite_test"), 200);
+}
+
+TEST(ConfigTest, LargeIntValue) {
+    Config& config = Config::instance();
+    config.reset();
+    
+    config.set_int("large_value", 9223372036854775807LL);
+    EXPECT_EQ(config.get_int("large_value"), 9223372036854775807LL);
+}
+
+TEST(ConfigTest, NegativeIntValue) {
+    Config& config = Config::instance();
+    config.reset();
+    
+    config.set_int("negative_value", -1000000);
+    EXPECT_EQ(config.get_int("negative_value"), -1000000);
+}
+
+TEST(ConfigTest, LongStringKey) {
+    Config& config = Config::instance();
+    config.reset();
+    
+    CMString long_key = "very_long_config_key_name_that_tests_string_handling";
+    config.set_str(long_key, "value");
+    EXPECT_EQ(config.get_str(long_key), "value");
+}
+
+TEST(ConfigTest, UnicodeStringValue) {
+    Config& config = Config::instance();
+    config.reset();
+    
+    config.set_str("unicode_key", "你好世界");
+    EXPECT_EQ(config.get_str("unicode_key"), "你好世界");
+}
+
+TEST(ConfigTest, MultipleSetBeforeLaunch) {
+    Config& config = Config::instance();
+    config.reset();
+    
+    config.set_int("key1", 1);
+    config.set_int("key2", 2);
+    config.set_int("key3", 3);
+    config.set_str("str1", "a");
+    config.set_str("str2", "b");
+    
+    EXPECT_EQ(config.get_int("key1"), 1);
+    EXPECT_EQ(config.get_int("key2"), 2);
+    EXPECT_EQ(config.get_int("key3"), 3);
+    EXPECT_EQ(config.get_str("str1"), "a");
+    EXPECT_EQ(config.get_str("str2"), "b");
+}

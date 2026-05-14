@@ -1,13 +1,12 @@
-# Fly serialization tests (gtest)
+# Fly common types tests
 
 package(default_visibility = ["//visibility:public"])
 
 cc_test(
-    name = "serialization_test",
-    srcs = ["serialization_test.cpp"],
+    name = "common_types_test",
+    srcs = ["common_types_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/serialization/cpp:fly_serialization_macros",
         "//src/common/cpp:fly_common_types",
     ],
     copts = ["-std=c++20"],
