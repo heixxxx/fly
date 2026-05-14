@@ -7,5 +7,8 @@ cc_library(
     hdrs = ["serialization_macros.h"],
     strip_include_prefix = "/src",
     copts = ["-std=c++20"],
-    deps = ["@zpp_bits//:zpp_bits"],
+    deps = [
+        "@zpp_bits//:zpp_bits",
+        "//src/common/cpp:fly_common_types",
+    ],
 )

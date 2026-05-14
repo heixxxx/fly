@@ -8,4 +8,5 @@ cc_library(
     hdrs = ["config.h"],
     strip_include_prefix = "/src",
     copts = ["-std=c++20"],
+    deps = ["//src/common/cpp:fly_common_types"],
 )
