@@ -1,114 +1,132 @@
 import sys
 import os
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../../bazel-bin/src/agent/export'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../../bazel-bin/src/log/export'))
 
 import _fly_agent as agent
+import _fly_log as log
 
-def test_task_executor_creation():
-    """Test TaskExecutor basic creation"""
-    executor = agent.EXTaskExecutor()
-    assert executor.is_running() == False
-    print("PASS: test_task_executor_creation")
-
-def test_task_executor_result():
-    """Test TaskExecResult structure"""
-    result = agent.EXTaskExecResult()
-    result.task_id = 123
-    result.status = agent.EXTaskExecStatus.SUCCESS
-    result.output = "test output"
-    result.error = ""
+def test_master_worker_register():
+    log.init_master("test_logs/")
+    log.init_worker(1, "test_logs/")
     
-    assert result.task_id == 123
-    assert result.status == agent.EXTaskExecStatus.SUCCESS
-    assert result.output == "test output"
-    print("PASS: test_task_executor_result")
-
-def test_task_executor_cancel():
-    """Test TaskExecutor cancel operation"""
-    executor = agent.EXTaskExecutor()
-    executor.cancel()
-    assert executor.is_running() == False
-    print("PASS: test_task_executor_cancel")
-
-def test_master_agent_creation():
-    """Test MasterAgent basic creation"""
-    master = agent.EXAgentMaster("127.0.0.1", 8080)
-    assert master.is_running() == False
-    print("PASS: test_master_agent_creation")
-
-def test_master_agent_lifecycle():
-    """Test MasterAgent start/stop lifecycle"""
-    master = agent.EXAgentMaster("127.0.0.1", 8080)
-    
+    master = agent.EXAgentMaster("127.0.0.1", 19090)
     master.start()
-    assert master.is_running() == True
+    time.sleep(0.1)
+    
+    worker = agent.EXAgentWorker(1, "127.0.0.1", 19090)
+    worker.start()
+    time.sleep(0.2)
+    
+    assert worker.is_registered() == True
+    assert master.get_connection_count() == 1
+    
+    connected = master.get_connected_workers()
+    assert len(connected) == 1
+    assert connected[0] == 1
     
     master.stop()
-    assert master.is_running() == False
-    print("PASS: test_master_agent_lifecycle")
+    worker.stop()
+    log.shutdown()
+    print("PASS: test_master_worker_register")
 
-def test_worker_agent_creation():
-    """Test WorkerAgent basic creation"""
-    worker = agent.EXAgentWorker(1, "127.0.0.1", 8080)
-    assert worker.is_running() == False
-    assert worker.get_worker_id() == 1
-    print("PASS: test_worker_agent_creation")
-
-def test_worker_agent_lifecycle():
-    """Test WorkerAgent start/stop lifecycle"""
-    worker = agent.EXAgentWorker(1, "127.0.0.1", 8080)
+def test_multiple_workers():
+    log.init_master("test_logs/")
+    log.init_worker(1, "test_logs/")
+    log.init_worker(2, "test_logs/")
     
+    master = agent.EXAgentMaster("127.0.0.1", 19091)
+    master.start()
+    time.sleep(0.1)
+    
+    worker1 = agent.EXAgentWorker(1, "127.0.0.1", 19091)
+    worker2 = agent.EXAgentWorker(2, "127.0.0.1", 19091)
+    worker1.start()
+    worker2.start()
+    time.sleep(0.3)
+    
+    assert master.get_connection_count() == 2
+    
+    master.stop()
+    worker1.stop()
+    worker2.stop()
+    log.shutdown()
+    print("PASS: test_multiple_workers")
+
+def test_worker_disconnect():
+    log.init_master("test_logs/")
+    log.init_worker(1, "test_logs/")
+    
+    master = agent.EXAgentMaster("127.0.0.1", 19092)
+    master.start()
+    
+    worker = agent.EXAgentWorker(1, "127.0.0.1", 19092)
     worker.start()
-    assert worker.is_running() == True
+    time.sleep(0.2)
+    
+    assert master.get_connection_count() == 1
     
     worker.stop()
-    assert worker.is_running() == False
-    print("PASS: test_worker_agent_lifecycle")
-
-def test_worker_agent_id():
-    """Test WorkerAgent worker_id tracking"""
-    worker1 = agent.EXAgentWorker(100, "127.0.0.1", 8080)
-    worker2 = agent.EXAgentWorker(200, "127.0.0.1", 8080)
+    time.sleep(0.2)
     
-    assert worker1.get_worker_id() == 100
-    assert worker2.get_worker_id() == 200
-    print("PASS: test_worker_agent_id")
+    assert master.get_connection_count() == 0
+    
+    master.stop()
+    log.shutdown()
+    print("PASS: test_worker_disconnect")
+
+def test_master_restart():
+    master = agent.EXAgentMaster("127.0.0.1", 19093)
+    
+    master.start()
+    time.sleep(0.05)
+    assert master.is_running() == True
+    master.stop()
+    time.sleep(0.05)
+    assert master.is_running() == False
+    
+    master.start()
+    time.sleep(0.05)
+    assert master.is_running() == True
+    master.stop()
+    time.sleep(0.05)
+    assert master.is_running() == False
+    print("PASS: test_master_restart")
+
+def test_executor_execute():
+    executor = agent.EXTaskExecutor()
+    result = executor.execute(1, "test_task", "test_module", ["arg1", "arg2"])
+    
+    assert result.task_id == 1
+    assert result.status == agent.EXTaskExecStatus.SUCCESS
+    print("PASS: test_executor_execute")
 
 def test_enum_values():
-    """Test TaskExecStatus enum values"""
     assert agent.EXTaskExecStatus.SUCCESS.value == 0
     assert agent.EXTaskExecStatus.FAILED.value == 1
     assert agent.EXTaskExecStatus.TIMEOUT.value == 2
     print("PASS: test_enum_values")
 
-def test_master_worker_integration():
-    """Test MasterAgent and WorkerAgent integration"""
-    master = agent.EXAgentMaster("127.0.0.1", 9090)
-    worker = agent.EXAgentWorker(1, "127.0.0.1", 9090)
-    
-    master.start()
-    worker.start()
-
-    assert master.is_running() == True
-    assert worker.is_running() == True
-
-    master.stop()
-    worker.stop()
-    
-    assert master.is_running() == False
-    assert worker.is_running() == False
-    print("PASS: test_master_worker_integration")
-
 if __name__ == "__main__":
-    test_task_executor_creation()
-    test_task_executor_result()
-    test_task_executor_cancel()
-    test_master_agent_creation()
-    test_master_agent_lifecycle()
-    test_worker_agent_creation()
-    test_worker_agent_lifecycle()
-    test_worker_agent_id()
+    import shutil
+    if os.path.exists("test_logs"):
+        shutil.rmtree("test_logs")
+    
+    test_master_worker_register()
+    shutil.rmtree("test_logs")
+    
+    test_multiple_workers()
+    shutil.rmtree("test_logs")
+    
+    test_worker_disconnect()
+    shutil.rmtree("test_logs")
+    
+    test_master_restart()
+    
+    test_executor_execute()
+    
     test_enum_values()
-    test_master_worker_integration()
-    print("\nAll agent integration tests passed!")
+    
+    print("\nAll Python network tests passed!")
