@@ -19,3 +19,13 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "task_scheduler_test",
+    srcs = ["task_scheduler_test.cpp"],
+    deps = [
+        "//src/task/cpp:fly_task_task_scheduler",
+        "@com_google_googletest//:gtest_main",
+    ],
+    copts = ["-std=c++20"],
+)
