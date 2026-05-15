@@ -18,8 +18,8 @@ TEST(MasterAgentTest, CreateAndStart) {
 }
 
 TEST(MasterAgentTest, CreateWithDifferentPorts) {
-    MasterAgent master1("127.0.0.1", 18081);
-    MasterAgent master2("127.0.0.1", 18082);
+    MasterAgent master1("127.0.0.1", 18181);
+    MasterAgent master2("127.0.0.1", 18182);
     
     master1.start();
     master2.start();
@@ -39,7 +39,7 @@ TEST(MasterAgentTest, CreateWithDifferentPorts) {
 }
 
 TEST(MasterAgentTest, MultipleStartStop) {
-    MasterAgent master("127.0.0.1", 18083);
+    MasterAgent master("127.0.0.1", 18183);
     
     master.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
