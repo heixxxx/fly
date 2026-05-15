@@ -39,8 +39,10 @@ http_archive(
     name = "hedron_compile_commands",
     strip_prefix = "bazel-compile-commands-extractor-main",
     urls = ["https://github.com/hedronvision/bazel-compile-commands-extractor/archive/refs/heads/main.tar.gz"],
-    build_file = "@//third_party:hedron_compile_commands.BUILD",
 )
+
+load("@hedron_compile_commands//:workspace_setup.bzl", "hedron_compile_commands_setup")
+hedron_compile_commands_setup()
 
 
 # Optional: Force clang over gcc
