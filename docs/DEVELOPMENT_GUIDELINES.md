@@ -125,6 +125,8 @@ CMVector<std::byte> buffer;
 | storage | Stg | `DbMeta` | `EXStgDbMeta` |
 | storage | Stg | `WorkerInfo` | `EXStgWorkerInfo` |
 | core | Core | `Config` | `EXCoreConfig` |
+| network | Net | `TransportEvent` | `EXNetTransportEvent` |
+| network | Net | `HeartbeatMessage` | `EXNetHeartbeatMessage` |
 
 **示例**:
 ```cpp
@@ -134,6 +136,39 @@ FLY_EXPORT_CLASS(IndexEntry, "EXStgIndexEntry")
     FLY_EXPORT_INIT()
     FLY_EXPORT_READONLY_ATTR("object_name", &IndexEntry::object_name)
     FLY_EXPORT_SERIALIZE(IndexEntry);
+```
+
+### 2.5 导出函数命名规范
+
+**所有导出到 Python 的 C++ 函数必须使用前缀命名**：
+
+**格式**: `ex_<module_abbr>_<function_name>`
+
+| 模块 | 缩写 | C++ 函数 | Python 导出名 |
+|------|------|----------|--------------|
+| storage | stg | `get_storage_manager()` | `ex_stg_get_storage_manager` |
+| storage | stg | `create_database()` | `ex_stg_create_database` |
+| core | core | `get_config()` | `ex_core_get_config` |
+| network | net | `create_transport()` | `ex_net_create_transport` |
+| network | net | `encode_message()` | `ex_net_encode_message` |
+
+**目的**: 便于区分 C++ 导出函数与纯 Python 函数，一眼识别函数来源。
+
+**示例**:
+```cpp
+// storage_export.cpp
+FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& base_path, const CMString& data_path) {
+    return std::make_shared<Database>(base_path, data_path);
+});
+
+FLY_EXPORT_FUNCTION_REF("ex_stg_get_storage_manager", []() -> StorageManager& {
+    return StorageManager::instance();
+});
+
+// network_export.cpp
+FLY_EXPORT_FUNCTION("ex_net_create_transport", [](const CMString& type) {
+    return create_transport(type);
+});
 ```
 
 ---

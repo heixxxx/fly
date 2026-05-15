@@ -1,0 +1,101 @@
+#include <export/cpp/export_macros.h>
+#include <serialization/cpp/serialization_macros.h>
+#include <network/cpp/transport.h>
+#include <network/cpp/tcp_transport.h>
+#include <network/cpp/message_types.h>
+#include <network/cpp/message_protocol.h>
+#include <network/cpp/io_thread_pool.h>
+#include <memory>
+
+FLY_EXPORT_MODULE(_fly_network) {
+
+FLY_EXPORT_ENUM(fly::TransportEventType, "EXNetTransportEventType")
+    FLY_EXPORT_ENUM_VALUE("CONNECT", fly::TransportEventType::CONNECT)
+    FLY_EXPORT_ENUM_VALUE("DATA", fly::TransportEventType::DATA)
+    FLY_EXPORT_ENUM_VALUE("DISCONNECT", fly::TransportEventType::DISCONNECT)
+    FLY_EXPORT_ENUM_VALUE("ERROR", fly::TransportEventType::ERROR);
+
+FLY_EXPORT_ENUM(fly::MessageType, "EXNetMessageType")
+    FLY_EXPORT_ENUM_VALUE("REGISTER", fly::MessageType::REGISTER)
+    FLY_EXPORT_ENUM_VALUE("REGISTER_ACK", fly::MessageType::REGISTER_ACK)
+    FLY_EXPORT_ENUM_VALUE("HEARTBEAT", fly::MessageType::HEARTBEAT)
+    FLY_EXPORT_ENUM_VALUE("TASK_SUBMIT", fly::MessageType::TASK_SUBMIT)
+    FLY_EXPORT_ENUM_VALUE("TASK_ASSIGN", fly::MessageType::TASK_ASSIGN)
+    FLY_EXPORT_ENUM_VALUE("TASK_COMPLETE", fly::MessageType::TASK_COMPLETE)
+    FLY_EXPORT_ENUM_VALUE("TASK_FAILED", fly::MessageType::TASK_FAILED)
+    FLY_EXPORT_ENUM_VALUE("DATA_READY", fly::MessageType::DATA_READY)
+    FLY_EXPORT_ENUM_VALUE("DATA_QUERY", fly::MessageType::DATA_QUERY)
+    FLY_EXPORT_ENUM_VALUE("DATA_LOCATION", fly::MessageType::DATA_LOCATION)
+    FLY_EXPORT_ENUM_VALUE("DATA_REQUEST", fly::MessageType::DATA_REQUEST)
+    FLY_EXPORT_ENUM_VALUE("DATA_RESPONSE", fly::MessageType::DATA_RESPONSE)
+    FLY_EXPORT_ENUM_VALUE("SHUTDOWN", fly::MessageType::SHUTDOWN);
+
+FLY_EXPORT_CLASS(fly::TransportEvent, "EXNetTransportEvent")
+    FLY_EXPORT_READONLY_ATTR("type", &fly::TransportEvent::type)
+    FLY_EXPORT_READONLY_ATTR("conn_id", &fly::TransportEvent::conn_id)
+    FLY_EXPORT_READONLY_ATTR("data", &fly::TransportEvent::data)
+    FLY_EXPORT_READONLY_ATTR("error_code", &fly::TransportEvent::error_code)
+    FLY_EXPORT_SERIALIZE(fly::TransportEvent);
+
+FLY_EXPORT_CLASS(fly::MessageHeader, "EXNetMessageHeader")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_ATTR("type", &fly::MessageHeader::type)
+    FLY_EXPORT_ATTR("message_id", &fly::MessageHeader::message_id)
+    FLY_EXPORT_ATTR("timestamp", &fly::MessageHeader::timestamp)
+    FLY_EXPORT_SERIALIZE(fly::MessageHeader);
+
+FLY_EXPORT_CLASS(fly::HeartbeatMessage, "EXNetHeartbeatMessage")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_ATTR("header", &fly::HeartbeatMessage::header)
+    FLY_EXPORT_ATTR("worker_id", &fly::HeartbeatMessage::worker_id)
+    FLY_EXPORT_ATTR("running_tasks", &fly::HeartbeatMessage::running_tasks)
+    FLY_EXPORT_ATTR("attributes", &fly::HeartbeatMessage::attributes)
+    FLY_EXPORT_SERIALIZE(fly::HeartbeatMessage);
+
+FLY_EXPORT_CLASS(fly::RegisterMessage, "EXNetRegisterMessage")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_ATTR("header", &fly::RegisterMessage::header)
+    FLY_EXPORT_ATTR("worker_id", &fly::RegisterMessage::worker_id)
+    FLY_EXPORT_ATTR("role", &fly::RegisterMessage::role)
+    FLY_EXPORT_ATTR("attributes", &fly::RegisterMessage::attributes)
+    FLY_EXPORT_SERIALIZE(fly::RegisterMessage);
+
+FLY_EXPORT_CLASS(fly::DataRequestMessage, "EXNetDataRequestMessage")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_ATTR("header", &fly::DataRequestMessage::header)
+    FLY_EXPORT_ATTR("object_name", &fly::DataRequestMessage::object_name)
+    FLY_EXPORT_ATTR("requesting_worker_id", &fly::DataRequestMessage::requesting_worker_id)
+    FLY_EXPORT_SERIALIZE(fly::DataRequestMessage);
+
+FLY_EXPORT_CLASS(fly::DataResponseMessage, "EXNetDataResponseMessage")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_ATTR("header", &fly::DataResponseMessage::header)
+    FLY_EXPORT_ATTR("object_name", &fly::DataResponseMessage::object_name)
+    FLY_EXPORT_ATTR("data", &fly::DataResponseMessage::data)
+    FLY_EXPORT_SERIALIZE(fly::DataResponseMessage);
+
+FLY_EXPORT_CLASS(fly::IOThreadPool, "EXNetIOThreadPool")
+    FLY_EXPORT_INIT(int)
+    FLY_EXPORT_METHOD("start", &fly::IOThreadPool::start)
+    FLY_EXPORT_METHOD("stop", &fly::IOThreadPool::stop)
+    FLY_EXPORT_METHOD("queue_size", &fly::IOThreadPool::queue_size)
+    FLY_EXPORT_METHOD("is_idle", &fly::IOThreadPool::is_idle)
+    FLY_EXPORT_METHOD("process_completions", &fly::IOThreadPool::process_completions);
+
+FLY_EXPORT_FUNCTION("ex_net_create_transport", [](const fly::CMString& type) -> std::unique_ptr<fly::TransportLayer> {
+    return fly::create_transport(type);
+});
+
+FLY_EXPORT_FUNCTION("ex_net_encode_message", [](const fly::HeartbeatMessage& msg) -> fly_export::bytes {
+    fly::CMString encoded = fly::MessageProtocol::encode(msg);
+    return fly_export::bytes(encoded.data(), encoded.size());
+});
+
+FLY_EXPORT_FUNCTION("ex_net_decode_heartbeat", [](fly_export::bytes data) -> fly::HeartbeatMessage {
+    fly::CMString buffer(data.c_str(), data.size());
+    fly::HeartbeatMessage msg;
+    fly::MessageProtocol::decode(buffer, msg);
+    return msg;
+});
+
+}

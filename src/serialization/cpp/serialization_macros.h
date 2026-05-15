@@ -142,7 +142,7 @@ using FlyInputStreamAdapter = bitsery::InputStreamAdapter;
             fly_ser::container(s, fly_v_); \
         } else if constexpr (fly_ser::is_string_v<fly_T_>) { \
             fly_ser::text(s, fly_v_); \
-        } else if constexpr (std::is_fundamental_v<fly_T_>) { \
+        } else if constexpr (std::is_fundamental_v<fly_T_> || std::is_enum_v<fly_T_>) { \
             fly_ser::value(s, fly_v_); \
         } else { \
             s.object(fly_v_); \

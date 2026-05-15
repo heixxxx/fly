@@ -18,11 +18,11 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
     FLY_EXPORT_ENUM_VALUE("ZLIB", CompressionType::ZLIB)
     FLY_EXPORT_ENUM_VALUE("ZSTD", CompressionType::ZSTD);
 
-FLY_EXPORT_FUNCTION("compression_type_from_name", [](const CMString& name) -> CompressionType {
+FLY_EXPORT_FUNCTION("ex_stg_compression_type_from_name", [](const CMString& name) -> CompressionType {
     return CompressorFactory::type_from_name(name);
 });
 
-FLY_EXPORT_FUNCTION("compression_name_from_type", [](CompressionType type) -> CMString {
+FLY_EXPORT_FUNCTION("ex_stg_compression_name_from_type", [](CompressionType type) -> CMString {
     return CompressorFactory::name_from_type(type);
 });
 
@@ -92,14 +92,14 @@ FLY_EXPORT_CLASS(WorkerInfo, "EXStgWorkerInfo")
     FLY_EXPORT_READONLY_ATTR("launch_command", &WorkerInfo::launch_command)
     FLY_EXPORT_SERIALIZE(WorkerInfo);
 
-FLY_EXPORT_FUNCTION_REF("get_storage_manager", []() -> StorageManager& { return StorageManager::instance(); });
+FLY_EXPORT_FUNCTION_REF("ex_stg_get_storage_manager", []() -> StorageManager& { return StorageManager::instance(); });
 
-FLY_EXPORT_FUNCTION("create_database", [](const CMString& base_path, const CMString& data_path) -> std::shared_ptr<Database> {
+FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& base_path, const CMString& data_path) -> std::shared_ptr<Database> {
     return std::make_shared<Database>(base_path, data_path);
 });
 
 // Cross-language test helper: C++ writes a typed object into a Database created by Python
-FLY_EXPORT_FUNCTION("cpp_write_index_entry", [](Database& db, const CMString& key) -> CMString {
+FLY_EXPORT_FUNCTION("ex_stg_cpp_write_index_entry", [](Database& db, const CMString& key) -> CMString {
     IndexEntry entry;
     entry.object_name = key;
     entry.file_name = "cpp_generated.dat";

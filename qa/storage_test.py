@@ -37,8 +37,8 @@ def temp_dir():
 
 @pytest.fixture
 def storage_mgr():
-    from _fly_storage import get_storage_manager
-    mgr = get_storage_manager()
+    from _fly_storage import ex_stg_get_storage_manager
+    mgr = ex_stg_get_storage_manager()
     yield mgr
 
 
@@ -77,8 +77,8 @@ def test_worker_info_creation():
 
 
 def test_database_write_read(temp_dir):
-    from _fly_storage import create_database
-    db = create_database(temp_dir, "")
+    from _fly_storage import ex_stg_create_database
+    db = ex_stg_create_database(temp_dir, "")
     db.write_object("test/key", "hello world")
     data = db.read_object("test/key")
     assert data == "hello world"
@@ -86,8 +86,8 @@ def test_database_write_read(temp_dir):
 
 
 def test_database_freeze(temp_dir):
-    from _fly_storage import create_database
-    db = create_database(temp_dir, "")
+    from _fly_storage import ex_stg_create_database
+    db = ex_stg_create_database(temp_dir, "")
     db.write_object("test/key", "data")
     db.freeze()
 
@@ -110,9 +110,9 @@ def test_database_getters(temp_dir):
 
 
 def test_storage_manager_singleton(storage_mgr):
-    from _fly_storage import get_storage_manager
-    mgr1 = get_storage_manager()
-    mgr2 = get_storage_manager()
+    from _fly_storage import ex_stg_get_storage_manager
+    mgr1 = ex_stg_get_storage_manager()
+    mgr2 = ex_stg_get_storage_manager()
     assert mgr1 is mgr2
 
 
@@ -327,12 +327,12 @@ def test_fly_database_pickle_roundtrip(temp_dir):
 
 def test_cpp_writes_python_reads_typed_object(temp_dir):
     """Python creates db → passes to C++ → C++ writes EXStgIndexEntry → Python reads back via typed path"""
-    from _fly_storage import create_database, cpp_write_index_entry, EXStgIndexEntry
+    from _fly_storage import ex_stg_create_database, ex_stg_cpp_write_index_entry, EXStgIndexEntry
 
-    db = create_database(temp_dir, "")
+    db = ex_stg_create_database(temp_dir, "")
 
     # C++ function takes Database& and writes a typed EXStgIndexEntry
-    cpp_write_index_entry(db, "cross/cpp_entry")
+    ex_stg_cpp_write_index_entry(db, "cross/cpp_entry")
 
     # Python reads via typed path
     data, py_name = db._read_typed("cross/cpp_entry")
@@ -356,12 +356,12 @@ def test_cpp_writes_python_reads_typed_object(temp_dir):
 def test_cpp_writes_python_reads_via_flydatabase(temp_dir):
     """Python creates FlyDatabase → passes to C++ → C++ writes → FlyDatabase.read_object reads back"""
     from database import FlyDatabase
-    from _fly_storage import cpp_write_index_entry, EXStgIndexEntry
+    from _fly_storage import ex_stg_cpp_write_index_entry, EXStgIndexEntry
 
     db = FlyDatabase(temp_dir)
 
     # C++ writes an EXStgIndexEntry into the Python-created database
-    cpp_write_index_entry(db, "cross/fly_entry")
+    ex_stg_cpp_write_index_entry(db, "cross/fly_entry")
 
     # Python reads via FlyDatabase.read_object (typed dispatch)
     result = db.read_object("cross/fly_entry")

@@ -13,6 +13,6 @@ FLY_EXPORT_CLASS(Config, "EXCoreConfig")
     FLY_EXPORT_METHOD("is_workers_launched", &Config::is_workers_launched)
     FLY_EXPORT_METHOD("reset", &Config::reset);
 
-FLY_EXPORT_FUNCTION_REF("get_config", []() { return &Config::instance(); });
+FLY_EXPORT_FUNCTION_REF("ex_core_get_config", []() { return &Config::instance(); });
 
 }
