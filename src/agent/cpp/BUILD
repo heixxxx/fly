@@ -24,9 +24,21 @@ cc_library(
 )
 
 cc_library(
+    name = "fly_agent_worker",
+    hdrs = ["worker_agent.h"],
+    srcs = ["worker_agent.cpp"],
+    deps = [
+        "//src/common/cpp:fly_common_types",
+    ],
+    strip_include_prefix = "/src",
+    copts = ["-std=c++20"],
+)
+
+cc_library(
     name = "fly_agent_cpp",
     deps = [
         ":fly_agent_task_executor",
         ":fly_agent_master",
+        ":fly_agent_worker",
     ],
 )
