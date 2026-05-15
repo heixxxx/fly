@@ -25,8 +25,29 @@ FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
     })
     FLY_EXPORT_METHOD("is_running", &fly::TaskExecutor::is_running)
     FLY_EXPORT_METHOD("cancel", &fly::TaskExecutor::cancel)
-    FLY_EXPORT_METHOD("set_exec_func", [](fly::TaskExecutor& self, fly::TaskExecutor::ExecFunc func) {
-        self.set_exec_func(func);
+    FLY_EXPORT_METHOD("set_exec_func", [](fly::TaskExecutor& self, fly_export::object py_func) {
+        auto cpp_func = [py_func](uint64_t task_id, const fly::CMString& task_name,
+                                   const fly::CMString& task_module,
+                                   const fly::CMVector<fly::CMString>& args) -> fly::TaskExecResult {
+            fly_export::gil_scoped_acquire acquire;
+            try {
+                fly_export::object result = py_func(task_id, task_name, task_module, args);
+                fly::TaskExecResult cpp_result;
+                cpp_result.task_id = fly_export::cast<uint64_t>(result.attr("task_id"));
+                cpp_result.status = fly_export::cast<fly::TaskExecStatus>(result.attr("status"));
+                cpp_result.output = fly_export::cast<fly::CMString>(result.attr("output"));
+                cpp_result.error = fly_export::cast<fly::CMString>(result.attr("error"));
+                return cpp_result;
+            } catch (const fly_export::python_error& e) {
+                fly::TaskExecResult cpp_result;
+                cpp_result.task_id = task_id;
+                cpp_result.status = fly::TaskExecStatus::FAILED;
+                cpp_result.output = "";
+                cpp_result.error = e.what();
+                return cpp_result;
+            }
+        };
+        self.set_exec_func(cpp_func);
     });
 
 FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
@@ -41,6 +62,14 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                          const fly::CMString& module,
                                          const fly::CMVector<fly::CMString>& args) {
         self.submit_task(task_id, name, module, args, {}, {});
+    })
+    FLY_EXPORT_METHOD("submit_task_with_deps", [](fly::MasterAgent& self, uint64_t task_id,
+                                                   const fly::CMString& name,
+                                                   const fly::CMString& module,
+                                                   const fly::CMVector<fly::CMString>& args,
+                                                   const fly::CMVector<fly::CMString>& inputs,
+                                                   const fly::CMVector<fly::CMString>& outputs) {
+        self.submit_task(task_id, name, module, args, inputs, outputs);
     })
     FLY_EXPORT_METHOD("get_pending_tasks", &fly::MasterAgent::get_pending_tasks)
     FLY_EXPORT_METHOD("get_running_tasks", &fly::MasterAgent::get_running_tasks)

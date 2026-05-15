@@ -1,7 +1,7 @@
 # Layer 4 Master/Worker Agents 进度报告
 
 **日期**: 2026-05-15
-**状态**: Phase 1 ✅ → Phase 2 ✅ → Log Module ✅ → Phase 3 ✅ COMPLETE
+**状态**: Phase 1 ✅ → Phase 2 ✅ → Log Module ✅ → Phase 3 ✅ → 端到端示例 ✅ COMPLETE
 
 ---
 
@@ -156,9 +156,131 @@ b43326c test(agent): Phase 2 Python network integration tests
 
 ---
 
+## 端到端示例：求和任务 (已完成 ✅)
+
+### 示例说明
+
+创建完整的端到端示例，展示 Master/Worker Agents 的分布式计算能力。
+
+### 示例流程
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    端到端求和示例流程                                      │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  [输入数据]                                                              │
+│      数组 [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] 分成3部分                      │
+│      - Worker 1: [1, 2, 3, 4] → 部分和 10                                │
+│      - Worker 2: [5, 6, 7] → 部分和 18                                   │
+│      - Worker 3: [8, 9, 10] → 部分和 27                                  │
+│                                                                         │
+│  [阶段1: 部分求和]                                                        │
+│      Master.submit_task(1, "partial_sum", ...) → Worker 1              │
+│      Master.submit_task(2, "partial_sum", ...) → Worker 2              │
+│      Master.submit_task(3, "partial_sum", ...) → Worker 3              │
+│      │                                                                  │
+│      ▼ [Worker 执行]                                                     │
+│      Executor.set_exec_func(custom_sum_func)                            │
+│      执行 → DB.write_object_raw("partial_result_{worker}_{task}", value)│
+│      │                                                                  │
+│      ▼ [结果]                                                            │
+│      partial_result_1_1 = 10                                            │
+│      partial_result_2_2 = 18                                            │
+│      partial_result_3_3 = 27                                            │
+│                                                                         │
+│  [阶段2: 聚合求和]                                                        │
+│      Master.submit_task(4, "aggregate_sum", [...partial_keys], ...)     │
+│      │                                                                  │
+│      ▼ [聚合执行]                                                        │
+│      DB.read_object_raw(partial_result_*) → 读取所有部分和               │
+│      total = 10 + 18 + 27 = 55                                          │
+│      DB.write_object_raw("final_result", 55)                            │
+│                                                                         │
+│  [阶段3: 数据库冻结与验证]                                                 │
+│      DB.freeze() → 冻结数据库                                            │
+│      DB.read_object_raw("final_result") → 读取成功                       │
+│      DB.write_object_raw("blocked_write", ...) → RuntimeError (被阻止)  │
+│                                                                         │
+│  [最终结果]                                                              │
+│      ✅ 分布式计算完成: 55                                                │
+│      ✅ 数据库冻结: 读正常，写阻止                                         │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Python 导出增强
+
+为支持 Python callable 作为任务执行函数，更新了 `set_exec_func` 导出：
+
+```cpp
+FLY_EXPORT_METHOD("set_exec_func", [](fly::TaskExecutor& self, fly_export::object py_func) {
+    auto cpp_func = [py_func](uint64_t task_id, ...) -> fly::TaskExecResult {
+        fly_export::gil_scoped_acquire acquire;
+        fly_export::object result = py_func(task_id, name, module, args);
+        // 转换 Python EXTaskExecResult → C++ TaskExecResult
+        ...
+    };
+    self.set_exec_func(cpp_func);
+});
+```
+
+新增 `submit_task_with_deps` 方法支持任务依赖：
+
+```cpp
+FLY_EXPORT_METHOD("submit_task_with_deps", [](fly::MasterAgent& self, uint64_t task_id,
+                                               const CMString& name, const CMString& module,
+                                               const CMVector<CMString>& args,
+                                               const CMVector<CMString>& inputs,
+                                               const CMVector<CMString>& outputs) {
+    self.submit_task(task_id, name, module, args, inputs, outputs);
+});
+```
+
+### 测试文件
+
+- `src/agent/tests/test_sum_example.py`: 端到端求和示例测试
+- 测试内容：
+  1. 自定义执行器函数（部分求和、聚合求和）
+  2. 3个 Worker 分布式计算
+  3. 结果写入数据库
+  4. 数据库冻结与状态验证
+
+### 测试输出
+
+```
+============================================================
+端到端求和示例测试
+============================================================
+PASS: test_simple_executor
+
+开始完整的求和示例流程...
+[Master] 启动完成
+[Master] 已连接 3 个 workers: [1, 2, 3]
+
+[阶段1] 提交部分求和任务
+[Worker 1] 部分和计算完成: 10, 已写入 partial_result_1_1
+[Worker 2] 部分和计算完成: 18, 已写入 partial_result_2_2
+[Worker 3] 部分和计算完成: 27, 已写入 partial_result_3_3
+
+[阶段2] 提交聚合任务
+[聚合] 最终结果: 55, 已写入 final_result
+
+[阶段3] 数据库冻结与验证
+[验证] 最终求和结果: 55
+[数据库] 已冻结
+[验证] 冻结后读取成功: 55
+[验证] 冻结后写入被正确阻止: RuntimeError
+
+✅ 端到端求和示例测试通过！
+============================================================
+```
+
+---
+
 ## Layer 4 完成
 
-**总测试**: 28 C++ + 18 Python = **46 tests PASS**
+**总测试**: 28 C++ + 18 Python + 2 端到端示例 = **48 tests PASS**
 
 **功能完整性**:
 - ✅ 网络通信 (Reactor TCP Server/Client)
@@ -169,6 +291,9 @@ b43326c test(agent): Phase 2 Python network integration tests
 - ✅ Worker 心跳超时检测
 - ✅ 日志输出 (master.log, worker{id}.log)
 - ✅ Python 绑定完整
+- ✅ Python callable 作为执行函数
+- ✅ 端到端分布式计算示例
+- ✅ 数据库冻结验证
 
 ### 完成的任务
 
