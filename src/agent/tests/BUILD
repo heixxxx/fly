@@ -39,3 +39,14 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "agent_network_test",
+    srcs = ["agent_network_test.cpp"],
+    deps = [
+        "//src/agent/cpp:fly_agent_cpp",
+        "//src/log/cpp:fly_log",
+        "@com_google_googletest//:gtest_main",
+    ],
+    copts = ["-std=c++20"],
+)
