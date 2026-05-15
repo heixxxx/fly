@@ -59,6 +59,7 @@ refresh_compile_commands(
         "//src/task/cpp:fly_task_metadata_manager": "",
         "//src/task/cpp:fly_task_task_scheduler": "",
         "//src/task/cpp:fly_task_worker_manager": "",
+        "//src/task/export:_fly_task.so": "",
         "//src/task/tests:dependency_graph_test": "",
         "//src/task/tests:heartbeat_monitor_test": "",
         "//src/task/tests:metadata_manager_test": "",
