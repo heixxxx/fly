@@ -35,7 +35,17 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     FLY_EXPORT_METHOD("stop", &fly::MasterAgent::stop)
     FLY_EXPORT_METHOD("is_running", &fly::MasterAgent::is_running)
     FLY_EXPORT_METHOD("get_connected_workers", &fly::MasterAgent::get_connected_workers)
-    FLY_EXPORT_METHOD("get_connection_count", &fly::MasterAgent::get_connection_count);
+    FLY_EXPORT_METHOD("get_connection_count", &fly::MasterAgent::get_connection_count)
+    FLY_EXPORT_METHOD("submit_task", [](fly::MasterAgent& self, uint64_t task_id,
+                                         const fly::CMString& name,
+                                         const fly::CMString& module,
+                                         const fly::CMVector<fly::CMString>& args) {
+        self.submit_task(task_id, name, module, args, {}, {});
+    })
+    FLY_EXPORT_METHOD("get_pending_tasks", &fly::MasterAgent::get_pending_tasks)
+    FLY_EXPORT_METHOD("get_running_tasks", &fly::MasterAgent::get_running_tasks)
+    FLY_EXPORT_METHOD("get_completed_tasks", &fly::MasterAgent::get_completed_tasks)
+    FLY_EXPORT_METHOD("get_idle_workers", &fly::MasterAgent::get_idle_workers);
 
 FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     FLY_EXPORT_INIT(uint64_t, fly::CMString, uint16_t)
