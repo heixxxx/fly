@@ -12,6 +12,7 @@ refresh_compile_commands(
         "//src/agent/cpp:fly_agent_master": "",
         "//src/agent/cpp:fly_agent_task_executor": "",
         "//src/agent/cpp:fly_agent_worker": "",
+        "//src/agent/tests:agent_integration_test": "",
         "//src/agent/tests:master_agent_test": "",
         "//src/agent/tests:worker_agent_test": "",
         "//src/common/cpp:fly_common_types": "",

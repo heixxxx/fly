@@ -19,3 +19,13 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "agent_integration_test",
+    srcs = ["agent_integration_test.cpp"],
+    deps = [
+        "//src/agent/cpp:fly_agent_cpp",
+        "@com_google_googletest//:gtest_main",
+    ],
+    copts = ["-std=c++20"],
+)
