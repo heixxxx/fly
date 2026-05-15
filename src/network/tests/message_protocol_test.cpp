@@ -111,9 +111,27 @@ TEST(MessageProtocolTest, GetPayloadSize) {
     msg.worker_id = 999;
     
     CMString encoded = MessageProtocol::encode(msg);
-    uint32_t size = MessageProtocol::get_payload_size(encoded);
+    uint32_t payload_size = MessageProtocol::get_payload_size(encoded);
     
-    EXPECT_EQ(size, encoded.size() - 4);
+    EXPECT_EQ(payload_size, encoded.size() - 5);
+}
+
+TEST(MessageProtocolTest, GetTypeFromHeader) {
+    HeartbeatMessage msg;
+    msg.worker_id = 100;
+    
+    CMString encoded = MessageProtocol::encode(msg);
+    MessageType type = MessageProtocol::get_type(encoded);
+    
+    EXPECT_EQ(type, MessageType::HEARTBEAT);
+    
+    RegisterMessage reg_msg;
+    reg_msg.worker_id = 1;
+    
+    CMString encoded_reg = MessageProtocol::encode(reg_msg);
+    MessageType reg_type = MessageProtocol::get_type(encoded_reg);
+    
+    EXPECT_EQ(reg_type, MessageType::REGISTER);
 }
 
 TEST(MessageProtocolTest, EmptyAttributes) {

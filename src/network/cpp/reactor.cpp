@@ -85,9 +85,9 @@ void Reactor::dispatch_message(uint64_t conn_id, CMString& buffer) {
         
         auto it = handlers_.find(type);
         if (it == handlers_.end()) {
-            uint32_t payload_size = MessageProtocol::get_payload_size(buffer);
-            if (payload_size > 0 && buffer.size() >= 4 + payload_size) {
-                buffer.erase(0, 4 + payload_size);
+            uint32_t total_size = MessageProtocol::get_total_size(buffer);
+            if (total_size > 0 && buffer.size() >= 4 + total_size) {
+                buffer.erase(0, 4 + total_size);
             } else {
                 break;
             }

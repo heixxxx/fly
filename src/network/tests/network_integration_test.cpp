@@ -324,24 +324,117 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
 }
 
 TEST_F(NetworkIntegrationTest, ReactorBasedMessageHandling) {
-    TCPTransport server_transport;
-    server_transport.listen("127.0.0.1", server_port_ + 5);
+    TCPTransport server_raw;
+    server_raw.listen("127.0.0.1", server_port_ + 5);
+    
+    std::atomic<bool> heartbeat_received{false};
+    std::atomic<uint64_t> received_worker_id{0};
+    std::atomic<bool> connection_established{false};
+    
+    auto server_transport = std::make_unique<TCPTransport>();
+    server_transport->listen("127.0.0.1", server_port_ + 6);
+    
+    Reactor server_reactor(std::move(server_transport));
+    
+    server_reactor.on_connect([&](uint64_t conn_id) {
+        connection_established = true;
+    });
+    
+    server_reactor.register_handler<HeartbeatMessage>([&](uint64_t conn_id, const HeartbeatMessage& msg) {
+        received_worker_id = msg.worker_id;
+        heartbeat_received = true;
+    });
     
     TCPTransport client_transport;
-    client_transport.connect("127.0.0.1", server_port_ + 5);
+    uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 6);
     
-    auto events = server_transport.poll(500);
-    
-    bool found_connect = false;
-    for (const auto& ev : events) {
-        if (ev.type == TransportEventType::CONNECT) {
-            found_connect = true;
-        }
+    int poll_count = 0;
+    while (!connection_established.load() && poll_count < 20) {
+        server_reactor.run_once(50);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        poll_count++;
     }
     
-    EXPECT_TRUE(found_connect);
+    ASSERT_TRUE(connection_established.load()) << "Connection should be established";
     
-    server_transport.close_all();
+    HeartbeatMessage msg;
+    msg.header.type = MessageType::HEARTBEAT;
+    msg.header.message_id = 1;
+    msg.header.timestamp = 12345;
+    msg.worker_id = 88888;
+    msg.running_tasks = {1, 2};
+    msg.attributes = {"test"};
+    
+    CMString encoded = MessageProtocol::encode(msg);
+    client_transport.send(client_conn, encoded);
+    
+    poll_count = 0;
+    while (!heartbeat_received.load() && poll_count < 20) {
+        server_reactor.run_once(50);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        poll_count++;
+    }
+    
+    EXPECT_TRUE(heartbeat_received.load()) << "Heartbeat message should be received and decoded";
+    EXPECT_EQ(received_worker_id.load(), 88888);
+    
+    server_raw.close_all();
+    client_transport.close_all();
+}
+
+TEST_F(NetworkIntegrationTest, InvalidMessageHandling) {
+    TCPTransport server_raw;
+    server_raw.listen("127.0.0.1", server_port_ + 7);
+    
+    std::atomic<bool> connection_established{false};
+    std::atomic<int> messages_processed{0};
+    
+    auto server_transport = std::make_unique<TCPTransport>();
+    server_transport->listen("127.0.0.1", server_port_ + 8);
+    
+    Reactor server_reactor(std::move(server_transport));
+    
+    server_reactor.on_connect([&](uint64_t conn_id) {
+        connection_established = true;
+    });
+    
+    server_reactor.register_handler<HeartbeatMessage>([&](uint64_t conn_id, const HeartbeatMessage& msg) {
+        messages_processed++;
+    });
+    
+    TCPTransport client_transport;
+    uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 8);
+    
+    int poll_count = 0;
+    while (!connection_established.load() && poll_count < 20) {
+        server_reactor.run_once(50);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        poll_count++;
+    }
+    
+    ASSERT_TRUE(connection_established.load());
+    
+    CMString invalid_data = "garbage_data_not_a_valid_message";
+    uint32_t len = 1 + invalid_data.size();
+    CMString fake_frame;
+    fake_frame.resize(4 + 1 + invalid_data.size());
+    fake_frame[0] = static_cast<char>((len >> 24) & 0xFF);
+    fake_frame[1] = static_cast<char>((len >> 16) & 0xFF);
+    fake_frame[2] = static_cast<char>((len >> 8) & 0xFF);
+    fake_frame[3] = static_cast<char>(len & 0xFF);
+    fake_frame[4] = static_cast<char>(static_cast<uint8_t>(MessageType::HEARTBEAT));
+    std::copy(invalid_data.begin(), invalid_data.end(), fake_frame.begin() + 5);
+    
+    client_transport.send(client_conn, fake_frame);
+    
+    for (int i = 0; i < 5; i++) {
+        server_reactor.run_once(50);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    
+    EXPECT_EQ(messages_processed.load(), 0);
+    
+    server_raw.close_all();
     client_transport.close_all();
 }
 
