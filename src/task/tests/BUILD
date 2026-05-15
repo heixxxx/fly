@@ -29,3 +29,13 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "metadata_manager_test",
+    srcs = ["metadata_manager_test.cpp"],
+    deps = [
+        "//src/task/cpp:fly_task_metadata_manager",
+        "@com_google_googletest//:gtest_main",
+    ],
+    copts = ["-std=c++20"],
+)
