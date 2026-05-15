@@ -42,6 +42,16 @@ cc_test(
     copts = ["-std=c++20"],
 )
 
+cc_test(
+    name = "network_integration_test",
+    srcs = ["network_integration_test.cpp"],
+    deps = [
+        "//src/network/cpp:fly_network_cpp",
+        "@com_google_googletest//:gtest_main",
+    ],
+    copts = ["-std=c++20"],
+)
+
 py_test(
     name = "network_test",
     srcs = ["network_test.py"],

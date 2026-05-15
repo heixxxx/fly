@@ -25,6 +25,7 @@ refresh_compile_commands(
         "//src/network/export:_fly_network.so": "",
         "//src/network/tests:io_thread_pool_test": "",
         "//src/network/tests:message_protocol_test": "",
+        "//src/network/tests:network_integration_test": "",
         "//src/network/tests:reactor_test": "",
         "//src/network/tests:tcp_transport_test": "",
         "//src/serialization/cpp:fly_bitsery_ext": "",
