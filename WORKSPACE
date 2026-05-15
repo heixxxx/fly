@@ -8,7 +8,7 @@ http_archive(
     name = "robin_map",
     strip_prefix = "robin-map-1.3.0",
     urls = ["https://github.com/Tessil/robin-map/archive/refs/tags/v1.3.0.tar.gz"],
-    build_file = "@//third_party/robin_map.BUILD",
+    build_file = "@//third_party:robin_map.BUILD",
 )
 
 # nanobind - thin bindings between C++ and Python
@@ -16,7 +16,7 @@ http_archive(
     name = "nanobind",
     strip_prefix = "nanobind-2.12.0",
     urls = ["https://github.com/wjakob/nanobind/archive/refs/tags/v2.12.0.tar.gz"],
-    build_file = "@//third_party/nanobind.BUILD",
+    build_file = "@//third_party:nanobind.BUILD",
 )
 
 # bitsery - header-only C++ serialization library with versioning support
