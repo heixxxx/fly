@@ -1,4 +1,5 @@
 #include <agent/cpp/master_agent.h>
+#include <log/cpp/logger.h>
 #include <thread>
 #include <chrono>
 
@@ -13,6 +14,11 @@ MasterAgent::~MasterAgent() {
 
 void MasterAgent::start() {
     if (running_) return;
+    
+    auto* log = Logger::get_master();
+    if (log) {
+        log->info("MasterAgent", "start() called, listening on " + host_ + ":" + std::to_string(port_));
+    }
     
     auto transport = create_transport("tcp");
     transport->listen(host_, port_);
@@ -39,9 +45,18 @@ void MasterAgent::start() {
     
     reactor_thread_ = std::thread([this] { reactor_->run(); });
     running_ = true;
+    
+    if (log) {
+        log->info("MasterAgent", "started, reactor thread running");
+    }
 }
 
 void MasterAgent::stop() {
+    auto* log = Logger::get_master();
+    if (log) {
+        log->info("MasterAgent", "stop() called");
+    }
+    
     if (running_) {
         reactor_->stop();
         if (reactor_thread_.joinable()) {
@@ -66,6 +81,11 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     conn_to_worker_[conn_id] = worker_id;
     worker_to_conn_[worker_id] = conn_id;
     
+    auto* log = Logger::get_master();
+    if (log) {
+        log->info("MasterAgent", "Worker registered: conn_id=" + std::to_string(conn_id) + ", worker_id=" + std::to_string(worker_id));
+    }
+    
     RegisterAckMessage ack;
     ack.worker_id = worker_id;
     ack.master_address = host_;
@@ -74,18 +94,32 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
 }
 
 void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
+    auto* log = Logger::get_master();
+    if (log) {
+        log->debug("MasterAgent", "Heartbeat from worker_id=" + std::to_string(msg.worker_id));
+    }
 }
 
 void MasterAgent::on_disconnect(uint64_t conn_id) {
+    auto* log = Logger::get_master();
+    
     auto it = conn_to_worker_.find(conn_id);
     if (it != conn_to_worker_.end()) {
         uint64_t worker_id = it->second;
         conn_to_worker_.erase(conn_id);
         worker_to_conn_.erase(worker_id);
+        
+        if (log) {
+            log->warn("MasterAgent", "Worker disconnected: worker_id=" + std::to_string(worker_id));
+        }
     }
 }
 
 void MasterAgent::on_error(uint64_t conn_id, int error_code) {
+    auto* log = Logger::get_master();
+    if (log) {
+        log->error("MasterAgent", "Connection error: conn_id=" + std::to_string(conn_id) + ", error=" + std::to_string(error_code));
+    }
     on_disconnect(conn_id);
 }
 

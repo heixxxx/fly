@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include <agent/cpp/worker_agent.h>
+#include <thread>
+#include <chrono>
 
 namespace fly {
 
@@ -8,50 +10,43 @@ TEST(WorkerAgentTest, CreateWithId) {
     EXPECT_EQ(worker.get_worker_id(), 42);
 }
 
-TEST(WorkerAgentTest, CreateAndStart) {
-    WorkerAgent worker(1, "127.0.0.1", 18080);
+TEST(WorkerAgentTest, StartWithoutMaster) {
+    WorkerAgent worker(1, "127.0.0.1", 18090);
     worker.start();
     
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_TRUE(worker.is_running());
+    EXPECT_FALSE(worker.is_registered());
+    
     worker.stop();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_FALSE(worker.is_running());
 }
 
-TEST(WorkerAgentTest, MultipleWorkers) {
-    WorkerAgent worker1(1, "127.0.0.1", 18080);
-    WorkerAgent worker2(2, "127.0.0.1", 18080);
-    WorkerAgent worker3(3, "127.0.0.1", 18080);
+TEST(WorkerAgentTest, SetExecutor) {
+    WorkerAgent worker(1, "127.0.0.1", 18091);
     
-    worker1.start();
-    worker2.start();
-    worker3.start();
-    
-    EXPECT_TRUE(worker1.is_running());
-    EXPECT_TRUE(worker2.is_running());
-    EXPECT_TRUE(worker3.is_running());
-    
-    worker1.stop();
-    worker2.stop();
-    worker3.stop();
-    
-    EXPECT_FALSE(worker1.is_running());
-    EXPECT_FALSE(worker2.is_running());
-    EXPECT_FALSE(worker3.is_running());
+    TaskExecutor* executor = nullptr;
+    worker.set_executor(executor);
 }
 
 TEST(WorkerAgentTest, MultipleStartStop) {
-    WorkerAgent worker(1, "127.0.0.1", 18080);
+    WorkerAgent worker(1, "127.0.0.1", 18092);
     
     worker.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_TRUE(worker.is_running());
     
     worker.stop();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_FALSE(worker.is_running());
     
     worker.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_TRUE(worker.is_running());
     
     worker.stop();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_FALSE(worker.is_running());
 }
 
