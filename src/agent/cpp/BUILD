@@ -18,6 +18,8 @@ cc_library(
     deps = [
         ":fly_agent_task_executor",
         "//src/common/cpp:fly_common_types",
+        "//src/network/cpp:fly_network_reactor",
+        "//src/network/cpp:fly_network_transport",
     ],
     strip_include_prefix = "/src",
     copts = ["-std=c++20"],

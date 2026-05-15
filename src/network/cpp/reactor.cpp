@@ -27,7 +27,7 @@ void Reactor::on_error(std::function<void(uint64_t, int)> handler) {
 void Reactor::run() {
     running_ = true;
     while (running_) {
-        run_once(100);
+        run_once(10);
         if (io_pool_) {
             io_pool_->process_completions();
         }
