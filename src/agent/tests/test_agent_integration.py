@@ -103,6 +103,34 @@ def test_executor_execute():
     assert result.status == agent.EXTaskExecStatus.SUCCESS
     print("PASS: test_executor_execute")
 
+def test_submit_task():
+    log.init_master("test_logs/")
+    log.init_worker(1, "test_logs/")
+    
+    master = agent.EXAgentMaster("127.0.0.1", 19300)
+    master.start()
+    time.sleep(0.1)
+    
+    worker = agent.EXAgentWorker(1, "127.0.0.1", 19300)
+    
+    executor = agent.EXTaskExecutor()
+    worker.set_executor(executor)
+    worker.start()
+    
+    time.sleep(0.3)
+    assert worker.is_registered() == True
+    
+    master.submit_task(1, "test_task", "test_module", [])
+    time.sleep(0.8)
+    
+    completed = master.get_completed_tasks()
+    assert len(completed) >= 1
+    
+    master.stop()
+    worker.stop()
+    log.shutdown()
+    print("PASS: test_submit_task")
+
 def test_enum_values():
     assert agent.EXTaskExecStatus.SUCCESS.value == 0
     assert agent.EXTaskExecStatus.FAILED.value == 1
@@ -127,6 +155,9 @@ if __name__ == "__main__":
     
     test_executor_execute()
     
+    test_submit_task()
+    shutil.rmtree("test_logs")
+    
     test_enum_values()
     
-    print("\nAll Python network tests passed!")
+    print("\nAll Python tests passed!")
