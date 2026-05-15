@@ -20,6 +20,7 @@ cc_library(
         "//src/common/cpp:fly_common_types",
         "//src/network/cpp:fly_network_reactor",
         "//src/network/cpp:fly_network_transport",
+        "//src/task/cpp:fly_task_cpp",
         "//src/log/cpp:fly_log",
     ],
     strip_include_prefix = "/src",
