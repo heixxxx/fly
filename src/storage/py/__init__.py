@@ -1,12 +1,14 @@
 from _fly_storage import (
-    StorageManager,
-    IndexEntry, DbMeta, WorkerInfo,
+    EXStgStorageManager,
+    EXStgIndexEntry, EXStgDbMeta, EXStgWorkerInfo,
+    EXStgCompressionType,
     get_storage_manager, create_database,
 )
 from .database import FlyDatabase
 
 __all__ = [
-    'FlyDatabase', 'StorageManager',
-    'IndexEntry', 'DbMeta', 'WorkerInfo',
+    'FlyDatabase', 'EXStgStorageManager',
+    'EXStgIndexEntry', 'EXStgDbMeta', 'EXStgWorkerInfo',
+    'EXStgCompressionType',
     'get_storage_manager', 'create_database',
 ]

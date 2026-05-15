@@ -105,11 +105,36 @@ CMVector<std::byte> buffer;
 
 | 类别 | 前缀 | 示例 |
 |------|------|------|
-| 序列化 | `FLY_SERIALIZE_` | `FLY_SERIALIZE_DECLARE()` |
+| 序列化 | `FLY_SERIALIZE` | `FLY_SERIALIZE(id, name)` |
 | 序列化操作 | `FLY_ENCODE` / `FLY_DECODE` | `FLY_ENCODE(msg, out)` |
-| 导出模块 | `FLY_EXPORT_MODULE_` | `FLY_EXPORT_MODULE_BEGIN()` |
-| 导出类 | `FLY_EXPORT_CLASS` | `FLY_EXPORT_CLASS_NO_INIT()` |
-| 导出方法 | `FLY_EXPORT_METHOD` | `FLY_EXPORT_METHOD(name, func)` |
+| 导出模块 | `FLY_EXPORT_MODULE` | `FLY_EXPORT_MODULE(_fly_module)` |
+| 导出类 | `FLY_EXPORT_CLASS` | `FLY_EXPORT_CLASS(Type, "EXStgType")` |
+| 导出方法 | `FLY_EXPORT_METHOD` | `FLY_EXPORT_METHOD("name", func)` |
+
+### 2.4 导出类型命名规范
+
+**所有导出到 Python 的 C++ 类型必须使用前缀命名**：
+
+**格式**: `EX<ModuleAbbr><TypeName>`
+
+| 模块 | 缩写 | C++ 类型 | Python 导出名 |
+|------|------|----------|--------------|
+| storage | Stg | `CompressionType` | `EXStgCompressionType` |
+| storage | Stg | `Database` | `EXStgDatabase` |
+| storage | Stg | `IndexEntry` | `EXStgIndexEntry` |
+| storage | Stg | `DbMeta` | `EXStgDbMeta` |
+| storage | Stg | `WorkerInfo` | `EXStgWorkerInfo` |
+| core | Core | `Config` | `EXCoreConfig` |
+
+**示例**:
+```cpp
+// storage_export.cpp
+FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
+FLY_EXPORT_CLASS(IndexEntry, "EXStgIndexEntry")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("object_name", &IndexEntry::object_name)
+    FLY_EXPORT_SERIALIZE(IndexEntry);
+```
 
 ---
 
@@ -171,28 +196,28 @@ cc_library(
 struct Simple {
     int32_t id;
     CMString name;
-    FLY_SERIALIZE(1, &Simple::id, &Simple::name)
-    //                          ↑ 成员指针语法 &Type::field
+    FLY_SERIALIZE(id, name)              // 直接传入字段名，无需 s/o 参数
 };
 
 // 2. 完整形式（需要版本判断逻辑）
 struct IndexEntry {
-    FLY_SERIALIZE_BEGIN(2)                   // Version 2
-        FLY_FIELD(s, o, object_name);
-        FLY_FIELD(s, o, offset);
-        if (version >= 2) {                  // v2 新增字段
-            FLY_FIELD(s, o, compression_type);
+    FLY_SERIALIZE_BEGIN(2)               // Version 2
+        FLY_FIELD(object_name);          // 直接传入字段名
+        FLY_FIELD(offset);
+        if (version >= 2) {              // v2 新增字段
+            FLY_FIELD(compression_type);
         }
     FLY_SERIALIZE_END
 };
 ```
 
-`FLY_SERIALIZE(N, ...)` 展开为：
+`FLY_SERIALIZE(...)` 使用 Boost.PP 遍历参数，展开为：
 ```cpp
 template<typename S> void serialize(S& s) {
-    s.ext(*this, fly::Version<N>{}, [](S& s, auto& o, size_t) {
-        fly_ser::serialize_fields(s, o, &Type::field1, &Type::field2, ...);
-        //          ↑ C++17 fold expression: ((field_single(s, o.*member)), ...)
+    s.ext(*this, fly::Version<1>{}, [](S& s, auto& o, size_t) {
+        FLY_FIELD(id);
+        FLY_FIELD(name);
+        //        ↑ 每个字段名自动展开为类型检测 + 正确序列化方法
     });
 }
 ```
@@ -202,89 +227,45 @@ template<typename S> void serialize(S& s) {
 template<typename S> void serialize(S& s) {
     s.ext(*this, fly::Version<N>{}, [](S& s, auto& o, size_t version) {
         // 用户代码（可访问 version 变量）
+        // s 和 o 由 lambda 提供，宏内部硬编码使用
     });
 }
 ```
 
 #### 4.2.2 字段序列化宏
 
-`FLY_FIELD(s, o, field)` 是统一宏，自动检测字段类型并分发：
+**推荐使用 `FLY_FIELD(field)`（统一宏）**——自动检测字段类型并分发到正确的序列化方式：
+
+```cpp
+// 一行搞定任何类型的字段（无需 s/o 参数）
+FLY_FIELD(id);           // int32_t → auto-sized value
+FLY_FIELD(name);         // string → text (1b length encoding)
+FLY_FIELD(scores);       // vector<int> → bulk container(bulk copy)
+FLY_FIELD(children);     // vector<Obj> → per-element container(object)
+FLY_FIELD(tags);         // map<string,int> → StdMap(key→text, val→value)
+FLY_FIELD(grouped);      // map<string,vector<Obj>> → StdMap(auto nested)
+FLY_FIELD(inner);        // Obj → object(serialize)
+```
+
+`FLY_FIELD(field)` 内部使用 `s` 和 `o`（来自 `FLY_SERIALIZE_BEGIN` lambda），通过 type traits 自动分发：
 
 | 字段类型 | 分发目标 | 说明 |
 |----------|----------|------|
-| `int32_t`, `double` 等 fundamental | `fly_ser::value()` | 自动 sizeof 推导 1/2/4/8b |
-| `std::string` | `fly_ser::text()` | 1字节长度编码 |
-| `std::vector<int>` | `fly_ser::container()` | bulk copy (连续内存) |
-| `std::vector<Obj>` | `fly_ser::container()` | 逐个 serialize() |
-| `std::map<K,V>` / `unordered_map` | `s.ext(StdMap{...})` | key+val 自动分发 |
-| 具有 `serialize()` 的类型 | `s.object()` | 递归序列化 |
-
-**当需要自定义 lambda 时使用：**
-
-| 宏 | 用途 |
-|----|------|
-| `FLY_VEC_F(s, o, field, lambda)` | vector 自定义元素序列化 |
-| `FLY_MAP(s, o, field, lambda)` | map 自定义 key/val 序列化 |
-| `FLY_BOOL(s, o, field)` | bool（单独处理，非 fundamental） |
-
-**lambda 内变量辅助函数**（用于序列化变量而非 `o.field`）：
-
-| 函数 | 用途 |
-|------|------|
-| `fly_ser::text(s, var)` | 字符串变量 |
-| `fly_ser::value(s, var)` | 定长值变量 |
-| `fly_ser::container(s, var)` | 容器变量（自动 dispatch） |
-| `fly_ser::object(s, var)` | 对象变量 |
-
-**生产代码对比**（IndexData：`map<string, vector<IndexEntry>>`）：
-
-```
-// 原始（直接 bitsery API）:
-s.ext(o.entries, bitsery::ext::StdMap{FLY_MAX_SIZE},
-    [](auto& s2, CMString& key, CMVector<IndexEntry>& val) {
-        s2.text1b(key, FLY_MAX_SIZE);
-        s2.container(val, FLY_MAX_SIZE, [](auto& s3, IndexEntry& e) {
-            s3.object(e);
-        });
-    });
-
-// 现在（1 行）:
-FLY_FIELD(s, o, entries);
-```
-
-`FLY_SERIALIZE_BEGIN(N)` 展开为：
-```cpp
-template<typename S> void serialize(S& s) {
-    s.ext(*this, fly::Version<N>{}, [](S& s, auto& o, size_t version) {
-```
-
-`FLY_SERIALIZE_END` 展开为 `);}`，关闭 `s.ext()` 调用和函数。
-
-`o` = struct 引用（通过 `fly::Version` 传入），`version` = 当前数据版本号。
-
-#### 4.2.2 字段序列化宏
-
-**推荐使用 `FLY_FIELD`（统一宏）**——自动检测字段类型并分发到正确的序列化方式：
-
-```cpp
-// 一行搞定任何类型的字段
-FLY_FIELD(s, o, id);           // int32_t → auto-sized value
-FLY_FIELD(s, o, name);         // string → text (1b length encoding)
-FLY_FIELD(s, o, scores);       // vector<int> → bulk container(copy)
-FLY_FIELD(s, o, children);     // vector<Obj> → per-element container(object)
-FLY_FIELD(s, o, tags);         // map<string,int> → StdMap(key→text, val→value)
-FLY_FIELD(s, o, grouped);      // map<string,vector<Obj>> → StdMap(key→text, val→container(auto))
-FLY_FIELD(s, o, inner);        // Obj → object(serialize)
-```
+| `int32_t`, `double` 等 fundamental | `fly_ser::value(s, o.field)` | 自动 sizeof 推导 1/2/4/8b |
+| `std::string` | `fly_ser::text(s, o.field)` | 1字节长度编码 |
+| `std::vector<int>` | `fly_ser::container(s, o.field)` | bulk copy（连续内存） |
+| `std::vector<Obj>` | `s.container(..., [](auto& s, E& e) { s.object(e); })` | 逐个 serialize() |
+| `std::map<K,V>` | `s.ext(StdMap{...}, [](auto& s, k, v) { ... })` | key+val 自动嵌套分发 |
+| 具有 `serialize()` 的类型 | `s.object(o.field)` | 递归序列化 |
 
 **仅当需要自定义 lambda 时才使用其他宏：**
 
 | 宏 | 用途 | 示例 |
 |----|------|------|
-| `FLY_VEC_F(s, o, f, lambda)` | 容器字段（自定义元素序列化） | `FLY_VEC_F(s, o, strs, [](auto& s, auto& e) { fly_ser::text(s, e); })` |
-| `FLY_MAP(s, o, f, lambda)` | map 字段（自定义 key/val 序列化） | `FLY_MAP(s, o, m, [](auto& s, auto& k, auto& v) { ... })` |
-| `FLY_BOOL(s, o, f)` | bool 值 | `FLY_BOOL(s, o, flag)` |
-| `FLY_VAL, FLY_STR, FLY_VEC, FLY_OBJ` | 精确控制（极少需要） | 个别场景 |
+| `FLY_VEC_F(field, lambda)` | 容器字段（自定义元素序列化） | `FLY_VEC_F(strs, [](auto& s, auto& e) { fly_ser::text(s, e); })` |
+| `FLY_MAP(field, lambda)` | map 字段（自定义 key/val 序列化） | `FLY_MAP(m, [](auto& s, auto& k, auto& v) { fly_ser::text(s, k); fly_ser::value(s, v); })` |
+| `FLY_BOOL(field)` | bool 值 | `FLY_BOOL(flag)` |
+| `FLY_VAL, FLY_STR, FLY_VEC, FLY_OBJ` | 精确控制（极少需要） | `FLY_VAL(count)` |
 
 **lambda 内变量辅助函数**（在 `FLY_VEC_F` 等 lambda 内部使用，用于序列化变量而非 struct 字段）：
 
@@ -297,7 +278,7 @@ FLY_FIELD(s, o, inner);        // Obj → object(serialize)
 
 **生产代码对比**（IndexData：`map<string, vector<IndexEntry>>` 的序列化）：
 
-```
+```cpp
 // 之前：5行 + bitsery API 暴露
 FLY_SERIALIZE_BEGIN(1) {
     s.ext(o.entries, bitsery::ext::StdMap{FLY_MAX_SIZE},
@@ -309,9 +290,9 @@ FLY_SERIALIZE_BEGIN(1) {
         });
 } FLY_SERIALIZE_END
 
-// 之后：1行 + 隐藏所有细节
+// 现在：1行 + 隐藏所有细节
 FLY_SERIALIZE_BEGIN(1) {
-    FLY_FIELD(s, o, entries);
+    FLY_FIELD(entries);    // 自动处理 nested map<string, vector<IndexEntry>>
 } FLY_SERIALIZE_END
 ```
 
@@ -336,21 +317,106 @@ FLY_DECODE_FROM_BYTES(buf, MyType, decoded);
 
 ### 4.3 导出宏
 
+所有导出宏基于 `NB_MODULE(module_name, m)` 约定，宏内部直接使用 `m`，无需传入 `module_var` 参数。
+
+#### 4.3.1 模块定义
+
 ```cpp
-// 模块定义
-FLY_EXPORT_MODULE_BEGIN(_fly_module)
-
-// 类导出（无构造函数，如单例）
-FLY_EXPORT_CLASS_NO_INIT(m, Config,
-    FLY_EXPORT_METHOD(get_int, &Config::get_int)
-    FLY_EXPORT_METHOD(set_int, &Config::set_int)
-);
-
-// 函数导出（返回引用）
-FLY_EXPORT_FUNCTION_REF_WITH_NAME(m, "get_config", []() { return &Config::instance(); });
-
-FLY_EXPORT_MODULE_END()
+// 模块入口宏 — 用户手动写大括号，无需 _BEGIN/_END
+FLY_EXPORT_MODULE(_fly_module) {
+    // 所有导出代码在此大括号内
+}
 ```
+
+#### 4.3.2 类导出
+
+所有类导出宏**必须显式传入 Python 导出名称**（格式：`EX<ModuleAbbr><TypeName>`）：
+
+| 宏 | 用途 | 示例 |
+|----|------|------|
+| `FLY_EXPORT_CLASS(Type, "name")` | 导出普通类 | `FLY_EXPORT_CLASS(Database, "EXStgDatabase")` |
+| `FLY_EXPORT_CLASS_SHARED_PTR(Type, "name")` | 导出支持 shared_ptr 的类 | `FLY_EXPORT_CLASS_SHARED_PTR(StorageManager, "EXStgStorageManager")` |
+
+**类成员导出宏**（链式调用，用户必须传入导出名称）：
+
+| 宏 | 用途 | 示例 |
+|----|------|------|
+| `FLY_EXPORT_INIT(...)` | 导出构造函数 | `FLY_EXPORT_INIT()` 或 `FLY_EXPORT_INIT(CMString, int)` |
+| `FLY_EXPORT_DEF("name", lambda)` | Lambda/复杂方法绑定 | `FLY_EXPORT_DEF("_write_typed", [](Database& db, ...) { ... })` |
+| `FLY_EXPORT_ATTR("name", &Type::field)` | 可读写成员变量 | `FLY_EXPORT_ATTR("config", &Config::value)` |
+| `FLY_EXPORT_READONLY_ATTR("name", &Type::field)` | 只读成员变量 | `FLY_EXPORT_READONLY_ATTR("db_id", &DbMeta::db_id)` |
+| `FLY_EXPORT_METHOD("name", &Type::func)` | 成员方法 | `FLY_EXPORT_METHOD("freeze", &Database::freeze)` |
+| `FLY_EXPORT_STATIC_METHOD("name", &Type::func)` | 静态方法 | `FLY_EXPORT_STATIC_METHOD("instance", &Config::instance)` |
+| `FLY_EXPORT_PROPERTY("name", getter, setter)` | 计算属性（读写） | `FLY_EXPORT_PROPERTY("count", &List::get_count, &List::set_count)` |
+| `FLY_EXPORT_READONLY_PROPERTY("name", getter)` | 计算属性（只读） | `FLY_EXPORT_READONLY_PROPERTY("size", &Buffer::get_size)` |
+
+**序列化导出**（仅 `FLY_EXPORT_SERIALIZE`，已废弃 `FLY_EXPORT_PICKLE`）：
+
+```cpp
+FLY_EXPORT_SERIALIZE(IndexEntry)  // 自动添加 __getstate__/__setstate__ + is_cpp 属性
+```
+
+`FLY_EXPORT_SERIALIZE` 展开为：
+- `__getstate__`: 将对象编码为 bytes
+- `__setstate__`: 从 bytes 解码恢复对象
+- `is_cpp` 属性：返回 `True`（用于 Python wrapper 判断对象来源）
+
+**完整类导出示例**：
+
+```cpp
+FLY_EXPORT_CLASS(IndexEntry, "EXStgIndexEntry")
+    FLY_EXPORT_INIT()                                    // 无参构造
+    FLY_EXPORT_READONLY_ATTR("object_name", &IndexEntry::object_name)
+    FLY_EXPORT_READONLY_ATTR("offset", &IndexEntry::offset)
+    FLY_EXPORT_METHOD("some_method", &IndexEntry::some_method)
+    FLY_EXPORT_SERIALIZE(IndexEntry);                    // Pickle 支持
+
+FLY_EXPORT_CLASS(Database, "EXStgDatabase")
+    FLY_EXPORT_DEF("_write_typed", [](Database& db, const CMString& name,
+                                       fly_export::bytes data, const CMString& py_name) {
+        CMString str_data(data.c_str(), data.size());
+        return db.write_object_typed(name, str_data, py_name);
+    })
+    FLY_EXPORT_METHOD("freeze", &Database::freeze)
+    FLY_EXPORT_METHOD("get_db_id", &Database::get_db_id);
+```
+
+#### 4.3.3 枚举导出
+
+```cpp
+FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
+    FLY_EXPORT_ENUM_VALUE("NONE", CompressionType::NONE)
+    FLY_EXPORT_ENUM_VALUE("LZ4", CompressionType::LZ4)
+    FLY_EXPORT_ENUM_VALUE("ZSTD", CompressionType::ZSTD);
+```
+
+注意：`FLY_EXPORT_ENUM_VALUE` 用户需传入**完全限定值**（如 `CompressionType::NONE`），而非短名。
+
+#### 4.3.4 函数导出
+
+| 宏 | 用途 | 示例 |
+|----|------|------|
+| `FLY_EXPORT_FUNCTION("name", lambda)` | 导出函数（默认返回值策略） | `FLY_EXPORT_FUNCTION("create_database", [](...) { ... })` |
+| `FLY_EXPORT_FUNCTION_REF("name", lambda)` | 导出函数（返回引用） | `FLY_EXPORT_FUNCTION_REF("get_storage_manager", []() -> StorageManager& { ... })` |
+
+**示例**：
+
+```cpp
+FLY_EXPORT_FUNCTION("compression_type_from_name", [](const CMString& name) {
+    return CompressorFactory::type_from_name(name);
+});
+
+FLY_EXPORT_FUNCTION_REF("get_storage_manager", []() -> StorageManager& {
+    return StorageManager::instance();
+});
+```
+
+#### 4.3.5 设计要点
+
+1. **无 `_WITH_NAME` 变体**：所有宏始终要求用户传入导出名称，不存在自动 stringify 版本
+2. **无 `module_var` 参数**：`NB_MODULE(module_name, m)` 固定定义 `m`，宏直接使用
+3. **用户写大括号**：`FLY_EXPORT_MODULE(name) { }` 不需要 `_BEGIN/_END`
+4. **FLY_EXPORT_SERIALIZE 是唯一 pickle 宏**：已删除 `FLY_EXPORT_PICKLE/PICKLE_SHARED_PTR`（不暴露 `__getstate__/__setstate__` 为 Python 方法，导致 FlyDatabase wrapper 无法工作）
 
 ---
 
@@ -592,37 +658,33 @@ bazel run //:refresh_compile_commands
 2. 使用 `bazel build //target` 验证依赖完整
 3. 检查工具：`bazel query "kind('cc_library', deps(//target))"` 可查看所有传递依赖
 
-### 12.3 *this 在宏中的 GCC 兼容性问题
+### 12.3 字段宏签名变更
 
-**问题**：宏 `FLY_VAL4B(s, *this, value)` 展开为 `s.value4b((*this).value)`，但在 GCC 模板上下文中编译失败：
-```
-error: request for member 'value' in '(TestData*)this'
-```
-
-**根因**：GCC 在模板成员函数中对 `*this` 的处理与其他编译器不同，宏展开后的 `(*this).value` 被错误解析为 `this->value`。
+**历史背景**：早期版本使用 `FLY_FIELD(s, o, field)` 签名，需要用户传入 `s` 和 `o` 参数。当前版本已简化为 `FLY_FIELD(field)`，`s` 和 `o` 由 `FLY_SERIALIZE_BEGIN` lambda 内部硬编码提供。
 
 **规范**：
-- **禁止**在 `FLY_*` 字段宏中使用 `*this` 作为对象参数
-- 始终使用 `fly::Version<N>` 包裹字段序列化：
+- **禁止**使用旧签名 `FLY_FIELD(s, o, field)`
+- 始终使用简化签名：
   ```cpp
-  FLY_SERIALIZE_DECLARE() {
-      s.ext(*this, fly::Version<1>{}, [](auto& s, auto& o, size_t) {
-          FLY_VAL4B(s, o, field);  // o 是命名引用，非 *this
-      });
-  }
+  FLY_SERIALIZE_BEGIN(1) {
+      FLY_FIELD(id);       // 正确 — 仅传字段名
+      FLY_FIELD(name);
+  } FLY_SERIALIZE_END
   ```
-- 对于 `StdMap` 等 lambda 中直接传入变量（非 struct 成员）的场景，使用直接的 bitsery API 调用，因 `FLY_*` 宏设计为 `obj.field` 模式。
+- `s` 和 `o` 在 lambda 内自动可用，无需手动传递
 
 ### 12.4 测试代码与生产代码序列化风格不一致
 
 **问题**：测试文件中的 `serialize()` 直接调用 `s.value4b(value)` 而非宏，导致未来切换序列化后端时测试代码也需要修改。
 
-**规范**：测试代码与生产代码使用相同的宏模式。所有 `serialize()` 方法必须使用 `FLY_SERIALIZE_BEGIN(N) { ... } FLY_SERIALIZE_END` 声明，内部使用 `FLY_VAL4B`、`FLY_TEXT` 等字段宏。
+**规范**：测试代码与生产代码使用相同的宏模式。所有 `serialize()` 方法必须使用 `FLY_SERIALIZE_BEGIN(N) { ... } FLY_SERIALIZE_END` 声明，内部使用 `FLY_FIELD` 字段宏。
 
 ---
 
 **文档更新历史**:
 
 - 2026-05-14: 初版创建，整合目录结构、命名规范、宏抽象、测试规范
-- 2026-05-14: 更新序列化宏文档（FLY_SERIALIZE/DECLARE + BOOST_PP），新增开发教训章节
+- 2026-05-14: 更新序列化宏文档（FLY_SERIALIZE + Boost.PP），新增开发教训章节
 - 2026-05-14: 新增 `fly-build` skill — 构建必须使用 `./fly.sh`，禁止裸 `bazel build`
+- 2026-05-15: 重构导出宏文档（Section 4.3）：移除 module_var 参数，用户写大括号，新增命名规范 Section 2.4
+- 2026-05-15: 修正序列化宏签名：`FLY_FIELD(field)` 替代 `FLY_FIELD(s, o, field)`，移除重复 Section 4.2.2

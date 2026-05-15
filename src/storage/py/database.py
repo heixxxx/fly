@@ -1,5 +1,5 @@
 import pickle
-from _fly_storage import Database as _CDatabase
+from _fly_storage import EXStgDatabase as _CDatabase
 
 
 class FlyDatabase(_CDatabase):
