@@ -3,18 +3,13 @@
 
 namespace fly {
 
-void WorkerManager::register_worker(uint64_t worker_id, const CMString& address, uint16_t port,
-                                     const CMVector<CMString>& capabilities) {
-    WorkerInfo info;
-    info.worker_id = worker_id;
-    info.address = address;
-    info.port = port;
-    info.status = WorkerStatus::IDLE;
-    info.capabilities = capabilities;
-    info.last_heartbeat = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    info.current_task_id = 0;
-    workers_[worker_id] = info;
+void WorkerManager::unregister_worker(uint64_t worker_id) {
+    workers_.erase(worker_id);
+}
+
+void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
+                                      const CMVector<CMString>& capabilities) {
+    register_worker(worker_id, address, 18080, capabilities);
 }
 
 void WorkerManager::unregister_worker(uint64_t worker_id) {

@@ -24,7 +24,9 @@ struct WorkerInfo {
 class WorkerManager {
 public:
     void register_worker(uint64_t worker_id, const CMString& address, uint16_t port,
-                         const CMVector<CMString>& capabilities);
+                          const CMVector<CMString>& capabilities = {});
+    void register_worker(uint64_t worker_id, const CMString& address,
+                          const CMVector<CMString>& capabilities);
     void unregister_worker(uint64_t worker_id);
     void update_worker_status(uint64_t worker_id, WorkerStatus status);
     void record_heartbeat(uint64_t worker_id);

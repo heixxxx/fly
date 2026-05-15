@@ -86,6 +86,15 @@ public:
         uint32_t total_len = get_total_size(buffer);
         return total_len > 0 ? total_len - 1 : 0;
     }
+    
+    static bool decode_header(const CMString& buffer, MessageHeader& header) {
+        if (buffer.size() < 5) return false;
+        
+        header.type = static_cast<MessageType>(static_cast<uint8_t>(buffer[4]));
+        header.message_id = 0;
+        header.timestamp = 0;
+        return true;
+    }
 };
 
 }  // namespace fly

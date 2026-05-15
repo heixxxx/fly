@@ -9,8 +9,9 @@ refresh_compile_commands(
     name = "refresh_compile_commands",
     targets = {
         "//src/agent/cpp:fly_agent_cpp": "",
+        "//src/agent/cpp:fly_agent_master": "",
         "//src/agent/cpp:fly_agent_task_executor": "",
-        "//src/agent/tests:task_executor_test": "",
+        "//src/agent/tests:master_agent_test": "",
         "//src/common/cpp:fly_common_types": "",
         "//src/common/tests:common_types_test": "",
         "//src/core/cpp:fly_core_cpp": "",

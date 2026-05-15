@@ -1,10 +1,10 @@
 package(default_visibility = ["//visibility:public"])
 
 cc_test(
-    name = "task_executor_test",
-    srcs = ["task_executor_test.cpp"],
+    name = "master_agent_test",
+    srcs = ["master_agent_test.cpp"],
     deps = [
-        "//src/agent/cpp:fly_agent_task_executor",
+        "//src/agent/cpp:fly_agent_master",
         "@com_google_googletest//:gtest_main",
     ],
     copts = ["-std=c++20"],
