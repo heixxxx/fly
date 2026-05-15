@@ -36,6 +36,13 @@ void WorkerManager::record_heartbeat(uint64_t worker_id) {
     }
 }
 
+void WorkerManager::set_heartbeat(uint64_t worker_id, uint64_t timestamp) {
+    auto it = workers_.find(worker_id);
+    if (it != workers_.end()) {
+        it->second.last_heartbeat = timestamp;
+    }
+}
+
 void WorkerManager::assign_task(uint64_t worker_id, uint64_t task_id) {
     auto it = workers_.find(worker_id);
     if (it != workers_.end()) {

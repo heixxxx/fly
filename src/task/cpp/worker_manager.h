@@ -28,6 +28,7 @@ public:
     void unregister_worker(uint64_t worker_id);
     void update_worker_status(uint64_t worker_id, WorkerStatus status);
     void record_heartbeat(uint64_t worker_id);
+    void set_heartbeat(uint64_t worker_id, uint64_t timestamp);
     void assign_task(uint64_t worker_id, uint64_t task_id);
     void complete_task(uint64_t worker_id);
     
