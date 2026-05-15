@@ -21,10 +21,16 @@ struct TaskExecResult {
 
 class TaskExecutor {
 public:
-    using ExecFunc = std::function<TaskExecResult(uint64_t, const CMString&, const CMVector<CMString>&)>;
+    using ExecFunc = std::function<TaskExecResult(
+        uint64_t task_id, 
+        const CMString& task_name,
+        const CMString& task_module,
+        const CMVector<CMString>& args)>;
     
     TaskExecutor();
     explicit TaskExecutor(ExecFunc exec_func);
+    
+    void set_exec_func(ExecFunc exec_func);
     
     TaskExecResult execute(uint64_t task_id, const CMString& task_name,
                            const CMString& task_module, const CMVector<CMString>& args);
