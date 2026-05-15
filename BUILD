@@ -53,5 +53,8 @@ refresh_compile_commands(
         "//src/storage/tests:local_index_test": "",
         "//src/storage/tests:storage_basics_test": "",
         "//src/storage/tests:storage_manager_test": "",
+        "//src/task/cpp:fly_task_cpp": "",
+        "//src/task/cpp:fly_task_dependency_graph": "",
+        "//src/task/tests:dependency_graph_test": "",
     },
 )
