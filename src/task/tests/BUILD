@@ -9,3 +9,13 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "worker_manager_test",
+    srcs = ["worker_manager_test.cpp"],
+    deps = [
+        "//src/task/cpp:fly_task_worker_manager",
+        "@com_google_googletest//:gtest_main",
+    ],
+    copts = ["-std=c++20"],
+)

@@ -55,6 +55,8 @@ refresh_compile_commands(
         "//src/storage/tests:storage_manager_test": "",
         "//src/task/cpp:fly_task_cpp": "",
         "//src/task/cpp:fly_task_dependency_graph": "",
+        "//src/task/cpp:fly_task_worker_manager": "",
         "//src/task/tests:dependency_graph_test": "",
+        "//src/task/tests:worker_manager_test": "",
     },
 )
