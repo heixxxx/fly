@@ -24,19 +24,26 @@ FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
         return self.execute(task_id, task_name, task_module, args);
     })
     FLY_EXPORT_METHOD("is_running", &fly::TaskExecutor::is_running)
-    FLY_EXPORT_METHOD("cancel", &fly::TaskExecutor::cancel);
+    FLY_EXPORT_METHOD("cancel", &fly::TaskExecutor::cancel)
+    FLY_EXPORT_METHOD("set_exec_func", [](fly::TaskExecutor& self, fly::TaskExecutor::ExecFunc func) {
+        self.set_exec_func(func);
+    });
 
 FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     FLY_EXPORT_INIT(fly::CMString, uint16_t)
     FLY_EXPORT_METHOD("start", &fly::MasterAgent::start)
     FLY_EXPORT_METHOD("stop", &fly::MasterAgent::stop)
-    FLY_EXPORT_METHOD("is_running", &fly::MasterAgent::is_running);
+    FLY_EXPORT_METHOD("is_running", &fly::MasterAgent::is_running)
+    FLY_EXPORT_METHOD("get_connected_workers", &fly::MasterAgent::get_connected_workers)
+    FLY_EXPORT_METHOD("get_connection_count", &fly::MasterAgent::get_connection_count);
 
 FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     FLY_EXPORT_INIT(uint64_t, fly::CMString, uint16_t)
     FLY_EXPORT_METHOD("start", &fly::WorkerAgent::start)
     FLY_EXPORT_METHOD("stop", &fly::WorkerAgent::stop)
     FLY_EXPORT_METHOD("is_running", &fly::WorkerAgent::is_running)
-    FLY_EXPORT_METHOD("get_worker_id", &fly::WorkerAgent::get_worker_id);
+    FLY_EXPORT_METHOD("get_worker_id", &fly::WorkerAgent::get_worker_id)
+    FLY_EXPORT_METHOD("set_executor", &fly::WorkerAgent::set_executor)
+    FLY_EXPORT_METHOD("is_registered", &fly::WorkerAgent::is_registered);
 
 }
