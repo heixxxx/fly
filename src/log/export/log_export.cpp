@@ -20,28 +20,28 @@ FLY_EXPORT_CLASS(fly::Logger, "EXLogger")
     FLY_EXPORT_METHOD("get_level", &fly::Logger::get_level)
     FLY_EXPORT_METHOD("flush", &fly::Logger::flush);
 
-m.def("init_master", [](const fly::CMString& path) {
+FLY_EXPORT_FUNCTION("init_master", [](const fly::CMString& path) {
     fly::Logger::init_master(path);
 });
 
-m.def("init_worker", [](uint64_t worker_id, const fly::CMString& path) {
+FLY_EXPORT_FUNCTION("init_worker", [](uint64_t worker_id, const fly::CMString& path) {
     fly::Logger::init_worker(worker_id, path);
 });
 
-m.def("shutdown", []() {
+FLY_EXPORT_FUNCTION("shutdown", []() {
     fly::Logger::shutdown();
 });
 
-m.def("get_master_log", []() -> fly::Logger& {
+FLY_EXPORT_FUNCTION_REF("get_master_log", []() -> fly::Logger& {
     auto* logger = fly::Logger::get_master();
     if (!logger) throw std::runtime_error("Master logger not initialized");
     return *logger;
-}, nanobind::rv_policy::reference);
+});
 
-m.def("get_worker_log", [](uint64_t worker_id) -> fly::Logger& {
+FLY_EXPORT_FUNCTION_REF("get_worker_log", [](uint64_t worker_id) -> fly::Logger& {
     auto* logger = fly::Logger::get_worker(worker_id);
     if (!logger) throw std::runtime_error("Worker logger not initialized");
     return *logger;
-}, nanobind::rv_policy::reference);
+});
 
 }

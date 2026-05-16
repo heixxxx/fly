@@ -2617,6 +2617,12 @@ def process_data(db, name):
     result = cpp_module.algorithm(raw)
     db.write_object(f"output/{name}.result", result, backup=True)
 
+# 定义冻结任务
+@as_task(inputs=lambda db, deps: [f"output/{name}.result" for name in deps])
+@task_name("processor")
+def freeze_db(db, deps):
+    db.freeze()
+
 # 创建Database并提交任务
 db_a = Database("/data/project_a")
 db_b = Database("/data/project_b", data_path="/ssd/local_b")
@@ -2625,5 +2631,6 @@ process_data(db_a, "file1")
 process_data(db_b, "file2")
 
 # 数据处理完成后冻结
-db_a.freeze()
+freeze_db(db_a, ["file1"])
+freeze_db(db_b, ["file2"])
 ```
