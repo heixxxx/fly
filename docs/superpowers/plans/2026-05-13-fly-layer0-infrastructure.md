@@ -1,5 +1,9 @@
 # Fly Layer 0: 项目基础设施 + 构建系统
 
+> **状态**: ✅ 完成 (2026-05-13)
+> **测试**: 5 tests pass
+> **提交**: 8 commits
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 搭建Fly项目的Bazel构建系统、C++基础设施（Config单例、序列化宏、导出宏），确保每个模块的`cpp/`和`export/`都编译为独立`.so`，Python运行时通过`import`动态加载。

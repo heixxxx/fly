@@ -1,5 +1,9 @@
 # Fly Layer 1: 核心存储层实现计划
 
+> **状态**: ✅ 完成 (2026-05-14)
+> **测试**: 45 tests pass
+> **提交**: 12 commits
+
 > **Goal:** 实现 Database、DataWriter、DataReader、LocalIndex、Serializer、StorageManager 等核心存储组件，为上层任务系统提供数据持久化能力。
 
 > **Architecture:** C++20 实现 + nanobind 导出 + Bazel 构建。每个组件编译为独立 `.so`。

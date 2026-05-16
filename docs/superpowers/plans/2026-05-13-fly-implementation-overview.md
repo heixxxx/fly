@@ -2,9 +2,25 @@
 
 > **Goal:** 实现完整的分布式任务执行框架，从底层基础设施到上层应用功能分5层递进开发
 
-> **Architecture:** C++核心（存储、通信、调度）+ Python流程控制（任务定义、主循环）+ pybind11桥接，Bazel构建，每个模块独立so
+> **Architecture:** C++核心（存储、通信、调度）+ Python流程控制（任务定义、主循环）+ nanobind桥接，Bazel构建，每个模块独立so
 
-> **Tech Stack:** C++17, Python 3.10+, pybind11, Bazel, gtest, pytest, cereal
+> **Tech Stack:** C++20, Python 3.10+, nanobind, Bazel, gtest, pytest, cereal
+
+---
+
+## 当前实现状态
+
+| 层 | 状态 | 测试数 | 提交数 | 完成日期 |
+|----|------|--------|--------|----------|
+| Layer 0 | ✅ 完成 | 5 | 8 | 2026-05-13 |
+| Layer 1 | ✅ 完成 | 45 | 12 | 2026-05-14 |
+| Layer 2 | ✅ 完成 | 35 | 15 | 2026-05-15 |
+| Layer 3 | ✅ 完成 | 28 | 18 | 2026-05-15 |
+| Layer 4 | ✅ 完成 | 48 | 35 | 2026-05-16 |
+| Layer 5+6 | 待实施 | - | - | - |
+
+**总提交**: 66 commits
+**总测试**: ~161 tests
 
 ---
 
@@ -36,86 +52,114 @@ Layer 6: 集成测试 + 端到端测试 (qa/)
 fly/
 ├── WORKSPACE                    # Bazel workspace
 ├── .bazelrc                     # Bazel配置
+├── fly.sh                       # 构建脚本 (必须使用此脚本而非裸 bazel)
 ├── src/
+│   ├── common/                  # 公共类型定义
+│   │   └── cpp/common_types.h   # CMString, CMVector, CMMap 等类型别名
+│   │
 │   ├── core/                    # 核心基础模块
-│   │   ├── cpp/
-│   │   │   ├── config.cpp
-│   │   │   ├── config.h
-│   │   │   ├── database.cpp
-│   │   │   ├── database.h
-│   │   │   ├── data_writer.cpp
-│   │   │   ├── data_writer.h
-│   │   │   ├── data_reader.cpp
-│   │   │   ├── data_reader.h
-│   │   │   ├── local_index.cpp
-│   │   │   ├── local_index.h
-│   │   │   ├── serializer.cpp
-│   │   │   ├── serializer.h
-│   │   │   ├── storage_manager.cpp
-│   │   │   ├── storage_manager.h
-│   │   │   ├── transport.cpp
-│   │   │   ├── transport.h
-│   │   │   ├── reactor.cpp
-│   │   │   ├── reactor.h
-│   │   │   ├── message_protocol.cpp
-│   │   │   ├── message_protocol.h
-│   │   │   ├── message_types.h
-│   │   │   ├── db_meta.cpp
-│   │   │   └── db_meta.h
-│   │   ├── export/
-│   │   │   └── core_export.cpp
-│   │   ├── py/
-│   │   │   ├── __init__.py
-│   │   │   ├── connection.py
-│   │   │   └── protocol.py
-│   │   └── tests/
-│   │       ├── config_test.cpp
-│   │       ├── database_test.cpp
-│   │       ├── data_writer_test.cpp
-│   │       ├── local_index_test.cpp
-│   │       ├── serializer_test.cpp
-│   │       ├── transport_test.cpp
-│   │       └── test_core.py
+│   │   └── cpp/config.h/cpp     # 配置管理
 │   │
-│   ├── serialization/
-│   │   ├── cpp/
+│   ├── serialization/           # 序列化模块
+│   │   └ cpp/
 │   │   │   ├── serialization_macros.h
-│   │   │   └── BUILD
-│   │   └── tests/
-│   │       └── serialization_test.cpp
+│   │   │   └ BUILD
+│   │   └ tests/
+│   │       └ serialization_test.cpp
 │   │
-│   ├── export/
-│   │   └── cpp/
-│   │       ├── export_macros.h
-│   │       └── BUILD
+│   ├── export/                  # 导出宏
+│   │   └ cpp/
+│   │   │   ├── export_macros.h  # nanobind 导出宏封装
+│   │   │   └ BUILD
 │   │
-│   ├── master/
-│   │   ├── cpp/
-│   │   ├── export/
-│   │   ├── py/
-│   │   └── tests/
+│   ├── compression/             # 压缩层
+│   │   └ cpp/
+│   │   │   ├── compressor.h/cpp
+│   │   │    BUILD
+│   │   └ tests/
 │   │
-│   ├── worker/
-│   │   ├── cpp/
-│   │   ├── export/
-│   │   ├── py/
-│   │   └── tests/
+│   ├── storage/                 # 存储层 (Layer 1)
+│   │   └ cpp/
+│   │   │   ├── database.h/cpp
+│   │   │   ├── data_writer.h/cpp
+│   │   │   ├── data_reader.h/cpp
+│   │   │   ├── object.h/cpp
+│   │   │   ├── index_entry.h/cpp
+│   │   │   ├── db_meta.h/cpp
+│   │   │   ├── storage_manager.h/cpp
+│   │   │   └ BUILD
+│   │   └ export/
+│   │   │   ├── storage_export.cpp
+│   │   │   └ BUILD (_fly_storage.so)
+│   │   └ tests/
 │   │
-│   ├── task/
-│   │   ├── py/
-│   │   └── tests/
+│   ├── network/                 # 网络层 (Layer 2)
+│   │   └ cpp/
+│   │   │   ├── reactor.h/cpp
+│   │   │   ├── transport.h/cpp
+│   │   │   ├── tcp_transport.cpp
+│   │   │   ├── message_protocol.h/cpp
+│   │   │   ├── message_types.h
+│   │   │   └ BUILD
+│   │   └ export/
+│   │   │   ├── network_export.cpp
+│   │   │   └ BUILD (_fly_network.so)
+│   │   └ tests/
 │   │
-│   └── main.cpp
+│   ├── task/                    # 任务系统层 (Layer 3)
+│   │   └ cpp/
+│   │   │   ├── dependency_graph.h/cpp
+│   │   │   ├── worker_manager.h/cpp
+│   │   │   ├── task_scheduler.h/cpp
+│   │   │   ├── metadata_manager.h/cpp
+│   │   │   ├── heartbeat_monitor.h/cpp
+│   │   │   └ BUILD
+│   │   └ tests/
+│   │
+│   ├── agent/                   # Agent层 (Layer 4)
+│   │   └ cpp/
+│   │   │   ├── task_executor.h/cpp
+│   │   │   ├── master_agent.h/cpp
+│   │   │   ├── worker_agent.h/cpp
+│   │   │   └ BUILD
+│   │   └ export/
+│   │   │   ├── agent_export.cpp
+│   │   │   └ BUILD (_fly_agent.so)
+│   │   └ tests/
+│   │     ├── test_agent_integration.py
+│   │     └ test_sum_example.py  (端到端示例)
+│   │
+│   └ log/                       # 日志模块
+│   │   └ cpp/
+│   │   │   ├── logger.h/cpp
+│   │   │   └ BUILD
+│   │   └ export/
+│   │   │   ├── log_export.cpp
+│   │   │   └ BUILD (_fly_log.so)
+│   │   └ tests/
+│   │
+│   └ main.cpp
 ├── qa/                          # 项目级集成测试
 │   ├── test_master_worker.py
 │   ├── test_task_dependency.py
 │   ├── test_database_freeze.py
-│   └── test_e2e.py
+│   └ test_e2e.py
 ├── docs/
-│   └── superpowers/
-│       ├── specs/
-│       └── plans/
-└── BUILD                        # 顶层BUILD文件
+│   └ superpowers/
+│   │   ├── specs/               # 设计文档
+│   │   └ plans/                 # 实施计划
+│   └     ├── 2026-05-13-fly-implementation-overview.md
+│   └     ├── 2026-05-13-fly-layer0-infrastructure.md
+│   └     ├── 2026-05-14-fly-layer1-storage-layer.md
+│   └     ├── 2026-05-15-layer2-networking-plan.md
+│   └     ├── 2026-05-15-layer3-task-system-plan.md
+│   └     ├── 2026-05-15-layer4-agents-plan.md
+│   └     ├── 2026-05-15-layer4-progress.md
+│   └     ├── 2026-05-15-layer4-phase2-implementation.md
+│   └     ├── 2026-05-15-layer4-phase3-implementation.md
+│   └     └ 2026-05-15-layer4-phase2-network-design.md
+│   └     └ 2026-05-12-distributed-task-framework-design.md
+└── BUILD                        # 顶层BUILD文件 (compile_commands.json refresh)
 ```
 
 ---
@@ -143,11 +187,42 @@ fly/
 3. **频繁提交**: 每个测试通过后立即commit
 4. **C++测试**: gtest，放在`src/<module>/tests/`
 5. **Python测试**: pytest，放在`src/<module>/tests/`或`qa/`
-6. **pybind11导出**: 每个模块的`export/`目录负责C++到Python的桥接
+6. **nanobind导出**: 每个模块的`export/`目录负责C++到Python的桥接
 7. **宏封装**: 序列化用`FLY_SERIALIZE_*`，导出用`FLY_EXPORT_*`
+8. **构建约束**:
+   - 必须使用 `./fly.sh` 而非裸 `bazel build/test`
+   - C++20 标准: `--copt=-std=c++20`
+   - 编译器: gcc12 (非 clang)
+   - fly.sh 会自动刷新 compile_commands.json 供 clangd 使用
+
+---
+
+## Layer 4 完成详情
+
+**MasterAgent**:
+- Reactor TCP Server 集成
+- TaskScheduler/WorkerManager/MetadataManager/HeartbeatMonitor 集成
+- submit_task() API 和任务状态查询
+- Worker 注册/心跳/任务完成消息处理
+- Python callable 作为执行函数支持
+
+**WorkerAgent**:
+- Reactor TCP Client 集成
+- 独立心跳线程 (10s interval)
+- TaskExecutor 外部注入
+- 任务执行 → 结果发送流程
+- 日志输出 (worker{id}.log)
+
+**端到端示例**:
+- test_sum_example.py: 分布式求和计算
+- 3个 worker 分布式计算部分和
+- 聚合任务汇总结果
+- 数据库冻结验证
 
 ---
 
 ## 下一步
 
-选择从 Layer 0 开始实现，或指定其他层。
+Layer 5+6 待实施:
+- Layer 5: 高级功能 (Database Freeze完善, 备份管理, 多DB, 交互模式)
+- Layer 6: 集成测试 + 端到端测试 (qa/)
