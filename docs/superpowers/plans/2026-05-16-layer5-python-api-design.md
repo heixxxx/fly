@@ -19,14 +19,36 @@ config.set(heartbeat_timeout=120, track_writes=1)
 
 master.launch_local_workers([{"role": "hybrid"}])
 
-@as_task(inputs=lambda db, name: [f"input/{name}"])
+@as_task(inputs=lambda db, name: [db.get_obj_name(f"input/{name}")])
+@task_name("processor")
 def process_data(db, name):
+    # read_object 内部自动使用 get_obj_name 查找数据
     raw = db.read_object(f"input/{name}")
     result = algorithm(raw)
-    db.write_object(f"output/{name}.result", result)  # 自动跟踪写入
+    # write_object 自动跟踪写入，无需手动声明 outputs
+    db.write_object(f"output/{name}.result", result)
 
-process_data(db, "file1")
+# 创建 Database
+db_a = Database("/data/project_a")
+db_b = Database("/data/project_b", data_path="/ssd/local_b")
+
+# 提交任务（一行代码）
+process_data(db_a, "file1")
+process_data(db_b, "file2")
+
+# 冻结任务作为最后一步
+@as_task(inputs=lambda db, deps: [db.get_obj_name(f"output/{name}.result") for name in deps])
+def freeze_db(db, deps):
+    db.freeze()
+
+freeze_db(db_a, ["file1"])
+freeze_db(db_b, ["file2"])
 ```
+
+**关键简化**：
+- `db.get_obj_name("key")` 返回唯一标识符，无需手动拼接 db_id
+- `db.read_object("key")` 内部自动处理 db_id
+- `db.write_object("key")` 自动跟踪写入
 
 ---
 
@@ -115,19 +137,47 @@ private:
 // src/storage/cpp/database.h
 class Database {
 public:
-    CMString write_object(const CMString& name, ...) {
-        CMString result = writer_->write_object(name, ...);
+    Database(const CMString& base_path, const CMString& data_path = "");
+    
+    // 获取对象唯一标识符
+    CMString get_obj_name(const CMString& name) const {
+        return db_id_ + ":" + name;
+    }
+    
+    // 写入对象（自动跟踪）
+    template<typename T>
+    CMString write_object(const CMString& name, const T& obj, ...) {
+        CMString result = writer_->write_object(name, obj, ...);
         
-        // 调用 Worker Agent 记录写入（如果在任务执行上下文中）
-        if (auto* agent = get_current_worker_agent()) {
+        // 自动调用 Worker Agent 记录写入
+        if (auto* agent = WorkerAgentContext::current()) {
             agent->record_write(db_id_, name);
         }
         
         return result;
     }
     
+    // 读取对象（自动定位）
+    template<typename T>
+    std::shared_ptr<T> read_object(const CMString& name) {
+        // 使用 get_obj_name 作为查找 key
+        CMString full_name = get_obj_name(name);
+        
+        // 优先本地读取
+        if (has_local(full_name)) {
+            return reader_->read_object<T>(name);
+        }
+        
+        // 否则请求远程数据
+        return request_remote(full_name);
+    }
+    
+    CMString get_db_id() const { return db_id_; }
+    
 private:
     CMString db_id_;  // Database 唯一标识符
+    CMString base_path_;
+    CMString data_path_;
 };
 ```
 
@@ -153,20 +203,31 @@ public:
 
 **问题**：多 db 可能写入同名对象，如何区分？
 
-**方案**：拼接 `db_id` 前缀
+**方案**：Database 提供 `get_obj_name()` 方法自动拼接 db_id
 
+```python
+# 用户使用方式（简洁）
+@as_task(inputs=lambda db, name: [db.get_obj_name(f"input/{name}")])
+def process_data(db, name):
+    raw = db.read_object(f"input/{name}")  # read_object 内部自动处理
+    result = algorithm(raw)
+    db.write_object(f"output/{name}.result", result)  # write_object 自动跟踪
+
+# get_obj_name 返回唯一标识符
+db.get_obj_name("input/file1") → "{db_id}:input/file1"
+```
+
+**内部实现**：
 ```
 写入对象唯一标识格式："{db_id}:{object_name}"
 
 示例：
-- Database db_a (db_id="proj_a") 写入 "output/result"
-  → 唯一标识: "proj_a:output/result"
-  
-- Database db_b (db_id="proj_b") 写入 "output/result"
-  → 唯一标识: "proj_b:output/result"
+- Database db_a.get_obj_name("output/result") → "proj_a:output/result"
+- Database db_b.get_obj_name("output/result") → "proj_b:output/result"
 
-依赖声明时使用完整标识：
-@as_task(inputs=lambda db, name: [f"{db.get_db_id()}:input/{name}"])
+依赖声明简化：
+@as_task(inputs=lambda db, name: [db.get_obj_name(f"input/{name}")])
+# 无需手动拼接 db_id
 ```
 
 ### 2.6 Python 导出
@@ -175,24 +236,42 @@ public:
 # src/fly/database.py
 class Database(_CDatabase):
     def write_object(self, name: str, obj) -> str:
-        result = self._write_typed(name, ...)
         # C++ 内部自动调用 Agent.record_write(db_id, name)
-        return result
+        return self._write_typed(name, ...)
+    
+    def read_object(self, name: str):
+        # 自动查找数据位置（本地优先，远程其次）
+        # 内部使用 get_obj_name(name) 作为查找 key
+        return self._read_typed(name)
+    
+    def get_obj_name(self, name: str) -> str:
+        # 返回唯一标识符："{db_id}:{name}"
+        return self._get_obj_name(name)
     
     def get_db_id(self) -> str:
-        return self._db_id  # 返回唯一标识符
+        return self._db_id
 
 # src/fly/task.py
 def as_task(inputs=None):
     def decorator(func):
         def wrapper(*args, **kwargs):
-            # 计算依赖时需要考虑 db_id
-            # inputs 函数签名：inputs(db, *args) 
+            # 计算依赖 - 使用 db.get_obj_name() 简化
             deps = inputs(*args, **kwargs) if inputs else []
-            # deps 应为完整标识符 ["db_id:input/name", ...]
+            # deps 格式：["{db_id}:input/name", ...]
             ...
         return wrapper
     return decorator
+```
+
+**用户代码示例**：
+```python
+@as_task(inputs=lambda db, name: [db.get_obj_name(f"input/{name}")])
+def process_data(db, name):
+    # read_object 无需调用 get_obj_name，内部自动处理
+    raw = db.read_object(f"input/{name}")
+    result = algorithm(raw)
+    # write_object 自动跟踪写入，使用 get_obj_name(name) 作为记录 key
+    db.write_object(f"output/{name}.result", result)
 ```
 
 ---
@@ -320,11 +399,19 @@ db = StorageManager.get_database(db_id)
 ### 5.3 依赖声明格式
 
 ```python
-@as_task(inputs=lambda db, name: [f"{db.get_db_id()}:input/{name}"])
+@as_task(inputs=lambda db, name: [db.get_obj_name(f"input/{name}")])
 def process_data(db, name):
-    # db.read_object 自动解析 db_id，优先本地读取
+    # read_object 无需 get_obj_name，内部自动处理
     raw = db.read_object(f"input/{name}")
+    
+    # write_object 自动跟踪，内部使用 get_obj_name 记录
+    db.write_object(f"output/{name}.result", result)
 ```
+
+**简化点**：
+- `inputs` 声明使用 `db.get_obj_name()` 获取唯一标识符
+- `read_object()` 和 `write_object()` 内部自动处理 db_id
+- 用户无需关心 db_id 拼接细节
 
 ---
 
@@ -342,7 +429,10 @@ def test_write_tracking():
     db.write_object("output/b", "data2")
     
     writes = agent.end_task(1)
-    assert writes == ["{db_id}:output/a", "{db_id}:output/b"]
+    # writes 使用 get_obj_name 格式
+    expected_a = db.get_obj_name("output/a")
+    expected_b = db.get_obj_name("output/b")
+    assert writes == [expected_a, expected_b]
 ```
 
 ### 6.2 多 db 同名对象测试
@@ -359,24 +449,43 @@ def test_multi_db_same_name():
     db_b.write_object("output/result", "from_b")
     
     writes = agent.end_task(1)
-    assert writes == [
-        "{db_a_id}:output/result",
-        "{db_b_id}:output/result"
-    ]
+    # 同名对象但唯一标识不同
+    assert db_a.get_obj_name("output/result") in writes
+    assert db_b.get_obj_name("output/result") in writes
 ```
 
 ### 6.3 依赖调度测试
 
 ```python
 def test_dependency_with_db_id():
+    db = Database("/data/project")
+    
+    # 使用 get_obj_name 声明依赖
+    deps = [db.get_obj_name("input/file1")]
+    
     master.submit_task_with_deps(
         task_id=2,
-        name="aggregate",
+        name="process",
         module="tasks",
         args=[...],
-        inputs=["{db_a_id}:output/a"],  # 依赖 db_a 的输出
+        inputs=deps,
         outputs=[]
     )
+```
+
+### 6.4 get_obj_name 接口测试
+
+```python
+def test_get_obj_name():
+    db_a = Database("/data/proj_a")
+    db_b = Database("/data/proj_b")
+    
+    # 不同 db，同名对象，唯一标识不同
+    assert db_a.get_obj_name("output/result") == f"{db_a.get_db_id()}:output/result"
+    assert db_b.get_obj_name("output/result") == f"{db_b.get_db_id()}:output/result"
+    
+    # 唯一标识不相等
+    assert db_a.get_obj_name("output/result") != db_b.get_obj_name("output/result")
 ```
 
 ---
@@ -387,22 +496,34 @@ def test_dependency_with_db_id():
 
 ```python
 from fly import master, Database, get_config
-from fly.task import as_task
+from fly.task import as_task, task_name
 
 config = get_config()
-config.set(track_writes=1)  # 启用写入跟踪
+config.set(track_writes=1)
 
 master.launch_local_workers([{"role": "hybrid"}])
 
-@as_task(inputs=lambda db, name: [f"{db.get_db_id()}:input/{name}"])
+@as_task(inputs=lambda db, name: [db.get_obj_name(f"input/{name}")])
+@task_name("processor")
 def process_data(db, name):
+    # read_object 内部自动处理 db_id
     raw = db.read_object(f"input/{name}")
     result = algorithm(raw)
-    db.write_object(f"output/{name}.result", result)  # 自动跟踪
+    # write_object 自动跟踪写入
+    db.write_object(f"output/{name}.result", result)
 
 db = Database("/data/project")
 process_data(db, "file1")  # 一行提交任务
 ```
+
+**关键 API 简化对比**：
+
+| 操作 | 原方式（手动拼接） | 新方式（自动处理） |
+|------|-------------------|-------------------|
+| 唯一标识符 | `f"{db.get_db_id()}:key"` | `db.get_obj_name("key")` |
+| 依赖声明 | `[f"{db_id}:input/{name}"]` | `[db.get_obj_name(f"input/{name}")]` |
+| 写入跟踪 | 手动设置 `outputs` | `write_object` 自动跟踪 |
+| 数据读取 | 需要知道 db_id | `read_object` 内部处理 |
 
 ---
 
