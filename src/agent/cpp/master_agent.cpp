@@ -221,12 +221,21 @@ void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
 void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg) {
     auto* log = Logger::get_master();
     if (log) {
-        log->info("MasterAgent", "Task complete: task_id=" + std::to_string(msg.task_id));
+        log->info("MasterAgent", "Task complete: task_id=" + std::to_string(msg.task_id) +
+                  ", written_objects=" + std::to_string(msg.written_objects.size()));
     }
     
     uint64_t worker_id = msg.worker_id;
     
     worker_manager_->complete_task(worker_id);
+    
+    for (const auto& data_path : msg.written_objects) {
+        graph_->mark_data_ready(data_path);
+        if (log) {
+            log->debug("MasterAgent", "Mark data ready: " + data_path);
+        }
+    }
+    
     graph_->remove_task(msg.task_id);
     
     metadata_->update_task_status(msg.task_id, TaskStatus::COMPLETED);
@@ -290,7 +299,7 @@ size_t MasterAgent::get_connection_count() const {
 }
 
 CMVector<uint64_t> MasterAgent::get_pending_tasks() const {
-    return graph_->get_ready_tasks();
+    return graph_->get_pending_tasks();
 }
 
 CMVector<uint64_t> MasterAgent::get_running_tasks() const {

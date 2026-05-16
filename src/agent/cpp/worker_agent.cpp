@@ -140,10 +140,12 @@ void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
             TaskCompleteMessage complete;
             complete.task_id = msg.task_id;
             complete.worker_id = worker_id_;
+            complete.written_objects = result.outputs;
             reactor_->send(master_conn_, complete);
             
             if (log) {
-                log->info("WorkerAgent", "TaskComplete sent: task_id=" + std::to_string(msg.task_id));
+                log->info("WorkerAgent", "TaskComplete sent: task_id=" + std::to_string(msg.task_id) +
+                          ", outputs=" + std::to_string(complete.written_objects.size()));
             }
         } else {
             TaskFailedMessage failed;

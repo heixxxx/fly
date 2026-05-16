@@ -16,7 +16,8 @@ FLY_EXPORT_CLASS(fly::TaskExecResult, "EXTaskExecResult")
     FLY_EXPORT_ATTR("task_id", &fly::TaskExecResult::task_id)
     FLY_EXPORT_ATTR("status", &fly::TaskExecResult::status)
     FLY_EXPORT_ATTR("output", &fly::TaskExecResult::output)
-    FLY_EXPORT_ATTR("error", &fly::TaskExecResult::error);
+    FLY_EXPORT_ATTR("error", &fly::TaskExecResult::error)
+    FLY_EXPORT_ATTR("outputs", &fly::TaskExecResult::outputs);
 
 FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
     FLY_EXPORT_INIT()
@@ -37,6 +38,7 @@ FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
                 cpp_result.status = fly_export::cast<fly::TaskExecStatus>(result.attr("status"));
                 cpp_result.output = fly_export::cast<fly::CMString>(result.attr("output"));
                 cpp_result.error = fly_export::cast<fly::CMString>(result.attr("error"));
+                cpp_result.outputs = fly_export::cast<fly::CMVector<fly::CMString>>(result.attr("outputs"));
                 return cpp_result;
             } catch (const fly_export::python_error& e) {
                 fly::TaskExecResult cpp_result;
@@ -44,6 +46,7 @@ FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
                 cpp_result.status = fly::TaskExecStatus::FAILED;
                 cpp_result.output = "";
                 cpp_result.error = e.what();
+                cpp_result.outputs = {};
                 return cpp_result;
             }
         };
