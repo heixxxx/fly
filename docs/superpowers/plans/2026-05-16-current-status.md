@@ -160,18 +160,46 @@ b7aa59e feat(agent): Phase 3 end-to-end task execution and Python exports
 
 ## 下一步
 
-Layer 5+6 待实施内容：
+Layer 5: Python 高层 API + 写入跟踪（详见 `2026-05-16-layer5-python-api-design.md`）
 
-### Layer 5: 高级功能
-- Database Freeze 完善
-- 备份管理
-- 多 Database 支持
-- 交互模式
+### 关键修正：写入跟踪机制
+
+**问题**：原设计使用全局 `track_writes` 配置，不适用于多 Database 场景
+
+**修正方案**：
+1. **Worker Agent 管理写入跟踪**：执行任务时维护写入列表
+2. **Database 调用 Agent API**：`db.write_object()` 调用 `Agent.record_write(db_id, name)`
+3. **多 db 支持**：写入对象使用 `"{db_id}:{object_name}"` 格式作为唯一标识
+
+**数据流**：
+```
+任务执行 → db.write_object(name) → Agent.record_write(db_id, name)
+→ Agent.end_task() → TaskCompleteMessage.written_objects=["db_id:name"]
+→ Master.mark_data_ready("db_id:name")
+```
+
+### 实施阶段
+
+**Phase 1: 写入跟踪核心**
+- WorkerAgent.begin_task/end_task/record_write
+- WorkerAgentContext 全局上下文
+- Database.db_id 生成
+- Python 导出自动跟踪
+
+**Phase 2: Python 高层 API**
+- fly/__init__.py 顶层包
+- fly/task.py @as_task 装饰器
+- fly/master.py launch_local_workers()
+
+**Phase 3: Worker 自动执行**
+- 模块加载执行机制
+- pickle args 序列化
+- fly 命令行入口
 
 ### Layer 6: 集成测试
 - qa/ 项目级集成测试
-- 端到端测试
-- 性能测试
+- 端到端用户脚本测试
+- 多 db 跨 Worker 数据读取测试
 
 ---
 
