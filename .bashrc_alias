@@ -1,0 +1,35 @@
+alias gl='git log'
+alias gsp='git stash pop'
+alias gs='git stash'
+alias gpr='git pull --rebase origin $(git branch --show-current)'
+alias gr='git rebase'
+alias grc='git rebase --continue'
+alias grm='git rebase master'
+alias gp='git push origin $(git branch --show-current)'
+alias gpn='git push origin $(git branch --show-current) --no-verify'
+alias gpnf='git push origin $(git branch --show-current) --no-verify -f'
+alias gco='git commit -m '
+alias gca='git commit --amend --no-edit'
+alias gcl='git clean -d -f -x'
+alias gc='git checkout'
+alias gcm='git checkout master'
+alias gcb='git checkout -b'
+alias gb='git branch'
+alias gbd='git branch -D'
+alias gf='git fetch'
+alias gau='git add -u'
+alias cl='clear'
+alias rf='rm -rf '
+alias upt='uptime'
+alias uss='source ~/.bashrc'
+
+mk() {
+    local dir="${@: -1}"
+    # echo "$@" $dir
+    mkdir "$@"; cd $dir; pwd
+}
+
+cd() {
+    builtin cd "$@" && ls
+}
+
