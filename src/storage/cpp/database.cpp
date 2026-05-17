@@ -4,12 +4,16 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
+#include <functional>
+#include <sstream>
+#include <iomanip>
 
 namespace fs = std::filesystem;
 
-Database::Database(const CMString& base_path, const CMString& data_path)
+Database::Database(const CMString& base_path, const CMString& data_path, uint64_t writer_id)
     : base_path_(base_path)
     , data_path_(data_path)
+    , writer_id_(writer_id)
     , db_id_(generate_db_id()) {
 
     ensure_directory_exists(base_path_);
@@ -24,7 +28,7 @@ Database::Database(const CMString& base_path, const CMString& data_path)
     int64_t stream_chunk_size = config.get_int("compression_stream_chunk_size");
 
     writer_ = std::make_unique<DataWriter>(
-        base_path_, data_path_, 0,
+        base_path_, data_path_, writer_id_,
         config.get_int("aggregation_threshold"),
         config.get_int("large_file_threshold"),
         config.get_int("block_size"),
@@ -33,39 +37,36 @@ Database::Database(const CMString& base_path, const CMString& data_path)
         static_cast<int>(config.get_int("compression_level")),
         stream_chunk_size
     );
-    reader_ = std::make_unique<DataReader>(base_path_, data_path_, 0);
+    reader_ = std::make_unique<DataReader>(base_path_, data_path_, writer_id_);
 }
 
 Database::~Database() = default;
 
 CMString Database::write_object(const CMString& object_name, const CMString& data, bool backup) {
     check_frozen();
-    return writer_->write_object(object_name, data, backup);
+    CMString result = writer_->write_object(object_name, data, backup);
+    writer_->flush();
+    fly::WorkerAgentContext::record_write(db_id_, object_name);
+    return result;
 }
 
 CMString Database::read_object(const CMString& object_name) {
-    if (!is_frozen_) {
-        writer_->flush();
-        reader_ = std::make_unique<DataReader>(base_path_, data_path_, 0);
-    }
-    ReadResult result = reader_->read_object_data(object_name);
-    return CMString(result.data_buffer.begin(), result.data_buffer.end());
+    return find_and_read(object_name);
 }
 
 CMString Database::write_object_typed(const CMString& object_name, const CMString& data,
                                         const CMString& py_name) {
     check_frozen();
-    return writer_->write_typed_object(object_name, static_cast<uint64_t>(data.size()),
+    CMString result = writer_->write_typed_object(object_name, static_cast<uint64_t>(data.size()),
                                         py_name, data.data(),
                                         static_cast<int64_t>(data.size()));
+    writer_->flush();
+    fly::WorkerAgentContext::record_write(db_id_, object_name);
+    return result;
 }
 
 ReadResult Database::read_object_typed(const CMString& object_name) {
-    if (!is_frozen_) {
-        writer_->flush();
-        reader_ = std::make_unique<DataReader>(base_path_, data_path_, 0);
-    }
-    return reader_->read_object_data(object_name);
+    return find_and_read_typed(object_name);
 }
 
 void Database::freeze() {
@@ -108,6 +109,10 @@ CMString Database::get_data_path() const {
     return data_path_;
 }
 
+CMString Database::get_obj_name(const CMString& name) const {
+    return db_id_ + ":" + name;
+}
+
 void Database::reset() {
     is_frozen_ = false;
     CMString frozen_marker = base_path_ + "/_FROZEN";
@@ -142,9 +147,44 @@ void Database::create_frozen_marker() {
 }
 
 CMString Database::generate_db_id() {
-    return base_path_;
+    std::size_t h = std::hash<CMString>{}(base_path_);
+    std::stringstream ss;
+    ss << std::hex << h;
+    CMString hash_str = ss.str();
+    if (hash_str.size() > 12) {
+        hash_str = hash_str.substr(0, 12);
+    }
+    return hash_str;
 }
 
 void Database::ensure_directory_exists(const CMString& path) {
     fs::create_directories(path);
+}
+
+ReadResult Database::find_and_read_typed(const CMString& object_name) {
+    CMString read_dir = data_path_.empty() ? base_path_ : data_path_;
+
+    writer_->flush();
+
+    for (const auto& entry : fs::directory_iterator(read_dir)) {
+        if (!entry.is_regular_file()) continue;
+        CMString fname = entry.path().filename().string();
+        if (fname.size() >= 12 && fname.substr(0, 7) == "worker_" && fname.substr(fname.size() - 4) == ".idx") {
+            try {
+                std::string id_str = fname.substr(7, fname.size() - 11);
+                uint64_t wid = std::stoull(id_str);
+                DataReader temp_reader(base_path_, data_path_, wid);
+                if (temp_reader.exists(object_name)) {
+                    return temp_reader.read_object_data(object_name);
+                }
+            } catch (...) {}
+        }
+    }
+
+    throw std::runtime_error("Object not found: " + object_name);
+}
+
+CMString Database::find_and_read(const CMString& object_name) {
+    ReadResult result = find_and_read_typed(object_name);
+    return CMString(result.data_buffer.begin(), result.data_buffer.end());
 }

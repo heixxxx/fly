@@ -3,6 +3,7 @@
 #include <network/cpp/reactor.h>
 #include <network/cpp/transport.h>
 #include <network/cpp/message_types.h>
+#include <storage/cpp/database.h>
 #include <task/cpp/dependency_graph.h>
 #include <task/cpp/worker_manager.h>
 #include <task/cpp/task_scheduler.h>
@@ -14,6 +15,7 @@
 #include <thread>
 #include <atomic>
 #include <map>
+#include <set>
 #include <memory>
 
 namespace fly {
@@ -41,9 +43,17 @@ public:
     
     CMVector<uint64_t> get_idle_workers() const;
     
+    uint16_t get_port() const { return port_; }
+    int32_t get_data_server_port() const { return data_server_port_; }
+    
+    void register_database(const CMString& db_id, const CMString& base_path, const CMString& data_path = "");
+    bool is_db_frozen(const CMString& db_id) const;
+    std::shared_ptr<Database> get_or_create_database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0);
+    
 private:
     CMString host_;
     uint16_t port_;
+    int32_t data_server_port_ = 0;
     std::atomic<bool> running_{false};
     
     std::unique_ptr<Reactor> reactor_;
@@ -59,9 +69,16 @@ private:
     std::unique_ptr<HeartbeatMonitor> heartbeat_monitor_;
     std::thread heartbeat_check_thread_;
     std::atomic<bool> heartbeat_check_running_{false};
+    std::mutex heartbeat_check_mutex_;
+    std::condition_variable heartbeat_check_cv_;
     
     CMMap<uint64_t, CMString> task_modules_;
     CMMap<uint64_t, CMVector<CMString>> task_args_;
+    
+    CMMap<CMString, CMMap<CMString, CMString>> db_registry_;
+    CMMap<CMString, std::shared_ptr<Database>> db_instances_;
+    CMSet<CMString> frozen_dbs_;
+    static std::atomic<uint64_t> remote_task_counter_;
     
     void schedule_tasks();
     void assign_task_to_worker(uint64_t task_id, uint64_t worker_id);
@@ -73,6 +90,7 @@ private:
     void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
     void on_disconnect(uint64_t conn_id);
     void on_error(uint64_t conn_id, int error_code);
+    void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
 };
 
 }  // namespace fly

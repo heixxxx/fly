@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/database.h>
+#include <agent/cpp/worker_context.h>
 #include <filesystem>
 #include <fstream>
 
@@ -69,16 +70,17 @@ TEST_F(DatabaseTest, LoadMetaFromFrozenDatabase) {
     db.freeze();
 
     DbMeta meta = db.load_meta();
-    EXPECT_EQ(meta.db_id, base_path);
+    EXPECT_EQ(meta.db_id, db.get_db_id());
     EXPECT_EQ(meta.base_path, base_path);
     EXPECT_GT(meta.frozen_at, 0);
 }
 
-TEST_F(DatabaseTest, GetDbIdReturnsBasePath) {
+TEST_F(DatabaseTest, GetDbIdIsHashed) {
     CMString base_path = test_dir_ + "/id_check";
     Database db(base_path);
 
-    EXPECT_EQ(db.get_db_id(), base_path);
+    EXPECT_NE(db.get_db_id(), base_path);
+    EXPECT_FALSE(db.get_db_id().empty());
 }
 
 TEST_F(DatabaseTest, GetBasePath) {
@@ -197,6 +199,88 @@ TEST_F(DatabaseTest, TypedNonexistentObjectThrows) {
     Database db(base_path);
 
     EXPECT_THROW(db.read_object_typed("no/such/typed/object"), std::runtime_error);
+}
+
+TEST_F(DatabaseTest, GetObjNameReturnsDbIdColonName) {
+    CMString base_path = test_dir_ + "/obj_name_test";
+    Database db(base_path);
+
+    CMString obj_name = db.get_obj_name("output/result");
+    CMString expected = db.get_db_id() + ":output/result";
+    EXPECT_EQ(obj_name, expected);
+}
+
+TEST_F(DatabaseTest, GetObjNameDifferentDbDifferentResult) {
+    CMString base_a = test_dir_ + "/db_a";
+    CMString base_b = test_dir_ + "/db_b";
+    Database db_a(base_a);
+    Database db_b(base_b);
+
+    // Same object name, different databases → different full names
+    EXPECT_NE(db_a.get_obj_name("output/result"), db_b.get_obj_name("output/result"));
+}
+
+TEST_F(DatabaseTest, DbIdIsDeterministicHash) {
+    CMString base_path = test_dir_ + "/hash_test";
+    Database db1(base_path);
+    Database db2(base_path);
+    // Same path → same db_id
+    EXPECT_EQ(db1.get_db_id(), db2.get_db_id());
+}
+
+TEST_F(DatabaseTest, DbIdIsNotBasePath) {
+    CMString base_path = test_dir_ + "/not_path";
+    Database db(base_path);
+    // db_id should NOT equal base_path (it should be a hash)
+    EXPECT_NE(db.get_db_id(), base_path);
+}
+
+// ─── Write tracking tests ───
+
+TEST_F(DatabaseTest, WriteObjectTracksWrite) {
+    CMVector<CMString> recorded_writes;
+    fly::WorkerAgentContext::set(
+        [](void* ctx, const CMString& db_id, const CMString& name) {
+            auto* writes = static_cast<CMVector<CMString>*>(ctx);
+            writes->push_back(db_id + ":" + name);
+        },
+        &recorded_writes
+    );
+
+    CMString base_path = test_dir_ + "/write_track";
+    Database db(base_path);
+    db.write_object("test/obj", "data", false);
+
+    fly::WorkerAgentContext::clear();
+
+    ASSERT_EQ(recorded_writes.size(), 1u);
+    EXPECT_EQ(recorded_writes[0], db.get_db_id() + ":test/obj");
+}
+
+TEST_F(DatabaseTest, WriteTypedObjectTracksWrite) {
+    CMVector<CMString> recorded_writes;
+    fly::WorkerAgentContext::set(
+        [](void* ctx, const CMString& db_id, const CMString& name) {
+            auto* writes = static_cast<CMVector<CMString>*>(ctx);
+            writes->push_back(db_id + ":" + name);
+        },
+        &recorded_writes
+    );
+
+    CMString base_path = test_dir_ + "/typed_track";
+    Database db(base_path);
+    db.write_object_typed("typed/obj", "typed_data", "TestType");
+
+    fly::WorkerAgentContext::clear();
+
+    ASSERT_EQ(recorded_writes.size(), 1u);
+    EXPECT_EQ(recorded_writes[0], db.get_db_id() + ":typed/obj");
+}
+
+TEST_F(DatabaseTest, NoTrackingWithoutContext) {
+    CMString base_path = test_dir_ + "/no_track";
+    Database db(base_path);
+    db.write_object("safe/obj", "data", false);
 }
 
 }

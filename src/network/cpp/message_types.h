@@ -43,10 +43,12 @@ struct RegisterMessage {
     uint64_t worker_id = 0;
     CMString role;
     CMVector<CMString> attributes;
+    CMString data_server_host;
+    int32_t data_server_port = 0;
     
     static constexpr MessageType msg_type = MessageType::REGISTER;
     
-    FLY_SERIALIZE(header, worker_id, role, attributes);
+    FLY_SERIALIZE(header, worker_id, role, attributes, data_server_host, data_server_port);
 };
 
 // Master → Worker: 注册确认
@@ -88,11 +90,13 @@ struct DataRequestMessage {
 struct DataResponseMessage {
     MessageHeader header;
     CMString object_name;
-    CMString data;  // 二进制 payload（可能 MB 级）
+    CMString data;
+    bool success = false;
+    CMString error_message;
     
     static constexpr MessageType msg_type = MessageType::DATA_RESPONSE;
     
-    FLY_SERIALIZE(header, object_name, data);
+    FLY_SERIALIZE(header, object_name, data, success, error_message);
 };
 
 // Master → Worker: 任务分配
@@ -114,10 +118,11 @@ struct TaskCompleteMessage {
     uint64_t task_id = 0;
     uint64_t worker_id = 0;
     CMVector<CMString> written_objects;
+    CMVector<CMString> frozen_dbs;
     
     static constexpr MessageType msg_type = MessageType::TASK_COMPLETE;
     
-    FLY_SERIALIZE(header, task_id, worker_id, written_objects);
+    FLY_SERIALIZE(header, task_id, worker_id, written_objects, frozen_dbs);
 };
 
 // Worker → Master: 任务失败
@@ -162,10 +167,42 @@ struct DataLocationMessage {
     uint64_t worker_id = 0;
     CMString file_path;
     CMString object_name;
+    CMString data_host;
+    int32_t data_port = 0;
+    bool success = false;
     
     static constexpr MessageType msg_type = MessageType::DATA_LOCATION;
     
-    FLY_SERIALIZE(header, worker_id, file_path, object_name);
+    FLY_SERIALIZE(header, worker_id, file_path, object_name, data_host, data_port, success);
+};
+
+// Worker → Master: 任务提交
+struct TaskSubmitMessage {
+    MessageHeader header;
+    CMString task_name;
+    CMString task_module;
+    CMVector<CMString> args;
+    CMVector<CMString> inputs;
+    static constexpr MessageType msg_type = MessageType::TASK_SUBMIT;
+    FLY_SERIALIZE(header, task_name, task_module, args, inputs);
+};
+
+// Worker → Master: 数据库路径查询
+struct DbPathRequestMessage {
+    MessageHeader header;
+    CMString db_id;
+    static constexpr MessageType msg_type = MessageType::DATA_QUERY;
+    FLY_SERIALIZE(header, db_id);
+};
+
+// Master → Worker: 数据库路径响应
+struct DbPathResponseMessage {
+    MessageHeader header;
+    CMString db_id;
+    CMString base_path;
+    CMString data_path;
+    static constexpr MessageType msg_type = MessageType::DATA_LOCATION;
+    FLY_SERIALIZE(header, db_id, base_path, data_path);
 };
 
 // Master → Worker: 关机

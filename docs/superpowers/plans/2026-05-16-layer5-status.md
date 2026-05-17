@@ -1,128 +1,154 @@
-# Layer 5 Python API + 写入跟踪 — 实施状态
+# Layer 5 Python API + 数据传输 — 实施状态
 
-**日期**: 2026-05-16
-**状态**: Phase 1 待开始 (0/19 完成)
+**日期**: 2026-05-17
+**状态**: Phase 1-3 完成, 数据传输协议已实现, Python API 重构完成
 
 ---
 
 ## 设计文档
 
-完整设计见 `2026-05-16-layer5-python-api-design.md`
+- 完整设计见 `2026-05-16-layer5-python-api-design.md`
+- 数据传输设计见 `specs/2026-05-12-distributed-task-framework-design.md` Section 9.5, 10.2, 19.4, 20.4
 
 ---
 
 ## 实施任务清单
 
-### Phase 1: 写入跟踪核心 (7 tasks)
+### Phase 1: 写入跟踪核心 (7/7 完成)
 
-| Task | 内容 | 状态 | 优先级 |
-|------|------|------|--------|
-| 1.1 | WorkerAgent添加begin_task/end_task/record_write接口 | pending | high |
-| 1.2 | WorkerAgentContext全局上下文管理 | pending | high |
-| 1.3 | Database.write_object调用Agent.record_write | pending | high |
-| 1.4 | Database.db_id生成和get_obj_name()方法 | pending | high |
-| 1.5 | TaskCompleteMessage使用完整标识符格式 | pending | medium |
-| 1.6 | Python导出get_obj_name和自动写入跟踪 | pending | high |
-| 1.7 | 测试：多db同名对象写入和get_obj_name | pending | high |
+| Task | 内容 | 状态 |
+|------|------|------|
+| 1.1 | WorkerAgent添加begin_task/end_task/record_write接口 | ✅ |
+| 1.2 | WorkerAgentContext全局上下文管理 | ✅ |
+| 1.3 | Database.write_object调用Agent.record_write | ✅ |
+| 1.4 | Database.db_id生成和get_obj_name()方法 | ✅ |
+| 1.5 | TaskCompleteMessage使用完整标识符格式 | ✅ |
+| 1.6 | Python导出get_obj_name和自动写入跟踪 | ✅ |
+| 1.7 | 测试：多db同名对象写入和get_obj_name | ✅ |
 
-### Phase 2: Python高层API (6 tasks)
+### Phase 2: Python高层API (6/6 完成)
 
-| Task | 内容 | 状态 | 优先级 |
-|------|------|------|--------|
-| 2.1 | fly/__init__.py顶层包 | pending | medium |
-| 2.2 | fly/task.py @as_task装饰器 | pending | high |
-| 2.3 | fly/task.py @task_name装饰器 | pending | medium |
-| 2.4 | fly/master.py Master类包装和launch_local_workers() | pending | high |
-| 2.5 | fly/config.py Config包装 | pending | medium |
-| 2.6 | 测试：完整用户代码流程 | pending | high |
+| Task | 内容 | 状态 |
+|------|------|------|
+| 2.1 | fly/__init__.py顶层包 | ✅ |
+| 2.2 | fly/task.py @as_task装饰器 | ✅ |
+| 2.3 | fly/database.py _Database类 + fly.open_db() 工厂函数 | ✅ |
+| 2.4 | fly/agent.py Master/Worker类 | ✅ |
+| 2.5 | fly/runtime.py 运行时配置 | ✅ |
+| 2.6 | fly/executor.py Worker执行器 | ✅ |
 
-### Phase 3: Worker自动执行 (6 tasks)
+### Phase 3: Worker自动执行 (8/8 完成)
 
-| Task | 内容 | 状态 | 优先级 |
-|------|------|------|--------|
-| 3.1 | Worker Agent自动import module | pending | high |
-| 3.2 | Worker Agent pickle args反序列化 | pending | high |
-| 3.3 | Worker Agent执行原始函数_fly_original_func | pending | high |
-| 3.4 | fly-worker启动脚本 | pending | medium |
-| 3.5 | fly主命令行入口 | pending | medium |
-| 3.6 | 测试：端到端用户脚本执行 | pending | high |
+| Task | 内容 | 状态 |
+|------|------|------|
+| 3.1 | Worker Agent import module + 执行原始函数 | ✅ |
+| 3.2 | pickle args反序列化 | ✅ |
+| 3.3 | fly binary C++入口 (main.cpp) | ✅ |
+| 3.4 | Worker poll_task()循环 | ✅ |
+| 3.5 | 递归任务提交 | ✅ |
+| 3.6 | E2E测试套件 | ✅ |
+| 3.7 | DB freeze通过消息传递 | ✅ |
+| 3.8 | Database C++侧管理 (MasterAgent) | ✅ |
+
+### 数据传输协议 (6/6 完成)
+
+| Task | 内容 | 状态 |
+|------|------|------|
+| D1 | MetadataManager DataLocation映射 (object→worker) | ✅ |
+| D2 | RegisterMessage扩展data_server_port | ✅ |
+| D3 | Worker Data Server (listen + DataRequest handler) | ✅ |
+| D4 | Master on_task_complete记录object→worker映射 | ✅ |
+| D5 | Master DataQuery handler返回DataLocationMessage | ✅ |
+| D6 | Worker直连数据请求 (request_remote_data) | ✅ |
+
+### Python API 重构 (5/5 完成)
+
+| Task | 内容 | 状态 |
+|------|------|------|
+| R1 | Database→_Database 内部化, 新增 fly.open_db() 工厂函数 | ✅ |
+| R2 | _Database 吸收 FlyDatabase 的 C++ 类型感知序列化 (is_cpp 双路径) | ✅ |
+| R3 | _Database 补齐 6 个代理方法 (write/read_object_raw, load_meta, get_base/data_path, reset) | ✅ |
+| R4 | 删除遗留 FlyDatabase (src/storage/py/database.py) | ✅ |
+| R5 | EXStgIndexEntry/DbMeta/WorkerInfo 导出带参构造函数 + 修复 __setstate__ placement new bug | ✅ |
 
 ---
 
-## 关键设计要点
+## 关键实现细节
 
-### 写入跟踪机制
-
-```
-任务执行 → db.write_object(name)
-         → Agent.record_write(db_id, name)
-         → Agent.end_task()
-         → TaskCompleteMessage.written_objects=["db_id:name"]
-         → Master.mark_data_ready("db_id:name")
-```
-
-### API简化
+### Database 创建方式
 
 ```python
-# 用户代码
-db.get_obj_name("output/result")  # 返回 "db_id:output/result"
+import fly
 
-@as_task(inputs=lambda db, name: [db.get_obj_name(f"input/{name}")])
-def process(db, name):
-    db.write_object(f"output/{name}", data)  # 自动跟踪
+db = fly.open_db("/path/to/db")
+db.write_object("key", value)
+result = db.read_object("key")
 ```
 
-### db_id生成策略
+- `fly.open_db(path)` 是唯一公开的 Database 创建接口
+- `_Database` 为内部类，Worker executor 内部可直接构造
+- `write_object` / `read_object` 自动检测 C++ 导出类型（`is_cpp` 属性），使用 `__getstate__`/`__setstate__` 透传序列化
 
-自动生成基于路径哈希：
+### C++ 导出类型构造函数
+
 ```python
-db = Database("/data/project_a")
-# db_id = hash("/data/project_a") → 自动生成
+from _fly_storage import EXStgIndexEntry, EXStgDbMeta, EXStgWorkerInfo
+
+entry = EXStgIndexEntry("name", "file.dat", 100, 512, False, 0, 0)
+meta = EXStgDbMeta("/db/id", "/base", 1000, 2000)
+worker = EXStgWorkerInfo(1, "host", "role", "/data", "w1.idx", 100, "")
 ```
 
----
+- 属性为 readonly，通过构造函数一次性设置
+- `__setstate__` 使用 placement new 确保未初始化对象安全反序列化
 
-## 文件结构规划
+### 线程模型
 
 ```
-src/fly/
-├── __init__.py       # 顶层包导出
-├── master.py         # Master类包装
-├── config.py         # Config包装
-├── task.py           # @as_task, @task_name装饰器
-└── worker/
-    └── executor.py   # Worker执行器
-
-src/agent/cpp/
-├── worker_agent.h/cpp  # 添加begin_task/end_task/record_write
-└── worker_context.h    # WorkerAgentContext全局上下文
-
-src/storage/cpp/
-├── database.h/cpp      # 添加db_id, get_obj_name(), write跟踪
+Worker Node:
+├── Main Thread: poll_task → executor.execute (Python)
+├── Reactor Thread: 消息处理 + Data Server (listen)
+└── Heartbeat Thread: 心跳发送 (CV-based, 非sleep)
 ```
 
+### 数据传输流程 (Worker直连)
+
+```
+Worker A 读 Worker B 的数据:
+1. Worker A → Master: DataQueryMessage(object_name)
+2. Master → Worker A: DataLocationMessage(worker_id, host, port)
+3. Worker A connect Worker B data server
+4. Worker A → Worker B: DataRequestMessage(object_name)
+5. Worker B 从本地Database读出bytes
+6. Worker B → Worker A: DataResponseMessage(data)
+```
+
+### 关键设计决策
+
+- **Master = worker_id=0**: Master也可写数据,有DataRequestMessage handler
+- **Worker Data Server**: 每个Worker启动时listen端口,注册时上报给Master
+- **Database shared_ptr**: 所有Database引用使用shared_ptr,不使用裸指针
+- **fly.open_db()**: 唯一公开的 Database 创建入口, _Database 为内部类
+- **C++ type-aware serialization**: write/read_object 自动检测 is_cpp 属性, C++ 导出类型走 __getstate__/__setstate__
+- **DB freeze via message**: Worker通过TaskCompleteMessage.frozen_dbs通知Master,Master调用C++ Database::freeze()
+- **Heartbeat CV**: 心跳线程使用 condition_variable::wait_for() 替代 sleep_for(), stop() 无阻塞
+
 ---
 
-## 当前状态
+## 测试状态
 
-- **Git**: 工作区干净
-- **提交**: 72 commits (含设计文档)
-- **测试**: 161 tests pass
-- **设计文档**: 已更新写入跟踪修正方案
-
----
-
-## 下次继续
-
-从 Phase 1.1 开始：
-- WorkerAgent添加begin_task/end_task/record_write接口
-- TDD流程：先写测试再实现
+- **C++ 测试**: 31 tests pass
+- **QA 测试**: 20/20 pass (qa/storage_test.py)
+- **E2E 测试**: 5/5 pass (via `./bazel-bin/src/main/cpp/fly src/e2e_user_script.py`)
+  1. test_worker_db_write: Worker写, Master读
+  2. test_dependency_and_freeze: 依赖+freeze
+  3. test_read_frozen_db: 读frozen DB
+  4. test_write_frozen_db_fails: 写frozen DB被拒绝
+  5. test_recursive_submit: 递归提交子任务
 
 ---
 
-## 约束
+## 下一步
 
-- 使用 `./fly.sh` 而非裸 bazel
-- gcc12 编译器
-- C++20 标准
-- TDD approach
+- 添加跨Worker数据读取E2E测试
+- Layer 6: 集成测试 + 性能优化

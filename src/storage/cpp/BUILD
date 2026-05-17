@@ -121,6 +121,7 @@ cc_library(
         "//src/common/cpp:fly_common_types",
         "//src/serialization/cpp:fly_serialization_macros",
         "//src/core/cpp:fly_core_cpp",
+        "//src/agent/cpp:fly_agent_worker_context",
     ],
 )
 

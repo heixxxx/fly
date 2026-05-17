@@ -1,0 +1,32 @@
+{
+  "name": "resolve-issues-not-ignore",
+  "description": "遇到错误/问题时，不可直接放弃选择忽略问题的方式去进行fix/workaround，而是尝试解决问题；若问题与当前实现/架构/设计存在冲突，询问用户该如何处理",
+  "category": "development",
+  "version": "1.0.0",
+  "behaviors": {
+    "rigid": true,
+    "trigger_on_error": true,
+    "trigger_on_conflict": true
+  },
+  "constraints": {
+    "no_ignore_errors": true,
+    "no_ts_ignore": true,
+    "no_as_any": true,
+    "no_empty_catch": true,
+    "no_workaround_first": true
+  },
+  "workflow": [
+    "detect_issue",
+    "analyze_root_cause", 
+    "propose_solutions",
+    "handle_conflict",
+    "implement_fix",
+    "verify_solution"
+  ],
+  "forbidden_practices": {
+    "ts_ignore": "禁止使用 @ts-ignore 绕过类型检查",
+    "as_any": "禁止使用 as any 绕过类型检查", 
+    "empty_catch": "禁止使用空的 catch 块",
+    "workaround": "禁止优先使用 workaround 而非根本修复"
+  }
+}

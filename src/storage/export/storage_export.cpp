@@ -53,6 +53,7 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_METHOD("get_db_id", &Database::get_db_id)
     FLY_EXPORT_METHOD("get_base_path", &Database::get_base_path)
     FLY_EXPORT_METHOD("get_data_path", &Database::get_data_path)
+    FLY_EXPORT_METHOD("get_obj_name", &Database::get_obj_name)
     FLY_EXPORT_METHOD("reset", &Database::reset);
 
 FLY_EXPORT_CLASS(StorageManager, "EXStgStorageManager")
@@ -64,6 +65,7 @@ FLY_EXPORT_CLASS(StorageManager, "EXStgStorageManager")
 
 FLY_EXPORT_CLASS(IndexEntry, "EXStgIndexEntry")
     FLY_EXPORT_INIT()
+    FLY_EXPORT_INIT(CMString, CMString, int64_t, int64_t, bool, int32_t, int8_t)
     FLY_EXPORT_READONLY_ATTR("object_name", &IndexEntry::object_name)
     FLY_EXPORT_READONLY_ATTR("file_name", &IndexEntry::file_name)
     FLY_EXPORT_READONLY_ATTR("offset", &IndexEntry::offset)
@@ -75,14 +77,17 @@ FLY_EXPORT_CLASS(IndexEntry, "EXStgIndexEntry")
 
 FLY_EXPORT_CLASS(DbMeta, "EXStgDbMeta")
     FLY_EXPORT_INIT()
+    FLY_EXPORT_INIT(CMString, CMString, int64_t, int64_t)
     FLY_EXPORT_READONLY_ATTR("db_id", &DbMeta::db_id)
     FLY_EXPORT_READONLY_ATTR("base_path", &DbMeta::base_path)
     FLY_EXPORT_READONLY_ATTR("created_at", &DbMeta::created_at)
     FLY_EXPORT_READONLY_ATTR("frozen_at", &DbMeta::frozen_at)
+    FLY_EXPORT_ATTR("workers", &DbMeta::workers)
     FLY_EXPORT_SERIALIZE(DbMeta);
 
 FLY_EXPORT_CLASS(WorkerInfo, "EXStgWorkerInfo")
     FLY_EXPORT_INIT()
+    FLY_EXPORT_INIT(uint64_t, CMString, CMString, CMString, CMString, int64_t, CMString)
     FLY_EXPORT_READONLY_ATTR("worker_id", &WorkerInfo::worker_id)
     FLY_EXPORT_READONLY_ATTR("host", &WorkerInfo::host)
     FLY_EXPORT_READONLY_ATTR("role", &WorkerInfo::role)
@@ -94,8 +99,8 @@ FLY_EXPORT_CLASS(WorkerInfo, "EXStgWorkerInfo")
 
 FLY_EXPORT_FUNCTION_REF("ex_stg_get_storage_manager", []() -> StorageManager& { return StorageManager::instance(); });
 
-FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& base_path, const CMString& data_path) -> std::shared_ptr<Database> {
-    return std::make_shared<Database>(base_path, data_path);
+FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& base_path, const CMString& data_path, uint64_t writer_id) -> std::shared_ptr<Database> {
+    return std::make_shared<Database>(base_path, data_path, writer_id);
 });
 
 // Cross-language test helper: C++ writes a typed object into a Database created by Python

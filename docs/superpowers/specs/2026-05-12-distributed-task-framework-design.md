@@ -14,7 +14,7 @@
 - **Python**: 流程控制、数据读写、任务定义
 - **C++20**: 存储层实现、性能敏感算法（当前使用headers，后续可迁移至C++20 Modules）
 - **nanobind**: C++与Python交互（通过FLY_EXPORT_*宏封装，支持未来替换）
-- **zpp_bits**: 二进制序列化（通过FLY_SERIALIZE_*宏封装，支持未来替换）
+- **bitsery**: 二进制序列化（通过FLY_SERIALIZE_*宏封装，支持未来替换为cereal等）
 - **TCP Socket**: 节点间通信（通过TransportLayer抽象层，支持未来替换为UDP/RDMA等）
 - **Bazel**: 构建系统（C++20标准，未来支持C++20 Modules编译）
 
@@ -81,7 +81,7 @@ fly --worker_mode --master master:8000 --role storage_only
 ### 3.2 Master启动流程
 
 1. C++层初始化Master TCP Server
-2. 导出Master Python接口（pybind11）
+2. 导出Master Python接口（nanobind）
 3. 执行用户Python脚本
 4. Python脚本中调用业务任务
 
@@ -244,16 +244,18 @@ private:
 };
 
 // nanobind导出（通过FLY_EXPORT_*宏封装，方便后续替换）
-NB_MODULE(_fly_core, m) {
-    nb::class_<Config>(m, "Config")
-        .def(nb::init<>())
-        .def("set_int", &Config::set_int)
-        .def("set_str", &Config::set_str)
-        .def("get_int", &Config::get_int)
-        .def("get_str", &Config::get_str)
-        .def("mark_workers_launched", &Config::mark_workers_launched);
+FLY_EXPORT_MODULE(_fly_core) {
+    FLY_EXPORT_CLASS(Config, "EXCoreConfig")
+        FLY_EXPORT_INIT()
+        FLY_EXPORT_METHOD("set_int", &Config::set_int)
+        FLY_EXPORT_METHOD("set_str", &Config::set_str)
+        FLY_EXPORT_METHOD("get_int", &Config::get_int)
+        FLY_EXPORT_METHOD("get_str", &Config::get_str)
+        FLY_EXPORT_METHOD("mark_workers_launched", &Config::mark_workers_launched);
     
-    m.def("get_config", []() { return &Config::instance(); });
+    FLY_EXPORT_FUNCTION("ex_core_get_config", []() -> Config& {
+        return Config::instance();
+    });
 }
 ```
 
@@ -313,7 +315,7 @@ def next_task(db, name):
 
 ### 6.1 核心组件
 
-- `Database` 类：统一存储接口（C++实现 + pybind11导出）
+- `Database` 类：统一存储接口（C++实现 + nanobind导出）
 - `DataWriter`：单线程写入聚合器
 - `DataReader`：从聚合文件中提取数据
 - `Serializer`：序列化模块（支持shared_ptr对象）
@@ -381,18 +383,18 @@ public:
     // 数据库冻结：标记为只读，触发Master后处理
     void freeze();
     
-    bool is_frozen() const { return is_frozen_; }
+bool is_frozen() const { return is_frozen_; }
     
     // 元信息加载（用于已冻结Database的恢复）
     DbMeta load_meta() const;               // 读取_META文件
     std::string get_db_id() const { return db_id_; }
     std::string get_base_path() const { return base_path_; }
     std::string get_data_path() const { return data_path_.empty() ? base_path_ : data_path_; }
-
+    
 private:
     std::string base_path_;   // 共享存储路径（所有节点可访问）
     std::string data_path_;    // 本地存储路径（可选，用于高性能本地写入）
-    std::string db_id_;        // 路径本身作为唯一标识
+    std::string db_id_;        // 自动生成的唯一标识（基于路径哈希）
     bool is_frozen_ = false;   // 是否已冻结
 };
 
@@ -1304,7 +1306,7 @@ TaskInfo TaskScheduler::select_by_locality(const WorkerInfo& worker) {
 ### 12.2 存储层实现
 
 - C++实现存储层核心逻辑
-- 通过pybind11导出Database接口
+- 通过nanobind（FLY_EXPORT_*宏）导出Database接口
 - 支持C++算法直接读写存储层
 
 ---
@@ -1452,117 +1454,110 @@ def load_and_execute(task_name, task_module, serialized_args):
 | 场景 | 序列化方式 | 说明 |
 |------|-----------|------|
 | 任务参数 | pickle | Python对象，标准库 |
-| 通信消息 | zpp_bits | C++结构体，通过FLY_SERIALIZE_*宏封装 |
-| 存储对象 | zpp_bits | C++对象，通过FLY_SERIALIZE_*宏封装 |
+| 通信消息 | bitsery | C++结构体，通过FLY_SERIALIZE_*宏封装 |
+| 存储对象 | bitsery | C++对象，通过FLY_SERIALIZE_*宏封装 |
 
-> **设计原则**：所有C++序列化均通过FLY_SERIALIZE_*宏封装，底层使用zpp_bits实现。宏抽象确保未来可无缝替换为其他序列化库（如cereal、protobuf等），只需修改宏定义，不影响业务代码。
+> **设计原则**：所有C++序列化均通过FLY_SERIALIZE_*宏封装，底层使用bitsery实现。宏抽象确保未来可无缝替换为其他序列化库（如cereal、protobuf等），只需修改宏定义，不影响业务代码。
 
 ### 15.2 序列化宏定义
 
 ```cpp
 // fly/serialization_macros.h
-// 底层序列化库：zpp_bits（C++20原生，高性能二进制序列化）
-// 通过宏抽象，方便后续替换底层实现
+// 底层序列化库：bitsery（C++20，header-only，高性能二进制序列化）
+// 通过宏抽象，方便后续替换底层实现（备选方案：cereal）
 
 #pragma once
 
-#include <zpp_bits.h>
-#include <sstream>
-#include <string>
-#include <vector>
-#include <map>
+#include <bitsery/bitsery.h>
+#include <bitsery/adapter/buffer.h>
+// ... 其他 includes
 
 // ==================== 序列化库配置 ====================
-// zpp_bits: 单头文件C++20序列化库，使用constexpr + concepts
+// bitsery: header-only C++20序列化库
 // 替换序列化库时，只需修改此文件中的宏定义
 
 // ==================== 序列化宏 ====================
 
-// 声明可序列化类型（使用zpp_bits的serialize函数模式）
-// 使用方式：在结构体中添加 FLY_SERIALIZE_DECLARE() { FLY_SERIALIZE_FIELDS(x, y, z); }
-#define FLY_SERIALIZE_DECLARE() \
-    constexpr static auto serialize(auto& archive)
+// 简洁形式（所有字段存在于版本 1）— 使用 Boost.PP 遍历参数
+struct Simple {
+    int32_t id;
+    CMString name;
+    FLY_SERIALIZE(id, name);
+    // 展开为: FLY_SERIALIZE_BEGIN(1) { FLY_FIELD(id); FLY_FIELD(name); } FLY_SERIALIZE_END
+};
 
-// 序列化多个字段
-#define FLY_SERIALIZE_FIELDS(...) archive(__VA_ARGS__);
+// 完整形式（需要版本判断逻辑）
+struct IndexEntry {
+    FLY_SERIALIZE_BEGIN(2)
+        FLY_FIELD(object_name);
+        FLY_FIELD(offset);
+        if (version >= 2) {
+            FLY_FIELD(compression_type);
+        }
+    FLY_SERIALIZE_END
+};
 
-// 序列化基类（zpp_bits通过模板参数支持基类序列化）
-#define FLY_SERIALIZE_BASE(base_class) \
-    archive(cereal::base_class<base_class>(this));
-// 注意：zpp_bits基类序列化不同于cereal，后续需适配
+// FLY_FIELD(field) 统一宏 — 自动检测字段类型并分发：
+//   fundamental (int/double etc) → value (auto sizeof)
+//   string → text1b
+//   vector<T> → container (bulk for POD, per-element for objects)
+//   map<K,V> → StdMap (auto nested dispatch)
+//   object → serialize()
 
-// 编码消息为字符串
-#define FLY_ENCODE(msg, output) \
-    do { \
-        auto [data, out] = zpp::bits::data_out(); \
-        out(msg).or_throw(); \
-        output = std::string(data.begin(), data.end()); \
-    } while(0)
+// 编解码宏（与 DEVELOPMENT_GUIDELINES.md 一致）
+// 编码到 CMString
+CMString bytes;
+FLY_ENCODE(myStruct, bytes);
 
-// 解码消息从字符串
-#define FLY_DECODE(data, msg_type, output) \
-    do { \
-        std::vector<unsigned char> buf(data.begin(), data.end()); \
-        auto in = zpp::bits::in(buf); \
-        msg_type msg; \
-        in(msg).or_throw(); \
-        output = std::move(msg); \
-    } while(0)
+// 解码
+MyStruct decoded;
+FLY_DECODE(bytes, MyType, decoded);
 
-// 流式编码
-#define FLY_ENCODE_STREAM(file_stream, msg) \
-    do { \
-        auto [data, out] = zpp::bits::data_out(); \
-        out(msg).or_throw(); \
-        file_stream.write(reinterpret_cast<const char*>(data.data()), data.size()); \
-    } while(0)
+// 编码到 FlyBuffer (uint8_t)
+FlyBuffer buf;
+FLY_ENCODE_TO_BYTES(obj, buf);
 
-// 流式解码
-#define FLY_DECODE_STREAM(file_stream, msg_type, output) \
-    do { \
-        std::vector<unsigned char> buf; \
-        /* 读取数据并反序列化 */ \
-        auto in = zpp::bits::in(buf); \
-        msg_type msg; \
-        in(msg).or_throw(); \
-        output = std::move(msg); \
-    } while(0)
+// 解码 from FlyBuffer
+FLY_DECODE_FROM_BYTES(buf, MyType, decoded);
 ```
 
 ### 15.3 消息结构体示例
 
 ```cpp
-// 使用宏定义消息结构体（zpp_bits风格）
-struct RegisterMessage : MessageBase {
+// 使用 FLY_SERIALIZE 宏定义消息结构体（bitsery风格）
+struct RegisterMessage {
+    MessageHeader header;
     uint64_t worker_id;
-    std::string role;
-    std::vector<std::string> attributes;
+    CMString role;
+    CMVector<CMString> attributes;
     
-    FLY_SERIALIZE_DECLARE() {
-        FLY_SERIALIZE_FIELDS(worker_id, role, attributes);
-    }
+    static constexpr MessageType msg_type = MessageType::REGISTER;
+    
+    FLY_SERIALIZE(header, worker_id, role, attributes);
 };
 
-struct TaskSubmitMessage : MessageBase {
+struct TaskSubmitMessage {
+    MessageHeader header;
     uint64_t task_id;
-    std::string task_name;
-    std::string task_module;
-    std::string serialized_args;  // pickle序列化的参数
-    std::vector<std::string> inputs;
-    std::vector<std::string> required_attributes;
+    CMString task_name;
+    CMString task_module;
+    CMVector<CMString> args;
+    CMVector<CMString> inputs;
+    CMVector<CMString> required_attributes;
     
-    FLY_SERIALIZE_DECLARE() {
-        FLY_SERIALIZE_FIELDS(task_id, task_name, task_module, serialized_args, inputs, required_attributes);
-    }
+    static constexpr MessageType msg_type = MessageType::TASK_SUBMIT;
+    
+    FLY_SERIALIZE(header, task_id, task_name, task_module, args, inputs, required_attributes);
 };
 ```
 
-> **zpp_bits vs cereal 对比**：
-> - **性能**：zpp_bits序列化速度约为cereal的14倍（benchmark: 733ms vs 10777ms）
-> - **体积**：zpp_bits生成的二进制更紧凑（8.4KB vs 10.4KB）
-> - **C++20原生**：zpp_bits使用concepts和constexpr，与C++20 Modules兼容
-> - **模块友好**：单头文件，无宏依赖，可轻松通过`import`或头文件方式引入
-> - **宏抽象保障**：FLY_SERIALIZE_*宏封装了所有序列化API调用，替换底层库只需修改宏定义文件
+> **bitsery 选择理由**：
+> - **兼容性**：bitsery使用标准C++17/20特性，与gcc12兼容性好
+> - **序列化方式**：bitsery使用 `serialize()` 成员函数模式，符合C++惯例
+> - **版本控制**：通过自定义 `fly::Version<N>` 扩展实现前后兼容
+> - **宏抽象**：FLY_SERIALIZE_*宏封装了所有bitsery API调用，替换底层库只需修改宏定义文件
+> - **备选方案**：cereal（未来可通过 FLY_SERIALIZATION_BACKEND 宏切换）
+```
 
 ---
 
@@ -1573,94 +1568,60 @@ struct TaskSubmitMessage : MessageBase {
 ```cpp
 // fly/export_macros.h
 // 底层绑定库：nanobind（C++20兼容，pybind11继任者）
-// 通过宏抽象，方便后续替换底层实现
+// 备选方案：pybind11（未来可通过修改宏定义切换）
 
 #pragma once
 
 #include <nanobind/nanobind.h>
-#include <nanobind/stl.h>
-#include <nanobind/stl/shared_ptr.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/map.h>
+#include <nanobind/stl/shared_ptr.h>
 #include <memory>
 #include <string>
 
-namespace nb = nanobind;
+namespace fly_export = nanobind;
 
-// ==================== Pickle导出宏 ====================
+// 模块定义 — NB_MODULE 固定定义变量 m，宏直接使用 m
+#define FLY_EXPORT_MODULE(module_name) NB_MODULE(module_name, m)
 
-#define FLY_EXPORT_PICKLE(class_type) \
-    .def(nb::pickle( \
-        [](const class_type& obj) { \
-            std::string serialized; \
-            FLY_ENCODE(obj, serialized); \
-            return nb::bytes(serialized); \
-        }, \
-        [](nb::bytes bytes) { \
-            std::string data = bytes.c_str(); \
-            class_type obj; \
-            FLY_DECODE(data, class_type, obj); \
-            return obj; \
-        } \
-    ))
+// 类导出 — 所有类导出必须显式传入 Python 导出名称（格式：EX<ModuleAbbr><TypeName>）
+#define FLY_EXPORT_CLASS(class_type, export_name) \
+    fly_export::class_<class_type>(m, export_name)
 
-#define FLY_EXPORT_PICKLE_SHARED_PTR(class_type) \
-    .def(nb::pickle( \
-        [](const std::shared_ptr<class_type>& obj) { \
-            std::string serialized; \
-            FLY_ENCODE(*obj, serialized); \
-            return nb::bytes(serialized); \
-        }, \
-        [](nb::bytes bytes) { \
-            std::string data = bytes.c_str(); \
-            auto obj = std::make_shared<class_type>(); \
-            FLY_DECODE(data, class_type, *obj); \
-            return obj; \
-        } \
-    ))
+#define FLY_EXPORT_CLASS_SHARED_PTR(class_type, export_name) \
+    fly_export::class_<class_type, std::shared_ptr<class_type>>(m, export_name)
 
-// ==================== 类导出宏 ====================
+// 成员导出
+#define FLY_EXPORT_INIT(...) .def(fly_export::init<__VA_ARGS__>())
+#define FLY_EXPORT_DEF(export_name, ...) .def(export_name, __VA_ARGS__)
+#define FLY_EXPORT_ATTR(export_name, member) .def_rw(export_name, member)
+#define FLY_EXPORT_READONLY_ATTR(export_name, member) .def_ro(export_name, member)
+#define FLY_EXPORT_METHOD(export_name, func) .def(export_name, func)
+#define FLY_EXPORT_STATIC_METHOD(export_name, func) .def_static(export_name, func)
+#define FLY_EXPORT_PROPERTY(export_name, getter, setter) .def_prop_rw(export_name, getter, setter)
+#define FLY_EXPORT_READONLY_PROPERTY(export_name, getter) .def_prop_ro(export_name, getter)
 
-#define FLY_EXPORT_CLASS_WITH_NAME(module, class_type, export_name, ...) \
-    nb::class_<class_type>(module, export_name) \
-        .def(nb::init<>()) \
-        __VA_ARGS__ \
-        FLY_EXPORT_PICKLE(class_type)
+// 枚举导出
+#define FLY_EXPORT_ENUM(enum_type, export_name) fly_export::enum_<enum_type>(m, export_name)
+#define FLY_EXPORT_ENUM_VALUE(export_name, ...) .value(export_name, __VA_ARGS__)
 
-#define FLY_EXPORT_CLASS(module, class_type, ...) \
-    FLY_EXPORT_CLASS_WITH_NAME(module, class_type, #class_type, __VA_ARGS__)
+// 函数导出
+#define FLY_EXPORT_FUNCTION(export_name, func) m.def(export_name, func)
+#define FLY_EXPORT_FUNCTION_REF(export_name, func) m.def(export_name, func, nanobind::rv_policy::reference)
 
-#define FLY_EXPORT_CLASS_SHARED_PTR_WITH_NAME(module, class_type, export_name, ...) \
-    nb::class_<class_type, std::shared_ptr<class_type>>(module, export_name) \
-        .def(nb::init<>()) \
-        __VA_ARGS__ \
-        FLY_EXPORT_PICKLE_SHARED_PTR(class_type)
-
-#define FLY_EXPORT_CLASS_SHARED_PTR(module, class_type, ...) \
-    FLY_EXPORT_CLASS_SHARED_PTR_WITH_NAME(module, class_type, #class_type, __VA_ARGS__)
-
-// ==================== 属性与方法导出宏 ====================
-
-#define FLY_EXPORT_ATTR(name, member) \
-    .def_rw(#name, member)
-
-#define FLY_EXPORT_ATTR_WITH_NAME(name, member) \
-    .def_rw(name, member)
-
-#define FLY_EXPORT_METHOD(name, func) \
-    .def(#name, func)
-
-#define FLY_EXPORT_METHOD_WITH_NAME(name, func) \
-    .def(name, func)
-
-// ==================== 模块导出宏 ====================
-// nanobind使用NB_MODULE宏（module_避免C++20 module关键字冲突）
-
-#define FLY_EXPORT_MODULE_BEGIN(module_name) \
-    NB_MODULE(module_name, m)
-
-#define FLY_EXPORT_MODULE_END()
+// 序列化导出（唯一pickle宏，替代旧 FLY_EXPORT_PICKLE）
+#define FLY_EXPORT_SERIALIZE(Cls) \
+    .def("__getstate__", [](const Cls& obj) -> fly_export::bytes { \
+        std::string serialized; \
+        FLY_ENCODE(obj, serialized); \
+        return fly_export::bytes(serialized.data(), serialized.size()); \
+    }) \
+    .def("__setstate__", [](Cls& obj, fly_export::bytes b) { \
+        std::string data(b.c_str(), b.size()); \
+        FLY_DECODE(data, Cls, obj); \
+    }) \
+    .def_prop_ro("is_cpp", [](const Cls&) { return true; })
 ```
 
 > **nanobind vs pybind11 对比**：
@@ -1676,35 +1637,42 @@ namespace nb = nanobind;
 struct MyData {
     int a;
     double b;
-    std::vector<float> data;
+    CMVector<float> data;
     
-    FLY_SERIALIZE_DECLARE() {
-        FLY_SERIALIZE_FIELDS(a, b, data);
-    }
+    FLY_SERIALIZE(a, b, data);
 };
 
-// Python导出（使用nanobind宏）
-FLY_EXPORT_MODULE_BEGIN(_fly_example) {
-    // 使用类名作为导出名称
-    FLY_EXPORT_CLASS(m, MyData,
-        FLY_EXPORT_ATTR(a, &MyData::a)
-        FLY_EXPORT_ATTR(b, &MyData::b)
-        FLY_EXPORT_ATTR(data, &MyData::data)
-    );
+// Python导出（使用 FLY_EXPORT_* 宏）
+FLY_EXPORT_MODULE(_fly_example) {
+    // 导出类（必须指定 EX 前缀名称）
+    FLY_EXPORT_CLASS(MyData, "EXExampleMyData")
+        FLY_EXPORT_INIT()
+        FLY_EXPORT_ATTR("a", &MyData::a)
+        FLY_EXPORT_ATTR("b", &MyData::b)
+        FLY_EXPORT_ATTR("data", &MyData::data)
+        FLY_EXPORT_SERIALIZE(MyData);
     
-    // 自定义导出名称
-    FLY_EXPORT_CLASS_WITH_NAME(m, MyData, "DataObj",
-        FLY_EXPORT_ATTR(a, &MyData::a)
-        FLY_EXPORT_ATTR(b, &MyData::b)
-    );
+    // 导出 shared_ptr 类
+    FLY_EXPORT_CLASS_SHARED_PTR(BigData, "EXExampleBigData")
+        FLY_EXPORT_INIT()
+        FLY_EXPORT_READONLY_ATTR("values", &BigData::values)
+        FLY_EXPORT_METHOD("process", &BigData::process)
+        FLY_EXPORT_SERIALIZE(BigData);
     
-    // shared_ptr类
-    FLY_EXPORT_CLASS_SHARED_PTR_WITH_NAME(m, BigData, "Processor",
-        FLY_EXPORT_ATTR(values, &BigData::values)
-        FLY_EXPORT_METHOD(process, &BigData::process)
-    );
+    // 导出函数
+    FLY_EXPORT_FUNCTION("ex_example_create", [](const CMString& name) {
+        return std::make_shared<MyData>();
+    });
+    
+    FLY_EXPORT_FUNCTION_REF("ex_example_get_manager", []() -> Manager& {
+        return Manager::instance();
+    });
+    
+    // 导出枚举
+    FLY_EXPORT_ENUM(CompressionType, "EXExampleCompressionType")
+        FLY_EXPORT_ENUM_VALUE("NONE", CompressionType::NONE)
+        FLY_EXPORT_ENUM_VALUE("LZ4", CompressionType::LZ4);
 }
-FLY_EXPORT_MODULE_END()
 ```
 
 ---
@@ -1717,80 +1685,81 @@ FLY_EXPORT_MODULE_END()
 
 ```
 src/
-├── core/               # 核心基础模块
-│   ├── cpp/            # C++类型定义和实现
-│   │   ├── config.cpp
-│   │   ├── storage_manager.cpp
-│   │   ├── database.cpp
-│   │   ├── local_index.cpp
-│   │   ├── transport.cpp         # TransportLayer实现（TCP等）
-│   │   ├── serializer.cpp
-│   ├── export/         # pybind11导出
-│   │   ├── core_export.cpp
-│   │   ├── CMakeLists.txt
-│   ├── py/             # Python包
-│   │   ├── __init__.py
-│   │   ├── connection.py
-│   │   ├── protocol.py
-│   │   ├── context.py
+├── common/               # 公共类型定义
+│   └── cpp/common_types.h  # CMString, CMVector, CMMap 等类型别名
 │
-├── master/             # Master节点模块
-│   ├── cpp/            # C++底层实现
-│   │   ├── dependency_graph.cpp
-│   ├── export/         # pybind11导出
-│   │   ├── master_export.cpp
-│   ├── py/             # Python主循环
-│   │   ├── __init__.py
-│   │   ├── master_agent.py    # 主循环
-│   │   ├── scheduler.py
-│   │   ├── metadata.py
-│   │   ├── worker_manager.py
-│   │   ├── heartbeat.py
-│   │   ├── launcher.py
+├── core/                 # 核心基础模块
+│   └── cpp/config.h/cpp    # 配置管理
 │
-├── worker/             # Worker节点模块
-│   ├── cpp/            # C++底层实现
-│   │   ├── data_writer.cpp
-│   │   ├── data_reader.cpp
-│   ├── export/         # pybind11导出
-│   │   ├── worker_export.cpp
-│   ├── py/             # Python主循环
-│   │   ├── __init__.py
-│   │   ├── worker_agent.py    # 主循环
-│   │   ├── task_executor.py
-│   │   ├── heartbeat.py
-│   │   ├── data_server.py
+├── serialization/        # 序列化模块
+│   └── cpp/
+│       ├── serialization_macros.h  # FLY_SERIALIZE, FLY_ENCODE/FLY_DECODE 宏
+│       └── bitsery_ext/version.h   # fly::Version<N> 版本控制扩展
 │
-├── task/               # 任务定义模块
-│   ├── py/
-│   │   ├── __init__.py
-│   │   ├── decorator.py       # @as_task, @task_name
-│   │   ├── registry.py
+├── export/               # 导出宏定义
+│   └── cpp/export_macros.h  # FLY_EXPORT_* 宏
 │
-├── serialization/      # 序列化模块
+├── compression/          # 压缩层
+│   └── cpp/compressor.h/cpp  # Compressor 抽象 + LZ4/ZLIB/ZSTD 实现
+│
+├── storage/              # 存储层 (Layer 1)
 │   ├── cpp/
-│   │   ├── serialization_macros.h
-│   │   ├── message_types.h
-│   ├── export/
-│   │   ├── serialization_export.cpp
-│   ├── py/
-│   │   ├── __init__.py
-│   │   ├── protocol.py
+│   │   ├── database.h/cpp      # 统一存储接口
+│   │   ├── data_writer.h/cpp   # 单线程写入聚合器
+│   │   ├── data_reader.h/cpp   # 数据读取器
+│   │   ├── storage_manager.h/cpp
+│   │   └── ...
+│   ├── export/storage_export.cpp
+│   └── tests/
 │
-├── export/             # 导出宏模块
+├── network/              # 网络层 (Layer 2)
 │   ├── cpp/
-│   │   ├── export_macros.h
+│   │   ├── reactor.h/cpp       # 单线程事件循环
+│   │   ├── transport.h/cpp     # TransportLayer 抽象
+│   │   ├── tcp_transport.cpp   # POSIX TCP 实现
+│   │   ├── message_protocol.h/cpp  # 二进制帧协议
+│   │   ├── message_types.h     # 消息结构定义
+│   │   └── io_thread_pool.h/cpp    # 重IO线程池
+│   ├── export/network_export.cpp
+│   └── tests/
 │
-└── main.cpp            # 程序入口（仅初始化Python解释器）
+├── task/                 # 任务系统层 (Layer 3)
+│   ├── cpp/
+│   │   ├── dependency_graph.h/cpp  # 任务依赖管理
+│   │   ├── worker_manager.h/cpp    # Worker 状态管理
+│   │   ├── task_scheduler.h/cpp    # 任务调度器
+│   │   ├── metadata_manager.h/cpp  # 任务元数据
+│   │   └── heartbeat_monitor.h/cpp # 心跳监控
+│   └── tests/
+│
+├── agent/                # Agent层 (Layer 4)
+│   ├── cpp/
+│   │   ├── master_agent.h/cpp   # Master Agent
+│   │   ├── worker_agent.h/cpp   # Worker Agent
+│   │   ├── worker_context.h     # WorkerAgentContext 写入跟踪上下文
+│   │   └── task_executor.h/cpp  # 任务执行器
+│   ├── export/agent_export.cpp
+│   └── tests/
+│
+├── log/                  # 日志模块
+│   ├── cpp/logger.h/cpp
+│   └── export/log_export.cpp
+│
+└── fly/                  # Python 高层 API (Layer 5)
+    ├── __init__.py
+    ├── task.py           # @as_task 装饰器
+    ├── master.py         # Master 类包装
+    └── config.py         # Config 包装
 ```
 
 ### 17.2 层次职责
 
 | 目录 | 职责 |
 |------|------|
-| `cpp/` | C++类型定义、核心算法实现，不直接操作py::object |
-| `export/` | pybind11导出，将C++类/函数暴露给Python |
-| `py/` | Python流程控制、主循环、消息解析 |
+| `cpp/` | C++类型定义、核心算法实现 |
+| `export/` | nanobind导出，将C++类/函数暴露给Python |
+| `py/` | Python流程控制、主循环 |
+| `tests/` | 单元测试和集成测试 |
 
 ---
 
@@ -1819,37 +1788,40 @@ fly --worker_mode --master addr:port --role storage_only
 
 ```cpp
 // main.cpp
-#include <pybind11/embed.h>
+#include <Python.h>
 
 int main(int argc, char* argv[]) {
-    py::scoped_interpreter guard{};
+    Py_Initialize();
     
     bool worker_mode = has_flag(argc, argv, "--worker_mode");
     bool interactive = has_flag(argc, argv, "-i");
     
-    py::object fly_module = py::module::import("fly");
+    PyObject* fly_module = PyImport_ImportModule("fly");
     
     if (worker_mode) {
         std::string master_addr = get_arg(argc, argv, "--master");
         std::string role = get_arg(argc, argv, "--role");
-        fly_module.attr("start_worker")(master_addr, role);
+        PyObject_CallMethod(fly_module, "start_worker", "ss", 
+                           master_addr.c_str(), role.c_str());
     } else {
         std::string script_path = argv[interactive ? 2 : 1];
         
         // 执行用户脚本
-        py::object importlib = py::module::import("importlib");
-        py::object spec = importlib.attr("util").attr("spec_from_file_location")("user_script", script_path);
-        py::object user_module = importlib.attr("util").attr("module_from_spec")(spec);
-        spec.attr("loader").attr("exec_module")(user_module);
+        PyObject* importlib = PyImport_ImportModule("importlib");
+        PyObject* spec = PyObject_CallMethod(importlib, "util", "spec_from_file_location",
+                                            "ss", "user_script", script_path.c_str());
+        PyObject* user_module = PyObject_CallMethod(
+            PyObject_GetAttrString(importlib, "util"), "module_from_spec", "O", spec);
+        PyObject_CallMethod(spec, "loader", "exec_module", "O", user_module);
         
-        // 根据模式启动
         if (interactive) {
-            fly_module.attr("start_master_interactive")();
+            PyObject_CallMethod(fly_module, "start_master_interactive", NULL);
         } else {
-            fly_module.attr("start_master")();
+            PyObject_CallMethod(fly_module, "start_master", NULL);
         }
     }
     
+    Py_Finalize();
     return 0;
 }
 ```
@@ -1872,9 +1844,9 @@ import threading
 
 def start_master():
     """正常模式启动"""
-    from fly_master import MasterReactor
+    from fly_master import MasterAgent
     
-    agent = MasterReactor()
+    agent = MasterAgent()
     agent.start()
     
     # 等待所有任务完成
@@ -1888,9 +1860,9 @@ def start_master():
 
 def start_master_interactive():
     """交互模式启动"""
-    from fly_master import MasterReactor
+    from fly_master import MasterAgent
     
-    agent = MasterReactor()
+    agent = MasterAgent()
     agent.start()
     
     exit_flag = threading.Event()
@@ -1942,26 +1914,26 @@ def start_master_interactive():
 
 def start_worker(master_addr: str, role: str):
     """启动Worker"""
-    from fly_worker import WorkerReactor
+    from fly_worker import WorkerAgent
     from fly_core import StorageManager
     from fly.worker.task_executor import TaskExecutorThread
     
     storage = StorageManager()
-    reactor = WorkerReactor(master_addr, role, storage)
-    reactor.start()
+    agent = WorkerAgent(master_addr, role, storage)
+    agent.start()
     
-    executor = TaskExecutorThread(reactor, storage)
+    executor = TaskExecutorThread(agent, storage)
     executor.start()
     
     executor.join()
-    reactor.stop()
+    agent.stop()
 ```
 
-### 18.5 MasterReactor C++接口
+### 18.5 MasterAgent C++接口
 
 ```cpp
-// src/master/cpp/master_reactor.h
-class MasterReactor {
+// src/agent/cpp/master_agent.h
+class MasterAgent {
 public:
     void start();
     void stop();
@@ -1982,8 +1954,8 @@ public:
 ```
 
 ```cpp
-// src/master/cpp/master_reactor.cpp
-void MasterReactor::wait_for_all_tasks_complete() {
+// src/agent/cpp/master_agent.cpp
+void MasterAgent::wait_for_all_tasks_complete() {
     while (running_) {
         int pending = scheduler_->get_pending_count();
         int running = scheduler_->get_running_count();
@@ -1996,7 +1968,7 @@ void MasterReactor::wait_for_all_tasks_complete() {
     }
 }
 
-void MasterReactor::force_stop() {
+void MasterAgent::force_stop() {
     running_ = false;
     
     // 立即停止所有线程
@@ -2007,7 +1979,7 @@ void MasterReactor::force_stop() {
     transport_->close_all();
 }
 
-void MasterReactor::cleanup() {
+void MasterAgent::cleanup() {
     // 1. 通知所有Worker停止
     ShutdownMessage msg;
     msg.header.type = MessageType::Shutdown;
@@ -2177,7 +2149,7 @@ Worker Node:
 ### 20.1 Reactor基类
 
 ```cpp
-// src/core/cpp/reactor.h
+// src/network/cpp/reactor.h
 class Reactor {
 public:
     Reactor(const std::string& transport_type = "tcp");
@@ -2204,71 +2176,70 @@ private:
 };
 ```
 
-### 20.2 MasterReactor
+### 20.2 MasterAgent
 
 ```cpp
-// src/master/cpp/master_reactor.h
-class MasterReactor : public Reactor {
+// src/agent/cpp/master_agent.h — 组合模式（非继承）
+class MasterAgent {
 public:
-    MasterReactor(BackupManager*, MetadataManager*, WorkerManager*, 
-                  TaskScheduler*, HeartbeatMonitor*);
-    
-    void start();  // 启动主循环 + 后台线程
+    MasterAgent(const CMString& host, uint16_t port);
+    void start();  // 创建 Transport + Reactor + 注册 handlers + 启动线程
     void stop();
     
-    void wait_for_all_tasks_complete();
-    void force_stop();
-    void cleanup();
-
-private:
-    // 后台线程
-    std::thread heartbeat_thread_;
-    std::thread scheduler_thread_;
+    void submit_task(uint64_t task_id, const CMString& name,
+                     const CMString& module, const CMVector<CMString>& args,
+                     const CMVector<CMString>& inputs = {},
+                     const CMVector<CMString>& outputs = {});
     
-    void heartbeat_loop();     // 心跳检测
-    void scheduler_loop();    // 定期备份检查 + 任务调度
-    void init_handlers();
+private:
+    std::unique_ptr<Reactor> reactor_;           // 组合（非继承）
+    std::unique_ptr<DependencyGraph> graph_;
+    std::unique_ptr<WorkerManager> worker_manager_;
+    std::unique_ptr<TaskScheduler> scheduler_;
+    std::unique_ptr<MetadataManager> metadata_;
+    std::unique_ptr<HeartbeatMonitor> heartbeat_monitor_;
+    std::thread reactor_thread_;
+    std::thread heartbeat_check_thread_;
+    
+    void on_worker_register(uint64_t conn_id, const RegisterMessage& msg);
+    void on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg);
+    void on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg);
+    void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
+    void on_disconnect(uint64_t conn_id);
 };
 ```
 
-### 20.3 WorkerReactor
+### 20.3 WorkerAgent
 
 ```cpp
-// src/worker/cpp/worker_reactor.h
-class WorkerReactor : public Reactor {
+// src/agent/cpp/worker_agent.h — 组合模式（非继承）
+class WorkerAgent {
 public:
-    WorkerReactor(const std::string& master_addr, const std::string& role,
-                  StorageManager*, LocalIndex*);
-    
-    void start();  // 启动主循环 + 后台线程
+    WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port);
+    void start();
     void stop();
     
-    // Python线程调用
-    TaskAssignMessage wait_for_task();
-    void report_task_complete(const TaskCompleteMessage& msg);
-    void report_task_failed(const TaskFailedMessage& msg);
-
+    void set_executor(TaskExecutor* executor);
+    
+    // 写入跟踪（Layer 5 新增）
+    void begin_task(uint64_t task_id);
+    void record_write(const CMString& db_id, const CMString& object_name);
+    CMVector<CMString> end_task(uint64_t task_id);
+    
 private:
-    // 后台线程
+    std::unique_ptr<Reactor> reactor_;           // 组合（非继承）
+    TaskExecutor* executor_;                     // 外部注入
+    std::thread reactor_thread_;
     std::thread heartbeat_thread_;
+    uint64_t master_conn_;
     
-    // Data Server线程池
-    std::vector<std::thread> data_server_pool_;
-    int data_server_thread_count_;  // 从Config读取，默认1
+    uint64_t current_task_id_ = 0;
+    CMVector<CMString> current_writes_;
     
-    // Python任务信号（单slot，Master不向忙碌Worker派发任务）
-    std::optional<TaskAssignMessage> task_slot_;
-    std::mutex task_slot_mutex_;
-    std::condition_variable task_slot_cv_;
-    
-    // 读请求队列（主线程生产，Data Server线程池消费）
-    std::queue<DataRequestMessage> read_request_queue_;
-    std::mutex read_request_mutex_;
-    std::condition_variable read_request_cv_;
-    
-    void heartbeat_loop();           // 心跳发送
-    void data_server_worker();       // Data Server工作线程函数
-    void init_handlers();
+    void on_register_ack(const RegisterAckMessage& msg);
+    void on_task_assign(const TaskAssignMessage& msg);
+    void on_shutdown(const ShutdownMessage& msg);
+    void heartbeat_loop();
 };
 ```
 
@@ -2300,7 +2271,7 @@ Config配置：
 ### 21.1 BackupManager
 
 ```cpp
-// src/master/cpp/backup_manager.h
+// src/task/cpp/backup_manager.h
 class BackupManager {
 public:
     BackupManager(WorkerManager* worker_manager, MetadataManager* metadata);
@@ -2330,7 +2301,7 @@ private:
 ### 21.2 MetadataManager
 
 ```cpp
-// src/master/cpp/metadata_manager.h
+// src/task/cpp/metadata_manager.h
 class MetadataManager {
 public:
     void record_data_location(const std::string& data_path, 
@@ -2415,26 +2386,26 @@ class TaskExecutorThread(threading.Thread):
 ```python
 # fly/__init__.py
 def start_worker(master_addr: str, role: str):
-    from fly_worker import WorkerReactor
+    from fly_worker import WorkerAgent
     from fly_core import StorageManager
     from fly.worker.task_executor import TaskExecutorThread
     
-    # 1. C++ Reactor（启动所有后台线程）
+    # 1. C++ Agent（启动所有后台线程）
     storage = StorageManager()
-    reactor = WorkerReactor(master_addr, role, storage)
-    reactor.start()
+    agent = WorkerAgent(master_addr, role, storage)
+    agent.start()
     
     # 2. Python任务执行线程（唯一涉及GIL）
-    executor = TaskExecutorThread(reactor, storage)
+    executor = TaskExecutorThread(agent, storage)
     executor.start()
     
     executor.join()
-    reactor.stop()
+    agent.stop()
 
 def start_master():
-    from fly_master import MasterReactor
+    from fly_master import MasterAgent
     
-    agent = MasterReactor()
+    agent = MasterAgent()
     agent.start()
     agent.wait_for_all_tasks_complete()
     agent.cleanup()
@@ -2466,7 +2437,7 @@ public:
 private:
     std::string base_path_;   // 共享存储路径（所有节点可访问）
     std::string data_path_;    // 本地存储路径（可选，用于高性能本地写入）
-    std::string db_id_;        // 路径本身作为唯一标识
+    std::string db_id_;        // 自动生成的唯一标识（基于路径哈希）
     bool is_frozen_ = false;   // 是否已冻结
 };
 
@@ -2569,7 +2540,7 @@ db_a.freeze()  # 标记db_a为只读，触发Master后处理
 ### 24.2 核心设计原则
 
 1. **Python主进程**：用户脚本执行、任务定义、装饰器
-2. **C++20底层实现**：存储、通信、消息处理、调度（使用C++20 Modules `import`机制）
+2. **C++20底层实现**：存储、通信、消息处理、调度（当前使用headers，后续可迁移至C++20 Modules）
 3. **Reactor模式**：Main Thread事件循环 + 后台线程（心跳/调度/数据服务）
 4. **唯一GIL线程**：Worker的Python任务执行线程
 5. **任务单slot传递**：Master不向忙碌Worker派发任务，task_slot_而非task_queue_
@@ -2577,7 +2548,7 @@ db_a.freeze()  # 标记db_a为只读，触发Master后处理
 7. **Database Freeze**：db.freeze()触发只读冻结，Master后台合并idx，Worker数据不搬迁
 8. **双路径存储**：base_path共享路径+data_path本地路径，写入走本地、读取优先本地
 9. **宏封装**：
-   - FLY_SERIALIZE_*宏封装zpp_bits序列化（支持未来替换为cereal/protobuf等）
+   - FLY_SERIALIZE_*宏封装bitsery序列化（支持未来替换为cereal等）
    - FLY_EXPORT_*宏封装nanobind绑定（支持未来替换为pybind11/CPython API等）
 10. **传输层抽象**：TransportLayer接口支持未来替换TCP为UDP/RDMA
 11. **Data Server线程池**：Worker数据服务采用线程池，默认单线程，可配置以支持高并发读请求
@@ -2587,7 +2558,7 @@ db_a.freeze()  # 标记db_a为只读，触发Master后处理
       - `extern "C"` 链接与 C++20 module export 语义冲突
       - 整个 Python 绑定生态（nanobind/pybind11/Boost.Python）均不支持 C++20 Modules
     - **纯 C++ 模块**：后续可迁移至 C++20 Modules（需 Bazel 9.0+、Clang 17+）
-    - zpp_bits：单头文件、C++20 原生
+     - bitsery：header-only，C++17/20 兼容，高性能二进制序列化
     - nanobind：`module_` 命名避开 C++20 关键字冲突（仅解决命名问题）
 
 ### 24.3 用户使用示例
@@ -2610,7 +2581,7 @@ master.launch_local_workers([
 ])
 
 # 定义任务
-@as_task(inputs=lambda db, name: [f"input/{name}"])
+@as_task(inputs=lambda db, name: [db.get_obj_name(f"input/{name}")])
 @task_name("processor")
 def process_data(db, name):
     raw = db.read_object(f"input/{name}")
@@ -2618,7 +2589,7 @@ def process_data(db, name):
     db.write_object(f"output/{name}.result", result, backup=True)
 
 # 定义冻结任务
-@as_task(inputs=lambda db, deps: [f"output/{name}.result" for name in deps])
+@as_task(inputs=lambda db, deps: [db.get_obj_name(f"output/{name}.result") for name in deps])
 @task_name("processor")
 def freeze_db(db, deps):
     db.freeze()

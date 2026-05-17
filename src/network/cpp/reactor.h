@@ -32,8 +32,14 @@ public:
     void run_once(int timeout_ms = 100);
     void stop();
     
+    int get_bound_port() const { return transport_->get_bound_port(); }
+    
     template<typename T>
     void send(uint64_t conn_id, const T& msg);
+    
+    uint64_t connect(const CMString& host, int port) {
+        return transport_->connect(host, port);
+    }
     
     void set_io_pool(std::shared_ptr<IOThreadPool> pool);
 

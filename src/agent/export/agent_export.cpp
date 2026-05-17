@@ -1,4 +1,5 @@
 #include <export/cpp/export_macros.h>
+#include <Python.h>
 #include <agent/cpp/task_executor.h>
 #include <agent/cpp/master_agent.h>
 #include <agent/cpp/worker_agent.h>
@@ -28,17 +29,23 @@ FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
     FLY_EXPORT_METHOD("cancel", &fly::TaskExecutor::cancel)
     FLY_EXPORT_METHOD("set_exec_func", [](fly::TaskExecutor& self, fly_export::object py_func) {
         auto cpp_func = [py_func](uint64_t task_id, const fly::CMString& task_name,
-                                   const fly::CMString& task_module,
-                                   const fly::CMVector<fly::CMString>& args) -> fly::TaskExecResult {
+                                    const fly::CMString& task_module,
+                                    const fly::CMVector<fly::CMString>& args) -> fly::TaskExecResult {
             fly_export::gil_scoped_acquire acquire;
             try {
                 fly_export::object result = py_func(task_id, task_name, task_module, args);
                 fly::TaskExecResult cpp_result;
-                cpp_result.task_id = fly_export::cast<uint64_t>(result.attr("task_id"));
-                cpp_result.status = fly_export::cast<fly::TaskExecStatus>(result.attr("status"));
-                cpp_result.output = fly_export::cast<fly::CMString>(result.attr("output"));
-                cpp_result.error = fly_export::cast<fly::CMString>(result.attr("error"));
-                cpp_result.outputs = fly_export::cast<fly::CMVector<fly::CMString>>(result.attr("outputs"));
+                cpp_result.task_id = fly_export::cast<uint64_t>(result[fly_export::str("task_id")]);
+                long status_val = PyLong_AsLong(result[fly_export::str("status")].ptr());
+                if (status_val == -1 && PyErr_Occurred()) {
+                    PyErr_Clear();
+                    status_val = 1;
+                }
+                cpp_result.status = static_cast<fly::TaskExecStatus>(status_val);
+                cpp_result.output = fly_export::cast<fly::CMString>(result[fly_export::str("output")]);
+                cpp_result.error = fly_export::cast<fly::CMString>(result[fly_export::str("error")]);
+                cpp_result.outputs = fly_export::cast<fly::CMVector<fly::CMString>>(result[fly_export::str("outputs")]);
+                cpp_result.frozen_dbs = fly_export::cast<fly::CMVector<fly::CMString>>(result[fly_export::str("frozen_dbs")]);
                 return cpp_result;
             } catch (const fly_export::python_error& e) {
                 fly::TaskExecResult cpp_result;
@@ -47,6 +54,7 @@ FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
                 cpp_result.output = "";
                 cpp_result.error = e.what();
                 cpp_result.outputs = {};
+                cpp_result.frozen_dbs = {};
                 return cpp_result;
             }
         };
@@ -74,10 +82,25 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                                    const fly::CMVector<fly::CMString>& outputs) {
         self.submit_task(task_id, name, module, args, inputs, outputs);
     })
+    FLY_EXPORT_METHOD("register_database", [](fly::MasterAgent& self,
+                                                const fly::CMString& db_id,
+                                                const fly::CMString& base_path,
+                                                const fly::CMString& data_path) {
+        self.register_database(db_id, base_path, data_path);
+    })
+    FLY_EXPORT_METHOD("is_db_frozen", &fly::MasterAgent::is_db_frozen)
+    FLY_EXPORT_METHOD("get_or_create_database", [](fly::MasterAgent& self,
+                                                      const fly::CMString& base_path,
+                                                      const fly::CMString& data_path,
+                                                      uint64_t writer_id) -> std::shared_ptr<Database> {
+        return self.get_or_create_database(base_path, data_path, writer_id);
+    })
     FLY_EXPORT_METHOD("get_pending_tasks", &fly::MasterAgent::get_pending_tasks)
     FLY_EXPORT_METHOD("get_running_tasks", &fly::MasterAgent::get_running_tasks)
     FLY_EXPORT_METHOD("get_completed_tasks", &fly::MasterAgent::get_completed_tasks)
-    FLY_EXPORT_METHOD("get_idle_workers", &fly::MasterAgent::get_idle_workers);
+    FLY_EXPORT_METHOD("get_idle_workers", &fly::MasterAgent::get_idle_workers)
+    FLY_EXPORT_METHOD("get_port", &fly::MasterAgent::get_port)
+    FLY_EXPORT_METHOD("get_data_server_port", &fly::MasterAgent::get_data_server_port);
 
 FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     FLY_EXPORT_INIT(uint64_t, fly::CMString, uint16_t)
@@ -85,7 +108,32 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     FLY_EXPORT_METHOD("stop", &fly::WorkerAgent::stop)
     FLY_EXPORT_METHOD("is_running", &fly::WorkerAgent::is_running)
     FLY_EXPORT_METHOD("get_worker_id", &fly::WorkerAgent::get_worker_id)
-    FLY_EXPORT_METHOD("set_executor", &fly::WorkerAgent::set_executor)
-    FLY_EXPORT_METHOD("is_registered", &fly::WorkerAgent::is_registered);
+    FLY_EXPORT_METHOD("set_executor", [](fly::WorkerAgent& self, std::shared_ptr<fly::TaskExecutor> executor) {
+        self.set_executor(std::move(executor));
+    })
+    FLY_EXPORT_METHOD("is_registered", &fly::WorkerAgent::is_registered)
+    FLY_EXPORT_METHOD("poll_task", &fly::WorkerAgent::poll_task)
+    FLY_EXPORT_METHOD("has_pending_task", &fly::WorkerAgent::has_pending_task)
+    FLY_EXPORT_METHOD("submit_task", [](fly::WorkerAgent& self,
+                                         const fly::CMString& name,
+                                         const fly::CMString& module,
+                                         const fly::CMVector<fly::CMString>& args,
+                                         const fly::CMVector<fly::CMString>& inputs) {
+        self.submit_task(name, module, args, inputs);
+    })
+    FLY_EXPORT_METHOD("register_database", [](fly::WorkerAgent& self,
+                                                const fly::CMString& db_id,
+                                                std::shared_ptr<Database> db) {
+        self.register_database(db_id, std::move(db));
+    })
+    FLY_EXPORT_METHOD("get_database", [](fly::WorkerAgent& self,
+                                           const fly::CMString& db_id) -> std::shared_ptr<Database> {
+        return self.get_database(db_id);
+    })
+    FLY_EXPORT_METHOD("request_remote_data", [](fly::WorkerAgent& self, const fly::CMString& object_name) -> fly_export::tuple {
+        auto result = self.request_remote_data(object_name);
+        CMString data_str(result.data_buffer.begin(), result.data_buffer.end());
+        return fly_export::make_tuple(data_str, result.py_name);
+    });
 
 }

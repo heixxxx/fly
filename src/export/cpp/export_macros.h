@@ -55,6 +55,7 @@ namespace fly_export = nanobind;
     }) \
     .def("__setstate__", [](Cls& obj, fly_export::bytes b) { \
         std::string data(b.c_str(), b.size()); \
+        ::new (&obj) Cls(); \
         FLY_DECODE(data, Cls, obj); \
     }) \
     .def_prop_ro("is_cpp", [](const Cls&) { return true; })

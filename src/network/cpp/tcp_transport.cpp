@@ -271,6 +271,16 @@ size_t TCPTransport::connection_count() const {
     return conn_to_fd_.size();
 }
 
+int TCPTransport::get_bound_port() const {
+    if (listen_fd_ < 0) return -1;
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    if (getsockname(listen_fd_, reinterpret_cast<struct sockaddr*>(&addr), &len) != 0) {
+        return -1;
+    }
+    return ntohs(addr.sin_port);
+}
+
 uint64_t TCPTransport::register_connection(int fd) {
     uint64_t conn_id = next_conn_id_++;
     conn_to_fd_[conn_id] = fd;

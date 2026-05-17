@@ -4,12 +4,38 @@
 #include <network/cpp/transport.h>
 #include <network/cpp/message_types.h>
 #include <agent/cpp/task_executor.h>
+#include <agent/cpp/worker_context.h>
+#include <storage/cpp/database.h>
 #include <common/cpp/common_types.h>
 #include <cstdint>
 #include <thread>
 #include <atomic>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <map>
 
 namespace fly {
+
+struct PendingTask {
+    uint64_t task_id;
+    CMString task_name;
+    CMString task_module;
+    CMVector<CMString> args;
+};
+
+struct PendingRemoteData {
+    CMString object_name;
+    CMString data;
+    CMString py_name;
+    bool completed = false;
+    bool success = false;
+    CMString error_message;
+    bool location_received = false;
+    CMString data_host;
+    int32_t data_port = 0;
+    uint64_t target_worker_id = 0;
+};
 
 class WorkerAgent {
 public:
@@ -21,10 +47,26 @@ public:
     bool is_running() const;
     uint64_t get_worker_id() const;
     
-    void set_executor(TaskExecutor* executor);
+    void set_executor(std::shared_ptr<TaskExecutor> executor);
+    
+    void begin_task(uint64_t task_id);
+    void record_write(const CMString& db_id, const CMString& object_name);
+    CMVector<CMString> end_task(uint64_t task_id);
     
     bool is_registered() const;
     
+    void submit_task(const CMString& name, const CMString& module,
+                     const CMVector<CMString>& args,
+                     const CMVector<CMString>& inputs);
+    
+    bool has_pending_task() const;
+    bool poll_task();
+    
+    void register_database(const CMString& db_id, std::shared_ptr<Database> db);
+    std::shared_ptr<Database> get_database(const CMString& db_id) const;
+    
+    ReadResult request_remote_data(const CMString& object_name);
+
 private:
     uint64_t worker_id_;
     CMString master_host_;
@@ -35,15 +77,35 @@ private:
     std::unique_ptr<Reactor> reactor_;
     std::thread reactor_thread_;
     uint64_t master_conn_;
+    int32_t data_server_port_ = 0;
     
     std::thread heartbeat_thread_;
     std::atomic<bool> heartbeat_running_{false};
+    std::mutex heartbeat_mutex_;
+    std::condition_variable heartbeat_cv_;
     
-    TaskExecutor* executor_{nullptr};
+    std::shared_ptr<TaskExecutor> executor_;
+    
+    static void record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
+    
+    uint64_t current_task_id_ = 0;
+    CMVector<CMString> current_writes_;
+    
+    mutable std::mutex task_queue_mutex_;
+    std::queue<PendingTask> task_queue_;
+    
+    CMMap<CMString, std::shared_ptr<Database>> databases_;
+    
+    mutable std::mutex pending_data_mutex_;
+    CMMap<CMString, std::shared_ptr<PendingRemoteData>> pending_data_;
     
     void on_register_ack(const RegisterAckMessage& msg);
     void on_task_assign(const TaskAssignMessage& msg);
     void on_shutdown(const ShutdownMessage& msg);
+    void on_db_path_response(const DbPathResponseMessage& msg);
+    void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
+    void on_data_location(uint64_t conn_id, const DataLocationMessage& msg);
+    void on_data_response(uint64_t conn_id, const DataResponseMessage& msg);
     
     void heartbeat_loop();
 };

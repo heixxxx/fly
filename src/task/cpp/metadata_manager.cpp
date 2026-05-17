@@ -84,4 +84,43 @@ void MetadataManager::remove_task(uint64_t task_id) {
     tasks_.erase(task_id);
 }
 
+void MetadataManager::record_data_location(const CMString& object_name, uint64_t worker_id) {
+    object_to_worker_[object_name] = worker_id;
+}
+
+bool MetadataManager::has_data_location(const CMString& object_name) const {
+    return object_to_worker_.count(object_name) > 0;
+}
+
+DataLocation MetadataManager::query_data_location(const CMString& object_name) const {
+    auto it = object_to_worker_.find(object_name);
+    if (it == object_to_worker_.end()) {
+        return DataLocation{};
+    }
+    uint64_t wid = it->second;
+    auto ds_it = worker_data_servers_.find(wid);
+    if (ds_it != worker_data_servers_.end()) {
+        return ds_it->second;
+    }
+    DataLocation loc;
+    loc.worker_id = wid;
+    return loc;
+}
+
+void MetadataManager::register_worker_data_server(uint64_t worker_id, const CMString& host, int32_t port) {
+    DataLocation loc;
+    loc.worker_id = worker_id;
+    loc.data_host = host;
+    loc.data_port = port;
+    worker_data_servers_[worker_id] = loc;
+}
+
+DataLocation MetadataManager::get_worker_data_server(uint64_t worker_id) const {
+    auto it = worker_data_servers_.find(worker_id);
+    if (it != worker_data_servers_.end()) {
+        return it->second;
+    }
+    return DataLocation{};
+}
+
 }  // namespace fly

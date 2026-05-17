@@ -19,6 +19,7 @@ public:
     void close_all() override;
     bool is_connected(uint64_t conn_id) const override;
     size_t connection_count() const override;
+    int get_bound_port() const override;
 
 private:
     int epoll_fd_ = -1;

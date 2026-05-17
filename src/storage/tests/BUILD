@@ -68,6 +68,7 @@ cc_test(
     deps = [
         "@com_google_googletest//:gtest_main",
         "//src/storage/cpp:fly_storage_database",
+        "//src/agent/cpp:fly_agent_worker_context",
         "//src/common/cpp:fly_common_types",
     ],
     copts = ["-std=c++20"],

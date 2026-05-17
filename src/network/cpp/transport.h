@@ -52,6 +52,9 @@ public:
     
     // 统计
     virtual size_t connection_count() const = 0;
+    
+    // 获取 listen 绑定的实际端口 (port=0 时由内核分配)
+    virtual int get_bound_port() const = 0;
 };
 
 // 工厂函数 - 根据配置创建实现

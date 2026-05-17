@@ -1,0 +1,52 @@
+{
+  "name": "systematic-debugging-analysis",
+  "description": "debug时需要结合代码流程、架构、运行结果及日志来共同分析问题，若日志覆盖不足，则增加日志后重新运行测例来获取更多信息；不要仅通过代码来分析问题",
+  "category": "debugging",
+  "version": "1.0.0",
+  "behaviors": {
+    "rigid": true,
+    "multi_dimensional": true,
+    "data_driven": true,
+    "incremental_debugging": true
+  },
+  "constraints": {
+    "no_static_analysis_only": "禁止仅通过代码静态分析问题",
+    "no_log_free_debugging": "禁止在没有日志的情况下调试",
+    "no_guessing": "禁止凭空猜测问题原因",
+    "no_ignore_logs": "禁止忽略日志信息",
+    "no_bypass_test_execution": "禁止跳过测试执行"
+  },
+  "debug_dimensions": {
+    "code_flow": "代码流程分析",
+    "runtime_results": "运行结果分析",
+    "log_analysis": "日志分析",
+    "architecture_context": "架构上下文分析",
+    "test_execution": "测试执行验证"
+  },
+  "log_enhancement": {
+    "method": "incremental",
+    "levels": ["DEBUG", "INFO", "WARN", "ERROR"],
+    "components": ["MasterAgent", "WorkerAgent", "Network", "Storage", "Task"],
+    "formats": ["timestamp", "level", "component", "message"]
+  },
+  "test_execution": {
+    "environment": "clean_logs",
+    "debug_mode": true,
+    "validation_steps": ["network_test", "task_test", "data_consistency_test"]
+  },
+  "workflows": [
+    "problem_identification",
+    "multi_dimensional_analysis", 
+    "log_enhancement",
+    "test_execution",
+    "root_cause_analysis",
+    "solution_validation"
+  ],
+  "scenarios": [
+    "network_connection_issues",
+    "task_execution_failures", 
+    "data_sync_problems",
+    "performance_bottlenecks",
+    "component_interaction_problems"
+  ]
+}

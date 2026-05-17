@@ -1,0 +1,49 @@
+{
+  "name": "design-compliant-implementation",
+  "description": "代码实现需高质量完成、符合设计优先，禁止由于实现困难而切换至简单但是不符合设计要求的方法。如遇到无法/难以解决的问题，列出问题后咨询用户",
+  "category": "development",
+  "version": "1.0.0",
+  "behaviors": {
+    "rigid": true,
+    "design_first": true,
+    "no_compromise": true,
+    "consult_on_obstacle": true
+  },
+  "constraints": {
+    "no_design_violation": "禁止违背设计文档",
+    "no_workaround": "禁止使用workaround代替正确实现",
+    "no_tech_debt": "禁止引入技术债换取便利",
+    "no_test_skip": "禁止跳过测试",
+    "no_ignore_errors": "禁止忽略类型错误/异常",
+    "no_unauthorized_downgrade": "禁止未经咨询就自行降级"
+  },
+  "workflow": [
+    "understand_design",
+    "evaluate_difficulty",
+    "follow_decision_tree",
+    "implement_with_quality",
+    "verify_compliance",
+    "consult_if_stuck"
+  ],
+  "decision_tree": {
+    "difficult": "尝试分解学习调研",
+    "truly_blocked": "咨询用户",
+    "achievable": "按设计实现"
+  },
+  "consultation_template": {
+    "goal": "当前实现目标",
+    "design_constraint": "设计约束",
+    "obstacle": "遇到障碍",
+    "attempted": "已尝试方式",
+    "root_cause": "根本原因",
+    "options": ["推荐方案", "备选方案", "降级方案", "修改设计"],
+    "question": "请用户决策"
+  },
+  "forbidden_practices": {
+    "design_violation": "因复杂就违背设计",
+    "workaround": "使用临时绕过方案",
+    "tech_debt_now": "以后再来优化",
+    "skip_tests": "跳过失败测试",
+    "ignore_errors": "使用as any/ts-ignore"
+  }
+}

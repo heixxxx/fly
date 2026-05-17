@@ -22,9 +22,20 @@ cc_library(
         "//src/network/cpp:fly_network_transport",
         "//src/task/cpp:fly_task_cpp",
         "//src/log/cpp:fly_log",
+        "//src/storage/cpp:fly_storage_database",
     ],
     strip_include_prefix = "/src",
     copts = ["-std=c++20"],
+)
+
+cc_library(
+    name = "fly_agent_worker_context",
+    hdrs = ["worker_context.h"],
+    strip_include_prefix = "/src",
+    copts = ["-std=c++20"],
+    deps = [
+        "//src/common/cpp:fly_common_types",
+    ],
 )
 
 cc_library(
@@ -33,10 +44,12 @@ cc_library(
     srcs = ["worker_agent.cpp"],
     deps = [
         ":fly_agent_task_executor",
+        ":fly_agent_worker_context",
         "//src/common/cpp:fly_common_types",
         "//src/network/cpp:fly_network_reactor",
         "//src/network/cpp:fly_network_transport",
         "//src/log/cpp:fly_log",
+        "//src/storage/cpp:fly_storage_database",
     ],
     strip_include_prefix = "/src",
     copts = ["-std=c++20"],

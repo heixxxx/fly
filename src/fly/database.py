@@ -1,0 +1,79 @@
+import pickle
+from _fly_storage import ex_stg_create_database
+
+
+class _Database:
+
+    def __init__(self, base_path: str, data_path: str = "", writer_id: int = 0):
+        from .runtime import _mode
+        if _mode == "master":
+            from .runtime import get_agent
+            agent = get_agent()
+            self._db = agent._agent.get_or_create_database(base_path, data_path, writer_id)
+        else:
+            self._db = ex_stg_create_database(base_path, data_path, writer_id)
+
+    def write_object(self, name: str, obj) -> str:
+        if hasattr(obj, "is_cpp"):
+            data = obj.__getstate__()
+        else:
+            data = pickle.dumps(obj, -1)
+        return self._db._write_typed(name, data, type(obj).__name__)
+
+    def read_object(self, name: str):
+        try:
+            data, py_name = self._db._read_typed(name)
+        except Exception:
+            return self._read_remote(name)
+        import _fly_storage
+        cls = getattr(_fly_storage, py_name, None)
+        if cls is not None and hasattr(cls, "is_cpp"):
+            obj = cls.__new__(cls)
+            obj.__setstate__(data)
+            return obj
+        return pickle.loads(data)
+
+    def _read_remote(self, name: str):
+        from .runtime import get_agent
+        agent = get_agent()
+        data, py_name = agent._agent.request_remote_data(name)
+        import _fly_storage
+        cls = getattr(_fly_storage, py_name, None)
+        if cls is not None and hasattr(cls, "is_cpp"):
+            obj = cls.__new__(cls)
+            obj.__setstate__(data)
+            return obj
+        return pickle.loads(data)
+
+    def write_object_raw(self, name: str, data: str) -> str:
+        return self._db.write_object_raw(name, data)
+
+    def read_object_raw(self, name: str) -> str:
+        return self._db.read_object_raw(name)
+
+    def get_obj_name(self, name: str) -> str:
+        return self._db.get_obj_name(name)
+
+    def get_db_id(self) -> str:
+        return self._db.get_db_id()
+
+    def get_base_path(self) -> str:
+        return self._db.get_base_path()
+
+    def get_data_path(self) -> str:
+        return self._db.get_data_path()
+
+    def freeze(self):
+        self._db.freeze()
+
+    def is_frozen(self) -> bool:
+        return self._db.is_frozen()
+
+    def load_meta(self):
+        return self._db.load_meta()
+
+    def reset(self):
+        self._db.reset()
+
+    def __repr__(self):
+        return f"Database(db_id={self.get_db_id()})"

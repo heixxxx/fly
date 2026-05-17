@@ -17,7 +17,8 @@ struct TaskExecResult {
     TaskExecStatus status;
     CMString output;
     CMString error;
-    CMVector<CMString> outputs;  // 写入的对象路径列表，用于依赖调度
+    CMVector<CMString> outputs;
+    CMVector<CMString> frozen_dbs;
 };
 
 class TaskExecutor {

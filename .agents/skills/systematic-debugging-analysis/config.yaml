@@ -1,0 +1,63 @@
+[tool.skill.metadata]
+name = "systematic-debugging-analysis"
+description = "debug时需要结合代码流程、架构、运行结果及日志来共同分析问题，若日志覆盖不足，则增加日志后重新运行测例来获取更多信息；不要仅通过代码来分析问题"
+category = "debugging"
+version = "1.0.0"
+
+[tool.skill.behavior]
+rigid = true
+multi_dimensional = true
+data_driven = true
+incremental_debugging = true
+
+[tool.skill.triggers]
+on_runtime_error = true
+on_network_issue = true
+on_task_failure = true
+on_data_sync_problem = true
+on_performance_issue = true
+on_component_interaction_problem = true
+
+[tool.skill.constraints]
+no_static_analysis_only = true
+no_log_free_debugging = true
+no_guessing = true
+no_ignore_logs = true
+no_bypass_test_execution = true
+
+[tool.skill.debug_dimensions]
+code_flow = "代码流程分析"
+runtime_results = "运行结果分析"
+log_analysis = "日志分析" 
+architecture_context = "架构上下文分析"
+test_execution = "测试执行验证"
+
+[tool.skill.log_enhancement]
+method = "incremental"
+levels = ["DEBUG", "INFO", "WARN", "ERROR"]
+components = ["MasterAgent", "WorkerAgent", "Network", "Storage", "Task"]
+formats = ["timestamp", "level", "component", "message"]
+
+[tool.skill.test_execution]
+environment = "clean_logs"
+debug_mode = true
+validation_steps = ["network_test", "task_test", "data_consistency_test"]
+
+[tool.skill.forbidden_practices]
+static_only = "禁止仅通过代码静态分析问题"
+no_logs = "禁止在没有日志的情况下调试"
+skip_tests = "禁止跳过测试执行"
+guessing = "禁止凭空猜测问题原因"
+
+[tool.skill.consultation_template]
+problem_context = "问题在{component}发生，表现为{symptom}"
+analysis_methods = "将使用：{methods}"
+log_enhancement_needed = "需要添加日志：{logs_needed}"
+test_execution_plan = "测试计划：{tests}"
+question = "请确认调试策略，或提供其他建议："
+
+[tool.skill.response_templates]
+dimension_analysis = "🔍 多维度分析：\n- 代码流程：{code_flow}\n- 运行结果：{runtime_results}\n- 日志分析：{log_analysis}\n- 架构上下文：{architecture}"
+log_enhancement = "📝 日志增强方案：\n- 组件：{component}\n- 操作点：{operations}\n- 日志级别：{level}"
+test_execution = "🧪 测试执行计划：\n- 测试用例：{tests}\n- 环境准备：{environment}\n- 验证点：{validation}"
+finding_summary = "🎯 发现总结：\n- 根本原因：{root_cause}\n- 解决方案：{solution}\n- 验证结果：{verification}"

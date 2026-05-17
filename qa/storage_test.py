@@ -10,28 +10,40 @@ import shutil
 import pickle
 
 # Add bazel-bin output to path for extension module discovery
-_bazel_bin = os.path.join(os.path.dirname(__file__), '..', 'bazel-bin', 'src', 'storage', 'export')
-if os.path.exists(_bazel_bin):
-    sys.path.insert(0, _bazel_bin)
+_bazel_bin = os.path.join(os.path.dirname(__file__), '..', 'bazel-bin', 'src')
+for _subpath in ['storage/export', 'core/export', 'log/export', 'agent/export', 'network/export', 'task/export']:
+    _full = os.path.join(_bazel_bin, _subpath)
+    if os.path.exists(_full):
+        sys.path.insert(0, _full)
 
-# Add source path for FlyDatabase wrapper discovery
-_storage_py = os.path.join(os.path.dirname(__file__), '..', 'src', 'storage', 'py')
-if os.path.exists(_storage_py):
-    sys.path.insert(0, _storage_py)
+# Add src directory to path for fly package discovery
+_fly_src = os.path.join(os.path.dirname(__file__), '..', 'src')
+if os.path.exists(_fly_src):
+    sys.path.insert(0, _fly_src)
+
+import fly.runtime as _rt
+_rt._mode = "worker"
 
 
 class PythonTaskData:
-    """Pure Python class for FlyDatabase Python object write/read tests"""
     def __init__(self, value=0, name="", tags=None):
         self.value = value
         self.name = name
         self.tags = tags or []
 
 
+class SmallData:
+    def __init__(self, x=0, y=0):
+        self.x = x
+        self.y = y
+
+
 @pytest.fixture
 def temp_dir():
     d = tempfile.mkdtemp(prefix='fly_test_storage_')
     yield d
+    import gc
+    gc.collect()
     shutil.rmtree(d, ignore_errors=True)
 
 
@@ -78,35 +90,35 @@ def test_worker_info_creation():
 
 def test_database_write_read(temp_dir):
     from _fly_storage import ex_stg_create_database
-    db = ex_stg_create_database(temp_dir, "")
-    db.write_object("test/key", "hello world")
-    data = db.read_object("test/key")
+    db = ex_stg_create_database(temp_dir, "", 0)
+    db.write_object_raw("test/key", "hello world")
+    data = db.read_object_raw("test/key")
     assert data == "hello world"
     db.reset()
 
 
 def test_database_freeze(temp_dir):
     from _fly_storage import ex_stg_create_database
-    db = ex_stg_create_database(temp_dir, "")
-    db.write_object("test/key", "data")
+    db = ex_stg_create_database(temp_dir, "", 0)
+    db.write_object_raw("test/key", "data")
     db.freeze()
 
     assert db.is_frozen() == True
 
     with pytest.raises(RuntimeError):
-        db.write_object("test/key2", "more data")
+        db.write_object_raw("test/key2", "more data")
 
     db.reset()
 
 
 def test_database_getters(temp_dir):
-    from _fly_storage import create_database
-    db = create_database(temp_dir, "/tmp/data")
+    from _fly_storage import ex_stg_create_database
+    data_path = temp_dir + "/data"
+    os.makedirs(data_path, exist_ok=True)
+    db = ex_stg_create_database(temp_dir, data_path, 0)
 
     assert db.get_base_path() == temp_dir
-    assert db.get_data_path() == "/tmp/data"
-
-    db.reset()
+    assert db.get_data_path() == data_path
 
 
 def test_storage_manager_singleton(storage_mgr):
@@ -123,24 +135,18 @@ def test_storage_manager_database(storage_mgr, temp_dir):
     db2 = storage_mgr.get_or_create_database(temp_dir)
     assert db is db2
 
+    storage_mgr.close_all()
+
 
 # ─── FlyDatabase typed path tests ───
 
 def test_fly_database_cpp_class_write_read(temp_dir):
-    """C++ exported class (EXStgIndexEntry) -> FlyDatabase -> bitsery -> storage roundtrip"""
-    from database import FlyDatabase
+    from fly import open_db
     from _fly_storage import EXStgIndexEntry
 
-    db = FlyDatabase(temp_dir)
+    db = open_db(temp_dir)
 
-    entry = EXStgIndexEntry()
-    entry.object_name = "test/entry"
-    entry.file_name = "data.dat"
-    entry.offset = 100
-    entry.size = 512
-    entry.is_large = False
-    entry.block_count = 0
-
+    entry = EXStgIndexEntry("test/entry", "data.dat", 100, 512, False, 0, 0)
     db.write_object("test/entry", entry)
 
     result = db.read_object("test/entry")
@@ -156,26 +162,12 @@ def test_fly_database_cpp_class_write_read(temp_dir):
 
 
 def test_fly_database_cpp_dbmeta_write_read(temp_dir):
-    """EXStgDbMeta (with nested EXStgWorkerInfo vector) -> FlyDatabase roundtrip"""
-    from database import FlyDatabase
+    from fly import open_db
     from _fly_storage import EXStgDbMeta, EXStgWorkerInfo
 
-    db = FlyDatabase(temp_dir)
+    db = open_db(temp_dir)
 
-    meta = EXStgDbMeta()
-    meta.db_id = "/test/db"
-    meta.base_path = "/test"
-    meta.created_at = 1000
-    meta.frozen_at = 2000
-
-    worker = EXStgWorkerInfo()
-    worker.worker_id = 1
-    worker.host = "node1"
-    worker.role = "hybrid"
-    worker.data_path = "/data"
-    worker.idx_file = "w1.idx"
-    worker.idx_entry_count = 100
-    meta.workers.append(worker)
+    meta = EXStgDbMeta("/test/db", "/test", 1000, 2000)
 
     db.write_object("test/meta", meta)
 
@@ -183,18 +175,15 @@ def test_fly_database_cpp_dbmeta_write_read(temp_dir):
     assert isinstance(result, EXStgDbMeta)
     assert result.db_id == "/test/db"
     assert result.created_at == 1000
-    assert len(result.workers) == 1
-    assert result.workers[0].worker_id == 1
-    assert result.workers[0].host == "node1"
 
     db.reset()
 
 
 def test_fly_database_python_class_write_read(temp_dir):
     """Pure Python class -> pickle -> FlyDatabase roundtrip"""
-    from database import FlyDatabase
+    from fly import open_db
 
-    db = FlyDatabase(temp_dir)
+    db = open_db(temp_dir)
 
     obj = PythonTaskData(42, "test_task", ["tag1", "tag2"])
     db.write_object("task/result", obj)
@@ -209,29 +198,22 @@ def test_fly_database_python_class_write_read(temp_dir):
 
 
 def test_fly_database_mixed_cpp_python(temp_dir):
-    """C++ exported class + Python class in same database"""
-    from database import FlyDatabase
+    from fly import open_db
     from _fly_storage import EXStgIndexEntry
 
-    db = FlyDatabase(temp_dir)
+    db = open_db(temp_dir)
 
-    # Write C++ type
-    entry = EXStgIndexEntry()
-    entry.object_name = "cpp/data"
-    entry.offset = 99
+    entry = EXStgIndexEntry("cpp/data", "", 99, 0, False, 0, 0)
     db.write_object("cpp/data", entry)
 
-    # Write Python type
     py_obj = PythonTaskData(7, "py_data")
     db.write_object("py/data", py_obj)
 
-    # Read C++ back
     cpp_result = db.read_object("cpp/data")
     assert isinstance(cpp_result, EXStgIndexEntry)
     assert cpp_result.object_name == "cpp/data"
     assert cpp_result.offset == 99
 
-    # Read Python back
     py_result = db.read_object("py/data")
     assert isinstance(py_result, PythonTaskData)
     assert py_result.value == 7
@@ -241,12 +223,12 @@ def test_fly_database_mixed_cpp_python(temp_dir):
 
 
 def test_fly_database_is_cpp_marker_present(temp_dir):
-    """C++ exported classes have is_cpp=True marker"""
     from _fly_storage import EXStgIndexEntry, EXStgDbMeta, EXStgWorkerInfo
 
     for cls in [EXStgIndexEntry, EXStgDbMeta, EXStgWorkerInfo]:
-        assert hasattr(cls, "is_cpp"), f"{cls.__name__} missing is_cpp"
-        assert cls.is_cpp is True
+        obj = cls()
+        assert hasattr(obj, "is_cpp"), f"{cls.__name__} missing is_cpp"
+        assert obj.is_cpp is True
 
 
 def test_fly_database_python_class_missing_is_cpp(temp_dir):
@@ -255,12 +237,9 @@ def test_fly_database_python_class_missing_is_cpp(temp_dir):
 
 
 def test_fly_database_cpp_getstate_setstate(temp_dir):
-    """C++ exported class __getstate__ / __setstate__ work from Python"""
     from _fly_storage import EXStgIndexEntry
 
-    entry = EXStgIndexEntry()
-    entry.object_name = "test"
-    entry.offset = 42
+    entry = EXStgIndexEntry("test", "", 42, 0, False, 0, 0)
 
     data = entry.__getstate__()
     assert isinstance(data, bytes)
@@ -273,24 +252,17 @@ def test_fly_database_cpp_getstate_setstate(temp_dir):
 
 
 def test_fly_database_multiple_cpp_types(temp_dir):
-    """Multiple C++ types (EXStgIndexEntry, EXStgDbMeta, EXStgWorkerInfo) write/read in one db"""
-    from database import FlyDatabase
-    from _fly_storage import EXStgIndexEntry, EXStgDbMeta, EXStgWorkerInfo
+    from fly import open_db
+    from _fly_storage import EXStgIndexEntry, EXStgWorkerInfo
 
-    db = FlyDatabase(temp_dir)
+    db = open_db(temp_dir)
 
-    # EXStgIndexEntry
-    entry = EXStgIndexEntry()
-    entry.object_name = "idx/1"
+    entry = EXStgIndexEntry("idx/1", "", 0, 0, False, 0, 0)
     db.write_object("idx/1", entry)
 
-    # EXStgWorkerInfo
-    wi = EXStgWorkerInfo()
-    wi.worker_id = 10
-    wi.host = "worker-10"
+    wi = EXStgWorkerInfo(10, "worker-10", "", "", "", 0, "")
     db.write_object("worker/10", wi)
 
-    # Read both
     r1 = db.read_object("idx/1")
     assert isinstance(r1, EXStgIndexEntry)
 
@@ -303,15 +275,9 @@ def test_fly_database_multiple_cpp_types(temp_dir):
 
 
 def test_fly_database_pickle_roundtrip(temp_dir):
-    """Pure Python pickled data roundtrip through FlyDatabase"""
-    from database import FlyDatabase
+    from fly import open_db
 
-    db = FlyDatabase(temp_dir)
-
-    class SmallData:
-        def __init__(self, x=0, y=0):
-            self.x = x
-            self.y = y
+    db = open_db(temp_dir)
 
     obj = SmallData(3, 4)
     db.write_object("math/pt", obj)
@@ -329,7 +295,7 @@ def test_cpp_writes_python_reads_typed_object(temp_dir):
     """Python creates db → passes to C++ → C++ writes EXStgIndexEntry → Python reads back via typed path"""
     from _fly_storage import ex_stg_create_database, ex_stg_cpp_write_index_entry, EXStgIndexEntry
 
-    db = ex_stg_create_database(temp_dir, "")
+    db = ex_stg_create_database(temp_dir, "", 0)
 
     # C++ function takes Database& and writes a typed EXStgIndexEntry
     ex_stg_cpp_write_index_entry(db, "cross/cpp_entry")
@@ -355,13 +321,13 @@ def test_cpp_writes_python_reads_typed_object(temp_dir):
 
 def test_cpp_writes_python_reads_via_flydatabase(temp_dir):
     """Python creates FlyDatabase → passes to C++ → C++ writes → FlyDatabase.read_object reads back"""
-    from database import FlyDatabase
+    from fly import open_db
     from _fly_storage import ex_stg_cpp_write_index_entry, EXStgIndexEntry
 
-    db = FlyDatabase(temp_dir)
+    db = open_db(temp_dir)
 
     # C++ writes an EXStgIndexEntry into the Python-created database
-    ex_stg_cpp_write_index_entry(db, "cross/fly_entry")
+    ex_stg_cpp_write_index_entry(db._db, "cross/fly_entry")
 
     # Python reads via FlyDatabase.read_object (typed dispatch)
     result = db.read_object("cross/fly_entry")

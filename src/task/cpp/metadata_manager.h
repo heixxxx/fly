@@ -27,6 +27,12 @@ struct TaskMetadata {
     uint64_t assigned_worker_id;
 };
 
+struct DataLocation {
+    uint64_t worker_id = 0;
+    CMString data_host;
+    int32_t data_port = 0;
+};
+
 class MetadataManager {
 public:
     void create_task(uint64_t task_id, const CMString& name,
@@ -44,8 +50,21 @@ public:
     bool has_task(uint64_t task_id);
     void remove_task(uint64_t task_id);
     
+    // Data location tracking: object_name → which worker has it
+    void record_data_location(const CMString& object_name, uint64_t worker_id);
+    bool has_data_location(const CMString& object_name) const;
+    DataLocation query_data_location(const CMString& object_name) const;
+    
+    // Worker data server registration: worker_id → (host, port)
+    void register_worker_data_server(uint64_t worker_id, const CMString& host, int32_t port);
+    DataLocation get_worker_data_server(uint64_t worker_id) const;
+    
 private:
     CMMap<uint64_t, TaskMetadata> tasks_;
+    // object_name → worker_id (which worker wrote this object)
+    CMMap<CMString, uint64_t> object_to_worker_;
+    // worker_id → DataLocation (host:port of worker's data server)
+    CMMap<uint64_t, DataLocation> worker_data_servers_;
 };
 
 }  // namespace fly

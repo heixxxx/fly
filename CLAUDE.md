@@ -1,0 +1,458 @@
+# Fly 分布式任务框架 — Agent 工作指南
+
+> 本文档为 OpenCode 等 Agent 提供项目概览、工作规范和关键参考。
+
+---
+
+## 1. 项目概述
+
+**Fly** 是一个分布式任务执行框架，采用 C++ 核心 + Python 流程控制 + nanobind 桥接的架构。
+
+### 技术栈
+
+| 组件 | 技术选型 |
+|------|----------|
+| C++ 标准 | C++20 |
+| 编译器 | gcc12 |
+| Python 绑定 | nanobind |
+| 序列化 | bitsery (zpp_bits) |
+| 构建系统 | Bazel + fly.sh |
+| 测试框架 | gtest + pytest |
+| 压缩库 | LZ4 / ZLIB / ZSTD |
+
+### 架构分层
+
+```
+┌─────────────────────────────────────────┐
+│  Python 流程控制 (py/)                   │
+├─────────────────────────────────────────┤
+│  nanobind 导出层 (export/)               │
+├─────────────────────────────────────────┤
+│  C++ 核心模块 (cpp/)                     │
+│  - Agent (Master/Worker)                 │
+│  - Task (调度/依赖图)                    │
+│  - Network (Reactor/TCP)                 │
+│  - Storage (Database)                   │
+│  - Serialization (bitsery)              │
+└─────────────────────────────────────────┘
+```
+
+---
+
+## 2. 目录结构
+
+```
+fly/
+├── fly.sh                    # 构建脚本 (必须使用!)
+├── BUILD                     # 顶层 BUILD (自动生成)
+├── .bazelrc                  # Bazel 配置
+├── WORKSPACE                 # Bazel 工作区
+├── MODULE.bazel              # Bazel 模块定义
+│
+├── src/                      # 源代码
+│   ├── common/               # 公共类型定义
+│   │   └── cpp/common_types.h  # CMString, CMVector, CMMap 等
+│   │
+│   ├── core/                 # 核心基础模块
+│   │   └── cpp/config.h/cpp  # 配置管理
+│   │
+│   ├── serialization/        # 序列化模块
+│   │   └── cpp/serialization_macros.h  # FLY_SERIALIZE, FLY_ENCODE
+│   │
+│   ├── export/               # 导出宏定义
+│   │   └── cpp/export_macros.h  # FLY_EXPORT_* 宏
+│   │
+│   ├── storage/              # 存储层 (Layer 1)
+│   │   ├── cpp/database.h/cpp
+│   │   ├── cpp/data_writer.h/cpp
+│   │   ├── cpp/data_reader.h/cpp
+│   │   └── export/storage_export.cpp
+│   │
+│   ├── network/             # 网络层 (Layer 2)
+│   │   ├── cpp/reactor.h/cpp
+│   │   ├── cpp/transport.h/cpp
+│   │   ├── cpp/tcp_transport.cpp
+│   │   ├── cpp/message_protocol.h/cpp
+│   │   └── cpp/message_types.h
+│   │
+│   ├── task/                # 任务系统层 (Layer 3)
+│   │   ├── cpp/dependency_graph.h/cpp
+│   │   ├── cpp/worker_manager.h/cpp
+│   │   ├── cpp/task_scheduler.h/cpp
+│   │   └── cpp/metadata_manager.h/cpp
+│   │
+│   ├── agent/               # Agent 层 (Layer 4)
+│   │   ├── cpp/master_agent.h/cpp
+│   │   ├── cpp/worker_agent.h/cpp
+│   │   ├── cpp/task_executor.h/cpp
+│   │   └── export/agent_export.cpp
+│   │
+│   └── log/                 # 日志模块
+│       └── cpp/logger.h/cpp
+│
+├── qa/                      # 项目级集成测试
+├── docs/                    # 设计文档
+│   └── superpowers/plans/   # Layer 状态文档
+└── scripts/                 # 辅助脚本
+```
+
+---
+
+## 3. 构建系统
+
+### 关键约束
+
+**必须使用 `./fly.sh` 而非裸 `bazel` 命令！**
+
+直接使用 `bazel build` 不会刷新 `compile_commands.json`，导致 clangd 无法工作。
+
+### 常用命令
+
+```bash
+# 构建 + 刷新 clangd
+./fly.sh build [target...]
+
+# 测试 + 刷新 clangd
+./fly.sh test [target...]
+
+# 仅构建，不刷新 clangd
+./fly.sh buildonly [target...]
+
+# 仅刷新 clangd
+./fly.sh refresh
+
+# 构建 + 测试 + 刷新
+./fly.sh check
+```
+
+### Bazel 配置 (.bazelrc)
+
+```
+build --cxxopt=-std=c++20
+build --host_cxxopt=-std=c++20
+build --enable_bzlmod=false
+test --test_output=errors
+```
+
+---
+
+## 4. 代码规范
+
+### C++ 类型别名
+
+所有代码使用标准库容器时，使用 `CM*` 前缀的类型别名（定义于 `common_types.h`）：
+
+```cpp
+#include <common/cpp/common_types.h>
+
+CMString name;           // std::string
+CMVector<int> ids;       // std::vector<int>
+CMMap<K, V> dict;        // std::map<K, V>
+CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
+```
+
+### Include 路径
+
+使用模块式路径，不使用相对路径：
+
+```cpp
+// 正确
+#include <core/cpp/config.h>
+#include <storage/cpp/database.h>
+
+// 错误
+#include "../cpp/config.h"
+```
+
+### 命名规范
+
+| 类型 | 命名示例 |
+|------|----------|
+| Bazel target | `fly_storage_cpp` |
+| Python so | `_fly_storage.so` |
+| 导出类型 | EX+模块缩写+类型名，例:`EXStgDatabase` (storage → Stg) |
+| 导出函数 | ex_模块缩写_函数名, 例:`ex_stg_create_database` |
+
+---
+
+## 5. 序列化宏
+
+### FLY_SERIALIZE 声明
+
+```cpp
+// 简洁形式 (所有字段存在于版本 1)
+struct Simple {
+    int32_t id;
+    CMString name;
+    FLY_SERIALIZE(id, name);
+};
+
+// 完整形式 (需要版本判断)
+struct IndexEntry {
+    FLY_SERIALIZE_BEGIN(2)
+        FLY_FIELD(object_name);
+        FLY_FIELD(offset);
+        if (version >= 2) {
+            FLY_FIELD(compression_type);
+        }
+    FLY_SERIALIZE_END
+};
+```
+
+### FLY_ENCODE / FLY_DECODE
+
+```cpp
+// 编码到 CMString
+CMString bytes;
+FLY_ENCODE(myStruct, bytes);
+
+// 解码
+MyStruct decoded;
+FLY_DECODE(bytes, MyType, decoded);
+
+// 编码到 FlyBuffer (uint8_t)
+FlyBuffer buf;
+FLY_ENCODE_TO_BYTES(obj, buf);
+
+// 解码 from FlyBuffer
+FLY_DECODE_FROM_BYTES(buf, MyType, decoded);
+```
+
+---
+
+## 6. Python 导出宏
+
+### 模块定义
+
+```cpp
+FLY_EXPORT_MODULE(_fly_module) {
+    // 导出代码
+}
+```
+
+### 类导出
+
+```cpp
+FLY_EXPORT_CLASS(Database, "EXStgDatabase")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("db_id", &Database::get_db_id)
+    FLY_EXPORT_METHOD("freeze", &Database::freeze)
+    FLY_EXPORT_SERIALIZE(Database);
+```
+
+### 函数导出
+
+```cpp
+FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& path) {
+    return std::make_shared<Database>(path);
+});
+
+FLY_EXPORT_FUNCTION_REF("ex_stg_get_storage_manager", []() -> StorageManager& {
+    return StorageManager::instance();
+});
+```
+
+### 枚举导出
+
+```cpp
+FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
+    FLY_EXPORT_ENUM_VALUE("NONE", CompressionType::NONE)
+    FLY_EXPORT_ENUM_VALUE("LZ4", CompressionType::LZ4)
+    FLY_EXPORT_ENUM_VALUE("ZSTD", CompressionType::ZSTD);
+```
+
+---
+
+## 7. 关键模块
+
+### 存储层 (src/storage/)
+
+| 文件 | 职责 |
+|------|------|
+| `database.h/cpp` | 统一存储接口，freeze 管理 |
+| `data_writer.h/cpp` | 单线程写入聚合器 |
+| `data_reader.h/cpp` | 数据读取器 |
+| `storage_manager.h/cpp` | Database 管理 |
+
+### 网络层 (src/network/)
+
+| 文件 | 职责 |
+|------|------|
+| `reactor.h/cpp` | 单线程事件循环 |
+| `transport.h/cpp` | TransportLayer 抽象 |
+| `tcp_transport.cpp` | POSIX TCP 实现 |
+| `message_protocol.h/cpp` | 二进制帧协议 |
+| `message_types.h` | 消息结构定义 |
+
+### 任务系统层 (src/task/)
+
+| 文件 | 职责 |
+|------|------|
+| `dependency_graph.h/cpp` | 任务依赖管理 |
+| `worker_manager.h/cpp` | Worker 状态管理 |
+| `task_scheduler.h/cpp` | 任务调度器 |
+| `metadata_manager.h/cpp` | 任务元数据 |
+| `heartbeat_monitor.h/cpp` | 心跳监控 |
+
+### Agent 层 (src/agent/)
+
+| 文件 | 职责 |
+|------|------|
+| `master_agent.h/cpp` | Master 节点管理 |
+| `worker_agent.h/cpp` | Worker 节点执行 |
+| `task_executor.h/cpp` | 任务执行器 |
+
+---
+
+## 8. 测试规范
+
+### C++ 测试 (gtest)
+
+```cpp
+#include <gtest/gtest.h>
+#include <storage/cpp/database.h>
+
+TEST(DatabaseTest, WriteRead) {
+    Database db("/tmp/test");
+    db.write_object("key", "value");
+    auto result = db.read_object<CMString>("key");
+    EXPECT_EQ(result, "value");
+}
+```
+
+BUILD 配置：
+```python
+cc_test(
+    name = "database_test",
+    srcs = ["database_test.cpp"],
+    deps = [
+        "@com_google_googletest//:gtest_main",
+        "//src/storage/cpp:fly_storage_database",
+    ],
+)
+```
+
+### Python 测试 (pytest)
+
+```python
+import pytest
+from _fly_storage import Database
+
+def test_database():
+    db = Database("/tmp/test")
+    db.write_object("key", "value")
+    assert db.read_object("key") == "value"
+```
+
+### 运行测试
+
+```bash
+# 运行所有测试
+./fly.sh test //src/...
+
+# 运行特定模块测试
+./fly.sh test //src/storage/tests:database_test
+```
+
+---
+
+## 9. 项目状态
+
+### Layer 实现进度
+
+| Layer | 状态 | 测试数 | 核心产出 |
+|-------|------|--------|----------|
+| Layer 0 | ✅ 完成 | 5 | WORKSPACE, BUILD, 宏定义 |
+| Layer 1 | ✅ 完成 | 45 | Database, StorageManager |
+| Layer 2 | ✅ 完成 | 35 | Reactor, TCP, 消息协议 |
+| Layer 3 | ✅ 完成 | 28 | DependencyGraph, 调度器 |
+| Layer 4 | ✅ 完成 | 48 | MasterAgent, WorkerAgent |
+| Layer 5 | 🔄 进行中 | - | Python API, 写入跟踪 |
+
+**总测试**: 161 tests pass
+
+### Layer 5 当前任务
+
+Phase 1: 写入跟踪核心
+- WorkerAgent 添加 begin_task/end_task/record_write
+- Database.db_id 生成
+- get_obj_name() 方法
+
+Phase 2: Python 高层 API
+- fly/__init__.py 顶层包
+- @as_task 装饰器
+- Master 类包装
+
+Phase 3: Worker 自动执行
+- 自动 import module
+- pickle args 反序列化
+- fly 命令行入口
+
+---
+
+## 10. Agent 工作指南
+
+### 必须遵循
+
+1. **使用 `./fly.sh` 而非裸 bazel**
+2. **TDD 流程**: 先写测试，再写实现，测试通过后提交
+3. **C++20 标准**: 使用 `--std=c++20`
+4. **gcc12 编译器**: 非 clang
+5. **模块式 include 路径**: 使用 `<module/cpp/file.h>` 格式
+
+### 禁止事项
+
+1. 禁止直接使用 `bazel build` 或 `bazel test`
+2. 禁止使用相对路径 include
+3. 禁止直接调用 bitsery/nanobind 原始 API（必须通过宏）
+4. 禁止跳过测试直接提交
+
+### 新模块创建模板
+
+```
+src/new_module/
+├── cpp/
+│   ├── new_module.h      # #pragma once, 使用 CMString/CMMap
+│   ├── new_module.cpp    # #include <module/cpp/new_module.h>
+│   └── BUILD             # name="fly_new_module_cpp"
+├── export/
+│   ├── new_module_export.cpp  # FLY_EXPORT_MODULE(_fly_new_module)
+│   └── BUILD             # cc_binary, name="_fly_new_module.so"
+├── py/
+│   ├── __init__.py
+│   └── BUILD             # py_library
+└── tests/
+    ├── new_module_test.cpp
+    ├── new_module_test.py
+    └── BUILD
+```
+
+---
+
+## 11. 快速参考
+
+### 常用命令
+
+```bash
+# 构建整个项目
+./fly.sh build //src/...
+
+# 运行测试
+./fly.sh test //src/...
+
+# 快速检查
+./fly.sh check
+
+# 刷新 clangd
+./fly.sh refresh
+```
+
+### 关键文件
+
+- `docs/DEVELOPMENT_GUIDELINES.md` - 开发规范（详细）
+- `docs/superpowers/plans/2026-05-16-current-status.md` - 当前状态
+- `docs/superpowers/plans/2026-05-16-layer5-python-api-design.md` - Layer 5 设计
+
+---
+
+*文档生成日期: 2026-05-16*

@@ -116,9 +116,10 @@ TEST_F(AgentNetworkTest, ExecutorInjection) {
     });
     
     WorkerAgent worker(1, "127.0.0.1", 19084);
-    worker.set_executor(&executor);
+    auto exec_ptr = std::make_shared<TaskExecutor>(std::move(executor));
+    worker.set_executor(exec_ptr);
     
-    auto result = executor.execute(1, "test_task", "test_module", {});
+    auto result = exec_ptr->execute(1, "test_task", "test_module", {});
     EXPECT_EQ(result.status, TaskExecStatus::SUCCESS);
     EXPECT_EQ(result.output, "mock_result");
 }
@@ -154,8 +155,8 @@ TEST_F(AgentNetworkTest, EndToEndTaskExecution) {
         return result;
     });
     
-    worker1.set_executor(&executor1);
-    worker2.set_executor(&executor2);
+    worker1.set_executor(std::make_shared<TaskExecutor>(std::move(executor1)));
+    worker2.set_executor(std::make_shared<TaskExecutor>(std::move(executor2)));
     worker1.start();
     worker2.start();
     
@@ -167,7 +168,11 @@ TEST_F(AgentNetworkTest, EndToEndTaskExecution) {
     master.submit_task(2, "test_task_2", "test_module", {"arg2"}, {}, {});
     master.submit_task(3, "test_task_3", "test_module", {"arg3"}, {}, {});
     
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    for (int i = 0; i < 100; ++i) {
+        worker1.poll_task();
+        worker2.poll_task();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     
     auto completed = master.get_completed_tasks();
     EXPECT_GE(completed.size(), 2);
