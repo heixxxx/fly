@@ -173,11 +173,14 @@ class Master(FlyAgent):
         self._workers.append(worker)
 
     def _spawn_process_worker(self, worker_id: int):
-        """Phase 3: 子进程 Worker — 启动 fly binary"""
         import time
         from .runtime import _log_dir
 
         fly_bin = self._find_fly_binary()
+
+        worker_log_dir = os.path.join(_log_dir, "workers")
+        os.makedirs(worker_log_dir, exist_ok=True)
+        log_path = os.path.join(worker_log_dir, f"worker_{worker_id}.log")
 
         cmd = [
             fly_bin,
@@ -188,7 +191,9 @@ class Master(FlyAgent):
             "--log-dir", _log_dir,
         ]
 
-        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL)
+        log_file = open(log_path, "a")
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                stdout=log_file, stderr=log_file)
         self._worker_procs.append(proc)
         time.sleep(0.1)
 

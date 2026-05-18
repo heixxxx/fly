@@ -28,7 +28,6 @@ def _import_all_internal_modules():
 
 def init(log_dir="fly_log", worker_mode=False, worker_id=0,
          master_host="127.0.0.1", master_port=0):
-    logging.basicConfig(level=logging.DEBUG)
 
     _import_all_internal_modules()
 
@@ -40,6 +39,17 @@ def init(log_dir="fly_log", worker_mode=False, worker_id=0,
     else:
         from .log_setup import setup_log_dir
         log_dir = setup_log_dir(log_dir)
+
+        master_log_path = os.path.join(log_dir, "master.log")
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            handlers=[
+                logging.FileHandler(master_log_path, mode="a"),
+                logging.StreamHandler(sys.stderr),
+            ],
+        )
+
         from _fly_log import init_master
         init_master(log_dir + "/")
         from .runtime import configure_master
@@ -68,9 +78,34 @@ def _cleanup():
     except Exception:
         pass
 
+    import gc
+    gc.collect()
+
+
+def _setup_worker_logging(worker_id, log_dir):
+    """Redirect Python stdout/stderr and logging to worker log file."""
+    worker_log_dir = os.path.join(log_dir, "workers")
+    os.makedirs(worker_log_dir, exist_ok=True)
+    log_path = os.path.join(worker_log_dir, f"worker_{worker_id}.log")
+
+    log_file = open(log_path, "a")
+
+    sys.stdout = log_file
+    sys.stderr = log_file
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(log_file),
+        ],
+    )
+
 
 def _run_worker(worker_id, master_host, master_port, log_dir):
     import time
+
+    _setup_worker_logging(worker_id, log_dir)
 
     init(
         worker_mode=True,
