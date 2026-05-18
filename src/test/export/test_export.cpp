@@ -20,7 +20,7 @@ FLY_EXPORT_CLASS(TestObject, "EXTestObject")
 FLY_EXPORT_FUNCTION("ex_test_parallel_read",
     [](fly_export::object py_db,
        const CMVector<CMString>& names) -> fly_export::tuple {
-    auto db = fly_export::cast<std::shared_ptr<Database>>(py_db.attr("_db"));
+    auto db = fly_export::cast<CMSharedPtr<Database>>(py_db.attr("_db"));
     std::atomic<int64_t> total_sum{0};
     std::atomic<int> local_count{0};
     std::atomic<int> remote_count{0};

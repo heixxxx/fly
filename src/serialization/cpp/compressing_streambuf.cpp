@@ -1,7 +1,7 @@
 #include <serialization/cpp/compressing_streambuf.h>
 
 CompressingStreamBuf::CompressingStreamBuf(std::ostream& dest,
-                                           std::unique_ptr<Compressor> compressor,
+                                           CMUniquePtr<Compressor> compressor,
                                            int64_t chunk_size)
     : dest_(dest)
     , compressor_(std::move(compressor))

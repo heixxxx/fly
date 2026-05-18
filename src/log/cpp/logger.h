@@ -46,7 +46,7 @@ private:
     CMString level_str(LogLevel level) const;
     CMString timestamp() const;
     
-    static CMMap<CMString, std::unique_ptr<Logger>> instances_;
+    static CMMap<CMString, CMUniquePtr<Logger>> instances_;
     static std::mutex instance_mutex_;
     static CMString log_path_;
 };

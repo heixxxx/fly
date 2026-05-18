@@ -7,7 +7,7 @@
 
 namespace fly {
 
-CMMap<CMString, std::unique_ptr<Logger>> Logger::instances_;
+CMMap<CMString, CMUniquePtr<Logger>> Logger::instances_;
 std::mutex Logger::instance_mutex_;
 CMString Logger::log_path_ = "logs/";
 
@@ -112,7 +112,7 @@ void Logger::init_master(const CMString& path) {
     std::filesystem::create_directories(log_path_);
     
     CMString filename = log_path_ + "master.log";
-    instances_["master"] = std::make_unique<Logger>(filename);
+    instances_["master"] = CMMakeUnique<Logger>(filename);
 }
 
 void Logger::init_worker(uint64_t worker_id, const CMString& path) {
@@ -123,7 +123,7 @@ void Logger::init_worker(uint64_t worker_id, const CMString& path) {
     
     CMString name = "worker" + std::to_string(worker_id);
     CMString filename = log_path_ + name + ".log";
-    instances_[name] = std::make_unique<Logger>(filename);
+    instances_[name] = CMMakeUnique<Logger>(filename);
 }
 
 void Logger::shutdown() {

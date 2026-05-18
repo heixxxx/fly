@@ -34,7 +34,7 @@ struct SharedPtrTestClass {
 };
 
 TEST(ExportMacrosFunctionalTest, SharedPtrHolderWorks) {
-    auto ptr = std::make_shared<SharedPtrTestClass>();
+    auto ptr = CMMakeShared<SharedPtrTestClass>();
     ptr->id = 100;
     ptr->data = "shared";
     

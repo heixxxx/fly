@@ -10,7 +10,7 @@
 
 class CompressingStreamBuf : public std::streambuf {
 public:
-    CompressingStreamBuf(std::ostream& dest, std::unique_ptr<Compressor> compressor,
+    CompressingStreamBuf(std::ostream& dest, CMUniquePtr<Compressor> compressor,
                          int64_t chunk_size = 4194304);
     ~CompressingStreamBuf() override;
 
@@ -26,7 +26,7 @@ private:
     void flush_chunk();
 
     std::ostream& dest_;
-    std::unique_ptr<Compressor> compressor_;
+    CMUniquePtr<Compressor> compressor_;
     int64_t chunk_size_;
     CMVector<char> buffer_;
     int64_t total_uncompressed_ = 0;
