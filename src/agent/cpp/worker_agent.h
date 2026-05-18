@@ -25,19 +25,6 @@ struct PendingTask {
     CMVector<CMString> args;
 };
 
-struct PendingRemoteData {
-    CMString object_name;
-    CMString data;
-    CMString py_name;
-    bool completed = false;
-    bool success = false;
-    CMString error_message;
-    bool location_received = false;
-    CMString data_host;
-    int32_t data_port = 0;
-    uint64_t target_worker_id = 0;
-};
-
 struct PendingDbPath {
     CMString db_id;
     CMString base_path;
@@ -121,23 +108,18 @@ private:
     std::queue<PendingTask> task_queue_;
     
     CMMap<CMString, std::shared_ptr<Database>> databases_;
-    
-    mutable std::mutex pending_data_mutex_;
-    CMMap<CMString, std::shared_ptr<PendingRemoteData>> pending_data_;
 
     std::mutex pending_db_path_mutex_;
     CMMap<CMString, std::shared_ptr<PendingDbPath>> pending_db_paths_;
 
     std::mutex pending_write_reg_mutex_;
     CMMap<CMString, std::shared_ptr<PendingWriteRegister>> pending_write_regs_;
-    
+
     void on_register_ack(const RegisterAckMessage& msg);
     void on_task_assign(const TaskAssignMessage& msg);
     void on_shutdown(const ShutdownMessage& msg);
     void on_db_path_response(const DbPathResponseMessage& msg);
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
-    void on_data_location(uint64_t conn_id, const DataLocationMessage& msg);
-    void on_data_response(uint64_t conn_id, const DataResponseMessage& msg);
     void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
     void on_disconnect(uint64_t conn_id);
     

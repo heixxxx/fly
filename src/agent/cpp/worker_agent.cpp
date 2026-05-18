@@ -98,16 +98,6 @@ void WorkerAgent::start() {
              on_data_request(conn_id, msg);
          });
 
-     reactor_->register_handler<DataLocationMessage>(
-         [this](uint64_t conn_id, const DataLocationMessage& msg) {
-             on_data_location(conn_id, msg);
-         });
-
-     reactor_->register_handler<DataResponseMessage>(
-         [this](uint64_t conn_id, const DataResponseMessage& msg) {
-             on_data_response(conn_id, msg);
-         });
-
      reactor_->register_handler<WriteRegisterAckMessage>(
          [this](uint64_t conn_id, const WriteRegisterAckMessage& msg) {
              on_write_register_ack(conn_id, msg);
@@ -419,50 +409,6 @@ void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& ms
     }
 
     ds().submit_transfer(conn_id, msg.object_name);
-}
-
-void WorkerAgent::on_data_response(uint64_t conn_id, const DataResponseMessage& msg) {
-    auto* log = Logger::get_worker(worker_id_);
-    if (log) {
-        log->info("WorkerAgent", "DataResponse for object: " + msg.object_name +
-                  ", success=" + std::to_string(msg.success));
-    }
-
-    std::lock_guard<std::mutex> lock(pending_data_mutex_);
-    auto it = pending_data_.find(msg.object_name);
-    if (it != pending_data_.end()) {
-        it->second->data = msg.data;
-        it->second->success = msg.success;
-        it->second->error_message = msg.error_message;
-        it->second->completed = true;
-    }
-}
-
-void WorkerAgent::on_data_location(uint64_t conn_id, const DataLocationMessage& msg) {
-    auto* log = Logger::get_worker(worker_id_);
-    touch_master_contact();
-    if (log) {
-        log->info("WorkerAgent", "DataLocation for object: " + msg.object_name +
-                  ", worker_id=" + std::to_string(msg.worker_id) +
-                  ", data_host=" + msg.data_host + ":" + std::to_string(msg.data_port) +
-                  ", success=" + std::to_string(msg.success));
-    }
-
-    std::lock_guard<std::mutex> lock(pending_data_mutex_);
-    auto it = pending_data_.find(msg.object_name);
-    if (it == pending_data_.end() || !msg.success) {
-        if (it != pending_data_.end()) {
-            it->second->completed = true;
-            it->second->success = false;
-            it->second->error_message = "DataLocation not found";
-        }
-        return;
-    }
-
-    it->second->data_host = msg.data_host;
-    it->second->data_port = msg.data_port;
-    it->second->target_worker_id = msg.worker_id;
-    it->second->location_received = true;
 }
 
 ReadResult WorkerAgent::request_remote_data(const CMString& object_name) {

@@ -5,7 +5,6 @@ import logging
 
 def _import_all_internal_modules():
     """Import all internal modules so Worker and Master share the same environment."""
-    sys.setdlopenflags(os.RTLD_NOW | os.RTLD_GLOBAL)
 
     import _fly_core
     import _fly_log
