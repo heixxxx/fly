@@ -52,6 +52,7 @@ cc_library(
         "//src/network/cpp:fly_network_reactor",
         "//src/network/cpp:fly_network_transport",
         "//src/network/cpp:fly_network_data_client",
+        "//src/network/cpp:fly_network_master_client",
         "//src/log/cpp:fly_log",
         "//src/storage/cpp:fly_storage_database",
         "//src/storage/cpp:fly_storage_data_service",

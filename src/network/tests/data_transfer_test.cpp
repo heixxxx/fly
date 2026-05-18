@@ -49,7 +49,7 @@ protected:
             CMString name = prefix + "/" + std::to_string(i);
             CMString data = "data_payload_" + std::to_string(i);
             db.write_object(name, data, false);
-            names.push_back(name);
+            names.push_back(db.get_obj_name(name));
         }
         TEST_LOG("Wrote %d objects to %s", count, db_path.c_str());
         return names;
@@ -225,7 +225,7 @@ TEST_F(DataTransferTest, ConcurrentTryReadLocal) {
     for (int i = 0; i < object_count; i++) {
         CMString name = "cread/obj_" + std::to_string(i);
         db.write_object(name, "cread_data_" + std::to_string(i), false);
-        names.push_back(name);
+        names.push_back(db.get_obj_name(name));
     }
     TEST_LOG("Wrote %d objects for concurrent read test", object_count);
 
@@ -469,7 +469,7 @@ TEST_F(DataTransferTest, ConcurrentReadWhileWriting) {
         for (int i = 0; i < write_count / 2; i++) {
             CMString name = "stress/pre_" + std::to_string(i);
             db.write_object(name, "pre_data_" + std::to_string(i), false);
-            pre_names.push_back(name);
+            pre_names.push_back(db.get_obj_name(name));
         }
     }
     TEST_LOG("Pre-wrote %zu objects", pre_names.size());

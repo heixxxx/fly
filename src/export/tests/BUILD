@@ -11,7 +11,7 @@ cc_test(
     ],
     copts = [
         "-std=c++20",
-        "-I/usr/local/include/python3.12",
+        "-I/usr/include/python3.10",
     ],
 )
 
@@ -26,6 +26,6 @@ cc_test(
     ],
     copts = [
         "-std=c++20",
-        "-I/usr/local/include/python3.12",
+        "-I/usr/include/python3.10",
     ],
 )

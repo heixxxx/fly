@@ -35,17 +35,19 @@ TEST_F(DataServiceTest, OnObjectWrittenAndFlushEnablesLocalRead) {
 
     db.write_object("local/obj", "hello", false);
 
-    EXPECT_TRUE(ds_.has_local_object("local/obj"));
+    CMString full = db.get_obj_name("local/obj");
+    EXPECT_TRUE(ds_.has_local_object(full));
 
-    auto [found, result] = ds_.try_read_local("local/obj");
+    auto [found, result] = ds_.try_read_local(full);
     EXPECT_TRUE(found);
     CMString data(result.data_buffer.begin(), result.data_buffer.end());
     EXPECT_EQ(data, "hello");
 }
 
 TEST_F(DataServiceTest, UnflushedObjectNotReadable) {
+    CMString full = "test_db:pending/obj";
     IndexEntry entry;
-    entry.object_name = "pending/obj";
+    entry.object_name = full;
     entry.file_name = "test.dat";
     entry.offset = 0;
     entry.size = 10;
@@ -53,16 +55,17 @@ TEST_F(DataServiceTest, UnflushedObjectNotReadable) {
     entry.block_count = 0;
     entry.compression_type = 0;
 
-    ds_.on_object_written("test_db", "pending/obj", entry);
-    EXPECT_FALSE(ds_.has_local_object("pending/obj"));
+    ds_.on_object_written("test_db", full, entry);
+    EXPECT_FALSE(ds_.has_local_object(full));
 
-    auto [found, result] = ds_.try_read_local("pending/obj");
+    auto [found, result] = ds_.try_read_local(full);
     EXPECT_FALSE(found);
 }
 
 TEST_F(DataServiceTest, FlushMarksObjectsAsReadable) {
+    CMString full = "flush_db:flush/obj";
     IndexEntry entry;
-    entry.object_name = "flush/obj";
+    entry.object_name = full;
     entry.file_name = "test.dat";
     entry.offset = 0;
     entry.size = 10;
@@ -70,11 +73,11 @@ TEST_F(DataServiceTest, FlushMarksObjectsAsReadable) {
     entry.block_count = 0;
     entry.compression_type = 0;
 
-    ds_.on_object_written("flush_db", "flush/obj", entry);
-    EXPECT_FALSE(ds_.has_local_object("flush/obj"));
+    ds_.on_object_written("flush_db", full, entry);
+    EXPECT_FALSE(ds_.has_local_object(full));
 
     ds_.on_flush("flush_db");
-    EXPECT_TRUE(ds_.has_local_object("flush/obj"));
+    EXPECT_TRUE(ds_.has_local_object(full));
 }
 
 TEST_F(DataServiceTest, UpdateRemoteIdxAndLookup) {
@@ -124,16 +127,16 @@ TEST_F(DataServiceTest, MultipleObjectsInSameDatabase) {
     db.write_object("multi/b", "data_b", false);
     db.write_object("multi/c", "data_c", false);
 
-    EXPECT_TRUE(ds_.has_local_object("multi/a"));
-    EXPECT_TRUE(ds_.has_local_object("multi/b"));
-    EXPECT_TRUE(ds_.has_local_object("multi/c"));
+    EXPECT_TRUE(ds_.has_local_object(db.get_obj_name("multi/a")));
+    EXPECT_TRUE(ds_.has_local_object(db.get_obj_name("multi/b")));
+    EXPECT_TRUE(ds_.has_local_object(db.get_obj_name("multi/c")));
 
-    auto [fa, ra] = ds_.try_read_local("multi/a");
+    auto [fa, ra] = ds_.try_read_local(db.get_obj_name("multi/a"));
     EXPECT_TRUE(fa);
     CMString da(ra.data_buffer.begin(), ra.data_buffer.end());
     EXPECT_EQ(da, "data_a");
 
-    auto [fb, rb] = ds_.try_read_local("multi/b");
+    auto [fb, rb] = ds_.try_read_local(db.get_obj_name("multi/b"));
     EXPECT_TRUE(fb);
     CMString db2(rb.data_buffer.begin(), rb.data_buffer.end());
     EXPECT_EQ(db2, "data_b");
@@ -145,7 +148,8 @@ TEST_F(DataServiceTest, TypedObjectReadableViaDataService) {
 
     db.write_object_typed("typed/ds_obj", "typed_payload", "MyType");
 
-    auto [found, result] = ds_.try_read_local("typed/ds_obj");
+    CMString full = db.get_obj_name("typed/ds_obj");
+    auto [found, result] = ds_.try_read_local(full);
     EXPECT_TRUE(found);
     EXPECT_EQ(result.py_name, "MyType");
     CMString data(result.data_buffer.begin(), result.data_buffer.end());
@@ -168,8 +172,9 @@ TEST_F(DataServiceTest, RegisterDatabaseAndLocalRead) {
 
     ds_.register_database("manual_db", base_path, "");
 
+    CMString full = "manual_db:manual/obj";
     IndexEntry entry;
-    entry.object_name = "manual/obj";
+    entry.object_name = full;
     entry.file_name = "test.dat";
     entry.offset = 0;
     entry.size = 5;
@@ -177,10 +182,10 @@ TEST_F(DataServiceTest, RegisterDatabaseAndLocalRead) {
     entry.block_count = 0;
     entry.compression_type = 0;
 
-    ds_.on_object_written("manual_db", "manual/obj", entry);
+    ds_.on_object_written("manual_db", full, entry);
     ds_.on_flush("manual_db");
 
-    EXPECT_TRUE(ds_.has_local_object("manual/obj"));
+    EXPECT_TRUE(ds_.has_local_object(full));
 }
 
 }
