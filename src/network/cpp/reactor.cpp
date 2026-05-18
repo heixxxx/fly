@@ -4,7 +4,7 @@
 
 namespace fly {
 
-Reactor::Reactor(std::unique_ptr<TransportLayer> transport)
+Reactor::Reactor(CMUniquePtr<TransportLayer> transport)
     : transport_(std::move(transport)) {
 }
 
@@ -45,7 +45,7 @@ void Reactor::stop() {
     running_ = false;
 }
 
-void Reactor::set_io_pool(std::shared_ptr<IOThreadPool> pool) {
+void Reactor::set_io_pool(CMSharedPtr<IOThreadPool> pool) {
     io_pool_ = pool;
 }
 

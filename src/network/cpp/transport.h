@@ -58,6 +58,6 @@ public:
 };
 
 // 工厂函数 - 根据配置创建实现
-std::unique_ptr<TransportLayer> create_transport(const CMString& type);
+CMUniquePtr<TransportLayer> create_transport(const CMString& type);
 
 }  // namespace fly

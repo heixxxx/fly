@@ -278,7 +278,7 @@ TEST_F(DataTransferTest, DataClientToReactorSingleRequest) {
     int server_port = server_transport->get_bound_port();
     TEST_LOG("Server listening on port %d", server_port);
 
-    auto reactor = std::make_unique<Reactor>(std::move(server_transport));
+    auto reactor = CMMakeUnique<Reactor>(std::move(server_transport));
 
     // Register DataRequestMessage handler — mimics WorkerAgent::on_data_request
     reactor->register_handler<DataRequestMessage>(
@@ -340,7 +340,7 @@ TEST_F(DataTransferTest, DataClientConcurrentRequests) {
     int server_port = server_transport->get_bound_port();
     TEST_LOG("Server listening on port %d for concurrent test", server_port);
 
-    auto reactor = std::make_unique<Reactor>(std::move(server_transport));
+    auto reactor = CMMakeUnique<Reactor>(std::move(server_transport));
 
     reactor->register_handler<DataRequestMessage>(
         [&](uint64_t conn_id, const DataRequestMessage& msg) {

@@ -79,8 +79,8 @@ TEST(ReactorTest, SendMessage) {
     
     server.listen("127.0.0.1", 19010);
     
-    Reactor server_reactor(std::make_unique<TCPTransport>());
-    Reactor client_reactor(std::make_unique<TCPTransport>());
+    Reactor server_reactor(CMMakeUnique<TCPTransport>());
+    Reactor client_reactor(CMMakeUnique<TCPTransport>());
     
     uint64_t client_conn = client.connect("127.0.0.1", 19010);
     
@@ -123,7 +123,7 @@ TEST(ReactorTest, SetIOThreadPool) {
     auto transport = create_transport("tcp");
     Reactor reactor(std::move(transport));
     
-    auto pool = std::make_shared<IOThreadPool>(2);
+    auto pool = CMMakeShared<IOThreadPool>(2);
     reactor.set_io_pool(pool);
     
     reactor.run_once(10);

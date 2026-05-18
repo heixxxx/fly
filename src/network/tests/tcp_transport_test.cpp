@@ -111,11 +111,11 @@ TEST(TCPTransportTest, MultipleConnections) {
     
     server.listen("127.0.0.1", 19005);
     
-    std::vector<std::unique_ptr<TCPTransport>> clients;
+    std::vector<CMUniquePtr<TCPTransport>> clients;
     std::vector<uint64_t> client_conns;
     
     for (int i = 0; i < 5; i++) {
-        clients.push_back(std::make_unique<TCPTransport>());
+        clients.push_back(CMMakeUnique<TCPTransport>());
         client_conns.push_back(clients[i]->connect("127.0.0.1", 19005));
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }

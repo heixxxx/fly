@@ -18,7 +18,7 @@ using GenericHandler = std::function<void(uint64_t conn_id, CMString& raw_msg)>;
 
 class Reactor {
 public:
-    explicit Reactor(std::unique_ptr<TransportLayer> transport);
+    explicit Reactor(CMUniquePtr<TransportLayer> transport);
     ~Reactor();
     
     template<typename T>
@@ -41,11 +41,11 @@ public:
         return transport_->connect(host, port);
     }
     
-    void set_io_pool(std::shared_ptr<IOThreadPool> pool);
+    void set_io_pool(CMSharedPtr<IOThreadPool> pool);
 
 private:
-    std::unique_ptr<TransportLayer> transport_;
-    std::shared_ptr<IOThreadPool> io_pool_;
+    CMUniquePtr<TransportLayer> transport_;
+    CMSharedPtr<IOThreadPool> io_pool_;
     
     CMUnorderedMap<uint64_t, CMString> recv_buffers_;
     

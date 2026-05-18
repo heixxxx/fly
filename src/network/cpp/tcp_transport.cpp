@@ -328,9 +328,9 @@ CMString TCPTransport::drain_socket(int fd, size_t max_size) {
     return buffer;
 }
 
-std::unique_ptr<TransportLayer> create_transport(const CMString& type) {
+CMUniquePtr<TransportLayer> create_transport(const CMString& type) {
     if (type == "tcp") {
-        return std::make_unique<TCPTransport>();
+        return CMMakeUnique<TCPTransport>();
     }
     throw std::runtime_error("Unknown transport type: " + type);
 }

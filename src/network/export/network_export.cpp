@@ -82,7 +82,7 @@ FLY_EXPORT_CLASS(fly::IOThreadPool, "EXNetIOThreadPool")
     FLY_EXPORT_METHOD("is_idle", &fly::IOThreadPool::is_idle)
     FLY_EXPORT_METHOD("process_completions", &fly::IOThreadPool::process_completions);
 
-FLY_EXPORT_FUNCTION("ex_net_create_transport", [](const fly::CMString& type) -> std::unique_ptr<fly::TransportLayer> {
+FLY_EXPORT_FUNCTION("ex_net_create_transport", [](const fly::CMString& type) -> CMUniquePtr<fly::TransportLayer> {
     return fly::create_transport(type);
 });
 

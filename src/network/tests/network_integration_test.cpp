@@ -331,7 +331,7 @@ TEST_F(NetworkIntegrationTest, ReactorBasedMessageHandling) {
     std::atomic<uint64_t> received_worker_id{0};
     std::atomic<bool> connection_established{false};
     
-    auto server_transport = std::make_unique<TCPTransport>();
+    auto server_transport = CMMakeUnique<TCPTransport>();
     server_transport->listen("127.0.0.1", server_port_ + 6);
     
     Reactor server_reactor(std::move(server_transport));
@@ -389,7 +389,7 @@ TEST_F(NetworkIntegrationTest, InvalidMessageHandling) {
     std::atomic<bool> connection_established{false};
     std::atomic<int> messages_processed{0};
     
-    auto server_transport = std::make_unique<TCPTransport>();
+    auto server_transport = CMMakeUnique<TCPTransport>();
     server_transport->listen("127.0.0.1", server_port_ + 8);
     
     Reactor server_reactor(std::move(server_transport));
