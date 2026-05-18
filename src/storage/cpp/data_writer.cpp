@@ -1,6 +1,6 @@
 #include <storage/cpp/data_writer.h>
 #include <storage/cpp/compression_utils.h>
-#include <serialization/cpp/compressing_streambuf.h>
+#include <storage/cpp/compressing_streambuf.h>
 #include <filesystem>
 #include <stdexcept>
 #include <sstream>
@@ -17,11 +17,13 @@ DataWriter::DataWriter(
     CompressionType compression_type,
     int64_t compression_threshold,
     int compression_level,
-    int64_t stream_chunk_size
+    int64_t stream_chunk_size,
+    const CMString& host
 )
     : base_path_(base_path)
     , data_path_(data_path)
     , worker_id_(worker_id)
+    , host_(host)
     , aggregation_threshold_(aggregation_threshold)
     , large_file_threshold_(large_file_threshold)
     , block_size_(block_size)
@@ -33,10 +35,11 @@ DataWriter::DataWriter(
         compressor_ = CompressorFactory::create(compression_type);
     }
 
+    fs::create_directories(base_path_);
     CMString write_dir = data_path_.empty() ? base_path_ : data_path_;
     fs::create_directories(write_dir);
 
-    CMString idx_path = write_dir + "/worker_" + std::to_string(worker_id_) + ".idx";
+    CMString idx_path = base_path_ + "/worker_" + std::to_string(worker_id_) + ".idx";
     index_ = CMMakeUnique<LocalIndex>(idx_path);
 
     if (fs::exists(idx_path)) {
@@ -135,7 +138,7 @@ CMString DataWriter::write_typed_object(const CMString& object_name, uint64_t or
     IndexEntry entry{object_name, current_file_, offset,
                      static_cast<int64_t>(header_bytes.size() + compressed_out.size()),
                      false, precomputed_chunks,
-                     static_cast<int8_t>(compression_type_)};
+                     static_cast<int8_t>(compression_type_), host_};
     index_->add_entry(entry);
 
     total_bytes_ += data_size;
@@ -223,7 +226,7 @@ void DataWriter::write_small_object(const CMString& object_name, const CMString&
     file_stream_.write(data_to_write.data(), static_cast<std::streamsize>(data_to_write.size()));
     current_file_size_ += static_cast<int64_t>(data_to_write.size());
 
-    IndexEntry entry{object_name, current_file_, offset, static_cast<int64_t>(data_to_write.size()), false, 0, comp_type};
+    IndexEntry entry{object_name, current_file_, offset, static_cast<int64_t>(data_to_write.size()), false, 0, comp_type, host_};
     index_->add_entry(entry);
 }
 
@@ -262,7 +265,7 @@ void DataWriter::write_large_object(const CMString& object_name, const CMString&
         file_stream_.write(data_to_write.data(), static_cast<std::streamsize>(data_to_write.size()));
         current_file_size_ += static_cast<int64_t>(data_to_write.size());
 
-        IndexEntry block_entry{object_name, current_file_, file_offset, static_cast<int64_t>(data_to_write.size()), true, block_count, block_comp_type};
+        IndexEntry block_entry{object_name, current_file_, file_offset, static_cast<int64_t>(data_to_write.size()), true, block_count, block_comp_type, host_};
         index_->add_entry(block_entry);
 
         offset += block_data_size;

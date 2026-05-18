@@ -34,6 +34,7 @@ TEST_F(DataServiceTest, OnObjectWrittenAndFlushEnablesLocalRead) {
     Database db(base_path);
 
     db.write_object("local/obj", "hello", false);
+    fly::DataService::instance().drain_write_back();
 
     CMString full = db.get_obj_name("local/obj");
     EXPECT_TRUE(ds_.has_local_object(full));
@@ -126,6 +127,7 @@ TEST_F(DataServiceTest, MultipleObjectsInSameDatabase) {
     db.write_object("multi/a", "data_a", false);
     db.write_object("multi/b", "data_b", false);
     db.write_object("multi/c", "data_c", false);
+    fly::DataService::instance().drain_write_back();
 
     EXPECT_TRUE(ds_.has_local_object(db.get_obj_name("multi/a")));
     EXPECT_TRUE(ds_.has_local_object(db.get_obj_name("multi/b")));
@@ -147,6 +149,7 @@ TEST_F(DataServiceTest, TypedObjectReadableViaDataService) {
     Database db(base_path);
 
     db.write_object_typed("typed/ds_obj", "typed_payload", "MyType");
+    fly::DataService::instance().drain_write_back();
 
     CMString full = db.get_obj_name("typed/ds_obj");
     auto [found, result] = ds_.try_read_local(full);

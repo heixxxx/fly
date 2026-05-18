@@ -1,5 +1,3 @@
-# nanobind BUILD file (overrides upstream BUILD.bazel)
-
 cc_library(
     name = "nanobind",
     hdrs = glob([
@@ -7,10 +5,7 @@ cc_library(
         "include/nanobind/**/*.inc",
     ]),
     includes = ["include"],
-    copts = [
-        "-std=c++20",
-        "-I/usr/include/python3.10",
-    ],
+    copts = ["-std=c++20"],
     visibility = ["//visibility:public"],
 )
 
@@ -29,10 +24,8 @@ cc_library(
     deps = ["@robin_map//:robin_map"],
     copts = [
         "-std=c++20",
-        "-I/usr/include/python3.10",
         "-DNB_COMPACT_ASSERTIONS",
     ],
-    linkopts = ["-lpython3.10"],
     linkstatic = True,
     alwayslink = True,
     visibility = ["//visibility:public"],

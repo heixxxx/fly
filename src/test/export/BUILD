@@ -5,18 +5,11 @@ cc_binary(
     srcs = ["test_export.cpp"],
     deps = [
         "@nanobind//:nanobind_src",
-        "//src/test/cpp:fly_test_object",
-        "//src/storage/cpp:fly_storage_cpp_headers",
         "//src/export/cpp:fly_export_macros",
-        "//src/serialization/cpp:fly_serialization_macros",
+        "//src/serialization/cpp:fly_serialization",
+        "//src/storage/cpp:fly_storage",
+        "//src/test/cpp:fly_test_object",
     ],
-    copts = [
-        "-std=c++20",
-        "-I/usr/include/python3.12",
-    ],
-    linkopts = [
-        "",
-        "-lpython3.12",
-    ],
+    copts = ["-std=c++20"],
     linkshared = True,
 )

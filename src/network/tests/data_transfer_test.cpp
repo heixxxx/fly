@@ -229,6 +229,8 @@ TEST_F(DataTransferTest, ConcurrentTryReadLocal) {
     }
     TEST_LOG("Wrote %d objects for concurrent read test", object_count);
 
+    fly::DataService::instance().drain_write_back();
+
     std::atomic<int> success_count{0};
     std::atomic<int> fail_count{0};
     std::vector<std::thread> threads;

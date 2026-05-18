@@ -9,6 +9,6 @@ cc_library(
     copts = ["-std=c++20"],
     deps = [
         "@nanobind//:nanobind",
-        "//src/serialization/cpp:fly_serialization_macros",
+        "//src/serialization/cpp:fly_serialization",
     ],
 )

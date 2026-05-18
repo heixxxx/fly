@@ -12,8 +12,9 @@ struct IndexEntry {
     bool is_large = false;
     int32_t block_count = 0;
     int8_t compression_type = 0;
+    CMString host;
 
-    FLY_SERIALIZE_BEGIN(2)
+    FLY_SERIALIZE_BEGIN(3)
         FLY_FIELD(object_name);
         FLY_FIELD(file_name);
         FLY_FIELD(offset);
@@ -22,6 +23,9 @@ struct IndexEntry {
         FLY_FIELD(block_count);
         if (version >= 2) {
             FLY_FIELD(compression_type);
+        }
+        if (version >= 3) {
+            FLY_FIELD(host);
         }
     FLY_SERIALIZE_END
 };

@@ -93,7 +93,10 @@ FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
     })
     FLY_EXPORT_DEF("has_remote_location", [](fly::DataService& ds, const CMString& name) -> bool {
         return ds.has_remote_location(name);
-    });
+    })
+    FLY_EXPORT_METHOD("drain_write_back", &fly::DataService::drain_write_back)
+    FLY_EXPORT_METHOD("stop_write_back", &fly::DataService::stop_write_back)
+    FLY_EXPORT_METHOD("stop_transfer_server", &fly::DataService::stop_transfer_server);
 
 FLY_EXPORT_FUNCTION_REF("ex_stg_get_data_service", []() -> fly::DataService& { return fly::DataService::instance(); });
 

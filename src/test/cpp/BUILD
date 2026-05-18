@@ -7,7 +7,7 @@ cc_library(
     strip_include_prefix = "/src",
     deps = [
         "//src/common/cpp:fly_common_types",
-        "//src/serialization/cpp:fly_serialization_macros",
+        "//src/serialization/cpp:fly_serialization",
     ],
     copts = ["-std=c++20"],
 )

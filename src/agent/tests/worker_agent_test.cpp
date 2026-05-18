@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <agent/cpp/worker_agent.h>
-#include <agent/cpp/worker_context.h>
+#include <common/cpp/worker_context.h>
 #include <thread>
 #include <chrono>
 

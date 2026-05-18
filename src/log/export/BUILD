@@ -5,17 +5,10 @@ cc_binary(
     srcs = ["log_export.cpp"],
     deps = [
         "@nanobind//:nanobind_src",
-        "//src/log/cpp:fly_log",
         "//src/export/cpp:fly_export_macros",
+        "//src/log/cpp:fly_log",
     ],
-    copts = [
-        "-std=c++20",
-        "-I/usr/include/python3.12",
-    ],
-    linkopts = [
-        "",
-        "-lpython3.12",
-        "-lpthread",
-    ],
+    copts = ["-std=c++20"],
+    linkopts = ["-lpthread"],
     linkshared = True,
 )

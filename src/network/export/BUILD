@@ -5,18 +5,10 @@ cc_binary(
     srcs = ["network_export.cpp"],
     deps = [
         "@nanobind//:nanobind_src",
-        "//src/network/cpp:fly_network_cpp",
         "//src/export/cpp:fly_export_macros",
-        "//src/serialization/cpp:fly_serialization_macros",
+        "//src/network/cpp:fly_network",
     ],
-    copts = [
-        "-std=c++20",
-        "-I/usr/include/python3.12",
-    ],
-    linkopts = [
-        "",
-        "-lpython3.12",
-        "-lpthread",
-    ],
+    copts = ["-std=c++20"],
+    linkopts = ["-lpthread"],
     linkshared = True,
 )

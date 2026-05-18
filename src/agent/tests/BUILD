@@ -1,11 +1,13 @@
+# Fly agent tests
+
 package(default_visibility = ["//visibility:public"])
 
 cc_test(
     name = "task_executor_test",
     srcs = ["task_executor_test.cpp"],
     deps = [
-        "//src/agent/cpp:fly_agent_task_executor",
         "@com_google_googletest//:gtest_main",
+        "//src/agent/cpp:fly_agent",
     ],
     copts = ["-std=c++20"],
 )
@@ -14,8 +16,8 @@ cc_test(
     name = "master_agent_test",
     srcs = ["master_agent_test.cpp"],
     deps = [
-        "//src/agent/cpp:fly_agent_master",
         "@com_google_googletest//:gtest_main",
+        "//src/agent/cpp:fly_agent",
     ],
     copts = ["-std=c++20"],
 )
@@ -24,8 +26,8 @@ cc_test(
     name = "worker_agent_test",
     srcs = ["worker_agent_test.cpp"],
     deps = [
-        "//src/agent/cpp:fly_agent_worker",
         "@com_google_googletest//:gtest_main",
+        "//src/agent/cpp:fly_agent",
     ],
     copts = ["-std=c++20"],
 )
@@ -34,8 +36,8 @@ cc_test(
     name = "agent_integration_test",
     srcs = ["agent_integration_test.cpp"],
     deps = [
-        "//src/agent/cpp:fly_agent_cpp",
         "@com_google_googletest//:gtest_main",
+        "//src/agent/cpp:fly_agent",
     ],
     copts = ["-std=c++20"],
 )
@@ -44,9 +46,8 @@ cc_test(
     name = "agent_network_test",
     srcs = ["agent_network_test.cpp"],
     deps = [
-        "//src/agent/cpp:fly_agent_cpp",
-        "//src/log/cpp:fly_log",
         "@com_google_googletest//:gtest_main",
+        "//src/agent/cpp:fly_agent",
     ],
     copts = ["-std=c++20"],
 )
@@ -55,11 +56,8 @@ cc_test(
     name = "write_register_network_test",
     srcs = ["write_register_network_test.cpp"],
     deps = [
-        "//src/agent/cpp:fly_agent_cpp",
-        "//src/storage/cpp:fly_storage_database",
-        "//src/storage/cpp:fly_storage_data_service",
-        "//src/log/cpp:fly_log",
         "@com_google_googletest//:gtest_main",
+        "//src/agent/cpp:fly_agent",
     ],
     copts = ["-std=c++20"],
 )

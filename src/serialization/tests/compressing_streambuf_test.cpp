@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include <serialization/cpp/compressing_streambuf.h>
+#include <storage/cpp/compressing_streambuf.h>
 #include <storage/cpp/compressor.h>
 #include <sstream>
 

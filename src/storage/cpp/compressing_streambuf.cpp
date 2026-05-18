@@ -1,4 +1,4 @@
-#include <serialization/cpp/compressing_streambuf.h>
+#include <storage/cpp/compressing_streambuf.h>
 
 CompressingStreamBuf::CompressingStreamBuf(std::ostream& dest,
                                            CMUniquePtr<Compressor> compressor,

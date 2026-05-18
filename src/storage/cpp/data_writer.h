@@ -21,7 +21,8 @@ public:
         CompressionType compression_type = CompressionType::LZ4,
         int64_t compression_threshold = 128,
         int compression_level = 0,
-        int64_t stream_chunk_size = 4194304
+        int64_t stream_chunk_size = 4194304,
+        const CMString& host = ""
     );
 
     ~DataWriter();
@@ -63,6 +64,7 @@ private:
     CMString base_path_;
     CMString data_path_;
     uint64_t worker_id_;
+    CMString host_;
     int64_t aggregation_threshold_;
     int64_t large_file_threshold_;
     int64_t block_size_;

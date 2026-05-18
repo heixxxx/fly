@@ -2,6 +2,7 @@
 
 #include <storage/cpp/index_entry.h>
 #include <storage/cpp/data_reader.h>
+#include <storage/cpp/write_back_queue.h>
 #include <common/cpp/common_types.h>
 #include <cstdint>
 #include <mutex>
@@ -109,8 +110,17 @@ public:
     void submit_transfer(uint64_t conn_id, const CMString& object_name);
     CMSharedPtr<IOThreadPool> get_transfer_pool() const;
 
+    void start_write_back();
+    void stop_write_back();
+    void enqueue_write_back(fly::WriteRequest&& task);
+    void drain_write_back();
+    bool is_write_back_running() const;
+
+    void on_object_flushed(const CMString& object_name);
+
 private:
     DataService() = default;
+    ~DataService();
 
     struct DbPaths {
         CMString base_path;
@@ -131,6 +141,8 @@ private:
     CMSharedPtr<IOThreadPool> transfer_pool_;
     TransferCallback transfer_callback_;
     std::atomic<bool> transfer_running_{false};
+
+    CMUniquePtr<fly::WriteBackQueue> write_back_queue_;
 
     RemoteReadCallback remote_read_handler_;
     DirectReadCallback direct_read_handler_;

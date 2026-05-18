@@ -7,8 +7,7 @@ cc_test(
     srcs = ["compressor_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/storage/cpp:fly_storage_compression_impl",
-        "//src/common/cpp:fly_common_types",
+        "//src/storage/cpp:fly_storage",
     ],
     copts = ["-std=c++20"],
 )
@@ -18,11 +17,7 @@ cc_test(
     srcs = ["storage_basics_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/storage/cpp:fly_storage_object",
-        "//src/storage/cpp:fly_storage_index_entry",
-        "//src/storage/cpp:fly_storage_db_meta",
-        "//src/common/cpp:fly_common_types",
-        "//src/serialization/cpp:fly_serialization_macros",
+        "//src/storage/cpp:fly_storage",
     ],
     copts = ["-std=c++20"],
 )
@@ -32,9 +27,7 @@ cc_test(
     srcs = ["local_index_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/storage/cpp:fly_storage_local_index",
-        "//src/common/cpp:fly_common_types",
-        "//src/serialization/cpp:fly_serialization_macros",
+        "//src/storage/cpp:fly_storage",
     ],
     copts = ["-std=c++20"],
 )
@@ -44,8 +37,7 @@ cc_test(
     srcs = ["data_writer_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/storage/cpp:fly_storage_data_writer",
-        "//src/common/cpp:fly_common_types",
+        "//src/storage/cpp:fly_storage",
     ],
     copts = ["-std=c++20"],
 )
@@ -55,9 +47,7 @@ cc_test(
     srcs = ["data_reader_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/storage/cpp:fly_storage_data_reader",
-        "//src/storage/cpp:fly_storage_data_writer",
-        "//src/common/cpp:fly_common_types",
+        "//src/storage/cpp:fly_storage",
     ],
     copts = ["-std=c++20"],
 )
@@ -67,9 +57,7 @@ cc_test(
     srcs = ["database_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/storage/cpp:fly_storage_database",
-        "//src/agent/cpp:fly_agent_worker_context",
-        "//src/common/cpp:fly_common_types",
+        "//src/storage/cpp:fly_storage",
     ],
     copts = ["-std=c++20"],
 )
@@ -79,8 +67,7 @@ cc_test(
     srcs = ["storage_manager_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/storage/cpp:fly_storage_storage_manager",
-        "//src/common/cpp:fly_common_types",
+        "//src/storage/cpp:fly_storage",
     ],
     copts = ["-std=c++20"],
 )
@@ -90,9 +77,7 @@ cc_test(
     srcs = ["data_service_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/storage/cpp:fly_storage_data_service",
-        "//src/storage/cpp:fly_storage_database",
-        "//src/common/cpp:fly_common_types",
+        "//src/storage/cpp:fly_storage",
     ],
     copts = ["-std=c++20"],
 )
@@ -102,10 +87,17 @@ cc_test(
     srcs = ["write_registration_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/storage/cpp:fly_storage_data_service",
-        "//src/storage/cpp:fly_storage_database",
-        "//src/agent/cpp:fly_agent_worker_context",
-        "//src/common/cpp:fly_common_types",
+        "//src/storage/cpp:fly_storage",
+    ],
+    copts = ["-std=c++20"],
+)
+
+cc_test(
+    name = "write_back_queue_test",
+    srcs = ["write_back_queue_test.cpp"],
+    deps = [
+        "@com_google_googletest//:gtest_main",
+        "//src/storage/cpp:fly_storage",
     ],
     copts = ["-std=c++20"],
 )

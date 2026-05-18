@@ -9,6 +9,13 @@ DataService& DataService::instance() {
     return instance;
 }
 
+DataService::~DataService() {
+    if (write_back_queue_) {
+        write_back_queue_->drain();
+        write_back_queue_->stop();
+    }
+}
+
 void DataService::register_database(const CMString& db_id,
                                      const CMString& base_path,
                                      const CMString& data_path,
@@ -358,6 +365,54 @@ void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name)
 
 CMSharedPtr<IOThreadPool> DataService::get_transfer_pool() const {
     return transfer_pool_;
+}
+
+void DataService::start_write_back() {
+    if (!write_back_queue_) {
+        write_back_queue_ = CMMakeUnique<fly::WriteBackQueue>(10);
+    }
+    write_back_queue_->start();
+}
+
+void DataService::stop_write_back() {
+    if (write_back_queue_) {
+        write_back_queue_->stop();
+    }
+}
+
+void DataService::enqueue_write_back(fly::WriteRequest&& task) {
+    if (!write_back_queue_ || !write_back_queue_->is_running()) {
+        start_write_back();
+    }
+    write_back_queue_->enqueue(std::move(task));
+}
+
+void DataService::drain_write_back() {
+    if (write_back_queue_) {
+        write_back_queue_->drain();
+    }
+}
+
+bool DataService::is_write_back_running() const {
+    return write_back_queue_ && write_back_queue_->is_running();
+}
+
+void DataService::on_object_flushed(const CMString& object_name) {
+    CMSharedPtr<LocalObjectInfo> info;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = local_idx_.find(object_name);
+        if (it != local_idx_.end() && it->second) {
+            it->second->flushed = true;
+            info = it->second;
+        }
+    }
+    if (info) {
+        {
+            std::lock_guard<std::mutex> cv_lock(info->cv_mutex);
+        }
+        info->cv.notify_all();
+    }
 }
 
 }  // namespace fly

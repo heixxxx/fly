@@ -3,15 +3,16 @@
 #include <storage/cpp/data_writer.h>
 #include <storage/cpp/data_reader.h>
 #include <storage/cpp/data_service.h>
+#include <storage/cpp/write_back_queue.h>
 #include <storage/cpp/db_meta.h>
-#include <agent/cpp/worker_context.h>
+#include <common/cpp/worker_context.h>
 #include <common/cpp/common_types.h>
 #include <memory>
 #include <stdexcept>
 
 class Database {
 public:
-    Database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0);
+    Database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0, const CMString& host = "");
     ~Database();
 
     Database(const Database&) = delete;
@@ -22,22 +23,52 @@ public:
                            const CMString& py_name = "") {
         CMString full = full_name(object_name);
         check_frozen();
+
+        FlyBuffer buffer;
+        FLY_ENCODE_TO_BYTES(obj, buffer);
+
         fly::DataService::instance().on_write_started(db_id_, full);
+
         try {
             fly::WorkerAgentContext::register_write(db_id_, object_name);
         } catch (const std::exception& e) {
             fly::DataService::instance().on_write_failed(db_id_, full, e.what());
             throw;
         }
-        CMString result = writer_->write_object(full, obj, py_name);
-        auto* all = writer_->get_all_entries(full);
-        if (all) {
-            fly::DataService::instance().on_write_completed(db_id_, full, *all);
-        }
-        writer_->flush();
-        fly::DataService::instance().on_flush(db_id_);
-        fly::WorkerAgentContext::record_write(db_id_, object_name);
-        return result;
+
+        auto data_ptr = CMMakeShared<FlyBuffer>(std::move(buffer));
+        auto original_size = static_cast<uint64_t>(data_ptr->size());
+
+        DataWriter* w = writer_.get();
+        auto caller_record_func = fly::WorkerAgentContext::current_record_func();
+        auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
+
+        auto execute = [w, name = full, original_size, py = py_name, data_ptr]() {
+            w->write_typed_object(name, original_size, py,
+                reinterpret_cast<const char*>(data_ptr->data()),
+                static_cast<int64_t>(data_ptr->size()));
+            w->flush();
+        };
+
+        auto complete = [full, db_id = this->db_id_, object_name,
+                         caller_record_func, caller_record_ctx, w]() {
+            auto& ds = fly::DataService::instance();
+            auto* entries = w->get_all_entries(full);
+            if (entries) {
+                ds.on_write_completed(db_id, full, *entries);
+            }
+            ds.on_object_flushed(full);
+            if (caller_record_func) {
+                caller_record_func(caller_record_ctx, db_id, object_name);
+            }
+        };
+
+        fly::WriteRequest req;
+        req.execute = std::move(execute);
+        req.on_complete = std::move(complete);
+        fly::DataService::instance().enqueue_write_back(std::move(req));
+
+        return "";
     }
 
     template<typename T>
@@ -81,6 +112,7 @@ private:
     CMString data_path_;
     uint64_t writer_id_ = 0;
     CMString db_id_;
+    CMString host_;
     bool is_frozen_ = false;
 
     CMUniquePtr<DataWriter> writer_;

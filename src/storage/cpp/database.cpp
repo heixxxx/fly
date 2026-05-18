@@ -10,11 +10,12 @@
 
 namespace fs = std::filesystem;
 
-Database::Database(const CMString& base_path, const CMString& data_path, uint64_t writer_id)
+Database::Database(const CMString& base_path, const CMString& data_path, uint64_t writer_id, const CMString& host)
     : base_path_(base_path)
     , data_path_(data_path)
     , writer_id_(writer_id)
-    , db_id_(generate_db_id()) {
+    , db_id_(generate_db_id())
+    , host_(host) {
 
     fly::DataService::instance().register_database(db_id_, base_path_, data_path_, writer_id_);
 
@@ -37,12 +38,18 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
         comp_type,
         comp_threshold,
         static_cast<int>(config.get_int("compression_level")),
-        stream_chunk_size
+        stream_chunk_size,
+        host_
     );
     reader_ = CMMakeUnique<DataReader>(base_path_, data_path_, writer_id_);
 }
 
-Database::~Database() = default;
+Database::~Database() {
+    try {
+        fly::DataService::instance().drain_write_back();
+    } catch (...) {
+    }
+}
 
 CMString Database::write_object(const CMString& object_name, const CMString& data, bool backup) {
     CMString full = full_name(object_name);
@@ -57,18 +64,37 @@ CMString Database::write_object(const CMString& object_name, const CMString& dat
         throw;
     }
 
-    CMString result = writer_->write_object(full, data, backup);
+    auto data_ptr = CMMakeShared<CMString>(std::move(data));
 
-    auto* all = writer_->get_all_entries(full);
-    if (all) {
-        fly::DataService::instance().on_write_completed(db_id_, full, *all);
-    }
+    DataWriter* w = writer_.get();
+    auto caller_record_func = fly::WorkerAgentContext::current_record_func();
+    auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
 
-    writer_->flush();
-    fly::DataService::instance().on_flush(db_id_);
+    auto execute = [w, name = full, data_ptr, backup]() {
+        (void)backup;
+        w->write_object(name, *data_ptr, false);
+        w->flush();
+    };
 
-    fly::WorkerAgentContext::record_write(db_id_, object_name);
-    return result;
+    auto complete = [full, db_id = this->db_id_, object_name,
+                     caller_record_func, caller_record_ctx, w]() {
+        auto& ds = fly::DataService::instance();
+        auto* entries = w->get_all_entries(full);
+        if (entries) {
+            ds.on_write_completed(db_id, full, *entries);
+        }
+        ds.on_object_flushed(full);
+        if (caller_record_func) {
+            caller_record_func(caller_record_ctx, db_id, object_name);
+        }
+    };
+
+    fly::WriteRequest req;
+    req.execute = std::move(execute);
+    req.on_complete = std::move(complete);
+    fly::DataService::instance().enqueue_write_back(std::move(req));
+
+    return "";
 }
 
 CMString Database::read_object(const CMString& object_name) {
@@ -90,20 +116,38 @@ CMString Database::write_object_typed(const CMString& object_name, const CMStrin
         throw;
     }
 
-    CMString result = writer_->write_typed_object(full, static_cast<uint64_t>(data.size()),
-                                        py_name, data.data(),
-                                        static_cast<int64_t>(data.size()));
+    auto data_ptr = CMMakeShared<CMString>(std::move(data));
+    auto original_size = static_cast<uint64_t>(data_ptr->size());
 
-    auto* all = writer_->get_all_entries(full);
-    if (all) {
-        fly::DataService::instance().on_write_completed(db_id_, full, *all);
-    }
+    DataWriter* w = writer_.get();
+    auto caller_record_func = fly::WorkerAgentContext::current_record_func();
+    auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
 
-    writer_->flush();
-    fly::DataService::instance().on_flush(db_id_);
+    auto execute = [w, name = full, original_size, py = py_name, data_ptr]() {
+        w->write_typed_object(name, original_size, py,
+            data_ptr->data(), static_cast<int64_t>(data_ptr->size()));
+        w->flush();
+    };
 
-    fly::WorkerAgentContext::record_write(db_id_, object_name);
-    return result;
+    auto complete = [full, db_id = this->db_id_, object_name,
+                     caller_record_func, caller_record_ctx, w]() {
+        auto& ds = fly::DataService::instance();
+        auto* entries = w->get_all_entries(full);
+        if (entries) {
+            ds.on_write_completed(db_id, full, *entries);
+        }
+        ds.on_object_flushed(full);
+        if (caller_record_func) {
+            caller_record_func(caller_record_ctx, db_id, object_name);
+        }
+    };
+
+    fly::WriteRequest req;
+    req.execute = std::move(execute);
+    req.on_complete = std::move(complete);
+    fly::DataService::instance().enqueue_write_back(std::move(req));
+
+    return "";
 }
 
 ReadResult Database::read_object_typed(const CMString& object_name) {
@@ -120,9 +164,11 @@ void Database::freeze() {
     if (is_frozen_) {
         return;
     }
+    fly::DataService::instance().drain_write_back();
     is_frozen_ = true;
     writer_->close();
     create_frozen_marker();
+    fly::DataService::instance().on_flush(db_id_);
 }
 
 bool Database::is_frozen() const {

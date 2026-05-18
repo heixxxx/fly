@@ -5,7 +5,7 @@
 #include <network/cpp/message_types.h>
 #include <network/cpp/data_client.h>
 #include <agent/cpp/task_executor.h>
-#include <agent/cpp/worker_context.h>
+#include <common/cpp/worker_context.h>
 #include <storage/cpp/database.h>
 #include <common/cpp/common_types.h>
 #include <cstdint>
@@ -89,6 +89,7 @@ private:
     CMUniquePtr<Reactor> reactor_;
     std::thread reactor_thread_;
     uint64_t master_conn_;
+    CMString data_server_host_;
     int32_t data_server_port_ = 0;
     
     std::thread heartbeat_thread_;

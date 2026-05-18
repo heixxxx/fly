@@ -7,8 +7,7 @@ cc_test(
     srcs = ["serialization_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/serialization/cpp:fly_serialization_macros",
-        "//src/common/cpp:fly_common_types",
+        "//src/serialization/cpp:fly_serialization",
     ],
     copts = ["-std=c++20"],
 )
@@ -18,8 +17,7 @@ cc_test(
     srcs = ["object_header_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/serialization/cpp:fly_object_header",
-        "//src/common/cpp:fly_common_types",
+        "//src/serialization/cpp:fly_serialization",
     ],
     copts = ["-std=c++20"],
 )
@@ -29,9 +27,8 @@ cc_test(
     srcs = ["compressing_streambuf_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/serialization/cpp:fly_compressing_streambuf",
-        "//src/storage/cpp:fly_storage_compression_impl",
-        "//src/common/cpp:fly_common_types",
+        "//src/serialization/cpp:fly_serialization",
+        "//src/storage/cpp:fly_storage",
     ],
     copts = ["-std=c++20"],
 )

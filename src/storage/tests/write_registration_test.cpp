@@ -74,12 +74,13 @@ TEST_F(WriteRegistrationTest, OnWriteFailedRemovesEntry) {
 
 TEST_F(WriteRegistrationTest, WaitCompletionSucceedsForCompleteEntry) {
     CMString base_path = test_dir_ + "/wait_real_db";
+    Database db(base_path);
+    CMString full = db.get_obj_name("writereg/wait_real");
     std::mutex mtx;
     std::condition_variable cv;
     bool entry_created = false;
 
     std::thread writer([&]() {
-        Database db(base_path);
         db.write_object("writereg/wait_real", "wait_data", false);
         TEST_LOG("writer thread: write completed");
         {
@@ -94,7 +95,7 @@ TEST_F(WriteRegistrationTest, WaitCompletionSucceedsForCompleteEntry) {
         cv.wait(lock, [&]{ return entry_created; });
     }
 
-    auto [found, result] = ds_.try_read_local_or_wait("writereg/wait_real", 3000);
+    auto [found, result] = ds_.try_read_local_or_wait(full, 3000);
     EXPECT_TRUE(found);
     CMString data(result.data_buffer.begin(), result.data_buffer.end());
     EXPECT_EQ(data, "wait_data");
@@ -136,9 +137,11 @@ TEST_F(WriteRegistrationTest, WaitReturnsImmediatelyForCompleteEntry) {
     CMString base_path = test_dir_ + "/imm_real_db";
     Database db(base_path);
     db.write_object("writereg/imm_real", "imm_data", false);
+    fly::DataService::instance().drain_write_back();
 
+    CMString full = db.get_obj_name("writereg/imm_real");
     auto start = std::chrono::steady_clock::now();
-    auto [found, result] = ds_.try_read_local_or_wait("writereg/imm_real", 3000);
+    auto [found, result] = ds_.try_read_local_or_wait(full, 3000);
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start);
 
@@ -151,6 +154,8 @@ TEST_F(WriteRegistrationTest, WaitReturnsImmediatelyForCompleteEntry) {
 
 TEST_F(WriteRegistrationTest, ConcurrentWaitersOnSameEntry) {
     CMString base_path = test_dir_ + "/conc_real_db";
+    Database db(base_path);
+    CMString full = db.get_obj_name("writereg/conc_real");
 
     std::atomic<int> success_count{0};
     std::atomic<int> fail_count{0};
@@ -163,7 +168,7 @@ TEST_F(WriteRegistrationTest, ConcurrentWaitersOnSameEntry) {
             std::unique_lock<std::mutex> lock(mtx);
             cv.wait(lock, [&]{ return entry_created; });
         }
-        auto [found, result] = ds_.try_read_local_or_wait("writereg/conc_real", 3000);
+        auto [found, result] = ds_.try_read_local_or_wait(full, 3000);
         if (found) {
             CMString data(result.data_buffer.begin(), result.data_buffer.end());
             if (data == "conc_data") {
@@ -181,7 +186,6 @@ TEST_F(WriteRegistrationTest, ConcurrentWaitersOnSameEntry) {
         threads.emplace_back(waiter);
     }
 
-    Database db(base_path);
     db.write_object("writereg/conc_real", "conc_data", false);
     TEST_LOG("main: write completed, waking all waiters");
     {
@@ -212,10 +216,12 @@ TEST_F(WriteRegistrationTest, FullTwoPhaseWriteViaDatabase) {
     Database db(base_path);
 
     db.write_object("twophase/obj", "hello_twophase", false);
+    fly::DataService::instance().drain_write_back();
 
-    EXPECT_TRUE(ds_.has_local_object("twophase/obj"));
+    CMString full = db.get_obj_name("twophase/obj");
+    EXPECT_TRUE(ds_.has_local_object(full));
 
-    auto [found, result] = ds_.try_read_local("twophase/obj");
+    auto [found, result] = ds_.try_read_local(full);
     EXPECT_TRUE(found);
     CMString data(result.data_buffer.begin(), result.data_buffer.end());
     EXPECT_EQ(data, "hello_twophase");

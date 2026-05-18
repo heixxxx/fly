@@ -5,17 +5,10 @@ cc_binary(
     srcs = ["task_export.cpp"],
     deps = [
         "@nanobind//:nanobind_src",
-        "//src/task/cpp:fly_task_cpp",
         "//src/export/cpp:fly_export_macros",
+        "//src/task/cpp:fly_task",
     ],
-    copts = [
-        "-std=c++20",
-        "-I/usr/include/python3.12",
-    ],
-    linkopts = [
-        "",
-        "-lpython3.12",
-        "-lpthread",
-    ],
+    copts = ["-std=c++20"],
+    linkopts = ["-lpthread"],
     linkshared = True,
 )

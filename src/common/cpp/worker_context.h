@@ -62,6 +62,9 @@ public:
         return last_error_type_;
     }
 
+    static RecordWriteFunc current_record_func() { return func_; }
+    static void* current_record_ctx() { return ctx_; }
+
 private:
     static inline thread_local RecordWriteFunc func_ = nullptr;
     static inline thread_local void* ctx_ = nullptr;

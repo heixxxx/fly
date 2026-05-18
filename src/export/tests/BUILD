@@ -1,5 +1,3 @@
-# Fly export macros tests (gtest)
-
 package(default_visibility = ["//visibility:public"])
 
 cc_test(
@@ -9,10 +7,7 @@ cc_test(
         "@com_google_googletest//:gtest_main",
         "//src/export/cpp:fly_export_macros",
     ],
-    copts = [
-        "-std=c++20",
-        "-I/usr/include/python3.12",
-    ],
+    copts = ["-std=c++20"],
 )
 
 cc_test(
@@ -21,11 +16,7 @@ cc_test(
     deps = [
         "@com_google_googletest//:gtest_main",
         "//src/export/cpp:fly_export_macros",
-        "//src/serialization/cpp:fly_serialization_macros",
-        "//src/common/cpp:fly_common_types",
+        "//src/serialization/cpp:fly_serialization",
     ],
-    copts = [
-        "-std=c++20",
-        "-I/usr/include/python3.12",
-    ],
+    copts = ["-std=c++20"],
 )

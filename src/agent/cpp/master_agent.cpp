@@ -186,13 +186,13 @@ void MasterAgent::stop() {
             heartbeat_check_thread_.join();
         }
 
-        db_instances_.clear();
-
         reactor_->stop();
         if (reactor_thread_.joinable()) {
             reactor_thread_.join();
         }
         reactor_.reset();
+
+        db_instances_.clear();
 
         conn_to_worker_.clear();
         worker_to_conn_.clear();

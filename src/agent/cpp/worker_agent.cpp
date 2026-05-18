@@ -44,6 +44,7 @@ void WorkerAgent::start() {
 
     transport->listen("0.0.0.0", 0);
     data_server_port_ = static_cast<int32_t>(transport->get_bound_port());
+    data_server_host_ = Config::instance().get_str("data_server_host");
 
     if (log) {
         log->info("WorkerAgent", "data server listening on port " + std::to_string(data_server_port_));
@@ -111,7 +112,7 @@ void WorkerAgent::start() {
 
     RegisterMessage reg;
     reg.worker_id = worker_id_;
-    reg.data_server_host = "127.0.0.1";
+    reg.data_server_host = data_server_host_;
     reg.data_server_port = data_server_port_;
     reactor_->send(master_conn_, reg);
 
@@ -143,8 +144,6 @@ void WorkerAgent::stop() {
         heartbeat_thread_.join();
     }
 
-    ds().stop_transfer_server();
-
     if (reactor_) {
         reactor_->stop();
     }
@@ -152,6 +151,10 @@ void WorkerAgent::stop() {
         reactor_thread_.join();
     }
     reactor_.reset();
+
+    databases_.clear();
+
+    ds().stop_transfer_server();
 
     running_ = false;
     registered_ = false;
@@ -497,7 +500,7 @@ bool WorkerAgent::request_db_path(const CMString& db_id) {
         if (pending->completed) {
             pending_db_paths_.erase(db_id);
             if (pending->success && !pending->base_path.empty()) {
-                auto db = CMMakeShared<Database>(pending->base_path, pending->data_path, worker_id_);
+                auto db = CMMakeShared<Database>(pending->base_path, pending->data_path, worker_id_, data_server_host_);
                 databases_[db_id] = db;
                 return true;
             }

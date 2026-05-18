@@ -7,7 +7,7 @@ cc_test(
     srcs = ["config_test.cpp"],
     deps = [
         "@com_google_googletest//:gtest_main",
-        "//src/core/cpp:fly_core_cpp",
+        "//src/core/cpp:fly_core",
     ],
     copts = ["-std=c++20"],
 )

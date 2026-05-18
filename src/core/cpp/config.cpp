@@ -74,4 +74,5 @@ const CMMap<CMString, int64_t> Config::INT_DEFAULTS = {
 const CMMap<CMString, CMString> Config::STR_DEFAULTS = {
     {"transport_type", "tcp"},
     {"compression_type", "lz4"},
+    {"data_server_host", "127.0.0.1"},
 };

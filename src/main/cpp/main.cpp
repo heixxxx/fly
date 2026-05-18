@@ -7,10 +7,7 @@
 
 static void setup_sys_path() {
     std::filesystem::path real_exe = std::filesystem::canonical("/proc/self/exe");
-    // fly is at bazel-bin/src/main/cpp/fly → 4 levels to bazel-bin
     std::filesystem::path bazel_bin = real_exe.parent_path().parent_path().parent_path().parent_path();
-
-    // For Python source, use CWD (user runs from project root)
     std::filesystem::path cwd = std::filesystem::current_path();
 
     std::string ps = "import sys, os\n";
@@ -33,6 +30,28 @@ static std::string escape_py(const std::string& s) {
         else out += c;
     }
     return out;
+}
+
+static void fly_cleanup() {
+    PyRun_SimpleString(
+        "try:\n"
+        "    from fly.runtime import get_agent, reset\n"
+        "    agent = get_agent()\n"
+        "    if agent is not None:\n"
+        "        reset()\n"
+        "except Exception:\n"
+        "    pass\n"
+    );
+    PyRun_SimpleString(
+        "try:\n"
+        "    from _fly_storage import ex_stg_get_data_service\n"
+        "    ds = ex_stg_get_data_service()\n"
+        "    ds.drain_write_back()\n"
+        "    ds.stop_write_back()\n"
+        "    ds.stop_transfer_server()\n"
+        "except Exception:\n"
+        "    pass\n"
+    );
 }
 
 int main(int argc, char* argv[]) {
@@ -65,62 +84,75 @@ int main(int argc, char* argv[]) {
     Py_Initialize();
     setup_sys_path();
 
-    if (worker_mode) {
-        std::string init_cmd =
-            "import fly.main\n"
-            "fly.main.init(worker_mode=True, worker_id=" + std::to_string(worker_id) +
-            ", master_host='" + escape_py(master_host) +
-            "', master_port=" + std::to_string(master_port) +
-            ", log_dir='" + escape_py(log_dir) + "')\n";
-        int rc = PyRun_SimpleString(init_cmd.c_str());
-        if (rc != 0) {
-            fprintf(stderr, "Worker init failed\n");
-            Py_Finalize();
-            return 1;
-        }
+    int exit_code = 0;
 
-        // Block until worker agent stops (reactor finishes)
-        std::string wait_cmd =
-            "import time\n"
-            "from fly.runtime import get_agent\n"
-            "_w = get_agent()\n"
-            "while _w._agent.is_running():\n"
-            "    _w._agent.poll_task()\n"
-            "    time.sleep(0.05)\n";
-        PyRun_SimpleString(wait_cmd.c_str());
-    } else {
-        std::string init_cmd =
-            "import fly.main\n"
-            "fly.main.init(log_dir='" + escape_py(log_dir) + "')\n";
-        int rc = PyRun_SimpleString(init_cmd.c_str());
-        if (rc != 0) {
-            fprintf(stderr, "Master init failed\n");
-            Py_Finalize();
-            return 1;
-        }
-
-        if (!script_path.empty()) {
-            std::string set_argv =
-                "import sys\n"
-                "sys.argv = ['" + escape_py(script_path) + "']\n"
-                "sys._fly_script_path = '" + escape_py(script_path) + "'\n";
-            PyRun_SimpleString(set_argv.c_str());
-
-            FILE* fp = std::fopen(script_path.c_str(), "r");
-            if (!fp) {
-                fprintf(stderr, "Cannot open script: %s\n", script_path.c_str());
+    try {
+        if (worker_mode) {
+            std::string init_cmd =
+                "import fly.main\n"
+                "fly.main.init(worker_mode=True, worker_id=" + std::to_string(worker_id) +
+                ", master_host='" + escape_py(master_host) +
+                "', master_port=" + std::to_string(master_port) +
+                ", log_dir='" + escape_py(log_dir) + "')\n";
+            int rc = PyRun_SimpleString(init_cmd.c_str());
+            if (rc != 0) {
+                fprintf(stderr, "Worker init failed\n");
+                fly_cleanup();
                 Py_Finalize();
                 return 1;
             }
-            PyRun_SimpleFile(fp, script_path.c_str());
-            std::fclose(fp);
-        }
 
-        if (interactive || script_path.empty()) {
-            PyRun_InteractiveLoop(stdin, "<stdin>");
+            std::string wait_cmd =
+                "import time\n"
+                "from fly.runtime import get_agent\n"
+                "_w = get_agent()\n"
+                "while _w._agent.is_running():\n"
+                "    _w._agent.poll_task()\n"
+                "    time.sleep(0.05)\n";
+            PyRun_SimpleString(wait_cmd.c_str());
+        } else {
+            std::string init_cmd =
+                "import fly.main\n"
+                "fly.main.init(log_dir='" + escape_py(log_dir) + "')\n";
+            int rc = PyRun_SimpleString(init_cmd.c_str());
+            if (rc != 0) {
+                fprintf(stderr, "Master init failed\n");
+                fly_cleanup();
+                Py_Finalize();
+                return 1;
+            }
+
+            if (!script_path.empty()) {
+                std::string set_argv =
+                    "import sys\n"
+                    "sys.argv = ['" + escape_py(script_path) + "']\n"
+                    "sys._fly_script_path = '" + escape_py(script_path) + "'\n";
+                PyRun_SimpleString(set_argv.c_str());
+
+                FILE* fp = std::fopen(script_path.c_str(), "r");
+                if (!fp) {
+                    fprintf(stderr, "Cannot open script: %s\n", script_path.c_str());
+                    fly_cleanup();
+                    Py_Finalize();
+                    return 1;
+                }
+                PyRun_SimpleFile(fp, script_path.c_str());
+                std::fclose(fp);
+            }
+
+            if (interactive || script_path.empty()) {
+                PyRun_InteractiveLoop(stdin, "<stdin>");
+            }
         }
+    } catch (const std::exception& e) {
+        fprintf(stderr, "Fatal error: %s\n", e.what());
+        exit_code = 1;
+    } catch (...) {
+        fprintf(stderr, "Fatal error: unknown exception\n");
+        exit_code = 1;
     }
 
+    fly_cleanup();
     Py_Finalize();
-    return 0;
+    return exit_code;
 }

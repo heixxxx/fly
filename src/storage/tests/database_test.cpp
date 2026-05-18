@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/database.h>
-#include <agent/cpp/worker_context.h>
+#include <common/cpp/worker_context.h>
 #include <filesystem>
 #include <fstream>
 
@@ -25,6 +25,7 @@ TEST_F(DatabaseTest, WriteAndReadObject) {
     Database db(base_path);
 
     db.write_object("test/obj", "hello world", false);
+    fly::DataService::instance().drain_write_back();
     CMString result = db.read_object("test/obj");
 
     EXPECT_EQ(result, "hello world");
@@ -57,6 +58,7 @@ TEST_F(DatabaseTest, DoublePathReadPriority) {
     Database db(base_path, data_path);
 
     db.write_object("priority/test", "local_data", false);
+    fly::DataService::instance().drain_write_back();
     CMString result = db.read_object("priority/test");
 
     EXPECT_EQ(result, "local_data");
@@ -119,6 +121,7 @@ TEST_F(DatabaseTest, WriteMultipleObjects) {
     db.write_object("obj1", "data1", false);
     db.write_object("obj2", "data2", false);
     db.write_object("obj3", "data3", false);
+    fly::DataService::instance().drain_write_back();
 
     EXPECT_EQ(db.read_object("obj1"), "data1");
     EXPECT_EQ(db.read_object("obj2"), "data2");
@@ -139,8 +142,8 @@ TEST_F(DatabaseTest, WriteAndReadTypedObject) {
     Database db(base_path);
 
     CMString data = "typed_data_content";
-    CMString result = db.write_object_typed("typed/obj", data, "TestType");
-    EXPECT_GT(result.size(), 0);
+    db.write_object_typed("typed/obj", data, "TestType");
+    fly::DataService::instance().drain_write_back();
 
     ReadResult read_result = db.read_object_typed("typed/obj");
     CMString read_data(read_result.data_buffer.begin(), read_result.data_buffer.end());
@@ -154,8 +157,8 @@ TEST_F(DatabaseTest, TypedObjectPersistenceAcrossFlush) {
 
     CMString data = "persistent_data";
     db.write_object_typed("persist/obj", data, "PersistType");
+    fly::DataService::instance().drain_write_back();
 
-    // Re-read without explicit flush (read_object_typed flushes internally)
     ReadResult result = db.read_object_typed("persist/obj");
     CMString read_data(result.data_buffer.begin(), result.data_buffer.end());
     EXPECT_EQ(read_data, data);
@@ -166,10 +169,9 @@ TEST_F(DatabaseTest, TypedObjectWithPyNameDetection) {
     CMString base_path = test_dir_ + "/typed_pyname";
     Database db(base_path);
 
-    // Write with a specific py_name
     db.write_object_typed("named/obj", "some_data", "MyCustomType");
+    fly::DataService::instance().drain_write_back();
 
-    // Read and verify py_name is preserved
     ReadResult result = db.read_object_typed("named/obj");
     EXPECT_EQ(result.py_name, "MyCustomType");
     CMString read_data(result.data_buffer.begin(), result.data_buffer.end());
@@ -182,6 +184,7 @@ TEST_F(DatabaseTest, MultipleTypedObjects) {
 
     db.write_object_typed("type/a", "data_a", "TypeA");
     db.write_object_typed("type/b", "data_b", "TypeB");
+    fly::DataService::instance().drain_write_back();
 
     ReadResult ra = db.read_object_typed("type/a");
     EXPECT_EQ(ra.py_name, "TypeA");
@@ -250,6 +253,7 @@ TEST_F(DatabaseTest, WriteObjectTracksWrite) {
     CMString base_path = test_dir_ + "/write_track";
     Database db(base_path);
     db.write_object("test/obj", "data", false);
+    fly::DataService::instance().drain_write_back();
 
     fly::WorkerAgentContext::clear();
 
@@ -270,6 +274,7 @@ TEST_F(DatabaseTest, WriteTypedObjectTracksWrite) {
     CMString base_path = test_dir_ + "/typed_track";
     Database db(base_path);
     db.write_object_typed("typed/obj", "typed_data", "TestType");
+    fly::DataService::instance().drain_write_back();
 
     fly::WorkerAgentContext::clear();
 
