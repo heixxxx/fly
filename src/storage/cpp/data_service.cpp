@@ -30,7 +30,7 @@ void DataService::on_object_written(const CMString& db_id,
     std::lock_guard<std::mutex> lock(mutex_);
     auto& info = local_idx_[object_name];
     if (!info) {
-        info = std::make_shared<LocalObjectInfo>();
+        info = CMMakeShared<LocalObjectInfo>();
     }
     info->db_id = db_id;
     info->entries.push_back(entry);
@@ -39,7 +39,7 @@ void DataService::on_object_written(const CMString& db_id,
 }
 
 void DataService::on_flush(const CMString& db_id) {
-    CMVector<std::shared_ptr<LocalObjectInfo>> to_notify;
+    CMVector<CMSharedPtr<LocalObjectInfo>> to_notify;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (auto& [name, info] : local_idx_) {
@@ -56,7 +56,7 @@ void DataService::on_flush(const CMString& db_id) {
 
 void DataService::on_write_started(const CMString& db_id,
                                      const CMString& object_name) {
-    std::shared_ptr<LocalObjectInfo> info = std::make_shared<LocalObjectInfo>();
+    CMSharedPtr<LocalObjectInfo> info = CMMakeShared<LocalObjectInfo>();
     info->db_id = db_id;
     info->completion_state = CompletionState::INCOMPLETE;
 
@@ -67,7 +67,7 @@ void DataService::on_write_started(const CMString& db_id,
 void DataService::on_write_completed(const CMString& db_id,
                                       const CMString& object_name,
                                       const CMVector<IndexEntry>& entries) {
-    std::shared_ptr<LocalObjectInfo> info;
+    CMSharedPtr<LocalObjectInfo> info;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = local_idx_.find(object_name);
@@ -85,7 +85,7 @@ void DataService::on_write_completed(const CMString& db_id,
 void DataService::on_write_failed(const CMString& db_id,
                                     const CMString& object_name,
                                     const CMString& error_message) {
-    std::shared_ptr<LocalObjectInfo> info;
+    CMSharedPtr<LocalObjectInfo> info;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = local_idx_.find(object_name);
@@ -172,7 +172,7 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
 
 std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
         const CMString& object_name, int timeout_ms) {
-    std::shared_ptr<LocalObjectInfo> info;
+    CMSharedPtr<LocalObjectInfo> info;
     CMString db_id;
     DbPaths paths;
 
@@ -312,7 +312,7 @@ ReadResult DataService::read_raw(const CMString& object_name, int max_retries) {
 
 void DataService::start_transfer_server(int thread_count, TransferCallback callback) {
     transfer_callback_ = std::move(callback);
-    transfer_pool_ = std::make_shared<IOThreadPool>(thread_count);
+    transfer_pool_ = CMMakeShared<IOThreadPool>(thread_count);
     transfer_pool_->start();
     transfer_running_ = true;
 }
@@ -332,7 +332,7 @@ bool DataService::is_transfer_server_running() const {
 void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name) {
     if (!transfer_running_ || !transfer_pool_) return;
 
-    auto result = std::make_shared<TransferResult>();
+    auto result = CMMakeShared<TransferResult>();
     result->conn_id = conn_id;
     result->object_name = object_name;
 
@@ -356,7 +356,7 @@ void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name)
     );
 }
 
-std::shared_ptr<IOThreadPool> DataService::get_transfer_pool() const {
+CMSharedPtr<IOThreadPool> DataService::get_transfer_pool() const {
     return transfer_pool_;
 }
 

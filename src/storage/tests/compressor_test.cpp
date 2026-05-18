@@ -52,9 +52,9 @@ TEST(CompressorFactoryTest, CreateByName) {
 class Lz4CompressorTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        compressor_ = std::make_unique<Lz4Compressor>();
+        compressor_ = CMMakeUnique<Lz4Compressor>();
     }
-    std::unique_ptr<Lz4Compressor> compressor_;
+    CMUniquePtr<Lz4Compressor> compressor_;
 };
 
 TEST_F(Lz4CompressorTest, CompressAndDecompress) {
@@ -113,9 +113,9 @@ TEST_F(Lz4CompressorTest, FactoryCreatesLz4) {
 class ZlibCompressorTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        compressor_ = std::make_unique<ZlibCompressor>();
+        compressor_ = CMMakeUnique<ZlibCompressor>();
     }
-    std::unique_ptr<ZlibCompressor> compressor_;
+    CMUniquePtr<ZlibCompressor> compressor_;
 };
 
 TEST_F(ZlibCompressorTest, CompressAndDecompress) {
@@ -161,9 +161,9 @@ TEST_F(ZlibCompressorTest, FactoryCreatesZlib) {
 class ZstdCompressorTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        compressor_ = std::make_unique<ZstdCompressor>();
+        compressor_ = CMMakeUnique<ZstdCompressor>();
     }
-    std::unique_ptr<ZstdCompressor> compressor_;
+    CMUniquePtr<ZstdCompressor> compressor_;
 };
 
 TEST_F(ZstdCompressorTest, CompressAndDecompress) {

@@ -29,7 +29,7 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
     int64_t comp_threshold = config.get_int("compression_threshold");
     int64_t stream_chunk_size = config.get_int("compression_stream_chunk_size");
 
-    writer_ = std::make_unique<DataWriter>(
+    writer_ = CMMakeUnique<DataWriter>(
         base_path_, data_path_, writer_id_,
         config.get_int("aggregation_threshold"),
         config.get_int("large_file_threshold"),
@@ -39,7 +39,7 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
         static_cast<int>(config.get_int("compression_level")),
         stream_chunk_size
     );
-    reader_ = std::make_unique<DataReader>(base_path_, data_path_, writer_id_);
+    reader_ = CMMakeUnique<DataReader>(base_path_, data_path_, writer_id_);
 }
 
 Database::~Database() = default;

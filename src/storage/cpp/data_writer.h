@@ -69,7 +69,7 @@ private:
 
     CompressionType compression_type_;
     int64_t compression_threshold_;
-    std::unique_ptr<Compressor> compressor_;
+    CMUniquePtr<Compressor> compressor_;
     int64_t stream_chunk_size_;
 
     CMString current_file_;
@@ -77,7 +77,7 @@ private:
     int64_t current_file_size_ = 0;
     std::ofstream file_stream_;
 
-    std::unique_ptr<LocalIndex> index_;
+    CMUniquePtr<LocalIndex> index_;
     int64_t total_bytes_ = 0;
     bool closed_ = false;
 };

@@ -17,7 +17,7 @@ DataReader::DataReader(
     CMString read_dir = data_path_.empty() ? base_path_ : data_path_;
     CMString idx_path = read_dir + "/worker_" + std::to_string(worker_id_) + ".idx";
 
-    index_ = std::make_unique<LocalIndex>(idx_path);
+    index_ = CMMakeUnique<LocalIndex>(idx_path);
     if (fs::exists(idx_path)) {
         index_->load();
     }

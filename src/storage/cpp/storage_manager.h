@@ -13,12 +13,12 @@ public:
     StorageManager(const StorageManager&) = delete;
     StorageManager& operator=(const StorageManager&) = delete;
 
-    std::shared_ptr<Database> get_or_create_database(
+    CMSharedPtr<Database> get_or_create_database(
         const CMString& base_path,
         const CMString& data_path = ""
     );
 
-    std::shared_ptr<DataWriter> get_writer(uint64_t worker_id);
+    CMSharedPtr<DataWriter> get_writer(uint64_t worker_id);
 
     void close_all();
     void reset();
@@ -26,6 +26,6 @@ public:
 private:
     StorageManager() = default;
 
-    CMMap<CMString, std::shared_ptr<Database>> databases_;
-    CMMap<uint64_t, std::shared_ptr<DataWriter>> writers_;
+    CMMap<CMString, CMSharedPtr<Database>> databases_;
+    CMMap<uint64_t, CMSharedPtr<DataWriter>> writers_;
 };

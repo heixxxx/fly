@@ -100,7 +100,7 @@ FLY_EXPORT_FUNCTION_REF("ex_stg_get_data_service", []() -> fly::DataService& { r
 FLY_EXPORT_CLASS(StorageManager, "EXStgStorageManager")
     FLY_EXPORT_METHOD("close_all", &StorageManager::close_all)
     FLY_EXPORT_METHOD("reset", &StorageManager::reset)
-    FLY_EXPORT_DEF("get_or_create_database", [](StorageManager& sm, const CMString& base_path) -> std::shared_ptr<Database> {
+    FLY_EXPORT_DEF("get_or_create_database", [](StorageManager& sm, const CMString& base_path) -> CMSharedPtr<Database> {
         return sm.get_or_create_database(base_path);
     });
 
@@ -140,8 +140,8 @@ FLY_EXPORT_CLASS(WorkerInfo, "EXStgWorkerInfo")
 
 FLY_EXPORT_FUNCTION_REF("ex_stg_get_storage_manager", []() -> StorageManager& { return StorageManager::instance(); });
 
-FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& base_path, const CMString& data_path, uint64_t writer_id) -> std::shared_ptr<Database> {
-    return std::make_shared<Database>(base_path, data_path, writer_id);
+FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& base_path, const CMString& data_path, uint64_t writer_id) -> CMSharedPtr<Database> {
+    return CMMakeShared<Database>(base_path, data_path, writer_id);
 });
 
 FLY_EXPORT_FUNCTION("ex_stg_cpp_write_index_entry", [](Database& db, const CMString& key) -> CMString {

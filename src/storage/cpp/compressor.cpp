@@ -30,21 +30,21 @@ public:
     CMString name() const override { return "none"; }
 };
 
-std::unique_ptr<Compressor> CompressorFactory::create(CompressionType type) {
+CMUniquePtr<Compressor> CompressorFactory::create(CompressionType type) {
     switch (type) {
         case CompressionType::NONE:
-            return std::make_unique<NoneCompressor>();
+            return CMMakeUnique<NoneCompressor>();
         case CompressionType::LZ4:
-            return std::make_unique<Lz4Compressor>();
+            return CMMakeUnique<Lz4Compressor>();
         case CompressionType::ZLIB:
-            return std::make_unique<ZlibCompressor>();
+            return CMMakeUnique<ZlibCompressor>();
         case CompressionType::ZSTD:
-            return std::make_unique<ZstdCompressor>();
+            return CMMakeUnique<ZstdCompressor>();
     }
     throw std::runtime_error("Unknown compression type");
 }
 
-std::unique_ptr<Compressor> CompressorFactory::create_from_name(const CMString& name) {
+CMUniquePtr<Compressor> CompressorFactory::create_from_name(const CMString& name) {
     return create(CompressorFactory::type_from_name(name));
 }
 

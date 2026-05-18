@@ -107,7 +107,7 @@ public:
     void stop_transfer_server();
     bool is_transfer_server_running() const;
     void submit_transfer(uint64_t conn_id, const CMString& object_name);
-    std::shared_ptr<IOThreadPool> get_transfer_pool() const;
+    CMSharedPtr<IOThreadPool> get_transfer_pool() const;
 
 private:
     DataService() = default;
@@ -120,7 +120,7 @@ private:
 
     mutable std::mutex mutex_;
 
-    CMUnorderedMap<CMString, std::shared_ptr<LocalObjectInfo>> local_idx_;
+    CMUnorderedMap<CMString, CMSharedPtr<LocalObjectInfo>> local_idx_;
 
     CMUnorderedMap<CMString, RemoteObjectInfo> remote_idx_;
 
@@ -128,7 +128,7 @@ private:
 
     CMUnorderedMap<CMString, DbPaths> db_paths_;
 
-    std::shared_ptr<IOThreadPool> transfer_pool_;
+    CMSharedPtr<IOThreadPool> transfer_pool_;
     TransferCallback transfer_callback_;
     std::atomic<bool> transfer_running_{false};
 

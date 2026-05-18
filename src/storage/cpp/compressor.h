@@ -37,8 +37,8 @@ public:
 
 class CompressorFactory {
 public:
-    static std::unique_ptr<Compressor> create(CompressionType type);
-    static std::unique_ptr<Compressor> create_from_name(const CMString& name);
+    static CMUniquePtr<Compressor> create(CompressionType type);
+    static CMUniquePtr<Compressor> create_from_name(const CMString& name);
 
     static CompressionType type_from_name(const CMString& name);
     static CMString name_from_type(CompressionType type);

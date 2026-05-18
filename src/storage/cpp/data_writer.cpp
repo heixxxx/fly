@@ -37,7 +37,7 @@ DataWriter::DataWriter(
     fs::create_directories(write_dir);
 
     CMString idx_path = write_dir + "/worker_" + std::to_string(worker_id_) + ".idx";
-    index_ = std::make_unique<LocalIndex>(idx_path);
+    index_ = CMMakeUnique<LocalIndex>(idx_path);
 
     if (fs::exists(idx_path)) {
         index_->load();

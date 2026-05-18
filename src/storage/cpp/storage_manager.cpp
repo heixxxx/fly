@@ -8,7 +8,7 @@ StorageManager& StorageManager::instance() {
     return manager;
 }
 
-std::shared_ptr<Database> StorageManager::get_or_create_database(
+CMSharedPtr<Database> StorageManager::get_or_create_database(
     const CMString& base_path,
     const CMString& data_path) {
 
@@ -22,18 +22,18 @@ std::shared_ptr<Database> StorageManager::get_or_create_database(
         fs::create_directories(data_path);
     }
 
-    auto db = std::make_shared<Database>(base_path, data_path);
+    auto db = CMMakeShared<Database>(base_path, data_path);
     databases_[base_path] = db;
     return db;
 }
 
-std::shared_ptr<DataWriter> StorageManager::get_writer(uint64_t worker_id) {
+CMSharedPtr<DataWriter> StorageManager::get_writer(uint64_t worker_id) {
     auto it = writers_.find(worker_id);
     if (it != writers_.end()) {
         return it->second;
     }
 
-    auto writer = std::make_shared<DataWriter>(
+    auto writer = CMMakeShared<DataWriter>(
         "/tmp/fly_worker_" + std::to_string(worker_id),
         "",
         worker_id,

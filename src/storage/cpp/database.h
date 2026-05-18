@@ -41,10 +41,10 @@ public:
     }
 
     template<typename T>
-    std::shared_ptr<T> read_object(const CMString& object_name) {
+    CMSharedPtr<T> read_object(const CMString& object_name) {
         CMString full = full_name(object_name);
         auto result = fly::DataService::instance().read_raw(full);
-        auto obj = std::make_shared<T>();
+        auto obj = CMMakeShared<T>();
         FLY_DECODE_FROM_BYTES(result.data_buffer, T, *obj);
         return obj;
     }
@@ -83,6 +83,6 @@ private:
     CMString db_id_;
     bool is_frozen_ = false;
 
-    std::unique_ptr<DataWriter> writer_;
-    std::unique_ptr<DataReader> reader_;
+    CMUniquePtr<DataWriter> writer_;
+    CMUniquePtr<DataReader> reader_;
 };

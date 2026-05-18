@@ -21,6 +21,6 @@ public:
 // using FLY_ENCODE/FLY_DECODE in their own cpp files.
 // bitsery supports serialization of types with virtual bases via serialize() method.
 template<typename T, typename... Args>
-std::shared_ptr<T> make_object(Args&&... args) {
-    return std::make_shared<T>(std::forward<Args>(args)...);
+CMSharedPtr<T> make_object(Args&&... args) {
+    return CMMakeShared<T>(std::forward<Args>(args)...);
 }

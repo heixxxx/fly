@@ -28,7 +28,7 @@ public:
     DataReader& operator=(const DataReader&) = delete;
 
     template<typename T>
-    std::shared_ptr<T> read_object(const CMString& object_name) {
+    CMSharedPtr<T> read_object(const CMString& object_name) {
         IndexEntry* entry = index_->find_entry(object_name);
         if (!entry) {
             throw std::runtime_error("Object not found: " + object_name);
@@ -37,9 +37,9 @@ public:
     }
 
     template<typename T>
-    std::shared_ptr<T> read_object_entry(const IndexEntry& entry) {
+    CMSharedPtr<T> read_object_entry(const IndexEntry& entry) {
         ReadResult result = read_object_data(entry);
-        auto obj = std::make_shared<T>();
+        auto obj = CMMakeShared<T>();
         FLY_DECODE_FROM_BYTES(result.data_buffer, T, *obj);
         return obj;
     }
@@ -62,5 +62,5 @@ private:
     CMString data_path_;
     uint64_t worker_id_;
 
-    std::unique_ptr<LocalIndex> index_;
+    CMUniquePtr<LocalIndex> index_;
 };
