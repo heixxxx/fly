@@ -9,7 +9,7 @@ cc_library(
     includes = ["include"],
     copts = [
         "-std=c++20",
-        "-I/usr/include/python3.10",
+        "-I/usr/local/include/python3.12",
     ],
     visibility = ["//visibility:public"],
 )
@@ -29,10 +29,10 @@ cc_library(
     deps = ["@robin_map//:robin_map"],
     copts = [
         "-std=c++20",
-        "-I/usr/include/python3.10",
+        "-I/usr/local/include/python3.12",
         "-DNB_COMPACT_ASSERTIONS",
     ],
-    linkopts = ["-lpython3.10"],
+    linkopts = ["-lpython3.12"],
     linkstatic = True,
     alwayslink = True,
     visibility = ["//visibility:public"],

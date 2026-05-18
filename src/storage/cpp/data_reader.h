@@ -50,6 +50,8 @@ public:
 
     bool exists(const CMString& object_name);
 
+    ReadResult read_from_entries(const CMVector<IndexEntry>& entries);
+
 private:
     CMString find_file_path(const CMString& file_name);
     CMString read_from_file(const CMString& file_path, int64_t offset, int64_t size);

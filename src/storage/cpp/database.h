@@ -2,6 +2,7 @@
 
 #include <storage/cpp/data_writer.h>
 #include <storage/cpp/data_reader.h>
+#include <storage/cpp/data_service.h>
 #include <storage/cpp/db_meta.h>
 #include <agent/cpp/worker_context.h>
 #include <common/cpp/common_types.h>
@@ -20,18 +21,33 @@ public:
     CMString write_object(const CMString& object_name, const T& obj,
                            const CMString& py_name = "") {
         check_frozen();
+        fly::DataService::instance().on_write_started(db_id_, object_name);
+        try {
+            fly::WorkerAgentContext::register_write(db_id_, object_name);
+        } catch (const std::exception& e) {
+            fly::DataService::instance().on_write_failed(db_id_, object_name, e.what());
+            throw;
+        }
         CMString result = writer_->write_object(object_name, obj, py_name);
+        auto* all = writer_->get_all_entries(object_name);
+        if (all) {
+            fly::DataService::instance().on_write_completed(db_id_, object_name, *all);
+        }
+        writer_->flush();
+        fly::DataService::instance().on_flush(db_id_);
         fly::WorkerAgentContext::record_write(db_id_, object_name);
         return result;
     }
 
     template<typename T>
     std::shared_ptr<T> read_object(const CMString& object_name) {
-        if (!is_frozen_) {
-            writer_->flush();
-            reader_ = std::make_unique<DataReader>(base_path_, data_path_, writer_id_);
+        auto [found, result] = fly::DataService::instance().try_read_local(object_name);
+        if (found) {
+            auto obj = std::make_shared<T>();
+            FLY_DECODE_FROM_BYTES(result.data_buffer, T, *obj);
+            return obj;
         }
-        return reader_->read_object<T>(object_name);
+        throw std::runtime_error("Object not found locally: " + object_name);
     }
 
     CMString write_object(const CMString& object_name, const CMString& data, bool backup = false);
@@ -59,13 +75,11 @@ private:
     void create_frozen_marker();
     CMString generate_db_id();
     void ensure_directory_exists(const CMString& path);
-    ReadResult find_and_read_typed(const CMString& object_name);
-    CMString find_and_read(const CMString& object_name);
 
     CMString base_path_;
     CMString data_path_;
+    uint64_t writer_id_ = 0;
     CMString db_id_;
-    uint64_t writer_id_;
     bool is_frozen_ = false;
 
     std::unique_ptr<DataWriter> writer_;

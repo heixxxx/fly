@@ -127,6 +127,33 @@ class Master(FlyAgent):
     def completed_tasks(self):
         return self._agent.get_completed_tasks()
 
+    def wait_for_all_tasks(self, expected: int = None, timeout: float = 30.0):
+        """Wait until all tasks complete.
+
+        Args:
+            expected: Number of completed tasks to wait for.
+                      If None, waits for pending+running to reach 0.
+            timeout: Max seconds to wait.
+        Returns:
+            List of completed task results.
+        """
+        import time
+        t0 = time.time()
+        if expected is not None:
+            while time.time() - t0 < timeout:
+                completed = self._agent.get_completed_tasks()
+                if len(completed) >= expected:
+                    return completed
+                time.sleep(0.5)
+        else:
+            while time.time() - t0 < timeout:
+                pending = self._agent.get_pending_tasks()
+                running = self._agent.get_running_tasks()
+                if not pending and not running:
+                    return self._agent.get_completed_tasks()
+                time.sleep(0.5)
+        return self._agent.get_completed_tasks()
+
     def _start_thread_worker(self, worker_id: int):
         """Phase 2: 线程内 Worker"""
         from _fly_log import init_worker

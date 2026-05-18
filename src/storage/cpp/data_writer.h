@@ -51,6 +51,9 @@ public:
     int64_t total_bytes_written() const;
     int32_t file_count() const;
 
+    IndexEntry* get_last_entry(const CMString& object_name);
+    CMVector<IndexEntry>* get_all_entries(const CMString& object_name);
+
 private:
     void create_new_file();
     CMString get_current_file_name();

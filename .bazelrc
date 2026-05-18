@@ -10,3 +10,6 @@ build --action_env=PATH
 
 # Test output
 test --test_output=errors
+# GCC 12 toolchain
+build --repo_env=CC=gcc-12
+build --repo_env=CXX=g++-12

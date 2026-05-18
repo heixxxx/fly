@@ -1,5 +1,8 @@
 #include <agent/cpp/worker_agent.h>
 #include <log/cpp/logger.h>
+#include <core/cpp/config.h>
+#include <storage/cpp/data_service.h>
+#include <network/cpp/data_client.h>
 #include <thread>
 #include <chrono>
 
@@ -15,79 +18,100 @@ WorkerAgent::~WorkerAgent() {
 
 void WorkerAgent::start() {
     if (running_) return;
-    
+
     auto* log = Logger::get_worker(worker_id_);
     if (log) {
         log->info("WorkerAgent", "start() called, connecting to " + master_host_ + ":" + std::to_string(master_port_));
     }
-    
+
     auto transport = create_transport("tcp");
-    
+
     transport->listen("0.0.0.0", 0);
     data_server_port_ = static_cast<int32_t>(transport->get_bound_port());
-    
+
     if (log) {
         log->info("WorkerAgent", "data server listening on port " + std::to_string(data_server_port_));
     }
-    
+
     master_conn_ = transport->connect(master_host_, master_port_);
-    
+
     if (log) {
         log->info("WorkerAgent", "connected, master_conn=" + std::to_string(master_conn_));
     }
-    
+
     reactor_ = std::make_unique<Reactor>(std::move(transport));
-    
+
+    auto& ds = DataService::instance();
+    int data_server_threads = static_cast<int>(Config::instance().get_int("data_server_threads"));
+    ds.start_transfer_server(
+        data_server_threads,
+        [this](const TransferResult& result) {
+            DataResponseMessage response;
+            response.object_name = result.object_name;
+            response.success = result.success;
+            response.data = result.data;
+            if (!result.success) {
+                response.error_message = result.error_message;
+            }
+            reactor_->send(result.conn_id, response);
+        });
+    reactor_->set_io_pool(ds.get_transfer_pool());
+
      reactor_->register_handler<RegisterAckMessage>(
          [this](uint64_t conn, const RegisterAckMessage& msg) {
              on_register_ack(msg);
          });
-     
+
      reactor_->register_handler<TaskAssignMessage>(
          [this](uint64_t conn, const TaskAssignMessage& msg) {
              on_task_assign(msg);
          });
-     
+
      reactor_->register_handler<ShutdownMessage>(
          [this](uint64_t conn, const ShutdownMessage& msg) {
              on_shutdown(msg);
          });
-     
+
      reactor_->register_handler<DbPathResponseMessage>(
          [this](uint64_t conn, const DbPathResponseMessage& msg) {
              on_db_path_response(msg);
          });
-     
+
      reactor_->register_handler<DataRequestMessage>(
          [this](uint64_t conn_id, const DataRequestMessage& msg) {
              on_data_request(conn_id, msg);
          });
-     
+
      reactor_->register_handler<DataLocationMessage>(
          [this](uint64_t conn_id, const DataLocationMessage& msg) {
              on_data_location(conn_id, msg);
          });
-     
+
      reactor_->register_handler<DataResponseMessage>(
          [this](uint64_t conn_id, const DataResponseMessage& msg) {
              on_data_response(conn_id, msg);
          });
-    
+
+     reactor_->register_handler<WriteRegisterAckMessage>(
+         [this](uint64_t conn_id, const WriteRegisterAckMessage& msg) {
+             on_write_register_ack(conn_id, msg);
+         });
+
     reactor_thread_ = std::thread([this] { reactor_->run(); });
-    
+
     RegisterMessage reg;
     reg.worker_id = worker_id_;
     reg.data_server_host = "127.0.0.1";
     reg.data_server_port = data_server_port_;
     reactor_->send(master_conn_, reg);
-    
+
     if (log) {
         log->info("WorkerAgent", "RegisterMessage sent with data_server_port=" + std::to_string(data_server_port_));
     }
-    
+
     heartbeat_running_ = true;
     heartbeat_thread_ = std::thread([this] { heartbeat_loop(); });
-    
+
     running_ = true;
 }
 
@@ -96,20 +120,22 @@ void WorkerAgent::stop() {
     if (log) {
         log->info("WorkerAgent", "stop() called");
     }
-    
+
     if (running_) {
         heartbeat_running_ = false;
         heartbeat_cv_.notify_all();
         if (heartbeat_thread_.joinable()) {
             heartbeat_thread_.join();
         }
-        
+
+        DataService::instance().stop_transfer_server();
+
         reactor_->stop();
         if (reactor_thread_.joinable()) {
             reactor_thread_.join();
         }
         reactor_.reset();
-        
+
         running_ = false;
         registered_ = false;
     }
@@ -150,12 +176,12 @@ void WorkerAgent::heartbeat_loop() {
             heartbeat_cv_.wait_for(lock, std::chrono::seconds(10),
                                     [this]{ return !heartbeat_running_.load(); });
         }
-        
+
         if (registered_ && heartbeat_running_) {
             HeartbeatMessage hb;
             hb.worker_id = worker_id_;
             reactor_->send(master_conn_, hb);
-            
+
             if (log) {
                 log->debug("WorkerAgent", "Heartbeat sent");
             }
@@ -166,7 +192,7 @@ void WorkerAgent::heartbeat_loop() {
 void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
     auto* log = Logger::get_worker(worker_id_);
     registered_ = true;
-    
+
     if (log) {
         log->info("WorkerAgent", "RegisterAck received, registered");
     }
@@ -177,13 +203,13 @@ void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
     if (log) {
         log->info("WorkerAgent", "TaskAssign received: task_id=" + std::to_string(msg.task_id));
     }
-    
+
     PendingTask task;
     task.task_id = msg.task_id;
     task.task_name = msg.task_name;
     task.task_module = msg.task_module;
     task.args = msg.args;
-    
+
     {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);
         task_queue_.push(std::move(task));
@@ -203,18 +229,18 @@ bool WorkerAgent::poll_task() {
         task = std::move(task_queue_.front());
         task_queue_.pop();
     }
-    
+
     auto* log = Logger::get_worker(worker_id_);
     if (log) {
         log->info("WorkerAgent", "Executing task: task_id=" + std::to_string(task.task_id));
     }
-    
+
     if (executor_) {
         begin_task(task.task_id);
         auto result = executor_->execute(
             task.task_id, task.task_name, task.task_module, task.args);
         auto tracked_writes = end_task(task.task_id);
-        
+
         if (result.status == TaskExecStatus::SUCCESS) {
             TaskCompleteMessage complete;
             complete.task_id = task.task_id;
@@ -225,7 +251,7 @@ bool WorkerAgent::poll_task() {
             }
             complete.frozen_dbs = std::move(result.frozen_dbs);
             reactor_->send(master_conn_, complete);
-            
+
             if (log) {
                 log->info("WorkerAgent", "TaskComplete sent: task_id=" + std::to_string(task.task_id) +
                           ", outputs=" + std::to_string(complete.written_objects.size()));
@@ -235,8 +261,9 @@ bool WorkerAgent::poll_task() {
             failed.task_id = task.task_id;
             failed.worker_id = worker_id_;
             failed.error_message = result.error;
+            failed.error_type = WorkerAgentContext::get_last_error_type();
             reactor_->send(master_conn_, failed);
-            
+
             if (log) {
                 log->error("WorkerAgent", "TaskFailed sent: task_id=" + std::to_string(task.task_id) + ", error=" + result.error);
             }
@@ -248,7 +275,7 @@ bool WorkerAgent::poll_task() {
 void WorkerAgent::on_shutdown(const ShutdownMessage& msg) {
     auto* log = Logger::get_worker(worker_id_);
     registered_ = false;
-    
+
     if (log) {
         log->info("WorkerAgent", "Shutdown received");
     }
@@ -257,8 +284,18 @@ void WorkerAgent::on_shutdown(const ShutdownMessage& msg) {
 void WorkerAgent::on_db_path_response(const DbPathResponseMessage& msg) {
     auto* log = Logger::get_worker(worker_id_);
     if (log) {
-        log->info("WorkerAgent", "DbPathResponse received: db_id=" + msg.db_id + 
-                  ", base_path=" + msg.base_path + ", data_path=" + msg.data_path);
+        log->info("WorkerAgent", "DbPathResponse received: db_id=" + msg.db_id +
+                  ", base_path=" + msg.base_path + ", data_path=" + msg.data_path +
+                  ", success=" + std::to_string(msg.success));
+    }
+
+    std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
+    auto it = pending_db_paths_.find(msg.db_id);
+    if (it != pending_db_paths_.end()) {
+        it->second->base_path = msg.base_path;
+        it->second->data_path = msg.data_path;
+        it->second->success = msg.success;
+        it->second->completed = true;
     }
 }
 
@@ -266,11 +303,20 @@ void WorkerAgent::begin_task(uint64_t task_id) {
     current_task_id_ = task_id;
     current_writes_.clear();
     WorkerAgentContext::set(&record_write_trampoline, this);
+    WorkerAgentContext::set_register_func(&register_write_trampoline);
 }
 
 void WorkerAgent::record_write(const CMString& db_id, const CMString& object_name) {
     CMString full_name = db_id + ":" + object_name;
     current_writes_.push_back(full_name);
+
+    if (registered_ && Config::instance().get_int("dependency_update_mode") == 0) {
+        DataReadyMessage msg;
+        msg.worker_id = worker_id_;
+        msg.object_name = full_name;
+        msg.db_id = db_id;
+        reactor_->send(master_conn_, msg);
+    }
 }
 
 CMVector<CMString> WorkerAgent::end_task(uint64_t task_id) {
@@ -285,32 +331,17 @@ void WorkerAgent::record_write_trampoline(void* ctx, const CMString& db_id, cons
     static_cast<WorkerAgent*>(ctx)->record_write(db_id, name);
 }
 
+void WorkerAgent::register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
+    static_cast<WorkerAgent*>(ctx)->register_write_with_master(db_id, name);
+}
+
 void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
     auto* log = Logger::get_worker(worker_id_);
     if (log) {
-        log->info("WorkerAgent", "DataRequest for object: " + msg.object_name);
+        log->info("WorkerAgent", "DataRequest enqueued for object: " + msg.object_name);
     }
-    
-    DataResponseMessage response;
-    response.object_name = msg.object_name;
-    response.success = false;
-    
-    for (const auto& [db_id, db] : databases_) {
-        try {
-            auto result = db->read_object_typed(msg.object_name);
-            response.data.assign(result.data_buffer.begin(), result.data_buffer.end());
-            response.success = true;
-            break;
-        } catch (...) {
-            continue;
-        }
-    }
-    
-    if (!response.success) {
-        response.error_message = "Object not found: " + msg.object_name;
-    }
-    
-    reactor_->send(conn_id, response);
+
+    DataService::instance().submit_transfer(conn_id, msg.object_name);
 }
 
 void WorkerAgent::on_data_response(uint64_t conn_id, const DataResponseMessage& msg) {
@@ -319,7 +350,7 @@ void WorkerAgent::on_data_response(uint64_t conn_id, const DataResponseMessage& 
         log->info("WorkerAgent", "DataResponse for object: " + msg.object_name +
                   ", success=" + std::to_string(msg.success));
     }
-    
+
     std::lock_guard<std::mutex> lock(pending_data_mutex_);
     auto it = pending_data_.find(msg.object_name);
     if (it != pending_data_.end()) {
@@ -338,7 +369,7 @@ void WorkerAgent::on_data_location(uint64_t conn_id, const DataLocationMessage& 
                   ", data_host=" + msg.data_host + ":" + std::to_string(msg.data_port) +
                   ", success=" + std::to_string(msg.success));
     }
-    
+
     std::lock_guard<std::mutex> lock(pending_data_mutex_);
     auto it = pending_data_.find(msg.object_name);
     if (it == pending_data_.end() || !msg.success) {
@@ -349,7 +380,7 @@ void WorkerAgent::on_data_location(uint64_t conn_id, const DataLocationMessage& 
         }
         return;
     }
-    
+
     it->second->data_host = msg.data_host;
     it->second->data_port = msg.data_port;
     it->second->target_worker_id = msg.worker_id;
@@ -358,65 +389,134 @@ void WorkerAgent::on_data_location(uint64_t conn_id, const DataLocationMessage& 
 
 ReadResult WorkerAgent::request_remote_data(const CMString& object_name) {
     auto* log = Logger::get_worker(worker_id_);
-    
+
+    // Step 1: Query Master for data location (via Reactor)
     auto pending = std::make_shared<PendingRemoteData>();
     pending->object_name = object_name;
     {
         std::lock_guard<std::mutex> lock(pending_data_mutex_);
         pending_data_[object_name] = pending;
     }
-    
+
     DataQueryMessage query;
     query.object_name = object_name;
     reactor_->send(master_conn_, query);
-    
+
     if (log) {
         log->info("WorkerAgent", "Sent DataQuery for " + object_name);
     }
-    
+
+    CMString target_host;
+    int32_t target_port = 0;
+    uint64_t target_worker_id = 0;
+
     for (int i = 0; i < 100; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         std::lock_guard<std::mutex> lock(pending_data_mutex_);
-        if (pending->location_received && !pending->completed) {
-            pending->location_received = false;
-            CMString host = pending->data_host;
-            int32_t port = pending->data_port;
-            
-            uint64_t target_conn = reactor_->connect(host, port);
-            
-            DataRequestMessage req;
-            req.object_name = object_name;
-            req.requesting_worker_id = worker_id_;
-            reactor_->send(target_conn, req);
-            
-            if (log) {
-                log->info("WorkerAgent", "Connected to " + host + ":" + std::to_string(port) +
-                          ", sent DataRequest for " + object_name);
-            }
-            continue;
-        }
-        if (pending->completed) {
+        if (pending->location_received) {
+            target_host = pending->data_host;
+            target_port = pending->data_port;
+            target_worker_id = pending->target_worker_id;
             pending_data_.erase(object_name);
-            if (pending->success) {
-                ReadResult result;
-                result.data_buffer.assign(pending->data.begin(), pending->data.end());
-                result.py_name = "";
-                return result;
-            } else {
-                throw std::runtime_error("Remote data request failed for " + object_name + ": " + pending->error_message);
-            }
+            break;
+        }
+        if (pending->completed && !pending->success) {
+            pending_data_.erase(object_name);
+            throw std::runtime_error("Remote data query failed: " + pending->error_message);
         }
     }
-    
-    {
+
+    if (target_host.empty()) {
         std::lock_guard<std::mutex> lock(pending_data_mutex_);
         pending_data_.erase(object_name);
+        throw std::runtime_error("Timeout waiting for data location: " + object_name);
     }
-    throw std::runtime_error("Remote data request timeout for: " + object_name);
+
+    // Step 2: Direct read from target worker via DataClient (separate connection)
+    if (log) {
+        log->info("WorkerAgent", "Connecting via DataClient to " + target_host + ":" +
+                  std::to_string(target_port) + " for " + object_name);
+    }
+
+    auto [success, data, error] = DataClient::request_data(target_host, target_port, object_name);
+
+    if (!success) {
+        throw std::runtime_error("Data transfer failed for " + object_name + ": " + error);
+    }
+
+    DataService::instance().update_remote_idx(object_name, target_worker_id, target_host, target_port);
+
+    ReadResult result;
+    result.data_buffer.assign(data.begin(), data.end());
+    return result;
+}
+
+ReadResult WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,
+                                                   const CMString& object_name) {
+    auto* log = Logger::get_worker(worker_id_);
+
+    if (log) {
+        log->info("WorkerAgent", "Direct DataClient request to " + host + ":" + std::to_string(port) +
+                  " for " + object_name);
+    }
+
+    auto [success, data, error] = DataClient::request_data(host, port, object_name);
+
+    if (!success) {
+        throw std::runtime_error("Direct data request failed for " + object_name + ": " + error);
+    }
+
+    ReadResult result;
+    result.data_buffer.assign(data.begin(), data.end());
+    return result;
 }
 
 void WorkerAgent::register_database(const CMString& db_id, std::shared_ptr<Database> db) {
     databases_[db_id] = std::move(db);
+}
+
+bool WorkerAgent::request_db_path(const CMString& db_id) {
+    auto it = databases_.find(db_id);
+    if (it != databases_.end()) {
+        return true;
+    }
+
+    auto* log = Logger::get_worker(worker_id_);
+
+    auto pending = std::make_shared<PendingDbPath>();
+    pending->db_id = db_id;
+    {
+        std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
+        pending_db_paths_[db_id] = pending;
+    }
+
+    DbPathRequestMessage req;
+    req.db_id = db_id;
+    reactor_->send(master_conn_, req);
+
+    if (log) {
+        log->info("WorkerAgent", "Sent DbPathRequest for db_id=" + db_id);
+    }
+
+    for (int i = 0; i < 100; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
+        if (pending->completed) {
+            pending_db_paths_.erase(db_id);
+            if (pending->success && !pending->base_path.empty()) {
+                auto db = std::make_shared<Database>(pending->base_path, pending->data_path, worker_id_);
+                databases_[db_id] = db;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
+        pending_db_paths_.erase(db_id);
+    }
+    return false;
 }
 
 std::shared_ptr<Database> WorkerAgent::get_database(const CMString& db_id) const {
@@ -425,6 +525,73 @@ std::shared_ptr<Database> WorkerAgent::get_database(const CMString& db_id) const
         return it->second;
     }
     return nullptr;
+}
+
+void WorkerAgent::register_write_with_master(const CMString& db_id, const CMString& object_name) {
+    if (!registered_) return;
+
+    auto* log = Logger::get_worker(worker_id_);
+
+    CMString full_name = db_id + ":" + object_name;
+    auto pending = std::make_shared<PendingWriteRegister>();
+    pending->object_name = full_name;
+    {
+        std::lock_guard<std::mutex> lock(pending_write_reg_mutex_);
+        pending_write_regs_[full_name] = pending;
+    }
+
+    WriteRegisterMessage msg;
+    msg.worker_id = worker_id_;
+    msg.object_name = full_name;
+    msg.db_id = db_id;
+    reactor_->send(master_conn_, msg);
+
+    if (log) {
+        log->info("WorkerAgent", "WriteRegister sent: object=" + full_name);
+    }
+
+    for (int i = 0; i < 100; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::lock_guard<std::mutex> lock(pending_write_reg_mutex_);
+        if (pending->completed) {
+            pending_write_regs_.erase(full_name);
+            if (!pending->success) {
+                TaskErrorType etype = pending->error_type;
+                WorkerAgentContext::set_last_error_type(etype);
+                throw WriteRegistrationError(
+                    "Write registration rejected: " + pending->error_message,
+                    etype);
+            }
+            return;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(pending_write_reg_mutex_);
+        pending_write_regs_.erase(full_name);
+    }
+    WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
+    throw WriteRegistrationError(
+        "Write registration timeout for: " + full_name,
+        TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
+}
+
+void WorkerAgent::on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg) {
+    auto* log = Logger::get_worker(worker_id_);
+    if (log) {
+        log->info("WorkerAgent", "WriteRegisterAck: object=" + msg.object_name +
+                  ", success=" + std::to_string(msg.success) +
+                  (!msg.error_message.empty() ? ", error=" + msg.error_message : ""));
+    }
+
+    std::lock_guard<std::mutex> lock(pending_write_reg_mutex_);
+    auto it = pending_write_regs_.find(msg.object_name);
+    if (it != pending_write_regs_.end()) {
+        it->second->success = msg.success;
+        it->second->error_message = msg.error_message;
+        it->second->error_type = msg.error_type;
+        it->second->completed = true;
+    }
 }
 
 }  // namespace fly

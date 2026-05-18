@@ -48,6 +48,19 @@ cc_library(
 )
 
 cc_library(
+    name = "fly_network_data_client",
+    hdrs = ["data_client.h"],
+    srcs = ["data_client.cpp"],
+    deps = [
+        ":fly_network_message_protocol",
+        ":fly_network_message_types",
+        "//src/common/cpp:fly_common_types",
+    ],
+    strip_include_prefix = "/src",
+    copts = ["-std=c++20"],
+)
+
+cc_library(
     name = "fly_network_reactor",
     hdrs = ["reactor.h"],
     srcs = ["reactor.cpp"],
@@ -69,5 +82,6 @@ cc_library(
         ":fly_network_message_types",
         ":fly_network_io_thread_pool",
         ":fly_network_reactor",
+        ":fly_network_data_client",
     ],
 )

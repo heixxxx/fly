@@ -84,3 +84,28 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "data_service_test",
+    srcs = ["data_service_test.cpp"],
+    deps = [
+        "@com_google_googletest//:gtest_main",
+        "//src/storage/cpp:fly_storage_data_service",
+        "//src/storage/cpp:fly_storage_database",
+        "//src/common/cpp:fly_common_types",
+    ],
+    copts = ["-std=c++20"],
+)
+
+cc_test(
+    name = "write_registration_test",
+    srcs = ["write_registration_test.cpp"],
+    deps = [
+        "@com_google_googletest//:gtest_main",
+        "//src/storage/cpp:fly_storage_data_service",
+        "//src/storage/cpp:fly_storage_database",
+        "//src/agent/cpp:fly_agent_worker_context",
+        "//src/common/cpp:fly_common_types",
+    ],
+    copts = ["-std=c++20"],
+)

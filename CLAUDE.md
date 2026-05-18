@@ -15,7 +15,7 @@
 | C++ 标准 | C++20 |
 | 编译器 | gcc12 |
 | Python 绑定 | nanobind |
-| 序列化 | bitsery (zpp_bits) |
+| 序列化 | bitsery (header-only, 版本化支持) |
 | 构建系统 | Bazel + fly.sh |
 | 测试框架 | gtest + pytest |
 | 压缩库 | LZ4 / ZLIB / ZSTD |
@@ -57,7 +57,7 @@ fly/
 │   │   └── cpp/config.h/cpp  # 配置管理
 │   │
 │   ├── serialization/        # 序列化模块
-│   │   └── cpp/serialization_macros.h  # FLY_SERIALIZE, FLY_ENCODE
+│   │   └── cpp/serialization_macros.h  # FLY_SERIALIZE, FLY_ENCODE (bitsery 后端)
 │   │
 │   ├── export/               # 导出宏定义
 │   │   └── cpp/export_macros.h  # FLY_EXPORT_* 宏
@@ -66,6 +66,8 @@ fly/
 │   │   ├── cpp/database.h/cpp
 │   │   ├── cpp/data_writer.h/cpp
 │   │   ├── cpp/data_reader.h/cpp
+│   │   ├── cpp/data_service.h/cpp  # 统一内存索引 (local/remote idx)
+│   │   ├── cpp/storage_manager.h/cpp
 │   │   └── export/storage_export.cpp
 │   │
 │   ├── network/             # 网络层 (Layer 2)
@@ -269,10 +271,11 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 
 | 文件 | 职责 |
 |------|------|
-| `database.h/cpp` | 统一存储接口，freeze 管理 |
-| `data_writer.h/cpp` | 单线程写入聚合器 |
-| `data_reader.h/cpp` | 数据读取器 |
-| `storage_manager.h/cpp` | Database 管理 |
+| `database.h/cpp` | 统一存储接口，写时通知 DataService，读时走 DataService 内存索引 |
+| `data_writer.h/cpp` | 单线程写入聚合器，小文件聚合 + 大文件分块 |
+| `data_reader.h/cpp` | 数据读取，支持 `read_from_entries()` 直接按索引读取 |
+| `data_service.h/cpp` | **统一内存索引：local_idx + remote_idx + worker_registry** |
+| `storage_manager.h/cpp` | Database 生命周期管理，单例 |
 
 ### 网络层 (src/network/)
 
@@ -282,7 +285,7 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 | `transport.h/cpp` | TransportLayer 抽象 |
 | `tcp_transport.cpp` | POSIX TCP 实现 |
 | `message_protocol.h/cpp` | 二进制帧协议 |
-| `message_types.h` | 消息结构定义 |
+| `message_types.h` | 消息结构定义 (20 种消息类型) |
 
 ### 任务系统层 (src/task/)
 
@@ -291,7 +294,7 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 | `dependency_graph.h/cpp` | 任务依赖管理 |
 | `worker_manager.h/cpp` | Worker 状态管理 |
 | `task_scheduler.h/cpp` | 任务调度器 |
-| `metadata_manager.h/cpp` | 任务元数据 |
+| `metadata_manager.h/cpp` | 任务元数据 (仅 task lifecycle，数据位置已迁移至 DataService) |
 | `heartbeat_monitor.h/cpp` | 心跳监控 |
 
 ### Agent 层 (src/agent/)
@@ -363,30 +366,38 @@ def test_database():
 | Layer | 状态 | 测试数 | 核心产出 |
 |-------|------|--------|----------|
 | Layer 0 | ✅ 完成 | 5 | WORKSPACE, BUILD, 宏定义 |
-| Layer 1 | ✅ 完成 | 45 | Database, StorageManager |
+| Layer 1 | ✅ 完成 | 45 | Database, DataService, StorageManager |
 | Layer 2 | ✅ 完成 | 35 | Reactor, TCP, 消息协议 |
 | Layer 3 | ✅ 完成 | 28 | DependencyGraph, 调度器 |
 | Layer 4 | ✅ 完成 | 48 | MasterAgent, WorkerAgent |
-| Layer 5 | 🔄 进行中 | - | Python API, 写入跟踪 |
+| Layer 5 | ✅ 完成 | - | Python API, DataService, 三层读取流程 |
 
-**总测试**: 161 tests pass
+**总测试**: 32 Bazel targets pass (1 data_service_test + 31 unit) + QA + E2E
 
-### Layer 5 当前任务
+### DataService 架构 (Layer 1 核心)
 
-Phase 1: 写入跟踪核心
-- WorkerAgent 添加 begin_task/end_task/record_write
-- Database.db_id 生成
-- get_obj_name() 方法
+DataService 是进程级单例，Master 和 Worker 通用：
+- **local_idx**: 本地写入的对象索引 (write_object 时更新)
+- **remote_idx**: 远程对象位置缓存 (Master 接收 DataReady/TaskComplete 时更新；Worker 远程读取成功后缓存)
+- **worker_registry**: Worker 注册信息
+- **transfer_server**: IOThreadPool 线程池，处理数据传输请求的文件 I/O (可配置线程数 `data_server_threads`，默认 1)
 
-Phase 2: Python 高层 API
-- fly/__init__.py 顶层包
-- @as_task 装饰器
-- Master 类包装
+数据传输架构 (Worker B 响应数据请求):
+- Reactor 收到 `DataRequestMessage` → `DataService.submit_transfer(conn_id, object_name)` (非阻塞入队)
+- IOThreadPool 线程执行文件 I/O (`try_read_local`)
+- 完成回调通过 `process_completions()` 在 Reactor 线程执行 → `reactor_->send(response)` (线程安全)
 
-Phase 3: Worker 自动执行
-- 自动 import module
-- pickle args 反序列化
-- fly 命令行入口
+Worker A 读取 (DataClient 独立连接):
+- `DataClient::request_data(host, port, object_name)` — 阻塞 TCP socket，独立于主 Reactor
+- 每次请求创建独立连接，避免多线程读冲突
+
+读取流程 (三层降级，所有路径统一经过 DataService):
+1. `DataService.try_read_local()` → 内存索引 → DataReader.read_from_entries() (含 ObjectHeader py_name 提取)
+2. `DataService.lookup_remote_idx()` → 有缓存 → `DataClient::request_data()` 直连目标 Worker
+3. `request_remote_data()` → 查 Master (via Reactor) → `DataClient::request_data()` 直连目标 Worker (最多 3 次重试)
+
+DB 路径查询: WorkerAgent.request_db_path(db_id) → 向 Master 查询 → 自动创建 Database 实例
+消息类型: 20 种 (含 DB_PATH_REQUEST/DB_PATH_RESPONSE)
 
 ---
 
@@ -450,9 +461,10 @@ src/new_module/
 ### 关键文件
 
 - `docs/DEVELOPMENT_GUIDELINES.md` - 开发规范（详细）
-- `docs/superpowers/plans/2026-05-16-current-status.md` - 当前状态
+- `docs/superpowers/plans/2026-05-17-progress-and-roadmap.md` - 当前状态与路线图
+- `docs/superpowers/plans/2026-05-17-network-and-message-flow.md` - 网络与消息流程
 - `docs/superpowers/plans/2026-05-16-layer5-python-api-design.md` - Layer 5 设计
 
 ---
 
-*文档生成日期: 2026-05-16*
+*文档更新日期: 2026-05-17*

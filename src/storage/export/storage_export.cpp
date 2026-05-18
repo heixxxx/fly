@@ -2,6 +2,7 @@
 #include <serialization/cpp/serialization_macros.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/storage_manager.h>
+#include <storage/cpp/data_service.h>
 #include <storage/cpp/object.h>
 #include <storage/cpp/index_entry.h>
 #include <storage/cpp/db_meta.h>
@@ -56,6 +57,35 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_METHOD("get_obj_name", &Database::get_obj_name)
     FLY_EXPORT_METHOD("reset", &Database::reset);
 
+FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
+    FLY_EXPORT_DEF("try_read_local", [](fly::DataService& ds, const CMString& name) -> fly_export::tuple {
+        auto [found, result] = ds.try_read_local(name);
+        return fly_export::make_tuple(
+            found,
+            fly_export::bytes(
+                reinterpret_cast<const char*>(result.data_buffer.data()),
+                result.data_buffer.size()),
+            result.py_name
+        );
+    })
+    FLY_EXPORT_DEF("lookup_remote_idx", [](fly::DataService& ds, const CMString& name) -> fly_export::tuple {
+        auto info = ds.lookup_remote_idx(name);
+        bool has = (info.worker_id != 0 || !info.host.empty());
+        return fly_export::make_tuple(has, info.worker_id, info.host, info.port);
+    })
+    FLY_EXPORT_DEF("update_remote_idx", [](fly::DataService& ds, const CMString& name,
+                                            uint64_t worker_id, const CMString& host, int32_t port) {
+        ds.update_remote_idx(name, worker_id, host, port);
+    })
+    FLY_EXPORT_DEF("has_local_object", [](fly::DataService& ds, const CMString& name) -> bool {
+        return ds.has_local_object(name);
+    })
+    FLY_EXPORT_DEF("has_remote_location", [](fly::DataService& ds, const CMString& name) -> bool {
+        return ds.has_remote_location(name);
+    });
+
+FLY_EXPORT_FUNCTION_REF("ex_stg_get_data_service", []() -> fly::DataService& { return fly::DataService::instance(); });
+
 FLY_EXPORT_CLASS(StorageManager, "EXStgStorageManager")
     FLY_EXPORT_METHOD("close_all", &StorageManager::close_all)
     FLY_EXPORT_METHOD("reset", &StorageManager::reset)
@@ -103,7 +133,6 @@ FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& base_path, cons
     return std::make_shared<Database>(base_path, data_path, writer_id);
 });
 
-// Cross-language test helper: C++ writes a typed object into a Database created by Python
 FLY_EXPORT_FUNCTION("ex_stg_cpp_write_index_entry", [](Database& db, const CMString& key) -> CMString {
     IndexEntry entry;
     entry.object_name = key;

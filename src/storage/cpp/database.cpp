@@ -38,35 +38,79 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
         stream_chunk_size
     );
     reader_ = std::make_unique<DataReader>(base_path_, data_path_, writer_id_);
+
+    fly::DataService::instance().register_database(db_id_, base_path_, data_path_);
 }
 
 Database::~Database() = default;
 
 CMString Database::write_object(const CMString& object_name, const CMString& data, bool backup) {
     check_frozen();
+
+    fly::DataService::instance().on_write_started(db_id_, object_name);
+
+    try {
+        fly::WorkerAgentContext::register_write(db_id_, object_name);
+    } catch (const std::exception& e) {
+        fly::DataService::instance().on_write_failed(db_id_, object_name, e.what());
+        throw;
+    }
+
     CMString result = writer_->write_object(object_name, data, backup);
+
+    auto* all = writer_->get_all_entries(object_name);
+    if (all) {
+        fly::DataService::instance().on_write_completed(db_id_, object_name, *all);
+    }
+
     writer_->flush();
+    fly::DataService::instance().on_flush(db_id_);
+
     fly::WorkerAgentContext::record_write(db_id_, object_name);
     return result;
 }
 
 CMString Database::read_object(const CMString& object_name) {
-    return find_and_read(object_name);
+    ReadResult result = read_object_typed(object_name);
+    return CMString(result.data_buffer.begin(), result.data_buffer.end());
 }
 
 CMString Database::write_object_typed(const CMString& object_name, const CMString& data,
                                         const CMString& py_name) {
     check_frozen();
+
+    fly::DataService::instance().on_write_started(db_id_, object_name);
+
+    try {
+        fly::WorkerAgentContext::register_write(db_id_, object_name);
+    } catch (const std::exception& e) {
+        fly::DataService::instance().on_write_failed(db_id_, object_name, e.what());
+        throw;
+    }
+
     CMString result = writer_->write_typed_object(object_name, static_cast<uint64_t>(data.size()),
                                         py_name, data.data(),
                                         static_cast<int64_t>(data.size()));
+
+    auto* all = writer_->get_all_entries(object_name);
+    if (all) {
+        fly::DataService::instance().on_write_completed(db_id_, object_name, *all);
+    }
+
     writer_->flush();
+    fly::DataService::instance().on_flush(db_id_);
+
     fly::WorkerAgentContext::record_write(db_id_, object_name);
     return result;
 }
 
 ReadResult Database::read_object_typed(const CMString& object_name) {
-    return find_and_read_typed(object_name);
+    auto& ds = fly::DataService::instance();
+    auto [found, result] = ds.try_read_local(object_name);
+    if (found) {
+        return result;
+    }
+    throw std::runtime_error("Object not found locally: " + object_name);
 }
 
 void Database::freeze() {
@@ -159,32 +203,4 @@ CMString Database::generate_db_id() {
 
 void Database::ensure_directory_exists(const CMString& path) {
     fs::create_directories(path);
-}
-
-ReadResult Database::find_and_read_typed(const CMString& object_name) {
-    CMString read_dir = data_path_.empty() ? base_path_ : data_path_;
-
-    writer_->flush();
-
-    for (const auto& entry : fs::directory_iterator(read_dir)) {
-        if (!entry.is_regular_file()) continue;
-        CMString fname = entry.path().filename().string();
-        if (fname.size() >= 12 && fname.substr(0, 7) == "worker_" && fname.substr(fname.size() - 4) == ".idx") {
-            try {
-                std::string id_str = fname.substr(7, fname.size() - 11);
-                uint64_t wid = std::stoull(id_str);
-                DataReader temp_reader(base_path_, data_path_, wid);
-                if (temp_reader.exists(object_name)) {
-                    return temp_reader.read_object_data(object_name);
-                }
-            } catch (...) {}
-        }
-    }
-
-    throw std::runtime_error("Object not found: " + object_name);
-}
-
-CMString Database::find_and_read(const CMString& object_name) {
-    ReadResult result = find_and_read_typed(object_name);
-    return CMString(result.data_buffer.begin(), result.data_buffer.end());
 }

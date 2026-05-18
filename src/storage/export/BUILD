@@ -9,6 +9,7 @@ cc_binary(
     deps = [
         "@nanobind//:nanobind_src",
         "//src/storage/cpp:fly_storage_database",
+        "//src/storage/cpp:fly_storage_data_service",
         "//src/storage/cpp:fly_storage_storage_manager",
         "//src/storage/cpp:fly_storage_db_meta",
         "//src/storage/cpp:fly_storage_object",
@@ -19,10 +20,11 @@ cc_binary(
     ],
     copts = [
         "-std=c++20",
-        "-I/usr/include/python3.10",
+        "-I/usr/local/include/python3.12",
     ],
     linkopts = [
-        "-lpython3.10",
+        "-L/usr/local/lib",
+        "-lpython3.12",
     ],
     linkshared = True,
     linkstatic = True,

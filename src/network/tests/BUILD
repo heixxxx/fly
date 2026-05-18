@@ -60,3 +60,16 @@ py_test(
     ],
     main = "network_test.py",
 )
+
+cc_test(
+    name = "data_transfer_test",
+    srcs = ["data_transfer_test.cpp"],
+    deps = [
+        "//src/network/cpp:fly_network_cpp",
+        "//src/storage/cpp:fly_storage_data_service",
+        "//src/storage/cpp:fly_storage_database",
+        "//src/log/cpp:fly_log",
+        "@com_google_googletest//:gtest_main",
+    ],
+    copts = ["-std=c++20"],
+)

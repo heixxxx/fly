@@ -3,6 +3,7 @@
 #include <network/cpp/reactor.h>
 #include <network/cpp/transport.h>
 #include <network/cpp/message_types.h>
+#include <network/cpp/data_client.h>
 #include <agent/cpp/task_executor.h>
 #include <agent/cpp/worker_context.h>
 #include <storage/cpp/database.h>
@@ -37,6 +38,22 @@ struct PendingRemoteData {
     uint64_t target_worker_id = 0;
 };
 
+struct PendingDbPath {
+    CMString db_id;
+    CMString base_path;
+    CMString data_path;
+    bool completed = false;
+    bool success = false;
+};
+
+struct PendingWriteRegister {
+    CMString object_name;
+    bool completed = false;
+    bool success = false;
+    CMString error_message;
+    TaskErrorType error_type = TaskErrorType::UNKNOWN;
+};
+
 class WorkerAgent {
 public:
     WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port);
@@ -66,6 +83,12 @@ public:
     std::shared_ptr<Database> get_database(const CMString& db_id) const;
     
     ReadResult request_remote_data(const CMString& object_name);
+    ReadResult request_data_from_worker(const CMString& host, int32_t port,
+                                         const CMString& object_name);
+
+    bool request_db_path(const CMString& db_id);
+
+    void register_write_with_master(const CMString& db_id, const CMString& object_name);
 
 private:
     uint64_t worker_id_;
@@ -87,6 +110,7 @@ private:
     std::shared_ptr<TaskExecutor> executor_;
     
     static void record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
+    static void register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     
     uint64_t current_task_id_ = 0;
     CMVector<CMString> current_writes_;
@@ -98,6 +122,12 @@ private:
     
     mutable std::mutex pending_data_mutex_;
     CMMap<CMString, std::shared_ptr<PendingRemoteData>> pending_data_;
+
+    std::mutex pending_db_path_mutex_;
+    CMMap<CMString, std::shared_ptr<PendingDbPath>> pending_db_paths_;
+
+    std::mutex pending_write_reg_mutex_;
+    CMMap<CMString, std::shared_ptr<PendingWriteRegister>> pending_write_regs_;
     
     void on_register_ack(const RegisterAckMessage& msg);
     void on_task_assign(const TaskAssignMessage& msg);
@@ -106,6 +136,7 @@ private:
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_data_location(uint64_t conn_id, const DataLocationMessage& msg);
     void on_data_response(uint64_t conn_id, const DataResponseMessage& msg);
+    void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
     
     void heartbeat_loop();
 };

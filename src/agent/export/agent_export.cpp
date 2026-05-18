@@ -100,7 +100,20 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     FLY_EXPORT_METHOD("get_completed_tasks", &fly::MasterAgent::get_completed_tasks)
     FLY_EXPORT_METHOD("get_idle_workers", &fly::MasterAgent::get_idle_workers)
     FLY_EXPORT_METHOD("get_port", &fly::MasterAgent::get_port)
-    FLY_EXPORT_METHOD("get_data_server_port", &fly::MasterAgent::get_data_server_port);
+    FLY_EXPORT_METHOD("get_data_server_port", &fly::MasterAgent::get_data_server_port)
+    FLY_EXPORT_METHOD("request_remote_data", [](fly::MasterAgent& self, const fly::CMString& object_name) -> fly_export::tuple {
+        auto result = self.request_remote_data(object_name);
+        CMString data_str(result.data_buffer.begin(), result.data_buffer.end());
+        return fly_export::make_tuple(data_str, result.py_name);
+    })
+    FLY_EXPORT_METHOD("request_data_from_worker", [](fly::MasterAgent& self,
+                                                       const fly::CMString& host,
+                                                       int32_t port,
+                                                       const fly::CMString& object_name) -> fly_export::tuple {
+        auto result = self.request_data_from_worker(host, port, object_name);
+        CMString data_str(result.data_buffer.begin(), result.data_buffer.end());
+        return fly_export::make_tuple(data_str, result.py_name);
+    });
 
 FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     FLY_EXPORT_INIT(uint64_t, fly::CMString, uint16_t)
@@ -134,6 +147,18 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
         auto result = self.request_remote_data(object_name);
         CMString data_str(result.data_buffer.begin(), result.data_buffer.end());
         return fly_export::make_tuple(data_str, result.py_name);
+    })
+    FLY_EXPORT_METHOD("request_data_from_worker", [](fly::WorkerAgent& self,
+                                                       const fly::CMString& host,
+                                                       int32_t port,
+                                                       const fly::CMString& object_name) -> fly_export::tuple {
+        auto result = self.request_data_from_worker(host, port, object_name);
+        CMString data_str(result.data_buffer.begin(), result.data_buffer.end());
+        return fly_export::make_tuple(data_str, result.py_name);
+    })
+    FLY_EXPORT_METHOD("request_db_path", [](fly::WorkerAgent& self,
+                                              const fly::CMString& db_id) -> bool {
+        return self.request_db_path(db_id);
     });
 
 }

@@ -1,12 +1,12 @@
 #pragma once
 
 #include <common/cpp/common_types.h>
+#include <common/cpp/error_types.h>
 #include <serialization/cpp/serialization_macros.h>
 #include <cstdint>
 
 namespace fly {
 
-// 消息类型枚举
 enum class MessageType : uint8_t {
     REGISTER = 1,
     REGISTER_ACK = 2,
@@ -26,6 +26,10 @@ enum class MessageType : uint8_t {
     IDX_RESPONSE = 16,
     CLEANUP_TASK = 17,
     CLEANUP_COMPLETE = 18,
+    DB_PATH_REQUEST = 19,
+    DB_PATH_RESPONSE = 20,
+    WRITE_REGISTER = 21,
+    WRITE_REGISTER_ACK = 22,
 };
 
 // 基础消息头（所有消息继承）
@@ -132,23 +136,23 @@ struct TaskFailedMessage {
     uint64_t worker_id = 0;
     bool recoverable = false;
     CMString error_message;
-    
+    TaskErrorType error_type = TaskErrorType::UNKNOWN;
+
     static constexpr MessageType msg_type = MessageType::TASK_FAILED;
-    
-    FLY_SERIALIZE(header, task_id, worker_id, recoverable, error_message);
+
+    FLY_SERIALIZE(header, task_id, worker_id, recoverable, error_message, error_type);
 };
 
-// Master → Worker: 数据就绪通知
+// Worker → Master: 数据就绪通知（write_object 时实时发送）
 struct DataReadyMessage {
     MessageHeader header;
     uint64_t worker_id = 0;
-    CMString data_path;
-    uint64_t offset = 0;
-    int64_t size = 0;
+    CMString object_name;   // 完整标识符: "db_id:obj_name"
+    CMString db_id;         // 所属 Database
     
     static constexpr MessageType msg_type = MessageType::DATA_READY;
     
-    FLY_SERIALIZE(header, worker_id, data_path, offset, size);
+    FLY_SERIALIZE(header, worker_id, object_name, db_id);
 };
 
 // Master/Worker: 数据位置查询
@@ -191,7 +195,7 @@ struct TaskSubmitMessage {
 struct DbPathRequestMessage {
     MessageHeader header;
     CMString db_id;
-    static constexpr MessageType msg_type = MessageType::DATA_QUERY;
+    static constexpr MessageType msg_type = MessageType::DB_PATH_REQUEST;
     FLY_SERIALIZE(header, db_id);
 };
 
@@ -201,8 +205,9 @@ struct DbPathResponseMessage {
     CMString db_id;
     CMString base_path;
     CMString data_path;
-    static constexpr MessageType msg_type = MessageType::DATA_LOCATION;
-    FLY_SERIALIZE(header, db_id, base_path, data_path);
+    bool success = false;
+    static constexpr MessageType msg_type = MessageType::DB_PATH_RESPONSE;
+    FLY_SERIALIZE(header, db_id, base_path, data_path, success);
 };
 
 // Master → Worker: 关机
@@ -212,6 +217,30 @@ struct ShutdownMessage {
     static constexpr MessageType msg_type = MessageType::SHUTDOWN;
     
     FLY_SERIALIZE(header);
+};
+
+struct WriteRegisterMessage {
+    MessageHeader header;
+    uint64_t worker_id = 0;
+    CMString object_name;
+    CMString db_id;
+    
+    static constexpr MessageType msg_type = MessageType::WRITE_REGISTER;
+    
+    FLY_SERIALIZE(header, worker_id, object_name, db_id);
+};
+
+struct WriteRegisterAckMessage {
+    MessageHeader header;
+    CMString object_name;
+    CMString db_id;
+    bool success = false;
+    CMString error_message;
+    TaskErrorType error_type = TaskErrorType::UNKNOWN;
+
+    static constexpr MessageType msg_type = MessageType::WRITE_REGISTER_ACK;
+
+    FLY_SERIALIZE(header, object_name, db_id, success, error_message, error_type);
 };
 
 }  // namespace fly

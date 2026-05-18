@@ -1,0 +1,22 @@
+[2026-05-17 23:03:45.427] [INFO] [WorkerAgent] start() called, connecting to 127.0.0.1:29080
+[2026-05-17 23:03:45.427] [INFO] [WorkerAgent] data server listening on port 34005
+[2026-05-17 23:03:45.427] [INFO] [WorkerAgent] connected, master_conn=1
+[2026-05-17 23:03:45.428] [INFO] [WorkerAgent] RegisterMessage sent with data_server_port=34005
+[2026-05-17 23:03:45.428] [INFO] [WorkerAgent] RegisterAck received, registered
+[2026-05-17 23:03:45.728] [INFO] [WorkerAgent] TaskAssign received: task_id=1
+[2026-05-17 23:03:45.828] [INFO] [WorkerAgent] Executing task: task_id=1
+[2026-05-17 23:03:45.829] [INFO] [WorkerAgent] TaskComplete sent: task_id=1, outputs=0
+[2026-05-17 23:03:45.829] [INFO] [WorkerAgent] Shutdown received
+[2026-05-17 23:03:45.839] [INFO] [WorkerAgent] stop() called
+[2026-05-17 23:03:45.850] [INFO] [WorkerAgent] stop() called
+[2026-05-17 23:07:15.950] [INFO] [WorkerAgent] start() called, connecting to 127.0.0.1:29080
+[2026-05-17 23:07:15.950] [INFO] [WorkerAgent] data server listening on port 39003
+[2026-05-17 23:07:15.950] [INFO] [WorkerAgent] connected, master_conn=1
+[2026-05-17 23:07:15.951] [INFO] [WorkerAgent] RegisterMessage sent with data_server_port=39003
+[2026-05-17 23:07:15.951] [INFO] [WorkerAgent] RegisterAck received, registered
+[2026-05-17 23:07:16.251] [INFO] [WorkerAgent] TaskAssign received: task_id=1
+[2026-05-17 23:07:16.351] [INFO] [WorkerAgent] Executing task: task_id=1
+[2026-05-17 23:07:16.352] [INFO] [WorkerAgent] TaskComplete sent: task_id=1, outputs=0
+[2026-05-17 23:07:16.553] [INFO] [WorkerAgent] Shutdown received
+[2026-05-17 23:07:16.554] [INFO] [WorkerAgent] stop() called
+[2026-05-17 23:07:16.565] [INFO] [WorkerAgent] stop() called

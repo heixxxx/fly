@@ -1,6 +1,13 @@
 # Fly 分布式任务框架 — 当前状态总结
 
-**生成日期**: 2026-05-16
+> ⚠️ **本文档已被取代**。请参阅最新版本：
+> - 进度总结与路线图：`docs/superpowers/plans/2026-05-17-progress-and-roadmap.md`
+> - 网络与消息流程：`docs/superpowers/plans/2026-05-17-network-and-message-flow.md`
+> - Layer 5 实施状态：`docs/superpowers/plans/2026-05-16-layer5-status.md`
+
+---
+
+**生成日期**: 2026-05-16 (已过时)
 **分支**: main
 **总提交**: 68 commits
 
@@ -15,10 +22,10 @@
 | Layer 2 | ✅ 完成 | 35 | 15 | 2026-05-15 | Reactor, TCPTransport, MessageProtocol, MessageTypes |
 | Layer 3 | ✅ 完成 | 28 | 18 | 2026-05-15 | DependencyGraph, WorkerManager, TaskScheduler, MetadataManager, HeartbeatMonitor |
 | Layer 4 | ✅ 完成 | 48 | 35 | 2026-05-16 | MasterAgent, WorkerAgent, TaskExecutor, Python callable executor, 端到端示例 |
-| Layer 5+6 | 待实施 | - | - | - | 高级功能 + 集成测试 |
+| Layer 5+6 | 🔄 Layer 5 完成, Layer 6 部分 | 33+5 | - | - | Python API, 数据传输, E2E 测试 |
 
-**总测试**: 161 tests pass
-**总提交**: 68 commits (含文档整理)
+**总测试**: 33 Bazel targets + 5 E2E tests pass
+**总提交**: 73 commits (含文档整理)
 
 ---
 
@@ -59,7 +66,7 @@
 | C++ 标准 | C++20 |
 | 编译器 | gcc12 |
 | Python 绑定 | nanobind |
-| 序列化 | zpp_bits / cereal |
+| 序列化 | bitsery (header-only, 版本化支持) |
 | 构建 | Bazel + fly.sh |
 | 测试 | gtest + pytest |
 | 压缩 | LZ4/ZLIB/ZSTD |

@@ -18,5 +18,13 @@ py_library(
         "//src/agent/export:_fly_agent.so",
         "//src/core/export:_fly_core.so",
         "//src/log/export:_fly_log.so",
+        "//src/test/export:_fly_test.so",
+    ],
+    imports = [
+        "../storage/export",
+        "../agent/export",
+        "../core/export",
+        "../log/export",
+        "../test/export",
     ],
 )

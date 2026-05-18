@@ -1,7 +1,7 @@
 # Layer 5 Python API + 数据传输 — 实施状态
 
-**日期**: 2026-05-17
-**状态**: Phase 1-3 完成, 数据传输协议已实现, Python API 重构完成
+**日期**: 2026-05-17 (v2)
+**状态**: ✅ 全部完成 (Phase 1-3 + 数据传输 + Python API 重构 + DataService 迁移)
 
 ---
 
@@ -50,16 +50,19 @@
 | 3.7 | DB freeze通过消息传递 | ✅ |
 | 3.8 | Database C++侧管理 (MasterAgent) | ✅ |
 
-### 数据传输协议 (6/6 完成)
+### 数据传输协议 → DataService 迁移 (9/9 完成)
 
 | Task | 内容 | 状态 |
 |------|------|------|
-| D1 | MetadataManager DataLocation映射 (object→worker) | ✅ |
-| D2 | RegisterMessage扩展data_server_port | ✅ |
-| D3 | Worker Data Server (listen + DataRequest handler) | ✅ |
-| D4 | Master on_task_complete记录object→worker映射 | ✅ |
-| D5 | Master DataQuery handler返回DataLocationMessage | ✅ |
-| D6 | Worker直连数据请求 (request_remote_data) | ✅ |
+| D1 | DataService 单例实现 (local_idx + remote_idx + worker_registry) | ✅ |
+| D2 | DataWriter::get_last_entry() 暴露索引条目 | ✅ |
+| D3 | DataReader::read_from_entries() 直接按 IndexEntry 读取 + ObjectHeader py_name 提取 | ✅ |
+| D4 | Database 写时通知 DataService, 读时走 DataService (模板 + 非模板统一) | ✅ |
+| D5 | MetadataManager 清理 (移除数据位置方法, 仅保留 task 元数据) | ✅ |
+| D6 | MasterAgent 迁移到 DataService (DataQuery, on_data_ready, on_task_complete) | ✅ |
+| D7 | WorkerAgent.request_data_from_worker + 远程读取后更新 remote_idx | ✅ |
+| D8 | Python database.py 三层读取流程 (local→remote_idx缓存→全程远程, 3次重试) | ✅ |
+| D9 | DB Path 查询: 独立消息类型 (19/20), WorkerAgent.request_db_path() + 自动创建 Database | ✅ |
 
 ### Python API 重构 (5/5 完成)
 
@@ -107,38 +110,55 @@ worker = EXStgWorkerInfo(1, "host", "role", "/data", "w1.idx", 100, "")
 ```
 Worker Node:
 ├── Main Thread: poll_task → executor.execute (Python)
-├── Reactor Thread: 消息处理 + Data Server (listen)
+├── Reactor Thread: 消息处理 + Data Server (listen) + IOThreadPool.process_completions()
+├── IOThreadPool: DataService 异步文件 I/O (可配置线程数, 默认1)
 └── Heartbeat Thread: 心跳发送 (CV-based, 非sleep)
 ```
 
-### 数据传输流程 (Worker直连)
+### 数据传输流程 (三层降级读取)
 
 ```
-Worker A 读 Worker B 的数据:
-1. Worker A → Master: DataQueryMessage(object_name)
-2. Master → Worker A: DataLocationMessage(worker_id, host, port)
-3. Worker A connect Worker B data server
-4. Worker A → Worker B: DataRequestMessage(object_name)
-5. Worker B 从本地Database读出bytes
-6. Worker B → Worker A: DataResponseMessage(data)
+Python: db.read_object("key")
+
+Layer 1: 本地读取
+  └── DataService.try_read_local(key)
+        ├── 找到 → DataReader.read_from_entries() → 返回
+        └── 未找到 → 进入 Layer 2
+
+Layer 2: 远程索引缓存
+  └── DataService.lookup_remote_idx(key)
+        ├── 有缓存 → WorkerAgent.request_data_from_worker(host, port, key)
+        │     └── 直连目标 Worker, 跳过 Master
+        └── 失败/无缓存 → 进入 Layer 3
+
+Layer 3: 全程远程 (最多 3 次重试)
+  └── WorkerAgent.request_remote_data(key)
+        ├── DataQuery → Master → DataLocation
+        ├── connect → target Worker → DataRequest → DataResponse
+        └── 成功 → DataService.update_remote_idx() (缓存)
 ```
 
 ### 关键设计决策
 
-- **Master = worker_id=0**: Master也可写数据,有DataRequestMessage handler
+- **DataService modeless**: Master 和 Worker 共享同一个 DataService 类，仅更新触发源不同
+- **remote_idx as cache**: Worker 远程读取成功后自动缓存，后续同对象跳过 Master 查询
+- **MetadataManager task-only**: 数据位置跟踪已迁移至 DataService，MetadataManager 仅管理 TaskMetadata
+- **Database::read_object_typed delegates to DataService**: 本地未找到时 throw，Python 处理远程重试
 - **Worker Data Server**: 每个Worker启动时listen端口,注册时上报给Master
 - **Database shared_ptr**: 所有Database引用使用shared_ptr,不使用裸指针
 - **fly.open_db()**: 唯一公开的 Database 创建入口, _Database 为内部类
 - **C++ type-aware serialization**: write/read_object 自动检测 is_cpp 属性, C++ 导出类型走 __getstate__/__setstate__
 - **DB freeze via message**: Worker通过TaskCompleteMessage.frozen_dbs通知Master,Master调用C++ Database::freeze()
 - **Heartbeat CV**: 心跳线程使用 condition_variable::wait_for() 替代 sleep_for(), stop() 无阻塞
+- **IOThreadPool completion pattern**: 任务在线程池执行文件 I/O, 完成回调通过 process_completions() 在 Reactor 线程执行 → reactor_->send(), 避免跨线程 transport 访问
+- **DataClient 独立连接**: Worker A 读取使用阻塞 TCP socket (DataClient), 独立于主 Reactor, 避免多线程读冲突
 
 ---
 
 ## 测试状态
 
-- **C++ 测试**: 31 tests pass
-- **QA 测试**: 20/20 pass (qa/storage_test.py)
+- **C++ 测试**: 33 Bazel targets pass (含 data_service_test 12 cases + data_transfer_test 10 cases)
+- **QA 测试**: 2 targets pass
 - **E2E 测试**: 5/5 pass (via `./bazel-bin/src/main/cpp/fly src/e2e_user_script.py`)
   1. test_worker_db_write: Worker写, Master读
   2. test_dependency_and_freeze: 依赖+freeze
@@ -150,5 +170,8 @@ Worker A 读 Worker B 的数据:
 
 ## 下一步
 
-- 添加跨Worker数据读取E2E测试
-- Layer 6: 集成测试 + 性能优化
+- 写入注册协议 (Worker→Master ACK, freeze 检测, 失败回滚)
+- 跨 Worker 数据读取 E2E 测试 (基于新 DataService 三层流程)
+- Database freeze 后处理 (merged.idx, _META, 恢复加载)
+- Locality 优化调度
+- 数据副本与容错机制

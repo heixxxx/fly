@@ -178,3 +178,53 @@ CMString DataReader::read_large_object(const IndexEntry& first_entry) {
 
     return result;
 }
+
+ReadResult DataReader::read_from_entries(const CMVector<IndexEntry>& entries) {
+    if (entries.empty()) {
+        throw std::runtime_error("No entries to read");
+    }
+
+    if (entries.size() == 1) {
+        return read_object_data(entries.front());
+    }
+
+    CMVector<IndexEntry> sorted = entries;
+    std::sort(sorted.begin(), sorted.end(),
+        [](const IndexEntry& a, const IndexEntry& b) {
+            if (a.file_name != b.file_name) return a.file_name < b.file_name;
+            return a.offset < b.offset;
+        });
+
+    FlyBuffer result;
+    CMString py_name;
+
+    for (size_t i = 0; i < sorted.size(); ++i) {
+        const auto& block = sorted[i];
+        CMString file_path = find_file_path(block.file_name);
+        CMString raw_data = read_from_file(file_path, block.offset, block.size);
+
+        if (i == 0 && raw_data.size() >= 4) {
+            uint32_t magic = 0;
+            std::memcpy(&magic, raw_data.data(), sizeof(magic));
+            if (magic == FLY_OBJECT_MAGIC) {
+                int64_t offset = 0;
+                ObjectHeader header = ObjectHeader::deserialize(raw_data, offset);
+                py_name = header.py_name;
+
+                CMString chunk_data(raw_data.data() + offset,
+                                    static_cast<size_t>(block.size - offset));
+                CMString decompressed = decompress_data(chunk_data, block.compression_type);
+                result.insert(result.end(), decompressed.begin(), decompressed.end());
+                continue;
+            }
+        }
+
+        CMString decompressed = decompress_data(raw_data, block.compression_type);
+        result.insert(result.end(), decompressed.begin(), decompressed.end());
+    }
+
+    ReadResult rr;
+    rr.py_name = py_name;
+    rr.data_buffer = std::move(result);
+    return rr;
+}

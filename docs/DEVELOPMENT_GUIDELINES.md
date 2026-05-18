@@ -36,6 +36,11 @@ src/<module>/
 | `src/core/` | 核心基础模块（Config 等） |
 | `src/serialization/` | 序列化宏和工具 |
 | `src/export/` | 导出宏定义 |
+| `src/storage/` | 存储层（Database, DataService, DataWriter, DataReader） |
+| `src/network/` | 网络层（Reactor, TCP, 消息协议） |
+| `src/task/` | 任务系统层（调度, 依赖图, 元数据） |
+| `src/agent/` | Agent 层（MasterAgent, WorkerAgent, TaskExecutor） |
+| `src/log/` | 日志模块 |
 
 ### 1.3 子目录职责
 
@@ -214,7 +219,7 @@ cc_library(
 
 | 库 | 宏封装 | 替换方案 |
 |---|--------|----------|
-| zpp_bits | `FLY_SERIALIZE_*` | cereal / protobuf |
+| bitsery | `FLY_SERIALIZE_*` | cereal / protobuf |
 | nanobind | `FLY_EXPORT_*` | pybind11 / CPython API |
 | std::map | `CMMap` | absl::btree_map / robin_map |
 
@@ -453,6 +458,10 @@ FLY_EXPORT_FUNCTION_REF("get_storage_manager", []() -> StorageManager& {
 3. **用户写大括号**：`FLY_EXPORT_MODULE(name) { }` 不需要 `_BEGIN/_END`
 4. **FLY_EXPORT_SERIALIZE 是唯一 pickle 宏**：已删除 `FLY_EXPORT_PICKLE/PICKLE_SHARED_PTR`（不暴露 `__getstate__/__setstate__` 为 Python 方法，导致 FlyDatabase wrapper 无法工作）
 
+#### 4.5.6 类导出规范
+1. **仅小对象** 允许使用copy导出
+2. **任意大对象类型/copy存在性能问题/python侧需要修改数据并体现在原始数据上的类型** 必须使用shared_ptr的方式导出
+
 ---
 
 ## 5. C++20 技术决策
@@ -621,7 +630,7 @@ Type 类型：
 | 决策 | 原因 |
 |------|------|
 | nanobind 而非 pybind11 | 更小、更快、C++20 兼容 |
-| zpp_bits 而非 cereal | 单头文件、14x 更快、C++20 原生 |
+| bitsery 而非 zpp_bits/cereal | header-only、版本化支持、稳定、性能优良 |
 | CM前缀容器别名 | CM=Common，便于替换高效实现 |
 | headers 而非 C++20 Modules | Python 绑定不兼容 |
 | 模块式 include 路径 | 避免相对路径，便于重构 |

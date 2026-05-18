@@ -68,6 +68,7 @@ const CMMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"compression_level", 0},
     {"compression_threshold", 128},
     {"compression_stream_chunk_size", 4194304},
+    {"dependency_update_mode", 0},
 };
 
 const CMMap<CMString, CMString> Config::STR_DEFAULTS = {

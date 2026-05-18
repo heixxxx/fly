@@ -49,6 +49,19 @@ cc_library(
 )
 
 cc_library(
+    name = "fly_storage_local_index",
+    srcs = ["local_index.cpp"],
+    hdrs = ["local_index.h"],
+    strip_include_prefix = "/src",
+    copts = ["-std=c++20"],
+    deps = [
+        ":fly_storage_index_entry",
+        "//src/common/cpp:fly_common_types",
+        "//src/serialization/cpp:fly_serialization_macros",
+    ],
+)
+
+cc_library(
     name = "fly_storage_db_meta",
     hdrs = ["db_meta.h"],
     strip_include_prefix = "/src",
@@ -61,16 +74,18 @@ cc_library(
 )
 
 cc_library(
-    name = "fly_storage_local_index",
-    srcs = ["local_index.cpp"],
-    hdrs = ["local_index.h"],
-    strip_include_prefix = "/src",
+    name = "fly_storage_data_service",
+    srcs = ["data_service.cpp"],
+    hdrs = ["data_service.h"],
     copts = ["-std=c++20"],
     deps = [
+        ":fly_storage_data_reader",
         ":fly_storage_index_entry",
         "//src/common/cpp:fly_common_types",
-        "//src/serialization/cpp:fly_serialization_macros",
+        "//src/log/cpp:fly_log",
+        "//src/network/cpp:fly_network_io_thread_pool",
     ],
+    strip_include_prefix = "/src",
 )
 
 cc_library(
@@ -115,6 +130,7 @@ cc_library(
     deps = [
         ":fly_storage_data_writer",
         ":fly_storage_data_reader",
+        ":fly_storage_data_service",
         ":fly_storage_db_meta",
         ":fly_storage_object",
         ":fly_storage_compression_impl",

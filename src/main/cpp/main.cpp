@@ -19,6 +19,7 @@ static void setup_sys_path() {
     ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "agent" / "export").string() + "')\n";
     ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "log" / "export").string() + "')\n";
     ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "network" / "export").string() + "')\n";
+    ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "test" / "export").string() + "')\n";
     ps += "sys.path.insert(0, '" + cwd.string() + "/src')\n";
 
     PyRun_SimpleString(ps.c_str());

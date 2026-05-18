@@ -1,0 +1,34 @@
+[2026-05-17 23:03:45.327] [INFO] [MasterAgent] start() called, listening on 127.0.0.1:29080
+[2026-05-17 23:03:45.327] [INFO] [MasterAgent] started, reactor thread running
+[2026-05-17 23:03:45.428] [INFO] [MasterAgent] Worker registered: worker_id=1, data_server=127.0.0.1:34005
+[2026-05-17 23:03:45.728] [INFO] [MasterAgent] submit_task: id=1, name=write_task
+[2026-05-17 23:03:45.728] [INFO] [MasterAgent] assign_task: task=1 to worker=1
+[2026-05-17 23:03:45.829] [INFO] [MasterAgent] stop() called
+[2026-05-17 23:03:45.829] [INFO] [MasterAgent] Broadcasting shutdown to worker_id=1
+[2026-05-17 23:03:45.829] [INFO] [MasterAgent] Task complete: task_id=1, written_objects=0
+[2026-05-17 23:03:45.850] [INFO] [MasterAgent] stop() called
+[2026-05-17 23:03:45.850] [INFO] [MasterAgent] start() called, listening on 127.0.0.1:29081
+[2026-05-17 23:03:45.850] [INFO] [MasterAgent] started, reactor thread running
+[2026-05-17 23:03:45.950] [INFO] [MasterAgent] register_database: db_id=frozen_test_db, base_path=/tmp/fly_frozen_test, data_path=
+[2026-05-17 23:03:45.951] [INFO] [MasterAgent] stop() called
+[2026-05-17 23:03:45.951] [INFO] [MasterAgent] start() called, listening on 127.0.0.1:29082
+[2026-05-17 23:03:45.952] [INFO] [MasterAgent] started, reactor thread running
+[2026-05-17 23:03:46.052] [INFO] [MasterAgent] Worker registered: worker_id=3, data_server=127.0.0.1:39043
+[2026-05-17 23:03:46.352] [INFO] [MasterAgent] stop() called
+[2026-05-17 23:03:46.352] [INFO] [MasterAgent] Broadcasting shutdown to worker_id=3
+[2026-05-17 23:03:46.366] [INFO] [MasterAgent] stop() called
+[2026-05-17 23:07:15.850] [INFO] [MasterAgent] start() called, listening on 127.0.0.1:29080
+[2026-05-17 23:07:15.850] [INFO] [MasterAgent] started, reactor thread running
+[2026-05-17 23:07:15.951] [INFO] [MasterAgent] Worker registered: worker_id=1, data_server=127.0.0.1:39003
+[2026-05-17 23:07:16.251] [INFO] [MasterAgent] submit_task: id=1, name=write_task
+[2026-05-17 23:07:16.251] [INFO] [MasterAgent] assign_task: task=1 to worker=1
+[2026-05-17 23:07:16.352] [INFO] [MasterAgent] Task complete: task_id=1, written_objects=0
+[2026-05-17 23:07:16.552] [INFO] [MasterAgent] stop() called
+[2026-05-17 23:07:16.552] [INFO] [MasterAgent] Broadcasting shutdown to worker_id=1
+[2026-05-17 23:07:16.565] [INFO] [MasterAgent] stop() called
+[2026-05-17 23:07:16.565] [INFO] [MasterAgent] start() called, listening on 127.0.0.1:29082
+[2026-05-17 23:07:16.565] [INFO] [MasterAgent] started, reactor thread running
+[2026-05-17 23:07:16.666] [INFO] [MasterAgent] Worker registered: worker_id=3, data_server=127.0.0.1:33387
+[2026-05-17 23:07:16.966] [INFO] [MasterAgent] stop() called
+[2026-05-17 23:07:16.966] [INFO] [MasterAgent] Broadcasting shutdown to worker_id=3
+[2026-05-17 23:07:16.981] [INFO] [MasterAgent] stop() called
