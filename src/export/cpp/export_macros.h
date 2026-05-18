@@ -5,6 +5,7 @@
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/map.h>
 #include <nanobind/stl/shared_ptr.h>
+#include <common/cpp/common_types.h>
 #include <memory>
 #include <string>
 
@@ -17,7 +18,7 @@ namespace fly_export = nanobind;
     fly_export::class_<class_type>(m, export_name)
 
 #define FLY_EXPORT_CLASS_SHARED_PTR(class_type, export_name) \
-    fly_export::class_<class_type, std::shared_ptr<class_type>>(m, export_name)
+    fly_export::class_<class_type, CMSharedPtr<class_type>>(m, export_name)
 
 // Init — separate from class macros, user chooses whether and how to add init
 #define FLY_EXPORT_INIT(...) .def(fly_export::init<__VA_ARGS__>())
