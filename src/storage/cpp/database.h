@@ -20,18 +20,19 @@ public:
     template<typename T>
     CMString write_object(const CMString& object_name, const T& obj,
                            const CMString& py_name = "") {
+        CMString full = full_name(object_name);
         check_frozen();
-        fly::DataService::instance().on_write_started(db_id_, object_name);
+        fly::DataService::instance().on_write_started(db_id_, full);
         try {
             fly::WorkerAgentContext::register_write(db_id_, object_name);
         } catch (const std::exception& e) {
-            fly::DataService::instance().on_write_failed(db_id_, object_name, e.what());
+            fly::DataService::instance().on_write_failed(db_id_, full, e.what());
             throw;
         }
-        CMString result = writer_->write_object(object_name, obj, py_name);
-        auto* all = writer_->get_all_entries(object_name);
+        CMString result = writer_->write_object(full, obj, py_name);
+        auto* all = writer_->get_all_entries(full);
         if (all) {
-            fly::DataService::instance().on_write_completed(db_id_, object_name, *all);
+            fly::DataService::instance().on_write_completed(db_id_, full, *all);
         }
         writer_->flush();
         fly::DataService::instance().on_flush(db_id_);
@@ -41,13 +42,11 @@ public:
 
     template<typename T>
     std::shared_ptr<T> read_object(const CMString& object_name) {
-        auto [found, result] = fly::DataService::instance().try_read_local(object_name);
-        if (found) {
-            auto obj = std::make_shared<T>();
-            FLY_DECODE_FROM_BYTES(result.data_buffer, T, *obj);
-            return obj;
-        }
-        throw std::runtime_error("Object not found locally: " + object_name);
+        CMString full = full_name(object_name);
+        auto result = fly::DataService::instance().read_raw(full);
+        auto obj = std::make_shared<T>();
+        FLY_DECODE_FROM_BYTES(result.data_buffer, T, *obj);
+        return obj;
     }
 
     CMString write_object(const CMString& object_name, const CMString& data, bool backup = false);
@@ -64,6 +63,7 @@ public:
     DbMeta load_meta() const;
 
     CMString get_db_id() const;
+    void set_db_id(const CMString& db_id);
     CMString get_base_path() const;
     CMString get_data_path() const;
     CMString get_obj_name(const CMString& name) const;
@@ -75,6 +75,7 @@ private:
     void create_frozen_marker();
     CMString generate_db_id();
     void ensure_directory_exists(const CMString& path);
+    CMString full_name(const CMString& short_name) const;
 
     CMString base_path_;
     CMString data_path_;

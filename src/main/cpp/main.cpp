@@ -13,7 +13,8 @@ static void setup_sys_path() {
     // For Python source, use CWD (user runs from project root)
     std::filesystem::path cwd = std::filesystem::current_path();
 
-    std::string ps = "import sys\n";
+    std::string ps = "import sys, os\n";
+    ps += "sys.setdlopenflags(os.RTLD_NOW | os.RTLD_GLOBAL)\n";
     ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "core" / "export").string() + "')\n";
     ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "storage" / "export").string() + "')\n";
     ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "agent" / "export").string() + "')\n";

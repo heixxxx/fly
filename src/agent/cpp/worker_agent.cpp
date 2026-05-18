@@ -3,10 +3,26 @@
 #include <core/cpp/config.h>
 #include <storage/cpp/data_service.h>
 #include <network/cpp/data_client.h>
+#include <network/cpp/master_client.h>
 #include <thread>
 #include <chrono>
 
 namespace fly {
+
+DataService& WorkerAgent::ds() {
+    return data_service_ ? *data_service_ : DataService::instance();
+}
+
+void WorkerAgent::set_data_service(DataService* ds) {
+    data_service_ = ds;
+    ds->set_remote_read_handler([this](const CMString& name) -> ReadResult {
+        return request_remote_data(name);
+    });
+    ds->set_direct_read_handler([this](const CMString& host, int32_t port,
+                                        const CMString& name) -> ReadResult {
+        return request_data_from_worker(host, port, name);
+    });
+}
 
 WorkerAgent::WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port)
     : worker_id_(worker_id), master_host_(master_host), master_port_(master_port),
@@ -41,9 +57,9 @@ void WorkerAgent::start() {
 
     reactor_ = std::make_unique<Reactor>(std::move(transport));
 
-    auto& ds = DataService::instance();
+    auto& dsInst = ds();
     int data_server_threads = static_cast<int>(Config::instance().get_int("data_server_threads"));
-    ds.start_transfer_server(
+    dsInst.start_transfer_server(
         data_server_threads,
         [this](const TransferResult& result) {
             DataResponseMessage response;
@@ -55,7 +71,7 @@ void WorkerAgent::start() {
             }
             reactor_->send(result.conn_id, response);
         });
-    reactor_->set_io_pool(ds.get_transfer_pool());
+    reactor_->set_io_pool(dsInst.get_transfer_pool());
 
      reactor_->register_handler<RegisterAckMessage>(
          [this](uint64_t conn, const RegisterAckMessage& msg) {
@@ -97,6 +113,10 @@ void WorkerAgent::start() {
              on_write_register_ack(conn_id, msg);
          });
 
+    reactor_->on_disconnect([this](uint64_t conn_id) {
+        on_disconnect(conn_id);
+    });
+
     reactor_thread_ = std::thread([this] { reactor_->run(); });
 
     RegisterMessage reg;
@@ -112,6 +132,12 @@ void WorkerAgent::start() {
     heartbeat_running_ = true;
     heartbeat_thread_ = std::thread([this] { heartbeat_loop(); });
 
+    {
+        auto now = std::chrono::system_clock::now().time_since_epoch();
+        last_master_contact_.store(
+            std::chrono::duration_cast<std::chrono::seconds>(now).count());
+    }
+
     running_ = true;
 }
 
@@ -121,24 +147,24 @@ void WorkerAgent::stop() {
         log->info("WorkerAgent", "stop() called");
     }
 
-    if (running_) {
-        heartbeat_running_ = false;
-        heartbeat_cv_.notify_all();
-        if (heartbeat_thread_.joinable()) {
-            heartbeat_thread_.join();
-        }
-
-        DataService::instance().stop_transfer_server();
-
-        reactor_->stop();
-        if (reactor_thread_.joinable()) {
-            reactor_thread_.join();
-        }
-        reactor_.reset();
-
-        running_ = false;
-        registered_ = false;
+    heartbeat_running_ = false;
+    heartbeat_cv_.notify_all();
+    if (heartbeat_thread_.joinable()) {
+        heartbeat_thread_.join();
     }
+
+    ds().stop_transfer_server();
+
+    if (reactor_) {
+        reactor_->stop();
+    }
+    if (reactor_thread_.joinable()) {
+        reactor_thread_.join();
+    }
+    reactor_.reset();
+
+    running_ = false;
+    registered_ = false;
 }
 
 bool WorkerAgent::is_running() const {
@@ -177,6 +203,8 @@ void WorkerAgent::heartbeat_loop() {
                                     [this]{ return !heartbeat_running_.load(); });
         }
 
+        if (!heartbeat_running_) break;
+
         if (registered_ && heartbeat_running_) {
             HeartbeatMessage hb;
             hb.worker_id = worker_id_;
@@ -186,12 +214,28 @@ void WorkerAgent::heartbeat_loop() {
                 log->debug("WorkerAgent", "Heartbeat sent");
             }
         }
+
+        if (registered_ && running_) {
+            auto now = std::chrono::system_clock::now().time_since_epoch();
+            auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(now).count();
+            auto elapsed = now_sec - last_master_contact_.load();
+            if (elapsed > MASTER_TIMEOUT_SECONDS) {
+                if (log) {
+                    log->warn("WorkerAgent",
+                              "Master timeout (" + std::to_string(elapsed) +
+                              "s since last contact), shutting down");
+                }
+                initiate_shutdown("master timeout");
+                break;
+            }
+        }
     }
 }
 
 void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
     auto* log = Logger::get_worker(worker_id_);
     registered_ = true;
+    touch_master_contact();
 
     if (log) {
         log->info("WorkerAgent", "RegisterAck received, registered");
@@ -203,6 +247,7 @@ void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
     if (log) {
         log->info("WorkerAgent", "TaskAssign received: task_id=" + std::to_string(msg.task_id));
     }
+    touch_master_contact();
 
     PendingTask task;
     task.task_id = msg.task_id;
@@ -274,10 +319,41 @@ bool WorkerAgent::poll_task() {
 
 void WorkerAgent::on_shutdown(const ShutdownMessage& msg) {
     auto* log = Logger::get_worker(worker_id_);
-    registered_ = false;
-
     if (log) {
         log->info("WorkerAgent", "Shutdown received");
+    }
+
+    initiate_shutdown("master shutdown message");
+}
+
+void WorkerAgent::on_disconnect(uint64_t conn_id) {
+    if (conn_id == master_conn_) {
+        auto* log = Logger::get_worker(worker_id_);
+        if (log) {
+            log->warn("WorkerAgent", "Master connection lost, shutting down");
+        }
+        initiate_shutdown("master connection lost");
+    }
+}
+
+void WorkerAgent::touch_master_contact() {
+    auto now = std::chrono::system_clock::now().time_since_epoch();
+    last_master_contact_.store(
+        std::chrono::duration_cast<std::chrono::seconds>(now).count());
+}
+
+void WorkerAgent::initiate_shutdown(const CMString& reason) {
+    auto* log = Logger::get_worker(worker_id_);
+    if (log) {
+        log->info("WorkerAgent", "Initiating shutdown: " + reason);
+    }
+
+    registered_ = false;
+    running_ = false;
+    heartbeat_running_ = false;
+    heartbeat_cv_.notify_all();
+    if (reactor_) {
+        reactor_->stop();
     }
 }
 
@@ -288,6 +364,7 @@ void WorkerAgent::on_db_path_response(const DbPathResponseMessage& msg) {
                   ", base_path=" + msg.base_path + ", data_path=" + msg.data_path +
                   ", success=" + std::to_string(msg.success));
     }
+    touch_master_contact();
 
     std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
     auto it = pending_db_paths_.find(msg.db_id);
@@ -341,7 +418,7 @@ void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& ms
         log->info("WorkerAgent", "DataRequest enqueued for object: " + msg.object_name);
     }
 
-    DataService::instance().submit_transfer(conn_id, msg.object_name);
+    ds().submit_transfer(conn_id, msg.object_name);
 }
 
 void WorkerAgent::on_data_response(uint64_t conn_id, const DataResponseMessage& msg) {
@@ -363,6 +440,7 @@ void WorkerAgent::on_data_response(uint64_t conn_id, const DataResponseMessage& 
 
 void WorkerAgent::on_data_location(uint64_t conn_id, const DataLocationMessage& msg) {
     auto* log = Logger::get_worker(worker_id_);
+    touch_master_contact();
     if (log) {
         log->info("WorkerAgent", "DataLocation for object: " + msg.object_name +
                   ", worker_id=" + std::to_string(msg.worker_id) +
@@ -390,61 +468,30 @@ void WorkerAgent::on_data_location(uint64_t conn_id, const DataLocationMessage& 
 ReadResult WorkerAgent::request_remote_data(const CMString& object_name) {
     auto* log = Logger::get_worker(worker_id_);
 
-    // Step 1: Query Master for data location (via Reactor)
-    auto pending = std::make_shared<PendingRemoteData>();
-    pending->object_name = object_name;
-    {
-        std::lock_guard<std::mutex> lock(pending_data_mutex_);
-        pending_data_[object_name] = pending;
-    }
+    // Step 1: Query Master for data location (blocking TCP, thread-safe)
+    auto location = MasterClient::query_data_location(
+        master_host_, master_port_, object_name);
 
-    DataQueryMessage query;
-    query.object_name = object_name;
-    reactor_->send(master_conn_, query);
+    if (!location.found) {
+        throw std::runtime_error(
+            "Master has no location for: " + object_name +
+            " (" + location.error + ")");
+    }
 
     if (log) {
-        log->info("WorkerAgent", "Sent DataQuery for " + object_name);
-    }
-
-    CMString target_host;
-    int32_t target_port = 0;
-    uint64_t target_worker_id = 0;
-
-    for (int i = 0; i < 100; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        std::lock_guard<std::mutex> lock(pending_data_mutex_);
-        if (pending->location_received) {
-            target_host = pending->data_host;
-            target_port = pending->data_port;
-            target_worker_id = pending->target_worker_id;
-            pending_data_.erase(object_name);
-            break;
-        }
-        if (pending->completed && !pending->success) {
-            pending_data_.erase(object_name);
-            throw std::runtime_error("Remote data query failed: " + pending->error_message);
-        }
-    }
-
-    if (target_host.empty()) {
-        std::lock_guard<std::mutex> lock(pending_data_mutex_);
-        pending_data_.erase(object_name);
-        throw std::runtime_error("Timeout waiting for data location: " + object_name);
+        log->info("WorkerAgent", "MasterClient resolved " + object_name +
+                  " → " + location.host + ":" + std::to_string(location.port));
     }
 
     // Step 2: Direct read from target worker via DataClient (separate connection)
-    if (log) {
-        log->info("WorkerAgent", "Connecting via DataClient to " + target_host + ":" +
-                  std::to_string(target_port) + " for " + object_name);
-    }
-
-    auto [success, data, error] = DataClient::request_data(target_host, target_port, object_name);
+    auto [success, data, error] = DataClient::request_data(
+        location.host, location.port, object_name);
 
     if (!success) {
         throw std::runtime_error("Data transfer failed for " + object_name + ": " + error);
     }
 
-    DataService::instance().update_remote_idx(object_name, target_worker_id, target_host, target_port);
+    ds().update_remote_idx(object_name, location.worker_id, location.host, location.port);
 
     ReadResult result;
     result.data_buffer.assign(data.begin(), data.end());
@@ -578,6 +625,7 @@ void WorkerAgent::register_write_with_master(const CMString& db_id, const CMStri
 
 void WorkerAgent::on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg) {
     auto* log = Logger::get_worker(worker_id_);
+    touch_master_contact();
     if (log) {
         log->info("WorkerAgent", "WriteRegisterAck: object=" + msg.object_name +
                   ", success=" + std::to_string(msg.success) +

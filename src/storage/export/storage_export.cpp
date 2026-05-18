@@ -48,10 +48,21 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_DEF("read_object_raw", [](Database& db, const CMString& name) -> CMString {
         return db.read_object(name);
     })
+    FLY_EXPORT_DEF("read_raw", [](Database& db, const CMString& name) -> fly_export::tuple {
+        CMString full = db.get_obj_name(name);
+        ReadResult result = fly::DataService::instance().read_raw(full);
+        return fly_export::make_tuple(
+            fly_export::bytes(
+                reinterpret_cast<const char*>(result.data_buffer.data()),
+                result.data_buffer.size()),
+            result.py_name
+        );
+    })
     FLY_EXPORT_METHOD("freeze", &Database::freeze)
     FLY_EXPORT_METHOD("is_frozen", &Database::is_frozen)
     FLY_EXPORT_METHOD("load_meta", &Database::load_meta)
     FLY_EXPORT_METHOD("get_db_id", &Database::get_db_id)
+    FLY_EXPORT_METHOD("set_db_id", &Database::set_db_id)
     FLY_EXPORT_METHOD("get_base_path", &Database::get_base_path)
     FLY_EXPORT_METHOD("get_data_path", &Database::get_data_path)
     FLY_EXPORT_METHOD("get_obj_name", &Database::get_obj_name)

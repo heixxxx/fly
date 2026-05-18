@@ -65,6 +65,8 @@ public:
     uint64_t get_worker_id() const;
     
     void set_executor(std::shared_ptr<TaskExecutor> executor);
+
+    void set_data_service(DataService* ds);
     
     void begin_task(uint64_t task_id);
     void record_write(const CMString& db_id, const CMString& object_name);
@@ -137,8 +139,19 @@ private:
     void on_data_location(uint64_t conn_id, const DataLocationMessage& msg);
     void on_data_response(uint64_t conn_id, const DataResponseMessage& msg);
     void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
+    void on_disconnect(uint64_t conn_id);
     
     void heartbeat_loop();
+    void touch_master_contact();
+    void initiate_shutdown(const CMString& reason);
+
+    DataService* data_service_ = nullptr;
+
+    DataService& ds();
+
+    // Master liveness tracking — seconds since epoch (atomic for cross-thread access)
+    std::atomic<int64_t> last_master_contact_{0};
+    static constexpr int MASTER_TIMEOUT_SECONDS = 60;
 };
 
 }  // namespace fly

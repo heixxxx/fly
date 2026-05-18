@@ -6,19 +6,17 @@ cc_binary(
     deps = [
         "@nanobind//:nanobind_src",
         "//src/test/cpp:fly_test_object",
-        "//src/storage/cpp:fly_storage_database",
-        "//src/storage/cpp:fly_storage_data_service",
+        "//src/storage/cpp:fly_storage_cpp_headers",
         "//src/export/cpp:fly_export_macros",
         "//src/serialization/cpp:fly_serialization_macros",
     ],
     copts = [
         "-std=c++20",
-        "-I/usr/local/include/python3.12",
+        "-I/usr/include/python3.10",
     ],
     linkopts = [
-        "-L/usr/local/lib",
-        "-lpython3.12",
+        "",
+        "-lpython3.10",
     ],
     linkshared = True,
-    linkstatic = True,
 )

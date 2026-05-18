@@ -8,6 +8,21 @@ namespace fly {
 
 std::atomic<uint64_t> MasterAgent::remote_task_counter_{100000};
 
+DataService& MasterAgent::ds() {
+    return data_service_ ? *data_service_ : DataService::instance();
+}
+
+void MasterAgent::set_data_service(DataService* ds) {
+    data_service_ = ds;
+    ds->set_remote_read_handler([this](const CMString& name) -> ReadResult {
+        return request_remote_data(name);
+    });
+    ds->set_direct_read_handler([this](const CMString& host, int32_t port,
+                                        const CMString& name) -> ReadResult {
+        return request_data_from_worker(host, port, name);
+    });
+}
+
 MasterAgent::MasterAgent(const CMString& host, uint16_t port)
     : host_(host), port_(port), running_(false),
       graph_(std::make_unique<DependencyGraph>()),
@@ -99,12 +114,12 @@ void MasterAgent::start() {
                  log->info("MasterAgent", "DataQuery for object: " + msg.object_name);
              }
 
-             auto& ds = DataService::instance();
+             ds();
              DataLocationMessage response;
              response.object_name = msg.object_name;
 
-             if (ds.has_remote_location(msg.object_name)) {
-                 auto loc = ds.lookup_remote_idx(msg.object_name);
+             if (ds().has_remote_location(msg.object_name)) {
+                 auto loc = ds().lookup_remote_idx(msg.object_name);
                  response.worker_id = loc.worker_id;
                  response.data_host = loc.host;
                  response.data_port = loc.port;
@@ -288,9 +303,9 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
 
     worker_manager_->register_worker(worker_id, host_, port_, msg.attributes);
 
-    auto& ds = DataService::instance();
+    ds();
     if (msg.data_server_port > 0) {
-        ds.register_worker(worker_id, msg.data_server_host, msg.data_server_port);
+        ds().register_worker(worker_id, msg.data_server_host, msg.data_server_port);
     }
 
     auto* log = Logger::get_master();
@@ -328,15 +343,9 @@ void MasterAgent::on_data_ready(uint64_t conn_id, const DataReadyMessage& msg) {
 
     graph_->mark_data_ready(msg.object_name);
 
-    auto& ds = DataService::instance();
-    auto addr = ds.get_worker_address(msg.worker_id);
+    auto addr = ds().get_worker_address(msg.worker_id);
 
-    auto colon_pos = msg.object_name.find(':');
-    CMString obj_name = (colon_pos != CMString::npos)
-        ? msg.object_name.substr(colon_pos + 1)
-        : msg.object_name;
-
-    ds.update_remote_idx(obj_name, msg.worker_id, addr.host, addr.port);
+    ds().update_remote_idx(msg.object_name, msg.worker_id, addr.host, addr.port);
 
     schedule_tasks();
 }
@@ -352,28 +361,17 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
 
     worker_manager_->complete_task(worker_id);
 
-    auto& ds = DataService::instance();
-    auto addr = ds.get_worker_address(worker_id);
+    ds();
+    auto addr = ds().get_worker_address(worker_id);
 
     bool streaming_mode = (Config::instance().get_int("dependency_update_mode") == 0);
 
     for (const auto& data_path : msg.written_objects) {
         if (!streaming_mode) {
             graph_->mark_data_ready(data_path);
-        }
-
-        auto colon_pos = data_path.find(':');
-        if (colon_pos != CMString::npos) {
-            CMString obj_name = data_path.substr(colon_pos + 1);
-            if (!streaming_mode) {
-                ds.update_remote_idx(obj_name, worker_id, addr.host, addr.port);
-                if (log) {
-                    log->debug("MasterAgent", "Recorded data location: " + obj_name + " -> worker " + std::to_string(worker_id));
-                }
-            }
-        } else {
+            ds().update_remote_idx(data_path, worker_id, addr.host, addr.port);
             if (log) {
-                log->debug("MasterAgent", "Mark data ready: " + data_path);
+                log->debug("MasterAgent", "Recorded data location: " + data_path + " -> worker " + std::to_string(worker_id));
             }
         }
     }
@@ -488,6 +486,23 @@ CMVector<uint64_t> MasterAgent::get_completed_tasks() const {
     return ids;
 }
 
+CMVector<uint64_t> MasterAgent::get_failed_tasks() const {
+    auto tasks = metadata_->get_tasks_by_status(TaskStatus::FAILED);
+    CMVector<uint64_t> ids;
+    for (const auto& t : tasks) {
+        ids.push_back(t.task_id);
+    }
+    return ids;
+}
+
+CMString MasterAgent::get_task_error(uint64_t task_id) const {
+    auto* meta = metadata_->get_task(task_id);
+    if (meta) {
+        return meta->error_message;
+    }
+    return "";
+}
+
 void MasterAgent::register_database(const CMString& db_id, const CMString& base_path, const CMString& data_path) {
     auto* log = Logger::get_master();
     if (log) {
@@ -581,18 +596,11 @@ void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage
 }
 
 ReadResult MasterAgent::request_remote_data(const CMString& object_name) {
-    auto* log = Logger::get_master();
+    ds();
 
-    auto& ds = DataService::instance();
-
-    auto info = ds.lookup_remote_idx(object_name);
+    auto info = ds().lookup_remote_idx(object_name);
     if (info.host.empty()) {
         throw std::runtime_error("No remote location found for: " + object_name);
-    }
-
-    if (log) {
-        log->info("MasterAgent", "request_remote_data: " + object_name +
-                  " -> " + info.host + ":" + std::to_string(info.port));
     }
 
     auto [success, data, error] = DataClient::request_data(info.host, info.port, object_name);

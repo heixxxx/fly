@@ -16,6 +16,8 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
     , writer_id_(writer_id)
     , db_id_(generate_db_id()) {
 
+    fly::DataService::instance().register_database(db_id_, base_path_, data_path_, writer_id_);
+
     ensure_directory_exists(base_path_);
     if (!data_path_.empty()) {
         ensure_directory_exists(data_path_);
@@ -38,29 +40,28 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
         stream_chunk_size
     );
     reader_ = std::make_unique<DataReader>(base_path_, data_path_, writer_id_);
-
-    fly::DataService::instance().register_database(db_id_, base_path_, data_path_);
 }
 
 Database::~Database() = default;
 
 CMString Database::write_object(const CMString& object_name, const CMString& data, bool backup) {
+    CMString full = full_name(object_name);
     check_frozen();
 
-    fly::DataService::instance().on_write_started(db_id_, object_name);
+    fly::DataService::instance().on_write_started(db_id_, full);
 
     try {
         fly::WorkerAgentContext::register_write(db_id_, object_name);
     } catch (const std::exception& e) {
-        fly::DataService::instance().on_write_failed(db_id_, object_name, e.what());
+        fly::DataService::instance().on_write_failed(db_id_, full, e.what());
         throw;
     }
 
-    CMString result = writer_->write_object(object_name, data, backup);
+    CMString result = writer_->write_object(full, data, backup);
 
-    auto* all = writer_->get_all_entries(object_name);
+    auto* all = writer_->get_all_entries(full);
     if (all) {
-        fly::DataService::instance().on_write_completed(db_id_, object_name, *all);
+        fly::DataService::instance().on_write_completed(db_id_, full, *all);
     }
 
     writer_->flush();
@@ -77,24 +78,25 @@ CMString Database::read_object(const CMString& object_name) {
 
 CMString Database::write_object_typed(const CMString& object_name, const CMString& data,
                                         const CMString& py_name) {
+    CMString full = full_name(object_name);
     check_frozen();
 
-    fly::DataService::instance().on_write_started(db_id_, object_name);
+    fly::DataService::instance().on_write_started(db_id_, full);
 
     try {
         fly::WorkerAgentContext::register_write(db_id_, object_name);
     } catch (const std::exception& e) {
-        fly::DataService::instance().on_write_failed(db_id_, object_name, e.what());
+        fly::DataService::instance().on_write_failed(db_id_, full, e.what());
         throw;
     }
 
-    CMString result = writer_->write_typed_object(object_name, static_cast<uint64_t>(data.size()),
+    CMString result = writer_->write_typed_object(full, static_cast<uint64_t>(data.size()),
                                         py_name, data.data(),
                                         static_cast<int64_t>(data.size()));
 
-    auto* all = writer_->get_all_entries(object_name);
+    auto* all = writer_->get_all_entries(full);
     if (all) {
-        fly::DataService::instance().on_write_completed(db_id_, object_name, *all);
+        fly::DataService::instance().on_write_completed(db_id_, full, *all);
     }
 
     writer_->flush();
@@ -105,12 +107,13 @@ CMString Database::write_object_typed(const CMString& object_name, const CMStrin
 }
 
 ReadResult Database::read_object_typed(const CMString& object_name) {
+    CMString full = full_name(object_name);
     auto& ds = fly::DataService::instance();
-    auto [found, result] = ds.try_read_local(object_name);
+    auto [found, result] = ds.try_read_local(full);
     if (found) {
         return result;
     }
-    throw std::runtime_error("Object not found locally: " + object_name);
+    throw std::runtime_error("Object not found locally: " + full);
 }
 
 void Database::freeze() {
@@ -145,6 +148,11 @@ CMString Database::get_db_id() const {
     return db_id_;
 }
 
+void Database::set_db_id(const CMString& db_id) {
+    fly::DataService::instance().register_database(db_id, base_path_, data_path_, writer_id_);
+    db_id_ = db_id;
+}
+
 CMString Database::get_base_path() const {
     return base_path_;
 }
@@ -154,7 +162,11 @@ CMString Database::get_data_path() const {
 }
 
 CMString Database::get_obj_name(const CMString& name) const {
-    return db_id_ + ":" + name;
+    return full_name(name);
+}
+
+CMString Database::full_name(const CMString& short_name) const {
+    return db_id_ + ":" + short_name;
 }
 
 void Database::reset() {

@@ -153,3 +153,35 @@ cc_library(
         "//src/common/cpp:fly_common_types",
     ],
 )
+
+cc_library(
+    name = "fly_storage_cpp_headers",
+    hdrs = [
+        "compressor.h",
+        "compression_utils.h",
+        "lz4_compressor.h",
+        "zlib_compressor.h",
+        "zstd_compressor.h",
+        "data_writer.h",
+        "data_reader.h",
+        "data_service.h",
+        "database.h",
+        "db_meta.h",
+        "index_entry.h",
+        "local_index.h",
+        "object.h",
+        "storage_manager.h",
+    ],
+    strip_include_prefix = "/src",
+    copts = ["-std=c++20"],
+    deps = [
+        "//src/common/cpp:fly_common_types",
+        "//src/serialization/cpp:fly_serialization_macros",
+        "//src/serialization/cpp:fly_object_header",
+        "//src/serialization/cpp:fly_compressing_streambuf",
+        "//src/core/cpp:fly_core_cpp",
+        "//src/log/cpp:fly_log",
+        "//src/network/cpp:fly_network_io_thread_pool",
+        "//src/agent/cpp:fly_agent_worker_context",
+    ],
+)

@@ -8,11 +8,10 @@ cc_binary(
     ],
     copts = [
         "-std=c++20",
-        "-I/usr/local/include/python3.12",
+        "-I/usr/include/python3.10",
     ],
     linkopts = [
-        "-L/usr/local/lib",
-        "-lpython3.12",
+        "-lpython3.10",
         "-lpthread",
     ],
 )

@@ -31,6 +31,9 @@ public:
     void stop();
     bool is_running() const;
 
+    void set_data_service(DataService* ds);
+
+
     CMVector<uint64_t> get_connected_workers() const;
     size_t get_connection_count() const;
 
@@ -42,6 +45,8 @@ public:
     CMVector<uint64_t> get_pending_tasks() const;
     CMVector<uint64_t> get_running_tasks() const;
     CMVector<uint64_t> get_completed_tasks() const;
+    CMVector<uint64_t> get_failed_tasks() const;
+    CMString get_task_error(uint64_t task_id) const;
 
     CMVector<uint64_t> get_idle_workers() const;
 
@@ -101,6 +106,10 @@ private:
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
 
     std::atomic<bool> fatal_error_{false};
+
+    DataService* data_service_ = nullptr;
+
+    DataService& ds();
 };
 
 }  // namespace fly

@@ -24,6 +24,7 @@ def _deserialize_args(args: list, worker) -> list:
                 data_path = parts[3] if len(parts) > 3 else ""
                 from fly.database import _Database
                 db = _Database(base_path, data_path, worker._worker_id)
+                db._db.set_db_id(db_id)
                 worker._db_cache[db_id] = db
                 worker._agent.register_database(db_id, db._db)
             result.append(worker._db_cache[db_id])
@@ -98,7 +99,7 @@ def create_executor(worker) -> callable:
 
             logger.error(
                 f"Task execution failed: id={task_id}, "
-                f"name={task_name}, error={str(e)}\n{result.error}")
+                f"name={task_name}, error={str(e)}\n{result['error']}")
 
         return result
 

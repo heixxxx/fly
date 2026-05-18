@@ -6,6 +6,7 @@ import logging
 from abc import ABC, abstractmethod
 
 from _fly_agent import EXAgentMaster, EXAgentWorker, EXTaskExecutor, EXTaskExecStatus
+from _fly_storage import ex_stg_get_data_service
 
 from .executor import create_executor
 
@@ -46,6 +47,7 @@ class Master(FlyAgent):
 
     def __init__(self, host: str = "127.0.0.1", port: int = 0):
         self._agent = EXAgentMaster(host, port)
+        self._agent.set_data_service(ex_stg_get_data_service())
         self._task_counter = 0
         self._lock = threading.Lock()
         self._workers = []
@@ -128,15 +130,6 @@ class Master(FlyAgent):
         return self._agent.get_completed_tasks()
 
     def wait_for_all_tasks(self, expected: int = None, timeout: float = 30.0):
-        """Wait until all tasks complete.
-
-        Args:
-            expected: Number of completed tasks to wait for.
-                      If None, waits for pending+running to reach 0.
-            timeout: Max seconds to wait.
-        Returns:
-            List of completed task results.
-        """
         import time
         t0 = time.time()
         if expected is not None:
@@ -144,6 +137,9 @@ class Master(FlyAgent):
                 completed = self._agent.get_completed_tasks()
                 if len(completed) >= expected:
                     return completed
+                failed = self._agent.get_failed_tasks()
+                if failed:
+                    raise RuntimeError(f"Tasks failed: {failed}")
                 time.sleep(0.5)
         else:
             while time.time() - t0 < timeout:
@@ -151,6 +147,9 @@ class Master(FlyAgent):
                 running = self._agent.get_running_tasks()
                 if not pending and not running:
                     return self._agent.get_completed_tasks()
+                failed = self._agent.get_failed_tasks()
+                if failed:
+                    raise RuntimeError(f"Tasks failed: {failed}")
                 time.sleep(0.5)
         return self._agent.get_completed_tasks()
 
@@ -248,6 +247,7 @@ class Worker(FlyAgent):
 
     def __init__(self, worker_id: int, master_host: str, master_port: int):
         self._agent = EXAgentWorker(worker_id, master_host, master_port)
+        self._agent.set_data_service(ex_stg_get_data_service())
         self._db_cache = {}
         self._db_path_pending = {}
         self._master_host = master_host

@@ -49,9 +49,17 @@ class DataService {
 public:
     static DataService& instance();
 
+    using RemoteReadCallback = std::function<ReadResult(const CMString& object_name)>;
+    using DirectReadCallback = std::function<ReadResult(const CMString& host, int32_t port,
+                                                         const CMString& object_name)>;
+
+    void set_remote_read_handler(RemoteReadCallback cb);
+    void set_direct_read_handler(DirectReadCallback cb);
+
     void register_database(const CMString& db_id,
                             const CMString& base_path,
-                            const CMString& data_path);
+                            const CMString& data_path,
+                            uint64_t writer_id = 0);
 
     void on_object_written(const CMString& db_id,
                             const CMString& object_name,
@@ -89,6 +97,8 @@ public:
     std::pair<bool, ReadResult> try_read_local_or_wait(const CMString& object_name,
                                                         int timeout_ms = 3000);
 
+    ReadResult read_raw(const CMString& object_name, int max_retries = 3);
+
     bool has_local_object(const CMString& object_name) const;
 
     using TransferCallback = std::function<void(const TransferResult&)>;
@@ -105,6 +115,7 @@ private:
     struct DbPaths {
         CMString base_path;
         CMString data_path;
+        uint64_t writer_id = 0;
     };
 
     mutable std::mutex mutex_;
@@ -120,6 +131,9 @@ private:
     std::shared_ptr<IOThreadPool> transfer_pool_;
     TransferCallback transfer_callback_;
     std::atomic<bool> transfer_running_{false};
+
+    RemoteReadCallback remote_read_handler_;
+    DirectReadCallback direct_read_handler_;
 };
 
 }  // namespace fly

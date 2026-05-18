@@ -11,9 +11,17 @@ DataService& DataService::instance() {
 
 void DataService::register_database(const CMString& db_id,
                                      const CMString& base_path,
-                                     const CMString& data_path) {
+                                     const CMString& data_path,
+                                     uint64_t writer_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    db_paths_[db_id] = {base_path, data_path};
+    for (const auto& [existing_id, paths] : db_paths_) {
+        if (existing_id != db_id && paths.base_path == base_path) {
+            throw std::runtime_error(
+                "base_path '" + base_path + "' already in use by database '" +
+                existing_id + "'. Each database must have a unique base_path.");
+        }
+    }
+    db_paths_[db_id] = {base_path, data_path, writer_id};
 }
 
 void DataService::on_object_written(const CMString& db_id,
@@ -154,14 +162,10 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
     }
 
     try {
-        DataReader reader(paths.base_path, paths.data_path, 0);
+        DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
         ReadResult result = reader.read_from_entries(entries);
         return {true, result};
     } catch (const std::exception& e) {
-        auto* log = Logger::get_master();
-        if (log) {
-            log->warn("DataService", "Local read failed for " + object_name + ": " + e.what());
-        }
         return {false, ReadResult{}};
     }
 }
@@ -192,7 +196,7 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
 
     if (info->completion_state == CompletionState::COMPLETE && info->flushed) {
         try {
-            DataReader reader(paths.base_path, paths.data_path, 0);
+            DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
             return {true, reader.read_from_entries(info->entries)};
         } catch (const std::exception& e) {
             return {false, ReadResult{}};
@@ -231,7 +235,7 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
     }
 
     try {
-        DataReader reader(paths.base_path, paths.data_path, 0);
+        DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
         return {true, reader.read_from_entries(info->entries)};
     } catch (const std::exception& e) {
         return {false, ReadResult{}};
@@ -243,6 +247,67 @@ bool DataService::has_local_object(const CMString& object_name) const {
     auto it = local_idx_.find(object_name);
     return it != local_idx_.end() && it->second &&
            it->second->completion_state == CompletionState::COMPLETE && it->second->flushed;
+}
+
+void DataService::set_remote_read_handler(RemoteReadCallback cb) {
+    remote_read_handler_ = std::move(cb);
+}
+
+void DataService::set_direct_read_handler(DirectReadCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    direct_read_handler_ = std::move(cb);
+}
+
+ReadResult DataService::read_raw(const CMString& object_name, int max_retries) {
+    // Tier 1: local
+    auto [found, result] = try_read_local(object_name);
+    if (found) {
+        return result;
+    }
+
+    // Tier 2: remote_idx cache → direct worker-to-worker
+    auto info = lookup_remote_idx(object_name);
+    if (info.worker_id != 0 && !info.host.empty()) {
+        DirectReadCallback direct_cb;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            direct_cb = direct_read_handler_;
+        }
+        if (direct_cb) {
+            try {
+                return direct_cb(info.host, info.port, object_name);
+            } catch (const std::exception&) {
+                // stale cache, fall through to full remote
+            }
+        }
+    }
+
+    // Tier 3: full remote via Master
+    RemoteReadCallback remote_cb;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        remote_cb = remote_read_handler_;
+    }
+
+    if (!remote_cb) {
+        throw std::runtime_error("No remote read handler registered for: " + object_name);
+    }
+
+    std::string last_error;
+    for (int attempt = 0; attempt < max_retries; ++attempt) {
+        try {
+            return remote_cb(object_name);
+        } catch (const std::exception& e) {
+            last_error = e.what();
+            if (attempt < max_retries - 1) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            }
+        }
+    }
+
+    throw std::runtime_error(
+        "Failed to read '" + object_name + "' after " +
+        std::to_string(max_retries) + " attempts: " + last_error);
 }
 
 void DataService::start_transfer_server(int thread_count, TransferCallback callback) {
