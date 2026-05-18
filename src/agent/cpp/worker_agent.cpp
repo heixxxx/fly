@@ -55,7 +55,7 @@ void WorkerAgent::start() {
         log->info("WorkerAgent", "connected, master_conn=" + std::to_string(master_conn_));
     }
 
-    reactor_ = std::make_unique<Reactor>(std::move(transport));
+    reactor_ = CMMakeUnique<Reactor>(std::move(transport));
 
     auto& dsInst = ds();
     int data_server_threads = static_cast<int>(Config::instance().get_int("data_server_threads"));
@@ -165,7 +165,7 @@ uint64_t WorkerAgent::get_worker_id() const {
     return worker_id_;
 }
 
-void WorkerAgent::set_executor(std::shared_ptr<TaskExecutor> executor) {
+void WorkerAgent::set_executor(CMSharedPtr<TaskExecutor> executor) {
     executor_ = std::move(executor);
 }
 
@@ -464,7 +464,7 @@ ReadResult WorkerAgent::request_data_from_worker(const CMString& host, int32_t p
     return result;
 }
 
-void WorkerAgent::register_database(const CMString& db_id, std::shared_ptr<Database> db) {
+void WorkerAgent::register_database(const CMString& db_id, CMSharedPtr<Database> db) {
     databases_[db_id] = std::move(db);
 }
 
@@ -476,7 +476,7 @@ bool WorkerAgent::request_db_path(const CMString& db_id) {
 
     auto* log = Logger::get_worker(worker_id_);
 
-    auto pending = std::make_shared<PendingDbPath>();
+    auto pending = CMMakeShared<PendingDbPath>();
     pending->db_id = db_id;
     {
         std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
@@ -497,7 +497,7 @@ bool WorkerAgent::request_db_path(const CMString& db_id) {
         if (pending->completed) {
             pending_db_paths_.erase(db_id);
             if (pending->success && !pending->base_path.empty()) {
-                auto db = std::make_shared<Database>(pending->base_path, pending->data_path, worker_id_);
+                auto db = CMMakeShared<Database>(pending->base_path, pending->data_path, worker_id_);
                 databases_[db_id] = db;
                 return true;
             }
@@ -512,7 +512,7 @@ bool WorkerAgent::request_db_path(const CMString& db_id) {
     return false;
 }
 
-std::shared_ptr<Database> WorkerAgent::get_database(const CMString& db_id) const {
+CMSharedPtr<Database> WorkerAgent::get_database(const CMString& db_id) const {
     auto it = databases_.find(db_id);
     if (it != databases_.end()) {
         return it->second;
@@ -526,7 +526,7 @@ void WorkerAgent::register_write_with_master(const CMString& db_id, const CMStri
     auto* log = Logger::get_worker(worker_id_);
 
     CMString full_name = db_id + ":" + object_name;
-    auto pending = std::make_shared<PendingWriteRegister>();
+    auto pending = CMMakeShared<PendingWriteRegister>();
     pending->object_name = full_name;
     {
         std::lock_guard<std::mutex> lock(pending_write_reg_mutex_);

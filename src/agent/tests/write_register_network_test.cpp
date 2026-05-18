@@ -44,7 +44,7 @@ TEST_F(WriteRegisterNetworkTest, MasterAcceptsWriteRegisterForNormalDb) {
         result.output = "ok";
         return result;
     });
-    worker.set_executor(std::make_shared<TaskExecutor>(std::move(executor)));
+    worker.set_executor(CMMakeShared<TaskExecutor>(std::move(executor)));
 
     master.submit_task(1, "write_task", "test_module", {}, {}, {});
     std::this_thread::sleep_for(std::chrono::milliseconds(100));

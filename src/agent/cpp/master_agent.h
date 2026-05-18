@@ -55,7 +55,7 @@ public:
 
     void register_database(const CMString& db_id, const CMString& base_path, const CMString& data_path = "");
     bool is_db_frozen(const CMString& db_id) const;
-    std::shared_ptr<Database> get_or_create_database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0);
+    CMSharedPtr<Database> get_or_create_database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0);
 
     ReadResult request_remote_data(const CMString& object_name);
     ReadResult request_data_from_worker(const CMString& host, int32_t port,
@@ -67,17 +67,17 @@ private:
     int32_t data_server_port_ = 0;
     std::atomic<bool> running_{false};
 
-    std::unique_ptr<Reactor> reactor_;
+    CMUniquePtr<Reactor> reactor_;
     std::thread reactor_thread_;
 
     CMMap<uint64_t, uint64_t> conn_to_worker_;
     CMMap<uint64_t, uint64_t> worker_to_conn_;
 
-    std::unique_ptr<DependencyGraph> graph_;
-    std::unique_ptr<WorkerManager> worker_manager_;
-    std::unique_ptr<TaskScheduler> scheduler_;
-    std::unique_ptr<MetadataManager> metadata_;
-    std::unique_ptr<HeartbeatMonitor> heartbeat_monitor_;
+    CMUniquePtr<DependencyGraph> graph_;
+    CMUniquePtr<WorkerManager> worker_manager_;
+    CMUniquePtr<TaskScheduler> scheduler_;
+    CMUniquePtr<MetadataManager> metadata_;
+    CMUniquePtr<HeartbeatMonitor> heartbeat_monitor_;
     std::thread heartbeat_check_thread_;
     std::atomic<bool> heartbeat_check_running_{false};
     std::mutex heartbeat_check_mutex_;
@@ -87,7 +87,7 @@ private:
     CMMap<uint64_t, CMVector<CMString>> task_args_;
 
     CMMap<CMString, CMMap<CMString, CMString>> db_registry_;
-    CMMap<CMString, std::shared_ptr<Database>> db_instances_;
+    CMMap<CMString, CMSharedPtr<Database>> db_instances_;
     CMSet<CMString> frozen_dbs_;
     static std::atomic<uint64_t> remote_task_counter_;
 

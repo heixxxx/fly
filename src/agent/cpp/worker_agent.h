@@ -51,7 +51,7 @@ public:
     bool is_running() const;
     uint64_t get_worker_id() const;
     
-    void set_executor(std::shared_ptr<TaskExecutor> executor);
+    void set_executor(CMSharedPtr<TaskExecutor> executor);
 
     void set_data_service(DataService* ds);
     
@@ -68,8 +68,8 @@ public:
     bool has_pending_task() const;
     bool poll_task();
     
-    void register_database(const CMString& db_id, std::shared_ptr<Database> db);
-    std::shared_ptr<Database> get_database(const CMString& db_id) const;
+    void register_database(const CMString& db_id, CMSharedPtr<Database> db);
+    CMSharedPtr<Database> get_database(const CMString& db_id) const;
     
     ReadResult request_remote_data(const CMString& object_name);
     ReadResult request_data_from_worker(const CMString& host, int32_t port,
@@ -86,7 +86,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> registered_{false};
     
-    std::unique_ptr<Reactor> reactor_;
+    CMUniquePtr<Reactor> reactor_;
     std::thread reactor_thread_;
     uint64_t master_conn_;
     int32_t data_server_port_ = 0;
@@ -96,7 +96,7 @@ private:
     std::mutex heartbeat_mutex_;
     std::condition_variable heartbeat_cv_;
     
-    std::shared_ptr<TaskExecutor> executor_;
+    CMSharedPtr<TaskExecutor> executor_;
     
     static void record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     static void register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
@@ -107,13 +107,13 @@ private:
     mutable std::mutex task_queue_mutex_;
     std::queue<PendingTask> task_queue_;
     
-    CMMap<CMString, std::shared_ptr<Database>> databases_;
+    CMMap<CMString, CMSharedPtr<Database>> databases_;
 
     std::mutex pending_db_path_mutex_;
-    CMMap<CMString, std::shared_ptr<PendingDbPath>> pending_db_paths_;
+    CMMap<CMString, CMSharedPtr<PendingDbPath>> pending_db_paths_;
 
     std::mutex pending_write_reg_mutex_;
-    CMMap<CMString, std::shared_ptr<PendingWriteRegister>> pending_write_regs_;
+    CMMap<CMString, CMSharedPtr<PendingWriteRegister>> pending_write_regs_;
 
     void on_register_ack(const RegisterAckMessage& msg);
     void on_task_assign(const TaskAssignMessage& msg);

@@ -93,7 +93,7 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     FLY_EXPORT_METHOD("get_or_create_database", [](fly::MasterAgent& self,
                                                       const fly::CMString& base_path,
                                                       const fly::CMString& data_path,
-                                                      uint64_t writer_id) -> std::shared_ptr<Database> {
+                                                      uint64_t writer_id) -> CMSharedPtr<Database> {
         return self.get_or_create_database(base_path, data_path, writer_id);
     })
     FLY_EXPORT_METHOD("get_pending_tasks", &fly::MasterAgent::get_pending_tasks)
@@ -135,7 +135,7 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     FLY_EXPORT_METHOD("stop", &fly::WorkerAgent::stop)
     FLY_EXPORT_METHOD("is_running", &fly::WorkerAgent::is_running)
     FLY_EXPORT_METHOD("get_worker_id", &fly::WorkerAgent::get_worker_id)
-    FLY_EXPORT_METHOD("set_executor", [](fly::WorkerAgent& self, std::shared_ptr<fly::TaskExecutor> executor) {
+    FLY_EXPORT_METHOD("set_executor", [](fly::WorkerAgent& self, CMSharedPtr<fly::TaskExecutor> executor) {
         self.set_executor(std::move(executor));
     })
     FLY_EXPORT_METHOD("is_registered", &fly::WorkerAgent::is_registered)
@@ -150,11 +150,11 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     })
     FLY_EXPORT_METHOD("register_database", [](fly::WorkerAgent& self,
                                                 const fly::CMString& db_id,
-                                                std::shared_ptr<Database> db) {
+                                                CMSharedPtr<Database> db) {
         self.register_database(db_id, std::move(db));
     })
     FLY_EXPORT_METHOD("get_database", [](fly::WorkerAgent& self,
-                                           const fly::CMString& db_id) -> std::shared_ptr<Database> {
+                                           const fly::CMString& db_id) -> CMSharedPtr<Database> {
         return self.get_database(db_id);
     })
     FLY_EXPORT_METHOD("request_remote_data", [](fly::WorkerAgent& self, const fly::CMString& object_name) -> fly_export::tuple {

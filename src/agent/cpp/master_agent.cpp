@@ -25,8 +25,8 @@ void MasterAgent::set_data_service(DataService* ds) {
 
 MasterAgent::MasterAgent(const CMString& host, uint16_t port)
     : host_(host), port_(port), running_(false),
-      graph_(std::make_unique<DependencyGraph>()),
-      worker_manager_(std::make_unique<WorkerManager>()) {}
+      graph_(CMMakeUnique<DependencyGraph>()),
+      worker_manager_(CMMakeUnique<WorkerManager>()) {}
 
 MasterAgent::~MasterAgent() {
     stop();
@@ -43,7 +43,7 @@ void MasterAgent::start() {
     auto transport = create_transport("tcp");
     transport->listen(host_, port_);
 
-    reactor_ = std::make_unique<Reactor>(std::move(transport));
+    reactor_ = CMMakeUnique<Reactor>(std::move(transport));
 
     port_ = static_cast<uint16_t>(reactor_->get_bound_port());
 
@@ -149,10 +149,10 @@ void MasterAgent::start() {
         on_error(conn_id, err);
     });
 
-    scheduler_ = std::make_unique<TaskScheduler>(graph_.get(), worker_manager_.get());
-    metadata_ = std::make_unique<MetadataManager>();
+    scheduler_ = CMMakeUnique<TaskScheduler>(graph_.get(), worker_manager_.get());
+    metadata_ = CMMakeUnique<MetadataManager>();
 
-    heartbeat_monitor_ = std::make_unique<HeartbeatMonitor>(worker_manager_.get(), 30);
+    heartbeat_monitor_ = CMMakeUnique<HeartbeatMonitor>(worker_manager_.get(), 30);
 
     heartbeat_check_running_ = true;
     heartbeat_check_thread_ = std::thread([this] { heartbeat_check_loop(); });
@@ -519,8 +519,8 @@ bool MasterAgent::is_db_frozen(const CMString& db_id) const {
     return frozen_dbs_.count(db_id) > 0;
 }
 
-std::shared_ptr<Database> MasterAgent::get_or_create_database(const CMString& base_path, const CMString& data_path, uint64_t writer_id) {
-    auto db = std::make_shared<Database>(base_path, data_path, writer_id);
+CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& base_path, const CMString& data_path, uint64_t writer_id) {
+    auto db = CMMakeShared<Database>(base_path, data_path, writer_id);
     CMString db_id = db->get_db_id();
     db_instances_[db_id] = db;
     db_registry_[db_id]["base_path"] = base_path;

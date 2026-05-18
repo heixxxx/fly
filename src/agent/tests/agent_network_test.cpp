@@ -116,7 +116,7 @@ TEST_F(AgentNetworkTest, ExecutorInjection) {
     });
     
     WorkerAgent worker(1, "127.0.0.1", 19084);
-    auto exec_ptr = std::make_shared<TaskExecutor>(std::move(executor));
+    auto exec_ptr = CMMakeShared<TaskExecutor>(std::move(executor));
     worker.set_executor(exec_ptr);
     
     auto result = exec_ptr->execute(1, "test_task", "test_module", {});
@@ -155,8 +155,8 @@ TEST_F(AgentNetworkTest, EndToEndTaskExecution) {
         return result;
     });
     
-    worker1.set_executor(std::make_shared<TaskExecutor>(std::move(executor1)));
-    worker2.set_executor(std::make_shared<TaskExecutor>(std::move(executor2)));
+    worker1.set_executor(CMMakeShared<TaskExecutor>(std::move(executor1)));
+    worker2.set_executor(CMMakeShared<TaskExecutor>(std::move(executor2)));
     worker1.start();
     worker2.start();
     
