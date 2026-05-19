@@ -6,11 +6,17 @@ import argparse
 
 
 def _import_all_internal_modules():
+    import ctypes
+    old_flags = sys.getdlopenflags()
+    sys.setdlopenflags(old_flags | ctypes.RTLD_GLOBAL)
+
     import _fly_core
     import _fly_log
     import _fly_storage
     import _fly_agent
     import _fly_test
+
+    sys.setdlopenflags(old_flags)
 
     from fly import open_db, get_agent, get_config
     from fly import as_task, task_name
