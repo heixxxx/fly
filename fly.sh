@@ -15,6 +15,11 @@ BUILD_FILE="$FLY_ROOT/BUILD"
 DEFAULT_BUILD_TARGETS="//src/..."
 DEFAULT_TEST_TARGETS="//src/..."
 
+# Respect .bazelversion if present
+if [ -f "$FLY_ROOT/.bazelversion" ]; then
+    export USE_BAZEL_VERSION="$(cat "$FLY_ROOT/.bazelversion")"
+fi
+
 # Python path auto-detection
 # Generates .bazelrc.user with machine-specific Python 3.12 include/link paths.
 # Different machines may have Python 3.12 headers at /usr/include or /usr/local/include.
