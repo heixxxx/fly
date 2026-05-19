@@ -1,5 +1,7 @@
 package(default_visibility = ["//visibility:public"])
 
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
 cc_binary(
     name = "_fly_core.so",
     srcs = ["core_export.cpp"],
@@ -11,4 +13,8 @@ cc_binary(
     ],
     copts = ["-std=c++20"],
     linkshared = True,
+    dynamic_deps = [
+        "//src/core/cpp:fly_core_so",
+        "//src/serialization/cpp:fly_serialization_so",
+    ],
 )

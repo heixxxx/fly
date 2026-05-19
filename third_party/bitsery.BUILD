@@ -1,3 +1,5 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
 # bitsery BUILD file
 # bitsery is a header-only C++ serialization library with versioning support
 

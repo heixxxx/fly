@@ -1,5 +1,8 @@
 package(default_visibility = ["//visibility:public"])
 
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
+
 cc_library(
     name = "fly_serialization",
     srcs = [
@@ -18,4 +21,11 @@ cc_library(
         "//src/common/cpp:fly_common_types",
         "//third_party:boost_preprocessor",
     ],
+)
+
+
+cc_shared_library(
+    name = "fly_serialization_so",
+    deps = [":fly_serialization"],
+    visibility = ["//visibility:public"],
 )

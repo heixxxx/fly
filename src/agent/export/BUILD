@@ -1,5 +1,7 @@
 package(default_visibility = ["//visibility:public"])
 
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+
 cc_binary(
     name = "_fly_agent.so",
     srcs = ["agent_export.cpp"],
@@ -11,4 +13,7 @@ cc_binary(
     copts = ["-std=c++20"],
     linkopts = ["-lpthread"],
     linkshared = True,
+    dynamic_deps = [
+        "//src/agent/cpp:fly_agent_so",
+    ],
 )

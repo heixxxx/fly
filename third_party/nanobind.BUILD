@@ -1,8 +1,9 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
 cc_library(
     name = "nanobind",
     hdrs = glob([
         "include/nanobind/**/*.h",
-        "include/nanobind/**/*.inc",
     ]),
     includes = ["include"],
     copts = ["-std=c++20"],
@@ -16,7 +17,6 @@ cc_library(
     ],
     hdrs = glob([
         "include/nanobind/**/*.h",
-        "include/nanobind/**/*.inc",
         "src/*.h",
         "src/*.cpp",
     ]),
