@@ -40,7 +40,10 @@ def test_serialize_args():
 
 
 def test_master_submit():
-    log.init_master("test_fly_api_logs")
+    if os.path.exists("test_fly_api_logs"):
+        shutil.rmtree("test_fly_api_logs")
+    
+    log.init_log("test_fly_api_logs", 0)
 
     try:
         master = Master()
@@ -76,7 +79,7 @@ def test_master_submit():
         print("PASS: test_master_submit")
     finally:
         master.stop()
-        log.shutdown()
+        log.shutdown_log()
         shutil.rmtree("test_fly_api_logs", ignore_errors=True)
         reset()
 

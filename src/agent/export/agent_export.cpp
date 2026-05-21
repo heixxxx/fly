@@ -60,7 +60,8 @@ FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
             }
         };
         self.set_exec_func(cpp_func);
-    });
+    })
+    FLY_EXPORT_METHOD("clear_exec_func", &fly::TaskExecutor::clear_exec_func);
 
 FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     FLY_EXPORT_INIT(fly::CMString, uint16_t)

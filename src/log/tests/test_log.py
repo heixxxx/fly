@@ -1,5 +1,6 @@
 import sys
 import os
+import shutil
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 
                                 '../../../bazel-bin/src/log/export'))
@@ -7,91 +8,85 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 import _fly_log as log
 
 def test_master_logger():
-    log.init_master("test_logs/")
+    if os.path.exists("test_logs"):
+        shutil.rmtree("test_logs")
     
-    master = log.get_master_log()
+    log.init_log("test_logs/", 0)
     
-    master.info("MasterAgent", "Master started")
-    master.flush()
+    log.INFO("Master started")
+    log.flush_log()
     
     with open("test_logs/master.log", "r") as f:
         line = f.readline()
         assert "[INFO]" in line
-        assert "[MasterAgent]" in line
         assert "Master started" in line
     
-    log.shutdown()
+    log.shutdown_log()
+    shutil.rmtree("test_logs")
     print("PASS: test_master_logger")
 
 def test_worker_logger():
-    log.init_worker(1, "test_logs/")
+    if os.path.exists("test_logs"):
+        shutil.rmtree("test_logs")
     
-    worker = log.get_worker_log(1)
+    log.init_log("test_logs/", 1)
     
-    worker.debug("WorkerAgent", "Worker initializing")
-    worker.flush()
+    log.DBG("Worker initializing")
+    log.flush_log()
     
     with open("test_logs/worker1.log", "r") as f:
         line = f.readline()
         assert "[DEBUG]" in line
-        assert "[WorkerAgent]" in line
+        assert "Worker initializing" in line
     
-    log.shutdown()
+    log.shutdown_log()
+    shutil.rmtree("test_logs")
     print("PASS: test_worker_logger")
 
 def test_log_level():
-    log.init_master("test_logs/")
+    if os.path.exists("test_logs"):
+        shutil.rmtree("test_logs")
     
-    master = log.get_master_log()
-    master.set_level(log.EXLogLevel.INFO)
+    log.init_log("test_logs/", 0)
+    log.set_log_level(log.EXLogLevel.INFO)
     
-    assert master.get_level() == log.EXLogLevel.INFO
-    
-    master.debug("Test", "Should not appear")
-    master.info("Test", "Should appear")
-    master.flush()
+    log.DBG("Should not appear")
+    log.INFO("Should appear")
+    log.flush_log()
     
     with open("test_logs/master.log", "r") as f:
         lines = f.readlines()
         assert len(lines) == 1
         assert "[DEBUG]" not in lines[0]
     
-    log.shutdown()
+    log.shutdown_log()
+    shutil.rmtree("test_logs")
     print("PASS: test_log_level")
 
 def test_all_levels():
-    log.init_master("test_logs/")
+    if os.path.exists("test_logs"):
+        shutil.rmtree("test_logs")
     
-    master = log.get_master_log()
+    log.init_log("test_logs/", 0)
     
-    master.debug("Test", "Debug")
-    master.info("Test", "Info")
-    master.warn("Test", "Warn")
-    master.error("Test", "Error")
-    master.flush()
+    log.DBG("Debug message")
+    log.INFO("Info message")
+    log.WARN("Warn message")
+    log.ERR("Error message")
+    log.flush_log()
     
     with open("test_logs/master.log", "r") as f:
         lines = f.readlines()
         assert len(lines) == 4
     
-    log.shutdown()
+    log.shutdown_log()
+    shutil.rmtree("test_logs")
     print("PASS: test_all_levels")
 
 if __name__ == "__main__":
-    import shutil
-    if os.path.exists("test_logs"):
-        shutil.rmtree("test_logs")
-    
     test_master_logger()
-    shutil.rmtree("test_logs")
-    
     test_worker_logger()
-    shutil.rmtree("test_logs")
-    
     test_log_level()
-    shutil.rmtree("test_logs")
-    
     test_all_levels()
-    shutil.rmtree("test_logs")
     
     print("\nAll Python log tests passed!")

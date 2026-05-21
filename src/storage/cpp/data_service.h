@@ -62,6 +62,8 @@ public:
                             const CMString& data_path,
                             uint64_t writer_id = 0);
 
+    void unregister_database(const CMString& db_id);
+
     void on_object_written(const CMString& db_id,
                             const CMString& object_name,
                             const IndexEntry& entry);

@@ -1,6 +1,7 @@
 import sys
 import os
 import time
+import shutil
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../../bazel-bin/src/agent/export'))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../../bazel-bin/src/log/export'))
@@ -9,8 +10,10 @@ import _fly_agent as agent
 import _fly_log as log
 
 def test_master_worker_register():
-    log.init_master("test_logs/")
-    log.init_worker(1, "test_logs/")
+    if os.path.exists("test_logs"):
+        shutil.rmtree("test_logs")
+    
+    log.init_log("test_logs/", 0)
     
     master = agent.EXAgentMaster("127.0.0.1", 19090)
     master.start()
@@ -29,13 +32,15 @@ def test_master_worker_register():
     
     master.stop()
     worker.stop()
-    log.shutdown()
+    log.shutdown_log()
+    shutil.rmtree("test_logs")
     print("PASS: test_master_worker_register")
 
 def test_multiple_workers():
-    log.init_master("test_logs/")
-    log.init_worker(1, "test_logs/")
-    log.init_worker(2, "test_logs/")
+    if os.path.exists("test_logs"):
+        shutil.rmtree("test_logs")
+    
+    log.init_log("test_logs/", 0)
     
     master = agent.EXAgentMaster("127.0.0.1", 19091)
     master.start()
@@ -52,12 +57,15 @@ def test_multiple_workers():
     master.stop()
     worker1.stop()
     worker2.stop()
-    log.shutdown()
+    log.shutdown_log()
+    shutil.rmtree("test_logs")
     print("PASS: test_multiple_workers")
 
 def test_worker_disconnect():
-    log.init_master("test_logs/")
-    log.init_worker(1, "test_logs/")
+    if os.path.exists("test_logs"):
+        shutil.rmtree("test_logs")
+    
+    log.init_log("test_logs/", 0)
     
     master = agent.EXAgentMaster("127.0.0.1", 19092)
     master.start()
@@ -74,7 +82,8 @@ def test_worker_disconnect():
     assert master.get_connection_count() == 0
     
     master.stop()
-    log.shutdown()
+    log.shutdown_log()
+    shutil.rmtree("test_logs")
     print("PASS: test_worker_disconnect")
 
 def test_master_restart():
@@ -104,8 +113,10 @@ def test_executor_execute():
     print("PASS: test_executor_execute")
 
 def test_submit_task():
-    log.init_master("test_logs/")
-    log.init_worker(1, "test_logs/")
+    if os.path.exists("test_logs"):
+        shutil.rmtree("test_logs")
+    
+    log.init_log("test_logs/", 0)
     
     master = agent.EXAgentMaster("127.0.0.1", 19300)
     master.start()
@@ -128,7 +139,8 @@ def test_submit_task():
     
     master.stop()
     worker.stop()
-    log.shutdown()
+    log.shutdown_log()
+    shutil.rmtree("test_logs")
     print("PASS: test_submit_task")
 
 def test_enum_values():
@@ -138,26 +150,12 @@ def test_enum_values():
     print("PASS: test_enum_values")
 
 if __name__ == "__main__":
-    import shutil
-    if os.path.exists("test_logs"):
-        shutil.rmtree("test_logs")
-    
     test_master_worker_register()
-    shutil.rmtree("test_logs")
-    
     test_multiple_workers()
-    shutil.rmtree("test_logs")
-    
     test_worker_disconnect()
-    shutil.rmtree("test_logs")
-    
     test_master_restart()
-    
     test_executor_execute()
-    
     test_submit_task()
-    shutil.rmtree("test_logs")
-    
     test_enum_values()
     
     print("\nAll Python tests passed!")

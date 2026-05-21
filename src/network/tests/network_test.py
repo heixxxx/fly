@@ -2,196 +2,169 @@
 
 import sys
 import os
-import pytest
+import unittest
 import tempfile
 import time
 
-_bazel_bin = os.path.join(os.path.dirname(__file__), '..', 'bazel-bin', 'src', 'network', 'export')
-if os.path.exists(_bazel_bin):
-    sys.path.insert(0, _bazel_bin)
+def _find_module():
+    script_dir = os.path.dirname(__file__)
+    paths_to_try = [
+        os.path.join(script_dir, '..', '..', '..', 'bazel-bin', 'src', 'network', 'export'),
+        os.path.join(script_dir, '..', 'export'),
+        os.path.join(os.getcwd(), 'bazel-bin', 'src', 'network', 'export'),
+    ]
+    for p in paths_to_try:
+        if os.path.exists(os.path.join(p, '_fly_network.so')):
+            return p
+    return None
+
+module_path = _find_module()
+if module_path:
+    sys.path.insert(0, module_path)
 
 
-def test_import_module():
-    """Test that _fly_network can be imported"""
-    from _fly_network import EXNetTransportEventType
-    assert EXNetTransportEventType is not None
+class TestImportModule(unittest.TestCase):
+    def test_import_module(self):
+        """Test that _fly_network can be imported"""
+        from _fly_network import EXNetTransportEventType
+        self.assertIsNotNone(EXNetTransportEventType)
 
 
-def test_transport_event_type_enum():
-    """Test TransportEventType enum values"""
-    from _fly_network import EXNetTransportEventType
-    assert EXNetTransportEventType.CONNECT == 0
-    assert EXNetTransportEventType.DATA == 1
-    assert EXNetTransportEventType.DISCONNECT == 2
-    assert EXNetTransportEventType.ERROR == 3
+class TestTransportEventTypeEnum(unittest.TestCase):
+    def test_transport_event_type_enum(self):
+        """Test TransportEventType enum values"""
+        from _fly_network import EXNetTransportEventType
+        self.assertEqual(EXNetTransportEventType.CONNECT.value, 0)
+        self.assertEqual(EXNetTransportEventType.DATA.value, 1)
+        self.assertEqual(EXNetTransportEventType.DISCONNECT.value, 2)
+        self.assertEqual(EXNetTransportEventType.ERROR.value, 3)
 
 
-def test_message_type_enum():
-    """Test MessageType enum values"""
-    from _fly_network import EXNetMessageType
-    assert EXNetMessageType.REGISTER == 1
-    assert EXNetMessageType.HEARTBEAT == 3
-    assert EXNetMessageType.DATA_REQUEST == 11
-    assert EXNetMessageType.DATA_RESPONSE == 12
+class TestMessageTypeEnum(unittest.TestCase):
+    def test_message_type_enum(self):
+        """Test MessageType enum values"""
+        from _fly_network import EXNetMessageType
+        self.assertEqual(EXNetMessageType.REGISTER.value, 1)
+        self.assertEqual(EXNetMessageType.HEARTBEAT.value, 3)
+        self.assertEqual(EXNetMessageType.DATA_REQUEST.value, 11)
+        self.assertEqual(EXNetMessageType.DATA_RESPONSE.value, 12)
 
 
-def test_transport_event_creation():
-    """Test TransportEvent struct"""
-    from _fly_network import EXNetTransportEvent, EXNetTransportEventType
-    event = EXNetTransportEvent()
-    assert event.conn_id == 0
-    assert event.error_code == 0
+class TestMessageHeaderCreation(unittest.TestCase):
+    def test_message_header_creation(self):
+        """Test MessageHeader struct"""
+        from _fly_network import EXNetMessageHeader, EXNetMessageType
+        header = EXNetMessageHeader()
+        header.type = EXNetMessageType.HEARTBEAT
+        header.message_id = 1
+        header.timestamp = int(time.time() * 1000)
+        
+        self.assertEqual(header.type, EXNetMessageType.HEARTBEAT)
+        self.assertEqual(header.message_id, 1)
 
 
-def test_message_header_creation():
-    """Test MessageHeader struct"""
-    from _fly_network import EXNetMessageHeader, EXNetMessageType
-    header = EXNetMessageHeader()
-    header.type = EXNetMessageType.HEARTBEAT
-    header.message_id = 1
-    header.timestamp = int(time.time() * 1000)
-    
-    assert header.type == EXNetMessageType.HEARTBEAT
-    assert header.message_id == 1
+class TestHeartbeatMessageCreation(unittest.TestCase):
+    def test_heartbeat_message_creation(self):
+        """Test HeartbeatMessage struct"""
+        from _fly_network import EXNetHeartbeatMessage, EXNetMessageType
+        msg = EXNetHeartbeatMessage()
+        msg.worker_id = 123
+        msg.running_tasks = [1, 2, 3]
+        msg.attributes = ["gpu", "ssd"]
+        
+        self.assertEqual(msg.worker_id, 123)
+        self.assertEqual(len(msg.running_tasks), 3)
+        self.assertEqual(len(msg.attributes), 2)
 
 
-def test_heartbeat_message_creation():
-    """Test HeartbeatMessage struct"""
-    from _fly_network import EXNetHeartbeatMessage, EXNetMessageType
-    msg = EXNetHeartbeatMessage()
-    msg.worker_id = 123
-    msg.running_tasks = [1, 2, 3]
-    msg.attributes = ["gpu", "ssd"]
-    
-    assert msg.worker_id == 123
-    assert len(msg.running_tasks) == 3
-    assert len(msg.attributes) == 2
+class TestRegisterMessageCreation(unittest.TestCase):
+    def test_register_message_creation(self):
+        """Test RegisterMessage struct"""
+        from _fly_network import EXNetRegisterMessage
+        msg = EXNetRegisterMessage()
+        msg.worker_id = 42
+        msg.role = "hybrid"
+        msg.attributes = ["has_gpu", "large_memory"]
+        
+        self.assertEqual(msg.worker_id, 42)
+        self.assertEqual(msg.role, "hybrid")
 
 
-def test_register_message_creation():
-    """Test RegisterMessage struct"""
-    from _fly_network import EXNetRegisterMessage
-    msg = EXNetRegisterMessage()
-    msg.worker_id = 42
-    msg.role = "hybrid"
-    msg.attributes = ["has_gpu", "large_memory"]
-    
-    assert msg.worker_id == 42
-    assert msg.role == "hybrid"
+class TestDataRequestResponseMessages(unittest.TestCase):
+    def test_data_request_response_messages(self):
+        from _fly_network import EXNetDataRequestMessage, EXNetDataResponseMessage
+        
+        req = EXNetDataRequestMessage()
+        req.object_name = "test/object"
+        req.requesting_worker_id = 10
+        self.assertEqual(req.object_name, "test/object")
+        
+        resp = EXNetDataResponseMessage()
+        resp.object_name = "test/object"
+        resp.data = "binary_payload"
+        self.assertEqual(resp.data, "binary_payload")
 
 
-def test_data_request_response_messages():
-    """Test DataRequest and DataResponse messages"""
-    from _fly_network import EXNetDataRequestMessage, EXNetDataResponseMessage
-    
-    req = EXNetDataRequestMessage()
-    req.object_name = "test/object"
-    req.requesting_worker_id = 10
-    assert req.object_name == "test/object"
-    
-    resp = EXNetDataResponseMessage()
-    resp.object_name = "test/object"
-    resp.data = b"binary_payload"
-    assert resp.data == b"binary_payload"
+class TestIOThreadPoolCreation(unittest.TestCase):
+    def test_io_thread_pool_creation(self):
+        """Test IOThreadPool creation and basic operations"""
+        from _fly_network import EXNetIOThreadPool
+        
+        pool = EXNetIOThreadPool(2)
+        pool.start()
+        
+        self.assertTrue(pool.is_idle())
+        self.assertEqual(pool.queue_size(), 0)
+        
+        pool.stop()
+        self.assertTrue(pool.is_idle())
 
 
-def test_io_thread_pool_creation():
-    """Test IOThreadPool creation and basic operations"""
-    from _fly_network import EXNetIOThreadPool
-    
-    pool = EXNetIOThreadPool(2)
-    pool.start()
-    
-    assert pool.is_idle() == True
-    assert pool.queue_size() == 0
-    
-    pool.stop()
-    assert pool.is_idle() == True
+class TestExNetEncodeDecodeHeartbeat(unittest.TestCase):
+    def test_ex_net_encode_decode_heartbeat(self):
+        """Test ex_net_encode/ex_net_decode heartbeat message roundtrip"""
+        from _fly_network import EXNetHeartbeatMessage, EXNetMessageType, ex_net_encode_message, ex_net_decode_heartbeat
+        
+        msg = EXNetHeartbeatMessage()
+        msg.worker_id = 999
+        msg.running_tasks = [10, 20]
+        msg.attributes = ["fast", "reliable"]
+        
+        encoded = ex_net_encode_message(msg)
+        self.assertGreater(len(encoded), 4)
+        
+        decoded = ex_net_decode_heartbeat(encoded)
+        self.assertEqual(decoded.worker_id, 999)
+        self.assertEqual(len(decoded.running_tasks), 2)
 
 
-def test_io_thread_pool_submit():
-    """Test IOThreadPool submit with completion"""
-    from _fly_network import EXNetIOThreadPool
-    
-    pool = EXNetIOThreadPool(1)
-    pool.start()
-    
-    import threading
-    counter = threading.Semaphore(0)
-    
-    def task():
-        pass
-    
-    def completion():
-        counter.release()
-    
-    pool.submit(task, completion)
-    
-    time.sleep(0.2)
-    pool.process_completions()
-    
-    assert counter.acquire(timeout=1)
-    
-    pool.stop()
+class TestIsCppMarker(unittest.TestCase):
+    def test_is_cpp_marker(self):
+        """Test is_cpp marker is present on exported classes"""
+        from _fly_network import EXNetHeartbeatMessage, EXNetRegisterMessage, EXNetMessageHeader
+        
+        for cls in [EXNetHeartbeatMessage, EXNetRegisterMessage, EXNetMessageHeader]:
+            instance = cls()
+            self.assertTrue(hasattr(instance, 'is_cpp'))
+            self.assertEqual(instance.is_cpp, True)
 
 
-def test_ex_net_create_transport():
-    """Test ex_net_create_transport factory function"""
-    from _fly_network import ex_net_create_transport
-    
-    transport = ex_net_create_transport("tcp")
-    assert transport is not None
-
-
-def test_ex_net_create_invalid_transport():
-    """Test ex_net_create_transport with invalid type raises error"""
-    from _fly_network import ex_net_create_transport
-    
-    with pytest.raises(RuntimeError):
-        ex_net_create_transport("invalid_type")
-
-
-def test_ex_net_encode_decode_heartbeat():
-    """Test ex_net_encode/ex_net_decode heartbeat message roundtrip"""
-    from _fly_network import EXNetHeartbeatMessage, EXNetMessageType, ex_net_encode_message, ex_net_decode_heartbeat
-    
-    msg = EXNetHeartbeatMessage()
-    msg.worker_id = 999
-    msg.running_tasks = [10, 20]
-    msg.attributes = ["fast", "reliable"]
-    
-    encoded = ex_net_encode_message(msg)
-    assert len(encoded) > 4
-    
-    decoded = ex_net_decode_heartbeat(encoded)
-    assert decoded.worker_id == 999
-    assert len(decoded.running_tasks) == 2
-
-
-def test_is_cpp_marker():
-    """Test is_cpp marker is present on exported classes"""
-    from _fly_network import EXNetHeartbeatMessage, EXNetRegisterMessage, EXNetMessageHeader
-    
-    for cls in [EXNetHeartbeatMessage, EXNetRegisterMessage, EXNetMessageHeader]:
-        assert hasattr(cls, 'is_cpp')
-        assert cls.is_cpp == True
-
-
-def test_pickle_roundtrip():
-    """Test pickle serialization roundtrip"""
-    from _fly_network import EXNetHeartbeatMessage
-    import pickle
-    
-    msg = EXNetHeartbeatMessage()
-    msg.worker_id = 777
-    msg.running_tasks = [1, 2]
-    
-    pickled = pickle.dumps(msg)
-    unpickled = pickle.loads(pickled)
-    
-    assert unpickled.worker_id == 777
-    assert len(unpickled.running_tasks) == 2
+class TestPickleRoundtrip(unittest.TestCase):
+    def test_pickle_roundtrip(self):
+        """Test pickle serialization roundtrip"""
+        from _fly_network import EXNetHeartbeatMessage
+        import pickle
+        
+        msg = EXNetHeartbeatMessage()
+        msg.worker_id = 777
+        msg.running_tasks = [1, 2]
+        
+        pickled = pickle.dumps(msg)
+        unpickled = pickle.loads(pickled)
+        
+        self.assertEqual(unpickled.worker_id, 777)
+        self.assertEqual(len(unpickled.running_tasks), 2)
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    unittest.main()

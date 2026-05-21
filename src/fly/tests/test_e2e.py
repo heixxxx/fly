@@ -30,8 +30,10 @@ from fly.task import _serialize_args
 
 
 def test_process_workers_connect():
-    """Workers spawned as subprocesses connect back to Master."""
-    log.init_master("test_e2e_logs")
+    if os.path.exists("test_e2e_logs"):
+        shutil.rmtree("test_e2e_logs")
+    
+    log.init_log("test_e2e_logs", 0)
 
     try:
         master = Master()
@@ -58,14 +60,16 @@ def test_process_workers_connect():
 
     finally:
         master.stop()
-        log.shutdown()
+        log.shutdown_log()
         shutil.rmtree("test_e2e_logs", ignore_errors=True)
         reset()
 
 
 def test_task_through_process_worker():
-    """Submit a task, worker executes it in subprocess, Master gets completion."""
-    log.init_master("test_e2e_logs2")
+    if os.path.exists("test_e2e_logs2"):
+        shutil.rmtree("test_e2e_logs2")
+    
+    log.init_log("test_e2e_logs2", 0)
 
     try:
         master = Master()
@@ -104,7 +108,7 @@ def test_task_through_process_worker():
 
     finally:
         master.stop()
-        log.shutdown()
+        log.shutdown_log()
         shutil.rmtree("test_e2e_logs2", ignore_errors=True)
         reset()
 

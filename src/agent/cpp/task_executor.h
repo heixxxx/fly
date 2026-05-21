@@ -31,8 +31,10 @@ public:
     
     TaskExecutor();
     explicit TaskExecutor(ExecFunc exec_func);
+    ~TaskExecutor();
     
     void set_exec_func(ExecFunc exec_func);
+    void clear_exec_func();
     
     TaskExecResult execute(uint64_t task_id, const CMString& task_name,
                            const CMString& task_module, const CMVector<CMString>& args);

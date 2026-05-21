@@ -195,7 +195,9 @@ CMString Database::get_db_id() const {
 }
 
 void Database::set_db_id(const CMString& db_id) {
-    fly::DataService::instance().register_database(db_id, base_path_, data_path_, writer_id_);
+    auto& ds = fly::DataService::instance();
+    ds.unregister_database(db_id_);
+    ds.register_database(db_id, base_path_, data_path_, writer_id_);
     db_id_ = db_id;
 }
 

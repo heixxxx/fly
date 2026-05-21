@@ -12,8 +12,8 @@ class AgentNetworkTest : public ::testing::Test {
 protected:
     void SetUp() override {
         Logger::shutdown();
-        Logger::init_master("test_logs/");
-        Logger::init_worker(1, "test_logs/");
+        Logger::init("test_logs/", 0);
+        Logger::init("test_logs/", 1);
     }
     
     void TearDown() override {
@@ -42,8 +42,8 @@ TEST_F(AgentNetworkTest, WorkerRegister) {
 }
 
 TEST_F(AgentNetworkTest, MultipleWorkers) {
-    Logger::init_worker(2, "test_logs/");
-    Logger::init_worker(3, "test_logs/");
+    Logger::init("test_logs/", 2);
+    Logger::init("test_logs/", 3);
     
     MasterAgent master("127.0.0.1", 19081);
     master.start();
@@ -125,8 +125,8 @@ TEST_F(AgentNetworkTest, ExecutorInjection) {
 }
 
 TEST_F(AgentNetworkTest, EndToEndTaskExecution) {
-    Logger::init_worker(1, "test_logs/");
-    Logger::init_worker(2, "test_logs/");
+    Logger::init("test_logs/", 1);
+    Logger::init("test_logs/", 2);
     
     MasterAgent master("127.0.0.1", 19200);
     master.start();

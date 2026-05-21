@@ -4,7 +4,7 @@
 
 FLY_EXPORT_MODULE(_fly_core) {
 
-FLY_EXPORT_CLASS(Config, "EXCoreConfig")
+    FLY_EXPORT_CLASS(Config, "EXCoreConfig")
     FLY_EXPORT_METHOD("set_int", &Config::set_int)
     FLY_EXPORT_METHOD("set_str", &Config::set_str)
     FLY_EXPORT_METHOD("get_int", &Config::get_int)

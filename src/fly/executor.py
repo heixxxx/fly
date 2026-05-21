@@ -5,13 +5,10 @@ arguments, and executes the original task functions.
 """
 import importlib
 import pickle
-import logging
 import traceback
 
 from _fly_agent import EXTaskExecResult, EXTaskExecStatus
-
-logger = logging.getLogger("fly")
-
+from _fly_log import INFO, ERR
 
 def _deserialize_args(args: list, worker) -> list:
     result = []
@@ -34,25 +31,10 @@ def _deserialize_args(args: list, worker) -> list:
 
 
 def create_executor(worker) -> callable:
-    """Create an executor function for the given worker.
+    
 
-    The executor function has signature:
-        (task_id, task_name, task_module, args) -> EXTaskExecResult
-
-    It:
-        1. Imports the user module
-        2. Gets the function by task_name
-        3. Retrieves the original function from _fly_original_func
-        4. Deserializes arguments
-        5. Calls the function
-
-    Args:
-        worker: Worker instance with get_database() method
-
-    Returns:
-        Executor function compatible with EXTaskExecutor
-    """
     def executor(task_id: int, task_name: str, task_module: str, args: list) -> dict:
+
         result = {
             'task_id': task_id,
             'status': 0,
@@ -88,18 +70,14 @@ def create_executor(worker) -> callable:
             result['output'] = str(output) if output is not None else ""
             result['frozen_dbs'] = frozen_dbs
 
-            logger.debug(
-                f"Task executed successfully: id={task_id}, "
-                f"name={task_name}, module={task_module}")
+            INFO(f"Task executed successfully: id={task_id}, name={task_name}, module={task_module}")
 
         except Exception as e:
             result['status'] = 1
             result['output'] = ""
             result['error'] = traceback.format_exc()
 
-            logger.error(
-                f"Task execution failed: id={task_id}, "
-                f"name={task_name}, error={str(e)}\n{result['error']}")
+            ERR(f"Task execution failed: id={task_id}, name={task_name}, error={str(e)}\n{result['error']}")
 
         return result
 

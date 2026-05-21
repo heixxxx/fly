@@ -10,7 +10,6 @@ py_library(
         "config.py",
         "database.py",
         "executor.py",
-        "log_setup.py",
         "main.py",
         "runtime.py",
         "task.py",

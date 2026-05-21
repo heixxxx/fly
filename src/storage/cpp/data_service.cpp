@@ -31,6 +31,11 @@ void DataService::register_database(const CMString& db_id,
     db_paths_[db_id] = {base_path, data_path, writer_id};
 }
 
+void DataService::unregister_database(const CMString& db_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    db_paths_.erase(db_id);
+}
+
 void DataService::on_object_written(const CMString& db_id,
                                      const CMString& object_name,
                                      const IndexEntry& entry) {

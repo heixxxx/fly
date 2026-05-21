@@ -49,12 +49,15 @@ def test_dependency_scheduling():
     
     os.makedirs(test_db_path, exist_ok=True)
     
-    log.init_master(test_log_path)
-    log.init_worker(1, test_log_path)
+    log.init_log(test_log_path, 0)
     
     master = agent.EXAgentMaster("127.0.0.1", 19500)
     master.start()
     time.sleep(0.1)
+    
+    # worker_id=1 for the worker
+    log.shutdown_log()
+    log.init_log(test_log_path, 1)
     
     def chain_executor(task_id, task_name, task_module, args):
         ret = agent.EXTaskExecResult()
@@ -70,7 +73,7 @@ def test_dependency_scheduling():
         if output_path:
             db.write_object_raw(output_path, f"data_from_task_{task_id}")
             ret.outputs = [output_path]
-            print(f"[Task {task_id}] 写入 {output_path}")
+            print(f"[Task {task_id}] Wrote {output_path}")
         
         return ret
     
@@ -84,70 +87,74 @@ def test_dependency_scheduling():
     time.sleep(0.3)
     assert worker.is_registered() == True
     
-    print("\n=== 依赖调度测试 ===")
+    # Reset logger back to master mode for master operations
+    log.shutdown_log()
+    log.init_log(test_log_path, 0)
+    
+    print("\n=== Dependency Scheduling Test ===")
     
     master.submit_task_with_deps(
         3, "task_c", "chain", ["output/c"],
         ["output/b"], ["output/c"]
     )
-    print("[Master] 提交 Task 3: 依赖 output/b")
+    print("[Master] Submitted Task 3: depends on output/b")
     
     pending = master.get_pending_tasks()
     print(f"[Master] pending tasks: {pending}")
-    assert 3 in pending, "Task 3 应在 pending 状态（等待依赖）"
+    assert 3 in pending, "Task 3 should be pending (waiting for dependency)"
     
     master.submit_task_with_deps(
         2, "task_b", "chain", ["output/b"],
         ["output/a"], ["output/b"]
     )
-    print("[Master] 提交 Task 2: 依赖 output/a")
+    print("[Master] Submitted Task 2: depends on output/a")
     
     pending = master.get_pending_tasks()
     print(f"[Master] pending tasks: {pending}")
-    assert 2 in pending, "Task 2 应在 pending 状态（等待依赖）"
+    assert 2 in pending, "Task 2 should be pending (waiting for dependency)"
     
     master.submit_task_with_deps(
         1, "task_a", "chain", ["output/a"],
         [], ["output/a"]
     )
-    print("[Master] 提交 Task 1: 无依赖")
+    print("[Master] Submitted Task 1: no dependencies")
     
     time.sleep(0.3)
     
-    print(f"[状态检查] pending: {master.get_pending_tasks()}, running: {master.get_running_tasks()}, completed: {master.get_completed_tasks()}")
+    print(f"[Status] pending: {master.get_pending_tasks()}, running: {master.get_running_tasks()}, completed: {master.get_completed_tasks()}")
     
     time.sleep(3.0)
     
     completed = master.get_completed_tasks()
-    print(f"[Master] 最终 completed tasks: {completed}")
+    print(f"[Master] Final completed tasks: {completed}")
     
     completed = master.get_completed_tasks()
-    print(f"[Master] 最终 completed tasks: {completed}")
+    print(f"[Master] Final completed tasks: {completed}")
     
     sm = storage.ex_stg_get_storage_manager()
     db = sm.get_or_create_database(test_db_path)
     
     data_a = db.read_object_raw("output/a")
-    print(f"[验证] output/a: {data_a}")
+    print(f"[Verify] output/a: {data_a}")
     assert data_a == "data_from_task_1"
     
     data_b = db.read_object_raw("output/b")
-    print(f"[验证] output/b: {data_b}")
+    print(f"[Verify] output/b: {data_b}")
     assert data_b == "data_from_task_2"
     
     data_c = db.read_object_raw("output/c")
-    print(f"[验证] output/c: {data_c}")
+    print(f"[Verify] output/c: {data_c}")
     assert data_c == "data_from_task_3"
     
-    assert len(completed) >= 3, f"期望 3 个任务完成，实际完成 {len(completed)}"
+    assert len(completed) >= 3, f"Expected 3 tasks completed, got {len(completed)}"
     assert 1 in completed and 2 in completed and 3 in completed
     
-    print("\n✅ 依赖调度测试通过!")
+    print("\n✅ Dependency scheduling test passed!")
     
     master.stop()
     worker.stop()
     sm.close_all()
-    log.shutdown()
+    log.shutdown_log()
     
     shutil.rmtree(test_log_path)
     shutil.rmtree(test_db_path)
@@ -155,17 +162,16 @@ def test_dependency_scheduling():
 
 def test_simple_dependency():
     """
-    简单依赖测试：
-    - Task 1: 无依赖
-    - Task 2: 依赖 Task 1 的输出
+    Simple dependency test:
+    - Task 1: no dependencies
+    - Task 2: depends on Task 1's output
     """
     test_log_path = "test_simple_dep_logs"
     
     if os.path.exists(test_log_path):
         shutil.rmtree(test_log_path)
     
-    log.init_master(test_log_path)
-    log.init_worker(1, test_log_path)
+    log.init_log(test_log_path, 0)
     
     master = agent.EXAgentMaster("127.0.0.1", 19501)
     master.start()
@@ -185,7 +191,7 @@ def test_simple_dependency():
         else:
             ret.outputs = []
         
-        print(f"[Task {task_id}] 完成, outputs: {ret.outputs}")
+        print(f"[Task {task_id}] Completed, outputs: {ret.outputs}")
         return ret
     
     executor = agent.EXTaskExecutor()
@@ -210,7 +216,7 @@ def test_simple_dependency():
     
     master.stop()
     worker.stop()
-    log.shutdown()
+    log.shutdown_log()
     shutil.rmtree(test_log_path)
     
     print("PASS: test_simple_dependency")
@@ -218,14 +224,14 @@ def test_simple_dependency():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("端到端依赖调度测试")
+    print("End-to-end Dependency Scheduling Test")
     print("=" * 60)
     
     test_simple_dependency()
     
-    print("\n开始完整依赖链测试...")
+    print("\nStarting full dependency chain test...")
     test_dependency_scheduling()
     
     print("\n" + "=" * 60)
-    print("所有依赖调度测试通过!")
+    print("All dependency scheduling tests passed!")
     print("=" * 60)

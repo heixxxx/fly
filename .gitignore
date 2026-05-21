@@ -24,3 +24,12 @@ compile_commands.json
 
 # OS
 .DS_Store
+
+# LOGS
+*.log
+
+# DB
+*.dat
+*.idx
+_DB_META
+_FROZEN

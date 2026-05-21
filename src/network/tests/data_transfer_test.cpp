@@ -31,7 +31,7 @@ protected:
                     std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
         std::filesystem::create_directories(test_dir_);
         Logger::shutdown();
-        Logger::init_master("test_logs/");
+        Logger::init("test_logs/", 0);
     }
 
     void TearDown() override {

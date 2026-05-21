@@ -35,10 +35,7 @@ MasterAgent::~MasterAgent() {
 void MasterAgent::start() {
     if (running_) return;
 
-    auto* log = Logger::get_master();
-    if (log) {
-        log->info("MasterAgent", "start() called, listening on " + host_ + ":" + std::to_string(port_));
-    }
+    INFO("MasterAgent start() called, listening on " + host_ + ":" + std::to_string(port_));
 
     auto transport = create_transport("tcp");
     transport->listen(host_, port_);
@@ -47,99 +44,90 @@ void MasterAgent::start() {
 
     port_ = static_cast<uint16_t>(reactor_->get_bound_port());
 
-     reactor_->register_handler<RegisterMessage>(
-         [this](uint64_t conn_id, const RegisterMessage& msg) {
-             on_worker_register(conn_id, msg);
-         });
+    reactor_->register_handler<RegisterMessage>(
+        [this](uint64_t conn_id, const RegisterMessage& msg) {
+            on_worker_register(conn_id, msg);
+        });
 
-     reactor_->register_handler<HeartbeatMessage>(
-         [this](uint64_t conn_id, const HeartbeatMessage& msg) {
-             on_heartbeat(conn_id, msg);
-         });
+    reactor_->register_handler<HeartbeatMessage>(
+        [this](uint64_t conn_id, const HeartbeatMessage& msg) {
+            on_heartbeat(conn_id, msg);
+        });
 
-     reactor_->register_handler<TaskCompleteMessage>(
-         [this](uint64_t conn_id, const TaskCompleteMessage& msg) {
-             on_task_complete(conn_id, msg);
-         });
+    reactor_->register_handler<TaskCompleteMessage>(
+        [this](uint64_t conn_id, const TaskCompleteMessage& msg) {
+            on_task_complete(conn_id, msg);
+        });
 
-     reactor_->register_handler<TaskFailedMessage>(
-         [this](uint64_t conn_id, const TaskFailedMessage& msg) {
-             on_task_failed(conn_id, msg);
-         });
+    reactor_->register_handler<TaskFailedMessage>(
+        [this](uint64_t conn_id, const TaskFailedMessage& msg) {
+            on_task_failed(conn_id, msg);
+        });
 
-     reactor_->register_handler<DataReadyMessage>(
-         [this](uint64_t conn_id, const DataReadyMessage& msg) {
-             on_data_ready(conn_id, msg);
-         });
+    reactor_->register_handler<DataReadyMessage>(
+        [this](uint64_t conn_id, const DataReadyMessage& msg) {
+            on_data_ready(conn_id, msg);
+        });
 
-     reactor_->register_handler<TaskSubmitMessage>(
-         [this](uint64_t conn_id, const TaskSubmitMessage& msg) {
-             auto* log = Logger::get_master();
-             if (log) {
-                 log->info("MasterAgent", "TaskSubmit received: task_name=" + msg.task_name +
-                           ", module=" + msg.task_module);
-             }
-             uint64_t task_id = ++remote_task_counter_;
-             submit_task(task_id, msg.task_name, msg.task_module, msg.args, msg.inputs, {});
-         });
+    reactor_->register_handler<TaskSubmitMessage>(
+        [this](uint64_t conn_id, const TaskSubmitMessage& msg) {
+            INFO("TaskSubmit received: task_name=" + msg.task_name +
+                 ", module=" + msg.task_module);
+            uint64_t task_id = ++remote_task_counter_;
+            submit_task(task_id, msg.task_name, msg.task_module, msg.args, msg.inputs, {});
+        });
 
-     reactor_->register_handler<DbPathRequestMessage>(
-         [this](uint64_t conn_id, const DbPathRequestMessage& msg) {
-             auto* log = Logger::get_master();
-             if (log) {
-                 log->info("MasterAgent", "DbPathRequest received: db_id=" + msg.db_id);
-             }
+    reactor_->register_handler<DbPathRequestMessage>(
+        [this](uint64_t conn_id, const DbPathRequestMessage& msg) {
+            INFO("DbPathRequest received: db_id=" + msg.db_id);
 
-             DbPathResponseMessage response;
-              response.db_id = msg.db_id;
+            DbPathResponseMessage response;
+            response.db_id = msg.db_id;
 
-              auto it = db_registry_.find(msg.db_id);
-              if (it != db_registry_.end()) {
-                  response.base_path = it->second["base_path"];
-                  response.data_path = it->second["data_path"];
-                  response.success = true;
-              } else {
-                  response.base_path = "";
-                  response.data_path = "";
-                  response.success = false;
-              }
+            auto it = db_registry_.find(msg.db_id);
+            if (it != db_registry_.end()) {
+                response.base_path = it->second["base_path"];
+                response.data_path = it->second["data_path"];
+                response.success = true;
+            } else {
+                response.base_path = "";
+                response.data_path = "";
+                response.success = false;
+            }
 
-             reactor_->send(conn_id, response);
-         });
+            reactor_->send(conn_id, response);
+        });
 
-     reactor_->register_handler<DataQueryMessage>(
-         [this](uint64_t conn_id, const DataQueryMessage& msg) {
-             auto* log = Logger::get_master();
-             if (log) {
-                 log->info("MasterAgent", "DataQuery for object: " + msg.object_name);
-             }
+    reactor_->register_handler<DataQueryMessage>(
+        [this](uint64_t conn_id, const DataQueryMessage& msg) {
+            INFO("DataQuery for object: " + msg.object_name);
 
-             ds();
-             DataLocationMessage response;
-             response.object_name = msg.object_name;
+            ds();
+            DataLocationMessage response;
+            response.object_name = msg.object_name;
 
-             if (ds().has_remote_location(msg.object_name)) {
-                 auto loc = ds().lookup_remote_idx(msg.object_name);
-                 response.worker_id = loc.worker_id;
-                 response.data_host = loc.host;
-                 response.data_port = loc.port;
-                 response.success = true;
-             } else {
-                 response.success = false;
-             }
+            if (ds().has_remote_location(msg.object_name)) {
+                auto loc = ds().lookup_remote_idx(msg.object_name);
+                response.worker_id = loc.worker_id;
+                response.data_host = loc.host;
+                response.data_port = loc.port;
+                response.success = true;
+            } else {
+                response.success = false;
+            }
 
-             reactor_->send(conn_id, response);
-         });
+            reactor_->send(conn_id, response);
+        });
 
-       reactor_->register_handler<DataRequestMessage>(
-          [this](uint64_t conn_id, const DataRequestMessage& msg) {
-              on_data_request(conn_id, msg);
-          });
+    reactor_->register_handler<DataRequestMessage>(
+        [this](uint64_t conn_id, const DataRequestMessage& msg) {
+            on_data_request(conn_id, msg);
+        });
 
-      reactor_->register_handler<WriteRegisterMessage>(
-          [this](uint64_t conn_id, const WriteRegisterMessage& msg) {
-              on_write_register(conn_id, msg);
-          });
+    reactor_->register_handler<WriteRegisterMessage>(
+        [this](uint64_t conn_id, const WriteRegisterMessage& msg) {
+            on_write_register(conn_id, msg);
+        });
 
     reactor_->on_disconnect([this](uint64_t conn_id) {
         on_disconnect(conn_id);
@@ -160,23 +148,16 @@ void MasterAgent::start() {
     reactor_thread_ = std::thread([this] { reactor_->run(); });
     running_ = true;
 
-    if (log) {
-        log->info("MasterAgent", "started, reactor thread running");
-    }
+    INFO("MasterAgent started, reactor thread running");
 }
 
 void MasterAgent::stop() {
-    auto* log = Logger::get_master();
-    if (log) {
-        log->info("MasterAgent", "stop() called");
-    }
+    INFO("MasterAgent stop() called");
 
     if (running_) {
         ShutdownMessage shutdown_msg;
         for (const auto& [worker_id, conn_id] : worker_to_conn_) {
-            if (log) {
-                log->info("MasterAgent", "Broadcasting shutdown to worker_id=" + std::to_string(worker_id));
-            }
+            INFO("Broadcasting shutdown to worker_id=" + std::to_string(worker_id));
             reactor_->send(conn_id, shutdown_msg);
         }
 
@@ -211,10 +192,7 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
                                const CMString& module, const CMVector<CMString>& args,
                                const CMVector<CMString>& inputs,
                                const CMVector<CMString>& outputs) {
-    auto* log = Logger::get_master();
-    if (log) {
-        log->info("MasterAgent", "submit_task: id=" + std::to_string(task_id) + ", name=" + name);
-    }
+    INFO("submit_task: id=" + std::to_string(task_id) + ", name=" + name);
 
     metadata_->create_task(task_id, name, inputs, outputs, "{}");
     graph_->add_task(task_id, inputs);
@@ -236,16 +214,11 @@ void MasterAgent::schedule_tasks() {
 }
 
 void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
-    auto* log = Logger::get_master();
-    if (log) {
-        log->info("MasterAgent", "assign_task: task=" + std::to_string(task_id) + " to worker=" + std::to_string(worker_id));
-    }
+    INFO("assign_task: task=" + std::to_string(task_id) + " to worker=" + std::to_string(worker_id));
 
     auto conn_it = worker_to_conn_.find(worker_id);
     if (conn_it == worker_to_conn_.end()) {
-        if (log) {
-            log->error("MasterAgent", "worker not found: " + std::to_string(worker_id));
-        }
+        ERR("worker not found: " + std::to_string(worker_id));
         return;
     }
 
@@ -280,10 +253,7 @@ void MasterAgent::heartbeat_check_loop() {
 
             auto dead = heartbeat_monitor_->get_dead_workers();
             for (uint64_t worker_id : dead) {
-                auto* log = Logger::get_master();
-                if (log) {
-                    log->warn("MasterAgent", "worker timeout: " + std::to_string(worker_id));
-                }
+                WARN("worker timeout: " + std::to_string(worker_id));
 
                 auto conn_it = worker_to_conn_.find(worker_id);
                 if (conn_it != worker_to_conn_.end()) {
@@ -306,12 +276,8 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     ds();
     if (msg.data_server_port > 0) {
         ds().register_worker(worker_id, msg.data_server_host, msg.data_server_port);
-    }
-
-    auto* log = Logger::get_master();
-    if (log) {
-        log->info("MasterAgent", "Worker registered: worker_id=" + std::to_string(worker_id) +
-                  ", data_server=" + msg.data_server_host + ":" + std::to_string(msg.data_server_port));
+        INFO("Worker registered: worker_id=" + std::to_string(worker_id) +
+             ", data_server=" + msg.data_server_host + ":" + std::to_string(msg.data_server_port));
     }
 
     RegisterAckMessage ack;
@@ -328,18 +294,12 @@ void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
 
     worker_manager_->set_heartbeat(worker_id, timestamp);
 
-    auto* log = Logger::get_master();
-    if (log) {
-        log->debug("MasterAgent", "Heartbeat from worker_id=" + std::to_string(worker_id));
-    }
+    DBG("Heartbeat from worker_id=" + std::to_string(worker_id));
 }
 
 void MasterAgent::on_data_ready(uint64_t conn_id, const DataReadyMessage& msg) {
-    auto* log = Logger::get_master();
-    if (log) {
-        log->info("MasterAgent", "DataReady: object=" + msg.object_name +
-                  ", worker_id=" + std::to_string(msg.worker_id));
-    }
+    INFO("DataReady: object=" + msg.object_name +
+         ", worker_id=" + std::to_string(msg.worker_id));
 
     graph_->mark_data_ready(msg.object_name);
 
@@ -351,11 +311,8 @@ void MasterAgent::on_data_ready(uint64_t conn_id, const DataReadyMessage& msg) {
 }
 
 void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg) {
-    auto* log = Logger::get_master();
-    if (log) {
-        log->info("MasterAgent", "Task complete: task_id=" + std::to_string(msg.task_id) +
-                  ", written_objects=" + std::to_string(msg.written_objects.size()));
-    }
+    INFO("Task complete: task_id=" + std::to_string(msg.task_id) +
+         ", written_objects=" + std::to_string(msg.written_objects.size()));
 
     uint64_t worker_id = msg.worker_id;
 
@@ -370,9 +327,7 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
         if (!streaming_mode) {
             graph_->mark_data_ready(data_path);
             ds().update_remote_idx(data_path, worker_id, addr.host, addr.port);
-            if (log) {
-                log->debug("MasterAgent", "Recorded data location: " + data_path + " -> worker " + std::to_string(worker_id));
-            }
+            DBG("Recorded data location: " + data_path + " -> worker " + std::to_string(worker_id));
         }
     }
 
@@ -386,9 +341,7 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
         if (it != db_instances_.end()) {
             it->second->freeze();
         }
-        if (log) {
-            log->info("MasterAgent", "DB frozen: db_id=" + db_id);
-        }
+        INFO("DB frozen: db_id=" + db_id);
     }
 
     task_modules_.erase(msg.task_id);
@@ -398,10 +351,7 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
 }
 
 void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg) {
-    auto* log = Logger::get_master();
-    if (log) {
-        log->error("MasterAgent", "Task failed: task_id=" + std::to_string(msg.task_id) + ", error=" + msg.error_message);
-    }
+    ERR("Task failed: task_id=" + std::to_string(msg.task_id) + ", error=" + msg.error_message);
 
     uint64_t worker_id = msg.worker_id;
 
@@ -416,10 +366,8 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
         msg.error_type == TaskErrorType::WRITE_REGISTRATION_FAILED ||
         msg.error_type == TaskErrorType::WRITE_REGISTRATION_TIMEOUT) {
         fatal_error_ = true;
-        if (log) {
-            log->error("MasterAgent", "FATAL: unrecoverable write error (type=" +
-                std::to_string(static_cast<int>(msg.error_type)) + "): " + msg.error_message);
-        }
+        ERR("FATAL: unrecoverable write error (type=" +
+            std::to_string(static_cast<int>(msg.error_type)) + "): " + msg.error_message);
 
         ShutdownMessage shutdown_msg;
         for (const auto& [wid, cid] : worker_to_conn_) {
@@ -429,8 +377,6 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
 }
 
 void MasterAgent::on_disconnect(uint64_t conn_id) {
-    auto* log = Logger::get_master();
-
     auto it = conn_to_worker_.find(conn_id);
     if (it != conn_to_worker_.end()) {
         uint64_t worker_id = it->second;
@@ -438,17 +384,12 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
         worker_to_conn_.erase(worker_id);
         worker_manager_->update_worker_status(worker_id, WorkerStatus::DEAD);
 
-        if (log) {
-            log->warn("MasterAgent", "Worker disconnected: worker_id=" + std::to_string(worker_id));
-        }
+        WARN("Worker disconnected: worker_id=" + std::to_string(worker_id));
     }
 }
 
 void MasterAgent::on_error(uint64_t conn_id, int error_code) {
-    auto* log = Logger::get_master();
-    if (log) {
-        log->error("MasterAgent", "Connection error: conn_id=" + std::to_string(conn_id) + ", error=" + std::to_string(error_code));
-    }
+    ERR("Connection error: conn_id=" + std::to_string(conn_id) + ", error=" + std::to_string(error_code));
     on_disconnect(conn_id);
 }
 
@@ -504,10 +445,7 @@ CMString MasterAgent::get_task_error(uint64_t task_id) const {
 }
 
 void MasterAgent::register_database(const CMString& db_id, const CMString& base_path, const CMString& data_path) {
-    auto* log = Logger::get_master();
-    if (log) {
-        log->info("MasterAgent", "register_database: db_id=" + db_id + ", base_path=" + base_path + ", data_path=" + data_path);
-    }
+    INFO("register_database: db_id=" + db_id + ", base_path=" + base_path + ", data_path=" + data_path);
 
     CMMap<CMString, CMString> path_info;
     path_info["base_path"] = base_path;
@@ -533,10 +471,7 @@ CMVector<uint64_t> MasterAgent::get_idle_workers() const {
 }
 
 void MasterAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
-    auto* log = Logger::get_master();
-    if (log) {
-        log->info("MasterAgent", "DataRequest for object: " + msg.object_name);
-    }
+    INFO("DataRequest for object: " + msg.object_name);
 
     DataResponseMessage response;
     response.object_name = msg.object_name;
@@ -549,16 +484,12 @@ void MasterAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& ms
             response.success = true;
             break;
         } catch (const std::exception& e) {
-            if (log) {
-                log->debug("MasterAgent", "DataRequest read failed in db " + db_id +
-                           " for " + msg.object_name + ": " + e.what());
-            }
+            DBG("DataRequest read failed in db " + db_id +
+                " for " + msg.object_name + ": " + e.what());
             continue;
         } catch (...) {
-            if (log) {
-                log->warn("MasterAgent", "DataRequest unknown error in db " + db_id +
-                          " for " + msg.object_name);
-            }
+            WARN("DataRequest unknown error in db " + db_id +
+                 " for " + msg.object_name);
             continue;
         }
     }
@@ -571,11 +502,8 @@ void MasterAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& ms
 }
 
 void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg) {
-    auto* log = Logger::get_master();
-    if (log) {
-        log->info("MasterAgent", "WriteRegister: worker=" + std::to_string(msg.worker_id) +
-                  ", object=" + msg.object_name + ", db_id=" + msg.db_id);
-    }
+    INFO("WriteRegister: worker=" + std::to_string(msg.worker_id) +
+         ", object=" + msg.object_name + ", db_id=" + msg.db_id);
 
     WriteRegisterAckMessage ack;
     ack.object_name = msg.object_name;
@@ -585,9 +513,7 @@ void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage
         ack.success = false;
         ack.error_message = "Database frozen: " + msg.db_id;
         ack.error_type = TaskErrorType::WRITE_TO_FROZEN_DB;
-        if (log) {
-            log->warn("MasterAgent", "WriteRegister rejected: db " + msg.db_id + " is frozen");
-        }
+        WARN("WriteRegister rejected: db " + msg.db_id + " is frozen");
     } else {
         ack.success = true;
     }
@@ -616,12 +542,8 @@ ReadResult MasterAgent::request_remote_data(const CMString& object_name) {
 
 ReadResult MasterAgent::request_data_from_worker(const CMString& host, int32_t port,
                                                    const CMString& object_name) {
-    auto* log = Logger::get_master();
-
-    if (log) {
-        log->info("MasterAgent", "Direct DataClient request to " + host + ":" +
-                  std::to_string(port) + " for " + object_name);
-    }
+    INFO("Direct DataClient request to " + host + ":" +
+         std::to_string(port) + " for " + object_name);
 
     auto [success, data, error] = DataClient::request_data(host, port, object_name);
 

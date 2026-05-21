@@ -59,6 +59,9 @@ cc_test(
 py_test(
     name = "network_test",
     srcs = ["network_test.py"],
+    data = [
+        "//src/network/export:_fly_network.so",
+    ],
     deps = [
         "//src/network/export:_fly_network.so",
     ],
@@ -72,6 +75,16 @@ cc_test(
         "@googletest//:gtest_main",
         "//src/network/cpp:fly_network",
         "//src/storage/cpp:fly_storage",
+    ],
+    copts = ["-std=c++20"],
+)
+
+cc_test(
+    name = "master_client_test",
+    srcs = ["master_client_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/network/cpp:fly_network",
     ],
     copts = ["-std=c++20"],
 )

@@ -56,6 +56,8 @@ void Config::reset() {
 }
 
 const CMMap<CMString, int64_t> Config::INT_DEFAULTS = {
+    {"worker_mode", 0},
+    {"worker_id", 0},
     {"master_port", 8000},
     {"heartbeat_timeout", 120},
     {"heartbeat_interval", 5},
@@ -69,10 +71,15 @@ const CMMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"compression_threshold", 128},
     {"compression_stream_chunk_size", 4194304},
     {"dependency_update_mode", 0},
+    {"interactive", 0},
+    {"cli_master_port", 0},
 };
 
 const CMMap<CMString, CMString> Config::STR_DEFAULTS = {
     {"transport_type", "tcp"},
     {"compression_type", "lz4"},
     {"data_server_host", "127.0.0.1"},
+    {"master_host", "127.0.0.1"},
+    {"log_dir", "fly_log"},
+    {"script_path", ""},
 };

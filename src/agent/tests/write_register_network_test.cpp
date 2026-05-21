@@ -16,8 +16,8 @@ class WriteRegisterNetworkTest : public ::testing::Test {
 protected:
     void SetUp() override {
         Logger::shutdown();
-        Logger::init_master("test_logs/");
-        Logger::init_worker(1, "test_logs/");
+        Logger::init("test_logs/", 0);
+        Logger::init("test_logs/", 1);
     }
 
     void TearDown() override {

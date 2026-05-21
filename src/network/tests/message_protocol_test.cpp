@@ -150,4 +150,248 @@ TEST(MessageProtocolTest, EmptyAttributes) {
     EXPECT_TRUE(decoded.attributes.empty());
 }
 
+TEST(MessageProtocolTest, RegisterAckMessage) {
+    RegisterAckMessage msg;
+    msg.header.type = MessageType::REGISTER_ACK;
+    msg.header.message_id = 2;
+    msg.worker_id = 42;
+    msg.master_address = "192.168.1.1";
+    msg.master_port = 8000;
+    
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+    
+    RegisterAckMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.header.type, MessageType::REGISTER_ACK);
+    EXPECT_EQ(decoded.worker_id, 42u);
+    EXPECT_EQ(decoded.master_address, "192.168.1.1");
+    EXPECT_EQ(decoded.master_port, 8000);
+}
+
+TEST(MessageProtocolTest, TaskAssignMessage) {
+    TaskAssignMessage msg;
+    msg.header.type = MessageType::TASK_ASSIGN;
+    msg.header.message_id = 10;
+    msg.task_id = 100;
+    msg.task_name = "process_data";
+    msg.task_module = "tasks.etl";
+    msg.args = {"arg1", "arg2"};
+    
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+    
+    TaskAssignMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.task_id, 100u);
+    EXPECT_EQ(decoded.task_name, "process_data");
+    EXPECT_EQ(decoded.task_module, "tasks.etl");
+    EXPECT_EQ(decoded.args.size(), 2u);
+}
+
+TEST(MessageProtocolTest, TaskCompleteMessage) {
+    TaskCompleteMessage msg;
+    msg.header.type = MessageType::TASK_COMPLETE;
+    msg.task_id = 50;
+    msg.worker_id = 1;
+    msg.written_objects = {"obj1", "obj2"};
+    msg.frozen_dbs = {"db_a"};
+    
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+    
+    TaskCompleteMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.task_id, 50u);
+    EXPECT_EQ(decoded.worker_id, 1u);
+    EXPECT_EQ(decoded.written_objects.size(), 2u);
+    EXPECT_EQ(decoded.frozen_dbs.size(), 1u);
+}
+
+TEST(MessageProtocolTest, TaskFailedMessage) {
+    TaskFailedMessage msg;
+    msg.header.type = MessageType::TASK_FAILED;
+    msg.task_id = 99;
+    msg.worker_id = 3;
+    msg.recoverable = true;
+    msg.error_message = "connection lost";
+    msg.error_type = TaskErrorType::EXECUTION_ERROR;
+    
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+    
+    TaskFailedMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.task_id, 99u);
+    EXPECT_TRUE(decoded.recoverable);
+    EXPECT_EQ(decoded.error_message, "connection lost");
+}
+
+TEST(MessageProtocolTest, DataReadyMessage) {
+    DataReadyMessage msg;
+    msg.header.type = MessageType::DATA_READY;
+    msg.worker_id = 5;
+    msg.object_name = "db_abc:result/output";
+    msg.db_id = "db_abc";
+    
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+    
+    DataReadyMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.worker_id, 5u);
+    EXPECT_EQ(decoded.object_name, "db_abc:result/output");
+    EXPECT_EQ(decoded.db_id, "db_abc");
+}
+
+TEST(MessageProtocolTest, DataLocationMessage) {
+    DataLocationMessage msg;
+    msg.header.type = MessageType::DATA_LOCATION;
+    msg.worker_id = 7;
+    msg.file_path = "/data/worker7/output.bin";
+    msg.object_name = "task_result";
+    msg.data_host = "10.0.0.7";
+    msg.data_port = 9001;
+    msg.success = true;
+    
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+    
+    DataLocationMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.worker_id, 7u);
+    EXPECT_EQ(decoded.file_path, "/data/worker7/output.bin");
+    EXPECT_EQ(decoded.data_host, "10.0.0.7");
+    EXPECT_EQ(decoded.data_port, 9001);
+    EXPECT_TRUE(decoded.success);
+}
+
+TEST(MessageProtocolTest, DataQueryMessage) {
+    DataQueryMessage msg;
+    msg.header.type = MessageType::DATA_QUERY;
+    msg.header.message_id = 55;
+    msg.object_name = "db_xyz:intermediate";
+    
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+    
+    DataQueryMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.object_name, "db_xyz:intermediate");
+}
+
+TEST(MessageProtocolTest, ShutdownMessage) {
+    ShutdownMessage msg;
+    msg.header.type = MessageType::SHUTDOWN;
+    msg.header.message_id = 999;
+    
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+    
+    ShutdownMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.header.type, MessageType::SHUTDOWN);
+    EXPECT_EQ(decoded.header.message_id, 999u);
+}
+
+TEST(MessageProtocolTest, TaskSubmitMessage) {
+    TaskSubmitMessage msg;
+    msg.header.type = MessageType::TASK_SUBMIT;
+    msg.task_name = "my_task";
+    msg.task_module = "my_module";
+    msg.args = {"a1", "a2"};
+    msg.inputs = {"input1", "input2"};
+    
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+    
+    TaskSubmitMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.task_name, "my_task");
+    EXPECT_EQ(decoded.task_module, "my_module");
+    EXPECT_EQ(decoded.args.size(), 2u);
+    EXPECT_EQ(decoded.inputs.size(), 2u);
+}
+
+TEST(MessageProtocolTest, DbPathRequestResponseMessages) {
+    DbPathRequestMessage req;
+    req.header.type = MessageType::DB_PATH_REQUEST;
+    req.db_id = "my_database";
+    
+    CMString encoded_req = MessageProtocol::encode(req);
+    CMString buffer = encoded_req;
+    
+    DbPathRequestMessage decoded_req;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded_req));
+    EXPECT_EQ(decoded_req.db_id, "my_database");
+    
+    DbPathResponseMessage resp;
+    resp.header.type = MessageType::DB_PATH_RESPONSE;
+    resp.db_id = "my_database";
+    resp.base_path = "/data/base";
+    resp.data_path = "/data/base/data";
+    resp.success = true;
+    
+    CMString encoded_resp = MessageProtocol::encode(resp);
+    CMString buffer_resp = encoded_resp;
+    
+    DbPathResponseMessage decoded_resp;
+    EXPECT_TRUE(MessageProtocol::decode(buffer_resp, decoded_resp));
+    EXPECT_EQ(decoded_resp.db_id, "my_database");
+    EXPECT_EQ(decoded_resp.base_path, "/data/base");
+    EXPECT_EQ(decoded_resp.data_path, "/data/base/data");
+    EXPECT_TRUE(decoded_resp.success);
+}
+
+TEST(MessageProtocolTest, WriteRegisterAndAckMessages) {
+    WriteRegisterMessage wr;
+    wr.header.type = MessageType::WRITE_REGISTER;
+    wr.worker_id = 10;
+    wr.object_name = "obj_key";
+    wr.db_id = "db1";
+    
+    CMString encoded_wr = MessageProtocol::encode(wr);
+    CMString buffer_wr = encoded_wr;
+    
+    WriteRegisterMessage decoded_wr;
+    EXPECT_TRUE(MessageProtocol::decode(buffer_wr, decoded_wr));
+    EXPECT_EQ(decoded_wr.worker_id, 10u);
+    EXPECT_EQ(decoded_wr.object_name, "obj_key");
+    EXPECT_EQ(decoded_wr.db_id, "db1");
+    
+    WriteRegisterAckMessage ack;
+    ack.header.type = MessageType::WRITE_REGISTER_ACK;
+    ack.object_name = "obj_key";
+    ack.db_id = "db1";
+    ack.success = true;
+    ack.error_message = "";
+    
+    CMString encoded_ack = MessageProtocol::encode(ack);
+    CMString buffer_ack = encoded_ack;
+    
+    WriteRegisterAckMessage decoded_ack;
+    EXPECT_TRUE(MessageProtocol::decode(buffer_ack, decoded_ack));
+    EXPECT_TRUE(decoded_ack.success);
+    EXPECT_EQ(decoded_ack.object_name, "obj_key");
+    EXPECT_EQ(decoded_ack.db_id, "db1");
+}
+
+TEST(MessageProtocolTest, WriteRegisterAckFailure) {
+    WriteRegisterAckMessage ack;
+    ack.header.type = MessageType::WRITE_REGISTER_ACK;
+    ack.object_name = "bad_obj";
+    ack.db_id = "bad_db";
+    ack.success = false;
+    ack.error_message = "database is frozen";
+    ack.error_type = TaskErrorType::WRITE_TO_FROZEN_DB;
+    
+    CMString encoded = MessageProtocol::encode(ack);
+    CMString buffer = encoded;
+    
+    WriteRegisterAckMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_FALSE(decoded.success);
+    EXPECT_EQ(decoded.error_message, "database is frozen");
+}
+
 }  // namespace fly

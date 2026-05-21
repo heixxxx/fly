@@ -1,33 +1,25 @@
-import logging
 from typing import Optional
 
 from .agent import FlyAgent, Master, Worker
 
-logger = logging.getLogger("fly")
-
 _agent: Optional[FlyAgent] = None
 
 _mode: str = "master"
-_worker_id: int = 0
-_master_host: str = "127.0.0.1"
-_master_port: int = 0
-_log_dir: str = "fly_log"
 
 
-def configure_worker(worker_id: int, master_host: str, master_port: int,
-                     log_dir: str = "fly_log"):
-    global _mode, _worker_id, _master_host, _master_port, _log_dir
+def _config_is_worker_mode():
+    from _fly_core import ex_core_get_config
+    return ex_core_get_config().get_int("worker_mode") == 1
+
+
+def configure_worker():
+    global _mode
     _mode = "worker"
-    _worker_id = worker_id
-    _master_host = master_host
-    _master_port = master_port
-    _log_dir = log_dir
 
 
-def configure_master(log_dir: str = "fly_log"):
-    global _mode, _log_dir
+def configure_master():
+    global _mode
     _mode = "master"
-    _log_dir = log_dir
 
 
 def get_agent() -> FlyAgent:
@@ -38,14 +30,21 @@ def get_agent() -> FlyAgent:
 
 
 def _create_agent() -> FlyAgent:
+    from _fly_log import DBG
+    from _fly_core import ex_core_get_config
+
+    cfg = ex_core_get_config()
+
     if _mode == "worker":
-        w = Worker(_worker_id, _master_host, _master_port)
+        w = Worker(cfg.get_int("worker_id"),
+                    cfg.get_str("master_host"),
+                    cfg.get_int("cli_master_port"))
         w.start()
-        logger.debug(f"Worker mode: id={_worker_id}, master={_master_host}:{_master_port}")
+        DBG(f"Worker mode: id={cfg.get_int('worker_id')}, master={cfg.get_str('master_host')}:{cfg.get_int('cli_master_port')}")
         return w
     else:
         m = Master()
-        logger.debug("Master mode: auto-initialized")
+        DBG("Master mode: auto-initialized")
         return m
 
 
@@ -56,4 +55,4 @@ def reset():
         _agent = None
 
 
-__all__ = ['get_agent', 'reset', 'configure_worker', 'configure_master']
+__all__ = ["get_agent", "reset", "configure_worker", "configure_master", "_config_is_worker_mode"]
