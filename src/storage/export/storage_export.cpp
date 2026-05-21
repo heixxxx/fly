@@ -66,7 +66,8 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_METHOD("get_base_path", &Database::get_base_path)
     FLY_EXPORT_METHOD("get_data_path", &Database::get_data_path)
     FLY_EXPORT_METHOD("get_obj_name", &Database::get_obj_name)
-    FLY_EXPORT_METHOD("reset", &Database::reset);
+    FLY_EXPORT_METHOD("reset", &Database::reset)
+    FLY_EXPORT_METHOD("remove_object", &Database::remove_object);
 
 FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
     FLY_EXPORT_DEF("try_read_local", [](fly::DataService& ds, const CMString& name) -> fly_export::tuple {

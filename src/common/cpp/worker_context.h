@@ -8,6 +8,7 @@ namespace fly {
 
 using RecordWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
 using RegisterWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
+using NotifyRemovedFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
 
 class WriteRegistrationError : public std::runtime_error {
 public:
@@ -27,10 +28,17 @@ public:
         ctx_ = ctx;
     }
 
+    static void set_notify_removed_func(NotifyRemovedFunc func, void* ctx) {
+        notify_removed_func_ = func;
+        notify_removed_ctx_ = ctx;
+    }
+
     static void clear() {
         func_ = nullptr;
         ctx_ = nullptr;
         register_func_ = nullptr;
+        notify_removed_func_ = nullptr;
+        notify_removed_ctx_ = nullptr;
         last_error_type_ = TaskErrorType::UNKNOWN;
     }
 
@@ -54,6 +62,12 @@ public:
         return func_ != nullptr;
     }
 
+    static void notify_object_removed(const CMString& db_id, const CMString& object_name) {
+        if (notify_removed_func_) {
+            notify_removed_func_(notify_removed_ctx_, db_id, object_name);
+        }
+    }
+
     static void set_last_error_type(TaskErrorType type) {
         last_error_type_ = type;
     }
@@ -69,6 +83,8 @@ private:
     static inline thread_local RecordWriteFunc func_ = nullptr;
     static inline thread_local void* ctx_ = nullptr;
     static inline thread_local RegisterWriteFunc register_func_ = nullptr;
+    static inline thread_local NotifyRemovedFunc notify_removed_func_ = nullptr;
+    static inline thread_local void* notify_removed_ctx_ = nullptr;
     static inline thread_local TaskErrorType last_error_type_ = TaskErrorType::UNKNOWN;
 };
 

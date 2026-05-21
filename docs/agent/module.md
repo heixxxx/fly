@@ -58,13 +58,14 @@ public:
                            const CMString& data_path = "");
     bool is_db_frozen(const CMString& db_id) const;
     CMSharedPtr<Database> get_or_create_database(const CMString& base_path,
-                                                  const CMString& data_path = "",
-                                                  uint64_t writer_id = 0);
+                                                   const CMString& data_path = "",
+                                                   uint64_t writer_id = 0);
+    void broadcast_object_removed(const CMString& db_id, const CMString& object_name);
 
     // 远程数据读取
     ReadResult request_remote_data(const CMString& object_name);
     ReadResult request_data_from_worker(const CMString& host, int32_t port,
-                                         const CMString& object_name);
+                                          const CMString& object_name);
 
 private:
     CMString host_;
@@ -103,6 +104,7 @@ private:
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
+    void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
     void on_disconnect(uint64_t conn_id);
     void on_error(uint64_t conn_id, int error_code);
 
@@ -233,6 +235,7 @@ private:
     CMSharedPtr<TaskExecutor> executor_;
     static void record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     static void register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
+    static void notify_removed_trampoline(void* ctx, const CMString& object_name);
 
     uint64_t current_task_id_ = 0;
     CMVector<CMString> current_writes_;
@@ -260,6 +263,7 @@ private:
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
+    void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
     void on_disconnect(uint64_t conn_id);
 
     void heartbeat_loop();

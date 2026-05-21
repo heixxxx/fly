@@ -16,7 +16,7 @@
 | `cpp/tcp_transport.cpp` | POSIX TCP 实现 (epoll) |
 | `cpp/reactor.h/cpp` | 单线程事件循环 |
 | `cpp/message_protocol.h/cpp` | 二进制帧协议 |
-| `cpp/message_types.h` | 23 种消息类型定义 |
+| `cpp/message_types.h` | 24 种消息类型定义 |
 | `cpp/io_thread_pool.h/cpp` | 通用线程池（submit + completion 回调） |
 | `cpp/metadata_client.h/cpp` | 阻塞 TCP 元数据查询客户端（原名 MasterClient） |
 | `cpp/data_client.h/cpp` | 阻塞 TCP 数据客户端 |
@@ -261,7 +261,7 @@ public:
 
 ### 消息类型定义（message_types.h）
 
-23 种消息类型，每种定义对应的结构体，均支持 `FLY_SERIALIZE` 序列化。
+24 种消息类型，每种定义对应的结构体，均支持 `FLY_SERIALIZE` 序列化。
 
 **核心消息结构体示例**:
 
@@ -293,6 +293,13 @@ struct TaskCompleteMessage {
     CMVector<CMString> written_objects;
     CMVector<CMString> frozen_dbs;
     FLY_SERIALIZE(header, task_id, worker_id, written_objects, frozen_dbs);
+};
+
+struct ObjectRemovedMessage {
+    MessageHeader header;
+    CMString object_name;   // "db_id:obj_name"
+    CMString db_id;
+    FLY_SERIALIZE(header, object_name, db_id);
 };
 ```
 

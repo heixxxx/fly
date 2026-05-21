@@ -180,6 +180,10 @@ CMVector<IndexEntry>* DataWriter::get_all_entries(const CMString& object_name) {
     return index_->find_all_entries(object_name);
 }
 
+bool DataWriter::remove_entry(const CMString& object_name) {
+    return index_->remove_entry(object_name);
+}
+
 void DataWriter::create_new_file() {
     if (file_stream_.is_open()) {
         file_stream_.close();

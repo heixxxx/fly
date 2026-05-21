@@ -73,6 +73,8 @@ public:
 
     void restart_failed_tasks(const CMString& file_path);
 
+    void broadcast_object_removed(const CMString& db_id, const CMString& object_name);
+
     uint16_t get_port() const { return port_; }
     int32_t get_data_server_port() const { return data_server_port_; }
 
@@ -128,6 +130,7 @@ private:
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
+    void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
 
     void persist_failed_task(const FailedTaskRecord& record);
     void remove_persisted_task(uint64_t task_id);

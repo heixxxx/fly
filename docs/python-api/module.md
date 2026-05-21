@@ -51,6 +51,9 @@ class _Database:
         # Layer 2: lookup_remote_idx → DataClient 直连
         # Layer 3: request_remote_data → 全程远程 (最多 3 次重试)
 
+    def remove_object(self, name: str):
+        # 删除对象索引（本地上移除，通知Master广播删除）
+
     def get_obj_name(self, name: str) -> str:
         # 返回 "{db_id}:{name}" 唯一标识符
 
@@ -167,6 +170,9 @@ class Master(FlyAgent):
 
     def restart_failed_tasks(self, file_path: str):
         # 读取失败任务记录，检查数据可用性，重新提交
+
+    def broadcast_object_removed(self, db_id: str, object_name: str):
+        # 广播对象删除给所有 Worker
 
     @property
     def pending_tasks / running_tasks / completed_tasks

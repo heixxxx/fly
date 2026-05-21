@@ -31,6 +31,7 @@ enum class MessageType : uint8_t {
     WRITE_REGISTER = 21,
     WRITE_REGISTER_ACK = 22,
     WORKER_PROPERTY_UPDATE = 23,
+    OBJECT_REMOVED = 24,
 };
 
 // 基础消息头（所有消息继承）
@@ -255,6 +256,17 @@ struct WorkerPropertyUpdateMessage {
     static constexpr MessageType msg_type = MessageType::WORKER_PROPERTY_UPDATE;
 
     FLY_SERIALIZE(header, worker_id, added_properties, removed_properties);
+};
+
+// Master → Worker: 对象删除通知（广播）
+struct ObjectRemovedMessage {
+    MessageHeader header;
+    CMString object_name;   // 完整标识符: "db_id:obj_name"
+    CMString db_id;
+
+    static constexpr MessageType msg_type = MessageType::OBJECT_REMOVED;
+
+    FLY_SERIALIZE(header, object_name, db_id);
 };
 
 }  // namespace fly

@@ -136,6 +136,11 @@ void MasterAgent::start() {
             on_worker_property_update(conn_id, msg);
         });
 
+    reactor_->register_handler<ObjectRemovedMessage>(
+        [this](uint64_t conn_id, const ObjectRemovedMessage& msg) {
+            on_object_removed(conn_id, msg);
+        });
+
     reactor_->on_disconnect([this](uint64_t conn_id) {
         on_disconnect(conn_id);
     });
@@ -609,6 +614,33 @@ void MasterAgent::on_worker_property_update(uint64_t conn_id, const WorkerProper
          + ", removed=" + std::to_string(msg.removed_properties.size()));
 
     worker_manager_->update_capabilities(msg.worker_id, msg.added_properties, msg.removed_properties);
+}
+
+void MasterAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg) {
+    INFO("ObjectRemoved: object=" + msg.object_name + ", db_id=" + msg.db_id);
+
+    ds().remove_remote_index(msg.object_name);
+
+    ObjectRemovedMessage broadcast_msg = msg;
+    for (const auto& [worker_id, worker_conn_id] : worker_to_conn_) {
+        if (worker_conn_id != conn_id) {
+            reactor_->send(worker_conn_id, broadcast_msg);
+        }
+    }
+}
+
+void MasterAgent::broadcast_object_removed(const CMString& db_id, const CMString& object_name) {
+    CMString full = db_id + ":" + object_name;
+
+    ds().remove_remote_index(full);
+
+    ObjectRemovedMessage msg;
+    msg.object_name = full;
+    msg.db_id = db_id;
+
+    for (const auto& [worker_id, conn_id] : worker_to_conn_) {
+        reactor_->send(conn_id, msg);
+    }
 }
 
 ReadResult MasterAgent::request_remote_data(const CMString& object_name) {

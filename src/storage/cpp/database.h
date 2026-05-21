@@ -10,6 +10,8 @@
 #include <memory>
 #include <stdexcept>
 
+#include <set>
+
 class Database {
 public:
     Database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0, const CMString& host = "");
@@ -91,6 +93,8 @@ public:
     void freeze();
     bool is_frozen() const;
 
+    void remove_object(const CMString& object_name);
+
     DbMeta load_meta() const;
 
     CMString get_db_id() const;
@@ -117,4 +121,5 @@ private:
 
     CMUniquePtr<DataWriter> writer_;
     CMUniquePtr<DataReader> reader_;
+    CMSet<CMString> removed_objects_;
 };

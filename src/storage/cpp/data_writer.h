@@ -54,6 +54,7 @@ public:
 
     IndexEntry* get_last_entry(const CMString& object_name);
     CMVector<IndexEntry>* get_all_entries(const CMString& object_name);
+    bool remove_entry(const CMString& object_name);
 
 private:
     void create_new_file();

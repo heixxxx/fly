@@ -111,6 +111,7 @@ private:
     
     static void record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     static void register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
+    static void notify_removed_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     
     uint64_t current_task_id_ = 0;
     CMVector<CMString> current_writes_;
@@ -132,6 +133,7 @@ private:
     void on_db_path_response(const DbPathResponseMessage& msg);
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
+    void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
     void on_disconnect(uint64_t conn_id);
     
     void heartbeat_loop();

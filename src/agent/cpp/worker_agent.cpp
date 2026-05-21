@@ -98,6 +98,11 @@ void WorkerAgent::start() {
             on_write_register_ack(conn_id, msg);
         });
 
+    reactor_->register_handler<ObjectRemovedMessage>(
+        [this](uint64_t conn_id, const ObjectRemovedMessage& msg) {
+            on_object_removed(conn_id, msg);
+        });
+
     reactor_->on_disconnect([this](uint64_t conn_id) {
         on_disconnect(conn_id);
     });
@@ -336,6 +341,7 @@ void WorkerAgent::begin_task(uint64_t task_id) {
     current_writes_.clear();
     WorkerAgentContext::set(&record_write_trampoline, this);
     WorkerAgentContext::set_register_func(&register_write_trampoline);
+    WorkerAgentContext::set_notify_removed_func(&notify_removed_trampoline, this);
 }
 
 void WorkerAgent::record_write(const CMString& db_id, const CMString& object_name) {
@@ -365,6 +371,18 @@ void WorkerAgent::record_write_trampoline(void* ctx, const CMString& db_id, cons
 
 void WorkerAgent::register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
     static_cast<WorkerAgent*>(ctx)->register_write_with_master(db_id, name);
+}
+
+void WorkerAgent::notify_removed_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
+    auto* self = static_cast<WorkerAgent*>(ctx);
+    CMString full_name = db_id + ":" + name;
+
+    ObjectRemovedMessage msg;
+    msg.object_name = full_name;
+    msg.db_id = db_id;
+    self->reactor_->send(self->master_conn_, msg);
+
+    INFO("ObjectRemoved sent to master: " + full_name);
 }
 
 void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
@@ -525,6 +543,14 @@ void WorkerAgent::on_write_register_ack(uint64_t conn_id, const WriteRegisterAck
         it->second->error_type = msg.error_type;
         it->second->completed = true;
     }
+}
+
+void WorkerAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg) {
+    touch_master_contact();
+    INFO("ObjectRemoved received from master: " + msg.object_name);
+
+    ds().remove_local_index(msg.object_name);
+    ds().remove_remote_index(msg.object_name);
 }
 
 void WorkerAgent::set_worker_property(const CMString& prop) {

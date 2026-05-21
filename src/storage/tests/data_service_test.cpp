@@ -191,4 +191,62 @@ TEST_F(DataServiceTest, RegisterDatabaseAndLocalRead) {
     EXPECT_TRUE(ds_.has_local_object(full));
 }
 
+TEST_F(DataServiceTest, RemoveLocalIndexMakesObjectUnreadable) {
+    CMString base_path = test_dir_ + "/remove_local";
+    Database db(base_path);
+
+    db.write_object("remove/local", "data", false);
+    fly::DataService::instance().drain_write_back();
+
+    CMString full = db.get_obj_name("remove/local");
+    EXPECT_TRUE(ds_.has_local_object(full));
+
+    ds_.remove_local_index(full);
+
+    EXPECT_FALSE(ds_.has_local_object(full));
+
+    auto [found, result] = ds_.try_read_local(full);
+    EXPECT_FALSE(found);
+}
+
+TEST_F(DataServiceTest, RemoveLocalIndexOnlyAffectsTarget) {
+    CMString base_path = test_dir_ + "/remove_one_local";
+    Database db(base_path);
+
+    db.write_object("keep/me", "keep_data", false);
+    db.write_object("remove/me", "remove_data", false);
+    fly::DataService::instance().drain_write_back();
+
+    CMString keep_full = db.get_obj_name("keep/me");
+    CMString remove_full = db.get_obj_name("remove/me");
+
+    ds_.remove_local_index(remove_full);
+
+    EXPECT_TRUE(ds_.has_local_object(keep_full));
+    EXPECT_FALSE(ds_.has_local_object(remove_full));
+}
+
+TEST_F(DataServiceTest, RemoveRemoteIndexClearsLocation) {
+    ds_.update_remote_idx("remote/remove_test", 1, "host_a", 8000);
+    EXPECT_TRUE(ds_.has_remote_location("remote/remove_test"));
+
+    ds_.remove_remote_index("remote/remove_test");
+
+    EXPECT_FALSE(ds_.has_remote_location("remote/remove_test"));
+
+    auto info = ds_.lookup_remote_idx("remote/remove_test");
+    EXPECT_EQ(info.worker_id, 0u);
+    EXPECT_TRUE(info.host.empty());
+}
+
+TEST_F(DataServiceTest, RemoveRemoteIndexOnlyAffectsTarget) {
+    ds_.update_remote_idx("remote/keep", 1, "host_a", 8000);
+    ds_.update_remote_idx("remote/remove", 2, "host_b", 9000);
+
+    ds_.remove_remote_index("remote/remove");
+
+    EXPECT_TRUE(ds_.has_remote_location("remote/keep"));
+    EXPECT_FALSE(ds_.has_remote_location("remote/remove"));
+}
+
 }

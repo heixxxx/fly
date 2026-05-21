@@ -196,6 +196,21 @@ db_b = Database("/data/project_b", data_path="/ssd/local_b")
 | `base_path` | 共享存储路径，所有Master/Worker可访问。freeze后聚合idx写入此路径 | 是 |
 | `data_path` | 本地磁盘路径，可选。启用时write_object写入此路径，read_object优先查找此路径 | 否 |
 
+**对象删除**：
+
+```python
+db.remove_object("object_name")
+
+# Master 端需额外广播通知所有 Worker
+master.broadcast_object_removed(db.get_db_id(), "object_name")
+```
+
+**删除流程**：
+- `db.remove_object()` 删除本地索引条目
+- Worker 端通过 `WorkerAgentContext` 自动发送 `ObjectRemovedMessage` 到 Master
+- Master 收到后通过 `DataService.remove_remote_index()` 清理，并广播给其他 Worker
+- `freeze()` 时从磁盘聚合文件中删除对象（占位符实现）
+
 **写入与读取**：
 
 ```python
@@ -217,6 +232,7 @@ db_b = Database("/data/project_b", data_path="/ssd/local_b")
 - `db.freeze()` 后，所有 `write_object()` 调用抛出异常
 - `db.read_object()` 正常工作
 - 冻结时在 `base_path` 创建标识文件 `_FROZEN`
+- 已通过 `db.remove_object()` 删除的对象会在 freeze 时从磁盘文件中移除（占位符实现）
 - **注意**：后处理（idx合并、_META生成）尚未实现
 
 **写注册协议**：
@@ -478,6 +494,7 @@ Master端（后台任务）：
 | DBPathRequestMessage | Worker → Master | ✅ 已实现 |
 | DBPathResponseMessage | Master → Worker | ✅ 已实现 |
 | WorkerPropertyUpdateMessage | Worker → Master | ✅ 已实现 |
+| ObjectRemovedMessage | Worker → Master | ✅ 已实现 |
 
 **TransportLayer更新**：
 - 移除 `accept()` 方法

@@ -89,6 +89,9 @@ public:
     bool has_remote_location(const CMString& object_name) const;
     RemoteObjectInfo lookup_remote_idx(const CMString& object_name) const;
 
+    void remove_local_index(const CMString& object_name);
+    void remove_remote_index(const CMString& object_name);
+
     void register_worker(uint64_t worker_id,
                             const CMString& host,
                             int32_t port);

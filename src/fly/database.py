@@ -71,5 +71,8 @@ class _Database:
     def reset(self):
         self._db.reset()
 
+    def remove_object(self, name: str):
+        self._db.remove_object(name)
+
     def __repr__(self):
         return f"Database(db_id={self.get_db_id()})"

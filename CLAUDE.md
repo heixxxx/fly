@@ -271,10 +271,10 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 
 | 文件 | 职责 |
 |------|------|
-| `database.h/cpp` | 统一存储接口，写时通知 DataService，读时走 DataService 内存索引 |
+| `database.h/cpp` | 统一存储接口，写时通知 DataService，读时走 DataService 内存索引，`remove_object()` 删除对象索引 |
 | `data_writer.h/cpp` | 单线程写入聚合器，小文件聚合 + 大文件分块 |
 | `data_reader.h/cpp` | 数据读取，支持 `read_from_entries()` 直接按索引读取 |
-| `data_service.h/cpp` | **统一内存索引：local_idx + remote_idx + worker_registry** |
+| `data_service.h/cpp` | **统一内存索引：local_idx + remote_idx + worker_registry**，支持 `remove_local_index()` / `remove_remote_index()` |
 | `storage_manager.h/cpp` | Database 生命周期管理，单例 |
 
 ### 网络层 (src/network/)
@@ -285,7 +285,7 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 | `transport.h/cpp` | TransportLayer 抽象 |
 | `tcp_transport.cpp` | POSIX TCP 实现 |
 | `message_protocol.h/cpp` | 二进制帧协议 |
-| `message_types.h` | 消息结构定义 (21 种消息类型，含 WorkerPropertyUpdate type=23) |
+| `message_types.h` | 消息结构定义 (24 种消息类型，含 WorkerPropertyUpdate type=23, ObjectRemoved type=24) |
 
 ### 任务系统层 (src/task/)
 
@@ -442,7 +442,46 @@ def my_task(db, key):
 
 ---
 
-## 11. 项目状态
+## 11. 对象删除 (remove_object)
+
+### API
+
+```python
+# Worker 端（task 函数内，自动通知 Master）
+db.remove_object("object_name")
+
+# Master 端（需额外调用 broadcast 通知所有 Worker）
+db.remove_object("object_name")
+master._agent.broadcast_object_removed(db.get_db_id(), "object_name")
+```
+
+### 删除流程
+
+1. `Database::remove_object()` 执行本地清理：
+   - `check_frozen()` — 冻结后不允许删除
+   - `removed_objects_` 集合记录待删除对象（freeze 时磁盘清理）
+   - `DataWriter::remove_entry()` 从 LocalIndex 中删除索引条目
+   - `DataService::remove_local_index()` 从内存索引 local_idx 中删除
+
+2. Worker 端通过 `WorkerAgentContext` trampoline 自动通知：
+   - `notify_removed_trampoline` → 发送 `ObjectRemovedMessage` (type=24) 给 Master
+   - Master 收到后：`DataService::remove_remote_index()` → 广播给所有其他 Worker
+   - 其他 Worker 收到后：清理 `local_idx_` + `remote_idx_`
+
+3. `freeze()` 时磁盘清理（占位符，当前未实现）：
+   - 聚合文件包含多个对象，删除单个需要重写整个文件
+   - 完整实现需等待数据压缩 (compaction) 功能
+
+### ObjectRemovedMessage (type=24)
+
+```
+Worker → Master: { object_name: "db_id:obj_name", db_id: "xxx" }
+Master → Worker (broadcast): 同上，转发给所有其他 Worker
+```
+
+---
+
+## 12. 项目状态
 
 ### Layer 实现进度
 
@@ -480,11 +519,11 @@ Worker A 读取 (DataClient 独立连接):
 3. `request_remote_data()` → 查 Master (via Reactor) → `DataClient::request_data()` 直连目标 Worker (最多 3 次重试)
 
 DB 路径查询: WorkerAgent.request_db_path(db_id) → 向 Master 查询 → 自动创建 Database 实例
-消息类型: 21 种 (含 DB_PATH_REQUEST/DB_PATH_RESPONSE, WorkerPropertyUpdate type=23)
+消息类型: 24 种 (含 DB_PATH_REQUEST/DB_PATH_RESPONSE, WorkerPropertyUpdate type=23, ObjectRemoved type=24)
 
 ---
 
-## 12. Agent 工作指南
+## 13. Agent 工作指南
 
 ### 必须遵循
 
@@ -523,7 +562,7 @@ src/new_module/
 
 ---
 
-## 13. 快速参考
+## 14. 快速参考
 
 ### 常用命令
 

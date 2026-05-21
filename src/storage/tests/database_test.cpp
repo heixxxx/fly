@@ -288,4 +288,66 @@ TEST_F(DatabaseTest, NoTrackingWithoutContext) {
     db.write_object("safe/obj", "data", false);
 }
 
+TEST_F(DatabaseTest, RemoveObjectPreventsRead) {
+    CMString base_path = test_dir_ + "/remove_obj";
+    Database db(base_path);
+
+    db.write_object("test/obj", "hello world", false);
+    fly::DataService::instance().drain_write_back();
+
+    CMString result = db.read_object("test/obj");
+    EXPECT_EQ(result, "hello world");
+
+    db.remove_object("test/obj");
+
+    EXPECT_THROW(db.read_object("test/obj"), std::runtime_error);
+}
+
+TEST_F(DatabaseTest, RemoveObjectOnlyAffectsTarget) {
+    CMString base_path = test_dir_ + "/remove_one";
+    Database db(base_path);
+
+    db.write_object("obj/a", "data_a", false);
+    db.write_object("obj/b", "data_b", false);
+    fly::DataService::instance().drain_write_back();
+
+    db.remove_object("obj/a");
+
+    EXPECT_THROW(db.read_object("obj/a"), std::runtime_error);
+    EXPECT_EQ(db.read_object("obj/b"), "data_b");
+}
+
+TEST_F(DatabaseTest, RemoveObjectFailsWhenFrozen) {
+    CMString base_path = test_dir_ + "/remove_frozen";
+    Database db(base_path);
+
+    db.write_object("test/obj", "data", false);
+    db.freeze();
+
+    EXPECT_THROW(db.remove_object("test/obj"), std::runtime_error);
+}
+
+TEST_F(DatabaseTest, RemoveObjectTrampolineNotifies) {
+    CMVector<CMString> removed_notifications;
+    fly::WorkerAgentContext::set_notify_removed_func(
+        [](void* ctx, const CMString& db_id, const CMString& name) {
+            auto* notifications = static_cast<CMVector<CMString>*>(ctx);
+            notifications->push_back(db_id + ":" + name);
+        },
+        &removed_notifications
+    );
+
+    CMString base_path = test_dir_ + "/remove_trampoline";
+    Database db(base_path);
+    db.write_object("notify/obj", "data", false);
+    fly::DataService::instance().drain_write_back();
+
+    db.remove_object("notify/obj");
+
+    fly::WorkerAgentContext::clear();
+
+    ASSERT_EQ(removed_notifications.size(), 1u);
+    EXPECT_EQ(removed_notifications[0], db.get_db_id() + ":notify/obj");
+}
+
 }

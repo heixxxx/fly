@@ -1,6 +1,7 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/compressor.h>
 #include <core/cpp/config.h>
+#include <log/cpp/logger.h>
 #include <filesystem>
 #include <fstream>
 #include <chrono>
@@ -169,10 +170,33 @@ void Database::freeze() {
     writer_->close();
     create_frozen_marker();
     fly::DataService::instance().on_flush(db_id_);
+
+    // TODO: freeze 后处理 — 从聚合文件中真正删除 removed_objects_ 的数据
+    // 当前聚合文件可能包含多个对象，删除单个对象需要重写整个文件
+    // 完整实现需要在数据压缩(compaction)功能中完成
+    if (!removed_objects_.empty()) {
+        INFO("freeze: " + std::to_string(removed_objects_.size()) +
+             " objects marked for removal (disk cleanup pending compaction implementation)");
+    }
 }
 
 bool Database::is_frozen() const {
     return is_frozen_;
+}
+
+void Database::remove_object(const CMString& object_name) {
+    check_frozen();
+
+    CMString full = full_name(object_name);
+    removed_objects_.insert(full);
+
+    writer_->remove_entry(full);
+
+    fly::DataService::instance().remove_local_index(full);
+
+    fly::WorkerAgentContext::notify_object_removed(db_id_, object_name);
+
+    INFO("Object removed: " + full);
 }
 
 DbMeta Database::load_meta() const {

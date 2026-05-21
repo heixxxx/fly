@@ -140,6 +140,11 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     })
     FLY_EXPORT_METHOD("restart_failed_tasks", [](fly::MasterAgent& self, const fly::CMString& file_path) {
         self.restart_failed_tasks(file_path);
+    })
+    FLY_EXPORT_METHOD("broadcast_object_removed", [](fly::MasterAgent& self,
+                                                        const fly::CMString& db_id,
+                                                        const fly::CMString& object_name) {
+        self.broadcast_object_removed(db_id, object_name);
     });
 
 FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")

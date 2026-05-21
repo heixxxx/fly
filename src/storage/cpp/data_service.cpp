@@ -132,6 +132,16 @@ RemoteObjectInfo DataService::lookup_remote_idx(const CMString& object_name) con
     return RemoteObjectInfo{};
 }
 
+void DataService::remove_local_index(const CMString& object_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    local_idx_.erase(object_name);
+}
+
+void DataService::remove_remote_index(const CMString& object_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    remote_idx_.erase(object_name);
+}
+
 void DataService::register_worker(uint64_t worker_id,
                                    const CMString& host,
                                    int32_t port) {

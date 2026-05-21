@@ -114,3 +114,20 @@ def remove_shared_on_beta(db, key):
     from fly.runtime import get_agent
     get_agent().remove_worker_property("shared")
     db.write_object(key, _get_wid())
+
+
+@as_task()
+def write_and_remove(db, key, value):
+    db.write_object(key, value)
+    db.remove_object(key)
+
+
+@as_task(inputs=lambda db, key, deps: list(deps))
+def read_after_remove(db, key, deps):
+    return db.read_object(key)
+
+
+@as_task()
+def write_remove_other(db, write_key, write_value, remove_key):
+    db.write_object(write_key, write_value)
+    db.remove_object(remove_key)

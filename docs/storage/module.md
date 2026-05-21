@@ -57,6 +57,9 @@ public:
     
     ReadResult read_object_typed(const CMString& object_name);
     
+    // 删除
+    void remove_object(const CMString& object_name);
+    
     // 生命周期
     void freeze();
     bool is_frozen() const;
@@ -77,6 +80,7 @@ private:
     CMString db_id_;
     CMString host_;
     bool is_frozen_ = false;
+    CMSet<CMString> removed_objects_;  // 待删除对象集合（freeze时磁盘清理）
     
     CMUniquePtr<DataWriter> writer_;
     CMUniquePtr<DataReader> reader_;
@@ -267,16 +271,18 @@ public:
     
     std::pair<bool, ReadResult> try_read_local(const CMString& object_name);
     std::pair<bool, ReadResult> try_read_local_or_wait(const CMString& object_name,
-                                                         int timeout_ms = 3000);
+                                                          int timeout_ms = 3000);
     ReadResult read_raw(const CMString& object_name, int max_retries = 3);
     
     bool has_local_object(const CMString& object_name) const;
+    void remove_local_index(const CMString& object_name);
     
     // 远程索引
     void update_remote_idx(const CMString& object_name, uint64_t worker_id,
                            const CMString& host, int32_t port);
     RemoteObjectInfo lookup_remote_idx(const CMString& object_name) const;
     bool has_remote_location(const CMString& object_name) const;
+    void remove_remote_index(const CMString& object_name);
     
     // Worker 注册
     void register_worker(uint64_t worker_id, const CMString& host, int32_t port);
