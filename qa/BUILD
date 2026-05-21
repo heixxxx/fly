@@ -116,3 +116,57 @@ py_test(
     ],
     main = "test_capability_scheduling.py",
 )
+
+py_test(
+    name = "dynamic_property_scheduling_test",
+    srcs = ["test_dynamic_property_scheduling.py"],
+    deps = [
+        "//src/storage/py:fly_storage_py",
+        "//src/fly:fly_py",
+    ],
+    imports = [
+        "../src/storage/export",
+        "../src/core/export",
+        "../src/log/export",
+        "../src/agent/export",
+        "../src/network/export",
+        "../src/task/export",
+    ],
+    main = "test_dynamic_property_scheduling.py",
+)
+
+py_test(
+    name = "no_matching_worker_test",
+    srcs = ["test_no_matching_worker.py"],
+    deps = [
+        "//src/storage/py:fly_storage_py",
+        "//src/fly:fly_py",
+    ],
+    imports = [
+        "../src/storage/export",
+        "../src/core/export",
+        "../src/log/export",
+        "../src/agent/export",
+        "../src/network/export",
+        "../src/task/export",
+    ],
+    main = "test_no_matching_worker.py",
+)
+
+py_test(
+    name = "fail_unscheduleable_test",
+    srcs = ["test_fail_unscheduleable.py"],
+    deps = [
+        "//src/storage/py:fly_storage_py",
+        "//src/fly:fly_py",
+    ],
+    imports = [
+        "../src/storage/export",
+        "../src/core/export",
+        "../src/log/export",
+        "../src/agent/export",
+        "../src/network/export",
+        "../src/task/export",
+    ],
+    main = "test_fail_unscheduleable.py",
+)
