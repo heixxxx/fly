@@ -9,7 +9,7 @@
 #include <task/cpp/dependency_graph.h>
 #include <task/cpp/worker_manager.h>
 #include <task/cpp/task_scheduler.h>
-#include <task/cpp/metadata_manager.h>
+#include <task/cpp/task_manager.h>
 #include <task/cpp/heartbeat_monitor.h>
 #include <log/cpp/logger.h>
 #include <common/cpp/common_types.h>
@@ -76,7 +76,7 @@ private:
     CMUniquePtr<DependencyGraph> graph_;
     CMUniquePtr<WorkerManager> worker_manager_;
     CMUniquePtr<TaskScheduler> scheduler_;
-    CMUniquePtr<MetadataManager> metadata_;
+    CMUniquePtr<TaskManager> metadata_;
     CMUniquePtr<HeartbeatMonitor> heartbeat_monitor_;
     std::thread heartbeat_check_thread_;
     std::atomic<bool> heartbeat_check_running_{false};

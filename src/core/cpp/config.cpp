@@ -63,7 +63,7 @@ const CMMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"heartbeat_interval", 5},
     {"backup_threshold", 100},
     {"aggregation_threshold", 1048576},
-    {"large_file_threshold", 10485710},
+    {"large_file_threshold_kb", 65536},  // 64MB in KB (user-configurable)
     {"block_size", 134217728},
     {"track_writes", 0},
     {"data_server_threads", 1},

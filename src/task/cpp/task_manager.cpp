@@ -1,8 +1,8 @@
-#include <task/cpp/metadata_manager.h>
+#include <task/cpp/task_manager.h>
 
 namespace fly {
 
-void MetadataManager::create_task(uint64_t task_id, const CMString& name,
+void TaskManager::create_task(uint64_t task_id, const CMString& name,
                                    const CMVector<CMString>& inputs,
                                    const CMVector<CMString>& outputs,
                                    const CMString& config) {
@@ -20,28 +20,28 @@ void MetadataManager::create_task(uint64_t task_id, const CMString& name,
     tasks_[task_id] = meta;
 }
 
-void MetadataManager::update_task_status(uint64_t task_id, TaskStatus status) {
+void TaskManager::update_task_status(uint64_t task_id, TaskStatus status) {
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
         it->second.status = status;
     }
 }
 
-void MetadataManager::set_error(uint64_t task_id, const CMString& error) {
+void TaskManager::set_error(uint64_t task_id, const CMString& error) {
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
         it->second.error_message = error;
     }
 }
 
-void MetadataManager::set_assigned_worker(uint64_t task_id, uint64_t worker_id) {
+void TaskManager::set_assigned_worker(uint64_t task_id, uint64_t worker_id) {
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
         it->second.assigned_worker_id = worker_id;
     }
 }
 
-void MetadataManager::set_timestamps(uint64_t task_id, uint64_t created, uint64_t started, uint64_t completed) {
+void TaskManager::set_timestamps(uint64_t task_id, uint64_t created, uint64_t started, uint64_t completed) {
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
         if (created != 0) it->second.created_at = created;
@@ -50,7 +50,7 @@ void MetadataManager::set_timestamps(uint64_t task_id, uint64_t created, uint64_
     }
 }
 
-TaskMetadata* MetadataManager::get_task(uint64_t task_id) {
+TaskMetadata* TaskManager::get_task(uint64_t task_id) {
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
         return &it->second;
@@ -58,7 +58,7 @@ TaskMetadata* MetadataManager::get_task(uint64_t task_id) {
     return nullptr;
 }
 
-CMVector<TaskMetadata> MetadataManager::get_tasks_by_status(TaskStatus status) {
+CMVector<TaskMetadata> TaskManager::get_tasks_by_status(TaskStatus status) {
     CMVector<TaskMetadata> result;
     for (const auto& [id, meta] : tasks_) {
         if (meta.status == status) {
@@ -68,7 +68,7 @@ CMVector<TaskMetadata> MetadataManager::get_tasks_by_status(TaskStatus status) {
     return result;
 }
 
-CMVector<TaskMetadata> MetadataManager::get_all_tasks() {
+CMVector<TaskMetadata> TaskManager::get_all_tasks() {
     CMVector<TaskMetadata> result;
     for (const auto& [id, meta] : tasks_) {
         result.push_back(meta);
@@ -76,11 +76,11 @@ CMVector<TaskMetadata> MetadataManager::get_all_tasks() {
     return result;
 }
 
-bool MetadataManager::has_task(uint64_t task_id) {
+bool TaskManager::has_task(uint64_t task_id) {
     return tasks_.count(task_id) > 0;
 }
 
-void MetadataManager::remove_task(uint64_t task_id) {
+void TaskManager::remove_task(uint64_t task_id) {
     tasks_.erase(task_id);
 }
 

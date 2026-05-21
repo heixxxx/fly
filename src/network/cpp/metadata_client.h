@@ -6,9 +6,9 @@
 
 namespace fly {
 
-// Blocking TCP client for querying Master about data locations.
+// Blocking TCP client for querying Master about data object metadata/locations.
 // Thread-safe: each call creates its own socket.
-class MasterClient {
+class MetadataClient {
 public:
     struct DataLocation {
         bool found = false;

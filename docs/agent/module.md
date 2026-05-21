@@ -27,68 +27,83 @@ Agent 层是框架的最高 C++ 层，封装 Master 和 Worker 的完整业务�
 ```cpp
 class MasterAgent {
 public:
-    MasterAgent(const CMString& host, int port);
+    MasterAgent(const CMString& host, uint16_t port);
     ~MasterAgent();
 
     void start();
     void stop();
-
-    // 任务提交
-    void submit_task_with_deps(uint64_t task_id, const CMString& name,
-                               const CMString& module,
-                               const CMVector<CMString>& args,
-                               const CMVector<CMString>& inputs,
-                               const CMVector<CMString>& outputs);
-
-    // 数据库管理
-    std::shared_ptr<Database> get_or_create_database(const CMString& base_path,
-                                                      const CMString& data_path,
-                                                      int writer_id);
-
-    // 查询
-    int get_port() const;
-    int get_pending_tasks() const;
-    int get_running_tasks() const;
-    int get_completed_tasks() const;
     bool is_running() const;
 
-private:
-    // 核心组件
-    std::unique_ptr<Reactor> reactor_;
-    std::shared_ptr<TaskScheduler> scheduler_;
-    std::shared_ptr<DependencyGraph> graph_;
-    std::shared_ptr<WorkerManager> worker_manager_;
-    std::shared_ptr<MetadataManager> metadata_;
-    std::shared_ptr<HeartbeatMonitor> heartbeat_monitor_;
+    void set_data_service(DataService* ds);
 
-    // 连接映射
-    CMMap<uint64_t, uint64_t> conn_to_worker_;   // conn_id → worker_id
-    CMMap<uint64_t, uint64_t> worker_to_conn_;   // worker_id → conn_id
+    // 任务提交
+    void submit_task(uint64_t task_id, const CMString& name,
+                     const CMString& module,
+                     const CMVector<CMString>& args,
+                     const CMVector<CMString>& inputs = {},
+                     const CMVector<CMString>& outputs = {});
 
-    // 任务参数存储
-    CMMap<uint64_t, CMVector<CMString>> task_args_;
+    // 查询
+    CMVector<uint64_t> get_connected_workers() const;
+    CMVector<uint64_t> get_pending_tasks() const;
+    CMVector<uint64_t> get_running_tasks() const;
+    CMVector<uint64_t> get_completed_tasks() const;
+    CMVector<uint64_t> get_failed_tasks() const;
+    CMString get_task_error(uint64_t task_id) const;
+    CMVector<uint64_t> get_idle_workers() const;
+    uint16_t get_port() const;
 
     // 数据库管理
-    CMMap<CMString, std::shared_ptr<Database>> db_instances_;
-    CMMap<CMString, std::pair<CMString, CMString>> db_registry_;  // db_id → {base, data}
+    void register_database(const CMString& db_id, const CMString& base_path,
+                           const CMString& data_path = "");
+    bool is_db_frozen(const CMString& db_id) const;
+    CMSharedPtr<Database> get_or_create_database(const CMString& base_path,
+                                                  const CMString& data_path = "",
+                                                  uint64_t writer_id = 0);
+
+    // 远程数据读取
+    ReadResult request_remote_data(const CMString& object_name);
+    ReadResult request_data_from_worker(const CMString& host, int32_t port,
+                                         const CMString& object_name);
+
+private:
+    CMString host_;
+    uint16_t port_;
+    int32_t data_server_port_ = 0;
+    std::atomic<bool> running_{false};
+
+    CMUniquePtr<Reactor> reactor_;
+    std::unique_ptr<DependencyGraph> graph_;
+    CMUniquePtr<WorkerManager> worker_manager_;
+    CMUniquePtr<TaskScheduler> scheduler_;
+    CMUniquePtr<TaskManager> metadata_;
+    CMUniquePtr<HeartbeatMonitor> heartbeat_monitor_;
+
+    CMMap<uint64_t, uint64_t> conn_to_worker_;
+    CMMap<uint64_t, uint64_t> worker_to_conn_;
+    CMMap<uint64_t, CMString> task_modules_;
+    CMMap<uint64_t, CMVector<CMString>> task_args_;
+
+    CMMap<CMString, CMMap<CMString, CMString>> db_registry_;
+    CMMap<CMString, CMSharedPtr<Database>> db_instances_;
     CMSet<CMString> frozen_dbs_;
 
-    // 线程
     std::thread reactor_thread_;
     std::thread heartbeat_check_thread_;
+
+    void schedule_tasks();
+    void assign_task_to_worker(uint64_t task_id, uint64_t worker_id);
 
     // Message handlers
     void on_worker_register(uint64_t conn_id, const RegisterMessage& msg);
     void on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg);
+    void on_data_ready(uint64_t conn_id, const DataReadyMessage& msg);
     void on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg);
     void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
-    void on_data_query(uint64_t conn_id, const DataQueryMessage& msg);
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
-    void on_db_path_request(uint64_t conn_id, const DbPathRequestMessage& msg);
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
     void on_disconnect(uint64_t conn_id);
-
-    void schedule_tasks();
+    void on_error(uint64_t conn_id, int error_code);
 };
 ```
 
@@ -97,8 +112,9 @@ private:
 ```
 conn_to_worker_:  conn_id → worker_id      // 连接双向映射
 worker_to_conn_:  worker_id → conn_id
-task_args_:       task_id → args[]          // 任务参数
-db_registry_:     db_id → {base_path, data_path}
+task_modules_:    task_id → module_name
+task_args_:       task_id → args[]
+db_registry_:     db_id → {base_path → data_path}
 db_instances_:    db_id → shared_ptr<Database>
 frozen_dbs_:      set<db_id>                // 已冻结 DB 集合
 ```
@@ -119,7 +135,7 @@ MasterAgent.start()
 
 ```
 on_task_complete(TaskCompleteMessage)
-  → worker_manager_->complete_task(worker_id)   // Worker 空闲
+  → worker_manager_->complete_task(worker_id)   // Worker → IDLE
   → for written_object:
       → graph_->mark_data_ready(data_path)       // 触发下游
       → DataService.update_remote_idx(...)        // 更新远程索引
@@ -129,6 +145,11 @@ on_task_complete(TaskCompleteMessage)
   → metadata_->update_task_status(task_id, COMPLETED)
   → schedule_tasks()                              // 调度新任务
 
+on_data_ready(DataReadyMessage)
+  → graph_->mark_data_ready(data_path)
+  → DataService.update_remote_idx(...)
+  → schedule_tasks()
+
 on_write_register(WriteRegisterMessage)
   → 检查 is_db_frozen(db_id)
   → 未冻结 → ACK(success=true)
@@ -136,7 +157,7 @@ on_write_register(WriteRegisterMessage)
 
 on_task_failed(TaskFailedMessage)
   → 检查 error_type 是否为 fatal (WRITE_TO_FROZEN_DB 等)
-  → fatal → 广播 ShutdownMessage
+  → fatal → 设 fatal_error_ 标志，后续停止调度
   → 非fatal → 记录失败，后续可重试
 ```
 
@@ -147,19 +168,32 @@ on_task_failed(TaskFailedMessage)
 ```cpp
 class WorkerAgent {
 public:
-    WorkerAgent(uint64_t worker_id, const CMString& master_host, int master_port);
+    WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port);
     ~WorkerAgent();
 
     void start();
     void stop();
+    bool is_running() const;
+    uint64_t get_worker_id() const;
+    bool is_registered() const;
 
     // 任务执行
-    void poll_task();
+    void set_executor(CMSharedPtr<TaskExecutor> executor);
+    bool has_pending_task() const;
+    bool poll_task();
+
+    void set_data_service(DataService* ds);
+
+    // 写入跟踪
+    void begin_task(uint64_t task_id);
+    void record_write(const CMString& db_id, const CMString& object_name);
+    CMVector<CMString> end_task(uint64_t task_id);
+    void register_write_with_master(const CMString& db_id, const CMString& object_name);
 
     // 远程数据读取
-    DataResponse request_data_from_worker(const CMString& host, int32_t port,
+    ReadResult request_data_from_worker(const CMString& host, int32_t port,
                                            const CMString& object_name);
-    DataResponse request_remote_data(const CMString& object_name);
+    ReadResult request_remote_data(const CMString& object_name);
 
     // DB 路径查询
     bool request_db_path(const CMString& db_id);
@@ -170,46 +204,50 @@ public:
                      const CMVector<CMString>& inputs);
 
     // 数据库管理
-    void register_database(const CMString& db_id, std::shared_ptr<Database> db);
-
-    // 查询
-    bool is_running() const;
+    void register_database(const CMString& db_id, CMSharedPtr<Database> db);
+    CMSharedPtr<Database> get_database(const CMString& db_id) const;
 
 private:
     uint64_t worker_id_;
+    CMString master_host_;
+    uint16_t master_port_;
+    std::atomic<bool> running_{false};
+    std::atomic<bool> registered_{false};
+
+    CMUniquePtr<Reactor> reactor_;
     uint64_t master_conn_;
-    int32_t data_server_port_;
+    CMString data_server_host_;
+    int32_t data_server_port_ = 0;
 
-    // Reactor (Master conn + Data Server 共用)
-    std::unique_ptr<Reactor> reactor_;
-    std::unique_ptr<TaskExecutor> executor_;
+    CMSharedPtr<TaskExecutor> executor_;
+    static void record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
+    static void register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
 
-    // 任务队列 (Reactor → Main Thread)
-    ThreadSafeQueue<PendingTask> task_queue_;
-
-    // 数据库管理
-    CMMap<CMString, std::shared_ptr<Database>> databases_;
-
-    // 远程数据请求状态
-    CMMap<CMString, PendingRemoteData> pending_data_;
-    CMMap<CMString, PendingDbPath> pending_db_paths_;
-
-    // 写入跟踪
-    uint64_t current_task_id_;
+    uint64_t current_task_id_ = 0;
     CMVector<CMString> current_writes_;
 
-    // 线程
+    std::queue<PendingTask> task_queue_;
+
+    CMMap<CMString, CMSharedPtr<Database>> databases_;
+    CMMap<CMString, CMSharedPtr<PendingDbPath>> pending_db_paths_;
+    CMMap<CMString, CMSharedPtr<PendingWriteRegister>> pending_write_regs_;
+
     std::thread reactor_thread_;
     std::thread heartbeat_thread_;
 
+    DataService* data_service_ = nullptr;
+
     // Message handlers
-    void on_register_ack(uint64_t conn_id, const RegisterAckMessage& msg);
-    void on_task_assign(uint64_t conn_id, const TaskAssignMessage& msg);
-    void on_data_location(uint64_t conn_id, const DataLocationMessage& msg);
+    void on_register_ack(const RegisterAckMessage& msg);
+    void on_task_assign(const TaskAssignMessage& msg);
+    void on_shutdown(const ShutdownMessage& msg);
+    void on_db_path_response(const DbPathResponseMessage& msg);
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
-    void on_db_path_response(uint64_t conn_id, const DbPathResponseMessage& msg);
     void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
-    void on_shutdown(uint64_t conn_id, const ShutdownMessage& msg);
+    void on_disconnect(uint64_t conn_id);
+
+    void heartbeat_loop();
+    void initiate_shutdown(const CMString& reason);
 };
 ```
 
@@ -220,7 +258,8 @@ master_conn_:      uint64_t                 // 到 Master 的连接 ID
 data_server_port_: int32_t                  // Data Server 监听端口
 task_queue_:      queue<PendingTask>        // Reactor→Main 传递
 databases_:       db_id → shared_ptr<Database>
-pending_data_:    object_name → PendingRemoteData
+pending_db_paths_: db_id → PendingDbPath    // DB 路径查询状态
+pending_write_regs_: object → PendingWriteRegister  // 写入注册状态
 current_task_id_: uint64_t                  // 当前任务
 current_writes_:  vector<string>            // 当前写入记录
 ```
@@ -296,32 +335,89 @@ private:
 
 ### WorkerAgentContext（写入跟踪上下文）
 
+> **文件位置**: `src/common/cpp/worker_context.h`（非 `src/agent/cpp/`）
+
+**回调类型定义**:
+
+```cpp
+using RecordWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
+using RegisterWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
+```
+
+**WorkerAgentContext 类**:
+
 ```cpp
 class WorkerAgentContext {
 public:
-    static void set(WorkerAgent* agent);
-    static WorkerAgent* current();
+    // 设置记录写入回调（任务开始时调用）
+    static void set(RecordWriteFunc func, void* ctx);
     static void clear();
 
-private:
-    static thread_local WorkerAgent* current_agent_;
-};
+    // 触发记录写入
+    static void record_write(const CMString& db_id, const CMString& object_name);
 
+    // 设置写入注册回调（写入冻结DB时触发）
+    static void set_register_func(RegisterWriteFunc func);
+    static void register_write(const CMString& db_id, const CMString& object_name);
+
+    // 状态查询
+    static bool is_active();
+    static void set_last_error_type(TaskErrorType type);
+    static TaskErrorType get_last_error_type();
+
+private:
+    static inline thread_local RecordWriteFunc func_ = nullptr;
+    static inline thread_local void* ctx_ = nullptr;
+    static inline thread_local RegisterWriteFunc register_func_ = nullptr;
+    static inline thread_local TaskErrorType last_error_type_ = TaskErrorType::UNKNOWN;
+};
+```
+
+**WriteRegistrationError 异常类**:
+
+```cpp
 class WriteRegistrationError : public std::runtime_error {
 public:
-    TaskErrorType error_type;
-    WriteRegistrationError(TaskErrorType type, const CMString& msg);
+    WriteRegistrationError(const CMString& what, TaskErrorType type);
+    TaskErrorType error_type() const;
 };
 ```
 
-**写入回调链**:
+**回调模式（C 函数指针 + trampoline）**:
+
+WorkerAgentContext 不存储 `WorkerAgent*` 指针，而是通过 **C 函数指针** 回调，实现 C++ 层与 Python 层的解耦：
 
 ```
-Database._write_typed(name, data, py_name)
-  → WorkerAgentContext::current() → WorkerAgent*
-  → agent->record_write(db_id_, name)
-  → current_writes_.push_back(db_id_ + ":" + name)
+任务开始:
+  WorkerAgent.begin_task(task_id)
+    → WorkerAgentContext::set(record_write_trampoline, this)
+    → WorkerAgentContext::set_register_func(register_write_trampoline)
+
+写入触发 (Python → C++ → 回调):
+  Database._write_typed(name, data, py_name)
+    → WorkerAgentContext::record_write(db_id, name)
+      → func_(ctx_, db_id, name)           // C 函数指针调用
+      → WorkerAgent::record_write_trampoline(void* ctx, db_id, name)
+        → static_cast<WorkerAgent*>(ctx)->record_write(db_id, name)
+        → current_writes_.push_back(db_id + ":" + name)
+
+写入冻结 DB 触发:
+  Database._write_typed() 检测到 db 已冻结
+    → WorkerAgentContext::register_write(db_id, name)
+      → register_func_(ctx_, db_id, name)   // C 函数指针调用
+      → WorkerAgent::register_write_trampoline(void* ctx, db_id, name)
+        → static_cast<WorkerAgent*>(ctx)->register_write_with_master(db_id, name)
+        → 向 Master 发送 WriteRegisterMessage
+        → Master 检查 → WriteRegisterAckMessage
+        → Worker 收到 ACK: success=false → 抛 WriteRegistrationError
+
+任务结束:
+  WorkerAgent.end_task(task_id)
+    → WorkerAgentContext::clear()
+    → return current_writes_
 ```
+
+**设计意图**: 使用 C 函数指针 + `void*` 而非 C++ 模板/虚函数，避免 `worker_context.h` 对 `WorkerAgent` 类的头文件依赖，保持 common 模块的独立性。
 
 ---
 
@@ -413,8 +509,10 @@ FLY_EXPORT_MODULE(_fly_agent) {
 | 决策 | 原因 |
 |------|------|
 | Master + Worker 共用 Reactor 模式 | 统一事件驱动，handler 无锁 |
-| Worker task_slot 而非 task_queue | Master 不向忙碌 Worker 派发，最多 1 个任务 |
-| Thread-local WorkerAgentContext | C++ exception 跨 nanobind 丢失类型信息，thread-local 保存 |
-| Master fatal error 不调 stop() | 避免 detached thread 调 stop() 崩溃，只设 flag + 广播 |
+| Worker 单任务约束（IDLE/BUSY/DEAD） | WorkerStatus 枚举支持 DEAD 状态，比 bool is_busy 更强 |
+| C 函数指针 + trampoline 回调 | WorkerAgentContext 不依赖 WorkerAgent 头文件，保持 common 模块独立 |
+| Master fatal error 设 flag 而不调 stop() | 避免 detached thread 调 stop() 崩溃 |
 | DataClient 独立 TCP | Worker A 读数据不走主 Reactor，避免多线程读冲突 |
 | 递归任务提交 | Worker 内 task 调用 task → submit_task → Master 调度 |
+| Master liveness tracking | Worker 跟踪 last_master_contact，检测 Master 断连 |
+| register_database 显式注册 | Master 和 Worker 都可注册 DB，支持分布式 Database 实例查找 |

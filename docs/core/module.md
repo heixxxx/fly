@@ -47,17 +47,39 @@ private:
 
 ### 配置项一览
 
-| 配置键 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `master_port` | int | 8000 | Master 监听端口 |
-| `heartbeat_timeout` | int | 120 | 心跳超时（秒） |
-| `heartbeat_interval` | int | 5 | 心跳间隔（秒） |
-| `backup_threshold` | int | 100 | 备份阈值 |
-| `aggregation_threshold` | int | 1048576 | 写入聚合阈值（1MB） |
-| `large_file_threshold` | int | 10485760 | 大文件阈值（10MB） |
-| `block_size` | int | 134217728 | 块大小（128MB） |
-| `track_writes` | int | 0 | 是否启用写入跟踪 |
-| `data_server_threads` | int | 1 | 数据传输线程池大小 |
+#### int 配置项
+
+| 配置键 | 默认值 | 说明 |
+|--------|--------|------|
+| `worker_mode` | 0 | Worker 模式（0=普通, 1=standalone） |
+| `worker_id` | 0 | Worker ID |
+| `master_port` | 8000 | Master 监听端口 |
+| `heartbeat_timeout` | 120 | 心跳超时（秒） |
+| `heartbeat_interval` | 5 | 心跳间隔（秒） |
+| `backup_threshold` | 100 | 备份阈值 |
+| `aggregation_threshold` | 1048576 | 写入聚合阈值（1MB） |
+| `large_file_threshold` | 67108864 | 大文件阈值（64MB），已废弃，使用 `large_file_threshold_kb` |
+| `large_file_threshold_kb` | 65536 | 大文件阈值（64MB，单位 KB，用户可配置） |
+| `block_size` | 134217728 | 块大小（128MB） |
+| `track_writes` | 0 | 是否启用写入跟踪（0=关闭, 1=开启） |
+| `data_server_threads` | 1 | 数据传输线程池大小 |
+| `compression_level` | 0 | 压缩级别 |
+| `compression_threshold` | 128 | 压缩阈值（字节） |
+| `compression_stream_chunk_size` | 4194304 | 压缩流块大小（4MB） |
+| `dependency_update_mode` | 0 | 依赖更新模式 |
+| `interactive` | 0 | 交互模式（0=关闭, 1=开启） |
+| `cli_master_port` | 0 | CLI 指定的 Master 端口 |
+
+#### string 配置项
+
+| 配置键 | 默认值 | 说明 |
+|--------|--------|------|
+| `transport_type` | "tcp" | 传输层类型 |
+| `compression_type` | "lz4" | 压缩算法（"lz4", "zstd", "none"） |
+| `data_server_host` | "127.0.0.1" | 数据服务器监听地址 |
+| `master_host` | "127.0.0.1" | Master 节点地址 |
+| `log_dir` | "fly_log" | 日志目录 |
+| `script_path` | "" | 脚本路径 |
 
 ---
 

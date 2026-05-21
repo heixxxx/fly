@@ -3,7 +3,7 @@
 #include <core/cpp/config.h>
 #include <storage/cpp/data_service.h>
 #include <network/cpp/data_client.h>
-#include <network/cpp/master_client.h>
+#include <network/cpp/metadata_client.h>
 #include <thread>
 #include <chrono>
 
@@ -369,7 +369,7 @@ void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& ms
 }
 
 ReadResult WorkerAgent::request_remote_data(const CMString& object_name) {
-    auto location = MasterClient::query_data_location(
+    auto location = MetadataClient::query_data_location(
         master_host_, master_port_, object_name);
 
     if (!location.found) {
@@ -378,7 +378,7 @@ ReadResult WorkerAgent::request_remote_data(const CMString& object_name) {
             " (" + location.error + ")");
     }
 
-    INFO("MasterClient resolved " + object_name +
+    INFO("MetadataClient resolved " + object_name +
          " -> " + location.host + ":" + std::to_string(location.port));
 
     auto [success, data, error] = DataClient::request_data(

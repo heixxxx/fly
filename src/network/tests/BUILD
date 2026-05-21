@@ -80,8 +80,8 @@ cc_test(
 )
 
 cc_test(
-    name = "master_client_test",
-    srcs = ["master_client_test.cpp"],
+    name = "metadata_client_test",
+    srcs = ["metadata_client_test.cpp"],
     deps = [
         "@googletest//:gtest_main",
         "//src/network/cpp:fly_network",

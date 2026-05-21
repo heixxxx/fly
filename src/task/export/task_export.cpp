@@ -2,7 +2,7 @@
 #include <task/cpp/dependency_graph.h>
 #include <task/cpp/worker_manager.h>
 #include <task/cpp/task_scheduler.h>
-#include <task/cpp/metadata_manager.h>
+#include <task/cpp/task_manager.h>
 #include <task/cpp/heartbeat_monitor.h>
 #include <memory>
 
@@ -81,19 +81,19 @@ FLY_EXPORT_CLASS(fly::TaskScheduler, "EXTaskTaskScheduler")
     FLY_EXPORT_METHOD("schedule_all_available", &fly::TaskScheduler::schedule_all_available)
     FLY_EXPORT_METHOD("set_locality_preference", &fly::TaskScheduler::set_locality_preference);
 
-FLY_EXPORT_CLASS(fly::MetadataManager, "EXTaskMetadataManager")
+FLY_EXPORT_CLASS(fly::TaskManager, "EXTaskManager")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_METHOD("create_task", [](fly::MetadataManager& self, uint64_t task_id, const fly::CMString& name, const fly::CMVector<fly::CMString>& inputs, const fly::CMVector<fly::CMString>& outputs, const fly::CMString& config) {
+    FLY_EXPORT_METHOD("create_task", [](fly::TaskManager& self, uint64_t task_id, const fly::CMString& name, const fly::CMVector<fly::CMString>& inputs, const fly::CMVector<fly::CMString>& outputs, const fly::CMString& config) {
         self.create_task(task_id, name, inputs, outputs, config);
     })
-    FLY_EXPORT_METHOD("update_task_status", &fly::MetadataManager::update_task_status)
-    FLY_EXPORT_METHOD("set_error", &fly::MetadataManager::set_error)
-    FLY_EXPORT_METHOD("set_assigned_worker", &fly::MetadataManager::set_assigned_worker)
-    FLY_EXPORT_METHOD("set_timestamps", &fly::MetadataManager::set_timestamps)
-    FLY_EXPORT_METHOD("get_tasks_by_status", &fly::MetadataManager::get_tasks_by_status)
-    FLY_EXPORT_METHOD("get_all_tasks", &fly::MetadataManager::get_all_tasks)
-    FLY_EXPORT_METHOD("has_task", &fly::MetadataManager::has_task)
-    FLY_EXPORT_METHOD("remove_task", &fly::MetadataManager::remove_task);
+    FLY_EXPORT_METHOD("update_task_status", &fly::TaskManager::update_task_status)
+    FLY_EXPORT_METHOD("set_error", &fly::TaskManager::set_error)
+    FLY_EXPORT_METHOD("set_assigned_worker", &fly::TaskManager::set_assigned_worker)
+    FLY_EXPORT_METHOD("set_timestamps", &fly::TaskManager::set_timestamps)
+    FLY_EXPORT_METHOD("get_tasks_by_status", &fly::TaskManager::get_tasks_by_status)
+    FLY_EXPORT_METHOD("get_all_tasks", &fly::TaskManager::get_all_tasks)
+    FLY_EXPORT_METHOD("has_task", &fly::TaskManager::has_task)
+    FLY_EXPORT_METHOD("remove_task", &fly::TaskManager::remove_task);
 
 FLY_EXPORT_CLASS(fly::HeartbeatMonitor, "EXTaskHeartbeatMonitor")
     FLY_EXPORT_INIT(fly::WorkerManager*, uint64_t)

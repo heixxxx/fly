@@ -1,4 +1,4 @@
-#include <network/cpp/master_client.h>
+#include <network/cpp/metadata_client.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
 #include <sys/socket.h>
@@ -40,7 +40,7 @@ static bool send_all(int fd, const char* buf, size_t len) {
     return true;
 }
 
-MasterClient::DataLocation MasterClient::query_data_location(
+MetadataClient::DataLocation MetadataClient::query_data_location(
     const CMString& master_host,
     int master_port,
     const CMString& object_name,

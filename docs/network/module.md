@@ -18,6 +18,7 @@
 | `cpp/message_protocol.h/cpp` | 二进制帧协议 |
 | `cpp/message_types.h` | 22 种消息类型定义 |
 | `cpp/io_thread_pool.h/cpp` | 通用线程池（submit + completion 回调） |
+| `cpp/metadata_client.h/cpp` | 阻塞 TCP 元数据查询客户端（原名 MasterClient） |
 | `cpp/data_client.h/cpp` | 阻塞 TCP 数据客户端 |
 | `export/network_export.cpp` | Python 导出 |
 
@@ -224,6 +225,37 @@ public:
 - 避免多线程并发读数据时的连接冲突
 - 内置超时控制 (SO_SNDTIMEO + SO_RCVTIMEO + deadline)
 - 消息帧收发: encode 发送 → 手动解析帧头 → decode 接收
+
+---
+
+### MetadataClient（阻塞元数据客户端）
+
+```cpp
+class MetadataClient {
+public:
+    struct DataLocation {
+        bool found = false;
+        uint64_t worker_id = 0;
+        CMString host;
+        int32_t port = 0;
+        CMString error;
+    };
+
+    static DataLocation query_data_location(
+        const CMString& master_host,
+        int master_port,
+        const CMString& object_name,
+        int timeout_ms = 5000);
+};
+```
+
+**设计特点**:
+- 与 DataClient 类似，每次调用创建**独立阻塞 TCP socket**
+- 功能：向 Master 查询数据对象的位置信息（哪个 Worker 持有）
+- Worker 在三层降级读取的 Layer 3 使用：本地无 → 远程索引无 → 查 Master → MetadataClient → 直连 Worker
+- 原名 `MasterClient`，因职责为元数据查询而非 Master 管理，更名为 `MetadataClient`
+
+**位置**: `src/network/cpp/metadata_client.h/cpp`
 
 ---
 

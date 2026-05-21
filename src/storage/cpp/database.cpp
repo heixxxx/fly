@@ -33,7 +33,7 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
     writer_ = CMMakeUnique<DataWriter>(
         base_path_, data_path_, writer_id_,
         config.get_int("aggregation_threshold"),
-        config.get_int("large_file_threshold"),
+        config.get_int("large_file_threshold_kb") * 1024,  // KB to bytes
         config.get_int("block_size"),
         comp_type,
         comp_threshold,

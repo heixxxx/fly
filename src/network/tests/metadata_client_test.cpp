@@ -1,12 +1,12 @@
 #include <gtest/gtest.h>
-#include <network/cpp/master_client.h>
+#include <network/cpp/metadata_client.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
 
 namespace fly {
 
-TEST(MasterClientTest, DataLocationDefaults) {
-    MasterClient::DataLocation loc;
+TEST(MetadataClientTest, DataLocationDefaults) {
+    MetadataClient::DataLocation loc;
     EXPECT_FALSE(loc.found);
     EXPECT_EQ(loc.worker_id, 0u);
     EXPECT_EQ(loc.host, "");
@@ -14,23 +14,23 @@ TEST(MasterClientTest, DataLocationDefaults) {
     EXPECT_EQ(loc.error, "");
 }
 
-TEST(MasterClientTest, QueryFailsWhenNoServer) {
-    MasterClient::DataLocation result =
-        MasterClient::query_data_location("127.0.0.1", 59999, "test/object");
+TEST(MetadataClientTest, QueryFailsWhenNoServer) {
+    MetadataClient::DataLocation result =
+        MetadataClient::query_data_location("127.0.0.1", 59999, "test/object");
 
     EXPECT_FALSE(result.found);
     EXPECT_FALSE(result.error.empty());
 }
 
-TEST(MasterClientTest, QueryFailsWithInvalidHost) {
-    MasterClient::DataLocation result =
-        MasterClient::query_data_location("0.0.0.0", 59999, "test/object");
+TEST(MetadataClientTest, QueryFailsWithInvalidHost) {
+    MetadataClient::DataLocation result =
+        MetadataClient::query_data_location("0.0.0.0", 59999, "test/object");
 
     EXPECT_FALSE(result.found);
     EXPECT_FALSE(result.error.empty());
 }
 
-TEST(MasterClientTest, DataLocationMessageEncodeDecode) {
+TEST(MetadataClientTest, DataLocationMessageEncodeDecode) {
     DataLocationMessage msg;
     msg.header.type = MessageType::DATA_LOCATION;
     msg.header.message_id = 42;
@@ -58,7 +58,7 @@ TEST(MasterClientTest, DataLocationMessageEncodeDecode) {
     EXPECT_TRUE(decoded.success);
 }
 
-TEST(MasterClientTest, DataLocationMessageFailure) {
+TEST(MetadataClientTest, DataLocationMessageFailure) {
     DataLocationMessage msg;
     msg.header.type = MessageType::DATA_LOCATION;
     msg.object_name = "nonexistent/object";
@@ -73,7 +73,7 @@ TEST(MasterClientTest, DataLocationMessageFailure) {
     EXPECT_EQ(decoded.object_name, "nonexistent/object");
 }
 
-TEST(MasterClientTest, DataQueryMessageEncodeDecode) {
+TEST(MetadataClientTest, DataQueryMessageEncodeDecode) {
     DataQueryMessage req;
     req.header.type = MessageType::DATA_QUERY;
     req.header.message_id = 55;

@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
-#include <task/cpp/metadata_manager.h>
+#include <task/cpp/task_manager.h>
 
 namespace fly {
 
-TEST(MetadataManagerTest, CreateTask) {
-    MetadataManager manager;
+TEST(TaskManagerTest, CreateTask) {
+    TaskManager manager;
     manager.create_task(1, "test_task", {"input/a"}, {"output/b"}, "{}");
     
     EXPECT_TRUE(manager.has_task(1));
@@ -17,8 +17,8 @@ TEST(MetadataManagerTest, CreateTask) {
     EXPECT_EQ(task->config, "{}");
 }
 
-TEST(MetadataManagerTest, UpdateTaskStatus) {
-    MetadataManager manager;
+TEST(TaskManagerTest, UpdateTaskStatus) {
+    TaskManager manager;
     manager.create_task(1, "test", {}, {}, "");
     
     manager.update_task_status(1, TaskStatus::RUNNING);
@@ -28,8 +28,8 @@ TEST(MetadataManagerTest, UpdateTaskStatus) {
     EXPECT_EQ(manager.get_task(1)->status, TaskStatus::COMPLETED);
 }
 
-TEST(MetadataManagerTest, SetError) {
-    MetadataManager manager;
+TEST(TaskManagerTest, SetError) {
+    TaskManager manager;
     manager.create_task(1, "test", {}, {}, "");
     manager.update_task_status(1, TaskStatus::FAILED);
     manager.set_error(1, "segmentation fault");
@@ -37,16 +37,16 @@ TEST(MetadataManagerTest, SetError) {
     EXPECT_EQ(manager.get_task(1)->error_message, "segmentation fault");
 }
 
-TEST(MetadataManagerTest, SetAssignedWorker) {
-    MetadataManager manager;
+TEST(TaskManagerTest, SetAssignedWorker) {
+    TaskManager manager;
     manager.create_task(1, "test", {}, {}, "");
     manager.set_assigned_worker(1, 42);
     
     EXPECT_EQ(manager.get_task(1)->assigned_worker_id, 42);
 }
 
-TEST(MetadataManagerTest, SetTimestamps) {
-    MetadataManager manager;
+TEST(TaskManagerTest, SetTimestamps) {
+    TaskManager manager;
     manager.create_task(1, "test", {}, {}, "");
     manager.set_timestamps(1, 100, 200, 300);
     
@@ -56,8 +56,8 @@ TEST(MetadataManagerTest, SetTimestamps) {
     EXPECT_EQ(task->completed_at, 300);
 }
 
-TEST(MetadataManagerTest, GetTasksByStatus) {
-    MetadataManager manager;
+TEST(TaskManagerTest, GetTasksByStatus) {
+    TaskManager manager;
     manager.create_task(1, "task1", {}, {}, "");
     manager.create_task(2, "task2", {}, {}, "");
     manager.create_task(3, "task3", {}, {}, "");
@@ -78,8 +78,8 @@ TEST(MetadataManagerTest, GetTasksByStatus) {
     EXPECT_EQ(pending[0].task_id, 3);
 }
 
-TEST(MetadataManagerTest, GetAllTasks) {
-    MetadataManager manager;
+TEST(TaskManagerTest, GetAllTasks) {
+    TaskManager manager;
     manager.create_task(1, "task1", {}, {}, "");
     manager.create_task(2, "task2", {}, {}, "");
     
@@ -87,8 +87,8 @@ TEST(MetadataManagerTest, GetAllTasks) {
     EXPECT_EQ(all.size(), 2);
 }
 
-TEST(MetadataManagerTest, RemoveTask) {
-    MetadataManager manager;
+TEST(TaskManagerTest, RemoveTask) {
+    TaskManager manager;
     manager.create_task(1, "test", {}, {}, "");
     manager.remove_task(1);
     

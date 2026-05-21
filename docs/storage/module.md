@@ -4,7 +4,7 @@
 
 **位置**: `src/storage/`
 
-存储层是 Fly 框架的核心数据管理模块，负责数据的写入聚合、索引管理、读取（本地 + 远程）、压缩和数据库生命周期管理。设计为 Master 和 Worker 共用的统一层。
+存储层是 Fly 框架的核心数据管理模块，负责数据的写入、聚合、索引管理、读取（本地 + 远程）、压缩和数据库生命周期管理。设计为 Master 和 Worker 共用的统一层。
 
 ---
 
@@ -12,16 +12,16 @@
 
 | 文件 | 说明 |
 |------|------|
-| `cpp/database.h/cpp` | 统一存储接口，写时通知 DataService，读时走 DataService |
+| `cpp/database.h/cpp` | 统一存储接口，异步写入（WriteBackQueue） |
 | `cpp/data_writer.h/cpp` | 单线程写入聚合器，小文件聚合 + 大文件分块 |
-| `cpp/data_reader.h/cpp` | 数据读取，`read_from_entries()` 按 IndexEntry 直接读取 |
-| `cpp/data_service.h/cpp` | **统一内存索引：local_idx + remote_idx + worker_registry + IOThreadPool** |
+| `cpp/data_reader.h/cpp` | 数据读取器（实例方法） |
+| `cpp/data_service.h/cpp` | 统一内存索引：local_idx + remote_idx + worker_registry |
 | `cpp/storage_manager.h/cpp` | Database 生命周期管理，单例 |
-| `cpp/local_index.h/cpp` | 本地索引持久化（.idx 文件读写） |
-| `cpp/compressor.h/cpp` | LZ4 / ZLIB / ZSTD 压缩实现 |
-| `cpp/object_header.h` | 对象头结构（标记 Python 类型名） |
-| `export/storage_export.cpp` | nanobind Python 导出 |
-| `export/BUILD` | Bazel 构建配置 |
+| `cpp/local_index.h/cpp` | 本地索引持久化（.idx 文件） |
+| `cpp/index_entry.h` | 索引条目结构（版本 3） |
+| `cpp/compressor.h/cpp` | 压缩接口（虚函数 + 工厂） |
+| `cpp/write_back_queue.h/cpp` | 异步写入队列 |
+| `export/storage_export.cpp` | Python 导出 |
 
 ---
 
@@ -32,46 +32,122 @@
 ```cpp
 class Database {
 public:
-    Database(const CMString& base_path, const CMString& data_path = "", int writer_id = 0);
+    Database(const CMString& base_path, 
+             const CMString& data_path = "", 
+             uint64_t writer_id = 0, 
+             const CMString& host = "");
+    ~Database();
 
-    // 写入
-    CMString write_object_typed(const CMString& name, const CMString& data, const CMString& py_name);
-    CMString write_object_raw(const CMString& name, const CMString& data);
-
+    // 异步写入（非阻塞）
+    template<typename T>
+    CMString write_object(const CMString& object_name, const T& obj, 
+                          const CMString& py_name = "");
+    
+    CMString write_object(const CMString& object_name, const CMString& data, 
+                          bool backup = false);
+    
+    CMString write_object_typed(const CMString& object_name, const CMString& data,
+                                 const CMString& py_name);
+    
     // 读取
-    ReadResult read_object_typed(const CMString& name);
-
-    // 管理
+    template<typename T>
+    CMSharedPtr<T> read_object(const CMString& object_name);
+    
+    CMString read_object(const CMString& object_name);
+    
+    ReadResult read_object_typed(const CMString& object_name);
+    
+    // 生命周期
     void freeze();
     bool is_frozen() const;
+    DbMeta load_meta() const;
     CMString get_db_id() const;
-    CMString get_obj_name(const CMString& name) const;
+    void set_db_id(const CMString& db_id);
+    void reset();
+    
+    // 路径信息
     CMString get_base_path() const;
     CMString get_data_path() const;
-
-    // 刷新
-    void flush();
+    CMString get_obj_name(const CMString& name) const;
 
 private:
-    CMString base_path_;    // 共享存储路径（所有节点可访问）
-    CMString data_path_;    // 本地存储路径（可选，高性能本地写入）
-    CMString db_id_;        // 基于路径哈希的唯一标识
+    CMString base_path_;
+    CMString data_path_;
+    uint64_t writer_id_ = 0;
+    CMString db_id_;
+    CMString host_;
     bool is_frozen_ = false;
-    std::shared_ptr<DataWriter> writer_;
-    int writer_id_;
+    
+    CMUniquePtr<DataWriter> writer_;
+    CMUniquePtr<DataReader> reader_;
 };
 ```
 
-**双路径设计**:
+---
 
-| 路径 | 说明 | 必填 |
-|------|------|------|
-| `base_path` | 共享存储路径，所有节点可访问 | 是 |
-| `data_path` | 本地磁盘路径，写入走此路径（高性能） | 否（默认 = base_path） |
+### 写入流程（异步 WriteBackQueue）
 
-**db_id 生成**: 基于路径字符串哈希自动生成，确保唯一性。
+**核心设计**: 写入操作**非阻塞**，通过 `WriteBackQueue` 异步执行文件 I/O。
 
-**get_obj_name**: 返回 `"{db_id}:{object_name}"` 格式的全局唯一标识符，用于依赖声明和跨 DB 去重。
+```
+write_object(name, obj)
+  │
+  ├─ 1. 编码对象 → FlyBuffer
+  │
+  ├─ 2. DataService.on_write_started(db_id, full_name)
+  │     → 创建 INCOMPLETE 状态的 LocalObjectInfo
+  │
+  ├─ 3. WorkerAgentContext.register_write(db_id, name)
+  │     → 发送 WriteRegisterMessage → Master
+  │     → 阻塞等待 WriteRegisterAck（最多 5 秒）
+  │
+  ├─ 4. 捕获回调函数指针和上下文
+  │     caller_record_func = WorkerAgentContext::current_record_func()
+  │     caller_record_ctx = WorkerAgentContext::current_record_ctx()
+  │
+  ├─ 5. 构造 WriteRequest
+  │     execute: DataWriter.write_typed_object() + flush()
+  │     complete: DataService.on_write_completed() + 
+  │               caller_record_func(ctx, db_id, name)
+  │
+  ├─ 6. DataService.enqueue_write_back(req)
+  │     → 入队到 WriteBackQueue（后台线程执行）
+  │
+  └─ 7. 返回 "" （立即返回，不等待落盘）
+```
+
+**回调模式说明**:
+
+`WorkerAgentContext` 使用 C 风格函数指针 + `void*` 上下文实现解耦：
+
+```cpp
+// 类型定义（worker_context.h）
+using RecordWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
+using RegisterWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
+
+// thread_local 存储
+class WorkerAgentContext {
+    static inline thread_local RecordWriteFunc func_ = nullptr;
+    static inline thread_local void* ctx_ = nullptr;  // 存 WorkerAgent*
+};
+
+// Trampoline（静态函数，签名匹配函数指针）
+void WorkerAgent::record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
+    static_cast<WorkerAgent*>(ctx)->record_write(db_id, name);
+}
+```
+
+**调用链**:
+```
+Database.write_object()
+  → WorkerAgentContext::register_write()
+    → register_func_(ctx_, db_id, name)
+    → trampoline → WorkerAgent::register_write_with_master()
+  
+  → 异步完成时 (complete lambda)
+    → caller_record_func(caller_record_ctx, ...)
+    → trampoline → WorkerAgent::record_write()
+```
 
 ---
 
@@ -80,39 +156,65 @@ private:
 ```cpp
 class DataWriter {
 public:
-    DataWriter(const CMString& base_path, int writer_id);
-
-    IndexEntry write_object(const CMString& name, const CMString& data,
-                            const CMString& py_name = "");
+    DataWriter(
+        const CMString& base_path,
+        const CMString& data_path,
+        uint64_t worker_id,
+        int64_t aggregation_threshold,
+        int64_t large_file_threshold,
+        int64_t block_size,
+        CompressionType compression_type = CompressionType::LZ4,
+        int64_t compression_threshold = 128,
+        int compression_level = 0,
+        int64_t stream_chunk_size = 4194304,
+        const CMString& host = ""
+    );
+    
+    void write_typed_object(const CMString& name, int64_t original_size,
+                            const CMString& py_name, const char* data, int64_t size);
     void flush();
-
-    IndexEntry get_last_entry() const;  // 暴露最后一条索引
+    void close();
+    
+    IndexEntry* get_last_entry(const CMString& object_name);
+    CMVector<IndexEntry>* get_all_entries(const CMString& object_name);
+    
+    int64_t total_bytes_written() const;
+    int file_count() const;
 
 private:
     CMString base_path_;
-    int writer_id_;
-    CMString current_file_;    // 当前数据文件名
-    int64_t current_offset_;   // 当前偏移量
-    int file_counter_;         // 文件滚动计数器
-    bool dirty_;               // 是否有未刷盘数据
+    CMString data_path_;
+    uint64_t worker_id_;
+    CMString host_;
+    int64_t aggregation_threshold_;
+    int64_t large_file_threshold_;
+    int64_t block_size_;
+    CompressionType compression_type_;
+    int64_t compression_threshold_;
+    int compression_level_;
+    int64_t stream_chunk_size_;
+    CMUniquePtr<Compressor> compressor_;
+    
+    CMUniquePtr<LocalIndex> index_;
+    std::ofstream file_stream_;
+    int32_t file_index_;
+    int64_t current_file_size_;
+    int64_t total_bytes_;
+    bool closed_ = false;
 };
 ```
 
 **写入策略**:
+- 小文件 (size < large_file_threshold): 聚合写入 `.dat` 文件
+- 大文件 (size >= large_file_threshold): 分块存储，每块 block_size 大小
+- 文件超过阈值时滚动到新文件
 
-```
-小文件 (size < large_file_threshold):
-  → 聚合写入当前 .dat 文件
-  → 当前文件超过阈值 → 创建新文件 (滚动)
-
-大文件 (size >= large_file_threshold):
-  → 分块存储，block_size 大小的连续块
-  → IndexEntry.is_large = true, block_count 记录块数
-```
-
-**数据文件命名**: `aggregated_w{writer_id}_{counter}.dat`
-
-**两阶段写入**: `write_object()` + `flush()`。write 返回 IndexEntry，flush 刷盘到磁盘。
+**配置项**:
+| 键 | 默认值 | 说明 |
+|---|--------|------|
+| `large_file_threshold_kb` | 65536 | 大文件阈值（KB），默认 64MB |
+| `block_size` | 134217728 | 大文件分块大小（字节），默认 128MB |
+| `aggregation_threshold` | 1048576 | 聚合阈值（字节） |
 
 ---
 
@@ -121,129 +223,114 @@ private:
 ```cpp
 class DataReader {
 public:
-    static ReadResult read_from_entries(const CMVector<IndexEntry>& entries,
-                                        const CMString& base_path);
-    static ReadResult read_object_data(const IndexEntry& entry,
-                                       const CMString& base_path);
+    DataReader(const CMString& base_path, 
+               const CMString& data_path, 
+               uint64_t worker_id);
+    
+    ReadResult read_from_entries(const CMVector<IndexEntry>& entries);
+    ReadResult read_object_data(const IndexEntry& entry);
+    ReadResult read_object_data(const CMString& object_name);
+    
+    template<typename T>
+    CMSharedPtr<T> read_object(const CMString& object_name);
+    
+    CMString read_object(const CMString& object_name);
+    
+    bool exists(const CMString& object_name) const;
 
 private:
-    static CMString find_file(const CMString& file_name, const CMString& base_path);
+    CMString base_path_;
+    CMString data_path_;
+    uint64_t worker_id_;
+    CMString find_file_path(const CMString& file_name);
 };
 ```
 
-**读取流程**:
-
-```
-read_from_entries(entries, base_path)
-  ├── 单条目 → read_object_data(entry)
-  │     └── 打开 .dat 文件 → seek(offset) → read(size)
-  │           → 解析 ObjectHeader → 提取 py_name + data
-  └── 多条目 (large object)
-        → 按 offset 排序 → 逐块读取 → 拼接
-        → 从首块 ObjectHeader 提取 py_name
-        → 返回 {data_buffer, py_name}
-```
+**注意**: 所有方法为**实例方法**（非静态），需构造 DataReader 实例。
 
 ---
 
-### DataService（统一内存索引）⭐ 核心组件
+### DataService（统一内存索引）
 
 ```cpp
 class DataService {
 public:
-    static DataService& instance();  // 进程级单例
-
+    static DataService& instance();
+    
     // 本地索引
-    void on_object_written(const CMString& db_id, const CMString& name,
-                           const CMVector<IndexEntry>& entries);
-    void on_write_started(const CMString& db_id, const CMString& name);
-    void on_write_completed(const CMString& db_id, const CMString& name,
-                            const CMVector<IndexEntry>& entries);
-    void on_write_failed(const CMString& db_id, const CMString& name);
-    void on_flush(const CMString& db_id);
-
-    ReadResult try_read_local(const CMString& name);
-    ReadResult try_read_local_or_wait(const CMString& name, int timeout_ms);
-
+    void on_write_started(const CMString& db_id, const CMString& object_name);
+    void on_write_completed(const CMString& db_id, const CMString& object_name,
+                             const CMVector<IndexEntry>& entries);
+    void on_write_failed(const CMString& db_id, const CMString& object_name,
+                         const CMString& error_message);
+    void on_object_flushed(const CMString& object_name);
+    
+    std::pair<bool, ReadResult> try_read_local(const CMString& object_name);
+    std::pair<bool, ReadResult> try_read_local_or_wait(const CMString& object_name,
+                                                         int timeout_ms = 3000);
+    ReadResult read_raw(const CMString& object_name, int max_retries = 3);
+    
+    bool has_local_object(const CMString& object_name) const;
+    
     // 远程索引
-    bool has_remote_location(const CMString& name) const;
-    void update_remote_idx(const CMString& name, uint64_t worker_id,
+    void update_remote_idx(const CMString& object_name, uint64_t worker_id,
                            const CMString& host, int32_t port);
-    bool lookup_remote_idx(const CMString& name, uint64_t& worker_id,
-                           CMString& host, int32_t& port) const;
-
+    RemoteObjectInfo lookup_remote_idx(const CMString& object_name) const;
+    bool has_remote_location(const CMString& object_name) const;
+    
     // Worker 注册
     void register_worker(uint64_t worker_id, const CMString& host, int32_t port);
-
-    // 数据传输（异步）
+    RemoteObjectInfo get_worker_address(uint64_t worker_id) const;
+    
+    // DB 管理
+    void register_database(const CMString& db_id, const CMString& base_path,
+                           const CMString& data_path, uint64_t writer_id = 0);
+    void unregister_database(const CMString& db_id);
+    
+    // WriteBackQueue
+    void start_write_back();
+    void stop_write_back();
+    void enqueue_write_back(WriteRequest&& task);
+    void drain_write_back();
+    bool is_write_back_running() const;
+    
+    // 传输服务器
+    void start_transfer_server(int thread_count, TransferCallback callback);
+    void stop_transfer_server();
+    bool is_transfer_server_running() const;
     void submit_transfer(uint64_t conn_id, const CMString& object_name);
-    void process_completions();
-
-    // DB 路径管理
-    void register_db_paths(const CMString& db_id, const CMString& base_path,
-                           const CMString& data_path);
-    bool get_db_paths(const CMString& db_id, CMString& base_path,
-                      CMString& data_path) const;
 
 private:
-    // 本地索引：object_name → {db_id, entries[], flushed, completion_state}
-    CMUnorderedMap<CMString, LocalObjectInfo> local_idx_;
-
-    // 远程索引：object_name → {worker_id, host, port}
-    CMUnorderedMap<CMString, RemoteLocation> remote_idx_;
-
-    // Worker 注册表：worker_id → {host, port}
-    CMUnorderedMap<uint64_t, WorkerLocation> worker_registry_;
-
-    // DB 路径映射：db_id → {base_path, data_path}
+    CMUnorderedMap<CMString, CMSharedPtr<LocalObjectInfo>> local_idx_;
+    CMUnorderedMap<CMString, RemoteObjectInfo> remote_idx_;
+    CMMap<uint64_t, RemoteObjectInfo> worker_registry_;
     CMUnorderedMap<CMString, DbPaths> db_paths_;
-
-    // 数据传输
-    std::unique_ptr<IOThreadPool> transfer_pool_;
-    CMVector<TransferTask> pending_transfers_;
+    
+    CMSharedPtr<IOThreadPool> transfer_pool_;
+    CMUniquePtr<WriteBackQueue> write_back_queue_;
 };
 ```
 
 **数据结构**:
-
 ```
-DataService (单例, Master 和 Worker 通用)
-├── local_idx:  object_name → LocalObjectInfo
+DataService (单例)
+├── local_idx: object_name → LocalObjectInfo
 │   ├── db_id: CMString
 │   ├── entries: CMVector<IndexEntry>
 │   ├── flushed: bool
-│   ├── state: CompletionState (INCOMPLETE / COMPLETE / FAILED)
-│   ├── cv: condition_variable (等待写入完成)
+│   ├── completion_state: INCOMPLETE / COMPLETE / FAILED
+│   ├── cv: condition_variable
 │   └── cv_mutex: mutex
 │
-├── remote_idx: object_name → RemoteLocation
+├── remote_idx: object_name → RemoteObjectInfo
 │   ├── worker_id: uint64_t
 │   ├── host: CMString
 │   └── port: int32_t
 │
-├── worker_registry: worker_id → WorkerLocation
-│   ├── host: CMString
-│   └── port: int32_t
+├── worker_registry: worker_id → RemoteObjectInfo
 │
-└── transfer_pool: IOThreadPool (文件 I/O 线程池)
+└── db_paths: db_id → {base_path, data_path, writer_id}
 ```
-
----
-
-### LocalIndex（索引持久化）
-
-```cpp
-class LocalIndex {
-public:
-    explicit LocalIndex(const CMString& idx_path);
-
-    void write_entry(const IndexEntry& entry);
-    CMVector<IndexEntry> read_all_entries();
-    void clear();
-};
-```
-
-将 `IndexEntry` 序列化写入 `.idx` 文件，支持追加写入和全量读取。
 
 ---
 
@@ -251,23 +338,27 @@ public:
 
 ```cpp
 struct IndexEntry {
-    CMString object_name;   // 对象名
-    CMString file_name;     // 所属数据文件名
-    int64_t offset;         // 文件内偏移
-    int64_t size;           // 数据大小
-    bool is_large;          // 是否大文件分块
-    int block_count;        // 块数量（大文件）
-    CompressionType compression_type;  // 压缩类型
-
-    FLY_SERIALIZE_BEGIN(2)
+    CMString object_name;
+    CMString file_name;
+    int64_t offset;
+    int64_t size;
+    bool is_large;
+    int32_t block_count;
+    int8_t compression_type;  // 原始值，非枚举
+    CMString host;            // v3 新增
+    
+    FLY_SERIALIZE_BEGIN(3)
         FLY_FIELD(object_name);
         FLY_FIELD(file_name);
         FLY_FIELD(offset);
         FLY_FIELD(size);
-        FLY_FIELD(is_large);
+        FLY_BOOL(is_large);
         FLY_FIELD(block_count);
         if (version >= 2) {
             FLY_FIELD(compression_type);
+        }
+        if (version >= 3) {
+            FLY_FIELD(host);
         }
     FLY_SERIALIZE_END
 };
@@ -275,161 +366,52 @@ struct IndexEntry {
 
 ---
 
-### Compressor（压缩）
+### Compressor（压缩接口）
 
 ```cpp
-enum class CompressionType { NONE, LZ4, ZLIB, ZSTD };
+enum class CompressionType { NONE = 0, LZ4 = 1, ZLIB = 2, ZSTD = 3 };
 
 class Compressor {
 public:
-    static CMString compress(const CMString& data, CompressionType type);
-    static CMString decompress(const CMString& data, CompressionType type);
-    static CompressionType type_from_name(const CMString& name);
+    virtual ~Compressor() = default;
+    
+    virtual CompressedChunk compress(const CMString& input) = 0;
+    virtual CMString decompress(int32_t uncompressed_size, 
+                                 const CMString& compressed_data) = 0;
+    virtual CompressedChunk compress_chunk(const CMString& input) = 0;
+    virtual CMString decompress_chunk(...) = 0;
+    
+    virtual CompressionType type() const = 0;
+    virtual CMString name() const = 0;
 };
 
 class CompressorFactory {
 public:
+    static CMUniquePtr<Compressor> create(CompressionType type);
+    static CMUniquePtr<Compressor> create_from_name(const CMString& name);
     static CompressionType type_from_name(const CMString& name);
+    static CMString name_from_type(CompressionType type);
 };
 ```
 
 ---
 
-## 核心流程
-
-### 写入流程
+## 读取流程（三层降级）
 
 ```
-db.write_object("key", obj)
-  │
-  ├─ 1. Database._write_typed(name, data, py_name)
-  │     └── 检查 is_frozen_ → 冻结则抛异常
-  │
-  ├─ 2. WorkerAgentContext 触发 → on_write_started(db_id, name)
-  │     └── DataService 创建 incomplete LocalObjectInfo
-  │
-  ├─ 3. register_write_with_master(db_id, name)
-  │     └── WriteRegisterMessage → Master ACK
-  │         ├── ACK success → 继续
-  │         └── ACK fail → 抛 WriteRegistrationError
-  │
-  ├─ 4. DataWriter::write_object(name, data, py_name)
-  │     └── 落盘 → 返回 IndexEntry
-  │
-  ├─ 5. on_write_completed(db_id, name, entries)
-  │     └── DataService 设置 COMPLETE 状态
-  │
-  └─ 6. Database::flush()
-        └── DataWriter::flush() → on_flush(db_id)
-            └── DataService 通知 CV (唤醒等待的读取者)
-```
-
-### 读取流程（三层降级）
-
-```
-db.read_object("key")
+read_object("key")
   │
   ├─ Layer 1: DataService.try_read_local(key)
-  │     └── 查内存 local_idx
-  │         ├── 找到 + flushed → DataReader.read_from_entries() → 返回
-  │         ├── 找到 + INCOMPLETE → wait on CV → COMPLETE → 返回
-  │         └── 未找到 → 进入 Layer 2
+  │     └── 内存索引 local_idx → 找到 + flushed
+  │           └── DataReader.read_from_entries()
   │
   ├─ Layer 2: DataService.lookup_remote_idx(key)
-  │     └── 查内存 remote_idx
-  │         ├── 有缓存 → DataClient.request_data(host, port, key)
-  │         │     └── 独立 TCP socket 直连目标 Worker → 返回
-  │         └── 失败/无缓存 → 进入 Layer 3
+  │     └── 有缓存 → DataClient.request_data(host, port, key)
   │
-  └─ Layer 3: request_remote_data(key) (最多 3 次重试)
-        └── DataQuery → Master → DataLocation
-            → DataClient 直连 → 返回
-            → 成功后 update_remote_idx() 缓存
-```
-
-### 数据传输架构
-
-**Worker B（服务端 — 响应数据请求）**:
-
-```
-Reactor 收到 DataRequestMessage
-  → on_data_request handler
-  → DataService.submit_transfer(conn_id, object_name)  ← 非阻塞入队
-  → IOThreadPool 工作线程:
-      → try_read_local_or_wait(object_name)
-      → 文件 I/O + 解压
-  → process_completions() (回到 Reactor 线程)
-      → reactor_->send(conn_id, DataResponseMessage)
-```
-
-**Worker A（客户端 — 发起数据请求）**:
-
-```
-DataClient::request_data(host, port, object_name)
-  → 创建独立阻塞 TCP socket (不走主 Reactor)
-  → connect → send DataRequestMessage → recv DataResponseMessage → close
-```
-
----
-
-## Python 导出
-
-```cpp
-FLY_EXPORT_MODULE(_fly_storage) {
-    FLY_EXPORT_CLASS(Database, "EXStgDatabase")
-        FLY_EXPORT_INIT(CMString, CMString, int)
-        FLY_EXPORT_METHOD("write_object_raw", &Database::write_object_raw)
-        FLY_EXPORT_METHOD("read_object_raw", &Database::read_object_raw)
-        FLY_EXPORT_READONLY_ATTR("db_id", &Database::get_db_id)
-        FLY_EXPORT_METHOD("get_obj_name", &Database::get_obj_name)
-        FLY_EXPORT_METHOD("freeze", &Database::freeze)
-        FLY_EXPORT_METHOD("is_frozen", &Database::is_frozen)
-        FLY_EXPORT_METHOD("flush", &Database::flush)
-        FLY_EXPORT_METHOD("get_base_path", &Database::get_base_path)
-        FLY_EXPORT_METHOD("get_data_path", &Database::get_data_path);
-
-    FLY_EXPORT_FUNCTION("ex_stg_create_database", ...);
-    FLY_EXPORT_FUNCTION_REF("ex_stg_get_data_service", ...);
-
-    FLY_EXPORT_CLASS(IndexEntry, "EXStgIndexEntry")
-        FLY_EXPORT_INIT(CMString, CMString, int64_t, int64_t, bool, int, int32_t)
-        FLY_EXPORT_READONLY_ATTR("object_name", &IndexEntry::object_name)
-        // ...
-        FLY_EXPORT_SERIALIZE(IndexEntry);
-}
-```
-
----
-
-## 存储文件格式
-
-### 目录结构
-
-```
-/data/                           (base_path — 共享路径)
-├── aggregated_w1_001.dat        # Worker1 数据文件
-├── aggregated_w1.idx            # Worker1 索引文件
-├── merged.idx                   # 合并索引（freeze 后生成）
-├── _FROZEN                      # 冻结标识文件
-├── _META                        # 数据库元信息（JSON）
-└── ...
-
-/ssd/local/                      (data_path — 本地路径，可选)
-├── aggregated_w1_001.dat        # Worker1 本地数据
-└── aggregated_w1.idx            # Worker1 本地索引
-```
-
-### 索引文件（.idx）
-
-每个 Worker 一个索引文件，二进制格式（bitsery 序列化），记录该 Worker 所有数据文件中的对象索引：
-
-```
-[IndexEntry][IndexEntry][IndexEntry]...
-
-每条 IndexEntry:
-  object_name (string) | file_name (string) | offset (int64)
-  size (int64) | is_large (bool) | block_count (int)
-  compression_type (enum, v2+)
+  └─ Layer 3: read_raw(key) (最多 3 次重试)
+        ├── MetadataClient::query_data_location() → 问 Master
+        └── DataClient.request_data() → 直连目标 Worker
+        └── 成功后 update_remote_idx() 缓存
 ```
 
 ---
@@ -438,12 +420,10 @@ FLY_EXPORT_MODULE(_fly_storage) {
 
 | 决策 | 原因 |
 |------|------|
-| DataService 进程级单例 | Master 和 Worker 共享同一个类，仅更新触发源不同 |
-| local_idx + remote_idx 不分模式 | 统一数据结构，降低复杂度 |
-| Worker 远程读取后更新 remote_idx | 避免重复查 Master，后续同对象直接 Worker→Worker |
-| IOThreadPool 异步传输 | 文件 I/O 不阻塞 Reactor，心跳和任务分配不受影响 |
-| DataClient 独立连接 | 每次读创建独立 socket，避免多线程读冲突 |
-| completion 回调在 Reactor 线程 | 复用 Reactor transport 发送，避免跨线程 send |
-| Write Registration 协议 | 防止写入已冻结 DB，支持并发读取等待 |
-| LocalObjectInfo shared_ptr | condition_variable 不可移动，shared_ptr 保证地址稳定 |
-| on_flush 通知 CV | CV predicate 等待 COMPLETE+flushed，flush 必须 notify |
+| WriteBackQueue 异步写入 | 文件 I/O 非阻塞，避免写入阻塞任务执行 |
+| 回调模式解耦 | Database 不依赖 WorkerAgent，纯函数指针桥接 |
+| large_file_threshold_kb 配置 | 用户可调整大文件阈值（单位 KB） |
+| DataReader 实例方法 | 需要构造实例，持有路径信息 |
+| DataService 进程级单例 | Master/Worker 共享，仅更新触发源不同 |
+| IOThreadPool 数据传输 | 文件 I/O 不阻塞 Reactor 线程 |
+| IndexEntry 版本 3 | 新增 host 字段支持跨节点追踪 |

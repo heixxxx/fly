@@ -35,8 +35,8 @@ cc_test(
 )
 
 cc_test(
-    name = "metadata_manager_test",
-    srcs = ["metadata_manager_test.cpp"],
+    name = "task_manager_test",
+    srcs = ["task_manager_test.cpp"],
     deps = [
         "@googletest//:gtest_main",
         "//src/task/cpp:fly_task",

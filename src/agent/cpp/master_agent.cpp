@@ -138,7 +138,7 @@ void MasterAgent::start() {
     });
 
     scheduler_ = CMMakeUnique<TaskScheduler>(graph_.get(), worker_manager_.get());
-    metadata_ = CMMakeUnique<MetadataManager>();
+    metadata_ = CMMakeUnique<TaskManager>();
 
     heartbeat_monitor_ = CMMakeUnique<HeartbeatMonitor>(worker_manager_.get(), 30);
 

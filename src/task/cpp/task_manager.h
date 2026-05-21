@@ -27,7 +27,7 @@ struct TaskMetadata {
     uint64_t assigned_worker_id;
 };
 
-class MetadataManager {
+class TaskManager {
 public:
     void create_task(uint64_t task_id, const CMString& name,
                      const CMVector<CMString>& inputs,

@@ -15,7 +15,7 @@
 | `cpp/dependency_graph.h/cpp` | 任务依赖管理，mark_data_ready 触发就绪 |
 | `cpp/worker_manager.h/cpp` | Worker 注册/状态管理 |
 | `cpp/task_scheduler.h/cpp` | FIFO 调度，依赖就绪检测 |
-| `cpp/metadata_manager.h/cpp` | 任务元数据（仅 task lifecycle） |
+| `cpp/task_manager.h/cpp` | 任务元数据管理（状态、时间戳、Worker 分配） |
 | `cpp/heartbeat_monitor.h/cpp` | 心跳监控，超时检测 |
 
 ---
@@ -84,125 +84,155 @@ mark_data_ready(data_path)
 ### WorkerManager（Worker 管理）
 
 ```cpp
-class WorkerManager {
-public:
-    // 注册
-    void register_worker(uint64_t worker_id, const CMString& role,
-                         const CMVector<CMString>& attributes);
-
-    // 状态更新
-    void complete_task(uint64_t worker_id);
-    void set_heartbeat(uint64_t worker_id, double timestamp);
-
-    // 查询
-    WorkerInfo get_worker(uint64_t worker_id) const;
-    CMVector<WorkerInfo> get_available_workers() const;
-    bool has_worker(uint64_t worker_id) const;
-    CMVector<uint64_t> get_all_worker_ids() const;
-
-    // 属性管理
-    void update_attributes(uint64_t worker_id,
-                           const CMVector<CMString>& add,
-                           const CMVector<CMString>& remove);
-
-private:
-    CMMap<uint64_t, WorkerInfo> workers_;
+enum class WorkerStatus : uint8_t {
+    IDLE = 0,
+    BUSY = 1,
+    DEAD = 2,
 };
 
 struct WorkerInfo {
     uint64_t worker_id;
-    CMString role;                         // "hybrid" | "storage_only"
-    CMVector<CMString> attributes;
-    bool is_busy = false;
-    uint64_t current_task_id = 0;
-    double last_heartbeat = 0.0;
+    CMString address;
+    uint16_t port;
+    WorkerStatus status;
+    CMVector<CMString> capabilities;
+    uint64_t last_heartbeat;
+    uint64_t current_task_id;
+};
+
+class WorkerManager {
+public:
+    void register_worker(uint64_t worker_id, const CMString& address, uint16_t port,
+                         const CMVector<CMString>& capabilities = {});
+    void register_worker(uint64_t worker_id, const CMString& address,
+                         const CMVector<CMString>& capabilities);
+    void unregister_worker(uint64_t worker_id);
+    void update_worker_status(uint64_t worker_id, WorkerStatus status);
+    void record_heartbeat(uint64_t worker_id);
+    void set_heartbeat(uint64_t worker_id, uint64_t timestamp);
+    void assign_task(uint64_t worker_id, uint64_t task_id);
+    void complete_task(uint64_t worker_id);
+
+    WorkerInfo* get_worker(uint64_t worker_id);
+    CMVector<uint64_t> get_idle_workers();
+    CMVector<uint64_t> get_workers_with_capability(const CMString& capability);
+    CMVector<WorkerInfo> get_all_workers();
+    size_t get_worker_count();
+    size_t get_idle_worker_count();
+
+private:
+    CMMap<uint64_t, WorkerInfo> workers_;
 };
 ```
 
 **Worker 生命周期**:
 
 ```
-注册 → register_worker(id, role, attrs) → is_busy=false
-分配任务 → mark_worker_busy(id, task_id) → is_busy=true
-任务完成 → complete_task(id) → is_busy=false
+注册 → register_worker(id, address, port, capabilities) → status=IDLE
+分配任务 → assign_task(id, task_id) → status=BUSY
+任务完成 → complete_task(id) → status=IDLE
+心跳超时 → heartbeat_monitor → status=DEAD
 ```
+
+> **注意**: `RegisterMessage` 协议中存在 `role` 字段（"hybrid" | "storage_only"），这是预留的设计字段。当前 Worker 注册时**未填充**该字段，Master 也**未读取**该字段进行角色区分。WorkerManager 使用 `capabilities`（标签能力）而非 `role`（角色类型）进行 Worker 分组。
 
 ---
 
 ### TaskScheduler（任务调度器）
 
 ```cpp
+struct ScheduleResult {
+    uint64_t task_id;
+    uint64_t worker_id;
+    bool scheduled;
+};
+
 class TaskScheduler {
 public:
-    explicit TaskScheduler(std::shared_ptr<DependencyGraph> graph,
-                           std::shared_ptr<WorkerManager> workers);
+    TaskScheduler(DependencyGraph* graph, WorkerManager* manager);
 
-    // 提交任务
-    void submit_task(uint64_t task_id, const CMString& name,
-                     const CMString& module, const CMVector<CMString>& args,
-                     const CMVector<CMString>& inputs,
-                     const CMVector<CMString>& required_attributes);
-
-    // 调度
-    void schedule_all_available();
-
-    // 查询
-    int get_pending_count() const;
-    int get_ready_count() const;
-    CMVector<uint64_t> get_pending_tasks() const;
+    ScheduleResult schedule_next();
+    CMVector<ScheduleResult> schedule_all_available();
+    void set_locality_preference(bool enabled);
 
 private:
-    std::shared_ptr<DependencyGraph> graph_;
-    std::shared_ptr<WorkerManager> workers_;
+    uint64_t select_best_worker(uint64_t task_id);
 
-    // 任务参数存储
-    CMMap<uint64_t, CMString> task_names_;
-    CMMap<uint64_t, CMString> task_modules_;
-    CMMap<uint64_t, CMVector<CMString>> task_args_;
-    CMMap<uint64_t, CMVector<CMString>> task_required_attrs_;
+    DependencyGraph* graph_;
+    WorkerManager* manager_;
+    bool locality_enabled_;
 };
 ```
 
-**FIFO 调度算法**:
+**调度算法**:
 
 ```
-schedule_all_available()
+schedule_next()
   → ready_tasks = graph_->get_ready_tasks()
-  → available_workers = workers_->get_available_workers()
-  → for each (task, worker) pair (FIFO 匹配):
-      → assign_task(task_id, worker_id)
-      → 发送 TaskAssignMessage
+  → idle_workers = manager_->get_idle_workers()
+  → if locality_enabled_:
+      → select_best_worker(task_id) // 基于数据局部性
+  → else:
+      → FIFO 匹配 idle_workers[0]
+  → return ScheduleResult{task_id, worker_id, scheduled}
+
+schedule_all_available()
+  → 循环调用 schedule_next() 直到无新调度
+  → return CMVector<ScheduleResult>
 ```
 
-**核心约束**: Worker 同一时刻最多执行一个任务。Master 仅向 `is_busy=false` 的 Worker 派发。
+**核心约束**: Worker 同一时刻最多执行一个任务。Master 仅向 `status=IDLE` 的 Worker 派发。
 
 ---
 
-### MetadataManager（元数据管理）
+### TaskManager（任务元数据管理）
 
 ```cpp
-struct TaskMetadata {
-    uint64_t task_id;
-    CMString task_name;
-    CMString module;
-    CMVector<CMString> inputs;
-    int status;  // PENDING=0, READY=1, RUNNING=2, COMPLETED=3, FAILED=4
+enum class TaskStatus : uint8_t {
+    PENDING = 0,
+    RUNNING = 1,
+    COMPLETED = 2,
+    FAILED = 3,
+    CANCELLED = 4,
 };
 
-class MetadataManager {
+struct TaskMetadata {
+    uint64_t task_id;
+    CMString name;
+    TaskStatus status;
+    CMVector<CMString> inputs;
+    CMVector<CMString> outputs;
+    CMString config;
+    uint64_t created_at;
+    uint64_t started_at;
+    uint64_t completed_at;
+    CMString error_message;
+    uint64_t assigned_worker_id;
+};
+
+class TaskManager {
 public:
     void create_task(uint64_t task_id, const CMString& name,
-                     const CMVector<CMString>& inputs, ...);
-    void update_task_status(uint64_t task_id, int status);
-    TaskMetadata get_task(uint64_t task_id) const;
-    CMVector<TaskMetadata> get_tasks_by_status(int status) const;
+                     const CMVector<CMString>& inputs,
+                     const CMVector<CMString>& outputs,
+                     const CMString& config);
+    void update_task_status(uint64_t task_id, TaskStatus status);
+    void set_error(uint64_t task_id, const CMString& error);
+    void set_assigned_worker(uint64_t task_id, uint64_t worker_id);
+    void set_timestamps(uint64_t task_id, uint64_t created, uint64_t started, uint64_t completed);
+
+    TaskMetadata* get_task(uint64_t task_id);
+    CMVector<TaskMetadata> get_tasks_by_status(TaskStatus status);
+    CMVector<TaskMetadata> get_all_tasks();
+    bool has_task(uint64_t task_id);
+    void remove_task(uint64_t task_id);
 
 private:
     CMMap<uint64_t, TaskMetadata> tasks_;
 };
 ```
 
-**职责范围**: 仅管理任务生命周期元数据（状态、名称、模块、输入），**不管理数据位置**（数据位置已迁移至 DataService）。
+**职责范围**: 仅管理任务生命周期元数据（状态、名称、输入输出、时间戳），**不管理数据位置**（数据位置已迁移至 DataService）。
 
 ---
 
@@ -211,19 +241,16 @@ private:
 ```cpp
 class HeartbeatMonitor {
 public:
-    explicit HeartbeatMonitor(std::shared_ptr<WorkerManager> workers);
+    HeartbeatMonitor(WorkerManager* manager, uint64_t timeout_seconds = 30);
 
-    // 检查所有 Worker 心跳
-    void check_all_workers(double current_timestamp);
-
-    // 获取超时 Worker 列表
+    void check_all_workers(uint64_t current_time);
+    uint64_t get_timeout() const;
+    void set_timeout(uint64_t seconds);
     CMVector<uint64_t> get_dead_workers() const;
 
-    void set_timeout(double seconds);
-
 private:
-    std::shared_ptr<WorkerManager> workers_;
-    double timeout_seconds_ = 120.0;
+    WorkerManager* manager_;
+    uint64_t timeout_seconds_;
     CMVector<uint64_t> dead_workers_;
 };
 ```
@@ -231,12 +258,15 @@ private:
 **心跳检测流程**:
 
 ```
-Master.heartbeat_check_thread_ (每 5s)
+Master.heartbeat_check_thread_ (每 heartbeat_interval 秒)
   → heartbeat_monitor_->check_all_workers(now)
   → for each worker:
       if (now - last_heartbeat) > timeout_seconds:
+        manager_->update_worker_status(worker_id, WorkerStatus::DEAD)
         dead_workers_.push_back(worker_id)
 ```
+
+> **注意**: 默认超时 30 秒（代码实现），配置文件 `heartbeat_timeout` 默认 120 秒。HeartbeatMonitor 构造时使用配置值覆盖默认值。
 
 ---
 
@@ -246,11 +276,13 @@ Master.heartbeat_check_thread_ (每 5s)
 
 ```
 TaskSubmitMessage 到达 Master
-  → metadata_->create_task(task_id, name, inputs, ...)
+  → metadata_->create_task(task_id, name, inputs, outputs, config)
   → graph_->add_task(task_id, inputs)  // 注册依赖
   → schedule_all_available()
-      → ready_tasks × idle_workers → FIFO 匹配
+      → 循环 schedule_next()
+      → ready_tasks × idle_workers → 匹配
       → for each match:
+          → manager_->assign_task(task_id, worker_id)
           → reactor_->send(worker_conn, TaskAssignMessage{...})
 ```
 
@@ -260,7 +292,6 @@ TaskSubmitMessage 到达 Master
 TaskCompleteMessage 到达 Master
   → for written_object in written_objects:
       → graph_->mark_data_ready(data_path)
-      → 返回 newly_ready 任务列表
       → DataService.update_remote_idx(...)
   → schedule_all_available()  // 调度新就绪的任务
 ```
@@ -272,8 +303,9 @@ TaskCompleteMessage 到达 Master
 | 决策 | 原因 |
 |------|------|
 | pending_count 归零即 ready | O(1) 判断就绪，无需遍历所有依赖 |
-| FIFO 调度（默认） | 简单可靠，后续可扩展 Locality 策略 |
+| FIFO 调度 + 可选 Locality | 默认简单可靠，`set_locality_preference(true)` 启用数据局部性 |
 | Worker 单任务约束 | 简化并发模型，Worker 无需任务队列 |
-| MetadataManager 不管数据位置 | 任务生命周期与数据位置是不同关注点，解耦独立演进 |
+| WorkerStatus 枚举替代 bool is_busy | 支持 DEAD 状态，扩展性更强 |
+| TaskManager 不管数据位置 | 任务生命周期与数据位置是不同关注点，解耦独立演进 |
 | HeartbeatMonitor 独立线程 | 不阻塞 Reactor，超时检测准确 |
-| graph_->mark_data_ready 返回新就绪任务 | 一次调用获取调度候选，减少轮询 |
+| role 字段预留未实现 | RegisterMessage.role 已定义，但 Worker 未填充、Master 未使用 |

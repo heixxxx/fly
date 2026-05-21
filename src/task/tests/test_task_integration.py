@@ -67,8 +67,8 @@ def test_task_scheduler():
     assert result.worker_id == 1
     print("PASS: test_task_scheduler")
 
-def test_metadata_manager():
-    meta = task.EXTaskMetadataManager()
+def test_task_manager():
+    meta = task.EXTaskManager()
     meta.create_task(1, "test_task", ["input/a"], ["output/b"], "{}")
     
     assert meta.has_task(1) == True
