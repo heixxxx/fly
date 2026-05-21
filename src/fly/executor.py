@@ -47,11 +47,14 @@ def create_executor(worker) -> callable:
         _frozen_before = set()
 
         try:
-            module = importlib.import_module(task_module)
-
-            func = getattr(module, task_name)
-
-            original_func = getattr(func, '_fly_original_func', func)
+            from fly.task import _task_registry
+            registered = _task_registry.get((task_module, task_name))
+            if registered is not None:
+                original_func = getattr(registered, '_fly_original_func', registered)
+            else:
+                module = importlib.import_module(task_module)
+                func = getattr(module, task_name)
+                original_func = getattr(func, '_fly_original_func', func)
 
             deserialized_args = _deserialize_args(args, worker)
 

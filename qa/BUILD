@@ -98,3 +98,21 @@ py_test(
     ],
     main = "test_database_freeze_protection.py",
 )
+
+py_test(
+    name = "capability_scheduling_test",
+    srcs = ["test_capability_scheduling.py"],
+    deps = [
+        "//src/storage/py:fly_storage_py",
+        "//src/fly:fly_py",
+    ],
+    imports = [
+        "../src/storage/export",
+        "../src/core/export",
+        "../src/log/export",
+        "../src/agent/export",
+        "../src/network/export",
+        "../src/task/export",
+    ],
+    main = "test_capability_scheduling.py",
+)

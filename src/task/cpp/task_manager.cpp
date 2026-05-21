@@ -3,9 +3,10 @@
 namespace fly {
 
 void TaskManager::create_task(uint64_t task_id, const CMString& name,
-                                   const CMVector<CMString>& inputs,
-                                   const CMVector<CMString>& outputs,
-                                   const CMString& config) {
+                                    const CMVector<CMString>& inputs,
+                                    const CMVector<CMString>& outputs,
+                                    const CMString& config,
+                                    const CMVector<CMString>& required_capabilities) {
     TaskMetadata meta;
     meta.task_id = task_id;
     meta.name = name;
@@ -13,6 +14,7 @@ void TaskManager::create_task(uint64_t task_id, const CMString& name,
     meta.inputs = inputs;
     meta.outputs = outputs;
     meta.config = config;
+    meta.required_capabilities = required_capabilities;
     meta.created_at = 0;
     meta.started_at = 0;
     meta.completed_at = 0;

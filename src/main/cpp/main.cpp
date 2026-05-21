@@ -49,6 +49,7 @@ int main(int argc, char* argv[]) {
     std::string log_dir = "fly_log";
     bool interactive = false;
     std::string script_path;
+    std::string worker_attributes;
 
     for (int i = 1; i < argc; i++) {
         std::string arg(argv[i]);
@@ -62,6 +63,8 @@ int main(int argc, char* argv[]) {
             master_port = std::stoi(argv[++i]);
         } else if (arg == "--log-dir" && i + 1 < argc) {
             log_dir = argv[++i];
+        } else if (arg == "--worker-attributes" && i + 1 < argc) {
+            worker_attributes = argv[++i];
         } else if (arg == "-i") {
             interactive = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -77,9 +80,11 @@ int main(int argc, char* argv[]) {
     cfg.set_int("worker_id", worker_id);
     cfg.set_str("master_host", master_host);
     cfg.set_int("master_port", master_port);
+    cfg.set_int("cli_master_port", master_port);
     cfg.set_str("log_dir", log_dir);
     cfg.set_int("interactive", interactive ? 1 : 0);
     cfg.set_str("script_path", script_path);
+    cfg.set_str("worker_attributes", worker_attributes);
 
     if (!worker_mode) {
         log_dir = fly::Logger::resolve_log_dir(log_dir);

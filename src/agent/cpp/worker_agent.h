@@ -43,7 +43,8 @@ struct PendingWriteRegister {
 
 class WorkerAgent {
 public:
-    WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port);
+    WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port,
+                const CMVector<CMString>& attributes = {});
     ~WorkerAgent();
     
     void start();
@@ -63,7 +64,8 @@ public:
     
     void submit_task(const CMString& name, const CMString& module,
                      const CMVector<CMString>& args,
-                     const CMVector<CMString>& inputs);
+                     const CMVector<CMString>& inputs,
+                     const CMVector<CMString>& required_capabilities = {});
     
     bool has_pending_task() const;
     bool poll_task();
@@ -83,6 +85,7 @@ private:
     uint64_t worker_id_;
     CMString master_host_;
     uint16_t master_port_;
+    CMVector<CMString> attributes_;
     std::atomic<bool> running_{false};
     std::atomic<bool> registered_{false};
     

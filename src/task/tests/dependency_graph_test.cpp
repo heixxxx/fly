@@ -65,4 +65,37 @@ TEST(DependencyGraphTest, CascadingDependencies) {
     EXPECT_EQ(ready[0], 2);
 }
 
+TEST(DependencyGraphTest, AddTaskWithRequirements) {
+    DependencyGraph graph;
+    graph.add_task(1, {}, {"gpu", "cuda"});
+    
+    auto reqs = graph.get_task_requirements(1);
+    EXPECT_EQ(reqs.size(), 2u);
+    EXPECT_EQ(reqs[0], "gpu");
+    EXPECT_EQ(reqs[1], "cuda");
+}
+
+TEST(DependencyGraphTest, GetRequirementsNonExistent) {
+    DependencyGraph graph;
+    auto reqs = graph.get_task_requirements(999);
+    EXPECT_TRUE(reqs.empty());
+}
+
+TEST(DependencyGraphTest, RequirementsClearedOnRemove) {
+    DependencyGraph graph;
+    graph.add_task(1, {}, {"gpu"});
+    graph.remove_task(1);
+    
+    auto reqs = graph.get_task_requirements(1);
+    EXPECT_TRUE(reqs.empty());
+}
+
+TEST(DependencyGraphTest, NoRequirementsDefault) {
+    DependencyGraph graph;
+    graph.add_task(1, {});
+    
+    auto reqs = graph.get_task_requirements(1);
+    EXPECT_TRUE(reqs.empty());
+}
+
 }  // namespace fly

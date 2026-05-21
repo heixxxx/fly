@@ -60,13 +60,23 @@ def _redirect_worker_io(worker_id, log_dir):
 def _run_worker():
     import time
     from fly.config import get_config
-    
+    from fly.runtime import get_agent
+
     cfg = get_config()
     _redirect_worker_io(cfg.get_int("worker_id"), cfg.get_str("log_dir"))
 
     init()
 
+    from fly.runtime import get_agent
+    from _fly_log import INFO
+    INFO("Worker process starting: id=" + str(cfg.get_int("worker_id")))
+
     agent = get_agent()
+    INFO("Worker agent created, starting poll loop")
+
+    while agent._agent.is_running():
+        agent._agent.poll_task()
+        time.sleep(0.05)
     while agent._agent.is_running():
         agent._agent.poll_task()
         time.sleep(0.05)

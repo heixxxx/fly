@@ -24,9 +24,10 @@ void WorkerAgent::set_data_service(DataService* ds) {
     });
 }
 
-WorkerAgent::WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port)
+WorkerAgent::WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port,
+                          const CMVector<CMString>& attributes)
     : worker_id_(worker_id), master_host_(master_host), master_port_(master_port),
-      running_(false), registered_(false) {}
+      attributes_(attributes), running_(false), registered_(false) {}
 
 WorkerAgent::~WorkerAgent() {
     stop();
@@ -105,11 +106,13 @@ void WorkerAgent::start() {
 
     RegisterMessage reg;
     reg.worker_id = worker_id_;
+    reg.attributes = attributes_;
     reg.data_server_host = data_server_host_;
     reg.data_server_port = data_server_port_;
     reactor_->send(master_conn_, reg);
 
-    INFO("RegisterMessage sent with data_server_port=" + std::to_string(data_server_port_));
+    INFO("RegisterMessage sent with data_server_port=" + std::to_string(data_server_port_)
+         + ", attributes=" + std::to_string(attributes_.size()));
 
     heartbeat_running_ = true;
     heartbeat_thread_ = std::thread([this] { heartbeat_loop(); });
@@ -166,12 +169,14 @@ bool WorkerAgent::is_registered() const {
 
 void WorkerAgent::submit_task(const CMString& name, const CMString& module,
                                const CMVector<CMString>& args,
-                               const CMVector<CMString>& inputs) {
+                               const CMVector<CMString>& inputs,
+                               const CMVector<CMString>& required_capabilities) {
     TaskSubmitMessage msg;
     msg.task_name = name;
     msg.task_module = module;
     msg.args = args;
     msg.inputs = inputs;
+    msg.required_capabilities = required_capabilities;
     reactor_->send(master_conn_, msg);
 }
 

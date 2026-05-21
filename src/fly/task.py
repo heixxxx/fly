@@ -3,6 +3,8 @@ import logging
 
 logger = logging.getLogger("fly")
 
+_task_registry = {}
+
 
 def task_name(name: str):
     """装饰器：设置任务名称。
@@ -19,7 +21,7 @@ def task_name(name: str):
     return decorator
 
 
-def as_task(inputs=None):
+def as_task(inputs=None, requires=None):
     def decorator(func):
         name = getattr(func, '_fly_task_name', None) or func.__name__
         module = func.__module__ or "__main__"
@@ -32,6 +34,10 @@ def as_task(inputs=None):
                 basename = os.path.splitext(os.path.basename(main_file))[0]
                 module = basename
 
+        task_requires = requires or []
+
+        _task_registry[(module, name)] = func
+
         def wrapper(*args, **kwargs):
             from .runtime import get_agent
             agent = get_agent()
@@ -39,10 +45,11 @@ def as_task(inputs=None):
             task_inputs = inputs(*args, **kwargs) if inputs else []
             serialized = _serialize_args(args)
 
-            agent.submit(name, module, serialized, task_inputs)
+            agent.submit(name, module, serialized, task_inputs,
+                         required_capabilities=task_requires)
             logger.debug(
                 f"Task submitted via {agent.mode}: "
-                f"name={name}, inputs={task_inputs}")
+                f"name={name}, inputs={task_inputs}, requires={task_requires}")
 
         wrapper._fly_original_func = func
         wrapper._fly_task_name = name

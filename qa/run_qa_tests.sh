@@ -3,7 +3,6 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-QA_DIR="$PROJECT_ROOT/qa"
 
 FLY_BIN="$PROJECT_ROOT/bazel-bin/src/main/cpp/fly"
 if [ ! -x "$FLY_BIN" ]; then
@@ -16,8 +15,12 @@ fi
 if [ -n "$1" ]; then
     TEST_FILES=("$1")
 else
-    TEST_FILES=$(find "$QA_DIR" -name "test_*.py" -type f | sort)
+    TEST_FILES=$(find "$SCRIPT_DIR" -maxdepth 1 -name "test_*.py" -type f | sort)
 fi
+
+LOG_BASE="$SCRIPT_DIR/logs"
+rm -rf "$LOG_BASE"
+mkdir -p "$LOG_BASE"
 
 PASSED=0
 FAILED=0
@@ -27,7 +30,7 @@ echo "=========================================="
 echo "Fly QA Test Suite"
 echo "=========================================="
 echo "Fly binary: $FLY_BIN"
-echo "Test directory: $QA_DIR"
+echo "Test directory: $SCRIPT_DIR"
 echo "Tests to run: ${#TEST_FILES[@]}"
 echo "=========================================="
 echo
@@ -36,11 +39,10 @@ for test_file in ${TEST_FILES[@]}; do
     test_name=$(basename "$test_file")
     echo "Running: $test_name"
     
-    LOG_DIR="$PROJECT_ROOT/qa_logs/${test_name%.py}"
-    mkdir -p "$LOG_DIR"
+    LOG_DIR="$LOG_BASE/${test_name%.py}"
     
     cd "$PROJECT_ROOT"
-    if $FLY_BIN --log-dir "$LOG_DIR" "$test_file" > "$LOG_DIR/output.log" 2>&1; then
+    if $FLY_BIN --log-dir "$LOG_DIR" "$test_file" > "$LOG_BASE/${test_name%.py}_output.log" 2>&1; then
         echo "  ✓ PASSED"
         PASSED=$((PASSED + 1))
     else
@@ -48,10 +50,9 @@ for test_file in ${TEST_FILES[@]}; do
         FAILED=$((FAILED + 1))
         FAILED_TESTS+=("$test_name")
         echo "  Last 20 lines of output:"
-        tail -20 "$LOG_DIR/output.log" | sed 's/^/    /'
+        tail -20 "$LOG_BASE/${test_name%.py}_output.log" | sed 's/^/    /'
     fi
     
-    rm -rf "$LOG_DIR"
     echo
 done
 

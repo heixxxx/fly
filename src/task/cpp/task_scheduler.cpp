@@ -17,17 +17,17 @@ ScheduleResult TaskScheduler::schedule_next() {
         return {0, 0, false};
     }
     
-    uint64_t task_id = ready_tasks[0];
-    uint64_t worker_id = select_best_worker(task_id);
-    
-    if (worker_id == 0) {
-        return {0, 0, false};
+    for (uint64_t task_id : ready_tasks) {
+        uint64_t worker_id = select_best_worker(task_id);
+        if (worker_id == 0) continue;
+        
+        manager_->assign_task(worker_id, task_id);
+        graph_->remove_task(task_id);
+        
+        return {task_id, worker_id, true};
     }
     
-    manager_->assign_task(worker_id, task_id);
-    graph_->remove_task(task_id);
-    
-    return {task_id, worker_id, true};
+    return {0, 0, false};
 }
 
 CMVector<ScheduleResult> TaskScheduler::schedule_all_available() {
@@ -54,11 +54,41 @@ uint64_t TaskScheduler::select_best_worker(uint64_t task_id) {
         return 0;
     }
     
-    if (!locality_enabled_ || idle_workers.size() == 1) {
+    auto requirements = graph_->get_task_requirements(task_id);
+    
+    if (requirements.empty()) {
         return idle_workers[0];
     }
     
-    return idle_workers[0];
+    CMVector<uint64_t> candidates;
+    for (uint64_t wid : idle_workers) {
+        auto* info = manager_->get_worker(wid);
+        if (!info) continue;
+        
+        bool has_all = true;
+        for (const auto& req : requirements) {
+            bool found = false;
+            for (const auto& cap : info->capabilities) {
+                if (cap == req) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                has_all = false;
+                break;
+            }
+        }
+        if (has_all) {
+            candidates.push_back(wid);
+        }
+    }
+    
+    if (candidates.empty()) {
+        return 0;
+    }
+    
+    return candidates[0];
 }
 
 }  // namespace fly

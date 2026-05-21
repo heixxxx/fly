@@ -37,6 +37,7 @@ private:
     CMString level_str(LogLevel level) const;
     CMString timestamp() const;
     static void _update_latest_symlink(const CMString& target_dir, const CMString& base_dir);
+    static CMString _ensure_trailing_sep(const CMString& path);
 
     static Logger* instance_;
     CMString filename_;

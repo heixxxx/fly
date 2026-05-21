@@ -20,6 +20,7 @@ struct TaskMetadata {
     CMVector<CMString> inputs;
     CMVector<CMString> outputs;
     CMString config;
+    CMVector<CMString> required_capabilities;
     uint64_t created_at;
     uint64_t started_at;
     uint64_t completed_at;
@@ -32,7 +33,8 @@ public:
     void create_task(uint64_t task_id, const CMString& name,
                      const CMVector<CMString>& inputs,
                      const CMVector<CMString>& outputs,
-                     const CMString& config);
+                     const CMString& config,
+                     const CMVector<CMString>& required_capabilities = {});
     void update_task_status(uint64_t task_id, TaskStatus status);
     void set_error(uint64_t task_id, const CMString& error);
     void set_assigned_worker(uint64_t task_id, uint64_t worker_id);

@@ -27,11 +27,12 @@ Logger& Logger::instance() {
 }
 
 void Logger::init(const CMString& base_dir, uint64_t worker_id) {
-    std::filesystem::create_directories(base_dir);
+    CMString dir = _ensure_trailing_sep(base_dir);
+    std::filesystem::create_directories(dir);
 
     CMString log_name = (worker_id == 0) ? "master"
                         : "worker" + std::to_string(worker_id);
-    CMString filename = base_dir + log_name + ".log";
+    CMString filename = dir + log_name + ".log";
 
     if (instance_) {
         instance_->flush();
@@ -46,7 +47,7 @@ CMString Logger::resolve_log_dir(const CMString& base_dir) {
     if (!fs::exists(base_dir)) {
         fs::create_directories(base_dir);
         _update_latest_symlink(base_dir, base_dir);
-        return base_dir;
+        return _ensure_trailing_sep(base_dir);
     }
 
     uint32_t highest = 0;
@@ -57,7 +58,7 @@ CMString Logger::resolve_log_dir(const CMString& base_dir) {
     CMString target = base_dir + "." + std::to_string(highest + 1);
     fs::create_directories(target);
     _update_latest_symlink(target, base_dir);
-    return target;
+    return _ensure_trailing_sep(target);
 }
 
 void Logger::shutdown() {
@@ -112,6 +113,11 @@ CMString Logger::timestamp() const {
     ss << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S");
     ss << "." << std::setfill('0') << std::setw(3) << ms.count();
     return ss.str();
+}
+
+CMString Logger::_ensure_trailing_sep(const CMString& path) {
+    if (path.empty() || path.back() == '/') return path;
+    return path + '/';
 }
 
 void Logger::_update_latest_symlink(const CMString& target_dir, const CMString& base_dir) {

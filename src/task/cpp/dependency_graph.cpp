@@ -3,8 +3,10 @@
 
 namespace fly {
 
-void DependencyGraph::add_task(uint64_t task_id, const CMVector<CMString>& inputs) {
+void DependencyGraph::add_task(uint64_t task_id, const CMVector<CMString>& inputs,
+                                const CMVector<CMString>& required_capabilities) {
     task_dependencies_[task_id] = inputs;
+    task_requirements_[task_id] = required_capabilities;
     
     int pending = 0;
     for (const auto& dep : inputs) {
@@ -71,6 +73,15 @@ void DependencyGraph::remove_task(uint64_t task_id) {
     completed_tasks_.insert(task_id);
     task_dependencies_.erase(task_id);
     pending_count_.erase(task_id);
+    task_requirements_.erase(task_id);
+}
+
+CMVector<CMString> DependencyGraph::get_task_requirements(uint64_t task_id) const {
+    auto it = task_requirements_.find(task_id);
+    if (it != task_requirements_.end()) {
+        return it->second;
+    }
+    return {};
 }
 
 }  // namespace fly

@@ -187,8 +187,9 @@ struct TaskSubmitMessage {
     CMString task_module;
     CMVector<CMString> args;
     CMVector<CMString> inputs;
+    CMVector<CMString> required_capabilities;
     static constexpr MessageType msg_type = MessageType::TASK_SUBMIT;
-    FLY_SERIALIZE(header, task_name, task_module, args, inputs);
+    FLY_SERIALIZE(header, task_name, task_module, args, inputs, required_capabilities);
 };
 
 // Worker → Master: 数据库路径查询

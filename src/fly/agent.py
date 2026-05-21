@@ -64,7 +64,8 @@ class Master(FlyAgent):
         DBG(f"Master started on {self._host}:{self._port}")
 
     def submit(self, name: str, module: str, args: list,
-               inputs: list = None) -> int:
+               inputs: list = None,
+               required_capabilities: list = None) -> int:
         with self._lock:
             self._task_counter += 1
             task_id = self._task_counter
@@ -72,13 +73,14 @@ class Master(FlyAgent):
         if not self._running:
             self.start()
 
-        self._agent.submit_task_with_deps(
-            task_id, name, module, args, inputs or [], [])
-        DBG(f"Task submitted: id={task_id}, name={name}")
+        self._agent.submit_task_with_requirements(
+            task_id, name, module, args, inputs or [], [],
+            required_capabilities or [])
+        DBG(f"Task submitted: id={task_id}, name={name}, requires={required_capabilities}")
         return task_id
 
     def launch_local_workers(self, worker_configs: list, port: int = None,
-                              mode: str = "thread"):
+                              mode: str = "process"):
         if port is not None:
             self._port = port
 
@@ -87,10 +89,12 @@ class Master(FlyAgent):
 
         num_workers = len(worker_configs)
         for i in range(num_workers):
+            config = worker_configs[i]
             if mode == "process":
-                self._spawn_process_worker(i + 1)
+                self._spawn_process_worker(i + 1, config)
             else:
-                self._start_thread_worker(i + 1)
+                attrs = config.get("attributes", []) if isinstance(config, dict) else []
+                self._start_thread_worker(i + 1, attrs)
 
         DBG(
             f"Master running on {self._host}:{self._port}, "
@@ -148,29 +152,50 @@ class Master(FlyAgent):
                 time.sleep(0.5)
         return self._agent.get_completed_tasks()
 
-    def _start_thread_worker(self, worker_id: int):
-        executor = EXTaskExecutor()
-        executor.set_exec_func(
-            lambda tid, tname, tmod, targs:
-            self._default_executor(tid, tname, tmod, targs))
+    def _start_thread_worker(self, worker_id: int, attributes: list = None):
+        worker_agent = EXAgentWorker(worker_id, self._host, self._port,
+                                      attributes or [])
+        worker_agent.set_data_service(ex_stg_get_data_service())
 
-        worker = EXAgentWorker(worker_id, self._host, self._port)
-        worker.set_executor(executor)
-        worker.start()
+        class _ThreadWorker:
+            def __init__(self):
+                self._db_cache = {}
+                self._agent = worker_agent
+                self._worker_id = worker_id
+
+        tw = _ThreadWorker()
+        executor = EXTaskExecutor()
+        executor.set_exec_func(create_executor(tw))
+
+        worker_agent.set_executor(executor)
+        worker_agent.start()
 
         import time
+
+        def _poll_loop():
+            while worker_agent.is_running():
+                worker_agent.poll_task()
+                time.sleep(0.05)
+
+        t = threading.Thread(target=_poll_loop, daemon=True)
+        t.start()
+
         time.sleep(0.1)
 
-        self._workers.append(worker)
+        self._workers.append(worker_agent)
 
-    def _spawn_process_worker(self, worker_id: int):
+    def _spawn_process_worker(self, worker_id: int, config: dict = None):
         import time
         from _fly_core import ex_core_get_config
 
         log_dir = ex_core_get_config().get_str("log_dir")
         fly_bin = self._find_fly_binary()
 
+        os.makedirs(log_dir, exist_ok=True)
         log_path = os.path.join(log_dir, f"worker{worker_id}.log")
+
+        attrs = config.get("attributes", []) if config and isinstance(config, dict) else []
+        attrs_str = ",".join(attrs) if attrs else ""
 
         cmd = [
             fly_bin,
@@ -180,6 +205,8 @@ class Master(FlyAgent):
             "--master-port", str(self._port),
             "--log-dir", log_dir,
         ]
+        if attrs_str:
+            cmd.extend(["--worker-attributes", attrs_str])
 
         log_file = open(log_path, "a")
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
@@ -189,7 +216,7 @@ class Master(FlyAgent):
 
         DBG(
             f"Spawned worker process: pid={proc.pid}, "
-            f"worker_id={worker_id}")
+            f"worker_id={worker_id}, attributes={attrs}")
 
     @staticmethod
     def _find_fly_binary() -> str:
@@ -208,17 +235,6 @@ class Master(FlyAgent):
         raise RuntimeError(
             f"Cannot find fly binary. Searched: PATH, {candidate}")
 
-    @staticmethod
-    def _default_executor(task_id, task_name, task_module, args):
-        from _fly_agent import EXTaskExecResult, EXTaskExecStatus as Status
-        ret = EXTaskExecResult()
-        ret.task_id = task_id
-        ret.status = Status.SUCCESS
-        ret.output = ""
-        ret.error = ""
-        ret.outputs = []
-        return ret
-
 
 class Worker(FlyAgent):
 
@@ -226,8 +242,10 @@ class Worker(FlyAgent):
     def mode(self) -> str:
         return "worker"
 
-    def __init__(self, worker_id: int, master_host: str, master_port: int):
-        self._agent = EXAgentWorker(worker_id, master_host, master_port)
+    def __init__(self, worker_id: int, master_host: str, master_port: int,
+                 attributes: list = None):
+        self._agent = EXAgentWorker(worker_id, master_host, master_port,
+                                    attributes or [])
         self._agent.set_data_service(ex_stg_get_data_service())
         self._db_cache = {}
         self._db_path_pending = {}
@@ -243,8 +261,10 @@ class Worker(FlyAgent):
         self._agent.start()
 
     def submit(self, name: str, module: str, args: list,
-               inputs: list = None) -> int:
-        return self._agent.submit_task(name, module, args, inputs or [])
+               inputs: list = None,
+               required_capabilities: list = None) -> int:
+        return self._agent.submit_task(name, module, args, inputs or [],
+                                       required_capabilities or [])
 
     def get_database(self, db_id: str):
         if db_id not in self._db_cache:

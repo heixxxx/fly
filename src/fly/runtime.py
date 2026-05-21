@@ -36,11 +36,14 @@ def _create_agent() -> FlyAgent:
     cfg = ex_core_get_config()
 
     if _mode == "worker":
+        attrs_str = cfg.get_str("worker_attributes")
+        attributes = [a.strip() for a in attrs_str.split(",") if a.strip()] if attrs_str else []
         w = Worker(cfg.get_int("worker_id"),
                     cfg.get_str("master_host"),
-                    cfg.get_int("cli_master_port"))
+                    cfg.get_int("cli_master_port"),
+                    attributes=attributes)
         w.start()
-        DBG(f"Worker mode: id={cfg.get_int('worker_id')}, master={cfg.get_str('master_host')}:{cfg.get_int('cli_master_port')}")
+        DBG(f"Worker mode: id={cfg.get_int('worker_id')}, master={cfg.get_str('master_host')}:{cfg.get_int('cli_master_port')}, attributes={attributes}")
         return w
     else:
         m = Master()

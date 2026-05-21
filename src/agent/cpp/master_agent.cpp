@@ -74,7 +74,7 @@ void MasterAgent::start() {
             INFO("TaskSubmit received: task_name=" + msg.task_name +
                  ", module=" + msg.task_module);
             uint64_t task_id = ++remote_task_counter_;
-            submit_task(task_id, msg.task_name, msg.task_module, msg.args, msg.inputs, {});
+            submit_task(task_id, msg.task_name, msg.task_module, msg.args, msg.inputs, {}, msg.required_capabilities);
         });
 
     reactor_->register_handler<DbPathRequestMessage>(
@@ -191,11 +191,12 @@ bool MasterAgent::is_running() const {
 void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
                                const CMString& module, const CMVector<CMString>& args,
                                const CMVector<CMString>& inputs,
-                               const CMVector<CMString>& outputs) {
+                               const CMVector<CMString>& outputs,
+                               const CMVector<CMString>& required_capabilities) {
     INFO("submit_task: id=" + std::to_string(task_id) + ", name=" + name);
 
-    metadata_->create_task(task_id, name, inputs, outputs, "{}");
-    graph_->add_task(task_id, inputs);
+    metadata_->create_task(task_id, name, inputs, outputs, "{}", required_capabilities);
+    graph_->add_task(task_id, inputs, required_capabilities);
 
     task_modules_[task_id] = module;
     task_args_[task_id] = args;

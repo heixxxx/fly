@@ -39,3 +39,13 @@ def write_after_freeze(db, key, value):
 def fanout_write(db, keys, values):
     for k, v in zip(keys, values):
         write_data(db, k, v)
+
+
+@as_task(requires=["gpu"])
+def gpu_write(db, key, value):
+    db.write_object(key, value)
+
+
+@as_task()
+def cpu_write(db, key, value):
+    db.write_object(key, value)

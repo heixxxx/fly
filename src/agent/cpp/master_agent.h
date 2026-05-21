@@ -40,7 +40,8 @@ public:
     void submit_task(uint64_t task_id, const CMString& name,
                     const CMString& module, const CMVector<CMString>& args,
                     const CMVector<CMString>& inputs = {},
-                    const CMVector<CMString>& outputs = {});
+                    const CMVector<CMString>& outputs = {},
+                    const CMVector<CMString>& required_capabilities = {});
 
     CMVector<uint64_t> get_pending_tasks() const;
     CMVector<uint64_t> get_running_tasks() const;

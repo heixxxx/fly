@@ -36,6 +36,7 @@ FLY_EXPORT_CLASS(fly::TaskMetadata, "EXTaskTaskMetadata")
     FLY_EXPORT_READONLY_ATTR("inputs", &fly::TaskMetadata::inputs)
     FLY_EXPORT_READONLY_ATTR("outputs", &fly::TaskMetadata::outputs)
     FLY_EXPORT_READONLY_ATTR("config", &fly::TaskMetadata::config)
+    FLY_EXPORT_READONLY_ATTR("required_capabilities", &fly::TaskMetadata::required_capabilities)
     FLY_EXPORT_READONLY_ATTR("created_at", &fly::TaskMetadata::created_at)
     FLY_EXPORT_READONLY_ATTR("started_at", &fly::TaskMetadata::started_at)
     FLY_EXPORT_READONLY_ATTR("completed_at", &fly::TaskMetadata::completed_at)
@@ -52,6 +53,9 @@ FLY_EXPORT_CLASS(fly::DependencyGraph, "EXTaskDependencyGraph")
     FLY_EXPORT_INIT()
     FLY_EXPORT_METHOD("add_task", [](fly::DependencyGraph& self, uint64_t task_id, const fly::CMVector<fly::CMString>& inputs) {
         self.add_task(task_id, inputs);
+    })
+    FLY_EXPORT_METHOD("add_task_with_requirements", [](fly::DependencyGraph& self, uint64_t task_id, const fly::CMVector<fly::CMString>& inputs, const fly::CMVector<fly::CMString>& required_capabilities) {
+        self.add_task(task_id, inputs, required_capabilities);
     })
     FLY_EXPORT_METHOD("mark_data_ready", [](fly::DependencyGraph& self, const fly::CMString& data_path) {
         self.mark_data_ready(data_path);
@@ -83,8 +87,8 @@ FLY_EXPORT_CLASS(fly::TaskScheduler, "EXTaskTaskScheduler")
 
 FLY_EXPORT_CLASS(fly::TaskManager, "EXTaskManager")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_METHOD("create_task", [](fly::TaskManager& self, uint64_t task_id, const fly::CMString& name, const fly::CMVector<fly::CMString>& inputs, const fly::CMVector<fly::CMString>& outputs, const fly::CMString& config) {
-        self.create_task(task_id, name, inputs, outputs, config);
+    FLY_EXPORT_METHOD("create_task", [](fly::TaskManager& self, uint64_t task_id, const fly::CMString& name, const fly::CMVector<fly::CMString>& inputs, const fly::CMVector<fly::CMString>& outputs, const fly::CMString& config, const fly::CMVector<fly::CMString>& required_capabilities) {
+        self.create_task(task_id, name, inputs, outputs, config, required_capabilities);
     })
     FLY_EXPORT_METHOD("update_task_status", &fly::TaskManager::update_task_status)
     FLY_EXPORT_METHOD("set_error", &fly::TaskManager::set_error)

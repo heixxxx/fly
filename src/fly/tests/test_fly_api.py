@@ -47,7 +47,7 @@ def test_master_submit():
 
     try:
         master = Master()
-        master.launch_local_workers([{"role": "hybrid"}])
+        master.launch_local_workers([{"role": "hybrid"}], mode="thread")
         print(f"  Master started on auto-assigned port: {master.port}")
 
         import fly.runtime as rt
