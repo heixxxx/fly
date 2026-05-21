@@ -1,11 +1,11 @@
-"""E2E test: task requiring nonexistent capability never completes.
+"""E2E test: task requiring nonexistent capability with fail_unscheduleable_tasks=0.
 
-Verifies that submitting a task with required_capabilities that no worker
-possesses does NOT raise an error and does NOT complete.
+Verifies that with fail_unscheduleable_tasks=0, submitting a task with
+required_capabilities that no worker possesses does NOT fail — it stays pending.
 
 Worker: 1 worker, attributes=["alpha"]
 Tasks:
-  - requires=["shared"]: no worker has this -> never completes, never fails
+  - requires=["shared"]: no worker has this -> stays pending (never completes, never fails)
   - requires=["alpha"]: should complete normally
 """
 import time
@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 from e2e_tasks import alpha_write, shared_write
 from fly import open_db
+from fly.config import get_config
 
 
 def cleanup():
@@ -29,6 +30,8 @@ def cleanup():
 
 def test_no_matching_worker_never_completes():
     cleanup()
+    get_config().set_int("fail_unscheduleable_tasks", 0)
+
     from fly.runtime import get_agent
     master = get_agent()
     if not master._running:

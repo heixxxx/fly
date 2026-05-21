@@ -285,15 +285,15 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 | `transport.h/cpp` | TransportLayer 抽象 |
 | `tcp_transport.cpp` | POSIX TCP 实现 |
 | `message_protocol.h/cpp` | 二进制帧协议 |
-| `message_types.h` | 消息结构定义 (20 种消息类型) |
+| `message_types.h` | 消息结构定义 (21 种消息类型，含 WorkerPropertyUpdate type=23) |
 
 ### 任务系统层 (src/task/)
 
 | 文件 | 职责 |
 |------|------|
-| `dependency_graph.h/cpp` | 任务依赖管理 |
-| `worker_manager.h/cpp` | Worker 状态管理 |
-| `task_scheduler.h/cpp` | 任务调度器 |
+| `dependency_graph.h/cpp` | 任务依赖管理，支持 `is_data_ready()` / `get_task_dependencies()` 查询 |
+| `worker_manager.h/cpp` | Worker 状态管理，动态属性 `update_capabilities()` / `has_worker_with_all_capabilities()` |
+| `task_scheduler.h/cpp` | 任务调度器，基于 Worker capabilities 匹配 |
 | `metadata_manager.h/cpp` | 任务元数据 (仅 task lifecycle，数据位置已迁移至 DataService) |
 | `heartbeat_monitor.h/cpp` | 心跳监控 |
 
@@ -301,8 +301,8 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 
 | 文件 | 职责 |
 |------|------|
-| `master_agent.h/cpp` | Master 节点管理 |
-| `worker_agent.h/cpp` | Worker 节点执行 |
+| `master_agent.h/cpp` | Master 节点管理，失败任务持久化 + `restart_failed_tasks()` |
+| `worker_agent.h/cpp` | Worker 节点执行，动态属性 `set/remove/get_worker_property()` |
 | `task_executor.h/cpp` | 任务执行器 |
 
 ---
@@ -359,7 +359,90 @@ def test_database():
 
 ---
 
-## 9. 项目状态
+## 9. 动态 Worker 属性与任务调度
+
+### 属性管理 API
+
+Worker 可在 Task 执行过程中动态增/删/查属性，实时同步至 Master：
+
+```python
+# Worker 端 (在 task 函数内)
+from fly.runtime import get_agent
+agent = get_agent()
+agent.set_worker_property("gpu")          # 添加属性
+agent.remove_worker_property("gpu")       # 移除属性
+props = agent.get_worker_properties()     # 查询属性列表
+
+# Master 端: 打印 WARN + no-op
+```
+
+### 消息流
+
+1. Worker Task 调用 `set_worker_property("gpu")` → `WorkerAgent` 发送 `WorkerPropertyUpdateMessage`（type=23）
+2. Master 收到 → `WorkerManager.update_capabilities()` 更新属性 → `schedule_tasks()` 重新调度
+
+### Capability 匹配调度
+
+Task 通过 `@as_task(requires=["gpu"])` 声明所需属性，调度器仅分配给拥有全部所需属性的 Worker。
+
+### fail_unscheduleable_tasks 配置
+
+| 值 | 行为 |
+|----|------|
+| `1`（默认）| 永远无法调度的 Task 立即标记 FAILED 并持久化（见 §10） |
+| `0` | 永远无法调度的 Task 保持等待状态 |
+
+---
+
+## 10. 失败任务持久化与重启
+
+### 持久化机制
+
+Task 失败时（capability 不匹配或数据依赖不可解析），Master 自动将完整任务信息序列化到 `log_dir/failed_tasks.bin`：
+
+- **FailedTaskRecord** 结构体（FLY_SERIALIZE）：task_id, name, module, args, inputs, outputs, required_capabilities, error_message
+- 失败时追加记录，成功完成时自动删除对应记录
+- 失败日志打印 bin 文件路径和 API 用法
+
+### 不可解析依赖检测
+
+当 `fail_unscheduleable_tasks=1` 时，`schedule_tasks()` 执行两项检查：
+1. **Capability 检查**：ready_tasks 中无匹配 Worker 的 task → FAILED
+2. **依赖检查**：仅 pending_tasks 残留（无 ready、无 running）→ 依赖永远无法满足 → FAILED
+
+### restart_failed_tasks API
+
+```python
+# 用户修复问题后（写入缺失数据、启动新 Worker）
+master.restart_failed_tasks("/path/to/failed_tasks.bin")
+```
+
+流程：
+1. 读取 bin 文件，反序列化 FailedTaskRecord 列表
+2. 删除 bin 文件（避免新 fail record 被误删）
+3. 对每个 record 的 inputs，通过 DataService 三阶段读取检查数据可用性 → `mark_data_ready`
+4. 重新 `submit_task()` → `schedule_tasks()` 调度
+5. 若 task 仍无法调度（如仍缺少 Worker capability）→ 重新 fail 并持久化到新 bin 文件
+
+### 依赖命名规范
+
+Task 的 inputs 必须使用 `db.get_obj_name()` 获取 full name（`db_id:object_name`），与 DataService / `mark_data_ready` 命名空间一致：
+
+```python
+# 正确
+@as_task(inputs=lambda db, key: [db.get_obj_name("phantom")])
+def my_task(db, key):
+    ...
+
+# 错误 — 短名无法匹配 DataService 索引
+@as_task(inputs=lambda db, key: ["phantom"])
+def my_task(db, key):
+    ...
+```
+
+---
+
+## 11. 项目状态
 
 ### Layer 实现进度
 
@@ -397,11 +480,11 @@ Worker A 读取 (DataClient 独立连接):
 3. `request_remote_data()` → 查 Master (via Reactor) → `DataClient::request_data()` 直连目标 Worker (最多 3 次重试)
 
 DB 路径查询: WorkerAgent.request_db_path(db_id) → 向 Master 查询 → 自动创建 Database 实例
-消息类型: 20 种 (含 DB_PATH_REQUEST/DB_PATH_RESPONSE)
+消息类型: 21 种 (含 DB_PATH_REQUEST/DB_PATH_RESPONSE, WorkerPropertyUpdate type=23)
 
 ---
 
-## 10. Agent 工作指南
+## 12. Agent 工作指南
 
 ### 必须遵循
 
@@ -440,7 +523,7 @@ src/new_module/
 
 ---
 
-## 11. 快速参考
+## 13. 快速参考
 
 ### 常用命令
 
@@ -467,4 +550,4 @@ src/new_module/
 
 ---
 
-*文档更新日期: 2026-05-17*
+*文档更新日期: 2026-05-21*
