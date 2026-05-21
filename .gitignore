@@ -36,3 +36,6 @@ qa_logs/
 *.idx
 _DB_META
 _FROZEN
+
+# Bazel lock file
+MODULE.bazel.lock
