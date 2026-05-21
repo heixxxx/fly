@@ -1,3 +1,8 @@
+---
+name: systematic-debugging-analysis
+description: Multi-dimensional debugging combining code flow, architecture, logs, and runtime results. Add logs when coverage is insufficient, avoid pure static analysis. Use for distributed system issues, concurrency bugs, network communication problems, cross-language (C++/Python) boundaries, or when logs are missing for the failure path.
+---
+
 # 技能：系统化调试 - 多维度分析法
 
 ## 技能描述

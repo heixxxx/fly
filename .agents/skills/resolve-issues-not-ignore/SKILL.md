@@ -1,3 +1,8 @@
+---
+name: resolve-issues-not-ignore
+description: Resolve issues fundamentally, never bypass with workarounds. Prohibits @ts-ignore/as any/empty catch/deleting failing tests/shotgun debugging. Use when encountering compilation errors, type mismatches, test failures, architecture conflicts, or any situation where "quick fix" temptation arises.
+---
+
 # 技能：解决冲突 - 不放弃问题
 
 ## 技能描述

@@ -1,3 +1,8 @@
+---
+name: design-compliant-implementation
+description: Enforce design-compliant implementation. Never downgrade to "simple workaround" when facing difficulty. No @ts-ignore/as any/empty catch/skipping tests. Use when implementing features that must follow design constraints, or when tempted to use shortcuts that violate design intent.
+---
+
 # 技能：高质量设计合规实现
 
 ## 技能描述
