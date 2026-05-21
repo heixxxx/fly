@@ -92,11 +92,25 @@ Only after user confirms:
 3. `git commit` with approved message
 4. If user said push → `git push`
 
+## Fast Path: Non-Code Changes
+
+When ALL changed files are **none** of the following:
+- Source code (`src/` under any language: `.cpp`, `.h`, `.py`, `.java`, etc.)
+- Tests (`tests/`, `qa/`, `*_test.*`, `test_*`)
+- Build system (`BUILD`, `BUILD.bazel`, `.bazelrc`, `WORKSPACE`, `MODULE.bazel`, `CMakeLists.txt`, `Makefile`)
+- Documentation that mirrors code (`CLAUDE.md`, `docs/`)
+
+Then:
+1. Skip Step 2–4 entirely (no classification, no doc check, no summary confirmation)
+2. Stage, commit, and push immediately
+3. Print: `Fast-committed [message] and pushed.`
+
+Examples of fast-path changes: `.agents/skills/`, `.opencode/`, `.github/`, `.gitignore`, `LICENSE`, `README.md` (non-technical), config dotfiles, etc.
+
 ## Rules
 
-- NEVER commit without user confirmation
-- NEVER skip the documentation check
-- If only tests/docs changed → still present summary but skip doc consistency check
+- NEVER commit without user confirmation — **except** on fast path
+- NEVER skip the documentation check — **except** on fast path
 - Match existing commit message style from git log
 - If changes span multiple concerns → suggest splitting into multiple commits
 - Do NOT update docs that are already accurate
