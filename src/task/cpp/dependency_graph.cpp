@@ -58,6 +58,11 @@ CMVector<uint64_t> DependencyGraph::get_ready_tasks() const {
     return result;
 }
 
+bool DependencyGraph::is_data_ready(const CMString& data_path) const {
+    auto it = data_ready_status_.find(data_path);
+    return it != data_ready_status_.end() && it->second;
+}
+
 CMVector<uint64_t> DependencyGraph::get_pending_tasks() const {
     CMVector<uint64_t> result(pending_tasks_.begin(), pending_tasks_.end());
     return result;
@@ -79,6 +84,14 @@ void DependencyGraph::remove_task(uint64_t task_id) {
 CMVector<CMString> DependencyGraph::get_task_requirements(uint64_t task_id) const {
     auto it = task_requirements_.find(task_id);
     if (it != task_requirements_.end()) {
+        return it->second;
+    }
+    return {};
+}
+
+CMVector<CMString> DependencyGraph::get_task_dependencies(uint64_t task_id) const {
+    auto it = task_dependencies_.find(task_id);
+    if (it != task_dependencies_.end()) {
         return it->second;
     }
     return {};

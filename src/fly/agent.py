@@ -43,6 +43,10 @@ class FlyAgent(ABC):
     def get_worker_properties(self) -> list:
         raise NotImplementedError
 
+    @abstractmethod
+    def restart_failed_tasks(self, file_path: str):
+        raise NotImplementedError
+
     @staticmethod
     def _ensure_list(prop):
         if isinstance(prop, str):
@@ -212,6 +216,9 @@ class Master(FlyAgent):
         WARN("get_worker_properties called on Master, returning empty")
         return []
 
+    def restart_failed_tasks(self, file_path: str):
+        self._agent.restart_failed_tasks(file_path)
+
     def _spawn_process_worker(self, worker_id: int, config: dict = None):
         import time
         from _fly_core import ex_core_get_config
@@ -320,6 +327,9 @@ class Worker(FlyAgent):
 
     def get_worker_properties(self) -> list:
         return list(self._agent.get_worker_properties())
+
+    def restart_failed_tasks(self, file_path: str):
+        WARN("restart_failed_tasks called on Worker, ignoring")
 
 
 __all__ = ['FlyAgent', 'Master', 'Worker']

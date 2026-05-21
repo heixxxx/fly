@@ -24,6 +24,7 @@ cc_library(
         "//src/core/cpp:fly_core",
         "//src/log/cpp:fly_log",
         "//src/network/cpp:fly_network",
+        "//src/serialization/cpp:fly_serialization",
         "//src/storage/cpp:fly_storage",
         "//src/task/cpp:fly_task",
     ],

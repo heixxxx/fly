@@ -137,6 +137,9 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     })
     FLY_EXPORT_METHOD("set_data_service", [](fly::MasterAgent& self, fly::DataService& ds) {
         self.set_data_service(&ds);
+    })
+    FLY_EXPORT_METHOD("restart_failed_tasks", [](fly::MasterAgent& self, const fly::CMString& file_path) {
+        self.restart_failed_tasks(file_path);
     });
 
 FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")

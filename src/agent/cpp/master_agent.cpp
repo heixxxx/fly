@@ -3,6 +3,8 @@
 #include <core/cpp/config.h>
 #include <thread>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 
 namespace fly {
 
@@ -233,13 +235,60 @@ void MasterAgent::schedule_tasks() {
             }
             CMString error_msg = "No worker with required capabilities: [" + cap_list + "]";
 
+            FailedTaskRecord record;
+            record.task_id = task_id;
+            record.name = metadata_->get_task(task_id) ? metadata_->get_task(task_id)->name : "";
+            record.module = task_modules_.count(task_id) ? task_modules_[task_id] : "";
+            record.args = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
+            record.inputs = metadata_->get_task(task_id) ? metadata_->get_task(task_id)->inputs : CMVector<CMString>();
+            record.outputs = metadata_->get_task(task_id) ? metadata_->get_task(task_id)->outputs : CMVector<CMString>();
+            record.required_capabilities = requirements;
+            record.error_message = error_msg;
+
             graph_->remove_task(task_id);
             metadata_->update_task_status(task_id, TaskStatus::FAILED);
             metadata_->set_error(task_id, error_msg);
             task_modules_.erase(task_id);
             task_args_.erase(task_id);
 
+            persist_failed_task(record);
             ERR("Task " + std::to_string(task_id) + " failed: " + error_msg);
+        }
+    }
+
+    auto pending = graph_->get_pending_tasks();
+    if (!pending.empty()) {
+        auto ready = graph_->get_ready_tasks();
+        auto running = metadata_->get_tasks_by_status(TaskStatus::RUNNING);
+        if (ready.empty() && running.empty()) {
+            for (uint64_t task_id : pending) {
+                auto deps = graph_->get_task_dependencies(task_id);
+                CMString dep_list;
+                for (size_t i = 0; i < deps.size(); i++) {
+                    if (i > 0) dep_list += ",";
+                    dep_list += deps[i];
+                }
+                CMString error_msg = "Unresolvable data dependencies: [" + dep_list + "]";
+
+                FailedTaskRecord record;
+                record.task_id = task_id;
+                record.name = metadata_->get_task(task_id) ? metadata_->get_task(task_id)->name : "";
+                record.module = task_modules_.count(task_id) ? task_modules_[task_id] : "";
+                record.args = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
+                record.inputs = deps;
+                record.outputs = metadata_->get_task(task_id) ? metadata_->get_task(task_id)->outputs : CMVector<CMString>();
+                record.required_capabilities = graph_->get_task_requirements(task_id);
+                record.error_message = error_msg;
+
+                graph_->remove_task(task_id);
+                metadata_->update_task_status(task_id, TaskStatus::FAILED);
+                metadata_->set_error(task_id, error_msg);
+                task_modules_.erase(task_id);
+                task_args_.erase(task_id);
+
+                persist_failed_task(record);
+                ERR("Task " + std::to_string(task_id) + " failed: " + error_msg);
+            }
         }
     }
 }
@@ -365,6 +414,8 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
     graph_->remove_task(msg.task_id);
 
     metadata_->update_task_status(msg.task_id, TaskStatus::COMPLETED);
+
+    remove_persisted_task(msg.task_id);
 
     for (const auto& db_id : msg.frozen_dbs) {
         frozen_dbs_.insert(db_id);
@@ -593,6 +644,121 @@ ReadResult MasterAgent::request_data_from_worker(const CMString& host, int32_t p
     ReadResult result;
     result.data_buffer.assign(data.begin(), data.end());
     return result;
+}
+
+CMString MasterAgent::get_failed_tasks_file_path() const {
+    CMString log_dir = Config::instance().get_str("log_dir");
+    namespace fs = std::filesystem;
+    if (!fs::exists(log_dir)) {
+        fs::create_directories(log_dir);
+    }
+    return log_dir + "/failed_tasks.bin";
+}
+
+void MasterAgent::persist_failed_task(const FailedTaskRecord& record) {
+    CMString file_path = get_failed_tasks_file_path();
+
+    FailedTaskFile file;
+    if (std::filesystem::exists(file_path)) {
+        std::ifstream ifs(file_path, std::ios::binary);
+        if (ifs) {
+            CMString content((std::istreambuf_iterator<char>(ifs)),
+                             std::istreambuf_iterator<char>());
+            if (!content.empty()) {
+                FLY_DECODE(content, FailedTaskFile, file);
+            }
+        }
+    }
+
+    file.records.push_back(record);
+
+    CMString output;
+    FLY_ENCODE(file, output);
+
+    std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
+    ofs.write(output.data(), output.size());
+    ofs.flush();
+
+    ERR("Task " + std::to_string(record.task_id) + " failed and persisted. "
+        "To restart after fixing, call restart_failed_tasks(\"" + file_path + "\")");
+}
+
+void MasterAgent::remove_persisted_task(uint64_t task_id) {
+    CMString file_path = get_failed_tasks_file_path();
+    if (!std::filesystem::exists(file_path)) return;
+
+    std::ifstream ifs(file_path, std::ios::binary);
+    if (!ifs) return;
+    CMString content((std::istreambuf_iterator<char>(ifs)),
+                     std::istreambuf_iterator<char>());
+    if (content.empty()) return;
+
+    FailedTaskFile file;
+    FLY_DECODE(content, FailedTaskFile, file);
+
+    size_t before = file.records.size();
+    file.records.erase(
+        std::remove_if(file.records.begin(), file.records.end(),
+            [task_id](const FailedTaskRecord& r) { return r.task_id == task_id; }),
+        file.records.end());
+
+    if (file.records.size() == before) return;
+
+    if (file.records.empty()) {
+        std::filesystem::remove(file_path);
+        INFO("Removed persisted task " + std::to_string(task_id) + ", file empty, deleted");
+    } else {
+        CMString output;
+        FLY_ENCODE(file, output);
+        std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
+        ofs.write(output.data(), output.size());
+        ofs.flush();
+        INFO("Removed persisted task " + std::to_string(task_id) + " from " + file_path);
+    }
+}
+
+void MasterAgent::restart_failed_tasks(const CMString& file_path) {
+    if (!std::filesystem::exists(file_path)) {
+        WARN("No failed tasks file found at " + file_path);
+        return;
+    }
+
+    std::ifstream ifs(file_path, std::ios::binary);
+    if (!ifs) return;
+    CMString content((std::istreambuf_iterator<char>(ifs)),
+                     std::istreambuf_iterator<char>());
+    if (content.empty()) return;
+
+    FailedTaskFile file;
+    FLY_DECODE(content, FailedTaskFile, file);
+
+    if (file.records.empty()) {
+        WARN("No failed tasks to restart");
+        return;
+    }
+
+    INFO("Restarting " + std::to_string(file.records.size()) + " failed tasks");
+
+    std::filesystem::remove(file_path);
+    INFO("Cleared failed tasks file " + file_path);
+
+    for (auto& record : file.records) {
+        metadata_->remove_task(record.task_id);
+
+        for (const auto& input : record.inputs) {
+            if (!graph_->is_data_ready(input)) {
+                auto [found, _result] = ds().try_read_local(input);
+                if (found || !ds().lookup_remote_idx(input).host.empty()) {
+                    graph_->mark_data_ready(input);
+                }
+            }
+        }
+
+        submit_task(record.task_id, record.name, record.module, record.args,
+                    record.inputs, record.outputs, record.required_capabilities);
+    }
+
+    INFO("Restarted " + std::to_string(file.records.size()) + " failed tasks");
 }
 
 }  // namespace fly

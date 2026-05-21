@@ -19,6 +19,11 @@ def write_data(db, key, value):
     db.write_object(key, value)
 
 
+@as_task(inputs=lambda db, key, value: [db.get_obj_name("phantom")])
+def write_data_needs_phantom(db, key, value):
+    db.write_object(key, value)
+
+
 @as_task(inputs=lambda db, dep_keys: list(dep_keys))
 def freeze_db(db, dep_keys):
     db.write_object("finish", 1)

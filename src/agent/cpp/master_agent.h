@@ -13,6 +13,7 @@
 #include <task/cpp/heartbeat_monitor.h>
 #include <log/cpp/logger.h>
 #include <common/cpp/common_types.h>
+#include <serialization/cpp/serialization_macros.h>
 #include <cstdint>
 #include <thread>
 #include <atomic>
@@ -21,6 +22,25 @@
 #include <memory>
 
 namespace fly {
+
+struct FailedTaskRecord {
+    uint64_t task_id = 0;
+    CMString name;
+    CMString module;
+    CMVector<CMString> args;
+    CMVector<CMString> inputs;
+    CMVector<CMString> outputs;
+    CMVector<CMString> required_capabilities;
+    CMString error_message;
+
+    FLY_SERIALIZE(task_id, name, module, args, inputs, outputs,
+                  required_capabilities, error_message);
+};
+
+struct FailedTaskFile {
+    CMVector<FailedTaskRecord> records;
+    FLY_SERIALIZE(records);
+};
 
 class MasterAgent {
 public:
@@ -50,6 +70,8 @@ public:
     CMString get_task_error(uint64_t task_id) const;
 
     CMVector<uint64_t> get_idle_workers() const;
+
+    void restart_failed_tasks(const CMString& file_path);
 
     uint16_t get_port() const { return port_; }
     int32_t get_data_server_port() const { return data_server_port_; }
@@ -106,6 +128,10 @@ private:
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
+
+    void persist_failed_task(const FailedTaskRecord& record);
+    void remove_persisted_task(uint64_t task_id);
+    CMString get_failed_tasks_file_path() const;
 
     std::atomic<bool> fatal_error_{false};
 
