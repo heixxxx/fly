@@ -31,6 +31,24 @@ class FlyAgent(ABC):
     def stop(self):
         raise NotImplementedError
 
+    @abstractmethod
+    def set_worker_property(self, prop):
+        raise NotImplementedError
+
+    @abstractmethod
+    def remove_worker_property(self, prop):
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_worker_properties(self) -> list:
+        raise NotImplementedError
+
+    @staticmethod
+    def _ensure_list(prop):
+        if isinstance(prop, str):
+            return [prop]
+        return list(prop)
+
 
 class Master(FlyAgent):
 
@@ -184,6 +202,16 @@ class Master(FlyAgent):
 
         self._workers.append(worker_agent)
 
+    def set_worker_property(self, prop):
+        WARN("set_worker_property called on Master, ignoring")
+
+    def remove_worker_property(self, prop):
+        WARN("remove_worker_property called on Master, ignoring")
+
+    def get_worker_properties(self) -> list:
+        WARN("get_worker_properties called on Master, returning empty")
+        return []
+
     def _spawn_process_worker(self, worker_id: int, config: dict = None):
         import time
         from _fly_core import ex_core_get_config
@@ -279,6 +307,19 @@ class Worker(FlyAgent):
         self._db_cache.clear()
         self._agent.stop()
         self._agent = None
+
+    def set_worker_property(self, prop):
+        props = self._ensure_list(prop)
+        if props:
+            self._agent.set_worker_property(props)
+
+    def remove_worker_property(self, prop):
+        props = self._ensure_list(prop)
+        if props:
+            self._agent.remove_worker_property(props)
+
+    def get_worker_properties(self) -> list:
+        return list(self._agent.get_worker_properties())
 
 
 __all__ = ['FlyAgent', 'Master', 'Worker']

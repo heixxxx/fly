@@ -196,6 +196,17 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     })
     FLY_EXPORT_METHOD("set_data_service", [](fly::WorkerAgent& self, fly::DataService& ds) {
         self.set_data_service(&ds);
+    })
+    FLY_EXPORT_METHOD("set_worker_property", [](fly::WorkerAgent& self,
+                                                   const fly::CMVector<fly::CMString>& props) {
+        self.set_worker_property(props);
+    })
+    FLY_EXPORT_METHOD("remove_worker_property", [](fly::WorkerAgent& self,
+                                                      const fly::CMVector<fly::CMString>& props) {
+        self.remove_worker_property(props);
+    })
+    FLY_EXPORT_METHOD("get_worker_properties", [](fly::WorkerAgent& self) {
+        return self.get_worker_properties();
     });
 
 }
