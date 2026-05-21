@@ -93,4 +93,112 @@ TEST(WorkerManagerTest, GetAllWorkers) {
     EXPECT_EQ(all.size(), 2);
 }
 
+TEST(WorkerManagerTest, UpdateCapabilitiesAddOnly) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"python"});
+
+    manager.update_capabilities(1, {"gpu", "cuda"}, {});
+
+    auto* worker = manager.get_worker(1);
+    ASSERT_NE(worker, nullptr);
+    EXPECT_EQ(worker->capabilities.size(), 3);
+
+    auto gpu_workers = manager.get_workers_with_capability("gpu");
+    EXPECT_EQ(gpu_workers.size(), 1);
+    EXPECT_EQ(gpu_workers[0], 1);
+}
+
+TEST(WorkerManagerTest, UpdateCapabilitiesRemoveOnly) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"python", "gpu", "cuda"});
+
+    manager.update_capabilities(1, {}, {"gpu"});
+
+    auto* worker = manager.get_worker(1);
+    ASSERT_NE(worker, nullptr);
+    EXPECT_EQ(worker->capabilities.size(), 2);
+
+    auto gpu_workers = manager.get_workers_with_capability("gpu");
+    EXPECT_TRUE(gpu_workers.empty());
+}
+
+TEST(WorkerManagerTest, UpdateCapabilitiesAddAndRemoveSimultaneously) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"python", "gpu"});
+
+    manager.update_capabilities(1, {"cuda"}, {"gpu"});
+
+    auto* worker = manager.get_worker(1);
+    ASSERT_NE(worker, nullptr);
+    EXPECT_EQ(worker->capabilities.size(), 2);
+
+    auto gpu_workers = manager.get_workers_with_capability("gpu");
+    EXPECT_TRUE(gpu_workers.empty());
+
+    auto cuda_workers = manager.get_workers_with_capability("cuda");
+    EXPECT_EQ(cuda_workers.size(), 1);
+}
+
+TEST(WorkerManagerTest, UpdateCapabilitiesDeduplicateOnAdd) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"python"});
+
+    manager.update_capabilities(1, {"python"}, {});
+
+    auto* worker = manager.get_worker(1);
+    ASSERT_NE(worker, nullptr);
+    EXPECT_EQ(worker->capabilities.size(), 1);
+}
+
+TEST(WorkerManagerTest, UpdateCapabilitiesRemoveNonexistent) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"python"});
+
+    manager.update_capabilities(1, {}, {"nonexistent"});
+
+    auto* worker = manager.get_worker(1);
+    ASSERT_NE(worker, nullptr);
+    EXPECT_EQ(worker->capabilities.size(), 1);
+}
+
+TEST(WorkerManagerTest, UpdateCapabilitiesNonexistentWorker) {
+    WorkerManager manager;
+    manager.update_capabilities(999, {"gpu"}, {"python"});
+    EXPECT_EQ(manager.get_worker_count(), 0);
+}
+
+TEST(WorkerManagerTest, HasWorkerWithAllCapabilitiesMatch) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"python", "gpu"});
+    EXPECT_TRUE(manager.has_worker_with_all_capabilities({"python"}));
+    EXPECT_TRUE(manager.has_worker_with_all_capabilities({"gpu"}));
+    EXPECT_TRUE(manager.has_worker_with_all_capabilities({"python", "gpu"}));
+}
+
+TEST(WorkerManagerTest, HasWorkerWithAllCapabilitiesNoMatch) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"python"});
+    EXPECT_FALSE(manager.has_worker_with_all_capabilities({"gpu"}));
+    EXPECT_FALSE(manager.has_worker_with_all_capabilities({"python", "gpu"}));
+}
+
+TEST(WorkerManagerTest, HasWorkerWithAllCapabilitiesEmpty) {
+    WorkerManager manager;
+    EXPECT_TRUE(manager.has_worker_with_all_capabilities({}));
+}
+
+TEST(WorkerManagerTest, HasWorkerWithAllCapabilitiesNoWorkers) {
+    WorkerManager manager;
+    EXPECT_FALSE(manager.has_worker_with_all_capabilities({"gpu"}));
+}
+
+TEST(WorkerManagerTest, HasWorkerWithAllCapabilitiesMultiWorker) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"python"});
+    manager.register_worker(2, "127.0.0.1", 8081, {"gpu"});
+    EXPECT_TRUE(manager.has_worker_with_all_capabilities({"python"}));
+    EXPECT_TRUE(manager.has_worker_with_all_capabilities({"gpu"}));
+    EXPECT_FALSE(manager.has_worker_with_all_capabilities({"python", "gpu"}));
+}
+
 }  // namespace fly

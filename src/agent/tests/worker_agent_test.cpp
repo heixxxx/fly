@@ -157,4 +157,69 @@ TEST(WorkerAgentTest, EndTaskClearsTracking) {
     EXPECT_TRUE(writes2.empty());
 }
 
+TEST(WorkerAgentTest, SetWorkerPropertySingle) {
+    WorkerAgent worker(1, "127.0.0.1", 18200, {});
+
+    auto props = worker.get_worker_properties();
+    EXPECT_TRUE(props.empty());
+
+    worker.set_worker_property("gpu");
+    props = worker.get_worker_properties();
+    EXPECT_EQ(props.size(), 1u);
+    EXPECT_EQ(props[0], "gpu");
+}
+
+TEST(WorkerAgentTest, SetWorkerPropertyBatch) {
+    WorkerAgent worker(1, "127.0.0.1", 18201, {"python"});
+
+    worker.set_worker_property(CMVector<CMString>{"gpu", "cuda"});
+    auto props = worker.get_worker_properties();
+    EXPECT_EQ(props.size(), 3u);
+}
+
+TEST(WorkerAgentTest, SetWorkerPropertyDeduplicate) {
+    WorkerAgent worker(1, "127.0.0.1", 18202, {"python"});
+
+    worker.set_worker_property("python");
+    auto props = worker.get_worker_properties();
+    EXPECT_EQ(props.size(), 1u);
+}
+
+TEST(WorkerAgentTest, RemoveWorkerPropertySingle) {
+    WorkerAgent worker(1, "127.0.0.1", 18203, {"python", "gpu"});
+
+    worker.remove_worker_property("gpu");
+    auto props = worker.get_worker_properties();
+    EXPECT_EQ(props.size(), 1u);
+    EXPECT_EQ(props[0], "python");
+}
+
+TEST(WorkerAgentTest, RemoveWorkerPropertyBatch) {
+    WorkerAgent worker(1, "127.0.0.1", 18204, {"python", "gpu", "cuda"});
+
+    worker.remove_worker_property(CMVector<CMString>{"gpu", "cuda"});
+    auto props = worker.get_worker_properties();
+    EXPECT_EQ(props.size(), 1u);
+    EXPECT_EQ(props[0], "python");
+}
+
+TEST(WorkerAgentTest, RemoveWorkerPropertyNonexistent) {
+    WorkerAgent worker(1, "127.0.0.1", 18205, {"python"});
+
+    worker.remove_worker_property("nonexistent");
+    auto props = worker.get_worker_properties();
+    EXPECT_EQ(props.size(), 1u);
+}
+
+TEST(WorkerAgentTest, GetWorkerPropertiesReturnsCopy) {
+    WorkerAgent worker(1, "127.0.0.1", 18206, {"python"});
+
+    auto props1 = worker.get_worker_properties();
+    worker.set_worker_property("gpu");
+    auto props2 = worker.get_worker_properties();
+
+    EXPECT_EQ(props1.size(), 1u);
+    EXPECT_EQ(props2.size(), 2u);
+}
+
 }  // namespace fly
