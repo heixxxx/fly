@@ -30,6 +30,7 @@ enum class MessageType : uint8_t {
     DB_PATH_RESPONSE = 20,
     WRITE_REGISTER = 21,
     WRITE_REGISTER_ACK = 22,
+    WORKER_PROPERTY_UPDATE = 23,
 };
 
 // 基础消息头（所有消息继承）
@@ -242,6 +243,18 @@ struct WriteRegisterAckMessage {
     static constexpr MessageType msg_type = MessageType::WRITE_REGISTER_ACK;
 
     FLY_SERIALIZE(header, object_name, db_id, success, error_message, error_type);
+};
+
+// Worker → Master: 属性动态更新
+struct WorkerPropertyUpdateMessage {
+    MessageHeader header;
+    uint64_t worker_id = 0;
+    CMVector<CMString> added_properties;
+    CMVector<CMString> removed_properties;
+
+    static constexpr MessageType msg_type = MessageType::WORKER_PROPERTY_UPDATE;
+
+    FLY_SERIALIZE(header, worker_id, added_properties, removed_properties);
 };
 
 }  // namespace fly

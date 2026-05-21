@@ -81,11 +81,18 @@ public:
 
     void register_write_with_master(const CMString& db_id, const CMString& object_name);
 
+    void set_worker_property(const CMString& prop);
+    void set_worker_property(const CMVector<CMString>& props);
+    void remove_worker_property(const CMString& prop);
+    void remove_worker_property(const CMVector<CMString>& props);
+    CMVector<CMString> get_worker_properties() const;
+
 private:
     uint64_t worker_id_;
     CMString master_host_;
     uint16_t master_port_;
     CMVector<CMString> attributes_;
+    mutable std::mutex attributes_mutex_;
     std::atomic<bool> running_{false};
     std::atomic<bool> registered_{false};
     

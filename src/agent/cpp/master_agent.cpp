@@ -129,6 +129,11 @@ void MasterAgent::start() {
             on_write_register(conn_id, msg);
         });
 
+    reactor_->register_handler<WorkerPropertyUpdateMessage>(
+        [this](uint64_t conn_id, const WorkerPropertyUpdateMessage& msg) {
+            on_worker_property_update(conn_id, msg);
+        });
+
     reactor_->on_disconnect([this](uint64_t conn_id) {
         on_disconnect(conn_id);
     });
@@ -210,6 +215,31 @@ void MasterAgent::schedule_tasks() {
     for (const auto& result : results) {
         if (result.scheduled) {
             assign_task_to_worker(result.task_id, result.worker_id);
+        }
+    }
+
+    if (Config::instance().get_int("fail_unscheduleable_tasks") != 1) return;
+
+    auto remaining = graph_->get_ready_tasks();
+    for (uint64_t task_id : remaining) {
+        auto requirements = graph_->get_task_requirements(task_id);
+        if (requirements.empty()) continue;
+
+        if (!worker_manager_->has_worker_with_all_capabilities(requirements)) {
+            CMString cap_list;
+            for (size_t i = 0; i < requirements.size(); i++) {
+                if (i > 0) cap_list += ",";
+                cap_list += requirements[i];
+            }
+            CMString error_msg = "No worker with required capabilities: [" + cap_list + "]";
+
+            graph_->remove_task(task_id);
+            metadata_->update_task_status(task_id, TaskStatus::FAILED);
+            metadata_->set_error(task_id, error_msg);
+            task_modules_.erase(task_id);
+            task_args_.erase(task_id);
+
+            ERR("Task " + std::to_string(task_id) + " failed: " + error_msg);
         }
     }
 }
@@ -520,6 +550,14 @@ void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage
     }
 
     reactor_->send(conn_id, ack);
+}
+
+void MasterAgent::on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg) {
+    INFO("WorkerPropertyUpdate: worker_id=" + std::to_string(msg.worker_id)
+         + ", added=" + std::to_string(msg.added_properties.size())
+         + ", removed=" + std::to_string(msg.removed_properties.size()));
+
+    worker_manager_->update_capabilities(msg.worker_id, msg.added_properties, msg.removed_properties);
 }
 
 ReadResult MasterAgent::request_remote_data(const CMString& object_name) {

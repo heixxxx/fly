@@ -33,11 +33,15 @@ public:
     void set_heartbeat(uint64_t worker_id, uint64_t timestamp);
     void assign_task(uint64_t worker_id, uint64_t task_id);
     void complete_task(uint64_t worker_id);
+    void update_capabilities(uint64_t worker_id,
+                              const CMVector<CMString>& added,
+                              const CMVector<CMString>& removed);
     
     WorkerInfo* get_worker(uint64_t worker_id);
     CMVector<uint64_t> get_idle_workers();
     CMVector<uint64_t> get_workers_with_capability(const CMString& capability);
     CMVector<WorkerInfo> get_all_workers();
+    bool has_worker_with_all_capabilities(const CMVector<CMString>& capabilities) const;
     size_t get_worker_count();
     size_t get_idle_worker_count();
     

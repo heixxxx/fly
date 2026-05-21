@@ -1,4 +1,5 @@
 #include <task/cpp/worker_manager.h>
+#include <algorithm>
 #include <chrono>
 
 namespace fly {
@@ -64,6 +65,32 @@ void WorkerManager::complete_task(uint64_t worker_id) {
     }
 }
 
+void WorkerManager::update_capabilities(uint64_t worker_id,
+                                          const CMVector<CMString>& added,
+                                          const CMVector<CMString>& removed) {
+    auto it = workers_.find(worker_id);
+    if (it == workers_.end()) return;
+
+    auto& caps = it->second.capabilities;
+
+    for (const auto& prop : added) {
+        bool exists = false;
+        for (const auto& c : caps) {
+            if (c == prop) { exists = true; break; }
+        }
+        if (!exists) {
+            caps.push_back(prop);
+        }
+    }
+
+    for (const auto& prop : removed) {
+        auto cit = std::find(caps.begin(), caps.end(), prop);
+        if (cit != caps.end()) {
+            caps.erase(cit);
+        }
+    }
+}
+
 WorkerInfo* WorkerManager::get_worker(uint64_t worker_id) {
     auto it = workers_.find(worker_id);
     if (it != workers_.end()) {
@@ -101,6 +128,23 @@ CMVector<WorkerInfo> WorkerManager::get_all_workers() {
         result.push_back(info);
     }
     return result;
+}
+
+bool WorkerManager::has_worker_with_all_capabilities(const CMVector<CMString>& capabilities) const {
+    if (capabilities.empty()) return true;
+
+    for (const auto& [id, info] : workers_) {
+        bool has_all = true;
+        for (const auto& req : capabilities) {
+            bool found = false;
+            for (const auto& cap : info.capabilities) {
+                if (cap == req) { found = true; break; }
+            }
+            if (!found) { has_all = false; break; }
+        }
+        if (has_all) return true;
+    }
+    return false;
 }
 
 size_t WorkerManager::get_worker_count() {

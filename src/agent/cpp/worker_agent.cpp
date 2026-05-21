@@ -527,4 +527,68 @@ void WorkerAgent::on_write_register_ack(uint64_t conn_id, const WriteRegisterAck
     }
 }
 
+void WorkerAgent::set_worker_property(const CMString& prop) {
+    set_worker_property(CMVector<CMString>{prop});
+}
+
+void WorkerAgent::set_worker_property(const CMVector<CMString>& props) {
+    CMVector<CMString> actually_added;
+    {
+        std::lock_guard<std::mutex> lock(attributes_mutex_);
+        for (const auto& p : props) {
+            bool exists = false;
+            for (const auto& a : attributes_) {
+                if (a == p) { exists = true; break; }
+            }
+            if (!exists) {
+                attributes_.push_back(p);
+                actually_added.push_back(p);
+            }
+        }
+    }
+
+    if (!actually_added.empty() && registered_) {
+        WorkerPropertyUpdateMessage msg;
+        msg.worker_id = worker_id_;
+        msg.added_properties = actually_added;
+        reactor_->send(master_conn_, msg);
+
+        INFO("WorkerPropertyUpdate (set): worker_id=" + std::to_string(worker_id_)
+             + ", added=" + std::to_string(actually_added.size()));
+    }
+}
+
+void WorkerAgent::remove_worker_property(const CMString& prop) {
+    remove_worker_property(CMVector<CMString>{prop});
+}
+
+void WorkerAgent::remove_worker_property(const CMVector<CMString>& props) {
+    CMVector<CMString> actually_removed;
+    {
+        std::lock_guard<std::mutex> lock(attributes_mutex_);
+        for (const auto& p : props) {
+            auto it = std::find(attributes_.begin(), attributes_.end(), p);
+            if (it != attributes_.end()) {
+                attributes_.erase(it);
+                actually_removed.push_back(p);
+            }
+        }
+    }
+
+    if (!actually_removed.empty() && registered_) {
+        WorkerPropertyUpdateMessage msg;
+        msg.worker_id = worker_id_;
+        msg.removed_properties = actually_removed;
+        reactor_->send(master_conn_, msg);
+
+        INFO("WorkerPropertyUpdate (remove): worker_id=" + std::to_string(worker_id_)
+             + ", removed=" + std::to_string(actually_removed.size()));
+    }
+}
+
+CMVector<CMString> WorkerAgent::get_worker_properties() const {
+    std::lock_guard<std::mutex> lock(attributes_mutex_);
+    return attributes_;
+}
+
 }  // namespace fly

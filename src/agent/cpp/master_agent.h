@@ -105,6 +105,7 @@ private:
     void on_error(uint64_t conn_id, int error_code);
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
+    void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
 
     std::atomic<bool> fatal_error_{false};
 
