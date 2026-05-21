@@ -269,7 +269,8 @@ master.launch_custom_workers(
 **Worker能力说明**：
 - `role` 字段：设计完成，但尚未在调度逻辑中使用
 - `RegisterMessage.role` 已存在，但WorkerInfo中不存储此字段
-- 当前实现：所有Worker被视为相同类型
+- **动态能力**: Worker 可在运行时通过 `WorkerPropertyUpdateMessage` 动态设置/移除能力（GPU/CPU等），调度器实时匹配任务所需能力
+- **持久化失败任务**: 不可调度任务会持久化到 `log_dir/failed_tasks.bin`，用户可调用 `restart_failed_tasks()` 修复问题后重新提交
 
 ---
 
@@ -476,6 +477,7 @@ Master端（后台任务）：
 | ShutdownMessage | Master → Worker | ✅ 已实现 |
 | DBPathRequestMessage | Worker → Master | ✅ 已实现 |
 | DBPathResponseMessage | Master → Worker | ✅ 已实现 |
+| WorkerPropertyUpdateMessage | Worker → Master | ✅ 已实现 |
 
 **TransportLayer更新**：
 - 移除 `accept()` 方法
@@ -571,7 +573,7 @@ fly/
   - DataService 统一索引（local_idx + remote_idx + worker_registry）
   - 异步 WriteBackQueue
 - **Layer 2**：网络层（Reactor, TCP, 消息协议）
-  - 22种消息类型全部定义
+  - 23种消息类型全部定义
   - TransportLayer 抽象（移除 accept()，新增 stop_listening()）
   - Worker 数据传输（独立 DataClient 连接）
 - **Layer 3**：任务系统层（DependencyGraph, 调度器）
@@ -582,7 +584,12 @@ fly/
 - **Layer 4**：Agent 层（MasterAgent, WorkerAgent）
   - WorkerAgentContext：C函数指针回调模式
   - TaskExecutor：任务执行器
+  - Worker动态能力管理：`set_worker_property`, `remove_worker_property`, `get_worker_properties`
+  - 失败任务持久化：`FailedTaskRecord`, `restart_failed_tasks()` API
 - **Layer 5**：Python API（@as_task 装饰器，配置管理）
+  - FlyAgent 抽象基类：统一接口，Master/Worker 实现
+  - Worker 属性管理：`set_worker_property`, `remove_worker_property`, `get_worker_properties`
+  - 失败任务重启：`restart_failed_tasks()`，三阶段数据可用性检查
 
 **测试覆盖**：
 - 32 Bazel targets pass（1 data_service_test + 31 unit）

@@ -69,6 +69,7 @@ private:
 | `dependency_update_mode` | 0 | 依赖更新模式 |
 | `interactive` | 0 | 交互模式（0=关闭, 1=开启） |
 | `cli_master_port` | 0 | CLI 指定的 Master 端口 |
+| `fail_unscheduleable_tasks` | 1 | 不可调度任务立即失败（1=立即fail并持久化, 0=保持等待） |
 
 #### string 配置项
 

@@ -119,6 +119,16 @@ def _serialize_args(args):
     return result
 ```
 
+> **注意**: inputs 使用 `db.get_obj_name()` 生成 full name（`db_id:object_name`），确保与 DataService / DependencyGraph 命名空间一致。
+
+```python
+# 正确
+@as_task(inputs=lambda db, key: [db.get_obj_name(f"input/{key}")])
+
+# 错误 — 短名无法匹配 DataService 索引
+@as_task(inputs=lambda db, key: [f"input/{key}"])
+```
+
 ---
 
 ### task_name(name) — 任务命名装饰器
@@ -155,6 +165,9 @@ class Master(FlyAgent):
     def stop(self):
         # 停止所有 Worker → 停止 Agent
 
+    def restart_failed_tasks(self, file_path: str):
+        # 读取失败任务记录，检查数据可用性，重新提交
+
     @property
     def pending_tasks / running_tasks / completed_tasks
 ```
@@ -178,6 +191,15 @@ class Worker(FlyAgent):
 
     def get_database(self, db_id):
         return self._db_cache[db_id]
+
+    def set_worker_property(self, prop):
+        # 设置 Worker 属性（GPU/CPU等）
+
+    def remove_worker_property(self, prop):
+        # 移除 Worker 属性
+
+    def get_worker_properties(self) -> list:
+        # 获取所有 Worker 属性列表
 ```
 
 ---
@@ -212,6 +234,60 @@ def configure_worker(...)          # 设置 Worker 模式
 def configure_master(...)          # 设置 Master 模式
 def reset()                        # 重置 Agent
 ```
+
+**FlyAgent 抽象基类**:
+```python
+from fly.agent import FlyAgent
+
+class FlyAgent(ABC):
+    @abstractmethod
+    def start(self): pass
+
+    @abstractmethod
+    def stop(self): pass
+
+    @abstractmethod
+    def submit_task_with_deps(self, task_id, name, module, args, inputs,
+                             outputs, required_capabilities, config):
+        pass
+
+    @abstractmethod
+    def get_or_create_database(self, base_path, data_path, writer_id):
+        pass
+
+    @abstractmethod
+    def get_pending_tasks(self): pass
+
+    @abstractmethod
+    def get_running_tasks(self): pass
+
+    @abstractmethod
+    def get_completed_tasks(self): pass
+
+    @abstractmethod
+    def get_failed_tasks(self): pass
+
+    @abstractmethod
+    def get_task_error(self, task_id): pass
+
+    # Worker-only
+    @abstractmethod
+    def set_worker_property(self, prop): pass
+
+    @abstractmethod
+    def remove_worker_property(self, prop): pass
+
+    @abstractmethod
+    def get_worker_properties(self): pass
+
+    # Master-only
+    @abstractmethod
+    def restart_failed_tasks(self, file_path): pass
+```
+
+**Master 实现无操作**: Master 的 Worker 属性方法打印 WARN 并无操作。
+
+**Worker 实现完整**: Worker 实现所有 FlyAgent 方法，并支持运行时动态修改属性。
 
 ### main.init() — 初始化入口
 
@@ -258,6 +334,39 @@ fly --worker --worker-id 1 \   # Worker 模式
     --master-host 127.0.0.1 \
     --master-port 8000
 ```
+
+---
+
+### 失败任务持久化与重启
+
+**触发条件**:
+- Capability 不匹配: task 声明 `@as_task(requires=["gpu"])` 但无 Worker 拥有 GPU
+- 依赖无法解析: 仅有 pending_tasks，无 ready/running，依赖永远无法满足
+
+**持久化流程**:
+```
+schedule_tasks() 检测到无法调度任务
+  → 读取 bin 文件 (log_dir/failed_tasks.bin)
+  → 反序列化 FailedTaskRecord 列表
+  → 删除 bin 文件 (避免新 fail record 被误删)
+  → 对每个 record:
+      → 三阶段检查数据可用性 (try_read_local → lookup_remote_idx)
+      → DataService.mark_data_ready(data_path)
+      → 重新 submit_task_with_deps(task_id, ...)
+  → 若仍无法调度 (如仍缺少 Worker capability) → 重新 fail 并持久化
+```
+
+**重启 API**:
+```python
+# 用户修复问题后（写入缺失数据、启动新 Worker）
+from fly import get_master
+
+master = get_master()
+master.restart_failed_tasks("/path/to/failed_tasks.bin")
+```
+
+**依赖命名规范**:
+- Task 的 inputs 必须使用 `db.get_obj_name()` 生成 full name (db_id:object_name)，与 DataService / mark_data_ready 命名空间一致
 
 ---
 

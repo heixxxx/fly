@@ -28,15 +28,19 @@
 class DependencyGraph {
 public:
     // 添加任务及其输入依赖
-    void add_task(uint64_t task_id, const CMVector<CMString>& inputs);
+    void add_task(uint64_t task_id, const CMVector<CMString>& inputs,
+                  const CMVector<CMString>& required_capabilities = {});
 
     // 标记数据就绪，返回因此变为 ready 的任务列表
     CMVector<uint64_t> mark_data_ready(const CMString& data_path);
 
     // 查询
+    bool is_data_ready(const CMString& data_path) const;
     bool is_task_ready(uint64_t task_id) const;
     bool has_task(uint64_t task_id) const;
     CMVector<uint64_t> get_ready_tasks() const;
+    CMVector<uint64_t> get_pending_tasks() const;
+    CMVector<CMString> get_task_dependencies(uint64_t task_id) const;
 
     // 移除已完成任务
     void remove_task(uint64_t task_id);
@@ -44,6 +48,7 @@ public:
 private:
     // 任务依赖映射
     CMMap<uint64_t, CMVector<CMString>> task_dependencies_;
+    CMMap<uint64_t, CMVector<CMString>> task_capabilities_;
 
     // 数据就绪状态
     CMUnorderedMap<CMString, bool> data_ready_status_;
@@ -95,7 +100,7 @@ struct WorkerInfo {
     CMString address;
     uint16_t port;
     WorkerStatus status;
-    CMVector<CMString> capabilities;
+    CMVector<CMString> capabilities;  // 动态可更新
     uint64_t last_heartbeat;
     uint64_t current_task_id;
 };
@@ -119,6 +124,11 @@ public:
     CMVector<WorkerInfo> get_all_workers();
     size_t get_worker_count();
     size_t get_idle_worker_count();
+
+    // 动态能力管理
+    void update_capabilities(uint64_t worker_id, const CMVector<CMString>& added,
+                             const CMVector<CMString>& removed);
+    bool has_worker_with_all_capabilities(const CMVector<CMString>& requirements) const;
 
 private:
     CMMap<uint64_t, WorkerInfo> workers_;
@@ -267,6 +277,36 @@ Master.heartbeat_check_thread_ (每 heartbeat_interval 秒)
 ```
 
 > **注意**: 默认超时 30 秒（代码实现），配置文件 `heartbeat_timeout` 默认 120 秒。HeartbeatMonitor 构造时使用配置值覆盖默认值。
+
+---
+
+## 任务调度失败检测
+
+当 `fail_unscheduleable_tasks=1` 时，`schedule_tasks()` 执行两项检查：
+
+**Capability 检查**:
+```
+ready_tasks = graph_->get_ready_tasks()
+for each task in ready_tasks:
+    if task.required_capabilities is not empty:
+        requirements = task.required_capabilities
+        matching_workers = worker_manager->has_worker_with_all_capabilities(requirements)
+        if not matching_workers:
+            graph_->mark_task_failed(task.task_id)
+            persist_failed_task(record)
+```
+
+**Dependency 检查**:
+```
+pending_tasks = graph_->get_pending_tasks()
+if only pending_tasks exist (no ready, no running):
+    for each pending in pending_tasks:
+        if graph_->is_data_ready_all_dependencies(pending.task_id):
+            mark_data_ready for all inputs
+        else:
+            mark_task_failed(pending.task_id)
+            persist_failed_task(record)
+```
 
 ---
 

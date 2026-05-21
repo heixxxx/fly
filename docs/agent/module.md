@@ -102,8 +102,15 @@ private:
     void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
+    void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
     void on_disconnect(uint64_t conn_id);
     void on_error(uint64_t conn_id, int error_code);
+
+    // Failed task persistence
+    void restart_failed_tasks(const CMString& file_path);
+    void persist_failed_task(const FailedTaskRecord& record);
+    void remove_persisted_task(uint64_t task_id);
+    CMString get_failed_tasks_file_path() const;
 };
 ```
 
@@ -131,6 +138,19 @@ MasterAgent.start()
   6. heartbeat_check_thread_ = thread { check_loop() }
 ```
 
+**schedule_tasks**:
+```
+schedule_tasks()
+  → ready_tasks = graph_->get_ready_tasks()
+  → idle_workers = worker_manager_->get_idle_workers()
+  → for each ready_task:
+      → 检查 required_capabilities (如果有)
+      → 检查依赖 (graph_->is_data_ready)
+      → 无匹配 Worker 或 依赖不可解 → persist_failed_task(task_id) → FAILED
+      → 有匹配 Worker → assign_task_to_worker(task_id, worker_id)
+  → schedule_all_available()
+```
+
 **Master 消息处理**:
 
 ```
@@ -143,22 +163,8 @@ on_task_complete(TaskCompleteMessage)
       → db_instances_[db_id]->freeze()            // Master 侧 C++ freeze
   → graph_->remove_task(task_id)
   → metadata_->update_task_status(task_id, COMPLETED)
+  → remove_persisted_task(task_id)               // 清除持久化记录
   → schedule_tasks()                              // 调度新任务
-
-on_data_ready(DataReadyMessage)
-  → graph_->mark_data_ready(data_path)
-  → DataService.update_remote_idx(...)
-  → schedule_tasks()
-
-on_write_register(WriteRegisterMessage)
-  → 检查 is_db_frozen(db_id)
-  → 未冻结 → ACK(success=true)
-  → 已冻结 → ACK(success=false, error_type=WRITE_TO_FROZEN_DB)
-
-on_task_failed(TaskFailedMessage)
-  → 检查 error_type 是否为 fatal (WRITE_TO_FROZEN_DB 等)
-  → fatal → 设 fatal_error_ 标志，后续停止调度
-  → 非fatal → 记录失败，后续可重试
 ```
 
 ---
@@ -198,6 +204,11 @@ public:
     // DB 路径查询
     bool request_db_path(const CMString& db_id);
 
+    // Worker 属性管理
+    void set_worker_property(const CMVector<CMString>& props);
+    void remove_worker_property(const CMVector<CMString>& props);
+    CMVector<CMString> get_worker_properties() const;
+
     // 任务提交（递归）
     void submit_task(const CMString& name, const CMString& module,
                      const CMVector<CMString>& args,
@@ -235,6 +246,10 @@ private:
     std::thread reactor_thread_;
     std::thread heartbeat_thread_;
 
+    // Worker 属性管理
+    mutable std::mutex attributes_mutex_;
+    CMSet<CMString> attributes_;
+
     DataService* data_service_ = nullptr;
 
     // Message handlers
@@ -244,6 +259,7 @@ private:
     void on_db_path_response(const DbPathResponseMessage& msg);
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
+    void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
     void on_disconnect(uint64_t conn_id);
 
     void heartbeat_loop();
@@ -297,6 +313,10 @@ Worker.MainThread (poll_task 循环)
     → tracked_writes = end_task(task_id)
     → [成功] reactor_->send(TaskCompleteMessage{written_objects, frozen_dbs})
     → [失败] reactor_->send(TaskFailedMessage{error_message, error_type})
+
+  → on_worker_property_update(WorkerPropertyUpdateMessage)
+    → set_worker_property(props)        // 更新 attributes_
+    → reactor_->send(..., msg)           // 通知 Master
 ```
 
 ---
@@ -421,6 +441,40 @@ WorkerAgentContext 不存储 `WorkerAgent*` 指针，而是通过 **C 函数指�
 
 ---
 
+### FailedTaskRecord / FailedTaskFile
+
+```cpp
+struct FailedTaskRecord {
+    uint64_t task_id;
+    CMString name;
+    CMString module;
+    CMVector<CMString> args;
+    CMVector<CMString> inputs;       // 使用 db.get_obj_name() 生成 full name
+    CMVector<CMString> outputs;
+    CMVector<CMString> required_capabilities;
+    CMString error_message;
+    FLY_SERIALIZE(task_id, name, module, args, inputs, outputs,
+                  required_capabilities, error_message);
+};
+
+struct FailedTaskFile {
+    CMVector<FailedTaskRecord> records;
+    FLY_SERIALIZE(records);
+};
+```
+
+**持久化机制**:
+- Task 失败时（capability 不匹配或依赖无法解析），Master 将 `FailedTaskRecord` 序列化到 `log_dir/failed_tasks.bin`
+- 失败时追加记录，成功完成时自动删除对应记录
+- 失败日志打印 bin 文件路径和 restart API 用法
+
+**Unresolvable Dependency 检测**:
+- 当 `fail_unscheduleable_tasks=1` 时，`schedule_tasks()` 执行两项检查：
+  1. **Capability 检查**: ready_tasks 中无匹配 Worker 的 task → FAILED
+  2. **依赖检查**: 仅 pending_tasks 残留（无 ready、无 running）→ 依赖永远无法满足 → FAILED
+
+---
+
 ## 核心流程
 
 ### 跨 Worker 数据读取
@@ -484,7 +538,8 @@ FLY_EXPORT_MODULE(_fly_agent) {
         FLY_EXPORT_METHOD("get_or_create_database", ...)
         FLY_EXPORT_METHOD("get_port", &MasterAgent::get_port)
         FLY_EXPORT_METHOD("get_pending_tasks", ...)
-        FLY_EXPORT_METHOD("is_running", &MasterAgent::is_running);
+        FLY_EXPORT_METHOD("is_running", &MasterAgent::is_running)
+        FLY_EXPORT_METHOD("restart_failed_tasks", &MasterAgent::restart_failed_tasks);
 
     FLY_EXPORT_CLASS(WorkerAgent, "EXAgentWorker")
         FLY_EXPORT_INIT(uint64_t, CMString, int)
@@ -495,7 +550,10 @@ FLY_EXPORT_MODULE(_fly_agent) {
         FLY_EXPORT_METHOD("request_remote_data", ...)
         FLY_EXPORT_METHOD("request_data_from_worker", ...)
         FLY_EXPORT_METHOD("request_db_path", ...)
-        FLY_EXPORT_METHOD("is_running", &WorkerAgent::is_running);
+        FLY_EXPORT_METHOD("is_running", &WorkerAgent::is_running)
+        FLY_EXPORT_METHOD("set_worker_property", &WorkerAgent::set_worker_property)
+        FLY_EXPORT_METHOD("remove_worker_property", &WorkerAgent::remove_worker_property)
+        FLY_EXPORT_METHOD("get_worker_properties", &WorkerAgent::get_worker_properties);
 
     FLY_EXPORT_CLASS(TaskExecutor, "EXTaskExecutor") ...;
     FLY_EXPORT_ENUM(EXTaskExecStatus, "EXTaskExecStatus") ...;
