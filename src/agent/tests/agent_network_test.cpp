@@ -55,8 +55,11 @@ TEST_F(AgentNetworkTest, MultipleWorkers) {
     worker1.start();
     worker2.start();
     worker3.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    
+    // Retry loop: 3 workers connecting concurrently may need more time
+    for (int retry = 0; retry < 10; ++retry) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (master.get_connection_count() >= 3) break;
+    }
     EXPECT_EQ(master.get_connection_count(), 3);
     
     auto connected = master.get_connected_workers();

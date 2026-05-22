@@ -22,11 +22,11 @@ TEST(AgentIntegrationTest, StartBothAgents) {
     EXPECT_TRUE(master.is_running());
     EXPECT_TRUE(worker.is_running());
     
-    master.stop();
     worker.stop();
+    master.stop();
     
-    EXPECT_FALSE(master.is_running());
     EXPECT_FALSE(worker.is_running());
+    EXPECT_FALSE(master.is_running());
 }
 
 TEST(AgentIntegrationTest, MultipleWorkersOneMaster) {
@@ -49,15 +49,15 @@ TEST(AgentIntegrationTest, MultipleWorkersOneMaster) {
     EXPECT_EQ(worker2.get_worker_id(), 2);
     EXPECT_EQ(worker3.get_worker_id(), 3);
     
-    master.stop();
     worker1.stop();
     worker2.stop();
     worker3.stop();
+    master.stop();
     
-    EXPECT_FALSE(master.is_running());
     EXPECT_FALSE(worker1.is_running());
     EXPECT_FALSE(worker2.is_running());
     EXPECT_FALSE(worker3.is_running());
+    EXPECT_FALSE(master.is_running());
 }
 
 TEST(AgentIntegrationTest, IndependentLifecycle) {
@@ -80,16 +80,16 @@ TEST(AgentIntegrationTest, IndependentLifecycle) {
     EXPECT_TRUE(master2.is_running());
     EXPECT_TRUE(worker2.is_running());
     
-    master1.stop();
     worker1.stop();
+    master1.stop();
     
     EXPECT_FALSE(master1.is_running());
     EXPECT_FALSE(worker1.is_running());
     EXPECT_TRUE(master2.is_running());
     EXPECT_TRUE(worker2.is_running());
     
-    master2.stop();
     worker2.stop();
+    master2.stop();
     
     EXPECT_FALSE(master2.is_running());
     EXPECT_FALSE(worker2.is_running());
