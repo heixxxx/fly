@@ -323,6 +323,7 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 | `data_writer.h/cpp` | 单线程写入聚合器，小文件聚合 + 大文件分块 |
 | `data_reader.h/cpp` | 数据读取，支持 `read_from_entries()` 直接按索引读取 |
 | `data_service.h/cpp` | **统一内存索引：local_idx + remote_idx + worker_registry**，支持 `remove_local_index()` / `remove_remote_index()` |
+| `local_index.h/cpp` | **增量持久化索引**：`IdxOpType(ADD/REMOVE)` + body 格式追加写入，`load()` 自动迁移旧格式，`compact()` 全量压缩 |
 | `storage_manager.h/cpp` | Database 生命周期管理，单例 |
 
 ### 网络层 (src/network/)
@@ -455,7 +456,9 @@ Task 通过 `@as_task(requires=["gpu"])` 声明所需属性，调度器仅分配
 Task 失败时（capability 不匹配或数据依赖不可解析），Master 自动将完整任务信息序列化到 `log_dir/failed_tasks.bin`：
 
 - **FailedTaskRecord** 结构体（FLY_SERIALIZE）：task_id, name, module, args, inputs, outputs, required_capabilities, error_message
-- 失败时追加记录，成功完成时自动删除对应记录
+- 持久化格式：增量追加 `[int64_t body_size][bitsery-encoded FailedTaskRecord]`，每次失败追加一条记录
+- 删除记录时（`remove_persisted_task`）：读取全部记录 → 过滤目标 → 重写文件
+- 重启时（`restart_failed_tasks`）：按 `[body_size][body]` 逐条增量读取并反序列化
 - 失败日志打印 bin 文件路径和 API 用法
 
 ### 不可解析依赖检测
@@ -472,7 +475,7 @@ master.restart_failed_tasks("/path/to/failed_tasks.bin")
 ```
 
 流程：
-1. 读取 bin 文件，反序列化 FailedTaskRecord 列表
+1. 按 `[body_size][body]` 逐条增量读取并反序列化 FailedTaskRecord 列表
 2. 删除 bin 文件（避免新 fail record 被误删）
 3. 对每个 record 的 inputs，通过 DataService 三阶段读取检查数据可用性 → `mark_data_ready`
 4. 重新 `submit_task()` → `schedule_tasks()` 调度
