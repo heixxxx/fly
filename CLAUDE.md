@@ -19,6 +19,7 @@
 | 构建系统 | Bazel + fly.sh |
 | 测试框架 | gtest + pytest |
 | 压缩库 | LZ4 / ZLIB / ZSTD |
+| 格式化库 | fmt (header-only) |
 
 ### 架构分层
 
@@ -89,8 +90,8 @@ fly/
 │   │   ├── cpp/task_executor.h/cpp
 │   │   └── export/agent_export.cpp
 │   │
-│   └── log/                 # 日志模块
-│       └── cpp/logger.h/cpp
+│   └── log/                 # 日志模块 (fmt 格式化 + 自定义类型宏)
+│       └── cpp/logger.h/cpp  # vlog(), DBG/INFO/WARN/ERR, CM_FORMAT_*
 │
 ├── qa/                      # 项目级集成测试
 ├── docs/                    # 设计文档
@@ -222,7 +223,54 @@ FLY_DECODE_FROM_BYTES(buf, MyType, decoded);
 
 ---
 
-## 6. Python 导出宏
+## 6. 日志与格式化宏
+
+### 日志宏 (DBG/INFO/WARN/ERR)
+
+基于 fmt 库的格式化日志，支持编译时格式检查：
+
+```cpp
+#include <log/cpp/logger.h>
+
+DBG("connection established to {}:{}", host, port);
+INFO("task {} completed in {}ms", task_id, elapsed);
+WARN("retry attempt {}/{}", attempt, max_retries);
+ERR("failed to read {}: {}", path, error_msg);
+```
+
+### 自定义类型格式化
+
+#### CM_FORMAT_CLASS — 结构体格式化
+
+必须在全局作用域使用（C++ 约束：`fmt::formatter` 特化必须在 `fmt` 命名空间外）：
+
+```cpp
+namespace fly {
+struct Point { double x, y; };
+}
+
+CM_FORMAT_CLASS(fly::Point, "({}, {})", v.x, v.y);
+```
+
+#### CM_FORMAT_ENUM — 枚举自动 stringify
+
+```cpp
+CM_FORMAT_ENUM(fly::Color, RED, GREEN, BLUE);
+// 输出: "RED", "GREEN", "BLUE"
+```
+
+#### CM_FORMAT_ENUM_EX — 枚举自定义字符串
+
+使用 Boost PP 括号平衡机制，`(VALUE, "str")` 为一个元组：
+
+```cpp
+CM_FORMAT_ENUM_EX(fly::Status, (PENDING, "P"), (RUNNING, "R"), (DONE, "D"));
+// 输出: "P", "R", "D"
+```
+
+---
+
+## 7. Python 导出宏
 
 ### 模块定义
 
@@ -265,7 +313,7 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 
 ---
 
-## 7. 关键模块
+## 8. 关键模块
 
 ### 存储层 (src/storage/)
 
@@ -305,9 +353,15 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 | `worker_agent.h/cpp` | Worker 节点执行，动态属性 `set/remove/get_worker_property()` |
 | `task_executor.h/cpp` | 任务执行器 |
 
+### 日志模块 (src/log/)
+
+| 文件 | 职责 |
+|------|------|
+| `logger.h/cpp` | fmt 格式化后端 `vlog()`，前端模板 `log_write()`，日志宏 `DBG/INFO/WARN/ERR`，自定义类型格式化宏 `CM_FORMAT_CLASS` / `CM_FORMAT_ENUM` / `CM_FORMAT_ENUM_EX` |
+
 ---
 
-## 8. 测试规范
+## 9. 测试规范
 
 ### C++ 测试 (gtest)
 
@@ -359,7 +413,7 @@ def test_database():
 
 ---
 
-## 9. 动态 Worker 属性与任务调度
+## 10. 动态 Worker 属性与任务调度
 
 ### 属性管理 API
 
@@ -389,12 +443,12 @@ Task 通过 `@as_task(requires=["gpu"])` 声明所需属性，调度器仅分配
 
 | 值 | 行为 |
 |----|------|
-| `1`（默认）| 永远无法调度的 Task 立即标记 FAILED 并持久化（见 §10） |
+| `1`（默认）| 永远无法调度的 Task 立即标记 FAILED 并持久化（见 §11） |
 | `0` | 永远无法调度的 Task 保持等待状态 |
 
 ---
 
-## 10. 失败任务持久化与重启
+## 11. 失败任务持久化与重启
 
 ### 持久化机制
 
@@ -442,7 +496,7 @@ def my_task(db, key):
 
 ---
 
-## 11. 对象删除 (remove_object)
+## 12. 对象删除 (remove_object)
 
 ### API
 
@@ -481,7 +535,7 @@ Master → Worker (broadcast): 同上，转发给所有其他 Worker
 
 ---
 
-## 12. 项目状态
+## 13. 项目状态
 
 ### Layer 实现进度
 
@@ -523,7 +577,7 @@ DB 路径查询: WorkerAgent.request_db_path(db_id) → 向 Master 查询 → �
 
 ---
 
-## 13. Agent 工作指南
+## 14. Agent 工作指南
 
 ### 必须遵循
 
@@ -562,7 +616,7 @@ src/new_module/
 
 ---
 
-## 14. 快速参考
+## 15. 快速参考
 
 ### 常用命令
 
@@ -589,4 +643,4 @@ src/new_module/
 
 ---
 
-*文档更新日期: 2026-05-21*
+*文档更新日期: 2026-05-22*

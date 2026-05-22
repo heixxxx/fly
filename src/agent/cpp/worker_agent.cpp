@@ -36,7 +36,7 @@ WorkerAgent::~WorkerAgent() {
 void WorkerAgent::start() {
     if (running_) return;
 
-    INFO("WorkerAgent start() called, connecting to " + master_host_ + ":" + std::to_string(master_port_));
+    INFO("WorkerAgent start() called, connecting to {}:{}", master_host_, master_port_);
 
     auto transport = create_transport("tcp");
 
@@ -44,11 +44,11 @@ void WorkerAgent::start() {
     data_server_port_ = static_cast<int32_t>(transport->get_bound_port());
     data_server_host_ = Config::instance().get_str("data_server_host");
 
-    INFO("data server listening on port " + std::to_string(data_server_port_));
+    INFO("data server listening on port {}", data_server_port_);
 
     master_conn_ = transport->connect(master_host_, master_port_);
 
-    INFO("connected, master_conn=" + std::to_string(master_conn_));
+    INFO("connected, master_conn={}", master_conn_);
 
     reactor_ = CMMakeUnique<Reactor>(std::move(transport));
 
@@ -116,8 +116,9 @@ void WorkerAgent::start() {
     reg.data_server_port = data_server_port_;
     reactor_->send(master_conn_, reg);
 
-    INFO("RegisterMessage sent with data_server_port=" + std::to_string(data_server_port_)
-         + ", attributes=" + std::to_string(attributes_.size()));
+    auto dsp = data_server_port_;
+    auto attr_count = attributes_.size();
+    INFO("RegisterMessage sent with data_server_port={}, attributes={}", dsp, attr_count);
 
     heartbeat_running_ = true;
     heartbeat_thread_ = std::thread([this] { heartbeat_loop(); });
@@ -208,8 +209,7 @@ void WorkerAgent::heartbeat_loop() {
             auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(now).count();
             auto elapsed = now_sec - last_master_contact_.load();
             if (elapsed > MASTER_TIMEOUT_SECONDS) {
-                WARN("Master timeout (" + std::to_string(elapsed) +
-                     "s since last contact), shutting down");
+                WARN("Master timeout ({}s since last contact), shutting down", elapsed);
                 initiate_shutdown("master timeout");
                 break;
             }
@@ -225,7 +225,7 @@ void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
 }
 
 void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
-    INFO("TaskAssign received: task_id=" + std::to_string(msg.task_id));
+    INFO("TaskAssign received: task_id={}", msg.task_id);
     touch_master_contact();
 
     PendingTask task;
@@ -254,7 +254,7 @@ bool WorkerAgent::poll_task() {
         task_queue_.pop();
     }
 
-    INFO("Executing task: task_id=" + std::to_string(task.task_id));
+    INFO("Executing task: task_id={}", task.task_id);
 
     if (executor_) {
         begin_task(task.task_id);
@@ -273,8 +273,9 @@ bool WorkerAgent::poll_task() {
             complete.frozen_dbs = std::move(result.frozen_dbs);
             reactor_->send(master_conn_, complete);
 
-            INFO("TaskComplete sent: task_id=" + std::to_string(task.task_id) +
-                 ", outputs=" + std::to_string(complete.written_objects.size()));
+            auto tid = task.task_id;
+            auto out_count = complete.written_objects.size();
+            INFO("TaskComplete sent: task_id={}, outputs={}", tid, out_count);
         } else {
             TaskFailedMessage failed;
             failed.task_id = task.task_id;
@@ -283,7 +284,7 @@ bool WorkerAgent::poll_task() {
             failed.error_type = WorkerAgentContext::get_last_error_type();
             reactor_->send(master_conn_, failed);
 
-            ERR("TaskFailed sent: task_id=" + std::to_string(task.task_id) + ", error=" + result.error);
+            ERR("TaskFailed sent: task_id={}, error={}", task.task_id, result.error);
         }
     }
     return true;
@@ -309,7 +310,7 @@ void WorkerAgent::touch_master_contact() {
 }
 
 void WorkerAgent::initiate_shutdown(const CMString& reason) {
-    INFO("Initiating shutdown: " + reason);
+    INFO("Initiating shutdown: {}", reason);
 
     registered_ = false;
     running_ = false;
@@ -321,9 +322,8 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
 }
 
 void WorkerAgent::on_db_path_response(const DbPathResponseMessage& msg) {
-    INFO("DbPathResponse received: db_id=" + msg.db_id +
-         ", base_path=" + msg.base_path + ", data_path=" + msg.data_path +
-         ", success=" + std::to_string(msg.success));
+    INFO("DbPathResponse received: db_id={}, base_path={}, data_path={}, success={}",
+         msg.db_id, msg.base_path, msg.data_path, msg.success);
     touch_master_contact();
 
     std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
@@ -382,11 +382,11 @@ void WorkerAgent::notify_removed_trampoline(void* ctx, const CMString& db_id, co
     msg.db_id = db_id;
     self->reactor_->send(self->master_conn_, msg);
 
-    INFO("ObjectRemoved sent to master: " + full_name);
+    INFO("ObjectRemoved sent to master: {}", full_name);
 }
 
 void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
-    INFO("DataRequest enqueued for object: " + msg.object_name);
+    INFO("DataRequest enqueued for object: {}", msg.object_name);
 
     ds().submit_transfer(conn_id, msg.object_name);
 }
@@ -401,8 +401,7 @@ ReadResult WorkerAgent::request_remote_data(const CMString& object_name) {
             " (" + location.error + ")");
     }
 
-    INFO("MetadataClient resolved " + object_name +
-         " -> " + location.host + ":" + std::to_string(location.port));
+    INFO("MetadataClient resolved {} -> {}:{}", object_name, location.host, location.port);
 
     auto [success, data, error] = DataClient::request_data(
         location.host, location.port, object_name);
@@ -420,8 +419,7 @@ ReadResult WorkerAgent::request_remote_data(const CMString& object_name) {
 
 ReadResult WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,
                                                    const CMString& object_name) {
-    INFO("Direct DataClient request to " + host + ":" + std::to_string(port) +
-         " for " + object_name);
+    INFO("Direct DataClient request to {}:{} for {}", host, port, object_name);
 
     auto [success, data, error] = DataClient::request_data(host, port, object_name);
 
@@ -454,7 +452,7 @@ bool WorkerAgent::request_db_path(const CMString& db_id) {
     req.db_id = db_id;
     reactor_->send(master_conn_, req);
 
-    INFO("Sent DbPathRequest for db_id=" + db_id);
+    INFO("Sent DbPathRequest for db_id={}", db_id);
 
     for (int i = 0; i < 100; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -501,7 +499,7 @@ void WorkerAgent::register_write_with_master(const CMString& db_id, const CMStri
     msg.db_id = db_id;
     reactor_->send(master_conn_, msg);
 
-    INFO("WriteRegister sent: object=" + full_name);
+    INFO("WriteRegister sent: object={}", full_name);
 
     for (int i = 0; i < 100; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -531,9 +529,8 @@ void WorkerAgent::register_write_with_master(const CMString& db_id, const CMStri
 
 void WorkerAgent::on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg) {
     touch_master_contact();
-    INFO("WriteRegisterAck: object=" + msg.object_name +
-         ", success=" + std::to_string(msg.success) +
-         (!msg.error_message.empty() ? ", error=" + msg.error_message : ""));
+    CMString err_suffix = msg.error_message.empty() ? "" : ", error=" + msg.error_message;
+    INFO("WriteRegisterAck: object={}, success={}{}", msg.object_name, msg.success, err_suffix);
 
     std::lock_guard<std::mutex> lock(pending_write_reg_mutex_);
     auto it = pending_write_regs_.find(msg.object_name);
@@ -547,7 +544,7 @@ void WorkerAgent::on_write_register_ack(uint64_t conn_id, const WriteRegisterAck
 
 void WorkerAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg) {
     touch_master_contact();
-    INFO("ObjectRemoved received from master: " + msg.object_name);
+    INFO("ObjectRemoved received from master: {}", msg.object_name);
 
     ds().remove_local_index(msg.object_name);
     ds().remove_remote_index(msg.object_name);
@@ -579,8 +576,9 @@ void WorkerAgent::set_worker_property(const CMVector<CMString>& props) {
         msg.added_properties = actually_added;
         reactor_->send(master_conn_, msg);
 
-        INFO("WorkerPropertyUpdate (set): worker_id=" + std::to_string(worker_id_)
-             + ", added=" + std::to_string(actually_added.size()));
+        auto wid = worker_id_;
+        auto added_count = actually_added.size();
+        INFO("WorkerPropertyUpdate (set): worker_id={}, added={}", wid, added_count);
     }
 }
 
@@ -607,8 +605,9 @@ void WorkerAgent::remove_worker_property(const CMVector<CMString>& props) {
         msg.removed_properties = actually_removed;
         reactor_->send(master_conn_, msg);
 
-        INFO("WorkerPropertyUpdate (remove): worker_id=" + std::to_string(worker_id_)
-             + ", removed=" + std::to_string(actually_removed.size()));
+        auto wid = worker_id_;
+        auto removed_count = actually_removed.size();
+        INFO("WorkerPropertyUpdate (remove): worker_id={}, removed={}", wid, removed_count);
     }
 }
 

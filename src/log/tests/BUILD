@@ -8,6 +8,7 @@ cc_test(
     deps = [
         "@googletest//:gtest_main",
         "//src/log/cpp:fly_log",
+        "//src/task/cpp:fly_task",
     ],
     copts = ["-std=c++20"],
 )

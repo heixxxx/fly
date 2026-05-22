@@ -10,19 +10,19 @@ FLY_EXPORT_ENUM(fly::LogLevel, "EXLogLevel")
     FLY_EXPORT_ENUM_VALUE("ERROR", fly::LogLevel::ERROR);
 
 FLY_EXPORT_FUNCTION("DBG", [](const fly::CMString& msg) {
-    fly::Logger::instance().debug(msg);
+    fly::Logger::instance().vlog(fly::LogLevel::DEBUG, msg, fmt::make_format_args());
 });
 
 FLY_EXPORT_FUNCTION("INFO", [](const fly::CMString& msg) {
-    fly::Logger::instance().info(msg);
+    fly::Logger::instance().vlog(fly::LogLevel::INFO, msg, fmt::make_format_args());
 });
 
 FLY_EXPORT_FUNCTION("WARN", [](const fly::CMString& msg) {
-    fly::Logger::instance().warn(msg);
+    fly::Logger::instance().vlog(fly::LogLevel::WARN, msg, fmt::make_format_args());
 });
 
 FLY_EXPORT_FUNCTION("ERR", [](const fly::CMString& msg) {
-    fly::Logger::instance().error(msg);
+    fly::Logger::instance().vlog(fly::LogLevel::ERROR, msg, fmt::make_format_args());
 });
 
 FLY_EXPORT_FUNCTION("flush_log", []() {

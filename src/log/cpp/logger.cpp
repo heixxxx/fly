@@ -69,10 +69,10 @@ void Logger::shutdown() {
     }
 }
 
-void Logger::debug(const CMString& msg) { log(LogLevel::DEBUG, msg); }
-void Logger::info(const CMString& msg)  { log(LogLevel::INFO, msg); }
-void Logger::warn(const CMString& msg)  { log(LogLevel::WARN, msg); }
-void Logger::error(const CMString& msg) { log(LogLevel::ERROR, msg); }
+void Logger::vlog(LogLevel level, fmt::string_view fmt, fmt::format_args args) {
+    if (level < level_) return;
+    log(level, fmt::vformat(fmt, args));
+}
 
 void Logger::set_level(LogLevel level) { level_ = level; }
 

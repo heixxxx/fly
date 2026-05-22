@@ -175,8 +175,9 @@ void Database::freeze() {
     // 当前聚合文件可能包含多个对象，删除单个对象需要重写整个文件
     // 完整实现需要在数据压缩(compaction)功能中完成
     if (!removed_objects_.empty()) {
-        INFO("freeze: " + std::to_string(removed_objects_.size()) +
-             " objects marked for removal (disk cleanup pending compaction implementation)");
+        uint64_t count = removed_objects_.size();
+        INFO("freeze: {} objects marked for removal (disk cleanup pending compaction implementation)",
+             count);
     }
 }
 
@@ -196,7 +197,7 @@ void Database::remove_object(const CMString& object_name) {
 
     fly::WorkerAgentContext::notify_object_removed(db_id_, object_name);
 
-    INFO("Object removed: " + full);
+    INFO("Object removed: {}", full);
 }
 
 DbMeta Database::load_meta() const {

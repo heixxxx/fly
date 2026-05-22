@@ -12,6 +12,7 @@ cc_library(
     linkstatic = False,
     deps = [
         "//src/common/cpp:fly_common_types",
+        "@fmt//:fmt",
     ],
 )
 

@@ -10,6 +10,7 @@ module(
 bazel_dep(name = "rules_cc", version = "0.2.14")
 bazel_dep(name = "rules_python", version = "1.2.0")
 bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
+bazel_dep(name = "fmt", version = "12.1.0")
 
 # Python toolchain (use system Python)
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")

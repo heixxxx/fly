@@ -5,6 +5,10 @@
 #include <fstream>
 #include <mutex>
 #include <memory>
+#include <fmt/format.h>
+#include <boost/preprocessor/variadic/to_seq.hpp>
+#include <boost/preprocessor/seq/for_each.hpp>
+#include <boost/preprocessor/tuple/elem.hpp>
 
 namespace fly {
 
@@ -22,10 +26,7 @@ public:
     static CMString resolve_log_dir(const CMString& base_dir);
     static void shutdown();
 
-    void debug(const CMString& msg);
-    void info(const CMString& msg);
-    void warn(const CMString& msg);
-    void error(const CMString& msg);
+    void vlog(LogLevel level, fmt::string_view fmt, fmt::format_args args);
 
     void set_level(LogLevel level);
     void flush();
@@ -46,9 +47,63 @@ private:
     LogLevel level_;
 };
 
+template <typename... T>
+inline void log_write(LogLevel level, fmt::format_string<T...> fmt, const T&... args) {
+    fly::Logger::instance().vlog(level, fmt, fmt::make_format_args(args...));
+}
+
 }  // namespace fly
 
-#define DBG(msg)   fly::Logger::instance().debug(msg)
-#define INFO(msg)  fly::Logger::instance().info(msg)
-#define WARN(msg)  fly::Logger::instance().warn(msg)
-#define ERR(msg)   fly::Logger::instance().error(msg)
+// --- Logging macros ---
+
+#define DBG(fmt, ...)   fly::log_write(fly::LogLevel::DEBUG, FMT_STRING(fmt), ##__VA_ARGS__)
+#define INFO(fmt, ...)  fly::log_write(fly::LogLevel::INFO,  FMT_STRING(fmt), ##__VA_ARGS__)
+#define WARN(fmt, ...)  fly::log_write(fly::LogLevel::WARN,  FMT_STRING(fmt), ##__VA_ARGS__)
+#define ERR(fmt, ...)   fly::log_write(fly::LogLevel::ERROR, FMT_STRING(fmt), ##__VA_ARGS__)
+
+// --- CM_FORMAT_CLASS: custom struct formatting ---
+// Usage (must be at global scope):
+//   CM_FORMAT_CLASS(MyStruct, "a={}, b={}", obj.a, obj.b);
+
+#define CM_FORMAT_CLASS(Type, Fmt, ...) \
+    template <> struct fmt::formatter<Type> { \
+        constexpr auto parse(fmt::format_parse_context& ctx) { return ctx.begin(); } \
+        auto format(const Type& v, fmt::format_context& ctx) const { \
+            return fmt::format_to(ctx.out(), FMT_STRING(Fmt), __VA_ARGS__); \
+        } \
+    }; \
+    static_assert(true, "")
+
+// --- CM_FORMAT_ENUM: auto-stringify enum values ---
+// Usage: CM_FORMAT_ENUM(fly::MyEnum, VAL_A, VAL_B, VAL_C);
+
+#define CM_ENUM_CASE_APPLY(r, Type, Value) case Type::Value: return fmt::format_to(ctx.out(), #Value);
+
+#define CM_FORMAT_ENUM(Type, ...) \
+    template <> struct fmt::formatter<Type> { \
+        constexpr auto parse(fmt::format_parse_context& ctx) { return ctx.begin(); } \
+        auto format(Type v, fmt::format_context& ctx) const { \
+            switch (v) { \
+                BOOST_PP_SEQ_FOR_EACH(CM_ENUM_CASE_APPLY, Type, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__)) \
+                default: return fmt::format_to(ctx.out(), "({})", static_cast<int>(v)); \
+            } \
+        } \
+    };
+
+// --- CM_FORMAT_ENUM_EX: custom string per enum value ---
+// Usage: CM_FORMAT_ENUM_EX(fly::MyEnum, (VAL_A, "a"), (VAL_B, "b"));
+
+#define CM_ENUM_PAIR_APPLY(r, Type, Pair) \
+    case Type::BOOST_PP_TUPLE_ELEM(2, 0, Pair): \
+        return fmt::format_to(ctx.out(), BOOST_PP_TUPLE_ELEM(2, 1, Pair));
+
+#define CM_FORMAT_ENUM_EX(Type, ...) \
+    template <> struct fmt::formatter<Type> { \
+        constexpr auto parse(fmt::format_parse_context& ctx) { return ctx.begin(); } \
+        auto format(Type v, fmt::format_context& ctx) const { \
+            switch (v) { \
+                BOOST_PP_SEQ_FOR_EACH(CM_ENUM_PAIR_APPLY, Type, BOOST_PP_VARIADIC_TO_SEQ(__VA_ARGS__)) \
+                default: return fmt::format_to(ctx.out(), "({})", static_cast<int>(v)); \
+            } \
+        } \
+    };
