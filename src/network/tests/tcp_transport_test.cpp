@@ -14,22 +14,25 @@ TEST(TransportLayerTest, CreateTCPTransport) {
 
 TEST(TCPTransportTest, ListenAndStop) {
     TCPTransport transport;
-    EXPECT_NO_THROW(transport.listen("127.0.0.1", 19001));
+    transport.listen("127.0.0.1", 0);
+    int port = transport.get_bound_port();
+    EXPECT_GT(port, 0);
     EXPECT_NO_THROW(transport.stop_listening());
 }
 
 TEST(TCPTransportTest, ListenAndConnect) {
     TCPTransport server;
     TCPTransport client;
-    
-    server.listen("127.0.0.1", 19002);
-    
-    uint64_t conn_id = client.connect("127.0.0.1", 19002);
+
+    server.listen("127.0.0.1", 0);
+    int port = server.get_bound_port();
+
+    uint64_t conn_id = client.connect("127.0.0.1", port);
     EXPECT_GT(conn_id, 0);
-    
+
     auto server_events = server.poll(1000);
     EXPECT_GE(server_events.size(), 1);
-    
+
     bool found_connect = false;
     for (const auto& ev : server_events) {
         if (ev.type == TransportEventType::CONNECT) {
@@ -39,7 +42,7 @@ TEST(TCPTransportTest, ListenAndConnect) {
         }
     }
     EXPECT_TRUE(found_connect);
-    
+
     server.close_all();
     client.close_all();
 }
@@ -47,13 +50,15 @@ TEST(TCPTransportTest, ListenAndConnect) {
 TEST(TCPTransportTest, SendAndRecv) {
     TCPTransport server;
     TCPTransport client;
-    
-    server.listen("127.0.0.1", 19003);
-    uint64_t client_conn = client.connect("127.0.0.1", 19003);
-    
+
+    server.listen("127.0.0.1", 0);
+    int port = server.get_bound_port();
+
+    uint64_t client_conn = client.connect("127.0.0.1", port);
+
     auto server_events = server.poll(1000);
-    EXPECT_GE(server_events.size(), 1);
-    
+    ASSERT_GE(server_events.size(), 1);
+
     uint64_t server_conn = 0;
     for (const auto& ev : server_events) {
         if (ev.type == TransportEventType::CONNECT) {
@@ -61,25 +66,24 @@ TEST(TCPTransportTest, SendAndRecv) {
             break;
         }
     }
-    EXPECT_GT(server_conn, 0);
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
-    CMString test_msg = "hello world";
-    ssize_t sent = client.send(client_conn, test_msg);
-    EXPECT_GT(sent, 0);
-    
-    server_events = server.poll(1000);
+    ASSERT_GT(server_conn, 0);
+
+    CMString msg = "hello from client";
+    client.send(client_conn, msg);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    auto recv_events = server.poll(1000);
     bool found_data = false;
-    for (const auto& ev : server_events) {
+    for (const auto& ev : recv_events) {
         if (ev.type == TransportEventType::DATA) {
             found_data = true;
-            EXPECT_EQ(ev.data, test_msg);
+            EXPECT_EQ(ev.data, msg);
             break;
         }
     }
-    EXPECT_TRUE(found_data);
-    
+    ASSERT_TRUE(found_data);
+
     server.close_all();
     client.close_all();
 }
@@ -87,16 +91,17 @@ TEST(TCPTransportTest, SendAndRecv) {
 TEST(TCPTransportTest, ConnectionCount) {
     TCPTransport server;
     TCPTransport client;
-    
-    server.listen("127.0.0.1", 19004);
-    
+
+    server.listen("127.0.0.1", 0);
+    int port = server.get_bound_port();
     EXPECT_EQ(server.connection_count(), 0);
-    
-    client.connect("127.0.0.1", 19004);
-    server.poll(1000);
-    
+
+    client.connect("127.0.0.1", port);
+    auto events = server.poll(1000);
+    EXPECT_GE(events.size(), 1);
+
     EXPECT_EQ(server.connection_count(), 1);
-    
+
     server.close_all();
     client.close_all();
 }
@@ -108,31 +113,28 @@ TEST(TCPTransportTest, InvalidTransportType) {
 
 TEST(TCPTransportTest, MultipleConnections) {
     TCPTransport server;
-    
-    server.listen("127.0.0.1", 19005);
-    
-    std::vector<CMUniquePtr<TCPTransport>> clients;
-    std::vector<uint64_t> client_conns;
-    
+    CMVector<std::unique_ptr<TCPTransport>> clients;
+
+    server.listen("127.0.0.1", 0);
+    int port = server.get_bound_port();
+
     for (int i = 0; i < 5; i++) {
         clients.push_back(CMMakeUnique<TCPTransport>());
-        client_conns.push_back(clients[i]->connect("127.0.0.1", 19005));
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        clients.back()->connect("127.0.0.1", port);
     }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    
-    int connect_count = 0;
-    for (int i = 0; i < 10 && connect_count < 5; i++) {
-        auto server_events = server.poll(100);
-        for (const auto& ev : server_events) {
+
+    int connected = 0;
+    for (int i = 0; i < 10 && connected < 5; i++) {
+        auto events = server.poll(100);
+        for (const auto& ev : events) {
             if (ev.type == TransportEventType::CONNECT) {
-                connect_count++;
+                connected++;
             }
         }
     }
-    EXPECT_GE(connect_count, 5);
-    
+
+    EXPECT_EQ(connected, 5);
+
     server.close_all();
     for (auto& c : clients) {
         c->close_all();

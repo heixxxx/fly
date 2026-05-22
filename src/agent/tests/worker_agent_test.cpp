@@ -7,12 +7,12 @@
 namespace fly {
 
 TEST(WorkerAgentTest, CreateWithId) {
-    WorkerAgent worker(42, "127.0.0.1", 18080);
+    WorkerAgent worker(42, "127.0.0.1", 0);
     EXPECT_EQ(worker.get_worker_id(), 42);
 }
 
 TEST(WorkerAgentTest, StartWithoutMaster) {
-    WorkerAgent worker(1, "127.0.0.1", 18090);
+    WorkerAgent worker(1, "127.0.0.1", 0);
     worker.start();
     
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -25,13 +25,13 @@ TEST(WorkerAgentTest, StartWithoutMaster) {
 }
 
 TEST(WorkerAgentTest, SetExecutor) {
-    WorkerAgent worker(1, "127.0.0.1", 18091);
+    WorkerAgent worker(1, "127.0.0.1", 0);
     
     worker.set_executor(nullptr);
 }
 
 TEST(WorkerAgentTest, MultipleStartStop) {
-    WorkerAgent worker(1, "127.0.0.1", 18092);
+    WorkerAgent worker(1, "127.0.0.1", 0);
     
     worker.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -74,7 +74,7 @@ TEST(WorkerAgentContextTest, SetAndClear) {
 }
 
 TEST(WorkerAgentTest, BeginEndTaskTracking) {
-    WorkerAgent worker(1, "127.0.0.1", 18100);
+    WorkerAgent worker(1, "127.0.0.1", 0);
     
     worker.begin_task(42);
     EXPECT_TRUE(WorkerAgentContext::is_active());
@@ -85,7 +85,7 @@ TEST(WorkerAgentTest, BeginEndTaskTracking) {
 }
 
 TEST(WorkerAgentTest, RecordWrites) {
-    WorkerAgent worker(1, "127.0.0.1", 18101);
+    WorkerAgent worker(1, "127.0.0.1", 0);
     
     worker.begin_task(100);
     worker.record_write("db_abc", "output/result");
@@ -98,7 +98,7 @@ TEST(WorkerAgentTest, RecordWrites) {
 }
 
 TEST(WorkerAgentTest, MultipleTasksSequential) {
-    WorkerAgent worker(1, "127.0.0.1", 18102);
+    WorkerAgent worker(1, "127.0.0.1", 0);
 
     worker.begin_task(1);
     worker.record_write("db1", "a");
@@ -113,7 +113,7 @@ TEST(WorkerAgentTest, MultipleTasksSequential) {
 }
 
 TEST(WorkerAgentTest, WriteTrackingWithDatabase) {
-    WorkerAgent worker(1, "127.0.0.1", 18110);
+    WorkerAgent worker(1, "127.0.0.1", 0);
     worker.begin_task(200);
 
     // Simulate Database.write_object tracking (what Database does internally)
@@ -127,7 +127,7 @@ TEST(WorkerAgentTest, WriteTrackingWithDatabase) {
 }
 
 TEST(WorkerAgentTest, MultiDbSameObjectNameTracking) {
-    WorkerAgent worker(1, "127.0.0.1", 18111);
+    WorkerAgent worker(1, "127.0.0.1", 0);
     worker.begin_task(300);
 
     // Two different databases, same object name
@@ -143,7 +143,7 @@ TEST(WorkerAgentTest, MultiDbSameObjectNameTracking) {
 }
 
 TEST(WorkerAgentTest, EndTaskClearsTracking) {
-    WorkerAgent worker(1, "127.0.0.1", 18112);
+    WorkerAgent worker(1, "127.0.0.1", 0);
 
     // Task 1
     worker.begin_task(1);
@@ -158,7 +158,7 @@ TEST(WorkerAgentTest, EndTaskClearsTracking) {
 }
 
 TEST(WorkerAgentTest, SetWorkerPropertySingle) {
-    WorkerAgent worker(1, "127.0.0.1", 18200, {});
+    WorkerAgent worker(1, "127.0.0.1", 0, {});
 
     auto props = worker.get_worker_properties();
     EXPECT_TRUE(props.empty());
@@ -170,7 +170,7 @@ TEST(WorkerAgentTest, SetWorkerPropertySingle) {
 }
 
 TEST(WorkerAgentTest, SetWorkerPropertyBatch) {
-    WorkerAgent worker(1, "127.0.0.1", 18201, {"python"});
+    WorkerAgent worker(1, "127.0.0.1", 0, {"python"});
 
     worker.set_worker_property(CMVector<CMString>{"gpu", "cuda"});
     auto props = worker.get_worker_properties();
@@ -178,7 +178,7 @@ TEST(WorkerAgentTest, SetWorkerPropertyBatch) {
 }
 
 TEST(WorkerAgentTest, SetWorkerPropertyDeduplicate) {
-    WorkerAgent worker(1, "127.0.0.1", 18202, {"python"});
+    WorkerAgent worker(1, "127.0.0.1", 0, {"python"});
 
     worker.set_worker_property("python");
     auto props = worker.get_worker_properties();
@@ -186,7 +186,7 @@ TEST(WorkerAgentTest, SetWorkerPropertyDeduplicate) {
 }
 
 TEST(WorkerAgentTest, RemoveWorkerPropertySingle) {
-    WorkerAgent worker(1, "127.0.0.1", 18203, {"python", "gpu"});
+    WorkerAgent worker(1, "127.0.0.1", 0, {"python", "gpu"});
 
     worker.remove_worker_property("gpu");
     auto props = worker.get_worker_properties();
@@ -195,7 +195,7 @@ TEST(WorkerAgentTest, RemoveWorkerPropertySingle) {
 }
 
 TEST(WorkerAgentTest, RemoveWorkerPropertyBatch) {
-    WorkerAgent worker(1, "127.0.0.1", 18204, {"python", "gpu", "cuda"});
+    WorkerAgent worker(1, "127.0.0.1", 0, {"python", "gpu", "cuda"});
 
     worker.remove_worker_property(CMVector<CMString>{"gpu", "cuda"});
     auto props = worker.get_worker_properties();
@@ -204,7 +204,7 @@ TEST(WorkerAgentTest, RemoveWorkerPropertyBatch) {
 }
 
 TEST(WorkerAgentTest, RemoveWorkerPropertyNonexistent) {
-    WorkerAgent worker(1, "127.0.0.1", 18205, {"python"});
+    WorkerAgent worker(1, "127.0.0.1", 0, {"python"});
 
     worker.remove_worker_property("nonexistent");
     auto props = worker.get_worker_properties();
@@ -212,7 +212,7 @@ TEST(WorkerAgentTest, RemoveWorkerPropertyNonexistent) {
 }
 
 TEST(WorkerAgentTest, GetWorkerPropertiesReturnsCopy) {
-    WorkerAgent worker(1, "127.0.0.1", 18206, {"python"});
+    WorkerAgent worker(1, "127.0.0.1", 0, {"python"});
 
     auto props1 = worker.get_worker_properties();
     worker.set_worker_property("gpu");

@@ -12,6 +12,7 @@ refresh_compile_commands(
         "//src/agent/export:_fly_agent.so": "",
         "//src/agent/tests:agent_integration_test": "",
         "//src/agent/tests:agent_network_test": "",
+        "//src/agent/tests:failed_tasks_test": "",
         "//src/agent/tests:master_agent_test": "",
         "//src/agent/tests:task_executor_test": "",
         "//src/agent/tests:worker_agent_test": "",

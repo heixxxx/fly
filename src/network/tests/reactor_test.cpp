@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include <network/cpp/reactor.h>
 #include <network/cpp/tcp_transport.h>
-#include <network/cpp/message_types.h>
+#include <network/cpp/transport.h>
 #include <thread>
 #include <chrono>
 #include <atomic>
@@ -77,12 +77,13 @@ TEST(ReactorTest, SendMessage) {
     TCPTransport server;
     TCPTransport client;
     
-    server.listen("127.0.0.1", 19010);
+    server.listen("127.0.0.1", 0);
+    int port = server.get_bound_port();
     
     Reactor server_reactor(CMMakeUnique<TCPTransport>());
     Reactor client_reactor(CMMakeUnique<TCPTransport>());
     
-    uint64_t client_conn = client.connect("127.0.0.1", 19010);
+    uint64_t client_conn = client.connect("127.0.0.1", port);
     
     auto events = server.poll(500);
     EXPECT_GE(events.size(), 1);

@@ -22,11 +22,11 @@ protected:
 };
 
 TEST_F(AgentNetworkTest, WorkerRegister) {
-    MasterAgent master("127.0.0.1", 19080);
+    MasterAgent master("127.0.0.1", 0);
     master.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
-    WorkerAgent worker(1, "127.0.0.1", 19080);
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
@@ -45,13 +45,14 @@ TEST_F(AgentNetworkTest, MultipleWorkers) {
     Logger::init("test_logs/", 2);
     Logger::init("test_logs/", 3);
     
-    MasterAgent master("127.0.0.1", 19081);
+    MasterAgent master("127.0.0.1", 0);
     master.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    uint16_t port = master.get_port();
     
-    WorkerAgent worker1(1, "127.0.0.1", 19081);
-    WorkerAgent worker2(2, "127.0.0.1", 19081);
-    WorkerAgent worker3(3, "127.0.0.1", 19081);
+    WorkerAgent worker1(1, "127.0.0.1", port);
+    WorkerAgent worker2(2, "127.0.0.1", port);
+    WorkerAgent worker3(3, "127.0.0.1", port);
     worker1.start();
     worker2.start();
     worker3.start();
@@ -72,10 +73,10 @@ TEST_F(AgentNetworkTest, MultipleWorkers) {
 }
 
 TEST_F(AgentNetworkTest, WorkerDisconnect) {
-    MasterAgent master("127.0.0.1", 19082);
+    MasterAgent master("127.0.0.1", 0);
     master.start();
     
-    WorkerAgent worker(1, "127.0.0.1", 19082);
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
@@ -90,7 +91,7 @@ TEST_F(AgentNetworkTest, WorkerDisconnect) {
 }
 
 TEST_F(AgentNetworkTest, MasterRestart) {
-    MasterAgent master("127.0.0.1", 19083);
+    MasterAgent master("127.0.0.1", 0);
     
     master.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -99,6 +100,7 @@ TEST_F(AgentNetworkTest, MasterRestart) {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_FALSE(master.is_running());
     
+    // After restart, port may change
     master.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_TRUE(master.is_running());
@@ -118,7 +120,7 @@ TEST_F(AgentNetworkTest, ExecutorInjection) {
         return result;
     });
     
-    WorkerAgent worker(1, "127.0.0.1", 19084);
+    WorkerAgent worker(1, "127.0.0.1", 0);
     auto exec_ptr = CMMakeShared<TaskExecutor>(std::move(executor));
     worker.set_executor(exec_ptr);
     
@@ -131,12 +133,13 @@ TEST_F(AgentNetworkTest, EndToEndTaskExecution) {
     Logger::init("test_logs/", 1);
     Logger::init("test_logs/", 2);
     
-    MasterAgent master("127.0.0.1", 19200);
+    MasterAgent master("127.0.0.1", 0);
     master.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    uint16_t port = master.get_port();
     
-    WorkerAgent worker1(1, "127.0.0.1", 19200);
-    WorkerAgent worker2(2, "127.0.0.1", 19200);
+    WorkerAgent worker1(1, "127.0.0.1", port);
+    WorkerAgent worker2(2, "127.0.0.1", port);
     
     TaskExecutor executor1;
     executor1.set_exec_func([](uint64_t id, const CMString& name,

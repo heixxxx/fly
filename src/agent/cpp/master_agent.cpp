@@ -681,29 +681,65 @@ CMString MasterAgent::get_failed_tasks_file_path() const {
     return log_dir + "/failed_tasks.bin";
 }
 
-void MasterAgent::persist_failed_task(const FailedTaskRecord& record) {
-    CMString file_path = get_failed_tasks_file_path();
+namespace {
 
-    FailedTaskFile file;
-    if (std::filesystem::exists(file_path)) {
-        std::ifstream ifs(file_path, std::ios::binary);
-        if (ifs) {
-            CMString content((std::istreambuf_iterator<char>(ifs)),
-                             std::istreambuf_iterator<char>());
-            if (!content.empty()) {
-                FLY_DECODE(content, FailedTaskFile, file);
-            }
-        }
+void append_failed_record(const CMString& file_path, const FailedTaskRecord& record) {
+    CMString body;
+    FLY_ENCODE(record, body);
+
+    int64_t body_size = static_cast<int64_t>(body.size());
+
+    std::ofstream ofs(file_path, std::ios::binary | std::ios::app);
+    if (!ofs.is_open()) {
+        throw std::runtime_error("Failed to open failed tasks file: " + file_path);
+    }
+    ofs.write(reinterpret_cast<const char*>(&body_size), sizeof(body_size));
+    ofs.write(body.data(), body.size());
+    ofs.flush();
+}
+
+CMVector<FailedTaskRecord> read_failed_records(const CMString& file_path) {
+    CMVector<FailedTaskRecord> result;
+
+    if (!std::filesystem::exists(file_path)) return result;
+
+    std::ifstream ifs(file_path, std::ios::binary);
+    if (!ifs) return result;
+
+    while (true) {
+        int64_t body_size = 0;
+        ifs.read(reinterpret_cast<char*>(&body_size), sizeof(body_size));
+        if (!ifs || body_size <= 0) break;
+
+        CMString body(body_size, '\0');
+        ifs.read(body.data(), body_size);
+        if (!ifs) break;
+
+        FailedTaskRecord record;
+        try {
+            FLY_DECODE(body, FailedTaskRecord, record);
+            result.push_back(std::move(record));
+        } catch (...) {}
     }
 
-    file.records.push_back(record);
+    return result;
+}
 
-    CMString output;
-    FLY_ENCODE(file, output);
+void rewrite_failed_records(const CMString& file_path, const CMVector<FailedTaskRecord>& records) {
+    std::filesystem::remove(file_path);
 
-    std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
-    ofs.write(output.data(), output.size());
-    ofs.flush();
+    if (records.empty()) return;
+
+    for (const auto& r : records) {
+        append_failed_record(file_path, r);
+    }
+}
+
+}
+
+void MasterAgent::persist_failed_task(const FailedTaskRecord& record) {
+    CMString file_path = get_failed_tasks_file_path();
+    append_failed_record(file_path, record);
 
     ERR("Task {} failed and persisted. To restart after fixing, call restart_failed_tasks(\"{}\")", record.task_id, file_path);
 }
@@ -712,32 +748,22 @@ void MasterAgent::remove_persisted_task(uint64_t task_id) {
     CMString file_path = get_failed_tasks_file_path();
     if (!std::filesystem::exists(file_path)) return;
 
-    std::ifstream ifs(file_path, std::ios::binary);
-    if (!ifs) return;
-    CMString content((std::istreambuf_iterator<char>(ifs)),
-                     std::istreambuf_iterator<char>());
-    if (content.empty()) return;
+    auto records = read_failed_records(file_path);
+    if (records.empty()) return;
 
-    FailedTaskFile file;
-    FLY_DECODE(content, FailedTaskFile, file);
-
-    size_t before = file.records.size();
-    file.records.erase(
-        std::remove_if(file.records.begin(), file.records.end(),
+    size_t before = records.size();
+    records.erase(
+        std::remove_if(records.begin(), records.end(),
             [task_id](const FailedTaskRecord& r) { return r.task_id == task_id; }),
-        file.records.end());
+        records.end());
 
-    if (file.records.size() == before) return;
+    if (records.size() == before) return;
 
-    if (file.records.empty()) {
+    if (records.empty()) {
         std::filesystem::remove(file_path);
         INFO("Removed persisted task {}, file empty, deleted", task_id);
     } else {
-        CMString output;
-        FLY_ENCODE(file, output);
-        std::ofstream ofs(file_path, std::ios::binary | std::ios::trunc);
-        ofs.write(output.data(), output.size());
-        ofs.flush();
+        rewrite_failed_records(file_path, records);
         INFO("Removed persisted task {} from {}", task_id, file_path);
     }
 }
@@ -748,27 +774,19 @@ void MasterAgent::restart_failed_tasks(const CMString& file_path) {
         return;
     }
 
-    std::ifstream ifs(file_path, std::ios::binary);
-    if (!ifs) return;
-    CMString content((std::istreambuf_iterator<char>(ifs)),
-                     std::istreambuf_iterator<char>());
-    if (content.empty()) return;
-
-    FailedTaskFile file;
-    FLY_DECODE(content, FailedTaskFile, file);
-
-    if (file.records.empty()) {
+    auto records = read_failed_records(file_path);
+    if (records.empty()) {
         WARN("No failed tasks to restart");
         return;
     }
 
-    size_t record_count = file.records.size();
+    size_t record_count = records.size();
     INFO("Restarting {} failed tasks", record_count);
 
     std::filesystem::remove(file_path);
     INFO("Cleared failed tasks file {}", file_path);
 
-    for (auto& record : file.records) {
+    for (auto& record : records) {
         metadata_->remove_task(record.task_id);
 
         for (const auto& input : record.inputs) {

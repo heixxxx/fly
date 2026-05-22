@@ -82,7 +82,8 @@ TEST_F(WriteRegistrationTest, WaitCompletionSucceedsForCompleteEntry) {
 
     std::thread writer([&]() {
         db.write_object("writereg/wait_real", "wait_data", false);
-        TEST_LOG("writer thread: write completed");
+        ds_.drain_write_back();
+        TEST_LOG("writer thread: write drained");
         {
             std::lock_guard<std::mutex> lock(mtx);
             entry_created = true;
@@ -161,12 +162,12 @@ TEST_F(WriteRegistrationTest, ConcurrentWaitersOnSameEntry) {
     std::atomic<int> fail_count{0};
     std::mutex mtx;
     std::condition_variable cv;
-    bool entry_created = false;
+    bool ready_to_wait = false;
 
     auto waiter = [&]() {
         {
             std::unique_lock<std::mutex> lock(mtx);
-            cv.wait(lock, [&]{ return entry_created; });
+            cv.wait(lock, [&]{ return ready_to_wait; });
         }
         auto [found, result] = ds_.try_read_local_or_wait(full, 3000);
         if (found) {
@@ -187,10 +188,11 @@ TEST_F(WriteRegistrationTest, ConcurrentWaitersOnSameEntry) {
     }
 
     db.write_object("writereg/conc_real", "conc_data", false);
-    TEST_LOG("main: write completed, waking all waiters");
+    ds_.drain_write_back();
+    TEST_LOG("main: write drained, waking all waiters");
     {
         std::lock_guard<std::mutex> lock(mtx);
-        entry_created = true;
+        ready_to_wait = true;
     }
     cv.notify_all();
 

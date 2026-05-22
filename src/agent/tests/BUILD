@@ -55,6 +55,16 @@ cc_test(
 )
 
 cc_test(
+    name = "failed_tasks_test",
+    srcs = ["failed_tasks_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/agent/cpp:fly_agent",
+    ],
+    copts = ["-std=c++20"],
+)
+
+cc_test(
     name = "write_register_network_test",
     srcs = ["write_register_network_test.cpp"],
     deps = [

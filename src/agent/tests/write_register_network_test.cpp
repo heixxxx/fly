@@ -26,11 +26,11 @@ protected:
 };
 
 TEST_F(WriteRegisterNetworkTest, MasterAcceptsWriteRegisterForNormalDb) {
-    MasterAgent master("127.0.0.1", 29080);
+    MasterAgent master("127.0.0.1", 0);
     master.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    WorkerAgent worker(1, "127.0.0.1", 29080);
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     ASSERT_TRUE(worker.is_registered());
@@ -82,11 +82,11 @@ TEST_F(WriteRegisterNetworkTest, MasterRejectsWriteToFrozenDb) {
 }
 
 TEST_F(WriteRegisterNetworkTest, FatalErrorOnWriteToFrozenDb) {
-    MasterAgent master("127.0.0.1", 29082);
+    MasterAgent master("127.0.0.1", 0);
     master.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    WorkerAgent worker(3, "127.0.0.1", 29082);
+    WorkerAgent worker(3, "127.0.0.1", master.get_port());
     worker.start();
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     ASSERT_TRUE(worker.is_registered());
