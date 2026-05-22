@@ -165,4 +165,132 @@ TEST_F(LocalIndexTest, MultipleEntriesSaveLoad) {
     EXPECT_EQ(entry->size, 50);
 }
 
+TEST_F(LocalIndexTest, IncrementalAddRecords) {
+    CMString idx_path = make_idx_path("incr_add");
+
+    {
+        LocalIndex index(idx_path);
+        index.add_entry({"obj/a", "data_001.dat", 0, 100, false, 0});
+        index.save();
+        index.add_entry({"obj/b", "data_002.dat", 0, 200, false, 0});
+        index.save();
+    }
+
+    LocalIndex loaded(idx_path);
+    loaded.load();
+    EXPECT_EQ(loaded.entry_count(), 2);
+
+    IndexEntry* a = loaded.find_entry("obj/a");
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(a->file_name, "data_001.dat");
+
+    IndexEntry* b = loaded.find_entry("obj/b");
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(b->file_name, "data_002.dat");
+}
+
+TEST_F(LocalIndexTest, IncrementalRemoveRecord) {
+    CMString idx_path = make_idx_path("incr_remove");
+
+    {
+        LocalIndex index(idx_path);
+        index.add_entry({"obj/a", "data.dat", 0, 100, false, 0});
+        index.add_entry({"obj/b", "data.dat", 100, 200, false, 0});
+        index.save();
+        index.remove_entry("obj/a");
+        index.save();
+    }
+
+    LocalIndex loaded(idx_path);
+    loaded.load();
+    EXPECT_EQ(loaded.entry_count(), 1);
+
+    EXPECT_EQ(loaded.find_entry("obj/a"), nullptr);
+
+    IndexEntry* b = loaded.find_entry("obj/b");
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(b->size, 200);
+}
+
+TEST_F(LocalIndexTest, IncrementalMixedOps) {
+    CMString idx_path = make_idx_path("incr_mixed");
+
+    {
+        LocalIndex index(idx_path);
+        index.add_entry({"obj/1", "data.dat", 0, 10, false, 0});
+        index.add_entry({"obj/2", "data.dat", 10, 20, false, 0});
+        index.save();
+        index.remove_entry("obj/1");
+        index.add_entry({"obj/3", "data.dat", 30, 30, false, 0});
+        index.save();
+        index.remove_entry("obj/2");
+        index.add_entry({"obj/4", "data.dat", 40, 40, false, 0});
+        index.save();
+    }
+
+    LocalIndex loaded(idx_path);
+    loaded.load();
+    EXPECT_EQ(loaded.entry_count(), 2);
+
+    EXPECT_EQ(loaded.find_entry("obj/1"), nullptr);
+    EXPECT_EQ(loaded.find_entry("obj/2"), nullptr);
+    ASSERT_NE(loaded.find_entry("obj/3"), nullptr);
+    ASSERT_NE(loaded.find_entry("obj/4"), nullptr);
+}
+
+TEST_F(LocalIndexTest, CompactReducesFileSize) {
+    CMString idx_path = make_idx_path("compact");
+
+    {
+        LocalIndex index(idx_path);
+        for (int i = 0; i < 50; i++) {
+            index.add_entry({"obj_" + std::to_string(i), "data.dat", i * 10, 10, false, 0});
+        }
+        index.save();
+        for (int i = 0; i < 25; i++) {
+            index.remove_entry("obj_" + std::to_string(i));
+        }
+        index.save();
+    }
+
+    auto size_before = std::filesystem::file_size(idx_path);
+
+    LocalIndex index(idx_path);
+    index.load();
+    index.compact();
+
+    auto size_after = std::filesystem::file_size(idx_path);
+    EXPECT_LT(size_after, size_before);
+    EXPECT_EQ(index.entry_count(), 25);
+
+    LocalIndex loaded(idx_path);
+    loaded.load();
+    EXPECT_EQ(loaded.entry_count(), 25);
+    EXPECT_EQ(loaded.find_entry("obj_0"), nullptr);
+    ASSERT_NE(loaded.find_entry("obj_25"), nullptr);
+}
+
+TEST_F(LocalIndexTest, LoadLegacyFormat) {
+    CMString idx_path = make_idx_path("legacy_compat");
+
+    {
+        LocalIndex old_idx(idx_path);
+        old_idx.add_entry({"obj/a", "data.dat", 0, 100, false, 0});
+        old_idx.add_entry({"obj/b", "data.dat", 100, 200, false, 0});
+        old_idx.save_legacy();
+    }
+
+    LocalIndex loaded(idx_path);
+    loaded.load();
+    EXPECT_EQ(loaded.entry_count(), 2);
+
+    IndexEntry* a = loaded.find_entry("obj/a");
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(a->size, 100);
+
+    IndexEntry* b = loaded.find_entry("obj/b");
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(b->size, 200);
+}
+
 }
