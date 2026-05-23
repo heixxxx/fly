@@ -58,6 +58,9 @@ void StorageManager::close_all() {
 }
 
 void StorageManager::reset() {
+    for (auto& [path, db] : databases_) {
+        fly::DataService::instance().unregister_database(db->get_db_id());
+    }
     databases_.clear();
     writers_.clear();
 }

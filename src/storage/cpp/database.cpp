@@ -53,6 +53,7 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
 Database::~Database() {
     try {
         fly::DataService::instance().drain_write_back();
+        fly::DataService::instance().unregister_database(db_id_);
     } catch (...) {
     }
 }

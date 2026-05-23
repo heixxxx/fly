@@ -21,16 +21,16 @@ void DataService::register_database(const CMString& db_id,
                                      const CMString& data_path,
                                      uint64_t writer_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& [existing_id, paths] : db_paths_) {
-        if (existing_id == db_id) {
-            paths = {base_path, data_path, writer_id};
-            return;
-        }
+    auto it = db_paths_.find(db_id);
+    if (it != db_paths_.end()) {
+        it->second = {base_path, data_path, writer_id};
+        return;
     }
-    for (auto it = db_paths_.begin(); it != db_paths_.end(); ++it) {
-        if (it->second.base_path == base_path) {
-            db_paths_.erase(it);
-            break;
+    for (const auto& [existing_id, paths] : db_paths_) {
+        if (paths.base_path == base_path) {
+            throw std::runtime_error(
+                "base_path '" + base_path + "' already registered by database '" +
+                existing_id + "'");
         }
     }
     db_paths_[db_id] = {base_path, data_path, writer_id};

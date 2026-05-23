@@ -3,10 +3,22 @@ from .config import get_config
 from .task import as_task, task_name
 from .runtime import get_agent
 from .agent import Master, Worker, FlyAgent
+import logging
+import os
+
+logger = logging.getLogger("fly")
 
 
-def open_db(path: str, data_path: str = "") -> _Database:
-    return _Database(path, data_path)
+def open_db(path: str, data_path: str = "") -> '_Database':
+    actual_path = path
+    n = 0
+    while os.path.exists(os.path.join(actual_path, '_DB_META')):
+        n += 1
+        actual_path = f"{path}.{n}"
+    if actual_path != path:
+        logger.warning("open_db: path '%s' already contains a database, "
+                       "creating new database at '%s'", path, actual_path)
+    return _Database(actual_path, data_path)
 
 
 def load_db(path: str) -> '_Database':

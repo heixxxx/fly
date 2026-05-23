@@ -78,13 +78,15 @@ TEST_F(StorageManagerTest, CloseAll) {
 }
 
 TEST_F(StorageManagerTest, ResetClearsCaches) {
-    CMString base_path = "/tmp/fly_test_sm_reset_" + std::to_string(::getpid());
-    track_cleanup(base_path);
-    auto db1 = StorageManager::instance().get_or_create_database(base_path, "");
+    CMString base_path1 = "/tmp/fly_test_sm_reset1_" + std::to_string(::getpid());
+    CMString base_path2 = "/tmp/fly_test_sm_reset2_" + std::to_string(::getpid());
+    track_cleanup(base_path1);
+    track_cleanup(base_path2);
+    auto db1 = StorageManager::instance().get_or_create_database(base_path1, "");
 
     StorageManager::instance().reset();
 
-    auto db2 = StorageManager::instance().get_or_create_database(base_path, "");
+    auto db2 = StorageManager::instance().get_or_create_database(base_path2, "");
     EXPECT_NE(db1.get(), db2.get());
 }
 

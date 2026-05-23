@@ -25,6 +25,7 @@ class DataTransferTest : public ::testing::Test {
 protected:
     CMString test_dir_;
     DataService& ds_ = DataService::instance();
+    CMUniquePtr<Database> db_;
 
     void SetUp() override {
         test_dir_ = "/tmp/fly_test_transfer_" + std::to_string(::getpid()) + "_" +
@@ -32,30 +33,28 @@ protected:
         std::filesystem::create_directories(test_dir_);
         Logger::shutdown();
         Logger::init("test_logs/", 0);
+        db_ = CMMakeUnique<Database>(test_dir_ + "/transfer_db");
     }
 
     void TearDown() override {
         ds_.stop_transfer_server();
+        db_.reset();
         Logger::shutdown();
         std::filesystem::remove_all(test_dir_);
     }
 
-    // Helper: write N objects and return their names
     CMVector<CMString> write_objects(int count, const CMString& prefix = "obj") {
         CMVector<CMString> names;
-        CMString db_path = test_dir_ + "/transfer_db";
-        Database db(db_path);
         for (int i = 0; i < count; i++) {
             CMString name = prefix + "/" + std::to_string(i);
             CMString data = "data_payload_" + std::to_string(i);
-            db.write_object(name, data, false);
-            names.push_back(db.get_obj_name(name));
+            db_->write_object(name, data, false);
+            names.push_back(db_->get_obj_name(name));
         }
-        TEST_LOG("Wrote %d objects to %s", count, db_path.c_str());
+        TEST_LOG("Wrote %d objects", count);
         return names;
     }
 
-    // Helper: run a Reactor for a limited number of iterations (processes completions)
     void run_reactor_n(Reactor& reactor, int iterations, int timeout_ms = 50) {
         for (int i = 0; i < iterations; i++) {
             reactor.run_once(timeout_ms);
@@ -462,29 +461,25 @@ TEST_F(DataTransferTest, StopTransferServer) {
 TEST_F(DataTransferTest, ConcurrentReadWhileWriting) {
     int write_count = 20;
     int reader_count = 4;
-    CMString db_path = test_dir_ + "/stress_db";
+    CMString stress_db_path = test_dir_ + "/stress_db";
 
-    // Pre-write some objects
+    Database stress_db(stress_db_path);
     CMVector<CMString> pre_names;
-    {
-        Database db(db_path);
-        for (int i = 0; i < write_count / 2; i++) {
-            CMString name = "stress/pre_" + std::to_string(i);
-            db.write_object(name, "pre_data_" + std::to_string(i), false);
-            pre_names.push_back(db.get_obj_name(name));
-        }
+    for (int i = 0; i < write_count / 2; i++) {
+        CMString name = "stress/pre_" + std::to_string(i);
+        stress_db.write_object(name, "pre_data_" + std::to_string(i), false);
+        pre_names.push_back(stress_db.get_obj_name(name));
     }
+    ds_.drain_write_back();
     TEST_LOG("Pre-wrote %zu objects", pre_names.size());
 
-    // Concurrent readers + writer
     std::atomic<int> read_success{0};
     std::atomic<int> read_not_found{0};
     std::atomic<int> read_mismatch{0};
     std::vector<std::thread> threads;
 
-    // Writer thread: writes more objects
     threads.emplace_back([&]() {
-        Database db2(db_path + "_writer");
+        Database db2(stress_db_path + "_writer");
         for (int i = write_count / 2; i < write_count; i++) {
             CMString name = "stress/post_" + std::to_string(i);
             db2.write_object(name, "post_data_" + std::to_string(i), false);
