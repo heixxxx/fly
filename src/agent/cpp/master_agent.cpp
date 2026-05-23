@@ -222,6 +222,7 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
 }
 
 void MasterAgent::schedule_tasks() {
+    std::lock_guard<std::mutex> lock(schedule_mutex_);
     auto results = scheduler_->schedule_all_available();
 
     for (const auto& result : results) {
@@ -640,6 +641,15 @@ void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage
         WARN("WriteRegister rejected: db {} is frozen", msg.db_id);
     } else {
         ack.success = true;
+
+        // Notify dependency graph that this data will be available
+        graph_->mark_data_ready(msg.object_name);
+
+        // Update remote_idx so other Workers know where to find this data
+        auto addr = ds().get_worker_address(msg.worker_id);
+        ds().update_remote_idx(msg.object_name, msg.worker_id, addr.host, addr.port);
+
+        schedule_tasks();
     }
 
     reactor_->send(conn_id, ack);
@@ -830,16 +840,6 @@ void MasterAgent::restart_failed_tasks(const CMString& file_path) {
 
     for (auto& record : records) {
         metadata_->remove_task(record.task_id);
-
-        for (const auto& input : record.inputs) {
-            if (!graph_->is_data_ready(input)) {
-                auto [found, _result] = ds().try_read_local(input);
-                if (found || !ds().lookup_remote_idx(input).host.empty()) {
-                    graph_->mark_data_ready(input);
-                }
-            }
-        }
-
         submit_task(record.task_id, record.name, record.module, record.args,
                     record.inputs, record.outputs, record.required_capabilities);
     }
@@ -849,6 +849,7 @@ void MasterAgent::restart_failed_tasks(const CMString& file_path) {
 
 void MasterAgent::setup_write_context() {
     WorkerAgentContext::set(&MasterAgent::master_record_write_trampoline, this);
+    WorkerAgentContext::set_register_func(&MasterAgent::master_register_write_trampoline);
 }
 
 void MasterAgent::master_record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
@@ -862,6 +863,21 @@ void MasterAgent::on_master_record_write(const CMString& db_id, const CMString& 
     msg.object_name = db_id + ":" + name;
     msg.db_id = db_id;
     on_data_ready(0, msg);
+}
+
+void MasterAgent::master_register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
+    static_cast<MasterAgent*>(ctx)->on_master_register_write(db_id, name);
+}
+
+void MasterAgent::on_master_register_write(const CMString& db_id, const CMString& name) {
+    if (!running_.load()) return;
+    CMString full = db_id + ":" + name;
+    graph_->mark_data_ready(full);
+
+    auto addr = ds().get_worker_address(0);
+    ds().update_remote_idx(full, 0, addr.host, addr.port);
+
+    schedule_tasks();
 }
 
 CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_id,

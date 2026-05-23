@@ -128,6 +128,8 @@ private:
     void assign_task_to_worker(uint64_t task_id, uint64_t worker_id);
     void heartbeat_check_loop();
 
+    std::mutex schedule_mutex_;
+
     void on_worker_register(uint64_t conn_id, const RegisterMessage& msg);
     void on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg);
     void on_data_ready(uint64_t conn_id, const DataReadyMessage& msg);
@@ -146,6 +148,9 @@ private:
 
     static void master_record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     void on_master_record_write(const CMString& db_id, const CMString& name);
+
+    static void master_register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
+    void on_master_register_write(const CMString& db_id, const CMString& name);
 
     std::atomic<bool> fatal_error_{false};
 

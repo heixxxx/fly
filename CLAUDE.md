@@ -350,7 +350,7 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 
 | 文件 | 职责 |
 |------|------|
-| `master_agent.h/cpp` | Master 节点管理，失败任务持久化 + `restart_failed_tasks()` + `load_db` 恢复 (restore_master_idx / send_idx_load_commands / rebuild_remote_idx) |
+| `master_agent.h/cpp` | Master 节点管理，失败任务持久化 + `restart_failed_tasks()` (直接 submit_task) + 写入注册依赖满足 (`on_write_register` / `on_master_register_write`) + `schedule_mutex_` 并发保护 + `load_db` 恢复 |
 | `worker_agent.h/cpp` | Worker 节点执行，动态属性 `set/remove/get_worker_property()` + `on_idx_load_command()` idx 恢复 |
 | `task_executor.h/cpp` | 任务执行器 |
 
@@ -477,9 +477,25 @@ master.restart_failed_tasks("/path/to/failed_tasks.bin")
 流程：
 1. 按 `[body_size][body]` 逐条增量读取并反序列化 FailedTaskRecord 列表
 2. 删除 bin 文件（避免新 fail record 被误删）
-3. 对每个 record 的 inputs，通过 DataService 三阶段读取检查数据可用性 → `mark_data_ready`
-4. 重新 `submit_task()` → `schedule_tasks()` 调度
+3. 对每个 record 直接 `submit_task()` 重新提交
+4. 依赖调度由 `write_object` 注册时自动完成（见下文"写入注册触发依赖满足"）
 5. 若 task 仍无法调度（如仍缺少 Worker capability）→ 重新 fail 并持久化到新 bin 文件
+
+### 写入注册触发依赖满足
+
+`write_object` 开始时即触发依赖满足，无需等待异步落盘完成：
+
+**Worker 端写入**：
+1. `write_object()` → `on_write_started()` (DataService 注册 INCOMPLETE) → `register_write_with_master()` → `WriteRegisterMessage` 至 Master
+2. Master 收到 `WriteRegisterMessage` → `mark_data_ready` + `update_remote_idx` + `schedule_tasks`
+3. 依赖此数据的 task 立即可被调度
+4. Worker 执行读取时 → 三阶段读 → 远程读 → `try_read_local_or_wait` 阻塞等待落盘完成
+
+**Master 端写入**：
+1. `write_object()` → `on_write_started()` → `on_master_register_write` → `mark_data_ready` + `update_remote_idx` + `schedule_tasks`
+2. 后续 `on_master_record_write` (WriteBackQueue 完成回调) 会再次触发 `on_data_ready`（幂等），并执行 `_DB_META` 记录
+
+**线程安全**：`schedule_tasks` 通过 `schedule_mutex_` 保护，防止 WriteBackQueue 工作线程与 Python 线程并发导致重复 fail/persist。
 
 ### 依赖命名规范
 

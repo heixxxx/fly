@@ -441,13 +441,13 @@ WorkerAgentContext 不存储 `WorkerAgent*` 指针，而是通过 **C 函数指�
 
 写入冻结 DB 触发:
   Database._write_typed() 检测到 db 已冻结
-    → WorkerAgentContext::register_write(db_id, name)
-      → register_func_(ctx_, db_id, name)   // C 函数指针调用
-      → WorkerAgent::register_write_trampoline(void* ctx, db_id, name)
-        → static_cast<WorkerAgent*>(ctx)->register_write_with_master(db_id, name)
-        → 向 Master 发送 WriteRegisterMessage
-        → Master 检查 → WriteRegisterAckMessage
-        → Worker 收到 ACK: success=false → 抛 WriteRegistrationError
+     → WorkerAgentContext::register_write(db_id, name)
+       → register_func_(ctx_, db_id, name)   // C 函数指针调用
+       → WorkerAgent::register_write_trampoline(void* ctx, db_id, name)
+         → static_cast<WorkerAgent*>(ctx)->register_write_with_master(db_id, name)
+         → 向 Master 发送 WriteRegisterMessage
+         → Master 收到 → mark_data_ready + update_remote_idx + schedule_tasks + WriteRegisterAckMessage
+         → Worker 收到 ACK: success=false → 抛 WriteRegistrationError
 
 任务结束:
   WorkerAgent.end_task(task_id)
