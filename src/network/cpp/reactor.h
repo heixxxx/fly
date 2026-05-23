@@ -56,6 +56,7 @@ private:
     std::function<void(uint64_t, int)> error_handler_;
     
     std::atomic<bool> running_{false};
+    std::atomic<bool> stop_requested_{false};
     
     void handle_event(const TransportEvent& event);
     void dispatch_message(uint64_t conn_id, CMString& buffer);

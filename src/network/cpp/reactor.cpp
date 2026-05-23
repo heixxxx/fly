@@ -25,6 +25,7 @@ void Reactor::on_error(std::function<void(uint64_t, int)> handler) {
 }
 
 void Reactor::run() {
+    if (stop_requested_.load()) return;
     running_ = true;
     while (running_) {
         run_once(10);
@@ -42,6 +43,7 @@ void Reactor::run_once(int timeout_ms) {
 }
 
 void Reactor::stop() {
+    stop_requested_ = true;
     running_ = false;
 }
 

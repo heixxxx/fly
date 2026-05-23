@@ -166,12 +166,6 @@ void MasterAgent::stop() {
     INFO("MasterAgent stop() called");
 
     if (running_) {
-        ShutdownMessage shutdown_msg;
-        for (const auto& [worker_id, conn_id] : worker_to_conn_) {
-            INFO("Broadcasting shutdown to worker_id={}", worker_id);
-            reactor_->send(conn_id, shutdown_msg);
-        }
-
         heartbeat_check_running_ = false;
         heartbeat_check_cv_.notify_all();
         if (heartbeat_check_thread_.joinable()) {
@@ -182,6 +176,12 @@ void MasterAgent::stop() {
         if (reactor_thread_.joinable()) {
             reactor_thread_.join();
         }
+
+        for (const auto& [worker_id, conn_id] : worker_to_conn_) {
+            INFO("Broadcasting shutdown to worker_id={}", worker_id);
+            reactor_->send(conn_id, ShutdownMessage{});
+        }
+
         reactor_.reset();
 
         db_instances_.clear();

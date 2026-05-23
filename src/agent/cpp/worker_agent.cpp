@@ -133,7 +133,7 @@ void WorkerAgent::start() {
 }
 
 void WorkerAgent::stop() {
-    INFO("WorkerAgent stop() called");
+    if (!running_ && !reactor_) return;
 
     heartbeat_running_ = false;
     heartbeat_cv_.notify_all();
