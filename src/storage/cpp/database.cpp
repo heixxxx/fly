@@ -6,6 +6,7 @@
 #include <fstream>
 #include <chrono>
 #include <functional>
+#include <random>
 #include <sstream>
 #include <iomanip>
 
@@ -349,14 +350,23 @@ void Database::append_worker_info_to_meta(const WorkerInfo& info) {
 }
 
 CMString Database::generate_db_id() {
-    std::size_t h = std::hash<CMString>{}(base_path_);
+    // UUID v4 (random), 32 hex chars without hyphens
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> dist;
+
+    uint32_t parts[4] = {dist(gen), dist(gen), dist(gen), dist(gen)};
+    // Set version (4) and variant (10xx)
+    parts[2] = (parts[2] & 0x0FFFFFFFu) | 0x40000000u;
+    parts[3] = (parts[3] & 0x3FFFFFFFu) | 0x80000000u;
+
     std::stringstream ss;
-    ss << std::hex << h;
-    CMString hash_str = ss.str();
-    if (hash_str.size() > 12) {
-        hash_str = hash_str.substr(0, 12);
-    }
-    return hash_str;
+    ss << std::hex << std::setfill('0');
+    ss << std::setw(8) << parts[0]
+       << std::setw(8) << parts[1]
+       << std::setw(8) << parts[2]
+       << std::setw(8) << parts[3];
+    return ss.str();
 }
 
 void Database::ensure_directory_exists(const CMString& path) {

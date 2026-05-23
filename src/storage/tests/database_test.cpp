@@ -222,18 +222,20 @@ TEST_F(DatabaseTest, GetObjNameDifferentDbDifferentResult) {
     EXPECT_NE(db_a.get_obj_name("output/result"), db_b.get_obj_name("output/result"));
 }
 
-TEST_F(DatabaseTest, DbIdIsDeterministicHash) {
-    CMString base_path = test_dir_ + "/hash_test";
-    Database db1(base_path);
-    Database db2(base_path);
-    // Same path → same db_id
-    EXPECT_EQ(db1.get_db_id(), db2.get_db_id());
+TEST_F(DatabaseTest, DbIdIsUUIDFormat) {
+    CMString base_path = test_dir_ + "/uuid_test";
+    Database db(base_path);
+    CMString db_id = db.get_db_id();
+    // UUID v4: 32 hex chars
+    EXPECT_EQ(db_id.size(), 32u);
+    for (char c : db_id) {
+        EXPECT_TRUE((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+    }
 }
 
 TEST_F(DatabaseTest, DbIdIsNotBasePath) {
     CMString base_path = test_dir_ + "/not_path";
     Database db(base_path);
-    // db_id should NOT equal base_path (it should be a hash)
     EXPECT_NE(db.get_db_id(), base_path);
 }
 

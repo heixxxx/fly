@@ -1,4 +1,5 @@
 #include <storage/cpp/storage_manager.h>
+#include <storage/cpp/data_service.h>
 #include <filesystem>
 
 namespace fs = std::filesystem;
