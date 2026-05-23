@@ -299,4 +299,14 @@ struct IdxLoadAckMessage {
     FLY_SERIALIZE(header, worker_id, db_id, success, loaded_count, error_message);
 };
 
+// Master → Worker: database frozen notification (broadcast)
+struct DatabaseFreezeNotification {
+    MessageHeader header;
+    CMString db_id;
+
+    static constexpr MessageType msg_type = MessageType::DATABASE_FREEZE;
+
+    FLY_SERIALIZE(header, db_id);
+};
+
 }  // namespace fly

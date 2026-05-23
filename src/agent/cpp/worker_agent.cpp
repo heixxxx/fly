@@ -109,6 +109,11 @@ void WorkerAgent::start() {
             on_idx_load_command(conn_id, msg);
         });
 
+    reactor_->register_handler<DatabaseFreezeNotification>(
+        [this](uint64_t conn_id, const DatabaseFreezeNotification& msg) {
+            on_database_freeze_notification(conn_id, msg);
+        });
+
     reactor_->on_disconnect([this](uint64_t conn_id) {
         on_disconnect(conn_id);
     });
@@ -354,6 +359,7 @@ void WorkerAgent::begin_task(uint64_t task_id) {
     WorkerAgentContext::set(&record_write_trampoline, this);
     WorkerAgentContext::set_register_func(&register_write_trampoline);
     WorkerAgentContext::set_notify_removed_func(&notify_removed_trampoline, this);
+    WorkerAgentContext::set_freeze_func(&freeze_trampoline, this);
 }
 
 void WorkerAgent::record_write(const CMString& db_id, const CMString& object_name) {
@@ -399,6 +405,19 @@ void WorkerAgent::notify_removed_trampoline(void* ctx, const CMString& db_id, co
     self->reactor_->send(self->master_conn_, msg);
 
     INFO("ObjectRemoved sent to master: {}", full_name);
+}
+
+void WorkerAgent::freeze_trampoline(void* ctx, const CMString& db_id) {
+    static_cast<WorkerAgent*>(ctx)->request_database_freeze(db_id);
+}
+
+void WorkerAgent::request_database_freeze(const CMString& db_id) {
+    if (!registered_) return;
+
+    DatabaseFreezeNotification msg;
+    msg.db_id = db_id;
+    reactor_->send(master_conn_, msg);
+    INFO("Freeze notification sent: db_id={}", db_id);
 }
 
 void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
@@ -673,6 +692,21 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
     }
 
     reactor_->send(conn_id, ack);
+}
+
+void WorkerAgent::on_database_freeze_notification(uint64_t conn_id, const DatabaseFreezeNotification& msg) {
+    touch_master_contact();
+    INFO("DatabaseFreezeNotification received: db_id={}", msg.db_id);
+
+    auto it = databases_.find(msg.db_id);
+    if (it != databases_.end()) {
+        if (it->second->is_frozen()) {
+            INFO("DB already frozen, ignoring broadcast: db_id={}", msg.db_id);
+            return;
+        }
+        it->second->freeze();
+        INFO("Worker local database frozen: db_id={}", msg.db_id);
+    }
 }
 
 }  // namespace fly

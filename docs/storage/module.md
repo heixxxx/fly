@@ -276,7 +276,7 @@ public:
     
     std::pair<bool, ReadResult> try_read_local(const CMString& object_name);
     std::pair<bool, ReadResult> try_read_local_or_wait(const CMString& object_name,
-                                                          int timeout_ms = 3000);
+                                                          int timeout_ms = 3000);  // -1 = 无限等待
     ReadResult read_raw(const CMString& object_name, int max_retries = 3);
     
     bool has_local_object(const CMString& object_name) const;

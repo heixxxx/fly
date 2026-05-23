@@ -143,6 +143,7 @@ private:
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
+    void on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg);
 
     void persist_failed_task(const FailedTaskRecord& record);
     void remove_persisted_task(uint64_t task_id);
@@ -153,6 +154,9 @@ private:
 
     static void master_register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     void on_master_register_write(const CMString& db_id, const CMString& name);
+
+    static void master_freeze_trampoline(void* ctx, const CMString& db_id);
+    void on_master_freeze(const CMString& db_id);
 
     std::atomic<bool> fatal_error_{false};
 

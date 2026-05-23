@@ -183,6 +183,7 @@ void Database::freeze() {
     writer_->close();
     create_frozen_marker();
     fly::DataService::instance().on_flush(db_id_);
+    fly::WorkerAgentContext::notify_freeze(db_id_);
 
     // TODO: freeze 后处理 — 从聚合文件中真正删除 removed_objects_ 的数据
     // 当前聚合文件可能包含多个对象，删除单个对象需要重写整个文件

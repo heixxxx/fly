@@ -590,7 +590,7 @@ fly/
   - DataService 统一索引（local_idx + remote_idx + worker_registry）
   - 异步 WriteBackQueue
 - **Layer 2**：网络层（Reactor, TCP, 消息协议）
-  - 23种消息类型全部定义
+  - 27种消息结构全部定义
   - TransportLayer 抽象（移除 accept()，新增 stop_listening()）
   - Worker 数据传输（独立 DataClient 连接）
 - **Layer 3**：任务系统层（DependencyGraph, 调度器）

@@ -235,3 +235,26 @@ qa/
 **Q: 测试间互相干扰？**
 
 每个测试使用独立的 `DB_PATH`（`/tmp/fly_e2e_<name>_db`），不应互相干扰。如果使用了相同的路径，修改为唯一路径。
+
+---
+
+## 6. 压力测试
+
+### 覆盖场景
+
+| 测试文件 | 场景 | 验证内容 |
+|----------|------|----------|
+| `test_stress_concurrent_write.py` | 2 Worker 并发写入同一 DB | 50 对象写入完整性、无数据丢失 |
+| `test_stress_dep_chain.py` | 20 步串行依赖链 | `increment` 任务逐步 +1，最终值正确 |
+| `test_stress_readwrite.py` | 并发读写混合 | 20 写 + 20 读同时进行，读结果一致 |
+| `test_stress_cross_db.py` | 跨 DB 数据传输 | 3 DB 间 cross_db_copy + triple_db_sum 链 |
+| `test_stress_freeze_reject.py` | freeze 后写入拒绝 | 10 写完成 → freeze → 10 写全部失败 |
+| `test_stress_multi_db.py` | 多 DB 并行操作 | 4 DB × 10 写并行，互不干扰 |
+| `test_stress_stability.py` | 长时间稳定性 | 100 写 + 50 compute_sum + 2×5MB 大对象 |
+
+### 未覆盖场景
+
+以下两种场景暂未覆盖测试：
+
+1. **Worker 写入中途 crash**: Worker 在 `write_object` 落盘过程中崩溃（数据可能写入 data 文件但 idx 未持久化）。当前 `test_worker_crash.py` 测试的是 Worker 连接断开后的任务恢复，不涉及写半完成状态。
+2. **失败 task 重跑写覆盖**: `restart_failed_tasks()` 重新执行曾写入过数据的 task，导致同一 key 的数据被重复写入。已知影响：`find_entry()` 返回旧数据、`restore_entries()` 不去重导致 `read_from_entries` 拼接。待实现 `find_entry() → back()` 和 `restore_entries()` 去重后补充测试。

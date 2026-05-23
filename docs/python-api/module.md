@@ -167,8 +167,9 @@ class Master(FlyAgent):
         # agent.submit_task_with_deps(task_id, ...)
 
     def launch_local_workers(self, worker_configs, port=None, mode="thread"):
-        # mode="thread": 线程内 Worker (_start_thread_worker)
-        # mode="process": 子进程 Worker (_spawn_process_worker)
+        # mode="thread": 线程内 Worker (_start_thread_worker) — 仅用于单元测试
+        # mode="process": 子进程 Worker (_spawn_process_worker) — QA 和生产环境
+        # 注意: 公共 API launch_workers() 已隐藏 mode 参数，始终使用 process
 
     def stop(self):
         # 停止所有 Worker → 停止 Agent

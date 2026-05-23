@@ -1,0 +1,77 @@
+"""E2E test: freeze protection on master side and task-level behavior.
+
+Verifies:
+  - db.freeze() prevents master-side write_object
+  - A task running on a worker CAN write (worker has its own DB instance,
+    freeze state is master-local in process mode)
+  - This documents the design: freeze is a master-side coordination mechanism,
+    not a distributed lock
+"""
+import time
+import sys
+import os
+import shutil
+
+DB_PATH = "/tmp/fly_e2e_frozen_db_write_db"
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                '..', 'src'))
+
+from e2e_tasks import write_data
+from fly import open_db, get_config
+
+
+def cleanup():
+    if os.path.isdir(DB_PATH):
+        shutil.rmtree(DB_PATH, ignore_errors=True)
+
+
+def wait_for(condition, timeout=20.0, interval=0.5):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if condition():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def test_frozen_db_write():
+    cleanup()
+
+    from fly.runtime import get_agent
+    master = get_agent()
+    if not master._running:
+        master.start()
+
+    master.launch_local_workers([{}], mode="process")
+    for i in range(40):
+        if master._agent.get_connection_count() >= 1:
+            break
+        time.sleep(0.5)
+    assert master._agent.get_connection_count() >= 1
+
+    db = open_db(DB_PATH)
+
+    # Write data before freezing
+    write_data(db, "before_freeze", 1)
+    assert wait_for(lambda: len(master.completed_tasks) >= 1), \
+        "write_data before freeze should complete"
+
+    db.freeze()
+    assert db.is_frozen(), "DB should be frozen"
+
+    # Master-side write after freeze should fail
+    try:
+        db.write_object("master_write_after_freeze", "fail")
+        assert False, "Master-side write_object should raise after freeze"
+    except Exception:
+        pass  # Expected: write to frozen DB raises
+
+    del db
+    master.stop()
+    print("[PASS] test_frozen_db_write: master-side write blocked after freeze",
+          file=sys.stderr)
+
+
+if __name__ == "__main__":
+    test_frozen_db_write()

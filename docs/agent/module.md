@@ -118,12 +118,17 @@ private:
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
     void on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg);
+    void on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg);
     void on_disconnect(uint64_t conn_id);
     void on_error(uint64_t conn_id, int error_code);
     void restart_failed_tasks(const CMString& file_path);
     void persist_failed_task(const FailedTaskRecord& record);
     void remove_persisted_task(uint64_t task_id);
     CMString get_failed_tasks_file_path() const;
+
+    // Master 本地 freeze（restart_failed_tasks 场景）
+    static void master_freeze_trampoline(void* ctx, const CMString& db_id);
+    void on_master_freeze(const CMString& db_id);
 };
 ```
 
@@ -175,11 +180,35 @@ on_task_complete(TaskCompleteMessage)
       → graph_->mark_data_ready(data_path)       // 触发下游
       → DataService.update_remote_idx(...)        // 更新远程索引
   → for frozen_db:
-      → db_instances_[db_id]->freeze()            // Master 侧 C++ freeze
+      → frozen_dbs_.insert(db_id)
+      → broadcast DatabaseFreezeNotification to all Workers
   → graph_->remove_task(task_id)
   → metadata_->update_task_status(task_id, COMPLETED)
   → remove_persisted_task(task_id)               // 清除持久化记录
   → schedule_tasks()                              // 调度新任务
+
+on_task_failed(TaskFailedMessage)
+  → worker_manager_->complete_task(worker_id)   // Worker → IDLE
+  → metadata_->update_task_status(task_id, FAILED)
+  → if WRITE_TO_FROZEN_DB / WRITE_REGISTRATION_FAILED / WRITE_REGISTRATION_TIMEOUT:
+      → fatal_error_ = true, shutdown all Workers
+  → schedule_tasks()                              // 调度剩余任务
+
+on_database_freeze_request(DatabaseFreezeNotification)
+  → if frozen_dbs_.count(db_id): return (幂等去重)
+  → frozen_dbs_.insert(db_id)
+  → db_instances_[db_id]->freeze()               // Master 侧 C++ freeze
+  → broadcast DatabaseFreezeNotification to all Workers
+
+on_disconnect(conn_id)
+  → 从 conn_to_worker_/worker_to_conn_ 移除断连 Worker
+  → 恢复该 Worker 的 RUNNING 任务 → PENDING
+  → schedule_tasks()
+
+on_master_freeze(db_id)
+  → if frozen_dbs_.count(db_id): return (幂等去重)
+  → frozen_dbs_.insert(db_id)
+  → broadcast DatabaseFreezeNotification to all Workers
 ```
 
 ---
@@ -249,6 +278,7 @@ private:
     static void record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     static void register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     static void notify_removed_trampoline(void* ctx, const CMString& object_name);
+    static void freeze_trampoline(void* ctx, const CMString& db_id);
 
     uint64_t current_task_id_ = 0;
     CMVector<CMString> current_writes_;
@@ -278,7 +308,10 @@ private:
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
     void on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg);
+    void on_database_freeze_notification(uint64_t conn_id, const DatabaseFreezeNotification& msg);
     void on_disconnect(uint64_t conn_id);
+
+    void request_database_freeze(const CMString& db_id);
 
     void heartbeat_loop();
     void initiate_shutdown(const CMString& reason);
@@ -324,7 +357,8 @@ Worker.MainThread (poll_task 循环)
   → poll_task()
     → task = task_queue_.pop()
     → begin_task(task_id)               // 设置 current_task_id_, 清空 writes
-    │     └── WorkerAgentContext::set(trampoline, this)
+    │     └── WorkerAgentContext::set(record_write, register_write, notify_removed, freeze_trampoline)
+    │     └── WorkerAgentContext::set_freeze_func(freeze_trampoline, this)
     → executor_->execute(task_id, ...)
     │     → import module → pickle.loads(args) → 执行原始函数
     │     → 函数内 write_object → WorkerAgentContext 触发 record_write
@@ -380,6 +414,7 @@ private:
 ```cpp
 using RecordWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
 using RegisterWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
+using FreezeFunc = void(*)(void* ctx, const CMString& db_id);
 ```
 
 **WorkerAgentContext 类**:
@@ -398,6 +433,10 @@ public:
     static void set_register_func(RegisterWriteFunc func);
     static void register_write(const CMString& db_id, const CMString& object_name);
 
+    // 设置 freeze 回调（Database::freeze() 调用时通知 Master）
+    static void set_freeze_func(FreezeFunc func, void* ctx);
+    static void notify_freeze(const CMString& db_id);
+
     // 状态查询
     static bool is_active();
     static void set_last_error_type(TaskErrorType type);
@@ -407,6 +446,8 @@ private:
     static inline thread_local RecordWriteFunc func_ = nullptr;
     static inline thread_local void* ctx_ = nullptr;
     static inline thread_local RegisterWriteFunc register_func_ = nullptr;
+    static inline thread_local FreezeFunc freeze_func_ = nullptr;
+    static inline thread_local void* freeze_ctx_ = nullptr;
     static inline thread_local TaskErrorType last_error_type_ = TaskErrorType::UNKNOWN;
 };
 ```
@@ -532,6 +573,7 @@ WorkerAgent.request_db_path(db_id)
 
 ```
 Master.stop()
+  → ds().stop_transfer_server()
   → 广播 ShutdownMessage 给所有 worker_to_conn_
   → heartbeat_check_running_ = false; cv_.notify_all()
   → heartbeat_check_thread_.join()
@@ -540,6 +582,55 @@ Master.stop()
 
 Worker.on_shutdown()
   → registered_ = false
+```
+
+### Freeze 流程（fire-and-forget）
+
+```
+Worker 任务执行中调用 db.freeze():
+  → Database::freeze() (本地)
+    → drain_write_back() + is_frozen_=true + writer_->close() + _FROZEN marker
+    → WorkerAgentContext::notify_freeze(db_id)
+      → freeze_trampoline → request_database_freeze(db_id)
+        → reactor_->send(master_conn_, DatabaseFreezeNotification{db_id})
+  → 任务正常返回，frozen_dbs 列表随 TaskCompleteMessage 发送
+
+Master 收到 TaskCompleteMessage:
+  → for frozen_db:
+    → frozen_dbs_.insert(db_id) (幂等)
+    → broadcast DatabaseFreezeNotification 给所有 Worker
+
+Master 收到 DatabaseFreezeNotification (来自 Worker freeze 请求):
+  → on_database_freeze_request()
+    → frozen_dbs_.count(db_id) → 已存在 → WARN + return (去重)
+    → frozen_dbs_.insert(db_id)
+    → db_instances_[db_id]->freeze() (Master 本地冻结)
+    → broadcast 给所有 Worker
+
+Worker 收到 DatabaseFreezeNotification (广播):
+  → on_database_freeze_notification()
+    → databases_[db_id]->is_frozen() → 已冻结 → INFO + return
+    → databases_[db_id]->freeze() (Worker 本地冻结)
+
+Master 本地 freeze (restart_failed_tasks 场景):
+  → on_master_freeze(db_id)
+    → frozen_dbs_.count(db_id) → 已存在 → WARN + return (去重)
+    → frozen_dbs_.insert(db_id)
+    → broadcast 给所有 Worker
+```
+
+### Worker 断连恢复
+
+```
+Master.on_disconnect(conn_id):
+  → 从 conn_to_worker_/worker_to_conn_ 移除断连 Worker
+  → worker_manager_->remove_worker(worker_id)
+  → 恢复该 Worker 的 RUNNING 任务:
+    → metadata_->get_tasks_by_status(RUNNING)
+    → 过滤 assigned_worker_id == dead_worker_id
+    → graph_->remove_task → graph_->add_task (重新入队，依赖不变)
+    → metadata_->update_task_status(task_id, PENDING)
+  → schedule_tasks() (调度恢复的任务到其他 Worker)
 ```
 
 ### load_db 恢复流程

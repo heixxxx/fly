@@ -81,6 +81,7 @@ public:
     bool request_db_path(const CMString& db_id);
 
     void register_write_with_master(const CMString& db_id, const CMString& object_name);
+    void request_database_freeze(const CMString& db_id);
 
     void set_worker_property(const CMString& prop);
     void set_worker_property(const CMVector<CMString>& props);
@@ -113,6 +114,7 @@ private:
     static void record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     static void register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     static void notify_removed_trampoline(void* ctx, const CMString& db_id, const CMString& name);
+    static void freeze_trampoline(void* ctx, const CMString& db_id);
     
     uint64_t current_task_id_ = 0;
     CMVector<CMString> current_writes_;
@@ -136,6 +138,7 @@ private:
     void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
     void on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg);
+    void on_database_freeze_notification(uint64_t conn_id, const DatabaseFreezeNotification& msg);
     void on_disconnect(uint64_t conn_id);
     
     void heartbeat_loop();

@@ -2,6 +2,20 @@
 
 ---
 
+## 2026-05-24 (7): Bug 修复 + 压力测试 + freeze 机制完善
+
+| 文档 | 变更 |
+|------|------|
+| CLAUDE.md | 新增 §QA 测试与 test 模块；新增 §内部接口；test 模块描述；消息结构数量 26→27 |
+| qa/README.md | 新增 §6 压力测试（7 覆盖场景 + 2 未覆盖场景） |
+| docs/test/module.md | 新增 `increment`、`write_after_freeze` 任务文档 |
+| docs/network/module.md | 消息结构数量 26→27；新增 `DatabaseFreezeNotification` |
+| docs/architecture.md | 消息结构数量 23→27 |
+| docs/architecture/overview.md | 消息类型总览 22→26+header |
+| docs/DOC_CHANGELOG.md | 本条记录 |
+
+---
+
 ## 2026-05-23 (5): writer_id UUID 解耦 idx/data 文件命名
 
 **原因**: load_db 时 worker_id 与 idx 文件名耦合导致冲突限制，Master 无法在任意机器上重启

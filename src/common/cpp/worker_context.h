@@ -9,6 +9,7 @@ namespace fly {
 using RecordWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
 using RegisterWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
 using NotifyRemovedFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
+using FreezeFunc = void(*)(void* ctx, const CMString& db_id);
 
 class WriteRegistrationError : public std::runtime_error {
 public:
@@ -33,12 +34,19 @@ public:
         notify_removed_ctx_ = ctx;
     }
 
+    static void set_freeze_func(FreezeFunc func, void* ctx) {
+        freeze_func_ = func;
+        freeze_ctx_ = ctx;
+    }
+
     static void clear() {
         func_ = nullptr;
         ctx_ = nullptr;
         register_func_ = nullptr;
         notify_removed_func_ = nullptr;
         notify_removed_ctx_ = nullptr;
+        freeze_func_ = nullptr;
+        freeze_ctx_ = nullptr;
         last_error_type_ = TaskErrorType::UNKNOWN;
     }
 
@@ -68,6 +76,12 @@ public:
         }
     }
 
+    static void notify_freeze(const CMString& db_id) {
+        if (freeze_func_) {
+            freeze_func_(freeze_ctx_, db_id);
+        }
+    }
+
     static void set_last_error_type(TaskErrorType type) {
         last_error_type_ = type;
     }
@@ -85,6 +99,8 @@ private:
     static inline thread_local RegisterWriteFunc register_func_ = nullptr;
     static inline thread_local NotifyRemovedFunc notify_removed_func_ = nullptr;
     static inline thread_local void* notify_removed_ctx_ = nullptr;
+    static inline thread_local FreezeFunc freeze_func_ = nullptr;
+    static inline thread_local void* freeze_ctx_ = nullptr;
     static inline thread_local TaskErrorType last_error_type_ = TaskErrorType::UNKNOWN;
 };
 

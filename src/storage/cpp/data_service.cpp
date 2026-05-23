@@ -242,12 +242,18 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
 
     {
         std::unique_lock<std::mutex> cv_lock(info->cv_mutex);
-        bool completed = info->cv.wait_for(cv_lock,
-            std::chrono::milliseconds(timeout_ms),
-            [&info]() {
-                return info->completion_state == CompletionState::FAILED ||
-                       (info->completion_state == CompletionState::COMPLETE && info->flushed);
-            });
+        auto pred = [&info]() {
+            return info->completion_state == CompletionState::FAILED ||
+                   (info->completion_state == CompletionState::COMPLETE && info->flushed);
+        };
+
+        bool completed = true;
+        if (timeout_ms < 0) {
+            info->cv.wait(cv_lock, pred);
+        } else {
+            completed = info->cv.wait_for(cv_lock,
+                std::chrono::milliseconds(timeout_ms), pred);
+        }
 
         if (!completed || info->completion_state == CompletionState::FAILED) {
             return {false, ReadResult{}};
@@ -373,7 +379,7 @@ void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name)
 
     transfer_pool_->submit(
         [this, result]() {
-            auto [found, read_result] = try_read_local_or_wait(result->object_name);
+            auto [found, read_result] = try_read_local_or_wait(result->object_name, -1);
             result->success = found;
             if (found) {
                 result->data.assign(read_result.data_buffer.begin(), read_result.data_buffer.end());

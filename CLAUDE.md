@@ -60,6 +60,18 @@
 bash qa/run_qa_tests.sh
 ```
 
+### QA 测试与 test 模块
+
+QA 测试位于 `qa/` 目录，使用 `src/test/py/e2e_tasks.py` 中定义的 @as_task 任务。添加新 QA case 时的工作流：
+
+1. **评估是否需要新任务**：检查 `e2e_tasks.py` 中是否已有满足需求的任务（write_data, read_data, compute_sum, cross_db_* 等）
+2. **若需新任务**：在 `e2e_tasks.py` 中添加，遵循现有命名风格（动词_名词，如 `write_data`）
+3. **若需新 C++ 测试对象**：在 `src/test/cpp/test_object.h` 添加新类 + `src/test/export/test_export.cpp` 添加导出
+4. **编写 QA 脚本**：在 `qa/` 目录创建新 `.py` 文件，import e2e_tasks 中的任务
+5. **注册到 QA 套件**：在 `qa/run_qa_tests.sh` 中添加新测试
+
+**test 模块不是用户可见的框架功能**，它仅为测试提供基础设施，不导出任何公共 API。
+
 ### 测试稳定性（零容忍）
 
 **所有测试必须每次运行都通过。**
@@ -127,7 +139,7 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 | `reactor.h/cpp` | 单线程事件循环 |
 | `transport.h/cpp` + `tcp_transport.cpp` | TransportLayer 抽象 + POSIX TCP 实现 |
 | `message_protocol.h/cpp` | 二进制帧协议 |
-| `message_types.h` | 26 种消息结构定义 |
+| `message_types.h` | 27 种消息结构定义（含 MessageHeader）
 
 ### 任务系统层 (src/task/)
 
@@ -164,6 +176,7 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 | `src/serialization/cpp/serialization_macros.h` | FLY_SERIALIZE, FLY_ENCODE/DECODE |
 | `src/export/cpp/export_macros.h` | FLY_EXPORT_* 宏 |
 | `src/log/cpp/logger.h/cpp` | DBG/INFO/WARN/ERR 日志宏，CM_FORMAT_CLASS/ENUM |
+| `src/test/` | 测试基础设施：TestObject（可序列化 C++ 测试对象）、e2e_tasks（QA 任务集合）、test_tasks（单元测试任务集合）。详见 `docs/test/module.md` |
 
 ---
 
@@ -226,6 +239,12 @@ from fly import get_agent  # 进阶：直接访问 Agent 单例
 **导出列表**: `open_db`, `load_db`, `get_config`, `as_task`, `task_name`, `launch_workers`, `wait_tasks`, `restart_failed_tasks`, `get_task_error`, `completed_tasks`, `pending_tasks`, `running_tasks`, `failed_tasks`, `get_agent`
 
 **不导出**: `Master`, `Worker`, `FlyAgent`（内部类，通过 `agent.agent` 模块可访问但不推荐用户使用）
+
+### 内部接口（用户不应使用）
+
+- **`launch_workers(mode=...)`**: `mode` 参数已对用户隐藏，始终使用 process 模式。thread 模式仅用于内部单元测试（共享 DataService 单例，不适合生产）
+- **`fly.runtime.reset()`**: 进程内 Agent 重置仅用于测试。用户场景下 Agent 生命周期由 fly 二进制管理，不允许手动 reset
+- **`Master` / `Worker` 直接构造**: 用户通过 `launch_workers()` 和 `get_agent()` 间接使用，不应直接 `Master()` 构造
 
 ### 数据命名与依赖
 

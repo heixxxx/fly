@@ -146,6 +146,11 @@ void MasterAgent::start() {
             on_object_removed(conn_id, msg);
         });
 
+    reactor_->register_handler<DatabaseFreezeNotification>(
+        [this](uint64_t conn_id, const DatabaseFreezeNotification& msg) {
+            on_database_freeze_request(conn_id, msg);
+        });
+
     reactor_->on_disconnect([this](uint64_t conn_id) {
         on_disconnect(conn_id);
     });
@@ -168,6 +173,22 @@ void MasterAgent::start() {
     data_server_port_ = static_cast<int32_t>(port_);
     ds().register_worker(0, host_, port_);
 
+    auto& dsInst = ds();
+    int data_server_threads = static_cast<int>(Config::instance().get_int("data_server_threads"));
+    dsInst.start_transfer_server(
+        data_server_threads,
+        [this](const TransferResult& result) {
+            DataResponseMessage response;
+            response.object_name = result.object_name;
+            response.success = result.success;
+            response.data = result.data;
+            if (!result.success) {
+                response.error_message = result.error_message;
+            }
+            reactor_->send(result.conn_id, response);
+        });
+    reactor_->set_io_pool(dsInst.get_transfer_pool());
+
     INFO("MasterAgent started, reactor thread running");
 }
 
@@ -180,6 +201,8 @@ void MasterAgent::stop() {
         if (heartbeat_check_thread_.joinable()) {
             heartbeat_check_thread_.join();
         }
+
+        ds().stop_transfer_server();
 
         reactor_->stop();
         if (reactor_thread_.joinable()) {
@@ -481,6 +504,12 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
             it->second->freeze();
         }
         INFO("DB frozen: db_id={}", db_id);
+
+        DatabaseFreezeNotification freeze_msg;
+        freeze_msg.db_id = db_id;
+        for (const auto& [wid, cid] : worker_to_conn_) {
+            reactor_->send(cid, freeze_msg);
+        }
     }
 
     task_modules_.erase(msg.task_id);
@@ -513,6 +542,8 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
             reactor_->send(cid, shutdown_msg);
         }
     }
+
+    schedule_tasks();
 }
 
 void MasterAgent::on_disconnect(uint64_t conn_id) {
@@ -524,6 +555,29 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
         worker_manager_->update_worker_status(worker_id, WorkerStatus::DEAD);
 
         WARN("Worker disconnected: worker_id={}", worker_id);
+
+        auto running_tasks = metadata_->get_tasks_by_status(TaskStatus::RUNNING);
+        CMVector<uint64_t> tasks_to_recover;
+        for (const auto& task : running_tasks) {
+            if (task.assigned_worker_id == worker_id) {
+                tasks_to_recover.push_back(task.task_id);
+            }
+        }
+
+        for (uint64_t task_id : tasks_to_recover) {
+            auto* meta = metadata_->get_task(task_id);
+            if (!meta) continue;
+
+            graph_->remove_task(task_id);
+            graph_->add_task(task_id, meta->inputs, meta->required_capabilities);
+            metadata_->update_task_status(task_id, TaskStatus::PENDING);
+            metadata_->set_assigned_worker(task_id, 0);
+            WARN("Recovered task from dead worker: task_id={}, name={}", task_id, meta->name);
+        }
+
+        if (!tasks_to_recover.empty()) {
+            schedule_tasks();
+        }
     }
 }
 
@@ -623,32 +677,7 @@ CMVector<uint64_t> MasterAgent::get_idle_workers() const {
 
 void MasterAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
     INFO("DataRequest for object: {}", msg.object_name);
-
-    DataResponseMessage response;
-    response.object_name = msg.object_name;
-    response.success = false;
-
-    for (const auto& [db_id, db] : db_instances_) {
-        try {
-            auto result = db->read_object_typed(msg.object_name);
-            response.data.assign(result.data_buffer.begin(), result.data_buffer.end());
-            response.success = true;
-            break;
-        } catch (const std::exception& e) {
-            const char* err = e.what();
-            DBG("DataRequest read failed in db {} for {}: {}", db_id, msg.object_name, err);
-            continue;
-        } catch (...) {
-            WARN("DataRequest unknown error in db {} for {}", db_id, msg.object_name);
-            continue;
-        }
-    }
-
-    if (!response.success) {
-        response.error_message = "Object not found on master: " + msg.object_name;
-    }
-
-    reactor_->send(conn_id, response);
+    ds().submit_transfer(conn_id, msg.object_name);
 }
 
 void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg) {
@@ -874,6 +903,7 @@ void MasterAgent::restart_failed_tasks(const CMString& file_path) {
 void MasterAgent::setup_write_context() {
     WorkerAgentContext::set(&MasterAgent::master_record_write_trampoline, this);
     WorkerAgentContext::set_register_func(&MasterAgent::master_register_write_trampoline);
+    WorkerAgentContext::set_freeze_func(&MasterAgent::master_freeze_trampoline, this);
 }
 
 void MasterAgent::master_record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
@@ -998,6 +1028,50 @@ void MasterAgent::rebuild_remote_idx(const CMString& db_id,
         }
         INFO("rebuild_remote_idx: mapped {} entries from writer_id={} to new worker_id={}",
              entries.size(), w.writer_id, new_worker_id);
+    }
+}
+
+void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg) {
+    if (frozen_dbs_.count(msg.db_id)) {
+        WARN("DB already frozen, ignoring duplicate freeze request: db_id={}", msg.db_id);
+        return;
+    }
+
+    INFO("DatabaseFreezeRequest: db_id={}", msg.db_id);
+
+    frozen_dbs_.insert(msg.db_id);
+
+    auto it = db_instances_.find(msg.db_id);
+    if (it != db_instances_.end()) {
+        it->second->freeze();
+    }
+
+    DatabaseFreezeNotification broadcast_msg = msg;
+    for (const auto& [wid, cid] : worker_to_conn_) {
+        reactor_->send(cid, broadcast_msg);
+    }
+
+    INFO("DB frozen and broadcasted: db_id={}", msg.db_id);
+}
+
+void MasterAgent::master_freeze_trampoline(void* ctx, const CMString& db_id) {
+    static_cast<MasterAgent*>(ctx)->on_master_freeze(db_id);
+}
+
+void MasterAgent::on_master_freeze(const CMString& db_id) {
+    if (!running_.load()) return;
+
+    if (frozen_dbs_.count(db_id)) {
+        WARN("DB already frozen, ignoring duplicate freeze: db_id={}", db_id);
+        return;
+    }
+
+    frozen_dbs_.insert(db_id);
+
+    DatabaseFreezeNotification msg;
+    msg.db_id = db_id;
+    for (const auto& [wid, cid] : worker_to_conn_) {
+        reactor_->send(cid, msg);
     }
 }
 

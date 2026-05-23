@@ -227,12 +227,18 @@ class Master(FlyAgent):
         raise TimeoutError(f"Only {registered}/{count} workers registered after {timeout}s")
 
     def load_db(self, path: str):
+        import os
         try:
             from storage.database import _Database
         except ImportError:
             from database import _Database
         from collections import defaultdict
         import socket
+
+        if not os.path.isdir(path):
+            raise RuntimeError(f"Path does not exist: {path}")
+        if not os.path.isfile(os.path.join(path, "_DB_META")):
+            raise RuntimeError(f"No _DB_META found at {path}")
 
         if not self._running:
             self.start()

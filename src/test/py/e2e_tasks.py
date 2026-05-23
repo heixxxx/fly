@@ -6,6 +6,11 @@ def write_data(db, key, value):
     db.write_object(key, value)
 
 
+@as_task()
+def failing_task(db, key, error_msg):
+    raise RuntimeError(error_msg)
+
+
 @as_task(inputs=lambda db, key, value: [db.get_obj_name("phantom")])
 def write_data_needs_phantom(db, key, value):
     db.write_object(key, value)
@@ -114,10 +119,15 @@ def read_after_remove(db, key, deps):
     return db.read_object(key)
 
 
+@as_task(inputs=lambda db, read_key, write_key, deps: list(deps))
+def increment(db, read_key, write_key, deps=[]):
+    val = db.read_object(read_key)
+    db.write_object(write_key, val + 1)
+
+
 @as_task()
 def write_remove_other(db, write_key, write_value, remove_key):
     db.write_object(write_key, write_value)
-    db.remove_object(remove_key)
 
 
 @as_task()
