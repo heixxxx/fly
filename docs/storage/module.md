@@ -15,7 +15,7 @@
 | `cpp/database.h/cpp` | 统一存储接口，异步写入（WriteBackQueue） |
 | `cpp/data_writer.h/cpp` | 单线程写入聚合器，小文件聚合 + 大文件分块 |
 | `cpp/data_reader.h/cpp` | 数据读取器（实例方法） |
-| `cpp/data_service.h/cpp` | 统一内存索引：local_idx + remote_idx + worker_registry |
+| `cpp/data_service.h/cpp` | 统一内存索引：local_idx + remote_idx + db_paths_ + worker_registry |
 | `cpp/storage_manager.h/cpp` | Database 生命周期管理，单例 |
 | `cpp/local_index.h/cpp` | 本地索引持久化（.idx 文件） |
 | `cpp/index_entry.h` | 索引条目结构（版本 3） |
@@ -35,8 +35,11 @@ public:
     Database(const CMString& base_path, 
              const CMString& data_path = "", 
              uint64_t writer_id = 0, 
-             const CMString& host = "");
+             const CMString& host = "",
+             const CMString& existing_db_id = "");
     ~Database();
+    
+    // existing_db_id: 非空时跳过 write_db_meta_header()，使用给定 db_id（用于 load_db 恢复）
 
     // 异步写入（非阻塞）
     template<typename T>
@@ -64,6 +67,7 @@ public:
     void freeze();
     bool is_frozen() const;
     DbMeta load_meta() const;
+    void write_db_meta_header();  // 写 _DB_META header（构造时自动调用，existing_db_id 非空时跳过）
     CMString get_db_id() const;
     void set_db_id(const CMString& db_id);
     void reset();
@@ -292,6 +296,11 @@ public:
     void register_database(const CMString& db_id, const CMString& base_path,
                            const CMString& data_path, uint64_t writer_id = 0);
     void unregister_database(const CMString& db_id);
+    bool has_database(const CMString& db_id) const;
+    
+    // 索引恢复 (load_db)
+    void restore_entries(const CMString& db_id,
+                          const CMVector<IndexEntry>& entries);
     
     // WriteBackQueue
     void start_write_back();
@@ -307,6 +316,12 @@ public:
     void submit_transfer(uint64_t conn_id, const CMString& object_name);
 
 private:
+    struct DbPaths {
+        CMString base_path;
+        CMString data_path;
+        uint64_t writer_id = 0;
+    };
+    
     CMUnorderedMap<CMString, CMSharedPtr<LocalObjectInfo>> local_idx_;
     CMUnorderedMap<CMString, RemoteObjectInfo> remote_idx_;
     CMMap<uint64_t, RemoteObjectInfo> worker_registry_;

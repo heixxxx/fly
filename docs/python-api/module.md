@@ -289,6 +289,13 @@ class FlyAgent(ABC):
     # Master-only
     @abstractmethod
     def restart_failed_tasks(self, file_path): pass
+
+    # load_db 恢复
+    @abstractmethod
+    def load_db(self, path): pass
+
+    @abstractmethod
+    def wait_for_all_workers(self, count, timeout=30): pass
 ```
 
 **Master 实现无操作**: Master 的 Worker 属性方法打印 WARN 并无操作。
@@ -376,6 +383,38 @@ master.restart_failed_tasks("/path/to/failed_tasks.bin")
 
 ---
 
+### load_db 数据库恢复
+
+**场景**: Master 进程重启后，恢复之前创建的 Database 及其数据索引。
+
+```python
+from fly.agent import Master
+
+# Run 1: 创建 DB，写入数据
+master = Master()
+db = master.open_db("/data/project")
+# ... 写入数据，执行任务 ...
+master.stop()
+
+# Run 2: 重启后恢复 DB
+master = Master()
+db = master.load_db("/data/project")   # 恢复 DB，自动加载索引，启动 Worker
+# ... db_id 不变，索引已恢复，可继续读取数据 ...
+```
+
+**DB 移动支持**: `_DB_META` 仅存储 `db_id`（不含 base_path），因此 DB 可被移动到新路径后恢复：
+```python
+# DB 被移动
+master.load_db("/new/location/project")  # db_id 从 _DB_META 读取，不受路径变化影响
+```
+
+**关键行为**:
+- `load_db` 内部使用 process worker（非 thread worker）
+- `next_worker_id` 从旧记录中推断，避免 idx 文件名冲突
+- Worker 的 `on_idx_load_command` 注册 `db_paths_` 并恢复 entries
+
+---
+
 ## 实现流程
 
 ### 任务从定义到执行
@@ -397,7 +436,10 @@ master.restart_failed_tasks("/path/to/failed_tasks.bin")
 
 4. Worker executor:
    → importlib.import_module(task_module)
-   → _deserialize_args: "__fly_db__:" → _Database(base, data, worker_id)
+   → _deserialize_args: "__fly_db__:" → 检查 DataService.has_database(db_id)
+     → 已注册 (IdxLoad 恢复过): ex_stg_create_database_with_id(base, db_id)
+     → 未注册: ex_stg_create_database(base, data, worker_id)
+   → executor 执行完成后 drain_write_back() 确保数据落盘
    → original_func(db, "file1")
    → 记录 writes + frozen_dbs
 

@@ -62,6 +62,14 @@ public:
                                                    uint64_t writer_id = 0);
     void broadcast_object_removed(const CMString& db_id, const CMString& object_name);
 
+    // load_db 恢复
+    CMVector<IndexEntry> restore_master_idx(const CMString& db_id, const CMString& base_path,
+                                             uint64_t writer_id);
+    void send_idx_load_commands(const CMString& db_id, const CMString& base_path,
+                                 const CMVector<uint64_t>& old_worker_ids);
+    void rebuild_remote_idx(const CMString& db_id, const CMString& base_path,
+                             const CMVector<WorkerInfo>& workers);
+
     // 远程数据读取
     ReadResult request_remote_data(const CMString& object_name);
     ReadResult request_data_from_worker(const CMString& host, int32_t port,
@@ -83,7 +91,11 @@ private:
     CMMap<uint64_t, uint64_t> conn_to_worker_;
     CMMap<uint64_t, uint64_t> worker_to_conn_;
     CMMap<uint64_t, CMString> task_modules_;
-    CMMap<uint64_t, CMVector<CMString>> task_args_;
+    CMMap<uint64_t, CMString> task_args_;
+
+    // Hostname 追踪 (load_db)
+    CMMap<uint64_t, CMString> worker_to_hostname_;
+    CMMap<uint64_t, CMString> worker_to_ip_;
 
     CMMap<CMString, CMMap<CMString, CMString>> db_registry_;
     CMMap<CMString, CMSharedPtr<Database>> db_instances_;
@@ -105,10 +117,9 @@ private:
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
+    void on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg);
     void on_disconnect(uint64_t conn_id);
     void on_error(uint64_t conn_id, int error_code);
-
-    // Failed task persistence
     void restart_failed_tasks(const CMString& file_path);
     void persist_failed_task(const FailedTaskRecord& record);
     void remove_persisted_task(uint64_t task_id);
@@ -126,6 +137,8 @@ task_args_:       task_id → args[]
 db_registry_:     db_id → {base_path → data_path}
 db_instances_:    db_id → shared_ptr<Database>
 frozen_dbs_:      set<db_id>                // 已冻结 DB 集合
+worker_to_hostname_: worker_id → hostname   // hostname 追踪 (load_db)
+worker_to_ip_:       worker_id → ip_address
 ```
 
 **Master 启动流程**:
@@ -264,6 +277,7 @@ private:
     void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
+    void on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg);
     void on_disconnect(uint64_t conn_id);
 
     void heartbeat_loop();
@@ -526,6 +540,38 @@ Master.stop()
 
 Worker.on_shutdown()
   → registered_ = false
+```
+
+### load_db 恢复流程
+
+```
+master.load_db("/path/to/db"):
+
+Phase 1: 读取 _DB_META
+  → DbMeta{db_id, created_at, workers[WorkerInfo{worker_id, hostname, ip, launch_command}]}
+
+Phase 2: Master 自身恢复
+  → get_or_create_database(base_path, writer_id=0, existing_db_id=meta.db_id)
+  → restore_master_idx(db_id, base_path, 0)
+    → DataWriter 加载 worker_0.idx → 提取 entries → DataService.restore_entries()
+  → next_worker_id = max(old_ids) + 1
+
+Phase 3: 启动 Worker (process worker)
+  → 按 hostname 分组，匹配本机 hostname → _spawn_process_worker()
+  → wait_for_all_workers(count)
+
+Phase 4: 下发 idx 加载命令
+  → send_idx_load_commands(db_id, base_path, old_worker_ids)
+  → Worker.on_idx_load_command()
+    → register_database(db_id, base_path) 注册 db_paths_
+    → 为每个 old_worker_id 创建只读 LocalIndex → load → restore_entries()
+    → reply IdxLoadAckMessage{success, loaded_count}
+
+Phase 5: 重建 remote_idx
+  → rebuild_remote_idx(db_id, base_path, workers)
+    → 读所有旧 idx → {object_name → old_worker_id}
+    → old_worker_id → hostname → new_worker_id 映射
+    → 写入 DataService remote_idx_
 ```
 
 ---

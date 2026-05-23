@@ -16,7 +16,7 @@
 | `cpp/tcp_transport.cpp` | POSIX TCP 实现 (epoll) |
 | `cpp/reactor.h/cpp` | 单线程事件循环 |
 | `cpp/message_protocol.h/cpp` | 二进制帧协议 |
-| `cpp/message_types.h` | 24 种消息类型定义 |
+| `cpp/message_types.h` | 26 种消息类型定义 |
 | `cpp/io_thread_pool.h/cpp` | 通用线程池（submit + completion 回调） |
 | `cpp/metadata_client.h/cpp` | 阻塞 TCP 元数据查询客户端（原名 MasterClient） |
 | `cpp/data_client.h/cpp` | 阻塞 TCP 数据客户端 |
@@ -261,7 +261,7 @@ public:
 
 ### 消息类型定义（message_types.h）
 
-24 种消息类型，每种定义对应的结构体，均支持 `FLY_SERIALIZE` 序列化。
+26 种消息类型，每种定义对应的结构体，均支持 `FLY_SERIALIZE` 序列化。
 
 **核心消息结构体示例**:
 
@@ -273,7 +273,10 @@ struct RegisterMessage {
     CMVector<CMString> attributes;
     CMString data_server_host;
     int32_t data_server_port;
-    FLY_SERIALIZE(header, worker_id, role, attributes, data_server_host, data_server_port);
+    CMString hostname;       // Worker 自行探测上报 (gethostname)
+    CMString ip_address;     // Worker IP
+    FLY_SERIALIZE(header, worker_id, role, attributes, data_server_host, data_server_port,
+                  hostname, ip_address);
 };
 
 struct TaskSubmitMessage {
@@ -300,6 +303,24 @@ struct ObjectRemovedMessage {
     CMString object_name;   // "db_id:obj_name"
     CMString db_id;
     FLY_SERIALIZE(header, object_name, db_id);
+};
+
+struct IdxLoadCommandMessage {       // type=25, Master → Worker
+    MessageHeader header;
+    CMString db_id;
+    CMString base_path;
+    CMVector<uint64_t> old_worker_ids;
+    FLY_SERIALIZE(header, db_id, base_path, old_worker_ids);
+};
+
+struct IdxLoadAckMessage {           // type=26, Worker → Master
+    MessageHeader header;
+    uint64_t worker_id;
+    CMString db_id;
+    bool success;
+    int32_t loaded_count;
+    CMString error_message;
+    FLY_SERIALIZE(header, worker_id, db_id, success, loaded_count, error_message);
 };
 ```
 
