@@ -28,6 +28,9 @@ compile_commands.json
 # OS
 .DS_Store
 
+# Agent runtime
+.sisyphus/run-continuation/
+
 # LOGS
 *.log
 fly_log/
