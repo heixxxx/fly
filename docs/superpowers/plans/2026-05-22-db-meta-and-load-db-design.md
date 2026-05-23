@@ -75,10 +75,9 @@ struct WorkerInfo {
 
 ```cpp
 struct DbMetaHeader {
-    CMString db_id;       // 持久化，load_db时直接使用，不重新计算hash
-    CMString base_path;
+    CMString db_id;       // 持久化，load_db时直接使用
     int64_t created_at = 0;
-    FLY_SERIALIZE(db_id, base_path, created_at)
+    FLY_SERIALIZE(db_id, created_at)
 };
 ```
 
@@ -88,7 +87,6 @@ struct DbMetaHeader {
 // load_meta() 的返回值 — 从磁盘聚合而来
 struct DbMeta {
     CMString db_id;
-    CMString base_path;
     int64_t created_at = 0;
     CMVector<WorkerInfo> workers;  // 从增量记录聚合
 };
@@ -145,19 +143,19 @@ struct IdxLoadAckMessage {
 
 ```
 磁盘格式:
-[8 bytes header_size][bitsery-encoded DbMetaHeader{db_id, base_path, created_at}]
+[8 bytes header_size][bitsery-encoded DbMetaHeader{db_id, created_at}]
 [8 bytes record_size][bitsery-encoded WorkerInfo{worker_id, hostname, ip, launch_command}]
 [8 bytes record_size][bitsery-encoded WorkerInfo{...}]  ← 新 worker 写入时追加
 ...
 ```
 
 **写入时机**:
-1. **Database 构造时**: 写 header `{db_id, base_path, created_at=now}`
+1. **Database 构造时**: 写 header `{db_id, created_at=now}`（不存储 base_path，DB 可被移动）
 2. **on_data_ready() 中**: 检查内存缓存，若 `(hostname, worker_id)` 未记录 → 追加 WorkerInfo 到文件末尾 + 更新缓存
 3. **freeze() 时**: 只写 `_FROZEN` 空文件（`_DB_META` 已最新）
 
 **读取/聚合** (`load_meta()`):
-1. 读 header → `{db_id, base_path, created_at}`
+1. 读 header → `{db_id, created_at}`
 2. 逐条读后续 WorkerInfo 记录 → 聚合到 `workers` 向量
 3. 返回完整 `DbMeta{header, workers}`
 
@@ -291,9 +289,9 @@ class Master:
 master.load_db("/path/to/db"):
 
 Phase 1: 读取元数据
-  1. 读 _DB_META → header{db_id, base_path, created_at} + WorkerInfo[]
-  2. 聚合: {hostname → [old_worker_ids]}
-  3. 收集所有 old_worker_ids (包括 master 的 0)
+   1. 读 _DB_META → header{db_id, created_at} + WorkerInfo[]
+   2. 聚合: {hostname → [old_worker_ids]}
+   3. 收集所有 old_worker_ids (包括 master 的 0)
 
 Phase 2: Master 自身恢复
   4. get_or_create_database(base_path, data_path, writer_id=0)
@@ -303,22 +301,23 @@ Phase 2: Master 自身恢复
   7. 提取 worker_0.idx entries → restore_entries(db_id, entries) → local_idx_
   8. next_worker_id = max(old_ids) + 1
 
-Phase 3: 启动 Worker
-  9. 按 hostname 分组，排除 Master 自身 hostname
-  10. 对匹配本机 hostname 的其他 worker_ids:
-      launch_local_worker(next_worker_id)
-      next_worker_id++
-  11. wait_for_all_workers(count=needed_count)
+Phase 3: 启动 Worker (process worker)
+   9. 按 hostname 分组，排除 Master 自身 hostname
+   10. 对匹配本机 hostname 的其他 worker_ids:
+       _spawn_process_worker(next_worker_id)
+       next_worker_id++
+   11. wait_for_all_workers(count=needed_count)
 
 Phase 4: 下发 idx 加载命令
-  12. 对每个新 Worker:
-      old_ids = _DB_META 中该 hostname 对应的 old_worker_ids
-      send IdxLoadCommandMessage{db_id, base_path, old_ids}
-  13. Worker 处理:
-      for old_id in old_ids:
-        LocalIndex(base_path + "/worker_" + old_id + ".idx").load()
-        restore_entries(db_id, entries)
-      reply IdxLoadAck{success, loaded_count}
+   12. 对每个新 Worker:
+       old_ids = _DB_META 中该 hostname 对应的 old_worker_ids
+       send IdxLoadCommandMessage{db_id, base_path, old_ids}
+   13. Worker 处理:
+       register_database(db_id, base_path, "", worker_id)  ← 注册 db_paths_ 供 try_read_local
+       for old_id in old_ids:
+         LocalIndex(base_path + "/worker_" + old_id + ".idx").load()
+         restore_entries(db_id, entries)
+       reply IdxLoadAck{success, loaded_count}
 
 Phase 5: 重建 remote_idx
   14. 等待所有 IdxLoadAck
