@@ -2,7 +2,13 @@
 
 ## 模块概述
 
-**位置**: `src/fly/`
+**位置**: 各模块 `py/` 目录（通过 `src/fly/` 统一导出）
+
+- `src/fly/` — 顶层包入口（`__init__.py`, `main.py`, `runtime.py`）
+- `src/agent/py/` — `agent.py`, `executor.py`
+- `src/task/py/` — `task.py`
+- `src/storage/py/` — `database.py`
+- `src/core/py/` — `get_config()`, `Config`（合并了原 `config.py`）
 
 Python API 层将 C++ 底层 API 包装为用户友好的高层接口，提供任务定义、Database 操作、Agent 管理和运行时配置。
 
@@ -13,12 +19,11 @@ Python API 层将 C++ 底层 API 包装为用户友好的高层接口，提供�
 | 文件 | 说明 |
 |------|------|
 | `__init__.py` | 顶层包，导出 open_db, as_task, get_config 等 |
-| `agent.py` | Master/Worker Python 封装 |
-| `database.py` | _Database 类（三层读取） |
-| `task.py` | @as_task 和 @task_name 装饰器 |
-| `executor.py` | Worker 任务执行器 |
+| `agent.py` | Master/Worker Python 封装（位于 `src/agent/py/`） |
+| `database.py` | _Database 类（位于 `src/storage/py/`） |
+| `task.py` | @as_task 和 @task_name 装饰器（位于 `src/task/py/`） |
+| `executor.py` | Worker 任务执行器（位于 `src/agent/py/`） |
 | `runtime.py` | 运行时配置（master/worker mode） |
-| `config.py` | Config Python 封装 |
 | `main.py` | 初始化入口 |
 
 ---

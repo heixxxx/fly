@@ -140,7 +140,7 @@ config.set(heartbeat_timeout=60)  # RuntimeError: Config must be set before work
 使用 `@as_task` 装饰器将普通函数包装为任务：
 
 ```python
-from fly.task import as_task, task_name
+from fly import as_task, task_name
 
 # 简单任务定义
 @as_task(inputs=lambda db, name: [f"input/{name}"])

@@ -313,23 +313,29 @@ cc_binary(
 
 ### 6.2 添加到 Python 默认加载
 
-编辑 `src/main/cpp/main.cpp`，在 `setup_sys_path()` 中添加 export 目录：
+编辑 `src/main/cpp/main.cpp`，在 `setup_sys_path()` 中添加模块路径：
 
 ```cpp
+// build/ 布局（fly.sh install 后）
+ps += "sys.path.insert(0, '" + (py_dir / "pipeline").string() + "')\n";
+
+// bazel-bin/ 布局（开发时）
 ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "pipeline" / "export").string() + "')\n";
 ```
 
-编辑 `src/fly/main.py`，在 `_import_all_internal_modules()` 中添加 import：
+同时在 C++ 模块加载区添加：
+
+```cpp
+ps += "import _fly_pipeline\n";
+```
+
+编辑 `src/fly/__init__.py`，在模块导入区添加：
 
 ```python
-def _import_all_internal_modules():
-    import _fly_core
-    import _fly_log
-    import _fly_storage
-    import _fly_agent
-    import _fly_test
-    import _fly_pipeline  # 新增
-    ...
+try:
+    from pipeline.pipeline import SomeClass
+except ImportError:
+    from pipeline.py.pipeline import SomeClass
 ```
 
 ### 6.3 添加到 compile_commands.json (可选)
@@ -345,6 +351,55 @@ def _import_all_internal_modules():
 
 或运行 `./fly.sh refresh` 自动重新生成。
 
+### 6.4 添加到 fly.sh install（部署模式）
+
+`fly.sh install` 创建 `build/` 目录，将 bazel-bin 产物 symlink 到可移植的目录结构中。新模块需要在 `fly.sh` 的 `do_install()` 函数中注册。
+
+**步骤 1**：在 `mkdir` 块中添加 Python 模块目录：
+
+```bash
+mkdir -p "$build_dir/python/pipeline"
+```
+
+**步骤 2**：在 Python 模块 symlink 块中添加（按模块名规律加入 `for mod in ...` 循环，或单独添加）：
+
+```bash
+# Pipeline
+ln -sf "$bazel_bin/src/pipeline/export/_fly_pipeline.so" "$build_dir/python/pipeline/"
+for py in "$FLY_ROOT/src/pipeline/py/"*.py; do
+    [ -f "$py" ] && ln -sf "$py" "$build_dir/python/pipeline/"
+done
+```
+
+**步骤 3**：C++ shared libs 会自动被通配符规则拾取（`src/*/export/_fly_*.so` 和 `src/*/cpp/libfly_*_so.so`），无需额外操作。
+
+**步骤 4**：验证安装：
+
+```bash
+./fly.sh build //src/pipeline/...
+./fly.sh install
+ls -la build/python/pipeline/   # 应有 _fly_pipeline.so + *.py
+ls -la build/lib/                # 应有 libfly_pipeline_so.so + _fly_pipeline.so
+./build/bin/fly -c "from pipeline import EXPPlPipeline; print('OK')"
+```
+
+**build/ 目录结构说明**：
+
+```
+build/
+├── bin/
+│   ├── fly            # wrapper 脚本（设置 LD_LIBRARY_PATH）
+│   └── fly.bin → bazel-bin/src/main/cpp/fly
+├── lib/               # C++ shared libraries
+│   ├── libfly_pipeline_so.so → bazel-bin/src/pipeline/cpp/libfly_pipeline_so.so
+│   ├── _fly_pipeline.so → bazel-bin/src/pipeline/export/_fly_pipeline.so
+│   └── ...
+└── python/            # Python modules (sys.path entry)
+    ├── fly/           # fly 包（__init__.py, main.py, runtime.py）
+    ├── pipeline/      # _fly_pipeline.so + pipeline/py/*.py
+    └── ...
+```
+
 ---
 
 ## 7. 构建与测试
@@ -358,6 +413,10 @@ def _import_all_internal_modules():
 
 # 运行全量测试确保无回归
 ./fly.sh test //src/...
+
+# 安装并验证 deploy 模式
+./fly.sh install
+./build/bin/fly -c "from pipeline import EXPPlPipeline; print('Pipeline OK')"
 ```
 
 ---
@@ -371,7 +430,10 @@ def _import_all_internal_modules():
 - [ ] export `BUILD` 有 `linkshared = True` 和 `dynamic_deps`
 - [ ] export `BUILD` 依赖 `@nanobind//:nanobind_src` 和 `fly_export_macros`
 - [ ] 模块名 `_fly_pipeline.so` 遵循 `_fly_` 前缀约定
-- [ ] `main.cpp` 的 `setup_sys_path()` 包含新模块的 export 目录
-- [ ] `main.py` 的 `_import_all_internal_modules()` 包含新模块 import
+- [ ] `main.cpp` 的 `setup_sys_path()` 包含新模块路径（build/ 和 bazel-bin/ 两种布局）
+- [ ] `main.cpp` 的 C++ 模块加载区包含 `import _fly_pipeline\n`
+- [ ] `src/fly/__init__.py` 包含新模块的 Python 导入（带 try/except 兼容两种路径）
 - [ ] `main/cpp/BUILD` 的 `deps` 和 `dynamic_deps` 包含新模块
+- [ ] `fly.sh` 的 `do_install()` 包含新模块的 mkdir + symlink 规则
 - [ ] `nm -CD` 验证无符号重复（新模块的符号只出现在 `libfly_pipeline_so.so` 中）
+- [ ] `./fly.sh install` 后 `build/` 目录结构正确

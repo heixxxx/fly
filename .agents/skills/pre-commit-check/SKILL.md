@@ -38,13 +38,21 @@ Categorize every changed file:
 
 For **every commit with code changes**, apply TWO checks:
 
-#### Check A: Existing Docs Accuracy (for API/Behavior changes)
+#### Check A: Existing Docs Accuracy (for API/Behavior/Internal changes)
 
-- [ ] **CLAUDE.md** — module tables, API sections, architecture flows still accurate?
-- [ ] **docs/\<module\>/module.md** — class methods, signatures, new/removed members match?
-- [ ] **docs/python-api/module.md** — Python-exposed methods match exports?
-- [ ] **docs/network/module.md** — message count, new message types match?
-- [ ] **docs/architecture.md** — message types table, flow descriptions match?
+Scan **all `.md` files under `docs/`** AND `CLAUDE.md` for references to changed code. For each changed file/function/path:
+
+- [ ] Grep `docs/` and `CLAUDE.md` for old paths, old function names, old class names that were moved/renamed/removed
+- [ ] Verify every hit is still accurate — if not, flag for update
+- [ ] `CLAUDE.md` — module tables, API sections, architecture flows still accurate?
+- [ ] `docs/python-api/module.md` — Python-exposed methods match exports?
+- [ ] `docs/architecture.md` + `docs/architecture/overview.md` — diagrams, flows, imports match?
+
+**When files are moved/renamed** (git diff shows `rename from` / `rename to` or path changes):
+- [ ] Grep ALL docs for the **old path** — every reference must be updated or annotated
+- [ ] Check `docs/NEW_MODULE_GUIDE.md` — does it reference the correct current paths?
+- [ ] Check `docs/DEVELOPMENT_GUIDELINES.md` — are build commands and conventions current?
+- [ ] Check `docs/<affected_module>/module.md` — file tables accurate?
 
 #### Check B: New Behavior Documentation (MANDATORY)
 
@@ -78,8 +86,11 @@ Present this format:
 
 ### Documentation Check
 - [x] CLAUDE.md — [up to date / needs update: reason]
-- [x] docs/xxx/module.md — [up to date / needs update: reason]
-- [x] docs/architecture.md — [up to date / needs update: reason]
+- [x] docs/ grep for old paths — [N stale references found / clean]
+- [x] docs/NEW_MODULE_GUIDE.md — [up to date / needs update: reason]
+- [x] docs/DEVELOPMENT_GUIDELINES.md — [up to date / needs update: reason]
+- [x] docs/architecture*.md — [up to date / needs update: reason]
+- [x] docs/<module>/module.md — [up to date / needs update: reason]
 
 ### Required Doc Updates (if any)
 1. [specific file]: [what to add/change]

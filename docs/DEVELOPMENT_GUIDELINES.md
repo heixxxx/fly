@@ -708,6 +708,9 @@ src/new_module/
 # 构建 + 测试 + 刷新
 ./fly.sh check
 
+# 安装到 build/ 目录（创建 symlink 到 bazel-bin 产物，用于 QA 测试和部署）
+./fly.sh install
+
 # clangd 配置（同 ./fly.sh refresh）
 bazel run //:refresh_compile_commands
 ```

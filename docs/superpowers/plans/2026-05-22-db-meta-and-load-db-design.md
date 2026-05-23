@@ -379,9 +379,9 @@ Phase 5: 重建 remote_idx
 | `src/agent/cpp/agent_context.h` | 新增 | 泛化 WorkerAgentContext → AgentContext |
 | `src/storage/export/storage_export.cpp` | 修改 | 更新 DbMeta/WorkerInfo 导出 |
 | `src/agent/export/agent_export.cpp` | 修改 | 导出新方法 |
-| `src/fly/agent.py` | 修改 | next_worker_id、load_db、wait_for_all_workers |
-| `src/fly/database.py` | 修改 | load_db 路径 |
-| `src/fly/__init__.py` | 修改 | load_db 接口 |
+| `src/fly/agent.py` → `src/agent/py/agent.py` | 修改 | next_worker_id、load_db、wait_for_all_workers |
+| `src/fly/database.py` → `src/storage/py/database.py` | 修改 | load_db 路径 |
+| `src/fly/__init__.py` | 修改 | load_db 接口（已迁至 src/fly/__init__.py，引用各模块 py/） |
 
 ---
 

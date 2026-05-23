@@ -15,7 +15,7 @@
 | `config.h` | Config 类声明 |
 | `config.cpp` | Config 类实现 |
 | `src/core/export/core_export.cpp` | nanobind Python 导出 |
-| `src/fly/config.py` | Python 封装 |
+| `src/core/py/__init__.py` | get_config() + Config 导出（合并了原 config.py） |
 
 ---
 
