@@ -8,6 +8,7 @@
 #   ./fly.sh buildonly [target...] - Build only, no clangd refresh
 #   ./fly.sh refresh               - Refresh compile_commands.json only
 #   ./fly.sh check                 - Build, test, and refresh clangd
+#   ./fly.sh install               - Create build/ with symlinks
 set -euo pipefail
 
 FLY_ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -99,6 +100,76 @@ refresh_clangd() {
     echo ">>> compile_commands.json updated ($count targets)"
 }
 
+do_install() {
+    cd "$FLY_ROOT"
+    local build_dir="$FLY_ROOT/build"
+    local bazel_bin="$FLY_ROOT/bazel-bin"
+
+    if [ ! -d "$bazel_bin/src" ]; then
+        echo "ERROR: bazel-bin not found. Run './fly.sh build' first." >&2
+        exit 1
+    fi
+
+    echo ">>> Installing to $build_dir/"
+    rm -rf "$build_dir"
+    mkdir -p "$build_dir/bin" "$build_dir/lib"
+    mkdir -p "$build_dir/python/fly"
+    mkdir -p "$build_dir/python/core"
+    mkdir -p "$build_dir/python/storage"
+    mkdir -p "$build_dir/python/agent"
+    mkdir -p "$build_dir/python/log"
+    mkdir -p "$build_dir/python/network"
+    mkdir -p "$build_dir/python/task"
+    mkdir -p "$build_dir/python/test"
+
+    # Binary + wrapper script
+    ln -sf "$bazel_bin/src/main/cpp/fly" "$build_dir/bin/fly.bin"
+    cat > "$build_dir/bin/fly" <<'WRAPPER'
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUILD_DIR="$(dirname "$SCRIPT_DIR")"
+export LD_LIBRARY_PATH="$BUILD_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$SCRIPT_DIR/fly.bin" "$@"
+WRAPPER
+    chmod +x "$build_dir/bin/fly"
+
+    # C++ shared libs (export .so + lib*_so.so dependencies)
+    for so in "$bazel_bin"/src/*/export/_fly_*.so; do
+        [ -f "$so" ] && ln -sf "$so" "$build_dir/lib/"
+    done
+    for so in "$bazel_bin"/src/*/cpp/libfly_*_so.so; do
+        [ -f "$so" ] && ln -sf "$so" "$build_dir/lib/"
+    done
+
+    # Python modules: .so files + Python source
+    for mod in core log network task test; do
+        local so="$bazel_bin/src/$mod/export/_fly_${mod}.so"
+        [ -f "$so" ] && ln -sf "$so" "$build_dir/python/$mod/"
+        for py in "$FLY_ROOT/src/$mod/py/"*.py; do
+            [ -f "$py" ] && ln -sf "$py" "$build_dir/python/$mod/"
+        done
+    done
+
+    # Storage (has extra _fly_storage.so naming)
+    ln -sf "$bazel_bin/src/storage/export/_fly_storage.so" "$build_dir/python/storage/"
+    for py in "$FLY_ROOT/src/storage/py/"*.py; do
+        [ -f "$py" ] && ln -sf "$py" "$build_dir/python/storage/"
+    done
+
+    # Agent
+    ln -sf "$bazel_bin/src/agent/export/_fly_agent.so" "$build_dir/python/agent/"
+    for py in "$FLY_ROOT/src/agent/py/"*.py; do
+        [ -f "$py" ] && ln -sf "$py" "$build_dir/python/agent/"
+    done
+
+    # fly package
+    for py in "$FLY_ROOT/src/fly/"__init__.py "$FLY_ROOT/src/fly/"main.py "$FLY_ROOT/src/fly/"runtime.py; do
+        [ -f "$py" ] && ln -sf "$py" "$build_dir/python/fly/"
+    done
+
+    echo ">>> Install complete: $build_dir/bin/fly"
+}
+
 case "${1:-build}" in
     build)
         shift || true
@@ -139,14 +210,18 @@ case "${1:-build}" in
         refresh_clangd
         echo ">>> Check complete."
         ;;
+    install)
+        do_install
+        ;;
     *)
-        echo "Usage: $0 {build|test|buildonly|refresh|check} [target...]"
+        echo "Usage: $0 {build|test|buildonly|refresh|check|install} [target...]"
         echo ""
         echo "  build      Build + refresh clangd (default)"
         echo "  test       Run tests + refresh clangd"
         echo "  buildonly  Build without refreshing clangd"
         echo "  refresh    Only refresh compile_commands.json"
         echo "  check      Build, test, and refresh clangd"
+        echo "  install    Create build/ with symlinks to bazel-bin artifacts"
         exit 1
         ;;
 esac

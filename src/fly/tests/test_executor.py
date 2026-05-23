@@ -19,8 +19,14 @@ sys.path.insert(0, os.path.join(_project_root, 'src'))
 
 sys.path.insert(0, _this_dir)
 
-from fly.executor import create_executor, _deserialize_args
-from fly.database import _Database
+try:
+    from agent.executor import create_executor, _deserialize_args
+except ImportError:
+    from executor import create_executor, _deserialize_args
+try:
+    from storage.database import _Database
+except ImportError:
+    from database import _Database
 import _fly_log as log
 import _fly_storage as storage
 
@@ -174,6 +180,8 @@ def test_executor_successful_execution():
     )
     
     assert result['task_id'] == 1
+    assert result['status'] == 0
+    assert result['error'] == ''
     assert result['status'] == 0
     assert result['error'] == ''
 

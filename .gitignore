@@ -1,3 +1,6 @@
+# Build output
+build/
+
 # Bazel
 bazel-bin
 bazel-fly

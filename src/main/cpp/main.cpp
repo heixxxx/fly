@@ -8,17 +8,47 @@
 
 static void setup_sys_path() {
     std::filesystem::path cwd = std::filesystem::current_path();
-    std::filesystem::path bazel_bin = cwd / "bazel-bin";
 
+    // Determine layout: build/ (installed) vs bazel-bin/ (legacy)
     std::string ps = "import sys, os\n";
-    ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "core" / "export").string() + "')\n";
-    ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "storage" / "export").string() + "')\n";
-    ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "agent" / "export").string() + "')\n";
-    ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "log" / "export").string() + "')\n";
-    ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "network" / "export").string() + "')\n";
-    ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "task" / "export").string() + "')\n";
-    ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "test" / "export").string() + "')\n";
-    ps += "sys.path.insert(0, '" + cwd.string() + "/src')\n";
+
+    const char* fly_build_env = std::getenv("FLY_BUILD");
+    std::filesystem::path build_dir;
+    bool use_build_layout = false;
+
+    if (fly_build_env && std::string(fly_build_env) != "") {
+        build_dir = std::filesystem::path(fly_build_env);
+        use_build_layout = true;
+    } else if (std::filesystem::exists(cwd / "build" / "bin" / "fly")) {
+        build_dir = cwd / "build";
+        use_build_layout = true;
+    }
+
+    if (use_build_layout) {
+        // build/ layout: modules are under build/python/<module>/
+        // fly package source is under build/python/fly/
+        auto py_dir = build_dir / "python";
+        ps += "sys.path.insert(0, '" + (py_dir / "core").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (py_dir / "storage").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (py_dir / "agent").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (py_dir / "log").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (py_dir / "network").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (py_dir / "task").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (py_dir / "test").string() + "')\n";
+        ps += "sys.path.insert(0, '" + py_dir.string() + "')\n";
+    } else {
+        // Fallback: bazel-bin/ layout (for Bazel test targets)
+        std::filesystem::path bazel_bin = cwd / "bazel-bin";
+        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "core" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "storage" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "agent" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "log" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "network" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "task" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "test" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + cwd.string() + "/src')\n";
+    }
+
     ps += "import _fly_core\n";
     ps += "import _fly_log\n";
     ps += "import _fly_storage\n";

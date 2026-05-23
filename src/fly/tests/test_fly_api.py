@@ -16,9 +16,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 import _fly_log as log
 from fly import open_db, as_task, task_name
-from fly.agent import Master
+from fly import Master
 from fly.runtime import reset
-from fly.task import _serialize_args
+from task.task import _serialize_args
 
 
 def test_database_get_obj_name():

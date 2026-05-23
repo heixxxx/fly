@@ -22,9 +22,13 @@ py_test(
     ],
     imports = [
         "../storage/export",
+        "../storage/py",
         "../agent/export",
+        "../agent/py",
         "../log/export",
         "../core/export",
+        "../task/export",
+        "../task/py",
     ],
 )
 

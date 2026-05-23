@@ -220,7 +220,10 @@ class Master(FlyAgent):
         raise TimeoutError(f"Only {registered}/{count} workers registered after {timeout}s")
 
     def load_db(self, path: str):
-        from fly.database import _Database
+        try:
+            from storage.database import _Database
+        except ImportError:
+            from database import _Database
         from collections import defaultdict
         import socket
 
@@ -341,8 +344,15 @@ class Master(FlyAgent):
 
         import _fly_agent
         agent_dir = os.path.dirname(os.path.abspath(_fly_agent.__file__))
-        bazel_bin = os.path.dirname(os.path.dirname(os.path.dirname(agent_dir)))
-        candidate = os.path.join(bazel_bin, "src", "main", "cpp", "fly")
+        # agent_dir = build/python/agent/ or bazel-bin/src/agent/export/
+        # fly binary = build/bin/fly or bazel-bin/src/main/cpp/fly
+        build_dir = os.path.dirname(os.path.dirname(agent_dir))
+        candidate = os.path.join(build_dir, "bin", "fly")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+        # Fallback: old bazel-bin layout
+        candidate = os.path.join(build_dir, "src", "main", "cpp", "fly")
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
 

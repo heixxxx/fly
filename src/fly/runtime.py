@@ -1,6 +1,9 @@
 from typing import Optional
 
-from .agent import FlyAgent, Master, Worker
+try:
+    from agent.agent import FlyAgent, Master, Worker
+except ImportError:
+    from agent.py.agent import FlyAgent, Master, Worker
 
 _agent: Optional[FlyAgent] = None
 

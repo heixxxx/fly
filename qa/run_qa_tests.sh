@@ -4,12 +4,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-FLY_BIN="$PROJECT_ROOT/bazel-bin/src/main/cpp/fly"
+FLY_BIN="$PROJECT_ROOT/build/bin/fly"
 if [ ! -x "$FLY_BIN" ]; then
-    echo "Building fly binary..."
+    echo "Installing fly binary..."
     cd "$PROJECT_ROOT"
     ./fly.sh build //src/main/cpp:fly
-    FLY_BIN="$PROJECT_ROOT/bazel-bin/src/main/cpp/fly"
+    ./fly.sh install
+    FLY_BIN="$PROJECT_ROOT/build/bin/fly"
 fi
 
 if [ -n "$1" ]; then

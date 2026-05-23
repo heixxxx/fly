@@ -1,12 +1,29 @@
-from .database import _Database
-from .config import get_config
-from .task import as_task, task_name
-from .runtime import get_agent
-from .agent import Master, Worker, FlyAgent
 import logging
 import os
 
 logger = logging.getLogger("fly")
+
+try:
+    from storage.database import _Database
+except ImportError:
+    from storage.py.database import _Database
+
+try:
+    from core import get_config
+except ImportError:
+    from core.py import get_config
+
+try:
+    from task.task import as_task, task_name
+except ImportError:
+    from task.py.task import as_task, task_name
+
+try:
+    from agent.agent import Master, Worker, FlyAgent
+except ImportError:
+    from agent.py.agent import Master, Worker, FlyAgent
+
+from fly.runtime import get_agent
 
 
 def open_db(path: str, data_path: str = "") -> '_Database':
@@ -22,7 +39,7 @@ def open_db(path: str, data_path: str = "") -> '_Database':
 
 
 def load_db(path: str) -> '_Database':
-    from .runtime import get_agent
+    from fly.runtime import get_agent
     agent = get_agent()
     if not isinstance(agent, Master):
         raise RuntimeError("load_db can only be called from Master")

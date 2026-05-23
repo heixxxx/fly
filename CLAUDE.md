@@ -49,12 +49,14 @@
 ./fly.sh buildonly [target...] # 仅构建，不刷新
 ./fly.sh refresh               # 仅刷新 clangd
 ./fly.sh check                 # 构建 + 测试 + 刷新
+./fly.sh install               # 创建 build/ 目录，symlink 到 bazel-bin 产物
 
 # 单元测试
 ./fly.sh test //src/...
 
-# QA 测试（需先构建 fly 二进制）
+# QA 测试（需先构建并安装）
 ./fly.sh build //src/main/cpp:fly
+./fly.sh install
 bash qa/run_qa_tests.sh
 ```
 
@@ -115,6 +117,8 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 | `data_service.h/cpp` | 统一内存索引：local_idx + remote_idx + db_paths_ + worker_registry |
 | `local_index.h/cpp` | 增量持久化索引，IdxOpType(ADD/REMOVE) 追加写入 |
 | `storage_manager.h/cpp` | Database 生命周期管理，单例 |
+| `py/database.py` | Python Database 类（write_object/read_object） |
+| `py/__init__.py` | 导出 C++ 存储类型 |
 
 ### 网络层 (src/network/)
 
@@ -134,6 +138,8 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 | `task_scheduler.h/cpp` | 基于 Worker capabilities 匹配的调度器 |
 | `metadata_manager.h/cpp` | 任务元数据（仅 lifecycle） |
 | `heartbeat_monitor.h/cpp` | 心跳监控 |
+| `py/task.py` | @as_task() 装饰器、task_name()、任务注册 |
+| `py/__init__.py` | 导出 as_task, task_name |
 
 ### Agent 层 (src/agent/)
 
@@ -142,6 +148,9 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 | `master_agent.h/cpp` | Master 节点：失败任务持久化、写入注册依赖满足、load_db 恢复、register_worker(0) 自注册 |
 | `worker_agent.h/cpp` | Worker 节点：任务执行、动态属性、on_idx_load_command() 按 writer_ids 加载 |
 | `task_executor.h/cpp` | 任务执行器 |
+| `py/agent.py` | Master/Worker/FlyAgent Python 类 |
+| `py/executor.py` | Python 侧任务执行器 |
+| `py/__init__.py` | 导出 Master, Worker, FlyAgent |
 
 ### 其他模块
 
@@ -151,6 +160,7 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 | `src/common/cpp/writer_context.h` | WorkerAgentContext（回调模式） |
 | `src/common/cpp/writer_id.h` | generate_writer_id()（8-char hex UUID） |
 | `src/core/cpp/config.h/cpp` | 配置管理 |
+| `src/core/py/__init__.py` | get_config() + Config 导出（合并了原 config.py） |
 | `src/serialization/cpp/serialization_macros.h` | FLY_SERIALIZE, FLY_ENCODE/DECODE |
 | `src/export/cpp/export_macros.h` | FLY_EXPORT_* 宏 |
 | `src/log/cpp/logger.h/cpp` | DBG/INFO/WARN/ERR 日志宏，CM_FORMAT_CLASS/ENUM |
@@ -274,6 +284,7 @@ src/new_module/
 │   └── BUILD             # cc_binary, name="_fly_new_module.so"
 ├── py/
 │   ├── __init__.py
+│   ├── new_module.py     # Python 侧封装（如有）
 │   └── BUILD             # py_library
 └── tests/
     ├── new_module_test.cpp

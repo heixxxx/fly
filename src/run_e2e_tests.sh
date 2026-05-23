@@ -1,6 +1,6 @@
 #!/bin/bash
 
-FLY_BIN="./bazel-bin/src/main/cpp/fly"
+FLY_BIN="./build/bin/fly"
 TEST_DIR="src/e2e_tests"
 
 tests=(

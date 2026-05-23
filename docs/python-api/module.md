@@ -243,7 +243,7 @@ def reset()                        # 重置 Agent
 
 **FlyAgent 抽象基类**:
 ```python
-from fly.agent import FlyAgent
+from fly import FlyAgent
 
 class FlyAgent(ABC):
     @abstractmethod
@@ -319,7 +319,7 @@ def init(log_dir="fly_log", worker_mode=False, worker_id=0,
 
 ```python
 from fly import open_db, get_config, as_task
-from fly.agent import Master
+from fly import Master
 
 config = get_config()
 config.set_int("track_writes", 1)
@@ -407,7 +407,7 @@ db3 = open_db("/data/project")       # WARN: 自动创建在 /data/project.2
 **场景**: Master 进程重启后，恢复之前创建的 Database 及其数据索引。
 
 ```python
-from fly.agent import Master
+from fly import Master
 
 # Run 1: 创建 DB，写入数据
 master = Master()

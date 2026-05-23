@@ -23,11 +23,17 @@ def _deserialize_args(args: list, worker) -> list:
                 ds = ex_stg_get_data_service()
                 if ds.has_database(db_id):
                     from _fly_storage import ex_stg_create_database_with_id
-                    from fly.database import _Database
+                    try:
+                        from storage.database import _Database
+                    except ImportError:
+                        from database import _Database
                     db = _Database.__new__(_Database)
                     db._db = ex_stg_create_database_with_id(base_path, data_path, worker._worker_id, db_id)
                 else:
-                    from fly.database import _Database
+                    try:
+                        from storage.database import _Database
+                    except ImportError:
+                        from database import _Database
                     db = _Database(base_path, data_path, worker._worker_id)
                     db._db.set_db_id(db_id)
                 worker._agent.register_database(db_id, db._db)
@@ -55,7 +61,13 @@ def create_executor(worker) -> callable:
         _frozen_before = set()
 
         try:
-            from fly.task import _task_registry
+            try:
+                from task.task import _task_registry
+            except ImportError:
+                try:
+                    from task import _task_registry
+                except ImportError:
+                    from fly.task import _task_registry
             registered = _task_registry.get((task_module, task_name))
             if registered is not None:
                 original_func = getattr(registered, '_fly_original_func', registered)

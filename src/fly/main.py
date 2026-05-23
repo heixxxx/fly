@@ -4,7 +4,7 @@ import code
 from _fly_log import DBG, ERR, INFO, WARN
 
 def init():
-    from fly.config import get_config
+    from core import get_config
     from fly.runtime import get_agent, configure_master, configure_worker
     
     cfg = get_config()
@@ -20,7 +20,7 @@ def init():
 
 def _cleanup():
     try:
-        from .runtime import get_agent, reset
+        from fly.runtime import get_agent, reset
         agent = get_agent()
         if agent is not None:
             reset()
@@ -59,7 +59,7 @@ def _redirect_worker_io(worker_id, log_dir):
 
 def _run_worker():
     import time
-    from fly.config import get_config
+    from core import get_config
     from fly.runtime import get_agent
 
     cfg = get_config()
@@ -83,7 +83,7 @@ def _run_worker():
 
 
 def _run_master():
-    from fly.config import get_config
+    from core import get_config
     init()
 
     cfg = get_config()
@@ -103,7 +103,7 @@ def _run_master():
 
 def run():
     try:
-        from .runtime import _config_is_worker_mode
+        from fly.runtime import _config_is_worker_mode
         if _config_is_worker_mode():
             _run_worker()
         else:

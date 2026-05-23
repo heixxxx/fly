@@ -12,9 +12,9 @@ _RETRY_INTERVAL_SEC = 1.0
 class _Database:
 
     def __init__(self, base_path: str, data_path: str = "", writer_id: int = 0):
-        from .runtime import _mode
+        from fly.runtime import _mode
         if _mode == "master":
-            from .runtime import get_agent
+            from fly.runtime import get_agent
             agent = get_agent()
             self._db = agent._agent.get_or_create_database(base_path, data_path, writer_id)
         else:

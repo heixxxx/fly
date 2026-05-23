@@ -3,30 +3,28 @@ package(default_visibility = ["//visibility:public"])
 load("@rules_python//python:defs.bzl", "py_library")
 
 py_library(
-    name = "fly_py",
+    name = "fly_agent_py",
     srcs = [
         "__init__.py",
-        "main.py",
-        "runtime.py",
+        "agent.py",
+        "executor.py",
     ],
     deps = [
-        "//src/agent/py:fly_agent_py",
-        "//src/core/py:fly_core_py",
+        "//src/agent/export:_fly_agent.so",
+        "//src/storage/export:_fly_storage.so",
         "//src/log/export:_fly_log.so",
-        "//src/storage/py:fly_storage_py",
-        "//src/task:task_pkg",
+        "//src/core/export:_fly_core.so",
     ],
     imports = [
-        "..",
-        "../storage/py",
-        "../core/py",
-        "../task/py",
-        "../agent/py",
-        "../log/export",
-        "../storage/export",
-        "../core/export",
         "../agent/export",
+        "../storage/export",
+        "../storage/py",
+        "../log/export",
+        "../core/export",
         "../task/export",
+        "../task/py",
+        "../test/export",
         "../network/export",
+        "..",
     ],
 )

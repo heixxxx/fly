@@ -39,7 +39,7 @@ def as_task(inputs=None, requires=None):
         _task_registry[(module, name)] = func
 
         def wrapper(*args, **kwargs):
-            from .runtime import get_agent
+            from fly.runtime import get_agent
             agent = get_agent()
 
             task_inputs = inputs(*args, **kwargs) if inputs else []
