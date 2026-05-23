@@ -2,7 +2,19 @@
 
 ---
 
-## 2026-05-23: load_db 文档同步
+## 2026-05-23 (2): db_id UUID v4 + open_db 路径递增
+
+**原因**: db_id 从 hash(base_path) 改为 UUID v4；open_db 检测已有 DB 时自动递增路径
+
+| 模块文档 | 主要变更 |
+|----------|----------|
+| CLAUDE.md | 新增 §open_db vs load_db 路径检测表（递增路径）、§db_id 生成（UUID v4）、DataService db_paths_ register/unregister 行为 |
+| docs/python-api/module.md | 新增 §open_db 路径检测（自动递增 `.1` `.2`... + WARN）、db_id UUID v4 说明 |
+| docs/storage/module.md | Database 构造函数注释（UUID v4、析构 unregister）、DataService register_database 严格检查注释 |
+
+---
+
+## 2026-05-23 (1): load_db 文档同步
 
 **原因**: load_db 功能实现完成后，同步更新所有相关模块文档
 

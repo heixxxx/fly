@@ -567,8 +567,15 @@ Master → Worker (broadcast): 同上，转发给所有其他 Worker
 
 | API | 用途 | 路径检测 |
 |-----|------|---------|
-| `open_db(path)` | 创建新 Database | 路径已存在 → 报错返回 None |
+| `open_db(path)` | 创建新 Database | `_DB_META` 已存在 → 自动递增路径 `path.1`, `path.2`... + WARN 日志 |
 | `load_db(path)` | 恢复已有 Database | 无 `_DB_META` → 报错 |
+
+### db_id 生成
+
+- `open_db`: UUID v4 随机生成（32 hex chars），与路径无关
+- `load_db`: 从 `_DB_META` header 读取持久化的 db_id
+- `register_database`: 同 base_path 不同 db_id → throw（防止两个活跃 DB 共享路径）
+- `Database` 析构时自动 `unregister_database`，释放 db_paths_ 条目
 
 ### load_db 完整流程
 
@@ -634,7 +641,7 @@ Master 和 Worker 的 `write_object` 共享同一通知路径：
 DataService 是进程级单例，Master 和 Worker 通用：
 - **local_idx**: 本地写入的对象索引 (write_object 时更新)
 - **remote_idx**: 远程对象位置缓存 (Master 接收 DataReady/TaskComplete 时更新；Worker 远程读取成功后缓存)
-- **db_paths_**: DB 路径注册表 (db_id → {base_path, data_path, writer_id})，`try_read_local` 依赖此表定位数据文件
+- **db_paths_**: DB 路径注册表 (db_id → {base_path, data_path, writer_id})，`try_read_local` 依赖此表定位数据文件。`register_database` 拒绝同 base_path 不同 db_id 的注册（防止路径冲突）。Database 析构时自动 unregister。
 - **worker_registry**: Worker 注册信息
 - **transfer_server**: IOThreadPool 线程池，处理数据传输请求的文件 I/O (可配置线程数 `data_server_threads`，默认 1)
 

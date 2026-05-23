@@ -37,9 +37,10 @@ public:
              uint64_t writer_id = 0, 
              const CMString& host = "",
              const CMString& existing_db_id = "");
-    ~Database();
+    ~Database();  // 析构时 unregister_database + drain_write_back
     
     // existing_db_id: 非空时跳过 write_db_meta_header()，使用给定 db_id（用于 load_db 恢复）
+    // 空时: generate_db_id() 生成 UUID v4 (32 hex chars)，写入 _DB_META header
 
     // 异步写入（非阻塞）
     template<typename T>
@@ -293,6 +294,8 @@ public:
     RemoteObjectInfo get_worker_address(uint64_t worker_id) const;
     
     // DB 管理
+    // register_database: 同 base_path 不同 db_id → throw
+    // Database 析构时自动调用 unregister_database
     void register_database(const CMString& db_id, const CMString& base_path,
                            const CMString& data_path, uint64_t writer_id = 0);
     void unregister_database(const CMString& db_id);

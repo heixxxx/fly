@@ -1,6 +1,6 @@
 ---
 name: pre-commit-check
-description: Pre-commit gate that analyzes code changes, checks documentation consistency, presents diff summary to user for confirmation, updates docs if needed, then commits. Automatically triggers when user says 'commit', '提交', 'push', or '推送'.
+description: Pre-commit gate that analyzes code changes, checks documentation consistency (existing accuracy + new behavior coverage), presents diff summary to user for confirmation, updates docs if needed, then commits. Automatically triggers when user says 'commit', '提交', 'push', or '推送'.
 ---
 
 # Pre-commit Check
@@ -36,20 +36,32 @@ Categorize every changed file:
 
 ### Step 3: Documentation Consistency Check
 
-For each **API change** or **Behavior change**, check:
+For **every commit with code changes**, apply TWO checks:
 
-**CLAUDE.md**:
-- [ ] Module table (§7) — file descriptions accurate?
-- [ ] Key API sections — method signatures/names match?
-- [ ] Message type count — matches `message_types.h` enum?
-- [ ] Config defaults — match `config.cpp`?
-- [ ] Architecture flow — matches actual message/data flow?
+#### Check A: Existing Docs Accuracy (for API/Behavior changes)
 
-**docs/**:
-- [ ] `docs/<module>/module.md` — class methods, signatures, new/removed members
-- [ ] `docs/architecture.md` — message types table, flow descriptions
-- [ ] `docs/python-api/module.md` — Python-exposed methods match exports
-- [ ] `docs/network/module.md` — message count, new message types
+- [ ] **CLAUDE.md** — module tables, API sections, architecture flows still accurate?
+- [ ] **docs/\<module\>/module.md** — class methods, signatures, new/removed members match?
+- [ ] **docs/python-api/module.md** — Python-exposed methods match exports?
+- [ ] **docs/network/module.md** — message count, new message types match?
+- [ ] **docs/architecture.md** — message types table, flow descriptions match?
+
+#### Check B: New Behavior Documentation (MANDATORY)
+
+Any **new feature, new behavior, or changed behavior** MUST be reflected in documentation — even if no existing doc mentioned it before. This includes:
+
+- New public API or user-facing behavior (e.g., path auto-increment in `open_db`)
+- New generation algorithms or changed defaults (e.g., UUID v4 replacing hash)
+- New lifecycle or cleanup semantics (e.g., destructor unregister, strict register checks)
+- New error conditions or recovery paths
+
+**Where to document**:
+- User-facing behavior → `docs/python-api/module.md` or relevant module doc
+- Internal behavior changes → `docs/<module>/module.md`
+- Architecture/archival → `CLAUDE.md`
+- All doc changes → `docs/DOC_CHANGELOG.md`
+
+**The rule: "Not mentioned in docs before" is NOT a reason to skip documentation. New behavior always requires documentation.**
 
 ### Step 4: Present Summary to User
 

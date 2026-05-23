@@ -383,6 +383,25 @@ master.restart_failed_tasks("/path/to/failed_tasks.bin")
 
 ---
 
+### open_db 路径检测
+
+`open_db(path)` 检测目标路径是否已包含数据库（通过 `_DB_META` 文件判断）：
+
+- **路径无 DB**: 直接在 `path` 创建新数据库，db_id 为 UUID v4（32 hex chars）
+- **路径已有 DB**: 自动递增路径 `path.1`, `path.2`... 并打印 WARN 日志
+
+```python
+from fly import open_db
+
+db1 = open_db("/data/project")       # 创建在 /data/project
+db2 = open_db("/data/project")       # WARN: 自动创建在 /data/project.1
+db3 = open_db("/data/project")       # WARN: 自动创建在 /data/project.2
+```
+
+**db_id 生成**: UUID v4 随机生成，与路径无关。即使 DB 被移动到新路径，db_id 也不变（持久化在 `_DB_META` 中）。
+
+---
+
 ### load_db 数据库恢复
 
 **场景**: Master 进程重启后，恢复之前创建的 Database 及其数据索引。
