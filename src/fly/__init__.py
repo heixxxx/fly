@@ -18,11 +18,6 @@ try:
 except ImportError:
     from task.py.task import as_task, task_name
 
-try:
-    from agent.agent import Master, Worker, FlyAgent
-except ImportError:
-    from agent.py.agent import Master, Worker, FlyAgent
-
 from fly.runtime import get_agent
 
 
@@ -39,21 +34,44 @@ def open_db(path: str, data_path: str = "") -> '_Database':
 
 
 def load_db(path: str) -> '_Database':
-    from fly.runtime import get_agent
-    agent = get_agent()
-    if not isinstance(agent, Master):
-        raise RuntimeError("load_db can only be called from Master")
-    return agent.load_db(path)
+    return get_agent().load_db(path)
+
+
+def launch_workers(configs: list, mode: str = "process"):
+    get_agent().launch_local_workers(configs, mode=mode)
+
+
+def wait_tasks(timeout: float = 30.0):
+    return get_agent().wait_for_all_tasks(timeout=timeout)
+
+
+def restart_failed_tasks(path: str):
+    get_agent().restart_failed_tasks(path)
+
+
+def get_task_error(task_id: int) -> str:
+    return get_agent().get_task_error(task_id)
 
 
 def __getattr__(name):
-    if name == "agent":
-        return get_agent()
+    if name == "completed_tasks":
+        return get_agent().completed_tasks
+    if name == "pending_tasks":
+        return get_agent().pending_tasks
+    if name == "running_tasks":
+        return get_agent().running_tasks
+    if name == "failed_tasks":
+        return get_agent().failed_tasks
+    if name == "port":
+        return get_agent().port
     raise AttributeError(f"module 'fly' has no attribute {name}")
 
 
 __all__ = [
-    'open_db', 'load_db', 'agent', 'get_agent', 'get_config',
+    'open_db', 'load_db', 'get_config',
     'as_task', 'task_name',
-    'Master', 'Worker', 'FlyAgent',
+    'launch_workers', 'wait_tasks',
+    'restart_failed_tasks', 'get_task_error',
+    'completed_tasks', 'pending_tasks', 'running_tasks', 'failed_tasks',
+    'get_agent',
 ]

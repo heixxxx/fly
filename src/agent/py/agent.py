@@ -152,6 +152,13 @@ class Master(FlyAgent):
     def completed_tasks(self):
         return self._agent.get_completed_tasks()
 
+    @property
+    def failed_tasks(self):
+        return self._agent.get_failed_tasks()
+
+    def get_task_error(self, task_id: int) -> str:
+        return self._agent.get_task_error(task_id)
+
     def wait_for_all_tasks(self, expected: int = None, timeout: float = 30.0):
         import time
         t0 = time.time()

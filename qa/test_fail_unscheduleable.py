@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 from e2e_tasks import alpha_write, shared_write
 from fly import open_db
-from fly.config import get_config
+from fly import get_config
 
 
 def cleanup():
@@ -51,7 +51,7 @@ def test_fail_unscheduleable_tasks_enabled():
     shared_write(db, "no_cap_result")
 
     for i in range(20):
-        failed = master._agent.get_failed_tasks()
+        failed = master.failed_tasks
         if failed:
             break
         time.sleep(0.5)
@@ -59,7 +59,7 @@ def test_fail_unscheduleable_tasks_enabled():
     assert len(failed) >= 1, \
         f"Task with nonexistent capability should be FAILED when config enabled, got failed={failed}"
 
-    error_msg = master._agent.get_task_error(failed[0])
+    error_msg = master.get_task_error(failed[0])
     assert "No worker with required capabilities" in error_msg, \
         f"Error message should mention missing capabilities, got: {error_msg}"
 

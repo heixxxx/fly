@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 from e2e_tasks import write_data, write_data_needs_phantom, gpu_write
 from fly import open_db
-from fly.config import get_config
+from fly import get_config
 
 
 def cleanup():
@@ -70,13 +70,13 @@ def test_restart_failed_tasks_lifecycle():
     write_data_needs_phantom(db, "dep_result", "done")
     gpu_write(db, "gpu_result", 42)
 
-    assert wait_for(lambda: len(master._agent.get_failed_tasks()) >= 2), \
-        f"Phase 1: expected 2 failed, got {master._agent.get_failed_tasks()}"
+    assert wait_for(lambda: len(master.failed_tasks) >= 2), \
+        f"Phase 1: expected 2 failed, got {master.failed_tasks}"
     assert wait_for(lambda: len(master.completed_tasks) >= 1), \
         "Phase 1: write_data should complete"
 
     p1_completed = len(master.completed_tasks)
-    p1_failed = len(master._agent.get_failed_tasks())
+    p1_failed = len(master.failed_tasks)
     assert p1_completed == 1, f"Phase 1: expected 1 completed, got {p1_completed}"
     assert p1_failed == 2, f"Phase 1: expected 2 failed, got {p1_failed}"
     assert os.path.isfile(failed_file), \
@@ -91,16 +91,16 @@ def test_restart_failed_tasks_lifecycle():
 
     assert wait_for(lambda: len(master.completed_tasks) >= 2), \
         f"Phase 2: dep task should complete, got {len(master.completed_tasks)} completed"
-    assert wait_for(lambda: len(master._agent.get_failed_tasks()) >= 1), \
+    assert wait_for(lambda: len(master.failed_tasks) >= 1), \
         "Phase 2: gpu task should re-fail"
 
     p2_completed = len(master.completed_tasks)
-    p2_failed_ids = master._agent.get_failed_tasks()
+    p2_failed_ids = master.failed_tasks
     assert p2_completed == 2, f"Phase 2: expected 2 completed, got {p2_completed}"
     assert len(p2_failed_ids) >= 1, \
         f"Phase 2: expected at least 1 failed (gpu), got {len(p2_failed_ids)}"
 
-    gpu_error = master._agent.get_task_error(p2_failed_ids[-1])
+    gpu_error = master.get_task_error(p2_failed_ids[-1])
     assert "capabilities" in gpu_error, \
         f"Phase 2: expected capability error, got: {gpu_error}"
 
@@ -122,7 +122,7 @@ def test_restart_failed_tasks_lifecycle():
         f"Phase 3: all tasks should complete, got {len(master.completed_tasks)}"
 
     p3_completed = len(master.completed_tasks)
-    p3_failed = master._agent.get_failed_tasks()
+    p3_failed = master.failed_tasks
     assert p3_completed == 3, f"Phase 3: expected 3 completed, got {p3_completed}"
     assert len(p3_failed) == 0, f"Phase 3: expected 0 failed, got {p3_failed}"
 

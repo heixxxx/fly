@@ -17,7 +17,7 @@ from e2e_tasks import (write_data, cross_db_copy, cross_db_sum,
                        add_alpha_property, alpha_cross_db_copy,
                        gpu_cross_db_copy, triple_db_sum)
 from fly import open_db, load_db
-from fly.config import get_config
+from fly import get_config
 
 
 def wait_for(condition, timeout=20.0, interval=0.5):
@@ -82,8 +82,8 @@ def main():
     assert wait_for(lambda: len(master.completed_tasks) >= 4), \
         f"Phase 5: expected 4 completed, got {len(master.completed_tasks)}"
 
-    assert wait_for(lambda: len(master._agent.get_failed_tasks()) >= 1), \
-        f"Phase 5: expected 1 failed, got {len(master._agent.get_failed_tasks())}"
+    assert wait_for(lambda: len(master.failed_tasks) >= 1), \
+        f"Phase 5: expected 1 failed, got {len(master.failed_tasks)}"
     print("  Phase 5 OK: alpha task completed, gpu task failed", file=sys.stderr)
 
     triple_db_sum(db_model, db_raw, db_feat, "x", "new_data", "triple_out")
@@ -103,8 +103,8 @@ def main():
 
     assert wait_for(lambda: len(master.completed_tasks) >= 6), \
         f"Phase 7: expected 6 completed, got {len(master.completed_tasks)}"
-    assert wait_for(lambda: len(master._agent.get_failed_tasks()) == 0), \
-        f"Phase 7: expected 0 failed, got {len(master._agent.get_failed_tasks())}"
+    assert wait_for(lambda: len(master.failed_tasks) == 0), \
+        f"Phase 7: expected 0 failed, got {len(master.failed_tasks)}"
     print("  Phase 7 OK: gpu task restarted and completed", file=sys.stderr)
 
     model_out = db_model.read_object("model_out")

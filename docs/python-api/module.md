@@ -18,12 +18,12 @@ Python API 层将 C++ 底层 API 包装为用户友好的高层接口，提供�
 
 | 文件 | 说明 |
 |------|------|
-| `__init__.py` | 顶层包，导出 open_db, as_task, get_config 等 |
-| `agent.py` | Master/Worker Python 封装（位于 `src/agent/py/`） |
+| `__init__.py` | 顶层包，导出 open_db, as_task, launch_workers, wait_tasks 等 |
+| `agent.py` | Master/Worker 内部实现（位于 `src/agent/py/`） |
 | `database.py` | _Database 类（位于 `src/storage/py/`） |
 | `task.py` | @as_task 和 @task_name 装饰器（位于 `src/task/py/`） |
 | `executor.py` | Worker 任务执行器（位于 `src/agent/py/`） |
-| `runtime.py` | 运行时配置（master/worker mode） |
+| `runtime.py` | 运行时配置（master/worker mode，内部模块） |
 | `main.py` | 初始化入口 |
 
 ---
@@ -234,21 +234,23 @@ def create_executor(worker) -> callable:
 
 ---
 
-### runtime — 运行时配置
+### runtime — 运行时配置（内部模块）
 
 ```python
 _mode: str = "master"     # "master" or "worker"
 _agent: FlyAgent = None   # 全局 Agent 实例
 
-def get_agent() -> FlyAgent:       # 懒初始化 Agent
-def configure_worker(...)          # 设置 Worker 模式
-def configure_master(...)          # 设置 Master 模式
-def reset()                        # 重置 Agent
+def get_agent() -> FlyAgent:       # 懒初始化 Agent（导出给进阶用户）
+def configure_worker(...)          # 设置 Worker 模式（内部）
+def configure_master(...)          # 设置 Master 模式（内部）
+def reset()                        # 重置 Agent（内部）
 ```
 
-**FlyAgent 抽象基类**:
+**FlyAgent 抽象基类**（内部，不导出给用户）:
 ```python
-from fly import FlyAgent
+from fly import get_agent
+
+agent = get_agent()  # 返回 Master 或 Worker 单例
 
 class FlyAgent(ABC):
     @abstractmethod
@@ -323,14 +325,12 @@ def init(log_dir="fly_log", worker_mode=False, worker_id=0,
 ### Master 端用户脚本
 
 ```python
-from fly import open_db, get_config, as_task
-from fly import Master
+from fly import open_db, get_config, as_task, launch_workers, wait_tasks
 
 config = get_config()
 config.set_int("track_writes", 1)
 
-master = Master()
-master.launch_local_workers([{"role": "hybrid"}])
+launch_workers([{"role": "hybrid"}])
 
 db = open_db("/data/project")
 
@@ -342,6 +342,8 @@ def process_data(db, name):
 
 process_data(db, "file1")
 process_data(db, "file2")
+
+wait_tasks()
 ```
 
 ### 程序入口 (main.cpp)
@@ -377,10 +379,9 @@ schedule_tasks() 检测到无法调度任务
 **重启 API**:
 ```python
 # 用户修复问题后（写入缺失数据、启动新 Worker）
-from fly import get_master
+from fly import restart_failed_tasks
 
-master = get_master()
-master.restart_failed_tasks("/path/to/failed_tasks.bin")
+restart_failed_tasks("/path/to/failed_tasks.bin")
 ```
 
 **依赖命名规范**:
@@ -412,17 +413,16 @@ db3 = open_db("/data/project")       # WARN: 自动创建在 /data/project.2
 **场景**: Master 进程重启后，恢复之前创建的 Database 及其数据索引。
 
 ```python
-from fly import Master
+from fly import load_db
 
 # Run 1: 创建 DB，写入数据
-master = Master()
-db = master.open_db("/data/project")
+from fly import open_db, launch_workers
+db = open_db("/data/project")
+launch_workers([{}])
 # ... 写入数据，执行任务 ...
-master.stop()
 
 # Run 2: 重启后恢复 DB
-master = Master()
-db = master.load_db("/data/project")   # 恢复 DB，自动加载索引，启动 Worker
+db = load_db("/data/project")   # 恢复 DB，自动加载索引，启动 Worker
 # ... db_id 不变，索引已恢复，可继续读取数据 ...
 ```
 
@@ -477,6 +477,7 @@ master.load_db("/new/location/project")  # db_id 从 _DB_META 读取，不受路
 
 | 决策 | 原因 |
 |------|------|
+| 函数级 API（launch_workers, wait_tasks 等） | 隐藏 Master/Worker 内部实现，用户无需直接构造 Agent |
 | `_Database` 内部类 + `open_db()` 工厂 | 隐藏 C++ 实现细节，统一创建入口 |
 | is_cpp 双路径序列化 | C++ 导出类型走 bitsery（高效），Python 类型走 pickle（兼容） |
 | `__fly_db__:` 协议传递 Database | 轻量级 db_id 传递，Worker 端按需创建 |

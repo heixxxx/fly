@@ -63,7 +63,7 @@ def wait_completed(master, expected, timeout=30):
         c = master.completed_tasks
         if len(c) >= expected:
             return c
-        failed = master._agent.get_failed_tasks()
+        failed = master.failed_tasks
         if failed:
             raise RuntimeError(f"Tasks failed: {failed}")
         time.sleep(0.5)

@@ -214,6 +214,19 @@ FLY_EXPORT_ENUM(EnumType, "EXModEnumType")
 
 ## 6. 设计约束
 
+### Python 公共 API
+
+用户通过 `from fly import ...` 使用函数级 API，无需了解 Master/Worker 内部实现：
+
+```python
+from fly import open_db, as_task, task_name, launch_workers, wait_tasks
+from fly import get_agent  # 进阶：直接访问 Agent 单例
+```
+
+**导出列表**: `open_db`, `load_db`, `get_config`, `as_task`, `task_name`, `launch_workers`, `wait_tasks`, `restart_failed_tasks`, `get_task_error`, `completed_tasks`, `pending_tasks`, `running_tasks`, `failed_tasks`, `get_agent`
+
+**不导出**: `Master`, `Worker`, `FlyAgent`（内部类，通过 `agent.agent` 模块可访问但不推荐用户使用）
+
 ### 数据命名与依赖
 
 - Task inputs 必须使用 `db.get_obj_name("name")` 获取全名（`db_id:object_name`），短名无法匹配 DataService 索引

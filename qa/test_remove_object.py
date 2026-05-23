@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 from e2e_tasks import write_data, write_and_remove, read_after_remove
 from fly import open_db
-from fly.config import get_config
+from fly import get_config
 
 
 def cleanup():
@@ -45,10 +45,10 @@ def test_remove_object_basic():
     write_and_remove(db, "temp/obj", "temp_data")
 
     for i in range(40):
-        completed = master._agent.get_completed_tasks()
-        failed = master._agent.get_failed_tasks()
+        completed = master.completed_tasks
+        failed = master.failed_tasks
         if failed:
-            err = master._agent.get_task_error(failed[0])
+            err = master.get_task_error(failed[0])
             master.stop()
             raise AssertionError(f"Task failed unexpectedly: {err}")
         if len(completed) >= 1:
@@ -96,7 +96,7 @@ def test_remove_then_dependent_task_fails():
     read_after_remove(db, "result", [removed_full])
 
     for i in range(40):
-        failed = master._agent.get_failed_tasks()
+        failed = master.failed_tasks
         if failed:
             break
         time.sleep(0.5)

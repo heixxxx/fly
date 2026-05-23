@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 from e2e_tasks import alpha_write, shared_write
 from fly import open_db
-from fly.config import get_config
+from fly import get_config
 
 
 def cleanup():
@@ -51,7 +51,7 @@ def test_no_matching_worker_never_completes():
     time.sleep(3)
 
     completed = master.completed_tasks
-    failed = master._agent.get_failed_tasks()
+    failed = master.failed_tasks
 
     assert len(completed) == 0, \
         f"Task with nonexistent capability should NOT complete, got {len(completed)} completed"

@@ -42,8 +42,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', 'src'))
 
 from e2e_tasks import write_data
-from fly import open_db
-from fly.config import get_config
+from fly import open_db, get_config
 
 
 def cleanup():

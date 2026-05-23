@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 from e2e_tasks import write_data, read_data
 from fly import open_db
-from fly.config import get_config
+from fly import get_config
 
 
 def cleanup():
@@ -52,7 +52,7 @@ def test_unresolvable_dependency():
     read_data(db, "result", [db.get_obj_name("phantom")])
 
     for i in range(20):
-        failed = master._agent.get_failed_tasks()
+        failed = master.failed_tasks
         if failed:
             break
         time.sleep(0.5)
@@ -60,7 +60,7 @@ def test_unresolvable_dependency():
     assert len(failed) >= 1, \
         f"Task with unresolvable dependency should be FAILED, got failed={failed}"
 
-    error_msg = master._agent.get_task_error(failed[0])
+    error_msg = master.get_task_error(failed[0])
     assert "Unresolvable data dependencies" in error_msg, \
         f"Error message should mention unresolvable dependencies, got: {error_msg}"
     assert "phantom" in error_msg, \

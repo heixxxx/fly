@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 from e2e_tasks import write_data, cross_db_copy, freeze_db
 from fly import open_db
-from fly.config import get_config
+from fly import get_config
 
 
 def cleanup():

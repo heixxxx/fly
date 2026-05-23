@@ -61,4 +61,4 @@ def reset():
         _agent = None
 
 
-__all__ = ["get_agent", "reset", "configure_worker", "configure_master", "_config_is_worker_mode"]
+__all__ = ["get_agent"]
