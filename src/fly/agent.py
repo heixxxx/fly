@@ -70,6 +70,7 @@ class Master(FlyAgent):
         self._host = host
         self._port = port
         self._running = False
+        self._next_worker_id = 1
 
     @property
     def port(self) -> int:
@@ -80,6 +81,7 @@ class Master(FlyAgent):
     def start(self):
         if self._running:
             return
+        self._agent.setup_write_context()
         self._agent.start()
         self._port = self._agent.get_port()
         self._running = True
@@ -205,6 +207,67 @@ class Master(FlyAgent):
         time.sleep(0.1)
 
         self._workers.append(worker_agent)
+
+    def wait_for_all_workers(self, count: int, timeout: float = 30.0):
+        import time
+        t0 = time.time()
+        registered = 0
+        while time.time() - t0 < timeout:
+            registered = len(self._agent.get_idle_workers())
+            if registered >= count:
+                return
+            time.sleep(0.1)
+        raise TimeoutError(f"Only {registered}/{count} workers registered after {timeout}s")
+
+    def load_db(self, path: str):
+        from fly.database import _Database
+
+        if not self._running:
+            self.start()
+
+        temp_db = _Database(path)
+        meta = temp_db.load_meta()
+        if not meta or not meta.db_id:
+            raise RuntimeError(f"No valid _DB_META found at {path}")
+
+        temp_db._db.set_db_id(meta.db_id)
+        # Use `path` (current actual location) for all disk I/O,
+        # NOT meta.base_path (original location, may differ if DB was moved).
+        self._agent.register_database(meta.db_id, path, "")
+
+        old_worker_ids = [w.worker_id for w in meta.workers]
+        self._agent.restore_master_idx(meta.db_id, path, 0)
+
+        if old_worker_ids:
+            self._next_worker_id = max(old_worker_ids) + 1
+
+        from collections import defaultdict
+        import socket
+
+        hostname_to_workers = defaultdict(list)
+        for w in meta.workers:
+            if w.worker_id != 0:
+                hostname_to_workers[w.hostname].append(w.worker_id)
+
+        master_hostname = socket.gethostname()
+
+        needed_count = 0
+        if master_hostname in hostname_to_workers:
+            needed_count = len(hostname_to_workers[master_hostname])
+            for _ in range(needed_count):
+                self._spawn_process_worker(self._next_worker_id, {})
+                self._next_worker_id += 1
+
+        if needed_count > 0:
+            self.wait_for_all_workers(needed_count, timeout=30.0)
+
+        if master_hostname in hostname_to_workers:
+            old_ids = hostname_to_workers[master_hostname]
+            self._agent.send_idx_load_commands(meta.db_id, path, old_ids)
+
+        self._agent.rebuild_remote_idx(meta.db_id, path, meta.workers)
+
+        return temp_db
 
     def set_worker_property(self, prop):
         WARN("set_worker_property called on Master, ignoring")

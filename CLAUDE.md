@@ -322,7 +322,7 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 | `database.h/cpp` | 统一存储接口，写时通知 DataService，读时走 DataService 内存索引，`remove_object()` 删除对象索引 |
 | `data_writer.h/cpp` | 单线程写入聚合器，小文件聚合 + 大文件分块 |
 | `data_reader.h/cpp` | 数据读取，支持 `read_from_entries()` 直接按索引读取 |
-| `data_service.h/cpp` | **统一内存索引：local_idx + remote_idx + worker_registry**，支持 `remove_local_index()` / `remove_remote_index()` |
+| `data_service.h/cpp` | **统一内存索引：local_idx + remote_idx + db_paths_ + worker_registry**，支持 `remove_local_index()` / `remove_remote_index()` / `has_database()` |
 | `local_index.h/cpp` | **增量持久化索引**：`IdxOpType(ADD/REMOVE)` + body 格式追加写入，`load()` 自动迁移旧格式，`compact()` 全量压缩 |
 | `storage_manager.h/cpp` | Database 生命周期管理，单例 |
 
@@ -334,7 +334,7 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 | `transport.h/cpp` | TransportLayer 抽象 |
 | `tcp_transport.cpp` | POSIX TCP 实现 |
 | `message_protocol.h/cpp` | 二进制帧协议 |
-| `message_types.h` | 消息结构定义 (24 种消息类型，含 WorkerPropertyUpdate type=23, ObjectRemoved type=24) |
+| `message_types.h` | 消息结构定义 (26 种消息类型，含 WorkerPropertyUpdate type=23, ObjectRemoved type=24, IdxLoadCommand type=25, IdxLoadAck type=26) |
 
 ### 任务系统层 (src/task/)
 
@@ -350,8 +350,8 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 
 | 文件 | 职责 |
 |------|------|
-| `master_agent.h/cpp` | Master 节点管理，失败任务持久化 + `restart_failed_tasks()` |
-| `worker_agent.h/cpp` | Worker 节点执行，动态属性 `set/remove/get_worker_property()` |
+| `master_agent.h/cpp` | Master 节点管理，失败任务持久化 + `restart_failed_tasks()` + `load_db` 恢复 (restore_master_idx / send_idx_load_commands / rebuild_remote_idx) |
+| `worker_agent.h/cpp` | Worker 节点执行，动态属性 `set/remove/get_worker_property()` + `on_idx_load_command()` idx 恢复 |
 | `task_executor.h/cpp` | 任务执行器 |
 
 ### 日志模块 (src/log/)
@@ -538,7 +538,83 @@ Master → Worker (broadcast): 同上，转发给所有其他 Worker
 
 ---
 
-## 13. 项目状态
+## 13. 数据库恢复 (load_db)
+
+### 概述
+
+`load_db` 允许 Master 进程重启后恢复之前创建的 Database，包括数据索引和 Worker 分布信息。当前版本要求 Master 在同一物理机上重启。
+
+### _DB_META 磁盘格式
+
+增量追加格式，避免高频 DataReady 路径的全量写开销：
+
+```
+[8B size][bitsery DbMetaHeader]     ← Database 构造时写入
+[8B size][bitsery WorkerInfo]       ← on_data_ready() 增量追加
+[8B size][bitsery WorkerInfo]       ← 每个 (hostname, worker_id) 只记录一次
+...
+```
+
+- `DbMetaHeader`: `{db_id, created_at}` — 不存储 base_path，因为 DB 可被移动
+- `WorkerInfo`: `{worker_id, hostname, ip_address, launch_command}`
+- `load_meta()` 读取 header + 迭代所有 WorkerInfo 记录 → 聚合为 `DbMeta`
+
+### _FROZEN 标记
+
+`freeze()` 仅写入空的 `_FROZEN` 文件。`_DB_META` 在每次 `on_data_ready()` 时已增量更新。
+
+### open_db vs load_db
+
+| API | 用途 | 路径检测 |
+|-----|------|---------|
+| `open_db(path)` | 创建新 Database | 路径已存在 → 报错返回 None |
+| `load_db(path)` | 恢复已有 Database | 无 `_DB_META` → 报错 |
+
+### load_db 完整流程
+
+```python
+master.load_db("/path/to/db"):
+  Phase 1: 读取 _DB_META → DbMeta{db_id, workers}
+  Phase 2: Master 自身恢复
+    - get_or_create_database() → DataWriter 加载 worker_0.idx
+    - restore_master_idx() → entries 写入 DataService local_idx_
+    - next_worker_id = max(old_ids) + 1
+  Phase 3: 按 hostname 启动 Worker (仅本机，使用 process worker)
+    - _spawn_process_worker() × count
+    - wait_for_all_workers()
+  Phase 4: 下发 idx 加载命令
+    - send_idx_load_commands() → Worker on_idx_load_command() 处理
+    - Worker 注册 db_paths_ + restore_entries() → DataService local_idx_
+  Phase 5: 重建 remote_idx
+    - rebuild_remote_idx() → 旧 worker_id → hostname → 新 worker_id 映射
+```
+
+### Worker IdxLoadCommand (type=25/26)
+
+```
+Master → Worker: IdxLoadCommandMessage{db_id, base_path, old_worker_ids}
+Worker → Master: IdxLoadAckMessage{worker_id, db_id, success, loaded_count, error_message}
+```
+
+Worker 对每个 `old_worker_id`，创建独立只读 `LocalIndex` 加载 `worker_{old_id}.idx`，提取 entries 后丢弃。
+
+### 统一写通知
+
+Master 和 Worker 的 `write_object` 共享同一通知路径：
+- Worker: `WorkerAgentContext` → 发送 `DataReadyMessage` 给 Master
+- Master: `setup_write_context()` → `on_master_record_write()` → 直接调用 `on_data_ready(worker_id=0)`
+
+`on_data_ready()` 是唯一的数据就绪处理入口：更新 remote_idx + 检查 _DB_META + 通知 dependency graph + schedule_tasks()。
+
+### Hostname 跟踪
+
+- Worker: `gethostname()` 填充 `RegisterMessage.hostname`，上报 Master
+- Master: `on_worker_register()` 存储 `worker_to_hostname_` / `worker_to_ip_`
+- Master 自身 hostname: 构造时通过 `gethostname()` 获取
+
+---
+
+## 14. 项目状态
 
 ### Layer 实现进度
 
@@ -551,13 +627,14 @@ Master → Worker (broadcast): 同上，转发给所有其他 Worker
 | Layer 4 | ✅ 完成 | 48 | MasterAgent, WorkerAgent |
 | Layer 5 | ✅ 完成 | - | Python API, DataService, 三层读取流程 |
 
-**总测试**: 32 Bazel targets pass (1 data_service_test + 31 unit) + QA + E2E
+**总测试**: 41 Bazel unit tests pass + 12 QA tests pass
 
 ### DataService 架构 (Layer 1 核心)
 
 DataService 是进程级单例，Master 和 Worker 通用：
 - **local_idx**: 本地写入的对象索引 (write_object 时更新)
 - **remote_idx**: 远程对象位置缓存 (Master 接收 DataReady/TaskComplete 时更新；Worker 远程读取成功后缓存)
+- **db_paths_**: DB 路径注册表 (db_id → {base_path, data_path, writer_id})，`try_read_local` 依赖此表定位数据文件
 - **worker_registry**: Worker 注册信息
 - **transfer_server**: IOThreadPool 线程池，处理数据传输请求的文件 I/O (可配置线程数 `data_server_threads`，默认 1)
 
@@ -576,11 +653,11 @@ Worker A 读取 (DataClient 独立连接):
 3. `request_remote_data()` → 查 Master (via Reactor) → `DataClient::request_data()` 直连目标 Worker (最多 3 次重试)
 
 DB 路径查询: WorkerAgent.request_db_path(db_id) → 向 Master 查询 → 自动创建 Database 实例
-消息类型: 24 种 (含 DB_PATH_REQUEST/DB_PATH_RESPONSE, WorkerPropertyUpdate type=23, ObjectRemoved type=24)
+消息类型: 26 种 (含 DB_PATH_REQUEST/DB_PATH_RESPONSE, WorkerPropertyUpdate type=23, ObjectRemoved type=24, IdxLoadCommand type=25, IdxLoadAck type=26)
 
 ---
 
-## 14. Agent 工作指南
+## 15. Agent 工作指南
 
 ### 必须遵循
 
@@ -589,6 +666,7 @@ DB 路径查询: WorkerAgent.request_db_path(db_id) → 向 Master 查询 → �
 3. **C++20 标准**: 使用 `--std=c++20`
 4. **gcc12 编译器**: 非 clang
 5. **模块式 include 路径**: 使用 `<module/cpp/file.h>` 格式
+6. **调试时必须加载 `systematic-debugging-analysis` skill**: 所有 agent 在 debug 问题时（包括调查错误、排查故障、分析失败原因），必须先通过 `skill(name="systematic-debugging-analysis")` 加载该 skill，严格按照其工作流执行。核心原则：**Don't guess. Add logs. Run. Observe.** 禁止仅通过代码静态分析猜测问题原因，必须先加日志运行观察实际行为。
 
 ### 禁止事项
 
@@ -596,6 +674,7 @@ DB 路径查询: WorkerAgent.request_db_path(db_id) → 向 Master 查询 → �
 2. 禁止使用相对路径 include
 3. 禁止直接调用 bitsery/nanobind 原始 API（必须通过宏）
 4. 禁止跳过测试直接提交
+5. **禁止无日志调试**: 不允许在没有运行日志/运行结果的情况下分析或推断 bug 原因。如果日志覆盖不足，必须先增加日志再运行获取更多信息
 
 ### 新模块创建模板
 
@@ -619,7 +698,7 @@ src/new_module/
 
 ---
 
-## 15. 快速参考
+## 16. 快速参考
 
 ### 常用命令
 
@@ -643,7 +722,8 @@ src/new_module/
 - `docs/superpowers/plans/2026-05-17-progress-and-roadmap.md` - 当前状态与路线图
 - `docs/superpowers/plans/2026-05-17-network-and-message-flow.md` - 网络与消息流程
 - `docs/superpowers/plans/2026-05-16-layer5-python-api-design.md` - Layer 5 设计
+- `docs/superpowers/plans/2026-05-22-db-meta-and-load-db-design.md` - load_db 设计
 
 ---
 
-*文档更新日期: 2026-05-22*
+*文档更新日期: 2026-05-23*

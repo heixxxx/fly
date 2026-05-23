@@ -65,7 +65,8 @@ TEST(MessageProtocolTest, RegisterMessage) {
     RegisterMessage msg;
     msg.header.type = MessageType::REGISTER;
     msg.worker_id = 42;
-    msg.role = "hybrid";
+    msg.hostname = "gpu-node-1";
+    msg.ip_address = "10.0.1.5";
     msg.attributes = {"has_gpu", "large_memory"};
     
     CMString encoded = MessageProtocol::encode(msg);
@@ -74,7 +75,8 @@ TEST(MessageProtocolTest, RegisterMessage) {
     RegisterMessage decoded;
     EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
     EXPECT_EQ(decoded.worker_id, 42);
-    EXPECT_EQ(decoded.role, "hybrid");
+    EXPECT_EQ(decoded.hostname, "gpu-node-1");
+    EXPECT_EQ(decoded.ip_address, "10.0.1.5");
     EXPECT_EQ(decoded.attributes.size(), 2);
 }
 

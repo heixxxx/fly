@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/data_service.h>
 #include <storage/cpp/database.h>
+#include <storage/cpp/local_index.h>
 #include <filesystem>
 
 namespace {
@@ -247,6 +248,135 @@ TEST_F(DataServiceTest, RemoveRemoteIndexOnlyAffectsTarget) {
 
     EXPECT_TRUE(ds_.has_remote_location("remote/keep"));
     EXPECT_FALSE(ds_.has_remote_location("remote/remove"));
+}
+
+TEST_F(DataServiceTest, RestoreEntriesMakesObjectsReadable) {
+    CMString base_path = test_dir_ + "/restore_test";
+    std::filesystem::create_directories(base_path);
+    ds_.register_database("restore_db", base_path, "");
+
+    CMVector<IndexEntry> entries;
+    IndexEntry e1;
+    e1.object_name = "restore_db:obj_a";
+    e1.file_name = "test.dat";
+    e1.offset = 0;
+    e1.size = 5;
+    e1.is_large = false;
+    e1.block_count = 0;
+    e1.compression_type = 0;
+    entries.push_back(e1);
+
+    IndexEntry e2;
+    e2.object_name = "restore_db:obj_b";
+    e2.file_name = "test.dat";
+    e2.offset = 10;
+    e2.size = 7;
+    e2.is_large = false;
+    e2.block_count = 0;
+    e2.compression_type = 0;
+    entries.push_back(e2);
+
+    ds_.restore_entries("restore_db", entries);
+
+    EXPECT_TRUE(ds_.has_local_object("restore_db:obj_a"));
+    EXPECT_TRUE(ds_.has_local_object("restore_db:obj_b"));
+}
+
+TEST_F(DataServiceTest, RestoreEntriesMultipleEntriesPerObject) {
+    CMString base_path = test_dir_ + "/restore_multi";
+    std::filesystem::create_directories(base_path);
+    ds_.register_database("multi_db", base_path, "");
+
+    CMVector<IndexEntry> entries;
+    IndexEntry e1;
+    e1.object_name = "multi_db:large_obj";
+    e1.file_name = "data_0.dat";
+    e1.offset = 0;
+    e1.size = 100;
+    e1.is_large = true;
+    e1.block_count = 1;
+    e1.compression_type = 0;
+    entries.push_back(e1);
+
+    IndexEntry e2;
+    e2.object_name = "multi_db:large_obj";
+    e2.file_name = "data_0.dat";
+    e2.offset = 100;
+    e2.size = 200;
+    e2.is_large = true;
+    e2.block_count = 1;
+    e2.compression_type = 0;
+    entries.push_back(e2);
+
+    ds_.restore_entries("multi_db", entries);
+
+    EXPECT_TRUE(ds_.has_local_object("multi_db:large_obj"));
+}
+
+TEST_F(DataServiceTest, RestoreEntriesAppendsToExisting) {
+    CMString base_path = test_dir_ + "/restore_append";
+    std::filesystem::create_directories(base_path);
+    ds_.register_database("append_db", base_path, "");
+
+    IndexEntry e1;
+    e1.object_name = "append_db:obj";
+    e1.file_name = "test.dat";
+    e1.offset = 0;
+    e1.size = 5;
+    e1.is_large = false;
+    e1.block_count = 0;
+    e1.compression_type = 0;
+    ds_.on_object_written("append_db", "append_db:obj", e1);
+    ds_.on_flush("append_db");
+    EXPECT_TRUE(ds_.has_local_object("append_db:obj"));
+
+    CMVector<IndexEntry> restore_entries_vec;
+    IndexEntry e2;
+    e2.object_name = "append_db:new_obj";
+    e2.file_name = "test.dat";
+    e2.offset = 100;
+    e2.size = 10;
+    e2.is_large = false;
+    e2.block_count = 0;
+    e2.compression_type = 0;
+    restore_entries_vec.push_back(e2);
+
+    ds_.restore_entries("append_db", restore_entries_vec);
+
+    EXPECT_TRUE(ds_.has_local_object("append_db:obj"));
+    EXPECT_TRUE(ds_.has_local_object("append_db:new_obj"));
+}
+
+TEST_F(DataServiceTest, RestoreEntriesEmptyVectorIsNoop) {
+    CMVector<IndexEntry> empty;
+    ds_.restore_entries("empty_db", empty);
+}
+
+TEST_F(DataServiceTest, RestoreEntriesFromLocalIndexFile) {
+    CMString base_path = test_dir_ + "/restore_from_idx";
+    Database db(base_path);
+
+    db.write_object("idx/obj1", "data1", false);
+    db.write_object("idx/obj2", "data2", false);
+    fly::DataService::instance().drain_write_back();
+
+    CMString idx_path = base_path + "/worker_0.idx";
+
+    LocalIndex source_idx(idx_path);
+    source_idx.load();
+    auto all_entries = source_idx.get_all_entries();
+    ASSERT_FALSE(all_entries.empty());
+
+    CMString restore_db_id = "restored_from_idx";
+    CMString restore_base = test_dir_ + "/restored_db";
+    std::filesystem::create_directories(restore_base);
+    ds_.register_database(restore_db_id, restore_base, "");
+
+    ds_.restore_entries(restore_db_id, all_entries);
+
+    for (const auto& e : all_entries) {
+        EXPECT_TRUE(ds_.has_local_object(e.object_name));
+    }
 }
 
 }

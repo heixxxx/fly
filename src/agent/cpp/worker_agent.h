@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <queue>
 #include <map>
+#include <filesystem>
 
 namespace fly {
 
@@ -134,6 +135,7 @@ private:
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
+    void on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg);
     void on_disconnect(uint64_t conn_id);
     
     void heartbeat_loop();

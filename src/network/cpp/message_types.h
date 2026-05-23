@@ -32,6 +32,8 @@ enum class MessageType : uint8_t {
     WRITE_REGISTER_ACK = 22,
     WORKER_PROPERTY_UPDATE = 23,
     OBJECT_REMOVED = 24,
+    IDX_LOAD_COMMAND = 25,
+    IDX_LOAD_ACK = 26,
 };
 
 // 基础消息头（所有消息继承）
@@ -47,14 +49,15 @@ struct MessageHeader {
 struct RegisterMessage {
     MessageHeader header;
     uint64_t worker_id = 0;
-    CMString role;
+    CMString hostname;
+    CMString ip_address;
     CMVector<CMString> attributes;
     CMString data_server_host;
     int32_t data_server_port = 0;
     
     static constexpr MessageType msg_type = MessageType::REGISTER;
     
-    FLY_SERIALIZE(header, worker_id, role, attributes, data_server_host, data_server_port);
+    FLY_SERIALIZE(header, worker_id, hostname, ip_address, attributes, data_server_host, data_server_port);
 };
 
 // Master → Worker: 注册确认
@@ -267,6 +270,32 @@ struct ObjectRemovedMessage {
     static constexpr MessageType msg_type = MessageType::OBJECT_REMOVED;
 
     FLY_SERIALIZE(header, object_name, db_id);
+};
+
+// Master → Worker: load_db idx 加载命令
+struct IdxLoadCommandMessage {
+    MessageHeader header;
+    CMString db_id;
+    CMString base_path;
+    CMVector<uint64_t> old_worker_ids;
+
+    static constexpr MessageType msg_type = MessageType::IDX_LOAD_COMMAND;
+
+    FLY_SERIALIZE(header, db_id, base_path, old_worker_ids);
+};
+
+// Worker → Master: idx 加载完成确认
+struct IdxLoadAckMessage {
+    MessageHeader header;
+    uint64_t worker_id = 0;
+    CMString db_id;
+    bool success = false;
+    int32_t loaded_count = 0;
+    CMString error_message;
+
+    static constexpr MessageType msg_type = MessageType::IDX_LOAD_ACK;
+
+    FLY_SERIALIZE(header, worker_id, db_id, success, loaded_count, error_message);
 };
 
 }  // namespace fly

@@ -64,6 +64,8 @@ public:
 
     void unregister_database(const CMString& db_id);
 
+    bool has_database(const CMString& db_id) const;
+
     void on_object_written(const CMString& db_id,
                             const CMString& object_name,
                             const IndexEntry& entry);
@@ -122,6 +124,9 @@ public:
     bool is_write_back_running() const;
 
     void on_object_flushed(const CMString& object_name);
+
+    void restore_entries(const CMString& db_id,
+                          const CMVector<IndexEntry>& entries);
 
 private:
     DataService() = default;

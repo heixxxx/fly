@@ -14,7 +14,7 @@
 
 class Database {
 public:
-    Database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0, const CMString& host = "");
+    Database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0, const CMString& host = "", const CMString& existing_db_id = "");
     ~Database();
 
     Database(const Database&) = delete;
@@ -104,6 +104,9 @@ public:
     CMString get_obj_name(const CMString& name) const;
 
     void reset();
+
+    void write_db_meta_header();
+    void append_worker_info_to_meta(const WorkerInfo& info);
 
 private:
     void check_frozen();

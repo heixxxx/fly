@@ -11,18 +11,22 @@
 
 namespace fs = std::filesystem;
 
-Database::Database(const CMString& base_path, const CMString& data_path, uint64_t writer_id, const CMString& host)
+Database::Database(const CMString& base_path, const CMString& data_path, uint64_t writer_id, const CMString& host, const CMString& existing_db_id)
     : base_path_(base_path)
     , data_path_(data_path)
     , writer_id_(writer_id)
-    , db_id_(generate_db_id())
+    , db_id_(existing_db_id.empty() ? generate_db_id() : existing_db_id)
     , host_(host) {
 
     fly::DataService::instance().register_database(db_id_, base_path_, data_path_, writer_id_);
 
-    ensure_directory_exists(base_path_);
-    if (!data_path_.empty()) {
-        ensure_directory_exists(data_path_);
+    if (existing_db_id.empty()) {
+        ensure_directory_exists(base_path_);
+        if (!data_path_.empty()) {
+            ensure_directory_exists(data_path_);
+        }
+
+        write_db_meta_header();
     }
 
     Config& config = Config::instance();
@@ -34,7 +38,7 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
     writer_ = CMMakeUnique<DataWriter>(
         base_path_, data_path_, writer_id_,
         config.get_int("aggregation_threshold"),
-        config.get_int("large_file_threshold_kb") * 1024,  // KB to bytes
+        config.get_int("large_file_threshold_kb") * 1024,
         config.get_int("block_size"),
         comp_type,
         comp_threshold,
@@ -207,11 +211,44 @@ DbMeta Database::load_meta() const {
         throw std::runtime_error("Cannot open meta file: " + meta_path);
     }
 
-    CMString content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-    ifs.close();
+    int64_t header_size = 0;
+    ifs.read(reinterpret_cast<char*>(&header_size), sizeof(header_size));
+    if (!ifs || header_size <= 0) {
+        throw std::runtime_error("Invalid _DB_META header size");
+    }
 
-    DbMeta meta{};
-    FLY_DECODE(content, DbMeta, meta);
+    CMString header_data(header_size, '\0');
+    ifs.read(header_data.data(), header_size);
+    if (!ifs) {
+        throw std::runtime_error("Failed to read _DB_META header");
+    }
+
+    DbMetaHeader header;
+    FLY_DECODE(header_data, DbMetaHeader, header);
+
+    CMVector<WorkerInfo> workers;
+    while (true) {
+        int64_t record_size = 0;
+        ifs.read(reinterpret_cast<char*>(&record_size), sizeof(record_size));
+        if (!ifs || record_size <= 0) break;
+
+        CMString record_data(record_size, '\0');
+        ifs.read(record_data.data(), record_size);
+        if (!ifs) break;
+
+        WorkerInfo info;
+        try {
+            FLY_DECODE(record_data, WorkerInfo, info);
+            workers.push_back(std::move(info));
+        } catch (...) {
+            break;
+        }
+    }
+
+    DbMeta meta;
+    meta.db_id = header.db_id;
+    meta.created_at = header.created_at;
+    meta.workers = std::move(workers);
     return meta;
 }
 
@@ -260,19 +297,55 @@ void Database::create_frozen_marker() {
     CMString frozen_path = base_path_ + "/_FROZEN";
     std::ofstream ofs(frozen_path);
     ofs.close();
+}
+
+void Database::write_db_meta_header() {
+    CMString meta_path = base_path_ + "/_DB_META";
+    if (fs::exists(meta_path)) return;  // don't overwrite
 
     auto now = std::chrono::system_clock::now();
-    int64_t frozen_at = std::chrono::duration_cast<std::chrono::seconds>(
+    int64_t created_at = std::chrono::duration_cast<std::chrono::seconds>(
         now.time_since_epoch()).count();
 
-    DbMeta meta{db_id_, base_path_, frozen_at, frozen_at, {}};
+    DbMetaHeader header{db_id_, created_at};
     CMString encoded;
-    FLY_ENCODE(meta, encoded);
+    FLY_ENCODE(header, encoded);
 
+    std::ofstream ofs(meta_path, std::ios::binary);
+    if (!ofs.is_open()) {
+        ERR("Failed to open _DB_META for writing: {}", meta_path);
+        return;
+    }
+    int64_t size = static_cast<int64_t>(encoded.size());
+    ofs.write(reinterpret_cast<const char*>(&size), sizeof(size));
+    ofs.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
+    ofs.close();
+
+    DBG("Wrote _DB_META header: db_id={}, base_path={}", db_id_, base_path_);
+}
+
+void Database::append_worker_info_to_meta(const WorkerInfo& info) {
     CMString meta_path = base_path_ + "/_DB_META";
-    std::ofstream meta_ofs(meta_path, std::ios::binary);
-    meta_ofs.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
-    meta_ofs.close();
+    if (!fs::exists(meta_path)) {
+        ERR("_DB_META file not found, cannot append worker info: {}", meta_path);
+        return;
+    }
+
+    CMString encoded;
+    FLY_ENCODE(info, encoded);
+
+    std::ofstream ofs(meta_path, std::ios::binary | std::ios::app);
+    if (!ofs.is_open()) {
+        ERR("Failed to open _DB_META for appending: {}", meta_path);
+        return;
+    }
+    int64_t size = static_cast<int64_t>(encoded.size());
+    ofs.write(reinterpret_cast<const char*>(&size), sizeof(size));
+    ofs.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
+    ofs.close();
+
+    DBG("Appended WorkerInfo to _DB_META: worker_id={}, hostname={}",
+        info.worker_id, info.hostname);
 }
 
 CMString Database::generate_db_id() {
@@ -289,3 +362,5 @@ CMString Database::generate_db_id() {
 void Database::ensure_directory_exists(const CMString& path) {
     fs::create_directories(path);
 }
+
+

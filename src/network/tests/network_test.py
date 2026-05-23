@@ -83,11 +83,13 @@ class TestRegisterMessageCreation(unittest.TestCase):
         from _fly_network import EXNetRegisterMessage
         msg = EXNetRegisterMessage()
         msg.worker_id = 42
-        msg.role = "hybrid"
+        msg.hostname = "gpu-node-1"
+        msg.ip_address = "10.0.1.5"
         msg.attributes = ["has_gpu", "large_memory"]
         
         self.assertEqual(msg.worker_id, 42)
-        self.assertEqual(msg.role, "hybrid")
+        self.assertEqual(msg.hostname, "gpu-node-1")
+        self.assertEqual(msg.ip_address, "10.0.1.5")
 
 
 class TestDataRequestResponseMessages(unittest.TestCase):

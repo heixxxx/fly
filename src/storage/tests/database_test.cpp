@@ -73,8 +73,7 @@ TEST_F(DatabaseTest, LoadMetaFromFrozenDatabase) {
 
     DbMeta meta = db.load_meta();
     EXPECT_EQ(meta.db_id, db.get_db_id());
-    EXPECT_EQ(meta.base_path, base_path);
-    EXPECT_GT(meta.frozen_at, 0);
+    EXPECT_GT(meta.created_at, 0);
 }
 
 TEST_F(DatabaseTest, GetDbIdIsHashed) {
@@ -348,6 +347,137 @@ TEST_F(DatabaseTest, RemoveObjectTrampolineNotifies) {
 
     ASSERT_EQ(removed_notifications.size(), 1u);
     EXPECT_EQ(removed_notifications[0], db.get_db_id() + ":notify/obj");
+}
+
+// ─── _DB_META incremental format tests ───
+
+TEST_F(DatabaseTest, DbMetaHeaderWrittenOnConstruction) {
+    CMString base_path = test_dir_ + "/meta_header";
+    Database db(base_path);
+
+    // _DB_META file should exist after construction
+    std::filesystem::path meta_path(base_path + "/_DB_META");
+    EXPECT_TRUE(std::filesystem::exists(meta_path));
+
+    // File should be non-empty
+    auto file_size = std::filesystem::file_size(meta_path);
+    EXPECT_GT(file_size, 0u);
+
+    // Load meta and verify header fields
+    DbMeta meta = db.load_meta();
+    EXPECT_EQ(meta.db_id, db.get_db_id());
+}
+
+TEST_F(DatabaseTest, AppendWorkerInfoToMeta) {
+    CMString base_path = test_dir_ + "/meta_append";
+    Database db(base_path);
+
+    // Append first WorkerInfo
+    WorkerInfo info1;
+    info1.worker_id = 1;
+    info1.hostname = "host1";
+    info1.ip_address = "10.0.0.1";
+    info1.launch_command = "python worker.py";
+    db.append_worker_info_to_meta(info1);
+
+    DbMeta meta = db.load_meta();
+    ASSERT_EQ(meta.workers.size(), 1u);
+    EXPECT_EQ(meta.workers[0].worker_id, 1u);
+    EXPECT_EQ(meta.workers[0].hostname, "host1");
+    EXPECT_EQ(meta.workers[0].ip_address, "10.0.0.1");
+    EXPECT_EQ(meta.workers[0].launch_command, "python worker.py");
+
+    // Append second WorkerInfo
+    WorkerInfo info2;
+    info2.worker_id = 2;
+    info2.hostname = "host2";
+    info2.ip_address = "10.0.0.2";
+    info2.launch_command = "python worker2.py";
+    db.append_worker_info_to_meta(info2);
+
+    meta = db.load_meta();
+    ASSERT_EQ(meta.workers.size(), 2u);
+    EXPECT_EQ(meta.workers[0].worker_id, 1u);
+    EXPECT_EQ(meta.workers[1].worker_id, 2u);
+    EXPECT_EQ(meta.workers[1].hostname, "host2");
+}
+
+TEST_F(DatabaseTest, FreezeOnlyWritesFrozenMarker) {
+    CMString base_path = test_dir_ + "/meta_freeze";
+    Database db(base_path);
+
+    db.write_object("test/obj", "data", false);
+    fly::DataService::instance().drain_write_back();
+
+    std::filesystem::path meta_path(base_path + "/_DB_META");
+    auto meta_size_before = std::filesystem::file_size(meta_path);
+
+    db.freeze();
+
+    // _FROZEN should exist
+    std::filesystem::path frozen_path(base_path + "/_FROZEN");
+    EXPECT_TRUE(std::filesystem::exists(frozen_path));
+
+    // _DB_META size should not change (no rewrite)
+    auto meta_size_after = std::filesystem::file_size(meta_path);
+    EXPECT_EQ(meta_size_before, meta_size_after);
+}
+
+TEST_F(DatabaseTest, LoadMetaReadsIncrementalFormat) {
+    CMString base_path = test_dir_ + "/meta_incremental";
+    Database db(base_path);
+
+    db.write_object("data/obj1", "payload1", false);
+    fly::DataService::instance().drain_write_back();
+
+    // Append multiple WorkerInfo records
+    WorkerInfo w1{1, "host_a", "192.168.1.1", "launch_a"};
+    WorkerInfo w2{2, "host_b", "192.168.1.2", "launch_b"};
+    WorkerInfo w3{3, "host_c", "192.168.1.3", "launch_c"};
+    db.append_worker_info_to_meta(w1);
+    db.append_worker_info_to_meta(w2);
+    db.append_worker_info_to_meta(w3);
+
+    DbMeta meta = db.load_meta();
+    EXPECT_EQ(meta.db_id, db.get_db_id());
+    EXPECT_GT(meta.created_at, 0);
+    ASSERT_EQ(meta.workers.size(), 3u);
+    EXPECT_EQ(meta.workers[0].worker_id, 1u);
+    EXPECT_EQ(meta.workers[1].worker_id, 2u);
+    EXPECT_EQ(meta.workers[2].worker_id, 3u);
+}
+
+TEST_F(DatabaseTest, LoadMetaNoWorkers) {
+    CMString base_path = test_dir_ + "/meta_no_workers";
+    Database db(base_path);
+
+    // No WorkerInfo appended
+    DbMeta meta = db.load_meta();
+    EXPECT_EQ(meta.db_id, db.get_db_id());
+    EXPECT_GT(meta.created_at, 0);
+    EXPECT_TRUE(meta.workers.empty());
+}
+
+TEST_F(DatabaseTest, AppendWorkerInfoIdempotent) {
+    CMString base_path = test_dir_ + "/meta_idempotent";
+    Database db(base_path);
+
+    // Append same WorkerInfo twice — append is additive, no dedup
+    WorkerInfo info;
+    info.worker_id = 42;
+    info.hostname = "dup_host";
+    info.ip_address = "10.0.0.42";
+    info.launch_command = "python dup.py";
+    db.append_worker_info_to_meta(info);
+    db.append_worker_info_to_meta(info);
+
+    DbMeta meta = db.load_meta();
+    ASSERT_EQ(meta.workers.size(), 2u);
+    // Both entries have same data
+    EXPECT_EQ(meta.workers[0].worker_id, 42u);
+    EXPECT_EQ(meta.workers[1].worker_id, 42u);
+    EXPECT_EQ(meta.workers[0].hostname, "dup_host");
+    EXPECT_EQ(meta.workers[1].hostname, "dup_host");
 }
 
 }

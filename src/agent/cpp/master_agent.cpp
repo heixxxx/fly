@@ -1,10 +1,12 @@
 #include <agent/cpp/master_agent.h>
 #include <log/cpp/logger.h>
 #include <core/cpp/config.h>
+#include <storage/cpp/local_index.h>
 #include <thread>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <unistd.h>
 
 namespace fly {
 
@@ -28,7 +30,11 @@ void MasterAgent::set_data_service(DataService* ds) {
 MasterAgent::MasterAgent(const CMString& host, uint16_t port)
     : host_(host), port_(port), running_(false),
       graph_(CMMakeUnique<DependencyGraph>()),
-      worker_manager_(CMMakeUnique<WorkerManager>()) {}
+      worker_manager_(CMMakeUnique<WorkerManager>()) {
+    char hostname_buf[256] = {};
+    gethostname(hostname_buf, sizeof(hostname_buf));
+    master_hostname_ = hostname_buf;
+}
 
 MasterAgent::~MasterAgent() {
     stop();
@@ -355,12 +361,16 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     conn_to_worker_[conn_id] = worker_id;
     worker_to_conn_[worker_id] = conn_id;
 
+    worker_to_hostname_[worker_id] = msg.hostname;
+    worker_to_ip_[worker_id] = msg.ip_address;
+
     worker_manager_->register_worker(worker_id, host_, port_, msg.attributes);
 
     ds();
     if (msg.data_server_port > 0) {
         ds().register_worker(worker_id, msg.data_server_host, msg.data_server_port);
-        INFO("Worker registered: worker_id={}, data_server={}:{}", worker_id, msg.data_server_host, msg.data_server_port);
+        INFO("Worker registered: worker_id={}, hostname={}, data_server={}:{}",
+             worker_id, msg.hostname, msg.data_server_host, msg.data_server_port);
     }
 
     RegisterAckMessage ack;
@@ -388,6 +398,38 @@ void MasterAgent::on_data_ready(uint64_t conn_id, const DataReadyMessage& msg) {
     auto addr = ds().get_worker_address(msg.worker_id);
 
     ds().update_remote_idx(msg.object_name, msg.worker_id, addr.host, addr.port);
+
+    CMString hostname;
+    CMString ip;
+    if (msg.worker_id == 0) {
+        hostname = master_hostname_;
+        ip = host_;
+    } else {
+        auto host_it = worker_to_hostname_.find(msg.worker_id);
+        if (host_it != worker_to_hostname_.end()) {
+            hostname = host_it->second;
+        }
+        auto ip_it = worker_to_ip_.find(msg.worker_id);
+        if (ip_it != worker_to_ip_.end()) {
+            ip = ip_it->second;
+        }
+    }
+
+    if (!hostname.empty()) {
+        auto key = std::make_pair(hostname, msg.worker_id);
+        if (recorded_workers_.find(key) == recorded_workers_.end()) {
+            recorded_workers_.insert(key);
+            auto db_it = db_instances_.find(msg.db_id);
+            if (db_it != db_instances_.end()) {
+                ::WorkerInfo info;
+                info.worker_id = msg.worker_id;
+                info.hostname = hostname;
+                info.ip_address = ip;
+                info.launch_command = "";
+                db_it->second->append_worker_info_to_meta(info);
+            }
+        }
+    }
 
     schedule_tasks();
 }
@@ -803,6 +845,114 @@ void MasterAgent::restart_failed_tasks(const CMString& file_path) {
     }
 
     INFO("Restarted {} failed tasks", record_count);
+}
+
+void MasterAgent::setup_write_context() {
+    WorkerAgentContext::set(&MasterAgent::master_record_write_trampoline, this);
+}
+
+void MasterAgent::master_record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
+    static_cast<MasterAgent*>(ctx)->on_master_record_write(db_id, name);
+}
+
+void MasterAgent::on_master_record_write(const CMString& db_id, const CMString& name) {
+    if (!running_.load()) return;
+    DataReadyMessage msg;
+    msg.worker_id = 0;
+    msg.object_name = db_id + ":" + name;
+    msg.db_id = db_id;
+    on_data_ready(0, msg);
+}
+
+CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_id,
+                                                       const CMString& base_path,
+                                                       uint64_t writer_id) {
+    CMString idx_path = base_path + "/worker_" + std::to_string(writer_id) + ".idx";
+    if (!std::filesystem::exists(idx_path)) {
+        WARN("restore_master_idx: idx file not found: {}", idx_path);
+        return {};
+    }
+
+    LocalIndex idx(idx_path);
+    idx.load();
+    auto entries = idx.get_all_entries();
+
+    if (!entries.empty()) {
+        ds().restore_entries(db_id, entries);
+        INFO("restore_master_idx: restored {} entries for db_id={}", entries.size(), db_id);
+    }
+
+    return entries;
+}
+
+void MasterAgent::send_idx_load_commands(const CMString& db_id,
+                                           const CMString& base_path,
+                                           const CMVector<uint64_t>& old_worker_ids) {
+    IdxLoadCommandMessage msg;
+    msg.db_id = db_id;
+    msg.base_path = base_path;
+    msg.old_worker_ids = old_worker_ids;
+
+    for (const auto& [worker_id, conn_id] : worker_to_conn_) {
+        reactor_->send(conn_id, msg);
+        INFO("Sent IdxLoadCommand to worker_id={}: db_id={}, old_ids_count={}",
+             worker_id, db_id, old_worker_ids.size());
+    }
+}
+
+void MasterAgent::rebuild_remote_idx(const CMString& db_id,
+                                       const CMString& base_path,
+                                       const CMVector<::WorkerInfo>& workers) {
+    CMMap<uint64_t, CMString> old_id_to_hostname;
+    for (const auto& w : workers) {
+        old_id_to_hostname[w.worker_id] = w.hostname;
+    }
+
+    CMMap<CMString, CMVector<uint64_t>> hostname_to_new_workers;
+    for (const auto& [worker_id, hostname] : worker_to_hostname_) {
+        hostname_to_new_workers[hostname].push_back(worker_id);
+    }
+
+    for (const auto& w : workers) {
+        CMString idx_path = base_path + "/worker_" + std::to_string(w.worker_id) + ".idx";
+        if (!std::filesystem::exists(idx_path)) {
+            WARN("rebuild_remote_idx: idx file not found: {}", idx_path);
+            continue;
+        }
+
+        LocalIndex idx(idx_path);
+        idx.load();
+        auto entries = idx.get_all_entries();
+
+        if (w.worker_id == 0) {
+            for (const auto& entry : entries) {
+                ds().update_remote_idx(entry.object_name, 0, host_, data_server_port_);
+            }
+            INFO("rebuild_remote_idx: mapped {} master entries", entries.size());
+        } else {
+            auto host_it = old_id_to_hostname.find(w.worker_id);
+            if (host_it == old_id_to_hostname.end()) {
+                WARN("rebuild_remote_idx: no hostname for old worker_id={}", w.worker_id);
+                continue;
+            }
+
+            const CMString& hostname = host_it->second;
+            auto new_it = hostname_to_new_workers.find(hostname);
+            if (new_it == hostname_to_new_workers.end() || new_it->second.empty()) {
+                WARN("rebuild_remote_idx: no new worker for hostname={}", hostname);
+                continue;
+            }
+
+            uint64_t new_worker_id = new_it->second[0];
+            auto addr = ds().get_worker_address(new_worker_id);
+
+            for (const auto& entry : entries) {
+                ds().update_remote_idx(entry.object_name, new_worker_id, addr.host, addr.port);
+            }
+            INFO("rebuild_remote_idx: mapped {} entries from old worker_id={} to new worker_id={}",
+                 entries.size(), w.worker_id, new_worker_id);
+        }
+    }
 }
 
 }  // namespace fly

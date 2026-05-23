@@ -6,6 +6,7 @@
 #include <network/cpp/metadata_client.h>
 #include <thread>
 #include <chrono>
+#include <unistd.h>
 
 namespace fly {
 
@@ -103,6 +104,11 @@ void WorkerAgent::start() {
             on_object_removed(conn_id, msg);
         });
 
+    reactor_->register_handler<IdxLoadCommandMessage>(
+        [this](uint64_t conn_id, const IdxLoadCommandMessage& msg) {
+            on_idx_load_command(conn_id, msg);
+        });
+
     reactor_->on_disconnect([this](uint64_t conn_id) {
         on_disconnect(conn_id);
     });
@@ -114,6 +120,12 @@ void WorkerAgent::start() {
     reg.attributes = attributes_;
     reg.data_server_host = data_server_host_;
     reg.data_server_port = data_server_port_;
+
+    char hostname_buf[256] = {};
+    gethostname(hostname_buf, sizeof(hostname_buf));
+    reg.hostname = hostname_buf;
+    reg.ip_address = data_server_host_;
+
     reactor_->send(master_conn_, reg);
 
     auto dsp = data_server_port_;
@@ -614,6 +626,49 @@ void WorkerAgent::remove_worker_property(const CMVector<CMString>& props) {
 CMVector<CMString> WorkerAgent::get_worker_properties() const {
     std::lock_guard<std::mutex> lock(attributes_mutex_);
     return attributes_;
+}
+
+void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg) {
+    touch_master_contact();
+    INFO("IdxLoadCommand received: db_id={}, base_path={}, old_worker_count={}",
+         msg.db_id, msg.base_path, msg.old_worker_ids.size());
+
+    IdxLoadAckMessage ack;
+    ack.worker_id = worker_id_;
+    ack.db_id = msg.db_id;
+
+    int32_t loaded = 0;
+    try {
+        auto& dsRef = ds();
+        dsRef.register_database(msg.db_id, msg.base_path, "", worker_id_);
+
+        for (auto old_id : msg.old_worker_ids) {
+            CMString idx_path = msg.base_path + "/worker_" + std::to_string(old_id) + ".idx";
+            if (!std::filesystem::exists(idx_path)) {
+                WARN("idx file not found: {}", idx_path);
+                continue;
+            }
+
+            LocalIndex idx(idx_path);
+            idx.load();
+            auto all_entries = idx.get_all_entries();
+
+            if (!all_entries.empty()) {
+                dsRef.restore_entries(msg.db_id, all_entries);
+                loaded++;
+            }
+        }
+
+        ack.success = true;
+        ack.loaded_count = loaded;
+        INFO("IdxLoad complete: db_id={}, loaded {} idx files", msg.db_id, loaded);
+    } catch (const std::exception& e) {
+        ack.success = false;
+        ack.error_message = e.what();
+        ERR("IdxLoad failed: db_id={}, error={}", msg.db_id, e.what());
+    }
+
+    reactor_->send(conn_id, ack);
 }
 
 }  // namespace fly

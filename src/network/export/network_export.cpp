@@ -56,8 +56,11 @@ FLY_EXPORT_CLASS(fly::RegisterMessage, "EXNetRegisterMessage")
     FLY_EXPORT_INIT()
     FLY_EXPORT_ATTR("header", &fly::RegisterMessage::header)
     FLY_EXPORT_ATTR("worker_id", &fly::RegisterMessage::worker_id)
-    FLY_EXPORT_ATTR("role", &fly::RegisterMessage::role)
+    FLY_EXPORT_ATTR("hostname", &fly::RegisterMessage::hostname)
+    FLY_EXPORT_ATTR("ip_address", &fly::RegisterMessage::ip_address)
     FLY_EXPORT_ATTR("attributes", &fly::RegisterMessage::attributes)
+    FLY_EXPORT_ATTR("data_server_host", &fly::RegisterMessage::data_server_host)
+    FLY_EXPORT_ATTR("data_server_port", &fly::RegisterMessage::data_server_port)
     FLY_EXPORT_SERIALIZE(fly::RegisterMessage);
 
 FLY_EXPORT_CLASS(fly::DataRequestMessage, "EXNetDataRequestMessage")

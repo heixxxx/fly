@@ -13,6 +13,7 @@
 #include <task/cpp/heartbeat_monitor.h>
 #include <log/cpp/logger.h>
 #include <common/cpp/common_types.h>
+#include <common/cpp/worker_context.h>
 #include <serialization/cpp/serialization_macros.h>
 #include <cstdint>
 #include <thread>
@@ -86,6 +87,13 @@ public:
     ReadResult request_data_from_worker(const CMString& host, int32_t port,
                                          const CMString& object_name);
 
+    void setup_write_context();
+
+    // load_db support methods
+    CMVector<IndexEntry> restore_master_idx(const CMString& db_id, const CMString& base_path, uint64_t writer_id);
+    void send_idx_load_commands(const CMString& db_id, const CMString& base_path, const CMVector<uint64_t>& old_worker_ids);
+    void rebuild_remote_idx(const CMString& db_id, const CMString& base_path, const CMVector<::WorkerInfo>& workers);
+
 private:
     CMString host_;
     uint16_t port_;
@@ -136,11 +144,19 @@ private:
     void remove_persisted_task(uint64_t task_id);
     CMString get_failed_tasks_file_path() const;
 
+    static void master_record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
+    void on_master_record_write(const CMString& db_id, const CMString& name);
+
     std::atomic<bool> fatal_error_{false};
 
     DataService* data_service_ = nullptr;
 
     DataService& ds();
+
+    CMMap<uint64_t, CMString> worker_to_hostname_;
+    CMMap<uint64_t, CMString> worker_to_ip_;
+    CMString master_hostname_;
+    CMSet<std::pair<CMString, uint64_t>> recorded_workers_;
 };
 
 }  // namespace fly

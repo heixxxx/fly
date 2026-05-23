@@ -131,3 +131,10 @@ def read_after_remove(db, key, deps):
 def write_remove_other(db, write_key, write_value, remove_key):
     db.write_object(write_key, write_value)
     db.remove_object(remove_key)
+
+
+@as_task()
+def compute_sum(db, read_key_a, read_key_b, result_key):
+    a = db.read_object(read_key_a)
+    b = db.read_object(read_key_b)
+    db.write_object(result_key, a + b)

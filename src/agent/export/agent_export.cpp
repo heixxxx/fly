@@ -145,6 +145,27 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                                         const fly::CMString& db_id,
                                                         const fly::CMString& object_name) {
         self.broadcast_object_removed(db_id, object_name);
+    })
+    FLY_EXPORT_METHOD("setup_write_context", [](fly::MasterAgent& self) {
+        self.setup_write_context();
+    })
+    FLY_EXPORT_METHOD("restore_master_idx", [](fly::MasterAgent& self,
+                                                  const fly::CMString& db_id,
+                                                  const fly::CMString& base_path,
+                                                  uint64_t writer_id) -> fly::CMVector<IndexEntry> {
+        return self.restore_master_idx(db_id, base_path, writer_id);
+    })
+    FLY_EXPORT_METHOD("send_idx_load_commands", [](fly::MasterAgent& self,
+                                                     const fly::CMString& db_id,
+                                                     const fly::CMString& base_path,
+                                                     const fly::CMVector<uint64_t>& old_worker_ids) {
+        self.send_idx_load_commands(db_id, base_path, old_worker_ids);
+    })
+    FLY_EXPORT_METHOD("rebuild_remote_idx", [](fly::MasterAgent& self,
+                                                 const fly::CMString& db_id,
+                                                 const fly::CMString& base_path,
+                                                 const fly::CMVector<::WorkerInfo>& workers) {
+        self.rebuild_remote_idx(db_id, base_path, workers);
     });
 
 FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")

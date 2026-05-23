@@ -72,25 +72,22 @@ TEST(IndexEntryTest, SerializeDeserializeLargeFile) {
 TEST(WorkerInfoTest, DefaultValues) {
     WorkerInfo info;
     EXPECT_EQ(info.worker_id, 0);
-    EXPECT_EQ(info.idx_entry_count, 0);
-    EXPECT_TRUE(info.host.empty());
-    EXPECT_TRUE(info.role.empty());
+    EXPECT_TRUE(info.hostname.empty());
+    EXPECT_TRUE(info.ip_address.empty());
+    EXPECT_TRUE(info.launch_command.empty());
 }
 
 TEST(WorkerInfoTest, AggregateInit) {
-    WorkerInfo info{2, "192.168.1.10", "storage_only", "/ssd", "w2.idx", 500, "ssh ..."};
+    WorkerInfo info{2, "gpu-node-1", "10.0.1.5", "ssh gpu-node-1 fly --worker ..."};
     
     EXPECT_EQ(info.worker_id, 2);
-    EXPECT_EQ(info.host, "192.168.1.10");
-    EXPECT_EQ(info.role, "storage_only");
-    EXPECT_EQ(info.data_path, "/ssd");
-    EXPECT_EQ(info.idx_file, "w2.idx");
-    EXPECT_EQ(info.idx_entry_count, 500);
-    EXPECT_EQ(info.launch_command, "ssh ...");
+    EXPECT_EQ(info.hostname, "gpu-node-1");
+    EXPECT_EQ(info.ip_address, "10.0.1.5");
+    EXPECT_EQ(info.launch_command, "ssh gpu-node-1 fly --worker ...");
 }
 
 TEST(WorkerInfoTest, SerializeDeserialize) {
-    WorkerInfo info{5, "10.0.0.1", "hybrid", "/disk", "w5.idx", 300, "cmd_run"};
+    WorkerInfo info{5, "node-3", "192.168.1.10", "bsub -n 1 fly --worker ..."};
     
     CMString bytes;
     FLY_ENCODE(info, bytes);
@@ -100,12 +97,9 @@ TEST(WorkerInfoTest, SerializeDeserialize) {
     FLY_DECODE(bytes, WorkerInfo, decoded);
     
     EXPECT_EQ(decoded.worker_id, 5);
-    EXPECT_EQ(decoded.host, "10.0.0.1");
-    EXPECT_EQ(decoded.role, "hybrid");
-    EXPECT_EQ(decoded.data_path, "/disk");
-    EXPECT_EQ(decoded.idx_file, "w5.idx");
-    EXPECT_EQ(decoded.idx_entry_count, 300);
-    EXPECT_EQ(decoded.launch_command, "cmd_run");
+    EXPECT_EQ(decoded.hostname, "node-3");
+    EXPECT_EQ(decoded.ip_address, "192.168.1.10");
+    EXPECT_EQ(decoded.launch_command, "bsub -n 1 fly --worker ...");
 }
 
 // --- DbMeta tests ---
@@ -113,36 +107,32 @@ TEST(WorkerInfoTest, SerializeDeserialize) {
 TEST(DbMetaTest, DefaultValues) {
     DbMeta meta;
     EXPECT_EQ(meta.created_at, 0);
-    EXPECT_EQ(meta.frozen_at, 0);
     EXPECT_TRUE(meta.db_id.empty());
-    EXPECT_TRUE(meta.base_path.empty());
     EXPECT_TRUE(meta.workers.empty());
 }
 
 TEST(DbMetaTest, AggregateInit) {
-    DbMeta meta{"/data/db1", "/data", 1715500000, 0, {}};
+    DbMeta meta{"/data/db1", 1715500000, {}};
     
     EXPECT_EQ(meta.db_id, "/data/db1");
-    EXPECT_EQ(meta.base_path, "/data");
     EXPECT_EQ(meta.created_at, 1715500000);
-    EXPECT_EQ(meta.frozen_at, 0);
 }
 
 TEST(DbMetaTest, AddWorkerInfo) {
-    DbMeta meta{"/data/db", "/data", 1715500000, 1715600000, {}};
+    DbMeta meta{"/data/db", 1715500000, {}};
     
-    WorkerInfo worker{1, "localhost", "hybrid", "/local", "w1.idx", 100, "cmd"};
+    WorkerInfo worker{1, "localhost", "127.0.0.1", "cmd"};
     meta.workers.push_back(worker);
     
     EXPECT_EQ(meta.workers.size(), 1);
     EXPECT_EQ(meta.workers[0].worker_id, 1);
-    EXPECT_EQ(meta.workers[0].host, "localhost");
+    EXPECT_EQ(meta.workers[0].hostname, "localhost");
 }
 
 TEST(DbMetaTest, SerializeDeserialize) {
-    DbMeta meta{"/db/test", "/base", 1715500000, 1715600000, {
-        {1, "host1", "hybrid", "/d1", "w1.idx", 100, "cmd1"},
-        {2, "host2", "storage_only", "/d2", "w2.idx", 200, "cmd2"}
+    DbMeta meta{"/db/test", 1715500000, {
+        {1, "host1", "10.0.0.1", "cmd1"},
+        {2, "host2", "10.0.0.2", "cmd2"}
     }};
     
     CMString bytes;
@@ -153,12 +143,32 @@ TEST(DbMetaTest, SerializeDeserialize) {
     FLY_DECODE(bytes, DbMeta, decoded);
     
     EXPECT_EQ(decoded.db_id, "/db/test");
-    EXPECT_EQ(decoded.base_path, "/base");
     EXPECT_EQ(decoded.created_at, 1715500000);
-    EXPECT_EQ(decoded.frozen_at, 1715600000);
     EXPECT_EQ(decoded.workers.size(), 2);
     EXPECT_EQ(decoded.workers[0].worker_id, 1);
     EXPECT_EQ(decoded.workers[1].worker_id, 2);
+}
+
+// --- DbMetaHeader tests ---
+
+TEST(DbMetaHeaderTest, DefaultValues) {
+    DbMetaHeader header;
+    EXPECT_TRUE(header.db_id.empty());
+    EXPECT_EQ(header.created_at, 0);
+}
+
+TEST(DbMetaHeaderTest, SerializeDeserialize) {
+    DbMetaHeader header{"abc123", 1715500000};
+    
+    CMString bytes;
+    FLY_ENCODE(header, bytes);
+    EXPECT_GT(bytes.size(), 0);
+    
+    DbMetaHeader decoded;
+    FLY_DECODE(bytes, DbMetaHeader, decoded);
+    
+    EXPECT_EQ(decoded.db_id, "abc123");
+    EXPECT_EQ(decoded.created_at, 1715500000);
 }
 
 // --- Object interface tests ---

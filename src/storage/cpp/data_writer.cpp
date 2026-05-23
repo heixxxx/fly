@@ -46,6 +46,20 @@ DataWriter::DataWriter(
         index_->load();
     }
 
+    // Advance file_index_ past existing data files to avoid truncating them.
+    // This is critical for load_db which reopens a database directory.
+    while (true) {
+        std::ostringstream oss;
+        oss << "aggregated_w" << worker_id_ << "_" << std::setfill('0')
+            << std::setw(3) << file_index_ << ".dat";
+        CMString candidate = write_dir + "/" + oss.str();
+        if (fs::exists(candidate)) {
+            file_index_++;
+        } else {
+            break;
+        }
+    }
+
     create_new_file();
 }
 

@@ -36,6 +36,11 @@ void DataService::unregister_database(const CMString& db_id) {
     db_paths_.erase(db_id);
 }
 
+bool DataService::has_database(const CMString& db_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return db_paths_.find(db_id) != db_paths_.end();
+}
+
 void DataService::on_object_written(const CMString& db_id,
                                      const CMString& object_name,
                                      const IndexEntry& entry) {
@@ -220,10 +225,11 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
         try {
             DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
             return {true, reader.read_from_entries(info->entries)};
-        } catch (const std::exception& e) {
-            return {false, ReadResult{}};
-        }
+    } catch (const std::exception& e) {
+        ERR("try_read_local FAILED for '{}': {}", object_name, e.what());
+        return {false, ReadResult{}};
     }
+}
 
     if (info->completion_state == CompletionState::FAILED) {
         return {false, ReadResult{}};
@@ -410,6 +416,34 @@ void DataService::drain_write_back() {
 
 bool DataService::is_write_back_running() const {
     return write_back_queue_ && write_back_queue_->is_running();
+}
+
+void DataService::restore_entries(const CMString& db_id,
+                                    const CMVector<IndexEntry>& entries) {
+    // Group entries by object_name
+    CMUnorderedMap<CMString, CMVector<IndexEntry>> grouped;
+    for (const auto& e : entries) {
+        grouped[e.object_name].push_back(e);
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [object_name, obj_entries] : grouped) {
+        auto& info = local_idx_[object_name];
+        if (!info) {
+            info = CMMakeShared<LocalObjectInfo>();
+        }
+        info->db_id = db_id;
+        // Append entries (don't replace — there might be existing entries)
+        for (auto& e : obj_entries) {
+            info->entries.push_back(std::move(e));
+        }
+        info->completion_state = CompletionState::COMPLETE;
+        info->flushed = true;
+    }
+
+    if (!grouped.empty()) {
+        DBG("restore_entries: restored {} objects for db_id={}", grouped.size(), db_id);
+    }
 }
 
 void DataService::on_object_flushed(const CMString& object_name) {

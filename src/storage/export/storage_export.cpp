@@ -97,7 +97,8 @@ FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
     })
     FLY_EXPORT_METHOD("drain_write_back", &fly::DataService::drain_write_back)
     FLY_EXPORT_METHOD("stop_write_back", &fly::DataService::stop_write_back)
-    FLY_EXPORT_METHOD("stop_transfer_server", &fly::DataService::stop_transfer_server);
+    FLY_EXPORT_METHOD("stop_transfer_server", &fly::DataService::stop_transfer_server)
+    FLY_EXPORT_METHOD("has_database", &fly::DataService::has_database);
 
 FLY_EXPORT_FUNCTION_REF("ex_stg_get_data_service", []() -> fly::DataService& { return fly::DataService::instance(); });
 
@@ -122,23 +123,18 @@ FLY_EXPORT_CLASS(IndexEntry, "EXStgIndexEntry")
 
 FLY_EXPORT_CLASS(DbMeta, "EXStgDbMeta")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_INIT(CMString, CMString, int64_t, int64_t)
+    FLY_EXPORT_INIT(CMString, int64_t)
     FLY_EXPORT_READONLY_ATTR("db_id", &DbMeta::db_id)
-    FLY_EXPORT_READONLY_ATTR("base_path", &DbMeta::base_path)
     FLY_EXPORT_READONLY_ATTR("created_at", &DbMeta::created_at)
-    FLY_EXPORT_READONLY_ATTR("frozen_at", &DbMeta::frozen_at)
     FLY_EXPORT_ATTR("workers", &DbMeta::workers)
     FLY_EXPORT_SERIALIZE(DbMeta);
 
 FLY_EXPORT_CLASS(WorkerInfo, "EXStgWorkerInfo")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_INIT(uint64_t, CMString, CMString, CMString, CMString, int64_t, CMString)
+    FLY_EXPORT_INIT(uint64_t, CMString, CMString, CMString)
     FLY_EXPORT_READONLY_ATTR("worker_id", &WorkerInfo::worker_id)
-    FLY_EXPORT_READONLY_ATTR("host", &WorkerInfo::host)
-    FLY_EXPORT_READONLY_ATTR("role", &WorkerInfo::role)
-    FLY_EXPORT_READONLY_ATTR("data_path", &WorkerInfo::data_path)
-    FLY_EXPORT_READONLY_ATTR("idx_file", &WorkerInfo::idx_file)
-    FLY_EXPORT_READONLY_ATTR("idx_entry_count", &WorkerInfo::idx_entry_count)
+    FLY_EXPORT_READONLY_ATTR("hostname", &WorkerInfo::hostname)
+    FLY_EXPORT_READONLY_ATTR("ip_address", &WorkerInfo::ip_address)
     FLY_EXPORT_READONLY_ATTR("launch_command", &WorkerInfo::launch_command)
     FLY_EXPORT_SERIALIZE(WorkerInfo);
 
@@ -146,6 +142,10 @@ FLY_EXPORT_FUNCTION_REF("ex_stg_get_storage_manager", []() -> StorageManager& { 
 
 FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& base_path, const CMString& data_path, uint64_t writer_id) -> CMSharedPtr<Database> {
     return CMMakeShared<Database>(base_path, data_path, writer_id);
+});
+
+FLY_EXPORT_FUNCTION("ex_stg_create_database_with_id", [](const CMString& base_path, const CMString& data_path, uint64_t writer_id, const CMString& db_id) -> CMSharedPtr<Database> {
+    return CMMakeShared<Database>(base_path, data_path, writer_id, "", db_id);
 });
 
 FLY_EXPORT_FUNCTION("ex_stg_cpp_write_index_entry", [](Database& db, const CMString& key) -> CMString {

@@ -19,11 +19,19 @@ def _deserialize_args(args: list, worker) -> list:
             if db_id not in worker._db_cache:
                 base_path = parts[2] if len(parts) > 2 else ""
                 data_path = parts[3] if len(parts) > 3 else ""
-                from fly.database import _Database
-                db = _Database(base_path, data_path, worker._worker_id)
-                db._db.set_db_id(db_id)
-                worker._db_cache[db_id] = db
+                from _fly_storage import ex_stg_get_data_service
+                ds = ex_stg_get_data_service()
+                if ds.has_database(db_id):
+                    from _fly_storage import ex_stg_create_database_with_id
+                    from fly.database import _Database
+                    db = _Database.__new__(_Database)
+                    db._db = ex_stg_create_database_with_id(base_path, data_path, worker._worker_id, db_id)
+                else:
+                    from fly.database import _Database
+                    db = _Database(base_path, data_path, worker._worker_id)
+                    db._db.set_db_id(db_id)
                 worker._agent.register_database(db_id, db._db)
+                worker._db_cache[db_id] = db
             result.append(worker._db_cache[db_id])
         else:
             result.append(pickle.loads(bytes.fromhex(arg)))
@@ -63,6 +71,9 @@ def create_executor(worker) -> callable:
                     _frozen_before.add(db_id)
 
             output = original_func(*deserialized_args)
+
+            from _fly_storage import ex_stg_get_data_service
+            ex_stg_get_data_service().drain_write_back()
 
             frozen_dbs = []
             for db_id, db_obj in worker._db_cache.items():
