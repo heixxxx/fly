@@ -12,7 +12,7 @@ Completion:
   HeaderInsertion: Never
 
 Index:
-  Background: Build
+  Background: Skip
 
 InlayHints:
   Enabled: No

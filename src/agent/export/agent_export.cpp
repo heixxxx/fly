@@ -69,6 +69,14 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     FLY_EXPORT_METHOD("stop", &fly::MasterAgent::stop)
     FLY_EXPORT_METHOD("is_running", &fly::MasterAgent::is_running)
     FLY_EXPORT_METHOD("get_connected_workers", &fly::MasterAgent::get_connected_workers)
+    FLY_EXPORT_METHOD("get_worker_hostnames", [](fly::MasterAgent& self) -> fly_export::list {
+        auto pairs = self.get_worker_hostnames();
+        fly_export::list result;
+        for (const auto& [worker_id, hostname] : pairs) {
+            result.append(fly_export::make_tuple(worker_id, hostname));
+        }
+        return result;
+    })
     FLY_EXPORT_METHOD("get_connection_count", &fly::MasterAgent::get_connection_count)
     FLY_EXPORT_METHOD("submit_task", [](fly::MasterAgent& self, uint64_t task_id,
                                          const fly::CMString& name,
@@ -152,14 +160,14 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     FLY_EXPORT_METHOD("restore_master_idx", [](fly::MasterAgent& self,
                                                   const fly::CMString& db_id,
                                                   const fly::CMString& base_path,
-                                                  uint64_t writer_id) -> fly::CMVector<IndexEntry> {
+                                                  const fly::CMString& writer_id) -> fly::CMVector<IndexEntry> {
         return self.restore_master_idx(db_id, base_path, writer_id);
     })
     FLY_EXPORT_METHOD("send_idx_load_commands", [](fly::MasterAgent& self,
                                                      const fly::CMString& db_id,
                                                      const fly::CMString& base_path,
-                                                     const fly::CMVector<uint64_t>& old_worker_ids) {
-        self.send_idx_load_commands(db_id, base_path, old_worker_ids);
+                                                     const fly::CMVector<fly::CMString>& writer_ids) {
+        self.send_idx_load_commands(db_id, base_path, writer_ids);
     })
     FLY_EXPORT_METHOD("rebuild_remote_idx", [](fly::MasterAgent& self,
                                                  const fly::CMString& db_id,

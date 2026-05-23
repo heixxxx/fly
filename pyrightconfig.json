@@ -1,0 +1,14 @@
+{
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/third_party",
+    "**/.venv",
+    "**/venv"
+  ],
+  "typeCheckingMode": "basic",
+  "useLibraryCodeForTypes": false
+}

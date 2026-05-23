@@ -8,6 +8,14 @@
 
 namespace fly {
 
+static bool wait_for_registered(WorkerAgent& worker, int max_attempts = 30, int delay_ms = 50) {
+    for (int i = 0; i < max_attempts; ++i) {
+        if (worker.is_registered()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+    }
+    return worker.is_registered();
+}
+
 class AgentNetworkTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -28,9 +36,7 @@ TEST_F(AgentNetworkTest, WorkerRegister) {
     
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    
-    EXPECT_TRUE(worker.is_registered());
+    EXPECT_TRUE(wait_for_registered(worker));
     EXPECT_EQ(master.get_connection_count(), 1);
     
     auto connected = master.get_connected_workers();

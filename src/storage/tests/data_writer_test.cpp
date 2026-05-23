@@ -21,7 +21,7 @@ protected:
 
 TEST_F(DataWriterTest, WriteSmallObject) {
     CMString base_path = test_dir_ + "/base";
-    DataWriter writer(base_path, "", 1, 1024, 10240, 128);
+    DataWriter writer(base_path, "", "a1b2c3d4", 1024, 10240, 128);
 
     CMString file = writer.write_object("small/test", "hello world", false);
     EXPECT_FALSE(file.empty());
@@ -32,7 +32,7 @@ TEST_F(DataWriterTest, WriteSmallObject) {
 
 TEST_F(DataWriterTest, WriteMultipleSmallObjects) {
     CMString base_path = test_dir_ + "/multi_base";
-    DataWriter writer(base_path, "", 1, 1024, 10240, 128);
+    DataWriter writer(base_path, "", "a1b2c3d4", 1024, 10240, 128);
 
     for (int i = 0; i < 5; i++) {
         CMString name = "obj_" + std::to_string(i);
@@ -46,7 +46,7 @@ TEST_F(DataWriterTest, WriteMultipleSmallObjects) {
 
 TEST_F(DataWriterTest, AggregationThresholdCreatesNewFile) {
     CMString base_path = test_dir_ + "/agg_base";
-    DataWriter writer(base_path, "", 1, 50, 10240, 128);
+    DataWriter writer(base_path, "", "a1b2c3d4", 50, 10240, 128);
 
     CMString data1(30, 'a');
     writer.write_object("obj1", data1, false);
@@ -60,7 +60,7 @@ TEST_F(DataWriterTest, AggregationThresholdCreatesNewFile) {
 
 TEST_F(DataWriterTest, WriteLargeObject) {
     CMString base_path = test_dir_ + "/large_base";
-    DataWriter writer(base_path, "", 1, 1048576, 100, 50);
+    DataWriter writer(base_path, "", "a1b2c3d4", 1048576, 100, 50);
 
     CMString large_data(500, 'x');
     CMString file = writer.write_object("large/test", large_data, false);
@@ -72,10 +72,10 @@ TEST_F(DataWriterTest, WriteLargeObject) {
 
 TEST_F(DataWriterTest, FlushPersistsIndex) {
     CMString base_path = test_dir_ + "/flush_base";
-    CMString idx_path = base_path + "/worker_1.idx";
+    CMString idx_path = base_path + "/a1b2c3d4.idx";
 
     {
-        DataWriter writer(base_path, "", 1, 1024, 10240, 128);
+        DataWriter writer(base_path, "", "a1b2c3d4", 1024, 10240, 128);
         writer.write_object("flush/obj", "data", false);
         writer.flush();
 
@@ -86,7 +86,7 @@ TEST_F(DataWriterTest, FlushPersistsIndex) {
 
 TEST_F(DataWriterTest, CloseIsIdempotent) {
     CMString base_path = test_dir_ + "/close_base";
-    DataWriter writer(base_path, "", 1, 1024, 10240, 128);
+    DataWriter writer(base_path, "", "a1b2c3d4", 1024, 10240, 128);
 
     writer.write_object("close/obj", "data", false);
     writer.close();
@@ -95,7 +95,7 @@ TEST_F(DataWriterTest, CloseIsIdempotent) {
 
 TEST_F(DataWriterTest, WriteAfterCloseThrows) {
     CMString base_path = test_dir_ + "/closed_base";
-    DataWriter writer(base_path, "", 1, 1024, 10240, 128);
+    DataWriter writer(base_path, "", "a1b2c3d4", 1024, 10240, 128);
 
     writer.write_object("obj", "data", false);
     writer.close();
@@ -106,7 +106,7 @@ TEST_F(DataWriterTest, WriteAfterCloseThrows) {
 TEST_F(DataWriterTest, WriteWithCustomDataPath) {
     CMString base_path = test_dir_ + "/base_custom";
     CMString data_path = test_dir_ + "/data_custom";
-    DataWriter writer(base_path, data_path, 1, 1024, 10240, 128);
+    DataWriter writer(base_path, data_path, "a1b2c3d4", 1024, 10240, 128);
 
     CMString file = writer.write_object("custom/obj", "hello", false);
     EXPECT_FALSE(file.empty());
@@ -119,7 +119,7 @@ TEST_F(DataWriterTest, WriteWithCustomDataPath) {
 
 TEST_F(DataWriterTest, FileCountIncrements) {
     CMString base_path = test_dir_ + "/count_base";
-    DataWriter writer(base_path, "", 1, 20, 10240, 128);
+    DataWriter writer(base_path, "", "a1b2c3d4", 20, 10240, 128);
 
     EXPECT_EQ(writer.file_count(), 1);
 

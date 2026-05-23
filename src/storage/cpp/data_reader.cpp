@@ -8,14 +8,14 @@ namespace fs = std::filesystem;
 DataReader::DataReader(
     const CMString& base_path,
     const CMString& data_path,
-    uint64_t worker_id
+    const CMString& writer_id
 )
     : base_path_(base_path)
     , data_path_(data_path)
-    , worker_id_(worker_id) {
+    , writer_id_(writer_id) {
 
     CMString read_dir = data_path_.empty() ? base_path_ : data_path_;
-    CMString idx_path = base_path_ + "/worker_" + std::to_string(worker_id_) + ".idx";
+    CMString idx_path = base_path_ + "/" + writer_id_ + ".idx";
 
     index_ = CMMakeUnique<LocalIndex>(idx_path);
     if (fs::exists(idx_path)) {

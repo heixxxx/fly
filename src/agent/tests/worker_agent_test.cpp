@@ -6,6 +6,14 @@
 
 namespace fly {
 
+static bool wait_for_registered(WorkerAgent& worker, int max_attempts = 30, int delay_ms = 50) {
+    for (int i = 0; i < max_attempts; ++i) {
+        if (worker.is_registered()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+    }
+    return worker.is_registered();
+}
+
 TEST(WorkerAgentTest, CreateWithId) {
     WorkerAgent worker(42, "127.0.0.1", 0);
     EXPECT_EQ(worker.get_worker_id(), 42);
@@ -229,9 +237,9 @@ TEST(WorkerAgentTest, GetWorkerPropertiesReturnsCopy) {
 
 namespace fly {
 
-static void create_test_idx_file(const CMString& base_path, uint64_t worker_id,
+static void create_test_idx_file(const CMString& base_path, const CMString& writer_id,
                                   const CMVector<IndexEntry>& entries) {
-    CMString idx_path = base_path + "/worker_" + std::to_string(worker_id) + ".idx";
+    CMString idx_path = base_path + "/" + writer_id + ".idx";
     LocalIndex idx(idx_path);
     for (const auto& e : entries) {
         idx.add_entry(e);
@@ -267,7 +275,7 @@ TEST_F(IdxLoadTest, WorkerProcessesSingleIdxFile) {
     entry.file_name = "data_0.bin";
     entry.offset = 0;
     entry.size = 100;
-    create_test_idx_file(test_dir_, 5, {entry});
+    create_test_idx_file(test_dir_, "w0000005", {entry});
 
     ds_.register_database("test_db", test_dir_, test_dir_ + "/data");
 
@@ -277,11 +285,9 @@ TEST_F(IdxLoadTest, WorkerProcessesSingleIdxFile) {
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    ASSERT_TRUE(wait_for_registered(worker));
 
-    ASSERT_TRUE(worker.is_registered());
-
-    master.send_idx_load_commands("test_db", test_dir_, {5});
+    master.send_idx_load_commands("test_db", test_dir_, {"w0000005"});
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     EXPECT_TRUE(ds_.has_local_object("test_db:obj_alpha"));
@@ -306,8 +312,8 @@ TEST_F(IdxLoadTest, WorkerProcessesMultipleIdxFiles) {
     e2.offset = 0;
     e2.size = 75;
 
-    create_test_idx_file(test_dir_, 10, {e1});
-    create_test_idx_file(test_dir_, 20, {e2});
+    create_test_idx_file(test_dir_, "w0000010", {e1});
+    create_test_idx_file(test_dir_, "w0000020", {e2});
 
     ds_.register_database("test_db", test_dir_, test_dir_ + "/data");
 
@@ -317,11 +323,9 @@ TEST_F(IdxLoadTest, WorkerProcessesMultipleIdxFiles) {
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    ASSERT_TRUE(wait_for_registered(worker));
 
-    ASSERT_TRUE(worker.is_registered());
-
-    master.send_idx_load_commands("test_db", test_dir_, {10, 20});
+    master.send_idx_load_commands("test_db", test_dir_, {"w0000010", "w0000020"});
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     EXPECT_TRUE(ds_.has_local_object("test_db:obj_one"));
@@ -341,7 +345,7 @@ TEST_F(IdxLoadTest, WorkerSkipsMissingIdxFiles) {
     entry.file_name = "data_5.bin";
     entry.offset = 0;
     entry.size = 100;
-    create_test_idx_file(test_dir_, 5, {entry});
+    create_test_idx_file(test_dir_, "w0000005", {entry});
 
     ds_.register_database("test_db", test_dir_, test_dir_ + "/data");
 
@@ -351,11 +355,9 @@ TEST_F(IdxLoadTest, WorkerSkipsMissingIdxFiles) {
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    ASSERT_TRUE(wait_for_registered(worker));
 
-    ASSERT_TRUE(worker.is_registered());
-
-    master.send_idx_load_commands("test_db", test_dir_, {5, 99});
+    master.send_idx_load_commands("test_db", test_dir_, {"w0000005", "w0000099"});
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     EXPECT_TRUE(ds_.has_local_object("test_db:obj_exists"));
@@ -376,12 +378,10 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyOldWorkerIds) {
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-
-    ASSERT_TRUE(worker.is_registered());
+    ASSERT_TRUE(wait_for_registered(worker));
 
     master.send_idx_load_commands("test_db", test_dir_, {});
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     EXPECT_TRUE(worker.is_running());
 
@@ -392,7 +392,7 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyOldWorkerIds) {
 }
 
 TEST_F(IdxLoadTest, WorkerHandlesEmptyIdxFile) {
-    CMString idx_path = test_dir_ + "/worker_30.idx";
+    CMString idx_path = test_dir_ + "/w0000030.idx";
     {
         std::ofstream ofs(idx_path, std::ios::binary);
     }
@@ -405,12 +405,10 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyIdxFile) {
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    ASSERT_TRUE(wait_for_registered(worker));
 
-    ASSERT_TRUE(worker.is_registered());
-
-    master.send_idx_load_commands("test_db", test_dir_, {30});
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    master.send_idx_load_commands("test_db", test_dir_, {"w0000030"});
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     EXPECT_TRUE(worker.is_running());
 
@@ -439,7 +437,7 @@ TEST_F(IdxLoadTest, WorkerLoadsMultipleEntriesPerIdx) {
     e3.offset = 100;
     e3.size = 30;
 
-    create_test_idx_file(test_dir_, 40, {e1, e2, e3});
+    create_test_idx_file(test_dir_, "w0000040", {e1, e2, e3});
 
     ds_.register_database("test_db", test_dir_, test_dir_ + "/data");
 
@@ -449,11 +447,9 @@ TEST_F(IdxLoadTest, WorkerLoadsMultipleEntriesPerIdx) {
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    ASSERT_TRUE(wait_for_registered(worker));
 
-    ASSERT_TRUE(worker.is_registered());
-
-    master.send_idx_load_commands("test_db", test_dir_, {40});
+    master.send_idx_load_commands("test_db", test_dir_, {"w0000040"});
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     EXPECT_TRUE(ds_.has_local_object("test_db:block_a"));

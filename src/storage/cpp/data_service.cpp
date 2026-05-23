@@ -19,7 +19,7 @@ DataService::~DataService() {
 void DataService::register_database(const CMString& db_id,
                                      const CMString& base_path,
                                      const CMString& data_path,
-                                     uint64_t writer_id) {
+                                     const CMString& writer_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = db_paths_.find(db_id);
     if (it != db_paths_.end()) {

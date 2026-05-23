@@ -37,24 +37,29 @@ echo
 
 for test_file in ${TEST_FILES[@]}; do
     test_name=$(basename "$test_file")
-    echo "Running: $test_name"
-    
     LOG_DIR="$LOG_BASE/${test_name%.py}"
-    
-    cd "$PROJECT_ROOT"
-    if $FLY_BIN --log-dir "$LOG_DIR" "$test_file" > "$LOG_BASE/${test_name%.py}_output.log" 2>&1; then
-        echo "  ✓ PASSED"
+    "$FLY_BIN" --log-dir "$LOG_DIR" "$test_file" > "$LOG_BASE/${test_name%.py}_output.log" 2>&1 &
+    echo "$! $test_file" >> /tmp/qa_pids_$$
+done
+
+echo
+echo "Waiting for ${#TEST_FILES[@]} tests to complete..."
+echo
+
+while IFS=' ' read -r pid test_file; do
+    test_name=$(basename "$test_file")
+    if wait "$pid"; then
+        echo "  ✓ PASSED  ${test_name}"
         PASSED=$((PASSED + 1))
     else
-        echo "  ✗ FAILED"
+        echo "  ✗ FAILED  ${test_name}"
         FAILED=$((FAILED + 1))
         FAILED_TESTS+=("$test_name")
         echo "  Last 20 lines of output:"
         tail -20 "$LOG_BASE/${test_name%.py}_output.log" | sed 's/^/    /'
     fi
-    
-    echo
-done
+done < /tmp/qa_pids_$$
+rm -f /tmp/qa_pids_$$
 
 echo "=========================================="
 echo "Summary"

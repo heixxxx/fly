@@ -365,6 +365,10 @@ void WorkerAgent::record_write(const CMString& db_id, const CMString& object_nam
         msg.worker_id = worker_id_;
         msg.object_name = full_name;
         msg.db_id = db_id;
+        auto db_it = databases_.find(db_id);
+        if (db_it != databases_.end()) {
+            msg.writer_id = db_it->second->get_writer_id();
+        }
         reactor_->send(master_conn_, msg);
     }
 }
@@ -630,8 +634,8 @@ CMVector<CMString> WorkerAgent::get_worker_properties() const {
 
 void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg) {
     touch_master_contact();
-    INFO("IdxLoadCommand received: db_id={}, base_path={}, old_worker_count={}",
-         msg.db_id, msg.base_path, msg.old_worker_ids.size());
+    INFO("IdxLoadCommand received: db_id={}, base_path={}, writer_ids_count={}",
+         msg.db_id, msg.base_path, msg.writer_ids.size());
 
     IdxLoadAckMessage ack;
     ack.worker_id = worker_id_;
@@ -640,10 +644,10 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
     int32_t loaded = 0;
     try {
         auto& dsRef = ds();
-        dsRef.register_database(msg.db_id, msg.base_path, "", worker_id_);
+        dsRef.register_database(msg.db_id, msg.base_path, "");
 
-        for (auto old_id : msg.old_worker_ids) {
-            CMString idx_path = msg.base_path + "/worker_" + std::to_string(old_id) + ".idx";
+        for (const auto& writer_id : msg.writer_ids) {
+            CMString idx_path = msg.base_path + "/" + writer_id + ".idx";
             if (!std::filesystem::exists(idx_path)) {
                 WARN("idx file not found: {}", idx_path);
                 continue;

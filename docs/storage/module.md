@@ -168,7 +168,7 @@ public:
     DataWriter(
         const CMString& base_path,
         const CMString& data_path,
-        uint64_t worker_id,
+        const CMString& writer_id,
         int64_t aggregation_threshold,
         int64_t large_file_threshold,
         int64_t block_size,
@@ -193,7 +193,7 @@ public:
 private:
     CMString base_path_;
     CMString data_path_;
-    uint64_t worker_id_;
+    CMString writer_id_;
     CMString host_;
     int64_t aggregation_threshold_;
     int64_t large_file_threshold_;
@@ -234,7 +234,7 @@ class DataReader {
 public:
     DataReader(const CMString& base_path, 
                const CMString& data_path, 
-               uint64_t worker_id);
+               const CMString& writer_id);
     
     ReadResult read_from_entries(const CMVector<IndexEntry>& entries);
     ReadResult read_object_data(const IndexEntry& entry);
@@ -250,7 +250,7 @@ public:
 private:
     CMString base_path_;
     CMString data_path_;
-    uint64_t worker_id_;
+    CMString writer_id_;
     CMString find_file_path(const CMString& file_name);
 };
 ```

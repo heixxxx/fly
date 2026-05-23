@@ -32,8 +32,13 @@ TEST_F(WriteRegisterNetworkTest, MasterAcceptsWriteRegisterForNormalDb) {
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    ASSERT_TRUE(worker.is_registered());
+    // Poll until registered (avoid flaky fixed-delay)
+    bool registered = false;
+    for (int i = 0; i < 30; ++i) {
+        if (worker.is_registered()) { registered = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    ASSERT_TRUE(registered);
 
     TaskExecutor executor;
     executor.set_exec_func([](uint64_t id, const CMString& name,
@@ -88,8 +93,12 @@ TEST_F(WriteRegisterNetworkTest, FatalErrorOnWriteToFrozenDb) {
 
     WorkerAgent worker(3, "127.0.0.1", master.get_port());
     worker.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    ASSERT_TRUE(worker.is_registered());
+    bool registered = false;
+    for (int i = 0; i < 30; ++i) {
+        if (worker.is_registered()) { registered = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    ASSERT_TRUE(registered);
 
     CMString error_msg = "Write registration rejected: Database frozen: abc123";
     TaskErrorType error_type = TaskErrorType::WRITE_TO_FROZEN_DB;

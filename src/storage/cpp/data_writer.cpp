@@ -1,6 +1,7 @@
 #include <storage/cpp/data_writer.h>
 #include <storage/cpp/compression_utils.h>
 #include <storage/cpp/compressing_streambuf.h>
+#include <common/cpp/writer_id.h>
 #include <filesystem>
 #include <stdexcept>
 #include <sstream>
@@ -10,7 +11,7 @@ namespace fs = std::filesystem;
 DataWriter::DataWriter(
     const CMString& base_path,
     const CMString& data_path,
-    uint64_t worker_id,
+    const CMString& writer_id,
     int64_t aggregation_threshold,
     int64_t large_file_threshold,
     int64_t block_size,
@@ -22,7 +23,7 @@ DataWriter::DataWriter(
 )
     : base_path_(base_path)
     , data_path_(data_path)
-    , worker_id_(worker_id)
+    , writer_id_(writer_id.empty() ? generate_writer_id() : writer_id)
     , host_(host)
     , aggregation_threshold_(aggregation_threshold)
     , large_file_threshold_(large_file_threshold)
@@ -39,7 +40,7 @@ DataWriter::DataWriter(
     CMString write_dir = data_path_.empty() ? base_path_ : data_path_;
     fs::create_directories(write_dir);
 
-    CMString idx_path = base_path_ + "/worker_" + std::to_string(worker_id_) + ".idx";
+    CMString idx_path = base_path_ + "/" + writer_id_ + ".idx";
     index_ = CMMakeUnique<LocalIndex>(idx_path);
 
     if (fs::exists(idx_path)) {
@@ -50,7 +51,7 @@ DataWriter::DataWriter(
     // This is critical for load_db which reopens a database directory.
     while (true) {
         std::ostringstream oss;
-        oss << "aggregated_w" << worker_id_ << "_" << std::setfill('0')
+        oss << "data_" << writer_id_ << "_" << std::setfill('0')
             << std::setw(3) << file_index_ << ".dat";
         CMString candidate = write_dir + "/" + oss.str();
         if (fs::exists(candidate)) {
@@ -218,7 +219,7 @@ void DataWriter::create_new_file() {
 
 CMString DataWriter::get_current_file_name() {
     std::ostringstream oss;
-    oss << "aggregated_w" << worker_id_ << "_" << std::setfill('0') << std::setw(3) << file_index_ << ".dat";
+    oss << "data_" << writer_id_ << "_" << std::setfill('0') << std::setw(3) << file_index_ << ".dat";
     return oss.str();
 }
 

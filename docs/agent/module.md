@@ -64,9 +64,9 @@ public:
 
     // load_db 恢复
     CMVector<IndexEntry> restore_master_idx(const CMString& db_id, const CMString& base_path,
-                                             uint64_t writer_id);
+                                             const CMString& writer_id);
     void send_idx_load_commands(const CMString& db_id, const CMString& base_path,
-                                 const CMVector<uint64_t>& old_worker_ids);
+                                 const CMVector<CMString>& writer_ids);
     void rebuild_remote_idx(const CMString& db_id, const CMString& base_path,
                              const CMVector<WorkerInfo>& workers);
 
@@ -548,30 +548,36 @@ Worker.on_shutdown()
 master.load_db("/path/to/db"):
 
 Phase 1: 读取 _DB_META
-  → DbMeta{db_id, created_at, workers[WorkerInfo{worker_id, hostname, ip, launch_command}]}
+  → DbMeta{db_id, created_at, workers[WorkerInfo{worker_id, writer_id, hostname, ip, launch_command}]}
 
-Phase 2: Master 自身恢复
-  → get_or_create_database(base_path, writer_id=0, existing_db_id=meta.db_id)
-  → restore_master_idx(db_id, base_path, 0)
-    → DataWriter 加载 worker_0.idx → 提取 entries → DataService.restore_entries()
-  → next_worker_id = max(old_ids) + 1
+Phase 2: Master 自身恢复 (不加载任何 idx)
+  → get_or_create_database(base_path, existing_db_id=meta.db_id)
+  → register_database(db_id, path, "")
+  → set_db_id() 恢复原始 db_id
+  → 若含 _FROZEN 标记 → 恢复 is_frozen_ 状态
 
-Phase 3: 启动 Worker (process worker)
-  → 按 hostname 分组，匹配本机 hostname → _spawn_process_worker()
-  → wait_for_all_workers(count)
+Phase 3: 按 hostname 分配 Worker
+  → 按 hostname 分组 WorkerInfo → writer_ids (含 Master 的 writer_id)
+  → 检查现有 Worker by hostname (get_worker_hostnames)
+  → 有现有 Worker → 复用
+  → 无现有 Worker 且 hostname == master_hostname → spawn process worker
+  → 无现有 Worker 且 hostname != master_hostname → WARN + skip
+  → wait_for_all_workers()（仅等待新 spawn 的）
 
 Phase 4: 下发 idx 加载命令
-  → send_idx_load_commands(db_id, base_path, old_worker_ids)
+  → send_idx_load_commands(db_id, base_path, all_writer_ids) → 广播给所有 Worker
   → Worker.on_idx_load_command()
     → register_database(db_id, base_path) 注册 db_paths_
-    → 为每个 old_worker_id 创建只读 LocalIndex → load → restore_entries()
+    → 为每个 writer_id 创建只读 LocalIndex → load {writer_id}.idx → restore_entries()
+    → 包含 Master 的 writer_id（Master 旧数据也由 Worker 加载）
     → reply IdxLoadAckMessage{success, loaded_count}
 
 Phase 5: 重建 remote_idx
   → rebuild_remote_idx(db_id, base_path, workers)
-    → 读所有旧 idx → {object_name → old_worker_id}
-    → old_worker_id → hostname → new_worker_id 映射
-    → 写入 DataService remote_idx_
+    → 读所有 idx → {object_name → entries}
+    → hostname → 新 worker_id 映射 (统一路径，含 Master 的 worker_id==0)
+    → 写入 DataService remote_idx_ + mark_data_ready
+    → Master 不加载任何 idx 到 local_idx
 ```
 
 ---

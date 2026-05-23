@@ -138,3 +138,52 @@ def compute_sum(db, read_key_a, read_key_b, result_key):
     a = db.read_object(read_key_a)
     b = db.read_object(read_key_b)
     db.write_object(result_key, a + b)
+
+
+@as_task(inputs=lambda target_db, source_db, source_key, target_key: [source_db.get_obj_name(source_key)])
+def cross_db_copy(target_db, source_db, source_key, target_key):
+    """Read from source_db, write to target_db (cross-DB)."""
+    data = source_db.read_object(source_key)
+    target_db.write_object(target_key, data)
+
+
+@as_task(inputs=lambda target_db, db_a, db_b, key_a, key_b, target_key:
+         [db_a.get_obj_name(key_a), db_b.get_obj_name(key_b)])
+def cross_db_sum(target_db, db_a, db_b, key_a, key_b, target_key):
+    """Read from two DBs, compute sum, write to target_db."""
+    a = db_a.read_object(key_a)
+    b = db_b.read_object(key_b)
+    target_db.write_object(target_key, a + b)
+
+
+@as_task()
+def add_alpha_property(db, key, value):
+    """Write data and dynamically add 'alpha' property to the worker."""
+    from fly.runtime import get_agent
+    get_agent().set_worker_property("alpha")
+    db.write_object(key, value)
+
+
+@as_task(inputs=lambda target_db, source_db, source_key, target_key: [source_db.get_obj_name(source_key)],
+         requires=["alpha"])
+def alpha_cross_db_copy(target_db, source_db, source_key, target_key):
+    """Cross-DB copy requiring 'alpha' capability."""
+    data = source_db.read_object(source_key)
+    target_db.write_object(target_key, data)
+
+
+@as_task(inputs=lambda target_db, source_db, source_key, target_key: [source_db.get_obj_name(source_key)],
+         requires=["gpu"])
+def gpu_cross_db_copy(target_db, source_db, source_key, target_key):
+    """Cross-DB copy requiring 'gpu' capability."""
+    data = source_db.read_object(source_key)
+    target_db.write_object(target_key, data)
+
+
+@as_task(inputs=lambda target_db, db_raw, db_feat, key_raw, key_feat, target_key:
+         [db_raw.get_obj_name(key_raw), db_feat.get_obj_name(key_feat)])
+def triple_db_sum(target_db, db_raw, db_feat, key_raw, key_feat, target_key):
+    """Read from two loaded DBs, compute sum with local value, write to target."""
+    raw_val = db_raw.read_object(key_raw)
+    feat_val = db_feat.read_object(key_feat)
+    target_db.write_object(target_key, raw_val + feat_val)

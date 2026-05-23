@@ -154,10 +154,11 @@ struct DataReadyMessage {
     uint64_t worker_id = 0;
     CMString object_name;   // 完整标识符: "db_id:obj_name"
     CMString db_id;         // 所属 Database
+    CMString writer_id;     // Writer's writer_id (from Database instance)
     
     static constexpr MessageType msg_type = MessageType::DATA_READY;
     
-    FLY_SERIALIZE(header, worker_id, object_name, db_id);
+    FLY_SERIALIZE(header, worker_id, object_name, db_id, writer_id);
 };
 
 // Master/Worker: 数据位置查询
@@ -277,11 +278,11 @@ struct IdxLoadCommandMessage {
     MessageHeader header;
     CMString db_id;
     CMString base_path;
-    CMVector<uint64_t> old_worker_ids;
+    CMVector<CMString> writer_ids;
 
     static constexpr MessageType msg_type = MessageType::IDX_LOAD_COMMAND;
 
-    FLY_SERIALIZE(header, db_id, base_path, old_worker_ids);
+    FLY_SERIALIZE(header, db_id, base_path, writer_ids);
 };
 
 // Worker → Master: idx 加载完成确认

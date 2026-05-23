@@ -56,6 +56,8 @@ public:
 
 
     CMVector<uint64_t> get_connected_workers() const;
+    CMVector<std::pair<uint64_t, CMString>> get_worker_hostnames() const;
+    void add_worker_hostname(uint64_t worker_id, const CMString& hostname);
     size_t get_connection_count() const;
 
     void submit_task(uint64_t task_id, const CMString& name,
@@ -90,8 +92,8 @@ public:
     void setup_write_context();
 
     // load_db support methods
-    CMVector<IndexEntry> restore_master_idx(const CMString& db_id, const CMString& base_path, uint64_t writer_id);
-    void send_idx_load_commands(const CMString& db_id, const CMString& base_path, const CMVector<uint64_t>& old_worker_ids);
+    CMVector<IndexEntry> restore_master_idx(const CMString& db_id, const CMString& base_path, const CMString& writer_id);
+    void send_idx_load_commands(const CMString& db_id, const CMString& base_path, const CMVector<CMString>& writer_ids);
     void rebuild_remote_idx(const CMString& db_id, const CMString& base_path, const CMVector<::WorkerInfo>& workers);
 
 private:
@@ -161,7 +163,7 @@ private:
     CMMap<uint64_t, CMString> worker_to_hostname_;
     CMMap<uint64_t, CMString> worker_to_ip_;
     CMString master_hostname_;
-    CMSet<std::pair<CMString, uint64_t>> recorded_workers_;
+    CMSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
 };
 
 }  // namespace fly

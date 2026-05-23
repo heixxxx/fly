@@ -2,6 +2,50 @@
 
 ---
 
+## 2026-05-23 (5): writer_id UUID 解耦 idx/data 文件命名
+
+**原因**: load_db 时 worker_id 与 idx 文件名耦合导致冲突限制，Master 无法在任意机器上重启
+
+| 模块文档 | 主要变更 |
+|----------|----------|
+| CLAUDE.md | §13 load_db 流程重写（Phase 0 冲突检查移除、Phase 2 不加载 idx、Phase 3 hostname 复用、Phase 4 含 Master writer_id）；§8 MasterAgent/WorkerAgent 模块描述更新；_DB_META WorkerInfo 新增 writer_id 字段 |
+| docs/storage/module.md | DataWriter/DataReader 构造函数参数 `uint64_t worker_id` → `const CMString& writer_id`；私有成员 `worker_id_` → `writer_id_` |
+| docs/agent/module.md | `restore_master_idx`/`send_idx_load_commands` 签名更新（writer_ids）；load_db 流程重写（Phase 2-5 全部更新） |
+| docs/network/module.md | `IdxLoadCommandMessage.old_worker_ids` → `writer_ids` (CMVector\<CMString\>) |
+
+**代码变更摘要**：
+- `writer_id`: 8-char hex UUID，Database 构造时生成，用于 idx/data 文件命名
+- 文件命名：`{writer_id}.idx`、`data_{writer_id}_{index:03}.dat`（替代 `worker_{id}.idx`、`aggregated_w{id}_*.dat`）
+- `DataReadyMessage` 新增 `writer_id` 字段，Worker/Master 均填充
+- `IdxLoadCommandMessage.old_worker_ids` → `writer_ids`
+- `rebuild_remote_idx`：统一路径，worker_id==0 不再特殊处理，所有条目按 hostname 映射到新 Worker
+- Master load_db 时不加载任何 idx 到 local_idx，所有旧数据通过 remote_idx 经 Worker 提供
+- `MasterAgent` 新增 `get_worker_hostnames()`、`add_worker_hostname()`
+- `register_worker(0, host_, port_)` 在 `start()` 中调用（Master 新数据仍需被 Worker 读取）
+- `recorded_workers_` key 从 `pair<hostname, worker_id>` 改为 `tuple<db_id, hostname, writer_id>`
+- agent.py load_db 重写：hostname-based worker 复用，Master writer_id 含入 idx load commands
+- 新增 3 个多 hostname 单元测试覆盖 idx 分配场景
+- 3 个网络测试 flaky 修复（poll loop 替代 sleep+assert）
+
+---
+
+## 2026-05-23 (4): load_db 增强 + 跨 DB QA 测试
+
+**原因**: 连续 load_db 多个 DB 时 `_next_worker_id` 回退导致 worker ID 冲突；load_db 恢复后数据未标记依赖就绪
+
+| 模块文档 | 主要变更 |
+|----------|----------|
+| CLAUDE.md | §load_db 完整流程增加 Phase 0 冲突检查、Phase 2 mark_data_ready + frozen 恢复、连续 load_db 说明 |
+
+**代码变更摘要**：
+- `agent.py` `load_db`: 新增 worker ID 冲突检查（重叠 → RuntimeError）；`_next_worker_id` 取 `max(当前, max(old)+1)` 不回退
+- `database.cpp`: 构造函数检测 `_FROZEN` 标记恢复 `is_frozen_` 状态
+- `master_agent.cpp`: `recorded_workers_` 从 `pair<hostname,worker_id>` 改为 `tuple<db_id,hostname,worker_id>`（per-DB 记录）；`restore_master_idx` + `rebuild_remote_idx` 新增 `mark_data_ready`
+- 新增 6 个跨 DB e2e_tasks：cross_db_copy, cross_db_sum, add_alpha_property, alpha_cross_db_copy, gpu_cross_db_copy, triple_db_sum
+- 新增 QA 测试 test_complex_scenario.py：2 进程协调器，覆盖多 DB、跨 DB 依赖、load_db 双 DB 迁移、动态属性、restart_failed_tasks、triple-DB 计算（12 个验证点）
+
+---
+
 ## 2026-05-23 (3): 异步写入依赖调度重构
 
 **原因**: `write_object` 异步写入时立即触发依赖满足，移除 `restart_failed_tasks` 中的 `drain_write_back` 同步阻塞

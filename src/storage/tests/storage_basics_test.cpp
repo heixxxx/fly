@@ -78,16 +78,17 @@ TEST(WorkerInfoTest, DefaultValues) {
 }
 
 TEST(WorkerInfoTest, AggregateInit) {
-    WorkerInfo info{2, "gpu-node-1", "10.0.1.5", "ssh gpu-node-1 fly --worker ..."};
+    WorkerInfo info{2, "w0000002", "gpu-node-1", "10.0.1.5", "ssh gpu-node-1 fly --worker ..."};
     
     EXPECT_EQ(info.worker_id, 2);
+    EXPECT_EQ(info.writer_id, "w0000002");
     EXPECT_EQ(info.hostname, "gpu-node-1");
     EXPECT_EQ(info.ip_address, "10.0.1.5");
     EXPECT_EQ(info.launch_command, "ssh gpu-node-1 fly --worker ...");
 }
 
 TEST(WorkerInfoTest, SerializeDeserialize) {
-    WorkerInfo info{5, "node-3", "192.168.1.10", "bsub -n 1 fly --worker ..."};
+    WorkerInfo info{5, "w0000005", "node-3", "192.168.1.10", "bsub -n 1 fly --worker ..."};
     
     CMString bytes;
     FLY_ENCODE(info, bytes);
@@ -97,6 +98,7 @@ TEST(WorkerInfoTest, SerializeDeserialize) {
     FLY_DECODE(bytes, WorkerInfo, decoded);
     
     EXPECT_EQ(decoded.worker_id, 5);
+    EXPECT_EQ(decoded.writer_id, "w0000005");
     EXPECT_EQ(decoded.hostname, "node-3");
     EXPECT_EQ(decoded.ip_address, "192.168.1.10");
     EXPECT_EQ(decoded.launch_command, "bsub -n 1 fly --worker ...");
@@ -121,18 +123,19 @@ TEST(DbMetaTest, AggregateInit) {
 TEST(DbMetaTest, AddWorkerInfo) {
     DbMeta meta{"/data/db", 1715500000, {}};
     
-    WorkerInfo worker{1, "localhost", "127.0.0.1", "cmd"};
+    WorkerInfo worker{1, "w0000001", "localhost", "127.0.0.1", "cmd"};
     meta.workers.push_back(worker);
     
     EXPECT_EQ(meta.workers.size(), 1);
     EXPECT_EQ(meta.workers[0].worker_id, 1);
+    EXPECT_EQ(meta.workers[0].writer_id, "w0000001");
     EXPECT_EQ(meta.workers[0].hostname, "localhost");
 }
 
 TEST(DbMetaTest, SerializeDeserialize) {
     DbMeta meta{"/db/test", 1715500000, {
-        {1, "host1", "10.0.0.1", "cmd1"},
-        {2, "host2", "10.0.0.2", "cmd2"}
+        {1, "w0000001", "host1", "10.0.0.1", "cmd1"},
+        {2, "w0000002", "host2", "10.0.0.2", "cmd2"}
     }};
     
     CMString bytes;

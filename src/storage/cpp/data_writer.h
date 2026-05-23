@@ -5,6 +5,7 @@
 #include <serialization/cpp/object_header.h>
 #include <serialization/cpp/serialization_macros.h>
 #include <common/cpp/common_types.h>
+#include <common/cpp/writer_id.h>
 #include <cstdint>
 #include <fstream>
 #include <memory>
@@ -14,7 +15,7 @@ public:
     DataWriter(
         const CMString& base_path,
         const CMString& data_path,
-        uint64_t worker_id,
+        const CMString& writer_id,
         int64_t aggregation_threshold,
         int64_t large_file_threshold,
         int64_t block_size,
@@ -64,7 +65,7 @@ private:
 
     CMString base_path_;
     CMString data_path_;
-    uint64_t worker_id_;
+    CMString writer_id_;
     CMString host_;
     int64_t aggregation_threshold_;
     int64_t large_file_threshold_;

@@ -221,6 +221,8 @@ class Master(FlyAgent):
 
     def load_db(self, path: str):
         from fly.database import _Database
+        from collections import defaultdict
+        import socket
 
         if not self._running:
             self.start()
@@ -230,41 +232,55 @@ class Master(FlyAgent):
         if not meta or not meta.db_id:
             raise RuntimeError(f"No valid _DB_META found at {path}")
 
+        # Phase 2: Master self-recovery (no idx loading)
         temp_db._db.set_db_id(meta.db_id)
-        # Use `path` (current actual location) for all disk I/O,
-        # NOT meta.base_path (original location, may differ if DB was moved).
         self._agent.register_database(meta.db_id, path, "")
 
-        old_worker_ids = [w.worker_id for w in meta.workers]
-        self._agent.restore_master_idx(meta.db_id, path, 0)
-
-        if old_worker_ids:
-            self._next_worker_id = max(old_worker_ids) + 1
-
-        from collections import defaultdict
-        import socket
-
-        hostname_to_workers = defaultdict(list)
+        # Phase 3: Assign workers by hostname
+        # Group WorkerInfo by hostname -> writer_ids (includes Master's writer_id)
+        hostname_to_writer_ids = defaultdict(list)
         for w in meta.workers:
-            if w.worker_id != 0:
-                hostname_to_workers[w.hostname].append(w.worker_id)
+            hostname_to_writer_ids[w.hostname].append(w.writer_id)
 
         master_hostname = socket.gethostname()
 
-        needed_count = 0
-        if master_hostname in hostname_to_workers:
-            needed_count = len(hostname_to_workers[master_hostname])
-            for _ in range(needed_count):
-                self._spawn_process_worker(self._next_worker_id, {})
-                self._next_worker_id += 1
+        # Check existing workers by hostname
+        existing_by_hostname = defaultdict(list)
+        for worker_id, hostname in self._agent.get_worker_hostnames():
+            existing_by_hostname[hostname].append(worker_id)
 
-        if needed_count > 0:
-            self.wait_for_all_workers(needed_count, timeout=30.0)
+        spawned = 0
+        for hostname, writer_ids in hostname_to_writer_ids.items():
+            if hostname == master_hostname:
+                # Master's hostname - use existing or spawn local workers
+                target_workers = existing_by_hostname.get(hostname, [])
+                if not target_workers:
+                    # Spawn one worker (will load all idx files)
+                    self._spawn_process_worker(self._next_worker_id, {})
+                    self._next_worker_id += 1
+                    spawned += 1
+            else:
+                # Non-master hostname - need workers on that host
+                target_workers = existing_by_hostname.get(hostname, [])
+                if not target_workers:
+                    # For now, only local process workers supported
+                    WARN(f"load_db: no workers available for hostname={hostname}, "
+                         f"skipping {len(writer_ids)} writer_ids")
+                    continue
 
-        if master_hostname in hostname_to_workers:
-            old_ids = hostname_to_workers[master_hostname]
-            self._agent.send_idx_load_commands(meta.db_id, path, old_ids)
+        if spawned > 0:
+            self.wait_for_all_workers(spawned, timeout=30.0)
 
+        # Send idx load commands to all connected workers (broadcast)
+        # Only send if there are writer_ids to load
+        all_writer_ids = []
+        for hostname, writer_ids in hostname_to_writer_ids.items():
+            all_writer_ids.extend(writer_ids)
+
+        if all_writer_ids:
+            self._agent.send_idx_load_commands(meta.db_id, path, all_writer_ids)
+
+        # Phase 4: Rebuild remote index
         self._agent.rebuild_remote_idx(meta.db_id, path, meta.workers)
 
         return temp_db

@@ -66,6 +66,7 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_METHOD("get_base_path", &Database::get_base_path)
     FLY_EXPORT_METHOD("get_data_path", &Database::get_data_path)
     FLY_EXPORT_METHOD("get_obj_name", &Database::get_obj_name)
+    FLY_EXPORT_METHOD("get_writer_id", &Database::get_writer_id)
     FLY_EXPORT_METHOD("reset", &Database::reset)
     FLY_EXPORT_METHOD("remove_object", &Database::remove_object);
 
@@ -131,8 +132,9 @@ FLY_EXPORT_CLASS(DbMeta, "EXStgDbMeta")
 
 FLY_EXPORT_CLASS(WorkerInfo, "EXStgWorkerInfo")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_INIT(uint64_t, CMString, CMString, CMString)
+    FLY_EXPORT_INIT(uint64_t, CMString, CMString, CMString, CMString)
     FLY_EXPORT_READONLY_ATTR("worker_id", &WorkerInfo::worker_id)
+    FLY_EXPORT_READONLY_ATTR("writer_id", &WorkerInfo::writer_id)
     FLY_EXPORT_READONLY_ATTR("hostname", &WorkerInfo::hostname)
     FLY_EXPORT_READONLY_ATTR("ip_address", &WorkerInfo::ip_address)
     FLY_EXPORT_READONLY_ATTR("launch_command", &WorkerInfo::launch_command)

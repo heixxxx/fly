@@ -19,7 +19,7 @@ public:
     DataReader(
         const CMString& base_path,
         const CMString& data_path,
-        uint64_t worker_id
+        const CMString& writer_id
     );
 
     ~DataReader();
@@ -60,7 +60,7 @@ private:
 
     CMString base_path_;
     CMString data_path_;
-    uint64_t worker_id_;
+    CMString writer_id_;
 
     CMUniquePtr<LocalIndex> index_;
 };

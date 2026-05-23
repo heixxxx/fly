@@ -360,7 +360,7 @@ TEST_F(DataServiceTest, RestoreEntriesFromLocalIndexFile) {
     db.write_object("idx/obj2", "data2", false);
     fly::DataService::instance().drain_write_back();
 
-    CMString idx_path = base_path + "/worker_0.idx";
+    CMString idx_path = base_path + "/" + db.get_writer_id() + ".idx";
 
     LocalIndex source_idx(idx_path);
     source_idx.load();

@@ -165,6 +165,9 @@ void MasterAgent::start() {
     reactor_thread_ = std::thread([this] { reactor_->run(); });
     running_ = true;
 
+    data_server_port_ = static_cast<int32_t>(port_);
+    ds().register_worker(0, host_, port_);
+
     INFO("MasterAgent started, reactor thread running");
 }
 
@@ -417,13 +420,22 @@ void MasterAgent::on_data_ready(uint64_t conn_id, const DataReadyMessage& msg) {
     }
 
     if (!hostname.empty()) {
-        auto key = std::make_pair(hostname, msg.worker_id);
+        CMString writer_id = msg.writer_id;
+        if (writer_id.empty()) {
+            auto db_it2 = db_instances_.find(msg.db_id);
+            if (db_it2 != db_instances_.end()) {
+                writer_id = db_it2->second->get_writer_id();
+            }
+        }
+
+        auto key = std::make_tuple(msg.db_id, hostname, writer_id);
         if (recorded_workers_.find(key) == recorded_workers_.end()) {
             recorded_workers_.insert(key);
             auto db_it = db_instances_.find(msg.db_id);
             if (db_it != db_instances_.end()) {
                 ::WorkerInfo info;
                 info.worker_id = msg.worker_id;
+                info.writer_id = writer_id;
                 info.hostname = hostname;
                 info.ip_address = ip;
                 info.launch_command = "";
@@ -526,6 +538,18 @@ CMVector<uint64_t> MasterAgent::get_connected_workers() const {
         workers.push_back(worker);
     }
     return workers;
+}
+
+CMVector<std::pair<uint64_t, CMString>> MasterAgent::get_worker_hostnames() const {
+    CMVector<std::pair<uint64_t, CMString>> result;
+    for (const auto& [worker_id, hostname] : worker_to_hostname_) {
+        result.push_back({worker_id, hostname});
+    }
+    return result;
+}
+
+void MasterAgent::add_worker_hostname(uint64_t worker_id, const CMString& hostname) {
+    worker_to_hostname_[worker_id] = hostname;
 }
 
 size_t MasterAgent::get_connection_count() const {
@@ -862,6 +886,10 @@ void MasterAgent::on_master_record_write(const CMString& db_id, const CMString& 
     msg.worker_id = 0;
     msg.object_name = db_id + ":" + name;
     msg.db_id = db_id;
+    auto db_it = db_instances_.find(db_id);
+    if (db_it != db_instances_.end()) {
+        msg.writer_id = db_it->second->get_writer_id();
+    }
     on_data_ready(0, msg);
 }
 
@@ -882,8 +910,8 @@ void MasterAgent::on_master_register_write(const CMString& db_id, const CMString
 
 CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_id,
                                                        const CMString& base_path,
-                                                       uint64_t writer_id) {
-    CMString idx_path = base_path + "/worker_" + std::to_string(writer_id) + ".idx";
+                                                       const CMString& writer_id) {
+    CMString idx_path = base_path + "/" + writer_id + ".idx";
     if (!std::filesystem::exists(idx_path)) {
         WARN("restore_master_idx: idx file not found: {}", idx_path);
         return {};
@@ -895,6 +923,9 @@ CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_id,
 
     if (!entries.empty()) {
         ds().restore_entries(db_id, entries);
+        for (const auto& entry : entries) {
+            graph_->mark_data_ready(entry.object_name);
+        }
         INFO("restore_master_idx: restored {} entries for db_id={}", entries.size(), db_id);
     }
 
@@ -903,25 +934,25 @@ CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_id,
 
 void MasterAgent::send_idx_load_commands(const CMString& db_id,
                                            const CMString& base_path,
-                                           const CMVector<uint64_t>& old_worker_ids) {
+                                           const CMVector<CMString>& writer_ids) {
     IdxLoadCommandMessage msg;
     msg.db_id = db_id;
     msg.base_path = base_path;
-    msg.old_worker_ids = old_worker_ids;
+    msg.writer_ids = writer_ids;
 
     for (const auto& [worker_id, conn_id] : worker_to_conn_) {
         reactor_->send(conn_id, msg);
-        INFO("Sent IdxLoadCommand to worker_id={}: db_id={}, old_ids_count={}",
-             worker_id, db_id, old_worker_ids.size());
+        INFO("Sent IdxLoadCommand to worker_id={}: db_id={}, writer_ids_count={}",
+             worker_id, db_id, writer_ids.size());
     }
 }
 
 void MasterAgent::rebuild_remote_idx(const CMString& db_id,
                                        const CMString& base_path,
                                        const CMVector<::WorkerInfo>& workers) {
-    CMMap<uint64_t, CMString> old_id_to_hostname;
+    CMMap<CMString, CMString> old_id_to_hostname;
     for (const auto& w : workers) {
-        old_id_to_hostname[w.worker_id] = w.hostname;
+        old_id_to_hostname[std::to_string(w.worker_id)] = w.hostname;
     }
 
     CMMap<CMString, CMVector<uint64_t>> hostname_to_new_workers;
@@ -930,7 +961,12 @@ void MasterAgent::rebuild_remote_idx(const CMString& db_id,
     }
 
     for (const auto& w : workers) {
-        CMString idx_path = base_path + "/worker_" + std::to_string(w.worker_id) + ".idx";
+        if (w.writer_id.empty()) {
+            WARN("rebuild_remote_idx: empty writer_id for worker_id={}", w.worker_id);
+            continue;
+        }
+
+        CMString idx_path = base_path + "/" + w.writer_id + ".idx";
         if (!std::filesystem::exists(idx_path)) {
             WARN("rebuild_remote_idx: idx file not found: {}", idx_path);
             continue;
@@ -940,34 +976,28 @@ void MasterAgent::rebuild_remote_idx(const CMString& db_id,
         idx.load();
         auto entries = idx.get_all_entries();
 
-        if (w.worker_id == 0) {
-            for (const auto& entry : entries) {
-                ds().update_remote_idx(entry.object_name, 0, host_, data_server_port_);
-            }
-            INFO("rebuild_remote_idx: mapped {} master entries", entries.size());
-        } else {
-            auto host_it = old_id_to_hostname.find(w.worker_id);
-            if (host_it == old_id_to_hostname.end()) {
-                WARN("rebuild_remote_idx: no hostname for old worker_id={}", w.worker_id);
-                continue;
-            }
-
-            const CMString& hostname = host_it->second;
-            auto new_it = hostname_to_new_workers.find(hostname);
-            if (new_it == hostname_to_new_workers.end() || new_it->second.empty()) {
-                WARN("rebuild_remote_idx: no new worker for hostname={}", hostname);
-                continue;
-            }
-
-            uint64_t new_worker_id = new_it->second[0];
-            auto addr = ds().get_worker_address(new_worker_id);
-
-            for (const auto& entry : entries) {
-                ds().update_remote_idx(entry.object_name, new_worker_id, addr.host, addr.port);
-            }
-            INFO("rebuild_remote_idx: mapped {} entries from old worker_id={} to new worker_id={}",
-                 entries.size(), w.worker_id, new_worker_id);
+        auto host_it = old_id_to_hostname.find(std::to_string(w.worker_id));
+        if (host_it == old_id_to_hostname.end()) {
+            WARN("rebuild_remote_idx: no hostname for worker_id={}", w.worker_id);
+            continue;
         }
+
+        const CMString& hostname = host_it->second;
+        auto new_it = hostname_to_new_workers.find(hostname);
+        if (new_it == hostname_to_new_workers.end() || new_it->second.empty()) {
+            WARN("rebuild_remote_idx: no new worker for hostname={}", hostname);
+            continue;
+        }
+
+        uint64_t new_worker_id = new_it->second[0];
+        auto addr = ds().get_worker_address(new_worker_id);
+
+        for (const auto& entry : entries) {
+            ds().update_remote_idx(entry.object_name, new_worker_id, addr.host, addr.port);
+            graph_->mark_data_ready(entry.object_name);
+        }
+        INFO("rebuild_remote_idx: mapped {} entries from writer_id={} to new worker_id={}",
+             entries.size(), w.writer_id, new_worker_id);
     }
 }
 

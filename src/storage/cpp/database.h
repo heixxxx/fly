@@ -102,6 +102,7 @@ public:
     CMString get_base_path() const;
     CMString get_data_path() const;
     CMString get_obj_name(const CMString& name) const;
+    CMString get_writer_id() const;
 
     void reset();
 
@@ -117,7 +118,7 @@ private:
 
     CMString base_path_;
     CMString data_path_;
-    uint64_t writer_id_ = 0;
+    CMString writer_id_;
     CMString db_id_;
     CMString host_;
     bool is_frozen_ = false;

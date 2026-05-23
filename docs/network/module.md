@@ -309,8 +309,8 @@ struct IdxLoadCommandMessage {       // type=25, Master → Worker
     MessageHeader header;
     CMString db_id;
     CMString base_path;
-    CMVector<uint64_t> old_worker_ids;
-    FLY_SERIALIZE(header, db_id, base_path, old_worker_ids);
+    CMVector<CMString> writer_ids;
+    FLY_SERIALIZE(header, db_id, base_path, writer_ids);
 };
 
 struct IdxLoadAckMessage {           // type=26, Worker → Master

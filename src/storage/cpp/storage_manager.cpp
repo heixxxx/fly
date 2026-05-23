@@ -37,7 +37,7 @@ CMSharedPtr<DataWriter> StorageManager::get_writer(uint64_t worker_id) {
     auto writer = CMMakeShared<DataWriter>(
         "/tmp/fly_worker_" + std::to_string(worker_id),
         "",
-        worker_id,
+        "",
         4096, 1048576, 65536
     );
     writers_[worker_id] = writer;

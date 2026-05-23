@@ -6,11 +6,12 @@
 
 struct WorkerInfo {
     uint64_t worker_id = 0;
+    CMString writer_id;
     CMString hostname;
     CMString ip_address;
     CMString launch_command;
 
-    FLY_SERIALIZE(worker_id, hostname, ip_address, launch_command)
+    FLY_SERIALIZE(worker_id, writer_id, hostname, ip_address, launch_command)
 };
 
 struct DbMetaHeader {

@@ -60,7 +60,7 @@ public:
     void register_database(const CMString& db_id,
                             const CMString& base_path,
                             const CMString& data_path,
-                            uint64_t writer_id = 0);
+                            const CMString& writer_id = "");
 
     void unregister_database(const CMString& db_id);
 
@@ -135,7 +135,7 @@ private:
     struct DbPaths {
         CMString base_path;
         CMString data_path;
-        uint64_t writer_id = 0;
+        CMString writer_id;
     };
 
     mutable std::mutex mutex_;

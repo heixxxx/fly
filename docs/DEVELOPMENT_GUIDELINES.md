@@ -529,6 +529,37 @@ def test_module_function():
 - 模块测试：`src/<module>/tests/`
 - 项目集成测试：`qa/`
 
+### 6.4 测试稳定性要求（零容忍）
+
+**项目原则：不容忍任何不稳定的测试（flaky test）。所有测试必须每次运行都通过。**
+
+禁止的写法：
+```cpp
+// ❌ 固定延时后断言 — 在高负载机器上会随机失败
+worker.start();
+std::this_thread::sleep_for(std::chrono::milliseconds(300));
+ASSERT_TRUE(worker.is_registered());
+```
+
+正确的写法：
+```cpp
+// ✅ 轮询等待条件满足 — 容忍机器性能差异
+worker.start();
+bool registered = false;
+for (int i = 0; i < 30; ++i) {
+    if (worker.is_registered()) { registered = true; break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+}
+ASSERT_TRUE(registered);
+```
+
+规则：
+- **禁止 `sleep(Xms); assert(condition)` 模式** — 必须用轮询循环
+- **网络/进程/线程相关的异步操作** — 一律使用轮询等待，超时上限 1.5 秒（30 次 × 50ms）
+- **禁止删除失败测试来"通过"** — 必须修复根因
+- **禁止 `time.sleep()` 作为 Python 测试中的同步手段** — 使用 `wait_for_*` 轮询方法
+- **QA 测试同样适用** — `./qa/run_qa_tests.sh` 必须 100% 稳定通过，不接受任何 flaky
+
 ---
 
 ## 7. Bazel 构建规范

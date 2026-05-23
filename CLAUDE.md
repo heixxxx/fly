@@ -350,8 +350,8 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 
 | 文件 | 职责 |
 |------|------|
-| `master_agent.h/cpp` | Master 节点管理，失败任务持久化 + `restart_failed_tasks()` (直接 submit_task) + 写入注册依赖满足 (`on_write_register` / `on_master_register_write`) + `schedule_mutex_` 并发保护 + `load_db` 恢复 |
-| `worker_agent.h/cpp` | Worker 节点执行，动态属性 `set/remove/get_worker_property()` + `on_idx_load_command()` idx 恢复 |
+| `master_agent.h/cpp` | Master 节点管理，失败任务持久化 + `restart_failed_tasks()` (直接 submit_task) + 写入注册依赖满足 (`on_write_register` / `on_master_register_write`) + `schedule_mutex_` 并发保护 + `load_db` 恢复 + `register_worker(0)` 自注册 + `get_worker_hostnames()` / `add_worker_hostname()` |
+| `worker_agent.h/cpp` | Worker 节点执行，动态属性 `set/remove/get_worker_property()` + `on_idx_load_command()` idx 恢复 (按 `writer_ids` 加载) |
 | `task_executor.h/cpp` | 任务执行器 |
 
 ### 日志模块 (src/log/)
@@ -411,6 +411,15 @@ def test_database():
 # 运行特定模块测试
 ./fly.sh test //src/storage/tests:database_test
 ```
+
+### 测试稳定性（零容忍）
+
+**不容忍任何 flaky test。所有测试（单元测试 + QA 测试）必须每次运行都通过。**
+
+- **禁止 `sleep(Xms); assert(condition)` 模式** — 异步操作必须用轮询循环（30 次 × 50ms）
+- **禁止删除失败测试**
+- **禁止 `time.sleep()` 作为同步手段** — 使用 `wait_for_*` 方法
+- **QA 测试同样适用** — `./qa/run_qa_tests.sh` 必须 100% 稳定通过
 
 ---
 
@@ -558,7 +567,7 @@ Master → Worker (broadcast): 同上，转发给所有其他 Worker
 
 ### 概述
 
-`load_db` 允许 Master 进程重启后恢复之前创建的 Database，包括数据索引和 Worker 分布信息。当前版本要求 Master 在同一物理机上重启。
+`load_db` 允许 Master 进程重启后恢复之前创建的 Database，包括数据索引和 Worker 分布信息。Master 可在任意可访问共享存储的机器上重启（idx 文件在 base_path 中）。
 
 ### _DB_META 磁盘格式
 
@@ -567,12 +576,12 @@ Master → Worker (broadcast): 同上，转发给所有其他 Worker
 ```
 [8B size][bitsery DbMetaHeader]     ← Database 构造时写入
 [8B size][bitsery WorkerInfo]       ← on_data_ready() 增量追加
-[8B size][bitsery WorkerInfo]       ← 每个 (hostname, worker_id) 只记录一次
+[8B size][bitsery WorkerInfo]       ← 每个 (db_id, hostname, writer_id) 只记录一次
 ...
 ```
 
 - `DbMetaHeader`: `{db_id, created_at}` — 不存储 base_path，因为 DB 可被移动
-- `WorkerInfo`: `{worker_id, hostname, ip_address, launch_command}`
+- `WorkerInfo`: `{worker_id, writer_id, hostname, ip_address, launch_command}`
 - `load_meta()` 读取 header + 迭代所有 WorkerInfo 记录 → 聚合为 `DbMeta`
 
 ### _FROZEN 标记
@@ -598,28 +607,44 @@ Master → Worker (broadcast): 同上，转发给所有其他 Worker
 ```python
 master.load_db("/path/to/db"):
   Phase 1: 读取 _DB_META → DbMeta{db_id, workers}
-  Phase 2: Master 自身恢复
-    - get_or_create_database() → DataWriter 加载 worker_0.idx
-    - restore_master_idx() → entries 写入 DataService local_idx_
-    - next_worker_id = max(old_ids) + 1
-  Phase 3: 按 hostname 启动 Worker (仅本机，使用 process worker)
-    - _spawn_process_worker() × count
-    - wait_for_all_workers()
+  Phase 2: Master 自身恢复 (不加载任何 idx)
+    - get_or_create_database() → 注册 db_id + path
+    - set_db_id() 恢复原始 db_id
+    - 若 DB 含 _FROZEN 标记 → 恢复 is_frozen_ 状态
+  Phase 3: 按 hostname 分配 Worker
+    - 按 hostname 分组 WorkerInfo → writer_ids
+    - 检查现有 Worker by hostname (get_worker_hostnames)
+    - 有现有 Worker → 复用（不重新启动）
+    - 无现有 Worker 且 hostname == master_hostname → spawn process worker
+    - 无现有 Worker 且 hostname != master_hostname → WARN + skip（仅支持本机）
+    - wait_for_all_workers()（仅等待新 spawn 的）
   Phase 4: 下发 idx 加载命令
-    - send_idx_load_commands() → Worker on_idx_load_command() 处理
-    - Worker 注册 db_paths_ + restore_entries() → DataService local_idx_
+    - send_idx_load_commands(db_id, base_path, all_writer_ids) → 广播给所有 Worker
+    - Worker on_idx_load_command(): 遍历 writer_ids，加载 {writer_id}.idx → restore_entries → local_idx
+    - 包含 Master 的 writer_id（Master 的旧数据也由 Worker 加载）
   Phase 5: 重建 remote_idx
-    - rebuild_remote_idx() → 旧 worker_id → hostname → 新 worker_id 映射
+    - rebuild_remote_idx() → hostname → 新 worker_id 映射 + mark_data_ready
+    - 所有旧数据（包括 Master 的）统一映射到 Worker 的 remote_idx
+    - Master 不加载任何 idx 到 local_idx
 ```
+
+**设计要点**：
+- writer_id（8-char hex UUID）替代 worker_id 用于文件命名，彻底解耦
+- idx 文件命名：`{writer_id}.idx`，data 文件命名：`data_{writer_id}_{index:03}.dat`
+- Master 在 load_db 时不加载任何 idx 到 local_idx，所有旧数据通过 remote_idx 经 Worker 提供
+- Master 仍可写入新数据（生成自己的 writer_id），新数据通过 `register_worker(0)` 被 Worker 读取
+- Worker 按 hostname 复用：同 hostname 的现有 Worker 直接复用，避免重复启动
+
+**连续 load_db 多个 DB**：`_next_worker_id` 正常递增，无冲突风险（idx 文件使用 UUID 命名，与 worker_id 无关）。每个 DB 独立记录 WorkerInfo 到自己的 `_DB_META`（`recorded_workers_` 以 `(db_id, hostname, writer_id)` 为 key）。
 
 ### Worker IdxLoadCommand (type=25/26)
 
 ```
-Master → Worker: IdxLoadCommandMessage{db_id, base_path, old_worker_ids}
+Master → Worker: IdxLoadCommandMessage{db_id, base_path, writer_ids}
 Worker → Master: IdxLoadAckMessage{worker_id, db_id, success, loaded_count, error_message}
 ```
 
-Worker 对每个 `old_worker_id`，创建独立只读 `LocalIndex` 加载 `worker_{old_id}.idx`，提取 entries 后丢弃。
+Worker 对每个 `writer_id`，创建独立只读 `LocalIndex` 加载 `{writer_id}.idx`，提取 entries 后丢弃。包含 Master 的 writer_id（Master 旧数据也由 Worker 加载并提供）。
 
 ### 统一写通知
 
@@ -650,7 +675,7 @@ Master 和 Worker 的 `write_object` 共享同一通知路径：
 | Layer 4 | ✅ 完成 | 48 | MasterAgent, WorkerAgent |
 | Layer 5 | ✅ 完成 | - | Python API, DataService, 三层读取流程 |
 
-**总测试**: 41 Bazel unit tests pass + 12 QA tests pass
+**总测试**: 41 Bazel unit tests pass + 13 QA tests pass
 
 ### DataService 架构 (Layer 1 核心)
 

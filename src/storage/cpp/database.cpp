@@ -2,6 +2,7 @@
 #include <storage/cpp/compressor.h>
 #include <core/cpp/config.h>
 #include <log/cpp/logger.h>
+#include <common/cpp/writer_id.h>
 #include <filesystem>
 #include <fstream>
 #include <chrono>
@@ -12,12 +13,13 @@
 
 namespace fs = std::filesystem;
 
-Database::Database(const CMString& base_path, const CMString& data_path, uint64_t writer_id, const CMString& host, const CMString& existing_db_id)
+Database::Database(const CMString& base_path, const CMString& data_path, uint64_t worker_id, const CMString& host, const CMString& existing_db_id)
     : base_path_(base_path)
     , data_path_(data_path)
-    , writer_id_(writer_id)
+    , writer_id_(generate_writer_id())
     , db_id_(existing_db_id.empty() ? generate_db_id() : existing_db_id)
     , host_(host) {
+    (void)worker_id;  // worker_id kept for API compat; writer_id_ is used for file naming
 
     fly::DataService::instance().register_database(db_id_, base_path_, data_path_, writer_id_);
 
@@ -28,6 +30,11 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
         }
 
         write_db_meta_header();
+    }
+
+    CMString frozen_marker = base_path_ + "/_FROZEN";
+    if (fs::exists(frozen_marker)) {
+        is_frozen_ = true;
     }
 
     Config& config = Config::instance();
@@ -271,6 +278,10 @@ CMString Database::get_base_path() const {
 
 CMString Database::get_data_path() const {
     return data_path_;
+}
+
+CMString Database::get_writer_id() const {
+    return writer_id_;
 }
 
 CMString Database::get_obj_name(const CMString& name) const {
