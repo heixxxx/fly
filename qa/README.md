@@ -7,15 +7,18 @@
 ./fly.sh build //src/main/cpp:fly
 
 # 运行全部QA测试
-./qa/run_qa_tests.sh
+./qa/runqa
 
-# 运行指定测试
-./qa/run_qa_tests.sh qa/test_remove_object.py
+# 运行指定测试（支持 -j 控制并发数）
+./qa/runqa -j2 qa/test_remove_object.py
+
+# 兼容旧入口
+./qa/run_qa_tests.sh
 ```
 
 ### 测试运行机制
 
-`run_qa_tests.sh` 对每个 `test_*.py` 文件：
+`runqa`（Python 运行器）对每个 `test_*.py` 文件：
 
 1. 用 `bazel-bin/src/main/cpp/fly --log-dir <dir> <test_file>` 启动一个**独立进程**
 2. fly 二进制初始化全新的 C++ 运行时（DataService、StorageManager 等单例都是全新的）
@@ -206,7 +209,8 @@ QA 测试由 fly 二进制以独立进程运行。`reset()` 用于单进程内�
 ```
 qa/
 ├── README.md                    # 本文档
-├── run_qa_tests.sh              # 测试运行器
+├── runqa                       # Python 测试运行器（-j 并发、计时、排序）
+├── run_qa_tests.sh             # 兼容入口（薄 wrapper → runqa）
 ├── .gitignore                   # 忽略 logs/
 ├── BUILD                        # Bazel 构建定义
 │

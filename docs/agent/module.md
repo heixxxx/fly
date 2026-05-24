@@ -589,7 +589,7 @@ Worker.on_shutdown()
 ```
 Worker 任务执行中调用 db.freeze():
   → Database::freeze() (本地)
-    → drain_write_back() + is_frozen_=true + writer_->close() + _FROZEN marker
+    → drain_write_back() + is_frozen_=true + _FROZEN marker
     → WorkerAgentContext::notify_freeze(db_id)
       → freeze_trampoline → request_database_freeze(db_id)
         → reactor_->send(master_conn_, DatabaseFreezeNotification{db_id})

@@ -180,7 +180,13 @@ void Database::freeze() {
     }
     fly::DataService::instance().drain_write_back();
     is_frozen_ = true;
-    writer_->close();
+    // Don't close the DataWriter here — in-flight write_object() calls that
+    // already passed check_frozen() may still need to enqueue and execute
+    // their write-backs (e.g., register_write_with_master uses a 50ms polling
+    // loop, so the writer can be closed before the write is enqueued).
+    // The writer will be flushed and closed by DataWriter's destructor when
+    // the Database is destroyed, after drain_write_back() ensures all pending
+    // writes complete.
     create_frozen_marker();
     fly::DataService::instance().on_flush(db_id_);
     fly::WorkerAgentContext::notify_freeze(db_id_);

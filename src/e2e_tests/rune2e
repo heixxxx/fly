@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+import subprocess
+import sys
+import os
+import time
+import argparse
+import glob
+import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+FLY_BIN = os.path.join(PROJECT_ROOT, "build", "bin", "fly")
+LOG_BASE = os.path.join(SCRIPT_DIR, "logs")
+
+
+def find_tests():
+    return sorted(glob.glob(os.path.join(SCRIPT_DIR, "test_*.py")))
+
+
+def run_one(test_path):
+    name = os.path.basename(test_path)
+    stem = os.path.splitext(name)[0]
+    log_dir = os.path.join(LOG_BASE, stem)
+    out_log = os.path.join(LOG_BASE, f"{stem}_output.log")
+
+    if os.path.isdir(log_dir):
+        shutil.rmtree(log_dir)
+
+    t0 = time.monotonic()
+    proc = subprocess.run(
+        [FLY_BIN, "--log-dir", log_dir, test_path],
+        stdout=open(out_log, "w"),
+        stderr=subprocess.STDOUT,
+        cwd=PROJECT_ROOT,
+    )
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+    return {
+        "name": name,
+        "ms": elapsed_ms,
+        "ok": proc.returncode == 0,
+        "log": out_log,
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Fly E2E Test Runner")
+    parser.add_argument("test_file", nargs="?", help="Run a single test file")
+    parser.add_argument("-j", type=int, default=0,
+                        help="Max parallel tests (0=unlimited, default=0)")
+    args = parser.parse_args()
+
+    if not os.path.isfile(FLY_BIN) or not os.access(FLY_BIN, os.X_OK):
+        print("Installing fly binary...")
+        subprocess.run(
+            [os.path.join(PROJECT_ROOT, "fly.sh"), "build", "//src/main/cpp:fly"],
+            cwd=PROJECT_ROOT, check=True,
+        )
+        subprocess.run(
+            [os.path.join(PROJECT_ROOT, "fly.sh"), "install"],
+            cwd=PROJECT_ROOT, check=True,
+        )
+
+    if args.test_file:
+        tests = [args.test_file]
+    else:
+        tests = find_tests()
+
+    if os.path.isdir(LOG_BASE):
+        shutil.rmtree(LOG_BASE)
+    os.makedirs(LOG_BASE)
+
+    print("=" * 42)
+    print("Fly E2E Test Suite")
+    print("=" * 42)
+    print(f"Fly binary: {FLY_BIN}")
+    print(f"Tests to run: {len(tests)}")
+    print(f"Parallelism: {'unlimited' if args.j == 0 else args.j}")
+    print("=" * 42)
+    print()
+
+    max_workers = None if args.j == 0 else args.j
+    results = []
+    t_total_start = time.monotonic()
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(run_one, t): t for t in tests}
+        for fut in as_completed(futures):
+            results.append(fut.result())
+
+    total_ms = int((time.monotonic() - t_total_start) * 1000)
+    results.sort(key=lambda r: r["ms"])
+
+    passed = failed = 0
+    failed_names = []
+
+    print("=" * 42)
+    print("Results (sorted by duration)")
+    print("=" * 42)
+    for r in results:
+        mark = "✓ PASSED" if r["ok"] else "✗ FAILED"
+        print(f"  {mark}  {r['ms']:>6}ms  {r['name']}")
+        if r["ok"]:
+            passed += 1
+        else:
+            failed += 1
+            failed_names.append(r["name"])
+            with open(r["log"]) as f:
+                lines = f.readlines()
+            for line in lines[-20:]:
+                print(f"    {line}", end="")
+
+    print()
+    print("=" * 42)
+    print("Summary")
+    print("=" * 42)
+    print(f"Passed:  {passed}")
+    print(f"Failed:  {failed}")
+    print(f"Total:   {total_ms}ms")
+
+    if failed:
+        print()
+        print("Failed tests:")
+        for n in failed_names:
+            print(f"  - {n}")
+        sys.exit(1)
+
+    print()
+    print("All E2E tests passed!")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

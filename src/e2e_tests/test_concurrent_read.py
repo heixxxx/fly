@@ -16,7 +16,7 @@ from e2e_tasks import write_after_freeze
 
 
 def test_concurrent_read():
-    for p in ["/tmp/fly_e2e_concurrent", "fly_log"]:
+    for p in ["/tmp/fly_e2e_concurrent"]:
         if os.path.isdir(p):
             shutil.rmtree(p, ignore_errors=True)
 
