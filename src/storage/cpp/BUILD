@@ -29,6 +29,7 @@ cc_library(
         "data_writer.h",
         "database.h",
         "db_meta.h",
+        "fly_buffer_stream.h",
         "index_entry.h",
         "local_index.h",
         "lz4_compressor.h",

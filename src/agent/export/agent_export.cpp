@@ -126,7 +126,7 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
         auto result = self.request_remote_data(object_name);
         return fly_export::make_tuple(
             fly_export::bytes(
-                reinterpret_cast<const char*>(result.data_buffer.data()),
+                result.data_buffer.data(),
                 result.data_buffer.size()),
             result.py_name
         );
@@ -138,7 +138,7 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
         auto result = self.request_data_from_worker(host, port, object_name);
         return fly_export::make_tuple(
             fly_export::bytes(
-                reinterpret_cast<const char*>(result.data_buffer.data()),
+                result.data_buffer.data(),
                 result.data_buffer.size()),
             result.py_name
         );
@@ -210,7 +210,7 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
         auto result = self.request_remote_data(object_name);
         return fly_export::make_tuple(
             fly_export::bytes(
-                reinterpret_cast<const char*>(result.data_buffer.data()),
+                result.data_buffer.data(),
                 result.data_buffer.size()),
             result.py_name
         );
@@ -222,7 +222,7 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
         auto result = self.request_data_from_worker(host, port, object_name);
         return fly_export::make_tuple(
             fly_export::bytes(
-                reinterpret_cast<const char*>(result.data_buffer.data()),
+                result.data_buffer.data(),
                 result.data_buffer.size()),
             result.py_name
         );

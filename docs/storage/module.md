@@ -13,8 +13,9 @@
 | 文件 | 说明 |
 |------|------|
 | `cpp/database.h/cpp` | 统一存储接口，异步写入（WriteBackQueue） |
-| `cpp/data_writer.h/cpp` | 单线程写入聚合器，小文件聚合 + 大文件分块 |
+| `cpp/data_writer.h/cpp` | 单线程写入聚合器，流式压缩管线 + 磁盘写入 |
 | `cpp/data_reader.h/cpp` | 数据读取器（实例方法） |
+| `cpp/fly_buffer_stream.h` | FlyBufferStreamBuf（streambuf→FlyBuffer）+ CountingStreamBuf |
 | `cpp/data_service.h/cpp` | 统一内存索引：local_idx + remote_idx + db_paths_ + worker_registry |
 | `cpp/storage_manager.h/cpp` | Database 生命周期管理，单例 |
 | `cpp/local_index.h/cpp` | 本地索引持久化（.idx 文件） |
@@ -94,36 +95,42 @@ private:
 
 ---
 
-### 写入流程（异步 WriteBackQueue）
+### 写入流程（流式管线 + 异步落盘）
 
-**核心设计**: 写入操作**非阻塞**，通过 `WriteBackQueue` 异步执行文件 I/O。
+**核心设计**: 序列化和压缩在**调用线程**完成（CPU 密集），WBQ 后台线程**仅负责磁盘 I/O**。
 
 ```
-write_object(name, obj)
+write_object(name, obj)  ← 调用线程
   │
-  ├─ 1. 编码对象 → FlyBuffer
+  ├─ 1. FLY_ENCODE_TO_BYTES(obj, serialized_buf)
+  │     → bitsery 直接写入 FlyBuffer（零拷贝）
   │
-  ├─ 2. DataService.on_write_started(db_id, full_name)
-  │     → 创建 INCOMPLETE 状态的 LocalObjectInfo
+  ├─ 2. compress_to_buffer(serialized → target FlyBuffer)
+  │     → 流式管线：FlyBufferStreamBuf → CompressingStreamBuf → target
+  │     → 输出：ObjectHeader + 分块压缩数据（完整线格式）
+  │     → 无中间 ostringstream 拷贝
   │
-  ├─ 3. WorkerAgentContext.register_write(db_id, name)
+  ├─ 3. DataService.on_write_started(db_id, full_name)
+  │
+  ├─ 4. WorkerAgentContext.register_write(db_id, name)
   │     → 发送 WriteRegisterMessage → Master
-  │     → 阻塞等待 WriteRegisterAck（最多 5 秒）
   │
-  ├─ 4. 捕获回调函数指针和上下文
-  │     caller_record_func = WorkerAgentContext::current_record_func()
-  │     caller_record_ctx = WorkerAgentContext::current_record_ctx()
-  │
-  ├─ 5. 构造 WriteRequest
-  │     execute: DataWriter.write_typed_object() + flush()
-  │     complete: DataService.on_write_completed() + 
-  │               caller_record_func(ctx, db_id, name)
-  │
-  ├─ 6. DataService.enqueue_write_back(req)
-  │     → 入队到 WriteBackQueue（后台线程执行）
-  │
-  └─ 7. 返回 "" （立即返回，不等待落盘）
+  ├─ 5. enqueue_write_back(req)  ────→  WBQ 后台线程
+  │     execute: write_record() + flush()    │
+  │     complete: on_write_completed()       │→ file_stream_.write(record)
+  │              + caller_record_func()       │→ index 更新
+  │                                           │→ flush
+  └─ 6. 返回 "" （立即返回）
 ```
+
+**流式管线组件**:
+| 组件 | 职责 |
+|------|------|
+| `FlyBufferStreamBuf` | `std::streambuf` → FlyBuffer 适配器，`xsputn` 直接 append |
+| `CountingStreamBuf` | 包装 streambuf 并统计写入字节数（用于 `ObjectHeader.total_size`） |
+| `CompressingStreamBuf` | 分块压缩，达到 `stream_chunk_size` 时自动 flush chunk |
+
+**Python 对象路径**: `pickle.dumps(obj)` → `_write_pickle_bytes` 直接传裸指针给 `compress_to_buffer`，无中间 FlyBuffer 拷贝。
 
 **回调模式说明**:
 
@@ -181,6 +188,16 @@ public:
     
     void write_typed_object(const CMString& name, int64_t original_size,
                             const CMString& py_name, const char* data, int64_t size);
+    
+    // 流式压缩（调用线程）
+    struct CompressResult { int64_t original_size; int64_t record_size; int32_t chunk_count; };
+    CompressResult compress_to_buffer(uint64_t original_size, const CMString& py_name,
+                                       const char* data, int64_t data_size, FlyBuffer& target);
+    
+    // 磁盘写入（WBQ 线程）
+    void write_record(const CMString& object_name, int64_t original_size,
+                      int32_t chunk_count, const FlyBuffer& record);
+    
     void flush();
     void close();
     
@@ -446,6 +463,9 @@ read_object("key")
 
 | 决策 | 原因 |
 |------|------|
+| 调用线程序列化+压缩，WBQ 仅落盘 | CPU 密集操作不阻塞 WBQ，单线程足以应对磁盘带宽 |
+| 流式管线（FlyBufferStreamBuf + CompressingStreamBuf） | 零中间拷贝，峰值内存 = chunk_size + compressed_size |
+| FlyBuffer 统一为 CMString 内部存储 | 消除 char↔uint8_t 阻抗失配，读取路径 `take(std::move(string))` 零拷贝 |
 | WriteBackQueue 异步写入 | 文件 I/O 非阻塞，避免写入阻塞任务执行 |
 | 回调模式解耦 | Database 不依赖 WorkerAgent，纯函数指针桥接 |
 | large_file_threshold_kb 配置 | 用户可调整大文件阈值（单位 KB） |

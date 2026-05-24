@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-05-25: FlyBuffer 统一 + 流式管线架构重构
+
+| 文档 | 变更 |
+|------|------|
+| docs/storage/module.md | 写入流程改为"流式管线 + 异步落盘"架构；新增 FlyBufferStreamBuf/CountingStreamBuf 组件描述；DataWriter 新增 compress_to_buffer/write_record |
+| CLAUDE.md | 存储层文件表更新（database/data_writer/fly_buffer_stream）；序列化部分新增 FlyBuffer 说明；写入架构约束更新 |
+
+代码变更摘要：
+- `fly_buffer.h`: FlyBuffer 内部存储从 `CMVector<uint8_t>` 改为 `CMString`，消除 char↔uint8_t 阻抗失配；新增 `take(CMString&&)` / `release()` 支持零拷贝
+- `serialization_macros.h`: FlySerBuf 改为 FlyBuffer 别名；FLY_ENCODE/DECODE 去掉 std::transform 转换；新增 bitsery traits 特化
+- `fly_buffer_stream.h`（新建）: FlyBufferStreamBuf（streambuf→FlyBuffer）+ CountingStreamBuf（字节计数）
+- `data_writer.h/cpp`: 新增 `compress_to_buffer`（流式管线：FlyBufferStreamBuf→CompressingStreamBuf→FlyBuffer）和 `write_record`（仅 file_stream_.write + index 更新）
+- `database.h/cpp`: write_object 模板改为调用线程 serialize+compress → WBQ 仅 write_record；新增 write_object_raw_ptr 接受裸指针
+- `export_macros.h`: `__getstate_buffer__` 改用 FLY_ENCODE_TO_BYTES 直接写入 FlyBuffer
+- `storage_export.cpp`: 新增 `_write_pickle_bytes`（Python bytes 裸指针直接进 compress_to_buffer）和 `_write_raw_ptr`
+- `database.py`: Python pickle 路径改用 pickle.dumps + _write_pickle_bytes
+- `data_reader.cpp`: 读取路径 `FlySerBuf(str.begin(), str.end())` 改为 `take(std::move(str))` 零拷贝
+
+---
+
 ## 2026-05-25: DataService 两层索引重构 + 并发 Bug 修复
 
 | 文档 | 变更 |

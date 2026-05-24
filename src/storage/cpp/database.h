@@ -26,8 +26,8 @@ public:
         CMString full = full_name(object_name);
         check_frozen();
 
-        FlyBuffer buffer;
-        FLY_ENCODE_TO_BYTES(obj, buffer);
+        FlySerBuf serialized;
+        FLY_ENCODE_TO_BYTES(obj, serialized);
 
         fly::DataService::instance().on_write_started(db_id_, full);
 
@@ -38,17 +38,19 @@ public:
             throw;
         }
 
-        auto data_ptr = CMMakeShared<FlyBuffer>(std::move(buffer));
-        auto original_size = static_cast<uint64_t>(data_ptr->size());
+        auto record = CMMakeShared<FlyBuffer>();
+        auto compress_result = writer_->compress_to_buffer(
+            static_cast<uint64_t>(serialized.size()), py_name,
+            serialized.data(), static_cast<int64_t>(serialized.size()),
+            *record);
 
         DataWriter* w = writer_.get();
         auto caller_record_func = fly::WorkerAgentContext::current_record_func();
         auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
 
-        auto execute = [w, name = full, original_size, py = py_name, data_ptr]() {
-            w->write_typed_object(name, original_size, py,
-                reinterpret_cast<const char*>(data_ptr->data()),
-                static_cast<int64_t>(data_ptr->size()));
+        auto execute = [w, name = full, compress_result, record]() {
+            w->write_record(name, compress_result.original_size,
+                            compress_result.chunk_count, *record);
             w->flush();
         };
 
@@ -88,6 +90,15 @@ public:
 
     CMString write_object_typed(const CMString& object_name, const CMString& data,
                                  const CMString& py_name);
+
+    CMString write_object_buffer(const CMString& object_name,
+                                 CMSharedPtr<FlyBuffer> buffer,
+                                 const CMString& py_name);
+
+    CMString write_object_raw_ptr(const CMString& object_name,
+                                  const char* data, int64_t data_size,
+                                  const CMString& py_name);
+
     ReadResult read_object_typed(const CMString& object_name);
 
     void freeze();

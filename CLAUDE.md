@@ -123,9 +123,10 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 
 | 文件 | 职责 |
 |------|------|
-| `database.h/cpp` | 统一存储接口，写时通知 DataService，读时走 DataService 内存索引 |
-| `data_writer.h/cpp` | 单线程写入聚合器，writer_id 命名 idx/data 文件 |
+| `database.h/cpp` | 统一存储接口，调用线程序列化+压缩，WBQ 仅落盘 |
+| `data_writer.h/cpp` | 写入聚合器：compress_to_buffer（流式管线）+ write_record（磁盘写入） |
 | `data_reader.h/cpp` | 数据读取，按 writer_id 索引 |
+| `fly_buffer_stream.h` | FlyBufferStreamBuf（streambuf→FlyBuffer）+ CountingStreamBuf |
 | `data_service.h/cpp` | 统一内存索引：local_idx + remote_idx + db_paths_ + worker_registry |
 | `local_index.h/cpp` | 增量持久化索引，IdxOpType(ADD/REMOVE) 追加写入 |
 | `storage_manager.h/cpp` | Database 生命周期管理，单例 |
@@ -185,6 +186,11 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 Agent 禁止直接调用 bitsery/nanobind 原始 API，必须通过以下宏。
 
 ### 序列化
+
+FlyBuffer 是统一字节缓冲区（内部存储为 CMString），兼容 bitsery adapter 和 Python pickle：
+- `FLY_ENCODE_TO_BYTES` 直接写入 FlyBuffer（零拷贝）
+- `FlyBufferStreamBuf` 将 `std::streambuf` 桥接到 FlyBuffer（流式管线）
+- `FlySerBuf` 是 FlyBuffer 的别名，用于 bitsery 内部
 
 ```cpp
 // 声明（在 struct 内）
@@ -251,6 +257,7 @@ from fly import get_agent  # 进阶：直接访问 Agent 单例
 - Task inputs 必须使用 `db.get_obj_name("name")` 获取全名（`db_id:object_name`），短名无法匹配 DataService 索引
 - `on_data_ready()` 是唯一数据就绪入口：更新 remote_idx + _DB_META + dependency graph + schedule_tasks()
 - `write_object` 开始时即触发依赖满足（无需等异步落盘完成）
+- **写入架构**：调用线程完成序列化+压缩（`compress_to_buffer` 流式管线），WBQ 后台线程仅执行 `write_record` 磁盘写入
 
 ### writer_id 解耦
 

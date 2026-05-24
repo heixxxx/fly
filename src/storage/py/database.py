@@ -22,11 +22,17 @@ class _Database:
             self._db = ex_stg_create_database(base_path, data_path, writer_id)
 
     def write_object(self, name: str, obj) -> str:
-        if hasattr(obj, "is_cpp"):
-            data = obj.__getstate__()
+        from _fly_storage import FlyBuffer
+        if hasattr(obj, "is_cpp") and hasattr(obj, "__getstate_buffer__"):
+            buf = obj.__getstate_buffer__()
+        elif hasattr(obj, "is_cpp"):
+            buf = FlyBuffer()
+            buf.write(obj.__getstate__())
         else:
-            data = pickle.dumps(obj, -1)
-        return self._db._write_typed(name, data, type(obj).__name__)
+            import pickle
+            data = pickle.dumps(obj)
+            return self._db._write_pickle_bytes(name, data, type(obj).__name__)
+        return self._db._write_buffer(name, buf, type(obj).__name__)
 
     def read_object(self, name: str):
         data, py_name = self._db.read_raw(name)

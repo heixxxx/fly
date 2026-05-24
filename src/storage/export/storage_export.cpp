@@ -1,5 +1,6 @@
 #include <export/cpp/export_macros.h>
 #include <serialization/cpp/serialization_macros.h>
+#include <serialization/cpp/fly_buffer.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/storage_manager.h>
 #include <storage/cpp/data_service.h>
@@ -27,23 +28,47 @@ FLY_EXPORT_FUNCTION("ex_stg_compression_name_from_type", [](CompressionType type
     return CompressorFactory::name_from_type(type);
 });
 
+FLY_EXPORT_CLASS(FlyBuffer, "FlyBuffer")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_DEF("write", [](FlyBuffer& buf, fly_export::bytes data) {
+        buf.write(data.c_str(), data.size());
+    })
+    FLY_EXPORT_READONLY_PROPERTY("size", &FlyBuffer::size);
+
 FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_DEF("_write_typed", [](Database& db, const CMString& name,
                                        fly_export::bytes data, const CMString& py_name) -> CMString {
         CMString str_data(data.c_str(), data.size());
         return db.write_object_typed(name, str_data, py_name);
     })
+    FLY_EXPORT_DEF("_write_buffer", [](Database& db, const CMString& name,
+                                       FlyBuffer& buf, const CMString& py_name) -> CMString {
+        auto buffer = CMMakeShared<FlyBuffer>(std::move(buf));
+        return db.write_object_buffer(name, std::move(buffer), py_name);
+    })
+    FLY_EXPORT_DEF("_write_pickle_bytes", [](Database& db, const CMString& name,
+                                              fly_export::bytes data,
+                                              const CMString& py_name) -> CMString {
+        return db.write_object_raw_ptr(name, data.c_str(),
+                                       static_cast<int64_t>(data.size()), py_name);
+    })
     FLY_EXPORT_DEF("_read_typed", [](Database& db, const CMString& name) -> fly_export::tuple {
         ReadResult result = db.read_object_typed(name);
         return fly_export::make_tuple(
             fly_export::bytes(
-                reinterpret_cast<const char*>(result.data_buffer.data()),
+                result.data_buffer.data(),
                 result.data_buffer.size()),
             result.py_name
         );
     })
     FLY_EXPORT_DEF("write_object_raw", [](Database& db, const CMString& name, const CMString& data) -> CMString {
         return db.write_object(name, data);
+    })
+    FLY_EXPORT_DEF("_write_raw_ptr", [](Database& db, const CMString& name,
+                                         fly_export::bytes data,
+                                         const CMString& py_name) -> CMString {
+        return db.write_object_raw_ptr(name, data.c_str(),
+                                       static_cast<int64_t>(data.size()), py_name);
     })
     FLY_EXPORT_DEF("read_object_raw", [](Database& db, const CMString& name) -> CMString {
         return db.read_object(name);
@@ -53,7 +78,7 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
         ReadResult result = fly::DataService::instance().read_raw(full);
         return fly_export::make_tuple(
             fly_export::bytes(
-                reinterpret_cast<const char*>(result.data_buffer.data()),
+                result.data_buffer.data(),
                 result.data_buffer.size()),
             result.py_name
         );
@@ -76,7 +101,7 @@ FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
         return fly_export::make_tuple(
             found,
             fly_export::bytes(
-                reinterpret_cast<const char*>(result.data_buffer.data()),
+                result.data_buffer.data(),
                 result.data_buffer.size()),
             result.py_name
         );

@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/compressing_streambuf.h>
 #include <storage/cpp/compressor.h>
+#include <storage/cpp/fly_buffer_stream.h>
+#include <serialization/cpp/fly_buffer.h>
 #include <sstream>
 #include <string>
 #include <cstring>
@@ -115,6 +117,51 @@ TEST(CompressingStreamBufTest, TotalUncompressedTracking) {
     }
 
     EXPECT_EQ(oss.str().size() > 0, true);
+}
+
+TEST(FlyBufferStreamBufTest, WritesData) {
+    FlyBuffer buf;
+    FlyBufferStreamBuf sbuf(buf);
+    std::ostream os(&sbuf);
+    os << "hello world";
+    os.flush();
+    ASSERT_EQ(buf.size(), 11u);
+    EXPECT_EQ(std::string(buf.data(), buf.size()), "hello world");
+}
+
+TEST(FlyBufferStreamBufTest, LargeData) {
+    FlyBuffer buf;
+    FlyBufferStreamBuf sbuf(buf);
+    std::ostream os(&sbuf);
+    std::string large_data(10000, 'X');
+    os << large_data;
+    os.flush();
+    EXPECT_EQ(buf.size(), 10000u);
+    EXPECT_EQ(std::string(buf.data(), 10000), large_data);
+}
+
+TEST(CountingStreamBufTest, CountsBytes) {
+    FlyBuffer buf;
+    FlyBufferStreamBuf inner(buf);
+    CountingStreamBuf counter(inner);
+    std::ostream os(&counter);
+    os << "12345";
+    os.flush();
+    EXPECT_EQ(counter.bytes_written(), 5);
+    EXPECT_EQ(std::string(buf.data(), buf.size()), "12345");
+}
+
+TEST(CountingStreamBufTest, MultipleWrites) {
+    FlyBuffer buf;
+    FlyBufferStreamBuf inner(buf);
+    CountingStreamBuf counter(inner);
+    std::ostream os(&counter);
+    os << "ab";
+    os << "cd";
+    os << "ef";
+    os.flush();
+    EXPECT_EQ(counter.bytes_written(), 6);
+    EXPECT_EQ(std::string(buf.data(), buf.size()), "abcdef");
 }
 
 }  // namespace fly

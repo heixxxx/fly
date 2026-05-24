@@ -58,11 +58,10 @@ ReadResult DataReader::read_object_data(const IndexEntry& entry) {
                                 static_cast<size_t>(entry.size - header_size));
 
             if (header.compression_type == static_cast<uint8_t>(CompressionType::NONE)) {
-                result.data_buffer.resize(static_cast<size_t>(header.total_size));
-                std::memcpy(result.data_buffer.data(), chunk_data.data(),
-                           static_cast<size_t>(header.total_size));
+                result.data_buffer.assign(
+                    chunk_data.data(), chunk_data.data() + static_cast<size_t>(header.total_size));
             } else {
-                FlyBuffer decompressed;
+                FlySerBuf decompressed;
                 auto compressor = CompressorFactory::create(
                     static_cast<CompressionType>(header.compression_type));
 
@@ -82,12 +81,12 @@ ReadResult DataReader::read_object_data(const IndexEntry& entry) {
 
     if (entry.is_large) {
         CMString large_data = read_large_object(entry);
-        result.data_buffer = FlyBuffer(large_data.begin(), large_data.end());
+        result.data_buffer.take(std::move(large_data));
         return result;
     }
 
     CMString decompressed = decompress_data(raw_data, entry.compression_type);
-    result.data_buffer = FlyBuffer(decompressed.begin(), decompressed.end());
+    result.data_buffer.take(std::move(decompressed));
     return result;
 }
 
@@ -195,7 +194,7 @@ ReadResult DataReader::read_from_entries(const CMVector<IndexEntry>& entries) {
             return a.offset < b.offset;
         });
 
-    FlyBuffer result;
+    FlySerBuf result;
     CMString py_name;
 
     for (size_t i = 0; i < sorted.size(); ++i) {

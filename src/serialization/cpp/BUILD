@@ -9,6 +9,7 @@ cc_library(
         "object_header.cpp",
     ],
     hdrs = [
+        "fly_buffer.h",
         "object_header.h",
         "serialization_macros.h",
         "bitsery_ext/version.h",

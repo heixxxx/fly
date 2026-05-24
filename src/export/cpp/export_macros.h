@@ -5,6 +5,7 @@
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/map.h>
 #include <nanobind/stl/shared_ptr.h>
+#include <serialization/cpp/serialization_macros.h>
 #include <common/cpp/common_types.h>
 #include <memory>
 #include <string>
@@ -16,9 +17,6 @@ namespace fly_export = nanobind;
 
 #define FLY_EXPORT_CLASS(class_type, export_name) \
     fly_export::class_<class_type>(m, export_name)
-
-#define FLY_EXPORT_CLASS_SHARED_PTR(class_type, export_name) \
-    fly_export::class_<class_type, CMSharedPtr<class_type>>(m, export_name)
 
 // Init — separate from class macros, user chooses whether and how to add init
 #define FLY_EXPORT_INIT(...) .def(fly_export::init<__VA_ARGS__>())
@@ -53,6 +51,12 @@ namespace fly_export = nanobind;
         std::string serialized; \
         FLY_ENCODE(obj, serialized); \
         return fly_export::bytes(serialized.data(), serialized.size()); \
+    }) \
+    .def("__getstate_buffer__", [](const Cls& obj) -> CMSharedPtr<FlyBuffer> { \
+        auto buf = CMMakeShared<FlyBuffer>(); \
+        auto& fly_buf_ref_ = *buf; \
+        FLY_ENCODE_TO_BYTES(obj, fly_buf_ref_); \
+        return buf; \
     }) \
     .def("__setstate__", [](Cls& obj, fly_export::bytes b) { \
         std::string data(b.c_str(), b.size()); \

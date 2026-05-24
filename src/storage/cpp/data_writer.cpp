@@ -1,6 +1,7 @@
 #include <storage/cpp/data_writer.h>
 #include <storage/cpp/compression_utils.h>
 #include <storage/cpp/compressing_streambuf.h>
+#include <storage/cpp/fly_buffer_stream.h>
 #include <common/cpp/writer_id.h>
 #include <filesystem>
 #include <stdexcept>
@@ -111,53 +112,99 @@ CMString DataWriter::write_typed_object(const CMString& object_name, uint64_t or
 
     CMString header_bytes = header.serialize();
 
-    CMString compressed_out;
-    {
-        std::ostringstream oss;
-        {
-            CompressingStreamBuf buf(oss,
-                compressor_ ? CompressorFactory::create(compression_type_) : nullptr,
-                stream_chunk_size_);
-            std::ostream os(&buf);
-            os.write(data, static_cast<std::streamsize>(data_size));
-            os.flush();
-        }
-        compressed_out = oss.str();
-    }
-
-    if (current_file_size_ + static_cast<int64_t>(header_bytes.size()) +
-        static_cast<int64_t>(compressed_out.size()) > aggregation_threshold_ &&
-        current_file_size_ > 0) {
-        file_index_++;
-        create_new_file();
-        offset = 0;
-        compressed_out.clear();
-        {
-            std::ostringstream oss;
-            {
-                CompressingStreamBuf buf(oss,
-                    compressor_ ? CompressorFactory::create(compression_type_) : nullptr,
-                    stream_chunk_size_);
-                std::ostream os(&buf);
-                os.write(data, static_cast<std::streamsize>(data_size));
-                os.flush();
-            }
-            compressed_out = oss.str();
-        }
-    }
-
     file_stream_.write(header_bytes.data(), static_cast<std::streamsize>(header_bytes.size()));
-    file_stream_.write(compressed_out.data(), static_cast<std::streamsize>(compressed_out.size()));
-    current_file_size_ += static_cast<int64_t>(header_bytes.size() + compressed_out.size());
 
-    IndexEntry entry{object_name, current_file_, offset,
-                     static_cast<int64_t>(header_bytes.size() + compressed_out.size()),
+    {
+        CompressingStreamBuf buf(file_stream_,
+            compressor_ ? CompressorFactory::create(compression_type_) : nullptr,
+            stream_chunk_size_);
+        std::ostream os(&buf);
+        os.write(data, static_cast<std::streamsize>(data_size));
+        os.flush();
+    }
+
+    int64_t end_pos = file_stream_.tellp();
+    int64_t entry_size = end_pos - offset;
+    current_file_size_ = end_pos;
+
+    IndexEntry entry{object_name, current_file_, offset, entry_size,
                      false, precomputed_chunks,
                      static_cast<int8_t>(compression_type_), host_};
     index_->add_entry(entry);
 
     total_bytes_ += data_size;
     return current_file_;
+}
+
+DataWriter::CompressResult DataWriter::compress_to_buffer(
+    uint64_t original_size,
+    const CMString& py_name,
+    const char* data, int64_t data_size,
+    FlyBuffer& target) {
+    ObjectHeader header;
+    header.total_size = original_size;
+    header.py_name = py_name;
+    header.py_name_len = static_cast<uint16_t>(py_name.size());
+    header.compression_type = static_cast<uint8_t>(compression_type_);
+
+    int32_t precomputed_chunks = static_cast<int32_t>(
+        (static_cast<int64_t>(data_size) + stream_chunk_size_ - 1) / stream_chunk_size_);
+    if (precomputed_chunks < 1) precomputed_chunks = 1;
+    header.chunk_count = precomputed_chunks;
+
+    CMString header_bytes = header.serialize();
+
+    FlyBufferStreamBuf fly_buf(target);
+    CountingStreamBuf counting_buf(fly_buf);
+    std::ostream counting_stream(&counting_buf);
+
+    counting_stream.write(header_bytes.data(), static_cast<std::streamsize>(header_bytes.size()));
+
+    {
+        CompressingStreamBuf csbuf(counting_stream,
+            compressor_ ? CompressorFactory::create(compression_type_) : nullptr,
+            stream_chunk_size_);
+        std::ostream os(&csbuf);
+        os.write(data, static_cast<std::streamsize>(data_size));
+        os.flush();
+    }
+
+    counting_stream.flush();
+
+    CompressResult result;
+    result.original_size = static_cast<int64_t>(original_size);
+    result.record_size = counting_buf.bytes_written();
+    result.chunk_count = precomputed_chunks;
+    return result;
+}
+
+void DataWriter::write_record(const CMString& object_name,
+                               int64_t original_size,
+                               int32_t chunk_count,
+                               const FlyBuffer& record) {
+    if (closed_) {
+        throw std::runtime_error("DataWriter is closed");
+    }
+
+    if (current_file_size_ + static_cast<int64_t>(record.size()) > aggregation_threshold_ && current_file_size_ > 0) {
+        file_index_++;
+        create_new_file();
+    }
+
+    int64_t offset = current_file_size_;
+
+    file_stream_.write(record.data(), static_cast<std::streamsize>(record.size()));
+
+    int64_t end_pos = file_stream_.tellp();
+    int64_t entry_size = end_pos - offset;
+    current_file_size_ = end_pos;
+
+    IndexEntry entry{object_name, current_file_, offset, entry_size,
+                     false, chunk_count,
+                     static_cast<int8_t>(compression_type_), host_};
+    index_->add_entry(entry);
+
+    total_bytes_ += original_size;
 }
 
 void DataWriter::flush() {

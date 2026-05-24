@@ -38,10 +38,10 @@
 
 #include <bitsery/ext/std_map.h>
 #include <common/cpp/common_types.h>
+#include <serialization/cpp/fly_buffer.h>
 #include <cstdint>
 #include <stdexcept>
 #include <fstream>
-#include <algorithm>
 #include <serialization/cpp/bitsery_ext/version.h>
 
 // TrustedConfig: disables data validation for internal trusted data.
@@ -58,9 +58,10 @@ struct FlyTrustedConfig {
 #define FLY_MAX_SIZE 0x7FFFFFFF
 
 // Type aliases for Fly serialization
-using FlyBuffer = CMVector<uint8_t>;
-using FlyOutputAdapter = bitsery::OutputBufferAdapter<FlyBuffer>;
-using FlyInputAdapter = bitsery::InputBufferAdapter<FlyBuffer, FlyTrustedConfig>;
+// FlySerBuf is now FlyBuffer — unified byte buffer for bitsery + Python + DataWriter
+using FlySerBuf = FlyBuffer;
+using FlyOutputAdapter = bitsery::OutputBufferAdapter<FlySerBuf>;
+using FlyInputAdapter = bitsery::InputBufferAdapter<FlySerBuf, FlyTrustedConfig>;
 
 // Stream adapter aliases
 using FlyOutputStreamAdapter = bitsery::OutputBufferedStreamAdapter;
@@ -248,22 +249,19 @@ void map_elem(S& s, T& v) {
 // =============================================================================
 
 // FLY_ENCODE: Serialize msg to output (CMString)
-// Output is a char-based string suitable for file/network transmission.
 #define FLY_ENCODE(msg, output) \
     do { \
-        FlyBuffer fly_enc_buf_; \
+        FlySerBuf fly_enc_buf_; \
         auto fly_enc_size_ = bitsery::quickSerialization<FlyOutputAdapter>(fly_enc_buf_, msg); \
-        output.resize(fly_enc_size_); \
-        std::transform(fly_enc_buf_.begin(), fly_enc_buf_.begin() + fly_enc_size_, \
-            output.begin(), [](uint8_t b) { return static_cast<char>(b); }); \
+        fly_enc_buf_.resize(fly_enc_size_); \
+        output = fly_enc_buf_.release(); \
     } while(0)
 
 // FLY_DECODE: Deserialize input (CMString) to msg of type msg_type
 #define FLY_DECODE(input, msg_type, output) \
     do { \
-        FlyBuffer fly_dec_buf_(input.size()); \
-        std::transform(input.begin(), input.end(), fly_dec_buf_.begin(), \
-            [](char c) { return static_cast<uint8_t>(c); }); \
+        FlySerBuf fly_dec_buf_; \
+        fly_dec_buf_.take(CMString(input)); \
         msg_type fly_dec_msg_; \
         auto fly_dec_result_ = bitsery::quickDeserialization<FlyInputAdapter>( \
             {fly_dec_buf_.begin(), static_cast<size_t>(input.size())}, fly_dec_msg_); \
@@ -273,14 +271,14 @@ void map_elem(S& s, T& v) {
         output = std::move(fly_dec_msg_); \
     } while(0)
 
-// FLY_ENCODE_TO_BYTES: Serialize msg to output (CMVector<uint8_t>)
+// FLY_ENCODE_TO_BYTES: Serialize msg to output (FlyBuffer)
 #define FLY_ENCODE_TO_BYTES(msg, output) \
     do { \
         auto fly_enc_size_ = bitsery::quickSerialization<FlyOutputAdapter>(output, msg); \
         output.resize(fly_enc_size_); \
     } while(0)
 
-// FLY_DECODE_FROM_BYTES: Deserialize input (CMVector<uint8_t>) to msg of type msg_type
+// FLY_DECODE_FROM_BYTES: Deserialize input (FlyBuffer) to msg of type msg_type
 #define FLY_DECODE_FROM_BYTES(input, msg_type, output) \
     do { \
         msg_type fly_dec_msg_; \
@@ -300,3 +298,26 @@ void map_elem(S& s, T& v) {
 #else
 #error "Unknown serialization backend. Define FLY_SERIALIZATION_BACKEND as FLY_BACKEND_BITSERY or FLY_BACKEND_CEREAL."
 #endif
+
+namespace bitsery { namespace traits {
+
+template<>
+struct ContainerTraits<FlyBuffer> {
+    using TValue = char;
+    static constexpr bool isResizable = true;
+    static constexpr bool isContiguous = true;
+    static size_t size(const FlyBuffer& buf) { return buf.size(); }
+    static void resize(FlyBuffer& buf, size_t n) { buf.resize(n); }
+};
+
+template<>
+struct BufferAdapterTraits<FlyBuffer> {
+    using TIterator = FlyBuffer::iterator;
+    using TConstIterator = FlyBuffer::const_iterator;
+    using TValue = char;
+    static void increaseBufferSize(FlyBuffer& buf, size_t, size_t minSize) {
+        buf.resize(minSize);
+    }
+};
+
+}}

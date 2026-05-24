@@ -10,7 +10,7 @@
 #include <memory>
 
 struct ReadResult {
-    FlyBuffer data_buffer;
+    FlySerBuf data_buffer;
     CMString py_name;
 };
 

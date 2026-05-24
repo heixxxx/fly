@@ -12,6 +12,12 @@
 
 class DataWriter {
 public:
+    struct CompressResult {
+        int64_t original_size;
+        int64_t record_size;
+        int32_t chunk_count;
+    };
+
     DataWriter(
         const CMString& base_path,
         const CMString& data_path,
@@ -34,10 +40,10 @@ public:
     template<typename T>
     CMString write_object(const CMString& object_name, const T& obj,
                            const CMString& py_name = "") {
-        FlyBuffer buffer;
+        FlySerBuf buffer;
         FLY_ENCODE_TO_BYTES(obj, buffer);
         return write_typed_object(object_name, static_cast<uint64_t>(buffer.size()),
-                                  py_name, reinterpret_cast<const char*>(buffer.data()),
+                                  py_name, buffer.data(),
                                   static_cast<int64_t>(buffer.size()));
     }
 
@@ -46,6 +52,17 @@ public:
     CMString write_typed_object(const CMString& object_name, uint64_t original_size,
                                  const CMString& py_name,
                                  const char* data, int64_t data_size);
+
+    CompressResult compress_to_buffer(
+        uint64_t original_size,
+        const CMString& py_name,
+        const char* data, int64_t data_size,
+        FlyBuffer& target);
+
+    void write_record(const CMString& object_name,
+                       int64_t original_size,
+                       int32_t chunk_count,
+                       const FlyBuffer& record);
 
     void flush();
     void close();

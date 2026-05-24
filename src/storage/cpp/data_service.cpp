@@ -291,7 +291,7 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
     try {
         DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
         ReadResult result = reader.read_from_entries(entries);
-        return {true, result};
+        return {true, std::move(result)};
     } catch (const std::exception& e) {
         return {false, ReadResult{}};
     }

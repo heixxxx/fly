@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/data_writer.h>
+#include <storage/cpp/fly_buffer_stream.h>
+#include <serialization/cpp/fly_buffer.h>
+#include <serialization/cpp/object_header.h>
 #include <filesystem>
 #include <fstream>
+#include <cstring>
 
 namespace {
 
@@ -132,6 +136,105 @@ TEST_F(DataWriterTest, FileCountIncrements) {
     EXPECT_EQ(writer.file_count(), 2);
 
     writer.close();
+}
+
+TEST_F(DataWriterTest, CompressToBufferProducesData) {
+    CMString base_path = test_dir_ + "/compress_buf";
+    DataWriter writer(base_path, "", "c1d2e3f4", 1024, 10240, 128);
+
+    CMString data = "hello stream pipeline";
+    FlyBuffer target;
+    auto result = writer.compress_to_buffer(
+        static_cast<uint64_t>(data.size()), "", data.data(),
+        static_cast<int64_t>(data.size()), target);
+
+    EXPECT_FALSE(target.empty());
+    EXPECT_EQ(result.original_size, static_cast<int64_t>(data.size()));
+    EXPECT_EQ(result.record_size, static_cast<int64_t>(target.size()));
+
+    writer.close();
+}
+
+TEST_F(DataWriterTest, CompressToBufferWireFormat) {
+    CMString base_path = test_dir_ + "/wire_fmt";
+    DataWriter writer(base_path, "", "c1d2e3f4", 1024, 10240, 128);
+
+    CMString data = "hello stream pipeline";
+    FlyBuffer target;
+    writer.compress_to_buffer(
+        static_cast<uint64_t>(data.size()), "", data.data(),
+        static_cast<int64_t>(data.size()), target);
+
+    ASSERT_GE(target.size(), sizeof(uint32_t));
+    uint32_t magic = 0;
+    std::memcpy(&magic, target.data(), sizeof(uint32_t));
+    EXPECT_EQ(magic, FLY_OBJECT_MAGIC);
+
+    writer.close();
+}
+
+TEST_F(DataWriterTest, WriteRecordPersistsData) {
+    CMString base_path = test_dir_ + "/write_rec";
+    DataWriter writer(base_path, "", "c1d2e3f4", 1024, 10240, 128);
+
+    CMString data = "record data here";
+    FlyBuffer target;
+    auto result = writer.compress_to_buffer(
+        static_cast<uint64_t>(data.size()), "", data.data(),
+        static_cast<int64_t>(data.size()), target);
+
+    writer.write_record("test/record", result.original_size,
+                         result.chunk_count, target);
+
+    EXPECT_EQ(writer.total_bytes_written(), static_cast<int64_t>(data.size()));
+
+    auto* entry = writer.get_last_entry("test/record");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_GT(entry->size, 0);
+
+    writer.close();
+}
+
+TEST_F(DataWriterTest, WriteRecordThresholdRollover) {
+    CMString base_path = test_dir_ + "/rollover";
+    DataWriter writer(base_path, "", "c1d2e3f4", 10, 10240, 128);
+
+    CMString data1(200, 'A');
+    FlyBuffer target1;
+    auto r1 = writer.compress_to_buffer(
+        static_cast<uint64_t>(data1.size()), "", data1.data(),
+        static_cast<int64_t>(data1.size()), target1);
+    writer.write_record("obj1", r1.original_size, r1.chunk_count, target1);
+
+    CMString data2(200, 'B');
+    FlyBuffer target2;
+    auto r2 = writer.compress_to_buffer(
+        static_cast<uint64_t>(data2.size()), "", data2.data(),
+        static_cast<int64_t>(data2.size()), target2);
+    writer.write_record("obj2", r2.original_size, r2.chunk_count, target2);
+
+    EXPECT_EQ(writer.file_count(), 2);
+
+    writer.close();
+}
+
+TEST_F(DataWriterTest, WriteRecordAfterCloseThrows) {
+    CMString base_path = test_dir_ + "/rec_close";
+    DataWriter writer(base_path, "", "c1d2e3f4", 1024, 10240, 128);
+
+    CMString data = "temp";
+    FlyBuffer target;
+    auto result = writer.compress_to_buffer(
+        static_cast<uint64_t>(data.size()), "", data.data(),
+        static_cast<int64_t>(data.size()), target);
+    writer.write_record("obj", result.original_size, result.chunk_count, target);
+
+    writer.close();
+
+    EXPECT_THROW(
+        writer.write_record("obj2", result.original_size,
+                             result.chunk_count, target),
+        std::runtime_error);
 }
 
 }
