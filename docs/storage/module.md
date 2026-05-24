@@ -325,8 +325,9 @@ private:
         uint64_t writer_id = 0;
     };
     
-    CMUnorderedMap<CMString, CMSharedPtr<LocalObjectInfo>> local_idx_;
-    CMUnorderedMap<CMString, RemoteObjectInfo> remote_idx_;
+    // Two-level index: db_id → (short_name → info)
+    CMUnorderedMap<CMString, CMUnorderedMap<CMString, CMSharedPtr<LocalObjectInfo>>> local_idx_;
+    CMUnorderedMap<CMString, CMUnorderedMap<CMString, RemoteObjectInfo>> remote_idx_;
     CMMap<uint64_t, RemoteObjectInfo> worker_registry_;
     CMUnorderedMap<CMString, DbPaths> db_paths_;
     
@@ -338,18 +339,19 @@ private:
 **数据结构**:
 ```
 DataService (单例)
-├── local_idx: object_name → LocalObjectInfo
-│   ├── db_id: CMString
-│   ├── entries: CMVector<IndexEntry>
-│   ├── flushed: bool
-│   ├── completion_state: INCOMPLETE / COMPLETE / FAILED
-│   ├── cv: condition_variable
-│   └── cv_mutex: mutex
+├── local_idx: db_id → (short_name → LocalObjectInfo)    [两层索引]
+│   └── LocalObjectInfo:
+│       ├── entries: CMVector<IndexEntry>
+│       ├── flushed: bool
+│       ├── completion_state: INCOMPLETE / COMPLETE / FAILED
+│       ├── cv: condition_variable
+│       └── cv_mutex: mutex
 │
-├── remote_idx: object_name → RemoteObjectInfo
-│   ├── worker_id: uint64_t
-│   ├── host: CMString
-│   └── port: int32_t
+├── remote_idx: db_id → (short_name → RemoteObjectInfo)  [两层索引]
+│   └── RemoteObjectInfo:
+│       ├── worker_id: uint64_t
+│       ├── host: CMString
+│       └── port: int32_t
 │
 ├── worker_registry: worker_id → RemoteObjectInfo
 │

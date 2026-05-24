@@ -4,6 +4,7 @@
 #include <common/cpp/common_types.h>
 #include <cstdint>
 #include <fstream>
+#include <mutex>
 
 enum class IdxOpType : uint8_t {
     ADD = 1,
@@ -41,4 +42,5 @@ private:
     CMUnorderedMap<CMString, CMVector<IndexEntry>> pending_adds_;
     CMUnorderedSet<CMString> pending_removes_;
     bool modified_ = false;
+    mutable std::mutex mutex_;
 };

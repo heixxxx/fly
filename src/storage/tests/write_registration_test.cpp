@@ -11,6 +11,12 @@ namespace {
 
 #define TEST_LOG(fmt, ...) fprintf(stderr, "[TEST_DEBUG] %s:%d " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__)
 
+static CMString db32(const CMString& hint) {
+    CMString r = hint;
+    r.resize(32, '_');
+    return r;
+}
+
 class WriteRegistrationTest : public ::testing::Test {
 protected:
     CMString test_dir_;
@@ -28,24 +34,29 @@ protected:
 };
 
 TEST_F(WriteRegistrationTest, OnWriteStartedCreatesIncompleteEntry) {
-    ds_.on_write_started("test_db", "writereg/start_obj");
+    CMString db_id = db32("test_db");
+    CMString full = db_id + ":start_obj";
+    ds_.on_write_started(db_id, full);
 
-    EXPECT_FALSE(ds_.has_local_object("writereg/start_obj"));
+    EXPECT_FALSE(ds_.has_local_object(full));
 
-    auto [found, result] = ds_.try_read_local("writereg/start_obj");
+    auto [found, result] = ds_.try_read_local(full);
     EXPECT_FALSE(found);
     TEST_LOG("on_write_started: entry exists but not readable (correct)");
 }
 
 TEST_F(WriteRegistrationTest, OnWriteCompletedMakesEntryReadable) {
-    ds_.on_write_started("comp_db", "writereg/comp_obj");
+    CMString db_id = db32("comp_db");
+    CMString full = db_id + ":comp_obj";
+
+    ds_.on_write_started(db_id, full);
 
     CMString base_path = test_dir_ + "/comp_db";
     std::filesystem::create_directories(base_path);
-    ds_.register_database("comp_db", base_path, "");
+    ds_.register_database(db_id, base_path, "");
 
     IndexEntry entry;
-    entry.object_name = "writereg/comp_obj";
+    entry.object_name = full;
     entry.file_name = "test.dat";
     entry.offset = 0;
     entry.size = 5;
@@ -54,20 +65,23 @@ TEST_F(WriteRegistrationTest, OnWriteCompletedMakesEntryReadable) {
     entry.compression_type = 0;
 
     CMVector<IndexEntry> entries = {entry};
-    ds_.on_write_completed("comp_db", "writereg/comp_obj", entries);
-    ds_.on_flush("comp_db");
+    ds_.on_write_completed(db_id, full, entries);
+    ds_.on_flush(db_id);
 
-    EXPECT_TRUE(ds_.has_local_object("writereg/comp_obj"));
+    EXPECT_TRUE(ds_.has_local_object(full));
     TEST_LOG("on_write_completed + flush: entry readable (correct)");
 }
 
 TEST_F(WriteRegistrationTest, OnWriteFailedRemovesEntry) {
-    ds_.on_write_started("fail_db", "writereg/fail_obj");
-    ds_.on_write_failed("fail_db", "writereg/fail_obj", "registration rejected");
+    CMString db_id = db32("fail_db");
+    CMString full = db_id + ":fail_obj";
 
-    EXPECT_FALSE(ds_.has_local_object("writereg/fail_obj"));
+    ds_.on_write_started(db_id, full);
+    ds_.on_write_failed(db_id, full, "registration rejected");
 
-    auto [found, result] = ds_.try_read_local("writereg/fail_obj");
+    EXPECT_FALSE(ds_.has_local_object(full));
+
+    auto [found, result] = ds_.try_read_local(full);
     EXPECT_FALSE(found);
     TEST_LOG("on_write_failed: entry removed (correct)");
 }
@@ -106,15 +120,18 @@ TEST_F(WriteRegistrationTest, WaitCompletionSucceedsForCompleteEntry) {
 }
 
 TEST_F(WriteRegistrationTest, WaitReturnsFalseForFailedEntry) {
-    ds_.on_write_started("waitfail_db", "writereg/waitfail_obj");
+    CMString db_id = db32("waitfail_db");
+    CMString full = db_id + ":waitfail_obj";
+
+    ds_.on_write_started(db_id, full);
 
     std::thread failer([&]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        ds_.on_write_failed("waitfail_db", "writereg/waitfail_obj", "rejected");
+        ds_.on_write_failed(db_id, full, "rejected");
         TEST_LOG("failer thread: write failed");
     });
 
-    auto [found, result] = ds_.try_read_local_or_wait("writereg/waitfail_obj", 3000);
+    auto [found, result] = ds_.try_read_local_or_wait(full, 3000);
     EXPECT_FALSE(found);
     TEST_LOG("try_read_local_or_wait: returned false for failed entry");
 
@@ -122,10 +139,13 @@ TEST_F(WriteRegistrationTest, WaitReturnsFalseForFailedEntry) {
 }
 
 TEST_F(WriteRegistrationTest, WaitTimesOutForIncompleteEntry) {
-    ds_.on_write_started("timeout_db", "writereg/timeout_obj");
+    CMString db_id = db32("timeout_db");
+    CMString full = db_id + ":timeout_obj";
+
+    ds_.on_write_started(db_id, full);
 
     auto start = std::chrono::steady_clock::now();
-    auto [found, result] = ds_.try_read_local_or_wait("writereg/timeout_obj", 200);
+    auto [found, result] = ds_.try_read_local_or_wait(full, 200);
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start);
 

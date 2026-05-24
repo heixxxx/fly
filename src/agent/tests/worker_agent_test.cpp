@@ -6,6 +6,12 @@
 
 using namespace fly::test;
 
+static CMString db32(const CMString& hint) {
+    CMString r = hint;
+    r.resize(32, '_');
+    return r;
+}
+
 namespace fly {
 
 TEST(WorkerAgentTest, CreateWithId) {
@@ -66,12 +72,12 @@ TEST(WorkerAgentContextTest, SetAndClear) {
     );
     EXPECT_TRUE(WorkerAgentContext::is_active());
     
-    WorkerAgentContext::record_write("db1", "obj1");
+    WorkerAgentContext::record_write(db32("db1"), "obj1");
     EXPECT_EQ(calls, 1);
     
     WorkerAgentContext::clear();
     EXPECT_FALSE(WorkerAgentContext::is_active());
-    WorkerAgentContext::record_write("db1", "obj2");
+    WorkerAgentContext::record_write(db32("db1"), "obj2");
     EXPECT_EQ(calls, 1);
 }
 
@@ -88,64 +94,73 @@ TEST(WorkerAgentTest, BeginEndTaskTracking) {
 
 TEST(WorkerAgentTest, RecordWrites) {
     WorkerAgent worker(1, "127.0.0.1", 0);
+    CMString db_abc = db32("db_abc");
     
     worker.begin_task(100);
-    worker.record_write("db_abc", "output/result");
-    worker.record_write("db_abc", "output/intermediate");
+    worker.record_write(db_abc, "output/result");
+    worker.record_write(db_abc, "output/intermediate");
     auto writes = worker.end_task(100);
     
     EXPECT_EQ(writes.size(), 2u);
-    EXPECT_EQ(writes[0], "db_abc:output/result");
-    EXPECT_EQ(writes[1], "db_abc:output/intermediate");
+    EXPECT_EQ(writes[0], db_abc + ":output/result");
+    EXPECT_EQ(writes[1], db_abc + ":output/intermediate");
 }
 
 TEST(WorkerAgentTest, MultipleTasksSequential) {
     WorkerAgent worker(1, "127.0.0.1", 0);
+    CMString db1 = db32("db1");
+    CMString db2 = db32("db2");
 
     worker.begin_task(1);
-    worker.record_write("db1", "a");
+    worker.record_write(db1, "a");
     auto writes1 = worker.end_task(1);
     EXPECT_EQ(writes1.size(), 1u);
 
     worker.begin_task(2);
-    worker.record_write("db2", "b");
+    worker.record_write(db2, "b");
     auto writes2 = worker.end_task(2);
     EXPECT_EQ(writes2.size(), 1u);
-    EXPECT_EQ(writes2[0], "db2:b");
+    EXPECT_EQ(writes2[0], db2 + ":b");
 }
 
 TEST(WorkerAgentTest, WriteTrackingWithDatabase) {
     WorkerAgent worker(1, "127.0.0.1", 0);
+    CMString db_hash_aaa = db32("db_hash_aaa");
+
     worker.begin_task(200);
 
-    worker.record_write("db_hash_aaa", "output/result");
-    worker.record_write("db_hash_aaa", "output/log");
+    worker.record_write(db_hash_aaa, "output/result");
+    worker.record_write(db_hash_aaa, "output/log");
 
     auto writes = worker.end_task(200);
     ASSERT_EQ(writes.size(), 2u);
-    EXPECT_EQ(writes[0], "db_hash_aaa:output/result");
-    EXPECT_EQ(writes[1], "db_hash_aaa:output/log");
+    EXPECT_EQ(writes[0], db_hash_aaa + ":output/result");
+    EXPECT_EQ(writes[1], db_hash_aaa + ":output/log");
 }
 
 TEST(WorkerAgentTest, MultiDbSameObjectNameTracking) {
     WorkerAgent worker(1, "127.0.0.1", 0);
+    CMString db_proj_a = db32("db_proj_a");
+    CMString db_proj_b = db32("db_proj_b");
+
     worker.begin_task(300);
 
-    worker.record_write("db_proj_a", "output/result");
-    worker.record_write("db_proj_b", "output/result");
+    worker.record_write(db_proj_a, "output/result");
+    worker.record_write(db_proj_b, "output/result");
 
     auto writes = worker.end_task(300);
     ASSERT_EQ(writes.size(), 2u);
     EXPECT_NE(writes[0], writes[1]);
-    EXPECT_EQ(writes[0], "db_proj_a:output/result");
-    EXPECT_EQ(writes[1], "db_proj_b:output/result");
+    EXPECT_EQ(writes[0], db_proj_a + ":output/result");
+    EXPECT_EQ(writes[1], db_proj_b + ":output/result");
 }
 
 TEST(WorkerAgentTest, EndTaskClearsTracking) {
     WorkerAgent worker(1, "127.0.0.1", 0);
+    CMString db1 = db32("db1");
 
     worker.begin_task(1);
-    worker.record_write("db1", "obj1");
+    worker.record_write(db1, "obj1");
     auto writes1 = worker.end_task(1);
     EXPECT_EQ(writes1.size(), 1u);
 
@@ -269,14 +284,15 @@ protected:
 };
 
 TEST_F(IdxLoadTest, WorkerProcessesSingleIdxFile) {
+    CMString db_id = db32("test_db");
     IndexEntry entry;
-    entry.object_name = "test_db:obj_alpha";
+    entry.object_name = db_id + ":obj_alpha";
     entry.file_name = "data_0.bin";
     entry.offset = 0;
     entry.size = 100;
     create_test_idx_file(test_dir_, "w0000005", {entry});
 
-    ds_.register_database("test_db", test_dir_, test_dir_ + "/data");
+    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -286,28 +302,32 @@ TEST_F(IdxLoadTest, WorkerProcessesSingleIdxFile) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    master.send_idx_load_commands("test_db", test_dir_, {"w0000005"});
-    wait_for([&]{ return ds_.has_local_object("test_db:obj_alpha"); }, 100, 10);
+    master.send_idx_load_commands(db_id, test_dir_, {"w0000005"});
+    wait_for([&]{ return ds_.has_local_object(db_id + ":obj_alpha"); }, 100, 10);
 
-    EXPECT_TRUE(ds_.has_local_object("test_db:obj_alpha"));
+    EXPECT_TRUE(ds_.has_local_object(db_id + ":obj_alpha"));
 
     worker.stop();
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database("test_db");
-    ds_.remove_local_index("test_db:obj_alpha");
+    ds_.unregister_database(db_id);
+    ds_.remove_local_index(db_id + ":obj_alpha");
 }
 
 TEST_F(IdxLoadTest, WorkerProcessesMultipleIdxFiles) {
+    CMString db_id = db32("test_db");
+    CMString full_one = db_id + ":obj_one";
+    CMString full_two = db_id + ":obj_two";
+
     IndexEntry e1;
-    e1.object_name = "test_db:obj_one";
+    e1.object_name = full_one;
     e1.file_name = "data_10.bin";
     e1.offset = 0;
     e1.size = 50;
 
     IndexEntry e2;
-    e2.object_name = "test_db:obj_two";
+    e2.object_name = full_two;
     e2.file_name = "data_20.bin";
     e2.offset = 0;
     e2.size = 75;
@@ -315,7 +335,7 @@ TEST_F(IdxLoadTest, WorkerProcessesMultipleIdxFiles) {
     create_test_idx_file(test_dir_, "w0000010", {e1});
     create_test_idx_file(test_dir_, "w0000020", {e2});
 
-    ds_.register_database("test_db", test_dir_, test_dir_ + "/data");
+    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -325,30 +345,33 @@ TEST_F(IdxLoadTest, WorkerProcessesMultipleIdxFiles) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    master.send_idx_load_commands("test_db", test_dir_, {"w0000010", "w0000020"});
-    wait_for([&]{ return ds_.has_local_object("test_db:obj_one") && ds_.has_local_object("test_db:obj_two"); }, 100, 10);
+    master.send_idx_load_commands(db_id, test_dir_, {"w0000010", "w0000020"});
+    wait_for([&]{ return ds_.has_local_object(full_one) && ds_.has_local_object(full_two); }, 100, 10);
 
-    EXPECT_TRUE(ds_.has_local_object("test_db:obj_one"));
-    EXPECT_TRUE(ds_.has_local_object("test_db:obj_two"));
+    EXPECT_TRUE(ds_.has_local_object(full_one));
+    EXPECT_TRUE(ds_.has_local_object(full_two));
 
     worker.stop();
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database("test_db");
-    ds_.remove_local_index("test_db:obj_one");
-    ds_.remove_local_index("test_db:obj_two");
+    ds_.unregister_database(db_id);
+    ds_.remove_local_index(full_one);
+    ds_.remove_local_index(full_two);
 }
 
 TEST_F(IdxLoadTest, WorkerSkipsMissingIdxFiles) {
+    CMString db_id = db32("test_db");
+    CMString full = db_id + ":obj_exists";
+
     IndexEntry entry;
-    entry.object_name = "test_db:obj_exists";
+    entry.object_name = full;
     entry.file_name = "data_5.bin";
     entry.offset = 0;
     entry.size = 100;
     create_test_idx_file(test_dir_, "w0000005", {entry});
 
-    ds_.register_database("test_db", test_dir_, test_dir_ + "/data");
+    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -358,21 +381,22 @@ TEST_F(IdxLoadTest, WorkerSkipsMissingIdxFiles) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    master.send_idx_load_commands("test_db", test_dir_, {"w0000005", "w0000099"});
-    wait_for([&]{ return ds_.has_local_object("test_db:obj_exists"); }, 100, 10);
+    master.send_idx_load_commands(db_id, test_dir_, {"w0000005", "w0000099"});
+    wait_for([&]{ return ds_.has_local_object(full); }, 100, 10);
 
-    EXPECT_TRUE(ds_.has_local_object("test_db:obj_exists"));
+    EXPECT_TRUE(ds_.has_local_object(full));
 
     worker.stop();
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database("test_db");
-    ds_.remove_local_index("test_db:obj_exists");
+    ds_.unregister_database(db_id);
+    ds_.remove_local_index(full);
 }
 
 TEST_F(IdxLoadTest, WorkerHandlesEmptyOldWorkerIds) {
-    ds_.register_database("test_db", test_dir_, test_dir_ + "/data");
+    CMString db_id = db32("test_db");
+    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -382,7 +406,7 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyOldWorkerIds) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    master.send_idx_load_commands("test_db", test_dir_, {});
+    master.send_idx_load_commands(db_id, test_dir_, {});
     wait_for_running(master, true);
 
     EXPECT_TRUE(worker.is_running());
@@ -391,16 +415,17 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyOldWorkerIds) {
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database("test_db");
+    ds_.unregister_database(db_id);
 }
 
 TEST_F(IdxLoadTest, WorkerHandlesEmptyIdxFile) {
+    CMString db_id = db32("test_db");
     CMString idx_path = test_dir_ + "/w0000030.idx";
     {
         std::ofstream ofs(idx_path, std::ios::binary);
     }
 
-    ds_.register_database("test_db", test_dir_, test_dir_ + "/data");
+    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -410,7 +435,7 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyIdxFile) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    master.send_idx_load_commands("test_db", test_dir_, {"w0000030"});
+    master.send_idx_load_commands(db_id, test_dir_, {"w0000030"});
     wait_for_running(master, true);
 
     EXPECT_TRUE(worker.is_running());
@@ -419,31 +444,35 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyIdxFile) {
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database("test_db");
+    ds_.unregister_database(db_id);
 }
 
 TEST_F(IdxLoadTest, WorkerLoadsMultipleEntriesPerIdx) {
+    CMString db_id = db32("test_db");
+    CMString full_a = db_id + ":block_a";
+    CMString full_b = db_id + ":block_b";
+
     IndexEntry e1;
-    e1.object_name = "test_db:block_a";
+    e1.object_name = full_a;
     e1.file_name = "data_40.bin";
     e1.offset = 0;
     e1.size = 50;
 
     IndexEntry e2;
-    e2.object_name = "test_db:block_a";
+    e2.object_name = full_a;
     e2.file_name = "data_40.bin";
     e2.offset = 50;
     e2.size = 50;
 
     IndexEntry e3;
-    e3.object_name = "test_db:block_b";
+    e3.object_name = full_b;
     e3.file_name = "data_40.bin";
     e3.offset = 100;
     e3.size = 30;
 
     create_test_idx_file(test_dir_, "w0000040", {e1, e2, e3});
 
-    ds_.register_database("test_db", test_dir_, test_dir_ + "/data");
+    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -453,19 +482,19 @@ TEST_F(IdxLoadTest, WorkerLoadsMultipleEntriesPerIdx) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    master.send_idx_load_commands("test_db", test_dir_, {"w0000040"});
-    wait_for([&]{ return ds_.has_local_object("test_db:block_a") && ds_.has_local_object("test_db:block_b"); }, 100, 10);
+    master.send_idx_load_commands(db_id, test_dir_, {"w0000040"});
+    wait_for([&]{ return ds_.has_local_object(full_a) && ds_.has_local_object(full_b); }, 100, 10);
 
-    EXPECT_TRUE(ds_.has_local_object("test_db:block_a"));
-    EXPECT_TRUE(ds_.has_local_object("test_db:block_b"));
+    EXPECT_TRUE(ds_.has_local_object(full_a));
+    EXPECT_TRUE(ds_.has_local_object(full_b));
 
     worker.stop();
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database("test_db");
-    ds_.remove_local_index("test_db:block_a");
-    ds_.remove_local_index("test_db:block_b");
+    ds_.unregister_database(db_id);
+    ds_.remove_local_index(full_a);
+    ds_.remove_local_index(full_b);
 }
 
 }  // namespace fly

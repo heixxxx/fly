@@ -1,8 +1,10 @@
 #include "tcp_transport.h"
+#include <log/cpp/logger.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/epoll.h>
+#include <poll.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <cstring>
@@ -106,20 +108,39 @@ uint64_t TCPTransport::connect(const CMString& address, int port) {
 ssize_t TCPTransport::send(uint64_t conn_id, const CMString& data) {
     auto it = conn_to_fd_.find(conn_id);
     if (it == conn_to_fd_.end() || it->second < 0) {
+        WARN("TCPTransport::send: unknown connection conn_id={}", conn_id);
         return -1;
     }
     
     int fd = it->second;
-    ssize_t sent = ::send(fd, data.data(), data.size(), MSG_NOSIGNAL);
+    size_t total_sent = 0;
     
-    if (sent < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return 0;
+    while (total_sent < data.size()) {
+        ssize_t sent = ::send(fd, data.data() + total_sent,
+                              data.size() - total_sent, MSG_NOSIGNAL);
+        
+        if (sent < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                struct pollfd pfd;
+                pfd.fd = fd;
+                pfd.events = POLLOUT;
+                int ret = ::poll(&pfd, 1, 5000);
+                if (ret <= 0) {
+                    ERR("TCPTransport::send: poll timeout/cancel conn_id={}, sent {}/{}",
+                        conn_id, total_sent, data.size());
+                    return (total_sent > 0) ? static_cast<ssize_t>(total_sent) : -1;
+                }
+                continue;
+            }
+            ERR("TCPTransport::send: write error conn_id={}, errno={}, sent {}/{}",
+                conn_id, errno, total_sent, data.size());
+            return (total_sent > 0) ? static_cast<ssize_t>(total_sent) : -1;
         }
-        return -1;
+        
+        total_sent += sent;
     }
     
-    return sent;
+    return static_cast<ssize_t>(total_sent);
 }
 
 ssize_t TCPTransport::recv(uint64_t conn_id, CMString& buffer, size_t max_size) {

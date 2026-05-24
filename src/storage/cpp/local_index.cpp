@@ -48,6 +48,7 @@ LocalIndex::LocalIndex(const CMString& idx_path)
 LocalIndex::~LocalIndex() = default;
 
 void LocalIndex::add_entry(const IndexEntry& entry) {
+    std::lock_guard<std::mutex> lock(mutex_);
     entries_[entry.object_name].push_back(entry);
     pending_adds_[entry.object_name].push_back(entry);
     pending_removes_.erase(entry.object_name);
@@ -55,6 +56,7 @@ void LocalIndex::add_entry(const IndexEntry& entry) {
 }
 
 bool LocalIndex::remove_entry(const CMString& object_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = entries_.find(object_name);
     if (it == entries_.end()) {
         return false;
@@ -67,6 +69,7 @@ bool LocalIndex::remove_entry(const CMString& object_name) {
 }
 
 IndexEntry* LocalIndex::find_entry(const CMString& object_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = entries_.find(object_name);
     if (it == entries_.end() || it->second.empty()) {
         return nullptr;
@@ -75,6 +78,7 @@ IndexEntry* LocalIndex::find_entry(const CMString& object_name) {
 }
 
 CMVector<IndexEntry>* LocalIndex::find_all_entries(const CMString& object_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = entries_.find(object_name);
     if (it == entries_.end()) {
         return nullptr;
@@ -118,23 +122,32 @@ void LocalIndex::append_remove(const CMString& object_name) {
 }
 
 void LocalIndex::save() {
-    if (!modified_) return;
+    CMUnorderedMap<CMString, CMVector<IndexEntry>> adds_snapshot;
+    CMUnorderedSet<CMString> removes_snapshot;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!modified_) return;
+        adds_snapshot = std::move(pending_adds_);
+        removes_snapshot = std::move(pending_removes_);
+        pending_adds_.clear();
+        pending_removes_.clear();
+        modified_ = false;
+    }
 
-    for (auto& [name, entries] : pending_adds_) {
+    for (auto& [name, entries] : adds_snapshot) {
         append_add(name, entries);
     }
-    for (auto& name : pending_removes_) {
+    for (auto& name : removes_snapshot) {
         append_remove(name);
     }
-
-    pending_adds_.clear();
-    pending_removes_.clear();
-    modified_ = false;
 }
 
 void LocalIndex::save_legacy() {
     IndexData data;
-    data.entries = entries_;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        data.entries = entries_;
+    }
 
     CMString bytes;
     FLY_ENCODE(data, bytes);
@@ -149,10 +162,12 @@ void LocalIndex::save_legacy() {
     ofs.write(bytes.data(), bytes.size());
     ofs.close();
 
+    std::lock_guard<std::mutex> lock(mutex_);
     modified_ = false;
 }
 
 void LocalIndex::load() {
+    std::lock_guard<std::mutex> lock(mutex_);
     entries_.clear();
     pending_adds_.clear();
     pending_removes_.clear();
@@ -203,7 +218,6 @@ void LocalIndex::load() {
 
             if (decoded) {
                 entries_ = std::move(data.entries);
-                save();
                 modified_ = false;
                 return;
             }
@@ -247,6 +261,7 @@ void LocalIndex::load() {
 void LocalIndex::compact() {
     CMString tmp_path = idx_path_ + ".compact";
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         std::ofstream ofs(tmp_path, std::ios::binary);
         if (!ofs.is_open()) {
             throw std::runtime_error("Failed to create compact file: " + tmp_path);
@@ -271,6 +286,7 @@ void LocalIndex::compact() {
 }
 
 int64_t LocalIndex::entry_count() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     int64_t count = 0;
     for (const auto& [key, vec] : entries_) {
         count += static_cast<int64_t>(vec.size());
@@ -279,6 +295,7 @@ int64_t LocalIndex::entry_count() const {
 }
 
 CMVector<IndexEntry> LocalIndex::get_all_entries() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     CMVector<IndexEntry> result;
     for (const auto& [key, vec] : entries_) {
         for (const auto& entry : vec) {

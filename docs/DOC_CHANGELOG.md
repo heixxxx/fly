@@ -2,6 +2,23 @@
 
 ---
 
+## 2026-05-25: DataService 两层索引重构 + 并发 Bug 修复
+
+| 文档 | 变更 |
+|------|------|
+| docs/storage/module.md | `local_idx_`/`remote_idx_` 类型从 `Map<full_name, ...>` 改为两层嵌套 `Map<db_id, Map<short_name, ...>>`；新增 `split_full()` 定长切分（32 字符 db_id） |
+
+代码变更摘要：
+- `data_service.h/cpp`: `local_idx_`/`remote_idx_` 改为两层索引；`split_full()` 使用 32 字符定长切分；`on_flush(db_id)` 优化为 O(该 db 条目)
+- `local_index.h/cpp`: 加 `std::mutex` 保护所有公共方法；`save()` 锁内取快照锁外做 I/O（修复 WBQ 线程与主线程数据竞争导致的 std::bad_alloc）
+- `tcp_transport.cpp`: `send()` 处理 partial send 和 EAGAIN（poll+retry 循环）
+- `worker_agent.cpp`: `on_remove_command` 提取 short name（修复 double-prefix）
+- `database.cpp`: `freeze()` 不再关闭 DataWriter（修复 in-flight write 竞争）
+- `main.cpp`: 新增 `std::set_terminate()` crash handler + SIGABRT/SIGSEGV handler + backtrace
+- 4 个测试文件改为使用 32 字符 db_id
+
+---
+
 ## 2026-05-24 (7): Bug 修复 + 压力测试 + freeze 机制完善
 
 | 文档 | 变更 |

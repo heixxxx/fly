@@ -1,5 +1,6 @@
 #include <network/cpp/reactor.h>
 #include <network/cpp/io_thread_pool.h>
+#include <log/cpp/logger.h>
 #include <algorithm>
 
 namespace fly {

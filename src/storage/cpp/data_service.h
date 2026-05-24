@@ -145,9 +145,13 @@ private:
 
     mutable std::mutex mutex_;
 
-    CMUnorderedMap<CMString, CMSharedPtr<LocalObjectInfo>> local_idx_;
+    CMUnorderedMap<CMString /*db_id*/,
+        CMUnorderedMap<CMString /*short_name*/,
+            CMSharedPtr<LocalObjectInfo>>> local_idx_;
 
-    CMUnorderedMap<CMString, CMVector<uint64_t>> remote_idx_;
+    CMUnorderedMap<CMString /*db_id*/,
+        CMUnorderedMap<CMString /*short_name*/,
+            CMVector<uint64_t>>> remote_idx_;
 
     CMMap<uint64_t, RemoteObjectInfo> worker_registry_;
 

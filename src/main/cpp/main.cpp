@@ -5,6 +5,55 @@
 #include <cstdlib>
 #include <string>
 #include <filesystem>
+#include <exception>
+#include <execinfo.h>
+#include <signal.h>
+#include <fstream>
+
+static void crash_backtrace() {
+    void* buf[64];
+    int n = backtrace(buf, 64);
+    backtrace_symbols_fd(buf, n, STDERR_FILENO);
+}
+
+static std::string get_mem_info() {
+    std::ifstream ifs("/proc/self/status");
+    std::string line, result;
+    while (std::getline(ifs, line)) {
+        if (line.compare(0, 6, "VmRSS:") == 0 ||
+            line.compare(0, 7, "VmSize:") == 0 ||
+            line.compare(0, 8, "VmPeak:") == 0) {
+            result += line + " ";
+        }
+    }
+    return result;
+}
+
+static void terminate_handler() {
+    fprintf(stderr, "\n=== FATAL: std::terminate ===\n");
+    auto ex = std::current_exception();
+    if (ex) {
+        try {
+            std::rethrow_exception(ex);
+        } catch (const std::bad_alloc& e) {
+            fprintf(stderr, "Exception: std::bad_alloc [%s]  %s\n",
+                    e.what(), get_mem_info().c_str());
+        } catch (const std::exception& e) {
+            fprintf(stderr, "Exception: %s [%s]\n",
+                    typeid(e).name(), e.what());
+        } catch (...) {
+            fprintf(stderr, "Exception: unknown\n");
+        }
+    }
+    crash_backtrace();
+    _exit(77);
+}
+
+static void sig_handler(int sig) {
+    fprintf(stderr, "\n=== FATAL: signal %d ===\n", sig);
+    crash_backtrace();
+    _exit(78);
+}
 
 static void setup_sys_path() {
     std::filesystem::path cwd = std::filesystem::current_path();
@@ -72,6 +121,10 @@ static void print_usage(const char* prog) {
 }
 
 int main(int argc, char* argv[]) {
+    std::set_terminate(terminate_handler);
+    signal(SIGABRT, sig_handler);
+    signal(SIGSEGV, sig_handler);
+
     bool worker_mode = false;
     int worker_id = 0;
     std::string master_host = "127.0.0.1";

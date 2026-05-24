@@ -788,7 +788,14 @@ void WorkerAgent::on_remove_command(uint64_t conn_id, const RemoveCommandMessage
     auto db_it = databases_.find(msg.db_id);
     if (db_it != databases_.end()) {
         auto& db = db_it->second;
-        db->remove_index_entry(msg.object_name);
+        // msg.object_name is already a full name (db_id:short_name),
+        // use the short part to avoid double-prefixing in remove_index_entry
+        CMString short_name = msg.object_name;
+        CMString prefix = msg.db_id + ":";
+        if (short_name.substr(0, prefix.size()) == prefix) {
+            short_name = short_name.substr(prefix.size());
+        }
+        db->remove_index_entry(short_name);
         INFO("RemoveCommand: persisted REMOVE entry for {}", msg.object_name);
     }
 }

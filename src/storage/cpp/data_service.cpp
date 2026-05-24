@@ -2,8 +2,22 @@
 #include <log/cpp/logger.h>
 #include <chrono>
 #include <algorithm>
+#include <utility>
 
 namespace fly {
+
+namespace {
+
+constexpr size_t DB_ID_LEN = 32;
+
+std::pair<CMString, CMString> split_full(const CMString& full) {
+    if (full.size() > DB_ID_LEN && full[DB_ID_LEN] == ':') {
+        return {full.substr(0, DB_ID_LEN), full.substr(DB_ID_LEN + 1)};
+    }
+    return {CMString{}, full};
+}
+
+}
 
 DataService& DataService::instance() {
     static DataService instance;
@@ -50,8 +64,9 @@ bool DataService::has_database(const CMString& db_id) const {
 void DataService::on_object_written(const CMString& db_id,
                                      const CMString& object_name,
                                      const IndexEntry& entry) {
+    auto [_, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
-    auto& info = local_idx_[object_name];
+    auto& info = local_idx_[db_id][short_name];
     if (!info) {
         info = CMMakeShared<LocalObjectInfo>();
     }
@@ -65,8 +80,10 @@ void DataService::on_flush(const CMString& db_id) {
     CMVector<CMSharedPtr<LocalObjectInfo>> to_notify;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        for (auto& [name, info] : local_idx_) {
-            if (info && info->db_id == db_id) {
+        auto db_it = local_idx_.find(db_id);
+        if (db_it == local_idx_.end()) return;
+        for (auto& [name, info] : db_it->second) {
+            if (info) {
                 info->flushed = true;
                 to_notify.push_back(info);
             }
@@ -79,22 +96,26 @@ void DataService::on_flush(const CMString& db_id) {
 
 void DataService::on_write_started(const CMString& db_id,
                                      const CMString& object_name) {
+    auto [_, short_name] = split_full(object_name);
     CMSharedPtr<LocalObjectInfo> info = CMMakeShared<LocalObjectInfo>();
     info->db_id = db_id;
     info->completion_state = CompletionState::INCOMPLETE;
 
     std::lock_guard<std::mutex> lock(mutex_);
-    local_idx_[object_name] = info;
+    local_idx_[db_id][short_name] = info;
 }
 
 void DataService::on_write_completed(const CMString& db_id,
                                       const CMString& object_name,
                                       const CMVector<IndexEntry>& entries) {
+    auto [_, short_name] = split_full(object_name);
     CMSharedPtr<LocalObjectInfo> info;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = local_idx_.find(object_name);
-        if (it == local_idx_.end() || !it->second) return;
+        auto db_it = local_idx_.find(db_id);
+        if (db_it == local_idx_.end()) return;
+        auto it = db_it->second.find(short_name);
+        if (it == db_it->second.end() || !it->second) return;
         info = it->second;
         info->entries = entries;
         info->completion_state = CompletionState::COMPLETE;
@@ -108,15 +129,18 @@ void DataService::on_write_completed(const CMString& db_id,
 void DataService::on_write_failed(const CMString& db_id,
                                     const CMString& object_name,
                                     const CMString& error_message) {
+    auto [_, short_name] = split_full(object_name);
     CMSharedPtr<LocalObjectInfo> info;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = local_idx_.find(object_name);
-        if (it == local_idx_.end() || !it->second) return;
+        auto db_it = local_idx_.find(db_id);
+        if (db_it == local_idx_.end()) return;
+        auto it = db_it->second.find(short_name);
+        if (it == db_it->second.end() || !it->second) return;
         info = it->second;
         info->completion_state = CompletionState::FAILED;
         info->error_message = error_message;
-        local_idx_.erase(it);
+        db_it->second.erase(it);
     }
     info->cv.notify_all();
 }
@@ -130,66 +154,96 @@ void DataService::update_remote_idx(const CMString& object_name,
 }
 
 void DataService::add_remote_location(const CMString& object_name, uint64_t worker_id) {
+    auto [db_id, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
-    auto& workers = remote_idx_[object_name];
+    auto& workers = remote_idx_[db_id][short_name];
     if (std::find(workers.begin(), workers.end(), worker_id) == workers.end()) {
         workers.push_back(worker_id);
     }
 }
 
 void DataService::remove_remote_location(const CMString& object_name) {
+    auto [db_id, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
-    remote_idx_.erase(object_name);
+    auto db_it = remote_idx_.find(db_id);
+    if (db_it != remote_idx_.end()) {
+        db_it->second.erase(short_name);
+    }
 }
 
 void DataService::remove_remote_location(const CMString& object_name, uint64_t worker_id) {
+    auto [db_id, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = remote_idx_.find(object_name);
-    if (it != remote_idx_.end()) {
-        auto& workers = it->second;
-        workers.erase(std::remove(workers.begin(), workers.end(), worker_id), workers.end());
-        if (workers.empty()) {
-            remote_idx_.erase(it);
+    auto db_it = remote_idx_.find(db_id);
+    if (db_it != remote_idx_.end()) {
+        auto it = db_it->second.find(short_name);
+        if (it != db_it->second.end()) {
+            auto& workers = it->second;
+            workers.erase(std::remove(workers.begin(), workers.end(), worker_id), workers.end());
+            if (workers.empty()) {
+                db_it->second.erase(it);
+            }
         }
     }
 }
 
 CMVector<uint64_t> DataService::get_remote_workers(const CMString& object_name) const {
+    auto [db_id, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = remote_idx_.find(object_name);
-    if (it != remote_idx_.end()) {
-        return it->second;
+    auto db_it = remote_idx_.find(db_id);
+    if (db_it != remote_idx_.end()) {
+        auto it = db_it->second.find(short_name);
+        if (it != db_it->second.end()) {
+            return it->second;
+        }
     }
     return {};
 }
 
 bool DataService::has_remote_location(const CMString& object_name) const {
+    auto [db_id, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = remote_idx_.find(object_name);
-    return it != remote_idx_.end() && !it->second.empty();
+    auto db_it = remote_idx_.find(db_id);
+    if (db_it != remote_idx_.end()) {
+        auto it = db_it->second.find(short_name);
+        return it != db_it->second.end() && !it->second.empty();
+    }
+    return false;
 }
 
 RemoteObjectInfo DataService::lookup_remote_idx(const CMString& object_name) const {
+    auto [db_id, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = remote_idx_.find(object_name);
-    if (it != remote_idx_.end() && !it->second.empty()) {
-        uint64_t wid = it->second.front();
-        auto wit = worker_registry_.find(wid);
-        if (wit != worker_registry_.end()) {
-            return wit->second;
+    auto db_it = remote_idx_.find(db_id);
+    if (db_it != remote_idx_.end()) {
+        auto it = db_it->second.find(short_name);
+        if (it != db_it->second.end() && !it->second.empty()) {
+            uint64_t wid = it->second.front();
+            auto wit = worker_registry_.find(wid);
+            if (wit != worker_registry_.end()) {
+                return wit->second;
+            }
         }
     }
     return RemoteObjectInfo{};
 }
 
 void DataService::remove_local_index(const CMString& object_name) {
+    auto [db_id, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
-    local_idx_.erase(object_name);
+    auto db_it = local_idx_.find(db_id);
+    if (db_it != local_idx_.end()) {
+        db_it->second.erase(short_name);
+    }
 }
 
 void DataService::remove_remote_index(const CMString& object_name) {
+    auto [db_id, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
-    remote_idx_.erase(object_name);
+    auto db_it = remote_idx_.find(db_id);
+    if (db_it != remote_idx_.end()) {
+        db_it->second.erase(short_name);
+    }
 }
 
 void DataService::register_worker(uint64_t worker_id,
@@ -209,21 +263,22 @@ RemoteObjectInfo DataService::get_worker_address(uint64_t worker_id) const {
 }
 
 std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_name) {
-    CMString db_id;
+    auto [db_id, short_name] = split_full(object_name);
     CMVector<IndexEntry> entries;
     DbPaths paths;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = local_idx_.find(object_name);
-        if (it == local_idx_.end() || !it->second) {
+        auto db_it = local_idx_.find(db_id);
+        if (db_it == local_idx_.end()) return {false, ReadResult{}};
+        auto it = db_it->second.find(short_name);
+        if (it == db_it->second.end() || !it->second) {
             return {false, ReadResult{}};
         }
         auto& info = *it->second;
         if (info.completion_state != CompletionState::COMPLETE || !info.flushed) {
             return {false, ReadResult{}};
         }
-        db_id = info.db_id;
         entries = info.entries;
 
         auto path_it = db_paths_.find(db_id);
@@ -244,18 +299,19 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
 
 std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
         const CMString& object_name, int timeout_ms) {
+    auto [db_id, short_name] = split_full(object_name);
     CMSharedPtr<LocalObjectInfo> info;
-    CMString db_id;
     DbPaths paths;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = local_idx_.find(object_name);
-        if (it == local_idx_.end() || !it->second) {
+        auto db_it = local_idx_.find(db_id);
+        if (db_it == local_idx_.end()) return {false, ReadResult{}};
+        auto it = db_it->second.find(short_name);
+        if (it == db_it->second.end() || !it->second) {
             return {false, ReadResult{}};
         }
         info = it->second;
-        db_id = info->db_id;
 
         if (info->completion_state == CompletionState::COMPLETE && info->flushed) {
             auto path_it = db_paths_.find(db_id);
@@ -271,10 +327,10 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
             DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
             return {true, reader.read_from_entries(info->entries)};
     } catch (const std::exception& e) {
-        ERR("try_read_local FAILED for '{}': {}", object_name, e.what());
-        return {false, ReadResult{}};
+            ERR("try_read_local FAILED for '{}': {}", object_name, e.what());
+            return {false, ReadResult{}};
     }
-}
+    }
 
     if (info->completion_state == CompletionState::FAILED) {
         return {false, ReadResult{}};
@@ -322,9 +378,12 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
 }
 
 bool DataService::has_local_object(const CMString& object_name) const {
+    auto [db_id, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = local_idx_.find(object_name);
-    return it != local_idx_.end() && it->second &&
+    auto db_it = local_idx_.find(db_id);
+    if (db_it == local_idx_.end()) return false;
+    auto it = db_it->second.find(short_name);
+    return it != db_it->second.end() && it->second &&
            it->second->completion_state == CompletionState::COMPLETE && it->second->flushed;
 }
 
@@ -471,20 +530,21 @@ bool DataService::is_write_back_running() const {
 
 void DataService::restore_entries(const CMString& db_id,
                                     const CMVector<IndexEntry>& entries) {
-    // Group entries by object_name
     CMUnorderedMap<CMString, CMVector<IndexEntry>> grouped;
     for (const auto& e : entries) {
-        grouped[e.object_name].push_back(e);
+        auto [entry_db_id, short_name] = split_full(e.object_name);
+        const CMString& key = entry_db_id.empty() ? e.object_name : short_name;
+        grouped[key].push_back(e);
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& [object_name, obj_entries] : grouped) {
-        auto& info = local_idx_[object_name];
+    auto& db_map = local_idx_[db_id];
+    for (auto& [short_name, obj_entries] : grouped) {
+        auto& info = db_map[short_name];
         if (!info) {
             info = CMMakeShared<LocalObjectInfo>();
         }
         info->db_id = db_id;
-        // Append entries (don't replace — there might be existing entries)
         for (auto& e : obj_entries) {
             info->entries.push_back(std::move(e));
         }
@@ -498,13 +558,17 @@ void DataService::restore_entries(const CMString& db_id,
 }
 
 void DataService::on_object_flushed(const CMString& object_name) {
+    auto [db_id, short_name] = split_full(object_name);
     CMSharedPtr<LocalObjectInfo> info;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = local_idx_.find(object_name);
-        if (it != local_idx_.end() && it->second) {
-            it->second->flushed = true;
-            info = it->second;
+        auto db_it = local_idx_.find(db_id);
+        if (db_it != local_idx_.end()) {
+            auto it = db_it->second.find(short_name);
+            if (it != db_it->second.end() && it->second) {
+                it->second->flushed = true;
+                info = it->second;
+            }
         }
     }
     if (info) {
