@@ -143,6 +143,7 @@ private:
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
+    void on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg);
     void on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg);
 
     void persist_failed_task(const FailedTaskRecord& record);

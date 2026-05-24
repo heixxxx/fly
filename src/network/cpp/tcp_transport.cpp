@@ -93,7 +93,7 @@ uint64_t TCPTransport::connect(const CMString& address, int port) {
     }
     
     struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
+    ev.events = EPOLLIN;
     ev.data.fd = fd;
     if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) < 0) {
         ::close(fd);
@@ -174,7 +174,7 @@ CMVector<TransportEvent> TCPTransport::poll(int timeout_ms) {
             }
             
             struct epoll_event client_ev;
-            client_ev.events = EPOLLIN | EPOLLET;
+            client_ev.events = EPOLLIN;
             client_ev.data.fd = client_fd;
             if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_fd, &client_ev) < 0) {
                 ::close(client_fd);

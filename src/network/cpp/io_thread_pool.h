@@ -23,6 +23,10 @@ public:
     
     void process_completions();
     
+    /// Wait until predicate returns true, processing completions between checks.
+    /// Returns true if predicate became true, false on timeout.
+    bool wait_for_completion(std::function<bool()> predicate, int timeout_ms = 5000);
+    
     void start();
     void stop();
     
@@ -39,6 +43,7 @@ private:
     
     CMVector<CompletionCallback> completions_;
     std::mutex completions_mutex_;
+    std::condition_variable completion_cv_;
     
     std::atomic<bool> running_{false};
     std::atomic<int> active_tasks_{0};

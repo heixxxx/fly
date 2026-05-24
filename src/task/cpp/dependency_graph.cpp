@@ -53,6 +53,25 @@ void DependencyGraph::mark_data_ready(const CMString& data_path) {
     }
 }
 
+void DependencyGraph::mark_data_removed(const CMString& data_path) {
+    data_ready_status_.erase(data_path);
+
+    CMVector<uint64_t> to_unready;
+    for (auto& task_id : ready_tasks_) {
+        auto& deps = task_dependencies_[task_id];
+        for (const auto& dep : deps) {
+            if (!data_ready_status_.count(dep) || !data_ready_status_[dep]) {
+                to_unready.push_back(task_id);
+                break;
+            }
+        }
+    }
+    for (auto task_id : to_unready) {
+        ready_tasks_.erase(task_id);
+        pending_tasks_.insert(task_id);
+    }
+}
+
 CMVector<uint64_t> DependencyGraph::get_ready_tasks() const {
     CMVector<uint64_t> result(ready_tasks_.begin(), ready_tasks_.end());
     return result;

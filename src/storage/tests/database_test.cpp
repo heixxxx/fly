@@ -328,14 +328,14 @@ TEST_F(DatabaseTest, RemoveObjectFailsWhenFrozen) {
     EXPECT_THROW(db.remove_object("test/obj"), std::runtime_error);
 }
 
-TEST_F(DatabaseTest, RemoveObjectTrampolineNotifies) {
-    CMVector<CMString> removed_notifications;
-    fly::WorkerAgentContext::set_notify_removed_func(
+TEST_F(DatabaseTest, RemoveObjectTrampolineRequestsRemove) {
+    CMVector<CMString> remove_requests;
+    fly::WorkerAgentContext::set_remove_request_func(
         [](void* ctx, const CMString& db_id, const CMString& name) {
-            auto* notifications = static_cast<CMVector<CMString>*>(ctx);
-            notifications->push_back(db_id + ":" + name);
+            auto* requests = static_cast<CMVector<CMString>*>(ctx);
+            requests->push_back(db_id + ":" + name);
         },
-        &removed_notifications
+        &remove_requests
     );
 
     CMString base_path = test_dir_ + "/remove_trampoline";
@@ -347,8 +347,8 @@ TEST_F(DatabaseTest, RemoveObjectTrampolineNotifies) {
 
     fly::WorkerAgentContext::clear();
 
-    ASSERT_EQ(removed_notifications.size(), 1u);
-    EXPECT_EQ(removed_notifications[0], db.get_db_id() + ":notify/obj");
+    ASSERT_EQ(remove_requests.size(), 1u);
+    EXPECT_EQ(remove_requests[0], db.get_db_id() + ":notify/obj");
 }
 
 // ─── _DB_META incremental format tests ───

@@ -160,14 +160,21 @@ TEST_F(DataServiceTest, TypedObjectReadableViaDataService) {
     EXPECT_EQ(data, "typed_payload");
 }
 
-TEST_F(DataServiceTest, RemoteIdxOverwritesOnUpdate) {
-    ds_.update_remote_idx("overwrite/obj", 1, "host_a", 8000);
-    ds_.update_remote_idx("overwrite/obj", 2, "host_b", 9000);
+TEST_F(DataServiceTest, RemoteIdxSupportsMultipleWorkers) {
+    ds_.update_remote_idx("multi/obj", 1, "host_a", 8000);
+    ds_.update_remote_idx("multi/obj", 2, "host_b", 9000);
 
-    auto info = ds_.lookup_remote_idx("overwrite/obj");
-    EXPECT_EQ(info.worker_id, 2u);
-    EXPECT_EQ(info.host, "host_b");
-    EXPECT_EQ(info.port, 9000);
+    // Both workers should be tracked
+    auto workers = ds_.get_remote_workers("multi/obj");
+    EXPECT_EQ(workers.size(), 2u);
+    EXPECT_EQ(workers[0], 1u);
+    EXPECT_EQ(workers[1], 2u);
+
+    // Lookup returns first registered worker
+    auto info = ds_.lookup_remote_idx("multi/obj");
+    EXPECT_EQ(info.worker_id, 1u);
+    EXPECT_EQ(info.host, "host_a");
+    EXPECT_EQ(info.port, 8000);
 }
 
 TEST_F(DataServiceTest, RegisterDatabaseAndLocalRead) {

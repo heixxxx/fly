@@ -151,6 +151,11 @@ void MasterAgent::start() {
             on_database_freeze_request(conn_id, msg);
         });
 
+    reactor_->register_handler<RemoveRequestMessage>(
+        [this](uint64_t conn_id, const RemoveRequestMessage& msg) {
+            on_remove_request(conn_id, msg);
+        });
+
     reactor_->on_disconnect([this](uint64_t conn_id) {
         on_disconnect(conn_id);
     });
@@ -168,6 +173,7 @@ void MasterAgent::start() {
     heartbeat_check_thread_ = std::thread([this] { heartbeat_check_loop(); });
 
     reactor_thread_ = std::thread([this] { reactor_->run(); });
+    reactor_->wait_until_running();
     running_ = true;
 
     data_server_port_ = static_cast<int32_t>(port_);
@@ -741,6 +747,37 @@ void MasterAgent::broadcast_object_removed(const CMString& db_id, const CMString
     for (const auto& [worker_id, conn_id] : worker_to_conn_) {
         reactor_->send(conn_id, msg);
     }
+}
+
+void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg) {
+    INFO("RemoveRequest: object={}, db_id={}", msg.object_name, msg.db_id);
+
+    graph_->mark_data_removed(msg.object_name);
+
+    auto worker_ids = ds().get_remote_workers(msg.object_name);
+
+    for (auto wid : worker_ids) {
+        auto it = worker_to_conn_.find(wid);
+        if (it != worker_to_conn_.end()) {
+            RemoveCommandMessage cmd;
+            cmd.db_id = msg.db_id;
+            cmd.object_name = msg.object_name;
+            reactor_->send(it->second, cmd);
+            INFO("RemoveCommand sent to worker_id={}: object={}", wid, msg.object_name);
+        }
+    }
+
+    ds().remove_remote_location(msg.object_name);
+
+    RemoveAckMessage ack;
+    ack.db_id = msg.db_id;
+    ack.object_name = msg.object_name;
+    ack.success = true;
+    reactor_->send(conn_id, ack);
+
+    schedule_tasks();
+
+    INFO("RemoveRequest completed: object={}, workers_notified={}", msg.object_name, worker_ids.size());
 }
 
 ReadResult MasterAgent::request_remote_data(const CMString& object_name) {

@@ -88,6 +88,11 @@ public:
                             const CMString& host,
                             int32_t port);
 
+    void add_remote_location(const CMString& object_name, uint64_t worker_id);
+    void remove_remote_location(const CMString& object_name);
+    void remove_remote_location(const CMString& object_name, uint64_t worker_id);
+    CMVector<uint64_t> get_remote_workers(const CMString& object_name) const;
+
     bool has_remote_location(const CMString& object_name) const;
     RemoteObjectInfo lookup_remote_idx(const CMString& object_name) const;
 
@@ -142,7 +147,7 @@ private:
 
     CMUnorderedMap<CMString, CMSharedPtr<LocalObjectInfo>> local_idx_;
 
-    CMUnorderedMap<CMString, RemoteObjectInfo> remote_idx_;
+    CMUnorderedMap<CMString, CMVector<uint64_t>> remote_idx_;
 
     CMMap<uint64_t, RemoteObjectInfo> worker_registry_;
 

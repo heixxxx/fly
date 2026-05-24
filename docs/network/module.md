@@ -68,7 +68,7 @@ struct TransportEvent {
 
 **关键特性**:
 - 所有 socket 非阻塞 (`SOCK_NONBLOCK | SOCK_CLOEXEC`)
-- listen_fd 用 `EPOLLIN`，client_fd 用 `EPOLLIN | EPOLLET`（边缘触发）
+- listen_fd 和 connect_fd 均用 `EPOLLIN`（水平触发）
 - `accept4` 直接创建非阻塞 client fd
 - `drain_socket` 循环 recv 直到 EAGAIN，单次最多 64KB
 - conn_id 单调递增，双映射 `conn_to_fd_` / `fd_to_conn_` 管理

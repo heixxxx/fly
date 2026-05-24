@@ -76,7 +76,7 @@ QA 测试位于 `qa/` 目录，使用 `src/test/py/e2e_tasks.py` 中定义的 @a
 
 **所有测试必须每次运行都通过。**
 
-- **禁止 `sleep(Xms); assert(condition)` 模式** — 异步操作必须用轮询循环（30 次 × 50ms）
+- **禁止 `sleep(Xms); assert(condition)` 模式** — 异步操作必须用 CV 等待（`wait_for()`、`wait_for_completion()`）或事件驱动轮询
 - **禁止删除失败测试**
 - **禁止 `time.sleep()` 作为同步手段** — 使用 `wait_for_*` 方法
 - **QA 测试同样适用** — `bash qa/run_qa_tests.sh` 必须 100% 稳定通过

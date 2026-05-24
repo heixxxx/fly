@@ -31,6 +31,7 @@ public:
     void run();
     void run_once(int timeout_ms = 100);
     void stop();
+    void wait_until_running() const;
     
     int get_bound_port() const { return transport_->get_bound_port(); }
     

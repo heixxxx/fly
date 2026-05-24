@@ -94,6 +94,7 @@ public:
     bool is_frozen() const;
 
     void remove_object(const CMString& object_name);
+    void remove_index_entry(const CMString& object_name);
 
     DbMeta load_meta() const;
 

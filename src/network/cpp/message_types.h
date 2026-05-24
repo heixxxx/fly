@@ -34,6 +34,9 @@ enum class MessageType : uint8_t {
     OBJECT_REMOVED = 24,
     IDX_LOAD_COMMAND = 25,
     IDX_LOAD_ACK = 26,
+    REMOVE_REQUEST = 27,
+    REMOVE_ACK = 28,
+    REMOVE_COMMAND = 29,
 };
 
 // 基础消息头（所有消息继承）
@@ -307,6 +310,40 @@ struct DatabaseFreezeNotification {
     static constexpr MessageType msg_type = MessageType::DATABASE_FREEZE;
 
     FLY_SERIALIZE(header, db_id);
+};
+
+// Worker → Master: request to remove object (blocking until ack)
+struct RemoveRequestMessage {
+    MessageHeader header;
+    CMString db_id;
+    CMString object_name;
+
+    static constexpr MessageType msg_type = MessageType::REMOVE_REQUEST;
+
+    FLY_SERIALIZE(header, db_id, object_name);
+};
+
+// Master → Worker (origin): ack the remove request
+struct RemoveAckMessage {
+    MessageHeader header;
+    CMString db_id;
+    CMString object_name;
+    bool success = false;
+
+    static constexpr MessageType msg_type = MessageType::REMOVE_ACK;
+
+    FLY_SERIALIZE(header, db_id, object_name, success);
+};
+
+// Master → Worker (data holder): command to remove object
+struct RemoveCommandMessage {
+    MessageHeader header;
+    CMString db_id;
+    CMString object_name;
+
+    static constexpr MessageType msg_type = MessageType::REMOVE_COMMAND;
+
+    FLY_SERIALIZE(header, db_id, object_name);
 };
 
 }  // namespace fly

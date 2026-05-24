@@ -82,6 +82,7 @@ public:
 
     void register_write_with_master(const CMString& db_id, const CMString& object_name);
     void request_database_freeze(const CMString& db_id);
+    void request_object_remove(const CMString& db_id, const CMString& object_name);
 
     void set_worker_property(const CMString& prop);
     void set_worker_property(const CMVector<CMString>& props);
@@ -115,6 +116,7 @@ private:
     static void register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     static void notify_removed_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     static void freeze_trampoline(void* ctx, const CMString& db_id);
+    static void remove_request_trampoline(void* ctx, const CMString& db_id, const CMString& object_name);
     
     uint64_t current_task_id_ = 0;
     CMVector<CMString> current_writes_;
@@ -130,6 +132,16 @@ private:
     std::mutex pending_write_reg_mutex_;
     CMMap<CMString, CMSharedPtr<PendingWriteRegister>> pending_write_regs_;
 
+    struct PendingRemove {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool completed = false;
+        bool success = false;
+    };
+
+    std::mutex pending_remove_mutex_;
+    CMMap<CMString, CMSharedPtr<PendingRemove>> pending_removes_;
+
     void on_register_ack(const RegisterAckMessage& msg);
     void on_task_assign(const TaskAssignMessage& msg);
     void on_shutdown(const ShutdownMessage& msg);
@@ -137,6 +149,8 @@ private:
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
+    void on_remove_ack(uint64_t conn_id, const RemoveAckMessage& msg);
+    void on_remove_command(uint64_t conn_id, const RemoveCommandMessage& msg);
     void on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg);
     void on_database_freeze_notification(uint64_t conn_id, const DatabaseFreezeNotification& msg);
     void on_disconnect(uint64_t conn_id);

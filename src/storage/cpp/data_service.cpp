@@ -1,6 +1,7 @@
 #include <storage/cpp/data_service.h>
 #include <log/cpp/logger.h>
 #include <chrono>
+#include <algorithm>
 
 namespace fly {
 
@@ -124,20 +125,59 @@ void DataService::update_remote_idx(const CMString& object_name,
                                       uint64_t worker_id,
                                       const CMString& host,
                                       int32_t port) {
+    register_worker(worker_id, host, port);
+    add_remote_location(object_name, worker_id);
+}
+
+void DataService::add_remote_location(const CMString& object_name, uint64_t worker_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    remote_idx_[object_name] = {worker_id, host, port};
+    auto& workers = remote_idx_[object_name];
+    if (std::find(workers.begin(), workers.end(), worker_id) == workers.end()) {
+        workers.push_back(worker_id);
+    }
+}
+
+void DataService::remove_remote_location(const CMString& object_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    remote_idx_.erase(object_name);
+}
+
+void DataService::remove_remote_location(const CMString& object_name, uint64_t worker_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = remote_idx_.find(object_name);
+    if (it != remote_idx_.end()) {
+        auto& workers = it->second;
+        workers.erase(std::remove(workers.begin(), workers.end(), worker_id), workers.end());
+        if (workers.empty()) {
+            remote_idx_.erase(it);
+        }
+    }
+}
+
+CMVector<uint64_t> DataService::get_remote_workers(const CMString& object_name) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = remote_idx_.find(object_name);
+    if (it != remote_idx_.end()) {
+        return it->second;
+    }
+    return {};
 }
 
 bool DataService::has_remote_location(const CMString& object_name) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return remote_idx_.count(object_name) > 0;
+    auto it = remote_idx_.find(object_name);
+    return it != remote_idx_.end() && !it->second.empty();
 }
 
 RemoteObjectInfo DataService::lookup_remote_idx(const CMString& object_name) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = remote_idx_.find(object_name);
-    if (it != remote_idx_.end()) {
-        return it->second;
+    if (it != remote_idx_.end() && !it->second.empty()) {
+        uint64_t wid = it->second.front();
+        auto wit = worker_registry_.find(wid);
+        if (wit != worker_registry_.end()) {
+            return wit->second;
+        }
     }
     return RemoteObjectInfo{};
 }
@@ -316,7 +356,7 @@ ReadResult DataService::read_raw(const CMString& object_name, int max_retries) {
             try {
                 return direct_cb(info.host, info.port, object_name);
             } catch (const std::exception&) {
-                // stale cache, fall through to full remote
+                remove_remote_location(object_name, info.worker_id);
             }
         }
     }

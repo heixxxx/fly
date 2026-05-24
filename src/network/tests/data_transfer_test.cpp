@@ -51,6 +51,7 @@ protected:
             db_->write_object(name, data, false);
             names.push_back(db_->get_obj_name(name));
         }
+        ds_.drain_write_back();
         TEST_LOG("Wrote %d objects", count);
         return names;
     }
@@ -81,12 +82,9 @@ TEST_F(DataTransferTest, SubmitTransferSingleObject) {
     TEST_LOG("Submitting transfer for %s", names[0].c_str());
     ds_.submit_transfer(42, names[0]);
 
-    // Wait for pool thread to process
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
-    // Drain completions
     auto pool = ds_.get_transfer_pool();
     ASSERT_TRUE(pool);
+    ASSERT_TRUE(pool->wait_for_completion([&]{ return results.size() >= 1; }));
     pool->process_completions();
 
     ASSERT_EQ(results.size(), 1u);
@@ -119,9 +117,8 @@ TEST_F(DataTransferTest, SubmitTransferMultipleObjects) {
     }
     TEST_LOG("Submitted %d transfers", count);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
     auto pool = ds_.get_transfer_pool();
+    ASSERT_TRUE(pool->wait_for_completion([&]{ return results.size() >= static_cast<size_t>(count); }));
     pool->process_completions();
 
     EXPECT_EQ(results.size(), static_cast<size_t>(count));
@@ -170,12 +167,8 @@ TEST_F(DataTransferTest, ConcurrentSubmitTransfer) {
     for (auto& th : threads) th.join();
     TEST_LOG("All %d submits done from %d threads", submit_count.load(), thread_count);
 
-    // Wait for pool to process all
-    for (int wait = 0; wait < 50 && completion_count.load() < object_count; wait++) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-
     auto pool = ds_.get_transfer_pool();
+    ASSERT_TRUE(pool->wait_for_completion([&]{ return completion_count.load() >= object_count; }));
     pool->process_completions();
 
     TEST_LOG("Completions: %d/%d", completion_count.load(), object_count);
@@ -201,9 +194,8 @@ TEST_F(DataTransferTest, SubmitTransferNonexistentObject) {
 
     ds_.submit_transfer(1, "nonexistent/object");
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-
     auto pool = ds_.get_transfer_pool();
+    ASSERT_TRUE(pool->wait_for_completion([&]{ return results.size() >= 1; }));
     pool->process_completions();
 
     ASSERT_EQ(results.size(), 1u);
@@ -306,14 +298,10 @@ TEST_F(DataTransferTest, DataClientToReactorSingleRequest) {
     std::thread reactor_thread([&]() {
         while (reactor_running.load()) {
             reactor->run_once(50);
-            // Must manually drain completions since we use run_once, not run()
             auto pool = ds_.get_transfer_pool();
             if (pool) pool->process_completions();
         }
     });
-
-    // Give reactor time to start
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     // Client: use DataClient to request data
     TEST_LOG("Client requesting %s from 127.0.0.1:%d", names[0].c_str(), server_port);
@@ -367,8 +355,6 @@ TEST_F(DataTransferTest, DataClientConcurrentRequests) {
             if (pool) pool->process_completions();
         }
     });
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     // Launch client_count threads, each requesting object_count/client_count objects
     std::atomic<int> success_count{0};
@@ -438,9 +424,10 @@ TEST_F(DataTransferTest, StopTransferServer) {
     EXPECT_TRUE(ds_.is_transfer_server_running());
 
     ds_.submit_transfer(1, names[0]);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     auto pool = ds_.get_transfer_pool();
+    ASSERT_TRUE(pool);
+    ASSERT_TRUE(pool->wait_for_completion([&]{ return results.size() >= 1; }));
     pool->process_completions();
     EXPECT_GE(results.size(), 1u);
 
@@ -450,7 +437,9 @@ TEST_F(DataTransferTest, StopTransferServer) {
     // After stop, submit should be no-op
     results.clear();
     ds_.submit_transfer(2, names[0]);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Short sleep to ensure no result after stop
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
     EXPECT_TRUE(results.empty());
 
     TEST_LOG("PASS: stop_transfer_server works correctly");

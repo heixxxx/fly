@@ -114,11 +114,13 @@ class Master(FlyAgent):
         num_workers = len(worker_configs)
         for i in range(num_workers):
             config = worker_configs[i]
+            wid = self._next_worker_id
+            self._next_worker_id += 1
             if mode == "process":
-                self._spawn_process_worker(i + 1, config)
+                self._spawn_process_worker(wid, config)
             else:
                 attrs = config.get("attributes", []) if isinstance(config, dict) else []
-                self._start_thread_worker(i + 1, attrs)
+                self._start_thread_worker(wid, attrs)
 
         DBG(
             f"Master running on {self._host}:{self._port}, "

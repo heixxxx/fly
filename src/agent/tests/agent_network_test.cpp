@@ -2,19 +2,14 @@
 #include <agent/cpp/master_agent.h>
 #include <agent/cpp/worker_agent.h>
 #include <agent/cpp/task_executor.h>
+#include <common/cpp/test_helpers.h>
 #include <log/cpp/logger.h>
 #include <thread>
 #include <chrono>
 
-namespace fly {
+using namespace fly::test;
 
-static bool wait_for_registered(WorkerAgent& worker, int max_attempts = 30, int delay_ms = 50) {
-    for (int i = 0; i < max_attempts; ++i) {
-        if (worker.is_registered()) return true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-    }
-    return worker.is_registered();
-}
+namespace fly {
 
 class AgentNetworkTest : public ::testing::Test {
 protected:
@@ -32,11 +27,11 @@ protected:
 TEST_F(AgentNetworkTest, WorkerRegister) {
     MasterAgent master("127.0.0.1", 0);
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for_running(master, true);
     
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    EXPECT_TRUE(wait_for_registered(worker));
+    EXPECT_TRUE(wait_until_registered(worker));
     EXPECT_EQ(master.get_connection_count(), 1);
     
     auto connected = master.get_connected_workers();
@@ -53,7 +48,7 @@ TEST_F(AgentNetworkTest, MultipleWorkers) {
     
     MasterAgent master("127.0.0.1", 0);
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for_running(master, true);
     uint16_t port = master.get_port();
     
     WorkerAgent worker1(1, "127.0.0.1", port);
@@ -62,11 +57,7 @@ TEST_F(AgentNetworkTest, MultipleWorkers) {
     worker1.start();
     worker2.start();
     worker3.start();
-    // Retry loop: 3 workers connecting concurrently may need more time
-    for (int retry = 0; retry < 10; ++retry) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        if (master.get_connection_count() >= 3) break;
-    }
+    wait_for([&]{ return master.get_connection_count() >= 3; });
     EXPECT_EQ(master.get_connection_count(), 3);
     
     auto connected = master.get_connected_workers();
@@ -84,12 +75,12 @@ TEST_F(AgentNetworkTest, WorkerDisconnect) {
     
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    wait_for([&]{ return master.get_connection_count() >= 1; });
     
     EXPECT_EQ(master.get_connection_count(), 1);
     
     worker.stop();
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    wait_for([&]{ return master.get_connection_count() == 0; }, 100, 10);
     
     EXPECT_EQ(master.get_connection_count(), 0);
     
@@ -100,18 +91,18 @@ TEST_F(AgentNetworkTest, MasterRestart) {
     MasterAgent master("127.0.0.1", 0);
     
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(master, true);
     EXPECT_TRUE(master.is_running());
     master.stop();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(master, false);
     EXPECT_FALSE(master.is_running());
     
     // After restart, port may change
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(master, true);
     EXPECT_TRUE(master.is_running());
     master.stop();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(master, false);
     EXPECT_FALSE(master.is_running());
 }
 
@@ -141,7 +132,7 @@ TEST_F(AgentNetworkTest, EndToEndTaskExecution) {
     
     MasterAgent master("127.0.0.1", 0);
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for_running(master, true);
     uint16_t port = master.get_port();
     
     WorkerAgent worker1(1, "127.0.0.1", port);
@@ -172,7 +163,8 @@ TEST_F(AgentNetworkTest, EndToEndTaskExecution) {
     worker1.start();
     worker2.start();
     
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    wait_until_registered(worker1);
+    wait_until_registered(worker2);
     EXPECT_TRUE(worker1.is_registered());
     EXPECT_TRUE(worker2.is_registered());
     
@@ -180,9 +172,10 @@ TEST_F(AgentNetworkTest, EndToEndTaskExecution) {
     master.submit_task(2, "test_task_2", "test_module", {"arg2"}, {}, {});
     master.submit_task(3, "test_task_3", "test_module", {"arg3"}, {}, {});
     
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < 200; ++i) {
         worker1.poll_task();
         worker2.poll_task();
+        if (master.get_completed_tasks().size() >= 2) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     

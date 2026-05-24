@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 #include <agent/cpp/master_agent.h>
+#include <common/cpp/test_helpers.h>
 #include <thread>
 #include <chrono>
+
+using namespace fly::test;
 
 namespace fly {
 
@@ -9,12 +12,11 @@ TEST(MasterAgentTest, CreateAndStart) {
     MasterAgent master("127.0.0.1", 0);
     master.start();
     
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    
+    wait_for_running(master, true);
     EXPECT_TRUE(master.is_running());
     EXPECT_GT(master.get_port(), 0);
     master.stop();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(master, false);
     EXPECT_FALSE(master.is_running());
 }
 
@@ -25,7 +27,8 @@ TEST(MasterAgentTest, CreateWithDifferentPorts) {
     master1.start();
     master2.start();
     
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(master1, true);
+    wait_for_running(master2, true);
     
     EXPECT_TRUE(master1.is_running());
     EXPECT_TRUE(master2.is_running());
@@ -36,7 +39,8 @@ TEST(MasterAgentTest, CreateWithDifferentPorts) {
     master1.stop();
     master2.stop();
     
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(master1, false);
+    wait_for_running(master2, false);
     
     EXPECT_FALSE(master1.is_running());
     EXPECT_FALSE(master2.is_running());
@@ -46,19 +50,19 @@ TEST(MasterAgentTest, MultipleStartStop) {
     MasterAgent master("127.0.0.1", 0);
     
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(master, true);
     EXPECT_TRUE(master.is_running());
     
     master.stop();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(master, false);
     EXPECT_FALSE(master.is_running());
     
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(master, true);
     EXPECT_TRUE(master.is_running());
     
     master.stop();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(master, false);
     EXPECT_FALSE(master.is_running());
 }
 
@@ -127,7 +131,7 @@ TEST(MasterAgentTest, SetupWriteContext_MasterRunning_RecordWriteUpdatesRemoteId
     MasterAgent master("127.0.0.1", 0);
     master.start();
     master.setup_write_context();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(master, true);
 
     CMString db_id = "test_db_setup_write";
     CMString obj_name = "test_obj_setup_write";
@@ -142,7 +146,7 @@ TEST(MasterAgentTest, SetupWriteContext_MasterRunning_RecordWriteUpdatesRemoteId
     EXPECT_EQ(info.worker_id, 0u);
 
     master.stop();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(master, false);
     WorkerAgentContext::clear();
 
     // Cleanup singleton state

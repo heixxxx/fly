@@ -13,10 +13,9 @@ TEST(IOThreadPoolTest, SubmitAndProcessCompletions) {
     
     pool.submit([] { }, [&] { completed++; });
     pool.submit([] { }, [&] { completed++; });
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    pool.process_completions();
-    
+
+    ASSERT_TRUE(pool.wait_for_completion([&]{ return completed.load() >= 2; }));
+
     EXPECT_GE(completed.load(), 2);
     EXPECT_EQ(pool.queue_size(), 0);
     
@@ -37,10 +36,10 @@ TEST(IOThreadPoolTest, GracefulShutdown) {
         },
         [&] { completion_done = true; }
     );
-    
+
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_FALSE(pool.is_idle());
-    
+
     pool.stop();
     
     EXPECT_TRUE(task_done.load());
@@ -54,11 +53,11 @@ TEST(IOThreadPoolTest, TaskQueuing) {
     for (int i = 0; i < 10; i++) {
         pool.submit([] { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }, nullptr);
     }
-    
+
     EXPECT_GT(pool.queue_size(), 0);
-    
+
     pool.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    ASSERT_TRUE(pool.wait_for_completion([&]{ return pool.queue_size() == 0 && pool.is_idle(); }, 2000));
     pool.process_completions();
     
     pool.stop();
@@ -70,10 +69,9 @@ TEST(IOThreadPoolTest, IsIdleAfterStop) {
     pool.start();
     
     pool.submit([] { }, [] { });
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    pool.process_completions();
-    
+
+    ASSERT_TRUE(pool.wait_for_completion([&]{ return pool.is_idle(); }, 500));
+
     pool.stop();
     EXPECT_TRUE(pool.is_idle());
 }
@@ -87,11 +85,11 @@ TEST(IOThreadPoolTest, MultipleThreadCount) {
     for (int i = 0; i < 20; i++) {
         pool.submit([&] { counter++; }, nullptr);
     }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    
+
+    ASSERT_TRUE(pool.wait_for_completion([&]{ return counter.load() >= 20; }, 1000));
+
     EXPECT_EQ(counter.load(), 20);
-    
+
     pool.stop();
 }
 

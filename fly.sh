@@ -186,8 +186,7 @@ case "${1:-build}" in
         detect_python_paths
         echo ">>> Testing: $targets"
         bazel test $targets --test_output=errors
-        refresh_clangd
-        echo ">>> Tests complete. clangd index updated."
+        echo ">>> Tests complete."
         ;;
     buildonly)
         shift || true
@@ -217,7 +216,7 @@ case "${1:-build}" in
         echo "Usage: $0 {build|test|buildonly|refresh|check|install} [target...]"
         echo ""
         echo "  build      Build + refresh clangd (default)"
-        echo "  test       Run tests + refresh clangd"
+        echo "  test       Run tests (no clangd refresh)"
         echo "  buildonly  Build without refreshing clangd"
         echo "  refresh    Only refresh compile_commands.json"
         echo "  check      Build, test, and refresh clangd"

@@ -10,6 +10,7 @@ using RecordWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString
 using RegisterWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
 using NotifyRemovedFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
 using FreezeFunc = void(*)(void* ctx, const CMString& db_id);
+using RemoveRequestFunc = void(*)(void* ctx, const CMString& db_id, const CMString& object_name);
 
 class WriteRegistrationError : public std::runtime_error {
 public:
@@ -39,6 +40,11 @@ public:
         freeze_ctx_ = ctx;
     }
 
+    static void set_remove_request_func(RemoveRequestFunc func, void* ctx) {
+        remove_request_func_ = func;
+        remove_request_ctx_ = ctx;
+    }
+
     static void clear() {
         func_ = nullptr;
         ctx_ = nullptr;
@@ -47,6 +53,8 @@ public:
         notify_removed_ctx_ = nullptr;
         freeze_func_ = nullptr;
         freeze_ctx_ = nullptr;
+        remove_request_func_ = nullptr;
+        remove_request_ctx_ = nullptr;
         last_error_type_ = TaskErrorType::UNKNOWN;
     }
 
@@ -82,6 +90,12 @@ public:
         }
     }
 
+    static void request_remove(const CMString& db_id, const CMString& object_name) {
+        if (remove_request_func_) {
+            remove_request_func_(remove_request_ctx_, db_id, object_name);
+        }
+    }
+
     static void set_last_error_type(TaskErrorType type) {
         last_error_type_ = type;
     }
@@ -101,6 +115,8 @@ private:
     static inline thread_local void* notify_removed_ctx_ = nullptr;
     static inline thread_local FreezeFunc freeze_func_ = nullptr;
     static inline thread_local void* freeze_ctx_ = nullptr;
+    static inline thread_local RemoveRequestFunc remove_request_func_ = nullptr;
+    static inline thread_local void* remove_request_ctx_ = nullptr;
     static inline thread_local TaskErrorType last_error_type_ = TaskErrorType::UNKNOWN;
 };
 

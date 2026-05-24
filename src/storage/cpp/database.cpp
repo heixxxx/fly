@@ -205,13 +205,20 @@ void Database::remove_object(const CMString& object_name) {
     CMString full = full_name(object_name);
     removed_objects_.insert(full);
 
+    fly::WorkerAgentContext::request_remove(db_id_, object_name);
+
     writer_->remove_entry(full);
 
     fly::DataService::instance().remove_local_index(full);
 
-    fly::WorkerAgentContext::notify_object_removed(db_id_, object_name);
-
     INFO("Object removed: {}", full);
+}
+
+void Database::remove_index_entry(const CMString& object_name) {
+    CMString full = full_name(object_name);
+    removed_objects_.insert(full);
+    writer_->remove_entry(full);
+    INFO("Index entry removed: {}", full);
 }
 
 DbMeta Database::load_meta() const {

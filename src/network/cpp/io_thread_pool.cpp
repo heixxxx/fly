@@ -35,6 +35,19 @@ void IOThreadPool::process_completions() {
     }
 }
 
+bool IOThreadPool::wait_for_completion(std::function<bool()> predicate, int timeout_ms) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        process_completions();
+        if (predicate()) return true;
+        
+        std::unique_lock<std::mutex> lock(completions_mutex_);
+        if (completion_cv_.wait_until(lock, deadline) == std::cv_status::timeout) break;
+    }
+    process_completions();
+    return predicate();
+}
+
 void IOThreadPool::start() {
     running_ = true;
     
@@ -95,9 +108,12 @@ void IOThreadPool::worker_loop() {
         }
         active_tasks_--;
         
-        if (item.second) {
+        {
             std::lock_guard<std::mutex> lock(completions_mutex_);
-            completions_.push_back(std::move(item.second));
+            if (item.second) {
+                completions_.push_back(std::move(item.second));
+            }
+            completion_cv_.notify_all();
         }
     }
 }

@@ -114,11 +114,22 @@ void WorkerAgent::start() {
             on_database_freeze_notification(conn_id, msg);
         });
 
+    reactor_->register_handler<RemoveAckMessage>(
+        [this](uint64_t conn_id, const RemoveAckMessage& msg) {
+            on_remove_ack(conn_id, msg);
+        });
+
+    reactor_->register_handler<RemoveCommandMessage>(
+        [this](uint64_t conn_id, const RemoveCommandMessage& msg) {
+            on_remove_command(conn_id, msg);
+        });
+
     reactor_->on_disconnect([this](uint64_t conn_id) {
         on_disconnect(conn_id);
     });
 
     reactor_thread_ = std::thread([this] { reactor_->run(); });
+    reactor_->wait_until_running();
 
     RegisterMessage reg;
     reg.worker_id = worker_id_;
@@ -360,6 +371,7 @@ void WorkerAgent::begin_task(uint64_t task_id) {
     WorkerAgentContext::set_register_func(&register_write_trampoline);
     WorkerAgentContext::set_notify_removed_func(&notify_removed_trampoline, this);
     WorkerAgentContext::set_freeze_func(&freeze_trampoline, this);
+    WorkerAgentContext::set_remove_request_func(&remove_request_trampoline, this);
 }
 
 void WorkerAgent::record_write(const CMString& db_id, const CMString& object_name) {
@@ -706,6 +718,78 @@ void WorkerAgent::on_database_freeze_notification(uint64_t conn_id, const Databa
         }
         it->second->freeze();
         INFO("Worker local database frozen: db_id={}", msg.db_id);
+    }
+}
+
+void WorkerAgent::remove_request_trampoline(void* ctx, const CMString& db_id, const CMString& object_name) {
+    static_cast<WorkerAgent*>(ctx)->request_object_remove(db_id, object_name);
+}
+
+void WorkerAgent::request_object_remove(const CMString& db_id, const CMString& object_name) {
+    CMString full = db_id + ":" + object_name;
+
+    auto pending = CMMakeShared<PendingRemove>();
+    {
+        std::lock_guard<std::mutex> lock(pending_remove_mutex_);
+        pending_removes_[full] = pending;
+    }
+
+    RemoveRequestMessage msg;
+    msg.db_id = db_id;
+    msg.object_name = full;
+    reactor_->send(master_conn_, msg);
+    INFO("RemoveRequest sent: {}", full);
+
+    std::unique_lock<std::mutex> lock(pending->mutex);
+    if (!pending->cv.wait_for(lock, std::chrono::seconds(30), [&]() { return pending->completed; })) {
+        std::lock_guard<std::mutex> rm_lock(pending_remove_mutex_);
+        pending_removes_.erase(full);
+        throw std::runtime_error("Remove request timed out: " + full);
+    }
+
+    {
+        std::lock_guard<std::mutex> rm_lock(pending_remove_mutex_);
+        pending_removes_.erase(full);
+    }
+
+    if (!pending->success) {
+        throw std::runtime_error("Remove request failed: " + full);
+    }
+}
+
+void WorkerAgent::on_remove_ack(uint64_t conn_id, const RemoveAckMessage& msg) {
+    touch_master_contact();
+    INFO("RemoveAck received: object={}, success={}", msg.object_name, msg.success);
+
+    CMSharedPtr<PendingRemove> pending;
+    {
+        std::lock_guard<std::mutex> lock(pending_remove_mutex_);
+        auto it = pending_removes_.find(msg.object_name);
+        if (it != pending_removes_.end()) {
+            pending = it->second;
+        }
+    }
+
+    if (pending) {
+        std::lock_guard<std::mutex> lock(pending->mutex);
+        pending->success = msg.success;
+        pending->completed = true;
+        pending->cv.notify_one();
+    }
+}
+
+void WorkerAgent::on_remove_command(uint64_t conn_id, const RemoveCommandMessage& msg) {
+    touch_master_contact();
+    INFO("RemoveCommand received: object={}", msg.object_name);
+
+    ds().remove_local_index(msg.object_name);
+    ds().remove_remote_index(msg.object_name);
+
+    auto db_it = databases_.find(msg.db_id);
+    if (db_it != databases_.end()) {
+        auto& db = db_it->second;
+        db->remove_index_entry(msg.object_name);
+        INFO("RemoveCommand: persisted REMOVE entry for {}", msg.object_name);
     }
 }
 

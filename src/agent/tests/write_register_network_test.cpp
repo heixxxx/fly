@@ -4,9 +4,12 @@
 #include <agent/cpp/task_executor.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/data_service.h>
+#include <common/cpp/test_helpers.h>
 #include <log/cpp/logger.h>
 #include <thread>
 #include <chrono>
+
+using namespace fly::test;
 
 namespace fly {
 
@@ -28,17 +31,12 @@ protected:
 TEST_F(WriteRegisterNetworkTest, MasterAcceptsWriteRegisterForNormalDb) {
     MasterAgent master("127.0.0.1", 0);
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for_running(master, true);
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    // Poll until registered (avoid flaky fixed-delay)
-    bool registered = false;
-    for (int i = 0; i < 30; ++i) {
-        if (worker.is_registered()) { registered = true; break; }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    ASSERT_TRUE(registered);
+    wait_for([&]{ return worker.is_registered(); });
+    ASSERT_TRUE(worker.is_registered());
 
     TaskExecutor executor;
     executor.set_exec_func([](uint64_t id, const CMString& name,
@@ -52,11 +50,13 @@ TEST_F(WriteRegisterNetworkTest, MasterAcceptsWriteRegisterForNormalDb) {
     worker.set_executor(CMMakeShared<TaskExecutor>(std::move(executor)));
 
     master.submit_task(1, "write_task", "test_module", {}, {}, {});
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Give master time to assign the task
+    wait_for([&]{ return master.get_idle_workers().size() >= 1 || master.get_pending_tasks().size() >= 1; }, 5, 10);
 
     worker.poll_task();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    wait_for([&]{ return master.get_completed_tasks().size() >= 1u; });
     auto completed = master.get_completed_tasks();
     EXPECT_GE(completed.size(), 1u);
     TEST_LOG("write register accepted for normal db: %zu tasks completed", completed.size());
@@ -89,16 +89,12 @@ TEST_F(WriteRegisterNetworkTest, MasterRejectsWriteToFrozenDb) {
 TEST_F(WriteRegisterNetworkTest, FatalErrorOnWriteToFrozenDb) {
     MasterAgent master("127.0.0.1", 0);
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for_running(master, true);
 
     WorkerAgent worker(3, "127.0.0.1", master.get_port());
     worker.start();
-    bool registered = false;
-    for (int i = 0; i < 30; ++i) {
-        if (worker.is_registered()) { registered = true; break; }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    ASSERT_TRUE(registered);
+    wait_for([&]{ return worker.is_registered(); });
+    ASSERT_TRUE(worker.is_registered());
 
     CMString error_msg = "Write registration rejected: Database frozen: abc123";
     TaskErrorType error_type = TaskErrorType::WRITE_TO_FROZEN_DB;

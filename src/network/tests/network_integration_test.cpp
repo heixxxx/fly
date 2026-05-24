@@ -7,8 +7,10 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
+#include <common/cpp/test_helpers.h>
 
 namespace fly {
+using namespace fly::test;
 
 class NetworkIntegrationTest : public ::testing::Test {
 protected:
@@ -56,11 +58,7 @@ TEST_F(NetworkIntegrationTest, FullMessageRoundTrip) {
     
     uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_);
     
-    while (!server_ready.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for([&]{ return server_ready.load(); });
     
     HeartbeatMessage msg;
     msg.header.type = MessageType::HEARTBEAT;
@@ -146,11 +144,7 @@ TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
     
     uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 1);
     
-    while (!server_ready.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for([&]{ return server_ready.load(); });
     
     DataRequestMessage req;
     req.header.type = MessageType::DATA_REQUEST;
@@ -159,7 +153,7 @@ TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
     req.requesting_worker_id = 100;
     
     CMString encoded_req = MessageProtocol::encode(req);
-    client_transport.send(client_conn, encoded_req);
+    auto send_result = client_transport.send(client_conn, encoded_req);
     
     server_thread.join();
     client_receiver.join();
@@ -221,11 +215,7 @@ TEST_F(NetworkIntegrationTest, MultipleMessagesInSequence) {
     
     uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 2);
     
-    while (!server_ready.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for([&]{ return server_ready.load(); });
     
     CMString combined_payload;
     for (int i = 0; i < 5; i++) {
@@ -299,11 +289,7 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
     
     uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 3);
     
-    while (!server_ready.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for([&]{ return server_ready.load(); });
     
     DataResponseMessage large_msg;
     large_msg.header.type = MessageType::DATA_RESPONSE;
@@ -347,16 +333,13 @@ TEST_F(NetworkIntegrationTest, ReactorBasedMessageHandling) {
     
     TCPTransport client_transport;
     uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 6);
-    
-    int poll_count = 0;
-    while (!connection_established.load() && poll_count < 20) {
-        server_reactor.run_once(50);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        poll_count++;
+
+    while (!connection_established.load()) {
+        server_reactor.run_once(100);
     }
-    
+
     ASSERT_TRUE(connection_established.load()) << "Connection should be established";
-    
+
     HeartbeatMessage msg;
     msg.header.type = MessageType::HEARTBEAT;
     msg.header.message_id = 1;
@@ -364,17 +347,14 @@ TEST_F(NetworkIntegrationTest, ReactorBasedMessageHandling) {
     msg.worker_id = 88888;
     msg.running_tasks = {1, 2};
     msg.attributes = {"test"};
-    
+
     CMString encoded = MessageProtocol::encode(msg);
     client_transport.send(client_conn, encoded);
-    
-    poll_count = 0;
-    while (!heartbeat_received.load() && poll_count < 20) {
-        server_reactor.run_once(50);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        poll_count++;
+
+    while (!heartbeat_received.load()) {
+        server_reactor.run_once(100);
     }
-    
+
     EXPECT_TRUE(heartbeat_received.load()) << "Heartbeat message should be received and decoded";
     EXPECT_EQ(received_worker_id.load(), 88888);
     
@@ -404,16 +384,13 @@ TEST_F(NetworkIntegrationTest, InvalidMessageHandling) {
     
     TCPTransport client_transport;
     uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 8);
-    
-    int poll_count = 0;
-    while (!connection_established.load() && poll_count < 20) {
-        server_reactor.run_once(50);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        poll_count++;
+
+    while (!connection_established.load()) {
+        server_reactor.run_once(100);
     }
-    
+
     ASSERT_TRUE(connection_established.load());
-    
+
     CMString invalid_data = "garbage_data_not_a_valid_message";
     uint32_t len = 1 + invalid_data.size();
     CMString fake_frame;
@@ -424,14 +401,11 @@ TEST_F(NetworkIntegrationTest, InvalidMessageHandling) {
     fake_frame[3] = static_cast<char>(len & 0xFF);
     fake_frame[4] = static_cast<char>(static_cast<uint8_t>(MessageType::HEARTBEAT));
     std::copy(invalid_data.begin(), invalid_data.end(), fake_frame.begin() + 5);
-    
+
     client_transport.send(client_conn, fake_frame);
-    
-    for (int i = 0; i < 5; i++) {
-        server_reactor.run_once(50);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    
+
+    server_reactor.run_once(100);
+
     EXPECT_EQ(messages_processed.load(), 0);
     
     server_raw.close_all();

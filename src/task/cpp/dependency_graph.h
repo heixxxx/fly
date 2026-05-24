@@ -13,6 +13,7 @@ public:
     void add_task(uint64_t task_id, const CMVector<CMString>& inputs,
                   const CMVector<CMString>& required_capabilities = {});
     void mark_data_ready(const CMString& data_path);
+    void mark_data_removed(const CMString& data_path);
     bool is_data_ready(const CMString& data_path) const;
     CMVector<uint64_t> get_ready_tasks() const;
     CMVector<uint64_t> get_pending_tasks() const;

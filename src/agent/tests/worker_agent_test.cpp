@@ -1,18 +1,12 @@
 #include <gtest/gtest.h>
 #include <agent/cpp/worker_agent.h>
-#include <common/cpp/worker_context.h>
+#include <common/cpp/test_helpers.h>
 #include <thread>
 #include <chrono>
 
-namespace fly {
+using namespace fly::test;
 
-static bool wait_for_registered(WorkerAgent& worker, int max_attempts = 30, int delay_ms = 50) {
-    for (int i = 0; i < max_attempts; ++i) {
-        if (worker.is_registered()) return true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-    }
-    return worker.is_registered();
-}
+namespace fly {
 
 TEST(WorkerAgentTest, CreateWithId) {
     WorkerAgent worker(42, "127.0.0.1", 0);
@@ -23,12 +17,12 @@ TEST(WorkerAgentTest, StartWithoutMaster) {
     WorkerAgent worker(1, "127.0.0.1", 0);
     worker.start();
     
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(worker, true);
     EXPECT_TRUE(worker.is_running());
     EXPECT_FALSE(worker.is_registered());
     
     worker.stop();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(worker, false);
     EXPECT_FALSE(worker.is_running());
 }
 
@@ -42,19 +36,19 @@ TEST(WorkerAgentTest, MultipleStartStop) {
     WorkerAgent worker(1, "127.0.0.1", 0);
     
     worker.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(worker, true);
     EXPECT_TRUE(worker.is_running());
     
     worker.stop();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(worker, false);
     EXPECT_FALSE(worker.is_running());
     
     worker.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(worker, true);
     EXPECT_TRUE(worker.is_running());
     
     worker.stop();
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait_for_running(worker, false);
     EXPECT_FALSE(worker.is_running());
 }
 
@@ -262,9 +256,14 @@ protected:
         test_dir_ = make_temp_dir("idxload");
         Logger::shutdown();
         Logger::init("test_logs/idxload", 0);
+        ds_.stop_transfer_server();
+        WorkerAgentContext::clear();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     void TearDown() override {
+        ds_.stop_transfer_server();
+        WorkerAgentContext::clear();
         std::filesystem::remove_all(test_dir_);
     }
 };
@@ -281,19 +280,20 @@ TEST_F(IdxLoadTest, WorkerProcessesSingleIdxFile) {
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for_running(master, true);
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    ASSERT_TRUE(wait_for_registered(worker));
+    ASSERT_TRUE(wait_until_registered(worker));
 
     master.send_idx_load_commands("test_db", test_dir_, {"w0000005"});
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    wait_for([&]{ return ds_.has_local_object("test_db:obj_alpha"); }, 100, 10);
 
     EXPECT_TRUE(ds_.has_local_object("test_db:obj_alpha"));
 
     worker.stop();
     master.stop();
+    wait_for_running(master, false);
 
     ds_.unregister_database("test_db");
     ds_.remove_local_index("test_db:obj_alpha");
@@ -319,20 +319,21 @@ TEST_F(IdxLoadTest, WorkerProcessesMultipleIdxFiles) {
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for_running(master, true);
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    ASSERT_TRUE(wait_for_registered(worker));
+    ASSERT_TRUE(wait_until_registered(worker));
 
     master.send_idx_load_commands("test_db", test_dir_, {"w0000010", "w0000020"});
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    wait_for([&]{ return ds_.has_local_object("test_db:obj_one") && ds_.has_local_object("test_db:obj_two"); }, 100, 10);
 
     EXPECT_TRUE(ds_.has_local_object("test_db:obj_one"));
     EXPECT_TRUE(ds_.has_local_object("test_db:obj_two"));
 
     worker.stop();
     master.stop();
+    wait_for_running(master, false);
 
     ds_.unregister_database("test_db");
     ds_.remove_local_index("test_db:obj_one");
@@ -351,19 +352,20 @@ TEST_F(IdxLoadTest, WorkerSkipsMissingIdxFiles) {
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for_running(master, true);
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    ASSERT_TRUE(wait_for_registered(worker));
+    ASSERT_TRUE(wait_until_registered(worker));
 
     master.send_idx_load_commands("test_db", test_dir_, {"w0000005", "w0000099"});
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    wait_for([&]{ return ds_.has_local_object("test_db:obj_exists"); }, 100, 10);
 
     EXPECT_TRUE(ds_.has_local_object("test_db:obj_exists"));
 
     worker.stop();
     master.stop();
+    wait_for_running(master, false);
 
     ds_.unregister_database("test_db");
     ds_.remove_local_index("test_db:obj_exists");
@@ -374,19 +376,20 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyOldWorkerIds) {
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for_running(master, true);
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    ASSERT_TRUE(wait_for_registered(worker));
+    ASSERT_TRUE(wait_until_registered(worker));
 
     master.send_idx_load_commands("test_db", test_dir_, {});
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for_running(master, true);
 
     EXPECT_TRUE(worker.is_running());
 
     worker.stop();
     master.stop();
+    wait_for_running(master, false);
 
     ds_.unregister_database("test_db");
 }
@@ -401,19 +404,20 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyIdxFile) {
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for_running(master, true);
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    ASSERT_TRUE(wait_for_registered(worker));
+    ASSERT_TRUE(wait_until_registered(worker));
 
     master.send_idx_load_commands("test_db", test_dir_, {"w0000030"});
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for_running(master, true);
 
     EXPECT_TRUE(worker.is_running());
 
     worker.stop();
     master.stop();
+    wait_for_running(master, false);
 
     ds_.unregister_database("test_db");
 }
@@ -443,20 +447,21 @@ TEST_F(IdxLoadTest, WorkerLoadsMultipleEntriesPerIdx) {
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    wait_for_running(master, true);
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
-    ASSERT_TRUE(wait_for_registered(worker));
+    ASSERT_TRUE(wait_until_registered(worker));
 
     master.send_idx_load_commands("test_db", test_dir_, {"w0000040"});
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    wait_for([&]{ return ds_.has_local_object("test_db:block_a") && ds_.has_local_object("test_db:block_b"); }, 100, 10);
 
     EXPECT_TRUE(ds_.has_local_object("test_db:block_a"));
     EXPECT_TRUE(ds_.has_local_object("test_db:block_b"));
 
     worker.stop();
     master.stop();
+    wait_for_running(master, false);
 
     ds_.unregister_database("test_db");
     ds_.remove_local_index("test_db:block_a");

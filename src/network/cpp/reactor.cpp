@@ -35,6 +35,12 @@ void Reactor::run() {
     }
 }
 
+void Reactor::wait_until_running() const {
+    while (!running_.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
 void Reactor::run_once(int timeout_ms) {
     auto events = transport_->poll(timeout_ms);
     for (const auto& event : events) {
