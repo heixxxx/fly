@@ -65,7 +65,6 @@ class Master(FlyAgent):
         self._agent.set_data_service(ex_stg_get_data_service())
         self._task_counter = 0
         self._lock = threading.Lock()
-        self._workers = []
         self._worker_procs = []
         self._host = host
         self._port = port
@@ -103,8 +102,7 @@ class Master(FlyAgent):
         DBG(f"Task submitted: id={task_id}, name={name}, requires={required_capabilities}")
         return task_id
 
-    def launch_local_workers(self, worker_configs: list, port: int = None,
-                              mode: str = "process"):
+    def launch_local_workers(self, worker_configs: list, port: int = None):
         if port is not None:
             self._port = port
 
@@ -116,19 +114,13 @@ class Master(FlyAgent):
             config = worker_configs[i]
             wid = self._next_worker_id
             self._next_worker_id += 1
-            if mode == "process":
-                self._spawn_process_worker(wid, config)
-            else:
-                attrs = config.get("attributes", []) if isinstance(config, dict) else []
-                self._start_thread_worker(wid, attrs)
+            self._spawn_process_worker(wid, config)
 
         DBG(
             f"Master running on {self._host}:{self._port}, "
-            f"{num_workers} workers launched (mode={mode})")
+            f"{num_workers} workers launched")
 
     def stop(self):
-        for w in self._workers:
-            w.stop()
         for proc in self._worker_procs:
             if proc.poll() is None:
                 proc.terminate()
@@ -139,7 +131,6 @@ class Master(FlyAgent):
         if self._running:
             self._agent.stop()
             self._running = False
-        self._workers.clear()
         self._worker_procs.clear()
 
     @property
@@ -184,38 +175,6 @@ class Master(FlyAgent):
                     raise RuntimeError(f"Tasks failed: {failed}")
                 time.sleep(0.5)
         return self._agent.get_completed_tasks()
-
-    def _start_thread_worker(self, worker_id: int, attributes: list = None):
-        worker_agent = EXAgentWorker(worker_id, self._host, self._port,
-                                      attributes or [])
-        worker_agent.set_data_service(ex_stg_get_data_service())
-
-        class _ThreadWorker:
-            def __init__(self):
-                self._db_cache = {}
-                self._agent = worker_agent
-                self._worker_id = worker_id
-
-        tw = _ThreadWorker()
-        executor = EXTaskExecutor()
-        executor.set_exec_func(create_executor(tw))
-
-        worker_agent.set_executor(executor)
-        worker_agent.start()
-
-        import time
-
-        def _poll_loop():
-            while worker_agent.is_running():
-                worker_agent.poll_task()
-                time.sleep(0.05)
-
-        t = threading.Thread(target=_poll_loop, daemon=True)
-        t.start()
-
-        time.sleep(0.1)
-
-        self._workers.append(worker_agent)
 
     def wait_for_all_workers(self, count: int, timeout: float = 30.0):
         import time

@@ -29,7 +29,7 @@ def main():
     master = get_agent()
     master.start()
 
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
 
     for _ in range(40):
         if master._agent.get_connection_count() >= 1:

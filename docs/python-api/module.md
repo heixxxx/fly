@@ -166,10 +166,9 @@ class Master(FlyAgent):
         # 线程安全 task_counter
         # agent.submit_task_with_deps(task_id, ...)
 
-    def launch_local_workers(self, worker_configs, port=None, mode="thread"):
-        # mode="thread": 线程内 Worker (_start_thread_worker) — 仅用于单元测试
-        # mode="process": 子进程 Worker (_spawn_process_worker) — QA 和生产环境
-        # 注意: 公共 API launch_workers() 已隐藏 mode 参数，始终使用 process
+    def launch_local_workers(self, worker_configs, port=None):
+        # 始终使用子进程 Worker (_spawn_process_worker)
+        # Worker 进程通过 TCP 连接 Master，实现真正的进程隔离
 
     def stop(self):
         # 停止所有 Worker → 停止 Agent
@@ -434,7 +433,7 @@ master.load_db("/new/location/project")  # db_id 从 _DB_META 读取，不受路
 ```
 
 **关键行为**:
-- `load_db` 内部使用 process worker（非 thread worker）
+- `load_db` 内部使用 process worker
 - `next_worker_id` 从旧记录中推断，避免 idx 文件名冲突
 - Worker 的 `on_idx_load_command` 注册 `db_paths_` 并恢复 entries
 

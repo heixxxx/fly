@@ -40,7 +40,7 @@ def test_concurrent_writes():
     if not master._running:
         master.start()
 
-    master.launch_local_workers([{}, {}], mode="process")
+    master.launch_local_workers([{}, {}])
 
     assert wait_for(lambda: master._agent.get_connection_count() >= 2), \
         f"Both workers should connect, got {master._agent.get_connection_count()}"

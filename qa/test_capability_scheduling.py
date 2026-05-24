@@ -38,7 +38,7 @@ def setup_mixed_workers():
     master.launch_local_workers([
         {"attributes": ["gpu"]},
         {"attributes": []},
-    ], mode="process")
+    ])
     for i in range(40):
         if master._agent.get_connection_count() >= 2:
             break

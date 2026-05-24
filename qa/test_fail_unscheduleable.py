@@ -39,7 +39,7 @@ def test_fail_unscheduleable_tasks_enabled():
         master.start()
     master.launch_local_workers([
         {"attributes": ["alpha"]},
-    ], mode="process")
+    ])
     for i in range(40):
         if master._agent.get_connection_count() >= 1:
             break

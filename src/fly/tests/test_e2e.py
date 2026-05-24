@@ -2,7 +2,7 @@
 
 Tests the full Phase 3 flow:
   1. Master starts, auto-assigns port
-  2. launch_local_workers(mode="process") spawns fly --worker subprocesses
+  2. launch_local_workers() spawns fly --worker subprocesses
   3. Worker subprocesses connect back to Master
   4. Task submitted, assigned to worker, executed in subprocess
   5. TaskComplete returned to Master
@@ -39,7 +39,6 @@ def test_process_workers_connect():
         master = Master()
         master.launch_local_workers(
             [{"role": "hybrid"}] * 2,
-            mode="process",
         )
 
         port = master.port
@@ -75,7 +74,6 @@ def test_task_through_process_worker():
         master = Master()
         master.launch_local_workers(
             [{"role": "hybrid"}],
-            mode="process",
         )
 
         port = master.port

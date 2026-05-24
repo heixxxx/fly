@@ -38,7 +38,7 @@ def load_db(path: str) -> '_Database':
 
 
 def launch_workers(configs: list):
-    get_agent().launch_local_workers(configs, mode="process")
+    get_agent().launch_local_workers(configs)
 
 
 def wait_tasks(timeout: float = 30.0):

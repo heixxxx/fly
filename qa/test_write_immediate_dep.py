@@ -42,7 +42,7 @@ def test_master_write_dep():
     if not master._running:
         master.start()
 
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
     for i in range(40):
         if master._agent.get_connection_count() >= 1:
             break
@@ -79,7 +79,7 @@ def test_worker_write_dep():
     if not master._running:
         master.start()
 
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
     for i in range(40):
         if master._agent.get_connection_count() >= 1:
             break

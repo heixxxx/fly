@@ -30,7 +30,7 @@ def main():
     master.start()
 
     # Launch 1 process worker for task execution
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
 
     # Wait for worker
     for _ in range(40):

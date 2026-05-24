@@ -57,7 +57,7 @@ def main():
     assert db_raw.is_frozen(), "DB_raw should be frozen from Run 1"
     print("  Phase 1b OK: DB_raw confirmed frozen", file=sys.stderr)
 
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
     assert wait_for(lambda: master._agent.get_connection_count() >= 1), \
         "Phase 2: Worker should connect"
     print("  Phase 2 OK: 1 worker launched", file=sys.stderr)
@@ -95,7 +95,7 @@ def main():
     log_dir = get_config().get_str("log_dir")
     failed_file = os.path.join(log_dir, "failed_tasks.bin")
 
-    master.launch_local_workers([{"attributes": ["gpu"]}], mode="process")
+    master.launch_local_workers([{"attributes": ["gpu"]}])
     assert wait_for(lambda: master._agent.get_connection_count() >= 2), \
         "Phase 7: gpu worker should connect"
 

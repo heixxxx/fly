@@ -33,7 +33,7 @@ def test_remove_object_basic():
     master = get_agent()
     if not master._running:
         master.start()
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
     for i in range(40):
         if master._agent.get_connection_count() >= 1:
             break
@@ -71,7 +71,7 @@ def test_remove_then_dependent_task_fails():
     master = get_agent()
     if not master._running:
         master.start()
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
     for i in range(40):
         if master._agent.get_connection_count() >= 1:
             break
@@ -117,7 +117,7 @@ def test_remove_one_keeps_other():
     master = get_agent()
     if not master._running:
         master.start()
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
     for i in range(40):
         if master._agent.get_connection_count() >= 1:
             break

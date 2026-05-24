@@ -31,7 +31,7 @@ def test_wait_tasks_no_pending_returns_gracefully():
     master = get_agent()
     if not master._running:
         master.start()
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
     for i in range(40):
         if master._agent.get_connection_count() >= 1:
             break
@@ -55,7 +55,7 @@ def test_wait_tasks_short_timeout_with_task():
     master = get_agent()
     if not master._running:
         master.start()
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
     for i in range(40):
         if master._agent.get_connection_count() >= 1:
             break

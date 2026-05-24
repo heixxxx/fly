@@ -12,12 +12,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '../../../bazel-bin/src/core/export'))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                '../../../bazel-bin/src/test/export'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..'))
 
 import _fly_log as log
 from fly import open_db, as_task, task_name, get_agent
 from fly.runtime import reset
 from task.task import _serialize_args
+from e2e_tasks import write_data
 
 
 def test_database_get_obj_name():
@@ -39,26 +42,29 @@ def test_serialize_args():
 
 
 def test_master_submit():
+    # Ensure cwd is project root so worker subprocess can find build artifacts
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..'))
+    original_cwd = os.getcwd()
+    os.chdir(project_root)
+
     if os.path.exists("test_fly_api_logs"):
         shutil.rmtree("test_fly_api_logs")
-    
+
     log.init_log("test_fly_api_logs", 0)
 
     try:
         master = get_agent()
-        master.launch_local_workers([{"role": "hybrid"}], mode="thread")
-        print(f"  Master started on auto-assigned port: {master.port}")
+        master.launch_local_workers([{"role": "hybrid"}])
 
-        print(f"  connected_workers: {master._agent.get_connected_workers()}")
-        print(f"  idle_workers: {master._agent.get_idle_workers()}")
-        print(f"  connection_count: {master._agent.get_connection_count()}")
+        # Wait for worker to connect
+        for i in range(20):
+            if master._agent.get_connection_count() >= 1:
+                break
+            time.sleep(0.5)
+        assert master._agent.get_connection_count() >= 1, "Worker failed to connect"
 
-        @as_task()
-        @task_name("simple_task")
-        def simple_task():
-            pass
-
-        simple_task()
+        db = open_db("/tmp/fly_api_test_db3")
+        write_data(db, "test_key", "test_value")
 
         for i in range(10):
             pending = master.pending_tasks
@@ -73,6 +79,7 @@ def test_master_submit():
         assert len(completed) >= 1, f"Expected 1+ completed, got {completed}"
         print("PASS: test_master_submit")
     finally:
+        os.chdir(original_cwd)
         master.stop()
         log.shutdown_log()
         shutil.rmtree("test_fly_api_logs", ignore_errors=True)

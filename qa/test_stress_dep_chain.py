@@ -41,7 +41,7 @@ def test_dependency_chain():
     if not master._running:
         master.start()
 
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
 
     assert wait_for(lambda: master._agent.get_connection_count() >= 1), \
         "Worker should connect"

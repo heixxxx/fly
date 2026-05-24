@@ -41,7 +41,7 @@ def test_freeze_reject_stress():
     if not master._running:
         master.start()
 
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
 
     assert wait_for(lambda: master._agent.get_connection_count() >= 1), \
         f"Worker should connect, got {master._agent.get_connection_count()}"

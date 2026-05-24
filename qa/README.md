@@ -59,7 +59,7 @@ def test_<feature>():
     if not master._running:
         master.start()
 
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
     for i in range(40):
         if master._agent.get_connection_count() >= 1:
             break
@@ -122,20 +122,19 @@ assert result.returncode == 0, f"Failed: {result.stderr}"
 
 ## 3. 必须遵循的原则
 
-### Worker 模式：必须使用 `mode="process"`
+### Worker 模式
+
+`launch_local_workers` 始终使用进程模式启动 Worker：
 
 ```python
-# ✅ 正确
-master.launch_local_workers([{}], mode="process")
-
-# ❌ 错误 — QA 测试必须使用进程模式
-master.launch_local_workers([{}], mode="thread")
+# Worker 进程通过 subprocess.Popen 启动 fly --worker 子进程
+master.launch_local_workers([{}])
 ```
 
-**原因**：
-- Process 模式模拟真实分布式场景（独立进程、独立内存空间）
-- Thread 模式共享 DataService 单例，掩盖单例状态泄漏等 bug
-- Worker 进程通过 `subprocess.Popen` 启动 `fly --worker` 子进程
+**架构**：
+- Worker 是独立进程，拥有独立的 DataService 单例和内存空间
+- Worker 进程通过 TCP 连接 Master，实现真正的进程隔离
+- 生产环境与测试环境使用完全一致的通信方式
 
 ### 不要在测试脚本中定义 `@as_task()` 函数
 

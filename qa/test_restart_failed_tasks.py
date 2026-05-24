@@ -56,7 +56,7 @@ def test_restart_failed_tasks_lifecycle():
     if not master._running:
         master.start()
 
-    master.launch_local_workers([{}], mode="process")
+    master.launch_local_workers([{}])
     assert wait_for(lambda: master._agent.get_connection_count() >= 1), \
         "Worker 1 should connect"
 
@@ -112,7 +112,7 @@ def test_restart_failed_tasks_lifecycle():
 
     # ── Phase 3: Launch gpu worker, restart ──
 
-    master.launch_local_workers([{"attributes": ["gpu"]}], mode="process")
+    master.launch_local_workers([{"attributes": ["gpu"]}])
     assert wait_for(lambda: master._agent.get_connection_count() >= 2), \
         "Phase 3: gpu worker should connect"
 

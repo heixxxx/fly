@@ -47,7 +47,7 @@ def setup_three_workers():
         {"attributes": ["alpha"]},
         {"attributes": ["beta"]},
         {"attributes": ["gamma"]},
-    ], mode="process")
+    ])
     for i in range(40):
         if master._agent.get_connection_count() >= 3:
             break
