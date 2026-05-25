@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <agent/cpp/master_agent.h>
+#include <agent/cpp/worker_agent.h>
 #include <common/cpp/test_helpers.h>
 #include <thread>
 #include <chrono>
@@ -78,6 +79,7 @@ TEST(MasterAgentTest, MultipleStartStop) {
 #include <storage/cpp/local_index.h>
 #include <common/cpp/worker_context.h>
 #include <storage/cpp/db_meta.h>
+#include <log/cpp/logger.h>
 #include <filesystem>
 #include <fstream>
 #include <fmt/format.h>
@@ -667,6 +669,336 @@ TEST(MasterAgentTest, RebuildRemoteIdx_PartialHostCoverage) {
     EXPECT_FALSE(DataService::instance().has_remote_location(full_off));
 
     DataService::instance().remove_remote_index(full_avail);
+}
+
+// --- Task failure rescheduling tests ---
+
+TEST(MasterAgentTest, OnTaskFailedRecordsErrorAndUpdatesStatus) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // Submit two tasks with unsatisfied inputs so they stay in the graph
+    master.submit_task(100, "task_a", "test_module", {"arg1"}, {"missing_input_1"}, {});
+    master.submit_task(101, "task_b", "test_module", {"arg2"}, {"missing_input_2"}, {});
+
+    // Tasks should exist (either pending or failed)
+    auto failed = master.get_failed_tasks();
+    auto pending = master.get_pending_tasks();
+    EXPECT_GE(failed.size() + pending.size(), 2u);
+
+    master.stop();
+    wait_for_running(master, false);
+}
+
+TEST(MasterAgentTest, StopDuringActiveCommunication) {
+    // Regression test for bd1e5df: MasterAgent::stop() accessed conn_to_worker_ maps
+    // while reactor thread still active, causing segfault.
+    // Fix: stop reactor before accessing maps.
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // Stop master while worker is connected — should not segfault
+    master.stop();
+    wait_for_running(master, false);
+
+    worker.stop();
+
+    // Cleanup
+    fly::DataService::instance().stop_transfer_server();
+}
+
+TEST(MasterAgentTest, DoubleStopNoCrash) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    master.stop();
+    wait_for_running(master, false);
+
+    // Double stop — should be safe
+    EXPECT_NO_THROW(master.stop());
+    EXPECT_FALSE(master.is_running());
+}
+
+TEST(MasterAgentTest, StopBeforeStartNoCrash) {
+    MasterAgent master("127.0.0.1", 0);
+    EXPECT_NO_THROW(master.stop());
+}
+
+TEST(MasterAgentTest, OnDisconnectRecoversRunningTasks) {
+    Logger::shutdown();
+    Logger::init("test_logs/", 0);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    master.submit_task(42, "recovery_task", "test_module", {"arg1"}, {}, {});
+
+    auto running = master.get_running_tasks();
+    bool task_is_running = false;
+    for (auto id : running) {
+        if (id == 42) { task_is_running = true; break; }
+    }
+
+    if (!task_is_running) {
+        wait_for([&]{
+            auto r = master.get_running_tasks();
+            for (auto id : r) { if (id == 42) return true; }
+            return false;
+        }, 50, 20);
+        running = master.get_running_tasks();
+        for (auto id : running) {
+            if (id == 42) { task_is_running = true; break; }
+        }
+    }
+
+    ASSERT_TRUE(task_is_running) << "Task 42 must reach RUNNING for disconnect recovery test";
+
+    worker.stop();
+
+    wait_for([&]{
+        auto r = master.get_running_tasks();
+        bool found = false;
+        for (auto id : r) { if (id == 42) { found = true; break; } }
+        return !found;
+    }, 100, 30);
+
+    auto running_after = master.get_running_tasks();
+    bool still_running = false;
+    for (auto id : running_after) {
+        if (id == 42) { still_running = true; break; }
+    }
+    EXPECT_FALSE(still_running) << "Task 42 should no longer be RUNNING after worker disconnect";
+
+    auto failed = master.get_failed_tasks();
+    bool task_failed = false;
+    for (auto id : failed) {
+        if (id == 42) { task_failed = true; break; }
+    }
+    EXPECT_FALSE(task_failed) << "Task 42 should not be FAILED after worker disconnect";
+
+    master.stop();
+    wait_for_running(master, false);
+    Logger::shutdown();
+}
+
+// --- register_database + is_db_frozen ---
+
+TEST(MasterAgentTest, RegisterDatabaseAndIsFrozen) {
+    TempDir tmpdir;
+    CMString db_id = db32("test_db_reg_freeze");
+
+    MasterAgent master("127.0.0.1", 0);
+    master.register_database(db_id, tmpdir.path());
+
+    // Not frozen initially
+    EXPECT_FALSE(master.is_db_frozen(db_id));
+
+    // Unknown db is also not frozen
+    EXPECT_FALSE(master.is_db_frozen(db32("unknown_db_freeze")));
+
+    // Freeze via network: start master, connect worker, send freeze request
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(501, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    worker.request_database_freeze(db_id);
+
+    // Wait for master to process the freeze
+    wait_for([&] { return master.is_db_frozen(db_id); }, 50, 20);
+    EXPECT_TRUE(master.is_db_frozen(db_id));
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// --- get_or_create_database ---
+
+TEST(MasterAgentTest, GetOrCreateDatabase) {
+    TempDir tmpdir1;
+    TempDir tmpdir2;
+
+    MasterAgent master("127.0.0.1", 0);
+
+    auto db = master.get_or_create_database(tmpdir1.path());
+    ASSERT_NE(db, nullptr);
+
+    CMString db_id = db->get_db_id();
+    EXPECT_EQ(db_id.size(), 32u);
+    EXPECT_FALSE(db->get_writer_id().empty());
+    EXPECT_EQ(db->get_base_path(), tmpdir1.path());
+
+    auto db2 = master.get_or_create_database(tmpdir2.path());
+    ASSERT_NE(db2, nullptr);
+    EXPECT_EQ(db2->get_db_id().size(), 32u);
+    EXPECT_NE(db->get_db_id(), db2->get_db_id());
+
+    DataService::instance().unregister_database(db->get_db_id());
+    DataService::instance().unregister_database(db2->get_db_id());
+}
+
+// --- get_task_error ---
+
+TEST(MasterAgentTest, GetTaskError) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // Submit task with impossible capability requirement
+    // fail_unscheduleable_tasks=1 by default → task fails immediately
+    master.submit_task(300, "impossible_task", "test_mod", {"arg"}, {}, {}, {"nonexistent_cap_xyz"});
+
+    // Wait for task to fail
+    wait_for([&] {
+        auto failed = master.get_failed_tasks();
+        for (auto id : failed) { if (id == 300) return true; }
+        return false;
+    }, 50, 20);
+
+    CMString error = master.get_task_error(300);
+    EXPECT_FALSE(error.empty());
+    EXPECT_NE(error.find("required capabilities"), CMString::npos);
+
+    // Non-existent task returns empty string
+    EXPECT_TRUE(master.get_task_error(99999).empty());
+
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// --- get_idle_workers ---
+
+TEST(MasterAgentTest, GetIdleWorkers) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // No workers connected → empty idle list
+    auto idle = master.get_idle_workers();
+    EXPECT_TRUE(idle.empty());
+
+    // Connect a worker
+    WorkerAgent worker(502, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // Wait for worker to appear in idle list
+    wait_for([&] {
+        auto iw = master.get_idle_workers();
+        for (auto id : iw) { if (id == 502) return true; }
+        return false;
+    }, 50, 20);
+
+    idle = master.get_idle_workers();
+    bool found = false;
+    for (auto id : idle) { if (id == 502) { found = true; break; } }
+    EXPECT_TRUE(found);
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// --- get_connected_workers ---
+
+TEST(MasterAgentTest, GetConnectedWorkers) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // No connections initially
+    EXPECT_TRUE(master.get_connected_workers().empty());
+
+    WorkerAgent worker(503, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    auto connected = master.get_connected_workers();
+    bool found = false;
+    for (auto id : connected) { if (id == 503) { found = true; break; } }
+    EXPECT_TRUE(found);
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// --- get_connection_count ---
+
+TEST(MasterAgentTest, GetConnectionCount) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    EXPECT_EQ(master.get_connection_count(), 0u);
+
+    WorkerAgent worker1(510, "127.0.0.1", master.get_port());
+    worker1.start();
+    ASSERT_TRUE(wait_until_registered(worker1));
+
+    wait_for([&] { return master.get_connection_count() >= 1u; }, 50, 20);
+    EXPECT_EQ(master.get_connection_count(), 1u);
+
+    WorkerAgent worker2(511, "127.0.0.1", master.get_port());
+    worker2.start();
+    ASSERT_TRUE(wait_until_registered(worker2));
+
+    wait_for([&] { return master.get_connection_count() >= 2u; }, 50, 20);
+    EXPECT_EQ(master.get_connection_count(), 2u);
+
+    worker1.stop();
+    worker2.stop();
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// --- add_worker_hostname + get_worker_hostnames ---
+
+TEST(MasterAgentTest, AddWorkerHostnameAndGetHostnames) {
+    MasterAgent master("127.0.0.1", 0);
+
+    // Empty initially
+    EXPECT_TRUE(master.get_worker_hostnames().empty());
+
+    master.add_worker_hostname(600, "host_alpha");
+    master.add_worker_hostname(601, "host_beta");
+
+    auto hostnames = master.get_worker_hostnames();
+    ASSERT_EQ(hostnames.size(), 2u);
+
+    // Build a map for easier lookup
+    CMMap<uint64_t, CMString> hostname_map;
+    for (const auto& [wid, hname] : hostnames) {
+        hostname_map[wid] = hname;
+    }
+
+    EXPECT_EQ(hostname_map[600], "host_alpha");
+    EXPECT_EQ(hostname_map[601], "host_beta");
+
+    // Overwrite existing hostname
+    master.add_worker_hostname(600, "host_gamma");
+    hostnames = master.get_worker_hostnames();
+    hostname_map.clear();
+    for (const auto& [wid, hname] : hostnames) {
+        hostname_map[wid] = hname;
+    }
+    EXPECT_EQ(hostname_map[600], "host_gamma");
+    EXPECT_EQ(hostname_map[601], "host_beta");
 }
 
 }  // namespace fly

@@ -482,4 +482,43 @@ TEST_F(DatabaseTest, AppendWorkerInfoIdempotent) {
     EXPECT_EQ(meta.workers[1].hostname, "dup_host");
 }
 
+TEST_F(DatabaseTest, FreezeDuringInFlightWrite) {
+    CMString base_path = test_dir_ + "/freeze_inflight";
+    Database db(base_path);
+
+    // Write object but do NOT drain — data is in WBQ
+    db.write_object("inflight/obj", "inflight_data", false);
+
+    // Freeze while write is in-flight (WBQ hasn't flushed yet)
+    // freeze() calls drain_write_back() internally, so data gets persisted
+    db.freeze();
+    EXPECT_TRUE(db.is_frozen());
+
+    // Data should be readable — freeze() drains the WBQ before freezing
+    CMString result = db.read_object("inflight/obj");
+    EXPECT_EQ(result, "inflight_data");
+
+    // Subsequent writes should be rejected
+    EXPECT_THROW(db.write_object("after/freeze", "data2", false), std::runtime_error);
+}
+
+TEST_F(DatabaseTest, DoubleFreezeIsIdempotent) {
+    CMString base_path = test_dir_ + "/double_freeze";
+    Database db(base_path);
+
+    db.write_object("before/freeze", "data", false);
+    fly::DataService::instance().drain_write_back();
+
+    db.freeze();
+    EXPECT_TRUE(db.is_frozen());
+
+    EXPECT_NO_THROW(db.freeze());
+    EXPECT_TRUE(db.is_frozen());
+
+    std::ifstream ifs(base_path + "/_FROZEN");
+    EXPECT_TRUE(ifs.good());
+
+    EXPECT_THROW(db.write_object("after/freeze", "data2", false), std::runtime_error);
+}
+
 }

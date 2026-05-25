@@ -403,4 +403,117 @@ TEST_F(DataServiceTest, RestoreEntriesFromLocalIndexFile) {
     }
 }
 
+TEST_F(DataServiceTest, ShortNameWithColonsHandledCorrectly) {
+    CMString db_id = db32("colon_test");
+    CMString full = db_id + ":obj/with:colons:inside";
+
+    IndexEntry entry;
+    entry.object_name = full;
+    entry.file_name = "test.dat";
+    entry.offset = 0;
+    entry.size = 5;
+    entry.is_large = false;
+    entry.block_count = 0;
+    entry.compression_type = 0;
+
+    ds_.on_object_written(db_id, full, entry);
+    ds_.on_flush(db_id);
+
+    EXPECT_TRUE(ds_.has_local_object(full));
+}
+
+TEST_F(DataServiceTest, DbIdExactly32Chars) {
+    CMString db_id(32, 'a');
+    CMString full = db_id + ":my_obj";
+
+    IndexEntry entry;
+    entry.object_name = full;
+    entry.file_name = "test.dat";
+    entry.offset = 0;
+    entry.size = 5;
+    entry.is_large = false;
+    entry.block_count = 0;
+    entry.compression_type = 0;
+
+    ds_.on_object_written(db_id, full, entry);
+    ds_.on_flush(db_id);
+
+    EXPECT_TRUE(ds_.has_local_object(full));
+}
+
+TEST_F(DataServiceTest, ShortFullNameTreatedAsNoDbId) {
+    CMString short_name = "short_obj_name";
+
+    IndexEntry entry;
+    entry.object_name = short_name;
+    entry.file_name = "test.dat";
+    entry.offset = 0;
+    entry.size = 5;
+    entry.is_large = false;
+    entry.block_count = 0;
+    entry.compression_type = 0;
+
+    ds_.on_object_written("", short_name, entry);
+    ds_.on_flush("");
+
+    EXPECT_TRUE(ds_.has_local_object(short_name));
+}
+
+TEST_F(DataServiceTest, RemoveIndexByShortName) {
+    CMString db_id = db32("remove_short");
+    CMString full = db_id + ":remove_target";
+
+    IndexEntry entry;
+    entry.object_name = full;
+    entry.file_name = "test.dat";
+    entry.offset = 0;
+    entry.size = 5;
+    entry.is_large = false;
+    entry.block_count = 0;
+    entry.compression_type = 0;
+
+    ds_.on_object_written(db_id, full, entry);
+    ds_.on_flush(db_id);
+    EXPECT_TRUE(ds_.has_local_object(full));
+
+    ds_.remove_local_index(full);
+    EXPECT_FALSE(ds_.has_local_object(full));
+}
+
+TEST_F(DataServiceTest, FlushOnlyAffectsTargetDb) {
+    CMString db_a = db32("flush_db_a");
+    CMString db_b = db32("flush_db_b");
+    CMString full_a = db_a + ":obj_a";
+    CMString full_b = db_b + ":obj_b";
+
+    IndexEntry ea;
+    ea.object_name = full_a;
+    ea.file_name = "test.dat";
+    ea.offset = 0;
+    ea.size = 5;
+    ea.is_large = false;
+    ea.block_count = 0;
+    ea.compression_type = 0;
+
+    IndexEntry eb;
+    eb.object_name = full_b;
+    eb.file_name = "test.dat";
+    eb.offset = 0;
+    eb.size = 5;
+    eb.is_large = false;
+    eb.block_count = 0;
+    eb.compression_type = 0;
+
+    ds_.on_object_written(db_a, full_a, ea);
+    ds_.on_object_written(db_b, full_b, eb);
+
+    ds_.on_flush(db_a);
+
+    EXPECT_TRUE(ds_.has_local_object(full_a));
+    EXPECT_FALSE(ds_.has_local_object(full_b));
+
+    ds_.on_flush(db_b);
+    EXPECT_TRUE(ds_.has_local_object(full_b));
+}
+
 }

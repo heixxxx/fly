@@ -234,6 +234,53 @@ TEST(WorkerAgentTest, GetWorkerPropertiesReturnsCopy) {
     EXPECT_EQ(props2.size(), 2u);
 }
 
+TEST(WorkerAgentTest, DoubleStopNoCrash) {
+    // Explicit stop() followed by destructor stop() — should not crash
+    // This was fixed in bd1e5df: early return guard `if (!running_ && !reactor_) return;`
+    {
+        WorkerAgent worker(1, "127.0.0.1", 0);
+        worker.start();
+        wait_for_running(worker, true);
+        EXPECT_TRUE(worker.is_running());
+
+        worker.stop();
+        wait_for_running(worker, false);
+        EXPECT_FALSE(worker.is_running());
+        // Destructor calls stop() again when scope exits — must not crash
+    }
+    // If we reach here, destructor double-stop succeeded
+}
+
+TEST(WorkerAgentTest, StopBeforeStartNoCrash) {
+    // Calling stop() without start() — should be safe
+    WorkerAgent worker(1, "127.0.0.1", 0);
+    EXPECT_NO_THROW(worker.stop());
+}
+
+TEST(WorkerAgentTest, GetDatabaseUnknownReturnsNull) {
+    WorkerAgent worker(1, "127.0.0.1", 0);
+    CMString unknown = db32("nonexistent_db");
+    EXPECT_EQ(worker.get_database(unknown), nullptr);
+}
+
+TEST(WorkerAgentTest, RequestDatabaseFreezeNotRegistered) {
+    // Worker not started → registered_ is false → request_database_freeze returns early
+    WorkerAgent worker(1, "127.0.0.1", 0);
+    CMString db_id = db32("no_reg_db");
+    EXPECT_NO_THROW(worker.request_database_freeze(db_id));
+}
+
+TEST(WorkerAgentTest, SubmitTaskStartedNotRegistered) {
+    // Start worker without master → reactor_ exists but not registered
+    // submit_task sends on a failed connection — should not crash
+    WorkerAgent worker(1, "127.0.0.1", 0);
+    worker.start();
+    wait_for_running(worker, true);
+    EXPECT_NO_THROW(worker.submit_task("test_task", "test_module", {}, {}));
+    worker.stop();
+    wait_for_running(worker, false);
+}
+
 }  // namespace fly
 
 #include <storage/cpp/data_service.h>
@@ -495,6 +542,300 @@ TEST_F(IdxLoadTest, WorkerLoadsMultipleEntriesPerIdx) {
     ds_.unregister_database(db_id);
     ds_.remove_local_index(full_a);
     ds_.remove_local_index(full_b);
+}
+
+TEST_F(IdxLoadTest, OnRemoveCommandExtractsShortName) {
+    CMString db_id = db32("remove_cmd_test");
+    CMString full = db_id + ":target_obj";
+    CMString base_path = test_dir_ + "/remove_cmd_db";
+    std::filesystem::create_directories(base_path);
+
+    auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_id);
+    db->write_object("target_obj", "remove_test_data", false);
+    fly::DataService::instance().drain_write_back();
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.register_database(db_id, db);
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    IndexEntry entry;
+    entry.object_name = full;
+    entry.file_name = "data_0.bin";
+    entry.offset = 0;
+    entry.size = 100;
+    entry.is_large = false;
+    entry.block_count = 0;
+    entry.compression_type = 0;
+    ds_.on_object_written(db_id, full, entry);
+    ds_.on_flush(db_id);
+    ASSERT_TRUE(ds_.has_local_object(full));
+
+    ds_.update_remote_idx(full, 1, "127.0.0.1", master.get_data_server_port());
+
+    worker.request_object_remove(db_id, "target_obj");
+
+    EXPECT_FALSE(ds_.has_local_object(full));
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+
+    ds_.unregister_database(db_id);
+}
+
+TEST(WorkerAgentTest, RegisterAndGetDatabase) {
+    WorkerAgent worker(1, "127.0.0.1", 0);
+    CMString db_id = db32("reg_db");
+    CMString base_path = make_temp_dir("reg_db");
+    auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_id);
+    worker.register_database(db_id, db);
+
+    auto retrieved = worker.get_database(db_id);
+    ASSERT_NE(retrieved, nullptr);
+    EXPECT_EQ(retrieved->get_db_id(), db_id);
+
+    EXPECT_EQ(worker.get_database(db32("unknown")), nullptr);
+
+    std::filesystem::remove_all(base_path);
+}
+
+TEST(WorkerAgentTest, RegisterDatabaseOverwritesExisting) {
+    WorkerAgent worker(1, "127.0.0.1", 0);
+    CMString db_id = db32("over_db");
+    CMString base1 = make_temp_dir("over1");
+    CMString base2 = make_temp_dir("over2");
+
+    auto db1 = CMMakeShared<Database>(base1, base1 + "/data", 0, "", db_id);
+    auto db2 = CMMakeShared<Database>(base2, base2 + "/data", 0, "", db_id);
+
+    worker.register_database(db_id, db1);
+    EXPECT_EQ(worker.get_database(db_id), db1);
+
+    worker.register_database(db_id, db2);
+    EXPECT_EQ(worker.get_database(db_id), db2);
+
+    std::filesystem::remove_all(base1);
+    std::filesystem::remove_all(base2);
+}
+
+TEST_F(IdxLoadTest, OnDbPathResponseSuccess) {
+    CMString db_id = db32("pathresp_ok");
+    CMString base_path = test_dir_ + "/pathresp_db";
+    std::filesystem::create_directories(base_path);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.register_database(db_id, base_path, base_path + "/data");
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    bool result = false;
+    std::thread t([&] { result = worker.request_db_path(db_id); });
+    t.join();
+
+    EXPECT_TRUE(result);
+    EXPECT_NE(worker.get_database(db_id), nullptr);
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+}
+
+TEST_F(IdxLoadTest, OnDbPathResponseFailure) {
+    CMString unknown_db = db32("pathresp_fail");
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    bool result = true;
+    std::thread t([&] { result = worker.request_db_path(unknown_db); });
+    t.join();
+
+    EXPECT_FALSE(result);
+    EXPECT_EQ(worker.get_database(unknown_db), nullptr);
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+}
+
+TEST_F(IdxLoadTest, OnDatabaseFreezeNotification) {
+    CMString db_id = db32("freeze_ntf");
+    CMString base_path = test_dir_ + "/freeze_ntf_db";
+    std::filesystem::create_directories(base_path);
+
+    auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_id);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.register_database(db_id, db);
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    worker.request_database_freeze(db_id);
+    wait_for([&] { return db->is_frozen(); }, 50, 20);
+    EXPECT_TRUE(db->is_frozen());
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+}
+
+TEST_F(IdxLoadTest, OnDatabaseFreezeNotificationAlreadyFrozen) {
+    CMString db_id = db32("freeze_twice");
+    CMString base_path = test_dir_ + "/freeze2_db";
+    std::filesystem::create_directories(base_path);
+
+    auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_id);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.register_database(db_id, db);
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    worker.request_database_freeze(db_id);
+    wait_for([&] { return db->is_frozen(); }, 50, 20);
+    ASSERT_TRUE(db->is_frozen());
+
+    worker.request_database_freeze(db_id);
+    wait_for([&] { return true; }, 5, 20);
+    EXPECT_TRUE(db->is_frozen());
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+}
+
+TEST_F(IdxLoadTest, OnObjectRemovedHandler) {
+    CMString db_id = db32("objrm_hdl");
+    CMString full = db_id + ":target_obj";
+
+    IndexEntry entry;
+    entry.object_name = full;
+    entry.file_name = "data_0.bin";
+    entry.offset = 0;
+    entry.size = 100;
+    entry.is_large = false;
+    entry.block_count = 0;
+    entry.compression_type = 0;
+
+    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_.on_object_written(db_id, full, entry);
+    ds_.on_flush(db_id);
+    ASSERT_TRUE(ds_.has_local_object(full));
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    master.broadcast_object_removed(db_id, "target_obj");
+    wait_for([&] { return !ds_.has_local_object(full); }, 50, 20);
+    EXPECT_FALSE(ds_.has_local_object(full));
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+
+    ds_.unregister_database(db_id);
+}
+
+TEST_F(IdxLoadTest, OnShutdownViaMasterStop) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    master.stop();
+    wait_for([&] { return !worker.is_running(); }, 50, 20);
+    EXPECT_FALSE(worker.is_running());
+}
+
+TEST_F(IdxLoadTest, OnWriteRegisterAckSuccess) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    CMString db_id = db32("writereg_ok");
+    bool no_throw = false;
+    std::thread t([&] {
+        try {
+            worker.register_write_with_master(db_id, "obj1");
+            no_throw = true;
+        } catch (...) {
+            no_throw = false;
+        }
+    });
+    t.join();
+
+    EXPECT_TRUE(no_throw);
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+}
+
+TEST_F(IdxLoadTest, OnWriteRegisterAckFailure) {
+    CMString db_id = db32("writereg_fail");
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    worker.request_database_freeze(db_id);
+    wait_for([&] { return true; }, 5, 20);
+
+    bool got_expected_error = false;
+    std::thread t([&] {
+        try {
+            worker.register_write_with_master(db_id, "obj_fail");
+        } catch (const WriteRegistrationError&) {
+            got_expected_error = true;
+        } catch (...) {
+            got_expected_error = false;
+        }
+    });
+    t.join();
+
+    EXPECT_TRUE(got_expected_error);
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
 }
 
 }  // namespace fly

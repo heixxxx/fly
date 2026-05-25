@@ -208,16 +208,18 @@ void MasterAgent::stop() {
             heartbeat_check_thread_.join();
         }
 
+        // Broadcast shutdown to Workers BEFORE stopping reactor,
+        // so Workers receive the message and can exit gracefully.
+        for (const auto& [worker_id, conn_id] : worker_to_conn_) {
+            INFO("Broadcasting shutdown to worker_id={}", worker_id);
+            reactor_->send(conn_id, ShutdownMessage{});
+        }
+
         ds().stop_transfer_server();
 
         reactor_->stop();
         if (reactor_thread_.joinable()) {
             reactor_thread_.join();
-        }
-
-        for (const auto& [worker_id, conn_id] : worker_to_conn_) {
-            INFO("Broadcasting shutdown to worker_id={}", worker_id);
-            reactor_->send(conn_id, ShutdownMessage{});
         }
 
         reactor_.reset();

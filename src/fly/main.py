@@ -77,9 +77,10 @@ def _run_worker():
     while agent._agent.is_running():
         agent._agent.poll_task()
         time.sleep(0.05)
-    while agent._agent.is_running():
-        agent._agent.poll_task()
-        time.sleep(0.05)
+    INFO("Worker poll loop exited, running cleanup")
+
+    agent.stop()
+    INFO("Worker agent stopped")
 
 
 def _run_master():

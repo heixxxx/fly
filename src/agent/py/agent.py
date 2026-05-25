@@ -121,16 +121,24 @@ class Master(FlyAgent):
             f"{num_workers} workers launched")
 
     def stop(self):
-        for proc in self._worker_procs:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
+        # First stop the C++ Master agent so it sends ShutdownMessage to Workers.
+        # Workers need graceful exit to flush gcov coverage data.
         if self._running:
             self._agent.stop()
             self._running = False
+
+        # Wait for Workers to exit gracefully (they received ShutdownMessage).
+        # This ensures atexit/__gcov_exit runs in Worker processes.
+        for proc in self._worker_procs:
+            if proc.poll() is None:
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
         self._worker_procs.clear()
 
     @property
@@ -299,9 +307,17 @@ class Master(FlyAgent):
         if attrs_str:
             cmd.extend(["--worker-attributes", attrs_str])
 
+        env = os.environ.copy()
+        gcov_prefix = os.environ.get("GCOV_PREFIX", "")
+        if gcov_prefix:
+            worker_cov_dir = gcov_prefix + f"/worker_{worker_id}"
+            os.makedirs(worker_cov_dir, exist_ok=True)
+            env["GCOV_PREFIX"] = worker_cov_dir
+
         log_file = open(log_path, "a")
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
-                                stdout=log_file, stderr=log_file)
+                                stdout=log_file, stderr=log_file,
+                                env=env)
         self._worker_procs.append(proc)
         time.sleep(0.1)
 
@@ -351,6 +367,7 @@ class Worker(FlyAgent):
         self._master_port = master_port
         self._worker_id = worker_id
         self._executor = None
+        self._worker_procs = []
 
     def start(self):
         self._executor = EXTaskExecutor()
@@ -375,8 +392,25 @@ class Worker(FlyAgent):
             self._executor.clear_exec_func()
             self._executor = None
         self._db_cache.clear()
-        self._agent.stop()
-        self._agent = None
+
+        # Stop C++ MasterAgent first — it sends ShutdownMessage to Workers
+        # so they can exit gracefully and flush gcov coverage data.
+        if self._agent is not None:
+            self._agent.stop()
+            self._agent = None
+
+        # Wait for Workers to exit gracefully (received ShutdownMessage).
+        for proc in self._worker_procs:
+            if proc.poll() is None:
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+        self._worker_procs.clear()
 
     def set_worker_property(self, prop):
         props = self._ensure_list(prop)

@@ -293,4 +293,52 @@ TEST_F(LocalIndexTest, LoadLegacyFormat) {
     EXPECT_EQ(b->size, 200);
 }
 
+TEST_F(LocalIndexTest, ConcurrentAddRemoveSave) {
+    CMString idx_path = make_idx_path("concurrent");
+
+    LocalIndex index(idx_path);
+
+    // Pre-populate with 50 entries
+    for (int i = 0; i < 50; i++) {
+        index.add_entry({"obj_" + std::to_string(i), "data.dat", i * 10, 10, false, 0});
+    }
+    index.save();
+
+    std::atomic<bool> done{false};
+
+    // Thread A: add entries 50-99 and save
+    std::thread adder([&] {
+        for (int i = 50; i < 100 && !done.load(); i++) {
+            index.add_entry({"obj_" + std::to_string(i), "data.dat", i * 10, 10, false, 0});
+        }
+        index.save();
+    });
+
+    // Thread B: remove entries 0-25 and save
+    std::thread remover([&] {
+        for (int i = 0; i < 25 && !done.load(); i++) {
+            index.remove_entry("obj_" + std::to_string(i));
+        }
+        index.save();
+    });
+
+    // Thread C: read entry count repeatedly
+    std::thread reader([&] {
+        for (int i = 0; i < 100 && !done.load(); i++) {
+            index.entry_count();
+            index.find_entry("obj_0");
+        }
+    });
+
+    adder.join();
+    remover.join();
+    done = true;
+    reader.join();
+
+    // Verify final state is consistent: 50 pre + up to 50 added - up to 25 removed
+    int64_t count = index.entry_count();
+    EXPECT_GE(count, 25);  // At least 50-25=25 original + 0 added (worst case timing)
+    EXPECT_LE(count, 100); // At most all entries
+}
+
 }

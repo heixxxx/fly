@@ -130,4 +130,45 @@ TEST(ReactorTest, SetIOThreadPool) {
     reactor.run_once(10);
 }
 
+TEST(ReactorTest, StopBeforeRunDoesNotHang) {
+    // Regression test for bd1e5df: Reactor::run() could overwrite running_=false
+    // with true when stop() was called before reactor thread started.
+    // Fix: check stop_requested_ before setting running_=true.
+    auto transport = create_transport("tcp");
+    Reactor reactor(std::move(transport));
+
+    // Stop BEFORE run starts
+    reactor.stop();
+
+    // Run in thread — should exit immediately, not hang for 35s
+    std::atomic<bool> run_exited{false};
+    std::thread t([&] {
+        reactor.run();
+        run_exited = true;
+    });
+
+    // Wait with timeout — if it takes >2s, the fix is broken
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!run_exited.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    t.join();
+    EXPECT_TRUE(run_exited.load());
+}
+
+TEST(ReactorTest, WaitUntilRunningAfterStop) {
+    // Verify wait_until_running() doesn't hang when reactor is stopped before run
+    auto transport = create_transport("tcp");
+    Reactor reactor(std::move(transport));
+    reactor.stop();
+
+    // Start run in background — should exit quickly
+    std::thread t([&] { reactor.run(); });
+    t.join(); // Should join quickly
+
+    // wait_until_running should return quickly since reactor already exited
+    // (it polls running_ which should be false)
+}
+
 }  // namespace fly

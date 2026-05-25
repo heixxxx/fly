@@ -37,7 +37,6 @@ WorkerAgent::~WorkerAgent() {
 void WorkerAgent::start() {
     if (running_) return;
 
-    INFO("WorkerAgent start() called, connecting to {}:{}", master_host_, master_port_);
 
     auto transport = create_transport("tcp");
 
@@ -183,6 +182,7 @@ void WorkerAgent::stop() {
 
     running_ = false;
     registered_ = false;
+
 }
 
 bool WorkerAgent::is_running() const {
@@ -205,8 +205,8 @@ void WorkerAgent::submit_task(const CMString& name, const CMString& module,
                                const CMVector<CMString>& args,
                                const CMVector<CMString>& inputs,
                                const CMVector<CMString>& required_capabilities) {
-    TaskSubmitMessage msg;
-    msg.task_name = name;
+     TaskSubmitMessage msg;
+     msg.task_name = name;
     msg.task_module = module;
     msg.args = args;
     msg.inputs = inputs;
@@ -253,7 +253,6 @@ void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
 }
 
 void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
-    INFO("TaskAssign received: task_id={}", msg.task_id);
     touch_master_contact();
 
     PendingTask task;
@@ -319,7 +318,6 @@ bool WorkerAgent::poll_task() {
 }
 
 void WorkerAgent::on_shutdown(const ShutdownMessage& msg) {
-    INFO("Shutdown received");
 
     initiate_shutdown("master shutdown message");
 }
@@ -338,7 +336,6 @@ void WorkerAgent::touch_master_contact() {
 }
 
 void WorkerAgent::initiate_shutdown(const CMString& reason) {
-    INFO("Initiating shutdown: {}", reason);
 
     registered_ = false;
     running_ = false;
@@ -350,8 +347,6 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
 }
 
 void WorkerAgent::on_db_path_response(const DbPathResponseMessage& msg) {
-    INFO("DbPathResponse received: db_id={}, base_path={}, data_path={}, success={}",
-         msg.db_id, msg.base_path, msg.data_path, msg.success);
     touch_master_contact();
 
     std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
@@ -375,8 +370,8 @@ void WorkerAgent::begin_task(uint64_t task_id) {
 }
 
 void WorkerAgent::record_write(const CMString& db_id, const CMString& object_name) {
-    CMString full_name = db_id + ":" + object_name;
-    current_writes_.push_back(full_name);
+     CMString full_name = db_id + ":" + object_name;
+     current_writes_.push_back(full_name);
 
     if (registered_ && Config::instance().get_int("dependency_update_mode") == 0) {
         DataReadyMessage msg;
@@ -433,13 +428,12 @@ void WorkerAgent::request_database_freeze(const CMString& db_id) {
 }
 
 void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
-    INFO("DataRequest enqueued for object: {}", msg.object_name);
 
     ds().submit_transfer(conn_id, msg.object_name);
 }
 
 ReadResult WorkerAgent::request_remote_data(const CMString& object_name) {
-    auto location = MetadataClient::query_data_location(
+     auto location = MetadataClient::query_data_location(
         master_host_, master_port_, object_name);
 
     if (!location.found) {
@@ -466,7 +460,6 @@ ReadResult WorkerAgent::request_remote_data(const CMString& object_name) {
 
 ReadResult WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,
                                                    const CMString& object_name) {
-    INFO("Direct DataClient request to {}:{} for {}", host, port, object_name);
 
     auto [success, data, error] = DataClient::request_data(host, port, object_name);
 
@@ -576,8 +569,6 @@ void WorkerAgent::register_write_with_master(const CMString& db_id, const CMStri
 
 void WorkerAgent::on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg) {
     touch_master_contact();
-    CMString err_suffix = msg.error_message.empty() ? "" : ", error=" + msg.error_message;
-    INFO("WriteRegisterAck: object={}, success={}{}", msg.object_name, msg.success, err_suffix);
 
     std::lock_guard<std::mutex> lock(pending_write_reg_mutex_);
     auto it = pending_write_regs_.find(msg.object_name);
