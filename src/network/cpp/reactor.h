@@ -32,6 +32,7 @@ public:
     void run_once(int timeout_ms = 100);
     void stop();
     void wait_until_running() const;
+    bool is_running() const { return running_.load(); }
     
     int get_bound_port() const { return transport_->get_bound_port(); }
     
@@ -43,6 +44,7 @@ public:
     }
     
     void set_io_pool(CMSharedPtr<IOThreadPool> pool);
+    CMSharedPtr<IOThreadPool> get_io_pool() const { return io_pool_; }
 
 private:
     CMUniquePtr<TransportLayer> transport_;

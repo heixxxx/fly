@@ -1,6 +1,7 @@
 import os
 import sys
 import code
+import signal
 from _fly_log import DBG, ERR, INFO, WARN
 
 def init():
@@ -103,6 +104,11 @@ def _run_master():
 
 
 def run():
+    def _sigterm_handler(sig, frame):
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
     try:
         from fly.runtime import _config_is_worker_mode
         if _config_is_worker_mode():
@@ -110,6 +116,7 @@ def run():
         else:
             _run_master()
     except SystemExit:
+        _cleanup()
         raise
     except KeyboardInterrupt:
         print("", file=sys.stderr)

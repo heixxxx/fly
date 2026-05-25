@@ -43,6 +43,10 @@ MasterAgent::~MasterAgent() {
 void MasterAgent::start() {
     if (running_) return;
 
+    draining_ = false;
+    shutdown_requested_ = false;
+    fatal_error_ = false;
+
     INFO("MasterAgent start() called, listening on {}:{}", host_, port_);
 
     auto transport = create_transport("tcp");
@@ -172,7 +176,9 @@ void MasterAgent::start() {
     heartbeat_check_running_ = true;
     heartbeat_check_thread_ = std::thread([this] { heartbeat_check_loop(); });
 
-    reactor_thread_ = std::thread([this] { reactor_->run(); });
+    reactor_thread_ = std::thread([this] {
+        reactor_->run();
+    });
     reactor_->wait_until_running();
     running_ = true;
 
@@ -195,44 +201,78 @@ void MasterAgent::start() {
         });
     reactor_->set_io_pool(dsInst.get_transfer_pool());
 
+    sigterm_received_ = false;
+
     INFO("MasterAgent started, reactor thread running");
 }
 
 void MasterAgent::stop() {
-    INFO("MasterAgent stop() called");
+    if (draining_.exchange(true)) return;
+    if (!running_) {
+        do_drain_and_stop();
+        return;
+    }
 
-    if (running_) {
-        heartbeat_check_running_ = false;
-        heartbeat_check_cv_.notify_all();
-        if (heartbeat_check_thread_.joinable()) {
-            heartbeat_check_thread_.join();
-        }
+    INFO("MasterAgent stop() called, entering drain phase");
 
-        // Broadcast shutdown to Workers BEFORE stopping reactor,
-        // so Workers receive the message and can exit gracefully.
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
         for (const auto& [worker_id, conn_id] : worker_to_conn_) {
             INFO("Broadcasting shutdown to worker_id={}", worker_id);
             reactor_->send(conn_id, ShutdownMessage{});
         }
+    }
 
+    {
+        std::unique_lock<std::mutex> lock(drain_mutex_);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (true) {
+            auto running_tasks = metadata_->get_tasks_by_status(TaskStatus::RUNNING);
+            if (running_tasks.empty()) break;
+            if (drain_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
+                WARN("Shutdown drain timeout (10s), {} tasks still running",
+                     running_tasks.size());
+                break;
+            }
+        }
+    }
+
+    persist_pending_tasks();
+    do_drain_and_stop();
+}
+
+void MasterAgent::do_drain_and_stop() {
+    INFO("MasterAgent performing full cleanup");
+
+    shutdown_requested_ = true;
+
+    if (heartbeat_check_thread_.joinable()) {
+        heartbeat_check_running_ = false;
+        heartbeat_check_cv_.notify_all();
+        heartbeat_check_thread_.join();
+    }
+
+    if (reactor_) {
         ds().stop_transfer_server();
 
         reactor_->stop();
         if (reactor_thread_.joinable()) {
             reactor_thread_.join();
         }
-
         reactor_.reset();
+    }
 
-        db_instances_.clear();
+    db_instances_.clear();
 
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
         conn_to_worker_.clear();
         worker_to_conn_.clear();
-        task_modules_.clear();
-        task_args_.clear();
-
-        running_ = false;
     }
+    task_modules_.clear();
+    task_args_.clear();
+
+    running_ = false;
 }
 
 bool MasterAgent::is_running() const {
@@ -256,6 +296,8 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
 }
 
 void MasterAgent::schedule_tasks() {
+    if (draining_.load()) return;
+
     std::lock_guard<std::mutex> lock(schedule_mutex_);
     auto results = scheduler_->schedule_all_available();
 
@@ -341,13 +383,16 @@ void MasterAgent::schedule_tasks() {
 void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
     INFO("assign_task: task={} to worker={}", task_id, worker_id);
 
-    auto conn_it = worker_to_conn_.find(worker_id);
-    if (conn_it == worker_to_conn_.end()) {
-        ERR("worker not found: {}", worker_id);
-        return;
+    uint64_t conn_id;
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        auto conn_it = worker_to_conn_.find(worker_id);
+        if (conn_it == worker_to_conn_.end()) {
+            ERR("worker not found: {}", worker_id);
+            return;
+        }
+        conn_id = conn_it->second;
     }
-
-    uint64_t conn_id = conn_it->second;
 
     TaskAssignMessage msg;
     msg.task_id = task_id;
@@ -370,7 +415,7 @@ void MasterAgent::heartbeat_check_loop() {
                                           [this]{ return !heartbeat_check_running_.load(); });
         }
 
-        if (running_) {
+        if (running_ && !draining_.load()) {
             auto now = std::chrono::system_clock::now().time_since_epoch();
             auto timestamp = std::chrono::duration_cast<std::chrono::seconds>(now).count();
 
@@ -380,6 +425,7 @@ void MasterAgent::heartbeat_check_loop() {
             for (uint64_t worker_id : dead) {
                 WARN("worker timeout: {}", worker_id);
 
+                std::lock_guard<std::mutex> lk(workers_mutex_);
                 auto conn_it = worker_to_conn_.find(worker_id);
                 if (conn_it != worker_to_conn_.end()) {
                     ShutdownMessage shutdown;
@@ -393,8 +439,11 @@ void MasterAgent::heartbeat_check_loop() {
 void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& msg) {
     uint64_t worker_id = msg.worker_id;
 
-    conn_to_worker_[conn_id] = worker_id;
-    worker_to_conn_[worker_id] = conn_id;
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        conn_to_worker_[conn_id] = worker_id;
+        worker_to_conn_[worker_id] = conn_id;
+    }
 
     worker_to_hostname_[worker_id] = msg.hostname;
     worker_to_ip_[worker_id] = msg.ip_address;
@@ -515,8 +564,11 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
 
         DatabaseFreezeNotification freeze_msg;
         freeze_msg.db_id = db_id;
-        for (const auto& [wid, cid] : worker_to_conn_) {
-            reactor_->send(cid, freeze_msg);
+        {
+            std::lock_guard<std::mutex> lk(workers_mutex_);
+            for (const auto& [wid, cid] : worker_to_conn_) {
+                reactor_->send(cid, freeze_msg);
+            }
         }
     }
 
@@ -524,6 +576,7 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
     task_args_.erase(msg.task_id);
 
     schedule_tasks();
+    notify_drain_if_active();
 }
 
 void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg) {
@@ -542,28 +595,32 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
         msg.error_type == TaskErrorType::WRITE_REGISTRATION_FAILED ||
         msg.error_type == TaskErrorType::WRITE_REGISTRATION_TIMEOUT) {
         fatal_error_ = true;
-        int error_type_val = static_cast<int>(msg.error_type);
-        ERR("FATAL: unrecoverable write error (type={}): {}", error_type_val, msg.error_message);
-
-        ShutdownMessage shutdown_msg;
-        for (const auto& [wid, cid] : worker_to_conn_) {
-            reactor_->send(cid, shutdown_msg);
-        }
+        ERR("FATAL: unrecoverable write error (type={}) for task_id={}: {}",
+            static_cast<int>(msg.error_type), msg.task_id, msg.error_message);
     }
 
     schedule_tasks();
+    notify_drain_if_active();
 }
 
 void MasterAgent::on_disconnect(uint64_t conn_id) {
-    auto it = conn_to_worker_.find(conn_id);
-    if (it != conn_to_worker_.end()) {
-        uint64_t worker_id = it->second;
-        conn_to_worker_.erase(conn_id);
-        worker_to_conn_.erase(worker_id);
-        worker_manager_->update_worker_status(worker_id, WorkerStatus::DEAD);
+    uint64_t worker_id = 0;
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        auto it = conn_to_worker_.find(conn_id);
+        if (it != conn_to_worker_.end()) {
+            worker_id = it->second;
+            conn_to_worker_.erase(conn_id);
+            worker_to_conn_.erase(worker_id);
+        }
+    }
+    if (worker_id == 0) return;
 
-        WARN("Worker disconnected: worker_id={}", worker_id);
+    worker_manager_->update_worker_status(worker_id, WorkerStatus::DEAD);
 
+    WARN("Worker disconnected: worker_id={}", worker_id);
+
+    if (!draining_.load()) {
         auto running_tasks = metadata_->get_tasks_by_status(TaskStatus::RUNNING);
         CMVector<uint64_t> tasks_to_recover;
         for (const auto& task : running_tasks) {
@@ -596,6 +653,7 @@ void MasterAgent::on_error(uint64_t conn_id, int error_code) {
 
 CMVector<uint64_t> MasterAgent::get_connected_workers() const {
     CMVector<uint64_t> workers;
+    std::lock_guard<std::mutex> lk(workers_mutex_);
     for (const auto& [conn, worker] : conn_to_worker_) {
         workers.push_back(worker);
     }
@@ -615,6 +673,7 @@ void MasterAgent::add_worker_hostname(uint64_t worker_id, const CMString& hostna
 }
 
 size_t MasterAgent::get_connection_count() const {
+    std::lock_guard<std::mutex> lk(workers_mutex_);
     return conn_to_worker_.size();
 }
 
@@ -730,9 +789,12 @@ void MasterAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage
     ds().remove_remote_index(msg.object_name);
 
     ObjectRemovedMessage broadcast_msg = msg;
-    for (const auto& [worker_id, worker_conn_id] : worker_to_conn_) {
-        if (worker_conn_id != conn_id) {
-            reactor_->send(worker_conn_id, broadcast_msg);
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        for (const auto& [worker_id, worker_conn_id] : worker_to_conn_) {
+            if (worker_conn_id != conn_id) {
+                reactor_->send(worker_conn_id, broadcast_msg);
+            }
         }
     }
 }
@@ -746,8 +808,11 @@ void MasterAgent::broadcast_object_removed(const CMString& db_id, const CMString
     msg.object_name = full;
     msg.db_id = db_id;
 
-    for (const auto& [worker_id, conn_id] : worker_to_conn_) {
-        reactor_->send(conn_id, msg);
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        for (const auto& [worker_id, conn_id] : worker_to_conn_) {
+            reactor_->send(conn_id, msg);
+        }
     }
 }
 
@@ -759,14 +824,20 @@ void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage
     auto worker_ids = ds().get_remote_workers(msg.object_name);
 
     for (auto wid : worker_ids) {
-        auto it = worker_to_conn_.find(wid);
-        if (it != worker_to_conn_.end()) {
-            RemoveCommandMessage cmd;
-            cmd.db_id = msg.db_id;
-            cmd.object_name = msg.object_name;
-            reactor_->send(it->second, cmd);
-            INFO("RemoveCommand sent to worker_id={}: object={}", wid, msg.object_name);
+        uint64_t worker_conn_id = 0;
+        {
+            std::lock_guard<std::mutex> lk(workers_mutex_);
+            auto it = worker_to_conn_.find(wid);
+            if (it != worker_to_conn_.end()) {
+                worker_conn_id = it->second;
+            }
         }
+        if (worker_conn_id == 0) continue;
+        RemoveCommandMessage cmd;
+        cmd.db_id = msg.db_id;
+        cmd.object_name = msg.object_name;
+        reactor_->send(worker_conn_id, cmd);
+        INFO("RemoveCommand sent to worker_id={}: object={}", wid, msg.object_name);
     }
 
     ds().remove_remote_location(msg.object_name);
@@ -1009,10 +1080,13 @@ void MasterAgent::send_idx_load_commands(const CMString& db_id,
     msg.base_path = base_path;
     msg.writer_ids = writer_ids;
 
-    for (const auto& [worker_id, conn_id] : worker_to_conn_) {
-        reactor_->send(conn_id, msg);
-        INFO("Sent IdxLoadCommand to worker_id={}: db_id={}, writer_ids_count={}",
-             worker_id, db_id, writer_ids.size());
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        for (const auto& [worker_id, conn_id] : worker_to_conn_) {
+            reactor_->send(conn_id, msg);
+            INFO("Sent IdxLoadCommand to worker_id={}: db_id={}, writer_ids_count={}",
+                 worker_id, db_id, writer_ids.size());
+        }
     }
 }
 
@@ -1086,8 +1160,11 @@ void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFre
     }
 
     DatabaseFreezeNotification broadcast_msg = msg;
-    for (const auto& [wid, cid] : worker_to_conn_) {
-        reactor_->send(cid, broadcast_msg);
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        for (const auto& [wid, cid] : worker_to_conn_) {
+            reactor_->send(cid, broadcast_msg);
+        }
     }
 
     INFO("DB frozen and broadcasted: db_id={}", msg.db_id);
@@ -1109,9 +1186,75 @@ void MasterAgent::on_master_freeze(const CMString& db_id) {
 
     DatabaseFreezeNotification msg;
     msg.db_id = db_id;
-    for (const auto& [wid, cid] : worker_to_conn_) {
-        reactor_->send(cid, msg);
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        for (const auto& [wid, cid] : worker_to_conn_) {
+            reactor_->send(cid, msg);
+        }
     }
+}
+
+std::atomic<bool> MasterAgent::sigterm_received_{false};
+
+void MasterAgent::sigterm_handler(int sig) {
+    sigterm_received_ = true;
+}
+
+void MasterAgent::check_shutdown_request() {
+    if ((sigterm_received_.load() || fatal_error_.load()) && !draining_.load()) {
+        if (!shutdown_requested_.exchange(true)) {
+            draining_ = true;
+            INFO("Shutdown requested (fatal_error={}, sigterm={}), triggering drain",
+                 fatal_error_.load(), sigterm_received_.load());
+
+            {
+                std::lock_guard<std::mutex> lk(workers_mutex_);
+                for (const auto& [wid, cid] : worker_to_conn_) {
+                    reactor_->send(cid, ShutdownMessage{});
+                }
+            }
+
+            drain_thread_ = std::thread([this] {
+                persist_pending_tasks();
+                do_drain_and_stop();
+            });
+            drain_thread_.detach();
+        }
+    }
+}
+
+void MasterAgent::notify_drain_if_active() {
+    if (draining_.load()) {
+        drain_cv_.notify_one();
+    }
+}
+
+void MasterAgent::persist_pending_tasks() {
+    auto pending = metadata_->get_tasks_by_status(TaskStatus::PENDING);
+    if (pending.empty()) return;
+
+    INFO("Persisting {} pending tasks on shutdown", pending.size());
+    for (const auto& task : pending) {
+        auto record = build_failed_record(task.task_id);
+        record.error_message = "Master shutdown: task still pending";
+        persist_failed_task(record);
+    }
+}
+
+FailedTaskRecord MasterAgent::build_failed_record(uint64_t task_id) {
+    FailedTaskRecord record;
+    record.task_id = task_id;
+    auto* meta = metadata_->get_task(task_id);
+    if (meta) {
+        record.name = meta->name;
+        record.module = task_modules_.count(task_id) ? task_modules_[task_id] : "";
+        record.args = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
+        record.inputs = meta->inputs;
+        record.outputs = meta->outputs;
+        record.required_capabilities = meta->required_capabilities;
+        record.error_message = meta->error_message;
+    }
+    return record;
 }
 
 }  // namespace fly

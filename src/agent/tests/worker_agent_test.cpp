@@ -838,4 +838,26 @@ TEST_F(IdxLoadTest, OnWriteRegisterAckFailure) {
     wait_for_running(master, false);
 }
 
+TEST_F(IdxLoadTest, InitiateShutdownFromOnDisconnect_ThenStop_CleansUp) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+    EXPECT_TRUE(worker.is_running());
+
+    master.stop();
+    wait_for_running(master, false);
+
+    wait_for([&] { return !worker.is_running(); }, 50, 20);
+
+    worker.stop();
+
+    EXPECT_FALSE(worker.is_running());
+
+    fly::DataService::instance().stop_transfer_server();
+}
+
 }  // namespace fly

@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <thread>
 #include <atomic>
+#include <signal.h>
 #include <map>
 #include <set>
 #include <memory>
@@ -102,9 +103,16 @@ private:
     int32_t data_server_port_ = 0;
     std::atomic<bool> running_{false};
 
+    std::atomic<bool> draining_{false};
+    std::atomic<bool> shutdown_requested_{false};
+    std::mutex drain_mutex_;
+    std::condition_variable drain_cv_;
+    std::thread drain_thread_;
+
     CMUniquePtr<Reactor> reactor_;
     std::thread reactor_thread_;
 
+    mutable std::mutex workers_mutex_;
     CMMap<uint64_t, uint64_t> conn_to_worker_;
     CMMap<uint64_t, uint64_t> worker_to_conn_;
 
@@ -169,6 +177,15 @@ private:
     CMMap<uint64_t, CMString> worker_to_ip_;
     CMString master_hostname_;
     CMSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
+
+    static std::atomic<bool> sigterm_received_;
+    static void sigterm_handler(int sig);
+
+    void check_shutdown_request();
+    void do_drain_and_stop();
+    void persist_pending_tasks();
+    FailedTaskRecord build_failed_record(uint64_t task_id);
+    void notify_drain_if_active();
 };
 
 }  // namespace fly

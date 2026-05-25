@@ -459,8 +459,21 @@ void DataService::stop_transfer_server() {
     transfer_running_ = false;
     if (transfer_pool_) {
         transfer_pool_->stop();
+        transfer_pool_.reset();
     }
     transfer_callback_ = nullptr;
+}
+
+void DataService::reset() {
+    stop_transfer_server();
+    drain_write_back();
+    stop_write_back();
+    local_idx_.clear();
+    remote_idx_.clear();
+    worker_registry_.clear();
+    db_paths_.clear();
+    remote_read_handler_ = nullptr;
+    direct_read_handler_ = nullptr;
 }
 
 bool DataService::is_transfer_server_running() const {

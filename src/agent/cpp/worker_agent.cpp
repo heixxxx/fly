@@ -37,6 +37,8 @@ WorkerAgent::~WorkerAgent() {
 void WorkerAgent::start() {
     if (running_) return;
 
+    shutdown_triggered_ = false;
+
 
     auto transport = create_transport("tcp");
 
@@ -160,17 +162,17 @@ void WorkerAgent::start() {
 }
 
 void WorkerAgent::stop() {
-    if (!running_ && !reactor_) return;
+    if (!reactor_ && !running_) return;
 
-    heartbeat_running_ = false;
-    heartbeat_cv_.notify_all();
+    initiate_shutdown("stop() called");
+    do_cleanup();
+}
+
+void WorkerAgent::do_cleanup() {
     if (heartbeat_thread_.joinable()) {
         heartbeat_thread_.join();
     }
 
-    if (reactor_) {
-        reactor_->stop();
-    }
     if (reactor_thread_.joinable()) {
         reactor_thread_.join();
     }
@@ -182,7 +184,6 @@ void WorkerAgent::stop() {
 
     running_ = false;
     registered_ = false;
-
 }
 
 bool WorkerAgent::is_running() const {
@@ -336,6 +337,9 @@ void WorkerAgent::touch_master_contact() {
 }
 
 void WorkerAgent::initiate_shutdown(const CMString& reason) {
+    if (shutdown_triggered_.exchange(true)) return;
+
+    WARN("Worker shutdown initiated: {}", reason);
 
     registered_ = false;
     running_ = false;

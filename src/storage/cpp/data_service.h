@@ -122,6 +122,8 @@ public:
     void submit_transfer(uint64_t conn_id, const CMString& object_name);
     CMSharedPtr<IOThreadPool> get_transfer_pool() const;
 
+    void reset();
+
     void start_write_back();
     void stop_write_back();
     void enqueue_write_back(fly::WriteRequest&& task);

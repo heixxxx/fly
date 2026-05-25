@@ -98,6 +98,7 @@ private:
     mutable std::mutex attributes_mutex_;
     std::atomic<bool> running_{false};
     std::atomic<bool> registered_{false};
+    std::atomic<bool> shutdown_triggered_{false};
     
     CMUniquePtr<Reactor> reactor_;
     std::thread reactor_thread_;
@@ -158,6 +159,7 @@ private:
     void heartbeat_loop();
     void touch_master_contact();
     void initiate_shutdown(const CMString& reason);
+    void do_cleanup();
 
     DataService* data_service_ = nullptr;
 

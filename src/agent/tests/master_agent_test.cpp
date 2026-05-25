@@ -2,6 +2,8 @@
 #include <agent/cpp/master_agent.h>
 #include <agent/cpp/worker_agent.h>
 #include <common/cpp/test_helpers.h>
+#include <core/cpp/config.h>
+#include <serialization/cpp/serialization_macros.h>
 #include <thread>
 #include <chrono>
 
@@ -692,6 +694,7 @@ TEST(MasterAgentTest, OnTaskFailedRecordsErrorAndUpdatesStatus) {
 }
 
 TEST(MasterAgentTest, StopDuringActiveCommunication) {
+    fly::DataService::instance().reset();
     // Regression test for bd1e5df: MasterAgent::stop() accessed conn_to_worker_ maps
     // while reactor thread still active, causing segfault.
     // Fix: stop reactor before accessing maps.
@@ -734,6 +737,7 @@ TEST(MasterAgentTest, StopBeforeStartNoCrash) {
 TEST(MasterAgentTest, OnDisconnectRecoversRunningTasks) {
     Logger::shutdown();
     Logger::init("test_logs/", 0);
+    fly::DataService::instance().reset();
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -796,6 +800,7 @@ TEST(MasterAgentTest, OnDisconnectRecoversRunningTasks) {
 // --- register_database + is_db_frozen ---
 
 TEST(MasterAgentTest, RegisterDatabaseAndIsFrozen) {
+    fly::DataService::instance().reset();
     TempDir tmpdir;
     CMString db_id = db32("test_db_reg_freeze");
 
@@ -830,6 +835,7 @@ TEST(MasterAgentTest, RegisterDatabaseAndIsFrozen) {
 // --- get_or_create_database ---
 
 TEST(MasterAgentTest, GetOrCreateDatabase) {
+    fly::DataService::instance().reset();
     TempDir tmpdir1;
     TempDir tmpdir2;
 
@@ -855,6 +861,7 @@ TEST(MasterAgentTest, GetOrCreateDatabase) {
 // --- get_task_error ---
 
 TEST(MasterAgentTest, GetTaskError) {
+    fly::DataService::instance().reset();
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
@@ -884,6 +891,7 @@ TEST(MasterAgentTest, GetTaskError) {
 // --- get_idle_workers ---
 
 TEST(MasterAgentTest, GetIdleWorkers) {
+    fly::DataService::instance().reset();
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
@@ -917,6 +925,7 @@ TEST(MasterAgentTest, GetIdleWorkers) {
 // --- get_connected_workers ---
 
 TEST(MasterAgentTest, GetConnectedWorkers) {
+    fly::DataService::instance().reset();
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
@@ -941,6 +950,7 @@ TEST(MasterAgentTest, GetConnectedWorkers) {
 // --- get_connection_count ---
 
 TEST(MasterAgentTest, GetConnectionCount) {
+    fly::DataService::instance().reset();
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
@@ -999,6 +1009,106 @@ TEST(MasterAgentTest, AddWorkerHostnameAndGetHostnames) {
     }
     EXPECT_EQ(hostname_map[600], "host_gamma");
     EXPECT_EQ(hostname_map[601], "host_beta");
+}
+
+// --- Shutdown / Drain tests ---
+
+namespace {
+
+CMVector<FailedTaskRecord> read_failed_records(const CMString& file_path) {
+    CMVector<FailedTaskRecord> result;
+    if (!std::filesystem::exists(file_path)) return result;
+    std::ifstream ifs(file_path, std::ios::binary);
+    if (!ifs) return result;
+    while (true) {
+        int64_t body_size = 0;
+        ifs.read(reinterpret_cast<char*>(&body_size), sizeof(body_size));
+        if (!ifs || body_size <= 0) break;
+        CMString body(body_size, '\0');
+        ifs.read(body.data(), body_size);
+        if (!ifs) break;
+        FailedTaskRecord record;
+        try {
+            FLY_DECODE(body, FailedTaskRecord, record);
+            result.push_back(std::move(record));
+        } catch (...) {}
+    }
+    return result;
+}
+
+}  // anonymous namespace
+
+TEST(MasterAgentTest, StopWithPendingTasks_PersistsThem) {
+    TempDir tmpdir;
+    Config::instance().set_str("log_dir", tmpdir.path());
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    master.submit_task(4001, "pending_task_a", "test_mod", {"arg1"}, {"nonexistent_input_a"}, {});
+    master.submit_task(4002, "pending_task_b", "test_mod", {"arg2"}, {"nonexistent_input_b"}, {});
+
+    wait_for([&] {
+        auto failed = master.get_failed_tasks();
+        auto pending = master.get_pending_tasks();
+        size_t total = 0;
+        for (auto id : failed) { if (id == 4001 || id == 4002) total++; }
+        for (auto id : pending) { if (id == 4001 || id == 4002) total++; }
+        return total >= 2;
+    }, 50, 20);
+
+    master.stop();
+    wait_for_running(master, false);
+
+    CMString file_path = tmpdir.path() + "/failed_tasks.bin";
+    auto records = read_failed_records(file_path);
+    bool found_4001 = false, found_4002 = false;
+    for (const auto& r : records) {
+        if (r.task_id == 4001) found_4001 = true;
+        if (r.task_id == 4002) found_4002 = true;
+    }
+    EXPECT_TRUE(found_4001) << "Task 4001 should be persisted";
+    EXPECT_TRUE(found_4002) << "Task 4002 should be persisted";
+    EXPECT_GE(records.size(), 2u);
+
+    Config::instance().set_str("log_dir", "");
+}
+
+TEST(MasterAgentTest, StopWithNoRunningTasks_DoesNotBlock) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // No workers, no tasks — stop should complete quickly
+    auto start = std::chrono::steady_clock::now();
+    master.stop();
+    wait_for_running(master, false);
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(), 1000);
+}
+
+TEST(MasterAgentTest, StopIsIdempotent) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // First stop
+    master.stop();
+    wait_for_running(master, false);
+    EXPECT_FALSE(master.is_running());
+
+    // Second stop — should not deadlock or crash
+    EXPECT_NO_THROW(master.stop());
+    EXPECT_FALSE(master.is_running());
+}
+
+TEST(MasterAgentTest, StopBeforeStart_CallsDoDrainAndStop) {
+    // Create MasterAgent without start(), call stop() — should not crash
+    MasterAgent master("127.0.0.1", 0);
+    EXPECT_NO_THROW(master.stop());
+    EXPECT_FALSE(master.is_running());
 }
 
 }  // namespace fly

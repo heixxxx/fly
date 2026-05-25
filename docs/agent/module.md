@@ -80,6 +80,9 @@ private:
     uint16_t port_;
     int32_t data_server_port_ = 0;
     std::atomic<bool> running_{false};
+    std::atomic<bool> draining_{false};
+    std::atomic<bool> shutdown_requested_{false};
+    std::atomic<bool> fatal_error_{false};
 
     CMUniquePtr<Reactor> reactor_;
     std::unique_ptr<DependencyGraph> graph_;
@@ -88,6 +91,7 @@ private:
     CMUniquePtr<TaskManager> metadata_;
     CMUniquePtr<HeartbeatMonitor> heartbeat_monitor_;
 
+    std::mutex workers_mutex_;
     CMMap<uint64_t, uint64_t> conn_to_worker_;
     CMMap<uint64_t, uint64_t> worker_to_conn_;
     CMMap<uint64_t, CMString> task_modules_;
@@ -103,6 +107,9 @@ private:
 
     std::thread reactor_thread_;
     std::thread heartbeat_check_thread_;
+    std::thread drain_thread_;
+    std::mutex drain_mutex_;
+    std::condition_variable drain_cv_;
 
     void schedule_tasks();
     void assign_task_to_worker(uint64_t task_id, uint64_t worker_id);
@@ -135,6 +142,7 @@ private:
 **Master 核心映射**:
 
 ```
+workers_mutex_:    mutable mutex             // 保护 conn_to_worker_/worker_to_conn_ 并发访问
 conn_to_worker_:  conn_id → worker_id      // 连接双向映射
 worker_to_conn_:  worker_id → conn_id
 task_modules_:    task_id → module_name
@@ -144,6 +152,10 @@ db_instances_:    db_id → shared_ptr<Database>
 frozen_dbs_:      set<db_id>                // 已冻结 DB 集合
 worker_to_hostname_: worker_id → hostname   // hostname 追踪 (load_db)
 worker_to_ip_:       worker_id → ip_address
+
+draining_:        atomic<bool>              // stop() 后为 true，阻止新调度
+shutdown_requested_: atomic<bool>           // check_shutdown_request() 已触发
+fatal_error_:     atomic<bool>              // 不可恢复写入错误时设为 true
 ```
 
 **Master 启动流程**:
@@ -161,6 +173,7 @@ MasterAgent.start()
 **schedule_tasks**:
 ```
 schedule_tasks()
+  → if draining_: return                      // 关机阶段不调度
   → ready_tasks = graph_->get_ready_tasks()
   → idle_workers = worker_manager_->get_idle_workers()
   → for each ready_task:
@@ -191,8 +204,9 @@ on_task_failed(TaskFailedMessage)
   → worker_manager_->complete_task(worker_id)   // Worker → IDLE
   → metadata_->update_task_status(task_id, FAILED)
   → if WRITE_TO_FROZEN_DB / WRITE_REGISTRATION_FAILED / WRITE_REGISTRATION_TIMEOUT:
-      → fatal_error_ = true, shutdown all Workers
+      → fatal_error_ = true
   → schedule_tasks()                              // 调度剩余任务
+  → notify_drain_if_active()                      // 唤醒 drain_cv_（如有）
 
 on_database_freeze_request(DatabaseFreezeNotification)
   → if frozen_dbs_.count(db_id): return (幂等去重)
@@ -201,7 +215,8 @@ on_database_freeze_request(DatabaseFreezeNotification)
   → broadcast DatabaseFreezeNotification to all Workers
 
 on_disconnect(conn_id)
-  → 从 conn_to_worker_/worker_to_conn_ 移除断连 Worker
+  → 加 workers_mutex_ → 从 conn_to_worker_/worker_to_conn_ 移除断连 Worker
+  → 若 draining_ → 跳过恢复（关机阶段不需要恢复）
   → 恢复该 Worker 的 RUNNING 任务 → PENDING
   → schedule_tasks()
 
@@ -268,6 +283,7 @@ private:
     uint16_t master_port_;
     std::atomic<bool> running_{false};
     std::atomic<bool> registered_{false};
+    std::atomic<bool> shutdown_triggered_{false};
 
     CMUniquePtr<Reactor> reactor_;
     uint64_t master_conn_;
@@ -321,14 +337,15 @@ private:
 **Worker 核心映射**:
 
 ```
-master_conn_:      uint64_t                 // 到 Master 的连接 ID
-data_server_port_: int32_t                  // Data Server 监听端口
-task_queue_:      queue<PendingTask>        // Reactor→Main 传递
-databases_:       db_id → shared_ptr<Database>
-pending_db_paths_: db_id → PendingDbPath    // DB 路径查询状态
+master_conn_:        uint64_t                 // 到 Master 的连接 ID
+data_server_port_:   int32_t                  // Data Server 监听端口
+shutdown_triggered_: atomic<bool>             // initiate_shutdown 幂等守卫
+task_queue_:         queue<PendingTask>        // Reactor→Main 传递
+databases_:          db_id → shared_ptr<Database>
+pending_db_paths_:   db_id → PendingDbPath    // DB 路径查询状态
 pending_write_regs_: object → PendingWriteRegister  // 写入注册状态
-current_task_id_: uint64_t                  // 当前任务
-current_writes_:  vector<string>            // 当前写入记录
+current_task_id_:    uint64_t                  // 当前任务
+current_writes_:     vector<string>            // 当前写入记录
 ```
 
 **Worker 启动流程**:
@@ -569,20 +586,42 @@ WorkerAgent.request_db_path(db_id)
   → 存入 databases_[db_id] → return true
 ```
 
-### 关机流程
+### 优雅关机流程（Graceful Shutdown）
 
 ```
 Master.stop()
-  → ds().stop_transfer_server()
-  → 广播 ShutdownMessage 给所有 worker_to_conn_
-  → heartbeat_check_running_ = false; cv_.notify_all()
-  → heartbeat_check_thread_.join()
-  → reactor_->stop()  → running_ = false
-  → reactor_thread_.join()
+  1. draining_.exchange(true) → 若已 draining 则直接 return（幂等）
+  2. 若 !running_ → do_drain_and_stop() 并 return
+  3. 加 workers_mutex_ → 广播 ShutdownMessage 给所有 worker_to_conn_
+  4. 等待 running tasks 清空（drain_cv_，最多 10s）
+     → on_task_complete/on_task_failed 中 notify_drain_if_active() 唤醒
+     → draining_ 为 true 时 schedule_tasks() 立即返回（不再调度）
+     → 新提交的 task 保持 PENDING 状态（仍可接受）
+  5. persist_pending_tasks() → 将所有 PENDING task 序列化到 failed_tasks.bin
+  6. do_drain_and_stop():
+     → heartbeat_check_running_ = false; heartbeat_check_thread_.join()
+     → ds().stop_transfer_server()
+     → reactor_->stop(); reactor_thread_.join()
+     → 清空所有内部状态
 
-Worker.on_shutdown()
-  → registered_ = false
+Worker.on_shutdown(ShutdownMessage)
+  → initiate_shutdown("received shutdown from master")
+    → shutdown_triggered_.exchange(true)（幂等，仅首次生效）
+    → stop 数据 server
+    → reactor_->stop()
+    → 注册状态置 false
+  → do_cleanup(): reactor_thread_.join(); heartbeat_thread_.join()
+
+Worker.stop()（主动调用）
+  → initiate_shutdown() → do_cleanup()
 ```
+
+**关键设计**:
+- `stop()` 是幂等的：重复调用安全
+- drain 期间仍可接受新 task（PENDING），但不调度
+- drain 超时 10s 后强制退出，未完成的 running task 不会被持久化（视为丢失）
+- pending task 持久化复用 `failed_tasks.bin` 格式，可通过 `restart_failed_tasks()` 恢复
+- `on_disconnect()` 在 draining 时跳过 task 恢复（避免无效恢复）
 
 ### Freeze 流程（fire-and-forget）
 
@@ -623,8 +662,9 @@ Master 本地 freeze (restart_failed_tasks 场景):
 
 ```
 Master.on_disconnect(conn_id):
-  → 从 conn_to_worker_/worker_to_conn_ 移除断连 Worker
-  → worker_manager_->remove_worker(worker_id)
+  → 加 workers_mutex_ → 从 conn_to_worker_/worker_to_conn_ 移除断连 Worker
+  → 若 draining_ → 跳过恢复（关机阶段）
+  → worker_manager_->update_worker_status(worker_id, DEAD)
   → 恢复该 Worker 的 RUNNING 任务:
     → metadata_->get_tasks_by_status(RUNNING)
     → 过滤 assigned_worker_id == dead_worker_id
@@ -716,8 +756,11 @@ FLY_EXPORT_MODULE(_fly_agent) {
 | Master + Worker 共用 Reactor 模式 | 统一事件驱动，handler 无锁 |
 | Worker 单任务约束（IDLE/BUSY/DEAD） | WorkerStatus 枚举支持 DEAD 状态，比 bool is_busy 更强 |
 | C 函数指针 + trampoline 回调 | WorkerAgentContext 不依赖 WorkerAgent 头文件，保持 common 模块独立 |
-| Master fatal error 设 flag 而不调 stop() | 避免 detached thread 调 stop() 崩溃 |
+| workers_mutex_ 保护连接映射 | conn_to_worker_/worker_to_conn_ 被 reactor 线程和主线程并发访问（stop 遍历 + on_disconnect erase） |
+| stop() 幂等 + drain 语义 | 允许重复调用；drain 期间仍接受 task 但不调度，退出时持久化 pending |
+| Master fatal error 设 flag | 供 check_shutdown_request() 检测后触发 drain（当前为 dead code，预留机制） |
 | DataClient 独立 TCP | Worker A 读数据不走主 Reactor，避免多线程读冲突 |
 | 递归任务提交 | Worker 内 task 调用 task → submit_task → Master 调度 |
 | Master liveness tracking | Worker 跟踪 last_master_contact，检测 Master 断连 |
 | register_database 显式注册 | Master 和 Worker 都可注册 DB，支持分布式 Database 实例查找 |
+| SIGTERM 在 Python 层处理 | 避免与 C++ SIGINT/KeyboardInterrupt 冲突，Python 层 catch → SystemExit → cleanup |

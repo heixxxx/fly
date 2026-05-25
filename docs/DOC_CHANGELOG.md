@@ -2,6 +2,25 @@
 
 ---
 
+## 2026-05-25: 优雅关机 + workers_mutex_ 线程安全
+
+| 文档 | 变更 |
+|------|------|
+| docs/agent/module.md | 关机流程重写为"优雅关机（Graceful Shutdown）"：drain 语义、pending task 持久化、stop 幂等；MasterAgent 成员变量新增 draining_/shutdown_requested_/fatal_error_/workers_mutex_/drain_mutex_/drain_cv_/drain_thread_；WorkerAgent 新增 shutdown_triggered_；schedule_tasks 新增 draining early return；on_disconnect 新增 draining 跳过恢复逻辑；设计决策表新增 workers_mutex_/stop 幂等/SIGTERM Python 层处理 |
+| CLAUDE.md | 新增 Agent 工作指南 §7 禁止项：禁止归因为 pre-existing bug、禁止忽略 crash/不稳定性、崩溃与不稳定性零容忍 |
+
+代码变更摘要：
+- `master_agent.h/cpp`: stop() 改为 drain 语义（广播 shutdown → 等待 running tasks → persist pending → cleanup）；schedule_tasks() draining early return；on_task_failed 设 fatal_error_；on_disconnect draining 跳过恢复；新增 workers_mutex_ 保护 conn_to_worker_/worker_to_conn_ 全部并发访问（修复 SIGSEGV）；新增 persist_pending_tasks()、build_failed_record()、notify_drain_if_active()、check_shutdown_request()（dead code）、do_drain_and_stop()
+- `worker_agent.h/cpp`: initiate_shutdown() 幂等（shutdown_triggered_）；stop() → initiate_shutdown() → do_cleanup()
+- `reactor.h`: 新增 is_running()、get_io_pool()
+- `data_service.h/cpp`: stop_transfer_server() 中 reset transfer_pool_；新增 reset() 公共方法
+- `main.py`: SIGTERM handler → SystemExit(0) → cleanup
+- `master_agent_test.cpp`: 4 new tests (StopWithPendingTasks, StopNoRunningTasks, StopIdempotent, StopBeforeStart)
+- `worker_agent_test.cpp`: 1 new test (InitiateShutdownFromOnDisconnect)
+- qa/: 5 new files (test_graceful_shutdown, test_shutdown_broadcast, test_pending_task_persist + 2 helpers)
+
+---
+
 ## 2026-05-25: FlyBuffer 统一 + 流式管线架构重构
 
 | 文档 | 变更 |
