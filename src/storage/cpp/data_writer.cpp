@@ -1,4 +1,5 @@
 #include <storage/cpp/data_writer.h>
+#include <log/cpp/logger.h>
 #include <storage/cpp/compression_utils.h>
 #include <storage/cpp/compressing_streambuf.h>
 #include <storage/cpp/fly_buffer_stream.h>
@@ -71,7 +72,7 @@ DataWriter::~DataWriter() {
 
 CMString DataWriter::write_object(const CMString& object_name, const CMString& data, bool) {
     if (closed_) {
-        throw std::runtime_error("DataWriter is closed");
+        ERR("DataWriter is closed"); return {};
     }
 
     if (static_cast<int64_t>(data.size()) >= large_file_threshold_) {
@@ -88,7 +89,7 @@ CMString DataWriter::write_typed_object(const CMString& object_name, uint64_t or
                                           const CMString& py_name,
                                           const char* data, int64_t data_size) {
     if (closed_) {
-        throw std::runtime_error("DataWriter is closed");
+        ERR("DataWriter is closed"); return {};
     }
 
     if (current_file_size_ + ObjectHeader::fixed_header_size() +
@@ -183,7 +184,7 @@ void DataWriter::write_record(const CMString& object_name,
                                int32_t chunk_count,
                                const FlyBuffer& record) {
     if (closed_) {
-        throw std::runtime_error("DataWriter is closed");
+        ERR("DataWriter is closed"); return;
     }
 
     if (current_file_size_ + static_cast<int64_t>(record.size()) > aggregation_threshold_ && current_file_size_ > 0) {
@@ -258,7 +259,7 @@ void DataWriter::create_new_file() {
     fs::create_directories(write_dir);
     file_stream_.open(file_path, std::ios::binary);
     if (!file_stream_.is_open()) {
-        throw std::runtime_error("Failed to create data file: " + file_path);
+        ERR("Failed to create data file: {}", file_path); return;
     }
 
     current_file_size_ = 0;

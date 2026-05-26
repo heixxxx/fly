@@ -7,6 +7,7 @@
 #include <storage/cpp/db_meta.h>
 #include <common/cpp/worker_context.h>
 #include <common/cpp/common_types.h>
+#include <log/cpp/logger.h>
 #include <memory>
 #include <stdexcept>
 
@@ -24,18 +25,18 @@ public:
     CMString write_object(const CMString& object_name, const T& obj,
                            const CMString& py_name = "") {
         CMString full = full_name(object_name);
-        check_frozen();
+        if (check_frozen()) return {};
 
         FlySerBuf serialized;
         FLY_ENCODE_TO_BYTES(obj, serialized);
 
         fly::DataService::instance().on_write_started(db_id_, full);
 
-        try {
-            fly::WorkerAgentContext::register_write(db_id_, object_name);
-        } catch (const std::exception& e) {
-            fly::DataService::instance().on_write_failed(db_id_, full, e.what());
-            throw;
+        auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
+        if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+            fly::DataService::instance().on_write_failed(db_id_, full, reg_error);
+            ERR("Write registration rejected: {} (type={})", reg_error, static_cast<int>(reg_error_type));
+            return {};
         }
 
         auto record = CMMakeShared<FlyBuffer>();
@@ -79,6 +80,10 @@ public:
     CMSharedPtr<T> read_object(const CMString& object_name) {
         CMString full = full_name(object_name);
         auto result = fly::DataService::instance().read_raw(full);
+        if (result.data_buffer.empty()) {
+            ERR("read_object<T>: empty data for '{}'", full);
+            return nullptr;
+        }
         auto obj = CMMakeShared<T>();
         FLY_DECODE_FROM_BYTES(result.data_buffer, T, *obj);
         return obj;
@@ -122,7 +127,7 @@ public:
     void append_worker_info_to_meta(const WorkerInfo& info);
 
 private:
-    void check_frozen();
+    bool check_frozen();
     void create_frozen_marker();
     CMString generate_db_id();
     void ensure_directory_exists(const CMString& path);

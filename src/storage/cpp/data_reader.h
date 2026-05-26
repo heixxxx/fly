@@ -5,6 +5,7 @@
 #include <serialization/cpp/object_header.h>
 #include <serialization/cpp/serialization_macros.h>
 #include <common/cpp/common_types.h>
+#include <log/cpp/logger.h>
 #include <cstdint>
 #include <fstream>
 #include <memory>
@@ -31,7 +32,8 @@ public:
     CMSharedPtr<T> read_object(const CMString& object_name) {
         IndexEntry* entry = index_->find_entry(object_name);
         if (!entry) {
-            throw std::runtime_error("Object not found: " + object_name);
+            ERR("Object not found: {}", object_name);
+            return nullptr;
         }
         return read_object_entry<T>(*entry);
     }

@@ -18,11 +18,11 @@ DataService& MasterAgent::ds() {
 
 void MasterAgent::set_data_service(DataService* ds) {
     data_service_ = ds;
-    ds->set_remote_read_handler([this](const CMString& name) -> ReadResult {
+    ds->set_remote_read_handler([this](const CMString& name) -> std::pair<bool, ReadResult> {
         return request_remote_data(name);
     });
     ds->set_direct_read_handler([this](const CMString& host, int32_t port,
-                                        const CMString& name) -> ReadResult {
+                                         const CMString& name) -> std::pair<bool, ReadResult> {
         return request_data_from_worker(host, port, name);
     });
 }
@@ -46,6 +46,9 @@ void MasterAgent::start() {
     draining_ = false;
     shutdown_requested_ = false;
     fatal_error_ = false;
+
+    graph_ = CMMakeUnique<DependencyGraph>();
+    worker_manager_ = CMMakeUnique<WorkerManager>();
 
     INFO("MasterAgent start() called, listening on {}:{}", host_, port_);
 
@@ -853,38 +856,38 @@ void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage
     INFO("RemoveRequest completed: object={}, workers_notified={}", msg.object_name, worker_ids.size());
 }
 
-ReadResult MasterAgent::request_remote_data(const CMString& object_name) {
+std::pair<bool, ReadResult> MasterAgent::request_remote_data(const CMString& object_name) {
     ds();
 
     auto info = ds().lookup_remote_idx(object_name);
     if (info.host.empty()) {
-        throw std::runtime_error("No remote location found for: " + object_name);
+        return {false, ReadResult{}};
     }
 
     auto [success, data, error] = DataClient::request_data(info.host, info.port, object_name);
 
     if (!success) {
-        throw std::runtime_error("Data transfer failed for " + object_name + ": " + error);
+        return {false, ReadResult{}};
     }
 
     ReadResult result;
     result.data_buffer.assign(data.begin(), data.end());
-    return result;
+    return {true, std::move(result)};
 }
 
-ReadResult MasterAgent::request_data_from_worker(const CMString& host, int32_t port,
-                                                   const CMString& object_name) {
+std::pair<bool, ReadResult> MasterAgent::request_data_from_worker(const CMString& host, int32_t port,
+                                                                  const CMString& object_name) {
     INFO("Direct DataClient request to {}:{} for {}", host, port, object_name);
 
     auto [success, data, error] = DataClient::request_data(host, port, object_name);
 
     if (!success) {
-        throw std::runtime_error("Direct data request failed for " + object_name + ": " + error);
+        return {false, ReadResult{}};
     }
 
     ReadResult result;
     result.data_buffer.assign(data.begin(), data.end());
-    return result;
+    return {true, std::move(result)};
 }
 
 CMString MasterAgent::get_failed_tasks_file_path() const {
@@ -906,7 +909,8 @@ void append_failed_record(const CMString& file_path, const FailedTaskRecord& rec
 
     std::ofstream ofs(file_path, std::ios::binary | std::ios::app);
     if (!ofs.is_open()) {
-        throw std::runtime_error("Failed to open failed tasks file: " + file_path);
+        ERR("Failed to open failed tasks file: {}", file_path);
+        return;
     }
     ofs.write(reinterpret_cast<const char*>(&body_size), sizeof(body_size));
     ofs.write(body.data(), body.size());
@@ -1012,7 +1016,9 @@ void MasterAgent::restart_failed_tasks(const CMString& file_path) {
 
 void MasterAgent::setup_write_context() {
     WorkerAgentContext::set(&MasterAgent::master_record_write_trampoline, this);
-    WorkerAgentContext::set_register_func(&MasterAgent::master_register_write_trampoline);
+    WorkerAgentContext::set_register_func([this](const CMString& db_id, const CMString& name) -> std::pair<CMString, TaskErrorType> {
+        return on_master_register_write(db_id, name);
+    });
     WorkerAgentContext::set_freeze_func(&MasterAgent::master_freeze_trampoline, this);
 }
 
@@ -1033,12 +1039,8 @@ void MasterAgent::on_master_record_write(const CMString& db_id, const CMString& 
     on_data_ready(0, msg);
 }
 
-void MasterAgent::master_register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
-    static_cast<MasterAgent*>(ctx)->on_master_register_write(db_id, name);
-}
-
-void MasterAgent::on_master_register_write(const CMString& db_id, const CMString& name) {
-    if (!running_.load()) return;
+std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const CMString& db_id, const CMString& name) {
+    if (!running_.load()) return {"", TaskErrorType::UNKNOWN};
     CMString full = db_id + ":" + name;
     graph_->mark_data_ready(full);
 
@@ -1046,6 +1048,7 @@ void MasterAgent::on_master_register_write(const CMString& db_id, const CMString
     ds().update_remote_idx(full, 0, addr.host, addr.port);
 
     schedule_tasks();
+    return {"", TaskErrorType::UNKNOWN};
 }
 
 CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_id,

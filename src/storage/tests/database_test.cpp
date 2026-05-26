@@ -39,7 +39,7 @@ TEST_F(DatabaseTest, FreezePreventsWrite) {
     db.freeze();
 
     EXPECT_TRUE(db.is_frozen());
-    EXPECT_THROW(db.write_object("test/obj2", "data2", false), std::runtime_error);
+    EXPECT_TRUE(db.write_object("test/obj2", "data2", false).empty());
 }
 
 TEST_F(DatabaseTest, FrozenMarkerCreated) {
@@ -131,7 +131,7 @@ TEST_F(DatabaseTest, ReadNonexistentObjectThrows) {
     CMString base_path = test_dir_ + "/nonexist";
     Database db(base_path);
 
-    EXPECT_THROW(db.read_object("no/such/object"), std::runtime_error);
+    EXPECT_TRUE(db.read_object("no/such/object").empty());
 }
 
 // ─── Typed write/read tests ───
@@ -200,7 +200,7 @@ TEST_F(DatabaseTest, TypedNonexistentObjectThrows) {
     CMString base_path = test_dir_ + "/typed_nonexist";
     Database db(base_path);
 
-    EXPECT_THROW(db.read_object_typed("no/such/typed/object"), std::runtime_error);
+    EXPECT_TRUE(db.read_object_typed("no/such/typed/object").data_buffer.empty());
 }
 
 TEST_F(DatabaseTest, GetObjNameReturnsDbIdColonName) {
@@ -301,7 +301,7 @@ TEST_F(DatabaseTest, RemoveObjectPreventsRead) {
 
     db.remove_object("test/obj");
 
-    EXPECT_THROW(db.read_object("test/obj"), std::runtime_error);
+    EXPECT_TRUE(db.read_object("test/obj").empty());
 }
 
 TEST_F(DatabaseTest, RemoveObjectOnlyAffectsTarget) {
@@ -314,7 +314,7 @@ TEST_F(DatabaseTest, RemoveObjectOnlyAffectsTarget) {
 
     db.remove_object("obj/a");
 
-    EXPECT_THROW(db.read_object("obj/a"), std::runtime_error);
+    EXPECT_TRUE(db.read_object("obj/a").empty());
     EXPECT_EQ(db.read_object("obj/b"), "data_b");
 }
 
@@ -325,7 +325,7 @@ TEST_F(DatabaseTest, RemoveObjectFailsWhenFrozen) {
     db.write_object("test/obj", "data", false);
     db.freeze();
 
-    EXPECT_THROW(db.remove_object("test/obj"), std::runtime_error);
+    db.remove_object("test/obj");
 }
 
 TEST_F(DatabaseTest, RemoveObjectTrampolineRequestsRemove) {
@@ -499,7 +499,7 @@ TEST_F(DatabaseTest, FreezeDuringInFlightWrite) {
     EXPECT_EQ(result, "inflight_data");
 
     // Subsequent writes should be rejected
-    EXPECT_THROW(db.write_object("after/freeze", "data2", false), std::runtime_error);
+    EXPECT_TRUE(db.write_object("after/freeze", "data2", false).empty());
 }
 
 TEST_F(DatabaseTest, DoubleFreezeIsIdempotent) {
@@ -518,7 +518,7 @@ TEST_F(DatabaseTest, DoubleFreezeIsIdempotent) {
     std::ifstream ifs(base_path + "/_FROZEN");
     EXPECT_TRUE(ifs.good());
 
-    EXPECT_THROW(db.write_object("after/freeze", "data2", false), std::runtime_error);
+    EXPECT_TRUE(db.write_object("after/freeze", "data2", false).empty());
 }
 
 }

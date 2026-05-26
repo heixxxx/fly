@@ -3,11 +3,12 @@
 #include <common/cpp/common_types.h>
 #include <common/cpp/error_types.h>
 #include <stdexcept>
+#include <utility>
+#include <functional>
 
 namespace fly {
 
 using RecordWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
-using RegisterWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
 using NotifyRemovedFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
 using FreezeFunc = void(*)(void* ctx, const CMString& db_id);
 using RemoveRequestFunc = void(*)(void* ctx, const CMString& db_id, const CMString& object_name);
@@ -64,14 +65,15 @@ public:
         }
     }
 
-    static void set_register_func(RegisterWriteFunc func) {
-        register_func_ = func;
+    static void set_register_func(std::function<std::pair<CMString, TaskErrorType>(const CMString&, const CMString&)> func) {
+        register_func_ = std::move(func);
     }
 
-    static void register_write(const CMString& db_id, const CMString& object_name) {
+    static std::pair<CMString, TaskErrorType> register_write(const CMString& db_id, const CMString& object_name) {
         if (register_func_) {
-            register_func_(ctx_, db_id, object_name);
+            return register_func_(db_id, object_name);
         }
+        return {"", TaskErrorType::UNKNOWN};
     }
 
     static bool is_active() {
@@ -110,7 +112,7 @@ public:
 private:
     static inline thread_local RecordWriteFunc func_ = nullptr;
     static inline thread_local void* ctx_ = nullptr;
-    static inline thread_local RegisterWriteFunc register_func_ = nullptr;
+    static inline thread_local std::function<std::pair<CMString, TaskErrorType>(const CMString&, const CMString&)> register_func_;
     static inline thread_local NotifyRemovedFunc notify_removed_func_ = nullptr;
     static inline thread_local void* notify_removed_ctx_ = nullptr;
     static inline thread_local FreezeFunc freeze_func_ = nullptr;

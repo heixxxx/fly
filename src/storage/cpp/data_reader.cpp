@@ -1,5 +1,6 @@
 #include <storage/cpp/data_reader.h>
 #include <storage/cpp/compression_utils.h>
+#include <log/cpp/logger.h>
 #include <filesystem>
 #include <stdexcept>
 
@@ -28,7 +29,8 @@ DataReader::~DataReader() = default;
 ReadResult DataReader::read_object_data(const CMString& object_name) {
     IndexEntry* entry = index_->find_entry(object_name);
     if (!entry) {
-        throw std::runtime_error("Object not found: " + object_name);
+        ERR("Object not found: {}", object_name);
+        return ReadResult{};
     }
     return read_object_data(*entry);
 }
@@ -107,13 +109,15 @@ CMString DataReader::find_file_path(const CMString& file_name) {
         return base_path_file;
     }
 
-    throw std::runtime_error("Data file not found: " + file_name);
+    ERR("Data file not found: {}", file_name);
+    return {};
 }
 
 CMString DataReader::read_from_file(const CMString& file_path, int64_t offset, int64_t size) {
     std::ifstream ifs(file_path, std::ios::binary);
     if (!ifs.is_open()) {
-        throw std::runtime_error("Failed to open data file: " + file_path);
+        ERR("Failed to open data file: {}", file_path);
+        return {};
     }
 
     ifs.seekg(offset);
@@ -121,7 +125,8 @@ CMString DataReader::read_from_file(const CMString& file_path, int64_t offset, i
     ifs.read(buffer.data(), static_cast<std::streamsize>(size));
 
     if (!ifs) {
-        throw std::runtime_error("Failed to read data from file: " + file_path);
+        ERR("Failed to read data from file: {}", file_path);
+        return {};
     }
 
     return buffer;
@@ -156,7 +161,8 @@ CMString DataReader::read_large_object(const IndexEntry& first_entry) {
     CMString object_name = first_entry.object_name;
     CMVector<IndexEntry>* all_blocks = index_->find_all_entries(object_name);
     if (!all_blocks || all_blocks->empty()) {
-        throw std::runtime_error("No blocks found for large object: " + object_name);
+        ERR("No blocks found for large object: {}", object_name);
+        return {};
     }
 
     CMVector<IndexEntry> blocks = *all_blocks;
@@ -180,7 +186,8 @@ CMString DataReader::read_large_object(const IndexEntry& first_entry) {
 
 ReadResult DataReader::read_from_entries(const CMVector<IndexEntry>& entries) {
     if (entries.empty()) {
-        throw std::runtime_error("No entries to read");
+        ERR("No entries to read");
+        return ReadResult{};
     }
 
     if (entries.size() == 1) {

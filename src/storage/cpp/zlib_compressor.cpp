@@ -1,4 +1,5 @@
 #include <storage/cpp/zlib_compressor.h>
+#include <log/cpp/logger.h>
 #include <zlib.h>
 #include <stdexcept>
 
@@ -27,7 +28,7 @@ CompressedChunk ZlibCompressor::compress(const CMString& input) {
     );
 
     if (result != Z_OK) {
-        throw std::runtime_error("Zlib compression failed: error " + std::to_string(result));
+        ERR("Zlib compression failed: error {}", result); return {};
     }
 
     compressed.resize(dest_len);
@@ -52,7 +53,7 @@ CMString ZlibCompressor::decompress(int32_t uncompressed_size, const CMString& c
     );
 
     if (result != Z_OK) {
-        throw std::runtime_error("Zlib decompression failed: error " + std::to_string(result));
+        ERR("Zlib decompression failed: error {}", result); return {};
     }
 
     return output;

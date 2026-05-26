@@ -1,4 +1,5 @@
 #include <storage/cpp/lz4_compressor.h>
+#include <log/cpp/logger.h>
 #include <lz4.h>
 #include <stdexcept>
 
@@ -16,7 +17,7 @@ CompressedChunk Lz4Compressor::compress(const CMString& input) {
 
     int bound = LZ4_compressBound(static_cast<int>(input.size()));
     if (bound <= 0) {
-        throw std::runtime_error("LZ4_compressBound failed");
+        ERR("LZ4_compressBound failed"); return {};
     }
 
     CMString compressed(static_cast<size_t>(bound), '\0');
@@ -28,7 +29,7 @@ CompressedChunk Lz4Compressor::compress(const CMString& input) {
     );
 
     if (compressed_size <= 0) {
-        throw std::runtime_error("LZ4 compression failed");
+        ERR("LZ4 compression failed"); return {};
     }
 
     compressed.resize(static_cast<size_t>(compressed_size));
@@ -51,7 +52,7 @@ CMString Lz4Compressor::decompress(int32_t uncompressed_size, const CMString& co
     );
 
     if (result < 0) {
-        throw std::runtime_error("LZ4 decompression failed");
+        ERR("LZ4 decompression failed"); return {};
     }
 
     return output;

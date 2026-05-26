@@ -1,4 +1,4 @@
-from fly import as_task
+from fly import as_task, wait_obj
 
 
 @as_task()
@@ -178,3 +178,23 @@ def triple_db_sum(target_db, db_raw, db_feat, key_raw, key_feat, target_key):
     raw_val = db_raw.read_object(key_raw)
     feat_val = db_feat.read_object(key_feat)
     target_db.write_object(target_key, raw_val + feat_val)
+
+
+# ── wait_obj usage: task that internally waits for another task's output ──
+
+@as_task(inputs=lambda db, dep_key, result_key: [])
+def wait_obj_then_process(db, dep_key, result_key):
+    """Task that uses @wait_obj to wait for upstream data, then processes it.
+
+    The dependency is checked AT CALL TIME by @wait_obj (not via task system).
+    This tests the Worker-side @wait_obj scenario.
+    """
+
+    @wait_obj(inputs=lambda d, k: [d.get_obj_name(k)])
+    def wait_for_data(d, k):
+        return d.read_object(k)
+
+    data = wait_for_data(db, dep_key)
+    # After waiting, process and write result
+    processed = f"processed:{data}"
+    db.write_object(result_key, processed)

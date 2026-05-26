@@ -787,18 +787,8 @@ TEST_F(IdxLoadTest, OnWriteRegisterAckSuccess) {
     ASSERT_TRUE(wait_until_registered(worker));
 
     CMString db_id = db32("writereg_ok");
-    bool no_throw = false;
-    std::thread t([&] {
-        try {
-            worker.register_write_with_master(db_id, "obj1");
-            no_throw = true;
-        } catch (...) {
-            no_throw = false;
-        }
-    });
-    t.join();
-
-    EXPECT_TRUE(no_throw);
+    auto [msg, err_type] = worker.register_write_with_master(db_id, "obj1");
+    EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);
 
     worker.stop();
     master.stop();
@@ -819,19 +809,9 @@ TEST_F(IdxLoadTest, OnWriteRegisterAckFailure) {
     worker.request_database_freeze(db_id);
     wait_for([&] { return true; }, 5, 20);
 
-    bool got_expected_error = false;
-    std::thread t([&] {
-        try {
-            worker.register_write_with_master(db_id, "obj_fail");
-        } catch (const WriteRegistrationError&) {
-            got_expected_error = true;
-        } catch (...) {
-            got_expected_error = false;
-        }
-    });
-    t.join();
-
-    EXPECT_TRUE(got_expected_error);
+    auto [msg, err_type] = worker.register_write_with_master(db_id, "obj_fail");
+    EXPECT_NE(err_type, TaskErrorType::UNKNOWN);
+    EXPECT_FALSE(msg.empty());
 
     worker.stop();
     master.stop();

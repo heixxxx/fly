@@ -1,4 +1,5 @@
 #include <storage/cpp/local_index.h>
+#include <log/cpp/logger.h>
 #include <serialization/cpp/serialization_macros.h>
 #include <filesystem>
 
@@ -96,7 +97,7 @@ void LocalIndex::append_add(const CMString& object_name, const CMVector<IndexEnt
 
     std::ofstream ofs(idx_path_, std::ios::binary | std::ios::app);
     if (!ofs.is_open()) {
-        throw std::runtime_error("Failed to open index file: " + idx_path_);
+        ERR("Failed to open index file: {}", idx_path_); return;
     }
 
     int64_t body_size = static_cast<int64_t>(body.size());
@@ -114,7 +115,7 @@ void LocalIndex::append_remove(const CMString& object_name) {
 
     std::ofstream ofs(idx_path_, std::ios::binary | std::ios::app);
     if (!ofs.is_open()) {
-        throw std::runtime_error("Failed to open index file: " + idx_path_);
+        ERR("Failed to open index file: {}", idx_path_); return;
     }
 
     write_header(ofs, IdxOpType::REMOVE, static_cast<int64_t>(body.size()));
@@ -154,7 +155,7 @@ void LocalIndex::save_legacy() {
 
     std::ofstream ofs(idx_path_, std::ios::binary);
     if (!ofs.is_open()) {
-        throw std::runtime_error("Failed to open index file for writing: " + idx_path_);
+        ERR("Failed to open index file for writing: {}", idx_path_); return;
     }
 
     int64_t size = static_cast<int64_t>(bytes.size());
@@ -264,7 +265,7 @@ void LocalIndex::compact() {
         std::lock_guard<std::mutex> lock(mutex_);
         std::ofstream ofs(tmp_path, std::ios::binary);
         if (!ofs.is_open()) {
-            throw std::runtime_error("Failed to create compact file: " + tmp_path);
+            ERR("Failed to create compact file: {}", tmp_path); return;
         }
 
         for (auto& [name, entries] : entries_) {

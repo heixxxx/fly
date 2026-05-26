@@ -50,9 +50,9 @@ class DataService {
 public:
     static DataService& instance();
 
-    using RemoteReadCallback = std::function<ReadResult(const CMString& object_name)>;
-    using DirectReadCallback = std::function<ReadResult(const CMString& host, int32_t port,
-                                                         const CMString& object_name)>;
+    using RemoteReadCallback = std::function<std::pair<bool, ReadResult>(const CMString& object_name)>;
+    using DirectReadCallback = std::function<std::pair<bool, ReadResult>(const CMString& host, int32_t port,
+                                                                           const CMString& object_name)>;
 
     void set_remote_read_handler(RemoteReadCallback cb);
     void set_direct_read_handler(DirectReadCallback cb);
@@ -106,6 +106,8 @@ public:
     RemoteObjectInfo get_worker_address(uint64_t worker_id) const;
 
     std::pair<bool, ReadResult> try_read_local(const CMString& object_name);
+
+    std::pair<bool, ReadResult> try_read_remote(const CMString& object_name);
 
     std::pair<bool, ReadResult> try_read_local_or_wait(const CMString& object_name,
                                                         int timeout_ms = 3000);

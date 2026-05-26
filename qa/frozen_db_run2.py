@@ -23,15 +23,10 @@ def main():
 
     assert db.is_frozen(), "DB should still be frozen after load_db"
 
-    write_raised = False
-    try:
-        db.write_object("should_fail", 1)
-    except Exception as e:
-        write_raised = True
-        print(f"[RUN2] write_object raised as expected: {e}", file=sys.stderr)
-
-    assert write_raised, \
-        "write_object on frozen DB should have raised an exception"
+    result = db.write_object("should_fail", 1)
+    assert not result or result == "", \
+        f"write_object on frozen DB should return empty, got: {result!r}"
+    print(f"[RUN2] write_object on frozen DB returned empty as expected", file=sys.stderr)
 
     assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), \
         "_FROZEN marker should still exist after load_db"

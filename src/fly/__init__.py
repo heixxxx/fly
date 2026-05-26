@@ -14,9 +14,9 @@ except ImportError:
     from core.py import get_config
 
 try:
-    from task.task import as_task, task_name
+    from task.task import as_task, task_name, wait_obj
 except ImportError:
-    from task.py.task import as_task, task_name
+    from task.py.task import as_task, task_name, wait_obj
 
 from fly.runtime import get_agent
 
@@ -69,7 +69,7 @@ def __getattr__(name):
 
 __all__ = [
     'open_db', 'load_db', 'get_config',
-    'as_task', 'task_name',
+    'as_task', 'task_name', 'wait_obj',
     'launch_workers', 'wait_tasks',
     'restart_failed_tasks', 'get_task_error',
     'completed_tasks', 'pending_tasks', 'running_tasks', 'failed_tasks',

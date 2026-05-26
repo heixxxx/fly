@@ -1,4 +1,5 @@
 #include <storage/cpp/compressor.h>
+#include <log/cpp/logger.h>
 #include <storage/cpp/lz4_compressor.h>
 #include <storage/cpp/zlib_compressor.h>
 #include <storage/cpp/zstd_compressor.h>
@@ -41,7 +42,7 @@ CMUniquePtr<Compressor> CompressorFactory::create(CompressionType type) {
         case CompressionType::ZSTD:
             return CMMakeUnique<ZstdCompressor>();
     }
-    throw std::runtime_error("Unknown compression type");
+    ERR("Unknown compression type"); return nullptr;
 }
 
 CMUniquePtr<Compressor> CompressorFactory::create_from_name(const CMString& name) {
@@ -53,7 +54,7 @@ CompressionType CompressorFactory::type_from_name(const CMString& name) {
     if (name == "lz4") return CompressionType::LZ4;
     if (name == "zlib") return CompressionType::ZLIB;
     if (name == "zstd") return CompressionType::ZSTD;
-    throw std::runtime_error("Unknown compression type name: " + name);
+    ERR("Unknown compression type name: {}", name); return CompressionType::NONE;
 }
 
 CMString CompressorFactory::name_from_type(CompressionType type) {

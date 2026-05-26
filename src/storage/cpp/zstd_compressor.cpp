@@ -1,4 +1,5 @@
 #include <storage/cpp/zstd_compressor.h>
+#include <log/cpp/logger.h>
 #include <zstd.h>
 #include <stdexcept>
 
@@ -26,7 +27,7 @@ CompressedChunk ZstdCompressor::compress(const CMString& input) {
     );
 
     if (ZSTD_isError(result)) {
-        throw std::runtime_error("ZSTD compression failed: " + std::string(ZSTD_getErrorName(result)));
+        ERR("ZSTD compression failed: {}", ZSTD_getErrorName(result)); return {};
     }
 
     compressed.resize(result);
@@ -50,7 +51,7 @@ CMString ZstdCompressor::decompress(int32_t uncompressed_size, const CMString& c
     );
 
     if (ZSTD_isError(result)) {
-        throw std::runtime_error("ZSTD decompression failed: " + std::string(ZSTD_getErrorName(result)));
+        ERR("ZSTD decompression failed: {}", ZSTD_getErrorName(result)); return {};
     }
 
     return output;

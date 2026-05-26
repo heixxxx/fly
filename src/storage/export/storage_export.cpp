@@ -121,6 +121,13 @@ FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
     FLY_EXPORT_DEF("has_remote_location", [](fly::DataService& ds, const CMString& name) -> bool {
         return ds.has_remote_location(name);
     })
+    FLY_EXPORT_DEF("try_read_remote", [](fly::DataService& ds, const CMString& name) -> fly_export::tuple {
+        auto [found, result] = ds.try_read_remote(name);
+        return fly_export::make_tuple(
+            found,
+            fly_export::bytes(result.data_buffer.data(), result.data_buffer.size()),
+            result.py_name);
+    })
     FLY_EXPORT_METHOD("drain_write_back", &fly::DataService::drain_write_back)
     FLY_EXPORT_METHOD("stop_write_back", &fly::DataService::stop_write_back)
     FLY_EXPORT_METHOD("stop_transfer_server", &fly::DataService::stop_transfer_server)

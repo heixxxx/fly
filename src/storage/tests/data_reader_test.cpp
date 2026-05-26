@@ -81,7 +81,7 @@ TEST_F(DataReaderWriterTest, ReadNonExistentThrows) {
     CMString base_path = test_dir_ + "/rw_throw";
     DataReader reader(base_path, "", "a1b2c3d4");
 
-    EXPECT_THROW(reader.read_object("nonexistent"), std::runtime_error);
+    EXPECT_TRUE(reader.read_object("nonexistent").empty());
 }
 
 TEST_F(DataReaderWriterTest, ReadFromLocalPathPriority) {

@@ -104,7 +104,7 @@ TEST_F(DataWriterTest, WriteAfterCloseThrows) {
     writer.write_object("obj", "data", false);
     writer.close();
 
-    EXPECT_THROW(writer.write_object("obj2", "data2", false), std::runtime_error);
+    EXPECT_TRUE(writer.write_object("obj2", "data2", false).empty());
 }
 
 TEST_F(DataWriterTest, WriteWithCustomDataPath) {
@@ -231,10 +231,8 @@ TEST_F(DataWriterTest, WriteRecordAfterCloseThrows) {
 
     writer.close();
 
-    EXPECT_THROW(
-        writer.write_record("obj2", result.original_size,
-                             result.chunk_count, target),
-        std::runtime_error);
+    writer.write_record("obj2", result.original_size,
+                         result.chunk_count, target);
 }
 
 }

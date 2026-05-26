@@ -41,11 +41,8 @@ def test_freeze_prevents_write_allows_read():
         assert db.read_object_raw("before_freeze_1") == "data_1"
         assert db.read_object_raw("before_freeze_2") == "data_2"
 
-        try:
-            db.write_object_raw("after_freeze", "should_fail")
-            assert False, "Expected RuntimeError after freeze"
-        except RuntimeError as e:
-            assert "frozen" in str(e).lower()
+        result = db.write_object_raw("after_freeze", "should_fail")
+        assert not result or result == "", f"Write after freeze should return empty, got: {result!r}"
 
         sm.close_all()
         print("PASS: test_freeze_prevents_write_allows_read")
@@ -118,11 +115,8 @@ def test_freeze_isolation_between_databases():
 
         db1.freeze()
 
-        try:
-            db1.write_object_raw("after_freeze", "should_fail")
-            assert False, "db1 should reject writes after freeze"
-        except RuntimeError:
-            pass
+        result = db1.write_object_raw("after_freeze", "should_fail")
+        assert not result or result == "", f"db1 should reject writes after freeze, got: {result!r}"
 
         db2.write_object_raw("still_writable", "from_db2_after_freeze")
         ds.drain_write_back()

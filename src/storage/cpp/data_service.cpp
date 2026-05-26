@@ -43,9 +43,8 @@ void DataService::register_database(const CMString& db_id,
     }
     for (const auto& [existing_id, paths] : db_paths_) {
         if (paths.base_path == base_path) {
-            throw std::runtime_error(
-                "base_path '" + base_path + "' already registered by database '" +
-                existing_id + "'");
+            ERR("base_path '{}' already registered by database '{}'", base_path, existing_id);
+            return;
         }
     }
     db_paths_[db_id] = {base_path, data_path, writer_id};
@@ -288,13 +287,38 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
         paths = path_it->second;
     }
 
-    try {
-        DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
-        ReadResult result = reader.read_from_entries(entries);
-        return {true, std::move(result)};
-    } catch (const std::exception& e) {
-        return {false, ReadResult{}};
+    DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
+    ReadResult result = reader.read_from_entries(entries);
+    if (result.data_buffer.empty()) return {false, ReadResult{}};
+    return {true, std::move(result)};
+}
+
+std::pair<bool, ReadResult> DataService::try_read_remote(const CMString& object_name) {
+    auto [found, result] = try_read_local(object_name);
+    if (found) return {true, std::move(result)};
+
+    auto info = lookup_remote_idx(object_name);
+    if (info.worker_id != 0 && !info.host.empty()) {
+        DirectReadCallback direct_cb;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            direct_cb = direct_read_handler_;
+        }
+        if (direct_cb) {
+            auto [cb_found, cb_result] = direct_cb(info.host, info.port, object_name);
+            if (cb_found) return {true, std::move(cb_result)};
+            remove_remote_location(object_name, info.worker_id);
+        }
     }
+
+    RemoteReadCallback remote_cb;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        remote_cb = remote_read_handler_;
+    }
+    if (!remote_cb) return {false, ReadResult{}};
+
+    return remote_cb(object_name);
 }
 
 std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
@@ -323,13 +347,10 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
     }
 
     if (info->completion_state == CompletionState::COMPLETE && info->flushed) {
-        try {
-            DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
-            return {true, reader.read_from_entries(info->entries)};
-    } catch (const std::exception& e) {
-            ERR("try_read_local FAILED for '{}': {}", object_name, e.what());
-            return {false, ReadResult{}};
-    }
+        DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
+        auto read_result = reader.read_from_entries(info->entries);
+        if (read_result.data_buffer.empty()) return {false, ReadResult{}};
+        return {true, std::move(read_result)};
     }
 
     if (info->completion_state == CompletionState::FAILED) {
@@ -369,12 +390,10 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
         paths = path_it->second;
     }
 
-    try {
-        DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
-        return {true, reader.read_from_entries(info->entries)};
-    } catch (const std::exception& e) {
-        return {false, ReadResult{}};
-    }
+    DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
+    auto read_result = reader.read_from_entries(info->entries);
+    if (read_result.data_buffer.empty()) return {false, ReadResult{}};
+    return {true, std::move(read_result)};
 }
 
 bool DataService::has_local_object(const CMString& object_name) const {
@@ -397,13 +416,9 @@ void DataService::set_direct_read_handler(DirectReadCallback cb) {
 }
 
 ReadResult DataService::read_raw(const CMString& object_name, int max_retries) {
-    // Tier 1: local
     auto [found, result] = try_read_local(object_name);
-    if (found) {
-        return result;
-    }
+    if (found) return result;
 
-    // Tier 2: remote_idx cache → direct worker-to-worker
     auto info = lookup_remote_idx(object_name);
     if (info.worker_id != 0 && !info.host.empty()) {
         DirectReadCallback direct_cb;
@@ -412,15 +427,12 @@ ReadResult DataService::read_raw(const CMString& object_name, int max_retries) {
             direct_cb = direct_read_handler_;
         }
         if (direct_cb) {
-            try {
-                return direct_cb(info.host, info.port, object_name);
-            } catch (const std::exception&) {
-                remove_remote_location(object_name, info.worker_id);
-            }
+            auto [cb_found, cb_result] = direct_cb(info.host, info.port, object_name);
+            if (cb_found) return cb_result;
+            remove_remote_location(object_name, info.worker_id);
         }
     }
 
-    // Tier 3: full remote via Master
     RemoteReadCallback remote_cb;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -428,25 +440,22 @@ ReadResult DataService::read_raw(const CMString& object_name, int max_retries) {
     }
 
     if (!remote_cb) {
-        throw std::runtime_error("No remote read handler registered for: " + object_name);
+        ERR("No remote read handler registered for: {}", object_name);
+        return ReadResult{};
     }
 
-    std::string last_error;
     for (int attempt = 0; attempt < max_retries; ++attempt) {
-        try {
-            return remote_cb(object_name);
-        } catch (const std::exception& e) {
-            last_error = e.what();
-            if (attempt < max_retries - 1) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-            }
+        auto [cb_found, cb_result] = remote_cb(object_name);
+        if (cb_found) return cb_result;
+        if (attempt < max_retries - 1) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         }
     }
 
-    throw std::runtime_error(
-        "Failed to read '" + object_name + "' after " +
-        std::to_string(max_retries) + " attempts: " + last_error);
+    ERR("Failed to read '{}' after {} attempts", object_name, max_retries);
+    return ReadResult{};
 }
+
 
 void DataService::start_transfer_server(int thread_count, TransferCallback callback) {
     transfer_callback_ = std::move(callback);

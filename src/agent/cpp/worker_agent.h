@@ -74,13 +74,13 @@ public:
     void register_database(const CMString& db_id, CMSharedPtr<Database> db);
     CMSharedPtr<Database> get_database(const CMString& db_id) const;
     
-    ReadResult request_remote_data(const CMString& object_name);
-    ReadResult request_data_from_worker(const CMString& host, int32_t port,
-                                         const CMString& object_name);
+    std::pair<bool, ReadResult> request_remote_data(const CMString& object_name);
+    std::pair<bool, ReadResult> request_data_from_worker(const CMString& host, int32_t port,
+                                                          const CMString& object_name);
 
     bool request_db_path(const CMString& db_id);
 
-    void register_write_with_master(const CMString& db_id, const CMString& object_name);
+    std::pair<CMString, TaskErrorType> register_write_with_master(const CMString& db_id, const CMString& object_name);
     void request_database_freeze(const CMString& db_id);
     void request_object_remove(const CMString& db_id, const CMString& object_name);
 
@@ -114,7 +114,6 @@ private:
     CMSharedPtr<TaskExecutor> executor_;
     
     static void record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
-    static void register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     static void notify_removed_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     static void freeze_trampoline(void* ctx, const CMString& db_id);
     static void remove_request_trampoline(void* ctx, const CMString& db_id, const CMString& object_name);

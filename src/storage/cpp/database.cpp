@@ -67,15 +67,14 @@ Database::~Database() {
 
 CMString Database::write_object(const CMString& object_name, const CMString& data, bool backup) {
     CMString full = full_name(object_name);
-    check_frozen();
+    if (check_frozen()) return {};
 
     fly::DataService::instance().on_write_started(db_id_, full);
-
-    try {
-        fly::WorkerAgentContext::register_write(db_id_, object_name);
-    } catch (const std::exception& e) {
-        fly::DataService::instance().on_write_failed(db_id_, full, e.what());
-        throw;
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
+    if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+        fly::DataService::instance().on_write_failed(db_id_, full, reg_error);
+        ERR("Write registration failed: {} (type={})", reg_error, static_cast<int>(reg_error_type));
+        return {};
     }
 
     auto data_ptr = CMMakeShared<CMString>(std::move(data));
@@ -119,15 +118,15 @@ CMString Database::read_object(const CMString& object_name) {
 CMString Database::write_object_typed(const CMString& object_name, const CMString& data,
                                         const CMString& py_name) {
     CMString full = full_name(object_name);
-    check_frozen();
+    if (check_frozen()) return {};
 
     fly::DataService::instance().on_write_started(db_id_, full);
 
-    try {
-        fly::WorkerAgentContext::register_write(db_id_, object_name);
-    } catch (const std::exception& e) {
-        fly::DataService::instance().on_write_failed(db_id_, full, e.what());
-        throw;
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
+    if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+        fly::DataService::instance().on_write_failed(db_id_, full, reg_error);
+        ERR("Write registration failed: {} (type={})", reg_error, static_cast<int>(reg_error_type));
+        return {};
     }
 
     auto original_size = static_cast<uint64_t>(data.size());
@@ -181,15 +180,15 @@ CMString Database::write_object_raw_ptr(const CMString& object_name,
                                          const char* data, int64_t data_size,
                                          const CMString& py_name) {
     CMString full = full_name(object_name);
-    check_frozen();
+    if (check_frozen()) return {};
 
     fly::DataService::instance().on_write_started(db_id_, full);
 
-    try {
-        fly::WorkerAgentContext::register_write(db_id_, object_name);
-    } catch (const std::exception& e) {
-        fly::DataService::instance().on_write_failed(db_id_, full, e.what());
-        throw;
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
+    if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+        fly::DataService::instance().on_write_failed(db_id_, full, reg_error);
+        ERR("Write registration failed: {} (type={})", reg_error, static_cast<int>(reg_error_type));
+        return {};
     }
 
     auto original_size = static_cast<uint64_t>(data_size);
@@ -238,7 +237,8 @@ ReadResult Database::read_object_typed(const CMString& object_name) {
     if (found) {
         return result;
     }
-    throw std::runtime_error("Object not found locally: " + full);
+    ERR("Object not found locally: {}", full);
+    return ReadResult{};
 }
 
 void Database::freeze() {
@@ -273,7 +273,7 @@ bool Database::is_frozen() const {
 }
 
 void Database::remove_object(const CMString& object_name) {
-    check_frozen();
+    if (check_frozen()) return;
 
     CMString full = full_name(object_name);
     removed_objects_.insert(full);
@@ -298,19 +298,19 @@ DbMeta Database::load_meta() const {
     CMString meta_path = base_path_ + "/_DB_META";
     std::ifstream ifs(meta_path, std::ios::binary);
     if (!ifs.is_open()) {
-        throw std::runtime_error("Cannot open meta file: " + meta_path);
+        ERR("Cannot open meta file: {}", meta_path); return {};
     }
 
     int64_t header_size = 0;
     ifs.read(reinterpret_cast<char*>(&header_size), sizeof(header_size));
     if (!ifs || header_size <= 0) {
-        throw std::runtime_error("Invalid _DB_META header size");
+        ERR("Invalid _DB_META header size"); return {};
     }
 
     CMString header_data(header_size, '\0');
     ifs.read(header_data.data(), header_size);
     if (!ifs) {
-        throw std::runtime_error("Failed to read _DB_META header");
+        ERR("Failed to read _DB_META header"); return {};
     }
 
     DbMetaHeader header;
@@ -381,10 +381,12 @@ void Database::reset() {
     }
 }
 
-void Database::check_frozen() {
+bool Database::check_frozen() {
     if (is_frozen_) {
-        throw std::runtime_error("Database is frozen: " + base_path_);
+        ERR("Database is frozen: {}", base_path_);
+        return true;
     }
+    return false;
 }
 
 void Database::create_frozen_marker() {

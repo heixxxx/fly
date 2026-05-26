@@ -16,11 +16,11 @@ DataService& WorkerAgent::ds() {
 
 void WorkerAgent::set_data_service(DataService* ds) {
     data_service_ = ds;
-    ds->set_remote_read_handler([this](const CMString& name) -> ReadResult {
+    ds->set_remote_read_handler([this](const CMString& name) -> std::pair<bool, ReadResult> {
         return request_remote_data(name);
     });
     ds->set_direct_read_handler([this](const CMString& host, int32_t port,
-                                        const CMString& name) -> ReadResult {
+                                         const CMString& name) -> std::pair<bool, ReadResult> {
         return request_data_from_worker(host, port, name);
     });
 }
@@ -367,7 +367,9 @@ void WorkerAgent::begin_task(uint64_t task_id) {
     current_task_id_ = task_id;
     current_writes_.clear();
     WorkerAgentContext::set(&record_write_trampoline, this);
-    WorkerAgentContext::set_register_func(&register_write_trampoline);
+    WorkerAgentContext::set_register_func([this](const CMString& db_id, const CMString& name) -> std::pair<CMString, TaskErrorType> {
+        return register_write_with_master(db_id, name);
+    });
     WorkerAgentContext::set_notify_removed_func(&notify_removed_trampoline, this);
     WorkerAgentContext::set_freeze_func(&freeze_trampoline, this);
     WorkerAgentContext::set_remove_request_func(&remove_request_trampoline, this);
@@ -402,10 +404,6 @@ void WorkerAgent::record_write_trampoline(void* ctx, const CMString& db_id, cons
     static_cast<WorkerAgent*>(ctx)->record_write(db_id, name);
 }
 
-void WorkerAgent::register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
-    static_cast<WorkerAgent*>(ctx)->register_write_with_master(db_id, name);
-}
-
 void WorkerAgent::notify_removed_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
     auto* self = static_cast<WorkerAgent*>(ctx);
     CMString full_name = db_id + ":" + name;
@@ -436,14 +434,12 @@ void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& ms
     ds().submit_transfer(conn_id, msg.object_name);
 }
 
-ReadResult WorkerAgent::request_remote_data(const CMString& object_name) {
+std::pair<bool, ReadResult> WorkerAgent::request_remote_data(const CMString& object_name) {
      auto location = MetadataClient::query_data_location(
         master_host_, master_port_, object_name);
 
     if (!location.found) {
-        throw std::runtime_error(
-            "Master has no location for: " + object_name +
-            " (" + location.error + ")");
+        return {false, ReadResult{}};
     }
 
     INFO("MetadataClient resolved {} -> {}:{}", object_name, location.host, location.port);
@@ -452,28 +448,28 @@ ReadResult WorkerAgent::request_remote_data(const CMString& object_name) {
         location.host, location.port, object_name);
 
     if (!success) {
-        throw std::runtime_error("Data transfer failed for " + object_name + ": " + error);
+        return {false, ReadResult{}};
     }
 
     ds().update_remote_idx(object_name, location.worker_id, location.host, location.port);
 
     ReadResult result;
     result.data_buffer.assign(data.begin(), data.end());
-    return result;
+    return {true, std::move(result)};
 }
 
-ReadResult WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,
-                                                   const CMString& object_name) {
+std::pair<bool, ReadResult> WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,
+                                                                  const CMString& object_name) {
 
     auto [success, data, error] = DataClient::request_data(host, port, object_name);
 
     if (!success) {
-        throw std::runtime_error("Direct data request failed for " + object_name + ": " + error);
+        return {false, ReadResult{}};
     }
 
     ReadResult result;
     result.data_buffer.assign(data.begin(), data.end());
-    return result;
+    return {true, std::move(result)};
 }
 
 void WorkerAgent::register_database(const CMString& db_id, CMSharedPtr<Database> db) {
@@ -527,8 +523,8 @@ CMSharedPtr<Database> WorkerAgent::get_database(const CMString& db_id) const {
     return nullptr;
 }
 
-void WorkerAgent::register_write_with_master(const CMString& db_id, const CMString& object_name) {
-    if (!registered_) return;
+std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const CMString& db_id, const CMString& object_name) {
+    if (!registered_) return {"", TaskErrorType::UNKNOWN};
     CMString full_name = db_id + ":" + object_name;
     auto pending = CMMakeShared<PendingWriteRegister>();
     pending->object_name = full_name;
@@ -551,13 +547,10 @@ void WorkerAgent::register_write_with_master(const CMString& db_id, const CMStri
         if (pending->completed) {
             pending_write_regs_.erase(full_name);
             if (!pending->success) {
-                TaskErrorType etype = pending->error_type;
-                WorkerAgentContext::set_last_error_type(etype);
-                throw WriteRegistrationError(
-                    "Write registration rejected: " + pending->error_message,
-                    etype);
+                WorkerAgentContext::set_last_error_type(pending->error_type);
+                return {pending->error_message, pending->error_type};
             }
-            return;
+            return {"", TaskErrorType::UNKNOWN};
         }
     }
 
@@ -566,9 +559,7 @@ void WorkerAgent::register_write_with_master(const CMString& db_id, const CMStri
         pending_write_regs_.erase(full_name);
     }
     WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
-    throw WriteRegistrationError(
-        "Write registration timeout for: " + full_name,
-        TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
+    return {"Write registration timeout for: " + full_name, TaskErrorType::WRITE_REGISTRATION_TIMEOUT};
 }
 
 void WorkerAgent::on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg) {
@@ -739,7 +730,8 @@ void WorkerAgent::request_object_remove(const CMString& db_id, const CMString& o
     if (!pending->cv.wait_for(lock, std::chrono::seconds(30), [&]() { return pending->completed; })) {
         std::lock_guard<std::mutex> rm_lock(pending_remove_mutex_);
         pending_removes_.erase(full);
-        throw std::runtime_error("Remove request timed out: " + full);
+        ERR("Remove request timed out: {}", full);
+        return;
     }
 
     {
@@ -748,7 +740,7 @@ void WorkerAgent::request_object_remove(const CMString& db_id, const CMString& o
     }
 
     if (!pending->success) {
-        throw std::runtime_error("Remove request failed: " + full);
+        ERR("Remove request failed: {}", full);
     }
 }
 

@@ -86,8 +86,8 @@ public:
     bool is_db_frozen(const CMString& db_id) const;
     CMSharedPtr<Database> get_or_create_database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0);
 
-    ReadResult request_remote_data(const CMString& object_name);
-    ReadResult request_data_from_worker(const CMString& host, int32_t port,
+    std::pair<bool, ReadResult> request_remote_data(const CMString& object_name);
+    std::pair<bool, ReadResult> request_data_from_worker(const CMString& host, int32_t port,
                                          const CMString& object_name);
 
     void setup_write_context();
@@ -161,11 +161,9 @@ private:
     static void master_record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     void on_master_record_write(const CMString& db_id, const CMString& name);
 
-    static void master_register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
-    void on_master_register_write(const CMString& db_id, const CMString& name);
-
     static void master_freeze_trampoline(void* ctx, const CMString& db_id);
     void on_master_freeze(const CMString& db_id);
+    std::pair<CMString, TaskErrorType> on_master_register_write(const CMString& db_id, const CMString& name);
 
     std::atomic<bool> fatal_error_{false};
 

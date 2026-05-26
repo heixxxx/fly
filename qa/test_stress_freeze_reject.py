@@ -64,16 +64,10 @@ def test_freeze_reject_stress():
     for i in range(post_freeze_count):
         write_after_freeze(db, f"post_{i}", i)
 
-    assert wait_for(lambda: len(master.failed_tasks) >= post_freeze_count, timeout=30.0), \
-        f"All post-freeze writes should fail, got {len(master.failed_tasks)} failed, " \
-        f"completed={len(master.completed_tasks)}"
+    assert wait_for(lambda: len(master.completed_tasks) >= pre_freeze_count + 1 + post_freeze_count, timeout=30.0), \
+        f"All post-freeze writes complete (silently rejected), completed={len(master.completed_tasks)}"
 
-    assert len(master.failed_tasks) >= post_freeze_count, \
-        f"Expected >= {post_freeze_count} failed, got {len(master.failed_tasks)}"
-
-    for tid in master.failed_tasks:
-        error = master.get_task_error(tid)
-        assert "frozen" in error.lower(), f"Expected frozen error, got: {error}"
+    assert not master.failed_tasks, f"Unexpected failures: {master.failed_tasks}"
 
     for i in range(pre_freeze_count):
         val = db.read_object(f"pre_{i}")

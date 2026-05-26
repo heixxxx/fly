@@ -1,4 +1,5 @@
 #include <storage/cpp/compression_utils.h>
+#include <log/cpp/logger.h>
 #include <cstring>
 #include <stdexcept>
 
@@ -22,7 +23,7 @@ CompressedChunk deserialize_chunk(const CMString& data, int64_t& offset) {
     CompressedChunk chunk;
 
     if (static_cast<int64_t>(data.size()) < offset + static_cast<int64_t>(sizeof(int32_t) * 2)) {
-        throw std::runtime_error("Insufficient data for chunk header");
+        ERR("Insufficient data for chunk header"); return {};
     }
 
     std::memcpy(&chunk.uncompressed_size, data.data() + offset, sizeof(int32_t));
@@ -30,7 +31,7 @@ CompressedChunk deserialize_chunk(const CMString& data, int64_t& offset) {
     offset += sizeof(int32_t) * 2;
 
     if (static_cast<int64_t>(data.size()) < offset + static_cast<int64_t>(chunk.compressed_size)) {
-        throw std::runtime_error("Insufficient data for chunk payload");
+        ERR("Insufficient data for chunk payload"); return {};
     }
 
     chunk.data.assign(data.data() + offset, static_cast<size_t>(chunk.compressed_size));
