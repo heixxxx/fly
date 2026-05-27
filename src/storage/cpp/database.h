@@ -25,7 +25,10 @@ public:
     CMString write_object(const CMString& object_name, const T& obj,
                            const CMString& py_name = "") {
         CMString full = full_name(object_name);
-        if (check_frozen()) return {};
+        if (check_frozen()) {
+            fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB);
+            return {};
+        }
 
         FlySerBuf serialized;
         FLY_ENCODE_TO_BYTES(obj, serialized);

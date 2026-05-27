@@ -259,7 +259,9 @@ void DataWriter::create_new_file() {
     fs::create_directories(write_dir);
     file_stream_.open(file_path, std::ios::binary);
     if (!file_stream_.is_open()) {
-        ERR("Failed to create data file: {}", file_path); return;
+        ERR("Failed to create data file: {}", file_path);
+        closed_ = true;
+        return;
     }
 
     current_file_size_ = 0;

@@ -103,7 +103,8 @@ def create_executor(worker) -> callable:
             result['output'] = ""
             result['error'] = traceback.format_exc()
 
-            ERR(f"Task execution failed: id={task_id}, name={task_name}, error={str(e)}\n{result['error']}")
+            msg = f"Task execution failed: id={task_id}, name={task_name}, error={str(e)}"
+            ERR(msg)
 
         return result
 

@@ -13,17 +13,6 @@ using NotifyRemovedFunc = void(*)(void* ctx, const CMString& db_id, const CMStri
 using FreezeFunc = void(*)(void* ctx, const CMString& db_id);
 using RemoveRequestFunc = void(*)(void* ctx, const CMString& db_id, const CMString& object_name);
 
-class WriteRegistrationError : public std::runtime_error {
-public:
-    WriteRegistrationError(const CMString& what, TaskErrorType type)
-        : std::runtime_error(what), error_type_(type) {}
-
-    TaskErrorType error_type() const { return error_type_; }
-
-private:
-    TaskErrorType error_type_;
-};
-
 class WorkerAgentContext {
 public:
     static void set(RecordWriteFunc func, void* ctx) {

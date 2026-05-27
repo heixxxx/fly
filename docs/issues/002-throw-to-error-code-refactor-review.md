@@ -316,7 +316,9 @@ try {
 
 ---
 
-## 8. 优雅退出机制评估
+## 8. 优雅退出机制
+
+### 8.1 现有退出路径评估
 
 当前重构在不可恢复错误下的退出路径：
 
@@ -334,9 +336,60 @@ Worker 写入冻结 DB
 
 **评估**: ✅ 路径完整，符合设计要求。
 
-**建议增强**:
-1. `WorkerAgent::request_object_remove` 超时也应标记为 error，但不一定是 fatal
-2. 网络层（tcp_transport）的 throw 目前直接触发 terminate → `_exit(77)`，属于硬 crash。如果改为 error code，可以走优雅退出路径
+### 8.2 新增 `graceful_exit()` 全局函数
+
+**问题**: 没有可以从任意位置（storage、network、Python 层）调用的全局优雅退出入口。
+- `terminate_handler()` / `sig_handler()` — crash 时使用，直接 `_exit(77/78)`，不优雅
+- `MasterAgent::stop()` / `WorkerAgent::stop()` — 需要实例引用
+
+**实现**: 新增 `fly::graceful_exit()` 函数（`src/core/cpp/graceful_exit.h/cpp`）
+
+```cpp
+// 从任意位置调用：
+fly::graceful_exit("disk full", TaskErrorType::EXECUTION_ERROR, 1);
+
+// Python 层调用：
+from _fly_core import graceful_exit
+graceful_exit("unrecoverable error", 1, 1)  # reason, error_type, exit_code
+```
+
+**Shutdown 序列**:
+1. `fprintf(stderr, ...)` — 输出退出原因到 stderr
+2. 调用注册的 shutdown callback（agent drain + persist + Logger::shutdown）
+3. `_exit(exit_code)` — 跳过 C++ 析构，避免双重清理
+
+**线程安全**: `std::atomic<bool> exit_initiated` 保证幂等，多次调用只执行一次。
+
+**Agent 注册**（在 `start()` 中）:
+```cpp
+// MasterAgent::start()
+register_shutdown_callback([this]() {
+    this->stop();          // drain + persist + cleanup
+    fly::Logger::shutdown();
+});
+
+// WorkerAgent::start()
+register_shutdown_callback([this]() {
+    this->stop();          // initiate_shutdown + do_cleanup
+    fly::Logger::shutdown();
+});
+```
+
+**Python 导出**: 通过 `_fly_core.graceful_exit(reason, error_type, exit_code)` 暴露。
+
+**新增文件**:
+| 文件 | 说明 |
+|------|------|
+| `src/core/cpp/graceful_exit.h` | 函数声明 |
+| `src/core/cpp/graceful_exit.cpp` | 实现（atomic guard + callback + _exit） |
+| `src/core/export/core_export.cpp` | nanobind 导出 |
+
+**修改文件**:
+| 文件 | 修改 |
+|------|------|
+| `src/core/cpp/BUILD` | 添加 graceful_exit.cpp |
+| `src/agent/cpp/master_agent.cpp` | start() 中注册 shutdown callback |
+| `src/agent/cpp/worker_agent.cpp` | start() 中注册 shutdown callback |
 
 ---
 

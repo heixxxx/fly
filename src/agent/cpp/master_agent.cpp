@@ -1,6 +1,7 @@
 #include <agent/cpp/master_agent.h>
 #include <log/cpp/logger.h>
 #include <core/cpp/config.h>
+#include <core/cpp/graceful_exit.h>
 #include <storage/cpp/local_index.h>
 #include <thread>
 #include <chrono>
@@ -207,6 +208,11 @@ void MasterAgent::start() {
     sigterm_received_ = false;
 
     INFO("MasterAgent started, reactor thread running");
+
+    register_shutdown_callback([this]() {
+        this->stop();
+        fly::Logger::shutdown();
+    });
 }
 
 void MasterAgent::stop() {
@@ -594,11 +600,10 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
     task_modules_.erase(msg.task_id);
     task_args_.erase(msg.task_id);
 
-    if (msg.error_type == TaskErrorType::WRITE_TO_FROZEN_DB ||
-        msg.error_type == TaskErrorType::WRITE_REGISTRATION_FAILED ||
-        msg.error_type == TaskErrorType::WRITE_REGISTRATION_TIMEOUT) {
+    if (msg.error_type == TaskErrorType::WRITE_REGISTRATION_TIMEOUT ||
+        msg.error_type == TaskErrorType::EXECUTION_ERROR) {
         fatal_error_ = true;
-        ERR("FATAL: unrecoverable write error (type={}) for task_id={}: {}",
+        ERR("FATAL: unrecoverable error (type={}) for task_id={}: {}",
             static_cast<int>(msg.error_type), msg.task_id, msg.error_message);
     }
 

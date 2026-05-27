@@ -1,6 +1,7 @@
 #include <agent/cpp/worker_agent.h>
 #include <log/cpp/logger.h>
 #include <core/cpp/config.h>
+#include <core/cpp/graceful_exit.h>
 #include <storage/cpp/data_service.h>
 #include <network/cpp/data_client.h>
 #include <network/cpp/metadata_client.h>
@@ -159,6 +160,11 @@ void WorkerAgent::start() {
     }
 
     running_ = true;
+
+    register_shutdown_callback([this]() {
+        this->stop();
+        fly::Logger::shutdown();
+    });
 }
 
 void WorkerAgent::stop() {
@@ -291,19 +297,33 @@ bool WorkerAgent::poll_task() {
         auto tracked_writes = end_task(task.task_id);
 
         if (result.status == TaskExecStatus::SUCCESS) {
-            TaskCompleteMessage complete;
-            complete.task_id = task.task_id;
-            complete.worker_id = worker_id_;
-            complete.written_objects = std::move(tracked_writes);
-            for (auto& out : result.outputs) {
-                complete.written_objects.push_back(std::move(out));
-            }
-            complete.frozen_dbs = std::move(result.frozen_dbs);
-            reactor_->send(master_conn_, complete);
+            auto error_type = WorkerAgentContext::get_last_error_type();
+            if (error_type != TaskErrorType::UNKNOWN) {
+                TaskFailedMessage failed;
+                failed.task_id = task.task_id;
+                failed.worker_id = worker_id_;
+                failed.error_message = "Write registration rejected: error_type=" +
+                    std::to_string(static_cast<int>(error_type));
+                failed.error_type = error_type;
+                reactor_->send(master_conn_, failed);
 
-            auto tid = task.task_id;
-            auto out_count = complete.written_objects.size();
-            INFO("TaskComplete sent: task_id={}, outputs={}", tid, out_count);
+                ERR("Task marked failed: task_id={}, write error_type={}",
+                    task.task_id, static_cast<int>(error_type));
+            } else {
+                TaskCompleteMessage complete;
+                complete.task_id = task.task_id;
+                complete.worker_id = worker_id_;
+                complete.written_objects = std::move(tracked_writes);
+                for (auto& out : result.outputs) {
+                    complete.written_objects.push_back(std::move(out));
+                }
+                complete.frozen_dbs = std::move(result.frozen_dbs);
+                reactor_->send(master_conn_, complete);
+
+                auto tid = task.task_id;
+                auto out_count = complete.written_objects.size();
+                INFO("TaskComplete sent: task_id={}, outputs={}", tid, out_count);
+            }
         } else {
             TaskFailedMessage failed;
             failed.task_id = task.task_id;
@@ -366,6 +386,7 @@ void WorkerAgent::on_db_path_response(const DbPathResponseMessage& msg) {
 void WorkerAgent::begin_task(uint64_t task_id) {
     current_task_id_ = task_id;
     current_writes_.clear();
+    WorkerAgentContext::set_last_error_type(TaskErrorType::UNKNOWN);
     WorkerAgentContext::set(&record_write_trampoline, this);
     WorkerAgentContext::set_register_func([this](const CMString& db_id, const CMString& name) -> std::pair<CMString, TaskErrorType> {
         return register_write_with_master(db_id, name);

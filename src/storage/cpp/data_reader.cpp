@@ -66,6 +66,10 @@ ReadResult DataReader::read_object_data(const IndexEntry& entry) {
                 FlySerBuf decompressed;
                 auto compressor = CompressorFactory::create(
                     static_cast<CompressionType>(header.compression_type));
+                if (!compressor) {
+                    ERR("read_object_data: unknown compression type {}", header.compression_type);
+                    return ReadResult{};
+                }
 
                 int64_t chunk_offset = 0;
                 while (chunk_offset < static_cast<int64_t>(chunk_data.size())) {
@@ -154,6 +158,10 @@ CMString DataReader::decompress_data(const CMString& raw_data, int8_t compressio
     auto chunk = compression_utils::deserialize_chunk(CMString(raw_data), offset);
 
     auto compressor = CompressorFactory::create(static_cast<CompressionType>(compression_type));
+    if (!compressor) {
+        ERR("decompress_data: unknown compression type {}", compression_type);
+        return {};
+    }
     return compressor->decompress(chunk.uncompressed_size, chunk.data);
 }
 

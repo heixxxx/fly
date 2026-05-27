@@ -58,16 +58,13 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
 }
 
 Database::~Database() {
-    try {
-        fly::DataService::instance().drain_write_back();
-        fly::DataService::instance().unregister_database(db_id_);
-    } catch (...) {
-    }
+    fly::DataService::instance().drain_write_back();
+    fly::DataService::instance().unregister_database(db_id_);
 }
 
 CMString Database::write_object(const CMString& object_name, const CMString& data, bool backup) {
     CMString full = full_name(object_name);
-    if (check_frozen()) return {};
+    if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return {}; }
 
     fly::DataService::instance().on_write_started(db_id_, full);
     auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
@@ -118,7 +115,7 @@ CMString Database::read_object(const CMString& object_name) {
 CMString Database::write_object_typed(const CMString& object_name, const CMString& data,
                                         const CMString& py_name) {
     CMString full = full_name(object_name);
-    if (check_frozen()) return {};
+    if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return {}; }
 
     fly::DataService::instance().on_write_started(db_id_, full);
 
@@ -180,7 +177,7 @@ CMString Database::write_object_raw_ptr(const CMString& object_name,
                                          const char* data, int64_t data_size,
                                          const CMString& py_name) {
     CMString full = full_name(object_name);
-    if (check_frozen()) return {};
+    if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return {}; }
 
     fly::DataService::instance().on_write_started(db_id_, full);
 
@@ -298,19 +295,22 @@ DbMeta Database::load_meta() const {
     CMString meta_path = base_path_ + "/_DB_META";
     std::ifstream ifs(meta_path, std::ios::binary);
     if (!ifs.is_open()) {
-        ERR("Cannot open meta file: {}", meta_path); return {};
+        ERR("Cannot open meta file: {}", meta_path);
+        return {};
     }
 
     int64_t header_size = 0;
     ifs.read(reinterpret_cast<char*>(&header_size), sizeof(header_size));
     if (!ifs || header_size <= 0) {
-        ERR("Invalid _DB_META header size"); return {};
+        ERR("Invalid _DB_META header size");
+        return {};
     }
 
     CMString header_data(header_size, '\0');
     ifs.read(header_data.data(), header_size);
     if (!ifs) {
-        ERR("Failed to read _DB_META header"); return {};
+        ERR("Failed to read _DB_META header");
+        return {};
     }
 
     DbMetaHeader header;

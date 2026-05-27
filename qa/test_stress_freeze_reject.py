@@ -65,7 +65,7 @@ def test_freeze_reject_stress():
         write_after_freeze(db, f"post_{i}", i)
 
     assert wait_for(lambda: len(master.completed_tasks) >= pre_freeze_count + 1 + post_freeze_count, timeout=30.0), \
-        f"All post-freeze writes complete (silently rejected), completed={len(master.completed_tasks)}"
+        f"All writes should complete (silently rejected): completed={len(master.completed_tasks)}"
 
     assert not master.failed_tasks, f"Unexpected failures: {master.failed_tasks}"
 
