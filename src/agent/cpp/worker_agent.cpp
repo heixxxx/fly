@@ -24,6 +24,16 @@ void WorkerAgent::set_data_service(DataService* ds) {
                                          const CMString& name) -> std::pair<bool, ReadResult> {
         return request_data_from_worker(host, port, name);
     });
+    ds->set_direct_compressed_read_handler(
+        [this](const CMString& host, int32_t port,
+              const CMString& name) -> std::tuple<bool, CMString, CMString> {
+            auto [success, data, py_name, error] = DataClient::request_compressed_data(host, port, name);
+            if (!success) {
+                ERR("request_compressed_data failed for {}: {}", name, error);
+                return {false, {}, {}};
+            }
+            return {true, std::move(data), std::move(py_name)};
+        });
 }
 
 WorkerAgent::WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port,
@@ -64,6 +74,8 @@ void WorkerAgent::start() {
             response.object_name = result.object_name;
             response.success = result.success;
             response.data = result.data;
+            response.compressed_data = result.compressed_data;
+            response.py_name = result.py_name;
             if (!result.success) {
                 response.error_message = result.error_message;
             }
@@ -124,6 +136,11 @@ void WorkerAgent::start() {
     reactor_->register_handler<RemoveCommandMessage>(
         [this](uint64_t conn_id, const RemoveCommandMessage& msg) {
             on_remove_command(conn_id, msg);
+        });
+
+    reactor_->register_handler<BackupAssignMessage>(
+        [this](uint64_t conn_id, const BackupAssignMessage& msg) {
+            on_backup_assign(conn_id, msg);
         });
 
     reactor_->on_disconnect([this](uint64_t conn_id) {
@@ -394,6 +411,8 @@ void WorkerAgent::begin_task(uint64_t task_id) {
     WorkerAgentContext::set_notify_removed_func(&notify_removed_trampoline, this);
     WorkerAgentContext::set_freeze_func(&freeze_trampoline, this);
     WorkerAgentContext::set_remove_request_func(&remove_request_trampoline, this);
+    WorkerAgentContext::set_backup_request_func(&backup_request_trampoline, this);
+    WorkerAgentContext::set_notify_backup_complete_func(&notify_backup_complete_trampoline, this);
 }
 
 void WorkerAgent::record_write(const CMString& db_id, const CMString& object_name) {
@@ -451,8 +470,7 @@ void WorkerAgent::request_database_freeze(const CMString& db_id) {
 }
 
 void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
-
-    ds().submit_transfer(conn_id, msg.object_name);
+    ds().submit_transfer(conn_id, msg.object_name, msg.raw_transfer);
 }
 
 std::pair<bool, ReadResult> WorkerAgent::request_remote_data(const CMString& object_name) {
@@ -796,8 +814,6 @@ void WorkerAgent::on_remove_command(uint64_t conn_id, const RemoveCommandMessage
     auto db_it = databases_.find(msg.db_id);
     if (db_it != databases_.end()) {
         auto& db = db_it->second;
-        // msg.object_name is already a full name (db_id:short_name),
-        // use the short part to avoid double-prefixing in remove_index_entry
         CMString short_name = msg.object_name;
         CMString prefix = msg.db_id + ":";
         if (short_name.substr(0, prefix.size()) == prefix) {
@@ -806,6 +822,123 @@ void WorkerAgent::on_remove_command(uint64_t conn_id, const RemoveCommandMessage
         db->remove_index_entry(short_name);
         INFO("RemoveCommand: persisted REMOVE entry for {}", msg.object_name);
     }
+}
+
+void WorkerAgent::backup_request_trampoline(void* ctx, const CMString& db_id, const CMString& object_name) {
+    static_cast<WorkerAgent*>(ctx)->request_backup(db_id, object_name);
+}
+
+void WorkerAgent::notify_backup_complete_trampoline(void* ctx, const CMString& db_id, const CMString& object_name) {
+    auto* self = static_cast<WorkerAgent*>(ctx);
+    if (!self->registered_) return;
+
+    CMString full_name = db_id + ":" + object_name;
+
+    BackupCompleteMessage msg;
+    msg.worker_id = self->worker_id_;
+    msg.object_name = full_name;
+    msg.db_id = db_id;
+    msg.success = true;
+    self->reactor_->send(self->master_conn_, msg);
+
+    INFO("BackupComplete (read) sent: object={}", full_name);
+}
+
+void WorkerAgent::request_backup(const CMString& db_id, const CMString& object_name) {
+    if (!registered_) return;
+
+    CMString full_name = db_id + ":" + object_name;
+
+    BackupRequestMessage msg;
+    msg.worker_id = worker_id_;
+    msg.object_name = full_name;
+    msg.db_id = db_id;
+    reactor_->send(master_conn_, msg);
+
+    INFO("BackupRequest sent: object={}", full_name);
+}
+
+void WorkerAgent::on_backup_assign(uint64_t conn_id, const BackupAssignMessage& msg) {
+    touch_master_contact();
+    INFO("BackupAssign received: object={}, source={}:{}", msg.object_name, msg.source_host, msg.source_port);
+
+    auto io_pool = ds().get_transfer_pool();
+    if (!io_pool) {
+        ERR("No IO thread pool for backup");
+        BackupCompleteMessage response;
+        response.worker_id = worker_id_;
+        response.object_name = msg.object_name;
+        response.db_id = msg.db_id;
+        response.success = false;
+        response.error_message = "No IO thread pool";
+        reactor_->send(master_conn_, response);
+        return;
+    }
+
+    auto task_data = CMMakeShared<BackupAssignMessage>(msg);
+    auto worker_id = worker_id_;
+    auto backup_success = CMMakeShared<bool>(false);
+    auto pool = io_pool;
+    auto* reactor_ptr = reactor_.get();
+    auto master_conn = master_conn_;
+
+    // Spawn a dedicated thread for the backup fetch to avoid starving the
+    // transfer pool (which also serves incoming data requests).  The
+    // completion callback is posted back to the pool so it runs on the
+    // reactor thread via process_completions().
+    std::thread([this, task_data, backup_success, pool, reactor_ptr, master_conn, worker_id]() {
+        auto [success, data, error] = DataClient::request_data(
+            task_data->source_host, task_data->source_port, task_data->object_name, 30000);
+
+        if (!success) {
+            ERR("Backup: failed to fetch data from source: {}", error);
+        } else {
+            auto db = get_database(task_data->db_id);
+            if (!db) {
+                if (!request_db_path(task_data->db_id)) {
+                    ERR("Backup: failed to get db_path for db_id={}", task_data->db_id);
+                    success = false;
+                } else {
+                    db = get_database(task_data->db_id);
+                    if (!db) {
+                        ERR("Backup: still no database after request_db_path for db_id={}", task_data->db_id);
+                        success = false;
+                    }
+                }
+            }
+
+            if (success && db) {
+                CMString short_name = task_data->object_name;
+                CMString prefix = task_data->db_id + ":";
+                if (short_name.substr(0, prefix.size()) == prefix) {
+                    short_name = short_name.substr(prefix.size());
+                }
+
+                db->write_object(short_name, data, true);
+
+                fly::DataService::instance().drain_write_back();
+
+                *backup_success = true;
+                INFO("Backup: data persisted locally for object={}", task_data->object_name);
+            }
+        }
+
+        pool->submit(
+            [reactor_ptr, master_conn, task_data, worker_id, backup_success]() {
+                BackupCompleteMessage response;
+                response.worker_id = worker_id;
+                response.object_name = task_data->object_name;
+                response.db_id = task_data->db_id;
+                response.success = *backup_success;
+                if (!*backup_success) {
+                    response.error_message = "Backup data fetch or persist failed";
+                }
+                reactor_ptr->send(master_conn, response);
+                INFO("BackupComplete sent: object={}, success={}", task_data->object_name, *backup_success);
+            },
+            nullptr
+        );
+    }).detach();
 }
 
 }  // namespace fly

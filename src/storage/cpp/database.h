@@ -23,7 +23,7 @@ public:
 
     template<typename T>
     CMString write_object(const CMString& object_name, const T& obj,
-                           const CMString& py_name = "") {
+                           const CMString& py_name = "", bool backup = false) {
         CMString full = full_name(object_name);
         if (check_frozen()) {
             fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB);
@@ -51,6 +51,8 @@ public:
         DataWriter* w = writer_.get();
         auto caller_record_func = fly::WorkerAgentContext::current_record_func();
         auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
+        auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : nullptr;
+        auto caller_backup_ctx = backup ? fly::WorkerAgentContext::current_backup_ctx() : nullptr;
 
         auto execute = [w, name = full, compress_result, record]() {
             w->write_record(name, compress_result.original_size,
@@ -59,7 +61,8 @@ public:
         };
 
         auto complete = [full, db_id = this->db_id_, object_name,
-                         caller_record_func, caller_record_ctx, w]() {
+                         caller_record_func, caller_record_ctx,
+                         caller_backup_func, caller_backup_ctx, w, backup]() {
             auto& ds = fly::DataService::instance();
             auto* entries = w->get_all_entries(full);
             if (entries) {
@@ -68,6 +71,9 @@ public:
             ds.on_object_flushed(full);
             if (caller_record_func) {
                 caller_record_func(caller_record_ctx, db_id, object_name);
+            }
+            if (backup && caller_backup_func) {
+                caller_backup_func(caller_backup_ctx, db_id, object_name);
             }
         };
 
@@ -94,20 +100,23 @@ public:
 
     CMString write_object(const CMString& object_name, const CMString& data, bool backup = false);
 
-    CMString read_object(const CMString& object_name);
+    CMString read_object(const CMString& object_name, bool backup = false);
 
     CMString write_object_typed(const CMString& object_name, const CMString& data,
-                                 const CMString& py_name);
+                                 const CMString& py_name, bool backup = false);
 
     CMString write_object_buffer(const CMString& object_name,
                                  CMSharedPtr<FlyBuffer> buffer,
-                                 const CMString& py_name);
+                                 const CMString& py_name, bool backup = false);
 
     CMString write_object_raw_ptr(const CMString& object_name,
                                   const char* data, int64_t data_size,
-                                  const CMString& py_name);
+                                  const CMString& py_name, bool backup = false);
 
-    ReadResult read_object_typed(const CMString& object_name);
+    ReadResult read_object_typed(const CMString& object_name, bool backup = false);
+
+    void persist_read_result(const CMString& object_name, const ReadResult& result);
+    void backup_object(const CMString& object_name);
 
     void freeze();
     bool is_frozen() const;

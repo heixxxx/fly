@@ -164,6 +164,16 @@ void MasterAgent::start() {
             on_remove_request(conn_id, msg);
         });
 
+    reactor_->register_handler<BackupRequestMessage>(
+        [this](uint64_t conn_id, const BackupRequestMessage& msg) {
+            on_backup_request(conn_id, msg);
+        });
+
+    reactor_->register_handler<BackupCompleteMessage>(
+        [this](uint64_t conn_id, const BackupCompleteMessage& msg) {
+            on_backup_complete(conn_id, msg);
+        });
+
     reactor_->on_disconnect([this](uint64_t conn_id) {
         on_disconnect(conn_id);
     });
@@ -1263,6 +1273,83 @@ FailedTaskRecord MasterAgent::build_failed_record(uint64_t task_id) {
         record.error_message = meta->error_message;
     }
     return record;
+}
+
+void MasterAgent::on_backup_request(uint64_t conn_id, const BackupRequestMessage& msg) {
+    INFO("BackupRequest: object={}, source_worker={}", msg.object_name, msg.worker_id);
+
+    uint64_t backup_worker_id = select_backup_worker(msg.worker_id);
+    if (backup_worker_id == 0) {
+        ERR("No suitable backup worker found for object={}", msg.object_name);
+        return;
+    }
+
+    auto source_addr = ds().get_worker_address(msg.worker_id);
+    uint64_t backup_conn = 0;
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        auto backup_conn_it = worker_to_conn_.find(backup_worker_id);
+        if (backup_conn_it == worker_to_conn_.end()) {
+            ERR("Backup worker {} not connected", backup_worker_id);
+            return;
+        }
+        backup_conn = backup_conn_it->second;
+    }
+
+    BackupAssignMessage assign;
+    assign.object_name = msg.object_name;
+    assign.db_id = msg.db_id;
+    assign.source_host = source_addr.host;
+    assign.source_port = source_addr.port;
+    assign.source_worker_id = msg.worker_id;
+
+    reactor_->send(backup_conn, assign);
+    INFO("BackupAssign sent to worker_id={} for object={}", backup_worker_id, msg.object_name);
+}
+
+uint64_t MasterAgent::select_backup_worker(uint64_t source_worker_id) {
+    std::lock_guard<std::mutex> lk(workers_mutex_);
+
+    CMString source_hostname;
+    auto host_it = worker_to_hostname_.find(source_worker_id);
+    if (host_it != worker_to_hostname_.end()) {
+        source_hostname = host_it->second;
+    }
+
+    uint64_t fallback_worker = 0;
+    for (const auto& [worker_id, hostname] : worker_to_hostname_) {
+        if (worker_id == source_worker_id) continue;
+        if (worker_id == 0) continue;
+
+        auto* worker_info = worker_manager_->get_worker(worker_id);
+        if (!worker_info || worker_info->status == WorkerStatus::DEAD) continue;
+
+        if (hostname != source_hostname) {
+            return worker_id;
+        }
+        if (fallback_worker == 0) {
+            fallback_worker = worker_id;
+        }
+    }
+
+    if (fallback_worker != 0) {
+        INFO("select_backup_worker: all workers on same host, using worker_id={}", fallback_worker);
+    }
+    return fallback_worker;
+}
+
+void MasterAgent::on_backup_complete(uint64_t conn_id, const BackupCompleteMessage& msg) {
+    INFO("BackupComplete: object={}, worker_id={}, success={}", msg.object_name, msg.worker_id, msg.success);
+
+    if (!msg.success) {
+        ERR("Backup failed: object={}, error={}", msg.object_name, msg.error_message);
+        return;
+    }
+
+    auto addr = ds().get_worker_address(msg.worker_id);
+    ds().update_remote_idx(msg.object_name, msg.worker_id, addr.host, addr.port);
+
+    INFO("Backup registered: object={} now available on worker_id={}", msg.object_name, msg.worker_id);
 }
 
 }  // namespace fly

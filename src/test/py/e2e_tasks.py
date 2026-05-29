@@ -198,3 +198,13 @@ def wait_obj_then_process(db, dep_key, result_key):
     # After waiting, process and write result
     processed = f"processed:{data}"
     db.write_object(result_key, processed)
+
+
+@as_task()
+def write_data_backup(db, key, value):
+    db.write_object(key, value, backup=True)
+
+
+@as_task(inputs=lambda db, key, deps: list(deps))
+def read_data_backup(db, key, deps):
+    return db.read_object(key, backup=True)

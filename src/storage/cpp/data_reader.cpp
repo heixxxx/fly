@@ -242,3 +242,17 @@ ReadResult DataReader::read_from_entries(const CMVector<IndexEntry>& entries) {
     rr.data_buffer = std::move(result);
     return rr;
 }
+
+CMString DataReader::read_raw_bytes(const CMString& object_name) {
+    IndexEntry* entry = index_->find_entry(object_name);
+    if (!entry) {
+        ERR("read_raw_bytes: object not found: {}", object_name);
+        return {};
+    }
+    return read_raw_bytes(*entry);
+}
+
+CMString DataReader::read_raw_bytes(const IndexEntry& entry) {
+    CMString file_path = find_file_path(entry.file_name);
+    return read_from_file(file_path, entry.offset, entry.size);
+}

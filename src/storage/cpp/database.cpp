@@ -1,5 +1,8 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/compressor.h>
+#include <network/cpp/data_client.h>
+#include <serialization/cpp/object_header.h>
+#include <storage/cpp/compression_utils.h>
 #include <core/cpp/config.h>
 #include <log/cpp/logger.h>
 #include <common/cpp/writer_id.h>
@@ -67,6 +70,7 @@ CMString Database::write_object(const CMString& object_name, const CMString& dat
     if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return {}; }
 
     fly::DataService::instance().on_write_started(db_id_, full);
+
     auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
     if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
         fly::DataService::instance().on_write_failed(db_id_, full, reg_error);
@@ -79,15 +83,17 @@ CMString Database::write_object(const CMString& object_name, const CMString& dat
     DataWriter* w = writer_.get();
     auto caller_record_func = fly::WorkerAgentContext::current_record_func();
     auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
+    auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : nullptr;
+    auto caller_backup_ctx = backup ? fly::WorkerAgentContext::current_backup_ctx() : nullptr;
 
-    auto execute = [w, name = full, data_ptr, backup]() {
-        (void)backup;
+    auto execute = [w, name = full, data_ptr]() {
         w->write_object(name, *data_ptr, false);
         w->flush();
     };
 
     auto complete = [full, db_id = this->db_id_, object_name,
-                     caller_record_func, caller_record_ctx, w]() {
+                     caller_record_func, caller_record_ctx,
+                     caller_backup_func, caller_backup_ctx, w, backup]() {
         auto& ds = fly::DataService::instance();
         auto* entries = w->get_all_entries(full);
         if (entries) {
@@ -96,6 +102,9 @@ CMString Database::write_object(const CMString& object_name, const CMString& dat
         ds.on_object_flushed(full);
         if (caller_record_func) {
             caller_record_func(caller_record_ctx, db_id, object_name);
+        }
+        if (backup && caller_backup_func) {
+            caller_backup_func(caller_backup_ctx, db_id, object_name);
         }
     };
 
@@ -107,13 +116,13 @@ CMString Database::write_object(const CMString& object_name, const CMString& dat
     return "";
 }
 
-CMString Database::read_object(const CMString& object_name) {
-    ReadResult result = read_object_typed(object_name);
+CMString Database::read_object(const CMString& object_name, bool backup) {
+    ReadResult result = read_object_typed(object_name, backup);
     return CMString(result.data_buffer.begin(), result.data_buffer.end());
 }
 
 CMString Database::write_object_typed(const CMString& object_name, const CMString& data,
-                                        const CMString& py_name) {
+                                        const CMString& py_name, bool backup) {
     CMString full = full_name(object_name);
     if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return {}; }
 
@@ -137,6 +146,8 @@ CMString Database::write_object_typed(const CMString& object_name, const CMStrin
     DataWriter* w = writer_.get();
     auto caller_record_func = fly::WorkerAgentContext::current_record_func();
     auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
+    auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : nullptr;
+    auto caller_backup_ctx = backup ? fly::WorkerAgentContext::current_backup_ctx() : nullptr;
 
     auto execute = [w, name = full, compress_result, record]() {
         w->write_record(name, compress_result.original_size,
@@ -145,7 +156,8 @@ CMString Database::write_object_typed(const CMString& object_name, const CMStrin
     };
 
     auto complete = [full, db_id = this->db_id_, object_name,
-                     caller_record_func, caller_record_ctx, w]() {
+                     caller_record_func, caller_record_ctx,
+                     caller_backup_func, caller_backup_ctx, w, backup]() {
         auto& ds = fly::DataService::instance();
         auto* entries = w->get_all_entries(full);
         if (entries) {
@@ -154,6 +166,9 @@ CMString Database::write_object_typed(const CMString& object_name, const CMStrin
         ds.on_object_flushed(full);
         if (caller_record_func) {
             caller_record_func(caller_record_ctx, db_id, object_name);
+        }
+        if (backup && caller_backup_func) {
+            caller_backup_func(caller_backup_ctx, db_id, object_name);
         }
     };
 
@@ -167,15 +182,15 @@ CMString Database::write_object_typed(const CMString& object_name, const CMStrin
 
 CMString Database::write_object_buffer(const CMString& object_name,
                                         CMSharedPtr<FlyBuffer> buffer,
-                                        const CMString& py_name) {
+                                        const CMString& py_name, bool backup) {
     return write_object_raw_ptr(object_name,
                                 buffer->data(), static_cast<int64_t>(buffer->size()),
-                                py_name);
+                                py_name, backup);
 }
 
 CMString Database::write_object_raw_ptr(const CMString& object_name,
                                          const char* data, int64_t data_size,
-                                         const CMString& py_name) {
+                                         const CMString& py_name, bool backup) {
     CMString full = full_name(object_name);
     if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return {}; }
 
@@ -199,6 +214,8 @@ CMString Database::write_object_raw_ptr(const CMString& object_name,
     DataWriter* w = writer_.get();
     auto caller_record_func = fly::WorkerAgentContext::current_record_func();
     auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
+    auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : nullptr;
+    auto caller_backup_ctx = backup ? fly::WorkerAgentContext::current_backup_ctx() : nullptr;
 
     auto execute = [w, name = full, compress_result, record]() {
         w->write_record(name, compress_result.original_size,
@@ -207,6 +224,153 @@ CMString Database::write_object_raw_ptr(const CMString& object_name,
     };
 
     auto complete = [full, db_id = this->db_id_, object_name,
+                     caller_record_func, caller_record_ctx,
+                     caller_backup_func, caller_backup_ctx, w, backup]() {
+        auto& ds = fly::DataService::instance();
+        auto* entries = w->get_all_entries(full);
+        if (entries) {
+            ds.on_write_completed(db_id, full, *entries);
+        }
+        ds.on_object_flushed(full);
+        if (caller_record_func) {
+            caller_record_func(caller_record_ctx, db_id, object_name);
+        }
+        if (backup && caller_backup_func) {
+            caller_backup_func(caller_backup_ctx, db_id, object_name);
+        }
+    };
+
+    fly::WriteRequest req;
+    req.execute = std::move(execute);
+    req.on_complete = std::move(complete);
+    fly::DataService::instance().enqueue_write_back(std::move(req));
+
+    return "";
+}
+
+ReadResult Database::read_object_typed(const CMString& object_name, bool backup) {
+    CMString full = full_name(object_name);
+    auto& ds = fly::DataService::instance();
+
+    auto [found, result] = ds.try_read_local(full);
+    if (found) {
+        return result;
+    }
+
+    if (backup) {
+        auto [comp_found, comp_data, comp_py_name] = ds.read_raw_compressed(full);
+        if (!comp_found || comp_data.empty()) {
+            ERR("read_object_typed: no data for '{}'", full);
+            return ReadResult{};
+        }
+
+        int64_t header_offset = 0;
+        ObjectHeader header = ObjectHeader::deserialize(comp_data, header_offset);
+
+        ds.on_write_started(db_id_, full);
+
+        // Decompress for return value BEFORE moving comp_data into record buffer
+        ReadResult ret;
+        ret.py_name = comp_py_name;
+        if (header.compression_type == static_cast<uint8_t>(CompressionType::NONE)) {
+            ret.data_buffer.assign(comp_data.begin() + header_offset,
+                                   comp_data.begin() + header_offset + static_cast<size_t>(header.total_size));
+        } else {
+            auto compressor = CompressorFactory::create(
+                static_cast<CompressionType>(header.compression_type));
+            if (compressor) {
+                CMString chunk_data(comp_data.data() + header_offset,
+                                    static_cast<size_t>(comp_data.size() - header_offset));
+                int64_t chunk_offset = 0;
+                while (chunk_offset < static_cast<int64_t>(chunk_data.size())) {
+                    auto chunk = compression_utils::deserialize_chunk(chunk_data, chunk_offset);
+                    CMString block = compressor->decompress(chunk.uncompressed_size, chunk.data);
+                    ret.data_buffer.insert(ret.data_buffer.end(), block.begin(), block.end());
+                }
+            }
+        }
+
+        auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
+        if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+            ds.on_write_failed(db_id_, full, reg_error);
+            ERR("read_object_typed backup: register_write failed for '{}': {}", object_name, reg_error);
+        } else {
+            DataWriter* w = writer_.get();
+            auto caller_record_func = fly::WorkerAgentContext::current_record_func();
+            auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
+            auto record = CMMakeShared<FlyBuffer>();
+            record->take(std::move(comp_data));
+
+            auto execute = [w, name = full, header, record]() {
+                w->write_record(name, header.total_size, header.chunk_count, *record);
+                w->flush();
+            };
+
+            auto complete = [full, db_id = db_id_, object_name,
+                             caller_record_func, caller_record_ctx, w]() {
+                auto& ds = fly::DataService::instance();
+                auto* entries = w->get_all_entries(full);
+                if (entries) {
+                    ds.on_write_completed(db_id, full, *entries);
+                }
+                ds.on_object_flushed(full);
+                if (caller_record_func) {
+                    caller_record_func(caller_record_ctx, db_id, object_name);
+                }
+            };
+
+            fly::WriteRequest req;
+            req.execute = std::move(execute);
+            req.on_complete = std::move(complete);
+            ds.enqueue_write_back(std::move(req));
+            ds.drain_write_back();
+        }
+
+        fly::WorkerAgentContext::notify_backup_complete(db_id_, object_name);
+        return ret;
+    }
+
+    ReadResult read_result = ds.read_raw(full);
+    if (read_result.data_buffer.empty()) {
+        ERR("read_object_typed: empty data for '{}'", full);
+        return ReadResult{};
+    }
+
+    return read_result;
+}
+
+void Database::persist_read_result(const CMString& object_name, const ReadResult& result) {
+    CMString full = full_name(object_name);
+    auto& ds = fly::DataService::instance();
+
+    ds.on_write_started(db_id_, full);
+
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
+    if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+        ds.on_write_failed(db_id_, full, reg_error);
+        ERR("persist_read_result: register_write failed for '{}': {}", object_name, reg_error);
+        return;
+    }
+
+    auto original_size = static_cast<uint64_t>(result.data_buffer.size());
+
+    auto record = CMMakeShared<FlyBuffer>();
+    auto compress_result = writer_->compress_to_buffer(
+        original_size, result.py_name,
+        result.data_buffer.data(), static_cast<int64_t>(result.data_buffer.size()),
+        *record);
+
+    DataWriter* w = writer_.get();
+    auto caller_record_func = fly::WorkerAgentContext::current_record_func();
+    auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
+
+    auto execute = [w, name = full, compress_result, record]() {
+        w->write_record(name, compress_result.original_size,
+                        compress_result.chunk_count, *record);
+        w->flush();
+    };
+
+    auto complete = [full, db_id = db_id_, object_name,
                      caller_record_func, caller_record_ctx, w]() {
         auto& ds = fly::DataService::instance();
         auto* entries = w->get_all_entries(full);
@@ -222,20 +386,61 @@ CMString Database::write_object_raw_ptr(const CMString& object_name,
     fly::WriteRequest req;
     req.execute = std::move(execute);
     req.on_complete = std::move(complete);
-    fly::DataService::instance().enqueue_write_back(std::move(req));
-
-    return "";
+    ds.enqueue_write_back(std::move(req));
 }
 
-ReadResult Database::read_object_typed(const CMString& object_name) {
+void Database::backup_object(const CMString& object_name) {
     CMString full = full_name(object_name);
     auto& ds = fly::DataService::instance();
-    auto [found, result] = ds.try_read_local(full);
-    if (found) {
-        return result;
+
+    auto [found, compressed_data, py_name] = ds.read_raw_compressed(full);
+    if (!found || compressed_data.empty()) {
+        ERR("backup_object: no data for '{}'", full);
+        return;
     }
-    ERR("Object not found locally: {}", full);
-    return ReadResult{};
+
+    ds.on_write_started(db_id_, full);
+
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
+    if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+        ds.on_write_failed(db_id_, full, reg_error);
+        ERR("backup_object: register_write failed for '{}': {}", object_name, reg_error);
+        return;
+    }
+
+    int64_t h_off = 0;
+    ObjectHeader header = ObjectHeader::deserialize(compressed_data, h_off);
+
+    DataWriter* w = writer_.get();
+    auto caller_record_func = fly::WorkerAgentContext::current_record_func();
+    auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
+    auto record = CMMakeShared<FlyBuffer>();
+    record->take(std::move(compressed_data));
+
+    auto execute = [w, name = full, header, record]() {
+        w->write_record(name, header.total_size, header.chunk_count, *record);
+        w->flush();
+    };
+
+    auto complete = [full, db_id = db_id_, object_name,
+                     caller_record_func, caller_record_ctx, w]() {
+        auto& ds = fly::DataService::instance();
+        auto* entries = w->get_all_entries(full);
+        if (entries) {
+            ds.on_write_completed(db_id, full, *entries);
+        }
+        ds.on_object_flushed(full);
+        if (caller_record_func) {
+            caller_record_func(caller_record_ctx, db_id, object_name);
+        }
+    };
+
+    fly::WriteRequest req;
+    req.execute = std::move(execute);
+    req.on_complete = std::move(complete);
+    ds.enqueue_write_back(std::move(req));
+    ds.drain_write_back();
+    fly::WorkerAgentContext::notify_backup_complete(db_id_, object_name);
 }
 
 void Database::freeze() {

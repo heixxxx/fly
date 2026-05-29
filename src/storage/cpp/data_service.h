@@ -27,6 +27,8 @@ struct TransferResult {
     bool success = false;
     CMString data;
     CMString error_message;
+    CMString compressed_data;
+    CMString py_name;
 };
 
 enum class CompletionState {
@@ -53,9 +55,12 @@ public:
     using RemoteReadCallback = std::function<std::pair<bool, ReadResult>(const CMString& object_name)>;
     using DirectReadCallback = std::function<std::pair<bool, ReadResult>(const CMString& host, int32_t port,
                                                                            const CMString& object_name)>;
+    using DirectCompressedReadCallback = std::function<std::tuple<bool, CMString, CMString>(
+        const CMString& host, int32_t port, const CMString& object_name)>;
 
     void set_remote_read_handler(RemoteReadCallback cb);
     void set_direct_read_handler(DirectReadCallback cb);
+    void set_direct_compressed_read_handler(DirectCompressedReadCallback cb);
 
     void register_database(const CMString& db_id,
                             const CMString& base_path,
@@ -107,12 +112,16 @@ public:
 
     std::pair<bool, ReadResult> try_read_local(const CMString& object_name);
 
+    std::pair<bool, CMString> try_read_local_raw(const CMString& object_name);
+
     std::pair<bool, ReadResult> try_read_remote(const CMString& object_name);
 
     std::pair<bool, ReadResult> try_read_local_or_wait(const CMString& object_name,
                                                         int timeout_ms = 3000);
 
     ReadResult read_raw(const CMString& object_name, int max_retries = 3);
+
+    std::tuple<bool, CMString, CMString> read_raw_compressed(const CMString& object_name);
 
     bool has_local_object(const CMString& object_name) const;
 
@@ -121,7 +130,7 @@ public:
     void start_transfer_server(int thread_count, TransferCallback callback);
     void stop_transfer_server();
     bool is_transfer_server_running() const;
-    void submit_transfer(uint64_t conn_id, const CMString& object_name);
+    void submit_transfer(uint64_t conn_id, const CMString& object_name, bool raw_transfer = false);
     CMSharedPtr<IOThreadPool> get_transfer_pool() const;
 
     void reset();
@@ -169,6 +178,7 @@ private:
 
     RemoteReadCallback remote_read_handler_;
     DirectReadCallback direct_read_handler_;
+    DirectCompressedReadCallback direct_compressed_read_handler_;
 };
 
 }  // namespace fly

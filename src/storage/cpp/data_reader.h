@@ -49,6 +49,10 @@ public:
     CMString read_object(const CMString& object_name);
     ReadResult read_object_data(const CMString& object_name);
     ReadResult read_object_data(const IndexEntry& entry);
+    CMString decompress_data(const CMString& raw_data, int8_t compression_type);
+
+    CMString read_raw_bytes(const CMString& object_name);
+    CMString read_raw_bytes(const IndexEntry& entry);
 
     bool exists(const CMString& object_name);
 
@@ -57,7 +61,6 @@ public:
 private:
     CMString find_file_path(const CMString& file_name);
     CMString read_from_file(const CMString& file_path, int64_t offset, int64_t size);
-    CMString decompress_data(const CMString& raw_data, int8_t compression_type);
     CMString read_large_object(const IndexEntry& entry);
 
     CMString base_path_;

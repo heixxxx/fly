@@ -293,6 +293,42 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
     return {true, std::move(result)};
 }
 
+std::pair<bool, CMString> DataService::try_read_local_raw(const CMString& object_name) {
+    auto [db_id, short_name] = split_full(object_name);
+    CMVector<IndexEntry> entries;
+    DbPaths paths;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto db_it = local_idx_.find(db_id);
+        if (db_it == local_idx_.end()) return {false, {}};
+        auto it = db_it->second.find(short_name);
+        if (it == db_it->second.end() || !it->second) {
+            return {false, {}};
+        }
+        auto& info = *it->second;
+        if (info.completion_state != CompletionState::COMPLETE || !info.flushed) {
+            return {false, {}};
+        }
+        entries = info.entries;
+
+        auto path_it = db_paths_.find(db_id);
+        if (path_it == db_paths_.end()) {
+            return {false, {}};
+        }
+        paths = path_it->second;
+    }
+
+    DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
+    if (entries.size() != 1) {
+        ERR("try_read_local_raw: multi-entry objects not supported for raw transfer");
+        return {false, {}};
+    }
+    CMString raw = reader.read_raw_bytes(entries.front());
+    if (raw.empty()) return {false, {}};
+    return {true, std::move(raw)};
+}
+
 std::pair<bool, ReadResult> DataService::try_read_remote(const CMString& object_name) {
     auto [found, result] = try_read_local(object_name);
     if (found) return {true, std::move(result)};
@@ -415,6 +451,58 @@ void DataService::set_direct_read_handler(DirectReadCallback cb) {
     direct_read_handler_ = std::move(cb);
 }
 
+void DataService::set_direct_compressed_read_handler(DirectCompressedReadCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    direct_compressed_read_handler_ = std::move(cb);
+}
+
+std::tuple<bool, CMString, CMString> DataService::read_raw_compressed(const CMString& object_name) {
+    auto [found, raw] = try_read_local_raw(object_name);
+    if (found) {
+        ReadResult header;
+        auto [db_id, short_name] = split_full(object_name);
+        DbPaths paths;
+        CMVector<IndexEntry> entries;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto db_it = local_idx_.find(db_id);
+            if (db_it != local_idx_.end()) {
+                auto it = db_it->second.find(short_name);
+                if (it != db_it->second.end() && it->second) {
+                    entries = it->second->entries;
+                }
+            }
+            auto path_it = db_paths_.find(db_id);
+            if (path_it != db_paths_.end()) {
+                paths = path_it->second;
+            }
+        }
+        CMString py_name;
+        if (!entries.empty() && !paths.base_path.empty()) {
+            DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
+            auto hr = reader.read_object_data(entries.front());
+            py_name = hr.py_name;
+        }
+        return {true, std::move(raw), std::move(py_name)};
+    }
+
+    auto info = lookup_remote_idx(object_name);
+    if (info.worker_id != 0 && !info.host.empty()) {
+        DirectCompressedReadCallback cb;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            cb = direct_compressed_read_handler_;
+        }
+        if (cb) {
+            auto [cb_found, cb_data, cb_py_name] = cb(info.host, info.port, object_name);
+            if (cb_found) return {true, std::move(cb_data), std::move(cb_py_name)};
+            remove_remote_location(object_name, info.worker_id);
+        }
+    }
+
+    return {false, {}, {}};
+}
+
 ReadResult DataService::read_raw(const CMString& object_name, int max_retries) {
     auto [found, result] = try_read_local(object_name);
     if (found) return result;
@@ -483,13 +571,14 @@ void DataService::reset() {
     db_paths_.clear();
     remote_read_handler_ = nullptr;
     direct_read_handler_ = nullptr;
+    direct_compressed_read_handler_ = nullptr;
 }
 
 bool DataService::is_transfer_server_running() const {
     return transfer_running_;
 }
 
-void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name) {
+void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name, bool raw_transfer) {
     if (!transfer_running_ || !transfer_pool_) return;
 
     auto result = CMMakeShared<TransferResult>();
@@ -499,13 +588,46 @@ void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name)
     auto callback = transfer_callback_;
 
     transfer_pool_->submit(
-        [this, result]() {
-            auto [found, read_result] = try_read_local_or_wait(result->object_name, -1);
-            result->success = found;
-            if (found) {
-                result->data.assign(read_result.data_buffer.begin(), read_result.data_buffer.end());
+        [this, result, raw_transfer]() {
+            if (raw_transfer) {
+                auto [found, raw_data] = try_read_local_raw(result->object_name);
+                result->success = found;
+                if (found) {
+                    result->compressed_data = std::move(raw_data);
+                    auto [db_id, short_name] = split_full(result->object_name);
+                    CMVector<IndexEntry> entries;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        auto db_it = local_idx_.find(db_id);
+                        if (db_it != local_idx_.end()) {
+                            auto it = db_it->second.find(short_name);
+                            if (it != db_it->second.end() && it->second) {
+                                entries = it->second->entries;
+                            }
+                        }
+                    }
+                    if (!entries.empty()) {
+                        CMString file_path;
+                        auto path_it = db_paths_.find(db_id);
+                        if (path_it != db_paths_.end()) {
+                            DataReader reader(path_it->second.base_path,
+                                             path_it->second.data_path,
+                                             path_it->second.writer_id);
+                            ReadResult header_result = reader.read_object_data(entries.front());
+                            result->py_name = header_result.py_name;
+                        }
+                    }
+                } else {
+                    result->error_message = "Object not found (raw): " + result->object_name;
+                }
             } else {
-                result->error_message = "Object not found: " + result->object_name;
+                auto [found, read_result] = try_read_local_or_wait(result->object_name, -1);
+                result->success = found;
+                if (found) {
+                    result->data.assign(read_result.data_buffer.begin(), read_result.data_buffer.end());
+                } else {
+                    result->error_message = "Object not found: " + result->object_name;
+                }
             }
         },
         [callback, result]() {

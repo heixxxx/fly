@@ -2,6 +2,16 @@
 
 ---
 
+## 2026-05-30: backup 数据复制 — 压缩传输零解压落盘
+
+| 文档 | 变更 |
+|------|------|
+| docs/architecture/overview.md | 数据副本策略从"低/未实现"更新为"已完成：backup=True 压缩传输零解压落盘" |
+| docs/python-api/module.md | write_object/read_object/write_object_raw/read_object_raw 签名新增 backup=False 参数说明 |
+| docs/storage/module.md | read_object/read_object_typed 签名新增 backup=false；新增 backup_object() 和 persist_read_result() 声明 |
+
+---
+
 ## 2026-05-25: 优雅关机 + workers_mutex_ 线程安全
 
 | 文档 | 变更 |

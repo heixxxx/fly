@@ -42,6 +42,13 @@ struct PendingWriteRegister {
     TaskErrorType error_type = TaskErrorType::UNKNOWN;
 };
 
+struct PendingBackup {
+    CMString object_name;
+    CMString db_id;
+    bool completed = false;
+    bool success = false;
+};
+
 class WorkerAgent {
 public:
     WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port,
@@ -83,6 +90,7 @@ public:
     std::pair<CMString, TaskErrorType> register_write_with_master(const CMString& db_id, const CMString& object_name);
     void request_database_freeze(const CMString& db_id);
     void request_object_remove(const CMString& db_id, const CMString& object_name);
+    void request_backup(const CMString& db_id, const CMString& object_name);
 
     void set_worker_property(const CMString& prop);
     void set_worker_property(const CMVector<CMString>& props);
@@ -117,6 +125,8 @@ private:
     static void notify_removed_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     static void freeze_trampoline(void* ctx, const CMString& db_id);
     static void remove_request_trampoline(void* ctx, const CMString& db_id, const CMString& object_name);
+    static void backup_request_trampoline(void* ctx, const CMString& db_id, const CMString& object_name);
+    static void notify_backup_complete_trampoline(void* ctx, const CMString& db_id, const CMString& object_name);
     
     uint64_t current_task_id_ = 0;
     CMVector<CMString> current_writes_;
@@ -153,6 +163,7 @@ private:
     void on_remove_command(uint64_t conn_id, const RemoveCommandMessage& msg);
     void on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg);
     void on_database_freeze_notification(uint64_t conn_id, const DatabaseFreezeNotification& msg);
+    void on_backup_assign(uint64_t conn_id, const BackupAssignMessage& msg);
     void on_disconnect(uint64_t conn_id);
     
     void heartbeat_loop();

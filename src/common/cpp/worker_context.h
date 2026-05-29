@@ -12,6 +12,8 @@ using RecordWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString
 using NotifyRemovedFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
 using FreezeFunc = void(*)(void* ctx, const CMString& db_id);
 using RemoveRequestFunc = void(*)(void* ctx, const CMString& db_id, const CMString& object_name);
+using BackupRequestFunc = void(*)(void* ctx, const CMString& db_id, const CMString& object_name);
+using NotifyBackupCompleteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& object_name);
 
 class WorkerAgentContext {
 public:
@@ -45,6 +47,10 @@ public:
         freeze_ctx_ = nullptr;
         remove_request_func_ = nullptr;
         remove_request_ctx_ = nullptr;
+        backup_request_func_ = nullptr;
+        backup_request_ctx_ = nullptr;
+        notify_backup_complete_func_ = nullptr;
+        notify_backup_complete_ctx_ = nullptr;
         last_error_type_ = TaskErrorType::UNKNOWN;
     }
 
@@ -87,6 +93,31 @@ public:
         }
     }
 
+    static void set_backup_request_func(BackupRequestFunc func, void* ctx) {
+        backup_request_func_ = func;
+        backup_request_ctx_ = ctx;
+    }
+
+    static void request_backup(const CMString& db_id, const CMString& object_name) {
+        if (backup_request_func_) {
+            backup_request_func_(backup_request_ctx_, db_id, object_name);
+        }
+    }
+
+    static BackupRequestFunc current_backup_func() { return backup_request_func_; }
+    static void* current_backup_ctx() { return backup_request_ctx_; }
+
+    static void set_notify_backup_complete_func(NotifyBackupCompleteFunc func, void* ctx) {
+        notify_backup_complete_func_ = func;
+        notify_backup_complete_ctx_ = ctx;
+    }
+
+    static void notify_backup_complete(const CMString& db_id, const CMString& object_name) {
+        if (notify_backup_complete_func_) {
+            notify_backup_complete_func_(notify_backup_complete_ctx_, db_id, object_name);
+        }
+    }
+
     static void set_last_error_type(TaskErrorType type) {
         last_error_type_ = type;
     }
@@ -108,6 +139,10 @@ private:
     static inline thread_local void* freeze_ctx_ = nullptr;
     static inline thread_local RemoveRequestFunc remove_request_func_ = nullptr;
     static inline thread_local void* remove_request_ctx_ = nullptr;
+    static inline thread_local BackupRequestFunc backup_request_func_ = nullptr;
+    static inline thread_local void* backup_request_ctx_ = nullptr;
+    static inline thread_local NotifyBackupCompleteFunc notify_backup_complete_func_ = nullptr;
+    static inline thread_local void* notify_backup_complete_ctx_ = nullptr;
     static inline thread_local TaskErrorType last_error_type_ = TaskErrorType::UNKNOWN;
 };
 

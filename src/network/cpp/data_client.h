@@ -18,6 +18,14 @@ public:
         int port,
         const CMString& object_name,
         int timeout_ms = 5000);
+
+    // Request compressed (raw) data from a remote worker.
+    // Returns: (success, compressed_bytes, py_name, error_message)
+    static std::tuple<bool, CMString, CMString, CMString> request_compressed_data(
+        const CMString& host,
+        int port,
+        const CMString& object_name,
+        int timeout_ms = 30000);
 };
 
 }  // namespace fly

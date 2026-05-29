@@ -21,7 +21,7 @@ class _Database:
             from _fly_storage import ex_stg_create_database
             self._db = ex_stg_create_database(base_path, data_path, writer_id)
 
-    def write_object(self, name: str, obj) -> str:
+    def write_object(self, name: str, obj, backup: bool = False) -> str:
         from _fly_storage import FlyBuffer
         if hasattr(obj, "is_cpp") and hasattr(obj, "__getstate_buffer__"):
             buf = obj.__getstate_buffer__()
@@ -31,12 +31,15 @@ class _Database:
         else:
             import pickle
             data = pickle.dumps(obj)
-            return self._db._write_pickle_bytes(name, data, type(obj).__name__)
-        return self._db._write_buffer(name, buf, type(obj).__name__)
+            return self._db._write_pickle_bytes(name, data, type(obj).__name__, backup)
+        return self._db._write_buffer(name, buf, type(obj).__name__, backup)
 
-    def read_object(self, name: str):
-        data, py_name = self._db.read_raw(name)
+    def read_object(self, name: str, backup: bool = False):
+        data, py_name = self._db.read_raw(name, backup)
         return self._reconstruct(data, py_name)
+
+    def backup_object(self, name: str):
+        self._db.backup_object(name)
 
     def _reconstruct(self, data, py_name: str):
         import _fly_storage
@@ -47,8 +50,8 @@ class _Database:
             return obj
         return pickle.loads(data)
 
-    def write_object_raw(self, name: str, data: str) -> str:
-        return self._db.write_object_raw(name, data)
+    def write_object_raw(self, name: str, data: str, backup: bool = False) -> str:
+        return self._db.write_object_raw(name, data, backup)
 
     def read_object_raw(self, name: str) -> str:
         return self._db.read_object_raw(name)

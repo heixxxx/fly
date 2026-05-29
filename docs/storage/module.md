@@ -45,23 +45,27 @@ public:
 
     // 异步写入（非阻塞）
     template<typename T>
-    CMString write_object(const CMString& object_name, const T& obj, 
+    CMString write_object(const CMString& object_name, const T& obj,
                           const CMString& py_name = "");
-    
-    CMString write_object(const CMString& object_name, const CMString& data, 
+
+    CMString write_object(const CMString& object_name, const CMString& data,
                           bool backup = false);
-    
+
     CMString write_object_typed(const CMString& object_name, const CMString& data,
                                  const CMString& py_name);
-    
+
     // 读取
     template<typename T>
     CMSharedPtr<T> read_object(const CMString& object_name);
-    
-    CMString read_object(const CMString& object_name);
-    
-    ReadResult read_object_typed(const CMString& object_name);
-    
+
+    CMString read_object(const CMString& object_name, bool backup = false);
+
+    ReadResult read_object_typed(const CMString& object_name, bool backup = false);
+
+    // 备份（内部使用，跳过 check_frozen，直接压缩传输落盘）
+    void persist_read_result(const CMString& object_name, const ReadResult& result);
+    void backup_object(const CMString& object_name);
+
     // 删除
     void remove_object(const CMString& object_name);
     

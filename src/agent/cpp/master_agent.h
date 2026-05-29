@@ -154,6 +154,10 @@ private:
     void on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg);
     void on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg);
 
+    void on_backup_request(uint64_t conn_id, const BackupRequestMessage& msg);
+    void on_backup_complete(uint64_t conn_id, const BackupCompleteMessage& msg);
+    uint64_t select_backup_worker(uint64_t source_worker_id);
+
     void persist_failed_task(const FailedTaskRecord& record);
     void remove_persisted_task(uint64_t task_id);
     CMString get_failed_tasks_file_path() const;

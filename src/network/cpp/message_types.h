@@ -37,6 +37,9 @@ enum class MessageType : uint8_t {
     REMOVE_REQUEST = 27,
     REMOVE_ACK = 28,
     REMOVE_COMMAND = 29,
+    BACKUP_REQUEST = 30,
+    BACKUP_ASSIGN = 31,
+    BACKUP_COMPLETE = 32,
 };
 
 // 基础消息头（所有消息继承）
@@ -92,10 +95,11 @@ struct DataRequestMessage {
     MessageHeader header;
     CMString object_name;
     uint64_t requesting_worker_id = 0;
+    bool raw_transfer = false;
     
     static constexpr MessageType msg_type = MessageType::DATA_REQUEST;
     
-    FLY_SERIALIZE(header, object_name, requesting_worker_id);
+    FLY_SERIALIZE(header, object_name, requesting_worker_id, raw_transfer);
 };
 
 // Worker → Worker: 数据响应（可能较大）
@@ -105,10 +109,12 @@ struct DataResponseMessage {
     CMString data;
     bool success = false;
     CMString error_message;
+    CMString compressed_data;
+    CMString py_name;
     
     static constexpr MessageType msg_type = MessageType::DATA_RESPONSE;
     
-    FLY_SERIALIZE(header, object_name, data, success, error_message);
+    FLY_SERIALIZE(header, object_name, data, success, error_message, compressed_data, py_name);
 };
 
 // Master → Worker: 任务分配
@@ -344,6 +350,43 @@ struct RemoveCommandMessage {
     static constexpr MessageType msg_type = MessageType::REMOVE_COMMAND;
 
     FLY_SERIALIZE(header, db_id, object_name);
+};
+
+// Worker → Master: request backup of an object
+struct BackupRequestMessage {
+    MessageHeader header;
+    uint64_t worker_id = 0;      // Source worker (has the data)
+    CMString object_name;         // Full name: "db_id:obj_name"
+    CMString db_id;
+
+    static constexpr MessageType msg_type = MessageType::BACKUP_REQUEST;
+    FLY_SERIALIZE(header, worker_id, object_name, db_id);
+};
+
+// Master → Worker: assign backup job
+struct BackupAssignMessage {
+    MessageHeader header;
+    CMString object_name;         // Full name
+    CMString db_id;
+    CMString source_host;         // Where to fetch data from
+    int32_t source_port = 0;
+    uint64_t source_worker_id = 0;
+
+    static constexpr MessageType msg_type = MessageType::BACKUP_ASSIGN;
+    FLY_SERIALIZE(header, object_name, db_id, source_host, source_port, source_worker_id);
+};
+
+// Worker → Master: backup complete notification
+struct BackupCompleteMessage {
+    MessageHeader header;
+    uint64_t worker_id = 0;      // Backup worker (or reading worker for read backup)
+    CMString object_name;         // Full name
+    CMString db_id;
+    bool success = false;
+    CMString error_message;
+
+    static constexpr MessageType msg_type = MessageType::BACKUP_COMPLETE;
+    FLY_SERIALIZE(header, worker_id, object_name, db_id, success, error_message);
 };
 
 }  // namespace fly

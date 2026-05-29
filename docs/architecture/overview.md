@@ -333,5 +333,5 @@ main → agent → task → network → storage → core → common
 | 高 | 跨 Worker 数据读取 E2E 测试 | 完整三层流程端到端验证 |
 | 中 | SSH/Custom Worker 启动 | launch_ssh_workers, launch_custom_workers |
 | 中 | Locality 优化调度 | 数据位置感知的任务分配 |
-| 低 | 数据副本策略 | backup=True + BackupManager |
+| ~~低~~ ✅ | 数据副本策略 | backup=True 压缩传输零解压落盘，BackupAssign/BackupComplete 消息协议 |
 | 低 | 容错机制 | Worker 失联重调度、任务重试 |

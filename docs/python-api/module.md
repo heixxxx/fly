@@ -47,14 +47,16 @@ class _Database:
         # Master 模式: agent._agent.get_or_create_database(...)
         # Worker 模式: ex_stg_create_database(...)
 
-    def write_object(self, name: str, obj) -> str:
+    def write_object(self, name: str, obj, *, backup: bool = False) -> str:
         # 自动检测 is_cpp → __getstate__() 或 pickle.dumps
+        # backup=True: 异步将数据副本写入另一个 Worker（跨 host），零解压压缩传输
 
-    def read_object(self, name: str):
+    def read_object(self, name: str, *, backup: bool = False):
         # 三层降级读取
         # Layer 1: DataService.try_read_local → 本地
         # Layer 2: lookup_remote_idx → DataClient 直连
         # Layer 3: request_remote_data → 全程远程 (最多 3 次重试)
+        # backup=True: 从远程 Worker 读取压缩数据，直接落盘本地（零解压），返回解压后数据
 
     def remove_object(self, name: str):
         # 删除对象索引（本地上移除，通知Master广播删除）
@@ -65,8 +67,8 @@ class _Database:
     def get_db_id(self) -> str
     def freeze(self)
     def is_frozen(self) -> bool
-    def write_object_raw(self, name, data) -> str
-    def read_object_raw(self, name) -> str
+    def write_object_raw(self, name, data, *, backup: bool = False) -> str
+    def read_object_raw(self, name, *, backup: bool = False) -> str
     def load_meta(self)
     def get_base_path(self) -> str
     def get_data_path(self) -> str
