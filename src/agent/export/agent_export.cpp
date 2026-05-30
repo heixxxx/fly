@@ -122,16 +122,13 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     FLY_EXPORT_METHOD("get_idle_workers", &fly::MasterAgent::get_idle_workers)
     FLY_EXPORT_METHOD("get_port", &fly::MasterAgent::get_port)
     FLY_EXPORT_METHOD("get_data_server_port", &fly::MasterAgent::get_data_server_port)
-    FLY_EXPORT_METHOD("request_remote_data", [](fly::MasterAgent& self, const fly::CMString& object_name) -> fly_export::tuple {
-        auto pair = self.request_remote_data(object_name);
-        if (!pair.first) return fly_export::make_tuple(
+    FLY_EXPORT_DEF("request_remote_data", [](fly::MasterAgent& self, const fly::CMString& object_name) -> fly_export::tuple {
+        auto [found, data, py_name] = self.request_remote_data(object_name);
+        if (!found) return fly_export::make_tuple(
             fly_export::bytes(), fly::CMString());
-        auto& result = pair.second;
         return fly_export::make_tuple(
-            fly_export::bytes(
-                result.data_buffer.data(),
-                result.data_buffer.size()),
-            result.py_name
+            fly_export::bytes(data.data(), data.size()),
+            py_name
         );
     })
     FLY_EXPORT_METHOD("request_data_from_worker", [](fly::MasterAgent& self,
@@ -212,16 +209,13 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
                                            const fly::CMString& db_id) -> CMSharedPtr<Database> {
         return self.get_database(db_id);
     })
-    FLY_EXPORT_METHOD("request_remote_data", [](fly::WorkerAgent& self, const fly::CMString& object_name) -> fly_export::tuple {
-        auto pair = self.request_remote_data(object_name);
-        if (!pair.first) return fly_export::make_tuple(
+    FLY_EXPORT_DEF("request_remote_data", [](fly::WorkerAgent& self, const fly::CMString& object_name) -> fly_export::tuple {
+        auto [found, data, py_name] = self.request_remote_data(object_name);
+        if (!found) return fly_export::make_tuple(
             fly_export::bytes(), fly::CMString());
-        auto& result = pair.second;
         return fly_export::make_tuple(
-            fly_export::bytes(
-                result.data_buffer.data(),
-                result.data_buffer.size()),
-            result.py_name
+            fly_export::bytes(data.data(), data.size()),
+            py_name
         );
     })
     FLY_EXPORT_METHOD("request_data_from_worker", [](fly::WorkerAgent& self,

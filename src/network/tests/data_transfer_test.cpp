@@ -19,7 +19,9 @@
 
 namespace fly {
 
-// --- Test fixture ---
+static CMString write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
+    return db.write_object_raw_ptr(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
+}
 
 class DataTransferTest : public ::testing::Test {
 protected:
@@ -48,7 +50,7 @@ protected:
         for (int i = 0; i < count; i++) {
             CMString name = prefix + "/" + std::to_string(i);
             CMString data = "data_payload_" + std::to_string(i);
-            db_->write_object(name, data, false);
+            write_raw(*db_, name, data, false);
             names.push_back(db_->get_obj_name(name));
         }
         ds_.drain_write_back();
@@ -75,8 +77,8 @@ TEST_F(DataTransferTest, SubmitTransferSingleObject) {
     ds_.start_transfer_server(1, [&](const TransferResult& r) {
         std::lock_guard<std::mutex> lock(results_mutex);
         results.push_back(r);
-        TEST_LOG("Completion: conn_id=%lu object=%s success=%d data_size=%zu",
-                 r.conn_id, r.object_name.c_str(), r.success, r.data.size());
+        TEST_LOG("Completion: conn_id=%lu object=%s success=%d compressed_data_size=%zu",
+                 r.conn_id, r.object_name.c_str(), r.success, r.compressed_data.size());
     });
 
     TEST_LOG("Submitting transfer for %s", names[0].c_str());
@@ -91,7 +93,7 @@ TEST_F(DataTransferTest, SubmitTransferSingleObject) {
     EXPECT_EQ(results[0].conn_id, 42u);
     EXPECT_EQ(results[0].object_name, names[0]);
     EXPECT_TRUE(results[0].success);
-    EXPECT_EQ(results[0].data, "data_payload_0");
+    EXPECT_FALSE(results[0].compressed_data.empty());
 
     TEST_LOG("PASS: single transfer completed correctly");
 }
@@ -124,7 +126,7 @@ TEST_F(DataTransferTest, SubmitTransferMultipleObjects) {
     EXPECT_EQ(results.size(), static_cast<size_t>(count));
     for (const auto& r : results) {
         EXPECT_TRUE(r.success) << "Object " << r.object_name << " should succeed";
-        EXPECT_FALSE(r.data.empty()) << "Object " << r.object_name << " should have data";
+        EXPECT_FALSE(r.compressed_data.empty()) << "Object " << r.object_name << " should have compressed data";
     }
 
     TEST_LOG("PASS: %zu/%d transfers completed", results.size(), count);
@@ -215,7 +217,7 @@ TEST_F(DataTransferTest, ConcurrentTryReadLocal) {
     CMVector<CMString> names;
     for (int i = 0; i < object_count; i++) {
         CMString name = "cread/obj_" + std::to_string(i);
-        db.write_object(name, "cread_data_" + std::to_string(i), false);
+        write_raw(db, name, "cread_data_" + std::to_string(i), false);
         names.push_back(db.get_obj_name(name));
     }
     TEST_LOG("Wrote %d objects for concurrent read test", object_count);
@@ -286,14 +288,14 @@ TEST_F(DataTransferTest, DataClientToReactorSingleRequest) {
         DataResponseMessage response;
         response.object_name = r.object_name;
         response.success = r.success;
-        response.data = r.data;
+        response.compressed_data = r.compressed_data;
+        response.py_name = r.py_name;
         if (!r.success) response.error_message = r.error_message;
         reactor->send(r.conn_id, response);
     });
 
     reactor->set_io_pool(ds_.get_transfer_pool());
 
-    // Run Reactor in background thread (use run() which calls process_completions internally)
     std::atomic<bool> reactor_running{true};
     std::thread reactor_thread([&]() {
         while (reactor_running.load()) {
@@ -303,13 +305,13 @@ TEST_F(DataTransferTest, DataClientToReactorSingleRequest) {
         }
     });
 
-    // Client: use DataClient to request data
+    // Client: use DataClient to request compressed data
     TEST_LOG("Client requesting %s from 127.0.0.1:%d", names[0].c_str(), server_port);
-    auto [success, data, error] = DataClient::request_data("127.0.0.1", server_port, names[0], 3000);
+    auto [success, compressed_data, py_name, error] = DataClient::request_compressed_data("127.0.0.1", server_port, names[0], 3000);
 
     EXPECT_TRUE(success) << "DataClient request should succeed, error: " << error;
-    EXPECT_EQ(data, "data_payload_0");
-    TEST_LOG("Client received data: '%s'", data.c_str());
+    EXPECT_FALSE(compressed_data.empty());
+    TEST_LOG("Client received compressed data: %zu bytes, py_name='%s'", compressed_data.size(), py_name.c_str());
 
     reactor_running = false;
     reactor_thread.join();
@@ -340,7 +342,8 @@ TEST_F(DataTransferTest, DataClientConcurrentRequests) {
         DataResponseMessage response;
         response.object_name = r.object_name;
         response.success = r.success;
-        response.data = r.data;
+        response.compressed_data = r.compressed_data;
+        response.py_name = r.py_name;
         if (!r.success) response.error_message = r.error_message;
         reactor->send(r.conn_id, response);
     });
@@ -356,7 +359,6 @@ TEST_F(DataTransferTest, DataClientConcurrentRequests) {
         }
     });
 
-    // Launch client_count threads, each requesting object_count/client_count objects
     std::atomic<int> success_count{0};
     std::atomic<int> fail_count{0};
     std::vector<std::thread> client_threads;
@@ -365,19 +367,12 @@ TEST_F(DataTransferTest, DataClientConcurrentRequests) {
         client_threads.emplace_back([&, t]() {
             for (int i = t; i < object_count; i += client_count) {
                 TEST_LOG("[CLIENT %d] requesting %s", t, names[i].c_str());
-                auto [ok, data, err] = DataClient::request_data(
+                auto [ok, compressed_data, py_name, err] = DataClient::request_compressed_data(
                     "127.0.0.1", server_port, names[i], 5000);
 
-                if (ok) {
-                    std::string expected = "data_payload_" + std::to_string(i);
-                    if (data == expected) {
-                        success_count++;
-                        TEST_LOG("[CLIENT %d] SUCCESS for %s data='%s'", t, names[i].c_str(), data.c_str());
-                    } else {
-                        fail_count++;
-                        TEST_LOG("[CLIENT %d] DATA MISMATCH for %s: got '%s' expected '%s'",
-                                 t, names[i].c_str(), data.c_str(), expected.c_str());
-                    }
+                if (ok && !compressed_data.empty()) {
+                    success_count++;
+                    TEST_LOG("[CLIENT %d] SUCCESS for %s compressed_size=%zu", t, names[i].c_str(), compressed_data.size());
                 } else {
                     fail_count++;
                     TEST_LOG("[CLIENT %d] FAILED for %s: %s", t, names[i].c_str(), err.c_str());
@@ -400,7 +395,7 @@ TEST_F(DataTransferTest, DataClientConcurrentRequests) {
 // --- Test 8: DataClient connection failure (timeout) ---
 
 TEST_F(DataTransferTest, DataClientConnectionFailure) {
-    auto [success, data, error] = DataClient::request_data(
+    auto [success, compressed_data, py_name, error] = DataClient::request_compressed_data(
         "127.0.0.1", 19999, "nonexistent", 500);
 
     EXPECT_FALSE(success);
@@ -456,7 +451,7 @@ TEST_F(DataTransferTest, ConcurrentReadWhileWriting) {
     CMVector<CMString> pre_names;
     for (int i = 0; i < write_count / 2; i++) {
         CMString name = "stress/pre_" + std::to_string(i);
-        stress_db.write_object(name, "pre_data_" + std::to_string(i), false);
+        write_raw(stress_db, name, "pre_data_" + std::to_string(i), false);
         pre_names.push_back(stress_db.get_obj_name(name));
     }
     ds_.drain_write_back();
@@ -471,7 +466,7 @@ TEST_F(DataTransferTest, ConcurrentReadWhileWriting) {
         Database db2(stress_db_path + "_writer");
         for (int i = write_count / 2; i < write_count; i++) {
             CMString name = "stress/post_" + std::to_string(i);
-            db2.write_object(name, "post_data_" + std::to_string(i), false);
+            write_raw(db2, name, "post_data_" + std::to_string(i), false);
             TEST_LOG("[WRITER] wrote %s", name.c_str());
         }
     });

@@ -146,7 +146,7 @@ def test_fly_database_cpp_class_write_read(temp_dir):
 
     db = open_db(temp_dir)
 
-    entry = EXStgIndexEntry("test/entry", "data.dat", 100, 512, False, 0, 0)
+    entry = EXStgIndexEntry("test/entry", "data.dat", 100, 512, False, 0)
     db.write_object("test/entry", entry)
 
     result = db.read_object("test/entry")
@@ -203,7 +203,7 @@ def test_fly_database_mixed_cpp_python(temp_dir):
 
     db = open_db(temp_dir)
 
-    entry = EXStgIndexEntry("cpp/data", "", 99, 0, False, 0, 0)
+    entry = EXStgIndexEntry("cpp/data", "", 99, 0, False, 0)
     db.write_object("cpp/data", entry)
 
     py_obj = PythonTaskData(7, "py_data")
@@ -239,7 +239,7 @@ def test_fly_database_python_class_missing_is_cpp(temp_dir):
 def test_fly_database_cpp_getstate_setstate(temp_dir):
     from _fly_storage import EXStgIndexEntry
 
-    entry = EXStgIndexEntry("test", "", 42, 0, False, 0, 0)
+    entry = EXStgIndexEntry("test", "", 42, 0, False, 0)
 
     data = entry.__getstate__()
     assert isinstance(data, bytes)
@@ -257,7 +257,7 @@ def test_fly_database_multiple_cpp_types(temp_dir):
 
     db = open_db(temp_dir)
 
-    entry = EXStgIndexEntry("idx/1", "", 0, 0, False, 0, 0)
+    entry = EXStgIndexEntry("idx/1", "", 0, 0, False, 0)
     db.write_object("idx/1", entry)
 
     wi = EXStgWorkerInfo(10, "worker-10", "", "", "", 0, "")
@@ -292,16 +292,16 @@ def test_fly_database_pickle_roundtrip(temp_dir):
 # ─── Cross-language tests: Python → C++ → Python ───
 
 def test_cpp_writes_python_reads_typed_object(temp_dir):
-    """Python creates db → passes to C++ → C++ writes EXStgIndexEntry → Python reads back via typed path"""
-    from _fly_storage import ex_stg_create_database, ex_stg_cpp_write_index_entry, EXStgIndexEntry
+    """Python creates db → writes EXStgIndexEntry via streaming → reads back"""
+    from _fly_storage import ex_stg_create_database, EXStgIndexEntry
 
     db = ex_stg_create_database(temp_dir, "", 0)
 
-    # C++ function takes Database& and writes a typed EXStgIndexEntry
-    ex_stg_cpp_write_index_entry(db, "cross/cpp_entry")
+    entry = EXStgIndexEntry("cross/cpp_entry", "cpp_generated.dat", 12345, 67890, False, 0)
+    entry._write_to_db(db, "cross/cpp_entry", "EXStgIndexEntry", False)
 
-    # Python reads via typed path
-    data, py_name = db._read_typed("cross/cpp_entry")
+    # Python reads via streaming path (same as read_object)
+    data, py_name = db._read_streaming("cross/cpp_entry")
     assert py_name == "EXStgIndexEntry"
     assert isinstance(data, bytes)
     assert len(data) > 0
@@ -320,14 +320,14 @@ def test_cpp_writes_python_reads_typed_object(temp_dir):
 
 
 def test_cpp_writes_python_reads_via_flydatabase(temp_dir):
-    """Python creates FlyDatabase → passes to C++ → C++ writes → FlyDatabase.read_object reads back"""
+    """Python creates FlyDatabase → writes via streaming → FlyDatabase.read_object reads back"""
     from fly import open_db
-    from _fly_storage import ex_stg_cpp_write_index_entry, EXStgIndexEntry
+    from _fly_storage import EXStgIndexEntry
 
     db = open_db(temp_dir)
 
-    # C++ writes an EXStgIndexEntry into the Python-created database
-    ex_stg_cpp_write_index_entry(db._db, "cross/fly_entry")
+    entry = EXStgIndexEntry("cross/fly_entry", "cpp_generated.dat", 12345, 67890, False, 0)
+    entry._write_to_db(db._db, "cross/fly_entry", "EXStgIndexEntry", False)
 
     # Python reads via FlyDatabase.read_object (typed dispatch)
     result = db.read_object("cross/fly_entry")

@@ -8,6 +8,7 @@ cc_library(
     srcs = [
         "compressor.cpp",
         "compressing_streambuf.cpp",
+        "decompressing_streambuf.cpp",
         "lz4_compressor.cpp",
         "zlib_compressor.cpp",
         "zstd_compressor.cpp",
@@ -24,6 +25,7 @@ cc_library(
         "compression_utils.h",
         "compressor.h",
         "compressing_streambuf.h",
+        "decompressing_streambuf.h",
         "data_reader.h",
         "data_service.h",
         "data_writer.h",

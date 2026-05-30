@@ -17,12 +17,8 @@ DataService& WorkerAgent::ds() {
 
 void WorkerAgent::set_data_service(DataService* ds) {
     data_service_ = ds;
-    ds->set_remote_read_handler([this](const CMString& name) -> std::pair<bool, ReadResult> {
+    ds->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString> {
         return request_remote_data(name);
-    });
-    ds->set_direct_read_handler([this](const CMString& host, int32_t port,
-                                         const CMString& name) -> std::pair<bool, ReadResult> {
-        return request_data_from_worker(host, port, name);
     });
     ds->set_direct_compressed_read_handler(
         [this](const CMString& host, int32_t port,
@@ -73,7 +69,6 @@ void WorkerAgent::start() {
             DataResponseMessage response;
             response.object_name = result.object_name;
             response.success = result.success;
-            response.data = result.data;
             response.compressed_data = result.compressed_data;
             response.py_name = result.py_name;
             if (!result.success) {
@@ -136,11 +131,6 @@ void WorkerAgent::start() {
     reactor_->register_handler<RemoveCommandMessage>(
         [this](uint64_t conn_id, const RemoveCommandMessage& msg) {
             on_remove_command(conn_id, msg);
-        });
-
-    reactor_->register_handler<BackupAssignMessage>(
-        [this](uint64_t conn_id, const BackupAssignMessage& msg) {
-            on_backup_assign(conn_id, msg);
         });
 
     reactor_->on_disconnect([this](uint64_t conn_id) {
@@ -289,6 +279,7 @@ void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);
         task_queue_.push(std::move(task));
     }
+    outstanding_tasks_++;
 }
 
 bool WorkerAgent::has_pending_task() const {
@@ -307,7 +298,9 @@ bool WorkerAgent::poll_task() {
 
     INFO("Executing task: task_id={}", task.task_id);
 
-    if (executor_) {
+    if (task.task_module == "__fly_internal") {
+        execute_internal_task(task);
+    } else if (executor_) {
         begin_task(task.task_id);
         auto result = executor_->execute(
             task.task_id, task.task_name, task.task_module, task.args);
@@ -352,6 +345,8 @@ bool WorkerAgent::poll_task() {
             ERR("TaskFailed sent: task_id={}, error={}", task.task_id, result.error);
         }
     }
+
+    outstanding_tasks_--;
     return true;
 }
 
@@ -412,7 +407,6 @@ void WorkerAgent::begin_task(uint64_t task_id) {
     WorkerAgentContext::set_freeze_func(&freeze_trampoline, this);
     WorkerAgentContext::set_remove_request_func(&remove_request_trampoline, this);
     WorkerAgentContext::set_backup_request_func(&backup_request_trampoline, this);
-    WorkerAgentContext::set_notify_backup_complete_func(&notify_backup_complete_trampoline, this);
 }
 
 void WorkerAgent::record_write(const CMString& db_id, const CMString& object_name) {
@@ -470,44 +464,43 @@ void WorkerAgent::request_database_freeze(const CMString& db_id) {
 }
 
 void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
-    ds().submit_transfer(conn_id, msg.object_name, msg.raw_transfer);
+    ds().submit_transfer(conn_id, msg.object_name);
 }
 
-std::pair<bool, ReadResult> WorkerAgent::request_remote_data(const CMString& object_name) {
+std::tuple<bool, CMString, CMString> WorkerAgent::request_remote_data(const CMString& object_name) {
      auto location = MetadataClient::query_data_location(
         master_host_, master_port_, object_name);
 
     if (!location.found) {
-        return {false, ReadResult{}};
+        return {false, {}, {}};
     }
 
-    INFO("MetadataClient resolved {} -> {}:{}", object_name, location.host, location.port);
-
-    auto [success, data, error] = DataClient::request_data(
+    auto [success, data, py_name, error] = DataClient::request_compressed_data(
         location.host, location.port, object_name);
 
     if (!success) {
-        return {false, ReadResult{}};
+        ERR("request_remote_data compressed failed for {}: {}", object_name, error);
+        return {false, {}, {}};
     }
 
     ds().update_remote_idx(object_name, location.worker_id, location.host, location.port);
 
-    ReadResult result;
-    result.data_buffer.assign(data.begin(), data.end());
-    return {true, std::move(result)};
+    return {true, std::move(data), std::move(py_name)};
 }
 
 std::pair<bool, ReadResult> WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,
-                                                                  const CMString& object_name) {
+                                                                   const CMString& object_name) {
 
-    auto [success, data, error] = DataClient::request_data(host, port, object_name);
+    auto [success, compressed_data, py_name, error] = DataClient::request_compressed_data(host, port, object_name);
 
     if (!success) {
+        ERR("request_data_from_worker failed for {}: {}", object_name, error);
         return {false, ReadResult{}};
     }
 
     ReadResult result;
-    result.data_buffer.assign(data.begin(), data.end());
+    result.data_buffer.assign(compressed_data.begin(), compressed_data.end());
+    result.py_name = std::move(py_name);
     return {true, std::move(result)};
 }
 
@@ -828,22 +821,6 @@ void WorkerAgent::backup_request_trampoline(void* ctx, const CMString& db_id, co
     static_cast<WorkerAgent*>(ctx)->request_backup(db_id, object_name);
 }
 
-void WorkerAgent::notify_backup_complete_trampoline(void* ctx, const CMString& db_id, const CMString& object_name) {
-    auto* self = static_cast<WorkerAgent*>(ctx);
-    if (!self->registered_) return;
-
-    CMString full_name = db_id + ":" + object_name;
-
-    BackupCompleteMessage msg;
-    msg.worker_id = self->worker_id_;
-    msg.object_name = full_name;
-    msg.db_id = db_id;
-    msg.success = true;
-    self->reactor_->send(self->master_conn_, msg);
-
-    INFO("BackupComplete (read) sent: object={}", full_name);
-}
-
 void WorkerAgent::request_backup(const CMString& db_id, const CMString& object_name) {
     if (!registered_) return;
 
@@ -858,87 +835,62 @@ void WorkerAgent::request_backup(const CMString& db_id, const CMString& object_n
     INFO("BackupRequest sent: object={}", full_name);
 }
 
-void WorkerAgent::on_backup_assign(uint64_t conn_id, const BackupAssignMessage& msg) {
-    touch_master_contact();
-    INFO("BackupAssign received: object={}, source={}:{}", msg.object_name, msg.source_host, msg.source_port);
+void WorkerAgent::execute_internal_task(const PendingTask& task) {
+    if (task.task_name == "__backup_object") {
+        if (task.args.size() < 2) {
+            ERR("Internal backup task: insufficient args (expected object_name, db_id)");
+            TaskFailedMessage failed;
+            failed.task_id = task.task_id;
+            failed.worker_id = worker_id_;
+            failed.error_message = "Internal backup: insufficient args";
+            reactor_->send(master_conn_, failed);
+            return;
+        }
 
-    auto io_pool = ds().get_transfer_pool();
-    if (!io_pool) {
-        ERR("No IO thread pool for backup");
-        BackupCompleteMessage response;
-        response.worker_id = worker_id_;
-        response.object_name = msg.object_name;
-        response.db_id = msg.db_id;
-        response.success = false;
-        response.error_message = "No IO thread pool";
-        reactor_->send(master_conn_, response);
-        return;
-    }
+        CMString object_name = task.args[0];
+        CMString db_id = task.args[1];
 
-    auto task_data = CMMakeShared<BackupAssignMessage>(msg);
-    auto worker_id = worker_id_;
-    auto backup_success = CMMakeShared<bool>(false);
-    auto pool = io_pool;
-    auto* reactor_ptr = reactor_.get();
-    auto master_conn = master_conn_;
-
-    // Spawn a dedicated thread for the backup fetch to avoid starving the
-    // transfer pool (which also serves incoming data requests).  The
-    // completion callback is posted back to the pool so it runs on the
-    // reactor thread via process_completions().
-    std::thread([this, task_data, backup_success, pool, reactor_ptr, master_conn, worker_id]() {
-        auto [success, data, error] = DataClient::request_data(
-            task_data->source_host, task_data->source_port, task_data->object_name, 30000);
-
-        if (!success) {
-            ERR("Backup: failed to fetch data from source: {}", error);
-        } else {
-            auto db = get_database(task_data->db_id);
-            if (!db) {
-                if (!request_db_path(task_data->db_id)) {
-                    ERR("Backup: failed to get db_path for db_id={}", task_data->db_id);
-                    success = false;
-                } else {
-                    db = get_database(task_data->db_id);
-                    if (!db) {
-                        ERR("Backup: still no database after request_db_path for db_id={}", task_data->db_id);
-                        success = false;
-                    }
-                }
+        auto db = get_database(db_id);
+        if (!db) {
+            if (!request_db_path(db_id)) {
+                ERR("Internal backup: failed to get db_path for db_id={}", db_id);
+                TaskFailedMessage failed;
+                failed.task_id = task.task_id;
+                failed.worker_id = worker_id_;
+                failed.error_message = "Internal backup: db_path request failed";
+                reactor_->send(master_conn_, failed);
+                return;
             }
-
-            if (success && db) {
-                CMString short_name = task_data->object_name;
-                CMString prefix = task_data->db_id + ":";
-                if (short_name.substr(0, prefix.size()) == prefix) {
-                    short_name = short_name.substr(prefix.size());
-                }
-
-                db->write_object(short_name, data, true);
-
-                fly::DataService::instance().drain_write_back();
-
-                *backup_success = true;
-                INFO("Backup: data persisted locally for object={}", task_data->object_name);
+            db = get_database(db_id);
+            if (!db) {
+                ERR("Internal backup: still no database for db_id={}", db_id);
+                TaskFailedMessage failed;
+                failed.task_id = task.task_id;
+                failed.worker_id = worker_id_;
+                failed.error_message = "Internal backup: no database";
+                reactor_->send(master_conn_, failed);
+                return;
             }
         }
 
-        pool->submit(
-            [reactor_ptr, master_conn, task_data, worker_id, backup_success]() {
-                BackupCompleteMessage response;
-                response.worker_id = worker_id;
-                response.object_name = task_data->object_name;
-                response.db_id = task_data->db_id;
-                response.success = *backup_success;
-                if (!*backup_success) {
-                    response.error_message = "Backup data fetch or persist failed";
-                }
-                reactor_ptr->send(master_conn, response);
-                INFO("BackupComplete sent: object={}, success={}", task_data->object_name, *backup_success);
-            },
-            nullptr
-        );
-    }).detach();
+        db->backup_object(object_name);
+        fly::DataService::instance().drain_write_back();
+
+        TaskCompleteMessage complete;
+        complete.task_id = task.task_id;
+        complete.worker_id = worker_id_;
+        complete.written_objects.push_back(db_id + ":" + object_name);
+        reactor_->send(master_conn_, complete);
+
+        INFO("Internal backup complete: object={}, db_id={}", object_name, db_id);
+    } else {
+        WARN("Unknown internal task: name={}", task.task_name);
+        TaskFailedMessage failed;
+        failed.task_id = task.task_id;
+        failed.worker_id = worker_id_;
+        failed.error_message = "Unknown internal task: " + task.task_name;
+        reactor_->send(master_conn_, failed);
+    }
 }
 
 }  // namespace fly

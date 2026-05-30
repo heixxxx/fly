@@ -147,15 +147,14 @@ def test_freeze_with_typed_objects():
         db = sm.get_or_create_database(test_dir)
 
         ds = storage.ex_stg_get_data_service()
-        entry = storage.EXStgIndexEntry("test/entry", "data.dat", 100, 512, False, 0, 0)
-        serialized = entry.__getstate__()
-        db._write_typed("typed/entry", serialized, "EXStgIndexEntry")
+        entry = storage.EXStgIndexEntry("test/entry", "data.dat", 100, 512, False, 0)
+        entry._write_to_db(db, "typed/entry", "EXStgIndexEntry", False)
         ds.drain_write_back()
         time.sleep(0.3)
 
         db.freeze()
 
-        data_bytes, py_name = db._read_typed("typed/entry")
+        data_bytes, py_name = db._read_streaming("typed/entry")
         assert py_name == "EXStgIndexEntry", f"Expected EXStgIndexEntry, got {py_name}"
 
         sm.close_all()

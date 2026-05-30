@@ -2,13 +2,35 @@
 
 ---
 
+## 2026-05-30: 统一流式序列化+压缩管线重构
+
+| 文档 | 变更 |
+|------|------|
+| docs/storage/module.md | 全面重写：Database API（删除 write_object/write_object_typed/write_object_buffer/read_object 非模板版，新增 write_object_raw_ptr/read_object_compressed）；DataWriter 简化为纯落盘；DataReader 简化为纯读字节；IndexEntry 删除 compression_type 字段和版本控制；写入/读取流程更新为流式管线架构；新增序列化宏说明 |
+| CLAUDE.md | FLY_SERIALIZE 说明更新为自动生成 fly_serialize/fly_deserialize |
+| AGENTS.md | storage 模块描述更新，新增 CompressingStreamBuf/DecompressingStreamBuf |
+| src/main/cpp/BUILD | 所有导出 .so 加入 data 依赖，修复 bazel clean 后 .so 不重建问题 |
+
+核心变更：
+- DataWriter 移除所有压缩配置和逻辑，只保留 write_record 纯落盘
+- DataReader 移除所有解压逻辑，只保留 read_raw_bytes + exists
+- Database 统一管理 compress_data_to_buffer（写）和 DecompressingStreamBuf（读）
+- FLY_STREAMABLE() 宏合并进 FLY_SERIALIZE_END，所有 FLY_SERIALIZE 类型自动获得流式能力
+- FLY_EXPORT_SERIALIZE 合并 _write_to_db + is_cpp + __getstate__/__setstate__
+- write_record 删除 compression_type 参数，IndexEntry 删除 compression_type 字段
+- IndexEntry 删除版本控制（FLY_SERIALIZE_BEGIN → FLY_SERIALIZE）
+- Python database.py 简化为两条写路径：_write_to_db / pickle
+- 删除 write_object(name, data) / read_object(name) / write_object_typed / write_object_buffer
+
+---
+
 ## 2026-05-30: backup 数据复制 — 压缩传输零解压落盘
 
 | 文档 | 变更 |
 |------|------|
 | docs/architecture/overview.md | 数据副本策略从"低/未实现"更新为"已完成：backup=True 压缩传输零解压落盘" |
 | docs/python-api/module.md | write_object/read_object/write_object_raw/read_object_raw 签名新增 backup=False 参数说明 |
-| docs/storage/module.md | read_object/read_object_typed 签名新增 backup=false；新增 backup_object() 和 persist_read_result() 声明 |
+| docs/storage/module.md | read_object/read_object_typed 签名新增 backup=false；新增 backup_object() 声明 |
 
 ---
 

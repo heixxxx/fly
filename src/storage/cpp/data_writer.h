@@ -1,9 +1,7 @@
 #pragma once
 
 #include <storage/cpp/local_index.h>
-#include <storage/cpp/compressor.h>
 #include <serialization/cpp/object_header.h>
-#include <serialization/cpp/serialization_macros.h>
 #include <common/cpp/common_types.h>
 #include <common/cpp/writer_id.h>
 #include <cstdint>
@@ -12,23 +10,11 @@
 
 class DataWriter {
 public:
-    struct CompressResult {
-        int64_t original_size;
-        int64_t record_size;
-        int32_t chunk_count;
-    };
-
     DataWriter(
         const CMString& base_path,
         const CMString& data_path,
         const CMString& writer_id,
         int64_t aggregation_threshold,
-        int64_t large_file_threshold,
-        int64_t block_size,
-        CompressionType compression_type = CompressionType::LZ4,
-        int64_t compression_threshold = 128,
-        int compression_level = 0,
-        int64_t stream_chunk_size = 4194304,
         const CMString& host = ""
     );
 
@@ -36,28 +22,6 @@ public:
 
     DataWriter(const DataWriter&) = delete;
     DataWriter& operator=(const DataWriter&) = delete;
-
-    template<typename T>
-    CMString write_object(const CMString& object_name, const T& obj,
-                           const CMString& py_name = "") {
-        FlySerBuf buffer;
-        FLY_ENCODE_TO_BYTES(obj, buffer);
-        return write_typed_object(object_name, static_cast<uint64_t>(buffer.size()),
-                                  py_name, buffer.data(),
-                                  static_cast<int64_t>(buffer.size()));
-    }
-
-    CMString write_object(const CMString& object_name, const CMString& data, bool backup = false);
-
-    CMString write_typed_object(const CMString& object_name, uint64_t original_size,
-                                 const CMString& py_name,
-                                 const char* data, int64_t data_size);
-
-    CompressResult compress_to_buffer(
-        uint64_t original_size,
-        const CMString& py_name,
-        const char* data, int64_t data_size,
-        FlyBuffer& target);
 
     void write_record(const CMString& object_name,
                        int64_t original_size,
@@ -77,21 +41,12 @@ public:
 private:
     void create_new_file();
     CMString get_current_file_name();
-    void write_small_object(const CMString& object_name, const CMString& data);
-    void write_large_object(const CMString& object_name, const CMString& data);
 
     CMString base_path_;
     CMString data_path_;
     CMString writer_id_;
     CMString host_;
     int64_t aggregation_threshold_;
-    int64_t large_file_threshold_;
-    int64_t block_size_;
-
-    CompressionType compression_type_;
-    int64_t compression_threshold_;
-    CMUniquePtr<Compressor> compressor_;
-    int64_t stream_chunk_size_;
 
     CMString current_file_;
     int32_t file_index_ = 1;

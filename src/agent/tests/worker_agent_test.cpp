@@ -551,7 +551,7 @@ TEST_F(IdxLoadTest, OnRemoveCommandExtractsShortName) {
     std::filesystem::create_directories(base_path);
 
     auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_id);
-    db->write_object("target_obj", "remove_test_data", false);
+    db->write_object_raw_ptr("target_obj", "remove_test_data", 16, "bytes", false);
     fly::DataService::instance().drain_write_back();
 
     MasterAgent master("127.0.0.1", 0);
@@ -570,7 +570,6 @@ TEST_F(IdxLoadTest, OnRemoveCommandExtractsShortName) {
     entry.size = 100;
     entry.is_large = false;
     entry.block_count = 0;
-    entry.compression_type = 0;
     ds_.on_object_written(db_id, full, entry);
     ds_.on_flush(db_id);
     ASSERT_TRUE(ds_.has_local_object(full));
@@ -737,7 +736,6 @@ TEST_F(IdxLoadTest, OnObjectRemovedHandler) {
     entry.size = 100;
     entry.is_large = false;
     entry.block_count = 0;
-    entry.compression_type = 0;
 
     ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
     ds_.on_object_written(db_id, full, entry);

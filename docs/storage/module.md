@@ -12,14 +12,16 @@
 
 | 文件 | 说明 |
 |------|------|
-| `cpp/database.h/cpp` | 统一存储接口，异步写入（WriteBackQueue） |
-| `cpp/data_writer.h/cpp` | 单线程写入聚合器，流式压缩管线 + 磁盘写入 |
-| `cpp/data_reader.h/cpp` | 数据读取器（实例方法） |
+| `cpp/database.h/cpp` | 统一存储接口，流式序列化+压缩，异步写入 |
+| `cpp/data_writer.h/cpp` | 纯落盘写入聚合器（不持有压缩配置） |
+| `cpp/data_reader.h/cpp` | 纯读取字节流（不碰压缩/反序列化） |
+| `cpp/compressing_streambuf.h` | 流式压缩 streambuf（分块自动 flush） |
+| `cpp/decompressing_streambuf.h/cpp` | 流式解压 streambuf（自动解析 ObjectHeader + 逐 chunk 解压） |
 | `cpp/fly_buffer_stream.h` | FlyBufferStreamBuf（streambuf→FlyBuffer）+ CountingStreamBuf |
 | `cpp/data_service.h/cpp` | 统一内存索引：local_idx + remote_idx + db_paths_ + worker_registry |
 | `cpp/storage_manager.h/cpp` | Database 生命周期管理，单例 |
 | `cpp/local_index.h/cpp` | 本地索引持久化（.idx 文件） |
-| `cpp/index_entry.h` | 索引条目结构（版本 3） |
+| `cpp/index_entry.h` | 索引条目结构 |
 | `cpp/compressor.h/cpp` | 压缩接口（虚函数 + 工厂） |
 | `cpp/write_back_queue.h/cpp` | 异步写入队列 |
 | `export/storage_export.cpp` | Python 导出 |
@@ -39,31 +41,25 @@ public:
              const CMString& host = "",
              const CMString& existing_db_id = "");
     ~Database();  // 析构时 unregister_database + drain_write_back
-    
-    // existing_db_id: 非空时跳过 write_db_meta_header()，使用给定 db_id（用于 load_db 恢复）
-    // 空时: generate_db_id() 生成 UUID v4 (32 hex chars)，写入 _DB_META header
 
-    // 异步写入（非阻塞）
+    // C++ 类型写入（流式序列化 + 压缩 + 异步落盘）
     template<typename T>
     CMString write_object(const CMString& object_name, const T& obj,
-                          const CMString& py_name = "");
+                          const CMString& py_name, bool backup = false);
 
-    CMString write_object(const CMString& object_name, const CMString& data,
-                          bool backup = false);
+    // Python pickle bytes 写入（压缩 + 异步落盘）
+    CMString write_object_raw_ptr(const CMString& object_name,
+                                  const char* data, int64_t data_size,
+                                  const CMString& py_name, bool backup = false);
 
-    CMString write_object_typed(const CMString& object_name, const CMString& data,
-                                 const CMString& py_name);
+    // 读取压缩数据（返回原始磁盘字节 + py_name）
+    std::pair<CMString, CMString> read_object_compressed(const CMString& object_name, bool backup = false);
 
-    // 读取
+    // C++ 类型读取（解压 + 流式反序列化）
     template<typename T>
     CMSharedPtr<T> read_object(const CMString& object_name);
 
-    CMString read_object(const CMString& object_name, bool backup = false);
-
-    ReadResult read_object_typed(const CMString& object_name, bool backup = false);
-
-    // 备份（内部使用，跳过 check_frozen，直接压缩传输落盘）
-    void persist_read_result(const CMString& object_name, const ReadResult& result);
+    // 备份（跳过 check_frozen，直接压缩传输落盘）
     void backup_object(const CMString& object_name);
 
     // 删除
@@ -73,7 +69,6 @@ public:
     void freeze();
     bool is_frozen() const;
     DbMeta load_meta() const;
-    void write_db_meta_header();  // 写 _DB_META header（构造时自动调用，existing_db_id 非空时跳过）
     CMString get_db_id() const;
     void set_db_id(const CMString& db_id);
     void reset();
@@ -86,23 +81,97 @@ public:
 private:
     CMString base_path_;
     CMString data_path_;
-    uint64_t writer_id_ = 0;
+    CMString writer_id_;
     CMString db_id_;
     CMString host_;
     bool is_frozen_ = false;
-    CMSet<CMString> removed_objects_;  // 待删除对象集合（freeze时磁盘清理）
+    CompressionType compression_type_;
+    int compression_level_;
+    int64_t serialize_chunk_size_;
+    CMSet<CMString> removed_objects_;
     
     CMUniquePtr<DataWriter> writer_;
     CMUniquePtr<DataReader> reader_;
 };
 ```
 
+**Python 侧写路径**（`database.py`）:
+```
+write_object(name, obj)
+  ├─ hasattr(obj, "_write_to_db") → C++ 路径: write_object<T>（流式序列化+压缩）
+  └─ else → pickle.dumps → _write_pickle_bytes → write_object_raw_ptr（压缩）
+```
+
+**Python 侧读路径**（`database.py`）:
+```
+read_object(name)
+  → _read_streaming → read_object_compressed → (compressed_data, py_name)
+  → _reconstruct(data, py_name)
+    ├─ C++ 类型 → __setstate__(data)
+    └─ Python 类型 → _decompress_bytes → pickle.loads
+```
+
 ---
 
-### 写入流程（流式管线 + 异步落盘）
+### 写入流程（流式序列化+压缩管线 + 异步落盘）
 
-**核心设计**: 序列化和压缩在**调用线程**完成（CPU 密集），WBQ 后台线程**仅负责磁盘 I/O**。
+**核心设计**: Database 统一负责流式序列化+压缩，DataWriter 纯落盘。CPU 密集操作在调用线程完成，WBQ 后台线程仅负责磁盘 I/O。
 
+```
+write_object<T>(name, obj, py_name)  ← 调用线程（C++ 类型）
+  │
+  ├─ 1. FlyBufferStreamBuf → CountingStreamBuf → CompressingStreamBuf
+  │     → obj.fly_serialize(os) 直接流式写入压缩管线
+  │     → 输出：ObjectHeader + 分块压缩数据（完整磁盘格式）
+  │     → 无中间 buffer 拷贝
+  │
+  ├─ 2. DataService.on_write_started(db_id, full_name)
+  │
+  ├─ 3. WorkerAgentContext.register_write(db_id, name)
+  │
+  ├─ 4. enqueue_write_back(req)  ────→  WBQ 后台线程
+  │     execute: write_record() + flush()    │
+  │     complete: on_write_completed()       │→ file_stream_.write(record)
+  │              + caller_record_func()       │→ index 更新
+  │                                           │→ flush
+  └─ 5. 返回 "" （立即返回）
+
+write_object_raw_ptr(name, data, size, py_name)  ← 调用线程（Python pickle）
+  │
+  ├─ 1. compress_data_to_buffer(data, size, py_name, target)
+  │     → ObjectHeader + os.write(data, size) → CompressingStreamBuf → target
+  │
+  └─ 2~5. 同上
+```
+
+**流式管线组件**:
+| 组件 | 职责 |
+|------|------|
+| `FlyBufferStreamBuf` | `std::streambuf` → FlyBuffer 适配器，`xsputn` 直接 append |
+| `CountingStreamBuf` | 包装 streambuf 并统计写入字节数（用于 `ObjectHeader.total_size`） |
+| `CompressingStreamBuf` | 分块压缩，达到 `serialize_chunk_size` 时自动 flush chunk |
+
+**Python pickle 路径**: `pickle.dumps(obj)` → `_write_pickle_bytes` 传裸指针给 `compress_data_to_buffer`。
+
+**回调模式说明**:
+
+`WorkerAgentContext` 使用 C 风格函数指针 + `void*` 上下文实现解耦：
+
+```cpp
+using RecordWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
+using RegisterWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
+```
+
+**调用链**:
+```
+Database.write_object<T>()
+  → WorkerAgentContext::register_write()
+    → register_func_(ctx_, db_id, name)
+    → trampoline → WorkerAgent::register_write_with_master()
+  
+  → 异步完成时 (complete lambda)
+    → caller_record_func(caller_record_ctx, ...)
+    → trampoline → WorkerAgent::record_write()
 ```
 write_object(name, obj)  ← 调用线程
   │
@@ -171,7 +240,9 @@ Database.write_object()
 
 ---
 
-### DataWriter（写入聚合器）
+### DataWriter（纯落盘写入聚合器）
+
+DataWriter 不持有任何压缩配置，仅负责将预压缩的 FlyBuffer 写入磁盘文件并维护索引。
 
 ```cpp
 class DataWriter {
@@ -181,24 +252,10 @@ public:
         const CMString& data_path,
         const CMString& writer_id,
         int64_t aggregation_threshold,
-        int64_t large_file_threshold,
-        int64_t block_size,
-        CompressionType compression_type = CompressionType::LZ4,
-        int64_t compression_threshold = 128,
-        int compression_level = 0,
-        int64_t stream_chunk_size = 4194304,
         const CMString& host = ""
     );
     
-    void write_typed_object(const CMString& name, int64_t original_size,
-                            const CMString& py_name, const char* data, int64_t size);
-    
-    // 流式压缩（调用线程）
-    struct CompressResult { int64_t original_size; int64_t record_size; int32_t chunk_count; };
-    CompressResult compress_to_buffer(uint64_t original_size, const CMString& py_name,
-                                       const char* data, int64_t data_size, FlyBuffer& target);
-    
-    // 磁盘写入（WBQ 线程）
+    // 纯落盘（数据已由 Database 层压缩完毕）
     void write_record(const CMString& object_name, int64_t original_size,
                       int32_t chunk_count, const FlyBuffer& record);
     
@@ -207,9 +264,10 @@ public:
     
     IndexEntry* get_last_entry(const CMString& object_name);
     CMVector<IndexEntry>* get_all_entries(const CMString& object_name);
+    bool remove_entry(const CMString& object_name);
     
     int64_t total_bytes_written() const;
-    int file_count() const;
+    int32_t file_count() const;
 
 private:
     CMString base_path_;
@@ -217,14 +275,6 @@ private:
     CMString writer_id_;
     CMString host_;
     int64_t aggregation_threshold_;
-    int64_t large_file_threshold_;
-    int64_t block_size_;
-    CompressionType compression_type_;
-    int64_t compression_threshold_;
-    int compression_level_;
-    int64_t stream_chunk_size_;
-    CMUniquePtr<Compressor> compressor_;
-    
     CMUniquePtr<LocalIndex> index_;
     std::ofstream file_stream_;
     int32_t file_index_;
@@ -235,20 +285,20 @@ private:
 ```
 
 **写入策略**:
-- 小文件 (size < large_file_threshold): 聚合写入 `.dat` 文件
-- 大文件 (size >= large_file_threshold): 分块存储，每块 block_size 大小
-- 文件超过阈值时滚动到新文件
+- 所有对象统一聚合写入 `.dat` 文件
+- 文件超过 `aggregation_threshold` 时滚动到新文件
+- 不区分大小文件，全部使用统一的 `[ObjectHeader][Chunks]` 磁盘格式
 
 **配置项**:
 | 键 | 默认值 | 说明 |
 |---|--------|------|
-| `large_file_threshold_kb` | 65536 | 大文件阈值（KB），默认 64MB |
-| `block_size` | 134217728 | 大文件分块大小（字节），默认 128MB |
-| `aggregation_threshold` | 1048576 | 聚合阈值（字节） |
+| `aggregation_threshold` | 1048576 | 聚合阈值（字节），超过时滚动新文件 |
 
 ---
 
-### DataReader（数据读取器）
+### DataReader（纯读取字节流）
+
+DataReader 不碰压缩/反序列化，仅负责从磁盘文件读取原始字节。
 
 ```cpp
 class DataReader {
@@ -257,26 +307,25 @@ public:
                const CMString& data_path, 
                const CMString& writer_id);
     
-    ReadResult read_from_entries(const CMVector<IndexEntry>& entries);
-    ReadResult read_object_data(const IndexEntry& entry);
-    ReadResult read_object_data(const CMString& object_name);
+    // 读取原始压缩字节（[ObjectHeader][Chunks]）
+    CMString read_raw_bytes(const CMString& object_name) const;
     
-    template<typename T>
-    CMSharedPtr<T> read_object(const CMString& object_name);
-    
-    CMString read_object(const CMString& object_name);
-    
+    // 检查对象是否存在
     bool exists(const CMString& object_name) const;
+
+    // 索引访问
+    IndexEntry* find_entry(const CMString& object_name) const;
+    CMVector<IndexEntry>* find_all_entries(const CMString& object_name) const;
 
 private:
     CMString base_path_;
     CMString data_path_;
     CMString writer_id_;
-    CMString find_file_path(const CMString& file_name);
+    CMUniquePtr<LocalIndex> index_;
 };
 ```
 
-**注意**: 所有方法为**实例方法**（非静态），需构造 DataReader 实例。
+**注意**: 解压和反序列化由 `DecompressingStreamBuf` 和 `fly_deserialize()` 在 Database/DataService 层完成。
 
 ---
 
@@ -391,23 +440,9 @@ struct IndexEntry {
     int64_t size;
     bool is_large;
     int32_t block_count;
-    int8_t compression_type;  // 原始值，非枚举
-    CMString host;            // v3 新增
+    CMString host;
     
-    FLY_SERIALIZE_BEGIN(3)
-        FLY_FIELD(object_name);
-        FLY_FIELD(file_name);
-        FLY_FIELD(offset);
-        FLY_FIELD(size);
-        FLY_BOOL(is_large);
-        FLY_FIELD(block_count);
-        if (version >= 2) {
-            FLY_FIELD(compression_type);
-        }
-        if (version >= 3) {
-            FLY_FIELD(host);
-        }
-    FLY_SERIALIZE_END
+    FLY_SERIALIZE(object_name, file_name, offset, size, is_large, block_count, host);
 };
 ```
 
@@ -446,20 +481,46 @@ public:
 ## 读取流程（三层降级）
 
 ```
-read_object("key")
+read_object<T>("key")
   │
-  ├─ Layer 1: DataService.try_read_local(key)
-  │     └── 内存索引 local_idx → 找到 + flushed
-  │           └── DataReader.read_from_entries()
+  ├─ 1. read_object_compressed("key") → (compressed_data, py_name)
+  │     └── DataService → DataReader.read_raw_bytes → 原始磁盘字节
   │
-  ├─ Layer 2: DataService.lookup_remote_idx(key)
-  │     └── 有缓存 → DataClient.request_data(host, port, key)
+  ├─ 2. DecompressingStreamBuf(compressed_data)
+  │     └── 自动解析 ObjectHeader + 逐 chunk 解压
   │
-  └─ Layer 3: read_raw(key) (最多 3 次重试)
-        ├── MetadataClient::query_data_location() → 问 Master
-        └── DataClient.request_data() → 直连目标 Worker
-        └── 成功后 update_remote_idx() 缓存
+  └─ 3. obj.fly_deserialize(is)
+        └── bitsery 流式反序列化
+
+read_object("key")  ← Python 侧
+  │
+  ├─ _read_streaming → read_object_compressed → (compressed_data, py_name)
+  │
+  └─ _reconstruct(data, py_name)
+      ├─ C++ 类型 → __setstate__(data)    [via DecompressingStreamBuf]
+      └─ Python 类型 → _decompress_bytes → pickle.loads
 ```
+
+**远程降级**:
+```
+DataService.try_read_local(key)     → Layer 1: 内存索引 → 本地读取
+DataService.lookup_remote_idx(key)  → Layer 2: DataClient.request_data(host, port, key)
+read_raw(key)                       → Layer 3: MetadataClient 查 Master → DataClient 直连
+```
+
+---
+
+## 序列化宏
+
+`FLY_SERIALIZE(...)` 自动生成三个函数：
+- `serialize(S& s)` — bitsery 通用序列化接口（字段声明）
+- `fly_serialize(std::ostream&)` — 流式编码到 ostream（用于压缩管线）
+- `fly_deserialize(std::istream&)` — 从 istream 流式解码（用于解压管线）
+
+`FLY_EXPORT_SERIALIZE(ClassName)` 在 `FLY_SERIALIZE` 基础上额外生成：
+- `_write_to_db` — Python 可调用，直接走 `Database::write_object<T>`
+- `is_cpp` — 属性标记，标识 C++ 导出类型
+- `__getstate__` / `__setstate__` — Python pickle 支持
 
 ---
 
@@ -467,13 +528,14 @@ read_object("key")
 
 | 决策 | 原因 |
 |------|------|
+| Database 统一压缩，DataWriter 纯落盘 | 压缩配置集中管理，DataWriter 不持有压缩状态 |
+| Database 统一解压，DataReader 纯读 | 读取路径不碰压缩/反序列化，职责单一 |
 | 调用线程序列化+压缩，WBQ 仅落盘 | CPU 密集操作不阻塞 WBQ，单线程足以应对磁盘带宽 |
 | 流式管线（FlyBufferStreamBuf + CompressingStreamBuf） | 零中间拷贝，峰值内存 = chunk_size + compressed_size |
+| DecompressingStreamBuf 自动解析 ObjectHeader | 读取路径无需从 IndexEntry 取压缩类型 |
+| `FLY_SERIALIZE` 合并流式能力 | 所有序列化类型自动获得 `fly_serialize`/`fly_deserialize`，无需独立 `FLY_STREAMABLE()` |
 | FlyBuffer 统一为 CMString 内部存储 | 消除 char↔uint8_t 阻抗失配，读取路径 `take(std::move(string))` 零拷贝 |
 | WriteBackQueue 异步写入 | 文件 I/O 非阻塞，避免写入阻塞任务执行 |
 | 回调模式解耦 | Database 不依赖 WorkerAgent，纯函数指针桥接 |
-| large_file_threshold_kb 配置 | 用户可调整大文件阈值（单位 KB） |
-| DataReader 实例方法 | 需要构造实例，持有路径信息 |
 | DataService 进程级单例 | Master/Worker 共享，仅更新触发源不同 |
 | IOThreadPool 数据传输 | 文件 I/O 不阻塞 Reactor 线程 |
-| IndexEntry 版本 3 | 新增 host 字段支持跨节点追踪 |

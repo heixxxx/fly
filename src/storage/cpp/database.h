@@ -5,11 +5,17 @@
 #include <storage/cpp/data_service.h>
 #include <storage/cpp/write_back_queue.h>
 #include <storage/cpp/db_meta.h>
+#include <storage/cpp/compressing_streambuf.h>
+#include <storage/cpp/decompressing_streambuf.h>
+#include <storage/cpp/fly_buffer_stream.h>
+#include <storage/cpp/compressor.h>
+#include <core/cpp/config.h>
 #include <common/cpp/worker_context.h>
 #include <common/cpp/common_types.h>
 #include <log/cpp/logger.h>
 #include <memory>
 #include <stdexcept>
+#include <cstring>
 
 #include <set>
 
@@ -21,101 +27,19 @@ public:
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
 
-    template<typename T>
-    CMString write_object(const CMString& object_name, const T& obj,
-                           const CMString& py_name = "", bool backup = false) {
-        CMString full = full_name(object_name);
-        if (check_frozen()) {
-            fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB);
-            return {};
-        }
-
-        FlySerBuf serialized;
-        FLY_ENCODE_TO_BYTES(obj, serialized);
-
-        fly::DataService::instance().on_write_started(db_id_, full);
-
-        auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
-        if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
-            fly::DataService::instance().on_write_failed(db_id_, full, reg_error);
-            ERR("Write registration rejected: {} (type={})", reg_error, static_cast<int>(reg_error_type));
-            return {};
-        }
-
-        auto record = CMMakeShared<FlyBuffer>();
-        auto compress_result = writer_->compress_to_buffer(
-            static_cast<uint64_t>(serialized.size()), py_name,
-            serialized.data(), static_cast<int64_t>(serialized.size()),
-            *record);
-
-        DataWriter* w = writer_.get();
-        auto caller_record_func = fly::WorkerAgentContext::current_record_func();
-        auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
-        auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : nullptr;
-        auto caller_backup_ctx = backup ? fly::WorkerAgentContext::current_backup_ctx() : nullptr;
-
-        auto execute = [w, name = full, compress_result, record]() {
-            w->write_record(name, compress_result.original_size,
-                            compress_result.chunk_count, *record);
-            w->flush();
-        };
-
-        auto complete = [full, db_id = this->db_id_, object_name,
-                         caller_record_func, caller_record_ctx,
-                         caller_backup_func, caller_backup_ctx, w, backup]() {
-            auto& ds = fly::DataService::instance();
-            auto* entries = w->get_all_entries(full);
-            if (entries) {
-                ds.on_write_completed(db_id, full, *entries);
-            }
-            ds.on_object_flushed(full);
-            if (caller_record_func) {
-                caller_record_func(caller_record_ctx, db_id, object_name);
-            }
-            if (backup && caller_backup_func) {
-                caller_backup_func(caller_backup_ctx, db_id, object_name);
-            }
-        };
-
-        fly::WriteRequest req;
-        req.execute = std::move(execute);
-        req.on_complete = std::move(complete);
-        fly::DataService::instance().enqueue_write_back(std::move(req));
-
-        return "";
-    }
-
-    template<typename T>
-    CMSharedPtr<T> read_object(const CMString& object_name) {
-        CMString full = full_name(object_name);
-        auto result = fly::DataService::instance().read_raw(full);
-        if (result.data_buffer.empty()) {
-            ERR("read_object<T>: empty data for '{}'", full);
-            return nullptr;
-        }
-        auto obj = CMMakeShared<T>();
-        FLY_DECODE_FROM_BYTES(result.data_buffer, T, *obj);
-        return obj;
-    }
-
-    CMString write_object(const CMString& object_name, const CMString& data, bool backup = false);
-
-    CMString read_object(const CMString& object_name, bool backup = false);
-
-    CMString write_object_typed(const CMString& object_name, const CMString& data,
-                                 const CMString& py_name, bool backup = false);
-
-    CMString write_object_buffer(const CMString& object_name,
-                                 CMSharedPtr<FlyBuffer> buffer,
-                                 const CMString& py_name, bool backup = false);
-
     CMString write_object_raw_ptr(const CMString& object_name,
                                   const char* data, int64_t data_size,
                                   const CMString& py_name, bool backup = false);
 
-    ReadResult read_object_typed(const CMString& object_name, bool backup = false);
+    std::pair<CMString, CMString> read_object_compressed(const CMString& object_name, bool backup = false);
 
-    void persist_read_result(const CMString& object_name, const ReadResult& result);
+    template<typename T>
+    CMString write_object(const CMString& object_name, const T& obj,
+                          const CMString& py_name, bool backup = false);
+
+    template<typename T>
+    CMSharedPtr<T> read_object(const CMString& object_name);
+
     void backup_object(const CMString& object_name);
 
     void freeze();
@@ -145,6 +69,13 @@ private:
     void ensure_directory_exists(const CMString& path);
     CMString full_name(const CMString& short_name) const;
 
+    struct CompressResult {
+        int64_t original_size;
+        int32_t chunk_count;
+    };
+    CompressResult compress_data_to_buffer(const char* data, int64_t data_size,
+                                            const CMString& py_name, FlyBuffer& target);
+
     CMString base_path_;
     CMString data_path_;
     CMString writer_id_;
@@ -152,7 +83,113 @@ private:
     CMString host_;
     bool is_frozen_ = false;
 
+    CompressionType compression_type_ = CompressionType::NONE;
+    int compression_level_ = 0;
+    int64_t serialize_chunk_size_ = 4194304;
+
     CMUniquePtr<DataWriter> writer_;
     CMUniquePtr<DataReader> reader_;
     CMSet<CMString> removed_objects_;
 };
+
+template<typename T>
+CMString Database::write_object(const CMString& object_name, const T& obj,
+                                const CMString& py_name, bool backup) {
+    CMString full = full_name(object_name);
+    if (check_frozen()) {
+        fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB);
+        return {};
+    }
+
+    fly::DataService::instance().on_write_started(db_id_, full);
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
+    if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+        fly::DataService::instance().on_write_failed(db_id_, full, reg_error);
+        ERR("Write registration rejected: {} (type={})", reg_error, static_cast<int>(reg_error_type));
+        return {};
+    }
+
+    auto record = CMMakeShared<FlyBuffer>();
+    FlyBufferStreamBuf fly_buf(*record);
+    CountingStreamBuf counting_buf(fly_buf);
+    std::ostream counting_stream(&counting_buf);
+
+    ObjectHeader header;
+    header.total_size = 0;
+    header.chunk_count = 0;
+    header.compression_type = static_cast<uint8_t>(compression_type_);
+    header.py_name = py_name;
+    header.py_name_len = static_cast<uint16_t>(py_name.size());
+    CMString header_bytes = header.serialize();
+    counting_stream.write(header_bytes.data(), static_cast<std::streamsize>(header_bytes.size()));
+
+    int64_t total_uncompressed = 0;
+    int32_t chunk_count = 0;
+    {
+        auto compressor = compression_type_ != CompressionType::NONE
+            ? CompressorFactory::create(compression_type_) : nullptr;
+        CompressingStreamBuf csbuf(counting_stream, std::move(compressor),
+                                    serialize_chunk_size_);
+        std::ostream os(&csbuf);
+        obj.fly_serialize(os);
+        os.flush();
+        total_uncompressed = csbuf.total_uncompressed();
+        chunk_count = csbuf.chunk_count();
+    }
+    counting_stream.flush();
+
+    header.total_size = static_cast<uint64_t>(total_uncompressed);
+    header.chunk_count = static_cast<uint32_t>(chunk_count);
+    CMString real_header = header.serialize();
+    std::memcpy(record->data(), real_header.data(), real_header.size());
+
+    DataWriter* w = writer_.get();
+    auto caller_record_func = fly::WorkerAgentContext::current_record_func();
+    auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
+    auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : nullptr;
+    auto caller_backup_ctx = backup ? fly::WorkerAgentContext::current_backup_ctx() : nullptr;
+
+    auto execute = [w, name = full, total_uncompressed, chunk_count, record]() {
+        w->write_record(name, total_uncompressed, chunk_count, *record);
+        w->flush();
+    };
+
+    auto complete = [full, db_id = this->db_id_, object_name,
+                     caller_record_func, caller_record_ctx,
+                     caller_backup_func, caller_backup_ctx, w, backup]() {
+        auto& ds = fly::DataService::instance();
+        auto* entries = w->get_all_entries(full);
+        if (entries) {
+            ds.on_write_completed(db_id, full, *entries);
+        }
+        ds.on_object_flushed(full);
+        if (caller_record_func) {
+            caller_record_func(caller_record_ctx, db_id, object_name);
+        }
+        if (backup && caller_backup_func) {
+            caller_backup_func(caller_backup_ctx, db_id, object_name);
+        }
+    };
+
+    fly::WriteRequest req;
+    req.execute = std::move(execute);
+    req.on_complete = std::move(complete);
+    fly::DataService::instance().enqueue_write_back(std::move(req));
+
+    return "";
+}
+
+template<typename T>
+CMSharedPtr<T> Database::read_object(const CMString& object_name) {
+    auto [comp_data, py_name] = read_object_compressed(object_name, false);
+    if (comp_data.empty()) {
+        ERR("read_object<T>: no data for '{}'", full_name(object_name));
+        return nullptr;
+    }
+
+    auto obj = CMMakeShared<T>();
+    DecompressingStreamBuf dsbuf(comp_data.data(), comp_data.size());
+    std::istream is(&dsbuf);
+    obj->fly_deserialize(is);
+    return obj;
+}

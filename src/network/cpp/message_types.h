@@ -95,18 +95,16 @@ struct DataRequestMessage {
     MessageHeader header;
     CMString object_name;
     uint64_t requesting_worker_id = 0;
-    bool raw_transfer = false;
     
     static constexpr MessageType msg_type = MessageType::DATA_REQUEST;
     
-    FLY_SERIALIZE(header, object_name, requesting_worker_id, raw_transfer);
+    FLY_SERIALIZE(header, object_name, requesting_worker_id);
 };
 
 // Worker → Worker: 数据响应（可能较大）
 struct DataResponseMessage {
     MessageHeader header;
     CMString object_name;
-    CMString data;
     bool success = false;
     CMString error_message;
     CMString compressed_data;
@@ -114,7 +112,7 @@ struct DataResponseMessage {
     
     static constexpr MessageType msg_type = MessageType::DATA_RESPONSE;
     
-    FLY_SERIALIZE(header, object_name, data, success, error_message, compressed_data, py_name);
+    FLY_SERIALIZE(header, object_name, success, error_message, compressed_data, py_name);
 };
 
 // Master → Worker: 任务分配

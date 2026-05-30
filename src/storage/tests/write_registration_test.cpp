@@ -9,6 +9,10 @@
 
 namespace {
 
+static CMString write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
+    return db.write_object_raw_ptr(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
+}
+
 #define TEST_LOG(fmt, ...) fprintf(stderr, "[TEST_DEBUG] %s:%d " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__)
 
 static CMString db32(const CMString& hint) {
@@ -62,7 +66,6 @@ TEST_F(WriteRegistrationTest, OnWriteCompletedMakesEntryReadable) {
     entry.size = 5;
     entry.is_large = false;
     entry.block_count = 0;
-    entry.compression_type = 0;
 
     CMVector<IndexEntry> entries = {entry};
     ds_.on_write_completed(db_id, full, entries);
@@ -95,7 +98,7 @@ TEST_F(WriteRegistrationTest, WaitCompletionSucceedsForCompleteEntry) {
     bool entry_created = false;
 
     std::thread writer([&]() {
-        db.write_object("writereg/wait_real", "wait_data", false);
+        write_raw(db, "writereg/wait_real", "wait_data", false);
         ds_.drain_write_back();
         TEST_LOG("writer thread: write drained");
         {
@@ -157,7 +160,7 @@ TEST_F(WriteRegistrationTest, WaitTimesOutForIncompleteEntry) {
 TEST_F(WriteRegistrationTest, WaitReturnsImmediatelyForCompleteEntry) {
     CMString base_path = test_dir_ + "/imm_real_db";
     Database db(base_path);
-    db.write_object("writereg/imm_real", "imm_data", false);
+    write_raw(db, "writereg/imm_real", "imm_data", false);
     fly::DataService::instance().drain_write_back();
 
     CMString full = db.get_obj_name("writereg/imm_real");
@@ -207,7 +210,7 @@ TEST_F(WriteRegistrationTest, ConcurrentWaitersOnSameEntry) {
         threads.emplace_back(waiter);
     }
 
-    db.write_object("writereg/conc_real", "conc_data", false);
+    write_raw(db, "writereg/conc_real", "conc_data", false);
     ds_.drain_write_back();
     TEST_LOG("main: write drained, waking all waiters");
     {
@@ -237,7 +240,7 @@ TEST_F(WriteRegistrationTest, FullTwoPhaseWriteViaDatabase) {
     CMString base_path = test_dir_ + "/twophase";
     Database db(base_path);
 
-    db.write_object("twophase/obj", "hello_twophase", false);
+    write_raw(db, "twophase/obj", "hello_twophase", false);
     fly::DataService::instance().drain_write_back();
 
     CMString full = db.get_obj_name("twophase/obj");

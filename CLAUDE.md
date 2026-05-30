@@ -193,9 +193,8 @@ FlyBuffer 是统一字节缓冲区（内部存储为 CMString），兼容 bitser
 - `FlySerBuf` 是 FlyBuffer 的别名，用于 bitsery 内部
 
 ```cpp
-// 声明（在 struct 内）
+// 声明（在 struct 内）— 自动生成 serialize() + fly_serialize() + fly_deserialize()
 FLY_SERIALIZE(field1, field2);
-FLY_SERIALIZE_BEGIN(version) FLY_FIELD(x); FLY_SERIALIZE_END
 
 // 编码/解码
 FLY_ENCODE(struct_obj, output_string);

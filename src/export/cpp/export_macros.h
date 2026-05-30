@@ -6,9 +6,15 @@
 #include <nanobind/stl/map.h>
 #include <nanobind/stl/shared_ptr.h>
 #include <serialization/cpp/serialization_macros.h>
+#include <storage/cpp/decompressing_streambuf.h>
+#include <serialization/cpp/object_header.h>
 #include <common/cpp/common_types.h>
 #include <memory>
 #include <string>
+#include <cstring>
+#include <istream>
+
+class Database;
 
 namespace fly_export = nanobind;
 
@@ -59,8 +65,22 @@ namespace fly_export = nanobind;
         return buf; \
     }) \
     .def("__setstate__", [](Cls& obj, fly_export::bytes b) { \
-        std::string data(b.c_str(), b.size()); \
         ::new (&obj) Cls(); \
+        if (b.size() >= sizeof(uint32_t)) { \
+            uint32_t fly_magic_; \
+            std::memcpy(&fly_magic_, b.c_str(), sizeof(uint32_t)); \
+            if (fly_magic_ == FLY_OBJECT_MAGIC) { \
+                DecompressingStreamBuf fly_dsbuf_(b.c_str(), b.size()); \
+                std::istream fly_is_(&fly_dsbuf_); \
+                FLY_DECODE_FROM_STREAM(fly_is_, Cls, obj); \
+                return; \
+            } \
+        } \
+        std::string data(b.c_str(), b.size()); \
         FLY_DECODE(data, Cls, obj); \
+    }) \
+    .def("_write_to_db", [](const Cls& obj, Database& db, const CMString& name, \
+                             const CMString& py_name, bool backup) -> CMString { \
+        return db.write_object<Cls>(name, obj, py_name, backup); \
     }) \
     .def_prop_ro("is_cpp", [](const Cls&) { return true; })

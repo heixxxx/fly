@@ -209,14 +209,12 @@ TEST(MasterAgentTest, RestoreMasterIdx_ExistingIdxFile) {
     entry1.file_name = "data_0.bin";
     entry1.offset = 0;
     entry1.size = 100;
-    entry1.compression_type = 0;
 
     IndexEntry entry2;
     entry2.object_name = db_id + ":obj_restore_2";
     entry2.file_name = "data_0.bin";
     entry2.offset = 100;
     entry2.size = 200;
-    entry2.compression_type = 0;
 
     create_idx_file(base_path, "master000", {entry1, entry2});
 
@@ -279,7 +277,6 @@ TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
         e.file_name = "data_0.bin";
         e.offset = i * 100;
         e.size = 100;
-        e.compression_type = 0;
         entries_writer0.push_back(e);
     }
     create_idx_file(base_path, "master000", entries_writer0);
@@ -312,7 +309,6 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MasterEntries) {
     entry.file_name = "data_0.bin";
     entry.offset = 0;
     entry.size = 50;
-    entry.compression_type = 0;
 
     create_idx_file(base_path, "master000", {entry});
 
@@ -352,7 +348,6 @@ TEST(MasterAgentTest, RebuildRemoteIdx_WorkerEntries_NoNewWorkers_Skipped) {
     entry.file_name = "data_5.bin";
     entry.offset = 0;
     entry.size = 50;
-    entry.compression_type = 0;
 
     create_idx_file(base_path, "worker005", {entry});
 
@@ -398,7 +393,6 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultipleWorkers) {
     master_entry.file_name = "data_0.bin";
     master_entry.offset = 0;
     master_entry.size = 50;
-    master_entry.compression_type = 0;
     create_idx_file(base_path, "master000", {master_entry});
 
     // Create worker's idx
@@ -407,7 +401,6 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultipleWorkers) {
     worker_entry.file_name = "data_3.bin";
     worker_entry.offset = 0;
     worker_entry.size = 100;
-    worker_entry.compression_type = 0;
     create_idx_file(base_path, "worker003", {worker_entry});
 
     ::WorkerInfo w0;
@@ -465,7 +458,6 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
     master_entry.file_name = "data_m.bin";
     master_entry.offset = 0;
     master_entry.size = 50;
-    master_entry.compression_type = 0;
     create_idx_file(base_path, "w_master", {master_entry});
 
     // Worker A (worker_id=1) on "host_a"
@@ -474,7 +466,6 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
     worker_a_entry.file_name = "data_a.bin";
     worker_a_entry.offset = 0;
     worker_a_entry.size = 80;
-    worker_a_entry.compression_type = 0;
     create_idx_file(base_path, "w_hosta", {worker_a_entry});
 
     // Worker B (worker_id=2) on "host_b"
@@ -483,7 +474,6 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
     worker_b_entry.file_name = "data_b.bin";
     worker_b_entry.offset = 0;
     worker_b_entry.size = 120;
-    worker_b_entry.compression_type = 0;
     create_idx_file(base_path, "w_hostb", {worker_b_entry});
 
     ::WorkerInfo w_master;
@@ -552,7 +542,6 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
     master_entry.file_name = "data_m.bin";
     master_entry.offset = 0;
     master_entry.size = 50;
-    master_entry.compression_type = 0;
     create_idx_file(base_path, "w_m", {master_entry});
 
     // Worker (worker_id=5) on same "host_local"
@@ -561,7 +550,6 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
     worker_entry.file_name = "data_w.bin";
     worker_entry.offset = 0;
     worker_entry.size = 80;
-    worker_entry.compression_type = 0;
     create_idx_file(base_path, "w_w5", {worker_entry});
 
     // Remote Worker (worker_id=3) on "host_remote"
@@ -570,7 +558,6 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
     remote_entry.file_name = "data_r.bin";
     remote_entry.offset = 0;
     remote_entry.size = 120;
-    remote_entry.compression_type = 0;
     create_idx_file(base_path, "w_r3", {remote_entry});
 
     ::WorkerInfo w_m;
@@ -632,7 +619,6 @@ TEST(MasterAgentTest, RebuildRemoteIdx_PartialHostCoverage) {
     entry_a.file_name = "data_a.bin";
     entry_a.offset = 0;
     entry_a.size = 50;
-    entry_a.compression_type = 0;
     create_idx_file(base_path, "w_avail", {entry_a});
 
     // Worker B on "host_offline"
@@ -641,7 +627,6 @@ TEST(MasterAgentTest, RebuildRemoteIdx_PartialHostCoverage) {
     entry_b.file_name = "data_b.bin";
     entry_b.offset = 0;
     entry_b.size = 80;
-    entry_b.compression_type = 0;
     create_idx_file(base_path, "w_off", {entry_b});
 
     ::WorkerInfo wa;

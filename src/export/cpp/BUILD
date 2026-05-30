@@ -12,5 +12,6 @@ cc_library(
     deps = [
         "@nanobind//:nanobind",
         "//src/serialization/cpp:fly_serialization",
+        "//src/storage/cpp:fly_storage",
     ],
 )

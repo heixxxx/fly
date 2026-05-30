@@ -111,6 +111,13 @@ using FlyInputStreamAdapter = bitsery::InputStreamAdapter;
 
 #define FLY_SERIALIZE_END \
         }); \
+    } \
+    void fly_serialize(std::ostream& fly_ss_os_) const { \
+        FLY_ENCODE_TO_STREAM(fly_ss_os_, *this); \
+    } \
+    void fly_deserialize(std::istream& fly_ss_is_) { \
+        using FlySelfType_ = std::decay_t<decltype(*this)>; \
+        FLY_DECODE_FROM_STREAM(fly_ss_is_, FlySelfType_, *this); \
     }
 
 // Field macros — simplified (recommended)
@@ -288,6 +295,35 @@ void map_elem(S& s, T& v) {
             throw std::runtime_error("FLY_DECODE_FROM_BYTES: deserialization failed"); \
         } \
         output = std::move(fly_dec_msg_); \
+    } while(0)
+
+// FLY_DECODE_FROM_STREAM: Stream-deserialize from std::istream (no intermediate buffer).
+// Pair with DecompressingStreamBuf for streaming decompress + deserialize pipeline:
+//   DecompressingStreamBuf dsbuf(data, size);
+//   std::istream is(&dsbuf);
+//   FLY_DECODE_FROM_STREAM(is, MyType, obj);
+#define FLY_DECODE_FROM_STREAM(istream_ref, msg_type, output) \
+    do { \
+        FlyInputStreamAdapter fly_is_adapter_(istream_ref); \
+        msg_type fly_dec_msg_; \
+        auto fly_dec_result_ = bitsery::quickDeserialization(std::move(fly_is_adapter_), fly_dec_msg_); \
+        if (fly_dec_result_.first != bitsery::ReaderError::NoError || !fly_dec_result_.second) { \
+            throw std::runtime_error("FLY_DECODE_FROM_STREAM: deserialization failed"); \
+        } \
+        output = std::move(fly_dec_msg_); \
+    } while(0)
+
+// FLY_ENCODE_TO_STREAM: Stream-serialize to std::ostream (no intermediate buffer).
+// Pair with CompressingStreamBuf for streaming serialize + compress pipeline:
+//   CompressingStreamBuf csbuf(dest_stream, compressor, chunk_size);
+//   std::ostream os(&csbuf);
+//   FLY_ENCODE_TO_STREAM(os, obj);
+#define FLY_ENCODE_TO_STREAM(ostream_ref, msg) \
+    do { \
+        FlyOutputStreamAdapter fly_os_adapter_(ostream_ref); \
+        bitsery::Serializer<FlyOutputStreamAdapter> fly_ser_(std::move(fly_os_adapter_)); \
+        fly_ser_.object(msg); \
+        fly_ser_.adapter().flush(); \
     } while(0)
 
 // =============================================================================

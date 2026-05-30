@@ -5,6 +5,7 @@
 #include <network/cpp/message_types.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/io_thread_pool.h>
+#include <storage/cpp/database.h>
 #include <memory>
 
 FLY_EXPORT_MODULE(_fly_network) {
@@ -74,7 +75,10 @@ FLY_EXPORT_CLASS(fly::DataResponseMessage, "EXNetDataResponseMessage")
     FLY_EXPORT_INIT()
     FLY_EXPORT_ATTR("header", &fly::DataResponseMessage::header)
     FLY_EXPORT_ATTR("object_name", &fly::DataResponseMessage::object_name)
-    FLY_EXPORT_ATTR("data", &fly::DataResponseMessage::data)
+    FLY_EXPORT_ATTR("success", &fly::DataResponseMessage::success)
+    FLY_EXPORT_ATTR("error_message", &fly::DataResponseMessage::error_message)
+    FLY_EXPORT_ATTR("compressed_data", &fly::DataResponseMessage::compressed_data)
+    FLY_EXPORT_ATTR("py_name", &fly::DataResponseMessage::py_name)
     FLY_EXPORT_SERIALIZE(fly::DataResponseMessage);
 
 FLY_EXPORT_CLASS(fly::IOThreadPool, "EXNetIOThreadPool")

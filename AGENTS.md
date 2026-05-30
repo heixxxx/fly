@@ -108,7 +108,7 @@ bash qa/run_qa_tests.sh
 ## Module Map
 
 ```
-src/storage/    → Layer 1: Database, DataService, DataWriter, DataReader
+src/storage/    → Layer 1: Database, DataService, DataWriter (纯落盘), DataReader (纯读字节), CompressingStreamBuf, DecompressingStreamBuf
 src/network/    → Layer 2: Reactor, TCP transport, message protocol (27 msg types)
 src/task/       → Layer 3: DependencyGraph, TaskScheduler, WorkerManager
 src/agent/      → Layer 4: MasterAgent, WorkerAgent, TaskExecutor

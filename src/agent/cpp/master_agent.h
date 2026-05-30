@@ -86,7 +86,7 @@ public:
     bool is_db_frozen(const CMString& db_id) const;
     CMSharedPtr<Database> get_or_create_database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0);
 
-    std::pair<bool, ReadResult> request_remote_data(const CMString& object_name);
+    std::tuple<bool, CMString, CMString> request_remote_data(const CMString& object_name);
     std::pair<bool, ReadResult> request_data_from_worker(const CMString& host, int32_t port,
                                          const CMString& object_name);
 
@@ -155,7 +155,6 @@ private:
     void on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg);
 
     void on_backup_request(uint64_t conn_id, const BackupRequestMessage& msg);
-    void on_backup_complete(uint64_t conn_id, const BackupCompleteMessage& msg);
     uint64_t select_backup_worker(uint64_t source_worker_id);
 
     void persist_failed_task(const FailedTaskRecord& record);

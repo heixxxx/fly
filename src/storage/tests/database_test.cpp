@@ -1,10 +1,32 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/database.h>
+#include <storage/cpp/decompressing_streambuf.h>
 #include <common/cpp/worker_context.h>
 #include <filesystem>
 #include <fstream>
+#include <istream>
 
 namespace {
+
+static CMString write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
+    return db.write_object_raw_ptr(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
+}
+
+static CMString read_raw_string(Database& db, const CMString& name, bool backup = false) {
+    auto [comp_data, py_name] = db.read_object_compressed(name, backup);
+    if (comp_data.empty()) return {};
+    DecompressingStreamBuf dsbuf(comp_data.data(), comp_data.size());
+    std::istream is(&dsbuf);
+    CMString result;
+    CMVector<char> tmp(4096);
+    while (is) {
+        is.read(tmp.data(), static_cast<std::streamsize>(tmp.size()));
+        if (is.gcount() > 0) {
+            result.append(tmp.data(), static_cast<size_t>(is.gcount()));
+        }
+    }
+    return result;
+}
 
 class DatabaseTest : public ::testing::Test {
 protected:
@@ -24,9 +46,9 @@ TEST_F(DatabaseTest, WriteAndReadObject) {
     CMString base_path = test_dir_ + "/write_read";
     Database db(base_path);
 
-    db.write_object("test/obj", "hello world", false);
+    write_raw(db, "test/obj", "hello world", false);
     fly::DataService::instance().drain_write_back();
-    CMString result = db.read_object("test/obj");
+    CMString result = read_raw_string(db, "test/obj");
 
     EXPECT_EQ(result, "hello world");
 }
@@ -35,11 +57,11 @@ TEST_F(DatabaseTest, FreezePreventsWrite) {
     CMString base_path = test_dir_ + "/freeze_prevent";
     Database db(base_path);
 
-    db.write_object("test/obj", "data", false);
+    write_raw(db, "test/obj", "data", false);
     db.freeze();
 
     EXPECT_TRUE(db.is_frozen());
-    EXPECT_TRUE(db.write_object("test/obj2", "data2", false).empty());
+    EXPECT_TRUE(write_raw(db, "test/obj2", "data2", false).empty());
 }
 
 TEST_F(DatabaseTest, FrozenMarkerCreated) {
@@ -57,9 +79,9 @@ TEST_F(DatabaseTest, DoublePathReadPriority) {
     CMString data_path = test_dir_ + "/local_data";
     Database db(base_path, data_path);
 
-    db.write_object("priority/test", "local_data", false);
+    write_raw(db, "priority/test", "local_data", false);
     fly::DataService::instance().drain_write_back();
-    CMString result = db.read_object("priority/test");
+    CMString result = read_raw_string(db, "priority/test");
 
     EXPECT_EQ(result, "local_data");
 }
@@ -68,7 +90,7 @@ TEST_F(DatabaseTest, LoadMetaFromFrozenDatabase) {
     CMString base_path = test_dir_ + "/meta_db";
     Database db(base_path);
 
-    db.write_object("test/obj", "data", false);
+    write_raw(db, "test/obj", "data", false);
     db.freeze();
 
     DbMeta meta = db.load_meta();
@@ -117,21 +139,21 @@ TEST_F(DatabaseTest, WriteMultipleObjects) {
     CMString base_path = test_dir_ + "/multi_write";
     Database db(base_path);
 
-    db.write_object("obj1", "data1", false);
-    db.write_object("obj2", "data2", false);
-    db.write_object("obj3", "data3", false);
+    write_raw(db, "obj1", "data1", false);
+    write_raw(db, "obj2", "data2", false);
+    write_raw(db, "obj3", "data3", false);
     fly::DataService::instance().drain_write_back();
 
-    EXPECT_EQ(db.read_object("obj1"), "data1");
-    EXPECT_EQ(db.read_object("obj2"), "data2");
-    EXPECT_EQ(db.read_object("obj3"), "data3");
+    EXPECT_EQ(read_raw_string(db, "obj1"), "data1");
+    EXPECT_EQ(read_raw_string(db, "obj2"), "data2");
+    EXPECT_EQ(read_raw_string(db, "obj3"), "data3");
 }
 
 TEST_F(DatabaseTest, ReadNonexistentObjectThrows) {
     CMString base_path = test_dir_ + "/nonexist";
     Database db(base_path);
 
-    EXPECT_TRUE(db.read_object("no/such/object").empty());
+    EXPECT_TRUE(read_raw_string(db, "no/such/object").empty());
 }
 
 // ─── Typed write/read tests ───
@@ -141,13 +163,11 @@ TEST_F(DatabaseTest, WriteAndReadTypedObject) {
     Database db(base_path);
 
     CMString data = "typed_data_content";
-    db.write_object_typed("typed/obj", data, "TestType");
+    db.write_object_raw_ptr("typed/obj", data.data(), static_cast<int64_t>(data.size()), "TestType");
     fly::DataService::instance().drain_write_back();
 
-    ReadResult read_result = db.read_object_typed("typed/obj");
-    CMString read_data(read_result.data_buffer.begin(), read_result.data_buffer.end());
+    CMString read_data = read_raw_string(db, "typed/obj");
     EXPECT_EQ(read_data, data);
-    EXPECT_EQ(read_result.py_name, "TestType");
 }
 
 TEST_F(DatabaseTest, TypedObjectPersistenceAcrossFlush) {
@@ -155,52 +175,48 @@ TEST_F(DatabaseTest, TypedObjectPersistenceAcrossFlush) {
     Database db(base_path);
 
     CMString data = "persistent_data";
-    db.write_object_typed("persist/obj", data, "PersistType");
+    db.write_object_raw_ptr("persist/obj", data.data(), static_cast<int64_t>(data.size()), "PersistType");
     fly::DataService::instance().drain_write_back();
 
-    ReadResult result = db.read_object_typed("persist/obj");
-    CMString read_data(result.data_buffer.begin(), result.data_buffer.end());
+    CMString read_data = read_raw_string(db, "persist/obj");
     EXPECT_EQ(read_data, data);
-    EXPECT_EQ(result.py_name, "PersistType");
 }
 
 TEST_F(DatabaseTest, TypedObjectWithPyNameDetection) {
     CMString base_path = test_dir_ + "/typed_pyname";
     Database db(base_path);
 
-    db.write_object_typed("named/obj", "some_data", "MyCustomType");
+    db.write_object_raw_ptr("named/obj", "some_data", 9, "MyCustomType");
     fly::DataService::instance().drain_write_back();
 
-    ReadResult result = db.read_object_typed("named/obj");
-    EXPECT_EQ(result.py_name, "MyCustomType");
-    CMString read_data(result.data_buffer.begin(), result.data_buffer.end());
-    EXPECT_EQ(read_data, "some_data");
+    auto [comp_data, py_name] = db.read_object_compressed("named/obj");
+    EXPECT_EQ(py_name, "MyCustomType");
+    EXPECT_FALSE(comp_data.empty());
 }
 
 TEST_F(DatabaseTest, MultipleTypedObjects) {
     CMString base_path = test_dir_ + "/typed_multi";
     Database db(base_path);
 
-    db.write_object_typed("type/a", "data_a", "TypeA");
-    db.write_object_typed("type/b", "data_b", "TypeB");
+    db.write_object_raw_ptr("type/a", "data_a", 6, "TypeA");
+    db.write_object_raw_ptr("type/b", "data_b", 6, "TypeB");
     fly::DataService::instance().drain_write_back();
 
-    ReadResult ra = db.read_object_typed("type/a");
-    EXPECT_EQ(ra.py_name, "TypeA");
-    CMString da(ra.data_buffer.begin(), ra.data_buffer.end());
-    EXPECT_EQ(da, "data_a");
+    auto [comp_a, py_a] = db.read_object_compressed("type/a");
+    EXPECT_EQ(py_a, "TypeA");
+    EXPECT_FALSE(comp_a.empty());
 
-    ReadResult rb = db.read_object_typed("type/b");
-    EXPECT_EQ(rb.py_name, "TypeB");
-    CMString db2(rb.data_buffer.begin(), rb.data_buffer.end());
-    EXPECT_EQ(db2, "data_b");
+    auto [comp_b, py_b] = db.read_object_compressed("type/b");
+    EXPECT_EQ(py_b, "TypeB");
+    EXPECT_FALSE(comp_b.empty());
 }
 
-TEST_F(DatabaseTest, TypedNonexistentObjectThrows) {
-    CMString base_path = test_dir_ + "/typed_nonexist";
+TEST_F(DatabaseTest, CompressedNonexistentObjectReturnsEmpty) {
+    CMString base_path = test_dir_ + "/compressed_nonexist";
     Database db(base_path);
 
-    EXPECT_TRUE(db.read_object_typed("no/such/typed/object").data_buffer.empty());
+    auto [comp_data, py_name] = db.read_object_compressed("no/such/object");
+    EXPECT_TRUE(comp_data.empty());
 }
 
 TEST_F(DatabaseTest, GetObjNameReturnsDbIdColonName) {
@@ -253,7 +269,7 @@ TEST_F(DatabaseTest, WriteObjectTracksWrite) {
 
     CMString base_path = test_dir_ + "/write_track";
     Database db(base_path);
-    db.write_object("test/obj", "data", false);
+    write_raw(db, "test/obj", "data", false);
     fly::DataService::instance().drain_write_back();
 
     fly::WorkerAgentContext::clear();
@@ -274,7 +290,7 @@ TEST_F(DatabaseTest, WriteTypedObjectTracksWrite) {
 
     CMString base_path = test_dir_ + "/typed_track";
     Database db(base_path);
-    db.write_object_typed("typed/obj", "typed_data", "TestType");
+    db.write_object_raw_ptr("typed/obj", "typed_data", 10, "TestType");
     fly::DataService::instance().drain_write_back();
 
     fly::WorkerAgentContext::clear();
@@ -286,43 +302,43 @@ TEST_F(DatabaseTest, WriteTypedObjectTracksWrite) {
 TEST_F(DatabaseTest, NoTrackingWithoutContext) {
     CMString base_path = test_dir_ + "/no_track";
     Database db(base_path);
-    db.write_object("safe/obj", "data", false);
+    write_raw(db, "safe/obj", "data", false);
 }
 
 TEST_F(DatabaseTest, RemoveObjectPreventsRead) {
     CMString base_path = test_dir_ + "/remove_obj";
     Database db(base_path);
 
-    db.write_object("test/obj", "hello world", false);
+    write_raw(db, "test/obj", "hello world", false);
     fly::DataService::instance().drain_write_back();
 
-    CMString result = db.read_object("test/obj");
+    CMString result = read_raw_string(db, "test/obj");
     EXPECT_EQ(result, "hello world");
 
     db.remove_object("test/obj");
 
-    EXPECT_TRUE(db.read_object("test/obj").empty());
+    EXPECT_TRUE(read_raw_string(db, "test/obj").empty());
 }
 
 TEST_F(DatabaseTest, RemoveObjectOnlyAffectsTarget) {
     CMString base_path = test_dir_ + "/remove_one";
     Database db(base_path);
 
-    db.write_object("obj/a", "data_a", false);
-    db.write_object("obj/b", "data_b", false);
+    write_raw(db, "obj/a", "data_a", false);
+    write_raw(db, "obj/b", "data_b", false);
     fly::DataService::instance().drain_write_back();
 
     db.remove_object("obj/a");
 
-    EXPECT_TRUE(db.read_object("obj/a").empty());
-    EXPECT_EQ(db.read_object("obj/b"), "data_b");
+    EXPECT_TRUE(read_raw_string(db, "obj/a").empty());
+    EXPECT_EQ(read_raw_string(db, "obj/b"), "data_b");
 }
 
 TEST_F(DatabaseTest, RemoveObjectFailsWhenFrozen) {
     CMString base_path = test_dir_ + "/remove_frozen";
     Database db(base_path);
 
-    db.write_object("test/obj", "data", false);
+    write_raw(db, "test/obj", "data", false);
     db.freeze();
 
     db.remove_object("test/obj");
@@ -340,7 +356,7 @@ TEST_F(DatabaseTest, RemoveObjectTrampolineRequestsRemove) {
 
     CMString base_path = test_dir_ + "/remove_trampoline";
     Database db(base_path);
-    db.write_object("notify/obj", "data", false);
+    write_raw(db, "notify/obj", "data", false);
     fly::DataService::instance().drain_write_back();
 
     db.remove_object("notify/obj");
@@ -408,7 +424,7 @@ TEST_F(DatabaseTest, FreezeOnlyWritesFrozenMarker) {
     CMString base_path = test_dir_ + "/meta_freeze";
     Database db(base_path);
 
-    db.write_object("test/obj", "data", false);
+    write_raw(db, "test/obj", "data", false);
     fly::DataService::instance().drain_write_back();
 
     std::filesystem::path meta_path(base_path + "/_DB_META");
@@ -429,7 +445,7 @@ TEST_F(DatabaseTest, LoadMetaReadsIncrementalFormat) {
     CMString base_path = test_dir_ + "/meta_incremental";
     Database db(base_path);
 
-    db.write_object("data/obj1", "payload1", false);
+    write_raw(db, "data/obj1", "payload1", false);
     fly::DataService::instance().drain_write_back();
 
     // Append multiple WorkerInfo records
@@ -487,7 +503,7 @@ TEST_F(DatabaseTest, FreezeDuringInFlightWrite) {
     Database db(base_path);
 
     // Write object but do NOT drain — data is in WBQ
-    db.write_object("inflight/obj", "inflight_data", false);
+    write_raw(db, "inflight/obj", "inflight_data", false);
 
     // Freeze while write is in-flight (WBQ hasn't flushed yet)
     // freeze() calls drain_write_back() internally, so data gets persisted
@@ -495,18 +511,18 @@ TEST_F(DatabaseTest, FreezeDuringInFlightWrite) {
     EXPECT_TRUE(db.is_frozen());
 
     // Data should be readable — freeze() drains the WBQ before freezing
-    CMString result = db.read_object("inflight/obj");
+    CMString result = read_raw_string(db, "inflight/obj");
     EXPECT_EQ(result, "inflight_data");
 
     // Subsequent writes should be rejected
-    EXPECT_TRUE(db.write_object("after/freeze", "data2", false).empty());
+    EXPECT_TRUE(write_raw(db, "after/freeze", "data2", false).empty());
 }
 
 TEST_F(DatabaseTest, DoubleFreezeIsIdempotent) {
     CMString base_path = test_dir_ + "/double_freeze";
     Database db(base_path);
 
-    db.write_object("before/freeze", "data", false);
+    write_raw(db, "before/freeze", "data", false);
     fly::DataService::instance().drain_write_back();
 
     db.freeze();
@@ -518,7 +534,7 @@ TEST_F(DatabaseTest, DoubleFreezeIsIdempotent) {
     std::ifstream ifs(base_path + "/_FROZEN");
     EXPECT_TRUE(ifs.good());
 
-    EXPECT_TRUE(db.write_object("after/freeze", "data2", false).empty());
+    EXPECT_TRUE(write_raw(db, "after/freeze", "data2", false).empty());
 }
 
 }

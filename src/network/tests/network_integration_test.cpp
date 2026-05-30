@@ -114,7 +114,7 @@ TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
                         resp.header.type = MessageType::DATA_RESPONSE;
                         resp.header.message_id = 2;
                         resp.object_name = req.object_name;
-                        resp.data = "response_data_payload";
+                        resp.compressed_data = "response_data_payload";
                         
                         CMString encoded_resp = MessageProtocol::encode(resp);
                         server_transport.send(server_conn_id.load(), encoded_resp);
@@ -132,7 +132,7 @@ TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
                     CMString buffer = ev.data;
                     DataResponseMessage resp;
                     if (MessageProtocol::decode(buffer, resp)) {
-                        if (resp.data == "response_data_payload") {
+                        if (resp.compressed_data == "response_data_payload") {
                             data_matches = true;
                         }
                         response_received = true;
@@ -277,7 +277,7 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
                             CMString temp = accumulated_buffer;
                             DataResponseMessage msg;
                             if (MessageProtocol::decode(accumulated_buffer, msg)) {
-                                received_size = msg.data.size();
+                                received_size = msg.compressed_data.size();
                                 large_data_received = true;
                             }
                         }
@@ -295,7 +295,7 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
     large_msg.header.type = MessageType::DATA_RESPONSE;
     large_msg.header.message_id = 1;
     large_msg.object_name = "large_data.bin";
-    large_msg.data = CMString(10000, 'X');
+    large_msg.compressed_data = CMString(10000, 'X');
     
     CMString encoded = MessageProtocol::encode(large_msg);
     client_transport.send(client_conn, encoded);

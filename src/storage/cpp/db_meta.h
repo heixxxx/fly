@@ -21,13 +21,10 @@ struct DbMetaHeader {
     FLY_SERIALIZE(db_id, created_at)
 };
 
-// Aggregated by load_meta() from DbMetaHeader + [WorkerInfo]...
 struct DbMeta {
     CMString db_id;
     int64_t created_at = 0;
-    CMVector<WorkerInfo> workers;  // 从增量 WorkerInfo 记录聚合
+    CMVector<WorkerInfo> workers;
 
-    // 注意：此结构不直接序列化到 _DB_META
-    // 磁盘格式 = DbMetaHeader + [WorkerInfo records]...
     FLY_SERIALIZE(db_id, created_at, workers)
 };

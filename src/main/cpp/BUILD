@@ -28,5 +28,11 @@ cc_binary(
     ],
     data = [
         "//src/test/export:_fly_test.so",
+        "//src/storage/export:_fly_storage.so",
+        "//src/network/export:_fly_network.so",
+        "//src/agent/export:_fly_agent.so",
+        "//src/core/export:_fly_core.so",
+        "//src/log/export:_fly_log.so",
+        "//src/task/export:_fly_task.so",
     ],
 )

@@ -2,9 +2,15 @@
 #include <storage/cpp/data_service.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/local_index.h>
+#include <storage/cpp/decompressing_streambuf.h>
 #include <filesystem>
+#include <istream>
 
 namespace {
+
+static CMString write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
+    return db.write_object_raw_ptr(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
+}
 
 static CMString db32(const CMString& hint) {
     CMString r = hint;
@@ -40,7 +46,7 @@ TEST_F(DataServiceTest, OnObjectWrittenAndFlushEnablesLocalRead) {
     CMString base_path = test_dir_ + "/local_read";
     Database db(base_path);
 
-    db.write_object("local/obj", "hello", false);
+    write_raw(db, "local/obj", "hello", false);
     fly::DataService::instance().drain_write_back();
 
     CMString full = db.get_obj_name("local/obj");
@@ -62,7 +68,6 @@ TEST_F(DataServiceTest, UnflushedObjectNotReadable) {
     entry.size = 10;
     entry.is_large = false;
     entry.block_count = 0;
-    entry.compression_type = 0;
 
     ds_.on_object_written(db_id, full, entry);
     EXPECT_FALSE(ds_.has_local_object(full));
@@ -81,7 +86,6 @@ TEST_F(DataServiceTest, FlushMarksObjectsAsReadable) {
     entry.size = 10;
     entry.is_large = false;
     entry.block_count = 0;
-    entry.compression_type = 0;
 
     ds_.on_object_written(db_id, full, entry);
     EXPECT_FALSE(ds_.has_local_object(full));
@@ -134,9 +138,9 @@ TEST_F(DataServiceTest, MultipleObjectsInSameDatabase) {
     CMString base_path = test_dir_ + "/multi_obj";
     Database db(base_path);
 
-    db.write_object("multi/a", "data_a", false);
-    db.write_object("multi/b", "data_b", false);
-    db.write_object("multi/c", "data_c", false);
+    write_raw(db, "multi/a", "data_a", false);
+    write_raw(db, "multi/b", "data_b", false);
+    write_raw(db, "multi/c", "data_c", false);
     fly::DataService::instance().drain_write_back();
 
     EXPECT_TRUE(ds_.has_local_object(db.get_obj_name("multi/a")));
@@ -158,7 +162,7 @@ TEST_F(DataServiceTest, TypedObjectReadableViaDataService) {
     CMString base_path = test_dir_ + "/typed_ds";
     Database db(base_path);
 
-    db.write_object_typed("typed/ds_obj", "typed_payload", "MyType");
+    db.write_object_raw_ptr("typed/ds_obj", "typed_payload", 13, "MyType");
     fly::DataService::instance().drain_write_back();
 
     CMString full = db.get_obj_name("typed/ds_obj");
@@ -202,7 +206,6 @@ TEST_F(DataServiceTest, RegisterDatabaseAndLocalRead) {
     entry.size = 5;
     entry.is_large = false;
     entry.block_count = 0;
-    entry.compression_type = 0;
 
     ds_.on_object_written(db_id, full, entry);
     ds_.on_flush(db_id);
@@ -214,7 +217,7 @@ TEST_F(DataServiceTest, RemoveLocalIndexMakesObjectUnreadable) {
     CMString base_path = test_dir_ + "/remove_local";
     Database db(base_path);
 
-    db.write_object("remove/local", "data", false);
+    write_raw(db, "remove/local", "data", false);
     fly::DataService::instance().drain_write_back();
 
     CMString full = db.get_obj_name("remove/local");
@@ -232,8 +235,8 @@ TEST_F(DataServiceTest, RemoveLocalIndexOnlyAffectsTarget) {
     CMString base_path = test_dir_ + "/remove_one_local";
     Database db(base_path);
 
-    db.write_object("keep/me", "keep_data", false);
-    db.write_object("remove/me", "remove_data", false);
+    write_raw(db, "keep/me", "keep_data", false);
+    write_raw(db, "remove/me", "remove_data", false);
     fly::DataService::instance().drain_write_back();
 
     CMString keep_full = db.get_obj_name("keep/me");
@@ -285,7 +288,6 @@ TEST_F(DataServiceTest, RestoreEntriesMakesObjectsReadable) {
     e1.size = 5;
     e1.is_large = false;
     e1.block_count = 0;
-    e1.compression_type = 0;
     entries.push_back(e1);
 
     IndexEntry e2;
@@ -295,7 +297,6 @@ TEST_F(DataServiceTest, RestoreEntriesMakesObjectsReadable) {
     e2.size = 7;
     e2.is_large = false;
     e2.block_count = 0;
-    e2.compression_type = 0;
     entries.push_back(e2);
 
     ds_.restore_entries(db_id, entries);
@@ -318,7 +319,6 @@ TEST_F(DataServiceTest, RestoreEntriesMultipleEntriesPerObject) {
     e1.size = 100;
     e1.is_large = true;
     e1.block_count = 1;
-    e1.compression_type = 0;
     entries.push_back(e1);
 
     IndexEntry e2;
@@ -328,7 +328,6 @@ TEST_F(DataServiceTest, RestoreEntriesMultipleEntriesPerObject) {
     e2.size = 200;
     e2.is_large = true;
     e2.block_count = 1;
-    e2.compression_type = 0;
     entries.push_back(e2);
 
     ds_.restore_entries(db_id, entries);
@@ -349,7 +348,6 @@ TEST_F(DataServiceTest, RestoreEntriesAppendsToExisting) {
     e1.size = 5;
     e1.is_large = false;
     e1.block_count = 0;
-    e1.compression_type = 0;
     ds_.on_object_written(db_id, db_id + ":obj", e1);
     ds_.on_flush(db_id);
     EXPECT_TRUE(ds_.has_local_object(db_id + ":obj"));
@@ -362,7 +360,6 @@ TEST_F(DataServiceTest, RestoreEntriesAppendsToExisting) {
     e2.size = 10;
     e2.is_large = false;
     e2.block_count = 0;
-    e2.compression_type = 0;
     restore_entries_vec.push_back(e2);
 
     ds_.restore_entries(db_id, restore_entries_vec);
@@ -380,8 +377,8 @@ TEST_F(DataServiceTest, RestoreEntriesFromLocalIndexFile) {
     CMString base_path = test_dir_ + "/restore_from_idx";
     Database db(base_path);
 
-    db.write_object("idx/obj1", "data1", false);
-    db.write_object("idx/obj2", "data2", false);
+    write_raw(db, "idx/obj1", "data1", false);
+    write_raw(db, "idx/obj2", "data2", false);
     fly::DataService::instance().drain_write_back();
 
     CMString idx_path = base_path + "/" + db.get_writer_id() + ".idx";
@@ -414,7 +411,6 @@ TEST_F(DataServiceTest, ShortNameWithColonsHandledCorrectly) {
     entry.size = 5;
     entry.is_large = false;
     entry.block_count = 0;
-    entry.compression_type = 0;
 
     ds_.on_object_written(db_id, full, entry);
     ds_.on_flush(db_id);
@@ -433,7 +429,6 @@ TEST_F(DataServiceTest, DbIdExactly32Chars) {
     entry.size = 5;
     entry.is_large = false;
     entry.block_count = 0;
-    entry.compression_type = 0;
 
     ds_.on_object_written(db_id, full, entry);
     ds_.on_flush(db_id);
@@ -451,7 +446,6 @@ TEST_F(DataServiceTest, ShortFullNameTreatedAsNoDbId) {
     entry.size = 5;
     entry.is_large = false;
     entry.block_count = 0;
-    entry.compression_type = 0;
 
     ds_.on_object_written("", short_name, entry);
     ds_.on_flush("");
@@ -470,7 +464,6 @@ TEST_F(DataServiceTest, RemoveIndexByShortName) {
     entry.size = 5;
     entry.is_large = false;
     entry.block_count = 0;
-    entry.compression_type = 0;
 
     ds_.on_object_written(db_id, full, entry);
     ds_.on_flush(db_id);
@@ -493,7 +486,6 @@ TEST_F(DataServiceTest, FlushOnlyAffectsTargetDb) {
     ea.size = 5;
     ea.is_large = false;
     ea.block_count = 0;
-    ea.compression_type = 0;
 
     IndexEntry eb;
     eb.object_name = full_b;
@@ -502,7 +494,6 @@ TEST_F(DataServiceTest, FlushOnlyAffectsTargetDb) {
     eb.size = 5;
     eb.is_large = false;
     eb.block_count = 0;
-    eb.compression_type = 0;
 
     ds_.on_object_written(db_a, full_a, ea);
     ds_.on_object_written(db_b, full_b, eb);

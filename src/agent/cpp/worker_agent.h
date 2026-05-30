@@ -81,7 +81,7 @@ public:
     void register_database(const CMString& db_id, CMSharedPtr<Database> db);
     CMSharedPtr<Database> get_database(const CMString& db_id) const;
     
-    std::pair<bool, ReadResult> request_remote_data(const CMString& object_name);
+    std::tuple<bool, CMString, CMString> request_remote_data(const CMString& object_name);
     std::pair<bool, ReadResult> request_data_from_worker(const CMString& host, int32_t port,
                                                           const CMString& object_name);
 
@@ -126,13 +126,13 @@ private:
     static void freeze_trampoline(void* ctx, const CMString& db_id);
     static void remove_request_trampoline(void* ctx, const CMString& db_id, const CMString& object_name);
     static void backup_request_trampoline(void* ctx, const CMString& db_id, const CMString& object_name);
-    static void notify_backup_complete_trampoline(void* ctx, const CMString& db_id, const CMString& object_name);
-    
+
     uint64_t current_task_id_ = 0;
     CMVector<CMString> current_writes_;
     
     mutable std::mutex task_queue_mutex_;
     std::queue<PendingTask> task_queue_;
+    std::atomic<int> outstanding_tasks_{0};
     
     CMMap<CMString, CMSharedPtr<Database>> databases_;
 
@@ -163,7 +163,7 @@ private:
     void on_remove_command(uint64_t conn_id, const RemoveCommandMessage& msg);
     void on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg);
     void on_database_freeze_notification(uint64_t conn_id, const DatabaseFreezeNotification& msg);
-    void on_backup_assign(uint64_t conn_id, const BackupAssignMessage& msg);
+    void execute_internal_task(const PendingTask& task);
     void on_disconnect(uint64_t conn_id);
     
     void heartbeat_loop();

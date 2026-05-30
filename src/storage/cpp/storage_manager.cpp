@@ -38,7 +38,7 @@ CMSharedPtr<DataWriter> StorageManager::get_writer(uint64_t worker_id) {
         "/tmp/fly_worker_" + std::to_string(worker_id),
         "",
         "",
-        4096, 1048576, 65536
+        1048576
     );
     writers_[worker_id] = writer;
     return writer;
