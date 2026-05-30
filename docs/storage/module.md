@@ -48,9 +48,9 @@ public:
                           const CMString& py_name, bool backup = false);
 
     // Python pickle bytes 写入（压缩 + 异步落盘）
-    CMString write_object_raw_ptr(const CMString& object_name,
-                                  const char* data, int64_t data_size,
-                                  const CMString& py_name, bool backup = false);
+    CMString write_pickle_bytes(const CMString& object_name,
+                                const char* data, int64_t data_size,
+                                const CMString& py_name, bool backup = false);
 
     // 读取压缩数据（返回原始磁盘字节 + py_name）
     std::pair<CMString, CMString> read_object_compressed(const CMString& object_name, bool backup = false);
@@ -136,9 +136,9 @@ write_object<T>(name, obj, py_name)  ← 调用线程（C++ 类型）
   │                                           │→ flush
   └─ 5. 返回 "" （立即返回）
 
-write_object_raw_ptr(name, data, size, py_name)  ← 调用线程（Python pickle）
+write_pickle_bytes(name, data, size, py_name)  ← 调用线程（Python pickle）
   │
-  ├─ 1. compress_data_to_buffer(data, size, py_name, target)
+  ├─ 1. compress_buffered_data(data, size, py_name, target)
   │     → ObjectHeader + os.write(data, size) → CompressingStreamBuf → target
   │
   └─ 2~5. 同上
@@ -151,7 +151,7 @@ write_object_raw_ptr(name, data, size, py_name)  ← 调用线程（Python pickl
 | `CountingStreamBuf` | 包装 streambuf 并统计写入字节数（用于 `ObjectHeader.total_size`） |
 | `CompressingStreamBuf` | 分块压缩，达到 `serialize_chunk_size` 时自动 flush chunk |
 
-**Python pickle 路径**: `pickle.dumps(obj)` → `_write_pickle_bytes` 传裸指针给 `compress_data_to_buffer`。
+**Python pickle 路径**: `pickle.dumps(obj)` → `_write_pickle_bytes` 传裸指针给 `compress_buffered_data`。
 
 **回调模式说明**:
 

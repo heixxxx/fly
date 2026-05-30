@@ -10,7 +10,7 @@
 namespace {
 
 static CMString write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
-    return db.write_object_raw_ptr(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
+    return db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
 }
 
 #define TEST_LOG(fmt, ...) fprintf(stderr, "[TEST_DEBUG] %s:%d " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__)

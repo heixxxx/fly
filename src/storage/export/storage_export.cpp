@@ -42,13 +42,13 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
                                               fly_export::bytes data,
                                               const CMString& py_name,
                                               bool backup) -> CMString {
-        return db.write_object_raw_ptr(name, data.c_str(),
+        return db.write_pickle_bytes(name, data.c_str(),
                                        static_cast<int64_t>(data.size()), py_name, backup);
     })
     FLY_EXPORT_DEF("_write_pickle_bytes", [](Database& db, const CMString& name,
                                               fly_export::bytes data,
                                               const CMString& py_name) -> CMString {
-        return db.write_object_raw_ptr(name, data.c_str(),
+        return db.write_pickle_bytes(name, data.c_str(),
                                        static_cast<int64_t>(data.size()), py_name, false);
     })
     FLY_EXPORT_DEF("_read_streaming", [](Database& db, const CMString& name, bool backup) -> fly_export::tuple {
@@ -79,23 +79,10 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
         return fly_export::bytes(result.data(), result.size());
     })
     FLY_EXPORT_DEF("write_object_raw", [](Database& db, const CMString& name, const CMString& data, bool backup) -> CMString {
-        return db.write_object_raw_ptr(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
+        return db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
     })
     FLY_EXPORT_DEF("write_object_raw", [](Database& db, const CMString& name, const CMString& data) -> CMString {
-        return db.write_object_raw_ptr(name, data.data(), static_cast<int64_t>(data.size()), "bytes", false);
-    })
-    FLY_EXPORT_DEF("_write_raw_ptr", [](Database& db, const CMString& name,
-                                         fly_export::bytes data,
-                                         const CMString& py_name,
-                                         bool backup) -> CMString {
-        return db.write_object_raw_ptr(name, data.c_str(),
-                                       static_cast<int64_t>(data.size()), py_name, backup);
-    })
-    FLY_EXPORT_DEF("_write_raw_ptr", [](Database& db, const CMString& name,
-                                         fly_export::bytes data,
-                                         const CMString& py_name) -> CMString {
-        return db.write_object_raw_ptr(name, data.c_str(),
-                                       static_cast<int64_t>(data.size()), py_name, false);
+        return db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", false);
     })
     FLY_EXPORT_DEF("read_object_raw", [](Database& db, const CMString& name, bool backup) -> CMString {
         auto [comp_data, py_name] = db.read_object_compressed(name, backup);

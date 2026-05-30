@@ -9,7 +9,7 @@
 namespace {
 
 static CMString write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
-    return db.write_object_raw_ptr(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
+    return db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
 }
 
 static CMString read_raw_string(Database& db, const CMString& name, bool backup = false) {
@@ -163,7 +163,7 @@ TEST_F(DatabaseTest, WriteAndReadTypedObject) {
     Database db(base_path);
 
     CMString data = "typed_data_content";
-    db.write_object_raw_ptr("typed/obj", data.data(), static_cast<int64_t>(data.size()), "TestType");
+    db.write_pickle_bytes("typed/obj", data.data(), static_cast<int64_t>(data.size()), "TestType");
     fly::DataService::instance().drain_write_back();
 
     CMString read_data = read_raw_string(db, "typed/obj");
@@ -175,7 +175,7 @@ TEST_F(DatabaseTest, TypedObjectPersistenceAcrossFlush) {
     Database db(base_path);
 
     CMString data = "persistent_data";
-    db.write_object_raw_ptr("persist/obj", data.data(), static_cast<int64_t>(data.size()), "PersistType");
+    db.write_pickle_bytes("persist/obj", data.data(), static_cast<int64_t>(data.size()), "PersistType");
     fly::DataService::instance().drain_write_back();
 
     CMString read_data = read_raw_string(db, "persist/obj");
@@ -186,7 +186,7 @@ TEST_F(DatabaseTest, TypedObjectWithPyNameDetection) {
     CMString base_path = test_dir_ + "/typed_pyname";
     Database db(base_path);
 
-    db.write_object_raw_ptr("named/obj", "some_data", 9, "MyCustomType");
+    db.write_pickle_bytes("named/obj", "some_data", 9, "MyCustomType");
     fly::DataService::instance().drain_write_back();
 
     auto [comp_data, py_name] = db.read_object_compressed("named/obj");
@@ -198,8 +198,8 @@ TEST_F(DatabaseTest, MultipleTypedObjects) {
     CMString base_path = test_dir_ + "/typed_multi";
     Database db(base_path);
 
-    db.write_object_raw_ptr("type/a", "data_a", 6, "TypeA");
-    db.write_object_raw_ptr("type/b", "data_b", 6, "TypeB");
+    db.write_pickle_bytes("type/a", "data_a", 6, "TypeA");
+    db.write_pickle_bytes("type/b", "data_b", 6, "TypeB");
     fly::DataService::instance().drain_write_back();
 
     auto [comp_a, py_a] = db.read_object_compressed("type/a");
@@ -290,7 +290,7 @@ TEST_F(DatabaseTest, WriteTypedObjectTracksWrite) {
 
     CMString base_path = test_dir_ + "/typed_track";
     Database db(base_path);
-    db.write_object_raw_ptr("typed/obj", "typed_data", 10, "TestType");
+    db.write_pickle_bytes("typed/obj", "typed_data", 10, "TestType");
     fly::DataService::instance().drain_write_back();
 
     fly::WorkerAgentContext::clear();

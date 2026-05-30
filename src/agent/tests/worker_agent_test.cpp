@@ -551,7 +551,7 @@ TEST_F(IdxLoadTest, OnRemoveCommandExtractsShortName) {
     std::filesystem::create_directories(base_path);
 
     auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_id);
-    db->write_object_raw_ptr("target_obj", "remove_test_data", 16, "bytes", false);
+    db->write_pickle_bytes("target_obj", "remove_test_data", 16, "bytes", false);
     fly::DataService::instance().drain_write_back();
 
     MasterAgent master("127.0.0.1", 0);

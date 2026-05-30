@@ -27,9 +27,9 @@ public:
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
 
-    CMString write_object_raw_ptr(const CMString& object_name,
-                                  const char* data, int64_t data_size,
-                                  const CMString& py_name, bool backup = false);
+    CMString write_pickle_bytes(const CMString& object_name,
+                                const char* data, int64_t data_size,
+                                const CMString& py_name, bool backup = false);
 
     std::pair<CMString, CMString> read_object_compressed(const CMString& object_name, bool backup = false);
 
@@ -73,8 +73,8 @@ private:
         int64_t original_size;
         int32_t chunk_count;
     };
-    CompressResult compress_data_to_buffer(const char* data, int64_t data_size,
-                                            const CMString& py_name, FlyBuffer& target);
+    CompressResult compress_buffered_data(const char* data, int64_t data_size,
+                                           const CMString& py_name, FlyBuffer& target);
 
     CMString base_path_;
     CMString data_path_;

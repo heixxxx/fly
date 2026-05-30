@@ -61,7 +61,7 @@ Database::~Database() {
     fly::DataService::instance().unregister_database(db_id_);
 }
 
-Database::CompressResult Database::compress_data_to_buffer(
+Database::CompressResult Database::compress_buffered_data(
     const char* data, int64_t data_size,
     const CMString& py_name, FlyBuffer& target) {
 
@@ -102,7 +102,7 @@ Database::CompressResult Database::compress_data_to_buffer(
     return {total_uncompressed, chunk_count};
 }
 
-CMString Database::write_object_raw_ptr(const CMString& object_name,
+CMString Database::write_pickle_bytes(const CMString& object_name,
                                          const char* data, int64_t data_size,
                                          const CMString& py_name, bool backup) {
     CMString full = full_name(object_name);
@@ -118,7 +118,7 @@ CMString Database::write_object_raw_ptr(const CMString& object_name,
     }
 
     auto record = CMMakeShared<FlyBuffer>();
-    auto compress_result = compress_data_to_buffer(
+    auto compress_result = compress_buffered_data(
         data, data_size, py_name, *record);
 
     DataWriter* w = writer_.get();

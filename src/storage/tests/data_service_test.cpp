@@ -9,7 +9,7 @@
 namespace {
 
 static CMString write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
-    return db.write_object_raw_ptr(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
+    return db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
 }
 
 static CMString db32(const CMString& hint) {
@@ -162,7 +162,7 @@ TEST_F(DataServiceTest, TypedObjectReadableViaDataService) {
     CMString base_path = test_dir_ + "/typed_ds";
     Database db(base_path);
 
-    db.write_object_raw_ptr("typed/ds_obj", "typed_payload", 13, "MyType");
+    db.write_pickle_bytes("typed/ds_obj", "typed_payload", 13, "MyType");
     fly::DataService::instance().drain_write_back();
 
     CMString full = db.get_obj_name("typed/ds_obj");
