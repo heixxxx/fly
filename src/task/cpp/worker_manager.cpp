@@ -6,6 +6,7 @@ namespace fly {
 
 void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
                                       uint16_t port, const CMVector<CMString>& capabilities) {
+    std::lock_guard<std::mutex> lock(mutex_);
     WorkerInfo info;
     info.worker_id = worker_id;
     info.address = address;
@@ -20,14 +21,17 @@ void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
 
 void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
                                       const CMVector<CMString>& capabilities) {
+    std::lock_guard<std::mutex> lock(mutex_);
     register_worker(worker_id, address, 18080, capabilities);
 }
 
 void WorkerManager::unregister_worker(uint64_t worker_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
     workers_.erase(worker_id);
 }
 
 void WorkerManager::update_worker_status(uint64_t worker_id, WorkerStatus status) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = workers_.find(worker_id);
     if (it != workers_.end()) {
         it->second.status = status;
@@ -35,6 +39,7 @@ void WorkerManager::update_worker_status(uint64_t worker_id, WorkerStatus status
 }
 
 void WorkerManager::record_heartbeat(uint64_t worker_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = workers_.find(worker_id);
     if (it != workers_.end()) {
         it->second.last_heartbeat = std::chrono::duration_cast<std::chrono::seconds>(
@@ -43,6 +48,7 @@ void WorkerManager::record_heartbeat(uint64_t worker_id) {
 }
 
 void WorkerManager::set_heartbeat(uint64_t worker_id, uint64_t timestamp) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = workers_.find(worker_id);
     if (it != workers_.end()) {
         it->second.last_heartbeat = timestamp;
@@ -50,6 +56,7 @@ void WorkerManager::set_heartbeat(uint64_t worker_id, uint64_t timestamp) {
 }
 
 void WorkerManager::assign_task(uint64_t worker_id, uint64_t task_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = workers_.find(worker_id);
     if (it != workers_.end()) {
         it->second.status = WorkerStatus::BUSY;
@@ -58,6 +65,7 @@ void WorkerManager::assign_task(uint64_t worker_id, uint64_t task_id) {
 }
 
 void WorkerManager::complete_task(uint64_t worker_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = workers_.find(worker_id);
     if (it != workers_.end()) {
         it->second.status = WorkerStatus::IDLE;
@@ -68,6 +76,7 @@ void WorkerManager::complete_task(uint64_t worker_id) {
 void WorkerManager::update_capabilities(uint64_t worker_id,
                                           const CMVector<CMString>& added,
                                           const CMVector<CMString>& removed) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = workers_.find(worker_id);
     if (it == workers_.end()) return;
 
@@ -91,15 +100,17 @@ void WorkerManager::update_capabilities(uint64_t worker_id,
     }
 }
 
-WorkerInfo* WorkerManager::get_worker(uint64_t worker_id) {
+std::optional<std::reference_wrapper<WorkerInfo>> WorkerManager::get_worker(uint64_t worker_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = workers_.find(worker_id);
     if (it != workers_.end()) {
-        return &it->second;
+        return std::ref(it->second);
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 CMVector<uint64_t> WorkerManager::get_idle_workers() {
+    std::lock_guard<std::mutex> lock(mutex_);
     CMVector<uint64_t> result;
     for (const auto& [id, info] : workers_) {
         if (info.status == WorkerStatus::IDLE) {
@@ -110,6 +121,7 @@ CMVector<uint64_t> WorkerManager::get_idle_workers() {
 }
 
 CMVector<uint64_t> WorkerManager::get_workers_with_capability(const CMString& capability) {
+    std::lock_guard<std::mutex> lock(mutex_);
     CMVector<uint64_t> result;
     for (const auto& [id, info] : workers_) {
         for (const auto& cap : info.capabilities) {
@@ -123,6 +135,7 @@ CMVector<uint64_t> WorkerManager::get_workers_with_capability(const CMString& ca
 }
 
 CMVector<WorkerInfo> WorkerManager::get_all_workers() {
+    std::lock_guard<std::mutex> lock(mutex_);
     CMVector<WorkerInfo> result;
     for (const auto& [id, info] : workers_) {
         result.push_back(info);
@@ -131,6 +144,7 @@ CMVector<WorkerInfo> WorkerManager::get_all_workers() {
 }
 
 bool WorkerManager::has_worker_with_all_capabilities(const CMVector<CMString>& capabilities) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (capabilities.empty()) return true;
 
     for (const auto& [id, info] : workers_) {
@@ -148,10 +162,12 @@ bool WorkerManager::has_worker_with_all_capabilities(const CMVector<CMString>& c
 }
 
 size_t WorkerManager::get_worker_count() {
+    std::lock_guard<std::mutex> lock(mutex_);
     return workers_.size();
 }
 
 size_t WorkerManager::get_idle_worker_count() {
+    std::lock_guard<std::mutex> lock(mutex_);
     size_t count = 0;
     for (const auto& [id, info] : workers_) {
         if (info.status == WorkerStatus::IDLE) {

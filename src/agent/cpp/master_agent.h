@@ -53,7 +53,7 @@ public:
     void stop();
     bool is_running() const;
 
-    void set_data_service(DataService* ds);
+    void set_data_service(CMWeakPtr<DataService> wp);
 
 
     CMVector<uint64_t> get_connected_workers() const;
@@ -161,16 +161,14 @@ private:
     void remove_persisted_task(uint64_t task_id);
     CMString get_failed_tasks_file_path() const;
 
-    static void master_record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
     void on_master_record_write(const CMString& db_id, const CMString& name);
 
-    static void master_freeze_trampoline(void* ctx, const CMString& db_id);
     void on_master_freeze(const CMString& db_id);
     std::pair<CMString, TaskErrorType> on_master_register_write(const CMString& db_id, const CMString& name);
 
     std::atomic<bool> fatal_error_{false};
 
-    DataService* data_service_ = nullptr;
+    CMWeakPtr<DataService> data_service_;
 
     DataService& ds();
 

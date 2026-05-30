@@ -12,24 +12,29 @@
 namespace fly {
 
 DataService& WorkerAgent::ds() {
-    return data_service_ ? *data_service_ : DataService::instance();
+    if (auto sp = data_service_.lock()) {
+        return *sp;
+    }
+    return DataService::instance();
 }
 
-void WorkerAgent::set_data_service(DataService* ds) {
-    data_service_ = ds;
-    ds->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString> {
-        return request_remote_data(name);
-    });
-    ds->set_direct_compressed_read_handler(
-        [this](const CMString& host, int32_t port,
-              const CMString& name) -> std::tuple<bool, CMString, CMString> {
-            auto [success, data, py_name, error] = DataClient::request_compressed_data(host, port, name);
-            if (!success) {
-                ERR("request_compressed_data failed for {}: {}", name, error);
-                return {false, {}, {}};
-            }
-            return {true, std::move(data), std::move(py_name)};
+void WorkerAgent::set_data_service(CMWeakPtr<DataService> wp) {
+    data_service_ = wp;
+    if (auto sp = wp.lock()) {
+        sp->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString> {
+            return request_remote_data(name);
         });
+        sp->set_direct_compressed_read_handler(
+            [this](const CMString& host, int32_t port,
+                  const CMString& name) -> std::tuple<bool, CMString, CMString> {
+                auto [success, data, py_name, error] = DataClient::request_compressed_data(host, port, name);
+                if (!success) {
+                    ERR("request_compressed_data failed for {}: {}", name, error);
+                    return {false, {}, {}};
+                }
+                return {true, std::move(data), std::move(py_name)};
+            });
+    }
 }
 
 WorkerAgent::WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port,
@@ -393,20 +398,36 @@ void WorkerAgent::on_db_path_response(const DbPathResponseMessage& msg) {
         it->second->success = msg.success;
         it->second->completed = true;
     }
+    pending_db_path_cv_.notify_all();
 }
 
 void WorkerAgent::begin_task(uint64_t task_id) {
     current_task_id_ = task_id;
     current_writes_.clear();
     WorkerAgentContext::set_last_error_type(TaskErrorType::UNKNOWN);
-    WorkerAgentContext::set(&record_write_trampoline, this);
+    WorkerAgentContext::set_record_write_func([this](const CMString& db_id, const CMString& name) {
+        record_write(db_id, name);
+    });
     WorkerAgentContext::set_register_func([this](const CMString& db_id, const CMString& name) -> std::pair<CMString, TaskErrorType> {
         return register_write_with_master(db_id, name);
     });
-    WorkerAgentContext::set_notify_removed_func(&notify_removed_trampoline, this);
-    WorkerAgentContext::set_freeze_func(&freeze_trampoline, this);
-    WorkerAgentContext::set_remove_request_func(&remove_request_trampoline, this);
-    WorkerAgentContext::set_backup_request_func(&backup_request_trampoline, this);
+    WorkerAgentContext::set_notify_removed_func([this](const CMString& db_id, const CMString& name) {
+        CMString full_name = db_id + ":" + name;
+        ObjectRemovedMessage msg;
+        msg.object_name = full_name;
+        msg.db_id = db_id;
+        reactor_->send(master_conn_, msg);
+        INFO("ObjectRemoved sent to master: {}", full_name);
+    });
+    WorkerAgentContext::set_freeze_func([this](const CMString& db_id) {
+        request_database_freeze(db_id);
+    });
+    WorkerAgentContext::set_remove_request_func([this](const CMString& db_id, const CMString& object_name) {
+        request_object_remove(db_id, object_name);
+    });
+    WorkerAgentContext::set_backup_request_func([this](const CMString& db_id, const CMString& object_name) {
+        request_backup(db_id, object_name);
+    });
 }
 
 void WorkerAgent::record_write(const CMString& db_id, const CMString& object_name) {
@@ -432,26 +453,6 @@ CMVector<CMString> WorkerAgent::end_task(uint64_t task_id) {
     current_writes_.clear();
     current_task_id_ = 0;
     return writes;
-}
-
-void WorkerAgent::record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
-    static_cast<WorkerAgent*>(ctx)->record_write(db_id, name);
-}
-
-void WorkerAgent::notify_removed_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
-    auto* self = static_cast<WorkerAgent*>(ctx);
-    CMString full_name = db_id + ":" + name;
-
-    ObjectRemovedMessage msg;
-    msg.object_name = full_name;
-    msg.db_id = db_id;
-    self->reactor_->send(self->master_conn_, msg);
-
-    INFO("ObjectRemoved sent to master: {}", full_name);
-}
-
-void WorkerAgent::freeze_trampoline(void* ctx, const CMString& db_id) {
-    static_cast<WorkerAgent*>(ctx)->request_database_freeze(db_id);
 }
 
 void WorkerAgent::request_database_freeze(const CMString& db_id) {
@@ -526,22 +527,23 @@ bool WorkerAgent::request_db_path(const CMString& db_id) {
 
     INFO("Sent DbPathRequest for db_id={}", db_id);
 
-    for (int i = 0; i < 100; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
-        if (pending->completed) {
-            pending_db_paths_.erase(db_id);
-            if (pending->success && !pending->base_path.empty()) {
-                auto db = CMMakeShared<Database>(pending->base_path, pending->data_path, worker_id_, data_server_host_);
-                databases_[db_id] = db;
-                return true;
-            }
-            return false;
-        }
-    }
-
     {
-        std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
+        std::unique_lock<std::mutex> lock(pending_db_path_mutex_);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (true) {
+            if (pending->completed) {
+                pending_db_paths_.erase(db_id);
+                if (pending->success && !pending->base_path.empty()) {
+                    auto db = CMMakeShared<Database>(pending->base_path, pending->data_path, worker_id_, data_server_host_);
+                    databases_[db_id] = db;
+                    return true;
+                }
+                return false;
+            }
+            if (pending_db_path_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
+                break;
+            }
+        }
         pending_db_paths_.erase(db_id);
     }
     return false;
@@ -573,21 +575,22 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
 
     INFO("WriteRegister sent: object={}", full_name);
 
-    for (int i = 0; i < 100; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        std::lock_guard<std::mutex> lock(pending_write_reg_mutex_);
-        if (pending->completed) {
-            pending_write_regs_.erase(full_name);
-            if (!pending->success) {
-                WorkerAgentContext::set_last_error_type(pending->error_type);
-                return {pending->error_message, pending->error_type};
-            }
-            return {"", TaskErrorType::UNKNOWN};
-        }
-    }
-
     {
-        std::lock_guard<std::mutex> lock(pending_write_reg_mutex_);
+        std::unique_lock<std::mutex> lock(pending_write_reg_mutex_);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (true) {
+            if (pending->completed) {
+                pending_write_regs_.erase(full_name);
+                if (!pending->success) {
+                    WorkerAgentContext::set_last_error_type(pending->error_type);
+                    return {pending->error_message, pending->error_type};
+                }
+                return {"", TaskErrorType::UNKNOWN};
+            }
+            if (pending_write_reg_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
+                break;
+            }
+        }
         pending_write_regs_.erase(full_name);
     }
     WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
@@ -605,6 +608,7 @@ void WorkerAgent::on_write_register_ack(uint64_t conn_id, const WriteRegisterAck
         it->second->error_type = msg.error_type;
         it->second->completed = true;
     }
+    pending_write_reg_cv_.notify_all();
 }
 
 void WorkerAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg) {
@@ -739,10 +743,6 @@ void WorkerAgent::on_database_freeze_notification(uint64_t conn_id, const Databa
     }
 }
 
-void WorkerAgent::remove_request_trampoline(void* ctx, const CMString& db_id, const CMString& object_name) {
-    static_cast<WorkerAgent*>(ctx)->request_object_remove(db_id, object_name);
-}
-
 void WorkerAgent::request_object_remove(const CMString& db_id, const CMString& object_name) {
     CMString full = db_id + ":" + object_name;
 
@@ -815,10 +815,6 @@ void WorkerAgent::on_remove_command(uint64_t conn_id, const RemoveCommandMessage
         db->remove_index_entry(short_name);
         INFO("RemoveCommand: persisted REMOVE entry for {}", msg.object_name);
     }
-}
-
-void WorkerAgent::backup_request_trampoline(void* ctx, const CMString& db_id, const CMString& object_name) {
-    static_cast<WorkerAgent*>(ctx)->request_backup(db_id, object_name);
 }
 
 void WorkerAgent::request_backup(const CMString& db_id, const CMString& object_name) {

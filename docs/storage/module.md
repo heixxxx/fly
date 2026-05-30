@@ -155,23 +155,18 @@ write_pickle_bytes(name, data, size, py_name)  ← 调用线程（Python pickle�
 
 **回调模式说明**:
 
-`WorkerAgentContext` 使用 C 风格函数指针 + `void*` 上下文实现解耦：
-
-```cpp
-using RecordWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
-using RegisterWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
-```
+`WorkerAgentContext` 使用 `std::function` 回调实现解耦（`#include <functional>`）：
 
 **调用链**:
 ```
 Database.write_object<T>()
   → WorkerAgentContext::register_write()
-    → register_func_(ctx_, db_id, name)
-    → trampoline → WorkerAgent::register_write_with_master()
+    → register_func_(db_id, name)
+    → lambda → WorkerAgent::register_write_with_master()
   
   → 异步完成时 (complete lambda)
-    → caller_record_func(caller_record_ctx, ...)
-    → trampoline → WorkerAgent::record_write()
+     → caller_record_func(...)
+     → lambda → WorkerAgent::record_write()
 ```
 write_object(name, obj)  ← 调用线程
   │
@@ -207,35 +202,18 @@ write_object(name, obj)  ← 调用线程
 
 **回调模式说明**:
 
-`WorkerAgentContext` 使用 C 风格函数指针 + `void*` 上下文实现解耦：
-
-```cpp
-// 类型定义（worker_context.h）
-using RecordWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
-using RegisterWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
-
-// thread_local 存储
-class WorkerAgentContext {
-    static inline thread_local RecordWriteFunc func_ = nullptr;
-    static inline thread_local void* ctx_ = nullptr;  // 存 WorkerAgent*
-};
-
-// Trampoline（静态函数，签名匹配函数指针）
-void WorkerAgent::record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
-    static_cast<WorkerAgent*>(ctx)->record_write(db_id, name);
-}
-```
+`WorkerAgentContext` 使用 `std::function` 回调实现解耦（`#include <functional>`）：
 
 **调用链**:
 ```
 Database.write_object()
   → WorkerAgentContext::register_write()
-    → register_func_(ctx_, db_id, name)
-    → trampoline → WorkerAgent::register_write_with_master()
+    → register_func_(db_id, name)
+    → lambda → WorkerAgent::register_write_with_master()
   
   → 异步完成时 (complete lambda)
-    → caller_record_func(caller_record_ctx, ...)
-    → trampoline → WorkerAgent::record_write()
+     → caller_record_func(...)
+     → lambda → WorkerAgent::record_write()
 ```
 
 ---
@@ -332,9 +310,10 @@ private:
 ### DataService（统一内存索引）
 
 ```cpp
-class DataService {
+class DataService : public std::enable_shared_from_this<DataService> {
 public:
     static DataService& instance();
+    static CMSharedPtr<DataService> instance_ptr();  // shared_from_this()
     
     // 本地索引
     void on_write_started(const CMString& db_id, const CMString& object_name);
@@ -536,6 +515,6 @@ read_raw(key)                       → Layer 3: MetadataClient 查 Master → D
 | `FLY_SERIALIZE` 合并流式能力 | 所有序列化类型自动获得 `fly_serialize`/`fly_deserialize`，无需独立 `FLY_STREAMABLE()` |
 | FlyBuffer 统一为 CMString 内部存储 | 消除 char↔uint8_t 阻抗失配，读取路径 `take(std::move(string))` 零拷贝 |
 | WriteBackQueue 异步写入 | 文件 I/O 非阻塞，避免写入阻塞任务执行 |
-| 回调模式解耦 | Database 不依赖 WorkerAgent，纯函数指针桥接 |
-| DataService 进程级单例 | Master/Worker 共享，仅更新触发源不同 |
+| 回调模式解耦 | Database 不依赖 WorkerAgent，std::function 桥接 |
+| DataService 进程级单例（enable_shared_from_this） | Master/Worker 共享，CMWeakPtr 观察者模式安全引用 |
 | IOThreadPool 数据传输 | 文件 I/O 不阻塞 Reactor 线程 |

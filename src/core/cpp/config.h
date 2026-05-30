@@ -4,8 +4,12 @@
 #include <cstdint>
 #include <stdexcept>
 
+#include <climits>
+
 class Config {
 public:
+    static constexpr int64_t INVALID_INT = INT64_MIN;
+
     static Config& instance();
 
     void set_int(const CMString& key, int64_t value);

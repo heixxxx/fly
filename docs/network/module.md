@@ -183,6 +183,8 @@ dispatch_message(buffer)
   → 无 handler → 跳过，消费字节
 ```
 
+> **优化**: `decode()` 已 in-place 修改 buffer（erase 已消费的前缀），`register_handler` 内无需额外 buffer 拷贝。
+
 **线程安全**: `reactor_->send()` 可在 Reactor 线程外调用。Linux `::send()` 对小帧是原子的，且只有 Reactor 线程 poll。
 
 ---

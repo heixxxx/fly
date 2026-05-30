@@ -64,12 +64,6 @@ TEST(TaskExecutorTest, IsRunning) {
     EXPECT_FALSE(executor.is_running());
 }
 
-TEST(TaskExecutorTest, Cancel) {
-    TaskExecutor executor;
-    executor.cancel();
-    EXPECT_FALSE(executor.is_running());
-}
-
 TEST(TaskExecutorTest, SetExecFunc) {
     TaskExecutor executor;
     

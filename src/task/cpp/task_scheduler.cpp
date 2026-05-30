@@ -4,7 +4,7 @@
 namespace fly {
 
 TaskScheduler::TaskScheduler(DependencyGraph* graph, WorkerManager* manager)
-    : graph_(graph), manager_(manager), locality_enabled_(true) {}
+    : graph_(graph), manager_(manager) {}
 
 ScheduleResult TaskScheduler::schedule_next() {
     auto ready_tasks = graph_->get_ready_tasks();
@@ -44,8 +44,7 @@ CMVector<ScheduleResult> TaskScheduler::schedule_all_available() {
     return results;
 }
 
-void TaskScheduler::set_locality_preference(bool enabled) {
-    locality_enabled_ = enabled;
+void TaskScheduler::set_locality_preference(bool /*enabled*/) {
 }
 
 uint64_t TaskScheduler::select_best_worker(uint64_t task_id) {
@@ -62,13 +61,14 @@ uint64_t TaskScheduler::select_best_worker(uint64_t task_id) {
     
     CMVector<uint64_t> candidates;
     for (uint64_t wid : idle_workers) {
-        auto* info = manager_->get_worker(wid);
-        if (!info) continue;
+        auto info_opt = manager_->get_worker(wid);
+        if (!info_opt) continue;
+        auto& info = info_opt->get();
         
         bool has_all = true;
         for (const auto& req : requirements) {
             bool found = false;
-            for (const auto& cap : info->capabilities) {
+            for (const auto& cap : info.capabilities) {
                 if (cap == req) {
                     found = true;
                     break;

@@ -121,16 +121,8 @@ ssize_t TCPTransport::send(uint64_t conn_id, const CMString& data) {
         
         if (sent < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                struct pollfd pfd;
-                pfd.fd = fd;
-                pfd.events = POLLOUT;
-                int ret = ::poll(&pfd, 1, 5000);
-                if (ret <= 0) {
-                    ERR("TCPTransport::send: poll timeout/cancel conn_id={}, sent {}/{}",
-                        conn_id, total_sent, data.size());
-                    return (total_sent > 0) ? static_cast<ssize_t>(total_sent) : -1;
-                }
-                continue;
+                // Non-blocking: return partial send instead of blocking the reactor
+                return static_cast<ssize_t>(total_sent);
             }
             ERR("TCPTransport::send: write error conn_id={}, errno={}, sent {}/{}",
                 conn_id, errno, total_sent, data.size());

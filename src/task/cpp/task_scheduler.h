@@ -26,7 +26,6 @@ private:
     
     DependencyGraph* graph_;
     WorkerManager* manager_;
-    bool locality_enabled_;
 };
 
 }  // namespace fly

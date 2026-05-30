@@ -3,6 +3,7 @@
 #include <common/cpp/common_types.h>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <set>
 #include <vector>
 
@@ -25,11 +26,11 @@ public:
 private:
     CMMap<uint64_t, CMVector<CMString>> task_dependencies_;
     CMMap<CMString, bool> data_ready_status_;
-    CMMap<uint64_t, int> pending_count_;
     CMMap<uint64_t, CMVector<CMString>> task_requirements_;
     CMSet<uint64_t> ready_tasks_;
     CMSet<uint64_t> pending_tasks_;
     CMSet<uint64_t> completed_tasks_;
+    mutable std::mutex mutex_;
 };
 
 }  // namespace fly

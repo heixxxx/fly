@@ -1,4 +1,5 @@
 #include "config.h"
+#include <cstdio>
 
 Config& Config::instance() {
     static Config config;
@@ -29,7 +30,8 @@ int64_t Config::get_int(const CMString& key) const {
     auto default_it = INT_DEFAULTS.find(key);
     if (it != int_values_.end()) return it->second;
     if (default_it != INT_DEFAULTS.end()) return default_it->second;
-    throw std::runtime_error("Unknown config key: " + key);
+    fprintf(stderr, "[ERR] Config::get_int: unknown key '%s'\n", key.c_str());
+    return INVALID_INT;
 }
 
 const CMString& Config::get_str(const CMString& key) const {

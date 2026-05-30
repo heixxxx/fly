@@ -58,8 +58,4 @@ bool TaskExecutor::is_running() const {
     return running_;
 }
 
-void TaskExecutor::cancel() {
-    running_ = false;
-}
-
 }  // namespace fly

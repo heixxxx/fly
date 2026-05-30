@@ -8,12 +8,13 @@ TEST(WorkerManagerTest, RegisterWorker) {
     manager.register_worker(1, "127.0.0.1", 8080, {"python", "gpu"});
     
     EXPECT_EQ(manager.get_worker_count(), 1);
-    auto* worker = manager.get_worker(1);
-    ASSERT_NE(worker, nullptr);
-    EXPECT_EQ(worker->address, "127.0.0.1");
-    EXPECT_EQ(worker->port, 8080);
-    EXPECT_EQ(worker->status, WorkerStatus::IDLE);
-    EXPECT_EQ(worker->capabilities.size(), 2);
+    auto worker_opt = manager.get_worker(1);
+    ASSERT_TRUE(worker_opt.has_value());
+    auto& worker = worker_opt->get();
+    EXPECT_EQ(worker.address, "127.0.0.1");
+    EXPECT_EQ(worker.port, 8080);
+    EXPECT_EQ(worker.status, WorkerStatus::IDLE);
+    EXPECT_EQ(worker.capabilities.size(), 2);
 }
 
 TEST(WorkerManagerTest, UnregisterWorker) {
@@ -21,7 +22,7 @@ TEST(WorkerManagerTest, UnregisterWorker) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
     manager.unregister_worker(1);
     EXPECT_EQ(manager.get_worker_count(), 0);
-    EXPECT_EQ(manager.get_worker(1), nullptr);
+    EXPECT_FALSE(manager.get_worker(1).has_value());
 }
 
 TEST(WorkerManagerTest, UpdateWorkerStatus) {
@@ -29,19 +30,19 @@ TEST(WorkerManagerTest, UpdateWorkerStatus) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
     
     manager.update_worker_status(1, WorkerStatus::BUSY);
-    EXPECT_EQ(manager.get_worker(1)->status, WorkerStatus::BUSY);
+    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::BUSY);
     
     manager.update_worker_status(1, WorkerStatus::DEAD);
-    EXPECT_EQ(manager.get_worker(1)->status, WorkerStatus::DEAD);
+    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::DEAD);
 }
 
 TEST(WorkerManagerTest, RecordHeartbeat) {
     WorkerManager manager;
     manager.register_worker(1, "127.0.0.1", 8080, {});
     
-    auto old_time = manager.get_worker(1)->last_heartbeat;
+    auto old_time = manager.get_worker(1)->get().last_heartbeat;
     manager.record_heartbeat(1);
-    auto new_time = manager.get_worker(1)->last_heartbeat;
+    auto new_time = manager.get_worker(1)->get().last_heartbeat;
     EXPECT_GE(new_time, old_time);
 }
 
@@ -50,12 +51,12 @@ TEST(WorkerManagerTest, AssignAndCompleteTask) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
     
     manager.assign_task(1, 100);
-    EXPECT_EQ(manager.get_worker(1)->status, WorkerStatus::BUSY);
-    EXPECT_EQ(manager.get_worker(1)->current_task_id, 100);
+    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::BUSY);
+    EXPECT_EQ(manager.get_worker(1)->get().current_task_id, 100);
     
     manager.complete_task(1);
-    EXPECT_EQ(manager.get_worker(1)->status, WorkerStatus::IDLE);
-    EXPECT_EQ(manager.get_worker(1)->current_task_id, 0);
+    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::IDLE);
+    EXPECT_EQ(manager.get_worker(1)->get().current_task_id, 0);
 }
 
 TEST(WorkerManagerTest, GetIdleWorkers) {
@@ -99,9 +100,9 @@ TEST(WorkerManagerTest, UpdateCapabilitiesAddOnly) {
 
     manager.update_capabilities(1, {"gpu", "cuda"}, {});
 
-    auto* worker = manager.get_worker(1);
-    ASSERT_NE(worker, nullptr);
-    EXPECT_EQ(worker->capabilities.size(), 3);
+    auto worker_opt1 = manager.get_worker(1);
+    ASSERT_TRUE(worker_opt1.has_value());
+    EXPECT_EQ(worker_opt1->get().capabilities.size(), 3);
 
     auto gpu_workers = manager.get_workers_with_capability("gpu");
     EXPECT_EQ(gpu_workers.size(), 1);
@@ -114,9 +115,9 @@ TEST(WorkerManagerTest, UpdateCapabilitiesRemoveOnly) {
 
     manager.update_capabilities(1, {}, {"gpu"});
 
-    auto* worker = manager.get_worker(1);
-    ASSERT_NE(worker, nullptr);
-    EXPECT_EQ(worker->capabilities.size(), 2);
+    auto worker_opt2 = manager.get_worker(1);
+    ASSERT_TRUE(worker_opt2.has_value());
+    EXPECT_EQ(worker_opt2->get().capabilities.size(), 2);
 
     auto gpu_workers = manager.get_workers_with_capability("gpu");
     EXPECT_TRUE(gpu_workers.empty());
@@ -128,9 +129,9 @@ TEST(WorkerManagerTest, UpdateCapabilitiesAddAndRemoveSimultaneously) {
 
     manager.update_capabilities(1, {"cuda"}, {"gpu"});
 
-    auto* worker = manager.get_worker(1);
-    ASSERT_NE(worker, nullptr);
-    EXPECT_EQ(worker->capabilities.size(), 2);
+    auto worker_opt3 = manager.get_worker(1);
+    ASSERT_TRUE(worker_opt3.has_value());
+    EXPECT_EQ(worker_opt3->get().capabilities.size(), 2);
 
     auto gpu_workers = manager.get_workers_with_capability("gpu");
     EXPECT_TRUE(gpu_workers.empty());
@@ -145,9 +146,9 @@ TEST(WorkerManagerTest, UpdateCapabilitiesDeduplicateOnAdd) {
 
     manager.update_capabilities(1, {"python"}, {});
 
-    auto* worker = manager.get_worker(1);
-    ASSERT_NE(worker, nullptr);
-    EXPECT_EQ(worker->capabilities.size(), 1);
+    auto worker_opt4 = manager.get_worker(1);
+    ASSERT_TRUE(worker_opt4.has_value());
+    EXPECT_EQ(worker_opt4->get().capabilities.size(), 1);
 }
 
 TEST(WorkerManagerTest, UpdateCapabilitiesRemoveNonexistent) {
@@ -156,9 +157,9 @@ TEST(WorkerManagerTest, UpdateCapabilitiesRemoveNonexistent) {
 
     manager.update_capabilities(1, {}, {"nonexistent"});
 
-    auto* worker = manager.get_worker(1);
-    ASSERT_NE(worker, nullptr);
-    EXPECT_EQ(worker->capabilities.size(), 1);
+    auto worker_opt5 = manager.get_worker(1);
+    ASSERT_TRUE(worker_opt5.has_value());
+    EXPECT_EQ(worker_opt5->get().capabilities.size(), 1);
 }
 
 TEST(WorkerManagerTest, UpdateCapabilitiesNonexistentWorker) {

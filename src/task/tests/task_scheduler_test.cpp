@@ -38,7 +38,7 @@ TEST(TaskSchedulerTest, ScheduleSingleTask) {
     EXPECT_TRUE(result.scheduled);
     EXPECT_EQ(result.task_id, 1);
     EXPECT_EQ(result.worker_id, 1);
-    EXPECT_EQ(manager.get_worker(1)->status, WorkerStatus::BUSY);
+    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::BUSY);
 }
 
 TEST(TaskSchedulerTest, ScheduleMultipleTasksFIFO) {

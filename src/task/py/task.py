@@ -22,6 +22,20 @@ def task_name(name: str):
 
 
 def as_task(inputs=None, requires=None):
+    """将函数注册为可分发任务。
+
+    装饰器会拦截函数调用，将任务提交给 Agent（Master 或 Worker）执行。
+
+    Args:
+        inputs: callable(*args, **kwargs) -> list[str]，返回依赖对象名列表。
+        requires: list[str]，任务所需的 worker 能力标签。
+
+    Usage::
+
+        @as_task(inputs=lambda db: [])
+        def my_task(db):
+            ...
+    """
     def decorator(func):
         name = getattr(func, '_fly_task_name', None) or func.__name__
         module = func.__module__ or "__main__"

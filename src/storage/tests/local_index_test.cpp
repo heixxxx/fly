@@ -30,8 +30,8 @@ TEST_F(LocalIndexTest, AddAndFindEntry) {
     IndexEntry entry{"test/object", "data_001.dat", 100, 200, false, 0};
     index.add_entry(entry);
 
-    IndexEntry* found = index.find_entry("test/object");
-    ASSERT_NE(found, nullptr);
+    auto found = index.find_entry("test/object");
+    ASSERT_TRUE(found.has_value());
     EXPECT_EQ(found->object_name, "test/object");
     EXPECT_EQ(found->file_name, "data_001.dat");
     EXPECT_EQ(found->offset, 100);
@@ -42,8 +42,8 @@ TEST_F(LocalIndexTest, AddAndFindEntry) {
 TEST_F(LocalIndexTest, FindNonExistentEntry) {
     LocalIndex index(make_idx_path("find_none"));
 
-    IndexEntry* found = index.find_entry("nonexistent");
-    EXPECT_EQ(found, nullptr);
+    auto found = index.find_entry("nonexistent");
+    EXPECT_FALSE(found.has_value());
 }
 
 TEST_F(LocalIndexTest, RemoveEntry) {
@@ -53,7 +53,7 @@ TEST_F(LocalIndexTest, RemoveEntry) {
     index.add_entry(entry);
 
     EXPECT_TRUE(index.remove_entry("obj/remove"));
-    EXPECT_EQ(index.find_entry("obj/remove"), nullptr);
+    EXPECT_EQ(index.find_entry("obj/remove"), std::nullopt);
     EXPECT_EQ(index.entry_count(), 0);
 }
 
@@ -93,14 +93,14 @@ TEST_F(LocalIndexTest, SaveAndLoad) {
 
     EXPECT_EQ(loaded.entry_count(), 3);
 
-    IndexEntry* entry_a = loaded.find_entry("obj/a");
-    ASSERT_NE(entry_a, nullptr);
+    auto entry_a = loaded.find_entry("obj/a");
+    ASSERT_TRUE(entry_a.has_value());
     EXPECT_EQ(entry_a->file_name, "data_001.dat");
     EXPECT_EQ(entry_a->offset, 0);
     EXPECT_EQ(entry_a->size, 100);
 
-    IndexEntry* entry_c = loaded.find_entry("obj/c");
-    ASSERT_NE(entry_c, nullptr);
+    auto entry_c = loaded.find_entry("obj/c");
+    ASSERT_TRUE(entry_c.has_value());
     EXPECT_TRUE(entry_c->is_large);
     EXPECT_EQ(entry_c->block_count, 5);
 }
@@ -132,13 +132,13 @@ TEST_F(LocalIndexTest, MultipleEntriesPerKey) {
 
     EXPECT_EQ(index.entry_count(), 2);
 
-    IndexEntry* found = index.find_entry("obj/same");
-    ASSERT_NE(found, nullptr);
+    auto found = index.find_entry("obj/same");
+    ASSERT_TRUE(found.has_value());
     EXPECT_EQ(found->file_name, "data_001.dat");
     EXPECT_EQ(found->offset, 0);
 
-    CMVector<IndexEntry>* all = index.find_all_entries("obj/same");
-    ASSERT_NE(all, nullptr);
+    auto all = index.find_all_entries("obj/same");
+    ASSERT_TRUE(all.has_value());
     EXPECT_EQ(all->size(), 2u);
 }
 
@@ -159,8 +159,8 @@ TEST_F(LocalIndexTest, MultipleEntriesSaveLoad) {
     loaded.load();
     EXPECT_EQ(loaded.entry_count(), 100);
 
-    IndexEntry* entry = loaded.find_entry("obj_50");
-    ASSERT_NE(entry, nullptr);
+    auto entry = loaded.find_entry("obj_50");
+    ASSERT_TRUE(entry.has_value());
     EXPECT_EQ(entry->offset, 5000);
     EXPECT_EQ(entry->size, 50);
 }
@@ -180,12 +180,12 @@ TEST_F(LocalIndexTest, IncrementalAddRecords) {
     loaded.load();
     EXPECT_EQ(loaded.entry_count(), 2);
 
-    IndexEntry* a = loaded.find_entry("obj/a");
-    ASSERT_NE(a, nullptr);
+    auto a = loaded.find_entry("obj/a");
+    ASSERT_TRUE(a.has_value());
     EXPECT_EQ(a->file_name, "data_001.dat");
 
-    IndexEntry* b = loaded.find_entry("obj/b");
-    ASSERT_NE(b, nullptr);
+    auto b = loaded.find_entry("obj/b");
+    ASSERT_TRUE(b.has_value());
     EXPECT_EQ(b->file_name, "data_002.dat");
 }
 
@@ -205,10 +205,10 @@ TEST_F(LocalIndexTest, IncrementalRemoveRecord) {
     loaded.load();
     EXPECT_EQ(loaded.entry_count(), 1);
 
-    EXPECT_EQ(loaded.find_entry("obj/a"), nullptr);
+    EXPECT_EQ(loaded.find_entry("obj/a"), std::nullopt);
 
-    IndexEntry* b = loaded.find_entry("obj/b");
-    ASSERT_NE(b, nullptr);
+    auto b = loaded.find_entry("obj/b");
+    ASSERT_TRUE(b.has_value());
     EXPECT_EQ(b->size, 200);
 }
 
@@ -232,10 +232,10 @@ TEST_F(LocalIndexTest, IncrementalMixedOps) {
     loaded.load();
     EXPECT_EQ(loaded.entry_count(), 2);
 
-    EXPECT_EQ(loaded.find_entry("obj/1"), nullptr);
-    EXPECT_EQ(loaded.find_entry("obj/2"), nullptr);
-    ASSERT_NE(loaded.find_entry("obj/3"), nullptr);
-    ASSERT_NE(loaded.find_entry("obj/4"), nullptr);
+    EXPECT_EQ(loaded.find_entry("obj/1"), std::nullopt);
+    EXPECT_EQ(loaded.find_entry("obj/2"), std::nullopt);
+    ASSERT_TRUE(loaded.find_entry("obj/3").has_value());
+    ASSERT_TRUE(loaded.find_entry("obj/4").has_value());
 }
 
 TEST_F(LocalIndexTest, CompactReducesFileSize) {
@@ -266,8 +266,8 @@ TEST_F(LocalIndexTest, CompactReducesFileSize) {
     LocalIndex loaded(idx_path);
     loaded.load();
     EXPECT_EQ(loaded.entry_count(), 25);
-    EXPECT_EQ(loaded.find_entry("obj_0"), nullptr);
-    ASSERT_NE(loaded.find_entry("obj_25"), nullptr);
+    EXPECT_EQ(loaded.find_entry("obj_0"), std::nullopt);
+    ASSERT_TRUE(loaded.find_entry("obj_25").has_value());
 }
 
 TEST_F(LocalIndexTest, LoadLegacyFormat) {
@@ -284,12 +284,12 @@ TEST_F(LocalIndexTest, LoadLegacyFormat) {
     loaded.load();
     EXPECT_EQ(loaded.entry_count(), 2);
 
-    IndexEntry* a = loaded.find_entry("obj/a");
-    ASSERT_NE(a, nullptr);
+    auto a = loaded.find_entry("obj/a");
+    ASSERT_TRUE(a.has_value());
     EXPECT_EQ(a->size, 100);
 
-    IndexEntry* b = loaded.find_entry("obj/b");
-    ASSERT_NE(b, nullptr);
+    auto b = loaded.find_entry("obj/b");
+    ASSERT_TRUE(b.has_value());
     EXPECT_EQ(b->size, 200);
 }
 

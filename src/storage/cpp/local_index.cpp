@@ -69,22 +69,22 @@ bool LocalIndex::remove_entry(const CMString& object_name) {
     return true;
 }
 
-IndexEntry* LocalIndex::find_entry(const CMString& object_name) {
+std::optional<IndexEntry> LocalIndex::find_entry(const CMString& object_name) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = entries_.find(object_name);
     if (it == entries_.end() || it->second.empty()) {
-        return nullptr;
+        return std::nullopt;
     }
-    return &(it->second.front());
+    return it->second.front();
 }
 
-CMVector<IndexEntry>* LocalIndex::find_all_entries(const CMString& object_name) {
+std::optional<CMVector<IndexEntry>> LocalIndex::find_all_entries(const CMString& object_name) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = entries_.find(object_name);
     if (it == entries_.end()) {
-        return nullptr;
+        return std::nullopt;
     }
-    return &(it->second);
+    return it->second;
 }
 
 void LocalIndex::append_add(const CMString& object_name, const CMVector<IndexEntry>& entries) {

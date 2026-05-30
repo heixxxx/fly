@@ -73,8 +73,8 @@ TEST_F(DataWriterTest, WriteRecordPersistsData) {
 
     EXPECT_EQ(writer.total_bytes_written(), static_cast<int64_t>(data.size()));
 
-    auto* entry = writer.get_last_entry("test/record");
-    ASSERT_NE(entry, nullptr);
+    auto entry = writer.get_last_entry("test/record");
+    ASSERT_TRUE(entry.has_value());
     EXPECT_GT(entry->size, 0);
 
     writer.close();
@@ -123,12 +123,12 @@ TEST_F(DataWriterTest, MultipleRecords) {
 
     EXPECT_EQ(writer.total_bytes_written(), static_cast<int64_t>(data1.size() + data2.size()));
 
-    auto* e1 = writer.get_last_entry("obj1");
-    ASSERT_NE(e1, nullptr);
+    auto e1 = writer.get_last_entry("obj1");
+    ASSERT_TRUE(e1.has_value());
     EXPECT_GT(e1->size, 0);
 
-    auto* e2 = writer.get_last_entry("obj2");
-    ASSERT_NE(e2, nullptr);
+    auto e2 = writer.get_last_entry("obj2");
+    ASSERT_TRUE(e2.has_value());
     EXPECT_GT(e2->size, 0);
 
     writer.close();
@@ -142,11 +142,11 @@ TEST_F(DataWriterTest, RemoveEntry) {
     auto rec = make_record(data);
     writer.write_record("target", rec.original_size, rec.chunk_count, rec.buffer);
 
-    auto* entry = writer.get_last_entry("target");
-    ASSERT_NE(entry, nullptr);
+    auto entry = writer.get_last_entry("target");
+    ASSERT_TRUE(entry.has_value());
 
     EXPECT_TRUE(writer.remove_entry("target"));
-    EXPECT_EQ(writer.get_last_entry("target"), nullptr);
+    EXPECT_EQ(writer.get_last_entry("target"), std::nullopt);
 
     writer.close();
 }

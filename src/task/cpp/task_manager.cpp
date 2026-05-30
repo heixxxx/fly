@@ -1,4 +1,5 @@
 #include <task/cpp/task_manager.h>
+#include <chrono>
 
 namespace fly {
 
@@ -7,6 +8,7 @@ void TaskManager::create_task(uint64_t task_id, const CMString& name,
                                     const CMVector<CMString>& outputs,
                                     const CMString& config,
                                     const CMVector<CMString>& required_capabilities) {
+    std::lock_guard<std::mutex> lock(mutex_);
     TaskMetadata meta;
     meta.task_id = task_id;
     meta.name = name;
@@ -15,7 +17,8 @@ void TaskManager::create_task(uint64_t task_id, const CMString& name,
     meta.outputs = outputs;
     meta.config = config;
     meta.required_capabilities = required_capabilities;
-    meta.created_at = 0;
+    auto now = std::chrono::system_clock::now().time_since_epoch();
+    meta.created_at = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
     meta.started_at = 0;
     meta.completed_at = 0;
     meta.assigned_worker_id = 0;
@@ -23,13 +26,23 @@ void TaskManager::create_task(uint64_t task_id, const CMString& name,
 }
 
 void TaskManager::update_task_status(uint64_t task_id, TaskStatus status) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
         it->second.status = status;
+        auto now = std::chrono::system_clock::now().time_since_epoch();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+        if (status == TaskStatus::RUNNING && it->second.started_at == 0) {
+            it->second.started_at = ms;
+        }
+        if (status == TaskStatus::COMPLETED || status == TaskStatus::FAILED) {
+            it->second.completed_at = ms;
+        }
     }
 }
 
 void TaskManager::set_error(uint64_t task_id, const CMString& error) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
         it->second.error_message = error;
@@ -37,6 +50,7 @@ void TaskManager::set_error(uint64_t task_id, const CMString& error) {
 }
 
 void TaskManager::set_assigned_worker(uint64_t task_id, uint64_t worker_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
         it->second.assigned_worker_id = worker_id;
@@ -44,6 +58,7 @@ void TaskManager::set_assigned_worker(uint64_t task_id, uint64_t worker_id) {
 }
 
 void TaskManager::set_timestamps(uint64_t task_id, uint64_t created, uint64_t started, uint64_t completed) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
         if (created != 0) it->second.created_at = created;
@@ -52,15 +67,17 @@ void TaskManager::set_timestamps(uint64_t task_id, uint64_t created, uint64_t st
     }
 }
 
-TaskMetadata* TaskManager::get_task(uint64_t task_id) {
+std::optional<std::reference_wrapper<TaskMetadata>> TaskManager::get_task(uint64_t task_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
-        return &it->second;
+        return std::ref(it->second);
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 CMVector<TaskMetadata> TaskManager::get_tasks_by_status(TaskStatus status) {
+    std::lock_guard<std::mutex> lock(mutex_);
     CMVector<TaskMetadata> result;
     for (const auto& [id, meta] : tasks_) {
         if (meta.status == status) {
@@ -71,6 +88,7 @@ CMVector<TaskMetadata> TaskManager::get_tasks_by_status(TaskStatus status) {
 }
 
 CMVector<TaskMetadata> TaskManager::get_all_tasks() {
+    std::lock_guard<std::mutex> lock(mutex_);
     CMVector<TaskMetadata> result;
     for (const auto& [id, meta] : tasks_) {
         result.push_back(meta);
@@ -79,10 +97,12 @@ CMVector<TaskMetadata> TaskManager::get_all_tasks() {
 }
 
 bool TaskManager::has_task(uint64_t task_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
     return tasks_.count(task_id) > 0;
 }
 
 void TaskManager::remove_task(uint64_t task_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
     tasks_.erase(task_id);
 }
 

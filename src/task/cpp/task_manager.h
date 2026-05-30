@@ -2,6 +2,9 @@
 
 #include <common/cpp/common_types.h>
 #include <cstdint>
+#include <mutex>
+#include <optional>
+#include <functional>
 
 namespace fly {
 
@@ -40,7 +43,7 @@ public:
     void set_assigned_worker(uint64_t task_id, uint64_t worker_id);
     void set_timestamps(uint64_t task_id, uint64_t created, uint64_t started, uint64_t completed);
 
-    TaskMetadata* get_task(uint64_t task_id);
+    std::optional<std::reference_wrapper<TaskMetadata>> get_task(uint64_t task_id);
     CMVector<TaskMetadata> get_tasks_by_status(TaskStatus status);
     CMVector<TaskMetadata> get_all_tasks();
     bool has_task(uint64_t task_id);
@@ -48,6 +51,7 @@ public:
 
 private:
     CMMap<uint64_t, TaskMetadata> tasks_;
+    mutable std::mutex mutex_;
 };
 
 }  // namespace fly

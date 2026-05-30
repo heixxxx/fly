@@ -38,6 +38,11 @@ void Reactor::run() {
 
 void Reactor::wait_until_running() const {
     while (!running_.load()) {
+        if (stop_requested_.load()) {
+            ERR("Reactor::wait_until_running: stop requested before reactor started running");
+            assert(false && "Reactor stop requested before running");
+            return;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
@@ -108,7 +113,9 @@ void Reactor::dispatch_message(uint64_t conn_id, CMString& buffer) {
         handler(conn_id, buffer);
         
         if (buffer == temp) {
-            break;
+            ERR("dispatch_message: handler for type={} did not consume buffer, discarding {} bytes",
+                static_cast<int>(type), buffer.size());
+            buffer.clear();
         }
     }
 }

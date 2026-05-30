@@ -2,6 +2,9 @@
 
 #include <common/cpp/common_types.h>
 #include <cstdint>
+#include <mutex>
+#include <optional>
+#include <functional>
 
 namespace fly {
 
@@ -37,7 +40,7 @@ public:
                               const CMVector<CMString>& added,
                               const CMVector<CMString>& removed);
     
-    WorkerInfo* get_worker(uint64_t worker_id);
+    std::optional<std::reference_wrapper<WorkerInfo>> get_worker(uint64_t worker_id);
     CMVector<uint64_t> get_idle_workers();
     CMVector<uint64_t> get_workers_with_capability(const CMString& capability);
     CMVector<WorkerInfo> get_all_workers();
@@ -47,6 +50,7 @@ public:
     
 private:
     CMMap<uint64_t, WorkerInfo> workers_;
+    mutable std::mutex mutex_;
 };
 
 }  // namespace fly

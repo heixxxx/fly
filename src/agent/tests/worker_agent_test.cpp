@@ -64,11 +64,10 @@ TEST(WorkerAgentContextTest, DefaultNotActive) {
 
 TEST(WorkerAgentContextTest, SetAndClear) {
     int calls = 0;
-    WorkerAgentContext::set(
-        [](void* ctx, const CMString& db_id, const CMString& name) {
-            (*static_cast<int*>(ctx))++;
-        },
-        &calls
+    WorkerAgentContext::set_record_write_func(
+        [&calls](const CMString& db_id, const CMString& name) {
+            calls++;
+        }
     );
     EXPECT_TRUE(WorkerAgentContext::is_active());
     

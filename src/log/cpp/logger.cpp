@@ -1,6 +1,7 @@
 #include <log/cpp/logger.h>
 #include <chrono>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <ctime>
 #include <filesystem>
@@ -79,6 +80,8 @@ void Logger::set_level(LogLevel level) { level_ = level; }
 void Logger::flush() {
     if (file_.is_open()) {
         file_.flush();
+    } else {
+        std::cout.flush();
     }
 }
 
@@ -89,7 +92,18 @@ void Logger::log(LogLevel level, const CMString& msg) {
     if (file_.is_open()) {
         file_ << "[" << timestamp() << "] "
               << "[" << level_str(level) << "] "
-              << msg << std::endl;
+              << msg << "\n";
+        if (level >= LogLevel::WARN) {
+            file_.flush();
+        }
+    } else {
+        // Pre-init: output to stdout so no messages are silently dropped
+        std::cout << "[" << timestamp() << "] "
+                  << "[" << level_str(level) << "] "
+                  << msg << "\n";
+        if (level >= LogLevel::WARN) {
+            std::cout.flush();
+        }
     }
 }
 

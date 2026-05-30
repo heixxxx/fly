@@ -8,6 +8,7 @@
 #include <storage/cpp/index_entry.h>
 #include <storage/cpp/db_meta.h>
 #include <storage/cpp/compressor.h>
+#include <storage/cpp/decompress_helper.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <nanobind/operators.h>
 #include <nanobind/stl/string.h>
@@ -66,16 +67,8 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
         );
     })
     FLY_EXPORT_DEF("_decompress_bytes", [](Database&, fly_export::bytes b) -> fly_export::bytes {
-        DecompressingStreamBuf dsbuf(b.c_str(), b.size());
-        std::istream is(&dsbuf);
-        CMString result;
-        CMVector<char> tmp(4096);
-        while (is) {
-            is.read(tmp.data(), static_cast<std::streamsize>(tmp.size()));
-            if (is.gcount() > 0) {
-                result.append(tmp.data(), static_cast<size_t>(is.gcount()));
-            }
-        }
+        CMString raw(b.c_str(), b.size());
+        CMString result = fly::decompress_raw_data(raw);
         return fly_export::bytes(result.data(), result.size());
     })
     FLY_EXPORT_DEF("write_object_raw", [](Database& db, const CMString& name, const CMString& data, bool backup) -> CMString {
@@ -87,32 +80,12 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_DEF("read_object_raw", [](Database& db, const CMString& name, bool backup) -> CMString {
         auto [comp_data, py_name] = db.read_object_compressed(name, backup);
         if (comp_data.empty()) return {};
-        DecompressingStreamBuf dsbuf(comp_data.data(), comp_data.size());
-        std::istream is(&dsbuf);
-        CMString result;
-        CMVector<char> tmp(4096);
-        while (is) {
-            is.read(tmp.data(), static_cast<std::streamsize>(tmp.size()));
-            if (is.gcount() > 0) {
-                result.append(tmp.data(), static_cast<size_t>(is.gcount()));
-            }
-        }
-        return result;
+        return fly::decompress_raw_data(comp_data);
     })
     FLY_EXPORT_DEF("read_object_raw", [](Database& db, const CMString& name) -> CMString {
         auto [comp_data, py_name] = db.read_object_compressed(name, false);
         if (comp_data.empty()) return {};
-        DecompressingStreamBuf dsbuf(comp_data.data(), comp_data.size());
-        std::istream is(&dsbuf);
-        CMString result;
-        CMVector<char> tmp(4096);
-        while (is) {
-            is.read(tmp.data(), static_cast<std::streamsize>(tmp.size()));
-            if (is.gcount() > 0) {
-                result.append(tmp.data(), static_cast<size_t>(is.gcount()));
-            }
-        }
-        return result;
+        return fly::decompress_raw_data(comp_data);
     })
     FLY_EXPORT_METHOD("backup_object", &Database::backup_object)
     FLY_EXPORT_METHOD("freeze", &Database::freeze)

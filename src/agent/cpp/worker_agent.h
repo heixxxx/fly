@@ -62,7 +62,7 @@ public:
     
     void set_executor(CMSharedPtr<TaskExecutor> executor);
 
-    void set_data_service(DataService* ds);
+    void set_data_service(CMWeakPtr<DataService> wp);
     
     void begin_task(uint64_t task_id);
     void record_write(const CMString& db_id, const CMString& object_name);
@@ -120,12 +120,6 @@ private:
     std::condition_variable heartbeat_cv_;
     
     CMSharedPtr<TaskExecutor> executor_;
-    
-    static void record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
-    static void notify_removed_trampoline(void* ctx, const CMString& db_id, const CMString& name);
-    static void freeze_trampoline(void* ctx, const CMString& db_id);
-    static void remove_request_trampoline(void* ctx, const CMString& db_id, const CMString& object_name);
-    static void backup_request_trampoline(void* ctx, const CMString& db_id, const CMString& object_name);
 
     uint64_t current_task_id_ = 0;
     CMVector<CMString> current_writes_;
@@ -137,9 +131,11 @@ private:
     CMMap<CMString, CMSharedPtr<Database>> databases_;
 
     std::mutex pending_db_path_mutex_;
+    std::condition_variable pending_db_path_cv_;
     CMMap<CMString, CMSharedPtr<PendingDbPath>> pending_db_paths_;
 
     std::mutex pending_write_reg_mutex_;
+    std::condition_variable pending_write_reg_cv_;
     CMMap<CMString, CMSharedPtr<PendingWriteRegister>> pending_write_regs_;
 
     struct PendingRemove {
@@ -171,7 +167,7 @@ private:
     void initiate_shutdown(const CMString& reason);
     void do_cleanup();
 
-    DataService* data_service_ = nullptr;
+    CMWeakPtr<DataService> data_service_;
 
     DataService& ds();
 

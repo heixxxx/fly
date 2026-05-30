@@ -15,6 +15,7 @@
 #include <log/cpp/logger.h>
 #include <memory>
 #include <stdexcept>
+#include <atomic>
 #include <cstring>
 
 #include <set>
@@ -76,12 +77,16 @@ private:
     CompressResult compress_buffered_data(const char* data, int64_t data_size,
                                            const CMString& py_name, FlyBuffer& target);
 
+    // Shared backup write logic: takes ownership of compressed_data and writes it
+    // as a backup record for the given object.
+    void do_backup_write(const CMString& full, const CMString& object_name, CMString compressed_data);
+
     CMString base_path_;
     CMString data_path_;
     CMString writer_id_;
     CMString db_id_;
     CMString host_;
-    bool is_frozen_ = false;
+    std::atomic<bool> is_frozen_{false};
 
     CompressionType compression_type_ = CompressionType::NONE;
     int compression_level_ = 0;
@@ -145,9 +150,7 @@ CMString Database::write_object(const CMString& object_name, const T& obj,
 
     DataWriter* w = writer_.get();
     auto caller_record_func = fly::WorkerAgentContext::current_record_func();
-    auto caller_record_ctx = fly::WorkerAgentContext::current_record_ctx();
-    auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : nullptr;
-    auto caller_backup_ctx = backup ? fly::WorkerAgentContext::current_backup_ctx() : nullptr;
+    auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : std::function<void(const fly::CMString&, const fly::CMString&)>{};
 
     auto execute = [w, name = full, total_uncompressed, chunk_count, record]() {
         w->write_record(name, total_uncompressed, chunk_count, *record);
@@ -155,19 +158,19 @@ CMString Database::write_object(const CMString& object_name, const T& obj,
     };
 
     auto complete = [full, db_id = this->db_id_, object_name,
-                     caller_record_func, caller_record_ctx,
-                     caller_backup_func, caller_backup_ctx, w, backup]() {
+                     caller_record_func,
+                     caller_backup_func, w, backup]() {
         auto& ds = fly::DataService::instance();
-        auto* entries = w->get_all_entries(full);
-        if (entries) {
-            ds.on_write_completed(db_id, full, *entries);
+        auto entries = w->get_all_entries(full);
+        if (entries.has_value()) {
+            ds.on_write_completed(db_id, full, entries.value());
         }
         ds.on_object_flushed(full);
         if (caller_record_func) {
-            caller_record_func(caller_record_ctx, db_id, object_name);
+            caller_record_func(db_id, object_name);
         }
         if (backup && caller_backup_func) {
-            caller_backup_func(caller_backup_ctx, db_id, object_name);
+            caller_backup_func(db_id, object_name);
         }
     };
 

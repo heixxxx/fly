@@ -3,7 +3,7 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/data_writer.h>
 #include <common/cpp/common_types.h>
-#include <unordered_map>
+#include <common/cpp/concurrent_map.h>
 #include <memory>
 
 class StorageManager {
@@ -26,6 +26,6 @@ public:
 private:
     StorageManager() = default;
 
-    CMMap<CMString, CMSharedPtr<Database>> databases_;
-    CMMap<uint64_t, CMSharedPtr<DataWriter>> writers_;
+    ConcurrentMap<CMString, CMSharedPtr<Database>> databases_;
+    ConcurrentMap<uint64_t, CMSharedPtr<DataWriter>> writers_;
 };

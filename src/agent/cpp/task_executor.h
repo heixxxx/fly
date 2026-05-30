@@ -39,7 +39,6 @@ public:
     TaskExecResult execute(uint64_t task_id, const CMString& task_name,
                            const CMString& task_module, const CMVector<CMString>& args);
     bool is_running() const;
-    void cancel();
     
 private:
     ExecFunc exec_func_;

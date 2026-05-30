@@ -47,17 +47,19 @@ struct LocalObjectInfo {
     std::condition_variable cv;
 };
 
-class DataService {
+class DataService : public std::enable_shared_from_this<DataService> {
 public:
     static DataService& instance();
+    static CMSharedPtr<DataService> instance_ptr();
 
     using RemoteCompressedReadCallback = std::function<std::tuple<bool, CMString, CMString>(
         const CMString& object_name)>;
     using DirectCompressedReadCallback = std::function<std::tuple<bool, CMString, CMString>(
         const CMString& host, int32_t port, const CMString& object_name)>;
 
-    void set_remote_compressed_read_handler(RemoteCompressedReadCallback cb);
-    void set_direct_compressed_read_handler(DirectCompressedReadCallback cb);
+    // ============================================================
+    // Database Registry
+    // ============================================================
 
     void register_database(const CMString& db_id,
                             const CMString& base_path,
@@ -67,6 +69,10 @@ public:
     void unregister_database(const CMString& db_id);
 
     bool has_database(const CMString& db_id) const;
+
+    // ============================================================
+    // Local Index Management
+    // ============================================================
 
     void on_object_written(const CMString& db_id,
                             const CMString& object_name,
@@ -85,6 +91,19 @@ public:
                           const CMString& object_name,
                           const CMString& error_message);
 
+    void remove_local_index(const CMString& object_name);
+
+    bool has_local_object(const CMString& object_name) const;
+
+    void on_object_flushed(const CMString& object_name);
+
+    void restore_entries(const CMString& db_id,
+                          const CMVector<IndexEntry>& entries);
+
+    // ============================================================
+    // Remote Index Management
+    // ============================================================
+
     void update_remote_idx(const CMString& object_name,
                             uint64_t worker_id,
                             const CMString& host,
@@ -98,14 +117,24 @@ public:
     bool has_remote_location(const CMString& object_name) const;
     RemoteObjectInfo lookup_remote_idx(const CMString& object_name) const;
 
-    void remove_local_index(const CMString& object_name);
     void remove_remote_index(const CMString& object_name);
+
+    // ============================================================
+    // Worker Registry
+    // ============================================================
 
     void register_worker(uint64_t worker_id,
                             const CMString& host,
                             int32_t port);
 
     RemoteObjectInfo get_worker_address(uint64_t worker_id) const;
+
+    // ============================================================
+    // Read Operations (3-tier fallback)
+    // ============================================================
+
+    void set_remote_compressed_read_handler(RemoteCompressedReadCallback cb);
+    void set_direct_compressed_read_handler(DirectCompressedReadCallback cb);
 
     std::pair<bool, ReadResult> try_read_local(const CMString& object_name);
 
@@ -121,7 +150,9 @@ public:
 
     std::tuple<bool, CMString, CMString> read_raw_compressed(const CMString& object_name);
 
-    bool has_local_object(const CMString& object_name) const;
+    // ============================================================
+    // Transfer Server
+    // ============================================================
 
     using TransferCallback = std::function<void(const TransferResult&)>;
 
@@ -131,7 +162,9 @@ public:
     void submit_transfer(uint64_t conn_id, const CMString& object_name);
     CMSharedPtr<IOThreadPool> get_transfer_pool() const;
 
-    void reset();
+    // ============================================================
+    // Write-Back Queue
+    // ============================================================
 
     void start_write_back();
     void stop_write_back();
@@ -139,20 +172,40 @@ public:
     void drain_write_back();
     bool is_write_back_running() const;
 
-    void on_object_flushed(const CMString& object_name);
+    // ============================================================
+    // Lifecycle
+    // ============================================================
 
-    void restore_entries(const CMString& db_id,
-                          const CMVector<IndexEntry>& entries);
+    void reset();
 
 private:
     DataService() = default;
     ~DataService();
+
+    struct Creator_;
+    friend struct Creator_;
 
     struct DbPaths {
         CMString base_path;
         CMString data_path;
         CMString writer_id;
     };
+
+    // ============================================================
+    // Private Helpers — Name Parsing
+    // ============================================================
+
+    static std::pair<CMString, CMString> split_full(const CMString& full);
+    CMString get_db_id_for_object(const CMString& object_name) const;
+
+    // ============================================================
+    // Private Helpers — Read Operations
+    // ============================================================
+
+    ReadResult do_read_local_entries(const CMVector<IndexEntry>& entries,
+                                     const DbPaths& paths);
+    CMString do_read_raw_entries(const CMVector<IndexEntry>& entries,
+                                 const DbPaths& paths);
 
     mutable std::mutex mutex_;
 

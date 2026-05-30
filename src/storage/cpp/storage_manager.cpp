@@ -13,54 +13,43 @@ CMSharedPtr<Database> StorageManager::get_or_create_database(
     const CMString& base_path,
     const CMString& data_path) {
 
-    auto it = databases_.find(base_path);
-    if (it != databases_.end()) {
-        return it->second;
-    }
-
-    fs::create_directories(base_path);
-    if (!data_path.empty()) {
-        fs::create_directories(data_path);
-    }
-
-    auto db = CMMakeShared<Database>(base_path, data_path);
-    databases_[base_path] = db;
-    return db;
+    return databases_.get_or_insert(base_path, [&]() {
+        fs::create_directories(base_path);
+        if (!data_path.empty()) {
+            fs::create_directories(data_path);
+        }
+        return CMMakeShared<Database>(base_path, data_path);
+    });
 }
 
 CMSharedPtr<DataWriter> StorageManager::get_writer(uint64_t worker_id) {
-    auto it = writers_.find(worker_id);
-    if (it != writers_.end()) {
-        return it->second;
-    }
-
-    auto writer = CMMakeShared<DataWriter>(
-        "/tmp/fly_worker_" + std::to_string(worker_id),
-        "",
-        "",
-        1048576
-    );
-    writers_[worker_id] = writer;
-    return writer;
+    return writers_.get_or_insert(worker_id, [&]() {
+        return CMMakeShared<DataWriter>(
+            "/tmp/fly_worker_" + std::to_string(worker_id),
+            "",
+            "",
+            1048576
+        );
+    });
 }
 
 void StorageManager::close_all() {
-    for (auto& [path, db] : databases_) {
+    databases_.iterate([](const CMString& path, CMSharedPtr<Database>& db) {
         if (!db->is_frozen()) {
             db->freeze();
         }
-    }
-    for (auto& [id, writer] : writers_) {
+    });
+    writers_.iterate([](const uint64_t& id, CMSharedPtr<DataWriter>& writer) {
         writer->close();
-    }
+    });
     databases_.clear();
     writers_.clear();
 }
 
 void StorageManager::reset() {
-    for (auto& [path, db] : databases_) {
+    databases_.iterate([](const CMString& path, const CMSharedPtr<Database>& db) {
         fly::DataService::instance().unregister_database(db->get_db_id());
-    }
+    });
     databases_.clear();
     writers_.clear();
 }

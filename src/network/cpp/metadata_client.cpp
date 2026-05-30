@@ -1,6 +1,7 @@
 #include <network/cpp/metadata_client.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
+#include <network/cpp/net_utils.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -9,36 +10,6 @@
 #include <chrono>
 
 namespace fly {
-
-static bool recv_exact(int fd, char* buf, size_t len, int timeout_ms) {
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-    size_t received = 0;
-    while (received < len) {
-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-            deadline - std::chrono::steady_clock::now()).count();
-        if (remaining <= 0) return false;
-
-        struct timeval tv;
-        tv.tv_sec = static_cast<time_t>(remaining / 1000);
-        tv.tv_usec = static_cast<suseconds_t>((remaining % 1000) * 1000);
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-        ssize_t n = ::recv(fd, buf + received, len - received, 0);
-        if (n <= 0) return false;
-        received += static_cast<size_t>(n);
-    }
-    return true;
-}
-
-static bool send_all(int fd, const char* buf, size_t len) {
-    size_t sent = 0;
-    while (sent < len) {
-        ssize_t n = ::send(fd, buf + sent, len - sent, MSG_NOSIGNAL);
-        if (n <= 0) return false;
-        sent += static_cast<size_t>(n);
-    }
-    return true;
-}
 
 MetadataClient::DataLocation MetadataClient::query_data_location(
     const CMString& master_host,
@@ -75,14 +46,14 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
     req.object_name = object_name;
     CMString encoded_req = MessageProtocol::encode(req);
 
-    if (!send_all(fd, encoded_req.data(), encoded_req.size())) {
+    if (!net_send_all(fd, encoded_req.data(), encoded_req.size())) {
         result.error = "Failed to send DataQuery for " + object_name;
         ::close(fd);
         return result;
     }
 
     char header[5] = {};
-    if (!recv_exact(fd, header, 5, timeout_ms)) {
+    if (!net_recv_exact(fd, header, 5, timeout_ms)) {
         result.error = "Timeout receiving DataLocation header for " + object_name;
         ::close(fd);
         return result;
@@ -102,7 +73,7 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
 
     uint32_t payload_len = total_len - 1;
     CMString payload(payload_len, '\0');
-    if (payload_len > 0 && !recv_exact(fd, payload.data(), payload_len, timeout_ms)) {
+    if (payload_len > 0 && !net_recv_exact(fd, payload.data(), payload_len, timeout_ms)) {
         result.error = "Timeout receiving DataLocation payload for " + object_name;
         ::close(fd);
         return result;

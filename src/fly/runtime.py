@@ -16,16 +16,26 @@ def _config_is_worker_mode():
 
 
 def configure_worker():
+    """Set mode to worker before calling ``get_agent()``."""
     global _mode
     _mode = "worker"
 
 
 def configure_master():
+    """Set mode to master before calling ``get_agent()``."""
     global _mode
     _mode = "master"
 
 
 def get_agent() -> FlyAgent:
+    """Get or create the singleton Agent (Master or Worker).
+
+    The agent type depends on the current mode (set via
+    ``configure_worker()`` or ``configure_master()``).
+
+    Returns:
+        The active ``FlyAgent`` instance.
+    """
     global _agent
     if _agent is None:
         _agent = _create_agent()
@@ -55,6 +65,7 @@ def _create_agent() -> FlyAgent:
 
 
 def reset():
+    """Stop and reset the current agent. For testing only."""
     global _agent
     if _agent is not None:
         _agent.stop()

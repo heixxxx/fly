@@ -104,11 +104,11 @@ int32_t DataWriter::file_count() const {
     return file_index_;
 }
 
-IndexEntry* DataWriter::get_last_entry(const CMString& object_name) {
+std::optional<IndexEntry> DataWriter::get_last_entry(const CMString& object_name) {
     return index_->find_entry(object_name);
 }
 
-CMVector<IndexEntry>* DataWriter::get_all_entries(const CMString& object_name) {
+std::optional<CMVector<IndexEntry>> DataWriter::get_all_entries(const CMString& object_name) {
     return index_->find_all_entries(object_name);
 }
 

@@ -63,11 +63,11 @@ TEST(ConfigTest, ResetRestoresDefaults) {
     EXPECT_EQ(config.get_int("master_port"), 8000);
 }
 
-TEST(ConfigTest, UnknownKeyThrowsException) {
+TEST(ConfigTest, UnknownKeyReturnsInvalidInt) {
     Config& config = Config::instance();
     config.reset();
     
-    EXPECT_THROW(config.get_int("nonexistent_key"), std::runtime_error);
+    EXPECT_EQ(config.get_int("nonexistent_key"), Config::INVALID_INT);
 }
 
 TEST(ConfigTest, EmptyStringKey) {

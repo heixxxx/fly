@@ -393,11 +393,19 @@ class Worker(FlyAgent):
             self._executor = None
         self._db_cache.clear()
 
-        # Stop C++ MasterAgent first — it sends ShutdownMessage to Workers
-        # so they can exit gracefully and flush gcov coverage data.
         if self._agent is not None:
             self._agent.stop()
             self._agent = None
+
+    def is_running(self) -> bool:
+        if self._agent is None:
+            return False
+        return self._agent.is_running()
+
+    def poll_task(self) -> bool:
+        if self._agent is None:
+            return False
+        return self._agent.poll_task()
 
         # Wait for Workers to exit gracefully (received ShutdownMessage).
         for proc in self._worker_procs:

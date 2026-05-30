@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
+#include <optional>
 
 struct ReadResult {
     FlySerBuf data_buffer;
@@ -32,8 +33,8 @@ public:
     bool exists(const CMString& object_name);
 
     CMString find_file_path(const CMString& file_name);
-    IndexEntry* find_entry(const CMString& object_name);
-    CMVector<IndexEntry>* find_all_entries(const CMString& object_name);
+    std::optional<IndexEntry> find_entry(const CMString& object_name);
+    std::optional<CMVector<IndexEntry>> find_all_entries(const CMString& object_name);
 
 private:
     CMString read_from_file(const CMString& file_path, int64_t offset, int64_t size);

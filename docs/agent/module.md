@@ -34,7 +34,7 @@ public:
     void stop();
     bool is_running() const;
 
-    void set_data_service(DataService* ds);
+    void set_data_service(CMWeakPtr<DataService> wp);
 
     // 任务提交
     void submit_task(uint64_t task_id, const CMString& name,
@@ -134,7 +134,6 @@ private:
     CMString get_failed_tasks_file_path() const;
 
     // Master 本地 freeze（restart_failed_tasks 场景）
-    static void master_freeze_trampoline(void* ctx, const CMString& db_id);
     void on_master_freeze(const CMString& db_id);
 };
 ```
@@ -247,7 +246,7 @@ public:
     bool has_pending_task() const;
     bool poll_task();
 
-    void set_data_service(DataService* ds);
+    void set_data_service(CMWeakPtr<DataService> wp);
 
     // 写入跟踪
     void begin_task(uint64_t task_id);
@@ -291,10 +290,6 @@ private:
     int32_t data_server_port_ = 0;
 
     CMSharedPtr<TaskExecutor> executor_;
-    static void record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
-    static void register_write_trampoline(void* ctx, const CMString& db_id, const CMString& name);
-    static void notify_removed_trampoline(void* ctx, const CMString& object_name);
-    static void freeze_trampoline(void* ctx, const CMString& db_id);
 
     uint64_t current_task_id_ = 0;
     CMVector<CMString> current_writes_;
@@ -312,7 +307,7 @@ private:
     mutable std::mutex attributes_mutex_;
     CMSet<CMString> attributes_;
 
-    DataService* data_service_ = nullptr;
+    CMWeakPtr<DataService> data_service_;
 
     // Message handlers
     void on_register_ack(const RegisterAckMessage& msg);
@@ -374,8 +369,10 @@ Worker.MainThread (poll_task 循环)
   → poll_task()
     → task = task_queue_.pop()
     → begin_task(task_id)               // 设置 current_task_id_, 清空 writes
-    │     └── WorkerAgentContext::set(record_write, register_write, notify_removed, freeze_trampoline)
-    │     └── WorkerAgentContext::set_freeze_func(freeze_trampoline, this)
+    │     └── WorkerAgentContext::set_record_write_func(lambda)
+    │     └── WorkerAgentContext::set_freeze_func(lambda)
+    │     └── WorkerAgentContext::set_register_func(lambda)
+    │     └── WorkerAgentContext::set_notify_removed_func(lambda)
     → executor_->execute(task_id, ...)
     │     → import module → pickle.loads(args) → 执行原始函数
     │     → 函数内 write_object → WorkerAgentContext 触发 record_write
@@ -426,33 +423,34 @@ private:
 
 > **文件位置**: `src/common/cpp/worker_context.h`（非 `src/agent/cpp/`）
 
-**回调类型定义**:
-
-```cpp
-using RecordWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
-using RegisterWriteFunc = void(*)(void* ctx, const CMString& db_id, const CMString& name);
-using FreezeFunc = void(*)(void* ctx, const CMString& db_id);
-```
-
-**WorkerAgentContext 类**:
+**WorkerAgentContext 类**（#include `<functional>`）：
 
 ```cpp
 class WorkerAgentContext {
 public:
     // 设置记录写入回调（任务开始时调用）
-    static void set(RecordWriteFunc func, void* ctx);
+    static void set_record_write_func(std::function<void(const CMString&, const CMString&)> func);
     static void clear();
 
     // 触发记录写入
     static void record_write(const CMString& db_id, const CMString& object_name);
 
     // 设置写入注册回调（写入冻结DB时触发）
-    static void set_register_func(RegisterWriteFunc func);
+    static void set_register_func(std::function<void(const CMString&, const CMString&)> func);
     static void register_write(const CMString& db_id, const CMString& object_name);
 
     // 设置 freeze 回调（Database::freeze() 调用时通知 Master）
-    static void set_freeze_func(FreezeFunc func, void* ctx);
+    static void set_freeze_func(std::function<void(const CMString&)> func);
     static void notify_freeze(const CMString& db_id);
+
+    // 设置 notify_removed 回调
+    static void set_notify_removed_func(std::function<void(const CMString&)> func);
+
+    // 设置 remove_request 回调
+    static void set_remove_request_func(std::function<void(const CMString&)> func);
+
+    // 设置 backup_request 回调
+    static void set_backup_request_func(std::function<void(const CMString&, const CMString&)> func);
 
     // 状态查询
     static bool is_active();
@@ -460,11 +458,12 @@ public:
     static TaskErrorType get_last_error_type();
 
 private:
-    static inline thread_local RecordWriteFunc func_ = nullptr;
-    static inline thread_local void* ctx_ = nullptr;
-    static inline thread_local RegisterWriteFunc register_func_ = nullptr;
-    static inline thread_local FreezeFunc freeze_func_ = nullptr;
-    static inline thread_local void* freeze_ctx_ = nullptr;
+    static inline thread_local std::function<void(const CMString&, const CMString&)> func_;
+    static inline thread_local std::function<void(const CMString&, const CMString&)> register_func_;
+    static inline thread_local std::function<void(const CMString&)> freeze_func_;
+    static inline thread_local std::function<void(const CMString&)> notify_removed_func_;
+    static inline thread_local std::function<void(const CMString&)> remove_request_func_;
+    static inline thread_local std::function<void(const CMString&, const CMString&)> backup_request_func_;
     static inline thread_local TaskErrorType last_error_type_ = TaskErrorType::UNKNOWN;
 };
 ```
@@ -479,30 +478,32 @@ public:
 };
 ```
 
-**回调模式（C 函数指针 + trampoline）**:
+**回调模式（std::function + lambda）**:
 
-WorkerAgentContext 不存储 `WorkerAgent*` 指针，而是通过 **C 函数指针** 回调，实现 C++ 层与 Python 层的解耦：
+WorkerAgentContext 不存储 `WorkerAgent*` 指针，而是通过 **`std::function`** 回调，实现 C++ 层与 Python 层的解耦：
 
 ```
 任务开始:
   WorkerAgent.begin_task(task_id)
-    → WorkerAgentContext::set(record_write_trampoline, this)
-    → WorkerAgentContext::set_register_func(register_write_trampoline)
+    → WorkerAgentContext::set_record_write_func([this](db_id, name) { record_write(db_id, name); })
+    → WorkerAgentContext::set_register_func([this](db_id, name) { register_write_with_master(db_id, name); })
+    → WorkerAgentContext::set_notify_removed_func([this](name) { on_object_removed_local(name); })
+    → WorkerAgentContext::set_freeze_func([this](db_id) { request_database_freeze(db_id); })
+    → WorkerAgentContext::set_remove_request_func([this](name) { ... })
+    → WorkerAgentContext::set_backup_request_func([this](db_id, name) { ... })
 
 写入触发 (Python → C++ → 回调):
   Database._write_typed(name, data, py_name)
     → WorkerAgentContext::record_write(db_id, name)
-      → func_(ctx_, db_id, name)           // C 函数指针调用
-      → WorkerAgent::record_write_trampoline(void* ctx, db_id, name)
-        → static_cast<WorkerAgent*>(ctx)->record_write(db_id, name)
+      → func_(db_id, name)                      // std::function 调用
+      → lambda → WorkerAgent::record_write(db_id, name)
         → current_writes_.push_back(db_id + ":" + name)
 
 写入冻结 DB 触发:
   Database._write_typed() 检测到 db 已冻结
      → WorkerAgentContext::register_write(db_id, name)
-       → register_func_(ctx_, db_id, name)   // C 函数指针调用
-       → WorkerAgent::register_write_trampoline(void* ctx, db_id, name)
-         → static_cast<WorkerAgent*>(ctx)->register_write_with_master(db_id, name)
+       → register_func_(db_id, name)            // std::function 调用
+       → lambda → WorkerAgent::register_write_with_master(db_id, name)
          → 向 Master 发送 WriteRegisterMessage
          → Master 收到 → mark_data_ready + update_remote_idx + schedule_tasks + WriteRegisterAckMessage
          → Worker 收到 ACK: success=false → 抛 WriteRegistrationError
@@ -513,7 +514,7 @@ WorkerAgentContext 不存储 `WorkerAgent*` 指针，而是通过 **C 函数指�
     → return current_writes_
 ```
 
-**设计意图**: 使用 C 函数指针 + `void*` 而非 C++ 模板/虚函数，避免 `worker_context.h` 对 `WorkerAgent` 类的头文件依赖，保持 common 模块的独立性。
+**设计意图**: 使用 `std::function` + lambda 替代 C 函数指针 + `void*`，避免 trampoline 静态函数，保持 common 模块独立性的同时提供更安全的类型检查。
 
 ---
 
@@ -629,8 +630,8 @@ Worker.stop()（主动调用）
 Worker 任务执行中调用 db.freeze():
   → Database::freeze() (本地)
     → drain_write_back() + is_frozen_=true + _FROZEN marker
-    → WorkerAgentContext::notify_freeze(db_id)
-      → freeze_trampoline → request_database_freeze(db_id)
+     → WorkerAgentContext::notify_freeze(db_id)
+       → freeze_func_ → request_database_freeze(db_id)
         → reactor_->send(master_conn_, DatabaseFreezeNotification{db_id})
   → 任务正常返回，frozen_dbs 列表随 TaskCompleteMessage 发送
 
@@ -755,7 +756,7 @@ FLY_EXPORT_MODULE(_fly_agent) {
 |------|------|
 | Master + Worker 共用 Reactor 模式 | 统一事件驱动，handler 无锁 |
 | Worker 单任务约束（IDLE/BUSY/DEAD） | WorkerStatus 枚举支持 DEAD 状态，比 bool is_busy 更强 |
-| C 函数指针 + trampoline 回调 | WorkerAgentContext 不依赖 WorkerAgent 头文件，保持 common 模块独立 |
+| std::function + lambda 回调 | WorkerAgentContext 不依赖 WorkerAgent 头文件，保持 common 模块独立；比 C 函数指针更安全 |
 | workers_mutex_ 保护连接映射 | conn_to_worker_/worker_to_conn_ 被 reactor 线程和主线程并发访问（stop 遍历 + on_disconnect erase） |
 | stop() 幂等 + drain 语义 | 允许重复调用；drain 期间仍接受 task 但不调度，退出时持久化 pending |
 | Master fatal error 设 flag | 供 check_shutdown_request() 检测后触发 drain（当前为 dead code，预留机制） |

@@ -259,12 +259,10 @@ TEST_F(DatabaseTest, DbIdIsNotBasePath) {
 
 TEST_F(DatabaseTest, WriteObjectTracksWrite) {
     CMVector<CMString> recorded_writes;
-    fly::WorkerAgentContext::set(
-        [](void* ctx, const CMString& db_id, const CMString& name) {
-            auto* writes = static_cast<CMVector<CMString>*>(ctx);
-            writes->push_back(db_id + ":" + name);
-        },
-        &recorded_writes
+    fly::WorkerAgentContext::set_record_write_func(
+        [&recorded_writes](const CMString& db_id, const CMString& name) {
+            recorded_writes.push_back(db_id + ":" + name);
+        }
     );
 
     CMString base_path = test_dir_ + "/write_track";
@@ -280,12 +278,10 @@ TEST_F(DatabaseTest, WriteObjectTracksWrite) {
 
 TEST_F(DatabaseTest, WriteTypedObjectTracksWrite) {
     CMVector<CMString> recorded_writes;
-    fly::WorkerAgentContext::set(
-        [](void* ctx, const CMString& db_id, const CMString& name) {
-            auto* writes = static_cast<CMVector<CMString>*>(ctx);
-            writes->push_back(db_id + ":" + name);
-        },
-        &recorded_writes
+    fly::WorkerAgentContext::set_record_write_func(
+        [&recorded_writes](const CMString& db_id, const CMString& name) {
+            recorded_writes.push_back(db_id + ":" + name);
+        }
     );
 
     CMString base_path = test_dir_ + "/typed_track";
@@ -347,11 +343,9 @@ TEST_F(DatabaseTest, RemoveObjectFailsWhenFrozen) {
 TEST_F(DatabaseTest, RemoveObjectTrampolineRequestsRemove) {
     CMVector<CMString> remove_requests;
     fly::WorkerAgentContext::set_remove_request_func(
-        [](void* ctx, const CMString& db_id, const CMString& name) {
-            auto* requests = static_cast<CMVector<CMString>*>(ctx);
-            requests->push_back(db_id + ":" + name);
-        },
-        &remove_requests
+        [&remove_requests](const CMString& db_id, const CMString& name) {
+            remove_requests.push_back(db_id + ":" + name);
+        }
     );
 
     CMString base_path = test_dir_ + "/remove_trampoline";

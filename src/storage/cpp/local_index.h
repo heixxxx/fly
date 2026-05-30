@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <fstream>
 #include <mutex>
+#include <optional>
 
 enum class IdxOpType : uint8_t {
     ADD = 1,
@@ -21,8 +22,8 @@ public:
 
     void add_entry(const IndexEntry& entry);
     bool remove_entry(const CMString& object_name);
-    IndexEntry* find_entry(const CMString& object_name);
-    CMVector<IndexEntry>* find_all_entries(const CMString& object_name);
+    std::optional<IndexEntry> find_entry(const CMString& object_name);
+    std::optional<CMVector<IndexEntry>> find_all_entries(const CMString& object_name);
 
     void save();
     void save_legacy();

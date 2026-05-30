@@ -8,13 +8,14 @@ TEST(TaskManagerTest, CreateTask) {
     manager.create_task(1, "test_task", {"input/a"}, {"output/b"}, "{}");
     
     EXPECT_TRUE(manager.has_task(1));
-    auto* task = manager.get_task(1);
-    ASSERT_NE(task, nullptr);
-    EXPECT_EQ(task->name, "test_task");
-    EXPECT_EQ(task->status, TaskStatus::PENDING);
-    EXPECT_EQ(task->inputs.size(), 1);
-    EXPECT_EQ(task->outputs.size(), 1);
-    EXPECT_EQ(task->config, "{}");
+    auto task_opt = manager.get_task(1);
+    ASSERT_TRUE(task_opt.has_value());
+    auto& task = task_opt->get();
+    EXPECT_EQ(task.name, "test_task");
+    EXPECT_EQ(task.status, TaskStatus::PENDING);
+    EXPECT_EQ(task.inputs.size(), 1);
+    EXPECT_EQ(task.outputs.size(), 1);
+    EXPECT_EQ(task.config, "{}");
 }
 
 TEST(TaskManagerTest, UpdateTaskStatus) {
@@ -22,10 +23,10 @@ TEST(TaskManagerTest, UpdateTaskStatus) {
     manager.create_task(1, "test", {}, {}, "");
     
     manager.update_task_status(1, TaskStatus::RUNNING);
-    EXPECT_EQ(manager.get_task(1)->status, TaskStatus::RUNNING);
+    EXPECT_EQ(manager.get_task(1)->get().status, TaskStatus::RUNNING);
     
     manager.update_task_status(1, TaskStatus::COMPLETED);
-    EXPECT_EQ(manager.get_task(1)->status, TaskStatus::COMPLETED);
+    EXPECT_EQ(manager.get_task(1)->get().status, TaskStatus::COMPLETED);
 }
 
 TEST(TaskManagerTest, SetError) {
@@ -34,7 +35,7 @@ TEST(TaskManagerTest, SetError) {
     manager.update_task_status(1, TaskStatus::FAILED);
     manager.set_error(1, "segmentation fault");
     
-    EXPECT_EQ(manager.get_task(1)->error_message, "segmentation fault");
+    EXPECT_EQ(manager.get_task(1)->get().error_message, "segmentation fault");
 }
 
 TEST(TaskManagerTest, SetAssignedWorker) {
@@ -42,7 +43,7 @@ TEST(TaskManagerTest, SetAssignedWorker) {
     manager.create_task(1, "test", {}, {}, "");
     manager.set_assigned_worker(1, 42);
     
-    EXPECT_EQ(manager.get_task(1)->assigned_worker_id, 42);
+    EXPECT_EQ(manager.get_task(1)->get().assigned_worker_id, 42);
 }
 
 TEST(TaskManagerTest, SetTimestamps) {
@@ -50,10 +51,12 @@ TEST(TaskManagerTest, SetTimestamps) {
     manager.create_task(1, "test", {}, {}, "");
     manager.set_timestamps(1, 100, 200, 300);
     
-    auto* task = manager.get_task(1);
-    EXPECT_EQ(task->created_at, 100);
-    EXPECT_EQ(task->started_at, 200);
-    EXPECT_EQ(task->completed_at, 300);
+    auto task_opt2 = manager.get_task(1);
+    ASSERT_TRUE(task_opt2.has_value());
+    auto& task2 = task_opt2->get();
+    EXPECT_EQ(task2.created_at, 100);
+    EXPECT_EQ(task2.started_at, 200);
+    EXPECT_EQ(task2.completed_at, 300);
 }
 
 TEST(TaskManagerTest, GetTasksByStatus) {
@@ -93,7 +96,7 @@ TEST(TaskManagerTest, RemoveTask) {
     manager.remove_task(1);
     
     EXPECT_FALSE(manager.has_task(1));
-    EXPECT_EQ(manager.get_task(1), nullptr);
+    EXPECT_FALSE(manager.get_task(1).has_value());
 }
 
 }  // namespace fly

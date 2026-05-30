@@ -131,7 +131,6 @@ TEST(MasterAgentTest, SetupWriteContext_ActivatesWorkerAgentContext) {
 
     EXPECT_TRUE(WorkerAgentContext::is_active());
     EXPECT_NE(WorkerAgentContext::current_record_func(), nullptr);
-    EXPECT_NE(WorkerAgentContext::current_record_ctx(), nullptr);
 
     WorkerAgentContext::clear();
 }

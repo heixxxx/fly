@@ -129,7 +129,7 @@ using FlyInputStreamAdapter = bitsery::InputStreamAdapter;
 //
 // Examples:
 //   FLY_FIELD(s, o, id);           // int32_t → value, auto-sized
-//   FLY_FIELD(s, o, name);         // string → text
+//   FLY_FIELD(s, o, name);         // string → text (char-width auto-detected)
 //   FLY_FIELD(s, o, scores);       // vector<int> → container(bulk)
 //   FLY_FIELD(s, o, children);     // vector<Obj> → container(per-elem)
 //   FLY_FIELD(s, o, tags);         // map<string,int> → StdMap(auto)
@@ -157,8 +157,15 @@ using FlyInputStreamAdapter = bitsery::InputStreamAdapter;
         } \
     } while(0)
 
-#define FLY_VAL(field)          fly_ser::value(s, o.field)
+// --- Explicit string width macros ---
+// bitsery text<N> where N = sizeof(char_type), NOT length prefix size.
+// The length prefix is always variable-length (1-4 bytes, max ~1GB).
+// CMString = std::string (char), always use FLY_STR / FLY_FIELD.
+// For u16string/u32string fields, use FLY_STR_U16 / FLY_STR_U32.
+
 #define FLY_STR(field)          fly_ser::text(s, o.field)
+#define FLY_STR_U16(field)      fly_ser::text_u16(s, o.field)
+#define FLY_STR_U32(field)      fly_ser::text_u32(s, o.field)
 #define FLY_VEC(field)          fly_ser::container(s, o.field)
 #define FLY_VEC_F(field, fn)    s.container(o.field, FLY_MAX_SIZE, fn)
 #define FLY_MAP(field, fn)      fly_ser::map(s, o.field, fn)
@@ -201,6 +208,16 @@ void value(S& s, T& v) {
 template<typename S, typename T>
 void text(S& s, T& str) {
     s.text1b(str, FLY_MAX_SIZE);
+}
+
+template<typename S, typename T>
+void text_u16(S& s, T& str) {
+    s.text2b(str, FLY_MAX_SIZE);
+}
+
+template<typename S, typename T>
+void text_u32(S& s, T& str) {
+    s.text4b(str, FLY_MAX_SIZE);
 }
 
 template<typename S, typename T>

@@ -2,6 +2,27 @@
 
 ---
 
+## 2026-05-31: Code Review Fixes — API 安全性改进
+
+| 文档 | 变更 |
+|------|------|
+| docs/task/module.md | `get_worker()` / `get_task()` 返回类型从指针改为 `std::optional<std::reference_wrapper<T>>` |
+| docs/agent/module.md | `set_data_service(DataService*)` → `set_data_service(CMWeakPtr<DataService>)`；`WorkerAgentContext` 回调从 C 函数指针 + trampoline 改为 `std::function` + lambda；移除所有 trampoline 声明；新增 `set_notify_removed_func`/`set_remove_request_func`/`set_backup_request_func`；`DataService` 继承 `enable_shared_from_this`，新增 `instance_ptr()` |
+| docs/storage/module.md | 回调模式从 C 函数指针更新为 `std::function`；`DataService` 继承 `enable_shared_from_this`；设计决策表更新 |
+| docs/network/module.md | `register_handler` 优化说明（decode() 已 in-place 修改 buffer，无需额外拷贝） |
+
+核心变更：
+- `WorkerManager::get_worker()` 返回 `std::optional<std::reference_wrapper<WorkerInfo>>` 替代 `WorkerInfo*`
+- `TaskManager::get_task()` 返回 `std::optional<std::reference_wrapper<TaskMetadata>>` 替代 `TaskMetadata*`
+- `WorkerAgentContext` 所有回调改用 `std::function`，移除 `void*` ctx 和全部 7 个 trampoline 静态函数
+- `DataService` 继承 `std::enable_shared_from_this<DataService>`，`instance_ptr()` 返回 `CMSharedPtr<DataService>`；Agent 通过 `CMWeakPtr<DataService>` 观察
+- `Config::INVALID_INT`（`INT64_MIN`）替代未知 key 抛异常；`get_int()` 使用 `fprintf(stderr, ...)` 日志（core 模块无 log 依赖）
+- `TaskExecutor::cancel()` 移除（header、cpp、test、export）
+- Reactor `register_handler` 移除冗余 buffer 拷贝（`decode()` 已 in-place 修改）
+- `main.py` triple `gc.collect()` → 单次调用
+
+---
+
 ## 2026-05-30: 统一流式序列化+压缩管线重构
 
 | 文档 | 变更 |
@@ -357,7 +378,7 @@
 
 **TaskExecutor变更**:
 - TaskExecStatus枚举新增 `TIMEOUT=2`
-- 新增：`clear_exec_func()`, `is_running()`, `cancel()`
+- 新增：`clear_exec_func()`, `is_running()`
 
 ---
 

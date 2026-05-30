@@ -4,6 +4,7 @@
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
 #include <network/cpp/io_thread_pool.h>
+#include <log/cpp/logger.h>
 #include <functional>
 #include <unordered_map>
 #include <atomic>
@@ -68,10 +69,8 @@ private:
 template<typename T>
 void Reactor::register_handler(MessageHandler<T> handler) {
     handlers_[T::msg_type] = [handler](uint64_t conn_id, CMString& raw) {
-        CMString buffer = raw;
         T msg;
-        if (MessageProtocol::decode(buffer, msg)) {
-            raw = buffer;
+        if (MessageProtocol::decode(raw, msg)) {
             handler(conn_id, msg);
         }
     };
@@ -80,7 +79,10 @@ void Reactor::register_handler(MessageHandler<T> handler) {
 template<typename T>
 void Reactor::send(uint64_t conn_id, const T& msg) {
     CMString frame = MessageProtocol::encode(msg);
-    transport_->send(conn_id, frame);
+    ssize_t result = transport_->send(conn_id, frame);
+    if (result < 0) {
+        WARN("Reactor::send failed for conn_id={}", conn_id);
+    }
 }
 
 }  // namespace fly

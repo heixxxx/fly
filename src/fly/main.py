@@ -46,8 +46,7 @@ def _cleanup():
         pass
 
     import gc
-    for _ in range(3):
-        gc.collect()
+    gc.collect()
 
 
 def _redirect_worker_io(worker_id, log_dir):
@@ -75,8 +74,8 @@ def _run_worker():
     agent = get_agent()
     INFO("Worker agent created, starting poll loop")
 
-    while agent._agent.is_running():
-        agent._agent.poll_task()
+    while agent.is_running():
+        agent.poll_task()
         time.sleep(0.05)
     INFO("Worker poll loop exited, running cleanup")
 
@@ -120,8 +119,9 @@ def run():
         raise
     except KeyboardInterrupt:
         print("", file=sys.stderr)
-    except Exception as e:
-        print(f"Fatal error: {e}", file=sys.stderr)
+    except Exception:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         _cleanup()
         return 1
 

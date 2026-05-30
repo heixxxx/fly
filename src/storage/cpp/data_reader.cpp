@@ -26,7 +26,7 @@ DataReader::DataReader(
 DataReader::~DataReader() = default;
 
 bool DataReader::exists(const CMString& object_name) {
-    return index_->find_entry(object_name) != nullptr;
+    return index_->find_entry(object_name).has_value();
 }
 
 CMString DataReader::find_file_path(const CMString& file_name) {
@@ -46,21 +46,21 @@ CMString DataReader::find_file_path(const CMString& file_name) {
     return {};
 }
 
-IndexEntry* DataReader::find_entry(const CMString& object_name) {
+std::optional<IndexEntry> DataReader::find_entry(const CMString& object_name) {
     return index_->find_entry(object_name);
 }
 
-CMVector<IndexEntry>* DataReader::find_all_entries(const CMString& object_name) {
+std::optional<CMVector<IndexEntry>> DataReader::find_all_entries(const CMString& object_name) {
     return index_->find_all_entries(object_name);
 }
 
 CMString DataReader::read_raw_bytes(const CMString& object_name) {
-    IndexEntry* entry = index_->find_entry(object_name);
-    if (!entry) {
+    auto entry = index_->find_entry(object_name);
+    if (!entry.has_value()) {
         ERR("read_raw_bytes: object not found: {}", object_name);
         return {};
     }
-    return read_raw_bytes(*entry);
+    return read_raw_bytes(entry.value());
 }
 
 CMString DataReader::read_raw_bytes(const IndexEntry& entry) {

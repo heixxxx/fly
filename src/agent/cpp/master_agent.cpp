@@ -14,14 +14,19 @@ namespace fly {
 std::atomic<uint64_t> MasterAgent::remote_task_counter_{100000};
 
 DataService& MasterAgent::ds() {
-    return data_service_ ? *data_service_ : DataService::instance();
+    if (auto sp = data_service_.lock()) {
+        return *sp;
+    }
+    return DataService::instance();
 }
 
-void MasterAgent::set_data_service(DataService* ds) {
-    data_service_ = ds;
-    ds->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString> {
-        return request_remote_data(name);
-    });
+void MasterAgent::set_data_service(CMWeakPtr<DataService> wp) {
+    data_service_ = wp;
+    if (auto sp = wp.lock()) {
+        sp->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString> {
+            return request_remote_data(name);
+        });
+    }
 }
 
 MasterAgent::MasterAgent(const CMString& host, uint16_t port)
@@ -335,11 +340,15 @@ void MasterAgent::schedule_tasks() {
 
             FailedTaskRecord record;
             record.task_id = task_id;
-            record.name = metadata_->get_task(task_id) ? metadata_->get_task(task_id)->name : "";
+            auto task_opt = metadata_->get_task(task_id);
+            if (task_opt) {
+                TaskMetadata& task = task_opt->get();
+                record.name = task.name;
+                record.inputs = task.inputs;
+                record.outputs = task.outputs;
+            }
             record.module = task_modules_.count(task_id) ? task_modules_[task_id] : "";
             record.args = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
-            record.inputs = metadata_->get_task(task_id) ? metadata_->get_task(task_id)->inputs : CMVector<CMString>();
-            record.outputs = metadata_->get_task(task_id) ? metadata_->get_task(task_id)->outputs : CMVector<CMString>();
             record.required_capabilities = requirements;
             record.error_message = error_msg;
 
@@ -370,11 +379,15 @@ void MasterAgent::schedule_tasks() {
 
                 FailedTaskRecord record;
                 record.task_id = task_id;
-                record.name = metadata_->get_task(task_id) ? metadata_->get_task(task_id)->name : "";
+                auto task_opt2 = metadata_->get_task(task_id);
+                if (task_opt2) {
+                    TaskMetadata& task2 = task_opt2->get();
+                    record.name = task2.name;
+                    record.outputs = task2.outputs;
+                }
                 record.module = task_modules_.count(task_id) ? task_modules_[task_id] : "";
                 record.args = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
                 record.inputs = deps;
-                record.outputs = metadata_->get_task(task_id) ? metadata_->get_task(task_id)->outputs : CMVector<CMString>();
                 record.required_capabilities = graph_->get_task_requirements(task_id);
                 record.error_message = error_msg;
 
@@ -407,7 +420,8 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
 
     TaskAssignMessage msg;
     msg.task_id = task_id;
-    msg.task_name = metadata_->get_task(task_id)->name;
+    auto task_opt3 = metadata_->get_task(task_id);
+    msg.task_name = task_opt3 ? task_opt3->get().name : "";
     msg.task_module = task_modules_[task_id];
     msg.args = task_args_[task_id];
 
@@ -606,6 +620,7 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
     worker_manager_->complete_task(worker_id);
     metadata_->update_task_status(msg.task_id, TaskStatus::FAILED);
     metadata_->set_error(msg.task_id, msg.error_message);
+    graph_->remove_task(msg.task_id);
 
     task_modules_.erase(msg.task_id);
     task_args_.erase(msg.task_id);
@@ -648,14 +663,15 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
         }
 
         for (uint64_t task_id : tasks_to_recover) {
-            auto* meta = metadata_->get_task(task_id);
-            if (!meta) continue;
+            auto task_opt4 = metadata_->get_task(task_id);
+            if (!task_opt4) continue;
+            TaskMetadata& meta = task_opt4->get();
 
             graph_->remove_task(task_id);
-            graph_->add_task(task_id, meta->inputs, meta->required_capabilities);
+            graph_->add_task(task_id, meta.inputs, meta.required_capabilities);
             metadata_->update_task_status(task_id, TaskStatus::PENDING);
             metadata_->set_assigned_worker(task_id, 0);
-            WARN("Recovered task from dead worker: task_id={}, name={}", task_id, meta->name);
+            WARN("Recovered task from dead worker: task_id={}, name={}", task_id, meta.name);
         }
 
         if (!tasks_to_recover.empty()) {
@@ -727,9 +743,9 @@ CMVector<uint64_t> MasterAgent::get_failed_tasks() const {
 }
 
 CMString MasterAgent::get_task_error(uint64_t task_id) const {
-    auto* meta = metadata_->get_task(task_id);
-    if (meta) {
-        return meta->error_message;
+    auto task_opt5 = metadata_->get_task(task_id);
+    if (task_opt5) {
+        return task_opt5->get().error_message;
     }
     return "";
 }
@@ -1031,15 +1047,15 @@ void MasterAgent::restart_failed_tasks(const CMString& file_path) {
 }
 
 void MasterAgent::setup_write_context() {
-    WorkerAgentContext::set(&MasterAgent::master_record_write_trampoline, this);
+    WorkerAgentContext::set_record_write_func([this](const CMString& db_id, const CMString& name) {
+        on_master_record_write(db_id, name);
+    });
     WorkerAgentContext::set_register_func([this](const CMString& db_id, const CMString& name) -> std::pair<CMString, TaskErrorType> {
         return on_master_register_write(db_id, name);
     });
-    WorkerAgentContext::set_freeze_func(&MasterAgent::master_freeze_trampoline, this);
-}
-
-void MasterAgent::master_record_write_trampoline(void* ctx, const CMString& db_id, const CMString& name) {
-    static_cast<MasterAgent*>(ctx)->on_master_record_write(db_id, name);
+    WorkerAgentContext::set_freeze_func([this](const CMString& db_id) {
+        on_master_freeze(db_id);
+    });
 }
 
 void MasterAgent::on_master_record_write(const CMString& db_id, const CMString& name) {
@@ -1189,10 +1205,6 @@ void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFre
     INFO("DB frozen and broadcasted: db_id={}", msg.db_id);
 }
 
-void MasterAgent::master_freeze_trampoline(void* ctx, const CMString& db_id) {
-    static_cast<MasterAgent*>(ctx)->on_master_freeze(db_id);
-}
-
 void MasterAgent::on_master_freeze(const CMString& db_id) {
     if (!running_.load()) return;
 
@@ -1263,15 +1275,16 @@ void MasterAgent::persist_pending_tasks() {
 FailedTaskRecord MasterAgent::build_failed_record(uint64_t task_id) {
     FailedTaskRecord record;
     record.task_id = task_id;
-    auto* meta = metadata_->get_task(task_id);
-    if (meta) {
-        record.name = meta->name;
+    auto task_opt6 = metadata_->get_task(task_id);
+    if (task_opt6) {
+        TaskMetadata& meta = task_opt6->get();
+        record.name = meta.name;
         record.module = task_modules_.count(task_id) ? task_modules_[task_id] : "";
         record.args = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
-        record.inputs = meta->inputs;
-        record.outputs = meta->outputs;
-        record.required_capabilities = meta->required_capabilities;
-        record.error_message = meta->error_message;
+        record.inputs = meta.inputs;
+        record.outputs = meta.outputs;
+        record.required_capabilities = meta.required_capabilities;
+        record.error_message = meta.error_message;
     }
     return record;
 }
@@ -1330,8 +1343,8 @@ uint64_t MasterAgent::select_backup_worker(uint64_t source_worker_id) {
         if (worker_id == source_worker_id) continue;
         if (worker_id == 0) continue;
 
-        auto* worker_info = worker_manager_->get_worker(worker_id);
-        if (!worker_info || worker_info->status == WorkerStatus::DEAD) continue;
+        auto worker_info_opt = worker_manager_->get_worker(worker_id);
+        if (!worker_info_opt || worker_info_opt->get().status == WorkerStatus::DEAD) continue;
 
         if (hostname != source_hostname) {
             return worker_id;
