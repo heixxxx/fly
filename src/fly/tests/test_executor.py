@@ -279,6 +279,28 @@ def test_executor_freeze_detection():
     worker._db_cache.clear()
 
 
+def test_executor_from_user_deserialization():
+    worker = MockWorker()
+    executor = create_executor(worker)
+
+    def _inline_add(a, b):
+        return a + b
+
+    payload = "__user_func__:" + pickle.dumps(_inline_add).hex()
+    pickled_args = [pickle.dumps((3, 4)).hex()]
+
+    result = executor(
+        task_id=7,
+        task_name=payload,
+        task_module="from_user",
+        args=pickled_args,
+    )
+
+    assert result['task_id'] == 7
+    assert result['status'] == 0
+    assert result['output'] == "7"
+
+
 if __name__ == "__main__":
     setup_module()
     

@@ -96,25 +96,38 @@ def _reconstruct(self, data, py_name):
 
 ---
 
-### as_task(inputs) — 任务装饰器
+### as_task(inputs, requires) — 任务装饰器
 
 ```python
-def as_task(inputs=None):
+def as_task(inputs=None, requires=None):
     def decorator(func):
         name = getattr(func, '_fly_task_name', None) or func.__name__
         module = func.__module__ or "__main__"
+
+        if module == "__main__":
+            module = "from_user"
+            func_payload = "__user_func__:" + pickle.dumps(func).hex()
+        else:
+            func_payload = None
+            _task_registry[(module, name)] = func
 
         def wrapper(*args, **kwargs):
             agent = get_agent()
             task_inputs = inputs(*args, **kwargs) if inputs else []
             serialized = _serialize_args(args)
-            agent.submit(name, module, serialized, task_inputs)
+            task_name = func_payload if func_payload is not None else name
+            agent.submit(task_name, module, serialized, task_inputs,
+                         required_capabilities=requires or [])
 
         wrapper._fly_original_func = func
         wrapper._fly_task_name = name
         return wrapper
     return decorator
 ```
+
+**用户脚本 vs 仓库模块**:
+- `__main__`（用户脚本）：函数被 pickle 序列化到 task_name 字段，Worker 通过反序列化重建函数
+- 仓库模块：函数注册到 `_task_registry`，Worker 通过 `importlib.import_module` 加载
 
 **参数序列化**:
 
@@ -447,24 +460,22 @@ master.load_db("/new/location/project")  # db_id 从 _DB_META 读取，不受路
 
 ```
 1. 用户脚本定义 @as_task 函数
-   → func._fly_is_task = True
-   → func._fly_task_name = name
-   → func._fly_original_func = original_func
+   → __main__ 模块: pickle.dumps(func).hex() 存入 task_name
+   → 仓库模块: 注册到 _task_registry[(module, name)]
 
 2. 用户调用 process_data(db, "file1")
    → wrapper(*args) 拦截
    → _serialize_args: db → "__fly_db__:db_id:base:data"
-   → agent.submit(name, module, args, inputs)
+   → agent.submit(task_name, module, args, inputs)
    → MasterAgent.submit_task_with_deps(task_id, ...)
    → 立即返回 (异步)
 
 3. Master 调度 → TaskAssignMessage → Worker
 
 4. Worker executor:
-   → importlib.import_module(task_module)
+   → from_user 模块: pickle.loads(payload) 重建函数
+   → 仓库模块: importlib.import_module(task_module) + getattr
    → _deserialize_args: "__fly_db__:" → 检查 DataService.has_database(db_id)
-     → 已注册 (IdxLoad 恢复过): ex_stg_create_database_with_id(base, db_id)
-     → 未注册: ex_stg_create_database(base, data, worker_id)
    → executor 执行完成后 drain_write_back() 确保数据落盘
    → original_func(db, "file1")
    → 记录 writes + frozen_dbs

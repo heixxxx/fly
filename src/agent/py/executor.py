@@ -7,6 +7,14 @@ import importlib
 import pickle
 import traceback
 
+try:
+    from task.task import _USER_MODULE, _USER_FUNC_PREFIX
+except ImportError:
+    try:
+        from task import _USER_MODULE, _USER_FUNC_PREFIX
+    except ImportError:
+        from fly.task import _USER_MODULE, _USER_FUNC_PREFIX
+
 from _fly_agent import EXTaskExecResult, EXTaskExecStatus
 from _fly_log import INFO, ERR
 
@@ -61,20 +69,29 @@ def create_executor(worker) -> callable:
         _frozen_before = set()
 
         try:
-            try:
-                from task.task import _task_registry
-            except ImportError:
-                try:
-                    from task import _task_registry
-                except ImportError:
-                    from fly.task import _task_registry
-            registered = _task_registry.get((task_module, task_name))
-            if registered is not None:
-                original_func = getattr(registered, '_fly_original_func', registered)
+            if task_module == _USER_MODULE:
+                if not task_name.startswith(_USER_FUNC_PREFIX):
+                    raise ValueError(
+                        f"Worker received from_user task but task_name "
+                        f"lacks serialized payload: {task_name!r}"
+                    )
+                payload_hex = task_name[len(_USER_FUNC_PREFIX):]
+                original_func = pickle.loads(bytes.fromhex(payload_hex))
             else:
-                module = importlib.import_module(task_module)
-                func = getattr(module, task_name)
-                original_func = getattr(func, '_fly_original_func', func)
+                try:
+                    from task.task import _task_registry
+                except ImportError:
+                    try:
+                        from task import _task_registry
+                    except ImportError:
+                        from fly.task import _task_registry
+                registered = _task_registry.get((task_module, task_name))
+                if registered is not None:
+                    original_func = getattr(registered, '_fly_original_func', registered)
+                else:
+                    module = importlib.import_module(task_module)
+                    func = getattr(module, task_name)
+                    original_func = getattr(func, '_fly_original_func', func)
 
             deserialized_args = _deserialize_args(args, worker)
 

@@ -5,6 +5,9 @@ logger = logging.getLogger("fly")
 
 _task_registry = {}
 
+_USER_MODULE = "from_user"
+_USER_FUNC_PREFIX = "__user_func__:"
+
 
 def task_name(name: str):
     """装饰器：设置任务名称。
@@ -41,29 +44,42 @@ def as_task(inputs=None, requires=None):
         module = func.__module__ or "__main__"
 
         if module == "__main__":
-            import sys
-            import os
-            main_file = getattr(sys, '_fly_script_path', sys.argv[0] if sys.argv else "")
-            if main_file:
-                basename = os.path.splitext(os.path.basename(main_file))[0]
-                module = basename
+            module = _USER_MODULE
 
         task_requires = requires or []
 
-        _task_registry[(module, name)] = func
+        if module == _USER_MODULE:
+            try:
+                func_payload = _USER_FUNC_PREFIX + pickle.dumps(func).hex()
+            except Exception as exc:
+                raise ValueError(
+                    f"Failed to serialize user task function {name!r}. "
+                    f"User-script tasks must be pickle-serializable. "
+                    f"Original error: {exc}"
+                ) from exc
+        else:
+            func_payload = None
+            _task_registry[(module, name)] = func
 
         def wrapper(*args, **kwargs):
             from fly.runtime import get_agent
+            from _fly_storage import ex_stg_compute_write_context_hash
             agent = get_agent()
 
             task_inputs = inputs(*args, **kwargs) if inputs else []
             serialized = _serialize_args(args)
 
-            agent.submit(name, module, serialized, task_inputs,
-                         required_capabilities=task_requires)
+            task_name = func_payload if func_payload is not None else name
+
+            write_context_hash = ex_stg_compute_write_context_hash(
+                task_name, module, serialized, task_inputs)
+
+            agent.submit(task_name, module, serialized, task_inputs,
+                         required_capabilities=task_requires,
+                         write_context_hash=write_context_hash)
             logger.debug(
                 f"Task submitted via {agent.mode}: "
-                f"name={name}, inputs={task_inputs}, requires={task_requires}")
+                f"name={name}, module={module}, inputs={task_inputs}, requires={task_requires}")
 
         wrapper._fly_original_func = func
         wrapper._fly_task_name = name
