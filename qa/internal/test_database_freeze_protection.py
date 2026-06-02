@@ -166,12 +166,11 @@ def test_freeze_with_typed_objects():
         shutil.rmtree("test_freeze_typed_logs", ignore_errors=True)
 
 
-if __name__ == "__main__":
-    test_freeze_prevents_write_allows_read()
-    print()
-    test_freeze_preserves_local_index()
-    print()
-    test_freeze_isolation_between_databases()
-    print()
-    test_freeze_with_typed_objects()
-    print("\nAll database freeze protection tests passed!")
+test_freeze_prevents_write_allows_read()
+print()
+test_freeze_preserves_local_index()
+print()
+test_freeze_isolation_between_databases()
+print()
+test_freeze_with_typed_objects()
+print("\nAll database freeze protection tests passed!")

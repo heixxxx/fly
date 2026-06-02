@@ -17,56 +17,48 @@ from fly import get_config
 from fly.runtime import get_agent
 
 
-def main():
-    import shutil
-    if os.path.isdir(DB_PATH):
-        shutil.rmtree(DB_PATH, ignore_errors=True)
+import shutil
+if os.path.isdir(DB_PATH):
+    shutil.rmtree(DB_PATH, ignore_errors=True)
 
-    get_config().set_int("fail_unscheduleable_tasks", 0)
+get_config().set_int("fail_unscheduleable_tasks", 0)
 
-    from _fly_storage import ex_stg_get_data_service
 
-    master = get_agent()
-    master.start()
+master = get_agent()
 
-    master.launch_local_workers([{}])
+master.launch_local_workers([{}])
 
-    for _ in range(40):
-        if master._agent.get_connection_count() >= 1:
-            break
-        time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1, "Worker should connect"
-
-    db = open_db(DB_PATH)
-    db_id = db.get_db_id()
-
-    # Submit tasks that write via worker
-    write_data(db, "moved/alpha", 42)
-    write_data(db, "moved/beta", 58)
-
-    completed = master.wait_for_all_tasks(expected=2, timeout=30)
-    assert len(completed) >= 2, f"Expected 2 completed tasks, got {len(completed)}"
-
-    # Master writes
-    db.write_object("moved/master_key", "master_value")
-    db.write_object("moved/dict", {"x": 1})
-
-    ex_stg_get_data_service().drain_write_back()
+for _ in range(40):
+    if master.worker_count >= 1:
+        break
     time.sleep(0.5)
+assert master.worker_count >= 1, "Worker should connect"
 
-    # Verify before exit
-    assert db.read_object("moved/master_key") == "master_value"
-    assert db.read_object("moved/dict") == {"x": 1}
+db = open_db(DB_PATH)
+db_id = db.get_db_id()
 
-    # Write marker
-    with open(os.path.join(DB_PATH, "_test_db_id"), "w") as f:
-        f.write(db_id)
+# Submit tasks that write via worker
+write_data(db, "moved/alpha", 42)
+write_data(db, "moved/beta", 58)
 
-    assert os.path.isfile(os.path.join(DB_PATH, "_DB_META")), "_DB_META should exist"
+completed = master.wait_for_all_tasks(expected=2, timeout=30)
+assert len(completed) >= 2, f"Expected 2 completed tasks, got {len(completed)}"
 
-    print(f"[RUN1_MOVED] Created DB at {DB_PATH}: db_id={db_id}", file=sys.stderr)
-    print(f"[RUN1_MOVED] Wrote 4 objects (2 worker, 2 master)", file=sys.stderr)
+# Master writes
+db.write_object("moved/master_key", "master_value")
+db.write_object("moved/dict", {"x": 1})
 
+time.sleep(0.5)
 
-if __name__ == "__main__":
-    main()
+# Verify before exit
+assert db.read_object("moved/master_key") == "master_value"
+assert db.read_object("moved/dict") == {"x": 1}
+
+# Write marker
+with open(os.path.join(DB_PATH, "_test_db_id"), "w") as f:
+    f.write(db_id)
+
+assert os.path.isfile(os.path.join(DB_PATH, "_DB_META")), "_DB_META should exist"
+
+print(f"[RUN1_MOVED] Created DB at {DB_PATH}: db_id={db_id}", file=sys.stderr)
+print(f"[RUN1_MOVED] Wrote 4 objects (2 worker, 2 master)", file=sys.stderr)

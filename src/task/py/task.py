@@ -1,6 +1,11 @@
 import pickle
 import logging
 
+try:
+    import cloudpickle
+except ImportError:
+    cloudpickle = None
+
 logger = logging.getLogger("fly")
 
 _task_registry = {}
@@ -50,7 +55,8 @@ def as_task(inputs=None, requires=None):
 
         if module == _USER_MODULE:
             try:
-                func_payload = _USER_FUNC_PREFIX + pickle.dumps(func).hex()
+                serializer = cloudpickle if cloudpickle is not None else pickle
+                func_payload = _USER_FUNC_PREFIX + serializer.dumps(func).hex()
             except Exception as exc:
                 raise ValueError(
                     f"Failed to serialize user task function {name!r}. "

@@ -20,7 +20,8 @@ class FlyAgent(ABC):
 
     @abstractmethod
     def submit(self, name: str, module: str, args: list,
-               inputs: list = None) -> int:
+               inputs: list = None,
+               write_context_hash: str = "") -> int:
         raise NotImplementedError
 
     @abstractmethod
@@ -71,6 +72,12 @@ class Master(FlyAgent):
         self._running = False
         self._next_worker_id = 1
 
+    def is_running(self) -> bool:
+        return self._running
+
+    def get_worker_pids(self) -> list:
+        return [proc.pid for proc in self._worker_procs if proc.poll() is None]
+
     @property
     def port(self) -> int:
         if self._running:
@@ -88,7 +95,8 @@ class Master(FlyAgent):
 
     def submit(self, name: str, module: str, args: list,
                inputs: list = None,
-               required_capabilities: list = None) -> int:
+               required_capabilities: list = None,
+               write_context_hash: str = "") -> int:
         with self._lock:
             self._task_counter += 1
             task_id = self._task_counter
@@ -98,7 +106,7 @@ class Master(FlyAgent):
 
         self._agent.submit_task_with_requirements(
             task_id, name, module, args, inputs or [], [],
-            required_capabilities or [])
+            required_capabilities or [], write_context_hash)
         DBG(f"Task submitted: id={task_id}, name={name}, requires={required_capabilities}")
         return task_id
 
@@ -159,6 +167,19 @@ class Master(FlyAgent):
 
     def get_task_error(self, task_id: int) -> str:
         return self._agent.get_task_error(task_id)
+
+    @property
+    def worker_count(self) -> int:
+        return self._agent.get_connection_count()
+
+    def wait_for_workers(self, count: int, timeout: float = 30.0) -> bool:
+        import time
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if self._agent.get_connection_count() >= count:
+                return True
+            time.sleep(0.1)
+        return False
 
     def wait_for_all_tasks(self, expected: int = None, timeout: float = 30.0):
         import time
@@ -377,9 +398,11 @@ class Worker(FlyAgent):
 
     def submit(self, name: str, module: str, args: list,
                inputs: list = None,
-               required_capabilities: list = None) -> int:
+               required_capabilities: list = None,
+               write_context_hash: str = "") -> int:
         return self._agent.submit_task(name, module, args, inputs or [],
-                                       required_capabilities or [])
+                                       required_capabilities or [],
+                                       write_context_hash)
 
     def get_database(self, db_id: str):
         if db_id not in self._db_cache:

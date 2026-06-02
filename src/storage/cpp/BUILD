@@ -21,6 +21,7 @@ cc_library(
         "data_reader.cpp",
         "database.cpp",
         "storage_manager.cpp",
+        "temp_store.cpp",
     ],
     hdrs = [
         "compression_utils.h",
@@ -39,6 +40,7 @@ cc_library(
         "lz4_compressor.h",
         "object.h",
         "storage_manager.h",
+        "temp_store.h",
         "write_back_queue.h",
         "zlib_compressor.h",
         "zstd_compressor.h",

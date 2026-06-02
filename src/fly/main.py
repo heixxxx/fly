@@ -15,6 +15,7 @@ def init():
         configure_master()
 
     agent = get_agent()
+    agent.start()
     
     INFO(f"Fly initialized: mode={agent.mode}")
 

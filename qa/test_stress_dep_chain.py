@@ -38,12 +38,10 @@ def test_dependency_chain():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}])
 
-    assert wait_for(lambda: master._agent.get_connection_count() >= 1), \
+    assert master.wait_for_workers(1), \
         "Worker should connect"
 
     db = open_db(DB_PATH)
@@ -66,12 +64,9 @@ def test_dependency_chain():
     assert final == chain_length, \
         f"chain_{chain_length} should be {chain_length}, got {final}"
 
-    del db
-    master.stop()
     print(f"[PASS] test_dependency_chain: {chain_length}-step serial chain, final={final}",
           file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_dependency_chain()
-    print("\nAll tests passed!")
+test_dependency_chain()
+print("\nAll tests passed!")

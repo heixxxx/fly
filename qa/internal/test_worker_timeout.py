@@ -76,14 +76,12 @@ def test_master_agent_timeout_detection():
     
     master = EXAgentMaster("127.0.0.1", 0)
     master.set_data_service(storage.ex_stg_get_data_service())
-    master.start()
     
     connected = master.get_connected_workers()
     assert len(connected) == 0, "No workers initially"
     
     time.sleep(0.5)
     
-    master.stop()
     log.shutdown_log()
     shutil.rmtree(log_dir, ignore_errors=True)
     print("PASS: test_master_agent_timeout_detection")
@@ -109,12 +107,11 @@ def test_worker_manager_unregister():
     print("PASS: test_worker_manager_unregister")
 
 
-if __name__ == "__main__":
-    test_heartbeat_monitor_timeout()
-    print()
-    test_heartbeat_keeps_worker_alive()
-    print()
-    test_master_agent_timeout_detection()
-    print()
-    test_worker_manager_unregister()
-    print("\nAll worker timeout tests passed!")
+test_heartbeat_monitor_timeout()
+print()
+test_heartbeat_keeps_worker_alive()
+print()
+test_master_agent_timeout_detection()
+print()
+test_worker_manager_unregister()
+print("\nAll worker timeout tests passed!")

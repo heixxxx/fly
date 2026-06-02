@@ -29,14 +29,12 @@ def test_fanout_write_three_objects():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
     master.launch_local_workers([{}])
     for i in range(40):
-        if master._agent.get_connection_count() >= 1:
+        if master.worker_count >= 1:
             break
         time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1, \
+    assert master.worker_count >= 1, \
         "Worker should connect to master"
 
     db = open_db(DB_PATH)
@@ -54,11 +52,8 @@ def test_fanout_write_three_objects():
     assert val_b == 2, f"Object 'b' should be 2, got {val_b}"
     assert val_c == 3, f"Object 'c' should be 3, got {val_c}"
 
-    del db
-    master.stop()
     print("[PASS] test_fanout_write_three_objects: "
           "all 3 fanout objects readable", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_fanout_write_three_objects()
+test_fanout_write_three_objects()

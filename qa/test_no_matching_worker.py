@@ -34,16 +34,14 @@ def test_no_matching_worker_never_completes():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
     master.launch_local_workers([
         {"attributes": ["alpha"]},
     ])
     for i in range(40):
-        if master._agent.get_connection_count() >= 1:
+        if master.worker_count >= 1:
             break
         time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1
+    assert master.worker_count >= 1
 
     db = open_db(DB_PATH)
 
@@ -70,11 +68,8 @@ def test_no_matching_worker_never_completes():
     assert total_completed == 1, \
         f"Only alpha task should have completed, got {total_completed}"
 
-    del db
-    master.stop()
     print("[PASS] test_no_matching_worker_never_completes: "
           "no-matching-cap task stays in scheduler, no error, no completion", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_no_matching_worker_never_completes()
+test_no_matching_worker_never_completes()

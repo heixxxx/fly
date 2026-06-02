@@ -69,6 +69,5 @@ def test_all_phases():
         print("", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_all_phases()
-    print("\nAll wait_obj E2E tests passed!")
+test_all_phases()
+print("\nAll wait_obj E2E tests passed!")

@@ -28,36 +28,29 @@ def wait_for(condition, timeout=20.0, interval=0.5):
     return False
 
 
-def main():
-    cleanup()
-    get_config().set_int("fail_unscheduleable_tasks", 0)
+cleanup()
+get_config().set_int("fail_unscheduleable_tasks", 0)
 
-    master = get_agent()
-    master.start()
-    master.launch_local_workers([{}])
-    for i in range(40):
-        if master._agent.get_connection_count() >= 1:
-            break
-        time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1
+master = get_agent()
+master.launch_local_workers([{}])
+for i in range(40):
+    if master.worker_count >= 1:
+        break
+    time.sleep(0.5)
+assert master.worker_count >= 1
 
-    db = open_db(DB_PATH)
+db = open_db(DB_PATH)
 
-    @wait_obj(inputs=lambda d, a, b: [d.get_obj_name(a), d.get_obj_name(b)])
-    def wait_and_sum(d, key_a, key_b):
-        return d.read_object(key_a) + d.read_object(key_b)
+@wait_obj(inputs=lambda d, a, b: [d.get_obj_name(a), d.get_obj_name(b)])
+def wait_and_sum(d, key_a, key_b):
+    return d.read_object(key_a) + d.read_object(key_b)
 
-    write_data(db, "x", 100)
-    write_data(db, "y", 200)
+write_data(db, "x", 100)
+write_data(db, "y", 200)
 
-    result = wait_and_sum(db, "x", "y")
-    assert result == 300
+result = wait_and_sum(db, "x", "y")
+assert result == 300
 
-    assert wait_for(lambda: len(master.completed_tasks) >= 2)
+assert wait_for(lambda: len(master.completed_tasks) >= 2)
 
-    master.stop()
-    print("[PASS] test_wait_obj_multi_deps", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()
+print("[PASS] test_wait_obj_multi_deps", file=sys.stderr)

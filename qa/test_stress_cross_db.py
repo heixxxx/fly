@@ -40,13 +40,11 @@ def test_cross_db_transfer():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}, {}])
 
-    assert wait_for(lambda: master._agent.get_connection_count() >= 2), \
-        f"Both workers should connect, got {master._agent.get_connection_count()}"
+    assert master.wait_for_workers(2), \
+        f"Both workers should connect, got {master.worker_count}"
 
     db_a = open_db(DB_A)
     db_b = open_db(DB_B)
@@ -83,12 +81,9 @@ def test_cross_db_transfer():
         assert result == i * 100 + i * 100, \
             f"result_{i} should be {i * 200}, got {result}"
 
-    del db_a, db_b, db_c
-    master.stop()
     print(f"[PASS] test_cross_db_transfer: 3 DBs, {n} cross-DB chains, all verified",
           file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_cross_db_transfer()
-    print("\nAll tests passed!")
+test_cross_db_transfer()
+print("\nAll tests passed!")

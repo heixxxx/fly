@@ -33,13 +33,11 @@ def test_worker_crash():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}, {}])
 
-    assert wait_for(lambda: master._agent.get_connection_count() >= 2), \
-        f"Both workers should connect, got {master._agent.get_connection_count()}"
+    assert master.wait_for_workers(2), \
+        f"Both workers should connect, got {master.worker_count}"
 
     db = open_db(DB_PATH)
 
@@ -49,8 +47,12 @@ def test_worker_crash():
     assert wait_for(lambda: len(master.completed_tasks) >= 1), \
         "At least 1 task should complete before crash"
 
-    master._worker_procs[0].kill()
-    master._worker_procs[0].wait()
+    worker_pids = master.get_worker_pids()
+    assert len(worker_pids) >= 2, f"Need 2+ workers, got {len(worker_pids)}"
+
+    import os, signal
+    os.kill(worker_pids[0], signal.SIGKILL)
+    os.waitpid(worker_pids[0], 0)
     print(f"  Killed worker 0, {len(master.completed_tasks)} tasks completed so far",
           file=sys.stderr)
 
@@ -62,11 +64,8 @@ def test_worker_crash():
     assert len(master.completed_tasks) >= 10, \
         f"Expected all 10 completed (zero task loss), got {len(master.completed_tasks)}"
 
-    del db
-    master.stop()
     print(f"[PASS] test_worker_crash: {len(master.completed_tasks)} completed after crash",
           file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_worker_crash()
+test_worker_crash()

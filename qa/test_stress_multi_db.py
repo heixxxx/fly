@@ -38,13 +38,11 @@ def test_multi_db_parallel():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}, {}])
 
-    assert wait_for(lambda: master._agent.get_connection_count() >= 2), \
-        f"Both workers should connect, got {master._agent.get_connection_count()}"
+    assert master.wait_for_workers(2), \
+        f"Both workers should connect, got {master.worker_count}"
 
     dbs = [open_db(p) for p in DB_PATHS]
     writes_per_db = 10
@@ -68,13 +66,9 @@ def test_multi_db_parallel():
             assert val == db_idx * 100 + i, \
                 f"db{db_idx}_key_{i} should be {db_idx * 100 + i}, got {val}"
 
-    for db in dbs:
-        del db
-    master.stop()
     print(f"[PASS] test_multi_db_parallel: 4 DBs x {writes_per_db} writes, all verified",
           file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_multi_db_parallel()
-    print("\nAll tests passed!")
+test_multi_db_parallel()
+print("\nAll tests passed!")

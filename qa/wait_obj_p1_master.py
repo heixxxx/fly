@@ -18,33 +18,26 @@ def cleanup():
         shutil.rmtree(DB_PATH, ignore_errors=True)
 
 
-def main():
-    cleanup()
-    get_config().set_int("fail_unscheduleable_tasks", 0)
+cleanup()
+get_config().set_int("fail_unscheduleable_tasks", 0)
 
-    master = get_agent()
-    master.start()
-    master.launch_local_workers([{}])
-    for i in range(40):
-        if master._agent.get_connection_count() >= 1:
-            break
-        time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1
+master = get_agent()
+master.launch_local_workers([{}])
+for i in range(40):
+    if master.worker_count >= 1:
+        break
+    time.sleep(0.5)
+assert master.worker_count >= 1
 
-    db = open_db(DB_PATH)
+db = open_db(DB_PATH)
 
-    @wait_obj(inputs=lambda d, k: [d.get_obj_name(k)])
-    def wait_master_data(d, k):
-        assert d.read_object(k) == "sync_data"
-        return "ok"
+@wait_obj(inputs=lambda d, k: [d.get_obj_name(k)])
+def wait_master_data(d, k):
+    assert d.read_object(k) == "sync_data"
+    return "ok"
 
-    db.write_object("master_key", "sync_data")
-    result = wait_master_data(db, "master_key")
-    assert result == "ok"
+db.write_object("master_key", "sync_data")
+result = wait_master_data(db, "master_key")
+assert result == "ok"
 
-    master.stop()
-    print("[PASS] test_wait_obj_master_write", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()
+print("[PASS] test_wait_obj_master_write", file=sys.stderr)

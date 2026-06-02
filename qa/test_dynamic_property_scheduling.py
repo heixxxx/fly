@@ -41,19 +41,17 @@ def cleanup():
 def setup_three_workers():
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
     master.launch_local_workers([
         {"attributes": ["alpha"]},
         {"attributes": ["beta"]},
         {"attributes": ["gamma"]},
     ])
     for i in range(40):
-        if master._agent.get_connection_count() >= 3:
+        if master.worker_count >= 3:
             break
         time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 3, \
-        f"Only {master._agent.get_connection_count()}/3 workers connected"
+    assert master.worker_count >= 3, \
+        f"Only {master.worker_count}/3 workers connected"
     return master
 
 
@@ -146,10 +144,7 @@ def test_dynamic_property_full_routing():
         f"Phase 3 FAILED: shared tasks should only run on Worker 3, got wids={p3_wids}"
     print(f"[PASS] Phase 3: {NUM_SHARED_TASKS} shared tasks routed to Worker 3 only after Worker 2 lost property (wids={p3_wids})", file=sys.stderr)
 
-    del db
-    master.stop()
     print("\nAll dynamic property routing tests passed!", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_dynamic_property_full_routing()
+test_dynamic_property_full_routing()

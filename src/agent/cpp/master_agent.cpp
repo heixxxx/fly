@@ -90,7 +90,7 @@ void MasterAgent::start() {
         [this](uint64_t conn_id, const TaskSubmitMessage& msg) {
             INFO("TaskSubmit received: task_name={}, module={}", msg.task_name, msg.task_module);
             uint64_t task_id = ++remote_task_counter_;
-            submit_task(task_id, msg.task_name, msg.task_module, msg.args, msg.inputs, {}, msg.required_capabilities);
+            submit_task(task_id, msg.task_name, msg.task_module, msg.args, msg.inputs, {}, msg.required_capabilities, msg.write_context_hash);
         });
 
     reactor_->register_handler<DbPathRequestMessage>(
@@ -299,10 +299,17 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
                                const CMString& module, const CMVector<CMString>& args,
                                const CMVector<CMString>& inputs,
                                const CMVector<CMString>& outputs,
-                               const CMVector<CMString>& required_capabilities) {
+                               const CMVector<CMString>& required_capabilities,
+                               const CMString& write_context_hash) {
     INFO("submit_task: id={}, name={}", task_id, name);
 
     metadata_->create_task(task_id, name, inputs, outputs, "{}", required_capabilities);
+    {
+        auto task_opt = metadata_->get_task(task_id);
+        if (task_opt) {
+            task_opt->get().write_context_hash = write_context_hash;
+        }
+    }
     graph_->add_task(task_id, inputs, required_capabilities);
 
     task_modules_[task_id] = module;
@@ -424,6 +431,9 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
     msg.task_name = task_opt3 ? task_opt3->get().name : "";
     msg.task_module = task_modules_[task_id];
     msg.args = task_args_[task_id];
+    if (task_opt3) {
+        msg.write_context_hash = task_opt3->get().write_context_hash;
+    }
 
     reactor_->send(conn_id, msg);
 
@@ -793,16 +803,33 @@ void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage
         ack.error_message = "Database frozen: " + msg.db_id;
         ack.error_type = TaskErrorType::WRITE_TO_FROZEN_DB;
         WARN("WriteRegister rejected: db {} is frozen", msg.db_id);
+    } else if (!msg.write_context_hash.empty()) {
+        auto it = write_provenance_.find(msg.object_name);
+        if (it == write_provenance_.end()) {
+            write_provenance_[msg.object_name] = msg.write_context_hash;
+            ack.success = true;
+            graph_->mark_data_ready(msg.object_name);
+            auto addr = ds().get_worker_address(msg.worker_id);
+            ds().update_remote_idx(msg.object_name, msg.worker_id, addr.host, addr.port);
+            schedule_tasks();
+        } else if (it->second == msg.write_context_hash) {
+            ack.success = true;
+            graph_->mark_data_ready(msg.object_name);
+            auto addr = ds().get_worker_address(msg.worker_id);
+            ds().update_remote_idx(msg.object_name, msg.worker_id, addr.host, addr.port);
+            schedule_tasks();
+        } else {
+            ack.success = false;
+            ack.error_message = "Write provenance mismatch for " + msg.object_name +
+                ": existing hash=" + it->second + " new hash=" + msg.write_context_hash;
+            ack.error_type = TaskErrorType::WRITE_PROVENANCE_MISMATCH;
+            ERR("WriteRegister rejected: provenance mismatch for {}", msg.object_name);
+        }
     } else {
         ack.success = true;
-
-        // Notify dependency graph that this data will be available
         graph_->mark_data_ready(msg.object_name);
-
-        // Update remote_idx so other Workers know where to find this data
         auto addr = ds().get_worker_address(msg.worker_id);
         ds().update_remote_idx(msg.object_name, msg.worker_id, addr.host, addr.port);
-
         schedule_tasks();
     }
 
@@ -821,6 +848,7 @@ void MasterAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage
     INFO("ObjectRemoved: object={}, db_id={}", msg.object_name, msg.db_id);
 
     ds().remove_remote_index(msg.object_name);
+    write_provenance_.erase(msg.object_name);
 
     ObjectRemovedMessage broadcast_msg = msg;
     {
@@ -837,6 +865,7 @@ void MasterAgent::broadcast_object_removed(const CMString& db_id, const CMString
     CMString full = db_id + ":" + object_name;
 
     ds().remove_remote_index(full);
+    write_provenance_.erase(full);
 
     ObjectRemovedMessage msg;
     msg.object_name = full;
@@ -876,6 +905,8 @@ void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage
 
     ds().remove_remote_location(msg.object_name);
 
+    write_provenance_.erase(msg.object_name);
+
     RemoveAckMessage ack;
     ack.db_id = msg.db_id;
     ack.object_name = msg.object_name;
@@ -895,7 +926,7 @@ std::tuple<bool, CMString, CMString> MasterAgent::request_remote_data(const CMSt
         return {false, {}, {}};
     }
 
-    auto [success, data, py_name, error] = DataClient::request_compressed_data(info.host, info.port, object_name);
+    auto [success, data, py_name, hash, error] = DataClient::request_compressed_data(info.host, info.port, object_name);
 
     if (!success) {
         ERR("request_remote_data compressed failed for {}: {}", object_name, error);
@@ -909,7 +940,7 @@ std::pair<bool, ReadResult> MasterAgent::request_data_from_worker(const CMString
                                                                    const CMString& object_name) {
     INFO("Direct DataClient request to {}:{} for {}", host, port, object_name);
 
-    auto [success, compressed_data, py_name, error] = DataClient::request_compressed_data(host, port, object_name);
+    auto [success, compressed_data, py_name, hash, error] = DataClient::request_compressed_data(host, port, object_name);
 
     if (!success) {
         ERR("request_data_from_worker failed for {}: {}", object_name, error);
@@ -1324,6 +1355,11 @@ void MasterAgent::on_backup_request(uint64_t conn_id, const BackupRequestMessage
     assign.task_name = "__backup_object";
     assign.task_module = "__fly_internal";
     assign.args = {short_name, msg.db_id};
+
+    auto prov_it = write_provenance_.find(msg.object_name);
+    if (prov_it != write_provenance_.end()) {
+        assign.write_context_hash = prov_it->second;
+    }
 
     reactor_->send(backup_conn, assign);
     INFO("Backup task assigned to worker_id={} for object={}", backup_worker_id, msg.object_name);

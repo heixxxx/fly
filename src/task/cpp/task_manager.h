@@ -29,6 +29,7 @@ struct TaskMetadata {
     uint64_t completed_at;
     CMString error_message;
     uint64_t assigned_worker_id;
+    CMString write_context_hash;
 };
 
 class TaskManager {

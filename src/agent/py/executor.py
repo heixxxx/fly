@@ -8,6 +8,11 @@ import pickle
 import traceback
 
 try:
+    import cloudpickle
+except ImportError:
+    cloudpickle = None
+
+try:
     from task.task import _USER_MODULE, _USER_FUNC_PREFIX
 except ImportError:
     try:
@@ -76,7 +81,8 @@ def create_executor(worker) -> callable:
                         f"lacks serialized payload: {task_name!r}"
                     )
                 payload_hex = task_name[len(_USER_FUNC_PREFIX):]
-                original_func = pickle.loads(bytes.fromhex(payload_hex))
+                deserializer = cloudpickle if cloudpickle is not None else pickle
+                original_func = deserializer.loads(bytes.fromhex(payload_hex))
             else:
                 try:
                     from task.task import _task_registry

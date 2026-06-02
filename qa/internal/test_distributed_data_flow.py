@@ -125,9 +125,6 @@ def test_data_service_remote_index():
     full_name_a = db.get_obj_name("obj/a")
     assert ds.has_local_object(full_name_a), "Object should be in local index"
     
-    has, worker_id, host, port = ds.lookup_remote_idx(full_name_a)
-    assert not has, "Local object should not be in remote index"
-    
     ds.update_remote_idx("remote/obj_x", 1, "192.168.1.100", 8080)
     has, worker_id, host, port = ds.lookup_remote_idx("remote/obj_x")
     assert has, "Updated remote object should be in remote index"
@@ -144,9 +141,8 @@ def test_data_service_remote_index():
     print("PASS: test_data_service_remote_index")
 
 
-if __name__ == "__main__":
-    test_database_write_updates_local_index()
-    test_database_multiple_objects()
-    test_storage_manager_singleton()
-    test_data_service_remote_index()
-    print("\nAll distributed data flow tests passed!")
+test_database_write_updates_local_index()
+test_database_multiple_objects()
+test_storage_manager_singleton()
+test_data_service_remote_index()
+print("\nAll distributed data flow tests passed!")

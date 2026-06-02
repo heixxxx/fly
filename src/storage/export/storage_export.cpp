@@ -4,12 +4,14 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/storage_manager.h>
 #include <storage/cpp/data_service.h>
+#include <storage/cpp/temp_store.h>
 #include <storage/cpp/object.h>
 #include <storage/cpp/index_entry.h>
 #include <storage/cpp/db_meta.h>
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/decompress_helper.h>
 #include <storage/cpp/decompressing_streambuf.h>
+#include <common/cpp/write_context_hash.h>
 #include <nanobind/operators.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/pair.h>
@@ -71,6 +73,13 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
         CMString result = fly::decompress_raw_data(raw);
         return fly_export::bytes(result.data(), result.size());
     })
+    FLY_EXPORT_DEF("_compress_pickle_bytes", [](Database& db, fly_export::bytes data,
+                                                 const CMString& py_name) -> fly_export::bytes {
+        CMString compressed = db.compress_pickle_bytes(data.c_str(),
+                                                        static_cast<int64_t>(data.size()),
+                                                        py_name);
+        return fly_export::bytes(compressed.data(), compressed.size());
+    })
     FLY_EXPORT_DEF("write_object_raw", [](Database& db, const CMString& name, const CMString& data, bool backup) -> CMString {
         return db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
     })
@@ -98,7 +107,21 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_METHOD("get_obj_name", &Database::get_obj_name)
     FLY_EXPORT_METHOD("get_writer_id", &Database::get_writer_id)
     FLY_EXPORT_METHOD("reset", &Database::reset)
-    FLY_EXPORT_METHOD("remove_object", &Database::remove_object);
+    FLY_EXPORT_METHOD("remove_object", &Database::remove_object)
+    FLY_EXPORT_DEF("_put_temp", [](Database& db, const CMString& name, fly_export::bytes data) {
+        CMString compressed(data.c_str(), data.size());
+        db.put_temp(name, compressed);
+    })
+    FLY_EXPORT_DEF("_get_temp", [](Database& db, const CMString& name) -> fly_export::tuple {
+        auto [found, data] = db.get_temp(name);
+        if (!found) return fly_export::make_tuple(false, fly_export::bytes());
+        return fly_export::make_tuple(true, fly_export::bytes(data.data(), data.size()));
+    })
+    FLY_EXPORT_DEF("_has_temp", &Database::has_temp)
+    FLY_EXPORT_DEF("_remove_temp", &Database::remove_temp)
+    FLY_EXPORT_DEF("_mark_temp", [](Database& db, const CMString& name) {
+        db.mark_temp(name);
+    });
 
 FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
     FLY_EXPORT_DEF("try_read_local", [](fly::DataService& ds, const CMString& name) -> fly_export::tuple {
@@ -187,5 +210,50 @@ FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& base_path, cons
 
 FLY_EXPORT_FUNCTION("ex_stg_create_database_with_id", [](const CMString& base_path, const CMString& data_path, uint64_t writer_id, const CMString& db_id) -> CMSharedPtr<Database> {
     return CMMakeShared<Database>(base_path, data_path, writer_id, "", db_id);
+});
+
+FLY_EXPORT_FUNCTION("ex_stg_compute_write_context_hash",
+    [](const CMString& task_name, const CMString& task_module,
+       const CMVector<CMString>& args, const CMVector<CMString>& inputs) -> CMString {
+        return compute_write_context_hash(task_name, task_module, args, inputs);
+    });
+
+FLY_EXPORT_ENUM(fly::TaskErrorType, "EXStgErrorType")
+    FLY_EXPORT_ENUM_VALUE("UNKNOWN", fly::TaskErrorType::UNKNOWN)
+    FLY_EXPORT_ENUM_VALUE("EXECUTION_ERROR", fly::TaskErrorType::EXECUTION_ERROR)
+    FLY_EXPORT_ENUM_VALUE("WRITE_TO_FROZEN_DB", fly::TaskErrorType::WRITE_TO_FROZEN_DB)
+    FLY_EXPORT_ENUM_VALUE("WRITE_REGISTRATION_FAILED", fly::TaskErrorType::WRITE_REGISTRATION_FAILED)
+    FLY_EXPORT_ENUM_VALUE("WRITE_REGISTRATION_TIMEOUT", fly::TaskErrorType::WRITE_REGISTRATION_TIMEOUT)
+    FLY_EXPORT_ENUM_VALUE("WRITE_PROVENANCE_MISMATCH", fly::TaskErrorType::WRITE_PROVENANCE_MISMATCH)
+    FLY_EXPORT_ENUM_VALUE("WRITE_DUPLICATE_SKIPPED", fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED);
+
+FLY_EXPORT_FUNCTION("ex_stg_get_last_error_type", []() -> int {
+    return static_cast<int>(fly::WorkerAgentContext::get_last_error_type());
+});
+
+FLY_EXPORT_CLASS(fly::TempStore, "EXStgTempStore")
+    FLY_EXPORT_DEF("put", [](fly::TempStore& self, const CMString& object_name,
+                              fly_export::bytes data) {
+        CMString compressed(data.c_str(), data.size());
+        self.put(object_name, compressed);
+    })
+    FLY_EXPORT_DEF("get", [](fly::TempStore& self, const CMString& object_name) -> fly_export::tuple {
+        auto [found, data] = self.get(object_name);
+        if (!found) return fly_export::make_tuple(false, fly_export::bytes());
+        return fly_export::make_tuple(true, fly_export::bytes(data.data(), data.size()));
+    })
+    FLY_EXPORT_METHOD("has", &fly::TempStore::has)
+    FLY_EXPORT_METHOD("remove", &fly::TempStore::remove)
+    FLY_EXPORT_METHOD("cleanup_all", &fly::TempStore::cleanup_all)
+    FLY_EXPORT_METHOD("mem_bytes", &fly::TempStore::mem_bytes)
+    FLY_EXPORT_METHOD("max_bytes", &fly::TempStore::max_bytes);
+
+FLY_EXPORT_FUNCTION("ex_stg_mark_temp_entry", [](const CMString& object_name, fly_export::bytes compressed_data) {
+    CMString data(compressed_data.c_str(), compressed_data.size());
+    fly::DataService::instance().mark_temp_entry(object_name, data);
+});
+
+FLY_EXPORT_FUNCTION("ex_stg_unmark_temp_entry", [](const CMString& object_name) {
+    fly::DataService::instance().unmark_temp_entry(object_name);
 });
 }

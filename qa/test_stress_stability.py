@@ -39,13 +39,11 @@ def test_stability():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}, {}])
 
-    assert wait_for(lambda: master._agent.get_connection_count() >= 2), \
-        f"Both workers should connect, got {master._agent.get_connection_count()}"
+    assert master.wait_for_workers(2), \
+        f"Both workers should connect, got {master.worker_count}"
 
     db = open_db(DB_PATH)
 
@@ -82,12 +80,9 @@ def test_stability():
         assert val == i * 4 + 1, \
             f"sum_{i} should be {i * 4 + 1}, got {val}"
 
-    del db
-    master.stop()
     print(f"[PASS] test_stability: {n_writes} writes + {n_sums} sums + 2 large objects",
           file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_stability()
-    print("\nAll tests passed!")
+test_stability()
+print("\nAll tests passed!")

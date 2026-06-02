@@ -53,11 +53,9 @@ def test_restart_failed_tasks_lifecycle():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}])
-    assert wait_for(lambda: master._agent.get_connection_count() >= 1), \
+    assert master.wait_for_workers(1), \
         "Worker 1 should connect"
 
     db = open_db(DB_PATH)
@@ -113,7 +111,7 @@ def test_restart_failed_tasks_lifecycle():
     # ── Phase 3: Launch gpu worker, restart ──
 
     master.launch_local_workers([{"attributes": ["gpu"]}])
-    assert wait_for(lambda: master._agent.get_connection_count() >= 2), \
+    assert master.wait_for_workers(2), \
         "Phase 3: gpu worker should connect"
 
     master.restart_failed_tasks(failed_file_2)
@@ -131,11 +129,7 @@ def test_restart_failed_tasks_lifecycle():
     print(f"  Phase 3+4 OK: {p3_completed} completed, 0 failed, file deleted",
           file=sys.stderr)
 
-    del db
-    master.stop()
     print("[PASS] test_restart_failed_tasks_lifecycle", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_restart_failed_tasks_lifecycle()
-
+test_restart_failed_tasks_lifecycle()

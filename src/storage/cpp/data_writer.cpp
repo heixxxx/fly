@@ -50,9 +50,10 @@ DataWriter::~DataWriter() {
 }
 
 void DataWriter::write_record(const CMString& object_name,
-                               int64_t original_size,
-                               int32_t chunk_count,
-                               const FlyBuffer& record) {
+                                int64_t original_size,
+                                int32_t chunk_count,
+                                const FlyBuffer& record,
+                                const CMString& write_context_hash) {
     if (closed_) {
         ERR("DataWriter is closed"); return;
     }
@@ -71,7 +72,7 @@ void DataWriter::write_record(const CMString& object_name,
     current_file_size_ = end_pos;
 
     IndexEntry entry{object_name, current_file_, offset, entry_size,
-                      false, chunk_count, host_};
+                      false, chunk_count, host_, write_context_hash};
     index_->add_entry(entry);
 
     total_bytes_ += original_size;

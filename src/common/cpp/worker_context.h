@@ -95,6 +95,18 @@ public:
         return last_error_type_;
     }
 
+    static void set_current_write_hash(const CMString& hash) {
+        current_write_hash_ = hash;
+    }
+
+    static CMString get_current_write_hash() {
+        return current_write_hash_;
+    }
+
+    static void clear_current_write_hash() {
+        current_write_hash_.clear();
+    }
+
     static std::function<void(const CMString&, const CMString&)>& current_record_func() { return record_write_func_; }
 
 private:
@@ -105,6 +117,7 @@ private:
     static inline thread_local std::function<void(const CMString&, const CMString&)> remove_request_func_;
     static inline thread_local std::function<void(const CMString&, const CMString&)> backup_request_func_;
     static inline thread_local TaskErrorType last_error_type_ = TaskErrorType::UNKNOWN;
+    static inline thread_local CMString current_write_hash_;
 };
 
 }  // namespace fly

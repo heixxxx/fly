@@ -73,5 +73,4 @@ def test_pending_task_persist():
     print("[PASS] test_pending_task_persist", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_pending_task_persist()
+test_pending_task_persist()

@@ -24,6 +24,7 @@ struct PendingTask {
     CMString task_name;
     CMString task_module;
     CMVector<CMString> args;
+    CMString write_context_hash;
 };
 
 struct PendingDbPath {
@@ -64,7 +65,7 @@ public:
 
     void set_data_service(CMWeakPtr<DataService> wp);
     
-    void begin_task(uint64_t task_id);
+    void begin_task(uint64_t task_id, const CMString& write_context_hash = "");
     void record_write(const CMString& db_id, const CMString& object_name);
     CMVector<CMString> end_task(uint64_t task_id);
     
@@ -73,7 +74,8 @@ public:
     void submit_task(const CMString& name, const CMString& module,
                      const CMVector<CMString>& args,
                      const CMVector<CMString>& inputs,
-                     const CMVector<CMString>& required_capabilities = {});
+                     const CMVector<CMString>& required_capabilities = {},
+                     const CMString& write_context_hash = "");
     
     bool has_pending_task() const;
     bool poll_task();
@@ -123,6 +125,7 @@ private:
 
     uint64_t current_task_id_ = 0;
     CMVector<CMString> current_writes_;
+    CMString current_write_hash_;
     
     mutable std::mutex task_queue_mutex_;
     std::queue<PendingTask> task_queue_;

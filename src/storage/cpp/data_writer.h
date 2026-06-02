@@ -25,9 +25,10 @@ public:
     DataWriter& operator=(const DataWriter&) = delete;
 
     void write_record(const CMString& object_name,
-                       int64_t original_size,
-                       int32_t chunk_count,
-                       const FlyBuffer& record);
+                        int64_t original_size,
+                        int32_t chunk_count,
+                        const FlyBuffer& record,
+                        const CMString& write_context_hash = "");
 
     void flush();
     void close();

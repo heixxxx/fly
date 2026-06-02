@@ -4,6 +4,7 @@
 #include <storage/cpp/data_reader.h>
 #include <storage/cpp/write_back_queue.h>
 #include <common/cpp/common_types.h>
+#include <common/cpp/concurrent_map.h>
 #include <cstdint>
 #include <mutex>
 #include <utility>
@@ -28,6 +29,7 @@ struct TransferResult {
     CMString error_message;
     CMString compressed_data;
     CMString py_name;
+    CMString write_context_hash;
 };
 
 enum class CompletionState {
@@ -54,7 +56,7 @@ public:
 
     using RemoteCompressedReadCallback = std::function<std::tuple<bool, CMString, CMString>(
         const CMString& object_name)>;
-    using DirectCompressedReadCallback = std::function<std::tuple<bool, CMString, CMString>(
+    using DirectCompressedReadCallback = std::function<std::tuple<bool, CMString, CMString, CMString>(
         const CMString& host, int32_t port, const CMString& object_name)>;
 
     // ============================================================
@@ -98,7 +100,9 @@ public:
     void on_object_flushed(const CMString& object_name);
 
     void restore_entries(const CMString& db_id,
-                          const CMVector<IndexEntry>& entries);
+                           const CMVector<IndexEntry>& entries);
+
+    std::optional<CMVector<IndexEntry>> find_local_entries(const CMString& object_name) const;
 
     // ============================================================
     // Remote Index Management
@@ -148,7 +152,12 @@ public:
     std::pair<bool, ReadResult> try_read_local_or_wait(const CMString& object_name,
                                                         int timeout_ms = 3000);
 
-    std::tuple<bool, CMString, CMString> read_raw_compressed(const CMString& object_name);
+    std::tuple<bool, CMString, CMString, CMString> read_raw_compressed(const CMString& object_name);
+
+    void mark_temp_entry(const CMString& object_name, const CMString& compressed_data);
+    void unmark_temp_entry(const CMString& object_name);
+    bool is_temp_entry(const CMString& object_name) const;
+    std::pair<bool, CMString> get_temp_data(const CMString& object_name) const;
 
     // ============================================================
     // Transfer Server
@@ -220,6 +229,8 @@ private:
     CMMap<uint64_t, RemoteObjectInfo> worker_registry_;
 
     CMUnorderedMap<CMString, DbPaths> db_paths_;
+
+    ConcurrentUnorderedMap<CMString, CMString> temp_entries_;
 
     CMSharedPtr<IOThreadPool> transfer_pool_;
     TransferCallback transfer_callback_;

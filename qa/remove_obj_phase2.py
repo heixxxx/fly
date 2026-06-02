@@ -22,46 +22,39 @@ def cleanup():
         shutil.rmtree(DB_PATH, ignore_errors=True)
 
 
-def main():
-    cleanup()
-    get_config().set_int("fail_unscheduleable_tasks", 1)
+cleanup()
+get_config().set_int("fail_unscheduleable_tasks", 1)
 
-    master = get_agent()
-    master.start()
-    master.launch_local_workers([{}])
-    for i in range(40):
-        if master._agent.get_connection_count() >= 1:
-            break
-        time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1
+master = get_agent()
+master.launch_local_workers([{}])
+for i in range(40):
+    if master.worker_count >= 1:
+        break
+    time.sleep(0.5)
+assert master.worker_count >= 1
 
-    db = open_db(DB_PATH)
+db = open_db(DB_PATH)
 
-    write_data(db, "will_remove", 42)
-    time.sleep(1)
+write_data(db, "will_remove", 42)
+time.sleep(1)
 
-    completed = master.wait_for_all_tasks(expected=1, timeout=15)
-    assert len(completed) >= 1
+completed = master.wait_for_all_tasks(expected=1, timeout=15)
+assert len(completed) >= 1
 
-    write_and_remove(db, "will_remove", 99)
-    master.wait_for_all_tasks(expected=2, timeout=15)
+write_and_remove(db, "will_remove", 99)
+master.wait_for_all_tasks(expected=2, timeout=15)
 
-    removed_full = db.get_obj_name("will_remove")
-    read_after_remove(db, "result", [removed_full])
+removed_full = db.get_obj_name("will_remove")
+read_after_remove(db, "result", [removed_full])
 
-    for i in range(40):
-        failed = master.failed_tasks
-        if failed:
-            break
-        time.sleep(0.5)
+for i in range(40):
+    failed = master.failed_tasks
+    if failed:
+        break
+    time.sleep(0.5)
 
-    assert len(failed) >= 1, \
-        f"Task depending on removed object should fail, got failed={failed}"
+assert len(failed) >= 1, \
+    f"Task depending on removed object should fail, got failed={failed}"
 
-    master.stop()
-    print("[PASS] test_remove_then_dependent_task_fails: dependent task failed as expected",
-          file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()
+print("[PASS] test_remove_then_dependent_task_fails: dependent task failed as expected",
+      file=sys.stderr)

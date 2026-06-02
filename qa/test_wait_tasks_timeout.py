@@ -29,20 +29,17 @@ def test_wait_tasks_no_pending_returns_gracefully():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
     master.launch_local_workers([{}])
     for i in range(40):
-        if master._agent.get_connection_count() >= 1:
+        if master.worker_count >= 1:
             break
         time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1, \
+    assert master.worker_count >= 1, \
         "Worker should connect to master"
 
     result = wait_tasks(timeout=2.0)
     assert result is not None, "wait_tasks should return a list, not None"
 
-    master.stop()
     print("[PASS] test_wait_tasks_no_pending_returns_gracefully: "
           "wait_tasks returns without error when no tasks pending", file=sys.stderr)
 
@@ -53,14 +50,12 @@ def test_wait_tasks_short_timeout_with_task():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
     master.launch_local_workers([{}])
     for i in range(40):
-        if master._agent.get_connection_count() >= 1:
+        if master.worker_count >= 1:
             break
         time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1, \
+    assert master.worker_count >= 1, \
         "Worker should connect to master"
 
     db = open_db(DB_PATH)
@@ -69,14 +64,11 @@ def test_wait_tasks_short_timeout_with_task():
     result = wait_tasks(timeout=1.0)
     assert result is not None, "wait_tasks should return a list, not None"
 
-    del db
-    master.stop()
     print("[PASS] test_wait_tasks_short_timeout_with_task: "
           "wait_tasks returns without error even with short timeout", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_wait_tasks_no_pending_returns_gracefully()
-    print()
-    test_wait_tasks_short_timeout_with_task()
-    print("\nAll wait_tasks timeout E2E tests passed!")
+test_wait_tasks_no_pending_returns_gracefully()
+print()
+test_wait_tasks_short_timeout_with_task()
+print("\nAll wait_tasks timeout E2E tests passed!")

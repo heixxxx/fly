@@ -1,12 +1,20 @@
 import pickle
 import time
 import logging
-from _fly_storage import ex_stg_get_data_service
+from _fly_storage import (
+    ex_stg_get_data_service,
+    ex_stg_get_last_error_type as _get_last_error_type_int,
+    EXStgErrorType,
+)
 
 logger = logging.getLogger("fly")
 
 _MAX_RETRIES = 3
 _RETRY_INTERVAL_SEC = 1.0
+
+
+def _get_last_error_type():
+    return EXStgErrorType(_get_last_error_type_int())
 
 
 class _Database:
@@ -21,15 +29,79 @@ class _Database:
             from _fly_storage import ex_stg_create_database
             self._db = ex_stg_create_database(base_path, data_path, writer_id)
 
-    def write_object(self, name: str, obj, backup: bool = False) -> str:
-        if hasattr(obj, "_write_to_db"):
-            return obj._write_to_db(self._db, name, type(obj).__name__, backup)
-        data = pickle.dumps(obj)
-        return self._db._write_pickle_bytes(name, data, type(obj).__name__, backup)
+    _WRITE_ERROR_MESSAGES = {
+        EXStgErrorType.WRITE_TO_FROZEN_DB: "Write to frozen database",
+        EXStgErrorType.WRITE_REGISTRATION_FAILED: "Write registration failed",
+        EXStgErrorType.WRITE_REGISTRATION_TIMEOUT: "Write registration timeout",
+        EXStgErrorType.WRITE_PROVENANCE_MISMATCH: "Write provenance mismatch",
+    }
 
-    def read_object(self, name: str, backup: bool = False):
+    def write_object(self, name: str, obj, backup: bool = False, save_to_db: bool = True) -> str:
+        if not save_to_db:
+            return self._write_temp(name, obj)
+
+        if hasattr(obj, "_write_to_db"):
+            result = obj._write_to_db(self._db, name, type(obj).__name__, backup)
+        else:
+            data = pickle.dumps(obj)
+            result = self._db._write_pickle_bytes(name, data, type(obj).__name__, backup)
+
+        if not result:
+            error_type = _get_last_error_type()
+            if error_type != EXStgErrorType.UNKNOWN and error_type != EXStgErrorType.WRITE_DUPLICATE_SKIPPED:
+                msg = self._WRITE_ERROR_MESSAGES.get(error_type, f"Write error (type={error_type})")
+                raise RuntimeError(f"{msg}: {name}")
+        return result
+
+    def _write_temp(self, name: str, obj) -> str:
+        if hasattr(obj, "_write_to_db"):
+            result = obj._write_to_db(self._db, name, type(obj).__name__, False)
+        else:
+            data = pickle.dumps(obj)
+            result = self._db._write_pickle_bytes(name, data, type(obj).__name__, False)
+        self._db._mark_temp(name)
+        return result
+
+    def read_object(self, name: str, backup: bool = False, cache: str = "low"):
+        if cache == "none":
+            data, py_name = self._db._read_streaming(name, backup)
+            return self._reconstruct(data, py_name)
+
+        try:
+            from storage.py.read_cache import get_read_cache
+        except ImportError:
+            from storage.read_cache import get_read_cache
+        rc = get_read_cache()
+        db_id = self.get_db_id()
+        key = f"{db_id}:{name}"
+
+        if cache == "high":
+            obj = rc.get(key, "high")
+            if obj is not None:
+                return obj
+            cached = rc.get(key, "low")
+            if cached is not None:
+                data, py_name = cached
+                obj = self._reconstruct(data, py_name)
+                rc.put(key, "high", obj)
+                rc.remove(key, "low")
+                return obj
+        elif cache == "low":
+            cached = rc.get(key, "low")
+            if cached is not None:
+                data, py_name = cached
+                return self._reconstruct(data, py_name)
+
         data, py_name = self._db._read_streaming(name, backup)
-        return self._reconstruct(data, py_name)
+
+        if cache == "high":
+            obj = self._reconstruct(data, py_name)
+            rc.put(key, "high", obj)
+        else:
+            rc.put(key, "low", (data, py_name))
+            obj = self._reconstruct(data, py_name)
+
+        return obj
 
     def backup_object(self, name: str):
         self._db.backup_object(name)
@@ -75,6 +147,7 @@ class _Database:
         self._db.reset()
 
     def remove_object(self, name: str):
+        self._db._remove_temp(name)
         self._db.remove_object(name)
 
     def __repr__(self):

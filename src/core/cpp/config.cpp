@@ -75,6 +75,8 @@ const CMMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"fail_unscheduleable_tasks", 1},
     {"interactive", 0},
     {"cli_master_port", 0},
+    {"read_cache_size", 1073741824},
+    {"temp_store_size", 536870912},
 };
 
 const CMMap<CMString, CMString> Config::STR_DEFAULTS = {

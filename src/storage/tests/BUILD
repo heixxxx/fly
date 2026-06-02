@@ -105,8 +105,28 @@ cc_test(
 )
 
 cc_test(
+    name = "write_context_hash_test",
+    srcs = ["write_context_hash_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/storage/cpp:fly_storage",
+    ],
+    copts = ["-std=c++20"],
+)
+
+cc_test(
     name = "compressing_streambuf_test",
     srcs = ["compressing_streambuf_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/storage/cpp:fly_storage",
+    ],
+    copts = ["-std=c++20"],
+)
+
+cc_test(
+    name = "temp_store_test",
+    srcs = ["temp_store_test.cpp"],
     deps = [
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",

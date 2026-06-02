@@ -31,11 +31,9 @@ def run1():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}])
-    assert wait_for(lambda: master._agent.get_connection_count() >= 1), \
+    assert master.wait_for_workers(1), \
         "Worker should connect"
 
     db = open_db(DB_PATH)
@@ -70,10 +68,7 @@ def run1():
     assert file_size > 0, "failed_tasks.bin should not be empty"
     print(f"  Run1: failed_tasks.bin exists ({file_size} bytes)", file=sys.stderr)
 
-    del db
-    master.stop()
     print("  Run1: master stopped", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    run1()
+run1()

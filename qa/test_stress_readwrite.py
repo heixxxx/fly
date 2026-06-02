@@ -38,13 +38,11 @@ def test_readwrite_mix():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}, {}])
 
-    assert wait_for(lambda: master._agent.get_connection_count() >= 2), \
-        f"Both workers should connect, got {master._agent.get_connection_count()}"
+    assert master.wait_for_workers(2), \
+        f"Both workers should connect, got {master.worker_count}"
 
     db = open_db(DB_PATH)
 
@@ -66,12 +64,9 @@ def test_readwrite_mix():
     assert len(master.failed_tasks) == 0, \
         f"Expected 0 failed, got {len(master.failed_tasks)}"
 
-    del db
-    master.stop()
     print(f"[PASS] test_readwrite_mix: {n} writes + {n} reads, all completed",
           file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_readwrite_mix()
-    print("\nAll tests passed!")
+test_readwrite_mix()
+print("\nAll tests passed!")

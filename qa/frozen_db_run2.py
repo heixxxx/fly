@@ -13,27 +13,26 @@ from fly import get_config
 from fly.runtime import get_agent
 
 
-def main():
-    get_config().set_int("fail_unscheduleable_tasks", 0)
+get_config().set_int("fail_unscheduleable_tasks", 0)
 
-    master = get_agent()
-    master.start()
+master = get_agent()
 
-    db = load_db(DB_PATH)
+db = load_db(DB_PATH)
 
-    assert db.is_frozen(), "DB should still be frozen after load_db"
+assert db.is_frozen(), "DB should still be frozen after load_db"
 
+try:
     result = db.write_object("should_fail", 1)
     assert not result or result == "", \
         f"write_object on frozen DB should return empty, got: {result!r}"
-    print(f"[RUN2] write_object on frozen DB returned empty as expected", file=sys.stderr)
+except RuntimeError as e:
+    assert "frozen" in str(e).lower(), \
+        f"Expected frozen DB error, got: {e}"
+    print(f"[RUN2] write_object on frozen DB raised RuntimeError as expected: {e}", file=sys.stderr)
+print(f"[RUN2] write_object on frozen DB returned empty as expected", file=sys.stderr)
 
-    assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), \
-        "_FROZEN marker should still exist after load_db"
+assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), \
+    "_FROZEN marker should still exist after load_db"
 
-    print("[RUN2] Verified: loaded DB is frozen, write_object correctly rejected",
-          file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()
+print("[RUN2] Verified: loaded DB is frozen, write_object correctly rejected",
+      file=sys.stderr)

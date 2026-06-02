@@ -33,7 +33,6 @@
 ### 基本模板
 
 ```python
-"""E2E test: <简要描述>."""
 import time
 import sys
 import os
@@ -53,33 +52,30 @@ def cleanup():
         shutil.rmtree(DB_PATH, ignore_errors=True)
 
 
-def test_<feature>():
-    cleanup()
-    get_config().set_int("fail_unscheduleable_tasks", 0)
-
-    from fly.runtime import get_agent
-    master = get_agent()
-    if not master._running:
-        master.start()
-
-    master.launch_local_workers([{}])
-    for i in range(40):
-        if master._agent.get_connection_count() >= 1:
-            break
-        time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1
-
-    db = open_db(DB_PATH)
-
-    # ... test logic ...
-
-    master.stop()
-    print(f"[PASS] test_<feature>", file=sys.stderr)
+def wait_for(condition, timeout=20.0, interval=0.5):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if condition():
+            return True
+        time.sleep(interval)
+    return False
 
 
-if __name__ == "__main__":
-    test_<feature>()
-    print("\nAll tests passed!")
+cleanup()
+get_config().set_int("fail_unscheduleable_tasks", 0)
+
+from fly.runtime import get_agent
+master = get_agent()
+
+master.launch_local_workers([{}])
+assert wait_for(lambda: master._agent.get_connection_count() >= 1)
+
+db = open_db(DB_PATH)
+
+# ... test logic ...
+
+master.stop()
+print(f"[PASS] test_<feature>", file=sys.stderr)
 ```
 
 ### 多进程测试（协调器模式）
@@ -125,6 +121,32 @@ assert result.returncode == 0, f"Failed: {result.stderr}"
 
 ## 3. 必须遵循的原则
 
+### 扁平脚本，不要用 `__main__` 或 `main()` 包装
+
+QA 测试脚本是**扁平的 Python 脚本**，代码从上到下直接执行，像写 bash 一样。
+
+```python
+# ✅ 正确 — 代码直接执行
+cleanup()
+master = get_agent()
+master.start()
+db = open_db(DB_PATH)
+write_data(db, "key", 42)
+master.stop()
+print("[PASS]", file=sys.stderr)
+
+# ❌ 错误 — 不要用 if __name__ 或 main() 包装
+def main():
+    cleanup()
+    master = get_agent()
+    ...
+
+if __name__ == "__main__":
+    main()
+```
+
+**原因**：QA runner 通过 `fly --log-dir <dir> <script>` 启动独立进程执行脚本，脚本内容会被 `exec()` 直接执行。不需要 `__main__` 守卫，也不需要 `main()` 函数。
+
 ### Worker 模式
 
 `launch_local_workers` 始终使用进程模式启动 Worker：
@@ -155,6 +177,69 @@ write_data(db, "key", "value")
 **原因**：Process worker 是独立进程，只导入 `e2e_tasks.py` 中的任务。内联定义的 `@as_task()` 函数在 Worker 进程中不可见，会导致任务执行失败。
 
 如需新任务，统一添加到 `src/e2e_tasks.py`。
+
+### 只使用公共 Python API
+
+QA 测试是高层集成测试，必须只使用公共 Python API。底层 C++ 测试属于 unit test（`src/*/tests/`），不属于 QA。
+
+```python
+# ✅ 正确 — 使用公共 API
+master = get_agent()
+master.launch_local_workers([{}])
+master.wait_for_workers(1)
+assert master.worker_count >= 1
+assert len(master.completed_tasks) >= 1
+
+# ❌ 错误 — 使用内部 API
+master._agent.get_connection_count()
+master._agent.submit_task_with_deps(...)
+master._worker_procs[0].kill()
+import _fly_storage as storage
+storage.ex_stg_get_data_service()
+```
+
+**公共 API 速查**：
+
+| API | 说明 |
+|-----|------|
+| `get_agent()` | 获取 Master/Worker 单例 |
+| `master.launch_local_workers(configs)` | 启动 Worker 进程 |
+| `master.wait_for_workers(n, timeout=30)` | 等待 N 个 Worker 连接，返回 True/False |
+| `master.worker_count` | 当前连接的 Worker 数量 |
+| `master.is_running()` | Master 是否在运行 |
+| `master.get_worker_pids()` | 获取 Worker 进程 PID 列表 |
+| `master.port` | Master 监听端口 |
+| `master.completed_tasks` | 已完成任务 ID 列表 |
+| `master.failed_tasks` | 失败任务 ID 列表 |
+| `master.pending_tasks` | 等待中任务 ID 列表 |
+| `master.stop()` | 停止 Master 和所有 Worker |
+| `open_db(path)` | 打开/创建数据库 |
+| `load_db(path)` | 加载已有数据库 |
+| `db.read_object(name, cache="low")` | 读取数据 |
+| `db.write_object(name, obj, save_to_db=True)` | 写入数据 |
+| `db.remove_object(name)` | 删除数据 |
+
+### 每个测试文件只测试一个场景
+
+一个文件 = 一个场景 = 一次 agent 生命周期。需要多次启停 agent 的场景，使用协调器模式（subprocess）。
+
+```python
+# ✅ 正确 — 单场景单文件
+cleanup()
+master = get_agent()
+master.launch_local_workers([{}])
+# ... test logic ...
+
+# ❌ 错误 — 多个测试函数共享 agent
+def test_part1():
+    master = get_agent()
+    master.launch_local_workers([{}])
+    # ...
+
+def test_part2():
+    master = get_agent()  # 复用 Part1 的 agent！
+    # ...
+```
 
 ### 文件命名
 

@@ -3,6 +3,7 @@
 #include <storage/cpp/data_writer.h>
 #include <storage/cpp/data_reader.h>
 #include <storage/cpp/data_service.h>
+#include <storage/cpp/temp_store.h>
 #include <storage/cpp/write_back_queue.h>
 #include <storage/cpp/db_meta.h>
 #include <storage/cpp/compressing_streambuf.h>
@@ -32,6 +33,9 @@ public:
                                 const char* data, int64_t data_size,
                                 const CMString& py_name, bool backup = false);
 
+    CMString compress_pickle_bytes(const char* data, int64_t data_size,
+                                   const CMString& py_name);
+
     std::pair<CMString, CMString> read_object_compressed(const CMString& object_name, bool backup = false);
 
     template<typename T>
@@ -48,6 +52,12 @@ public:
 
     void remove_object(const CMString& object_name);
     void remove_index_entry(const CMString& object_name);
+
+    void put_temp(const CMString& object_name, const CMString& compressed_data);
+    std::pair<bool, CMString> get_temp(const CMString& object_name);
+    bool has_temp(const CMString& object_name);
+    void remove_temp(const CMString& object_name);
+    void mark_temp(const CMString& object_name);
 
     DbMeta load_meta() const;
 
@@ -79,7 +89,7 @@ private:
 
     // Shared backup write logic: takes ownership of compressed_data and writes it
     // as a backup record for the given object.
-    void do_backup_write(const CMString& full, const CMString& object_name, CMString compressed_data);
+    void do_backup_write(const CMString& full, const CMString& object_name, CMString compressed_data, const CMString& source_hash = {});
 
     CMString base_path_;
     CMString data_path_;
@@ -95,6 +105,8 @@ private:
     CMUniquePtr<DataWriter> writer_;
     CMUniquePtr<DataReader> reader_;
     CMSet<CMString> removed_objects_;
+    CMSet<CMString> temp_objects_;
+    CMUniquePtr<fly::TempStore> temp_store_;
 };
 
 template<typename T>
@@ -151,9 +163,10 @@ CMString Database::write_object(const CMString& object_name, const T& obj,
     DataWriter* w = writer_.get();
     auto caller_record_func = fly::WorkerAgentContext::current_record_func();
     auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : std::function<void(const fly::CMString&, const fly::CMString&)>{};
+    CMString write_hash = fly::WorkerAgentContext::get_current_write_hash();
 
-    auto execute = [w, name = full, total_uncompressed, chunk_count, record]() {
-        w->write_record(name, total_uncompressed, chunk_count, *record);
+    auto execute = [w, name = full, total_uncompressed, chunk_count, record, write_hash]() {
+        w->write_record(name, total_uncompressed, chunk_count, *record, write_hash);
         w->flush();
     };
 

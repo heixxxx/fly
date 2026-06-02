@@ -65,7 +65,8 @@ public:
                     const CMString& module, const CMVector<CMString>& args,
                     const CMVector<CMString>& inputs = {},
                     const CMVector<CMString>& outputs = {},
-                    const CMVector<CMString>& required_capabilities = {});
+                    const CMVector<CMString>& required_capabilities = {},
+                    const CMString& write_context_hash = "");
 
     CMVector<uint64_t> get_pending_tasks() const;
     CMVector<uint64_t> get_running_tasks() const;
@@ -176,6 +177,8 @@ private:
     CMMap<uint64_t, CMString> worker_to_ip_;
     CMString master_hostname_;
     CMSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
+
+    CMMap<CMString, CMString> write_provenance_;
 
     static std::atomic<bool> sigterm_received_;
     static void sigterm_handler(int sig);

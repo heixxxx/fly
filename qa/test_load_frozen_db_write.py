@@ -69,5 +69,4 @@ def test_load_frozen_db_write():
           file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_load_frozen_db_write()
+test_load_frozen_db_write()

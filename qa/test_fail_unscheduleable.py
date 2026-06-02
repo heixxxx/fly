@@ -35,16 +35,14 @@ def test_fail_unscheduleable_tasks_enabled():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
     master.launch_local_workers([
         {"attributes": ["alpha"]},
     ])
     for i in range(40):
-        if master._agent.get_connection_count() >= 1:
+        if master.worker_count >= 1:
             break
         time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1
+    assert master.worker_count >= 1
 
     db = open_db(DB_PATH)
 
@@ -71,11 +69,8 @@ def test_fail_unscheduleable_tasks_enabled():
     assert db.read_object("alpha_result") == 1, \
         f"alpha task should still complete normally"
 
-    del db
-    master.stop()
     print(f"[PASS] test_fail_unscheduleable_tasks_enabled: "
           f"task failed with '{error_msg}'", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_fail_unscheduleable_tasks_enabled()
+test_fail_unscheduleable_tasks_enabled()

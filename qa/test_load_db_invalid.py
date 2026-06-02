@@ -17,8 +17,6 @@ def test_load_db_invalid_meta():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     # Create a directory with an empty _DB_META file (no valid db_id)
     os.makedirs(DB_PATH, exist_ok=True)
@@ -36,7 +34,6 @@ def test_load_db_invalid_meta():
 
     assert caught, "load_db should have raised RuntimeError for corrupt _DB_META"
 
-    master.stop()
     print("[PASS] test_load_db_invalid_meta: "
           "RuntimeError raised for corrupt _DB_META", file=sys.stderr)
 
@@ -45,8 +42,6 @@ def test_load_db_nonexistent_path():
     """load_db on a nonexistent path should raise RuntimeError."""
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     caught = False
     try:
@@ -59,7 +54,6 @@ def test_load_db_nonexistent_path():
 
     assert caught, "load_db should have raised RuntimeError for nonexistent path"
 
-    master.stop()
     print("[PASS] test_load_db_nonexistent_path: "
           "RuntimeError raised for nonexistent path", file=sys.stderr)
 
@@ -69,7 +63,6 @@ def cleanup():
         shutil.rmtree(DB_PATH, ignore_errors=True)
 
 
-if __name__ == "__main__":
-    test_load_db_invalid_meta()
-    test_load_db_nonexistent_path()
-    print("\nAll tests passed!")
+test_load_db_invalid_meta()
+test_load_db_nonexistent_path()
+print("\nAll tests passed!")

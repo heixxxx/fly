@@ -22,38 +22,31 @@ def cleanup():
         shutil.rmtree(DB_PATH, ignore_errors=True)
 
 
-def main():
-    cleanup()
-    get_config().set_int("fail_unscheduleable_tasks", 0)
+cleanup()
+get_config().set_int("fail_unscheduleable_tasks", 0)
 
-    master = get_agent()
-    master.start()
-    master.launch_local_workers([{}])
-    for i in range(40):
-        if master._agent.get_connection_count() >= 1:
-            break
-        time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1
+master = get_agent()
+master.launch_local_workers([{}])
+for i in range(40):
+    if master.worker_count >= 1:
+        break
+    time.sleep(0.5)
+assert master.worker_count >= 1
 
-    db = open_db(DB_PATH)
+db = open_db(DB_PATH)
 
-    write_data(db, "keep/obj", "keep_data")
-    write_data(db, "remove/obj", "remove_data")
+write_data(db, "keep/obj", "keep_data")
+write_data(db, "remove/obj", "remove_data")
 
-    completed = master.wait_for_all_tasks(expected=2, timeout=15)
-    assert len(completed) >= 2
+completed = master.wait_for_all_tasks(expected=2, timeout=15)
+assert len(completed) >= 2
 
-    write_and_remove(db, "remove/obj", "overwrite")
-    master.wait_for_all_tasks(expected=3, timeout=15)
+write_and_remove(db, "remove/obj", "overwrite")
+master.wait_for_all_tasks(expected=3, timeout=15)
 
-    keep_result = db.read_object("keep/obj")
-    assert keep_result == "keep_data", \
-        f"Remaining object should still be readable, got: {keep_result}"
+keep_result = db.read_object("keep/obj")
+assert keep_result == "keep_data", \
+    f"Remaining object should still be readable, got: {keep_result}"
 
-    master.stop()
-    print("[PASS] test_remove_one_keeps_other: kept object still readable",
-          file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()
+print("[PASS] test_remove_one_keeps_other: kept object still readable",
+      file=sys.stderr)

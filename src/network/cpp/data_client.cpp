@@ -11,7 +11,7 @@
 
 namespace fly {
 
-std::tuple<bool, CMString, CMString, CMString> DataClient::request_compressed_data(
+std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_compressed_data(
     const CMString& host,
     int port,
     const CMString& object_name,
@@ -19,7 +19,7 @@ std::tuple<bool, CMString, CMString, CMString> DataClient::request_compressed_da
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
-        return {false, "", "", "Failed to create socket: " + CMString(std::strerror(errno))};
+        return {false, "", "", "", "Failed to create socket: " + CMString(std::strerror(errno))};
     }
 
     struct timeval tv;
@@ -35,7 +35,7 @@ std::tuple<bool, CMString, CMString, CMString> DataClient::request_compressed_da
 
     if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
         ::close(fd);
-        return {false, "", "", "Failed to connect to " + host + ":" + std::to_string(port)};
+        return {false, "", "", "", "Failed to connect to " + host + ":" + std::to_string(port)};
     }
 
     DataRequestMessage req;
@@ -44,13 +44,13 @@ std::tuple<bool, CMString, CMString, CMString> DataClient::request_compressed_da
 
     if (!net_send_all(fd, encoded_req.data(), encoded_req.size())) {
         ::close(fd);
-        return {false, "", "", "Failed to send compressed request for " + object_name};
+        return {false, "", "", "", "Failed to send compressed request for " + object_name};
     }
 
     char header[5] = {};
     if (!net_recv_exact(fd, header, 5, timeout_ms)) {
         ::close(fd);
-        return {false, "", "", "Timeout receiving response header for " + object_name};
+        return {false, "", "", "", "Timeout receiving response header for " + object_name};
     }
 
     uint32_t total_len =
@@ -61,7 +61,7 @@ std::tuple<bool, CMString, CMString, CMString> DataClient::request_compressed_da
 
     if (total_len < 1 || total_len > 256 * 1024 * 1024) {
         ::close(fd);
-        return {false, "", "", "Invalid response frame size for " + object_name};
+        return {false, "", "", "", "Invalid response frame size for " + object_name};
     }
 
     uint32_t payload_len = total_len - 1;
@@ -69,7 +69,7 @@ std::tuple<bool, CMString, CMString, CMString> DataClient::request_compressed_da
     CMString payload(payload_len, '\0');
     if (payload_len > 0 && !net_recv_exact(fd, payload.data(), payload_len, timeout_ms)) {
         ::close(fd);
-        return {false, "", "", "Timeout receiving response payload for " + object_name};
+        return {false, "", "", "", "Timeout receiving response payload for " + object_name};
     }
 
     ::close(fd);
@@ -83,10 +83,10 @@ std::tuple<bool, CMString, CMString, CMString> DataClient::request_compressed_da
 
     DataResponseMessage response;
     if (!MessageProtocol::decode(full_buf, response)) {
-        return {false, "", "", "Failed to decode response for " + object_name};
+        return {false, "", "", "", "Failed to decode response for " + object_name};
     }
 
-    return {response.success, response.compressed_data, response.py_name, response.error_message};
+    return {response.success, response.compressed_data, response.py_name, response.write_context_hash, response.error_message};
 }
 
 }  // namespace fly

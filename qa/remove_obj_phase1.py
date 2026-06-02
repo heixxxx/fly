@@ -22,38 +22,30 @@ def cleanup():
         shutil.rmtree(DB_PATH, ignore_errors=True)
 
 
-def main():
-    cleanup()
-    get_config().set_int("fail_unscheduleable_tasks", 0)
+cleanup()
+get_config().set_int("fail_unscheduleable_tasks", 0)
 
-    master = get_agent()
-    master.start()
-    master.launch_local_workers([{}])
-    for i in range(40):
-        if master._agent.get_connection_count() >= 1:
-            break
-        time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1
+master = get_agent()
+master.launch_local_workers([{}])
+for i in range(40):
+    if master.worker_count >= 1:
+        break
+    time.sleep(0.5)
+assert master.worker_count >= 1
 
-    db = open_db(DB_PATH)
-    write_and_remove(db, "temp/obj", "temp_data")
+db = open_db(DB_PATH)
+write_and_remove(db, "temp/obj", "temp_data")
 
-    for i in range(40):
-        completed = master.completed_tasks
-        failed = master.failed_tasks
-        if failed:
-            err = master.get_task_error(failed[0])
-            master.stop()
-            raise AssertionError(f"Task failed unexpectedly: {err}")
-        if len(completed) >= 1:
-            break
-        time.sleep(0.5)
+for i in range(40):
+    completed = master.completed_tasks
+    failed = master.failed_tasks
+    if failed:
+        err = master.get_task_error(failed[0])
+        raise AssertionError(f"Task failed unexpectedly: {err}")
+    if len(completed) >= 1:
+        break
+    time.sleep(0.5)
 
-    assert len(completed) >= 1
+assert len(completed) >= 1
 
-    master.stop()
-    print("[PASS] test_remove_object_basic: write+remove completed", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()
+print("[PASS] test_remove_object_basic: write+remove completed", file=sys.stderr)

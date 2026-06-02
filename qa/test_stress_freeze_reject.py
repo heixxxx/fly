@@ -38,13 +38,11 @@ def test_freeze_reject_stress():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}])
 
-    assert wait_for(lambda: master._agent.get_connection_count() >= 1), \
-        f"Worker should connect, got {master._agent.get_connection_count()}"
+    assert master.wait_for_workers(1), \
+        f"Worker should connect, got {master.worker_count}"
 
     db = open_db(DB_PATH)
 
@@ -73,12 +71,9 @@ def test_freeze_reject_stress():
         val = db.read_object(f"pre_{i}")
         assert val == i, f"pre_{i} should be {i}, got {val}"
 
-    del db
-    master.stop()
     print(f"[PASS] test_freeze_reject_stress: {pre_freeze_count} pre-freeze OK, "
           f"{post_freeze_count} post-freeze rejected", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_freeze_reject_stress()
-    print("\nAll tests passed!")
+test_freeze_reject_stress()
+print("\nAll tests passed!")

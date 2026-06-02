@@ -191,10 +191,9 @@ def test_load_db_moved_db():
     print("[PASS] test_load_db_moved_db: moved-DB lifecycle verified", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_db_meta_incremental_format()
-    print()
-    test_load_db_two_processes()
-    print()
-    test_load_db_moved_db()
-    print("\nAll load_db E2E tests passed!")
+test_db_meta_incremental_format()
+print()
+test_load_db_two_processes()
+print()
+test_load_db_moved_db()
+print("\nAll load_db E2E tests passed!")

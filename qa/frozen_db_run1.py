@@ -15,47 +15,39 @@ from fly import get_config
 from fly.runtime import get_agent
 
 
-def main():
-    if os.path.isdir(DB_PATH):
-        shutil.rmtree(DB_PATH, ignore_errors=True)
+if os.path.isdir(DB_PATH):
+    shutil.rmtree(DB_PATH, ignore_errors=True)
 
-    get_config().set_int("fail_unscheduleable_tasks", 0)
+get_config().set_int("fail_unscheduleable_tasks", 0)
 
-    master = get_agent()
-    master.start()
+master = get_agent()
 
-    master.launch_local_workers([{}])
+master.launch_local_workers([{}])
 
-    for _ in range(40):
-        if master._agent.get_connection_count() >= 1:
-            break
-        time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1, "Worker should connect"
-
-    db = open_db(DB_PATH)
-
-    write_data(db, "frozen/a", 10)
-    write_data(db, "frozen/b", 20)
-    write_data(db, "frozen/c", "hello")
-
-    completed = master.wait_for_all_tasks(expected=3, timeout=30)
-    assert len(completed) >= 3, f"Expected 3 completed tasks, got {len(completed)}"
-
-    from _fly_storage import ex_stg_get_data_service
-    ex_stg_get_data_service().drain_write_back()
+for _ in range(40):
+    if master.worker_count >= 1:
+        break
     time.sleep(0.5)
+assert master.worker_count >= 1, "Worker should connect"
 
-    assert db.read_object("frozen/a") == 10
-    assert db.read_object("frozen/b") == 20
-    assert db.read_object("frozen/c") == "hello"
+db = open_db(DB_PATH)
 
-    db.freeze()
-    assert db.is_frozen(), "DB should be frozen after freeze()"
+write_data(db, "frozen/a", 10)
+write_data(db, "frozen/b", 20)
+write_data(db, "frozen/c", "hello")
 
-    assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "_FROZEN marker should exist"
+completed = master.wait_for_all_tasks(expected=3, timeout=30)
+assert len(completed) >= 3, f"Expected 3 completed tasks, got {len(completed)}"
 
-    print(f"[RUN1] Created DB, wrote 3 objects, frozen successfully", file=sys.stderr)
+time.sleep(0.5)
 
+assert db.read_object("frozen/a") == 10
+assert db.read_object("frozen/b") == 20
+assert db.read_object("frozen/c") == "hello"
 
-if __name__ == "__main__":
-    main()
+db.freeze()
+assert db.is_frozen(), "DB should be frozen after freeze()"
+
+assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "_FROZEN marker should exist"
+
+print(f"[RUN1] Created DB, wrote 3 objects, frozen successfully", file=sys.stderr)

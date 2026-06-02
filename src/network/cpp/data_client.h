@@ -12,8 +12,8 @@ namespace fly {
 class DataClient {
 public:
     // Request compressed (raw disk) data from a remote worker.
-    // Returns: (success, compressed_bytes, py_name, error_message)
-    static std::tuple<bool, CMString, CMString, CMString> request_compressed_data(
+    // Returns: (success, compressed_bytes, py_name, write_context_hash, error_message)
+    static std::tuple<bool, CMString, CMString, CMString, CMString> request_compressed_data(
         const CMString& host,
         int port,
         const CMString& object_name,

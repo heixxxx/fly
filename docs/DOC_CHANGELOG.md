@@ -2,6 +2,24 @@
 
 ---
 
+## 2026-06-01: 用户脚本 task 支持 + 两层读缓存
+
+| 文档 | 变更 |
+|------|------|
+| docs/python-api/module.md | `as_task` 实现描述更新（from_user 协议）；`read_object` 新增 `cache` 参数 |
+| qa/README.md | 新增"扁平脚本"编写规范，移除 `__main__`/`main()` 模板 |
+
+新功能：
+- **用户脚本 task**: `@as_task()` 装饰器自动检测 `__main__` 模块，将函数 cloudpickle 序列化到 task_name 字段（`from_user` 协议），Worker 端反序列化重建函数执行。用户脚本无需特殊结构。
+- **两层读缓存**: `read_object(name, cache="low"|"high"|"none")` — LOW 层缓存压缩数据（避免网络/磁盘 IO），HIGH 层缓存反序列化对象（避免重复 pickle.loads）。LRU + 读取频率淘汰，30s 保护期，1.5x 硬限制。缓存大小由 `read_cache_size` config 控制（默认 1GB）。
+- **save_to_db=False**: `write_object(name, obj, save_to_db=False)` 通过正常写入管线落盘，但标记为 temp。`read_object` 通过三级读取透明访问（支持跨 Worker）。`remove_object` 清理 temp 标记。run 结束后 temp 数据不持久化。
+- **Master 自动启动**: `init()` 中自动调用 `agent.start()`，用户无需手动启动 Master。
+- **QA 公共 API 规范**: 所有 QA 测试只使用公共 Python API（`master.worker_count`、`master.wait_for_workers()` 等），底层 C++ 测试迁移至 `qa/internal/`。每个测试文件只测试一个场景。
+- **QA 扁平脚本**: 所有 QA 测试移除 `if __name__ == "__main__":`、`main()`、`master.stop()`、`del db`。代码从上到下直接执行。
+- **Master 公共 API**: 新增 `worker_count`、`wait_for_workers(n, timeout)`、`is_running()`、`get_worker_pids()`。
+
+---
+
 ## 2026-05-31: Code Review Fixes — API 安全性改进
 
 | 文档 | 变更 |

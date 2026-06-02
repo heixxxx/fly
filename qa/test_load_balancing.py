@@ -38,11 +38,9 @@ def test_load_balancing():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}, {}, {}])
-    assert wait_for(lambda: master._agent.get_connection_count() >= 3), \
+    assert master.wait_for_workers(3), \
         "3 workers should connect"
 
     db = open_db(DB_PATH)
@@ -62,10 +60,7 @@ def test_load_balancing():
         val = db.read_object(f"key_{i}")
         assert val == i, f"Expected key_{i}={i}, got {val}"
 
-    del db
-    master.stop()
     print("[PASS] test_load_balancing", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_load_balancing()
+test_load_balancing()

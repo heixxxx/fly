@@ -33,18 +33,16 @@ def cleanup():
 def setup_mixed_workers():
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
     master.launch_local_workers([
         {"attributes": ["gpu"]},
         {"attributes": []},
     ])
     for i in range(40):
-        if master._agent.get_connection_count() >= 2:
+        if master.worker_count >= 2:
             break
         time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 2, \
-        f"Only {master._agent.get_connection_count()}/2 workers connected"
+    assert master.worker_count >= 2, \
+        f"Only {master.worker_count}/2 workers connected"
     return master
 
 
@@ -72,10 +70,7 @@ def test_capability_matching():
     assert db.read_object("cpu_result") == 1
     assert db.read_object("gpu_result") == 2
 
-    del db
-    master.stop()
     print(f"[PASS] test_capability_matching: {len(completed)} tasks completed", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_capability_matching()
+test_capability_matching()

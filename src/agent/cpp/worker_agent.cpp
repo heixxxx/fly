@@ -26,13 +26,13 @@ void WorkerAgent::set_data_service(CMWeakPtr<DataService> wp) {
         });
         sp->set_direct_compressed_read_handler(
             [this](const CMString& host, int32_t port,
-                  const CMString& name) -> std::tuple<bool, CMString, CMString> {
-                auto [success, data, py_name, error] = DataClient::request_compressed_data(host, port, name);
+                  const CMString& name) -> std::tuple<bool, CMString, CMString, CMString> {
+                auto [success, data, py_name, hash, error] = DataClient::request_compressed_data(host, port, name);
                 if (!success) {
                     ERR("request_compressed_data failed for {}: {}", name, error);
-                    return {false, {}, {}};
+                    return {false, {}, {}, {}};
                 }
-                return {true, std::move(data), std::move(py_name)};
+                return {true, std::move(data), std::move(py_name), std::move(hash)};
             });
     }
 }
@@ -76,6 +76,7 @@ void WorkerAgent::start() {
             response.success = result.success;
             response.compressed_data = result.compressed_data;
             response.py_name = result.py_name;
+            response.write_context_hash = result.write_context_hash;
             if (!result.success) {
                 response.error_message = result.error_message;
             }
@@ -223,13 +224,15 @@ bool WorkerAgent::is_registered() const {
 void WorkerAgent::submit_task(const CMString& name, const CMString& module,
                                const CMVector<CMString>& args,
                                const CMVector<CMString>& inputs,
-                               const CMVector<CMString>& required_capabilities) {
+                               const CMVector<CMString>& required_capabilities,
+                               const CMString& write_context_hash) {
      TaskSubmitMessage msg;
      msg.task_name = name;
     msg.task_module = module;
     msg.args = args;
     msg.inputs = inputs;
     msg.required_capabilities = required_capabilities;
+    msg.write_context_hash = write_context_hash;
     reactor_->send(master_conn_, msg);
 }
 
@@ -279,6 +282,7 @@ void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
     task.task_name = msg.task_name;
     task.task_module = msg.task_module;
     task.args = msg.args;
+    task.write_context_hash = msg.write_context_hash;
 
     {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);
@@ -306,7 +310,7 @@ bool WorkerAgent::poll_task() {
     if (task.task_module == "__fly_internal") {
         execute_internal_task(task);
     } else if (executor_) {
-        begin_task(task.task_id);
+        begin_task(task.task_id, task.write_context_hash);
         auto result = executor_->execute(
             task.task_id, task.task_name, task.task_module, task.args);
         auto tracked_writes = end_task(task.task_id);
@@ -401,9 +405,11 @@ void WorkerAgent::on_db_path_response(const DbPathResponseMessage& msg) {
     pending_db_path_cv_.notify_all();
 }
 
-void WorkerAgent::begin_task(uint64_t task_id) {
+void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_hash) {
     current_task_id_ = task_id;
     current_writes_.clear();
+    current_write_hash_ = write_context_hash;
+    WorkerAgentContext::set_current_write_hash(write_context_hash);
     WorkerAgentContext::set_last_error_type(TaskErrorType::UNKNOWN);
     WorkerAgentContext::set_record_write_func([this](const CMString& db_id, const CMString& name) {
         record_write(db_id, name);
@@ -449,6 +455,8 @@ void WorkerAgent::record_write(const CMString& db_id, const CMString& object_nam
 
 CMVector<CMString> WorkerAgent::end_task(uint64_t task_id) {
     WorkerAgentContext::clear();
+    WorkerAgentContext::clear_current_write_hash();
+    current_write_hash_.clear();
     auto writes = std::move(current_writes_);
     current_writes_.clear();
     current_task_id_ = 0;
@@ -476,7 +484,7 @@ std::tuple<bool, CMString, CMString> WorkerAgent::request_remote_data(const CMSt
         return {false, {}, {}};
     }
 
-    auto [success, data, py_name, error] = DataClient::request_compressed_data(
+    auto [success, data, py_name, hash, error] = DataClient::request_compressed_data(
         location.host, location.port, object_name);
 
     if (!success) {
@@ -492,7 +500,7 @@ std::tuple<bool, CMString, CMString> WorkerAgent::request_remote_data(const CMSt
 std::pair<bool, ReadResult> WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,
                                                                    const CMString& object_name) {
 
-    auto [success, compressed_data, py_name, error] = DataClient::request_compressed_data(host, port, object_name);
+    auto [success, compressed_data, py_name, hash, error] = DataClient::request_compressed_data(host, port, object_name);
 
     if (!success) {
         ERR("request_data_from_worker failed for {}: {}", object_name, error);
@@ -560,6 +568,36 @@ CMSharedPtr<Database> WorkerAgent::get_database(const CMString& db_id) const {
 std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const CMString& db_id, const CMString& object_name) {
     if (!registered_) return {"", TaskErrorType::UNKNOWN};
     CMString full_name = db_id + ":" + object_name;
+    CMString ctx_hash = fly::WorkerAgentContext::get_current_write_hash();
+
+    if (!ctx_hash.empty()) {
+        auto existing_entries = ds().find_local_entries(full_name);
+        if (existing_entries.has_value() && !existing_entries.value().empty()) {
+            for (const auto& entry : existing_entries.value()) {
+                if (!entry.write_context_hash.empty() && entry.write_context_hash != ctx_hash) {
+                    CMString error_msg = "Write provenance mismatch for " + full_name +
+                        ": existing hash=" + entry.write_context_hash +
+                        " new hash=" + ctx_hash;
+                    ERR("{}", error_msg);
+                    WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_PROVENANCE_MISMATCH);
+                    return {error_msg, TaskErrorType::WRITE_PROVENANCE_MISMATCH};
+                }
+            }
+            bool has_matching_hash = false;
+            for (const auto& entry : existing_entries.value()) {
+                if (entry.write_context_hash == ctx_hash) {
+                    has_matching_hash = true;
+                    break;
+                }
+            }
+            if (has_matching_hash) {
+                INFO("Write skipped (duplicate): object={}, hash={}", full_name, ctx_hash);
+                WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_DUPLICATE_SKIPPED);
+                return {"", TaskErrorType::UNKNOWN};
+            }
+        }
+    }
+
     auto pending = CMMakeShared<PendingWriteRegister>();
     pending->object_name = full_name;
     {
@@ -571,6 +609,7 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
     msg.worker_id = worker_id_;
     msg.object_name = full_name;
     msg.db_id = db_id;
+    msg.write_context_hash = ctx_hash;
     reactor_->send(master_conn_, msg);
 
     INFO("WriteRegister sent: object={}", full_name);

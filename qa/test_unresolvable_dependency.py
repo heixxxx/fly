@@ -36,14 +36,12 @@ def test_unresolvable_dependency():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
     master.launch_local_workers([{}])
     for i in range(40):
-        if master._agent.get_connection_count() >= 1:
+        if master.worker_count >= 1:
             break
         time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1
+    assert master.worker_count >= 1
 
     db = open_db(DB_PATH)
 
@@ -73,11 +71,8 @@ def test_unresolvable_dependency():
     assert db.read_object("real_key") == 1, \
         f"write_data task should still complete normally"
 
-    del db
-    master.stop()
     print(f"[PASS] test_unresolvable_dependency: "
           f"task failed with '{error_msg}'", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_unresolvable_dependency()
+test_unresolvable_dependency()

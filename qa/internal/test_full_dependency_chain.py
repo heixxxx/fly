@@ -123,46 +123,28 @@ def test_dependency_graph_is_task_ready():
 
 def test_master_submit_and_track():
     """Master: submit tasks with dependencies, track status through completion."""
-    if os.path.exists("test_dep_chain_logs"):
-        shutil.rmtree("test_dep_chain_logs")
+    from fly.runtime import get_agent
+    master = get_agent()
 
-    log.init_log("test_dep_chain_logs", 0)
+    master._agent.submit_task_with_deps(1, "step1", "tasks_module", [], [], ["step1_out"])
+    master._agent.submit_task_with_deps(2, "step2", "tasks_module", [], ["step1_out"], ["step2_out"])
+    master._agent.submit_task_with_deps(3, "step3", "tasks_module", [], ["step2_out"], [])
 
-    try:
-        master = EXAgentMaster("127.0.0.1", 0)
-        master.set_data_service(ex_stg_get_data_service())
-        master.start()
+    time.sleep(0.2)
 
-        # Submit 3 tasks with dependencies
-        # Task 1: no deps
-        master.submit_task_with_deps(1, "step1", "tasks_module", [], [], ["step1_out"])
-        # Task 2: depends on task 1
-        master.submit_task_with_deps(2, "step2", "tasks_module", [], ["step1_out"], ["step2_out"])
-        # Task 3: depends on task 2
-        master.submit_task_with_deps(3, "step3", "tasks_module", [], ["step2_out"], [])
+    pending = master._agent.get_pending_tasks()
+    assert len(pending) > 0, "Should have pending tasks"
 
-        time.sleep(0.2)
-
-        pending = master.get_pending_tasks()
-        assert len(pending) > 0, "Should have pending tasks"
-
-        master.stop()
-
-        print("PASS: test_master_submit_and_track")
-
-    finally:
-        log.shutdown_log()
-        shutil.rmtree("test_dep_chain_logs", ignore_errors=True)
+    print("PASS: test_master_submit_and_track")
 
 
-if __name__ == "__main__":
-    test_dependency_graph_basic()
-    print()
-    test_dependency_graph_diamond()
-    print()
-    test_dependency_graph_add_and_remove()
-    print()
-    test_dependency_graph_is_task_ready()
-    print()
-    test_master_submit_and_track()
-    print("\nAll dependency chain tests passed!")
+test_dependency_graph_basic()
+print()
+test_dependency_graph_diamond()
+print()
+test_dependency_graph_add_and_remove()
+print()
+test_dependency_graph_is_task_ready()
+print()
+test_master_submit_and_track()
+print("\nAll dependency chain tests passed!")

@@ -29,7 +29,10 @@ def read_data(db, key, deps):
 
 @as_task()
 def write_after_freeze(db, key, value):
-    db.write_object(key, value)
+    try:
+        db.write_object(key, value)
+    except RuntimeError:
+        pass
 
 
 @as_task()
@@ -110,6 +113,7 @@ def remove_shared_on_beta(db, key):
 
 @as_task()
 def write_and_remove(db, key, value):
+    db.remove_object(key)
     db.write_object(key, value)
     db.remove_object(key)
 
@@ -208,3 +212,14 @@ def write_data_backup(db, key, value):
 @as_task(inputs=lambda db, key, deps: list(deps))
 def read_data_backup(db, key, deps):
     return db.read_object(key, backup=True)
+
+
+@as_task()
+def write_temp(db, key, value):
+    db.write_object(key, value, save_to_db=False)
+
+
+@as_task()
+def write_temp_large(db, key, size):
+    data = list(range(size))
+    db.write_object(key, data, save_to_db=False)

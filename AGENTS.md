@@ -4,19 +4,28 @@
 
 ---
 
-## Non-obvious Gotchas
+## 构建与测试
 
-### fly.sh build EXIT CODE IS MISLEADING
+**必须使用 `./fly.sh` 而非裸 `bazel` 命令！** 直接使用 `bazel build` 不会刷新 `compile_commands.json`，导致 clangd 无法工作。
 
 ```bash
+./fly.sh build [target...]     # 构建 + 刷新 clangd
+./fly.sh test [target...]      # 测试 + 刷新 clangd
+./fly.sh buildonly [target...] # 仅构建，不刷新
+./fly.sh refresh               # 仅刷新 clangd
+./fly.sh check                 # 构建 + 测试 + 刷新
+./fly.sh install               # 创建 build/ 目录，symlink 到 bazel-bin 产物
+
+# 单元测试
+./fly.sh test //src/...
+
+# QA 测试（需先构建并安装）
 ./fly.sh build //src/main/cpp:fly
-# May print "ERROR: Build did NOT complete successfully" at the end
-# IGNORE this — it's the refresh_compile_commands step failing, NOT the actual build.
-# Check for "Build completed successfully" earlier in the output.
-# The binary is in bazel-bin/src/main/cpp/fly regardless.
+./fly.sh install
+bash qa/run_qa_tests.sh
 ```
 
-Workaround: use `./fly.sh buildonly` to skip clangd refresh entirely.
+## Non-obvious Gotchas
 
 ### Must install before QA tests
 
@@ -102,7 +111,15 @@ bash qa/run_qa_tests.sh
 - **C++20 / gcc12** — use `CMString`, `CMVector`, etc. from `common_types.h`
 - **Module-style includes**: `<module/cpp/file.h>` NOT `"../cpp/file.h"`
 - **Macros over raw APIs**: use `FLY_SERIALIZE_*` not bitsery, `FLY_EXPORT_*` not nanobind
+- **必须通过全量测试**: 所有新增代码，必须在完成后通过全量测试(cpp/python unittests， qa tests)，才可算完成，需要保证下一次的开发时，不存在任何未通过的测试
+- **禁止归因为"之前代码就存在的问题"**：所有 crash 和不稳定问题一定为本次代码修改引入的，不得以"pre-existing bug"为由跳过或忽略
+- **禁止忽略任何 crash 和不稳定问题**：发现的第一时间必须修复，不允许搁置或推迟
 
+## 崩溃与不稳定性零容忍
+
+- 所有 crash（SIGSEGV、SIGABRT 等）必须立即修复，不得标记为"已知问题"
+- 所有间歇性失败（flaky test）必须立即修复，不得提高超时或增加重试
+- 稳定性测试（50 轮以上）必须 100% 通过，任何一轮失败都是必须修复的 bug
 ---
 
 ## Module Map

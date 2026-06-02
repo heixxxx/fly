@@ -40,15 +40,13 @@ def test_frozen_db_write():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}])
     for i in range(40):
-        if master._agent.get_connection_count() >= 1:
+        if master.worker_count >= 1:
             break
         time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1
+    assert master.worker_count >= 1
 
     db = open_db(DB_PATH)
 
@@ -67,11 +65,8 @@ def test_frozen_db_write():
     except Exception:
         pass  # Expected: write to frozen DB raises
 
-    del db
-    master.stop()
     print("[PASS] test_frozen_db_write: master-side write blocked after freeze",
           file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_frozen_db_write()
+test_frozen_db_write()

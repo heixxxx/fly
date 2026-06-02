@@ -27,18 +27,15 @@ def test_freeze_rejects_worker_write():
     get_config().set_int("fail_unscheduleable_tasks", 0)
     from fly.runtime import get_agent
     master = get_agent()
-    master.start()
     master.launch_local_workers([{}, {}])
-    assert wait_for(lambda: master._agent.get_connection_count() >= 2)
+    assert master.wait_for_workers(2)
     db = open_db(DB_PATH)
     freeze_db(db, [])
     assert wait_for(lambda: len(master.completed_tasks) >= 1)
     write_after_freeze(db, "after_freeze_key", "value")
     assert wait_for(lambda: len(master.completed_tasks) >= 2), f"write should complete silently"
     assert not master.failed_tasks, f"Unexpected failures: {master.failed_tasks}"
-    del db; master.stop()
     print("[PASS] test_freeze_rejects_worker_write", file=sys.stderr)
 
-if __name__ == "__main__":
-    test_freeze_rejects_worker_write()
-    print("\nAll tests passed!")
+test_freeze_rejects_worker_write()
+print("\nAll tests passed!")

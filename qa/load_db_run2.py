@@ -16,86 +16,78 @@ from fly import get_config
 from fly.runtime import get_agent
 
 
-def main():
-    get_config().set_int("fail_unscheduleable_tasks", 0)
-
-    from _fly_storage import ex_stg_get_data_service
-
-    # Read original db_id from marker file
-    marker_path = os.path.join(DB_PATH, "_test_db_id")
-    assert os.path.isfile(marker_path), f"Marker file not found: {marker_path}"
-    with open(marker_path) as f:
-        original_db_id = f.read().strip()
-
-    master = get_agent()
-    master.start()
-
-    # Do NOT call launch_local_workers here — load_db will spawn
-    # process workers to restore the old worker idx files.
-
-    # ── Load DB from Run 1 ──
-    db = load_db(DB_PATH)
-
-    # Verify db_id matches
-    assert db.get_db_id() == original_db_id, \
-        f"db_id mismatch: {db.get_db_id()} != {original_db_id}"
-
-    # ── Read back Run 1 master-written data (available immediately) ──
-    assert db.read_object("stage1/master_only") == "from_master", \
-        "Failed to read master-only data from Run 1"
-    assert db.read_object("stage1/config") == {"version": 1, "source": "run1"}, \
-        "Failed to read config from Run 1"
-
-    # ── Wait for worker to process IdxLoadCommand ──
-    # After load_db(), idx load commands have been SENT but may not be
-    # PROCESSED yet by the worker. Sleep to allow async processing.
-    time.sleep(2.0)
-
-    # ── Read back Run 1 worker-written data ──
-    alpha = db.read_object("stage1/alpha")
-    assert alpha == 100, f"stage1/alpha should be 100, got {alpha}"
-
-    beta = db.read_object("stage1/beta")
-    assert beta == 200, f"stage1/beta should be 200, got {beta}"
-
-    gamma = db.read_object("stage1/gamma")
-    assert gamma == "hello", f"stage1/gamma should be 'hello', got {gamma}"
-
-    print(f"[RUN2] Successfully read back all Run 1 data", file=sys.stderr)
-
-    # ── Submit new tasks that read Run 1 data and produce results ──
-    compute_sum(db, "stage1/alpha", "stage1/beta", "stage2/sum")
-    write_data(db, "stage2/final", "completed_by_run2")
-
-    # Wait for tasks
-    completed = master.wait_for_all_tasks(expected=2, timeout=30)
-    assert len(completed) >= 2, f"Expected 2 completed tasks, got {len(completed)}"
-
-    # Drain write-back for task outputs
-    ex_stg_get_data_service().drain_write_back()
-    time.sleep(0.5)
-
-    # Verify task results
-    stage2_sum = db.read_object("stage2/sum")
-    assert stage2_sum == 300, f"stage2/sum should be 300, got {stage2_sum}"
-
-    assert db.read_object("stage2/final") == "completed_by_run2"
-
-    # ── Freeze ──
-    db.freeze()
-    assert db.is_frozen(), "DB should be frozen"
-
-    # Verify _FROZEN marker
-    assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "_FROZEN should exist"
-
-    # Verify load_meta
-    meta = db.load_meta()
-    assert meta.db_id == original_db_id
-    assert meta.created_at > 0
-
-    print(f"[RUN2] All data verified, DB frozen successfully", file=sys.stderr)
-    print(f"[RUN2] stage2/sum = {stage2_sum} (100 + 200 from Run 1)", file=sys.stderr)
+get_config().set_int("fail_unscheduleable_tasks", 0)
 
 
-if __name__ == "__main__":
-    main()
+# Read original db_id from marker file
+marker_path = os.path.join(DB_PATH, "_test_db_id")
+assert os.path.isfile(marker_path), f"Marker file not found: {marker_path}"
+with open(marker_path) as f:
+    original_db_id = f.read().strip()
+
+master = get_agent()
+
+# Do NOT call launch_local_workers here — load_db will spawn
+# process workers to restore the old worker idx files.
+
+# ── Load DB from Run 1 ──
+db = load_db(DB_PATH)
+
+# Verify db_id matches
+assert db.get_db_id() == original_db_id, \
+    f"db_id mismatch: {db.get_db_id()} != {original_db_id}"
+
+# ── Read back Run 1 master-written data (available immediately) ──
+assert db.read_object("stage1/master_only") == "from_master", \
+    "Failed to read master-only data from Run 1"
+assert db.read_object("stage1/config") == {"version": 1, "source": "run1"}, \
+    "Failed to read config from Run 1"
+
+# ── Wait for worker to process IdxLoadCommand ──
+# After load_db(), idx load commands have been SENT but may not be
+# PROCESSED yet by the worker. Sleep to allow async processing.
+time.sleep(2.0)
+
+# ── Read back Run 1 worker-written data ──
+alpha = db.read_object("stage1/alpha")
+assert alpha == 100, f"stage1/alpha should be 100, got {alpha}"
+
+beta = db.read_object("stage1/beta")
+assert beta == 200, f"stage1/beta should be 200, got {beta}"
+
+gamma = db.read_object("stage1/gamma")
+assert gamma == "hello", f"stage1/gamma should be 'hello', got {gamma}"
+
+print(f"[RUN2] Successfully read back all Run 1 data", file=sys.stderr)
+
+# ── Submit new tasks that read Run 1 data and produce results ──
+compute_sum(db, "stage1/alpha", "stage1/beta", "stage2/sum")
+write_data(db, "stage2/final", "completed_by_run2")
+
+# Wait for tasks
+completed = master.wait_for_all_tasks(expected=2, timeout=30)
+assert len(completed) >= 2, f"Expected 2 completed tasks, got {len(completed)}"
+
+# Drain write-back for task outputs
+time.sleep(0.5)
+
+# Verify task results
+stage2_sum = db.read_object("stage2/sum")
+assert stage2_sum == 300, f"stage2/sum should be 300, got {stage2_sum}"
+
+assert db.read_object("stage2/final") == "completed_by_run2"
+
+# ── Freeze ──
+db.freeze()
+assert db.is_frozen(), "DB should be frozen"
+
+# Verify _FROZEN marker
+assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "_FROZEN should exist"
+
+# Verify load_meta
+meta = db.load_meta()
+assert meta.db_id == original_db_id
+assert meta.created_at > 0
+
+print(f"[RUN2] All data verified, DB frozen successfully", file=sys.stderr)
+print(f"[RUN2] stage2/sum = {stage2_sum} (100 + 200 from Run 1)", file=sys.stderr)

@@ -49,11 +49,9 @@ def test_graceful_shutdown():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}])
-    assert wait_for(lambda: master._agent.get_connection_count() >= 1), \
+    assert master.wait_for_workers(1), \
         "Worker should connect"
 
     db = open_db(DB_PATH)
@@ -91,7 +89,6 @@ def test_graceful_shutdown():
 
     # -- Phase 3: Stop master --
     # This should persist any pending/failed tasks to failed_tasks.bin
-    master.stop()
 
     # -- Phase 4: Verify persisted file exists --
     # After stop, pending tasks that were not completed should be persisted.
@@ -123,12 +120,9 @@ def test_graceful_shutdown():
     # Start a new master in the same process context
     from fly.runtime import get_agent as get_agent2
     master2 = get_agent2()
-    if not master2._running:
+    if not master2.is_running():
         master2.start()
-
-    master2.launch_local_workers([{}])
-    assert wait_for(lambda: master2._agent.get_connection_count() >= 1), \
-        "Phase 5: Worker should connect to new master"
+    master2.wait_for_workers(1)
 
     # If failed file exists, restart those tasks
     if os.path.isfile(failed_file):
@@ -146,10 +140,8 @@ def test_graceful_shutdown():
     else:
         print("  Phase 5: no failed file to restart", file=sys.stderr)
 
-    del db
     master2.stop()
     print("[PASS] test_graceful_shutdown", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_graceful_shutdown()
+test_graceful_shutdown()

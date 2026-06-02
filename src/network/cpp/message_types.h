@@ -109,10 +109,11 @@ struct DataResponseMessage {
     CMString error_message;
     CMString compressed_data;
     CMString py_name;
+    CMString write_context_hash;
     
     static constexpr MessageType msg_type = MessageType::DATA_RESPONSE;
     
-    FLY_SERIALIZE(header, object_name, success, error_message, compressed_data, py_name);
+    FLY_SERIALIZE(header, object_name, success, error_message, compressed_data, py_name, write_context_hash);
 };
 
 // Master → Worker: 任务分配
@@ -122,10 +123,11 @@ struct TaskAssignMessage {
     CMString task_name;
     CMString task_module;
     CMVector<CMString> args;
+    CMString write_context_hash;
     
     static constexpr MessageType msg_type = MessageType::TASK_ASSIGN;
     
-    FLY_SERIALIZE(header, task_id, task_name, task_module, args);
+    FLY_SERIALIZE(header, task_id, task_name, task_module, args, write_context_hash);
 };
 
 // Worker → Master: 任务完成
@@ -201,8 +203,9 @@ struct TaskSubmitMessage {
     CMVector<CMString> args;
     CMVector<CMString> inputs;
     CMVector<CMString> required_capabilities;
+    CMString write_context_hash;
     static constexpr MessageType msg_type = MessageType::TASK_SUBMIT;
-    FLY_SERIALIZE(header, task_name, task_module, args, inputs, required_capabilities);
+    FLY_SERIALIZE(header, task_name, task_module, args, inputs, required_capabilities, write_context_hash);
 };
 
 // Worker → Master: 数据库路径查询
@@ -238,10 +241,11 @@ struct WriteRegisterMessage {
     uint64_t worker_id = 0;
     CMString object_name;
     CMString db_id;
+    CMString write_context_hash;
     
     static constexpr MessageType msg_type = MessageType::WRITE_REGISTER;
     
-    FLY_SERIALIZE(header, worker_id, object_name, db_id);
+    FLY_SERIALIZE(header, worker_id, object_name, db_id, write_context_hash);
 };
 
 struct WriteRegisterAckMessage {

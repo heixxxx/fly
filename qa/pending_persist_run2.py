@@ -32,12 +32,10 @@ def run2():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     # Launch worker with gpu attribute so gpu task can complete on restart
     master.launch_local_workers([{"attributes": ["gpu"]}])
-    assert wait_for(lambda: master._agent.get_connection_count() >= 1), \
+    assert master.wait_for_workers(1), \
         "Worker should connect"
 
     # Restart failed tasks from the persisted file
@@ -61,9 +59,7 @@ def run2():
     assert completed >= 1, \
         f"Expected >= 1 task to complete after restart, got {completed}"
 
-    master.stop()
     print("  Run2: master stopped", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    run2()
+run2()

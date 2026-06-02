@@ -41,13 +41,11 @@ def test_write_backup():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}, {}])
 
-    assert wait_for(lambda: master._agent.get_connection_count() >= 2), \
-        f"Both workers should connect, got {master._agent.get_connection_count()}"
+    assert master.wait_for_workers(2), \
+        f"Both workers should connect, got {master.worker_count}"
 
     db = open_db(DB_PATH)
 
@@ -65,7 +63,6 @@ def test_write_backup():
     val = db.read_object("backup_key_1")
     assert val == 42, f"Expected 42, got {val}"
 
-    del db
     master.stop()
     print(f"[PASS] test_write_backup: data replicated to {len(ds.get_remote_workers(full_name))} workers",
           file=sys.stderr)
@@ -77,13 +74,11 @@ def test_read_backup():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}, {}, {}])
 
-    assert wait_for(lambda: master._agent.get_connection_count() >= 3), \
-        f"3 workers should connect, got {master._agent.get_connection_count()}"
+    assert master.wait_for_workers(3), \
+        f"3 workers should connect, got {master.worker_count}"
 
     db = open_db(DB_PATH)
 
@@ -110,7 +105,6 @@ def test_read_backup():
     val = db.read_object("read_backup_key")
     assert val == 99, f"Expected 99, got {val}"
 
-    del db
     master.stop()
     print(f"[PASS] test_read_backup: reading worker added to remote_idx, total workers={len(ds.get_remote_workers(full_name))}",
           file=sys.stderr)
@@ -123,13 +117,11 @@ def test_backup_stability_50_rounds():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}, {}, {}])
 
-    assert wait_for(lambda: master._agent.get_connection_count() >= 3), \
-        f"3 workers should connect, got {master._agent.get_connection_count()}"
+    assert master.wait_for_workers(3), \
+        f"3 workers should connect, got {master.worker_count}"
 
     db = open_db(DB_PATH)
     ds = storage.ex_stg_get_data_service()
@@ -163,14 +155,11 @@ def test_backup_stability_50_rounds():
         val = db.read_object(f"stab_{i}")
         assert val == i * 10, f"stab_{i} should be {i * 10}, got {val}"
 
-    del db
-    master.stop()
     print(f"[PASS] test_backup_stability_50_rounds: {ROUNDS} objects backed up, all readable from 2+ workers",
           file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_write_backup()
-    test_read_backup()
-    test_backup_stability_50_rounds()
-    print("\nAll tests passed!")
+test_write_backup()
+test_read_backup()
+test_backup_stability_50_rounds()
+print("\nAll tests passed!")

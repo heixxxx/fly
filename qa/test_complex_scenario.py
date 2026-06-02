@@ -30,23 +30,18 @@ def run_script(script_name, log_dir, timeout=120):
     return result
 
 
-def main():
-    cleanup()
+cleanup()
 
-    print("=== Run 1: Initial data production ===", file=sys.stderr)
-    r1 = run_script("complex_run1.py", "/tmp/fly_complex_logs_run1")
-    print(r1.stderr, file=sys.stderr)
-    assert r1.returncode == 0, f"Run 1 failed:\n{r1.stderr}"
-    print("Run 1 PASSED\n", file=sys.stderr)
+print("=== Run 1: Initial data production ===", file=sys.stderr)
+r1 = run_script("complex_run1.py", "/tmp/fly_complex_logs_run1")
+print(r1.stderr, file=sys.stderr)
+assert r1.returncode == 0, f"Run 1 failed:\n{r1.stderr}"
+print("Run 1 PASSED\n", file=sys.stderr)
 
-    print("=== Run 2: load_db + migration + dynamic props + restart ===", file=sys.stderr)
-    r2 = run_script("complex_run2.py", "/tmp/fly_complex_logs_run2")
-    print(r2.stderr, file=sys.stderr)
-    assert r2.returncode == 0, f"Run 2 failed:\n{r2.stderr}"
-    print("Run 2 PASSED\n", file=sys.stderr)
+print("=== Run 2: load_db + migration + dynamic props + restart ===", file=sys.stderr)
+r2 = run_script("complex_run2.py", "/tmp/fly_complex_logs_run2")
+print(r2.stderr, file=sys.stderr)
+assert r2.returncode == 0, f"Run 2 failed:\n{r2.stderr}"
+print("Run 2 PASSED\n", file=sys.stderr)
 
-    print("[PASS] test_complex_scenario — all features verified across 2 runs", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()
+print("[PASS] test_complex_scenario — all features verified across 2 runs", file=sys.stderr)

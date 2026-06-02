@@ -12,6 +12,7 @@ struct IndexEntry {
     bool is_large = false;
     int32_t block_count = 0;
     CMString host;
+    CMString write_context_hash;
 
-    FLY_SERIALIZE(object_name, file_name, offset, size, is_large, block_count, host);
+    FLY_SERIALIZE(object_name, file_name, offset, size, is_large, block_count, host, write_context_hash);
 };

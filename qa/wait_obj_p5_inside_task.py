@@ -34,37 +34,30 @@ def wait_for(condition, timeout=20.0, interval=0.5):
     return False
 
 
-def main():
-    cleanup()
-    get_config().set_int("fail_unscheduleable_tasks", 0)
+cleanup()
+get_config().set_int("fail_unscheduleable_tasks", 0)
 
-    master = get_agent()
-    master.start()
-    # Two Workers — tasks may be distributed across them
-    master.launch_local_workers([{}, {}])
-    for i in range(40):
-        if master._agent.get_connection_count() >= 2:
-            break
-        time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 2
+master = get_agent()
+# Two Workers — tasks may be distributed across them
+master.launch_local_workers([{}, {}])
+for i in range(40):
+    if master.worker_count >= 2:
+        break
+    time.sleep(0.5)
+assert master.worker_count >= 2
 
-    db = open_db(DB_PATH)
+db = open_db(DB_PATH)
 
-    # Step 1: Worker A (or B) writes upstream data
-    write_data(db, "hello_upstream", "hello worker")
-    assert wait_for(lambda: len(master.completed_tasks) >= 1)
+# Step 1: Worker A (or B) writes upstream data
+write_data(db, "hello_upstream", "hello worker")
+assert wait_for(lambda: len(master.completed_tasks) >= 1)
 
-    # Step 2: Worker B (or A) uses @wait_obj to wait for upstream
-    # If on different Worker: Tier 3 probe triggers, updates remote_idx
-    wait_obj_then_process(db, "hello_upstream", "processed_result")
-    assert wait_for(lambda: len(master.completed_tasks) >= 2)
+# Step 2: Worker B (or A) uses @wait_obj to wait for upstream
+# If on different Worker: Tier 3 probe triggers, updates remote_idx
+wait_obj_then_process(db, "hello_upstream", "processed_result")
+assert wait_for(lambda: len(master.completed_tasks) >= 2)
 
-    result = db.read_object("processed_result")
-    assert result == "processed:hello worker"
+result = db.read_object("processed_result")
+assert result == "processed:hello worker"
 
-    master.stop()
-    print("[PASS] test_wait_obj_inside_worker_task (2 workers)", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()
+print("[PASS] test_wait_obj_inside_worker_task (2 workers)", file=sys.stderr)

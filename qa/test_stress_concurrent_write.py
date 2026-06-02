@@ -37,13 +37,11 @@ def test_concurrent_writes():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}, {}])
 
-    assert wait_for(lambda: master._agent.get_connection_count() >= 2), \
-        f"Both workers should connect, got {master._agent.get_connection_count()}"
+    assert master.wait_for_workers(2), \
+        f"Both workers should connect, got {master.worker_count}"
 
     db = open_db(DB_PATH)
 
@@ -62,12 +60,9 @@ def test_concurrent_writes():
         val = db.read_object(f"concurrent_{i}")
         assert val == i, f"concurrent_{i} should be {i}, got {val}"
 
-    del db
-    master.stop()
     print(f"[PASS] test_concurrent_writes: 50 objects written by 2 workers, all readable",
           file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_concurrent_writes()
-    print("\nAll tests passed!")
+test_concurrent_writes()
+print("\nAll tests passed!")

@@ -30,15 +30,13 @@ def cleanup():
 def setup_workers():
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
     master.launch_local_workers([{}])
     for _ in range(40):
-        if master._agent.get_connection_count() >= 1:
+        if master.worker_count >= 1:
             break
         time.sleep(0.5)
-    assert master._agent.get_connection_count() >= 1, \
-        f"Only {master._agent.get_connection_count()}/1 workers connected"
+    assert master.worker_count >= 1, \
+        f"Only {master.worker_count}/1 workers connected"
     return master
 
 
@@ -69,11 +67,8 @@ def test_user_script_task():
     assert db.read_object("ukey") == 42
     assert db.read_object("uresult") == "echo:42"
 
-    del db
-    master.stop()
     print(f"[PASS] test_user_script_task: {len(completed)} tasks completed",
           file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_user_script_task()
+test_user_script_task()

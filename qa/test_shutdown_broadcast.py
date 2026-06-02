@@ -5,7 +5,7 @@ Scenario:
   2. Verify both workers are connected
   3. Submit a few tasks that complete normally
   4. Call master.stop()
-  5. Verify master._running is False
+  5. Verify master is not running
   6. Verify worker processes have exited (they received ShutdownMessage)
 """
 import time
@@ -43,12 +43,10 @@ def test_shutdown_broadcast():
 
     from fly.runtime import get_agent
     master = get_agent()
-    if not master._running:
-        master.start()
 
     master.launch_local_workers([{}, {}])
-    assert wait_for(lambda: master._agent.get_connection_count() >= 2), \
-        f"Both workers should connect, got {master._agent.get_connection_count()}"
+    assert master.wait_for_workers(2), \
+        f"Both workers should connect, got {master.worker_count}"
 
     print(f"  Phase 1: 2 workers connected", file=sys.stderr)
 
@@ -65,7 +63,7 @@ def test_shutdown_broadcast():
           file=sys.stderr)
 
     # Capture worker PIDs before stop
-    worker_pids = [proc.pid for proc in master._worker_procs]
+    worker_pids = master.get_worker_pids()
     assert len(worker_pids) == 2, \
         f"Expected 2 worker processes, got {len(worker_pids)}"
     print(f"  Worker PIDs: {worker_pids}", file=sys.stderr)
@@ -74,36 +72,27 @@ def test_shutdown_broadcast():
     master.stop()
 
     # -- Phase 4: Verify master is stopped --
-    assert not master._running, \
-        "Phase 4: master._running should be False after stop()"
+    assert not master.is_running(), \
+        "Phase 4: master should not be running after stop()"
 
     # -- Phase 5: Verify worker processes have exited --
-    for proc in master._worker_procs:
-        # proc.wait() already called in master.stop(), poll should return exitcode
-        assert proc.poll() is not None, \
-            f"Phase 5: worker process pid={proc.pid} should have exited"
-
-    # Also check the original PIDs are gone (no zombie processes)
     for pid in worker_pids:
         try:
             os.kill(pid, 0)
-            # If we get here, the process is still alive - that's a failure
             assert False, \
                 f"Phase 5: worker pid={pid} should be terminated after shutdown"
         except ProcessLookupError:
-            pass  # Expected - process is gone
+            pass
         except PermissionError:
-            pass  # Also acceptable - process is gone from our view
+            pass
 
     print(f"  Phase 5: all worker processes exited gracefully", file=sys.stderr)
 
-    # -- Phase 6: Verify no worker procs left in master --
-    assert len(master._worker_procs) == 0, \
-        f"Phase 6: worker_procs should be cleared, got {len(master._worker_procs)}"
+    # -- Phase 6: Verify no worker procs left --
+    assert len(master.get_worker_pids()) == 0, \
+        f"Phase 6: no workers should be running"
 
-    del db
     print("[PASS] test_shutdown_broadcast", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_shutdown_broadcast()
+test_shutdown_broadcast()

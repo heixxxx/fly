@@ -84,10 +84,9 @@ def test_remove_one_keeps_other():
     print("[PASS] test_remove_one_keeps_other", file=sys.stderr)
 
 
-if __name__ == "__main__":
-    test_remove_object_basic()
-    print()
-    test_remove_then_dependent_task_fails()
-    print()
-    test_remove_one_keeps_other()
-    print("\nAll remove_object E2E tests passed!")
+test_remove_object_basic()
+print()
+test_remove_then_dependent_task_fails()
+print()
+test_remove_one_keeps_other()
+print("\nAll remove_object E2E tests passed!")

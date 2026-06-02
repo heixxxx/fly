@@ -92,13 +92,14 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
         self.submit_task(task_id, name, module, args, inputs, outputs, {});
     })
     FLY_EXPORT_METHOD("submit_task_with_requirements", [](fly::MasterAgent& self, uint64_t task_id,
-                                                            const fly::CMString& name,
-                                                            const fly::CMString& module,
-                                                            const fly::CMVector<fly::CMString>& args,
-                                                            const fly::CMVector<fly::CMString>& inputs,
-                                                            const fly::CMVector<fly::CMString>& outputs,
-                                                            const fly::CMVector<fly::CMString>& required_capabilities) {
-        self.submit_task(task_id, name, module, args, inputs, outputs, required_capabilities);
+                                                             const fly::CMString& name,
+                                                             const fly::CMString& module,
+                                                             const fly::CMVector<fly::CMString>& args,
+                                                             const fly::CMVector<fly::CMString>& inputs,
+                                                             const fly::CMVector<fly::CMString>& outputs,
+                                                             const fly::CMVector<fly::CMString>& required_capabilities,
+                                                             const fly::CMString& write_context_hash) {
+        self.submit_task(task_id, name, module, args, inputs, outputs, required_capabilities, write_context_hash);
     })
     FLY_EXPORT_METHOD("register_database", [](fly::MasterAgent& self,
                                                 const fly::CMString& db_id,
@@ -196,8 +197,9 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
                                          const fly::CMString& module,
                                          const fly::CMVector<fly::CMString>& args,
                                          const fly::CMVector<fly::CMString>& inputs,
-                                         const fly::CMVector<fly::CMString>& required_capabilities) {
-        self.submit_task(name, module, args, inputs, required_capabilities);
+                                         const fly::CMVector<fly::CMString>& required_capabilities,
+                                         const fly::CMString& write_context_hash) {
+        self.submit_task(name, module, args, inputs, required_capabilities, write_context_hash);
     })
     FLY_EXPORT_METHOD("register_database", [](fly::WorkerAgent& self,
                                                 const fly::CMString& db_id,

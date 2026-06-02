@@ -1,5 +1,6 @@
 #include <storage/cpp/data_service.h>
 #include <storage/cpp/data_reader.h>
+#include <storage/cpp/temp_store.h>
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/compression_utils.h>
 #include <storage/cpp/decompressing_streambuf.h>
@@ -266,6 +267,16 @@ void DataService::restore_entries(const CMString& db_id,
     }
 }
 
+std::optional<CMVector<IndexEntry>> DataService::find_local_entries(const CMString& object_name) const {
+    auto [db_id, short_name] = split_full(object_name);
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto db_it = local_idx_.find(db_id);
+    if (db_it == local_idx_.end()) return std::nullopt;
+    auto it = db_it->second.find(short_name);
+    if (it == db_it->second.end() || !it->second) return std::nullopt;
+    return it->second->entries;
+}
+
 // ============================================================
 // Remote Index Management
 // ============================================================
@@ -409,7 +420,7 @@ ReadResult DataService::do_read_local_entries(const CMVector<IndexEntry>& entrie
 }
 
 CMString DataService::do_read_raw_entries(const CMVector<IndexEntry>& entries,
-                                           const DbPaths& paths) {
+                                            const DbPaths& paths) {
     DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
     return reader.read_raw_bytes(entries.back());
 }
@@ -570,7 +581,7 @@ std::pair<bool, ReadResult> DataService::try_read_remote(const CMString& object_
     auto [found, result] = try_read_local(object_name);
     if (found) return {true, std::move(result)};
 
-    auto [comp_found, comp_data, comp_py_name] = read_raw_compressed(object_name);
+    auto [comp_found, comp_data, comp_py_name, comp_hash] = read_raw_compressed(object_name);
     if (!comp_found || comp_data.empty()) return {false, ReadResult{}};
 
     ReadResult ret;
@@ -662,7 +673,7 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
     return {true, std::move(read_result)};
 }
 
-std::tuple<bool, CMString, CMString> DataService::read_raw_compressed(const CMString& object_name) {
+std::tuple<bool, CMString, CMString, CMString> DataService::read_raw_compressed(const CMString& object_name) {
     auto [found, raw] = try_read_local_raw(object_name);
     if (found) {
         ReadResult header;
@@ -684,14 +695,16 @@ std::tuple<bool, CMString, CMString> DataService::read_raw_compressed(const CMSt
             }
         }
         CMString py_name;
+        CMString write_hash;
         if (!entries.empty() && !paths.base_path.empty()) {
             CMString entry_raw = do_read_raw_entries(entries, paths);
             if (!entry_raw.empty()) {
                 DecompressingStreamBuf dsbuf(entry_raw.data(), entry_raw.size());
                 py_name = dsbuf.py_name();
             }
+            write_hash = entries.back().write_context_hash;
         }
-        return {true, std::move(raw), std::move(py_name)};
+        return {true, std::move(raw), std::move(py_name), std::move(write_hash)};
     }
 
     auto info = lookup_remote_idx(object_name);
@@ -702,8 +715,8 @@ std::tuple<bool, CMString, CMString> DataService::read_raw_compressed(const CMSt
             cb = direct_compressed_read_handler_;
         }
         if (cb) {
-            auto [cb_found, cb_data, cb_py_name] = cb(info.host, info.port, object_name);
-            if (cb_found) return {true, std::move(cb_data), std::move(cb_py_name)};
+            auto [cb_found, cb_data, cb_py_name, cb_hash] = cb(info.host, info.port, object_name);
+            if (cb_found) return {true, std::move(cb_data), std::move(cb_py_name), std::move(cb_hash)};
             remove_remote_location(object_name, info.worker_id);
         }
     }
@@ -717,7 +730,7 @@ std::tuple<bool, CMString, CMString> DataService::read_raw_compressed(const CMSt
         for (int attempt = 0; attempt < 3; ++attempt) {
             auto [cb_found, cb_data, cb_py_name] = remote_cb(object_name);
             if (cb_found && !cb_data.empty()) {
-                return {true, std::move(cb_data), std::move(cb_py_name)};
+                return {true, std::move(cb_data), std::move(cb_py_name), {}};
             }
             if (attempt < 2) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1000));
@@ -725,7 +738,7 @@ std::tuple<bool, CMString, CMString> DataService::read_raw_compressed(const CMSt
         }
     }
 
-    return {false, {}, {}};
+    return {false, {}, {}, {}};
 }
 
 // ============================================================
@@ -758,6 +771,18 @@ void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name)
     auto result = CMMakeShared<TransferResult>();
     result->conn_id = conn_id;
     result->object_name = object_name;
+
+    {
+        auto [db_id, short_name] = split_full(object_name);
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto db_it = local_idx_.find(db_id);
+        if (db_it != local_idx_.end()) {
+            auto it = db_it->second.find(short_name);
+            if (it != db_it->second.end() && it->second && !it->second->entries.empty()) {
+                result->write_context_hash = it->second->entries.back().write_context_hash;
+            }
+        }
+    }
 
     auto callback = transfer_callback_;
 
@@ -816,6 +841,24 @@ void DataService::drain_write_back() {
 
 bool DataService::is_write_back_running() const {
     return write_back_queue_ && write_back_queue_->is_running();
+}
+
+void DataService::mark_temp_entry(const CMString& object_name, const CMString& compressed_data) {
+    temp_entries_.insert(object_name, compressed_data);
+}
+
+void DataService::unmark_temp_entry(const CMString& object_name) {
+    temp_entries_.erase(object_name);
+}
+
+bool DataService::is_temp_entry(const CMString& object_name) const {
+    return temp_entries_.contains(object_name);
+}
+
+std::pair<bool, CMString> DataService::get_temp_data(const CMString& object_name) const {
+    auto val = temp_entries_.find(object_name);
+    if (val.has_value()) return {true, *val};
+    return {false, {}};
 }
 
 }  // namespace fly

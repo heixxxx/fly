@@ -25,6 +25,7 @@ Python API 层将 C++ 底层 API 包装为用户友好的高层接口，提供�
 | `executor.py` | Worker 任务执行器（位于 `src/agent/py/`） |
 | `runtime.py` | 运行时配置（master/worker mode，内部模块） |
 | `main.py` | 初始化入口 |
+| `read_cache.py` | 两层读缓存（位于 `src/storage/py/`） |
 
 ---
 
@@ -47,16 +48,22 @@ class _Database:
         # Master 模式: agent._agent.get_or_create_database(...)
         # Worker 模式: ex_stg_create_database(...)
 
-    def write_object(self, name: str, obj, *, backup: bool = False) -> str:
+    def write_object(self, name: str, obj, *, backup: bool = False, save_to_db: bool = True) -> str:
         # 自动检测 is_cpp → __getstate__() 或 pickle.dumps
         # backup=True: 异步将数据副本写入另一个 Worker（跨 host），零解压压缩传输
+        # save_to_db=False: 写入 TempStore（独立后台线程），不落盘到 DB 目录
+        #   read_object 透明读取，remove_object 清理，run 结束自动清理
 
-    def read_object(self, name: str, *, backup: bool = False):
+    def read_object(self, name: str, *, backup: bool = False, cache: str = "low"):
         # 三层降级读取
         # Layer 1: DataService.try_read_local → 本地
         # Layer 2: lookup_remote_idx → DataClient 直连
         # Layer 3: request_remote_data → 全程远程 (最多 3 次重试)
         # backup=True: 从远程 Worker 读取压缩数据，直接落盘本地（零解压），返回解压后数据
+        # cache: "low" (默认) | "high" | "none"
+        #   "low"  — 缓存压缩数据，避免重复网络/磁盘 IO
+        #   "high" — 缓存反序列化后的 Python 对象，避免重复反序列化
+        #   "none" — 不缓存，不从缓存读取
 
     def remove_object(self, name: str):
         # 删除对象索引（本地上移除，通知Master广播删除）
@@ -174,6 +181,8 @@ class Master(FlyAgent):
         self._agent = EXAgentMaster(host, port)
 
     def start(self):
+        # init() 时自动调用，用户无需手动启动
+        # launch_local_workers() 和 submit() 也会幂等调用
         self._agent.start()
         self._port = self._agent.get_port()
 
