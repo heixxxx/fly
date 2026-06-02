@@ -837,4 +837,73 @@ TEST_F(IdxLoadTest, InitiateShutdownFromOnDisconnect_ThenStop_CleansUp) {
     fly::DataService::instance().stop_transfer_server();
 }
 
+TEST(WorkerAgentTest, SetDataServiceWithValidPointer) {
+    WorkerAgent worker(1, "127.0.0.1", 0);
+    auto ds = DataService::instance_ptr();
+    EXPECT_NO_THROW(worker.set_data_service(ds));
+}
+
+TEST(WorkerAgentTest, BeginTaskWithWriteContextHash) {
+    WorkerAgent worker(1, "127.0.0.1", 0);
+
+    worker.begin_task(42, "hash_abc");
+    EXPECT_TRUE(WorkerAgentContext::is_active());
+
+    auto writes = worker.end_task(42);
+    EXPECT_TRUE(writes.empty());
+    EXPECT_FALSE(WorkerAgentContext::is_active());
+}
+
+TEST(WorkerAgentTest, RecordWriteWithoutBeginEnd) {
+    WorkerAgent worker(1, "127.0.0.1", 0);
+    CMString db_id = db32("no_begin");
+
+    worker.begin_task(1);
+    worker.record_write(db_id, "output/data");
+    auto writes = worker.end_task(1);
+
+    EXPECT_EQ(writes.size(), 1u);
+    EXPECT_EQ(writes[0], db_id + ":output/data");
+}
+
+TEST(WorkerAgentTest, SetWorkerPropertyMultiple) {
+    WorkerAgent worker(1, "127.0.0.1", 0, {"python"});
+
+    worker.set_worker_property("gpu");
+    worker.set_worker_property("cuda");
+    worker.set_worker_property("python");
+
+    auto props = worker.get_worker_properties();
+    EXPECT_EQ(props.size(), 3);
+}
+
+TEST(WorkerAgentTest, RemoveAndSetWorkerProperty) {
+    WorkerAgent worker(1, "127.0.0.1", 0, {"python", "gpu"});
+
+    worker.remove_worker_property("gpu");
+    worker.set_worker_property("cuda");
+
+    auto props = worker.get_worker_properties();
+    EXPECT_EQ(props.size(), 2);
+
+    bool has_python = false, has_cuda = false;
+    for (const auto& p : props) {
+        if (p == "python") has_python = true;
+        if (p == "cuda") has_cuda = true;
+    }
+    EXPECT_TRUE(has_python);
+    EXPECT_TRUE(has_cuda);
+}
+
+TEST(WorkerAgentTest, HasPendingTaskEmpty) {
+    WorkerAgent worker(1, "127.0.0.1", 0);
+    EXPECT_FALSE(worker.has_pending_task());
+}
+
+TEST(WorkerAgentTest, RequestBackupNotRegisteredNoop) {
+    WorkerAgent worker(1, "127.0.0.1", 0);
+    CMString db_id = db32("backup_db");
+    EXPECT_NO_THROW(worker.request_backup(db_id, "obj"));
+}
+
 }  // namespace fly

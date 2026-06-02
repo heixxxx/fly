@@ -531,4 +531,180 @@ TEST_F(DatabaseTest, DoubleFreezeIsIdempotent) {
     EXPECT_TRUE(write_raw(db, "after/freeze", "data2", false).empty());
 }
 
+TEST_F(DatabaseTest, CompressPickleBytes) {
+    CMString base_path = test_dir_ + "/compress_bytes";
+    Database db(base_path);
+
+    CMString data = "compressible_test_data";
+    CMString compressed = db.compress_pickle_bytes(data.data(), static_cast<int64_t>(data.size()), "bytes");
+    EXPECT_FALSE(compressed.empty());
+}
+
+TEST_F(DatabaseTest, CompressPickleBytesTyped) {
+    CMString base_path = test_dir_ + "/compress_typed";
+    Database db(base_path);
+
+    CMString data = "typed_compress";
+    CMString compressed = db.compress_pickle_bytes(data.data(), static_cast<int64_t>(data.size()), "MyType");
+    EXPECT_FALSE(compressed.empty());
+
+    DecompressingStreamBuf dsbuf(compressed.data(), compressed.size());
+    std::istream is(&dsbuf);
+    EXPECT_EQ(dsbuf.py_name(), "MyType");
+}
+
+TEST_F(DatabaseTest, ReadNonexistentObjectCompressedReturnsEmpty) {
+    CMString base_path = test_dir_ + "/read_nonexist_comp";
+    Database db(base_path);
+
+    auto [comp_data, py_name] = db.read_object_compressed("absent/object");
+    EXPECT_TRUE(comp_data.empty());
+    EXPECT_TRUE(py_name.empty());
+}
+
+TEST_F(DatabaseTest, WriteAndReadViaReadObjectCompressed) {
+    CMString base_path = test_dir_ + "/write_read_comp";
+    Database db(base_path);
+
+    write_raw(db, "comp/test", "compressed_payload", false);
+    fly::DataService::instance().drain_write_back();
+
+    auto [comp_data, py_name] = db.read_object_compressed("comp/test");
+    EXPECT_FALSE(comp_data.empty());
+    EXPECT_EQ(py_name, "bytes");
+}
+
+TEST_F(DatabaseTest, GetWriterIdIsNotEmpty) {
+    CMString base_path = test_dir_ + "/writer_id";
+    Database db(base_path);
+
+    EXPECT_FALSE(db.get_writer_id().empty());
+}
+
+TEST_F(DatabaseTest, SetDbIdUpdatesRegistration) {
+    CMString base_path = test_dir_ + "/set_dbid";
+    Database db(base_path);
+
+    CMString old_id = db.get_db_id();
+    CMString new_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    db.set_db_id(new_id);
+
+    EXPECT_EQ(db.get_db_id(), new_id);
+    EXPECT_NE(db.get_db_id(), old_id);
+}
+
+TEST_F(DatabaseTest, RemoveObjectOnFrozenIsNoop) {
+    CMString base_path = test_dir_ + "/remove_frozen_noop";
+    Database db(base_path);
+
+    write_raw(db, "freeze_rm/obj", "data", false);
+    fly::DataService::instance().drain_write_back();
+
+    db.freeze();
+    EXPECT_TRUE(db.is_frozen());
+
+    db.remove_object("freeze_rm/obj");
+}
+
+TEST_F(DatabaseTest, LoadMetaEmptyAfterCorruption) {
+    CMString base_path = test_dir_ + "/meta_corrupt";
+    Database db(base_path);
+
+    CMString meta_path = base_path + "/_DB_META";
+    {
+        std::ofstream ofs(meta_path, std::ios::binary | std::ios::trunc);
+        int64_t bad_size = -1;
+        ofs.write(reinterpret_cast<const char*>(&bad_size), sizeof(bad_size));
+    }
+
+    DbMeta meta = db.load_meta();
+    EXPECT_TRUE(meta.db_id.empty());
+}
+
+TEST_F(DatabaseTest, DatabaseWithExistingDbId) {
+    CMString base_path = test_dir_ + "/existing_id";
+    CMString existing_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    {
+        Database db(base_path, "", 0, "", existing_id);
+        EXPECT_EQ(db.get_db_id(), existing_id);
+        EXPECT_EQ(db.get_base_path(), base_path);
+    }
+}
+
+TEST_F(DatabaseTest, TempStorePutGetHasRemove) {
+    CMString base_path = test_dir_ + "/temp_store";
+    Database db(base_path);
+
+    CMString compressed = "compressed_temp_data";
+    db.put_temp("temp/obj", compressed);
+
+    EXPECT_TRUE(db.has_temp("temp/obj"));
+
+    auto [found, data] = db.get_temp("temp/obj");
+    EXPECT_TRUE(found);
+    EXPECT_EQ(data, compressed);
+
+    db.remove_temp("temp/obj");
+    EXPECT_FALSE(db.has_temp("temp/obj"));
+}
+
+TEST_F(DatabaseTest, TempGetReturnsFalseForMissing) {
+    CMString base_path = test_dir_ + "/temp_missing";
+    Database db(base_path);
+
+    auto [found, data] = db.get_temp("missing/temp");
+    EXPECT_FALSE(found);
+}
+
+TEST_F(DatabaseTest, TempHasReturnsFalseForMissing) {
+    CMString base_path = test_dir_ + "/temp_has_missing";
+    Database db(base_path);
+
+    EXPECT_FALSE(db.has_temp("never/temp"));
+}
+
+TEST_F(DatabaseTest, RemoveIndexEntry) {
+    CMString base_path = test_dir_ + "/remove_idx";
+    Database db(base_path);
+
+    write_raw(db, "ridx/obj", "data", false);
+    fly::DataService::instance().drain_write_back();
+
+    db.remove_index_entry("ridx/obj");
+}
+
+TEST_F(DatabaseTest, WriteEmptyData) {
+    CMString base_path = test_dir_ + "/empty_write";
+    Database db(base_path);
+
+    CMString result = write_raw(db, "empty/obj", "", false);
+    fly::DataService::instance().drain_write_back();
+}
+
+TEST_F(DatabaseTest, WriteLargeData) {
+    CMString base_path = test_dir_ + "/large_write";
+    Database db(base_path);
+
+    CMString large_data(100000, 'X');
+    write_raw(db, "large/obj", large_data, false);
+    fly::DataService::instance().drain_write_back();
+
+    CMString result = read_raw_string(db, "large/obj");
+    EXPECT_EQ(result.size(), large_data.size());
+    EXPECT_EQ(result, large_data);
+}
+
+TEST_F(DatabaseTest, MultipleObjectsSameDbMeta) {
+    CMString base_path = test_dir_ + "/multi_meta";
+    Database db(base_path);
+
+    write_raw(db, "meta/a", "data_a", false);
+    write_raw(db, "meta/b", "data_b", false);
+    fly::DataService::instance().drain_write_back();
+
+    DbMeta meta = db.load_meta();
+    EXPECT_EQ(meta.db_id, db.get_db_id());
+}
+
 }

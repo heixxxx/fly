@@ -439,4 +439,187 @@ TEST_F(LocalIndexTest, LoadEmptyFile) {
     EXPECT_EQ(index.entry_count(), 0);
 }
 
+TEST_F(LocalIndexTest, SaveAfterRemovePersistsRemoval) {
+    CMString idx_path = make_idx_path("save_remove");
+
+    {
+        LocalIndex index(idx_path);
+        index.add_entry({"obj/a", "data.dat", 0, 100, false, 0});
+        index.add_entry({"obj/b", "data.dat", 100, 200, false, 0});
+        index.save();
+        index.remove_entry("obj/a");
+        index.save();
+    }
+
+    LocalIndex loaded(idx_path);
+    loaded.load();
+    EXPECT_EQ(loaded.entry_count(), 1);
+    EXPECT_FALSE(loaded.find_entry("obj/a").has_value());
+    EXPECT_TRUE(loaded.find_entry("obj/b").has_value());
+}
+
+TEST_F(LocalIndexTest, CompactEmptyIndexCreatesFile) {
+    CMString idx_path = make_idx_path("compact_empty");
+
+    LocalIndex index(idx_path);
+    index.compact();
+
+    EXPECT_TRUE(std::filesystem::exists(idx_path));
+}
+
+TEST_F(LocalIndexTest, CompactPreservesAllEntries) {
+    CMString idx_path = make_idx_path("compact_preserve");
+
+    {
+        LocalIndex index(idx_path);
+        index.add_entry({"obj/1", "data.dat", 0, 10, false, 0});
+        index.add_entry({"obj/2", "data.dat", 10, 20, false, 0});
+        index.add_entry({"obj/3", "data.dat", 20, 30, false, 0});
+        index.save();
+    }
+
+    LocalIndex index(idx_path);
+    index.load();
+    EXPECT_EQ(index.entry_count(), 3);
+    index.compact();
+
+    LocalIndex loaded(idx_path);
+    loaded.load();
+    EXPECT_EQ(loaded.entry_count(), 3);
+    EXPECT_TRUE(loaded.find_entry("obj/1").has_value());
+    EXPECT_TRUE(loaded.find_entry("obj/2").has_value());
+    EXPECT_TRUE(loaded.find_entry("obj/3").has_value());
+}
+
+TEST_F(LocalIndexTest, FindAllEntriesReturnsCorrectEntries) {
+    CMString idx_path = make_idx_path("find_all_correct");
+    LocalIndex index(idx_path);
+
+    index.add_entry({"obj/multi", "d1.dat", 0, 10, false, 0});
+    index.add_entry({"obj/multi", "d2.dat", 10, 20, true, 1});
+    index.add_entry({"obj/multi", "d3.dat", 20, 30, false, 0});
+
+    auto all = index.find_all_entries("obj/multi");
+    ASSERT_TRUE(all.has_value());
+    EXPECT_EQ(all->size(), 3u);
+    EXPECT_EQ((*all)[0].file_name, "d1.dat");
+    EXPECT_EQ((*all)[1].file_name, "d2.dat");
+    EXPECT_EQ((*all)[2].file_name, "d3.dat");
+}
+
+TEST_F(LocalIndexTest, FindAllEntriesAfterRemove) {
+    LocalIndex index(make_idx_path("find_all_rm"));
+
+    index.add_entry({"obj/1", "data.dat", 0, 10, false, 0});
+    index.add_entry({"obj/2", "data.dat", 10, 20, false, 0});
+
+    EXPECT_TRUE(index.find_all_entries("obj/1").has_value());
+    EXPECT_EQ(index.find_all_entries("obj/1")->size(), 1u);
+
+    index.remove_entry("obj/1");
+    EXPECT_FALSE(index.find_all_entries("obj/1").has_value());
+}
+
+TEST_F(LocalIndexTest, SaveLoadWithLargeBlockCount) {
+    CMString idx_path = make_idx_path("large_block");
+
+    {
+        LocalIndex index(idx_path);
+        IndexEntry entry;
+        entry.object_name = "obj/large";
+        entry.file_name = "data.dat";
+        entry.offset = 0;
+        entry.size = 1000000;
+        entry.is_large = true;
+        entry.block_count = 1000;
+        index.add_entry(entry);
+        index.save();
+    }
+
+    LocalIndex loaded(idx_path);
+    loaded.load();
+    auto found = loaded.find_entry("obj/large");
+    ASSERT_TRUE(found.has_value());
+    EXPECT_TRUE(found->is_large);
+    EXPECT_EQ(found->block_count, 1000);
+    EXPECT_EQ(found->size, 1000000);
+}
+
+TEST_F(LocalIndexTest, AddEntryClearsPendingRemoves) {
+    LocalIndex index(make_idx_path("add_clears_rm"));
+
+    index.add_entry({"obj/x", "data.dat", 0, 10, false, 0});
+    index.remove_entry("obj/x");
+    EXPECT_FALSE(index.find_entry("obj/x").has_value());
+
+    index.add_entry({"obj/x", "data.dat", 10, 20, false, 0});
+    EXPECT_TRUE(index.find_entry("obj/x").has_value());
+}
+
+TEST_F(LocalIndexTest, MultipleSaveCallsWithoutChanges) {
+    CMString idx_path = make_idx_path("multi_save");
+
+    {
+        LocalIndex index(idx_path);
+        index.add_entry({"obj/a", "data.dat", 0, 10, false, 0});
+        index.save();
+    }
+
+    auto size1 = std::filesystem::file_size(idx_path);
+
+    {
+        LocalIndex index(idx_path);
+        index.load();
+        index.save();
+        index.save();
+        index.save();
+    }
+
+    auto size2 = std::filesystem::file_size(idx_path);
+    EXPECT_EQ(size1, size2);
+}
+
+TEST_F(LocalIndexTest, SaveLegacyThenLoadAndModify) {
+    CMString idx_path = make_idx_path("legacy_modify");
+
+    {
+        LocalIndex index(idx_path);
+        index.add_entry({"obj/legacy", "data.dat", 0, 100, false, 0});
+        index.save_legacy();
+    }
+
+    LocalIndex loaded(idx_path);
+    loaded.load();
+    EXPECT_EQ(loaded.entry_count(), 1);
+    EXPECT_TRUE(loaded.find_entry("obj/legacy").has_value());
+}
+
+TEST_F(LocalIndexTest, GetAllEntriesAfterMultipleAddsAndRemoves) {
+    LocalIndex index(make_idx_path("all_entries_mixed"));
+
+    index.add_entry({"obj/1", "d1.dat", 0, 10, false, 0});
+    index.add_entry({"obj/2", "d2.dat", 10, 20, false, 0});
+    index.add_entry({"obj/3", "d3.dat", 20, 30, false, 0});
+    index.remove_entry("obj/2");
+
+    auto entries = index.get_all_entries();
+    EXPECT_EQ(entries.size(), 2);
+
+    bool found1 = false, found3 = false;
+    for (const auto& e : entries) {
+        if (e.object_name == "obj/1") found1 = true;
+        if (e.object_name == "obj/3") found3 = true;
+    }
+    EXPECT_TRUE(found1);
+    EXPECT_TRUE(found3);
+}
+
+TEST_F(LocalIndexTest, RemoveEntryReturnsFalseAfterAlreadyRemoved) {
+    LocalIndex index(make_idx_path("double_rm"));
+
+    index.add_entry({"obj/del", "data.dat", 0, 10, false, 0});
+    EXPECT_TRUE(index.remove_entry("obj/del"));
+    EXPECT_FALSE(index.remove_entry("obj/del"));
+}
+
 }

@@ -680,4 +680,308 @@ TEST_F(DataServiceTest, FindLocalEntriesReturnsNoneForMissing) {
     EXPECT_FALSE(entries.has_value());
 }
 
+TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsFalseForMissingDb) {
+    auto [found, result] = ds_.try_read_local_or_wait("no_such_object", 100);
+    EXPECT_FALSE(found);
+}
+
+TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsFalseForMissingEntry) {
+    CMString db_id = db32("wait_missing");
+    auto [found, result] = ds_.try_read_local_or_wait(db_id + ":no_entry", 100);
+    EXPECT_FALSE(found);
+}
+
+TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsImmediatelyWhenComplete) {
+    CMString base_path = test_dir_ + "/wait_read";
+    Database db(base_path);
+
+    write_raw(db, "wait/obj", "wait_data", false);
+    fly::DataService::instance().drain_write_back();
+
+    CMString full = db.get_obj_name("wait/obj");
+    auto [found, result] = ds_.try_read_local_or_wait(full, 100);
+    EXPECT_TRUE(found);
+    CMString data(result.data_buffer.begin(), result.data_buffer.end());
+    EXPECT_EQ(data, "wait_data");
+}
+
+TEST_F(DataServiceTest, TryReadLocalOrWaitTimeoutOnIncomplete) {
+    CMString db_id = db32("wait_timeout");
+    CMString full = db_id + ":pending_obj";
+
+    ds_.on_write_started(db_id, full);
+
+    auto [found, result] = ds_.try_read_local_or_wait(full, 50);
+    EXPECT_FALSE(found);
+}
+
+TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsFalseOnFailed) {
+    CMString db_id = db32("wait_fail");
+    CMString full = db_id + ":fail_obj";
+
+    ds_.on_write_started(db_id, full);
+    ds_.on_write_failed(db_id, full, "test error");
+
+    auto [found, result] = ds_.try_read_local_or_wait(full, 100);
+    EXPECT_FALSE(found);
+}
+
+TEST_F(DataServiceTest, TryReadLocalRawReturnsData) {
+    CMString base_path = test_dir_ + "/raw_read";
+    Database db(base_path);
+
+    write_raw(db, "raw/obj", "raw_data", false);
+    fly::DataService::instance().drain_write_back();
+
+    CMString full = db.get_obj_name("raw/obj");
+    auto [found, raw] = ds_.try_read_local_raw(full);
+    EXPECT_TRUE(found);
+    EXPECT_FALSE(raw.empty());
+}
+
+TEST_F(DataServiceTest, TryReadLocalRawReturnsFalseForMissing) {
+    auto [found, raw] = ds_.try_read_local_raw("missing/obj");
+    EXPECT_FALSE(found);
+    EXPECT_TRUE(raw.empty());
+}
+
+TEST_F(DataServiceTest, TryReadLocalRawOrWaitReturnsData) {
+    CMString base_path = test_dir_ + "/raw_wait";
+    Database db(base_path);
+
+    write_raw(db, "rawwait/obj", "rawwait_data", false);
+    fly::DataService::instance().drain_write_back();
+
+    CMString full = db.get_obj_name("rawwait/obj");
+    auto [found, raw, py_name] = ds_.try_read_local_raw_or_wait(full, 100);
+    EXPECT_TRUE(found);
+    EXPECT_FALSE(raw.empty());
+    EXPECT_EQ(py_name, "bytes");
+}
+
+TEST_F(DataServiceTest, TryReadLocalRawOrWaitReturnsFalseForMissing) {
+    auto [found, raw, py_name] = ds_.try_read_local_raw_or_wait("missing_raw/obj", 50);
+    EXPECT_FALSE(found);
+}
+
+TEST_F(DataServiceTest, TryReadLocalRawOrWaitTimeoutOnIncomplete) {
+    CMString db_id = db32("raw_timeout");
+    CMString full = db_id + ":incomplete_raw";
+    ds_.on_write_started(db_id, full);
+
+    auto [found, raw, py_name] = ds_.try_read_local_raw_or_wait(full, 50);
+    EXPECT_FALSE(found);
+}
+
+TEST_F(DataServiceTest, TryReadRemoteReturnsLocalIfAvailable) {
+    CMString base_path = test_dir_ + "/remote_local";
+    Database db(base_path);
+
+    write_raw(db, "remote/local_obj", "local_data", false);
+    fly::DataService::instance().drain_write_back();
+
+    CMString full = db.get_obj_name("remote/local_obj");
+    auto [found, result] = ds_.try_read_remote(full);
+    EXPECT_TRUE(found);
+    CMString data(result.data_buffer.begin(), result.data_buffer.end());
+    EXPECT_EQ(data, "local_data");
+}
+
+TEST_F(DataServiceTest, TryReadRemoteReturnsFalseForMissing) {
+    auto [found, result] = ds_.try_read_remote("no_such_remote_obj");
+    EXPECT_FALSE(found);
+}
+
+TEST_F(DataServiceTest, TryReadRemoteSetsCanStillProduceFlag) {
+    auto [found, result] = ds_.try_read_remote("missing_remote_data");
+    EXPECT_FALSE(found);
+    EXPECT_FALSE(result.can_still_produce);
+}
+
+TEST_F(DataServiceTest, ReadRawCompressedReturnsLocalRaw) {
+    CMString base_path = test_dir_ + "/raw_comp";
+    Database db(base_path);
+
+    write_raw(db, "comp/obj", "comp_data", false);
+    fly::DataService::instance().drain_write_back();
+
+    CMString full = db.get_obj_name("comp/obj");
+    auto [found, raw, py_name, hash, can_still] = ds_.read_raw_compressed(full);
+    EXPECT_TRUE(found);
+    EXPECT_FALSE(raw.empty());
+    EXPECT_EQ(py_name, "bytes");
+}
+
+TEST_F(DataServiceTest, ReadRawCompressedReturnsFalseForMissing) {
+    auto [found, raw, py_name, hash, can_still] = ds_.read_raw_compressed("missing_comp");
+    EXPECT_FALSE(found);
+}
+
+TEST_F(DataServiceTest, RegisterDatabaseDuplicateUpdatesExisting) {
+    CMString db_id = db32("dup_db");
+    CMString base1 = test_dir_ + "/dup_db1";
+    CMString base2 = test_dir_ + "/dup_db2";
+    std::filesystem::create_directories(base1);
+    std::filesystem::create_directories(base2);
+
+    ds_.register_database(db_id, base1, "");
+    EXPECT_TRUE(ds_.has_database(db_id));
+
+    ds_.register_database(db_id, base2, "");
+    EXPECT_TRUE(ds_.has_database(db_id));
+}
+
+TEST_F(DataServiceTest, RegisterDatabaseDuplicateBasePathRejected) {
+    CMString db1 = db32("first_db");
+    CMString db2 = db32("second_db");
+    CMString base = test_dir_ + "/shared_base";
+
+    std::filesystem::create_directories(base);
+    ds_.register_database(db1, base, "");
+    ds_.register_database(db2, base, "");
+
+    EXPECT_TRUE(ds_.has_database(db1));
+    EXPECT_FALSE(ds_.has_database(db2));
+}
+
+TEST_F(DataServiceTest, RemoveRemoteLocationByFullObject) {
+    CMString full = db32("rr_full") + ":obj";
+    ds_.update_remote_idx(full, 1, "host_a", 8000);
+    EXPECT_TRUE(ds_.has_remote_location(full));
+
+    ds_.remove_remote_location(full);
+    EXPECT_FALSE(ds_.has_remote_location(full));
+}
+
+TEST_F(DataServiceTest, RestoreEntriesWithShortObjectNames) {
+    CMString db_id = db32("short_db");
+    CMString base_path = test_dir_ + "/short_restore";
+    std::filesystem::create_directories(base_path);
+    ds_.register_database(db_id, base_path, "");
+
+    CMVector<IndexEntry> entries;
+    IndexEntry e;
+    e.object_name = db_id + ":simple_name";
+    e.file_name = "test.dat";
+    e.offset = 0;
+    e.size = 10;
+    e.is_large = false;
+    e.block_count = 0;
+    entries.push_back(e);
+
+    ds_.restore_entries(db_id, entries);
+    EXPECT_TRUE(ds_.has_local_object(db_id + ":simple_name"));
+}
+
+TEST_F(DataServiceTest, OnWriteStartedAndCompletedCycle) {
+    CMString db_id = db32("cycle_db");
+    CMString full = db_id + ":cycle/obj";
+
+    ds_.on_write_started(db_id, full);
+    EXPECT_FALSE(ds_.has_local_object(full));
+
+    IndexEntry entry;
+    entry.object_name = full;
+    entry.file_name = "test.dat";
+    entry.offset = 0;
+    entry.size = 10;
+    entry.is_large = false;
+    entry.block_count = 0;
+
+    CMVector<IndexEntry> entries = {entry};
+    ds_.on_write_completed(db_id, full, entries);
+    ds_.on_object_flushed(full);
+
+    EXPECT_TRUE(ds_.has_local_object(full));
+}
+
+TEST_F(DataServiceTest, OnWriteCompletedForMissingDbIsNoop) {
+    CMString db_id = db32("missing_db_wc");
+    CMString full = db_id + ":missing/obj";
+    CMVector<IndexEntry> entries;
+    EXPECT_NO_THROW(ds_.on_write_completed(db_id, full, entries));
+}
+
+TEST_F(DataServiceTest, OnWriteFailedForMissingDbIsNoop) {
+    CMString db_id = db32("missing_db_wf");
+    CMString full = db_id + ":missing/obj";
+    EXPECT_NO_THROW(ds_.on_write_failed(db_id, full, "error"));
+}
+
+TEST_F(DataServiceTest, OnFlushForMissingDbIsNoop) {
+    EXPECT_NO_THROW(ds_.on_flush(db32("nonexistent_flush")));
+}
+
+TEST_F(DataServiceTest, FindLocalEntriesReturnsData) {
+    CMString db_id = db32("find_db");
+    CMString full = db_id + ":find/obj";
+    IndexEntry entry;
+    entry.object_name = full;
+    entry.file_name = "test.dat";
+    entry.offset = 0;
+    entry.size = 10;
+    entry.is_large = false;
+    entry.block_count = 0;
+
+    ds_.on_object_written(db_id, full, entry);
+    ds_.on_flush(db_id);
+
+    auto found = ds_.find_local_entries(full);
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(found->size(), 1u);
+    EXPECT_EQ((*found)[0].object_name, full);
+}
+
+TEST_F(DataServiceTest, SetRemoteCompressedReadHandler) {
+    bool called = false;
+    ds_.set_remote_compressed_read_handler([&called](const CMString& name) {
+        called = true;
+        return std::make_tuple(false, CMString{}, CMString{}, false);
+    });
+    EXPECT_NO_THROW(ds_.set_remote_compressed_read_handler(nullptr));
+}
+
+TEST_F(DataServiceTest, SetDirectCompressedReadHandler) {
+    ds_.set_direct_compressed_read_handler(
+        [](const CMString& host, int32_t port, const CMString& name) {
+            return std::make_tuple(false, CMString{}, CMString{}, CMString{});
+        });
+    EXPECT_NO_THROW(ds_.set_direct_compressed_read_handler(nullptr));
+}
+
+TEST_F(DataServiceTest, TransferServerStartStop) {
+    EXPECT_FALSE(ds_.is_transfer_server_running());
+
+    ds_.start_transfer_server(1, [](const fly::TransferResult&) {});
+    EXPECT_TRUE(ds_.is_transfer_server_running());
+
+    ds_.stop_transfer_server();
+    EXPECT_FALSE(ds_.is_transfer_server_running());
+}
+
+TEST_F(DataServiceTest, EnqueueWriteBackAutoStarts) {
+    ds_.stop_write_back();
+    EXPECT_FALSE(ds_.is_write_back_running());
+
+    fly::WriteRequest req;
+    req.execute = []() {};
+    req.on_complete = []() {};
+    ds_.enqueue_write_back(std::move(req));
+
+    EXPECT_TRUE(ds_.is_write_back_running());
+
+    ds_.drain_write_back();
+    ds_.stop_write_back();
+}
+
+TEST_F(DataServiceTest, ResetClearsAllState) {
+    CMString db_id = db32("reset_db");
+    ds_.register_database(db_id, test_dir_, "");
+    ds_.register_worker(1, "host", 8000);
+
+    ds_.reset();
+
+    EXPECT_FALSE(ds_.has_database(db_id));
+}
+
 }

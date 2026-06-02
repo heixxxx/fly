@@ -268,4 +268,101 @@ TEST(WorkerManagerTest, GetIdleWorkerCount) {
     EXPECT_EQ(manager.get_idle_worker_count(), 1);
 }
 
+TEST(WorkerManagerTest, ReRegisterWorkerOverwrites) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"python"});
+    manager.register_worker(1, "10.0.0.1", 9000, {"gpu"});
+
+    EXPECT_EQ(manager.get_worker_count(), 1);
+    auto worker_opt = manager.get_worker(1);
+    ASSERT_TRUE(worker_opt.has_value());
+    EXPECT_EQ(worker_opt->get().address, "10.0.0.1");
+    EXPECT_EQ(worker_opt->get().port, 9000);
+    EXPECT_EQ(worker_opt->get().capabilities.size(), 1);
+    EXPECT_EQ(worker_opt->get().capabilities[0], "gpu");
+}
+
+TEST(WorkerManagerTest, UpdateCapabilitiesComplexScenario) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"a", "b", "c"});
+
+    manager.update_capabilities(1, {"d"}, {"b"});
+
+    auto worker_opt = manager.get_worker(1);
+    ASSERT_TRUE(worker_opt.has_value());
+    auto& caps = worker_opt->get().capabilities;
+    EXPECT_EQ(caps.size(), 3);
+
+    bool has_a = false, has_c = false, has_d = false;
+    for (const auto& cap : caps) {
+        if (cap == "a") has_a = true;
+        if (cap == "c") has_c = true;
+        if (cap == "d") has_d = true;
+    }
+    EXPECT_TRUE(has_a);
+    EXPECT_TRUE(has_c);
+    EXPECT_TRUE(has_d);
+}
+
+TEST(WorkerManagerTest, HasWorkerWithAllCapabilitiesPartialMatch) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"python", "gpu"});
+    manager.register_worker(2, "127.0.0.1", 8081, {"python", "cuda"});
+
+    EXPECT_TRUE(manager.has_worker_with_all_capabilities({"python"}));
+    EXPECT_TRUE(manager.has_worker_with_all_capabilities({"python", "gpu"}));
+    EXPECT_TRUE(manager.has_worker_with_all_capabilities({"python", "cuda"}));
+    EXPECT_FALSE(manager.has_worker_with_all_capabilities({"gpu", "cuda"}));
+}
+
+TEST(WorkerManagerTest, GetAllWorkersEmpty) {
+    WorkerManager manager;
+    auto all = manager.get_all_workers();
+    EXPECT_TRUE(all.empty());
+}
+
+TEST(WorkerManagerTest, GetWorkersWithCapabilityNoWorkers) {
+    WorkerManager manager;
+    auto workers = manager.get_workers_with_capability("anything");
+    EXPECT_TRUE(workers.empty());
+}
+
+TEST(WorkerManagerTest, CompleteTaskResetsWorkerState) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+
+    manager.assign_task(1, 42);
+    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::BUSY);
+    EXPECT_EQ(manager.get_worker(1)->get().current_task_id, 42);
+
+    manager.complete_task(1);
+    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::IDLE);
+    EXPECT_EQ(manager.get_worker(1)->get().current_task_id, 0);
+    EXPECT_EQ(manager.get_idle_worker_count(), 1);
+}
+
+TEST(WorkerManagerTest, WorkerStatusTransitions) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+
+    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::IDLE);
+
+    manager.update_worker_status(1, WorkerStatus::BUSY);
+    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::BUSY);
+
+    manager.update_worker_status(1, WorkerStatus::DEAD);
+    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::DEAD);
+}
+
+TEST(WorkerManagerTest, SetHeartbeatPersistsTimestamp) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+
+    manager.set_heartbeat(1, 12345);
+    EXPECT_EQ(manager.get_worker(1)->get().last_heartbeat, 12345);
+
+    manager.set_heartbeat(1, 67890);
+    EXPECT_EQ(manager.get_worker(1)->get().last_heartbeat, 67890);
+}
+
 }  // namespace fly

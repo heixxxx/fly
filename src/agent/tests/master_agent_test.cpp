@@ -1095,4 +1095,180 @@ TEST(MasterAgentTest, StopBeforeStart_CallsDoDrainAndStop) {
     EXPECT_FALSE(master.is_running());
 }
 
+TEST(MasterAgentTest, SubmitTaskCreatesMetadataAndGraph) {
+    TempDir tmpdir;
+    Config::instance().set_str("log_dir", tmpdir.path());
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    master.submit_task(500, "test_submit", "test_module", {"arg1"}, {"missing_input_500"}, {});
+
+    wait_for([&] {
+        auto pending = master.get_pending_tasks();
+        auto failed = master.get_failed_tasks();
+        for (auto id : pending) { if (id == 500) return true; }
+        for (auto id : failed) { if (id == 500) return true; }
+        return false;
+    }, 50, 20);
+
+    auto failed = master.get_failed_tasks();
+    auto pending = master.get_pending_tasks();
+    bool found = false;
+    for (auto id : pending) { if (id == 500) { found = true; break; } }
+    for (auto id : failed) { if (id == 500) { found = true; break; } }
+    EXPECT_TRUE(found);
+
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance().set_str("log_dir", "");
+}
+
+TEST(MasterAgentTest, GetPendingTasksReturnsCorrectIds) {
+    TempDir tmpdir;
+    Config::instance().set_str("log_dir", tmpdir.path());
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    master.submit_task(601, "pending1", "mod", {}, {"missing_input_1"}, {});
+    master.submit_task(602, "pending2", "mod", {}, {"missing_input_2"}, {});
+
+    wait_for([&] {
+        auto failed = master.get_failed_tasks();
+        size_t count = 0;
+        for (auto id : failed) { if (id == 601 || id == 602) count++; }
+        return count >= 2;
+    }, 50, 20);
+
+    auto failed = master.get_failed_tasks();
+    bool found_601 = false, found_602 = false;
+    for (auto id : failed) {
+        if (id == 601) found_601 = true;
+        if (id == 602) found_602 = true;
+    }
+    EXPECT_TRUE(found_601);
+    EXPECT_TRUE(found_602);
+
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance().set_str("log_dir", "");
+}
+
+TEST(MasterAgentTest, GetCompletedTasksInitiallyEmpty) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    auto completed = master.get_completed_tasks();
+    EXPECT_TRUE(completed.empty());
+
+    master.stop();
+    wait_for_running(master, false);
+}
+
+TEST(MasterAgentTest, GetFailedTasksForImpossibleCapabilities) {
+    TempDir tmpdir;
+    Config::instance().set_str("log_dir", tmpdir.path());
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    master.submit_task(700, "impossible", "mod", {"arg"}, {}, {}, {"nonexistent_cap"});
+
+    wait_for([&] {
+        auto failed = master.get_failed_tasks();
+        for (auto id : failed) { if (id == 700) return true; }
+        return false;
+    }, 50, 20);
+
+    auto failed = master.get_failed_tasks();
+    bool found = false;
+    for (auto id : failed) { if (id == 700) { found = true; break; } }
+    EXPECT_TRUE(found);
+
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance().set_str("log_dir", "");
+}
+
+TEST(MasterAgentTest, GetTaskErrorForNonExistentReturnsEmpty) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    CMString error = master.get_task_error(99999);
+    EXPECT_TRUE(error.empty());
+
+    master.stop();
+    wait_for_running(master, false);
+}
+
+TEST(MasterAgentTest, RegisterDatabaseStoresPathInfo) {
+    MasterAgent master("127.0.0.1", 0);
+    CMString db_id = db32("reg_test");
+    CMString base = "/tmp/test_base_" + std::to_string(::getpid());
+
+    master.register_database(db_id, base, base + "/data");
+    EXPECT_FALSE(master.is_db_frozen(db_id));
+}
+
+TEST(MasterAgentTest, GetWorkerHostnamesEmpty) {
+    MasterAgent master("127.0.0.1", 0);
+    EXPECT_TRUE(master.get_worker_hostnames().empty());
+}
+
+TEST(MasterAgentTest, GetIdleWorkersNoWorkersConnected) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    auto idle = master.get_idle_workers();
+    EXPECT_TRUE(idle.empty());
+
+    master.stop();
+    wait_for_running(master, false);
+}
+
+TEST(MasterAgentTest, GetConnectedWorkersNoWorkers) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    EXPECT_TRUE(master.get_connected_workers().empty());
+    EXPECT_EQ(master.get_connection_count(), 0u);
+
+    master.stop();
+    wait_for_running(master, false);
+}
+
+TEST(MasterAgentTest, SubmitTaskWithWriteContextHash) {
+    TempDir tmpdir;
+    Config::instance().set_str("log_dir", tmpdir.path());
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    master.submit_task(800, "ctx_task", "mod", {"arg"}, {"missing_input_ctx"}, {}, {}, "hash123");
+
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance().set_str("log_dir", "");
+}
+
+TEST(MasterAgentTest, OnMasterRegisterWriteNotRunning) {
+    WorkerAgentContext::clear();
+    MasterAgent master("127.0.0.1", 0);
+    master.setup_write_context();
+
+    CMString db_id = db32("reg_norun");
+    auto [msg, err_type] = WorkerAgentContext::register_write(db_id, "test_obj");
+
+    WorkerAgentContext::clear();
+}
+
 }  // namespace fly
