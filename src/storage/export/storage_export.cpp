@@ -157,7 +157,8 @@ FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
         return fly_export::make_tuple(
             found,
             fly_export::bytes(result.data_buffer.data(), result.data_buffer.size()),
-            result.py_name);
+            result.py_name,
+            result.can_still_produce);
     })
     FLY_EXPORT_METHOD("drain_write_back", &fly::DataService::drain_write_back)
     FLY_EXPORT_METHOD("stop_write_back", &fly::DataService::stop_write_back)

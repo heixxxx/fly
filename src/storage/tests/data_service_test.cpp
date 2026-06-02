@@ -507,4 +507,177 @@ TEST_F(DataServiceTest, FlushOnlyAffectsTargetDb) {
     EXPECT_TRUE(ds_.has_local_object(full_b));
 }
 
+TEST_F(DataServiceTest, MarkTempEntryAndGet) {
+    CMString name = "temp/obj";
+    CMString data = "temp_data_payload";
+
+    ds_.mark_temp_entry(name, data);
+    EXPECT_TRUE(ds_.is_temp_entry(name));
+
+    auto [found, result] = ds_.get_temp_data(name);
+    EXPECT_TRUE(found);
+    EXPECT_EQ(result, data);
+}
+
+TEST_F(DataServiceTest, UnmarkTempEntry) {
+    CMString name = "temp/remove";
+    CMString data = "to_remove";
+
+    ds_.mark_temp_entry(name, data);
+    EXPECT_TRUE(ds_.is_temp_entry(name));
+
+    ds_.unmark_temp_entry(name);
+    EXPECT_FALSE(ds_.is_temp_entry(name));
+
+    auto [found, result] = ds_.get_temp_data(name);
+    EXPECT_FALSE(found);
+}
+
+TEST_F(DataServiceTest, IsTempEntryReturnsFalseForMissing) {
+    EXPECT_FALSE(ds_.is_temp_entry("never/temp"));
+}
+
+TEST_F(DataServiceTest, GetTempDataReturnsFalseForMissing) {
+    auto [found, result] = ds_.get_temp_data("no/temp");
+    EXPECT_FALSE(found);
+}
+
+TEST_F(DataServiceTest, MarkTempEntrySameKey) {
+    CMString name = "temp/same";
+    ds_.mark_temp_entry(name, "data1");
+
+    auto [found, result] = ds_.get_temp_data(name);
+    EXPECT_TRUE(found);
+    EXPECT_EQ(result, "data1");
+}
+
+TEST_F(DataServiceTest, HasDatabaseReturnsTrue) {
+    CMString db_id = db32("has_db");
+    CMString base_path = test_dir_ + "/has_db";
+    std::filesystem::create_directories(base_path);
+    ds_.register_database(db_id, base_path, "");
+    EXPECT_TRUE(ds_.has_database(db_id));
+}
+
+TEST_F(DataServiceTest, HasDatabaseReturnsFalseForUnknown) {
+    EXPECT_FALSE(ds_.has_database(db32("unknown_db")));
+}
+
+TEST_F(DataServiceTest, UnregisterDatabaseRemovesIt) {
+    CMString db_id = db32("unreg_db");
+    CMString base_path = test_dir_ + "/unreg_db";
+    std::filesystem::create_directories(base_path);
+    ds_.register_database(db_id, base_path, "");
+    EXPECT_TRUE(ds_.has_database(db_id));
+
+    ds_.unregister_database(db_id);
+    EXPECT_FALSE(ds_.has_database(db_id));
+}
+
+TEST_F(DataServiceTest, RemoveRemoteLocationByWorkerId) {
+    CMString full = db32("rr_worker") + ":obj";
+    ds_.update_remote_idx(full, 1, "host_a", 8000);
+    ds_.update_remote_idx(full, 2, "host_b", 9000);
+
+    auto workers = ds_.get_remote_workers(full);
+    EXPECT_EQ(workers.size(), 2u);
+
+    ds_.remove_remote_location(full, 1);
+
+    workers = ds_.get_remote_workers(full);
+    EXPECT_EQ(workers.size(), 1u);
+    EXPECT_EQ(workers[0], 2u);
+}
+
+TEST_F(DataServiceTest, RemoveRemoteLocationByWorkerIdCleansUpWhenEmpty) {
+    CMString full = db32("rr_cleanup") + ":obj";
+    ds_.update_remote_idx(full, 1, "host_a", 8000);
+
+    ds_.remove_remote_location(full, 1);
+
+    EXPECT_FALSE(ds_.has_remote_location(full));
+    EXPECT_TRUE(ds_.get_remote_workers(full).empty());
+}
+
+TEST_F(DataServiceTest, OnObjectFlushedEnablesRead) {
+    CMString db_id = db32("flush_obj_db");
+    CMString full = db_id + ":flush/obj";
+    IndexEntry entry;
+    entry.object_name = full;
+    entry.file_name = "test.dat";
+    entry.offset = 0;
+    entry.size = 5;
+    entry.is_large = false;
+    entry.block_count = 0;
+
+    ds_.on_object_written(db_id, full, entry);
+    EXPECT_FALSE(ds_.has_local_object(full));
+
+    ds_.on_object_flushed(full);
+    EXPECT_TRUE(ds_.has_local_object(full));
+}
+
+TEST_F(DataServiceTest, OnWriteStartedCreatesEntry) {
+    CMString db_id = db32("start_db");
+    CMString full = db_id + ":started/obj";
+
+    ds_.on_write_started(db_id, full);
+    EXPECT_FALSE(ds_.has_local_object(full));
+}
+
+TEST_F(DataServiceTest, OnWriteFailedRemovesEntry) {
+    CMString db_id = db32("fail_db");
+    CMString full = db_id + ":failed/obj";
+    IndexEntry entry;
+    entry.object_name = full;
+    entry.file_name = "test.dat";
+    entry.offset = 0;
+    entry.size = 5;
+    entry.is_large = false;
+    entry.block_count = 0;
+
+    ds_.on_object_written(db_id, full, entry);
+    ds_.on_flush(db_id);
+    EXPECT_TRUE(ds_.has_local_object(full));
+
+    ds_.on_write_failed(db_id, full, "error msg");
+    EXPECT_FALSE(ds_.has_local_object(full));
+}
+
+TEST_F(DataServiceTest, AddRemoteLocation) {
+    CMString full = db32("add_remote") + ":obj";
+    ds_.register_worker(1, "host_a", 8000);
+    ds_.add_remote_location(full, 1);
+
+    EXPECT_TRUE(ds_.has_remote_location(full));
+    auto workers = ds_.get_remote_workers(full);
+    EXPECT_EQ(workers.size(), 1u);
+    EXPECT_EQ(workers[0], 1u);
+}
+
+TEST_F(DataServiceTest, GetRemoteWorkersEmptyForMissing) {
+    auto workers = ds_.get_remote_workers("no/such/obj");
+    EXPECT_TRUE(workers.empty());
+}
+
+TEST_F(DataServiceTest, HasRemoteLocationFalseForMissing) {
+    EXPECT_FALSE(ds_.has_remote_location("missing/remote"));
+}
+
+TEST_F(DataServiceTest, WriteBackQueueStartStop) {
+    ds_.stop_write_back();
+    EXPECT_FALSE(ds_.is_write_back_running());
+
+    ds_.start_write_back();
+    EXPECT_TRUE(ds_.is_write_back_running());
+
+    ds_.stop_write_back();
+    EXPECT_FALSE(ds_.is_write_back_running());
+}
+
+TEST_F(DataServiceTest, FindLocalEntriesReturnsNoneForMissing) {
+    auto entries = ds_.find_local_entries("no/local/entries");
+    EXPECT_FALSE(entries.has_value());
+}
+
 }

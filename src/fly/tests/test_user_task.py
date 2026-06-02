@@ -7,17 +7,6 @@ try:
 except ImportError:
     cloudpickle = None
 
-_this_dir = os.path.dirname(os.path.abspath(__file__))
-_project_root = os.path.normpath(os.path.join(_this_dir, '..', '..', '..'))
-_bazel_bin = os.path.join(_project_root, 'bazel-bin', 'src')
-
-for _subpath in ['agent/export', 'storage/export', 'log/export', 'core/export']:
-    _full = os.path.join(_bazel_bin, _subpath)
-    if os.path.exists(_full):
-        sys.path.insert(0, _full)
-
-sys.path.insert(0, os.path.join(_project_root, 'src'))
-
 try:
     from agent.executor import create_executor
 except ImportError:
@@ -117,13 +106,13 @@ def test_as_task_user_script_unpickleable_raises():
 
     bad_obj = _Unpickleable()
 
-    def _task_with_bad_obj(db, obj):
-        db.write_object("k", obj)
+    def _task_with_bad_closure(db):
+        return bad_obj
 
-    _task_with_bad_obj.__module__ = "__main__"
+    _task_with_bad_closure.__module__ = "__main__"
 
     try:
-        as_task()(_task_with_bad_obj)
+        as_task()(_task_with_bad_closure)
         assert False, "Should have raised ValueError"
     except (ValueError, TypeError):
         print("  PASS: test_as_task_user_script_unpickleable_raises")

@@ -202,4 +202,70 @@ TEST(WorkerManagerTest, HasWorkerWithAllCapabilitiesMultiWorker) {
     EXPECT_FALSE(manager.has_worker_with_all_capabilities({"python", "gpu"}));
 }
 
+TEST(WorkerManagerTest, RecordHeartbeatNonExistent) {
+    WorkerManager manager;
+    EXPECT_NO_THROW(manager.record_heartbeat(999));
+    EXPECT_EQ(manager.get_worker_count(), 0);
+}
+
+TEST(WorkerManagerTest, SetHeartbeatNonExistent) {
+    WorkerManager manager;
+    EXPECT_NO_THROW(manager.set_heartbeat(999, 12345));
+    EXPECT_EQ(manager.get_worker_count(), 0);
+}
+
+TEST(WorkerManagerTest, SetHeartbeatOnExisting) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+
+    manager.set_heartbeat(1, 99999);
+    EXPECT_EQ(manager.get_worker(1)->get().last_heartbeat, 99999);
+}
+
+TEST(WorkerManagerTest, AssignTaskNonExistent) {
+    WorkerManager manager;
+    EXPECT_NO_THROW(manager.assign_task(999, 100));
+    EXPECT_EQ(manager.get_worker_count(), 0);
+}
+
+TEST(WorkerManagerTest, CompleteTaskNonExistent) {
+    WorkerManager manager;
+    EXPECT_NO_THROW(manager.complete_task(999));
+    EXPECT_EQ(manager.get_worker_count(), 0);
+}
+
+TEST(WorkerManagerTest, UpdateWorkerStatusNonExistent) {
+    WorkerManager manager;
+    EXPECT_NO_THROW(manager.update_worker_status(999, WorkerStatus::BUSY));
+    EXPECT_EQ(manager.get_worker_count(), 0);
+}
+
+TEST(WorkerManagerTest, UnregisterWorkerNonExistent) {
+    WorkerManager manager;
+    EXPECT_NO_THROW(manager.unregister_worker(999));
+    EXPECT_EQ(manager.get_worker_count(), 0);
+}
+
+TEST(WorkerManagerTest, GetWorkerNonExistent) {
+    WorkerManager manager;
+    EXPECT_FALSE(manager.get_worker(999).has_value());
+}
+
+TEST(WorkerManagerTest, GetWorkersWithCapabilityEmpty) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"python"});
+    auto gpu_workers = manager.get_workers_with_capability("gpu");
+    EXPECT_TRUE(gpu_workers.empty());
+}
+
+TEST(WorkerManagerTest, GetIdleWorkerCount) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+    manager.register_worker(2, "127.0.0.1", 8081, {});
+    EXPECT_EQ(manager.get_idle_worker_count(), 2);
+
+    manager.assign_task(1, 100);
+    EXPECT_EQ(manager.get_idle_worker_count(), 1);
+}
+
 }  // namespace fly

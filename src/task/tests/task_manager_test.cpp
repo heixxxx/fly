@@ -99,4 +99,111 @@ TEST(TaskManagerTest, RemoveTask) {
     EXPECT_FALSE(manager.get_task(1).has_value());
 }
 
+TEST(TaskManagerTest, UpdateTaskStatusNonExistent) {
+    TaskManager manager;
+    EXPECT_NO_THROW(manager.update_task_status(999, TaskStatus::RUNNING));
+    EXPECT_FALSE(manager.has_task(999));
+}
+
+TEST(TaskManagerTest, SetErrorNonExistent) {
+    TaskManager manager;
+    EXPECT_NO_THROW(manager.set_error(999, "no error"));
+}
+
+TEST(TaskManagerTest, SetAssignedWorkerNonExistent) {
+    TaskManager manager;
+    EXPECT_NO_THROW(manager.set_assigned_worker(999, 42));
+}
+
+TEST(TaskManagerTest, SetTimestampsNonExistent) {
+    TaskManager manager;
+    EXPECT_NO_THROW(manager.set_timestamps(999, 100, 200, 300));
+}
+
+TEST(TaskManagerTest, SetTimestampsWithZeroValuesSkips) {
+    TaskManager manager;
+    manager.create_task(1, "test", {}, {}, "");
+    manager.set_timestamps(1, 100, 200, 300);
+
+    auto& task = manager.get_task(1)->get();
+    EXPECT_EQ(task.created_at, 100);
+    EXPECT_EQ(task.started_at, 200);
+    EXPECT_EQ(task.completed_at, 300);
+
+    manager.set_timestamps(1, 0, 0, 0);
+    EXPECT_EQ(task.created_at, 100);
+    EXPECT_EQ(task.started_at, 200);
+    EXPECT_EQ(task.completed_at, 300);
+
+    manager.set_timestamps(1, 500, 0, 600);
+    EXPECT_EQ(task.created_at, 500);
+    EXPECT_EQ(task.started_at, 200);
+    EXPECT_EQ(task.completed_at, 600);
+}
+
+TEST(TaskManagerTest, CreateTaskOverwritesExisting) {
+    TaskManager manager;
+    manager.create_task(1, "first", {}, {}, "");
+    manager.create_task(1, "second", {"input/a"}, {"output/b"}, "{}");
+
+    auto& task = manager.get_task(1)->get();
+    EXPECT_EQ(task.name, "second");
+    EXPECT_EQ(task.inputs.size(), 1);
+    EXPECT_EQ(task.outputs.size(), 1);
+}
+
+TEST(TaskManagerTest, GetTaskNonExistent) {
+    TaskManager manager;
+    EXPECT_FALSE(manager.get_task(999).has_value());
+}
+
+TEST(TaskManagerTest, HasTaskReturnsFalseForMissing) {
+    TaskManager manager;
+    EXPECT_FALSE(manager.has_task(999));
+}
+
+TEST(TaskManagerTest, RemoveTaskNonExistent) {
+    TaskManager manager;
+    EXPECT_NO_THROW(manager.remove_task(999));
+}
+
+TEST(TaskManagerTest, GetTasksByStatusEmptyWhenNoneMatch) {
+    TaskManager manager;
+    manager.create_task(1, "test", {}, {}, "");
+    manager.update_task_status(1, TaskStatus::COMPLETED);
+
+    auto running = manager.get_tasks_by_status(TaskStatus::RUNNING);
+    EXPECT_TRUE(running.empty());
+
+    auto failed = manager.get_tasks_by_status(TaskStatus::FAILED);
+    EXPECT_TRUE(failed.empty());
+}
+
+TEST(TaskManagerTest, GetAllTasksEmpty) {
+    TaskManager manager;
+    auto all = manager.get_all_tasks();
+    EXPECT_TRUE(all.empty());
+}
+
+TEST(TaskManagerTest, UpdateTaskStatusAutoTimestamps) {
+    TaskManager manager;
+    manager.create_task(1, "test", {}, {}, "");
+    EXPECT_EQ(manager.get_task(1)->get().started_at, 0);
+
+    manager.update_task_status(1, TaskStatus::RUNNING);
+    EXPECT_GT(manager.get_task(1)->get().started_at, 0);
+
+    manager.update_task_status(1, TaskStatus::COMPLETED);
+    EXPECT_GT(manager.get_task(1)->get().completed_at, 0);
+}
+
+TEST(TaskManagerTest, TaskWithCapabilities) {
+    TaskManager manager;
+    manager.create_task(1, "gpu_task", {}, {}, "{}", {"gpu", "cuda"});
+    auto& task = manager.get_task(1)->get();
+    EXPECT_EQ(task.required_capabilities.size(), 2);
+    EXPECT_EQ(task.required_capabilities[0], "gpu");
+    EXPECT_EQ(task.required_capabilities[1], "cuda");
+}
+
 }  // namespace fly

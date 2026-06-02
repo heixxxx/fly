@@ -98,6 +98,7 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
     result.worker_id = response.worker_id;
     result.host = response.data_host;
     result.port = response.data_port;
+    result.can_still_produce = response.can_still_produce;
     if (!response.success) {
         result.error = "Master has no location for " + object_name;
     }

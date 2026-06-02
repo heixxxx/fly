@@ -12,6 +12,7 @@
 struct ReadResult {
     FlySerBuf data_buffer;
     CMString py_name;
+    bool can_still_produce = false;
 };
 
 class DataReader {

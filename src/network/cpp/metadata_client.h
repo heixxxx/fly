@@ -16,6 +16,7 @@ public:
         CMString host;
         int32_t port = 0;
         CMString error;
+        bool can_still_produce = false;
     };
 
     static DataLocation query_data_location(

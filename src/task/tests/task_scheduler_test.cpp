@@ -191,4 +191,62 @@ TEST(TaskSchedulerTest, MultipleWorkersWithSameCapability) {
     EXPECT_TRUE(result.worker_id == 1 || result.worker_id == 2);
 }
 
+TEST(TaskSchedulerTest, ScheduleAllAvailableExhaustsReadyAndIdle) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    graph.add_task(1, {});
+    graph.add_task(2, {});
+    graph.add_task(3, {});
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+
+    TaskScheduler scheduler(&graph, &manager);
+    auto results = scheduler.schedule_all_available();
+
+    EXPECT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].task_id, 1);
+}
+
+TEST(TaskSchedulerTest, ScheduleAllAvailableEmptyGraph) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    TaskScheduler scheduler(&graph, &manager);
+    auto results = scheduler.schedule_all_available();
+    EXPECT_TRUE(results.empty());
+}
+
+TEST(TaskSchedulerTest, ScheduleRemovesTaskFromReady) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    graph.add_task(1, {});
+    graph.add_task(2, {});
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+
+    TaskScheduler scheduler(&graph, &manager);
+    auto r1 = scheduler.schedule_next();
+    EXPECT_TRUE(r1.scheduled);
+    EXPECT_EQ(r1.task_id, 1);
+
+    auto r2 = scheduler.schedule_next();
+    EXPECT_FALSE(r2.scheduled);
+}
+
+TEST(TaskSchedulerTest, ScheduleNextWithMultipleCapabilities) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    graph.add_task(1, {}, {"gpu", "cuda"});
+    manager.register_worker(1, "127.0.0.1", 8080, {"gpu", "cuda", "python"});
+    manager.register_worker(2, "127.0.0.1", 8081, {"gpu"});
+
+    TaskScheduler scheduler(&graph, &manager);
+    auto result = scheduler.schedule_next();
+
+    EXPECT_TRUE(result.scheduled);
+    EXPECT_EQ(result.task_id, 1);
+    EXPECT_EQ(result.worker_id, 1);
+}
+
 }  // namespace fly

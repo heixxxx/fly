@@ -83,7 +83,7 @@ public:
     void register_database(const CMString& db_id, CMSharedPtr<Database> db);
     CMSharedPtr<Database> get_database(const CMString& db_id) const;
     
-    std::tuple<bool, CMString, CMString> request_remote_data(const CMString& object_name);
+    std::tuple<bool, CMString, CMString, bool> request_remote_data(const CMString& object_name);
     std::pair<bool, ReadResult> request_data_from_worker(const CMString& host, int32_t port,
                                                           const CMString& object_name);
 

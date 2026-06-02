@@ -71,6 +71,7 @@ class Master(FlyAgent):
         self._port = port
         self._running = False
         self._next_worker_id = 1
+        self._expected_workers = 0
 
     def is_running(self) -> bool:
         return self._running
@@ -118,6 +119,7 @@ class Master(FlyAgent):
         self._port = self._agent.get_port()
 
         num_workers = len(worker_configs)
+        self._expected_workers += num_workers
         for i in range(num_workers):
             config = worker_configs[i]
             wid = self._next_worker_id
@@ -205,8 +207,12 @@ class Master(FlyAgent):
                 time.sleep(0.5)
         return self._agent.get_completed_tasks()
 
-    def wait_for_all_workers(self, count: int, timeout: float = 30.0):
+    def wait_for_all_workers(self, count: int = None, timeout: float = 30.0):
         import time
+        if count is None:
+            count = self._expected_workers
+        if count <= 0:
+            return
         t0 = time.time()
         registered = 0
         while time.time() - t0 < timeout:
@@ -275,7 +281,8 @@ class Master(FlyAgent):
                     continue
 
         if spawned > 0:
-            self.wait_for_all_workers(spawned, timeout=30.0)
+            self._expected_workers += spawned
+            self.wait_for_all_workers(timeout=30.0)
 
         # Send idx load commands to all connected workers (broadcast)
         # Only send if there are writer_ids to load

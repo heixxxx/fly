@@ -581,11 +581,16 @@ std::pair<bool, ReadResult> DataService::try_read_remote(const CMString& object_
     auto [found, result] = try_read_local(object_name);
     if (found) return {true, std::move(result)};
 
-    auto [comp_found, comp_data, comp_py_name, comp_hash] = read_raw_compressed(object_name);
-    if (!comp_found || comp_data.empty()) return {false, ReadResult{}};
+    auto [comp_found, comp_data, comp_py_name, comp_hash, can_still_produce] = read_raw_compressed(object_name);
+    if (!comp_found || comp_data.empty()) {
+        ReadResult empty;
+        empty.can_still_produce = can_still_produce;
+        return {false, std::move(empty)};
+    }
 
     ReadResult ret;
     ret.py_name = comp_py_name;
+    ret.can_still_produce = false;
 
     DecompressingStreamBuf dsbuf(comp_data.data(), comp_data.size());
     std::istream is(&dsbuf);
@@ -673,7 +678,7 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
     return {true, std::move(read_result)};
 }
 
-std::tuple<bool, CMString, CMString, CMString> DataService::read_raw_compressed(const CMString& object_name) {
+std::tuple<bool, CMString, CMString, CMString, bool> DataService::read_raw_compressed(const CMString& object_name) {
     auto [found, raw] = try_read_local_raw(object_name);
     if (found) {
         ReadResult header;
@@ -704,7 +709,7 @@ std::tuple<bool, CMString, CMString, CMString> DataService::read_raw_compressed(
             }
             write_hash = entries.back().write_context_hash;
         }
-        return {true, std::move(raw), std::move(py_name), std::move(write_hash)};
+        return {true, std::move(raw), std::move(py_name), std::move(write_hash), false};
     }
 
     auto info = lookup_remote_idx(object_name);
@@ -716,7 +721,7 @@ std::tuple<bool, CMString, CMString, CMString> DataService::read_raw_compressed(
         }
         if (cb) {
             auto [cb_found, cb_data, cb_py_name, cb_hash] = cb(info.host, info.port, object_name);
-            if (cb_found) return {true, std::move(cb_data), std::move(cb_py_name), std::move(cb_hash)};
+            if (cb_found) return {true, std::move(cb_data), std::move(cb_py_name), std::move(cb_hash), false};
             remove_remote_location(object_name, info.worker_id);
         }
     }
@@ -728,9 +733,12 @@ std::tuple<bool, CMString, CMString, CMString> DataService::read_raw_compressed(
     }
     if (remote_cb) {
         for (int attempt = 0; attempt < 3; ++attempt) {
-            auto [cb_found, cb_data, cb_py_name] = remote_cb(object_name);
+            auto [cb_found, cb_data, cb_py_name, cb_can_still_produce] = remote_cb(object_name);
             if (cb_found && !cb_data.empty()) {
-                return {true, std::move(cb_data), std::move(cb_py_name), {}};
+                return {true, std::move(cb_data), std::move(cb_py_name), {}, false};
+            }
+            if (!cb_found && !cb_can_still_produce) {
+                return {false, {}, {}, {}, false};
             }
             if (attempt < 2) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1000));
@@ -738,7 +746,7 @@ std::tuple<bool, CMString, CMString, CMString> DataService::read_raw_compressed(
         }
     }
 
-    return {false, {}, {}, {}};
+    return {false, {}, {}, {}, false};
 }
 
 // ============================================================

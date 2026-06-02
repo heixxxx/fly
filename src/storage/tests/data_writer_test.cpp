@@ -185,4 +185,112 @@ TEST_F(DataWriterTest, FileCountIncrements) {
     writer.close();
 }
 
+TEST_F(DataWriterTest, DoubleCloseIsSafe) {
+    CMString base_path = test_dir_ + "/double_close";
+    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+
+    CMString data = "close test";
+    auto rec = make_record(data);
+    writer.write_record("obj", rec.original_size, rec.chunk_count, rec.buffer);
+    writer.close();
+    EXPECT_NO_THROW(writer.close());
+}
+
+TEST_F(DataWriterTest, RemoveEntryReturnsFalseForMissing) {
+    CMString base_path = test_dir_ + "/remove_miss";
+    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+
+    EXPECT_FALSE(writer.remove_entry("nonexistent_obj"));
+
+    writer.close();
+}
+
+TEST_F(DataWriterTest, GetAllEntriesReturnsNulloptForMissing) {
+    CMString base_path = test_dir_ + "/get_all_miss";
+    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+
+    auto entries = writer.get_all_entries("no_such_obj");
+    EXPECT_FALSE(entries.has_value());
+
+    writer.close();
+}
+
+TEST_F(DataWriterTest, WriteRecordWithWriteContextHash) {
+    CMString base_path = test_dir_ + "/ctx_hash";
+    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+
+    CMString data = "ctx hash data";
+    auto rec = make_record(data);
+    writer.write_record("ctx/obj", rec.original_size, rec.chunk_count, rec.buffer, "hash123");
+
+    auto entry = writer.get_last_entry("ctx/obj");
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(entry->write_context_hash, "hash123");
+
+    writer.close();
+}
+
+TEST_F(DataWriterTest, TotalBytesAccumulatesAcrossRecords) {
+    CMString base_path = test_dir_ + "/total_bytes";
+    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+
+    CMString d1 = "first";
+    auto r1 = make_record(d1);
+    writer.write_record("a", r1.original_size, r1.chunk_count, r1.buffer);
+    EXPECT_EQ(writer.total_bytes_written(), static_cast<int64_t>(d1.size()));
+
+    CMString d2 = "second_record";
+    auto r2 = make_record(d2);
+    writer.write_record("b", r2.original_size, r2.chunk_count, r2.buffer);
+    EXPECT_EQ(writer.total_bytes_written(), static_cast<int64_t>(d1.size() + d2.size()));
+
+    writer.close();
+}
+
+TEST_F(DataWriterTest, GetAllEntriesForSingleObject) {
+    CMString base_path = test_dir_ + "/get_all";
+    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+
+    CMString data = "single";
+    auto rec = make_record(data);
+    writer.write_record("single/obj", rec.original_size, rec.chunk_count, rec.buffer);
+
+    auto entries = writer.get_all_entries("single/obj");
+    ASSERT_TRUE(entries.has_value());
+    EXPECT_EQ(entries->size(), 1u);
+
+    writer.close();
+}
+
+TEST_F(DataWriterTest, FlushAfterWritePersistsIndex) {
+    CMString base_path = test_dir_ + "/flush_idx";
+    CMString writer_id = "f1ush2id";
+
+    {
+        DataWriter writer(base_path, "", writer_id, 1024);
+        CMString data = "flush test";
+        auto rec = make_record(data);
+        writer.write_record("flush/obj", rec.original_size, rec.chunk_count, rec.buffer);
+        writer.flush();
+
+        EXPECT_TRUE(std::filesystem::exists(base_path + "/" + writer_id + ".idx"));
+        writer.close();
+    }
+}
+
+TEST_F(DataWriterTest, HostStoredInEntry) {
+    CMString base_path = test_dir_ + "/host_test";
+    DataWriter writer(base_path, "", "a1b2c3d4", 1024, "192.168.1.1");
+
+    CMString data = "host data";
+    auto rec = make_record(data);
+    writer.write_record("host/obj", rec.original_size, rec.chunk_count, rec.buffer);
+
+    auto entry = writer.get_last_entry("host/obj");
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(entry->host, "192.168.1.1");
+
+    writer.close();
+}
+
 }

@@ -433,3 +433,69 @@ TEST_F(ZlibCompressorTest, EmptyInputChunkRoundTrip) {
     auto result = compressor_->decompress_chunk(chunk.uncompressed_size, chunk.data);
     EXPECT_EQ(result.size(), 0u);
 }
+
+TEST(CompressorFactoryTest, NoneCompressorCompressAndDecompress) {
+    auto comp = CompressorFactory::create(CompressionType::NONE);
+    ASSERT_NE(comp, nullptr);
+    EXPECT_EQ(comp->type(), CompressionType::NONE);
+    EXPECT_EQ(comp->name(), "none");
+
+    CMString input = "none compressor test data";
+    auto chunk = comp->compress(input);
+    EXPECT_EQ(chunk.uncompressed_size, static_cast<int32_t>(input.size()));
+    EXPECT_EQ(chunk.compressed_size, static_cast<int32_t>(input.size()));
+    EXPECT_EQ(chunk.data, input);
+
+    auto result = comp->decompress(chunk.uncompressed_size, chunk.data);
+    EXPECT_EQ(result, input);
+}
+
+TEST(CompressorFactoryTest, NoneCompressorEmptyInput) {
+    auto comp = CompressorFactory::create(CompressionType::NONE);
+    ASSERT_NE(comp, nullptr);
+
+    CMString input;
+    auto chunk = comp->compress(input);
+    EXPECT_EQ(chunk.uncompressed_size, 0);
+    EXPECT_EQ(chunk.compressed_size, 0);
+
+    auto result = comp->decompress(0, chunk.data);
+    EXPECT_EQ(result.size(), 0u);
+}
+
+TEST(CompressorFactoryTest, NoneCompressorChunkRoundTrip) {
+    auto comp = CompressorFactory::create(CompressionType::NONE);
+    ASSERT_NE(comp, nullptr);
+
+    CMString input = "chunk round trip data";
+    auto chunk = comp->compress_chunk(input);
+    EXPECT_EQ(chunk.uncompressed_size, static_cast<int32_t>(input.size()));
+
+    auto result = comp->decompress_chunk(chunk.uncompressed_size, chunk.data);
+    EXPECT_EQ(result, input);
+}
+
+TEST(CompressorFactoryTest, NoneCompressorFromName) {
+    auto comp = CompressorFactory::create_from_name("none");
+    ASSERT_NE(comp, nullptr);
+    EXPECT_EQ(comp->type(), CompressionType::NONE);
+}
+
+TEST(CompressorFactoryTest, CreateWithInvalidEnumReturnsNull) {
+    auto comp = CompressorFactory::create(static_cast<CompressionType>(100));
+    EXPECT_EQ(comp, nullptr);
+}
+
+TEST_F(Lz4CompressorTest, DecompressGarbageData) {
+    CMString garbage_data = CMString(100, '\xff');
+    EXPECT_TRUE(compressor_->decompress_chunk(100, garbage_data).empty());
+}
+
+TEST_F(Lz4CompressorTest, EmptyInputChunkRoundTrip) {
+    CMString input;
+    auto chunk = compressor_->compress_chunk(input);
+    EXPECT_EQ(chunk.uncompressed_size, 0);
+
+    auto result = compressor_->decompress_chunk(chunk.uncompressed_size, chunk.data);
+    EXPECT_EQ(result.size(), 0u);
+}

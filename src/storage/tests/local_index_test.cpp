@@ -298,7 +298,6 @@ TEST_F(LocalIndexTest, ConcurrentAddRemoveSave) {
 
     LocalIndex index(idx_path);
 
-    // Pre-populate with 50 entries
     for (int i = 0; i < 50; i++) {
         index.add_entry({"obj_" + std::to_string(i), "data.dat", i * 10, 10, false, 0});
     }
@@ -306,7 +305,6 @@ TEST_F(LocalIndexTest, ConcurrentAddRemoveSave) {
 
     std::atomic<bool> done{false};
 
-    // Thread A: add entries 50-99 and save
     std::thread adder([&] {
         for (int i = 50; i < 100 && !done.load(); i++) {
             index.add_entry({"obj_" + std::to_string(i), "data.dat", i * 10, 10, false, 0});
@@ -314,7 +312,6 @@ TEST_F(LocalIndexTest, ConcurrentAddRemoveSave) {
         index.save();
     });
 
-    // Thread B: remove entries 0-25 and save
     std::thread remover([&] {
         for (int i = 0; i < 25 && !done.load(); i++) {
             index.remove_entry("obj_" + std::to_string(i));
@@ -322,7 +319,6 @@ TEST_F(LocalIndexTest, ConcurrentAddRemoveSave) {
         index.save();
     });
 
-    // Thread C: read entry count repeatedly
     std::thread reader([&] {
         for (int i = 0; i < 100 && !done.load(); i++) {
             index.entry_count();
@@ -335,10 +331,112 @@ TEST_F(LocalIndexTest, ConcurrentAddRemoveSave) {
     done = true;
     reader.join();
 
-    // Verify final state is consistent: 50 pre + up to 50 added - up to 25 removed
     int64_t count = index.entry_count();
-    EXPECT_GE(count, 25);  // At least 50-25=25 original + 0 added (worst case timing)
-    EXPECT_LE(count, 100); // At most all entries
+    EXPECT_GE(count, 25);
+    EXPECT_LE(count, 100);
+}
+
+TEST_F(LocalIndexTest, FindAllEntriesNonExistent) {
+    LocalIndex index(make_idx_path("find_all_none"));
+    auto result = index.find_all_entries("nonexistent");
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(LocalIndexTest, SaveWithoutChangesIsNoop) {
+    CMString idx_path = make_idx_path("save_noop");
+
+    {
+        LocalIndex index(idx_path);
+        index.add_entry({"obj/a", "data.dat", 0, 100, false, 0});
+        index.save();
+    }
+
+    auto size_before = std::filesystem::file_size(idx_path);
+
+    {
+        LocalIndex index(idx_path);
+        index.load();
+        index.save();
+    }
+
+    auto size_after = std::filesystem::file_size(idx_path);
+    EXPECT_EQ(size_before, size_after);
+}
+
+TEST_F(LocalIndexTest, GetAllEntriesEmpty) {
+    LocalIndex index(make_idx_path("get_all_empty"));
+    auto entries = index.get_all_entries();
+    EXPECT_TRUE(entries.empty());
+}
+
+TEST_F(LocalIndexTest, AddEntryWithHostAndContextHash) {
+    LocalIndex index(make_idx_path("host_ctx"));
+
+    IndexEntry entry;
+    entry.object_name = "obj/with_host";
+    entry.file_name = "data.dat";
+    entry.offset = 0;
+    entry.size = 50;
+    entry.is_large = false;
+    entry.block_count = 0;
+    entry.host = "192.168.1.1";
+    entry.write_context_hash = "abc123";
+
+    index.add_entry(entry);
+    index.save();
+
+    LocalIndex loaded(make_idx_path("host_ctx"));
+    loaded.load();
+
+    auto found = loaded.find_entry("obj/with_host");
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(found->host, "192.168.1.1");
+    EXPECT_EQ(found->write_context_hash, "abc123");
+}
+
+TEST_F(LocalIndexTest, RemoveOneEntryFromMultiplePerKey) {
+    LocalIndex index(make_idx_path("remove_one_multi"));
+
+    index.add_entry({"obj/same", "data_001.dat", 0, 100, false, 0});
+    index.add_entry({"obj/same", "data_002.dat", 200, 50, true, 2});
+
+    EXPECT_EQ(index.entry_count(), 2);
+    EXPECT_TRUE(index.remove_entry("obj/same"));
+    EXPECT_EQ(index.entry_count(), 0);
+    EXPECT_FALSE(index.find_entry("obj/same").has_value());
+}
+
+TEST_F(LocalIndexTest, CompactThenAddAndSave) {
+    CMString idx_path = make_idx_path("compact_add");
+
+    {
+        LocalIndex index(idx_path);
+        index.add_entry({"obj/a", "data.dat", 0, 10, false, 0});
+        index.add_entry({"obj/b", "data.dat", 10, 20, false, 0});
+        index.save();
+        index.remove_entry("obj/a");
+        index.compact();
+        index.add_entry({"obj/c", "data.dat", 30, 30, false, 0});
+        index.save();
+    }
+
+    LocalIndex loaded(idx_path);
+    loaded.load();
+    EXPECT_EQ(loaded.entry_count(), 2);
+    EXPECT_FALSE(loaded.find_entry("obj/a").has_value());
+    ASSERT_TRUE(loaded.find_entry("obj/b").has_value());
+    ASSERT_TRUE(loaded.find_entry("obj/c").has_value());
+}
+
+TEST_F(LocalIndexTest, LoadEmptyFile) {
+    CMString idx_path = make_idx_path("empty_file");
+
+    std::ofstream ofs(idx_path, std::ios::binary);
+    ofs.close();
+
+    LocalIndex index(idx_path);
+    index.load();
+    EXPECT_EQ(index.entry_count(), 0);
 }
 
 }

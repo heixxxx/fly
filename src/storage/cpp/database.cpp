@@ -172,7 +172,7 @@ std::pair<CMString, CMString> Database::read_object_compressed(const CMString& o
     CMString full = full_name(object_name);
     auto& ds = fly::DataService::instance();
 
-    auto [comp_found, comp_data, comp_py_name, comp_hash] = ds.read_raw_compressed(full);
+    auto [comp_found, comp_data, comp_py_name, comp_hash, comp_can_still_produce] = ds.read_raw_compressed(full);
     if (!comp_found || comp_data.empty()) {
         ERR("read_object_compressed: no data for '{}'", full);
         return {};
@@ -240,7 +240,7 @@ void Database::backup_object(const CMString& object_name) {
     CMString full = full_name(object_name);
     auto& ds = fly::DataService::instance();
 
-    auto [found, compressed_data, py_name, source_hash] = ds.read_raw_compressed(full);
+    auto [found, compressed_data, py_name, source_hash, can_still_produce] = ds.read_raw_compressed(full);
     if (!found || compressed_data.empty()) {
         ERR("backup_object: no data for '{}'", full);
         return;

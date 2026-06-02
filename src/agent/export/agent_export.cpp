@@ -123,7 +123,7 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     FLY_EXPORT_METHOD("get_port", &fly::MasterAgent::get_port)
     FLY_EXPORT_METHOD("get_data_server_port", &fly::MasterAgent::get_data_server_port)
     FLY_EXPORT_DEF("request_remote_data", [](fly::MasterAgent& self, const fly::CMString& object_name) -> fly_export::tuple {
-        auto [found, data, py_name] = self.request_remote_data(object_name);
+        auto [found, data, py_name, can_still_produce] = self.request_remote_data(object_name);
         if (!found) return fly_export::make_tuple(
             fly_export::bytes(), fly::CMString());
         return fly_export::make_tuple(
@@ -211,7 +211,7 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
         return self.get_database(db_id);
     })
     FLY_EXPORT_DEF("request_remote_data", [](fly::WorkerAgent& self, const fly::CMString& object_name) -> fly_export::tuple {
-        auto [found, data, py_name] = self.request_remote_data(object_name);
+        auto [found, data, py_name, can_still_produce] = self.request_remote_data(object_name);
         if (!found) return fly_export::make_tuple(
             fly_export::bytes(), fly::CMString());
         return fly_export::make_tuple(

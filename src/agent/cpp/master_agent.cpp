@@ -23,7 +23,7 @@ DataService& MasterAgent::ds() {
 void MasterAgent::set_data_service(CMWeakPtr<DataService> wp) {
     data_service_ = wp;
     if (auto sp = wp.lock()) {
-        sp->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString> {
+        sp->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString, bool> {
             return request_remote_data(name);
         });
     }
@@ -128,8 +128,12 @@ void MasterAgent::start() {
                 response.data_host = loc.host;
                 response.data_port = loc.port;
                 response.success = true;
+                response.can_still_produce = false;
             } else {
                 response.success = false;
+                bool has_pending = !graph_->get_pending_tasks().empty();
+                bool has_running = !metadata_->get_tasks_by_status(TaskStatus::RUNNING).empty();
+                response.can_still_produce = has_pending || has_running;
             }
 
             reactor_->send(conn_id, response);
@@ -918,22 +922,24 @@ void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage
     INFO("RemoveRequest completed: object={}, workers_notified={}", msg.object_name, worker_ids.size());
 }
 
-std::tuple<bool, CMString, CMString> MasterAgent::request_remote_data(const CMString& object_name) {
+std::tuple<bool, CMString, CMString, bool> MasterAgent::request_remote_data(const CMString& object_name) {
     ds();
 
     auto info = ds().lookup_remote_idx(object_name);
     if (info.host.empty()) {
-        return {false, {}, {}};
+        bool has_pending = !graph_->get_pending_tasks().empty();
+        bool has_running = !metadata_->get_tasks_by_status(TaskStatus::RUNNING).empty();
+        return {false, {}, {}, has_pending || has_running};
     }
 
     auto [success, data, py_name, hash, error] = DataClient::request_compressed_data(info.host, info.port, object_name);
 
     if (!success) {
         ERR("request_remote_data compressed failed for {}: {}", object_name, error);
-        return {false, {}, {}};
+        return {false, {}, {}, false};
     }
 
-    return {true, std::move(data), std::move(py_name)};
+    return {true, std::move(data), std::move(py_name), false};
 }
 
 std::pair<bool, ReadResult> MasterAgent::request_data_from_worker(const CMString& host, int32_t port,

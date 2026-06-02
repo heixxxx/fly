@@ -44,3 +44,26 @@ py_test(
         "../log/export",
     ],
 )
+
+py_test(
+    name = "user_task_test",
+    srcs = ["test_user_task.py"],
+    main = "test_user_task.py",
+    deps = [
+        "//src/fly:fly_py",
+        "//src/storage/export:_fly_storage.so",
+        "//src/agent/export:_fly_agent.so",
+        ":test_executor_tasks",
+    ],
+    imports = [
+        ".",
+        "../storage/export",
+        "../storage/py",
+        "../agent/export",
+        "../agent/py",
+        "../log/export",
+        "../core/export",
+        "../task/export",
+        "../task/py",
+    ],
+)

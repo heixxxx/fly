@@ -1,4 +1,4 @@
-"""Phase 4: @wait_obj raises TimeoutError when data never appears."""
+"""Phase 4: @wait_obj raises RuntimeError when data can never appear."""
 import time
 import sys
 import os
@@ -31,16 +31,16 @@ assert master.worker_count >= 1
 
 db = open_db(DB_PATH)
 
-@wait_obj(inputs=lambda d, k: [d.get_obj_name(k)], timeout=2.0)
+@wait_obj(inputs=lambda d, k: [d.get_obj_name(k)])
 def wait_phantom(d, k):
     return d.read_object(k)
 
 try:
     wait_phantom(db, "phantom")
-    assert False, "Should have raised TimeoutError"
-except TimeoutError as e:
-    assert "phantom" in str(e)
+    assert False, "Should have raised RuntimeError"
+except RuntimeError as e:
+    assert "cannot be produced" in str(e)
 except Exception as e:
-    assert False, f"Expected TimeoutError, got {type(e).__name__}: {e}"
+    assert False, f"Expected RuntimeError, got {type(e).__name__}: {e}"
 
 print("[PASS] test_wait_obj_timeout", file=sys.stderr)

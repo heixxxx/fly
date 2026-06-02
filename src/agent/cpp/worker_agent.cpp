@@ -21,7 +21,7 @@ DataService& WorkerAgent::ds() {
 void WorkerAgent::set_data_service(CMWeakPtr<DataService> wp) {
     data_service_ = wp;
     if (auto sp = wp.lock()) {
-        sp->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString> {
+        sp->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString, bool> {
             return request_remote_data(name);
         });
         sp->set_direct_compressed_read_handler(
@@ -476,12 +476,12 @@ void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& ms
     ds().submit_transfer(conn_id, msg.object_name);
 }
 
-std::tuple<bool, CMString, CMString> WorkerAgent::request_remote_data(const CMString& object_name) {
+std::tuple<bool, CMString, CMString, bool> WorkerAgent::request_remote_data(const CMString& object_name) {
      auto location = MetadataClient::query_data_location(
         master_host_, master_port_, object_name);
 
     if (!location.found) {
-        return {false, {}, {}};
+        return {false, {}, {}, location.can_still_produce};
     }
 
     auto [success, data, py_name, hash, error] = DataClient::request_compressed_data(
@@ -489,12 +489,12 @@ std::tuple<bool, CMString, CMString> WorkerAgent::request_remote_data(const CMSt
 
     if (!success) {
         ERR("request_remote_data compressed failed for {}: {}", object_name, error);
-        return {false, {}, {}};
+        return {false, {}, {}, location.can_still_produce};
     }
 
     ds().update_remote_idx(object_name, location.worker_id, location.host, location.port);
 
-    return {true, std::move(data), std::move(py_name)};
+    return {true, std::move(data), std::move(py_name), false};
 }
 
 std::pair<bool, ReadResult> WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,

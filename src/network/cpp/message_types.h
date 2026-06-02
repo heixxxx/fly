@@ -189,10 +189,11 @@ struct DataLocationMessage {
     CMString data_host;
     int32_t data_port = 0;
     bool success = false;
+    bool can_still_produce = false;  // true if pending/running tasks might produce this object
     
     static constexpr MessageType msg_type = MessageType::DATA_LOCATION;
     
-    FLY_SERIALIZE(header, worker_id, file_path, object_name, data_host, data_port, success);
+    FLY_SERIALIZE(header, worker_id, file_path, object_name, data_host, data_port, success, can_still_produce);
 };
 
 // Worker → Master: 任务提交

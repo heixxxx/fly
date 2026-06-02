@@ -159,4 +159,124 @@ TEST_F(DataReaderWriterTest, PyNameRoundtrip) {
     EXPECT_EQ(dsbuf.py_name(), "MyClass");
 }
 
+TEST_F(DataReaderWriterTest, FindEntryReturnsEntryForExisting) {
+    CMString base_path = test_dir_ + "/rw_find";
+
+    {
+        DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+        auto rec = make_record("find_data");
+        writer.write_record("find/obj", rec.original_size, rec.chunk_count, rec.buffer);
+        writer.close();
+    }
+
+    DataReader reader(base_path, "", "a1b2c3d4");
+    auto entry = reader.find_entry("find/obj");
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(entry->object_name, "find/obj");
+    EXPECT_GT(entry->size, 0);
+}
+
+TEST_F(DataReaderWriterTest, FindEntryReturnsNulloptForMissing) {
+    CMString base_path = test_dir_ + "/rw_find_miss";
+    DataReader reader(base_path, "", "a1b2c3d4");
+    auto entry = reader.find_entry("missing/obj");
+    EXPECT_FALSE(entry.has_value());
+}
+
+TEST_F(DataReaderWriterTest, FindAllEntriesReturnsEntries) {
+    CMString base_path = test_dir_ + "/rw_find_all";
+
+    {
+        DataWriter writer(base_path, "", "a1b2c3d4", 10);
+        auto r1 = make_record("data1");
+        writer.write_record("multi/obj", r1.original_size, r1.chunk_count, r1.buffer);
+        auto r2 = make_record("data2");
+        writer.write_record("multi/obj", r2.original_size, r2.chunk_count, r2.buffer);
+        writer.close();
+    }
+
+    DataReader reader(base_path, "", "a1b2c3d4");
+    auto entries = reader.find_all_entries("multi/obj");
+    ASSERT_TRUE(entries.has_value());
+    EXPECT_EQ(entries->size(), 2u);
+}
+
+TEST_F(DataReaderWriterTest, FindAllEntriesReturnsNulloptForMissing) {
+    CMString base_path = test_dir_ + "/rw_find_all_miss";
+    DataReader reader(base_path, "", "a1b2c3d4");
+    auto entries = reader.find_all_entries("no/such/obj");
+    EXPECT_FALSE(entries.has_value());
+}
+
+TEST_F(DataReaderWriterTest, FindFilePathWithEmptyDataPath) {
+    CMString base_path = test_dir_ + "/rw_filepath";
+
+    {
+        DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+        auto rec = make_record("filepath data");
+        writer.write_record("fp/obj", rec.original_size, rec.chunk_count, rec.buffer);
+        writer.close();
+    }
+
+    DataReader reader(base_path, "", "a1b2c3d4");
+    auto entry = reader.find_entry("fp/obj");
+    ASSERT_TRUE(entry.has_value());
+
+    CMString found_path = reader.find_file_path(entry->file_name);
+    EXPECT_FALSE(found_path.empty());
+    EXPECT_TRUE(std::filesystem::exists(found_path));
+}
+
+TEST_F(DataReaderWriterTest, ReadFromMissingFileReturnsEmpty) {
+    CMString base_path = test_dir_ + "/rw_missing_file";
+    DataReader reader(base_path, "", "a1b2c3d4");
+
+    IndexEntry fake_entry;
+    fake_entry.object_name = "fake";
+    fake_entry.file_name = "nonexistent_file.dat";
+    fake_entry.offset = 0;
+    fake_entry.size = 10;
+
+    CMString result = reader.read_raw_bytes(fake_entry);
+    EXPECT_TRUE(result.empty());
+}
+
+TEST_F(DataReaderWriterTest, ReadRawBytesByIndexEntry) {
+    CMString base_path = test_dir_ + "/rw_by_entry";
+
+    {
+        DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+        auto rec = make_record("entry data");
+        writer.write_record("entry/obj", rec.original_size, rec.chunk_count, rec.buffer);
+        writer.close();
+    }
+
+    DataReader reader(base_path, "", "a1b2c3d4");
+    auto entry = reader.find_entry("entry/obj");
+    ASSERT_TRUE(entry.has_value());
+
+    CMString raw = reader.read_raw_bytes(entry.value());
+    ASSERT_FALSE(raw.empty());
+    CMString data = decompress_raw(raw);
+    EXPECT_EQ(data, "entry data");
+}
+
+TEST_F(DataReaderWriterTest, DataPathFallback) {
+    CMString base_path = test_dir_ + "/rw_base_fb";
+    CMString data_path = test_dir_ + "/rw_data_fb";
+
+    {
+        DataWriter writer(base_path, data_path, "a1b2c3d4", 1024);
+        auto rec = make_record("fallback data");
+        writer.write_record("fb/obj", rec.original_size, rec.chunk_count, rec.buffer);
+        writer.close();
+    }
+
+    DataReader reader(base_path, data_path, "a1b2c3d4");
+    CMString raw = reader.read_raw_bytes("fb/obj");
+    ASSERT_FALSE(raw.empty());
+    CMString data = decompress_raw(raw);
+    EXPECT_EQ(data, "fallback data");
+}
+
 }

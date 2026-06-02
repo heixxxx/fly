@@ -54,7 +54,7 @@ public:
     static DataService& instance();
     static CMSharedPtr<DataService> instance_ptr();
 
-    using RemoteCompressedReadCallback = std::function<std::tuple<bool, CMString, CMString>(
+    using RemoteCompressedReadCallback = std::function<std::tuple<bool, CMString, CMString, bool>(
         const CMString& object_name)>;
     using DirectCompressedReadCallback = std::function<std::tuple<bool, CMString, CMString, CMString>(
         const CMString& host, int32_t port, const CMString& object_name)>;
@@ -152,7 +152,7 @@ public:
     std::pair<bool, ReadResult> try_read_local_or_wait(const CMString& object_name,
                                                         int timeout_ms = 3000);
 
-    std::tuple<bool, CMString, CMString, CMString> read_raw_compressed(const CMString& object_name);
+    std::tuple<bool, CMString, CMString, CMString, bool> read_raw_compressed(const CMString& object_name);
 
     void mark_temp_entry(const CMString& object_name, const CMString& compressed_data);
     void unmark_temp_entry(const CMString& object_name);
