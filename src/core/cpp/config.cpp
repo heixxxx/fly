@@ -57,10 +57,17 @@ void Config::reset() {
     workers_launched_ = false;
 }
 
+void Config::apply_sync(const CMMap<CMString, int64_t>& ints,
+                         const CMMap<CMString, CMString>& strs) {
+    for (const auto& [k, v] : ints) {
+        int_values_[k] = v;
+    }
+    for (const auto& [k, v] : strs) {
+        str_values_[k] = v;
+    }
+}
+
 const CMMap<CMString, int64_t> Config::INT_DEFAULTS = {
-    {"worker_mode", 0},
-    {"worker_id", 0},
-    {"master_port", 8000},
     {"heartbeat_timeout", 120},
     {"heartbeat_interval", 5},
     {"backup_threshold", 100},
@@ -73,8 +80,6 @@ const CMMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"serialize_chunk_size", 4194304},
     {"dependency_update_mode", 0},
     {"fail_unscheduleable_tasks", 1},
-    {"interactive", 0},
-    {"cli_master_port", 0},
     {"read_cache_size", 1073741824},
     {"temp_store_size", 536870912},
 };
@@ -82,8 +87,5 @@ const CMMap<CMString, int64_t> Config::INT_DEFAULTS = {
 const CMMap<CMString, CMString> Config::STR_DEFAULTS = {
     {"transport_type", "tcp"},
     {"compression_type", "lz4"},
-    {"data_server_host", "127.0.0.1"},
-    {"master_host", "127.0.0.1"},
     {"log_dir", "fly_log"},
-    {"script_path", ""},
 };

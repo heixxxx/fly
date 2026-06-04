@@ -23,6 +23,12 @@ public:
 
     void reset();
 
+    void apply_sync(const CMMap<CMString, int64_t>& ints,
+                    const CMMap<CMString, CMString>& strs);
+
+    const CMMap<CMString, int64_t>& all_ints() const { return int_values_; }
+    const CMMap<CMString, CMString>& all_strs() const { return str_values_; }
+
 private:
     Config();
     Config(const Config&) = delete;

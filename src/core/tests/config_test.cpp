@@ -11,7 +11,6 @@ TEST(ConfigTest, DefaultValues) {
     Config& config = Config::instance();
     config.reset();
     
-    EXPECT_EQ(config.get_int("master_port"), 8000);
     EXPECT_EQ(config.get_int("heartbeat_timeout"), 120);
     EXPECT_EQ(config.get_int("heartbeat_interval"), 5);
     EXPECT_EQ(config.get_str("transport_type"), "tcp");
@@ -56,11 +55,11 @@ TEST(ConfigTest, ResetRestoresDefaults) {
     Config& config = Config::instance();
     config.reset();
     
-    config.set_int("master_port", 9000);
-    EXPECT_EQ(config.get_int("master_port"), 9000);
+    config.set_int("heartbeat_timeout", 9000);
+    EXPECT_EQ(config.get_int("heartbeat_timeout"), 9000);
     
     config.reset();
-    EXPECT_EQ(config.get_int("master_port"), 8000);
+    EXPECT_EQ(config.get_int("heartbeat_timeout"), 120);
 }
 
 TEST(ConfigTest, UnknownKeyReturnsInvalidInt) {
