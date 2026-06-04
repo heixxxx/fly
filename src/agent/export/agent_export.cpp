@@ -173,10 +173,25 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
         self.send_idx_load_commands(db_id, base_path, writer_ids);
     })
     FLY_EXPORT_METHOD("rebuild_remote_idx", [](fly::MasterAgent& self,
-                                                 const fly::CMString& db_id,
-                                                 const fly::CMString& base_path,
-                                                 const fly::CMVector<::WorkerInfo>& workers) {
+                                                   const fly::CMString& db_id,
+                                                   const fly::CMString& base_path,
+                                                   const fly::CMVector<::WorkerInfo>& workers) {
         self.rebuild_remote_idx(db_id, base_path, workers);
+    })
+    FLY_EXPORT_METHOD("set_master_hostname", &fly::MasterAgent::set_master_hostname)
+    FLY_EXPORT_METHOD("send_idx_load_to_worker", [](fly::MasterAgent& self,
+                                                      const fly::CMString& db_id,
+                                                      const fly::CMString& base_path,
+                                                      const fly::CMVector<fly::CMString>& writer_ids,
+                                                      uint64_t worker_id) {
+        self.send_idx_load_to_worker(db_id, base_path, writer_ids, worker_id);
+    })
+    FLY_EXPORT_METHOD("rebuild_remote_idx_for_worker", [](fly::MasterAgent& self,
+                                                            const fly::CMString& db_id,
+                                                            const fly::CMString& base_path,
+                                                            const fly::CMVector<fly::CMString>& writer_ids,
+                                                            uint64_t worker_id) {
+        self.rebuild_remote_idx_for_worker(db_id, base_path, writer_ids, worker_id);
     });
 
 FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")

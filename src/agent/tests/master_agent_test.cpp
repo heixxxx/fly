@@ -3,6 +3,7 @@
 #include <agent/cpp/worker_agent.h>
 #include <common/cpp/test_helpers.h>
 #include <core/cpp/config.h>
+#include <core/cpp/process_info.h>
 #include <serialization/cpp/serialization_macros.h>
 #include <thread>
 #include <chrono>

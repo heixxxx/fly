@@ -40,6 +40,7 @@ enum class MessageType : uint8_t {
     BACKUP_REQUEST = 30,
     BACKUP_ASSIGN = 31,
     BACKUP_COMPLETE = 32,
+    CONFIG_SYNC = 33,
 };
 
 // 基础消息头（所有消息继承）
@@ -305,10 +306,11 @@ struct IdxLoadAckMessage {
     bool success = false;
     int32_t loaded_count = 0;
     CMString error_message;
+    CMVector<CMString> loaded_writer_ids;
 
     static constexpr MessageType msg_type = MessageType::IDX_LOAD_ACK;
 
-    FLY_SERIALIZE(header, worker_id, db_id, success, loaded_count, error_message);
+    FLY_SERIALIZE(header, worker_id, db_id, success, loaded_count, error_message, loaded_writer_ids);
 };
 
 // Master → Worker: database frozen notification (broadcast)
@@ -390,6 +392,16 @@ struct BackupCompleteMessage {
 
     static constexpr MessageType msg_type = MessageType::BACKUP_COMPLETE;
     FLY_SERIALIZE(header, worker_id, object_name, db_id, success, error_message);
+};
+
+// Master → Worker: sync shared config after registration
+struct ConfigSyncMessage {
+    MessageHeader header;
+    CMMap<CMString, int64_t> int_values;
+    CMMap<CMString, CMString> str_values;
+
+    static constexpr MessageType msg_type = MessageType::CONFIG_SYNC;
+    FLY_SERIALIZE(header, int_values, str_values);
 };
 
 }  // namespace fly

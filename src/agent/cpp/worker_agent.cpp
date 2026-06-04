@@ -1,6 +1,7 @@
 #include <agent/cpp/worker_agent.h>
 #include <log/cpp/logger.h>
 #include <core/cpp/config.h>
+#include <core/cpp/process_info.h>
 #include <core/cpp/graceful_exit.h>
 #include <storage/cpp/data_service.h>
 #include <network/cpp/data_client.h>
@@ -56,7 +57,7 @@ void WorkerAgent::start() {
 
     transport->listen("0.0.0.0", 0);
     data_server_port_ = static_cast<int32_t>(transport->get_bound_port());
-    data_server_host_ = Config::instance().get_str("data_server_host");
+    data_server_host_ = ProcessInfo::instance().data_server_host();
 
     INFO("data server listening on port {}", data_server_port_);
 
@@ -87,6 +88,13 @@ void WorkerAgent::start() {
     reactor_->register_handler<RegisterAckMessage>(
         [this](uint64_t conn, const RegisterAckMessage& msg) {
             on_register_ack(msg);
+        });
+
+    reactor_->register_handler<ConfigSyncMessage>(
+        [this](uint64_t conn, const ConfigSyncMessage& msg) {
+            Config::instance().apply_sync(msg.int_values, msg.str_values);
+            INFO("ConfigSync received: {} int keys, {} str keys",
+                 msg.int_values.size(), msg.str_values.size());
         });
 
     reactor_->register_handler<TaskAssignMessage>(
@@ -151,10 +159,7 @@ void WorkerAgent::start() {
     reg.attributes = attributes_;
     reg.data_server_host = data_server_host_;
     reg.data_server_port = data_server_port_;
-
-    char hostname_buf[256] = {};
-    gethostname(hostname_buf, sizeof(hostname_buf));
-    reg.hostname = hostname_buf;
+    reg.hostname = ProcessInfo::instance().hostname();
     reg.ip_address = data_server_host_;
 
     reactor_->send(master_conn_, reg);
@@ -734,6 +739,7 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
     ack.db_id = msg.db_id;
 
     int32_t loaded = 0;
+    CMVector<CMString> loaded_writer_ids;
     try {
         auto& dsRef = ds();
         dsRef.register_database(msg.db_id, msg.base_path, "");
@@ -751,12 +757,14 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
 
             if (!all_entries.empty()) {
                 dsRef.restore_entries(msg.db_id, all_entries);
+                loaded_writer_ids.push_back(writer_id);
                 loaded++;
             }
         }
 
         ack.success = true;
         ack.loaded_count = loaded;
+        ack.loaded_writer_ids = loaded_writer_ids;
         INFO("IdxLoad complete: db_id={}, loaded {} idx files", msg.db_id, loaded);
     } catch (const std::exception& e) {
         ack.success = false;

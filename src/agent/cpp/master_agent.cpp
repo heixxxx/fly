@@ -1,6 +1,7 @@
 #include <agent/cpp/master_agent.h>
 #include <log/cpp/logger.h>
 #include <core/cpp/config.h>
+#include <core/cpp/process_info.h>
 #include <core/cpp/graceful_exit.h>
 #include <storage/cpp/local_index.h>
 #include <thread>
@@ -33,9 +34,6 @@ MasterAgent::MasterAgent(const CMString& host, uint16_t port)
     : host_(host), port_(port), running_(false),
       graph_(CMMakeUnique<DependencyGraph>()),
       worker_manager_(CMMakeUnique<WorkerManager>()) {
-    char hostname_buf[256] = {};
-    gethostname(hostname_buf, sizeof(hostname_buf));
-    master_hostname_ = hostname_buf;
 }
 
 MasterAgent::~MasterAgent() {
@@ -172,6 +170,11 @@ void MasterAgent::start() {
     reactor_->register_handler<BackupRequestMessage>(
         [this](uint64_t conn_id, const BackupRequestMessage& msg) {
             on_backup_request(conn_id, msg);
+        });
+
+    reactor_->register_handler<IdxLoadAckMessage>(
+        [this](uint64_t conn_id, const IdxLoadAckMessage& msg) {
+            on_idx_load_ack(conn_id, msg);
         });
 
     reactor_->on_disconnect([this](uint64_t conn_id) {
@@ -501,6 +504,11 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     ack.master_address = host_;
     ack.master_port = static_cast<int32_t>(port_);
     reactor_->send(conn_id, ack);
+
+    ConfigSyncMessage cfg_msg;
+    cfg_msg.int_values = Config::instance().all_ints();
+    cfg_msg.str_values = Config::instance().all_strs();
+    reactor_->send(conn_id, cfg_msg);
 }
 
 void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
@@ -525,7 +533,7 @@ void MasterAgent::on_data_ready(uint64_t conn_id, const DataReadyMessage& msg) {
     CMString hostname;
     CMString ip;
     if (msg.worker_id == 0) {
-        hostname = master_hostname_;
+        hostname = ProcessInfo::instance().hostname();
         ip = host_;
     } else {
         auto host_it = worker_to_hostname_.find(msg.worker_id);
@@ -1214,6 +1222,76 @@ void MasterAgent::rebuild_remote_idx(const CMString& db_id,
         INFO("rebuild_remote_idx: mapped {} entries from writer_id={} to new worker_id={}",
              entries.size(), w.writer_id, new_worker_id);
     }
+}
+
+void MasterAgent::set_master_hostname(const CMString& hostname) {
+    ProcessInfo::instance().set_hostname(hostname);
+}
+
+void MasterAgent::send_idx_load_to_worker(const CMString& db_id,
+                                            const CMString& base_path,
+                                            const CMVector<CMString>& writer_ids,
+                                            uint64_t worker_id) {
+    IdxLoadCommandMessage msg;
+    msg.db_id = db_id;
+    msg.base_path = base_path;
+    msg.writer_ids = writer_ids;
+
+    std::lock_guard<std::mutex> lk(workers_mutex_);
+    auto it = worker_to_conn_.find(worker_id);
+    if (it == worker_to_conn_.end()) {
+        ERR("send_idx_load_to_worker: worker_id={} not found", worker_id);
+        return;
+    }
+    reactor_->send(it->second, msg);
+    INFO("Sent IdxLoadCommand to worker_id={}: db_id={}, writer_ids_count={}",
+         worker_id, db_id, writer_ids.size());
+}
+
+void MasterAgent::rebuild_remote_idx_for_worker(const CMString& db_id,
+                                                   const CMString& base_path,
+                                                   const CMVector<CMString>& writer_ids,
+                                                   uint64_t worker_id) {
+    auto addr = ds().get_worker_address(worker_id);
+
+    for (const auto& writer_id : writer_ids) {
+        CMString idx_path = base_path + "/" + writer_id + ".idx";
+        if (!std::filesystem::exists(idx_path)) {
+            WARN("rebuild_remote_idx_for_worker: idx file not found: {}", idx_path);
+            continue;
+        }
+
+        LocalIndex idx(idx_path);
+        idx.load();
+        auto entries = idx.get_all_entries();
+
+        for (const auto& entry : entries) {
+            ds().update_remote_idx(entry.object_name, worker_id, addr.host, addr.port);
+            graph_->mark_data_ready(entry.object_name);
+        }
+        INFO("rebuild_remote_idx_for_worker: mapped {} entries from writer_id={} to worker_id={}",
+             entries.size(), writer_id, worker_id);
+    }
+}
+
+void MasterAgent::on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg) {
+    INFO("IdxLoadAck: worker_id={}, db_id={}, success={}, loaded_count={}, writer_ids={}",
+         msg.worker_id, msg.db_id, msg.success, msg.loaded_count, msg.loaded_writer_ids.size());
+
+    if (!msg.success) {
+        ERR("IdxLoadAck failed from worker_id={}: {}", msg.worker_id, msg.error_message);
+        return;
+    }
+
+    // Master reads the same idx files from shared filesystem and updates remote_idx_
+    auto it = db_registry_.find(msg.db_id);
+    if (it == db_registry_.end()) {
+        ERR("IdxLoadAck: unknown db_id={}", msg.db_id);
+        return;
+    }
+
+    const CMString& base_path = it->second["base_path"];
+    rebuild_remote_idx_for_worker(msg.db_id, base_path, msg.loaded_writer_ids, msg.worker_id);
 }
 
 void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg) {

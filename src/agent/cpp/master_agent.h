@@ -97,6 +97,11 @@ public:
     CMVector<IndexEntry> restore_master_idx(const CMString& db_id, const CMString& base_path, const CMString& writer_id);
     void send_idx_load_commands(const CMString& db_id, const CMString& base_path, const CMVector<CMString>& writer_ids);
     void rebuild_remote_idx(const CMString& db_id, const CMString& base_path, const CMVector<::WorkerInfo>& workers);
+    void send_idx_load_to_worker(const CMString& db_id, const CMString& base_path,
+                                  const CMVector<CMString>& writer_ids, uint64_t worker_id);
+    void rebuild_remote_idx_for_worker(const CMString& db_id, const CMString& base_path,
+                                        const CMVector<CMString>& writer_ids, uint64_t worker_id);
+    void set_master_hostname(const CMString& hostname);
 
 private:
     CMString host_;
@@ -154,6 +159,7 @@ private:
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
     void on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg);
     void on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg);
+    void on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg);
 
     void on_backup_request(uint64_t conn_id, const BackupRequestMessage& msg);
     uint64_t select_backup_worker(uint64_t source_worker_id);
@@ -175,7 +181,6 @@ private:
 
     CMMap<uint64_t, CMString> worker_to_hostname_;
     CMMap<uint64_t, CMString> worker_to_ip_;
-    CMString master_hostname_;
     CMSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
 
     CMMap<CMString, CMString> write_provenance_;
