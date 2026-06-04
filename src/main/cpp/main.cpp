@@ -1,5 +1,6 @@
 #include <Python.h>
 #include <core/cpp/config.h>
+#include <core/cpp/process_info.h>
 #include <log/cpp/logger.h>
 #include <cstdio>
 #include <cstdlib>
@@ -116,6 +117,7 @@ static void print_usage(const char* prog) {
     printf("  --master-host HOST   Master host (default: 127.0.0.1)\n");
     printf("  --master-port PORT   Master port (default: 0)\n");
     printf("  --log-dir DIR        Log directory (default: fly_log)\n");
+    printf("  --host HOST          Host override for registration\n");
     printf("  -i                   Interactive mode\n");
     printf("  script               Python script to execute\n");
 }
@@ -133,6 +135,7 @@ int main(int argc, char* argv[]) {
     bool interactive = false;
     std::string script_path;
     std::string worker_attributes;
+    std::string host_override;
 
     for (int i = 1; i < argc; i++) {
         std::string arg(argv[i]);
@@ -148,6 +151,8 @@ int main(int argc, char* argv[]) {
             log_dir = argv[++i];
         } else if (arg == "--worker-attributes" && i + 1 < argc) {
             worker_attributes = argv[++i];
+        } else if (arg == "--host" && i + 1 < argc) {
+            host_override = argv[++i];
         } else if (arg == "-i") {
             interactive = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -159,15 +164,21 @@ int main(int argc, char* argv[]) {
     }
 
     auto& cfg = Config::instance();
-    cfg.set_int("worker_mode", worker_mode ? 1 : 0);
-    cfg.set_int("worker_id", worker_id);
-    cfg.set_str("master_host", master_host);
-    cfg.set_int("master_port", master_port);
-    cfg.set_int("cli_master_port", master_port);
+    auto& proc = ProcessInfo::instance();
+
+    proc.set_worker_mode(worker_mode);
+    proc.set_worker_id(worker_id);
+    proc.set_master_host(master_host);
+    proc.set_master_port(master_port);
+    proc.set_cli_master_port(master_port);
     cfg.set_str("log_dir", log_dir);
-    cfg.set_int("interactive", interactive ? 1 : 0);
-    cfg.set_str("script_path", script_path);
-    cfg.set_str("worker_attributes", worker_attributes);
+    proc.set_interactive(interactive);
+    proc.set_script_path(script_path);
+    proc.set_worker_attributes(worker_attributes);
+
+    if (!host_override.empty()) {
+        proc.set_hostname(host_override);
+    }
 
     if (!worker_mode) {
         log_dir = fly::Logger::resolve_log_dir(log_dir);
