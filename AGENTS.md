@@ -120,15 +120,23 @@ bash qa/run_qa_tests.sh
 - 所有 crash（SIGSEGV、SIGABRT 等）必须立即修复，不得标记为"已知问题"
 - 所有间歇性失败（flaky test）必须立即修复，不得提高超时或增加重试
 - 稳定性测试（50 轮以上）必须 100% 通过，任何一轮失败都是必须修复的 bug
+
+## Config vs ProcessInfo
+
+- **Config**：所有进程共享，master 通过 ConfigSyncMessage 自动同步给 worker。包含 heartbeat/backup/compression/log_dir 等配置
+- **ProcessInfo**：进程私有，不同步。包含 worker_mode, worker_id, master_host/port, hostname 等
+- **`--host` CLI**：覆盖 ProcessInfo 的 hostname，用于单机模拟多 host 测试
+- **log_dir** 在 Config 中（所有进程共享同一日志目录）
 ---
 
 ## Module Map
 
 ```
 src/storage/    → Layer 1: Database, DataService, DataWriter (纯落盘), DataReader (纯读字节), CompressingStreamBuf, DecompressingStreamBuf
-src/network/    → Layer 2: Reactor, TCP transport, message protocol (27 msg types)
+src/network/    → Layer 2: Reactor, TCP transport, message protocol (27 msg types + ConfigSync + IdxLoad)
 src/task/       → Layer 3: DependencyGraph, TaskScheduler, WorkerManager
 src/agent/      → Layer 4: MasterAgent, WorkerAgent, TaskExecutor
+src/core/       → Config (共享配置), ProcessInfo (进程私有数据, hostname)
 src/fly/        → Layer 5: Python public API (__init__.py, runtime.py)
 src/common/     → CM* type aliases (CMString, CMVector…)
 src/log/        → DBG/INFO/WARN/ERR macros, CM_FORMAT_CLASS/ENUM

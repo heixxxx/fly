@@ -105,17 +105,17 @@ fly -i user_tasks.py
 
 ### 3.1 配置管理
 
-Config单例模式，必须在启动worker前设置参数：
+Config单例模式管理所有进程共享的配置，ProcessInfo单例管理进程私有数据：
 
 ```python
 from fly import get_config
+from fly.runtime import get_agent
 
-# 获取全局单例Config（无需创建实例）
+# 获取全局单例Config（所有进程共享，由master通过ConfigSyncMessage同步到worker）
 config = get_config()
 
-# 设置参数（必须在启动worker前）
+# 设置共享参数（必须在启动worker前）
 config.set(
-    master_port=8000,
     heartbeat_timeout=120,
     heartbeat_interval=5,
     backup_threshold=100,
@@ -124,9 +124,11 @@ config.set(
     block_size=134217728,               # 128MB
     track_writes=1,                     # 启用写入跟踪，记录每个任务写入的对象列表
     data_server_threads=2,              # Data Server线程池大小，默认1
+    log_dir="/path/to/logs",            # 所有进程共享的日志目录
 )
 
 # 再次调用get_config()返回同一个实例
+config2 = get_config()  # config2 == config
 config2 = get_config()  # config2 == config
 ```
 
@@ -134,6 +136,11 @@ config2 = get_config()  # config2 == config
 ```python
 config.set(heartbeat_timeout=60)  # RuntimeError: Config must be set before workers are launched
 ```
+
+**Config vs ProcessInfo**：
+- `Config`：所有进程共享的数据（heartbeat_timeout, backup_threshold, log_dir 等），master 通过 ConfigSyncMessage 自动同步给 worker
+- `ProcessInfo`：进程私有数据（worker_mode, worker_id, master_host/port, hostname 等），不同步
+- `--host` CLI 参数通过 `ProcessInfo::set_hostname()` 覆盖自动检测的 hostname，用于多 host 测试
 
 ### 3.2 任务定义与提交
 
@@ -322,7 +329,8 @@ master.launch_custom_workers(
 │  - DataService: 统一内存索引（local_idx + remote_idx）          │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 0: 基础设施层                                             │
-│  - Config: 全局配置管理                                          │
+│  - Config: 全局共享配置管理（通过 ConfigSyncMessage 同步）        │
+│  - ProcessInfo: 进程私有数据（hostname, worker_mode 等）          │
 │  - Serializer: bitsery 序列化（FLY_SERIALIZE_* 宏封装）          │
 │  - Export: nanobind 绑定（FLY_EXPORT_* 宏封装）                  │
 │  - Common: CMString, CMVector 等类型别名                         │
@@ -454,6 +462,47 @@ Master端（后台任务）：
 
 **注意**：idx合并、_META生成等后处理尚未实现。
 
+### 5.4 数据备份 (Backup)
+
+```
+Worker A 写入 object_name (backup=True):
+1. 正常写入流程完成
+2. Master 检测 backup_threshold，选择另一个 host 上的 Worker B
+3. Master 向 Worker B 发送 TaskAssignMessage(__backup_object)
+4. Worker B 从 Worker A 的 DataServer 拉取压缩数据（零解压落盘）
+5. Worker B 写入本地 idx + data，发送 TaskComplete
+6. Master 更新 remote_idx（两个 worker 都有该对象）
+```
+
+**关键设计**：备份数据保持压缩状态传输，不做解压-再压缩。
+
+### 5.5 load_db 流程
+
+```
+load_db(path) 恢复已有数据库：
+
+Phase 1: Master 注册 db paths
+├─ 读取 _DB_META（db_id, WorkerInfo 列表）
+├─ 创建临时 Database，注册 db_id 到 DataService
+└─ Master 不加载任何 idx 到 local_idx
+
+Phase 2: 按 hostname 分配 worker
+├─ 从 _DB_META 中提取 hostname → writer_ids 映射
+├─ 检查现有 worker 的 hostname 匹配情况
+├─ 对缺少 worker 的 hostname，spawn 新 worker 并传 --host
+└─ 等待新 worker 连接并刷新 hostname 映射
+
+Phase 3: 定向 idx 加载
+├─ 每个 hostname 的 writer_ids 发送给对应 hostname 的 worker
+├─ Worker 加载 idx 到 local_idx，发送 IdxLoadAck（含 loaded_writer_ids）
+└─ Master 收到 ack 后从共享文件系统读取 idx，更新 remote_idx
+
+关键约束：
+- Master 自身不加载任何 idx 到 local_idx（由 worker 负责）
+- Worker ack 轻量级，Master 自行读 idx 文件
+- spawn 时传 --host 确保新 worker hostname 与 _DB_META 匹配
+```
+
 ---
 
 ## 六、通信协议
@@ -495,6 +544,9 @@ Master端（后台任务）：
 | DBPathResponseMessage | Master → Worker | ✅ 已实现 |
 | WorkerPropertyUpdateMessage | Worker → Master | ✅ 已实现 |
 | ObjectRemovedMessage | Worker → Master | ✅ 已实现 |
+| ConfigSyncMessage | Master → Worker | ✅ 已实现 |
+| IdxLoadCommandMessage | Master → Worker | ✅ 已实现 |
+| IdxLoadAckMessage | Worker → Master | ✅ 已实现 |
 
 **TransportLayer更新**：
 - 移除 `accept()` 方法
@@ -574,6 +626,9 @@ fly/
 │       └── config.py        # Config 包装
 │
 ├── qa/                       # 项目级集成测试
+│   ├── test_backup_load_db_multi_worker.py  # backup+load_db 多host测试
+│   ├── backup_load_db_multi_worker_run1.py  # Run1: 写入+备份
+│   └── backup_load_db_multi_worker_run2.py  # Run2: load_db+读取验证
 ├── docs/                     # 设计文档
 └── scripts/                  # 辅助脚本
 ```
@@ -590,9 +645,11 @@ fly/
   - DataService 统一索引（local_idx + remote_idx + worker_registry）
   - 异步 WriteBackQueue
 - **Layer 2**：网络层（Reactor, TCP, 消息协议）
-  - 27种消息结构全部定义
+  - 27种消息结构全部定义 + ConfigSyncMessage + IdxLoadCommand/Ack
   - TransportLayer 抽象（移除 accept()，新增 stop_listening()）
   - Worker 数据传输（独立 DataClient 连接）
+  - ConfigSyncMessage：master 注册 worker 后自动同步 Config
+  - IdxLoadCommand/Ack：定向 idx 加载，按 hostname 分配 worker
 - **Layer 3**：任务系统层（DependencyGraph, 调度器）
   - TaskManager（原 MetadataManager）
   - TaskScheduler
@@ -603,14 +660,16 @@ fly/
   - TaskExecutor：任务执行器
   - Worker动态能力管理：`set_worker_property`, `remove_worker_property`, `get_worker_properties`
   - 失败任务持久化：`FailedTaskRecord`, `restart_failed_tasks()` API
+  - 数据备份：压缩数据零解压跨 host 复制
+  - load_db：按 hostname 分配 worker 定向加载 idx，master 不加载 local idx
 - **Layer 5**：Python API（@as_task 装饰器，配置管理）
   - FlyAgent 抽象基类：统一接口，Master/Worker 实现
   - Worker 属性管理：`set_worker_property`, `remove_worker_property`, `get_worker_properties`
   - 失败任务重启：`restart_failed_tasks()`，三阶段数据可用性检查
 
 **测试覆盖**：
-- 32 Bazel targets pass（1 data_service_test + 31 unit）
-- QA + E2E 测试
+- 44 Bazel targets pass（单元测试 + 集成测试）
+- 47 QA tests pass（含 backup + load_db 多 host 分布式测试）
 
 ### 尚未实现（⏳）
 
@@ -621,10 +680,10 @@ fly/
   - _META 元信息生成
   - Worker 自动启动恢复
 - **Locality 调度**：数据locality优先调度（设计完成，未实现）
-- **数据副本**：自动备份策略（BackupManager 设计完成，未实现）
+- **数据副本**：自动备份策略已实现（手动 backup=True），阈值触发备份尚未实现
 - **Worker 失败恢复**：任务重新调度（设计完成，未实现）
 - **Worker role 调度**：role-based 任务分配（RegisterMessage.role 存在但未使用）
 
 ---
 
-*文档更新日期: 2026-05-21*
+*文档更新日期: 2026-06-04*
