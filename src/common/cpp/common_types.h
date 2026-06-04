@@ -12,6 +12,29 @@
 #include <string>
 #include <memory>
 #include <utility>
+#include <tuple>
+#include <functional>
+
+namespace fly {
+
+// Hash combiner for std::tuple — enables CMUnorderedSet<std::tuple<...>>
+template<typename Tuple, std::size_t... Is>
+size_t tuple_hash_impl(const Tuple& t, std::index_sequence<Is...>) {
+    size_t seed = 0;
+    ((seed ^= std::hash<std::tuple_element_t<Is, Tuple>>{}(std::get<Is>(t)) + 0x9e3779b9 + (seed << 6) + (seed >> 2)), ...);
+    return seed;
+}
+
+}
+
+namespace std {
+template<typename... Ts>
+struct hash<std::tuple<Ts...>> {
+    size_t operator()(const std::tuple<Ts...>& t) const {
+        return fly::tuple_hash_impl(t, std::index_sequence_for<Ts...>{});
+    }
+};
+}
 
 namespace fly {
 

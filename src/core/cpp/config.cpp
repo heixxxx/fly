@@ -57,8 +57,8 @@ void Config::reset() {
     workers_launched_ = false;
 }
 
-void Config::apply_sync(const CMMap<CMString, int64_t>& ints,
-                         const CMMap<CMString, CMString>& strs) {
+void Config::apply_sync(const CMUnorderedMap<CMString, int64_t>& ints,
+                         const CMUnorderedMap<CMString, CMString>& strs) {
     for (const auto& [k, v] : ints) {
         int_values_[k] = v;
     }
@@ -67,7 +67,7 @@ void Config::apply_sync(const CMMap<CMString, int64_t>& ints,
     }
 }
 
-const CMMap<CMString, int64_t> Config::INT_DEFAULTS = {
+const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"heartbeat_timeout", 120},
     {"heartbeat_interval", 5},
     {"backup_threshold", 100},
@@ -84,7 +84,7 @@ const CMMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"temp_store_size", 536870912},
 };
 
-const CMMap<CMString, CMString> Config::STR_DEFAULTS = {
+const CMUnorderedMap<CMString, CMString> Config::STR_DEFAULTS = {
     {"transport_type", "tcp"},
     {"compression_type", "lz4"},
     {"log_dir", "fly_log"},

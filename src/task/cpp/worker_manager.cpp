@@ -117,6 +117,7 @@ CMVector<uint64_t> WorkerManager::get_idle_workers() {
             result.push_back(id);
         }
     }
+    std::sort(result.begin(), result.end());
     return result;
 }
 

@@ -775,7 +775,7 @@ CMString MasterAgent::get_task_error(uint64_t task_id) const {
 void MasterAgent::register_database(const CMString& db_id, const CMString& base_path, const CMString& data_path) {
     INFO("register_database: db_id={}, base_path={}, data_path={}", db_id, base_path, data_path);
 
-    CMMap<CMString, CMString> path_info;
+    CMUnorderedMap<CMString, CMString> path_info;
     path_info["base_path"] = base_path;
     path_info["data_path"] = data_path;
     db_registry_[db_id] = path_info;
@@ -1173,12 +1173,12 @@ void MasterAgent::send_idx_load_commands(const CMString& db_id,
 void MasterAgent::rebuild_remote_idx(const CMString& db_id,
                                        const CMString& base_path,
                                        const CMVector<::WorkerInfo>& workers) {
-    CMMap<CMString, CMString> old_id_to_hostname;
+    CMUnorderedMap<CMString, CMString> old_id_to_hostname;
     for (const auto& w : workers) {
         old_id_to_hostname[std::to_string(w.worker_id)] = w.hostname;
     }
 
-    CMMap<CMString, CMVector<uint64_t>> hostname_to_new_workers;
+    CMUnorderedMap<CMString, CMVector<uint64_t>> hostname_to_new_workers;
     for (const auto& [worker_id, hostname] : worker_to_hostname_) {
         hostname_to_new_workers[hostname].push_back(worker_id);
     }

@@ -76,6 +76,7 @@ void DependencyGraph::mark_data_removed(const CMString& data_path) {
 CMVector<uint64_t> DependencyGraph::get_ready_tasks() const {
     std::lock_guard<std::mutex> lock(mutex_);
     CMVector<uint64_t> result(ready_tasks_.begin(), ready_tasks_.end());
+    std::sort(result.begin(), result.end());
     return result;
 }
 
@@ -88,6 +89,7 @@ bool DependencyGraph::is_data_ready(const CMString& data_path) const {
 CMVector<uint64_t> DependencyGraph::get_pending_tasks() const {
     std::lock_guard<std::mutex> lock(mutex_);
     CMVector<uint64_t> result(pending_tasks_.begin(), pending_tasks_.end());
+    std::sort(result.begin(), result.end());
     return result;
 }
 

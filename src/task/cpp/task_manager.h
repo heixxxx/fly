@@ -51,7 +51,7 @@ public:
     void remove_task(uint64_t task_id);
 
 private:
-    CMMap<uint64_t, TaskMetadata> tasks_;
+    CMUnorderedMap<uint64_t, TaskMetadata> tasks_;
     mutable std::mutex mutex_;
 };
 

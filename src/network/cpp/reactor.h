@@ -6,7 +6,6 @@
 #include <network/cpp/io_thread_pool.h>
 #include <log/cpp/logger.h>
 #include <functional>
-#include <unordered_map>
 #include <atomic>
 #include <memory>
 

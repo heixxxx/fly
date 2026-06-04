@@ -26,6 +26,6 @@ public:
 private:
     StorageManager() = default;
 
-    ConcurrentMap<CMString, CMSharedPtr<Database>> databases_;
-    ConcurrentMap<uint64_t, CMSharedPtr<DataWriter>> writers_;
+    ConcurrentUnorderedMap<CMString, CMSharedPtr<Database>> databases_;
+    ConcurrentUnorderedMap<uint64_t, CMSharedPtr<DataWriter>> writers_;
 };

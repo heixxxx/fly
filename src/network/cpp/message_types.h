@@ -397,8 +397,8 @@ struct BackupCompleteMessage {
 // Master → Worker: sync shared config after registration
 struct ConfigSyncMessage {
     MessageHeader header;
-    CMMap<CMString, int64_t> int_values;
-    CMMap<CMString, CMString> str_values;
+    CMUnorderedMap<CMString, int64_t> int_values;
+    CMUnorderedMap<CMString, CMString> str_values;
 
     static constexpr MessageType msg_type = MessageType::CONFIG_SYNC;
     FLY_SERIALIZE(header, int_values, str_values);

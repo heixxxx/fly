@@ -23,21 +23,21 @@ public:
 
     void reset();
 
-    void apply_sync(const CMMap<CMString, int64_t>& ints,
-                    const CMMap<CMString, CMString>& strs);
+    void apply_sync(const CMUnorderedMap<CMString, int64_t>& ints,
+                    const CMUnorderedMap<CMString, CMString>& strs);
 
-    const CMMap<CMString, int64_t>& all_ints() const { return int_values_; }
-    const CMMap<CMString, CMString>& all_strs() const { return str_values_; }
+    const CMUnorderedMap<CMString, int64_t>& all_ints() const { return int_values_; }
+    const CMUnorderedMap<CMString, CMString>& all_strs() const { return str_values_; }
 
 private:
     Config();
     Config(const Config&) = delete;
     Config& operator=(const Config&) = delete;
 
-    CMMap<CMString, int64_t> int_values_;
-    CMMap<CMString, CMString> str_values_;
+    CMUnorderedMap<CMString, int64_t> int_values_;
+    CMUnorderedMap<CMString, CMString> str_values_;
     bool workers_launched_ = false;
 
-    static const CMMap<CMString, int64_t> INT_DEFAULTS;
-    static const CMMap<CMString, CMString> STR_DEFAULTS;
+    static const CMUnorderedMap<CMString, int64_t> INT_DEFAULTS;
+    static const CMUnorderedMap<CMString, CMString> STR_DEFAULTS;
 };

@@ -2,9 +2,7 @@
 
 #include <common/cpp/common_types.h>
 #include <cstdint>
-#include <map>
 #include <mutex>
-#include <set>
 #include <vector>
 
 namespace fly {
@@ -24,12 +22,12 @@ public:
     void remove_task(uint64_t task_id);
     
 private:
-    CMMap<uint64_t, CMVector<CMString>> task_dependencies_;
-    CMMap<CMString, bool> data_ready_status_;
-    CMMap<uint64_t, CMVector<CMString>> task_requirements_;
-    CMSet<uint64_t> ready_tasks_;
-    CMSet<uint64_t> pending_tasks_;
-    CMSet<uint64_t> completed_tasks_;
+    CMUnorderedMap<uint64_t, CMVector<CMString>> task_dependencies_;
+    CMUnorderedMap<CMString, bool> data_ready_status_;
+    CMUnorderedMap<uint64_t, CMVector<CMString>> task_requirements_;
+    CMUnorderedSet<uint64_t> ready_tasks_;
+    CMUnorderedSet<uint64_t> pending_tasks_;
+    CMUnorderedSet<uint64_t> completed_tasks_;
     mutable std::mutex mutex_;
 };
 

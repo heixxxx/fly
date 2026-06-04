@@ -19,8 +19,6 @@
 #include <atomic>
 #include <cstring>
 
-#include <set>
-
 class Database {
 public:
     Database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0, const CMString& host = "", const CMString& existing_db_id = "");
@@ -104,8 +102,8 @@ private:
 
     CMUniquePtr<DataWriter> writer_;
     CMUniquePtr<DataReader> reader_;
-    CMSet<CMString> removed_objects_;
-    CMSet<CMString> temp_objects_;
+    CMUnorderedSet<CMString> removed_objects_;
+    CMUnorderedSet<CMString> temp_objects_;
     CMUniquePtr<fly::TempStore> temp_store_;
 };
 

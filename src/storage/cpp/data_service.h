@@ -226,7 +226,7 @@ private:
         CMUnorderedMap<CMString /*short_name*/,
             CMVector<uint64_t>>> remote_idx_;
 
-    CMMap<uint64_t, RemoteObjectInfo> worker_registry_;
+    CMUnorderedMap<uint64_t, RemoteObjectInfo> worker_registry_;
 
     CMUnorderedMap<CMString, DbPaths> db_paths_;
 

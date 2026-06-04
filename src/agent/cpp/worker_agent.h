@@ -14,7 +14,6 @@
 #include <mutex>
 #include <condition_variable>
 #include <queue>
-#include <map>
 #include <filesystem>
 
 namespace fly {
@@ -131,15 +130,15 @@ private:
     std::queue<PendingTask> task_queue_;
     std::atomic<int> outstanding_tasks_{0};
     
-    CMMap<CMString, CMSharedPtr<Database>> databases_;
+    CMUnorderedMap<CMString, CMSharedPtr<Database>> databases_;
 
     std::mutex pending_db_path_mutex_;
     std::condition_variable pending_db_path_cv_;
-    CMMap<CMString, CMSharedPtr<PendingDbPath>> pending_db_paths_;
+    CMUnorderedMap<CMString, CMSharedPtr<PendingDbPath>> pending_db_paths_;
 
     std::mutex pending_write_reg_mutex_;
     std::condition_variable pending_write_reg_cv_;
-    CMMap<CMString, CMSharedPtr<PendingWriteRegister>> pending_write_regs_;
+    CMUnorderedMap<CMString, CMSharedPtr<PendingWriteRegister>> pending_write_regs_;
 
     struct PendingRemove {
         std::mutex mutex;
@@ -149,7 +148,7 @@ private:
     };
 
     std::mutex pending_remove_mutex_;
-    CMMap<CMString, CMSharedPtr<PendingRemove>> pending_removes_;
+    CMUnorderedMap<CMString, CMSharedPtr<PendingRemove>> pending_removes_;
 
     void on_register_ack(const RegisterAckMessage& msg);
     void on_task_assign(const TaskAssignMessage& msg);

@@ -49,7 +49,7 @@ public:
     size_t get_idle_worker_count();
     
 private:
-    CMMap<uint64_t, WorkerInfo> workers_;
+    CMUnorderedMap<uint64_t, WorkerInfo> workers_;
     mutable std::mutex mutex_;
 };
 

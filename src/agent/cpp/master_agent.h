@@ -19,8 +19,6 @@
 #include <thread>
 #include <atomic>
 #include <signal.h>
-#include <map>
-#include <set>
 #include <memory>
 
 namespace fly {
@@ -119,8 +117,8 @@ private:
     std::thread reactor_thread_;
 
     mutable std::mutex workers_mutex_;
-    CMMap<uint64_t, uint64_t> conn_to_worker_;
-    CMMap<uint64_t, uint64_t> worker_to_conn_;
+    CMUnorderedMap<uint64_t, uint64_t> conn_to_worker_;
+    CMUnorderedMap<uint64_t, uint64_t> worker_to_conn_;
 
     CMUniquePtr<DependencyGraph> graph_;
     CMUniquePtr<WorkerManager> worker_manager_;
@@ -132,12 +130,12 @@ private:
     std::mutex heartbeat_check_mutex_;
     std::condition_variable heartbeat_check_cv_;
 
-    CMMap<uint64_t, CMString> task_modules_;
-    CMMap<uint64_t, CMVector<CMString>> task_args_;
+    CMUnorderedMap<uint64_t, CMString> task_modules_;
+    CMUnorderedMap<uint64_t, CMVector<CMString>> task_args_;
 
-    CMMap<CMString, CMMap<CMString, CMString>> db_registry_;
-    CMMap<CMString, CMSharedPtr<Database>> db_instances_;
-    CMSet<CMString> frozen_dbs_;
+    CMUnorderedMap<CMString, CMUnorderedMap<CMString, CMString>> db_registry_;
+    CMUnorderedMap<CMString, CMSharedPtr<Database>> db_instances_;
+    CMUnorderedSet<CMString> frozen_dbs_;
     static std::atomic<uint64_t> remote_task_counter_;
 
     void schedule_tasks();
@@ -179,11 +177,11 @@ private:
 
     DataService& ds();
 
-    CMMap<uint64_t, CMString> worker_to_hostname_;
-    CMMap<uint64_t, CMString> worker_to_ip_;
-    CMSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
+    CMUnorderedMap<uint64_t, CMString> worker_to_hostname_;
+    CMUnorderedMap<uint64_t, CMString> worker_to_ip_;
+    CMUnorderedSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
 
-    CMMap<CMString, CMString> write_provenance_;
+    CMUnorderedMap<CMString, CMString> write_provenance_;
 
     static std::atomic<bool> sigterm_received_;
     static void sigterm_handler(int sig);
