@@ -5,11 +5,11 @@ import signal
 from _fly_log import DBG, ERR, INFO, WARN
 
 def init():
-    from core import get_config
+    from _fly_core import ex_core_get_process_info
     from fly.runtime import get_agent, configure_master, configure_worker
     
-    cfg = get_config()
-    if cfg.get_int("worker_mode"):
+    proc = ex_core_get_process_info()
+    if proc.worker_mode():
         configure_worker()
     else:
         configure_master()
@@ -60,17 +60,18 @@ def _redirect_worker_io(worker_id, log_dir):
 
 def _run_worker():
     import time
-    from core import get_config
+    from _fly_core import ex_core_get_process_info, ex_core_get_config
     from fly.runtime import get_agent
 
-    cfg = get_config()
-    _redirect_worker_io(cfg.get_int("worker_id"), cfg.get_str("log_dir"))
+    proc = ex_core_get_process_info()
+    cfg = ex_core_get_config()
+    _redirect_worker_io(proc.worker_id(), cfg.get_str("log_dir"))
 
     init()
 
     from fly.runtime import get_agent
     from _fly_log import INFO
-    INFO("Worker process starting: id=" + str(cfg.get_int("worker_id")))
+    INFO("Worker process starting: id=" + str(proc.worker_id()))
 
     agent = get_agent()
     INFO("Worker agent created, starting poll loop")
@@ -85,12 +86,12 @@ def _run_worker():
 
 
 def _run_master():
-    from core import get_config
+    from _fly_core import ex_core_get_process_info
     init()
 
-    cfg = get_config()
-    script_path = cfg.get_str("script_path")
-    interactive = cfg.get_int("interactive")
+    proc = ex_core_get_process_info()
+    script_path = proc.script_path()
+    interactive = proc.interactive()
 
     if script_path:
         sys.argv = [script_path]

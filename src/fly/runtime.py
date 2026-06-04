@@ -11,31 +11,21 @@ _mode: str = "master"
 
 
 def _config_is_worker_mode():
-    from _fly_core import ex_core_get_config
-    return ex_core_get_config().get_int("worker_mode") == 1
+    from _fly_core import ex_core_get_process_info
+    return ex_core_get_process_info().worker_mode()
 
 
 def configure_worker():
-    """Set mode to worker before calling ``get_agent()``."""
     global _mode
     _mode = "worker"
 
 
 def configure_master():
-    """Set mode to master before calling ``get_agent()``."""
     global _mode
     _mode = "master"
 
 
 def get_agent() -> FlyAgent:
-    """Get or create the singleton Agent (Master or Worker).
-
-    The agent type depends on the current mode (set via
-    ``configure_worker()`` or ``configure_master()``).
-
-    Returns:
-        The active ``FlyAgent`` instance.
-    """
     global _agent
     if _agent is None:
         _agent = _create_agent()
@@ -44,19 +34,19 @@ def get_agent() -> FlyAgent:
 
 def _create_agent() -> FlyAgent:
     from _fly_log import DBG
-    from _fly_core import ex_core_get_config
+    from _fly_core import ex_core_get_process_info
 
-    cfg = ex_core_get_config()
+    proc = ex_core_get_process_info()
 
     if _mode == "worker":
-        attrs_str = cfg.get_str("worker_attributes")
+        attrs_str = proc.worker_attributes()
         attributes = [a.strip() for a in attrs_str.split(",") if a.strip()] if attrs_str else []
-        w = Worker(cfg.get_int("worker_id"),
-                    cfg.get_str("master_host"),
-                    cfg.get_int("cli_master_port"),
+        w = Worker(proc.worker_id(),
+                    proc.master_host(),
+                    proc.cli_master_port(),
                     attributes=attributes)
         w.start()
-        DBG(f"Worker mode: id={cfg.get_int('worker_id')}, master={cfg.get_str('master_host')}:{cfg.get_int('cli_master_port')}, attributes={attributes}")
+        DBG(f"Worker mode: id={proc.worker_id()}, master={proc.master_host()}:{proc.cli_master_port()}, attributes={attributes}")
         return w
     else:
         m = Master()
@@ -65,7 +55,6 @@ def _create_agent() -> FlyAgent:
 
 
 def reset():
-    """Stop and reset the current agent. For testing only."""
     global _agent
     if _agent is not None:
         _agent.stop()

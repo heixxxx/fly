@@ -38,7 +38,6 @@ def test_config_singleton():
 def test_config_defaults():
     config = ex_core_get_config()
     config.reset()
-    assert config.get_int("master_port") == 8000
     assert config.get_int("heartbeat_timeout") == 120
     assert config.get_int("heartbeat_interval") == 5
     assert config.get_str("transport_type") == "tcp"
