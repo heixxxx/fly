@@ -732,8 +732,10 @@ std::tuple<bool, CMString, CMString, CMString, bool> DataService::read_raw_compr
         remote_cb = remote_compressed_read_handler_;
     }
     if (remote_cb) {
+        bool last_can_produce = false;
         for (int attempt = 0; attempt < 3; ++attempt) {
             auto [cb_found, cb_data, cb_py_name, cb_can_still_produce] = remote_cb(object_name);
+            last_can_produce = cb_can_still_produce;
             if (cb_found && !cb_data.empty()) {
                 return {true, std::move(cb_data), std::move(cb_py_name), {}, false};
             }
@@ -744,6 +746,7 @@ std::tuple<bool, CMString, CMString, CMString, bool> DataService::read_raw_compr
                 std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             }
         }
+        return {false, {}, {}, {}, last_can_produce};
     }
 
     return {false, {}, {}, {}, false};
