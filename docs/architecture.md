@@ -464,6 +464,8 @@ Master端（后台任务）：
 
 ### 5.4 数据备份 (Backup)
 
+#### 5.4.1 手动备份
+
 ```
 Worker A 写入 object_name (backup=True):
 1. 正常写入流程完成
@@ -475,6 +477,54 @@ Worker A 写入 object_name (backup=True):
 ```
 
 **关键设计**：备份数据保持压缩状态传输，不做解压-再压缩。
+
+#### 5.4.2 自动备份（访问频率触发）
+
+当 `auto_backup_enabled=1` 时，Master 在处理跨 Worker 读取请求（DataQueryMessage）时自动追踪访问频率，超过阈值后自动触发备份。访问计数直接存储在 `remote_idx_` 的 `RemoteObjectMeta` 结构中，无需额外追踪器。
+
+```
+Worker B 读取 object_name（本地无数据）:
+1. Worker B 发送 DataQueryMessage 到 Master
+2. Master 返回 DataLocationMessage（数据在 Worker A）
+3. Master 调用 DataService.record_remote_access(object_name)
+4. 当 read_count >= backup_threshold 且 workers.size() < target_replicas:
+   a. Master 调用 trigger_auto_backup()
+   b. 构造 BackupRequestMessage，复用 on_backup_request() 流程
+   c. 选择目标 Worker（优先不同 host）
+   d. 目标 Worker 执行 __backup_object 内部任务
+5. 备份完成后，Master 更新 remote_idx（新增 Worker 到 meta.workers）
+```
+
+#### 5.4.3 Master 本地写入自动备份
+
+Master 上的本地写入（worker_id=0）也支持自动备份，确保 Master 数据至少在一个 Worker 上有副本。触发条件与跨 Worker 读取相同，但 `threshold=0`（写入即触发）。
+
+```
+Master 写入 object_name:
+1. DataReadyMessage 触发 on_data_ready()
+2. 检测 worker_id==0 且 auto_backup_enabled==1
+3. evaluate_auto_backup(threshold=0) → should_backup=true（只要 workers.size() < target）
+4. trigger_auto_backup() 选择目标 Worker
+5. 目标 Worker 执行 __backup_object
+```
+
+**关键设计**：
+- 访问频率追踪内嵌在 `RemoteObjectMeta`（workers + read_count + last_access_time），无需独立 AccessTracker
+- `current_replicas` 直接取 `meta.workers.size()`，无需手动同步
+- 每个 Worker 首次远程读取后缓存数据位置（lookup_remote_idx），后续读取绕过 Master 直连
+- 因此 `backup_threshold` 应 ≤ (Worker 总数 - 1)
+- 衰减机制（backup_decay_interval/backup_decay_factor）防止冷数据永久占用备份资源
+- 默认关闭（auto_backup_enabled=0），需显式启用
+
+**相关配置**：
+
+| 配置键 | 默认值 | 说明 |
+|--------|--------|------|
+| `auto_backup_enabled` | 0 | 自动备份开关（0=关闭, 1=开启） |
+| `backup_threshold` | 100 | 触发自动备份的跨 Worker 读取次数 |
+| `backup_replicas` | 2 | 目标备份数（包含原始 Worker） |
+| `backup_decay_interval` | 300 | 衰减检查间隔（秒），0=不衰减 |
+| `backup_decay_factor` | 50 | 衰减因子百分比（read_count *= factor/100） |
 
 ### 5.5 load_db 流程
 
@@ -680,7 +730,7 @@ fly/
   - _META 元信息生成
   - Worker 自动启动恢复
 - **Locality 调度**：数据locality优先调度（设计完成，未实现）
-- **数据副本**：自动备份策略已实现（手动 backup=True），阈值触发备份尚未实现
+- **数据副本**：✅ 手动备份（backup=True）+ 自动备份（访问频率触发）均已实现
 - **Worker 失败恢复**：任务重新调度（设计完成，未实现）
 - **Worker role 调度**：role-based 任务分配（RegisterMessage.role 存在但未使用）
 

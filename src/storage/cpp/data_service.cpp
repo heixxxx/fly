@@ -292,9 +292,9 @@ void DataService::update_remote_idx(const CMString& object_name,
 void DataService::add_remote_location(const CMString& object_name, uint64_t worker_id) {
     auto [db_id, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
-    auto& workers = remote_idx_[db_id][short_name];
-    if (std::find(workers.begin(), workers.end(), worker_id) == workers.end()) {
-        workers.push_back(worker_id);
+    auto& meta = remote_idx_[db_id][short_name];
+    if (std::find(meta.workers.begin(), meta.workers.end(), worker_id) == meta.workers.end()) {
+        meta.workers.push_back(worker_id);
     }
 }
 
@@ -314,7 +314,7 @@ void DataService::remove_remote_location(const CMString& object_name, uint64_t w
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
         if (it != db_it->second.end()) {
-            auto& workers = it->second;
+            auto& workers = it->second.workers;
             workers.erase(std::remove(workers.begin(), workers.end(), worker_id), workers.end());
             if (workers.empty()) {
                 db_it->second.erase(it);
@@ -330,7 +330,7 @@ CMVector<uint64_t> DataService::get_remote_workers(const CMString& object_name) 
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
         if (it != db_it->second.end()) {
-            return it->second;
+            return it->second.workers;
         }
     }
     return {};
@@ -342,7 +342,7 @@ bool DataService::has_remote_location(const CMString& object_name) const {
     auto db_it = remote_idx_.find(db_id);
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
-        return it != db_it->second.end() && !it->second.empty();
+        return it != db_it->second.end() && !it->second.workers.empty();
     }
     return false;
 }
@@ -353,8 +353,8 @@ RemoteObjectInfo DataService::lookup_remote_idx(const CMString& object_name) con
     auto db_it = remote_idx_.find(db_id);
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
-        if (it != db_it->second.end() && !it->second.empty()) {
-            uint64_t wid = it->second.front();
+        if (it != db_it->second.end() && !it->second.workers.empty()) {
+            uint64_t wid = it->second.workers.front();
             auto wit = worker_registry_.find(wid);
             if (wit != worker_registry_.end()) {
                 return wit->second;
@@ -867,6 +867,70 @@ std::pair<bool, CMString> DataService::get_temp_data(const CMString& object_name
     auto val = temp_entries_.find(object_name);
     if (val.has_value()) return {true, *val};
     return {false, {}};
+}
+
+// ============================================================
+// Auto-Backup Access Tracking (inline in remote_idx_)
+// ============================================================
+
+void DataService::record_remote_access(const CMString& object_name) {
+    auto [db_id, short_name] = split_full(object_name);
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto db_it = remote_idx_.find(db_id);
+    if (db_it == remote_idx_.end()) return;
+    auto obj_it = db_it->second.find(short_name);
+    if (obj_it == db_it->second.end()) return;
+    auto& meta = obj_it->second;
+    meta.read_count++;
+    meta.last_access_time = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+BackupDecision DataService::evaluate_auto_backup(const CMString& object_name,
+                                                   uint64_t threshold,
+                                                   uint32_t target_replicas) const {
+    auto [db_id, short_name] = split_full(object_name);
+    std::lock_guard<std::mutex> lock(mutex_);
+    BackupDecision decision;
+    decision.target_replicas = target_replicas;
+    
+    auto db_it = remote_idx_.find(db_id);
+    if (db_it == remote_idx_.end()) return decision;
+    auto obj_it = db_it->second.find(short_name);
+    if (obj_it == db_it->second.end()) return decision;
+    
+    const auto& meta = obj_it->second;
+    decision.current_replicas = static_cast<uint32_t>(meta.workers.size());
+    decision.should_backup = (meta.read_count >= threshold) && (meta.workers.size() < target_replicas);
+    
+    return decision;
+}
+
+void DataService::decay_remote_access(int64_t protection_seconds, int decay_factor_percent) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    int64_t current_time = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    
+    for (auto& [db_id, objects] : remote_idx_) {
+        for (auto it = objects.begin(); it != objects.end();) {
+            auto& meta = it->second;
+            int64_t age = current_time - meta.last_access_time;
+            if (meta.read_count > 0 && age >= protection_seconds) {
+                meta.read_count = meta.read_count * static_cast<uint64_t>(decay_factor_percent) / 100u;
+            }
+            ++it;
+        }
+    }
+}
+
+uint64_t DataService::get_access_read_count(const CMString& object_name) const {
+    auto [db_id, short_name] = split_full(object_name);
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto db_it = remote_idx_.find(db_id);
+    if (db_it == remote_idx_.end()) return 0;
+    auto obj_it = db_it->second.find(short_name);
+    if (obj_it == db_it->second.end()) return 0;
+    return obj_it->second.read_count;
 }
 
 }  // namespace fly

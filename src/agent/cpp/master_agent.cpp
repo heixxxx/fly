@@ -127,6 +127,25 @@ void MasterAgent::start() {
                 response.data_port = loc.port;
                 response.success = true;
                 response.can_still_produce = false;
+
+                // Auto-backup: track access frequency
+                if (Config::instance().get_int("auto_backup_enabled") == 1) {
+                    ds().record_remote_access(msg.object_name);
+
+                    auto threshold = static_cast<uint64_t>(Config::instance().get_int("backup_threshold"));
+                    auto target_replicas = static_cast<uint32_t>(Config::instance().get_int("backup_replicas"));
+
+                    auto decision = ds().evaluate_auto_backup(msg.object_name, threshold, target_replicas);
+                    if (decision.should_backup) {
+                        // Extract db_id from object_name (format: "db_id:short_name")
+                        CMString db_id = msg.object_name;
+                        auto colon_pos = msg.object_name.find(':');
+                        if (colon_pos != CMString::npos) {
+                            db_id = msg.object_name.substr(0, colon_pos);
+                        }
+                        trigger_auto_backup(msg.object_name, loc.worker_id, db_id);
+                    }
+                }
             } else {
                 response.success = false;
                 bool has_pending = !graph_->get_pending_tasks().empty();
@@ -529,6 +548,19 @@ void MasterAgent::on_data_ready(uint64_t conn_id, const DataReadyMessage& msg) {
     auto addr = ds().get_worker_address(msg.worker_id);
 
     ds().update_remote_idx(msg.object_name, msg.worker_id, addr.host, addr.port);
+
+    if (msg.worker_id == 0 && Config::instance().get_int("auto_backup_enabled") == 1) {
+        auto target_replicas = static_cast<uint32_t>(Config::instance().get_int("backup_replicas"));
+        auto decision = ds().evaluate_auto_backup(msg.object_name, 0, target_replicas);
+        if (decision.should_backup) {
+            CMString db_id = msg.object_name;
+            auto colon_pos = msg.object_name.find(':');
+            if (colon_pos != CMString::npos) {
+                db_id = msg.object_name.substr(0, colon_pos);
+            }
+            trigger_auto_backup(msg.object_name, 0, db_id);
+        }
+    }
 
     CMString hostname;
     CMString ip;
@@ -1478,6 +1510,17 @@ uint64_t MasterAgent::select_backup_worker(uint64_t source_worker_id) {
         INFO("select_backup_worker: all workers on same host, using worker_id={}", fallback_worker);
     }
     return fallback_worker;
+}
+
+void MasterAgent::trigger_auto_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_id) {
+    INFO("Auto-backup triggered: object={}, source_worker={}", object_name, source_worker_id);
+
+    BackupRequestMessage backup_msg;
+    backup_msg.worker_id = source_worker_id;
+    backup_msg.object_name = object_name;
+    backup_msg.db_id = db_id;
+
+    on_backup_request(0, backup_msg);
 }
 
 }  // namespace fly

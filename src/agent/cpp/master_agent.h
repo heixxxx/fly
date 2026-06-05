@@ -162,6 +162,8 @@ private:
     void on_backup_request(uint64_t conn_id, const BackupRequestMessage& msg);
     uint64_t select_backup_worker(uint64_t source_worker_id);
 
+    void trigger_auto_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_id);
+
     void persist_failed_task(const FailedTaskRecord& record);
     void remove_persisted_task(uint64_t task_id);
     CMString get_failed_tasks_file_path() const;

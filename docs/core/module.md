@@ -57,6 +57,10 @@ private:
 | `heartbeat_timeout` | 120 | 心跳超时（秒） |
 | `heartbeat_interval` | 5 | 心跳间隔（秒） |
 | `backup_threshold` | 100 | 备份阈值 |
+| `auto_backup_enabled` | 0 | 自动备份开关（0=关闭, 1=开启） |
+| `backup_replicas` | 2 | 备份副本数（包含原始文件） |
+| `backup_decay_interval` | 300 | 降频检查间隔（秒），0=不降频 |
+| `backup_decay_factor` | 50 | 降频因子（读取次数 *= factor/100） |
 | `aggregation_threshold` | 1048576 | 写入聚合阈值（1MB） |
 | `large_file_threshold` | 67108864 | 大文件阈值（64MB），已废弃，使用 `large_file_threshold_kb` |
 | `large_file_threshold_kb` | 65536 | 大文件阈值（64MB，单位 KB，用户可配置） |

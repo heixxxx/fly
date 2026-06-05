@@ -367,6 +367,14 @@ public:
     bool is_transfer_server_running() const;
     void submit_transfer(uint64_t conn_id, const CMString& object_name);
 
+    // 自动备份访问频率追踪（内嵌于 remote_idx_）
+    void record_remote_access(const CMString& object_name);
+    BackupDecision evaluate_auto_backup(const CMString& object_name,
+                                         uint64_t threshold,
+                                         uint32_t target_replicas) const;
+    void decay_remote_access(int64_t protection_seconds, int decay_factor_percent);
+    uint64_t get_access_read_count(const CMString& object_name) const;
+
 private:
     struct DbPaths {
         CMString base_path;
@@ -376,7 +384,7 @@ private:
     
     // Two-level index: db_id → (short_name → info)
     CMUnorderedMap<CMString, CMUnorderedMap<CMString, CMSharedPtr<LocalObjectInfo>>> local_idx_;
-    CMUnorderedMap<CMString, CMUnorderedMap<CMString, RemoteObjectInfo>> remote_idx_;
+    CMUnorderedMap<CMString, CMUnorderedMap<CMString, RemoteObjectMeta>> remote_idx_;
     CMMap<uint64_t, RemoteObjectInfo> worker_registry_;
     CMUnorderedMap<CMString, DbPaths> db_paths_;
     
@@ -396,11 +404,11 @@ DataService (单例)
 │       ├── cv: condition_variable
 │       └── cv_mutex: mutex
 │
-├── remote_idx: db_id → (short_name → RemoteObjectInfo)  [两层索引]
-│   └── RemoteObjectInfo:
-│       ├── worker_id: uint64_t
-│       ├── host: CMString
-│       └── port: int32_t
+├── remote_idx: db_id → (short_name → RemoteObjectMeta)  [两层索引]
+│   └── RemoteObjectMeta:
+│       ├── workers: CMVector<uint64_t>  [持有该对象的 worker_id 列表]
+│       ├── read_count: uint64_t         [跨 Worker 读取计数]
+│       └── last_access_time: int64_t    [最后访问时间，epoch seconds]
 │
 ├── worker_registry: worker_id → RemoteObjectInfo
 │
@@ -424,6 +432,26 @@ struct IndexEntry {
     FLY_SERIALIZE(object_name, file_name, offset, size, is_large, block_count, host);
 };
 ```
+
+---
+
+### RemoteObjectMeta（远程对象元数据）
+
+```cpp
+struct RemoteObjectMeta {
+    CMVector<uint64_t> workers;
+    uint64_t read_count = 0;
+    int64_t last_access_time = 0;   // epoch seconds
+};
+
+struct BackupDecision {
+    bool should_backup = false;
+    uint32_t current_replicas = 0;
+    uint32_t target_replicas = 0;
+};
+```
+
+**说明**：`RemoteObjectMeta` 合并了原 `remote_idx_` 的 worker 列表和访问频率追踪数据，消除了对象名称的重复存储。`current_replicas` 直接取 `workers.size()`，无需手动同步。访问追踪方法（`record_remote_access`、`evaluate_auto_backup`、`decay_remote_access`）直接操作 `remote_idx_` 中的 `RemoteObjectMeta`，所有方法线程安全（通过 DataService 的 mutex_）。
 
 ---
 

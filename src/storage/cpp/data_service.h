@@ -16,6 +16,18 @@
 
 namespace fly {
 
+struct RemoteObjectMeta {
+    CMVector<uint64_t> workers;
+    uint64_t read_count = 0;
+    int64_t last_access_time = 0;   // epoch seconds
+};
+
+struct BackupDecision {
+    bool should_backup = false;
+    uint32_t current_replicas = 0;
+    uint32_t target_replicas = 0;
+};
+
 struct RemoteObjectInfo {
     uint64_t worker_id = 0;
     CMString host;
@@ -187,6 +199,20 @@ public:
 
     void reset();
 
+    // ============================================================
+    // Auto-Backup Access Tracking (inline in remote_idx_)
+    // ============================================================
+
+    void record_remote_access(const CMString& object_name);
+
+    BackupDecision evaluate_auto_backup(const CMString& object_name,
+                                         uint64_t threshold,
+                                         uint32_t target_replicas) const;
+
+    void decay_remote_access(int64_t protection_seconds, int decay_factor_percent);
+
+    uint64_t get_access_read_count(const CMString& object_name) const;
+
 private:
     DataService() = default;
     ~DataService();
@@ -224,7 +250,7 @@ private:
 
     CMUnorderedMap<CMString /*db_id*/,
         CMUnorderedMap<CMString /*short_name*/,
-            CMVector<uint64_t>>> remote_idx_;
+            RemoteObjectMeta>> remote_idx_;
 
     CMUnorderedMap<uint64_t, RemoteObjectInfo> worker_registry_;
 

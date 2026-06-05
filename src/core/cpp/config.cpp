@@ -71,6 +71,10 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"heartbeat_timeout", 120},
     {"heartbeat_interval", 5},
     {"backup_threshold", 100},
+    {"auto_backup_enabled", 0},       // 0=disabled, 1=enabled
+    {"backup_replicas", 2},           // target number of backup copies (including original)
+    {"backup_decay_interval", 300},   // decay check interval in seconds, 0=no decay
+    {"backup_decay_factor", 50},      // decay factor percentage (read_count *= factor/100)
     {"aggregation_threshold", 1048576},
     {"large_file_threshold_kb", 65536},  // 64MB in KB (user-configurable)
     {"block_size", 134217728},

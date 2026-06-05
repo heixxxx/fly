@@ -984,4 +984,73 @@ TEST_F(DataServiceTest, ResetClearsAllState) {
     EXPECT_FALSE(ds_.has_database(db_id));
 }
 
+// ============================================================
+// Auto-Backup Access Tracking (inline in remote_idx_)
+// ============================================================
+
+TEST_F(DataServiceTest, RemoteObjectMetaTracksReadCount) {
+    CMString full = db32("meta_test") + ":obj";
+    ds_.update_remote_idx(full, 1, "host1", 1234);
+    
+    // Access tracking is now on remote_idx_ directly
+    ds_.record_remote_access(full);
+    ds_.record_remote_access(full);
+    
+    EXPECT_EQ(ds_.get_access_read_count(full), 2u);
+}
+
+TEST_F(DataServiceTest, RemoteObjectMetaEvaluateAutoBackup) {
+    CMString full = db32("eval_test") + ":obj";
+    ds_.update_remote_idx(full, 1, "host1", 1234);
+    
+    for (int i = 0; i < 5; i++) {
+        ds_.record_remote_access(full);
+    }
+    
+    // 1 worker, threshold=3, target=2 → should_backup
+    auto decision = ds_.evaluate_auto_backup(full, 3, 2);
+    EXPECT_TRUE(decision.should_backup);
+    EXPECT_EQ(decision.current_replicas, 1u);
+    EXPECT_EQ(decision.target_replicas, 2u);
+}
+
+TEST_F(DataServiceTest, RemoteObjectMetaEvaluateSatisfied) {
+    CMString full = db32("sat_test") + ":obj";
+    ds_.update_remote_idx(full, 1, "host1", 1234);
+    ds_.update_remote_idx(full, 2, "host2", 1235);
+    
+    for (int i = 0; i < 5; i++) {
+        ds_.record_remote_access(full);
+    }
+    
+    // 2 workers already, target=2 → NOT should_backup
+    auto decision = ds_.evaluate_auto_backup(full, 3, 2);
+    EXPECT_FALSE(decision.should_backup);
+    EXPECT_EQ(decision.current_replicas, 2u);
+}
+
+TEST_F(DataServiceTest, RemoteObjectMetaDecay) {
+    CMString full = db32("decay_test") + ":obj";
+    ds_.update_remote_idx(full, 1, "host1", 1234);
+    
+    for (int i = 0; i < 10; i++) {
+        ds_.record_remote_access(full);
+    }
+    EXPECT_EQ(ds_.get_access_read_count(full), 10u);
+    
+    // Decay with 0 protection → immediate decay
+    ds_.decay_remote_access(0, 50);  // 50% decay factor
+    EXPECT_EQ(ds_.get_access_read_count(full), 5u);
+}
+
+TEST_F(DataServiceTest, RemoteObjectMetaResetClearsAccess) {
+    CMString full = db32("reset_test") + ":obj";
+    ds_.update_remote_idx(full, 1, "host1", 1234);
+    ds_.record_remote_access(full);
+    EXPECT_EQ(ds_.get_access_read_count(full), 1u);
+    
+    ds_.reset();
+    EXPECT_EQ(ds_.get_access_read_count(full), 0u);
+}
+
 }
