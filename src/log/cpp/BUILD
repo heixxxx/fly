@@ -5,8 +5,8 @@ load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
 
 cc_library(
     name = "fly_log",
-    srcs = ["logger.cpp"],
-    hdrs = ["logger.h"],
+    srcs = glob(["*.cpp"]),
+    hdrs = glob(["*.h"]),
     strip_include_prefix = "/src",
     copts = ["-std=c++20"],
     linkstatic = False,

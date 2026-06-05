@@ -6,9 +6,6 @@ load("@rules_python//python:defs.bzl", "py_library")
 
 py_library(
     name = "fly_storage_py",
-    srcs = [
-        "__init__.py",
-        "database.py",
-    ],
+    srcs = glob(["*.py"]),
     deps = ["//src/storage/export:_fly_storage.so"],
 )

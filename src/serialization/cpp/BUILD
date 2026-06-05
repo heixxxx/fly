@@ -5,15 +5,8 @@ load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
 
 cc_library(
     name = "fly_serialization",
-    srcs = [
-        "object_header.cpp",
-    ],
-    hdrs = [
-        "fly_buffer.h",
-        "object_header.h",
-        "serialization_macros.h",
-        "bitsery_ext/version.h",
-    ],
+    srcs = glob(["*.cpp"]),
+    hdrs = glob(["*.h", "**/*.h"]),
     strip_include_prefix = "/src",
     copts = ["-std=c++20"],
     linkstatic = False,

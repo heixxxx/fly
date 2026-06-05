@@ -5,16 +5,8 @@ load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
 
 cc_library(
     name = "fly_agent",
-    srcs = [
-        "task_executor.cpp",
-        "master_agent.cpp",
-        "worker_agent.cpp",
-    ],
-    hdrs = [
-        "master_agent.h",
-        "task_executor.h",
-        "worker_agent.h",
-    ],
+    srcs = glob(["*.cpp"]),
+    hdrs = glob(["*.h"]),
     strip_include_prefix = "/src",
     copts = ["-std=c++20"],
     linkstatic = False,

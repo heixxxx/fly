@@ -37,6 +37,7 @@ except ImportError:
     from task.py.task import as_task, task_name, wait_obj
 
 from fly.runtime import get_agent
+from fly.mapreduce import MapReduceJob
 
 
 def open_db(path: str, data_path: str = "") -> '_Database':
@@ -141,5 +142,5 @@ __all__ = [
     'launch_workers', 'wait_tasks',
     'restart_failed_tasks', 'get_task_error',
     'completed_tasks', 'pending_tasks', 'running_tasks', 'failed_tasks',
-    'get_agent',
+    'get_agent', 'MapReduceJob',
 ]

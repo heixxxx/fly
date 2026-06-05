@@ -4,11 +4,7 @@ load("@rules_python//python:defs.bzl", "py_library")
 
 py_library(
     name = "fly_agent_py",
-    srcs = [
-        "__init__.py",
-        "agent.py",
-        "executor.py",
-    ],
+    srcs = glob(["*.py"]),
     deps = [
         "//src/agent/export:_fly_agent.so",
         "//src/storage/export:_fly_storage.so",

@@ -6,7 +6,7 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 
 cc_library(
     name = "fly_common_types",
-    hdrs = ["common_types.h", "concurrent_map.h", "error_types.h", "worker_context.h", "writer_id.h", "test_helpers.h", "write_context_hash.h"],
+    hdrs = glob(["*.h"]),
     strip_include_prefix = "/src",
     copts = ["-std=c++20"],
 )

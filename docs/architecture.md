@@ -526,7 +526,38 @@ Master 写入 object_name:
 | `backup_decay_interval` | 300 | 衰减检查间隔（秒），0=不衰减 |
 | `backup_decay_factor` | 50 | 衰减因子百分比（read_count *= factor/100） |
 
-### 5.5 load_db 流程
+### 5.5 MapReduce 框架
+
+Fly 提供基于 `@as_task` 的四阶段 MapReduce 管道：**Partition → Process → Merge → Finalize**。
+
+```
+MapReduceJob(db, output_name="result")
+    │
+    ▼ Phase 1: Partition (可跳过)
+    input_data → partition_fn → N 个分区 (temp objects)
+    (或 set_pre_partitioned(names) 跳过)
+    │
+    ▼ Phase 2: Process
+    N 个并行 @as_task，每个处理一个分区
+    │
+    ▼ Phase 3: Merge
+    summary: 多阶段树形合并 (fan_in=min(N,8), O(log N) 深度)
+    full:    单阶段合并，2 并发读加速
+    │
+    ▼ Phase 4: Finalize (可选)
+    finalize_fn 处理合并结果 → 持久化到 output_name
+    │
+    ▼ Cleanup
+    移除所有 __mr__{job_id}__* 临时对象 (除非 keep_intermediate=True)
+```
+
+**关键设计**：
+- 中间数据默认使用 `save_to_db=False`（TempStore，不落盘），完成后自动清理
+- 最终结果写入用户指定的 `output_name`（持久化），MR 清理后仍保留
+- `MapReduceJob` 对象可序列化，可传递给 `@as_task` 作为依赖参数
+- `get_output_name()` 返回完整对象名用于下游任务的 `inputs` 依赖声明
+
+### 5.6 load_db 流程
 
 ```
 load_db(path) 恢复已有数据库：

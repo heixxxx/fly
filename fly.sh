@@ -144,7 +144,7 @@ WRAPPER
     done
 
     # fly package
-    for py in "$FLY_ROOT/src/fly/"__init__.py "$FLY_ROOT/src/fly/"main.py "$FLY_ROOT/src/fly/"runtime.py; do
+    for py in "$FLY_ROOT/src/fly/"*.py; do
         [ -f "$py" ] && ln -sf "$py" "$build_dir/python/fly/"
     done
 

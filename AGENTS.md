@@ -137,7 +137,7 @@ src/network/    → Layer 2: Reactor, TCP transport, message protocol (27 msg ty
 src/task/       → Layer 3: DependencyGraph, TaskScheduler, WorkerManager
 src/agent/      → Layer 4: MasterAgent, WorkerAgent, TaskExecutor
 src/core/       → Config (共享配置), ProcessInfo (进程私有数据, hostname)
-src/fly/        → Layer 5: Python public API (__init__.py, runtime.py)
+src/fly/        → Layer 5: Python public API (__init__.py, runtime.py, mapreduce.py)
 src/common/     → CM* type aliases (CMString, CMVector…)
 src/log/        → DBG/INFO/WARN/ERR macros, CM_FORMAT_CLASS/ENUM
 src/test/       → TestObject, e2e_tasks.py, test_tasks.py (not public API)

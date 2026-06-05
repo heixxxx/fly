@@ -5,25 +5,8 @@ load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
 
 cc_library(
     name = "fly_network",
-    srcs = [
-        "data_client.cpp",
-        "io_thread_pool.cpp",
-        "metadata_client.cpp",
-        "net_utils.cpp",
-        "reactor.cpp",
-        "tcp_transport.cpp",
-    ],
-    hdrs = [
-        "data_client.h",
-        "io_thread_pool.h",
-        "metadata_client.h",
-        "message_protocol.h",
-        "message_types.h",
-        "net_utils.h",
-        "reactor.h",
-        "tcp_transport.h",
-        "transport.h",
-    ],
+    srcs = glob(["*.cpp"]),
+    hdrs = glob(["*.h"]),
     strip_include_prefix = "/src",
     copts = ["-std=c++20"],
     linkstatic = False,
