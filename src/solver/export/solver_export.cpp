@@ -1,0 +1,129 @@
+#include <export/cpp/export_macros.h>
+#include <solver/cpp/solver.h>
+#include <nanobind/stl/vector.h>
+#include <nanobind/stl/string.h>
+
+static std::vector<double> vec_to_std(const Eigen::VectorXd& v) {
+    return std::vector<double>(v.data(), v.data() + v.size());
+}
+
+static Eigen::VectorXd std_to_vec(const std::vector<double>& v) {
+    return Eigen::Map<const Eigen::VectorXd>(v.data(), static_cast<Eigen::Index>(v.size()));
+}
+
+FLY_EXPORT_MODULE(_fly_solver) {
+
+FLY_EXPORT_CLASS(fly::SubdomainInfo, "EXSlvSubdomainInfo")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_ATTR("subdomain_id", &fly::SubdomainInfo::subdomain_id)
+    FLY_EXPORT_ATTR("local_indices", &fly::SubdomainInfo::local_indices)
+    FLY_EXPORT_ATTR("own_indices", &fly::SubdomainInfo::own_indices)
+    FLY_EXPORT_ATTR("boundary_indices", &fly::SubdomainInfo::boundary_indices);
+
+FLY_EXPORT_CLASS(fly::SubdomainSolver, "EXSlvSubdomainSolver")
+    FLY_EXPORT_INIT(const Eigen::SparseMatrix<double>&)
+    FLY_EXPORT_DEF("from_coo", [](int size,
+                                   const std::vector<int>& rows,
+                                   const std::vector<int>& cols,
+                                   const std::vector<double>& values) -> fly::SubdomainSolver* {
+        Eigen::SparseMatrix<double> A(size, size);
+        std::vector<Eigen::Triplet<double>> triplets;
+        triplets.reserve(values.size());
+        for (size_t i = 0; i < values.size(); ++i) {
+            triplets.emplace_back(rows[i], cols[i], values[i]);
+        }
+        A.setFromTriplets(triplets.begin(), triplets.end());
+        A.makeCompressed();
+        return new fly::SubdomainSolver(A);
+    })
+    FLY_EXPORT_DEF("solve", [](const fly::SubdomainSolver& self,
+                                const std::vector<double>& rhs) -> std::vector<double> {
+        return vec_to_std(self.solve(std_to_vec(rhs)));
+    });
+
+FLY_EXPORT_FUNCTION("ex_slv_partition_1d", [](int n, int num_parts, int overlap) {
+    return fly::partition_1d(n, num_parts, overlap);
+});
+
+m.def("ex_slv_build_poisson_2d", [](int n) -> fly_export::object {
+    auto A = fly::build_poisson_2d(n);
+    std::vector<int> rows, cols;
+    std::vector<double> values;
+    for (int k = 0; k < A.outerSize(); ++k) {
+        for (Eigen::SparseMatrix<double>::InnerIterator it(A, k); it; ++it) {
+            rows.push_back(static_cast<int>(it.row()));
+            cols.push_back(static_cast<int>(it.col()));
+            values.push_back(it.value());
+        }
+    }
+    return fly_export::make_tuple(A.rows(), A.cols(), rows, cols, values);
+});
+
+m.def("ex_slv_extract_subdomain_matrix", [](
+    int matrix_size,
+    const std::vector<int>& row_indices,
+    const std::vector<int>& col_indices,
+    const std::vector<double>& values,
+    const std::vector<int>& local_indices) -> fly_export::object {
+    Eigen::SparseMatrix<double> A(matrix_size, matrix_size);
+    std::vector<Eigen::Triplet<double>> triplets;
+    triplets.reserve(values.size());
+    for (size_t i = 0; i < values.size(); ++i) {
+        triplets.emplace_back(row_indices[i], col_indices[i], values[i]);
+    }
+    A.setFromTriplets(triplets.begin(), triplets.end());
+    A.makeCompressed();
+    auto local_A = fly::extract_subdomain_matrix(A, local_indices);
+    std::vector<int> out_rows, out_cols;
+    std::vector<double> out_values;
+    for (int k = 0; k < local_A.outerSize(); ++k) {
+        for (Eigen::SparseMatrix<double>::InnerIterator it(local_A, k); it; ++it) {
+            out_rows.push_back(static_cast<int>(it.row()));
+            out_cols.push_back(static_cast<int>(it.col()));
+            out_values.push_back(it.value());
+        }
+    }
+    return fly_export::make_tuple(
+        local_A.rows(), local_A.cols(), out_rows, out_cols, out_values);
+});
+
+m.def("ex_slv_residual_norm", [](
+    int matrix_size,
+    const std::vector<int>& row_indices,
+    const std::vector<int>& col_indices,
+    const std::vector<double>& values,
+    const std::vector<double>& x_vec,
+    const std::vector<double>& b_vec) -> double {
+    Eigen::SparseMatrix<double> A(matrix_size, matrix_size);
+    std::vector<Eigen::Triplet<double>> triplets;
+    triplets.reserve(values.size());
+    for (size_t i = 0; i < values.size(); ++i) {
+        triplets.emplace_back(row_indices[i], col_indices[i], values[i]);
+    }
+    A.setFromTriplets(triplets.begin(), triplets.end());
+    A.makeCompressed();
+    return fly::residual_norm(A, std_to_vec(x_vec), std_to_vec(b_vec));
+});
+
+m.def("ex_slv_ras_subdomain_update", [](
+    int matrix_size,
+    const std::vector<int>& row_indices,
+    const std::vector<int>& col_indices,
+    const std::vector<double>& values,
+    const std::vector<double>& b_vec,
+    const std::vector<double>& x_vec,
+    const fly::SubdomainInfo& subdomain,
+    const fly::SubdomainSolver& solver) -> std::vector<double> {
+    Eigen::SparseMatrix<double> A(matrix_size, matrix_size);
+    std::vector<Eigen::Triplet<double>> triplets;
+    triplets.reserve(values.size());
+    for (size_t i = 0; i < values.size(); ++i) {
+        triplets.emplace_back(row_indices[i], col_indices[i], values[i]);
+    }
+    A.setFromTriplets(triplets.begin(), triplets.end());
+    A.makeCompressed();
+    return vec_to_std(fly::ras_subdomain_update(
+        A, std_to_vec(b_vec), std_to_vec(x_vec), subdomain, solver));
+});
+
+} // FLY_EXPORT_MODULE

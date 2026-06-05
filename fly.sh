@@ -102,6 +102,7 @@ do_install() {
     mkdir -p "$build_dir/python/network"
     mkdir -p "$build_dir/python/task"
     mkdir -p "$build_dir/python/test"
+    mkdir -p "$build_dir/python/solver"
 
     # Binary + wrapper script
     ln -sf "$bazel_bin/src/main/cpp/fly" "$build_dir/bin/fly.bin"
@@ -141,6 +142,12 @@ WRAPPER
     ln -sf "$bazel_bin/src/agent/export/_fly_agent.so" "$build_dir/python/agent/"
     for py in "$FLY_ROOT/src/agent/py/"*.py; do
         [ -f "$py" ] && ln -sf "$py" "$build_dir/python/agent/"
+    done
+
+    # Solver
+    ln -sf "$bazel_bin/src/solver/export/_fly_solver.so" "$build_dir/python/solver/"
+    for py in "$FLY_ROOT/src/solver/py/"*.py; do
+        [ -f "$py" ] && ln -sf "$py" "$build_dir/python/solver/"
     done
 
     # fly package

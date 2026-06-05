@@ -15,6 +15,7 @@ cc_binary(
         "//src/network/cpp:fly_network",
         "//src/task/cpp:fly_task",
         "//src/agent/cpp:fly_agent",
+        "//src/solver/cpp:fly_solver",
     ],
 
     dynamic_deps = [
@@ -25,6 +26,7 @@ cc_binary(
         "//src/network/cpp:fly_network_so",
         "//src/task/cpp:fly_task_so",
         "//src/agent/cpp:fly_agent_so",
+        "//src/solver/cpp:fly_solver_so",
     ],
     data = [
         "//src/test/export:_fly_test.so",
@@ -34,5 +36,6 @@ cc_binary(
         "//src/core/export:_fly_core.so",
         "//src/log/export:_fly_log.so",
         "//src/task/export:_fly_task.so",
+        "//src/solver/export:_fly_solver.so",
     ],
 )

@@ -85,6 +85,7 @@ static void setup_sys_path() {
         ps += "sys.path.insert(0, '" + (py_dir / "network").string() + "')\n";
         ps += "sys.path.insert(0, '" + (py_dir / "task").string() + "')\n";
         ps += "sys.path.insert(0, '" + (py_dir / "test").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (py_dir / "solver").string() + "')\n";
         ps += "sys.path.insert(0, '" + py_dir.string() + "')\n";
     } else {
         // Fallback: bazel-bin/ layout (for Bazel test targets)
@@ -96,6 +97,7 @@ static void setup_sys_path() {
         ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "network" / "export").string() + "')\n";
         ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "task" / "export").string() + "')\n";
         ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "test" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "solver" / "export").string() + "')\n";
         ps += "sys.path.insert(0, '" + cwd.string() + "/src')\n";
     }
 
@@ -105,6 +107,7 @@ static void setup_sys_path() {
     ps += "import _fly_agent\n";
     ps += "import _fly_task\n";
     ps += "import _fly_test\n";
+    ps += "import _fly_solver\n";
 
     PyRun_SimpleString(ps.c_str());
 }

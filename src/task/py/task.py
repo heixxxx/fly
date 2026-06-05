@@ -113,6 +113,8 @@ def wait_obj(inputs=None, poll_interval=0.1):
         result = process(db, "my_key")  # 阻塞直到 dep1 就绪后执行
     """
     def decorator(func):
+        import functools
+        @functools.wraps(func)
         def wrapper(*args, **kwargs):
             deps = inputs(*args, **kwargs) if inputs else []
             _wait_for_objects(deps, poll_interval)
@@ -131,7 +133,8 @@ def _wait_for_objects(deps, poll_interval):
     1. 快速检查 local_idx + remote_idx 缓存
     2. 若都不命中，触发 try_read_remote（Tier 3 → Master 查询）
        — Worker 端会缓存 remote_idx，下次轮询命中
-    3. 若 Master 返回 can_still_produce=false（无 pending/running 任务），抛出 RuntimeError
+    3. 若 Master 返回 can_still_produce=false（无 pending/running 任务），
+       连续确认多次后才判定失败（容忍任务链的竞态窗口）
     """
     if not deps:
         return
@@ -144,6 +147,10 @@ def _wait_for_objects(deps, poll_interval):
     pending = list(deps)
     last_probe = {dep: 0.0 for dep in deps}
     probe_interval = max(poll_interval * 5, 0.5)
+    # can_still_produce=false 的连续确认计数
+    # 任务链中旧任务完成和新任务注册之间有竞态窗口，需要多次确认
+    fail_confirm_count = {dep: 0 for dep in deps}
+    fail_confirm_threshold = 3
 
     while pending:
         still_pending = []
@@ -160,9 +167,13 @@ def _wait_for_objects(deps, poll_interval):
                     logger.debug("wait_obj: object '%s' found via Tier 3 probe", dep)
                     continue
                 if not can_still_produce:
-                    raise RuntimeError(
-                        f"wait_obj: object '{dep}' cannot be produced — "
-                        f"no pending or running tasks on master")
+                    fail_confirm_count[dep] += 1
+                    if fail_confirm_count[dep] >= fail_confirm_threshold:
+                        raise RuntimeError(
+                            f"wait_obj: object '{dep}' cannot be produced — "
+                            f"no pending or running tasks on master (confirmed {fail_confirm_threshold}x)")
+                else:
+                    fail_confirm_count[dep] = 0
 
             still_pending.append(dep)
 
