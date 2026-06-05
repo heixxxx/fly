@@ -122,6 +122,52 @@ def get_task_error(task_id: int) -> str:
     return get_agent().get_task_error(task_id)
 
 
+def put_cache(key: str, value):
+    """Store a Python object in the local agent cache.
+
+    The cache lives for the lifetime of the agent process (Master or Worker)
+    and is strictly local — not shared across workers.  Useful for passing
+    data between tasks on the same worker without network/disk I/O.
+
+    Args:
+        key: String key for the cached value.
+        value: Any Python object.
+    """
+    get_agent().put_cache(key, value)
+
+
+def get_cache(key: str, default=None):
+    """Retrieve a cached Python object by key.
+
+    Args:
+        key: String key that was used with :func:`put_cache`.
+        default: Value to return if *key* is not found.
+
+    Returns:
+        The cached Python object, or *default* if not found.
+    """
+    return get_agent().get_cache(key, default)
+
+
+def has_cache(key: str) -> bool:
+    """Return ``True`` if *key* exists in the local agent cache."""
+    return get_agent().has_cache(key)
+
+
+def remove_cache(key: str):
+    """Remove a single entry from the local agent cache.
+
+    Raises:
+        KeyError: If *key* is not in the cache.
+    """
+    get_agent().remove_cache(key)
+
+
+def clear_cache():
+    """Remove all entries from the local agent cache."""
+    get_agent().clear_cache()
+
+
 def __getattr__(name):
     if name == "completed_tasks":
         return get_agent().completed_tasks
@@ -143,4 +189,5 @@ __all__ = [
     'restart_failed_tasks', 'get_task_error',
     'completed_tasks', 'pending_tasks', 'running_tasks', 'failed_tasks',
     'get_agent', 'MapReduceJob',
+    'put_cache', 'get_cache', 'has_cache', 'remove_cache', 'clear_cache',
 ]

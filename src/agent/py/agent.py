@@ -54,6 +54,47 @@ class FlyAgent(ABC):
             return [prop]
         return list(prop)
 
+    def put_cache(self, key: str, value):
+        """Store a Python object in the local agent cache.
+
+        The cache lives for the lifetime of the agent process and is not
+        shared across workers.  Use it to pass data between tasks on the
+        same worker without network/disk I/O.
+
+        Args:
+            key: String key for the cached value.
+            value: Any Python object.
+        """
+        self._cache[key] = value
+
+    def get_cache(self, key: str, default=None):
+        """Retrieve a cached Python object by key.
+
+        Args:
+            key: String key that was used with :meth:`put_cache`.
+            default: Value to return if *key* is not found.
+
+        Returns:
+            The cached Python object, or *default* if not found.
+        """
+        return self._cache.get(key, default)
+
+    def has_cache(self, key: str) -> bool:
+        """Return ``True`` if *key* exists in the local agent cache."""
+        return key in self._cache
+
+    def remove_cache(self, key: str):
+        """Remove a single entry from the local agent cache.
+
+        Raises:
+            KeyError: If *key* is not in the cache.
+        """
+        del self._cache[key]
+
+    def clear_cache(self):
+        """Remove all entries from the local agent cache."""
+        self._cache.clear()
+
 
 class Master(FlyAgent):
 
@@ -72,6 +113,7 @@ class Master(FlyAgent):
         self._running = False
         self._next_worker_id = 1
         self._expected_workers = 0
+        self._cache = {}
 
     def is_running(self) -> bool:
         return self._running
@@ -136,6 +178,8 @@ class Master(FlyAgent):
         if self._running:
             self._agent.stop()
             self._running = False
+
+        self._cache.clear()
 
         # Wait for Workers to exit gracefully (they received ShutdownMessage).
         # This ensures atexit/__gcov_exit runs in Worker processes.
@@ -401,6 +445,7 @@ class Worker(FlyAgent):
         self._agent.set_data_service(ex_stg_get_data_service())
         self._db_cache = {}
         self._db_path_pending = {}
+        self._cache = {}
         self._master_host = master_host
         self._master_port = master_port
         self._worker_id = worker_id
@@ -432,6 +477,7 @@ class Worker(FlyAgent):
             self._executor.clear_exec_func()
             self._executor = None
         self._db_cache.clear()
+        self._cache.clear()
 
         if self._agent is not None:
             self._agent.stop()
