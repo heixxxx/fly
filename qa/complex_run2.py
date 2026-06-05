@@ -55,7 +55,7 @@ assert db_raw.is_frozen(), "DB_raw should be frozen from Run 1"
 print("  Phase 1b OK: DB_raw confirmed frozen", file=sys.stderr)
 
 master.launch_local_workers([{}])
-assert master.wait_for_workers(1), \
+assert master.wait_for_workers(), \
     "Phase 2: Worker should connect"
 print("  Phase 2 OK: 1 worker launched", file=sys.stderr)
 
@@ -93,7 +93,7 @@ log_dir = get_config().get_str("log_dir")
 failed_file = os.path.join(log_dir, "failed_tasks.bin")
 
 master.launch_local_workers([{"attributes": ["gpu"]}])
-assert master.wait_for_workers(2), \
+assert master.wait_for_workers(), \
     "Phase 7: gpu worker should connect"
 
 master.restart_failed_tasks(failed_file)

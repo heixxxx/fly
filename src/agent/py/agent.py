@@ -174,8 +174,10 @@ class Master(FlyAgent):
     def worker_count(self) -> int:
         return self._agent.get_connection_count()
 
-    def wait_for_workers(self, count: int, timeout: float = 30.0) -> bool:
+    def wait_for_workers(self, count: int = None, timeout: float = 30.0) -> bool:
         import time
+        if count is None:
+            count = self._expected_workers
         t0 = time.time()
         while time.time() - t0 < timeout:
             if self._agent.get_connection_count() >= count:
@@ -342,6 +344,13 @@ class Master(FlyAgent):
             worker_cov_dir = gcov_prefix + f"/worker_{worker_id}"
             os.makedirs(worker_cov_dir, exist_ok=True)
             env["GCOV_PREFIX"] = worker_cov_dir
+
+        # Python coverage: per-worker data file so parallel writes don't conflict
+        if os.environ.get("FLY_PYCOVERAGE"):
+            env["FLY_PYCOVERAGE"] = "1"
+            env["FLY_PYCOVERAGE_DATA"] = f"/tmp/.coverage.fly.worker_{worker_id}"
+            if os.environ.get("FLY_PYCOVERAGE_RCFILE"):
+                env["FLY_PYCOVERAGE_RCFILE"] = os.environ["FLY_PYCOVERAGE_RCFILE"]
 
         log_file = open(log_path, "a")
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,

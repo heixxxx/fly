@@ -62,13 +62,13 @@ def _mr_partition_task(db, job_id, data_hex, partition_fn_hex):
         db.write_object(f"__mr__{job_id}__part__{i}", part, save_to_db=False)
 
 
-@as_task(inputs=lambda db, job_id, part_id, process_fn_hex: [
-    db.get_obj_name(f"__mr__{job_id}__part__{part_id}")
+@as_task(inputs=lambda db, job_id, part_id, partition_key, process_fn_hex: [
+    db.get_obj_name(partition_key)
 ])
-def _mr_process_task(db, job_id, part_id, process_fn_hex):
+def _mr_process_task(db, job_id, part_id, partition_key, process_fn_hex):
     """Process a single partition."""
     process_fn = _deserialize_fn(process_fn_hex)
-    data = db.read_object(f"__mr__{job_id}__part__{part_id}")
+    data = db.read_object(partition_key)
     result = process_fn(data)
     db.write_object(f"__mr__{job_id}__proc__{part_id}", result, save_to_db=False)
 
@@ -293,7 +293,8 @@ class MapReduceJob:
         process_fn_hex = _serialize_fn(self._process_fn)
         for i in range(self._num_partitions):
             _mr_process_task(
-                self._db, self._job_id, i, process_fn_hex,
+                self._db, self._job_id, i,
+                self._partition_keys[i], process_fn_hex,
             )
 
         self._processed_keys = [

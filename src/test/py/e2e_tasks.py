@@ -223,3 +223,9 @@ def write_temp(db, key, value):
 def write_temp_large(db, key, size):
     data = list(range(size))
     db.write_object(key, data, save_to_db=False)
+
+
+@as_task(inputs=lambda db, mr, output_key: [mr.get_output_name()])
+def mr_downstream_read(db, mr, output_key):
+    data = mr.get(db)
+    db.write_object(output_key, f"downstream:{data}")
