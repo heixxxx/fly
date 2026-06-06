@@ -14,7 +14,9 @@ FLY_EXPORT_MODULE(_fly_core) {
     FLY_EXPORT_METHOD("get_str", &Config::get_str)
     FLY_EXPORT_METHOD("mark_workers_launched", &Config::mark_workers_launched)
     FLY_EXPORT_METHOD("is_workers_launched", &Config::is_workers_launched)
-    FLY_EXPORT_METHOD("reset", &Config::reset);
+    FLY_EXPORT_METHOD("reset", &Config::reset)
+    FLY_EXPORT_METHOD("save_to_file", &Config::save_to_file)
+    FLY_EXPORT_METHOD("load_from_file", &Config::load_from_file);
 
     FLY_EXPORT_FUNCTION_REF("ex_core_get_config", []() { return &Config::instance(); });
 

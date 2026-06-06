@@ -1,5 +1,7 @@
 #include "config.h"
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 
 Config& Config::instance() {
     static Config config;
@@ -64,6 +66,36 @@ void Config::apply_sync(const CMUnorderedMap<CMString, int64_t>& ints,
     }
     for (const auto& [k, v] : strs) {
         str_values_[k] = v;
+    }
+}
+
+void Config::save_to_file(const CMString& path) const {
+    std::ofstream ofs(path.c_str(), std::ios::trunc);
+    for (const auto& [k, v] : int_values_) {
+        ofs << "i " << k << " " << v << "\n";
+    }
+    for (const auto& [k, v] : str_values_) {
+        ofs << "s " << k << " " << v << "\n";
+    }
+}
+
+void Config::load_from_file(const CMString& path) {
+    std::ifstream ifs(path.c_str());
+    if (!ifs.is_open()) return;
+    CMString line;
+    while (std::getline(ifs, line)) {
+        if (line.size() < 3) continue;
+        char type = line[0];
+        CMString rest = line.substr(2);
+        auto sp = rest.find(' ');
+        if (sp == CMString::npos) continue;
+        CMString key = rest.substr(0, sp);
+        CMString val = rest.substr(sp + 1);
+        if (type == 'i') {
+            try { int_values_[key] = std::stoll(val); } catch (...) {}
+        } else if (type == 's') {
+            str_values_[key] = val;
+        }
     }
 }
 

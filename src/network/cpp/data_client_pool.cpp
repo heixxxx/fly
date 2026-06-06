@@ -66,7 +66,7 @@ void PooledConnection::invalidate() {
 // ============================================================
 
 DataClientPool::DataClientPool(int64_t max_pool_size)
-    : max_pool_size_(max_pool_size > 0 ? max_pool_size : 4) {}
+    : max_pool_size_(max_pool_size) {}
 
 DataClientPool::~DataClientPool() {
     stop();
@@ -99,7 +99,7 @@ int DataClientPool::create_connection(const CMString& host, int port, int timeou
 }
 
 PooledConnection DataClientPool::acquire(const CMString& host, int port, int timeout_ms) {
-    if (stopped_.load(std::memory_order_relaxed)) {
+    if (stopped_.load(std::memory_order_relaxed) || max_pool_size_ == 0) {
         int fd = create_connection(host, port, timeout_ms);
         return PooledConnection(fd, host, port, nullptr);
     }
@@ -122,7 +122,7 @@ PooledConnection DataClientPool::acquire(const CMString& host, int port, int tim
 void DataClientPool::release(int fd, const CMString& host, int port) {
     if (fd < 0) return;
 
-    if (stopped_.load(std::memory_order_relaxed)) {
+    if (stopped_.load(std::memory_order_relaxed) || max_pool_size_ == 0) {
         ::close(fd);
         return;
     }

@@ -139,6 +139,7 @@ int main(int argc, char* argv[]) {
     std::string script_path;
     std::string worker_attributes;
     std::string host_override;
+    std::string config_file;
 
     for (int i = 1; i < argc; i++) {
         std::string arg(argv[i]);
@@ -156,6 +157,8 @@ int main(int argc, char* argv[]) {
             worker_attributes = argv[++i];
         } else if (arg == "--host" && i + 1 < argc) {
             host_override = argv[++i];
+        } else if (arg == "--config-file" && i + 1 < argc) {
+            config_file = argv[++i];
         } else if (arg == "-i") {
             interactive = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -168,6 +171,10 @@ int main(int argc, char* argv[]) {
 
     auto& cfg = Config::instance();
     auto& proc = ProcessInfo::instance();
+
+    if (!config_file.empty()) {
+        cfg.load_from_file(config_file);
+    }
 
     proc.set_worker_mode(worker_mode);
     proc.set_worker_id(worker_id);
