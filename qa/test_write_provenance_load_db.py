@@ -5,6 +5,7 @@ Run 2: load_db, submit same write_data(db, key, 42) → same hash from @as_task
   → Worker local pre-check: new hash matches IndexEntry hash → accept
   → Master: no stored provenance (fresh process) → accept
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -37,9 +38,9 @@ def run_script(script_name, log_dir):
         capture_output=True, text=True, timeout=120, cwd=PROJECT_ROOT,
     )
     if result.returncode != 0:
-        print(f"FAILED: {script_name}", file=sys.stderr)
-        print(f"stdout: {result.stdout}", file=sys.stderr)
-        print(f"stderr: {result.stderr}", file=sys.stderr)
+        INFO(f"FAILED: {script_name}")
+        INFO(f"stdout: {result.stdout}")
+        INFO(f"stderr: {result.stderr}")
     assert result.returncode == 0, f"{script_name} failed (exit {result.returncode})"
     return result
 
@@ -53,8 +54,8 @@ def test_write_provenance_load_db():
     run_script("provenance_load_db_run1.py", run1_log)
     run_script("provenance_load_db_run2.py", run2_log)
 
-    print("[PASS] test_write_provenance_load_db: load_db + rerun accepted", file=sys.stderr)
+    INFO("[PASS] test_write_provenance_load_db: load_db + rerun accepted")
 
 
 test_write_provenance_load_db()
-print("\nAll tests passed!")
+INFO("\nAll tests passed!")

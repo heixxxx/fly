@@ -1,5 +1,6 @@
 """E2E test: MapReduce comprehensive coverage — full merge, pre-partitioned,
 keep_intermediate, multi-stage tree, downstream dependency, error paths."""
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -52,7 +53,7 @@ def test_full_merge():
     result = mr.get()
     assert result == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], \
         f"Expected sorted list, got {result}"
-    print("[PASS] test_full_merge", file=sys.stderr)
+    INFO("[PASS] test_full_merge")
 
 
 # ── Test 2: Pre-partitioned (skip partition phase) ─────────────────────────
@@ -74,7 +75,7 @@ def test_pre_partitioned():
     assert wait_tasks(timeout=60.0)
     result = mr.get()
     assert result == 21, f"Expected 21 (1+2+3+4+5+6), got {result}"
-    print("[PASS] test_pre_partitioned", file=sys.stderr)
+    INFO("[PASS] test_pre_partitioned")
 
 
 # ── Test 3: Keep intermediate data ────────────────────────────────────────
@@ -102,7 +103,7 @@ def test_keep_intermediate():
             pass
     assert read_count > 0, \
         f"Intermediate data should be preserved (keep_intermediate=True), but 0/{len(mr._processed_keys)} readable"
-    print(f"[PASS] test_keep_intermediate ({read_count} intermediates preserved)", file=sys.stderr)
+    INFO(f"[PASS] test_keep_intermediate ({read_count} intermediates preserved)")
 
 
 # ── Test 4: Multi-stage tree merge (>8 partitions) ────────────────────────
@@ -123,7 +124,7 @@ def test_multi_stage_merge():
     result = mr.get()
     expected = sum(range(1, 65))
     assert result == expected, f"Expected {expected}, got {result}"
-    print("[PASS] test_multi_stage_merge (16 partitions -> 2-stage tree)", file=sys.stderr)
+    INFO("[PASS] test_multi_stage_merge (16 partitions -> 2-stage tree)")
 
 
 # ── Test 5: MR as downstream task dependency ───────────────────────────────
@@ -144,7 +145,7 @@ def test_downstream_dependency():
     downstream = db.read_object("downstream_output")
     assert downstream == "downstream:100", \
         f"Expected 'downstream:100', got {downstream}"
-    print("[PASS] test_downstream_dependency", file=sys.stderr)
+    INFO("[PASS] test_downstream_dependency")
 
 
 # ── Test 6: Error paths ───────────────────────────────────────────────────
@@ -191,7 +192,7 @@ def test_error_paths():
     if errors:
         raise AssertionError(errors[0])
 
-    print("[PASS] test_error_paths (4/4)", file=sys.stderr)
+    INFO("[PASS] test_error_paths (4/4)")
 
 
 # ── Run all ───────────────────────────────────────────────────────────────
@@ -213,4 +214,4 @@ test_keep_intermediate()
 test_error_paths()
 
 master.stop()
-print("\nAll MapReduce coverage tests passed!", file=sys.stderr)
+INFO("\nAll MapReduce coverage tests passed!")

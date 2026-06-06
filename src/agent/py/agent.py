@@ -493,6 +493,11 @@ class Worker(FlyAgent):
             return False
         return self._agent.poll_task()
 
+    def poll_task_blocking(self, timeout_ms: int = 100) -> bool:
+        if self._agent is None:
+            return False
+        return self._agent.poll_task_blocking(timeout_ms)
+
         # Wait for Workers to exit gracefully (received ShutdownMessage).
         for proc in self._worker_procs:
             if proc.poll() is None:

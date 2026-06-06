@@ -4,6 +4,7 @@ Verifies that when a DB is frozen, all subsequent write registrations
 are rejected. Submits 10 writes, freezes after first batch, then
 submits 10 more writes — all should fail.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -71,9 +72,9 @@ def test_freeze_reject_stress():
         val = db.read_object(f"pre_{i}")
         assert val == i, f"pre_{i} should be {i}, got {val}"
 
-    print(f"[PASS] test_freeze_reject_stress: {pre_freeze_count} pre-freeze OK, "
-          f"{post_freeze_count} post-freeze rejected", file=sys.stderr)
+    INFO(f"[PASS] test_freeze_reject_stress: {pre_freeze_count} pre-freeze OK, "
+          f"{post_freeze_count} post-freeze rejected")
 
 
 test_freeze_reject_stress()
-print("\nAll tests passed!")
+INFO("\nAll tests passed!")

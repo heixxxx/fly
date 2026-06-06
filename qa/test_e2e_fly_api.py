@@ -1,4 +1,5 @@
 """E2E test: fly public API — open_db, as_task, task_name, get_agent."""
+from _fly_log import INFO
 import sys
 import os
 import time
@@ -44,4 +45,4 @@ write_data(db, "test_key", "test_value")
 assert wait_for(lambda: len(master.completed_tasks) >= 1)
 
 master.stop()
-print("[PASS] test_e2e_fly_api", file=sys.stderr)
+INFO("[PASS] test_e2e_fly_api")

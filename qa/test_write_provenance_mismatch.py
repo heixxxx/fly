@@ -5,6 +5,7 @@ write_data(db, "clash_key", 99) — same task name but different args
   → different hash → provenance mismatch → write rejected.
   The task still "completes" but the original value is preserved.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -67,8 +68,8 @@ def test_write_provenance_mismatch():
     assert val2 == 42, \
         f"Original value should be preserved after mismatch, expected 42 got {val2}"
 
-    print("[PASS] test_write_provenance_mismatch: different-args write rejected, original preserved", file=sys.stderr)
+    INFO("[PASS] test_write_provenance_mismatch: different-args write rejected, original preserved")
 
 
 test_write_provenance_mismatch()
-print("\nAll tests passed!")
+INFO("\nAll tests passed!")

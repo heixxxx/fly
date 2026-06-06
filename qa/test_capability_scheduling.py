@@ -11,6 +11,7 @@ Tasks:
   - gpu_write: requires=["gpu"] -> must run on Worker 1
   - cpu_write: requires=None    -> can run on any worker
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -70,7 +71,7 @@ def test_capability_matching():
     assert db.read_object("cpu_result") == 1
     assert db.read_object("gpu_result") == 2
 
-    print(f"[PASS] test_capability_matching: {len(completed)} tasks completed", file=sys.stderr)
+    INFO(f"[PASS] test_capability_matching: {len(completed)} tasks completed")
 
 
 test_capability_matching()

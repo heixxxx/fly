@@ -17,6 +17,7 @@ Phase 3: Launch gpu worker + restart
 
 Phase 4: Verify no persisted failures remain
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -79,8 +80,7 @@ def test_restart_failed_tasks_lifecycle():
     assert p1_failed == 2, f"Phase 1: expected 2 failed, got {p1_failed}"
     assert os.path.isfile(failed_file), \
         "Phase 1: failed_tasks.bin should exist"
-    print(f"  Phase 1 OK: {p1_completed} completed, {p1_failed} failed",
-          file=sys.stderr)
+    INFO(f"  Phase 1 OK: {p1_completed} completed, {p1_failed} failed")
 
     # ── Phase 2: Fix data dependency, restart ──
 
@@ -105,8 +105,7 @@ def test_restart_failed_tasks_lifecycle():
     failed_file_2 = os.path.join(log_dir, "failed_tasks.bin")
     assert os.path.isfile(failed_file_2), \
         "Phase 2: failed_tasks.bin should still exist (gpu re-persisted)"
-    print(f"  Phase 2 OK: {p2_completed} completed, gpu re-failed: {gpu_error}",
-          file=sys.stderr)
+    INFO(f"  Phase 2 OK: {p2_completed} completed, gpu re-failed: {gpu_error}")
 
     # ── Phase 3: Launch gpu worker, restart ──
 
@@ -126,10 +125,9 @@ def test_restart_failed_tasks_lifecycle():
 
     assert not os.path.isfile(failed_file_2), \
         "Phase 4: failed_tasks.bin should be deleted"
-    print(f"  Phase 3+4 OK: {p3_completed} completed, 0 failed, file deleted",
-          file=sys.stderr)
+    INFO(f"  Phase 3+4 OK: {p3_completed} completed, 0 failed, file deleted")
 
-    print("[PASS] test_restart_failed_tasks_lifecycle", file=sys.stderr)
+    INFO("[PASS] test_restart_failed_tasks_lifecycle")
 
 
 test_restart_failed_tasks_lifecycle()

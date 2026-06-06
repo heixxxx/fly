@@ -33,6 +33,7 @@
 ### 基本模板
 
 ```python
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -75,7 +76,7 @@ db = open_db(DB_PATH)
 # ... test logic ...
 
 master.stop()
-print(f"[PASS] test_<feature>", file=sys.stderr)
+INFO(f"[PASS] test_<feature>")
 ```
 
 ### 多进程测试（协调器模式）
@@ -133,7 +134,7 @@ master.start()
 db = open_db(DB_PATH)
 write_data(db, "key", 42)
 master.stop()
-print("[PASS]", file=sys.stderr)
+INFO("[PASS] test_feature")
 
 # ❌ 错误 — 不要用 if __name__ 或 main() 包装
 def main():
@@ -254,50 +255,49 @@ def test_part2():
 
 ### 日志系统
 
-#### 在测试中输出信息
+#### 统一日志原则
 
-使用 `print(..., file=sys.stderr)` 输出测试进度。
-
-#### 日志架构
-
-Fly 的日志系统基于 C++ Logger（`src/log/cpp/logger.h`），提供四个级别：
+Fly 进程内**禁止使用 `print`**，所有日志输出统一使用 `_fly_log` 模块：
 
 ```python
 from _fly_log import DBG, INFO, WARN, ERR
-INFO("任务完成")
-WARN("重试中")
-ERR("连接失败")
+
+INFO(f"[PASS] test_feature")
+WARN(f"重试中: attempt={i}")
+ERR(f"连接失败: {error}")
+DBG(f"调试信息: value={v}")
 ```
 
-C++ 侧使用同名宏：
+`_fly_log` 是 C++ Logger 的 Python binding，与 C++ 侧的 `INFO`/`WARN`/`ERR`/`DBG` 宏共用同一套日志系统。所有日志带有统一的时间戳和级别前缀。
 
-```cpp
-INFO("Worker connected, id={}", worker_id);
-ERR("task failed: {}", error_msg);
+**禁止**：
+- `print(...)` / `print(..., file=sys.stderr)` — 日志混入非格式化输出
+- `import logging` — 引入第二套日志系统
+- `traceback.print_exc(file=sys.stderr)` — 改用 `ERR(traceback.format_exc())`
+
+#### 日志架构
+
+```
+C++ Logger (src/log/cpp/logger.h)
+├── Master (dual_output=true):  file + stderr
+└── Worker (dual_output=false): file only
 ```
 
-#### 双输出机制（Master）
-
-Master 进程（用户直接运行 `fly script.py` 或 QA 运行）的日志**同时写入两处**：
-
-| 输出目标 | 内容 |
-|---------|------|
-| **stderr（终端）** | C++ 全级别日志 + Python print + traceback |
-| **log 文件** | 同上，写入 `{log_dir}/master.log` |
-
-用户在终端可以实时看到所有日志输出，包括任务调度、数据写入、错误信息等。
-
-Worker 进程的日志**仅写入文件**（`{log_dir}/worker{N}.log`），不输出到终端。
+| 进程 | 文件输出 | stderr 输出 |
+|------|---------|-------------|
+| Master | `{log_dir}/master.log` | ✅ 终端可见 |
+| Worker | `{log_dir}/worker{N}.log` | ❌ 仅文件 |
 
 #### QA 日志查看
 
-QA 运行器（`runqa`）为每个测试生成两类日志：
+`runqa` 为每个测试生成日志，同时 runner 自身输出到终端和 `qa.log`：
 
 ```
 qa/logs/
-├── test_foo.log                    # 综合日志：Python print + C++ 日志 + traceback
-├── test_foo/                       # C++ Logger 写入的文件日志
-│   ├── master.log                  #   Master 进程日志（与 .log 内容相同）
+├── qa.log                          # Runner 自身输出（终端 + 文件双写）
+├── test_foo.log                    # fly 进程全部输出（C++ Logger + Python INFO/WARN/ERR）
+├── test_foo/                       # C++ Logger 文件日志
+│   ├── master.log                  #   Master 进程日志
 │   └── worker1.log                 #   Worker 进程日志
 ├── test_bar.log
 ├── test_bar/
@@ -306,9 +306,17 @@ qa/logs/
 └── ...
 ```
 
-**快速查看测试结果**：
+- `{test_name}.log` — fly 进程的完整输出（stdout + stderr 合并），包含所有 C++/Python 日志
+- `{test_name}/master.log` — Master 的 C++ Logger 文件输出（与 `.log` 内容相同）
+- `{test_name}/worker{N}.log` — Worker 的 C++ Logger 文件输出
+- `qa.log` — runqa runner 自身输出（测试结果汇总），同时显示在终端
+
+**快速查看**：
 ```bash
-# 查看失败测试的日志（包含全部输出）
+# 查看 runner 汇总（与终端输出相同）
+cat qa/logs/qa.log
+
+# 查看失败测试的完整日志
 cat qa/logs/test_foo.log
 
 # 仅查看 Worker 日志（任务执行细节）
@@ -318,7 +326,7 @@ cat qa/logs/test_foo/worker1.log
 grep '\[ERROR\]' qa/logs/test_foo.log
 ```
 
-**测试失败时**，`runqa` 自动打印失败测试的最后 20 行日志。完整日志在 `qa/logs/{test_name}.log`。
+**测试失败时**，`runqa` 自动在终端打印失败测试的最后 20 行日志。完整日志在 `qa/logs/{test_name}.log`。
 
 #### 生产环境日志
 
@@ -370,7 +378,7 @@ QA 测试由 fly 二进制以独立进程运行。`reset()` 用于单进程内�
 ```
 qa/
 ├── README.md                    # 本文档
-├── runqa                       # Python 测试运行器（-j 并发、计时、排序）
+├── runqa                       # Python 测试运行器（-j 并发、计时、排序、qa.log 双写）
 ├── run_qa_tests.sh             # 兼容入口（薄 wrapper → runqa）
 ├── .gitignore                   # 忽略 logs/
 ├── BUILD                        # Bazel 构建定义
@@ -379,14 +387,12 @@ qa/
 ├── <helper>.py                  # 辅助脚本（由 test_*.py 调用）
 │
 └── logs/                        # 测试日志（gitignore）
-    ├── test_foo.log             # 综合日志（Python + C++ + traceback）
+    ├── qa.log                   # Runner 自身输出（终端 + 文件双写）
+    ├── test_foo.log             # fly 进程全部输出（C++ Logger + Python 日志）
     ├── test_foo/
-    │   ├── master.log           # Master C++ 日志文件
-    │   └── worker1.log          # Worker C++ 日志文件
-    ├── test_bar.log
-    └── test_bar/
-        ├── master.log
-        └── worker1.log
+    │   ├── master.log           # Master C++ Logger 文件输出
+    │   └── worker1.log          # Worker C++ Logger 文件输出
+    └── ...
 ```
 
 ---
@@ -399,7 +405,7 @@ qa/
 ```bash
 cat qa/logs/test_foo.log
 ```
-里面包含 Master 的全部 C++ 日志和 Python 输出。搜索 `[ERROR]` 定位错误点。
+里面包含 fly 进程的全部 C++ 日志和 Python INFO/WARN/ERR 输出。搜索 `[ERROR]` 定位错误点。
 
 **Q: 测试失败如何调试？**
 

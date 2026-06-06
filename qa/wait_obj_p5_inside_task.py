@@ -5,6 +5,7 @@ If write_data runs on Worker 1 and wait_obj_then_process on Worker 2,
 @wait_obj in Worker 2 must use Tier 3 probe (→ Master query → update_remote_idx)
 to discover Worker 1's data.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -60,4 +61,4 @@ assert wait_for(lambda: len(master.completed_tasks) >= 2)
 result = db.read_object("processed_result")
 assert result == "processed:hello worker"
 
-print("[PASS] test_wait_obj_inside_worker_task (2 workers)", file=sys.stderr)
+INFO("[PASS] test_wait_obj_inside_worker_task (2 workers)")

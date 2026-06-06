@@ -3,6 +3,7 @@
 Verifies that wait_for_all_workers() no longer requires explicit count parameter —
 it should automatically know how many workers were launched.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -53,4 +54,4 @@ write_data(db, "k1", "v1")
 assert wait_for(lambda: len(master.completed_tasks) >= 1)
 
 master.stop()
-print("[PASS] test_wait_for_all_workers_auto", file=sys.stderr)
+INFO("[PASS] test_wait_for_all_workers_auto")

@@ -16,6 +16,7 @@ Phase 3 - Dynamic remove "shared" from Worker 2:
   Remove "shared" from Worker 2 via targeted task (routed by beta).
   Submit N tasks requiring "shared" -> verify ALL land on Worker 3 only.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -99,7 +100,7 @@ def test_dynamic_property_full_routing():
         f"beta task should run on Worker 2, got {db.read_object('p1_beta')}"
     assert db.read_object("p1_gamma") == 3, \
         f"gamma task should run on Worker 3, got {db.read_object('p1_gamma')}"
-    print("[PASS] Phase 1: initial attribute routing correct", file=sys.stderr)
+    INFO("[PASS] Phase 1: initial attribute routing correct")
 
     # Phase 2: dynamic add "shared" on Worker 2 and Worker 3
     add_shared_on_beta(db, "p2_add_beta")
@@ -122,7 +123,7 @@ def test_dynamic_property_full_routing():
         f"Phase 2 FAILED: Worker 1 should NOT handle shared tasks, but got wids={p2_wids}"
     assert p2_wids.issubset({2, 3}), \
         f"Phase 2 FAILED: shared tasks should only run on Worker 2/3, got wids={p2_wids}"
-    print(f"[PASS] Phase 2: {NUM_SHARED_TASKS} shared tasks routed to Worker 2/3 only (wids={p2_wids})", file=sys.stderr)
+    INFO(f"[PASS] Phase 2: {NUM_SHARED_TASKS} shared tasks routed to Worker 2/3 only (wids={p2_wids})")
 
     # Phase 3: remove "shared" from Worker 2
     remove_shared_on_beta(db, "p3_remove")
@@ -142,9 +143,9 @@ def test_dynamic_property_full_routing():
         f"Phase 3 FAILED: Worker 2 should NOT handle shared tasks after removal, but got wids={p3_wids}"
     assert p3_wids == {3}, \
         f"Phase 3 FAILED: shared tasks should only run on Worker 3, got wids={p3_wids}"
-    print(f"[PASS] Phase 3: {NUM_SHARED_TASKS} shared tasks routed to Worker 3 only after Worker 2 lost property (wids={p3_wids})", file=sys.stderr)
+    INFO(f"[PASS] Phase 3: {NUM_SHARED_TASKS} shared tasks routed to Worker 3 only after Worker 2 lost property (wids={p3_wids})")
 
-    print("\nAll dynamic property routing tests passed!", file=sys.stderr)
+    INFO("\nAll dynamic property routing tests passed!")
 
 
 test_dynamic_property_full_routing()

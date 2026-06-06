@@ -5,6 +5,7 @@ Verifies the new wait_obj semantics:
   2. Master returns can_still_produce=false when no executable tasks remain
   3. wait_obj raises when object doesn't exist AND can_still_produce=false
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -64,7 +65,7 @@ try:
 except RuntimeError as e:
     if "cannot be produced" in str(e) or "no pending tasks" in str(e):
         raised = True
-        print(f"  Got expected error: {e}", file=sys.stderr)
+        INFO(f"  Got expected error: {e}")
     else:
         raise
 
@@ -74,4 +75,4 @@ assert raised, "wait_obj should raise when object can never appear"
 # Submit a slow task and verify wait_obj doesn't timeout
 # (This test passes if wait_obj completes after the slow task finishes)
 
-print("[PASS] test_wait_obj_no_timeout", file=sys.stderr)
+INFO("[PASS] test_wait_obj_no_timeout")

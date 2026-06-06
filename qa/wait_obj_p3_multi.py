@@ -1,4 +1,5 @@
 """Phase 3: Two Worker writes → @wait_obj waits for both → executes and returns result."""
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -53,4 +54,4 @@ assert result == 300
 
 assert wait_for(lambda: len(master.completed_tasks) >= 2)
 
-print("[PASS] test_wait_obj_multi_deps", file=sys.stderr)
+INFO("[PASS] test_wait_obj_multi_deps")

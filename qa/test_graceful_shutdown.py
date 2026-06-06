@@ -11,6 +11,7 @@ Scenario:
   7. Verify persisted file contains task records
   8. Call restart_failed_tasks() and verify tasks re-submitted
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -66,7 +67,7 @@ def test_graceful_shutdown():
         f"Phase 1: 3 write_data tasks should complete, got {len(master.completed_tasks)}"
 
     p1_completed = len(master.completed_tasks)
-    print(f"  Phase 1 OK: {p1_completed} tasks completed", file=sys.stderr)
+    INFO(f"  Phase 1 OK: {p1_completed} tasks completed")
 
     # -- Phase 2: Submit tasks with unresolvable deps (stay PENDING) --
     # Use db.get_obj_name to create full dep names; point to non-existent objects
@@ -79,8 +80,7 @@ def test_graceful_shutdown():
 
     p2_pending = len(master.pending_tasks)
     p2_completed = len(master.completed_tasks)
-    print(f"  Phase 2: pending={p2_pending}, completed={p2_completed}",
-          file=sys.stderr)
+    INFO(f"  Phase 2: pending={p2_pending}, completed={p2_completed}")
 
     # The pending tasks should exist (either pending or failed, depending on scheduler)
     total = p2_completed + len(master.pending_tasks) + len(master.running_tasks) + len(master.failed_tasks)
@@ -108,13 +108,11 @@ def test_graceful_shutdown():
         file_size = os.path.getsize(failed_file)
         assert file_size > 0, \
             "Phase 4: failed_tasks.bin exists but is empty"
-        print(f"  Phase 4 OK: failed_tasks.bin exists ({file_size} bytes)",
-              file=sys.stderr)
+        INFO(f"  Phase 4 OK: failed_tasks.bin exists ({file_size} bytes)")
     else:
         # With fail_unscheduleable_tasks=0, tasks may stay pending and not be persisted
         # This is acceptable behavior - the test verifies stop() completes cleanly
-        print("  Phase 4 OK: no failed_tasks.bin (pending tasks not force-failed)",
-              file=sys.stderr)
+        INFO("  Phase 4 OK: no failed_tasks.bin (pending tasks not force-failed)")
 
     # -- Phase 5: Restart master and verify restart_failed_tasks works --
     # Start a new master in the same process context
@@ -127,7 +125,7 @@ def test_graceful_shutdown():
     # If failed file exists, restart those tasks
     if os.path.isfile(failed_file):
         master2.restart_failed_tasks(failed_file)
-        print("  Phase 5: restart_failed_tasks called", file=sys.stderr)
+        INFO("  Phase 5: restart_failed_tasks called")
 
         # After restart, tasks should be re-submitted (back in pending/running)
         time.sleep(1.0)
@@ -135,13 +133,12 @@ def test_graceful_shutdown():
                            len(master2.running_tasks) +
                            len(master2.completed_tasks) +
                            len(master2.failed_tasks))
-        print(f"  Phase 5: total tasks after restart = {restarted_total}",
-              file=sys.stderr)
+        INFO(f"  Phase 5: total tasks after restart = {restarted_total}")
     else:
-        print("  Phase 5: no failed file to restart", file=sys.stderr)
+        INFO("  Phase 5: no failed file to restart")
 
     master2.stop()
-    print("[PASS] test_graceful_shutdown", file=sys.stderr)
+    INFO("[PASS] test_graceful_shutdown")
 
 
 test_graceful_shutdown()

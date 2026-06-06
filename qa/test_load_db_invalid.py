@@ -1,4 +1,5 @@
 """E2E test: load_db with corrupt/missing _DB_META raises RuntimeError."""
+from _fly_log import INFO
 import sys
 import os
 import shutil
@@ -34,8 +35,8 @@ def test_load_db_invalid_meta():
 
     assert caught, "load_db should have raised RuntimeError for corrupt _DB_META"
 
-    print("[PASS] test_load_db_invalid_meta: "
-          "RuntimeError raised for corrupt _DB_META", file=sys.stderr)
+    INFO("[PASS] test_load_db_invalid_meta: "
+          "RuntimeError raised for corrupt _DB_META")
 
 
 def test_load_db_nonexistent_path():
@@ -54,8 +55,8 @@ def test_load_db_nonexistent_path():
 
     assert caught, "load_db should have raised RuntimeError for nonexistent path"
 
-    print("[PASS] test_load_db_nonexistent_path: "
-          "RuntimeError raised for nonexistent path", file=sys.stderr)
+    INFO("[PASS] test_load_db_nonexistent_path: "
+          "RuntimeError raised for nonexistent path")
 
 
 def cleanup():
@@ -65,4 +66,4 @@ def cleanup():
 
 test_load_db_invalid_meta()
 test_load_db_nonexistent_path()
-print("\nAll tests passed!")
+INFO("\nAll tests passed!")

@@ -1,4 +1,5 @@
 """Run 1: Initial data production with 2 DBs, cross-DB compute, freeze."""
+from _fly_log import INFO
 import sys
 import os
 import shutil
@@ -53,7 +54,7 @@ write_data(db_feat, "y", 20)
 
 assert wait_for(lambda: len(master.completed_tasks) >= 3), \
     f"Phase 1: expected 3 completed, got {len(master.completed_tasks)}"
-print(f"  Phase 1 OK: {len(master.completed_tasks)} tasks completed", file=sys.stderr)
+INFO(f"  Phase 1 OK: {len(master.completed_tasks)} tasks completed")
 
 cross_db_copy(db_feat, db_raw, "x", "feat_xy_from_raw")
 
@@ -62,10 +63,10 @@ assert wait_for(lambda: len(master.completed_tasks) >= 4), \
 
 result = db_feat.read_object("feat_xy_from_raw")
 assert result == 10, f"Expected feat_xy_from_raw=10, got {result}"
-print(f"  Phase 2 OK: cross-DB copy feat_xy_from_raw={result}", file=sys.stderr)
+INFO(f"  Phase 2 OK: cross-DB copy feat_xy_from_raw={result}")
 
 db_raw.write_object("finish", 1)
 db_raw.freeze()
-print("  Phase 3 OK: DB_raw frozen", file=sys.stderr)
+INFO("  Phase 3 OK: DB_raw frozen")
 
-print("[PASS] Run 1 complete", file=sys.stderr)
+INFO("[PASS] Run 1 complete")

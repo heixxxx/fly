@@ -3,6 +3,7 @@
 Two workers with different --host values write data with backup enabled.
 Data is backed up across hosts, creating cross-host idx entries.
 """
+from _fly_log import INFO
 import os
 import sys
 import time
@@ -65,6 +66,6 @@ with open(os.path.join(DB_PATH, "_test_db_id"), "w") as f:
 assert db.read_object("shared/alpha_data") == 42
 assert db.read_object("shared/beta_data") == 99
 
-print(f"[RUN1] db_id={db_id}, wrote 3 objects with backup", file=sys.stderr)
+INFO(f"[RUN1] db_id={db_id}, wrote 3 objects with backup")
 
 master.stop()

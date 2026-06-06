@@ -3,6 +3,7 @@
 Verifies no data corruption or lost writes when 2 workers concurrently
 write 25 objects each (50 total) to the same database.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -60,9 +61,8 @@ def test_concurrent_writes():
         val = db.read_object(f"concurrent_{i}")
         assert val == i, f"concurrent_{i} should be {i}, got {val}"
 
-    print(f"[PASS] test_concurrent_writes: 50 objects written by 2 workers, all readable",
-          file=sys.stderr)
+    INFO(f"[PASS] test_concurrent_writes: 50 objects written by 2 workers, all readable")
 
 
 test_concurrent_writes()
-print("\nAll tests passed!")
+INFO("\nAll tests passed!")

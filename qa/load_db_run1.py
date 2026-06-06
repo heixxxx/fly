@@ -1,6 +1,7 @@
 """Run 1 of two-process load_db test.
 Creates DB, writes data via tasks, does NOT freeze.
 """
+from _fly_log import INFO
 import os
 import sys
 import time
@@ -68,6 +69,6 @@ with open(os.path.join(DB_PATH, "_test_db_id"), "w") as f:
 # Verify _DB_META exists
 assert os.path.isfile(os.path.join(DB_PATH, "_DB_META")), "_DB_META should exist"
 
-print(f"[RUN1] Created DB: db_id={db_id}, path={DB_PATH}", file=sys.stderr)
-print(f"[RUN1] Wrote 5 objects (3 via worker, 2 via master)", file=sys.stderr)
-print(f"[RUN1] NOT freezing — exiting for Run 2 to load_db", file=sys.stderr)
+INFO(f"[RUN1] Created DB: db_id={db_id}, path={DB_PATH}")
+INFO(f"[RUN1] Wrote 5 objects (3 via worker, 2 via master)")
+INFO(f"[RUN1] NOT freezing — exiting for Run 2 to load_db")

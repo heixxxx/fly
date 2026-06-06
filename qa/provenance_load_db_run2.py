@@ -1,4 +1,5 @@
 """Run 2: load_db, submit same write_data(db, key, 42), verify idempotent."""
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -45,4 +46,4 @@ assert len(master.failed_tasks) == 0, \
 val2 = db.read_object("prov_key")
 assert val2 == 42, f"Expected 42 after rerun, got {val2}"
 
-print("[RUN2] load_db + rerun idempotent, verified", file=sys.stderr)
+INFO("[RUN2] load_db + rerun idempotent, verified")

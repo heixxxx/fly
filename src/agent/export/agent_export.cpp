@@ -206,6 +206,7 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     })
     FLY_EXPORT_METHOD("is_registered", &fly::WorkerAgent::is_registered)
     FLY_EXPORT_METHOD("poll_task", &fly::WorkerAgent::poll_task)
+    FLY_EXPORT_METHOD("poll_task_blocking", &fly::WorkerAgent::poll_task_blocking)
     FLY_EXPORT_METHOD("has_pending_task", &fly::WorkerAgent::has_pending_task)
     FLY_EXPORT_METHOD("submit_task", [](fly::WorkerAgent& self,
                                          const fly::CMString& name,

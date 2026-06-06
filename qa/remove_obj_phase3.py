@@ -1,6 +1,7 @@
 """E2E: remove_object Phase 3 — remove one object, verify other still readable.
 Runs as a separate fly binary process.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -48,5 +49,4 @@ keep_result = db.read_object("keep/obj")
 assert keep_result == "keep_data", \
     f"Remaining object should still be readable, got: {keep_result}"
 
-print("[PASS] test_remove_one_keeps_other: kept object still readable",
-      file=sys.stderr)
+INFO("[PASS] test_remove_one_keeps_other: kept object still readable")

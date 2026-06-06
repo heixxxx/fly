@@ -8,6 +8,7 @@ Phase 1: Write + remove on same Worker, verify read fails
 Phase 2: Write data, remove it, dependent task on removed data should fail
 Phase 3: Write two objects, remove one, verify other still readable
 """
+from _fly_log import INFO
 import os
 import sys
 import subprocess
@@ -36,57 +37,57 @@ def run_script(script_name, log_dir):
 # ── Phase 1: write_and_remove basic ──
 
 def test_remove_object_basic():
-    print("── Phase 1: write_and_remove basic ──", file=sys.stderr)
+    INFO("── Phase 1: write_and_remove basic ──")
     log_dir = os.path.join(SCRIPT_DIR, "logs", "remove_obj", "phase1")
 
     r = run_script("remove_obj_phase1.py", log_dir)
 
-    print(r.stderr, file=sys.stderr)
+    INFO(r.stderr)
     if r.returncode != 0:
-        print(f"Phase 1 FAILED (exit={r.returncode})", file=sys.stderr)
-        print(r.stdout, file=sys.stderr)
+        INFO(f"Phase 1 FAILED (exit={r.returncode})")
+        INFO(r.stdout)
         assert False, f"Phase 1 failed with exit code {r.returncode}\n{r.stderr}"
 
-    print("[PASS] test_remove_object_basic", file=sys.stderr)
+    INFO("[PASS] test_remove_object_basic")
 
 
 # ── Phase 2: dependent task fails after object removed ──
 
 def test_remove_then_dependent_task_fails():
-    print("── Phase 2: dependent task fails after remove ──", file=sys.stderr)
+    INFO("── Phase 2: dependent task fails after remove ──")
     log_dir = os.path.join(SCRIPT_DIR, "logs", "remove_obj", "phase2")
 
     r = run_script("remove_obj_phase2.py", log_dir)
 
-    print(r.stderr, file=sys.stderr)
+    INFO(r.stderr)
     if r.returncode != 0:
-        print(f"Phase 2 FAILED (exit={r.returncode})", file=sys.stderr)
-        print(r.stdout, file=sys.stderr)
+        INFO(f"Phase 2 FAILED (exit={r.returncode})")
+        INFO(r.stdout)
         assert False, f"Phase 2 failed with exit code {r.returncode}\n{r.stderr}"
 
-    print("[PASS] test_remove_then_dependent_task_fails", file=sys.stderr)
+    INFO("[PASS] test_remove_then_dependent_task_fails")
 
 
 # ── Phase 3: remove one, keep the other ──
 
 def test_remove_one_keeps_other():
-    print("── Phase 3: remove one, keep other readable ──", file=sys.stderr)
+    INFO("── Phase 3: remove one, keep other readable ──")
     log_dir = os.path.join(SCRIPT_DIR, "logs", "remove_obj", "phase3")
 
     r = run_script("remove_obj_phase3.py", log_dir)
 
-    print(r.stderr, file=sys.stderr)
+    INFO(r.stderr)
     if r.returncode != 0:
-        print(f"Phase 3 FAILED (exit={r.returncode})", file=sys.stderr)
-        print(r.stdout, file=sys.stderr)
+        INFO(f"Phase 3 FAILED (exit={r.returncode})")
+        INFO(r.stdout)
         assert False, f"Phase 3 failed with exit code {r.returncode}\n{r.stderr}"
 
-    print("[PASS] test_remove_one_keeps_other", file=sys.stderr)
+    INFO("[PASS] test_remove_one_keeps_other")
 
 
 test_remove_object_basic()
-print()
+INFO("")
 test_remove_then_dependent_task_fails()
-print()
+INFO("")
 test_remove_one_keeps_other()
-print("\nAll remove_object E2E tests passed!")
+INFO("\nAll remove_object E2E tests passed!")

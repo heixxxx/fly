@@ -1,4 +1,5 @@
 """Phase 2: Worker writes via @as_task → @wait_obj blocks → reads and verifies."""
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -51,4 +52,4 @@ assert result == "hello world"
 
 assert wait_for(lambda: len(master.completed_tasks) >= 1)
 
-print("[PASS] test_wait_obj_worker_write", file=sys.stderr)
+INFO("[PASS] test_wait_obj_worker_write")

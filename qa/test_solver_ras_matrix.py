@@ -11,6 +11,7 @@ Tests:
 Each configuration runs in its own DB to avoid object name collision.
 Cache keys include db_id so different cases don't pollute each other.
 """
+from _fly_log import INFO
 import sys
 import os
 import shutil
@@ -123,8 +124,8 @@ def run_case(master, case_idx, n, num_subdomains, overlap, should_converge):
             f"[{tag}] Expected 3 iters for maxiter=3, got {result['iters']}"
         assert result["residual"] > 1e-4, \
             f"[{tag}] Expected residual > 1e-4, got {result['residual']:.2e}"
-        print(f"  [{case_idx:2d}] {tag:20s} NON-CONVERGE OK iters={result['iters']} "
-              f"res={result['residual']:.2e}", file=sys.stderr)
+        INFO(f"  [{case_idx:2d}] {tag:20s} NON-CONVERGE OK iters={result['iters']} "
+              f"res={result['residual']:.2e}")
         return
 
     # Normal convergence test
@@ -143,9 +144,9 @@ def run_case(master, case_idx, n, num_subdomains, overlap, should_converge):
     assert error < 1e-2, \
         f"[{tag}] Error too large: {error:.2e}"
 
-    print(f"  [{case_idx:2d}] {tag:20s} OK iters={result['iters']:3d} "
+    INFO(f"  [{case_idx:2d}] {tag:20s} OK iters={result['iters']:3d} "
           f"res={result['residual']:.2e} err={error:.2e} "
-          f"time={elapsed:.2f}s", file=sys.stderr)
+          f"time={elapsed:.2f}s")
 
 
 # ── Main ──
@@ -154,7 +155,7 @@ get_config().set_int("fail_unscheduleable_tasks", 1)
 master = get_agent()
 master.launch_local_workers([{}])
 assert master.wait_for_workers(), "Worker should connect"
-print("  Worker connected", file=sys.stderr)
+INFO("  Worker connected")
 
 total = len(CONFIGS)
 passed = 0
@@ -168,12 +169,12 @@ for idx, (n, nsd, ov, conv) in enumerate(CONFIGS):
     except Exception as e:
         failed += 1
         tag = f"n={n},sd={nsd},ov={ov}"
-        print(f"  [{idx:2d}] {tag:20s} FAIL: {e}", file=sys.stderr)
+        INFO(f"  [{idx:2d}] {tag:20s} FAIL: {e}")
 
 t_elapsed = time.time() - t_total
-print(f"\n  Results: {passed}/{total} passed, {failed} failed "
-      f"({t_elapsed:.1f}s total)", file=sys.stderr)
+INFO(f"\n  Results: {passed}/{total} passed, {failed} failed "
+      f"({t_elapsed:.1f}s total)")
 
 master.stop()
 assert failed == 0, f"{failed} test cases failed"
-print(f"[PASS] test_solver_ras_matrix ({passed} configs)", file=sys.stderr)
+INFO(f"[PASS] test_solver_ras_matrix ({passed} configs)")

@@ -5,6 +5,7 @@ Phase 2 (frozen_db_run2.py): load_db, verify is_frozen(), verify write_object fa
 
 Each phase runs in a separate fly process to ensure true process-restart semantics.
 """
+from _fly_log import INFO
 import os
 import sys
 import subprocess
@@ -39,12 +40,12 @@ def test_load_frozen_db_write():
     log_dir = os.path.join(SCRIPT_DIR, "logs", "frozen_db")
 
     # ── Run 1: Create DB, write data, freeze ──
-    print("── Run 1: Creating DB, writing data, freezing ──", file=sys.stderr)
+    INFO("── Run 1: Creating DB, writing data, freezing ──")
     r1 = run_script("frozen_db_run1.py", os.path.join(log_dir, "run1"))
-    print(r1.stderr, file=sys.stderr)
+    INFO(r1.stderr)
     if r1.returncode != 0:
-        print(f"Run 1 FAILED (exit={r1.returncode})", file=sys.stderr)
-        print(r1.stdout, file=sys.stderr)
+        INFO(f"Run 1 FAILED (exit={r1.returncode})")
+        INFO(r1.stdout)
         assert False, f"Run 1 failed with exit code {r1.returncode}\n{r1.stderr}"
 
     # Verify DB artifacts exist and is frozen after Run 1
@@ -53,20 +54,19 @@ def test_load_frozen_db_write():
     assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), \
         "Should be frozen after Run 1"
 
-    print("  Run 1 passed", file=sys.stderr)
+    INFO("  Run 1 passed")
 
     # ── Run 2: load_db, verify frozen, verify write fails ──
-    print("── Run 2: Loading frozen DB, verifying frozen state ──", file=sys.stderr)
+    INFO("── Run 2: Loading frozen DB, verifying frozen state ──")
     r2 = run_script("frozen_db_run2.py", os.path.join(log_dir, "run2"))
-    print(r2.stderr, file=sys.stderr)
+    INFO(r2.stderr)
     if r2.returncode != 0:
-        print(f"Run 2 FAILED (exit={r2.returncode})", file=sys.stderr)
-        print(r2.stdout, file=sys.stderr)
+        INFO(f"Run 2 FAILED (exit={r2.returncode})")
+        INFO(r2.stdout)
         assert False, f"Run 2 failed with exit code {r2.returncode}\n{r2.stderr}"
 
-    print("  Run 2 passed", file=sys.stderr)
-    print("[PASS] test_load_frozen_db_write: frozen state preserved across process restart",
-          file=sys.stderr)
+    INFO("  Run 2 passed")
+    INFO("[PASS] test_load_frozen_db_write: frozen state preserved across process restart")
 
 
 test_load_frozen_db_write()

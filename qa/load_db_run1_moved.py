@@ -2,6 +2,7 @@
 Creates DB at path A, writes data via tasks, does NOT freeze.
 Coordinator moves the DB directory to path B before Run 2.
 """
+from _fly_log import INFO
 import os
 import sys
 import time
@@ -60,5 +61,5 @@ with open(os.path.join(DB_PATH, "_test_db_id"), "w") as f:
 
 assert os.path.isfile(os.path.join(DB_PATH, "_DB_META")), "_DB_META should exist"
 
-print(f"[RUN1_MOVED] Created DB at {DB_PATH}: db_id={db_id}", file=sys.stderr)
-print(f"[RUN1_MOVED] Wrote 4 objects (2 worker, 2 master)", file=sys.stderr)
+INFO(f"[RUN1_MOVED] Created DB at {DB_PATH}: db_id={db_id}")
+INFO(f"[RUN1_MOVED] Wrote 4 objects (2 worker, 2 master)")

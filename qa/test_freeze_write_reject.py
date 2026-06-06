@@ -5,6 +5,7 @@ Verifies:
   - Worker B attempts write → silently rejected
   - Task completes but writes nothing
 """
+from _fly_log import INFO
 import time, sys, os, shutil
 
 DB_PATH = "/tmp/fly_e2e_freeze_write_reject_db"
@@ -35,7 +36,7 @@ def test_freeze_rejects_worker_write():
     write_after_freeze(db, "after_freeze_key", "value")
     assert wait_for(lambda: len(master.completed_tasks) >= 2), f"write should complete silently"
     assert not master.failed_tasks, f"Unexpected failures: {master.failed_tasks}"
-    print("[PASS] test_freeze_rejects_worker_write", file=sys.stderr)
+    INFO("[PASS] test_freeze_rejects_worker_write")
 
 test_freeze_rejects_worker_write()
-print("\nAll tests passed!")
+INFO("\nAll tests passed!")

@@ -4,6 +4,7 @@ Verifies a 20-task serial dependency chain:
   write(A) -> read(A)+write(B) -> read(B)+write(C) -> ... -> read(T)+write(U)
 Each task depends on the previous task's output.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -64,9 +65,8 @@ def test_dependency_chain():
     assert final == chain_length, \
         f"chain_{chain_length} should be {chain_length}, got {final}"
 
-    print(f"[PASS] test_dependency_chain: {chain_length}-step serial chain, final={final}",
-          file=sys.stderr)
+    INFO(f"[PASS] test_dependency_chain: {chain_length}-step serial chain, final={final}")
 
 
 test_dependency_chain()
-print("\nAll tests passed!")
+INFO("\nAll tests passed!")

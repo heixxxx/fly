@@ -8,6 +8,7 @@ Uses multi-process coordinator pattern:
 
 Run as coordinator: spawns Run 1 and Run 2 as subprocess via fly binary.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -37,11 +38,9 @@ def run_script(script_name, log_dir):
         capture_output=True, text=True, timeout=120, cwd=PROJECT_ROOT,
     )
     if result.returncode != 0:
-        print(f"  {script_name} FAILED:", file=sys.stderr)
-        print(result.stderr[-2000:] if result.stderr else "(no stderr)",
-              file=sys.stderr)
-        print(result.stdout[-2000:] if result.stdout else "(no stdout)",
-              file=sys.stderr)
+        INFO(f"  {script_name} FAILED:")
+        INFO(result.stderr[-2000:] if result.stderr else "(no stderr)")
+        INFO(result.stdout[-2000:] if result.stdout else "(no stdout)")
     return result
 
 
@@ -52,7 +51,7 @@ def test_pending_task_persist():
     result1 = run_script("pending_persist_run1.py", LOG_DIR)
     assert result1.returncode == 0, \
         f"Run 1 failed with exit code {result1.returncode}"
-    print("  Phase 1 OK: Run 1 completed", file=sys.stderr)
+    INFO("  Phase 1 OK: Run 1 completed")
 
     # -- Phase 2: Verify failed_tasks.bin was created --
     failed_file = os.path.join(LOG_DIR, "failed_tasks.bin")
@@ -61,16 +60,15 @@ def test_pending_task_persist():
     file_size = os.path.getsize(failed_file)
     assert file_size > 0, \
         "Phase 2: failed_tasks.bin should not be empty"
-    print(f"  Phase 2 OK: failed_tasks.bin exists ({file_size} bytes)",
-          file=sys.stderr)
+    INFO(f"  Phase 2 OK: failed_tasks.bin exists ({file_size} bytes)")
 
     # -- Phase 3: Run script that restarts failed tasks --
     result2 = run_script("pending_persist_run2.py", LOG_DIR)
     assert result2.returncode == 0, \
         f"Run 2 failed with exit code {result2.returncode}"
-    print("  Phase 3 OK: Run 2 completed", file=sys.stderr)
+    INFO("  Phase 3 OK: Run 2 completed")
 
-    print("[PASS] test_pending_task_persist", file=sys.stderr)
+    INFO("[PASS] test_pending_task_persist")
 
 
 test_pending_task_persist()

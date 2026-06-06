@@ -1,4 +1,5 @@
 """E2E test: worker crash and task recovery on remaining workers."""
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -53,8 +54,7 @@ def test_worker_crash():
     import os, signal
     os.kill(worker_pids[0], signal.SIGKILL)
     os.waitpid(worker_pids[0], 0)
-    print(f"  Killed worker 0, {len(master.completed_tasks)} tasks completed so far",
-          file=sys.stderr)
+    INFO(f"  Killed worker 0, {len(master.completed_tasks)} tasks completed so far")
 
     # Remaining worker should pick up all tasks (recovered from dead worker)
     total_done = lambda: len(master.completed_tasks) + len(master.failed_tasks)
@@ -64,8 +64,7 @@ def test_worker_crash():
     assert len(master.completed_tasks) >= 10, \
         f"Expected all 10 completed (zero task loss), got {len(master.completed_tasks)}"
 
-    print(f"[PASS] test_worker_crash: {len(master.completed_tasks)} completed after crash",
-          file=sys.stderr)
+    INFO(f"[PASS] test_worker_crash: {len(master.completed_tasks)} completed after crash")
 
 
 test_worker_crash()

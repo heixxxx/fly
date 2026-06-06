@@ -7,6 +7,7 @@ Tests the full Phase 3 flow:
   4. Task submitted, assigned to worker, executed in subprocess
   5. TaskComplete returned to Master
 """
+from _fly_log import INFO
 import sys
 import os
 import time
@@ -50,4 +51,4 @@ write_data(db, "key2", "value2")
 assert wait_for(lambda: len(master.completed_tasks) >= 2)
 
 master.stop()
-print("[PASS] test_e2e_process_workers", file=sys.stderr)
+INFO("[PASS] test_e2e_process_workers")

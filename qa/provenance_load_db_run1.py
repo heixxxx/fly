@@ -1,4 +1,5 @@
 """Run 1: write data, verify value, exit for Run 2 to load_db and rerun."""
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -44,4 +45,4 @@ assert wait_for(lambda: len(master.completed_tasks) >= 1), \
 val = db.read_object("prov_key")
 assert val == 42, f"Expected 42, got {val}"
 
-print("[RUN1] Written prov_key=42, exiting for Run 2", file=sys.stderr)
+INFO("[RUN1] Written prov_key=42, exiting for Run 2")

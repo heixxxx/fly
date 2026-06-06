@@ -1,3 +1,4 @@
+from _fly_log import INFO
 import os
 import sys
 import subprocess
@@ -30,20 +31,19 @@ def test_temp_not_persisted_across_restart():
 
     log_dir = os.path.join(SCRIPT_DIR, "logs", "save_to_db_false")
 
-    print("-- Run 1: write persistent + temp data --", file=sys.stderr)
+    INFO("-- Run 1: write persistent + temp data --")
     r1 = run_script("save_to_db_false_run1.py", os.path.join(log_dir, "run1"))
-    print(r1.stderr, file=sys.stderr)
+    INFO(r1.stderr)
     assert r1.returncode == 0, f"Run 1 failed: {r1.stderr}"
 
     assert os.path.isdir(DB_PATH), "DB should exist after Run 1"
 
-    print("-- Run 2: verify temp data gone, persistent data survives --", file=sys.stderr)
+    INFO("-- Run 2: verify temp data gone, persistent data survives --")
     r2 = run_script("save_to_db_false_run2.py", os.path.join(log_dir, "run2"))
-    print(r2.stderr, file=sys.stderr)
+    INFO(r2.stderr)
     assert r2.returncode == 0, f"Run 2 failed: {r2.stderr}"
 
-    print("[PASS] test_save_to_db_false_persist: temp data not persisted across restart",
-          file=sys.stderr)
+    INFO("[PASS] test_save_to_db_false_persist: temp data not persisted across restart")
 
 
 test_temp_not_persisted_across_restart()

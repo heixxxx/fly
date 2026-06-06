@@ -1,3 +1,4 @@
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -67,8 +68,7 @@ def test_user_script_task():
     assert db.read_object("ukey") == 42
     assert db.read_object("uresult") == "echo:42"
 
-    print(f"[PASS] test_user_script_task: {len(completed)} tasks completed",
-          file=sys.stderr)
+    INFO(f"[PASS] test_user_script_task: {len(completed)} tasks completed")
 
 
 test_user_script_task()

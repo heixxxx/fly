@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Fly QA Test Runner.
+
+Runs each test_*.py as a fly subprocess.
+  - Fly's output (C++ Logger + Python INFO/WARN/ERR) → {test_name}.log
+  - Runner's own output → terminal + qa.log
+"""
 import subprocess
 import sys
 import os
@@ -10,6 +16,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 FLY_BIN = os.path.join(PROJECT_ROOT, "build", "bin", "fly")
+
+# ── Dual-output helper: terminal + qa.log ──
+
+_log_file = None
+
+
+def log(msg=""):
+    """Print to both terminal and qa.log."""
+    print(msg)
+    if _log_file:
+        _log_file.write(msg + "\n")
+        _log_file.flush()
 
 
 def find_tests():
@@ -40,6 +58,8 @@ def run_one(test_path, log_base):
 
 
 def main():
+    global _log_file
+
     parser = argparse.ArgumentParser(description="Fly QA Test Runner")
     parser.add_argument("test_file", nargs="?", help="Run a single test file")
     parser.add_argument("-j", type=int, default=0,
@@ -47,7 +67,7 @@ def main():
     args = parser.parse_args()
 
     if not os.path.isfile(FLY_BIN) or not os.access(FLY_BIN, os.X_OK):
-        print("Installing fly binary...")
+        log("Installing fly binary...")
         subprocess.run(
             [os.path.join(PROJECT_ROOT, "fly.sh"), "build", "//src/main/cpp:fly"],
             cwd=PROJECT_ROOT, check=True,
@@ -68,15 +88,17 @@ def main():
         shutil.rmtree(log_base)
     os.makedirs(log_base)
 
-    print("=" * 42)
-    print("Fly QA Test Suite")
-    print("=" * 42)
-    print(f"Fly binary: {FLY_BIN}")
-    print(f"Test directory: {SCRIPT_DIR}")
-    print(f"Tests to run: {len(tests)}")
-    print(f"Parallelism: {'unlimited' if args.j == 0 else args.j}")
-    print("=" * 42)
-    print()
+    _log_file = open(os.path.join(log_base, "qa.log"), "w")
+
+    log("=" * 42)
+    log("Fly QA Test Suite")
+    log("=" * 42)
+    log(f"Fly binary: {FLY_BIN}")
+    log(f"Test directory: {SCRIPT_DIR}")
+    log(f"Tests to run: {len(tests)}")
+    log(f"Parallelism: {'unlimited' if args.j == 0 else args.j}")
+    log("=" * 42)
+    log()
 
     max_workers = None if args.j == 0 else args.j
     results = []
@@ -94,12 +116,12 @@ def main():
     passed = failed = 0
     failed_names = []
 
-    print("=" * 42)
-    print("Results (sorted by duration)")
-    print("=" * 42)
+    log("=" * 42)
+    log("Results (sorted by duration)")
+    log("=" * 42)
     for r in results:
         mark = "✓ PASSED" if r["ok"] else "✗ FAILED"
-        print(f"  {mark}  {r['ms']:>6}ms  {r['name']}")
+        log(f"  {mark}  {r['ms']:>6}ms  {r['name']}")
         if r["ok"]:
             passed += 1
         else:
@@ -108,25 +130,28 @@ def main():
             with open(r["log"]) as f:
                 lines = f.readlines()
             for line in lines[-20:]:
-                print(f"    {line}", end="")
+                log(f"    {line.rstrip()}")
 
-    print()
-    print("=" * 42)
-    print("Summary")
-    print("=" * 42)
-    print(f"Passed:  {passed}")
-    print(f"Failed:  {failed}")
-    print(f"Total:   {total_ms}ms")
+    log()
+    log("=" * 42)
+    log("Summary")
+    log("=" * 42)
+    log(f"Passed:  {passed}")
+    log(f"Failed:  {failed}")
+    log(f"Total:   {total_ms}ms")
+
+    _log_file.close()
+    _log_file = None
 
     if failed:
-        print()
-        print("Failed tests:")
+        log()
+        log("Failed tests:")
         for n in failed_names:
-            print(f"  - {n}")
+            log(f"  - {n}")
         sys.exit(1)
 
-    print()
-    print("All QA tests passed!")
+    log()
+    log("All QA tests passed!")
     sys.exit(0)
 
 

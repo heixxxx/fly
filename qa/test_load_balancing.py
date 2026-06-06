@@ -5,6 +5,7 @@ Verifies:
   - 30 independent tasks all complete successfully
   - Completion happens within reasonable time (multi-worker throughput)
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -60,7 +61,7 @@ def test_load_balancing():
         val = db.read_object(f"key_{i}")
         assert val == i, f"Expected key_{i}={i}, got {val}"
 
-    print("[PASS] test_load_balancing", file=sys.stderr)
+    INFO("[PASS] test_load_balancing")
 
 
 test_load_balancing()

@@ -1,3 +1,4 @@
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -46,4 +47,4 @@ assert len(master.failed_tasks) == 0
 assert db.read_object("perm") == 100
 assert db.read_object("temp") == 200
 
-print("[PASS] test_save_to_db_false_basic", file=sys.stderr)
+INFO("[PASS] test_save_to_db_false_basic")

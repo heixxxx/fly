@@ -4,6 +4,7 @@ Verifies that while tasks are writing data, downstream read tasks
 can execute as soon as dependencies are satisfied. 20 write tasks
 paired with 20 read tasks, all running concurrently on 2 workers.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -64,9 +65,8 @@ def test_readwrite_mix():
     assert len(master.failed_tasks) == 0, \
         f"Expected 0 failed, got {len(master.failed_tasks)}"
 
-    print(f"[PASS] test_readwrite_mix: {n} writes + {n} reads, all completed",
-          file=sys.stderr)
+    INFO(f"[PASS] test_readwrite_mix: {n} writes + {n} reads, all completed")
 
 
 test_readwrite_mix()
-print("\nAll tests passed!")
+INFO("\nAll tests passed!")

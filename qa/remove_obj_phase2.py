@@ -1,6 +1,7 @@
 """E2E: remove_object Phase 2 — dependent task fails after object removed.
 Runs as a separate fly binary process.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -56,5 +57,4 @@ for i in range(40):
 assert len(failed) >= 1, \
     f"Task depending on removed object should fail, got failed={failed}"
 
-print("[PASS] test_remove_then_dependent_task_fails: dependent task failed as expected",
-      file=sys.stderr)
+INFO("[PASS] test_remove_then_dependent_task_fails: dependent task failed as expected")

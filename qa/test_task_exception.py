@@ -6,6 +6,7 @@ Verifies:
   - get_task_error() returns the error message
   - The key the task would have written is NOT readable (task didn't complete)
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -68,7 +69,7 @@ def test_task_exception():
     except Exception:
         pass
 
-    print("[PASS] test_task_exception", file=sys.stderr)
+    INFO("[PASS] test_task_exception")
 
 
 test_task_exception()

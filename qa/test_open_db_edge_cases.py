@@ -6,6 +6,7 @@ Scenarios:
   3. data_path parameter sets get_data_path()
   4. get_base_path() and get_data_path() return correct values
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -54,8 +55,8 @@ def test_open_db_path_conflict_auto_rename():
     assert db2.get_base_path() == DB_PATH + ".1", \
         f"db2 base_path should be {DB_PATH}.1, got {db2.get_base_path()}"
 
-    print("[PASS] test_open_db_path_conflict_auto_rename: "
-          "second open_db auto-renames to path.1", file=sys.stderr)
+    INFO("[PASS] test_open_db_path_conflict_auto_rename: "
+          "second open_db auto-renames to path.1")
 
 
 def test_port_property():
@@ -67,8 +68,8 @@ def test_port_property():
     assert port > 0, \
         f"Master port should be > 0 after start, got {port}"
 
-    print("[PASS] test_port_property: "
-          f"master.port={port}", file=sys.stderr)
+    INFO("[PASS] test_port_property: "
+          f"master.port={port}")
 
 
 def test_data_path_parameter():
@@ -92,8 +93,8 @@ def test_data_path_parameter():
     assert actual_data_path == CUSTOM_DATA_PATH, \
         f"get_data_path() should return '{CUSTOM_DATA_PATH}', got '{actual_data_path}'"
 
-    print("[PASS] test_data_path_parameter: "
-          f"data_path={CUSTOM_DATA_PATH} returned by get_data_path()", file=sys.stderr)
+    INFO("[PASS] test_data_path_parameter: "
+          f"data_path={CUSTOM_DATA_PATH} returned by get_data_path()")
 
 
 def test_get_base_path_get_data_path_getters():
@@ -119,15 +120,15 @@ def test_get_base_path_get_data_path_getters():
     assert data_path == "", \
         f"get_data_path() should be '' when not set, got '{data_path}'"
 
-    print("[PASS] test_get_base_path_get_data_path_getters: "
-          f"base_path={base_path}, data_path='{data_path}'", file=sys.stderr)
+    INFO("[PASS] test_get_base_path_get_data_path_getters: "
+          f"base_path={base_path}, data_path='{data_path}'")
 
 
 test_open_db_path_conflict_auto_rename()
-print()
+INFO("")
 test_port_property()
-print()
+INFO("")
 test_data_path_parameter()
-print()
+INFO("")
 test_get_base_path_get_data_path_getters()
-print("\nAll open_db edge case E2E tests passed!")
+INFO("\nAll open_db edge case E2E tests passed!")

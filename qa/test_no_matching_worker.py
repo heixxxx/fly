@@ -8,6 +8,7 @@ Tasks:
   - requires=["shared"]: no worker has this -> stays pending (never completes, never fails)
   - requires=["alpha"]: should complete normally
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -68,8 +69,8 @@ def test_no_matching_worker_never_completes():
     assert total_completed == 1, \
         f"Only alpha task should have completed, got {total_completed}"
 
-    print("[PASS] test_no_matching_worker_never_completes: "
-          "no-matching-cap task stays in scheduler, no error, no completion", file=sys.stderr)
+    INFO("[PASS] test_no_matching_worker_never_completes: "
+          "no-matching-cap task stays in scheduler, no error, no completion")
 
 
 test_no_matching_worker_never_completes()

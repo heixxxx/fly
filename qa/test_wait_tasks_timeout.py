@@ -4,6 +4,7 @@ Tests:
   1. wait_tasks(timeout=2.0) returns gracefully (no raise) when no tasks pending
   2. wait_tasks(timeout=1.0) with a submitted task returns partial results (no raise)
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -40,8 +41,8 @@ def test_wait_tasks_no_pending_returns_gracefully():
     result = wait_tasks(timeout=2.0)
     assert result is not None, "wait_tasks should return a list, not None"
 
-    print("[PASS] test_wait_tasks_no_pending_returns_gracefully: "
-          "wait_tasks returns without error when no tasks pending", file=sys.stderr)
+    INFO("[PASS] test_wait_tasks_no_pending_returns_gracefully: "
+          "wait_tasks returns without error when no tasks pending")
 
 
 def test_wait_tasks_short_timeout_with_task():
@@ -64,11 +65,11 @@ def test_wait_tasks_short_timeout_with_task():
     result = wait_tasks(timeout=1.0)
     assert result is not None, "wait_tasks should return a list, not None"
 
-    print("[PASS] test_wait_tasks_short_timeout_with_task: "
-          "wait_tasks returns without error even with short timeout", file=sys.stderr)
+    INFO("[PASS] test_wait_tasks_short_timeout_with_task: "
+          "wait_tasks returns without error even with short timeout")
 
 
 test_wait_tasks_no_pending_returns_gracefully()
-print()
+INFO("")
 test_wait_tasks_short_timeout_with_task()
-print("\nAll wait_tasks timeout E2E tests passed!")
+INFO("\nAll wait_tasks timeout E2E tests passed!")

@@ -1,3 +1,4 @@
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -54,5 +55,4 @@ assert len(master.failed_tasks) == 0
 for i in range(n):
     assert db.read_object(f"ctemp_{i}") == i * 100
 
-print(f"[PASS] test_save_to_db_false_concurrent: {n} temp objects, {n} reads across 3 workers",
-      file=sys.stderr)
+INFO(f"[PASS] test_save_to_db_false_concurrent: {n} temp objects, {n} reads across 3 workers")

@@ -1,3 +1,4 @@
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -38,4 +39,4 @@ try:
 except Exception:
     pass
 
-print("[PASS] save_to_db_false_run2: perm=42 survived, temp gone", file=sys.stderr)
+INFO("[PASS] save_to_db_false_run2: perm=42 survived, temp gone")

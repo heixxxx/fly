@@ -117,8 +117,7 @@ def _run_worker():
     INFO("Worker agent created, starting poll loop")
 
     while agent.is_running():
-        agent.poll_task()
-        time.sleep(0.05)
+        agent.poll_task_blocking(100)
     INFO("Worker poll loop exited, running cleanup")
 
     agent.stop()

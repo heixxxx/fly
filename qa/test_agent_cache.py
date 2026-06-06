@@ -1,4 +1,5 @@
 """Test agent local cache — cross-task data sharing on the same worker."""
+from _fly_log import INFO
 import sys
 import os
 import shutil
@@ -82,7 +83,7 @@ master = get_agent()
 master.launch_local_workers([{}])
 assert master.wait_for_workers(), \
     "Worker should connect"
-print("  Phase 1 OK: worker connected", file=sys.stderr)
+INFO("  Phase 1 OK: worker connected")
 
 # Test Master-side cache API
 master.put_cache("mkey", "mval")
@@ -91,7 +92,7 @@ assert master.has_cache("mkey"), "Master has_cache broken"
 master.remove_cache("mkey")
 assert not master.has_cache("mkey"), "Master remove_cache broken"
 assert master.get_cache("mkey", default="X") == "X", "Master default broken"
-print("  Phase 2 OK: Master cache API works", file=sys.stderr)
+INFO("  Phase 2 OK: Master cache API works")
 
 # Test Master clear_cache
 master.put_cache("a", 1)
@@ -99,7 +100,7 @@ master.put_cache("b", 2)
 assert master.has_cache("a") and master.has_cache("b")
 master.clear_cache()
 assert not master.has_cache("a") and not master.has_cache("b")
-print("  Phase 3 OK: Master clear_cache works", file=sys.stderr)
+INFO("  Phase 3 OK: Master clear_cache works")
 
 db = open_db(DB_PATH)
 
@@ -110,12 +111,12 @@ cache_remover(db)
 
 assert wait_for(lambda: len(master.completed_tasks) >= 3), \
     f"Expected 3 completed, got {len(master.completed_tasks)}"
-print("  Phase 4 OK: all tasks completed", file=sys.stderr)
+INFO("  Phase 4 OK: all tasks completed")
 
 # Verify final data
 done = db.read_object("done")
 assert done is True, f"Expected done=True, got {done}"
-print("  Phase 5 OK: data verified", file=sys.stderr)
+INFO("  Phase 5 OK: data verified")
 
 master.stop()
-print("[PASS] test_agent_cache", file=sys.stderr)
+INFO("[PASS] test_agent_cache")

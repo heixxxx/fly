@@ -1,6 +1,7 @@
 """E2E: remove_object Phase 1 — write_and_remove basic.
 Runs as a separate fly binary process.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -48,4 +49,4 @@ for i in range(40):
 
 assert len(completed) >= 1
 
-print("[PASS] test_remove_object_basic: write+remove completed", file=sys.stderr)
+INFO("[PASS] test_remove_object_basic: write+remove completed")

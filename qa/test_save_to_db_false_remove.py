@@ -1,3 +1,4 @@
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -76,5 +77,4 @@ try:
 except Exception:
     pass
 
-print(f"[PASS] test_save_to_db_false_remove: disk before={disk_before}, after={disk_after}",
-      file=sys.stderr)
+INFO(f"[PASS] test_save_to_db_false_remove: disk before={disk_before}, after={disk_after}")

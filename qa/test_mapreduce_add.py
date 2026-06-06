@@ -1,4 +1,5 @@
 """E2E test: MapReduce addition — summary merge with 3 partitions."""
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -48,7 +49,7 @@ try:
     wait_tasks(timeout=60.0)
 except RuntimeError:
     for tid in master.failed_tasks:
-        print(f"Task {tid} failed: {master.get_task_error(tid)}", file=sys.stderr)
+        INFO(f"Task {tid} failed: {master.get_task_error(tid)}")
     raise
 
 assert len(master.failed_tasks) == 0, \
@@ -61,4 +62,4 @@ result_via_db = db.read_object("sum_result")
 assert result_via_db == 55, f"Expected sum=55 via db.read_object, got {result_via_db}"
 
 master.stop()
-print("[PASS] test_mapreduce_add", file=sys.stderr)
+INFO("[PASS] test_mapreduce_add")

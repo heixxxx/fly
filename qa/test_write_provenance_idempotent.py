@@ -3,6 +3,7 @@
 Submit write_data(db, key, 42) twice with identical args.
 Both should succeed — same task + same args = same hash → provenance match.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -65,8 +66,8 @@ def test_write_provenance_idempotent():
     assert len(master.failed_tasks) == 0, \
         f"Expected 0 failed, got {len(master.failed_tasks)}"
 
-    print("[PASS] test_write_provenance_idempotent: same task rerun accepted", file=sys.stderr)
+    INFO("[PASS] test_write_provenance_idempotent: same task rerun accepted")
 
 
 test_write_provenance_idempotent()
-print("\nAll tests passed!")
+INFO("\nAll tests passed!")

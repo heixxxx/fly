@@ -27,6 +27,7 @@ public:
     static void shutdown();
 
     void vlog(LogLevel level, fmt::string_view fmt, fmt::format_args args);
+    void log(LogLevel level, const CMString& msg);
 
     void set_level(LogLevel level);
     void flush();
@@ -34,7 +35,6 @@ public:
 private:
     Logger();
     explicit Logger(const CMString& filename, bool dual_output = false);
-    void log(LogLevel level, const CMString& msg);
     CMString level_str(LogLevel level) const;
     CMString timestamp() const;
     static void _update_latest_symlink(const CMString& target_dir, const CMString& base_dir);

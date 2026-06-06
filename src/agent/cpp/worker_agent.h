@@ -78,6 +78,7 @@ public:
     
     bool has_pending_task() const;
     bool poll_task();
+    bool poll_task_blocking(int timeout_ms = 100);
     
     void register_database(const CMString& db_id, CMSharedPtr<Database> db);
     CMSharedPtr<Database> get_database(const CMString& db_id) const;
@@ -127,6 +128,7 @@ private:
     CMString current_write_hash_;
     
     mutable std::mutex task_queue_mutex_;
+    std::condition_variable task_queue_cv_;
     std::queue<PendingTask> task_queue_;
     std::atomic<int> outstanding_tasks_{0};
     

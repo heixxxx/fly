@@ -1,3 +1,4 @@
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -65,8 +66,7 @@ def test_read_cache_basic():
         val = db.read_object(f"cache_{i}", cache="none")
         assert val == i * 100, f"NONE cache failed: expected {i * 100}, got {val}"
 
-    print(f"[PASS] test_read_cache_basic: {n} objects, all cache modes verified",
-          file=sys.stderr)
+    INFO(f"[PASS] test_read_cache_basic: {n} objects, all cache modes verified")
 
 
 def test_read_cache_cross_db():
@@ -104,8 +104,7 @@ def test_read_cache_cross_db():
     assert val1 == 42, f"db1 HIGH expected 42, got {val1}"
     assert val2 == 99, f"db2 HIGH expected 99, got {val2}"
 
-    print(f"[PASS] test_read_cache_cross_db: cross-DB cache isolation verified",
-          file=sys.stderr)
+    INFO(f"[PASS] test_read_cache_cross_db: cross-DB cache isolation verified")
 
 
 def test_read_cache_large_objects():
@@ -134,11 +133,10 @@ def test_read_cache_large_objects():
     val = db.read_object("large_obj", cache="high")
     assert val == large_data, "Large object HIGH cache hit failed"
 
-    print(f"[PASS] test_read_cache_large_objects: large object caching verified",
-          file=sys.stderr)
+    INFO(f"[PASS] test_read_cache_large_objects: large object caching verified")
 
 
 test_read_cache_basic()
 test_read_cache_cross_db()
 test_read_cache_large_objects()
-print("\nAll read cache tests passed!")
+INFO("\nAll read cache tests passed!")

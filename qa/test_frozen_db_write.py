@@ -7,6 +7,7 @@ Verifies:
   - This documents the design: freeze is a master-side coordination mechanism,
     not a distributed lock
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -65,8 +66,7 @@ def test_frozen_db_write():
     except Exception:
         pass  # Expected: write to frozen DB raises
 
-    print("[PASS] test_frozen_db_write: master-side write blocked after freeze",
-          file=sys.stderr)
+    INFO("[PASS] test_frozen_db_write: master-side write blocked after freeze")
 
 
 test_frozen_db_write()

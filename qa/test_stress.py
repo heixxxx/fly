@@ -1,4 +1,5 @@
 """E2E test: stress test with large objects and many concurrent tasks."""
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -63,7 +64,7 @@ def test_stress():
     assert len(master.failed_tasks) == 0, \
         f"Expected 0 failed tasks, got {len(master.failed_tasks)}"
 
-    print("[PASS] test_stress", file=sys.stderr)
+    INFO("[PASS] test_stress")
 
 
 test_stress()

@@ -11,6 +11,7 @@ Phases:
   4. Timeout → @wait_obj raises TimeoutError on phantom data
   5. Worker task internally uses @wait_obj to wait for upstream data
 """
+from _fly_log import INFO
 import os
 import sys
 import subprocess
@@ -56,18 +57,18 @@ def test_all_phases():
 
     for name, helper in zip(PHASE_NAMES, HELPERS):
         log_dir = os.path.join(log_base, helper.replace(".py", ""))
-        print(f"── {name}: {helper} ──", file=sys.stderr)
+        INFO(f"── {name}: {helper} ──")
 
         r = run_script(helper, log_dir)
-        print(r.stderr, file=sys.stderr)
+        INFO(r.stderr)
 
         if r.returncode != 0:
-            print(f"FAILED (exit={r.returncode})", file=sys.stderr)
-            print(r.stdout, file=sys.stderr)
+            INFO(f"FAILED (exit={r.returncode})")
+            INFO(r.stdout)
             assert False, f"Phase '{name}' failed\n{r.stderr}"
 
-        print("", file=sys.stderr)
+        INFO("")
 
 
 test_all_phases()
-print("\nAll wait_obj E2E tests passed!")
+INFO("\nAll wait_obj E2E tests passed!")

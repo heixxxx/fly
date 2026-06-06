@@ -5,6 +5,7 @@ Verifies framework stability under sustained load:
   - 2 large objects (5MB each) to stress serialization/compression
   - Verify no memory issues or hangs over extended run
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -80,9 +81,8 @@ def test_stability():
         assert val == i * 4 + 1, \
             f"sum_{i} should be {i * 4 + 1}, got {val}"
 
-    print(f"[PASS] test_stability: {n_writes} writes + {n_sums} sums + 2 large objects",
-          file=sys.stderr)
+    INFO(f"[PASS] test_stability: {n_writes} writes + {n_sums} sums + 2 large objects")
 
 
 test_stability()
-print("\nAll tests passed!")
+INFO("\nAll tests passed!")

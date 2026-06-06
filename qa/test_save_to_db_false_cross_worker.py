@@ -1,3 +1,4 @@
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -51,4 +52,4 @@ assert len(master.failed_tasks) == 0
 
 assert db.read_object("shared_temp") == 777
 
-print("[PASS] test_save_to_db_false_cross_worker", file=sys.stderr)
+INFO("[PASS] test_save_to_db_false_cross_worker")

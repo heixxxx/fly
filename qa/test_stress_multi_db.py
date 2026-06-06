@@ -3,6 +3,7 @@
 Verifies 4 databases, each receiving 10 write tasks simultaneously
 across 2 workers. All 40 tasks should complete without interference.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -66,9 +67,8 @@ def test_multi_db_parallel():
             assert val == db_idx * 100 + i, \
                 f"db{db_idx}_key_{i} should be {db_idx * 100 + i}, got {val}"
 
-    print(f"[PASS] test_multi_db_parallel: 4 DBs x {writes_per_db} writes, all verified",
-          file=sys.stderr)
+    INFO(f"[PASS] test_multi_db_parallel: 4 DBs x {writes_per_db} writes, all verified")
 
 
 test_multi_db_parallel()
-print("\nAll tests passed!")
+INFO("\nAll tests passed!")

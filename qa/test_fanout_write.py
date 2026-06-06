@@ -3,6 +3,7 @@
 fanout_write(db, keys, values) calls write_data for each key/value pair
 as sub-tasks within a single task execution. Verify all 3 objects readable.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -52,8 +53,8 @@ def test_fanout_write_three_objects():
     assert val_b == 2, f"Object 'b' should be 2, got {val_b}"
     assert val_c == 3, f"Object 'c' should be 3, got {val_c}"
 
-    print("[PASS] test_fanout_write_three_objects: "
-          "all 3 fanout objects readable", file=sys.stderr)
+    INFO("[PASS] test_fanout_write_three_objects: "
+          "all 3 fanout objects readable")
 
 
 test_fanout_write_three_objects()

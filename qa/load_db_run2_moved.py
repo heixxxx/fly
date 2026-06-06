@@ -2,6 +2,7 @@
 Loads DB from a NEW path (DB was moved by coordinator after Run 1).
 This tests that load_db uses the current path, not meta.base_path.
 """
+from _fly_log import INFO
 import os
 import sys
 import time
@@ -53,7 +54,7 @@ assert alpha == 42, f"moved/alpha should be 42, got {alpha}"
 beta = db.read_object("moved/beta")
 assert beta == 58, f"moved/beta should be 58, got {beta}"
 
-print(f"[RUN2_MOVED] Successfully read all data from moved DB", file=sys.stderr)
+INFO(f"[RUN2_MOVED] Successfully read all data from moved DB")
 
 # ── New tasks ──
 compute_sum(db, "moved/alpha", "moved/beta", "moved/sum")
@@ -68,26 +69,26 @@ try:
     sum_val = db.read_object("moved/sum")
     assert sum_val == 100, f"moved/sum should be 42+58=100, got {sum_val}"
 except Exception as e:
-    print(f"[RUN2_MOVED] ERROR reading moved/sum: {type(e).__name__}: {e}", file=sys.stderr)
+    INFO(f"[RUN2_MOVED] ERROR reading moved/sum: {type(e).__name__}: {e}")
     raise
 
 try:
     final_val = db.read_object("moved/final")
     assert final_val == "done", f"moved/final should be 'done', got {final_val}"
 except Exception as e:
-    print(f"[RUN2_MOVED] ERROR reading moved/final: {type(e).__name__}: {e}", file=sys.stderr)
+    INFO(f"[RUN2_MOVED] ERROR reading moved/final: {type(e).__name__}: {e}")
     raise
 
 # Freeze
-print(f"[RUN2_MOVED] Freezing DB...", file=sys.stderr)
+INFO(f"[RUN2_MOVED] Freezing DB...")
 db.freeze()
-print(f"[RUN2_MOVED] Frozen. is_frozen={db.is_frozen()}", file=sys.stderr)
+INFO(f"[RUN2_MOVED] Frozen. is_frozen={db.is_frozen()}")
 assert db.is_frozen(), "DB should be frozen"
 assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "_FROZEN should exist"
 
 meta = db.load_meta()
-print(f"[RUN2_MOVED] meta: db_id={meta.db_id}, created_at={meta.created_at}", file=sys.stderr)
+INFO(f"[RUN2_MOVED] meta: db_id={meta.db_id}, created_at={meta.created_at}")
 assert meta.db_id == original_db_id, f"meta.db_id={meta.db_id} != {original_db_id}"
 assert meta.created_at > 0, f"meta.created_at={meta.created_at}"
 
-print(f"[RUN2_MOVED] All verified, DB frozen at new path {DB_PATH}", file=sys.stderr)
+INFO(f"[RUN2_MOVED] All verified, DB frozen at new path {DB_PATH}")

@@ -1,3 +1,4 @@
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -51,5 +52,4 @@ assert wait_for(lambda: len(master.completed_tasks) >= 3), \
 result = db.read_object("sum_result")
 assert result == 30, f"Expected 30, got {result}"
 
-print("[PASS] test_write_worker_dep: data written by tasks satisfies downstream compute_sum",
-      file=sys.stderr)
+INFO("[PASS] test_write_worker_dep: data written by tasks satisfies downstream compute_sum")

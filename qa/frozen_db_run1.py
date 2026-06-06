@@ -1,4 +1,5 @@
 """Run 1 of frozen DB load test. Create DB, write data via tasks, freeze."""
+from _fly_log import INFO
 import os
 import sys
 import time
@@ -50,4 +51,4 @@ assert db.is_frozen(), "DB should be frozen after freeze()"
 
 assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "_FROZEN marker should exist"
 
-print(f"[RUN1] Created DB, wrote 3 objects, frozen successfully", file=sys.stderr)
+INFO(f"[RUN1] Created DB, wrote 3 objects, frozen successfully")

@@ -3,6 +3,7 @@
 Loads the DB created in Run 1, assigns idx files per hostname to workers,
 and verifies that all data (including cross-host backup data) is readable.
 """
+from _fly_log import INFO
 import os
 import sys
 import time
@@ -64,7 +65,7 @@ assert blob == "x" * 1000, f"local/alpha_blob length mismatch"
 beta_only = db.read_object("local/beta_only")
 assert beta_only == "beta_value", f"local/beta_only should be 'beta_value', got {beta_only}"
 
-print("[RUN2] All Run 1 data read back successfully", file=sys.stderr)
+INFO("[RUN2] All Run 1 data read back successfully")
 
 # Submit new tasks that depend on loaded data
 compute_sum(db, "shared/alpha_data", "shared/beta_data", "result/sum")
@@ -81,7 +82,7 @@ assert result_sum == 141, f"result/sum should be 141 (42+99), got {result_sum}"
 
 assert db.read_object("result/new_output") == "from_run2"
 
-print(f"[RUN2] New tasks completed: sum={result_sum}", file=sys.stderr)
+INFO(f"[RUN2] New tasks completed: sum={result_sum}")
 
 master.stop()
-print("[PASS] backup_load_db_multi_worker", file=sys.stderr)
+INFO("[PASS] backup_load_db_multi_worker")

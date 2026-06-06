@@ -8,6 +8,7 @@ Tasks:
   - requires=["shared"]: no worker has this -> FAILED with error message
   - requires=["alpha"]: completes normally
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -69,8 +70,8 @@ def test_fail_unscheduleable_tasks_enabled():
     assert db.read_object("alpha_result") == 1, \
         f"alpha task should still complete normally"
 
-    print(f"[PASS] test_fail_unscheduleable_tasks_enabled: "
-          f"task failed with '{error_msg}'", file=sys.stderr)
+    INFO(f"[PASS] test_fail_unscheduleable_tasks_enabled: "
+          f"task failed with '{error_msg}'")
 
 
 test_fail_unscheduleable_tasks_enabled()

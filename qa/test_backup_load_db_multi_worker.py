@@ -4,6 +4,7 @@ Uses --host override to simulate multi-host scenario on a single machine.
 Run 1: Two workers with different --host values write+backup data.
 Run 2: load_db with workers on different virtual hosts, verify cross-host reads.
 """
+from _fly_log import INFO
 import os
 import sys
 import subprocess
@@ -33,9 +34,9 @@ def run_script(script_name, log_subdir, extra_args=None, timeout=120):
         cmd, capture_output=True, text=True, timeout=timeout, cwd=PROJECT_ROOT,
     )
     if result.returncode != 0:
-        print(f"[FAIL] Script {script_name} exited with code {result.returncode}", file=sys.stderr)
-        print(f"  stdout: {result.stdout[-2000:]}", file=sys.stderr)
-        print(f"  stderr: {result.stderr[-2000:]}", file=sys.stderr)
+        INFO(f"[FAIL] Script {script_name} exited with code {result.returncode}")
+        INFO(f"  stdout: {result.stdout[-2000:]}")
+        INFO(f"  stderr: {result.stderr[-2000:]}")
     return result
 
 
@@ -46,21 +47,21 @@ os.makedirs(DB_PATH, exist_ok=True)
 
 # ── Execute Run 1 ──
 # Run 1 master is on host-alpha, so --host host-alpha
-print("[TEST] Running Run 1: write+backup on two virtual hosts", file=sys.stderr)
+INFO("[TEST] Running Run 1: write+backup on two virtual hosts")
 result1 = run_script("backup_load_db_multi_worker_run1.py", "run1",
                      extra_args=["--host", "host-alpha"])
 assert result1.returncode == 0, f"Run 1 failed with exit code {result1.returncode}"
-print("[TEST] Run 1 completed successfully", file=sys.stderr)
+INFO("[TEST] Run 1 completed successfully")
 
 # Small delay between runs
 time.sleep(1.0)
 
 # ── Execute Run 2 ──
 # Run 2 master is also on host-alpha
-print("[TEST] Running Run 2: load_db + distributed reads", file=sys.stderr)
+INFO("[TEST] Running Run 2: load_db + distributed reads")
 result2 = run_script("backup_load_db_multi_worker_run2.py", "run2",
                      extra_args=["--host", "host-alpha"])
 assert result2.returncode == 0, f"Run 2 failed with exit code {result2.returncode}"
-print("[TEST] Run 2 completed successfully", file=sys.stderr)
+INFO("[TEST] Run 2 completed successfully")
 
-print("[PASS] test_backup_load_db_multi_worker", file=sys.stderr)
+INFO("[PASS] test_backup_load_db_multi_worker")

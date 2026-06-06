@@ -1,4 +1,5 @@
 """Phase 1: Master writes data → @wait_obj sees it immediately → reads and verifies."""
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -40,4 +41,4 @@ db.write_object("master_key", "sync_data")
 result = wait_master_data(db, "master_key")
 assert result == "ok"
 
-print("[PASS] test_wait_obj_master_write", file=sys.stderr)
+INFO("[PASS] test_wait_obj_master_write")

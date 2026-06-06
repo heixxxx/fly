@@ -1,6 +1,7 @@
 """Run 2 of two-process load_db test.
 Loads DB from Run 1, reads back data, executes new tasks, freezes.
 """
+from _fly_log import INFO
 import os
 import sys
 import time
@@ -58,7 +59,7 @@ assert beta == 200, f"stage1/beta should be 200, got {beta}"
 gamma = db.read_object("stage1/gamma")
 assert gamma == "hello", f"stage1/gamma should be 'hello', got {gamma}"
 
-print(f"[RUN2] Successfully read back all Run 1 data", file=sys.stderr)
+INFO(f"[RUN2] Successfully read back all Run 1 data")
 
 # ── Submit new tasks that read Run 1 data and produce results ──
 compute_sum(db, "stage1/alpha", "stage1/beta", "stage2/sum")
@@ -89,5 +90,5 @@ meta = db.load_meta()
 assert meta.db_id == original_db_id
 assert meta.created_at > 0
 
-print(f"[RUN2] All data verified, DB frozen successfully", file=sys.stderr)
-print(f"[RUN2] stage2/sum = {stage2_sum} (100 + 200 from Run 1)", file=sys.stderr)
+INFO(f"[RUN2] All data verified, DB frozen successfully")
+INFO(f"[RUN2] stage2/sum = {stage2_sum} (100 + 200 from Run 1)")

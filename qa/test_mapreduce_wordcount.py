@@ -1,4 +1,5 @@
 """E2E test: MapReduce word count — summary merge with finalize."""
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -80,4 +81,4 @@ assert result == {"hello": 4, "world": 3, "fly": 2}, \
     f"Expected {{hello:4, world:3, fly:2}}, got {result}"
 
 master.stop()
-print("[PASS] test_mapreduce_wordcount", file=sys.stderr)
+INFO("[PASS] test_mapreduce_wordcount")

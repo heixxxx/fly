@@ -8,6 +8,7 @@ Scenario:
   5. Verify master is not running
   6. Verify worker processes have exited (they received ShutdownMessage)
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -48,7 +49,7 @@ def test_shutdown_broadcast():
     assert master.wait_for_workers(2), \
         f"Both workers should connect, got {master.worker_count}"
 
-    print(f"  Phase 1: 2 workers connected", file=sys.stderr)
+    INFO(f"  Phase 1: 2 workers connected")
 
     db = open_db(DB_PATH)
 
@@ -59,14 +60,13 @@ def test_shutdown_broadcast():
     assert wait_for(lambda: len(master.completed_tasks) >= 5), \
         f"Phase 2: 5 tasks should complete, got {len(master.completed_tasks)}"
 
-    print(f"  Phase 2: {len(master.completed_tasks)} tasks completed",
-          file=sys.stderr)
+    INFO(f"  Phase 2: {len(master.completed_tasks)} tasks completed")
 
     # Capture worker PIDs before stop
     worker_pids = master.get_worker_pids()
     assert len(worker_pids) == 2, \
         f"Expected 2 worker processes, got {len(worker_pids)}"
-    print(f"  Worker PIDs: {worker_pids}", file=sys.stderr)
+    INFO(f"  Worker PIDs: {worker_pids}")
 
     # -- Phase 3: Stop master (should broadcast shutdown to workers) --
     master.stop()
@@ -86,13 +86,13 @@ def test_shutdown_broadcast():
         except PermissionError:
             pass
 
-    print(f"  Phase 5: all worker processes exited gracefully", file=sys.stderr)
+    INFO(f"  Phase 5: all worker processes exited gracefully")
 
     # -- Phase 6: Verify no worker procs left --
     assert len(master.get_worker_pids()) == 0, \
         f"Phase 6: no workers should be running"
 
-    print("[PASS] test_shutdown_broadcast", file=sys.stderr)
+    INFO("[PASS] test_shutdown_broadcast")
 
 
 test_shutdown_broadcast()

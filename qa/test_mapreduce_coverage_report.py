@@ -4,6 +4,7 @@ When run with FLY_PYCOVERAGE=1, the Fly runtime automatically tracks
 Python coverage for Master and Worker processes. No manual coverage
 management needed in this script.
 """
+from _fly_log import INFO, ERR
 import time
 import sys
 import os
@@ -26,11 +27,11 @@ def run_test(name, fn):
     global passed, failed
     try:
         fn()
-        print(f"[PASS] {name}", file=sys.stderr)
+        INFO(f"[PASS] {name}")
         passed += 1
     except Exception as e:
-        print(f"[FAIL] {name}: {e}", file=sys.stderr)
-        traceback.print_exc(file=sys.stderr)
+        INFO(f"[FAIL] {name}: {e}")
+        ERR(traceback.format_exc())
         failed += 1
 
 def fresh_db(name):
@@ -258,5 +259,5 @@ run_test("downstream_dependency", test_downstream_dependency)
 run_test("error_paths", test_errors)
 
 # ── Done ──
-print(f"\nResults: {passed} passed, {failed} failed", file=sys.stderr)
-print("=" * 70, file=sys.stderr)
+INFO(f"\nResults: {passed} passed, {failed} failed")
+INFO("=" * 70)

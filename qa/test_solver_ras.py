@@ -4,6 +4,7 @@ Baseline (single-process, n=4, 2 subdomains): 8 iters, 1.2ms.
 Distributed overhead ~50ms/task × 24 tasks ≈ 1.2s.
 Timeout set to 30s (25x baseline).
 """
+from _fly_log import INFO
 import sys
 import os
 import shutil
@@ -60,12 +61,12 @@ get_config().set_int("fail_unscheduleable_tasks", 1)
 master = get_agent()
 master.launch_local_workers([{}])
 assert master.wait_for_workers(), "Worker should connect"
-print("  Phase 1 OK: worker connected", file=sys.stderr)
+INFO("  Phase 1 OK: worker connected")
 
 N = 4; NSD = 2; OVERLAP = 1
 x_ref = scipy_reference(N)
 import numpy as np
-print(f"  scipy reference: ||x||={np.linalg.norm(x_ref):.6f}", file=sys.stderr)
+INFO(f"  scipy reference: ||x||={np.linalg.norm(x_ref):.6f}")
 
 db = open_db(DB_PATH)
 
@@ -75,18 +76,18 @@ t0 = time.time()
 result = solve_ras(db, N, NSD, OVERLAP)
 elapsed = time.time() - t0
 
-print(f"  RAS: iters={result['iters']}, residual={result['residual']:.2e}, "
-      f"converged={result['converged']}, time={elapsed:.2f}s", file=sys.stderr)
+INFO(f"  RAS: iters={result['iters']}, residual={result['residual']:.2e}, "
+      f"converged={result['converged']}, time={elapsed:.2f}s")
 
 assert result["converged"], \
     f"RAS did not converge in {result['iters']} iters (res={result['residual']:.2e})"
-print("  Phase 2 OK: RAS converged", file=sys.stderr)
+INFO("  Phase 2 OK: RAS converged")
 
 x_ras = np.array(result["x"])
 error = np.linalg.norm(x_ras - x_ref) / np.linalg.norm(x_ref)
-print(f"  Relative error vs scipy: {error:.2e}", file=sys.stderr)
+INFO(f"  Relative error vs scipy: {error:.2e}")
 assert error < 1e-2, f"Error too large: {error:.2e}"
-print("  Phase 3 OK: precision verified", file=sys.stderr)
+INFO("  Phase 3 OK: precision verified")
 
 master.stop()
-print("[PASS] test_solver_ras", file=sys.stderr)
+INFO("[PASS] test_solver_ras")

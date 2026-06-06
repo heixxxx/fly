@@ -3,6 +3,7 @@
 Submit tasks: some complete, some fail with unresolvable deps.
 Stop master, verify failed_tasks.bin is created.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -58,7 +59,7 @@ def run1():
 
     completed = len(master.completed_tasks)
     failed = len(master.failed_tasks)
-    print(f"  Run1: {completed} completed, {failed} failed", file=sys.stderr)
+    INFO(f"  Run1: {completed} completed, {failed} failed")
 
     # Verify failed_tasks.bin exists before stop
     assert wait_for(lambda: os.path.isfile(failed_file)), \
@@ -66,9 +67,9 @@ def run1():
 
     file_size = os.path.getsize(failed_file)
     assert file_size > 0, "failed_tasks.bin should not be empty"
-    print(f"  Run1: failed_tasks.bin exists ({file_size} bytes)", file=sys.stderr)
+    INFO(f"  Run1: failed_tasks.bin exists ({file_size} bytes)")
 
-    print("  Run1: master stopped", file=sys.stderr)
+    INFO("  Run1: master stopped")
 
 
 run1()

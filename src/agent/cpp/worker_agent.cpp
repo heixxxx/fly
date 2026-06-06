@@ -293,6 +293,7 @@ void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);
         task_queue_.push(std::move(task));
     }
+    task_queue_cv_.notify_one();
     outstanding_tasks_++;
 }
 
@@ -364,6 +365,19 @@ bool WorkerAgent::poll_task() {
     return true;
 }
 
+bool WorkerAgent::poll_task_blocking(int timeout_ms) {
+    {
+        std::unique_lock<std::mutex> lock(task_queue_mutex_);
+        if (task_queue_.empty()) {
+            task_queue_cv_.wait_for(lock,
+                std::chrono::milliseconds(timeout_ms),
+                [this] { return !task_queue_.empty() || shutdown_triggered_.load(); });
+        }
+        if (task_queue_.empty()) return false;
+    }
+    return poll_task();
+}
+
 void WorkerAgent::on_shutdown(const ShutdownMessage& msg) {
 
     initiate_shutdown("master shutdown message");
@@ -391,6 +405,7 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
     running_ = false;
     heartbeat_running_ = false;
     heartbeat_cv_.notify_all();
+    task_queue_cv_.notify_all();
     if (reactor_) {
         reactor_->stop();
     }

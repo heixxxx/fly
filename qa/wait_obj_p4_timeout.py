@@ -1,4 +1,5 @@
 """Phase 4: @wait_obj raises RuntimeError when data can never appear."""
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -43,4 +44,4 @@ except RuntimeError as e:
 except Exception as e:
     assert False, f"Expected RuntimeError, got {type(e).__name__}: {e}"
 
-print("[PASS] test_wait_obj_timeout", file=sys.stderr)
+INFO("[PASS] test_wait_obj_timeout")

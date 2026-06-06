@@ -9,6 +9,7 @@ Tasks:
   - write_data(db, "real_key", 1)        -> completes, produces "real_key"
   - read_data(db, "result", ["phantom"]) -> depends on "phantom" which nobody produces -> FAILED
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -71,8 +72,8 @@ def test_unresolvable_dependency():
     assert db.read_object("real_key") == 1, \
         f"write_data task should still complete normally"
 
-    print(f"[PASS] test_unresolvable_dependency: "
-          f"task failed with '{error_msg}'", file=sys.stderr)
+    INFO(f"[PASS] test_unresolvable_dependency: "
+          f"task failed with '{error_msg}'")
 
 
 test_unresolvable_dependency()

@@ -3,6 +3,7 @@
 Start new master, call restart_failed_tasks(), launch worker,
 verify tasks are re-submitted and gpu task completes once gpu worker available.
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -43,7 +44,7 @@ def run2():
         f"failed_tasks.bin should exist at {failed_file}"
 
     master.restart_failed_tasks(failed_file)
-    print("  Run2: restart_failed_tasks called", file=sys.stderr)
+    INFO("  Run2: restart_failed_tasks called")
 
     # Wait for gpu task to complete (gpu worker now available)
     # The unresolvable dep task will fail again, but gpu task should succeed
@@ -52,14 +53,13 @@ def run2():
 
     completed = len(master.completed_tasks)
     failed = len(master.failed_tasks)
-    print(f"  Run2: {completed} completed, {failed} failed after restart",
-          file=sys.stderr)
+    INFO(f"  Run2: {completed} completed, {failed} failed after restart")
 
     # The gpu task should have completed
     assert completed >= 1, \
         f"Expected >= 1 task to complete after restart, got {completed}"
 
-    print("  Run2: master stopped", file=sys.stderr)
+    INFO("  Run2: master stopped")
 
 
 run2()

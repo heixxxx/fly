@@ -1,4 +1,5 @@
 """Run 2: load_db both DBs (moved), new DB_model, dynamic properties, restart, triple-DB compute."""
+from _fly_log import INFO
 import sys
 import os
 import shutil
@@ -49,20 +50,20 @@ feat_val = db_feat.read_object("feat_xy_from_raw")
 assert x_val == 10, f"Expected x=10, got {x_val}"
 assert z_val == 30, f"Expected z=30, got {z_val}"
 assert feat_val == 10, f"Expected feat_xy_from_raw=10, got {feat_val}"
-print(f"  Phase 1 OK: loaded DB_raw(x={x_val},z={z_val}), DB_feat(feat_xy={feat_val})", file=sys.stderr)
+INFO(f"  Phase 1 OK: loaded DB_raw(x={x_val},z={z_val}), DB_feat(feat_xy={feat_val})")
 
 assert db_raw.is_frozen(), "DB_raw should be frozen from Run 1"
-print("  Phase 1b OK: DB_raw confirmed frozen", file=sys.stderr)
+INFO("  Phase 1b OK: DB_raw confirmed frozen")
 
 master.launch_local_workers([{}])
 assert master.wait_for_workers(), \
     "Phase 2: Worker should connect"
-print("  Phase 2 OK: 1 worker launched", file=sys.stderr)
+INFO("  Phase 2 OK: 1 worker launched")
 
 add_alpha_property(db_feat, "prop_signal", 1)
 assert wait_for(lambda: len(master.completed_tasks) >= 1), \
     f"Phase 3: expected 1 completed, got {len(master.completed_tasks)}"
-print("  Phase 3 OK: Worker gained 'alpha' property", file=sys.stderr)
+INFO("  Phase 3 OK: Worker gained 'alpha' property")
 
 write_data(db_feat, "new_data", 99)
 
@@ -70,7 +71,7 @@ cross_db_sum(db_model, db_feat, db_feat, "feat_xy_from_raw", "new_data", "model_
 
 assert wait_for(lambda: len(master.completed_tasks) >= 3), \
     f"Phase 4: expected 3 completed, got {len(master.completed_tasks)}"
-print("  Phase 4 OK: cross-DB sum scheduled (async dependency)", file=sys.stderr)
+INFO("  Phase 4 OK: cross-DB sum scheduled (async dependency)")
 
 alpha_cross_db_copy(db_model, db_feat, "feat_xy_from_raw", "alpha_result")
 
@@ -81,13 +82,13 @@ assert wait_for(lambda: len(master.completed_tasks) >= 4), \
 
 assert wait_for(lambda: len(master.failed_tasks) >= 1), \
     f"Phase 5: expected 1 failed, got {len(master.failed_tasks)}"
-print("  Phase 5 OK: alpha task completed, gpu task failed", file=sys.stderr)
+INFO("  Phase 5 OK: alpha task completed, gpu task failed")
 
 triple_db_sum(db_model, db_raw, db_feat, "x", "new_data", "triple_out")
 
 assert wait_for(lambda: len(master.completed_tasks) >= 5), \
     f"Phase 6: expected 5 completed, got {len(master.completed_tasks)}"
-print("  Phase 6 OK: triple-DB compute done", file=sys.stderr)
+INFO("  Phase 6 OK: triple-DB compute done")
 
 log_dir = get_config().get_str("log_dir")
 failed_file = os.path.join(log_dir, "failed_tasks.bin")
@@ -102,7 +103,7 @@ assert wait_for(lambda: len(master.completed_tasks) >= 6), \
     f"Phase 7: expected 6 completed, got {len(master.completed_tasks)}"
 assert wait_for(lambda: len(master.failed_tasks) == 0), \
     f"Phase 7: expected 0 failed, got {len(master.failed_tasks)}"
-print("  Phase 7 OK: gpu task restarted and completed", file=sys.stderr)
+INFO("  Phase 7 OK: gpu task restarted and completed")
 
 model_out = db_model.read_object("model_out")
 alpha_result = db_model.read_object("alpha_result")
@@ -117,7 +118,7 @@ assert triple_out == 109, f"Expected triple_out=109 (10+99), got {triple_out}"
 new_data = db_feat.read_object("new_data")
 assert new_data == 99, f"Expected new_data=99, got {new_data}"
 
-print(f"  Phase 8 OK: all data verified — model_out={model_out}, alpha={alpha_result}, "
-      f"gpu={gpu_result}, triple={triple_out}", file=sys.stderr)
+INFO(f"  Phase 8 OK: all data verified — model_out={model_out}, alpha={alpha_result}, "
+      f"gpu={gpu_result}, triple={triple_out}")
 
-print("[PASS] Run 2 complete — all 12 checks passed", file=sys.stderr)
+INFO("[PASS] Run 2 complete — all 12 checks passed")

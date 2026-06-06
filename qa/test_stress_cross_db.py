@@ -3,6 +3,7 @@
 Verifies 3 databases with cross-DB dependency chains:
   DB_A writes raw data -> DB_B reads from DB_A and writes features -> DB_C reads from both and writes result
 """
+from _fly_log import INFO
 import time
 import sys
 import os
@@ -81,9 +82,8 @@ def test_cross_db_transfer():
         assert result == i * 100 + i * 100, \
             f"result_{i} should be {i * 200}, got {result}"
 
-    print(f"[PASS] test_cross_db_transfer: 3 DBs, {n} cross-DB chains, all verified",
-          file=sys.stderr)
+    INFO(f"[PASS] test_cross_db_transfer: 3 DBs, {n} cross-DB chains, all verified")
 
 
 test_cross_db_transfer()
-print("\nAll tests passed!")
+INFO("\nAll tests passed!")
