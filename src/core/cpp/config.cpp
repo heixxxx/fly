@@ -85,7 +85,8 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"dependency_update_mode", 0},
     {"fail_unscheduleable_tasks", 1},
     {"read_cache_size", 1073741824},
-    {"temp_store_size", 536870912},
+    {"temp_store_size", 2147483648},
+    {"data_client_pool_size", 4},
 };
 
 const CMUnorderedMap<CMString, CMString> Config::STR_DEFAULTS = {

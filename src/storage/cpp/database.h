@@ -56,6 +56,7 @@ public:
     bool has_temp(const CMString& object_name);
     void remove_temp(const CMString& object_name);
     void mark_temp(const CMString& object_name);
+    void put_temp_data(const CMString& object_name, const CMString& compressed_data);
 
     DbMeta load_meta() const;
 

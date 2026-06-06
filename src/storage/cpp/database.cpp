@@ -59,6 +59,7 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
 
 Database::~Database() {
     fly::DataService::instance().drain_write_back();
+    fly::DataService::instance().cleanup_temp_entries(db_id_);
     fly::DataService::instance().unregister_database(db_id_);
 }
 
@@ -256,15 +257,9 @@ void Database::freeze() {
     }
     fly::DataService::instance().drain_write_back();
     is_frozen_ = true;
-    // Don't close the DataWriter here — in-flight write_object() calls that
-    // already passed check_frozen() may still need to enqueue and execute
-    // their write-backs (e.g., register_write_with_master uses a 50ms polling
-    // loop, so the writer can be closed before the write is enqueued).
-    // The writer will be flushed and closed by DataWriter's destructor when
-    // the Database is destroyed, after drain_write_back() ensures all pending
-    // writes complete.
     create_frozen_marker();
     fly::DataService::instance().on_flush(db_id_);
+    fly::DataService::instance().cleanup_temp_entries(db_id_);
     fly::WorkerAgentContext::notify_freeze(db_id_);
 
     // TODO: freeze 后处理 — 从聚合文件中真正删除 removed_objects_ 的数据
@@ -502,6 +497,12 @@ void Database::remove_temp(const CMString& object_name) {
 
 void Database::mark_temp(const CMString& object_name) {
     temp_objects_.insert(full_name(object_name));
+}
+
+void Database::put_temp_data(const CMString& object_name, const CMString& compressed_data) {
+    CMString full = full_name(object_name);
+    fly::DataService::instance().on_temp_write(db_id_, full, CMString(compressed_data));
+    fly::WorkerAgentContext::register_write(db_id_, object_name);
 }
 
 

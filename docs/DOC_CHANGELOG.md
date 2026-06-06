@@ -12,7 +12,7 @@
 新功能：
 - **用户脚本 task**: `@as_task()` 装饰器自动检测 `__main__` 模块，将函数 cloudpickle 序列化到 task_name 字段（`from_user` 协议），Worker 端反序列化重建函数执行。用户脚本无需特殊结构。
 - **两层读缓存**: `read_object(name, cache="low"|"high"|"none")` — LOW 层缓存压缩数据（避免网络/磁盘 IO），HIGH 层缓存反序列化对象（避免重复 pickle.loads）。LRU + 读取频率淘汰，30s 保护期，1.5x 硬限制。缓存大小由 `read_cache_size` config 控制（默认 1GB）。
-- **save_to_db=False**: `write_object(name, obj, save_to_db=False)` 通过正常写入管线落盘，但标记为 temp。`read_object` 通过三级读取透明访问（支持跨 Worker）。`remove_object` 清理 temp 标记。run 结束后 temp 数据不持久化。
+- **save_to_db=False**: `write_object(name, obj, save_to_db=False)` 将压缩数据存入 `local_idx_` 的 `temp_compressed_data` 内存字段（不落盘到 DB 文件）。LRU 淘汰溢出到 TempStore 临时文件。`read_object` 通过 `local_idx_` 统一路径透明访问（支持跨 Worker，通过 WriteRegister 通知 master）。`remove_object` 清理 temp 条目。freeze/析构时自动清理。
 - **Master 自动启动**: `init()` 中自动调用 `agent.start()`，用户无需手动启动 Master。
 - **QA 公共 API 规范**: 所有 QA 测试只使用公共 Python API（`master.worker_count`、`master.wait_for_workers()` 等），底层 C++ 测试迁移至 `qa/internal/`。每个测试文件只测试一个场景。
 - **QA 扁平脚本**: 所有 QA 测试移除 `if __name__ == "__main__":`、`main()`、`master.stop()`、`del db`。代码从上到下直接执行。

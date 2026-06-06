@@ -4,6 +4,8 @@
 #include <network/cpp/transport.h>
 #include <network/cpp/message_types.h>
 #include <network/cpp/data_client.h>
+#include <network/cpp/data_client_pool.h>
+#include <core/cpp/config.h>
 #include <agent/cpp/task_executor.h>
 #include <common/cpp/worker_context.h>
 #include <storage/cpp/database.h>
@@ -174,6 +176,8 @@ private:
     CMWeakPtr<DataService> data_service_;
 
     DataService& ds();
+
+    DataClientPool data_client_pool_{Config::instance().get_int("data_client_pool_size")};
 
     // Master liveness tracking — seconds since epoch (atomic for cross-thread access)
     std::atomic<int64_t> last_master_contact_{0};

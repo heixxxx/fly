@@ -3,6 +3,7 @@
 #include <storage/cpp/index_entry.h>
 #include <storage/cpp/data_reader.h>
 #include <storage/cpp/write_back_queue.h>
+#include <storage/cpp/temp_store.h>
 #include <common/cpp/common_types.h>
 #include <common/cpp/concurrent_map.h>
 #include <cstdint>
@@ -56,6 +57,8 @@ struct LocalObjectInfo {
     bool flushed = false;
     CompletionState completion_state = CompletionState::INCOMPLETE;
     CMString error_message;
+    bool is_temp = false;
+    CMString temp_compressed_data;
 
     std::mutex cv_mutex;
     std::condition_variable cv;
@@ -171,6 +174,9 @@ public:
     bool is_temp_entry(const CMString& object_name) const;
     std::pair<bool, CMString> get_temp_data(const CMString& object_name) const;
 
+    void on_temp_write(const CMString& db_id, const CMString& object_name, CMString&& compressed_data);
+    void cleanup_temp_entries(const CMString& db_id);
+
     // ============================================================
     // Transfer Server
     // ============================================================
@@ -257,6 +263,11 @@ private:
     CMUnorderedMap<CMString, DbPaths> db_paths_;
 
     ConcurrentUnorderedMap<CMString, CMString> temp_entries_;
+
+    CMVector<CMString> temp_lru_order_;
+    int64_t temp_total_bytes_ = 0;
+    int64_t temp_max_bytes_ = 0;
+    CMUniquePtr<fly::TempStore> temp_eviction_store_;
 
     CMSharedPtr<IOThreadPool> transfer_pool_;
     TransferCallback transfer_callback_;

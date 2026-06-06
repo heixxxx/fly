@@ -4,7 +4,6 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/storage_manager.h>
 #include <storage/cpp/data_service.h>
-#include <storage/cpp/temp_store.h>
 #include <storage/cpp/object.h>
 #include <storage/cpp/index_entry.h>
 #include <storage/cpp/db_meta.h>
@@ -121,6 +120,10 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_DEF("_remove_temp", &Database::remove_temp)
     FLY_EXPORT_DEF("_mark_temp", [](Database& db, const CMString& name) {
         db.mark_temp(name);
+    })
+    FLY_EXPORT_DEF("_put_temp_data", [](Database& db, const CMString& name, fly_export::bytes compressed_data) {
+        CMString data(compressed_data.c_str(), compressed_data.size());
+        db.put_temp_data(name, data);
     });
 
 FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")

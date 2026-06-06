@@ -5,6 +5,7 @@
 #include <core/cpp/graceful_exit.h>
 #include <storage/cpp/data_service.h>
 #include <network/cpp/data_client.h>
+#include <network/cpp/data_client_pool.h>
 #include <network/cpp/metadata_client.h>
 #include <thread>
 #include <chrono>
@@ -28,9 +29,9 @@ void WorkerAgent::set_data_service(CMWeakPtr<DataService> wp) {
         sp->set_direct_compressed_read_handler(
             [this](const CMString& host, int32_t port,
                   const CMString& name) -> std::tuple<bool, CMString, CMString, CMString> {
-                auto [success, data, py_name, hash, error] = DataClient::request_compressed_data(host, port, name);
+                auto [success, data, py_name, hash, error] = data_client_pool_.request(host, port, name);
                 if (!success) {
-                    ERR("request_compressed_data failed for {}: {}", name, error);
+                    ERR("pooled request_compressed_data failed for {}: {}", name, error);
                     return {false, {}, {}, {}};
                 }
                 return {true, std::move(data), std::move(py_name), std::move(hash)};
@@ -193,6 +194,8 @@ void WorkerAgent::stop() {
 }
 
 void WorkerAgent::do_cleanup() {
+    data_client_pool_.stop();
+
     if (heartbeat_thread_.joinable()) {
         heartbeat_thread_.join();
     }

@@ -53,11 +53,13 @@ class _Database:
     def _write_temp(self, name: str, obj) -> str:
         if hasattr(obj, "_write_to_db"):
             result = obj._write_to_db(self._db, name, type(obj).__name__, False)
-        else:
-            data = pickle.dumps(obj)
-            result = self._db._write_pickle_bytes(name, data, type(obj).__name__, False)
-        self._db._mark_temp(name)
-        return result
+            self._db._mark_temp(name)
+            return result
+        data = pickle.dumps(obj)
+        py_name = type(obj).__name__
+        compressed = self._db._compress_pickle_bytes(data, py_name)
+        self._db._put_temp_data(name, compressed)
+        return ""
 
     def read_object(self, name: str, backup: bool = False, cache: str = "low"):
         if cache == "none":
