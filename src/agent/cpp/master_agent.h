@@ -132,10 +132,12 @@ private:
 
     CMUnorderedMap<uint64_t, CMString> task_modules_;
     CMUnorderedMap<uint64_t, CMVector<CMString>> task_args_;
+    mutable std::mutex task_args_mutex_;
 
     CMUnorderedMap<CMString, CMUnorderedMap<CMString, CMString>> db_registry_;
     CMUnorderedMap<CMString, CMSharedPtr<Database>> db_instances_;
     CMUnorderedSet<CMString> frozen_dbs_;
+    mutable std::mutex frozen_dbs_mutex_;
     static std::atomic<uint64_t> remote_task_counter_;
 
     void schedule_tasks();
@@ -151,6 +153,7 @@ private:
     void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
     void on_disconnect(uint64_t conn_id);
     void on_error(uint64_t conn_id, int error_code);
+    void on_data_query_dispatch(uint64_t conn_id, const DataQueryMessage& msg);
     void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
@@ -182,8 +185,10 @@ private:
     CMUnorderedMap<uint64_t, CMString> worker_to_hostname_;
     CMUnorderedMap<uint64_t, CMString> worker_to_ip_;
     CMUnorderedSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
+    mutable std::mutex recorded_workers_mutex_;
 
     CMUnorderedMap<CMString, CMString> write_provenance_;
+    mutable std::mutex provenance_mutex_;
 
     static std::atomic<bool> sigterm_received_;
     static void sigterm_handler(int sig);

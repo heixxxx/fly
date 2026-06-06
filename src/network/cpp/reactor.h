@@ -8,6 +8,11 @@
 #include <functional>
 #include <atomic>
 #include <memory>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <thread>
+#include <vector>
 
 namespace fly {
 
@@ -15,6 +20,26 @@ template<typename T>
 using MessageHandler = std::function<void(uint64_t conn_id, const T& msg)>;
 
 using GenericHandler = std::function<void(uint64_t conn_id, CMString& raw_msg)>;
+
+class HandlerThreadPool {
+public:
+    explicit HandlerThreadPool(size_t num_threads, size_t max_queue_size = 100);
+    ~HandlerThreadPool();
+
+    bool submit(std::function<void()> task);
+    void shutdown();
+    bool is_shutdown() const { return stop_.load(); }
+
+private:
+    CMVector<std::thread> workers_;
+    std::queue<std::function<void()>> tasks_;
+    std::mutex queue_mutex_;
+    std::condition_variable cv_;
+    std::atomic<bool> stop_{false};
+    size_t max_queue_size_;
+
+    void worker_loop();
+};
 
 class Reactor {
 public:
@@ -46,9 +71,13 @@ public:
     void set_io_pool(CMSharedPtr<IOThreadPool> pool);
     CMSharedPtr<IOThreadPool> get_io_pool() const { return io_pool_; }
 
+    void set_handler_pool(CMUniquePtr<HandlerThreadPool> pool);
+    HandlerThreadPool* get_handler_pool() { return handler_pool_.get(); }
+
 private:
     CMUniquePtr<TransportLayer> transport_;
     CMSharedPtr<IOThreadPool> io_pool_;
+    CMUniquePtr<HandlerThreadPool> handler_pool_;
     
     CMUnorderedMap<uint64_t, CMString> recv_buffers_;
     
@@ -60,6 +89,8 @@ private:
     
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
+
+    std::mutex send_mutex_;
     
     void handle_event(const TransportEvent& event);
     void dispatch_message(uint64_t conn_id, CMString& buffer);
@@ -78,6 +109,7 @@ void Reactor::register_handler(MessageHandler<T> handler) {
 template<typename T>
 void Reactor::send(uint64_t conn_id, const T& msg) {
     CMString frame = MessageProtocol::encode(msg);
+    std::lock_guard<std::mutex> lock(send_mutex_);
     ssize_t result = transport_->send(conn_id, frame);
     if (result < 0) {
         WARN("Reactor::send failed for conn_id={}", conn_id);

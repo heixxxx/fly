@@ -5,6 +5,55 @@
 
 namespace fly {
 
+HandlerThreadPool::HandlerThreadPool(size_t num_threads, size_t max_queue_size)
+    : max_queue_size_(max_queue_size) {
+    workers_.reserve(num_threads);
+    for (size_t i = 0; i < num_threads; ++i) {
+        workers_.emplace_back(&HandlerThreadPool::worker_loop, this);
+    }
+}
+
+HandlerThreadPool::~HandlerThreadPool() {
+    shutdown();
+}
+
+void HandlerThreadPool::worker_loop() {
+    while (true) {
+        std::function<void()> task;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            cv_.wait(lock, [this] { return stop_.load() || !tasks_.empty(); });
+            if (stop_.load() && tasks_.empty()) return;
+            task = std::move(tasks_.front());
+            tasks_.pop();
+        }
+        task();
+    }
+}
+
+bool HandlerThreadPool::submit(std::function<void()> task) {
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        if (stop_.load()) return false;
+        if (tasks_.size() >= max_queue_size_) return false;
+        tasks_.push(std::move(task));
+    }
+    cv_.notify_one();
+    return true;
+}
+
+void HandlerThreadPool::shutdown() {
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        if (stop_.load()) return;
+        stop_ = true;
+    }
+    cv_.notify_all();
+    for (auto& w : workers_) {
+        if (w.joinable()) w.join();
+    }
+}
+
 Reactor::Reactor(CMUniquePtr<TransportLayer> transport)
     : transport_(std::move(transport)) {
 }
@@ -61,6 +110,10 @@ void Reactor::stop() {
 
 void Reactor::set_io_pool(CMSharedPtr<IOThreadPool> pool) {
     io_pool_ = pool;
+}
+
+void Reactor::set_handler_pool(CMUniquePtr<HandlerThreadPool> pool) {
+    handler_pool_ = std::move(pool);
 }
 
 void Reactor::handle_event(const TransportEvent& event) {
