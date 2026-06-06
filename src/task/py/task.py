@@ -1,12 +1,11 @@
 import pickle
-import logging
 
 try:
     import cloudpickle
 except ImportError:
     cloudpickle = None
 
-logger = logging.getLogger("fly")
+from _fly_log import DBG
 
 _task_registry = {}
 
@@ -83,7 +82,7 @@ def as_task(inputs=None, requires=None):
             agent.submit(task_name, module, serialized, task_inputs,
                          required_capabilities=task_requires,
                          write_context_hash=write_context_hash)
-            logger.debug(
+            DBG(
                 f"Task submitted via {agent.mode}: "
                 f"name={name}, module={module}, inputs={task_inputs}, requires={task_requires}")
 
@@ -156,7 +155,7 @@ def _wait_for_objects(deps, poll_interval):
         still_pending = []
         for dep in pending:
             if ds.has_local_object(dep) or ds.has_remote_location(dep):
-                logger.debug("wait_obj: object '%s' is ready", dep)
+                DBG(f"wait_obj: object '{dep}' is ready")
                 continue
 
             now = time.time()
@@ -164,7 +163,7 @@ def _wait_for_objects(deps, poll_interval):
                 last_probe[dep] = now
                 found, _data, _py_name, can_still_produce = ds.try_read_remote(dep)
                 if found:
-                    logger.debug("wait_obj: object '%s' found via Tier 3 probe", dep)
+                    DBG(f"wait_obj: object '{dep}' found via Tier 3 probe")
                     continue
                 if not can_still_produce:
                     fail_confirm_count[dep] += 1

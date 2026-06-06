@@ -20,11 +20,11 @@
 
 `runqa`（Python 运行器）对每个 `test_*.py` 文件：
 
-1. 用 `bazel-bin/src/main/cpp/fly --log-dir <dir> <test_file>` 启动一个**独立进程**
+1. 用 `fly --log-dir <dir> <test_file>` 启动一个**独立进程**
 2. fly 二进制初始化全新的 C++ 运行时（DataService、StorageManager 等单例都是全新的）
 3. 执行 Python 测试脚本
 4. 通过进程退出码判断 pass/fail（0=pass, 非0=fail）
-5. 日志写入 `qa/logs/<test_name>/` 目录
+5. 日志写入 `qa/logs/` 目录
 
 ---
 
@@ -252,9 +252,85 @@ def test_part2():
 
 使用 `/tmp/fly_e2e_<test_name>_db` 格式，测试前清理，测试后不清理（方便调试）。
 
-### 日志输出
+### 日志系统
 
-使用 `print(..., file=sys.stderr)` 输出测试进度。fly 二进制将 stdout/stderr 重定向到 `qa/logs/`。
+#### 在测试中输出信息
+
+使用 `print(..., file=sys.stderr)` 输出测试进度。
+
+#### 日志架构
+
+Fly 的日志系统基于 C++ Logger（`src/log/cpp/logger.h`），提供四个级别：
+
+```python
+from _fly_log import DBG, INFO, WARN, ERR
+INFO("任务完成")
+WARN("重试中")
+ERR("连接失败")
+```
+
+C++ 侧使用同名宏：
+
+```cpp
+INFO("Worker connected, id={}", worker_id);
+ERR("task failed: {}", error_msg);
+```
+
+#### 双输出机制（Master）
+
+Master 进程（用户直接运行 `fly script.py` 或 QA 运行）的日志**同时写入两处**：
+
+| 输出目标 | 内容 |
+|---------|------|
+| **stderr（终端）** | C++ 全级别日志 + Python print + traceback |
+| **log 文件** | 同上，写入 `{log_dir}/master.log` |
+
+用户在终端可以实时看到所有日志输出，包括任务调度、数据写入、错误信息等。
+
+Worker 进程的日志**仅写入文件**（`{log_dir}/worker{N}.log`），不输出到终端。
+
+#### QA 日志查看
+
+QA 运行器（`runqa`）为每个测试生成两类日志：
+
+```
+qa/logs/
+├── test_foo.log                    # 综合日志：Python print + C++ 日志 + traceback
+├── test_foo/                       # C++ Logger 写入的文件日志
+│   ├── master.log                  #   Master 进程日志（与 .log 内容相同）
+│   └── worker1.log                 #   Worker 进程日志
+├── test_bar.log
+├── test_bar/
+│   ├── master.log
+│   └── worker1.log
+└── ...
+```
+
+**快速查看测试结果**：
+```bash
+# 查看失败测试的日志（包含全部输出）
+cat qa/logs/test_foo.log
+
+# 仅查看 Worker 日志（任务执行细节）
+cat qa/logs/test_foo/worker1.log
+
+# 查看所有 ERROR 级别日志
+grep '\[ERROR\]' qa/logs/test_foo.log
+```
+
+**测试失败时**，`runqa` 自动打印失败测试的最后 20 行日志。完整日志在 `qa/logs/{test_name}.log`。
+
+#### 生产环境日志
+
+用户直接运行 `fly script.py` 时，日志写入 `fly_log/` 目录（可通过 `--log-dir` 自定义）：
+
+```bash
+fly --log-dir /var/log/fly my_script.py
+# /var/log/fly/master.log     — Master 日志（同时显示在终端）
+# /var/log/fly/worker1.log    — Worker 日志
+```
+
+每次运行自动创建新目录（`fly_log.1`, `fly_log.2`, ...），`fly_log.latest` 符号链接指向最新一次。
 
 ### 资源清理
 
@@ -303,9 +379,14 @@ qa/
 ├── <helper>.py                  # 辅助脚本（由 test_*.py 调用）
 │
 └── logs/                        # 测试日志（gitignore）
-    └── <test_name>/
+    ├── test_foo.log             # 综合日志（Python + C++ + traceback）
+    ├── test_foo/
+    │   ├── master.log           # Master C++ 日志文件
+    │   └── worker1.log          # Worker C++ 日志文件
+    ├── test_bar.log
+    └── test_bar/
         ├── master.log
-        └── ...
+        └── worker1.log
 ```
 
 ---
@@ -314,7 +395,18 @@ qa/
 
 **Q: 测试超时怎么办？**
 
-检查 `qa/logs/<test_name>/master.log` 和 `worker*.log`，确认 Worker 是否连接成功、任务是否被调度。
+查看综合日志：
+```bash
+cat qa/logs/test_foo.log
+```
+里面包含 Master 的全部 C++ 日志和 Python 输出。搜索 `[ERROR]` 定位错误点。
+
+**Q: 测试失败如何调试？**
+
+1. `runqa` 失败时自动打印最后 20 行日志
+2. 查看完整日志：`cat qa/logs/{test_name}.log`
+3. 查看Worker 日志（任务执行细节）：`cat qa/logs/{test_name}/worker1.log`
+4. 搜索错误：`grep '\[ERROR\]' qa/logs/{test_name}.log`
 
 **Q: Worker 连接失败？**
 

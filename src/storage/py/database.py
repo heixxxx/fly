@@ -1,13 +1,10 @@
 import pickle
 import time
-import logging
 from _fly_storage import (
     ex_stg_get_data_service,
     ex_stg_get_last_error_type as _get_last_error_type_int,
     EXStgErrorType,
 )
-
-logger = logging.getLogger("fly")
 
 _MAX_RETRIES = 3
 _RETRY_INTERVAL_SEC = 1.0

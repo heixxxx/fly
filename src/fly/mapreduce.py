@@ -32,8 +32,6 @@ except ImportError:
 
 from fly import as_task
 
-logger = __import__("logging").getLogger("fly")
-
 # ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------

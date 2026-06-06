@@ -16,10 +16,9 @@ Example::
     fly.wait_tasks()
 """
 
-import logging
 import os
 
-logger = logging.getLogger("fly")
+from _fly_log import WARN
 
 try:
     from storage.database import _Database
@@ -59,8 +58,8 @@ def open_db(path: str, data_path: str = "") -> '_Database':
         n += 1
         actual_path = f"{path}.{n}"
     if actual_path != path:
-        logger.warning("open_db: path '%s' already contains a database, "
-                       "creating new database at '%s'", path, actual_path)
+        WARN(f"open_db: path '{path}' already contains a database, "
+             f"creating new database at '{actual_path}'")
     return _Database(actual_path, data_path)
 
 
