@@ -58,12 +58,13 @@ def wait_for(condition, timeout=TIMEOUT, interval=0.5):
 cleanup()
 get_config().set_int("fail_unscheduleable_tasks", 1)
 
-master = get_agent()
-master.launch_local_workers([{}])
-assert master.wait_for_workers(), "Worker should connect"
-INFO("  Phase 1 OK: worker connected")
-
 N = 4; NSD = 2; OVERLAP = 1
+
+master = get_agent()
+master.launch_local_workers([{}] * NSD)
+assert master.wait_for_workers(NSD), f"{NSD} workers should connect"
+INFO(f"  {NSD} workers connected")
+
 x_ref = scipy_reference(N)
 import numpy as np
 INFO(f"  scipy reference: ||x||={np.linalg.norm(x_ref):.6f}")
