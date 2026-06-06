@@ -2,6 +2,7 @@
 #include <log/cpp/logger.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <sys/epoll.h>
 #include <poll.h>
@@ -94,6 +95,9 @@ uint64_t TCPTransport::connect(const CMString& address, int port) {
                                  ": " + std::string(std::strerror(errno)));
     }
     
+    int nodelay = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+    
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.fd = fd;
@@ -185,6 +189,9 @@ CMVector<TransportEvent> TCPTransport::poll(int timeout_ms) {
                 }
                 continue;
             }
+            
+            int nodelay = 1;
+            setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
             
             struct epoll_event client_ev;
             client_ev.events = EPOLLIN;
