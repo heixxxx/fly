@@ -109,6 +109,8 @@ CMString Database::write_pickle_bytes(const CMString& object_name,
     CMString full = full_name(object_name);
     if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return {}; }
 
+    fly::DataService::instance().on_write_started(db_id_, full);
+
     auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
     if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
         ERR("Write registration failed: {} (type={})", reg_error, static_cast<int>(reg_error_type));
@@ -118,8 +120,6 @@ CMString Database::write_pickle_bytes(const CMString& object_name,
     if (fly::WorkerAgentContext::get_last_error_type() == fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED) {
         return "";
     }
-
-    fly::DataService::instance().on_write_started(db_id_, full);
 
     auto record = CMMakeShared<FlyBuffer>();
     auto compress_result = compress_buffered_data(
