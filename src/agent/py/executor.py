@@ -119,8 +119,6 @@ def create_executor(worker) -> callable:
             result['output'] = str(output) if output is not None else ""
             result['frozen_dbs'] = frozen_dbs
 
-            INFO(f"Task executed successfully: id={task_id}, name={task_name}, module={task_module}")
-
         except Exception as e:
             result['status'] = 1
             result['output'] = ""
