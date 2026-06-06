@@ -33,7 +33,7 @@ public:
 
 private:
     Logger();
-    explicit Logger(const CMString& filename);
+    explicit Logger(const CMString& filename, bool dual_output = false);
     void log(LogLevel level, const CMString& msg);
     CMString level_str(LogLevel level) const;
     CMString timestamp() const;
@@ -45,6 +45,7 @@ private:
     std::ofstream file_;
     std::mutex mutex_;
     LogLevel level_;
+    bool dual_output_;  // true = write to both file and stderr (master mode)
 };
 
 template <typename... T>

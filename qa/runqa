@@ -18,8 +18,9 @@ def find_tests():
 
 def run_one(test_path, log_base):
     name = os.path.basename(test_path)
-    log_dir = os.path.join(log_base, os.path.splitext(name)[0])
-    out_log = os.path.join(log_base, f"{os.path.splitext(name)[0]}_output.log")
+    stem = os.path.splitext(name)[0]
+    log_dir = os.path.join(log_base, stem)
+    out_log = os.path.join(log_base, f"{stem}.log")
 
     t0 = time.monotonic()
     proc = subprocess.run(

@@ -10,10 +10,10 @@ namespace fly {
 
 Logger* Logger::instance_ = nullptr;
 
-Logger::Logger() : level_(LogLevel::DEBUG) {}
+Logger::Logger() : level_(LogLevel::DEBUG), dual_output_(false) {}
 
-Logger::Logger(const CMString& filename)
-    : filename_(filename), level_(LogLevel::DEBUG) {
+Logger::Logger(const CMString& filename, bool dual_output)
+    : filename_(filename), level_(LogLevel::DEBUG), dual_output_(dual_output) {
     if (!filename_.empty()) {
         file_.open(filename_, std::ios::out | std::ios::app);
     }
@@ -39,7 +39,8 @@ void Logger::init(const CMString& base_dir, uint64_t worker_id) {
         instance_->flush();
         delete instance_;
     }
-    instance_ = new Logger(filename);
+    // Master (worker_id == 0) gets dual output: file + stderr
+    instance_ = new Logger(filename, worker_id == 0);
 }
 
 CMString Logger::resolve_log_dir(const CMString& base_dir) {
@@ -80,8 +81,9 @@ void Logger::set_level(LogLevel level) { level_ = level; }
 void Logger::flush() {
     if (file_.is_open()) {
         file_.flush();
-    } else {
-        std::cout.flush();
+    }
+    if (dual_output_ || !file_.is_open()) {
+        std::cerr.flush();
     }
 }
 
@@ -89,20 +91,21 @@ void Logger::log(LogLevel level, const CMString& msg) {
     if (level < level_) return;
 
     std::lock_guard<std::mutex> lock(mutex_);
+    CMString line = "[" + timestamp() + "] "
+                  + "[" + level_str(level) + "] "
+                  + msg + "\n";
+
     if (file_.is_open()) {
-        file_ << "[" << timestamp() << "] "
-              << "[" << level_str(level) << "] "
-              << msg << "\n";
+        file_ << line;
         if (level >= LogLevel::WARN) {
             file_.flush();
         }
-    } else {
-        // Pre-init: output to stdout so no messages are silently dropped
-        std::cout << "[" << timestamp() << "] "
-                  << "[" << level_str(level) << "] "
-                  << msg << "\n";
+    }
+
+    if (dual_output_ || !file_.is_open()) {
+        std::cerr << line;
         if (level >= LogLevel::WARN) {
-            std::cout.flush();
+            std::cerr.flush();
         }
     }
 }
