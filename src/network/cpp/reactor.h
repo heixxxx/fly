@@ -10,7 +10,6 @@
 #include <memory>
 #include <mutex>
 #include <condition_variable>
-#include <queue>
 #include <thread>
 #include <vector>
 
@@ -90,7 +89,10 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
 
-    std::mutex send_mutex_;
+    std::mutex conn_send_mutex_map_mutex_;
+    CMUnorderedMap<uint64_t, CMUniquePtr<std::mutex>> conn_send_mutexes_;
+    std::mutex& get_send_mutex(uint64_t conn_id);
+    void remove_send_mutex(uint64_t conn_id);
     
     void handle_event(const TransportEvent& event);
     void dispatch_message(uint64_t conn_id, CMString& buffer);
@@ -109,7 +111,7 @@ void Reactor::register_handler(MessageHandler<T> handler) {
 template<typename T>
 void Reactor::send(uint64_t conn_id, const T& msg) {
     CMString frame = MessageProtocol::encode(msg);
-    std::lock_guard<std::mutex> lock(send_mutex_);
+    std::lock_guard<std::mutex> lock(get_send_mutex(conn_id));
     ssize_t result = transport_->send(conn_id, frame);
     if (result < 0) {
         WARN("Reactor::send failed for conn_id={}", conn_id);

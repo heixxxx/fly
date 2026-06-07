@@ -1,6 +1,7 @@
 #pragma once
 
 #include <network/cpp/transport.h>
+#include <mutex>
 
 namespace fly {
 
@@ -26,6 +27,9 @@ private:
     int listen_fd_ = -1;
     uint64_t next_conn_id_ = 1;
     
+    // Protects conn_to_fd_ and fd_to_conn_ — accessed from reactor thread
+    // (poll/unregister) and task threads (send/recv)
+    mutable std::mutex conn_mutex_;
     CMUnorderedMap<uint64_t, int> conn_to_fd_;
     CMUnorderedMap<int, uint64_t> fd_to_conn_;
     

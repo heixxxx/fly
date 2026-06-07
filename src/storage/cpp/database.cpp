@@ -501,8 +501,11 @@ void Database::mark_temp(const CMString& object_name) {
 
 void Database::put_temp_data(const CMString& object_name, const CMString& compressed_data) {
     CMString full = full_name(object_name);
+    DBG("[TEMP-PUT] put_temp_data: obj={}, full={}, data_size={}", object_name, full, compressed_data.size());
     fly::DataService::instance().on_temp_write(db_id_, full, CMString(compressed_data));
+    DBG("[TEMP-PUT] put_temp_data on_temp_write done, calling register_write: obj={}", object_name);
     fly::WorkerAgentContext::register_write(db_id_, object_name);
+    DBG("[TEMP-PUT] put_temp_data complete: obj={}", object_name);
 }
 
 

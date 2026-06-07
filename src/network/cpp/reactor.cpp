@@ -116,6 +116,25 @@ void Reactor::set_handler_pool(CMUniquePtr<HandlerThreadPool> pool) {
     handler_pool_ = std::move(pool);
 }
 
+std::mutex& Reactor::get_send_mutex(uint64_t conn_id) {
+    {
+        std::lock_guard<std::mutex> lock(conn_send_mutex_map_mutex_);
+        auto it = conn_send_mutexes_.find(conn_id);
+        if (it != conn_send_mutexes_.end()) {
+            return *it->second;
+        }
+        auto m = CMMakeUnique<std::mutex>();
+        auto& ref = *m;
+        conn_send_mutexes_[conn_id] = std::move(m);
+        return ref;
+    }
+}
+
+void Reactor::remove_send_mutex(uint64_t conn_id) {
+    std::lock_guard<std::mutex> lock(conn_send_mutex_map_mutex_);
+    conn_send_mutexes_.erase(conn_id);
+}
+
 void Reactor::handle_event(const TransportEvent& event) {
     switch (event.type) {
         case TransportEventType::CONNECT:
@@ -135,6 +154,7 @@ void Reactor::handle_event(const TransportEvent& event) {
                 disconnect_handler_(event.conn_id);
             }
             recv_buffers_.erase(event.conn_id);
+            remove_send_mutex(event.conn_id);
             break;
             
         case TransportEventType::ERROR:
@@ -142,6 +162,7 @@ void Reactor::handle_event(const TransportEvent& event) {
                 error_handler_(event.conn_id, event.error_code);
             }
             recv_buffers_.erase(event.conn_id);
+            remove_send_mutex(event.conn_id);
             break;
     }
 }

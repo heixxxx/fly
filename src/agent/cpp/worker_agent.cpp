@@ -91,13 +91,6 @@ void WorkerAgent::start() {
             on_register_ack(msg);
         });
 
-    reactor_->register_handler<ConfigSyncMessage>(
-        [this](uint64_t conn, const ConfigSyncMessage& msg) {
-            Config::instance().apply_sync(msg.int_values, msg.str_values);
-            INFO("ConfigSync received: {} int keys, {} str keys",
-                 msg.int_values.size(), msg.str_values.size());
-        });
-
     reactor_->register_handler<TaskAssignMessage>(
         [this](uint64_t conn, const TaskAssignMessage& msg) {
             on_task_assign(msg);

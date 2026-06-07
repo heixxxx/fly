@@ -17,7 +17,7 @@ public:
         const CMString& host,
         int port,
         const CMString& object_name,
-        int timeout_ms = 30000);
+        int timeout_ms = 300000);
 };
 
 }  // namespace fly

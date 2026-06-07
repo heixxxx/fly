@@ -111,7 +111,7 @@ Config单例模式管理所有进程共享的配置，ProcessInfo单例管理进
 from fly import get_config
 from fly.runtime import get_agent
 
-# 获取全局单例Config（所有进程共享，由master通过ConfigSyncMessage同步到worker）
+# 获取全局单例Config（所有进程共享，master在启动worker前通过config文件同步）
 config = get_config()
 
 # 设置共享参数（必须在启动worker前）
@@ -138,7 +138,7 @@ config.set(heartbeat_timeout=60)  # RuntimeError: Config must be set before work
 ```
 
 **Config vs ProcessInfo**：
-- `Config`：所有进程共享的数据（heartbeat_timeout, backup_threshold, log_dir 等），master 通过 ConfigSyncMessage 自动同步给 worker
+- `Config`：所有进程共享的数据（heartbeat_timeout, backup_threshold, log_dir 等），master 在启动 worker 前通过 config 文件同步
 - `ProcessInfo`：进程私有数据（worker_mode, worker_id, master_host/port, hostname 等），不同步
 - `--host` CLI 参数通过 `ProcessInfo::set_hostname()` 覆盖自动检测的 hostname，用于多 host 测试
 
@@ -329,7 +329,7 @@ master.launch_custom_workers(
 │  - DataService: 统一内存索引（local_idx + remote_idx）          │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 0: 基础设施层                                             │
-│  - Config: 全局共享配置管理（通过 ConfigSyncMessage 同步）        │
+│  - Config: 全局共享配置管理（master 启动 worker 前通过文件同步）  │
 │  - ProcessInfo: 进程私有数据（hostname, worker_mode 等）          │
 │  - Serializer: bitsery 序列化（FLY_SERIALIZE_* 宏封装）          │
 │  - Export: nanobind 绑定（FLY_EXPORT_* 宏封装）                  │
@@ -625,7 +625,7 @@ Phase 3: 定向 idx 加载
 | DBPathResponseMessage | Master → Worker | ✅ 已实现 |
 | WorkerPropertyUpdateMessage | Worker → Master | ✅ 已实现 |
 | ObjectRemovedMessage | Worker → Master | ✅ 已实现 |
-| ConfigSyncMessage | Master → Worker | ✅ 已实现 |
+| ~~ConfigSyncMessage~~ | ~~Master → Worker~~ | ❌ 已移除（改用 config 文件预加载） |
 | IdxLoadCommandMessage | Master → Worker | ✅ 已实现 |
 | IdxLoadAckMessage | Worker → Master | ✅ 已实现 |
 
@@ -726,10 +726,10 @@ fly/
   - DataService 统一索引（local_idx + remote_idx + worker_registry）
   - 异步 WriteBackQueue
 - **Layer 2**：网络层（Reactor, TCP, 消息协议）
-  - 27种消息结构全部定义 + ConfigSyncMessage + IdxLoadCommand/Ack
+  - 27种消息结构全部定义 + IdxLoadCommand/Ack（ConfigSyncMessage 已移除，改用文件预加载）
   - TransportLayer 抽象（移除 accept()，新增 stop_listening()）
   - Worker 数据传输（独立 DataClient 连接）
-  - ConfigSyncMessage：master 注册 worker 后自动同步 Config
+  - Config 同步：master 启动 worker 前写入 config 文件，worker 初始化时从文件加载
   - IdxLoadCommand/Ack：定向 idx 加载，按 hostname 分配 worker
 - **Layer 3**：任务系统层（DependencyGraph, 调度器）
   - TaskManager（原 MetadataManager）

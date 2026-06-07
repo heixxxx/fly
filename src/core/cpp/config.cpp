@@ -59,16 +59,6 @@ void Config::reset() {
     workers_launched_ = false;
 }
 
-void Config::apply_sync(const CMUnorderedMap<CMString, int64_t>& ints,
-                         const CMUnorderedMap<CMString, CMString>& strs) {
-    for (const auto& [k, v] : ints) {
-        int_values_[k] = v;
-    }
-    for (const auto& [k, v] : strs) {
-        str_values_[k] = v;
-    }
-}
-
 void Config::save_to_file(const CMString& path) const {
     std::ofstream ofs(path.c_str(), std::ios::trunc);
     for (const auto& [k, v] : int_values_) {

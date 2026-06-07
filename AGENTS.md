@@ -121,9 +121,16 @@ bash qa/run_qa_tests.sh
 - 所有间歇性失败（flaky test）必须立即修复，不得提高超时或增加重试
 - 稳定性测试（50 轮以上）必须 100% 通过，任何一轮失败都是必须修复的 bug
 
+## Debug 准则
+
+- **加日志定位，不猜测**：遇到运行时问题，先在关键决策点加 DBG 日志，运行观察，用日志证据定位根因
+- **复现脚本必须遇错即停**：循环复现脚本必须在首次失败时立即停止、保存失败现场日志，然后检查日志确认问题。不要盲目跑完所有轮次再回头看
+- **复现脚本必须设 timeout**：每轮运行必须设置 timeout，防止卡住浪费整晚时间
+- **用 `/systematic-debugging-analysis` skill**：debug 时先加载此 skill，遵循其流程
+
 ## Config vs ProcessInfo
 
-- **Config**：所有进程共享，master 通过 ConfigSyncMessage 自动同步给 worker。包含 heartbeat/backup/compression/log_dir 等配置
+- **Config**：所有进程共享，master 启动 worker 前通过 config 文件同步。包含 heartbeat/backup/compression/log_dir 等配置
 - **ProcessInfo**：进程私有，不同步。包含 worker_mode, worker_id, master_host/port, hostname 等
 - **`--host` CLI**：覆盖 ProcessInfo 的 hostname，用于单机模拟多 host 测试
 - **log_dir** 在 Config 中（所有进程共享同一日志目录）
@@ -133,7 +140,7 @@ bash qa/run_qa_tests.sh
 
 ```
 src/storage/    → Layer 1: Database, DataService, DataWriter (纯落盘), DataReader (纯读字节), CompressingStreamBuf, DecompressingStreamBuf
-src/network/    → Layer 2: Reactor, TCP transport, message protocol (27 msg types + ConfigSync + IdxLoad)
+src/network/    → Layer 2: Reactor, TCP transport, message protocol (27 msg types + IdxLoad)
 src/task/       → Layer 3: DependencyGraph, TaskScheduler, WorkerManager
 src/agent/      → Layer 4: MasterAgent, WorkerAgent, TaskExecutor
 src/core/       → Config (共享配置), ProcessInfo (进程私有数据, hostname)

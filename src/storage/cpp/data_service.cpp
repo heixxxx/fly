@@ -527,19 +527,26 @@ std::pair<bool, CMString> DataService::try_read_local_raw(const CMString& object
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto db_it = local_idx_.find(db_id);
-        if (db_it == local_idx_.end()) return {false, {}};
+        if (db_it == local_idx_.end()) {
+            DBG("[TEMP-READ-LOCAL] NOT FOUND: obj={}, db_id={} not in local_idx", object_name, db_id);
+            return {false, {}};
+        }
         auto it = db_it->second.find(short_name);
         if (it == db_it->second.end() || !it->second) {
+            DBG("[TEMP-READ-LOCAL] NOT FOUND: obj={}, short_name={} not in db_map", object_name, short_name);
             return {false, {}};
         }
         auto& info = *it->second;
         if (info.completion_state != CompletionState::COMPLETE || !info.flushed) {
+            DBG("[TEMP-READ-LOCAL] NOT READY: obj={}, state={}, flushed={}, is_temp={}",
+                object_name, static_cast<int>(info.completion_state), info.flushed, info.is_temp);
             return {false, {}};
         }
 
         if (info.is_temp) {
             is_temp = true;
             temp_data = info.temp_compressed_data;
+            DBG("[TEMP-READ-LOCAL] FOUND TEMP: obj={}, data_size={}", object_name, temp_data.size());
         } else {
             entries = info.entries;
 
@@ -861,6 +868,7 @@ std::tuple<bool, CMString, CMString, CMString, bool> DataService::read_raw_compr
     }
 
     auto info = lookup_remote_idx(object_name);
+    DBG("[TEMP-READ-RAW] remote_idx lookup: obj={}, worker_id={}, host={}", object_name, info.worker_id, info.host);
     if (info.worker_id != 0 && !info.host.empty()) {
         DirectCompressedReadCallback cb;
         {
@@ -927,6 +935,8 @@ bool DataService::is_transfer_server_running() const {
 void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name) {
     if (!transfer_running_ || !transfer_pool_) return;
 
+    DBG("[TEMP-TRANSFER] submit_transfer START: obj={}, conn_id={}", object_name, conn_id);
+
     auto result = CMMakeShared<TransferResult>();
     result->conn_id = conn_id;
     result->object_name = object_name;
@@ -937,9 +947,18 @@ void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name)
         auto db_it = local_idx_.find(db_id);
         if (db_it != local_idx_.end()) {
             auto it = db_it->second.find(short_name);
-            if (it != db_it->second.end() && it->second && !it->second->entries.empty()) {
-                result->write_context_hash = it->second->entries.back().write_context_hash;
+            if (it != db_it->second.end() && it->second) {
+                DBG("[TEMP-TRANSFER] local_idx entry: obj={}, is_temp={}, entries_size={}, state={}, flushed={}",
+                    object_name, it->second->is_temp, it->second->entries.size(),
+                    static_cast<int>(it->second->completion_state), it->second->flushed);
+                if (!it->second->entries.empty()) {
+                    result->write_context_hash = it->second->entries.back().write_context_hash;
+                }
+            } else {
+                DBG("[TEMP-TRANSFER] NOT in local_idx: obj={}, db_id={}, short_name={}", object_name, db_id, short_name);
             }
+        } else {
+            DBG("[TEMP-TRANSFER] db_id NOT in local_idx: obj={}, db_id={}", object_name, db_id);
         }
     }
 
@@ -1052,6 +1071,10 @@ void DataService::on_temp_write(const CMString& db_id, const CMString& object_na
         db_map[short_name] = info;
         temp_lru_order_.push_back(object_name);
         temp_total_bytes_ += data_size;
+
+        DBG("[TEMP-WRITE] on_temp_write complete: obj={}, db_id={}, data_size={}, is_temp={}, state={}, flushed={}, lru_count={}",
+            object_name, db_id, data_size, info->is_temp,
+            static_cast<int>(info->completion_state), info->flushed, temp_lru_order_.size());
 
         // LRU eviction: overflow oldest temp entries to temp file
         while (temp_total_bytes_ > temp_max_bytes_ && temp_lru_order_.size() > 1) {

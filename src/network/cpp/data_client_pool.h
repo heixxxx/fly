@@ -43,7 +43,7 @@ public:
     DataClientPool(const DataClientPool&) = delete;
     DataClientPool& operator=(const DataClientPool&) = delete;
 
-    PooledConnection acquire(const CMString& host, int port, int timeout_ms = 30000);
+    PooledConnection acquire(const CMString& host, int port, int timeout_ms = 300000);
 
     void release(int fd, const CMString& host, int port);
 
@@ -52,7 +52,7 @@ public:
         const CMString& host,
         int port,
         const CMString& object_name,
-        int timeout_ms = 30000);
+        int timeout_ms = 300000);
 
     void stop();
 

@@ -35,7 +35,8 @@ def as_task(inputs=None, requires=None):
 
     Args:
         inputs: callable(*args, **kwargs) -> list[str]，返回依赖对象名列表。
-        requires: list[str]，任务所需的 worker 能力标签。
+        requires: list[str] or callable(*args, **kwargs) -> list[str]，
+                  任务所需的 worker 能力标签。
 
     Usage::
 
@@ -72,6 +73,10 @@ def as_task(inputs=None, requires=None):
             agent = get_agent()
 
             task_inputs = inputs(*args, **kwargs) if inputs else []
+            if callable(task_requires):
+                caps = task_requires(*args, **kwargs)
+            else:
+                caps = task_requires
             serialized = _serialize_args(args)
 
             task_name = func_payload if func_payload is not None else name
@@ -80,11 +85,11 @@ def as_task(inputs=None, requires=None):
                 task_name, module, serialized, task_inputs)
 
             agent.submit(task_name, module, serialized, task_inputs,
-                         required_capabilities=task_requires,
+                         required_capabilities=caps,
                          write_context_hash=write_context_hash)
             DBG(
                 f"Task submitted via {agent.mode}: "
-                f"name={name}, module={module}, inputs={task_inputs}, requires={task_requires}")
+                f"name={name}, module={module}, inputs={task_inputs}, requires={caps}")
 
         wrapper._fly_original_func = func
         wrapper._fly_task_name = name

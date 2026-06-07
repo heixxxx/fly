@@ -40,7 +40,6 @@ enum class MessageType : uint8_t {
     BACKUP_REQUEST = 30,
     BACKUP_ASSIGN = 31,
     BACKUP_COMPLETE = 32,
-    CONFIG_SYNC = 33,
 };
 
 // 基础消息头（所有消息继承）
@@ -392,16 +391,6 @@ struct BackupCompleteMessage {
 
     static constexpr MessageType msg_type = MessageType::BACKUP_COMPLETE;
     FLY_SERIALIZE(header, worker_id, object_name, db_id, success, error_message);
-};
-
-// Master → Worker: sync shared config after registration
-struct ConfigSyncMessage {
-    MessageHeader header;
-    CMUnorderedMap<CMString, int64_t> int_values;
-    CMUnorderedMap<CMString, CMString> str_values;
-
-    static constexpr MessageType msg_type = MessageType::CONFIG_SYNC;
-    FLY_SERIALIZE(header, int_values, str_values);
 };
 
 }  // namespace fly

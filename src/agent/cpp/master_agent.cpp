@@ -59,53 +59,29 @@ void MasterAgent::start() {
 
     port_ = static_cast<uint16_t>(reactor_->get_bound_port());
 
-    auto pool = CMMakeUnique<HandlerThreadPool>(2, 100);
-    auto* pool_ptr = pool.get();
-    reactor_->set_handler_pool(std::move(pool));
-
     reactor_->register_handler<RegisterMessage>(
         [this](uint64_t conn_id, const RegisterMessage& msg) {
             on_worker_register(conn_id, msg);
         });
 
     reactor_->register_handler<HeartbeatMessage>(
-        [this, pool_ptr](uint64_t conn_id, const HeartbeatMessage& msg) {
-            auto self = this;
-            if (!pool_ptr->submit([self, conn_id, msg]() {
-                self->on_heartbeat(conn_id, msg);
-            })) {
-                on_heartbeat(conn_id, msg);
-            }
+        [this](uint64_t conn_id, const HeartbeatMessage& msg) {
+            on_heartbeat(conn_id, msg);
         });
 
     reactor_->register_handler<TaskCompleteMessage>(
-        [this, pool_ptr](uint64_t conn_id, const TaskCompleteMessage& msg) {
-            auto self = this;
-            if (!pool_ptr->submit([self, conn_id, msg]() {
-                self->on_task_complete(conn_id, msg);
-            })) {
-                on_task_complete(conn_id, msg);
-            }
+        [this](uint64_t conn_id, const TaskCompleteMessage& msg) {
+            on_task_complete(conn_id, msg);
         });
 
     reactor_->register_handler<TaskFailedMessage>(
-        [this, pool_ptr](uint64_t conn_id, const TaskFailedMessage& msg) {
-            auto self = this;
-            if (!pool_ptr->submit([self, conn_id, msg]() {
-                self->on_task_failed(conn_id, msg);
-            })) {
-                on_task_failed(conn_id, msg);
-            }
+        [this](uint64_t conn_id, const TaskFailedMessage& msg) {
+            on_task_failed(conn_id, msg);
         });
 
     reactor_->register_handler<DataReadyMessage>(
-        [this, pool_ptr](uint64_t conn_id, const DataReadyMessage& msg) {
-            auto self = this;
-            if (!pool_ptr->submit([self, conn_id, msg]() {
-                self->on_data_ready(conn_id, msg);
-            })) {
-                on_data_ready(conn_id, msg);
-            }
+        [this](uint64_t conn_id, const DataReadyMessage& msg) {
+            on_data_ready(conn_id, msg);
         });
 
     reactor_->register_handler<TaskSubmitMessage>(
@@ -116,85 +92,44 @@ void MasterAgent::start() {
         });
 
     reactor_->register_handler<DbPathRequestMessage>(
-        [this, pool_ptr](uint64_t conn_id, const DbPathRequestMessage& msg) {
-            auto self = this;
-            if (!pool_ptr->submit([self, conn_id, msg]() {
-                INFO("DbPathRequest received: db_id={}", msg.db_id);
+        [this](uint64_t conn_id, const DbPathRequestMessage& msg) {
+            INFO("DbPathRequest received: db_id={}", msg.db_id);
 
-                DbPathResponseMessage response;
-                response.db_id = msg.db_id;
+            DbPathResponseMessage response;
+            response.db_id = msg.db_id;
 
-                auto it = self->db_registry_.find(msg.db_id);
-                if (it != self->db_registry_.end()) {
-                    response.base_path = it->second["base_path"];
-                    response.data_path = it->second["data_path"];
-                    response.success = true;
-                } else {
-                    response.base_path = "";
-                    response.data_path = "";
-                    response.success = false;
-                }
-
-                self->reactor_->send(conn_id, response);
-            })) {
-                INFO("DbPathRequest received: db_id={}", msg.db_id);
-
-                DbPathResponseMessage response;
-                response.db_id = msg.db_id;
-
-                auto it = db_registry_.find(msg.db_id);
-                if (it != db_registry_.end()) {
-                    response.base_path = it->second["base_path"];
-                    response.data_path = it->second["data_path"];
-                    response.success = true;
-                } else {
-                    response.base_path = "";
-                    response.data_path = "";
-                    response.success = false;
-                }
-
-                reactor_->send(conn_id, response);
+            auto it = db_registry_.find(msg.db_id);
+            if (it != db_registry_.end()) {
+                response.base_path = it->second["base_path"];
+                response.data_path = it->second["data_path"];
+                response.success = true;
+            } else {
+                response.base_path = "";
+                response.data_path = "";
+                response.success = false;
             }
+
+            reactor_->send(conn_id, response);
         });
 
     reactor_->register_handler<DataQueryMessage>(
-        [this, pool_ptr](uint64_t conn_id, const DataQueryMessage& msg) {
-            auto self = this;
-            if (!pool_ptr->submit([self, conn_id, msg]() {
-                self->on_data_query_dispatch(conn_id, msg);
-            })) {
-                on_data_query_dispatch(conn_id, msg);
-            }
+        [this](uint64_t conn_id, const DataQueryMessage& msg) {
+            on_data_query_dispatch(conn_id, msg);
         });
 
     reactor_->register_handler<DataRequestMessage>(
-        [this, pool_ptr](uint64_t conn_id, const DataRequestMessage& msg) {
-            auto self = this;
-            if (!pool_ptr->submit([self, conn_id, msg]() {
-                self->on_data_request(conn_id, msg);
-            })) {
-                on_data_request(conn_id, msg);
-            }
+        [this](uint64_t conn_id, const DataRequestMessage& msg) {
+            on_data_request(conn_id, msg);
         });
 
     reactor_->register_handler<WriteRegisterMessage>(
-        [this, pool_ptr](uint64_t conn_id, const WriteRegisterMessage& msg) {
-            auto self = this;
-            if (!pool_ptr->submit([self, conn_id, msg]() {
-                self->on_write_register(conn_id, msg);
-            })) {
-                on_write_register(conn_id, msg);
-            }
+        [this](uint64_t conn_id, const WriteRegisterMessage& msg) {
+            on_write_register(conn_id, msg);
         });
 
     reactor_->register_handler<WorkerPropertyUpdateMessage>(
-        [this, pool_ptr](uint64_t conn_id, const WorkerPropertyUpdateMessage& msg) {
-            auto self = this;
-            if (!pool_ptr->submit([self, conn_id, msg]() {
-                self->on_worker_property_update(conn_id, msg);
-            })) {
-                on_worker_property_update(conn_id, msg);
-            }
+        [this](uint64_t conn_id, const WorkerPropertyUpdateMessage& msg) {
+            on_worker_property_update(conn_id, msg);
         });
 
     reactor_->register_handler<ObjectRemovedMessage>(
@@ -208,13 +143,8 @@ void MasterAgent::start() {
         });
 
     reactor_->register_handler<RemoveRequestMessage>(
-        [this, pool_ptr](uint64_t conn_id, const RemoveRequestMessage& msg) {
-            auto self = this;
-            if (!pool_ptr->submit([self, conn_id, msg]() {
-                self->on_remove_request(conn_id, msg);
-            })) {
-                on_remove_request(conn_id, msg);
-            }
+        [this](uint64_t conn_id, const RemoveRequestMessage& msg) {
+            on_remove_request(conn_id, msg);
         });
 
     reactor_->register_handler<BackupRequestMessage>(
@@ -328,10 +258,6 @@ void MasterAgent::do_drain_and_stop() {
     if (reactor_) {
         ds().stop_transfer_server();
 
-        if (reactor_->get_handler_pool()) {
-            reactor_->get_handler_pool()->shutdown();
-        }
-
         reactor_->stop();
         if (reactor_thread_.joinable()) {
             reactor_thread_.join();
@@ -364,6 +290,14 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
                                const CMString& write_context_hash) {
     INFO("submit_task: id={}, name={}", task_id, name);
 
+    // module/args must be set before graph_->add_task (concurrency: reactor thread's
+    // schedule_tasks reads task_modules_ when task becomes ready)
+    {
+        std::lock_guard<std::mutex> lk(task_args_mutex_);
+        task_modules_[task_id] = module;
+        task_args_[task_id] = args;
+    }
+
     metadata_->create_task(task_id, name, inputs, outputs, "{}", required_capabilities);
     {
         auto task_opt = metadata_->get_task(task_id);
@@ -372,11 +306,14 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
         }
     }
     graph_->add_task(task_id, inputs, required_capabilities);
-
+    
     {
-        std::lock_guard<std::mutex> lk(task_args_mutex_);
-        task_modules_[task_id] = module;
-        task_args_[task_id] = args;
+        bool is_ready = graph_->is_task_ready(task_id);
+        auto pending = graph_->get_pending_tasks();
+        auto ready = graph_->get_ready_tasks();
+        DBG("[DEP-GRAPH] submit_task: id={} name={} ready={} pending_count={} is_ready={} "
+            "thread={}", task_id, name, ready.size(), pending.size(), is_ready,
+            std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
     }
 
     schedule_tasks();
@@ -386,6 +323,17 @@ void MasterAgent::schedule_tasks() {
     if (draining_.load()) return;
 
     std::lock_guard<std::mutex> lock(schedule_mutex_);
+    auto ready = graph_->get_ready_tasks();
+    auto idle = worker_manager_->get_idle_workers();
+    
+    if (ready.empty() && !graph_->get_pending_tasks().empty()) {
+        auto pending = graph_->get_pending_tasks();
+        DBG("[SCHED] schedule_tasks: ready={}, idle={}, pending={} (first_pending={}) "
+            "thread={}", ready.size(), idle.size(), pending.size(),
+            pending.empty() ? 0 : pending[0],
+            std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+    }
+    
     auto results = scheduler_->schedule_all_available();
 
     for (const auto& result : results) {
@@ -418,8 +366,11 @@ void MasterAgent::schedule_tasks() {
                 record.inputs = task.inputs;
                 record.outputs = task.outputs;
             }
-            record.module = task_modules_.count(task_id) ? task_modules_[task_id] : "";
+            {
+                std::lock_guard<std::mutex> lk(task_args_mutex_);
+                record.module = task_modules_.count(task_id) ? task_modules_[task_id] : "";
                 record.args = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
+            }
             record.required_capabilities = requirements;
             record.error_message = error_msg;
 
@@ -561,8 +512,8 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     ds();
     if (msg.data_server_port > 0) {
         ds().register_worker(worker_id, msg.data_server_host, msg.data_server_port);
-        INFO("Worker registered: worker_id={}, hostname={}, data_server={}:{}",
-             worker_id, msg.hostname, msg.data_server_host, msg.data_server_port);
+        INFO("Worker registered: worker_id={}, conn_id={}, hostname={}, data_server={}:{}",
+             worker_id, conn_id, msg.hostname, msg.data_server_host, msg.data_server_port);
     }
 
     RegisterAckMessage ack;
@@ -570,11 +521,6 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     ack.master_address = host_;
     ack.master_port = static_cast<int32_t>(port_);
     reactor_->send(conn_id, ack);
-
-    ConfigSyncMessage cfg_msg;
-    cfg_msg.int_values = Config::instance().all_ints();
-    cfg_msg.str_values = Config::instance().all_strs();
-    reactor_->send(conn_id, cfg_msg);
 }
 
 void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
@@ -667,55 +613,46 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
     ds();
     auto addr = ds().get_worker_address(worker_id);
 
-    constexpr uint64_t INTERNAL_TASK_BASE = 100000;
-    bool is_internal = (msg.task_id >= INTERNAL_TASK_BASE);
+    bool streaming_mode = (Config::instance().get_int("dependency_update_mode") == 0);
 
-    if (!is_internal) {
-        bool streaming_mode = (Config::instance().get_int("dependency_update_mode") == 0);
-
-        for (const auto& data_path : msg.written_objects) {
-            if (!streaming_mode) {
-                graph_->mark_data_ready(data_path);
-                ds().update_remote_idx(data_path, worker_id, addr.host, addr.port);
-                DBG("Recorded data location: {} -> worker {}", data_path, worker_id);
-            }
-        }
-
-        graph_->remove_task(msg.task_id);
-        metadata_->update_task_status(msg.task_id, TaskStatus::COMPLETED);
-        remove_persisted_task(msg.task_id);
-
-        for (const auto& db_id : msg.frozen_dbs) {
-            {
-                std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
-                frozen_dbs_.insert(db_id);
-            }
-            auto it = db_instances_.find(db_id);
-            if (it != db_instances_.end()) {
-                it->second->freeze();
-            }
-            INFO("DB frozen: db_id={}", db_id);
-
-            DatabaseFreezeNotification freeze_msg;
-            freeze_msg.db_id = db_id;
-            {
-                std::lock_guard<std::mutex> lk(workers_mutex_);
-                for (const auto& [wid, cid] : worker_to_conn_) {
-                    reactor_->send(cid, freeze_msg);
-                }
-            }
-        }
-
-        {
-            std::lock_guard<std::mutex> lk(task_args_mutex_);
-            task_modules_.erase(msg.task_id);
-            task_args_.erase(msg.task_id);
-        }
-    } else {
-        for (const auto& data_path : msg.written_objects) {
+    for (const auto& data_path : msg.written_objects) {
+        if (!streaming_mode) {
+            graph_->mark_data_ready(data_path);
             ds().update_remote_idx(data_path, worker_id, addr.host, addr.port);
-            INFO("Internal task data registered: {} -> worker {}", data_path, worker_id);
+            DBG("Recorded data location: {} -> worker {}", data_path, worker_id);
         }
+    }
+
+    graph_->remove_task(msg.task_id);
+    metadata_->update_task_status(msg.task_id, TaskStatus::COMPLETED);
+    remove_persisted_task(msg.task_id);
+    INFO("Task cleanup complete: task_id={}, status=COMPLETED", msg.task_id);
+
+    for (const auto& db_id : msg.frozen_dbs) {
+        {
+            std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
+            frozen_dbs_.insert(db_id);
+        }
+        auto it = db_instances_.find(db_id);
+        if (it != db_instances_.end()) {
+            it->second->freeze();
+        }
+        INFO("DB frozen: db_id={}", db_id);
+
+        DatabaseFreezeNotification freeze_msg;
+        freeze_msg.db_id = db_id;
+        {
+            std::lock_guard<std::mutex> lk(workers_mutex_);
+            for (const auto& [wid, cid] : worker_to_conn_) {
+                reactor_->send(cid, freeze_msg);
+            }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(task_args_mutex_);
+        task_modules_.erase(msg.task_id);
+        task_args_.erase(msg.task_id);
     }
 
     schedule_tasks();
@@ -899,6 +836,8 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
 
     if (ds().has_remote_location(msg.object_name)) {
         auto loc = ds().lookup_remote_idx(msg.object_name);
+        DBG("[TEMP-QUERY] DataQuery FOUND: obj={}, worker_id={}, host={}, port={}",
+            msg.object_name, loc.worker_id, loc.host, loc.port);
         response.worker_id = loc.worker_id;
         response.data_host = loc.host;
         response.data_port = loc.port;
@@ -926,6 +865,7 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
         bool has_pending = !graph_->get_pending_tasks().empty();
         bool has_running = !metadata_->get_tasks_by_status(TaskStatus::RUNNING).empty();
         response.can_still_produce = has_pending || has_running;
+        DBG("[TEMP-QUERY] DataQuery NOT FOUND: obj={}, can_still_produce={}", msg.object_name, response.can_still_produce);
     }
 
     reactor_->send(conn_id, response);
@@ -976,7 +916,13 @@ void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage
         graph_->mark_data_ready(msg.object_name);
         auto addr = ds().get_worker_address(msg.worker_id);
         ds().update_remote_idx(msg.object_name, msg.worker_id, addr.host, addr.port);
+        DBG("[TEMP-REG-MASTER] WriteRegister success (no hash): obj={}, worker_id={}, host={}, port={}",
+            msg.object_name, msg.worker_id, addr.host, addr.port);
         schedule_tasks();
+        DBG("[DEP-GRAPH] after WriteRegister schedule: obj={} ready={} pending={} thread={}",
+            msg.object_name, graph_->get_ready_tasks().size(), 
+            graph_->get_pending_tasks().size(),
+            std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
     }
 
     reactor_->send(conn_id, ack);

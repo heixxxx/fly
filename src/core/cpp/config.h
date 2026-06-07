@@ -23,9 +23,6 @@ public:
 
     void reset();
 
-    void apply_sync(const CMUnorderedMap<CMString, int64_t>& ints,
-                    const CMUnorderedMap<CMString, CMString>& strs);
-
     void save_to_file(const CMString& path) const;
     void load_from_file(const CMString& path);
 

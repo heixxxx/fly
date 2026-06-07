@@ -10,6 +10,10 @@
 #include <execinfo.h>
 #include <signal.h>
 #include <fstream>
+#include <thread>
+#include <atomic>
+#include <unistd.h>
+#include <sstream>
 
 static void crash_backtrace() {
     void* buf[64];
@@ -28,6 +32,98 @@ static std::string get_mem_info() {
         }
     }
     return result;
+}
+
+static std::atomic<bool> g_monitor_running{false};
+
+static void resource_monitor_loop() {
+    long hz = sysconf(_SC_CLK_TCK);
+    long prev_utime = 0, prev_stime = 0;
+    long prev_total_cpu = 0;
+    auto prev_wall = std::chrono::steady_clock::now();
+
+    {
+        std::ifstream ifs("/proc/self/stat");
+        if (ifs) {
+            std::string line;
+            std::getline(ifs, line);
+            std::istringstream iss(line);
+            std::string tok;
+            int idx = 0;
+            while (iss >> tok) {
+                if (idx == 13) prev_utime = std::stol(tok);
+                if (idx == 14) prev_stime = std::stol(tok);
+                ++idx;
+            }
+        }
+        std::ifstream ifs2("/proc/stat");
+        if (ifs2) {
+            std::string line;
+            std::getline(ifs2, line);
+            std::istringstream iss(line.substr(5));
+            std::string tok;
+            while (iss >> tok) {
+                if (!tok.empty()) prev_total_cpu += std::stol(tok);
+            }
+        }
+    }
+
+    while (g_monitor_running.load()) {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        if (!g_monitor_running.load()) break;
+
+        long utime = 0, stime = 0;
+        std::ifstream ifs("/proc/self/stat");
+        if (ifs) {
+            std::string line;
+            std::getline(ifs, line);
+            std::istringstream iss(line);
+            std::string tok;
+            int idx = 0;
+            while (iss >> tok) {
+                if (idx == 13) utime = std::stol(tok);
+                if (idx == 14) stime = std::stol(tok);
+                ++idx;
+            }
+        }
+
+        long total_cpu = 0;
+        std::ifstream ifs2("/proc/stat");
+        if (ifs2) {
+            std::string line;
+            std::getline(ifs2, line);
+            std::istringstream iss(line.substr(5));
+            std::string tok;
+            while (iss >> tok) {
+                if (!tok.empty()) total_cpu += std::stol(tok);
+            }
+        }
+
+        long rss_kb = 0;
+        std::ifstream ifs3("/proc/self/status");
+        if (ifs3) {
+            std::string line;
+            while (std::getline(ifs3, line)) {
+                if (line.compare(0, 6, "VmRSS:") == 0) {
+                    rss_kb = std::stol(line.substr(6));
+                    break;
+                }
+            }
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        double dt = std::chrono::duration<double>(now - prev_wall).count();
+        double dproc = (utime - prev_utime + stime - prev_stime) / (double)hz;
+        double dtot = (total_cpu - prev_total_cpu) / (double)hz;
+        double cpu_pct = dtot > 0.001 ? dproc / dtot * 100.0 : 0.0;
+
+        DBG("ResourceMonitor cpu={:.1f}% rss={}MB", cpu_pct, rss_kb / 1024);
+
+        prev_utime = utime;
+        prev_stime = stime;
+        prev_total_cpu = total_cpu;
+        prev_wall = now;
+    }
 }
 
 static void terminate_handler() {
@@ -196,6 +292,9 @@ int main(int argc, char* argv[]) {
     }
     fly::Logger::init(log_dir, worker_id);
 
+    g_monitor_running.store(true);
+    std::thread monitor_thread(resource_monitor_loop);
+
     wchar_t** wargv = new wchar_t*[argc];
     for (int i = 0; i < argc; ++i) {
         wargv[i] = Py_DecodeLocale(argv[i], nullptr);
@@ -210,6 +309,9 @@ int main(int argc, char* argv[]) {
         "from fly.main import run\n"
         "sys.exit(run())\n"
     );
+
+    g_monitor_running.store(false);
+    monitor_thread.join();
 
     fly::Logger::shutdown();
 

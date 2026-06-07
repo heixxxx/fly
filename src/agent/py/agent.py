@@ -360,11 +360,14 @@ class Master(FlyAgent):
         import time
         from _fly_core import ex_core_get_config
 
-        log_dir = ex_core_get_config().get_str("log_dir")
+        cfg = ex_core_get_config()
+        log_dir = cfg.get_str("log_dir")
         fly_bin = self._find_fly_binary()
 
         os.makedirs(log_dir, exist_ok=True)
         log_path = os.path.join(log_dir, f"worker{worker_id}.log")
+        config_path = os.path.join(log_dir, f".fly_config_{worker_id}")
+        cfg.save_to_file(config_path)
 
         attrs = config.get("attributes", []) if config and isinstance(config, dict) else []
         attrs_str = ",".join(attrs) if attrs else ""
@@ -376,6 +379,7 @@ class Master(FlyAgent):
             "--master-host", self._host,
             "--master-port", str(self._port),
             "--log-dir", log_dir,
+            "--config-file", config_path,
         ]
         if config and isinstance(config, dict) and config.get("host"):
             cmd.extend(["--host", config["host"]])
