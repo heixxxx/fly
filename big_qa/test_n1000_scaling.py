@@ -1,4 +1,4 @@
-"""Test n=1000: omega=1.0 vs adaptive. Each config as independent subprocess."""
+"""Test n=1000: omega=1.0 vs adaptive vs coarse. Each config as independent subprocess."""
 import subprocess
 import sys
 import os
@@ -18,48 +18,28 @@ from scipy.sparse.linalg import splu
 from _fly_log import INFO
 
 DB_PATH = f"/tmp/fly_bigqa_n{N_SIDE}_sd{NSD}_omega{str(OMEGA).replace('.', '_')}"
+MATRIX_PATH = f"/tmp/fly_bigqa_matrix_n{N_SIDE}.npz"
 
 from fly import open_db, get_config
 from fly.runtime import get_agent
-from solver import solve_ras_graph
-
-def build_poisson_2d(n):
-    N = n * n
-    diags = [4.0 * np.ones(N),
-             -1.0 * np.ones(N - 1), -1.0 * np.ones(N - 1),
-             -1.0 * np.ones(N - n), -1.0 * np.ones(N - n)]
-    A = sparse.diags(diags, [0, 1, -1, n, -n], shape=(N, N), format='lil')
-    for i in range(1, n):
-        A[i * n - 1, i * n] = 0.0
-        A[i * n, i * n - 1] = 0.0
-    A_csc = A.tocsc()
-    rows, cols, vals = [], [], []
-    for k in range(A_csc.shape[1]):
-        start, end = A_csc.indptr[k], A_csc.indptr[k + 1]
-        for p in range(start, end):
-            rows.append(int(A_csc.indices[p]))
-            cols.append(int(k))
-            vals.append(float(A_csc.data[p]))
-    return N, rows, cols, vals, A_csc
+from solver import solve_ras_graph, generate_poisson_matrix
 
 if os.path.isdir(DB_PATH):
     shutil.rmtree(DB_PATH, ignore_errors=True)
 
 get_config().set_int("fail_unscheduleable_tasks", 1)
 
-t0 = time.time()
-N_val, rows, cols, vals, A_csc = build_poisson_2d(N_SIDE)
-b = [1.0] * N_val
+generate_poisson_matrix(N_SIDE, MATRIX_PATH)
+golden = np.load(MATRIX_PATH, allow_pickle=False)
+x_exact = golden["x_exact"]
+rows, cols, vals = golden["rows"], golden["cols"], golden["vals"]
+b = golden["b"]
+N_val = int(golden["N"])
 A_sp = sparse.csc_matrix((vals, (rows, cols)), shape=(N_val, N_val))
 
 t0 = time.time()
-x_exact = splu(A_sp).solve(np.array(b))
-t_exact = time.time() - t0
-INFO(f"Exact solve: time={t_exact:.1f}s")
-
-t0 = time.time()
 db = open_db(DB_PATH)
-sol = solve_ras_graph(db, N_val, rows, cols, vals, b, NSD,
+sol = solve_ras_graph(db, MATRIX_PATH, NSD,
                       overlap_ratio=OVERLAP, max_iter=MAX_ITER, tol=TOL,
                       omega=OMEGA)
 t_solve = time.time() - t0
@@ -70,7 +50,7 @@ converged = sol["converged"]
 
 rel_error = np.linalg.norm(x_ras - x_exact) / np.linalg.norm(x_exact)
 max_error = np.max(np.abs(x_ras - x_exact))
-rel_res = np.linalg.norm(np.array(b) - A_sp @ x_ras) / np.linalg.norm(b)
+rel_res = np.linalg.norm(b - A_sp @ x_ras) / np.linalg.norm(b)
 
 label = f"n={N_SIDE} nsd={NSD} omega={OMEGA}"
 status = "PASS" if converged and rel_error < 1e-4 else "FAIL"

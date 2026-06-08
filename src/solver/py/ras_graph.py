@@ -5,7 +5,7 @@ Optional two-level coarse grid correction for faster convergence.
 
 Task topology:
   coord (plain function, runs on master) → compute_task × nsd (dispatched to workers)
-  compute_task(sd_id, step): b-update + LU solve, local convergence check
+  compute_task(sd_id, step): load matrix + expand + extract + b-update + LU solve
   check_task(step): coarse correction (if enabled) → convergence check → next iter
   assemble_task: merge primary solutions → final result
 """
@@ -15,6 +15,79 @@ from _fly_log import DBG, INFO
 import math
 import time
 
+
+# ── Matrix File I/O ──────────────────────────────────────────────
+
+def generate_poisson_matrix(n, path):
+    """Generate a Poisson 2D matrix and save to .npz file.
+
+    Creates a 5-point stencil Laplacian on an n×n grid.
+    RHS b = [1.0] * N. Golden solution computed via scipy.sparse.linalg.splu.
+
+    Args:
+        n: Grid side length (matrix is n² × n²)
+        path: Output .npz file path
+    """
+    import numpy as np
+    from scipy import sparse
+    from scipy.sparse.linalg import splu
+
+    N = n * n
+    diags = [4.0 * np.ones(N),
+             -1.0 * np.ones(N - 1), -1.0 * np.ones(N - 1),
+             -1.0 * np.ones(N - n), -1.0 * np.ones(N - n)]
+    A = sparse.diags(diags, [0, 1, -1, n, -n], shape=(N, N), format='lil')
+    for i in range(1, n):
+        A[i * n - 1, i * n] = 0.0
+        A[i * n, i * n - 1] = 0.0
+    A_csc = A.tocsc()
+
+    rows, cols, vals = [], [], []
+    for k in range(A_csc.shape[1]):
+        start, end = A_csc.indptr[k], A_csc.indptr[k + 1]
+        for p in range(start, end):
+            rows.append(int(A_csc.indices[p]))
+            cols.append(int(k))
+            vals.append(float(A_csc.data[p]))
+
+    b = np.ones(N, dtype=np.float64)
+    x_exact = splu(A_csc).solve(b)
+
+    np.savez(path,
+             n=np.int64(n), N=np.int64(N),
+             rows=np.array(rows, dtype=np.int64),
+             cols=np.array(cols, dtype=np.int64),
+             vals=np.array(vals, dtype=np.float64),
+             b=b, x_exact=x_exact)
+    INFO(f"[MATRIX] Generated n={n} N={N} nnz={len(vals)} → {path}")
+
+
+def _load_matrix(path):
+    """Load matrix data from .npz file. Returns dict with n, N, rows, cols, vals, b, x_exact."""
+    import numpy as np
+    data = np.load(path, allow_pickle=False)
+    return {
+        "n": int(data["n"]),
+        "N": int(data["N"]),
+        "rows": data["rows"].tolist(),
+        "cols": data["cols"].tolist(),
+        "vals": data["vals"].tolist(),
+        "b": data["b"].tolist(),
+        "x_exact": data["x_exact"].tolist(),
+    }
+
+
+def _get_matrix_data(matrix_path):
+    """Load matrix data with process-local caching."""
+    from fly import get_cache, has_cache, put_cache
+    cache_key = f"__rasg__matrix_{matrix_path}"
+    if not has_cache(cache_key):
+        data = _load_matrix(matrix_path)
+        put_cache(cache_key, data)
+    return get_cache(cache_key)
+
+
+# ── Geometry helpers ─────────────────────────────────────────────
 
 def _factor_nsd(nsd):
     best_x, best_y = 1, nsd
@@ -60,6 +133,20 @@ def _estimate_depth(n, nsd_x, nsd_y, overlap_ratio):
     return max(2, math.ceil(overlap_ratio * L / 2))
 
 
+def _compute_grid_neighbors(nsd_x, nsd_y):
+    """Compute neighbor subdomain IDs from 2D grid layout (grid adjacency)."""
+    neighbors = []
+    for ix in range(nsd_x):
+        for iy in range(nsd_y):
+            nb = []
+            for dix, diy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nix, niy = ix + dix, iy + diy
+                if 0 <= nix < nsd_x and 0 <= niy < nsd_y:
+                    nb.append(nix * nsd_y + niy)
+            neighbors.append(nb)
+    return neighbors
+
+
 def _is_adaptive(db):
     try:
         cfg = db.read_object("__rasg__cfg")
@@ -78,7 +165,7 @@ def _is_coarse(db):
 
 
 def _compute_deps(db, sd_id, step, neighbor_ids):
-    deps = [db.get_obj_name(f"__rasg__setup_{sd_id}")]
+    deps = [db.get_obj_name("__rasg__coord")]
     if step > 0:
         use_coarse = _is_coarse(db)
         for n in neighbor_ids:
@@ -100,21 +187,6 @@ def _check_deps(db, step, nsd):
 
 
 def _aitken_omega(delta_curr, delta_prev):
-    """Aitken delta-squared adaptive relaxation.
-
-    Given two consecutive solution deltas on the primary region:
-        delta_curr = x_{k-1} - x_{k-2}
-        delta_prev = x_{k-2} - x_{k-3}
-
-    Compute the optimal relaxation parameter:
-        omega = (delta_curr · delta_curr) / (delta_curr · (delta_curr - delta_prev))
-
-    This is the standard Aitken Δ² acceleration adapted for
-    Schwarz-type fixed-point iterations (Dufaud & Tromeur-Dervout, 2010).
-
-    Returns omega clipped to [0.3, 2.0] for stability.
-    """
-    # Compute dot products component-wise for local omega estimate
     numer = sum(c * c for c in delta_curr)
     diff = [c - p for c, p in zip(delta_curr, delta_prev)]
     denom = sum(c * d for c, d in zip(delta_curr, diff))
@@ -124,15 +196,16 @@ def _aitken_omega(delta_curr, delta_prev):
     return max(0.3, min(2.0, omega))
 
 
-# ── Phase 1: Coordination + expansion (master process) ───────────
+# ── Phase 1: Coordination (master process, fast — geometry only) ─
 
-def ras_graph_coord(db, N, rows, cols, vals, b, nsd, overlap_ratio,
+def ras_graph_coord(db, matrix_path, nsd, overlap_ratio,
                     max_iter, tol, omega=1.0):
-    from _fly_solver import (ex_slv_graph_expand_overlap,
-                              ex_slv_extract_subdomain_matrix,
-                              ex_slv_find_outside_connections)
+    t_coord_start = time.perf_counter()
 
-    n = int(math.isqrt(N))
+    data = _load_matrix(matrix_path)
+    n = data["n"]
+    N = data["N"]
+
     primary_sets, nsd_x, nsd_y = _partition_primary_2d(n, nsd)
 
     if overlap_ratio <= 0:
@@ -144,102 +217,33 @@ def ras_graph_coord(db, N, rows, cols, vals, b, nsd, overlap_ratio,
         for gidx in primary_sets[sd_id]:
             global_owner[gidx] = sd_id
 
+    neighbor_ids_all = _compute_grid_neighbors(nsd_x, nsd_y)
+
     coord = {
         "nsd": nsd, "N": N, "n": n,
         "nsd_x": nsd_x, "nsd_y": nsd_y,
-        "max_iter": max_iter, "tol": tol,
         "overlap_ratio": overlap_ratio,
         "depth": depth,
         "primary_sets": primary_sets,
         "global_owner": global_owner,
-        "rows": rows, "cols": cols, "vals": vals, "b": b,
+        "matrix_path": matrix_path,
     }
     db.write_object("__rasg__coord", coord, save_to_db=False)
 
-    INFO(f"[RASG COORD] n={n} nsd={nsd} ({nsd_x}x{nsd_y}) "
-         f"depth={depth} overlap_ratio={overlap_ratio:.0%}")
-
-    neighbor_ids_all = []
-
-    for sd_id in range(nsd):
-        primary_nodes = primary_sets[sd_id]
-        primary_set = set(primary_nodes)
-        primary_size = len(primary_nodes)
-
-        local_idx = ex_slv_graph_expand_overlap(
-            N, rows, cols, vals, primary_nodes, depth)
-
-        ratio = len(local_idx) / primary_size
-        if ratio < 1 + overlap_ratio:
-            local_idx = ex_slv_graph_expand_overlap(
-                N, rows, cols, vals, primary_nodes, depth * 2)
-            ratio = len(local_idx) / primary_size
-
-        INFO(f"[RASG EXPAND] sd={sd_id} primary={primary_size} "
-             f"extended={len(local_idx)} ratio={ratio:.2f}x depth={depth}")
-
-        local_idx_map = {gidx: pos for pos, gidx in enumerate(local_idx)}
-        primary_local_pos = [local_idx_map[gidx] for gidx in primary_nodes]
-
-        size, _, a_rows, a_cols, a_vals = ex_slv_extract_subdomain_matrix(
-            N, rows, cols, vals, local_idx)
-
-        out_pos, out_gidx, out_coeffs = ex_slv_find_outside_connections(
-            N, rows, cols, vals, local_idx)
-
-        b_local = [b[gidx] for gidx in local_idx]
-
-        neighbor_needed = {}
-        for i, gidx in enumerate(out_gidx):
-            owner = global_owner.get(gidx, -1)
-            if owner >= 0 and owner != sd_id:
-                if owner not in neighbor_needed:
-                    neighbor_needed[owner] = []
-                neighbor_needed[owner].append(i)
-
-        neighbor_ids = sorted(neighbor_needed.keys())
-        neighbor_ids_all.append(neighbor_ids)
-
-        neighbor_recv_idx = {}
-        for nb_id in neighbor_ids:
-            nb_primary_map = {gidx: pos for pos, gidx in enumerate(primary_sets[nb_id])}
-            recv_positions = []
-            for conn_i in neighbor_needed[nb_id]:
-                outside_gidx = out_gidx[conn_i]
-                recv_positions.append(nb_primary_map.get(outside_gidx, -1))
-            neighbor_recv_idx[nb_id] = recv_positions
-
-        import numpy as np
-        setup_data = {
-            "sd_id": sd_id,
-            "local_indices": np.array(local_idx, dtype=np.int64),
-            "primary_local_pos": np.array(primary_local_pos, dtype=np.int64),
-            "b_orig": np.array(b_local, dtype=np.float64),
-            "outside_local_pos": np.array(out_pos, dtype=np.int64),
-            "outside_global_idx": np.array(out_gidx, dtype=np.int64),
-            "outside_coeffs": np.array(out_coeffs, dtype=np.float64),
-            "neighbor_ids": neighbor_ids,
-            "neighbor_recv_idx": neighbor_recv_idx,
-            "neighbor_needed": neighbor_needed,
-            "a_rows": np.array(a_rows, dtype=np.int64),
-            "a_cols": np.array(a_cols, dtype=np.int64),
-            "a_vals": np.array(a_vals, dtype=np.float64),
-            "size": size,
-        }
-        db.write_object(f"__rasg__setup_{sd_id}", setup_data, save_to_db=False)
-
     cfg = {
-        "nsd": nsd,
-        "N": N,
-        "n": n,
-        "max_iter": max_iter,
-        "tol": tol,
+        "nsd": nsd, "N": N, "n": n,
+        "max_iter": max_iter, "tol": tol,
         "omega": omega,
         "primary_sets": primary_sets,
         "neighbor_ids_all": neighbor_ids_all,
+        "matrix_path": matrix_path,
     }
     db.write_object("__rasg__cfg", cfg, save_to_db=False)
 
+    t_coord_total = time.perf_counter() - t_coord_start
+    INFO(f"[RASG COORD] n={n} nsd={nsd} ({nsd_x}x{nsd_y}) "
+         f"depth={depth} overlap_ratio={overlap_ratio:.0%} "
+         f"t_coord={t_coord_total*1000:.0f}ms")
     INFO(f"[RASG START] nsd={nsd} omega={omega} launching iteration loop")
 
     for sd_id in range(nsd):
@@ -247,13 +251,9 @@ def ras_graph_coord(db, N, rows, cols, vals, b, nsd, overlap_ratio,
     ras_graph_check(db, 0, nsd, max_iter, tol, neighbor_ids_all)
 
 
-# ── Coarse Grid Correction ──────────────────────────────────────────
+# ── Coarse Grid Correction ──────────────────────────────────────
 
 def _ensure_coarse_cached(db):
-    """Lazy-build coarse grid operators and cache in process-local cache.
-    Called from worker's check task. Reads __rasg__coord (save_to_db=False,
-    readable cross-worker) for the fine-grid matrix.
-    """
     from fly import get_cache, has_cache, put_cache
     if has_cache("__rasg__coarse_lu"):
         return
@@ -265,9 +265,12 @@ def _ensure_coarse_cached(db):
     coord = db.read_object("__rasg__coord")
     N = coord["N"]
     n = coord["n"]
-    rows = coord["rows"]
-    cols = coord["cols"]
-    vals = coord["vals"]
+    matrix_path = coord["matrix_path"]
+
+    data = _get_matrix_data(matrix_path)
+    rows = data["rows"]
+    cols = data["cols"]
+    vals = data["vals"]
 
     stride = max(2, n // 125)
     nc = n // stride
@@ -277,7 +280,7 @@ def _ensure_coarse_cached(db):
         INFO(f"[RASG COARSE] Skipping: coarse grid too small (nc={nc})")
         return
 
-    # Build prolongation P: N × Nc, bilinear interpolation
+    t0 = time.perf_counter()
     P_rows, P_cols, P_vals = [], [], []
     for fi in range(n):
         for fj in range(n):
@@ -307,30 +310,35 @@ def _ensure_coarse_cached(db):
                     P_vals.append(w)
 
     P = sparse.csr_matrix((P_vals, (P_rows, P_cols)), shape=(N, Nc))
-    A_fine = sparse.csr_matrix((vals, (rows, cols)), shape=(N, N))
+    t_P = time.perf_counter() - t0
 
+    t0 = time.perf_counter()
+    A_fine = sparse.csr_matrix((vals, (rows, cols)), shape=(N, N))
+    t_A = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
     Ac = (P.T @ (A_fine @ P)).tocsc()
+    t_Galerkin = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
     Ac_lu = splu(Ac)
+    t_LU = time.perf_counter() - t0
 
     put_cache("__rasg__coarse_lu", Ac_lu)
     put_cache("__rasg__coarse_P", P)
     put_cache("__rasg__coarse_A", A_fine)
-    put_cache("__rasg__coarse_b", np.array(coord["b"], dtype=np.float64))
+    put_cache("__rasg__coarse_b", np.array(data["b"], dtype=np.float64))
     put_cache("__rasg__coarse_stride", stride)
     INFO(f"[RASG COARSE] Built on worker: stride={stride} nc={nc} "
-         f"Nc={Nc} nnz={Ac.nnz}")
+         f"Nc={Nc} nnz={Ac.nnz} t_P={t_P*1000:.0f}ms t_A={t_A*1000:.0f}ms "
+         f"t_Galerkin={t_Galerkin*1000:.0f}ms t_LU={t_LU*1000:.0f}ms")
 
 
 def _apply_coarse_correction(db, step, nsd):
-    """Apply coarse grid correction after local RAS solves.
-
-    Assembles global x from subdomains, computes residual r = b - Ax,
-    solves coarse system, and distributes correction to subdomain x data.
-    All computation happens on the worker running the check task.
-    """
     import numpy as np
     from fly import get_cache
 
+    t_coarse_start = time.perf_counter()
     _ensure_coarse_cached(db)
 
     from fly import has_cache
@@ -346,24 +354,26 @@ def _apply_coarse_correction(db, step, nsd):
     N = cfg["N"]
     primary_sets = cfg["primary_sets"]
 
-    # Assemble global x from subdomain primary data
+    t_assemble = time.perf_counter()
     x_global = np.zeros(N, dtype=np.float64)
     for sd_id in range(nsd):
         x_sd = db.read_object(f"__rasg__x_{sd_id}_{step}")
         for pos, gidx in enumerate(primary_sets[sd_id]):
             x_global[gidx] = x_sd[pos]
+    t_assemble = time.perf_counter() - t_assemble
 
-    # Compute residual r = b - Ax (A_fine cached, no rebuild)
+    t_residual = time.perf_counter()
     r = b_fine - A_fine.dot(x_global)
     r_norm = np.linalg.norm(r)
+    t_residual = time.perf_counter() - t_residual
 
-    # Restrict → solve coarse → interpolate
+    t_solve = time.perf_counter()
     e_c = Ac_lu.solve(P.T.dot(r))
     e_fine = P.dot(e_c)
     e_norm = np.linalg.norm(e_fine)
+    t_solve = time.perf_counter() - t_solve
 
-    # Apply correction: write corrected x as __rasg__xc_{sd_id}_{step}
-    # (separate key to avoid write provenance mismatch with compute task)
+    t_write = time.perf_counter()
     for sd_id in range(nsd):
         x_sd = db.read_object(f"__rasg__x_{sd_id}_{step}")
         corrected = list(x_sd)
@@ -371,36 +381,135 @@ def _apply_coarse_correction(db, step, nsd):
             corrected[pos] += e_fine[gidx]
         db.write_object(f"__rasg__xc_{sd_id}_{step}",
                         np.array(corrected, dtype=np.float64), save_to_db=False)
+    t_write = time.perf_counter() - t_write
 
-    INFO(f"[RASG COARSE] step={step} |r|={r_norm:.2e} |e|={e_norm:.2e}")
+    t_total = time.perf_counter() - t_coarse_start
+    INFO(f"[RASG COARSE] step={step} |r|={r_norm:.2e} |e|={e_norm:.2e} "
+         f"t_total={t_total*1000:.0f}ms assemble={t_assemble*1000:.0f}ms "
+         f"residual={t_residual*1000:.0f}ms solve={t_solve*1000:.0f}ms "
+         f"write={t_write*1000:.0f}ms")
 
 
-# ── Compute (dispatched to workers via @as_task) ─────────────────
+# ── Compute (dispatched to workers via @as_task) ────────────────
 
 @as_task(inputs=lambda db, sd_id, step, nsd, neighbor_ids:
          _compute_deps(db, sd_id, step, neighbor_ids),
          requires=lambda db, sd_id, step, nsd, neighbor_ids:
          [f"sd_{sd_id}"])
 def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
-    from _fly_solver import EXSlvSubdomainSolver, ex_slv_ras_bupdated_solve
+    from _fly_solver import (EXSlvSubdomainSolver, ex_slv_ras_bupdated_solve,
+                              ex_slv_graph_expand_overlap,
+                              ex_slv_extract_subdomain_matrix,
+                              ex_slv_find_outside_connections)
     from fly import get_cache, put_cache, has_cache
 
-    cache_key = f"__rasg__setup_{sd_id}"
-    if not has_cache(cache_key):
-        setup = db.read_object(f"__rasg__setup_{sd_id}")
-        put_cache(cache_key, setup)
-    setup = get_cache(cache_key)
+    t_compute_start = time.perf_counter()
 
+    coord = db.read_object("__rasg__coord")
+    matrix_path = coord["matrix_path"]
+    N = coord["N"]
+    depth = coord["depth"]
+    overlap_ratio = coord["overlap_ratio"]
+    primary_nodes = coord["primary_sets"][sd_id]
+    global_owner = coord["global_owner"]
+    all_primary_sets = coord["primary_sets"]
+
+    # ── Build setup_data (was done in coord, now done on worker) ──
+    setup_key = f"__rasg__setup_{sd_id}"
+    t_expand = None
+    t_extract = None
+    if not has_cache(setup_key):
+        data = _get_matrix_data(matrix_path)
+        rows = data["rows"]
+        cols = data["cols"]
+        vals = data["vals"]
+        b = data["b"]
+
+        primary_size = len(primary_nodes)
+
+        t_expand = time.perf_counter()
+        local_idx = ex_slv_graph_expand_overlap(
+            N, rows, cols, vals, primary_nodes, depth)
+        ratio = len(local_idx) / primary_size
+        if ratio < 1 + overlap_ratio:
+            local_idx = ex_slv_graph_expand_overlap(
+                N, rows, cols, vals, primary_nodes, depth * 2)
+            ratio = len(local_idx) / primary_size
+        t_expand = time.perf_counter() - t_expand
+
+        INFO(f"[RASG EXPAND] sd={sd_id} primary={primary_size} "
+             f"extended={len(local_idx)} ratio={ratio:.2f}x depth={depth} "
+             f"t={t_expand*1000:.0f}ms")
+
+        local_idx_map = {gidx: pos for pos, gidx in enumerate(local_idx)}
+        primary_local_pos = [local_idx_map[gidx] for gidx in primary_nodes]
+
+        t_extract = time.perf_counter()
+        size, _, a_rows, a_cols, a_vals = ex_slv_extract_subdomain_matrix(
+            N, rows, cols, vals, local_idx)
+        out_pos, out_gidx, out_coeffs = ex_slv_find_outside_connections(
+            N, rows, cols, vals, local_idx)
+        t_extract = time.perf_counter() - t_extract
+
+        b_local = [b[gidx] for gidx in local_idx]
+
+        neighbor_needed = {}
+        for i, gidx in enumerate(out_gidx):
+            owner = global_owner.get(gidx, -1)
+            if owner >= 0 and owner != sd_id:
+                if owner not in neighbor_needed:
+                    neighbor_needed[owner] = []
+                neighbor_needed[owner].append(i)
+
+        actual_neighbor_ids = sorted(neighbor_needed.keys())
+
+        neighbor_recv_idx = {}
+        for nb_id in actual_neighbor_ids:
+            nb_primary_map = {gidx: pos for pos, gidx in enumerate(all_primary_sets[nb_id])}
+            recv_positions = []
+            for conn_i in neighbor_needed[nb_id]:
+                outside_gidx = out_gidx[conn_i]
+                recv_positions.append(nb_primary_map.get(outside_gidx, -1))
+            neighbor_recv_idx[nb_id] = recv_positions
+
+        import numpy as np
+        setup_data = {
+            "sd_id": sd_id,
+            "local_indices": np.array(local_idx, dtype=np.int64),
+            "primary_local_pos": np.array(primary_local_pos, dtype=np.int64),
+            "b_orig": np.array(b_local, dtype=np.float64),
+            "outside_local_pos": np.array(out_pos, dtype=np.int64),
+            "outside_global_idx": np.array(out_gidx, dtype=np.int64),
+            "outside_coeffs": np.array(out_coeffs, dtype=np.float64),
+            "neighbor_ids": actual_neighbor_ids,
+            "neighbor_recv_idx": neighbor_recv_idx,
+            "neighbor_needed": neighbor_needed,
+            "a_rows": np.array(a_rows, dtype=np.int64),
+            "a_cols": np.array(a_cols, dtype=np.int64),
+            "a_vals": np.array(a_vals, dtype=np.float64),
+            "size": size,
+        }
+        put_cache(setup_key, setup_data)
+        INFO(f"[RASG SETUP] sd={sd_id} t_expand={t_expand*1000:.0f}ms "
+             f"t_extract={t_extract*1000:.0f}ms")
+
+    setup = get_cache(setup_key)
+
+    # ── Build solver (cached) ──
     solver_key = f"__rasg__solver_{sd_id}"
+    t_solver_build = None
     if not has_cache(solver_key):
+        t0 = time.perf_counter()
         solver = EXSlvSubdomainSolver.from_coo(
             setup["size"],
             setup["a_rows"].tolist(),
             setup["a_cols"].tolist(),
             setup["a_vals"].tolist())
+        t_solver_build = time.perf_counter() - t0
         put_cache(solver_key, solver)
     solver = get_cache(solver_key)
 
+    # ── Load tol/omega config ──
     tol_key = "__rasg__tol"
     omega_key = "__rasg__omega"
     if not has_cache(tol_key):
@@ -410,10 +519,14 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
     tol = get_cache(tol_key)
     omega_strategy = get_cache(omega_key)
 
+    # ── Read neighbor values ──
     outside_coeffs = setup["outside_coeffs"].tolist()
     neighbor_values = [0.0] * len(outside_coeffs)
     use_coarse = _is_coarse(db)
+
+    t_read_neighbors = None
     if step > 0:
+        t_read_neighbors = time.perf_counter()
         x_prefix = "__rasg__xc_" if use_coarse else "__rasg__x_"
         for nb_id in setup["neighbor_ids"]:
             nb_x = db.read_object(f"{x_prefix}{nb_id}_{step - 1}")
@@ -423,7 +536,9 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
                 pos = recv_positions[i]
                 if pos >= 0:
                     neighbor_values[conn_i] = nb_x[pos]
+        t_read_neighbors = time.perf_counter() - t_read_neighbors
 
+    # ── Omega computation ──
     prev_x_key = f"__rasg__prev_x_{sd_id}"
     prev2_x_key = f"__rasg__prev2_x_{sd_id}"
     prev3_x_key = f"__rasg__prev3_x_{sd_id}"
@@ -448,10 +563,13 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
     elif isinstance(omega_strategy, (int, float)):
         omega = float(omega_strategy)
 
+    # ── RAS solve ──
+    t_solve_start = time.perf_counter()
     x_local = ex_slv_ras_bupdated_solve(
         solver, setup["b_orig"].tolist(),
         setup["outside_local_pos"].tolist(), outside_coeffs,
         neighbor_values, 1.0)
+    t_solve = time.perf_counter() - t_solve_start
 
     primary_local_pos = setup["primary_local_pos"].tolist()
     x_primary = [x_local[pos] for pos in primary_local_pos]
@@ -461,6 +579,7 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
         x_primary = [(1.0 - omega) * p + omega * n
                      for p, n in zip(prev_x, x_primary)]
 
+    # ── Convergence check ──
     converged_local = False
     max_delta = 0.0
     if step > 0 and has_cache(prev_x_key):
@@ -474,7 +593,9 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
         put_cache(prev2_x_key, get_cache(prev_x_key))
     put_cache(prev_x_key, list(x_primary))
 
+    # ── Write results ──
     import numpy as np
+    t_write_start = time.perf_counter()
     db.write_object(f"__rasg__x_{sd_id}_{step}",
                     np.array(x_primary, dtype=np.float64), save_to_db=False)
     db.write_object(f"__rasg__conv_{sd_id}_{step}", converged_local,
@@ -482,7 +603,9 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
     if step > 0 and omega_strategy == "adaptive":
         db.write_object(f"__rasg__err_{sd_id}_{step}", max_delta,
                         save_to_db=False)
+    t_write = time.perf_counter() - t_write_start
 
+    # ── Cleanup old data ──
     if step > 1:
         try:
             db.remove_object(f"__rasg__x_{sd_id}_{step - 2}")
@@ -494,11 +617,23 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
             except Exception:
                 pass
 
-    DBG(f"[RASG COMPUTE] sd={sd_id} step={step} omega={omega:.4f} "
-        f"conv_local={converged_local}")
+    # ── Timing log ──
+    t_total = time.perf_counter() - t_compute_start
+    parts = [f"[RASG COMPUTE] sd={sd_id} step={step} omega={omega:.4f} "
+             f"conv_local={converged_local} t_total={t_total*1000:.0f}ms"]
+    if t_expand is not None:
+        parts.append(f" expand={t_expand*1000:.0f}ms")
+    if t_extract is not None:
+        parts.append(f" extract={t_extract*1000:.0f}ms")
+    if t_solver_build is not None:
+        parts.append(f" solver_build={t_solver_build*1000:.0f}ms")
+    if t_read_neighbors is not None:
+        parts.append(f" read_nb={t_read_neighbors*1000:.0f}ms")
+    parts.append(f" solve={t_solve*1000:.0f}ms write={t_write*1000:.0f}ms")
+    INFO("".join(parts))
 
 
-# ── Check ────────────────────────────────────────────────────────
+# ── Check ───────────────────────────────────────────────────────
 
 def _compute_adaptive_omega(errs, tol, prev_err=None):
     if not errs or max(errs) < 1e-30:
@@ -525,7 +660,6 @@ def ras_graph_check(db, step, nsd, max_iter, tol, neighbor_ids_all):
     omega_strategy = cfg.get("omega", 1.0)
     use_coarse = _is_coarse(db)
 
-    # ── Coarse grid correction (before convergence check) ──
     if use_coarse and not all_converged and step < max_iter - 1:
         _apply_coarse_correction(db, step, nsd)
 
@@ -601,7 +735,6 @@ def ras_graph_assemble(db, nsd, final_step):
 
     x = [0.0] * N
     for sd_id in range(nsd):
-        # Use coarse-corrected data if available, else raw x
         if use_coarse:
             xc_name = db.get_obj_name(f"__rasg__xc_{sd_id}_{final_step}")
             from _fly_storage import ex_stg_get_data_service
@@ -637,9 +770,21 @@ def get_ras_graph_solution(db, timeout=3600):
     raise RuntimeError(f"get_ras_graph_solution: timed out waiting for __rasg__sol after {timeout}s")
 
 
-def solve_ras_graph(db, N, rows, cols, vals, b, nsd,
+def solve_ras_graph(db, matrix_path, nsd,
                     overlap_ratio=0.50, max_iter=100, tol=1e-8,
                     omega=1.0):
+    """Solve a sparse linear system using distributed RAS with graph-based overlap.
+
+    Args:
+        db: Database instance
+        matrix_path: Path to .npz matrix file (generated by generate_poisson_matrix)
+        nsd: Number of subdomains
+        overlap_ratio: Overlap ratio (default 0.50)
+        max_iter: Maximum iterations (default 100)
+        tol: Convergence tolerance (default 1e-8)
+        omega: Relaxation strategy. 1.0 (default), "coarse" for two-level correction,
+               "adaptive" for adaptive omega
+    """
     from fly.runtime import get_agent
 
     master = get_agent()
@@ -648,6 +793,6 @@ def solve_ras_graph(db, N, rows, cols, vals, b, nsd,
         master.launch_local_workers(worker_configs)
         assert master.wait_for_workers(nsd), f"{nsd} workers should connect"
 
-    ras_graph_coord(db, N, rows, cols, vals, b, nsd,
+    ras_graph_coord(db, matrix_path, nsd,
                     overlap_ratio, max_iter, tol, omega)
     return get_ras_graph_solution(db)

@@ -11,7 +11,7 @@ from _fly_solver import (
     ex_slv_ras_bupdated_solve,
 )
 from solver.ras import solve_ras
-from solver.ras_graph import solve_ras_graph
+from solver.ras_graph import solve_ras_graph, generate_poisson_matrix
 
 __all__ = [
     'EXSlvSubdomainInfo',
@@ -26,4 +26,5 @@ __all__ = [
     'ex_slv_ras_bupdated_solve',
     'solve_ras',
     'solve_ras_graph',
+    'generate_poisson_matrix',
 ]
