@@ -309,8 +309,14 @@ private:
 
     CMWeakPtr<DataService> data_service_;
 
+    // Master 存活检测
+    std::mutex master_contact_mutex_;
+    std::chrono::steady_clock::time_point last_master_contact_;
+    static constexpr int MASTER_TIMEOUT_SECONDS = 120;
+
     // Message handlers
     void on_register_ack(const RegisterAckMessage& msg);
+    void on_heartbeat_ack(const HeartbeatAckMessage& msg);
     void on_task_assign(const TaskAssignMessage& msg);
     void on_shutdown(const ShutdownMessage& msg);
     void on_db_path_response(const DbPathResponseMessage& msg);
@@ -560,21 +566,29 @@ struct FailedTaskFile {
 Worker A: db.read_object("key") (Python 三层降级)
 
 Layer 1: DataService.try_read_local("key")
-  → 找到 → DataReader → 返回
+  → 找到且 COMPLETE → DataReader → 返回
   → 未找到 → Layer 2
 
 Layer 2: DataService.lookup_remote_idx("key")
-  → 有缓存 → DataClient.request_data(host, port, "key")
+  → 有缓存 → DataClient.request_compressed_data(host, port, "key",
+        requesting_worker_id, request_id)
   │     → 独立 TCP socket 直连 Worker B Data Server
   │     → Worker B: submit_transfer → IOThreadPool → reactor_->send(DataResponse)
+  │     → 传输去重: (requesting_worker_id, object_name, request_id) 三元组
   → 失败 → Layer 3
 
-Layer 3: request_remote_data("key") (最多 3 次重试)
+Layer 3: request_remote_data("key")
+  → 最多 3 次重试，每次 30s 超时
+  → 每次重试先重新查询 Master 获取最新数据位置
   → reactor_->send(master_conn_, DataQueryMessage)
   → Master: DataService.has_remote_location → DataLocationMessage
-  → DataClient 直连目标 Worker
+  → DataClient.request_compressed_data(host, port, "key", ...)
   → 成功 → update_remote_idx 缓存
 ```
+
+**传输去重机制**: `DataService::submit_transfer()` 使用 `(requesting_worker_id, object_name, request_id)` 三元组作为去重键，同一请求不会重复传输大对象数据。`request_id` 为随机生成，确保不同逻辑请求不会误判为重复。
+
+**COMPLETE = 可读语义**: 所有读取操作（`try_read_local`、`try_read_local_or_wait`、`has_local_object`）仅检查 `completion_state == COMPLETE`，不检查 `flushed` 标志。
 
 ### DB 路径查询
 
@@ -762,6 +776,9 @@ FLY_EXPORT_MODULE(_fly_agent) {
 | Master fatal error 设 flag | 供 check_shutdown_request() 检测后触发 drain（当前为 dead code，预留机制） |
 | DataClient 独立 TCP | Worker A 读数据不走主 Reactor，避免多线程读冲突 |
 | 递归任务提交 | Worker 内 task 调用 task → submit_task → Master 调度 |
-| Master liveness tracking | Worker 跟踪 last_master_contact，检测 Master 断连 |
+| Master liveness tracking | Worker 跟踪 last_master_contact，MASTER_TIMEOUT=120s，检测 Master 断连 |
+| HeartbeatAck 双向检测 | Master 在 on_heartbeat() 回复 ACK，Worker 通过 ACK 判断 Master 存活 |
+| 跨 worker 读取 30s 超时 + 3 重试 | 每次重试重新查询 Master 获取最新位置，避免死等已断开的 Worker |
+| 传输去重三元组 | (requesting_worker_id, object_name, request_id) 防止重复传输大对象 |
 | register_database 显式注册 | Master 和 Worker 都可注册 DB，支持分布式 Database 实例查找 |
 | SIGTERM 在 Python 层处理 | 避免与 C++ SIGINT/KeyboardInterrupt 冲突，Python 层 catch → SystemExit → cleanup |

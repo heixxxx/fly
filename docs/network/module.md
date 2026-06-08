@@ -16,7 +16,7 @@
 | `cpp/tcp_transport.cpp` | POSIX TCP 实现 (epoll) |
 | `cpp/reactor.h/cpp` | 单线程事件循环 |
 | `cpp/message_protocol.h/cpp` | 二进制帧协议 |
-| `cpp/message_types.h` | 27 种消息结构定义（含 MessageHeader） |
+| `cpp/message_types.h` | 33 种消息结构定义（含 MessageHeader） |
 | `cpp/io_thread_pool.h/cpp` | 通用线程池（submit + completion 回调） |
 | `cpp/metadata_client.h/cpp` | 阻塞 TCP 元数据查询客户端（原名 MasterClient） |
 | `cpp/data_client.h/cpp` | 阻塞 TCP 数据客户端 |
@@ -133,6 +133,11 @@ public:
     void send(uint64_t conn_id, const CMString& data);
     template<typename MsgT>
     void send(uint64_t conn_id, const MsgT& msg);
+
+    // 非阻塞发送（线程安全，连接断开时不阻塞）
+    bool try_send(uint64_t conn_id, const CMString& data);
+    template<typename MsgT>
+    bool try_send(uint64_t conn_id, const MsgT& msg);
 
     // IO 线程池
     void set_io_pool(IOThreadPool* pool);
@@ -263,7 +268,7 @@ public:
 
 ### 消息类型定义（message_types.h）
 
-27 种消息结构（含 MessageHeader），每种定义对应的结构体，均支持 `FLY_SERIALIZE` 序列化。
+33 种消息结构（含 MessageHeader），每种定义对应的结构体，均支持 `FLY_SERIALIZE` 序列化。
 
 **核心消息结构体示例**:
 
@@ -324,6 +329,20 @@ struct IdxLoadAckMessage {           // type=26, Worker → Master
     CMString error_message;
     FLY_SERIALIZE(header, worker_id, db_id, success, loaded_count, error_message);
 };
+
+struct HeartbeatAckMessage {         // type=33, Master → Worker
+    MessageHeader header;
+    uint64_t worker_id = 0;
+    FLY_SERIALIZE(header, worker_id);
+};
+
+struct DataRequestMessage {          // type=11, Worker → Worker（重 I/O）
+    MessageHeader header;
+    CMString object_name;
+    uint64_t requesting_worker_id = 0;  // 请求方 worker_id（用于传输去重）
+    uint64_t request_id = 0;            // 随机 ID（用于传输去重）
+    FLY_SERIALIZE(header, object_name, requesting_worker_id, request_id);
+};
 ```
 
 ---
@@ -352,12 +371,24 @@ Master.ReactorThread
 
 ```
 Worker.heartbeat_thread_ (CV-based, 10s 间隔)
-  → HeartbeatMessage → reactor_->send(master_conn_, ...)
+   → HeartbeatMessage → reactor_->try_send(master_conn_, ...)
+   → Master 收到 → HeartbeatAckMessage → Worker
+   → Worker.on_heartbeat_ack() → touch_master_contact()
 
 Master.heartbeat_check_thread_ (CV-based, 5s 间隔)
-  → heartbeat_monitor_->check_all_workers()
-  → get_dead_workers() → 超时 Worker → ShutdownMessage
+   → heartbeat_monitor_->check_all_workers()
+   → get_dead_workers() → 超时 Worker → ShutdownMessage
+
+Worker.master_liveness_check:
+   → MASTER_TIMEOUT_SECONDS = 120 (12 次未收到 ACK)
+   → 超时 → initiate_shutdown("master timeout")
 ```
+
+**HeartbeatAck 设计要点**:
+- Master 在 `on_heartbeat()` 中回复 `HeartbeatAckMessage`（type=33），携带 `worker_id`
+- Worker 通过收到 ACK 判断 Master 存活，而非依赖任务分配
+- `try_send()` 非阻塞发送，避免心跳线程阻塞在已断开的连接上
+- 与 Worker→Master 心跳方向相反，形成双向存活检测
 
 ---
 
@@ -372,3 +403,6 @@ Master.heartbeat_check_thread_ (CV-based, 5s 间隔)
 | DataClient 独立 socket | 多线程读无冲突，不走主 Reactor |
 | 工厂函数 create_transport | 支持未来替换 UDP/RDMA |
 | CV-based 心跳 | stop() 时可立即唤醒，无阻塞 |
+| HeartbeatAck 双向检测 | Worker 通过 ACK 检测 Master 存活，不依赖任务分配 |
+| try_send() 非阻塞发送 | 心跳线程在连接断开时不阻塞，安全跳过 |
+| DataRequestMessage 三元组去重 | (requesting_worker_id, object_name, request_id) 防止重复传输 |

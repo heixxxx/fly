@@ -117,7 +117,57 @@ read_object(name)
 
 **核心设计**: Database 统一负责流式序列化+压缩，DataWriter 纯落盘。CPU 密集操作在调用线程完成，WBQ 后台线程仅负责磁盘 I/O。
 
+#### save_to_db=True（持久化写入）
+
+三步写入流程：添加 local idx (INCOMPLETE) → 注册 Master → 后台落盘 → COMPLETE
+
 ```
+write_object<T>(name, obj, py_name)  ← 调用线程
+  │
+  ├─ 1. FlyBufferStreamBuf → CountingStreamBuf → CompressingStreamBuf
+  │     → obj.fly_serialize(os) 直接流式写入压缩管线
+  │     → 输出：ObjectHeader + 分块压缩数据（完整磁盘格式）
+  │
+  ├─ 2. DataService.on_write_started(db_id, full_name)
+  │     → 添加 local_idx 条目，状态 INCOMPLETE
+  │     → Master 可发现数据（但尚不可读）
+  │
+  ├─ 3. WorkerAgentContext.register_write(db_id, name)
+  │     → 发送 WriteRegisterMessage → Master
+  │
+  ├─ 4. enqueue_write_back(req)  ────→  WBQ 后台线程
+  │     execute: write_record() + flush()    │
+  │     complete: on_write_completed()       │→ file_stream_.write(record)
+  │              + caller_record_func()       │→ index 更新
+  │              + flushed=true               │→ flush
+  │     → 状态变更为 COMPLETE（此时数据可读）
+  │
+  └─ 5. 返回 "" （立即返回）
+```
+
+#### save_to_db=False（临时数据，内存存储）
+
+三步写入流程：添加 local idx (INCOMPLETE) → 注册 Master → 放入内存 → COMPLETE
+
+```
+put_temp_data(name, data)  ← 调用线程
+  │
+  ├─ 1. DataService.on_temp_write_started(db_id, full_name)
+  │     → 添加 local_idx 条目，状态 INCOMPLETE，is_temp=true
+  │
+  ├─ 2. WorkerAgentContext.register_write(db_id, name)
+  │     → 发送 WriteRegisterMessage → Master
+  │
+  ├─ 3. DataService.on_temp_write(db_id, full_name, data)
+  │     → 将数据存入内存 temp 缓存
+  │     → 状态变更为 COMPLETE（此时数据可读）
+  │
+  └─ 4. 返回
+```
+
+**关键语义**: COMPLETE = 可读。无论 save_to_db 与否，只要 completion_state == COMPLETE，其他 worker 即可读取。
+
+**回调模式说明**:
 write_object<T>(name, obj, py_name)  ← 调用线程（C++ 类型）
   │
   ├─ 1. FlyBufferStreamBuf → CountingStreamBuf → CompressingStreamBuf
@@ -323,6 +373,13 @@ public:
                          const CMString& error_message);
     void on_object_flushed(const CMString& object_name);
     
+    // Temp 数据写入（save_to_db=False）
+    void on_temp_write_started(const CMString& db_id, const CMString& object_name);
+    void on_temp_write(const CMString& db_id, const CMString& object_name,
+                       const CMString& data);
+    
+    // COMPLETE = 可读（统一语义，不论 save_to_db 与否）
+    
     std::pair<bool, ReadResult> try_read_local(const CMString& object_name);
     std::pair<bool, ReadResult> try_read_local_or_wait(const CMString& object_name,
                                                           int timeout_ms = 3000);  // -1 = 无限等待
@@ -365,7 +422,8 @@ public:
     void start_transfer_server(int thread_count, TransferCallback callback);
     void stop_transfer_server();
     bool is_transfer_server_running() const;
-    void submit_transfer(uint64_t conn_id, const CMString& object_name);
+    void submit_transfer(uint64_t conn_id, const CMString& object_name,
+                         uint64_t requesting_worker_id, uint64_t request_id);
 
     // 自动备份访问频率追踪（内嵌于 remote_idx_）
     void record_remote_access(const CMString& object_name);
@@ -390,6 +448,9 @@ private:
     
     CMSharedPtr<IOThreadPool> transfer_pool_;
     CMUniquePtr<WriteBackQueue> write_back_queue_;
+    
+    // 传输去重：(requesting_worker_id, object_name, request_id) → bool
+    CMSet<std::tuple<uint64_t, CMString, uint64_t>> active_transfers_;
 };
 ```
 
@@ -399,8 +460,11 @@ DataService (单例)
 ├── local_idx: db_id → (short_name → LocalObjectInfo)    [两层索引]
 │   └── LocalObjectInfo:
 │       ├── entries: CMVector<IndexEntry>
-│       ├── flushed: bool
+│       ├── flushed: bool               // 内部记账标记（save_to_db 时由 WBQ 完成）
 │       ├── completion_state: INCOMPLETE / COMPLETE / FAILED
+│       │   └── COMPLETE = 可读（统一语义，不论 save_to_db 与否）
+│       │       save_to_db=True: WBQ 完成落盘 + flush 后标记
+│       │       save_to_db=False: on_temp_write 放入内存后标记
 │       ├── cv: condition_variable
 │       └── cv_mutex: mutex
 │
@@ -546,3 +610,6 @@ read_raw(key)                       → Layer 3: MetadataClient 查 Master → D
 | 回调模式解耦 | Database 不依赖 WorkerAgent，std::function 桥接 |
 | DataService 进程级单例（enable_shared_from_this） | Master/Worker 共享，CMWeakPtr 观察者模式安全引用 |
 | IOThreadPool 数据传输 | 文件 I/O 不阻塞 Reactor 线程 |
+| COMPLETE = 可读（统一语义） | 不论 save_to_db 与否，completion_state==COMPLETE 即可读 |
+| 传输去重三元组 | (requesting_worker_id, object_name, request_id) 防止重复大对象传输 |
+| 三步写入流程 | INCOMPLETE→注册Master→COMPLETE，确保 Master 可发现数据后再变可读 |

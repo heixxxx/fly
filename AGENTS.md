@@ -145,7 +145,7 @@ src/task/       → Layer 3: DependencyGraph, TaskScheduler, WorkerManager
 src/agent/      → Layer 4: MasterAgent, WorkerAgent, TaskExecutor
 src/core/       → Config (共享配置), ProcessInfo (进程私有数据, hostname)
 src/fly/        → Layer 5: Python public API (__init__.py, runtime.py, mapreduce.py)
-src/solver/     → Layer 6: Distributed RAS solver (C++ core with Eigen, Python orchestration)
+src/solver/     → Layer 6: Distributed RAS solver (C++ core with Eigen, Python orchestration). ras.py (basic RAS) + ras_graph.py (graph-based overlap RAS with b-update).
 src/common/     → CM* type aliases (CMString, CMVector…)
 src/log/        → DBG/INFO/WARN/ERR macros, CM_FORMAT_CLASS/ENUM
 src/test/       → TestObject, e2e_tasks.py, test_tasks.py (not public API)
@@ -163,3 +163,4 @@ src/test/       → TestObject, e2e_tasks.py, test_tasks.py (not public API)
 | [`docs/architecture.md`](docs/architecture.md) | System architecture, data flow, thread model (630 lines) |
 | [`docs/matrix-solver-analysis.md`](docs/matrix-solver-analysis.md) | RAS algorithm analysis, convergence theory, implementation notes |
 | [`qa/README.md`](qa/README.md) | QA test framework and conventions |
+| `big_qa/` | Large matrix solver tests (n≥1000), not run in regular QA |
