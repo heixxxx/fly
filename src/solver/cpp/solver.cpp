@@ -272,12 +272,13 @@ Eigen::VectorXd ras_bupdated_solve(
     const Eigen::VectorXd& b_orig_local,
     const std::vector<int>& outside_local_positions,
     const std::vector<double>& outside_coefficients,
-    const std::vector<double>& outside_neighbor_values)
+    const std::vector<double>& outside_neighbor_values,
+    double omega)
 {
     Eigen::VectorXd b_updated = b_orig_local;
     for (size_t i = 0; i < outside_local_positions.size(); ++i) {
         b_updated[outside_local_positions[i]] -=
-            outside_coefficients[i] * outside_neighbor_values[i];
+            omega * outside_coefficients[i] * outside_neighbor_values[i];
     }
     return solver.solve(b_updated);
 }

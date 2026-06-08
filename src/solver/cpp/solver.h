@@ -90,13 +90,17 @@ void find_outside_connections(
 
 // RAS b-update + solve.
 // Updates b_local for all nodes with outside connections:
-//   b_updated[local_pos] = b_orig[local_pos] - sum(coeff * neighbor_value)
+//   b_updated[local_pos] = b_orig[local_pos] - omega * sum(coeff * neighbor_value)
 // Then solves A_local * x = b_updated using cached LDLT.
+// omega: relaxation parameter. omega=1.0 is standard RAS.
+//   omega < 1: under-relaxation (stabilizes convergence)
+//   omega > 1: over-relaxation (accelerates convergence)
 Eigen::VectorXd ras_bupdated_solve(
     const SubdomainSolver& solver,
     const Eigen::VectorXd& b_orig_local,
     const std::vector<int>& outside_local_positions,
     const std::vector<double>& outside_coefficients,
-    const std::vector<double>& outside_neighbor_values);
+    const std::vector<double>& outside_neighbor_values,
+    double omega = 1.0);
 
 } // namespace fly

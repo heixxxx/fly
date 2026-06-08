@@ -59,9 +59,7 @@ if os.path.isdir(DB_PATH):
     shutil.rmtree(DB_PATH, ignore_errors=True)
 
 get_config().set_int("fail_unscheduleable_tasks", 1)
-master = get_agent()
-master.launch_local_workers([{}] * NSD)
-assert master.wait_for_workers(NSD), "workers should connect"
+# solve_ras_graph auto-launches workers with sd_ attributes
 
 N_val, rows, cols, vals, A_csc = build_poisson_2d(N_SIDE)
 b = [1.0] * N_val
@@ -85,7 +83,7 @@ status = "PASS" if converged and rel_error < 1e-4 else "FAIL"
 INFO(f"[{status}] {label}: iters={iters} converged={converged} "
      f"rel_err={rel_error:.2e} max_err={max_error:.2e} rel_res={rel_res:.2e}")
 
-master.stop()
+get_agent().stop()
 assert converged, f"{label}: did not converge"
 assert rel_error < 1e-4, f"{label}: rel_error={rel_error:.2e}"
 assert rel_res < 1e-4, f"{label}: rel_res={rel_res:.2e}"

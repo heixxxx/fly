@@ -283,13 +283,15 @@ m.def("ex_slv_ras_bupdated_solve", [](
     const std::vector<double>& b_orig,
     const std::vector<int>& outside_local_positions,
     const std::vector<double>& outside_coefficients,
-    const std::vector<double>& outside_neighbor_values) -> std::vector<double> {
+    const std::vector<double>& outside_neighbor_values,
+    double omega = 1.0) -> std::vector<double> {
     return vec_to_std(fly::ras_bupdated_solve(
         solver,
         std_to_vec(b_orig),
         outside_local_positions,
         outside_coefficients,
-        outside_neighbor_values));
+        outside_neighbor_values,
+        omega));
 });
 
 } // FLY_EXPORT_MODULE

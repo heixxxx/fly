@@ -49,9 +49,6 @@ if os.path.isdir(DB_PATH):
     shutil.rmtree(DB_PATH, ignore_errors=True)
 
 get_config().set_int("fail_unscheduleable_tasks", 1)
-master = get_agent()
-master.launch_local_workers([{}] * NSD)
-assert master.wait_for_workers(NSD), "workers should connect"
 
 # ── build matrix ──
 N = N_SIDE * N_SIDE
@@ -83,5 +80,5 @@ assert converged, f"Did not converge: iters={iters}"
 assert rel_error < 1e-4, f"rel_error too large: {rel_error:.2e}"
 assert rel_res < 1e-4, f"rel_residual too large: {rel_res:.2e}"
 
-master.stop()
+get_agent().stop()
 INFO(f"[PASS] test_ras_graph n={N_SIDE} nsd={NSD}")
