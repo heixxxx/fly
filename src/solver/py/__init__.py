@@ -6,8 +6,12 @@ from _fly_solver import (
     ex_slv_extract_subdomain_matrix,
     ex_slv_residual_norm,
     ex_slv_ras_subdomain_update,
+    ex_slv_graph_expand_overlap,
+    ex_slv_find_outside_connections,
+    ex_slv_ras_bupdated_solve,
 )
 from solver.ras import solve_ras
+from solver.ras_graph import solve_ras_graph
 
 __all__ = [
     'EXSlvSubdomainInfo',
@@ -17,5 +21,9 @@ __all__ = [
     'ex_slv_extract_subdomain_matrix',
     'ex_slv_residual_norm',
     'ex_slv_ras_subdomain_update',
+    'ex_slv_graph_expand_overlap',
+    'ex_slv_find_outside_connections',
+    'ex_slv_ras_bupdated_solve',
     'solve_ras',
+    'solve_ras_graph',
 ]

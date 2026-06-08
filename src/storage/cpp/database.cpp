@@ -502,9 +502,20 @@ void Database::mark_temp(const CMString& object_name) {
 void Database::put_temp_data(const CMString& object_name, const CMString& compressed_data) {
     CMString full = full_name(object_name);
     DBG("[TEMP-PUT] put_temp_data: obj={}, full={}, data_size={}", object_name, full, compressed_data.size());
+
+    // Step 1: Add local idx entry (INCOMPLETE, is_temp=true)
+    fly::DataService::instance().on_temp_write_started(db_id_, full);
+
+    // Step 2: Register with master so other workers can discover this data
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
+    if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+        ERR("[TEMP-PUT] register_write failed for '{}': {}", object_name, reg_error);
+        fly::DataService::instance().on_write_failed(db_id_, full, reg_error);
+        return;
+    }
+
+    // Step 3: Write temp data and mark COMPLETE
     fly::DataService::instance().on_temp_write(db_id_, full, CMString(compressed_data));
-    DBG("[TEMP-PUT] put_temp_data on_temp_write done, calling register_write: obj={}", object_name);
-    fly::WorkerAgentContext::register_write(db_id_, object_name);
     DBG("[TEMP-PUT] put_temp_data complete: obj={}", object_name);
 }
 

@@ -1,6 +1,7 @@
 #include <solver/cpp/solver.h>
 #include <cmath>
 #include <algorithm>
+#include <unordered_set>
 
 namespace fly {
 
@@ -39,48 +40,54 @@ Eigen::SparseMatrix<double> build_poisson_2d(int n) {
 
 std::vector<SubdomainInfo> partition_1d(int n, int num_parts, int overlap) {
     const int total = n * n;
-    const int base_size = total / num_parts;
-    const int remainder = total % num_parts;
+
+    // Split grid rows [0, n) into num_parts contiguous row-blocks.
+    // Each row i contributes n grid points with global indices [i*n, i*n + n).
+    const int base_rows = n / num_parts;
+    const int remainder = n % num_parts;
 
     std::vector<SubdomainInfo> partitions;
     partitions.reserve(num_parts);
 
-    int start = 0;
+    int row_start = 0;
     for (int p = 0; p < num_parts; ++p) {
         SubdomainInfo info;
         info.subdomain_id = p;
 
-        const int part_size = base_size + (p < remainder ? 1 : 0);
-        const int part_start = start;
-        const int part_end = start + part_size;  // exclusive
+        const int num_rows = base_rows + (p < remainder ? 1 : 0);
+        const int row_end = row_start + num_rows;
 
-        // Own indices: [part_start, part_end)
-        info.own_indices.reserve(part_size);
-        for (int idx = part_start; idx < part_end; ++idx) {
+        // Own indices: all grid points in [row_start, row_end) rows
+        const int own_start = row_start * n;
+        const int own_end = row_end * n;
+        info.own_indices.reserve(own_end - own_start);
+        for (int idx = own_start; idx < own_end; ++idx) {
             info.own_indices.push_back(idx);
         }
 
-        // Local indices: extend by overlap on each side, clamped to [0, total)
-        const int local_start = std::max(0, part_start - overlap);
-        const int local_end = std::min(total, part_end + overlap);
+        // Local indices: extend by overlap rows on each side
+        const int local_row_start = std::max(0, row_start - overlap);
+        const int local_row_end = std::min(n, row_end + overlap);
+        const int local_start = local_row_start * n;
+        const int local_end = local_row_end * n;
 
         info.local_indices.reserve(local_end - local_start);
         for (int idx = local_start; idx < local_end; ++idx) {
             info.local_indices.push_back(idx);
         }
 
-        // Boundary indices: overlap zone indices that belong to neighbors
-        // Left overlap: [local_start, part_start)
-        // Right overlap: [part_end, local_end)
-        for (int idx = local_start; idx < part_start; ++idx) {
+        // Boundary indices: overlap rows not in own rows
+        // Left overlap: [local_start, own_start)
+        for (int idx = local_start; idx < own_start; ++idx) {
             info.boundary_indices.push_back(idx);
         }
-        for (int idx = part_end; idx < local_end; ++idx) {
+        // Right overlap: [own_end, local_end)
+        for (int idx = own_end; idx < local_end; ++idx) {
             info.boundary_indices.push_back(idx);
         }
 
         partitions.push_back(std::move(info));
-        start = part_end;
+        row_start = row_end;
     }
 
     return partitions;
@@ -101,6 +108,37 @@ Eigen::SparseMatrix<double> extract_subdomain_matrix(
     // A_local = R * A * R^T
     Eigen::SparseMatrix<double> RA = R * A;
     Eigen::SparseMatrix<double> A_local = RA * R.transpose();
+    A_local.makeCompressed();
+    return A_local;
+}
+
+Eigen::SparseMatrix<double> extract_subdomain_matrix_oras(
+    const Eigen::SparseMatrix<double>& A,
+    const std::vector<int>& local_indices,
+    const std::vector<int>& own_indices,
+    double alpha)
+{
+    auto A_local = extract_subdomain_matrix(A, local_indices);
+
+    std::unordered_set<int> local_set(local_indices.begin(), local_indices.end());
+
+    int local_size = static_cast<int>(local_indices.size());
+    for (int i = 0; i < local_size; ++i) {
+        int global_row = local_indices[i];
+        int ext_connections = 0;
+
+        for (Eigen::SparseMatrix<double>::InnerIterator it(A, global_row); it; ++it) {
+            int row = static_cast<int>(it.row());
+            if (row != global_row && local_set.find(row) == local_set.end()) {
+                ext_connections++;
+            }
+        }
+
+        if (ext_connections > 0) {
+            A_local.coeffRef(i, i) += alpha * ext_connections;
+        }
+    }
+
     A_local.makeCompressed();
     return A_local;
 }
@@ -172,6 +210,76 @@ Eigen::VectorXd ras_subdomain_update(
     }
 
     return x_new;
+}
+
+std::vector<int> graph_expand_overlap(
+    const Eigen::SparseMatrix<double>& A,
+    const std::vector<int>& primary_indices,
+    int depth)
+{
+    std::unordered_set<int> expanded(primary_indices.begin(), primary_indices.end());
+    std::unordered_set<int> current(primary_indices.begin(), primary_indices.end());
+
+    for (int layer = 0; layer < depth; ++layer) {
+        std::unordered_set<int> frontier;
+        for (int node : current) {
+            for (Eigen::SparseMatrix<double>::InnerIterator it(A, node); it; ++it) {
+                int row = static_cast<int>(it.row());
+                if (row != node && it.value() != 0.0 && expanded.find(row) == expanded.end()) {
+                    frontier.insert(row);
+                }
+            }
+        }
+        if (frontier.empty()) break;
+        expanded.insert(frontier.begin(), frontier.end());
+        current = std::move(frontier);
+    }
+
+    std::vector<int> result(expanded.begin(), expanded.end());
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+void find_outside_connections(
+    const Eigen::SparseMatrix<double>& A,
+    const std::vector<int>& local_indices,
+    std::vector<int>& out_local_positions,
+    std::vector<int>& out_outside_indices,
+    std::vector<double>& out_coefficients)
+{
+    std::unordered_set<int> local_set(local_indices.begin(), local_indices.end());
+    out_local_positions.clear();
+    out_outside_indices.clear();
+    out_coefficients.clear();
+
+    int local_size = static_cast<int>(local_indices.size());
+    for (int i = 0; i < local_size; ++i) {
+        int gidx = local_indices[i];
+        for (Eigen::SparseMatrix<double>::InnerIterator it(A, gidx); it; ++it) {
+            int row = static_cast<int>(it.row());
+            double val = it.value();
+            if (row != gidx && local_set.find(row) == local_set.end() && val != 0.0) {
+                out_local_positions.push_back(i);
+                out_outside_indices.push_back(row);
+                out_coefficients.push_back(val);
+            }
+        }
+    }
+}
+
+Eigen::VectorXd ras_bupdated_solve(
+    const SubdomainSolver& solver,
+    const Eigen::VectorXd& b_orig_local,
+    const std::vector<int>& outside_local_positions,
+    const std::vector<double>& outside_coefficients,
+    const std::vector<double>& outside_neighbor_values)
+{
+    Eigen::VectorXd b_updated = b_orig_local;
+    for (size_t i = 0; i < outside_local_positions.size(); ++i) {
+        b_updated[outside_local_positions[i]] -=
+            outside_coefficients[i] * outside_neighbor_values[i];
+    }
+    return solver.solve(b_updated);
 }
 
 } // namespace fly

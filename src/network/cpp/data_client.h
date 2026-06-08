@@ -17,6 +17,8 @@ public:
         const CMString& host,
         int port,
         const CMString& object_name,
+        uint64_t requesting_worker_id = 0,
+        uint64_t request_id = 0,
         int timeout_ms = 300000);
 };
 

@@ -168,7 +168,8 @@ void MasterAgent::start() {
     scheduler_ = CMMakeUnique<TaskScheduler>(graph_.get(), worker_manager_.get());
     metadata_ = CMMakeUnique<TaskManager>();
 
-    heartbeat_monitor_ = CMMakeUnique<HeartbeatMonitor>(worker_manager_.get(), 30);
+    heartbeat_monitor_ = CMMakeUnique<HeartbeatMonitor>(
+        worker_manager_.get(), Config::instance().get_int("heartbeat_timeout"));
 
     heartbeat_check_running_ = true;
     heartbeat_check_thread_ = std::thread([this] { heartbeat_check_loop(); });
@@ -530,6 +531,16 @@ void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
 
     worker_manager_->set_heartbeat(worker_id, timestamp);
 
+    auto worker = worker_manager_->get_worker(worker_id);
+    if (worker && worker->get().status == WorkerStatus::DEAD) {
+        worker_manager_->update_worker_status(worker_id, WorkerStatus::IDLE);
+        INFO("Worker {} revived (heartbeat received after timeout)", worker_id);
+    }
+
+    HeartbeatAckMessage ack;
+    ack.worker_id = worker_id;
+    reactor_->send(conn_id, ack);
+
     DBG("Heartbeat from worker_id={}", worker_id);
 }
 
@@ -873,7 +884,7 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
 
 void MasterAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
     INFO("DataRequest for object: {}", msg.object_name);
-    ds().submit_transfer(conn_id, msg.object_name);
+    ds().submit_transfer(conn_id, msg.object_name, msg.requesting_worker_id, msg.request_id);
 }
 
 void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg) {

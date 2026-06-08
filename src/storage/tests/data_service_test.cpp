@@ -58,25 +58,18 @@ TEST_F(DataServiceTest, OnObjectWrittenAndFlushEnablesLocalRead) {
     EXPECT_EQ(data, "hello");
 }
 
-TEST_F(DataServiceTest, UnflushedObjectNotReadable) {
+TEST_F(DataServiceTest, IncompleteObjectNotReadable) {
     CMString db_id = db32("test_db");
     CMString full = db_id + ":pending/obj";
-    IndexEntry entry;
-    entry.object_name = full;
-    entry.file_name = "test.dat";
-    entry.offset = 0;
-    entry.size = 10;
-    entry.is_large = false;
-    entry.block_count = 0;
 
-    ds_.on_object_written(db_id, full, entry);
+    ds_.on_write_started(db_id, full);
     EXPECT_FALSE(ds_.has_local_object(full));
 
     auto [found, result] = ds_.try_read_local(full);
     EXPECT_FALSE(found);
 }
 
-TEST_F(DataServiceTest, FlushMarksObjectsAsReadable) {
+TEST_F(DataServiceTest, WriteCompletedMarksObjectReadable) {
     CMString db_id = db32("flush_db");
     CMString full = db_id + ":flush/obj";
     IndexEntry entry;
@@ -87,10 +80,11 @@ TEST_F(DataServiceTest, FlushMarksObjectsAsReadable) {
     entry.is_large = false;
     entry.block_count = 0;
 
-    ds_.on_object_written(db_id, full, entry);
+    ds_.on_write_started(db_id, full);
     EXPECT_FALSE(ds_.has_local_object(full));
 
-    ds_.on_flush(db_id);
+    CMVector<IndexEntry> entries = {entry};
+    ds_.on_write_completed(db_id, full, entries);
     EXPECT_TRUE(ds_.has_local_object(full));
 }
 
@@ -473,7 +467,7 @@ TEST_F(DataServiceTest, RemoveIndexByShortName) {
     EXPECT_FALSE(ds_.has_local_object(full));
 }
 
-TEST_F(DataServiceTest, FlushOnlyAffectsTargetDb) {
+TEST_F(DataServiceTest, WriteCompletedOnlyAffectsTargetDb) {
     CMString db_a = db32("flush_db_a");
     CMString db_b = db32("flush_db_b");
     CMString full_a = db_a + ":obj_a";
@@ -495,15 +489,16 @@ TEST_F(DataServiceTest, FlushOnlyAffectsTargetDb) {
     eb.is_large = false;
     eb.block_count = 0;
 
-    ds_.on_object_written(db_a, full_a, ea);
-    ds_.on_object_written(db_b, full_b, eb);
+    ds_.on_write_started(db_a, full_a);
+    ds_.on_write_started(db_b, full_b);
 
-    ds_.on_flush(db_a);
-
+    CMVector<IndexEntry> entries_a = {ea};
+    ds_.on_write_completed(db_a, full_a, entries_a);
     EXPECT_TRUE(ds_.has_local_object(full_a));
     EXPECT_FALSE(ds_.has_local_object(full_b));
 
-    ds_.on_flush(db_b);
+    CMVector<IndexEntry> entries_b = {eb};
+    ds_.on_write_completed(db_b, full_b, entries_b);
     EXPECT_TRUE(ds_.has_local_object(full_b));
 }
 
@@ -599,7 +594,7 @@ TEST_F(DataServiceTest, RemoveRemoteLocationByWorkerIdCleansUpWhenEmpty) {
     EXPECT_TRUE(ds_.get_remote_workers(full).empty());
 }
 
-TEST_F(DataServiceTest, OnObjectFlushedEnablesRead) {
+TEST_F(DataServiceTest, OnObjectWrittenSetsComplete) {
     CMString db_id = db32("flush_obj_db");
     CMString full = db_id + ":flush/obj";
     IndexEntry entry;
@@ -611,9 +606,6 @@ TEST_F(DataServiceTest, OnObjectFlushedEnablesRead) {
     entry.block_count = 0;
 
     ds_.on_object_written(db_id, full, entry);
-    EXPECT_FALSE(ds_.has_local_object(full));
-
-    ds_.on_object_flushed(full);
     EXPECT_TRUE(ds_.has_local_object(full));
 }
 

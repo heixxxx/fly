@@ -15,6 +15,8 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_com
     const CMString& host,
     int port,
     const CMString& object_name,
+    uint64_t requesting_worker_id,
+    uint64_t request_id,
     int timeout_ms)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -40,6 +42,8 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_com
 
     DataRequestMessage req;
     req.object_name = object_name;
+    req.requesting_worker_id = requesting_worker_id;
+    req.request_id = request_id;
     CMString encoded_req = MessageProtocol::encode(req);
 
     if (!net_send_all(fd, encoded_req.data(), encoded_req.size())) {

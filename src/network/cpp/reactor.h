@@ -63,6 +63,9 @@ public:
     template<typename T>
     void send(uint64_t conn_id, const T& msg);
     
+    template<typename T>
+    bool try_send(uint64_t conn_id, const T& msg);
+    
     uint64_t connect(const CMString& host, int port) {
         return transport_->connect(host, port);
     }
@@ -116,6 +119,22 @@ void Reactor::send(uint64_t conn_id, const T& msg) {
     if (result < 0) {
         WARN("Reactor::send failed for conn_id={}", conn_id);
     }
+}
+
+template<typename T>
+bool Reactor::try_send(uint64_t conn_id, const T& msg) {
+    CMString frame = MessageProtocol::encode(msg);
+    auto& mtx = get_send_mutex(conn_id);
+    if (!mtx.try_lock()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mtx, std::adopt_lock);
+    ssize_t result = transport_->send(conn_id, frame);
+    if (result < 0) {
+        WARN("Reactor::try_send failed for conn_id={}", conn_id);
+        return false;
+    }
+    return true;
 }
 
 }  // namespace fly

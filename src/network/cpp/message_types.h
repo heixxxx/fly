@@ -40,6 +40,7 @@ enum class MessageType : uint8_t {
     BACKUP_REQUEST = 30,
     BACKUP_ASSIGN = 31,
     BACKUP_COMPLETE = 32,
+    HEARTBEAT_ACK = 33,
 };
 
 // 基础消息头（所有消息继承）
@@ -90,15 +91,26 @@ struct HeartbeatMessage {
     FLY_SERIALIZE(header, worker_id, running_tasks, attributes);
 };
 
+// Master → Worker: 心跳确认
+struct HeartbeatAckMessage {
+    MessageHeader header;
+    uint64_t worker_id = 0;
+    
+    static constexpr MessageType msg_type = MessageType::HEARTBEAT_ACK;
+    
+    FLY_SERIALIZE(header, worker_id);
+};
+
 // Worker → Worker: 数据请求（重 I/O）
 struct DataRequestMessage {
     MessageHeader header;
     CMString object_name;
     uint64_t requesting_worker_id = 0;
+    uint64_t request_id = 0;
     
     static constexpr MessageType msg_type = MessageType::DATA_REQUEST;
     
-    FLY_SERIALIZE(header, object_name, requesting_worker_id);
+    FLY_SERIALIZE(header, object_name, requesting_worker_id, request_id);
 };
 
 // Worker → Worker: 数据响应（可能较大）

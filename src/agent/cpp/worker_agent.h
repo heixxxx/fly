@@ -181,7 +181,7 @@ private:
 
     // Master liveness tracking — seconds since epoch (atomic for cross-thread access)
     std::atomic<int64_t> last_master_contact_{0};
-    static constexpr int MASTER_TIMEOUT_SECONDS = 60;
+    static constexpr int MASTER_TIMEOUT_SECONDS = 120;
 };
 
 }  // namespace fly

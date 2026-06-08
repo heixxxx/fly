@@ -239,7 +239,7 @@ bool DataService::has_local_object(const CMString& object_name) const {
     if (db_it == local_idx_.end()) return false;
     auto it = db_it->second.find(short_name);
     return it != db_it->second.end() && it->second &&
-           it->second->completion_state == CompletionState::COMPLETE && it->second->flushed;
+           it->second->completion_state == CompletionState::COMPLETE;
 }
 
 void DataService::on_object_flushed(const CMString& object_name) {
@@ -537,9 +537,9 @@ std::pair<bool, CMString> DataService::try_read_local_raw(const CMString& object
             return {false, {}};
         }
         auto& info = *it->second;
-        if (info.completion_state != CompletionState::COMPLETE || !info.flushed) {
-            DBG("[TEMP-READ-LOCAL] NOT READY: obj={}, state={}, flushed={}, is_temp={}",
-                object_name, static_cast<int>(info.completion_state), info.flushed, info.is_temp);
+        if (info.completion_state != CompletionState::COMPLETE) {
+            DBG("[TEMP-READ-LOCAL] NOT READY: obj={}, state={}, is_temp={}",
+                object_name, static_cast<int>(info.completion_state), info.is_temp);
             return {false, {}};
         }
 
@@ -591,7 +591,8 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
         }
         info = it->second;
 
-        if (info->completion_state == CompletionState::COMPLETE && info->flushed) {
+        bool readable = info->completion_state == CompletionState::COMPLETE;
+        if (readable) {
             if (info->is_temp) {
                 is_temp = true;
             } else {
@@ -604,7 +605,9 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
         }
     }
 
-    if (info->completion_state == CompletionState::COMPLETE && info->flushed) {
+    bool readable = info->completion_state == CompletionState::COMPLETE &&
+                    (info->is_temp || info->flushed);
+    if (readable) {
         if (is_temp) {
             CMString temp_data = info->temp_compressed_data;
             if (temp_data.empty()) {
@@ -638,7 +641,7 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
         std::unique_lock<std::mutex> cv_lock(info->cv_mutex);
         auto pred = [&info]() {
             return info->completion_state == CompletionState::FAILED ||
-                   (info->completion_state == CompletionState::COMPLETE && info->flushed);
+                   info->completion_state == CompletionState::COMPLETE;
         };
 
         bool completed = true;
@@ -734,7 +737,8 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
         }
         info = it->second;
 
-        if (info->completion_state == CompletionState::COMPLETE && info->flushed) {
+        bool readable = info->completion_state == CompletionState::COMPLETE;
+        if (readable) {
             if (info->is_temp) {
                 is_temp = true;
             } else {
@@ -747,7 +751,8 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
         }
     }
 
-    if (info->completion_state == CompletionState::COMPLETE && info->flushed) {
+    bool readable2 = info->completion_state == CompletionState::COMPLETE;
+    if (readable2) {
         if (is_temp) {
             CMString temp_data = info->temp_compressed_data;
             if (temp_data.empty()) {
@@ -774,7 +779,7 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
         std::unique_lock<std::mutex> cv_lock(info->cv_mutex);
         auto pred = [&info]() {
             return info->completion_state == CompletionState::FAILED ||
-                   (info->completion_state == CompletionState::COMPLETE && info->flushed);
+                   info->completion_state == CompletionState::COMPLETE;
         };
 
         bool completed = true;
@@ -788,10 +793,6 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
         if (!completed || info->completion_state == CompletionState::FAILED) {
             return {false, ReadResult{}};
         }
-    }
-
-    if (!info->flushed) {
-        return {false, ReadResult{}};
     }
 
     if (info->is_temp) {
@@ -932,10 +933,26 @@ bool DataService::is_transfer_server_running() const {
     return transfer_running_;
 }
 
-void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name) {
+void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name,
+                                   uint64_t requesting_worker_id, uint64_t request_id) {
     if (!transfer_running_ || !transfer_pool_) return;
 
-    DBG("[TEMP-TRANSFER] submit_transfer START: obj={}, conn_id={}", object_name, conn_id);
+    CMString transfer_key = std::to_string(requesting_worker_id) + ":" +
+                            CMString(object_name) + ":" +
+                            std::to_string(request_id);
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (active_transfers_.count(transfer_key)) {
+            DBG("[TEMP-TRANSFER] duplicate transfer skipped: obj={}, conn_id={}, requester={}, req_id={}",
+                object_name, conn_id, requesting_worker_id, request_id);
+            return;
+        }
+        active_transfers_[transfer_key] = true;
+    }
+
+    DBG("[TEMP-TRANSFER] submit_transfer START: obj={}, conn_id={}, requester={}, req_id={}",
+        object_name, conn_id, requesting_worker_id, request_id);
 
     auto result = CMMakeShared<TransferResult>();
     result->conn_id = conn_id;
@@ -948,9 +965,9 @@ void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name)
         if (db_it != local_idx_.end()) {
             auto it = db_it->second.find(short_name);
             if (it != db_it->second.end() && it->second) {
-                DBG("[TEMP-TRANSFER] local_idx entry: obj={}, is_temp={}, entries_size={}, state={}, flushed={}",
+                DBG("[TEMP-TRANSFER] local_idx entry: obj={}, is_temp={}, entries_size={}, state={}",
                     object_name, it->second->is_temp, it->second->entries.size(),
-                    static_cast<int>(it->second->completion_state), it->second->flushed);
+                    static_cast<int>(it->second->completion_state));
                 if (!it->second->entries.empty()) {
                     result->write_context_hash = it->second->entries.back().write_context_hash;
                 }
@@ -965,7 +982,7 @@ void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name)
     auto callback = transfer_callback_;
 
     transfer_pool_->submit(
-        [this, result]() {
+        [this, result, transfer_key]() {
             auto [found, raw_data, py_name] = try_read_local_raw_or_wait(result->object_name, -1);
             result->success = found;
             if (found) {
@@ -975,7 +992,11 @@ void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name)
                 result->error_message = "Object not found (raw): " + result->object_name;
             }
         },
-        [callback, result]() {
+        [this, callback, result, transfer_key]() {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                active_transfers_.erase(transfer_key);
+            }
             if (callback) {
                 callback(*result);
             }
@@ -1039,6 +1060,27 @@ std::pair<bool, CMString> DataService::get_temp_data(const CMString& object_name
     return {false, {}};
 }
 
+void DataService::on_temp_write_started(const CMString& db_id, const CMString& object_name) {
+    if (!temp_eviction_store_) {
+        temp_max_bytes_ = Config::instance().get_int("temp_store_size");
+        if (temp_max_bytes_ <= 0) temp_max_bytes_ = 2147483648LL;
+        temp_eviction_store_ = CMMakeUnique<fly::TempStore>(temp_max_bytes_);
+    }
+
+    auto [_, short_name] = split_full(object_name);
+    CMSharedPtr<LocalObjectInfo> info = CMMakeShared<LocalObjectInfo>();
+    info->db_id = db_id;
+    info->is_temp = true;
+    info->completion_state = CompletionState::INCOMPLETE;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        local_idx_[db_id][short_name] = info;
+    }
+
+    DBG("[TEMP-WRITE-STARTED] obj={}, db_id={}", object_name, db_id);
+}
+
 void DataService::on_temp_write(const CMString& db_id, const CMString& object_name, CMString&& compressed_data) {
     if (!temp_eviction_store_) {
         temp_max_bytes_ = Config::instance().get_int("temp_store_size");
@@ -1049,34 +1091,34 @@ void DataService::on_temp_write(const CMString& db_id, const CMString& object_na
     int64_t data_size = static_cast<int64_t>(compressed_data.size());
     auto [_, short_name] = split_full(object_name);
 
-    CMSharedPtr<LocalObjectInfo> info = CMMakeShared<LocalObjectInfo>();
-    info->db_id = db_id;
-    info->is_temp = true;
-    info->temp_compressed_data = std::move(compressed_data);
-    info->completion_state = CompletionState::COMPLETE;
-    info->flushed = true;
-
+    CMSharedPtr<LocalObjectInfo> info;
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
         auto& db_map = local_idx_[db_id];
-        auto old_it = db_map.find(short_name);
-        if (old_it != db_map.end() && old_it->second && old_it->second->is_temp) {
-            int64_t old_size = static_cast<int64_t>(old_it->second->temp_compressed_data.size());
+        auto it = db_map.find(short_name);
+        if (it == db_map.end() || !it->second) {
+            ERR("[TEMP-WRITE] on_temp_write: no entry found for obj={}, db_id={}", object_name, db_id);
+            return;
+        }
+        info = it->second;
+
+        if (info->is_temp && !info->temp_compressed_data.empty()) {
+            int64_t old_size = static_cast<int64_t>(info->temp_compressed_data.size());
             temp_total_bytes_ -= old_size;
             auto lru_it = std::find(temp_lru_order_.begin(), temp_lru_order_.end(), object_name);
             if (lru_it != temp_lru_order_.end()) temp_lru_order_.erase(lru_it);
         }
 
-        db_map[short_name] = info;
+        info->temp_compressed_data = std::move(compressed_data);
+        info->completion_state = CompletionState::COMPLETE;
+
         temp_lru_order_.push_back(object_name);
         temp_total_bytes_ += data_size;
 
-        DBG("[TEMP-WRITE] on_temp_write complete: obj={}, db_id={}, data_size={}, is_temp={}, state={}, flushed={}, lru_count={}",
-            object_name, db_id, data_size, info->is_temp,
-            static_cast<int>(info->completion_state), info->flushed, temp_lru_order_.size());
+        DBG("[TEMP-WRITE] on_temp_write complete: obj={}, db_id={}, data_size={}, lru_count={}",
+            object_name, db_id, data_size, temp_lru_order_.size());
 
-        // LRU eviction: overflow oldest temp entries to temp file
         while (temp_total_bytes_ > temp_max_bytes_ && temp_lru_order_.size() > 1) {
             CMString oldest = temp_lru_order_.front();
             temp_lru_order_.erase(temp_lru_order_.begin());

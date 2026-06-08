@@ -307,7 +307,7 @@ TEST_F(DataTransferTest, DataClientToReactorSingleRequest) {
 
     // Client: use DataClient to request compressed data
     TEST_LOG("Client requesting %s from 127.0.0.1:%d", names[0].c_str(), server_port);
-    auto [success, compressed_data, py_name, hash, error] = DataClient::request_compressed_data("127.0.0.1", server_port, names[0], 3000);
+    auto [success, compressed_data, py_name, hash, error] = DataClient::request_compressed_data("127.0.0.1", server_port, names[0], 0, 0, 3000);
 
     EXPECT_TRUE(success) << "DataClient request should succeed, error: " << error;
     EXPECT_FALSE(compressed_data.empty());
@@ -368,7 +368,7 @@ TEST_F(DataTransferTest, DataClientConcurrentRequests) {
             for (int i = t; i < object_count; i += client_count) {
                 TEST_LOG("[CLIENT %d] requesting %s", t, names[i].c_str());
                 auto [ok, compressed_data, py_name, h, err] = DataClient::request_compressed_data(
-                    "127.0.0.1", server_port, names[i], 5000);
+                    "127.0.0.1", server_port, names[i], 0, 0, 5000);
 
                 if (ok && !compressed_data.empty()) {
                     success_count++;
@@ -396,7 +396,7 @@ TEST_F(DataTransferTest, DataClientConcurrentRequests) {
 
 TEST_F(DataTransferTest, DataClientConnectionFailure) {
     auto [success, compressed_data, py_name, hash, error] = DataClient::request_compressed_data(
-        "127.0.0.1", 19999, "nonexistent", 500);
+        "127.0.0.1", 19999, "nonexistent", 0, 0, 500);
 
     EXPECT_FALSE(success);
     EXPECT_FALSE(error.empty());

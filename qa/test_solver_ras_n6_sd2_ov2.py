@@ -41,7 +41,7 @@ if os.path.isdir(DB_PATH):
 
 get_config().set_int("fail_unscheduleable_tasks", 1)
 master = get_agent()
-master.launch_local_workers([{}] * NSD)
+master.launch_local_workers([{"attributes": [f"sd_{i}"]} for i in range(NSD)])
 assert master.wait_for_workers(NSD), f"workers should connect"
 
 db = open_db(DB_PATH)

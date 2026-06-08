@@ -174,6 +174,7 @@ public:
     bool is_temp_entry(const CMString& object_name) const;
     std::pair<bool, CMString> get_temp_data(const CMString& object_name) const;
 
+    void on_temp_write_started(const CMString& db_id, const CMString& object_name);
     void on_temp_write(const CMString& db_id, const CMString& object_name, CMString&& compressed_data);
     void cleanup_temp_entries(const CMString& db_id);
 
@@ -186,7 +187,8 @@ public:
     void start_transfer_server(int thread_count, TransferCallback callback);
     void stop_transfer_server();
     bool is_transfer_server_running() const;
-    void submit_transfer(uint64_t conn_id, const CMString& object_name);
+    void submit_transfer(uint64_t conn_id, const CMString& object_name,
+                          uint64_t requesting_worker_id = 0, uint64_t request_id = 0);
     CMSharedPtr<IOThreadPool> get_transfer_pool() const;
 
     // ============================================================
@@ -272,6 +274,7 @@ private:
     CMSharedPtr<IOThreadPool> transfer_pool_;
     TransferCallback transfer_callback_;
     std::atomic<bool> transfer_running_{false};
+    CMUnorderedMap<CMString, bool> active_transfers_;
 
     CMUniquePtr<fly::WriteBackQueue> write_back_queue_;
 

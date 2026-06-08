@@ -9,6 +9,7 @@
 #include <network/cpp/metadata_client.h>
 #include <thread>
 #include <chrono>
+#include <functional>
 #include <unistd.h>
 
 namespace fly {
@@ -29,7 +30,9 @@ void WorkerAgent::set_data_service(CMWeakPtr<DataService> wp) {
         sp->set_direct_compressed_read_handler(
             [this](const CMString& host, int32_t port,
                   const CMString& name) -> std::tuple<bool, CMString, CMString, CMString> {
-                auto [success, data, py_name, hash, error] = data_client_pool_.request(host, port, name);
+                uint64_t rid = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) ^
+                               static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+                auto [success, data, py_name, hash, error] = data_client_pool_.request(host, port, name, worker_id_, rid);
                 if (!success) {
                     ERR("pooled request_compressed_data failed for {}: {}", name, error);
                     return {false, {}, {}, {}};
@@ -141,6 +144,12 @@ void WorkerAgent::start() {
             on_remove_command(conn_id, msg);
         });
 
+    reactor_->register_handler<HeartbeatAckMessage>(
+        [this](uint64_t conn_id, const HeartbeatAckMessage& msg) {
+            touch_master_contact();
+            DBG("HeartbeatAck received from master");
+        });
+
     reactor_->on_disconnect([this](uint64_t conn_id) {
         on_disconnect(conn_id);
     });
@@ -250,9 +259,11 @@ void WorkerAgent::heartbeat_loop() {
         if (registered_ && heartbeat_running_) {
             HeartbeatMessage hb;
             hb.worker_id = worker_id_;
-            reactor_->send(master_conn_, hb);
-
-            DBG("Heartbeat sent");
+            if (!reactor_->try_send(master_conn_, hb)) {
+                DBG("Heartbeat skipped (send busy)");
+            } else {
+                DBG("Heartbeat sent");
+            }
         }
 
         if (registered_ && running_) {
@@ -489,7 +500,7 @@ void WorkerAgent::request_database_freeze(const CMString& db_id) {
 }
 
 void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
-    ds().submit_transfer(conn_id, msg.object_name);
+    ds().submit_transfer(conn_id, msg.object_name, msg.requesting_worker_id, msg.request_id);
 }
 
 std::tuple<bool, CMString, CMString, bool> WorkerAgent::request_remote_data(const CMString& object_name) {
@@ -500,23 +511,45 @@ std::tuple<bool, CMString, CMString, bool> WorkerAgent::request_remote_data(cons
         return {false, {}, {}, location.can_still_produce};
     }
 
-    auto [success, data, py_name, hash, error] = DataClient::request_compressed_data(
-        location.host, location.port, object_name);
+    constexpr int kMaxAttempts = 3;
+    constexpr int kTimeoutMs = 30000;
+    uint64_t request_id = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) ^
+                          static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
 
-    if (!success) {
-        ERR("request_remote_data compressed failed for {}: {}", object_name, error);
-        return {false, {}, {}, location.can_still_produce};
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        auto [success, data, py_name, hash, error] = DataClient::request_compressed_data(
+            location.host, location.port, object_name, worker_id_, request_id, kTimeoutMs);
+
+        if (success) {
+            ds().update_remote_idx(object_name, location.worker_id, location.host, location.port);
+            return {true, std::move(data), std::move(py_name), false};
+        }
+
+        if (attempt < kMaxAttempts - 1) {
+            WARN("request_remote_data attempt {}/{} failed for {}, retrying: {}",
+                 attempt + 1, kMaxAttempts, object_name, error);
+            auto recheck = MetadataClient::query_data_location(
+                master_host_, master_port_, object_name);
+            if (!recheck.found) {
+                return {false, {}, {}, recheck.can_still_produce};
+            }
+            if (recheck.host != location.host || recheck.port != location.port) {
+                location = recheck;
+            }
+        } else {
+            ERR("request_remote_data all {} attempts failed for {}: {}",
+                kMaxAttempts, object_name, error);
+        }
     }
 
-    ds().update_remote_idx(object_name, location.worker_id, location.host, location.port);
-
-    return {true, std::move(data), std::move(py_name), false};
+    return {false, {}, {}, location.can_still_produce};
 }
 
 std::pair<bool, ReadResult> WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,
                                                                    const CMString& object_name) {
 
-    auto [success, compressed_data, py_name, hash, error] = DataClient::request_compressed_data(host, port, object_name);
+    auto [success, compressed_data, py_name, hash, error] = DataClient::request_compressed_data(
+        host, port, object_name, worker_id_, 0);
 
     if (!success) {
         ERR("request_data_from_worker failed for {}: {}", object_name, error);
