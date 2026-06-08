@@ -379,3 +379,67 @@ V-cycle 每层都有同步点
 | PowerRush | AMG-PCG with K-cycle |
 | PowerRChol (2026) | 随机化 Cholesky |
 | FreeFem++ | RAS、ASM、ORAS |
+
+---
+
+## 7. Two-Level Schwarz 粗网格修正（已实现）
+
+### 7.1 动机
+
+单层 RAS 的收敛速度随子域数量增加而退化（信息每轮只传播一个子域）。对于 nsd=8、n=1000，需要 134 轮迭代才能收敛。两阶 Schwarz 通过在每轮 RAS 局部修正后增加一步粗网格全局修正，消除低频误差分量。
+
+### 7.2 算法
+
+```
+每轮迭代：
+  ① 局部 RAS 求解（各子域并行 LU solve）
+  ② 粗网格修正（check task 中执行）：
+     a. 组装全局 x → 计算残差 r = b - Ax
+     b. 限制到粗网格：r_c = P^T r
+     c. 粗求解：e_c = A_c^{-1} r_c
+     d. 插值回细网格：e = P e_c
+     e. 修正各子域 x 数据
+  ③ 收敛检查
+```
+
+### 7.3 粗空间构建
+
+- **几何粗化**：stride = max(2, n/125)，粗网格点数 Nc = (n/stride)²
+- **双线性插值** P（细→粗的延长算子）
+- **Galerkin 粗矩阵**：A_c = P^T A P
+- **一次性 LU 分解**：粗求解每轮 O(Nc)，微秒级
+- **Worker 端懒构建**：首次 check task 时构建并缓存 P、A_fine、A_c LU
+
+### 7.4 性能
+
+| 规模 | nsd | baseline iters | coarse iters | 迭代减少 | baseline time | coarse time | 时间减少 |
+|------|-----|---------------|-------------|---------|--------------|------------|---------|
+| n=50 | 4 | 41 | 9 | 78% | 3.6s | 2.1s | 42% |
+| n=50 | 8 | 102 | 11 | 89% | 15.7s | 4.7s | 70% |
+| n=500 | 4 | 55 | 8 | 85% | 37s | 23s | 38% |
+| n=500 | 8 | 125 | 10 | 92% | 81s | 34s | 58% |
+| n=1000 | 4 | ~36 | 9 | ~75% | — | 143s | — |
+
+### 7.5 使用方式
+
+```python
+from solver import solve_ras_graph
+
+sol = solve_ras_graph(db, N, rows, cols, vals, b, nsd,
+                      overlap_ratio=0.50, max_iter=300, tol=1e-8,
+                      omega="coarse")
+```
+
+`omega="coarse"` 启用两阶粗网格修正。`omega=1.0`（默认）使用标准单层 RAS。
+
+### 7.6 数据对象生命周期
+
+| 对象 | save_to_db | 生命周期 | 清理时机 |
+|------|-----------|---------|---------|
+| `__rasg__coord` | False | 整个求解 | 进程结束 |
+| `__rasg__cfg` | False | 整个求解 | 进程结束 |
+| `__rasg__setup_{sd}` | False | 整个求解 | 进程结束 |
+| `__rasg__x_{sd}_{step}` | False | 2 轮迭代 | compute step+2 |
+| `__rasg__xc_{sd}_{step}` | False | 2 轮迭代 | compute step+2 |
+| `__rasg__conv_{sd}_{step}` | False | 1 轮迭代 | check 当步 |
+| `__rasg__sol` | True | 永久 | 用户清理 |
