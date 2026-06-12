@@ -772,7 +772,7 @@ def get_ras_graph_solution(db, timeout=3600):
 
 def solve_ras_graph(db, matrix_path, nsd,
                     overlap_ratio=0.50, max_iter=100, tol=1e-8,
-                    omega=1.0):
+                    omega=1.0, max_concurrent_compute=None):
     """Solve a sparse linear system using distributed RAS with graph-based overlap.
 
     Args:
@@ -784,14 +784,25 @@ def solve_ras_graph(db, matrix_path, nsd,
         tol: Convergence tolerance (default 1e-8)
         omega: Relaxation strategy. 1.0 (default), "coarse" for two-level correction,
                "adaptive" for adaptive omega
+        max_concurrent_compute: Max workers running compute tasks simultaneously.
+               Fewer workers = less memory (each loads full matrix).
+               None means min(nsd, available_cores).
     """
     from fly.runtime import get_agent
 
+    n_workers = min(nsd, max_concurrent_compute) if max_concurrent_compute else nsd
+
     master = get_agent()
-    if not master.is_running() or master.worker_count < nsd:
-        worker_configs = [{"attributes": [f"sd_{i}"]} for i in range(nsd)]
+    if not master.is_running() or master.worker_count < n_workers:
+        worker_configs = []
+        for w in range(n_workers):
+            assigned = [f"sd_{s}" for s in range(nsd) if s % n_workers == w]
+            worker_configs.append({"attributes": assigned})
         master.launch_local_workers(worker_configs)
-        assert master.wait_for_workers(nsd), f"{nsd} workers should connect"
+        assert master.wait_for_workers(n_workers), f"{n_workers} workers should connect"
+
+    INFO(f"[RASG WORKERS] nsd={nsd} n_workers={n_workers} "
+         f"(max_concurrent_compute={max_concurrent_compute})")
 
     ras_graph_coord(db, matrix_path, nsd,
                     overlap_ratio, max_iter, tol, omega)
