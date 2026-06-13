@@ -1,7 +1,8 @@
 # Reactor 异步化改造设计
 
-> 状态: 设计中（待确认）
+> 状态: 设计中
 > 创建日期: 2026-06-14
+> 更新日期: 2026-06-14（追加 DataService 独立网络层设计）
 > 关联文档: docs/ARCHITECTURE_REVIEW.md 3.1/3.6
 
 ---
@@ -431,12 +432,175 @@ stop():
 
 ---
 
-## 八、待确认项
+## 八、DataService 独立网络层
 
-1. **DataResponseMessage 发送路径**：是否让 IOThreadPool completion 不再回到 reactor 线程，直接在 IO 线程发送？还是 DataService transfer server 应有完全独立的收发通道？
-2. **并行线程池大小**：默认 2-4 个线程处理 PARALLEL 类消息？
-3. **DATA_QUERY 分类**：已确认 PARALLEL 安全（trigger_auto_backup 的操作都有各自独立锁保护，不碰 DependencyGraph）。
-4. **IOThreadPool process_completions() 是否完全移除**：如果 transfer completion 改为线程内直接执行，此机制可移除。但需确认是否有其他使用者依赖 process_completions 回到 reactor 线程。
+### 8.1 设计目标
+
+DataService 拥有**独立的监听端口和消息收发处理线程**，完全脱离 reactor transport。所有数据请求与回复由 DataService 自己处理，避免大数据传输阻塞 reactor。
+
+### 8.2 当前问题
+
+当前 DataService 的 "transfer server" 只是 IOThreadPool（异步读取+压缩），没有自己的网络监听层：
+
+```
+Worker::start()
+  transport->listen("0.0.0.0", 0) → 端口 P（reactor transport，控制+数据共用）
+  data_server_port_ = P
+  DataService::start_transfer_server() → 只启动 IOThreadPool，无 listen socket
+```
+
+DataClient 连接到端口 P（reactor transport），DATA_REQUEST 经过 reactor epoll：
+- reactor 解码 DATA_REQUEST → on_data_request → submit_transfer
+- IO 线程读取+压缩
+- completion 在 reactor 线程执行 → `reactor_->send(DataResponse)` → 阻塞 reactor
+
+remote_idx_ 记录的端口也是 P（reactor 端口），不是独立的 DataService 端口。
+
+### 8.3 改造方案
+
+#### 端口拆分
+
+```
+Worker/Master 启动:
+  transport->listen(host, port_C)       → 控制端口 C（给 reactor，仅控制消息）
+  DataService::start_data_server(host, port_D) → 数据端口 D（独立 listen + accept 线程）
+
+  data_server_port_ = D                  → 注册给 Master 的是 D
+  remote_idx_ 记录 host:D                → DataClient 连接到 D
+```
+
+#### DataService 网络层架构
+
+```
+DataService::start_data_server(host, port):
+  1. 创建独立 listen socket（SOCK_STREAM | SOCK_NONBLOCK | SOCK_REUSEADDR）
+  2. bind + listen
+  3. 启动 accept 线程（1 个）
+  4. 启动 IO 处理线程池（已有 IOThreadPool，复用或扩展）
+
+DataService accept 线程循环:
+  while running:
+    fd = accept(listen_fd)
+    if fd < 0: continue
+    submit 到 IO 处理线程池:
+      1. recv DataRequestMessage（帧解码）
+      2. 读取本地数据 + 压缩（现有 submit_transfer 逻辑）
+      3. 编码 DataResponseMessage
+      4. send DataResponseMessage（直接在 IO 线程，不经 reactor）
+      5. close fd（短连接，与 DataClient 的 connect→req→resp→close 模式一致）
+```
+
+**关键**：DataService 的 accept/recv/send 完全在自己的线程中，不经过 reactor transport。DataResponseMessage 的大数据发送在 IO 线程执行，不阻塞任何其他线程。
+
+#### DataClient 侧不变
+
+DataClient / MetadataClient 当前已经是独立同步 TCP fd（connect → send req → recv resp → close）。改造后连接的目标端口从 P（reactor）变为 D（DataService），客户端代码逻辑不变。
+
+MetadataClient 连接的是 Master 的控制端口 C（查询 DataLocation），返回的 data_host/data_port 是 D。DataClient 连接的是 D。
+
+#### remote_idx_ 端口变更
+
+```cpp
+// Master::on_worker_register
+DataService::register_worker(worker_id, msg.data_server_host_, msg.data_server_port_);
+//                                              ↑ msg.data_server_port_ 现在是 DataService 端口 D
+
+// Master::on_data_ready
+DataService::update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
+//                                                                          ↑ addr.port_ 是 D
+```
+
+所有 `update_remote_idx` 和 `register_worker` 记录的端口自动变为 D，因为传入的 `data_server_port_` 值变了。不需要改 DataService 的 register/update 逻辑。
+
+#### Master 侧
+
+Master 是特殊的 Worker。Master 也需要 DataService 独立监听：
+
+```cpp
+// MasterAgent::start()
+transport->listen(host_, port_);                    // 控制端口 C
+data_server_port_ = port_;                          // ← 当前错误：C 不是数据端口
+
+// 改造后:
+transport->listen(host_, port_);                    // 控制端口 C
+DataService::start_data_server(host_, 0);           // 数据端口 D（端口 0 = 内核分配）
+data_server_port_ = DataService::get_data_port();   // ← 记录 D
+DataService::register_worker(0, host_, data_server_port_);  // Master 自己也注册到 remote_idx
+```
+
+### 8.4 reactor 侧变化
+
+改造后，DATA_REQUEST 和 DATA_QUERY 不再经过 reactor：
+
+- **DATA_REQUEST**：从 reactor 的 handler 注册中**移除**。DataClient 直接连 DataService 端口 D。
+- **DATA_QUERY**：MetadataClient 连 Master 控制端口 C 查询 DataLocation。当前 MetadataClient 用独立 TCP fd 同步查询，不经 reactor。但 Master 侧的 on_data_query handler 当前注册在 reactor 上，通过 DataClient 连接进来。
+
+  等等——MetadataClient 连接的是 Master 的 reactor transport 端口（控制端口 C）。这意味着 DATA_QUERY 仍然经过 reactor。DATA_QUERY 是轻量级消息（只读查询），归为 PARALLEL 即可。
+
+- **DATA_RESPONSE**：不再作为 reactor 消息类型。DataService 直接在自己的 fd 上发送，不经 reactor transport。
+
+### 8.5 消息路由调整
+
+改造后 reactor 不再需要处理 DATA_REQUEST：
+
+| 消息 | 改造前 | 改造后 |
+|------|--------|--------|
+| DATA_REQUEST | reactor PARALLEL handler → submit_transfer | **移出 reactor**， DataService 自己 accept+处理 |
+| DATA_RESPONSE | reactor completion → send | **移出 reactor**，DataService IO 线程直接 send |
+| DATA_QUERY | reactor handler | 仍在 reactor（PARALLEL），MetadataClient 连控制端口查询 |
+
+### 8.6 IOThreadPool process_completions() 移除
+
+DataService 独立后，transfer completion 不再需要回到 reactor 线程：
+
+- IO 线程完成数据读取+压缩后，直接在**自己的线程**编码并发送 DataResponseMessage
+- 移除 `reactor::run()` 中的 `io_pool_->process_completions()` 调用
+- 移除 transfer callback 中的 `reactor_->send()` 调用
+
+IOThreadPool 的两阶段模型（task + completion）可以简化为单阶段（task 直接完成所有工作）。
+
+### 8.7 组件关系图（完整版）
+
+```
+Worker 进程
+├── Reactor Transport（端口 C：控制消息）
+│   ├── Reactor 线程: epoll → recv → decode → route
+│   │   ├── CONNECT/DISCONNECT/ERROR → 直接处理
+│   │   ├── SEQUENTIAL 消息 → 顺序队列 → 1 个消费线程
+│   │   └── PARALLEL 消息 → 并行队列 → 线程池（2-4）
+│   │                    └── post_send() → SendQueue → transport->send
+│   │
+│   └── 连接: Master ↔ Worker 长连接
+│
+├── DataService Data Server（端口 D：数据消息）
+│   ├── Accept 线程: accept → submit 到 IO 线程池
+│   ├── IO 线程池（N 线程）:
+│   │   ├── recv DataRequestMessage
+│   │   ├── 读取本地数据 + 压缩
+│   │   ├── 编码 DataResponseMessage
+│   │   └── send DataResponseMessage（直接在 IO 线程）
+│   │
+│   └── 连接: DataClient 短连接（connect → req → resp → close）
+│
+└── DataClientPool（主动拉取远程数据）
+    ├── MetadataClient → Master 控制端口 C: DataQuery → DataLocation
+    └── DataClient → 目标 Worker 数据端口 D: DataRequest → DataResponse
+```
+
+### 8.8 Master 进程
+
+Master 是特殊 Worker，同样的双端口模型：
+
+```
+Master 进程
+├── Reactor Transport（端口 C：控制消息）
+│   ├── Reactor 线程: 同上
+│   └── 连接: 所有 Worker 长连接
+│
+└── DataService Data Server（端口 D：数据消息）
+    ├── Accept 线程 + IO 线程池
+    └── Master 自己的数据也被请求时（如 backup 读取），通过端口 D 响应
+```
 
 ---
 
@@ -446,16 +610,52 @@ stop():
 
 | 文件 | 改动 |
 |------|------|
-| `src/network/cpp/reactor.h` | 新增 MessageCategory / category_of() / SendQueue / 顺序队列，改造 dispatch_message |
+| `src/network/cpp/reactor.h` | 新增 MessageCategory / category_of() / SendQueue / 顺序队列，改造 dispatch_message，移除 io_pool 相关 |
 | `src/network/cpp/reactor.cpp` | 实现 SendQueue、顺序队列消费线程、路由逻辑，移除 process_completions 调用 |
-| `src/agent/cpp/master_agent.cpp` | `reactor_->send()` → `reactor_->post_send()`（~20 处） |
-| `src/agent/cpp/worker_agent.cpp` | `reactor_->send()` → `reactor_->post_send()`（~20 处），transfer callback 发送路径改造 |
-| `src/network/cpp/io_thread_pool.h/cpp` | completion 改为线程内直接执行（待确认） |
+| `src/network/cpp/io_thread_pool.h/cpp` | completion 改为线程内直接执行（或 DataService 内部自管理） |
+| `src/storage/cpp/data_service.h` | 新增 data_server listen/accept 逻辑，start_data_server()，get_data_port()，移除 transfer callback 回 reactor 机制 |
+| `src/storage/cpp/data_service.cpp` | 实现 accept 线程 + IO 线程 recv/send，端口管理 |
+| `src/storage/cpp/BUILD` | 添加 network 依赖（DataService 需要网络层）或抽取独立模块 |
+| `src/agent/cpp/master_agent.cpp` | 启动 DataService data server，移除 DATA_REQUEST handler 注册，移除 transfer callback 中 reactor->send |
+| `src/agent/cpp/master_agent.h` | data_server_port_ 改为 DataService 端口 |
+| `src/agent/cpp/worker_agent.cpp` | 同 Master，启动 DataService data server，移除 DATA_REQUEST handler |
+| `src/agent/cpp/worker_agent.h` | data_server_port_ 改为 DataService 端口 |
 
 ### 不需要修改的文件
 
-- 消息定义 `message_types.h`
+- 消息定义 `message_types.h`（消息结构不变）
 - 序列化 `serialization_macros.h` / `message_protocol.h`
-- DataClient / MetadataClient / DataClientPool
+- DataClient / MetadataClient / DataClientPool（连接逻辑不变，目标端口自动变为 D）
 - 所有 `.py` 文件
-- 所有 test 文件（除非 handler 调用方式变化）
+- WorkerAgentContext / TaskExecutor
+
+---
+
+## 十、实施顺序
+
+建议分三个阶段，每阶段独立可测试：
+
+### 阶段 1：DataService 独立网络层
+
+1. DataService 新增 `start_data_server(host, port)` — 独立 listen socket + accept 线程
+2. DataService accept 线程接收连接，IO 线程池处理 recv DataRequest → 读数据+压缩 → send DataResponse → close fd
+3. Master/Worker::start() 中启动 DataService data server，`data_server_port_` 改为 DataService 端口
+4. 移除 reactor 上 DATA_REQUEST handler 注册
+5. 移除 transfer callback 中 `reactor_->send()`，改为 IO 线程直接 send
+6. 移除 `io_pool_->process_completions()` 调用
+7. 验证：DataClient 连接 DataService 端口，数据请求/响应正常，reactor 不再处理 DATA_REQUEST
+
+### 阶段 2：Reactor 异步化（消息分类 + 多队列）
+
+1. 新增 `MessageCategory` + `category_of()` 路由表
+2. Reactor `dispatch_message` 改为路由到顺序队列 / 并行队列
+3. 启用 HandlerThreadPool（已有定义，当前未使用）作为并行队列
+4. 新增顺序队列（单线程消费）
+5. 验证：所有消息正常处理，顺序消息保序，reactor 不再直接执行 handler
+
+### 阶段 3：异步发送 SendQueue
+
+1. 新增 `SendQueue` 组件
+2. Reactor 新增 `post_send()` 接口
+3. Master/Worker 中所有 `reactor_->send()` 改为 `reactor_->post_send()`
+4. 验证：控制消息异步发送，不阻塞 handler 线程
