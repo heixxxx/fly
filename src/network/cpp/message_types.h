@@ -43,6 +43,10 @@ enum class MessageType : uint8_t {
     HEARTBEAT_ACK = 33,
 };
 
+inline bool is_valid_message_type(uint8_t raw) {
+    return raw >= 1 && raw <= 33;
+}
+
 // 基础消息头（所有消息继承）
 struct MessageHeader {
     MessageType type = MessageType::REGISTER;

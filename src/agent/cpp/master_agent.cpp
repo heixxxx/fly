@@ -176,6 +176,11 @@ void MasterAgent::start() {
 
     reactor_thread_ = std::thread([this] {
         reactor_->run();
+        if (drain_thread_.joinable()) {
+            drain_thread_.join();
+        }
+        ds().stop_transfer_server();
+        reactor_.reset();
     });
     reactor_->wait_until_running();
     running_ = true;
@@ -1466,11 +1471,25 @@ void MasterAgent::check_shutdown_request() {
                 }
             }
 
+            reactor_->stop();
             drain_thread_ = std::thread([this] {
                 persist_pending_tasks();
-                do_drain_and_stop();
+                shutdown_requested_ = true;
+                if (heartbeat_check_thread_.joinable()) {
+                    heartbeat_check_running_ = false;
+                    heartbeat_check_cv_.notify_all();
+                    heartbeat_check_thread_.join();
+                }
+                db_instances_.clear();
+                {
+                    std::lock_guard<std::mutex> lk(workers_mutex_);
+                    conn_to_worker_.clear();
+                    worker_to_conn_.clear();
+                }
+                task_modules_.clear();
+                task_args_.clear();
+                running_ = false;
             });
-            drain_thread_.detach();
         }
     }
 }

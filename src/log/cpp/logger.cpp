@@ -8,7 +8,7 @@
 
 namespace fly {
 
-Logger* Logger::instance_ = nullptr;
+CMUniquePtr<Logger> Logger::instance_;
 
 Logger::Logger() : level_(LogLevel::DEBUG), dual_output_(false) {}
 
@@ -37,10 +37,8 @@ void Logger::init(const CMString& base_dir, uint64_t worker_id) {
 
     if (instance_) {
         instance_->flush();
-        delete instance_;
     }
-    // Master (worker_id == 0) gets dual output: file + stderr
-    instance_ = new Logger(filename, worker_id == 0);
+    instance_ = CMUniquePtr<Logger>(new Logger(filename, worker_id == 0));
 }
 
 CMString Logger::resolve_log_dir(const CMString& base_dir) {
@@ -66,8 +64,7 @@ CMString Logger::resolve_log_dir(const CMString& base_dir) {
 void Logger::shutdown() {
     if (instance_) {
         instance_->flush();
-        delete instance_;
-        instance_ = nullptr;
+        instance_.reset();
     }
 }
 
