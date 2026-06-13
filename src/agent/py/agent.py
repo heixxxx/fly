@@ -502,19 +502,6 @@ class Worker(FlyAgent):
             return False
         return self._agent.poll_task_blocking(timeout_ms)
 
-        # Wait for Workers to exit gracefully (received ShutdownMessage).
-        for proc in self._worker_procs:
-            if proc.poll() is None:
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-        self._worker_procs.clear()
-
     def set_worker_property(self, prop):
         props = self._ensure_list(prop)
         if props:
