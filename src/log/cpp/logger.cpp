@@ -8,24 +8,12 @@
 
 namespace fly {
 
-CMUniquePtr<Logger> Logger::instance_;
+CMSharedPtr<Logger> Logger::instance() {
+    static CMSharedPtr<Logger> inst = CMMakeShared<Logger>();
+    return inst;
+}
 
 Logger::Logger() : level_(LogLevel::DEBUG), dual_output_(false) {}
-
-Logger::Logger(const CMString& filename, bool dual_output)
-    : filename_(filename), level_(LogLevel::DEBUG), dual_output_(dual_output) {
-    if (!filename_.empty()) {
-        file_.open(filename_, std::ios::out | std::ios::app);
-    }
-}
-
-Logger& Logger::instance() {
-    static Logger fallback;
-    if (instance_) {
-        return *instance_;
-    }
-    return fallback;
-}
 
 void Logger::init(const CMString& base_dir, uint64_t worker_id) {
     CMString dir = _ensure_trailing_sep(base_dir);
@@ -35,10 +23,17 @@ void Logger::init(const CMString& base_dir, uint64_t worker_id) {
                         : "worker" + std::to_string(worker_id);
     CMString filename = dir + log_name + ".log";
 
-    if (instance_) {
-        instance_->flush();
+    auto inst = instance();
+    std::lock_guard<std::mutex> lock(inst->mutex_);
+
+    if (inst->file_.is_open()) {
+        inst->file_.flush();
+        inst->file_.close();
     }
-    instance_ = CMUniquePtr<Logger>(new Logger(filename, worker_id == 0));
+    inst->filename_ = filename;
+    inst->dual_output_ = (worker_id == 0);
+    inst->level_ = LogLevel::DEBUG;
+    inst->file_.open(inst->filename_, std::ios::out | std::ios::app);
 }
 
 CMString Logger::resolve_log_dir(const CMString& base_dir) {
@@ -62,9 +57,11 @@ CMString Logger::resolve_log_dir(const CMString& base_dir) {
 }
 
 void Logger::shutdown() {
-    if (instance_) {
-        instance_->flush();
-        instance_.reset();
+    auto inst = instance();
+    std::lock_guard<std::mutex> lock(inst->mutex_);
+    if (inst->file_.is_open()) {
+        inst->file_.flush();
+        inst->file_.close();
     }
 }
 

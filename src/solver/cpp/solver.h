@@ -7,10 +7,10 @@
 namespace fly {
 
 struct SubdomainInfo {
-    int subdomain_id;
-    std::vector<int> local_indices;
-    std::vector<int> own_indices;
-    std::vector<int> boundary_indices;
+    int subdomain_id_;
+    std::vector<int> local_indices_;
+    std::vector<int> own_indices_;
+    std::vector<int> boundary_indices_;
 };
 
 // Build 2D Poisson matrix (5-point stencil) of size n*n x n*n.

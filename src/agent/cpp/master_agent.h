@@ -24,22 +24,22 @@
 namespace fly {
 
 struct FailedTaskRecord {
-    uint64_t task_id = 0;
-    CMString name;
-    CMString module;
-    CMVector<CMString> args;
-    CMVector<CMString> inputs;
-    CMVector<CMString> outputs;
-    CMVector<CMString> required_capabilities;
-    CMString error_message;
+    uint64_t task_id_ = 0;
+    CMString name_;
+    CMString module_;
+    CMVector<CMString> args_;
+    CMVector<CMString> inputs_;
+    CMVector<CMString> outputs_;
+    CMVector<CMString> required_capabilities_;
+    CMString error_message_;
 
-    FLY_SERIALIZE(task_id, name, module, args, inputs, outputs,
-                  required_capabilities, error_message);
+    FLY_SERIALIZE(task_id_, name_, module_, args_, inputs_, outputs_,
+                  required_capabilities_, error_message_);
 };
 
 struct FailedTaskFile {
-    CMVector<FailedTaskRecord> records;
-    FLY_SERIALIZE(records);
+    CMVector<FailedTaskRecord> records_;
+    FLY_SERIALIZE(records_);
 };
 
 class MasterAgent {
@@ -50,9 +50,6 @@ public:
     void start();
     void stop();
     bool is_running() const;
-
-    void set_data_service(CMWeakPtr<DataService> wp);
-
 
     CMVector<uint64_t> get_connected_workers() const;
     CMVector<std::pair<uint64_t, CMString>> get_worker_hostnames() const;
@@ -177,10 +174,6 @@ private:
     std::pair<CMString, TaskErrorType> on_master_register_write(const CMString& db_id, const CMString& name);
 
     std::atomic<bool> fatal_error_{false};
-
-    CMWeakPtr<DataService> data_service_;
-
-    DataService& ds();
 
     CMUnorderedMap<uint64_t, CMString> worker_to_hostname_;
     CMUnorderedMap<uint64_t, CMString> worker_to_ip_;

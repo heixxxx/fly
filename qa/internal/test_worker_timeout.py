@@ -4,10 +4,8 @@ import time
 import shutil
 
 import _fly_log as log
-import _fly_storage as storage
 from _fly_agent import EXAgentMaster
 from _fly_task import EXTaskWorkerManager, EXTaskHeartbeatMonitor
-from _fly_storage import ex_stg_get_data_service
 
 
 def test_heartbeat_monitor_timeout():
@@ -75,8 +73,7 @@ def test_master_agent_timeout_detection():
     log.init_log(log_dir, 0)
     
     master = EXAgentMaster("127.0.0.1", 0)
-    master.set_data_service(storage.ex_stg_get_data_service())
-    
+
     connected = master.get_connected_workers()
     assert len(connected) == 0, "No workers initially"
     

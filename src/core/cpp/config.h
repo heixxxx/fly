@@ -8,9 +8,11 @@
 
 class Config {
 public:
+    Config();
+
     static constexpr int64_t INVALID_INT = INT64_MIN;
 
-    static Config& instance();
+    static CMSharedPtr<Config> instance();
 
     void set_int(const CMString& key, int64_t value);
     void set_str(const CMString& key, const CMString& value);
@@ -30,7 +32,6 @@ public:
     const CMUnorderedMap<CMString, CMString>& all_strs() const { return str_values_; }
 
 private:
-    Config();
     Config(const Config&) = delete;
     Config& operator=(const Config&) = delete;
 

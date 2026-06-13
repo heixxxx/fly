@@ -111,9 +111,9 @@ TEST_F(AgentNetworkTest, ExecutorInjection) {
     executor.set_exec_func([](uint64_t id, const CMString& name,
                               const CMString& module, const CMVector<CMString>& args) {
         TaskExecResult result;
-        result.task_id = id;
-        result.status = TaskExecStatus::SUCCESS;
-        result.output = "mock_result";
+        result.task_id_ = id;
+        result.status_ = TaskExecStatus::SUCCESS;
+        result.output_ = "mock_result";
         return result;
     });
     
@@ -122,8 +122,8 @@ TEST_F(AgentNetworkTest, ExecutorInjection) {
     worker.set_executor(exec_ptr);
     
     auto result = exec_ptr->execute(1, "test_task", "test_module", {});
-    EXPECT_EQ(result.status, TaskExecStatus::SUCCESS);
-    EXPECT_EQ(result.output, "mock_result");
+    EXPECT_EQ(result.status_, TaskExecStatus::SUCCESS);
+    EXPECT_EQ(result.output_, "mock_result");
 }
 
 TEST_F(AgentNetworkTest, EndToEndTaskExecution) {
@@ -142,9 +142,9 @@ TEST_F(AgentNetworkTest, EndToEndTaskExecution) {
     executor1.set_exec_func([](uint64_t id, const CMString& name,
                                 const CMString& module, const CMVector<CMString>& args) {
         TaskExecResult result;
-        result.task_id = id;
-        result.status = TaskExecStatus::SUCCESS;
-        result.output = "executed: " + name;
+        result.task_id_ = id;
+        result.status_ = TaskExecStatus::SUCCESS;
+        result.output_ = "executed: " + name;
         return result;
     });
     
@@ -152,9 +152,9 @@ TEST_F(AgentNetworkTest, EndToEndTaskExecution) {
     executor2.set_exec_func([](uint64_t id, const CMString& name,
                                 const CMString& module, const CMVector<CMString>& args) {
         TaskExecResult result;
-        result.task_id = id;
-        result.status = TaskExecStatus::SUCCESS;
-        result.output = "executed: " + name;
+        result.task_id_ = id;
+        result.status_ = TaskExecStatus::SUCCESS;
+        result.output_ = "executed: " + name;
         return result;
     });
     

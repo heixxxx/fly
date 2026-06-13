@@ -10,9 +10,9 @@
 #include <optional>
 
 struct ReadResult {
-    FlySerBuf data_buffer;
-    CMString py_name;
-    bool can_still_produce = false;
+    FlySerBuf data_buffer_;
+    CMString py_name_;
+    bool can_still_produce_ = false;
 };
 
 class DataReader {

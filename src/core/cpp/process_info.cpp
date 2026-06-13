@@ -1,10 +1,12 @@
 #include "process_info.h"
 #include <unistd.h>
 
-ProcessInfo& ProcessInfo::instance() {
-    static ProcessInfo info;
-    return info;
+CMSharedPtr<ProcessInfo> ProcessInfo::instance() {
+    static CMSharedPtr<ProcessInfo> inst = CMMakeShared<ProcessInfo>();
+    return inst;
 }
+
+ProcessInfo::ProcessInfo() = default;
 
 CMString ProcessInfo::hostname() const {
     if (!hostname_.empty()) {

@@ -60,19 +60,19 @@ protected:
 TEST_F(Lz4CompressorTest, CompressAndDecompress) {
     CMString input = "Hello, LZ4 compression! This is a test string with some repetition. repetition. repetition.";
     auto chunk = compressor_->compress(input);
-    EXPECT_EQ(chunk.uncompressed_size, static_cast<int32_t>(input.size()));
-    EXPECT_LT(chunk.compressed_size, static_cast<int32_t>(input.size()));
+    EXPECT_EQ(chunk.uncompressed_size_, static_cast<int32_t>(input.size()));
+    EXPECT_LT(chunk.compressed_size_, static_cast<int32_t>(input.size()));
 
-    auto result = compressor_->decompress(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
 TEST_F(Lz4CompressorTest, EmptyInput) {
     CMString input;
     auto chunk = compressor_->compress(input);
-    EXPECT_EQ(chunk.uncompressed_size, 0);
+    EXPECT_EQ(chunk.uncompressed_size_, 0);
 
-    auto result = compressor_->decompress(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result.size(), 0u);
 }
 
@@ -81,9 +81,9 @@ TEST_F(Lz4CompressorTest, LargeDataRoundTrip) {
     input.append(100000, 'y');
 
     auto chunk = compressor_->compress(input);
-    EXPECT_LT(chunk.compressed_size, static_cast<int32_t>(input.size()));
+    EXPECT_LT(chunk.compressed_size_, static_cast<int32_t>(input.size()));
 
-    auto result = compressor_->decompress(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
@@ -92,9 +92,9 @@ TEST_F(Lz4CompressorTest, StreamingChunkRoundTrip) {
     input.append(50000, 'b');
 
     auto chunk = compressor_->compress_chunk(input);
-    EXPECT_EQ(chunk.uncompressed_size, static_cast<int32_t>(input.size()));
+    EXPECT_EQ(chunk.uncompressed_size_, static_cast<int32_t>(input.size()));
 
-    auto result = compressor_->decompress_chunk(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress_chunk(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
@@ -106,7 +106,7 @@ TEST_F(Lz4CompressorTest, FactoryCreatesLz4) {
 
     CMString input = "factory test";
     auto chunk = comp->compress(input);
-    auto result = comp->decompress(chunk.uncompressed_size, chunk.data);
+    auto result = comp->decompress(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
@@ -121,19 +121,19 @@ protected:
 TEST_F(ZlibCompressorTest, CompressAndDecompress) {
     CMString input = "Hello, ZLIB compression! Testing with repetitive data. Testing with repetitive data.";
     auto chunk = compressor_->compress(input);
-    EXPECT_EQ(chunk.uncompressed_size, static_cast<int32_t>(input.size()));
-    EXPECT_LT(chunk.compressed_size, static_cast<int32_t>(input.size()));
+    EXPECT_EQ(chunk.uncompressed_size_, static_cast<int32_t>(input.size()));
+    EXPECT_LT(chunk.compressed_size_, static_cast<int32_t>(input.size()));
 
-    auto result = compressor_->decompress(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
 TEST_F(ZlibCompressorTest, EmptyInput) {
     CMString input;
     auto chunk = compressor_->compress(input);
-    EXPECT_EQ(chunk.uncompressed_size, 0);
+    EXPECT_EQ(chunk.uncompressed_size_, 0);
 
-    auto result = compressor_->decompress(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result.size(), 0u);
 }
 
@@ -141,9 +141,9 @@ TEST_F(ZlibCompressorTest, LargeDataRoundTrip) {
     CMString input(200000, 'z');
 
     auto chunk = compressor_->compress(input);
-    EXPECT_LT(chunk.compressed_size, static_cast<int32_t>(input.size()));
+    EXPECT_LT(chunk.compressed_size_, static_cast<int32_t>(input.size()));
 
-    auto result = compressor_->decompress(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
@@ -154,7 +154,7 @@ TEST_F(ZlibCompressorTest, FactoryCreatesZlib) {
 
     CMString input = "zlib factory test";
     auto chunk = comp->compress(input);
-    auto result = comp->decompress(chunk.uncompressed_size, chunk.data);
+    auto result = comp->decompress(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
@@ -169,18 +169,18 @@ protected:
 TEST_F(ZstdCompressorTest, CompressAndDecompress) {
     CMString input = "Hello, ZSTD compression! High compression ratio test data here.";
     auto chunk = compressor_->compress(input);
-    EXPECT_EQ(chunk.uncompressed_size, static_cast<int32_t>(input.size()));
+    EXPECT_EQ(chunk.uncompressed_size_, static_cast<int32_t>(input.size()));
 
-    auto result = compressor_->decompress(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
 TEST_F(ZstdCompressorTest, EmptyInput) {
     CMString input;
     auto chunk = compressor_->compress(input);
-    EXPECT_EQ(chunk.uncompressed_size, 0);
+    EXPECT_EQ(chunk.uncompressed_size_, 0);
 
-    auto result = compressor_->decompress(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result.size(), 0u);
 }
 
@@ -188,9 +188,9 @@ TEST_F(ZstdCompressorTest, LargeDataRoundTrip) {
     CMString input(200000, 'q');
 
     auto chunk = compressor_->compress(input);
-    EXPECT_LT(chunk.compressed_size, static_cast<int32_t>(input.size()));
+    EXPECT_LT(chunk.compressed_size_, static_cast<int32_t>(input.size()));
 
-    auto result = compressor_->decompress(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
@@ -201,7 +201,7 @@ TEST_F(ZstdCompressorTest, FactoryCreatesZstd) {
 
     CMString input = "zstd factory test";
     auto chunk = comp->compress(input);
-    auto result = comp->decompress(chunk.uncompressed_size, chunk.data);
+    auto result = comp->decompress(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
@@ -216,11 +216,11 @@ TEST(CompressionUtilsTest, SerializeDeserializeChunk) {
     int64_t offset = 0;
     auto deserialized = compression_utils::deserialize_chunk(serialized, offset);
 
-    EXPECT_EQ(deserialized.uncompressed_size, chunk.uncompressed_size);
-    EXPECT_EQ(deserialized.compressed_size, chunk.compressed_size);
-    EXPECT_EQ(deserialized.data, chunk.data);
+    EXPECT_EQ(deserialized.uncompressed_size_, chunk.uncompressed_size_);
+    EXPECT_EQ(deserialized.compressed_size_, chunk.compressed_size_);
+    EXPECT_EQ(deserialized.data_, chunk.data_);
 
-    auto result = compressor->decompress(deserialized.uncompressed_size, deserialized.data);
+    auto result = compressor->decompress(deserialized.uncompressed_size_, deserialized.data_);
     EXPECT_EQ(result, input);
 }
 
@@ -238,11 +238,11 @@ TEST(CompressionUtilsTest, RoundTripThroughFile) {
     auto read_chunk = compression_utils::read_compressed_from_stream(ifs, 0);
     ifs.close();
 
-    EXPECT_EQ(read_chunk.uncompressed_size, chunk.uncompressed_size);
-    EXPECT_EQ(read_chunk.compressed_size, chunk.compressed_size);
-    EXPECT_EQ(read_chunk.data, chunk.data);
+    EXPECT_EQ(read_chunk.uncompressed_size_, chunk.uncompressed_size_);
+    EXPECT_EQ(read_chunk.compressed_size_, chunk.compressed_size_);
+    EXPECT_EQ(read_chunk.data_, chunk.data_);
 
-    auto result = compressor->decompress(read_chunk.uncompressed_size, read_chunk.data);
+    auto result = compressor->decompress(read_chunk.uncompressed_size_, read_chunk.data_);
     EXPECT_EQ(result, input);
 
     std::remove(test_file.c_str());
@@ -253,22 +253,22 @@ TEST(CompressionUtilsTest, DeserializeChunkInsufficientData) {
     buffer.resize(4);
 
     int64_t offset = 0;
-    EXPECT_TRUE(compression_utils::deserialize_chunk(buffer, offset).data.empty());
+    EXPECT_TRUE(compression_utils::deserialize_chunk(buffer, offset).data_.empty());
 }
 
 TEST(CompressionUtilsTest, DeserializeChunkTruncatedPayload) {
     // Create a valid header
     CompressedChunk header;
-    header.uncompressed_size = 100;
-    header.compressed_size = 50;
-    header.data = CMString(50, 'x');
+    header.uncompressed_size_ = 100;
+    header.compressed_size_ = 50;
+    header.data_ = CMString(50, 'x');
 
     CMString buffer;
     buffer.append(reinterpret_cast<const char*>(&header), 8); // header
-    buffer.append(header.data.data(), 25); // Only 25 bytes of payload (need 50)
+    buffer.append(header.data_.data(), 25); // Only 25 bytes of payload (need 50)
 
     int64_t offset = 0;
-    EXPECT_TRUE(compression_utils::deserialize_chunk(buffer, offset).data.empty());
+    EXPECT_TRUE(compression_utils::deserialize_chunk(buffer, offset).data_.empty());
 }
 
 TEST(CompressionUtilsTest, DeserializeMultipleChunks) {
@@ -288,21 +288,21 @@ TEST(CompressionUtilsTest, DeserializeMultipleChunks) {
 
     int64_t offset = 0;
     auto deserialized1 = compression_utils::deserialize_chunk(buffer, offset);
-    EXPECT_EQ(offset, 8 + chunk1.compressed_size);
+    EXPECT_EQ(offset, 8 + chunk1.compressed_size_);
 
     auto deserialized2 = compression_utils::deserialize_chunk(buffer, offset);
-    EXPECT_EQ(offset, (8 + chunk1.compressed_size) + (8 + chunk2.compressed_size));
+    EXPECT_EQ(offset, (8 + chunk1.compressed_size_) + (8 + chunk2.compressed_size_));
 
     auto deserialized3 = compression_utils::deserialize_chunk(buffer, offset);
     EXPECT_EQ(offset, buffer.size());
 
-    auto result1 = compressor->decompress(deserialized1.uncompressed_size, deserialized1.data);
+    auto result1 = compressor->decompress(deserialized1.uncompressed_size_, deserialized1.data_);
     EXPECT_EQ(result1, input1);
 
-    auto result2 = compressor->decompress(deserialized2.uncompressed_size, deserialized2.data);
+    auto result2 = compressor->decompress(deserialized2.uncompressed_size_, deserialized2.data_);
     EXPECT_EQ(result2, input2);
 
-    auto result3 = compressor->decompress(deserialized3.uncompressed_size, deserialized3.data);
+    auto result3 = compressor->decompress(deserialized3.uncompressed_size_, deserialized3.data_);
     EXPECT_EQ(result3, input3);
 }
 
@@ -330,11 +330,11 @@ TEST(CompressionUtilsTest, ReadCompressedFromStreamNonZeroOffset) {
     auto read_chunk = compression_utils::read_compressed_from_stream(ifs, 8);
     ifs.close();
 
-    EXPECT_EQ(read_chunk.uncompressed_size, chunk.uncompressed_size);
-    EXPECT_EQ(read_chunk.compressed_size, chunk.compressed_size);
-    EXPECT_EQ(read_chunk.data, chunk.data);
+    EXPECT_EQ(read_chunk.uncompressed_size_, chunk.uncompressed_size_);
+    EXPECT_EQ(read_chunk.compressed_size_, chunk.compressed_size_);
+    EXPECT_EQ(read_chunk.data_, chunk.data_);
 
-    auto result = compressor->decompress(read_chunk.uncompressed_size, read_chunk.data);
+    auto result = compressor->decompress(read_chunk.uncompressed_size_, read_chunk.data_);
     EXPECT_EQ(result, input);
 
     std::remove(test_file.c_str());
@@ -351,18 +351,18 @@ TEST(CompressorFactoryTest, NameFromTypeInvalid) {
 TEST_F(ZstdCompressorTest, CompressDecompressChunkRoundTrip) {
     CMString input = "Test data for chunk round-trip";
     auto chunk = compressor_->compress_chunk(input);
-    EXPECT_EQ(chunk.uncompressed_size, static_cast<int32_t>(input.size()));
+    EXPECT_EQ(chunk.uncompressed_size_, static_cast<int32_t>(input.size()));
 
-    auto result = compressor_->decompress_chunk(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress_chunk(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
 TEST_F(ZlibCompressorTest, CompressDecompressChunkRoundTrip) {
     CMString input = "Test data for zlib chunk round-trip";
     auto chunk = compressor_->compress_chunk(input);
-    EXPECT_EQ(chunk.uncompressed_size, static_cast<int32_t>(input.size()));
+    EXPECT_EQ(chunk.uncompressed_size_, static_cast<int32_t>(input.size()));
 
-    auto result = compressor_->decompress_chunk(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress_chunk(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
@@ -393,11 +393,11 @@ TEST_F(ZstdCompressorTest, CustomCompressionLevels) {
     CMString input(50000, 'z');
 
     auto chunk1 = level1->compress(input);
-    auto result1 = level1->decompress(chunk1.uncompressed_size, chunk1.data);
+    auto result1 = level1->decompress(chunk1.uncompressed_size_, chunk1.data_);
     EXPECT_EQ(result1, input);
 
     auto chunk19 = level19->compress(input);
-    auto result19 = level19->decompress(chunk19.uncompressed_size, chunk19.data);
+    auto result19 = level19->decompress(chunk19.uncompressed_size_, chunk19.data_);
     EXPECT_EQ(result19, input);
 }
 
@@ -408,29 +408,29 @@ TEST_F(ZlibCompressorTest, CustomCompressionLevels) {
     CMString input(50000, 'z');
 
     auto chunk1 = level1->compress(input);
-    auto result1 = level1->decompress(chunk1.uncompressed_size, chunk1.data);
+    auto result1 = level1->decompress(chunk1.uncompressed_size_, chunk1.data_);
     EXPECT_EQ(result1, input);
 
     auto chunk9 = level9->compress(input);
-    auto result9 = level9->decompress(chunk9.uncompressed_size, chunk9.data);
+    auto result9 = level9->decompress(chunk9.uncompressed_size_, chunk9.data_);
     EXPECT_EQ(result9, input);
 }
 
 TEST_F(ZstdCompressorTest, EmptyInputChunkRoundTrip) {
     CMString input;
     auto chunk = compressor_->compress_chunk(input);
-    EXPECT_EQ(chunk.uncompressed_size, 0);
+    EXPECT_EQ(chunk.uncompressed_size_, 0);
 
-    auto result = compressor_->decompress_chunk(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress_chunk(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result.size(), 0u);
 }
 
 TEST_F(ZlibCompressorTest, EmptyInputChunkRoundTrip) {
     CMString input;
     auto chunk = compressor_->compress_chunk(input);
-    EXPECT_EQ(chunk.uncompressed_size, 0);
+    EXPECT_EQ(chunk.uncompressed_size_, 0);
 
-    auto result = compressor_->decompress_chunk(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress_chunk(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result.size(), 0u);
 }
 
@@ -442,11 +442,11 @@ TEST(CompressorFactoryTest, NoneCompressorCompressAndDecompress) {
 
     CMString input = "none compressor test data";
     auto chunk = comp->compress(input);
-    EXPECT_EQ(chunk.uncompressed_size, static_cast<int32_t>(input.size()));
-    EXPECT_EQ(chunk.compressed_size, static_cast<int32_t>(input.size()));
-    EXPECT_EQ(chunk.data, input);
+    EXPECT_EQ(chunk.uncompressed_size_, static_cast<int32_t>(input.size()));
+    EXPECT_EQ(chunk.compressed_size_, static_cast<int32_t>(input.size()));
+    EXPECT_EQ(chunk.data_, input);
 
-    auto result = comp->decompress(chunk.uncompressed_size, chunk.data);
+    auto result = comp->decompress(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
@@ -456,10 +456,10 @@ TEST(CompressorFactoryTest, NoneCompressorEmptyInput) {
 
     CMString input;
     auto chunk = comp->compress(input);
-    EXPECT_EQ(chunk.uncompressed_size, 0);
-    EXPECT_EQ(chunk.compressed_size, 0);
+    EXPECT_EQ(chunk.uncompressed_size_, 0);
+    EXPECT_EQ(chunk.compressed_size_, 0);
 
-    auto result = comp->decompress(0, chunk.data);
+    auto result = comp->decompress(0, chunk.data_);
     EXPECT_EQ(result.size(), 0u);
 }
 
@@ -469,9 +469,9 @@ TEST(CompressorFactoryTest, NoneCompressorChunkRoundTrip) {
 
     CMString input = "chunk round trip data";
     auto chunk = comp->compress_chunk(input);
-    EXPECT_EQ(chunk.uncompressed_size, static_cast<int32_t>(input.size()));
+    EXPECT_EQ(chunk.uncompressed_size_, static_cast<int32_t>(input.size()));
 
-    auto result = comp->decompress_chunk(chunk.uncompressed_size, chunk.data);
+    auto result = comp->decompress_chunk(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result, input);
 }
 
@@ -494,8 +494,8 @@ TEST_F(Lz4CompressorTest, DecompressGarbageData) {
 TEST_F(Lz4CompressorTest, EmptyInputChunkRoundTrip) {
     CMString input;
     auto chunk = compressor_->compress_chunk(input);
-    EXPECT_EQ(chunk.uncompressed_size, 0);
+    EXPECT_EQ(chunk.uncompressed_size_, 0);
 
-    auto result = compressor_->decompress_chunk(chunk.uncompressed_size, chunk.data);
+    auto result = compressor_->decompress_chunk(chunk.uncompressed_size_, chunk.data_);
     EXPECT_EQ(result.size(), 0u);
 }

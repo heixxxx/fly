@@ -311,19 +311,19 @@ static CMString make_temp_dir(const CMString& suffix) {
 class IdxLoadTest : public ::testing::Test {
 protected:
     CMString test_dir_;
-    fly::DataService& ds_ = fly::DataService::instance();
+    CMSharedPtr<fly::DataService> ds_ = fly::DataService::instance();
 
     void SetUp() override {
         test_dir_ = make_temp_dir("idxload");
         Logger::shutdown();
         Logger::init("test_logs/idxload", 0);
-        ds_.stop_transfer_server();
+        ds_->stop_transfer_server();
         WorkerAgentContext::clear();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     void TearDown() override {
-        ds_.stop_transfer_server();
+        ds_->stop_transfer_server();
         WorkerAgentContext::clear();
         std::filesystem::remove_all(test_dir_);
     }
@@ -332,13 +332,13 @@ protected:
 TEST_F(IdxLoadTest, WorkerProcessesSingleIdxFile) {
     CMString db_id = db32("test_db");
     IndexEntry entry;
-    entry.object_name = db_id + ":obj_alpha";
-    entry.file_name = "data_0.bin";
-    entry.offset = 0;
-    entry.size = 100;
+    entry.object_name_ = db_id + ":obj_alpha";
+    entry.file_name_ = "data_0.bin";
+    entry.offset_ = 0;
+    entry.size_ = 100;
     create_test_idx_file(test_dir_, "w0000005", {entry});
 
-    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -349,16 +349,16 @@ TEST_F(IdxLoadTest, WorkerProcessesSingleIdxFile) {
     ASSERT_TRUE(wait_until_registered(worker));
 
     master.send_idx_load_commands(db_id, test_dir_, {"w0000005"});
-    wait_for([&]{ return ds_.has_local_object(db_id + ":obj_alpha"); }, 100, 10);
+    wait_for([&]{ return ds_->has_local_object(db_id + ":obj_alpha"); }, 100, 10);
 
-    EXPECT_TRUE(ds_.has_local_object(db_id + ":obj_alpha"));
+    EXPECT_TRUE(ds_->has_local_object(db_id + ":obj_alpha"));
 
     worker.stop();
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database(db_id);
-    ds_.remove_local_index(db_id + ":obj_alpha");
+    ds_->unregister_database(db_id);
+    ds_->remove_local_index(db_id + ":obj_alpha");
 }
 
 TEST_F(IdxLoadTest, WorkerProcessesMultipleIdxFiles) {
@@ -367,21 +367,21 @@ TEST_F(IdxLoadTest, WorkerProcessesMultipleIdxFiles) {
     CMString full_two = db_id + ":obj_two";
 
     IndexEntry e1;
-    e1.object_name = full_one;
-    e1.file_name = "data_10.bin";
-    e1.offset = 0;
-    e1.size = 50;
+    e1.object_name_ = full_one;
+    e1.file_name_ = "data_10.bin";
+    e1.offset_ = 0;
+    e1.size_ = 50;
 
     IndexEntry e2;
-    e2.object_name = full_two;
-    e2.file_name = "data_20.bin";
-    e2.offset = 0;
-    e2.size = 75;
+    e2.object_name_ = full_two;
+    e2.file_name_ = "data_20.bin";
+    e2.offset_ = 0;
+    e2.size_ = 75;
 
     create_test_idx_file(test_dir_, "w0000010", {e1});
     create_test_idx_file(test_dir_, "w0000020", {e2});
 
-    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -392,18 +392,18 @@ TEST_F(IdxLoadTest, WorkerProcessesMultipleIdxFiles) {
     ASSERT_TRUE(wait_until_registered(worker));
 
     master.send_idx_load_commands(db_id, test_dir_, {"w0000010", "w0000020"});
-    wait_for([&]{ return ds_.has_local_object(full_one) && ds_.has_local_object(full_two); }, 100, 10);
+    wait_for([&]{ return ds_->has_local_object(full_one) && ds_->has_local_object(full_two); }, 100, 10);
 
-    EXPECT_TRUE(ds_.has_local_object(full_one));
-    EXPECT_TRUE(ds_.has_local_object(full_two));
+    EXPECT_TRUE(ds_->has_local_object(full_one));
+    EXPECT_TRUE(ds_->has_local_object(full_two));
 
     worker.stop();
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database(db_id);
-    ds_.remove_local_index(full_one);
-    ds_.remove_local_index(full_two);
+    ds_->unregister_database(db_id);
+    ds_->remove_local_index(full_one);
+    ds_->remove_local_index(full_two);
 }
 
 TEST_F(IdxLoadTest, WorkerSkipsMissingIdxFiles) {
@@ -411,13 +411,13 @@ TEST_F(IdxLoadTest, WorkerSkipsMissingIdxFiles) {
     CMString full = db_id + ":obj_exists";
 
     IndexEntry entry;
-    entry.object_name = full;
-    entry.file_name = "data_5.bin";
-    entry.offset = 0;
-    entry.size = 100;
+    entry.object_name_ = full;
+    entry.file_name_ = "data_5.bin";
+    entry.offset_ = 0;
+    entry.size_ = 100;
     create_test_idx_file(test_dir_, "w0000005", {entry});
 
-    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -428,21 +428,21 @@ TEST_F(IdxLoadTest, WorkerSkipsMissingIdxFiles) {
     ASSERT_TRUE(wait_until_registered(worker));
 
     master.send_idx_load_commands(db_id, test_dir_, {"w0000005", "w0000099"});
-    wait_for([&]{ return ds_.has_local_object(full); }, 100, 10);
+    wait_for([&]{ return ds_->has_local_object(full); }, 100, 10);
 
-    EXPECT_TRUE(ds_.has_local_object(full));
+    EXPECT_TRUE(ds_->has_local_object(full));
 
     worker.stop();
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database(db_id);
-    ds_.remove_local_index(full);
+    ds_->unregister_database(db_id);
+    ds_->remove_local_index(full);
 }
 
 TEST_F(IdxLoadTest, WorkerHandlesEmptyOldWorkerIds) {
     CMString db_id = db32("test_db");
-    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -461,7 +461,7 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyOldWorkerIds) {
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database(db_id);
+    ds_->unregister_database(db_id);
 }
 
 TEST_F(IdxLoadTest, WorkerHandlesEmptyIdxFile) {
@@ -471,7 +471,7 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyIdxFile) {
         std::ofstream ofs(idx_path, std::ios::binary);
     }
 
-    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -490,7 +490,7 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyIdxFile) {
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database(db_id);
+    ds_->unregister_database(db_id);
 }
 
 TEST_F(IdxLoadTest, WorkerLoadsMultipleEntriesPerIdx) {
@@ -499,26 +499,26 @@ TEST_F(IdxLoadTest, WorkerLoadsMultipleEntriesPerIdx) {
     CMString full_b = db_id + ":block_b";
 
     IndexEntry e1;
-    e1.object_name = full_a;
-    e1.file_name = "data_40.bin";
-    e1.offset = 0;
-    e1.size = 50;
+    e1.object_name_ = full_a;
+    e1.file_name_ = "data_40.bin";
+    e1.offset_ = 0;
+    e1.size_ = 50;
 
     IndexEntry e2;
-    e2.object_name = full_a;
-    e2.file_name = "data_40.bin";
-    e2.offset = 50;
-    e2.size = 50;
+    e2.object_name_ = full_a;
+    e2.file_name_ = "data_40.bin";
+    e2.offset_ = 50;
+    e2.size_ = 50;
 
     IndexEntry e3;
-    e3.object_name = full_b;
-    e3.file_name = "data_40.bin";
-    e3.offset = 100;
-    e3.size = 30;
+    e3.object_name_ = full_b;
+    e3.file_name_ = "data_40.bin";
+    e3.offset_ = 100;
+    e3.size_ = 30;
 
     create_test_idx_file(test_dir_, "w0000040", {e1, e2, e3});
 
-    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -529,18 +529,18 @@ TEST_F(IdxLoadTest, WorkerLoadsMultipleEntriesPerIdx) {
     ASSERT_TRUE(wait_until_registered(worker));
 
     master.send_idx_load_commands(db_id, test_dir_, {"w0000040"});
-    wait_for([&]{ return ds_.has_local_object(full_a) && ds_.has_local_object(full_b); }, 100, 10);
+    wait_for([&]{ return ds_->has_local_object(full_a) && ds_->has_local_object(full_b); }, 100, 10);
 
-    EXPECT_TRUE(ds_.has_local_object(full_a));
-    EXPECT_TRUE(ds_.has_local_object(full_b));
+    EXPECT_TRUE(ds_->has_local_object(full_a));
+    EXPECT_TRUE(ds_->has_local_object(full_b));
 
     worker.stop();
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database(db_id);
-    ds_.remove_local_index(full_a);
-    ds_.remove_local_index(full_b);
+    ds_->unregister_database(db_id);
+    ds_->remove_local_index(full_a);
+    ds_->remove_local_index(full_b);
 }
 
 TEST_F(IdxLoadTest, OnRemoveCommandExtractsShortName) {
@@ -551,7 +551,7 @@ TEST_F(IdxLoadTest, OnRemoveCommandExtractsShortName) {
 
     auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_id);
     db->write_pickle_bytes("target_obj", "remove_test_data", 16, "bytes", false);
-    fly::DataService::instance().drain_write_back();
+    fly::DataService::instance()->drain_write_back();
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -563,27 +563,27 @@ TEST_F(IdxLoadTest, OnRemoveCommandExtractsShortName) {
     ASSERT_TRUE(wait_until_registered(worker));
 
     IndexEntry entry;
-    entry.object_name = full;
-    entry.file_name = "data_0.bin";
-    entry.offset = 0;
-    entry.size = 100;
-    entry.is_large = false;
-    entry.block_count = 0;
-    ds_.on_object_written(db_id, full, entry);
-    ds_.on_flush(db_id);
-    ASSERT_TRUE(ds_.has_local_object(full));
+    entry.object_name_ = full;
+    entry.file_name_ = "data_0.bin";
+    entry.offset_ = 0;
+    entry.size_ = 100;
+    entry.is_large_ = false;
+    entry.block_count_ = 0;
+    ds_->on_object_written(db_id, full, entry);
+    ds_->on_flush(db_id);
+    ASSERT_TRUE(ds_->has_local_object(full));
 
-    ds_.update_remote_idx(full, 1, "127.0.0.1", master.get_data_server_port());
+    ds_->update_remote_idx(full, 1, "127.0.0.1", master.get_data_server_port());
 
     worker.request_object_remove(db_id, "target_obj");
 
-    EXPECT_FALSE(ds_.has_local_object(full));
+    EXPECT_FALSE(ds_->has_local_object(full));
 
     worker.stop();
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database(db_id);
+    ds_->unregister_database(db_id);
 }
 
 TEST(WorkerAgentTest, RegisterAndGetDatabase) {
@@ -729,17 +729,17 @@ TEST_F(IdxLoadTest, OnObjectRemovedHandler) {
     CMString full = db_id + ":target_obj";
 
     IndexEntry entry;
-    entry.object_name = full;
-    entry.file_name = "data_0.bin";
-    entry.offset = 0;
-    entry.size = 100;
-    entry.is_large = false;
-    entry.block_count = 0;
+    entry.object_name_ = full;
+    entry.file_name_ = "data_0.bin";
+    entry.offset_ = 0;
+    entry.size_ = 100;
+    entry.is_large_ = false;
+    entry.block_count_ = 0;
 
-    ds_.register_database(db_id, test_dir_, test_dir_ + "/data");
-    ds_.on_object_written(db_id, full, entry);
-    ds_.on_flush(db_id);
-    ASSERT_TRUE(ds_.has_local_object(full));
+    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_->on_object_written(db_id, full, entry);
+    ds_->on_flush(db_id);
+    ASSERT_TRUE(ds_->has_local_object(full));
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -750,14 +750,14 @@ TEST_F(IdxLoadTest, OnObjectRemovedHandler) {
     ASSERT_TRUE(wait_until_registered(worker));
 
     master.broadcast_object_removed(db_id, "target_obj");
-    wait_for([&] { return !ds_.has_local_object(full); }, 50, 20);
-    EXPECT_FALSE(ds_.has_local_object(full));
+    wait_for([&] { return !ds_->has_local_object(full); }, 50, 20);
+    EXPECT_FALSE(ds_->has_local_object(full));
 
     worker.stop();
     master.stop();
     wait_for_running(master, false);
 
-    ds_.unregister_database(db_id);
+    ds_->unregister_database(db_id);
 }
 
 TEST_F(IdxLoadTest, OnShutdownViaMasterStop) {
@@ -834,13 +834,7 @@ TEST_F(IdxLoadTest, InitiateShutdownFromOnDisconnect_ThenStop_CleansUp) {
 
     EXPECT_FALSE(worker.is_running());
 
-    fly::DataService::instance().stop_transfer_server();
-}
-
-TEST(WorkerAgentTest, SetDataServiceWithValidPointer) {
-    WorkerAgent worker(1, "127.0.0.1", 0);
-    auto ds = DataService::instance_ptr();
-    EXPECT_NO_THROW(worker.set_data_service(ds));
+    fly::DataService::instance()->stop_transfer_server();
 }
 
 TEST(WorkerAgentTest, BeginTaskWithWriteContextHash) {

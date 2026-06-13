@@ -11,12 +11,12 @@ namespace fly {
 class MetadataClient {
 public:
     struct DataLocation {
-        bool found = false;
-        uint64_t worker_id = 0;
-        CMString host;
-        int32_t port = 0;
-        CMString error;
-        bool can_still_produce = false;
+        bool found_ = false;
+        uint64_t worker_id_ = 0;
+        CMString host_;
+        int32_t port_ = 0;
+        CMString error_;
+        bool can_still_produce_ = false;
     };
 
     static DataLocation query_data_location(

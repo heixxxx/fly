@@ -15,8 +15,8 @@ static constexpr int64_t DEFAULT_TEMP_MAX_BYTES = 512LL * 1024 * 1024;
 
 TempStore::TempStore(int64_t max_bytes) : max_bytes_(max_bytes) {
     if (max_bytes_ <= 0) {
-        Config& cfg = Config::instance();
-        max_bytes_ = cfg.get_int("temp_store_size");
+        auto cfg = Config::instance();
+        max_bytes_ = cfg->get_int("temp_store_size");
         if (max_bytes_ <= 0) max_bytes_ = DEFAULT_TEMP_MAX_BYTES;
     }
     std::random_device rd;
@@ -36,7 +36,7 @@ void TempStore::put(const CMString& object_name, const CMString& compressed_data
     int64_t size = static_cast<int64_t>(compressed_data.size());
 
     auto old = mem_.find(object_name);
-    if (old.has_value()) mem_bytes_.fetch_sub(old->size);
+    if (old.has_value()) mem_bytes_.fetch_sub(old->size_);
     mem_.erase(object_name);
 
     auto old_path = disk_files_.find(object_name);
@@ -48,8 +48,8 @@ void TempStore::put(const CMString& object_name, const CMString& compressed_data
 
     if (mem_bytes_.load() + size <= max_bytes_) {
         MemEntry e;
-        e.compressed_data = compressed_data;
-        e.size = size;
+        e.compressed_data_ = compressed_data;
+        e.size_ = size;
         mem_.insert(object_name, std::move(e));
         mem_bytes_.fetch_add(size);
         return;
@@ -72,7 +72,7 @@ void TempStore::put(const CMString& object_name, const CMString& compressed_data
 std::pair<bool, CMString> TempStore::get(const CMString& object_name) {
     auto entry = mem_.find(object_name);
     if (entry.has_value()) {
-        return {true, entry->compressed_data};
+        return {true, entry->compressed_data_};
     }
 
     auto path = disk_files_.find(object_name);
@@ -95,7 +95,7 @@ bool TempStore::has(const CMString& object_name) {
 
 void TempStore::remove(const CMString& object_name) {
     auto entry = mem_.find(object_name);
-    if (entry.has_value()) mem_bytes_.fetch_sub(entry->size);
+    if (entry.has_value()) mem_bytes_.fetch_sub(entry->size_);
     mem_.erase(object_name);
 
     auto path = disk_files_.find(object_name);

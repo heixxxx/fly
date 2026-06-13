@@ -26,8 +26,8 @@ public:
 
 private:
     struct MemEntry {
-        CMString compressed_data;
-        int64_t size = 0;
+        CMString compressed_data_;
+        int64_t size_ = 0;
     };
 
     int64_t max_bytes_;

@@ -25,7 +25,7 @@ TEST(HeartbeatMonitorTest, DetectDeadWorker) {
     auto dead = monitor.get_dead_workers();
     EXPECT_EQ(dead.size(), 1);
     EXPECT_EQ(dead[0], 1);
-    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::DEAD);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::DEAD);
 }
 
 TEST(HeartbeatMonitorTest, AliveWorkerNotMarkedDead) {
@@ -38,7 +38,7 @@ TEST(HeartbeatMonitorTest, AliveWorkerNotMarkedDead) {
     
     auto dead = monitor.get_dead_workers();
     EXPECT_EQ(dead.size(), 0);
-    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::IDLE);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::IDLE);
 }
 
 TEST(HeartbeatMonitorTest, MultipleWorkersMixedStatus) {

@@ -5,14 +5,14 @@
 #include <cstdint>
 
 struct IndexEntry {
-    CMString object_name;
-    CMString file_name;
-    int64_t offset = 0;
-    int64_t size = 0;
-    bool is_large = false;
-    int32_t block_count = 0;
-    CMString host;
-    CMString write_context_hash;
+    CMString object_name_;
+    CMString file_name_;
+    int64_t offset_ = 0;
+    int64_t size_ = 0;
+    bool is_large_ = false;
+    int32_t block_count_ = 0;
+    CMString host_;
+    CMString write_context_hash_;
 
-    FLY_SERIALIZE(object_name, file_name, offset, size, is_large, block_count, host, write_context_hash);
+    FLY_SERIALIZE(object_name_, file_name_, offset_, size_, is_large_, block_count_, host_, write_context_hash_);
 };

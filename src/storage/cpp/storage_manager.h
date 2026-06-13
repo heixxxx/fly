@@ -8,7 +8,9 @@
 
 class StorageManager {
 public:
-    static StorageManager& instance();
+    StorageManager();
+
+    static CMSharedPtr<StorageManager> instance();
 
     StorageManager(const StorageManager&) = delete;
     StorageManager& operator=(const StorageManager&) = delete;
@@ -24,8 +26,6 @@ public:
     void reset();
 
 private:
-    StorageManager() = default;
-
     ConcurrentUnorderedMap<CMString, CMSharedPtr<Database>> databases_;
     ConcurrentUnorderedMap<uint64_t, CMSharedPtr<DataWriter>> writers_;
 };

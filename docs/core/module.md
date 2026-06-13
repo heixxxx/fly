@@ -110,7 +110,7 @@ FLY_EXPORT_MODULE(_fly_core) {
         FLY_EXPORT_METHOD("get_int", &Config::get_int)
         FLY_EXPORT_METHOD("get_str", &Config::get_str);
 
-    FLY_EXPORT_FUNCTION_REF("ex_core_get_config", []() -> Config& {
+    FLY_EXPORT_FUNCTION("ex_core_get_config", []() {
         return Config::instance();
     });
 }

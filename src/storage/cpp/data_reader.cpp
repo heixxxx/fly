@@ -64,8 +64,8 @@ CMString DataReader::read_raw_bytes(const CMString& object_name) {
 }
 
 CMString DataReader::read_raw_bytes(const IndexEntry& entry) {
-    CMString file_path = find_file_path(entry.file_name);
-    return read_from_file(file_path, entry.offset, entry.size);
+    CMString file_path = find_file_path(entry.file_name_);
+    return read_from_file(file_path, entry.offset_, entry.size_);
 }
 
 CMString DataReader::read_from_file(const CMString& file_path, int64_t offset, int64_t size) {

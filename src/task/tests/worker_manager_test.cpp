@@ -11,10 +11,10 @@ TEST(WorkerManagerTest, RegisterWorker) {
     auto worker_opt = manager.get_worker(1);
     ASSERT_TRUE(worker_opt.has_value());
     auto& worker = worker_opt->get();
-    EXPECT_EQ(worker.address, "127.0.0.1");
-    EXPECT_EQ(worker.port, 8080);
-    EXPECT_EQ(worker.status, WorkerStatus::IDLE);
-    EXPECT_EQ(worker.capabilities.size(), 2);
+    EXPECT_EQ(worker.address_, "127.0.0.1");
+    EXPECT_EQ(worker.port_, 8080);
+    EXPECT_EQ(worker.status_, WorkerStatus::IDLE);
+    EXPECT_EQ(worker.capabilities_.size(), 2);
 }
 
 TEST(WorkerManagerTest, UnregisterWorker) {
@@ -30,19 +30,19 @@ TEST(WorkerManagerTest, UpdateWorkerStatus) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
     
     manager.update_worker_status(1, WorkerStatus::BUSY);
-    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::BUSY);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::BUSY);
     
     manager.update_worker_status(1, WorkerStatus::DEAD);
-    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::DEAD);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::DEAD);
 }
 
 TEST(WorkerManagerTest, RecordHeartbeat) {
     WorkerManager manager;
     manager.register_worker(1, "127.0.0.1", 8080, {});
     
-    auto old_time = manager.get_worker(1)->get().last_heartbeat;
+    auto old_time = manager.get_worker(1)->get().last_heartbeat_;
     manager.record_heartbeat(1);
-    auto new_time = manager.get_worker(1)->get().last_heartbeat;
+    auto new_time = manager.get_worker(1)->get().last_heartbeat_;
     EXPECT_GE(new_time, old_time);
 }
 
@@ -51,12 +51,12 @@ TEST(WorkerManagerTest, AssignAndCompleteTask) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
     
     manager.assign_task(1, 100);
-    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::BUSY);
-    EXPECT_EQ(manager.get_worker(1)->get().current_task_id, 100);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::BUSY);
+    EXPECT_EQ(manager.get_worker(1)->get().current_task_id_, 100);
     
     manager.complete_task(1);
-    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::IDLE);
-    EXPECT_EQ(manager.get_worker(1)->get().current_task_id, 0);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::IDLE);
+    EXPECT_EQ(manager.get_worker(1)->get().current_task_id_, 0);
 }
 
 TEST(WorkerManagerTest, GetIdleWorkers) {
@@ -102,7 +102,7 @@ TEST(WorkerManagerTest, UpdateCapabilitiesAddOnly) {
 
     auto worker_opt1 = manager.get_worker(1);
     ASSERT_TRUE(worker_opt1.has_value());
-    EXPECT_EQ(worker_opt1->get().capabilities.size(), 3);
+    EXPECT_EQ(worker_opt1->get().capabilities_.size(), 3);
 
     auto gpu_workers = manager.get_workers_with_capability("gpu");
     EXPECT_EQ(gpu_workers.size(), 1);
@@ -117,7 +117,7 @@ TEST(WorkerManagerTest, UpdateCapabilitiesRemoveOnly) {
 
     auto worker_opt2 = manager.get_worker(1);
     ASSERT_TRUE(worker_opt2.has_value());
-    EXPECT_EQ(worker_opt2->get().capabilities.size(), 2);
+    EXPECT_EQ(worker_opt2->get().capabilities_.size(), 2);
 
     auto gpu_workers = manager.get_workers_with_capability("gpu");
     EXPECT_TRUE(gpu_workers.empty());
@@ -131,7 +131,7 @@ TEST(WorkerManagerTest, UpdateCapabilitiesAddAndRemoveSimultaneously) {
 
     auto worker_opt3 = manager.get_worker(1);
     ASSERT_TRUE(worker_opt3.has_value());
-    EXPECT_EQ(worker_opt3->get().capabilities.size(), 2);
+    EXPECT_EQ(worker_opt3->get().capabilities_.size(), 2);
 
     auto gpu_workers = manager.get_workers_with_capability("gpu");
     EXPECT_TRUE(gpu_workers.empty());
@@ -148,7 +148,7 @@ TEST(WorkerManagerTest, UpdateCapabilitiesDeduplicateOnAdd) {
 
     auto worker_opt4 = manager.get_worker(1);
     ASSERT_TRUE(worker_opt4.has_value());
-    EXPECT_EQ(worker_opt4->get().capabilities.size(), 1);
+    EXPECT_EQ(worker_opt4->get().capabilities_.size(), 1);
 }
 
 TEST(WorkerManagerTest, UpdateCapabilitiesRemoveNonexistent) {
@@ -159,7 +159,7 @@ TEST(WorkerManagerTest, UpdateCapabilitiesRemoveNonexistent) {
 
     auto worker_opt5 = manager.get_worker(1);
     ASSERT_TRUE(worker_opt5.has_value());
-    EXPECT_EQ(worker_opt5->get().capabilities.size(), 1);
+    EXPECT_EQ(worker_opt5->get().capabilities_.size(), 1);
 }
 
 TEST(WorkerManagerTest, UpdateCapabilitiesNonexistentWorker) {
@@ -219,7 +219,7 @@ TEST(WorkerManagerTest, SetHeartbeatOnExisting) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
 
     manager.set_heartbeat(1, 99999);
-    EXPECT_EQ(manager.get_worker(1)->get().last_heartbeat, 99999);
+    EXPECT_EQ(manager.get_worker(1)->get().last_heartbeat_, 99999);
 }
 
 TEST(WorkerManagerTest, AssignTaskNonExistent) {
@@ -276,10 +276,10 @@ TEST(WorkerManagerTest, ReRegisterWorkerOverwrites) {
     EXPECT_EQ(manager.get_worker_count(), 1);
     auto worker_opt = manager.get_worker(1);
     ASSERT_TRUE(worker_opt.has_value());
-    EXPECT_EQ(worker_opt->get().address, "10.0.0.1");
-    EXPECT_EQ(worker_opt->get().port, 9000);
-    EXPECT_EQ(worker_opt->get().capabilities.size(), 1);
-    EXPECT_EQ(worker_opt->get().capabilities[0], "gpu");
+    EXPECT_EQ(worker_opt->get().address_, "10.0.0.1");
+    EXPECT_EQ(worker_opt->get().port_, 9000);
+    EXPECT_EQ(worker_opt->get().capabilities_.size(), 1);
+    EXPECT_EQ(worker_opt->get().capabilities_[0], "gpu");
 }
 
 TEST(WorkerManagerTest, UpdateCapabilitiesComplexScenario) {
@@ -290,7 +290,7 @@ TEST(WorkerManagerTest, UpdateCapabilitiesComplexScenario) {
 
     auto worker_opt = manager.get_worker(1);
     ASSERT_TRUE(worker_opt.has_value());
-    auto& caps = worker_opt->get().capabilities;
+    auto& caps = worker_opt->get().capabilities_;
     EXPECT_EQ(caps.size(), 3);
 
     bool has_a = false, has_c = false, has_d = false;
@@ -332,12 +332,12 @@ TEST(WorkerManagerTest, CompleteTaskResetsWorkerState) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
 
     manager.assign_task(1, 42);
-    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::BUSY);
-    EXPECT_EQ(manager.get_worker(1)->get().current_task_id, 42);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::BUSY);
+    EXPECT_EQ(manager.get_worker(1)->get().current_task_id_, 42);
 
     manager.complete_task(1);
-    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::IDLE);
-    EXPECT_EQ(manager.get_worker(1)->get().current_task_id, 0);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::IDLE);
+    EXPECT_EQ(manager.get_worker(1)->get().current_task_id_, 0);
     EXPECT_EQ(manager.get_idle_worker_count(), 1);
 }
 
@@ -345,13 +345,13 @@ TEST(WorkerManagerTest, WorkerStatusTransitions) {
     WorkerManager manager;
     manager.register_worker(1, "127.0.0.1", 8080, {});
 
-    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::IDLE);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::IDLE);
 
     manager.update_worker_status(1, WorkerStatus::BUSY);
-    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::BUSY);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::BUSY);
 
     manager.update_worker_status(1, WorkerStatus::DEAD);
-    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::DEAD);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::DEAD);
 }
 
 TEST(WorkerManagerTest, SetHeartbeatPersistsTimestamp) {
@@ -359,10 +359,10 @@ TEST(WorkerManagerTest, SetHeartbeatPersistsTimestamp) {
     manager.register_worker(1, "127.0.0.1", 8080, {});
 
     manager.set_heartbeat(1, 12345);
-    EXPECT_EQ(manager.get_worker(1)->get().last_heartbeat, 12345);
+    EXPECT_EQ(manager.get_worker(1)->get().last_heartbeat_, 12345);
 
     manager.set_heartbeat(1, 67890);
-    EXPECT_EQ(manager.get_worker(1)->get().last_heartbeat, 67890);
+    EXPECT_EQ(manager.get_worker(1)->get().last_heartbeat_, 67890);
 }
 
 }  // namespace fly

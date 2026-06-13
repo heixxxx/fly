@@ -7,13 +7,13 @@ constexpr uint32_t FLY_OBJECT_MAGIC = 0x464C5900;
 constexpr uint8_t FLY_OBJECT_VERSION = 1;
 
 struct ObjectHeader {
-    uint32_t magic = FLY_OBJECT_MAGIC;
-    uint8_t version = FLY_OBJECT_VERSION;
-    uint16_t py_name_len = 0;
-    CMString py_name;
-    uint64_t total_size = 0;
-    uint32_t chunk_count = 0;
-    uint8_t compression_type = 0;
+    uint32_t magic_ = FLY_OBJECT_MAGIC;
+    uint8_t version_ = FLY_OBJECT_VERSION;
+    uint16_t py_name_len_ = 0;
+    CMString py_name_;
+    uint64_t total_size_ = 0;
+    uint32_t chunk_count_ = 0;
+    uint8_t compression_type_ = 0;
 
     CMString serialize() const;
     static ObjectHeader deserialize(const CMString& data, int64_t& offset);

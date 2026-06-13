@@ -10,18 +10,18 @@ void TaskManager::create_task(uint64_t task_id, const CMString& name,
                                     const CMVector<CMString>& required_capabilities) {
     std::lock_guard<std::mutex> lock(mutex_);
     TaskMetadata meta;
-    meta.task_id = task_id;
-    meta.name = name;
-    meta.status = TaskStatus::PENDING;
-    meta.inputs = inputs;
-    meta.outputs = outputs;
-    meta.config = config;
-    meta.required_capabilities = required_capabilities;
+    meta.task_id_ = task_id;
+    meta.name_ = name;
+    meta.status_ = TaskStatus::PENDING;
+    meta.inputs_ = inputs;
+    meta.outputs_ = outputs;
+    meta.config_ = config;
+    meta.required_capabilities_ = required_capabilities;
     auto now = std::chrono::system_clock::now().time_since_epoch();
-    meta.created_at = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
-    meta.started_at = 0;
-    meta.completed_at = 0;
-    meta.assigned_worker_id = 0;
+    meta.created_at_ = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+    meta.started_at_ = 0;
+    meta.completed_at_ = 0;
+    meta.assigned_worker_id_ = 0;
     tasks_[task_id] = meta;
 }
 
@@ -29,14 +29,14 @@ void TaskManager::update_task_status(uint64_t task_id, TaskStatus status) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
-        it->second.status = status;
+        it->second.status_ = status;
         auto now = std::chrono::system_clock::now().time_since_epoch();
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
-        if (status == TaskStatus::RUNNING && it->second.started_at == 0) {
-            it->second.started_at = ms;
+        if (status == TaskStatus::RUNNING && it->second.started_at_ == 0) {
+            it->second.started_at_ = ms;
         }
         if (status == TaskStatus::COMPLETED || status == TaskStatus::FAILED) {
-            it->second.completed_at = ms;
+            it->second.completed_at_ = ms;
         }
     }
 }
@@ -45,7 +45,7 @@ void TaskManager::set_error(uint64_t task_id, const CMString& error) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
-        it->second.error_message = error;
+        it->second.error_message_ = error;
     }
 }
 
@@ -53,7 +53,7 @@ void TaskManager::set_assigned_worker(uint64_t task_id, uint64_t worker_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
-        it->second.assigned_worker_id = worker_id;
+        it->second.assigned_worker_id_ = worker_id;
     }
 }
 
@@ -61,9 +61,9 @@ void TaskManager::set_timestamps(uint64_t task_id, uint64_t created, uint64_t st
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = tasks_.find(task_id);
     if (it != tasks_.end()) {
-        if (created != 0) it->second.created_at = created;
-        if (started != 0) it->second.started_at = started;
-        if (completed != 0) it->second.completed_at = completed;
+        if (created != 0) it->second.created_at_ = created;
+        if (started != 0) it->second.started_at_ = started;
+        if (completed != 0) it->second.completed_at_ = completed;
     }
 }
 
@@ -80,7 +80,7 @@ CMVector<TaskMetadata> TaskManager::get_tasks_by_status(TaskStatus status) {
     std::lock_guard<std::mutex> lock(mutex_);
     CMVector<TaskMetadata> result;
     for (const auto& [id, meta] : tasks_) {
-        if (meta.status == status) {
+        if (meta.status_ == status) {
             result.push_back(meta);
         }
     }

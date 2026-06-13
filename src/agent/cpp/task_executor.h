@@ -13,12 +13,12 @@ enum class TaskExecStatus : uint8_t {
 };
 
 struct TaskExecResult {
-    uint64_t task_id;
-    TaskExecStatus status;
-    CMString output;
-    CMString error;
-    CMVector<CMString> outputs;
-    CMVector<CMString> frozen_dbs;
+    uint64_t task_id_;
+    TaskExecStatus status_;
+    CMString output_;
+    CMString error_;
+    CMVector<CMString> outputs_;
+    CMVector<CMString> frozen_dbs_;
 };
 
 class TaskExecutor {

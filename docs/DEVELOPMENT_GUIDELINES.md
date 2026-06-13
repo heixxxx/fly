@@ -166,7 +166,7 @@ FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& base_path, cons
     return std::make_shared<Database>(base_path, data_path);
 });
 
-FLY_EXPORT_FUNCTION_REF("ex_stg_get_storage_manager", []() -> StorageManager& {
+FLY_EXPORT_FUNCTION("ex_stg_get_storage_manager", []() -> StorageManager& {
     return StorageManager::instance();
 });
 
@@ -437,7 +437,7 @@ FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
 | 宏 | 用途 | 示例 |
 |----|------|------|
 | `FLY_EXPORT_FUNCTION("name", lambda)` | 导出函数（默认返回值策略） | `FLY_EXPORT_FUNCTION("create_database", [](...) { ... })` |
-| `FLY_EXPORT_FUNCTION_REF("name", lambda)` | 导出函数（返回引用） | `FLY_EXPORT_FUNCTION_REF("get_storage_manager", []() -> StorageManager& { ... })` |
+| `FLY_EXPORT_FUNCTION("name", lambda)` | 导出函数（返回引用） | `FLY_EXPORT_FUNCTION("get_storage_manager", []() -> StorageManager& { ... })` |
 
 **示例**：
 
@@ -446,7 +446,7 @@ FLY_EXPORT_FUNCTION("compression_type_from_name", [](const CMString& name) {
     return CompressorFactory::type_from_name(name);
 });
 
-FLY_EXPORT_FUNCTION_REF("get_storage_manager", []() -> StorageManager& {
+FLY_EXPORT_FUNCTION("get_storage_manager", []() -> StorageManager& {
     return StorageManager::instance();
 });
 ```

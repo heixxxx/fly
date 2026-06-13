@@ -46,12 +46,12 @@ void CompressingStreamBuf::flush_chunk() {
     if (compressor_) {
         CompressedChunk chunk = compressor_->compress(input);
 
-        int32_t uncomp_size = chunk.uncompressed_size;
-        int32_t comp_size = chunk.compressed_size;
+        int32_t uncomp_size = chunk.uncompressed_size_;
+        int32_t comp_size = chunk.compressed_size_;
 
         dest_.write(reinterpret_cast<const char*>(&uncomp_size), sizeof(int32_t));
         dest_.write(reinterpret_cast<const char*>(&comp_size), sizeof(int32_t));
-        dest_.write(chunk.data.data(), static_cast<std::streamsize>(chunk.compressed_size));
+        dest_.write(chunk.data_.data(), static_cast<std::streamsize>(chunk.compressed_size_));
     } else {
         int32_t size = static_cast<int32_t>(buffer_.size());
 

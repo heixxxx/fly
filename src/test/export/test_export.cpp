@@ -29,8 +29,8 @@ FLY_EXPORT_FUNCTION("ex_test_parallel_read",
     for (size_t i = 0; i < names.size(); i++) {
         threads.emplace_back([db, &names, i, &total_sum, &local_count, &remote_count]() {
             auto full = db->get_obj_name(names[i]);
-            auto& ds = fly::DataService::instance();
-            bool was_local = ds.has_local_object(full);
+            auto ds = fly::DataService::instance();
+            bool was_local = ds->has_local_object(full);
 
             auto obj = db->read_object<TestObject>(names[i]);
             total_sum += obj->value;

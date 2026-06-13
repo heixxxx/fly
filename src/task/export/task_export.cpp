@@ -21,33 +21,33 @@ FLY_EXPORT_ENUM(fly::TaskStatus, "EXTaskTaskStatus")
     FLY_EXPORT_ENUM_VALUE("CANCELLED", fly::TaskStatus::CANCELLED);
 
 FLY_EXPORT_CLASS(fly::WorkerInfo, "EXTaskWorkerInfo")
-    FLY_EXPORT_READONLY_ATTR("worker_id", &fly::WorkerInfo::worker_id)
-    FLY_EXPORT_READONLY_ATTR("address", &fly::WorkerInfo::address)
-    FLY_EXPORT_READONLY_ATTR("port", &fly::WorkerInfo::port)
-    FLY_EXPORT_READONLY_ATTR("status", &fly::WorkerInfo::status)
-    FLY_EXPORT_READONLY_ATTR("capabilities", &fly::WorkerInfo::capabilities)
-    FLY_EXPORT_READONLY_ATTR("last_heartbeat", &fly::WorkerInfo::last_heartbeat)
-    FLY_EXPORT_READONLY_ATTR("current_task_id", &fly::WorkerInfo::current_task_id);
+    FLY_EXPORT_READONLY_ATTR("worker_id", &fly::WorkerInfo::worker_id_)
+    FLY_EXPORT_READONLY_ATTR("address", &fly::WorkerInfo::address_)
+    FLY_EXPORT_READONLY_ATTR("port", &fly::WorkerInfo::port_)
+    FLY_EXPORT_READONLY_ATTR("status", &fly::WorkerInfo::status_)
+    FLY_EXPORT_READONLY_ATTR("capabilities", &fly::WorkerInfo::capabilities_)
+    FLY_EXPORT_READONLY_ATTR("last_heartbeat", &fly::WorkerInfo::last_heartbeat_)
+    FLY_EXPORT_READONLY_ATTR("current_task_id", &fly::WorkerInfo::current_task_id_);
 
 FLY_EXPORT_CLASS(fly::TaskMetadata, "EXTaskTaskMetadata")
-    FLY_EXPORT_READONLY_ATTR("task_id", &fly::TaskMetadata::task_id)
-    FLY_EXPORT_READONLY_ATTR("name", &fly::TaskMetadata::name)
-    FLY_EXPORT_READONLY_ATTR("status", &fly::TaskMetadata::status)
-    FLY_EXPORT_READONLY_ATTR("inputs", &fly::TaskMetadata::inputs)
-    FLY_EXPORT_READONLY_ATTR("outputs", &fly::TaskMetadata::outputs)
-    FLY_EXPORT_READONLY_ATTR("config", &fly::TaskMetadata::config)
-    FLY_EXPORT_READONLY_ATTR("required_capabilities", &fly::TaskMetadata::required_capabilities)
-    FLY_EXPORT_READONLY_ATTR("created_at", &fly::TaskMetadata::created_at)
-    FLY_EXPORT_READONLY_ATTR("started_at", &fly::TaskMetadata::started_at)
-    FLY_EXPORT_READONLY_ATTR("completed_at", &fly::TaskMetadata::completed_at)
-    FLY_EXPORT_READONLY_ATTR("error_message", &fly::TaskMetadata::error_message)
-    FLY_EXPORT_READONLY_ATTR("assigned_worker_id", &fly::TaskMetadata::assigned_worker_id);
+    FLY_EXPORT_READONLY_ATTR("task_id", &fly::TaskMetadata::task_id_)
+    FLY_EXPORT_READONLY_ATTR("name", &fly::TaskMetadata::name_)
+    FLY_EXPORT_READONLY_ATTR("status", &fly::TaskMetadata::status_)
+    FLY_EXPORT_READONLY_ATTR("inputs", &fly::TaskMetadata::inputs_)
+    FLY_EXPORT_READONLY_ATTR("outputs", &fly::TaskMetadata::outputs_)
+    FLY_EXPORT_READONLY_ATTR("config", &fly::TaskMetadata::config_)
+    FLY_EXPORT_READONLY_ATTR("required_capabilities", &fly::TaskMetadata::required_capabilities_)
+    FLY_EXPORT_READONLY_ATTR("created_at", &fly::TaskMetadata::created_at_)
+    FLY_EXPORT_READONLY_ATTR("started_at", &fly::TaskMetadata::started_at_)
+    FLY_EXPORT_READONLY_ATTR("completed_at", &fly::TaskMetadata::completed_at_)
+    FLY_EXPORT_READONLY_ATTR("error_message", &fly::TaskMetadata::error_message_)
+    FLY_EXPORT_READONLY_ATTR("assigned_worker_id", &fly::TaskMetadata::assigned_worker_id_);
 
 FLY_EXPORT_CLASS(fly::ScheduleResult, "EXTaskScheduleResult")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_ATTR("task_id", &fly::ScheduleResult::task_id)
-    FLY_EXPORT_ATTR("worker_id", &fly::ScheduleResult::worker_id)
-    FLY_EXPORT_ATTR("scheduled", &fly::ScheduleResult::scheduled);
+    FLY_EXPORT_ATTR("task_id", &fly::ScheduleResult::task_id_)
+    FLY_EXPORT_ATTR("worker_id", &fly::ScheduleResult::worker_id_)
+    FLY_EXPORT_ATTR("scheduled", &fly::ScheduleResult::scheduled_);
 
 FLY_EXPORT_CLASS(fly::DependencyGraph, "EXTaskDependencyGraph")
     FLY_EXPORT_INIT()

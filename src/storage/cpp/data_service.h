@@ -18,31 +18,31 @@
 namespace fly {
 
 struct RemoteObjectMeta {
-    CMVector<uint64_t> workers;
-    uint64_t read_count = 0;
-    int64_t last_access_time = 0;   // epoch seconds
+    CMVector<uint64_t> workers_;
+    uint64_t read_count_ = 0;
+    int64_t last_access_time_ = 0;   // epoch seconds
 };
 
 struct BackupDecision {
-    bool should_backup = false;
-    uint32_t current_replicas = 0;
-    uint32_t target_replicas = 0;
+    bool should_backup_ = false;
+    uint32_t current_replicas_ = 0;
+    uint32_t target_replicas_ = 0;
 };
 
 struct RemoteObjectInfo {
-    uint64_t worker_id = 0;
-    CMString host;
-    int32_t port = 0;
+    uint64_t worker_id_ = 0;
+    CMString host_;
+    int32_t port_ = 0;
 };
 
 struct TransferResult {
-    uint64_t conn_id = 0;
-    CMString object_name;
-    bool success = false;
-    CMString error_message;
-    CMString compressed_data;
-    CMString py_name;
-    CMString write_context_hash;
+    uint64_t conn_id_ = 0;
+    CMString object_name_;
+    bool success_ = false;
+    CMString error_message_;
+    CMString compressed_data_;
+    CMString py_name_;
+    CMString write_context_hash_;
 };
 
 enum class CompletionState {
@@ -52,23 +52,24 @@ enum class CompletionState {
 };
 
 struct LocalObjectInfo {
-    CMString db_id;
-    CMVector<IndexEntry> entries;
-    bool flushed = false;
-    CompletionState completion_state = CompletionState::INCOMPLETE;
-    CMString error_message;
-    bool is_temp = false;
-    CMString temp_compressed_data;
+    CMString db_id_;
+    CMVector<IndexEntry> entries_;
+    bool flushed_ = false;
+    CompletionState completion_state_ = CompletionState::INCOMPLETE;
+    CMString error_message_;
+    bool is_temp_ = false;
+    CMString temp_compressed_data_;
 
-    std::mutex cv_mutex;
-    std::condition_variable cv;
+    std::mutex cv_mutex_;
+    std::condition_variable cv_;
 };
 
-class DataService : public std::enable_shared_from_this<DataService> {
+class DataService {
 public:
-    static DataService& instance();
-    static CMSharedPtr<DataService> instance_ptr();
+    DataService();
+    ~DataService();
 
+    static CMSharedPtr<DataService> instance();
     using RemoteCompressedReadCallback = std::function<std::tuple<bool, CMString, CMString, bool>(
         const CMString& object_name)>;
     using DirectCompressedReadCallback = std::function<std::tuple<bool, CMString, CMString, CMString>(
@@ -222,16 +223,10 @@ public:
     uint64_t get_access_read_count(const CMString& object_name) const;
 
 private:
-    DataService() = default;
-    ~DataService();
-
-    struct Creator_;
-    friend struct Creator_;
-
     struct DbPaths {
-        CMString base_path;
-        CMString data_path;
-        CMString writer_id;
+        CMString base_path_;
+        CMString data_path_;
+        CMString writer_id_;
     };
 
     // ============================================================

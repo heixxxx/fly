@@ -21,34 +21,34 @@
 namespace fly {
 
 struct PendingTask {
-    uint64_t task_id;
-    CMString task_name;
-    CMString task_module;
-    CMVector<CMString> args;
-    CMString write_context_hash;
+    uint64_t task_id_;
+    CMString task_name_;
+    CMString task_module_;
+    CMVector<CMString> args_;
+    CMString write_context_hash_;
 };
 
 struct PendingDbPath {
-    CMString db_id;
-    CMString base_path;
-    CMString data_path;
-    bool completed = false;
-    bool success = false;
+    CMString db_id_;
+    CMString base_path_;
+    CMString data_path_;
+    bool completed_ = false;
+    bool success_ = false;
 };
 
 struct PendingWriteRegister {
-    CMString object_name;
-    bool completed = false;
-    bool success = false;
-    CMString error_message;
-    TaskErrorType error_type = TaskErrorType::UNKNOWN;
+    CMString object_name_;
+    bool completed_ = false;
+    bool success_ = false;
+    CMString error_message_;
+    TaskErrorType error_type_ = TaskErrorType::UNKNOWN;
 };
 
 struct PendingBackup {
-    CMString object_name;
-    CMString db_id;
-    bool completed = false;
-    bool success = false;
+    CMString object_name_;
+    CMString db_id_;
+    bool completed_ = false;
+    bool success_ = false;
 };
 
 class WorkerAgent {
@@ -64,8 +64,6 @@ public:
     
     void set_executor(CMSharedPtr<TaskExecutor> executor);
 
-    void set_data_service(CMWeakPtr<DataService> wp);
-    
     void begin_task(uint64_t task_id, const CMString& write_context_hash = "");
     void record_write(const CMString& db_id, const CMString& object_name);
     CMVector<CMString> end_task(uint64_t task_id);
@@ -145,10 +143,10 @@ private:
     CMUnorderedMap<CMString, CMSharedPtr<PendingWriteRegister>> pending_write_regs_;
 
     struct PendingRemove {
-        std::mutex mutex;
-        std::condition_variable cv;
-        bool completed = false;
-        bool success = false;
+        std::mutex mutex_;
+        std::condition_variable cv_;
+        bool completed_ = false;
+        bool success_ = false;
     };
 
     std::mutex pending_remove_mutex_;
@@ -173,11 +171,7 @@ private:
     void initiate_shutdown(const CMString& reason);
     void do_cleanup();
 
-    CMWeakPtr<DataService> data_service_;
-
-    DataService& ds();
-
-    DataClientPool data_client_pool_{Config::instance().get_int("data_client_pool_size")};
+    DataClientPool data_client_pool_{Config::instance()->get_int("data_client_pool_size")};
 
     // Master liveness tracking — seconds since epoch (atomic for cross-thread access)
     std::atomic<int64_t> last_master_contact_{0};

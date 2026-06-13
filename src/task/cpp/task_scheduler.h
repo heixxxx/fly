@@ -8,9 +8,9 @@
 namespace fly {
 
 struct ScheduleResult {
-    uint64_t task_id;
-    uint64_t worker_id;
-    bool scheduled;
+    uint64_t task_id_;
+    uint64_t worker_id_;
+    bool scheduled_;
 };
 
 class TaskScheduler {

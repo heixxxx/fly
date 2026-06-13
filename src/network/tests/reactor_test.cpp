@@ -90,8 +90,8 @@ TEST(ReactorTest, SendMessage) {
     
     uint64_t server_conn = 0;
     for (const auto& ev : events) {
-        if (ev.type == TransportEventType::CONNECT) {
-            server_conn = ev.conn_id;
+        if (ev.type_ == TransportEventType::CONNECT) {
+            server_conn = ev.conn_id_;
             break;
         }
     }
@@ -100,8 +100,8 @@ TEST(ReactorTest, SendMessage) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
     HeartbeatMessage msg;
-    msg.header.type = MessageType::HEARTBEAT;
-    msg.worker_id = 123;
+    msg.header_.type_ = MessageType::HEARTBEAT;
+    msg.worker_id_ = 123;
     
     CMString encoded = MessageProtocol::encode(msg);
     client.send(client_conn, encoded);
@@ -109,7 +109,7 @@ TEST(ReactorTest, SendMessage) {
     events = server.poll(500);
     bool found_data = false;
     for (const auto& ev : events) {
-        if (ev.type == TransportEventType::DATA) {
+        if (ev.type_ == TransportEventType::DATA) {
             found_data = true;
             break;
         }

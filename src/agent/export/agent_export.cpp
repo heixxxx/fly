@@ -15,11 +15,11 @@ FLY_EXPORT_ENUM(fly::TaskExecStatus, "EXTaskExecStatus")
 
 FLY_EXPORT_CLASS(fly::TaskExecResult, "EXTaskExecResult")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_ATTR("task_id", &fly::TaskExecResult::task_id)
-    FLY_EXPORT_ATTR("status", &fly::TaskExecResult::status)
-    FLY_EXPORT_ATTR("output", &fly::TaskExecResult::output)
-    FLY_EXPORT_ATTR("error", &fly::TaskExecResult::error)
-    FLY_EXPORT_ATTR("outputs", &fly::TaskExecResult::outputs);
+    FLY_EXPORT_ATTR("task_id", &fly::TaskExecResult::task_id_)
+    FLY_EXPORT_ATTR("status", &fly::TaskExecResult::status_)
+    FLY_EXPORT_ATTR("output", &fly::TaskExecResult::output_)
+    FLY_EXPORT_ATTR("error", &fly::TaskExecResult::error_)
+    FLY_EXPORT_ATTR("outputs", &fly::TaskExecResult::outputs_);
 
 FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
     FLY_EXPORT_INIT()
@@ -35,26 +35,26 @@ FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
             try {
                 fly_export::object result = py_func(task_id, task_name, task_module, args);
                 fly::TaskExecResult cpp_result;
-                cpp_result.task_id = fly_export::cast<uint64_t>(result[fly_export::str("task_id")]);
+                cpp_result.task_id_ = fly_export::cast<uint64_t>(result[fly_export::str("task_id")]);
                 long status_val = PyLong_AsLong(result[fly_export::str("status")].ptr());
                 if (status_val == -1 && PyErr_Occurred()) {
                     PyErr_Clear();
                     status_val = 1;
                 }
-                cpp_result.status = static_cast<fly::TaskExecStatus>(status_val);
-                cpp_result.output = fly_export::cast<fly::CMString>(result[fly_export::str("output")]);
-                cpp_result.error = fly_export::cast<fly::CMString>(result[fly_export::str("error")]);
-                cpp_result.outputs = fly_export::cast<fly::CMVector<fly::CMString>>(result[fly_export::str("outputs")]);
-                cpp_result.frozen_dbs = fly_export::cast<fly::CMVector<fly::CMString>>(result[fly_export::str("frozen_dbs")]);
+                cpp_result.status_ = static_cast<fly::TaskExecStatus>(status_val);
+                cpp_result.output_ = fly_export::cast<fly::CMString>(result[fly_export::str("output")]);
+                cpp_result.error_ = fly_export::cast<fly::CMString>(result[fly_export::str("error")]);
+                cpp_result.outputs_ = fly_export::cast<fly::CMVector<fly::CMString>>(result[fly_export::str("outputs")]);
+                cpp_result.frozen_dbs_ = fly_export::cast<fly::CMVector<fly::CMString>>(result[fly_export::str("frozen_dbs")]);
                 return cpp_result;
             } catch (const fly_export::python_error& e) {
                 fly::TaskExecResult cpp_result;
-                cpp_result.task_id = task_id;
-                cpp_result.status = fly::TaskExecStatus::FAILED;
-                cpp_result.output = "";
-                cpp_result.error = e.what();
-                cpp_result.outputs = {};
-                cpp_result.frozen_dbs = {};
+                cpp_result.task_id_ = task_id;
+                cpp_result.status_ = fly::TaskExecStatus::FAILED;
+                cpp_result.output_ = "";
+                cpp_result.error_ = e.what();
+                cpp_result.outputs_ = {};
+                cpp_result.frozen_dbs_ = {};
                 return cpp_result;
             }
         };
@@ -141,13 +141,10 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
         auto& result = pair.second;
         return fly_export::make_tuple(
             fly_export::bytes(
-                result.data_buffer.data(),
-                result.data_buffer.size()),
-            result.py_name
+                result.data_buffer_.data(),
+                result.data_buffer_.size()),
+            result.py_name_
         );
-    })
-    FLY_EXPORT_METHOD("set_data_service", [](fly::MasterAgent& self, fly::DataService& ds) {
-        self.set_data_service(ds.shared_from_this());
     })
     FLY_EXPORT_METHOD("restart_failed_tasks", [](fly::MasterAgent& self, const fly::CMString& file_path) {
         self.restart_failed_tasks(file_path);
@@ -245,17 +242,14 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
         auto& result = pair.second;
         return fly_export::make_tuple(
             fly_export::bytes(
-                result.data_buffer.data(),
-                result.data_buffer.size()),
-            result.py_name
+                result.data_buffer_.data(),
+                result.data_buffer_.size()),
+            result.py_name_
         );
     })
     FLY_EXPORT_METHOD("request_db_path", [](fly::WorkerAgent& self,
                                                const fly::CMString& db_id) -> bool {
         return self.request_db_path(db_id);
-    })
-    FLY_EXPORT_METHOD("set_data_service", [](fly::WorkerAgent& self, fly::DataService& ds) {
-        self.set_data_service(ds.shared_from_this());
     })
     FLY_EXPORT_METHOD("set_worker_property", [](fly::WorkerAgent& self,
                                                    const fly::CMVector<fly::CMString>& props) {

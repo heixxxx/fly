@@ -103,7 +103,7 @@ private:
 
 template<typename T>
 void Reactor::register_handler(MessageHandler<T> handler) {
-    handlers_[T::msg_type] = [handler](uint64_t conn_id, CMString& raw) {
+    handlers_[T::msg_type_] = [handler](uint64_t conn_id, CMString& raw) {
         T msg;
         if (MessageProtocol::decode(raw, msg)) {
             handler(conn_id, msg);

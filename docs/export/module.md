@@ -56,7 +56,7 @@ FLY_EXPORT_MODULE(_fly_module) {
 | `FLY_EXPORT_ENUM(EnumType, "name")` | 导出枚举 |
 | `FLY_EXPORT_ENUM_VALUE("name", value)` | 导出枚举值 |
 | `FLY_EXPORT_FUNCTION("name", lambda)` | 导出函数（值返回） |
-| `FLY_EXPORT_FUNCTION_REF("name", lambda)` | 导出函数（引用返回） |
+| `FLY_EXPORT_FUNCTION("name", lambda)` | 导出函数（引用返回） |
 
 ---
 

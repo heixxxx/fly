@@ -224,8 +224,8 @@ CMVector<TransportEvent> TCPTransport::poll(int timeout_ms) {
             uint64_t new_conn_id = register_connection(client_fd);
             
             TransportEvent ev;
-            ev.type = TransportEventType::CONNECT;
-            ev.conn_id = new_conn_id;
+            ev.type_ = TransportEventType::CONNECT;
+            ev.conn_id_ = new_conn_id;
             events.push_back(ev);
             
         } else {
@@ -247,9 +247,9 @@ CMVector<TransportEvent> TCPTransport::poll(int timeout_ms) {
                 getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len);
                 
                 TransportEvent ev;
-                ev.type = TransportEventType::ERROR;
-                ev.conn_id = conn_id;
-                ev.error_code = error;
+                ev.type_ = TransportEventType::ERROR;
+                ev.conn_id_ = conn_id;
+                ev.error_code_ = error;
                 events.push_back(ev);
                 
                 DBG("[TCP-CLOSE] EPOLLERR/HUP conn_id={}, fd={}, thread={} → unregister then close",
@@ -265,8 +265,8 @@ CMVector<TransportEvent> TCPTransport::poll(int timeout_ms) {
                 
                 if (data.empty()) {
                     TransportEvent ev;
-                    ev.type = TransportEventType::DISCONNECT;
-                    ev.conn_id = conn_id;
+                    ev.type_ = TransportEventType::DISCONNECT;
+                    ev.conn_id_ = conn_id;
                     events.push_back(ev);
                     
                     DBG("[TCP-CLOSE] DISCONNECT conn_id={}, fd={}, thread={} → unregister then close",
@@ -276,9 +276,9 @@ CMVector<TransportEvent> TCPTransport::poll(int timeout_ms) {
                     ::close(fd);
                 } else {
                     TransportEvent ev;
-                    ev.type = TransportEventType::DATA;
-                    ev.conn_id = conn_id;
-                    ev.data = std::move(data);
+                    ev.type_ = TransportEventType::DATA;
+                    ev.conn_id_ = conn_id;
+                    ev.data_ = std::move(data);
                     events.push_back(ev);
                 }
             }

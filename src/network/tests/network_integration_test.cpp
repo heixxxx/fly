@@ -35,8 +35,8 @@ TEST_F(NetworkIntegrationTest, FullMessageRoundTrip) {
     std::thread server_thread([&] {
         auto events = server_transport.poll(2000);
         for (const auto& ev : events) {
-            if (ev.type == TransportEventType::CONNECT) {
-                server_conn_id = ev.conn_id;
+            if (ev.type_ == TransportEventType::CONNECT) {
+                server_conn_id = ev.conn_id_;
                 server_ready = true;
             }
         }
@@ -44,11 +44,11 @@ TEST_F(NetworkIntegrationTest, FullMessageRoundTrip) {
         while (messages_received.load() < 1) {
             events = server_transport.poll(500);
             for (const auto& ev : events) {
-                if (ev.type == TransportEventType::DATA) {
-                    CMString buffer = ev.data;
+                if (ev.type_ == TransportEventType::DATA) {
+                    CMString buffer = ev.data_;
                     HeartbeatMessage msg;
                     if (MessageProtocol::decode(buffer, msg)) {
-                        received_worker_id = msg.worker_id;
+                        received_worker_id = msg.worker_id_;
                         messages_received++;
                     }
                 }
@@ -61,12 +61,12 @@ TEST_F(NetworkIntegrationTest, FullMessageRoundTrip) {
     wait_for([&]{ return server_ready.load(); });
     
     HeartbeatMessage msg;
-    msg.header.type = MessageType::HEARTBEAT;
-    msg.header.message_id = 1;
-    msg.header.timestamp = std::chrono::system_clock::now().time_since_epoch().count();
-    msg.worker_id = 12345;
-    msg.running_tasks = {1, 2, 3};
-    msg.attributes = {"gpu", "fast"};
+    msg.header_.type_ = MessageType::HEARTBEAT;
+    msg.header_.message_id_ = 1;
+    msg.header_.timestamp_ = std::chrono::system_clock::now().time_since_epoch().count();
+    msg.worker_id_ = 12345;
+    msg.running_tasks_ = {1, 2, 3};
+    msg.attributes_ = {"gpu", "fast"};
     
     CMString encoded = MessageProtocol::encode(msg);
     client_transport.send(client_conn, encoded);
@@ -94,8 +94,8 @@ TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
     std::thread server_thread([&] {
         auto events = server_transport.poll(2000);
         for (const auto& ev : events) {
-            if (ev.type == TransportEventType::CONNECT) {
-                server_conn_id = ev.conn_id;
+            if (ev.type_ == TransportEventType::CONNECT) {
+                server_conn_id = ev.conn_id_;
                 server_ready = true;
             }
         }
@@ -104,17 +104,17 @@ TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
         while (!request_received) {
             events = server_transport.poll(500);
             for (const auto& ev : events) {
-                if (ev.type == TransportEventType::DATA && !request_received) {
-                    CMString buffer = ev.data;
+                if (ev.type_ == TransportEventType::DATA && !request_received) {
+                    CMString buffer = ev.data_;
                     DataRequestMessage req;
                     if (MessageProtocol::decode(buffer, req)) {
                         request_received = true;
                         
                         DataResponseMessage resp;
-                        resp.header.type = MessageType::DATA_RESPONSE;
-                        resp.header.message_id = 2;
-                        resp.object_name = req.object_name;
-                        resp.compressed_data = "response_data_payload";
+                        resp.header_.type_ = MessageType::DATA_RESPONSE;
+                        resp.header_.message_id_ = 2;
+                        resp.object_name_ = req.object_name_;
+                        resp.compressed_data_ = "response_data_payload";
                         
                         CMString encoded_resp = MessageProtocol::encode(resp);
                         server_transport.send(server_conn_id.load(), encoded_resp);
@@ -128,11 +128,11 @@ TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
         while (!response_received.load()) {
             auto events = client_transport.poll(500);
             for (const auto& ev : events) {
-                if (ev.type == TransportEventType::DATA) {
-                    CMString buffer = ev.data;
+                if (ev.type_ == TransportEventType::DATA) {
+                    CMString buffer = ev.data_;
                     DataResponseMessage resp;
                     if (MessageProtocol::decode(buffer, resp)) {
-                        if (resp.compressed_data == "response_data_payload") {
+                        if (resp.compressed_data_ == "response_data_payload") {
                             data_matches = true;
                         }
                         response_received = true;
@@ -147,10 +147,10 @@ TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
     wait_for([&]{ return server_ready.load(); });
     
     DataRequestMessage req;
-    req.header.type = MessageType::DATA_REQUEST;
-    req.header.message_id = 1;
-    req.object_name = "test/object";
-    req.requesting_worker_id = 100;
+    req.header_.type_ = MessageType::DATA_REQUEST;
+    req.header_.message_id_ = 1;
+    req.object_name_ = "test/object";
+    req.requesting_worker_id_ = 100;
     
     CMString encoded_req = MessageProtocol::encode(req);
     auto send_result = client_transport.send(client_conn, encoded_req);
@@ -180,8 +180,8 @@ TEST_F(NetworkIntegrationTest, MultipleMessagesInSequence) {
     std::thread server_thread([&] {
         auto events = server_transport.poll(2000);
         for (const auto& ev : events) {
-            if (ev.type == TransportEventType::CONNECT) {
-                server_conn_id = ev.conn_id;
+            if (ev.type_ == TransportEventType::CONNECT) {
+                server_conn_id = ev.conn_id_;
                 server_ready = true;
             }
         }
@@ -191,8 +191,8 @@ TEST_F(NetworkIntegrationTest, MultipleMessagesInSequence) {
         while (total_received.load() < 5) {
             events = server_transport.poll(200);
             for (const auto& ev : events) {
-                if (ev.type == TransportEventType::DATA) {
-                    accumulated_buffer += ev.data;
+                if (ev.type_ == TransportEventType::DATA) {
+                    accumulated_buffer += ev.data_;
                     
                     while (!accumulated_buffer.empty()) {
                         HeartbeatMessage msg;
@@ -201,7 +201,7 @@ TEST_F(NetworkIntegrationTest, MultipleMessagesInSequence) {
                             total_received++;
                             {
                                 std::lock_guard<std::mutex> lock(ids_mutex);
-                                received_worker_ids.push_back(msg.worker_id);
+                                received_worker_ids.push_back(msg.worker_id_);
                             }
                         } else {
                             accumulated_buffer = temp;
@@ -220,9 +220,9 @@ TEST_F(NetworkIntegrationTest, MultipleMessagesInSequence) {
     CMString combined_payload;
     for (int i = 0; i < 5; i++) {
         HeartbeatMessage msg;
-        msg.header.type = MessageType::HEARTBEAT;
-        msg.header.message_id = i + 1;
-        msg.worker_id = 100 + i;
+        msg.header_.type_ = MessageType::HEARTBEAT;
+        msg.header_.message_id_ = i + 1;
+        msg.worker_id_ = 100 + i;
         
         CMString encoded = MessageProtocol::encode(msg);
         combined_payload += encoded;
@@ -257,8 +257,8 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
     std::thread server_thread([&] {
         auto events = server_transport.poll(2000);
         for (const auto& ev : events) {
-            if (ev.type == TransportEventType::CONNECT) {
-                server_conn_id = ev.conn_id;
+            if (ev.type_ == TransportEventType::CONNECT) {
+                server_conn_id = ev.conn_id_;
                 server_ready = true;
             }
         }
@@ -268,8 +268,8 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
         while (!large_data_received.load()) {
             events = server_transport.poll(200);
             for (const auto& ev : events) {
-                if (ev.type == TransportEventType::DATA) {
-                    accumulated_buffer += ev.data;
+                if (ev.type_ == TransportEventType::DATA) {
+                    accumulated_buffer += ev.data_;
                     
                     if (accumulated_buffer.size() >= 4) {
                         uint32_t expected_size = MessageProtocol::get_payload_size(accumulated_buffer);
@@ -277,7 +277,7 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
                             CMString temp = accumulated_buffer;
                             DataResponseMessage msg;
                             if (MessageProtocol::decode(accumulated_buffer, msg)) {
-                                received_size = msg.compressed_data.size();
+                                received_size = msg.compressed_data_.size();
                                 large_data_received = true;
                             }
                         }
@@ -292,10 +292,10 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
     wait_for([&]{ return server_ready.load(); });
     
     DataResponseMessage large_msg;
-    large_msg.header.type = MessageType::DATA_RESPONSE;
-    large_msg.header.message_id = 1;
-    large_msg.object_name = "large_data.bin";
-    large_msg.compressed_data = CMString(10000, 'X');
+    large_msg.header_.type_ = MessageType::DATA_RESPONSE;
+    large_msg.header_.message_id_ = 1;
+    large_msg.object_name_ = "large_data.bin";
+    large_msg.compressed_data_ = CMString(10000, 'X');
     
     CMString encoded = MessageProtocol::encode(large_msg);
     client_transport.send(client_conn, encoded);
@@ -327,7 +327,7 @@ TEST_F(NetworkIntegrationTest, ReactorBasedMessageHandling) {
     });
     
     server_reactor.register_handler<HeartbeatMessage>([&](uint64_t conn_id, const HeartbeatMessage& msg) {
-        received_worker_id = msg.worker_id;
+        received_worker_id = msg.worker_id_;
         heartbeat_received = true;
     });
     
@@ -341,12 +341,12 @@ TEST_F(NetworkIntegrationTest, ReactorBasedMessageHandling) {
     ASSERT_TRUE(connection_established.load()) << "Connection should be established";
 
     HeartbeatMessage msg;
-    msg.header.type = MessageType::HEARTBEAT;
-    msg.header.message_id = 1;
-    msg.header.timestamp = 12345;
-    msg.worker_id = 88888;
-    msg.running_tasks = {1, 2};
-    msg.attributes = {"test"};
+    msg.header_.type_ = MessageType::HEARTBEAT;
+    msg.header_.message_id_ = 1;
+    msg.header_.timestamp_ = 12345;
+    msg.worker_id_ = 88888;
+    msg.running_tasks_ = {1, 2};
+    msg.attributes_ = {"test"};
 
     CMString encoded = MessageProtocol::encode(msg);
     client_transport.send(client_conn, encoded);

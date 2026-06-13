@@ -37,7 +37,7 @@ protected:
 TEST_F(LoggerTest, MasterLog) {
     Logger::init("test_logs/", 0);
     INFO("Master started");
-    Logger::instance().flush();
+    Logger::instance()->flush();
 
     std::ifstream file("test_logs/master.log");
     ASSERT_TRUE(file.is_open());
@@ -51,7 +51,7 @@ TEST_F(LoggerTest, MasterLog) {
 TEST_F(LoggerTest, WorkerLog) {
     Logger::init("test_logs/", 1);
     DBG("Worker initializing");
-    Logger::instance().flush();
+    Logger::instance()->flush();
 
     std::ifstream file("test_logs/worker1.log");
     ASSERT_TRUE(file.is_open());
@@ -69,7 +69,7 @@ TEST_F(LoggerTest, ReinitWorker) {
 
     Logger::init("test_logs/", 3);
     INFO("Second init");
-    Logger::instance().flush();
+    Logger::instance()->flush();
 
     ASSERT_TRUE(std::filesystem::exists("test_logs/master.log"));
     ASSERT_TRUE(std::filesystem::exists("test_logs/worker3.log"));
@@ -77,12 +77,12 @@ TEST_F(LoggerTest, ReinitWorker) {
 
 TEST_F(LoggerTest, LogLevelFilter) {
     Logger::init("test_logs/", 0);
-    Logger::instance().set_level(LogLevel::INFO);
+    Logger::instance()->set_level(LogLevel::INFO);
 
     DBG("Should not appear");
     INFO("Should appear");
     WARN("Should appear");
-    Logger::instance().flush();
+    Logger::instance()->flush();
 
     std::ifstream file("test_logs/master.log");
     CMString line;
@@ -101,7 +101,7 @@ TEST_F(LoggerTest, AllLogLevels) {
     INFO("Info message");
     WARN("Warn message");
     ERR("Error message");
-    Logger::instance().flush();
+    Logger::instance()->flush();
 
     std::ifstream file("test_logs/master.log");
     CMString line;
@@ -115,7 +115,7 @@ TEST_F(LoggerTest, AllLogLevels) {
 TEST_F(LoggerTest, TimestampFormat) {
     Logger::init("test_logs/", 0);
     INFO("Check timestamp");
-    Logger::instance().flush();
+    Logger::instance()->flush();
 
     std::ifstream file("test_logs/master.log");
     CMString line;
@@ -133,7 +133,7 @@ TEST_F(LoggerTest, FmtCustomTypes) {
     WARN("rect={}", TestRect{1.0, 2.0, 100.0, 200.0});
     ERR("empty args ok: {}", TestColor::RED);
     INFO("status={}", TaskStatus::RUNNING);
-    Logger::instance().flush();
+    Logger::instance()->flush();
 
     std::ifstream file("test_logs/master.log");
     CMString line;

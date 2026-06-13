@@ -151,16 +151,16 @@ TEST(MasterAgentTest, SetupWriteContext_MasterRunning_RecordWriteUpdatesRemoteId
     WorkerAgentContext::record_write(db_id, obj_name);
 
     // on_data_ready should have updated remote_idx
-    EXPECT_TRUE(DataService::instance().has_remote_location(full_name));
-    auto info = DataService::instance().lookup_remote_idx(full_name);
-    EXPECT_EQ(info.worker_id, 0u);
+    EXPECT_TRUE(DataService::instance()->has_remote_location(full_name));
+    auto info = DataService::instance()->lookup_remote_idx(full_name);
+    EXPECT_EQ(info.worker_id_, 0u);
 
     master.stop();
     wait_for_running(master, false);
     WorkerAgentContext::clear();
 
     // Cleanup singleton state
-    DataService::instance().remove_remote_index(full_name);
+    DataService::instance()->remove_remote_index(full_name);
 }
 
 TEST(MasterAgentTest, SetupWriteContext_MasterNotRunning_RecordWriteNoOp) {
@@ -180,7 +180,7 @@ TEST(MasterAgentTest, SetupWriteContext_MasterNotRunning_RecordWriteNoOp) {
     // on_data_ready still runs — it will call update_remote_idx with empty host
     // But the early return in on_master_record_write means nothing happens
     // Actually, on_master_record_write checks running_ and returns early
-    EXPECT_FALSE(DataService::instance().has_remote_location(full_name));
+    EXPECT_FALSE(DataService::instance()->has_remote_location(full_name));
 
     WorkerAgentContext::clear();
 }
@@ -205,16 +205,16 @@ TEST(MasterAgentTest, RestoreMasterIdx_ExistingIdxFile) {
 
     // Create idx file with entries
     IndexEntry entry1;
-    entry1.object_name = db_id + ":obj_restore_1";
-    entry1.file_name = "data_0.bin";
-    entry1.offset = 0;
-    entry1.size = 100;
+    entry1.object_name_ = db_id + ":obj_restore_1";
+    entry1.file_name_ = "data_0.bin";
+    entry1.offset_ = 0;
+    entry1.size_ = 100;
 
     IndexEntry entry2;
-    entry2.object_name = db_id + ":obj_restore_2";
-    entry2.file_name = "data_0.bin";
-    entry2.offset = 100;
-    entry2.size = 200;
+    entry2.object_name_ = db_id + ":obj_restore_2";
+    entry2.file_name_ = "data_0.bin";
+    entry2.offset_ = 100;
+    entry2.size_ = 200;
 
     create_idx_file(base_path, "master000", {entry1, entry2});
 
@@ -222,16 +222,16 @@ TEST(MasterAgentTest, RestoreMasterIdx_ExistingIdxFile) {
     auto entries = master.restore_master_idx(db_id, base_path, "master000");
 
     ASSERT_EQ(entries.size(), 2u);
-    EXPECT_EQ(entries[0].object_name, db_id + ":obj_restore_1");
-    EXPECT_EQ(entries[1].object_name, db_id + ":obj_restore_2");
+    EXPECT_EQ(entries[0].object_name_, db_id + ":obj_restore_1");
+    EXPECT_EQ(entries[1].object_name_, db_id + ":obj_restore_2");
 
     // DataService local_idx should be populated
-    EXPECT_TRUE(DataService::instance().has_local_object(db_id + ":obj_restore_1"));
-    EXPECT_TRUE(DataService::instance().has_local_object(db_id + ":obj_restore_2"));
+    EXPECT_TRUE(DataService::instance()->has_local_object(db_id + ":obj_restore_1"));
+    EXPECT_TRUE(DataService::instance()->has_local_object(db_id + ":obj_restore_2"));
 
     // Cleanup
-    DataService::instance().remove_local_index(db_id + ":obj_restore_1");
-    DataService::instance().remove_local_index(db_id + ":obj_restore_2");
+    DataService::instance()->remove_local_index(db_id + ":obj_restore_1");
+    DataService::instance()->remove_local_index(db_id + ":obj_restore_2");
 }
 
 TEST(MasterAgentTest, RestoreMasterIdx_NonExistentIdxFile) {
@@ -273,10 +273,10 @@ TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
     CMVector<IndexEntry> entries_writer0;
     for (int i = 0; i < 5; i++) {
         IndexEntry e;
-        e.object_name = db_id + ":" + fmt::format("multi_obj_{}", i);
-        e.file_name = "data_0.bin";
-        e.offset = i * 100;
-        e.size = 100;
+        e.object_name_ = db_id + ":" + fmt::format("multi_obj_{}", i);
+        e.file_name_ = "data_0.bin";
+        e.offset_ = i * 100;
+        e.size_ = 100;
         entries_writer0.push_back(e);
     }
     create_idx_file(base_path, "master000", entries_writer0);
@@ -286,12 +286,12 @@ TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
 
     ASSERT_EQ(entries.size(), 5u);
     for (int i = 0; i < 5; i++) {
-        EXPECT_EQ(entries[i].object_name, db_id + ":" + fmt::format("multi_obj_{}", i));
+        EXPECT_EQ(entries[i].object_name_, db_id + ":" + fmt::format("multi_obj_{}", i));
     }
 
     // Cleanup
     for (int i = 0; i < 5; i++) {
-        DataService::instance().remove_local_index(db_id + ":" + fmt::format("multi_obj_{}", i));
+        DataService::instance()->remove_local_index(db_id + ":" + fmt::format("multi_obj_{}", i));
     }
 }
 
@@ -305,35 +305,35 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MasterEntries) {
 
     // Create master's idx with entries
     IndexEntry entry;
-    entry.object_name = full;
-    entry.file_name = "data_0.bin";
-    entry.offset = 0;
-    entry.size = 50;
+    entry.object_name_ = full;
+    entry.file_name_ = "data_0.bin";
+    entry.offset_ = 0;
+    entry.size_ = 50;
 
     create_idx_file(base_path, "master000", {entry});
 
     // WorkerInfo for master (worker_id=0, hostname="localhost")
     ::WorkerInfo master_worker;
-    master_worker.worker_id = 0;
-    master_worker.writer_id = "master000";
-    master_worker.hostname = "localhost";
+    master_worker.worker_id_ = 0;
+    master_worker.writer_id_ = "master000";
+    master_worker.hostname_ = "localhost";
 
     MasterAgent master("127.0.0.1", 0);
     // Register a new worker on "localhost" so master's entries get mapped to it
-    DataService::instance().register_worker(10, "127.0.0.1", 9999);
+    DataService::instance()->register_worker(10, "127.0.0.1", 9999);
     master.add_worker_hostname(10, "localhost");
 
     master.rebuild_remote_idx(db_id, base_path, {master_worker});
 
     // Master entries now map to the new worker on same hostname
-    EXPECT_TRUE(DataService::instance().has_remote_location(full));
-    auto info = DataService::instance().lookup_remote_idx(full);
-    EXPECT_EQ(info.worker_id, 10u);
-    EXPECT_EQ(info.host, "127.0.0.1");
-    EXPECT_EQ(info.port, 9999u);
+    EXPECT_TRUE(DataService::instance()->has_remote_location(full));
+    auto info = DataService::instance()->lookup_remote_idx(full);
+    EXPECT_EQ(info.worker_id_, 10u);
+    EXPECT_EQ(info.host_, "127.0.0.1");
+    EXPECT_EQ(info.port_, 9999u);
 
     // Cleanup
-    DataService::instance().remove_remote_index(full);
+    DataService::instance()->remove_remote_index(full);
 }
 
 TEST(MasterAgentTest, RebuildRemoteIdx_WorkerEntries_NoNewWorkers_Skipped) {
@@ -344,24 +344,24 @@ TEST(MasterAgentTest, RebuildRemoteIdx_WorkerEntries_NoNewWorkers_Skipped) {
 
     // Create worker_5.idx with entries
     IndexEntry entry;
-    entry.object_name = full;
-    entry.file_name = "data_5.bin";
-    entry.offset = 0;
-    entry.size = 50;
+    entry.object_name_ = full;
+    entry.file_name_ = "data_5.bin";
+    entry.offset_ = 0;
+    entry.size_ = 50;
 
     create_idx_file(base_path, "worker005", {entry});
 
     // WorkerInfo for old worker_id=5, but no new workers registered
     ::WorkerInfo old_worker;
-    old_worker.worker_id = 5;
-    old_worker.writer_id = "worker005";
-    old_worker.hostname = "testhost_skipped";
+    old_worker.worker_id_ = 5;
+    old_worker.writer_id_ = "worker005";
+    old_worker.hostname_ = "testhost_skipped";
 
     MasterAgent master("127.0.0.1", 0);
     master.rebuild_remote_idx(db_id, base_path, {old_worker});
 
     // No new workers with matching hostname → entry should NOT be in remote_idx
-    EXPECT_FALSE(DataService::instance().has_remote_location(full));
+    EXPECT_FALSE(DataService::instance()->has_remote_location(full));
 }
 
 TEST(MasterAgentTest, RebuildRemoteIdx_MissingIdxFile_Skipped) {
@@ -371,9 +371,9 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MissingIdxFile_Skipped) {
 
     // WorkerInfo for a worker whose idx file doesn't exist
     ::WorkerInfo missing_worker;
-    missing_worker.worker_id = 42;
-    missing_worker.writer_id = "worker042";
-    missing_worker.hostname = "ghost_host";
+    missing_worker.worker_id_ = 42;
+    missing_worker.writer_id_ = "worker042";
+    missing_worker.hostname_ = "ghost_host";
 
     MasterAgent master("127.0.0.1", 0);
     // Should not crash, just WARN and skip
@@ -389,49 +389,49 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultipleWorkers) {
 
     // Create master's idx
     IndexEntry master_entry;
-    master_entry.object_name = full_master;
-    master_entry.file_name = "data_0.bin";
-    master_entry.offset = 0;
-    master_entry.size = 50;
+    master_entry.object_name_ = full_master;
+    master_entry.file_name_ = "data_0.bin";
+    master_entry.offset_ = 0;
+    master_entry.size_ = 50;
     create_idx_file(base_path, "master000", {master_entry});
 
     // Create worker's idx
     IndexEntry worker_entry;
-    worker_entry.object_name = full_worker;
-    worker_entry.file_name = "data_3.bin";
-    worker_entry.offset = 0;
-    worker_entry.size = 100;
+    worker_entry.object_name_ = full_worker;
+    worker_entry.file_name_ = "data_3.bin";
+    worker_entry.offset_ = 0;
+    worker_entry.size_ = 100;
     create_idx_file(base_path, "worker003", {worker_entry});
 
     ::WorkerInfo w0;
-    w0.worker_id = 0;
-    w0.writer_id = "master000";
-    w0.hostname = "master_host";
+    w0.worker_id_ = 0;
+    w0.writer_id_ = "master000";
+    w0.hostname_ = "master_host";
 
     ::WorkerInfo w3;
-    w3.worker_id = 3;
-    w3.writer_id = "worker003";
-    w3.hostname = "unknown_host";
+    w3.worker_id_ = 3;
+    w3.writer_id_ = "worker003";
+    w3.hostname_ = "unknown_host";
 
     MasterAgent master("127.0.0.1", 0);
     // Register a new worker on "master_host" for master's entries
-    DataService::instance().register_worker(10, "127.0.0.1", 9999);
+    DataService::instance()->register_worker(10, "127.0.0.1", 9999);
     master.add_worker_hostname(10, "master_host");
 
     master.rebuild_remote_idx(db_id, base_path, {w0, w3});
 
     // master entries → mapped to new worker_id=10 on "master_host"
-    EXPECT_TRUE(DataService::instance().has_remote_location(full_master));
-    auto info0 = DataService::instance().lookup_remote_idx(full_master);
-    EXPECT_EQ(info0.worker_id, 10u);
-    EXPECT_EQ(info0.host, "127.0.0.1");
-    EXPECT_EQ(info0.port, 9999u);
+    EXPECT_TRUE(DataService::instance()->has_remote_location(full_master));
+    auto info0 = DataService::instance()->lookup_remote_idx(full_master);
+    EXPECT_EQ(info0.worker_id_, 10u);
+    EXPECT_EQ(info0.host_, "127.0.0.1");
+    EXPECT_EQ(info0.port_, 9999u);
 
     // worker_id=3 entries → no matching new worker on "unknown_host" → skipped
-    EXPECT_FALSE(DataService::instance().has_remote_location(full_worker));
+    EXPECT_FALSE(DataService::instance()->has_remote_location(full_worker));
 
     // Cleanup
-    DataService::instance().remove_remote_index(full_master);
+    DataService::instance()->remove_remote_index(full_master);
 }
 
 TEST(MasterAgentTest, RebuildRemoteIdx_EmptyWorkers_Noop) {
@@ -454,78 +454,78 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
 
     // Master (worker_id=0) on "host_master"
     IndexEntry master_entry;
-    master_entry.object_name = full_m;
-    master_entry.file_name = "data_m.bin";
-    master_entry.offset = 0;
-    master_entry.size = 50;
+    master_entry.object_name_ = full_m;
+    master_entry.file_name_ = "data_m.bin";
+    master_entry.offset_ = 0;
+    master_entry.size_ = 50;
     create_idx_file(base_path, "w_master", {master_entry});
 
     // Worker A (worker_id=1) on "host_a"
     IndexEntry worker_a_entry;
-    worker_a_entry.object_name = full_a;
-    worker_a_entry.file_name = "data_a.bin";
-    worker_a_entry.offset = 0;
-    worker_a_entry.size = 80;
+    worker_a_entry.object_name_ = full_a;
+    worker_a_entry.file_name_ = "data_a.bin";
+    worker_a_entry.offset_ = 0;
+    worker_a_entry.size_ = 80;
     create_idx_file(base_path, "w_hosta", {worker_a_entry});
 
     // Worker B (worker_id=2) on "host_b"
     IndexEntry worker_b_entry;
-    worker_b_entry.object_name = full_b;
-    worker_b_entry.file_name = "data_b.bin";
-    worker_b_entry.offset = 0;
-    worker_b_entry.size = 120;
+    worker_b_entry.object_name_ = full_b;
+    worker_b_entry.file_name_ = "data_b.bin";
+    worker_b_entry.offset_ = 0;
+    worker_b_entry.size_ = 120;
     create_idx_file(base_path, "w_hostb", {worker_b_entry});
 
     ::WorkerInfo w_master;
-    w_master.worker_id = 0;
-    w_master.writer_id = "w_master";
-    w_master.hostname = "host_master";
+    w_master.worker_id_ = 0;
+    w_master.writer_id_ = "w_master";
+    w_master.hostname_ = "host_master";
 
     ::WorkerInfo w_a;
-    w_a.worker_id = 1;
-    w_a.writer_id = "w_hosta";
-    w_a.hostname = "host_a";
+    w_a.worker_id_ = 1;
+    w_a.writer_id_ = "w_hosta";
+    w_a.hostname_ = "host_a";
 
     ::WorkerInfo w_b;
-    w_b.worker_id = 2;
-    w_b.writer_id = "w_hostb";
-    w_b.hostname = "host_b";
+    w_b.worker_id_ = 2;
+    w_b.writer_id_ = "w_hostb";
+    w_b.hostname_ = "host_b";
 
     MasterAgent master("127.0.0.1", 0);
 
-    DataService::instance().register_worker(100, "10.0.0.1", 8001);
+    DataService::instance()->register_worker(100, "10.0.0.1", 8001);
     master.add_worker_hostname(100, "host_master");
-    DataService::instance().register_worker(200, "10.0.0.2", 8002);
+    DataService::instance()->register_worker(200, "10.0.0.2", 8002);
     master.add_worker_hostname(200, "host_a");
-    DataService::instance().register_worker(300, "10.0.0.3", 8003);
+    DataService::instance()->register_worker(300, "10.0.0.3", 8003);
     master.add_worker_hostname(300, "host_b");
 
     master.rebuild_remote_idx(db_id, base_path, {w_master, w_a, w_b});
 
     // master → worker 100 on host_master
-    EXPECT_TRUE(DataService::instance().has_remote_location(full_m));
-    auto info_m = DataService::instance().lookup_remote_idx(full_m);
-    EXPECT_EQ(info_m.worker_id, 100u);
-    EXPECT_EQ(info_m.host, "10.0.0.1");
-    EXPECT_EQ(info_m.port, 8001u);
+    EXPECT_TRUE(DataService::instance()->has_remote_location(full_m));
+    auto info_m = DataService::instance()->lookup_remote_idx(full_m);
+    EXPECT_EQ(info_m.worker_id_, 100u);
+    EXPECT_EQ(info_m.host_, "10.0.0.1");
+    EXPECT_EQ(info_m.port_, 8001u);
 
     // worker A → worker 200 on host_a
-    EXPECT_TRUE(DataService::instance().has_remote_location(full_a));
-    auto info_a = DataService::instance().lookup_remote_idx(full_a);
-    EXPECT_EQ(info_a.worker_id, 200u);
-    EXPECT_EQ(info_a.host, "10.0.0.2");
-    EXPECT_EQ(info_a.port, 8002u);
+    EXPECT_TRUE(DataService::instance()->has_remote_location(full_a));
+    auto info_a = DataService::instance()->lookup_remote_idx(full_a);
+    EXPECT_EQ(info_a.worker_id_, 200u);
+    EXPECT_EQ(info_a.host_, "10.0.0.2");
+    EXPECT_EQ(info_a.port_, 8002u);
 
     // worker B → worker 300 on host_b
-    EXPECT_TRUE(DataService::instance().has_remote_location(full_b));
-    auto info_b = DataService::instance().lookup_remote_idx(full_b);
-    EXPECT_EQ(info_b.worker_id, 300u);
-    EXPECT_EQ(info_b.host, "10.0.0.3");
-    EXPECT_EQ(info_b.port, 8003u);
+    EXPECT_TRUE(DataService::instance()->has_remote_location(full_b));
+    auto info_b = DataService::instance()->lookup_remote_idx(full_b);
+    EXPECT_EQ(info_b.worker_id_, 300u);
+    EXPECT_EQ(info_b.host_, "10.0.0.3");
+    EXPECT_EQ(info_b.port_, 8003u);
 
-    DataService::instance().remove_remote_index(full_m);
-    DataService::instance().remove_remote_index(full_a);
-    DataService::instance().remove_remote_index(full_b);
+    DataService::instance()->remove_remote_index(full_m);
+    DataService::instance()->remove_remote_index(full_a);
+    DataService::instance()->remove_remote_index(full_b);
 }
 
 TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
@@ -538,72 +538,72 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
 
     // Master (worker_id=0) on "host_local"
     IndexEntry master_entry;
-    master_entry.object_name = full_m;
-    master_entry.file_name = "data_m.bin";
-    master_entry.offset = 0;
-    master_entry.size = 50;
+    master_entry.object_name_ = full_m;
+    master_entry.file_name_ = "data_m.bin";
+    master_entry.offset_ = 0;
+    master_entry.size_ = 50;
     create_idx_file(base_path, "w_m", {master_entry});
 
     // Worker (worker_id=5) on same "host_local"
     IndexEntry worker_entry;
-    worker_entry.object_name = full_w;
-    worker_entry.file_name = "data_w.bin";
-    worker_entry.offset = 0;
-    worker_entry.size = 80;
+    worker_entry.object_name_ = full_w;
+    worker_entry.file_name_ = "data_w.bin";
+    worker_entry.offset_ = 0;
+    worker_entry.size_ = 80;
     create_idx_file(base_path, "w_w5", {worker_entry});
 
     // Remote Worker (worker_id=3) on "host_remote"
     IndexEntry remote_entry;
-    remote_entry.object_name = full_r;
-    remote_entry.file_name = "data_r.bin";
-    remote_entry.offset = 0;
-    remote_entry.size = 120;
+    remote_entry.object_name_ = full_r;
+    remote_entry.file_name_ = "data_r.bin";
+    remote_entry.offset_ = 0;
+    remote_entry.size_ = 120;
     create_idx_file(base_path, "w_r3", {remote_entry});
 
     ::WorkerInfo w_m;
-    w_m.worker_id = 0;
-    w_m.writer_id = "w_m";
-    w_m.hostname = "host_local";
+    w_m.worker_id_ = 0;
+    w_m.writer_id_ = "w_m";
+    w_m.hostname_ = "host_local";
 
     ::WorkerInfo w5;
-    w5.worker_id = 5;
-    w5.writer_id = "w_w5";
-    w5.hostname = "host_local";
+    w5.worker_id_ = 5;
+    w5.writer_id_ = "w_w5";
+    w5.hostname_ = "host_local";
 
     ::WorkerInfo w3;
-    w3.worker_id = 3;
-    w3.writer_id = "w_r3";
-    w3.hostname = "host_remote";
+    w3.worker_id_ = 3;
+    w3.writer_id_ = "w_r3";
+    w3.hostname_ = "host_remote";
 
     MasterAgent master("127.0.0.1", 0);
 
-    DataService::instance().register_worker(10, "192.168.1.1", 9001);
+    DataService::instance()->register_worker(10, "192.168.1.1", 9001);
     master.add_worker_hostname(10, "host_local");
-    DataService::instance().register_worker(20, "192.168.1.2", 9002);
+    DataService::instance()->register_worker(20, "192.168.1.2", 9002);
     master.add_worker_hostname(20, "host_remote");
 
     master.rebuild_remote_idx(db_id, base_path, {w_m, w5, w3});
 
     // Both master and worker_id=5 on host_local → mapped to worker 10
-    auto info_m = DataService::instance().lookup_remote_idx(full_m);
-    EXPECT_EQ(info_m.worker_id, 10u);
-    EXPECT_EQ(info_m.host, "192.168.1.1");
-    EXPECT_EQ(info_m.port, 9001u);
+    auto info_m = DataService::instance()->lookup_remote_idx(full_m);
+    EXPECT_EQ(info_m.worker_id_, 10u);
+    EXPECT_EQ(info_m.host_, "192.168.1.1");
+    EXPECT_EQ(info_m.port_, 9001u);
 
-    auto info_w = DataService::instance().lookup_remote_idx(full_w);
-    EXPECT_EQ(info_w.worker_id, 10u);
-    EXPECT_EQ(info_w.host, "192.168.1.1");
-    EXPECT_EQ(info_w.port, 9001u);
+    auto info_w = DataService::instance()->lookup_remote_idx(full_w);
+    EXPECT_EQ(info_w.worker_id_, 10u);
+    EXPECT_EQ(info_w.host_, "192.168.1.1");
+    EXPECT_EQ(info_w.port_, 9001u);
 
     // Remote worker on host_remote → mapped to worker 20
-    auto info_r = DataService::instance().lookup_remote_idx(full_r);
-    EXPECT_EQ(info_r.worker_id, 20u);
-    EXPECT_EQ(info_r.host, "192.168.1.2");
-    EXPECT_EQ(info_r.port, 9002u);
+    auto info_r = DataService::instance()->lookup_remote_idx(full_r);
+    EXPECT_EQ(info_r.worker_id_, 20u);
+    EXPECT_EQ(info_r.host_, "192.168.1.2");
+    EXPECT_EQ(info_r.port_, 9002u);
 
-    DataService::instance().remove_remote_index(full_m);
-    DataService::instance().remove_remote_index(full_w);
-    DataService::instance().remove_remote_index(full_r);
+    DataService::instance()->remove_remote_index(full_m);
+    DataService::instance()->remove_remote_index(full_w);
+    DataService::instance()->remove_remote_index(full_r);
 }
 
 TEST(MasterAgentTest, RebuildRemoteIdx_PartialHostCoverage) {
@@ -615,47 +615,47 @@ TEST(MasterAgentTest, RebuildRemoteIdx_PartialHostCoverage) {
 
     // Worker A on "host_available"
     IndexEntry entry_a;
-    entry_a.object_name = full_avail;
-    entry_a.file_name = "data_a.bin";
-    entry_a.offset = 0;
-    entry_a.size = 50;
+    entry_a.object_name_ = full_avail;
+    entry_a.file_name_ = "data_a.bin";
+    entry_a.offset_ = 0;
+    entry_a.size_ = 50;
     create_idx_file(base_path, "w_avail", {entry_a});
 
     // Worker B on "host_offline"
     IndexEntry entry_b;
-    entry_b.object_name = full_off;
-    entry_b.file_name = "data_b.bin";
-    entry_b.offset = 0;
-    entry_b.size = 80;
+    entry_b.object_name_ = full_off;
+    entry_b.file_name_ = "data_b.bin";
+    entry_b.offset_ = 0;
+    entry_b.size_ = 80;
     create_idx_file(base_path, "w_off", {entry_b});
 
     ::WorkerInfo wa;
-    wa.worker_id = 1;
-    wa.writer_id = "w_avail";
-    wa.hostname = "host_available";
+    wa.worker_id_ = 1;
+    wa.writer_id_ = "w_avail";
+    wa.hostname_ = "host_available";
 
     ::WorkerInfo wb;
-    wb.worker_id = 2;
-    wb.writer_id = "w_off";
-    wb.hostname = "host_offline";
+    wb.worker_id_ = 2;
+    wb.writer_id_ = "w_off";
+    wb.hostname_ = "host_offline";
 
     MasterAgent master("127.0.0.1", 0);
 
     // Only register a worker for "host_available", NOT for "host_offline"
-    DataService::instance().register_worker(50, "10.0.0.10", 7000);
+    DataService::instance()->register_worker(50, "10.0.0.10", 7000);
     master.add_worker_hostname(50, "host_available");
 
     master.rebuild_remote_idx(db_id, base_path, {wa, wb});
 
     // host_available → mapped
-    EXPECT_TRUE(DataService::instance().has_remote_location(full_avail));
-    auto info = DataService::instance().lookup_remote_idx(full_avail);
-    EXPECT_EQ(info.worker_id, 50u);
+    EXPECT_TRUE(DataService::instance()->has_remote_location(full_avail));
+    auto info = DataService::instance()->lookup_remote_idx(full_avail);
+    EXPECT_EQ(info.worker_id_, 50u);
 
     // host_offline → skipped (no worker registered)
-    EXPECT_FALSE(DataService::instance().has_remote_location(full_off));
+    EXPECT_FALSE(DataService::instance()->has_remote_location(full_off));
 
-    DataService::instance().remove_remote_index(full_avail);
+    DataService::instance()->remove_remote_index(full_avail);
 }
 
 // --- Task failure rescheduling tests ---
@@ -679,7 +679,7 @@ TEST(MasterAgentTest, OnTaskFailedRecordsErrorAndUpdatesStatus) {
 }
 
 TEST(MasterAgentTest, StopDuringActiveCommunication) {
-    fly::DataService::instance().reset();
+    fly::DataService::instance()->reset();
     // Regression test for bd1e5df: MasterAgent::stop() accessed conn_to_worker_ maps
     // while reactor thread still active, causing segfault.
     // Fix: stop reactor before accessing maps.
@@ -698,7 +698,7 @@ TEST(MasterAgentTest, StopDuringActiveCommunication) {
     worker.stop();
 
     // Cleanup
-    fly::DataService::instance().stop_transfer_server();
+    fly::DataService::instance()->stop_transfer_server();
 }
 
 TEST(MasterAgentTest, DoubleStopNoCrash) {
@@ -722,7 +722,7 @@ TEST(MasterAgentTest, StopBeforeStartNoCrash) {
 TEST(MasterAgentTest, OnDisconnectRecoversRunningTasks) {
     Logger::shutdown();
     Logger::init("test_logs/", 0);
-    fly::DataService::instance().reset();
+    fly::DataService::instance()->reset();
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -785,7 +785,7 @@ TEST(MasterAgentTest, OnDisconnectRecoversRunningTasks) {
 // --- register_database + is_db_frozen ---
 
 TEST(MasterAgentTest, RegisterDatabaseAndIsFrozen) {
-    fly::DataService::instance().reset();
+    fly::DataService::instance()->reset();
     TempDir tmpdir;
     CMString db_id = db32("test_db_reg_freeze");
 
@@ -820,7 +820,7 @@ TEST(MasterAgentTest, RegisterDatabaseAndIsFrozen) {
 // --- get_or_create_database ---
 
 TEST(MasterAgentTest, GetOrCreateDatabase) {
-    fly::DataService::instance().reset();
+    fly::DataService::instance()->reset();
     TempDir tmpdir1;
     TempDir tmpdir2;
 
@@ -839,14 +839,14 @@ TEST(MasterAgentTest, GetOrCreateDatabase) {
     EXPECT_EQ(db2->get_db_id().size(), 32u);
     EXPECT_NE(db->get_db_id(), db2->get_db_id());
 
-    DataService::instance().unregister_database(db->get_db_id());
-    DataService::instance().unregister_database(db2->get_db_id());
+    DataService::instance()->unregister_database(db->get_db_id());
+    DataService::instance()->unregister_database(db2->get_db_id());
 }
 
 // --- get_task_error ---
 
 TEST(MasterAgentTest, GetTaskError) {
-    fly::DataService::instance().reset();
+    fly::DataService::instance()->reset();
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
@@ -876,7 +876,7 @@ TEST(MasterAgentTest, GetTaskError) {
 // --- get_idle_workers ---
 
 TEST(MasterAgentTest, GetIdleWorkers) {
-    fly::DataService::instance().reset();
+    fly::DataService::instance()->reset();
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
@@ -910,7 +910,7 @@ TEST(MasterAgentTest, GetIdleWorkers) {
 // --- get_connected_workers ---
 
 TEST(MasterAgentTest, GetConnectedWorkers) {
-    fly::DataService::instance().reset();
+    fly::DataService::instance()->reset();
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
@@ -935,7 +935,7 @@ TEST(MasterAgentTest, GetConnectedWorkers) {
 // --- get_connection_count ---
 
 TEST(MasterAgentTest, GetConnectionCount) {
-    fly::DataService::instance().reset();
+    fly::DataService::instance()->reset();
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
@@ -1025,7 +1025,7 @@ CMVector<FailedTaskRecord> read_failed_records(const CMString& file_path) {
 
 TEST(MasterAgentTest, StopWithPendingTasks_PersistsThem) {
     TempDir tmpdir;
-    Config::instance().set_str("log_dir", tmpdir.path());
+    Config::instance()->set_str("log_dir", tmpdir.path());
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -1050,14 +1050,14 @@ TEST(MasterAgentTest, StopWithPendingTasks_PersistsThem) {
     auto records = read_failed_records(file_path);
     bool found_4001 = false, found_4002 = false;
     for (const auto& r : records) {
-        if (r.task_id == 4001) found_4001 = true;
-        if (r.task_id == 4002) found_4002 = true;
+        if (r.task_id_ == 4001) found_4001 = true;
+        if (r.task_id_ == 4002) found_4002 = true;
     }
     EXPECT_TRUE(found_4001) << "Task 4001 should be persisted";
     EXPECT_TRUE(found_4002) << "Task 4002 should be persisted";
     EXPECT_GE(records.size(), 2u);
 
-    Config::instance().set_str("log_dir", "");
+    Config::instance()->set_str("log_dir", "");
 }
 
 TEST(MasterAgentTest, StopWithNoRunningTasks_DoesNotBlock) {
@@ -1098,7 +1098,7 @@ TEST(MasterAgentTest, StopBeforeStart_CallsDoDrainAndStop) {
 
 TEST(MasterAgentTest, SubmitTaskCreatesMetadataAndGraph) {
     TempDir tmpdir;
-    Config::instance().set_str("log_dir", tmpdir.path());
+    Config::instance()->set_str("log_dir", tmpdir.path());
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -1123,12 +1123,12 @@ TEST(MasterAgentTest, SubmitTaskCreatesMetadataAndGraph) {
 
     master.stop();
     wait_for_running(master, false);
-    Config::instance().set_str("log_dir", "");
+    Config::instance()->set_str("log_dir", "");
 }
 
 TEST(MasterAgentTest, GetPendingTasksReturnsCorrectIds) {
     TempDir tmpdir;
-    Config::instance().set_str("log_dir", tmpdir.path());
+    Config::instance()->set_str("log_dir", tmpdir.path());
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -1155,7 +1155,7 @@ TEST(MasterAgentTest, GetPendingTasksReturnsCorrectIds) {
 
     master.stop();
     wait_for_running(master, false);
-    Config::instance().set_str("log_dir", "");
+    Config::instance()->set_str("log_dir", "");
 }
 
 TEST(MasterAgentTest, GetCompletedTasksInitiallyEmpty) {
@@ -1172,7 +1172,7 @@ TEST(MasterAgentTest, GetCompletedTasksInitiallyEmpty) {
 
 TEST(MasterAgentTest, GetFailedTasksForImpossibleCapabilities) {
     TempDir tmpdir;
-    Config::instance().set_str("log_dir", tmpdir.path());
+    Config::instance()->set_str("log_dir", tmpdir.path());
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -1193,7 +1193,7 @@ TEST(MasterAgentTest, GetFailedTasksForImpossibleCapabilities) {
 
     master.stop();
     wait_for_running(master, false);
-    Config::instance().set_str("log_dir", "");
+    Config::instance()->set_str("log_dir", "");
 }
 
 TEST(MasterAgentTest, GetTaskErrorForNonExistentReturnsEmpty) {
@@ -1248,7 +1248,7 @@ TEST(MasterAgentTest, GetConnectedWorkersNoWorkers) {
 
 TEST(MasterAgentTest, SubmitTaskWithWriteContextHash) {
     TempDir tmpdir;
-    Config::instance().set_str("log_dir", tmpdir.path());
+    Config::instance()->set_str("log_dir", tmpdir.path());
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -1258,7 +1258,7 @@ TEST(MasterAgentTest, SubmitTaskWithWriteContextHash) {
 
     master.stop();
     wait_for_running(master, false);
-    Config::instance().set_str("log_dir", "");
+    Config::instance()->set_str("log_dir", "");
 }
 
 TEST(MasterAgentTest, OnMasterRegisterWriteNotRunning) {

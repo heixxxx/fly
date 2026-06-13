@@ -79,14 +79,14 @@ TEST(WriteContextHashTest, HashIsHexString) {
 
 TEST(IndexEntryV2Test, SerializeDeserializeWithWriteContextHash) {
     IndexEntry entry;
-    entry.object_name = "db_id:test_obj";
-    entry.file_name = "data_abc_001.dat";
-    entry.offset = 1024;
-    entry.size = 512;
-    entry.is_large = false;
-    entry.block_count = 3;
-    entry.host = "worker-1";
-    entry.write_context_hash = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
+    entry.object_name_ = "db_id:test_obj";
+    entry.file_name_ = "data_abc_001.dat";
+    entry.offset_ = 1024;
+    entry.size_ = 512;
+    entry.is_large_ = false;
+    entry.block_count_ = 3;
+    entry.host_ = "worker-1";
+    entry.write_context_hash_ = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
 
     CMString serialized;
     FLY_ENCODE(entry, serialized);
@@ -95,30 +95,30 @@ TEST(IndexEntryV2Test, SerializeDeserializeWithWriteContextHash) {
     IndexEntry loaded;
     FLY_DECODE(serialized, IndexEntry, loaded);
 
-    EXPECT_EQ(loaded.object_name, entry.object_name);
-    EXPECT_EQ(loaded.file_name, entry.file_name);
-    EXPECT_EQ(loaded.offset, entry.offset);
-    EXPECT_EQ(loaded.size, entry.size);
-    EXPECT_EQ(loaded.is_large, entry.is_large);
-    EXPECT_EQ(loaded.block_count, entry.block_count);
-    EXPECT_EQ(loaded.host, entry.host);
-    EXPECT_EQ(loaded.write_context_hash, entry.write_context_hash);
+    EXPECT_EQ(loaded.object_name_, entry.object_name_);
+    EXPECT_EQ(loaded.file_name_, entry.file_name_);
+    EXPECT_EQ(loaded.offset_, entry.offset_);
+    EXPECT_EQ(loaded.size_, entry.size_);
+    EXPECT_EQ(loaded.is_large_, entry.is_large_);
+    EXPECT_EQ(loaded.block_count_, entry.block_count_);
+    EXPECT_EQ(loaded.host_, entry.host_);
+    EXPECT_EQ(loaded.write_context_hash_, entry.write_context_hash_);
 }
 
 TEST(IndexEntryV2Test, EmptyWriteContextHashRoundtrip) {
     IndexEntry entry;
-    entry.object_name = "test_obj";
-    entry.file_name = "data.dat";
-    entry.offset = 0;
-    entry.size = 100;
-    entry.write_context_hash = "";
+    entry.object_name_ = "test_obj";
+    entry.file_name_ = "data.dat";
+    entry.offset_ = 0;
+    entry.size_ = 100;
+    entry.write_context_hash_ = "";
 
     CMString serialized;
     FLY_ENCODE(entry, serialized);
 
     IndexEntry loaded;
     FLY_DECODE(serialized, IndexEntry, loaded);
-    EXPECT_EQ(loaded.write_context_hash, "");
+    EXPECT_EQ(loaded.write_context_hash_, "");
 }
 
 TEST(IndexEntryV2Test, LocalIndexSaveLoadWithHash) {
@@ -129,11 +129,11 @@ TEST(IndexEntryV2Test, LocalIndexSaveLoadWithHash) {
     {
         LocalIndex index(idx_path);
         IndexEntry e;
-        e.object_name = "hashed_obj";
-        e.file_name = "data.dat";
-        e.offset = 0;
-        e.size = 100;
-        e.write_context_hash = "abcdef0123456789abcdef0123456789";
+        e.object_name_ = "hashed_obj";
+        e.file_name_ = "data.dat";
+        e.offset_ = 0;
+        e.size_ = 100;
+        e.write_context_hash_ = "abcdef0123456789abcdef0123456789";
         index.add_entry(e);
         index.save();
     }
@@ -143,7 +143,7 @@ TEST(IndexEntryV2Test, LocalIndexSaveLoadWithHash) {
 
     auto found = loaded.find_entry("hashed_obj");
     ASSERT_TRUE(found.has_value());
-    EXPECT_EQ(found->write_context_hash, "abcdef0123456789abcdef0123456789");
+    EXPECT_EQ(found->write_context_hash_, "abcdef0123456789abcdef0123456789");
 
     std::filesystem::remove_all(test_dir);
 }
@@ -156,18 +156,18 @@ TEST(IndexEntryV2Test, MultipleEntriesWithDifferentHashes) {
     {
         LocalIndex index(idx_path);
         IndexEntry e1;
-        e1.object_name = "obj_a";
-        e1.file_name = "data.dat";
-        e1.offset = 0;
-        e1.size = 50;
-        e1.write_context_hash = "hash_aaa01234567890123456789012";
+        e1.object_name_ = "obj_a";
+        e1.file_name_ = "data.dat";
+        e1.offset_ = 0;
+        e1.size_ = 50;
+        e1.write_context_hash_ = "hash_aaa01234567890123456789012";
 
         IndexEntry e2;
-        e2.object_name = "obj_b";
-        e2.file_name = "data.dat";
-        e2.offset = 50;
-        e2.size = 60;
-        e2.write_context_hash = "hash_bbb01234567890123456789012";
+        e2.object_name_ = "obj_b";
+        e2.file_name_ = "data.dat";
+        e2.offset_ = 50;
+        e2.size_ = 60;
+        e2.write_context_hash_ = "hash_bbb01234567890123456789012";
 
         index.add_entry(e1);
         index.add_entry(e2);
@@ -180,11 +180,11 @@ TEST(IndexEntryV2Test, MultipleEntriesWithDifferentHashes) {
 
     auto a = loaded.find_entry("obj_a");
     ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->write_context_hash, "hash_aaa01234567890123456789012");
+    EXPECT_EQ(a->write_context_hash_, "hash_aaa01234567890123456789012");
 
     auto b = loaded.find_entry("obj_b");
     ASSERT_TRUE(b.has_value());
-    EXPECT_EQ(b->write_context_hash, "hash_bbb01234567890123456789012");
+    EXPECT_EQ(b->write_context_hash_, "hash_bbb01234567890123456789012");
 
     std::filesystem::remove_all(test_dir);
 }

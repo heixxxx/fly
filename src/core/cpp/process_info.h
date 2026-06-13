@@ -5,7 +5,9 @@
 
 class ProcessInfo {
 public:
-    static ProcessInfo& instance();
+    ProcessInfo();
+
+    static CMSharedPtr<ProcessInfo> instance();
 
     void set_worker_mode(bool mode) { worker_mode_ = mode; }
     void set_worker_id(int id) { worker_id_ = id; }
@@ -33,7 +35,6 @@ public:
     void reset();
 
 private:
-    ProcessInfo() = default;
     ProcessInfo(const ProcessInfo&) = delete;
     ProcessInfo& operator=(const ProcessInfo&) = delete;
 

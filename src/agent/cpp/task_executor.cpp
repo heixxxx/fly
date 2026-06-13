@@ -41,13 +41,13 @@ TaskExecResult TaskExecutor::execute(uint64_t task_id, const CMString& task_name
     running_ = true;
     
     TaskExecResult result;
-    result.task_id = task_id;
+    result.task_id_ = task_id;
     
     if (exec_func_) {
         result = exec_func_(task_id, task_name, task_module, args);
     } else {
-        result.status = TaskExecStatus::SUCCESS;
-        result.output = task_module + "." + task_name;
+        result.status_ = TaskExecStatus::SUCCESS;
+        result.output_ = task_module + "." + task_name;
     }
     
     running_ = false;

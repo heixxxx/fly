@@ -5,7 +5,6 @@ import subprocess
 from abc import ABC, abstractmethod
 
 from _fly_agent import EXAgentMaster, EXAgentWorker, EXTaskExecutor, EXTaskExecStatus
-from _fly_storage import ex_stg_get_data_service
 from _fly_log import DBG, INFO, WARN, ERR 
 
 from .executor import create_executor
@@ -104,7 +103,6 @@ class Master(FlyAgent):
 
     def __init__(self, host: str = "127.0.0.1", port: int = 0):
         self._agent = EXAgentMaster(host, port)
-        self._agent.set_data_service(ex_stg_get_data_service())
         self._task_counter = 0
         self._lock = threading.Lock()
         self._worker_procs = []
@@ -446,7 +444,6 @@ class Worker(FlyAgent):
                  attributes: list = None):
         self._agent = EXAgentWorker(worker_id, master_host, master_port,
                                     attributes or [])
-        self._agent.set_data_service(ex_stg_get_data_service())
         self._db_cache = {}
         self._db_path_pending = {}
         self._cache = {}

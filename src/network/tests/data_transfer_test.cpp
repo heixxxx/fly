@@ -26,7 +26,7 @@ static CMString write_raw(Database& db, const CMString& name, const CMString& da
 class DataTransferTest : public ::testing::Test {
 protected:
     CMString test_dir_;
-    DataService& ds_ = DataService::instance();
+    CMSharedPtr<DataService> ds_ = DataService::instance();
     CMUniquePtr<Database> db_;
 
     void SetUp() override {
@@ -39,7 +39,7 @@ protected:
     }
 
     void TearDown() override {
-        ds_.stop_transfer_server();
+        ds_->stop_transfer_server();
         db_.reset();
         Logger::shutdown();
         std::filesystem::remove_all(test_dir_);
@@ -53,7 +53,7 @@ protected:
             write_raw(*db_, name, data, false);
             names.push_back(db_->get_obj_name(name));
         }
-        ds_.drain_write_back();
+        ds_->drain_write_back();
         TEST_LOG("Wrote %d objects", count);
         return names;
     }
@@ -74,26 +74,26 @@ TEST_F(DataTransferTest, SubmitTransferSingleObject) {
     CMVector<TransferResult> results;
     std::mutex results_mutex;
 
-    ds_.start_transfer_server(1, [&](const TransferResult& r) {
+    ds_->start_transfer_server(1, [&](const TransferResult& r) {
         std::lock_guard<std::mutex> lock(results_mutex);
         results.push_back(r);
         TEST_LOG("Completion: conn_id=%lu object=%s success=%d compressed_data_size=%zu",
-                 r.conn_id, r.object_name.c_str(), r.success, r.compressed_data.size());
+                 r.conn_id_, r.object_name_.c_str(), r.success_, r.compressed_data_.size());
     });
 
     TEST_LOG("Submitting transfer for %s", names[0].c_str());
-    ds_.submit_transfer(42, names[0]);
+    ds_->submit_transfer(42, names[0]);
 
-    auto pool = ds_.get_transfer_pool();
+    auto pool = ds_->get_transfer_pool();
     ASSERT_TRUE(pool);
     ASSERT_TRUE(pool->wait_for_completion([&]{ return results.size() >= 1; }));
     pool->process_completions();
 
     ASSERT_EQ(results.size(), 1u);
-    EXPECT_EQ(results[0].conn_id, 42u);
-    EXPECT_EQ(results[0].object_name, names[0]);
-    EXPECT_TRUE(results[0].success);
-    EXPECT_FALSE(results[0].compressed_data.empty());
+    EXPECT_EQ(results[0].conn_id_, 42u);
+    EXPECT_EQ(results[0].object_name_, names[0]);
+    EXPECT_TRUE(results[0].success_);
+    EXPECT_FALSE(results[0].compressed_data_.empty());
 
     TEST_LOG("PASS: single transfer completed correctly");
 }
@@ -107,26 +107,26 @@ TEST_F(DataTransferTest, SubmitTransferMultipleObjects) {
     CMVector<TransferResult> results;
     std::mutex results_mutex;
 
-    ds_.start_transfer_server(1, [&](const TransferResult& r) {
+    ds_->start_transfer_server(1, [&](const TransferResult& r) {
         std::lock_guard<std::mutex> lock(results_mutex);
         results.push_back(r);
         TEST_LOG("Completion: conn_id=%lu object=%s success=%d",
-                 r.conn_id, r.object_name.c_str(), r.success);
+                 r.conn_id_, r.object_name_.c_str(), r.success_);
     });
 
     for (int i = 0; i < count; i++) {
-        ds_.submit_transfer(100 + i, names[i]);
+        ds_->submit_transfer(100 + i, names[i]);
     }
     TEST_LOG("Submitted %d transfers", count);
 
-    auto pool = ds_.get_transfer_pool();
+    auto pool = ds_->get_transfer_pool();
     ASSERT_TRUE(pool->wait_for_completion([&]{ return results.size() >= static_cast<size_t>(count); }));
     pool->process_completions();
 
     EXPECT_EQ(results.size(), static_cast<size_t>(count));
     for (const auto& r : results) {
-        EXPECT_TRUE(r.success) << "Object " << r.object_name << " should succeed";
-        EXPECT_FALSE(r.compressed_data.empty()) << "Object " << r.object_name << " should have compressed data";
+        EXPECT_TRUE(r.success_) << "Object " << r.object_name_ << " should succeed";
+        EXPECT_FALSE(r.compressed_data_.empty()) << "Object " << r.object_name_ << " should have compressed data";
     }
 
     TEST_LOG("PASS: %zu/%d transfers completed", results.size(), count);
@@ -143,13 +143,13 @@ TEST_F(DataTransferTest, ConcurrentSubmitTransfer) {
     std::mutex results_mutex;
     std::atomic<int> completion_count{0};
 
-    ds_.start_transfer_server(2, [&](const TransferResult& r) {
+    ds_->start_transfer_server(2, [&](const TransferResult& r) {
         std::lock_guard<std::mutex> lock(results_mutex);
         results.push_back(r);
         completion_count++;
         TEST_LOG("[COMPLETION] thread=%lu conn_id=%lu object=%s success=%d",
                  std::hash<std::thread::id>{}(std::this_thread::get_id()),
-                 r.conn_id, r.object_name.c_str(), r.success);
+                 r.conn_id_, r.object_name_.c_str(), r.success_);
     });
 
     // Each thread submits transfers for a subset of objects
@@ -159,7 +159,7 @@ TEST_F(DataTransferTest, ConcurrentSubmitTransfer) {
     for (int t = 0; t < thread_count; t++) {
         threads.emplace_back([&, t]() {
             for (int i = t; i < object_count; i += thread_count) {
-                ds_.submit_transfer(1000 + t * 100 + i, names[i]);
+                ds_->submit_transfer(1000 + t * 100 + i, names[i]);
                 submit_count++;
                 TEST_LOG("[SUBMIT] thread=%d object=%s", t, names[i].c_str());
             }
@@ -169,7 +169,7 @@ TEST_F(DataTransferTest, ConcurrentSubmitTransfer) {
     for (auto& th : threads) th.join();
     TEST_LOG("All %d submits done from %d threads", submit_count.load(), thread_count);
 
-    auto pool = ds_.get_transfer_pool();
+    auto pool = ds_->get_transfer_pool();
     ASSERT_TRUE(pool->wait_for_completion([&]{ return completion_count.load() >= object_count; }));
     pool->process_completions();
 
@@ -177,7 +177,7 @@ TEST_F(DataTransferTest, ConcurrentSubmitTransfer) {
 
     EXPECT_EQ(results.size(), static_cast<size_t>(object_count));
     for (const auto& r : results) {
-        EXPECT_TRUE(r.success) << "Object " << r.object_name << " transfer should succeed";
+        EXPECT_TRUE(r.success_) << "Object " << r.object_name_ << " transfer should succeed";
     }
 
     TEST_LOG("PASS: concurrent submit_transfer completed");
@@ -189,21 +189,21 @@ TEST_F(DataTransferTest, SubmitTransferNonexistentObject) {
     CMVector<TransferResult> results;
     std::mutex results_mutex;
 
-    ds_.start_transfer_server(1, [&](const TransferResult& r) {
+    ds_->start_transfer_server(1, [&](const TransferResult& r) {
         std::lock_guard<std::mutex> lock(results_mutex);
         results.push_back(r);
     });
 
-    ds_.submit_transfer(1, "nonexistent/object");
+    ds_->submit_transfer(1, "nonexistent/object");
 
-    auto pool = ds_.get_transfer_pool();
+    auto pool = ds_->get_transfer_pool();
     ASSERT_TRUE(pool->wait_for_completion([&]{ return results.size() >= 1; }));
     pool->process_completions();
 
     ASSERT_EQ(results.size(), 1u);
-    EXPECT_FALSE(results[0].success);
-    EXPECT_FALSE(results[0].error_message.empty());
-    TEST_LOG("PASS: nonexistent object returns success=false, error=%s", results[0].error_message.c_str());
+    EXPECT_FALSE(results[0].success_);
+    EXPECT_FALSE(results[0].error_message_.empty());
+    TEST_LOG("PASS: nonexistent object returns success=false, error=%s", results[0].error_message_.c_str());
 }
 
 // --- Test 5: try_read_local thread safety (concurrent reads) ---
@@ -222,7 +222,7 @@ TEST_F(DataTransferTest, ConcurrentTryReadLocal) {
     }
     TEST_LOG("Wrote %d objects for concurrent read test", object_count);
 
-    fly::DataService::instance().drain_write_back();
+    fly::DataService::instance()->drain_write_back();
 
     std::atomic<int> success_count{0};
     std::atomic<int> fail_count{0};
@@ -231,9 +231,9 @@ TEST_F(DataTransferTest, ConcurrentTryReadLocal) {
     for (int t = 0; t < thread_count; t++) {
         threads.emplace_back([&, t]() {
             for (int i = 0; i < object_count; i++) {
-                auto [found, result] = ds_.try_read_local(names[i]);
+                auto [found, result] = ds_->try_read_local(names[i]);
                 if (found) {
-                    CMString data(result.data_buffer.begin(), result.data_buffer.end());
+                    CMString data(result.data_buffer_.begin(), result.data_buffer_.end());
                     std::string expected = "cread_data_" + std::to_string(i);
                     if (data == expected) {
                         success_count++;
@@ -278,29 +278,29 @@ TEST_F(DataTransferTest, DataClientToReactorSingleRequest) {
     // Register DataRequestMessage handler — mimics WorkerAgent::on_data_request
     reactor->register_handler<DataRequestMessage>(
         [&](uint64_t conn_id, const DataRequestMessage& msg) {
-            TEST_LOG("Reactor received DataRequest for %s", msg.object_name.c_str());
-            ds_.submit_transfer(conn_id, msg.object_name);
+            TEST_LOG("Reactor received DataRequest for %s", msg.object_name_.c_str());
+            ds_->submit_transfer(conn_id, msg.object_name_);
         });
 
     // Start DataService with completion callback that sends response via Reactor
-    ds_.start_transfer_server(1, [&](const TransferResult& r) {
-        TEST_LOG("Transfer completion: object=%s success=%d", r.object_name.c_str(), r.success);
+    ds_->start_transfer_server(1, [&](const TransferResult& r) {
+        TEST_LOG("Transfer completion: object=%s success=%d", r.object_name_.c_str(), r.success_);
         DataResponseMessage response;
-        response.object_name = r.object_name;
-        response.success = r.success;
-        response.compressed_data = r.compressed_data;
-        response.py_name = r.py_name;
-        if (!r.success) response.error_message = r.error_message;
-        reactor->send(r.conn_id, response);
+        response.object_name_ = r.object_name_;
+        response.success_ = r.success_;
+        response.compressed_data_ = r.compressed_data_;
+        response.py_name_ = r.py_name_;
+        if (!r.success_) response.error_message_ = r.error_message_;
+        reactor->send(r.conn_id_, response);
     });
 
-    reactor->set_io_pool(ds_.get_transfer_pool());
+    reactor->set_io_pool(ds_->get_transfer_pool());
 
     std::atomic<bool> reactor_running{true};
     std::thread reactor_thread([&]() {
         while (reactor_running.load()) {
             reactor->run_once(50);
-            auto pool = ds_.get_transfer_pool();
+            auto pool = ds_->get_transfer_pool();
             if (pool) pool->process_completions();
         }
     });
@@ -335,26 +335,26 @@ TEST_F(DataTransferTest, DataClientConcurrentRequests) {
 
     reactor->register_handler<DataRequestMessage>(
         [&](uint64_t conn_id, const DataRequestMessage& msg) {
-            ds_.submit_transfer(conn_id, msg.object_name);
+            ds_->submit_transfer(conn_id, msg.object_name_);
         });
 
-    ds_.start_transfer_server(2, [&](const TransferResult& r) {
+    ds_->start_transfer_server(2, [&](const TransferResult& r) {
         DataResponseMessage response;
-        response.object_name = r.object_name;
-        response.success = r.success;
-        response.compressed_data = r.compressed_data;
-        response.py_name = r.py_name;
-        if (!r.success) response.error_message = r.error_message;
-        reactor->send(r.conn_id, response);
+        response.object_name_ = r.object_name_;
+        response.success_ = r.success_;
+        response.compressed_data_ = r.compressed_data_;
+        response.py_name_ = r.py_name_;
+        if (!r.success_) response.error_message_ = r.error_message_;
+        reactor->send(r.conn_id_, response);
     });
 
-    reactor->set_io_pool(ds_.get_transfer_pool());
+    reactor->set_io_pool(ds_->get_transfer_pool());
 
     std::atomic<bool> reactor_running{true};
     std::thread reactor_thread([&]() {
         while (reactor_running.load()) {
             reactor->run_once(50);
-            auto pool = ds_.get_transfer_pool();
+            auto pool = ds_->get_transfer_pool();
             if (pool) pool->process_completions();
         }
     });
@@ -411,27 +411,27 @@ TEST_F(DataTransferTest, StopTransferServer) {
     CMVector<TransferResult> results;
     std::mutex results_mutex;
 
-    ds_.start_transfer_server(1, [&](const TransferResult& r) {
+    ds_->start_transfer_server(1, [&](const TransferResult& r) {
         std::lock_guard<std::mutex> lock(results_mutex);
         results.push_back(r);
     });
 
-    EXPECT_TRUE(ds_.is_transfer_server_running());
+    EXPECT_TRUE(ds_->is_transfer_server_running());
 
-    ds_.submit_transfer(1, names[0]);
+    ds_->submit_transfer(1, names[0]);
 
-    auto pool = ds_.get_transfer_pool();
+    auto pool = ds_->get_transfer_pool();
     ASSERT_TRUE(pool);
     ASSERT_TRUE(pool->wait_for_completion([&]{ return results.size() >= 1; }));
     pool->process_completions();
     EXPECT_GE(results.size(), 1u);
 
-    ds_.stop_transfer_server();
-    EXPECT_FALSE(ds_.is_transfer_server_running());
+    ds_->stop_transfer_server();
+    EXPECT_FALSE(ds_->is_transfer_server_running());
 
     // After stop, submit should be no-op
     results.clear();
-    ds_.submit_transfer(2, names[0]);
+    ds_->submit_transfer(2, names[0]);
 
     // Short sleep to ensure no result after stop
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -454,7 +454,7 @@ TEST_F(DataTransferTest, ConcurrentReadWhileWriting) {
         write_raw(stress_db, name, "pre_data_" + std::to_string(i), false);
         pre_names.push_back(stress_db.get_obj_name(name));
     }
-    ds_.drain_write_back();
+    ds_->drain_write_back();
     TEST_LOG("Pre-wrote %zu objects", pre_names.size());
 
     std::atomic<int> read_success{0};
@@ -475,9 +475,9 @@ TEST_F(DataTransferTest, ConcurrentReadWhileWriting) {
     for (int t = 0; t < reader_count; t++) {
         threads.emplace_back([&, t]() {
             for (size_t i = 0; i < pre_names.size(); i++) {
-                auto [found, result] = ds_.try_read_local(pre_names[i]);
+                auto [found, result] = ds_->try_read_local(pre_names[i]);
                 if (found) {
-                    CMString data(result.data_buffer.begin(), result.data_buffer.end());
+                    CMString data(result.data_buffer_.begin(), result.data_buffer_.end());
                     std::string expected = "pre_data_" + std::to_string(i);
                     if (data == expected) {
                         read_success++;

@@ -360,10 +360,9 @@ private:
 ### DataService（统一内存索引）
 
 ```cpp
-class DataService : public std::enable_shared_from_this<DataService> {
+class DataService {
 public:
-    static DataService& instance();
-    static CMSharedPtr<DataService> instance_ptr();  // shared_from_this()
+    static CMSharedPtr<DataService> instance();
     
     // 本地索引
     void on_write_started(const CMString& db_id, const CMString& object_name);
@@ -608,7 +607,7 @@ read_raw(key)                       → Layer 3: MetadataClient 查 Master → D
 | FlyBuffer 统一为 CMString 内部存储 | 消除 char↔uint8_t 阻抗失配，读取路径 `take(std::move(string))` 零拷贝 |
 | WriteBackQueue 异步写入 | 文件 I/O 非阻塞，避免写入阻塞任务执行 |
 | 回调模式解耦 | Database 不依赖 WorkerAgent，std::function 桥接 |
-| DataService 进程级单例（enable_shared_from_this） | Master/Worker 共享，CMWeakPtr 观察者模式安全引用 |
+| DataService 进程级单例（CMSharedPtr） | Master/Worker 共享，instance() 返回 CMSharedPtr |
 | IOThreadPool 数据传输 | 文件 I/O 不阻塞 Reactor 线程 |
 | COMPLETE = 可读（统一语义） | 不论 save_to_db 与否，completion_state==COMPLETE 即可读 |
 | 传输去重三元组 | (requesting_worker_id, object_name, request_id) 防止重复大对象传输 |

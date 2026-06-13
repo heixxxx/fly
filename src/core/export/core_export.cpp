@@ -18,7 +18,7 @@ FLY_EXPORT_MODULE(_fly_core) {
     FLY_EXPORT_METHOD("save_to_file", &Config::save_to_file)
     FLY_EXPORT_METHOD("load_from_file", &Config::load_from_file);
 
-    FLY_EXPORT_FUNCTION_REF("ex_core_get_config", []() { return &Config::instance(); });
+    FLY_EXPORT_FUNCTION("ex_core_get_config", []() { return Config::instance(); });
 
     FLY_EXPORT_CLASS(ProcessInfo, "EXProcessInfo")
     FLY_EXPORT_METHOD("worker_mode", &ProcessInfo::worker_mode)
@@ -33,7 +33,7 @@ FLY_EXPORT_MODULE(_fly_core) {
     FLY_EXPORT_METHOD("hostname", &ProcessInfo::hostname)
     FLY_EXPORT_METHOD("set_hostname", &ProcessInfo::set_hostname);
 
-    FLY_EXPORT_FUNCTION_REF("ex_core_get_process_info", []() { return &ProcessInfo::instance(); });
+    FLY_EXPORT_FUNCTION("ex_core_get_process_info", []() { return ProcessInfo::instance(); });
 
     FLY_EXPORT_FUNCTION("graceful_exit", [](const CMString& reason, int error_type, int exit_code) {
         fly::graceful_exit(reason, static_cast<fly::TaskErrorType>(error_type), exit_code);

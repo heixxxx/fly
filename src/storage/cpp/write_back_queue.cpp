@@ -79,8 +79,8 @@ void WriteBackQueue::worker_loop() {
             }
         }
 
-        task.execute();
-        task.on_complete();
+        task.execute_();
+        task.on_complete_();
 
         {
             std::lock_guard<std::mutex> lock(mutex_);

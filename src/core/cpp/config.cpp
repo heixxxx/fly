@@ -3,9 +3,9 @@
 #include <fstream>
 #include <sstream>
 
-Config& Config::instance() {
-    static Config config;
-    return config;
+CMSharedPtr<Config> Config::instance() {
+    static CMSharedPtr<Config> inst = CMMakeShared<Config>();
+    return inst;
 }
 
 Config::Config() {

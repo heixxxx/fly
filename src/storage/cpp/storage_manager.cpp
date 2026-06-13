@@ -4,10 +4,12 @@
 
 namespace fs = std::filesystem;
 
-StorageManager& StorageManager::instance() {
-    static StorageManager manager;
-    return manager;
+CMSharedPtr<StorageManager> StorageManager::instance() {
+    static CMSharedPtr<StorageManager> inst = CMMakeShared<StorageManager>();
+    return inst;
 }
+
+StorageManager::StorageManager() = default;
 
 CMSharedPtr<Database> StorageManager::get_or_create_database(
     const CMString& base_path,
@@ -48,7 +50,7 @@ void StorageManager::close_all() {
 
 void StorageManager::reset() {
     databases_.iterate([](const CMString& path, const CMSharedPtr<Database>& db) {
-        fly::DataService::instance().unregister_database(db->get_db_id());
+        fly::DataService::instance()->unregister_database(db->get_db_id());
     });
     databases_.clear();
     writers_.clear();

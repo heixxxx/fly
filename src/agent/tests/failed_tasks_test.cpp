@@ -65,14 +65,14 @@ protected:
 
     FailedTaskRecord make_record(uint64_t id, const CMString& name) {
         FailedTaskRecord r;
-        r.task_id = id;
-        r.name = name;
-        r.module = "mod_" + name;
-        r.args = {"arg1", "arg2"};
-        r.inputs = {"in1"};
-        r.outputs = {"out1"};
-        r.required_capabilities = {"gpu"};
-        r.error_message = "failed: " + name;
+        r.task_id_ = id;
+        r.name_ = name;
+        r.module_ = "mod_" + name;
+        r.args_ = {"arg1", "arg2"};
+        r.inputs_ = {"in1"};
+        r.outputs_ = {"out1"};
+        r.required_capabilities_ = {"gpu"};
+        r.error_message_ = "failed: " + name;
         return r;
     }
 };
@@ -82,11 +82,11 @@ TEST_F(FailedTasksTest, AppendAndReadSingle) {
 
     auto records = read_all_records(file_path_);
     ASSERT_EQ(records.size(), 1u);
-    EXPECT_EQ(records[0].task_id, 1u);
-    EXPECT_EQ(records[0].name, "task_a");
-    EXPECT_EQ(records[0].module, "mod_task_a");
-    EXPECT_EQ(records[0].args.size(), 2u);
-    EXPECT_EQ(records[0].error_message, "failed: task_a");
+    EXPECT_EQ(records[0].task_id_, 1u);
+    EXPECT_EQ(records[0].name_, "task_a");
+    EXPECT_EQ(records[0].module_, "mod_task_a");
+    EXPECT_EQ(records[0].args_.size(), 2u);
+    EXPECT_EQ(records[0].error_message_, "failed: task_a");
 }
 
 TEST_F(FailedTasksTest, AppendMultipleSequential) {
@@ -96,10 +96,10 @@ TEST_F(FailedTasksTest, AppendMultipleSequential) {
 
     auto records = read_all_records(file_path_);
     ASSERT_EQ(records.size(), 3u);
-    EXPECT_EQ(records[0].task_id, 1u);
-    EXPECT_EQ(records[1].task_id, 2u);
-    EXPECT_EQ(records[2].task_id, 3u);
-    EXPECT_EQ(records[2].name, "task_c");
+    EXPECT_EQ(records[0].task_id_, 1u);
+    EXPECT_EQ(records[1].task_id_, 2u);
+    EXPECT_EQ(records[2].task_id_, 3u);
+    EXPECT_EQ(records[2].name_, "task_c");
 }
 
 TEST_F(FailedTasksTest, ReadFromNonExistentFile) {
@@ -123,7 +123,7 @@ TEST_F(FailedTasksTest, RewriteAfterRemove) {
     auto records = read_all_records(file_path_);
     records.erase(
         std::remove_if(records.begin(), records.end(),
-            [](const FailedTaskRecord& r) { return r.task_id == 2; }),
+            [](const FailedTaskRecord& r) { return r.task_id_ == 2; }),
         records.end());
 
     std::filesystem::remove(file_path_);
@@ -133,8 +133,8 @@ TEST_F(FailedTasksTest, RewriteAfterRemove) {
 
     auto reloaded = read_all_records(file_path_);
     ASSERT_EQ(reloaded.size(), 2u);
-    EXPECT_EQ(reloaded[0].task_id, 1u);
-    EXPECT_EQ(reloaded[1].task_id, 3u);
+    EXPECT_EQ(reloaded[0].task_id_, 1u);
+    EXPECT_EQ(reloaded[1].task_id_, 3u);
 }
 
 TEST_F(FailedTasksTest, RewriteAllRemovedDeletesFile) {

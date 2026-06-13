@@ -166,6 +166,9 @@ def _run_master():
     if script_path:
         sys.argv = [script_path]
         sys._fly_script_path = script_path
+        script_dir = os.path.dirname(os.path.abspath(script_path))
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
         with open(script_path) as f:
             compiled = compile(f.read(), script_path, "exec")
             exec(compiled, {"__name__": "__main__", "__file__": script_path})

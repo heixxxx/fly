@@ -20,31 +20,25 @@ constexpr size_t DB_ID_LEN = 32;
 
 }  // namespace
 
-struct DataService::Creator_ : public DataService {
-    Creator_() = default;
-};
-
-CMSharedPtr<DataService> DataService::instance_ptr() {
-    static CMSharedPtr<DataService> inst = CMMakeShared<Creator_>();
+CMSharedPtr<DataService> DataService::instance() {
+    static CMSharedPtr<DataService> inst = CMMakeShared<DataService>();
     return inst;
 }
 
-DataService& DataService::instance() {
-    return *instance_ptr();
-}
+DataService::DataService() = default;
 
 namespace {
 
 ReadResult decompress_raw(const CMString& raw) {
     ReadResult result;
     DecompressingStreamBuf dsbuf(raw.data(), raw.size());
-    result.py_name = dsbuf.py_name();
+    result.py_name_ = dsbuf.py_name();
     std::istream is(&dsbuf);
     CMVector<char> tmp(4096);
     while (is) {
         is.read(tmp.data(), static_cast<std::streamsize>(tmp.size()));
         if (is.gcount() > 0) {
-            result.data_buffer.insert(result.data_buffer.end(),
+            result.data_buffer_.insert(result.data_buffer_.end(),
                 tmp.data(), tmp.data() + static_cast<size_t>(is.gcount()));
         }
     }
@@ -97,7 +91,7 @@ void DataService::register_database(const CMString& db_id,
         return;
     }
     for (const auto& [existing_id, paths] : db_paths_) {
-        if (paths.base_path == base_path) {
+        if (paths.base_path_ == base_path) {
             ERR("base_path '{}' already registered by database '{}'", base_path, existing_id);
             return;
         }
@@ -128,10 +122,10 @@ void DataService::on_object_written(const CMString& db_id,
     if (!info) {
         info = CMMakeShared<LocalObjectInfo>();
     }
-    info->db_id = db_id;
-    info->entries.push_back(entry);
-    info->flushed = false;
-    info->completion_state = CompletionState::COMPLETE;
+    info->db_id_ = db_id;
+    info->entries_.push_back(entry);
+    info->flushed_ = false;
+    info->completion_state_ = CompletionState::COMPLETE;
 }
 
 void DataService::on_flush(const CMString& db_id) {
@@ -142,13 +136,13 @@ void DataService::on_flush(const CMString& db_id) {
         if (db_it == local_idx_.end()) return;
         for (auto& [name, info] : db_it->second) {
             if (info) {
-                info->flushed = true;
+                info->flushed_ = true;
                 to_notify.push_back(info);
             }
         }
     }
     for (auto& info : to_notify) {
-        info->cv.notify_all();
+        info->cv_.notify_all();
     }
 }
 
@@ -156,8 +150,8 @@ void DataService::on_write_started(const CMString& db_id,
                                      const CMString& object_name) {
     auto [_, short_name] = split_full(object_name);
     CMSharedPtr<LocalObjectInfo> info = CMMakeShared<LocalObjectInfo>();
-    info->db_id = db_id;
-    info->completion_state = CompletionState::INCOMPLETE;
+    info->db_id_ = db_id;
+    info->completion_state_ = CompletionState::INCOMPLETE;
 
     std::lock_guard<std::mutex> lock(mutex_);
     local_idx_[db_id][short_name] = info;
@@ -175,13 +169,13 @@ void DataService::on_write_completed(const CMString& db_id,
         auto it = db_it->second.find(short_name);
         if (it == db_it->second.end() || !it->second) return;
         info = it->second;
-        info->entries = entries;
-        info->completion_state = CompletionState::COMPLETE;
+        info->entries_ = entries;
+        info->completion_state_ = CompletionState::COMPLETE;
     }
     {
-        std::lock_guard<std::mutex> cv_lock(info->cv_mutex);
+        std::lock_guard<std::mutex> cv_lock(info->cv_mutex_);
     }
-    info->cv.notify_all();
+    info->cv_.notify_all();
 }
 
 void DataService::on_write_failed(const CMString& db_id,
@@ -196,11 +190,11 @@ void DataService::on_write_failed(const CMString& db_id,
         auto it = db_it->second.find(short_name);
         if (it == db_it->second.end() || !it->second) return;
         info = it->second;
-        info->completion_state = CompletionState::FAILED;
-        info->error_message = error_message;
+        info->completion_state_ = CompletionState::FAILED;
+        info->error_message_ = error_message;
         db_it->second.erase(it);
     }
-    info->cv.notify_all();
+    info->cv_.notify_all();
 }
 
 void DataService::remove_local_index(const CMString& object_name) {
@@ -211,8 +205,8 @@ void DataService::remove_local_index(const CMString& object_name) {
         auto db_it = local_idx_.find(db_id);
         if (db_it != local_idx_.end()) {
             auto it = db_it->second.find(short_name);
-            if (it != db_it->second.end() && it->second && it->second->is_temp) {
-                freed_bytes = static_cast<int64_t>(it->second->temp_compressed_data.size());
+            if (it != db_it->second.end() && it->second && it->second->is_temp_) {
+                freed_bytes = static_cast<int64_t>(it->second->temp_compressed_data_.size());
             }
             db_it->second.erase(short_name);
         }
@@ -239,7 +233,7 @@ bool DataService::has_local_object(const CMString& object_name) const {
     if (db_it == local_idx_.end()) return false;
     auto it = db_it->second.find(short_name);
     return it != db_it->second.end() && it->second &&
-           it->second->completion_state == CompletionState::COMPLETE;
+           it->second->completion_state_ == CompletionState::COMPLETE;
 }
 
 void DataService::on_object_flushed(const CMString& object_name) {
@@ -251,16 +245,16 @@ void DataService::on_object_flushed(const CMString& object_name) {
         if (db_it != local_idx_.end()) {
             auto it = db_it->second.find(short_name);
             if (it != db_it->second.end() && it->second) {
-                it->second->flushed = true;
+                it->second->flushed_ = true;
                 info = it->second;
             }
         }
     }
     if (info) {
         {
-            std::lock_guard<std::mutex> cv_lock(info->cv_mutex);
+            std::lock_guard<std::mutex> cv_lock(info->cv_mutex_);
         }
-        info->cv.notify_all();
+        info->cv_.notify_all();
     }
 }
 
@@ -268,8 +262,8 @@ void DataService::restore_entries(const CMString& db_id,
                                     const CMVector<IndexEntry>& entries) {
     CMUnorderedMap<CMString, CMVector<IndexEntry>> grouped;
     for (const auto& e : entries) {
-        auto [entry_db_id, short_name] = split_full(e.object_name);
-        const CMString& key = entry_db_id.empty() ? e.object_name : short_name;
+        auto [entry_db_id, short_name] = split_full(e.object_name_);
+        const CMString& key = entry_db_id.empty() ? e.object_name_ : short_name;
         grouped[key].push_back(e);
     }
 
@@ -280,12 +274,12 @@ void DataService::restore_entries(const CMString& db_id,
         if (!info) {
             info = CMMakeShared<LocalObjectInfo>();
         }
-        info->db_id = db_id;
+        info->db_id_ = db_id;
         for (auto& e : obj_entries) {
-            info->entries.push_back(std::move(e));
+            info->entries_.push_back(std::move(e));
         }
-        info->completion_state = CompletionState::COMPLETE;
-        info->flushed = true;
+        info->completion_state_ = CompletionState::COMPLETE;
+        info->flushed_ = true;
     }
 
     if (!grouped.empty()) {
@@ -300,7 +294,7 @@ std::optional<CMVector<IndexEntry>> DataService::find_local_entries(const CMStri
     if (db_it == local_idx_.end()) return std::nullopt;
     auto it = db_it->second.find(short_name);
     if (it == db_it->second.end() || !it->second) return std::nullopt;
-    return it->second->entries;
+    return it->second->entries_;
 }
 
 // ============================================================
@@ -319,8 +313,8 @@ void DataService::add_remote_location(const CMString& object_name, uint64_t work
     auto [db_id, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
     auto& meta = remote_idx_[db_id][short_name];
-    if (std::find(meta.workers.begin(), meta.workers.end(), worker_id) == meta.workers.end()) {
-        meta.workers.push_back(worker_id);
+    if (std::find(meta.workers_.begin(), meta.workers_.end(), worker_id) == meta.workers_.end()) {
+        meta.workers_.push_back(worker_id);
     }
 }
 
@@ -340,7 +334,7 @@ void DataService::remove_remote_location(const CMString& object_name, uint64_t w
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
         if (it != db_it->second.end()) {
-            auto& workers = it->second.workers;
+            auto& workers = it->second.workers_;
             workers.erase(std::remove(workers.begin(), workers.end(), worker_id), workers.end());
             if (workers.empty()) {
                 db_it->second.erase(it);
@@ -356,7 +350,7 @@ CMVector<uint64_t> DataService::get_remote_workers(const CMString& object_name) 
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
         if (it != db_it->second.end()) {
-            return it->second.workers;
+            return it->second.workers_;
         }
     }
     return {};
@@ -368,7 +362,7 @@ bool DataService::has_remote_location(const CMString& object_name) const {
     auto db_it = remote_idx_.find(db_id);
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
-        return it != db_it->second.end() && !it->second.workers.empty();
+        return it != db_it->second.end() && !it->second.workers_.empty();
     }
     return false;
 }
@@ -379,8 +373,8 @@ RemoteObjectInfo DataService::lookup_remote_idx(const CMString& object_name) con
     auto db_it = remote_idx_.find(db_id);
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
-        if (it != db_it->second.end() && !it->second.workers.empty()) {
-            uint64_t wid = it->second.workers.front();
+        if (it != db_it->second.end() && !it->second.workers_.empty()) {
+            uint64_t wid = it->second.workers_.front();
             auto wit = worker_registry_.find(wid);
             if (wit != worker_registry_.end()) {
                 return wit->second;
@@ -447,7 +441,7 @@ ReadResult DataService::do_read_local_entries(const CMVector<IndexEntry>& entrie
 
 CMString DataService::do_read_raw_entries(const CMVector<IndexEntry>& entries,
                                             const DbPaths& paths) {
-    DataReader reader(paths.base_path, paths.data_path, paths.writer_id);
+    DataReader reader(paths.base_path_, paths.data_path_, paths.writer_id_);
     return reader.read_raw_bytes(entries.back());
 }
 
@@ -481,15 +475,15 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
             return {false, ReadResult{}};
         }
         auto& info = *it->second;
-        if (info.completion_state != CompletionState::COMPLETE || !info.flushed) {
+        if (info.completion_state_ != CompletionState::COMPLETE || !info.flushed_) {
             return {false, ReadResult{}};
         }
 
-        if (info.is_temp) {
+        if (info.is_temp_) {
             is_temp = true;
-            temp_data = info.temp_compressed_data;
+            temp_data = info.temp_compressed_data_;
         } else {
-            entries = info.entries;
+            entries = info.entries_;
 
             auto path_it = db_paths_.find(db_id);
             if (path_it == db_paths_.end()) {
@@ -513,7 +507,7 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
     }
 
     ReadResult result = do_read_local_entries(entries, paths);
-    if (result.data_buffer.empty()) return {false, ReadResult{}};
+    if (result.data_buffer_.empty()) return {false, ReadResult{}};
     return {true, std::move(result)};
 }
 
@@ -537,18 +531,18 @@ std::pair<bool, CMString> DataService::try_read_local_raw(const CMString& object
             return {false, {}};
         }
         auto& info = *it->second;
-        if (info.completion_state != CompletionState::COMPLETE) {
+        if (info.completion_state_ != CompletionState::COMPLETE) {
             DBG("[TEMP-READ-LOCAL] NOT READY: obj={}, state={}, is_temp={}",
-                object_name, static_cast<int>(info.completion_state), info.is_temp);
+                object_name, static_cast<int>(info.completion_state_), info.is_temp_);
             return {false, {}};
         }
 
-        if (info.is_temp) {
+        if (info.is_temp_) {
             is_temp = true;
-            temp_data = info.temp_compressed_data;
+            temp_data = info.temp_compressed_data_;
             DBG("[TEMP-READ-LOCAL] FOUND TEMP: obj={}, data_size={}", object_name, temp_data.size());
         } else {
-            entries = info.entries;
+            entries = info.entries_;
 
             auto path_it = db_paths_.find(db_id);
             if (path_it == db_paths_.end()) {
@@ -591,9 +585,9 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
         }
         info = it->second;
 
-        bool readable = info->completion_state == CompletionState::COMPLETE;
+        bool readable = info->completion_state_ == CompletionState::COMPLETE;
         if (readable) {
-            if (info->is_temp) {
+            if (info->is_temp_) {
                 is_temp = true;
             } else {
                 auto path_it = db_paths_.find(db_id);
@@ -605,11 +599,11 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
         }
     }
 
-    bool readable = info->completion_state == CompletionState::COMPLETE &&
-                    (info->is_temp || info->flushed);
+    bool readable = info->completion_state_ == CompletionState::COMPLETE &&
+                    (info->is_temp_ || info->flushed_);
     if (readable) {
         if (is_temp) {
-            CMString temp_data = info->temp_compressed_data;
+            CMString temp_data = info->temp_compressed_data_;
             if (temp_data.empty()) {
                 if (temp_eviction_store_) {
                     auto [found, data] = temp_eviction_store_->get(object_name);
@@ -625,7 +619,7 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
             return {true, std::move(temp_data), std::move(py_name)};
         }
 
-        CMString raw = do_read_raw_entries(info->entries, paths);
+        CMString raw = do_read_raw_entries(info->entries_, paths);
         if (raw.empty()) return {false, {}, {}};
         CMString py_name;
         DecompressingStreamBuf dsbuf(raw.data(), raw.size());
@@ -633,32 +627,32 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
         return {true, std::move(raw), std::move(py_name)};
     }
 
-    if (info->completion_state == CompletionState::FAILED) {
+    if (info->completion_state_ == CompletionState::FAILED) {
         return {false, {}, {}};
     }
 
     {
-        std::unique_lock<std::mutex> cv_lock(info->cv_mutex);
+        std::unique_lock<std::mutex> cv_lock(info->cv_mutex_);
         auto pred = [&info]() {
-            return info->completion_state == CompletionState::FAILED ||
-                   info->completion_state == CompletionState::COMPLETE;
+            return info->completion_state_ == CompletionState::FAILED ||
+                   info->completion_state_ == CompletionState::COMPLETE;
         };
 
         bool completed = true;
         if (timeout_ms < 0) {
-            info->cv.wait(cv_lock, pred);
+            info->cv_.wait(cv_lock, pred);
         } else {
-            completed = info->cv.wait_for(cv_lock,
+            completed = info->cv_.wait_for(cv_lock,
                 std::chrono::milliseconds(timeout_ms), pred);
         }
 
-        if (!completed || info->completion_state == CompletionState::FAILED) {
+        if (!completed || info->completion_state_ == CompletionState::FAILED) {
             return {false, {}, {}};
         }
     }
 
-    if (info->is_temp) {
-        CMString temp_data = info->temp_compressed_data;
+    if (info->is_temp_) {
+        CMString temp_data = info->temp_compressed_data_;
         if (temp_data.empty()) {
             if (temp_eviction_store_) {
                 auto [found, data] = temp_eviction_store_->get(object_name);
@@ -681,7 +675,7 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
         auto path_it = db_paths_.find(db_id);
         if (path_it == db_paths_.end()) return {false, {}, {}};
         final_paths = path_it->second;
-        final_entries = info->entries;
+        final_entries = info->entries_;
     }
 
     CMString raw = do_read_raw_entries(final_entries, final_paths);
@@ -699,13 +693,13 @@ std::pair<bool, ReadResult> DataService::try_read_remote(const CMString& object_
     auto [comp_found, comp_data, comp_py_name, comp_hash, can_still_produce] = read_raw_compressed(object_name);
     if (!comp_found || comp_data.empty()) {
         ReadResult empty;
-        empty.can_still_produce = can_still_produce;
+        empty.can_still_produce_ = can_still_produce;
         return {false, std::move(empty)};
     }
 
     ReadResult ret;
-    ret.py_name = comp_py_name;
-    ret.can_still_produce = false;
+    ret.py_name_ = comp_py_name;
+    ret.can_still_produce_ = false;
 
     DecompressingStreamBuf dsbuf(comp_data.data(), comp_data.size());
     std::istream is(&dsbuf);
@@ -713,7 +707,7 @@ std::pair<bool, ReadResult> DataService::try_read_remote(const CMString& object_
     while (is) {
         is.read(tmp.data(), static_cast<std::streamsize>(tmp.size()));
         if (is.gcount() > 0) {
-            ret.data_buffer.insert(ret.data_buffer.end(), tmp.data(),
+            ret.data_buffer_.insert(ret.data_buffer_.end(), tmp.data(),
                                    tmp.data() + static_cast<size_t>(is.gcount()));
         }
     }
@@ -737,9 +731,9 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
         }
         info = it->second;
 
-        bool readable = info->completion_state == CompletionState::COMPLETE;
+        bool readable = info->completion_state_ == CompletionState::COMPLETE;
         if (readable) {
-            if (info->is_temp) {
+            if (info->is_temp_) {
                 is_temp = true;
             } else {
                 auto path_it = db_paths_.find(db_id);
@@ -751,10 +745,10 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
         }
     }
 
-    bool readable2 = info->completion_state == CompletionState::COMPLETE;
+    bool readable2 = info->completion_state_ == CompletionState::COMPLETE;
     if (readable2) {
         if (is_temp) {
-            CMString temp_data = info->temp_compressed_data;
+            CMString temp_data = info->temp_compressed_data_;
             if (temp_data.empty()) {
                 if (temp_eviction_store_) {
                     auto [found, data] = temp_eviction_store_->get(object_name);
@@ -766,37 +760,37 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
             }
             return {true, decompress_raw(temp_data)};
         }
-        ReadResult read_result = do_read_local_entries(info->entries, paths);
-        if (read_result.data_buffer.empty()) return {false, ReadResult{}};
+        ReadResult read_result = do_read_local_entries(info->entries_, paths);
+        if (read_result.data_buffer_.empty()) return {false, ReadResult{}};
         return {true, std::move(read_result)};
     }
 
-    if (info->completion_state == CompletionState::FAILED) {
+    if (info->completion_state_ == CompletionState::FAILED) {
         return {false, ReadResult{}};
     }
 
     {
-        std::unique_lock<std::mutex> cv_lock(info->cv_mutex);
+        std::unique_lock<std::mutex> cv_lock(info->cv_mutex_);
         auto pred = [&info]() {
-            return info->completion_state == CompletionState::FAILED ||
-                   info->completion_state == CompletionState::COMPLETE;
+            return info->completion_state_ == CompletionState::FAILED ||
+                   info->completion_state_ == CompletionState::COMPLETE;
         };
 
         bool completed = true;
         if (timeout_ms < 0) {
-            info->cv.wait(cv_lock, pred);
+            info->cv_.wait(cv_lock, pred);
         } else {
-            completed = info->cv.wait_for(cv_lock,
+            completed = info->cv_.wait_for(cv_lock,
                 std::chrono::milliseconds(timeout_ms), pred);
         }
 
-        if (!completed || info->completion_state == CompletionState::FAILED) {
+        if (!completed || info->completion_state_ == CompletionState::FAILED) {
             return {false, ReadResult{}};
         }
     }
 
-    if (info->is_temp) {
-        CMString temp_data = info->temp_compressed_data;
+    if (info->is_temp_) {
+        CMString temp_data = info->temp_compressed_data_;
         if (temp_data.empty()) {
             if (temp_eviction_store_) {
                 auto [found, data] = temp_eviction_store_->get(object_name);
@@ -818,8 +812,8 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
         paths = path_it->second;
     }
 
-    ReadResult read_result = do_read_local_entries(info->entries, paths);
-    if (read_result.data_buffer.empty()) return {false, ReadResult{}};
+    ReadResult read_result = do_read_local_entries(info->entries_, paths);
+    if (read_result.data_buffer_.empty()) return {false, ReadResult{}};
     return {true, std::move(read_result)};
 }
 
@@ -836,9 +830,9 @@ std::tuple<bool, CMString, CMString, CMString, bool> DataService::read_raw_compr
             if (db_it != local_idx_.end()) {
                 auto it = db_it->second.find(short_name);
                 if (it != db_it->second.end() && it->second) {
-                    is_temp_entry = it->second->is_temp;
+                    is_temp_entry = it->second->is_temp_;
                     if (!is_temp_entry) {
-                        entries = it->second->entries;
+                        entries = it->second->entries_;
                     }
                 }
             }
@@ -857,29 +851,29 @@ std::tuple<bool, CMString, CMString, CMString, bool> DataService::read_raw_compr
 
         CMString py_name;
         CMString write_hash;
-        if (!entries.empty() && !paths.base_path.empty()) {
+        if (!entries.empty() && !paths.base_path_.empty()) {
             CMString entry_raw = do_read_raw_entries(entries, paths);
             if (!entry_raw.empty()) {
                 DecompressingStreamBuf dsbuf(entry_raw.data(), entry_raw.size());
                 py_name = dsbuf.py_name();
             }
-            write_hash = entries.back().write_context_hash;
+            write_hash = entries.back().write_context_hash_;
         }
         return {true, std::move(raw), std::move(py_name), std::move(write_hash), false};
     }
 
     auto info = lookup_remote_idx(object_name);
-    DBG("[TEMP-READ-RAW] remote_idx lookup: obj={}, worker_id={}, host={}", object_name, info.worker_id, info.host);
-    if (info.worker_id != 0 && !info.host.empty()) {
+    DBG("[TEMP-READ-RAW] remote_idx lookup: obj={}, worker_id={}, host={}", object_name, info.worker_id_, info.host_);
+    if (info.worker_id_ != 0 && !info.host_.empty()) {
         DirectCompressedReadCallback cb;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             cb = direct_compressed_read_handler_;
         }
         if (cb) {
-            auto [cb_found, cb_data, cb_py_name, cb_hash] = cb(info.host, info.port, object_name);
+            auto [cb_found, cb_data, cb_py_name, cb_hash] = cb(info.host_, info.port_, object_name);
             if (cb_found) return {true, std::move(cb_data), std::move(cb_py_name), std::move(cb_hash), false};
-            remove_remote_location(object_name, info.worker_id);
+            remove_remote_location(object_name, info.worker_id_);
         }
     }
 
@@ -955,8 +949,8 @@ void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name,
         object_name, conn_id, requesting_worker_id, request_id);
 
     auto result = CMMakeShared<TransferResult>();
-    result->conn_id = conn_id;
-    result->object_name = object_name;
+    result->conn_id_ = conn_id;
+    result->object_name_ = object_name;
 
     {
         auto [db_id, short_name] = split_full(object_name);
@@ -966,10 +960,10 @@ void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name,
             auto it = db_it->second.find(short_name);
             if (it != db_it->second.end() && it->second) {
                 DBG("[TEMP-TRANSFER] local_idx entry: obj={}, is_temp={}, entries_size={}, state={}",
-                    object_name, it->second->is_temp, it->second->entries.size(),
-                    static_cast<int>(it->second->completion_state));
-                if (!it->second->entries.empty()) {
-                    result->write_context_hash = it->second->entries.back().write_context_hash;
+                    object_name, it->second->is_temp_, it->second->entries_.size(),
+                    static_cast<int>(it->second->completion_state_));
+                if (!it->second->entries_.empty()) {
+                    result->write_context_hash_ = it->second->entries_.back().write_context_hash_;
                 }
             } else {
                 DBG("[TEMP-TRANSFER] NOT in local_idx: obj={}, db_id={}, short_name={}", object_name, db_id, short_name);
@@ -983,13 +977,13 @@ void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name,
 
     transfer_pool_->submit(
         [this, result, transfer_key]() {
-            auto [found, raw_data, py_name] = try_read_local_raw_or_wait(result->object_name, -1);
-            result->success = found;
+            auto [found, raw_data, py_name] = try_read_local_raw_or_wait(result->object_name_, -1);
+            result->success_ = found;
             if (found) {
-                result->compressed_data = std::move(raw_data);
-                result->py_name = std::move(py_name);
+                result->compressed_data_ = std::move(raw_data);
+                result->py_name_ = std::move(py_name);
             } else {
-                result->error_message = "Object not found (raw): " + result->object_name;
+                result->error_message_ = "Object not found (raw): " + result->object_name_;
             }
         },
         [this, callback, result, transfer_key]() {
@@ -1062,16 +1056,16 @@ std::pair<bool, CMString> DataService::get_temp_data(const CMString& object_name
 
 void DataService::on_temp_write_started(const CMString& db_id, const CMString& object_name) {
     if (!temp_eviction_store_) {
-        temp_max_bytes_ = Config::instance().get_int("temp_store_size");
+        temp_max_bytes_ = Config::instance()->get_int("temp_store_size");
         if (temp_max_bytes_ <= 0) temp_max_bytes_ = 2147483648LL;
         temp_eviction_store_ = CMMakeUnique<fly::TempStore>(temp_max_bytes_);
     }
 
     auto [_, short_name] = split_full(object_name);
     CMSharedPtr<LocalObjectInfo> info = CMMakeShared<LocalObjectInfo>();
-    info->db_id = db_id;
-    info->is_temp = true;
-    info->completion_state = CompletionState::INCOMPLETE;
+    info->db_id_ = db_id;
+    info->is_temp_ = true;
+    info->completion_state_ = CompletionState::INCOMPLETE;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1083,7 +1077,7 @@ void DataService::on_temp_write_started(const CMString& db_id, const CMString& o
 
 void DataService::on_temp_write(const CMString& db_id, const CMString& object_name, CMString&& compressed_data) {
     if (!temp_eviction_store_) {
-        temp_max_bytes_ = Config::instance().get_int("temp_store_size");
+        temp_max_bytes_ = Config::instance()->get_int("temp_store_size");
         if (temp_max_bytes_ <= 0) temp_max_bytes_ = 2147483648LL;
         temp_eviction_store_ = CMMakeUnique<fly::TempStore>(temp_max_bytes_);
     }
@@ -1103,15 +1097,15 @@ void DataService::on_temp_write(const CMString& db_id, const CMString& object_na
         }
         info = it->second;
 
-        if (info->is_temp && !info->temp_compressed_data.empty()) {
-            int64_t old_size = static_cast<int64_t>(info->temp_compressed_data.size());
+        if (info->is_temp_ && !info->temp_compressed_data_.empty()) {
+            int64_t old_size = static_cast<int64_t>(info->temp_compressed_data_.size());
             temp_total_bytes_ -= old_size;
             auto lru_it = std::find(temp_lru_order_.begin(), temp_lru_order_.end(), object_name);
             if (lru_it != temp_lru_order_.end()) temp_lru_order_.erase(lru_it);
         }
 
-        info->temp_compressed_data = std::move(compressed_data);
-        info->completion_state = CompletionState::COMPLETE;
+        info->temp_compressed_data_ = std::move(compressed_data);
+        info->completion_state_ = CompletionState::COMPLETE;
 
         temp_lru_order_.push_back(object_name);
         temp_total_bytes_ += data_size;
@@ -1127,11 +1121,11 @@ void DataService::on_temp_write(const CMString& db_id, const CMString& object_na
             auto old_db_it = local_idx_.find(old_db_id);
             if (old_db_it != local_idx_.end()) {
                 auto old_ent = old_db_it->second.find(old_short_name);
-                if (old_ent != old_db_it->second.end() && old_ent->second && old_ent->second->is_temp
-                    && !old_ent->second->temp_compressed_data.empty()) {
-                    int64_t freed = static_cast<int64_t>(old_ent->second->temp_compressed_data.size());
-                    temp_eviction_store_->put(oldest, old_ent->second->temp_compressed_data);
-                    old_ent->second->temp_compressed_data.clear();
+                if (old_ent != old_db_it->second.end() && old_ent->second && old_ent->second->is_temp_
+                    && !old_ent->second->temp_compressed_data_.empty()) {
+                    int64_t freed = static_cast<int64_t>(old_ent->second->temp_compressed_data_.size());
+                    temp_eviction_store_->put(oldest, old_ent->second->temp_compressed_data_);
+                    old_ent->second->temp_compressed_data_.clear();
                     temp_total_bytes_ -= freed;
                 }
             }
@@ -1139,9 +1133,9 @@ void DataService::on_temp_write(const CMString& db_id, const CMString& object_na
     }
 
     {
-        std::lock_guard<std::mutex> cv_lock(info->cv_mutex);
+        std::lock_guard<std::mutex> cv_lock(info->cv_mutex_);
     }
-    info->cv.notify_all();
+    info->cv_.notify_all();
 }
 
 void DataService::cleanup_temp_entries(const CMString& db_id) {
@@ -1152,8 +1146,8 @@ void DataService::cleanup_temp_entries(const CMString& db_id) {
         auto db_it = local_idx_.find(db_id);
         if (db_it == local_idx_.end()) return;
         for (auto it = db_it->second.begin(); it != db_it->second.end();) {
-            if (it->second && it->second->is_temp) {
-                freed_bytes += static_cast<int64_t>(it->second->temp_compressed_data.size());
+            if (it->second && it->second->is_temp_) {
+                freed_bytes += static_cast<int64_t>(it->second->temp_compressed_data_.size());
                 names_to_clean.push_back(db_id + ":" + it->first);
                 it = db_it->second.erase(it);
             } else {
@@ -1190,8 +1184,8 @@ void DataService::record_remote_access(const CMString& object_name) {
     auto obj_it = db_it->second.find(short_name);
     if (obj_it == db_it->second.end()) return;
     auto& meta = obj_it->second;
-    meta.read_count++;
-    meta.last_access_time = std::chrono::duration_cast<std::chrono::seconds>(
+    meta.read_count_++;
+    meta.last_access_time_ = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
@@ -1201,7 +1195,7 @@ BackupDecision DataService::evaluate_auto_backup(const CMString& object_name,
     auto [db_id, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
     BackupDecision decision;
-    decision.target_replicas = target_replicas;
+    decision.target_replicas_ = target_replicas;
     
     auto db_it = remote_idx_.find(db_id);
     if (db_it == remote_idx_.end()) return decision;
@@ -1209,8 +1203,8 @@ BackupDecision DataService::evaluate_auto_backup(const CMString& object_name,
     if (obj_it == db_it->second.end()) return decision;
     
     const auto& meta = obj_it->second;
-    decision.current_replicas = static_cast<uint32_t>(meta.workers.size());
-    decision.should_backup = (meta.read_count >= threshold) && (meta.workers.size() < target_replicas);
+    decision.current_replicas_ = static_cast<uint32_t>(meta.workers_.size());
+    decision.should_backup_ = (meta.read_count_ >= threshold) && (meta.workers_.size() < target_replicas);
     
     return decision;
 }
@@ -1223,9 +1217,9 @@ void DataService::decay_remote_access(int64_t protection_seconds, int decay_fact
     for (auto& [db_id, objects] : remote_idx_) {
         for (auto it = objects.begin(); it != objects.end();) {
             auto& meta = it->second;
-            int64_t age = current_time - meta.last_access_time;
-            if (meta.read_count > 0 && age >= protection_seconds) {
-                meta.read_count = meta.read_count * static_cast<uint64_t>(decay_factor_percent) / 100u;
+            int64_t age = current_time - meta.last_access_time_;
+            if (meta.read_count_ > 0 && age >= protection_seconds) {
+                meta.read_count_ = meta.read_count_ * static_cast<uint64_t>(decay_factor_percent) / 100u;
             }
             ++it;
         }
@@ -1239,7 +1233,7 @@ uint64_t DataService::get_access_read_count(const CMString& object_name) const {
     if (db_it == remote_idx_.end()) return 0;
     auto obj_it = db_it->second.find(short_name);
     if (obj_it == db_it->second.end()) return 0;
-    return obj_it->second.read_count;
+    return obj_it->second.read_count_;
 }
 
 }  // namespace fly

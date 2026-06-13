@@ -6,16 +6,16 @@
 namespace {
 
 struct IndexData {
-    CMUnorderedMap<CMString, CMVector<IndexEntry>> entries;
+    CMUnorderedMap<CMString, CMVector<IndexEntry>> entries_;
 
-    FLY_SERIALIZE(entries)
+    FLY_SERIALIZE(entries_)
 };
 
 struct AddRecord {
-    CMString object_name;
-    CMVector<IndexEntry> entries;
+    CMString object_name_;
+    CMVector<IndexEntry> entries_;
 
-    FLY_SERIALIZE(object_name, entries)
+    FLY_SERIALIZE(object_name_, entries_)
 };
 
 void write_header(std::ofstream& ofs, IdxOpType op, int64_t body_size) {
@@ -50,9 +50,9 @@ LocalIndex::~LocalIndex() = default;
 
 void LocalIndex::add_entry(const IndexEntry& entry) {
     std::lock_guard<std::mutex> lock(mutex_);
-    entries_[entry.object_name].push_back(entry);
-    pending_adds_[entry.object_name].push_back(entry);
-    pending_removes_.erase(entry.object_name);
+    entries_[entry.object_name_].push_back(entry);
+    pending_adds_[entry.object_name_].push_back(entry);
+    pending_removes_.erase(entry.object_name_);
     modified_ = true;
 }
 
@@ -89,8 +89,8 @@ std::optional<CMVector<IndexEntry>> LocalIndex::find_all_entries(const CMString&
 
 void LocalIndex::append_add(const CMString& object_name, const CMVector<IndexEntry>& entries) {
     AddRecord record;
-    record.object_name = object_name;
-    record.entries = entries;
+    record.object_name_ = object_name;
+    record.entries_ = entries;
 
     CMString body;
     FLY_ENCODE(record, body);
@@ -108,7 +108,7 @@ void LocalIndex::append_add(const CMString& object_name, const CMVector<IndexEnt
 
 void LocalIndex::append_remove(const CMString& object_name) {
     AddRecord record;
-    record.object_name = object_name;
+    record.object_name_ = object_name;
 
     CMString body;
     FLY_ENCODE(record, body);
@@ -147,7 +147,7 @@ void LocalIndex::save_legacy() {
     IndexData data;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        data.entries = entries_;
+        data.entries_ = entries_;
     }
 
     CMString bytes;
@@ -218,7 +218,7 @@ void LocalIndex::load() {
             } catch (...) {}
 
             if (decoded) {
-                entries_ = std::move(data.entries);
+                entries_ = std::move(data.entries_);
                 modified_ = false;
                 return;
             }
@@ -244,13 +244,13 @@ void LocalIndex::load() {
             AddRecord record;
             try {
                 FLY_DECODE(body, AddRecord, record);
-                entries_[record.object_name] = std::move(record.entries);
+                entries_[record.object_name_] = std::move(record.entries_);
             } catch (...) {}
         } else if (op == IdxOpType::REMOVE) {
             AddRecord record;
             try {
                 FLY_DECODE(body, AddRecord, record);
-                entries_.erase(record.object_name);
+                entries_.erase(record.object_name_);
             } catch (...) {}
         }
     }
@@ -270,8 +270,8 @@ void LocalIndex::compact() {
 
         for (auto& [name, entries] : entries_) {
             AddRecord record;
-            record.object_name = name;
-            record.entries = entries;
+            record.object_name_ = name;
+            record.entries_ = entries;
 
             CMString body;
             FLY_ENCODE(record, body);

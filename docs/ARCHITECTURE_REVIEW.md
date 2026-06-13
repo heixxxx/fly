@@ -1,20 +1,19 @@
 # Fly 架构深度审查报告
 
-> 审查日期: 2026-06-12
+> 审查日期: 2026-06-12（2026-06-13 复核验证）
 > 审查范围: C++ 核心层、Python API/绑定层、网络通信与分布式架构
-> 状态标记: `[待修复]` / `[需验证]` / `[建议]` / `[已记录]`
+> 状态标记: `[待修复]` / `[需验证]` / `[建议]` / `[已记录]` / `[经验证无风险]` / `[经验证无需修复]` / `[误报]`
 
 ---
 
 ## 一、架构分层违规
 
-### 1.1 storage → network 跨层依赖 [待修复]
+### 1.1 storage → network 跨层依赖 [误报]
 
-- **严重程度**: 高
+- **严重程度**: ~~高~~ → 误报
 - **文件**: `src/storage/cpp/BUILD:19`, `src/storage/cpp/data_service.h:12`, `src/storage/cpp/database.cpp:4`
-- **问题**: Layer 1 的 storage 反向依赖 Layer 2 的 network（`fly_storage` 的 deps 包含 `//src/network/cpp:fly_network`）。storage 的核心数据服务头文件直接引用 `io_thread_pool.h`，database.cpp 引用 `data_client.h`。
-- **影响**: storage 无法独立测试/部署，构建图变形，模块间形成概念层面的紧耦合（storage 的 transfer server 依赖 network 的 IOThreadPool；network 运行时需要 storage 的 DataService）。
-- **建议**: 将 storage 中的网络功能抽象为接口（如 `ITransferServer`），由上层注入实现；或将 transfer 相关代码移至 network 层。
+- **原描述**: storage 反向依赖 network，network 运行时需要 storage 的 DataService。
+- **验证结论**: 依赖方向正确。`network/BUILD` deps 仅有 `common`、`log`、`serialization`，**零依赖 storage**。network 是底层基础设施（与 log/core 同层），storage 是上层消费者。实际层次为 `common → log → serialization → core → network → storage → task → agent`。storage 使用 `IOThreadPool`、`DataClient` 是消费底层组件的正常行为，不构成跨层违规。
 
 ### 1.2 export_macros 依赖 storage [建议]
 
@@ -34,12 +33,12 @@
 
 ## 二、并发安全缺陷
 
-### 2.1 Logger 裸指针 singleton [待修复]
+### 2.1 Logger singleton 内存安全 [修复中]
 
 - **严重程度**: 高
-- **文件**: `src/log/cpp/logger.h:43`, `src/log/cpp/logger.cpp:40,43,66-71`
-- **问题**: `static Logger* instance_` + 手动 `new/delete`。`init()` 中 `delete instance_; instance_ = new Logger(...);` 无锁保护，两个线程同时调用 `init()` 会导致 use-after-free。`shutdown()` 中 `delete instance_` 后其他线程仍可通过 `instance()` 访问已释放内存。
-- **建议**: 改为 `static std::unique_ptr<Logger>` 或 Meyers' singleton 模式（`static Logger& instance() { static Logger inst; return inst; }`）。
+- **文件**: `src/log/cpp/logger.h:43`, `src/log/cpp/logger.cpp`
+- **现状**: 已从裸指针改为 `CMUniquePtr<Logger> instance_` + `static Logger fallback`（Meyers' singleton 兜底）。不存在 review 原描述的 `static Logger* instance_` 裸指针。
+- **待修复问题**: `init()` 中 `CMUniquePtr<Logger>(new Logger(...))` 仍通过裸 `new` 创建对象，且 `instance()` 返回 `Logger&` 引用——如需 shared_ptr 只能从引用构造（危险，会导致 double-free）。应统一为 shared_ptr singleton 模式（与 `DataService` 一致）：`enable_shared_from_this` + `instance_ptr()` 返回 `CMSharedPtr<Logger>`，`init()` 原地配置而非 new 新对象。
 
 ### 2.2 transfer_callback_ 无锁并发访问 [经验证无风险]
 
@@ -101,10 +100,11 @@
 
 ### 3.2 非阻塞 connect 未处理 EINPROGRESS [待修复]
 
-- **严重程度**: 高
-- **文件**: `src/network/cpp/tcp_transport.cpp:102-104`
-- **问题**: Client connect 后只注册 `EPOLLIN`，未注册 `EPOLLOUT`。非阻塞 connect 需要检测 `EPOLLOUT` 事件确认连接成功，否则数据可能丢失。
-- **建议**: connect 后注册 `EPOLLOUT`，在写事件触发时检查 `getsockopt(SO_ERROR)` 确认连接成功，再切换为 `EPOLLIN`。
+- **严重程度**: 中（原标高，实际影响被高估）
+- **文件**: `src/network/cpp/tcp_transport.cpp:92-110`
+- **问题**: 非阻塞 `connect()` 返回 EINPROGRESS 后，仅注册 EPOLLIN，未注册 EPOLLOUT 确认连接完成。标准模式应：connect 后注册 EPOLLOUT → 等 EPOLLOUT 触发 → `getsockopt(SO_ERROR)` 确认连接成功 → 切换 EPOLLIN。
+- **实际影响评估**: 不构成数据丢失。`send()` 方法自带 `poll(POLLOUT, 30000)` 兜底——连接握手未完成时 `::send()` 返回 EAGAIN，`poll` 等待握手完成后继续发送。连接失败由 reactor 的 `EPOLLERR|EPOLLHUP` 路径检测（`tcp_transport.cpp:244-261`），触发 `on_disconnect` → `initiate_shutdown`。真正缺陷是 **连接状态无显式通知**：`connect()` 立即返回 conn_id，调用方无法区分"已连接"和"正在连接"，失败只能通过 send 返回 -1 或异步 ERROR 事件发现。
+- **建议**: 在 `connect()` 内同步 `poll(POLLOUT, 5000)` + `getsockopt(SO_ERROR)` 确认连接成功后再返回 conn_id，失败则直接 throw。
 
 ### 3.3 recv_buffers_ 无大小限制 [经验证可接受]
 
@@ -117,12 +117,11 @@
 - **文件**: `src/network/cpp/message_protocol.h`, `src/network/cpp/message_types.h`
 - **修复方案**: 添加 `is_valid_message_type()` 校验函数（枚举范围 1-33），`MessageProtocol::decode` 和 `get_type` 中校验帧头 type 字段。异常帧（type 不在有效范围、total_len < 1）直接跳过。bitsery 的 `CheckDataErrors=false` 保留，因为大消息（如压缩数据）的容器大小可能合法地很大。
 
-### 3.5 Worker 无 Master 重连机制 [待修复]
+### 3.5 Worker 无 Master 重连机制 [经验证无需修复]
 
-- **严重程度**: 高
+- **严重程度**: ~~高~~ → 无需修复
 - **文件**: `src/agent/cpp/worker_agent.cpp:393-398`
-- **问题**: Worker 检测到 Master 连接断开后直接关闭自身，无重连逻辑。临时网络抖动导致不必要的 Worker 关闭和任务恢复。
-- **建议**: 添加指数退避重连（如 1s/2s/4s/8s/16s，上限 60s，最多重试 10 次）。
+- **验证结论**: 正确的设计决策。Master 是唯一调度源（DependencyGraph、WorkerManager、TaskManager 全在 Master 内存中），Master 丢失 = 全部调度状态丢失。即使 Worker 重连成功，新 Master 也不知道此 Worker 的 in-progress task，会导致重复执行或状态不一致。已有持久化恢复机制：Master 在 SIGTERM 路径 `persist_pending_tasks`，重启后从文件恢复，Worker 重启后重新注册。进程级重启（由 Python `main.py` / supervisor fork 新进程）是正确的恢复路径，而非 Worker 自行重连。
 
 ### 3.6 Reactor send 可阻塞 30 秒 [待修复]
 
@@ -170,19 +169,17 @@
 
 ## 四、Python 层问题
 
-### 4.1 shared_from_this() 可能 bad_weak_ptr [需验证]
+### 4.1 shared_from_this() bad_weak_ptr [经验证无风险]
 
-- **严重程度**: 高
+- **严重程度**: ~~高~~ → 无风险
 - **文件**: `src/agent/export/agent_export.cpp:150,257`
-- **问题**: `ds.shared_from_this()` 要求 DataService 继承 `std::enable_shared_from_this` 且 singleton 实例通过 shared_ptr 管理。`storage_export.cpp:171` 返回的是 `DataService&`（引用），如果 singleton 使用裸对象则 `shared_from_this()` 导致 `std::bad_weak_ptr`。
-- **建议**: 验证 DataService singleton 实现方式，若不支持则修改为传递引用或 shared_ptr。
+- **验证结论**: DataService 已继承 `std::enable_shared_from_this`（`data_service.h:67`），singleton 通过 `CMMakeShared<Creator_>()` 创建（`data_service.cpp:27-30`）。`shared_from_this()` 操作的是有效的 shared_ptr 控制块，不会抛 `bad_weak_ptr`。此问题在 ISSUES.md X-2 中已修复。
 
-### 4.2 Worker.poll_task_blocking 后不可达死代码 [待修复]
+### 4.2 Worker.poll_task_blocking 后不可达死代码 [已修复]
 
-- **严重程度**: 高
-- **文件**: `src/agent/py/agent.py:505-516`
-- **问题**: `poll_task_blocking` 方法在 503 行 return 后，505-516 行有完整的 worker 进程清理逻辑（与 `Master.stop` 中的逻辑完全重复），是从 `Master.stop()` 错误复制粘贴的结果。
-- **建议**: 删除 505-516 行死代码。
+- **严重程度**: ~~高~~ → 已清理
+- **文件**: `src/agent/py/agent.py:500-516`
+- **验证结论**: 503 行 `return` 后是 `set_worker_property` 等正常方法定义，死代码已不存在。review 描述的复制粘贴问题在当前代码中已清理。
 
 ### 4.3 solver 绑定绕过 FLY_EXPORT_* 宏 [建议]
 
@@ -291,6 +288,36 @@
 
 ---
 
+## 六B、非惯用代码模式（Trick Code）
+
+### 6B.1 单例模式不统一 [已修复]
+
+- **严重程度**: 中
+- **问题**: 项目中单例类使用了不同写法，现已统一为 `CMSharedPtr<T> instance()` 模式。
+
+| 类 | 写法 | 状态 |
+|---|---|---|
+| `Config` | Meyers' singleton (`static Config config`) | ✅ 不变 |
+| `ProcessInfo` | Meyers' singleton (`static ProcessInfo info`) | ✅ 不变 |
+| `Logger` | `CMSharedPtr<Logger> instance()` — `CMMakeShared` + public 构造 | ✅ 已修复 |
+| `DataService` | `CMSharedPtr<DataService> instance()` — `CMMakeShared` + public 构造 | ✅ 已修复 |
+
+- **修复**: Logger 和 DataService 的 `instance()` 统一返回 `CMSharedPtr`，消除 `instance_ptr()` 重复接口，消除裸引用解引用。
+
+### 6B.2 DataService Creator_ 友元 hack 绕过私有构造 [已修复]
+
+- **严重程度**: 中
+- **文件**: `src/storage/cpp/data_service.h`, `src/storage/cpp/data_service.cpp`
+- **修复**: 构造函数改 public，删除 `Creator_` 结构体和 `friend` 声明（全项目唯一一处 friend），直接 `CMMakeShared<DataService>()`。
+
+### 6B.3 agent_export 从引用调 shared_from_this() [已修复]
+
+- **严重程度**: 中
+- **文件**: `src/agent/export/agent_export.cpp`
+- **修复**: 整条 `shared_from_this` / `weak_ptr<DataService>` 链路已删除。Agent 不再持有 `CMWeakPtr<DataService> data_service_`，不再有 `set_data_service()` 方法。回调注册（`set_remote_compressed_read_handler` / `set_direct_compressed_read_handler`）移到各 Agent 的 `start()` 方法中，直接用 `DataService::instance()` 获取。Python 侧删除 `set_data_service()` 调用。
+
+---
+
 ## 七、头文件与代码质量问题
 
 ### 7.1 头文件膨胀 [已记录]
@@ -345,27 +372,27 @@
 ## 十、修复优先级建议
 
 ### P0 — 立即修复（正确性/稳定性风险）
-1. Logger 裸指针 singleton → 改为安全单例（2.1）
-2. transfer_callback_ data race → 加锁或原子化（2.2）
-3. 非阻塞 connect EINPROGRESS → 注册 EPOLLOUT（3.2）
-4. recv_buffers_ 无大小限制 → 添加上限（3.3）
-5. 序列化无大小验证 → 按消息类型限制（3.4）
-6. drain_thread_.detach() → 改为 join（2.3）
-7. graceful_exit data race → 原子化回调（2.4）
-8. Worker 无重连 → 添加退避重连（3.5）
+
+> 原列 8 项中 5 项已解决（2.2 无风险 / 3.3 可接受 / 3.4 已修复 / 2.3 已修复 / 2.4 无风险），3.5 经验证无需修复。实际剩余：
+
+1. Logger singleton → 改为 shared_ptr 管理模式（2.1）
+2. 非阻塞 connect EINPROGRESS → 同步确认连接成功（3.2）
 
 ### P1 — 尽快修复（性能/可靠性）
-9. HandlerThreadPool 未使用 → 启用异步 handler（3.1）
-10. Reactor send 阻塞 30s → 异步发送或缩短超时（3.6）
-11. shared_from_this 验证 → 检查 DataService singleton（4.1）
-12. Worker.poll_task_blocking 死代码 → 删除（4.2）
-13. storage → network 跨层 → 接口抽象解耦（1.1）
+
+> 原列 5 项中 4.1 无风险、4.2 已清理。实际剩余：
+
+3. HandlerThreadPool 未使用 → 启用异步 handler（3.1）
+4. Reactor send 阻塞 30s → 异步发送或缩短超时（3.6）
+5. storage → network 跨层 → ~~接口抽象解耦（1.1）~~ **误报，依赖方向正确**
+
+> 注：3.1 和 3.6 耦合——启用 HandlerThreadPool 后 handler 不再在 reactor 线程执行，send 阻塞不再阻塞 reactor，建议一并修复。
 
 ### P2 — 计划改进（代码质量/可维护性）
-14. 消息编解码内存拷贝优化（5.1）
-15. 无背压/流控（5.3）
-16. DataResponse 分片传输（5.4）
-17. 测试框架迁移 pytest（4.10）
-18. 类型注解补全（4.8）
-19. DataService 锁粒度拆分（2.7）
-20. WorkerAgentContext 去全局状态（2.5）
+5. 消息编解码内存拷贝优化（5.1）
+6. 无背压/流控（5.3）
+7. DataResponse 分片传输（5.4）
+8. 测试框架迁移 pytest（4.10）
+9. 类型注解补全（4.8）
+10. DataService 锁粒度拆分（2.7）
+11. WorkerAgentContext 去全局状态（2.5）

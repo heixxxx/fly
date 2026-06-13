@@ -24,19 +24,19 @@ protected:
     }
 
     struct TestRecord {
-        int64_t original_size;
-        int32_t chunk_count;
+        int64_t original_size_;
+        int32_t chunk_count_;
         FlyBuffer buffer;
     };
 
     TestRecord make_record(const CMString& data, const CMString& py_name = "") {
         TestRecord rec;
         ObjectHeader header;
-        header.total_size = 0;
-        header.chunk_count = 0;
-        header.compression_type = 0;
-        header.py_name = py_name;
-        header.py_name_len = static_cast<uint16_t>(py_name.size());
+        header.total_size_ = 0;
+        header.chunk_count_ = 0;
+        header.compression_type_ = 0;
+        header.py_name_ = py_name;
+        header.py_name_len_ = static_cast<uint16_t>(py_name.size());
         CMString header_bytes = header.serialize();
 
         FlyBufferStreamBuf fly_buf(rec.buffer);
@@ -49,13 +49,13 @@ protected:
             std::ostream os(&csbuf);
             os.write(data.data(), static_cast<std::streamsize>(data.size()));
             os.flush();
-            rec.original_size = csbuf.total_uncompressed();
-            rec.chunk_count = csbuf.chunk_count();
+            rec.original_size_ = csbuf.total_uncompressed();
+            rec.chunk_count_ = csbuf.chunk_count();
         }
         counting_stream.flush();
 
-        header.total_size = static_cast<uint64_t>(rec.original_size);
-        header.chunk_count = static_cast<uint32_t>(rec.chunk_count);
+        header.total_size_ = static_cast<uint64_t>(rec.original_size_);
+        header.chunk_count_ = static_cast<uint32_t>(rec.chunk_count_);
         CMString real_header = header.serialize();
         std::memcpy(rec.buffer.data(), real_header.data(), real_header.size());
 
@@ -69,13 +69,13 @@ TEST_F(DataWriterTest, WriteRecordPersistsData) {
 
     CMString data = "record data here";
     auto rec = make_record(data);
-    writer.write_record("test/record", rec.original_size, rec.chunk_count, rec.buffer);
+    writer.write_record("test/record", rec.original_size_, rec.chunk_count_, rec.buffer);
 
     EXPECT_EQ(writer.total_bytes_written(), static_cast<int64_t>(data.size()));
 
     auto entry = writer.get_last_entry("test/record");
     ASSERT_TRUE(entry.has_value());
-    EXPECT_GT(entry->size, 0);
+    EXPECT_GT(entry->size_, 0);
 
     writer.close();
 }
@@ -86,11 +86,11 @@ TEST_F(DataWriterTest, WriteRecordThresholdRollover) {
 
     CMString data1(200, 'A');
     auto r1 = make_record(data1);
-    writer.write_record("obj1", r1.original_size, r1.chunk_count, r1.buffer);
+    writer.write_record("obj1", r1.original_size_, r1.chunk_count_, r1.buffer);
 
     CMString data2(200, 'B');
     auto r2 = make_record(data2);
-    writer.write_record("obj2", r2.original_size, r2.chunk_count, r2.buffer);
+    writer.write_record("obj2", r2.original_size_, r2.chunk_count_, r2.buffer);
 
     EXPECT_EQ(writer.file_count(), 2);
 
@@ -103,10 +103,10 @@ TEST_F(DataWriterTest, WriteRecordAfterCloseLogs) {
 
     CMString data = "temp";
     auto rec = make_record(data);
-    writer.write_record("obj", rec.original_size, rec.chunk_count, rec.buffer);
+    writer.write_record("obj", rec.original_size_, rec.chunk_count_, rec.buffer);
     writer.close();
 
-    writer.write_record("obj2", rec.original_size, rec.chunk_count, rec.buffer);
+    writer.write_record("obj2", rec.original_size_, rec.chunk_count_, rec.buffer);
 }
 
 TEST_F(DataWriterTest, MultipleRecords) {
@@ -115,21 +115,21 @@ TEST_F(DataWriterTest, MultipleRecords) {
 
     CMString data1 = "hello world";
     auto r1 = make_record(data1);
-    writer.write_record("obj1", r1.original_size, r1.chunk_count, r1.buffer);
+    writer.write_record("obj1", r1.original_size_, r1.chunk_count_, r1.buffer);
 
     CMString data2 = "another record";
     auto r2 = make_record(data2);
-    writer.write_record("obj2", r2.original_size, r2.chunk_count, r2.buffer);
+    writer.write_record("obj2", r2.original_size_, r2.chunk_count_, r2.buffer);
 
     EXPECT_EQ(writer.total_bytes_written(), static_cast<int64_t>(data1.size() + data2.size()));
 
     auto e1 = writer.get_last_entry("obj1");
     ASSERT_TRUE(e1.has_value());
-    EXPECT_GT(e1->size, 0);
+    EXPECT_GT(e1->size_, 0);
 
     auto e2 = writer.get_last_entry("obj2");
     ASSERT_TRUE(e2.has_value());
-    EXPECT_GT(e2->size, 0);
+    EXPECT_GT(e2->size_, 0);
 
     writer.close();
 }
@@ -140,7 +140,7 @@ TEST_F(DataWriterTest, RemoveEntry) {
 
     CMString data = "to be removed";
     auto rec = make_record(data);
-    writer.write_record("target", rec.original_size, rec.chunk_count, rec.buffer);
+    writer.write_record("target", rec.original_size_, rec.chunk_count_, rec.buffer);
 
     auto entry = writer.get_last_entry("target");
     ASSERT_TRUE(entry.has_value());
@@ -158,7 +158,7 @@ TEST_F(DataWriterTest, WriteWithCustomDataPath) {
 
     CMString data = "hello";
     auto rec = make_record(data);
-    writer.write_record("custom/obj", rec.original_size, rec.chunk_count, rec.buffer);
+    writer.write_record("custom/obj", rec.original_size_, rec.chunk_count_, rec.buffer);
 
     std::filesystem::path dp(data_path);
     EXPECT_TRUE(std::filesystem::exists(dp));
@@ -174,12 +174,12 @@ TEST_F(DataWriterTest, FileCountIncrements) {
 
     CMString data1(15, 'a');
     auto r1 = make_record(data1);
-    writer.write_record("obj1", r1.original_size, r1.chunk_count, r1.buffer);
+    writer.write_record("obj1", r1.original_size_, r1.chunk_count_, r1.buffer);
     EXPECT_EQ(writer.file_count(), 1);
 
     CMString data2(15, 'b');
     auto r2 = make_record(data2);
-    writer.write_record("obj2", r2.original_size, r2.chunk_count, r2.buffer);
+    writer.write_record("obj2", r2.original_size_, r2.chunk_count_, r2.buffer);
     EXPECT_EQ(writer.file_count(), 2);
 
     writer.close();
@@ -191,7 +191,7 @@ TEST_F(DataWriterTest, DoubleCloseIsSafe) {
 
     CMString data = "close test";
     auto rec = make_record(data);
-    writer.write_record("obj", rec.original_size, rec.chunk_count, rec.buffer);
+    writer.write_record("obj", rec.original_size_, rec.chunk_count_, rec.buffer);
     writer.close();
     EXPECT_NO_THROW(writer.close());
 }
@@ -221,11 +221,11 @@ TEST_F(DataWriterTest, WriteRecordWithWriteContextHash) {
 
     CMString data = "ctx hash data";
     auto rec = make_record(data);
-    writer.write_record("ctx/obj", rec.original_size, rec.chunk_count, rec.buffer, "hash123");
+    writer.write_record("ctx/obj", rec.original_size_, rec.chunk_count_, rec.buffer, "hash123");
 
     auto entry = writer.get_last_entry("ctx/obj");
     ASSERT_TRUE(entry.has_value());
-    EXPECT_EQ(entry->write_context_hash, "hash123");
+    EXPECT_EQ(entry->write_context_hash_, "hash123");
 
     writer.close();
 }
@@ -236,12 +236,12 @@ TEST_F(DataWriterTest, TotalBytesAccumulatesAcrossRecords) {
 
     CMString d1 = "first";
     auto r1 = make_record(d1);
-    writer.write_record("a", r1.original_size, r1.chunk_count, r1.buffer);
+    writer.write_record("a", r1.original_size_, r1.chunk_count_, r1.buffer);
     EXPECT_EQ(writer.total_bytes_written(), static_cast<int64_t>(d1.size()));
 
     CMString d2 = "second_record";
     auto r2 = make_record(d2);
-    writer.write_record("b", r2.original_size, r2.chunk_count, r2.buffer);
+    writer.write_record("b", r2.original_size_, r2.chunk_count_, r2.buffer);
     EXPECT_EQ(writer.total_bytes_written(), static_cast<int64_t>(d1.size() + d2.size()));
 
     writer.close();
@@ -253,7 +253,7 @@ TEST_F(DataWriterTest, GetAllEntriesForSingleObject) {
 
     CMString data = "single";
     auto rec = make_record(data);
-    writer.write_record("single/obj", rec.original_size, rec.chunk_count, rec.buffer);
+    writer.write_record("single/obj", rec.original_size_, rec.chunk_count_, rec.buffer);
 
     auto entries = writer.get_all_entries("single/obj");
     ASSERT_TRUE(entries.has_value());
@@ -270,7 +270,7 @@ TEST_F(DataWriterTest, FlushAfterWritePersistsIndex) {
         DataWriter writer(base_path, "", writer_id, 1024);
         CMString data = "flush test";
         auto rec = make_record(data);
-        writer.write_record("flush/obj", rec.original_size, rec.chunk_count, rec.buffer);
+        writer.write_record("flush/obj", rec.original_size_, rec.chunk_count_, rec.buffer);
         writer.flush();
 
         EXPECT_TRUE(std::filesystem::exists(base_path + "/" + writer_id + ".idx"));
@@ -284,11 +284,11 @@ TEST_F(DataWriterTest, HostStoredInEntry) {
 
     CMString data = "host data";
     auto rec = make_record(data);
-    writer.write_record("host/obj", rec.original_size, rec.chunk_count, rec.buffer);
+    writer.write_record("host/obj", rec.original_size_, rec.chunk_count_, rec.buffer);
 
     auto entry = writer.get_last_entry("host/obj");
     ASSERT_TRUE(entry.has_value());
-    EXPECT_EQ(entry->host, "192.168.1.1");
+    EXPECT_EQ(entry->host_, "192.168.1.1");
 
     writer.close();
 }

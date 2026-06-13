@@ -8,10 +8,10 @@ Lz4Compressor::Lz4Compressor(int acceleration)
 
 CompressedChunk Lz4Compressor::compress(const CMString& input) {
     CompressedChunk chunk;
-    chunk.uncompressed_size = static_cast<int32_t>(input.size());
+    chunk.uncompressed_size_ = static_cast<int32_t>(input.size());
 
     if (input.empty()) {
-        chunk.compressed_size = 0;
+        chunk.compressed_size_ = 0;
         return chunk;
     }
 
@@ -33,8 +33,8 @@ CompressedChunk Lz4Compressor::compress(const CMString& input) {
     }
 
     compressed.resize(static_cast<size_t>(compressed_size));
-    chunk.data = std::move(compressed);
-    chunk.compressed_size = compressed_size;
+    chunk.data_ = std::move(compressed);
+    chunk.compressed_size_ = compressed_size;
     return chunk;
 }
 

@@ -80,8 +80,8 @@ private:
     CMString full_name(const CMString& short_name) const;
 
     struct CompressResult {
-        int64_t original_size;
-        int32_t chunk_count;
+        int64_t original_size_;
+        int32_t chunk_count_;
     };
     CompressResult compress_buffered_data(const char* data, int64_t data_size,
                                            const CMString& py_name, FlyBuffer& target);
@@ -117,10 +117,10 @@ CMString Database::write_object(const CMString& object_name, const T& obj,
         return {};
     }
 
-    fly::DataService::instance().on_write_started(db_id_, full);
+    fly::DataService::instance()->on_write_started(db_id_, full);
     auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
     if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
-        fly::DataService::instance().on_write_failed(db_id_, full, reg_error);
+        fly::DataService::instance()->on_write_failed(db_id_, full, reg_error);
         ERR("Write registration rejected: {} (type={})", reg_error, static_cast<int>(reg_error_type));
         return {};
     }
@@ -131,11 +131,11 @@ CMString Database::write_object(const CMString& object_name, const T& obj,
     std::ostream counting_stream(&counting_buf);
 
     ObjectHeader header;
-    header.total_size = 0;
-    header.chunk_count = 0;
-    header.compression_type = static_cast<uint8_t>(compression_type_);
-    header.py_name = py_name;
-    header.py_name_len = static_cast<uint16_t>(py_name.size());
+    header.total_size_ = 0;
+    header.chunk_count_ = 0;
+    header.compression_type_ = static_cast<uint8_t>(compression_type_);
+    header.py_name_ = py_name;
+    header.py_name_len_ = static_cast<uint16_t>(py_name.size());
     CMString header_bytes = header.serialize();
     counting_stream.write(header_bytes.data(), static_cast<std::streamsize>(header_bytes.size()));
 
@@ -154,8 +154,8 @@ CMString Database::write_object(const CMString& object_name, const T& obj,
     }
     counting_stream.flush();
 
-    header.total_size = static_cast<uint64_t>(total_uncompressed);
-    header.chunk_count = static_cast<uint32_t>(chunk_count);
+    header.total_size_ = static_cast<uint64_t>(total_uncompressed);
+    header.chunk_count_ = static_cast<uint32_t>(chunk_count);
     CMString real_header = header.serialize();
     std::memcpy(record->data(), real_header.data(), real_header.size());
 
@@ -172,12 +172,12 @@ CMString Database::write_object(const CMString& object_name, const T& obj,
     auto complete = [full, db_id = this->db_id_, object_name,
                      caller_record_func,
                      caller_backup_func, w, backup]() {
-        auto& ds = fly::DataService::instance();
+        auto ds = fly::DataService::instance();
         auto entries = w->get_all_entries(full);
         if (entries.has_value()) {
-            ds.on_write_completed(db_id, full, entries.value());
+            ds->on_write_completed(db_id, full, entries.value());
         }
-        ds.on_object_flushed(full);
+        ds->on_object_flushed(full);
         if (caller_record_func) {
             caller_record_func(db_id, object_name);
         }
@@ -187,9 +187,9 @@ CMString Database::write_object(const CMString& object_name, const T& obj,
     };
 
     fly::WriteRequest req;
-    req.execute = std::move(execute);
-    req.on_complete = std::move(complete);
-    fly::DataService::instance().enqueue_write_back(std::move(req));
+    req.execute_ = std::move(execute);
+    req.on_complete_ = std::move(complete);
+    fly::DataService::instance()->enqueue_write_back(std::move(req));
 
     return "";
 }

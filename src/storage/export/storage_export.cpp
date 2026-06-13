@@ -132,15 +132,15 @@ FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
         return fly_export::make_tuple(
             found,
             fly_export::bytes(
-                result.data_buffer.data(),
-                result.data_buffer.size()),
-            result.py_name
+                result.data_buffer_.data(),
+                result.data_buffer_.size()),
+            result.py_name_
         );
     })
     FLY_EXPORT_DEF("lookup_remote_idx", [](fly::DataService& ds, const CMString& name) -> fly_export::tuple {
         auto info = ds.lookup_remote_idx(name);
-        bool has = (info.worker_id != 0 || !info.host.empty());
-        return fly_export::make_tuple(has, info.worker_id, info.host, info.port);
+        bool has = (info.worker_id_ != 0 || !info.host_.empty());
+        return fly_export::make_tuple(has, info.worker_id_, info.host_, info.port_);
     })
     FLY_EXPORT_DEF("update_remote_idx", [](fly::DataService& ds, const CMString& name,
                                             uint64_t worker_id, const CMString& host, int32_t port) {
@@ -159,16 +159,16 @@ FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
         auto [found, result] = ds.try_read_remote(name);
         return fly_export::make_tuple(
             found,
-            fly_export::bytes(result.data_buffer.data(), result.data_buffer.size()),
-            result.py_name,
-            result.can_still_produce);
+            fly_export::bytes(result.data_buffer_.data(), result.data_buffer_.size()),
+            result.py_name_,
+            result.can_still_produce_);
     })
     FLY_EXPORT_METHOD("drain_write_back", &fly::DataService::drain_write_back)
     FLY_EXPORT_METHOD("stop_write_back", &fly::DataService::stop_write_back)
     FLY_EXPORT_METHOD("stop_transfer_server", &fly::DataService::stop_transfer_server)
     FLY_EXPORT_METHOD("has_database", &fly::DataService::has_database);
 
-FLY_EXPORT_FUNCTION_REF("ex_stg_get_data_service", []() -> fly::DataService& { return fly::DataService::instance(); });
+FLY_EXPORT_FUNCTION("ex_stg_get_data_service", []() { return fly::DataService::instance(); });
 
 FLY_EXPORT_CLASS(StorageManager, "EXStgStorageManager")
     FLY_EXPORT_METHOD("close_all", &StorageManager::close_all)
@@ -180,33 +180,33 @@ FLY_EXPORT_CLASS(StorageManager, "EXStgStorageManager")
 FLY_EXPORT_CLASS(IndexEntry, "EXStgIndexEntry")
     FLY_EXPORT_INIT()
     FLY_EXPORT_INIT(CMString, CMString, int64_t, int64_t, bool, int32_t)
-    FLY_EXPORT_READONLY_ATTR("object_name", &IndexEntry::object_name)
-    FLY_EXPORT_READONLY_ATTR("file_name", &IndexEntry::file_name)
-    FLY_EXPORT_READONLY_ATTR("offset", &IndexEntry::offset)
-    FLY_EXPORT_READONLY_ATTR("size", &IndexEntry::size)
-    FLY_EXPORT_READONLY_ATTR("is_large", &IndexEntry::is_large)
-    FLY_EXPORT_READONLY_ATTR("block_count", &IndexEntry::block_count)
+    FLY_EXPORT_READONLY_ATTR("object_name", &IndexEntry::object_name_)
+    FLY_EXPORT_READONLY_ATTR("file_name", &IndexEntry::file_name_)
+    FLY_EXPORT_READONLY_ATTR("offset", &IndexEntry::offset_)
+    FLY_EXPORT_READONLY_ATTR("size", &IndexEntry::size_)
+    FLY_EXPORT_READONLY_ATTR("is_large", &IndexEntry::is_large_)
+    FLY_EXPORT_READONLY_ATTR("block_count", &IndexEntry::block_count_)
     FLY_EXPORT_SERIALIZE(IndexEntry);
 
 FLY_EXPORT_CLASS(DbMeta, "EXStgDbMeta")
     FLY_EXPORT_INIT()
     FLY_EXPORT_INIT(CMString, int64_t)
-    FLY_EXPORT_READONLY_ATTR("db_id", &DbMeta::db_id)
-    FLY_EXPORT_READONLY_ATTR("created_at", &DbMeta::created_at)
-    FLY_EXPORT_ATTR("workers", &DbMeta::workers)
+    FLY_EXPORT_READONLY_ATTR("db_id", &DbMeta::db_id_)
+    FLY_EXPORT_READONLY_ATTR("created_at", &DbMeta::created_at_)
+    FLY_EXPORT_ATTR("workers", &DbMeta::workers_)
     FLY_EXPORT_SERIALIZE(DbMeta);
 
 FLY_EXPORT_CLASS(WorkerInfo, "EXStgWorkerInfo")
     FLY_EXPORT_INIT()
     FLY_EXPORT_INIT(uint64_t, CMString, CMString, CMString, CMString)
-    FLY_EXPORT_READONLY_ATTR("worker_id", &WorkerInfo::worker_id)
-    FLY_EXPORT_READONLY_ATTR("writer_id", &WorkerInfo::writer_id)
-    FLY_EXPORT_READONLY_ATTR("hostname", &WorkerInfo::hostname)
-    FLY_EXPORT_READONLY_ATTR("ip_address", &WorkerInfo::ip_address)
-    FLY_EXPORT_READONLY_ATTR("launch_command", &WorkerInfo::launch_command)
+    FLY_EXPORT_READONLY_ATTR("worker_id", &WorkerInfo::worker_id_)
+    FLY_EXPORT_READONLY_ATTR("writer_id", &WorkerInfo::writer_id_)
+    FLY_EXPORT_READONLY_ATTR("hostname", &WorkerInfo::hostname_)
+    FLY_EXPORT_READONLY_ATTR("ip_address", &WorkerInfo::ip_address_)
+    FLY_EXPORT_READONLY_ATTR("launch_command", &WorkerInfo::launch_command_)
     FLY_EXPORT_SERIALIZE(WorkerInfo);
 
-FLY_EXPORT_FUNCTION_REF("ex_stg_get_storage_manager", []() -> StorageManager& { return StorageManager::instance(); });
+FLY_EXPORT_FUNCTION("ex_stg_get_storage_manager", []() { return StorageManager::instance(); });
 
 FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& base_path, const CMString& data_path, uint64_t writer_id) -> CMSharedPtr<Database> {
     return CMMakeShared<Database>(base_path, data_path, writer_id);
@@ -254,10 +254,10 @@ FLY_EXPORT_CLASS(fly::TempStore, "EXStgTempStore")
 
 FLY_EXPORT_FUNCTION("ex_stg_mark_temp_entry", [](const CMString& object_name, fly_export::bytes compressed_data) {
     CMString data(compressed_data.c_str(), compressed_data.size());
-    fly::DataService::instance().mark_temp_entry(object_name, data);
+    fly::DataService::instance()->mark_temp_entry(object_name, data);
 });
 
 FLY_EXPORT_FUNCTION("ex_stg_unmark_temp_entry", [](const CMString& object_name) {
-    fly::DataService::instance().unmark_temp_entry(object_name);
+    fly::DataService::instance()->unmark_temp_entry(object_name);
 });
 }

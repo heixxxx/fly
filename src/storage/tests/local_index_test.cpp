@@ -32,11 +32,11 @@ TEST_F(LocalIndexTest, AddAndFindEntry) {
 
     auto found = index.find_entry("test/object");
     ASSERT_TRUE(found.has_value());
-    EXPECT_EQ(found->object_name, "test/object");
-    EXPECT_EQ(found->file_name, "data_001.dat");
-    EXPECT_EQ(found->offset, 100);
-    EXPECT_EQ(found->size, 200);
-    EXPECT_FALSE(found->is_large);
+    EXPECT_EQ(found->object_name_, "test/object");
+    EXPECT_EQ(found->file_name_, "data_001.dat");
+    EXPECT_EQ(found->offset_, 100);
+    EXPECT_EQ(found->size_, 200);
+    EXPECT_FALSE(found->is_large_);
 }
 
 TEST_F(LocalIndexTest, FindNonExistentEntry) {
@@ -95,14 +95,14 @@ TEST_F(LocalIndexTest, SaveAndLoad) {
 
     auto entry_a = loaded.find_entry("obj/a");
     ASSERT_TRUE(entry_a.has_value());
-    EXPECT_EQ(entry_a->file_name, "data_001.dat");
-    EXPECT_EQ(entry_a->offset, 0);
-    EXPECT_EQ(entry_a->size, 100);
+    EXPECT_EQ(entry_a->file_name_, "data_001.dat");
+    EXPECT_EQ(entry_a->offset_, 0);
+    EXPECT_EQ(entry_a->size_, 100);
 
     auto entry_c = loaded.find_entry("obj/c");
     ASSERT_TRUE(entry_c.has_value());
-    EXPECT_TRUE(entry_c->is_large);
-    EXPECT_EQ(entry_c->block_count, 5);
+    EXPECT_TRUE(entry_c->is_large_);
+    EXPECT_EQ(entry_c->block_count_, 5);
 }
 
 TEST_F(LocalIndexTest, LoadFromNonExistentFile) {
@@ -134,8 +134,8 @@ TEST_F(LocalIndexTest, MultipleEntriesPerKey) {
 
     auto found = index.find_entry("obj/same");
     ASSERT_TRUE(found.has_value());
-    EXPECT_EQ(found->file_name, "data_001.dat");
-    EXPECT_EQ(found->offset, 0);
+    EXPECT_EQ(found->file_name_, "data_001.dat");
+    EXPECT_EQ(found->offset_, 0);
 
     auto all = index.find_all_entries("obj/same");
     ASSERT_TRUE(all.has_value());
@@ -161,8 +161,8 @@ TEST_F(LocalIndexTest, MultipleEntriesSaveLoad) {
 
     auto entry = loaded.find_entry("obj_50");
     ASSERT_TRUE(entry.has_value());
-    EXPECT_EQ(entry->offset, 5000);
-    EXPECT_EQ(entry->size, 50);
+    EXPECT_EQ(entry->offset_, 5000);
+    EXPECT_EQ(entry->size_, 50);
 }
 
 TEST_F(LocalIndexTest, IncrementalAddRecords) {
@@ -182,11 +182,11 @@ TEST_F(LocalIndexTest, IncrementalAddRecords) {
 
     auto a = loaded.find_entry("obj/a");
     ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->file_name, "data_001.dat");
+    EXPECT_EQ(a->file_name_, "data_001.dat");
 
     auto b = loaded.find_entry("obj/b");
     ASSERT_TRUE(b.has_value());
-    EXPECT_EQ(b->file_name, "data_002.dat");
+    EXPECT_EQ(b->file_name_, "data_002.dat");
 }
 
 TEST_F(LocalIndexTest, IncrementalRemoveRecord) {
@@ -209,7 +209,7 @@ TEST_F(LocalIndexTest, IncrementalRemoveRecord) {
 
     auto b = loaded.find_entry("obj/b");
     ASSERT_TRUE(b.has_value());
-    EXPECT_EQ(b->size, 200);
+    EXPECT_EQ(b->size_, 200);
 }
 
 TEST_F(LocalIndexTest, IncrementalMixedOps) {
@@ -286,11 +286,11 @@ TEST_F(LocalIndexTest, LoadLegacyFormat) {
 
     auto a = loaded.find_entry("obj/a");
     ASSERT_TRUE(a.has_value());
-    EXPECT_EQ(a->size, 100);
+    EXPECT_EQ(a->size_, 100);
 
     auto b = loaded.find_entry("obj/b");
     ASSERT_TRUE(b.has_value());
-    EXPECT_EQ(b->size, 200);
+    EXPECT_EQ(b->size_, 200);
 }
 
 TEST_F(LocalIndexTest, ConcurrentAddRemoveSave) {
@@ -373,14 +373,14 @@ TEST_F(LocalIndexTest, AddEntryWithHostAndContextHash) {
     LocalIndex index(make_idx_path("host_ctx"));
 
     IndexEntry entry;
-    entry.object_name = "obj/with_host";
-    entry.file_name = "data.dat";
-    entry.offset = 0;
-    entry.size = 50;
-    entry.is_large = false;
-    entry.block_count = 0;
-    entry.host = "192.168.1.1";
-    entry.write_context_hash = "abc123";
+    entry.object_name_ = "obj/with_host";
+    entry.file_name_ = "data.dat";
+    entry.offset_ = 0;
+    entry.size_ = 50;
+    entry.is_large_ = false;
+    entry.block_count_ = 0;
+    entry.host_ = "192.168.1.1";
+    entry.write_context_hash_ = "abc123";
 
     index.add_entry(entry);
     index.save();
@@ -390,8 +390,8 @@ TEST_F(LocalIndexTest, AddEntryWithHostAndContextHash) {
 
     auto found = loaded.find_entry("obj/with_host");
     ASSERT_TRUE(found.has_value());
-    EXPECT_EQ(found->host, "192.168.1.1");
-    EXPECT_EQ(found->write_context_hash, "abc123");
+    EXPECT_EQ(found->host_, "192.168.1.1");
+    EXPECT_EQ(found->write_context_hash_, "abc123");
 }
 
 TEST_F(LocalIndexTest, RemoveOneEntryFromMultiplePerKey) {
@@ -502,9 +502,9 @@ TEST_F(LocalIndexTest, FindAllEntriesReturnsCorrectEntries) {
     auto all = index.find_all_entries("obj/multi");
     ASSERT_TRUE(all.has_value());
     EXPECT_EQ(all->size(), 3u);
-    EXPECT_EQ((*all)[0].file_name, "d1.dat");
-    EXPECT_EQ((*all)[1].file_name, "d2.dat");
-    EXPECT_EQ((*all)[2].file_name, "d3.dat");
+    EXPECT_EQ((*all)[0].file_name_, "d1.dat");
+    EXPECT_EQ((*all)[1].file_name_, "d2.dat");
+    EXPECT_EQ((*all)[2].file_name_, "d3.dat");
 }
 
 TEST_F(LocalIndexTest, FindAllEntriesAfterRemove) {
@@ -526,12 +526,12 @@ TEST_F(LocalIndexTest, SaveLoadWithLargeBlockCount) {
     {
         LocalIndex index(idx_path);
         IndexEntry entry;
-        entry.object_name = "obj/large";
-        entry.file_name = "data.dat";
-        entry.offset = 0;
-        entry.size = 1000000;
-        entry.is_large = true;
-        entry.block_count = 1000;
+        entry.object_name_ = "obj/large";
+        entry.file_name_ = "data.dat";
+        entry.offset_ = 0;
+        entry.size_ = 1000000;
+        entry.is_large_ = true;
+        entry.block_count_ = 1000;
         index.add_entry(entry);
         index.save();
     }
@@ -540,9 +540,9 @@ TEST_F(LocalIndexTest, SaveLoadWithLargeBlockCount) {
     loaded.load();
     auto found = loaded.find_entry("obj/large");
     ASSERT_TRUE(found.has_value());
-    EXPECT_TRUE(found->is_large);
-    EXPECT_EQ(found->block_count, 1000);
-    EXPECT_EQ(found->size, 1000000);
+    EXPECT_TRUE(found->is_large_);
+    EXPECT_EQ(found->block_count_, 1000);
+    EXPECT_EQ(found->size_, 1000000);
 }
 
 TEST_F(LocalIndexTest, AddEntryClearsPendingRemoves) {
@@ -607,8 +607,8 @@ TEST_F(LocalIndexTest, GetAllEntriesAfterMultipleAddsAndRemoves) {
 
     bool found1 = false, found3 = false;
     for (const auto& e : entries) {
-        if (e.object_name == "obj/1") found1 = true;
-        if (e.object_name == "obj/3") found3 = true;
+        if (e.object_name_ == "obj/1") found1 = true;
+        if (e.object_name_ == "obj/3") found3 = true;
     }
     EXPECT_TRUE(found1);
     EXPECT_TRUE(found3);

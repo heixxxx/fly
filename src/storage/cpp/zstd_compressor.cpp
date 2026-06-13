@@ -8,10 +8,10 @@ ZstdCompressor::ZstdCompressor(int level)
 
 CompressedChunk ZstdCompressor::compress(const CMString& input) {
     CompressedChunk chunk;
-    chunk.uncompressed_size = static_cast<int32_t>(input.size());
+    chunk.uncompressed_size_ = static_cast<int32_t>(input.size());
 
     if (input.empty()) {
-        chunk.compressed_size = 0;
+        chunk.compressed_size_ = 0;
         return chunk;
     }
 
@@ -31,8 +31,8 @@ CompressedChunk ZstdCompressor::compress(const CMString& input) {
     }
 
     compressed.resize(result);
-    chunk.data = std::move(compressed);
-    chunk.compressed_size = static_cast<int32_t>(result);
+    chunk.data_ = std::move(compressed);
+    chunk.compressed_size_ = static_cast<int32_t>(result);
     return chunk;
 }
 

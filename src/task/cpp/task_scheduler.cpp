@@ -35,7 +35,7 @@ CMVector<ScheduleResult> TaskScheduler::schedule_all_available() {
     
     while (true) {
         auto result = schedule_next();
-        if (!result.scheduled) {
+        if (!result.scheduled_) {
             break;
         }
         results.push_back(result);
@@ -68,7 +68,7 @@ uint64_t TaskScheduler::select_best_worker(uint64_t task_id) {
         bool has_all = true;
         for (const auto& req : requirements) {
             bool found = false;
-            for (const auto& cap : info.capabilities) {
+            for (const auto& cap : info.capabilities_) {
                 if (cap == req) {
                     found = true;
                     break;

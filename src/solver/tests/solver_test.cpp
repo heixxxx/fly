@@ -76,16 +76,16 @@ TEST(SolverTest, Partition1D_TwoParts) {
     auto parts = partition_1d(n, 2, 1);
 
     ASSERT_EQ(parts.size(), 2u);
-    EXPECT_EQ(parts[0].subdomain_id, 0);
-    EXPECT_EQ(parts[1].subdomain_id, 1);
+    EXPECT_EQ(parts[0].subdomain_id_, 0);
+    EXPECT_EQ(parts[1].subdomain_id_, 1);
 
-    EXPECT_EQ(parts[0].own_indices[0], 0);
-    EXPECT_EQ(parts[0].own_indices.back(), 7);
-    EXPECT_EQ(parts[1].own_indices[0], 8);
-    EXPECT_EQ(parts[1].own_indices.back(), 15);
+    EXPECT_EQ(parts[0].own_indices_[0], 0);
+    EXPECT_EQ(parts[0].own_indices_.back(), 7);
+    EXPECT_EQ(parts[1].own_indices_[0], 8);
+    EXPECT_EQ(parts[1].own_indices_.back(), 15);
 
-    EXPECT_TRUE(parts[0].local_indices.size() > parts[0].own_indices.size());
-    EXPECT_TRUE(parts[1].local_indices.size() > parts[1].own_indices.size());
+    EXPECT_TRUE(parts[0].local_indices_.size() > parts[0].own_indices_.size());
+    EXPECT_TRUE(parts[1].local_indices_.size() > parts[1].own_indices_.size());
 }
 
 TEST(SolverTest, Partition1D_AllOwnIndicesCoverFullRange) {
@@ -96,7 +96,7 @@ TEST(SolverTest, Partition1D_AllOwnIndicesCoverFullRange) {
     // Collect all own indices
     std::vector<int> all_own;
     for (const auto& p : parts) {
-        all_own.insert(all_own.end(), p.own_indices.begin(), p.own_indices.end());
+        all_own.insert(all_own.end(), p.own_indices_.begin(), p.own_indices_.end());
     }
     EXPECT_EQ(static_cast<int>(all_own.size()), total);
     std::sort(all_own.begin(), all_own.end());
@@ -207,7 +207,7 @@ TEST(SolverTest, RAS_Convergence) {
     std::vector<std::unique_ptr<SubdomainSolver>> solvers;
     solvers.reserve(num_parts);
     for (int p = 0; p < num_parts; ++p) {
-        auto A_local = extract_subdomain_matrix(A, parts[p].local_indices);
+        auto A_local = extract_subdomain_matrix(A, parts[p].local_indices_);
         solvers.push_back(std::make_unique<SubdomainSolver>(A_local));
     }
 

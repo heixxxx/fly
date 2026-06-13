@@ -15,9 +15,9 @@ enum class CompressionType : int8_t {
 // On-disk format for each stored chunk:
 // [int32_t uncompressed_size][int32_t compressed_size][compressed_bytes...]
 struct CompressedChunk {
-    int32_t uncompressed_size = 0;
-    int32_t compressed_size = 0;
-    CMString data;
+    int32_t uncompressed_size_ = 0;
+    int32_t compressed_size_ = 0;
+    CMString data_;
 };
 
 class Compressor {

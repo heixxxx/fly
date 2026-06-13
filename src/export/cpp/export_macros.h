@@ -46,8 +46,6 @@ namespace fly_export = nanobind;
 
 #define FLY_EXPORT_FUNCTION(export_name, func) m.def(export_name, func)
 
-#define FLY_EXPORT_FUNCTION_REF(export_name, func) m.def(export_name, func, nanobind::rv_policy::reference)
-
 #define FLY_EXPORT_ENUM(enum_type, export_name) fly_export::enum_<enum_type>(m, export_name)
 
 #define FLY_EXPORT_ENUM_VALUE(export_name, ...) .value(export_name, __VA_ARGS__)

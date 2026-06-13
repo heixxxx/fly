@@ -42,9 +42,9 @@ TEST_F(WriteRegisterNetworkTest, MasterAcceptsWriteRegisterForNormalDb) {
     executor.set_exec_func([](uint64_t id, const CMString& name,
                                const CMString& module, const CMVector<CMString>& args) {
         TaskExecResult result;
-        result.task_id = id;
-        result.status = TaskExecStatus::SUCCESS;
-        result.output = "ok";
+        result.task_id_ = id;
+        result.status_ = TaskExecStatus::SUCCESS;
+        result.output_ = "ok";
         return result;
     });
     worker.set_executor(CMMakeShared<TaskExecutor>(std::move(executor)));
@@ -69,21 +69,21 @@ TEST_F(WriteRegisterNetworkTest, MasterRejectsWriteToFrozenDb) {
     CMString frozen_db_id = "frozen_test_db_123";
 
     WriteRegisterAckMessage ack;
-    ack.object_name = "test/obj";
-    ack.db_id = frozen_db_id;
-    ack.success = false;
-    ack.error_message = "Database frozen: " + frozen_db_id;
-    ack.error_type = TaskErrorType::WRITE_TO_FROZEN_DB;
+    ack.object_name_ = "test/obj";
+    ack.db_id_ = frozen_db_id;
+    ack.success_ = false;
+    ack.error_message_ = "Database frozen: " + frozen_db_id;
+    ack.error_type_ = TaskErrorType::WRITE_TO_FROZEN_DB;
 
-    EXPECT_FALSE(ack.success);
-    EXPECT_EQ(ack.error_type, TaskErrorType::WRITE_TO_FROZEN_DB);
-    EXPECT_EQ(ack.error_message, "Database frozen: " + frozen_db_id);
+    EXPECT_FALSE(ack.success_);
+    EXPECT_EQ(ack.error_type_, TaskErrorType::WRITE_TO_FROZEN_DB);
+    EXPECT_EQ(ack.error_message_, "Database frozen: " + frozen_db_id);
 
     WriteRegisterAckMessage fresh_ack;
-    EXPECT_EQ(fresh_ack.error_type, TaskErrorType::UNKNOWN);
+    EXPECT_EQ(fresh_ack.error_type_, TaskErrorType::UNKNOWN);
 
     TEST_LOG("master: frozen db rejection logic verified, error_type=%d",
-             static_cast<int>(ack.error_type));
+             static_cast<int>(ack.error_type_));
 }
 
 TEST_F(WriteRegisterNetworkTest, FatalErrorOnWriteToFrozenDb) {
@@ -100,11 +100,11 @@ TEST_F(WriteRegisterNetworkTest, FatalErrorOnWriteToFrozenDb) {
     TaskErrorType error_type = TaskErrorType::WRITE_TO_FROZEN_DB;
 
     TaskFailedMessage fail_msg;
-    fail_msg.task_id = 99;
-    fail_msg.worker_id = 3;
-    fail_msg.error_message = error_msg;
-    fail_msg.error_type = error_type;
-    fail_msg.recoverable = false;
+    fail_msg.task_id_ = 99;
+    fail_msg.worker_id_ = 3;
+    fail_msg.error_message_ = error_msg;
+    fail_msg.error_type_ = error_type;
+    fail_msg.recoverable_ = false;
 
     EXPECT_FALSE(master.is_running() && false);
 
@@ -116,39 +116,39 @@ TEST_F(WriteRegisterNetworkTest, FatalErrorOnWriteToFrozenDb) {
 
 TEST_F(WriteRegisterNetworkTest, WriteRegisterAckCarriesErrorType) {
     WriteRegisterAckMessage ack;
-    ack.object_name = "test/obj";
-    ack.db_id = "test_db";
-    ack.success = false;
-    ack.error_message = "Database frozen: test_db";
-    ack.error_type = TaskErrorType::WRITE_TO_FROZEN_DB;
+    ack.object_name_ = "test/obj";
+    ack.db_id_ = "test_db";
+    ack.success_ = false;
+    ack.error_message_ = "Database frozen: test_db";
+    ack.error_type_ = TaskErrorType::WRITE_TO_FROZEN_DB;
 
-    EXPECT_FALSE(ack.success);
-    EXPECT_EQ(ack.error_type, TaskErrorType::WRITE_TO_FROZEN_DB);
+    EXPECT_FALSE(ack.success_);
+    EXPECT_EQ(ack.error_type_, TaskErrorType::WRITE_TO_FROZEN_DB);
 
     WriteRegisterAckMessage success_ack;
-    success_ack.object_name = "test/obj2";
-    success_ack.db_id = "test_db2";
-    success_ack.success = true;
-    success_ack.error_type = TaskErrorType::UNKNOWN;
+    success_ack.object_name_ = "test/obj2";
+    success_ack.db_id_ = "test_db2";
+    success_ack.success_ = true;
+    success_ack.error_type_ = TaskErrorType::UNKNOWN;
 
-    EXPECT_TRUE(success_ack.success);
-    EXPECT_EQ(success_ack.error_type, TaskErrorType::UNKNOWN);
+    EXPECT_TRUE(success_ack.success_);
+    EXPECT_EQ(success_ack.error_type_, TaskErrorType::UNKNOWN);
 
     TEST_LOG("WriteRegisterAckMessage: error_type field works correctly");
 }
 
 TEST_F(WriteRegisterNetworkTest, TaskFailedMessageCarriesErrorType) {
     TaskFailedMessage msg;
-    msg.task_id = 42;
-    msg.worker_id = 7;
-    msg.error_message = "some error";
-    msg.error_type = TaskErrorType::WRITE_REGISTRATION_TIMEOUT;
+    msg.task_id_ = 42;
+    msg.worker_id_ = 7;
+    msg.error_message_ = "some error";
+    msg.error_type_ = TaskErrorType::WRITE_REGISTRATION_TIMEOUT;
 
-    EXPECT_EQ(msg.error_type, TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
-    EXPECT_NE(msg.error_type, TaskErrorType::UNKNOWN);
+    EXPECT_EQ(msg.error_type_, TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
+    EXPECT_NE(msg.error_type_, TaskErrorType::UNKNOWN);
 
     TaskFailedMessage default_msg;
-    EXPECT_EQ(default_msg.error_type, TaskErrorType::UNKNOWN);
+    EXPECT_EQ(default_msg.error_type_, TaskErrorType::UNKNOWN);
 
     TEST_LOG("TaskFailedMessage: error_type field defaults to UNKNOWN");
 }

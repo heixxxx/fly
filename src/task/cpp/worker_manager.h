@@ -15,13 +15,13 @@ enum class WorkerStatus : uint8_t {
 };
 
 struct WorkerInfo {
-    uint64_t worker_id;
-    CMString address;
-    uint16_t port;
-    WorkerStatus status;
-    CMVector<CMString> capabilities;
-    uint64_t last_heartbeat;
-    uint64_t current_task_id;
+    uint64_t worker_id_;
+    CMString address_;
+    uint16_t port_;
+    WorkerStatus status_;
+    CMVector<CMString> capabilities_;
+    uint64_t last_heartbeat_;
+    uint64_t current_task_id_;
 };
 
 class WorkerManager {

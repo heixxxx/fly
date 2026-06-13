@@ -47,9 +47,12 @@
 // TrustedConfig: disables data validation for internal trusted data.
 // When enabled, maxSize parameters on text/container are placeholder only.
 struct FlyTrustedConfig {
-    static constexpr bitsery::EndiannessType Endianness = bitsery::EndiannessType::LittleEndian;
-    static constexpr bool CheckAdapterErrors = true;
-    static constexpr bool CheckDataErrors = false;  // skip maxSize validation
+    static constexpr bitsery::EndiannessType Endianness_ = bitsery::EndiannessType::LittleEndian;
+    static constexpr bool CheckAdapterErrors_ = true;
+    static constexpr bool CheckDataErrors_ = false;
+    static constexpr bitsery::EndiannessType Endianness = Endianness_;
+    static constexpr bool CheckAdapterErrors = CheckAdapterErrors_;
+    static constexpr bool CheckDataErrors = CheckDataErrors_;
 };
 
 // Max size placeholder — only used for bitsery container/text size parameters.

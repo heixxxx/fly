@@ -10,19 +10,19 @@
 namespace {
 
 struct TestRecord {
-    int64_t original_size;
-    int32_t chunk_count;
+    int64_t original_size_;
+    int32_t chunk_count_;
     FlyBuffer buffer;
 };
 
 TestRecord make_record(const CMString& data, const CMString& py_name = "") {
     TestRecord rec;
     ObjectHeader header;
-    header.total_size = 0;
-    header.chunk_count = 0;
-    header.compression_type = 0;
-    header.py_name = py_name;
-    header.py_name_len = static_cast<uint16_t>(py_name.size());
+    header.total_size_ = 0;
+    header.chunk_count_ = 0;
+    header.compression_type_ = 0;
+    header.py_name_ = py_name;
+    header.py_name_len_ = static_cast<uint16_t>(py_name.size());
     CMString header_bytes = header.serialize();
 
     FlyBufferStreamBuf fly_buf(rec.buffer);
@@ -35,13 +35,13 @@ TestRecord make_record(const CMString& data, const CMString& py_name = "") {
         std::ostream os(&csbuf);
         os.write(data.data(), static_cast<std::streamsize>(data.size()));
         os.flush();
-        rec.original_size = csbuf.total_uncompressed();
-        rec.chunk_count = csbuf.chunk_count();
+        rec.original_size_ = csbuf.total_uncompressed();
+        rec.chunk_count_ = csbuf.chunk_count();
     }
     counting_stream.flush();
 
-    header.total_size = static_cast<uint64_t>(rec.original_size);
-    header.chunk_count = static_cast<uint32_t>(rec.chunk_count);
+    header.total_size_ = static_cast<uint64_t>(rec.original_size_);
+    header.chunk_count_ = static_cast<uint32_t>(rec.chunk_count_);
     CMString real_header = header.serialize();
     std::memcpy(rec.buffer.data(), real_header.data(), real_header.size());
 
@@ -82,7 +82,7 @@ TEST_F(DataReaderWriterTest, WriteAndReadRawBytes) {
     {
         DataWriter writer(base_path, "", "a1b2c3d4", 1024);
         auto rec = make_record("hello world");
-        writer.write_record("test/obj", rec.original_size, rec.chunk_count, rec.buffer);
+        writer.write_record("test/obj", rec.original_size_, rec.chunk_count_, rec.buffer);
         writer.close();
     }
 
@@ -100,11 +100,11 @@ TEST_F(DataReaderWriterTest, WriteAndReadMultipleObjects) {
     {
         DataWriter writer(base_path, "", "a1b2c3d4", 1024);
         auto r1 = make_record("data_one");
-        writer.write_record("obj/1", r1.original_size, r1.chunk_count, r1.buffer);
+        writer.write_record("obj/1", r1.original_size_, r1.chunk_count_, r1.buffer);
         auto r2 = make_record("data_two");
-        writer.write_record("obj/2", r2.original_size, r2.chunk_count, r2.buffer);
+        writer.write_record("obj/2", r2.original_size_, r2.chunk_count_, r2.buffer);
         auto r3 = make_record("data_three");
-        writer.write_record("obj/3", r3.original_size, r3.chunk_count, r3.buffer);
+        writer.write_record("obj/3", r3.original_size_, r3.chunk_count_, r3.buffer);
         writer.close();
     }
 
@@ -120,7 +120,7 @@ TEST_F(DataReaderWriterTest, ExistsReturnsTrue) {
     {
         DataWriter writer(base_path, "", "a1b2c3d4", 1024);
         auto rec = make_record("data");
-        writer.write_record("exists/obj", rec.original_size, rec.chunk_count, rec.buffer);
+        writer.write_record("exists/obj", rec.original_size_, rec.chunk_count_, rec.buffer);
         writer.close();
     }
 
@@ -147,7 +147,7 @@ TEST_F(DataReaderWriterTest, PyNameRoundtrip) {
     {
         DataWriter writer(base_path, "", "a1b2c3d4", 1024);
         auto rec = make_record("test data", "MyClass");
-        writer.write_record("named/obj", rec.original_size, rec.chunk_count, rec.buffer);
+        writer.write_record("named/obj", rec.original_size_, rec.chunk_count_, rec.buffer);
         writer.close();
     }
 
@@ -165,15 +165,15 @@ TEST_F(DataReaderWriterTest, FindEntryReturnsEntryForExisting) {
     {
         DataWriter writer(base_path, "", "a1b2c3d4", 1024);
         auto rec = make_record("find_data");
-        writer.write_record("find/obj", rec.original_size, rec.chunk_count, rec.buffer);
+        writer.write_record("find/obj", rec.original_size_, rec.chunk_count_, rec.buffer);
         writer.close();
     }
 
     DataReader reader(base_path, "", "a1b2c3d4");
     auto entry = reader.find_entry("find/obj");
     ASSERT_TRUE(entry.has_value());
-    EXPECT_EQ(entry->object_name, "find/obj");
-    EXPECT_GT(entry->size, 0);
+    EXPECT_EQ(entry->object_name_, "find/obj");
+    EXPECT_GT(entry->size_, 0);
 }
 
 TEST_F(DataReaderWriterTest, FindEntryReturnsNulloptForMissing) {
@@ -189,9 +189,9 @@ TEST_F(DataReaderWriterTest, FindAllEntriesReturnsEntries) {
     {
         DataWriter writer(base_path, "", "a1b2c3d4", 10);
         auto r1 = make_record("data1");
-        writer.write_record("multi/obj", r1.original_size, r1.chunk_count, r1.buffer);
+        writer.write_record("multi/obj", r1.original_size_, r1.chunk_count_, r1.buffer);
         auto r2 = make_record("data2");
-        writer.write_record("multi/obj", r2.original_size, r2.chunk_count, r2.buffer);
+        writer.write_record("multi/obj", r2.original_size_, r2.chunk_count_, r2.buffer);
         writer.close();
     }
 
@@ -214,7 +214,7 @@ TEST_F(DataReaderWriterTest, FindFilePathWithEmptyDataPath) {
     {
         DataWriter writer(base_path, "", "a1b2c3d4", 1024);
         auto rec = make_record("filepath data");
-        writer.write_record("fp/obj", rec.original_size, rec.chunk_count, rec.buffer);
+        writer.write_record("fp/obj", rec.original_size_, rec.chunk_count_, rec.buffer);
         writer.close();
     }
 
@@ -222,7 +222,7 @@ TEST_F(DataReaderWriterTest, FindFilePathWithEmptyDataPath) {
     auto entry = reader.find_entry("fp/obj");
     ASSERT_TRUE(entry.has_value());
 
-    CMString found_path = reader.find_file_path(entry->file_name);
+    CMString found_path = reader.find_file_path(entry->file_name_);
     EXPECT_FALSE(found_path.empty());
     EXPECT_TRUE(std::filesystem::exists(found_path));
 }
@@ -232,10 +232,10 @@ TEST_F(DataReaderWriterTest, ReadFromMissingFileReturnsEmpty) {
     DataReader reader(base_path, "", "a1b2c3d4");
 
     IndexEntry fake_entry;
-    fake_entry.object_name = "fake";
-    fake_entry.file_name = "nonexistent_file.dat";
-    fake_entry.offset = 0;
-    fake_entry.size = 10;
+    fake_entry.object_name_ = "fake";
+    fake_entry.file_name_ = "nonexistent_file.dat";
+    fake_entry.offset_ = 0;
+    fake_entry.size_ = 10;
 
     CMString result = reader.read_raw_bytes(fake_entry);
     EXPECT_TRUE(result.empty());
@@ -247,7 +247,7 @@ TEST_F(DataReaderWriterTest, ReadRawBytesByIndexEntry) {
     {
         DataWriter writer(base_path, "", "a1b2c3d4", 1024);
         auto rec = make_record("entry data");
-        writer.write_record("entry/obj", rec.original_size, rec.chunk_count, rec.buffer);
+        writer.write_record("entry/obj", rec.original_size_, rec.chunk_count_, rec.buffer);
         writer.close();
     }
 
@@ -268,7 +268,7 @@ TEST_F(DataReaderWriterTest, DataPathFallback) {
     {
         DataWriter writer(base_path, data_path, "a1b2c3d4", 1024);
         auto rec = make_record("fallback data");
-        writer.write_record("fb/obj", rec.original_size, rec.chunk_count, rec.buffer);
+        writer.write_record("fb/obj", rec.original_size_, rec.chunk_count_, rec.buffer);
         writer.close();
     }
 

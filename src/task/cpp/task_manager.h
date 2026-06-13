@@ -17,19 +17,19 @@ enum class TaskStatus : uint8_t {
 };
 
 struct TaskMetadata {
-    uint64_t task_id;
-    CMString name;
-    TaskStatus status;
-    CMVector<CMString> inputs;
-    CMVector<CMString> outputs;
-    CMString config;
-    CMVector<CMString> required_capabilities;
-    uint64_t created_at;
-    uint64_t started_at;
-    uint64_t completed_at;
-    CMString error_message;
-    uint64_t assigned_worker_id;
-    CMString write_context_hash;
+    uint64_t task_id_;
+    CMString name_;
+    TaskStatus status_;
+    CMVector<CMString> inputs_;
+    CMVector<CMString> outputs_;
+    CMString config_;
+    CMVector<CMString> required_capabilities_;
+    uint64_t created_at_;
+    uint64_t started_at_;
+    uint64_t completed_at_;
+    CMString error_message_;
+    uint64_t assigned_worker_id_;
+    CMString write_context_hash_;
 };
 
 class TaskManager {

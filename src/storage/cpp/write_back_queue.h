@@ -11,8 +11,8 @@
 namespace fly {
 
 struct WriteRequest {
-    std::function<void()> execute;      // Does the actual write (calls DataWriter methods)
-    std::function<void()> on_complete;   // Notifies DataService + master after write
+    std::function<void()> execute_;      // Does the actual write (calls DataWriter methods)
+    std::function<void()> on_complete_;   // Notifies DataService + master after write
 };
 
 class WriteBackQueue {

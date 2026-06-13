@@ -47,366 +47,338 @@ inline bool is_valid_message_type(uint8_t raw) {
     return raw >= 1 && raw <= 33;
 }
 
-// 基础消息头（所有消息继承）
 struct MessageHeader {
-    MessageType type = MessageType::REGISTER;
-    uint32_t message_id = 0;
-    uint64_t timestamp = 0;
-    
-    FLY_SERIALIZE(type, message_id, timestamp);
+    MessageType type_ = MessageType::REGISTER;
+    uint32_t message_id_ = 0;
+    uint64_t timestamp_ = 0;
+
+    FLY_SERIALIZE(type_, message_id_, timestamp_);
 };
 
-// Worker → Master: 注册
 struct RegisterMessage {
-    MessageHeader header;
-    uint64_t worker_id = 0;
-    CMString hostname;
-    CMString ip_address;
-    CMVector<CMString> attributes;
-    CMString data_server_host;
-    int32_t data_server_port = 0;
-    
-    static constexpr MessageType msg_type = MessageType::REGISTER;
-    
-    FLY_SERIALIZE(header, worker_id, hostname, ip_address, attributes, data_server_host, data_server_port);
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMString hostname_;
+    CMString ip_address_;
+    CMVector<CMString> attributes_;
+    CMString data_server_host_;
+    int32_t data_server_port_ = 0;
+
+    static constexpr MessageType msg_type_ = MessageType::REGISTER;
+
+    FLY_SERIALIZE(header_, worker_id_, hostname_, ip_address_, attributes_, data_server_host_, data_server_port_);
 };
 
-// Master → Worker: 注册确认
 struct RegisterAckMessage {
-    MessageHeader header;
-    uint64_t worker_id = 0;
-    CMString master_address;
-    int32_t master_port = 0;
-    
-    static constexpr MessageType msg_type = MessageType::REGISTER_ACK;
-    
-    FLY_SERIALIZE(header, worker_id, master_address, master_port);
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMString master_address_;
+    int32_t master_port_ = 0;
+
+    static constexpr MessageType msg_type_ = MessageType::REGISTER_ACK;
+
+    FLY_SERIALIZE(header_, worker_id_, master_address_, master_port_);
 };
 
-// Worker → Master: 心跳
 struct HeartbeatMessage {
-    MessageHeader header;
-    uint64_t worker_id = 0;
-    CMVector<uint64_t> running_tasks;
-    CMVector<CMString> attributes;
-    
-    static constexpr MessageType msg_type = MessageType::HEARTBEAT;
-    
-    FLY_SERIALIZE(header, worker_id, running_tasks, attributes);
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMVector<uint64_t> running_tasks_;
+    CMVector<CMString> attributes_;
+
+    static constexpr MessageType msg_type_ = MessageType::HEARTBEAT;
+
+    FLY_SERIALIZE(header_, worker_id_, running_tasks_, attributes_);
 };
 
-// Master → Worker: 心跳确认
 struct HeartbeatAckMessage {
-    MessageHeader header;
-    uint64_t worker_id = 0;
-    
-    static constexpr MessageType msg_type = MessageType::HEARTBEAT_ACK;
-    
-    FLY_SERIALIZE(header, worker_id);
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+
+    static constexpr MessageType msg_type_ = MessageType::HEARTBEAT_ACK;
+
+    FLY_SERIALIZE(header_, worker_id_);
 };
 
-// Worker → Worker: 数据请求（重 I/O）
 struct DataRequestMessage {
-    MessageHeader header;
-    CMString object_name;
-    uint64_t requesting_worker_id = 0;
-    uint64_t request_id = 0;
-    
-    static constexpr MessageType msg_type = MessageType::DATA_REQUEST;
-    
-    FLY_SERIALIZE(header, object_name, requesting_worker_id, request_id);
+    MessageHeader header_;
+    CMString object_name_;
+    uint64_t requesting_worker_id_ = 0;
+    uint64_t request_id_ = 0;
+
+    static constexpr MessageType msg_type_ = MessageType::DATA_REQUEST;
+
+    FLY_SERIALIZE(header_, object_name_, requesting_worker_id_, request_id_);
 };
 
-// Worker → Worker: 数据响应（可能较大）
 struct DataResponseMessage {
-    MessageHeader header;
-    CMString object_name;
-    bool success = false;
-    CMString error_message;
-    CMString compressed_data;
-    CMString py_name;
-    CMString write_context_hash;
-    
-    static constexpr MessageType msg_type = MessageType::DATA_RESPONSE;
-    
-    FLY_SERIALIZE(header, object_name, success, error_message, compressed_data, py_name, write_context_hash);
+    MessageHeader header_;
+    CMString object_name_;
+    bool success_ = false;
+    CMString error_message_;
+    CMString compressed_data_;
+    CMString py_name_;
+    CMString write_context_hash_;
+
+    static constexpr MessageType msg_type_ = MessageType::DATA_RESPONSE;
+
+    FLY_SERIALIZE(header_, object_name_, success_, error_message_, compressed_data_, py_name_, write_context_hash_);
 };
 
-// Master → Worker: 任务分配
 struct TaskAssignMessage {
-    MessageHeader header;
-    uint64_t task_id = 0;
-    CMString task_name;
-    CMString task_module;
-    CMVector<CMString> args;
-    CMString write_context_hash;
-    
-    static constexpr MessageType msg_type = MessageType::TASK_ASSIGN;
-    
-    FLY_SERIALIZE(header, task_id, task_name, task_module, args, write_context_hash);
+    MessageHeader header_;
+    uint64_t task_id_ = 0;
+    CMString task_name_;
+    CMString task_module_;
+    CMVector<CMString> args_;
+    CMString write_context_hash_;
+
+    static constexpr MessageType msg_type_ = MessageType::TASK_ASSIGN;
+
+    FLY_SERIALIZE(header_, task_id_, task_name_, task_module_, args_, write_context_hash_);
 };
 
-// Worker → Master: 任务完成
 struct TaskCompleteMessage {
-    MessageHeader header;
-    uint64_t task_id = 0;
-    uint64_t worker_id = 0;
-    CMVector<CMString> written_objects;
-    CMVector<CMString> frozen_dbs;
-    
-    static constexpr MessageType msg_type = MessageType::TASK_COMPLETE;
-    
-    FLY_SERIALIZE(header, task_id, worker_id, written_objects, frozen_dbs);
+    MessageHeader header_;
+    uint64_t task_id_ = 0;
+    uint64_t worker_id_ = 0;
+    CMVector<CMString> written_objects_;
+    CMVector<CMString> frozen_dbs_;
+
+    static constexpr MessageType msg_type_ = MessageType::TASK_COMPLETE;
+
+    FLY_SERIALIZE(header_, task_id_, worker_id_, written_objects_, frozen_dbs_);
 };
 
-// Worker → Master: 任务失败
 struct TaskFailedMessage {
-    MessageHeader header;
-    uint64_t task_id = 0;
-    uint64_t worker_id = 0;
-    bool recoverable = false;
-    CMString error_message;
-    TaskErrorType error_type = TaskErrorType::UNKNOWN;
+    MessageHeader header_;
+    uint64_t task_id_ = 0;
+    uint64_t worker_id_ = 0;
+    bool recoverable_ = false;
+    CMString error_message_;
+    TaskErrorType error_type_ = TaskErrorType::UNKNOWN;
 
-    static constexpr MessageType msg_type = MessageType::TASK_FAILED;
+    static constexpr MessageType msg_type_ = MessageType::TASK_FAILED;
 
-    FLY_SERIALIZE(header, task_id, worker_id, recoverable, error_message, error_type);
+    FLY_SERIALIZE(header_, task_id_, worker_id_, recoverable_, error_message_, error_type_);
 };
 
-// Worker → Master: 数据就绪通知（write_object 时实时发送）
 struct DataReadyMessage {
-    MessageHeader header;
-    uint64_t worker_id = 0;
-    CMString object_name;   // 完整标识符: "db_id:obj_name"
-    CMString db_id;         // 所属 Database
-    CMString writer_id;     // Writer's writer_id (from Database instance)
-    
-    static constexpr MessageType msg_type = MessageType::DATA_READY;
-    
-    FLY_SERIALIZE(header, worker_id, object_name, db_id, writer_id);
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMString object_name_;
+    CMString db_id_;
+    CMString writer_id_;
+
+    static constexpr MessageType msg_type_ = MessageType::DATA_READY;
+
+    FLY_SERIALIZE(header_, worker_id_, object_name_, db_id_, writer_id_);
 };
 
-// Master/Worker: 数据位置查询
 struct DataQueryMessage {
-    MessageHeader header;
-    CMString object_name;
-    
-    static constexpr MessageType msg_type = MessageType::DATA_QUERY;
-    
-    FLY_SERIALIZE(header, object_name);
+    MessageHeader header_;
+    CMString object_name_;
+
+    static constexpr MessageType msg_type_ = MessageType::DATA_QUERY;
+
+    FLY_SERIALIZE(header_, object_name_);
 };
 
-// Master → Worker: 数据位置响应
 struct DataLocationMessage {
-    MessageHeader header;
-    uint64_t worker_id = 0;
-    CMString file_path;
-    CMString object_name;
-    CMString data_host;
-    int32_t data_port = 0;
-    bool success = false;
-    bool can_still_produce = false;  // true if pending/running tasks might produce this object
-    
-    static constexpr MessageType msg_type = MessageType::DATA_LOCATION;
-    
-    FLY_SERIALIZE(header, worker_id, file_path, object_name, data_host, data_port, success, can_still_produce);
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMString file_path_;
+    CMString object_name_;
+    CMString data_host_;
+    int32_t data_port_ = 0;
+    bool success_ = false;
+    bool can_still_produce_ = false;
+
+    static constexpr MessageType msg_type_ = MessageType::DATA_LOCATION;
+
+    FLY_SERIALIZE(header_, worker_id_, file_path_, object_name_, data_host_, data_port_, success_, can_still_produce_);
 };
 
-// Worker → Master: 任务提交
 struct TaskSubmitMessage {
-    MessageHeader header;
-    CMString task_name;
-    CMString task_module;
-    CMVector<CMString> args;
-    CMVector<CMString> inputs;
-    CMVector<CMString> required_capabilities;
-    CMString write_context_hash;
-    static constexpr MessageType msg_type = MessageType::TASK_SUBMIT;
-    FLY_SERIALIZE(header, task_name, task_module, args, inputs, required_capabilities, write_context_hash);
+    MessageHeader header_;
+    CMString task_name_;
+    CMString task_module_;
+    CMVector<CMString> args_;
+    CMVector<CMString> inputs_;
+    CMVector<CMString> required_capabilities_;
+    CMString write_context_hash_;
+    static constexpr MessageType msg_type_ = MessageType::TASK_SUBMIT;
+    FLY_SERIALIZE(header_, task_name_, task_module_, args_, inputs_, required_capabilities_, write_context_hash_);
 };
 
-// Worker → Master: 数据库路径查询
 struct DbPathRequestMessage {
-    MessageHeader header;
-    CMString db_id;
-    static constexpr MessageType msg_type = MessageType::DB_PATH_REQUEST;
-    FLY_SERIALIZE(header, db_id);
+    MessageHeader header_;
+    CMString db_id_;
+    static constexpr MessageType msg_type_ = MessageType::DB_PATH_REQUEST;
+    FLY_SERIALIZE(header_, db_id_);
 };
 
-// Master → Worker: 数据库路径响应
 struct DbPathResponseMessage {
-    MessageHeader header;
-    CMString db_id;
-    CMString base_path;
-    CMString data_path;
-    bool success = false;
-    static constexpr MessageType msg_type = MessageType::DB_PATH_RESPONSE;
-    FLY_SERIALIZE(header, db_id, base_path, data_path, success);
+    MessageHeader header_;
+    CMString db_id_;
+    CMString base_path_;
+    CMString data_path_;
+    bool success_ = false;
+    static constexpr MessageType msg_type_ = MessageType::DB_PATH_RESPONSE;
+    FLY_SERIALIZE(header_, db_id_, base_path_, data_path_, success_);
 };
 
-// Master → Worker: 关机
 struct ShutdownMessage {
-    MessageHeader header;
-    
-    static constexpr MessageType msg_type = MessageType::SHUTDOWN;
-    
-    FLY_SERIALIZE(header);
+    MessageHeader header_;
+
+    static constexpr MessageType msg_type_ = MessageType::SHUTDOWN;
+
+    FLY_SERIALIZE(header_);
 };
 
 struct WriteRegisterMessage {
-    MessageHeader header;
-    uint64_t worker_id = 0;
-    CMString object_name;
-    CMString db_id;
-    CMString write_context_hash;
-    
-    static constexpr MessageType msg_type = MessageType::WRITE_REGISTER;
-    
-    FLY_SERIALIZE(header, worker_id, object_name, db_id, write_context_hash);
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMString object_name_;
+    CMString db_id_;
+    CMString write_context_hash_;
+
+    static constexpr MessageType msg_type_ = MessageType::WRITE_REGISTER;
+
+    FLY_SERIALIZE(header_, worker_id_, object_name_, db_id_, write_context_hash_);
 };
 
 struct WriteRegisterAckMessage {
-    MessageHeader header;
-    CMString object_name;
-    CMString db_id;
-    bool success = false;
-    CMString error_message;
-    TaskErrorType error_type = TaskErrorType::UNKNOWN;
+    MessageHeader header_;
+    CMString object_name_;
+    CMString db_id_;
+    bool success_ = false;
+    CMString error_message_;
+    TaskErrorType error_type_ = TaskErrorType::UNKNOWN;
 
-    static constexpr MessageType msg_type = MessageType::WRITE_REGISTER_ACK;
+    static constexpr MessageType msg_type_ = MessageType::WRITE_REGISTER_ACK;
 
-    FLY_SERIALIZE(header, object_name, db_id, success, error_message, error_type);
+    FLY_SERIALIZE(header_, object_name_, db_id_, success_, error_message_, error_type_);
 };
 
-// Worker → Master: 属性动态更新
 struct WorkerPropertyUpdateMessage {
-    MessageHeader header;
-    uint64_t worker_id = 0;
-    CMVector<CMString> added_properties;
-    CMVector<CMString> removed_properties;
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMVector<CMString> added_properties_;
+    CMVector<CMString> removed_properties_;
 
-    static constexpr MessageType msg_type = MessageType::WORKER_PROPERTY_UPDATE;
+    static constexpr MessageType msg_type_ = MessageType::WORKER_PROPERTY_UPDATE;
 
-    FLY_SERIALIZE(header, worker_id, added_properties, removed_properties);
+    FLY_SERIALIZE(header_, worker_id_, added_properties_, removed_properties_);
 };
 
-// Master → Worker: 对象删除通知（广播）
 struct ObjectRemovedMessage {
-    MessageHeader header;
-    CMString object_name;   // 完整标识符: "db_id:obj_name"
-    CMString db_id;
+    MessageHeader header_;
+    CMString object_name_;
+    CMString db_id_;
 
-    static constexpr MessageType msg_type = MessageType::OBJECT_REMOVED;
+    static constexpr MessageType msg_type_ = MessageType::OBJECT_REMOVED;
 
-    FLY_SERIALIZE(header, object_name, db_id);
+    FLY_SERIALIZE(header_, object_name_, db_id_);
 };
 
-// Master → Worker: load_db idx 加载命令
 struct IdxLoadCommandMessage {
-    MessageHeader header;
-    CMString db_id;
-    CMString base_path;
-    CMVector<CMString> writer_ids;
+    MessageHeader header_;
+    CMString db_id_;
+    CMString base_path_;
+    CMVector<CMString> writer_ids_;
 
-    static constexpr MessageType msg_type = MessageType::IDX_LOAD_COMMAND;
+    static constexpr MessageType msg_type_ = MessageType::IDX_LOAD_COMMAND;
 
-    FLY_SERIALIZE(header, db_id, base_path, writer_ids);
+    FLY_SERIALIZE(header_, db_id_, base_path_, writer_ids_);
 };
 
-// Worker → Master: idx 加载完成确认
 struct IdxLoadAckMessage {
-    MessageHeader header;
-    uint64_t worker_id = 0;
-    CMString db_id;
-    bool success = false;
-    int32_t loaded_count = 0;
-    CMString error_message;
-    CMVector<CMString> loaded_writer_ids;
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMString db_id_;
+    bool success_ = false;
+    int32_t loaded_count_ = 0;
+    CMString error_message_;
+    CMVector<CMString> loaded_writer_ids_;
 
-    static constexpr MessageType msg_type = MessageType::IDX_LOAD_ACK;
+    static constexpr MessageType msg_type_ = MessageType::IDX_LOAD_ACK;
 
-    FLY_SERIALIZE(header, worker_id, db_id, success, loaded_count, error_message, loaded_writer_ids);
+    FLY_SERIALIZE(header_, worker_id_, db_id_, success_, loaded_count_, error_message_, loaded_writer_ids_);
 };
 
-// Master → Worker: database frozen notification (broadcast)
 struct DatabaseFreezeNotification {
-    MessageHeader header;
-    CMString db_id;
+    MessageHeader header_;
+    CMString db_id_;
 
-    static constexpr MessageType msg_type = MessageType::DATABASE_FREEZE;
+    static constexpr MessageType msg_type_ = MessageType::DATABASE_FREEZE;
 
-    FLY_SERIALIZE(header, db_id);
+    FLY_SERIALIZE(header_, db_id_);
 };
 
-// Worker → Master: request to remove object (blocking until ack)
 struct RemoveRequestMessage {
-    MessageHeader header;
-    CMString db_id;
-    CMString object_name;
+    MessageHeader header_;
+    CMString db_id_;
+    CMString object_name_;
 
-    static constexpr MessageType msg_type = MessageType::REMOVE_REQUEST;
+    static constexpr MessageType msg_type_ = MessageType::REMOVE_REQUEST;
 
-    FLY_SERIALIZE(header, db_id, object_name);
+    FLY_SERIALIZE(header_, db_id_, object_name_);
 };
 
-// Master → Worker (origin): ack the remove request
 struct RemoveAckMessage {
-    MessageHeader header;
-    CMString db_id;
-    CMString object_name;
-    bool success = false;
+    MessageHeader header_;
+    CMString db_id_;
+    CMString object_name_;
+    bool success_ = false;
 
-    static constexpr MessageType msg_type = MessageType::REMOVE_ACK;
+    static constexpr MessageType msg_type_ = MessageType::REMOVE_ACK;
 
-    FLY_SERIALIZE(header, db_id, object_name, success);
+    FLY_SERIALIZE(header_, db_id_, object_name_, success_);
 };
 
-// Master → Worker (data holder): command to remove object
 struct RemoveCommandMessage {
-    MessageHeader header;
-    CMString db_id;
-    CMString object_name;
+    MessageHeader header_;
+    CMString db_id_;
+    CMString object_name_;
 
-    static constexpr MessageType msg_type = MessageType::REMOVE_COMMAND;
+    static constexpr MessageType msg_type_ = MessageType::REMOVE_COMMAND;
 
-    FLY_SERIALIZE(header, db_id, object_name);
+    FLY_SERIALIZE(header_, db_id_, object_name_);
 };
 
-// Worker → Master: request backup of an object
 struct BackupRequestMessage {
-    MessageHeader header;
-    uint64_t worker_id = 0;      // Source worker (has the data)
-    CMString object_name;         // Full name: "db_id:obj_name"
-    CMString db_id;
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMString object_name_;
+    CMString db_id_;
 
-    static constexpr MessageType msg_type = MessageType::BACKUP_REQUEST;
-    FLY_SERIALIZE(header, worker_id, object_name, db_id);
+    static constexpr MessageType msg_type_ = MessageType::BACKUP_REQUEST;
+    FLY_SERIALIZE(header_, worker_id_, object_name_, db_id_);
 };
 
-// Master → Worker: assign backup job
 struct BackupAssignMessage {
-    MessageHeader header;
-    CMString object_name;         // Full name
-    CMString db_id;
-    CMString source_host;         // Where to fetch data from
-    int32_t source_port = 0;
-    uint64_t source_worker_id = 0;
+    MessageHeader header_;
+    CMString object_name_;
+    CMString db_id_;
+    CMString source_host_;
+    int32_t source_port_ = 0;
+    uint64_t source_worker_id_ = 0;
 
-    static constexpr MessageType msg_type = MessageType::BACKUP_ASSIGN;
-    FLY_SERIALIZE(header, object_name, db_id, source_host, source_port, source_worker_id);
+    static constexpr MessageType msg_type_ = MessageType::BACKUP_ASSIGN;
+    FLY_SERIALIZE(header_, object_name_, db_id_, source_host_, source_port_, source_worker_id_);
 };
 
-// Worker → Master: backup complete notification
 struct BackupCompleteMessage {
-    MessageHeader header;
-    uint64_t worker_id = 0;      // Backup worker (or reading worker for read backup)
-    CMString object_name;         // Full name
-    CMString db_id;
-    bool success = false;
-    CMString error_message;
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMString object_name_;
+    CMString db_id_;
+    bool success_ = false;
+    CMString error_message_;
 
-    static constexpr MessageType msg_type = MessageType::BACKUP_COMPLETE;
-    FLY_SERIALIZE(header, worker_id, object_name, db_id, success, error_message);
+    static constexpr MessageType msg_type_ = MessageType::BACKUP_COMPLETE;
+    FLY_SERIALIZE(header_, worker_id_, object_name_, db_id_, success_, error_message_);
 };
 
 }  // namespace fly

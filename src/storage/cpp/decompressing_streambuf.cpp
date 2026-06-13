@@ -19,8 +19,8 @@ DecompressingStreamBuf::DecompressingStreamBuf(const char* data, size_t size)
     int64_t offset = 0;
     ObjectHeader header = ObjectHeader::deserialize(header_data, offset);
 
-    py_name_ = header.py_name;
-    auto comp_type = static_cast<CompressionType>(header.compression_type);
+    py_name_ = header.py_name_;
+    auto comp_type = static_cast<CompressionType>(header.compression_type_);
     if (comp_type != CompressionType::NONE) {
         compressor_ = CompressorFactory::create(comp_type);
     }

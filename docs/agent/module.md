@@ -34,8 +34,6 @@ public:
     void stop();
     bool is_running() const;
 
-    void set_data_service(CMWeakPtr<DataService> wp);
-
     // 任务提交
     void submit_task(uint64_t task_id, const CMString& name,
                      const CMString& module,
@@ -246,8 +244,6 @@ public:
     bool has_pending_task() const;
     bool poll_task();
 
-    void set_data_service(CMWeakPtr<DataService> wp);
-
     // 写入跟踪
     void begin_task(uint64_t task_id);
     void record_write(const CMString& db_id, const CMString& object_name);
@@ -306,8 +302,6 @@ private:
     // Worker 属性管理
     mutable std::mutex attributes_mutex_;
     CMSet<CMString> attributes_;
-
-    CMWeakPtr<DataService> data_service_;
 
     // Master 存活检测
     std::mutex master_contact_mutex_;

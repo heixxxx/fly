@@ -136,33 +136,33 @@ void Reactor::remove_send_mutex(uint64_t conn_id) {
 }
 
 void Reactor::handle_event(const TransportEvent& event) {
-    switch (event.type) {
+    switch (event.type_) {
         case TransportEventType::CONNECT:
-            recv_buffers_[event.conn_id] = "";
+            recv_buffers_[event.conn_id_] = "";
             if (connect_handler_) {
-                connect_handler_(event.conn_id);
+                connect_handler_(event.conn_id_);
             }
             break;
             
         case TransportEventType::DATA:
-            recv_buffers_[event.conn_id] += event.data;
-            dispatch_message(event.conn_id, recv_buffers_[event.conn_id]);
+            recv_buffers_[event.conn_id_] += event.data_;
+            dispatch_message(event.conn_id_, recv_buffers_[event.conn_id_]);
             break;
             
         case TransportEventType::DISCONNECT:
             if (disconnect_handler_) {
-                disconnect_handler_(event.conn_id);
+                disconnect_handler_(event.conn_id_);
             }
-            recv_buffers_.erase(event.conn_id);
-            remove_send_mutex(event.conn_id);
+            recv_buffers_.erase(event.conn_id_);
+            remove_send_mutex(event.conn_id_);
             break;
             
         case TransportEventType::ERROR:
             if (error_handler_) {
-                error_handler_(event.conn_id, event.error_code);
+                error_handler_(event.conn_id_, event.error_code_);
             }
-            recv_buffers_.erase(event.conn_id);
-            remove_send_mutex(event.conn_id);
+            recv_buffers_.erase(event.conn_id_);
+            remove_send_mutex(event.conn_id_);
             break;
     }
 }

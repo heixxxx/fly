@@ -20,10 +20,10 @@ FLY_EXPORT_MODULE(_fly_solver) {
 
 FLY_EXPORT_CLASS(fly::SubdomainInfo, "EXSlvSubdomainInfo")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_ATTR("subdomain_id", &fly::SubdomainInfo::subdomain_id)
-    FLY_EXPORT_ATTR("local_indices", &fly::SubdomainInfo::local_indices)
-    FLY_EXPORT_ATTR("own_indices", &fly::SubdomainInfo::own_indices)
-    FLY_EXPORT_ATTR("boundary_indices", &fly::SubdomainInfo::boundary_indices);
+    FLY_EXPORT_ATTR("subdomain_id", &fly::SubdomainInfo::subdomain_id_)
+    FLY_EXPORT_ATTR("local_indices", &fly::SubdomainInfo::local_indices_)
+    FLY_EXPORT_ATTR("own_indices", &fly::SubdomainInfo::own_indices_)
+    FLY_EXPORT_ATTR("boundary_indices", &fly::SubdomainInfo::boundary_indices_);
 
 FLY_EXPORT_CLASS(fly::SubdomainSolver, "EXSlvSubdomainSolver")
     FLY_EXPORT_INIT(const Eigen::SparseMatrix<double>&)

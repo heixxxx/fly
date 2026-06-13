@@ -8,10 +8,10 @@ ZlibCompressor::ZlibCompressor(int level)
 
 CompressedChunk ZlibCompressor::compress(const CMString& input) {
     CompressedChunk chunk;
-    chunk.uncompressed_size = static_cast<int32_t>(input.size());
+    chunk.uncompressed_size_ = static_cast<int32_t>(input.size());
 
     if (input.empty()) {
-        chunk.compressed_size = 0;
+        chunk.compressed_size_ = 0;
         return chunk;
     }
 
@@ -32,8 +32,8 @@ CompressedChunk ZlibCompressor::compress(const CMString& input) {
     }
 
     compressed.resize(dest_len);
-    chunk.data = std::move(compressed);
-    chunk.compressed_size = static_cast<int32_t>(dest_len);
+    chunk.data_ = std::move(compressed);
+    chunk.compressed_size_ = static_cast<int32_t>(dest_len);
     return chunk;
 }
 

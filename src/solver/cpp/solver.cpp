@@ -52,7 +52,7 @@ std::vector<SubdomainInfo> partition_1d(int n, int num_parts, int overlap) {
     int row_start = 0;
     for (int p = 0; p < num_parts; ++p) {
         SubdomainInfo info;
-        info.subdomain_id = p;
+        info.subdomain_id_ = p;
 
         const int num_rows = base_rows + (p < remainder ? 1 : 0);
         const int row_end = row_start + num_rows;
@@ -60,9 +60,9 @@ std::vector<SubdomainInfo> partition_1d(int n, int num_parts, int overlap) {
         // Own indices: all grid points in [row_start, row_end) rows
         const int own_start = row_start * n;
         const int own_end = row_end * n;
-        info.own_indices.reserve(own_end - own_start);
+        info.own_indices_.reserve(own_end - own_start);
         for (int idx = own_start; idx < own_end; ++idx) {
-            info.own_indices.push_back(idx);
+            info.own_indices_.push_back(idx);
         }
 
         // Local indices: extend by overlap rows on each side
@@ -71,19 +71,19 @@ std::vector<SubdomainInfo> partition_1d(int n, int num_parts, int overlap) {
         const int local_start = local_row_start * n;
         const int local_end = local_row_end * n;
 
-        info.local_indices.reserve(local_end - local_start);
+        info.local_indices_.reserve(local_end - local_start);
         for (int idx = local_start; idx < local_end; ++idx) {
-            info.local_indices.push_back(idx);
+            info.local_indices_.push_back(idx);
         }
 
         // Boundary indices: overlap rows not in own rows
         // Left overlap: [local_start, own_start)
         for (int idx = local_start; idx < own_start; ++idx) {
-            info.boundary_indices.push_back(idx);
+            info.boundary_indices_.push_back(idx);
         }
         // Right overlap: [own_end, local_end)
         for (int idx = own_end; idx < local_end; ++idx) {
-            info.boundary_indices.push_back(idx);
+            info.boundary_indices_.push_back(idx);
         }
 
         partitions.push_back(std::move(info));
@@ -172,12 +172,12 @@ Eigen::VectorXd ras_subdomain_update(
     const Eigen::VectorXd& x,
     const SubdomainInfo& subdomain,
     const SubdomainSolver& solver) {
-    const int local_size = static_cast<int>(subdomain.local_indices.size());
+    const int local_size = static_cast<int>(subdomain.local_indices_.size());
 
     Eigen::SparseMatrix<double> R(local_size, A.rows());
     R.reserve(Eigen::VectorXi::Constant(A.rows(), 1));
     for (int i = 0; i < local_size; ++i) {
-        R.insert(i, subdomain.local_indices[i]) = 1.0;
+        R.insert(i, subdomain.local_indices_[i]) = 1.0;
     }
     R.makeCompressed();
 
@@ -193,20 +193,20 @@ Eigen::VectorXd ras_subdomain_update(
     // own_indices start at offset = local_size - own_count - right_boundary_count
     // Simpler: count boundary indices on the left side
     Eigen::VectorXd x_new = x;
-    const int own_count = static_cast<int>(subdomain.own_indices.size());
+    const int own_count = static_cast<int>(subdomain.own_indices_.size());
     // Left boundary count = position of first own index in local_indices
     int left_boundary = 0;
     if (own_count > 0) {
-        int first_own = subdomain.own_indices[0];
+        int first_own = subdomain.own_indices_[0];
         for (int j = 0; j < local_size; ++j) {
-            if (subdomain.local_indices[j] == first_own) {
+            if (subdomain.local_indices_[j] == first_own) {
                 left_boundary = j;
                 break;
             }
         }
     }
     for (int i = 0; i < own_count; ++i) {
-        x_new(subdomain.own_indices[i]) += delta_local(left_boundary + i);
+        x_new(subdomain.own_indices_[i]) += delta_local(left_boundary + i);
     }
 
     return x_new;

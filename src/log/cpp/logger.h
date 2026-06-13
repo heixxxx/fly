@@ -21,7 +21,9 @@ enum class LogLevel : uint8_t {
 
 class Logger {
 public:
-    static Logger& instance();
+    Logger();
+
+    static CMSharedPtr<Logger> instance();
     static void init(const CMString& base_dir, uint64_t worker_id = 0);
     static CMString resolve_log_dir(const CMString& base_dir);
     static void shutdown();
@@ -33,14 +35,11 @@ public:
     void flush();
 
 private:
-    Logger();
-    explicit Logger(const CMString& filename, bool dual_output = false);
     CMString level_str(LogLevel level) const;
     CMString timestamp() const;
     static void _update_latest_symlink(const CMString& target_dir, const CMString& base_dir);
     static CMString _ensure_trailing_sep(const CMString& path);
 
-    static CMUniquePtr<Logger> instance_;
     CMString filename_;
     std::ofstream file_;
     std::mutex mutex_;
@@ -50,7 +49,7 @@ private:
 
 template <typename... T>
 inline void log_write(LogLevel level, fmt::format_string<T...> fmt, const T&... args) {
-    fly::Logger::instance().vlog(level, fmt, fmt::make_format_args(args...));
+    fly::Logger::instance()->vlog(level, fmt, fmt::make_format_args(args...));
 }
 
 }  // namespace fly

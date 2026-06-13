@@ -10,15 +10,15 @@ void HeartbeatMonitor::check_all_workers(uint64_t current_time) {
     
     auto all_workers = manager_->get_all_workers();
     for (const auto& worker : all_workers) {
-        if (worker.status == WorkerStatus::DEAD) {
-            dead_workers_.push_back(worker.worker_id);
+        if (worker.status_ == WorkerStatus::DEAD) {
+            dead_workers_.push_back(worker.worker_id_);
             continue;
         }
         
-        uint64_t elapsed = current_time - worker.last_heartbeat;
+        uint64_t elapsed = current_time - worker.last_heartbeat_;
         if (elapsed > timeout_seconds_) {
-            manager_->update_worker_status(worker.worker_id, WorkerStatus::DEAD);
-            dead_workers_.push_back(worker.worker_id);
+            manager_->update_worker_status(worker.worker_id_, WorkerStatus::DEAD);
+            dead_workers_.push_back(worker.worker_id_);
         }
     }
 }

@@ -154,9 +154,9 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
     }
 
     DataRequestMessage req;
-    req.object_name = object_name;
-    req.requesting_worker_id = requesting_worker_id;
-    req.request_id = request_id;
+    req.object_name_ = object_name;
+    req.requesting_worker_id_ = requesting_worker_id;
+    req.request_id_ = request_id;
     CMString encoded_req = MessageProtocol::encode(req);
 
     if (!net_send_all(conn.fd(), encoded_req.data(), encoded_req.size())) {
@@ -202,8 +202,8 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
         return {false, "", "", "", "Failed to decode response for " + object_name};
     }
 
-    return {response.success, response.compressed_data, response.py_name,
-            response.write_context_hash, response.error_message};
+    return {response.success_, response.compressed_data_, response.py_name_,
+            response.write_context_hash_, response.error_message_};
 }
 
 void DataClientPool::stop() {

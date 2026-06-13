@@ -35,9 +35,9 @@ TEST(TCPTransportTest, ListenAndConnect) {
 
     bool found_connect = false;
     for (const auto& ev : server_events) {
-        if (ev.type == TransportEventType::CONNECT) {
+        if (ev.type_ == TransportEventType::CONNECT) {
             found_connect = true;
-            EXPECT_GT(ev.conn_id, 0);
+            EXPECT_GT(ev.conn_id_, 0);
             break;
         }
     }
@@ -61,8 +61,8 @@ TEST(TCPTransportTest, SendAndRecv) {
 
     uint64_t server_conn = 0;
     for (const auto& ev : server_events) {
-        if (ev.type == TransportEventType::CONNECT) {
-            server_conn = ev.conn_id;
+        if (ev.type_ == TransportEventType::CONNECT) {
+            server_conn = ev.conn_id_;
             break;
         }
     }
@@ -76,9 +76,9 @@ TEST(TCPTransportTest, SendAndRecv) {
     auto recv_events = server.poll(1000);
     bool found_data = false;
     for (const auto& ev : recv_events) {
-        if (ev.type == TransportEventType::DATA) {
+        if (ev.type_ == TransportEventType::DATA) {
             found_data = true;
-            EXPECT_EQ(ev.data, msg);
+            EXPECT_EQ(ev.data_, msg);
             break;
         }
     }
@@ -127,7 +127,7 @@ TEST(TCPTransportTest, MultipleConnections) {
     for (int i = 0; i < 10 && connected < 5; i++) {
         auto events = server.poll(100);
         for (const auto& ev : events) {
-            if (ev.type == TransportEventType::CONNECT) {
+            if (ev.type_ == TransportEventType::CONNECT) {
                 connected++;
             }
         }
@@ -157,8 +157,8 @@ TEST(TCPTransportTest, LargeBufferSendRecv) {
 
     uint64_t server_conn = 0;
     for (const auto& ev : server_events) {
-        if (ev.type == TransportEventType::CONNECT) {
-            server_conn = ev.conn_id;
+        if (ev.type_ == TransportEventType::CONNECT) {
+            server_conn = ev.conn_id_;
             break;
         }
     }
@@ -178,8 +178,8 @@ TEST(TCPTransportTest, LargeBufferSendRecv) {
     for (int attempts = 0; attempts < 50 && received.size() < large_msg.size(); attempts++) {
         auto events = server.poll(200);
         for (const auto& ev : events) {
-            if (ev.type == TransportEventType::DATA) {
-                received += ev.data;
+            if (ev.type_ == TransportEventType::DATA) {
+                received += ev.data_;
             }
         }
     }
@@ -206,8 +206,8 @@ TEST(TCPTransportTest, MultipleLargeMessagesInSequence) {
 
     uint64_t server_conn = 0;
     for (const auto& ev : server_events) {
-        if (ev.type == TransportEventType::CONNECT) {
-            server_conn = ev.conn_id;
+        if (ev.type_ == TransportEventType::CONNECT) {
+            server_conn = ev.conn_id_;
             break;
         }
     }
@@ -228,8 +228,8 @@ TEST(TCPTransportTest, MultipleLargeMessagesInSequence) {
     for (int attempts = 0; attempts < 20; attempts++) {
         auto events = server.poll(200);
         for (const auto& ev : events) {
-            if (ev.type == TransportEventType::DATA) {
-                received += ev.data;
+            if (ev.type_ == TransportEventType::DATA) {
+                received += ev.data_;
             }
         }
         size_t total = 3 * 64 * 1024;
@@ -268,8 +268,8 @@ TEST(TCPTransportTest, ConnectFdDoesNotContinuouslyFireEvents) {
 
     uint64_t server_conn = 0;
     for (const auto& ev : server_events) {
-        if (ev.type == TransportEventType::CONNECT) {
-            server_conn = ev.conn_id;
+        if (ev.type_ == TransportEventType::CONNECT) {
+            server_conn = ev.conn_id_;
             break;
         }
     }
@@ -282,7 +282,7 @@ TEST(TCPTransportTest, ConnectFdDoesNotContinuouslyFireEvents) {
     for (int i = 0; i < 5; i++) {
         auto events = client.poll(10);  // 10ms timeout
         for (const auto& ev : events) {
-            if (ev.type == TransportEventType::DATA) {
+            if (ev.type_ == TransportEventType::DATA) {
                 false_events++;
             }
         }
@@ -314,7 +314,7 @@ TEST(TCPTransportTest, AcceptedFdDoesNotContinuouslyFireEvents) {
     for (int i = 0; i < 5; i++) {
         auto events = server.poll(10);  // 10ms timeout
         for (const auto& ev : events) {
-            if (ev.type == TransportEventType::DATA) {
+            if (ev.type_ == TransportEventType::DATA) {
                 false_events++;
             }
         }

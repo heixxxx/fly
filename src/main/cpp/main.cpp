@@ -265,30 +265,30 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    auto& cfg = Config::instance();
-    auto& proc = ProcessInfo::instance();
+    auto cfg = Config::instance();
+    auto proc = ProcessInfo::instance();
 
     if (!config_file.empty()) {
-        cfg.load_from_file(config_file);
+        cfg->load_from_file(config_file);
     }
 
-    proc.set_worker_mode(worker_mode);
-    proc.set_worker_id(worker_id);
-    proc.set_master_host(master_host);
-    proc.set_master_port(master_port);
-    proc.set_cli_master_port(master_port);
-    cfg.set_str("log_dir", log_dir);
-    proc.set_interactive(interactive);
-    proc.set_script_path(script_path);
-    proc.set_worker_attributes(worker_attributes);
+    proc->set_worker_mode(worker_mode);
+    proc->set_worker_id(worker_id);
+    proc->set_master_host(master_host);
+    proc->set_master_port(master_port);
+    proc->set_cli_master_port(master_port);
+    cfg->set_str("log_dir", log_dir);
+    proc->set_interactive(interactive);
+    proc->set_script_path(script_path);
+    proc->set_worker_attributes(worker_attributes);
 
     if (!host_override.empty()) {
-        proc.set_hostname(host_override);
+        proc->set_hostname(host_override);
     }
 
     if (!worker_mode) {
         log_dir = fly::Logger::resolve_log_dir(log_dir);
-        cfg.set_str("log_dir", log_dir);
+        cfg->set_str("log_dir", log_dir);
     }
     fly::Logger::init(log_dir, worker_id);
 

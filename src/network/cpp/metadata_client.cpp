@@ -21,7 +21,7 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
-        result.error = "Failed to create socket: " + CMString(std::strerror(errno));
+        result.error_ = "Failed to create socket: " + CMString(std::strerror(errno));
         return result;
     }
 
@@ -37,24 +37,24 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
     addr.sin_port = htons(static_cast<uint16_t>(master_port));
 
     if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-        result.error = "Failed to connect to Master " + master_host + ":" + std::to_string(master_port);
+        result.error_ = "Failed to connect to Master " + master_host + ":" + std::to_string(master_port);
         ::close(fd);
         return result;
     }
 
     DataQueryMessage req;
-    req.object_name = object_name;
+    req.object_name_ = object_name;
     CMString encoded_req = MessageProtocol::encode(req);
 
     if (!net_send_all(fd, encoded_req.data(), encoded_req.size())) {
-        result.error = "Failed to send DataQuery for " + object_name;
+        result.error_ = "Failed to send DataQuery for " + object_name;
         ::close(fd);
         return result;
     }
 
     char header[5] = {};
     if (!net_recv_exact(fd, header, 5, timeout_ms)) {
-        result.error = "Timeout receiving DataLocation header for " + object_name;
+        result.error_ = "Timeout receiving DataLocation header for " + object_name;
         ::close(fd);
         return result;
     }
@@ -66,7 +66,7 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
         static_cast<uint32_t>(static_cast<unsigned char>(header[3]));
 
     if (total_len < 1 || total_len > 16 * 1024 * 1024) {
-        result.error = "Invalid DataLocation frame size for " + object_name;
+        result.error_ = "Invalid DataLocation frame size for " + object_name;
         ::close(fd);
         return result;
     }
@@ -74,7 +74,7 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
     uint32_t payload_len = total_len - 1;
     CMString payload(payload_len, '\0');
     if (payload_len > 0 && !net_recv_exact(fd, payload.data(), payload_len, timeout_ms)) {
-        result.error = "Timeout receiving DataLocation payload for " + object_name;
+        result.error_ = "Timeout receiving DataLocation payload for " + object_name;
         ::close(fd);
         return result;
     }
@@ -90,17 +90,17 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
 
     DataLocationMessage response;
     if (!MessageProtocol::decode(full_buf, response)) {
-        result.error = "Failed to decode DataLocation for " + object_name;
+        result.error_ = "Failed to decode DataLocation for " + object_name;
         return result;
     }
 
-    result.found = response.success;
-    result.worker_id = response.worker_id;
-    result.host = response.data_host;
-    result.port = response.data_port;
-    result.can_still_produce = response.can_still_produce;
-    if (!response.success) {
-        result.error = "Master has no location for " + object_name;
+    result.found_ = response.success_;
+    result.worker_id_ = response.worker_id_;
+    result.host_ = response.data_host_;
+    result.port_ = response.data_port_;
+    result.can_still_produce_ = response.can_still_produce_;
+    if (!response.success_) {
+        result.error_ = "Master has no location for " + object_name;
     }
     return result;
 }

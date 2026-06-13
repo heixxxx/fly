@@ -23,7 +23,7 @@ public:
         frame[2] = static_cast<char>((total_len >> 8) & 0xFF);
         frame[3] = static_cast<char>(total_len & 0xFF);
         
-        frame[4] = static_cast<char>(static_cast<uint8_t>(T::msg_type));
+        frame[4] = static_cast<char>(static_cast<uint8_t>(T::msg_type_));
         
         std::copy(payload.begin(), payload.end(), frame.begin() + 5);
         return frame;
@@ -46,7 +46,7 @@ public:
         if (!is_valid_message_type(raw_type)) return false;
         
         MessageType msg_type = static_cast<MessageType>(raw_type);
-        if (msg_type != T::msg_type) return false;
+        if (msg_type != T::msg_type_) return false;
         
         uint32_t payload_len = total_len - 1;
         CMString payload(buffer.substr(5, payload_len));
@@ -97,9 +97,9 @@ public:
     static bool decode_header(const CMString& buffer, MessageHeader& header) {
         if (buffer.size() < 5) return false;
         
-        header.type = static_cast<MessageType>(static_cast<uint8_t>(buffer[4]));
-        header.message_id = 0;
-        header.timestamp = 0;
+        header.type_ = static_cast<MessageType>(static_cast<uint8_t>(buffer[4]));
+        header.message_id_ = 0;
+        header.timestamp_ = 0;
         return true;
     }
 };

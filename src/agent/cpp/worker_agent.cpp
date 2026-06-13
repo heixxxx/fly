@@ -14,34 +14,6 @@
 
 namespace fly {
 
-DataService& WorkerAgent::ds() {
-    if (auto sp = data_service_.lock()) {
-        return *sp;
-    }
-    return DataService::instance();
-}
-
-void WorkerAgent::set_data_service(CMWeakPtr<DataService> wp) {
-    data_service_ = wp;
-    if (auto sp = wp.lock()) {
-        sp->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString, bool> {
-            return request_remote_data(name);
-        });
-        sp->set_direct_compressed_read_handler(
-            [this](const CMString& host, int32_t port,
-                  const CMString& name) -> std::tuple<bool, CMString, CMString, CMString> {
-                uint64_t rid = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) ^
-                               static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-                auto [success, data, py_name, hash, error] = data_client_pool_.request(host, port, name, worker_id_, rid);
-                if (!success) {
-                    ERR("pooled request_compressed_data failed for {}: {}", name, error);
-                    return {false, {}, {}, {}};
-                }
-                return {true, std::move(data), std::move(py_name), std::move(hash)};
-            });
-    }
-}
-
 WorkerAgent::WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port,
                           const CMVector<CMString>& attributes)
     : worker_id_(worker_id), master_host_(master_host), master_port_(master_port),
@@ -61,7 +33,7 @@ void WorkerAgent::start() {
 
     transport->listen("0.0.0.0", 0);
     data_server_port_ = static_cast<int32_t>(transport->get_bound_port());
-    data_server_host_ = ProcessInfo::instance().data_server_host();
+    data_server_host_ = ProcessInfo::instance()->data_server_host();
 
     INFO("data server listening on port {}", data_server_port_);
 
@@ -71,23 +43,39 @@ void WorkerAgent::start() {
 
     reactor_ = CMMakeUnique<Reactor>(std::move(transport));
 
-    auto& dsInst = ds();
-    int data_server_threads = static_cast<int>(Config::instance().get_int("data_server_threads"));
-    dsInst.start_transfer_server(
+    auto dsInst = DataService::instance();
+    int data_server_threads = static_cast<int>(Config::instance()->get_int("data_server_threads"));
+    dsInst->start_transfer_server(
         data_server_threads,
         [this](const TransferResult& result) {
             DataResponseMessage response;
-            response.object_name = result.object_name;
-            response.success = result.success;
-            response.compressed_data = result.compressed_data;
-            response.py_name = result.py_name;
-            response.write_context_hash = result.write_context_hash;
-            if (!result.success) {
-                response.error_message = result.error_message;
+            response.object_name_ = result.object_name_;
+            response.success_ = result.success_;
+            response.compressed_data_ = result.compressed_data_;
+            response.py_name_ = result.py_name_;
+            response.write_context_hash_ = result.write_context_hash_;
+            if (!result.success_) {
+                response.error_message_ = result.error_message_;
             }
-            reactor_->send(result.conn_id, response);
+            reactor_->send(result.conn_id_, response);
         });
-    reactor_->set_io_pool(dsInst.get_transfer_pool());
+    reactor_->set_io_pool(dsInst->get_transfer_pool());
+
+    dsInst->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString, bool> {
+        return request_remote_data(name);
+    });
+    dsInst->set_direct_compressed_read_handler(
+        [this](const CMString& host, int32_t port,
+               const CMString& name) -> std::tuple<bool, CMString, CMString, CMString> {
+            uint64_t rid = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) ^
+                           static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+            auto [success, data, py_name, hash, error] = data_client_pool_.request(host, port, name, worker_id_, rid);
+            if (!success) {
+                ERR("pooled request_compressed_data failed for {}: {}", name, error);
+                return {false, {}, {}, {}};
+            }
+            return {true, std::move(data), std::move(py_name), std::move(hash)};
+        });
 
     reactor_->register_handler<RegisterAckMessage>(
         [this](uint64_t conn, const RegisterAckMessage& msg) {
@@ -158,12 +146,12 @@ void WorkerAgent::start() {
     reactor_->wait_until_running();
 
     RegisterMessage reg;
-    reg.worker_id = worker_id_;
-    reg.attributes = attributes_;
-    reg.data_server_host = data_server_host_;
-    reg.data_server_port = data_server_port_;
-    reg.hostname = ProcessInfo::instance().hostname();
-    reg.ip_address = data_server_host_;
+    reg.worker_id_ = worker_id_;
+    reg.attributes_ = attributes_;
+    reg.data_server_host_ = data_server_host_;
+    reg.data_server_port_ = data_server_port_;
+    reg.hostname_ = ProcessInfo::instance()->hostname();
+    reg.ip_address_ = data_server_host_;
 
     reactor_->send(master_conn_, reg);
 
@@ -209,7 +197,7 @@ void WorkerAgent::do_cleanup() {
 
     databases_.clear();
 
-    ds().stop_transfer_server();
+    DataService::instance()->stop_transfer_server();
 
     running_ = false;
     registered_ = false;
@@ -237,12 +225,12 @@ void WorkerAgent::submit_task(const CMString& name, const CMString& module,
                                const CMVector<CMString>& required_capabilities,
                                const CMString& write_context_hash) {
      TaskSubmitMessage msg;
-     msg.task_name = name;
-    msg.task_module = module;
-    msg.args = args;
-    msg.inputs = inputs;
-    msg.required_capabilities = required_capabilities;
-    msg.write_context_hash = write_context_hash;
+     msg.task_name_ = name;
+    msg.task_module_ = module;
+    msg.args_ = args;
+    msg.inputs_ = inputs;
+    msg.required_capabilities_ = required_capabilities;
+    msg.write_context_hash_ = write_context_hash;
     reactor_->send(master_conn_, msg);
 }
 
@@ -258,7 +246,7 @@ void WorkerAgent::heartbeat_loop() {
 
         if (registered_ && heartbeat_running_) {
             HeartbeatMessage hb;
-            hb.worker_id = worker_id_;
+            hb.worker_id_ = worker_id_;
             if (!reactor_->try_send(master_conn_, hb)) {
                 DBG("Heartbeat skipped (send busy)");
             } else {
@@ -290,11 +278,11 @@ void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
     touch_master_contact();
 
     PendingTask task;
-    task.task_id = msg.task_id;
-    task.task_name = msg.task_name;
-    task.task_module = msg.task_module;
-    task.args = msg.args;
-    task.write_context_hash = msg.write_context_hash;
+    task.task_id_ = msg.task_id_;
+    task.task_name_ = msg.task_name_;
+    task.task_module_ = msg.task_module_;
+    task.args_ = msg.args_;
+    task.write_context_hash_ = msg.write_context_hash_;
 
     {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);
@@ -318,53 +306,53 @@ bool WorkerAgent::poll_task() {
         task_queue_.pop();
     }
 
-    INFO("Executing task: task_id={}", task.task_id);
+    INFO("Executing task: task_id={}", task.task_id_);
 
-    if (task.task_module == "__fly_internal") {
+    if (task.task_module_ == "__fly_internal") {
         execute_internal_task(task);
     } else if (executor_) {
-        begin_task(task.task_id, task.write_context_hash);
+        begin_task(task.task_id_, task.write_context_hash_);
         auto result = executor_->execute(
-            task.task_id, task.task_name, task.task_module, task.args);
-        auto tracked_writes = end_task(task.task_id);
+            task.task_id_, task.task_name_, task.task_module_, task.args_);
+        auto tracked_writes = end_task(task.task_id_);
 
-        if (result.status == TaskExecStatus::SUCCESS) {
+        if (result.status_ == TaskExecStatus::SUCCESS) {
             auto error_type = WorkerAgentContext::get_last_error_type();
             if (error_type != TaskErrorType::UNKNOWN) {
                 TaskFailedMessage failed;
-                failed.task_id = task.task_id;
-                failed.worker_id = worker_id_;
-                failed.error_message = "Write registration rejected: error_type=" +
+                failed.task_id_ = task.task_id_;
+                failed.worker_id_ = worker_id_;
+                failed.error_message_ = "Write registration rejected: error_type=" +
                     std::to_string(static_cast<int>(error_type));
-                failed.error_type = error_type;
+                failed.error_type_ = error_type;
                 reactor_->send(master_conn_, failed);
 
                 ERR("Task marked failed: task_id={}, write error_type={}",
-                    task.task_id, static_cast<int>(error_type));
+                    task.task_id_, static_cast<int>(error_type));
             } else {
                 TaskCompleteMessage complete;
-                complete.task_id = task.task_id;
-                complete.worker_id = worker_id_;
-                complete.written_objects = std::move(tracked_writes);
-                for (auto& out : result.outputs) {
-                    complete.written_objects.push_back(std::move(out));
+                complete.task_id_ = task.task_id_;
+                complete.worker_id_ = worker_id_;
+                complete.written_objects_ = std::move(tracked_writes);
+                for (auto& out : result.outputs_) {
+                    complete.written_objects_.push_back(std::move(out));
                 }
-                complete.frozen_dbs = std::move(result.frozen_dbs);
+                complete.frozen_dbs_ = std::move(result.frozen_dbs_);
                 reactor_->send(master_conn_, complete);
 
-                auto tid = task.task_id;
-                auto out_count = complete.written_objects.size();
+                auto tid = task.task_id_;
+                auto out_count = complete.written_objects_.size();
                 INFO("TaskComplete sent: task_id={}, outputs={}", tid, out_count);
             }
         } else {
             TaskFailedMessage failed;
-            failed.task_id = task.task_id;
-            failed.worker_id = worker_id_;
-            failed.error_message = result.error;
-            failed.error_type = WorkerAgentContext::get_last_error_type();
+            failed.task_id_ = task.task_id_;
+            failed.worker_id_ = worker_id_;
+            failed.error_message_ = result.error_;
+            failed.error_type_ = WorkerAgentContext::get_last_error_type();
             reactor_->send(master_conn_, failed);
 
-            ERR("TaskFailed sent: task_id={}, error={}", task.task_id, result.error);
+            ERR("TaskFailed sent: task_id={}, error={}", task.task_id_, result.error_);
         }
     }
 
@@ -422,12 +410,12 @@ void WorkerAgent::on_db_path_response(const DbPathResponseMessage& msg) {
     touch_master_contact();
 
     std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
-    auto it = pending_db_paths_.find(msg.db_id);
+    auto it = pending_db_paths_.find(msg.db_id_);
     if (it != pending_db_paths_.end()) {
-        it->second->base_path = msg.base_path;
-        it->second->data_path = msg.data_path;
-        it->second->success = msg.success;
-        it->second->completed = true;
+        it->second->base_path_ = msg.base_path_;
+        it->second->data_path_ = msg.data_path_;
+        it->second->success_ = msg.success_;
+        it->second->completed_ = true;
     }
     pending_db_path_cv_.notify_all();
 }
@@ -447,8 +435,8 @@ void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_has
     WorkerAgentContext::set_notify_removed_func([this](const CMString& db_id, const CMString& name) {
         CMString full_name = db_id + ":" + name;
         ObjectRemovedMessage msg;
-        msg.object_name = full_name;
-        msg.db_id = db_id;
+        msg.object_name_ = full_name;
+        msg.db_id_ = db_id;
         reactor_->send(master_conn_, msg);
         INFO("ObjectRemoved sent to master: {}", full_name);
     });
@@ -467,14 +455,14 @@ void WorkerAgent::record_write(const CMString& db_id, const CMString& object_nam
      CMString full_name = db_id + ":" + object_name;
      current_writes_.push_back(full_name);
 
-    if (registered_ && Config::instance().get_int("dependency_update_mode") == 0) {
+    if (registered_ && Config::instance()->get_int("dependency_update_mode") == 0) {
         DataReadyMessage msg;
-        msg.worker_id = worker_id_;
-        msg.object_name = full_name;
-        msg.db_id = db_id;
+        msg.worker_id_ = worker_id_;
+        msg.object_name_ = full_name;
+        msg.db_id_ = db_id;
         auto db_it = databases_.find(db_id);
         if (db_it != databases_.end()) {
-            msg.writer_id = db_it->second->get_writer_id();
+            msg.writer_id_ = db_it->second->get_writer_id();
         }
         reactor_->send(master_conn_, msg);
     }
@@ -494,21 +482,21 @@ void WorkerAgent::request_database_freeze(const CMString& db_id) {
     if (!registered_) return;
 
     DatabaseFreezeNotification msg;
-    msg.db_id = db_id;
+    msg.db_id_ = db_id;
     reactor_->send(master_conn_, msg);
     INFO("Freeze notification sent: db_id={}", db_id);
 }
 
 void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
-    ds().submit_transfer(conn_id, msg.object_name, msg.requesting_worker_id, msg.request_id);
+    DataService::instance()->submit_transfer(conn_id, msg.object_name_, msg.requesting_worker_id_, msg.request_id_);
 }
 
 std::tuple<bool, CMString, CMString, bool> WorkerAgent::request_remote_data(const CMString& object_name) {
      auto location = MetadataClient::query_data_location(
         master_host_, master_port_, object_name);
 
-    if (!location.found) {
-        return {false, {}, {}, location.can_still_produce};
+    if (!location.found_) {
+        return {false, {}, {}, location.can_still_produce_};
     }
 
     constexpr int kMaxAttempts = 3;
@@ -518,10 +506,10 @@ std::tuple<bool, CMString, CMString, bool> WorkerAgent::request_remote_data(cons
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
         auto [success, data, py_name, hash, error] = DataClient::request_compressed_data(
-            location.host, location.port, object_name, worker_id_, request_id, kTimeoutMs);
+            location.host_, location.port_, object_name, worker_id_, request_id, kTimeoutMs);
 
         if (success) {
-            ds().update_remote_idx(object_name, location.worker_id, location.host, location.port);
+            DataService::instance()->update_remote_idx(object_name, location.worker_id_, location.host_, location.port_);
             return {true, std::move(data), std::move(py_name), false};
         }
 
@@ -530,10 +518,10 @@ std::tuple<bool, CMString, CMString, bool> WorkerAgent::request_remote_data(cons
                  attempt + 1, kMaxAttempts, object_name, error);
             auto recheck = MetadataClient::query_data_location(
                 master_host_, master_port_, object_name);
-            if (!recheck.found) {
-                return {false, {}, {}, recheck.can_still_produce};
+            if (!recheck.found_) {
+                return {false, {}, {}, recheck.can_still_produce_};
             }
-            if (recheck.host != location.host || recheck.port != location.port) {
+            if (recheck.host_ != location.host_ || recheck.port_ != location.port_) {
                 location = recheck;
             }
         } else {
@@ -542,7 +530,7 @@ std::tuple<bool, CMString, CMString, bool> WorkerAgent::request_remote_data(cons
         }
     }
 
-    return {false, {}, {}, location.can_still_produce};
+    return {false, {}, {}, location.can_still_produce_};
 }
 
 std::pair<bool, ReadResult> WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,
@@ -557,8 +545,8 @@ std::pair<bool, ReadResult> WorkerAgent::request_data_from_worker(const CMString
     }
 
     ReadResult result;
-    result.data_buffer.assign(compressed_data.begin(), compressed_data.end());
-    result.py_name = std::move(py_name);
+    result.data_buffer_.assign(compressed_data.begin(), compressed_data.end());
+    result.py_name_ = std::move(py_name);
     return {true, std::move(result)};
 }
 
@@ -572,14 +560,14 @@ bool WorkerAgent::request_db_path(const CMString& db_id) {
         return true;
     }
     auto pending = CMMakeShared<PendingDbPath>();
-    pending->db_id = db_id;
+    pending->db_id_ = db_id;
     {
         std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
         pending_db_paths_[db_id] = pending;
     }
 
     DbPathRequestMessage req;
-    req.db_id = db_id;
+    req.db_id_ = db_id;
     reactor_->send(master_conn_, req);
 
     INFO("Sent DbPathRequest for db_id={}", db_id);
@@ -588,10 +576,10 @@ bool WorkerAgent::request_db_path(const CMString& db_id) {
         std::unique_lock<std::mutex> lock(pending_db_path_mutex_);
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         while (true) {
-            if (pending->completed) {
+            if (pending->completed_) {
                 pending_db_paths_.erase(db_id);
-                if (pending->success && !pending->base_path.empty()) {
-                    auto db = CMMakeShared<Database>(pending->base_path, pending->data_path, worker_id_, data_server_host_);
+                if (pending->success_ && !pending->base_path_.empty()) {
+                    auto db = CMMakeShared<Database>(pending->base_path_, pending->data_path_, worker_id_, data_server_host_);
                     databases_[db_id] = db;
                     return true;
                 }
@@ -620,12 +608,12 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
     CMString ctx_hash = fly::WorkerAgentContext::get_current_write_hash();
 
     if (!ctx_hash.empty()) {
-        auto existing_entries = ds().find_local_entries(full_name);
+        auto existing_entries = DataService::instance()->find_local_entries(full_name);
         if (existing_entries.has_value() && !existing_entries.value().empty()) {
             for (const auto& entry : existing_entries.value()) {
-                if (!entry.write_context_hash.empty() && entry.write_context_hash != ctx_hash) {
+                if (!entry.write_context_hash_.empty() && entry.write_context_hash_ != ctx_hash) {
                     CMString error_msg = "Write provenance mismatch for " + full_name +
-                        ": existing hash=" + entry.write_context_hash +
+                        ": existing hash=" + entry.write_context_hash_ +
                         " new hash=" + ctx_hash;
                     ERR("{}", error_msg);
                     WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_PROVENANCE_MISMATCH);
@@ -634,7 +622,7 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
             }
             bool has_matching_hash = false;
             for (const auto& entry : existing_entries.value()) {
-                if (entry.write_context_hash == ctx_hash) {
+                if (entry.write_context_hash_ == ctx_hash) {
                     has_matching_hash = true;
                     break;
                 }
@@ -648,17 +636,17 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
     }
 
     auto pending = CMMakeShared<PendingWriteRegister>();
-    pending->object_name = full_name;
+    pending->object_name_ = full_name;
     {
         std::lock_guard<std::mutex> lock(pending_write_reg_mutex_);
         pending_write_regs_[full_name] = pending;
     }
 
     WriteRegisterMessage msg;
-    msg.worker_id = worker_id_;
-    msg.object_name = full_name;
-    msg.db_id = db_id;
-    msg.write_context_hash = ctx_hash;
+    msg.worker_id_ = worker_id_;
+    msg.object_name_ = full_name;
+    msg.db_id_ = db_id;
+    msg.write_context_hash_ = ctx_hash;
     reactor_->send(master_conn_, msg);
 
     INFO("WriteRegister sent: object={}", full_name);
@@ -667,11 +655,11 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
         std::unique_lock<std::mutex> lock(pending_write_reg_mutex_);
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         while (true) {
-            if (pending->completed) {
+            if (pending->completed_) {
                 pending_write_regs_.erase(full_name);
-                if (!pending->success) {
-                    WorkerAgentContext::set_last_error_type(pending->error_type);
-                    return {pending->error_message, pending->error_type};
+                if (!pending->success_) {
+                    WorkerAgentContext::set_last_error_type(pending->error_type_);
+                    return {pending->error_message_, pending->error_type_};
                 }
                 return {"", TaskErrorType::UNKNOWN};
             }
@@ -689,22 +677,22 @@ void WorkerAgent::on_write_register_ack(uint64_t conn_id, const WriteRegisterAck
     touch_master_contact();
 
     std::lock_guard<std::mutex> lock(pending_write_reg_mutex_);
-    auto it = pending_write_regs_.find(msg.object_name);
+    auto it = pending_write_regs_.find(msg.object_name_);
     if (it != pending_write_regs_.end()) {
-        it->second->success = msg.success;
-        it->second->error_message = msg.error_message;
-        it->second->error_type = msg.error_type;
-        it->second->completed = true;
+        it->second->success_ = msg.success_;
+        it->second->error_message_ = msg.error_message_;
+        it->second->error_type_ = msg.error_type_;
+        it->second->completed_ = true;
     }
     pending_write_reg_cv_.notify_all();
 }
 
 void WorkerAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg) {
     touch_master_contact();
-    INFO("ObjectRemoved received from master: {}", msg.object_name);
+    INFO("ObjectRemoved received from master: {}", msg.object_name_);
 
-    ds().remove_local_index(msg.object_name);
-    ds().remove_remote_index(msg.object_name);
+    DataService::instance()->remove_local_index(msg.object_name_);
+    DataService::instance()->remove_remote_index(msg.object_name_);
 }
 
 void WorkerAgent::set_worker_property(const CMString& prop) {
@@ -729,8 +717,8 @@ void WorkerAgent::set_worker_property(const CMVector<CMString>& props) {
 
     if (!actually_added.empty() && registered_) {
         WorkerPropertyUpdateMessage msg;
-        msg.worker_id = worker_id_;
-        msg.added_properties = actually_added;
+        msg.worker_id_ = worker_id_;
+        msg.added_properties_ = actually_added;
         reactor_->send(master_conn_, msg);
 
         auto wid = worker_id_;
@@ -758,8 +746,8 @@ void WorkerAgent::remove_worker_property(const CMVector<CMString>& props) {
 
     if (!actually_removed.empty() && registered_) {
         WorkerPropertyUpdateMessage msg;
-        msg.worker_id = worker_id_;
-        msg.removed_properties = actually_removed;
+        msg.worker_id_ = worker_id_;
+        msg.removed_properties_ = actually_removed;
         reactor_->send(master_conn_, msg);
 
         auto wid = worker_id_;
@@ -776,20 +764,20 @@ CMVector<CMString> WorkerAgent::get_worker_properties() const {
 void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg) {
     touch_master_contact();
     INFO("IdxLoadCommand received: db_id={}, base_path={}, writer_ids_count={}",
-         msg.db_id, msg.base_path, msg.writer_ids.size());
+         msg.db_id_, msg.base_path_, msg.writer_ids_.size());
 
     IdxLoadAckMessage ack;
-    ack.worker_id = worker_id_;
-    ack.db_id = msg.db_id;
+    ack.worker_id_ = worker_id_;
+    ack.db_id_ = msg.db_id_;
 
     int32_t loaded = 0;
     CMVector<CMString> loaded_writer_ids;
     try {
-        auto& dsRef = ds();
-        dsRef.register_database(msg.db_id, msg.base_path, "");
+        auto dsRef = DataService::instance();
+        dsRef->register_database(msg.db_id_, msg.base_path_, "");
 
-        for (const auto& writer_id : msg.writer_ids) {
-            CMString idx_path = msg.base_path + "/" + writer_id + ".idx";
+        for (const auto& writer_id : msg.writer_ids_) {
+            CMString idx_path = msg.base_path_ + "/" + writer_id + ".idx";
             if (!std::filesystem::exists(idx_path)) {
                 WARN("idx file not found: {}", idx_path);
                 continue;
@@ -800,20 +788,20 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
             auto all_entries = idx.get_all_entries();
 
             if (!all_entries.empty()) {
-                dsRef.restore_entries(msg.db_id, all_entries);
+                dsRef->restore_entries(msg.db_id_, all_entries);
                 loaded_writer_ids.push_back(writer_id);
                 loaded++;
             }
         }
 
-        ack.success = true;
-        ack.loaded_count = loaded;
-        ack.loaded_writer_ids = loaded_writer_ids;
-        INFO("IdxLoad complete: db_id={}, loaded {} idx files", msg.db_id, loaded);
+        ack.success_ = true;
+        ack.loaded_count_ = loaded;
+        ack.loaded_writer_ids_ = loaded_writer_ids;
+        INFO("IdxLoad complete: db_id={}, loaded {} idx files", msg.db_id_, loaded);
     } catch (const std::exception& e) {
-        ack.success = false;
-        ack.error_message = e.what();
-        ERR("IdxLoad failed: db_id={}, error={}", msg.db_id, e.what());
+        ack.success_ = false;
+        ack.error_message_ = e.what();
+        ERR("IdxLoad failed: db_id={}, error={}", msg.db_id_, e.what());
     }
 
     reactor_->send(conn_id, ack);
@@ -821,16 +809,16 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
 
 void WorkerAgent::on_database_freeze_notification(uint64_t conn_id, const DatabaseFreezeNotification& msg) {
     touch_master_contact();
-    INFO("DatabaseFreezeNotification received: db_id={}", msg.db_id);
+    INFO("DatabaseFreezeNotification received: db_id={}", msg.db_id_);
 
-    auto it = databases_.find(msg.db_id);
+    auto it = databases_.find(msg.db_id_);
     if (it != databases_.end()) {
         if (it->second->is_frozen()) {
-            INFO("DB already frozen, ignoring broadcast: db_id={}", msg.db_id);
+            INFO("DB already frozen, ignoring broadcast: db_id={}", msg.db_id_);
             return;
         }
         it->second->freeze();
-        INFO("Worker local database frozen: db_id={}", msg.db_id);
+        INFO("Worker local database frozen: db_id={}", msg.db_id_);
     }
 }
 
@@ -844,13 +832,13 @@ void WorkerAgent::request_object_remove(const CMString& db_id, const CMString& o
     }
 
     RemoveRequestMessage msg;
-    msg.db_id = db_id;
-    msg.object_name = full;
+    msg.db_id_ = db_id;
+    msg.object_name_ = full;
     reactor_->send(master_conn_, msg);
     INFO("RemoveRequest sent: {}", full);
 
-    std::unique_lock<std::mutex> lock(pending->mutex);
-    if (!pending->cv.wait_for(lock, std::chrono::seconds(30), [&]() { return pending->completed; })) {
+    std::unique_lock<std::mutex> lock(pending->mutex_);
+    if (!pending->cv_.wait_for(lock, std::chrono::seconds(30), [&]() { return pending->completed_; })) {
         std::lock_guard<std::mutex> rm_lock(pending_remove_mutex_);
         pending_removes_.erase(full);
         ERR("Remove request timed out: {}", full);
@@ -862,49 +850,49 @@ void WorkerAgent::request_object_remove(const CMString& db_id, const CMString& o
         pending_removes_.erase(full);
     }
 
-    if (!pending->success) {
+    if (!pending->success_) {
         ERR("Remove request failed: {}", full);
     }
 }
 
 void WorkerAgent::on_remove_ack(uint64_t conn_id, const RemoveAckMessage& msg) {
     touch_master_contact();
-    INFO("RemoveAck received: object={}, success={}", msg.object_name, msg.success);
+    INFO("RemoveAck received: object={}, success={}", msg.object_name_, msg.success_);
 
     CMSharedPtr<PendingRemove> pending;
     {
         std::lock_guard<std::mutex> lock(pending_remove_mutex_);
-        auto it = pending_removes_.find(msg.object_name);
+        auto it = pending_removes_.find(msg.object_name_);
         if (it != pending_removes_.end()) {
             pending = it->second;
         }
     }
 
     if (pending) {
-        std::lock_guard<std::mutex> lock(pending->mutex);
-        pending->success = msg.success;
-        pending->completed = true;
-        pending->cv.notify_one();
+        std::lock_guard<std::mutex> lock(pending->mutex_);
+        pending->success_ = msg.success_;
+        pending->completed_ = true;
+        pending->cv_.notify_one();
     }
 }
 
 void WorkerAgent::on_remove_command(uint64_t conn_id, const RemoveCommandMessage& msg) {
     touch_master_contact();
-    INFO("RemoveCommand received: object={}", msg.object_name);
+    INFO("RemoveCommand received: object={}", msg.object_name_);
 
-    ds().remove_local_index(msg.object_name);
-    ds().remove_remote_index(msg.object_name);
+    DataService::instance()->remove_local_index(msg.object_name_);
+    DataService::instance()->remove_remote_index(msg.object_name_);
 
-    auto db_it = databases_.find(msg.db_id);
+    auto db_it = databases_.find(msg.db_id_);
     if (db_it != databases_.end()) {
         auto& db = db_it->second;
-        CMString short_name = msg.object_name;
-        CMString prefix = msg.db_id + ":";
+        CMString short_name = msg.object_name_;
+        CMString prefix = msg.db_id_ + ":";
         if (short_name.substr(0, prefix.size()) == prefix) {
             short_name = short_name.substr(prefix.size());
         }
         db->remove_index_entry(short_name);
-        INFO("RemoveCommand: persisted REMOVE entry for {}", msg.object_name);
+        INFO("RemoveCommand: persisted REMOVE entry for {}", msg.object_name_);
     }
 }
 
@@ -914,37 +902,37 @@ void WorkerAgent::request_backup(const CMString& db_id, const CMString& object_n
     CMString full_name = db_id + ":" + object_name;
 
     BackupRequestMessage msg;
-    msg.worker_id = worker_id_;
-    msg.object_name = full_name;
-    msg.db_id = db_id;
+    msg.worker_id_ = worker_id_;
+    msg.object_name_ = full_name;
+    msg.db_id_ = db_id;
     reactor_->send(master_conn_, msg);
 
     INFO("BackupRequest sent: object={}", full_name);
 }
 
 void WorkerAgent::execute_internal_task(const PendingTask& task) {
-    if (task.task_name == "__backup_object") {
-        if (task.args.size() < 2) {
+    if (task.task_name_ == "__backup_object") {
+        if (task.args_.size() < 2) {
             ERR("Internal backup task: insufficient args (expected object_name, db_id)");
             TaskFailedMessage failed;
-            failed.task_id = task.task_id;
-            failed.worker_id = worker_id_;
-            failed.error_message = "Internal backup: insufficient args";
+            failed.task_id_ = task.task_id_;
+            failed.worker_id_ = worker_id_;
+            failed.error_message_ = "Internal backup: insufficient args";
             reactor_->send(master_conn_, failed);
             return;
         }
 
-        CMString object_name = task.args[0];
-        CMString db_id = task.args[1];
+        CMString object_name = task.args_[0];
+        CMString db_id = task.args_[1];
 
         auto db = get_database(db_id);
         if (!db) {
             if (!request_db_path(db_id)) {
                 ERR("Internal backup: failed to get db_path for db_id={}", db_id);
                 TaskFailedMessage failed;
-                failed.task_id = task.task_id;
-                failed.worker_id = worker_id_;
-                failed.error_message = "Internal backup: db_path request failed";
+                failed.task_id_ = task.task_id_;
+                failed.worker_id_ = worker_id_;
+                failed.error_message_ = "Internal backup: db_path request failed";
                 reactor_->send(master_conn_, failed);
                 return;
             }
@@ -952,30 +940,30 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
             if (!db) {
                 ERR("Internal backup: still no database for db_id={}", db_id);
                 TaskFailedMessage failed;
-                failed.task_id = task.task_id;
-                failed.worker_id = worker_id_;
-                failed.error_message = "Internal backup: no database";
+                failed.task_id_ = task.task_id_;
+                failed.worker_id_ = worker_id_;
+                failed.error_message_ = "Internal backup: no database";
                 reactor_->send(master_conn_, failed);
                 return;
             }
         }
 
         db->backup_object(object_name);
-        fly::DataService::instance().drain_write_back();
+        fly::DataService::instance()->drain_write_back();
 
         TaskCompleteMessage complete;
-        complete.task_id = task.task_id;
-        complete.worker_id = worker_id_;
-        complete.written_objects.push_back(db_id + ":" + object_name);
+        complete.task_id_ = task.task_id_;
+        complete.worker_id_ = worker_id_;
+        complete.written_objects_.push_back(db_id + ":" + object_name);
         reactor_->send(master_conn_, complete);
 
         INFO("Internal backup complete: object={}, db_id={}", object_name, db_id);
     } else {
-        WARN("Unknown internal task: name={}", task.task_name);
+        WARN("Unknown internal task: name={}", task.task_name_);
         TaskFailedMessage failed;
-        failed.task_id = task.task_id;
-        failed.worker_id = worker_id_;
-        failed.error_message = "Unknown internal task: " + task.task_name;
+        failed.task_id_ = task.task_id_;
+        failed.worker_id_ = worker_id_;
+        failed.error_message_ = "Unknown internal task: " + task.task_name_;
         reactor_->send(master_conn_, failed);
     }
 }

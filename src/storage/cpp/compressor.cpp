@@ -8,9 +8,9 @@ class NoneCompressor : public Compressor {
 public:
     CompressedChunk compress(const CMString& input) override {
         CompressedChunk chunk;
-        chunk.uncompressed_size = static_cast<int32_t>(input.size());
-        chunk.data = input;
-        chunk.compressed_size = static_cast<int32_t>(chunk.data.size());
+        chunk.uncompressed_size_ = static_cast<int32_t>(input.size());
+        chunk.data_ = input;
+        chunk.compressed_size_ = static_cast<int32_t>(chunk.data_.size());
         return chunk;
     }
 

@@ -9,7 +9,7 @@ TEST(TaskSchedulerTest, ScheduleNoReadyTasks) {
     TaskScheduler scheduler(&graph, &manager);
     
     auto result = scheduler.schedule_next();
-    EXPECT_FALSE(result.scheduled);
+    EXPECT_FALSE(result.scheduled_);
 }
 
 TEST(TaskSchedulerTest, ScheduleNoIdleWorkers) {
@@ -22,7 +22,7 @@ TEST(TaskSchedulerTest, ScheduleNoIdleWorkers) {
     
     TaskScheduler scheduler(&graph, &manager);
     auto result = scheduler.schedule_next();
-    EXPECT_FALSE(result.scheduled);
+    EXPECT_FALSE(result.scheduled_);
 }
 
 TEST(TaskSchedulerTest, ScheduleSingleTask) {
@@ -35,10 +35,10 @@ TEST(TaskSchedulerTest, ScheduleSingleTask) {
     TaskScheduler scheduler(&graph, &manager);
     auto result = scheduler.schedule_next();
     
-    EXPECT_TRUE(result.scheduled);
-    EXPECT_EQ(result.task_id, 1);
-    EXPECT_EQ(result.worker_id, 1);
-    EXPECT_EQ(manager.get_worker(1)->get().status, WorkerStatus::BUSY);
+    EXPECT_TRUE(result.scheduled_);
+    EXPECT_EQ(result.task_id_, 1);
+    EXPECT_EQ(result.worker_id_, 1);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::BUSY);
 }
 
 TEST(TaskSchedulerTest, ScheduleMultipleTasksFIFO) {
@@ -55,8 +55,8 @@ TEST(TaskSchedulerTest, ScheduleMultipleTasksFIFO) {
     auto results = scheduler.schedule_all_available();
     
     EXPECT_EQ(results.size(), 2);
-    EXPECT_EQ(results[0].task_id, 1);
-    EXPECT_EQ(results[1].task_id, 2);
+    EXPECT_EQ(results[0].task_id_, 1);
+    EXPECT_EQ(results[1].task_id_, 2);
 }
 
 TEST(TaskSchedulerTest, ScheduleWithDependencies) {
@@ -70,17 +70,17 @@ TEST(TaskSchedulerTest, ScheduleWithDependencies) {
     TaskScheduler scheduler(&graph, &manager);
     
     auto result1 = scheduler.schedule_next();
-    EXPECT_TRUE(result1.scheduled);
-    EXPECT_EQ(result1.task_id, 1);
+    EXPECT_TRUE(result1.scheduled_);
+    EXPECT_EQ(result1.task_id_, 1);
     
     auto result2 = scheduler.schedule_next();
-    EXPECT_FALSE(result2.scheduled);
+    EXPECT_FALSE(result2.scheduled_);
     
     manager.complete_task(1);
     graph.mark_data_ready("output/1");
     auto result3 = scheduler.schedule_next();
-    EXPECT_TRUE(result3.scheduled);
-    EXPECT_EQ(result3.task_id, 2);
+    EXPECT_TRUE(result3.scheduled_);
+    EXPECT_EQ(result3.task_id_, 2);
 }
 
 TEST(TaskSchedulerTest, LocalityPreferenceToggle) {
@@ -94,7 +94,7 @@ TEST(TaskSchedulerTest, LocalityPreferenceToggle) {
     scheduler.set_locality_preference(false);
     
     auto result = scheduler.schedule_next();
-    EXPECT_TRUE(result.scheduled);
+    EXPECT_TRUE(result.scheduled_);
 }
 
 TEST(TaskSchedulerTest, CapabilityMatch) {
@@ -108,9 +108,9 @@ TEST(TaskSchedulerTest, CapabilityMatch) {
     TaskScheduler scheduler(&graph, &manager);
     auto result = scheduler.schedule_next();
     
-    EXPECT_TRUE(result.scheduled);
-    EXPECT_EQ(result.task_id, 1);
-    EXPECT_EQ(result.worker_id, 1);
+    EXPECT_TRUE(result.scheduled_);
+    EXPECT_EQ(result.task_id_, 1);
+    EXPECT_EQ(result.worker_id_, 1);
 }
 
 TEST(TaskSchedulerTest, NoMatchingWorker) {
@@ -123,7 +123,7 @@ TEST(TaskSchedulerTest, NoMatchingWorker) {
     TaskScheduler scheduler(&graph, &manager);
     auto result = scheduler.schedule_next();
     
-    EXPECT_FALSE(result.scheduled);
+    EXPECT_FALSE(result.scheduled_);
 }
 
 TEST(TaskSchedulerTest, PartialCapabilityMismatch) {
@@ -137,7 +137,7 @@ TEST(TaskSchedulerTest, PartialCapabilityMismatch) {
     TaskScheduler scheduler(&graph, &manager);
     auto result = scheduler.schedule_next();
     
-    EXPECT_FALSE(result.scheduled);
+    EXPECT_FALSE(result.scheduled_);
 }
 
 TEST(TaskSchedulerTest, MixedCapabilitiesAndConstraints) {
@@ -154,10 +154,10 @@ TEST(TaskSchedulerTest, MixedCapabilitiesAndConstraints) {
     
     EXPECT_EQ(results.size(), 2u);
     
-    EXPECT_EQ(results[0].task_id, 1);
-    EXPECT_EQ(results[0].worker_id, 1);
+    EXPECT_EQ(results[0].task_id_, 1);
+    EXPECT_EQ(results[0].worker_id_, 1);
     
-    EXPECT_EQ(results[1].task_id, 2);
+    EXPECT_EQ(results[1].task_id_, 2);
 }
 
 TEST(TaskSchedulerTest, ConstrainedTaskDoesNotBlockUnconstrained) {
@@ -172,7 +172,7 @@ TEST(TaskSchedulerTest, ConstrainedTaskDoesNotBlockUnconstrained) {
     auto results = scheduler.schedule_all_available();
     
     EXPECT_EQ(results.size(), 1u);
-    EXPECT_EQ(results[0].task_id, 2);
+    EXPECT_EQ(results[0].task_id_, 2);
 }
 
 TEST(TaskSchedulerTest, MultipleWorkersWithSameCapability) {
@@ -186,9 +186,9 @@ TEST(TaskSchedulerTest, MultipleWorkersWithSameCapability) {
     TaskScheduler scheduler(&graph, &manager);
     auto result = scheduler.schedule_next();
     
-    EXPECT_TRUE(result.scheduled);
-    EXPECT_EQ(result.task_id, 1);
-    EXPECT_TRUE(result.worker_id == 1 || result.worker_id == 2);
+    EXPECT_TRUE(result.scheduled_);
+    EXPECT_EQ(result.task_id_, 1);
+    EXPECT_TRUE(result.worker_id_ == 1 || result.worker_id_ == 2);
 }
 
 TEST(TaskSchedulerTest, ScheduleAllAvailableExhaustsReadyAndIdle) {
@@ -204,7 +204,7 @@ TEST(TaskSchedulerTest, ScheduleAllAvailableExhaustsReadyAndIdle) {
     auto results = scheduler.schedule_all_available();
 
     EXPECT_EQ(results.size(), 1u);
-    EXPECT_EQ(results[0].task_id, 1);
+    EXPECT_EQ(results[0].task_id_, 1);
 }
 
 TEST(TaskSchedulerTest, ScheduleAllAvailableEmptyGraph) {
@@ -226,11 +226,11 @@ TEST(TaskSchedulerTest, ScheduleRemovesTaskFromReady) {
 
     TaskScheduler scheduler(&graph, &manager);
     auto r1 = scheduler.schedule_next();
-    EXPECT_TRUE(r1.scheduled);
-    EXPECT_EQ(r1.task_id, 1);
+    EXPECT_TRUE(r1.scheduled_);
+    EXPECT_EQ(r1.task_id_, 1);
 
     auto r2 = scheduler.schedule_next();
-    EXPECT_FALSE(r2.scheduled);
+    EXPECT_FALSE(r2.scheduled_);
 }
 
 TEST(TaskSchedulerTest, ScheduleNextWithMultipleCapabilities) {
@@ -244,9 +244,9 @@ TEST(TaskSchedulerTest, ScheduleNextWithMultipleCapabilities) {
     TaskScheduler scheduler(&graph, &manager);
     auto result = scheduler.schedule_next();
 
-    EXPECT_TRUE(result.scheduled);
-    EXPECT_EQ(result.task_id, 1);
-    EXPECT_EQ(result.worker_id, 1);
+    EXPECT_TRUE(result.scheduled_);
+    EXPECT_EQ(result.task_id_, 1);
+    EXPECT_EQ(result.worker_id_, 1);
 }
 
 }  // namespace fly
