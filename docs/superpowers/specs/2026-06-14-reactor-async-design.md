@@ -69,7 +69,7 @@ Worker B 的 DataClient 连到 Worker A 的 data_server_port_
   → reactor transport epoll 检测到新连接 / 数据
   → reactor 线程解码 DataRequestMessage
   → on_data_request: DataService::submit_transfer(conn_id, ...)
-  → IOThreadPool worker 线程：读取本地数据 + 压缩
+  → IOThreadPool worker 线程：读取本地已压缩数据
   → completion 放入 completions_ 队列
   → reactor 下一轮循环: process_completions() 在 reactor 线程执行
   → transfer callback: reactor_->send(DataResponseMessage)
@@ -347,7 +347,7 @@ SendQueue **只处理控制消息**（全部轻量级元数据）：
 
 **待确认方案**（设计悬而未决）：
 
-当前 DataService transfer server 有自己的 IOThreadPool 做数据读取和压缩。但 completion 回到 reactor 线程执行发送。数据传输的发送路径需要改造为不阻塞 reactor。
+当前 DataService transfer server 有自己的 IOThreadPool 做异步数据读取。但 completion 回到 reactor 线程执行发送。数据传输的发送路径需要改造为不阻塞 reactor。
 
 可能的方案：
 1. **IOThreadPool completion 不再回到 reactor 线程**——worker 线程完成 task 后直接在自己的线程执行 completion callback（发送 DataResponseMessage），移除 `process_completions()` 机制
@@ -413,7 +413,7 @@ worker 线程: task() → 直接执行 completion（在自己的线程）
 - `register_handler<T>()` API 不变（内部自动查路由表决定投递到哪个队列）
 - `connect()` / `on_connect()` / `on_disconnect()` / `on_error()` API 不变
 - DataClientPool / DataClient / MetadataClient（Worker 间主动拉取数据的同步 TCP 客户端）不变
-- IOThreadPool / transfer server 的数据读取+压缩机制不变
+- IOThreadPool / transfer server 的数据读取机制不变
 
 ---
 
@@ -440,7 +440,7 @@ DataService 拥有**独立的监听端口和消息收发处理线程**，完全�
 
 ### 8.2 当前问题
 
-当前 DataService 的 "transfer server" 只是 IOThreadPool（异步读取+压缩），没有自己的网络监听层：
+当前 DataService 的 "transfer server" 只是 IOThreadPool（异步读取已压缩数据，无二次压缩），没有自己的网络监听层：
 
 ```
 Worker::start()
@@ -451,7 +451,7 @@ Worker::start()
 
 DataClient 连接到端口 P（reactor transport），DATA_REQUEST 经过 reactor epoll：
 - reactor 解码 DATA_REQUEST → on_data_request → submit_transfer
-- IO 线程读取+压缩
+- IO 线程读取已压缩数据
 - completion 在 reactor 线程执行 → `reactor_->send(DataResponse)` → 阻塞 reactor
 
 remote_idx_ 记录的端口也是 P（reactor 端口），不是独立的 DataService 端口。
@@ -484,7 +484,7 @@ DataService accept 线程循环:
     if fd < 0: continue
     submit 到 IO 处理线程池:
       1. recv DataRequestMessage（帧解码）
-      2. 读取本地数据 + 压缩（现有 submit_transfer 逻辑）
+      2. 读取本地已压缩数据（现有 submit_transfer 逻辑）
       3. 编码 DataResponseMessage
       4. send DataResponseMessage（直接在 IO 线程，不经 reactor）
       5. close fd（短连接，与 DataClient 的 connect→req→resp→close 模式一致）
@@ -553,7 +553,7 @@ DataService::register_worker(0, host_, data_server_port_);  // Master 自己也�
 
 DataService 独立后，transfer completion 不再需要回到 reactor 线程：
 
-- IO 线程完成数据读取+压缩后，直接在**自己的线程**编码并发送 DataResponseMessage
+- IO 线程完成数据读取后，直接在**自己的线程**编码并发送 DataResponseMessage
 - 移除 `reactor::run()` 中的 `io_pool_->process_completions()` 调用
 - 移除 transfer callback 中的 `reactor_->send()` 调用
 
@@ -576,7 +576,7 @@ Worker 进程
 │   ├── Accept 线程: accept → submit 到 IO 线程池
 │   ├── IO 线程池（N 线程）:
 │   │   ├── recv DataRequestMessage
-│   │   ├── 读取本地数据 + 压缩
+│   │   ├── 读取本地已压缩数据
 │   │   ├── 编码 DataResponseMessage
 │   │   └── send DataResponseMessage（直接在 IO 线程）
 │   │
@@ -638,7 +638,7 @@ Master 进程
 ### 阶段 1：DataService 独立网络层
 
 1. DataService 新增 `start_data_server(host, port)` — 独立 listen socket + accept 线程
-2. DataService accept 线程接收连接，IO 线程池处理 recv DataRequest → 读数据+压缩 → send DataResponse → close fd
+2. DataService accept 线程接收连接，IO 线程池处理 recv DataRequest → 读取已压缩数据 → send DataResponse → close fd
 3. Master/Worker::start() 中启动 DataService data server，`data_server_port_` 改为 DataService 端口
 4. 移除 reactor 上 DATA_REQUEST handler 注册
 5. 移除 transfer callback 中 `reactor_->send()`，改为 IO 线程直接 send
