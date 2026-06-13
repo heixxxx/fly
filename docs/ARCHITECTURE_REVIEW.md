@@ -33,12 +33,11 @@
 
 ## 二、并发安全缺陷
 
-### 2.1 Logger singleton 内存安全 [修复中]
+### 2.1 Logger singleton 内存安全 [已修复]
 
-- **严重程度**: 高
-- **文件**: `src/log/cpp/logger.h:43`, `src/log/cpp/logger.cpp`
-- **现状**: 已从裸指针改为 `CMUniquePtr<Logger> instance_` + `static Logger fallback`（Meyers' singleton 兜底）。不存在 review 原描述的 `static Logger* instance_` 裸指针。
-- **待修复问题**: `init()` 中 `CMUniquePtr<Logger>(new Logger(...))` 仍通过裸 `new` 创建对象，且 `instance()` 返回 `Logger&` 引用——如需 shared_ptr 只能从引用构造（危险，会导致 double-free）。应统一为 shared_ptr singleton 模式（与 `DataService` 一致）：`enable_shared_from_this` + `instance_ptr()` 返回 `CMSharedPtr<Logger>`，`init()` 原地配置而非 new 新对象。
+- **严重程度**: ~~高~~ → 已修复
+- **文件**: `src/log/cpp/logger.h`, `src/log/cpp/logger.cpp`
+- **修复**: `instance()` 返回 `CMSharedPtr<Logger>`，`CMMakeShared<Logger>` + public 构造，`init()` 原地配置，`shutdown()` 只关文件不释放对象。消除 `instance_ptr()` 重复接口和裸引用解引用。
 
 ### 2.2 transfer_callback_ 无锁并发访问 [经验证无风险]
 
@@ -373,26 +372,20 @@
 
 ### P0 — 立即修复（正确性/稳定性风险）
 
-> 原列 8 项中 5 项已解决（2.2 无风险 / 3.3 可接受 / 3.4 已修复 / 2.3 已修复 / 2.4 无风险），3.5 经验证无需修复。实际剩余：
-
-1. Logger singleton → 改为 shared_ptr 管理模式（2.1）
-2. 非阻塞 connect EINPROGRESS → 同步确认连接成功（3.2）
+> 原 8 项全部解决。当前无 P0。
 
 ### P1 — 尽快修复（性能/可靠性）
 
-> 原列 5 项中 4.1 无风险、4.2 已清理。实际剩余：
-
-3. HandlerThreadPool 未使用 → 启用异步 handler（3.1）
-4. Reactor send 阻塞 30s → 异步发送或缩短超时（3.6）
-5. storage → network 跨层 → ~~接口抽象解耦（1.1）~~ **误报，依赖方向正确**
+1. HandlerThreadPool 未使用 → 启用异步 handler（3.1）
+2. Reactor send 阻塞 30s → 异步发送或缩短超时（3.6）
 
 > 注：3.1 和 3.6 耦合——启用 HandlerThreadPool 后 handler 不再在 reactor 线程执行，send 阻塞不再阻塞 reactor，建议一并修复。
 
 ### P2 — 计划改进（代码质量/可维护性）
-5. 消息编解码内存拷贝优化（5.1）
-6. 无背压/流控（5.3）
-7. DataResponse 分片传输（5.4）
-8. 测试框架迁移 pytest（4.10）
-9. 类型注解补全（4.8）
-10. DataService 锁粒度拆分（2.7）
-11. WorkerAgentContext 去全局状态（2.5）
+3. 消息编解码内存拷贝优化（5.1）
+4. 无背压/流控（5.3）
+5. DataResponse 分片传输（5.4）
+6. 测试框架迁移 pytest（4.10）
+7. 类型注解补全（4.8）
+8. DataService 锁粒度拆分（2.7）
+9. WorkerAgentContext 去全局状态（2.5）
