@@ -158,10 +158,10 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
         }
 
         if (response.error_message_ == "DATA_NOT_READY") {
-            if (std::chrono::steady_clock::now() >= deadline) {
+            if (stopped_.load()) {
                 ::close(fd);
                 release_slot();
-                return {false, "", "", "", "Timeout waiting for data: " + object_name};
+                return {false, "", "", "", "Pool stopped"};
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
             continue;
