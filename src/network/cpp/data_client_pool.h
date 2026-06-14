@@ -2,13 +2,10 @@
 
 #include <common/cpp/common_types.h>
 #include <cstdint>
-#include <deque>
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
-#include <functional>
 #include <tuple>
-#include <thread>
 
 namespace fly {
 

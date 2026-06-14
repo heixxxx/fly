@@ -5,7 +5,8 @@
 #include <atomic>
 #include <thread>
 #include <mutex>
-#include <unordered_map>
+#include <queue>
+#include <condition_variable>
 
 namespace fly {
 
@@ -26,23 +27,20 @@ private:
     int thread_count_;
 
     int listen_fd_ = -1;
-    int epoll_fd_ = -1;
     int data_port_ = 0;
 
     std::atomic<bool> running_{false};
-    CMVector<std::thread> threads_;
+    std::thread accept_thread_;
     std::mutex start_mutex_;
 
-    struct ConnState {
-        CMString recv_buf;
-    };
-    std::unordered_map<int, ConnState> conns_;
-    std::mutex conn_mutex_;
+    std::queue<int> pending_fds_;
+    std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+    CMVector<std::thread> io_threads_;
 
-    void epoll_loop();
-    void on_data(int fd);
-    void process_frame(int fd, const CMString& frame);
-    void cleanup_fd(int fd);
+    void accept_loop();
+    void io_loop();
+    void handle_connection(int fd);
 };
 
 }  // namespace fly

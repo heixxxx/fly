@@ -118,7 +118,6 @@ private:
     void on_data_ready(uint64_t conn_id, const DataReadyMessage& msg);
     void on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg);
     void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
-    void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
@@ -314,7 +313,6 @@ private:
     void on_task_assign(const TaskAssignMessage& msg);
     void on_shutdown(const ShutdownMessage& msg);
     void on_db_path_response(const DbPathResponseMessage& msg);
-    void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
@@ -566,21 +564,20 @@ Layer 1: DataService.try_read_local("key")
 Layer 2: DataService.lookup_remote_idx("key")
   → 有缓存 → DataClient.request_compressed_data(host, port, "key",
         requesting_worker_id, request_id)
-  │     → 独立 TCP socket 直连 Worker B Data Server
-  │     → Worker B: submit_transfer → IOThreadPool → reactor_->send(DataResponse)
-  │     → 传输去重: (requesting_worker_id, object_name, request_id) 三元组
+  │     → 独立 TCP socket 直连 Worker B DataServer (独立端口)
+  │     → Worker B: DataServer accept → IO thread read → send DataResponse
   → 失败 → Layer 3
 
 Layer 3: request_remote_data("key")
   → 最多 3 次重试，每次 30s 超时
   → 每次重试先重新查询 Master 获取最新数据位置
-  → reactor_->send(master_conn_, DataQueryMessage)
+  → MetadataClient.query_data_location (独立 TCP socket)
   → Master: DataService.has_remote_location → DataLocationMessage
   → DataClient.request_compressed_data(host, port, "key", ...)
   → 成功 → update_remote_idx 缓存
 ```
 
-**传输去重机制**: `DataService::submit_transfer()` 使用 `(requesting_worker_id, object_name, request_id)` 三元组作为去重键，同一请求不会重复传输大对象数据。`request_id` 为随机生成，确保不同逻辑请求不会误判为重复。
+**传输去重机制**: 当前 DataServer 短连接模式下未实现去重。原 `submit_transfer` 中的 `(requesting_worker_id, object_name, request_id)` 三元组去重已随 transfer callback 机制移除。如需去重，可在 DataServer IO 线程层基于 object_name 做读合并。
 
 **COMPLETE = 可读语义**: 所有读取操作（`try_read_local`、`try_read_local_or_wait`、`has_local_object`）仅检查 `completion_state == COMPLETE`，不检查 `flushed` 标志。
 
@@ -609,7 +606,7 @@ Master.stop()
   5. persist_pending_tasks() → 将所有 PENDING task 序列化到 failed_tasks.bin
   6. do_drain_and_stop():
      → heartbeat_check_running_ = false; heartbeat_check_thread_.join()
-     → ds().stop_transfer_server()
+     → DataService::instance()->stop_data_server()
      → reactor_->stop(); reactor_thread_.join()
      → 清空所有内部状态
 

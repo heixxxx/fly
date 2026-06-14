@@ -93,7 +93,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
     req.request_id_ = request_id;
     CMString encoded_req = MessageProtocol::encode(req);
 
-    constexpr int POLL_INTERVAL_MS = 1000;
+    constexpr int POLL_INTERVAL_MS = 100;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
 
     while (true) {
@@ -107,7 +107,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
         if (!net_recv_exact(fd, header, 5, 30000)) {
             ::close(fd);
             release_slot();
-            return {false, "", "", "", "Connection lost receiving header for " + object_name};
+            return {false, "", "", "", "Connection lost for " + object_name};
         }
 
         uint32_t total_len =
@@ -119,7 +119,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
         if (total_len < 1 || total_len > 256 * 1024 * 1024) {
             ::close(fd);
             release_slot();
-            return {false, "", "", "", "Invalid response frame size for " + object_name};
+            return {false, "", "", "", "Invalid response for " + object_name};
         }
 
         uint32_t payload_len = total_len - 1;

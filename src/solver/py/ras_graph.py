@@ -653,6 +653,29 @@ def _compute_adaptive_omega(errs, tol, prev_err=None):
 @as_task(inputs=lambda db, step, nsd, max_iter, tol, neighbor_ids_all:
          _check_deps(db, step, nsd))
 def ras_graph_check(db, step, nsd, max_iter, tol, neighbor_ids_all):
+    if step > 0:
+        for i in range(nsd):
+            try:
+                db.remove_object(f"__rasg__conv_{i}_{step - 1}")
+            except Exception:
+                pass
+        if _is_adaptive(db):
+            for i in range(nsd):
+                if step > 1:
+                    try:
+                        db.remove_object(f"__rasg__err_{i}_{step - 1}")
+                    except Exception:
+                        pass
+            if step > 2:
+                try:
+                    db.remove_object(f"__rasg__gomega_{step - 2}")
+                except Exception:
+                    pass
+                try:
+                    db.remove_object(f"__rasg__prev_err_{step - 3}")
+                except Exception:
+                    pass
+
     conv_flags = [db.read_object(f"__rasg__conv_{i}_{step}") for i in range(nsd)]
     all_converged = all(conv_flags)
 
@@ -698,28 +721,6 @@ def ras_graph_check(db, step, nsd, max_iter, tol, neighbor_ids_all):
             ras_graph_compute(db, sd_id, step + 1, nsd,
                               neighbor_ids_all[sd_id])
         ras_graph_check(db, step + 1, nsd, max_iter, tol, neighbor_ids_all)
-
-    for i in range(nsd):
-        try:
-            db.remove_object(f"__rasg__conv_{i}_{step}")
-        except Exception:
-            pass
-    if omega_strategy == "adaptive":
-        for i in range(nsd):
-            if step > 0:
-                try:
-                    db.remove_object(f"__rasg__err_{i}_{step}")
-                except Exception:
-                    pass
-        if step > 1:
-            try:
-                db.remove_object(f"__rasg__gomega_{step - 1}")
-            except Exception:
-                pass
-            try:
-                db.remove_object(f"__rasg__prev_err_{step - 2}")
-            except Exception:
-                pass
 
 
 # ── Assemble ─────────────────────────────────────────────────────
