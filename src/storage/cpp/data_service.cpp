@@ -911,9 +911,6 @@ std::tuple<bool, CMString, CMString, CMString, bool> DataService::read_raw_compr
             if (cb_found && !cb_data.empty()) {
                 return {true, std::move(cb_data), std::move(cb_py_name), {}, false};
             }
-            if (!cb_found && !cb_can_still_produce) {
-                return {false, {}, {}, {}, false};
-            }
             if (attempt < 2) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             }

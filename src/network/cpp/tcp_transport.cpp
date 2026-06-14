@@ -110,49 +110,85 @@ uint64_t TCPTransport::connect(const CMString& address, int port) {
     return register_connection(fd);
 }
 
+void TCPTransport::mod_epoll_events(int fd, uint32_t events) {
+    struct epoll_event ev;
+    std::memset(&ev, 0, sizeof(ev));
+    ev.events = events;
+    ev.data.fd = fd;
+    epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+}
+
 ssize_t TCPTransport::send(uint64_t conn_id, const CMString& data) {
     int fd;
     {
         std::lock_guard<std::mutex> lock(conn_mutex_);
         auto it = conn_to_fd_.find(conn_id);
         if (it == conn_to_fd_.end() || it->second < 0) {
-            DBG("[TCP-SEND] unknown conn_id={}, thread={}", conn_id,
-                std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+            DBG("[TCP-SEND] unknown conn_id={}", conn_id);
             return -1;
         }
         fd = it->second;
-    }
-    
-    size_t total_sent = 0;
-    
-    while (total_sent < data.size()) {
-        ssize_t sent = ::send(fd, data.data() + total_sent,
-                              data.size() - total_sent, MSG_NOSIGNAL);
         
-        if (sent < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                struct pollfd pfd;
-                pfd.fd = fd;
-                pfd.events = POLLOUT;
-                int ret = ::poll(&pfd, 1, 30000);
-                if (ret <= 0) {
-                    ERR("TCPTransport::send: poll timeout conn_id={}, fd={}, thread={}",
-                        conn_id, fd,
-                        std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
-                    return (total_sent > 0) ? static_cast<ssize_t>(total_sent) : -1;
-                }
-                continue;
-            }
-            ERR("TCPTransport::send: write error conn_id={}, fd={}, errno={}, thread={}",
-                conn_id, fd, errno,
-                std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
-            return (total_sent > 0) ? static_cast<ssize_t>(total_sent) : -1;
+        auto wbuf_it = write_buffers_.find(conn_id);
+        if (wbuf_it != write_buffers_.end() && !wbuf_it->second.empty()) {
+            wbuf_it->second.append(data);
+            return static_cast<ssize_t>(data.size());
         }
-        
-        total_sent += sent;
     }
-    
-    return static_cast<ssize_t>(total_sent);
+
+    ssize_t sent = ::send(fd, data.data(), data.size(), MSG_NOSIGNAL | MSG_DONTWAIT);
+
+    if (sent < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            std::lock_guard<std::mutex> lock(conn_mutex_);
+            write_buffers_[conn_id] = data;
+            mod_epoll_events(fd, EPOLLIN | EPOLLOUT);
+            return static_cast<ssize_t>(data.size());
+        }
+        ERR("[TCP-SEND] error conn_id={} fd={} errno={}", conn_id, fd, errno);
+        return -1;
+    }
+
+    if (static_cast<size_t>(sent) < data.size()) {
+        std::lock_guard<std::mutex> lock(conn_mutex_);
+        write_buffers_[conn_id].assign(data.data() + sent, data.size() - sent);
+        mod_epoll_events(fd, EPOLLIN | EPOLLOUT);
+    }
+
+    return static_cast<ssize_t>(data.size());
+}
+
+void TCPTransport::drain_write_buffer(uint64_t conn_id, int fd) {
+    std::lock_guard<std::mutex> lock(conn_mutex_);
+    auto it = write_buffers_.find(conn_id);
+    if (it == write_buffers_.end() || it->second.empty()) {
+        mod_epoll_events(fd, EPOLLIN);
+        return;
+    }
+
+    CMString& buf = it->second;
+    size_t total_sent = 0;
+    while (total_sent < buf.size()) {
+        ssize_t sent = ::send(fd, buf.data() + total_sent, buf.size() - total_sent,
+                              MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (sent < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            buf.clear();
+            write_buffers_.erase(it);
+            return;
+        }
+        if (sent == 0) break;
+        total_sent += static_cast<size_t>(sent);
+    }
+
+    if (total_sent > 0) {
+        buf.erase(0, total_sent);
+    }
+
+    if (buf.empty()) {
+        write_buffers_.erase(it);
+        mod_epoll_events(fd, EPOLLIN);
+    }
 }
 
 ssize_t TCPTransport::recv(uint64_t conn_id, CMString& buffer, size_t max_size) {
@@ -204,9 +240,6 @@ CMVector<TransportEvent> TCPTransport::poll(int timeout_ms) {
         if (fd == listen_fd_) {
             int client_fd = ::accept4(listen_fd_, nullptr, nullptr, SOCK_NONBLOCK);
             if (client_fd < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    continue;
-                }
                 continue;
             }
             
@@ -252,12 +285,15 @@ CMVector<TransportEvent> TCPTransport::poll(int timeout_ms) {
                 ev.error_code_ = error;
                 events.push_back(ev);
                 
-                DBG("[TCP-CLOSE] EPOLLERR/HUP conn_id={}, fd={}, thread={} → unregister then close",
-                    conn_id, fd, std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+                DBG("[TCP-CLOSE] EPOLLERR/HUP conn_id={}, fd={}", conn_id, fd);
                 epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
                 unregister_connection(conn_id);
                 ::close(fd);
                 continue;
+            }
+            
+            if (evs[i].events & EPOLLOUT) {
+                drain_write_buffer(conn_id, fd);
             }
             
             if (evs[i].events & EPOLLIN) {
@@ -269,8 +305,7 @@ CMVector<TransportEvent> TCPTransport::poll(int timeout_ms) {
                     ev.conn_id_ = conn_id;
                     events.push_back(ev);
                     
-                    DBG("[TCP-CLOSE] DISCONNECT conn_id={}, fd={}, thread={} → unregister then close",
-                        conn_id, fd, std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+                    DBG("[TCP-CLOSE] DISCONNECT conn_id={}, fd={}", conn_id, fd);
                     epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
                     unregister_connection(conn_id);
                     ::close(fd);
@@ -299,10 +334,10 @@ void TCPTransport::close(uint64_t conn_id) {
         fd = it->second;
         fd_to_conn_.erase(fd);
         conn_to_fd_.erase(it);
+        write_buffers_.erase(conn_id);
     }
     epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
-    DBG("[TCP-CLOSE] explicit close conn_id={}, fd={}, thread={}",
-        conn_id, fd, std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+    DBG("[TCP-CLOSE] explicit close conn_id={}, fd={}", conn_id, fd);
     ::close(fd);
 }
 
@@ -316,6 +351,7 @@ void TCPTransport::close_all() {
     }
     conn_to_fd_.clear();
     fd_to_conn_.clear();
+    write_buffers_.clear();
 }
 
 bool TCPTransport::is_connected(uint64_t conn_id) const {
@@ -354,6 +390,7 @@ void TCPTransport::unregister_connection(uint64_t conn_id) {
         fd_to_conn_.erase(it->second);
         conn_to_fd_.erase(it);
     }
+    write_buffers_.erase(conn_id);
 }
 
 void TCPTransport::set_nonblocking(int fd) {

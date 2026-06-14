@@ -27,16 +27,18 @@ private:
     int listen_fd_ = -1;
     uint64_t next_conn_id_ = 1;
     
-    // Protects conn_to_fd_ and fd_to_conn_ — accessed from reactor thread
-    // (poll/unregister) and task threads (send/recv)
     mutable std::mutex conn_mutex_;
     CMUnorderedMap<uint64_t, int> conn_to_fd_;
     CMUnorderedMap<int, uint64_t> fd_to_conn_;
+    
+    CMUnorderedMap<uint64_t, CMString> write_buffers_;
     
     uint64_t register_connection(int fd);
     void unregister_connection(uint64_t conn_id);
     void set_nonblocking(int fd);
     CMString drain_socket(int fd, size_t max_size);
+    void drain_write_buffer(uint64_t conn_id, int fd);
+    void mod_epoll_events(int fd, uint32_t events);
 };
 
 }  // namespace fly

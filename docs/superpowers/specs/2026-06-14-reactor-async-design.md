@@ -13,7 +13,9 @@
 
 Reactor 单线程循环：`epoll → recv → decode → handler → send`。
 
-所有消息 handler 在 reactor 线程同步执行。handler 中如果调用 `reactor_->send()`，会直接调用 `transport_->send()`——该方法在 EAGAIN 时使用 `poll(POLLOUT, 30000)` 同步等待，**最多阻塞 reactor 线程 30 秒**。
+所有消息 handler 在 reactor 线程同步执行。handler 中如果调用 `reactor_->send()`，会调用 `transport_->send()`——~~该方法在 EAGAIN 时使用 `poll(POLLOUT, 30000)` 同步等待，**最多阻塞 reactor 线程 30 秒**~~。
+
+> **已修复（EPOLLOUT 写缓冲）**：`TCPTransport::send()` 现在使用 `MSG_DONTWAIT` 非阻塞发送。EAGAIN 时数据追加到 per-connection write buffer，注册 EPOLLOUT，由 reactor 的 epoll 事件循环在 fd 可写时自动 drain。reactor 线程永远不阻塞。
 
 此外，DataService 的 transfer completion 通过 `IOThreadPool::process_completions()` 在 reactor 线程执行，`DataResponseMessage`（可能 256MB）的 `transport_->send()` 也阻塞 reactor。
 
@@ -699,7 +701,7 @@ DataClientPool (每个 Worker 进程内一个实例)
 ### 11.3 服务端 send 线程
 
 - 从 `send_queue` 弹出任务（condition variable wait）
-- `do_send(fd, data)`：非阻塞 socket 上 `send(MSG_NOSIGNAL)`，EAGAIN 时 `poll(POLLOUT, 5s)`
+- `do_send(fd, data)`：非阻塞 socket 上 `send(MSG_NOSIGNAL)`，EAGAIN 时数据入 write buffer 由 EPOLLOUT drain
 - 发送成功 → `epoll_ctl(MOD, fd, EPOLLIN|EPOLLONESHOT)` rearm
 - 发送失败 → `cleanup_fd(fd)`
 
