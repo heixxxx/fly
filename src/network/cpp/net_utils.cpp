@@ -19,7 +19,11 @@ bool net_recv_exact(int fd, char* buf, size_t len, int timeout_ms) {
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         
         ssize_t n = ::recv(fd, buf + received, len - received, 0);
-        if (n <= 0) return false;
+        if (n == 0) return false;  // peer closed
+        if (n < 0) {
+            if (errno == EINTR) continue;  // signal interrupted — retry
+            return false;  // real error or timeout
+        }
         received += static_cast<size_t>(n);
     }
     return true;
@@ -29,7 +33,11 @@ bool net_send_all(int fd, const char* data, size_t len, int /*timeout_ms*/) {
     size_t sent = 0;
     while (sent < len) {
         ssize_t n = ::send(fd, data + sent, len - sent, MSG_NOSIGNAL);
-        if (n <= 0) return false;
+        if (n == 0) return false;
+        if (n < 0) {
+            if (errno == EINTR) continue;  // signal interrupted — retry
+            return false;
+        }
         sent += static_cast<size_t>(n);
     }
     return true;

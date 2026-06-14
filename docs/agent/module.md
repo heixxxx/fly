@@ -565,7 +565,7 @@ Layer 2: DataService.lookup_remote_idx("key")
   → 有缓存 → DataClient.request_compressed_data(host, port, "key",
         requesting_worker_id, request_id)
   │     → 独立 TCP socket 直连 Worker B DataServer (独立端口)
-  │     → Worker B: DataServer accept → IO thread read → send DataResponse
+  │     → Worker B: DataServer epoll recv → send_queue → send DataResponse
   → 失败 → Layer 3
 
 Layer 3: request_remote_data("key")

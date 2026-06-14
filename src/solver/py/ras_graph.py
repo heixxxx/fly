@@ -10,7 +10,7 @@ Task topology:
   assemble_task: merge primary solutions → final result
 """
 
-from fly import as_task
+from fly import as_task, wait_obj
 from _fly_log import DBG, INFO
 import math
 import time
@@ -755,20 +755,13 @@ def ras_graph_assemble(db, nsd, final_step):
 
 # ── Public API ────────────────────────────────────────────────────
 
+@wait_obj(inputs=lambda db: [db.get_obj_name("__rasg__sol")])
 def get_ras_graph_solution(db, timeout=3600):
-    sol_name = db.get_obj_name("__rasg__sol")
-    from _fly_storage import ex_stg_get_data_service
-    ds = ex_stg_get_data_service()
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        if ds.has_local_object(sol_name) or ds.has_remote_location(sol_name):
-            return {
-                "x": db.read_object("__rasg__sol"),
-                "iters": db.read_object("__rasg__iters"),
-                "converged": db.read_object("__rasg__converged"),
-            }
-        time.sleep(0.5)
-    raise RuntimeError(f"get_ras_graph_solution: timed out waiting for __rasg__sol after {timeout}s")
+    return {
+        "x": db.read_object("__rasg__sol"),
+        "iters": db.read_object("__rasg__iters"),
+        "converged": db.read_object("__rasg__converged"),
+    }
 
 
 def solve_ras_graph(db, matrix_path, nsd,

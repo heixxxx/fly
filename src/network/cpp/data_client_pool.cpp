@@ -98,6 +98,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
 
     while (true) {
         if (!net_send_all(fd, encoded_req.data(), encoded_req.size())) {
+            ERR("[DCP] send failed: obj={} fd={} errno={}", object_name, fd, errno);
             ::close(fd);
             release_slot();
             return {false, "", "", "", "Connection lost sending request for " + object_name};
@@ -105,6 +106,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
 
         char header[5] = {};
         if (!net_recv_exact(fd, header, 5, 30000)) {
+            ERR("[DCP] recv header failed: obj={} fd={} errno={}", object_name, fd, errno);
             ::close(fd);
             release_slot();
             return {false, "", "", "", "Connection lost for " + object_name};
@@ -117,6 +119,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
             static_cast<uint32_t>(static_cast<unsigned char>(header[3]));
 
         if (total_len < 1 || total_len > 256 * 1024 * 1024) {
+            ERR("[DCP] invalid total_len={}: obj={} fd={}", total_len, object_name, fd);
             ::close(fd);
             release_slot();
             return {false, "", "", "", "Invalid response for " + object_name};
@@ -125,6 +128,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
         uint32_t payload_len = total_len - 1;
         CMString payload(payload_len, '\0');
         if (payload_len > 0 && !net_recv_exact(fd, payload.data(), payload_len, 30000)) {
+            ERR("[DCP] recv payload failed: obj={} fd={} payload_len={} errno={}", object_name, fd, payload_len, errno);
             ::close(fd);
             release_slot();
             return {false, "", "", "", "Connection lost receiving payload for " + object_name};
@@ -139,12 +143,14 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
 
         DataResponseMessage response;
         if (!MessageProtocol::decode(full_buf, response)) {
+            ERR("[DCP] decode failed: obj={} fd={} frame_size={}", object_name, fd, full_buf.size());
             ::close(fd);
             release_slot();
             return {false, "", "", "", "Failed to decode response for " + object_name};
         }
 
         if (response.success_) {
+            DBG("[DCP] success: obj={} fd={} data_size={}", object_name, fd, response.compressed_data_.size());
             ::close(fd);
             release_slot();
             return {true, response.compressed_data_, response.py_name_,

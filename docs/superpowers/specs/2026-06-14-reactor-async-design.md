@@ -662,166 +662,113 @@ Master 进程
 
 ---
 
-## 十一、DataServer/DataClientPool 线程池设计（最终方案）
+## 十一、DataServer/DataClientPool epoll + send_queue 设计（已实现）
 
 > 更新日期: 2026-06-14
-> 替代第八节中的 DataServer accept+IO 线程池设计
+> 状态: 已实现，75/75 QA 通过，50 轮稳定性验证通过
 
-### 11.1 设计目标
-
-解决 DataServer 连接处理中的线程占用问题。之前方案每个连接独占一个 IO 线程，并发连接数受限于线程数。新方案用 epoll 多路复用消除这一限制。
-
-### 11.2 两类线程池
-
-#### 服务线程（DataServer 侧）
-
-- **池化**：启动时预创建固定数量的服务线程，常驻运行直到 stop。不随请求创建/销毁。
-- **数量**：默认 2 个，通过 config `data_server_threads` 修改
-- **职责**：处理其他 Worker 向本 Worker 的数据请求
-- **连接模型**：长连接——不主动断开，被动等待请求端断开
-- **机制**：
-  - epoll 监听 listen_fd + 所有已 accept 的 client_fd
-  - EPOLLIN 事件 → 从对应 fd recv 请求 → `try_read_local_raw` → send 响应
-  - 一个服务线程可以同时管理数百个连接
-  - 连接空闲时（等待 DATA_NOT_READY 重试），不占线程——epoll 只在有数据可读时唤醒
-
-- **BUSY 机制**：
-  - 保护场景：大对象 `send` 阻塞导致服务线程被占满（如 256MB 数据发送耗时长）
-  - 触发条件：当所有服务线程都在处理 send 阶段时，新连接立即收到 BUSY 响应
-  - 实现方式：服务线程进入 send 阶段时计数 `active_sends++`，accept 新连接时检查 `active_sends == thread_count` 则回复 BUSY
-  - 请求端收到 BUSY 后短退避重试
-
-#### 请求线程（DataClientPool 侧）
-
-- **池化**：启动时预创建固定数量的请求线程，常驻运行直到 stop。不随请求创建/销毁。
-- **数量**：默认 2 个，通过 config `data_client_pool_size` 修改
-- **职责**：处理本 Worker 向其他 Worker 的数据请求（read_object 触发）
-- **并发限制**：支持并发 read_object，但并发度受请求线程池大小限制。当池中所有线程都被占用时，新的 read_object 调用被阻塞，等待有线程归还后才能执行
-- **连接模型**：
-  - 每次 `read_object` 调用从池中获取一个空闲线程
-  - 该线程创建到目标 Worker 的 TCP 连接
-  - 在请求彻底成功/失败前不断开连接
-  - 请求完成后归还线程到池中，关闭连接
-- **DATA_NOT_READY 重试**：
-  - 在同一连接上发送请求 → 收到 DATA_NOT_READY → sleep → 在同一连接上再次发送
-  - 不新建连接，不切换线程
-  - 连接保持直到请求成功或超时
-
-### 11.3 连接复用规则
-
-| 场景 | 连接行为 |
-|------|---------|
-| 单次 read_object | 创建 1 个 TCP 连接，请求完成后关闭 |
-| 同一 read_object 的 DATA_NOT_READY 重试 | 复用同一连接（不新建） |
-| 不同 read_object | 不同连接（不复用） |
-| 服务端响应 | 长连接，不主动 close，等请求端断开 |
-
-### 11.4 服务端 epoll 架构
+### 11.1 架构总览
 
 ```
-DataServer 服务线程:
-  epoll_fd = epoll_create1()
-  epoll_ctl(ADD, listen_fd, EPOLLIN)
+DataServer (每个 Worker 进程内一个实例)
+├── epoll_threads (N/2 个)     ← recv 请求 + decode + push 到 send_queue
+├── send_threads  (N/2 个)     ← pop send_queue + send 响应 + rearm fd
+└── N = config.data_server_threads (默认 4)
 
-  while running:
-    events = epoll_wait(epoll_fd, timeout=10ms)
-
-    for event in events:
-      if event.fd == listen_fd:
-        client_fd = accept4(NONBLOCK)
-        epoll_ctl(ADD, client_fd, EPOLLIN)
-        conn_state[client_fd] = READING_HEADER
-
-      elif event has EPOLLIN:
-        fd = event.fd
-        state = conn_state[fd]
-
-        switch state:
-          case READING_HEADER:
-            recv 5 bytes (frame header)
-            if complete → state = READING_PAYLOAD
-
-          case READING_PAYLOAD:
-            recv payload bytes
-            if complete:
-              decode DataRequestMessage
-              try_read_local_raw(object_name)
-              → encode DataResponseMessage
-              send(fd, response)
-              state = READING_HEADER  // 等待下一个请求（长连接）
-
-      elif event has EPOLLHUP/EPOLLERR:
-        close(fd)
-        epoll_ctl(DEL, fd)
-        conn_state.erase(fd)
+DataClientPool (每个 Worker 进程内一个实例)
+└── semaphore (pool_size 并发限制，默认 4)
+    └── 每次 request() 新建 TCP 连接，完成后关闭
 ```
 
-**关键特性**：
-- `try_read_local_raw` 是非阻塞的——不会卡住服务线程
-- DATA_NOT_READY 响应立即返回——服务线程回到 epoll_wait
-- 连接空闲等待期间（客户端 sleep 1s）不占任何线程
-- 一个服务线程可处理任意数量的连接
+### 11.2 服务端 epoll 线程
 
-### 11.5 请求端线程模型
+- **epoll + EPOLLONESHOT**：每个 fd 事件处理后自动 disable，需显式 rearm
+- **EPOLLONESHOT 保证**：同一 fd 同一时刻只有一个 epoll 线程处理，无需额外锁
+- **on_readable 流程**：
+  1. `recv(MSG_DONTWAIT)` 读取所有可用数据
+  2. 追加到 per-connection `recv_buf`
+  3. 从 `recv_buf` 提取完整帧（4 字节长度 + payload）
+  4. `try_read_local_raw` → encode `DataResponseMessage`
+  5. push 到 `send_queue`（mutex + condition variable）
+  6. **不 rearm**（send_thread 发送后负责 rearm）
+- **rearm 规则**：
+  - pushed_response=true → 不 rearm，send_thread 发送后 rearm
+  - pushed_response=false, got_eof=true → cleanup_fd
+  - pushed_response=false, got_eof=false → rearm（等待更多数据）
 
+### 11.3 服务端 send 线程
+
+- 从 `send_queue` 弹出任务（condition variable wait）
+- `do_send(fd, data)`：非阻塞 socket 上 `send(MSG_NOSIGNAL)`，EAGAIN 时 `poll(POLLOUT, 5s)`
+- 发送成功 → `epoll_ctl(MOD, fd, EPOLLIN|EPOLLONESHOT)` rearm
+- 发送失败 → `cleanup_fd(fd)`
+
+### 11.4 请求端 DataClientPool
+
+- 信号量限制并发：`pool_size` 个 slot（默认 4），task 线程 acquire/release
+- 每次 `request()` 新建 TCP 连接（blocking socket + SO_RCVTIMEO 30s）
+- 发送 `DataRequestMessage` → recv 响应
+- `DATA_NOT_READY` → sleep 100ms → 同一 fd 重试
+- `OBJECT_NOT_FOUND` 或 success → close fd，release slot
+
+### 11.5 调试中发现并修复的 4 个 bug
+
+#### Bug 1: Logger mutex 竞争（性能问题）
+
+**现象**：epoll 版本比 accept+thread 慢 10 倍，大量测试超时。
+
+**根因**：DataServer 每个请求产生 9 条 DBG 日志（DS-ACCEPT/RECV/RESP/DONE/SEND×2/EOF/CLEANUP），accept+thread 只有 1 条。Logger 持全局 `mutex_` 做 `file_ << line` + flush。9 倍日志导致 mutex 利用率 ~90%，reactor 线程日志被阻塞。
+
+**修复**：data_server.cpp 顶部 `#define DBG(...) ((void)0)` 禁用 DataServer 的 verbose 日志。
+
+#### Bug 2: net_recv_exact/net_send_all 不处理 EINTR
+
+**现象**：偶发 `recv` 被 Python 信号中断（errno=4），`net_recv_exact` 直接返回 false。
+
+**修复**：recv/send 返回 -1 且 errno=EINTR 时 `continue` 重试。
+
+#### Bug 3: cleanup_fd 中 fd 复用竞态
+
+**现象**：偶发请求被静默丢弃，客户端 30 秒超时。
+
+**根因**：
 ```
-DataClientPool::request(host, port, object_name, timeout):
-  // 从预创建的线程池中获取空闲线程（池满时阻塞等待）
-  acquire_request_slot()  // 信号量，池满时阻塞
-
-  fd = create_connection(host, port)  // 新建 TCP
-  deadline = now + timeout
-
-  while true:
-    send(fd, DataRequestMessage)
-
-    recv(fd, header + payload)
-    decode DataResponseMessage
-
-    if success:
-      close(fd)
-      release_request_slot()  // 归还线程到池
-      return data
-
-    if error == "DATA_NOT_READY":
-      if now >= deadline:
-        close(fd)
-        release_request_slot()
-        return timeout_error
-      sleep(1s)
-      continue  // 同一 fd，同一线程
-
-    if error == "BUSY":
-      sleep(short_backoff)
-      continue  // 同一 fd
-
-    // OBJECT_NOT_FOUND 或其他错误
-    close(fd)
-    release_request_slot()
-    return error
+cleanup_fd(fd=12):
+  epoll_ctl(DEL, 12)      ← 无锁
+  close(12)                ← fd 号 12 被释放
+  // ← 此时另一个 epoll 线程 accept 恰好复用 fd=12
+  lock(conn_mutex_)
+  find_conn_index(12)      ← 找到新连接的 ConnState！
+  remove it                ← 新连接状态被删除！
 ```
 
-**关键特性**：
-- 请求线程预创建池化，不随请求创建/销毁
-- 不使用连接池（每次 read_object 新建连接，完成后关闭）
-- DATA_NOT_READY 重试在同一连接上（无 TCP 重建开销）
-- 请求并发度受线程池大小限制，池满时阻塞新请求
-- acquire_request_slot / release_request_slot 保证线程池不超额
+新连接的 ConnState 被错误删除，后续 `on_readable` 找不到 ConnState，请求被丢弃。
 
-### 11.6 与旧设计的区别
+**修复**：先在 `conn_mutex_` 内移除 ConnState，**然后** `close(fd)`。close 在锁外执行，但 ConnState 已移除，fd 复用不会误删新连接的状态。
 
-| 维度 | 旧设计（第八节） | 新设计（第十一节） |
-|------|----------------|-------------------|
-| 服务端线程 | N 个 IO 线程，每连接独占 | 1-2 个 epoll 线程，多路复用 |
-| 服务端连接 | 短连接（请求后 close） | 长连接（等请求端断开） |
-| 客户端连接 | 连接池复用 | 每次请求新建，完成后关闭 |
-| 并发上限 | 受 IO 线程数限制 | 受 fd 数限制（远大于线程数） |
-| DATA_NOT_READY | 客户端重新 acquire | 同一连接重试 |
-| 连接池 | DataClientPool 维护 fd 池 | 不需要连接池 |
+#### Bug 4: ConnState 创建在 epoll ADD 之后
 
-### 11.7 实施步骤
+**现象**：偶发请求被丢弃（`find_conn_index` 返回 -1）。
 
-1. **DataServer 改为 epoll 多路复用**——重写 handle_connection 为 epoll 事件驱动
-2. **DataClientPool::request 改为每次新建连接**——移除池复用，同一连接内重试 DATA_NOT_READY
-3. **新增 BUSY 响应**——accept 队列满时返回 BUSY
-4. **移除旧的 IO 线程池**——`pending_fds_` 队列 + io_threads_ 改为 epoll
+**根因**：
+```
+epoll_thread_1 (accept):  epoll_ctl(ADD, fd=12)     ← fd 进入 epoll
+epoll_thread_2 (wait):    拿到 fd=12 事件 → on_readable(12)
+epoll_thread_2:           find_conn_index(12) → -1  ← ConnState 还没创建！
+epoll_thread_1:           conns_.push_back({12})     ← 太晚了
+```
+
+有 2 个 epoll 线程时，线程 2 可在线程 1 创建 ConnState 之前处理该 fd。
+
+**修复**：**先创建 ConnState，再 epoll_ctl(ADD)**。
+
+### 11.6 设计要点总结
+
+| 设计决策 | 理由 |
+|---------|------|
+| EPOLLONESHOT | 保证同一 fd 同一时刻只有一个线程处理 |
+| send_queue 分离 recv 和 send | 大数据发送（200MB+）不阻塞 epoll 线程 |
+| send_thread 负责 rearm | 避免 on_readable rearm 后 epoll 再次触发与 send 并发 |
+| DBG 日志禁用 | 避免 Logger 全局 mutex 竞争阻塞 reactor |
+| ConnState 先于 epoll ADD | 多 epoll 线程下的正确性保证 |
+| cleanup_fd 先移除状态后 close | 防止 fd 号复用导致误删新连接状态 |

@@ -521,40 +521,47 @@ std::pair<bool, CMString> DataService::try_read_local_raw(const CMString& object
     DbPaths paths;
     bool is_temp = false;
     CMString temp_data;
+    int diag = 0;  // 0=not_found_db, 1=not_found_obj, 2=not_ready, 3=found_temp
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto db_it = local_idx_.find(db_id);
         if (db_it == local_idx_.end()) {
-            DBG("[TEMP-READ-LOCAL] NOT FOUND: obj={}, db_id={} not in local_idx", object_name, db_id);
-            return {false, {}};
-        }
-        auto it = db_it->second.find(short_name);
-        if (it == db_it->second.end() || !it->second) {
-            DBG("[TEMP-READ-LOCAL] NOT FOUND: obj={}, short_name={} not in db_map", object_name, short_name);
-            return {false, {}};
-        }
-        auto& info = *it->second;
-        if (info.completion_state_ != CompletionState::COMPLETE) {
-            DBG("[TEMP-READ-LOCAL] NOT READY: obj={}, state={}, is_temp={}",
-                object_name, static_cast<int>(info.completion_state_), info.is_temp_);
-            return {false, {}};
-        }
-
-        if (info.is_temp_) {
-            is_temp = true;
-            temp_data = info.temp_compressed_data_;
-            DBG("[TEMP-READ-LOCAL] FOUND TEMP: obj={}, data_size={}", object_name, temp_data.size());
+            diag = 0;
         } else {
-            entries = info.entries_;
-
-            auto path_it = db_paths_.find(db_id);
-            if (path_it == db_paths_.end()) {
-                return {false, {}};
+            auto it = db_it->second.find(short_name);
+            if (it == db_it->second.end() || !it->second) {
+                diag = 1;
+            } else {
+                auto& info = *it->second;
+                if (info.completion_state_ != CompletionState::COMPLETE) {
+                    diag = 2;
+                } else if (info.is_temp_) {
+                    is_temp = true;
+                    temp_data = info.temp_compressed_data_;
+                    diag = 3;
+                } else {
+                    entries = info.entries_;
+                    auto path_it = db_paths_.find(db_id);
+                    if (path_it == db_paths_.end()) {
+                        diag = 0;
+                    } else {
+                        paths = path_it->second;
+                        diag = 3;
+                    }
+                }
             }
-            paths = path_it->second;
         }
     }
+
+    switch (diag) {
+        case 0: DBG("[TEMP-READ-LOCAL] NOT FOUND: obj={}", object_name); break;
+        case 1: DBG("[TEMP-READ-LOCAL] NOT FOUND: obj={}, short_name={}", object_name, short_name); break;
+        case 2: DBG("[TEMP-READ-LOCAL] NOT READY: obj={}", object_name); break;
+        case 3: DBG("[TEMP-READ-LOCAL] FOUND: obj={}, data_size={}", object_name, temp_data.size()); break;
+    }
+
+    if (diag != 3) return {false, {}};
 
     if (is_temp) {
         if (!temp_data.empty()) {
