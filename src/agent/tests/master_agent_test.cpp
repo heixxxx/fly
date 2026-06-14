@@ -698,7 +698,7 @@ TEST(MasterAgentTest, StopDuringActiveCommunication) {
     worker.stop();
 
     // Cleanup
-    fly::DataService::instance()->stop_transfer_server();
+    fly::DataService::instance()->stop_data_server();
 }
 
 TEST(MasterAgentTest, DoubleStopNoCrash) {

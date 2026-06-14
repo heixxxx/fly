@@ -941,14 +941,10 @@ TEST_F(DataServiceTest, SetDirectCompressedReadHandler) {
     EXPECT_NO_THROW(ds_->set_direct_compressed_read_handler(nullptr));
 }
 
-TEST_F(DataServiceTest, TransferServerStartStop) {
-    EXPECT_FALSE(ds_->is_transfer_server_running());
-
-    ds_->start_transfer_server(1, [](const fly::TransferResult&) {});
-    EXPECT_TRUE(ds_->is_transfer_server_running());
-
-    ds_->stop_transfer_server();
-    EXPECT_FALSE(ds_->is_transfer_server_running());
+TEST_F(DataServiceTest, DataServerStartStop) {
+    ds_->start_data_server("127.0.0.1", 0, 1);
+    EXPECT_GT(ds_->get_data_port(), 0);
+    ds_->stop_data_server();
 }
 
 TEST_F(DataServiceTest, EnqueueWriteBackAutoStarts) {

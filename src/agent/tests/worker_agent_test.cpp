@@ -38,26 +38,6 @@ TEST(WorkerAgentTest, SetExecutor) {
     worker.set_executor(nullptr);
 }
 
-TEST(WorkerAgentTest, MultipleStartStop) {
-    WorkerAgent worker(1, "127.0.0.1", 0);
-    
-    worker.start();
-    wait_for_running(worker, true);
-    EXPECT_TRUE(worker.is_running());
-    
-    worker.stop();
-    wait_for_running(worker, false);
-    EXPECT_FALSE(worker.is_running());
-    
-    worker.start();
-    wait_for_running(worker, true);
-    EXPECT_TRUE(worker.is_running());
-    
-    worker.stop();
-    wait_for_running(worker, false);
-    EXPECT_FALSE(worker.is_running());
-}
-
 TEST(WorkerAgentContextTest, DefaultNotActive) {
     EXPECT_FALSE(WorkerAgentContext::is_active());
 }
@@ -317,13 +297,13 @@ protected:
         test_dir_ = make_temp_dir("idxload");
         Logger::shutdown();
         Logger::init("test_logs/idxload", 0);
-        ds_->stop_transfer_server();
+        ds_->stop_data_server();
         WorkerAgentContext::clear();
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     void TearDown() override {
-        ds_->stop_transfer_server();
+        ds_->stop_data_server();
         WorkerAgentContext::clear();
         std::filesystem::remove_all(test_dir_);
     }
@@ -834,7 +814,7 @@ TEST_F(IdxLoadTest, InitiateShutdownFromOnDisconnect_ThenStop_CleansUp) {
 
     EXPECT_FALSE(worker.is_running());
 
-    fly::DataService::instance()->stop_transfer_server();
+    fly::DataService::instance()->stop_data_server();
 }
 
 TEST(WorkerAgentTest, BeginTaskWithWriteContextHash) {

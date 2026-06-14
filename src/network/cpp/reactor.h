@@ -3,7 +3,6 @@
 #include <network/cpp/transport.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
-#include <network/cpp/io_thread_pool.h>
 #include <log/cpp/logger.h>
 #include <functional>
 #include <atomic>
@@ -69,16 +68,12 @@ public:
     uint64_t connect(const CMString& host, int port) {
         return transport_->connect(host, port);
     }
-    
-    void set_io_pool(CMSharedPtr<IOThreadPool> pool);
-    CMSharedPtr<IOThreadPool> get_io_pool() const { return io_pool_; }
 
     void set_handler_pool(CMUniquePtr<HandlerThreadPool> pool);
     HandlerThreadPool* get_handler_pool() { return handler_pool_.get(); }
 
 private:
     CMUniquePtr<TransportLayer> transport_;
-    CMSharedPtr<IOThreadPool> io_pool_;
     CMUniquePtr<HandlerThreadPool> handler_pool_;
     
     CMUnorderedMap<uint64_t, CMString> recv_buffers_;

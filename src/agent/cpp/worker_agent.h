@@ -156,7 +156,6 @@ private:
     void on_task_assign(const TaskAssignMessage& msg);
     void on_shutdown(const ShutdownMessage& msg);
     void on_db_path_response(const DbPathResponseMessage& msg);
-    void on_data_request(uint64_t conn_id, const DataRequestMessage& msg);
     void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
     void on_remove_ack(uint64_t conn_id, const RemoveAckMessage& msg);

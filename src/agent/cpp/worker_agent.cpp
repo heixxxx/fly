@@ -30,36 +30,17 @@ void WorkerAgent::start() {
 
 
     auto transport = create_transport("tcp");
-
     transport->listen("0.0.0.0", 0);
-    data_server_port_ = static_cast<int32_t>(transport->get_bound_port());
-    data_server_host_ = ProcessInfo::instance()->data_server_host();
-
-    INFO("data server listening on port {}", data_server_port_);
-
     master_conn_ = transport->connect(master_host_, master_port_);
-
     INFO("connected, master_conn={}", master_conn_);
-
     reactor_ = CMMakeUnique<Reactor>(std::move(transport));
 
+    data_server_host_ = ProcessInfo::instance()->data_server_host();
     auto dsInst = DataService::instance();
     int data_server_threads = static_cast<int>(Config::instance()->get_int("data_server_threads"));
-    dsInst->start_transfer_server(
-        data_server_threads,
-        [this](const TransferResult& result) {
-            DataResponseMessage response;
-            response.object_name_ = result.object_name_;
-            response.success_ = result.success_;
-            response.compressed_data_ = result.compressed_data_;
-            response.py_name_ = result.py_name_;
-            response.write_context_hash_ = result.write_context_hash_;
-            if (!result.success_) {
-                response.error_message_ = result.error_message_;
-            }
-            reactor_->send(result.conn_id_, response);
-        });
-    reactor_->set_io_pool(dsInst->get_transfer_pool());
+    dsInst->start_data_server(data_server_host_, 0, data_server_threads);
+    data_server_port_ = static_cast<int32_t>(dsInst->get_data_port());
+    INFO("data server listening on port {}", data_server_port_);
 
     dsInst->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString, bool> {
         return request_remote_data(name);
@@ -95,11 +76,6 @@ void WorkerAgent::start() {
     reactor_->register_handler<DbPathResponseMessage>(
         [this](uint64_t conn, const DbPathResponseMessage& msg) {
             on_db_path_response(msg);
-        });
-
-    reactor_->register_handler<DataRequestMessage>(
-        [this](uint64_t conn_id, const DataRequestMessage& msg) {
-            on_data_request(conn_id, msg);
         });
 
     reactor_->register_handler<WriteRegisterAckMessage>(
@@ -197,7 +173,7 @@ void WorkerAgent::do_cleanup() {
 
     databases_.clear();
 
-    DataService::instance()->stop_transfer_server();
+    DataService::instance()->stop_data_server();
 
     running_ = false;
     registered_ = false;
@@ -398,7 +374,10 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
 
     registered_ = false;
     running_ = false;
-    heartbeat_running_ = false;
+    {
+        std::lock_guard<std::mutex> lock(heartbeat_mutex_);
+        heartbeat_running_ = false;
+    }
     heartbeat_cv_.notify_all();
     task_queue_cv_.notify_all();
     if (reactor_) {
@@ -487,10 +466,6 @@ void WorkerAgent::request_database_freeze(const CMString& db_id) {
     INFO("Freeze notification sent: db_id={}", db_id);
 }
 
-void WorkerAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
-    DataService::instance()->submit_transfer(conn_id, msg.object_name_, msg.requesting_worker_id_, msg.request_id_);
-}
-
 std::tuple<bool, CMString, CMString, bool> WorkerAgent::request_remote_data(const CMString& object_name) {
      auto location = MetadataClient::query_data_location(
         master_host_, master_port_, object_name);
@@ -499,38 +474,24 @@ std::tuple<bool, CMString, CMString, bool> WorkerAgent::request_remote_data(cons
         return {false, {}, {}, location.can_still_produce_};
     }
 
-    constexpr int kMaxAttempts = 3;
-    constexpr int kTimeoutMs = 30000;
     uint64_t request_id = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) ^
                           static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
 
-    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        auto [success, data, py_name, hash, error] = DataClient::request_compressed_data(
-            location.host_, location.port_, object_name, worker_id_, request_id, kTimeoutMs);
+    auto [success, data, py_name, hash, error] = data_client_pool_.request(
+        location.host_, location.port_, object_name, worker_id_, request_id, 30000);
 
-        if (success) {
-            DataService::instance()->update_remote_idx(object_name, location.worker_id_, location.host_, location.port_);
-            return {true, std::move(data), std::move(py_name), false};
-        }
-
-        if (attempt < kMaxAttempts - 1) {
-            WARN("request_remote_data attempt {}/{} failed for {}, retrying: {}",
-                 attempt + 1, kMaxAttempts, object_name, error);
-            auto recheck = MetadataClient::query_data_location(
-                master_host_, master_port_, object_name);
-            if (!recheck.found_) {
-                return {false, {}, {}, recheck.can_still_produce_};
-            }
-            if (recheck.host_ != location.host_ || recheck.port_ != location.port_) {
-                location = recheck;
-            }
-        } else {
-            ERR("request_remote_data all {} attempts failed for {}: {}",
-                kMaxAttempts, object_name, error);
-        }
+    if (success) {
+        DataService::instance()->update_remote_idx(object_name, location.worker_id_, location.host_, location.port_);
+        return {true, std::move(data), std::move(py_name), false};
     }
 
-    return {false, {}, {}, location.can_still_produce_};
+    auto recheck = MetadataClient::query_data_location(
+        master_host_, master_port_, object_name);
+    if (!recheck.found_) {
+        return {false, {}, {}, recheck.can_still_produce_};
+    }
+
+    return {false, {}, {}, recheck.can_still_produce_};
 }
 
 std::pair<bool, ReadResult> WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,

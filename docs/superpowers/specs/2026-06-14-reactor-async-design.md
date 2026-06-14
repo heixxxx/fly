@@ -659,3 +659,169 @@ Master 进程
 2. Reactor 新增 `post_send()` 接口
 3. Master/Worker 中所有 `reactor_->send()` 改为 `reactor_->post_send()`
 4. 验证：控制消息异步发送，不阻塞 handler 线程
+
+---
+
+## 十一、DataServer/DataClientPool 线程池设计（最终方案）
+
+> 更新日期: 2026-06-14
+> 替代第八节中的 DataServer accept+IO 线程池设计
+
+### 11.1 设计目标
+
+解决 DataServer 连接处理中的线程占用问题。之前方案每个连接独占一个 IO 线程，并发连接数受限于线程数。新方案用 epoll 多路复用消除这一限制。
+
+### 11.2 两类线程池
+
+#### 服务线程（DataServer 侧）
+
+- **池化**：启动时预创建固定数量的服务线程，常驻运行直到 stop。不随请求创建/销毁。
+- **数量**：默认 2 个，通过 config `data_server_threads` 修改
+- **职责**：处理其他 Worker 向本 Worker 的数据请求
+- **连接模型**：长连接——不主动断开，被动等待请求端断开
+- **机制**：
+  - epoll 监听 listen_fd + 所有已 accept 的 client_fd
+  - EPOLLIN 事件 → 从对应 fd recv 请求 → `try_read_local_raw` → send 响应
+  - 一个服务线程可以同时管理数百个连接
+  - 连接空闲时（等待 DATA_NOT_READY 重试），不占线程——epoll 只在有数据可读时唤醒
+
+- **BUSY 机制**：
+  - 保护场景：大对象 `send` 阻塞导致服务线程被占满（如 256MB 数据发送耗时长）
+  - 触发条件：当所有服务线程都在处理 send 阶段时，新连接立即收到 BUSY 响应
+  - 实现方式：服务线程进入 send 阶段时计数 `active_sends++`，accept 新连接时检查 `active_sends == thread_count` 则回复 BUSY
+  - 请求端收到 BUSY 后短退避重试
+
+#### 请求线程（DataClientPool 侧）
+
+- **池化**：启动时预创建固定数量的请求线程，常驻运行直到 stop。不随请求创建/销毁。
+- **数量**：默认 2 个，通过 config `data_client_pool_size` 修改
+- **职责**：处理本 Worker 向其他 Worker 的数据请求（read_object 触发）
+- **并发限制**：支持并发 read_object，但并发度受请求线程池大小限制。当池中所有线程都被占用时，新的 read_object 调用被阻塞，等待有线程归还后才能执行
+- **连接模型**：
+  - 每次 `read_object` 调用从池中获取一个空闲线程
+  - 该线程创建到目标 Worker 的 TCP 连接
+  - 在请求彻底成功/失败前不断开连接
+  - 请求完成后归还线程到池中，关闭连接
+- **DATA_NOT_READY 重试**：
+  - 在同一连接上发送请求 → 收到 DATA_NOT_READY → sleep → 在同一连接上再次发送
+  - 不新建连接，不切换线程
+  - 连接保持直到请求成功或超时
+
+### 11.3 连接复用规则
+
+| 场景 | 连接行为 |
+|------|---------|
+| 单次 read_object | 创建 1 个 TCP 连接，请求完成后关闭 |
+| 同一 read_object 的 DATA_NOT_READY 重试 | 复用同一连接（不新建） |
+| 不同 read_object | 不同连接（不复用） |
+| 服务端响应 | 长连接，不主动 close，等请求端断开 |
+
+### 11.4 服务端 epoll 架构
+
+```
+DataServer 服务线程:
+  epoll_fd = epoll_create1()
+  epoll_ctl(ADD, listen_fd, EPOLLIN)
+
+  while running:
+    events = epoll_wait(epoll_fd, timeout=10ms)
+
+    for event in events:
+      if event.fd == listen_fd:
+        client_fd = accept4(NONBLOCK)
+        epoll_ctl(ADD, client_fd, EPOLLIN)
+        conn_state[client_fd] = READING_HEADER
+
+      elif event has EPOLLIN:
+        fd = event.fd
+        state = conn_state[fd]
+
+        switch state:
+          case READING_HEADER:
+            recv 5 bytes (frame header)
+            if complete → state = READING_PAYLOAD
+
+          case READING_PAYLOAD:
+            recv payload bytes
+            if complete:
+              decode DataRequestMessage
+              try_read_local_raw(object_name)
+              → encode DataResponseMessage
+              send(fd, response)
+              state = READING_HEADER  // 等待下一个请求（长连接）
+
+      elif event has EPOLLHUP/EPOLLERR:
+        close(fd)
+        epoll_ctl(DEL, fd)
+        conn_state.erase(fd)
+```
+
+**关键特性**：
+- `try_read_local_raw` 是非阻塞的——不会卡住服务线程
+- DATA_NOT_READY 响应立即返回——服务线程回到 epoll_wait
+- 连接空闲等待期间（客户端 sleep 1s）不占任何线程
+- 一个服务线程可处理任意数量的连接
+
+### 11.5 请求端线程模型
+
+```
+DataClientPool::request(host, port, object_name, timeout):
+  // 从预创建的线程池中获取空闲线程（池满时阻塞等待）
+  acquire_request_slot()  // 信号量，池满时阻塞
+
+  fd = create_connection(host, port)  // 新建 TCP
+  deadline = now + timeout
+
+  while true:
+    send(fd, DataRequestMessage)
+
+    recv(fd, header + payload)
+    decode DataResponseMessage
+
+    if success:
+      close(fd)
+      release_request_slot()  // 归还线程到池
+      return data
+
+    if error == "DATA_NOT_READY":
+      if now >= deadline:
+        close(fd)
+        release_request_slot()
+        return timeout_error
+      sleep(1s)
+      continue  // 同一 fd，同一线程
+
+    if error == "BUSY":
+      sleep(short_backoff)
+      continue  // 同一 fd
+
+    // OBJECT_NOT_FOUND 或其他错误
+    close(fd)
+    release_request_slot()
+    return error
+```
+
+**关键特性**：
+- 请求线程预创建池化，不随请求创建/销毁
+- 不使用连接池（每次 read_object 新建连接，完成后关闭）
+- DATA_NOT_READY 重试在同一连接上（无 TCP 重建开销）
+- 请求并发度受线程池大小限制，池满时阻塞新请求
+- acquire_request_slot / release_request_slot 保证线程池不超额
+
+### 11.6 与旧设计的区别
+
+| 维度 | 旧设计（第八节） | 新设计（第十一节） |
+|------|----------------|-------------------|
+| 服务端线程 | N 个 IO 线程，每连接独占 | 1-2 个 epoll 线程，多路复用 |
+| 服务端连接 | 短连接（请求后 close） | 长连接（等请求端断开） |
+| 客户端连接 | 连接池复用 | 每次请求新建，完成后关闭 |
+| 并发上限 | 受 IO 线程数限制 | 受 fd 数限制（远大于线程数） |
+| DATA_NOT_READY | 客户端重新 acquire | 同一连接重试 |
+| 连接池 | DataClientPool 维护 fd 池 | 不需要连接池 |
+
+### 11.7 实施步骤
+
+1. **DataServer 改为 epoll 多路复用**——重写 handle_connection 为 epoll 事件驱动
+2. **DataClientPool::request 改为每次新建连接**——移除池复用，同一连接内重试 DATA_NOT_READY
+3. **新增 BUSY 响应**——accept 队列满时返回 BUSY
+4. **移除旧的 IO 线程池**——`pending_fds_` 队列 + io_threads_ 改为 epoll

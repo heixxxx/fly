@@ -120,16 +120,6 @@ TEST(ReactorTest, SendMessage) {
     client.close_all();
 }
 
-TEST(ReactorTest, SetIOThreadPool) {
-    auto transport = create_transport("tcp");
-    Reactor reactor(std::move(transport));
-    
-    auto pool = CMMakeShared<IOThreadPool>(2);
-    reactor.set_io_pool(pool);
-    
-    reactor.run_once(10);
-}
-
 TEST(ReactorTest, StopBeforeRunDoesNotHang) {
     // Regression test for bd1e5df: Reactor::run() could overwrite running_=false
     // with true when stop() was called before reactor thread started.

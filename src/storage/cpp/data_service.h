@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <mutex>
 #include <utility>
-#include <network/cpp/io_thread_pool.h>
 #include <atomic>
 #include <functional>
 #include <string>
@@ -35,16 +34,6 @@ struct RemoteObjectInfo {
     int32_t port_ = 0;
 };
 
-struct TransferResult {
-    uint64_t conn_id_ = 0;
-    CMString object_name_;
-    bool success_ = false;
-    CMString error_message_;
-    CMString compressed_data_;
-    CMString py_name_;
-    CMString write_context_hash_;
-};
-
 enum class CompletionState {
     INCOMPLETE,
     COMPLETE,
@@ -63,6 +52,8 @@ struct LocalObjectInfo {
     std::mutex cv_mutex_;
     std::condition_variable cv_;
 };
+
+class DataServer;
 
 class DataService {
 public:
@@ -160,6 +151,8 @@ public:
 
     std::pair<bool, CMString> try_read_local_raw(const CMString& object_name);
 
+    bool is_write_in_progress(const CMString& object_name) const;
+
     std::tuple<bool, CMString, CMString> try_read_local_raw_or_wait(
         const CMString& object_name, int timeout_ms = -1);
 
@@ -180,17 +173,13 @@ public:
     void cleanup_temp_entries(const CMString& db_id);
 
     // ============================================================
-    // Transfer Server
+    // Data Server (independent data transfer network layer)
     // ============================================================
 
-    using TransferCallback = std::function<void(const TransferResult&)>;
-
-    void start_transfer_server(int thread_count, TransferCallback callback);
-    void stop_transfer_server();
-    bool is_transfer_server_running() const;
-    void submit_transfer(uint64_t conn_id, const CMString& object_name,
-                          uint64_t requesting_worker_id = 0, uint64_t request_id = 0);
-    CMSharedPtr<IOThreadPool> get_transfer_pool() const;
+    void start_data_server(const CMString& host, int port, int io_thread_count);
+    void stop_data_server();
+    int get_data_port() const;
+    CMString get_write_context_hash(const CMString& object_name) const;
 
     // ============================================================
     // Write-Back Queue
@@ -266,10 +255,7 @@ private:
     int64_t temp_max_bytes_ = 0;
     CMUniquePtr<fly::TempStore> temp_eviction_store_;
 
-    CMSharedPtr<IOThreadPool> transfer_pool_;
-    TransferCallback transfer_callback_;
-    std::atomic<bool> transfer_running_{false};
-    CMUnorderedMap<CMString, bool> active_transfers_;
+    CMUniquePtr<DataServer> data_server_;
 
     CMUniquePtr<fly::WriteBackQueue> write_back_queue_;
 

@@ -1,5 +1,4 @@
 #include <network/cpp/reactor.h>
-#include <network/cpp/io_thread_pool.h>
 #include <log/cpp/logger.h>
 #include <algorithm>
 
@@ -79,9 +78,6 @@ void Reactor::run() {
     running_ = true;
     while (running_) {
         run_once(10);
-        if (io_pool_) {
-            io_pool_->process_completions();
-        }
     }
 }
 
@@ -106,10 +102,6 @@ void Reactor::run_once(int timeout_ms) {
 void Reactor::stop() {
     stop_requested_ = true;
     running_ = false;
-}
-
-void Reactor::set_io_pool(CMSharedPtr<IOThreadPool> pool) {
-    io_pool_ = pool;
 }
 
 void Reactor::set_handler_pool(CMUniquePtr<HandlerThreadPool> pool) {

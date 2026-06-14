@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <cstring>
 #include <chrono>
+#include <thread>
+#include <chrono>
 
 namespace fly {
 
@@ -48,7 +50,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_com
 
     if (!net_send_all(fd, encoded_req.data(), encoded_req.size())) {
         ::close(fd);
-        return {false, "", "", "", "Failed to send compressed request for " + object_name};
+        return {false, "", "", "", "Failed to send request for " + object_name};
     }
 
     char header[5] = {};
@@ -90,7 +92,8 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_com
         return {false, "", "", "", "Failed to decode response for " + object_name};
     }
 
-    return {response.success_, response.compressed_data_, response.py_name_, response.write_context_hash_, response.error_message_};
+    return {response.success_, response.compressed_data_, response.py_name_,
+            response.write_context_hash_, response.error_message_};
 }
 
 }  // namespace fly

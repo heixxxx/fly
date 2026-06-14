@@ -101,7 +101,7 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"large_file_threshold_kb", 65536},  // 64MB in KB (user-configurable)
     {"block_size", 134217728},
     {"track_writes", 0},
-    {"data_server_threads", 1},
+    {"data_server_threads", 4},
     {"compression_level", 0},
     {"serialize_chunk_size", 4194304},
     {"dependency_update_mode", 0},

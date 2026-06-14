@@ -101,11 +101,6 @@ void MasterAgent::start() {
             on_data_query_dispatch(conn_id, msg);
         });
 
-    reactor_->register_handler<DataRequestMessage>(
-        [this](uint64_t conn_id, const DataRequestMessage& msg) {
-            on_data_request(conn_id, msg);
-        });
-
     reactor_->register_handler<WriteRegisterMessage>(
         [this](uint64_t conn_id, const WriteRegisterMessage& msg) {
             on_write_register(conn_id, msg);
@@ -163,31 +158,17 @@ void MasterAgent::start() {
         if (drain_thread_.joinable()) {
             drain_thread_.join();
         }
-        DataService::instance()->stop_transfer_server();
+        DataService::instance()->stop_data_server();
         reactor_.reset();
     });
     reactor_->wait_until_running();
     running_ = true;
 
-    data_server_port_ = static_cast<int32_t>(port_);
-    DataService::instance()->register_worker(0, host_, port_);
-
     auto dsInst = DataService::instance();
     int data_server_threads = static_cast<int>(Config::instance()->get_int("data_server_threads"));
-    dsInst->start_transfer_server(
-        data_server_threads,
-        [this](const TransferResult& result) {
-            DataResponseMessage response;
-            response.object_name_ = result.object_name_;
-            response.success_ = result.success_;
-            response.compressed_data_ = result.compressed_data_;
-            response.py_name_ = result.py_name_;
-            if (!result.success_) {
-                response.error_message_ = result.error_message_;
-            }
-            reactor_->send(result.conn_id_, response);
-        });
-    reactor_->set_io_pool(dsInst->get_transfer_pool());
+    dsInst->start_data_server(host_, 0, data_server_threads);
+    data_server_port_ = static_cast<int32_t>(dsInst->get_data_port());
+    DataService::instance()->register_worker(0, host_, data_server_port_);
 
     dsInst->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString, bool> {
         return request_remote_data(name);
@@ -250,7 +231,7 @@ void MasterAgent::do_drain_and_stop() {
     }
 
     if (reactor_) {
-        DataService::instance()->stop_transfer_server();
+        DataService::instance()->stop_data_server();
 
         reactor_->stop();
         if (reactor_thread_.joinable()) {
@@ -873,11 +854,6 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
     }
 
     reactor_->send(conn_id, response);
-}
-
-void MasterAgent::on_data_request(uint64_t conn_id, const DataRequestMessage& msg) {
-    INFO("DataRequest for object: {}", msg.object_name_);
-    DataService::instance()->submit_transfer(conn_id, msg.object_name_, msg.requesting_worker_id_, msg.request_id_);
 }
 
 void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg) {

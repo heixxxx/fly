@@ -1,4 +1,5 @@
 #include <storage/cpp/data_service.h>
+#include <storage/cpp/data_server.h>
 #include <storage/cpp/data_reader.h>
 #include <storage/cpp/temp_store.h>
 #include <storage/cpp/compressor.h>
@@ -48,6 +49,9 @@ ReadResult decompress_raw(const CMString& raw) {
 }  // namespace
 
 DataService::~DataService() {
+    if (data_server_) {
+        data_server_->stop();
+    }
     if (write_back_queue_) {
         write_back_queue_->drain();
         write_back_queue_->stop();
@@ -60,7 +64,7 @@ DataService::~DataService() {
 
 void DataService::reset() {
     std::lock_guard<std::mutex> lock(mutex_);
-    stop_transfer_server();
+    stop_data_server();
     drain_write_back();
     stop_write_back();
     local_idx_.clear();
@@ -568,6 +572,16 @@ std::pair<bool, CMString> DataService::try_read_local_raw(const CMString& object
     return {true, std::move(raw)};
 }
 
+bool DataService::is_write_in_progress(const CMString& object_name) const {
+    auto [db_id, short_name] = split_full(object_name);
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto db_it = local_idx_.find(db_id);
+    if (db_it == local_idx_.end()) return false;
+    auto it = db_it->second.find(short_name);
+    if (it == db_it->second.end() || !it->second) return false;
+    return it->second->completion_state_ == CompletionState::INCOMPLETE;
+}
+
 std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
         const CMString& object_name, int timeout_ms) {
     auto [db_id, short_name] = split_full(object_name);
@@ -904,102 +918,39 @@ std::tuple<bool, CMString, CMString, CMString, bool> DataService::read_raw_compr
 }
 
 // ============================================================
-// Transfer Server
+// Data Server (independent data transfer network layer)
 // ============================================================
 
-void DataService::start_transfer_server(int thread_count, TransferCallback callback) {
-    transfer_callback_ = std::move(callback);
-    transfer_pool_ = CMMakeShared<IOThreadPool>(thread_count);
-    transfer_pool_->start();
-    transfer_running_ = true;
+void DataService::start_data_server(const CMString& host, int port, int io_thread_count) {
+    data_server_ = CMMakeUnique<DataServer>(*this, io_thread_count);
+    data_server_->start(host, port);
 }
 
-void DataService::stop_transfer_server() {
-    transfer_running_ = false;
-    if (transfer_pool_) {
-        transfer_pool_->stop();
-        transfer_pool_.reset();
+void DataService::stop_data_server() {
+    if (data_server_) {
+        data_server_->stop();
+        data_server_.reset();
     }
-    transfer_callback_ = nullptr;
 }
 
-bool DataService::is_transfer_server_running() const {
-    return transfer_running_;
-}
-
-void DataService::submit_transfer(uint64_t conn_id, const CMString& object_name,
-                                   uint64_t requesting_worker_id, uint64_t request_id) {
-    if (!transfer_running_ || !transfer_pool_) return;
-
-    CMString transfer_key = std::to_string(requesting_worker_id) + ":" +
-                            CMString(object_name) + ":" +
-                            std::to_string(request_id);
-
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (active_transfers_.count(transfer_key)) {
-            DBG("[TEMP-TRANSFER] duplicate transfer skipped: obj={}, conn_id={}, requester={}, req_id={}",
-                object_name, conn_id, requesting_worker_id, request_id);
-            return;
-        }
-        active_transfers_[transfer_key] = true;
+int DataService::get_data_port() const {
+    if (data_server_) {
+        return data_server_->get_port();
     }
+    return 0;
+}
 
-    DBG("[TEMP-TRANSFER] submit_transfer START: obj={}, conn_id={}, requester={}, req_id={}",
-        object_name, conn_id, requesting_worker_id, request_id);
-
-    auto result = CMMakeShared<TransferResult>();
-    result->conn_id_ = conn_id;
-    result->object_name_ = object_name;
-
-    {
-        auto [db_id, short_name] = split_full(object_name);
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto db_it = local_idx_.find(db_id);
-        if (db_it != local_idx_.end()) {
-            auto it = db_it->second.find(short_name);
-            if (it != db_it->second.end() && it->second) {
-                DBG("[TEMP-TRANSFER] local_idx entry: obj={}, is_temp={}, entries_size={}, state={}",
-                    object_name, it->second->is_temp_, it->second->entries_.size(),
-                    static_cast<int>(it->second->completion_state_));
-                if (!it->second->entries_.empty()) {
-                    result->write_context_hash_ = it->second->entries_.back().write_context_hash_;
-                }
-            } else {
-                DBG("[TEMP-TRANSFER] NOT in local_idx: obj={}, db_id={}, short_name={}", object_name, db_id, short_name);
-            }
-        } else {
-            DBG("[TEMP-TRANSFER] db_id NOT in local_idx: obj={}, db_id={}", object_name, db_id);
+CMString DataService::get_write_context_hash(const CMString& object_name) const {
+    auto [db_id, short_name] = split_full(object_name);
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto db_it = local_idx_.find(db_id);
+    if (db_it != local_idx_.end()) {
+        auto it = db_it->second.find(short_name);
+        if (it != db_it->second.end() && it->second && !it->second->entries_.empty()) {
+            return it->second->entries_.back().write_context_hash_;
         }
     }
-
-    auto callback = transfer_callback_;
-
-    transfer_pool_->submit(
-        [this, result, transfer_key]() {
-            auto [found, raw_data, py_name] = try_read_local_raw_or_wait(result->object_name_, -1);
-            result->success_ = found;
-            if (found) {
-                result->compressed_data_ = std::move(raw_data);
-                result->py_name_ = std::move(py_name);
-            } else {
-                result->error_message_ = "Object not found (raw): " + result->object_name_;
-            }
-        },
-        [this, callback, result, transfer_key]() {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                active_transfers_.erase(transfer_key);
-            }
-            if (callback) {
-                callback(*result);
-            }
-        }
-    );
-}
-
-CMSharedPtr<IOThreadPool> DataService::get_transfer_pool() const {
-    return transfer_pool_;
+    return {};
 }
 
 // ============================================================

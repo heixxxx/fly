@@ -165,7 +165,6 @@ FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
     })
     FLY_EXPORT_METHOD("drain_write_back", &fly::DataService::drain_write_back)
     FLY_EXPORT_METHOD("stop_write_back", &fly::DataService::stop_write_back)
-    FLY_EXPORT_METHOD("stop_transfer_server", &fly::DataService::stop_transfer_server)
     FLY_EXPORT_METHOD("has_database", &fly::DataService::has_database);
 
 FLY_EXPORT_FUNCTION("ex_stg_get_data_service", []() { return fly::DataService::instance(); });
