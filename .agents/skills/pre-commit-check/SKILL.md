@@ -71,7 +71,15 @@ Any **new feature, new behavior, or changed behavior** MUST be reflected in docu
 
 **The rule: "Not mentioned in docs before" is NOT a reason to skip documentation. New behavior always requires documentation.**
 
-### Step 4: Present Summary to User
+### Step 4: Update Documentation (MANDATORY, before commit)
+
+Documentation updates are **mandatory and automatic** — do NOT ask the user whether to update docs. If Step 3 found stale references or missing coverage:
+
+1. **Update all flagged docs immediately** — fix stale references, add new behavior docs
+2. Include updated doc files in the same commit as code changes
+3. Do NOT present a separate "Required Doc Updates" section asking for permission
+
+### Step 5: Present Summary to User
 
 Present this format:
 
@@ -84,36 +92,26 @@ Present this format:
 ### Code Changes
 - [file]: [what changed]
 
-### Documentation Check
-- [x] CLAUDE.md — [up to date / needs update: reason]
-- [x] docs/ grep for old paths — [N stale references found / clean]
-- [x] docs/NEW_MODULE_GUIDE.md — [up to date / needs update: reason]
-- [x] docs/DEVELOPMENT_GUIDELINES.md — [up to date / needs update: reason]
-- [x] docs/architecture*.md — [up to date / needs update: reason]
-- [x] docs/<module>/module.md — [up to date / needs update: reason]
-
-### Required Doc Updates (if any)
-1. [specific file]: [what to add/change]
-2. ...
+### Documentation Updates (already applied)
+- [doc file]: [what was updated]
+- ...
 
 ### Proposed Commit Message
 [type]: [message]
 ```
 
-### Step 5: Wait for User Confirmation
+### Step 6: Wait for User Confirmation
 
 Ask user:
 - Approve commit as-is?
-- Update docs first? (then update and re-present)
 - Modify commit message?
 
-### Step 6: Execute
+### Step 7: Execute
 
 Only after user confirms:
-1. If docs need update → update docs, present diff, get re-confirmation
-2. `git add` relevant files
-3. `git commit` with approved message
-4. If user said push → `git push`
+1. `git add` all relevant files (code + docs)
+2. `git commit` with approved message
+3. If user said push → `git push`
 
 ## Fast Path: Non-Code Changes
 
