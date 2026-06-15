@@ -41,7 +41,7 @@ TEST_F(DataTransferTest, DataServiceStartDataServer) {
 }
 
 TEST_F(DataTransferTest, DataServerReturnsObjectNotFoundForUnknownObject) {
-    std::string db_id(32, 'b');
+    std::string db_id(fly::db_id_len(), 'b');
     ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     ds_->start_data_server("127.0.0.1", 0, 2);
@@ -56,7 +56,7 @@ TEST_F(DataTransferTest, DataServerReturnsObjectNotFoundForUnknownObject) {
 }
 
 TEST_F(DataTransferTest, DataServerReturnsDataForCompletedWrite) {
-    std::string db_id(32, 'c');
+    std::string db_id(fly::db_id_len(), 'c');
     ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     std::string full = db_id + ":myobj";
@@ -98,7 +98,7 @@ TEST_F(DataTransferTest, DataServerReturnsDataForCompletedWrite) {
 }
 
 TEST_F(DataTransferTest, DataClientPoolRetriesOnDataNotReady) {
-    std::string db_id(32, 'd');
+    std::string db_id(fly::db_id_len(), 'd');
     ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     std::string full = db_id + ":myobj";
@@ -149,7 +149,7 @@ TEST_F(DataTransferTest, DataClientPoolRetriesOnDataNotReady) {
 }
 
 TEST_F(DataTransferTest, DataServerHandlesConcurrentRequestsBeyondThreadCount) {
-    std::string db_id(32, 'e');
+    std::string db_id(fly::db_id_len(), 'e');
     ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     for (int i = 0; i < 6; ++i) {

@@ -17,7 +17,7 @@ static CMString write_raw(Database& db, const CMString& name, const CMString& da
 
 static CMString db32(const CMString& hint) {
     CMString r = hint;
-    r.resize(32, '_');
+    r.resize(fly::db_id_len(), '_');
     return r;
 }
 

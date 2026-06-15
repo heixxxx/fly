@@ -2,6 +2,16 @@
 
 ---
 
+## 2026-06-15: db_id 生成策略重构（UUID v4 → path-hash + 随机）
+
+**原因**: db_id 从 UUID v4（32 hex）改为 10-char base62（4 char path-hash 前缀 + 6 char 随机后缀）。同路径 → 同前缀，使路径迁移后 load 旧 db + 原路径新建的碰撞可被检测。
+
+| 文档 | 变更 |
+|------|------|
+| docs/python-api/module.md | §open_db 路径检测 db_id 格式说明（UUID v4 → 10-char base62）；db_id 生成段重写（path-hash 前缀 + 随机后缀 + 碰撞检测） |
+
+---
+
 ## 2026-06-01: 用户脚本 task 支持 + 两层读缓存
 
 | 文档 | 变更 |

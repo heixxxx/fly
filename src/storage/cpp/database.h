@@ -75,7 +75,7 @@ public:
 private:
     bool check_frozen();
     void create_frozen_marker();
-    CMString generate_db_id();
+    CMString generate_db_id(const CMString& base_path);
     void ensure_directory_exists(const CMString& path);
     CMString full_name(const CMString& short_name) const;
 

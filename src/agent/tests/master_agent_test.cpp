@@ -12,7 +12,7 @@ using namespace fly::test;
 
 static CMString db32(const CMString& hint) {
     CMString r = hint;
-    r.resize(32, '_');
+    r.resize(fly::db_id_len(), '_');
     return r;
 }
 
@@ -830,13 +830,13 @@ TEST(MasterAgentTest, GetOrCreateDatabase) {
     ASSERT_NE(db, nullptr);
 
     CMString db_id = db->get_db_id();
-    EXPECT_EQ(db_id.size(), 32u);
+    EXPECT_EQ(db_id.size(), fly::db_id_len());
     EXPECT_FALSE(db->get_writer_id().empty());
     EXPECT_EQ(db->get_base_path(), tmpdir1.path());
 
     auto db2 = master.get_or_create_database(tmpdir2.path());
     ASSERT_NE(db2, nullptr);
-    EXPECT_EQ(db2->get_db_id().size(), 32u);
+    EXPECT_EQ(db2->get_db_id().size(), fly::db_id_len());
     EXPECT_NE(db->get_db_id(), db2->get_db_id());
 
     DataService::instance()->unregister_database(db->get_db_id());

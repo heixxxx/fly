@@ -8,7 +8,7 @@ using namespace fly::test;
 
 static CMString db32(const CMString& hint) {
     CMString r = hint;
-    r.resize(32, '_');
+    r.resize(fly::db_id_len(), '_');
     return r;
 }
 

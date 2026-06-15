@@ -16,9 +16,10 @@
 namespace fly {
 
 namespace {
-
-constexpr size_t DB_ID_LEN = 32;
-
+// Single source of truth for db_id length; exposed externally via the
+// inline db_id_len() function in the header. Kept here as an implementation
+// detail — split_full() uses it directly for fixed-offset parsing.
+constexpr size_t kDbIdLen = db_id_len();
 }  // namespace
 
 CMSharedPtr<DataService> DataService::instance() {
@@ -422,8 +423,11 @@ RemoteObjectInfo DataService::get_worker_address(uint64_t worker_id) const {
 // ============================================================
 
 std::pair<CMString, CMString> DataService::split_full(const CMString& full) {
-    if (full.size() > DB_ID_LEN && full[DB_ID_LEN] == ':') {
-        return {full.substr(0, DB_ID_LEN), full.substr(DB_ID_LEN + 1)};
+    // Fixed-length split: db_id is exactly kDbIdLen base62 chars followed by ':'.
+    // Avoids a separator scan; relies on the invariant that every full object
+    // name produced by Database::full_name() is "<db_id>:<short_name>".
+    if (full.size() > kDbIdLen && full[kDbIdLen] == ':') {
+        return {full.substr(0, kDbIdLen), full.substr(kDbIdLen + 1)};
     }
     return {CMString{}, full};
 }

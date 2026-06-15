@@ -238,14 +238,17 @@ TEST_F(DatabaseTest, GetObjNameDifferentDbDifferentResult) {
     EXPECT_NE(db_a.get_obj_name("output/result"), db_b.get_obj_name("output/result"));
 }
 
-TEST_F(DatabaseTest, DbIdIsUUIDFormat) {
+TEST_F(DatabaseTest, DbIdIsBase62Format) {
     CMString base_path = test_dir_ + "/uuid_test";
     Database db(base_path);
     CMString db_id = db.get_db_id();
-    // UUID v4: 32 hex chars
-    EXPECT_EQ(db_id.size(), 32u);
+    // db_id: 4 path-hash + 6 random = 10 base62 chars
+    EXPECT_EQ(db_id.size(), fly::db_id_len());
     for (char c : db_id) {
-        EXPECT_TRUE((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+        EXPECT_TRUE((c >= '0' && c <= '9')
+                    || (c >= 'a' && c <= 'z')
+                    || (c >= 'A' && c <= 'Z'))
+            << "non-base62 char in db_id: " << c;
     }
 }
 
@@ -705,6 +708,31 @@ TEST_F(DatabaseTest, MultipleObjectsSameDbMeta) {
 
     DbMeta meta = db.load_meta();
     EXPECT_EQ(meta.db_id_, db.get_db_id());
+}
+
+// db_id = <4-char path-hash prefix><6-char random suffix>.
+// Same base_path -> same prefix (deterministic), different suffix (random).
+// Different base_path -> different prefix with overwhelming probability.
+TEST_F(DatabaseTest, DbIdPrefixIsPathDerived) {
+    constexpr size_t kPrefixLen = 4;
+    CMString path_a = test_dir_ + "/prefix_a";
+    CMString path_b = test_dir_ + "/prefix_b";
+
+    // Two dbs on the SAME path: identical prefix, different full id.
+    Database db_a1(path_a);
+    Database db_a2(path_a);
+    CMString id_a1 = db_a1.get_db_id();
+    CMString id_a2 = db_a2.get_db_id();
+    EXPECT_EQ(id_a1.substr(0, kPrefixLen), id_a2.substr(0, kPrefixLen))
+        << "same path must yield same prefix";
+    EXPECT_NE(id_a1, id_a2)
+        << "random suffix must differ between two dbs on the same path";
+
+    // A db on a DIFFERENT path: prefix differs.
+    Database db_b(path_b);
+    CMString id_b = db_b.get_db_id();
+    EXPECT_NE(id_a1.substr(0, kPrefixLen), id_b.substr(0, kPrefixLen))
+        << "different paths should yield different prefixes";
 }
 
 }

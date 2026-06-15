@@ -12,9 +12,12 @@ static CMString write_raw(Database& db, const CMString& name, const CMString& da
     return db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
 }
 
+// Generate a fixed-length db_id (canonical db_id_len()). Uses '_' padding
+// (a base62-safe filler) so the result never contains ':' — split_full() can
+// parse it by fixed offset. Kept as db32() for call-site compatibility.
 static CMString db32(const CMString& hint) {
     CMString r = hint;
-    r.resize(32, '_');
+    r.resize(fly::db_id_len(), '_');
     return r;
 }
 
@@ -412,8 +415,8 @@ TEST_F(DataServiceTest, ShortNameWithColonsHandledCorrectly) {
     EXPECT_TRUE(ds_->has_local_object(full));
 }
 
-TEST_F(DataServiceTest, DbIdExactly32Chars) {
-    CMString db_id(32, 'a');
+TEST_F(DataServiceTest, DbIdCanonicalLen) {
+    CMString db_id(fly::db_id_len(), 'a');
     CMString full = db_id + ":my_obj";
 
     IndexEntry entry;

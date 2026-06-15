@@ -417,7 +417,7 @@ restart_failed_tasks("/path/to/failed_tasks.bin")
 
 `open_db(path)` 检测目标路径是否已包含数据库（通过 `_DB_META` 文件判断）：
 
-- **路径无 DB**: 直接在 `path` 创建新数据库，db_id 为 UUID v4（32 hex chars）
+- **路径无 DB**: 直接在 `path` 创建新数据库，db_id 为 10-char base62（4 char path-hash 前缀 + 6 char 随机后缀）
 - **路径已有 DB**: 自动递增路径 `path.1`, `path.2`... 并打印 WARN 日志
 
 ```python
@@ -428,7 +428,12 @@ db2 = open_db("/data/project")       # WARN: 自动创建在 /data/project.1
 db3 = open_db("/data/project")       # WARN: 自动创建在 /data/project.2
 ```
 
-**db_id 生成**: UUID v4 随机生成，与路径无关。即使 DB 被移动到新路径，db_id 也不变（持久化在 `_DB_META` 中）。
+**db_id 生成**: `<4-char path-hash><6-char random>` = 10-char base62。
+- **前缀**：base_path 的 FNV-1a 32-bit hash 映射到 4 个 base62 字符（同路径 → 同前缀）。
+- **后缀**：6 个随机 base62 字符（~35.7 bit 熵）。
+- **碰撞检测**：生成时若 id 已被 `DataService` 注册（如路径迁移后 load 了旧 db，又在原路径新建），重抽随机后缀重试。
+
+`load_db` 从 `_DB_META` 读回原 db_id（不重新生成），故 DB 迁移后 id 不变。
 
 ---
 

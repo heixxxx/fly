@@ -16,6 +16,12 @@
 
 namespace fly {
 
+// Canonical db_id length. db_id is base62 (4 path-hash + 6 random chars),
+// followed by ':' then the short object name. Used to split a full object name
+// at a fixed offset (no separator scan). Defined as a function over an internal
+// constant so the length stays an implementation detail of the .cpp.
+inline constexpr size_t db_id_len() { return 10; }
+
 struct RemoteObjectMeta {
     CMVector<uint64_t> workers_;
     uint64_t read_count_ = 0;

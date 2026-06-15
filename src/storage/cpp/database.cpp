@@ -12,9 +12,8 @@
 #include <chrono>
 #include <functional>
 #include <random>
-#include <sstream>
-#include <iomanip>
 #include <istream>
+#include <cassert>
 
 namespace fs = std::filesystem;
 
@@ -22,7 +21,7 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
     : base_path_(base_path)
     , data_path_(data_path)
     , writer_id_(generate_writer_id())
-    , db_id_(existing_db_id.empty() ? generate_db_id() : existing_db_id)
+    , db_id_(existing_db_id.empty() ? generate_db_id(base_path) : existing_db_id)
     , host_(host) {
     (void)worker_id;  // worker_id kept for API compat; writer_id_ is used for file naming
 
@@ -451,24 +450,62 @@ void Database::append_worker_info_to_meta(const WorkerInfo& info) {
         info.worker_id_, info.hostname_);
 }
 
-CMString Database::generate_db_id() {
-    // UUID v4 (random), 32 hex chars without hyphens
+CMString Database::generate_db_id(const CMString& base_path) {
+    // Format: <4 char path-hash><6 char random> = 10 char base62
+    //   - path-hash (deterministic): FNV-1a 32-bit of base_path -> prefix base62 chars.
+    //     Same path -> same prefix. Enables collision detection when a migrated db
+    //     is loaded (its id occupies db_paths_) and a new db is then created on the
+    //     original path: identical prefix makes the collision observable.
+    //   - random suffix: remaining base62 chars (~35.7 bit). Re-rolled on collision retry.
+    static constexpr char kBase62[] =
+        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    static constexpr uint64_t kBase = 62;
+    static constexpr size_t kPrefixLen = 4;  // path-hash chars (deterministic)
+    static constexpr size_t kSuffixLen = 6;  // random chars
+    static_assert(kPrefixLen + kSuffixLen == 10, "prefix+suffix length mismatch");
+    // Runtime guard: keep in sync with the canonical db_id_len(). (A static_assert
+    // on the inline constexpr function is rejected by GCC via virtual includes.)
+    assert(kPrefixLen + kSuffixLen == fly::db_id_len());
+
+    // --- Deterministic prefix: FNV-1a 32-bit over base_path ---
+    uint32_t hash = 2166136261u;
+    for (char c : base_path) {
+        hash ^= static_cast<uint8_t>(c);
+        hash *= 16777619u;
+    }
+    uint32_t prefix_val = hash % (kBase * kBase * kBase * kBase);  // 62^kPrefixLen
+    char prefix[kPrefixLen];
+    for (int i = kPrefixLen - 1; i >= 0; --i) {
+        prefix[i] = kBase62[prefix_val % kBase];
+        prefix_val /= kBase;
+    }
+
+    // --- Random suffix (re-rolled on collision) ---
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<uint32_t> dist;
+    std::uniform_int_distribution<int> dist(0, 61);
 
-    uint32_t parts[4] = {dist(gen), dist(gen), dist(gen), dist(gen)};
-    // Set version (4) and variant (10xx)
-    parts[2] = (parts[2] & 0x0FFFFFFFu) | 0x40000000u;
-    parts[3] = (parts[3] & 0x3FFFFFFFu) | 0x80000000u;
-
-    std::stringstream ss;
-    ss << std::hex << std::setfill('0');
-    ss << std::setw(8) << parts[0]
-       << std::setw(8) << parts[1]
-       << std::setw(8) << parts[2]
-       << std::setw(8) << parts[3];
-    return ss.str();
+    auto ds = fly::DataService::instance();
+    constexpr int kMaxRetries = 10;
+    for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
+        char suffix[kSuffixLen];
+        for (size_t i = 0; i < kSuffixLen; ++i) {
+            suffix[i] = kBase62[dist(gen)];
+        }
+        CMString id(prefix, kPrefixLen);
+        id.append(suffix, kSuffixLen);
+        if (!ds->has_database(id)) {
+            return id;
+        }
+        WARN("db_id collision on prefix '{}', retrying (attempt {}/{})", id.substr(0, kPrefixLen), attempt + 1, kMaxRetries);
+    }
+    // Extremely unlikely (62^kSuffixLen ~ 56 billion suffix space). Return the last candidate
+    // rather than blocking construction; DataService registration will surface any
+    // real conflict downstream.
+    ERR("db_id collision exhausted retries for path '{}'", base_path);
+    CMString fallback(prefix, kPrefixLen);
+    for (size_t i = 0; i < kSuffixLen; ++i) fallback.push_back(kBase62[dist(gen)]);
+    return fallback;
 }
 
 void Database::ensure_directory_exists(const CMString& path) {
