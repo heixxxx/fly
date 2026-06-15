@@ -90,7 +90,7 @@
   - Decompression loop duplicated 5× across `storage_export.cpp`, `data_service.cpp`
   - `recv_exact()`/`send_all()` duplicated in `data_client.cpp`, `metadata_client.cpp`
   - DataService `try_read_local/raw/raw_or_wait/or_wait` 4 methods with similar logic
-- **Fix Applied**: Extracted shared utilities into `src/network/cpp/net_utils.h/cpp` (recv_exact, send_all) and `src/storage/cpp/decompress_helper.h/cpp` (decompression loop). DataService internal reorganization with extracted helper methods.
+- **Fix Applied**: 原先提取为 `src/network/cpp/net_utils.h/cpp`（recv_exact, send_all）。网络层抽象重构后所有客户端改用 `Transport`/`ConnectionManager`，`net_utils` 已作为死代码删除（见 2026-06-14 网络层重构）。Decompression loop 仍在 `src/storage/cpp/decompress_helper.h/cpp`。
 
 ### P2-13: std::endl flushes every log line
 - **Status**: FIXED ✅

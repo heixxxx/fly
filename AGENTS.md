@@ -120,7 +120,7 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 
 ```
 src/storage/    → Layer 1: Database, DataService, DataWriter, DataReader, CompressingStreamBuf
-src/network/    → Layer 2: Reactor, TCP transport, message protocol (27 msg types + IdxLoad)
+src/network/    → Layer 2: Transport 抽象 + EpollMultiplexer + ConnectionManager + Reactor + message protocol (33 msg types, 含 IdxLoadCommand/Ack)
 src/task/       → Layer 3: DependencyGraph, TaskScheduler, WorkerManager
 src/agent/      → Layer 4: MasterAgent, WorkerAgent, TaskExecutor
 src/core/       → Config (shared), ProcessInfo (per-process)

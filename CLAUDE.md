@@ -142,9 +142,9 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 | `epoll_multiplexer.h/cpp` | EpollMultiplexer 抽象接口 + 实现（事件复用） |
 | `connection_manager.h` | ConnectionManager 抽象接口（conn_id 管理 + 事件分发） |
 | `tcp_connection_manager.h/cpp` | TcpConnectionManager — 基于 Transport+EpollMultiplexer |
-| `reactor.h/cpp` | 单线程事件循环 |
+| `reactor.h/cpp` | 单线程事件循环（持有 ConnectionManager） |
 | `message_protocol.h/cpp` | 二进制帧协议 |
-| `message_types.h` | 27 种消息结构定义（含 MessageHeader）
+| `message_types.h` | 33 种消息枚举 / 29 种消息结构定义（含 MessageHeader，含 IdxLoadCommand/Ack）
 
 ### 任务系统层 (src/task/)
 

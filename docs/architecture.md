@@ -670,9 +670,12 @@ fly/
 │   │
 │   ├── network/              # 网络层 (Layer 2)
 │   │   ├── cpp/
-│   │   │   ├── reactor.h/cpp
-│   │   │   ├── transport.h/cpp
-│   │   │   ├── tcp_transport.cpp
+│   │   │   ├── transport_interface.h        # Transport 抽象（socket 薄包装）
+│   │   │   ├── tcp_socket.h/cpp             # TCPSocketTransport — POSIX 实现
+│   │   │   ├── epoll_multiplexer.h/cpp      # EpollMultiplexer 抽象 + 实现
+│   │   │   ├── connection_manager.h         # ConnectionManager 抽象（conn_id + 事件）
+│   │   │   ├── tcp_connection_manager.h/cpp # TcpConnectionManager（Transport+Epoll）
+│   │   │   ├── reactor.h/cpp                # 单线程事件循环
 │   │   │   ├── message_protocol.h/cpp
 │   │   │   └── message_types.h
 │   │   ├── export/network_export.cpp
@@ -726,8 +729,9 @@ fly/
   - DataService 统一索引（local_idx + remote_idx + worker_registry）
   - 异步 WriteBackQueue
 - **Layer 2**：网络层（Reactor, TCP, 消息协议）
-  - 27种消息结构全部定义 + IdxLoadCommand/Ack（ConfigSyncMessage 已移除，改用文件预加载）
-  - TransportLayer 抽象（移除 accept()，新增 stop_listening()）
+  - Transport 抽象（socket 薄包装）+ EpollMultiplexer（事件复用）+ ConnectionManager（conn_id 管理 + 事件分发，TCP 实现为 TcpConnectionManager）
+  - 33 种消息枚举 / 29 种消息结构定义，含 IdxLoadCommand/Ack（ConfigSyncMessage 已移除，改用文件预加载）
+  - ConnectionManager 抽象（listen/connect/send/recv/poll，conn_id ↔ fd 映射）
   - Worker 数据传输（独立 DataClient 连接）
   - Config 同步：master 启动 worker 前写入 config 文件，worker 初始化时从文件加载
   - IdxLoadCommand/Ack：定向 idx 加载，按 hostname 分配 worker

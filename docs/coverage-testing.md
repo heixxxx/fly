@@ -197,7 +197,6 @@ genhtml /tmp/coverage_html_ready.info \
 | task_manager.cpp | 100% | 100% | 79 | 优秀 |
 | temp_store.cpp | 100% | 100% | 88 | 优秀 |
 | heartbeat_monitor.cpp | 100% | 100% | 21 | 优秀 |
-| net_utils.cpp | 100% | 100% | 21 | 优秀 |
 | decompress_helper.cpp | 100% | 100% | 12 | 优秀 |
 | process_info.h | 100% | 100% | 1 | 优秀 |
 | compressor.cpp | 97.6% | 100% | 41 | 优秀 |
