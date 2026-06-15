@@ -1,10 +1,11 @@
 #pragma once
 
 #include <network/cpp/reactor.h>
-#include <network/cpp/transport.h>
+#include <network/cpp/transport_interface.h>
 #include <network/cpp/message_types.h>
 #include <network/cpp/data_client.h>
 #include <network/cpp/data_client_pool.h>
+#include <network/cpp/metadata_client.h>
 #include <core/cpp/config.h>
 #include <agent/cpp/task_executor.h>
 #include <common/cpp/worker_context.h>
@@ -171,6 +172,7 @@ private:
     void do_cleanup();
 
     DataClientPool data_client_pool_{Config::instance()->get_int("data_client_pool_size")};
+    MetadataClient metadata_client_;
 
     // Master liveness tracking — seconds since epoch (atomic for cross-thread access)
     std::atomic<int64_t> last_master_contact_{0};

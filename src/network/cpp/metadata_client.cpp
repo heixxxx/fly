@@ -1,15 +1,18 @@
 #include <network/cpp/metadata_client.h>
+#include <network/cpp/transport_interface.h>
+#include <network/cpp/tcp_socket.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
-#include <network/cpp/net_utils.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
 #include <cstring>
-#include <chrono>
+#include <cerrno>
 
 namespace fly {
+
+MetadataClient::MetadataClient(CMSharedPtr<Transport> transport)
+    : transport_(std::move(transport)) {}
+
+MetadataClient::MetadataClient()
+    : MetadataClient(create_tcp_transport()) {}
 
 MetadataClient::DataLocation MetadataClient::query_data_location(
     const CMString& master_host,
@@ -19,44 +22,44 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
 {
     DataLocation result;
 
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int fd = transport_->create_connection(master_host, master_port);
     if (fd < 0) {
-        result.error_ = "Failed to create socket: " + CMString(std::strerror(errno));
-        return result;
-    }
-
-    struct timeval tv;
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-    struct sockaddr_in addr;
-    std::memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr(master_host.c_str());
-    addr.sin_port = htons(static_cast<uint16_t>(master_port));
-
-    if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
         result.error_ = "Failed to connect to Master " + master_host + ":" + std::to_string(master_port);
-        ::close(fd);
         return result;
     }
+
+    transport_->set_send_timeout(fd, timeout_ms);
+    transport_->set_recv_timeout(fd, timeout_ms);
 
     DataQueryMessage req;
     req.object_name_ = object_name;
     CMString encoded_req = MessageProtocol::encode(req);
 
-    if (!net_send_all(fd, encoded_req.data(), encoded_req.size())) {
-        result.error_ = "Failed to send DataQuery for " + object_name;
-        ::close(fd);
-        return result;
+    // send all
+    const char* send_ptr = encoded_req.data();
+    size_t send_remaining = encoded_req.size();
+    while (send_remaining > 0) {
+        ssize_t n = transport_->send(fd, send_ptr, send_remaining);
+        if (n < 0) {
+            result.error_ = "Failed to send DataQuery for " + object_name;
+            transport_->close(fd);
+            return result;
+        }
+        send_ptr += n;
+        send_remaining -= static_cast<size_t>(n);
     }
 
+    // recv header (5 bytes)
     char header[5] = {};
-    if (!net_recv_exact(fd, header, 5, timeout_ms)) {
-        result.error_ = "Timeout receiving DataLocation header for " + object_name;
-        ::close(fd);
-        return result;
+    size_t header_received = 0;
+    while (header_received < 5) {
+        ssize_t n = transport_->recv(fd, header + header_received, 5 - header_received);
+        if (n <= 0) {
+            result.error_ = "Timeout receiving DataLocation header for " + object_name;
+            transport_->close(fd);
+            return result;
+        }
+        header_received += static_cast<size_t>(n);
     }
 
     uint32_t total_len =
@@ -67,19 +70,24 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
 
     if (total_len < 1 || total_len > 16 * 1024 * 1024) {
         result.error_ = "Invalid DataLocation frame size for " + object_name;
-        ::close(fd);
+        transport_->close(fd);
         return result;
     }
 
     uint32_t payload_len = total_len - 1;
     CMString payload(payload_len, '\0');
-    if (payload_len > 0 && !net_recv_exact(fd, payload.data(), payload_len, timeout_ms)) {
-        result.error_ = "Timeout receiving DataLocation payload for " + object_name;
-        ::close(fd);
-        return result;
+    size_t payload_received = 0;
+    while (payload_received < payload_len) {
+        ssize_t n = transport_->recv(fd, payload.data() + payload_received, payload_len - payload_received);
+        if (n <= 0) {
+            result.error_ = "Timeout receiving DataLocation payload for " + object_name;
+            transport_->close(fd);
+            return result;
+        }
+        payload_received += static_cast<size_t>(n);
     }
 
-    ::close(fd);
+    transport_->close(fd);
 
     CMString full_buf;
     full_buf.resize(4 + total_len);

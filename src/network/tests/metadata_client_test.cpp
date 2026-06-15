@@ -15,16 +15,18 @@ TEST(MetadataClientTest, DataLocationDefaults) {
 }
 
 TEST(MetadataClientTest, QueryFailsWhenNoServer) {
+    MetadataClient client;
     MetadataClient::DataLocation result =
-        MetadataClient::query_data_location("127.0.0.1", 59999, "test/object");
+        client.query_data_location("127.0.0.1", 59999, "test/object");
 
     EXPECT_FALSE(result.found_);
     EXPECT_FALSE(result.error_.empty());
 }
 
 TEST(MetadataClientTest, QueryFailsWithInvalidHost) {
+    MetadataClient client;
     MetadataClient::DataLocation result =
-        MetadataClient::query_data_location("0.0.0.0", 59999, "test/object");
+        client.query_data_location("0.0.0.0", 59999, "test/object");
 
     EXPECT_FALSE(result.found_);
     EXPECT_FALSE(result.error_.empty());

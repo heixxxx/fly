@@ -29,7 +29,7 @@ void WorkerAgent::start() {
     shutdown_triggered_ = false;
 
 
-    auto transport = create_transport("tcp");
+    auto transport = create_connection_manager("tcp");
     transport->listen("0.0.0.0", 0);
     master_conn_ = transport->connect(master_host_, master_port_);
     INFO("connected, master_conn={}", master_conn_);
@@ -467,7 +467,7 @@ void WorkerAgent::request_database_freeze(const CMString& db_id) {
 }
 
 std::tuple<bool, CMString, CMString, bool> WorkerAgent::request_remote_data(const CMString& object_name) {
-     auto location = MetadataClient::query_data_location(
+     auto location = metadata_client_.query_data_location(
         master_host_, master_port_, object_name);
 
     if (!location.found_) {
@@ -485,7 +485,7 @@ std::tuple<bool, CMString, CMString, bool> WorkerAgent::request_remote_data(cons
         return {true, std::move(data), std::move(py_name), false};
     }
 
-    auto recheck = MetadataClient::query_data_location(
+    auto recheck = metadata_client_.query_data_location(
         master_host_, master_port_, object_name);
     if (!recheck.found_) {
         return {false, {}, {}, recheck.can_still_produce_};

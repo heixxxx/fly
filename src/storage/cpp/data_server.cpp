@@ -1,23 +1,15 @@
 #include <storage/cpp/data_server.h>
 #include <storage/cpp/data_service.h>
 #include <storage/cpp/decompressing_streambuf.h>
+#include <network/cpp/transport_interface.h>
+#include <network/cpp/tcp_socket.h>
+#include <network/cpp/epoll_multiplexer.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
-#include <network/cpp/net_utils.h>
 #include <log/cpp/logger.h>
-#include <sys/socket.h>
-#include <sys/epoll.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
-#include <unistd.h>
 #include <cstring>
-#include <poll.h>
-#include <fcntl.h>
 #include <cerrno>
 
-// Disable verbose DataServer logging: 9 DBG calls per request × Logger::mutex_
-// contention blocks the reactor thread (which also logs), causing 10x slowdown.
 #ifdef DBG
 #undef DBG
 #endif
@@ -25,8 +17,15 @@
 
 namespace fly {
 
+DataServer::DataServer(DataService& ds, CMSharedPtr<Transport> transport,
+                       CMSharedPtr<EpollMultiplexer> epoll, int thread_count)
+    : data_service_(ds)
+    , transport_(std::move(transport))
+    , epoll_(std::move(epoll))
+    , thread_count_(thread_count > 1 ? thread_count : 2) {}
+
 DataServer::DataServer(DataService& ds, int thread_count)
-    : data_service_(ds), thread_count_(thread_count > 1 ? thread_count : 2) {}
+    : DataServer(ds, create_tcp_transport(), create_epoll_multiplexer(), thread_count) {}
 
 DataServer::~DataServer() {
     stop();
@@ -36,56 +35,26 @@ void DataServer::start(const CMString& host, int port) {
     std::lock_guard<std::mutex> lk(start_mutex_);
     if (running_) return;
 
-    listen_fd_ = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    listen_fd_ = transport_->create_listen_socket(host, port);
     if (listen_fd_ < 0) {
-        ERR("DataServer: socket() failed: {}", std::strerror(errno));
+        ERR("DataServer: create_listen_socket() failed");
         return;
     }
 
-    int opt = 1;
-    ::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    data_port_ = transport_->get_port(listen_fd_);
 
-    struct sockaddr_in addr;
-    std::memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr(host.c_str());
-    addr.sin_port = htons(static_cast<uint16_t>(port));
-
-    if (::bind(listen_fd_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-        ERR("DataServer: bind() failed: {}", std::strerror(errno));
-        ::close(listen_fd_);
-        listen_fd_ = -1;
-        return;
-    }
-
-    if (::listen(listen_fd_, 128) < 0) {
-        ERR("DataServer: listen() failed: {}", std::strerror(errno));
-        ::close(listen_fd_);
-        listen_fd_ = -1;
-        return;
-    }
-
-    struct sockaddr_in bound_addr;
-    socklen_t bound_len = sizeof(bound_addr);
-    ::getsockname(listen_fd_, reinterpret_cast<struct sockaddr*>(&bound_addr), &bound_len);
-    data_port_ = ntohs(bound_addr.sin_port);
-
-    epoll_fd_ = ::epoll_create1(EPOLL_CLOEXEC);
+    epoll_fd_ = epoll_->create();
     if (epoll_fd_ < 0) {
-        ERR("DataServer: epoll_create1() failed: {}", std::strerror(errno));
-        ::close(listen_fd_);
+        ERR("DataServer: epoll create() failed");
+        transport_->close(listen_fd_);
         listen_fd_ = -1;
         return;
     }
 
-    struct epoll_event ev;
-    std::memset(&ev, 0, sizeof(ev));
-    ev.events = EPOLLIN;
-    ev.data.fd = listen_fd_;
-    if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listen_fd_, &ev) < 0) {
-        ERR("DataServer: epoll_ctl(ADD listen_fd) failed: {}", std::strerror(errno));
-        ::close(epoll_fd_);
-        ::close(listen_fd_);
+    if (!epoll_->add(epoll_fd_, listen_fd_, EV_READ)) {
+        ERR("DataServer: epoll add(listen_fd) failed");
+        epoll_->destroy(epoll_fd_);
+        transport_->close(listen_fd_);
         epoll_fd_ = -1;
         listen_fd_ = -1;
         return;
@@ -117,12 +86,12 @@ void DataServer::stop() {
     send_cv_.notify_all();
 
     if (listen_fd_ >= 0) {
-        ::close(listen_fd_);
+        transport_->close(listen_fd_);
         listen_fd_ = -1;
     }
 
     if (epoll_fd_ >= 0) {
-        ::close(epoll_fd_);
+        epoll_->destroy(epoll_fd_);
         epoll_fd_ = -1;
     }
 
@@ -139,7 +108,7 @@ void DataServer::stop() {
     std::lock_guard<std::mutex> clkk(conn_mutex_);
     for (auto& c : conns_) {
         if (c.fd >= 0) {
-            ::close(c.fd);
+            transport_->close(c.fd);
             c.fd = -1;
         }
     }
@@ -154,7 +123,7 @@ int DataServer::find_conn_index(int fd) {
 }
 
 void DataServer::cleanup_fd(int fd) {
-    ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
+    epoll_->del(epoll_fd_, fd);
     {
         std::lock_guard<std::mutex> lk(conn_mutex_);
         int idx = find_conn_index(fd);
@@ -163,15 +132,13 @@ void DataServer::cleanup_fd(int fd) {
             conns_.pop_back();
         }
     }
-    ::close(fd);
+    transport_->close(fd);
 }
 
 void DataServer::epoll_loop() {
-    constexpr int MAX_EVENTS = 64;
-    struct epoll_event events[MAX_EVENTS];
-
     while (running_) {
-        int n = ::epoll_wait(epoll_fd_, events, MAX_EVENTS, 100);
+        IoEvent events[64];
+        int n = epoll_->wait(epoll_fd_, events, 64, 100);
         if (n < 0) {
             if (errno == EINTR) continue;
             if (!running_) return;
@@ -179,27 +146,21 @@ void DataServer::epoll_loop() {
         }
 
         for (int i = 0; i < n; ++i) {
-            int fd = events[i].data.fd;
+            int fd = events[i].fd;
 
             if (fd == listen_fd_) {
                 while (true) {
-                    int cfd = ::accept4(listen_fd_, nullptr, nullptr,
-                                        SOCK_NONBLOCK | SOCK_CLOEXEC);
+                    int cfd = transport_->accept_connection(listen_fd_);
                     if (cfd < 0) break;
 
-                    int nodelay = 1;
-                    ::setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+                    transport_->set_nonblocking(cfd);
 
                     {
                         std::lock_guard<std::mutex> lk(conn_mutex_);
                         conns_.push_back({cfd, {}});
                     }
 
-                    struct epoll_event ev;
-                    std::memset(&ev, 0, sizeof(ev));
-                    ev.events = EPOLLIN | EPOLLONESHOT;
-                    ev.data.fd = cfd;
-                    ::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, cfd, &ev);
+                    epoll_->add(epoll_fd_, cfd, EV_READ | EV_ONESHOT);
 
                     INFO("[DS-ACCEPT] fd={} total={}", cfd, conns_.size());
                 }
@@ -216,7 +177,7 @@ void DataServer::on_readable(int fd) {
     bool got_eof = false;
 
     while (true) {
-        ssize_t n = ::recv(fd, tmp, sizeof(tmp), MSG_DONTWAIT);
+        ssize_t n = transport_->recv(fd, tmp, sizeof(tmp));
         if (n > 0) {
             new_data.append(tmp, n);
             if (n < static_cast<ssize_t>(sizeof(tmp))) break;
@@ -328,11 +289,7 @@ void DataServer::on_readable(int fd) {
     } else if (got_eof) {
         cleanup_fd(fd);
     } else {
-        struct epoll_event ev;
-        std::memset(&ev, 0, sizeof(ev));
-        ev.events = EPOLLIN | EPOLLONESHOT;
-        ev.data.fd = fd;
-        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+        epoll_->mod(epoll_fd_, fd, EV_READ | EV_ONESHOT);
     }
 }
 
@@ -356,40 +313,14 @@ void DataServer::send_loop() {
 }
 
 void DataServer::do_send(int fd, const CMString& data) {
-    size_t total = data.size();
-    size_t sent = 0;
-    const char* buf = data.data();
+    bool ok = transport_->send_all(fd, data.data(), data.size());
 
-    while (sent < total && running_) {
-        ssize_t n = ::send(fd, buf + sent, total - sent, MSG_NOSIGNAL);
-        if (n > 0) {
-            sent += static_cast<size_t>(n);
-        } else if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                struct pollfd pfd;
-                pfd.fd = fd;
-                pfd.events = POLLOUT;
-                pfd.revents = 0;
-                int pret = ::poll(&pfd, 1, 5000);
-                if (pret <= 0) break;
-                if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) break;
-                continue;
-            }
-            if (errno == EINTR) continue;
-            break;
-        }
-    }
-
-    if (sent < total) {
-        ERR("[DS-SEND] fd={} INCOMPLETE: {}/{}", fd, sent, total);
+    if (!ok) {
+        ERR("[DS-SEND] fd={} failed: {}/{} bytes", fd, 0, data.size());
         cleanup_fd(fd);
     } else {
-        INFO("[DS-SEND] fd={} complete: {} bytes", fd, sent);
-        struct epoll_event ev;
-        std::memset(&ev, 0, sizeof(ev));
-        ev.events = EPOLLIN | EPOLLONESHOT;
-        ev.data.fd = fd;
-        ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+        INFO("[DS-SEND] fd={} complete: {} bytes", fd, data.size());
+        epoll_->mod(epoll_fd_, fd, EV_READ | EV_ONESHOT);
     }
 }
 

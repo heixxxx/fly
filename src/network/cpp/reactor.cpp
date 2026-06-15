@@ -53,7 +53,7 @@ void HandlerThreadPool::shutdown() {
     }
 }
 
-Reactor::Reactor(CMUniquePtr<TransportLayer> transport)
+Reactor::Reactor(CMUniquePtr<ConnectionManager> transport)
     : transport_(std::move(transport)) {
 }
 

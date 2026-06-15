@@ -1,7 +1,7 @@
 #pragma once
 
 #include <network/cpp/reactor.h>
-#include <network/cpp/transport.h>
+#include <network/cpp/connection_manager.h>
 #include <network/cpp/message_types.h>
 #include <network/cpp/data_client.h>
 #include <storage/cpp/database.h>

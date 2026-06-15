@@ -6,8 +6,8 @@
 
 namespace fly {
 
-// Blocking TCP client for querying Master about data object metadata/locations.
-// Thread-safe: each call creates its own socket.
+class Transport;
+
 class MetadataClient {
 public:
     struct DataLocation {
@@ -19,11 +19,17 @@ public:
         bool can_still_produce_ = false;
     };
 
-    static DataLocation query_data_location(
+    explicit MetadataClient(CMSharedPtr<Transport> transport);
+    MetadataClient();
+
+    DataLocation query_data_location(
         const CMString& master_host,
         int master_port,
         const CMString& object_name,
         int timeout_ms = 5000);
+
+private:
+    CMSharedPtr<Transport> transport_;
 };
 
 }  // namespace fly

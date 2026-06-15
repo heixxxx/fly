@@ -23,7 +23,7 @@
 | 构建 | Bazel + fly.sh | fly.sh 封装自动刷新 clangd |
 | 测试 | gtest + pytest | C++ 单元测试 + Python 测试 |
 | 压缩 | LZ4 / ZLIB / ZSTD | 可选压缩策略 |
-| 网络 | TCP (epoll) | 通过 TransportLayer 抽象，支持扩展 |
+| 网络 | TCP (epoll) | 通过 ConnectionManager 抽象，支持扩展 |
 
 ---
 

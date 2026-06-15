@@ -1,28 +1,28 @@
 #include <gtest/gtest.h>
-#include <network/cpp/transport.h>
-#include <network/cpp/tcp_transport.h>
+#include <network/cpp/connection_manager.h>
+#include <network/cpp/tcp_connection_manager.h>
 #include <thread>
 #include <chrono>
 
 namespace fly {
 
-TEST(TransportLayerTest, CreateTCPTransport) {
-    auto transport = create_transport("tcp");
+TEST(ConnectionManagerTest, CreateTcpConnectionManager) {
+    auto transport = create_connection_manager("tcp");
     EXPECT_NE(transport, nullptr);
     EXPECT_EQ(transport->connection_count(), 0);
 }
 
-TEST(TCPTransportTest, ListenAndStop) {
-    TCPTransport transport;
+TEST(TcpConnectionManagerTest, ListenAndStop) {
+    TcpConnectionManager transport;
     transport.listen("127.0.0.1", 0);
     int port = transport.get_bound_port();
     EXPECT_GT(port, 0);
     EXPECT_NO_THROW(transport.stop_listening());
 }
 
-TEST(TCPTransportTest, ListenAndConnect) {
-    TCPTransport server;
-    TCPTransport client;
+TEST(TcpConnectionManagerTest, ListenAndConnect) {
+    TcpConnectionManager server;
+    TcpConnectionManager client;
 
     server.listen("127.0.0.1", 0);
     int port = server.get_bound_port();
@@ -47,9 +47,9 @@ TEST(TCPTransportTest, ListenAndConnect) {
     client.close_all();
 }
 
-TEST(TCPTransportTest, SendAndRecv) {
-    TCPTransport server;
-    TCPTransport client;
+TEST(TcpConnectionManagerTest, SendAndRecv) {
+    TcpConnectionManager server;
+    TcpConnectionManager client;
 
     server.listen("127.0.0.1", 0);
     int port = server.get_bound_port();
@@ -88,9 +88,9 @@ TEST(TCPTransportTest, SendAndRecv) {
     client.close_all();
 }
 
-TEST(TCPTransportTest, ConnectionCount) {
-    TCPTransport server;
-    TCPTransport client;
+TEST(TcpConnectionManagerTest, ConnectionCount) {
+    TcpConnectionManager server;
+    TcpConnectionManager client;
 
     server.listen("127.0.0.1", 0);
     int port = server.get_bound_port();
@@ -106,20 +106,20 @@ TEST(TCPTransportTest, ConnectionCount) {
     client.close_all();
 }
 
-TEST(TCPTransportTest, InvalidTransportType) {
-    EXPECT_THROW(create_transport("udp"), std::runtime_error);
-    EXPECT_THROW(create_transport("rdma"), std::runtime_error);
+TEST(TcpConnectionManagerTest, InvalidTransportType) {
+    EXPECT_THROW(create_connection_manager("udp"), std::runtime_error);
+    EXPECT_THROW(create_connection_manager("rdma"), std::runtime_error);
 }
 
-TEST(TCPTransportTest, MultipleConnections) {
-    TCPTransport server;
-    CMVector<std::unique_ptr<TCPTransport>> clients;
+TEST(TcpConnectionManagerTest, MultipleConnections) {
+    TcpConnectionManager server;
+    CMVector<std::unique_ptr<TcpConnectionManager>> clients;
 
     server.listen("127.0.0.1", 0);
     int port = server.get_bound_port();
 
     for (int i = 0; i < 5; i++) {
-        clients.push_back(CMMakeUnique<TCPTransport>());
+        clients.push_back(CMMakeUnique<TcpConnectionManager>());
         clients.back()->connect("127.0.0.1", port);
     }
 
@@ -141,11 +141,11 @@ TEST(TCPTransportTest, MultipleConnections) {
     }
 }
 
-TEST(TCPTransportTest, LargeBufferSendRecv) {
+TEST(TcpConnectionManagerTest, LargeBufferSendRecv) {
     // Test sending a large buffer that may trigger partial send / EAGAIN path
-    // This tests the poll+retry loop in TCPTransport::send() (fixed in bcf16aa)
-    TCPTransport server;
-    TCPTransport client;
+    // This tests the poll+retry loop in TcpConnectionManager::send() (fixed in bcf16aa)
+    TcpConnectionManager server;
+    TcpConnectionManager client;
 
     server.listen("127.0.0.1", 0);
     int port = server.get_bound_port();
@@ -191,10 +191,10 @@ TEST(TCPTransportTest, LargeBufferSendRecv) {
     client.close_all();
 }
 
-TEST(TCPTransportTest, MultipleLargeMessagesInSequence) {
+TEST(TcpConnectionManagerTest, MultipleLargeMessagesInSequence) {
     // Test multiple large messages sent in sequence
-    TCPTransport server;
-    TCPTransport client;
+    TcpConnectionManager server;
+    TcpConnectionManager client;
 
     server.listen("127.0.0.1", 0);
     int port = server.get_bound_port();
@@ -251,12 +251,12 @@ TEST(TCPTransportTest, MultipleLargeMessagesInSequence) {
     client.close_all();
 }
 
-TEST(TCPTransportTest, ConnectFdDoesNotContinuouslyFireEvents) {
+TEST(TcpConnectionManagerTest, ConnectFdDoesNotContinuouslyFireEvents) {
     // Regression test for ff53939: connect() registered EPOLLOUT in level-triggered epoll,
     // continuously firing events. client_receiver consumed the event and closed the fd,
     // causing send() EBADF on the main thread. Fix: connect() now registers EPOLLIN only.
-    TCPTransport server;
-    TCPTransport client;
+    TcpConnectionManager server;
+    TcpConnectionManager client;
 
     server.listen("127.0.0.1", 0);
     int port = server.get_bound_port();
@@ -296,10 +296,10 @@ TEST(TCPTransportTest, ConnectFdDoesNotContinuouslyFireEvents) {
     client.close_all();
 }
 
-TEST(TCPTransportTest, AcceptedFdDoesNotContinuouslyFireEvents) {
+TEST(TcpConnectionManagerTest, AcceptedFdDoesNotContinuouslyFireEvents) {
     // Verify accepted connections also don't continuously fire events (EPOLLIN only).
-    TCPTransport server;
-    TCPTransport client;
+    TcpConnectionManager server;
+    TcpConnectionManager client;
 
     server.listen("127.0.0.1", 0);
     int port = server.get_bound_port();

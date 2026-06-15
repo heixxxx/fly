@@ -158,7 +158,7 @@ fatal_error_:     atomic<bool>              // 不可恢复写入错误时设为
 
 ```
 MasterAgent.start()
-  1. create_transport("tcp")
+  1. create_connection_manager("tcp")
   2. transport->listen(host, port)
   3. reactor_ = new Reactor(transport)
   4. 注册所有 message handlers
@@ -345,7 +345,7 @@ current_writes_:     vector<string>            // 当前写入记录
 
 ```
 WorkerAgent.start()
-  1. create_transport("tcp")
+  1. create_connection_manager("tcp")
   2. transport->listen("0.0.0.0", 0)        // Data Server
   3. data_server_port_ = transport->get_bound_port()
   4. master_conn_ = transport->connect(master_host, master_port)

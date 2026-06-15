@@ -7,8 +7,8 @@ load("@rules_python//python:defs.bzl", "py_test")
 load("@rules_cc//cc:defs.bzl", "cc_test")
 
 cc_test(
-    name = "tcp_transport_test",
-    srcs = ["tcp_transport_test.cpp"],
+    name = "tcp_connection_manager_test",
+    srcs = ["tcp_connection_manager_test.cpp"],
     deps = [
         "@googletest//:gtest_main",
         "//src/network/cpp:fly_network",
@@ -82,6 +82,16 @@ cc_test(
 cc_test(
     name = "metadata_client_test",
     srcs = ["metadata_client_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/network/cpp:fly_network",
+    ],
+    copts = ["-std=c++20"],
+)
+
+cc_test(
+    name = "transport_interface_test",
+    srcs = ["transport_interface_test.cpp"],
     deps = [
         "@googletest//:gtest_main",
         "//src/network/cpp:fly_network",

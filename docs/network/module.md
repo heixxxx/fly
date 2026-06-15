@@ -12,78 +12,99 @@
 
 | 文件 | 说明 |
 |------|------|
-| `cpp/transport.h/cpp` | TransportLayer 抽象接口 |
-| `cpp/tcp_transport.cpp` | POSIX TCP 实现 (epoll) |
+| `cpp/transport_interface.h` | Transport 抽象接口（socket 操作） |
+| `cpp/tcp_socket.h/cpp` | TCPSocketTransport — POSIX TCP 实现 |
+| `cpp/epoll_multiplexer.h/cpp` | EpollMultiplexer 抽象接口 + 实现（事件复用） |
+| `cpp/connection_manager.h` | ConnectionManager 抽象接口（conn_id 管理 + 事件分发） |
+| `cpp/tcp_connection_manager.h/cpp` | TcpConnectionManager — 基于 Transport+EpollMultiplexer |
 | `cpp/reactor.h/cpp` | 单线程事件循环 |
 | `cpp/message_protocol.h/cpp` | 二进制帧协议 |
 | `cpp/message_types.h` | 33 种消息结构定义（含 MessageHeader） |
 | `cpp/io_thread_pool.h/cpp` | 通用线程池（submit + completion 回调） |
 | `cpp/metadata_client.h/cpp` | 阻塞 TCP 元数据查询客户端（原名 MasterClient） |
 | `cpp/data_client.h/cpp` | 阻塞 TCP 数据客户端 |
+| `cpp/data_client_pool.h/cpp` | 数据客户端连接池（并发请求控制） |
 | `export/network_export.cpp` | Python 导出 |
 
 ---
 
 ## 类详细说明
 
-### TransportLayer（传输抽象）
+### Transport（Socket 操作抽象）
+
+薄包装层，封装 POSIX socket 操作。不含事件模型、不含消息协议。
 
 ```cpp
-class TransportLayer {
+class Transport {
 public:
-    virtual ~TransportLayer() = default;
+    virtual int create_listen_socket(const CMString& host, int port) = 0;
+    virtual int accept_connection(int listen_fd) = 0;
+    virtual int create_connection(const CMString& host, int port) = 0;
 
-    // 服务端
-    virtual void listen(const CMString& address, int port) = 0;
-    void accept();  // 内部由 poll 触发
+    virtual void set_nodelay(int fd) = 0;
+    virtual void set_nonblocking(int fd) = 0;
+    virtual void set_recv_timeout(int fd, int timeout_ms) = 0;
+    virtual void set_send_timeout(int fd, int timeout_ms) = 0;
 
-    // 客户端
-    virtual uint64_t connect(const CMString& address, int port) = 0;
-
-    // 数据收发
-    virtual ssize_t send(uint64_t conn_id, const CMString& data) = 0;
-
-    // 连接管理
-    virtual void close(uint64_t conn_id) = 0;
-    virtual void close_all() = 0;
-
-    // 事件轮询
-    virtual CMVector<TransportEvent> poll(int timeout_ms) = 0;
-
-    // 辅助
-    virtual int32_t get_bound_port() const = 0;
-};
-
-struct TransportEvent {
-    enum Type { CONNECT, DATA, DISCONNECT, ERROR };
-    Type type;
-    uint64_t conn_id;
-    CMString data;
+    virtual ssize_t send(int fd, const char* data, size_t len) = 0;
+    virtual ssize_t recv(int fd, char* buf, size_t len) = 0;
+    virtual bool send_all(int fd, const char* data, size_t len) = 0;
+    virtual int get_port(int fd) = 0;
+    virtual void close(int fd) = 0;
 };
 ```
 
-### TCPTransport（TCP 实现）
+**实现**: `TCPSocketTransport`（`tcp_socket.h/cpp`），工厂函数 `create_tcp_transport()`。
 
-基于 POSIX epoll 的 TCP 实现。
+### EpollMultiplexer（事件复用抽象）
+
+封装 epoll 操作，头文件零 `<sys/epoll.h>` 依赖。使用自有事件类型。
+
+```cpp
+struct IoEvent {
+    int fd = -1;
+    bool readable = false;
+    bool writable = false;
+    bool error = false;
+    bool hangup = false;
+};
+
+class EpollMultiplexer {
+public:
+    virtual int create() = 0;
+    virtual bool add(int epfd, int fd, uint32_t events) = 0;  // EV_READ | EV_ONESHOT
+    virtual bool mod(int epfd, int fd, uint32_t events) = 0;
+    virtual bool del(int epfd, int fd) = 0;
+    virtual int wait(int epfd, IoEvent* events, int max_events, int timeout_ms) = 0;
+    virtual void destroy(int epfd) = 0;
+};
+```
+
+**事件标志**: `EV_READ`, `EV_WRITE`, `EV_ONESHOT`（定义于 `epoll_multiplexer.h`）
+
+### ConnectionManager（连接管理抽象）
+
+基于 Transport + EpollMultiplexer 构建，提供 conn_id 抽象 + 写缓冲 + 事件分发。
+
+```cpp
+class ConnectionManager {
+public:
+    virtual void listen(const CMString& address, int port) = 0;
+    virtual uint64_t connect(const CMString& address, int port) = 0;
+    virtual ssize_t send(uint64_t conn_id, const CMString& data) = 0;
+    virtual CMVector<TransportEvent> poll(int timeout_ms) = 0;
+    virtual void close(uint64_t conn_id) = 0;
+    virtual int get_bound_port() const = 0;
+};
+```
+
+**实现**: `TcpConnectionManager`（`tcp_connection_manager.h/cpp`），工厂函数 `create_connection_manager("tcp")`。
 
 **关键特性**:
-- 所有 socket 非阻塞 (`SOCK_NONBLOCK | SOCK_CLOEXEC`)
-- listen_fd 和 connect_fd 均用 `EPOLLIN`（水平触发）
-- `accept4` 直接创建非阻塞 client fd
-- `drain_socket` 循环 recv 直到 EAGAIN，单次最多 64KB
+- 内部持有 Transport + EpollMultiplexer 实例，所有 socket/epoll 操作委托给它们
 - conn_id 单调递增，双映射 `conn_to_fd_` / `fd_to_conn_` 管理
-- 工厂函数 `create_transport("tcp")` 支持扩展
-
-**epoll 事件处理**:
-
-```
-poll(timeout_ms)
-  → epoll_wait → 返回 CMVector<TransportEvent>
-  ├── listen_fd EPOLLIN → accept4 → TransportEvent::CONNECT
-  ├── client_fd EPOLLIN → drain_socket → TransportEvent::DATA
-  ├── client_fd 空 recv → TransportEvent::DISCONNECT
-  └── EPOLLERR|EPOLLHUP → TransportEvent::ERROR
-```
+- 写缓冲: send() EAGAIN → 数据存入 `write_buffers_` → 注册 EPOLLOUT → drain
+- `drain_socket` 循环 recv 直到 EAGAIN，单次最多 64KB
 
 ---
 
@@ -119,7 +140,7 @@ total_len = 1 + payload.size()
 ```cpp
 class Reactor {
 public:
-    explicit Reactor(std::unique_ptr<TransportLayer> transport);
+    explicit Reactor(std::unique_ptr<ConnectionManager> transport);
     ~Reactor();
 
     void run();           // 启动事件循环（阻塞）
@@ -143,7 +164,7 @@ public:
     void set_io_pool(IOThreadPool* pool);
 
 private:
-    std::unique_ptr<TransportLayer> transport_;
+    std::unique_ptr<ConnectionManager> transport_;
     CMMap<MessageType, GenericHandler> handlers_;
     CMMap<uint64_t, CMString> recv_buffers_;  // per-conn 拼接缓冲
     IOThreadPool* io_pool_ = nullptr;
@@ -241,14 +262,17 @@ public:
 class MetadataClient {
 public:
     struct DataLocation {
-        bool found = false;
-        uint64_t worker_id = 0;
-        CMString host;
-        int32_t port = 0;
-        CMString error;
+        bool found_ = false;
+        uint64_t worker_id_ = 0;
+        CMString host_;
+        int32_t port_ = 0;
+        CMString error_;
     };
 
-    static DataLocation query_data_location(
+    explicit MetadataClient(CMSharedPtr<Transport> transport);
+    MetadataClient();
+
+    DataLocation query_data_location(
         const CMString& master_host,
         int master_port,
         const CMString& object_name,
@@ -353,7 +377,7 @@ struct DataRequestMessage {          // type=11, Worker → Worker（重 I/O）
 
 ```
 Worker.start()
-  1. create_transport("tcp")
+  1. create_connection_manager("tcp")
   2. transport->listen("0.0.0.0", 0)           // Data Server, 随机端口
   3. master_conn_ = transport->connect(master_host, master_port)
   4. reactor_ = new Reactor(transport)          // 共用一个 Reactor
@@ -401,7 +425,7 @@ Worker.master_liveness_check:
 | per-conn 拼接缓冲 | TCP 粘包/拆包安全处理 |
 | IOThreadPool completion pattern | 文件 I/O 不阻塞 Reactor，回调线程安全 |
 | DataClient 独立 socket | 多线程读无冲突，不走主 Reactor |
-| 工厂函数 create_transport | 支持未来替换 UDP/RDMA |
+| 工厂函数 create_connection_manager | 支持未来替换 UDP/RDMA |
 | CV-based 心跳 | stop() 时可立即唤醒，无阻塞 |
 | HeartbeatAck 双向检测 | Worker 通过 ACK 检测 Master 存活，不依赖任务分配 |
 | try_send() 非阻塞发送 | 心跳线程在连接断开时不阻塞，安全跳过 |

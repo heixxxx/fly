@@ -137,8 +137,12 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 
 | 文件 | 职责 |
 |------|------|
+| `transport_interface.h` | Transport 抽象接口（socket 操作薄包装） |
+| `tcp_socket.h/cpp` | TCPSocketTransport — POSIX TCP 实现 |
+| `epoll_multiplexer.h/cpp` | EpollMultiplexer 抽象接口 + 实现（事件复用） |
+| `connection_manager.h` | ConnectionManager 抽象接口（conn_id 管理 + 事件分发） |
+| `tcp_connection_manager.h/cpp` | TcpConnectionManager — 基于 Transport+EpollMultiplexer |
 | `reactor.h/cpp` | 单线程事件循环 |
-| `transport.h/cpp` + `tcp_transport.cpp` | TransportLayer 抽象 + POSIX TCP 实现 |
 | `message_protocol.h/cpp` | 二进制帧协议 |
 | `message_types.h` | 27 种消息结构定义（含 MessageHeader）
 

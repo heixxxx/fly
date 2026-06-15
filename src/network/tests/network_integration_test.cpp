@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
-#include <network/cpp/transport.h>
-#include <network/cpp/tcp_transport.h>
+#include <network/cpp/connection_manager.h>
+#include <network/cpp/tcp_connection_manager.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
 #include <network/cpp/reactor.h>
@@ -22,8 +22,8 @@ protected:
 };
 
 TEST_F(NetworkIntegrationTest, FullMessageRoundTrip) {
-    TCPTransport server_transport;
-    TCPTransport client_transport;
+    TcpConnectionManager server_transport;
+    TcpConnectionManager client_transport;
     
     server_transport.listen("127.0.0.1", server_port_);
     
@@ -81,8 +81,8 @@ TEST_F(NetworkIntegrationTest, FullMessageRoundTrip) {
 }
 
 TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
-    TCPTransport server_transport;
-    TCPTransport client_transport;
+    TcpConnectionManager server_transport;
+    TcpConnectionManager client_transport;
     
     server_transport.listen("127.0.0.1", server_port_ + 1);
     
@@ -166,8 +166,8 @@ TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
 }
 
 TEST_F(NetworkIntegrationTest, MultipleMessagesInSequence) {
-    TCPTransport server_transport;
-    TCPTransport client_transport;
+    TcpConnectionManager server_transport;
+    TcpConnectionManager client_transport;
     
     server_transport.listen("127.0.0.1", server_port_ + 2);
     
@@ -244,8 +244,8 @@ TEST_F(NetworkIntegrationTest, MultipleMessagesInSequence) {
 }
 
 TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
-    TCPTransport server_transport;
-    TCPTransport client_transport;
+    TcpConnectionManager server_transport;
+    TcpConnectionManager client_transport;
     
     server_transport.listen("127.0.0.1", server_port_ + 3);
     
@@ -310,14 +310,14 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
 }
 
 TEST_F(NetworkIntegrationTest, ReactorBasedMessageHandling) {
-    TCPTransport server_raw;
+    TcpConnectionManager server_raw;
     server_raw.listen("127.0.0.1", server_port_ + 5);
     
     std::atomic<bool> heartbeat_received{false};
     std::atomic<uint64_t> received_worker_id{0};
     std::atomic<bool> connection_established{false};
     
-    auto server_transport = CMMakeUnique<TCPTransport>();
+    auto server_transport = CMMakeUnique<TcpConnectionManager>();
     server_transport->listen("127.0.0.1", server_port_ + 6);
     
     Reactor server_reactor(std::move(server_transport));
@@ -331,7 +331,7 @@ TEST_F(NetworkIntegrationTest, ReactorBasedMessageHandling) {
         heartbeat_received = true;
     });
     
-    TCPTransport client_transport;
+    TcpConnectionManager client_transport;
     uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 6);
 
     while (!connection_established.load()) {
@@ -363,13 +363,13 @@ TEST_F(NetworkIntegrationTest, ReactorBasedMessageHandling) {
 }
 
 TEST_F(NetworkIntegrationTest, InvalidMessageHandling) {
-    TCPTransport server_raw;
+    TcpConnectionManager server_raw;
     server_raw.listen("127.0.0.1", server_port_ + 7);
     
     std::atomic<bool> connection_established{false};
     std::atomic<int> messages_processed{0};
     
-    auto server_transport = CMMakeUnique<TCPTransport>();
+    auto server_transport = CMMakeUnique<TcpConnectionManager>();
     server_transport->listen("127.0.0.1", server_port_ + 8);
     
     Reactor server_reactor(std::move(server_transport));
@@ -382,7 +382,7 @@ TEST_F(NetworkIntegrationTest, InvalidMessageHandling) {
         messages_processed++;
     });
     
-    TCPTransport client_transport;
+    TcpConnectionManager client_transport;
     uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 8);
 
     while (!connection_established.load()) {

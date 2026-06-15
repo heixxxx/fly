@@ -1,124 +1,72 @@
-#include "tcp_transport.h"
+#include "tcp_connection_manager.h"
+#include <network/cpp/tcp_socket.h>
 #include <log/cpp/logger.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <thread>
-#include <arpa/inet.h>
-#include <sys/epoll.h>
-#include <poll.h>
-#include <unistd.h>
-#include <fcntl.h>
 #include <cstring>
-#include <errno.h>
+#include <cerrno>
 
 namespace fly {
 
-TCPTransport::TCPTransport() {
-    epoll_fd_ = epoll_create1(EPOLL_CLOEXEC);
+TcpConnectionManager::TcpConnectionManager() {
+    transport_ = create_tcp_transport();
+    epoll_ = create_epoll_multiplexer();
+    epoll_fd_ = epoll_->create();
     if (epoll_fd_ < 0) {
-        throw std::runtime_error("Failed to create epoll: " + std::string(std::strerror(errno)));
+        throw std::runtime_error("Failed to create epoll");
     }
 }
 
-TCPTransport::~TCPTransport() {
+TcpConnectionManager::~TcpConnectionManager() {
     close_all();
     stop_listening();
     if (epoll_fd_ >= 0) {
-        ::close(epoll_fd_);
+        epoll_->destroy(epoll_fd_);
         epoll_fd_ = -1;
     }
 }
 
-void TCPTransport::listen(const CMString& address, int port) {
-    listen_fd_ = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+void TcpConnectionManager::listen(const CMString& address, int port) {
+    listen_fd_ = transport_->create_listen_socket(address, port);
     if (listen_fd_ < 0) {
-        throw std::runtime_error("Failed to create socket: " + std::string(std::strerror(errno)));
+        throw std::runtime_error("Failed to create listen socket");
     }
-    
-    int opt = 1;
-    setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    
-    struct sockaddr_in addr;
-    std::memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr(address.c_str());
-    addr.sin_port = htons(port);
-    
-    if (bind(listen_fd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        ::close(listen_fd_);
+
+    if (!epoll_->add(epoll_fd_, listen_fd_, EV_READ)) {
+        transport_->close(listen_fd_);
         listen_fd_ = -1;
-        throw std::runtime_error("Failed to bind to " + address + ":" + std::to_string(port) + 
-                                 ": " + std::string(std::strerror(errno)));
-    }
-    
-    if (::listen(listen_fd_, 128) < 0) {
-        ::close(listen_fd_);
-        listen_fd_ = -1;
-        throw std::runtime_error("Failed to listen on port " + std::to_string(port) + 
-                                 ": " + std::string(std::strerror(errno)));
-    }
-    
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.fd = listen_fd_;
-    if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, listen_fd_, &ev) < 0) {
-        ::close(listen_fd_);
-        listen_fd_ = -1;
-        throw std::runtime_error("Failed to add listen socket to epoll: " + std::string(std::strerror(errno)));
+        throw std::runtime_error("Failed to add listen socket to epoll");
     }
 }
 
-void TCPTransport::stop_listening() {
+void TcpConnectionManager::stop_listening() {
     if (listen_fd_ >= 0) {
-        epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, listen_fd_, nullptr);
-        ::close(listen_fd_);
+        epoll_->del(epoll_fd_, listen_fd_);
+        transport_->close(listen_fd_);
         listen_fd_ = -1;
     }
 }
 
-uint64_t TCPTransport::connect(const CMString& address, int port) {
-    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+uint64_t TcpConnectionManager::connect(const CMString& address, int port) {
+    int fd = transport_->create_connection(address, port);
     if (fd < 0) {
-        throw std::runtime_error("Failed to create client socket: " + std::string(std::strerror(errno)));
+        throw std::runtime_error("Failed to connect to " + address + ":" + std::to_string(port));
     }
-    
-    struct sockaddr_in addr;
-    std::memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr(address.c_str());
-    addr.sin_port = htons(port);
-    
-    int ret = ::connect(fd, (struct sockaddr*)&addr, sizeof(addr));
-    if (ret < 0 && errno != EINPROGRESS) {
-        ::close(fd);
-        throw std::runtime_error("Failed to connect to " + address + ":" + std::to_string(port) + 
-                                 ": " + std::string(std::strerror(errno)));
+
+    transport_->set_nonblocking(fd);
+
+    if (!epoll_->add(epoll_fd_, fd, EV_READ)) {
+        transport_->close(fd);
+        throw std::runtime_error("Failed to add client socket to epoll");
     }
-    
-    int nodelay = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-    
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.fd = fd;
-    if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &ev) < 0) {
-        ::close(fd);
-        throw std::runtime_error("Failed to add client socket to epoll: " + std::string(std::strerror(errno)));
-    }
-    
+
     return register_connection(fd);
 }
 
-void TCPTransport::mod_epoll_events(int fd, uint32_t events) {
-    struct epoll_event ev;
-    std::memset(&ev, 0, sizeof(ev));
-    ev.events = events;
-    ev.data.fd = fd;
-    epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
+void TcpConnectionManager::mod_epoll_events(int fd, uint32_t events) {
+    epoll_->mod(epoll_fd_, fd, events);
 }
 
-ssize_t TCPTransport::send(uint64_t conn_id, const CMString& data) {
+ssize_t TcpConnectionManager::send(uint64_t conn_id, const CMString& data) {
     int fd;
     {
         std::lock_guard<std::mutex> lock(conn_mutex_);
@@ -128,7 +76,7 @@ ssize_t TCPTransport::send(uint64_t conn_id, const CMString& data) {
             return -1;
         }
         fd = it->second;
-        
+
         auto wbuf_it = write_buffers_.find(conn_id);
         if (wbuf_it != write_buffers_.end() && !wbuf_it->second.empty()) {
             wbuf_it->second.append(data);
@@ -136,13 +84,13 @@ ssize_t TCPTransport::send(uint64_t conn_id, const CMString& data) {
         }
     }
 
-    ssize_t sent = ::send(fd, data.data(), data.size(), MSG_NOSIGNAL | MSG_DONTWAIT);
+    ssize_t sent = transport_->send(fd, data.data(), data.size());
 
     if (sent < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             std::lock_guard<std::mutex> lock(conn_mutex_);
             write_buffers_[conn_id] = data;
-            mod_epoll_events(fd, EPOLLIN | EPOLLOUT);
+            mod_epoll_events(fd, EV_READ | EV_WRITE);
             return static_cast<ssize_t>(data.size());
         }
         ERR("[TCP-SEND] error conn_id={} fd={} errno={}", conn_id, fd, errno);
@@ -152,25 +100,24 @@ ssize_t TCPTransport::send(uint64_t conn_id, const CMString& data) {
     if (static_cast<size_t>(sent) < data.size()) {
         std::lock_guard<std::mutex> lock(conn_mutex_);
         write_buffers_[conn_id].assign(data.data() + sent, data.size() - sent);
-        mod_epoll_events(fd, EPOLLIN | EPOLLOUT);
+        mod_epoll_events(fd, EV_READ | EV_WRITE);
     }
 
     return static_cast<ssize_t>(data.size());
 }
 
-void TCPTransport::drain_write_buffer(uint64_t conn_id, int fd) {
+void TcpConnectionManager::drain_write_buffer(uint64_t conn_id, int fd) {
     std::lock_guard<std::mutex> lock(conn_mutex_);
     auto it = write_buffers_.find(conn_id);
     if (it == write_buffers_.end() || it->second.empty()) {
-        mod_epoll_events(fd, EPOLLIN);
+        mod_epoll_events(fd, EV_READ);
         return;
     }
 
     CMString& buf = it->second;
     size_t total_sent = 0;
     while (total_sent < buf.size()) {
-        ssize_t sent = ::send(fd, buf.data() + total_sent, buf.size() - total_sent,
-                              MSG_NOSIGNAL | MSG_DONTWAIT);
+        ssize_t sent = transport_->send(fd, buf.data() + total_sent, buf.size() - total_sent);
         if (sent < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
             buf.clear();
@@ -187,11 +134,11 @@ void TCPTransport::drain_write_buffer(uint64_t conn_id, int fd) {
 
     if (buf.empty()) {
         write_buffers_.erase(it);
-        mod_epoll_events(fd, EPOLLIN);
+        mod_epoll_events(fd, EV_READ);
     }
 }
 
-ssize_t TCPTransport::recv(uint64_t conn_id, CMString& buffer, size_t max_size) {
+ssize_t TcpConnectionManager::recv(uint64_t conn_id, CMString& buffer, size_t max_size) {
     int fd;
     {
         std::lock_guard<std::mutex> lock(conn_mutex_);
@@ -201,11 +148,11 @@ ssize_t TCPTransport::recv(uint64_t conn_id, CMString& buffer, size_t max_size) 
         }
         fd = it->second;
     }
-    
+
     buffer.resize(max_size);
-    
-    ssize_t received = ::recv(fd, buffer.data(), max_size, 0);
-    
+
+    ssize_t received = transport_->recv(fd, buffer.data(), max_size);
+
     if (received < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             buffer.clear();
@@ -214,101 +161,97 @@ ssize_t TCPTransport::recv(uint64_t conn_id, CMString& buffer, size_t max_size) 
         buffer.clear();
         return -1;
     }
-    
+
     if (received == 0) {
         buffer.clear();
         return -1;
     }
-    
+
     buffer.resize(received);
     return received;
 }
 
-CMVector<TransportEvent> TCPTransport::poll(int timeout_ms) {
+CMVector<TransportEvent> TcpConnectionManager::poll(int timeout_ms) {
     CMVector<TransportEvent> events;
-    
-    struct epoll_event evs[64];
-    int n = epoll_wait(epoll_fd_, evs, 64, timeout_ms);
-    
+
+    IoEvent evs[64];
+    int n = epoll_->wait(epoll_fd_, evs, 64, timeout_ms);
+
     if (n <= 0) {
         return events;
     }
-    
+
     for (int i = 0; i < n; i++) {
-        int fd = evs[i].data.fd;
-        
+        int fd = evs[i].fd;
+
         if (fd == listen_fd_) {
-            int client_fd = ::accept4(listen_fd_, nullptr, nullptr, SOCK_NONBLOCK);
+            int client_fd = transport_->accept_connection(listen_fd_);
             if (client_fd < 0) {
                 continue;
             }
-            
-            int nodelay = 1;
-            setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-            
-            struct epoll_event client_ev;
-            client_ev.events = EPOLLIN;
-            client_ev.data.fd = client_fd;
-            if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_fd, &client_ev) < 0) {
-                ::close(client_fd);
+
+            transport_->set_nonblocking(client_fd);
+
+            if (!epoll_->add(epoll_fd_, client_fd, EV_READ)) {
+                transport_->close(client_fd);
                 continue;
             }
-            
+
             uint64_t new_conn_id = register_connection(client_fd);
-            
+
             TransportEvent ev;
             ev.type_ = TransportEventType::CONNECT;
             ev.conn_id_ = new_conn_id;
             events.push_back(ev);
-            
+
         } else {
             uint64_t conn_id;
             {
                 std::lock_guard<std::mutex> lock(conn_mutex_);
                 auto it = fd_to_conn_.find(fd);
                 if (it == fd_to_conn_.end()) {
-                    epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
-                    ::close(fd);
+                    epoll_->del(epoll_fd_, fd);
+                    transport_->close(fd);
                     continue;
                 }
                 conn_id = it->second;
             }
-            
-            if (evs[i].events & (EPOLLERR | EPOLLHUP)) {
+
+            if (evs[i].error || evs[i].hangup) {
                 int error = 0;
                 socklen_t len = sizeof(error);
                 getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len);
-                
+
                 TransportEvent ev;
                 ev.type_ = TransportEventType::ERROR;
                 ev.conn_id_ = conn_id;
                 ev.error_code_ = error;
                 events.push_back(ev);
-                
+
                 DBG("[TCP-CLOSE] EPOLLERR/HUP conn_id={}, fd={}", conn_id, fd);
-                epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
+                epoll_->del(epoll_fd_, fd);
                 unregister_connection(conn_id);
-                ::close(fd);
+                transport_->close(fd);
                 continue;
             }
-            
-            if (evs[i].events & EPOLLOUT) {
+
+            if (evs[i].writable) {
                 drain_write_buffer(conn_id, fd);
             }
-            
-            if (evs[i].events & EPOLLIN) {
+
+            if (evs[i].readable) {
                 CMString data = drain_socket(fd, 65536);
-                
+
                 if (data.empty()) {
                     TransportEvent ev;
                     ev.type_ = TransportEventType::DISCONNECT;
                     ev.conn_id_ = conn_id;
                     events.push_back(ev);
-                    
+
                     DBG("[TCP-CLOSE] DISCONNECT conn_id={}, fd={}", conn_id, fd);
-                    epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
+                    epoll_->del(epoll_fd_, fd);
                     unregister_connection(conn_id);
-                    ::close(fd);
+                    transport_->close(fd);
                 } else {
                     TransportEvent ev;
                     ev.type_ = TransportEventType::DATA;
@@ -319,11 +262,11 @@ CMVector<TransportEvent> TCPTransport::poll(int timeout_ms) {
             }
         }
     }
-    
+
     return events;
 }
 
-void TCPTransport::close(uint64_t conn_id) {
+void TcpConnectionManager::close(uint64_t conn_id) {
     int fd;
     {
         std::lock_guard<std::mutex> lock(conn_mutex_);
@@ -336,17 +279,17 @@ void TCPTransport::close(uint64_t conn_id) {
         conn_to_fd_.erase(it);
         write_buffers_.erase(conn_id);
     }
-    epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
+    epoll_->del(epoll_fd_, fd);
     DBG("[TCP-CLOSE] explicit close conn_id={}, fd={}", conn_id, fd);
-    ::close(fd);
+    transport_->close(fd);
 }
 
-void TCPTransport::close_all() {
+void TcpConnectionManager::close_all() {
     std::lock_guard<std::mutex> lock(conn_mutex_);
     for (const auto& [conn_id, fd] : conn_to_fd_) {
         if (fd >= 0) {
-            epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
-            ::close(fd);
+            epoll_->del(epoll_fd_, fd);
+            transport_->close(fd);
         }
     }
     conn_to_fd_.clear();
@@ -354,28 +297,23 @@ void TCPTransport::close_all() {
     write_buffers_.clear();
 }
 
-bool TCPTransport::is_connected(uint64_t conn_id) const {
+bool TcpConnectionManager::is_connected(uint64_t conn_id) const {
     std::lock_guard<std::mutex> lock(conn_mutex_);
     auto it = conn_to_fd_.find(conn_id);
     return it != conn_to_fd_.end() && it->second >= 0;
 }
 
-size_t TCPTransport::connection_count() const {
+size_t TcpConnectionManager::connection_count() const {
     std::lock_guard<std::mutex> lock(conn_mutex_);
     return conn_to_fd_.size();
 }
 
-int TCPTransport::get_bound_port() const {
+int TcpConnectionManager::get_bound_port() const {
     if (listen_fd_ < 0) return -1;
-    struct sockaddr_in addr;
-    socklen_t len = sizeof(addr);
-    if (getsockname(listen_fd_, reinterpret_cast<struct sockaddr*>(&addr), &len) != 0) {
-        return -1;
-    }
-    return ntohs(addr.sin_port);
+    return transport_->get_port(listen_fd_);
 }
 
-uint64_t TCPTransport::register_connection(int fd) {
+uint64_t TcpConnectionManager::register_connection(int fd) {
     std::lock_guard<std::mutex> lock(conn_mutex_);
     uint64_t conn_id = next_conn_id_++;
     conn_to_fd_[conn_id] = fd;
@@ -383,7 +321,7 @@ uint64_t TCPTransport::register_connection(int fd) {
     return conn_id;
 }
 
-void TCPTransport::unregister_connection(uint64_t conn_id) {
+void TcpConnectionManager::unregister_connection(uint64_t conn_id) {
     std::lock_guard<std::mutex> lock(conn_mutex_);
     auto it = conn_to_fd_.find(conn_id);
     if (it != conn_to_fd_.end()) {
@@ -393,20 +331,13 @@ void TCPTransport::unregister_connection(uint64_t conn_id) {
     write_buffers_.erase(conn_id);
 }
 
-void TCPTransport::set_nonblocking(int fd) {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags >= 0) {
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-    }
-}
-
-CMString TCPTransport::drain_socket(int fd, size_t max_size) {
+CMString TcpConnectionManager::drain_socket(int fd, size_t max_size) {
     CMString buffer;
     buffer.resize(max_size);
-    
+
     size_t total = 0;
     while (total < max_size) {
-        ssize_t n = ::recv(fd, buffer.data() + total, max_size - total, 0);
+        ssize_t n = transport_->recv(fd, buffer.data() + total, max_size - total);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
@@ -418,18 +349,18 @@ CMString TCPTransport::drain_socket(int fd, size_t max_size) {
             buffer.clear();
             return buffer;
         }
-        total += n;
+        total += static_cast<size_t>(n);
     }
-    
+
     buffer.resize(total);
     return buffer;
 }
 
-CMUniquePtr<TransportLayer> create_transport(const CMString& type) {
+CMUniquePtr<ConnectionManager> create_connection_manager(const CMString& type) {
     if (type == "tcp") {
-        return CMMakeUnique<TCPTransport>();
+        return CMMakeUnique<TcpConnectionManager>();
     }
-    throw std::runtime_error("Unknown transport type: " + type);
+    throw std::runtime_error("Unknown connection manager type: " + type);
 }
 
 }  // namespace fly

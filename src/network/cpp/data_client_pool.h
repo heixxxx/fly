@@ -9,9 +9,22 @@
 
 namespace fly {
 
+class Transport;
+
 class DataClientPool {
 public:
+    /**
+     * 使用传入的 Transport 实现。
+     * pool_size 控制最大并发请求数。
+     */
+    explicit DataClientPool(CMSharedPtr<Transport> transport, int64_t pool_size = 2);
+
+    /**
+     * 便利构造函数：内部创建 TCPSocketTransport。
+     * 仅用于测试和向后兼容。
+     */
     explicit DataClientPool(int64_t pool_size = 2);
+
     ~DataClientPool();
 
     DataClientPool(const DataClientPool&) = delete;
@@ -28,13 +41,12 @@ public:
     void stop();
 
 private:
+    CMSharedPtr<Transport> transport_;
     int64_t pool_size_;
     std::atomic<int> active_count_{0};
     std::atomic<bool> stopped_{false};
     std::mutex mutex_;
     std::condition_variable slot_cv_;
-
-    static int create_connection(const CMString& host, int port);
 };
 
 }  // namespace fly

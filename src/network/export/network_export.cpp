@@ -1,7 +1,7 @@
 #include <export/cpp/export_macros.h>
 #include <serialization/cpp/serialization_macros.h>
-#include <network/cpp/transport.h>
-#include <network/cpp/tcp_transport.h>
+#include <network/cpp/connection_manager.h>
+#include <network/cpp/tcp_connection_manager.h>
 #include <network/cpp/message_types.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/io_thread_pool.h>
@@ -89,8 +89,8 @@ FLY_EXPORT_CLASS(fly::IOThreadPool, "EXNetIOThreadPool")
     FLY_EXPORT_METHOD("is_idle", &fly::IOThreadPool::is_idle)
     FLY_EXPORT_METHOD("process_completions", &fly::IOThreadPool::process_completions);
 
-FLY_EXPORT_FUNCTION("ex_net_create_transport", [](const fly::CMString& type) -> CMUniquePtr<fly::TransportLayer> {
-    return fly::create_transport(type);
+FLY_EXPORT_FUNCTION("ex_net_create_connection_manager", [](const fly::CMString& type) -> CMUniquePtr<fly::ConnectionManager> {
+    return fly::create_connection_manager(type);
 });
 
 FLY_EXPORT_FUNCTION("ex_net_encode_message", [](const fly::HeartbeatMessage& msg) -> fly_export::bytes {

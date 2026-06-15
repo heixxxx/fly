@@ -1,50 +1,24 @@
 #include <network/cpp/data_client_pool.h>
+#include <network/cpp/transport_interface.h>
+#include <network/cpp/tcp_socket.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
-#include <network/cpp/net_utils.h>
 #include <log/cpp/logger.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
-#include <unistd.h>
 #include <cstring>
 #include <chrono>
 #include <thread>
 
 namespace fly {
 
+DataClientPool::DataClientPool(CMSharedPtr<Transport> transport, int64_t pool_size)
+    : transport_(std::move(transport))
+    , pool_size_(pool_size > 0 ? pool_size : 2) {}
+
 DataClientPool::DataClientPool(int64_t pool_size)
-    : pool_size_(pool_size > 0 ? pool_size : 2) {}
+    : DataClientPool(create_tcp_transport(), pool_size) {}
 
 DataClientPool::~DataClientPool() {
     stop();
-}
-
-int DataClientPool::create_connection(const CMString& host, int port) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
-
-    int nodelay = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-
-    struct timeval tv;
-    tv.tv_sec = 5;
-    tv.tv_usec = 0;
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-    struct sockaddr_in addr;
-    std::memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr(host.c_str());
-    addr.sin_port = htons(static_cast<uint16_t>(port));
-
-    if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-        ::close(fd);
-        return -1;
-    }
-
-    return fd;
 }
 
 std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request(
@@ -75,17 +49,14 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
         slot_cv_.notify_one();
     };
 
-    int fd = create_connection(host, port);
+    int fd = transport_->create_connection(host, port);
     if (fd < 0) {
         release_slot();
         return {false, "", "", "", "Failed to connect to " + host + ":" + std::to_string(port)};
     }
 
-    struct timeval tv;
-    tv.tv_sec = 30;
-    tv.tv_usec = 0;
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    transport_->set_recv_timeout(fd, 30000);
+    transport_->set_send_timeout(fd, 30000);
 
     DataRequestMessage req;
     req.object_name_ = object_name;
@@ -94,22 +65,35 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
     CMString encoded_req = MessageProtocol::encode(req);
 
     constexpr int POLL_INTERVAL_MS = 100;
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
 
     while (true) {
-        if (!net_send_all(fd, encoded_req.data(), encoded_req.size())) {
-            ERR("[DCP] send failed: obj={} fd={} errno={}", object_name, fd, errno);
-            ::close(fd);
-            release_slot();
-            return {false, "", "", "", "Connection lost sending request for " + object_name};
+        // send all
+        const char* send_ptr = encoded_req.data();
+        size_t send_remaining = encoded_req.size();
+        while (send_remaining > 0) {
+            ssize_t n = transport_->send(fd, send_ptr, send_remaining);
+            if (n < 0) {
+                ERR("[DCP] send failed: obj={} fd={} errno={}", object_name, fd, errno);
+                transport_->close(fd);
+                release_slot();
+                return {false, "", "", "", "Connection lost sending request for " + object_name};
+            }
+            send_ptr += n;
+            send_remaining -= static_cast<size_t>(n);
         }
 
+        // recv header (5 bytes)
         char header[5] = {};
-        if (!net_recv_exact(fd, header, 5, 30000)) {
-            ERR("[DCP] recv header failed: obj={} fd={} errno={}", object_name, fd, errno);
-            ::close(fd);
-            release_slot();
-            return {false, "", "", "", "Connection lost for " + object_name};
+        size_t header_received = 0;
+        while (header_received < 5) {
+            ssize_t n = transport_->recv(fd, header + header_received, 5 - header_received);
+            if (n <= 0) {
+                ERR("[DCP] recv header failed: obj={} fd={} errno={}", object_name, fd, errno);
+                transport_->close(fd);
+                release_slot();
+                return {false, "", "", "", "Connection lost for " + object_name};
+            }
+            header_received += static_cast<size_t>(n);
         }
 
         uint32_t total_len =
@@ -120,18 +104,23 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
 
         if (total_len < 1 || total_len > 256 * 1024 * 1024) {
             ERR("[DCP] invalid total_len={}: obj={} fd={}", total_len, object_name, fd);
-            ::close(fd);
+            transport_->close(fd);
             release_slot();
             return {false, "", "", "", "Invalid response for " + object_name};
         }
 
         uint32_t payload_len = total_len - 1;
         CMString payload(payload_len, '\0');
-        if (payload_len > 0 && !net_recv_exact(fd, payload.data(), payload_len, 30000)) {
-            ERR("[DCP] recv payload failed: obj={} fd={} payload_len={} errno={}", object_name, fd, payload_len, errno);
-            ::close(fd);
-            release_slot();
-            return {false, "", "", "", "Connection lost receiving payload for " + object_name};
+        size_t payload_received = 0;
+        while (payload_received < payload_len) {
+            ssize_t n = transport_->recv(fd, payload.data() + payload_received, payload_len - payload_received);
+            if (n <= 0) {
+                ERR("[DCP] recv payload failed: obj={} fd={} payload_len={} errno={}", object_name, fd, payload_len, errno);
+                transport_->close(fd);
+                release_slot();
+                return {false, "", "", "", "Connection lost receiving payload for " + object_name};
+            }
+            payload_received += static_cast<size_t>(n);
         }
 
         CMString full_buf;
@@ -144,14 +133,14 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
         DataResponseMessage response;
         if (!MessageProtocol::decode(full_buf, response)) {
             ERR("[DCP] decode failed: obj={} fd={} frame_size={}", object_name, fd, full_buf.size());
-            ::close(fd);
+            transport_->close(fd);
             release_slot();
             return {false, "", "", "", "Failed to decode response for " + object_name};
         }
 
         if (response.success_) {
             DBG("[DCP] success: obj={} fd={} data_size={}", object_name, fd, response.compressed_data_.size());
-            ::close(fd);
+            transport_->close(fd);
             release_slot();
             return {true, response.compressed_data_, response.py_name_,
                     response.write_context_hash_, ""};
@@ -159,7 +148,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
 
         if (response.error_message_ == "DATA_NOT_READY") {
             if (stopped_.load()) {
-                ::close(fd);
+                transport_->close(fd);
                 release_slot();
                 return {false, "", "", "", "Pool stopped"};
             }
@@ -167,7 +156,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
             continue;
         }
 
-        ::close(fd);
+        transport_->close(fd);
         release_slot();
         return {false, "", "", "", response.error_message_};
     }

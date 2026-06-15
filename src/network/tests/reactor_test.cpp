@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include <network/cpp/reactor.h>
-#include <network/cpp/tcp_transport.h>
-#include <network/cpp/transport.h>
+#include <network/cpp/tcp_connection_manager.h>
+#include <network/cpp/connection_manager.h>
 #include <thread>
 #include <chrono>
 #include <atomic>
@@ -9,14 +9,14 @@
 namespace fly {
 
 TEST(ReactorTest, CreateReactor) {
-    auto transport = create_transport("tcp");
+    auto transport = create_connection_manager("tcp");
     Reactor reactor(std::move(transport));
     
     EXPECT_NO_THROW(reactor.run_once(10));
 }
 
 TEST(ReactorTest, OnConnectCallback) {
-    auto transport = create_transport("tcp");
+    auto transport = create_connection_manager("tcp");
     Reactor reactor(std::move(transport));
     
     std::atomic<int> connect_count{0};
@@ -29,7 +29,7 @@ TEST(ReactorTest, OnConnectCallback) {
 }
 
 TEST(ReactorTest, OnDisconnectCallback) {
-    auto transport = create_transport("tcp");
+    auto transport = create_connection_manager("tcp");
     Reactor reactor(std::move(transport));
     
     std::atomic<int> disconnect_count{0};
@@ -42,7 +42,7 @@ TEST(ReactorTest, OnDisconnectCallback) {
 }
 
 TEST(ReactorTest, RegisterHandler) {
-    auto transport = create_transport("tcp");
+    auto transport = create_connection_manager("tcp");
     Reactor reactor(std::move(transport));
     
     std::atomic<int> heartbeat_count{0};
@@ -55,7 +55,7 @@ TEST(ReactorTest, RegisterHandler) {
 }
 
 TEST(ReactorTest, StopReactor) {
-    auto transport = create_transport("tcp");
+    auto transport = create_connection_manager("tcp");
     Reactor reactor(std::move(transport));
     
     std::atomic<bool> stopped{false};
@@ -74,14 +74,14 @@ TEST(ReactorTest, StopReactor) {
 }
 
 TEST(ReactorTest, SendMessage) {
-    TCPTransport server;
-    TCPTransport client;
+    TcpConnectionManager server;
+    TcpConnectionManager client;
     
     server.listen("127.0.0.1", 0);
     int port = server.get_bound_port();
     
-    Reactor server_reactor(CMMakeUnique<TCPTransport>());
-    Reactor client_reactor(CMMakeUnique<TCPTransport>());
+    Reactor server_reactor(CMMakeUnique<TcpConnectionManager>());
+    Reactor client_reactor(CMMakeUnique<TcpConnectionManager>());
     
     uint64_t client_conn = client.connect("127.0.0.1", port);
     
@@ -124,7 +124,7 @@ TEST(ReactorTest, StopBeforeRunDoesNotHang) {
     // Regression test for bd1e5df: Reactor::run() could overwrite running_=false
     // with true when stop() was called before reactor thread started.
     // Fix: check stop_requested_ before setting running_=true.
-    auto transport = create_transport("tcp");
+    auto transport = create_connection_manager("tcp");
     Reactor reactor(std::move(transport));
 
     // Stop BEFORE run starts
@@ -149,7 +149,7 @@ TEST(ReactorTest, StopBeforeRunDoesNotHang) {
 
 TEST(ReactorTest, WaitUntilRunningAfterStop) {
     // Verify wait_until_running() doesn't hang when reactor is stopped before run
-    auto transport = create_transport("tcp");
+    auto transport = create_connection_manager("tcp");
     Reactor reactor(std::move(transport));
     reactor.stop();
 

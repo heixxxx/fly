@@ -1,6 +1,6 @@
 #pragma once
 
-#include <network/cpp/transport.h>
+#include <network/cpp/connection_manager.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
 #include <log/cpp/logger.h>
@@ -41,7 +41,7 @@ private:
 
 class Reactor {
 public:
-    explicit Reactor(CMUniquePtr<TransportLayer> transport);
+    explicit Reactor(CMUniquePtr<ConnectionManager> transport);
     ~Reactor();
     
     template<typename T>
@@ -73,7 +73,7 @@ public:
     HandlerThreadPool* get_handler_pool() { return handler_pool_.get(); }
 
 private:
-    CMUniquePtr<TransportLayer> transport_;
+    CMUniquePtr<ConnectionManager> transport_;
     CMUniquePtr<HandlerThreadPool> handler_pool_;
     
     CMUnorderedMap<uint64_t, CMString> recv_buffers_;

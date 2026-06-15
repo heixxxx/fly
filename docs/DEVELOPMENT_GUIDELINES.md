@@ -154,7 +154,7 @@ FLY_EXPORT_CLASS(IndexEntry, "EXStgIndexEntry")
 | storage | stg | `get_storage_manager()` | `ex_stg_get_storage_manager` |
 | storage | stg | `create_database()` | `ex_stg_create_database` |
 | core | core | `get_config()` | `ex_core_get_config` |
-| network | net | `create_transport()` | `ex_net_create_transport` |
+| network | net | `create_connection_manager()` | `ex_net_create_connection_manager` |
 | network | net | `encode_message()` | `ex_net_encode_message` |
 
 **目的**: 便于区分 C++ 导出函数与纯 Python 函数，一眼识别函数来源。
@@ -171,8 +171,8 @@ FLY_EXPORT_FUNCTION("ex_stg_get_storage_manager", []() -> StorageManager& {
 });
 
 // network_export.cpp
-FLY_EXPORT_FUNCTION("ex_net_create_transport", [](const CMString& type) {
-    return create_transport(type);
+FLY_EXPORT_FUNCTION("ex_net_create_connection_manager", [](const CMString& type) {
+    return create_connection_manager(type);
 });
 ```
 

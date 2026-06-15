@@ -1,6 +1,6 @@
 #pragma once
 
-#include <network/cpp/transport.h>
+#include <network/cpp/connection_manager.h>
 #include <network/cpp/message_types.h>
 #include <cstdint>
 #include <stdexcept>

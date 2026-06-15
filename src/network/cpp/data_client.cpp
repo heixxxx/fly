@@ -1,15 +1,9 @@
 #include <network/cpp/data_client.h>
+#include <network/cpp/transport_interface.h>
+#include <network/cpp/tcp_socket.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
-#include <network/cpp/net_utils.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
 #include <cstring>
-#include <chrono>
-#include <thread>
-#include <chrono>
 
 namespace fly {
 
@@ -21,26 +15,15 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_com
     uint64_t request_id,
     int timeout_ms)
 {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    auto transport = create_tcp_transport();
+
+    int fd = transport->create_connection(host, port);
     if (fd < 0) {
-        return {false, "", "", "", "Failed to create socket: " + CMString(std::strerror(errno))};
-    }
-
-    struct timeval tv;
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-    struct sockaddr_in addr;
-    std::memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr(host.c_str());
-    addr.sin_port = htons(static_cast<uint16_t>(port));
-
-    if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-        ::close(fd);
         return {false, "", "", "", "Failed to connect to " + host + ":" + std::to_string(port)};
     }
+
+    transport->set_send_timeout(fd, timeout_ms);
+    transport->set_recv_timeout(fd, timeout_ms);
 
     DataRequestMessage req;
     req.object_name_ = object_name;
@@ -48,15 +31,20 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_com
     req.request_id_ = request_id;
     CMString encoded_req = MessageProtocol::encode(req);
 
-    if (!net_send_all(fd, encoded_req.data(), encoded_req.size())) {
-        ::close(fd);
+    if (!transport->send_all(fd, encoded_req.data(), encoded_req.size())) {
+        transport->close(fd);
         return {false, "", "", "", "Failed to send request for " + object_name};
     }
 
     char header[5] = {};
-    if (!net_recv_exact(fd, header, 5, timeout_ms)) {
-        ::close(fd);
-        return {false, "", "", "", "Timeout receiving response header for " + object_name};
+    size_t header_received = 0;
+    while (header_received < 5) {
+        ssize_t n = transport->recv(fd, header + header_received, 5 - header_received);
+        if (n <= 0) {
+            transport->close(fd);
+            return {false, "", "", "", "Timeout receiving response header for " + object_name};
+        }
+        header_received += static_cast<size_t>(n);
     }
 
     uint32_t total_len =
@@ -66,19 +54,23 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_com
         static_cast<uint32_t>(static_cast<unsigned char>(header[3]));
 
     if (total_len < 1 || total_len > 256 * 1024 * 1024) {
-        ::close(fd);
+        transport->close(fd);
         return {false, "", "", "", "Invalid response frame size for " + object_name};
     }
 
     uint32_t payload_len = total_len - 1;
-
     CMString payload(payload_len, '\0');
-    if (payload_len > 0 && !net_recv_exact(fd, payload.data(), payload_len, timeout_ms)) {
-        ::close(fd);
-        return {false, "", "", "", "Timeout receiving response payload for " + object_name};
+    size_t payload_received = 0;
+    while (payload_received < payload_len) {
+        ssize_t n = transport->recv(fd, payload.data() + payload_received, payload_len - payload_received);
+        if (n <= 0) {
+            transport->close(fd);
+            return {false, "", "", "", "Timeout receiving response payload for " + object_name};
+        }
+        payload_received += static_cast<size_t>(n);
     }
 
-    ::close(fd);
+    transport->close(fd);
 
     CMString full_buf;
     full_buf.resize(4 + total_len);

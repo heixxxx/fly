@@ -36,7 +36,7 @@ void MasterAgent::start() {
 
     INFO("MasterAgent start() called, listening on {}:{}", host_, port_);
 
-    auto transport = create_transport("tcp");
+    auto transport = create_connection_manager("tcp");
     transport->listen(host_, port_);
 
     reactor_ = CMMakeUnique<Reactor>(std::move(transport));

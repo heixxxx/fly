@@ -24,9 +24,9 @@ struct TransportEvent {
     FLY_SERIALIZE(type_, conn_id_, data_, error_code_);
 };
 
-class TransportLayer {
+class ConnectionManager {
 public:
-    virtual ~TransportLayer() = default;
+    virtual ~ConnectionManager() = default;
 
     virtual void listen(const CMString& address, int port) = 0;
     virtual void stop_listening() = 0;
@@ -47,6 +47,6 @@ public:
     virtual int get_bound_port() const = 0;
 };
 
-CMUniquePtr<TransportLayer> create_transport(const CMString& type);
+CMUniquePtr<ConnectionManager> create_connection_manager(const CMString& type);
 
 }  // namespace fly
