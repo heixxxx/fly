@@ -678,6 +678,55 @@ TEST(MasterAgentTest, OnTaskFailedRecordsErrorAndUpdatesStatus) {
     wait_for_running(master, false);
 }
 
+// With fail_unscheduleable_tasks=1, a ready task requiring capabilities that no
+// worker has is immediately failed. Covers schedule_tasks capability-mismatch
+// branch (master_agent.cpp L322-363).
+TEST(MasterAgentTest, UnscheduleableCapabilityTaskFailsImmediately) {
+    Config::instance()->set_int("fail_unscheduleable_tasks", 1);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // Task with no input deps (becomes ready) but requires a capability no worker has.
+    master.submit_task(200, "cap_task", "mod", {}, {}, {}, {"gpu"});
+
+    // Wait briefly for schedule_tasks to process the unscheduleable task.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    auto failed = master.get_failed_tasks();
+    EXPECT_GE(failed.size(), 1u)
+        << "capability-unscheduleable task should be failed immediately";
+
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("fail_unscheduleable_tasks", 0);
+}
+
+// With fail_unscheduleable_tasks=1, pending tasks whose dependencies will never
+// be satisfied (deadlock) are detected and failed. Covers schedule_tasks
+// deadlock-detection branch (master_agent.cpp L366-401).
+TEST(MasterAgentTest, DeadlockedPendingTasksAreDetectedAndFailed) {
+    Config::instance()->set_int("fail_unscheduleable_tasks", 1);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // Pending task depending on an input that no task will ever produce.
+    master.submit_task(300, "deadlock_task", "mod", {"a"}, {"never_produced_input"}, {}, {});
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    auto failed = master.get_failed_tasks();
+    EXPECT_GE(failed.size(), 1u)
+        << "deadlocked pending task should be detected and failed";
+
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("fail_unscheduleable_tasks", 0);
+}
+
 TEST(MasterAgentTest, StopDuringActiveCommunication) {
     fly::DataService::instance()->reset();
     // Regression test for bd1e5df: MasterAgent::stop() accessed conn_to_worker_ maps
@@ -847,6 +896,7 @@ TEST(MasterAgentTest, GetOrCreateDatabase) {
 
 TEST(MasterAgentTest, GetTaskError) {
     fly::DataService::instance()->reset();
+    Config::instance()->set_int("fail_unscheduleable_tasks", 1);
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
@@ -1129,6 +1179,7 @@ TEST(MasterAgentTest, SubmitTaskCreatesMetadataAndGraph) {
 TEST(MasterAgentTest, GetPendingTasksReturnsCorrectIds) {
     TempDir tmpdir;
     Config::instance()->set_str("log_dir", tmpdir.path());
+    Config::instance()->set_int("fail_unscheduleable_tasks", 1);
 
     MasterAgent master("127.0.0.1", 0);
     master.start();

@@ -161,4 +161,114 @@ TEST(ReactorTest, WaitUntilRunningAfterStop) {
     // (it polls running_ which should be false)
 }
 
+// End-to-end reactor message dispatch: client sends a typed message → server
+// reactor's registered handler fires. Covers handle_event DATA path +
+// dispatch_message handler invocation (the core gap in prior reactor tests).
+TEST(ReactorTest, HandlerFiresOnReceivedMessage) {
+    TcpConnectionManager server_transport;
+    TcpConnectionManager client_transport;
+
+    server_transport.listen("127.0.0.1", 0);
+    int port = server_transport.get_bound_port();
+
+    // Server reactor wraps a separate transport instance but must listen on same port.
+    // Simpler: server reactor owns the listening transport directly.
+    auto server_cm = create_connection_manager("tcp");
+    server_cm->listen("127.0.0.1", 0);
+    int sport = server_cm->get_bound_port();
+
+    Reactor server_reactor(std::move(server_cm));
+    Reactor client_reactor(create_connection_manager("tcp"));
+
+    std::atomic<int> heartbeat_received{0};
+    std::atomic<uint64_t> received_conn_id{0};
+    server_reactor.register_handler<HeartbeatMessage>([&](uint64_t conn_id, const HeartbeatMessage& msg) {
+        received_conn_id = conn_id;
+        heartbeat_received++;
+    });
+
+    // Run server reactor in background.
+    std::thread server_thread([&] { server_reactor.run(); });
+    server_reactor.wait_until_running();
+
+    // Client connects + sends a HeartbeatMessage.
+    uint64_t client_conn = client_reactor.connect("127.0.0.1", sport);
+    ASSERT_GT(client_conn, 0);
+
+    HeartbeatMessage hb;
+    hb.header_.type_ = MessageType::HEARTBEAT;
+    hb.worker_id_ = 42;
+    client_reactor.send(client_conn, hb);
+
+    // Wait for handler to fire.
+    for (int i = 0; i < 100 && heartbeat_received.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(heartbeat_received.load(), 1);
+    EXPECT_GT(received_conn_id.load(), 0u);
+
+    server_reactor.stop();
+    server_thread.join();
+    client_reactor.stop();
+}
+
+// on_connect / on_disconnect handlers fire on real connection lifecycle events.
+// Covers handle_event CONNECT + DISCONNECT paths.
+TEST(ReactorTest, ConnectAndDisconnectHandlersFire) {
+    auto server_cm = create_connection_manager("tcp");
+    server_cm->listen("127.0.0.1", 0);
+    int port = server_cm->get_bound_port();
+
+    Reactor server_reactor(std::move(server_cm));
+
+    std::atomic<int> connect_count{0};
+    std::atomic<int> disconnect_count{0};
+    server_reactor.on_connect([&](uint64_t) { connect_count++; });
+    server_reactor.on_disconnect([&](uint64_t) { disconnect_count++; });
+
+    std::thread server_thread([&] { server_reactor.run(); });
+    server_reactor.wait_until_running();
+
+    // Client connects via a raw ConnectionManager (Reactor has no close()).
+    TcpConnectionManager client_cm;
+    uint64_t client_conn = client_cm.connect("127.0.0.1", port);
+    ASSERT_GT(client_conn, 0);
+
+    // Wait for server on_connect.
+    for (int i = 0; i < 100 && connect_count.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_GE(connect_count.load(), 1);
+
+    // Client closes → server observes DISCONNECT.
+    client_cm.close_all();
+    for (int i = 0; i < 100 && disconnect_count.load() == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_GE(disconnect_count.load(), 1);
+
+    server_reactor.stop();
+    server_thread.join();
+}
+
+// HandlerThreadPool: submit a task, it executes, shutdown is clean.
+// Covers worker_loop / submit / shutdown.
+TEST(ReactorTest, HandlerThreadPoolExecutesTasks) {
+    HandlerThreadPool pool(2);
+    std::atomic<int> executed{0};
+    for (int i = 0; i < 5; ++i) {
+        bool ok = pool.submit([&] { executed++; });
+        EXPECT_TRUE(ok);
+    }
+    // Wait for tasks.
+    for (int i = 0; i < 100 && executed.load() < 5; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(executed.load(), 5);
+
+    pool.shutdown();
+    // submit after shutdown returns false.
+    EXPECT_FALSE(pool.submit([&] {}));
+}
+
 }  // namespace fly

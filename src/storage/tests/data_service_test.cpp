@@ -5,6 +5,7 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <filesystem>
 #include <istream>
+#include <chrono>
 
 namespace {
 
@@ -1039,9 +1040,98 @@ TEST_F(DataServiceTest, RemoteObjectMetaResetClearsAccess) {
     ds_->update_remote_idx(full, 1, "host1", 1234);
     ds_->record_remote_access(full);
     EXPECT_EQ(ds_->get_access_read_count(full), 1u);
-    
+
     ds_->reset();
     EXPECT_EQ(ds_->get_access_read_count(full), 0u);
+}
+
+// ─── Read API coverage (raw / wait / remote) ───
+
+// try_read_local_raw returns (found, compressed_bytes) for a flushed object.
+TEST_F(DataServiceTest, TryReadLocalRawReturnsCompressedData) {
+    CMString base_path = test_dir_ + "/raw_read";
+    Database db(base_path);
+    write_raw(db, "raw/obj", "payload", false);
+    ds_->drain_write_back();
+
+    CMString full = db.get_obj_name("raw/obj");
+    auto [found, comp] = ds_->try_read_local_raw(full);
+    EXPECT_TRUE(found);
+    EXPECT_FALSE(comp.empty());
+}
+
+// try_read_local_raw for unknown object returns false.
+TEST_F(DataServiceTest, TryReadLocalRawReturnsFalseForUnknown) {
+    auto [found, comp] = ds_->try_read_local_raw("unknown_obj");
+    EXPECT_FALSE(found);
+    EXPECT_TRUE(comp.empty());
+}
+
+// try_read_local_raw_or_wait returns immediately for a complete object (no wait).
+TEST_F(DataServiceTest, TryReadLocalRawOrWaitImmediateForComplete) {
+    CMString base_path = test_dir_ + "/raw_wait";
+    Database db(base_path);
+    write_raw(db, "rw/obj", "data", false);
+    ds_->drain_write_back();
+
+    CMString full = db.get_obj_name("rw/obj");
+    auto [found, comp, py_name] = ds_->try_read_local_raw_or_wait(full, 1000);
+    EXPECT_TRUE(found);
+    EXPECT_FALSE(comp.empty());
+}
+
+// try_read_local_raw_or_wait times out for an object that never completes.
+TEST_F(DataServiceTest, TryReadLocalRawOrWaitTimesOut) {
+    CMString db_id = db32("waitraw_db");
+    CMString full = db_id + ":never_obj";
+    // Register db so lookup doesn't early-return on unknown db.
+    ds_->register_database(db_id, test_dir_ + "/waitraw", "", "writer_x");
+    ds_->on_write_started(db_id, full);
+
+    auto t0 = std::chrono::steady_clock::now();
+    auto [found, comp, py_name] = ds_->try_read_local_raw_or_wait(full, 200);
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - t0).count();
+    EXPECT_FALSE(found);
+    EXPECT_GE(elapsed, 150);
+}
+
+// try_read_local_or_wait (decoded) returns immediately for complete object.
+TEST_F(DataServiceTest, TryReadLocalOrWaitImmediateForComplete) {
+    CMString base_path = test_dir_ + "/or_wait";
+    Database db(base_path);
+    write_raw(db, "ow/obj", "hello", false);
+    ds_->drain_write_back();
+
+    CMString full = db.get_obj_name("ow/obj");
+    auto [found, result] = ds_->try_read_local_or_wait(full, 1000);
+    EXPECT_TRUE(found);
+}
+
+// try_read_remote invokes the configured remote read handler and returns its result.
+TEST_F(DataServiceTest, TryReadRemoteUsesHandler) {
+    CMString full = db32("remote_db") + ":rmt_obj";
+    ds_->update_remote_idx(full, 7, "10.0.0.7", 5000);
+
+    ds_->set_remote_compressed_read_handler(
+        [&full](const CMString& name) -> std::tuple<bool, CMString, CMString, bool> {
+            EXPECT_EQ(name, full);
+            return {true, "compressed_payload", "bytes", false};
+        });
+
+    auto [found, result] = ds_->try_read_remote(full);
+    EXPECT_TRUE(found);
+}
+
+// is_write_in_progress reflects on_write_started / on_write_completed lifecycle.
+TEST_F(DataServiceTest, IsWriteInProgressReflectsLifecycle) {
+    CMString db_id = db32("wip_db");
+    CMString full = db_id + ":wip_obj";
+    ds_->register_database(db_id, test_dir_ + "/wip", "", "writer_w");
+    EXPECT_FALSE(ds_->is_write_in_progress(full));
+
+    ds_->on_write_started(db_id, full);
+    EXPECT_TRUE(ds_->is_write_in_progress(full));
 }
 
 }

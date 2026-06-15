@@ -327,4 +327,89 @@ TEST(TcpConnectionManagerTest, AcceptedFdDoesNotContinuouslyFireEvents) {
     client.close_all();
 }
 
+// connect() to an unlistened port must return 0 (failure sentinel), never throw.
+// Covers the non-fatal-connect contract added in the connect-failure refactor.
+TEST(TcpConnectionManagerTest, ConnectFailureReturnsZero) {
+    TcpConnectionManager client;
+    // Port 1 is reserved and unlistened on test machines; connect() fails synchronously.
+    uint64_t conn_id = client.connect("127.0.0.1", 1);
+    EXPECT_EQ(conn_id, 0u);
+    EXPECT_EQ(client.connection_count(), 0u);
+}
+
+// close(conn_id) on a single connection + is_connected() state transitions.
+TEST(TcpConnectionManagerTest, CloseSingleConnectionAndIsConnected) {
+    TcpConnectionManager server;
+    TcpConnectionManager client;
+
+    server.listen("127.0.0.1", 0);
+    int port = server.get_bound_port();
+
+    uint64_t client_conn = client.connect("127.0.0.1", port);
+    ASSERT_GT(client_conn, 0);
+    EXPECT_TRUE(client.is_connected(client_conn));
+
+    // Drain server accept so server-side conn is registered.
+    auto events = server.poll(500);
+    ASSERT_GE(events.size(), 1);
+    uint64_t server_conn = 0;
+    for (const auto& ev : events) {
+        if (ev.type_ == TransportEventType::CONNECT) { server_conn = ev.conn_id_; break; }
+    }
+    ASSERT_GT(server_conn, 0);
+    EXPECT_TRUE(server.is_connected(server_conn));
+
+    // Close single connection on client.
+    client.close(client_conn);
+    EXPECT_FALSE(client.is_connected(client_conn));
+    EXPECT_EQ(client.connection_count(), 0u);
+
+    // Close unknown conn_id is a no-op (must not crash).
+    EXPECT_NO_THROW(client.close(99999));
+
+    // Cleanup server side.
+    server.close(server_conn);
+    EXPECT_FALSE(server.is_connected(server_conn));
+}
+
+// Peer closing the connection yields a DISCONNECT event on the other side.
+// Covers poll()'s drain_socket-empty → DISCONNECT path (tcp_connection_manager.cpp L247-256).
+TEST(TcpConnectionManagerTest, PeerCloseYieldsDisconnectEvent) {
+    TcpConnectionManager server;
+    TcpConnectionManager client;
+
+    server.listen("127.0.0.1", 0);
+    int port = server.get_bound_port();
+
+    client.connect("127.0.0.1", port);
+
+    // Accept on server.
+    auto events = server.poll(500);
+    ASSERT_GE(events.size(), 1);
+    uint64_t server_conn = 0;
+    for (const auto& ev : events) {
+        if (ev.type_ == TransportEventType::CONNECT) { server_conn = ev.conn_id_; break; }
+    }
+    ASSERT_GT(server_conn, 0);
+
+    // Client closes its end → server should observe DISCONNECT on next poll.
+    client.close_all();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    bool found_disconnect = false;
+    for (int attempt = 0; attempt < 10 && !found_disconnect; ++attempt) {
+        auto evs = server.poll(200);
+        for (const auto& ev : evs) {
+            if (ev.type_ == TransportEventType::DISCONNECT && ev.conn_id_ == server_conn) {
+                found_disconnect = true;
+                break;
+            }
+        }
+    }
+    EXPECT_TRUE(found_disconnect)
+        << "Server did not observe DISCONNECT after client closed";
+
+    server.close_all();
+}
+
 }  // namespace fly
