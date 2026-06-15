@@ -32,6 +32,15 @@ void WorkerAgent::start() {
     auto transport = create_connection_manager("tcp");
     transport->listen("0.0.0.0", 0);
     master_conn_ = transport->connect(master_host_, master_port_);
+    if (master_conn_ == 0) {
+        // Connection failure is non-fatal at the network layer; for a worker it
+        // is fatal: a worker cannot run without its master. Abort start() cleanly
+        // (running_ stays false, no reactor/data-server created) and let the caller
+        // observe is_running()==false and exit.
+        ERR("Failed to connect to master {}:{} — worker cannot start",
+            master_host_, master_port_);
+        return;
+    }
     INFO("connected, master_conn={}", master_conn_);
     reactor_ = CMMakeUnique<Reactor>(std::move(transport));
 
@@ -200,6 +209,12 @@ void WorkerAgent::submit_task(const CMString& name, const CMString& module,
                                const CMVector<CMString>& inputs,
                                const CMVector<CMString>& required_capabilities,
                                const CMString& write_context_hash) {
+    // No reactor means start() failed (e.g. master unreachable) — nothing to
+    // send to. Fail soft rather than crash; caller observes no progress.
+    if (!reactor_) {
+        ERR("submit_task '{}' ignored: worker not started (no reactor)", name);
+        return;
+    }
      TaskSubmitMessage msg;
      msg.task_name_ = name;
     msg.task_module_ = module;

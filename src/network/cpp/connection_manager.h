@@ -31,6 +31,9 @@ public:
     virtual void listen(const CMString& address, int port) = 0;
     virtual void stop_listening() = 0;
 
+    // Connect to remote. Returns conn_id (>=1) on success, 0 on failure.
+    // Never throws — caller decides whether failure is fatal.
+    // (conn_id allocation starts at 1, so 0 is an unambiguous failure sentinel.)
     virtual uint64_t connect(const CMString& address, int port) = 0;
 
     virtual ssize_t send(uint64_t conn_id, const CMString& data) = 0;

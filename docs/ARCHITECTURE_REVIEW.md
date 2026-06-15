@@ -97,13 +97,16 @@
 - **问题**: `HandlerThreadPool` 已定义但 `handle_event` 中没有 `handler_pool_->submit()` 调用。所有 handler 在 reactor 线程中同步执行。如果某个 handler 阻塞（如 `schedule_tasks`），整个 reactor 停止处理所有连接。
 - **建议**: 将耗时 handler（schedule_tasks, on_task_complete 广播等）提交到 HandlerThreadPool 执行。
 
-### 3.2 非阻塞 connect 未处理 EINPROGRESS [待修复]
+### 3.2 connect 连接状态显式通知 [已处理 — 方向调整]
 
-- **严重程度**: 中（原标高，实际影响被高估）
-- **文件**: `src/network/cpp/tcp_transport.cpp:92-110`
-- **问题**: 非阻塞 `connect()` 返回 EINPROGRESS 后，仅注册 EPOLLIN，未注册 EPOLLOUT 确认连接完成。标准模式应：connect 后注册 EPOLLOUT → 等 EPOLLOUT 触发 → `getsockopt(SO_ERROR)` 确认连接成功 → 切换 EPOLLIN。
-- **实际影响评估**: 不构成数据丢失。`send()` 方法自带 `poll(POLLOUT, 30000)` 兜底——连接握手未完成时 `::send()` 返回 EAGAIN，`poll` 等待握手完成后继续发送。连接失败由 reactor 的 `EPOLLERR|EPOLLHUP` 路径检测（`tcp_transport.cpp:244-261`），触发 `on_disconnect` → `initiate_shutdown`。真正缺陷是 **连接状态无显式通知**：`connect()` 立即返回 conn_id，调用方无法区分"已连接"和"正在连接"，失败只能通过 send 返回 -1 或异步 ERROR 事件发现。
-- **建议**: 在 `connect()` 内同步 `poll(POLLOUT, 5000)` + `getsockopt(SO_ERROR)` 确认连接成功后再返回 conn_id，失败则直接 throw。
+- **严重程度**: ~~中~~ → 已处理
+- **原问题**: 非阻塞 `connect()` 返回 EINPROGRESS 后仅注册 EPOLLIN，调用方无法区分"已连接"和"正在连接"，失败只能异步发现。
+- **处理方案（2026-06-15）**: 采纳**连接失败非致命**原则，改用阻塞 connect + 返回 sentinel：
+  - `TCPSocketTransport::create_connection` 阻塞 `::connect()`，失败立即返回 -1（EINPROGRESS 不再出现）。
+  - `ConnectionManager::connect` 失败返回 **0**（conn_id 从 1 分配，0 = 明确失败 sentinel），**不抛异常**——调用层决定失败是否致命。
+  - 调用方可同步区分：`conn_id >= 1` = 已连接，`conn_id == 0` = 失败。
+  - `WorkerAgent::start()` 检测 `conn_id == 0` 后终止启动（running_=false），避免孤儿 worker。
+- **与原"建议 throw"的差异**: 经权衡，连接失败在多业务流程（worker 启动、worker 间数据传输等）均可能出现，不应在底层网络抽象抛异常；改为返回 sentinel 让调用层按场景判断，符合"非必要不抛异常"原则。
 
 ### 3.3 recv_buffers_ 无大小限制 [经验证可接受]
 

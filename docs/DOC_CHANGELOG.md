@@ -2,6 +2,19 @@
 
 ---
 
+## 2026-06-15 (2): connect 失败非致命化 — 返回 0 sentinel，不抛异常
+
+**原因**: 8606397 网络层重构后 `connect()` 失败抛异常，把连接失败当致命错误，破坏 worker_agent_test（无 master 场景）及「连接失败非致命」契约。改为返回 sentinel 让调用层判断。
+
+| 文档 | 变更 |
+|------|------|
+| CLAUDE.md | 网络层表格 connection_manager.h 补 connect() 失败返回 0 语义 |
+| docs/ARCHITECTURE_REVIEW.md | §3.2 从「待修复（建议 throw）」改为「已处理 — 方向调整（返回 sentinel 不抛）」，记录设计决策 |
+
+新行为：`connect()` 失败返回 0（conn_id 从 1 起，0 = 失败），不抛异常；`WorkerAgent::start()` 检测 0 后终止（不进入存活未注册态）。
+
+---
+
 ## 2026-06-15: db_id 生成策略重构（UUID v4 → path-hash + 随机）
 
 **原因**: db_id 从 UUID v4（32 hex）改为 10-char base62（4 char path-hash 前缀 + 6 char 随机后缀）。同路径 → 同前缀，使路径迁移后 load 旧 db + 原路径新建的碰撞可被检测。

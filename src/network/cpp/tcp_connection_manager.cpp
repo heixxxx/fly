@@ -49,14 +49,16 @@ void TcpConnectionManager::stop_listening() {
 uint64_t TcpConnectionManager::connect(const CMString& address, int port) {
     int fd = transport_->create_connection(address, port);
     if (fd < 0) {
-        throw std::runtime_error("Failed to connect to " + address + ":" + std::to_string(port));
+        WARN("connect failed to {}:{}", address, port);
+        return 0;  // failure sentinel (valid conn_id starts at 1)
     }
 
     transport_->set_nonblocking(fd);
 
     if (!epoll_->add(epoll_fd_, fd, EV_READ)) {
         transport_->close(fd);
-        throw std::runtime_error("Failed to add client socket to epoll");
+        WARN("epoll add failed for connect to {}:{}", address, port);
+        return 0;
     }
 
     return register_connection(fd);

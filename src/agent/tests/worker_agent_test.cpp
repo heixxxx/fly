@@ -19,16 +19,19 @@ TEST(WorkerAgentTest, CreateWithId) {
     EXPECT_EQ(worker.get_worker_id(), 42);
 }
 
+// New contract (post connect-non-fatal refactor): when master is unreachable,
+// start() fails cleanly — worker does NOT enter a live-but-unregistered state.
+// running_ stays false, no reactor/data-server created, stop() is a no-op.
 TEST(WorkerAgentTest, StartWithoutMaster) {
-    WorkerAgent worker(1, "127.0.0.1", 0);
+    WorkerAgent worker(1, "127.0.0.1", 0);  // port 0 = no master
     worker.start();
-    
-    wait_for_running(worker, true);
-    EXPECT_TRUE(worker.is_running());
+
+    // Must not be running: connection failure aborts start().
+    EXPECT_FALSE(worker.is_running());
     EXPECT_FALSE(worker.is_registered());
-    
+
+    // stop() on a never-started worker must be safe (no-op via guard).
     worker.stop();
-    wait_for_running(worker, false);
     EXPECT_FALSE(worker.is_running());
 }
 
@@ -213,21 +216,22 @@ TEST(WorkerAgentTest, GetWorkerPropertiesReturnsCopy) {
     EXPECT_EQ(props2.size(), 2u);
 }
 
+// Double-stop safety on a failed-start worker: start() aborted (no master),
+// then explicit stop() + destructor stop() must not crash.
 TEST(WorkerAgentTest, DoubleStopNoCrash) {
-    // Explicit stop() followed by destructor stop() — should not crash
-    // This was fixed in bd1e5df: early return guard `if (!running_ && !reactor_) return;`
+    // start() fails -> running_=false, reactor_=nullptr
+    // stop() guard `if (!reactor_ && !running_) return;` makes it a no-op.
+    // Destructor calls stop() again — must still be safe.
     {
         WorkerAgent worker(1, "127.0.0.1", 0);
         worker.start();
-        wait_for_running(worker, true);
-        EXPECT_TRUE(worker.is_running());
+        EXPECT_FALSE(worker.is_running());
 
         worker.stop();
-        wait_for_running(worker, false);
         EXPECT_FALSE(worker.is_running());
-        // Destructor calls stop() again when scope exits — must not crash
+        // Destructor double-stop when scope exits — must not crash.
     }
-    // If we reach here, destructor double-stop succeeded
+    // If we reach here, destructor double-stop on failed-start succeeded.
 }
 
 TEST(WorkerAgentTest, StopBeforeStartNoCrash) {
@@ -249,15 +253,16 @@ TEST(WorkerAgentTest, RequestDatabaseFreezeNotRegistered) {
     EXPECT_NO_THROW(worker.request_database_freeze(db_id));
 }
 
-TEST(WorkerAgentTest, SubmitTaskStartedNotRegistered) {
-    // Start worker without master → reactor_ exists but not registered
-    // submit_task sends on a failed connection — should not crash
+// submit_task on a worker whose start() failed (no reactor) must not crash.
+// New contract: submit_task guards reactor_==nullptr and returns softly.
+TEST(WorkerAgentTest, SubmitTaskAfterFailedStart) {
     WorkerAgent worker(1, "127.0.0.1", 0);
     worker.start();
-    wait_for_running(worker, true);
+    EXPECT_FALSE(worker.is_running());
+
+    // No reactor exists — submit_task must not dereference null; logs + returns.
     EXPECT_NO_THROW(worker.submit_task("test_task", "test_module", {}, {}));
     worker.stop();
-    wait_for_running(worker, false);
 }
 
 }  // namespace fly
