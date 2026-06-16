@@ -8,7 +8,7 @@
 
 namespace {
 
-static CMString write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
+static fly::WriteErrorType write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
     return db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
 }
 
@@ -61,7 +61,7 @@ TEST_F(DatabaseTest, FreezePreventsWrite) {
     db.freeze();
 
     EXPECT_TRUE(db.is_frozen());
-    EXPECT_TRUE(write_raw(db, "test/obj2", "data2", false).empty());
+    EXPECT_EQ(write_raw(db, "test/obj2", "data2", false), fly::WriteErrorType::FROZEN_DB);
 }
 
 TEST_F(DatabaseTest, FrozenMarkerCreated) {
@@ -512,7 +512,7 @@ TEST_F(DatabaseTest, FreezeDuringInFlightWrite) {
     EXPECT_EQ(result, "inflight_data");
 
     // Subsequent writes should be rejected
-    EXPECT_TRUE(write_raw(db, "after/freeze", "data2", false).empty());
+    EXPECT_EQ(write_raw(db, "after/freeze", "data2", false), fly::WriteErrorType::FROZEN_DB);
 }
 
 TEST_F(DatabaseTest, DoubleFreezeIsIdempotent) {
@@ -531,7 +531,7 @@ TEST_F(DatabaseTest, DoubleFreezeIsIdempotent) {
     std::ifstream ifs(base_path + "/_FROZEN");
     EXPECT_TRUE(ifs.good());
 
-    EXPECT_TRUE(write_raw(db, "after/freeze", "data2", false).empty());
+    EXPECT_EQ(write_raw(db, "after/freeze", "data2", false), fly::WriteErrorType::FROZEN_DB);
 }
 
 TEST_F(DatabaseTest, CompressPickleBytes) {
@@ -681,7 +681,7 @@ TEST_F(DatabaseTest, WriteEmptyData) {
     CMString base_path = test_dir_ + "/empty_write";
     Database db(base_path);
 
-    CMString result = write_raw(db, "empty/obj", "", false);
+    write_raw(db, "empty/obj", "", false);
     fly::DataService::instance()->drain_write_back();
 }
 

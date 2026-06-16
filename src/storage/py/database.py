@@ -2,16 +2,11 @@ import pickle
 import time
 from _fly_storage import (
     ex_stg_get_data_service,
-    ex_stg_get_last_error_type as _get_last_error_type_int,
-    EXStgErrorType,
+    EXStgWriteErrorType,
 )
 
 _MAX_RETRIES = 3
 _RETRY_INTERVAL_SEC = 1.0
-
-
-def _get_last_error_type():
-    return EXStgErrorType(_get_last_error_type_int())
 
 
 class _Database:
@@ -27,28 +22,27 @@ class _Database:
             self._db = ex_stg_create_database(base_path, data_path, writer_id)
 
     _WRITE_ERROR_MESSAGES = {
-        EXStgErrorType.WRITE_TO_FROZEN_DB: "Write to frozen database",
-        EXStgErrorType.WRITE_REGISTRATION_FAILED: "Write registration failed",
-        EXStgErrorType.WRITE_REGISTRATION_TIMEOUT: "Write registration timeout",
-        EXStgErrorType.WRITE_PROVENANCE_MISMATCH: "Write provenance mismatch",
+        EXStgWriteErrorType.FROZEN_DB: "Write to frozen database",
+        EXStgWriteErrorType.REGISTRATION_FAILED: "Write registration failed",
+        EXStgWriteErrorType.REGISTRATION_TIMEOUT: "Write registration timeout",
     }
 
     def write_object(self, name: str, obj, backup: bool = False, save_to_db: bool = True) -> str:
         if not save_to_db:
             return self._write_temp(name, obj)
 
+        # write_object / _write_pickle_bytes return a WriteErrorType int (OK=success).
+        # DUPLICATE_SKIPPED is benign (same object already written) — not raised.
         if hasattr(obj, "_write_to_db"):
-            result = obj._write_to_db(self._db, name, type(obj).__name__, backup)
+            err = EXStgWriteErrorType(obj._write_to_db(self._db, name, type(obj).__name__, backup))
         else:
             data = pickle.dumps(obj)
-            result = self._db._write_pickle_bytes(name, data, type(obj).__name__, backup)
+            err = EXStgWriteErrorType(self._db._write_pickle_bytes(name, data, type(obj).__name__, backup))
 
-        if not result:
-            error_type = _get_last_error_type()
-            if error_type != EXStgErrorType.UNKNOWN and error_type != EXStgErrorType.WRITE_DUPLICATE_SKIPPED:
-                msg = self._WRITE_ERROR_MESSAGES.get(error_type, f"Write error (type={error_type})")
-                raise RuntimeError(f"{msg}: {name}")
-        return result
+        if err != EXStgWriteErrorType.OK and err != EXStgWriteErrorType.DUPLICATE_SKIPPED:
+            msg = self._WRITE_ERROR_MESSAGES.get(err, f"Write error (type={err})")
+            raise RuntimeError(f"{msg}: {name}")
+        return ""
 
     def _write_temp(self, name: str, obj) -> str:
         if hasattr(obj, "_write_to_db"):

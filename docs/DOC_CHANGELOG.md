@@ -2,6 +2,23 @@
 
 ---
 
+## 2026-06-16 (2): write API 返回 WriteErrorType 错误码（独立于 TaskErrorType）
+
+**原因**: write_object/write_pickle_bytes 原返回 CMString（成功失败都为空），Python wrapper 靠 task 级累积的 last_error_type 区分成败，导致跨测试 error_type 污染（生产 bug）。改为返回独立 WriteErrorType 错误码，per-call 明确区分。
+
+新增 `WriteErrorType` 枚举（src/common/cpp/error_types.h）：OK/FROZEN_DB/REGISTRATION_FAILED/REGISTRATION_TIMEOUT/DUPLICATE_SKIPPED。不复用 TaskErrorType（那是 task 执行级累积状态，worker_agent task 失败检测依赖）。
+
+| 改动 | 说明 |
+|------|------|
+| database.h/cpp | write_object/write_pickle_bytes 返回 WriteErrorType（原 CMString）|
+| export_macros.h / storage_export.cpp | _write_to_db / _write_pickle_bytes / write_object_raw 返回 int；导出 EXStgWriteErrorType 枚举 |
+| database.py | write_object 据 return code 判断（OK/DUPLICATE_SKIPPED = 成功），删除 last_error_type 快照逻辑 |
+| last_error_type | 保持 task 级累积语义不变（write_object 仍设它供 worker_agent task 失败检测）|
+
+无文档需更新（Python write_object 签名不变；agent/module.md 的 last_error_type 描述仍准确）。
+
+---
+
 ## 2026-06-16: C++ ObjectCache — 两层 LRU 读缓存（low 层下沉 C++ + nanobind high 层）
 
 **原因**: 新增 C++ 侧 read 缓存系统，统一 master/worker 进程的读缓存。low 层（压缩字节）下沉 C++，消除 Python 与 C++ 的双缓存冗余；high 层（反序列化对象）C++ 服务 read_object<T> + nanobind 类（经 _read_from_db），Python 服务 pickle 对象。

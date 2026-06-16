@@ -104,22 +104,26 @@ Database::CompressResult Database::compress_buffered_data(
     return {total_uncompressed, chunk_count};
 }
 
-CMString Database::write_pickle_bytes(const CMString& object_name,
+fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
                                          const char* data, int64_t data_size,
                                          const CMString& py_name, bool backup) {
     CMString full = full_name(object_name);
-    if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return {}; }
+    if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return fly::WriteErrorType::FROZEN_DB; }
 
     fly::DataService::instance()->on_write_started(db_id_, full);
 
     auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
-    if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+    if (reg_error_type == fly::TaskErrorType::WRITE_PROVENANCE_MISMATCH) {
         ERR("Write registration failed: {} (type={})", reg_error, static_cast<int>(reg_error_type));
-        return {};
+        return fly::WriteErrorType::REGISTRATION_FAILED;
     }
-
-    if (fly::WorkerAgentContext::get_last_error_type() == fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED) {
-        return "";
+    if (reg_error_type == fly::TaskErrorType::WRITE_REGISTRATION_TIMEOUT) {
+        ERR("Write registration timeout: {}", reg_error);
+        return fly::WriteErrorType::REGISTRATION_TIMEOUT;
+    }
+    if (reg_error_type == fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED) {
+        fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED);
+        return fly::WriteErrorType::DUPLICATE_SKIPPED;
     }
 
     auto record = CMMakeShared<FlyBuffer>();
@@ -159,7 +163,7 @@ CMString Database::write_pickle_bytes(const CMString& object_name,
     req.on_complete_ = std::move(complete);
     fly::DataService::instance()->enqueue_write_back(std::move(req));
 
-    return "";
+    return fly::WriteErrorType::OK;
 }
 
 CMString Database::compress_pickle_bytes(const char* data, int64_t data_size,

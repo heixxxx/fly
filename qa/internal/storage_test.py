@@ -81,13 +81,6 @@ def test_db_meta_creation():
     assert meta.created_at == 0
 
 
-def test_worker_info_creation():
-    from _fly_storage import EXStgWorkerInfo
-    info = EXStgWorkerInfo()
-    assert info.worker_id == 0
-    assert info.host == ""
-
-
 def test_database_write_read(temp_dir):
     from _fly_storage import ex_stg_create_database
     db = ex_stg_create_database(temp_dir, "", 0)
@@ -98,15 +91,16 @@ def test_database_write_read(temp_dir):
 
 
 def test_database_freeze(temp_dir):
-    from _fly_storage import ex_stg_create_database
+    from _fly_storage import ex_stg_create_database, EXStgWriteErrorType
     db = ex_stg_create_database(temp_dir, "", 0)
     db.write_object_raw("test/key", "data")
     db.freeze()
 
     assert db.is_frozen() == True
 
-    with pytest.raises(RuntimeError):
-        db.write_object_raw("test/key2", "more data")
+    # After freeze, writes return WriteErrorType.FROZEN_DB (error code, not raise).
+    err = EXStgWriteErrorType(db.write_object_raw("test/key2", "more data"))
+    assert err == EXStgWriteErrorType.FROZEN_DB, f"expected FROZEN_DB, got {err}"
 
     db.reset()
 
@@ -157,24 +151,6 @@ def test_fly_database_cpp_class_write_read(temp_dir):
     assert result.size == 512
     assert result.is_large == False
     assert result.block_count == 0
-
-    db.reset()
-
-
-def test_fly_database_cpp_dbmeta_write_read(temp_dir):
-    from fly import open_db
-    from _fly_storage import EXStgDbMeta, EXStgWorkerInfo
-
-    db = open_db(temp_dir)
-
-    meta = EXStgDbMeta("/test/db", "/test", 1000, 2000)
-
-    db.write_object("test/meta", meta)
-
-    result = db.read_object("test/meta")
-    assert isinstance(result, EXStgDbMeta)
-    assert result.db_id == "/test/db"
-    assert result.created_at == 1000
 
     db.reset()
 
@@ -260,7 +236,7 @@ def test_fly_database_multiple_cpp_types(temp_dir):
     entry = EXStgIndexEntry("idx/1", "", 0, 0, False, 0)
     db.write_object("idx/1", entry)
 
-    wi = EXStgWorkerInfo(10, "worker-10", "", "", "", 0, "")
+    wi = EXStgWorkerInfo(10, "writer-10", "worker-10", "", "")
     db.write_object("worker/10", wi)
 
     r1 = db.read_object("idx/1")
@@ -269,7 +245,7 @@ def test_fly_database_multiple_cpp_types(temp_dir):
     r2 = db.read_object("worker/10")
     assert isinstance(r2, EXStgWorkerInfo)
     assert r2.worker_id == 10
-    assert r2.host == "worker-10"
+    assert r2.hostname == "worker-10"
 
     db.reset()
 

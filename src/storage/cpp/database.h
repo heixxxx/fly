@@ -29,7 +29,7 @@ public:
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
 
-    CMString write_pickle_bytes(const CMString& object_name,
+    fly::WriteErrorType write_pickle_bytes(const CMString& object_name,
                                 const char* data, int64_t data_size,
                                 const CMString& py_name, bool backup = false);
 
@@ -39,7 +39,7 @@ public:
     std::pair<CMString, CMString> read_object_compressed(const CMString& object_name, bool backup = false);
 
     template<typename T>
-    CMString write_object(const CMString& object_name, const T& obj,
+    fly::WriteErrorType write_object(const CMString& object_name, const T& obj,
                           const CMString& py_name, bool backup = false);
 
     template<typename T>
@@ -116,20 +116,29 @@ private:
 };
 
 template<typename T>
-CMString Database::write_object(const CMString& object_name, const T& obj,
+fly::WriteErrorType Database::write_object(const CMString& object_name, const T& obj,
                                 const CMString& py_name, bool backup) {
     CMString full = full_name(object_name);
     if (check_frozen()) {
         fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB);
-        return {};
+        return fly::WriteErrorType::FROZEN_DB;
     }
 
     fly::DataService::instance()->on_write_started(db_id_, full);
     auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
-    if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+    if (reg_error_type == fly::TaskErrorType::WRITE_PROVENANCE_MISMATCH) {
         fly::DataService::instance()->on_write_failed(db_id_, full, reg_error);
         ERR("Write registration rejected: {} (type={})", reg_error, static_cast<int>(reg_error_type));
-        return {};
+        return fly::WriteErrorType::REGISTRATION_FAILED;
+    }
+    if (reg_error_type == fly::TaskErrorType::WRITE_REGISTRATION_TIMEOUT) {
+        fly::DataService::instance()->on_write_failed(db_id_, full, reg_error);
+        ERR("Write registration timeout: {}", reg_error);
+        return fly::WriteErrorType::REGISTRATION_TIMEOUT;
+    }
+    if (reg_error_type == fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED) {
+        fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED);
+        return fly::WriteErrorType::DUPLICATE_SKIPPED;
     }
 
     auto record = CMMakeShared<FlyBuffer>();
@@ -198,7 +207,7 @@ CMString Database::write_object(const CMString& object_name, const T& obj,
     req.on_complete_ = std::move(complete);
     fly::DataService::instance()->enqueue_write_back(std::move(req));
 
-    return "";
+    return fly::WriteErrorType::OK;
 }
 
 template<typename T>

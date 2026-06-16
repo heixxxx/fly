@@ -43,15 +43,15 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_DEF("_write_pickle_bytes", [](Database& db, const CMString& name,
                                               fly_export::bytes data,
                                               const CMString& py_name,
-                                              bool backup) -> CMString {
-        return db.write_pickle_bytes(name, data.c_str(),
-                                       static_cast<int64_t>(data.size()), py_name, backup);
+                                              bool backup) -> int {
+        return static_cast<int>(db.write_pickle_bytes(name, data.c_str(),
+                                       static_cast<int64_t>(data.size()), py_name, backup));
     })
     FLY_EXPORT_DEF("_write_pickle_bytes", [](Database& db, const CMString& name,
                                               fly_export::bytes data,
-                                              const CMString& py_name) -> CMString {
-        return db.write_pickle_bytes(name, data.c_str(),
-                                       static_cast<int64_t>(data.size()), py_name, false);
+                                              const CMString& py_name) -> int {
+        return static_cast<int>(db.write_pickle_bytes(name, data.c_str(),
+                                       static_cast<int64_t>(data.size()), py_name, false));
     })
     FLY_EXPORT_DEF("_read_streaming", [](Database& db, const CMString& name, bool backup) -> fly_export::tuple {
         auto [comp_data, py_name] = db.read_object_compressed(name, backup);
@@ -82,11 +82,11 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
                                                         py_name);
         return fly_export::bytes(compressed.data(), compressed.size());
     })
-    FLY_EXPORT_DEF("write_object_raw", [](Database& db, const CMString& name, const CMString& data, bool backup) -> CMString {
-        return db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
+    FLY_EXPORT_DEF("write_object_raw", [](Database& db, const CMString& name, const CMString& data, bool backup) -> int {
+        return static_cast<int>(db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup));
     })
-    FLY_EXPORT_DEF("write_object_raw", [](Database& db, const CMString& name, const CMString& data) -> CMString {
-        return db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", false);
+    FLY_EXPORT_DEF("write_object_raw", [](Database& db, const CMString& name, const CMString& data) -> int {
+        return static_cast<int>(db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", false));
     })
     FLY_EXPORT_DEF("read_object_raw", [](Database& db, const CMString& name, bool backup) -> CMString {
         auto [comp_data, py_name] = db.read_object_compressed(name, backup);
@@ -232,6 +232,13 @@ FLY_EXPORT_ENUM(fly::TaskErrorType, "EXStgErrorType")
     FLY_EXPORT_ENUM_VALUE("WRITE_REGISTRATION_TIMEOUT", fly::TaskErrorType::WRITE_REGISTRATION_TIMEOUT)
     FLY_EXPORT_ENUM_VALUE("WRITE_PROVENANCE_MISMATCH", fly::TaskErrorType::WRITE_PROVENANCE_MISMATCH)
     FLY_EXPORT_ENUM_VALUE("WRITE_DUPLICATE_SKIPPED", fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED);
+
+FLY_EXPORT_ENUM(fly::WriteErrorType, "EXStgWriteErrorType")
+    FLY_EXPORT_ENUM_VALUE("OK", fly::WriteErrorType::OK)
+    FLY_EXPORT_ENUM_VALUE("FROZEN_DB", fly::WriteErrorType::FROZEN_DB)
+    FLY_EXPORT_ENUM_VALUE("REGISTRATION_FAILED", fly::WriteErrorType::REGISTRATION_FAILED)
+    FLY_EXPORT_ENUM_VALUE("REGISTRATION_TIMEOUT", fly::WriteErrorType::REGISTRATION_TIMEOUT)
+    FLY_EXPORT_ENUM_VALUE("DUPLICATE_SKIPPED", fly::WriteErrorType::DUPLICATE_SKIPPED);
 
 FLY_EXPORT_FUNCTION("ex_stg_get_last_error_type", []() -> int {
     return static_cast<int>(fly::WorkerAgentContext::get_last_error_type());

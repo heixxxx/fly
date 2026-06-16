@@ -9,8 +9,8 @@
 
 namespace {
 
-static CMString write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
-    return db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
+static void write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
+    db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
 }
 
 // Generate a fixed-length db_id (canonical db_id_len()). Uses '_' padding
