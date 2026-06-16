@@ -2,6 +2,16 @@
 
 ---
 
+## 2026-06-17 (2): 零拷贝验证 — valgrind massif profiling 固化结论
+
+**方法**: 10MB 对象远程传输（master + 2 worker），valgrind massif 追踪各进程堆分配树。
+
+**结论**: wire 路径零用户态 copy。massif 分配树中无 DataResponseProtocol/MessageProtocol/FlyBuffer→CMString/substr/take 相关 heap 分配。worker 峰值分配全在 compress_pickle_bytes（写入压缩）+ decompress_raw_data（解压），均为序列化/压缩/解压的必然成本。
+
+仅剩不可消除 copy: 内核 send/recv（syscall 固有）+ pickle 序列化/反序列化 + lz4 压缩/解压。
+
+---
+
 ## 2026-06-17: Wire 协议优化 — DataResponse 分段传输 + string_view 零拷贝 header
 
 **原因**: DataResponseMessage 的 compressed_data_（大对象压缩字节）原经 bitsery 序列化，5 次用户态 copy（500MB/100MB 对象）。改为两段传输（小字段 bitsery + raw payload 独立），消除全部用户态 copy。ObjectHeader::deserialize 改 string_view，消除 header 解析的全量 copy。

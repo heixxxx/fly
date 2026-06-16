@@ -229,3 +229,19 @@ def write_temp_large(db, key, size):
 def mr_downstream_read(db, mr, output_key):
     data = mr.get(db)
     db.write_object(output_key, f"downstream:{data}")
+
+
+# ── Large object remote transfer profiling tasks ──
+
+# Task 1: runs on GPU worker, writes a large temp object (~100MB).
+@as_task(requires=["gpu"])
+def gpu_write_large_temp(db, key, size):
+    data = list(range(size))  # ~100MB when size = 12_500_000 (each int ~8 bytes)
+    db.write_object(key, data, save_to_db=False)
+
+
+# Task 2: runs on CPU worker, depends on task 1's output, reads it remotely.
+@as_task(inputs=lambda db, source_key: [db.get_obj_name(source_key)])
+def cpu_read_large_remote(db, source_key):
+    data = db.read_object(source_key)
+    return len(data)
