@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-06-16 (4): FlyBufferPtr 全链路零拷贝重构 + write-through
+
+**原因**: ObjectCache low 层原存 CMString，write/read 链路多次 copy。改为存 FlyBufferPtr（shared_ptr 共享所有权），缓存与读取链路全程零拷贝。write_object/write_pickle_bytes 落盘后 write-through 填入 low 层，立即启用数据可读性。
+
+| 文档 | 变更 |
+|------|------|
+| CLAUDE.md | object_cache.h low 层描述 CMString→FlyBufferPtr；补 write-through 填入 |
+| docs/architecture.md | 读缓存分层表 low 层 CMString→FlyBufferPtr；补 write-through |
+
+改动（13 签名）:
+- fly_buffer.h: 新增 FlyBufferPtr 别名
+- object_cache.h: put_low/get_low 改 FlyBufferPtr（low 层 std::any 持 shared_ptr）
+- data_reader/data_service: read_raw_bytes/try_read_local_raw/read_raw_compressed 等返回 FlyBufferPtr
+- database: read_object_compressed 返回 pair<FlyBufferPtr, CMString>
+- 回调 typedef + data_client/data_client_pool + worker/master agent: 返回 FlyBufferPtr
+- data_server: wire egress FlyBufferPtr→CMString copy（wire 固有）
+- write 路径: complete_ lambda 直接传 record（FlyBufferPtr），省 FlyBuffer→CMString copy
+
+消除 copy: write→put_low（2次→0）、read→get_low→返回（1次→0）、DataServer serve 缓存命中（get_low copy→shared_ptr data()）。
+保留 copy: wire encode/decode（序列化固有）。
+
+---
+
 ## 2026-06-16 (3): 远程读复用 low 层缓存 + hit stats + remove 缓存清理补全
 
 **原因**: ObjectCache low 层存的压缩字节正是远程传输载荷，可用于加速远程 DataServer 服务（省磁盘 IO）。补充 hit stats 诊断 + 修复远程 remove 场景的缓存失效 gap。

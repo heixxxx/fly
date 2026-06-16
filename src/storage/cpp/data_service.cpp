@@ -449,12 +449,12 @@ CMString DataService::get_db_id_for_object(const CMString& object_name) const {
 
 ReadResult DataService::do_read_local_entries(const CMVector<IndexEntry>& entries,
                                                const DbPaths& paths) {
-    CMString raw = do_read_raw_entries(entries, paths);
-    if (raw.empty()) return ReadResult{};
-    return decompress_raw(raw);
+    FlyBufferPtr raw = do_read_raw_entries(entries, paths);
+    if (!raw || raw->empty()) return ReadResult{};
+    return decompress_raw(CMString(raw->data(), raw->size()));
 }
 
-CMString DataService::do_read_raw_entries(const CMVector<IndexEntry>& entries,
+FlyBufferPtr DataService::do_read_raw_entries(const CMVector<IndexEntry>& entries,
                                             const DbPaths& paths) {
     DataReader reader(paths.base_path_, paths.data_path_, paths.writer_id_);
     return reader.read_raw_bytes(entries.back());
@@ -526,13 +526,13 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
     return {true, std::move(result)};
 }
 
-std::pair<bool, CMString> DataService::try_read_local_raw(const CMString& object_name) {
+std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& object_name) {
     // Short-circuit: serve compressed bytes from the ObjectCache low tier when
     // available. This benefits both the remote DataServer serve path (which
     // calls this directly) and the local read_raw_compressed Tier-1 path —
     // avoiding index lookup + disk IO entirely on a cache hit.
     if (auto [hit, cached] = fly::ObjectCache::instance().get_low(object_name); hit) {
-        return {true, std::move(cached)};
+        return {true, cached};
     }
 
     auto [db_id, short_name] = split_full(object_name);
@@ -580,34 +580,39 @@ std::pair<bool, CMString> DataService::try_read_local_raw(const CMString& object
         case 3: DBG("[TEMP-READ-LOCAL] FOUND: obj={}, data_size={}", object_name, temp_data.size()); break;
     }
 
-    if (diag != 3) return {false, {}};
+    if (diag != 3) return {false, nullptr};
 
     if (is_temp) {
         if (!temp_data.empty()) {
-            return {true, std::move(temp_data)};
+            auto buf = CMMakeShared<FlyBuffer>();
+            buf->take(std::move(temp_data));
+            return {true, buf};
         }
         if (temp_eviction_store_) {
             auto [found, data] = temp_eviction_store_->get(object_name);
-            return {found, std::move(data)};
+            if (!found) return {false, nullptr};
+            auto buf = CMMakeShared<FlyBuffer>();
+            buf->take(std::move(data));
+            return {true, buf};
         }
-        return {false, {}};
+        return {false, nullptr};
     }
 
-    CMString raw = do_read_raw_entries(entries, paths);
-    if (raw.empty()) return {false, {}};
+    FlyBufferPtr raw = do_read_raw_entries(entries, paths);
+    if (!raw || raw->empty()) return {false, nullptr};
 
     // Populate the low-tier cache so subsequent reads (local or remote serve)
     // skip disk IO. Account by uncompressed size from the object header;
     // fall back to compressed size if the header cannot be parsed.
-    size_t accounted = raw.size();
+    size_t accounted = raw->size();
     try {
         int64_t off = 0;
-        auto hdr = ObjectHeader::deserialize(raw, off);
+        auto hdr = ObjectHeader::deserialize(CMString(raw->data(), raw->size()), off);
         if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
     } catch (...) {}
     fly::ObjectCache::instance().put_low(object_name, raw, accounted);
 
-    return {true, std::move(raw)};
+    return {true, raw};
 }
 
 bool DataService::is_write_in_progress(const CMString& object_name) const {
@@ -620,7 +625,7 @@ bool DataService::is_write_in_progress(const CMString& object_name) const {
     return it->second->completion_state_ == CompletionState::INCOMPLETE;
 }
 
-std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
+std::tuple<bool, FlyBufferPtr, CMString> DataService::try_read_local_raw_or_wait(
         const CMString& object_name, int timeout_ms) {
     auto [db_id, short_name] = split_full(object_name);
     CMSharedPtr<LocalObjectInfo> info;
@@ -630,10 +635,10 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto db_it = local_idx_.find(db_id);
-        if (db_it == local_idx_.end()) return {false, {}, {}};
+        if (db_it == local_idx_.end()) return {false, nullptr, {}};
         auto it = db_it->second.find(short_name);
         if (it == db_it->second.end() || !it->second) {
-            return {false, {}, {}};
+            return {false, nullptr, {}};
         }
         info = it->second;
 
@@ -644,7 +649,7 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
             } else {
                 auto path_it = db_paths_.find(db_id);
                 if (path_it == db_paths_.end()) {
-                    return {false, {}, {}};
+                    return {false, nullptr, {}};
                 }
                 paths = path_it->second;
             }
@@ -659,28 +664,30 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
             if (temp_data.empty()) {
                 if (temp_eviction_store_) {
                     auto [found, data] = temp_eviction_store_->get(object_name);
-                    if (!found) return {false, {}, {}};
+                    if (!found) return {false, nullptr, {}};
                     temp_data = std::move(data);
                 } else {
-                    return {false, {}, {}};
+                    return {false, nullptr, {}};
                 }
             }
             CMString py_name;
             DecompressingStreamBuf dsbuf(temp_data.data(), temp_data.size());
             py_name = dsbuf.py_name();
-            return {true, std::move(temp_data), std::move(py_name)};
+            auto buf = CMMakeShared<FlyBuffer>();
+            buf->take(std::move(temp_data));
+            return {true, buf, std::move(py_name)};
         }
 
-        CMString raw = do_read_raw_entries(info->entries_, paths);
-        if (raw.empty()) return {false, {}, {}};
+        FlyBufferPtr raw = do_read_raw_entries(info->entries_, paths);
+        if (!raw || raw->empty()) return {false, nullptr, {}};
         CMString py_name;
-        DecompressingStreamBuf dsbuf(raw.data(), raw.size());
+        DecompressingStreamBuf dsbuf(raw->data(), raw->size());
         py_name = dsbuf.py_name();
-        return {true, std::move(raw), std::move(py_name)};
+        return {true, raw, std::move(py_name)};
     }
 
     if (info->completion_state_ == CompletionState::FAILED) {
-        return {false, {}, {}};
+        return {false, nullptr, {}};
     }
 
     {
@@ -699,7 +706,7 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
         }
 
         if (!completed || info->completion_state_ == CompletionState::FAILED) {
-            return {false, {}, {}};
+            return {false, nullptr, {}};
         }
     }
 
@@ -708,16 +715,18 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
         if (temp_data.empty()) {
             if (temp_eviction_store_) {
                 auto [found, data] = temp_eviction_store_->get(object_name);
-                if (!found) return {false, {}, {}};
+                if (!found) return {false, nullptr, {}};
                 temp_data = std::move(data);
             } else {
-                return {false, {}, {}};
+                return {false, nullptr, {}};
             }
         }
         CMString py_name;
         DecompressingStreamBuf dsbuf(temp_data.data(), temp_data.size());
         py_name = dsbuf.py_name();
-        return {true, std::move(temp_data), std::move(py_name)};
+        auto buf = CMMakeShared<FlyBuffer>();
+        buf->take(std::move(temp_data));
+        return {true, buf, std::move(py_name)};
     }
 
     DbPaths final_paths;
@@ -725,17 +734,17 @@ std::tuple<bool, CMString, CMString> DataService::try_read_local_raw_or_wait(
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto path_it = db_paths_.find(db_id);
-        if (path_it == db_paths_.end()) return {false, {}, {}};
+        if (path_it == db_paths_.end()) return {false, nullptr, {}};
         final_paths = path_it->second;
         final_entries = info->entries_;
     }
 
-    CMString raw = do_read_raw_entries(final_entries, final_paths);
-    if (raw.empty()) return {false, {}, {}};
+    FlyBufferPtr raw = do_read_raw_entries(final_entries, final_paths);
+    if (!raw || raw->empty()) return {false, nullptr, {}};
     CMString py_name;
-    DecompressingStreamBuf dsbuf(raw.data(), raw.size());
+    DecompressingStreamBuf dsbuf(raw->data(), raw->size());
     py_name = dsbuf.py_name();
-    return {true, std::move(raw), std::move(py_name)};
+    return {true, raw, std::move(py_name)};
 }
 
 std::pair<bool, ReadResult> DataService::try_read_remote(const CMString& object_name) {
@@ -743,7 +752,7 @@ std::pair<bool, ReadResult> DataService::try_read_remote(const CMString& object_
     if (found) return {true, std::move(result)};
 
     auto [comp_found, comp_data, comp_py_name, comp_hash, can_still_produce] = read_raw_compressed(object_name);
-    if (!comp_found || comp_data.empty()) {
+    if (!comp_found || !comp_data || comp_data->empty()) {
         ReadResult empty;
         empty.can_still_produce_ = can_still_produce;
         return {false, std::move(empty)};
@@ -753,7 +762,7 @@ std::pair<bool, ReadResult> DataService::try_read_remote(const CMString& object_
     ret.py_name_ = comp_py_name;
     ret.can_still_produce_ = false;
 
-    DecompressingStreamBuf dsbuf(comp_data.data(), comp_data.size());
+    DecompressingStreamBuf dsbuf(comp_data->data(), comp_data->size());
     std::istream is(&dsbuf);
     CMVector<char> tmp(4096);
     while (is) {
@@ -869,7 +878,7 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
     return {true, std::move(read_result)};
 }
 
-std::tuple<bool, CMString, CMString, CMString, bool> DataService::read_raw_compressed(const CMString& object_name) {
+std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_compressed(const CMString& object_name) {
     auto [found, raw] = try_read_local_raw(object_name);
     if (found) {
         auto [db_id, short_name] = split_full(object_name);
@@ -896,22 +905,22 @@ std::tuple<bool, CMString, CMString, CMString, bool> DataService::read_raw_compr
 
         if (is_temp_entry) {
             CMString py_name;
-            DecompressingStreamBuf dsbuf(raw.data(), raw.size());
+            DecompressingStreamBuf dsbuf(raw->data(), raw->size());
             py_name = dsbuf.py_name();
-            return {true, std::move(raw), std::move(py_name), {}, false};
+            return {true, raw, std::move(py_name), {}, false};
         }
 
         CMString py_name;
         CMString write_hash;
         if (!entries.empty() && !paths.base_path_.empty()) {
-            CMString entry_raw = do_read_raw_entries(entries, paths);
-            if (!entry_raw.empty()) {
-                DecompressingStreamBuf dsbuf(entry_raw.data(), entry_raw.size());
+            FlyBufferPtr entry_raw = do_read_raw_entries(entries, paths);
+            if (entry_raw && !entry_raw->empty()) {
+                DecompressingStreamBuf dsbuf(entry_raw->data(), entry_raw->size());
                 py_name = dsbuf.py_name();
             }
             write_hash = entries.back().write_context_hash_;
         }
-        return {true, std::move(raw), std::move(py_name), std::move(write_hash), false};
+        return {true, raw, std::move(py_name), std::move(write_hash), false};
     }
 
     auto info = lookup_remote_idx(object_name);
@@ -924,7 +933,7 @@ std::tuple<bool, CMString, CMString, CMString, bool> DataService::read_raw_compr
         }
         if (cb) {
             auto [cb_found, cb_data, cb_py_name, cb_hash] = cb(info.host_, info.port_, object_name);
-            if (cb_found) return {true, std::move(cb_data), std::move(cb_py_name), std::move(cb_hash), false};
+            if (cb_found) return {true, cb_data, std::move(cb_py_name), std::move(cb_hash), false};
             remove_remote_location(object_name, info.worker_id_);
         }
     }
@@ -939,17 +948,17 @@ std::tuple<bool, CMString, CMString, CMString, bool> DataService::read_raw_compr
         for (int attempt = 0; attempt < 3; ++attempt) {
             auto [cb_found, cb_data, cb_py_name, cb_can_still_produce] = remote_cb(object_name);
             last_can_produce = cb_can_still_produce;
-            if (cb_found && !cb_data.empty()) {
-                return {true, std::move(cb_data), std::move(cb_py_name), {}, false};
+            if (cb_found && cb_data && !cb_data->empty()) {
+                return {true, cb_data, std::move(cb_py_name), {}, false};
             }
             if (attempt < 2) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             }
         }
-        return {false, {}, {}, {}, last_can_produce};
+        return {false, nullptr, {}, {}, last_can_produce};
     }
 
-    return {false, {}, {}, {}, false};
+    return {false, nullptr, {}, {}, false};
 }
 
 // ============================================================

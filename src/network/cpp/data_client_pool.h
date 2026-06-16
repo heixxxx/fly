@@ -1,6 +1,7 @@
 #pragma once
 
 #include <common/cpp/common_types.h>
+#include <serialization/cpp/fly_buffer.h>
 #include <cstdint>
 #include <mutex>
 #include <condition_variable>
@@ -30,7 +31,7 @@ public:
     DataClientPool(const DataClientPool&) = delete;
     DataClientPool& operator=(const DataClientPool&) = delete;
 
-    std::tuple<bool, CMString, CMString, CMString, CMString> request(
+    std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> request(
         const CMString& host,
         int port,
         const CMString& object_name,

@@ -62,6 +62,12 @@ CMString decompress_raw(const CMString& raw) {
     return result;
 }
 
+// Convenience: extract CMString from a FlyBufferPtr (for decompress_raw calls).
+CMString raw_str(const FlyBufferPtr& buf) {
+    if (!buf) return {};
+    return CMString(buf->data(), buf->size());
+}
+
 class DataReaderWriterTest : public ::testing::Test {
 protected:
     CMString test_dir_;
@@ -87,10 +93,10 @@ TEST_F(DataReaderWriterTest, WriteAndReadRawBytes) {
     }
 
     DataReader reader(base_path, "", "a1b2c3d4");
-    CMString raw = reader.read_raw_bytes("test/obj");
-    ASSERT_FALSE(raw.empty());
+    FlyBufferPtr raw = reader.read_raw_bytes("test/obj");
+    ASSERT_FALSE(!raw || raw->empty());
 
-    CMString data = decompress_raw(raw);
+    CMString data = decompress_raw(raw_str(raw));
     EXPECT_EQ(data, "hello world");
 }
 
@@ -109,9 +115,9 @@ TEST_F(DataReaderWriterTest, WriteAndReadMultipleObjects) {
     }
 
     DataReader reader(base_path, "", "a1b2c3d4");
-    EXPECT_EQ(decompress_raw(reader.read_raw_bytes("obj/1")), "data_one");
-    EXPECT_EQ(decompress_raw(reader.read_raw_bytes("obj/2")), "data_two");
-    EXPECT_EQ(decompress_raw(reader.read_raw_bytes("obj/3")), "data_three");
+    EXPECT_EQ(decompress_raw(raw_str(reader.read_raw_bytes("obj/1"))), "data_one");
+    EXPECT_EQ(decompress_raw(raw_str(reader.read_raw_bytes("obj/2"))), "data_two");
+    EXPECT_EQ(decompress_raw(raw_str(reader.read_raw_bytes("obj/3"))), "data_three");
 }
 
 TEST_F(DataReaderWriterTest, ExistsReturnsTrue) {
@@ -138,7 +144,7 @@ TEST_F(DataReaderWriterTest, ExistsReturnsFalseForMissing) {
 TEST_F(DataReaderWriterTest, ReadNonExistentReturnsEmpty) {
     CMString base_path = test_dir_ + "/rw_empty";
     DataReader reader(base_path, "", "a1b2c3d4");
-    EXPECT_TRUE(reader.read_raw_bytes("nonexistent").empty());
+    EXPECT_TRUE(!reader.read_raw_bytes("nonexistent"));
 }
 
 TEST_F(DataReaderWriterTest, PyNameRoundtrip) {
@@ -152,10 +158,10 @@ TEST_F(DataReaderWriterTest, PyNameRoundtrip) {
     }
 
     DataReader reader(base_path, "", "a1b2c3d4");
-    CMString raw = reader.read_raw_bytes("named/obj");
-    ASSERT_FALSE(raw.empty());
+    FlyBufferPtr raw = reader.read_raw_bytes("named/obj");
+    ASSERT_FALSE(!raw || raw->empty());
 
-    DecompressingStreamBuf dsbuf(raw.data(), raw.size());
+    DecompressingStreamBuf dsbuf(raw->data(), raw->size());
     EXPECT_EQ(dsbuf.py_name(), "MyClass");
 }
 
@@ -237,8 +243,8 @@ TEST_F(DataReaderWriterTest, ReadFromMissingFileReturnsEmpty) {
     fake_entry.offset_ = 0;
     fake_entry.size_ = 10;
 
-    CMString result = reader.read_raw_bytes(fake_entry);
-    EXPECT_TRUE(result.empty());
+    FlyBufferPtr result = reader.read_raw_bytes(fake_entry);
+    EXPECT_TRUE(!result || result->empty());
 }
 
 TEST_F(DataReaderWriterTest, ReadRawBytesByIndexEntry) {
@@ -255,9 +261,9 @@ TEST_F(DataReaderWriterTest, ReadRawBytesByIndexEntry) {
     auto entry = reader.find_entry("entry/obj");
     ASSERT_TRUE(entry.has_value());
 
-    CMString raw = reader.read_raw_bytes(entry.value());
-    ASSERT_FALSE(raw.empty());
-    CMString data = decompress_raw(raw);
+    FlyBufferPtr raw = reader.read_raw_bytes(entry.value());
+    ASSERT_FALSE(!raw || raw->empty());
+    CMString data = decompress_raw(raw_str(raw));
     EXPECT_EQ(data, "entry data");
 }
 
@@ -273,9 +279,9 @@ TEST_F(DataReaderWriterTest, DataPathFallback) {
     }
 
     DataReader reader(base_path, data_path, "a1b2c3d4");
-    CMString raw = reader.read_raw_bytes("fb/obj");
-    ASSERT_FALSE(raw.empty());
-    CMString data = decompress_raw(raw);
+    FlyBufferPtr raw = reader.read_raw_bytes("fb/obj");
+    ASSERT_FALSE(!raw || raw->empty());
+    CMString data = decompress_raw(raw_str(raw));
     EXPECT_EQ(data, "fallback data");
 }
 

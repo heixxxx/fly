@@ -54,25 +54,25 @@ std::optional<CMVector<IndexEntry>> DataReader::find_all_entries(const CMString&
     return index_->find_all_entries(object_name);
 }
 
-CMString DataReader::read_raw_bytes(const CMString& object_name) {
+FlyBufferPtr DataReader::read_raw_bytes(const CMString& object_name) {
     auto entry = index_->find_entry(object_name);
     if (!entry.has_value()) {
         ERR("read_raw_bytes: object not found: {}", object_name);
-        return {};
+        return nullptr;
     }
     return read_raw_bytes(entry.value());
 }
 
-CMString DataReader::read_raw_bytes(const IndexEntry& entry) {
+FlyBufferPtr DataReader::read_raw_bytes(const IndexEntry& entry) {
     CMString file_path = find_file_path(entry.file_name_);
     return read_from_file(file_path, entry.offset_, entry.size_);
 }
 
-CMString DataReader::read_from_file(const CMString& file_path, int64_t offset, int64_t size) {
+FlyBufferPtr DataReader::read_from_file(const CMString& file_path, int64_t offset, int64_t size) {
     std::ifstream ifs(file_path, std::ios::binary);
     if (!ifs.is_open()) {
         ERR("Failed to open data file: {}", file_path);
-        return {};
+        return nullptr;
     }
 
     ifs.seekg(offset);
@@ -81,8 +81,11 @@ CMString DataReader::read_from_file(const CMString& file_path, int64_t offset, i
 
     if (!ifs) {
         ERR("Failed to read data from file: {}", file_path);
-        return {};
+        return nullptr;
     }
 
-    return buffer;
+    // Zero-copy: move the read buffer into a shared FlyBuffer.
+    auto buf = CMMakeShared<FlyBuffer>();
+    buf->take(std::move(buffer));
+    return buf;
 }

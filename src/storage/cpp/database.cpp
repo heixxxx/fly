@@ -143,13 +143,17 @@ fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
 
     auto complete = [full, db_id = this->db_id_, object_name,
                      caller_record_func,
-                     caller_backup_func, w, backup]() {
+                     caller_backup_func, w, backup,
+                     record, compress_result]() {
         auto ds = fly::DataService::instance();
         auto entries = w->get_all_entries(full);
         if (entries.has_value()) {
             ds->on_write_completed(db_id, full, entries.value());
         }
         ds->on_object_flushed(full);
+        // Populate low-tier cache for immediate readability (zero-copy: share record).
+        size_t sz = compress_result.original_size_ > 0 ? static_cast<size_t>(compress_result.original_size_) : record->size();
+        fly::ObjectCache::instance().put_low(full, record, sz);
         if (caller_record_func) {
             caller_record_func(db_id, object_name);
         }
@@ -173,7 +177,7 @@ CMString Database::compress_pickle_bytes(const char* data, int64_t data_size,
     return CMString(buf.data(), buf.size());
 }
 
-std::pair<CMString, CMString> Database::read_object_compressed(const CMString& object_name, bool backup) {
+std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMString& object_name, bool backup) {
     CMString full = full_name(object_name);
     auto& cache = fly::ObjectCache::instance();
 
@@ -182,7 +186,7 @@ std::pair<CMString, CMString> Database::read_object_compressed(const CMString& o
         CMString py_name;
         try {
             int64_t off = 0;
-            auto hdr = ObjectHeader::deserialize(cached, off);
+            auto hdr = ObjectHeader::deserialize(CMString(cached->data(), cached->size()), off);
             py_name = hdr.py_name_;
         } catch (...) {
             // Malformed cached entry — fall through to re-read from source.
@@ -196,29 +200,28 @@ std::pair<CMString, CMString> Database::read_object_compressed(const CMString& o
 
     auto ds = fly::DataService::instance();
     auto [comp_found, comp_data, comp_py_name, comp_hash, comp_can_still_produce] = ds->read_raw_compressed(full);
-    if (!comp_found || comp_data.empty()) {
+    if (!comp_found || !comp_data || comp_data->empty()) {
         ERR("read_object_compressed: no data for '{}'", full);
-        return {};
+        return {nullptr, {}};
     }
 
     if (backup && !ds->has_local_object(full)) {
-        CMString cp = comp_data;
-        do_backup_write(full, object_name, std::move(cp), comp_hash);
+        do_backup_write(full, object_name, CMString(comp_data->data(), comp_data->size()), comp_hash);
     }
 
     // Populate low tier: account by uncompressed size from the object header
     // (fall back to compressed size if the header cannot be parsed).
-    size_t accounted = comp_data.size();
+    size_t accounted = comp_data->size();
     try {
         int64_t off = 0;
-        auto hdr = ObjectHeader::deserialize(comp_data, off);
+        auto hdr = ObjectHeader::deserialize(CMString(comp_data->data(), comp_data->size()), off);
         if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
     } catch (...) {
         // Keep compressed-size accounting.
     }
     cache.put_low(full, comp_data, accounted);
 
-    return {std::move(comp_data), std::move(comp_py_name)};
+    return {comp_data, std::move(comp_py_name)};
 }
 
 CMString Database::read_object_py_name(const CMString& object_name) {
@@ -283,13 +286,13 @@ void Database::backup_object(const CMString& object_name) {
     auto ds = fly::DataService::instance();
 
     auto [found, compressed_data, py_name, source_hash, can_still_produce] = ds->read_raw_compressed(full);
-    if (!found || compressed_data.empty()) {
+    if (!found || !compressed_data || compressed_data->empty()) {
         ERR("backup_object: no data for '{}'", full);
         return;
     }
 
     CMString hash_to_use = source_hash.empty() ? fly::WorkerAgentContext::get_current_write_hash() : source_hash;
-    do_backup_write(full, object_name, std::move(compressed_data), hash_to_use);
+    do_backup_write(full, object_name, CMString(compressed_data->data(), compressed_data->size()), hash_to_use);
 }
 
 void Database::freeze() {

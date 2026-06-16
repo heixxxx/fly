@@ -53,3 +53,9 @@ public:
 private:
     CMString data_;
 };
+
+// Shared ownership of a FlyBuffer. Used as the carrier type for compressed
+// bytes throughout the read/serve/cache data flow, enabling zero-copy transfer
+// (the same buffer is shared between cache, read path, and remote serve path;
+// only the wire serialization boundary copies).
+using FlyBufferPtr = CMSharedPtr<FlyBuffer>;

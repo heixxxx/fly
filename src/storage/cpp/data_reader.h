@@ -2,6 +2,7 @@
 
 #include <storage/cpp/local_index.h>
 #include <serialization/cpp/object_header.h>
+#include <serialization/cpp/fly_buffer.h>
 #include <common/cpp/common_types.h>
 #include <log/cpp/logger.h>
 #include <cstdint>
@@ -28,8 +29,8 @@ public:
     DataReader(const DataReader&) = delete;
     DataReader& operator=(const DataReader&) = delete;
 
-    CMString read_raw_bytes(const CMString& object_name);
-    CMString read_raw_bytes(const IndexEntry& entry);
+    FlyBufferPtr read_raw_bytes(const CMString& object_name);
+    FlyBufferPtr read_raw_bytes(const IndexEntry& entry);
 
     bool exists(const CMString& object_name);
 
@@ -38,7 +39,7 @@ public:
     std::optional<CMVector<IndexEntry>> find_all_entries(const CMString& object_name);
 
 private:
-    CMString read_from_file(const CMString& file_path, int64_t offset, int64_t size);
+    FlyBufferPtr read_from_file(const CMString& file_path, int64_t offset, int64_t size);
 
     CMString base_path_;
     CMString data_path_;

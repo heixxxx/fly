@@ -82,7 +82,7 @@ public:
     bool is_db_frozen(const CMString& db_id) const;
     CMSharedPtr<Database> get_or_create_database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0);
 
-    std::tuple<bool, CMString, CMString, bool> request_remote_data(const CMString& object_name);
+    std::tuple<bool, FlyBufferPtr, CMString, bool> request_remote_data(const CMString& object_name);
     std::pair<bool, ReadResult> request_data_from_worker(const CMString& host, int32_t port,
                                          const CMString& object_name);
 

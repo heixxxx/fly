@@ -7,7 +7,7 @@
 
 namespace fly {
 
-std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_compressed_data(
+std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClient::request_compressed_data(
     const CMString& host,
     int port,
     const CMString& object_name,
@@ -19,7 +19,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_com
 
     int fd = transport->create_connection(host, port);
     if (fd < 0) {
-        return {false, "", "", "", "Failed to connect to " + host + ":" + std::to_string(port)};
+        return {false, nullptr, "", "", "Failed to connect to " + host + ":" + std::to_string(port)};
     }
 
     transport->set_send_timeout(fd, timeout_ms);
@@ -33,7 +33,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_com
 
     if (!transport->send_all(fd, encoded_req.data(), encoded_req.size())) {
         transport->close(fd);
-        return {false, "", "", "", "Failed to send request for " + object_name};
+        return {false, nullptr, "", "", "Failed to send request for " + object_name};
     }
 
     char header[5] = {};
@@ -42,7 +42,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_com
         ssize_t n = transport->recv(fd, header + header_received, 5 - header_received);
         if (n <= 0) {
             transport->close(fd);
-            return {false, "", "", "", "Timeout receiving response header for " + object_name};
+            return {false, nullptr, "", "", "Timeout receiving response header for " + object_name};
         }
         header_received += static_cast<size_t>(n);
     }
@@ -55,7 +55,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_com
 
     if (total_len < 1 || total_len > 256 * 1024 * 1024) {
         transport->close(fd);
-        return {false, "", "", "", "Invalid response frame size for " + object_name};
+        return {false, nullptr, "", "", "Invalid response frame size for " + object_name};
     }
 
     uint32_t payload_len = total_len - 1;
@@ -65,7 +65,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_com
         ssize_t n = transport->recv(fd, payload.data() + payload_received, payload_len - payload_received);
         if (n <= 0) {
             transport->close(fd);
-            return {false, "", "", "", "Timeout receiving response payload for " + object_name};
+            return {false, nullptr, "", "", "Timeout receiving response payload for " + object_name};
         }
         payload_received += static_cast<size_t>(n);
     }
@@ -81,10 +81,13 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClient::request_com
 
     DataResponseMessage response;
     if (!MessageProtocol::decode(full_buf, response)) {
-        return {false, "", "", "", "Failed to decode response for " + object_name};
+        return {false, nullptr, "", "", "Failed to decode response for " + object_name};
     }
 
-    return {response.success_, response.compressed_data_, response.py_name_,
+    // Wire ingress: wrap decoded CMString into FlyBufferPtr (zero-copy move).
+    auto buf = CMMakeShared<FlyBuffer>();
+    buf->take(std::move(response.compressed_data_));
+    return {response.success_, buf, response.py_name_,
             response.write_context_hash_, response.error_message_};
 }
 

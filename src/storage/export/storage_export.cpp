@@ -56,14 +56,14 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_DEF("_read_streaming", [](Database& db, const CMString& name, bool backup) -> fly_export::tuple {
         auto [comp_data, py_name] = db.read_object_compressed(name, backup);
         return fly_export::make_tuple(
-            fly_export::bytes(comp_data.data(), comp_data.size()),
+            fly_export::bytes(comp_data ? comp_data->data() : "", comp_data ? comp_data->size() : 0),
             py_name
         );
     })
     FLY_EXPORT_DEF("_read_streaming", [](Database& db, const CMString& name) -> fly_export::tuple {
         auto [comp_data, py_name] = db.read_object_compressed(name, false);
         return fly_export::make_tuple(
-            fly_export::bytes(comp_data.data(), comp_data.size()),
+            fly_export::bytes(comp_data ? comp_data->data() : "", comp_data ? comp_data->size() : 0),
             py_name
         );
     })
@@ -90,13 +90,13 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     })
     FLY_EXPORT_DEF("read_object_raw", [](Database& db, const CMString& name, bool backup) -> CMString {
         auto [comp_data, py_name] = db.read_object_compressed(name, backup);
-        if (comp_data.empty()) return {};
-        return fly::decompress_raw_data(comp_data);
+        if (!comp_data || comp_data->empty()) return {};
+        return fly::decompress_raw_data(CMString(comp_data->data(), comp_data->size()));
     })
     FLY_EXPORT_DEF("read_object_raw", [](Database& db, const CMString& name) -> CMString {
         auto [comp_data, py_name] = db.read_object_compressed(name, false);
-        if (comp_data.empty()) return {};
-        return fly::decompress_raw_data(comp_data);
+        if (!comp_data || comp_data->empty()) return {};
+        return fly::decompress_raw_data(CMString(comp_data->data(), comp_data->size()));
     })
     FLY_EXPORT_METHOD("backup_object", &Database::backup_object)
     FLY_EXPORT_METHOD("freeze", &Database::freeze)

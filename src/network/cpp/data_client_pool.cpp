@@ -21,7 +21,7 @@ DataClientPool::~DataClientPool() {
     stop();
 }
 
-std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request(
+std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::request(
     const CMString& host,
     int port,
     const CMString& object_name,
@@ -30,7 +30,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
     int timeout_ms)
 {
     if (stopped_.load()) {
-        return {false, "", "", "", "Pool stopped"};
+        return {false, nullptr, "", "", "Pool stopped"};
     }
 
     {
@@ -39,7 +39,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
             return stopped_.load() || active_count_.load() < static_cast<int>(pool_size_);
         });
         if (stopped_.load()) {
-            return {false, "", "", "", "Pool stopped"};
+            return {false, nullptr, "", "", "Pool stopped"};
         }
         active_count_.fetch_add(1);
     }
@@ -52,7 +52,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
     int fd = transport_->create_connection(host, port);
     if (fd < 0) {
         release_slot();
-        return {false, "", "", "", "Failed to connect to " + host + ":" + std::to_string(port)};
+        return {false, nullptr, "", "", "Failed to connect to " + host + ":" + std::to_string(port)};
     }
 
     transport_->set_recv_timeout(fd, 30000);
@@ -76,7 +76,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
                 ERR("[DCP] send failed: obj={} fd={} errno={}", object_name, fd, errno);
                 transport_->close(fd);
                 release_slot();
-                return {false, "", "", "", "Connection lost sending request for " + object_name};
+                return {false, nullptr, "", "", "Connection lost sending request for " + object_name};
             }
             send_ptr += n;
             send_remaining -= static_cast<size_t>(n);
@@ -91,7 +91,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
                 ERR("[DCP] recv header failed: obj={} fd={} errno={}", object_name, fd, errno);
                 transport_->close(fd);
                 release_slot();
-                return {false, "", "", "", "Connection lost for " + object_name};
+                return {false, nullptr, "", "", "Connection lost for " + object_name};
             }
             header_received += static_cast<size_t>(n);
         }
@@ -106,7 +106,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
             ERR("[DCP] invalid total_len={}: obj={} fd={}", total_len, object_name, fd);
             transport_->close(fd);
             release_slot();
-            return {false, "", "", "", "Invalid response for " + object_name};
+            return {false, nullptr, "", "", "Invalid response for " + object_name};
         }
 
         uint32_t payload_len = total_len - 1;
@@ -118,7 +118,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
                 ERR("[DCP] recv payload failed: obj={} fd={} payload_len={} errno={}", object_name, fd, payload_len, errno);
                 transport_->close(fd);
                 release_slot();
-                return {false, "", "", "", "Connection lost receiving payload for " + object_name};
+                return {false, nullptr, "", "", "Connection lost receiving payload for " + object_name};
             }
             payload_received += static_cast<size_t>(n);
         }
@@ -135,14 +135,17 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
             ERR("[DCP] decode failed: obj={} fd={} frame_size={}", object_name, fd, full_buf.size());
             transport_->close(fd);
             release_slot();
-            return {false, "", "", "", "Failed to decode response for " + object_name};
+            return {false, nullptr, "", "", "Failed to decode response for " + object_name};
         }
 
         if (response.success_) {
             DBG("[DCP] success: obj={} fd={} data_size={}", object_name, fd, response.compressed_data_.size());
             transport_->close(fd);
             release_slot();
-            return {true, response.compressed_data_, response.py_name_,
+            // Wire ingress: wrap decoded CMString into FlyBufferPtr (zero-copy move).
+            auto buf = CMMakeShared<FlyBuffer>();
+            buf->take(std::move(response.compressed_data_));
+            return {true, buf, response.py_name_,
                     response.write_context_hash_, ""};
         }
 
@@ -150,7 +153,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
             if (stopped_.load()) {
                 transport_->close(fd);
                 release_slot();
-                return {false, "", "", "", "Pool stopped"};
+                return {false, nullptr, "", "", "Pool stopped"};
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
             continue;
@@ -158,7 +161,7 @@ std::tuple<bool, CMString, CMString, CMString, CMString> DataClientPool::request
 
         transport_->close(fd);
         release_slot();
-        return {false, "", "", "", response.error_message_};
+        return {false, nullptr, "", "", response.error_message_};
     }
 }
 

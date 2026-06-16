@@ -36,7 +36,7 @@ public:
     CMString compress_pickle_bytes(const char* data, int64_t data_size,
                                    const CMString& py_name);
 
-    std::pair<CMString, CMString> read_object_compressed(const CMString& object_name, bool backup = false);
+    std::pair<FlyBufferPtr, CMString> read_object_compressed(const CMString& object_name, bool backup = false);
 
     template<typename T>
     fly::WriteErrorType write_object(const CMString& object_name, const T& obj,
@@ -187,13 +187,19 @@ fly::WriteErrorType Database::write_object(const CMString& object_name, const T&
 
     auto complete = [full, db_id = this->db_id_, object_name,
                      caller_record_func,
-                     caller_backup_func, w, backup]() {
+                     caller_backup_func, w, backup,
+                     record, total_uncompressed]() {
         auto ds = fly::DataService::instance();
         auto entries = w->get_all_entries(full);
         if (entries.has_value()) {
             ds->on_write_completed(db_id, full, entries.value());
         }
         ds->on_object_flushed(full);
+        // Populate the low-tier cache so the object is immediately readable
+        // without disk IO. Pass the shared FlyBufferPtr directly (zero-copy:
+        // the cache shares ownership of the same buffer written to disk).
+        size_t sz = total_uncompressed > 0 ? static_cast<size_t>(total_uncompressed) : record->size();
+        fly::ObjectCache::instance().put_low(full, record, sz);
         if (caller_record_func) {
             caller_record_func(db_id, object_name);
         }
@@ -220,22 +226,22 @@ CMSharedPtr<T> Database::read_object(const CMString& object_name) {
     }
 
     auto [comp_data, py_name] = read_object_compressed(object_name, false);
-    if (comp_data.empty()) {
+    if (!comp_data || comp_data->empty()) {
         ERR("read_object<T>: no data for '{}'", full);
         return nullptr;
     }
 
     auto obj = CMMakeShared<T>();
-    DecompressingStreamBuf dsbuf(comp_data.data(), comp_data.size());
+    DecompressingStreamBuf dsbuf(comp_data->data(), comp_data->size());
     std::istream is(&dsbuf);
     obj->fly_deserialize(is);
 
     // Account by uncompressed size from the object header (low tier already
     // parsed it; re-parse here is cheap and avoids coupling).
-    size_t accounted = comp_data.size();
+    size_t accounted = comp_data->size();
     try {
         int64_t off = 0;
-        auto hdr = ObjectHeader::deserialize(comp_data, off);
+        auto hdr = ObjectHeader::deserialize(CMString(comp_data->data(), comp_data->size()), off);
         if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
     } catch (...) {}
 

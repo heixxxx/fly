@@ -67,9 +67,9 @@ public:
     ~DataService();
 
     static CMSharedPtr<DataService> instance();
-    using RemoteCompressedReadCallback = std::function<std::tuple<bool, CMString, CMString, bool>(
+    using RemoteCompressedReadCallback = std::function<std::tuple<bool, FlyBufferPtr, CMString, bool>(
         const CMString& object_name)>;
-    using DirectCompressedReadCallback = std::function<std::tuple<bool, CMString, CMString, CMString>(
+    using DirectCompressedReadCallback = std::function<std::tuple<bool, FlyBufferPtr, CMString, CMString>(
         const CMString& host, int32_t port, const CMString& object_name)>;
 
     // ============================================================
@@ -155,11 +155,11 @@ public:
 
     std::pair<bool, ReadResult> try_read_local(const CMString& object_name);
 
-    std::pair<bool, CMString> try_read_local_raw(const CMString& object_name);
+    std::pair<bool, FlyBufferPtr> try_read_local_raw(const CMString& object_name);
 
     bool is_write_in_progress(const CMString& object_name) const;
 
-    std::tuple<bool, CMString, CMString> try_read_local_raw_or_wait(
+    std::tuple<bool, FlyBufferPtr, CMString> try_read_local_raw_or_wait(
         const CMString& object_name, int timeout_ms = -1);
 
     std::pair<bool, ReadResult> try_read_remote(const CMString& object_name);
@@ -167,7 +167,7 @@ public:
     std::pair<bool, ReadResult> try_read_local_or_wait(const CMString& object_name,
                                                         int timeout_ms = 3000);
 
-    std::tuple<bool, CMString, CMString, CMString, bool> read_raw_compressed(const CMString& object_name);
+    std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> read_raw_compressed(const CMString& object_name);
 
     void mark_temp_entry(const CMString& object_name, const CMString& compressed_data);
     void unmark_temp_entry(const CMString& object_name);
@@ -237,7 +237,7 @@ private:
 
     ReadResult do_read_local_entries(const CMVector<IndexEntry>& entries,
                                      const DbPaths& paths);
-    CMString do_read_raw_entries(const CMVector<IndexEntry>& entries,
+    FlyBufferPtr do_read_raw_entries(const CMVector<IndexEntry>& entries,
                                  const DbPaths& paths);
 
     mutable std::mutex mutex_;

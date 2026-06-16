@@ -732,13 +732,13 @@ TEST_F(DataServiceTest, TryReadLocalRawReturnsData) {
     CMString full = db.get_obj_name("raw/obj");
     auto [found, raw] = ds_->try_read_local_raw(full);
     EXPECT_TRUE(found);
-    EXPECT_FALSE(raw.empty());
+    EXPECT_FALSE(!raw || raw->empty());
 }
 
 TEST_F(DataServiceTest, TryReadLocalRawReturnsFalseForMissing) {
     auto [found, raw] = ds_->try_read_local_raw("missing/obj");
     EXPECT_FALSE(found);
-    EXPECT_TRUE(raw.empty());
+    EXPECT_TRUE(!raw);
 }
 
 TEST_F(DataServiceTest, TryReadLocalRawOrWaitReturnsData) {
@@ -751,7 +751,7 @@ TEST_F(DataServiceTest, TryReadLocalRawOrWaitReturnsData) {
     CMString full = db.get_obj_name("rawwait/obj");
     auto [found, raw, py_name] = ds_->try_read_local_raw_or_wait(full, 100);
     EXPECT_TRUE(found);
-    EXPECT_FALSE(raw.empty());
+    EXPECT_FALSE(!raw || raw->empty());
     EXPECT_EQ(py_name, "bytes");
 }
 
@@ -804,7 +804,7 @@ TEST_F(DataServiceTest, ReadRawCompressedReturnsLocalRaw) {
     CMString full = db.get_obj_name("comp/obj");
     auto [found, raw, py_name, hash, can_still] = ds_->read_raw_compressed(full);
     EXPECT_TRUE(found);
-    EXPECT_FALSE(raw.empty());
+    EXPECT_FALSE(!raw || raw->empty());
     EXPECT_EQ(py_name, "bytes");
 }
 
@@ -930,17 +930,17 @@ TEST_F(DataServiceTest, FindLocalEntriesReturnsData) {
 
 TEST_F(DataServiceTest, SetRemoteCompressedReadHandler) {
     bool called = false;
-    ds_->set_remote_compressed_read_handler([&called](const CMString& name) {
+    ds_->set_remote_compressed_read_handler([&called](const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, bool> {
         called = true;
-        return std::make_tuple(false, CMString{}, CMString{}, false);
+        return std::make_tuple(false, nullptr, CMString{}, false);
     });
     EXPECT_NO_THROW(ds_->set_remote_compressed_read_handler(nullptr));
 }
 
 TEST_F(DataServiceTest, SetDirectCompressedReadHandler) {
     ds_->set_direct_compressed_read_handler(
-        [](const CMString& host, int32_t port, const CMString& name) {
-            return std::make_tuple(false, CMString{}, CMString{}, CMString{});
+        [](const CMString& host, int32_t port, const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, CMString> {
+            return std::make_tuple(false, nullptr, CMString{}, CMString{});
         });
     EXPECT_NO_THROW(ds_->set_direct_compressed_read_handler(nullptr));
 }
@@ -1057,14 +1057,14 @@ TEST_F(DataServiceTest, TryReadLocalRawReturnsCompressedData) {
     CMString full = db.get_obj_name("raw/obj");
     auto [found, comp] = ds_->try_read_local_raw(full);
     EXPECT_TRUE(found);
-    EXPECT_FALSE(comp.empty());
+    EXPECT_FALSE(!comp || comp->empty());
 }
 
 // try_read_local_raw for unknown object returns false.
 TEST_F(DataServiceTest, TryReadLocalRawReturnsFalseForUnknown) {
     auto [found, comp] = ds_->try_read_local_raw("unknown_obj");
     EXPECT_FALSE(found);
-    EXPECT_TRUE(comp.empty());
+    EXPECT_TRUE(!comp || comp->empty());
 }
 
 // try_read_local_raw short-circuits via ObjectCache low tier: after a prior
@@ -1083,7 +1083,7 @@ TEST_F(DataServiceTest, TryReadLocalRawServesFromLowCache) {
 
     // Populate low tier via read_object_compressed.
     auto [comp, py_name] = db.read_object_compressed("serve/obj", false);
-    ASSERT_FALSE(comp.empty());
+    ASSERT_FALSE(!comp || comp->empty());
     ASSERT_EQ(fly::ObjectCache::instance().low_size(), 1u);
 
     // Delete on-disk data files so a disk read would fail.
@@ -1116,7 +1116,7 @@ TEST_F(DataServiceTest, TryReadLocalRawPopulatesLowCache) {
     // First try_read_local_raw reads from disk and populates the low tier.
     auto [found, raw] = ds_->try_read_local_raw(full);
     ASSERT_TRUE(found);
-    ASSERT_FALSE(raw.empty());
+    ASSERT_FALSE(!raw || raw->empty());
     EXPECT_EQ(fly::ObjectCache::instance().low_size(), 1u)
         << "try_read_local_raw should populate low tier after disk read";
 
@@ -1133,7 +1133,7 @@ TEST_F(DataServiceTest, TryReadLocalRawOrWaitImmediateForComplete) {
     CMString full = db.get_obj_name("rw/obj");
     auto [found, comp, py_name] = ds_->try_read_local_raw_or_wait(full, 1000);
     EXPECT_TRUE(found);
-    EXPECT_FALSE(comp.empty());
+    EXPECT_FALSE(!comp || comp->empty());
 }
 
 // try_read_local_raw_or_wait times out for an object that never completes.
@@ -1170,9 +1170,9 @@ TEST_F(DataServiceTest, TryReadRemoteUsesHandler) {
     ds_->update_remote_idx(full, 7, "10.0.0.7", 5000);
 
     ds_->set_remote_compressed_read_handler(
-        [&full](const CMString& name) -> std::tuple<bool, CMString, CMString, bool> {
+        [&full](const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, bool> {
             EXPECT_EQ(name, full);
-            return {true, "compressed_payload", "bytes", false};
+            auto buf = CMMakeShared<FlyBuffer>(); buf->take(CMString("compressed_payload")); return {true, buf, "bytes", false};
         });
 
     auto [found, result] = ds_->try_read_remote(full);

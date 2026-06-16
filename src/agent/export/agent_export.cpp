@@ -127,7 +127,7 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
         if (!found) return fly_export::make_tuple(
             fly_export::bytes(), fly::CMString());
         return fly_export::make_tuple(
-            fly_export::bytes(data.data(), data.size()),
+            fly_export::bytes(data ? data->data() : "", data ? data->size() : 0),
             py_name
         );
     })
@@ -228,7 +228,7 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
         if (!found) return fly_export::make_tuple(
             fly_export::bytes(), fly::CMString());
         return fly_export::make_tuple(
-            fly_export::bytes(data.data(), data.size()),
+            fly_export::bytes(data ? data->data() : "", data ? data->size() : 0),
             py_name
         );
     })

@@ -14,8 +14,8 @@ static fly::WriteErrorType write_raw(Database& db, const CMString& name, const C
 
 static CMString read_raw_string(Database& db, const CMString& name, bool backup = false) {
     auto [comp_data, py_name] = db.read_object_compressed(name, backup);
-    if (comp_data.empty()) return {};
-    DecompressingStreamBuf dsbuf(comp_data.data(), comp_data.size());
+    if (!comp_data || comp_data->empty()) return {};
+    DecompressingStreamBuf dsbuf(comp_data->data(), comp_data->size());
     std::istream is(&dsbuf);
     CMString result;
     CMVector<char> tmp(4096);
@@ -191,7 +191,7 @@ TEST_F(DatabaseTest, TypedObjectWithPyNameDetection) {
 
     auto [comp_data, py_name] = db.read_object_compressed("named/obj");
     EXPECT_EQ(py_name, "MyCustomType");
-    EXPECT_FALSE(comp_data.empty());
+    EXPECT_FALSE(!comp_data || comp_data->empty());
 }
 
 TEST_F(DatabaseTest, MultipleTypedObjects) {
@@ -204,11 +204,11 @@ TEST_F(DatabaseTest, MultipleTypedObjects) {
 
     auto [comp_a, py_a] = db.read_object_compressed("type/a");
     EXPECT_EQ(py_a, "TypeA");
-    EXPECT_FALSE(comp_a.empty());
+    EXPECT_FALSE(!comp_a || comp_a->empty());
 
     auto [comp_b, py_b] = db.read_object_compressed("type/b");
     EXPECT_EQ(py_b, "TypeB");
-    EXPECT_FALSE(comp_b.empty());
+    EXPECT_FALSE(!comp_b || comp_b->empty());
 }
 
 TEST_F(DatabaseTest, CompressedNonexistentObjectReturnsEmpty) {
@@ -216,7 +216,7 @@ TEST_F(DatabaseTest, CompressedNonexistentObjectReturnsEmpty) {
     Database db(base_path);
 
     auto [comp_data, py_name] = db.read_object_compressed("no/such/object");
-    EXPECT_TRUE(comp_data.empty());
+    EXPECT_TRUE(!comp_data || comp_data->empty());
 }
 
 TEST_F(DatabaseTest, GetObjNameReturnsDbIdColonName) {
@@ -561,7 +561,7 @@ TEST_F(DatabaseTest, ReadNonexistentObjectCompressedReturnsEmpty) {
     Database db(base_path);
 
     auto [comp_data, py_name] = db.read_object_compressed("absent/object");
-    EXPECT_TRUE(comp_data.empty());
+    EXPECT_TRUE(!comp_data || comp_data->empty());
     EXPECT_TRUE(py_name.empty());
 }
 
@@ -573,7 +573,7 @@ TEST_F(DatabaseTest, WriteAndReadViaReadObjectCompressed) {
     fly::DataService::instance()->drain_write_back();
 
     auto [comp_data, py_name] = db.read_object_compressed("comp/test");
-    EXPECT_FALSE(comp_data.empty());
+    EXPECT_FALSE(!comp_data || comp_data->empty());
     EXPECT_EQ(py_name, "bytes");
 }
 

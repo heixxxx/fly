@@ -237,7 +237,7 @@ read_object 经两层 LRU 缓存加速，进程级单例（master/worker 各自�
 
 | 层 | 存储内容 | 命中收益 | 服务对象 |
 |----|---------|---------|---------|
-| **low** | 压缩字节 (CMString) | 省磁盘/远程 IO | 本地读（read_object_compressed）+ 远程服务（DataServer 的 try_read_local_raw short-circuit）|
+| **low** | 压缩字节 (FlyBufferPtr shared_ptr，零拷贝共享) | 省磁盘/远程 IO | 本地读（read_object_compressed）+ 远程服务（DataServer 的 try_read_local_raw short-circuit）；write_object/write_pickle_bytes 落盘后 write-through 填入 |
 | **high (C++)** | 反序列化对象 (std::any 持 CMSharedPtr<T>) | 省反序列化 | C++ read_object<T> + nanobind 类（经 _read_from_db）|
 | **high (Python)** | 反序列化 Python 对象 | 省反序列化 | pickle 对象（read_object(cache="high")）|
 

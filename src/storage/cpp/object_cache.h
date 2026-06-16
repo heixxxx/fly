@@ -17,6 +17,7 @@
 
 #include <common/cpp/common_types.h>
 #include <core/cpp/config.h>
+#include <serialization/cpp/fly_buffer.h>
 #include <any>
 #include <atomic>
 #include <chrono>
@@ -47,14 +48,14 @@ public:
         return *held;
     }
 
-    // low-tier get: returns {true, compressed_bytes} on hit, {false, ""} on miss.
-    std::pair<bool, CMString> get_low(const CMString& key) {
+    // low-tier get: returns {true, FlyBufferPtr} on hit, {false, nullptr} on miss.
+    std::pair<bool, FlyBufferPtr> get_low(const CMString& key) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = low_.find(key);
-        if (it == low_.end()) { stats_.low_misses.fetch_add(1, std::memory_order_relaxed); return {false, CMString{}}; }
+        if (it == low_.end()) { stats_.low_misses.fetch_add(1, std::memory_order_relaxed); return {false, nullptr}; }
         touch_entry(it->second);
         stats_.low_hits.fetch_add(1, std::memory_order_relaxed);
-        return {true, std::any_cast<CMString>(it->second.value_)};
+        return {true, std::any_cast<FlyBufferPtr>(it->second.value_)};
     }
 
     // high-tier put: stores CMSharedPtr<T> erased as std::any. size = bytes
@@ -83,20 +84,21 @@ public:
         stats_.high_evictions.fetch_add(evict(high_, high_bytes_), std::memory_order_relaxed);
     }
 
-    // low-tier put: stores compressed bytes.
-    void put_low(const CMString& key, CMString comp_data, size_t size) {
+    // low-tier put: stores compressed bytes as a shared FlyBuffer (zero-copy:
+    // the caller's FlyBufferPtr is shared, not copied).
+    void put_low(const CMString& key, FlyBufferPtr data, size_t size) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = low_.find(key);
         if (it != low_.end()) {
             low_bytes_ -= it->second.size_;
-            it->second.value_ = std::any(comp_data);
+            it->second.value_ = std::any(data);
             it->second.size_ = size;
             it->second.last_access_ = now_sec();
             it->second.created_at_ = it->second.last_access_;
             it->second.read_count_ = 1;
         } else {
             Entry e;
-            e.value_ = std::any(comp_data);
+            e.value_ = std::any(data);
             e.size_ = size;
             e.last_access_ = now_sec();
             e.created_at_ = e.last_access_;

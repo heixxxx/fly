@@ -246,7 +246,10 @@ void DataServer::on_readable(int fd) {
 
         if (found) {
             response.success_ = true;
-            response.compressed_data_ = std::move(raw_data);
+            // Wire egress: copy FlyBuffer bytes into CMString (wire field).
+            // This copy is unavoidable — the wire serialization layer requires
+            // a CMString. The cache/serve path up to here was zero-copy.
+            response.compressed_data_.assign(raw_data->data(), raw_data->size());
 
             DecompressingStreamBuf dsbuf(response.compressed_data_.data(),
                                           response.compressed_data_.size());

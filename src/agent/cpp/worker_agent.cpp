@@ -51,20 +51,20 @@ void WorkerAgent::start() {
     data_server_port_ = static_cast<int32_t>(dsInst->get_data_port());
     INFO("data server listening on port {}", data_server_port_);
 
-    dsInst->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString, bool> {
+    dsInst->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, bool> {
         return request_remote_data(name);
     });
     dsInst->set_direct_compressed_read_handler(
         [this](const CMString& host, int32_t port,
-               const CMString& name) -> std::tuple<bool, CMString, CMString, CMString> {
+               const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, CMString> {
             uint64_t rid = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) ^
                            static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
             auto [success, data, py_name, hash, error] = data_client_pool_.request(host, port, name, worker_id_, rid);
             if (!success) {
                 ERR("pooled request_compressed_data failed for {}: {}", name, error);
-                return {false, {}, {}, {}};
+                return {false, nullptr, {}, {}};
             }
-            return {true, std::move(data), std::move(py_name), std::move(hash)};
+            return {true, data, std::move(py_name), std::move(hash)};
         });
 
     reactor_->register_handler<RegisterAckMessage>(
@@ -481,12 +481,12 @@ void WorkerAgent::request_database_freeze(const CMString& db_id) {
     INFO("Freeze notification sent: db_id={}", db_id);
 }
 
-std::tuple<bool, CMString, CMString, bool> WorkerAgent::request_remote_data(const CMString& object_name) {
+std::tuple<bool, FlyBufferPtr, CMString, bool> WorkerAgent::request_remote_data(const CMString& object_name) {
      auto location = metadata_client_.query_data_location(
         master_host_, master_port_, object_name);
 
     if (!location.found_) {
-        return {false, {}, {}, location.can_still_produce_};
+        return {false, nullptr, {}, location.can_still_produce_};
     }
 
     uint64_t request_id = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) ^
@@ -497,16 +497,16 @@ std::tuple<bool, CMString, CMString, bool> WorkerAgent::request_remote_data(cons
 
     if (success) {
         DataService::instance()->update_remote_idx(object_name, location.worker_id_, location.host_, location.port_);
-        return {true, std::move(data), std::move(py_name), false};
+        return {true, data, std::move(py_name), false};
     }
 
     auto recheck = metadata_client_.query_data_location(
         master_host_, master_port_, object_name);
     if (!recheck.found_) {
-        return {false, {}, {}, recheck.can_still_produce_};
+        return {false, nullptr, {}, recheck.can_still_produce_};
     }
 
-    return {false, {}, {}, recheck.can_still_produce_};
+    return {false, nullptr, {}, recheck.can_still_produce_};
 }
 
 std::pair<bool, ReadResult> WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,
@@ -521,7 +521,7 @@ std::pair<bool, ReadResult> WorkerAgent::request_data_from_worker(const CMString
     }
 
     ReadResult result;
-    result.data_buffer_.assign(compressed_data.begin(), compressed_data.end());
+    result.data_buffer_.assign(compressed_data->data(), compressed_data->data() + compressed_data->size());
     result.py_name_ = std::move(py_name);
     return {true, std::move(result)};
 }

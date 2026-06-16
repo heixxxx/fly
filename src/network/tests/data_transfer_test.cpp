@@ -94,7 +94,7 @@ TEST_F(DataTransferTest, DataServerReturnsDataForCompletedWrite) {
         "127.0.0.1", port, full, 0, 0, 5000);
 
     EXPECT_TRUE(success) << "error: " << error;
-    EXPECT_FALSE(data.empty());
+    EXPECT_FALSE(!data || data->empty());
 }
 
 TEST_F(DataTransferTest, DataClientPoolRetriesOnDataNotReady) {
@@ -144,7 +144,7 @@ TEST_F(DataTransferTest, DataClientPoolRetriesOnDataNotReady) {
     writer.join();
 
     EXPECT_TRUE(success) << "error: " << error;
-    EXPECT_FALSE(data.empty());
+    EXPECT_FALSE(!data || data->empty());
     EXPECT_TRUE(write_done.load());
 }
 

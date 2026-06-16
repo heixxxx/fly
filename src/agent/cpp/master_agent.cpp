@@ -170,7 +170,7 @@ void MasterAgent::start() {
     data_server_port_ = static_cast<int32_t>(dsInst->get_data_port());
     DataService::instance()->register_worker(0, host_, data_server_port_);
 
-    dsInst->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, CMString, CMString, bool> {
+    dsInst->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, bool> {
         return request_remote_data(name);
     });
 
@@ -999,24 +999,24 @@ void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage
     INFO("RemoveRequest completed: object={}, workers_notified={}", msg.object_name_, worker_ids.size());
 }
 
-std::tuple<bool, CMString, CMString, bool> MasterAgent::request_remote_data(const CMString& object_name) {
+std::tuple<bool, FlyBufferPtr, CMString, bool> MasterAgent::request_remote_data(const CMString& object_name) {
     DataService::instance();
 
     auto info = DataService::instance()->lookup_remote_idx(object_name);
     if (info.host_.empty()) {
         bool has_pending = !graph_->get_pending_tasks().empty();
         bool has_running = !metadata_->get_tasks_by_status(TaskStatus::RUNNING).empty();
-        return {false, {}, {}, has_pending || has_running};
+        return {false, nullptr, {}, has_pending || has_running};
     }
 
     auto [success, data, py_name, hash, error] = DataClient::request_compressed_data(info.host_, info.port_, object_name);
 
     if (!success) {
         ERR("request_remote_data compressed failed for {}: {}", object_name, error);
-        return {false, {}, {}, false};
+        return {false, nullptr, {}, false};
     }
 
-    return {true, std::move(data), std::move(py_name), false};
+    return {true, data, std::move(py_name), false};
 }
 
 std::pair<bool, ReadResult> MasterAgent::request_data_from_worker(const CMString& host, int32_t port,
@@ -1031,7 +1031,7 @@ std::pair<bool, ReadResult> MasterAgent::request_data_from_worker(const CMString
     }
 
     ReadResult result;
-    result.data_buffer_.assign(compressed_data.begin(), compressed_data.end());
+    result.data_buffer_.assign(compressed_data->data(), compressed_data->data() + compressed_data->size());
     result.py_name_ = std::move(py_name);
     return {true, std::move(result)};
 }
