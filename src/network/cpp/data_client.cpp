@@ -7,6 +7,21 @@
 
 namespace fly {
 
+namespace {
+
+// Read exactly n bytes from fd (partial-read loop).
+bool recv_exact(Transport* transport, int fd, char* buf, size_t n) {
+    size_t received = 0;
+    while (received < n) {
+        ssize_t r = transport->recv(fd, buf + received, n - received);
+        if (r <= 0) return false;
+        received += static_cast<size_t>(r);
+    }
+    return true;
+}
+
+}  // namespace
+
 std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClient::request_compressed_data(
     const CMString& host,
     int port,
@@ -36,57 +51,65 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClient::request
         return {false, nullptr, "", "", "Failed to send request for " + object_name};
     }
 
-    char header[5] = {};
-    size_t header_received = 0;
-    while (header_received < 5) {
-        ssize_t n = transport->recv(fd, header + header_received, 5 - header_received);
-        if (n <= 0) {
-            transport->close(fd);
-            return {false, nullptr, "", "", "Timeout receiving response header for " + object_name};
-        }
-        header_received += static_cast<size_t>(n);
+    // ── Two-segment response read (DATA_RESPONSE protocol) ──
+
+    // 1. Read 5B frame header [4B total_len][1B type]
+    char frame_header[5];
+    if (!recv_exact(transport.get(), fd, frame_header, 5)) {
+        transport->close(fd);
+        return {false, nullptr, "", "", "Timeout receiving response header for " + object_name};
     }
-
     uint32_t total_len =
-        (static_cast<uint32_t>(static_cast<unsigned char>(header[0])) << 24) |
-        (static_cast<uint32_t>(static_cast<unsigned char>(header[1])) << 16) |
-        (static_cast<uint32_t>(static_cast<unsigned char>(header[2])) << 8) |
-        static_cast<uint32_t>(static_cast<unsigned char>(header[3]));
-
-    if (total_len < 1 || total_len > 256 * 1024 * 1024) {
+        (static_cast<uint32_t>(static_cast<unsigned char>(frame_header[0])) << 24) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(frame_header[1])) << 16) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(frame_header[2])) << 8) |
+        static_cast<uint32_t>(static_cast<unsigned char>(frame_header[3]));
+    if (total_len < 6) {  // 1(type)+4(small_len)+1(has_raw) minimum
         transport->close(fd);
         return {false, nullptr, "", "", "Invalid response frame size for " + object_name};
     }
 
-    uint32_t payload_len = total_len - 1;
-    CMString payload(payload_len, '\0');
-    size_t payload_received = 0;
-    while (payload_received < payload_len) {
-        ssize_t n = transport->recv(fd, payload.data() + payload_received, payload_len - payload_received);
-        if (n <= 0) {
+    // 2. Read 5B sub-header [4B small_fields_len][1B has_raw]
+    char sub_header[5];
+    if (!recv_exact(transport.get(), fd, sub_header, 5)) {
+        transport->close(fd);
+        return {false, nullptr, "", "", "Timeout receiving response sub-header for " + object_name};
+    }
+    uint32_t small_fields_len = 0;
+    bool has_raw = false;
+    DataResponseProtocol::parse_sub_header(sub_header, small_fields_len, has_raw);
+
+    // 3. Read small_fields_len bytes → FLY_DECODE → msg
+    CMString small_payload(small_fields_len, '\0');
+    if (small_fields_len > 0) {
+        if (!recv_exact(transport.get(), fd, small_payload.data(), small_fields_len)) {
             transport->close(fd);
-            return {false, nullptr, "", "", "Timeout receiving response payload for " + object_name};
+            return {false, nullptr, "", "", "Timeout receiving response fields for " + object_name};
         }
-        payload_received += static_cast<size_t>(n);
     }
-
-    transport->close(fd);
-
-    CMString full_buf;
-    full_buf.resize(4 + total_len);
-    std::memcpy(&full_buf[0], header, 5);
-    if (payload_len > 0) {
-        std::memcpy(&full_buf[5], payload.data(), payload_len);
-    }
-
     DataResponseMessage response;
-    if (!MessageProtocol::decode(full_buf, response)) {
+    if (!DataResponseProtocol::decode_small_fields(small_payload, response)) {
+        transport->close(fd);
         return {false, nullptr, "", "", "Failed to decode response for " + object_name};
     }
 
-    // Wire ingress: wrap decoded CMString into FlyBufferPtr (zero-copy move).
-    auto buf = CMMakeShared<FlyBuffer>();
-    buf->take(std::move(response.compressed_data_));
+    // 4. If has_raw: read raw payload directly into FlyBuffer (zero user-space copy)
+    FlyBufferPtr buf;
+    if (has_raw) {
+        uint32_t raw_len = DataResponseProtocol::raw_len_from_total(total_len, small_fields_len);
+        if (raw_len > 256 * 1024 * 1024) {
+            transport->close(fd);
+            return {false, nullptr, "", "", "Invalid raw payload size for " + object_name};
+        }
+        buf = CMMakeShared<FlyBuffer>();
+        buf->resize(raw_len);
+        if (!recv_exact(transport.get(), fd, buf->data(), raw_len)) {
+            transport->close(fd);
+            return {false, nullptr, "", "", "Timeout receiving raw payload for " + object_name};
+        }
+    }
+
+    transport->close(fd);
     return {response.success_, buf, response.py_name_,
             response.write_context_hash_, response.error_message_};
 }

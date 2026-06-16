@@ -246,13 +246,8 @@ void DataServer::on_readable(int fd) {
 
         if (found) {
             response.success_ = true;
-            // Wire egress: copy FlyBuffer bytes into CMString (wire field).
-            // This copy is unavoidable — the wire serialization layer requires
-            // a CMString. The cache/serve path up to here was zero-copy.
-            response.compressed_data_.assign(raw_data->data(), raw_data->size());
-
-            DecompressingStreamBuf dsbuf(response.compressed_data_.data(),
-                                          response.compressed_data_.size());
+            // Parse py_name directly from the FlyBuffer (zero-copy via string_view).
+            DecompressingStreamBuf dsbuf(raw_data->data(), raw_data->size());
             response.py_name_ = dsbuf.py_name();
 
             auto write_hash = data_service_.get_write_context_hash(req.object_name_);
@@ -268,11 +263,17 @@ void DataServer::on_readable(int fd) {
             }
         }
 
-        CMString resp_frame = MessageProtocol::encode(response);
+        // Two-segment encode: small fields via bitsery, raw payload referenced
+        // by pointer (zero-copy — raw_data FlyBufferPtr shared ownership).
+        auto seg = DataResponseProtocol::encode(response, found ? raw_data : nullptr);
 
         {
             std::lock_guard<std::mutex> slk(send_mutex_);
-            send_queue_.push({fd, std::move(resp_frame)});
+            SendTask task;
+            task.fd = fd;
+            task.data = std::move(seg.header_segment);
+            task.raw_data = found ? raw_data : nullptr;  // keep alive for send thread
+            send_queue_.push(std::move(task));
             INFO("[DS-Q] fd={} pushed queue_size={}", fd, send_queue_.size());
         }
         send_cv_.notify_one();
@@ -311,6 +312,14 @@ void DataServer::send_loop() {
 
         if (task.fd >= 0 && !task.data.empty()) {
             do_send(task.fd, task.data);
+            // Send raw payload segment (zero-copy: FlyBufferPtr referenced directly).
+            if (task.raw_data && !task.raw_data->empty()) {
+                bool ok = transport_->send_all(task.fd, task.raw_data->data(),
+                                                task.raw_data->size());
+                if (!ok) {
+                    ERR("[DS-SEND] raw segment failed: fd={}", task.fd);
+                }
+            }
         }
     }
 }

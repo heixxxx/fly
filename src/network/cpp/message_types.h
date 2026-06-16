@@ -111,18 +111,20 @@ struct DataRequestMessage {
     FLY_SERIALIZE(header_, object_name_, requesting_worker_id_, request_id_);
 };
 
+// DataResponseMessage carries small fields via bitsery; the large compressed_data
+// payload is transmitted as a separate raw segment after the encoded message
+// (see DataResponseProtocol). This avoids bitsery serializing the large blob.
 struct DataResponseMessage {
     MessageHeader header_;
     CMString object_name_;
     bool success_ = false;
     CMString error_message_;
-    CMString compressed_data_;
     CMString py_name_;
     CMString write_context_hash_;
 
     static constexpr MessageType msg_type_ = MessageType::DATA_RESPONSE;
 
-    FLY_SERIALIZE(header_, object_name_, success_, error_message_, compressed_data_, py_name_, write_context_hash_);
+    FLY_SERIALIZE(header_, object_name_, success_, error_message_, py_name_, write_context_hash_);
 };
 
 struct TaskAssignMessage {

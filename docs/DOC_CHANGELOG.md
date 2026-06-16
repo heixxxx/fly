@@ -2,6 +2,25 @@
 
 ---
 
+## 2026-06-17: Wire 协议优化 — DataResponse 分段传输 + string_view 零拷贝 header
+
+**原因**: DataResponseMessage 的 compressed_data_（大对象压缩字节）原经 bitsery 序列化，5 次用户态 copy（500MB/100MB 对象）。改为两段传输（小字段 bitsery + raw payload 独立），消除全部用户态 copy。ObjectHeader::deserialize 改 string_view，消除 header 解析的全量 copy。
+
+| 文档 | 变更 |
+|------|------|
+| docs/network/module.md | MessageProtocol 帧格式段新增 DataResponseProtocol 两段帧描述 + 方法表 |
+
+改动:
+- message_types.h: DataResponseMessage 移除 compressed_data_ 字段（改为传输层 raw payload）
+- message_protocol.h: 新增 DataResponseProtocol（两段编解码 + parse_sub_header + raw_len_from_total）
+- data_server: serve 用 DataResponseProtocol::encode + SendTask 携 raw_data；do_send 两段发送
+- data_client/data_client_pool: 分步 recv（header + sub-header + small_fields + raw 直接进 FlyBuffer）
+- object_header.h/cpp: deserialize 改 string_view（CMString/FlyBuffer/raw ptr 零拷贝传参）
+
+消除 copy: wire 用户态 5 次 → 0 次（仅剩内核 send/recv）；header 解析全量 copy → 零拷贝。
+
+---
+
 ## 2026-06-16 (4): FlyBufferPtr 全链路零拷贝重构 + write-through
 
 **原因**: ObjectCache low 层原存 CMString，write/read 链路多次 copy。改为存 FlyBufferPtr（shared_ptr 共享所有权），缓存与读取链路全程零拷贝。write_object/write_pickle_bytes 落盘后 write-through 填入 low 层，立即启用数据可读性。

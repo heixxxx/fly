@@ -82,11 +82,13 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
             send_remaining -= static_cast<size_t>(n);
         }
 
-        // recv header (5 bytes)
-        char header[5] = {};
+        // ── Two-segment response read (DATA_RESPONSE protocol) ──
+
+        // 1. Read 5B frame header [4B total_len][1B type]
+        char frame_header[5];
         size_t header_received = 0;
         while (header_received < 5) {
-            ssize_t n = transport_->recv(fd, header + header_received, 5 - header_received);
+            ssize_t n = transport_->recv(fd, frame_header + header_received, 5 - header_received);
             if (n <= 0) {
                 ERR("[DCP] recv header failed: obj={} fd={} errno={}", object_name, fd, errno);
                 transport_->close(fd);
@@ -95,57 +97,83 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
             }
             header_received += static_cast<size_t>(n);
         }
-
         uint32_t total_len =
-            (static_cast<uint32_t>(static_cast<unsigned char>(header[0])) << 24) |
-            (static_cast<uint32_t>(static_cast<unsigned char>(header[1])) << 16) |
-            (static_cast<uint32_t>(static_cast<unsigned char>(header[2])) << 8) |
-            static_cast<uint32_t>(static_cast<unsigned char>(header[3]));
-
-        if (total_len < 1 || total_len > 256 * 1024 * 1024) {
+            (static_cast<uint32_t>(static_cast<unsigned char>(frame_header[0])) << 24) |
+            (static_cast<uint32_t>(static_cast<unsigned char>(frame_header[1])) << 16) |
+            (static_cast<uint32_t>(static_cast<unsigned char>(frame_header[2])) << 8) |
+            static_cast<uint32_t>(static_cast<unsigned char>(frame_header[3]));
+        if (total_len < 6 || total_len > 256 * 1024 * 1024) {
             ERR("[DCP] invalid total_len={}: obj={} fd={}", total_len, object_name, fd);
             transport_->close(fd);
             release_slot();
             return {false, nullptr, "", "", "Invalid response for " + object_name};
         }
 
-        uint32_t payload_len = total_len - 1;
-        CMString payload(payload_len, '\0');
-        size_t payload_received = 0;
-        while (payload_received < payload_len) {
-            ssize_t n = transport_->recv(fd, payload.data() + payload_received, payload_len - payload_received);
+        // 2. Read 5B sub-header [4B small_fields_len][1B has_raw]
+        char sub_header[5];
+        size_t sub_received = 0;
+        while (sub_received < 5) {
+            ssize_t n = transport_->recv(fd, sub_header + sub_received, 5 - sub_received);
             if (n <= 0) {
-                ERR("[DCP] recv payload failed: obj={} fd={} payload_len={} errno={}", object_name, fd, payload_len, errno);
                 transport_->close(fd);
                 release_slot();
-                return {false, nullptr, "", "", "Connection lost receiving payload for " + object_name};
+                return {false, nullptr, "", "", "Connection lost for " + object_name};
             }
-            payload_received += static_cast<size_t>(n);
+            sub_received += static_cast<size_t>(n);
         }
+        uint32_t small_fields_len = 0;
+        bool has_raw = false;
+        DataResponseProtocol::parse_sub_header(sub_header, small_fields_len, has_raw);
 
-        CMString full_buf;
-        full_buf.resize(4 + total_len);
-        std::memcpy(&full_buf[0], header, 5);
-        if (payload_len > 0) {
-            std::memcpy(&full_buf[5], payload.data(), payload_len);
+        // 3. Read small_fields_len bytes → FLY_DECODE → msg
+        CMString small_payload(small_fields_len, '\0');
+        if (small_fields_len > 0) {
+            size_t sf_received = 0;
+            while (sf_received < small_fields_len) {
+                ssize_t n = transport_->recv(fd, small_payload.data() + sf_received,
+                                              small_fields_len - sf_received);
+                if (n <= 0) {
+                    transport_->close(fd);
+                    release_slot();
+                    return {false, nullptr, "", "", "Connection lost for " + object_name};
+                }
+                sf_received += static_cast<size_t>(n);
+            }
         }
-
         DataResponseMessage response;
-        if (!MessageProtocol::decode(full_buf, response)) {
-            ERR("[DCP] decode failed: obj={} fd={} frame_size={}", object_name, fd, full_buf.size());
+        if (!DataResponseProtocol::decode_small_fields(small_payload, response)) {
+            ERR("[DCP] decode failed: obj={} fd={}", object_name, fd);
             transport_->close(fd);
             release_slot();
             return {false, nullptr, "", "", "Failed to decode response for " + object_name};
         }
 
+        // 4. If has_raw: read raw payload directly into FlyBuffer
+        FlyBufferPtr data_buf;
+        if (has_raw) {
+            uint32_t raw_len = DataResponseProtocol::raw_len_from_total(total_len, small_fields_len);
+            data_buf = CMMakeShared<FlyBuffer>();
+            data_buf->resize(raw_len);
+            size_t raw_received = 0;
+            while (raw_received < raw_len) {
+                ssize_t n = transport_->recv(fd, data_buf->data() + raw_received,
+                                              raw_len - raw_received);
+                if (n <= 0) {
+                    ERR("[DCP] recv raw failed: obj={} fd={} errno={}", object_name, fd, errno);
+                    transport_->close(fd);
+                    release_slot();
+                    return {false, nullptr, "", "", "Connection lost receiving payload for " + object_name};
+                }
+                raw_received += static_cast<size_t>(n);
+            }
+        }
+
         if (response.success_) {
-            DBG("[DCP] success: obj={} fd={} data_size={}", object_name, fd, response.compressed_data_.size());
+            DBG("[DCP] success: obj={} fd={} data_size={}", object_name, fd,
+                data_buf ? data_buf->size() : 0);
             transport_->close(fd);
             release_slot();
-            // Wire ingress: wrap decoded CMString into FlyBufferPtr (zero-copy move).
-            auto buf = CMMakeShared<FlyBuffer>();
-            buf->take(std::move(response.compressed_data_));
-            return {true, buf, response.py_name_,
+            return {true, data_buf, response.py_name_,
                     response.write_context_hash_, ""};
         }
 

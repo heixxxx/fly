@@ -241,7 +241,7 @@ CMSharedPtr<T> Database::read_object(const CMString& object_name) {
     size_t accounted = comp_data->size();
     try {
         int64_t off = 0;
-        auto hdr = ObjectHeader::deserialize(CMString(comp_data->data(), comp_data->size()), off);
+        auto hdr = ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, off);
         if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
     } catch (...) {}
 

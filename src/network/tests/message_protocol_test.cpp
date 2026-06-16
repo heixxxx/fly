@@ -97,7 +97,6 @@ TEST(MessageProtocolTest, DataRequestResponse) {
     DataResponseMessage resp;
     resp.header_.type_ = MessageType::DATA_RESPONSE;
     resp.object_name_ = "test/object";
-    resp.compressed_data_ = "binary_payload_data";
     
     CMString encoded_resp = MessageProtocol::encode(resp);
     CMString buffer_resp = encoded_resp;
@@ -105,7 +104,6 @@ TEST(MessageProtocolTest, DataRequestResponse) {
     DataResponseMessage decoded_resp;
     EXPECT_TRUE(MessageProtocol::decode(buffer_resp, decoded_resp));
     EXPECT_EQ(decoded_resp.object_name_, "test/object");
-    EXPECT_EQ(decoded_resp.compressed_data_, "binary_payload_data");
 }
 
 TEST(MessageProtocolTest, GetPayloadSize) {

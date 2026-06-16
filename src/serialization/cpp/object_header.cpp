@@ -34,7 +34,7 @@ CMString ObjectHeader::serialize() const {
     return result;
 }
 
-ObjectHeader ObjectHeader::deserialize(const CMString& data, int64_t& offset) {
+ObjectHeader ObjectHeader::deserialize(std::string_view data, int64_t& offset) {
     ObjectHeader header;
 
     if (static_cast<int64_t>(data.size()) < offset + fixed_header_size()) {

@@ -2,6 +2,7 @@
 
 #include <common/cpp/common_types.h>
 #include <cstdint>
+#include <string_view>
 
 constexpr uint32_t FLY_OBJECT_MAGIC = 0x464C5900;
 constexpr uint8_t FLY_OBJECT_VERSION = 1;
@@ -16,7 +17,9 @@ struct ObjectHeader {
     uint8_t compression_type_ = 0;
 
     CMString serialize() const;
-    static ObjectHeader deserialize(const CMString& data, int64_t& offset);
+    // Zero-copy: accepts std::string_view — CMString, FlyBuffer data, or raw
+    // pointer+size all construct a string_view implicitly without copying.
+    static ObjectHeader deserialize(std::string_view data, int64_t& offset);
 
     static constexpr int64_t fixed_header_size() {
         return sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint16_t) +

@@ -103,8 +103,8 @@ class TestDataRequestResponseMessages(unittest.TestCase):
         
         resp = EXNetDataResponseMessage()
         resp.object_name = "test/object"
-        resp.compressed_data = "binary_payload"
-        self.assertEqual(resp.compressed_data, "binary_payload")
+        resp.success = True
+        self.assertEqual(resp.object_name, "test/object")
 
 
 class TestIOThreadPoolCreation(unittest.TestCase):

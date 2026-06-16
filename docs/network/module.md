@@ -110,7 +110,7 @@ public:
 
 ### MessageProtocol（帧协议）
 
-**帧格式**:
+**帧格式**（通用）:
 
 ```
 ┌──────────────┬──────────┬────────────────┐
@@ -122,12 +122,36 @@ public:
 total_len = 1 + payload.size()
 ```
 
+**DataResponseProtocol（两段帧，仅 DATA_RESPONSE）**:
+
+DataResponseMessage 的大 payload（compressed_data_）不经 bitsery 序列化，
+作为帧尾 raw 段独立传输，消除用户态 copy：
+
+```
+┌──────────────┬──────────┬─────────────────┬──────────┬──────────────────┬────────────────┐
+│ 4 bytes      │ 1 byte   │ 4 bytes         │ 1 byte   │ small_fields_len │ raw_len        │
+│ total_len    │ type=    │ small_fields_len│ has_raw  │ (bitsery 小字段)  │ (raw payload)  │
+│ (big-endian) │ DATA_RESP│ (big-endian)    │ (uint8)  │                  │                │
+└──────────────┴──────────┴─────────────────┴──────────┴──────────────────┴────────────────┘
+
+total_len = 1 + 4 + 1 + small_fields_len + raw_len
+raw_len = total_len - 6 - small_fields_len（接收侧推算）
+```
+
+发送侧：DataServer 用 `DataResponseProtocol::encode` 编码小字段段 + 直接引用
+FlyBufferPtr 发送 raw 段（零用户态 copy）。
+
+接收侧：DataClient/DataClientPool 分步 recv（header → sub-header → small_fields
+→ raw 直接进 FlyBuffer），零拷贝。
+
 **关键方法**:
 
 | 方法 | 作用 |
 |------|------|
-| `encode<T>(msg)` | bitsery 序列化 → 拼接帧头 + payload |
-| `decode<T>(buffer, msg)` | 校验长度+类型 → 反序列化 → 消费 buffer |
+| `MessageProtocol::encode<T>(msg)` | bitsery 序列化 → 拼接帧头 + payload（通用消息）|
+| `MessageProtocol::decode<T>(buffer, msg)` | 校验长度+类型 → 反序列化 → 消费 buffer |
+| `DataResponseProtocol::encode(msg, raw)` | 两段编码：bitsery 小字段 + raw 引用（零拷贝）|
+| `DataResponseProtocol::decode_small_fields` | 解码小字段段（不含 raw）|
 | `get_type(buffer)` | 读取第 5 字节得到 MessageType |
 | `get_total_size(buffer)` | 读取前 4 字节大端序长度 |
 

@@ -77,7 +77,6 @@ FLY_EXPORT_CLASS(fly::DataResponseMessage, "EXNetDataResponseMessage")
     FLY_EXPORT_ATTR("object_name", &fly::DataResponseMessage::object_name_)
     FLY_EXPORT_ATTR("success", &fly::DataResponseMessage::success_)
     FLY_EXPORT_ATTR("error_message", &fly::DataResponseMessage::error_message_)
-    FLY_EXPORT_ATTR("compressed_data", &fly::DataResponseMessage::compressed_data_)
     FLY_EXPORT_ATTR("py_name", &fly::DataResponseMessage::py_name_)
     FLY_EXPORT_SERIALIZE(fly::DataResponseMessage);
 

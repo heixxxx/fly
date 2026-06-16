@@ -607,7 +607,7 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
     size_t accounted = raw->size();
     try {
         int64_t off = 0;
-        auto hdr = ObjectHeader::deserialize(CMString(raw->data(), raw->size()), off);
+        auto hdr = ObjectHeader::deserialize({raw->data(), raw->size()}, off);
         if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
     } catch (...) {}
     fly::ObjectCache::instance().put_low(object_name, raw, accounted);

@@ -2,6 +2,7 @@
 
 #include <common/cpp/common_types.h>
 #include <network/cpp/epoll_multiplexer.h>
+#include <serialization/cpp/fly_buffer.h>
 #include <cstdint>
 #include <atomic>
 #include <thread>
@@ -52,6 +53,7 @@ private:
     struct SendTask {
         int fd = -1;
         CMString data;
+        FlyBufferPtr raw_data;  // optional: raw payload sent after `data` (zero-copy)
     };
     std::queue<SendTask> send_queue_;
     std::mutex send_mutex_;

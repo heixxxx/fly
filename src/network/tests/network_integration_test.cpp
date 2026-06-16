@@ -114,7 +114,7 @@ TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
                         resp.header_.type_ = MessageType::DATA_RESPONSE;
                         resp.header_.message_id_ = 2;
                         resp.object_name_ = req.object_name_;
-                        resp.compressed_data_ = "response_data_payload";
+                        resp.object_name_ = "response_data_payload";
                         
                         CMString encoded_resp = MessageProtocol::encode(resp);
                         server_transport.send(server_conn_id.load(), encoded_resp);
@@ -132,7 +132,7 @@ TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
                     CMString buffer = ev.data_;
                     DataResponseMessage resp;
                     if (MessageProtocol::decode(buffer, resp)) {
-                        if (resp.compressed_data_ == "response_data_payload") {
+                        if (resp.object_name_ == "response_data_payload") {
                             data_matches = true;
                         }
                         response_received = true;
@@ -277,7 +277,7 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
                             CMString temp = accumulated_buffer;
                             DataResponseMessage msg;
                             if (MessageProtocol::decode(accumulated_buffer, msg)) {
-                                received_size = msg.compressed_data_.size();
+                                received_size = msg.object_name_.size();
                                 large_data_received = true;
                             }
                         }
@@ -294,8 +294,7 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
     DataResponseMessage large_msg;
     large_msg.header_.type_ = MessageType::DATA_RESPONSE;
     large_msg.header_.message_id_ = 1;
-    large_msg.object_name_ = "large_data.bin";
-    large_msg.compressed_data_ = CMString(10000, 'X');
+    large_msg.object_name_ = CMString(10000, 'X');
     
     CMString encoded = MessageProtocol::encode(large_msg);
     client_transport.send(client_conn, encoded);
