@@ -62,45 +62,40 @@ class _Database:
         return ""
 
     def read_object(self, name: str, backup: bool = False, cache: str = "low"):
-        if cache == "none":
-            data, py_name = self._db._read_streaming(name, backup)
-            return self._reconstruct(data, py_name)
+        # Caching tier dispatch:
+        #   - nanobind (C++ exported) classes: _read_from_db → C++ ObjectCache
+        #     high tier (省反序列化). Both "low" and "high" cache modes use this.
+        #   - pickle (Python) objects: "high" → Python ReadCache high tier;
+        #     "low"/"none" → C++ ObjectCache low tier (transparent, via
+        #     _read_streaming) + reconstruct every time.
+        py_name = self._db._get_py_name(name)
+        import _fly_storage
+        cls = getattr(_fly_storage, py_name, None)
+        is_cpp_obj = cls is not None and hasattr(cls, "_read_from_db")
 
-        try:
-            from storage.py.read_cache import get_read_cache
-        except ImportError:
-            from storage.read_cache import get_read_cache
-        rc = get_read_cache()
-        db_id = self.get_db_id()
-        key = f"{db_id}:{name}"
+        if is_cpp_obj:
+            # nanobind class → C++ read_object<Cls> with high-tier cache.
+            return cls._read_from_db(self._db, name)
 
         if cache == "high":
+            try:
+                from storage.py.read_cache import get_read_cache
+            except ImportError:
+                from storage.read_cache import get_read_cache
+            rc = get_read_cache()
+            db_id = self.get_db_id()
+            key = f"{db_id}:{name}"
             obj = rc.get(key, "high")
             if obj is not None:
                 return obj
-            cached = rc.get(key, "low")
-            if cached is not None:
-                data, py_name = cached
-                obj = self._reconstruct(data, py_name)
-                rc.put(key, "high", obj)
-                rc.remove(key, "low")
-                return obj
-        elif cache == "low":
-            cached = rc.get(key, "low")
-            if cached is not None:
-                data, py_name = cached
-                return self._reconstruct(data, py_name)
-
-        data, py_name = self._db._read_streaming(name, backup)
-
-        if cache == "high":
+            data, _ = self._db._read_streaming(name, backup)
             obj = self._reconstruct(data, py_name)
             rc.put(key, "high", obj)
-        else:
-            rc.put(key, "low", (data, py_name))
-            obj = self._reconstruct(data, py_name)
+            return obj
 
-        return obj
+        # pickle object, cache="low"/"none": C++ low tier handles byte caching.
+        data, _ = self._db._read_streaming(name, backup)
+        return self._reconstruct(data, py_name)
 
     def backup_object(self, name: str):
         self._db.backup_object(name)

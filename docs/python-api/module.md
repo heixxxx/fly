@@ -25,7 +25,7 @@ Python API 层将 C++ 底层 API 包装为用户友好的高层接口，提供�
 | `executor.py` | Worker 任务执行器（位于 `src/agent/py/`） |
 | `runtime.py` | 运行时配置（master/worker mode，内部模块） |
 | `main.py` | 初始化入口 |
-| `read_cache.py` | 两层读缓存（位于 `src/storage/py/`） |
+| `read_cache.py` | Python 侧 high 层读缓存（pickle 对象）；low 层（压缩字节）已下沉 C++ ObjectCache |
 
 ---
 
@@ -61,6 +61,10 @@ class _Database:
         # Layer 3: request_remote_data → 全程远程 (最多 3 次重试)
         # backup=True: 从远程 Worker 读取压缩数据，直接落盘本地（零解压），返回解压后数据
         # cache: "low" (默认) | "high" | "none"
+        # 缓存分层:
+        #   - low 层（压缩字节）+ nanobind 类 high 层（反序列化对象）在 C++ ObjectCache
+        #   - pickle 对象 high 层在 Python ReadCache（src/storage/py/read_cache.py）
+        #   - nanobind 类（FLY_EXPORT_SERIALIZE）经 _read_from_db 走 C++ high 层（省反序列化）
         #   "low"  — 缓存压缩数据，避免重复网络/磁盘 IO
         #   "high" — 缓存反序列化后的 Python 对象，避免重复反序列化
         #   "none" — 不缓存，不从缓存读取

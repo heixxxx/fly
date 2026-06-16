@@ -5,6 +5,16 @@ package(default_visibility = ["//visibility:public"])
 load("@rules_cc//cc:defs.bzl", "cc_test")
 
 cc_test(
+    name = "object_cache_test",
+    srcs = ["object_cache_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/storage/cpp:fly_storage",
+    ],
+    copts = ["-std=c++20"],
+)
+
+cc_test(
     name = "compressor_test",
     srcs = ["compressor_test.cpp"],
     deps = [

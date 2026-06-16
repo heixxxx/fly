@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-06-16: C++ ObjectCache — 两层 LRU 读缓存（low 层下沉 C++ + nanobind high 层）
+
+**原因**: 新增 C++ 侧 read 缓存系统，统一 master/worker 进程的读缓存。low 层（压缩字节）下沉 C++，消除 Python 与 C++ 的双缓存冗余；high 层（反序列化对象）C++ 服务 read_object<T> + nanobind 类（经 _read_from_db），Python 服务 pickle 对象。
+
+| 文档 | 变更 |
+|------|------|
+| CLAUDE.md | 存储层文件表新增 object_cache.h 行（两层 LRU + std::any + LFU 淘汰） |
+| docs/python-api/module.md | read_cache.py 描述更新（low 下沉 C++）；read_object cache 语义补充分层 |
+
+新增文件: `src/storage/cpp/object_cache.h`（header-only，进程级单例）、`src/storage/tests/object_cache_test.cpp`（16 单测）、`qa/test_cpp_object_cache.py`（6 case，含 high 层命中断言）。
+集成: `read_object_compressed` low 层（命中省 IO）、`read_object<T>` high 层（命中省反序列化）、`remove_object`/`remove_index_entry` 失效。
+nanobind: `FLY_EXPORT_SERIALIZE` 加 `_read_from_db`（对称 `_write_to_db`）；`_get_py_name` 辅助分派；database.py read_object 据类型分流（nanobind→C++ high / pickle→Python high）。
+诊断: `ex_stg_cache_high_size` / `ex_stg_cache_clear`（测试/观测用）。
+
+---
+
 ## 2026-06-15 (2): connect 失败非致命化 — 返回 0 sentinel，不抛异常
 
 **原因**: 8606397 网络层重构后 `connect()` 失败抛异常，把连接失败当致命错误，破坏 worker_agent_test（无 master 场景）及「连接失败非致命」契约。改为返回 sentinel 让调用层判断。

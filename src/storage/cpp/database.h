@@ -10,6 +10,8 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/fly_buffer_stream.h>
 #include <storage/cpp/compressor.h>
+#include <storage/cpp/object_cache.h>
+#include <serialization/cpp/object_header.h>
 #include <core/cpp/config.h>
 #include <common/cpp/worker_context.h>
 #include <common/cpp/common_types.h>
@@ -42,6 +44,11 @@ public:
 
     template<typename T>
     CMSharedPtr<T> read_object(const CMString& object_name);
+
+    // Returns the py_name (type name) stored in the object header, without
+    // reading/deserializing the payload. Goes through the low-tier cache, so a
+    // hit is cheap. Used by Python to dispatch read_object to the right tier.
+    CMString read_object_py_name(const CMString& object_name);
 
     void backup_object(const CMString& object_name);
 
@@ -196,9 +203,16 @@ CMString Database::write_object(const CMString& object_name, const T& obj,
 
 template<typename T>
 CMSharedPtr<T> Database::read_object(const CMString& object_name) {
+    CMString full = full_name(object_name);
+
+    // High-tier hit: return cached instance, skip IO + deserialize.
+    if (auto cached = fly::ObjectCache::instance().get_high<T>(full)) {
+        return cached;
+    }
+
     auto [comp_data, py_name] = read_object_compressed(object_name, false);
     if (comp_data.empty()) {
-        ERR("read_object<T>: no data for '{}'", full_name(object_name));
+        ERR("read_object<T>: no data for '{}'", full);
         return nullptr;
     }
 
@@ -206,5 +220,16 @@ CMSharedPtr<T> Database::read_object(const CMString& object_name) {
     DecompressingStreamBuf dsbuf(comp_data.data(), comp_data.size());
     std::istream is(&dsbuf);
     obj->fly_deserialize(is);
+
+    // Account by uncompressed size from the object header (low tier already
+    // parsed it; re-parse here is cheap and avoids coupling).
+    size_t accounted = comp_data.size();
+    try {
+        int64_t off = 0;
+        auto hdr = ObjectHeader::deserialize(comp_data, off);
+        if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
+    } catch (...) {}
+
+    fly::ObjectCache::instance().put_high<T>(full, obj, accounted);
     return obj;
 }

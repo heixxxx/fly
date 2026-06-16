@@ -67,6 +67,9 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
             py_name
         );
     })
+    FLY_EXPORT_DEF("_get_py_name", [](Database& db, const CMString& name) -> CMString {
+        return db.read_object_py_name(name);
+    })
     FLY_EXPORT_DEF("_decompress_bytes", [](Database&, fly_export::bytes b) -> fly_export::bytes {
         CMString raw(b.c_str(), b.size());
         CMString result = fly::decompress_raw_data(raw);
@@ -258,5 +261,13 @@ FLY_EXPORT_FUNCTION("ex_stg_mark_temp_entry", [](const CMString& object_name, fl
 
 FLY_EXPORT_FUNCTION("ex_stg_unmark_temp_entry", [](const CMString& object_name) {
     fly::DataService::instance()->unmark_temp_entry(object_name);
+});
+
+// ObjectCache diagnostics (test/observability).
+FLY_EXPORT_FUNCTION("ex_stg_cache_high_size", []() -> size_t {
+    return fly::ObjectCache::instance().high_size();
+});
+FLY_EXPORT_FUNCTION("ex_stg_cache_clear", []() {
+    fly::ObjectCache::instance().clear();
 });
 }

@@ -2,6 +2,7 @@
 #include <storage/cpp/compressor.h>
 #include <network/cpp/data_client.h>
 #include <serialization/cpp/object_header.h>
+#include <storage/cpp/object_cache.h>
 #include <storage/cpp/compression_utils.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <core/cpp/config.h>
@@ -170,8 +171,26 @@ CMString Database::compress_pickle_bytes(const char* data, int64_t data_size,
 
 std::pair<CMString, CMString> Database::read_object_compressed(const CMString& object_name, bool backup) {
     CMString full = full_name(object_name);
-    auto ds = fly::DataService::instance();
+    auto& cache = fly::ObjectCache::instance();
 
+    // Low-tier hit: skip disk/remote IO. Re-parse py_name from the cached header.
+    if (auto [hit, cached] = cache.get_low(full); hit) {
+        CMString py_name;
+        try {
+            int64_t off = 0;
+            auto hdr = ObjectHeader::deserialize(cached, off);
+            py_name = hdr.py_name_;
+        } catch (...) {
+            // Malformed cached entry — fall through to re-read from source.
+        }
+        if (!py_name.empty()) {
+            return {cached, std::move(py_name)};
+        }
+        // If header parse failed, evict the stale entry and re-read.
+        cache.remove(full);
+    }
+
+    auto ds = fly::DataService::instance();
     auto [comp_found, comp_data, comp_py_name, comp_hash, comp_can_still_produce] = ds->read_raw_compressed(full);
     if (!comp_found || comp_data.empty()) {
         ERR("read_object_compressed: no data for '{}'", full);
@@ -183,7 +202,26 @@ std::pair<CMString, CMString> Database::read_object_compressed(const CMString& o
         do_backup_write(full, object_name, std::move(cp), comp_hash);
     }
 
+    // Populate low tier: account by uncompressed size from the object header
+    // (fall back to compressed size if the header cannot be parsed).
+    size_t accounted = comp_data.size();
+    try {
+        int64_t off = 0;
+        auto hdr = ObjectHeader::deserialize(comp_data, off);
+        if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
+    } catch (...) {
+        // Keep compressed-size accounting.
+    }
+    cache.put_low(full, comp_data, accounted);
+
     return {std::move(comp_data), std::move(comp_py_name)};
+}
+
+CMString Database::read_object_py_name(const CMString& object_name) {
+    // read_object_compressed already goes through the low-tier cache, so this
+    // is a cheap header parse on cache hit (no payload read).
+    auto [comp_data, py_name] = read_object_compressed(object_name, false);
+    return py_name;
 }
 
 void Database::do_backup_write(const CMString& full, const CMString& object_name, CMString compressed_data, const CMString& source_hash) {
@@ -287,6 +325,8 @@ void Database::remove_object(const CMString& object_name) {
 
     fly::DataService::instance()->remove_local_index(full);
 
+    fly::ObjectCache::instance().remove(full);
+
     INFO("Object removed: {}", full);
 }
 
@@ -294,6 +334,7 @@ void Database::remove_index_entry(const CMString& object_name) {
     CMString full = full_name(object_name);
     removed_objects_.insert(full);
     writer_->remove_entry(full);
+    fly::ObjectCache::instance().remove(full);
     INFO("Index entry removed: {}", full);
 }
 
