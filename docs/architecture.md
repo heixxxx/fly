@@ -229,6 +229,21 @@ data = db.read_object(f"input/{name}")
 
 # 冻结数据库（标记为只读）
 db.freeze()
+```
+
+**读缓存分层**（`src/storage/cpp/object_cache.h`）：
+
+read_object 经两层 LRU 缓存加速，进程级单例（master/worker 各自一份）：
+
+| 层 | 存储内容 | 命中收益 | 服务对象 |
+|----|---------|---------|---------|
+| **low** | 压缩字节 (CMString) | 省磁盘/远程 IO | 所有读（read_object_compressed 内部）|
+| **high (C++)** | 反序列化对象 (std::any 持 CMSharedPtr<T>) | 省反序列化 | C++ read_object<T> + nanobind 类（经 _read_from_db）|
+| **high (Python)** | 反序列化 Python 对象 | 省反序列化 | pickle 对象（read_object(cache="high")）|
+
+- 淘汰：LFU score = read_count/age，30s 保护期，1.5× 硬限制（对齐 Python ReadCache）
+- 失效：remove_object/remove_index_entry 触发 cache.remove（双层清理）
+- 类型分流：nanobind 类（FLY_EXPORT_SERIALIZE）走 _read_from_db（C++ high）；pickle 对象走 Python ReadCache
 
 # 多Database支持（轻量级）
 db_a = Database("/data/project_a")

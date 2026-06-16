@@ -398,8 +398,11 @@ FLY_EXPORT_SERIALIZE(IndexEntry)  // 自动添加 __getstate__/__setstate__ + is
 
 `FLY_EXPORT_SERIALIZE` 展开为：
 - `__getstate__`: 将对象编码为 bytes
-- `__setstate__`: 从 bytes 解码恢复对象
-- `is_cpp` 属性：返回 `True`（用于 Python wrapper 判断对象来源）
+- `__getstate_buffer__`: 编码为 FlyBuffer（shared_ptr 形式）
+- `__setstate__`: 从 bytes 解码恢复对象（自动识别 FLY_OBJECT_MAGIC 头走解压路径）
+- `_write_to_db`: 实例方法，调 `db.write_object<Cls>` 写入（对称读取用 `_read_from_db`）
+- `_read_from_db`: 静态方法，调 `db.read_object<Cls>` 读取（走 C++ ObjectCache high 层，省反序列化）
+- `is_cpp` 属性：返回 `True`（用于 Python wrapper 判断对象来源 + 缓存分派）
 
 **完整类导出示例**：
 
