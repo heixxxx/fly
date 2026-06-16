@@ -18,6 +18,7 @@
 #include <common/cpp/common_types.h>
 #include <core/cpp/config.h>
 #include <any>
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <algorithm>
@@ -37,11 +38,12 @@ public:
     CMSharedPtr<T> get_high(const CMString& key) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = high_.find(key);
-        if (it == high_.end()) return nullptr;
+        if (it == high_.end()) { stats_.high_misses.fetch_add(1, std::memory_order_relaxed); return nullptr; }
         // any_cast on contained shared_ptr<T>; type mismatch → nullptr.
         auto held = std::any_cast<CMSharedPtr<T>>(&it->second.value_);
-        if (!held) return nullptr;
+        if (!held) { stats_.high_misses.fetch_add(1, std::memory_order_relaxed); return nullptr; }
         touch_entry(it->second);
+        stats_.high_hits.fetch_add(1, std::memory_order_relaxed);
         return *held;
     }
 
@@ -49,8 +51,9 @@ public:
     std::pair<bool, CMString> get_low(const CMString& key) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = low_.find(key);
-        if (it == low_.end()) return {false, CMString{}};
+        if (it == low_.end()) { stats_.low_misses.fetch_add(1, std::memory_order_relaxed); return {false, CMString{}}; }
         touch_entry(it->second);
+        stats_.low_hits.fetch_add(1, std::memory_order_relaxed);
         return {true, std::any_cast<CMString>(it->second.value_)};
     }
 
@@ -76,7 +79,8 @@ public:
             high_[key] = std::move(e);
         }
         high_bytes_ += size;
-        evict(high_, high_bytes_);
+        stats_.high_puts.fetch_add(1, std::memory_order_relaxed);
+        stats_.high_evictions.fetch_add(evict(high_, high_bytes_), std::memory_order_relaxed);
     }
 
     // low-tier put: stores compressed bytes.
@@ -99,7 +103,8 @@ public:
             low_[key] = std::move(e);
         }
         low_bytes_ += size;
-        evict(low_, low_bytes_);
+        stats_.low_puts.fetch_add(1, std::memory_order_relaxed);
+        stats_.low_evictions.fetch_add(evict(low_, low_bytes_), std::memory_order_relaxed);
     }
 
     // remove from both tiers (used on object invalidation: remove_object/freeze).
@@ -123,6 +128,7 @@ public:
         high_.clear();
         low_bytes_ = 0;
         high_bytes_ = 0;
+        reset_stats();
     }
 
     // Test-only: reset cache state and override byte limits (production uses
@@ -135,6 +141,19 @@ public:
         high_bytes_ = 0;
         max_bytes_ = max_bytes;
         hard_limit_ = max_bytes + max_bytes / 2;
+        reset_stats();
+    }
+
+    // Reset all hit/miss/put/eviction counters to zero.
+    void reset_stats() {
+        stats_.low_hits.store(0, std::memory_order_relaxed);
+        stats_.low_misses.store(0, std::memory_order_relaxed);
+        stats_.low_puts.store(0, std::memory_order_relaxed);
+        stats_.low_evictions.store(0, std::memory_order_relaxed);
+        stats_.high_hits.store(0, std::memory_order_relaxed);
+        stats_.high_misses.store(0, std::memory_order_relaxed);
+        stats_.high_puts.store(0, std::memory_order_relaxed);
+        stats_.high_evictions.store(0, std::memory_order_relaxed);
     }
 
     // test/diagnostic accessors (not for hot paths)
@@ -153,6 +172,34 @@ public:
     size_t high_size() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return high_.size();
+    }
+
+    // ── Hit statistics (per-tier: hits / misses / puts / evictions) ──
+    // Counters are std::atomic for lock-free reads; writes happen under mutex_
+    // (or via atomic fetch_add in the hot path).
+    struct Stats {
+        std::atomic<uint64_t> low_hits{0};
+        std::atomic<uint64_t> low_misses{0};
+        std::atomic<uint64_t> low_puts{0};
+        std::atomic<uint64_t> low_evictions{0};
+        std::atomic<uint64_t> high_hits{0};
+        std::atomic<uint64_t> high_misses{0};
+        std::atomic<uint64_t> high_puts{0};
+        std::atomic<uint64_t> high_evictions{0};
+    };
+
+    const Stats& stats() const { return stats_; }
+
+    // Convenience: hit rate per tier (0.0 if no accesses yet).
+    double low_hit_rate() const {
+        uint64_t h = stats_.low_hits.load(), m = stats_.low_misses.load();
+        uint64_t total = h + m;
+        return total == 0 ? 0.0 : static_cast<double>(h) / total;
+    }
+    double high_hit_rate() const {
+        uint64_t h = stats_.high_hits.load(), m = stats_.high_misses.load();
+        uint64_t total = h + m;
+        return total == 0 ? 0.0 : static_cast<double>(h) / total;
     }
 
 private:
@@ -175,6 +222,7 @@ private:
     CMUnorderedMap<CMString, Entry> high_;
     size_t low_bytes_ = 0;
     size_t high_bytes_ = 0;
+    Stats stats_;
 
     // Limits read once from config; constants mirror Python read_cache.py.
     size_t max_bytes_ = load_max_bytes();
@@ -201,10 +249,11 @@ private:
 
     // Eviction: collect candidates past protection window; if none and over
     // hard limit, consider all. Sort ascending by score, evict until under max.
-    void evict(CMUnorderedMap<CMString, Entry>& cache, size_t& bytes) {
-        if (bytes <= max_bytes_) return;
+    // Returns the number of entries evicted (for stats accounting).
+    size_t evict(CMUnorderedMap<CMString, Entry>& cache, size_t& bytes) {
+        if (bytes <= max_bytes_) return 0;
         double now = now_sec();
-
+        size_t evicted = 0;
         CMVector<std::pair<CMString, Entry*>> candidates;
         for (auto& [k, v] : cache) {
             if (now - v.created_at_ >= PROTECTION_SEC) {
@@ -216,7 +265,7 @@ private:
                 candidates.emplace_back(k, &v);
             }
         }
-        if (candidates.empty()) return;
+        if (candidates.empty()) return 0;
 
         std::sort(candidates.begin(), candidates.end(),
                   [&](const auto& a, const auto& b) {
@@ -227,7 +276,9 @@ private:
             if (bytes <= max_bytes_) break;
             bytes -= v->size_;
             cache.erase(k);
+            ++evicted;
         }
+        return evicted;
     }
 };
 

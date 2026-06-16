@@ -1067,6 +1067,62 @@ TEST_F(DataServiceTest, TryReadLocalRawReturnsFalseForUnknown) {
     EXPECT_TRUE(comp.empty());
 }
 
+// try_read_local_raw short-circuits via ObjectCache low tier: after a prior
+// read_object_compressed populates the low tier, a subsequent try_read_local_raw
+// must serve from cache (no disk IO). We prove this by deleting the on-disk
+// .dat files after populating the cache — if it still returns data, it came
+// from the low-tier cache, not disk.
+TEST_F(DataServiceTest, TryReadLocalRawServesFromLowCache) {
+    CMString base_path = test_dir_ + "/serve_cache";
+    Database db(base_path);
+    write_raw(db, "serve/obj", "payload", false);
+    ds_->drain_write_back();
+
+    CMString full = db.get_obj_name("serve/obj");
+    fly::ObjectCache::instance().clear();
+
+    // Populate low tier via read_object_compressed.
+    auto [comp, py_name] = db.read_object_compressed("serve/obj", false);
+    ASSERT_FALSE(comp.empty());
+    ASSERT_EQ(fly::ObjectCache::instance().low_size(), 1u);
+
+    // Delete on-disk data files so a disk read would fail.
+    for (auto& p : std::filesystem::directory_iterator(base_path)) {
+        if (p.path().extension() == ".dat") {
+            std::filesystem::remove(p.path());
+        }
+    }
+
+    // try_read_local_raw must still succeed via the low-tier short-circuit.
+    auto [found, raw] = ds_->try_read_local_raw(full);
+    EXPECT_TRUE(found) << "should serve from cache even with disk files removed";
+    EXPECT_EQ(raw, comp);
+
+    fly::ObjectCache::instance().clear();
+}
+
+// try_read_local_raw populates the low tier after a disk read, so subsequent
+// calls hit the cache.
+TEST_F(DataServiceTest, TryReadLocalRawPopulatesLowCache) {
+    CMString base_path = test_dir_ + "/populate_cache";
+    Database db(base_path);
+    write_raw(db, "pop/obj", "data", false);
+    ds_->drain_write_back();
+
+    CMString full = db.get_obj_name("pop/obj");
+    fly::ObjectCache::instance().clear();
+    EXPECT_EQ(fly::ObjectCache::instance().low_size(), 0u);
+
+    // First try_read_local_raw reads from disk and populates the low tier.
+    auto [found, raw] = ds_->try_read_local_raw(full);
+    ASSERT_TRUE(found);
+    ASSERT_FALSE(raw.empty());
+    EXPECT_EQ(fly::ObjectCache::instance().low_size(), 1u)
+        << "try_read_local_raw should populate low tier after disk read";
+
+    fly::ObjectCache::instance().clear();
+}
+
 // try_read_local_raw_or_wait returns immediately for a complete object (no wait).
 TEST_F(DataServiceTest, TryReadLocalRawOrWaitImmediateForComplete) {
     CMString base_path = test_dir_ + "/raw_wait";

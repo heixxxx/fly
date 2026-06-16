@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-06-16 (3): 远程读复用 low 层缓存 + hit stats + remove 缓存清理补全
+
+**原因**: ObjectCache low 层存的压缩字节正是远程传输载荷，可用于加速远程 DataServer 服务（省磁盘 IO）。补充 hit stats 诊断 + 修复远程 remove 场景的缓存失效 gap。
+
+| 文档 | 变更 |
+|------|------|
+| docs/architecture.md | 读缓存分层表 low 层「服务对象」补远程路径（DataServer try_read_local_raw short-circuit）；失效路径补 remove_local_index/remove_remote_index；新增命中统计行 |
+
+改动:
+- data_service.cpp try_read_local_raw: 入口 short-circuit（命中 low 层省磁盘 IO）+ 磁盘读后 put_low
+- object_cache.h: Stats 结构（per-tier hits/misses/puts/evictions，atomic）+ low_hit_rate/high_hit_rate
+- storage_export.cpp: ex_stg_cache_stats Python 绑定
+- data_service.cpp remove_local_index/remove_remote_index: 补 ObjectCache::remove（修复远程 remove 广播的陈旧缓存 bug）
+
+---
+
 ## 2026-06-16 (2): write API 返回 WriteErrorType 错误码（独立于 TaskErrorType）
 
 **原因**: write_object/write_pickle_bytes 原返回 CMString（成功失败都为空），Python wrapper 靠 task 级累积的 last_error_type 区分成败，导致跨测试 error_type 污染（生产 bug）。改为返回独立 WriteErrorType 错误码，per-call 明确区分。

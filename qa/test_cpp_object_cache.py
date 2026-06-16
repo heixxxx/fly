@@ -40,20 +40,23 @@ def main():
     assert result.size == 512
     assert result.is_large == False
     assert result.block_count == 0
-    # First read must populate the C++ high tier.
-    assert _fly_storage.ex_stg_cache_high_size() == 1, \
-        f"high tier should have 1 entry after cpp read, got {_fly_storage.ex_stg_cache_high_size()}"
-    print("[PASS] cpp class write→read round-trip + populates C++ high tier")
+    # First read populates the C++ high tier: 1 put, 0 hits (it was a miss).
+    # stats tuple = (lo_h, lo_m, lo_p, lo_e, hi_h, hi_m, hi_p, hi_e)
+    s1 = _fly_storage.ex_stg_cache_stats()
+    assert s1[6] == 1, f"high tier should have 1 put after cpp read, got {s1[6]}"
+    assert s1[4] == 0, f"first read should be a miss (0 hits), got {s1[4]}"
+    print("[PASS] cpp class write→read populates C++ high tier (1 put, 0 hit)")
 
     # ── 2. Second read hits C++ high tier (cached, no re-deserialize) ──
     result2 = db.read_object("test/entry")
     assert isinstance(result2, EXStgIndexEntry)
     assert result2.object_name == "test/entry"
     assert result2.offset == 100
-    # Still exactly 1 entry (hit, not a new populate).
-    assert _fly_storage.ex_stg_cache_high_size() == 1, \
-        "second read should hit (not add) high tier entry"
-    print("[PASS] cpp class second read (high-tier cache hit)")
+    # Hit stats prove the second read served from cache (not a fresh deserialize).
+    s2 = _fly_storage.ex_stg_cache_stats()
+    assert s2[4] == 1, f"second read should register 1 high-tier hit, got {s2[4]}"
+    assert s2[6] == 1, f"second read should NOT add a new put (still 1), got {s2[6]}"
+    print("[PASS] cpp class second read (high-tier cache hit: 1 hit, no new put)")
 
     # ── 3. _get_py_name returns the stored type name ──
     py_name = db._db._get_py_name("test/entry")

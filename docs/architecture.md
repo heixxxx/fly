@@ -237,13 +237,14 @@ read_object 经两层 LRU 缓存加速，进程级单例（master/worker 各自�
 
 | 层 | 存储内容 | 命中收益 | 服务对象 |
 |----|---------|---------|---------|
-| **low** | 压缩字节 (CMString) | 省磁盘/远程 IO | 所有读（read_object_compressed 内部）|
+| **low** | 压缩字节 (CMString) | 省磁盘/远程 IO | 本地读（read_object_compressed）+ 远程服务（DataServer 的 try_read_local_raw short-circuit）|
 | **high (C++)** | 反序列化对象 (std::any 持 CMSharedPtr<T>) | 省反序列化 | C++ read_object<T> + nanobind 类（经 _read_from_db）|
 | **high (Python)** | 反序列化 Python 对象 | 省反序列化 | pickle 对象（read_object(cache="high")）|
 
 - 淘汰：LFU score = read_count/age，30s 保护期，1.5× 硬限制（对齐 Python ReadCache）
-- 失效：remove_object/remove_index_entry 触发 cache.remove（双层清理）
+- 失效：remove_object/remove_index_entry/remove_local_index/remove_remote_index 触发 cache.remove（双层清理，覆盖本地+远程 remove 广播）
 - 类型分流：nanobind 类（FLY_EXPORT_SERIALIZE）走 _read_from_db（C++ high）；pickle 对象走 Python ReadCache
+- 命中统计：ObjectCache 维护 per-tier hits/misses/puts/evictions 计数（ex_stg_cache_stats Python 绑定）
 
 # 多Database支持（轻量级）
 db_a = Database("/data/project_a")

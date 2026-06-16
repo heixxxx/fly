@@ -5,6 +5,7 @@
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/compression_utils.h>
 #include <storage/cpp/decompressing_streambuf.h>
+#include <storage/cpp/object_cache.h>
 #include <serialization/cpp/object_header.h>
 #include <core/cpp/config.h>
 #include <log/cpp/logger.h>
@@ -216,6 +217,9 @@ void DataService::remove_local_index(const CMString& object_name) {
             db_it->second.erase(short_name);
         }
     }
+    // Invalidate cached bytes (low/high tier) for this object so subsequent
+    // reads don't return stale data after removal.
+    fly::ObjectCache::instance().remove(object_name);
 
     if (freed_bytes > 0) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -396,6 +400,9 @@ void DataService::remove_remote_index(const CMString& object_name) {
     if (db_it != remote_idx_.end()) {
         db_it->second.erase(short_name);
     }
+    // Invalidate cached bytes (a prior remote read may have populated the low
+    // tier via read_raw_compressed → put_low; remove it to avoid stale data).
+    fly::ObjectCache::instance().remove(object_name);
 }
 
 // ============================================================
@@ -520,6 +527,14 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
 }
 
 std::pair<bool, CMString> DataService::try_read_local_raw(const CMString& object_name) {
+    // Short-circuit: serve compressed bytes from the ObjectCache low tier when
+    // available. This benefits both the remote DataServer serve path (which
+    // calls this directly) and the local read_raw_compressed Tier-1 path —
+    // avoiding index lookup + disk IO entirely on a cache hit.
+    if (auto [hit, cached] = fly::ObjectCache::instance().get_low(object_name); hit) {
+        return {true, std::move(cached)};
+    }
+
     auto [db_id, short_name] = split_full(object_name);
     CMVector<IndexEntry> entries;
     DbPaths paths;
@@ -580,6 +595,18 @@ std::pair<bool, CMString> DataService::try_read_local_raw(const CMString& object
 
     CMString raw = do_read_raw_entries(entries, paths);
     if (raw.empty()) return {false, {}};
+
+    // Populate the low-tier cache so subsequent reads (local or remote serve)
+    // skip disk IO. Account by uncompressed size from the object header;
+    // fall back to compressed size if the header cannot be parsed.
+    size_t accounted = raw.size();
+    try {
+        int64_t off = 0;
+        auto hdr = ObjectHeader::deserialize(raw, off);
+        if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
+    } catch (...) {}
+    fly::ObjectCache::instance().put_low(object_name, raw, accounted);
+
     return {true, std::move(raw)};
 }
 

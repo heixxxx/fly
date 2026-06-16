@@ -169,6 +169,80 @@ TEST(ObjectCacheTest, EvictionRespectsScoreOrder) {
     c.clear();
 }
 
+// ---- hit statistics ----
+
+TEST(ObjectCacheTest, LowTierHitMissPutCounters) {
+    ObjectCache& c = ObjectCache::instance();
+    c.reset_for_test(1 << 20);
+    const auto& s = c.stats();
+    EXPECT_EQ(s.low_hits.load(), 0u);
+    EXPECT_EQ(s.low_misses.load(), 0u);
+    EXPECT_EQ(s.low_puts.load(), 0u);
+
+    // Miss on empty cache.
+    (void)c.get_low("absent");
+    EXPECT_EQ(s.low_misses.load(), 1u);
+
+    // Put then hit.
+    c.put_low("k", "data", 4);
+    EXPECT_EQ(s.low_puts.load(), 1u);
+    auto [hit, _] = c.get_low("k");
+    EXPECT_TRUE(hit);
+    EXPECT_EQ(s.low_hits.load(), 1u);
+    EXPECT_EQ(s.low_misses.load(), 1u);  // unchanged
+
+    c.clear();
+}
+
+TEST(ObjectCacheTest, HighTierHitMissPutCounters) {
+    ObjectCache& c = ObjectCache::instance();
+    c.reset_for_test(1 << 20);
+    const auto& s = c.stats();
+
+    // Miss on empty cache.
+    EXPECT_EQ(c.get_high<int>("absent"), nullptr);
+    EXPECT_EQ(s.high_misses.load(), 1u);
+
+    // Put then hit.
+    c.put_high<int>("k", CMMakeShared<int>(5), 4);
+    EXPECT_EQ(s.high_puts.load(), 1u);
+    EXPECT_NE(c.get_high<int>("k"), nullptr);
+    EXPECT_EQ(s.high_hits.load(), 1u);
+
+    // Type mismatch counts as miss.
+    EXPECT_EQ(c.get_high<double>("k"), nullptr);
+    EXPECT_EQ(s.high_misses.load(), 2u);
+
+    c.clear();
+}
+
+TEST(ObjectCacheTest, EvictionCounter) {
+    ObjectCache& c = ObjectCache::instance();
+    c.reset_for_test(100);  // tiny limit
+    const auto& s = c.stats();
+
+    // Each entry 40 bytes; exceed hard limit (150) to force eviction.
+    c.put_low("a", CMString(40, 'a'), 40);
+    c.put_low("b", CMString(40, 'b'), 40);
+    c.put_low("c", CMString(40, 'c'), 40);
+    c.put_low("d", CMString(40, 'd'), 40);  // 160 > 150 → evict
+    EXPECT_GE(s.low_evictions.load(), 1u);
+    c.clear();
+}
+
+TEST(ObjectCacheTest, ResetStatsZeroesCounters) {
+    ObjectCache& c = ObjectCache::instance();
+    c.reset_for_test(1 << 20);
+    c.put_low("k", "data", 4);
+    (void)c.get_low("k");
+    EXPECT_GT(c.stats().low_hits.load(), 0u);
+
+    c.reset_stats();
+    EXPECT_EQ(c.stats().low_hits.load(), 0u);
+    EXPECT_EQ(c.stats().low_puts.load(), 0u);
+    c.clear();
+}
+
 // ---- thread safety smoke test ----
 
 TEST(ObjectCacheTest, ConcurrentAccessIsSafe) {

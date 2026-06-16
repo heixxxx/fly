@@ -277,4 +277,19 @@ FLY_EXPORT_FUNCTION("ex_stg_cache_high_size", []() -> size_t {
 FLY_EXPORT_FUNCTION("ex_stg_cache_clear", []() {
     fly::ObjectCache::instance().clear();
 });
+// Hit statistics: returns (low_hits, low_misses, low_puts, low_evictions,
+// high_hits, high_misses, high_puts, high_evictions).
+FLY_EXPORT_FUNCTION("ex_stg_cache_stats", []() -> fly_export::tuple {
+    const auto& s = fly::ObjectCache::instance().stats();
+    return fly_export::make_tuple(
+        s.low_hits.load(std::memory_order_relaxed),
+        s.low_misses.load(std::memory_order_relaxed),
+        s.low_puts.load(std::memory_order_relaxed),
+        s.low_evictions.load(std::memory_order_relaxed),
+        s.high_hits.load(std::memory_order_relaxed),
+        s.high_misses.load(std::memory_order_relaxed),
+        s.high_puts.load(std::memory_order_relaxed),
+        s.high_evictions.load(std::memory_order_relaxed)
+    );
+});
 }
