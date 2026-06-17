@@ -206,7 +206,7 @@ public:
 
 private:
     struct Entry {
-        std::any value_;        // high: CMSharedPtr<T>; low: CMString
+        std::any value_;        // high: CMSharedPtr<T>; low: FlyBufferPtr
         size_t size_ = 0;
         double last_access_ = 0;    // seconds since epoch (monotonic-ish via steady_clock)
         double created_at_ = 0;

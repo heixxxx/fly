@@ -1,15 +1,15 @@
-"""QA test: 100MB object remote transfer with memory copy profiling.
+"""QA test: 10MB object remote transfer with memory copy profiling.
 
 Setup:
   - Master launches 2 workers: worker1 (gpu), worker2 (cpu)
-  - Task 1 (gpu_write_large_temp): runs on worker1, writes ~100MB temp object
+  - Task 1 (gpu_write_large_temp): runs on worker1, writes ~10MB temp object
   - Task 2 (cpu_read_large_remote): runs on worker2, reads the object remotely
     (triggers DataServer → DataClient wire transfer)
 
 Profiling:
   - Workers launched under perf record to capture memcpy/copy_user calls
   - After completion, perf report shows hot copy points
-  - Validates: no large user-space copy of the 100MB payload in the hot path
+  - Validates: no large user-space copy of the 10MB payload in the hot path
 
 Run: ./build/bin/fly qa/test_large_transfer_profile.py
 """
@@ -41,10 +41,9 @@ def setup_workers_under_perf():
     from fly.runtime import get_agent
     master = get_agent()
 
-    # Launch workers normally (in-process mode for QA); perf attaches to the
-    # fly process itself. For true multi-process profiling, we'd use process
-    # mode — but in QA we use in-process workers sharing one PID.
-    # Instead, we'll instrument via perf stat on the whole test process.
+    # Launch workers as separate processes via subprocess.Popen.
+    # For perf: attach to the master PID; for valgrind massif: use
+    # --trace-children=yes to trace worker subprocesses.
     master.launch_local_workers([
         {"attributes": ["gpu"]},
         {"attributes": []},

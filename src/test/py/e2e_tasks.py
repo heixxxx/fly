@@ -233,10 +233,10 @@ def mr_downstream_read(db, mr, output_key):
 
 # ── Large object remote transfer profiling tasks ──
 
-# Task 1: runs on GPU worker, writes a large temp object (~100MB).
+# Task 1: runs on GPU worker, writes a large temp object (~10MB when size=1_250_000).
 @as_task(requires=["gpu"])
 def gpu_write_large_temp(db, key, size):
-    data = list(range(size))  # ~100MB when size = 12_500_000 (each int ~8 bytes)
+    data = list(range(size))  # ~10MB when size = 1_250_000 (each int ~8 bytes)
     db.write_object(key, data, save_to_db=False)
 
 

@@ -28,6 +28,13 @@ for f in massif.out.*; do
   echo "$f: peak = $((peak/1024/1024))MB"
 done
 
+# 区分 master / worker 角色（massif 输出文件头包含 cmd 行）
+for f in massif.out.*; do
+  pid=${f#massif.out.}
+  cmd=$(grep "^cmd:" "$f" | head -1)
+  echo "$f → $cmd"
+done
+
 # 详细分配树（找特定函数）
 ms_print massif.out.<PID>
 ```
