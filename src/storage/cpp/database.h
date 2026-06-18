@@ -36,13 +36,15 @@ public:
     CMString compress_pickle_bytes(const char* data, int64_t data_size,
                                    const CMString& py_name);
 
-    std::pair<FlyBufferPtr, CMString> read_object_compressed(const CMString& object_name, bool backup = false);
+    // bypass_cache=true skips the low-tier cache lookup (cache="none" mode).
+    std::pair<FlyBufferPtr, CMString> read_object_compressed(const CMString& object_name, bool backup = false, bool bypass_cache = false);
 
     template<typename T>
     fly::WriteErrorType write_object(const CMString& object_name, const T& obj,
                           const CMString& py_name, bool backup = false);
 
-    // Cache tiers: "low" (default, compressed bytes), "high" (deserialized objects), "none" (bypass cache)
+    // Cache tiers: "low" (default) and "high" populate/query the high-tier
+    // cache (省反序列化); "none" bypasses all cache tiers and reads from source.
     template<typename T>
     CMSharedPtr<T> read_object(const CMString& object_name, const CMString& cache = "low");
 
@@ -222,17 +224,28 @@ CMSharedPtr<T> Database::read_object(const CMString& object_name, const CMString
     CMString full = full_name(object_name);
     auto& cache_instance = fly::ObjectCache::instance();
 
-    // High-tier query: only for cache="high"
-    // Hit → return cached instance, skip IO + deserialize.
-    if (cache == "high") {
-        if (auto cached = cache_instance.get_high<T>(full)) {
-            return cached;
+    // cache="none": bypass all cache tiers, read directly from source.
+    if (cache == "none") {
+        auto [comp_data, py_name] = read_object_compressed(object_name, false, true);
+        if (!comp_data || comp_data->empty()) {
+            ERR("read_object<T>: no data for '{}'", full);
+            return nullptr;
         }
+        auto obj = CMMakeShared<T>();
+        DecompressingStreamBuf dsbuf(comp_data->data(), comp_data->size());
+        std::istream is(&dsbuf);
+        obj->fly_deserialize(is);
+        return obj;
     }
 
-    // Low-tier query (via read_object_compressed): for cache="low" and cache="high"
-    // Skipped only for cache="none".
-    auto [comp_data, py_name] = read_object_compressed(object_name, false);
+    // cache="low" (default) or cache="high": query high tier first.
+    // Hit → return cached instance, skip IO + deserialize.
+    if (auto cached = cache_instance.get_high<T>(full)) {
+        return cached;
+    }
+
+    // Miss → read compressed data (low-tier cache transparent in read_object_compressed).
+    auto [comp_data, py_name] = read_object_compressed(object_name, false, false);
     if (!comp_data || comp_data->empty()) {
         ERR("read_object<T>: no data for '{}'", full);
         return nullptr;
@@ -243,16 +256,14 @@ CMSharedPtr<T> Database::read_object(const CMString& object_name, const CMString
     std::istream is(&dsbuf);
     obj->fly_deserialize(is);
 
-    // High-tier population: only for cache="high"
-    if (cache == "high") {
-        size_t accounted = comp_data->size();
-        try {
-            int64_t off = 0;
-            auto hdr = ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, off);
-            if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
-        } catch (...) {}
-        cache_instance.put_high<T>(full, obj, accounted);
-    }
+    // Populate high tier so subsequent reads skip deserialization.
+    size_t accounted = comp_data->size();
+    try {
+        int64_t off = 0;
+        auto hdr = ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, off);
+        if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
+    } catch (...) {}
+    cache_instance.put_high<T>(full, obj, accounted);
 
     return obj;
 }

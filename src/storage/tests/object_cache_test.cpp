@@ -390,7 +390,10 @@ TEST_F(ObjectCacheDbTest, ReadObjectPopulatesHighTier) {
 
 // With cache="low" (default), read_object<T> does NOT populate high tier.
 // Each read returns a new instance.
-TEST_F(ObjectCacheDbTest, ReadObjectLowCacheDoesNotPopulateHighTier) {
+// With cache="low" (default), read_object<T> still populates the high tier
+// so subsequent reads skip deserialization. This is the original design intent
+// of _read_from_db: C++ classes always benefit from the high-tier cache.
+TEST_F(ObjectCacheDbTest, ReadObjectLowCachePopulatesHighTier) {
     Database db(test_dir_ + "/low_default");
     CacheItem src;
     src.n = 42;
@@ -400,41 +403,19 @@ TEST_F(ObjectCacheDbTest, ReadObjectLowCacheDoesNotPopulateHighTier) {
 
     EXPECT_EQ(ObjectCache::instance().high_size(), 0u);
 
-    // First read with default cache="low" does NOT populate high tier.
+    // First read with default cache="low" populates high tier.
     auto obj1 = db.read_object<CacheItem>("obj");
     ASSERT_NE(obj1, nullptr);
     EXPECT_EQ(obj1->n, 42);
-    EXPECT_EQ(ObjectCache::instance().high_size(), 0u)
-        << "read_object<T> with cache='low' should NOT populate high tier";
+    EXPECT_EQ(ObjectCache::instance().high_size(), 1u)
+        << "read_object<T> with cache='low' should populate high tier";
 
-    // Second read returns a NEW instance (no high-tier cache).
+    // Second read returns the SAME instance (high-tier cache hit).
     auto obj2 = db.read_object<CacheItem>("obj");
     ASSERT_NE(obj2, nullptr);
     EXPECT_EQ(obj2->n, 42);
-    EXPECT_NE(obj2.get(), obj1.get())
-        << "second read with cache='low' should return a new instance";
-}
-
-// With cache="low", read_object<T> ignores high tier even if populated.
-TEST_F(ObjectCacheDbTest, ReadObjectLowCacheIgnoresHighTier) {
-    Database db(test_dir_ + "/low_ignores_high");
-    CacheItem src;
-    src.n = 55;
-    src.s = "ignored";
-    db.write_object("obj", src, "CacheItem", false);
-    fly::DataService::instance()->drain_write_back();
-
-    // Populate high tier first with cache="high".
-    auto obj1 = db.read_object<CacheItem>("obj", "high");
-    ASSERT_NE(obj1, nullptr);
-    EXPECT_EQ(ObjectCache::instance().high_size(), 1u);
-
-    // Read with cache="low" ignores high tier, returns new instance.
-    auto obj2 = db.read_object<CacheItem>("obj", "low");
-    ASSERT_NE(obj2, nullptr);
-    EXPECT_EQ(obj2->n, 55);
-    EXPECT_NE(obj2.get(), obj1.get())
-        << "cache='low' should ignore high tier and return new instance";
+    EXPECT_EQ(obj2.get(), obj1.get())
+        << "second read should hit high tier and return the same instance";
 }
 
 // With cache="none", read_object<T> bypasses all caches.

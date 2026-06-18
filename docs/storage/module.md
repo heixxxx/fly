@@ -55,11 +55,15 @@ public:
                                       const CMString& py_name, bool backup = false);
 
     // 读取压缩数据（返回原始磁盘字节 + py_name）
-    std::pair<FlyBufferPtr, CMString> read_object_compressed(const CMString& object_name);
+    // bypass_cache=true 跳过 low 层缓存查询（cache="none" 模式）
+    std::pair<FlyBufferPtr, CMString> read_object_compressed(const CMString& object_name,
+                                                              bool backup = false,
+                                                              bool bypass_cache = false);
 
     // C++ 类型读取（解压 + 流式反序列化，带缓存）
+    // cache: "low"(默认)/"high" 查/填 high 层（省反序列化），"none" 完全 bypass
     template<typename T>
-    CMSharedPtr<T> read_object(const CMString& object_name);
+    CMSharedPtr<T> read_object(const CMString& object_name, const CMString& cache = "low");
 
     // 备份（跳过 check_frozen，直接压缩传输落盘）
     void backup_object(const CMString& object_name);

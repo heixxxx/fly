@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-06-18: 读写路径零拷贝优化 review 修复 — cache 语义 + xsputn 边界
+
+**原因**: review `117c725`（读写路径零拷贝优化）发现三个问题：
+1. `cache="none"` 未实现 — `read_object_compressed` 无条件查 low 层，`cache="none"` 仍命中缓存
+2. `xsputn` 边界条件 — `buffer_.size() >= chunk_size_` 时 `space<=0`，`to_write<=0`，逻辑不够健壮
+3. high-tier 语义回归 — `117c725` 把 `read_object<T>` 改成仅 `cache="high"` 时查/填 high 层，与 `_read_from_db` 设计初衷（C++ class 总是省反序列化）冲突，导致 `test_cpp_object_cache.py` 失败
+
+**修复**:
+- `read_object_compressed` 新增 `bypass_cache` 参数，`cache="none"` 时传 `true` 跳过 low 层查询
+- `read_object<T>` 恢复重构前语义：`cache="low"`/`"high"` 都查+填 high 层，仅 `cache="none"` 完全 bypass
+- `xsputn` flush 检查移到 insert 前，保证 `space` 恒正、`written` 恒前进
+- 修正 `117c725` 新增的两个矛盾单测（`ReadObjectLowCacheDoesNotPopulateHighTier` → `ReadObjectLowCachePopulatesHighTier`）
+
+| 文档 | 变更 |
+|------|------|
+| docs/storage/module.md | `read_object_compressed` 签名加 `bypass_cache` 参数；`read_object` cache 语义说明 |
+| CLAUDE.md | object_cache.h 条目补 cache="none" bypass 说明 |
+
+---
+
 ## 2026-06-17 (2): 零拷贝验证 — valgrind massif profiling 固化结论
 
 **方法**: 10MB 对象远程传输（master + 2 worker），valgrind massif 追踪各进程堆分配树。

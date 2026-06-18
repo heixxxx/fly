@@ -129,7 +129,7 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 | `fly_buffer_stream.h` | FlyBufferStreamBuf（streambuf→FlyBuffer）+ CountingStreamBuf |
 | `data_service.h/cpp` | 统一内存索引：local_idx + remote_idx + db_paths_ + worker_registry |
 | `data_server.h/cpp` | epoll + send_thread_pool 数据服务（响应远程 Worker 数据请求） |
-| `object_cache.h` | 两层 LRU 读缓存：low=压缩字节(FlyBufferPtr shared_ptr，零拷贝共享)，high=反序列化对象(std::any 持 CMSharedPtr<T>)。write_object complete_ 填 low，read_object_compressed 查/填 low，read_object<T> 查/填 high；LFU 淘汰 + 30s 保护期 + 1.5× 硬限制 |
+| `object_cache.h` | 两层 LRU 读缓存：low=压缩字节(FlyBufferPtr shared_ptr，零拷贝共享)，high=反序列化对象(std::any 持 CMSharedPtr<T>)。write_object complete_ 填 low，read_object_compressed 查/填 low，read_object<T> 查/填 high（cache="none" 时完全 bypass）；LFU 淘汰 + 30s 保护期 + 1.5× 硬限制 |
 | `local_index.h/cpp` | 增量持久化索引，IdxOpType(ADD/REMOVE) 追加写入 |
 | `storage_manager.h/cpp` | Database 生命周期管理，单例 |
 | `py/database.py` | Python Database 类（write_object/read_object） |

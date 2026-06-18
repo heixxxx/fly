@@ -30,13 +30,15 @@ CompressingStreamBuf::int_type CompressingStreamBuf::overflow(int_type ch) {
 std::streamsize CompressingStreamBuf::xsputn(const char* s, std::streamsize n) {
     std::streamsize written = 0;
     while (written < n) {
+        // Flush first if buffer is already at/over capacity, so the space
+        // computation below is always positive and written always advances.
+        if (static_cast<int64_t>(buffer_.size()) >= chunk_size_) {
+            flush_chunk();
+        }
         auto space = chunk_size_ - static_cast<int64_t>(buffer_.size());
         auto to_write = std::min(static_cast<std::streamsize>(space), n - written);
         buffer_.insert(buffer_.end(), s + written, s + written + to_write);
         written += to_write;
-        if (static_cast<int64_t>(buffer_.size()) >= chunk_size_) {
-            flush_chunk();
-        }
     }
     return written;
 }

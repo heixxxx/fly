@@ -177,25 +177,28 @@ CMString Database::compress_pickle_bytes(const char* data, int64_t data_size,
     return CMString(buf.data(), buf.size());
 }
 
-std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMString& object_name, bool backup) {
+std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMString& object_name, bool backup, bool bypass_cache) {
     CMString full = full_name(object_name);
     auto& cache = fly::ObjectCache::instance();
 
     // Low-tier hit: skip disk/remote IO. Re-parse py_name from the cached header.
-    if (auto [hit, cached] = cache.get_low(full); hit) {
-        CMString py_name;
-        try {
-            int64_t off = 0;
-            auto hdr = ObjectHeader::deserialize({cached->data(), cached->size()}, off);
-            py_name = hdr.py_name_;
-        } catch (...) {
-            // Malformed cached entry — fall through to re-read from source.
+    // Skipped when bypass_cache=true (cache="none" mode).
+    if (!bypass_cache) {
+        if (auto [hit, cached] = cache.get_low(full); hit) {
+            CMString py_name;
+            try {
+                int64_t off = 0;
+                auto hdr = ObjectHeader::deserialize({cached->data(), cached->size()}, off);
+                py_name = hdr.py_name_;
+            } catch (...) {
+                // Malformed cached entry — fall through to re-read from source.
+            }
+            if (!py_name.empty()) {
+                return {cached, std::move(py_name)};
+            }
+            // If header parse failed, evict the stale entry and re-read.
+            cache.remove(full);
         }
-        if (!py_name.empty()) {
-            return {cached, std::move(py_name)};
-        }
-        // If header parse failed, evict the stale entry and re-read.
-        cache.remove(full);
     }
 
     auto ds = fly::DataService::instance();
