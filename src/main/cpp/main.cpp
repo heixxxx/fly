@@ -158,16 +158,35 @@ static void setup_sys_path() {
     // Determine layout: build/ (installed) vs bazel-bin/ (legacy)
     std::string ps = "import sys, os\n";
 
+    // Priority 1: FLY_BUILD environment variable
     const char* fly_build_env = std::getenv("FLY_BUILD");
+    // Priority 2: Derive from binary path (e.g., /root/fly/build/bin/fly → /root/fly/build)
+    // Priority 3: Look for build/ in cwd
     std::filesystem::path build_dir;
     bool use_build_layout = false;
 
     if (fly_build_env && std::string(fly_build_env) != "") {
         build_dir = std::filesystem::path(fly_build_env);
         use_build_layout = true;
-    } else if (std::filesystem::exists(cwd / "build" / "bin" / "fly")) {
-        build_dir = cwd / "build";
-        use_build_layout = true;
+    } else {
+        // Try to derive from binary path
+        char exe_path[4096];
+        ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+        if (len > 0) {
+            exe_path[len] = '\0';
+            std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
+            // exe_dir is build/bin, so build_dir is exe_dir/..
+            std::filesystem::path candidate = exe_dir.parent_path();
+            if (std::filesystem::exists(candidate / "lib") && std::filesystem::exists(candidate / "python")) {
+                build_dir = candidate;
+                use_build_layout = true;
+            }
+        }
+        // Fallback: look for build/ in cwd
+        if (!use_build_layout && std::filesystem::exists(cwd / "build" / "bin" / "fly")) {
+            build_dir = cwd / "build";
+            use_build_layout = true;
+        }
     }
 
     if (use_build_layout) {
