@@ -12,7 +12,7 @@ import sys
 import os
 import shutil
 
-DB_PATH = "/tmp/fly_e2e_open_db_edge_db"
+DB_PATH = f"/tmp/fly_e2e_open_db_edge_db_{os.getpid()}"
 DB_PATH_AUTO = "/tmp/fly_e2e_open_db_auto_db"
 DB_PATH_DATAPATH = "/tmp/fly_e2e_open_db_datapath_db"
 CUSTOM_DATA_PATH = "/tmp/fly_e2e_custom_data_path"

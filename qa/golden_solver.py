@@ -23,7 +23,8 @@ from solver import solve_ras_graph, generate_poisson_matrix
 def run_golden(n_side, nsd, overlap_ratio=0.30, max_iter=200, tol=1e-8):
     label = f"n={n_side} nsd={nsd} ratio={overlap_ratio:.0%}"
     db_path = f"/tmp/fly_golden_n{n_side}_sd{nsd}_r{int(overlap_ratio*100)}"
-    matrix_path = f"/tmp/fly_golden_matrix_n{n_side}.npz"
+    # Use unique matrix path per process to avoid concurrent read/write conflicts
+    matrix_path = f"/tmp/fly_golden_matrix_n{n_side}_{os.getpid()}.npz"
 
     if os.path.isdir(db_path):
         shutil.rmtree(db_path, ignore_errors=True)

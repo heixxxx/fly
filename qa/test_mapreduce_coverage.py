@@ -6,7 +6,7 @@ import sys
 import os
 import shutil
 
-BASE_PATH = "/tmp/fly_e2e_mr_coverage"
+BASE_PATH = f"/tmp/fly_e2e_mr_coverage_{os.getpid()}"
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', 'src'))

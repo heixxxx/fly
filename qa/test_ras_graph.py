@@ -19,8 +19,8 @@ from solver import solve_ras_graph, generate_poisson_matrix
 
 N_SIDE = 20
 NSD = 4
-DB_PATH = "/tmp/fly_e2e_ras_graph_db"
-MATRIX_PATH = "/tmp/fly_e2e_ras_graph_matrix.npz"
+DB_PATH = f"/tmp/fly_e2e_ras_graph_db_{os.getpid()}"
+MATRIX_PATH = f"/tmp/fly_e2e_ras_graph_matrix_{os.getpid()}.npz"
 
 # ── cleanup ──
 if os.path.isdir(DB_PATH):

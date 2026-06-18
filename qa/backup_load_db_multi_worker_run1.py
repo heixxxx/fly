@@ -56,7 +56,8 @@ completed = master.wait_for_all_tasks(expected=6, timeout=30)
 assert len(completed) >= 6, f"Expected 6 completed tasks, got {len(completed)}"
 
 # Wait for backup tasks to complete (internal __backup_object tasks)
-time.sleep(3.0)
+# Use wait_for_all_tasks with expected=None to wait for ALL tasks including backups
+master.wait_for_all_tasks(expected=None, timeout=10)
 
 # Save db_id for Run 2
 with open(os.path.join(DB_PATH, "_test_db_id"), "w") as f:

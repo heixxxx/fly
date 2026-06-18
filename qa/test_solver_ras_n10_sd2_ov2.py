@@ -16,7 +16,7 @@ from solver import solve_ras
 N = 10
 NSD = 2
 OVERLAP = 2
-DB_PATH = "/tmp/fly_e2e_solver_ras_n10_sd2_ov2_db"
+DB_PATH = f"/tmp/fly_e2e_solver_ras_n10_sd2_ov2_db_{os.getpid()}"
 
 
 def scipy_reference(n):

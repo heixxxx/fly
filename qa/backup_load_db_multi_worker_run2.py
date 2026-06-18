@@ -39,8 +39,8 @@ db = load_db(DB_PATH)
 assert db.get_db_id() == original_db_id, \
     f"db_id mismatch: {db.get_db_id()} != {original_db_id}"
 
-# Wait for idx loading to complete (workers process IdxLoadCommand + ack)
-time.sleep(3.0)
+# idx loading is synchronous (IdxLoadCommand -> IdxLoadAck is fast)
+# No need to wait
 
 # ── Verify BACKUP data is readable via host-beta's backup copy ──
 # These were written with write_data_backup, so copies exist on host-beta's idx.
@@ -74,7 +74,8 @@ write_data(db, "result/new_output", "from_run2")
 completed = master.wait_for_all_tasks(expected=2, timeout=30)
 assert len(completed) >= 2, f"Expected 2 tasks, got {len(completed)}"
 
-time.sleep(0.5)
+# Wait for any pending writes to complete
+master.wait_for_all_tasks(expected=None, timeout=5)
 
 # Verify computed results
 result_sum = db.read_object("result/sum")

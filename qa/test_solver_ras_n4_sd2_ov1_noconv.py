@@ -17,7 +17,7 @@ from fly.runtime import get_agent
 N = 4
 NSD = 2
 OVERLAP = 1
-DB_PATH = "/tmp/fly_e2e_solver_ras_n4_sd2_ov1_noconv_db"
+DB_PATH = f"/tmp/fly_e2e_solver_ras_n4_sd2_ov1_noconv_db_{os.getpid()}"
 
 if os.path.isdir(DB_PATH):
     shutil.rmtree(DB_PATH, ignore_errors=True)

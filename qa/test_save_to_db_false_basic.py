@@ -4,7 +4,7 @@ import sys
 import os
 import shutil
 
-DB_PATH = "/tmp/fly_e2e_save_to_db_false_basic_db"
+DB_PATH = f"/tmp/fly_e2e_save_to_db_false_basic_db_{os.getpid()}"
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', 'src'))

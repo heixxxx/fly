@@ -19,8 +19,8 @@ import time
 import shutil
 import subprocess
 
-DB_PATH = "/tmp/fly_profile_db"
-PERF_DIR = "/tmp/fly_profile_perf"
+DB_PATH = f"/tmp/fly_profile_db_{os.getpid()}"
+PERF_DIR = f"/tmp/fly_profile_perf_{os.getpid()}"
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', 'src'))
