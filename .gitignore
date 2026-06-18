@@ -49,3 +49,7 @@ MODULE.bazel.lock
 # open-mem: Auto-generated folder context files.
 # Uncomment to exclude from version control (recommended for large projects):
 # **/AGENTS.md
+-e 
+# QA test logs
+qa/*/test_*.*
+qa/logs/
