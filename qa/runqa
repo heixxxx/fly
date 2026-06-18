@@ -2,8 +2,10 @@
 """Fly QA Test Runner.
 
 Runs each test_*.py as a fly subprocess.
-  - Fly's output (C++ Logger + Python INFO/WARN/ERR) → {test_name}.log
-  - Runner's own output → terminal + qa.log (real-time, per-case)
+  - cd to test script directory before running
+  - log directory: {test_dir}/{test_name}/ (cleaned before each run)
+  - Fly's output → {test_dir}/{test_name}/fly.log
+  - Runner's output → terminal + qa.log
 """
 import subprocess
 import sys
@@ -12,6 +14,7 @@ import time
 import argparse
 import glob
 import signal
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -32,52 +35,64 @@ def log(msg=""):
 
 
 def find_tests():
-    return sorted(glob.glob(os.path.join(SCRIPT_DIR, "test_*.py")))
+    return sorted(glob.glob(os.path.join(SCRIPT_DIR, "**", "test_*.py"), recursive=True))
 
 
-def run_one(test_path, log_base, timeout=20):
+def run_one(test_path, timeout=20):
+    abs_test_path = os.path.abspath(test_path)
+    test_dir = os.path.dirname(abs_test_path)
     name = os.path.basename(test_path)
     stem = os.path.splitext(name)[0]
-    log_dir = os.path.join(log_base, stem)
-    out_log = os.path.join(log_base, f"{stem}.log")
-    abs_test_path = os.path.abspath(test_path)
+
+    # Log directory: {test_dir}/{test_name}/
+    log_dir = os.path.join(test_dir, stem)
+
+    # Clean previous log
+    if os.path.isdir(log_dir):
+        shutil.rmtree(log_dir)
+    os.makedirs(log_dir, exist_ok=True)
 
     t0 = time.monotonic()
 
-    out_fd = open(out_log, "w")
+    # Set up environment based on FLY_BIN location
+    env = os.environ.copy()
+    # FLY_BIN is /root/fly/build/bin/fly, so build_dir is /root/fly/build
+    build_dir = os.path.dirname(os.path.dirname(FLY_BIN))
+    lib_dir = os.path.join(build_dir, "lib")
+    python_dir = os.path.join(build_dir, "python")
+    env["LD_LIBRARY_PATH"] = lib_dir + ":" + env.get("LD_LIBRARY_PATH", "")
+    env["PYTHONPATH"] = lib_dir + ":" + python_dir + ":" + env.get("PYTHONPATH", "")
+    env["FLY_BUILD"] = build_dir
+
+    # Run test with cwd = test_dir
     proc = subprocess.Popen(
         [FLY_BIN, "--log-dir", log_dir, abs_test_path],
-        stdout=out_fd,
+        stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        cwd=PROJECT_ROOT,
+        cwd=test_dir,
+        env=env,
         preexec_fn=os.setsid,
     )
 
-    try:
-        proc.wait(timeout=timeout)
-        elapsed_ms = int((time.monotonic() - t0) * 1000)
-        ok = proc.returncode == 0
-        status = "PASSED" if ok else "FAILED"
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except Exception:
-            pass
-        proc.wait()
-        elapsed_ms = timeout * 1000
-        ok = False
-        status = "TIMEOUT"
-    finally:
-        out_fd.close()
+    # Capture output
+    stdout, _ = proc.communicate(timeout=timeout)
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    ok = proc.returncode == 0
+    status = "PASSED" if ok else "FAILED"
+
+    # Write output to log file
+    out_log = os.path.join(log_dir, "fly.log")
+    with open(out_log, "wb") as f:
+        f.write(stdout)
 
     log(f"  {'✓ PASSED' if ok else '✗ ' + status}  {elapsed_ms:>6}ms  {name}")
 
-    if not ok and status != "TIMEOUT":
+    if not ok:
         try:
-            with open(out_log) as f:
-                lines = f.readlines()
+            lines = stdout.decode("utf-8", errors="replace").split("\n")
             for line in lines[-10:]:
-                log(f"    {line.rstrip()}")
+                if line.strip():
+                    log(f"    {line.rstrip()}")
         except Exception:
             pass
 
@@ -117,13 +132,13 @@ def main():
     else:
         tests = find_tests()
 
-    log_base = os.path.join(SCRIPT_DIR, "logs")
-    import shutil
-    if os.path.isdir(log_base):
-        shutil.rmtree(log_base)
-    os.makedirs(log_base)
+    # Clean and create qa log directory
+    qa_log_dir = os.path.join(SCRIPT_DIR, "logs")
+    if os.path.isdir(qa_log_dir):
+        shutil.rmtree(qa_log_dir)
+    os.makedirs(qa_log_dir)
 
-    _log_file = open(os.path.join(log_base, "qa.log"), "w")
+    _log_file = open(os.path.join(qa_log_dir, "qa.log"), "w")
 
     log("=" * 50)
     log("Fly QA Test Suite")
@@ -140,7 +155,7 @@ def main():
     t_total_start = time.monotonic()
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(run_one, t, log_base, args.timeout): t for t in tests}
+        futures = {pool.submit(run_one, t, args.timeout): t for t in tests}
         for fut in as_completed(futures):
             results.append(fut.result())
 

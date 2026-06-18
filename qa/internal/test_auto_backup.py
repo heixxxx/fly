@@ -12,7 +12,7 @@ import shutil
 
 DB_PATH = "/tmp/fly_e2e_auto_backup_db"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
                                 '..', 'src'))
 
 from e2e_tasks import write_data, read_data

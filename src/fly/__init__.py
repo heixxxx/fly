@@ -190,3 +190,30 @@ __all__ = [
     'get_agent', 'MapReduceJob',
     'put_cache', 'get_cache', 'has_cache', 'remove_cache', 'clear_cache',
 ]
+
+
+def get_fly_binary() -> str:
+    """Get the path to the fly binary.
+
+    Returns:
+        Path to the fly binary executable.
+
+    Example:
+        >>> from fly import get_fly_binary
+        >>> print(get_fly_binary())
+        /path/to/build/bin/fly
+    """
+    import os
+    # Try to find fly binary relative to this file
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    # Check build/bin/fly relative to project root
+    project_root = os.path.dirname(os.path.dirname(this_dir))
+    fly_bin = os.path.join(project_root, "build", "bin", "fly")
+    if os.path.isfile(fly_bin) and os.access(fly_bin, os.X_OK):
+        return fly_bin
+    # Fallback: check if fly is on PATH
+    import shutil
+    fly_on_path = shutil.which("fly")
+    if fly_on_path:
+        return fly_on_path
+    raise RuntimeError("Cannot find fly binary")
