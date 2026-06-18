@@ -128,6 +128,7 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 | `data_reader.h/cpp` | 数据读取，按 writer_id 索引 |
 | `fly_buffer_stream.h` | FlyBufferStreamBuf（streambuf→FlyBuffer）+ CountingStreamBuf |
 | `data_service.h/cpp` | 统一内存索引：local_idx + remote_idx + db_paths_ + worker_registry |
+| `data_server.h/cpp` | epoll + send_thread_pool 数据服务（响应远程 Worker 数据请求） |
 | `object_cache.h` | 两层 LRU 读缓存：low=压缩字节(FlyBufferPtr shared_ptr，零拷贝共享)，high=反序列化对象(std::any 持 CMSharedPtr<T>)。write_object complete_ 填 low，read_object_compressed 查/填 low，read_object<T> 查/填 high；LFU 淘汰 + 30s 保护期 + 1.5× 硬限制 |
 | `local_index.h/cpp` | 增量持久化索引，IdxOpType(ADD/REMOVE) 追加写入 |
 | `storage_manager.h/cpp` | Database 生命周期管理，单例 |
@@ -144,8 +145,9 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 | `connection_manager.h` | ConnectionManager 抽象接口（conn_id 管理 + 事件分发）；`connect()` 失败返回 0 不抛（0=失败 sentinel，conn_id 从 1 起） |
 | `tcp_connection_manager.h/cpp` | TcpConnectionManager — 基于 Transport+EpollMultiplexer |
 | `reactor.h/cpp` | 单线程事件循环（持有 ConnectionManager） |
-| `message_protocol.h/cpp` | 二进制帧协议 |
-| `message_types.h` | 33 种消息枚举 / 29 种消息结构定义（含 MessageHeader，含 IdxLoadCommand/Ack）
+| `message_protocol.h/cpp` | MessageProtocol（通用帧协议）+ DataResponseProtocol（两段式，避免大 payload 用户态拷贝） |
+| `message_types.h` | 33 种消息枚举 / 29 种消息结构定义（含 MessageHeader，含 IdxLoadCommand/Ack） |
+| `data_client_pool.h/cpp` | 并发限制的数据请求池（pool_size 限制 in-flight 请求数） |
 
 ### 任务系统层 (src/task/)
 

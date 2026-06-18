@@ -40,6 +40,145 @@ def open_db(path: str, data_path: str = "") -> _Database:
 
 唯一公开的 Database 创建接口。
 
+### launch_workers(configs) — 启动 Worker
+
+```python
+def launch_workers(configs: list[dict]) -> None:
+    """
+    启动本地 Worker 进程（非阻塞，立即返回）。
+
+    Args:
+        configs: Worker 配置列表，每个配置是 dict，至少包含 'role' 键。
+                 可选键: 'role' (hybrid/storage_only), 'host' (覆盖 hostname)
+
+    Example:
+        launch_workers([
+            {"role": "hybrid"},
+            {"role": "storage_only"},
+        ])
+    """
+    get_agent().launch_local_workers(configs)
+```
+
+**实现细节**:
+- 始终使用 **process 模式**（子进程 Worker，独立 DataService 单例）
+- thread 模式已移除
+- Worker 进程通过 TCP 连接 Master，实现真正的进程隔离
+- 内部调用 `_spawn_process_worker()` 启动子进程
+
+### wait_tasks(timeout) — 等待任务完成
+
+```python
+def wait_tasks(timeout: float = 30.0) -> bool:
+    """
+    阻塞等待所有任务完成或超时。
+
+    Args:
+        timeout: 超时时间（秒），默认 30 秒
+
+    Returns:
+        True: 所有任务已完成
+        False: 超时，仍有任务未完成
+
+    Example:
+        if wait_tasks(timeout=60.0):
+            print("All tasks completed!")
+        else:
+            print("Timeout, some tasks still pending")
+    """
+    return get_agent().wait_for_all_tasks(timeout)
+```
+
+**实现细节**:
+- 内部轮询 `agent.get_pending_tasks()` 和 `agent.get_running_tasks()`
+- 每 100ms 检查一次
+- 超时后返回 False，不抛异常
+
+### load_db(path) — 恢复数据库
+
+```python
+def load_db(path: str) -> _Database:
+    """
+    恢复已有数据库（Master 节点专用）。
+
+    Args:
+        path: 数据库路径（包含 _DB_META 文件）
+
+    Returns:
+        恢复的 _Database 实例
+
+    Example:
+        db = load_db("/data/project")  # 恢复 DB，自动加载索引
+    """
+    return get_agent().load_db(path)
+```
+
+### restart_failed_tasks(path) — 重启失败任务
+
+```python
+def restart_failed_tasks(path: str) -> None:
+    """
+    重新提交之前失败的任务。
+
+    Args:
+        path: 失败任务记录文件路径（log_dir/failed_tasks.bin）
+
+    Example:
+        # 用户修复问题后（写入缺失数据、启动新 Worker）
+        restart_failed_tasks("/path/to/failed_tasks.bin")
+    """
+    get_agent().restart_failed_tasks(path)
+```
+
+### 进程级跨 Task 缓存
+
+Fly 提供进程级的通用缓存系统，用于在同一进程的不同 task 之间传递数据，无需网络/磁盘 I/O。
+
+```python
+# 存储缓存
+put_cache(key: str, value: Any) -> None
+
+# 读取缓存
+get_cache(key: str, default=None) -> Any
+
+# 检查缓存是否存在
+has_cache(key: str) -> bool
+
+# 删除单个缓存条目
+remove_cache(key: str) -> None
+# Raises: KeyError if key not found
+
+# 清空所有缓存
+clear_cache() -> None
+```
+
+**特性**:
+- **进程级生命周期**: 缓存在 Agent 进程（Master 或 Worker）的整个生命周期内有效
+- **本地隔离**: 严格本地存储，不跨 Worker 共享
+- **跨 Task 共享**: 同一 Worker 上的不同 task 可以通过缓存共享数据
+- **任意 Python 对象**: 值可以是任意 Python 对象
+
+**使用场景**:
+```python
+@as_task(inputs=lambda db, name: [f"input/{name}"])
+def task_a(db, name):
+    result = expensive_computation(name)
+    put_cache(f"result_{name}", result)  # 缓存中间结果
+
+@as_task(inputs=lambda db, name: [f"output/{name}"])
+def task_b(db, name):
+    cached = get_cache(f"result_{name}")  # 读取缓存，避免重复计算
+    if cached is None:
+        cached = expensive_computation(name)
+    db.write_object(f"output/{name}", cached)
+```
+
+**注意**: 此缓存与 C++ ObjectCache（read_object 的两层 LRU 缓存）是独立的系统：
+- **Agent Cache** (`put_cache/get_cache`): 通用 Python 对象缓存，用于 task 间数据传递
+- **ObjectCache** (`read_object` 的 `cache` 参数): 专门用于加速数据读取的两层 LRU 缓存
+
+---
+
 ### _Database — Database 内部类
 
 ```python

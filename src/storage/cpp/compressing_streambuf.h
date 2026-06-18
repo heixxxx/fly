@@ -20,6 +20,7 @@ public:
 
 protected:
     int_type overflow(int_type ch) override;
+    std::streamsize xsputn(const char* s, std::streamsize n) override;
     int sync() override;
 
 private:

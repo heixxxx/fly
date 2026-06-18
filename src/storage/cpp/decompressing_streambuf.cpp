@@ -1,6 +1,7 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <serialization/cpp/object_header.h>
 #include <cstring>
+#include <string_view>
 
 DecompressingStreamBuf::DecompressingStreamBuf(const char* data, size_t size)
     : chunk_data_(nullptr), chunk_data_size_(0) {
@@ -73,16 +74,22 @@ bool DecompressingStreamBuf::refill() {
 
     if (chunk_data_pos_ + static_cast<size_t>(comp_size) > chunk_data_size_) return false;
 
+    std::string_view comp_view(chunk_data_ + chunk_data_pos_, static_cast<size_t>(comp_size));
+    chunk_data_pos_ += static_cast<size_t>(comp_size);
+
     if (compressor_) {
-        CMString comp_data(chunk_data_ + chunk_data_pos_, static_cast<size_t>(comp_size));
-        chunk_data_pos_ += static_cast<size_t>(comp_size);
-        CMString decompressed = compressor_->decompress(uncomp_size, comp_data);
-        buffer_.assign(decompressed.begin(), decompressed.end());
+        // Zero-copy: decompress directly into buffer_
+        buffer_.resize(static_cast<size_t>(uncomp_size));
+        int32_t written = compressor_->decompress_to(comp_view, buffer_.data(), buffer_.size());
+        if (written < 0) {
+            buffer_.clear();
+            return false;
+        }
+        buffer_.resize(static_cast<size_t>(written));
     } else {
-        buffer_.assign(
-            chunk_data_ + chunk_data_pos_,
-            chunk_data_ + chunk_data_pos_ + static_cast<size_t>(comp_size));
-        chunk_data_pos_ += static_cast<size_t>(comp_size);
+        // No compression: direct copy
+        buffer_.resize(comp_view.size());
+        std::memcpy(buffer_.data(), comp_view.data(), comp_view.size());
     }
 
     buffer_pos_ = 0;

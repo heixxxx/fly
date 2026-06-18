@@ -119,14 +119,14 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 ## Module Map
 
 ```
-src/storage/    → Layer 1: Database, DataService, DataWriter, DataReader, CompressingStreamBuf
-src/network/    → Layer 2: Transport 抽象 + EpollMultiplexer + ConnectionManager + Reactor + message protocol (33 msg types, 含 IdxLoadCommand/Ack)
+src/storage/    → Layer 1: Database, DataService, DataWriter, DataReader, CompressingStreamBuf, ObjectCache (两层 LRU), DataServer (epoll+线程池)
+src/network/    → Layer 2: Transport + EpollMultiplexer + ConnectionManager 抽象, Reactor, MessageProtocol + DataResponseProtocol (两段式), DataClientPool, 33 msg types
 src/task/       → Layer 3: DependencyGraph, TaskScheduler, WorkerManager
 src/agent/      → Layer 4: MasterAgent, WorkerAgent, TaskExecutor
 src/core/       → Config (shared), ProcessInfo (per-process)
 src/fly/        → Layer 5: Python public API (__init__.py, runtime.py, mapreduce.py)
 src/solver/     → Layer 6: Distributed RAS solver (C++ core + Python orchestration)
-src/common/     → CM* type aliases (CMString, CMVector…)
+src/common/     → CM* type aliases (CMSharedPtr, CMString, CMVector…), FlyBuffer, FlyBufferPtr, WriterID, ErrorTypes
 src/log/        → DBG/INFO/WARN/ERR macros, CM_FORMAT_CLASS/ENUM
 src/test/       → TestObject, e2e_tasks.py, test_tasks.py (not public API)
 ```

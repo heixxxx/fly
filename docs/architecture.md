@@ -9,7 +9,7 @@
 - Worker节点负责具体任务执行和数据存储
 - 任务可在任意节点提交，支持递归任务提交
 - 任务调度需满足数据依赖准备完毕
-- 数据传递依靠分布式文件存储系统
+- 数据传递依靠分布式文件存储系统 + Worker 间直连传输
 
 ### 技术栈
 
@@ -22,6 +22,7 @@
 | 构建系统 | Bazel + fly.sh |
 | 测试框架 | gtest + pytest |
 | 压缩库 | LZ4 / ZLIB / ZSTD |
+| 格式化库 | fmt (header-only) |
 
 ### 架构分层
 
@@ -51,6 +52,10 @@
 │ ┌─────────────┐ │  │ ┌─────────────┐ │  │ └─────────────┘ │
 │ │Data Storage │ │  │ │Data Storage │ │  │ ┌─────────────┐ │
 │ │(Aggregator) │ │  │ │(Aggregator) │ │  │ │Data Storage │ │
+│ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘ │
+│ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐ │
+│ │Data Server  │ │  │ │Data Server  │ │  │ │Data Server  │ │
+│ │(epoll+pool) │ │  │ │(epoll+pool) │ │  │ │(epoll+pool) │ │
 │ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘ │
 └─────────────────┘  └─────────────────┘  └─────────────────┘
 ```
@@ -84,6 +89,7 @@ fly -i user_tasks.py
 | `--master` | 不设置（自己就是Master） | Master地址 |
 | `--role` | 不适用 | hybrid / storage_only |
 | `-i` | 交互模式，执行后进入Python REPL | 不适用 |
+| `--host` | 不适用 | 覆盖 hostname（用于多 host 测试） |
 
 ### Master启动流程
 
@@ -98,6 +104,10 @@ fly -i user_tasks.py
 2. 导出Python接口
 3. 连接Master，注册
 4. 进入等待任务循环
+
+### 进程模式
+
+`launch_workers()` 始终使用 **process 模式**（子进程 Worker，独立 DataService 单例）。thread 模式已移除。
 
 ---
 
@@ -120,27 +130,23 @@ config.set(
     heartbeat_interval=5,
     backup_threshold=100,
     aggregation_threshold=1048576,      # 1MB
-    large_file_threshold=67108864,      # 64MB（更新）
+    large_file_threshold=67108864,      # 64MB
     block_size=134217728,               # 128MB
-    track_writes=1,                     # 启用写入跟踪，记录每个任务写入的对象列表
-    data_server_threads=2,              # Data Server线程池大小，默认1
+    track_writes=1,                     # 启用写入跟踪
+    data_server_threads=2,              # Data Server线程池大小
     log_dir="/path/to/logs",            # 所有进程共享的日志目录
 )
 
 # 再次调用get_config()返回同一个实例
 config2 = get_config()  # config2 == config
-config2 = get_config()  # config2 == config
 ```
 
-**注意**：启动worker后再调用 `config.set()` 会抛出异常：
-```python
-config.set(heartbeat_timeout=60)  # RuntimeError: Config must be set before workers are launched
-```
+**注意**：启动worker后再调用 `config.set()` 会抛出异常。
 
 **Config vs ProcessInfo**：
 - `Config`：所有进程共享的数据（heartbeat_timeout, backup_threshold, log_dir 等），master 在启动 worker 前通过 config 文件同步
 - `ProcessInfo`：进程私有数据（worker_mode, worker_id, master_host/port, hostname 等），不同步
-- `--host` CLI 参数通过 `ProcessInfo::set_hostname()` 覆盖自动检测的 hostname，用于多 host 测试
+- `--host` CLI 参数通过 `ProcessInfo::set_hostname()` 覆盖自动检测的 hostname
 
 ### 3.2 任务定义与提交
 
@@ -173,7 +179,7 @@ def custom_process(db, name):
 def parent_task(db, name):
     child_task(db, name)  # 异步调用，无返回值
 
-@as_task(inputs=lambda db, name: [f"output/{name}.result"])  # 依赖子任务输出
+@as_task(inputs=lambda db, name: [f"output/{name}.result"])
 def next_task(db, name):
     result = db.read_object(f"output/{name}.result")
     ...
@@ -182,26 +188,26 @@ def next_task(db, name):
 **任务调度策略**：
 - 默认策略：FIFO
 - Worker选择：数据locality优先，尽量调度到数据所在的Worker
-- 核心约束：Worker同一时刻最多执行一个任务。Master仅向 `is_busy=false` 的Worker派发任务
+- 核心约束：Worker同一时刻最多执行一个任务
 
 ### 3.3 数据存储
 
 **Database创建**：支持共享路径和本地路径双路径设计：
 
 ```python
-from fly import Database
+from fly import open_db
 
 # 仅共享路径
-db_a = Database("/data/project_a")
+db_a = open_db("/data/project_a")
 
 # 共享路径 + 本地路径（高性能写入）
-db_b = Database("/data/project_b", data_path="/ssd/local_b")
+db_b = open_db("/data/project_b", data_path="/ssd/local_b")
 ```
 
 | 路径 | 说明 | 必填 |
 |------|------|------|
-| `base_path` | 共享存储路径，所有Master/Worker可访问。freeze后聚合idx写入此路径 | 是 |
-| `data_path` | 本地磁盘路径，可选。启用时write_object写入此路径，read_object优先查找此路径 | 否 |
+| `base_path` | 共享存储路径，所有Master/Worker可访问 | 是 |
+| `data_path` | 本地磁盘路径，写入走此路径 | 否 |
 
 **对象删除**：
 
@@ -211,12 +217,6 @@ db.remove_object("object_name")
 # Master 端需额外广播通知所有 Worker
 master.broadcast_object_removed(db.get_db_id(), "object_name")
 ```
-
-**删除流程**：
-- `db.remove_object()` 删除本地索引条目
-- Worker 端通过 `WorkerAgentContext` 自动发送 `ObjectRemovedMessage` 到 Master
-- Master 收到后通过 `DataService.remove_remote_index()` 清理，并广播给其他 Worker
-- `freeze()` 时从磁盘聚合文件中删除对象（占位符实现）
 
 **写入与读取**：
 
@@ -233,89 +233,55 @@ db.freeze()
 
 **读缓存分层**（`src/storage/cpp/object_cache.h`）：
 
-read_object 经两层 LRU 缓存加速，进程级单例（master/worker 各自一份）：
+read_object 经两层 LRU 缓存加速，进程级单例：
 
-| 层 | 存储内容 | 命中收益 | 服务对象 |
-|----|---------|---------|---------|
-| **low** | 压缩字节 (FlyBufferPtr shared_ptr，零拷贝共享) | 省磁盘/远程 IO | 本地读（read_object_compressed）+ 远程服务（DataServer 的 try_read_local_raw short-circuit）；write_object/write_pickle_bytes 落盘后 write-through 填入 |
-| **high (C++)** | 反序列化对象 (std::any 持 CMSharedPtr<T>) | 省反序列化 | C++ read_object<T> + nanobind 类（经 _read_from_db）|
-| **high (Python)** | 反序列化 Python 对象 | 省反序列化 | pickle 对象（read_object(cache="high")）|
+| 层 | 存储内容 | 命中收益 |
+|----|---------|---------|
+| **low** | 压缩字节 (`FlyBufferPtr` shared_ptr，零拷贝共享) | 省磁盘/远程 IO |
+| **high** | 反序列化对象 (`std::any` 持 `CMSharedPtr<T>`) | 省反序列化 |
 
-- 淘汰：LFU score = read_count/age，30s 保护期，1.5× 硬限制（对齐 Python ReadCache）
-- 失效：remove_object/remove_index_entry/remove_local_index/remove_remote_index 触发 cache.remove（双层清理，覆盖本地+远程 remove 广播）
-- 类型分流：nanobind 类（FLY_EXPORT_SERIALIZE）走 _read_from_db（C++ high）；pickle 对象走 Python ReadCache
-- 命中统计：ObjectCache 维护 per-tier hits/misses/puts/evictions 计数（ex_stg_cache_stats Python 绑定）
+- 淘汰：LFU score = read_count/age，30s 保护期，1.5× 硬限制
+- 失效：remove_object 触发 cache.remove（双层清理）
+- 命中统计：`ObjectCache::Stats` 提供 per-tier hits/misses/puts/evictions 计数
 
-# 多Database支持（轻量级）
-db_a = Database("/data/project_a")
-db_b = Database("/data/project_b", data_path="/ssd/local_b")
-```
-
-**Database Freeze**：
-- `db.freeze()` 后，所有 `write_object()` 调用抛出异常
-- `db.read_object()` 正常工作
-- 冻结时在 `base_path` 创建标识文件 `_FROZEN`
-- 已通过 `db.remove_object()` 删除的对象会在 freeze 时从磁盘文件中移除（占位符实现）
-- **注意**：后处理（idx合并、_META生成）尚未实现
-
-**写注册协议**：
-- 任务调用 `write_object` 时记录写入的对象名
-- 任务完成后，通过 `TaskCompleteMessage` 携带写入对象列表发送到Master
-- Master 更新DataService索引
+**写入流程**：
+1. 调用线程序列化 + 压缩（`compress_to_buffer` 流式管线）
+2. WBQ 后台线程仅执行 `write_record` 磁盘写入
+3. `write_object` 开始时即触发依赖满足（无需等异步落盘完成）
 
 ### 3.4 Worker管理
 
 **本地Worker启动**：
 
 ```python
-from fly import master
+from fly import launch_workers
 
 # 启动本地Workers（非阻塞，立即返回）
-master.launch_local_workers(
-    workers=[
-        {"role": "hybrid"},
-        {"role": "storage_only"},
-    ],
-)
+launch_workers([
+    {"role": "hybrid"},
+    {"role": "storage_only"},
+])
 ```
 
-**SSH Worker启动**（尚未实现）：
+**等待任务完成**：
 
 ```python
-# SSH方式启动（设计完成，尚未实现）
-master.launch_ssh_workers(
-    workers=[
-        {"host": "192.168.1.10", "role": "hybrid"},
-        {"host": "192.168.1.11", "role": "hybrid"},
-    ],
-    ssh_user="root",
-    ssh_key="/path/to/key",
-)
-```
+from fly import wait_tasks
 
-**自定义Worker启动**（尚未实现）：
-
-```python
-# 自定义方式启动（设计完成，尚未实现）
-master.launch_custom_workers(
-    workers=[
-        {"role": "hybrid"},
-    ],
-    submit_command="bsub -q normal -P my_project",
-)
+# 等待所有任务完成
+wait_tasks(timeout=30.0)  # 返回 True/False
 ```
 
 **Worker能力说明**：
-- `role` 字段：设计完成，但尚未在调度逻辑中使用
-- `RegisterMessage.role` 已存在，但WorkerInfo中不存储此字段
-- **动态能力**: Worker 可在运行时通过 `WorkerPropertyUpdateMessage` 动态设置/移除能力（GPU/CPU等），调度器实时匹配任务所需能力
-- **持久化失败任务**: 不可调度任务会持久化到 `log_dir/failed_tasks.bin`，用户可调用 `restart_failed_tasks()` 修复问题后重新提交
+- `role` 字段：hybrid（任务执行+数据存储）/ storage_only（仅数据存储）
+- **动态能力**: Worker 可在运行时动态设置/移除能力（GPU/CPU等），调度器实时匹配
+- **持久化失败任务**: 不可调度任务会持久化到 `log_dir/failed_tasks.bin`
 
 ---
 
 ## 四、架构分层
 
-### 4.1 五层架构
+### 4.1 六层架构
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -327,6 +293,7 @@ master.launch_custom_workers(
 │  Layer 4: Agent 层 (Master/Worker)                              │
 │  - MasterAgent: 任务调度、元数据管理                             │
 │  - WorkerAgent: 任务执行、数据存储                               │
+│  - TaskExecutor: 任务执行器                                      │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 3: 任务系统层                                             │
 │  - DependencyGraph: 任务依赖管理                                 │
@@ -335,21 +302,23 @@ master.launch_custom_workers(
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 2: 网络层                                                 │
 │  - Reactor: 单线程事件循环                                       │
-│  - TransportLayer: TCP/UDP/RDMA 抽象                             │
-│  - MessageProtocol: 二进制帧协议                                 │
+│  - Transport + EpollMultiplexer + ConnectionManager              │
+│  - MessageProtocol + DataResponseProtocol (两段式)               │
+│  - DataClientPool: 并发限制的数据请求池                          │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 1: 存储层                                                 │
 │  - Database: 统一存储接口                                        │
-│  - DataWriter: 单线程写入聚合器                                  │
-│  - DataReader: 数据读取器（实例方法）                            │
-│  - DataService: 统一内存索引（local_idx + remote_idx）          │
+│  - DataWriter: 流式管线 (compress_to_buffer + write_record)     │
+│  - DataReader: 数据读取器                                        │
+│  - DataService: 统一内存索引 + DataServer (epoll+线程池)        │
+│  - ObjectCache: 两层 LRU 读缓存 (low=压缩字节, high=反序列化)  │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 0: 基础设施层                                             │
-│  - Config: 全局共享配置管理（master 启动 worker 前通过文件同步）  │
-│  - ProcessInfo: 进程私有数据（hostname, worker_mode 等）          │
-│  - Serializer: bitsery 序列化（FLY_SERIALIZE_* 宏封装）          │
-│  - Export: nanobind 绑定（FLY_EXPORT_* 宏封装）                  │
-│  - Common: CMString, CMVector 等类型别名                         │
+│  - Config: 全局共享配置管理                                      │
+│  - ProcessInfo: 进程私有数据                                     │
+│  - Serializer: bitsery 序列化 (FLY_SERIALIZE_* 宏封装)          │
+│  - Export: nanobind 绑定 (FLY_EXPORT_* 宏封装)                  │
+│  - Common: CM* 类型别名 (CMSharedPtr, CMString, CMVector...)    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -359,69 +328,70 @@ master.launch_custom_workers(
 
 | 线程 | 职责 |
 |------|------|
-| Main Thread (C++) | Reactor 事件循环，处理所有Worker消息 |
+| Main Thread (Python) | 用户脚本执行、任务提交 |
+| Reactor Thread | epoll 事件循环，处理所有Worker消息 |
 | Heartbeat Thread | 心跳检测，超时Worker标记 |
-| Scheduler Thread | 定期备份检查、任务调度 |
 
 **Worker节点**：
 
 | 线程 | 职责 |
 |------|------|
-| Main Thread (C++) | Reactor 事件循环，处理Master消息 |
+| Main Thread (Python) | poll_task() 循环，执行任务 |
+| Reactor Thread | epoll 事件循环 (Master conn + Data Server) |
+| Data Server epoll | 接收数据请求 |
+| Data Server send threads | 发送数据响应（线程池，可配置） |
 | Heartbeat Thread | 心跳发送 |
-| Data Server IOThreadPool | 响应其他Worker的数据请求（默认1线程，可配置） |
-| Task Execution Thread (Python) | 唯一涉及GIL的线程，执行用户任务 |
 
 **关键设计**：
-- Master 不需要消息处理线程池（所有操作为快速C++操作）
-- Worker Data Server采用线程池模式，支持高并发读请求
-- Task Execution Thread 使用 `task_slot_`（而非队列）传递任务（Master保证仅向空闲Worker派发）
+- 单线程 Reactor + I/O 线程池，避免锁竞争
+- DataClient 使用独立 TCP socket（独立于主 Reactor）
+- DataServer 采用 epoll + send_thread_pool 模式
 
 ### 4.3 核心设计决策
 
-1. **Python主进程**：用户脚本执行、任务定义、装饰器
-2. **C++20底层实现**：存储、通信、消息处理、调度
-3. **Reactor模式**：Main Thread事件循环 + 后台线程（心跳/调度/数据服务）
-4. **唯一GIL线程**：Worker的Python任务执行线程
-5. **任务单slot传递**：Master不向忙碌Worker派发任务，task_slot_而非task_queue_
-6. **动态创建**：Database轻量级，StorageManager按需创建writer
-7. **Database Freeze**：db.freeze()触发只读冻结，Master后台合并idx，Worker数据不搬迁
-8. **双路径存储**：base_path共享路径+data_path本地路径，写入走本地、读取优先本地
-9. **宏封装**：
-   - FLY_SERIALIZE_* 宏封装bitsery序列化（支持未来替换）
-   - FLY_EXPORT_* 宏封装nanobind绑定（支持未来替换）
-10. **传输层抽象**：TransportLayer接口支持未来替换TCP为UDP/RDMA
-11. **Data Server线程池**：Worker数据服务采用线程池，默认单线程，可配置
-12. **DataService统一索引**：local_idx（本地写入）、remote_idx（远程缓存）、worker_registry（Worker注册信息）
+| 决策 | 原因 |
+|------|------|
+| nanobind 而非 pybind11 | 更小、更快、C++20 兼容 |
+| bitsery 而非 protobuf | header-only、版本化支持、无代码生成 |
+| CM 前缀容器别名 | 便于替换底层实现（如 absl） |
+| 单线程 Reactor + IOThreadPool | 事件驱动 + I/O 异步，避免锁竞争 |
+| DataClient 独立连接 | 每次读创建独立 socket，不走主 Reactor，多线程安全 |
+| DataService 进程级单例 | Master 和 Worker 共享，仅更新触发源不同 |
+| 三层降级读取 | 本地 → 缓存 → 远程，最大限度减少 Master 查询 |
+| 两段式 wire 协议 | DataResponseProtocol 避免大 payload 的用户态拷贝 |
+| ObjectCache 两层缓存 | low=压缩字节省 IO，high=反序列化对象省 CPU |
+| FlyBufferPtr 共享所有权 | 零拷贝共享压缩字节，避免不必要的内存拷贝 |
+| 进程模式 Worker | 独立 DataService 单例，避免线程模式的复杂性 |
 
 ---
 
 ## 五、数据流
 
-### 5.1 读取流程（三层降级）
+### 5.1 读取流程（三层降级 + 缓存）
 
 ```
 Worker A 读取 object_name:
 
-1. 优先查询本地索引（DataService.local_idx）
+1. 查询 ObjectCache.high (反序列化对象)
+   └─ 命中 → 直接返回，省反序列化
+
+2. 查询 ObjectCache.low (压缩字节)
+   └─ 命中 → 解压 + 反序列化 → 返回
+
+3. 查询本地索引（DataService.local_idx）
    └─ 找到 → DataReader.read_from_entries() → 返回数据
 
-2. 本地未找到，查询远程索引缓存（DataService.remote_idx）
-   └─ 找到缓存 → DataClient.request_data() 直连目标 Worker B
+4. 查询远程索引缓存（DataService.remote_idx）
+   └─ 找到 → DataClientPool.request() 直连目标 Worker B
        └─ Worker B 响应 → 返回数据
 
-3. 缓存未找到，查询 Master
+5. 查询 Master
    └─ request_remote_data(object_name) → Master 查询 DataService
        └─ 返回目标 Worker 地址
-       └─ DataClient.request_data() 直连目标 Worker B
+       └─ DataClientPool.request() 直连目标 Worker B
            └─ 最多重试3次
            └─ 成功后更新 remote_idx 缓存
 ```
-
-**关键点**：
-- 所有读取路径统一经过DataService
-- DataClient 使用独立TCP socket（独立于主Reactor）
-- 每次请求创建独立连接，避免多线程读冲突
 
 ### 5.2 写入流程
 
@@ -431,27 +401,23 @@ Worker A 写入 object_name:
 1. 调用 db.write_object(object_name, data)
    └─ 检查 Database 是否冻结
 
-2. 序列化数据（bitsery）
+2. 调用线程序列化 + 压缩（compress_to_buffer 流式管线）
 
-3. 判断大小：
-   └─ 小于 large_file_threshold (64MB) → 聚合存储
-   └─ 大于 threshold → 分块存储
+3. 触发依赖满足（on_data_ready）
 
-4. 写入 data_path（若设置）或 base_path
+4. WBQ 后台线程执行 write_record 磁盘写入
 
-5. 更新本地索引（DataService.local_idx）
+5. 向 Master 发送 DataReadyMessage
+   └─ Master 更新 DataService 索引
 
-6. 向 Master 发送 DataReadyMessage
-   └─ Master 更新 DataService索引
-
-7. 若任务完成：
+6. 任务完成时：
    └─ 发送 TaskCompleteMessage（携带 written_objects）
-   └─ Master 更新远程索引（DataService.remote_idx）
+   └─ Master 更新远程索引
 ```
 
 **写注册协议**：
 - Config.track_writes 启用时，记录每个任务写入的对象列表
-- WorkerAgentContext 使用C函数指针回调模式（非WorkerAgent*指针）
+- WorkerAgentContext 使用C函数指针回调模式
 
 ### 5.3 Database Freeze
 
@@ -471,7 +437,6 @@ Master端（后台任务）：
 ├─ 收集所有 IdxResponseMessage
 ├─ 合并 idx 条目
 ├─ 将聚合 idx 写入 base_path/merged.idx
-├─ 收集 Worker 信息
 ├─ 将数据库元信息写入 base_path/_META
 └─ 后处理完成
 ```
@@ -480,7 +445,7 @@ Master端（后台任务）：
 
 ### 5.4 数据备份 (Backup)
 
-#### 5.4.1 手动备份
+#### 手动备份
 
 ```
 Worker A 写入 object_name (backup=True):
@@ -492,55 +457,19 @@ Worker A 写入 object_name (backup=True):
 6. Master 更新 remote_idx（两个 worker 都有该对象）
 ```
 
-**关键设计**：备份数据保持压缩状态传输，不做解压-再压缩。
+#### 自动备份（访问频率触发）
 
-#### 5.4.2 自动备份（访问频率触发）
-
-当 `auto_backup_enabled=1` 时，Master 在处理跨 Worker 读取请求（DataQueryMessage）时自动追踪访问频率，超过阈值后自动触发备份。访问计数直接存储在 `remote_idx_` 的 `RemoteObjectMeta` 结构中，无需额外追踪器。
-
-```
-Worker B 读取 object_name（本地无数据）:
-1. Worker B 发送 DataQueryMessage 到 Master
-2. Master 返回 DataLocationMessage（数据在 Worker A）
-3. Master 调用 DataService.record_remote_access(object_name)
-4. 当 read_count >= backup_threshold 且 workers.size() < target_replicas:
-   a. Master 调用 trigger_auto_backup()
-   b. 构造 BackupRequestMessage，复用 on_backup_request() 流程
-   c. 选择目标 Worker（优先不同 host）
-   d. 目标 Worker 执行 __backup_object 内部任务
-5. 备份完成后，Master 更新 remote_idx（新增 Worker 到 meta.workers）
-```
-
-#### 5.4.3 Master 本地写入自动备份
-
-Master 上的本地写入（worker_id=0）也支持自动备份，确保 Master 数据至少在一个 Worker 上有副本。触发条件与跨 Worker 读取相同，但 `threshold=0`（写入即触发）。
-
-```
-Master 写入 object_name:
-1. DataReadyMessage 触发 on_data_ready()
-2. 检测 worker_id==0 且 auto_backup_enabled==1
-3. evaluate_auto_backup(threshold=0) → should_backup=true（只要 workers.size() < target）
-4. trigger_auto_backup() 选择目标 Worker
-5. 目标 Worker 执行 __backup_object
-```
-
-**关键设计**：
-- 访问频率追踪内嵌在 `RemoteObjectMeta`（workers + read_count + last_access_time），无需独立 AccessTracker
-- `current_replicas` 直接取 `meta.workers.size()`，无需手动同步
-- 每个 Worker 首次远程读取后缓存数据位置（lookup_remote_idx），后续读取绕过 Master 直连
-- 因此 `backup_threshold` 应 ≤ (Worker 总数 - 1)
-- 衰减机制（backup_decay_interval/backup_decay_factor）防止冷数据永久占用备份资源
-- 默认关闭（auto_backup_enabled=0），需显式启用
+当 `auto_backup_enabled=1` 时，Master 在处理跨 Worker 读取请求时自动追踪访问频率，超过阈值后自动触发备份。
 
 **相关配置**：
 
 | 配置键 | 默认值 | 说明 |
 |--------|--------|------|
-| `auto_backup_enabled` | 0 | 自动备份开关（0=关闭, 1=开启） |
+| `auto_backup_enabled` | 0 | 自动备份开关 |
 | `backup_threshold` | 100 | 触发自动备份的跨 Worker 读取次数 |
-| `backup_replicas` | 2 | 目标备份数（包含原始 Worker） |
-| `backup_decay_interval` | 300 | 衰减检查间隔（秒），0=不衰减 |
-| `backup_decay_factor` | 50 | 衰减因子百分比（read_count *= factor/100） |
+| `backup_replicas` | 2 | 目标备份数 |
+| `backup_decay_interval` | 300 | 衰减检查间隔（秒） |
+| `backup_decay_factor` | 50 | 衰减因子百分比 |
 
 ### 5.5 MapReduce 框架
 
@@ -550,28 +479,21 @@ Fly 提供基于 `@as_task` 的四阶段 MapReduce 管道：**Partition → Proc
 MapReduceJob(db, output_name="result")
     │
     ▼ Phase 1: Partition (可跳过)
-    input_data → partition_fn → N 个分区 (temp objects)
-    (或 set_pre_partitioned(names) 跳过)
+    input_data → partition_fn → N 个分区
     │
     ▼ Phase 2: Process
     N 个并行 @as_task，每个处理一个分区
     │
     ▼ Phase 3: Merge
-    summary: 多阶段树形合并 (fan_in=min(N,8), O(log N) 深度)
-    full:    单阶段合并，2 并发读加速
+    summary: 多阶段树形合并 (fan_in=min(N,8))
+    full:    单阶段合并
     │
     ▼ Phase 4: Finalize (可选)
     finalize_fn 处理合并结果 → 持久化到 output_name
     │
     ▼ Cleanup
-    移除所有 __mr__{job_id}__* 临时对象 (除非 keep_intermediate=True)
+    移除所有 __mr__{job_id}__* 临时对象
 ```
-
-**关键设计**：
-- 中间数据默认使用 `save_to_db=False`（TempStore，不落盘），完成后自动清理
-- 最终结果写入用户指定的 `output_name`（持久化），MR 清理后仍保留
-- `MapReduceJob` 对象可序列化，可传递给 `@as_task` 作为依赖参数
-- `get_output_name()` 返回完整对象名用于下游任务的 `inputs` 依赖声明
 
 ### 5.6 load_db 流程
 
@@ -587,17 +509,12 @@ Phase 2: 按 hostname 分配 worker
 ├─ 从 _DB_META 中提取 hostname → writer_ids 映射
 ├─ 检查现有 worker 的 hostname 匹配情况
 ├─ 对缺少 worker 的 hostname，spawn 新 worker 并传 --host
-└─ 等待新 worker 连接并刷新 hostname 映射
+└─ 等待新 worker 连接
 
 Phase 3: 定向 idx 加载
 ├─ 每个 hostname 的 writer_ids 发送给对应 hostname 的 worker
-├─ Worker 加载 idx 到 local_idx，发送 IdxLoadAck（含 loaded_writer_ids）
+├─ Worker 加载 idx 到 local_idx，发送 IdxLoadAck
 └─ Master 收到 ack 后从共享文件系统读取 idx，更新 remote_idx
-
-关键约束：
-- Master 自身不加载任何 idx 到 local_idx（由 worker 负责）
-- Worker ack 轻量级，Master 自行读 idx 文件
-- spawn 时传 --host 确保新 worker hostname 与 _DB_META 匹配
 ```
 
 ---
@@ -613,41 +530,47 @@ Phase 3: 定向 idx 加载
 └────────────────┴─────────┴─────────────────┘
 ```
 
-### 6.2 消息类型
+### 6.2 两段式 DataResponse 协议
 
-| 消息类型 | 方向 | 处理状态 |
-|---------|------|---------|
-| RegisterMessage | Worker → Master | ✅ 已实现 |
-| RegisterAckMessage | Master → Worker | ✅ 已实现 |
-| HeartbeatMessage | Worker → Master | ✅ 已实现 |
-| TaskSubmitMessage | 任意 → Master | ✅ 已实现 |
-| TaskAssignMessage | Master → Worker | ✅ 已实现 |
-| TaskCompleteMessage | Worker → Master | ✅ 已实现 |
-| TaskFailedMessage | Worker → Master | ✅ 已实现 |
-| DataReadyMessage | Worker → Master | ✅ 已实现 |
-| DataQueryMessage | 任意 → Master | ✅ 已实现 |
-| DataLocationMessage | Master → Worker | ✅ 已实现 |
-| DataRequestMessage | Worker → Worker | ✅ 已实现 |
-| DataResponseMessage | Worker → Worker | ✅ 已实现 |
-| BackupTaskMessage | Master → Worker | ✅ 已实现 |
-| CleanupTaskMessage | Master → Worker | ✅ 已实现 |
-| CleanupCompleteMessage | Worker → Master | ✅ 已实现 |
-| UpdateAttributesMessage | Worker → Master | ✅ 已实现 |
-| DatabaseFreezeMessage | Worker → Master | ✅ 已实现 |
-| IdxRequestMessage | Master → Worker | ✅ 已实现 |
-| IdxResponseMessage | Worker → Master | ✅ 已实现 |
-| ShutdownMessage | Master → Worker | ✅ 已实现 |
-| DBPathRequestMessage | Worker → Master | ✅ 已实现 |
-| DBPathResponseMessage | Master → Worker | ✅ 已实现 |
-| WorkerPropertyUpdateMessage | Worker → Master | ✅ 已实现 |
-| ObjectRemovedMessage | Worker → Master | ✅ 已实现 |
-| ~~ConfigSyncMessage~~ | ~~Master → Worker~~ | ❌ 已移除（改用 config 文件预加载） |
-| IdxLoadCommandMessage | Master → Worker | ✅ 已实现 |
-| IdxLoadAckMessage | Worker → Master | ✅ 已实现 |
+```
+┌──────────────┬──────────┬─────────────────┬─────────────┬───────────────┬─────────┐
+│ 4 bytes      │ 1 byte   │ 4 bytes         │ 1 byte      │ small_fields  │ raw     │
+│ total_len    │ type=12  │ small_fields_len│ has_raw     │ (bitsery)     │ payload │
+└──────────────┴──────────┴─────────────────┴─────────────┴───────────────┴─────────┘
+```
 
-**TransportLayer更新**：
-- 移除 `accept()` 方法
-- 新增 `stop_listening()` 方法
+**优势**：大 payload 保持为原始字节，避免用户态拷贝。
+
+### 6.3 消息类型
+
+| 消息类型 | 方向 | 说明 |
+|---------|------|------|
+| RegisterMessage | W→M | Worker 注册 |
+| RegisterAckMessage | M→W | 注册确认 |
+| HeartbeatMessage | W→M | 心跳 |
+| TaskSubmitMessage | 任意→M | 任务提交 |
+| TaskAssignMessage | M→W | 任务分配 |
+| TaskCompleteMessage | W→M | 任务完成 |
+| TaskFailedMessage | W→M | 任务失败 |
+| DataReadyMessage | W→M | 数据就绪 |
+| DataQueryMessage | W→M | 数据位置查询 |
+| DataLocationMessage | M→W | 数据位置响应 |
+| DataRequestMessage | W→W | 数据请求 |
+| DataResponseMessage | W→W | 数据响应（两段式） |
+| BackupTaskMessage | M→W | 备份任务 |
+| CleanupTaskMessage | M→W | 清理任务 |
+| CleanupCompleteMessage | W→M | 清理完成 |
+| UpdateAttributesMessage | W→M | 属性更新 |
+| DatabaseFreezeMessage | W→M | 数据库冻结 |
+| IdxRequestMessage | M→W | 请求 idx 内容 |
+| IdxResponseMessage | W→M | 返回 idx 内容 |
+| ShutdownMessage | M→W | 关机广播 |
+| DBPathRequestMessage | W→M | DB 路径查询 |
+| DBPathResponseMessage | M→W | DB 路径响应 |
+| WorkerPropertyUpdateMessage | W→M | Worker 属性更新 |
+| ObjectRemovedMessage | W→M | 对象删除通知 |
+| IdxLoadCommandMessage | M→W | 定向 idx 加载 |
+| IdxLoadAckMessage | W→M | idx 加载确认 |
 
 ---
 
@@ -663,13 +586,13 @@ fly/
 │
 ├── src/                      # 源代码
 │   ├── common/               # 公共类型定义
-│   │   └── cpp/common_types.h  # CMString, CMVector, CMMap 等
+│   │   └── cpp/common_types.h  # CM* 类型别名
 │   │
 │   ├── core/                 # 核心基础模块
 │   │   └── cpp/config.h/cpp  # 配置管理
 │   │
 │   ├── serialization/        # 序列化模块
-│   │   └── cpp/serialization_macros.h  # FLY_SERIALIZE, FLY_ENCODE (bitsery 后端)
+│   │   └── cpp/serialization_macros.h  # FLY_SERIALIZE, FLY_ENCODE
 │   │
 │   ├── export/               # 导出宏定义
 │   │   └── cpp/export_macros.h  # FLY_EXPORT_* 宏
@@ -679,21 +602,25 @@ fly/
 │   │   │   ├── database.h/cpp
 │   │   │   ├── data_writer.h/cpp
 │   │   │   ├── data_reader.h/cpp
-│   │   │   ├── data_service.h/cpp  # 统一内存索引 (local/remote idx)
+│   │   │   ├── data_service.h/cpp
+│   │   │   ├── data_server.h/cpp     # epoll+线程池数据服务
+│   │   │   ├── object_cache.h        # 两层 LRU 读缓存
 │   │   │   └── storage_manager.h/cpp
 │   │   ├── export/storage_export.cpp
 │   │   └── tests/
 │   │
 │   ├── network/              # 网络层 (Layer 2)
 │   │   ├── cpp/
-│   │   │   ├── transport_interface.h        # Transport 抽象（socket 薄包装）
-│   │   │   ├── tcp_socket.h/cpp             # TCPSocketTransport — POSIX 实现
-│   │   │   ├── epoll_multiplexer.h/cpp      # EpollMultiplexer 抽象 + 实现
-│   │   │   ├── connection_manager.h         # ConnectionManager 抽象（conn_id + 事件）
-│   │   │   ├── tcp_connection_manager.h/cpp # TcpConnectionManager（Transport+Epoll）
-│   │   │   ├── reactor.h/cpp                # 单线程事件循环
-│   │   │   ├── message_protocol.h/cpp
-│   │   │   └── message_types.h
+│   │   │   ├── transport_interface.h
+│   │   │   ├── tcp_socket.h/cpp
+│   │   │   ├── epoll_multiplexer.h/cpp
+│   │   │   ├── connection_manager.h
+│   │   │   ├── tcp_connection_manager.h/cpp
+│   │   │   ├── reactor.h/cpp
+│   │   │   ├── message_protocol.h/cpp    # MessageProtocol + DataResponseProtocol
+│   │   │   ├── message_types.h
+│   │   │   ├── data_client.h/cpp
+│   │   │   └── data_client_pool.h/cpp    # 并发限制的数据请求池
 │   │   ├── export/network_export.cpp
 │   │   └── tests/
 │   │
@@ -702,7 +629,7 @@ fly/
 │   │   │   ├── dependency_graph.h/cpp
 │   │   │   ├── worker_manager.h/cpp
 │   │   │   ├── task_scheduler.h/cpp
-│   │   │   ├── task_manager.h/cpp  # (原 metadata_manager)
+│   │   │   ├── task_manager.h/cpp
 │   │   │   └── heartbeat_monitor.h/cpp
 │   │   └── tests/
 │   │
@@ -710,8 +637,7 @@ fly/
 │   │   ├── cpp/
 │   │   │   ├── master_agent.h/cpp
 │   │   │   ├── worker_agent.h/cpp
-│   │   │   ├── task_executor.h/cpp
-│   │   │   └── worker_agent_context.h  # C函数指针回调模式
+│   │   │   └── task_executor.h/cpp
 │   │   ├── export/agent_export.cpp
 │   │   └── tests/
 │   │
@@ -719,16 +645,13 @@ fly/
 │   │   ├── cpp/logger.h/cpp
 │   │   └── export/log_export.cpp
 │   │
-│   └── py/                  # Python 高层 API (Layer 5)
-│       ├── __init__.py
-│       ├── task.py          # @as_task 装饰器
-│       ├── master.py        # Master 类包装
-│       └── config.py        # Config 包装
+│   └── fly/                 # Python API (Layer 5)
+│       ├── __init__.py      # 顶层导出
+│       ├── runtime.py       # Agent 生命周期管理
+│       ├── mapreduce.py     # MapReduce 框架
+│       └── py/
 │
 ├── qa/                       # 项目级集成测试
-│   ├── test_backup_load_db_multi_worker.py  # backup+load_db 多host测试
-│   ├── backup_load_db_multi_worker_run1.py  # Run1: 写入+备份
-│   └── backup_load_db_multi_worker_run2.py  # Run2: load_db+读取验证
 ├── docs/                     # 设计文档
 └── scripts/                  # 辅助脚本
 ```
@@ -739,52 +662,41 @@ fly/
 
 ### 已完成（✅）
 
-- **Layer 0**：基础设施层（WORKSPACE, BUILD, 宏定义）
-- **Layer 1**：存储层（Database, DataService, StorageManager）
-  - DataReader 实例方法（非静态）
+- **Layer 0**：基础设施层（WORKSPACE, BUILD, 宏定义, Config, Logger）
+- **Layer 1**：存储层（Database, DataService, DataServer, ObjectCache）
+  - DataWriter 流式管线（compress_to_buffer + write_record）
+  - DataReader 实例方法
   - DataService 统一索引（local_idx + remote_idx + worker_registry）
-  - 异步 WriteBackQueue
+  - ObjectCache 两层 LRU 缓存（low=压缩字节, high=反序列化对象）
+  - DataServer epoll + send_thread_pool
+  - FlyBufferPtr 零拷贝共享
 - **Layer 2**：网络层（Reactor, TCP, 消息协议）
-  - Transport 抽象（socket 薄包装）+ EpollMultiplexer（事件复用）+ ConnectionManager（conn_id 管理 + 事件分发，TCP 实现为 TcpConnectionManager）
-  - 33 种消息枚举 / 29 种消息结构定义，含 IdxLoadCommand/Ack（ConfigSyncMessage 已移除，改用文件预加载）
-  - ConnectionManager 抽象（listen/connect/send/recv/poll，conn_id ↔ fd 映射）
-  - Worker 数据传输（独立 DataClient 连接）
-  - Config 同步：master 启动 worker 前写入 config 文件，worker 初始化时从文件加载
-  - IdxLoadCommand/Ack：定向 idx 加载，按 hostname 分配 worker
-- **Layer 3**：任务系统层（DependencyGraph, 调度器）
-  - TaskManager（原 MetadataManager）
-  - TaskScheduler
-  - WorkerManager
-  - HeartbeatMonitor
-- **Layer 4**：Agent 层（MasterAgent, WorkerAgent）
-  - WorkerAgentContext：C函数指针回调模式
-  - TaskExecutor：任务执行器
-  - Worker动态能力管理：`set_worker_property`, `remove_worker_property`, `get_worker_properties`
-  - 失败任务持久化：`FailedTaskRecord`, `restart_failed_tasks()` API
-  - 数据备份：压缩数据零解压跨 host 复制
-  - load_db：按 hostname 分配 worker 定向加载 idx，master 不加载 local idx
-- **Layer 5**：Python API（@as_task 装饰器，配置管理）
-  - FlyAgent 抽象基类：统一接口，Master/Worker 实现
-  - Worker 属性管理：`set_worker_property`, `remove_worker_property`, `get_worker_properties`
-  - 失败任务重启：`restart_failed_tasks()`，三阶段数据可用性检查
+  - Transport + EpollMultiplexer + ConnectionManager 抽象
+  - DataResponseProtocol 两段式传输
+  - DataClientPool 并发限制
+  - 33 种消息类型
+- **Layer 3**：任务系统层（DependencyGraph, TaskScheduler, WorkerManager）
+- **Layer 4**：Agent 层（MasterAgent, WorkerAgent, TaskExecutor）
+  - WorkerAgentContext C函数指针回调
+  - 失败任务持久化 + restart_failed_tasks
+  - load_db 按 hostname 分配 worker
+  - 动态 Worker 属性管理
+- **Layer 5**：Python API（@as_task, open_db, launch_workers, wait_tasks）
+  - MapReduce 框架
 
 **测试覆盖**：
-- 44 Bazel targets pass（单元测试 + 集成测试）
-- 47 QA tests pass（含 backup + load_db 多 host 分布式测试）
+- C++ 单元测试 + Python 测试
+- QA 集成测试（含 backup + load_db 多 host 分布式测试）
 
 ### 尚未实现（⏳）
 
-- **SSH Worker 启动**：`launch_ssh_workers` 接口设计完成，未实现
-- **自定义 Worker 启动**：`launch_custom_workers` 接口设计完成，未实现
-- **Database Freeze 后处理**：
-  - idx 合并（merged.idx）
-  - _META 元信息生成
-  - Worker 自动启动恢复
-- **Locality 调度**：数据locality优先调度（设计完成，未实现）
-- **数据副本**：✅ 手动备份（backup=True）+ 自动备份（访问频率触发）均已实现
-- **Worker 失败恢复**：任务重新调度（设计完成，未实现）
-- **Worker role 调度**：role-based 任务分配（RegisterMessage.role 存在但未使用）
+- **SSH Worker 启动**：launch_ssh_workers 接口设计完成，未实现
+- **自定义 Worker 启动**：launch_custom_workers 接口设计完成，未实现
+- **Database Freeze 后处理**：idx 合并、_META 生成
+- **Locality 调度**：数据位置感知的任务分配
+- **Worker 失败恢复**：任务重新调度
+- **Worker role 调度**：role-based 任务分配
 
 ---
 
-*文档更新日期: 2026-06-04*
+*文档更新日期: 2026-06-17*

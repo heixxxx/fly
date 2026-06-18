@@ -14,9 +14,24 @@ public:
         return chunk;
     }
 
+    CompressedChunk compress(std::string_view input) override {
+        CompressedChunk chunk;
+        chunk.uncompressed_size_ = static_cast<int32_t>(input.size());
+        chunk.data_ = CMString(input.data(), input.size());
+        chunk.compressed_size_ = static_cast<int32_t>(chunk.data_.size());
+        return chunk;
+    }
+
     CMString decompress(int32_t uncompressed_size, const CMString& compressed_data) override {
         (void)uncompressed_size;
         return compressed_data;
+    }
+
+    int32_t decompress_to(std::string_view compressed_data,
+                          char* output, size_t output_size) override {
+        size_t copy_size = std::min(compressed_data.size(), output_size);
+        std::memcpy(output, compressed_data.data(), copy_size);
+        return static_cast<int32_t>(copy_size);
     }
 
     CompressedChunk compress_chunk(const CMString& input) override {

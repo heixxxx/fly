@@ -1,6 +1,7 @@
 #include <export/cpp/export_macros.h>
 #include <serialization/cpp/serialization_macros.h>
 #include <serialization/cpp/fly_buffer.h>
+#include <serialization/cpp/object_header.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/storage_manager.h>
 #include <storage/cpp/data_service.h>
@@ -11,10 +12,12 @@
 #include <storage/cpp/decompress_helper.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <common/cpp/write_context_hash.h>
+#include <common/cpp/error_types.h>
 #include <nanobind/operators.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/pair.h>
 #include <istream>
+#include <Python.h>
 
 FLY_EXPORT_MODULE(_fly_storage) {
 
@@ -40,18 +43,33 @@ FLY_EXPORT_CLASS(FlyBuffer, "FlyBuffer")
     FLY_EXPORT_READONLY_PROPERTY("size", &FlyBuffer::size);
 
 FLY_EXPORT_CLASS(Database, "EXStgDatabase")
+    // Zero-copy write: access Python bytes directly without copying
     FLY_EXPORT_DEF("_write_pickle_bytes", [](Database& db, const CMString& name,
-                                              fly_export::bytes data,
+                                              nanobind::handle data,
                                               const CMString& py_name,
                                               bool backup) -> int {
-        return static_cast<int>(db.write_pickle_bytes(name, data.c_str(),
-                                       static_cast<int64_t>(data.size()), py_name, backup));
+        Py_buffer view;
+        if (PyObject_GetBuffer(data.ptr(), &view, PyBUF_SIMPLE) < 0) {
+            return -1;  // Error
+        }
+        auto result = static_cast<int>(db.write_pickle_bytes(name,
+                                       static_cast<const char*>(view.buf),
+                                       static_cast<int64_t>(view.len), py_name, backup));
+        PyBuffer_Release(&view);
+        return result;
     })
     FLY_EXPORT_DEF("_write_pickle_bytes", [](Database& db, const CMString& name,
-                                              fly_export::bytes data,
+                                              nanobind::handle data,
                                               const CMString& py_name) -> int {
-        return static_cast<int>(db.write_pickle_bytes(name, data.c_str(),
-                                       static_cast<int64_t>(data.size()), py_name, false));
+        Py_buffer view;
+        if (PyObject_GetBuffer(data.ptr(), &view, PyBUF_SIMPLE) < 0) {
+            return -1;  // Error
+        }
+        auto result = static_cast<int>(db.write_pickle_bytes(name,
+                                       static_cast<const char*>(view.buf),
+                                       static_cast<int64_t>(view.len), py_name, false));
+        PyBuffer_Release(&view);
+        return result;
     })
     FLY_EXPORT_DEF("_read_streaming", [](Database& db, const CMString& name, bool backup) -> fly_export::tuple {
         auto [comp_data, py_name] = db.read_object_compressed(name, backup);
@@ -66,6 +84,100 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
             fly_export::bytes(comp_data ? comp_data->data() : "", comp_data ? comp_data->size() : 0),
             py_name
         );
+    })
+    // Zero-copy read: decompress directly from FlyBuffer to Python bytes
+    // Avoids intermediate CMString by decompressing directly into Python bytes object
+    FLY_EXPORT_DEF("_read_decompressed", [](Database& db, const CMString& name, bool backup) -> fly_export::tuple {
+        auto [comp_data, py_name] = db.read_object_compressed(name, backup);
+        if (!comp_data || comp_data->empty()) {
+            return fly_export::make_tuple(fly_export::bytes("", 0), py_name);
+        }
+
+        // Read expected decompressed size from ObjectHeader
+        int64_t offset = 0;
+        int64_t expected_size = 0;
+        try {
+            ObjectHeader header = ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, offset);
+            if (header.total_size_ > 0) {
+                expected_size = static_cast<int64_t>(header.total_size_);
+            }
+        } catch (...) {}
+
+        if (expected_size > 0) {
+            // Create Python bytes object with exact size
+            PyObject* py_bytes = PyBytes_FromStringAndSize(nullptr, expected_size);
+            if (!py_bytes) {
+                return fly_export::make_tuple(fly_export::bytes("", 0), py_name);
+            }
+
+            // Decompress directly into Python bytes buffer
+            DecompressingStreamBuf dsbuf(comp_data->data(), comp_data->size());
+            std::istream is(&dsbuf);
+            is.read(PyBytes_AS_STRING(py_bytes), expected_size);
+            auto gcount = is.gcount();
+
+            if (gcount > 0 && gcount < expected_size) {
+                _PyBytes_Resize(&py_bytes, gcount);
+            }
+
+            return fly_export::make_tuple(
+                fly_export::bytes(py_bytes),
+                py_name
+            );
+        } else {
+            // Fallback: decompress to std::string then convert
+            std::string result = fly::decompress_raw_data({comp_data->data(), comp_data->size()});
+            return fly_export::make_tuple(
+                fly_export::bytes(result.data(), result.size()),
+                py_name
+            );
+        }
+    })
+    FLY_EXPORT_DEF("_read_decompressed", [](Database& db, const CMString& name) -> fly_export::tuple {
+        auto [comp_data, py_name] = db.read_object_compressed(name, false);
+        if (!comp_data || comp_data->empty()) {
+            return fly_export::make_tuple(fly_export::bytes("", 0), py_name);
+        }
+
+        // Read expected decompressed size from ObjectHeader
+        int64_t offset = 0;
+        int64_t expected_size = 0;
+        try {
+            ObjectHeader header = ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, offset);
+            if (header.total_size_ > 0) {
+                expected_size = static_cast<int64_t>(header.total_size_);
+            }
+        } catch (...) {}
+
+        if (expected_size > 0) {
+            // Create Python bytes object with exact size
+            PyObject* py_bytes = PyBytes_FromStringAndSize(nullptr, expected_size);
+            if (!py_bytes) {
+                return fly_export::make_tuple(fly_export::bytes("", 0), py_name);
+            }
+
+            // Decompress directly into Python bytes buffer
+            DecompressingStreamBuf dsbuf(comp_data->data(), comp_data->size());
+            std::istream is(&dsbuf);
+            is.read(PyBytes_AS_STRING(py_bytes), expected_size);
+            auto gcount = is.gcount();
+
+            if (gcount > 0 && gcount < expected_size) {
+                _PyBytes_Resize(&py_bytes, gcount);
+            }
+
+            return fly_export::make_tuple(
+                fly_export::bytes(py_bytes),
+                py_name
+            );
+        } else {
+            // Fallback: decompress to std::string then convert
+            std::string result = fly::decompress_raw_data({comp_data->data(), comp_data->size()});
+            return fly_export::make_tuple(
+                fly_export::bytes(result.data(), result.size()),
+                py_name
+            );
+        }
     })
     FLY_EXPORT_DEF("_get_py_name", [](Database& db, const CMString& name) -> CMString {
         return db.read_object_py_name(name);

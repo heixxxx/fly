@@ -267,8 +267,8 @@ public:
 class DataClient {
 public:
     static DataResponse request_data(const CMString& host, int32_t port,
-                                      const CMString& object_name,
-                                      int timeout_ms = 5000);
+                                     const CMString& object_name,
+                                     int timeout_ms = 5000);
 };
 ```
 
@@ -277,6 +277,37 @@ public:
 - 避免多线程并发读数据时的连接冲突
 - 内置超时控制 (SO_SNDTIMEO + SO_RCVTIMEO + deadline)
 - 消息帧收发: encode 发送 → 手动解析帧头 → decode 接收
+
+---
+
+### DataClientPool（并发限制的数据请求池）
+
+```cpp
+class DataClientPool {
+public:
+    DataClientPool(CMSharedPtr<Transport> transport, int pool_size = 2);
+    DataClientPool(int pool_size = 2);  // 便捷构造，内部创建 TCPSocketTransport
+
+    // 请求数据（并发限制）
+    std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> request(
+        const CMString& host, int32_t port,
+        const CMString& object_name,
+        uint64_t requesting_worker_id, uint64_t request_id,
+        int timeout_ms = 5000);
+
+    // 返回值: (success, raw_buffer, metadata1, metadata2, metadata3)
+};
+```
+
+**设计特点**:
+- 并发限制：`pool_size`（默认 2）限制同时 in-flight 的请求数
+- 使用 `active_count_` + `slot_cv_` 实现信号量语义
+- 非拷贝（move-only）
+- 与 DataClient 相同的两段式接收逻辑，零拷贝 raw payload 到 `FlyBufferPtr`
+
+**使用场景**:
+- Worker 读取远程数据时，通过 DataClientPool 并发请求多个 Worker
+- 替代直接使用 DataClient，避免无限并发导致连接爆炸
 
 ---
 

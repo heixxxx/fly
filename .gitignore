@@ -33,7 +33,7 @@ compile_commands.json
 
 # LOGS
 *.log
-fly_log/
+fly_log*/
 qa_logs/
 *.latest
 

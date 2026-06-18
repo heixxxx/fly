@@ -81,7 +81,7 @@ namespace fly_export = nanobind;
                              const CMString& py_name, bool backup) -> int { \
         return static_cast<int>(db.write_object<Cls>(name, obj, py_name, backup)); \
     }) \
-    .def_static("_read_from_db", [](Database& db, const CMString& name) -> CMSharedPtr<Cls> { \
-        return db.read_object<Cls>(name); \
+    .def_static("_read_from_db", [](Database& db, const CMString& name, const CMString& cache = "low") -> CMSharedPtr<Cls> { \
+        return db.read_object<Cls>(name, cache); \
     }) \
     .def_prop_ro("is_cpp", [](const Cls&) { return true; })

@@ -1,4 +1,5 @@
 #include <storage/cpp/compressing_streambuf.h>
+#include <string_view>
 
 CompressingStreamBuf::CompressingStreamBuf(std::ostream& dest,
                                            CMUniquePtr<Compressor> compressor,
@@ -26,6 +27,20 @@ CompressingStreamBuf::int_type CompressingStreamBuf::overflow(int_type ch) {
     return ch;
 }
 
+std::streamsize CompressingStreamBuf::xsputn(const char* s, std::streamsize n) {
+    std::streamsize written = 0;
+    while (written < n) {
+        auto space = chunk_size_ - static_cast<int64_t>(buffer_.size());
+        auto to_write = std::min(static_cast<std::streamsize>(space), n - written);
+        buffer_.insert(buffer_.end(), s + written, s + written + to_write);
+        written += to_write;
+        if (static_cast<int64_t>(buffer_.size()) >= chunk_size_) {
+            flush_chunk();
+        }
+    }
+    return written;
+}
+
 int CompressingStreamBuf::sync() {
     if (!buffer_.empty()) {
         flush_chunk();
@@ -41,7 +56,8 @@ void CompressingStreamBuf::flush_chunk() {
 
     total_uncompressed_ += static_cast<int64_t>(buffer_.size());
 
-    CMString input(buffer_.begin(), buffer_.end());
+    // Zero-copy: use string_view to avoid constructing CMString
+    std::string_view input(buffer_.data(), buffer_.size());
 
     if (compressor_) {
         CompressedChunk chunk = compressor_->compress(input);

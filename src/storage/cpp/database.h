@@ -42,8 +42,9 @@ public:
     fly::WriteErrorType write_object(const CMString& object_name, const T& obj,
                           const CMString& py_name, bool backup = false);
 
+    // Cache tiers: "low" (default, compressed bytes), "high" (deserialized objects), "none" (bypass cache)
     template<typename T>
-    CMSharedPtr<T> read_object(const CMString& object_name);
+    CMSharedPtr<T> read_object(const CMString& object_name, const CMString& cache = "low");
 
     // Returns the py_name (type name) stored in the object header, without
     // reading/deserializing the payload. Goes through the low-tier cache, so a
@@ -217,14 +218,20 @@ fly::WriteErrorType Database::write_object(const CMString& object_name, const T&
 }
 
 template<typename T>
-CMSharedPtr<T> Database::read_object(const CMString& object_name) {
+CMSharedPtr<T> Database::read_object(const CMString& object_name, const CMString& cache) {
     CMString full = full_name(object_name);
+    auto& cache_instance = fly::ObjectCache::instance();
 
-    // High-tier hit: return cached instance, skip IO + deserialize.
-    if (auto cached = fly::ObjectCache::instance().get_high<T>(full)) {
-        return cached;
+    // High-tier query: only for cache="high"
+    // Hit → return cached instance, skip IO + deserialize.
+    if (cache == "high") {
+        if (auto cached = cache_instance.get_high<T>(full)) {
+            return cached;
+        }
     }
 
+    // Low-tier query (via read_object_compressed): for cache="low" and cache="high"
+    // Skipped only for cache="none".
     auto [comp_data, py_name] = read_object_compressed(object_name, false);
     if (!comp_data || comp_data->empty()) {
         ERR("read_object<T>: no data for '{}'", full);
@@ -236,15 +243,16 @@ CMSharedPtr<T> Database::read_object(const CMString& object_name) {
     std::istream is(&dsbuf);
     obj->fly_deserialize(is);
 
-    // Account by uncompressed size from the object header (low tier already
-    // parsed it; re-parse here is cheap and avoids coupling).
-    size_t accounted = comp_data->size();
-    try {
-        int64_t off = 0;
-        auto hdr = ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, off);
-        if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
-    } catch (...) {}
+    // High-tier population: only for cache="high"
+    if (cache == "high") {
+        size_t accounted = comp_data->size();
+        try {
+            int64_t off = 0;
+            auto hdr = ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, off);
+            if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
+        } catch (...) {}
+        cache_instance.put_high<T>(full, obj, accounted);
+    }
 
-    fly::ObjectCache::instance().put_high<T>(full, obj, accounted);
     return obj;
 }

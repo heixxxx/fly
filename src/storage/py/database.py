@@ -58,7 +58,7 @@ class _Database:
     def read_object(self, name: str, backup: bool = False, cache: str = "low"):
         # Caching tier dispatch:
         #   - nanobind (C++ exported) classes: _read_from_db → C++ ObjectCache
-        #     high tier (省反序列化). Both "low" and "high" cache modes use this.
+        #     Supports "low" (default), "high", "none" cache tiers.
         #   - pickle (Python) objects: "high" → Python ReadCache high tier;
         #     "low"/"none" → C++ ObjectCache low tier (transparent, via
         #     _read_streaming) + reconstruct every time.
@@ -68,8 +68,8 @@ class _Database:
         is_cpp_obj = cls is not None and hasattr(cls, "_read_from_db")
 
         if is_cpp_obj:
-            # nanobind class → C++ read_object<Cls> with high-tier cache.
-            return cls._read_from_db(self._db, name)
+            # nanobind class → C++ read_object<Cls> with specified cache tier.
+            return cls._read_from_db(self._db, name, cache)
 
         if cache == "high":
             try:
@@ -82,27 +82,19 @@ class _Database:
             obj = rc.get(key, "high")
             if obj is not None:
                 return obj
-            data, _ = self._db._read_streaming(name, backup)
-            obj = self._reconstruct(data, py_name)
+            # Zero-copy: use _read_decompressed to avoid intermediate copies
+            data, _ = self._db._read_decompressed(name, backup)
+            obj = pickle.loads(data)
             rc.put(key, "high", obj)
             return obj
 
         # pickle object, cache="low"/"none": C++ low tier handles byte caching.
-        data, _ = self._db._read_streaming(name, backup)
-        return self._reconstruct(data, py_name)
+        # Zero-copy: use _read_decompressed to avoid intermediate copies
+        data, _ = self._db._read_decompressed(name, backup)
+        return pickle.loads(data)
 
     def backup_object(self, name: str):
         self._db.backup_object(name)
-
-    def _reconstruct(self, data, py_name: str):
-        import _fly_storage
-        cls = getattr(_fly_storage, py_name, None)
-        if cls is not None and hasattr(cls, "_write_to_db"):
-            obj = cls.__new__(cls)
-            obj.__setstate__(data)
-            return obj
-        raw = self._db._decompress_bytes(data)
-        return pickle.loads(raw)
 
     def write_object_raw(self, name: str, data: str, backup: bool = False) -> str:
         return self._db.write_object_raw(name, data, backup)
