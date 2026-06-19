@@ -181,13 +181,12 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
 void Database::write_temp_pickle(const CMString& object_name,
                                  const char* data, int64_t data_size,
                                  const CMString& py_name) {
-    // Compress directly into a CMString — no Python roundtrip.
-    FlyBuffer buf;
-    compress_buffered_data(data, data_size, py_name, buf);
-    CMString compressed(buf.data(), buf.size());
+    // Compress directly into FlyBufferPtr — zero-copy path, no Python roundtrip.
+    auto buf = CMMakeShared<FlyBuffer>();
+    compress_buffered_data(data, data_size, py_name, *buf);
 
     // Register + store as temp (same logic as put_temp_data).
-    put_temp_data(object_name, compressed);
+    put_temp_data(object_name, buf);
 }
 
 fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
@@ -632,9 +631,9 @@ void Database::mark_temp(const CMString& object_name) {
     temp_objects_.insert(full_name(object_name));
 }
 
-void Database::put_temp_data(const CMString& object_name, const CMString& compressed_data) {
+void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compressed_data) {
     CMString full = full_name(object_name);
-    DBG("[TEMP-PUT] put_temp_data: obj={}, full={}, data_size={}", object_name, full, compressed_data.size());
+    DBG("[TEMP-PUT] put_temp_data: obj={}, full={}, data_size={}", object_name, full, compressed_data ? compressed_data->size() : 0);
 
     // Step 1: Add local idx entry (INCOMPLETE, is_temp=true)
     fly::DataService::instance()->on_temp_write_started(db_id_, full);
@@ -647,8 +646,8 @@ void Database::put_temp_data(const CMString& object_name, const CMString& compre
         return;
     }
 
-    // Step 3: Write temp data and mark COMPLETE
-    fly::DataService::instance()->on_temp_write(db_id_, full, CMString(compressed_data));
+    // Step 3: Write temp data and mark COMPLETE — zero-copy, shared_ptr passed through
+    fly::DataService::instance()->on_temp_write(db_id_, full, std::move(compressed_data));
     DBG("[TEMP-PUT] put_temp_data complete: obj={}", object_name);
 }
 

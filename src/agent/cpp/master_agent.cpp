@@ -170,8 +170,27 @@ void MasterAgent::start() {
     data_server_port_ = static_cast<int32_t>(dsInst->get_data_port());
     DataService::instance()->register_worker(0, host_, data_server_port_);
 
+    // Master reads its own data by looking up remote_idx directly — no network
+    // DataQuery to self. A self-DataQuery would go through the reactor's epoll,
+    // which doesn't guarantee ordering against worker WriteRegister on a
+    // different fd. Direct lookup + DataClient::request_compressed_data avoids
+    // the race entirely (the read sees remote_idx via mutex, same as
+    // WriteRegister updates).
     dsInst->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, bool> {
-        return request_remote_data(name);
+        auto ds = DataService::instance();
+        if (!ds->has_remote_location(name)) {
+            return {false, nullptr, {}, false};
+        }
+        auto loc = ds->lookup_remote_idx(name);
+        if (loc.worker_id_ == 0 || loc.host_.empty()) {
+            return {false, nullptr, {}, false};
+        }
+        auto [success, data, py_name, hash, error] =
+            DataClient::request_compressed_data(loc.host_, loc.port_, name);
+        if (success) {
+            return {true, data, std::move(py_name), false};
+        }
+        return {false, nullptr, {}, false};
     });
 
     sigterm_received_ = false;

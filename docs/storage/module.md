@@ -107,7 +107,7 @@ read_object(name, backup, cache)
 
 read_object_compressed（两条路径的公共 IO + 缓存 + backup 逻辑）:
   → low cache hit → 直接返回（跳过远程 IO）
-  → miss → read_raw_compressed → 本地 / 远程 DataQuery
+  → miss → read_raw_compressed → Tier 1 本地 / Tier 2 直连 / Tier 3 Master 代理
   → backup 检查 → do_backup_write
   → put_low（填充 low cache）
 ```
@@ -149,7 +149,7 @@ write_object<T>(name, obj, py_name)  ← 调用线程
   └─ 6. 返回 WriteErrorType::OK（立即返回）
 ```
 
-**Temp 写入路径**（`save_to_db=False`）：
+**Temp 写入路径**（`save_to_db=False`，全链路零拷贝）：
 
 Python pickle 对象走 `write_temp_pickle`（C++ 侧一步完成压缩+注册+存储，无 Python 往返）：
 
@@ -158,15 +158,15 @@ write_object(name, obj, save_to_db=False)
   └─ _write_temp(name, obj)
        └─ pickle.dumps(obj) → data
        └─ db._write_temp_pickle(name, data, py_name)  ← C++ 侧完成
-            └─ compress_buffered_data → CMString
-            └─ put_temp_data → on_temp_write_started + register_write + on_temp_write
-                └─ local_idx[db_id][short_name].temp_compressed_data_ = move(data)
-                └─ 溢出淘汰：temp_total_bytes_ > temp_max_bytes_ → temp_eviction_store_
+            └─ compress_buffered_data → FlyBufferPtr (直接压缩到 shared_ptr)
+            └─ put_temp_data(ptr) → on_temp_write_started + register_write + on_temp_write(ptr)
+                └─ local_idx[db_id][short_name].temp_compressed_data_ = ptr  (shared_ptr 透传，零拷贝)
+                └─ 溢出淘汰时：temp_eviction_store_->put() 才拷贝一次（淘汰是低频路径）
 ```
 
 C++ 类型对象走 `_write_to_db` + `_mark_temp`（序列化在 C++ 侧完成，无需 Python 压缩）。
 
-与正常写入的区别：无 disk write（`commit_write`），无 low cache（`put_low`），数据仅存在于 temp 缓存（`local_idx->temp_compressed_data_` + 溢出 `temp_eviction_store_`）。
+与正常写入的区别：无 disk write（`commit_write`），无 low cache（`put_low`），数据仅存在于 temp 缓存（`local_idx->temp_compressed_data_` 为 `FlyBufferPtr` 共享指针 + 溢出 `temp_eviction_store_`）。写入和读取路径均为零拷贝。
 
 **流式管线组件**:
 | 组件 | 职责 |
@@ -395,6 +395,8 @@ DataService (单例)
 │       ├── flushed: bool
 │       ├── completion_state: INCOMPLETE / COMPLETE / FAILED
 │       │   └── COMPLETE = 可读（统一语义）
+│       ├── is_temp: bool
+│       ├── temp_compressed_data: FlyBufferPtr  (shared_ptr, 零拷贝读取)
 │       ├── cv: condition_variable
 │       └── cv_mutex: mutex
 │
@@ -557,12 +559,16 @@ read_object<T>("key")
         └── 填充 ObjectCache.high
 ```
 
-**远程降级**:
+**远程降级**（`read_raw_compressed`，单次尝试，不重试）:
 ```
-DataService.try_read_local(key)     → Layer 1: 内存索引 → 本地读取
-DataService.lookup_remote_idx(key)  → Layer 2: DataClientPool 直连目标 Worker
-read_raw(key)                       → Layer 3: MetadataClient 查 Master → DataClientPool 直连
+try_read_local_raw(key)            → Tier 1: local_idx + ObjectCache.low + temp 缓存
+lookup_remote_idx(key)             → Tier 2: remote_idx → DataClient 直连目标 Worker
+remote_compressed_read_handler_(key) → Tier 3: agent 层兜底回调（Master 端直接查 remote_idx）
 ```
+
+Tier 2 和 Tier 3 的区别：Tier 2 是 DataService 内置的 remote_idx 查找 + DataClient 直连；Tier 3 是 agent 层注入的回调，Master 端直接查本地 remote_idx（不走 reactor，避免 epoll 跨 fd 顺序不确定），Worker 端则通过网络查询 Master。
+
+Tier 3 返回 `(found, data, py_name, can_still_produce)`。`can_still_produce=true` 表示有 pending/running task 可能产出该数据，调用方可重试。扩展等待由 Python 层 `wait_obj` 负责轮询。
 
 ---
 
@@ -595,7 +601,10 @@ read_raw(key)                       → Layer 3: MetadataClient 查 Master → D
 | 回调模式解耦 | Database 不依赖 WorkerAgent，std::function 桥接 |
 | DataService 进程级单例 | Master/Worker 共享，instance() 返回 CMSharedPtr |
 | COMPLETE = 可读（统一语义） | 不论 save_to_db 与否，completion_state==COMPLETE 即可读 |
+| read_raw_compressed 单次尝试 | C++ 不重试，返回 can_still_produce 状态，扩展等待由 Python wait_obj 处理 |
+| Tier 3 回调直接查 remote_idx | 避免 reactor epoll 跨 fd 顺序不确定导致的 race |
+| temp_compressed_data_ 用 FlyBufferPtr | shared_ptr 零拷贝读取，避免每次读都全量拷贝压缩数据 |
 
 ---
 
-*文档更新日期: 2026-06-17*
+*文档更新日期: 2026-06-19*

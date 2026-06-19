@@ -2,6 +2,20 @@
 
 ---
 
+## 2026-06-19: temp cache 重构 + 读重试策略 + wait_obj timeout + QA 拆分
+
+**temp cache 重构**: `LocalObjectInfo::temp_compressed_data_` 从 `CMString` 改为 `FlyBufferPtr`。`write_temp_pickle` 直接压缩到 `FlyBufferPtr`，`put_temp_data` → `on_temp_write` 全链路 shared_ptr 透传，写入零拷贝。读取时直接返回 shared_ptr，读取零拷贝。`try_read_local_raw` 统一返回 `FlyBufferPtr`，temp 和非 temp 路径一致。仅淘汰到 `temp_eviction_store_` 时拷贝一次（低频路径）。
+
+**读重试策略**: `read_raw_compressed` 远程回调改为单次尝试，不再 C++ 侧重试。`can_still_produce` 状态返回给调用方，扩展等待由 `wait_obj` 在 Python 层轮询处理。
+
+**Master 自读 race 修复**: `remote_compressed_read_handler` 改为直接查 `remote_idx` + `DataClient::request_compressed_data`，不再走 reactor 自查询。原路径经过 epoll，与 worker WriteRegister 在不同 fd 上的处理顺序不保证。
+
+**wait_obj timeout**: `@wait_obj(timeout=30)` 新增可选超时参数。默认 `None` = 永远等待，直到数据可读或确认无法产出（`can_still_produce=false` 确认 3 次）。
+
+**QA 测试拆分**: `test_read_cache.py` 拆为三个独立文件（`test_read_cache_basic.py`、`test_read_cache_cross_db.py`、`test_read_cache_large_objects.py`）。原文件中三个测试函数共享同一 fly 进程，`completed_tasks` 累积导致后续测试的 `wait_for` 被前面的残留数据欺骗。拆分后每个文件由 `runqa` 独立调度，`completed_tasks` 从零开始，保持直接 `read_object` 测试边界条件。
+
+---
+
 ## 2026-06-19: temp 写入路径优化 — 消除 C++→Python→C++ 往返
 
 **问题**: Python `_write_temp` 先调 `_compress_pickle_bytes`（C++ 压缩 → 返回 Python bytes），再调 `_put_temp_data`（Python bytes → C++ CMString）。压缩结果经历 C++→Python→C++ 两次无意义拷贝。

@@ -241,8 +241,9 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
         db.mark_temp(name);
     })
     FLY_EXPORT_DEF("_put_temp_data", [](Database& db, const CMString& name, fly_export::bytes compressed_data) {
-        CMString data(compressed_data.c_str(), compressed_data.size());
-        db.put_temp_data(name, data);
+        auto buf = CMMakeShared<FlyBuffer>();
+        buf->write(compressed_data.c_str(), compressed_data.size());
+        db.put_temp_data(name, buf);
     });
 
 FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")

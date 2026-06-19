@@ -10,7 +10,7 @@
 ./qa/runqa -j 4 -t 40
 
 # 运行指定测试
-./qa/runqa qa/storage/test_read_cache.py
+./qa/runqa qa/storage/test_read_cache_basic.py
 
 # 兼容旧入口
 ./qa/run_qa_tests.sh
@@ -362,13 +362,13 @@ C++ Logger (src/log/cpp/logger.h)
 cat qa/logs/qa.log
 
 # 查看失败测试的完整日志
-cat qa/storage/test_read_cache/fly.log
+cat qa/storage/test_read_cache_basic/fly.log
 
 # 仅查看 Worker 日志（任务执行细节）
-cat qa/storage/test_read_cache/worker1.log
+cat qa/storage/test_read_cache_basic/worker1.log
 
 # 查看所有 ERROR 级别日志
-grep '\[ERROR\]' qa/storage/test_read_cache/fly.log
+grep '\[ERROR\]' qa/storage/test_read_cache_basic/fly.log
 ```
 
 **测试失败时**，`runqa` 自动在终端打印失败测试的最后 10 行日志。

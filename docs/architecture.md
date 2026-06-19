@@ -385,12 +385,13 @@ Worker A 读取 object_name:
    └─ 找到 → DataClientPool.request() 直连目标 Worker B
        └─ Worker B 响应 → 返回数据
 
-5. 查询 Master
-   └─ request_remote_data(object_name) → Master 查询 DataService
-       └─ 返回目标 Worker 地址
-       └─ DataClientPool.request() 直连目标 Worker B
-           └─ DATA_NOT_READY 时 50ms 重试，最多等待 30s
-           └─ 成功后更新 remote_idx 缓存
+5. Tier 3: agent 层兜底回调
+   └─ remote_compressed_read_handler(object_name)
+       └─ Master 端：直接查本地 remote_idx（不走 reactor，避免 epoll 顺序不确定）
+       └─ Worker 端：通过网络查询 Master
+       └─ DataClient.request_compressed_data() 直连目标 Worker B
+           └─ 单次尝试，返回 (found, can_still_produce)
+           └─ can_still_produce=true 时 Python wait_obj 负责轮询重试
 ```
 
 ### 5.2 写入流程

@@ -98,7 +98,7 @@ def as_task(inputs=None, requires=None):
     return decorator
 
 
-def wait_obj(inputs=None, poll_interval=0.1):
+def wait_obj(inputs=None, poll_interval=0.1, timeout=None):
     """装饰器：等待依赖对象就绪后执行函数。
 
     与 @as_task 不同，@wait_obj 不会将函数提交给任务系统，
@@ -108,6 +108,7 @@ def wait_obj(inputs=None, poll_interval=0.1):
         inputs: 与 @as_task 相同，callable(*args, **kwargs) -> list[str]，
                 返回依赖对象的全名列表（需用 db.get_obj_name() 获取）。
         poll_interval: 轮询间隔（秒），默认 0.1 秒。
+        timeout: 超时秒数。None（默认）= 永远等待，直到数据可读或确认无法产出。
 
     Usage:
         @wait_obj(inputs=lambda db, key: [db.get_obj_name("dep1")])
@@ -121,7 +122,7 @@ def wait_obj(inputs=None, poll_interval=0.1):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             deps = inputs(*args, **kwargs) if inputs else []
-            _wait_for_objects(deps, poll_interval)
+            _wait_for_objects(deps, poll_interval, timeout)
             return func(*args, **kwargs)
 
         wrapper._fly_original_func = func
@@ -130,7 +131,7 @@ def wait_obj(inputs=None, poll_interval=0.1):
     return decorator
 
 
-def _wait_for_objects(deps, poll_interval):
+def _wait_for_objects(deps, poll_interval, timeout=None):
     """阻塞等待所有依赖对象在 DataService 中可用。
 
     轮询策略：
@@ -139,6 +140,11 @@ def _wait_for_objects(deps, poll_interval):
        — Worker 端会缓存 remote_idx，下次轮询命中
     3. 若 Master 返回 can_still_produce=false（无 pending/running 任务），
        连续确认多次后才判定失败（容忍任务链的竞态窗口）
+
+    Args:
+        deps: 待等待的对象全名列表
+        poll_interval: 轮询间隔（秒）
+        timeout: 超时秒数。None = 永远等待（直到数据可读或确认无法产出）
     """
     if not deps:
         return
@@ -155,6 +161,7 @@ def _wait_for_objects(deps, poll_interval):
     # 任务链中旧任务完成和新任务注册之间有竞态窗口，需要多次确认
     fail_confirm_count = {dep: 0 for dep in deps}
     fail_confirm_threshold = 3
+    start_time = time.monotonic() if timeout is not None else None
 
     while pending:
         still_pending = []
@@ -180,6 +187,11 @@ def _wait_for_objects(deps, poll_interval):
                     fail_confirm_count[dep] = 0
 
             still_pending.append(dep)
+
+        if timeout is not None and start_time is not None:
+            if time.monotonic() - start_time >= timeout:
+                raise TimeoutError(
+                    f"wait_obj: timed out after {timeout}s waiting for {still_pending}")
 
         pending = still_pending
 

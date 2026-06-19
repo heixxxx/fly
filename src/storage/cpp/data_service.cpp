@@ -212,7 +212,7 @@ void DataService::remove_local_index(const CMString& object_name) {
         if (db_it != local_idx_.end()) {
             auto it = db_it->second.find(short_name);
             if (it != db_it->second.end() && it->second && it->second->is_temp_) {
-                freed_bytes = static_cast<int64_t>(it->second->temp_compressed_data_.size());
+                freed_bytes = it->second->temp_compressed_data_ ? static_cast<int64_t>(it->second->temp_compressed_data_->size()) : 0;
             }
             db_it->second.erase(short_name);
         }
@@ -479,7 +479,7 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
     CMVector<IndexEntry> entries;
     DbPaths paths;
     bool is_temp = false;
-    CMString temp_data;
+    FlyBufferPtr temp_data;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -509,16 +509,17 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
     }
 
     if (is_temp) {
-        if (temp_data.empty()) {
+        if (!temp_data) {
             if (temp_eviction_store_) {
                 auto [found, data] = temp_eviction_store_->get(object_name);
                 if (!found) return {false, ReadResult{}};
-                temp_data = std::move(data);
+                temp_data = CMMakeShared<FlyBuffer>();
+                temp_data->take(std::move(data));
             } else {
                 return {false, ReadResult{}};
             }
         }
-        return {true, decompress_raw(temp_data)};
+        return {true, decompress_raw(CMString(temp_data->data(), temp_data->size()))};
     }
 
     ReadResult result = do_read_local_entries(entries, paths);
@@ -539,7 +540,7 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
     CMVector<IndexEntry> entries;
     DbPaths paths;
     bool is_temp = false;
-    CMString temp_data;
+    FlyBufferPtr temp_data;
     int diag = 0;  // 0=not_found_db, 1=not_found_obj, 2=not_ready, 3=found_temp
 
     {
@@ -577,16 +578,14 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
         case 0: DBG("[TEMP-READ-LOCAL] NOT FOUND: obj={}", object_name); break;
         case 1: DBG("[TEMP-READ-LOCAL] NOT FOUND: obj={}, short_name={}", object_name, short_name); break;
         case 2: DBG("[TEMP-READ-LOCAL] NOT READY: obj={}", object_name); break;
-        case 3: DBG("[TEMP-READ-LOCAL] FOUND: obj={}, data_size={}", object_name, temp_data.size()); break;
+        case 3: DBG("[TEMP-READ-LOCAL] FOUND: obj={}, data_size={}", object_name, temp_data ? temp_data->size() : 0); break;
     }
 
     if (diag != 3) return {false, nullptr};
 
     if (is_temp) {
-        if (!temp_data.empty()) {
-            auto buf = CMMakeShared<FlyBuffer>();
-            buf->take(std::move(temp_data));
-            return {true, buf};
+        if (temp_data) {
+            return {true, temp_data};  // zero-copy shared_ptr return
         }
         if (temp_eviction_store_) {
             auto [found, data] = temp_eviction_store_->get(object_name);
@@ -660,22 +659,21 @@ std::tuple<bool, FlyBufferPtr, CMString> DataService::try_read_local_raw_or_wait
                     (info->is_temp_ || info->flushed_);
     if (readable) {
         if (is_temp) {
-            CMString temp_data = info->temp_compressed_data_;
-            if (temp_data.empty()) {
+            FlyBufferPtr temp_data = info->temp_compressed_data_;
+            if (!temp_data) {
                 if (temp_eviction_store_) {
                     auto [found, data] = temp_eviction_store_->get(object_name);
                     if (!found) return {false, nullptr, {}};
-                    temp_data = std::move(data);
+                    temp_data = CMMakeShared<FlyBuffer>();
+                    temp_data->take(std::move(data));
                 } else {
                     return {false, nullptr, {}};
                 }
             }
             CMString py_name;
-            DecompressingStreamBuf dsbuf(temp_data.data(), temp_data.size());
+            DecompressingStreamBuf dsbuf(temp_data->data(), temp_data->size());
             py_name = dsbuf.py_name();
-            auto buf = CMMakeShared<FlyBuffer>();
-            buf->take(std::move(temp_data));
-            return {true, buf, std::move(py_name)};
+            return {true, temp_data, std::move(py_name)};
         }
 
         FlyBufferPtr raw = do_read_raw_entries(info->entries_, paths);
@@ -711,22 +709,21 @@ std::tuple<bool, FlyBufferPtr, CMString> DataService::try_read_local_raw_or_wait
     }
 
     if (info->is_temp_) {
-        CMString temp_data = info->temp_compressed_data_;
-        if (temp_data.empty()) {
+        FlyBufferPtr temp_data = info->temp_compressed_data_;
+        if (!temp_data) {
             if (temp_eviction_store_) {
                 auto [found, data] = temp_eviction_store_->get(object_name);
                 if (!found) return {false, nullptr, {}};
-                temp_data = std::move(data);
+                temp_data = CMMakeShared<FlyBuffer>();
+                temp_data->take(std::move(data));
             } else {
                 return {false, nullptr, {}};
             }
         }
         CMString py_name;
-        DecompressingStreamBuf dsbuf(temp_data.data(), temp_data.size());
+        DecompressingStreamBuf dsbuf(temp_data->data(), temp_data->size());
         py_name = dsbuf.py_name();
-        auto buf = CMMakeShared<FlyBuffer>();
-        buf->take(std::move(temp_data));
-        return {true, buf, std::move(py_name)};
+        return {true, temp_data, std::move(py_name)};
     }
 
     DbPaths final_paths;
@@ -809,17 +806,18 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
     bool readable2 = info->completion_state_ == CompletionState::COMPLETE;
     if (readable2) {
         if (is_temp) {
-            CMString temp_data = info->temp_compressed_data_;
-            if (temp_data.empty()) {
+            FlyBufferPtr temp_data = info->temp_compressed_data_;
+            if (!temp_data) {
                 if (temp_eviction_store_) {
                     auto [found, data] = temp_eviction_store_->get(object_name);
                     if (!found) return {false, ReadResult{}};
-                    temp_data = std::move(data);
+                    temp_data = CMMakeShared<FlyBuffer>();
+                    temp_data->take(std::move(data));
                 } else {
                     return {false, ReadResult{}};
                 }
             }
-            return {true, decompress_raw(temp_data)};
+            return {true, decompress_raw(CMString(temp_data->data(), temp_data->size()))};
         }
         ReadResult read_result = do_read_local_entries(info->entries_, paths);
         if (read_result.data_buffer_.empty()) return {false, ReadResult{}};
@@ -851,17 +849,18 @@ std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
     }
 
     if (info->is_temp_) {
-        CMString temp_data = info->temp_compressed_data_;
-        if (temp_data.empty()) {
+        FlyBufferPtr temp_data = info->temp_compressed_data_;
+        if (!temp_data) {
             if (temp_eviction_store_) {
                 auto [found, data] = temp_eviction_store_->get(object_name);
                 if (!found) return {false, ReadResult{}};
-                temp_data = std::move(data);
+                temp_data = CMMakeShared<FlyBuffer>();
+                temp_data->take(std::move(data));
             } else {
                 return {false, ReadResult{}};
             }
         }
-        return {true, decompress_raw(temp_data)};
+        return {true, decompress_raw(CMString(temp_data->data(), temp_data->size()))};
     }
 
     {
@@ -944,18 +943,14 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
         remote_cb = remote_compressed_read_handler_;
     }
     if (remote_cb) {
-        bool last_can_produce = false;
-        constexpr int kRetryIntervalMs = 50;
-        constexpr int kMaxWaitMs = 30000;
-        for (int elapsed = 0; elapsed < kMaxWaitMs; elapsed += kRetryIntervalMs) {
-            auto [cb_found, cb_data, cb_py_name, cb_can_still_produce] = remote_cb(object_name);
-            last_can_produce = cb_can_still_produce;
-            if (cb_found && cb_data && !cb_data->empty()) {
-                return {true, cb_data, std::move(cb_py_name), {}, false};
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(kRetryIntervalMs));
+        // Single attempt — no retry. If data is not found, return immediately
+        // with can_still_produce so the caller can decide. Extended waiting
+        // is the caller's responsibility (wait_obj polls at the Python level).
+        auto [cb_found, cb_data, cb_py_name, cb_can_still_produce] = remote_cb(object_name);
+        if (cb_found && cb_data && !cb_data->empty()) {
+            return {true, cb_data, std::move(cb_py_name), {}, false};
         }
-        return {false, nullptr, {}, {}, last_can_produce};
+        return {false, nullptr, {}, {}, cb_can_still_produce};
     }
 
     return {false, nullptr, {}, {}, false};
@@ -1070,14 +1065,14 @@ void DataService::on_temp_write_started(const CMString& db_id, const CMString& o
     DBG("[TEMP-WRITE-STARTED] obj={}, db_id={}", object_name, db_id);
 }
 
-void DataService::on_temp_write(const CMString& db_id, const CMString& object_name, CMString&& compressed_data) {
+void DataService::on_temp_write(const CMString& db_id, const CMString& object_name, FlyBufferPtr compressed_data) {
     if (!temp_eviction_store_) {
         temp_max_bytes_ = Config::instance()->get_int("temp_store_size");
         if (temp_max_bytes_ <= 0) temp_max_bytes_ = 2147483648LL;
         temp_eviction_store_ = CMMakeUnique<fly::TempStore>(temp_max_bytes_);
     }
 
-    int64_t data_size = static_cast<int64_t>(compressed_data.size());
+    int64_t data_size = compressed_data ? static_cast<int64_t>(compressed_data->size()) : 0;
     auto [_, short_name] = split_full(object_name);
 
     CMSharedPtr<LocalObjectInfo> info;
@@ -1092,8 +1087,8 @@ void DataService::on_temp_write(const CMString& db_id, const CMString& object_na
         }
         info = it->second;
 
-        if (info->is_temp_ && !info->temp_compressed_data_.empty()) {
-            int64_t old_size = static_cast<int64_t>(info->temp_compressed_data_.size());
+        if (info->is_temp_ && info->temp_compressed_data_) {
+            int64_t old_size = static_cast<int64_t>(info->temp_compressed_data_->size());
             temp_total_bytes_ -= old_size;
             auto lru_it = std::find(temp_lru_order_.begin(), temp_lru_order_.end(), object_name);
             if (lru_it != temp_lru_order_.end()) temp_lru_order_.erase(lru_it);
@@ -1117,10 +1112,12 @@ void DataService::on_temp_write(const CMString& db_id, const CMString& object_na
             if (old_db_it != local_idx_.end()) {
                 auto old_ent = old_db_it->second.find(old_short_name);
                 if (old_ent != old_db_it->second.end() && old_ent->second && old_ent->second->is_temp_
-                    && !old_ent->second->temp_compressed_data_.empty()) {
-                    int64_t freed = static_cast<int64_t>(old_ent->second->temp_compressed_data_.size());
-                    temp_eviction_store_->put(oldest, old_ent->second->temp_compressed_data_);
-                    old_ent->second->temp_compressed_data_.clear();
+                    && old_ent->second->temp_compressed_data_) {
+                    int64_t freed = static_cast<int64_t>(old_ent->second->temp_compressed_data_->size());
+                    temp_eviction_store_->put(oldest,
+                        CMString(old_ent->second->temp_compressed_data_->data(),
+                                 old_ent->second->temp_compressed_data_->size()));
+                    old_ent->second->temp_compressed_data_.reset();
                     temp_total_bytes_ -= freed;
                 }
             }
@@ -1142,7 +1139,7 @@ void DataService::cleanup_temp_entries(const CMString& db_id) {
         if (db_it == local_idx_.end()) return;
         for (auto it = db_it->second.begin(); it != db_it->second.end();) {
             if (it->second && it->second->is_temp_) {
-                freed_bytes += static_cast<int64_t>(it->second->temp_compressed_data_.size());
+                freed_bytes += it->second->temp_compressed_data_ ? static_cast<int64_t>(it->second->temp_compressed_data_->size()) : 0;
                 names_to_clean.push_back(db_id + ":" + it->first);
                 it = db_it->second.erase(it);
             } else {

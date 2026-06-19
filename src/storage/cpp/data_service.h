@@ -54,7 +54,7 @@ struct LocalObjectInfo {
     CompletionState completion_state_ = CompletionState::INCOMPLETE;
     CMString error_message_;
     bool is_temp_ = false;
-    CMString temp_compressed_data_;
+    FlyBufferPtr temp_compressed_data_;  // shared_ptr: zero-copy reads, automatic lifetime
 
     std::mutex cv_mutex_;
     std::condition_variable cv_;
@@ -176,7 +176,7 @@ public:
     std::pair<bool, CMString> get_temp_data(const CMString& object_name) const;
 
     void on_temp_write_started(const CMString& db_id, const CMString& object_name);
-    void on_temp_write(const CMString& db_id, const CMString& object_name, CMString&& compressed_data);
+    void on_temp_write(const CMString& db_id, const CMString& object_name, FlyBufferPtr compressed_data);
     void cleanup_temp_entries(const CMString& db_id);
 
     // ============================================================
