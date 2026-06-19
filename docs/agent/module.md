@@ -185,7 +185,7 @@ schedule_tasks()
 ```
 on_task_complete(TaskCompleteMessage)
   → worker_manager_->complete_task(worker_id)   // Worker → IDLE
-  → if task_id < 100000 (普通任务):
+  → if !msg.is_internal_ (普通任务):
       → for written_object:
           → graph_->mark_data_ready(data_path)       // 触发下游
           → DataService.update_remote_idx(...)        // 更新远程索引
@@ -196,7 +196,7 @@ on_task_complete(TaskCompleteMessage)
       → metadata_->update_task_status(task_id, COMPLETED)
       → remove_persisted_task(task_id)               // 清除持久化记录
       → 清理 task_modules_ / task_args_
-  → else (internal task, 如 backup, task_id >= 100000):
+  → else (internal task, is_internal_=true, 如 backup):
       → for written_object:
           → DataService.update_remote_idx(...)        // 无论 streaming_mode 都更新
   → schedule_tasks()                              // 调度新任务

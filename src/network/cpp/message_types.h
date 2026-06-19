@@ -146,10 +146,11 @@ struct TaskCompleteMessage {
     uint64_t worker_id_ = 0;
     CMVector<CMString> written_objects_;
     CMVector<CMString> frozen_dbs_;
+    bool is_internal_ = false;  // backup 等内部任务，不参与依赖图和 metadata
 
     static constexpr MessageType msg_type_ = MessageType::TASK_COMPLETE;
 
-    FLY_SERIALIZE(header_, task_id_, worker_id_, written_objects_, frozen_dbs_);
+    FLY_SERIALIZE(header_, task_id_, worker_id_, written_objects_, frozen_dbs_, is_internal_);
 };
 
 struct TaskFailedMessage {

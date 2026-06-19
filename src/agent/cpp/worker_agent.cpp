@@ -934,9 +934,10 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
         fly::DataService::instance()->drain_write_back();
 
         TaskCompleteMessage complete;
-        complete.task_id_ = task.task_id_;
+        complete.task_id_ = 0;  // internal task 不需要 task_id
         complete.worker_id_ = worker_id_;
         complete.written_objects_.push_back(db_id + ":" + object_name);
+        complete.is_internal_ = true;
         reactor_->send(master_conn_, complete);
 
         INFO("Internal backup complete: object={}, db_id={}", object_name, db_id);

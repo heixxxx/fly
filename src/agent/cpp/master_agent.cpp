@@ -598,10 +598,7 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
     DataService::instance();
     auto addr = DataService::instance()->get_worker_address(worker_id);
 
-    constexpr uint64_t INTERNAL_TASK_BASE = 100000;
-    bool is_internal = (msg.task_id_ >= INTERNAL_TASK_BASE);
-
-    if (!is_internal) {
+    if (!msg.is_internal_) {
         bool streaming_mode = (Config::instance()->get_int("dependency_update_mode") == 0);
 
         for (const auto& data_path : msg.written_objects_) {
