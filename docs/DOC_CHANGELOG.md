@@ -2,6 +2,56 @@
 
 ---
 
+## 2026-06-20: solver 优化 + stop() 修复 + FLY_RELEASE + 粗网格预构建
+
+### stop() 流程重构
+
+**三阶段流程**：
+1. Phase 1: 等待所有 running tasks 完成（workers 仍然活跃）
+2. Phase 2: 发送 shutdown 给所有 workers
+3. Phase 3: 等待 workers 断开连接（CV 通知机制）
+
+**draining 模式修复**: on_disconnect 在 draining 模式下将 running tasks 标记为 FAILED（而非跳过），并通知 drain_cv_，避免 stop() 等待 10s 超时。
+
+**自动 stop()**: 脚本模式下，用户脚本执行完毕后自动调用 stop()。交互模式下，用户退出时通过 atexit 调用 stop()。
+
+### FLY_RELEASE 编译 flag
+
+新增 `FLY_RELEASE` 编译宏，在 `build:opt` 模式下自动定义。DBG 宏在 FLY_RELEASE 模式下编译为空宏 `((void)0)`，彻底消除热路径日志开销。
+
+配置方式：`./fly.sh build --config=opt`（等效于 `--compilation_mode=opt -DFLY_RELEASE`）
+
+### scipy 模块级 import
+
+将 `numpy`、`scipy.sparse`、`scipy.sparse.linalg.splu` 移到 `ras_graph.py` 顶部，避免热路径懒加载。Worker 进程启动时即完成 import，不阻塞迭代。
+
+### 粗网格预构建
+
+coarse 校正的粗网格构建从迭代循环内移到迭代前。通过 `_prebuild_coarse_grid()` 向所有 worker 分发构建任务，worker 并行构建，不阻塞 check task。
+
+### 热路径日志降级
+
+- `data_server.cpp`: DS-ACCEPT/DS-Q/DS-SEND INFO→DBG
+- `master_agent.cpp`: WriteRegister INFO→DBG
+
+### 性能对比 (O2 + FLY_RELEASE, golden_n50_sd9)
+
+| 版本 | Wall Clock | t_total | read_nb | write |
+|------|-----------|---------|---------|-------|
+| Baseline | 5578ms | 10.7ms | 6.2ms | 2.0ms |
+| 优化后 | 3368ms | 4.8ms | 2.4ms | 1.0ms |
+| 提升 | -39.6% | -55% | -61% | -50% |
+
+### n=500 coarse 性能
+
+| 阶段 | 优化前 | 优化后 |
+|------|--------|--------|
+| 粗网格构建 | 迭代内阻塞 | 1.6s (迭代前并行) |
+| 迭代时间 | 5.7s | 2.8s (-51%) |
+| 总时间 | 7.44s | 6.41s (-14%) |
+
+---
+
 ## 2026-06-19: TaskManager/DependencyGraph 性能优化 + 依赖位置预取
 
 ### TaskManager 优化

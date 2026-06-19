@@ -214,17 +214,33 @@ Layer 3: request_remote_data("key")
 ### 优雅关机流程
 
 ```
-Master.stop()
-  1. draining_ = true (阻止新调度)
-  2. 广播 ShutdownMessage 给所有 Worker
-  3. 等待 running tasks 清空 (最多 10s)
-  4. persist_pending_tasks() (持久化未完成任务)
-  5. 停止所有线程和组件
+Master.stop() — 三阶段流程
+  Phase 1: 等待所有 running tasks 完成 (workers 仍然活跃)
+    → drain_cv_ 等待 running_count == 0 (最多 30s)
+    → on_task_complete / on_task_failed 通知 drain_cv_
+
+  Phase 2: 发送 shutdown 给所有 workers
+    → 广播 ShutdownMessage
+
+  Phase 3: 等待 workers 断开连接
+    → workers_drained_cv_ 等待 worker_to_conn_ 为空 (最多 10s)
+    → on_disconnect 通知 workers_drained_cv_
+
+  → persist_pending_tasks()
+  → 停止所有线程和组件
+
+draining 模式下 on_disconnect:
+  → 标记 running tasks 为 FAILED
+  → 通知 drain_cv_ 和 workers_drained_cv_
 
 Worker.on_shutdown()
   → initiate_shutdown()
   → 停止 Data Server 和 Reactor
   → do_cleanup()
+
+自动 stop():
+  → 脚本模式: 用户脚本执行完毕后自动调用 stop()
+  → 交互模式: 用户退出时通过 atexit 调用 stop()
 ```
 
 ### Freeze 流程
