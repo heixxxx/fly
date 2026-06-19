@@ -389,7 +389,7 @@ Worker A 读取 object_name:
    └─ request_remote_data(object_name) → Master 查询 DataService
        └─ 返回目标 Worker 地址
        └─ DataClientPool.request() 直连目标 Worker B
-           └─ 最多重试3次
+           └─ DATA_NOT_READY 时 50ms 重试，最多等待 30s
            └─ 成功后更新 remote_idx 缓存
 ```
 
@@ -401,17 +401,22 @@ Worker A 写入 object_name:
 1. 调用 db.write_object(object_name, data)
    └─ 检查 Database 是否冻结
 
-2. 调用线程序列化 + 压缩（compress_to_buffer 流式管线）
+2. 调用线程序列化 + 压缩（流式管线）
 
-3. 触发依赖满足（on_data_ready）
+3. 立即填充 low cache（put_low）
+   └─ 远程读可直接命中，无需等待落盘
 
-4. WBQ 后台线程执行 write_record 磁盘写入
+4. 注册写入（commit_write）
+   └─ on_write_started → local_idx 标记 INCOMPLETE
+   └─ register_write → WriteRegisterMessage → Master
+   └─ Master 标记数据就绪 → 调度依赖任务
+   └─ 此时远程读已可从 cache 命中
+   └─ 失败时回滚：cache.remove + on_write_failed
 
-5. 向 Master 发送 DataReadyMessage
-   └─ Master 更新 DataService 索引
+5. WBQ 后台线程执行 write_record 磁盘写入
 
-6. 任务完成时：
-   └─ 发送 TaskCompleteMessage（携带 written_objects）
+6. 完成回调：on_write_completed → local_idx 标记 COMPLETE
+   └─ 任务完成时发送 TaskCompleteMessage
    └─ Master 更新远程索引
 ```
 

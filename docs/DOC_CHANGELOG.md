@@ -2,6 +2,40 @@
 
 ---
 
+## 2026-06-19: 写入时序重构 + 读写公共路径统一
+
+**写入时序**：`write_object` 统一为 序列化+压缩 → put_low（cache）→ 注册（通知 master）→ 落盘。原时序中注册在序列化之前，master 标记数据就绪时 cache 未填充，其他 worker 读返回 `DATA_NOT_READY` 需重试。
+
+**commit_write 提取**：`write_pickle_bytes`（Python pickle）和 `write_object<T>`（C++ 流式序列化）共享相同的 cache→register→enqueue 逻辑，提取为 `commit_write` 私有方法，净减 56 行。
+
+**读侧公共路径**：两条读路径（Python `_read_decompressed` 和 C++ `read_object<T>`）都经过 `read_object_compressed` 作为公共 IO+缓存+backup 逻辑，无需额外提取。
+
+**读重试参数**：`read_raw_compressed` 远程回调重试从 3 次×1s 改为 50ms×30s。
+
+| 文档 | 变更 |
+|------|------|
+| docs/storage/module.md | 读路径说明补充 read_object_compressed 公共路径；写入流程更新时序 |
+| docs/architecture.md | 写入流程 6 步更新；读重试参数更新 |
+
+---
+
+## 2026-06-19: internal task 判定 + worker config 共享 + DB 路径统一
+
+- `TaskCompleteMessage` 新增 `is_internal_` 字段，替代 `task_id >= 100000` 脆弱判定
+- worker 启动共享一份 config 文件（`.fly_config`），不再为每个 worker 创建独立文件
+- QA 测试 DB 路径统一到 `log_dir/db`，coordinator 通过 `FLY_DB_PATH`/`FLY_DB_DIR` 环境变量传递共享路径给 helper
+
+---
+
+## 2026-06-19: QA 路径清理 + 分类整理 + 源码 bug 修复
+
+- 删除 98 个 case/helper/script 的冗余 `sys.path.insert`（fly 已自动配好路径）
+- 10 个多阶段测试改用 `get_fly_binary()`，消除 `bazel-bin` 硬编码
+- `qa/internal/` 7 个 case 按内容拆分到 backup/storage/dependency/fault/unit/
+- 源码修复：`read_object_compressed` cache 命中补 backup 检查；`request_db_path` 传 `existing_db_id`；`_update_latest_symlink` 用 `remove_all`
+
+---
+
 ## 2026-06-18: 读写路径零拷贝优化 review 修复 — cache 语义 + xsputn 边界
 
 **原因**: review `117c725`（读写路径零拷贝优化）发现三个问题：

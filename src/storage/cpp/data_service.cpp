@@ -945,15 +945,15 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
     }
     if (remote_cb) {
         bool last_can_produce = false;
-        for (int attempt = 0; attempt < 3; ++attempt) {
+        constexpr int kRetryIntervalMs = 50;
+        constexpr int kMaxWaitMs = 30000;
+        for (int elapsed = 0; elapsed < kMaxWaitMs; elapsed += kRetryIntervalMs) {
             auto [cb_found, cb_data, cb_py_name, cb_can_still_produce] = remote_cb(object_name);
             last_can_produce = cb_can_still_produce;
             if (cb_found && cb_data && !cb_data->empty()) {
                 return {true, cb_data, std::move(cb_py_name), {}, false};
             }
-            if (attempt < 2) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(kRetryIntervalMs));
         }
         return {false, nullptr, {}, {}, last_can_produce};
     }

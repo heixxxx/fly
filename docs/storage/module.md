@@ -97,11 +97,19 @@ write_object(name, obj)
 
 **Python 侧读路径**（`database.py`）:
 ```
-read_object(name)
-  → _read_streaming → read_object_compressed → (compressed_data, py_name)
-  → _reconstruct(data, py_name)
-    ├─ C++ 类型 → __setstate__(data)
-    └─ Python 类型 → _decompress_bytes → pickle.loads
+read_object(name, backup, cache)
+  ├─ C++ 类型（nanobind 导出）→ _read_from_db → read_object<T>
+  │   └─ high cache hit → 直接返回（跳过 IO + 反序列化）
+  │   └─ miss → read_object_compressed → decompress + deserialize → put_high
+  └─ Python 类型
+      ├─ cache="high" → Python ReadCache → miss → _read_decompressed → pickle.loads
+      └─ cache="low"  → _read_decompressed → pickle.loads
+
+read_object_compressed（两条路径的公共 IO + 缓存 + backup 逻辑）:
+  → low cache hit → 直接返回（跳过远程 IO）
+  → miss → read_raw_compressed → 本地 / 远程 DataQuery
+  → backup 检查 → do_backup_write
+  → put_low（填充 low cache）
 ```
 
 ---
