@@ -110,6 +110,8 @@ read_object(name)
 
 **核心设计**: Database 统一负责流式序列化+压缩，DataWriter 纯落盘。CPU 密集操作在调用线程完成，WBQ 后台线程仅负责磁盘 I/O。
 
+**时序保证**: 注册（通知 master）在压缩+缓存填充之后，确保 master 标记数据就绪时，远程读可立即从 cache 命中。
+
 ```
 write_object<T>(name, obj, py_name)  ← 调用线程
   │
@@ -118,21 +120,25 @@ write_object<T>(name, obj, py_name)  ← 调用线程
   │     → 输出：ObjectHeader + 分块压缩数据（完整磁盘格式）
   │     → 无中间 buffer 拷贝
   │
-  ├─ 2. DataService.on_write_started(db_id, full_name)
+  ├─ 2. ObjectCache.put_low(full, record)  ← 立即填充 low cache
+  │     → 远程读（DataServer.try_read_local_raw）可直接命中
+  │
+  ├─ 3. DataService.on_write_started(db_id, full_name)
   │     → 添加 local_idx 条目，状态 INCOMPLETE
-  │     → Master 可发现数据（但尚不可读）
   │
-  ├─ 3. WorkerAgentContext.register_write(db_id, name)
+  ├─ 4. WorkerAgentContext.register_write(db_id, name)
   │     → 发送 WriteRegisterMessage → Master
+  │     → Master 标记数据就绪 → 调度依赖任务
+  │     → 此时远程读已可从 cache 命中，无需等待落盘
+  │     → 失败时回滚：ObjectCache.remove + on_write_failed
   │
-  ├─ 4. enqueue_write_back(req)  ────→  WBQ 后台线程
+  ├─ 5. enqueue_write_back(req)  ────→  WBQ 后台线程
   │     execute: write_record() + flush()    │
   │     complete: on_write_completed()       │→ file_stream_.write(record)
   │              + caller_record_func()       │→ index 更新
-  │              + write-through to ObjectCache.low  │→ flush
   │     → 状态变更为 COMPLETE（此时数据可读）
   │
-  └─ 5. 返回 WriteErrorType::OK（立即返回）
+  └─ 6. 返回 WriteErrorType::OK（立即返回）
 ```
 
 **流式管线组件**:

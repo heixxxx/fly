@@ -110,41 +110,53 @@ fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
     CMString full = full_name(object_name);
     if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return fly::WriteErrorType::FROZEN_DB; }
 
-    fly::DataService::instance()->on_write_started(db_id_, full);
-
-    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
-    if (reg_error_type == fly::TaskErrorType::WRITE_PROVENANCE_MISMATCH) {
-        ERR("Write registration failed: {} (type={})", reg_error, static_cast<int>(reg_error_type));
-        return fly::WriteErrorType::REGISTRATION_FAILED;
-    }
-    if (reg_error_type == fly::TaskErrorType::WRITE_REGISTRATION_TIMEOUT) {
-        ERR("Write registration timeout: {}", reg_error);
-        return fly::WriteErrorType::REGISTRATION_TIMEOUT;
-    }
-    if (reg_error_type == fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED) {
-        fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED);
-        return fly::WriteErrorType::DUPLICATE_SKIPPED;
-    }
-
+    // 1. Serialize + compress (before any registration — avoids gap where
+    //    master marks data ready before it's readable).
     auto record = CMMakeShared<FlyBuffer>();
     auto compress_result = compress_buffered_data(
         data, data_size, py_name, *record);
 
-    DataWriter* w = writer_.get();
-    auto caller_record_func = fly::WorkerAgentContext::current_record_func();
-    auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : std::function<void(const fly::CMString&, const fly::CMString&)>{};
-    CMString write_hash = fly::WorkerAgentContext::get_current_write_hash();
-
-    // Populate low-tier cache immediately after compression, before the
-    // background disk write. This lets remote reads (DataServer) serve from
-    // cache without waiting for the write-back thread to flush, avoiding
-    // DATA_NOT_READY retry loops.
+    // 2. Populate low-tier cache immediately — remote reads can serve from
+    //    cache without waiting for the background disk write.
     {
         size_t sz = compress_result.original_size_ > 0
                         ? static_cast<size_t>(compress_result.original_size_)
                         : record->size();
         fly::ObjectCache::instance().put_low(full, record, sz);
     }
+
+    // 3. Register write with master. Only NOW does the master mark data ready
+    //    and schedule dependent tasks — by which point the cache is populated
+    //    and remote reads can be served immediately.
+    fly::DataService::instance()->on_write_started(db_id_, full);
+
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
+
+    if (reg_error_type == fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED) {
+        // Rollback: remove from cache and local_idx, no disk write needed.
+        fly::ObjectCache::instance().remove(full);
+        fly::DataService::instance()->on_write_failed(db_id_, full, "duplicate skipped");
+        fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED);
+        return fly::WriteErrorType::DUPLICATE_SKIPPED;
+    }
+    if (reg_error_type == fly::TaskErrorType::WRITE_PROVENANCE_MISMATCH) {
+        fly::ObjectCache::instance().remove(full);
+        fly::DataService::instance()->on_write_failed(db_id_, full, reg_error);
+        ERR("Write registration failed: {} (type={})", reg_error, static_cast<int>(reg_error_type));
+        return fly::WriteErrorType::REGISTRATION_FAILED;
+    }
+    if (reg_error_type == fly::TaskErrorType::WRITE_REGISTRATION_TIMEOUT) {
+        fly::ObjectCache::instance().remove(full);
+        fly::DataService::instance()->on_write_failed(db_id_, full, reg_error);
+        ERR("Write registration timeout: {}", reg_error);
+        return fly::WriteErrorType::REGISTRATION_TIMEOUT;
+    }
+
+    // 4. Registration succeeded — enqueue background disk write.
+    DataWriter* w = writer_.get();
+    auto caller_record_func = fly::WorkerAgentContext::current_record_func();
+    auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : std::function<void(const fly::CMString&, const fly::CMString&)>{};
+    CMString write_hash = fly::WorkerAgentContext::get_current_write_hash();
 
     auto execute = [w, name = full, compress_result, record, write_hash]() {
         w->write_record(name, compress_result.original_size_,
@@ -162,7 +174,6 @@ fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
             ds->on_write_completed(db_id, full, entries.value());
         }
         ds->on_object_flushed(full);
-        // put_low already done in caller thread right after compression.
         if (caller_record_func) {
             caller_record_func(db_id, object_name);
         }
