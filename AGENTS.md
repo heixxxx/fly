@@ -26,7 +26,9 @@
 bash qa/run_qa_tests.sh        # Legacy wrapper, same thing
 ```
 
-`runqa` launches each `test_*.py` in a fresh `fly` process with isolated C++ singletons. Logs go to `qa/logs/`.
+`runqa` launches each `test_*.py` in a fresh `fly` process with isolated C++ singletons. Logs go to `{test_dir}/{test_name}/`. Before each run, `runqa` cleans the test's historical logs (`.N` variants + helper nested logs).
+
+**QA case 脚本不需要 `sys.path.insert`** — fly 启动时已自动配好所有模块路径。获取 fly binary 路径用 `get_fly_binary()`，不要硬编码 `bazel-bin/...`。
 
 ---
 

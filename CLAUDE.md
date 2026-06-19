@@ -54,21 +54,24 @@
 # 单元测试
 ./fly.sh test //src/...
 
-# QA 测试（需先构建并安装）
+# QA 测试（需先构建）
 ./fly.sh build //src/main/cpp:fly
-./fly.sh install
-bash qa/run_qa_tests.sh
+./qa/runqa -j 4 -t 40
 ```
 
 ### QA 测试与 test 模块
 
-QA 测试位于 `qa/` 目录，使用 `src/test/py/e2e_tasks.py` 中定义的 @as_task 任务。添加新 QA case 时的工作流：
+QA 测试按模块分类在 `qa/<category>/` 子目录下（api/backup/dependency/fault/mapreduce/performance/scheduling/solver/storage/stress/write_provenance），使用 `src/test/py/e2e_tasks.py` 中定义的 @as_task 任务。
+
+**QA case 脚本不需要 `sys.path.insert`** — fly 启动时已自动配好所有模块路径。获取 fly binary 路径用 `get_fly_binary()`，不要硬编码 `bazel-bin/...`。
+
+添加新 QA case 时的工作流：
 
 1. **评估是否需要新任务**：检查 `e2e_tasks.py` 中是否已有满足需求的任务（write_data, read_data, compute_sum, cross_db_* 等）
 2. **若需新任务**：在 `e2e_tasks.py` 中添加，遵循现有命名风格（动词_名词，如 `write_data`）
 3. **若需新 C++ 测试对象**：在 `src/test/cpp/test_object.h` 添加新类 + `src/test/export/test_export.cpp` 添加导出
-4. **编写 QA 脚本**：在 `qa/` 目录创建新 `.py` 文件，import e2e_tasks 中的任务
-5. **注册到 QA 套件**：在 `qa/run_qa_tests.sh` 中添加新测试
+4. **编写 QA 脚本**：在 `qa/<category>/` 目录创建新 `test_<name>.py` 文件，直接 import e2e_tasks 中的任务（无需 sys.path 操作）
+5. **runqa 自动发现**：`test_*.py` 文件自动被 runqa 的 glob 递归发现，无需手动注册
 
 **test 模块不是用户可见的框架功能**，它仅为测试提供基础设施，不导出任何公共 API。
 

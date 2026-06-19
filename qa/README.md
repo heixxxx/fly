@@ -6,11 +6,11 @@
 # 构建fly二进制
 ./fly.sh build //src/main/cpp:fly
 
-# 运行全部QA测试
-./qa/runqa
+# 运行全部QA测试（-j 并发，-t 超时秒数）
+./qa/runqa -j 4 -t 40
 
-# 运行指定测试（支持 -j 控制并发数）
-./qa/runqa -j2 qa/test_remove_object.py
+# 运行指定测试
+./qa/runqa qa/storage/test_read_cache.py
 
 # 兼容旧入口
 ./qa/run_qa_tests.sh
@@ -20,11 +20,12 @@
 
 `runqa`（Python 运行器）对每个 `test_*.py` 文件：
 
-1. 用 `fly --log-dir <dir> <test_file>` 启动一个**独立进程**
-2. fly 二进制初始化全新的 C++ 运行时（DataService、StorageManager 等单例都是全新的）
-3. 执行 Python 测试脚本
-4. 通过进程退出码判断 pass/fail（0=pass, 非0=fail）
-5. 日志写入 `qa/logs/` 目录
+1. 清理该测试的历史日志（`.N` 变体 + helper 嵌套 log）
+2. 用 `fly --log-dir <dir> <test_file>` 启动一个**独立进程**（`cwd` 设为测试所在目录）
+3. fly 二进制初始化全新的 C++ 运行时（DataService、StorageManager 等单例都是全新的）
+4. 执行 Python 测试脚本
+5. 通过进程退出码判断 pass/fail（0=pass, 非0=fail）
+6. 日志写入 `{test_dir}/{test_name}/` 目录
 
 ---
 
@@ -32,17 +33,15 @@
 
 ### 基本模板
 
+**不需要任何 `sys.path.insert` 操作** — fly 启动时已自动配好所有模块路径。
+
 ```python
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
-DB_PATH = "/tmp/fly_e2e_<test_name>_db"
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
+DB_PATH = f"/tmp/fly_e2e_<test_name>_db_{os.getpid()}"
 
 from e2e_tasks import write_data
 from fly import open_db, get_config
@@ -84,9 +83,9 @@ INFO(f"[PASS] test_<feature>")
 如果测试需要跨进程重启（如 load_db），使用协调器模式：
 
 ```
-qa/
-├── test_load_db.py          # 协调器（QA runner 发现此文件）
-├── load_db_run1.py          # 辅助脚本（不是test_前缀，不会被QA runner直接运行）
+qa/storage/
+├── test_load_db.py          # 协调器（runqa 发现此文件）
+├── load_db_run1.py          # 辅助脚本（非 test_ 前缀，不被 runqa 直接运行）
 └── load_db_run2.py          # 辅助脚本
 ```
 
@@ -94,19 +93,23 @@ qa/
 
 ```python
 import subprocess
+from fly import get_fly_binary
 
-FLY_BIN = os.path.join(PROJECT_ROOT, "bazel-bin", "src", "main", "cpp", "fly")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+FLY_BIN = get_fly_binary()
 
 result = subprocess.run(
     [FLY_BIN, "--log-dir", log_dir, script_path],
-    capture_output=True, text=True, timeout=120, cwd=PROJECT_ROOT,
+    capture_output=True, text=True, timeout=120, cwd=SCRIPT_DIR,
 )
 assert result.returncode == 0, f"Failed: {result.stderr}"
 ```
 
+> **注意**：使用 `get_fly_binary()` 获取 fly 路径，不要硬编码 `bazel-bin/...`。`get_fly_binary()` 在任何场景（build/ 布局、bazel-bin/ 布局、tar 打包重定位）都能返回正确路径。
+
 ### 任务函数
 
-所有任务函数定义在 `/root/fly/src/e2e_tasks.py`。常用任务：
+所有任务函数定义在 `src/test/py/e2e_tasks.py`。常用任务：
 
 | 任务 | 说明 |
 |------|------|
@@ -116,7 +119,30 @@ assert result.returncode == 0, f"Failed: {result.stderr}"
 | `write_and_remove(db, key, value)` | 写入后删除 |
 | `compute_sum(db, read_a, read_b, result)` | 读取两个值，写入和 |
 
-如需新任务，在 `src/e2e_tasks.py` 中添加。
+如需新任务，在 `src/test/py/e2e_tasks.py` 中添加。
+
+### 使用 worker 属性确定性钉选任务
+
+通过 `@as_task(requires=...)` 和 worker 属性，可以确定性地把任务调度到指定 worker：
+
+```python
+from fly import as_task
+
+# 定义带动态 requires 的任务（支持 lambda）
+@as_task(inputs=lambda db, key, deps, cap: list(deps),
+         requires=lambda db, key, deps, cap: [cap])
+def read_on(db, key, deps, cap):
+    return db.read_object(key)
+
+# 启动带属性的 worker
+master.launch_local_workers([
+    {"attributes": ["reader_a"]},
+    {"attributes": ["reader_b"]},
+])
+
+# 确定性调度：读任务必然跑在 reader_a worker
+read_on(db, "key", [full_name], "reader_a")
+```
 
 ---
 
@@ -148,6 +174,31 @@ if __name__ == "__main__":
 
 **原因**：QA runner 通过 `fly --log-dir <dir> <script>` 启动独立进程执行脚本，脚本内容会被 `exec()` 直接执行。不需要 `__main__` 守卫，也不需要 `main()` 函数。
 
+### 不要在测试脚本中做路径推断
+
+fly 启动时已自动配好 `sys.path`（C++ `setup_sys_path` 注入 build/python/* 模块，Python 自动注入脚本所在目录）。测试脚本**不需要** `sys.path.insert` 操作。
+
+```python
+# ✅ 正确 — 直接 import
+from e2e_tasks import write_data
+from fly import open_db, get_config
+
+# ❌ 错误 — 手动推断路径
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+```
+
+获取 fly binary 路径（用于 spawn 子进程）：
+
+```python
+# ✅ 正确 — 使用 API
+from fly import get_fly_binary
+FLY_BIN = get_fly_binary()
+
+# ❌ 错误 — 硬编码路径
+FLY_BIN = os.path.join(PROJECT_ROOT, "bazel-bin", "src", "main", "cpp", "fly")
+```
+
 ### Worker 模式
 
 `launch_local_workers` 始终使用进程模式启动 Worker：
@@ -162,10 +213,10 @@ master.launch_local_workers([{}])
 - Worker 进程通过 TCP 连接 Master，实现真正的进程隔离
 - 生产环境与测试环境使用完全一致的通信方式
 
-### 不要在测试脚本中定义 `@as_task()` 函数
+### 不要在测试脚本中定义 `@as_task()` 函数（除非配合 requires）
 
 ```python
-# ❌ 错误 — Worker 进程无法看到此函数
+# ❌ 错误 — Worker 进程无法看到此函数（普通无 requires 的任务）
 @as_task()
 def my_task(db, key):
     db.write_object(key, "value")
@@ -173,15 +224,20 @@ def my_task(db, key):
 # ✅ 正确 — 使用 e2e_tasks.py 中的任务
 from e2e_tasks import write_data
 write_data(db, "key", "value")
+
+# ✅ 正确 — 带 requires 的任务可用于确定性钉选（见上文）
+@as_task(requires=lambda db, key, value: ["writer"])
+def write_on(db, key, value):
+    db.write_object(key, value)
 ```
 
-**原因**：Process worker 是独立进程，只导入 `e2e_tasks.py` 中的任务。内联定义的 `@as_task()` 函数在 Worker 进程中不可见，会导致任务执行失败。
+**原因**：Process worker 是独立进程，只导入 `e2e_tasks.py` 中的任务。内联定义的 `@as_task()` 函数在 Worker 进程中不可见，会导致任务执行失败。带 `requires` 的任务通过 cloudpickle 序列化，可以正常分发。
 
-如需新任务，统一添加到 `src/e2e_tasks.py`。
+如需新任务，统一添加到 `src/test/py/e2e_tasks.py`。
 
 ### 只使用公共 Python API
 
-QA 测试是高层集成测试，必须只使用公共 Python API。底层 C++ 测试属于 unit test（`src/*/tests/`），不属于 QA。
+QA 测试是高层集成测试，必须只使用公共 Python API。底层 C++ 测试属于 unit test（`qa/unit/` 或 `src/*/tests/`），不属于 QA。
 
 ```python
 # ✅ 正确 — 使用公共 API
@@ -216,6 +272,7 @@ storage.ex_stg_get_data_service()
 | `master.stop()` | 停止 Master 和所有 Worker |
 | `open_db(path)` | 打开/创建数据库 |
 | `load_db(path)` | 加载已有数据库 |
+| `get_fly_binary()` | 获取 fly 二进制路径（任何布局下都正确） |
 | `db.read_object(name, cache="low")` | 读取数据 |
 | `db.write_object(name, obj, save_to_db=True)` | 写入数据 |
 | `db.remove_object(name)` | 删除数据 |
@@ -246,12 +303,12 @@ def test_part2():
 
 | 类型 | 命名 | 说明 |
 |------|------|------|
-| 测试文件 | `test_<name>.py` | QA runner 自动发现并运行 |
+| 测试文件 | `test_<name>.py` | runqa 自动发现并运行 |
 | 辅助脚本 | `<name>.py`（非 test_ 前缀） | 由测试文件通过 subprocess 调用 |
 
 ### DB 路径
 
-使用 `/tmp/fly_e2e_<test_name>_db` 格式，测试前清理，测试后不清理（方便调试）。
+使用 `f"/tmp/fly_e2e_<test_name>_db_{os.getpid()}"` 格式，确保并发安全。测试前清理，测试后不清理（方便调试）。
 
 ### 日志系统
 
@@ -290,26 +347,14 @@ C++ Logger (src/log/cpp/logger.h)
 
 #### QA 日志查看
 
-`runqa` 为每个测试生成日志，同时 runner 自身输出到终端和 `qa.log`：
+`runqa` 为每个测试生成日志，同时 runner 自身输出到终端和 `qa/logs/qa.log`：
 
 ```
-qa/logs/
-├── qa.log                          # Runner 自身输出（终端 + 文件双写）
-├── test_foo.log                    # fly 进程全部输出（C++ Logger + Python INFO/WARN/ERR）
-├── test_foo/                       # C++ Logger 文件日志
-│   ├── master.log                  #   Master 进程日志
-│   └── worker1.log                 #   Worker 进程日志
-├── test_bar.log
-├── test_bar/
-│   ├── master.log
-│   └── worker1.log
-└── ...
+{test_dir}/{test_name}/            # 测试日志目录（fly --log-dir 指定）
+├── fly.log                        # fly 进程全部输出（stdout + stderr 合并）
+├── master.log                     # Master C++ Logger 文件输出
+└── worker{N}.log                  # Worker C++ Logger 文件输出
 ```
-
-- `{test_name}.log` — fly 进程的完整输出（stdout + stderr 合并），包含所有 C++/Python 日志
-- `{test_name}/master.log` — Master 的 C++ Logger 文件输出（与 `.log` 内容相同）
-- `{test_name}/worker{N}.log` — Worker 的 C++ Logger 文件输出
-- `qa.log` — runqa runner 自身输出（测试结果汇总），同时显示在终端
 
 **快速查看**：
 ```bash
@@ -317,16 +362,16 @@ qa/logs/
 cat qa/logs/qa.log
 
 # 查看失败测试的完整日志
-cat qa/logs/test_foo.log
+cat qa/storage/test_read_cache/fly.log
 
 # 仅查看 Worker 日志（任务执行细节）
-cat qa/logs/test_foo/worker1.log
+cat qa/storage/test_read_cache/worker1.log
 
 # 查看所有 ERROR 级别日志
-grep '\[ERROR\]' qa/logs/test_foo.log
+grep '\[ERROR\]' qa/storage/test_read_cache/fly.log
 ```
 
-**测试失败时**，`runqa` 自动在终端打印失败测试的最后 20 行日志。完整日志在 `qa/logs/{test_name}.log`。
+**测试失败时**，`runqa` 自动在终端打印失败测试的最后 10 行日志。
 
 #### 生产环境日志
 
@@ -380,20 +425,43 @@ qa/
 ├── README.md                    # 本文档
 ├── runqa                       # Python 测试运行器（-j 并发、计时、排序、qa.log 双写）
 ├── run_qa_tests.sh             # 兼容入口（薄 wrapper → runqa）
-├── .gitignore                   # 忽略 logs/
+├── .gitignore                   # 忽略运行产物
 ├── BUILD                        # Bazel 构建定义
 │
-├── test_*.py                    # 测试文件（QA runner 自动发现）
-├── <helper>.py                  # 辅助脚本（由 test_*.py 调用）
+├── api/                         # API 测试（缓存、进程模式、用户脚本）
+├── backup/                      # 备份测试（自动备份、数据备份、持久化）
+├── dependency/                  # 依赖测试（wait_obj、依赖链、超时）
+├── fault/                       # 容错测试（graceful shutdown、worker crash、task exception）
+├── mapreduce/                   # MapReduce 测试
+├── performance/                 # 性能测试（fanout、copy profiling、complex scenario）
+├── scheduling/                  # 调度测试（capability、load balancing、fail unscheduleable）
+├── solver/                      # RAS 求解器测试（golden、RAS 参数矩阵）
+├── storage/                     # 存储测试（read cache、save_to_db_false、load_db、frozen DB）
+├── stress/                      # 压力测试（并发写、读写混合、稳定性）
+├── write_provenance/            # 写入溯源测试（幂等、mismatch、load_db 溯源）
 │
-└── logs/                        # 测试日志（gitignore）
-    ├── qa.log                   # Runner 自身输出（终端 + 文件双写）
-    ├── test_foo.log             # fly 进程全部输出（C++ Logger + Python 日志）
-    ├── test_foo/
-    │   ├── master.log           # Master C++ Logger 文件输出
-    │   └── worker1.log          # Worker C++ Logger 文件输出
-    └── ...
+├── unit/                        # pytest 单元测试（不经 fly 运行，独立 import C++ 模块）
+│   ├── smoke_test.py            #   Config + serialization + export 集成
+│   └── storage_test.py          #   DataService + Database 单元测试
+│
+└── scripts/                     # 基准测试 / 调试脚本（不在 QA 套件中）
+    ├── bench_ras*.py            #   RAS 性能基准
+    ├── debug_*.py               #   调试辅助脚本
+    └── sweep_*.py               #   参数扫描脚本
 ```
+
+### 测试分类原则
+
+| 目录 | 分类标准 | 示例 |
+|------|---------|------|
+| `api/` | fly 公共 API 的端到端验证 | agent cache、进程模式、用户脚本 |
+| `backup/` | 数据备份/恢复相关 | 自动备份、数据复制、持久化 |
+| `dependency/` | 任务间依赖关系 | wait_obj、依赖链、超时处理 |
+| `fault/` | 错误处理和容错 | graceful shutdown、worker crash |
+| `storage/` | 存储层功能 | read cache、frozen DB、load_db |
+| `scheduling/` | 任务调度逻辑 | capability 匹配、负载均衡 |
+| `stress/` | 高负载/并发场景 | 并发写、读写混合、稳定性 |
+| `unit/` | pytest 单元测试 | C++ 模块直接测试（不经 fly） |
 
 ---
 
@@ -403,16 +471,16 @@ qa/
 
 查看综合日志：
 ```bash
-cat qa/logs/test_foo.log
+cat qa/<category>/<test_name>/fly.log
 ```
 里面包含 fly 进程的全部 C++ 日志和 Python INFO/WARN/ERR 输出。搜索 `[ERROR]` 定位错误点。
 
 **Q: 测试失败如何调试？**
 
-1. `runqa` 失败时自动打印最后 20 行日志
-2. 查看完整日志：`cat qa/logs/{test_name}.log`
-3. 查看Worker 日志（任务执行细节）：`cat qa/logs/{test_name}/worker1.log`
-4. 搜索错误：`grep '\[ERROR\]' qa/logs/{test_name}.log`
+1. `runqa` 失败时自动打印最后 10 行日志
+2. 查看完整日志：`cat qa/<category>/<test_name>/fly.log`
+3. 查看 Worker 日志（任务执行细节）：`cat qa/<category>/<test_name>/worker1.log`
+4. 搜索错误：`grep '\[ERROR\]' qa/<category>/<test_name>/fly.log`
 
 **Q: Worker 连接失败？**
 
@@ -420,7 +488,11 @@ cat qa/logs/test_foo.log
 
 **Q: 测试间互相干扰？**
 
-每个测试使用独立的 `DB_PATH`（`/tmp/fly_e2e_<name>_db`），不应互相干扰。如果使用了相同的路径，修改为唯一路径。
+每个测试使用独立的 `DB_PATH`（`f"/tmp/fly_e2e_<name>_db_{os.getpid()}"`），不应互相干扰。如果使用了相同的路径，修改为唯一路径。
+
+**Q: 新建的 QA case 被 runqa 忽略？**
+
+确认文件名以 `test_` 开头、以 `.py` 结尾，且位于 `qa/` 的某个子目录下。runqa 使用 `glob("**/test_*.py", recursive=True)` 发现测试。
 
 ---
 
