@@ -653,17 +653,17 @@ def _compute_adaptive_omega(errs, tol, prev_err=None):
 @as_task(inputs=lambda db, step, nsd, max_iter, tol, neighbor_ids_all:
          _check_deps(db, step, nsd))
 def ras_graph_check(db, step, nsd, max_iter, tol, neighbor_ids_all):
-    if step > 1:
+    if step > 0:
         for i in range(nsd):
             try:
-                db.remove_object(f"__rasg__conv_{i}_{step - 2}")
+                db.remove_object(f"__rasg__conv_{i}_{step - 1}")
             except Exception:
                 pass
         if _is_adaptive(db):
             for i in range(nsd):
-                if step > 2:
+                if step > 1:
                     try:
-                        db.remove_object(f"__rasg__err_{i}_{step - 2}")
+                        db.remove_object(f"__rasg__err_{i}_{step - 1}")
                     except Exception:
                         pass
             if step > 2:
@@ -750,7 +750,17 @@ def ras_graph_assemble(db, nsd, final_step):
             x[gidx] = x_sd[pos]
 
     db.write_object("__rasg__sol", x, save_to_db=True)
-    DBG(f"[RASG ASSEMBLE] nsd={nsd} final_step={final_step}")
+
+    # Cleanup remaining temp data from the final iteration.
+    for i in range(nsd):
+        for prefix in [f"__rasg__x_{i}_{final_step}", f"__rasg__conv_{i}_{final_step}",
+                        f"__rasg__x_{i}_{final_step - 1}", f"__rasg__conv_{i}_{final_step - 1}"]:
+            try:
+                db.remove_object(prefix)
+            except Exception:
+                pass
+
+    INFO(f"[RASG ASSEMBLE] nsd={nsd} final_step={final_step} cleanup done")
 
 
 # ── Public API ────────────────────────────────────────────────────
