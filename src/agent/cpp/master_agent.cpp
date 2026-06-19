@@ -178,12 +178,11 @@ void MasterAgent::start() {
     // WriteRegister updates).
     dsInst->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, bool> {
         auto ds = DataService::instance();
-        if (!ds->has_remote_location(name)) {
-            return {false, nullptr, {}, false};
-        }
         auto loc = ds->lookup_remote_idx(name);
         if (loc.worker_id_ == 0 || loc.host_.empty()) {
-            return {false, nullptr, {}, false};
+            bool has_pending = !graph_->get_pending_tasks().empty();
+            bool has_running = !metadata_->get_tasks_by_status(TaskStatus::RUNNING).empty();
+            return {false, nullptr, {}, has_pending || has_running};
         }
         auto [success, data, py_name, hash, error] =
             DataClient::request_compressed_data(loc.host_, loc.port_, name);
@@ -305,9 +304,12 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
         bool is_ready = graph_->is_task_ready(task_id);
         auto pending = graph_->get_pending_tasks();
         auto ready = graph_->get_ready_tasks();
-        DBG("[DEP-GRAPH] submit_task: id={} name={} ready={} pending_count={} is_ready={} "
-            "thread={}", task_id, name, ready.size(), pending.size(), is_ready,
-            std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+        auto deps = graph_->get_task_dependencies(task_id);
+        INFO("[DEP] submit: id={} name={} deps={} ready={} pending={} is_ready={}",
+             task_id, name, deps.size(), ready.size(), pending.size(), is_ready);
+        for (const auto& dep : deps) {
+            INFO("[DEP]   dep={} data_ready={}", dep, graph_->is_data_ready(dep));
+        }
     }
 
     schedule_tasks();
@@ -908,7 +910,9 @@ void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage
             schedule_tasks();
         } else if (it->second == msg.write_context_hash_) {
             ack.success_ = true;
+            INFO("[DEP] before mark_data_ready: obj={}, ready={}, pending={}", msg.object_name_, graph_->get_ready_tasks().size(), graph_->get_pending_tasks().size());
             graph_->mark_data_ready(msg.object_name_);
+            INFO("[DEP] after mark_data_ready: obj={}, ready={}, pending={}", msg.object_name_, graph_->get_ready_tasks().size(), graph_->get_pending_tasks().size());
             auto addr = DataService::instance()->get_worker_address(msg.worker_id_);
             DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
             schedule_tasks();

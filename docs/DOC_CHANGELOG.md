@@ -8,7 +8,13 @@
 
 **put_temp_data 时序修复**: `on_temp_write`（存储数据到 `temp_compressed_data_`）移到 `register_write` 之前。`register_write` 是同步阻塞的，Master 收到 ACK 后立刻调度依赖任务，如果数据还未存储，其他 worker 读取会失败。
 
-**读重试策略**: `read_raw_compressed` 远程回调保留 50ms×30s 重试循环。solver 的 `db.read_object()` 不用 `wait_obj`，需要 C++ 层重试作为隐式同步机制。
+**读重试策略**: `read_raw_compressed` 远程回调改为单次尝试，移除 50ms×30s 重试循环。retry loop 是 workaround 而非正确修复——真正的问题是 Master Tier 3 回调未正确返回 `can_still_produce` 状态。
+
+**can_still_produce 修复**: Master 的 `remote_compressed_read_handler` 回调在数据未找到时检查是否有 pending/running task，返回正确的 `can_still_produce` 状态。旧代码直接返回 `false`，导致 `wait_obj` 误判数据无法产出而报错。
+
+**solver 竞态条件修复**: `ras_graph_check` 中 cleanup 从 `step-1` 改为 `step-2`。原代码中 step N 的 check 删除 `conv_{i}_{N-1}`，但 step N-1 的 check 可能还在读取这些数据（两者依赖不同，可并行执行）。
+
+**依赖图日志**: `dependency_graph.cpp` 添加 INFO 级别日志，追踪 task 依赖注册和 ready 状态变化。task 模块新增 log 依赖（`dynamic_deps`）。
 
 **Master 自读 race 修复**: `remote_compressed_read_handler` 改为直接查 `remote_idx` + `DataClient::request_compressed_data`，不再走 reactor 自查询。原路径经过 epoll，与 worker WriteRegister 在不同 fd 上的处理顺序不保证。
 

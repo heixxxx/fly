@@ -653,17 +653,17 @@ def _compute_adaptive_omega(errs, tol, prev_err=None):
 @as_task(inputs=lambda db, step, nsd, max_iter, tol, neighbor_ids_all:
          _check_deps(db, step, nsd))
 def ras_graph_check(db, step, nsd, max_iter, tol, neighbor_ids_all):
-    if step > 0:
+    if step > 1:
         for i in range(nsd):
             try:
-                db.remove_object(f"__rasg__conv_{i}_{step - 1}")
+                db.remove_object(f"__rasg__conv_{i}_{step - 2}")
             except Exception:
                 pass
         if _is_adaptive(db):
             for i in range(nsd):
-                if step > 1:
+                if step > 2:
                     try:
-                        db.remove_object(f"__rasg__err_{i}_{step - 1}")
+                        db.remove_object(f"__rasg__err_{i}_{step - 2}")
                     except Exception:
                         pass
             if step > 2:

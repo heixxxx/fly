@@ -1,4 +1,5 @@
 #include <task/cpp/dependency_graph.h>
+#include <log/cpp/logger.h>
 #include <algorithm>
 
 namespace fly {
@@ -8,48 +9,53 @@ void DependencyGraph::add_task(uint64_t task_id, const CMVector<CMString>& input
     std::lock_guard<std::mutex> lock(mutex_);
     task_dependencies_[task_id] = inputs;
     task_requirements_[task_id] = required_capabilities;
-    
+
     int pending = 0;
     for (const auto& dep : inputs) {
         if (!data_ready_status_.count(dep) || !data_ready_status_[dep]) {
             pending++;
         }
     }
-    
+
     if (pending == 0) {
         ready_tasks_.insert(task_id);
     } else {
         pending_tasks_.insert(task_id);
     }
+    INFO("[DEP] add_task: id={} deps={} pending_deps={} → {}", task_id, inputs.size(), pending, pending == 0 ? "READY" : "PENDING");
 }
 
 void DependencyGraph::mark_data_ready(const CMString& data_path) {
     std::lock_guard<std::mutex> lock(mutex_);
     data_ready_status_[data_path] = true;
-    
+
+    INFO("[DEP] mark_data_ready: data={} pending_count={}", data_path, pending_tasks_.size());
+
     CMVector<uint64_t> to_ready;
-    
+
     for (auto& task_id : pending_tasks_) {
         if (completed_tasks_.count(task_id)) continue;
         if (ready_tasks_.count(task_id)) continue;
-        
+
         auto& deps = task_dependencies_[task_id];
         bool all_ready = true;
         for (const auto& dep : deps) {
             if (!data_ready_status_.count(dep) || !data_ready_status_[dep]) {
                 all_ready = false;
+                INFO("[DEP] mark_data_ready: task={} still waiting for dep={}", task_id, dep);
                 break;
             }
         }
-        
+
         if (all_ready) {
             to_ready.push_back(task_id);
         }
     }
-    
+
     for (auto task_id : to_ready) {
         pending_tasks_.erase(task_id);
         ready_tasks_.insert(task_id);
+        INFO("[DEP] mark_data_ready: task={} → READY", task_id);
     }
 }
 
