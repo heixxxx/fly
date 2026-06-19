@@ -213,27 +213,27 @@ master.launch_local_workers([{}])
 - Worker 进程通过 TCP 连接 Master，实现真正的进程隔离
 - 生产环境与测试环境使用完全一致的通信方式
 
-### 不要在测试脚本中定义 `@as_task()` 函数（除非配合 requires）
+### 在测试脚本中定义 `@as_task()` 函数
+
+测试脚本中可以直接用 `@as_task()` 定义任务（通过 cloudpickle 序列化分发到 worker）。如需确定性调度到指定 worker，配合 `requires` 参数使用。
 
 ```python
-# ❌ 错误 — Worker 进程无法看到此函数（普通无 requires 的任务）
+# ✅ 正确 — 普通任务（任意 idle worker 执行）
 @as_task()
 def my_task(db, key):
     db.write_object(key, "value")
 
-# ✅ 正确 — 使用 e2e_tasks.py 中的任务
-from e2e_tasks import write_data
-write_data(db, "key", "value")
-
-# ✅ 正确 — 带 requires 的任务可用于确定性钉选（见上文）
+# ✅ 正确 — 带 requires 的任务（只在有对应属性的 worker 上执行）
 @as_task(requires=lambda db, key, value: ["writer"])
 def write_on(db, key, value):
-    db.write_object(key, value)
+    db.write_object(key, "value")
+
+# ✅ 正确 — 使用 e2e_tasks.py 中的共享任务
+from e2e_tasks import write_data
+write_data(db, "key", "value")
 ```
 
-**原因**：Process worker 是独立进程，只导入 `e2e_tasks.py` 中的任务。内联定义的 `@as_task()` 函数在 Worker 进程中不可见，会导致任务执行失败。带 `requires` 的任务通过 cloudpickle 序列化，可以正常分发。
-
-如需新任务，统一添加到 `src/test/py/e2e_tasks.py`。
+常用任务（write_data、read_data 等）建议统一放在 `src/test/py/e2e_tasks.py` 中复用。仅在测试需要特殊行为（如自定义 requires、特定写入逻辑）时在测试脚本中定义。
 
 ### 只使用公共 Python API
 
