@@ -58,18 +58,18 @@ assert master.wait_for_workers(1)
 db = open_db(DB_PATH)
 
 # ============================================================
-# Write: 3 x 1MB temp objects
+# Write: 5 x 10MB temp objects
 # Expected allocation: compress_buffered_data (lz4 chunks) only
 # No CMString copy in put_temp_data → on_temp_write path
 # ============================================================
-n = 3
-obj_size = 1 * 1024 * 1024  # 1MB
+n = 5
+obj_size = 10 * 1024 * 1024  # 10MB
 
 INFO(f"Writing {n} x {obj_size // (1024*1024)}MB temp objects...")
 for i in range(n):
     write_temp_large(db, f"temp_{i}", obj_size)
 
-assert wait_for(lambda: len(master.completed_tasks) >= n, timeout=30.0), \
+assert wait_for(lambda: len(master.completed_tasks) >= n, timeout=60.0), \
     f"Expected {n} tasks, got {len(master.completed_tasks)}"
 
 INFO(f"Write complete: {n} objects")
@@ -105,3 +105,6 @@ INFO("  - 2nd/3rd read: near-zero alloc (ObjectCache.low hit, shared_ptr return)
 INFO("  - Should NOT see: FlyBuffer→CMString copy in try_read_local_raw")
 INFO("")
 INFO("[PASS] test_temp_zero_copy")
+
+# Cleanup: remove temp data produced by this test
+cleanup()
