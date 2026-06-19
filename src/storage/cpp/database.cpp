@@ -638,7 +638,14 @@ void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compresse
     // Step 1: Add local idx entry (INCOMPLETE, is_temp=true)
     fly::DataService::instance()->on_temp_write_started(db_id_, full);
 
-    // Step 2: Register with master so other workers can discover this data
+    // Step 2: Store temp data and mark COMPLETE — must happen BEFORE register_write.
+    // register_write is synchronous (blocks for ACK). Master dispatches dependent
+    // tasks immediately on receiving WriteRegister. If data isn't stored yet,
+    // other workers' reads will fail.
+    fly::DataService::instance()->on_temp_write(db_id_, full, compressed_data);
+
+    // Step 3: Register with master so other workers can discover this data.
+    // By now the data is readable on this worker's DataServer.
     auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
     if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
         ERR("[TEMP-PUT] register_write failed for '{}': {}", object_name, reg_error);
@@ -646,8 +653,6 @@ void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compresse
         return;
     }
 
-    // Step 3: Write temp data and mark COMPLETE — zero-copy, shared_ptr passed through
-    fly::DataService::instance()->on_temp_write(db_id_, full, std::move(compressed_data));
     DBG("[TEMP-PUT] put_temp_data complete: obj={}", object_name);
 }
 

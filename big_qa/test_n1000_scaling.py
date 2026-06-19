@@ -8,9 +8,17 @@ FLY_BIN = os.path.join(PROJECT_ROOT, 'build', 'bin', 'fly')
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
 
+# Build environment (same as runqa)
+BUILD_DIR = os.path.join(PROJECT_ROOT, 'build')
+LIB_DIR = os.path.join(BUILD_DIR, 'lib')
+PYTHON_DIR = os.path.join(BUILD_DIR, 'python')
+FLY_ENV = os.environ.copy()
+FLY_ENV["LD_LIBRARY_PATH"] = LIB_DIR + ":" + FLY_ENV.get("LD_LIBRARY_PATH", "")
+FLY_ENV["PYTHONPATH"] = LIB_DIR + ":" + PYTHON_DIR + ":" + FLY_ENV.get("PYTHONPATH", "")
+FLY_ENV["FLY_BUILD"] = BUILD_DIR
+
 RUNNER_SCRIPT = '''"""Single n=1000 test case."""
 import sys, os, shutil, time
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))
 
 import numpy as np
 from scipy import sparse
@@ -92,6 +100,7 @@ for omega_val in OMEGAS:
         result = subprocess.run(
             [FLY_BIN, '--log-dir', log_dir, script_path],
             capture_output=True, text=True, timeout=1800, cwd=PROJECT_ROOT,
+            env=FLY_ENV,
         )
 
         if result.returncode == 0:

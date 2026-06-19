@@ -943,14 +943,21 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
         remote_cb = remote_compressed_read_handler_;
     }
     if (remote_cb) {
-        // Single attempt — no retry. If data is not found, return immediately
-        // with can_still_produce so the caller can decide. Extended waiting
-        // is the caller's responsibility (wait_obj polls at the Python level).
-        auto [cb_found, cb_data, cb_py_name, cb_can_still_produce] = remote_cb(object_name);
-        if (cb_found && cb_data && !cb_data->empty()) {
-            return {true, cb_data, std::move(cb_py_name), {}, false};
+        // Retry loop: wait for data to become available.
+        // The solver's direct db.read_object() calls don't use wait_obj,
+        // so this C++-level retry is necessary for correctness.
+        bool last_can_produce = false;
+        constexpr int kRetryIntervalMs = 50;
+        constexpr int kMaxWaitMs = 30000;
+        for (int elapsed = 0; elapsed < kMaxWaitMs; elapsed += kRetryIntervalMs) {
+            auto [cb_found, cb_data, cb_py_name, cb_can_still_produce] = remote_cb(object_name);
+            last_can_produce = cb_can_still_produce;
+            if (cb_found && cb_data && !cb_data->empty()) {
+                return {true, cb_data, std::move(cb_py_name), {}, false};
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(kRetryIntervalMs));
         }
-        return {false, nullptr, {}, {}, cb_can_still_produce};
+        return {false, nullptr, {}, {}, last_can_produce};
     }
 
     return {false, nullptr, {}, {}, false};
