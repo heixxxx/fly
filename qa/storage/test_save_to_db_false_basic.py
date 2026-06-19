@@ -3,11 +3,11 @@ import time
 import os
 import shutil
 
-DB_PATH = f"/tmp/fly_e2e_save_to_db_false_basic_db_{os.getpid()}"
 
 
 from e2e_tasks import write_data, write_temp
 from fly import open_db, get_config
+DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
 def cleanup():

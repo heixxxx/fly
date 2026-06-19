@@ -3,10 +3,10 @@ import time
 import os
 import shutil
 
-DB_PATH = "/tmp/fly_e2e_save_to_db_false_persist_db"
 
 
 from fly import load_db, get_config
+DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 
 
 def wait_for(condition, timeout=60.0, interval=0.5):

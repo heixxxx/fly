@@ -3,10 +3,10 @@ from _fly_log import INFO
 import os
 import shutil
 
-DB_PATH = f"/tmp/fly_e2e_load_db_invalid_db_{os.getpid()}"
 
 
-from fly import load_db
+from fly import load_db, get_config
+DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
 def test_load_db_invalid_meta():

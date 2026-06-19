@@ -3,10 +3,10 @@ from _fly_log import INFO
 import os
 import time
 
-DB_PATH = "/tmp/fly_e2e_frozen_load_db"
 
 
-from fly import load_db
+from fly import load_db, get_config
+DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 from fly import get_config
 from fly.runtime import get_agent
 

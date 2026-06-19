@@ -4,20 +4,17 @@ import os
 import shutil
 import time
 
-DB_RAW_ORIG = "/tmp/fly_complex_db_raw"
-DB_FEAT_ORIG = "/tmp/fly_complex_db_feat"
-DB_RAW_MOVED = "/tmp/fly_complex_db_raw_moved"
-DB_FEAT_MOVED = "/tmp/fly_complex_db_feat_moved"
-DB_MODEL = "/tmp/fly_complex_db_model"
-
-
 from e2e_tasks import (write_data, cross_db_copy, cross_db_sum,
                        add_alpha_property, alpha_cross_db_copy,
                        gpu_cross_db_copy, triple_db_sum)
 from fly import open_db, load_db
 from fly import get_config
-
-
+_DB_DIR = os.environ.get("FLY_DB_DIR") or get_config().get_str("log_dir")
+DB_RAW_ORIG = os.path.join(_DB_DIR, "db_raw")
+DB_FEAT_ORIG = os.path.join(_DB_DIR, "db_feat")
+DB_RAW_MOVED = os.path.join(_DB_DIR, "db_raw_moved")
+DB_FEAT_MOVED = os.path.join(_DB_DIR, "db_feat_moved")
+DB_MODEL = os.path.join(_DB_DIR, "db_model")
 def wait_for(condition, timeout=20.0, interval=0.5):
     t0 = time.time()
     while time.time() - t0 < timeout:

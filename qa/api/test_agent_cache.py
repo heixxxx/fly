@@ -3,11 +3,11 @@ from _fly_log import INFO
 import os
 import shutil
 
-DB_PATH = f"/tmp/fly_e2e_cache_db_{os.getpid()}"
 
 
 from e2e_tasks import write_data
 from fly import open_db, get_config, as_task
+DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent
 
 

@@ -3,10 +3,10 @@ import time
 import os
 import shutil
 
-DB_PATH = f"/tmp/fly_e2e_user_script_task_db_{os.getpid()}"
 
 
-from fly import as_task, open_db
+from fly import as_task, open_db, get_config
+DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
 @as_task()

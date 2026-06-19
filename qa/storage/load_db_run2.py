@@ -5,11 +5,11 @@ from _fly_log import INFO
 import os
 import time
 
-DB_PATH = "/tmp/fly_e2e_load_db_twoproc"
 
 
 from e2e_tasks import write_data, compute_sum
-from fly import load_db
+from fly import load_db, get_config
+DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 from fly import get_config
 from fly.runtime import get_agent
 

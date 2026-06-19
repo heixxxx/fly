@@ -10,10 +10,10 @@ import time
 import os
 import shutil
 
-DB_PATH = "/tmp/fly_e2e_wait_obj_p5_db"
 
 from e2e_tasks import write_data, wait_obj_then_process
 from fly import open_db, get_config
+DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent
 
 

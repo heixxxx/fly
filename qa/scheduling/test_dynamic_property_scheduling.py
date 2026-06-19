@@ -21,14 +21,14 @@ import time
 import os
 import shutil
 
-DB_PATH = f"/tmp/fly_e2e_dyn_prop_db_{os.getpid()}"
 NUM_SHARED_TASKS = 10
 
 
 from e2e_tasks import (alpha_write, beta_write, gamma_write,
                         shared_write, add_shared_on_beta,
                         add_shared_on_gamma, remove_shared_on_beta)
-from fly import open_db
+from fly import open_db, get_config
+DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
 def cleanup():

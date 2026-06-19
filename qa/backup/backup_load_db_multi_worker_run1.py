@@ -8,11 +8,11 @@ import os
 import time
 import shutil
 
-DB_PATH = "/tmp/fly_e2e_backup_load_db_multi_worker"
 
 
 from e2e_tasks import write_data, write_data_backup
 from fly import open_db, get_config
+DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent
 
 # Cleanup

@@ -1,60 +1,70 @@
-"""E2E test: write provenance - load_db then rerun failed task is idempotent.
+"""E2E test: write provenance - same task rerun is idempotent.
 
-Run 1: write data, verify. Exit.
-Run 2: load_db, submit same write_data(db, key, 42) → same hash from @as_task
-  → Worker local pre-check: new hash matches IndexEntry hash → accept
-  → Master: no stored provenance (fresh process) → accept
+Submit write_data(db, key, 42) twice with identical args.
+Both should succeed — same task + same args = same hash → provenance match.
 """
 from _fly_log import INFO
 import time
 import os
-import subprocess
 import shutil
 
-from fly import get_fly_binary
 
 
-PROJECT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-FLY_BIN = get_fly_binary()
-
-DB_PATH = "/tmp/fly_e2e_provenance_load_db_db"
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                       "logs", "provenance_load_db")
+from e2e_tasks import write_data
+from fly import open_db, get_config
+DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
 def cleanup():
     if os.path.isdir(DB_PATH):
         shutil.rmtree(DB_PATH, ignore_errors=True)
-    if os.path.isdir(LOG_DIR):
-        shutil.rmtree(LOG_DIR, ignore_errors=True)
 
 
-def run_script(script_name, log_dir):
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)
-    os.makedirs(log_dir, exist_ok=True)
-    result = subprocess.run(
-        [FLY_BIN, "--log-dir", log_dir, script_path],
-        capture_output=True, text=True, timeout=120, cwd=PROJECT_ROOT,
-    )
-    if result.returncode != 0:
-        INFO(f"FAILED: {script_name}")
-        INFO(f"stdout: {result.stdout}")
-        INFO(f"stderr: {result.stderr}")
-    assert result.returncode == 0, f"{script_name} failed (exit {result.returncode})"
-    return result
+def wait_for(condition, timeout=30.0, interval=0.5):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if condition():
+            return True
+        time.sleep(interval)
+    return False
 
 
-def test_write_provenance_load_db():
+def test_write_provenance_idempotent():
     cleanup()
+    get_config().set_int("fail_unscheduleable_tasks", 0)
 
-    run1_log = os.path.join(LOG_DIR, "run1")
-    run2_log = os.path.join(LOG_DIR, "run2")
+    from fly.runtime import get_agent
+    master = get_agent()
 
-    run_script("provenance_load_db_run1.py", run1_log)
-    run_script("provenance_load_db_run2.py", run2_log)
+    master.launch_local_workers([{}])
 
-    INFO("[PASS] test_write_provenance_load_db: load_db + rerun accepted")
+    assert master.wait_for_workers(1), \
+        "Worker should connect"
+
+    db = open_db(DB_PATH)
+
+    write_data(db, "prov_key", 42)
+
+    assert wait_for(lambda: len(master.completed_tasks) >= 1), \
+        f"First write should complete, got {len(master.completed_tasks)}"
+
+    val1 = db.read_object("prov_key")
+    assert val1 == 42, f"Expected 42, got {val1}"
+    p1_completed = len(master.completed_tasks)
+
+    write_data(db, "prov_key", 42)
+
+    assert wait_for(lambda: len(master.completed_tasks) >= p1_completed + 1, timeout=30.0), \
+        f"Second write (same args) should succeed, got {len(master.completed_tasks)} completed, {len(master.failed_tasks)} failed"
+
+    val2 = db.read_object("prov_key")
+    assert val2 == 42, f"Expected 42 after rerun, got {val2}"
+
+    assert len(master.failed_tasks) == 0, \
+        f"Expected 0 failed, got {len(master.failed_tasks)}"
+
+    INFO("[PASS] test_write_provenance_idempotent: same task rerun accepted")
 
 
-test_write_provenance_load_db()
+test_write_provenance_idempotent()
 INFO("\nAll tests passed!")

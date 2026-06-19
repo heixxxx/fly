@@ -58,3 +58,6 @@ qa/**/.fly_config_*
 qa/**/failed_tasks.bin
 qa/logs/
 massif.out.*
+.omo/run-continuation
+.open-mem
+.fly_config

@@ -10,9 +10,9 @@ import time
 import os
 import shutil
 
-DB_PATH = f"/tmp/fly_e2e_freeze_write_reject_db_{os.getpid()}"
 from e2e_tasks import freeze_db, write_after_freeze
 from fly import open_db, get_config
+DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 def cleanup():
     if os.path.isdir(DB_PATH): shutil.rmtree(DB_PATH, ignore_errors=True)

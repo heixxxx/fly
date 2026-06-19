@@ -38,7 +38,14 @@ PHASE_NAMES = [
 ]
 
 
-def run_script(script_name, log_dir):
+def _merge_env(extra):
+    """Merge extra env vars into a copy of os.environ (safe for parallel execution)."""
+    e = os.environ.copy()
+    if extra:
+        e.update(extra)
+    return e
+
+def run_script(script_name, log_dir, extra_env=None):
     """Run a Python script via the fly binary in a subprocess."""
     script_path = os.path.join(SCRIPT_DIR, script_name)
     os.makedirs(log_dir, exist_ok=True)
@@ -49,6 +56,7 @@ def run_script(script_name, log_dir):
         text=True,
         timeout=120,
         cwd=PROJECT_ROOT,
+        env=_merge_env(extra_env),
     )
     return result
 

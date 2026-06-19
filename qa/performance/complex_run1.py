@@ -4,15 +4,12 @@ import os
 import shutil
 import time
 
-DB_RAW = "/tmp/fly_complex_db_raw"
-DB_FEAT = "/tmp/fly_complex_db_feat"
-
-
 from e2e_tasks import write_data, cross_db_copy, freeze_db
 from fly import open_db
 from fly import get_config
-
-
+_DB_DIR = os.environ.get("FLY_DB_DIR") or get_config().get_str("log_dir")
+DB_RAW = os.path.join(_DB_DIR, "db_raw")
+DB_FEAT = os.path.join(_DB_DIR, "db_feat")
 def cleanup():
     for p in [DB_RAW, DB_FEAT]:
         if os.path.isdir(p):

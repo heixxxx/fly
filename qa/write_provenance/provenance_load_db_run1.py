@@ -4,11 +4,11 @@ import time
 import os
 import shutil
 
-DB_PATH = "/tmp/fly_e2e_provenance_load_db_db"
 
 
 from e2e_tasks import write_data
 from fly import open_db, get_config
+DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 
 
 def wait_for(condition, timeout=30.0, interval=0.5):

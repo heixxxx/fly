@@ -4,10 +4,10 @@ import time
 import os
 import shutil
 
-DB_PATH = f"/tmp/fly_e2e_mr_wordcount_db_{os.getpid()}"
 
 
 from fly import open_db, get_config, MapReduceJob, wait_tasks
+DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
 def cleanup():

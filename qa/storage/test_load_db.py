@@ -13,15 +13,15 @@ import subprocess
 import shutil
 import time
 
-from fly import get_fly_binary
+from fly import get_fly_binary, get_config
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 FLY_BIN = get_fly_binary()
 
-DB_PATH_P2 = "/tmp/fly_e2e_load_db_twoproc"
-DB_PATH_P3_RUN1 = "/tmp/fly_e2e_load_db_moved_run1"
-DB_PATH_P3_RUN2 = "/tmp/fly_e2e_load_db_moved_run2"
+DB_PATH_P2 = os.path.join(get_config().get_str("log_dir"), "db_p2")
+DB_PATH_P3_RUN1 = os.path.join(get_config().get_str("log_dir"), "db_p3_run1")
+DB_PATH_P3_RUN2 = os.path.join(get_config().get_str("log_dir"), "db_p3_run2")
 
 
 def cleanup(path):
@@ -29,7 +29,14 @@ def cleanup(path):
         shutil.rmtree(path, ignore_errors=True)
 
 
-def run_script(script_name, log_dir):
+def _merge_env(extra):
+    """Merge extra env vars into a copy of os.environ (safe for parallel execution)."""
+    e = os.environ.copy()
+    if extra:
+        e.update(extra)
+    return e
+
+def run_script(script_name, log_dir, extra_env=None):
     """Run a Python script via the fly binary in a subprocess."""
     script_path = os.path.join(SCRIPT_DIR, script_name)
 
@@ -41,6 +48,7 @@ def run_script(script_name, log_dir):
         text=True,
         timeout=120,
         cwd=PROJECT_ROOT,
+        env=_merge_env(extra_env),
     )
 
     return result
@@ -106,7 +114,7 @@ def test_load_db_two_processes():
 
     # ── Run 1: Create DB, write data, no freeze ──
     print("── Phase 2 Run 1: Creating DB and writing data ──", file=sys.stderr)
-    r1 = run_script("load_db_run1.py", os.path.join(log_dir, "run1"))
+    r1 = run_script("load_db_run1.py", os.path.join(log_dir, "run1"), extra_env={"FLY_DB_PATH": DB_PATH_P2})
 
     print(r1.stderr, file=sys.stderr)
     if r1.returncode != 0:
@@ -125,7 +133,7 @@ def test_load_db_two_processes():
 
     # ── Run 2: load_db, read data, new tasks, freeze ──
     print("── Phase 2 Run 2: Loading DB, reading, new tasks, freezing ──", file=sys.stderr)
-    r2 = run_script("load_db_run2.py", os.path.join(log_dir, "run2"))
+    r2 = run_script("load_db_run2.py", os.path.join(log_dir, "run2"), extra_env={"FLY_DB_PATH": DB_PATH_P2})
 
     print(r2.stderr, file=sys.stderr)
     if r2.returncode != 0:
@@ -153,7 +161,7 @@ def test_load_db_moved_db():
 
     # ── Run 1: Create DB at path A ──
     print("── Phase 3 Run 1: Creating DB at path A ──", file=sys.stderr)
-    r1 = run_script("load_db_run1_moved.py", os.path.join(log_dir, "run1"))
+    r1 = run_script("load_db_run1_moved.py", os.path.join(log_dir, "run1"), extra_env={"FLY_DB_PATH": DB_PATH_P3_RUN1})
 
     print(r1.stderr, file=sys.stderr)
     if r1.returncode != 0:
@@ -178,7 +186,7 @@ def test_load_db_moved_db():
 
     # ── Run 2: load_db from path B (different from original path A) ──
     print("── Phase 3 Run 2: Loading DB from moved path B ──", file=sys.stderr)
-    r2 = run_script("load_db_run2_moved.py", os.path.join(log_dir, "run2"))
+    r2 = run_script("load_db_run2_moved.py", os.path.join(log_dir, "run2"), extra_env={"FLY_DB_PATH": DB_PATH_P3_RUN2})
 
     print(r2.stderr, file=sys.stderr)
     if r2.returncode != 0:

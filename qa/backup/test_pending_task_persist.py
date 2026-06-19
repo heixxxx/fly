@@ -1,74 +1,72 @@
-"""E2E test: Pending tasks persisted on shutdown and recoverable.
+"""Helper: Run 1 for pending_task_persist test.
 
-Uses multi-process coordinator pattern:
-  - Run 1: Submit tasks, some complete, some fail (unresolvable deps),
-           stop master, verify failed_tasks.bin exists.
-  - Run 2: New master with same log_dir, call restart_failed_tasks(),
-           verify tasks are re-submitted and either complete or remain pending.
-
-Run as coordinator: spawns Run 1 and Run 2 as subprocess via fly binary.
+Submit tasks: some complete, some fail with unresolvable deps.
+Stop master, verify failed_tasks.bin is created.
 """
 from _fly_log import INFO
 import time
 import os
 import shutil
-import subprocess
-
-from fly import get_fly_binary
-
-DB_PATH = "/tmp/fly_e2e_pending_persist_db"
-LOG_DIR = "/tmp/fly_e2e_pending_persist_logs"
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
-FLY_BIN = get_fly_binary()
 
 
 
-def cleanup():
-    for path in [DB_PATH, LOG_DIR]:
-        if os.path.isdir(path):
-            shutil.rmtree(path, ignore_errors=True)
+from e2e_tasks import write_data, read_data, gpu_write
+from fly import open_db, get_config
+DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
-def run_script(script_name, log_dir):
-    script_path = os.path.join(SCRIPT_DIR, script_name)
-    result = subprocess.run(
-        [FLY_BIN, "--log-dir", log_dir, script_path],
-        capture_output=True, text=True, timeout=120, cwd=PROJECT_ROOT,
-    )
-    if result.returncode != 0:
-        INFO(f"  {script_name} FAILED:")
-        INFO(result.stderr[-2000:] if result.stderr else "(no stderr)")
-        INFO(result.stdout[-2000:] if result.stdout else "(no stdout)")
-    return result
+def wait_for(condition, timeout=20.0, interval=0.5):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if condition():
+            return True
+        time.sleep(interval)
+    return False
 
 
-def test_pending_task_persist():
-    cleanup()
+def run1():
+    get_config().set_int("fail_unscheduleable_tasks", 1)
 
-    # -- Phase 1: Run script that creates failed tasks and stops --
-    result1 = run_script("pending_persist_run1.py", LOG_DIR)
-    assert result1.returncode == 0, \
-        f"Run 1 failed with exit code {result1.returncode}"
-    INFO("  Phase 1 OK: Run 1 completed")
+    from fly.runtime import get_agent
+    master = get_agent()
 
-    # -- Phase 2: Verify failed_tasks.bin was created --
-    failed_file = os.path.join(LOG_DIR, "failed_tasks.bin")
-    assert os.path.isfile(failed_file), \
-        f"Phase 2: failed_tasks.bin should exist at {failed_file}"
+    master.launch_local_workers([{}])
+    assert master.wait_for_workers(1), \
+        "Worker should connect"
+
+    db = open_db(DB_PATH)
+    log_dir = get_config().get_str("log_dir")
+    failed_file = os.path.join(log_dir, "failed_tasks.bin")
+
+    # Submit tasks that will complete
+    write_data(db, "real_key_1", 10)
+    write_data(db, "real_key_2", 20)
+
+    # Submit task with unresolvable dep -> will FAIL
+    read_data(db, "result_1", [db.get_obj_name("phantom_data")])
+
+    # Submit task requiring GPU -> will FAIL (no gpu worker)
+    gpu_write(db, "gpu_result", 42)
+
+    # Wait for completions and failures
+    assert wait_for(lambda: len(master.completed_tasks) >= 2), \
+        f"Expected 2 completed, got {len(master.completed_tasks)}"
+    assert wait_for(lambda: len(master.failed_tasks) >= 2), \
+        f"Expected 2 failed, got {len(master.failed_tasks)}"
+
+    completed = len(master.completed_tasks)
+    failed = len(master.failed_tasks)
+    INFO(f"  Run1: {completed} completed, {failed} failed")
+
+    # Verify failed_tasks.bin exists before stop
+    assert wait_for(lambda: os.path.isfile(failed_file)), \
+        f"failed_tasks.bin should exist at {failed_file}"
+
     file_size = os.path.getsize(failed_file)
-    assert file_size > 0, \
-        "Phase 2: failed_tasks.bin should not be empty"
-    INFO(f"  Phase 2 OK: failed_tasks.bin exists ({file_size} bytes)")
+    assert file_size > 0, "failed_tasks.bin should not be empty"
+    INFO(f"  Run1: failed_tasks.bin exists ({file_size} bytes)")
 
-    # -- Phase 3: Run script that restarts failed tasks --
-    result2 = run_script("pending_persist_run2.py", LOG_DIR)
-    assert result2.returncode == 0, \
-        f"Run 2 failed with exit code {result2.returncode}"
-    INFO("  Phase 3 OK: Run 2 completed")
-
-    INFO("[PASS] test_pending_task_persist")
+    INFO("  Run1: master stopped")
 
 
-test_pending_task_persist()
+run1()

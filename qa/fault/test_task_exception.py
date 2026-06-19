@@ -11,11 +11,11 @@ import time
 import os
 import shutil
 
-DB_PATH = f"/tmp/fly_e2e_task_exception_db_{os.getpid()}"
 
 
 from e2e_tasks import failing_task
 from fly import open_db, get_config
+DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
 def cleanup():

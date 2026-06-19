@@ -19,12 +19,12 @@ import time
 import shutil
 import subprocess
 
-DB_PATH = f"/tmp/fly_profile_db_{os.getpid()}"
 PERF_DIR = f"/tmp/fly_profile_perf_{os.getpid()}"
 
 
 from e2e_tasks import gpu_write_large_temp, cpu_read_large_remote
-from fly import open_db
+from fly import open_db, get_config
+DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
 def cleanup():

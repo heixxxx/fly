@@ -4,11 +4,11 @@ import os
 import shutil
 import glob
 
-DB_PATH = f"/tmp/fly_e2e_temp_remove_db_{os.getpid()}"
 
 
 from e2e_tasks import write_temp
 from fly import open_db, get_config
+DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
 def cleanup():
