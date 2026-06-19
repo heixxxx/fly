@@ -56,6 +56,8 @@ public:
 
     // 读取压缩数据（返回原始磁盘字节 + py_name）
     // bypass_cache=true 跳过 low 层缓存查询（cache="none" 模式）
+    // backup=true 时，即使 low 层缓存命中也会检查 has_local_object：
+    // 若本地无持久副本则触发 do_backup_write（缓存是内存态，不代表落盘）
     std::pair<FlyBufferPtr, CMString> read_object_compressed(const CMString& object_name,
                                                               bool backup = false,
                                                               bool bypass_cache = false);
@@ -460,13 +462,14 @@ struct RemoteObjectMeta {
 };
 
 struct BackupDecision {
+    uint64_t read_count = 0;       // 跨 Worker 读取次数（evaluate 时的快照）
     bool should_backup = false;
     uint32_t current_replicas = 0;
     uint32_t target_replicas = 0;
 };
 ```
 
-**说明**：`RemoteObjectMeta` 合并了 worker 列表和访问频率追踪数据。`current_replicas` 直接取 `workers.size()`。
+**说明**：`RemoteObjectMeta` 合并了 worker 列表和访问频率追踪数据。`current_replicas` 直接取 `workers.size()`。`read_count` 从 `RemoteObjectMeta.read_count_` 快照而来，供调用方记录日志。
 
 ---
 

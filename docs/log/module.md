@@ -128,14 +128,12 @@ shutdown_log()
 ```
 init("fly_log", worker_id=0)
   → resolve_log_dir("fly_log")
-    → 若 fly_log 不存在: 创建 fly_log
+    → 若 fly_log 不存在: 创建 fly_log → 创建 fly_log.latest symlink → 返回 fly_log
     → 若 fly_log 存在:
-        - 创建 fly_log.1, fly_log.2, ... (递增序号)
-        - fly_log 内容移动到 fly_log.1
-        - fly_log 重置为空目录
-    → 返回实际目录名 (fly_log 或 fly_log.N)
-  → _update_latest_symlink(target_dir, "fly_log")
-    → 创建 fly_log.latest symlink → target_dir
+        - 扫描 fly_log.1, fly_log.2, ... 找到最大序号 N
+        - 创建 fly_log.(N+1)
+        - 更新 fly_log.latest symlink → fly_log.(N+1)
+        - 返回 fly_log.(N+1)
   → 配置 instance_ptr() 单例对象打开 target_dir + "/master.log"
 
 init("fly_log", worker_id=1)

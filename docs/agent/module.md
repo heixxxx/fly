@@ -185,15 +185,20 @@ schedule_tasks()
 ```
 on_task_complete(TaskCompleteMessage)
   → worker_manager_->complete_task(worker_id)   // Worker → IDLE
-  → for written_object:
-      → graph_->mark_data_ready(data_path)       // 触发下游
-      → DataService.update_remote_idx(...)        // 更新远程索引
-  → for frozen_db:
-      → frozen_dbs_.insert(db_id)
-      → broadcast DatabaseFreezeNotification to all Workers
-  → graph_->remove_task(task_id)
-  → metadata_->update_task_status(task_id, COMPLETED)
-  → remove_persisted_task(task_id)               // 清除持久化记录
+  → if task_id < 100000 (普通任务):
+      → for written_object:
+          → graph_->mark_data_ready(data_path)       // 触发下游
+          → DataService.update_remote_idx(...)        // 更新远程索引
+      → for frozen_db:
+          → frozen_dbs_.insert(db_id)
+          → broadcast DatabaseFreezeNotification to all Workers
+      → graph_->remove_task(task_id)
+      → metadata_->update_task_status(task_id, COMPLETED)
+      → remove_persisted_task(task_id)               // 清除持久化记录
+      → 清理 task_modules_ / task_args_
+  → else (internal task, 如 backup, task_id >= 100000):
+      → for written_object:
+          → DataService.update_remote_idx(...)        // 无论 streaming_mode 都更新
   → schedule_tasks()                              // 调度新任务
 
 on_task_failed(TaskFailedMessage)
@@ -588,7 +593,8 @@ WorkerAgent.request_db_path(db_id)
   → 查本地 databases_[db_id] → 已有 → return true
   → reactor_->send(master_conn_, DbPathRequestMessage{db_id})
   → Master: 查 db_registry_ → DbPathResponseMessage
-  → Worker: 创建 Database(base_path, data_path, worker_id)
+  → Worker: 创建 Database(base_path, data_path, worker_id, host, db_id)
+                                               // ↑ existing_db_id，复用 master 的 db_id
   → 存入 databases_[db_id] → return true
 ```
 
