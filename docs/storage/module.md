@@ -149,6 +149,25 @@ write_object<T>(name, obj, py_name)  ← 调用线程
   └─ 6. 返回 WriteErrorType::OK（立即返回）
 ```
 
+**Temp 写入路径**（`save_to_db=False`）：
+
+Python pickle 对象走 `write_temp_pickle`（C++ 侧一步完成压缩+注册+存储，无 Python 往返）：
+
+```
+write_object(name, obj, save_to_db=False)
+  └─ _write_temp(name, obj)
+       └─ pickle.dumps(obj) → data
+       └─ db._write_temp_pickle(name, data, py_name)  ← C++ 侧完成
+            └─ compress_buffered_data → CMString
+            └─ put_temp_data → on_temp_write_started + register_write + on_temp_write
+                └─ local_idx[db_id][short_name].temp_compressed_data_ = move(data)
+                └─ 溢出淘汰：temp_total_bytes_ > temp_max_bytes_ → temp_eviction_store_
+```
+
+C++ 类型对象走 `_write_to_db` + `_mark_temp`（序列化在 C++ 侧完成，无需 Python 压缩）。
+
+与正常写入的区别：无 disk write（`commit_write`），无 low cache（`put_low`），数据仅存在于 temp 缓存（`local_idx->temp_compressed_data_` + 溢出 `temp_eviction_store_`）。
+
 **流式管线组件**:
 | 组件 | 职责 |
 |------|------|

@@ -2,6 +2,18 @@
 
 ---
 
+## 2026-06-19: temp 写入路径优化 — 消除 C++→Python→C++ 往返
+
+**问题**: Python `_write_temp` 先调 `_compress_pickle_bytes`（C++ 压缩 → 返回 Python bytes），再调 `_put_temp_data`（Python bytes → C++ CMString）。压缩结果经历 C++→Python→C++ 两次无意义拷贝。
+
+**修复**: 新增 `Database::write_temp_pickle`（C++ 侧一步完成压缩+注册+存储），nanobind 绑定 `_write_temp_pickle`，Python `_write_temp` 直接调用。`storage_export.cpp` 新增绑定。
+
+| 文档 | 变更 |
+|------|------|
+| docs/storage/module.md | 补充 temp 写入流程说明 |
+
+---
+
 ## 2026-06-19: 写入时序重构 + 读写公共路径统一
 
 **写入时序**：`write_object` 统一为 序列化+压缩 → put_low（cache）→ 注册（通知 master）→ 落盘。原时序中注册在序列化之前，master 标记数据就绪时 cache 未填充，其他 worker 读返回 `DATA_NOT_READY` 需重试。

@@ -187,6 +187,10 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
         CMString result = fly::decompress_raw_data(raw);
         return fly_export::bytes(result.data(), result.size());
     })
+    FLY_EXPORT_DEF("_write_temp_pickle", [](Database& db, const CMString& name,
+                                             fly_export::bytes data, const CMString& py_name) {
+        db.write_temp_pickle(name, data.c_str(), static_cast<int64_t>(data.size()), py_name);
+    })
     FLY_EXPORT_DEF("_compress_pickle_bytes", [](Database& db, fly_export::bytes data,
                                                  const CMString& py_name) -> fly_export::bytes {
         CMString compressed = db.compress_pickle_bytes(data.c_str(),

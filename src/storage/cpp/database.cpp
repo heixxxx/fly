@@ -178,6 +178,18 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
     return fly::WriteErrorType::OK;
 }
 
+void Database::write_temp_pickle(const CMString& object_name,
+                                 const char* data, int64_t data_size,
+                                 const CMString& py_name) {
+    // Compress directly into a CMString — no Python roundtrip.
+    FlyBuffer buf;
+    compress_buffered_data(data, data_size, py_name, buf);
+    CMString compressed(buf.data(), buf.size());
+
+    // Register + store as temp (same logic as put_temp_data).
+    put_temp_data(object_name, compressed);
+}
+
 fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
                                          const char* data, int64_t data_size,
                                          const CMString& py_name, bool backup) {

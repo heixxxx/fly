@@ -36,6 +36,12 @@ public:
     CMString compress_pickle_bytes(const char* data, int64_t data_size,
                                    const CMString& py_name);
 
+    // Compress + register + store as temp (no disk write, no cache).
+    // Avoids C++→Python→C++ roundtrip of compress_pickle_bytes + put_temp_data.
+    void write_temp_pickle(const CMString& object_name,
+                           const char* data, int64_t data_size,
+                           const CMString& py_name);
+
     // bypass_cache=true skips the low-tier cache lookup (cache="none" mode).
     std::pair<FlyBufferPtr, CMString> read_object_compressed(const CMString& object_name, bool backup = false, bool bypass_cache = false);
 

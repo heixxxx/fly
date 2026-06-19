@@ -51,8 +51,9 @@ class _Database:
             return result
         data = pickle.dumps(obj)
         py_name = type(obj).__name__
-        compressed = self._db._compress_pickle_bytes(data, py_name)
-        self._db._put_temp_data(name, compressed)
+        # Compress + register + store in one C++ call — avoids
+        # compress→Python bytes→CMString roundtrip.
+        self._db._write_temp_pickle(name, data, py_name)
         return ""
 
     def read_object(self, name: str, backup: bool = False, cache: str = "low"):
