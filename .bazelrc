@@ -16,6 +16,10 @@ build --action_env=PYTHONPATH=/usr/local/lib/python3.12/site-packages
 build --repo_env=CC=gcc-12
 build --repo_env=CXX=g++-12
 
+# Release mode: eliminate DBG logs at compile time
+build:opt --copt=-DFLY_RELEASE
+build:opt --compilation_mode=opt
+
 # Coverage: sandbox hides gcno files, use standalone spawn strategy
 build:coverage --spawn_strategy=standalone
 build:coverage --copt=--coverage

@@ -173,8 +173,16 @@ def _run_master():
             compiled = compile(f.read(), script_path, "exec")
             exec(compiled, {"__name__": "__main__", "__file__": script_path})
 
-    if interactive or not script_path:
+    if interactive:
+        # -i flag: enter interactive shell after script (or directly).
+        # stop() will be called by _cleanup when user exits.
         code.interact(banner="Fly Shell", exitmsg="")
+    elif script_path:
+        # Script mode (non-interactive): auto-stop after script completes.
+        from fly.runtime import get_agent
+        agent = get_agent()
+        if agent is not None and agent.is_running():
+            agent.stop()
 
 
 def run():

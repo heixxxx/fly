@@ -56,7 +56,13 @@ inline void log_write(LogLevel level, fmt::format_string<T...> fmt, const T&... 
 
 // --- Logging macros ---
 
+#ifdef FLY_RELEASE
+// Release mode: DBG is completely eliminated at compile time.
+#define DBG(fmt, ...) ((void)0)
+#else
 #define DBG(fmt, ...)   fly::log_write(fly::LogLevel::DEBUG, FMT_STRING(fmt), ##__VA_ARGS__)
+#endif
+
 #define INFO(fmt, ...)  fly::log_write(fly::LogLevel::INFO,  FMT_STRING(fmt), ##__VA_ARGS__)
 #define WARN(fmt, ...)  fly::log_write(fly::LogLevel::WARN,  FMT_STRING(fmt), ##__VA_ARGS__)
 #define ERR(fmt, ...)   fly::log_write(fly::LogLevel::ERROR, FMT_STRING(fmt), ##__VA_ARGS__)

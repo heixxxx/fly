@@ -14,6 +14,9 @@ from fly import as_task, wait_obj
 from _fly_log import DBG, INFO
 import math
 import time
+import numpy as np
+from scipy import sparse
+from scipy.sparse.linalg import splu
 
 
 # ── Matrix File I/O ──────────────────────────────────────────────
@@ -246,6 +249,12 @@ def ras_graph_coord(db, matrix_path, nsd, overlap_ratio,
          f"t_coord={t_coord_total*1000:.0f}ms")
     INFO(f"[RASG START] nsd={nsd} omega={omega} launching iteration loop")
 
+    # Pre-build coarse grid on all workers before iteration loop.
+    if omega == "coarse":
+        INFO("[RASG] Pre-building coarse grid on all workers...")
+        _prebuild_coarse_grid(db, nsd)
+        INFO("[RASG] Coarse grid pre-build dispatched")
+
     for sd_id in range(nsd):
         ras_graph_compute(db, sd_id, 0, nsd, neighbor_ids_all[sd_id])
     ras_graph_check(db, 0, nsd, max_iter, tol, neighbor_ids_all)
@@ -253,18 +262,29 @@ def ras_graph_coord(db, matrix_path, nsd, overlap_ratio,
 
 # ── Coarse Grid Correction ──────────────────────────────────────
 
+@as_task(inputs=lambda db: [db.get_obj_name("__rasg__coord")])
+def _prebuild_coarse_task(db):
+    """Build coarse grid on a worker (dispatched to all workers)."""
+    _ensure_coarse_cached(db)
+
+
+def _prebuild_coarse_grid(db, nsd):
+    """Dispatch coarse grid build to all workers in parallel."""
+    for sd_id in range(nsd):
+        _prebuild_coarse_task(db)
+
+
 def _ensure_coarse_cached(db):
     from fly import get_cache, has_cache, put_cache
     if has_cache("__rasg__coarse_lu"):
         return
 
-    import numpy as np
-    from scipy import sparse
-    from scipy.sparse.linalg import splu
+    INFO("[COARSE] building coarse grid...")
 
     coord = db.read_object("__rasg__coord")
     N = coord["N"]
     n = coord["n"]
+    INFO(f"[COARSE] coord read: N={N} n={n}")
     matrix_path = coord["matrix_path"]
 
     data = _get_matrix_data(matrix_path)
@@ -335,7 +355,6 @@ def _ensure_coarse_cached(db):
 
 
 def _apply_coarse_correction(db, step, nsd):
-    import numpy as np
     from fly import get_cache
 
     t_coarse_start = time.perf_counter()

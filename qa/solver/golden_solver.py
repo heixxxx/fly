@@ -18,9 +18,9 @@ from fly.runtime import get_agent
 from solver import solve_ras_graph, generate_poisson_matrix
 
 
-def run_golden(n_side, nsd, overlap_ratio=0.30, max_iter=200, tol=1e-8):
-    label = f"n={n_side} nsd={nsd} ratio={overlap_ratio:.0%}"
-    db_path = f"/tmp/fly_golden_n{n_side}_sd{nsd}_r{int(overlap_ratio*100)}"
+def run_golden(n_side, nsd, overlap_ratio=0.30, max_iter=200, tol=1e-8, omega=1.0):
+    label = f"n={n_side} nsd={nsd} ratio={overlap_ratio:.0%} omega={omega}"
+    db_path = f"/tmp/fly_golden_n{n_side}_sd{nsd}_r{int(overlap_ratio*100)}_o{str(omega).replace('.','_')}"
     # Use unique matrix path per process to avoid concurrent read/write conflicts
     matrix_path = f"/tmp/fly_golden_matrix_n{n_side}_{os.getpid()}.npz"
 
@@ -39,7 +39,8 @@ def run_golden(n_side, nsd, overlap_ratio=0.30, max_iter=200, tol=1e-8):
 
     db = open_db(db_path)
     sol = solve_ras_graph(db, matrix_path, nsd,
-                          overlap_ratio=overlap_ratio, max_iter=max_iter, tol=tol)
+                          overlap_ratio=overlap_ratio, max_iter=max_iter, tol=tol,
+                          omega=omega)
 
     x_ras = np.array(sol["x"])
     iters = sol["iters"]

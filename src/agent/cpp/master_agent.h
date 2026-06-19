@@ -114,6 +114,7 @@ private:
     std::thread reactor_thread_;
 
     mutable std::mutex workers_mutex_;
+    std::condition_variable workers_drained_cv_;  // Notified when all workers disconnect during shutdown.
     CMUnorderedMap<uint64_t, uint64_t> conn_to_worker_;
     CMUnorderedMap<uint64_t, uint64_t> worker_to_conn_;
 

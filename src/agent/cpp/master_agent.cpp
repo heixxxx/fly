@@ -211,23 +211,40 @@ void MasterAgent::stop() {
 
     INFO("MasterAgent stop() called, entering drain phase");
 
+    // Phase 1: Wait for all running tasks to complete (workers are still alive).
+    {
+        std::unique_lock<std::mutex> lock(drain_mutex_);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (true) {
+            int running_count = metadata_->count_tasks_by_status(TaskStatus::RUNNING);
+            if (running_count == 0) break;
+            INFO("Drain: waiting for {} running tasks to complete", running_count);
+            if (drain_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
+                WARN("Drain timeout (30s), {} tasks still running", running_count);
+                break;
+            }
+        }
+    }
+
+    INFO("Drain: all tasks completed, shutting down workers");
+
+    // Phase 2: All tasks done — now send shutdown to workers.
     {
         std::lock_guard<std::mutex> lk(workers_mutex_);
         for (const auto& [worker_id, conn_id] : worker_to_conn_) {
-            INFO("Broadcasting shutdown to worker_id={}", worker_id);
+            INFO("Sending shutdown to worker_id={}", worker_id);
             reactor_->send(conn_id, ShutdownMessage{});
         }
     }
 
+    // Phase 3: Wait for workers to disconnect (reactor will call on_disconnect).
+    // Use a simple CV wait — on_disconnect notifies workers_drained_cv_.
     {
-        std::unique_lock<std::mutex> lock(drain_mutex_);
+        std::unique_lock<std::mutex> lock(workers_mutex_);
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (true) {
-            int running_count = metadata_->count_tasks_by_status(TaskStatus::RUNNING);
-            if (running_count == 0) break;
-            if (drain_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
-                WARN("Shutdown drain timeout (10s), {} tasks still running",
-                     running_count);
+        while (!worker_to_conn_.empty()) {
+            if (workers_drained_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
+                WARN("Shutdown timeout (10s), {} workers still connected", worker_to_conn_.size());
                 break;
             }
         }
@@ -762,9 +779,18 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
 
     WARN("Worker disconnected: worker_id={}", worker_id);
 
-    if (!draining_.load()) {
-        auto tasks_to_recover = metadata_->get_task_ids_by_worker(worker_id);
+    auto tasks_to_recover = metadata_->get_task_ids_by_worker(worker_id);
 
+    if (draining_.load()) {
+        // During shutdown: mark running tasks as FAILED so drain can complete.
+        for (uint64_t task_id : tasks_to_recover) {
+            metadata_->fail_task(task_id, "Worker disconnected during shutdown");
+            graph_->remove_task(task_id);
+            WARN("Task failed due to shutdown disconnect: task_id={}", task_id);
+        }
+        notify_drain_if_active();  // Wake up stop() drain wait.
+    } else {
+        // Normal operation: re-queue tasks for recovery.
         for (uint64_t task_id : tasks_to_recover) {
             auto task_opt4 = metadata_->get_task(task_id);
             if (!task_opt4) continue;
@@ -779,6 +805,9 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
             schedule_tasks();
         }
     }
+
+    // Notify stop() that a worker has disconnected.
+    workers_drained_cv_.notify_one();
 }
 
 void MasterAgent::on_error(uint64_t conn_id, int error_code) {
@@ -910,7 +939,7 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
 }
 
 void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg) {
-    INFO("WriteRegister: worker={}, object={}, db_id={}", msg.worker_id_, msg.object_name_, msg.db_id_);
+    DBG("WriteRegister: worker={}, object={}, db_id={}", msg.worker_id_, msg.object_name_, msg.db_id_);
 
     WriteRegisterAckMessage ack;
     ack.object_name_ = msg.object_name_;

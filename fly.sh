@@ -112,6 +112,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$(dirname "$SCRIPT_DIR")"
 export FLY_BUILD="$BUILD_DIR"
 export LD_LIBRARY_PATH="$BUILD_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PYTHONPATH="$BUILD_DIR/lib:$BUILD_DIR/python${PYTHONPATH:+:$PYTHONPATH}"
 exec "$SCRIPT_DIR/fly.bin" "$@"
 WRAPPER
     chmod +x "$build_dir/bin/fly"

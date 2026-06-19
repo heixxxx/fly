@@ -162,7 +162,7 @@ void DataServer::epoll_loop() {
 
                     epoll_->add(epoll_fd_, cfd, EV_READ | EV_ONESHOT);
 
-                    INFO("[DS-ACCEPT] fd={} total={}", cfd, conns_.size());
+                    DBG("[DS-ACCEPT] fd={} total={}", cfd, conns_.size());
                 }
             } else {
                 on_readable(fd);
@@ -274,7 +274,7 @@ void DataServer::on_readable(int fd) {
             task.data = std::move(seg.header_segment);
             task.raw_data = found ? raw_data : nullptr;  // keep alive for send thread
             send_queue_.push(std::move(task));
-            INFO("[DS-Q] fd={} pushed queue_size={}", fd, send_queue_.size());
+            DBG("[DS-Q] fd={} pushed queue_size={}", fd, send_queue_.size());
         }
         send_cv_.notify_one();
         pushed_response = true;
@@ -324,7 +324,7 @@ void DataServer::send_loop() {
                     ERR("[DS-SEND] sendv failed: fd={}", task.fd);
                     cleanup_fd(task.fd);
                 } else {
-                    INFO("[DS-SEND] fd={} complete: {} + {} bytes (sendv)", task.fd, task.data.size(), task.raw_data->size());
+                    DBG("[DS-SEND] fd={} complete: {} + {} bytes (sendv)", task.fd, task.data.size(), task.raw_data->size());
                     epoll_->mod(epoll_fd_, task.fd, EV_READ | EV_ONESHOT);
                 }
             } else {
@@ -341,7 +341,7 @@ void DataServer::do_send(int fd, const CMString& data) {
         ERR("[DS-SEND] fd={} failed: {}/{} bytes", fd, 0, data.size());
         cleanup_fd(fd);
     } else {
-        INFO("[DS-SEND] fd={} complete: {} bytes", fd, data.size());
+        DBG("[DS-SEND] fd={} complete: {} bytes", fd, data.size());
         epoll_->mod(epoll_fd_, fd, EV_READ | EV_ONESHOT);
     }
 }
