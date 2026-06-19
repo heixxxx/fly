@@ -2,14 +2,11 @@
 keep_intermediate, multi-stage tree, downstream dependency, error paths."""
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
 BASE_PATH = f"/tmp/fly_e2e_mr_coverage_{os.getpid()}"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from fly import open_db, get_config, MapReduceJob, wait_tasks
 

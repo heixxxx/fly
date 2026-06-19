@@ -4,13 +4,10 @@ Coordinator moves the DB directory to path B before Run 2.
 """
 from _fly_log import INFO
 import os
-import sys
 import time
 
 DB_PATH = "/tmp/fly_e2e_load_db_moved_run1"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from e2e_tasks import write_data
 from fly import open_db

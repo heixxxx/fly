@@ -136,7 +136,10 @@ void Logger::_update_latest_symlink(const CMString& target_dir, const CMString& 
     if (std::filesystem::is_symlink(latest)) {
         std::filesystem::remove(latest);
     } else if (std::filesystem::exists(latest)) {
-        std::filesystem::remove(latest);
+        // remove() only handles files and empty directories. A non-empty
+        // directory (left from a previous run with a different layout) would
+        // throw; use remove_all to handle that cleanly.
+        std::filesystem::remove_all(latest);
     }
     std::filesystem::create_symlink(
         std::filesystem::path(target_dir).filename().string(),

@@ -4,13 +4,10 @@ This tests that load_db uses the current path, not meta.base_path.
 """
 from _fly_log import INFO
 import os
-import sys
 import time
 
 DB_PATH = "/tmp/fly_e2e_load_db_moved_run2"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from e2e_tasks import write_data, compute_sum
 from fly import load_db

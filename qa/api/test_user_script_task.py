@@ -1,13 +1,10 @@
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
 DB_PATH = f"/tmp/fly_e2e_user_script_task_db_{os.getpid()}"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from fly import as_task, open_db
 

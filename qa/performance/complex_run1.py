@@ -1,6 +1,5 @@
 """Run 1: Initial data production with 2 DBs, cross-DB compute, freeze."""
 from _fly_log import INFO
-import sys
 import os
 import shutil
 import time
@@ -8,8 +7,6 @@ import time
 DB_RAW = "/tmp/fly_complex_db_raw"
 DB_FEAT = "/tmp/fly_complex_db_feat"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from e2e_tasks import write_data, cross_db_copy, freeze_db
 from fly import open_db

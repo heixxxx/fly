@@ -5,7 +5,6 @@ Each test_golden_*.py calls run_golden(n_side, nsd, overlap, ...) which:
 2. Solves it with the distributed RAS solver
 3. Asserts convergence and accuracy against scipy SPLU
 """
-import sys
 import os
 import shutil
 
@@ -13,7 +12,6 @@ import numpy as np
 from scipy import sparse
 from _fly_log import INFO
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))
 
 from fly import open_db, get_config
 from fly.runtime import get_agent

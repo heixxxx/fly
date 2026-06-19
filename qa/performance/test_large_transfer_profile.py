@@ -22,8 +22,6 @@ import subprocess
 DB_PATH = f"/tmp/fly_profile_db_{os.getpid()}"
 PERF_DIR = f"/tmp/fly_profile_perf_{os.getpid()}"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from e2e_tasks import gpu_write_large_temp, cpu_read_large_remote
 from fly import open_db

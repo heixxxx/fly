@@ -5,14 +5,11 @@ verify tasks are re-submitted and gpu task completes once gpu worker available.
 """
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
 LOG_DIR = "/tmp/fly_e2e_pending_persist_logs"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from fly import get_config
 

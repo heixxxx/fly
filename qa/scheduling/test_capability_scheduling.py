@@ -13,14 +13,11 @@ Tasks:
 """
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
 DB_PATH = f"/tmp/fly_e2e_cap_db_{os.getpid()}"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from e2e_tasks import cpu_write, gpu_write
 from fly import open_db

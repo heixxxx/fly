@@ -6,11 +6,11 @@ Verifies:
   - Task completes but writes nothing
 """
 from _fly_log import INFO
-import time, sys, os, shutil
+import time
+import os
+import shutil
 
 DB_PATH = f"/tmp/fly_e2e_freeze_write_reject_db_{os.getpid()}"
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'src'))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib'))
 from e2e_tasks import freeze_db, write_after_freeze
 from fly import open_db, get_config
 

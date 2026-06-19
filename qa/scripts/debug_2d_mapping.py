@@ -1,7 +1,6 @@
 """Debug: trace 2D partition neighbor mapping in detail.
 Compare with 1D partition to find the difference."""
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))
 
 import math
 import numpy as np

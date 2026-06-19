@@ -1,14 +1,10 @@
 """Phase 4: @wait_obj raises RuntimeError when data can never appear."""
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
 DB_PATH = "/tmp/fly_e2e_wait_obj_p4_db"
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from fly import open_db, get_config, wait_obj
 from fly.runtime import get_agent

@@ -1,6 +1,5 @@
 """Verify: are primary nodes contiguous in sorted local_idx for 2D partition?"""
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))
 
 import numpy as np
 from _fly_log import INFO

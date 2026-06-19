@@ -10,7 +10,6 @@ import os
 import time
 
 # Add build directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'build', 'python'))
 
 from fly import open_db, get_config, wait_tasks, launch_workers
 import tempfile

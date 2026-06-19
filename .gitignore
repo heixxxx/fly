@@ -50,6 +50,11 @@ MODULE.bazel.lock
 # Uncomment to exclude from version control (recommended for large projects):
 # **/AGENTS.md
 -e 
-# QA test logs
-qa/*/test_*.*
+# QA test logs & run artifacts (numeric suffix dirs, not .py files)
+qa/*/test_*.[0-9]*
+qa/**/test_*.[0-9]*
+qa/**/logs/
+qa/**/.fly_config_*
+qa/**/failed_tasks.bin
 qa/logs/
+massif.out.*

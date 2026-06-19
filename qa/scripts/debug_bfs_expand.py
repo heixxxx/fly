@@ -4,8 +4,6 @@ import sys, os, math
 import numpy as np
 from scipy import sparse
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 from _fly_solver import ex_slv_graph_expand_overlap
 
 def build_poisson_2d(n):

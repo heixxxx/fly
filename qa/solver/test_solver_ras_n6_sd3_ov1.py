@@ -1,13 +1,10 @@
 """RAS solver: n=6, subdomains=3, overlap=1. Workers=3."""
 from _fly_log import INFO
-import sys
 import os
 import shutil
 import time
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from fly import open_db, get_config
 from fly.runtime import get_agent

@@ -5,13 +5,10 @@ and verifies that all data (including cross-host backup data) is readable.
 """
 from _fly_log import INFO
 import os
-import sys
 import time
 
 DB_PATH = "/tmp/fly_e2e_backup_load_db_multi_worker"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from e2e_tasks import write_data, compute_sum
 from fly import load_db, get_config

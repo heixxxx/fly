@@ -18,15 +18,12 @@ Phase 3 - Dynamic remove "shared" from Worker 2:
 """
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
 DB_PATH = f"/tmp/fly_e2e_dyn_prop_db_{os.getpid()}"
 NUM_SHARED_TASKS = 10
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from e2e_tasks import (alpha_write, beta_write, gamma_write,
                         shared_write, add_shared_on_beta,

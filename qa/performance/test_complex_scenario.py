@@ -1,13 +1,14 @@
 """Complex scenario: multi-DB, cross-DB deps, load_db migration, dynamic properties, restart."""
 from _fly_log import INFO
 import subprocess
-import sys
 import os
 import shutil
 
+from fly import get_fly_binary
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
-FLY_BIN = os.path.join(PROJECT_ROOT, "bazel-bin", "src", "main", "cpp", "fly")
+FLY_BIN = get_fly_binary()
 
 DB_RAW = "/tmp/fly_complex_db_raw"
 DB_FEAT = "/tmp/fly_complex_db_feat"

@@ -195,23 +195,46 @@ __all__ = [
 def get_fly_binary() -> str:
     """Get the path to the fly binary.
 
-    Returns:
-        Path to the fly binary executable.
+    Returns the wrapper script (build/bin/fly) when available, since it sets
+    FLY_BUILD and LD_LIBRARY_PATH — preferred over the raw fly.bin for spawning
+    subprocesses.
 
-    Example:
-        >>> from fly import get_fly_binary
-        >>> print(get_fly_binary())
-        /path/to/build/bin/fly
+    Resolution order (first hit wins):
+      1. ``sys._fly_binary`` — injected by the C++ launcher (main.cpp), which
+         knows the exact layout at startup. Always correct when running under
+         fly.
+      2. ``FLY_BUILD`` env var — set by the wrapper and runqa.
+      3. Path inference from this module's location (build or source layout).
+      4. ``fly`` on PATH.
     """
     import os
-    # Try to find fly binary relative to this file
+    import sys
+
+    # 1. Injected by the launcher — authoritative.
+    injected = getattr(sys, "_fly_binary", None)
+    if injected and os.path.isfile(injected) and os.access(injected, os.X_OK):
+        return injected
+
+    # 2. FLY_BUILD env (wrapper / runqa).
+    fly_build = os.environ.get("FLY_BUILD")
+    if fly_build:
+        candidate = os.path.join(fly_build, "bin", "fly")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    # 3. Inference from this file's location. Installed build layout puts this
+    # module at <root>/build/python/fly/__init__.py (root is 3 levels up);
+    # source layout puts it at <root>/src/fly/__init__.py (2 levels up).
     this_dir = os.path.dirname(os.path.abspath(__file__))
-    # Check build/bin/fly relative to project root
-    project_root = os.path.dirname(os.path.dirname(this_dir))
-    fly_bin = os.path.join(project_root, "build", "bin", "fly")
-    if os.path.isfile(fly_bin) and os.access(fly_bin, os.X_OK):
-        return fly_bin
-    # Fallback: check if fly is on PATH
+    for project_root in (
+        os.path.dirname(os.path.dirname(os.path.dirname(this_dir))),  # build/python/fly → root
+        os.path.dirname(os.path.dirname(this_dir)),                   # src/fly → root
+    ):
+        candidate = os.path.join(project_root, "build", "bin", "fly")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    # 4. PATH fallback.
     import shutil
     fly_on_path = shutil.which("fly")
     if fly_on_path:

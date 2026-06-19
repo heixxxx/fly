@@ -8,15 +8,12 @@ Tests the full Phase 3 flow:
   5. TaskComplete returned to Master
 """
 from _fly_log import INFO
-import sys
 import os
 import time
 import shutil
 
 DB_PATH = f"/tmp/fly_e2e_process_workers_db_{os.getpid()}"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from e2e_tasks import write_data
 from fly import open_db, get_config

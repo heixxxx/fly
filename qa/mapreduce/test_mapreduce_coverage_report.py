@@ -6,18 +6,13 @@ management needed in this script.
 """
 from _fly_log import INFO, ERR
 import time
-import sys
 import os
 import shutil
 import traceback
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from fly import open_db, get_config, MapReduceJob, wait_tasks
 from fly.runtime import get_agent
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src', 'test', 'py'))
 from e2e_tasks import mr_downstream_read
 
 passed = 0

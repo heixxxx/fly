@@ -1,6 +1,5 @@
 """Run 2: load_db both DBs (moved), new DB_model, dynamic properties, restart, triple-DB compute."""
 from _fly_log import INFO
-import sys
 import os
 import shutil
 import time
@@ -11,8 +10,6 @@ DB_RAW_MOVED = "/tmp/fly_complex_db_raw_moved"
 DB_FEAT_MOVED = "/tmp/fly_complex_db_feat_moved"
 DB_MODEL = "/tmp/fly_complex_db_model"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from e2e_tasks import (write_data, cross_db_copy, cross_db_sum,
                        add_alpha_property, alpha_cross_db_copy,

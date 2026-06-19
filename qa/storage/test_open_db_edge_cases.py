@@ -8,7 +8,6 @@ Scenarios:
 """
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
@@ -17,8 +16,6 @@ DB_PATH_AUTO = "/tmp/fly_e2e_open_db_auto_db"
 DB_PATH_DATAPATH = "/tmp/fly_e2e_open_db_datapath_db"
 CUSTOM_DATA_PATH = "/tmp/fly_e2e_custom_data_path"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from fly import open_db, get_config
 

@@ -5,14 +5,11 @@ across 2 workers. All 40 tasks should complete without interference.
 """
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
 DB_PATHS = [f"/tmp/fly_e2e_stress_multidb_{i}" for i in range(4)]
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from e2e_tasks import write_data
 from fly import open_db, get_config

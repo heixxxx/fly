@@ -1,7 +1,6 @@
 """Sequential RAS solver test — no distributed tasks, pure computation loop.
 Isolates the algorithm from task scheduling issues."""
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))
 
 import math
 import numpy as np

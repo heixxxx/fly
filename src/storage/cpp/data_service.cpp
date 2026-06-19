@@ -1191,16 +1191,28 @@ BackupDecision DataService::evaluate_auto_backup(const CMString& object_name,
     std::lock_guard<std::mutex> lock(mutex_);
     BackupDecision decision;
     decision.target_replicas_ = target_replicas;
-    
+    decision.read_count_ = 0;
+    decision.current_replicas_ = 0;
+
     auto db_it = remote_idx_.find(db_id);
-    if (db_it == remote_idx_.end()) return decision;
+    if (db_it == remote_idx_.end()) {
+        DBG("[AUTO-BACKUP] evaluate: obj={}, db_id={} not found in remote_idx", object_name, db_id);
+        return decision;
+    }
     auto obj_it = db_it->second.find(short_name);
-    if (obj_it == db_it->second.end()) return decision;
-    
+    if (obj_it == db_it->second.end()) {
+        DBG("[AUTO-BACKUP] evaluate: obj={}, short_name={} not found in remote_idx", object_name, short_name);
+        return decision;
+    }
+
     const auto& meta = obj_it->second;
     decision.current_replicas_ = static_cast<uint32_t>(meta.workers_.size());
+    decision.read_count_ = meta.read_count_;
     decision.should_backup_ = (meta.read_count_ >= threshold) && (meta.workers_.size() < target_replicas);
-    
+
+    DBG("[AUTO-BACKUP] evaluate: obj={}, read_count={}, workers_size={}, threshold={}, target={}, should_backup={}",
+        object_name, meta.read_count_, meta.workers_.size(), threshold, target_replicas, decision.should_backup_);
+
     return decision;
 }
 

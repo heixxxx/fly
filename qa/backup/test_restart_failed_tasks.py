@@ -19,14 +19,11 @@ Phase 4: Verify no persisted failures remain
 """
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
 DB_PATH = f"/tmp/fly_e2e_restart_lifecycle_db_{os.getpid()}"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from e2e_tasks import write_data, write_data_needs_phantom, gpu_write
 from fly import open_db

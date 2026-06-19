@@ -598,46 +598,56 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
     DataService::instance();
     auto addr = DataService::instance()->get_worker_address(worker_id);
 
-    bool streaming_mode = (Config::instance()->get_int("dependency_update_mode") == 0);
+    constexpr uint64_t INTERNAL_TASK_BASE = 100000;
+    bool is_internal = (msg.task_id_ >= INTERNAL_TASK_BASE);
 
-    for (const auto& data_path : msg.written_objects_) {
-        if (!streaming_mode) {
-            graph_->mark_data_ready(data_path);
-            DataService::instance()->update_remote_idx(data_path, worker_id, addr.host_, addr.port_);
-            DBG("Recorded data location: {} -> worker {}", data_path, worker_id);
-        }
-    }
+    if (!is_internal) {
+        bool streaming_mode = (Config::instance()->get_int("dependency_update_mode") == 0);
 
-    graph_->remove_task(msg.task_id_);
-    metadata_->update_task_status(msg.task_id_, TaskStatus::COMPLETED);
-    remove_persisted_task(msg.task_id_);
-    INFO("Task cleanup complete: task_id={}, status=COMPLETED", msg.task_id_);
-
-    for (const auto& db_id : msg.frozen_dbs_) {
-        {
-            std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
-            frozen_dbs_.insert(db_id);
-        }
-        auto it = db_instances_.find(db_id);
-        if (it != db_instances_.end()) {
-            it->second->freeze();
-        }
-        INFO("DB frozen: db_id={}", db_id);
-
-        DatabaseFreezeNotification freeze_msg;
-        freeze_msg.db_id_ = db_id;
-        {
-            std::lock_guard<std::mutex> lk(workers_mutex_);
-            for (const auto& [wid, cid] : worker_to_conn_) {
-                reactor_->send(cid, freeze_msg);
+        for (const auto& data_path : msg.written_objects_) {
+            if (!streaming_mode) {
+                graph_->mark_data_ready(data_path);
+                DataService::instance()->update_remote_idx(data_path, worker_id, addr.host_, addr.port_);
+                DBG("Recorded data location: {} -> worker {}", data_path, worker_id);
             }
         }
-    }
 
-    {
-        std::lock_guard<std::mutex> lk(task_args_mutex_);
-        task_modules_.erase(msg.task_id_);
-        task_args_.erase(msg.task_id_);
+        graph_->remove_task(msg.task_id_);
+        metadata_->update_task_status(msg.task_id_, TaskStatus::COMPLETED);
+        remove_persisted_task(msg.task_id_);
+
+        for (const auto& db_id : msg.frozen_dbs_) {
+            {
+                std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
+                frozen_dbs_.insert(db_id);
+            }
+            auto it = db_instances_.find(db_id);
+            if (it != db_instances_.end()) {
+                it->second->freeze();
+            }
+            INFO("DB frozen: db_id={}", db_id);
+
+            DatabaseFreezeNotification freeze_msg;
+            freeze_msg.db_id_ = db_id;
+            {
+                std::lock_guard<std::mutex> lk(workers_mutex_);
+                for (const auto& [wid, cid] : worker_to_conn_) {
+                    reactor_->send(cid, freeze_msg);
+                }
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(task_args_mutex_);
+            task_modules_.erase(msg.task_id_);
+            task_args_.erase(msg.task_id_);
+        }
+    } else {
+        // Internal tasks (backup, etc.) always update remote_idx
+        for (const auto& data_path : msg.written_objects_) {
+            DataService::instance()->update_remote_idx(data_path, worker_id, addr.host_, addr.port_);
+            DBG("Internal task: recorded data location: {} -> worker {}", data_path, worker_id);
+        }
     }
 
     schedule_tasks();
@@ -836,6 +846,8 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
             auto target_replicas = static_cast<uint32_t>(Config::instance()->get_int("backup_replicas"));
 
             auto decision = DataService::instance()->evaluate_auto_backup(msg.object_name_, threshold, target_replicas);
+            INFO("[AUTO-BACKUP] obj={}, read_count={}, current_replicas={}, target={}, should_backup={}",
+                 msg.object_name_, decision.read_count_, decision.current_replicas_, target_replicas, decision.should_backup_);
             if (decision.should_backup_) {
                 CMString db_id = msg.object_name_;
                 auto colon_pos = msg.object_name_.find(':');

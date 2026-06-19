@@ -8,13 +8,10 @@ Measures:
 Configs: grid sizes n=4,6,8,10, subdomain counts 2-5, overlap 1-2.
 """
 from _fly_log import INFO
-import sys
 import os
 import shutil
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 import numpy as np
 import scipy.sparse as sp

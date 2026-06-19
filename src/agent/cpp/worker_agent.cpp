@@ -555,7 +555,13 @@ bool WorkerAgent::request_db_path(const CMString& db_id) {
             if (pending->completed_) {
                 pending_db_paths_.erase(db_id);
                 if (pending->success_ && !pending->base_path_.empty()) {
-                    auto db = CMMakeShared<Database>(pending->base_path_, pending->data_path_, worker_id_, data_server_host_);
+                    // Reuse the master-assigned db_id instead of generating a
+                    // fresh random one. Without this, the worker's Database
+                    // would get a different db_id than the master recorded,
+                    // so object names (db_id:short_name) built here would
+                    // never match the master's remote_idx lookups.
+                    auto db = CMMakeShared<Database>(pending->base_path_, pending->data_path_,
+                                                     worker_id_, data_server_host_, db_id);
                     databases_[db_id] = db;
                     return true;
                 }

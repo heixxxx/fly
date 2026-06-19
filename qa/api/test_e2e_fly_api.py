@@ -1,14 +1,11 @@
 """E2E test: fly public API — open_db, as_task, task_name, get_agent."""
 from _fly_log import INFO
-import sys
 import os
 import time
 import shutil
 
 DB_PATH = f"/tmp/fly_e2e_fly_api_db_{os.getpid()}"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from e2e_tasks import write_data
 from fly import open_db, get_config

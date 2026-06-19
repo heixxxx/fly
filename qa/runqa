@@ -47,10 +47,41 @@ def run_one(test_path, timeout=20):
     # Log directory: {test_dir}/{test_name}/
     log_dir = os.path.join(test_dir, stem)
 
-    # Clean previous log
-    if os.path.isdir(log_dir):
-        shutil.rmtree(log_dir)
-    os.makedirs(log_dir, exist_ok=True)
+    # Clean all previous logs for this case, including nested helper logs.
+    #
+    # fly's Logger.resolve_log_dir creates ".N" variants (case.1, case.2, ...)
+    # plus a "case.latest" symlink when the requested dir already exists.
+    # Multi-phase tests also produce helper logs under test_dir/logs/.
+    # We remove every variant and matching helper log so nothing accumulates.
+    # We do NOT pre-create log_dir — resolve_log_dir creates it directly.
+    import glob as _glob
+    for variant in _glob.glob(os.path.join(test_dir, stem + "*")):
+        tail = os.path.basename(variant)
+        if tail == stem or tail == stem + ".latest" or (
+            tail.startswith(stem + ".") and tail[len(stem) + 1:].isdigit()
+        ):
+            if os.path.islink(variant) or os.path.isfile(variant):
+                os.remove(variant)
+            elif os.path.isdir(variant):
+                shutil.rmtree(variant, ignore_errors=True)
+
+    # Clean helper log directories for multi-phase tests. Helpers write to
+    # test_dir/logs/<group>/ (e.g. logs/wait_obj/, logs/frozen_db/). Each
+    # group accumulates .N variants and .latest symlinks that must be cleaned.
+    # We match by comparing helper names against the case stem (test_wait_obj
+    # ↔ logs/wait_obj/). Safe under -j parallelism because each test only
+    # removes its own helper group, not the entire logs/ tree.
+    helper_log_base = os.path.join(test_dir, "logs")
+    if os.path.isdir(helper_log_base):
+        helper_prefix = stem.replace("test_", "", 1)
+        for entry in os.listdir(helper_log_base):
+            entry_path = os.path.join(helper_log_base, entry)
+            base = entry.split(".")[0]  # strip .N / .latest suffix
+            if base == helper_prefix or base.startswith(helper_prefix + "_"):
+                if os.path.islink(entry_path) or os.path.isfile(entry_path):
+                    os.remove(entry_path)
+                elif os.path.isdir(entry_path):
+                    shutil.rmtree(entry_path, ignore_errors=True)
 
     t0 = time.monotonic()
 
@@ -64,7 +95,9 @@ def run_one(test_path, timeout=20):
     env["PYTHONPATH"] = lib_dir + ":" + python_dir + ":" + env.get("PYTHONPATH", "")
     env["FLY_BUILD"] = build_dir
 
-    # Run test with cwd = test_dir
+    # Run test with cwd = test_dir. preexec_fn=os.setsid puts the fly process
+    # (and the worker subprocesses it spawns) in their own process group, so a
+    # timeout can kill the whole tree instead of orphaning workers.
     proc = subprocess.Popen(
         [FLY_BIN, "--log-dir", log_dir, abs_test_path],
         stdout=subprocess.PIPE,
@@ -74,11 +107,25 @@ def run_one(test_path, timeout=20):
         preexec_fn=os.setsid,
     )
 
-    # Capture output
-    stdout, _ = proc.communicate(timeout=timeout)
+    # Capture output. A timeout must not crash the whole runner (it would
+    # propagate through the ThreadPoolExecutor and abort every other test) —
+    # kill the process group, salvage whatever output was produced, and mark
+    # the test as FAILED with status TIMEOUT.
+    timed_out = False
+    try:
+        stdout, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        # Drain the pipe so the child is fully reaped and we keep partial logs.
+        stdout, _ = proc.communicate()
+
     elapsed_ms = int((time.monotonic() - t0) * 1000)
-    ok = proc.returncode == 0
-    status = "PASSED" if ok else "FAILED"
+    ok = (not timed_out) and proc.returncode == 0
+    status = "TIMEOUT" if timed_out else ("PASSED" if ok else "FAILED")
 
     # Write output to log file
     out_log = os.path.join(log_dir, "fly.log")
@@ -88,6 +135,8 @@ def run_one(test_path, timeout=20):
     log(f"  {'✓ PASSED' if ok else '✗ ' + status}  {elapsed_ms:>6}ms  {name}")
 
     if not ok:
+        if timed_out:
+            log(f"    (timed out after {timeout}s)")
         try:
             lines = stdout.decode("utf-8", errors="replace").split("\n")
             for line in lines[-10:]:

@@ -29,6 +29,7 @@ struct RemoteObjectMeta {
 };
 
 struct BackupDecision {
+    uint64_t read_count_ = 0;
     bool should_backup_ = false;
     uint32_t current_replicas_ = 0;
     uint32_t target_replicas_ = 0;

@@ -29,7 +29,6 @@ for n in [1000, 2000, 3000]:
 HAS_GOLDEN = {1000: True, 2000: True, 3000: False}
 
 TASK_RUNNER = '''import sys, os, time, shutil
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))
 import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import splu

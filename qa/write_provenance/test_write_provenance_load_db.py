@@ -7,16 +7,15 @@ Run 2: load_db, submit same write_data(db, key, 42) → same hash from @as_task
 """
 from _fly_log import INFO
 import time
-import sys
 import os
 import subprocess
 import shutil
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
+from fly import get_fly_binary
+
 
 PROJECT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-FLY_BIN = os.path.join(PROJECT_ROOT, "bazel-bin", "src", "main", "cpp", "fly")
+FLY_BIN = get_fly_binary()
 
 DB_PATH = "/tmp/fly_e2e_provenance_load_db_db"
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',

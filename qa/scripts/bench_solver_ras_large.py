@@ -8,13 +8,10 @@ Measures:
 Configs: large grid sizes n=20,50,100,200,316
 """
 from _fly_log import INFO
-import sys
 import os
 import shutil
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 import numpy as np
 import scipy.sparse as sp

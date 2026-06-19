@@ -1,13 +1,10 @@
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
 DB_PATH = "/tmp/fly_e2e_save_to_db_false_persist_db"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from fly import load_db, get_config
 

@@ -5,14 +5,11 @@ Data is backed up across hosts, creating cross-host idx entries.
 """
 from _fly_log import INFO
 import os
-import sys
 import time
 import shutil
 
 DB_PATH = "/tmp/fly_e2e_backup_load_db_multi_worker"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from e2e_tasks import write_data, write_data_backup
 from fly import open_db, get_config

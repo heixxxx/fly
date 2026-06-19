@@ -5,7 +5,6 @@ Usage:
   ./build/bin/fly qa/bench_ras_graph.py
 """
 from _fly_log import INFO
-import sys
 import os
 import shutil
 import time
@@ -13,8 +12,6 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import splu
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from fly import open_db, get_config
 from fly.runtime import get_agent

@@ -10,13 +10,14 @@ Phase 3: Write two objects, remove one, verify other still readable
 """
 from _fly_log import INFO
 import os
-import sys
 import subprocess
 import shutil
 
+from fly import get_fly_binary
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
-FLY_BIN = os.path.join(PROJECT_ROOT, "bazel-bin", "src", "main", "cpp", "fly")
+FLY_BIN = get_fly_binary()
 
 
 def run_script(script_name, log_dir):

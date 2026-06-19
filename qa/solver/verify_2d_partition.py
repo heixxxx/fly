@@ -8,8 +8,6 @@ import time
 import numpy as np
 from scipy import sparse
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from fly import open_db, get_config
 from fly.runtime import get_agent

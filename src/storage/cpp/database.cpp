@@ -194,6 +194,19 @@ std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMStrin
                 // Malformed cached entry — fall through to re-read from source.
             }
             if (!py_name.empty()) {
+                // backup=True means the caller wants a persisted local replica.
+                // The low-tier cache is memory-only and does NOT imply a local
+                // on-disk copy, so a cache hit must still honour the backup
+                // request when the object is not yet persisted locally.
+                // (Without this, a prior _get_py_name() pre-read would populate
+                // the cache and silently skip the backup the caller asked for.)
+                if (backup) {
+                    auto ds = fly::DataService::instance();
+                    if (!ds->has_local_object(full)) {
+                        do_backup_write(full, object_name,
+                                        CMString(cached->data(), cached->size()), {});
+                    }
+                }
                 return {cached, std::move(py_name)};
             }
             // If header parse failed, evict the stale entry and re-read.

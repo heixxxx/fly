@@ -1,13 +1,10 @@
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
 DB_PATH = f"/tmp/fly_e2e_temp_cross_worker_db_{os.getpid()}"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from e2e_tasks import write_temp, read_data
 from fly import open_db, get_config

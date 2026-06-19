@@ -7,13 +7,14 @@ Each phase runs in a separate fly process to ensure true process-restart semanti
 """
 from _fly_log import INFO
 import os
-import sys
 import subprocess
 import shutil
 
+from fly import get_fly_binary
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
-FLY_BIN = os.path.join(PROJECT_ROOT, "bazel-bin", "src", "main", "cpp", "fly")
+FLY_BIN = get_fly_binary()
 
 DB_PATH = "/tmp/fly_e2e_frozen_load_db"
 

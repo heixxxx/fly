@@ -4,12 +4,9 @@ Tests that GMRES-RAS with restart=3 and max_restarts=1 does not converge
 within such limited iterations.
 """
 from _fly_log import INFO
-import sys
 import os
 import shutil
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from fly import open_db, get_config
 from fly.runtime import get_agent

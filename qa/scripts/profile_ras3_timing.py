@@ -1,13 +1,10 @@
 """Profile ras3 task scheduling overhead: measure wall time between tasks."""
 from _fly_log import INFO, ERR
-import sys
 import os
 import shutil
 import time
 import re
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from fly import open_db, get_config
 from fly.runtime import get_agent

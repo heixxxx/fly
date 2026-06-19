@@ -6,15 +6,16 @@ Run 2: load_db with workers on different virtual hosts, verify cross-host reads.
 """
 from _fly_log import INFO
 import os
-import sys
 import subprocess
 import shutil
 import time
 
+from fly import get_fly_binary
+
 DB_PATH = "/tmp/fly_e2e_backup_load_db_multi_worker"
 PROJECT_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
 QA_DIR = os.path.dirname(os.path.abspath(__file__))
-FLY_BIN = os.path.join(PROJECT_ROOT, "bazel-bin", "src", "main", "cpp", "fly")
+FLY_BIN = get_fly_binary()
 
 LOG_DIR = os.path.join(QA_DIR, "logs", "test_backup_load_db_multi_worker")
 

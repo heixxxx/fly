@@ -1,14 +1,10 @@
 """Phase 3: Two Worker writes → @wait_obj waits for both → executes and returns result."""
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
 DB_PATH = "/tmp/fly_e2e_wait_obj_p3_db"
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from e2e_tasks import write_data
 from fly import open_db, get_config, wait_obj

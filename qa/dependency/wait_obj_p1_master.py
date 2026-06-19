@@ -1,14 +1,10 @@
 """Phase 1: Master writes data → @wait_obj sees it immediately → reads and verifies."""
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
 DB_PATH = "/tmp/fly_e2e_wait_obj_p1_db"
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from fly import open_db, get_config, wait_obj
 from fly.runtime import get_agent

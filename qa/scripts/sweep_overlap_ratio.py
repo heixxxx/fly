@@ -1,7 +1,6 @@
 """Parameter sweep: overlap_ratio × nsd → iterations + solve_time.
 Goal: find optimal config where iters ≤ 100 and total time minimized."""
 import subprocess
-import sys
 import os
 import re
 import json
@@ -13,7 +12,6 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 RUNNER_SCRIPT = '''"""Single sweep case."""
 import sys, os, shutil, time
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))
 
 import numpy as np
 from scipy import sparse

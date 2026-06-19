@@ -1,13 +1,10 @@
 """E2E test: load_db with corrupt/missing _DB_META raises RuntimeError."""
 from _fly_log import INFO
-import sys
 import os
 import shutil
 
 DB_PATH = f"/tmp/fly_e2e_load_db_invalid_db_{os.getpid()}"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from fly import load_db
 

@@ -5,15 +5,12 @@ Distributed overhead ~50ms/task × 24 tasks ≈ 1.2s.
 Timeout set to 30s (25x baseline).
 """
 from _fly_log import INFO
-import sys
 import os
 import shutil
 import time
 
 DB_PATH = f"/tmp/fly_e2e_solver_ras_db_{os.getpid()}"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from fly import open_db, get_config
 from fly.runtime import get_agent

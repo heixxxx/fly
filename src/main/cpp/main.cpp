@@ -153,15 +153,12 @@ static void sig_handler(int sig) {
 }
 
 static void setup_sys_path() {
-    std::filesystem::path cwd = std::filesystem::current_path();
-
     // Determine layout: build/ (installed) vs bazel-bin/ (legacy)
     std::string ps = "import sys, os\n";
 
     // Priority 1: FLY_BUILD environment variable
     const char* fly_build_env = std::getenv("FLY_BUILD");
     // Priority 2: Derive from binary path (e.g., /root/fly/build/bin/fly → /root/fly/build)
-    // Priority 3: Look for build/ in cwd
     std::filesystem::path build_dir;
     bool use_build_layout = false;
 
@@ -169,23 +166,24 @@ static void setup_sys_path() {
         build_dir = std::filesystem::path(fly_build_env);
         use_build_layout = true;
     } else {
-        // Try to derive from binary path
+        // Derive from binary path
         char exe_path[4096];
         ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
         if (len > 0) {
             exe_path[len] = '\0';
             std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
-            // exe_dir is build/bin, so build_dir is exe_dir/..
+            // Try build/ layout first (exe_dir is build/bin)
             std::filesystem::path candidate = exe_dir.parent_path();
             if (std::filesystem::exists(candidate / "lib") && std::filesystem::exists(candidate / "python")) {
                 build_dir = candidate;
                 use_build_layout = true;
+            } else {
+                // Try bazel-bin/ layout (exe_dir is bazel-bin/src/main/cpp)
+                std::filesystem::path project_root = exe_dir.parent_path().parent_path().parent_path().parent_path();
+                if (std::filesystem::exists(project_root / "bazel-bin")) {
+                    build_dir = project_root / "bazel-bin";
+                }
             }
-        }
-        // Fallback: look for build/ in cwd
-        if (!use_build_layout && std::filesystem::exists(cwd / "build" / "bin" / "fly")) {
-            build_dir = cwd / "build";
-            use_build_layout = true;
         }
     }
 
@@ -202,18 +200,23 @@ static void setup_sys_path() {
         ps += "sys.path.insert(0, '" + (py_dir / "test").string() + "')\n";
         ps += "sys.path.insert(0, '" + (py_dir / "solver").string() + "')\n";
         ps += "sys.path.insert(0, '" + py_dir.string() + "')\n";
-    } else {
-        // Fallback: bazel-bin/ layout (for Bazel test targets)
-        std::filesystem::path bazel_bin = cwd / "bazel-bin";
-        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "core" / "export").string() + "')\n";
-        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "storage" / "export").string() + "')\n";
-        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "agent" / "export").string() + "')\n";
-        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "log" / "export").string() + "')\n";
-        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "network" / "export").string() + "')\n";
-        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "task" / "export").string() + "')\n";
-        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "test" / "export").string() + "')\n";
-        ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "solver" / "export").string() + "')\n";
-        ps += "sys.path.insert(0, '" + cwd.string() + "/src')\n";
+        // Expose the wrapper script path so Python (get_fly_binary) can spawn
+        // fly subprocesses without guessing. The wrapper sets FLY_BUILD and
+        // LD_LIBRARY_PATH, so it must be preferred over the raw fly.bin.
+        ps += "sys._fly_binary = '" + (build_dir / "bin" / "fly").string() + "'\n";
+    } else if (!build_dir.empty()) {
+        // bazel-bin/ layout (for Bazel test targets)
+        ps += "sys.path.insert(0, '" + (build_dir / "src" / "core" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (build_dir / "src" / "storage" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (build_dir / "src" / "agent" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (build_dir / "src" / "log" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (build_dir / "src" / "network" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (build_dir / "src" / "task" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (build_dir / "src" / "test" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (build_dir / "src" / "solver" / "export").string() + "')\n";
+        auto project_root = build_dir.parent_path();
+        ps += "sys.path.insert(0, '" + (project_root / "src").string() + "')\n";
+        ps += "sys._fly_binary = '" + (build_dir / "src" / "main" / "cpp" / "fly").string() + "'\n";
     }
 
     ps += "import _fly_core\n";

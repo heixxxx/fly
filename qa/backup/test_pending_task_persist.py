@@ -10,19 +10,19 @@ Run as coordinator: spawns Run 1 and Run 2 as subprocess via fly binary.
 """
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 import subprocess
+
+from fly import get_fly_binary
 
 DB_PATH = "/tmp/fly_e2e_pending_persist_db"
 LOG_DIR = "/tmp/fly_e2e_pending_persist_logs"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
-FLY_BIN = os.path.join(PROJECT_ROOT, "build", "bin", "fly")
+FLY_BIN = get_fly_binary()
 
-sys.path.insert(0, os.path.join(SCRIPT_DIR, '..', '..', 'src'))
 
 
 def cleanup():

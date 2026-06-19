@@ -5,14 +5,11 @@ it should automatically know how many workers were launched.
 """
 from _fly_log import INFO
 import time
-import sys
 import os
 import shutil
 
 DB_PATH = f"/tmp/fly_e2e_wait_for_all_workers_auto_db_{os.getpid()}"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
-                                '..', 'src'))
 
 from e2e_tasks import write_data
 from fly import open_db, get_config

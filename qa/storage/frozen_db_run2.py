@@ -1,13 +1,10 @@
 """Run 2 of frozen DB load test. load_db, verify frozen, verify write fails."""
 from _fly_log import INFO
 import os
-import sys
 import time
 
 DB_PATH = "/tmp/fly_e2e_frozen_load_db"
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                '..', 'src'))
 
 from fly import load_db
 from fly import get_config
