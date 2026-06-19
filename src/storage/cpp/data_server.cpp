@@ -311,14 +311,24 @@ void DataServer::send_loop() {
         }
 
         if (task.fd >= 0 && !task.data.empty()) {
-            do_send(task.fd, task.data);
-            // Send raw payload segment (zero-copy: FlyBufferPtr referenced directly).
-            if (task.raw_data && !task.raw_data->empty()) {
-                bool ok = transport_->send_all(task.fd, task.raw_data->data(),
-                                                task.raw_data->size());
+            bool has_raw = task.raw_data && !task.raw_data->empty();
+            if (has_raw) {
+                // Single writev call for header + raw payload (avoids 2x send overhead).
+                struct iovec iov[2];
+                iov[0].iov_base = const_cast<char*>(task.data.data());
+                iov[0].iov_len = task.data.size();
+                iov[1].iov_base = const_cast<char*>(task.raw_data->data());
+                iov[1].iov_len = task.raw_data->size();
+                bool ok = transport_->sendv(task.fd, iov, 2);
                 if (!ok) {
-                    ERR("[DS-SEND] raw segment failed: fd={}", task.fd);
+                    ERR("[DS-SEND] sendv failed: fd={}", task.fd);
+                    cleanup_fd(task.fd);
+                } else {
+                    INFO("[DS-SEND] fd={} complete: {} + {} bytes (sendv)", task.fd, task.data.size(), task.raw_data->size());
+                    epoll_->mod(epoll_fd_, task.fd, EV_READ | EV_ONESHOT);
                 }
+            } else {
+                do_send(task.fd, task.data);
             }
         }
     }

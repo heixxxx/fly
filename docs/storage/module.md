@@ -330,7 +330,7 @@ public:
     // Temp 数据写入（save_to_db=False）
     void on_temp_write_started(const CMString& db_id, const CMString& object_name);
     void on_temp_write(const CMString& db_id, const CMString& object_name,
-                       const CMString& data);
+                       FlyBufferPtr data);  // shared_ptr，零拷贝
 
     // 读取（COMPLETE = 可读，不论 save_to_db 与否）
     std::pair<bool, ReadResult> try_read_local(const CMString& object_name);
@@ -466,6 +466,20 @@ private:
 5. send 线程执行实际发送
 
 **零拷贝路径**: `SendTask.raw_data` 指向 `FlyBufferPtr`（ObjectCache.low 的共享引用），避免数据拷贝。
+
+**sendv 优化**: 当有 raw payload 时，使用 `writev` 系统调用将 header 和 payload 合并为一次发送，避免两次 `send` 的系统调用开销：
+
+```cpp
+// DataServer::send_loop()
+if (has_raw) {
+    struct iovec iov[2];
+    iov[0] = {header.data(), header.size()};
+    iov[1] = {raw_data->data(), raw_data->size()};
+    transport_->sendv(fd, iov, 2);  // 单次 writev
+} else {
+    do_send(fd, header);  // 无 payload 时单次 send
+}
+```
 
 ---
 

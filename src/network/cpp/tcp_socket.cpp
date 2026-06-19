@@ -121,6 +121,51 @@ bool TCPSocketTransport::send_all(int fd, const char* data, size_t len) {
     return true;
 }
 
+bool TCPSocketTransport::sendv(int fd, const struct iovec* iov, int iovcnt) {
+    // Compute total bytes to send.
+    size_t total = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        total += iov[i].iov_len;
+    }
+
+    size_t sent = 0;
+    struct iovec* iov_copy = const_cast<struct iovec*>(iov);
+    int remaining_iovcnt = iovcnt;
+
+    while (sent < total) {
+        ssize_t n = ::writev(fd, iov_copy, remaining_iovcnt);
+        if (n > 0) {
+            sent += static_cast<size_t>(n);
+            // Advance iov pointers past sent data.
+            while (n > 0 && remaining_iovcnt > 0) {
+                if (static_cast<size_t>(n) >= iov_copy[0].iov_len) {
+                    n -= iov_copy[0].iov_len;
+                    iov_copy++;
+                    remaining_iovcnt--;
+                } else {
+                    iov_copy[0].iov_base = static_cast<char*>(iov_copy[0].iov_base) + n;
+                    iov_copy[0].iov_len -= n;
+                    n = 0;
+                }
+            }
+        } else if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                struct pollfd pfd;
+                pfd.fd = fd;
+                pfd.events = POLLOUT;
+                pfd.revents = 0;
+                int ret = ::poll(&pfd, 1, 5000);
+                if (ret <= 0) return false;
+                if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) return false;
+                continue;
+            }
+            if (errno == EINTR) continue;
+            return false;
+        }
+    }
+    return true;
+}
+
 int TCPSocketTransport::get_port(int fd) {
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);

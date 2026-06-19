@@ -174,6 +174,11 @@ private:
     DataClientPool data_client_pool_{Config::instance()->get_int("data_client_pool_size")};
     MetadataClient metadata_client_;
 
+    // Pre-fetched dependency locations from TaskAssignMessage.
+    // Key: object_name, Value: (worker_id, host, port)
+    CMUnorderedMap<CMString, std::tuple<uint64_t, CMString, int32_t>> prefetched_locations_;
+    std::mutex prefetched_mutex_;
+
     // Master liveness tracking — seconds since epoch (atomic for cross-thread access)
     std::atomic<int64_t> last_master_contact_{0};
     static constexpr int MASTER_TIMEOUT_SECONDS = 120;

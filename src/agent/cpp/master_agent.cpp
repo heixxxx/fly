@@ -181,7 +181,7 @@ void MasterAgent::start() {
         auto loc = ds->lookup_remote_idx(name);
         if (loc.worker_id_ == 0 || loc.host_.empty()) {
             bool has_pending = !graph_->get_pending_tasks().empty();
-            bool has_running = !metadata_->get_tasks_by_status(TaskStatus::RUNNING).empty();
+            bool has_running = metadata_->has_tasks_with_status(TaskStatus::RUNNING);
             return {false, nullptr, {}, has_pending || has_running};
         }
         auto [success, data, py_name, hash, error] =
@@ -223,11 +223,11 @@ void MasterAgent::stop() {
         std::unique_lock<std::mutex> lock(drain_mutex_);
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         while (true) {
-            auto running_tasks = metadata_->get_tasks_by_status(TaskStatus::RUNNING);
-            if (running_tasks.empty()) break;
+            int running_count = metadata_->count_tasks_by_status(TaskStatus::RUNNING);
+            if (running_count == 0) break;
             if (drain_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
                 WARN("Shutdown drain timeout (10s), {} tasks still running",
-                     running_tasks.size());
+                     running_count);
                 break;
             }
         }
@@ -292,23 +292,31 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
     }
 
     metadata_->create_task(task_id, name, inputs, outputs, "{}", required_capabilities);
+    metadata_->set_write_context_hash(task_id, write_context_hash);
+    graph_->add_task(task_id, inputs, required_capabilities);
+
+    // Pre-fetch dependency locations at submit time (earliest possible point).
     {
-        auto task_opt = metadata_->get_task(task_id);
-        if (task_opt) {
-            task_opt->get().write_context_hash_ = write_context_hash;
+        auto ds = DataService::instance();
+        std::lock_guard<std::mutex> lock(dep_loc_mutex_);
+        for (const auto& dep : inputs) {
+            auto loc = ds->lookup_remote_idx(dep);
+            if (loc.worker_id_ != 0 && !loc.host_.empty()) {
+                task_dependency_locations_[task_id][dep] = {loc.worker_id_, loc.host_, loc.port_};
+                DBG("[DEP-LOC] submit-time: task={} obj={} worker={}", task_id, dep, loc.worker_id_);
+            }
         }
     }
-    graph_->add_task(task_id, inputs, required_capabilities);
-    
+
     {
         bool is_ready = graph_->is_task_ready(task_id);
         auto pending = graph_->get_pending_tasks();
         auto ready = graph_->get_ready_tasks();
         auto deps = graph_->get_task_dependencies(task_id);
-        INFO("[DEP] submit: id={} name={} deps={} ready={} pending={} is_ready={}",
+        DBG("[DEP] submit: id={} name={} deps={} ready={} pending={} is_ready={}",
              task_id, name, deps.size(), ready.size(), pending.size(), is_ready);
         for (const auto& dep : deps) {
-            INFO("[DEP]   dep={} data_ready={}", dep, graph_->is_data_ready(dep));
+            DBG("[DEP]   dep={} data_ready={}", dep, graph_->is_data_ready(dep));
         }
     }
 
@@ -357,10 +365,9 @@ void MasterAgent::schedule_tasks() {
             record.task_id_ = task_id;
             auto task_opt = metadata_->get_task(task_id);
             if (task_opt) {
-                TaskMetadata& task = task_opt->get();
-                record.name_ = task.name_;
-                record.inputs_ = task.inputs_;
-                record.outputs_ = task.outputs_;
+                record.name_ = task_opt->name_;
+                record.inputs_ = task_opt->inputs_;
+                record.outputs_ = task_opt->outputs_;
             }
             {
                 std::lock_guard<std::mutex> lk(task_args_mutex_);
@@ -371,8 +378,7 @@ void MasterAgent::schedule_tasks() {
             record.error_message_ = error_msg;
 
             graph_->remove_task(task_id);
-            metadata_->update_task_status(task_id, TaskStatus::FAILED);
-            metadata_->set_error(task_id, error_msg);
+            metadata_->fail_task(task_id, error_msg);
             {
                 std::lock_guard<std::mutex> lk(task_args_mutex_);
                 task_modules_.erase(task_id);
@@ -387,8 +393,7 @@ void MasterAgent::schedule_tasks() {
     auto pending = graph_->get_pending_tasks();
     if (!pending.empty()) {
         auto ready = graph_->get_ready_tasks();
-        auto running = metadata_->get_tasks_by_status(TaskStatus::RUNNING);
-        if (ready.empty() && running.empty()) {
+        if (ready.empty() && !metadata_->has_tasks_with_status(TaskStatus::RUNNING)) {
             for (uint64_t task_id : pending) {
                 auto deps = graph_->get_task_dependencies(task_id);
                 CMString dep_list;
@@ -402,9 +407,8 @@ void MasterAgent::schedule_tasks() {
                 record.task_id_ = task_id;
                 auto task_opt2 = metadata_->get_task(task_id);
                 if (task_opt2) {
-                    TaskMetadata& task2 = task_opt2->get();
-                    record.name_ = task2.name_;
-                    record.outputs_ = task2.outputs_;
+                    record.name_ = task_opt2->name_;
+                    record.outputs_ = task_opt2->outputs_;
                 }
                 record.module_ = task_modules_.count(task_id) ? task_modules_[task_id] : "";
                 record.args_ = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
@@ -413,8 +417,7 @@ void MasterAgent::schedule_tasks() {
                 record.error_message_ = error_msg;
 
                 graph_->remove_task(task_id);
-                metadata_->update_task_status(task_id, TaskStatus::FAILED);
-                metadata_->set_error(task_id, error_msg);
+                metadata_->fail_task(task_id, error_msg);
                 {
                     std::lock_guard<std::mutex> lk(task_args_mutex_);
                     task_modules_.erase(task_id);
@@ -423,6 +426,22 @@ void MasterAgent::schedule_tasks() {
 
                 persist_failed_task(record);
             ERR("Task {} failed: {}", task_id, error_msg);
+            }
+        }
+    }
+}
+
+void MasterAgent::update_dependency_location_cache(const CMString& object_name, uint64_t worker_id, const CMString& host, int32_t port) {
+    // Find pending tasks that depend on this data and cache the location.
+    auto pending = graph_->get_pending_tasks();
+    std::lock_guard<std::mutex> lock(dep_loc_mutex_);
+    for (uint64_t task_id : pending) {
+        auto deps = graph_->get_task_dependencies(task_id);
+        for (const auto& dep : deps) {
+            if (dep == object_name) {
+                task_dependency_locations_[task_id][object_name] = {worker_id, host, port};
+                DBG("[DEP-LOC] cached: task={} obj={} worker={}", task_id, object_name, worker_id);
+                break;
             }
         }
     }
@@ -445,20 +464,48 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
     TaskAssignMessage msg;
     msg.task_id_ = task_id;
     auto task_opt3 = metadata_->get_task(task_id);
-    msg.task_name_ = task_opt3 ? task_opt3->get().name_ : "";
+    msg.task_name_ = task_opt3 ? task_opt3->name_ : "";
     {
         std::lock_guard<std::mutex> lk(task_args_mutex_);
         msg.task_module_ = task_modules_[task_id];
         msg.args_ = task_args_[task_id];
     }
     if (task_opt3) {
-        msg.write_context_hash_ = task_opt3->get().write_context_hash_;
+        msg.write_context_hash_ = task_opt3->write_context_hash_;
+
+        // Populate dependency locations from cache + direct lookup.
+        auto ds = DataService::instance();
+        {
+            std::lock_guard<std::mutex> lock(dep_loc_mutex_);
+            auto loc_it = task_dependency_locations_.find(task_id);
+            if (loc_it != task_dependency_locations_.end()) {
+                for (const auto& [dep, loc] : loc_it->second) {
+                    msg.dependency_locations_.push_back({dep, loc.worker_id, loc.host, loc.port});
+                }
+                task_dependency_locations_.erase(loc_it);  // Consume cache.
+            }
+        }
+        // Also look up any dependencies not in cache (e.g. ready tasks that weren't pending).
+        for (const auto& dep : task_opt3->inputs_) {
+            bool already_cached = false;
+            for (const auto& loc : msg.dependency_locations_) {
+                if (loc.object_name == dep) {
+                    already_cached = true;
+                    break;
+                }
+            }
+            if (!already_cached) {
+                auto loc = ds->lookup_remote_idx(dep);
+                if (loc.worker_id_ != 0 && !loc.host_.empty()) {
+                    msg.dependency_locations_.push_back({dep, loc.worker_id_, loc.host_, loc.port_});
+                }
+            }
+        }
     }
 
     reactor_->send(conn_id, msg);
 
-    metadata_->update_task_status(task_id, TaskStatus::RUNNING);
-    metadata_->set_assigned_worker(task_id, worker_id);
+    metadata_->assign_task(task_id, worker_id);
     worker_manager_->assign_task(worker_id, task_id);
 }
 
@@ -678,8 +725,7 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
     uint64_t worker_id = msg.worker_id_;
 
     worker_manager_->complete_task(worker_id);
-    metadata_->update_task_status(msg.task_id_, TaskStatus::FAILED);
-    metadata_->set_error(msg.task_id_, msg.error_message_);
+    metadata_->fail_task(msg.task_id_, msg.error_message_);
     graph_->remove_task(msg.task_id_);
 
     {
@@ -717,24 +763,16 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
     WARN("Worker disconnected: worker_id={}", worker_id);
 
     if (!draining_.load()) {
-        auto running_tasks = metadata_->get_tasks_by_status(TaskStatus::RUNNING);
-        CMVector<uint64_t> tasks_to_recover;
-        for (const auto& task : running_tasks) {
-            if (task.assigned_worker_id_ == worker_id) {
-                tasks_to_recover.push_back(task.task_id_);
-            }
-        }
+        auto tasks_to_recover = metadata_->get_task_ids_by_worker(worker_id);
 
         for (uint64_t task_id : tasks_to_recover) {
             auto task_opt4 = metadata_->get_task(task_id);
             if (!task_opt4) continue;
-            TaskMetadata& meta = task_opt4->get();
 
             graph_->remove_task(task_id);
-            graph_->add_task(task_id, meta.inputs_, meta.required_capabilities_);
-            metadata_->update_task_status(task_id, TaskStatus::PENDING);
-            metadata_->set_assigned_worker(task_id, 0);
-            WARN("Recovered task from dead worker: task_id={}, name={}", task_id, meta.name_);
+            graph_->add_task(task_id, task_opt4->inputs_, task_opt4->required_capabilities_);
+            metadata_->unassign_task(task_id);
+            WARN("Recovered task from dead worker: task_id={}, name={}", task_id, task_opt4->name_);
         }
 
         if (!tasks_to_recover.empty()) {
@@ -779,36 +817,21 @@ CMVector<uint64_t> MasterAgent::get_pending_tasks() const {
 }
 
 CMVector<uint64_t> MasterAgent::get_running_tasks() const {
-    auto tasks = metadata_->get_tasks_by_status(TaskStatus::RUNNING);
-    CMVector<uint64_t> ids;
-    for (const auto& t : tasks) {
-        ids.push_back(t.task_id_);
-    }
-    return ids;
+    return metadata_->get_task_ids_by_status(TaskStatus::RUNNING);
 }
 
 CMVector<uint64_t> MasterAgent::get_completed_tasks() const {
-    auto tasks = metadata_->get_tasks_by_status(TaskStatus::COMPLETED);
-    CMVector<uint64_t> ids;
-    for (const auto& t : tasks) {
-        ids.push_back(t.task_id_);
-    }
-    return ids;
+    return metadata_->get_task_ids_by_status(TaskStatus::COMPLETED);
 }
 
 CMVector<uint64_t> MasterAgent::get_failed_tasks() const {
-    auto tasks = metadata_->get_tasks_by_status(TaskStatus::FAILED);
-    CMVector<uint64_t> ids;
-    for (const auto& t : tasks) {
-        ids.push_back(t.task_id_);
-    }
-    return ids;
+    return metadata_->get_task_ids_by_status(TaskStatus::FAILED);
 }
 
 CMString MasterAgent::get_task_error(uint64_t task_id) const {
     auto task_opt5 = metadata_->get_task(task_id);
     if (task_opt5) {
-        return task_opt5->get().error_message_;
+        return task_opt5->error_message_;
     }
     return "";
 }
@@ -878,7 +901,7 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
     } else {
         response.success_ = false;
         bool has_pending = !graph_->get_pending_tasks().empty();
-        bool has_running = !metadata_->get_tasks_by_status(TaskStatus::RUNNING).empty();
+        bool has_running = metadata_->has_tasks_with_status(TaskStatus::RUNNING);
         response.can_still_produce_ = has_pending || has_running;
         DBG("[TEMP-QUERY] DataQuery NOT FOUND: obj={}, can_still_produce={}", msg.object_name_, response.can_still_produce_);
     }
@@ -907,14 +930,14 @@ void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage
             graph_->mark_data_ready(msg.object_name_);
             auto addr = DataService::instance()->get_worker_address(msg.worker_id_);
             DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
+            update_dependency_location_cache(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
             schedule_tasks();
         } else if (it->second == msg.write_context_hash_) {
             ack.success_ = true;
-            INFO("[DEP] before mark_data_ready: obj={}, ready={}, pending={}", msg.object_name_, graph_->get_ready_tasks().size(), graph_->get_pending_tasks().size());
             graph_->mark_data_ready(msg.object_name_);
-            INFO("[DEP] after mark_data_ready: obj={}, ready={}, pending={}", msg.object_name_, graph_->get_ready_tasks().size(), graph_->get_pending_tasks().size());
             auto addr = DataService::instance()->get_worker_address(msg.worker_id_);
             DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
+            update_dependency_location_cache(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
             schedule_tasks();
         } else {
             ack.success_ = false;
@@ -928,13 +951,8 @@ void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage
         graph_->mark_data_ready(msg.object_name_);
         auto addr = DataService::instance()->get_worker_address(msg.worker_id_);
         DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
-        DBG("[TEMP-REG-MASTER] WriteRegister success (no hash): obj={}, worker_id={}, host={}, port={}",
-            msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
+        update_dependency_location_cache(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
         schedule_tasks();
-        DBG("[DEP-GRAPH] after WriteRegister schedule: obj={} ready={} pending={} thread={}",
-            msg.object_name_, graph_->get_ready_tasks().size(), 
-            graph_->get_pending_tasks().size(),
-            std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
     }
 
     reactor_->send(conn_id, ack);
@@ -1037,7 +1055,7 @@ std::tuple<bool, FlyBufferPtr, CMString, bool> MasterAgent::request_remote_data(
     auto info = DataService::instance()->lookup_remote_idx(object_name);
     if (info.host_.empty()) {
         bool has_pending = !graph_->get_pending_tasks().empty();
-        bool has_running = !metadata_->get_tasks_by_status(TaskStatus::RUNNING).empty();
+        bool has_running = metadata_->has_tasks_with_status(TaskStatus::RUNNING);
         return {false, nullptr, {}, has_pending || has_running};
     }
 
@@ -1502,7 +1520,7 @@ void MasterAgent::persist_pending_tasks() {
 
     INFO("Persisting {} pending tasks on shutdown", pending.size());
     for (const auto& task : pending) {
-        auto record = build_failed_record(task.task_id_);
+        auto record = build_failed_record(task->task_id_);
         record.error_message_ = "Master shutdown: task still pending";
         persist_failed_task(record);
     }
@@ -1513,17 +1531,16 @@ FailedTaskRecord MasterAgent::build_failed_record(uint64_t task_id) {
     record.task_id_ = task_id;
     auto task_opt6 = metadata_->get_task(task_id);
     if (task_opt6) {
-        TaskMetadata& meta = task_opt6->get();
-        record.name_ = meta.name_;
+        record.name_ = task_opt6->name_;
         {
             std::lock_guard<std::mutex> lk(task_args_mutex_);
             record.module_ = task_modules_.count(task_id) ? task_modules_[task_id] : "";
             record.args_ = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
         }
-        record.inputs_ = meta.inputs_;
-        record.outputs_ = meta.outputs_;
-        record.required_capabilities_ = meta.required_capabilities_;
-        record.error_message_ = meta.error_message_;
+        record.inputs_ = task_opt6->inputs_;
+        record.outputs_ = task_opt6->outputs_;
+        record.required_capabilities_ = task_opt6->required_capabilities_;
+        record.error_message_ = task_opt6->error_message_;
     }
     return record;
 }

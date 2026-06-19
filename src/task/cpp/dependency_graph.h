@@ -20,14 +20,21 @@ public:
     CMVector<CMString> get_task_requirements(uint64_t task_id) const;
     CMVector<CMString> get_task_dependencies(uint64_t task_id) const;
     void remove_task(uint64_t task_id);
-    
+
 private:
+    bool check_and_move_to_ready(uint64_t task_id);
+
     CMUnorderedMap<uint64_t, CMVector<CMString>> task_dependencies_;
     CMUnorderedMap<CMString, bool> data_ready_status_;
     CMUnorderedMap<uint64_t, CMVector<CMString>> task_requirements_;
     CMUnorderedSet<uint64_t> ready_tasks_;
     CMUnorderedSet<uint64_t> pending_tasks_;
     CMUnorderedSet<uint64_t> completed_tasks_;
+
+    // Reverse index: data_path → set of pending task_ids that depend on it.
+    // Avoids iterating all pending tasks in mark_data_ready().
+    CMUnorderedMap<CMString, CMUnorderedSet<uint64_t>> data_to_pending_tasks_;
+
     mutable std::mutex mutex_;
 };
 

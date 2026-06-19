@@ -131,6 +131,16 @@ private:
     CMUnorderedMap<uint64_t, CMVector<CMString>> task_args_;
     mutable std::mutex task_args_mutex_;
 
+    // Pre-fetched dependency locations: task_id → {object_name → (worker_id, host, port)}.
+    // Updated on write_register, consumed on assign_task_to_worker.
+    struct CachedLocation {
+        uint64_t worker_id = 0;
+        CMString host;
+        int32_t port = 0;
+    };
+    CMUnorderedMap<uint64_t, CMUnorderedMap<CMString, CachedLocation>> task_dependency_locations_;
+    mutable std::mutex dep_loc_mutex_;
+
     CMUnorderedMap<CMString, CMUnorderedMap<CMString, CMString>> db_registry_;
     CMUnorderedMap<CMString, CMSharedPtr<Database>> db_instances_;
     CMUnorderedSet<CMString> frozen_dbs_;
@@ -139,6 +149,7 @@ private:
 
     void schedule_tasks();
     void assign_task_to_worker(uint64_t task_id, uint64_t worker_id);
+    void update_dependency_location_cache(const CMString& object_name, uint64_t worker_id, const CMString& host, int32_t port);
     void heartbeat_check_loop();
 
     std::mutex schedule_mutex_;

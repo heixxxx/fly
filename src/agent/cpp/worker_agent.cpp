@@ -268,6 +268,15 @@ void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
 void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
     touch_master_contact();
 
+    // Store pre-fetched dependency locations for this task.
+    if (!msg.dependency_locations_.empty()) {
+        std::lock_guard<std::mutex> lock(prefetched_mutex_);
+        for (const auto& loc : msg.dependency_locations_) {
+            prefetched_locations_[loc.object_name] = {loc.worker_id, loc.host, loc.port};
+            DBG("[PREFETCH] obj={} worker_id={} host={} port={}", loc.object_name, loc.worker_id, loc.host, loc.port);
+        }
+    }
+
     PendingTask task;
     task.task_id_ = msg.task_id_;
     task.task_name_ = msg.task_name_;
@@ -482,7 +491,30 @@ void WorkerAgent::request_database_freeze(const CMString& db_id) {
 }
 
 std::tuple<bool, FlyBufferPtr, CMString, bool> WorkerAgent::request_remote_data(const CMString& object_name) {
-     auto location = metadata_client_.query_data_location(
+    // Try pre-fetched location first (from TaskAssignMessage).
+    {
+        std::lock_guard<std::mutex> lock(prefetched_mutex_);
+        auto it = prefetched_locations_.find(object_name);
+        if (it != prefetched_locations_.end()) {
+            auto [wid, host, port] = it->second;
+            prefetched_locations_.erase(it);
+
+            uint64_t request_id = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) ^
+                                  static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+
+            auto [success, data, py_name, hash, error] = data_client_pool_.request(
+                host, port, object_name, worker_id_, request_id, 30000);
+
+            if (success) {
+                DataService::instance()->update_remote_idx(object_name, wid, host, port);
+                return {true, data, std::move(py_name), false};
+            }
+            // Prefetch miss — fall through to master query.
+        }
+    }
+
+    // Fallback: query master for location.
+    auto location = metadata_client_.query_data_location(
         master_host_, master_port_, object_name);
 
     if (!location.found_) {

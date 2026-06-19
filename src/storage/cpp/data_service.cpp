@@ -575,8 +575,8 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
     }
 
     switch (diag) {
-        case 0: INFO("[TIER1] NOT FOUND: obj={}", object_name); break;
-        case 1: INFO("[TIER1] NOT FOUND: obj={}, short_name={}", object_name, short_name); break;
+        case 0: DBG("[TIER1] NOT FOUND: obj={}", object_name); break;
+        case 1: DBG("[TIER1] NOT FOUND: obj={}, short_name={}", object_name, short_name); break;
         case 2: DBG("[TEMP-READ-LOCAL] NOT READY: obj={}", object_name); break;
         case 3: DBG("[TEMP-READ-LOCAL] FOUND: obj={}, data_size={}", object_name, temp_data ? temp_data->size() : 0); break;
     }
@@ -923,7 +923,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
     }
 
     auto info = lookup_remote_idx(object_name);
-    INFO("[TIER2] remote_idx lookup: obj={}, worker_id={}, host={}", object_name, info.worker_id_, info.host_);
+    DBG("[TIER2] remote_idx lookup: obj={}, worker_id={}, host={}", object_name, info.worker_id_, info.host_);
     if (info.worker_id_ != 0 && !info.host_.empty()) {
         DirectCompressedReadCallback cb;
         {
@@ -932,7 +932,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
         }
         if (cb) {
             auto [cb_found, cb_data, cb_py_name, cb_hash] = cb(info.host_, info.port_, object_name);
-            INFO("[TIER2] obj={}, cb_found={}", object_name, cb_found);
+            DBG("[TIER2] obj={}, cb_found={}", object_name, cb_found);
             if (cb_found) return {true, cb_data, std::move(cb_py_name), std::move(cb_hash), false};
             remove_remote_location(object_name, info.worker_id_);
         }
@@ -945,14 +945,14 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
     }
     if (remote_cb) {
         auto [cb_found, cb_data, cb_py_name, cb_can_still_produce] = remote_cb(object_name);
-        INFO("[TIER3] obj={}, found={}, can_produce={}", object_name, cb_found, cb_can_still_produce);
+        DBG("[TIER3] obj={}, found={}, can_produce={}", object_name, cb_found, cb_can_still_produce);
         if (cb_found && cb_data && !cb_data->empty()) {
             return {true, cb_data, std::move(cb_py_name), {}, false};
         }
         return {false, nullptr, {}, {}, cb_can_still_produce};
     }
 
-    INFO("[TIER3] obj={}, no remote_cb", object_name);
+    DBG("[TIER3] obj={}, no remote_cb", object_name);
     return {false, nullptr, {}, {}, false};
 }
 

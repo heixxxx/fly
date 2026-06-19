@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <sys/types.h>
+#include <sys/uio.h>
 
 namespace fly {
 
@@ -24,6 +25,10 @@ public:
     virtual ssize_t recv(int fd, char* buf, size_t len) = 0;
 
     virtual bool send_all(int fd, const char* data, size_t len) = 0;
+
+    // Scatter-gather send: write multiple buffers in a single system call (writev).
+    // Returns true if all data was sent successfully.
+    virtual bool sendv(int fd, const struct iovec* iov, int iovcnt) = 0;
 
     virtual int get_port(int fd) = 0;
 

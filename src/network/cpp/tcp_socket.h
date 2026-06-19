@@ -22,6 +22,7 @@ public:
     ssize_t recv(int fd, char* buf, size_t len) override;
 
     bool send_all(int fd, const char* data, size_t len) override;
+    bool sendv(int fd, const struct iovec* iov, int iovcnt) override;
     int get_port(int fd) override;
 
     void close(int fd) override;

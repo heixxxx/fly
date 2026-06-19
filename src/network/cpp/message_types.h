@@ -127,6 +127,15 @@ struct DataResponseMessage {
     FLY_SERIALIZE(header_, object_name_, success_, error_message_, py_name_, write_context_hash_);
 };
 
+struct DataLocation {
+    CMString object_name;
+    uint64_t worker_id = 0;
+    CMString host;
+    int32_t port = 0;
+
+    FLY_SERIALIZE(object_name, worker_id, host, port);
+};
+
 struct TaskAssignMessage {
     MessageHeader header_;
     uint64_t task_id_ = 0;
@@ -134,10 +143,11 @@ struct TaskAssignMessage {
     CMString task_module_;
     CMVector<CMString> args_;
     CMString write_context_hash_;
+    CMVector<DataLocation> dependency_locations_;  // Pre-fetched locations of input data.
 
     static constexpr MessageType msg_type_ = MessageType::TASK_ASSIGN;
 
-    FLY_SERIALIZE(header_, task_id_, task_name_, task_module_, args_, write_context_hash_);
+    FLY_SERIALIZE(header_, task_id_, task_name_, task_module_, args_, write_context_hash_, dependency_locations_);
 };
 
 struct TaskCompleteMessage {

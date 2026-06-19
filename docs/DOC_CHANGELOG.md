@@ -2,6 +2,32 @@
 
 ---
 
+## 2026-06-19: TaskManager + DependencyGraph 性能优化 + 依赖位置预取
+
+**TaskManager 按状态分桶**: `tasks_` 从单一 `CMUnorderedMap` 改为按状态分桶的 `buckets_[5]`。`get_tasks_by_status()` 从 O(n) 降到 O(k)，k = 该状态的任务数。新增 `has_tasks_with_status()` 和 `count_tasks_by_status()` O(1) 查询。新增 `get_task_ids_by_status()` 和 `get_task_ids_by_worker()` ID-only 查询。
+
+**TaskMetadataPtr shared_ptr**: `TaskMetadata` 存储改为 `CMSharedPtr<TaskMetadata>`。`get_task()` 返回 shared_ptr（0.2ns 拷贝），消除 use-after-unlock 数据竞态。
+
+**原子复合操作**: 新增 `fail_task(task_id, error)`、`assign_task(task_id, worker_id)`、`unassign_task(task_id)`，单次锁获取替代 2-3 次分离调用。
+
+**自动清理**: completed+failed 任务超过 `kMaxCompletedTasks`（100）时自动淘汰最老任务，防止内存无限增长。
+
+**DependencyGraph 反向索引**: 新增 `data_to_pending_tasks_` 反向索引。`mark_data_ready()` 从 O(P×D) 降到 O(T×D)，P = pending 任务总数，T = 依赖该数据的任务数。
+
+**依赖位置预取**: `TaskAssignMessage` 新增 `dependency_locations_` 字段。Master 在 `submit_task` 时缓存依赖位置，在 `assign_task_to_worker` 时填充到消息中。Worker 收到 task 后存入 `prefetched_locations_`，`request_remote_data` 优先使用预取位置，消除 master 查询开销。read_nb 从 3.4ms 降到 2.2ms（-35%）。
+
+**sendv 合并发送**: `Transport` 新增 `sendv()` 方法（基于 `writev`）。`DataServer::send_loop` 使用 sendv 将 header 和 payload 合并为一次系统调用，避免两次 send 的开销。
+
+**INFO→DBG 日志修复**: `data_service.cpp` 热路径中的 TIER1/TIER2/TIER3 INFO 日志改为 DBG，消除 ~3400 条/worker 的日志 I/O 开销。`dependency_graph.cpp` 和 `master_agent.cpp` 中的 `[DEP]` INFO 日志同步改为 DBG。
+
+**性能对比 (O2, golden_n50_sd9)**:
+- Wall Clock: 3502ms → 3105ms (-11.3%)
+- t_total: 5.6ms → 4.3ms (-23.2%)
+- read_nb: 3.4ms → 2.2ms (-35.3%)
+- write: 1.0ms → 0.92ms (-8%)
+
+---
+
 ## 2026-06-19: temp cache 重构 + 读重试策略 + wait_obj timeout + QA 拆分
 
 **temp cache 重构**: `LocalObjectInfo::temp_compressed_data_` 从 `CMString` 改为 `FlyBufferPtr`。`write_temp_pickle` 直接压缩到 `FlyBufferPtr`，`put_temp_data` → `on_temp_write` 全链路 shared_ptr 透传，写入零拷贝。读取时直接返回 shared_ptr，读取零拷贝。`try_read_local_raw` 统一返回 `FlyBufferPtr`，temp 和非 temp 路径一致。仅淘汰到 `temp_eviction_store_` 时拷贝一次（低频路径）。
