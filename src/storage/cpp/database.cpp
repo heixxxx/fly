@@ -135,6 +135,17 @@ fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
     auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : std::function<void(const fly::CMString&, const fly::CMString&)>{};
     CMString write_hash = fly::WorkerAgentContext::get_current_write_hash();
 
+    // Populate low-tier cache immediately after compression, before the
+    // background disk write. This lets remote reads (DataServer) serve from
+    // cache without waiting for the write-back thread to flush, avoiding
+    // DATA_NOT_READY retry loops.
+    {
+        size_t sz = compress_result.original_size_ > 0
+                        ? static_cast<size_t>(compress_result.original_size_)
+                        : record->size();
+        fly::ObjectCache::instance().put_low(full, record, sz);
+    }
+
     auto execute = [w, name = full, compress_result, record, write_hash]() {
         w->write_record(name, compress_result.original_size_,
                         compress_result.chunk_count_, *record, write_hash);
@@ -151,9 +162,7 @@ fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
             ds->on_write_completed(db_id, full, entries.value());
         }
         ds->on_object_flushed(full);
-        // Populate low-tier cache for immediate readability (zero-copy: share record).
-        size_t sz = compress_result.original_size_ > 0 ? static_cast<size_t>(compress_result.original_size_) : record->size();
-        fly::ObjectCache::instance().put_low(full, record, sz);
+        // put_low already done in caller thread right after compression.
         if (caller_record_func) {
             caller_record_func(db_id, object_name);
         }
