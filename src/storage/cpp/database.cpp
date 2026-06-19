@@ -104,36 +104,27 @@ Database::CompressResult Database::compress_buffered_data(
     return {total_uncompressed, chunk_count};
 }
 
-fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
-                                         const char* data, int64_t data_size,
-                                         const CMString& py_name, bool backup) {
-    CMString full = full_name(object_name);
-    if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return fly::WriteErrorType::FROZEN_DB; }
-
-    // 1. Serialize + compress (before any registration — avoids gap where
-    //    master marks data ready before it's readable).
-    auto record = CMMakeShared<FlyBuffer>();
-    auto compress_result = compress_buffered_data(
-        data, data_size, py_name, *record);
-
-    // 2. Populate low-tier cache immediately — remote reads can serve from
+// Shared commit logic: cache → register → enqueue disk write.
+fly::WriteErrorType Database::commit_write(const CMString& object_name,
+                                           const CMString& full,
+                                           FlyBufferPtr record,
+                                           int64_t original_size,
+                                           int32_t chunk_count,
+                                           bool backup) {
+    // 1. Populate low-tier cache immediately — remote reads can serve from
     //    cache without waiting for the background disk write.
     {
-        size_t sz = compress_result.original_size_ > 0
-                        ? static_cast<size_t>(compress_result.original_size_)
-                        : record->size();
+        size_t sz = original_size > 0 ? static_cast<size_t>(original_size) : record->size();
         fly::ObjectCache::instance().put_low(full, record, sz);
     }
 
-    // 3. Register write with master. Only NOW does the master mark data ready
+    // 2. Register write with master. Only NOW does the master mark data ready
     //    and schedule dependent tasks — by which point the cache is populated
     //    and remote reads can be served immediately.
     fly::DataService::instance()->on_write_started(db_id_, full);
-
     auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
 
     if (reg_error_type == fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED) {
-        // Rollback: remove from cache and local_idx, no disk write needed.
         fly::ObjectCache::instance().remove(full);
         fly::DataService::instance()->on_write_failed(db_id_, full, "duplicate skipped");
         fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED);
@@ -152,22 +143,19 @@ fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
         return fly::WriteErrorType::REGISTRATION_TIMEOUT;
     }
 
-    // 4. Registration succeeded — enqueue background disk write.
+    // 3. Registration succeeded — enqueue background disk write.
     DataWriter* w = writer_.get();
     auto caller_record_func = fly::WorkerAgentContext::current_record_func();
     auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : std::function<void(const fly::CMString&, const fly::CMString&)>{};
     CMString write_hash = fly::WorkerAgentContext::get_current_write_hash();
 
-    auto execute = [w, name = full, compress_result, record, write_hash]() {
-        w->write_record(name, compress_result.original_size_,
-                        compress_result.chunk_count_, *record, write_hash);
+    auto execute = [w, name = full, original_size, chunk_count, record, write_hash]() {
+        w->write_record(name, original_size, chunk_count, *record, write_hash);
         w->flush();
     };
 
     auto complete = [full, db_id = this->db_id_, object_name,
-                     caller_record_func,
-                     caller_backup_func, w, backup,
-                     record, compress_result]() {
+                     caller_record_func, caller_backup_func, w, backup]() {
         auto ds = fly::DataService::instance();
         auto entries = w->get_all_entries(full);
         if (entries.has_value()) {
@@ -188,6 +176,18 @@ fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
     fly::DataService::instance()->enqueue_write_back(std::move(req));
 
     return fly::WriteErrorType::OK;
+}
+
+fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
+                                         const char* data, int64_t data_size,
+                                         const CMString& py_name, bool backup) {
+    CMString full = full_name(object_name);
+    if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return fly::WriteErrorType::FROZEN_DB; }
+
+    auto record = CMMakeShared<FlyBuffer>();
+    auto cr = compress_buffered_data(data, data_size, py_name, *record);
+
+    return commit_write(object_name, full, record, cr.original_size_, cr.chunk_count_, backup);
 }
 
 CMString Database::compress_pickle_bytes(const char* data, int64_t data_size,

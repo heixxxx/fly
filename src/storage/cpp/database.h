@@ -100,6 +100,16 @@ private:
     // as a backup record for the given object.
     void do_backup_write(const CMString& full, const CMString& object_name, CMString compressed_data, const CMString& source_hash = {});
 
+    // Commit a compressed record: cache → register with master → enqueue disk write.
+    // Shared by write_pickle_bytes and write_object<T>. On registration failure,
+    // rolls back cache and local_idx, does not enqueue disk write.
+    fly::WriteErrorType commit_write(const CMString& object_name,
+                                     const CMString& full,
+                                     FlyBufferPtr record,
+                                     int64_t original_size,
+                                     int32_t chunk_count,
+                                     bool backup);
+
     CMString base_path_;
     CMString data_path_;
     CMString writer_id_;
@@ -127,8 +137,7 @@ fly::WriteErrorType Database::write_object(const CMString& object_name, const T&
         return fly::WriteErrorType::FROZEN_DB;
     }
 
-    // 1. Serialize + compress (before any registration — avoids gap where
-    //    master marks data ready before it's readable).
+    // Serialize + compress via streaming pipeline.
     auto record = CMMakeShared<FlyBuffer>();
     FlyBufferStreamBuf fly_buf(*record);
     CountingStreamBuf counting_buf(fly_buf);
@@ -163,73 +172,8 @@ fly::WriteErrorType Database::write_object(const CMString& object_name, const T&
     CMString real_header = header.serialize();
     std::memcpy(record->data(), real_header.data(), real_header.size());
 
-    // 2. Populate low-tier cache immediately — remote reads can serve from
-    //    cache without waiting for the background disk write.
-    {
-        size_t sz = total_uncompressed > 0 ? static_cast<size_t>(total_uncompressed) : record->size();
-        fly::ObjectCache::instance().put_low(full, record, sz);
-    }
-
-    // 3. Register write with master. Only NOW does the master mark data ready
-    //    and schedule dependent tasks — by which point the cache is populated
-    //    and remote reads can be served immediately.
-    fly::DataService::instance()->on_write_started(db_id_, full);
-    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
-
-    if (reg_error_type == fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED) {
-        fly::ObjectCache::instance().remove(full);
-        fly::DataService::instance()->on_write_failed(db_id_, full, "duplicate skipped");
-        fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED);
-        return fly::WriteErrorType::DUPLICATE_SKIPPED;
-    }
-    if (reg_error_type == fly::TaskErrorType::WRITE_PROVENANCE_MISMATCH) {
-        fly::ObjectCache::instance().remove(full);
-        fly::DataService::instance()->on_write_failed(db_id_, full, reg_error);
-        ERR("Write registration rejected: {} (type={})", reg_error, static_cast<int>(reg_error_type));
-        return fly::WriteErrorType::REGISTRATION_FAILED;
-    }
-    if (reg_error_type == fly::TaskErrorType::WRITE_REGISTRATION_TIMEOUT) {
-        fly::ObjectCache::instance().remove(full);
-        fly::DataService::instance()->on_write_failed(db_id_, full, reg_error);
-        ERR("Write registration timeout: {}", reg_error);
-        return fly::WriteErrorType::REGISTRATION_TIMEOUT;
-    }
-
-    // 4. Registration succeeded — enqueue background disk write.
-    DataWriter* w = writer_.get();
-    auto caller_record_func = fly::WorkerAgentContext::current_record_func();
-    auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : std::function<void(const fly::CMString&, const fly::CMString&)>{};
-    CMString write_hash = fly::WorkerAgentContext::get_current_write_hash();
-
-    auto execute = [w, name = full, total_uncompressed, chunk_count, record, write_hash]() {
-        w->write_record(name, total_uncompressed, chunk_count, *record, write_hash);
-        w->flush();
-    };
-
-    auto complete = [full, db_id = this->db_id_, object_name,
-                     caller_record_func,
-                     caller_backup_func, w, backup,
-                     record, total_uncompressed]() {
-        auto ds = fly::DataService::instance();
-        auto entries = w->get_all_entries(full);
-        if (entries.has_value()) {
-            ds->on_write_completed(db_id, full, entries.value());
-        }
-        ds->on_object_flushed(full);
-        if (caller_record_func) {
-            caller_record_func(db_id, object_name);
-        }
-        if (backup && caller_backup_func) {
-            caller_backup_func(db_id, object_name);
-        }
-    };
-
-    fly::WriteRequest req;
-    req.execute_ = std::move(execute);
-    req.on_complete_ = std::move(complete);
-    fly::DataService::instance()->enqueue_write_back(std::move(req));
-
-    return fly::WriteErrorType::OK;
+    // Commit: cache → register → enqueue disk write (shared logic).
+    return commit_write(object_name, full, record, total_uncompressed, chunk_count, backup);
 }
 
 template<typename T>
