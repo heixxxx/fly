@@ -112,6 +112,7 @@ class Master(FlyAgent):
         self._next_worker_id = 1
         self._expected_workers = 0
         self._cache = {}
+        self._shared_config_path = None
 
     def is_running(self) -> bool:
         return self._running
@@ -178,6 +179,7 @@ class Master(FlyAgent):
             self._running = False
 
         self._cache.clear()
+        self._shared_config_path = None
 
         # Wait for Workers to exit gracefully (they received ShutdownMessage).
         # This ensures atexit/__gcov_exit runs in Worker processes.
@@ -364,8 +366,12 @@ class Master(FlyAgent):
 
         os.makedirs(log_dir, exist_ok=True)
         log_path = os.path.join(log_dir, f"worker{worker_id}.log")
-        config_path = os.path.join(log_dir, f".fly_config_{worker_id}")
-        cfg.save_to_file(config_path)
+
+        # Config is shared and immutable after worker startup — only write once.
+        if not hasattr(self, '_shared_config_path') or not self._shared_config_path:
+            self._shared_config_path = os.path.join(log_dir, ".fly_config")
+            cfg.save_to_file(self._shared_config_path)
+        config_path = self._shared_config_path
 
         attrs = config.get("attributes", []) if config and isinstance(config, dict) else []
         attrs_str = ",".join(attrs) if attrs else ""
