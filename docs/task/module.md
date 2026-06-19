@@ -8,180 +8,108 @@
 
 ---
 
-## 核心文件
+## 核心组件
 
-| 文件 | 说明 |
-|------|------|
-| `cpp/dependency_graph.h/cpp` | 任务依赖管理，反向索引优化 mark_data_ready |
-| `cpp/worker_manager.h/cpp` | Worker 注册/状态管理 |
-| `cpp/task_scheduler.h/cpp` | FIFO 调度，依赖就绪检测 |
-| `cpp/task_manager.h/cpp` | 任务元数据管理（按状态分桶，O(1) 查询） |
-| `cpp/heartbeat_monitor.h/cpp` | 心跳监控，超时检测 |
-
----
-
-## 类详细说明
-
-### DependencyGraph（依赖图）
-
-```cpp
-class DependencyGraph {
-public:
-    void add_task(uint64_t task_id, const CMVector<CMString>& inputs,
-                  const CMVector<CMString>& required_capabilities = {});
-    void mark_data_ready(const CMString& data_path);
-    void mark_data_removed(const CMString& data_path);
-    bool is_data_ready(const CMString& data_path) const;
-    CMVector<uint64_t> get_ready_tasks() const;
-    CMVector<uint64_t> get_pending_tasks() const;
-    bool is_task_ready(uint64_t task_id) const;
-    CMVector<CMString> get_task_requirements(uint64_t task_id) const;
-    CMVector<CMString> get_task_dependencies(uint64_t task_id) const;
-    void remove_task(uint64_t task_id);
-
-private:
-    bool check_and_move_to_ready(uint64_t task_id);
-
-    CMUnorderedMap<uint64_t, CMVector<CMString>> task_dependencies_;
-    CMUnorderedMap<CMString, bool> data_ready_status_;
-    CMUnorderedMap<uint64_t, CMVector<CMString>> task_requirements_;
-    CMUnorderedSet<uint64_t> ready_tasks_;
-    CMUnorderedSet<uint64_t> pending_tasks_;
-    CMUnorderedSet<uint64_t> completed_tasks_;
-
-    // 反向索引：data_path → 依赖该数据的 pending task_ids
-    // 避免 mark_data_ready 遍历所有 pending tasks
-    CMUnorderedMap<CMString, CMUnorderedSet<uint64_t>> data_to_pending_tasks_;
-};
-```
-
-**依赖解析算法（反向索引优化）**:
-
-```
-add_task(task_id, inputs)
-  → task_dependencies_[task_id] = inputs
-  → for each input in inputs:
-      if !data_ready_status_[input]:
-        data_to_pending_tasks_[input].insert(task_id)  // 构建反向索引
-  → if all inputs ready:
-      ready_tasks_.insert(task_id)
-  else:
-      pending_tasks_.insert(task_id)
-
-mark_data_ready(data_path)
-  → data_ready_status_[data_path] = true
-  → affected_tasks = data_to_pending_tasks_[data_path]  // O(1) 查找
-  → for each task_id in affected_tasks:                  // O(T) 遍历
-      if check_and_move_to_ready(task_id):
-        移除反向索引条目
-```
-
-**复杂度**: 从 O(P×D) 降到 O(T×D)，P = pending 任务总数，T = 依赖该数据的任务数（通常 T << P）
+| 组件 | 文件 | 职责 |
+|------|------|------|
+| DependencyGraph | `cpp/dependency_graph.h/cpp` | 任务依赖管理，数据就绪触发任务就绪 |
+| WorkerManager | `cpp/worker_manager.h/cpp` | Worker 注册/状态/能力管理 |
+| TaskScheduler | `cpp/task_scheduler.h/cpp` | FIFO 调度，依赖就绪检测 |
+| TaskManager | `cpp/task_manager.h/cpp` | 任务元数据生命周期管理 |
+| HeartbeatMonitor | `cpp/heartbeat_monitor.h/cpp` | 心跳监控，超时检测 |
 
 ---
 
-### TaskManager（任务元数据管理）
+## DependencyGraph
 
-```cpp
-enum class TaskStatus : uint8_t {
-    PENDING = 0,
-    RUNNING = 1,
-    COMPLETED = 2,
-    FAILED = 3,
-    CANCELLED = 4,
-};
+### 核心职责
 
-struct TaskMetadata {
-    uint64_t task_id_ = 0;
-    CMString name_;
-    TaskStatus status_ = TaskStatus::PENDING;
-    CMVector<CMString> inputs_;
-    CMVector<CMString> outputs_;
-    CMString config_;
-    CMVector<CMString> required_capabilities_;
-    uint64_t created_at_ = 0;
-    uint64_t started_at_ = 0;
-    uint64_t completed_at_ = 0;
-    CMString error_message_;
-    uint64_t assigned_worker_id_ = 0;
-    CMString write_context_hash_;
-};
+管理任务之间的数据依赖关系。当某个数据就绪时，自动检测并更新依赖该数据的任务状态。
 
-using TaskMetadataPtr = CMSharedPtr<TaskMetadata>;
+### 数据结构
 
-class TaskManager {
-public:
-    // 原子复合操作（单次锁获取）
-    void fail_task(uint64_t task_id, const CMString& error);
-    void assign_task(uint64_t task_id, uint64_t worker_id);
-    void unassign_task(uint64_t task_id);
+- **task_dependencies_**: task_id → 依赖的数据列表
+- **data_ready_status_**: data_path → 是否就绪
+- **ready_tasks_**: 已就绪（所有依赖满足）的任务集合
+- **pending_tasks_**: 未就绪（存在未满足依赖）的任务集合
+- **data_to_pending_tasks_**: 反向索引，data_path → 依赖该数据的 pending task 集合
 
-    // O(1) 状态查询
-    bool has_tasks_with_status(TaskStatus status) const;
-    int count_tasks_by_status(TaskStatus status) const;
+### 依赖解析算法
 
-    // ID-only 查询（避免拷贝完整 TaskMetadata）
-    CMVector<uint64_t> get_task_ids_by_status(TaskStatus status) const;
-    CMVector<uint64_t> get_task_ids_by_worker(uint64_t worker_id) const;
+**添加任务**:
+1. 记录任务的依赖列表
+2. 检查每个依赖是否已就绪
+3. 如果所有依赖已就绪 → 加入 ready_tasks
+4. 否则 → 加入 pending_tasks，并构建反向索引
 
-    // 返回 shared_ptr（0.2ns 拷贝，无竞态）
-    TaskMetadataPtr get_task(uint64_t task_id) const;
+**标记数据就绪**:
+1. 标记 data_path 为就绪
+2. 通过反向索引找到依赖该数据的所有 pending tasks（O(1) 查找）
+3. 对每个相关任务检查是否所有依赖都已满足
+4. 如果满足 → 从 pending 移到 ready，清理反向索引
 
-private:
-    void move_task(uint64_t task_id, TaskStatus from, TaskStatus to);
-    void maybe_cleanup_completed();
+**复杂度**: O(T×D)，T = 依赖该数据的任务数，D = 平均依赖数。相比遍历所有 pending tasks 的 O(P×D)，当 T << P 时有显著提升。
 
-    // 按状态分桶 — get_tasks_by_status 只遍历目标桶
-    CMUnorderedMap<uint64_t, TaskMetadataPtr> buckets_[5];
-    CMUnorderedMap<uint64_t, TaskStatus> task_status_;
-};
-```
+---
 
-**存储结构**: 按状态分桶
+## TaskManager
+
+### 核心职责
+
+管理任务的生命周期元数据：状态、名称、输入输出、时间戳、错误信息、分配的 Worker。
+
+### 数据结构
+
+采用**按状态分桶**的存储结构，每个状态维护独立的哈希表。任务元数据使用 `shared_ptr` 管理，实现零拷贝共享和线程安全。
 
 ```
-buckets_[PENDING]  → {task_id → TaskMetadataPtr}
-buckets_[RUNNING]  → {task_id → TaskMetadataPtr}
+buckets_[PENDING]   → {task_id → TaskMetadataPtr}
+buckets_[RUNNING]   → {task_id → TaskMetadataPtr}
 buckets_[COMPLETED] → {task_id → TaskMetadataPtr}
-buckets_[FAILED]   → {task_id → TaskMetadataPtr}
+buckets_[FAILED]    → {task_id → TaskMetadataPtr}
 buckets_[CANCELLED] → {task_id → TaskMetadataPtr}
+task_status_        → {task_id → 当前状态}
 ```
 
-**优势**:
-- `get_tasks_by_status()` 从 O(n) 降到 O(k)，k = 该状态的任务数
-- `has_tasks_with_status()` 从 O(n) 降到 O(1)
-- `get_task()` 返回 shared_ptr，0.2ns 拷贝，无数据竞态
-- 自动清理：completed+failed 超过 kMaxCompletedTasks 时淘汰最老任务
+### 查询复杂度
 
-**原子复合操作**:
-- `fail_task(task_id, error)` = `update_task_status(FAILED)` + `set_error()`
-- `assign_task(task_id, worker_id)` = `update_task_status(RUNNING)` + `set_assigned_worker()`
-- `unassign_task(task_id)` = `update_task_status(PENDING)` + `set_assigned_worker(0)`
+| 接口 | 复杂度 | 说明 |
+|------|--------|------|
+| get_task | O(1) | 返回 shared_ptr，0.2ns 拷贝 |
+| has_tasks_with_status | O(1) | 检查桶是否为空 |
+| count_tasks_by_status | O(1) | 桶的大小 |
+| get_tasks_by_status | O(k) | 只遍历目标桶 |
+| get_task_ids_by_status | O(k) | 只返回 ID |
+| get_task_ids_by_worker | O(r) | 按 worker 过滤 RUNNING 任务 |
+
+### 原子复合操作
+
+将常见的多步操作合并为单次锁获取：
+
+- **fail_task**: 更新状态为 FAILED + 设置错误信息 + 记录完成时间
+- **assign_task**: 更新状态为 RUNNING + 设置分配的 Worker + 记录开始时间
+- **unassign_task**: 更新状态为 PENDING + 清除 Worker 分配
+
+### 自动清理
+
+当 COMPLETED + FAILED 任务数超过阈值（默认 100）时，按完成时间排序，淘汰最老的任务。防止长时间运行时内存无限增长。
 
 ---
 
-### TaskScheduler（任务调度器）
+## TaskScheduler
 
-```cpp
-struct ScheduleResult {
-    uint64_t task_id;
-    uint64_t worker_id;
-    bool scheduled;
-};
+### 核心职责
 
-class TaskScheduler {
-public:
-    TaskScheduler(DependencyGraph* graph, WorkerManager* manager);
-    ScheduleResult schedule_next();
-    CMVector<ScheduleResult> schedule_all_available();
-    void set_locality_preference(bool enabled);
+将就绪任务匹配到空闲 Worker。
 
-private:
-    uint64_t select_best_worker(uint64_t task_id);
-    DependencyGraph* graph_;
-    WorkerManager* manager_;
-};
-```
+### 调度算法
+
+1. 获取就绪任务列表
+2. 获取空闲 Worker 列表
+3. 对每个就绪任务，选择一个符合条件的 Worker（能力匹配）
+4. 返回匹配结果
+
+**约束**: Worker 同一时刻最多执行一个任务。
 
 ---
 
@@ -189,48 +117,31 @@ private:
 
 当 `fail_unscheduleable_tasks=1` 时，`schedule_tasks()` 执行两项检查：
 
-**Capability 检查**:
-```
-ready_tasks = graph_->get_ready_tasks()
-for each task in ready_tasks:
-    if task.required_capabilities is not empty:
-        if !worker_manager->has_worker_with_all_capabilities(requirements):
-            fail_task(task_id, error)
-            persist_failed_task(record)
-```
+**Capability 检查**: 遍历就绪任务，检查是否有 Worker 具备所需能力。如果没有，任务标记为 FAILED。
 
-**Dependency 检查**:
-```
-pending_tasks = graph_->get_pending_tasks()
-if ready_tasks empty AND no running tasks:
-    → 所有 pending tasks 的依赖无法满足
-    → fail_task(task_id, error)
-```
+**Dependency 检查**: 如果没有就绪任务且没有运行中的任务，说明剩余 pending 任务的依赖永远无法满足，标记为 FAILED。
 
 ---
 
 ## 核心流程
 
-### 任务提交到调度
+### 任务提交
 
 ```
 TaskSubmitMessage 到达 Master
-  → metadata_->create_task(task_id, name, inputs, outputs, config)
-  → graph_->add_task(task_id, inputs)  // 注册依赖 + 构建反向索引
-  → 预取依赖位置（submit_time prefetch）
-      → for each input in inputs:
-          loc = DataService->lookup_remote_idx(input)
-          if found: task_dependency_locations_[task_id][input] = loc
+  → TaskManager.create_task(...)
+  → DependencyGraph.add_task(...)     // 注册依赖 + 构建反向索引
+  → 预取依赖数据位置（submit_time prefetch）
   → schedule_tasks()
 ```
 
-### 数据就绪触发下游
+### 数据就绪触发调度
 
 ```
 WriteRegister 到达 Master
-  → graph_->mark_data_ready(data_path)  // O(T×D) 反向索引查询
+  → DependencyGraph.mark_data_ready(...)  // O(T×D) 反向索引查询
   → DataService.update_remote_idx(...)
-  → update_dependency_location_cache(...)  // 更新 pending tasks 的依赖位置
+  → 更新依赖位置缓存
   → schedule_tasks()
 ```
 
@@ -239,10 +150,11 @@ WriteRegister 到达 Master
 ```
 assign_task_to_worker(task_id, worker_id)
   → 构建 TaskAssignMessage
-  → 从 task_dependency_locations_ 获取缓存的依赖位置
-  → 直接查询 DataService 补充未缓存的依赖位置
-  → 发送 TaskAssignMessage + dependency_locations_
+  → 填充依赖数据位置（从缓存 + 直接查询）
+  → 发送给 Worker
 ```
+
+Worker 收到 TaskAssignMessage 后，将依赖位置存入本地缓存。后续读取依赖数据时优先使用缓存位置，避免查询 Master。
 
 ---
 
@@ -251,8 +163,8 @@ assign_task_to_worker(task_id, worker_id)
 | 决策 | 原因 |
 |------|------|
 | DependencyGraph 反向索引 | mark_data_ready 从 O(P×D) 降到 O(T×D) |
-| TaskManager 按状态分桶 | get_tasks_by_status 从 O(n) 降到 O(k) |
-| TaskMetadataPtr shared_ptr | get_task 返回 0.2ns 拷贝，消除数据竞态 |
-| 原子复合操作 | fail_task/assign_task/unassign_task 单次锁获取 |
-| 自动清理 completed tasks | 防止内存无限增长，保留最近 100 个 |
-| 依赖位置预取 | 消除 read_nb 路径的 master 查询开销 |
+| TaskManager 按状态分桶 | 按状态查询从 O(n) 降到 O(k) |
+| shared_ptr 存储元数据 | 零拷贝共享，消除数据竞态 |
+| 原子复合操作 | 减少锁获取次数，降低竞争 |
+| 自动清理 completed tasks | 防止内存无限增长 |
+| 依赖位置预取 | 消除远程读路径的 Master 查询开销 |

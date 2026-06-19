@@ -2,29 +2,48 @@
 
 ---
 
-## 2026-06-19: TaskManager + DependencyGraph 性能优化 + 依赖位置预取
+## 2026-06-19: TaskManager/DependencyGraph 性能优化 + 依赖位置预取
 
-**TaskManager 按状态分桶**: `tasks_` 从单一 `CMUnorderedMap` 改为按状态分桶的 `buckets_[5]`。`get_tasks_by_status()` 从 O(n) 降到 O(k)，k = 该状态的任务数。新增 `has_tasks_with_status()` 和 `count_tasks_by_status()` O(1) 查询。新增 `get_task_ids_by_status()` 和 `get_task_ids_by_worker()` ID-only 查询。
+### TaskManager 优化
 
-**TaskMetadataPtr shared_ptr**: `TaskMetadata` 存储改为 `CMSharedPtr<TaskMetadata>`。`get_task()` 返回 shared_ptr（0.2ns 拷贝），消除 use-after-unlock 数据竞态。
+**按状态分桶存储**: 任务元数据按状态分为 5 个桶（PENDING/RUNNING/COMPLETED/FAILED/CANCELLED），按状态查询从 O(n) 降到 O(k)。
 
-**原子复合操作**: 新增 `fail_task(task_id, error)`、`assign_task(task_id, worker_id)`、`unassign_task(task_id)`，单次锁获取替代 2-3 次分离调用。
+**shared_ptr 存储**: 任务元数据使用 shared_ptr 管理，读取时返回 shared_ptr 拷贝（0.2ns），消除数据竞态。
 
-**自动清理**: completed+failed 任务超过 `kMaxCompletedTasks`（100）时自动淘汰最老任务，防止内存无限增长。
+**原子复合操作**: 将常见的多步操作（如更新状态+设置错误）合并为单次锁获取，减少锁竞争。
 
-**DependencyGraph 反向索引**: 新增 `data_to_pending_tasks_` 反向索引。`mark_data_ready()` 从 O(P×D) 降到 O(T×D)，P = pending 任务总数，T = 依赖该数据的任务数。
+**O(1) 状态查询**: 新增 has_tasks_with_status、count_tasks_by_status 等 O(1) 查询接口。
 
-**依赖位置预取**: `TaskAssignMessage` 新增 `dependency_locations_` 字段。Master 在 `submit_task` 时缓存依赖位置，在 `assign_task_to_worker` 时填充到消息中。Worker 收到 task 后存入 `prefetched_locations_`，`request_remote_data` 优先使用预取位置，消除 master 查询开销。read_nb 从 3.4ms 降到 2.2ms（-35%）。
+**ID-only 查询**: 新增 get_task_ids_by_status、get_task_ids_by_worker，避免拷贝完整元数据。
 
-**sendv 合并发送**: `Transport` 新增 `sendv()` 方法（基于 `writev`）。`DataServer::send_loop` 使用 sendv 将 header 和 payload 合并为一次系统调用，避免两次 send 的开销。
+**自动清理**: 已完成任务超过阈值时自动淘汰最老任务，防止内存无限增长。
 
-**INFO→DBG 日志修复**: `data_service.cpp` 热路径中的 TIER1/TIER2/TIER3 INFO 日志改为 DBG，消除 ~3400 条/worker 的日志 I/O 开销。`dependency_graph.cpp` 和 `master_agent.cpp` 中的 `[DEP]` INFO 日志同步改为 DBG。
+### DependencyGraph 反向索引
 
-**性能对比 (O2, golden_n50_sd9)**:
-- Wall Clock: 3502ms → 3105ms (-11.3%)
-- t_total: 5.6ms → 4.3ms (-23.2%)
-- read_nb: 3.4ms → 2.2ms (-35.3%)
-- write: 1.0ms → 0.92ms (-8%)
+新增 data → pending_tasks 的反向索引。mark_data_ready 从遍历所有 pending tasks（O(P×D)）改为只检查依赖该数据的任务（O(T×D)）。
+
+### 依赖位置预取
+
+**机制**: Master 在任务提交时缓存依赖数据位置，在任务分配时通过 TaskAssignMessage 下发给 Worker。Worker 读取依赖数据时优先使用预取位置，避免查询 Master。
+
+**效果**: 远程读路径从 2 次网络往返（Master 查询 + 数据读取）减少为 1 次（仅数据读取）。
+
+### sendv 合并发送
+
+DataServer 使用 writev 系统调用将 header 和 payload 合并为一次发送，减少系统调用次数。
+
+### 日志级别修复
+
+热路径中的 INFO 日志改为 DBG，消除每 worker ~3400 条日志的 I/O 开销。
+
+### 性能对比 (O2, golden_n50_sd9)
+
+| 指标 | Before | After | 提升 |
+|------|--------|-------|------|
+| Wall Clock | 3502ms | 3105ms | -11.3% |
+| t_total | 5.6ms | 4.3ms | -23.2% |
+| read_nb | 3.4ms | 2.2ms | -35.3% |
+| write | 1.0ms | 0.92ms | -8% |
 
 ---
 
