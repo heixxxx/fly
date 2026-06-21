@@ -2,6 +2,27 @@
 
 ---
 
+## 2026-06-21: attribute_timeout — 属性依赖超时降级
+
+### `@as_task(requires=...)` 支持 tuple/callable 形式
+
+`requires` 参数扩展，新增属性依赖超时语义：
+
+- `list[str]`：死等（旧行为，向后兼容）。
+- `tuple(list[str], float)`：`(能力标签, 超时秒数)`，`timeout<0` 死等 / `==0` 立即降级 / `>0` 限时降级。
+- `callable(*args, **kwargs)`：提交时动态解析为上述任一形式。
+
+### 调度器限时降级机制
+
+新增 master `attr_timeout_check_thread_`（周期 200ms）周期性触发 `schedule_tasks()`，让限时等待属性的 task 在数据依赖满足后到期被降级调度到匹配属性最多的 idle worker。
+
+### 文档同步
+
+- `docs/python-api/module.md`：更新 `as_task` 签名、requires 形式、attribute_timeout 语义。
+- `docs/task/module.md`：调度算法段落补充属性匹配与超时降级表。
+
+---
+
 ## 2026-06-20: solver 优化 + stop() 修复 + FLY_RELEASE + 粗网格预构建
 
 ### stop() 流程重构

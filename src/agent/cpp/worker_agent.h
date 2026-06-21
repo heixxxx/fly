@@ -75,6 +75,7 @@ public:
                      const CMVector<CMString>& args,
                      const CMVector<CMString>& inputs,
                      const CMVector<CMString>& required_capabilities = {},
+                     float attribute_timeout = -1.0f,
                      const CMString& write_context_hash = "");
     
     bool has_pending_task() const;

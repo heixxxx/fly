@@ -264,15 +264,38 @@ def as_task(inputs=None, requires=None):
         def wrapper(*args, **kwargs):
             agent = get_agent()
             task_inputs = inputs(*args, **kwargs) if inputs else []
+            # requires 支持 list / tuple(list, float) / callable，解析为
+            # (caps, attribute_timeout) 传递给 submit。
+            resolved = requires(*args, **kwargs) if callable(requires) else requires
+            if isinstance(resolved, tuple) and len(resolved) == 2:
+                caps, attr_timeout = resolved
+            else:
+                caps, attr_timeout = list(resolved), -1.0
             serialized = _serialize_args(args)
             task_name = func_payload if func_payload is not None else name
             agent.submit(task_name, module, serialized, task_inputs,
-                         required_capabilities=requires or [])
+                         required_capabilities=caps,
+                         attribute_timeout=attr_timeout)
 
         wrapper._fly_original_func = func
         wrapper._fly_task_name = name
         return wrapper
     return decorator
+```
+
+**requires 参数形式**（属性依赖 + 超时语义）:
+
+- `list[str]`：能力标签列表，死等（必须满足才调度）。
+- `tuple(list[str], float)`：`(能力标签列表, 属性依赖超时秒数)`：
+    - `timeout < 0`：死等（等价纯 list）。
+    - `timeout == 0`：数据依赖满足后仅检查一次，无完整匹配立即降级到匹配属性最多的 idle worker。
+    - `timeout > 0`：数据依赖满足后限时等待；到期后降级调度。
+- `callable(*args, **kwargs)`：返回上述任一形式，在提交时动态解析。
+
+```python
+@as_task(requires=["gpu"])                  # 死等 gpu
+@as_task(requires=(["gpu"], 5.0))           # 5 秒后降级
+@as_task(requires=lambda db, k: ([k], 1.0)) # 动态决定
 ```
 
 **用户脚本 vs 仓库模块**:

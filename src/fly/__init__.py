@@ -31,6 +31,11 @@ except ImportError:
     from core.py import get_config
 
 try:
+    from core import get_work_directory
+except ImportError:
+    from core.py import get_work_directory
+
+try:
     from task.task import as_task, task_name, wait_obj
 except ImportError:
     from task.py.task import as_task, task_name, wait_obj
@@ -182,7 +187,7 @@ def __getattr__(name):
 
 
 __all__ = [
-    'open_db', 'load_db', 'get_config',
+    'open_db', 'load_db', 'get_config', 'get_work_directory',
     'as_task', 'task_name', 'wait_obj',
     'launch_workers', 'wait_tasks',
     'restart_failed_tasks', 'get_task_error',

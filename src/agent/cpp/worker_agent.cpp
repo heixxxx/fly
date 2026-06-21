@@ -208,6 +208,7 @@ void WorkerAgent::submit_task(const CMString& name, const CMString& module,
                                const CMVector<CMString>& args,
                                const CMVector<CMString>& inputs,
                                const CMVector<CMString>& required_capabilities,
+                               float attribute_timeout,
                                const CMString& write_context_hash) {
     // No reactor means start() failed (e.g. master unreachable) — nothing to
     // send to. Fail soft rather than crash; caller observes no progress.
@@ -221,6 +222,7 @@ void WorkerAgent::submit_task(const CMString& name, const CMString& module,
     msg.args_ = args;
     msg.inputs_ = inputs;
     msg.required_capabilities_ = required_capabilities;
+    msg.attribute_timeout_ = attribute_timeout;
     msg.write_context_hash_ = write_context_hash;
     reactor_->send(master_conn_, msg);
 }

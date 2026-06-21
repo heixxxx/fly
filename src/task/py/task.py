@@ -35,13 +35,27 @@ def as_task(inputs=None, requires=None):
 
     Args:
         inputs: callable(*args, **kwargs) -> list[str]，返回依赖对象名列表。
-        requires: list[str] or callable(*args, **kwargs) -> list[str]，
-                  任务所需的 worker 能力标签。
+        requires: 任务所需的 worker 能力标签，支持以下形式：
+            - list[str]: 能力标签列表，死等（必须满足才调度）
+            - tuple(list[str], float): (能力标签列表, 属性依赖超时秒数)
+                - timeout < 0: 死等（等价纯 list）
+                - timeout == 0: 数据依赖满足后仅检查一次，无完整匹配立即降级
+                  到匹配属性最多的 idle worker
+                - timeout > 0: 数据依赖满足后限时等待；到期后降级调度
+            - callable(*args, **kwargs): 返回上述任一形式，在提交时动态解析
 
     Usage::
 
         @as_task(inputs=lambda db: [])
         def my_task(db):
+            ...
+
+        @as_task(requires=["gpu"])
+        def gpu_task(db):
+            ...
+
+        @as_task(requires=(["gpu"], 5.0))  # 5秒后降级
+        def soft_gpu_task(db):
             ...
     """
     def decorator(func):
@@ -74,9 +88,17 @@ def as_task(inputs=None, requires=None):
 
             task_inputs = inputs(*args, **kwargs) if inputs else []
             if callable(task_requires):
-                caps = task_requires(*args, **kwargs)
+                resolved = task_requires(*args, **kwargs)
             else:
-                caps = task_requires
+                resolved = task_requires
+
+            # 解析为 (caps, attribute_timeout)
+            # tuple 形式：(list[str], float)；其他形式：纯 list，默认死等 (timeout<0)
+            if isinstance(resolved, tuple) and len(resolved) == 2:
+                caps, attr_timeout = resolved
+            else:
+                caps, attr_timeout = list(resolved), -1.0
+
             serialized = _serialize_args(args)
 
             task_name = func_payload if func_payload is not None else name
@@ -86,10 +108,12 @@ def as_task(inputs=None, requires=None):
 
             agent.submit(task_name, module, serialized, task_inputs,
                          required_capabilities=caps,
+                         attribute_timeout=attr_timeout,
                          write_context_hash=write_context_hash)
             DBG(
                 f"Task submitted via {agent.mode}: "
-                f"name={name}, module={module}, inputs={task_inputs}, requires={caps}")
+                f"name={name}, module={module}, inputs={task_inputs}, "
+                f"requires={caps}, attr_timeout={attr_timeout}")
 
         wrapper._fly_original_func = func
         wrapper._fly_task_name = name

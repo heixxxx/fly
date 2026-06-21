@@ -60,7 +60,8 @@ void TaskManager::create_task(uint64_t task_id, const CMString& name,
                                     const CMVector<CMString>& inputs,
                                     const CMVector<CMString>& outputs,
                                     const CMString& config,
-                                    const CMVector<CMString>& required_capabilities) {
+                                    const CMVector<CMString>& required_capabilities,
+                                    float attribute_timeout) {
     std::lock_guard<std::mutex> lock(mutex_);
     // Remove existing entry if overwriting.
     auto st_it = task_status_.find(task_id);
@@ -76,6 +77,7 @@ void TaskManager::create_task(uint64_t task_id, const CMString& name,
     meta->outputs_ = outputs;
     meta->config_ = config;
     meta->required_capabilities_ = required_capabilities;
+    meta->attribute_timeout_ = attribute_timeout;
     meta->created_at_ = now_ms();
     meta->started_at_ = 0;
     meta->completed_at_ = 0;

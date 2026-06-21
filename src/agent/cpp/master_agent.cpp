@@ -72,7 +72,7 @@ void MasterAgent::start() {
         [this](uint64_t conn_id, const TaskSubmitMessage& msg) {
             INFO("TaskSubmit received: task_name={}, module={}", msg.task_name_, msg.task_module_);
             uint64_t task_id = ++remote_task_counter_;
-            submit_task(task_id, msg.task_name_, msg.task_module_, msg.args_, msg.inputs_, {}, msg.required_capabilities_, msg.write_context_hash_);
+            submit_task(task_id, msg.task_name_, msg.task_module_, msg.args_, msg.inputs_, {}, msg.required_capabilities_, msg.attribute_timeout_, msg.write_context_hash_);
         });
 
     reactor_->register_handler<DbPathRequestMessage>(
@@ -152,6 +152,9 @@ void MasterAgent::start() {
 
     heartbeat_check_running_ = true;
     heartbeat_check_thread_ = std::thread([this] { heartbeat_check_loop(); });
+
+    attr_timeout_check_running_ = true;
+    attr_timeout_check_thread_ = std::thread([this] { attr_timeout_check_loop(); });
 
     reactor_thread_ = std::thread([this] {
         reactor_->run();
@@ -265,6 +268,12 @@ void MasterAgent::do_drain_and_stop() {
         heartbeat_check_thread_.join();
     }
 
+    if (attr_timeout_check_thread_.joinable()) {
+        attr_timeout_check_running_ = false;
+        attr_timeout_check_cv_.notify_all();
+        attr_timeout_check_thread_.join();
+    }
+
     if (reactor_) {
         DataService::instance()->stop_data_server();
 
@@ -297,8 +306,9 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
                                const CMVector<CMString>& inputs,
                                const CMVector<CMString>& outputs,
                                const CMVector<CMString>& required_capabilities,
+                               float attribute_timeout,
                                const CMString& write_context_hash) {
-    INFO("submit_task: id={}, name={}", task_id, name);
+    INFO("submit_task: id={}, name={}, attr_timeout={}", task_id, name, attribute_timeout);
 
     // module/args must be set before graph_->add_task (concurrency: reactor thread's
     // schedule_tasks reads task_modules_ when task becomes ready)
@@ -308,9 +318,13 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
         task_args_[task_id] = args;
     }
 
-    metadata_->create_task(task_id, name, inputs, outputs, "{}", required_capabilities);
+    metadata_->create_task(task_id, name, inputs, outputs, "{}", required_capabilities, attribute_timeout);
     metadata_->set_write_context_hash(task_id, write_context_hash);
-    graph_->add_task(task_id, inputs, required_capabilities);
+
+    TaskRequirements reqs;
+    reqs.capabilities_ = required_capabilities;
+    reqs.timeout_seconds_ = attribute_timeout;
+    graph_->add_task(task_id, inputs, reqs);
 
     // Pre-fetch dependency locations at submit time (earliest possible point).
     {
@@ -366,15 +380,23 @@ void MasterAgent::schedule_tasks() {
     if (Config::instance()->get_int("fail_unscheduleable_tasks") != 1) return;
 
     auto remaining = graph_->get_ready_tasks();
+    // 属性死锁检测：仅当集群中无任何 worker（含 BUSY）具备所需属性，且无 running
+    // task（即没有 worker 可能通过 set_worker_property 动态获得属性）时，
+    // 才 fail 掉死等(timeout<0)的 task。限时(>=0)的 task 会被降级调度，不在此处 fail。
+    bool has_running = metadata_->has_tasks_with_status(TaskStatus::RUNNING);
     for (uint64_t task_id : remaining) {
         auto requirements = graph_->get_task_requirements(task_id);
-        if (requirements.empty()) continue;
+        if (requirements.capabilities_.empty()) continue;
+        // 仅死等(timeout<0)的 task 才适用属性死锁 fail；timeout>=0 的会被降级调度
+        if (requirements.timeout_seconds_ >= 0.0f) continue;
+        // 有 running task 时，worker 仍可能动态获得属性，不能判定死锁
+        if (has_running) continue;
 
-        if (!worker_manager_->has_worker_with_all_capabilities(requirements)) {
+        if (!worker_manager_->has_worker_with_all_capabilities(requirements.capabilities_)) {
             CMString cap_list;
-            for (size_t i = 0; i < requirements.size(); i++) {
+            for (size_t i = 0; i < requirements.capabilities_.size(); i++) {
                 if (i > 0) cap_list += ",";
-                cap_list += requirements[i];
+                cap_list += requirements.capabilities_[i];
             }
             CMString error_msg = "No worker with required capabilities: [" + cap_list + "]";
 
@@ -391,7 +413,7 @@ void MasterAgent::schedule_tasks() {
                 record.module_ = task_modules_.count(task_id) ? task_modules_[task_id] : "";
                 record.args_ = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
             }
-            record.required_capabilities_ = requirements;
+            record.required_capabilities_ = requirements.capabilities_;
             record.error_message_ = error_msg;
 
             graph_->remove_task(task_id);
@@ -430,7 +452,7 @@ void MasterAgent::schedule_tasks() {
                 record.module_ = task_modules_.count(task_id) ? task_modules_[task_id] : "";
                 record.args_ = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
                 record.inputs_ = deps;
-                record.required_capabilities_ = graph_->get_task_requirements(task_id);
+                record.required_capabilities_ = graph_->get_task_requirements(task_id).capabilities_;
                 record.error_message_ = error_msg;
 
                 graph_->remove_task(task_id);
@@ -555,6 +577,23 @@ void MasterAgent::heartbeat_check_loop() {
     }
 }
 
+void MasterAgent::attr_timeout_check_loop() {
+    // 周期性触发 schedule_tasks，让限时等待属性的 task 在超时后被降级调度。
+    // 检查周期 200ms，满足秒级 float timeout 精度。schedule_tasks 内部会
+    // 跳过未超时的 task（select_best_worker 返回 0 被 continue）。
+    while (attr_timeout_check_running_) {
+        {
+            std::unique_lock<std::mutex> lock(attr_timeout_check_mutex_);
+            attr_timeout_check_cv_.wait_for(lock, std::chrono::milliseconds(200),
+                                             [this]{ return !attr_timeout_check_running_.load(); });
+        }
+
+        if (running_ && !draining_.load()) {
+            schedule_tasks();
+        }
+    }
+}
+
 void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& msg) {
     uint64_t worker_id = msg.worker_id_;
 
@@ -581,6 +620,9 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     ack.master_address_ = host_;
     ack.master_port_ = static_cast<int32_t>(port_);
     reactor_->send(conn_id, ack);
+
+    // 新 worker 注册后，ready 的 task 可能可调度（含等待属性的 task）
+    schedule_tasks();
 }
 
 void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
@@ -796,7 +838,10 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
             if (!task_opt4) continue;
 
             graph_->remove_task(task_id);
-            graph_->add_task(task_id, task_opt4->inputs_, task_opt4->required_capabilities_);
+            TaskRequirements reqs;
+            reqs.capabilities_ = task_opt4->required_capabilities_;
+            reqs.timeout_seconds_ = task_opt4->attribute_timeout_;
+            graph_->add_task(task_id, task_opt4->inputs_, reqs);
             metadata_->unassign_task(task_id);
             WARN("Recovered task from dead worker: task_id={}, name={}", task_id, task_opt4->name_);
         }
@@ -993,6 +1038,10 @@ void MasterAgent::on_worker_property_update(uint64_t conn_id, const WorkerProper
     INFO("WorkerPropertyUpdate: worker_id={}, added={}, removed={}", msg.worker_id_, added_count, removed_count);
 
     worker_manager_->update_capabilities(msg.worker_id_, msg.added_properties_, msg.removed_properties_);
+
+    // 属性变化后立即触发调度：worker 通过 set_worker_property 获得新属性后，
+    // 等待该属性的 task（waiting 中）应立即被调度，无需等到 timeout。
+    schedule_tasks();
 }
 
 void MasterAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg) {
@@ -1522,6 +1571,11 @@ void MasterAgent::check_shutdown_request() {
                     heartbeat_check_running_ = false;
                     heartbeat_check_cv_.notify_all();
                     heartbeat_check_thread_.join();
+                }
+                if (attr_timeout_check_thread_.joinable()) {
+                    attr_timeout_check_running_ = false;
+                    attr_timeout_check_cv_.notify_all();
+                    attr_timeout_check_thread_.join();
                 }
                 db_instances_.clear();
                 {

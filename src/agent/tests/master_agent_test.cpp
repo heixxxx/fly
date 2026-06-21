@@ -1305,7 +1305,7 @@ TEST(MasterAgentTest, SubmitTaskWithWriteContextHash) {
     master.start();
     wait_for_running(master, true);
 
-    master.submit_task(800, "ctx_task", "mod", {"arg"}, {"missing_input_ctx"}, {}, {}, "hash123");
+    master.submit_task(800, "ctx_task", "mod", {"arg"}, {"missing_input_ctx"}, {}, {}, -1.0f, "hash123");
 
     master.stop();
     wait_for_running(master, false);

@@ -26,6 +26,7 @@ struct TaskMetadata {
     CMVector<CMString> outputs_;
     CMString config_;
     CMVector<CMString> required_capabilities_;
+    float attribute_timeout_ = -1.0f;  // <0=死等, 0=立即降级, >0=限时降级
     uint64_t created_at_ = 0;
     uint64_t started_at_ = 0;
     uint64_t completed_at_ = 0;
@@ -43,7 +44,8 @@ public:
                      const CMVector<CMString>& inputs,
                      const CMVector<CMString>& outputs,
                      const CMString& config,
-                     const CMVector<CMString>& required_capabilities = {});
+                     const CMVector<CMString>& required_capabilities = {},
+                     float attribute_timeout = -1.0f);
 
     void update_task_status(uint64_t task_id, TaskStatus status);
     void set_error(uint64_t task_id, const CMString& error);

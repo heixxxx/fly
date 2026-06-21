@@ -219,9 +219,10 @@ struct TaskSubmitMessage {
     CMVector<CMString> args_;
     CMVector<CMString> inputs_;
     CMVector<CMString> required_capabilities_;
+    float attribute_timeout_ = -1.0f;  // <0=死等, 0=立即降级, >0=限时降级
     CMString write_context_hash_;
     static constexpr MessageType msg_type_ = MessageType::TASK_SUBMIT;
-    FLY_SERIALIZE(header_, task_name_, task_module_, args_, inputs_, required_capabilities_, write_context_hash_);
+    FLY_SERIALIZE(header_, task_name_, task_module_, args_, inputs_, required_capabilities_, attribute_timeout_, write_context_hash_);
 };
 
 struct DbPathRequestMessage {

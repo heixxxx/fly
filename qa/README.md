@@ -41,10 +41,10 @@ import time
 import os
 import shutil
 
-DB_PATH = f"/tmp/fly_e2e_<test_name>_db_{os.getpid()}"
+DB_PATH = os.path.join(get_work_directory(), "db")
 
 from e2e_tasks import write_data
-from fly import open_db, get_config
+from fly import open_db, get_config, get_work_directory
 
 
 def cleanup():
@@ -260,6 +260,7 @@ storage.ex_stg_get_data_service()
 | API | 说明 |
 |-----|------|
 | `get_agent()` | 获取 Master/Worker 单例 |
+| `get_work_directory()` | 当前进程的工作目录路径（log_dir），用于拼接 DB 路径 |
 | `master.launch_local_workers(configs)` | 启动 Worker 进程 |
 | `master.wait_for_workers(n, timeout=30)` | 等待 N 个 Worker 连接，返回 True/False |
 | `master.worker_count` | 当前连接的 Worker 数量 |
@@ -308,7 +309,7 @@ def test_part2():
 
 ### DB 路径
 
-使用 `f"/tmp/fly_e2e_<test_name>_db_{os.getpid()}"` 格式，确保并发安全。测试前清理，测试后不清理（方便调试）。
+使用 `os.path.join(get_work_directory(), "db")` 格式。`get_work_directory()` 返回当前进程的 log_dir 路径——每个 QA 测试由 runqa 分配独立 log_dir，用它拼接 DB 路径可获得进程隔离的工作空间，避免并发测试间互相干扰。测试前清理，测试后不清理（方便调试）。
 
 ### 日志系统
 
@@ -488,7 +489,7 @@ cat qa/<category>/<test_name>/fly.log
 
 **Q: 测试间互相干扰？**
 
-每个测试使用独立的 `DB_PATH`（`f"/tmp/fly_e2e_<name>_db_{os.getpid()}"`），不应互相干扰。如果使用了相同的路径，修改为唯一路径。
+每个测试使用独立的 `DB_PATH`（`os.path.join(get_work_directory(), "db")`），不应互相干扰。每个测试由 runqa 分配独立 log_dir，DB 路径基于该目录拼接。
 
 **Q: 新建的 QA case 被 runqa 忽略？**
 

@@ -98,8 +98,9 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                                              const fly::CMVector<fly::CMString>& inputs,
                                                              const fly::CMVector<fly::CMString>& outputs,
                                                              const fly::CMVector<fly::CMString>& required_capabilities,
+                                                             float attribute_timeout,
                                                              const fly::CMString& write_context_hash) {
-        self.submit_task(task_id, name, module, args, inputs, outputs, required_capabilities, write_context_hash);
+        self.submit_task(task_id, name, module, args, inputs, outputs, required_capabilities, attribute_timeout, write_context_hash);
     })
     FLY_EXPORT_METHOD("register_database", [](fly::MasterAgent& self,
                                                 const fly::CMString& db_id,
@@ -211,8 +212,9 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
                                          const fly::CMVector<fly::CMString>& args,
                                          const fly::CMVector<fly::CMString>& inputs,
                                          const fly::CMVector<fly::CMString>& required_capabilities,
+                                         float attribute_timeout,
                                          const fly::CMString& write_context_hash) {
-        self.submit_task(name, module, args, inputs, required_capabilities, write_context_hash);
+        self.submit_task(name, module, args, inputs, required_capabilities, attribute_timeout, write_context_hash);
     })
     FLY_EXPORT_METHOD("register_database", [](fly::WorkerAgent& self,
                                                 const fly::CMString& db_id,

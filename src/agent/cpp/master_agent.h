@@ -61,6 +61,7 @@ public:
                     const CMVector<CMString>& inputs = {},
                     const CMVector<CMString>& outputs = {},
                     const CMVector<CMString>& required_capabilities = {},
+                    float attribute_timeout = -1.0f,
                     const CMString& write_context_hash = "");
 
     CMVector<uint64_t> get_pending_tasks() const;
@@ -128,6 +129,13 @@ private:
     std::mutex heartbeat_check_mutex_;
     std::condition_variable heartbeat_check_cv_;
 
+    // Attribute timeout 检查线程：周期性触发 schedule_tasks，
+    // 让限时等待属性的 task 在超时后被降级调度。
+    std::thread attr_timeout_check_thread_;
+    std::atomic<bool> attr_timeout_check_running_{false};
+    std::mutex attr_timeout_check_mutex_;
+    std::condition_variable attr_timeout_check_cv_;
+
     CMUnorderedMap<uint64_t, CMString> task_modules_;
     CMUnorderedMap<uint64_t, CMVector<CMString>> task_args_;
     mutable std::mutex task_args_mutex_;
@@ -152,6 +160,7 @@ private:
     void assign_task_to_worker(uint64_t task_id, uint64_t worker_id);
     void update_dependency_location_cache(const CMString& object_name, uint64_t worker_id, const CMString& host, int32_t port);
     void heartbeat_check_loop();
+    void attr_timeout_check_loop();
 
     std::mutex schedule_mutex_;
 

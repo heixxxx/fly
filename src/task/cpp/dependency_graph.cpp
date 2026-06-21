@@ -5,10 +5,10 @@
 namespace fly {
 
 void DependencyGraph::add_task(uint64_t task_id, const CMVector<CMString>& inputs,
-                                const CMVector<CMString>& required_capabilities) {
+                                const TaskRequirements& requirements) {
     std::lock_guard<std::mutex> lock(mutex_);
     task_dependencies_[task_id] = inputs;
-    task_requirements_[task_id] = required_capabilities;
+    task_requirements_[task_id] = requirements;
 
     int pending = 0;
     for (const auto& dep : inputs) {
@@ -21,10 +21,13 @@ void DependencyGraph::add_task(uint64_t task_id, const CMVector<CMString>& input
 
     if (pending == 0) {
         ready_tasks_.insert(task_id);
+        task_ready_timestamps_[task_id] = std::chrono::steady_clock::now();
     } else {
         pending_tasks_.insert(task_id);
     }
-    DBG("[DEP] add_task: id={} deps={} pending_deps={} → {}", task_id, inputs.size(), pending, pending == 0 ? "READY" : "PENDING");
+    DBG("[DEP] add_task: id={} deps={} pending_deps={} timeout={} → {}",
+        task_id, inputs.size(), pending, requirements.timeout_seconds_,
+        pending == 0 ? "READY" : "PENDING");
 }
 
 bool DependencyGraph::check_and_move_to_ready(uint64_t task_id) {
@@ -43,6 +46,7 @@ bool DependencyGraph::check_and_move_to_ready(uint64_t task_id) {
     // All deps ready — move to ready.
     pending_tasks_.erase(task_id);
     ready_tasks_.insert(task_id);
+    task_ready_timestamps_[task_id] = std::chrono::steady_clock::now();
 
     // Clean up reverse index for this task.
     for (const auto& dep : deps) {
@@ -96,6 +100,7 @@ void DependencyGraph::mark_data_removed(const CMString& data_path) {
     for (auto task_id : to_pending) {
         ready_tasks_.erase(task_id);
         pending_tasks_.insert(task_id);
+        task_ready_timestamps_.erase(task_id);
         // Re-add to reverse index for all unmet deps.
         for (const auto& dep : task_dependencies_[task_id]) {
             if (!data_ready_status_.count(dep) || !data_ready_status_[dep]) {
@@ -135,6 +140,7 @@ void DependencyGraph::remove_task(uint64_t task_id) {
     ready_tasks_.erase(task_id);
     pending_tasks_.erase(task_id);
     completed_tasks_.insert(task_id);
+    task_ready_timestamps_.erase(task_id);
 
     // Clean up reverse index.
     auto dep_it = task_dependencies_.find(task_id);
@@ -154,13 +160,23 @@ void DependencyGraph::remove_task(uint64_t task_id) {
     task_requirements_.erase(task_id);
 }
 
-CMVector<CMString> DependencyGraph::get_task_requirements(uint64_t task_id) const {
+TaskRequirements DependencyGraph::get_task_requirements(uint64_t task_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = task_requirements_.find(task_id);
     if (it != task_requirements_.end()) {
         return it->second;
     }
     return {};
+}
+
+std::optional<std::chrono::steady_clock::time_point>
+DependencyGraph::get_task_ready_timestamp(uint64_t task_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = task_ready_timestamps_.find(task_id);
+    if (it != task_ready_timestamps_.end()) {
+        return it->second;
+    }
+    return std::nullopt;
 }
 
 CMVector<CMString> DependencyGraph::get_task_dependencies(uint64_t task_id) const {

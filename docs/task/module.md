@@ -111,6 +111,18 @@ task_status_        → {task_id → 当前状态}
 
 **约束**: Worker 同一时刻最多执行一个任务。
 
+**属性匹配与超时降级**:
+
+每个任务的 `TaskRequirements` 携带 `capabilities_`（必需能力标签）和 `timeout_seconds_`（属性依赖超时）：
+
+| timeout | 语义 | 行为 |
+|---------|------|------|
+| `< 0` | 死等 | 必须有完整匹配能力的 idle worker 才调度，否则继续等待 |
+| `== 0` | 立即降级 | 数据依赖满足后仅检查一次，无完整匹配则降级到匹配属性最多的 idle worker |
+| `> 0` | 限时降级 | 数据依赖满足后限时等待；到期后降级到匹配属性最多的 idle worker |
+
+`attribute_timeout` 由 `@as_task(requires=...)` 声明（见 `docs/python-api/module.md`），在 master 的 `attr_timeout_check_thread_`（周期 200ms）触发 `schedule_tasks()` 推进超时降级。
+
 ---
 
 ## 任务调度失败检测

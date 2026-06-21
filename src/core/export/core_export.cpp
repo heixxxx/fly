@@ -20,6 +20,12 @@ FLY_EXPORT_MODULE(_fly_core) {
 
     FLY_EXPORT_FUNCTION("ex_core_get_config", []() { return Config::instance(); });
 
+    // 返回当前进程的工作目录（即 log_dir）。每个 QA 测试由 runqa 分配独立 log_dir，
+    // 测试用它拼接 DB 路径以获得进程隔离的工作空间。
+    FLY_EXPORT_FUNCTION("ex_core_get_work_directory", []() -> CMString {
+        return Config::instance()->get_str("log_dir");
+    });
+
     FLY_EXPORT_CLASS(ProcessInfo, "EXProcessInfo")
     FLY_EXPORT_METHOD("worker_mode", &ProcessInfo::worker_mode)
     FLY_EXPORT_METHOD("worker_id", &ProcessInfo::worker_id)

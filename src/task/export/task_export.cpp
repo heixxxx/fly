@@ -47,21 +47,28 @@ FLY_EXPORT_CLASS(fly::ScheduleResult, "EXTaskScheduleResult")
     FLY_EXPORT_INIT()
     FLY_EXPORT_ATTR("task_id", &fly::ScheduleResult::task_id_)
     FLY_EXPORT_ATTR("worker_id", &fly::ScheduleResult::worker_id_)
-    FLY_EXPORT_ATTR("scheduled", &fly::ScheduleResult::scheduled_);
+    FLY_EXPORT_ATTR("scheduled", &fly::ScheduleResult::scheduled_)
+    FLY_EXPORT_ATTR("degraded", &fly::ScheduleResult::degraded_);
 
 FLY_EXPORT_CLASS(fly::DependencyGraph, "EXTaskDependencyGraph")
     FLY_EXPORT_INIT()
     FLY_EXPORT_METHOD("add_task", [](fly::DependencyGraph& self, uint64_t task_id, const fly::CMVector<fly::CMString>& inputs) {
         self.add_task(task_id, inputs);
     })
-    FLY_EXPORT_METHOD("add_task_with_requirements", [](fly::DependencyGraph& self, uint64_t task_id, const fly::CMVector<fly::CMString>& inputs, const fly::CMVector<fly::CMString>& required_capabilities) {
-        self.add_task(task_id, inputs, required_capabilities);
+    FLY_EXPORT_METHOD("add_task_with_requirements", [](fly::DependencyGraph& self, uint64_t task_id, const fly::CMVector<fly::CMString>& inputs, const fly::CMVector<fly::CMString>& required_capabilities, float attribute_timeout) {
+        fly::TaskRequirements reqs;
+        reqs.capabilities_ = required_capabilities;
+        reqs.timeout_seconds_ = attribute_timeout;
+        self.add_task(task_id, inputs, reqs);
     })
     FLY_EXPORT_METHOD("mark_data_ready", [](fly::DependencyGraph& self, const fly::CMString& data_path) {
         self.mark_data_ready(data_path);
     })
     FLY_EXPORT_METHOD("get_ready_tasks", &fly::DependencyGraph::get_ready_tasks)
     FLY_EXPORT_METHOD("is_task_ready", &fly::DependencyGraph::is_task_ready)
+    FLY_EXPORT_METHOD("get_task_requirements", [](fly::DependencyGraph& self, uint64_t task_id) -> fly::CMVector<fly::CMString> {
+        return self.get_task_requirements(task_id).capabilities_;
+    })
     FLY_EXPORT_METHOD("remove_task", &fly::DependencyGraph::remove_task);
 
 FLY_EXPORT_CLASS(fly::WorkerManager, "EXTaskWorkerManager")
@@ -87,8 +94,8 @@ FLY_EXPORT_CLASS(fly::TaskScheduler, "EXTaskTaskScheduler")
 
 FLY_EXPORT_CLASS(fly::TaskManager, "EXTaskManager")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_METHOD("create_task", [](fly::TaskManager& self, uint64_t task_id, const fly::CMString& name, const fly::CMVector<fly::CMString>& inputs, const fly::CMVector<fly::CMString>& outputs, const fly::CMString& config, const fly::CMVector<fly::CMString>& required_capabilities) {
-        self.create_task(task_id, name, inputs, outputs, config, required_capabilities);
+    FLY_EXPORT_METHOD("create_task", [](fly::TaskManager& self, uint64_t task_id, const fly::CMString& name, const fly::CMVector<fly::CMString>& inputs, const fly::CMVector<fly::CMString>& outputs, const fly::CMString& config, const fly::CMVector<fly::CMString>& required_capabilities, float attribute_timeout) {
+        self.create_task(task_id, name, inputs, outputs, config, required_capabilities, attribute_timeout);
     })
     FLY_EXPORT_METHOD("update_task_status", &fly::TaskManager::update_task_status)
     FLY_EXPORT_METHOD("set_error", &fly::TaskManager::set_error)
