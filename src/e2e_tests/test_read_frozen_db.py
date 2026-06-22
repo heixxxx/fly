@@ -18,12 +18,12 @@ def test_read_frozen_db():
     write_data(db2, "frozen_data", "can_read")
     wait_completed(master, 1)
 
-    obj_name = db2.get_obj_name("frozen_data")
+    obj_name = db2.get_full_name("frozen_data")
     freeze_db(db2, [obj_name])
     wait_completed(master, 2)
     assert db2.is_frozen()
 
-    finish_obj = db2.get_obj_name("finish")
+    finish_obj = db2.get_full_name("finish")
     read_data(db2, "frozen_data", [finish_obj])
 
     completed = wait_completed(master, 3, timeout=15)

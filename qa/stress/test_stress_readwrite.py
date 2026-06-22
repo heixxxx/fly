@@ -52,7 +52,7 @@ def test_readwrite_mix():
         f"Phase 1: {n} writes should complete, got {len(master.completed_tasks)}"
 
     for i in range(n):
-        read_data(db, f"rw_{i}", [db.get_obj_name(f"rw_{i}")])
+        read_data(db, f"rw_{i}", [db.get_full_name(f"rw_{i}")])
 
     assert wait_for(lambda: len(master.completed_tasks) >= 2 * n, timeout=60.0), \
         f"Phase 2: {2*n} total tasks should complete, got {len(master.completed_tasks)}"

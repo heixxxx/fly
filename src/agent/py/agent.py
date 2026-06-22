@@ -139,7 +139,8 @@ class Master(FlyAgent):
                inputs: list = None,
                required_capabilities: list = None,
                attribute_timeout: float = -1.0,
-               write_context_hash: str = "") -> int:
+               write_context_hash: str = "",
+               vars: list = None) -> int:
         with self._lock:
             self._task_counter += 1
             task_id = self._task_counter
@@ -149,9 +150,11 @@ class Master(FlyAgent):
 
         self._agent.submit_task_with_requirements(
             task_id, name, module, args, inputs or [], [],
-            required_capabilities or [], attribute_timeout, write_context_hash)
+            required_capabilities or [], attribute_timeout, write_context_hash,
+            vars or [])
         DBG(f"Task submitted: id={task_id}, name={name}, "
-            f"requires={required_capabilities}, attr_timeout={attribute_timeout}")
+            f"requires={required_capabilities}, attr_timeout={attribute_timeout}, "
+            f"vars={vars}")
         return task_id
 
     def launch_local_workers(self, worker_configs: list, port: int = None):
@@ -471,11 +474,13 @@ class Worker(FlyAgent):
                inputs: list = None,
                required_capabilities: list = None,
                attribute_timeout: float = -1.0,
-               write_context_hash: str = "") -> int:
+               write_context_hash: str = "",
+               vars: list = None) -> int:
         return self._agent.submit_task(name, module, args, inputs or [],
                                        required_capabilities or [],
                                        attribute_timeout,
-                                       write_context_hash)
+                                       write_context_hash,
+                                       vars or [])
 
     def get_database(self, db_id: str):
         if db_id not in self._db_cache:

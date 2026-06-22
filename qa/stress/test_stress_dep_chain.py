@@ -48,7 +48,7 @@ def test_dependency_chain():
 
     chain_length = 20
     for i in range(1, chain_length + 1):
-        increment(db, f"chain_{i-1}", f"chain_{i}", [db.get_obj_name(f"chain_{i-1}")])
+        increment(db, f"chain_{i-1}", f"chain_{i}", [db.get_full_name(f"chain_{i-1}")])
 
     assert wait_for(lambda: len(master.completed_tasks) >= chain_length, timeout=120.0), \
         f"All {chain_length} tasks should complete, got {len(master.completed_tasks)} completed"

@@ -55,7 +55,7 @@ def ras_setup(db, n, num_subdomains, overlap, rhs):
 
 # ── Task: Subdomain Solve ──
 
-@as_task(inputs=lambda db, sd_id, it: [db.get_obj_name(f"__ras__x_{it}")])
+@as_task(inputs=lambda db, sd_id, it: [db.get_full_name(f"__ras__x_{it}")])
 def ras_sd_solve(db, sd_id, iteration):
     from _fly_solver import (EXSlvSubdomainSolver, EXSlvSubdomainInfo,
                               ex_slv_ras_subdomain_update)
@@ -91,7 +91,7 @@ def ras_sd_solve(db, sd_id, iteration):
 
 # ── Task: Convergence Check ──
 
-@as_task(inputs=lambda db, it, nsd: [db.get_obj_name(f"__ras__res_{i}_{it}") for i in range(nsd)])
+@as_task(inputs=lambda db, it, nsd: [db.get_full_name(f"__ras__res_{i}_{it}") for i in range(nsd)])
 def ras_check(db, iteration, num_subdomains):
     from _fly_solver import ex_slv_residual_norm
 
@@ -126,7 +126,7 @@ def ras_check(db, iteration, num_subdomains):
 
 # ── Master-side: wait for solution ──
 
-@wait_obj(inputs=lambda db: [db.get_obj_name("__ras__sol")])
+@wait_obj(inputs=lambda db: [db.get_full_name("__ras__sol")])
 def get_ras_solution(db):
     """Block on Master until RAS solver writes final solution."""
     return {

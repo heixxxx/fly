@@ -92,7 +92,7 @@ TEST_F(WriteRegistrationTest, OnWriteFailedRemovesEntry) {
 TEST_F(WriteRegistrationTest, WaitCompletionSucceedsForCompleteEntry) {
     CMString base_path = test_dir_ + "/wait_real_db";
     Database db(base_path);
-    CMString full = db.get_obj_name("writereg/wait_real");
+    CMString full = db.get_full_name("writereg/wait_real");
     std::mutex mtx;
     std::condition_variable cv;
     bool entry_created = false;
@@ -163,7 +163,7 @@ TEST_F(WriteRegistrationTest, WaitReturnsImmediatelyForCompleteEntry) {
     write_raw(db, "writereg/imm_real", "imm_data", false);
     fly::DataService::instance()->drain_write_back();
 
-    CMString full = db.get_obj_name("writereg/imm_real");
+    CMString full = db.get_full_name("writereg/imm_real");
     auto start = std::chrono::steady_clock::now();
     auto [found, result] = ds_->try_read_local_or_wait(full, 3000);
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -179,7 +179,7 @@ TEST_F(WriteRegistrationTest, WaitReturnsImmediatelyForCompleteEntry) {
 TEST_F(WriteRegistrationTest, ConcurrentWaitersOnSameEntry) {
     CMString base_path = test_dir_ + "/conc_real_db";
     Database db(base_path);
-    CMString full = db.get_obj_name("writereg/conc_real");
+    CMString full = db.get_full_name("writereg/conc_real");
 
     std::atomic<int> success_count{0};
     std::atomic<int> fail_count{0};
@@ -243,7 +243,7 @@ TEST_F(WriteRegistrationTest, FullTwoPhaseWriteViaDatabase) {
     write_raw(db, "twophase/obj", "hello_twophase", false);
     fly::DataService::instance()->drain_write_back();
 
-    CMString full = db.get_obj_name("twophase/obj");
+    CMString full = db.get_full_name("twophase/obj");
     EXPECT_TRUE(ds_->has_local_object(full));
 
     auto [found, result] = ds_->try_read_local(full);

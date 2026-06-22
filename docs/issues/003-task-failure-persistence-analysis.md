@@ -124,7 +124,7 @@ Task: write(A); write(B); write(C)
 
 **方案 C：任务层面显式管理**
 
-- 使用 `db.get_obj_name()` + `DataReady` 机制让任务在写之前检查对象是否已存在
+- 使用 `db.get_full_name()` + `DataReady` 机制让任务在写之前检查对象是否已存在
 - 任务代码自行处理幂等逻辑
 
 ### 2.5 当前 `WRITE_REGISTRATION_FAILED` 评估

@@ -394,4 +394,197 @@ TEST(MessageProtocolTest, WriteRegisterAckFailure) {
     EXPECT_EQ(decoded.error_message_, "database is frozen");
 }
 
+// =============================================================================
+// Var service messages — round-trip serialization tests.
+// =============================================================================
+
+TEST(MessageProtocolTest, VarSetMessageRoundTrip) {
+    VarSetMessage msg;
+    msg.header_.type_ = MessageType::VAR_SET;
+    msg.var_name_ = "db00000001:counter";  // full name
+    msg.value_ = "deadbeef";  // serialized bytes
+    msg.type_name_ = "int";
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    VarSetMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.var_name_, "db00000001:counter");
+    EXPECT_EQ(decoded.value_, "deadbeef");
+    EXPECT_EQ(decoded.type_name_, "int");
+    EXPECT_TRUE(buffer.empty());
+}
+
+TEST(MessageProtocolTest, VarGetMessageRoundTrip) {
+    VarGetMessage msg;
+    msg.header_.type_ = MessageType::VAR_GET;
+    msg.var_name_ = "db00000002:config_value";  // full name
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    VarGetMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.var_name_, "db00000002:config_value");
+}
+
+TEST(MessageProtocolTest, VarAckMessageGetHit) {
+    VarAckMessage ack;
+    ack.header_.type_ = MessageType::VAR_ACK;
+    ack.var_name_ = "db00000003:threshold";  // full name
+    ack.success_ = true;
+    ack.value_ = "0a0b0c";
+    ack.type_name_ = "float";
+
+    CMString encoded = MessageProtocol::encode(ack);
+    CMString buffer = encoded;
+
+    VarAckMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.var_name_, "db00000003:threshold");
+    EXPECT_TRUE(decoded.success_);
+    EXPECT_EQ(decoded.value_, "0a0b0c");
+    EXPECT_EQ(decoded.type_name_, "float");
+    EXPECT_TRUE(decoded.error_message_.empty());
+}
+
+TEST(MessageProtocolTest, VarAckMessageSetReject) {
+    VarAckMessage ack;
+    ack.header_.type_ = MessageType::VAR_ACK;
+    ack.var_name_ = "db00000004:frozen_key";  // full name
+    ack.success_ = false;
+    ack.error_message_ = "var already exists (immutable)";
+
+    CMString encoded = MessageProtocol::encode(ack);
+    CMString buffer = encoded;
+
+    VarAckMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_FALSE(decoded.success_);
+    EXPECT_TRUE(decoded.value_.empty());
+    EXPECT_EQ(decoded.error_message_, "var already exists (immutable)");
+}
+
+TEST(MessageProtocolTest, VarRemoveMessageRoundTrip) {
+    VarRemoveMessage msg;
+    msg.header_.type_ = MessageType::VAR_REMOVE;
+    msg.var_name_ = "db00000005:stale_var";  // full name
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    VarRemoveMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.var_name_, "db00000005:stale_var");
+}
+
+TEST(MessageProtocolTest, VarRemoveMessageClearAll) {
+    // empty var_name_ means clear all vars of the db.
+    VarRemoveMessage msg;
+    msg.header_.type_ = MessageType::VAR_REMOVE;
+    msg.var_name_ = "db00000006:";  // empty short name = clear all
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    VarRemoveMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.var_name_, "db00000006:");
+}
+
+TEST(MessageProtocolTest, VarBroadcastMessageRoundTrip) {
+    VarBroadcastMessage msg;
+    msg.header_.type_ = MessageType::VAR_BROADCAST;
+    msg.var_name_ = "db00000007:rejected_var";  // full name
+    msg.is_modification_reject_ = true;
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    VarBroadcastMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.var_name_, "db00000007:rejected_var");
+    EXPECT_TRUE(decoded.is_modification_reject_);
+}
+
+TEST(MessageProtocolTest, VarBroadcastMessageRemoval) {
+    VarBroadcastMessage msg;
+    msg.header_.type_ = MessageType::VAR_BROADCAST;
+    msg.var_name_ = "db00000008:removed_var";  // full name
+    msg.is_modification_reject_ = false;
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    VarBroadcastMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_FALSE(decoded.is_modification_reject_);
+}
+
+TEST(MessageProtocolTest, VarPayloadRoundTrip) {
+    VarPayload vp;
+    vp.var_name = "vp_key";
+    vp.value = "vp_value_bytes";
+    vp.type_name = "MyClass";
+
+    CMString encoded;
+    FLY_ENCODE(vp, encoded);
+
+    VarPayload decoded;
+    FLY_DECODE(encoded, VarPayload, decoded);
+    EXPECT_EQ(decoded.var_name, "vp_key");
+    EXPECT_EQ(decoded.value, "vp_value_bytes");
+    EXPECT_EQ(decoded.type_name, "MyClass");
+}
+
+TEST(MessageProtocolTest, TaskAssignMessageWithVarPayloads) {
+    TaskAssignMessage msg;
+    msg.header_.type_ = MessageType::TASK_ASSIGN;
+    msg.task_id_ = 42;
+    msg.task_name_ = "task_with_vars";
+    msg.task_module_ = "m";
+    msg.args_ = {"arg1"};
+    msg.var_payloads_.push_back({"var_a", "val_a", "int"});
+    msg.var_payloads_.push_back({"var_b", "val_b", "str"});
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    TaskAssignMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.task_id_, 42u);
+    EXPECT_EQ(decoded.args_.size(), 1u);
+    ASSERT_EQ(decoded.var_payloads_.size(), 2u);
+    EXPECT_EQ(decoded.var_payloads_[0].var_name, "var_a");
+    EXPECT_EQ(decoded.var_payloads_[0].value, "val_a");
+    EXPECT_EQ(decoded.var_payloads_[0].type_name, "int");
+    EXPECT_EQ(decoded.var_payloads_[1].var_name, "var_b");
+    EXPECT_EQ(decoded.var_payloads_[1].value, "val_b");
+}
+
+TEST(MessageProtocolTest, TaskAssignMessageEmptyVarPayloads) {
+    // Backward-compatible case: no vars declared.
+    TaskAssignMessage msg;
+    msg.header_.type_ = MessageType::TASK_ASSIGN;
+    msg.task_id_ = 7;
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    TaskAssignMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.task_id_, 7u);
+    EXPECT_TRUE(decoded.var_payloads_.empty());
+}
+
+TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::VAR_SET)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::VAR_GET)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::VAR_ACK)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::VAR_REMOVE)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::VAR_BROADCAST)));
+    EXPECT_FALSE(is_valid_message_type(39));  // upper bound is 38
+}
+
 }  // namespace fly

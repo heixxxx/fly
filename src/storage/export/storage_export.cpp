@@ -40,7 +40,39 @@ FLY_EXPORT_CLASS(FlyBuffer, "FlyBuffer")
     FLY_EXPORT_DEF("write", [](FlyBuffer& buf, fly_export::bytes data) {
         buf.write(data.c_str(), data.size());
     })
-    FLY_EXPORT_READONLY_PROPERTY("size", &FlyBuffer::size);
+    // read(n): file-protocol read for pickle.load(flybuffer). Advances a
+    // read cursor; returns up to n bytes.
+    FLY_EXPORT_DEF("read", [](FlyBuffer& buf, int64_t n) -> fly_export::bytes {
+        CMString s = buf.read(n < 0 ? buf.size() - buf.pos() : static_cast<size_t>(n));
+        return fly_export::bytes(s.data(), s.size());
+    })
+    // readline(): file-protocol readline for pickle.load(flybuffer).
+    FLY_EXPORT_DEF("readline", [](FlyBuffer& buf) -> fly_export::bytes {
+        CMString s = buf.readline();
+        return fly_export::bytes(s.data(), s.size());
+    })
+    // readinto(bytearray): file-protocol readinto for pickle.load(flybuffer).
+    // Writes directly into the caller's bytearray (pickle's working buffer) —
+    // one serialization-inherent copy, no intermediate Python bytes object.
+    // Returns the number of bytes written.
+    FLY_EXPORT_DEF("readinto", [](FlyBuffer& buf, fly_export::object b) -> int64_t {
+        PyObject* ba = b.ptr();
+        if (!PyByteArray_Check(ba)) {
+            throw fly_export::type_error("readinto() expects a bytearray");
+        }
+        Py_ssize_t cap = PyByteArray_Size(ba);
+        char* dst = PyByteArray_AsString(ba);
+        return static_cast<int64_t>(buf.readinto(dst, static_cast<size_t>(cap)));
+    })
+    // to_bytes(): copies the buffer into a Python bytes object. Needed for
+    // pickle.loads (whose binary opcode stream is not line-oriented, so the
+    // file-protocol read/readline is unsafe for generic pickle payloads).
+    FLY_EXPORT_DEF("to_bytes", [](const FlyBuffer& buf) -> fly_export::bytes {
+        return fly_export::bytes(buf.data(), buf.size());
+    })
+    FLY_EXPORT_DEF("seek", [](FlyBuffer& buf, int64_t p) { buf.seek(static_cast<size_t>(p)); })
+    FLY_EXPORT_READONLY_PROPERTY("size", &FlyBuffer::size)
+    FLY_EXPORT_READONLY_PROPERTY("pos", &FlyBuffer::pos);
 
 FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     // Zero-copy write: access Python bytes directly without copying
@@ -222,7 +254,7 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_METHOD("set_db_id", &Database::set_db_id)
     FLY_EXPORT_METHOD("get_base_path", &Database::get_base_path)
     FLY_EXPORT_METHOD("get_data_path", &Database::get_data_path)
-    FLY_EXPORT_METHOD("get_obj_name", &Database::get_obj_name)
+    FLY_EXPORT_METHOD("get_full_name", &Database::get_full_name)
     FLY_EXPORT_METHOD("get_writer_id", &Database::get_writer_id)
     FLY_EXPORT_METHOD("reset", &Database::reset)
     FLY_EXPORT_METHOD("remove_object", &Database::remove_object)
@@ -244,6 +276,48 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
         auto buf = CMMakeShared<FlyBuffer>();
         buf->write(compressed_data.c_str(), compressed_data.size());
         db.put_temp_data(name, buf);
+    })
+    // ---- Var service ----
+    // All entries accept/return FlyBufferPtr directly (zero-copy in process):
+    //   - Python objects: pickle.dumps → bytes → _set_var_bytes wraps into FlyBuffer
+    //   - C++ exported objects: __getstate_buffer__ returns FlyBufferPtr → _set_var_buffer
+    // get_var returns the FlyBufferPtr so the caller can __setstate_from_buffer__
+    // a C++ object without copying through Python bytes.
+
+    // _set_var_bytes(name, pickle_bytes, type_name) -> bool (success).
+    // For Python objects serialized via pickle.
+    FLY_EXPORT_DEF("_set_var_bytes", [](Database& db, const CMString& name,
+                                         CMString value, const CMString& type_name) -> bool {
+        // nanobind constructs `value` from Python bytes (1 boundary copy, inherent).
+        // take() moves it into the FlyBuffer — no second copy.
+        auto buf = CMMakeShared<FlyBuffer>();
+        buf->take(std::move(value));
+        return db.set_var(name, buf, type_name);
+    })
+    // _set_var_buffer(name, FlyBufferPtr, type_name) -> bool (success).
+    // For C++ exported objects (zero-copy: the shared FlyBufferPtr goes straight in).
+    FLY_EXPORT_DEF("_set_var_buffer", [](Database& db, const CMString& name,
+                                          CMSharedPtr<FlyBuffer> value, const CMString& type_name) -> bool {
+        return db.set_var(name, value, type_name);
+    })
+    // _get_var(name) -> (success: bool, value: FlyBufferPtr, type_name: str).
+    // success=false (value=nullptr) means the var does not exist; no bytes are
+    // constructed in that case.
+    FLY_EXPORT_DEF("_get_var", [](Database& db, const CMString& name) -> fly_export::tuple {
+        auto [ok, buf, type_name] = db.get_var(name);
+        return fly_export::make_tuple(ok, ok ? buf : nullptr, type_name);
+    })
+    FLY_EXPORT_DEF("_remove_var", [](Database& db, const CMString& name) {
+        db.remove_var(name);
+    })
+    // _inject_var(name, FlyBufferPtr, type_name): worker-side local cache fill
+    // from TaskAssignMessage var_payloads (no network).
+    FLY_EXPORT_DEF("_inject_var", [](Database& db, const CMString& name,
+                                      CMSharedPtr<FlyBuffer> value, const CMString& type_name) {
+        db.inject_var(name, value, type_name);
+    })
+    FLY_EXPORT_DEF("_drop_local_var", [](Database& db, const CMString& name) {
+        db.drop_local_var(name);
     });
 
 FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")

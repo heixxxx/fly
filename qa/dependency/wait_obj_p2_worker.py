@@ -38,7 +38,7 @@ assert master.worker_count >= 1
 
 db = open_db(DB_PATH)
 
-@wait_obj(inputs=lambda d, k: [d.get_obj_name(k)])
+@wait_obj(inputs=lambda d, k: [d.get_full_name(k)])
 def wait_then_read(d, k):
     return d.read_object(k)
 

@@ -27,7 +27,7 @@ def write_source(db, key, value):
 
 
 # 依赖 source_key 的产出，要求 gpu，timeout=2s
-@as_task(inputs=lambda db, source_key, result_key: [db.get_obj_name(source_key)],
+@as_task(inputs=lambda db, source_key, result_key: [db.get_full_name(source_key)],
          requires=(["gpu"], 2.0))
 def read_after_dep(db, source_key, result_key):
     data = db.read_object(source_key)

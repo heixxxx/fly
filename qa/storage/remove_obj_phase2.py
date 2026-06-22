@@ -42,7 +42,7 @@ assert len(completed) >= 1
 write_and_remove(db, "will_remove", 99)
 master.wait_for_all_tasks(expected=2, timeout=15)
 
-removed_full = db.get_obj_name("will_remove")
+removed_full = db.get_full_name("will_remove")
 read_after_remove(db, "result", [removed_full])
 
 for i in range(40):

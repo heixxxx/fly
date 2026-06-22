@@ -51,30 +51,25 @@ namespace fly_export = nanobind;
 #define FLY_EXPORT_ENUM_VALUE(export_name, ...) .value(export_name, __VA_ARGS__)
 
 #define FLY_EXPORT_SERIALIZE(Cls) \
-    .def("__getstate__", [](const Cls& obj) -> fly_export::bytes { \
-        std::string serialized; \
-        FLY_ENCODE(obj, serialized); \
-        return fly_export::bytes(serialized.data(), serialized.size()); \
-    }) \
     .def("__getstate_buffer__", [](const Cls& obj) -> CMSharedPtr<FlyBuffer> { \
         auto buf = CMMakeShared<FlyBuffer>(); \
         auto& fly_buf_ref_ = *buf; \
         FLY_ENCODE_TO_BYTES(obj, fly_buf_ref_); \
         return buf; \
     }) \
-    .def("__setstate__", [](Cls& obj, fly_export::bytes b) { \
+    .def("__setstate_from_buffer__", [](Cls& obj, const CMSharedPtr<FlyBuffer>& buf) { \
         ::new (&obj) Cls(); \
-        if (b.size() >= sizeof(uint32_t)) { \
+        if (buf && buf->size() >= sizeof(uint32_t)) { \
             uint32_t fly_magic_; \
-            std::memcpy(&fly_magic_, b.c_str(), sizeof(uint32_t)); \
+            std::memcpy(&fly_magic_, buf->data(), sizeof(uint32_t)); \
             if (fly_magic_ == FLY_OBJECT_MAGIC) { \
-                DecompressingStreamBuf fly_dsbuf_(b.c_str(), b.size()); \
+                DecompressingStreamBuf fly_dsbuf_(buf->data(), buf->size()); \
                 std::istream fly_is_(&fly_dsbuf_); \
                 FLY_DECODE_FROM_STREAM(fly_is_, Cls, obj); \
                 return; \
             } \
         } \
-        std::string data(b.c_str(), b.size()); \
+        std::string data(buf ? buf->data() : "", buf ? buf->size() : 0); \
         FLY_DECODE(data, Cls, obj); \
     }) \
     .def("_write_to_db", [](const Cls& obj, Database& db, const CMString& name, \

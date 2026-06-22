@@ -67,8 +67,8 @@ def test_graceful_shutdown():
     INFO(f"  Phase 1 OK: {p1_completed} tasks completed")
 
     # -- Phase 2: Submit tasks with unresolvable deps (stay PENDING) --
-    # Use db.get_obj_name to create full dep names; point to non-existent objects
-    phantom_deps = [db.get_obj_name("phantom_data")]
+    # Use db.get_full_name to create full dep names; point to non-existent objects
+    phantom_deps = [db.get_full_name("phantom_data")]
     read_data(db, "result_1", phantom_deps)
     read_data(db, "result_2", phantom_deps)
 

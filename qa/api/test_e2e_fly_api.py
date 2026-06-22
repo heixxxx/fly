@@ -34,7 +34,7 @@ master.launch_local_workers([{}])
 assert wait_for(lambda: master.worker_count >= 1)
 
 db = open_db(DB_PATH)
-obj_name = db.get_obj_name("output/result")
+obj_name = db.get_full_name("output/result")
 assert ":" in obj_name
 assert obj_name.endswith(":output/result")
 

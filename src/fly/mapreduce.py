@@ -61,7 +61,7 @@ def _mr_partition_task(db, job_id, data_hex, partition_fn_hex):
 
 
 @as_task(inputs=lambda db, job_id, part_id, partition_key, process_fn_hex: [
-    db.get_obj_name(partition_key)
+    db.get_full_name(partition_key)
 ])
 def _mr_process_task(db, job_id, part_id, partition_key, process_fn_hex):
     """Process a single partition."""
@@ -74,7 +74,7 @@ def _mr_process_task(db, job_id, part_id, partition_key, process_fn_hex):
 # -- Summary merge: multi-stage tree ----------------------------------------
 
 @as_task(inputs=lambda db, job_id, stage, merge_id, input_keys, merge_fn_hex: [
-    db.get_obj_name(k) for k in input_keys
+    db.get_full_name(k) for k in input_keys
 ])
 def _mr_summary_merge_task(db, job_id, stage, merge_id, input_keys, merge_fn_hex):
     """Merge multiple items in one tree-reduce step (summary type)."""
@@ -93,7 +93,7 @@ def _mr_summary_merge_task(db, job_id, stage, merge_id, input_keys, merge_fn_hex
 # -- Full merge: single-stage with concurrent reads --------------------------
 
 @as_task(inputs=lambda db, job_id, input_keys, merge_fn_hex, output_name: [
-    db.get_obj_name(k) for k in input_keys
+    db.get_full_name(k) for k in input_keys
 ])
 def _mr_full_merge_task(db, job_id, input_keys, merge_fn_hex, output_name):
     """Single-stage full merge with 2-concurrent-read acceleration."""
@@ -117,7 +117,7 @@ def _mr_full_merge_task(db, job_id, input_keys, merge_fn_hex, output_name):
 # -- Finalize: post-processing on merged result ------------------------------
 
 @as_task(inputs=lambda db, job_id, finalize_fn_hex, output_name, merge_output_key: [
-    db.get_obj_name(merge_output_key)
+    db.get_full_name(merge_output_key)
 ])
 def _mr_finalize_task(db, job_id, finalize_fn_hex, output_name, merge_output_key):
     """Apply finalize function to merged result, write to output_name (persisted)."""
@@ -130,7 +130,7 @@ def _mr_finalize_task(db, job_id, finalize_fn_hex, output_name, merge_output_key
 # -- Cleanup: remove intermediate temp objects -------------------------------
 
 @as_task(inputs=lambda db, job_id, intermediate_keys, output_name: [
-    db.get_obj_name(output_name)
+    db.get_full_name(output_name)
 ])
 def _mr_cleanup_task(db, job_id, intermediate_keys, output_name):
     """Remove all intermediate temp objects."""
@@ -141,7 +141,7 @@ def _mr_cleanup_task(db, job_id, intermediate_keys, output_name):
             pass
 
 
-@as_task(inputs=lambda db, src_key, dst_key: [db.get_obj_name(src_key)])
+@as_task(inputs=lambda db, src_key, dst_key: [db.get_full_name(src_key)])
 def _mr_copy_to_output(db, src_key, dst_key):
     data = db.read_object(src_key)
     db.write_object(dst_key, data, save_to_db=True)

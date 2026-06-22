@@ -27,6 +27,7 @@ struct PendingTask {
     CMString task_module_;
     CMVector<CMString> args_;
     CMString write_context_hash_;
+    CMVector<VarPayload> var_payloads_;  // Pre-fetched vars from TaskAssignMessage.
 };
 
 struct PendingDbPath {
@@ -50,6 +51,16 @@ struct PendingBackup {
     CMString db_id_;
     bool completed_ = false;
     bool success_ = false;
+};
+
+// Pending state for a synchronous var set/get (awaits master VAR_ACK).
+struct PendingVarOp {
+    CMString var_name_;
+    bool completed_ = false;
+    bool success_ = false;
+    FlyBufferPtr value_;        // get result (zero-copy shared with master response)
+    CMString type_name_;
+    CMString error_message_;
 };
 
 class WorkerAgent {
@@ -76,7 +87,8 @@ public:
                      const CMVector<CMString>& inputs,
                      const CMVector<CMString>& required_capabilities = {},
                      float attribute_timeout = -1.0f,
-                     const CMString& write_context_hash = "");
+                     const CMString& write_context_hash = "",
+                     const CMVector<CMString>& vars = {});
     
     bool has_pending_task() const;
     bool poll_task();
@@ -95,6 +107,20 @@ public:
     void request_database_freeze(const CMString& db_id);
     void request_object_remove(const CMString& db_id, const CMString& object_name);
     void request_backup(const CMString& db_id, const CMString& object_name);
+
+    // Var service: synchronous set/get (block on master VAR_ACK) and async remove.
+    // These are bound to WorkerAgentContext var funcs at begin_task time, so
+    // Database.set_var/get_var/remove_var on a worker reach master over the network.
+    bool set_var_sync(const CMString& full_var_name,
+                      FlyBufferPtr value, const CMString& type_name);
+    std::tuple<bool, FlyBufferPtr, CMString> get_var_sync(const CMString& full_var_name);
+    void remove_var_async(const CMString& full_var_name);
+
+    // Called by the Python executor after _deserialize_args: returns the var
+    // payloads inlined by master into the current task's TaskAssignMessage, so
+    // they can be injected into the freshly-created Database(s) before the task
+    // function runs. Returns and clears the pending vars (one-shot).
+    CMVector<VarPayload> take_pending_task_vars();
 
     void set_worker_property(const CMString& prop);
     void set_worker_property(const CMVector<CMString>& props);
@@ -154,6 +180,16 @@ private:
     std::mutex pending_remove_mutex_;
     CMUnorderedMap<CMString, CMSharedPtr<PendingRemove>> pending_removes_;
 
+    // Pending var set/get operations (keyed by var_name, awaiting master VAR_ACK).
+    std::mutex pending_var_mutex_;
+    std::condition_variable pending_var_cv_;
+    CMUnorderedMap<CMString, CMSharedPtr<PendingVarOp>> pending_var_ops_;
+
+    // Vars inlined into the current task's TaskAssignMessage; consumed by the
+    // Python executor via take_pending_task_vars() before the task runs.
+    CMVector<VarPayload> pending_task_vars_;
+    std::mutex pending_task_vars_mutex_;
+
     void on_register_ack(const RegisterAckMessage& msg);
     void on_task_assign(const TaskAssignMessage& msg);
     void on_shutdown(const ShutdownMessage& msg);
@@ -166,6 +202,10 @@ private:
     void on_database_freeze_notification(uint64_t conn_id, const DatabaseFreezeNotification& msg);
     void execute_internal_task(const PendingTask& task);
     void on_disconnect(uint64_t conn_id);
+
+    // Var service handlers.
+    void on_var_ack(uint64_t conn_id, const VarAckMessage& msg);
+    void on_var_broadcast(uint64_t conn_id, const VarBroadcastMessage& msg);
     
     void heartbeat_loop();
     void touch_master_contact();

@@ -43,7 +43,7 @@ def run1():
     write_data(db, "real_key_2", 20)
 
     # Submit task with unresolvable dep -> will FAIL
-    read_data(db, "result_1", [db.get_obj_name("phantom_data")])
+    read_data(db, "result_1", [db.get_full_name("phantom_data")])
 
     # Submit task requiring GPU -> will FAIL (no gpu worker)
     gpu_write(db, "gpu_result", 42)

@@ -43,7 +43,7 @@ assert wait_for(lambda: len(master.completed_tasks) >= n, timeout=30.0)
 assert len(master.failed_tasks) == 0
 
 for i in range(n):
-    dep = db.get_obj_name(f"ctemp_{i}")
+    dep = db.get_full_name(f"ctemp_{i}")
     read_data(db, f"ctemp_{i}", [dep])
 
 assert wait_for(lambda: len(master.completed_tasks) >= 2 * n, timeout=30.0)

@@ -40,7 +40,7 @@ write_temp(db, "shared_temp", 777)
 assert wait_for(lambda: len(master.completed_tasks) >= 1, timeout=30.0)
 assert len(master.failed_tasks) == 0
 
-dep = db.get_obj_name("shared_temp")
+dep = db.get_full_name("shared_temp")
 read_data(db, "shared_temp", [dep])
 read_data(db, "shared_temp", [dep])
 

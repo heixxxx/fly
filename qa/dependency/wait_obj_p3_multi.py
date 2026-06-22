@@ -38,7 +38,7 @@ assert master.worker_count >= 1
 
 db = open_db(DB_PATH)
 
-@wait_obj(inputs=lambda d, a, b: [d.get_obj_name(a), d.get_obj_name(b)])
+@wait_obj(inputs=lambda d, a, b: [d.get_full_name(a), d.get_full_name(b)])
 def wait_and_sum(d, key_a, key_b):
     return d.read_object(key_a) + d.read_object(key_b)
 

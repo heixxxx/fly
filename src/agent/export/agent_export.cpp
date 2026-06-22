@@ -99,8 +99,9 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                                              const fly::CMVector<fly::CMString>& outputs,
                                                              const fly::CMVector<fly::CMString>& required_capabilities,
                                                              float attribute_timeout,
-                                                             const fly::CMString& write_context_hash) {
-        self.submit_task(task_id, name, module, args, inputs, outputs, required_capabilities, attribute_timeout, write_context_hash);
+                                                             const fly::CMString& write_context_hash,
+                                                             const fly::CMVector<fly::CMString>& vars) {
+        self.submit_task(task_id, name, module, args, inputs, outputs, required_capabilities, attribute_timeout, write_context_hash, vars);
     })
     FLY_EXPORT_METHOD("register_database", [](fly::MasterAgent& self,
                                                 const fly::CMString& db_id,
@@ -192,6 +193,18 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
         self.rebuild_remote_idx_for_worker(db_id, base_path, writer_ids, worker_id);
     });
 
+// VarPayload: a {var_name, value, type_name} triple inlined into TaskAssignMessage.
+// Exported so the Python executor can read master-inlined vars.
+FLY_EXPORT_CLASS(fly::VarPayload, "EXVarPayload")
+    FLY_EXPORT_READONLY_ATTR("var_name", &fly::VarPayload::var_name)
+    // value holds arbitrary serialized bytes (pickle / FLY_ENCODE_TO_BYTES) that may
+    // not be valid UTF-8; expose as raw bytes, not str.
+    FLY_EXPORT_READONLY_PROPERTY("value",
+        [](const fly::VarPayload& vp) -> fly_export::bytes {
+            return fly_export::bytes(vp.value.data(), vp.value.size());
+        })
+    FLY_EXPORT_READONLY_ATTR("type_name", &fly::VarPayload::type_name);
+
 FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     FLY_EXPORT_INIT(uint64_t, fly::CMString, uint16_t)
     FLY_EXPORT_INIT(uint64_t, fly::CMString, uint16_t, fly::CMVector<fly::CMString>)
@@ -213,8 +226,12 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
                                          const fly::CMVector<fly::CMString>& inputs,
                                          const fly::CMVector<fly::CMString>& required_capabilities,
                                          float attribute_timeout,
-                                         const fly::CMString& write_context_hash) {
-        self.submit_task(name, module, args, inputs, required_capabilities, attribute_timeout, write_context_hash);
+                                         const fly::CMString& write_context_hash,
+                                         const fly::CMVector<fly::CMString>& vars) {
+        self.submit_task(name, module, args, inputs, required_capabilities, attribute_timeout, write_context_hash, vars);
+    })
+    FLY_EXPORT_METHOD("take_pending_task_vars", [](fly::WorkerAgent& self) -> fly::CMVector<fly::VarPayload> {
+        return self.take_pending_task_vars();
     })
     FLY_EXPORT_METHOD("register_database", [](fly::WorkerAgent& self,
                                                 const fly::CMString& db_id,

@@ -72,7 +72,7 @@ def test_freeze_preserves_local_index():
         ds.drain_write_back()
         time.sleep(0.3)
 
-        full_name = db.get_obj_name("idx_obj")
+        full_name = db.get_full_name("idx_obj")
         assert ds.has_local_object(full_name)
 
         db.freeze()

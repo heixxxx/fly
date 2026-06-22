@@ -37,7 +37,7 @@ def cache_producer(db):
     put_cache("label", "hello")
 
 
-@as_task(inputs=lambda db: [db.get_obj_name("produced")])
+@as_task(inputs=lambda db: [db.get_full_name("produced")])
 def cache_consumer(db):
     """Read from agent cache — should find data left by producer."""
     from fly import get_cache, has_cache
@@ -55,7 +55,7 @@ def cache_consumer(db):
     db.write_object("consumed", val[0] + val[1] + val[2])
 
 
-@as_task(inputs=lambda db: [db.get_obj_name("consumed")])
+@as_task(inputs=lambda db: [db.get_full_name("consumed")])
 def cache_remover(db):
     """Remove a cache entry and verify it's gone."""
     from fly import remove_cache, has_cache, get_cache

@@ -25,7 +25,7 @@ def test_database_write_updates_local_index():
     
     test_data = "local_index_test_data"
     obj_name = "test/local_obj"
-    full_name = db.get_obj_name(obj_name)
+    full_name = db.get_full_name(obj_name)
     
     db.write_object_raw(obj_name, test_data)
     ds.drain_write_back()
@@ -72,7 +72,7 @@ def test_database_multiple_objects():
     
     for i in range(10):
         key = f"multi/obj_{i}"
-        full_name = db.get_obj_name(key)
+        full_name = db.get_full_name(key)
         assert ds.has_local_object(full_name), f"Object {full_name} not found"
         
         result = db.read_object_raw(key)
@@ -122,7 +122,7 @@ def test_data_service_remote_index():
     ds.drain_write_back()
     time.sleep(0.3)
     
-    full_name_a = db.get_obj_name("obj/a")
+    full_name_a = db.get_full_name("obj/a")
     assert ds.has_local_object(full_name_a), "Object should be in local index"
     
     ds.update_remote_idx("remote/obj_x", 1, "192.168.1.100", 8080)

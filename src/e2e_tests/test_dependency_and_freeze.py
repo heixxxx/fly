@@ -21,8 +21,8 @@ def test_dependency_and_freeze():
 
     db.read_object("data1")
     db.read_object("data2")
-    obj1 = db.get_obj_name("data1")
-    obj2 = db.get_obj_name("data2")
+    obj1 = db.get_full_name("data1")
+    obj2 = db.get_full_name("data2")
 
     freeze_db(db, [obj1, obj2])
 

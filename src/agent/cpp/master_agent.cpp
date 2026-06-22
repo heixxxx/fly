@@ -72,7 +72,7 @@ void MasterAgent::start() {
         [this](uint64_t conn_id, const TaskSubmitMessage& msg) {
             INFO("TaskSubmit received: task_name={}, module={}", msg.task_name_, msg.task_module_);
             uint64_t task_id = ++remote_task_counter_;
-            submit_task(task_id, msg.task_name_, msg.task_module_, msg.args_, msg.inputs_, {}, msg.required_capabilities_, msg.attribute_timeout_, msg.write_context_hash_);
+            submit_task(task_id, msg.task_name_, msg.task_module_, msg.args_, msg.inputs_, {}, msg.required_capabilities_, msg.attribute_timeout_, msg.write_context_hash_, msg.vars_);
         });
 
     reactor_->register_handler<DbPathRequestMessage>(
@@ -134,6 +134,21 @@ void MasterAgent::start() {
     reactor_->register_handler<IdxLoadAckMessage>(
         [this](uint64_t conn_id, const IdxLoadAckMessage& msg) {
             on_idx_load_ack(conn_id, msg);
+        });
+
+    reactor_->register_handler<VarSetMessage>(
+        [this](uint64_t conn_id, const VarSetMessage& msg) {
+            on_var_set(conn_id, msg);
+        });
+
+    reactor_->register_handler<VarGetMessage>(
+        [this](uint64_t conn_id, const VarGetMessage& msg) {
+            on_var_get(conn_id, msg);
+        });
+
+    reactor_->register_handler<VarRemoveMessage>(
+        [this](uint64_t conn_id, const VarRemoveMessage& msg) {
+            on_var_remove(conn_id, msg);
         });
 
     reactor_->on_disconnect([this](uint64_t conn_id) {
@@ -307,15 +322,31 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
                                const CMVector<CMString>& outputs,
                                const CMVector<CMString>& required_capabilities,
                                float attribute_timeout,
-                               const CMString& write_context_hash) {
-    INFO("submit_task: id={}, name={}, attr_timeout={}", task_id, name, attribute_timeout);
+                               const CMString& write_context_hash,
+                               const CMVector<CMString>& vars) {
+    INFO("submit_task: id={}, name={}, attr_timeout={}, vars={}", task_id, name, attribute_timeout, vars.size());
 
-    // module/args must be set before graph_->add_task (concurrency: reactor thread's
+    // module/args/vars must be set before graph_->add_task (concurrency: reactor thread's
     // schedule_tasks reads task_modules_ when task becomes ready)
     {
         std::lock_guard<std::mutex> lk(task_args_mutex_);
         task_modules_[task_id] = module;
         task_args_[task_id] = args;
+        task_vars_[task_id] = vars;
+    }
+
+    // Var existence check (advisory only — does not affect scheduling).
+    // vars are FULL names (db_id:short_name); split each to locate the Database.
+    if (!vars.empty()) {
+        for (const auto& full_var : vars) {
+            CMString db_id, short_name;
+            if (!split_full_name(full_var, db_id, short_name)) continue;
+            auto db_it = db_instances_.find(db_id);
+            if (db_it != db_instances_.end() && !db_it->second->master_has_var(short_name)) {
+                WARN("task {} declares var '{}' but it does not exist on master (db={})",
+                     task_id, short_name, db_id);
+            }
+        }
     }
 
     metadata_->create_task(task_id, name, inputs, outputs, "{}", required_capabilities, attribute_timeout);
@@ -504,11 +535,37 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
     msg.task_id_ = task_id;
     auto task_opt3 = metadata_->get_task(task_id);
     msg.task_name_ = task_opt3 ? task_opt3->name_ : "";
+    CMVector<CMString> declared_vars;
     {
         std::lock_guard<std::mutex> lk(task_args_mutex_);
         msg.task_module_ = task_modules_[task_id];
         msg.args_ = task_args_[task_id];
+        auto vit = task_vars_.find(task_id);
+        if (vit != task_vars_.end()) {
+            declared_vars = vit->second;
+        }
     }
+
+    // Inline declared vars into the TaskAssignMessage so the worker receives
+    // them in one shot (no extra round-trip). vars are FULL names; split each
+    // to locate the Database and fetch the short-named value.
+    if (!declared_vars.empty()) {
+        for (const auto& full_var : declared_vars) {
+            CMString db_id, short_name;
+            if (!split_full_name(full_var, db_id, short_name)) continue;
+            auto db_it = db_instances_.find(db_id);
+            if (db_it == db_instances_.end()) continue;
+            auto [found, value, type_name] = db_it->second->master_get_var(short_name);
+            if (found && value) {
+                VarPayload vp;
+                vp.var_name = full_var;  // keep the full name on the wire
+                vp.value.assign(value->data(), value->size());
+                vp.type_name = type_name;
+                msg.var_payloads_.push_back(std::move(vp));
+            }
+        }
+    }
+
     if (task_opt3) {
         msg.write_context_hash_ = task_opt3->write_context_hash_;
 
@@ -1085,6 +1142,92 @@ void MasterAgent::broadcast_object_removed(const CMString& db_id, const CMString
     }
 }
 
+// =============================================================================
+// Var service handlers
+// =============================================================================
+
+void MasterAgent::on_var_set(uint64_t conn_id, const VarSetMessage& msg) {
+    VarAckMessage ack;
+    ack.var_name_ = msg.var_name_;  // echo the full name
+
+    CMString db_id, short_name;
+    auto it = (!split_full_name(msg.var_name_, db_id, short_name))
+        ? db_instances_.end() : db_instances_.find(db_id);
+    if (it == db_instances_.end()) {
+        ack.success_ = false;
+        ack.error_message_ = "db not found on master";
+        reactor_->send(conn_id, ack);
+        return;
+    }
+
+    // value_ is mutable: std::move it directly into the FlyBuffer (zero-copy).
+    // The decoded msg is a local destroyed right after this handler returns, so
+    // moving its payload is safe despite the const& handler contract.
+    auto buf = CMMakeShared<FlyBuffer>();
+    buf->take(std::move(msg.value_));
+
+    bool ok = it->second->master_set_var(short_name, buf, msg.type_name_);
+    ack.success_ = ok;
+    if (!ok) {
+        if (it->second->is_frozen()) {
+            ack.error_message_ = "db frozen";
+        } else {
+            ack.error_message_ = "var already exists (immutable)";
+            // Broadcast so workers drop any stale local cache of the rejected var.
+            broadcast_var(msg.var_name_, true);
+        }
+    }
+    reactor_->send(conn_id, ack);
+}
+
+void MasterAgent::on_var_get(uint64_t conn_id, const VarGetMessage& msg) {
+    VarAckMessage ack;
+    ack.var_name_ = msg.var_name_;  // echo the full name
+
+    CMString db_id, short_name;
+    auto it = (!split_full_name(msg.var_name_, db_id, short_name))
+        ? db_instances_.end() : db_instances_.find(db_id);
+    if (it == db_instances_.end()) {
+        ack.success_ = false;
+        reactor_->send(conn_id, ack);
+        return;
+    }
+
+    auto [found, value, type_name] = it->second->master_get_var(short_name);
+    ack.success_ = found;
+    if (found && value) {
+        // The var_store_ FlyBufferPtr is shared (other readers may hold it), so
+        // its contents cannot be moved out — one copy into the message CMString
+        // field, which bitsery then serializes onto the wire.
+        ack.value_.assign(value->data(), value->size());
+        ack.type_name_ = type_name;
+    }
+    reactor_->send(conn_id, ack);
+}
+
+void MasterAgent::on_var_remove(uint64_t conn_id, const VarRemoveMessage& msg) {
+    CMString db_id, short_name;
+    if (split_full_name(msg.var_name_, db_id, short_name)) {
+        auto it = db_instances_.find(db_id);
+        if (it != db_instances_.end()) {
+            it->second->master_remove_var(short_name);
+            // Broadcast the removal (full name) to all workers so they drop caches.
+            broadcast_var(msg.var_name_, false);
+        }
+    }
+}
+
+void MasterAgent::broadcast_var(const CMString& full_var_name, bool is_modification_reject) {
+    VarBroadcastMessage msg;
+    msg.var_name_ = full_var_name;
+    msg.is_modification_reject_ = is_modification_reject;
+
+    std::lock_guard<std::mutex> lk(workers_mutex_);
+    for (const auto& [worker_id, conn_id] : worker_to_conn_) {
+        reactor_->send(conn_id, msg);
+    }
+}
+
 void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg) {
     INFO("RemoveRequest: object={}, db_id={}", msg.object_name_, msg.db_id_);
 
@@ -1297,6 +1440,35 @@ void MasterAgent::setup_write_context() {
     });
     WorkerAgentContext::set_freeze_func([this](const CMString& db_id) {
         on_master_freeze(db_id);
+    });
+    // Var funcs: master process operates directly on the authoritative Database
+    // store (no network). The context passes FULL var names (db_id:short_name);
+    // split off db_id to locate the Database, then query with the short name.
+    WorkerAgentContext::set_set_var_func([this](const CMString& full_var_name,
+                                                FlyBufferPtr value, const CMString& type_name) -> bool {
+        CMString db_id, short_name;
+        if (!split_full_name(full_var_name, db_id, short_name)) return false;
+        auto it = db_instances_.find(db_id);
+        if (it == db_instances_.end()) return false;
+        return it->second->master_set_var(short_name, value, type_name);
+    });
+    WorkerAgentContext::set_get_var_func([this](const CMString& full_var_name)
+        -> std::tuple<bool, FlyBufferPtr, CMString> {
+        CMString db_id, short_name;
+        if (!split_full_name(full_var_name, db_id, short_name)) return {false, nullptr, ""};
+        auto it = db_instances_.find(db_id);
+        if (it == db_instances_.end()) return {false, nullptr, ""};
+        return it->second->master_get_var(short_name);
+    });
+    WorkerAgentContext::set_remove_var_func([this](const CMString& full_var_name) {
+        CMString db_id, short_name;
+        if (split_full_name(full_var_name, db_id, short_name)) {
+            auto it = db_instances_.find(db_id);
+            if (it != db_instances_.end()) {
+                it->second->master_remove_var(short_name);
+                broadcast_var(full_var_name, false);
+            }
+        }
     });
 }
 

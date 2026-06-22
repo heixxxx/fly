@@ -62,7 +62,8 @@ public:
                     const CMVector<CMString>& outputs = {},
                     const CMVector<CMString>& required_capabilities = {},
                     float attribute_timeout = -1.0f,
-                    const CMString& write_context_hash = "");
+                    const CMString& write_context_hash = "",
+                    const CMVector<CMString>& vars = {});
 
     CMVector<uint64_t> get_pending_tasks() const;
     CMVector<uint64_t> get_running_tasks() const;
@@ -138,6 +139,8 @@ private:
 
     CMUnorderedMap<uint64_t, CMString> task_modules_;
     CMUnorderedMap<uint64_t, CMVector<CMString>> task_args_;
+    // Declared var names per task (from @as_task(vars=...)).
+    CMUnorderedMap<uint64_t, CMVector<CMString>> task_vars_;
     mutable std::mutex task_args_mutex_;
 
     // Pre-fetched dependency locations: task_id → {object_name → (worker_id, host, port)}.
@@ -178,6 +181,12 @@ private:
     void on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg);
     void on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg);
     void on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg);
+
+    // Var service handlers.
+    void on_var_set(uint64_t conn_id, const VarSetMessage& msg);
+    void on_var_get(uint64_t conn_id, const VarGetMessage& msg);
+    void on_var_remove(uint64_t conn_id, const VarRemoveMessage& msg);
+    void broadcast_var(const CMString& full_var_name, bool is_modification_reject);
 
     void on_backup_request(uint64_t conn_id, const BackupRequestMessage& msg);
     uint64_t select_backup_worker(uint64_t source_worker_id);

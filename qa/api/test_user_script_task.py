@@ -14,7 +14,7 @@ def user_write(db, key, value):
     db.write_object(key, value)
 
 
-@as_task(inputs=lambda db, dep_key, result_key: [db.get_obj_name(dep_key)])
+@as_task(inputs=lambda db, dep_key, result_key: [db.get_full_name(dep_key)])
 def user_read_after_write(db, dep_key, result_key):
     val = db.read_object(dep_key)
     db.write_object(result_key, f"echo:{val}")

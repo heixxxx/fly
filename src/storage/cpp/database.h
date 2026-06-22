@@ -80,13 +80,45 @@ public:
     void set_db_id(const CMString& db_id);
     CMString get_base_path() const;
     CMString get_data_path() const;
-    CMString get_obj_name(const CMString& name) const;
+    CMString get_full_name(const CMString& name) const;
     CMString get_writer_id() const;
 
     void reset();
 
     void write_db_meta_header();
     void append_worker_info_to_meta(const WorkerInfo& info);
+
+    // ---- Var service: lightweight small-object KV managed by this Database ----
+    // value is an already-serialized FlyBufferPtr (pickle for Python objects,
+    // FLY_ENCODE_TO_BYTES for C++ exported objects). Zero-copy in-process: the
+    // shared FlyBufferPtr is shared between local cache, WorkerAgentContext,
+    // and TaskAssignMessage construction.
+    //
+    // set_var/get_var are synchronous (await master response); remove_var is
+    // asynchronous (fire-and-forget). On the master process these go directly
+    // to the local authoritative store (master_*); on worker processes they
+    // traverse WorkerAgentContext to the master over the network.
+
+    // Sync set. Returns false if db frozen or var already exists (immutable).
+    bool set_var(const CMString& var_name, FlyBufferPtr value, const CMString& type_name);
+    // Sync get. Returns (success, value, type_name). success=false on miss.
+    std::tuple<bool, FlyBufferPtr, CMString> get_var(const CMString& var_name);
+    // Async remove (local cache cleared immediately; master notified async).
+    void remove_var(const CMString& var_name);
+
+    // Worker-side: inject a var into the local cache (from TaskAssignMessage
+    // var_payloads). No network. Called before task execution so db.get_var
+    // hits the local cache without a round-trip.
+    void inject_var(const CMString& var_name, FlyBufferPtr value, const CMString& type_name);
+
+    // Master authoritative operations (no network, direct local store access).
+    bool master_set_var(const CMString& var_name, FlyBufferPtr value, const CMString& type_name);
+    std::tuple<bool, FlyBufferPtr, CMString> master_get_var(const CMString& var_name);
+    void master_remove_var(const CMString& var_name);
+    bool master_has_var(const CMString& var_name);
+
+    // Drop a local cached var (called on immutable-reject broadcast from master).
+    void drop_local_var(const CMString& var_name);
 
 private:
     bool check_frozen();
@@ -116,6 +148,17 @@ private:
                                      int32_t chunk_count,
                                      bool backup);
 
+    // Var persistence: flush non-deleted vars to {base_path}/_VARS at freeze time;
+    // load them back at construction if the file exists.
+    void flush_vars_to_disk();
+    void load_vars_from_disk();
+
+    // A single var entry: zero-copy shared value buffer + Python type name.
+    struct VarEntry {
+        FlyBufferPtr value_;
+        CMString type_name_;
+    };
+
     CMString base_path_;
     CMString data_path_;
     CMString writer_id_;
@@ -132,6 +175,11 @@ private:
     CMUnorderedSet<CMString> removed_objects_;
     CMUnorderedSet<CMString> temp_objects_;
     CMUniquePtr<fly::TempStore> temp_store_;
+
+    // Var store: var_name → VarEntry. Mutex guards all access (set/get/remove
+    // may come from task-execution threads; freeze snapshots under the lock).
+    CMUnorderedMap<CMString, VarEntry> var_store_;
+    mutable std::mutex var_mutex_;
 };
 
 template<typename T>

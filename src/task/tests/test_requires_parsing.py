@@ -45,7 +45,7 @@ class _FakeAgent:
 
     def submit(self, name, module, args, inputs=None,
                required_capabilities=None, attribute_timeout=-1.0,
-               write_context_hash=""):
+               write_context_hash="", vars=None):
         self.last_submit = {
             'name': name,
             'module': module,
@@ -54,17 +54,18 @@ class _FakeAgent:
             'required_capabilities': required_capabilities,
             'attribute_timeout': attribute_timeout,
             'write_context_hash': write_context_hash,
+            'vars': vars,
         }
 
 
-def _make_wrapper(requires):
-    """构造一个带指定 requires 的 as_task wrapper，返回 (wrapper, fake_agent, restore)"""
+def _make_wrapper(requires=None, vars=None):
+    """构造一个带指定 requires/vars 的 as_task wrapper，返回 (wrapper, fake_agent, restore)"""
     import fly.runtime as runtime
     fake_agent = _FakeAgent()
     orig_get_agent = runtime.get_agent
     runtime.get_agent = lambda: fake_agent
 
-    @task_mod.as_task(requires=requires)
+    @task_mod.as_task(requires=requires, vars=vars)
     def my_task(db):
         pass
 
@@ -175,6 +176,50 @@ def test_requires_empty_list():
     assert agent.last_submit['attribute_timeout'] == -1.0
 
 
+# ---- vars 参数解析测试 ----
+
+def test_vars_pure_list():
+    """vars=list[str] → 直接传递"""
+    wrapper, agent, restore = _make_wrapper(vars=["counter", "threshold"])
+    try:
+        wrapper(None)
+    finally:
+        restore()
+    assert agent.last_submit['vars'] == ["counter", "threshold"]
+
+
+def test_vars_callable():
+    """vars=callable → 提交时动态解析"""
+    wrapper, agent, restore = _make_wrapper(vars=lambda db, key: [f"var_{key}"])
+    try:
+        wrapper(None, "abc")
+    finally:
+        restore()
+    assert agent.last_submit['vars'] == ["var_abc"]
+
+
+def test_vars_none_defaults_to_empty():
+    """vars=None → 空 list"""
+    wrapper, agent, restore = _make_wrapper()
+    try:
+        wrapper(None)
+    finally:
+        restore()
+    assert agent.last_submit['vars'] == []
+
+
+def test_vars_combined_with_requires():
+    """vars 和 requires 同时使用"""
+    wrapper, agent, restore = _make_wrapper(requires=(["gpu"], 5.0), vars=["cfg"])
+    try:
+        wrapper(None)
+    finally:
+        restore()
+    assert agent.last_submit['required_capabilities'] == ["gpu"]
+    assert agent.last_submit['attribute_timeout'] == 5.0
+    assert agent.last_submit['vars'] == ["cfg"]
+
+
 if __name__ == "__main__":
     test_requires_pure_list()
     print("PASS: test_requires_pure_list")
@@ -194,4 +239,12 @@ if __name__ == "__main__":
     print("PASS: test_requires_callable_with_args")
     test_requires_empty_list()
     print("PASS: test_requires_empty_list")
-    print("\nAll requires parsing tests passed!")
+    test_vars_pure_list()
+    print("PASS: test_vars_pure_list")
+    test_vars_callable()
+    print("PASS: test_vars_callable")
+    test_vars_none_defaults_to_empty()
+    print("PASS: test_vars_none_defaults_to_empty")
+    test_vars_combined_with_requires()
+    print("PASS: test_vars_combined_with_requires")
+    print("\nAll requires + vars parsing tests passed!")

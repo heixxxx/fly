@@ -28,7 +28,7 @@ FLY_EXPORT_FUNCTION("ex_test_parallel_read",
     std::vector<std::thread> threads;
     for (size_t i = 0; i < names.size(); i++) {
         threads.emplace_back([db, &names, i, &total_sum, &local_count, &remote_count]() {
-            auto full = db->get_obj_name(names[i]);
+            auto full = db->get_full_name(names[i]);
             auto ds = fly::DataService::instance();
             bool was_local = ds->has_local_object(full);
 

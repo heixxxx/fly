@@ -103,8 +103,8 @@ class _Database:
     def read_object_raw(self, name: str) -> str:
         return self._db.read_object_raw(name)
 
-    def get_obj_name(self, name: str) -> str:
-        return self._db.get_obj_name(name)
+    def get_full_name(self, name: str) -> str:
+        return self._db.get_full_name(name)
 
     def get_db_id(self) -> str:
         return self._db.get_db_id()
@@ -130,6 +130,74 @@ class _Database:
     def remove_object(self, name: str):
         self._db._remove_temp(name)
         self._db.remove_object(name)
+
+    # ---- Var service: lightweight small-object KV ----
+    # set_var/get_var/remove_var bypass write_object's compression / cache /
+    # WriteBackQueue / dependency-graph machinery. Vars are immutable (a second
+    # set on the same name is rejected) and are persisted at freeze time.
+    #
+    # All values flow through FlyBufferPtr (zero-copy in process):
+    #   - C++ exported objects: __getstate_buffer__ returns a FlyBufferPtr stored
+    #     directly; get_var reconstructs via __setstate_from_buffer__ (no Python
+    #     bytes round-trip).
+    #   - Python objects: pickle.dumps -> bytes -> wrapped into FlyBuffer at the
+    #     C++ boundary; get_var unwraps and pickle.loads.
+    def set_var(self, name: str, value):
+        """Store a small object under `name`. Synchronous (waits for master).
+
+        Var is immutable: a second set_var on an existing name is rejected.
+        Serialized size > 1K logs a warning (use write_object instead).
+        """
+        type_name = type(value).__name__
+        if hasattr(value, '__getstate_buffer__'):
+            # C++ exported object: zero-copy. __getstate_buffer__ returns a
+            # FlyBufferPtr (FLY_ENCODE_TO_BYTES, non-streaming) that is stored
+            # directly via shared ownership.
+            buf = value.__getstate_buffer__()
+            ok = self._db._set_var_buffer(name, buf, type_name)
+        else:
+            # Python object: pickle.dump writes directly into a FlyBuffer via the
+            # file protocol — no intermediate Python bytes object.
+            from _fly_storage import FlyBuffer
+            buf = FlyBuffer()
+            pickle.dump(value, buf)
+            ok = self._db._set_var_buffer(name, buf, type_name)
+        if not ok:
+            import _fly_log
+            _fly_log.ERR(f"set_var rejected: '{name}' (frozen or already exists)")
+            raise RuntimeError(f"set_var failed: '{name}' (frozen or already exists)")
+
+    def get_var(self, name: str):
+        """Retrieve a small object stored under `name`. Synchronous (queries
+        master on local cache miss). Returns None if the var does not exist
+        (distinct from a stored value, which is returned as-is).
+
+        Deserialization dispatches by the stored type_name: C++ exported objects
+        are reconstructed via __setstate_from_buffer__ (zero-copy from the shared
+        FlyBufferPtr); Python objects via pickle.loads.
+        """
+        success, buf, type_name = self._db._get_var(name)
+        if not success or buf is None:
+            return None  # var does not exist
+        import _fly_storage
+        cls = getattr(_fly_storage, type_name, None)
+        if cls is not None and hasattr(cls, '_read_from_db'):
+            obj = cls.__new__(cls)
+            obj.__setstate_from_buffer__(buf)  # zero-copy fill
+            return obj
+        # Python object: pickle.load reads from the FlyBuffer via the file
+        # protocol (readinto/read/readline). pickle's C unpickler uses
+        # readinto to fill its own working buffer directly — one
+        # serialization-inherent copy, no intermediate Python bytes object.
+        # seek(0) first: the FlyBufferPtr is shared in the cache, and a prior
+        # read may have advanced the cursor (Python GIL makes seek+load atomic).
+        buf.seek(0)
+        return pickle.load(buf)
+
+    def remove_var(self, name: str):
+        """Remove a var. Asynchronous (local cache cleared immediately,
+        master notified without waiting for ack)."""
+        self._db._remove_var(name)
 
     def __repr__(self):
         return f"Database(db_id={self.get_db_id()})"

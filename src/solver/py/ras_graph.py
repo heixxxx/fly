@@ -168,24 +168,24 @@ def _is_coarse(db):
 
 
 def _compute_deps(db, sd_id, step, neighbor_ids):
-    deps = [db.get_obj_name("__rasg__coord")]
+    deps = [db.get_full_name("__rasg__coord")]
     if step > 0:
         use_coarse = _is_coarse(db)
         for n in neighbor_ids:
             if use_coarse:
-                deps.append(db.get_obj_name(f"__rasg__xc_{n}_{step - 1}"))
+                deps.append(db.get_full_name(f"__rasg__xc_{n}_{step - 1}"))
             else:
-                deps.append(db.get_obj_name(f"__rasg__x_{n}_{step - 1}"))
+                deps.append(db.get_full_name(f"__rasg__x_{n}_{step - 1}"))
         if _is_adaptive(db):
-            deps.append(db.get_obj_name(f"__rasg__gomega_{step}"))
+            deps.append(db.get_full_name(f"__rasg__gomega_{step}"))
     return deps
 
 
 def _check_deps(db, step, nsd):
-    deps = [db.get_obj_name(f"__rasg__conv_{i}_{step}") for i in range(nsd)]
+    deps = [db.get_full_name(f"__rasg__conv_{i}_{step}") for i in range(nsd)]
     if step > 0 and _is_adaptive(db):
         for i in range(nsd):
-            deps.append(db.get_obj_name(f"__rasg__err_{i}_{step}"))
+            deps.append(db.get_full_name(f"__rasg__err_{i}_{step}"))
     return deps
 
 
@@ -262,7 +262,7 @@ def ras_graph_coord(db, matrix_path, nsd, overlap_ratio,
 
 # ── Coarse Grid Correction ──────────────────────────────────────
 
-@as_task(inputs=lambda db: [db.get_obj_name("__rasg__coord")])
+@as_task(inputs=lambda db: [db.get_full_name("__rasg__coord")])
 def _prebuild_coarse_task(db):
     """Build coarse grid on a worker (dispatched to all workers)."""
     _ensure_coarse_cached(db)
@@ -745,7 +745,7 @@ def ras_graph_check(db, step, nsd, max_iter, tol, neighbor_ids_all):
 # ── Assemble ─────────────────────────────────────────────────────
 
 @as_task(inputs=lambda db, nsd, final_step: [
-    db.get_obj_name(f"__rasg__x_{i}_{final_step}") for i in range(nsd)
+    db.get_full_name(f"__rasg__x_{i}_{final_step}") for i in range(nsd)
 ])
 def ras_graph_assemble(db, nsd, final_step):
     cfg = db.read_object("__rasg__cfg")
@@ -756,7 +756,7 @@ def ras_graph_assemble(db, nsd, final_step):
     x = [0.0] * N
     for sd_id in range(nsd):
         if use_coarse:
-            xc_name = db.get_obj_name(f"__rasg__xc_{sd_id}_{final_step}")
+            xc_name = db.get_full_name(f"__rasg__xc_{sd_id}_{final_step}")
             from _fly_storage import ex_stg_get_data_service
             ds = ex_stg_get_data_service()
             if ds.has_local_object(xc_name) or ds.has_remote_location(xc_name):
@@ -784,7 +784,7 @@ def ras_graph_assemble(db, nsd, final_step):
 
 # ── Public API ────────────────────────────────────────────────────
 
-@wait_obj(inputs=lambda db: [db.get_obj_name("__rasg__sol")])
+@wait_obj(inputs=lambda db: [db.get_full_name("__rasg__sol")])
 def get_ras_graph_solution(db, timeout=3600):
     return {
         "x": db.read_object("__rasg__sol"),

@@ -2,11 +2,19 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <common/cpp/worker_context.h>
+#include <serialization/cpp/fly_buffer.h>
 #include <filesystem>
 #include <fstream>
 #include <istream>
 
 namespace {
+
+// Build a FlyBufferPtr from raw bytes (simulates pickle/FLY_ENCODE_TO_BYTES output).
+static FlyBufferPtr make_var_buf(const CMString& bytes) {
+    auto buf = CMMakeShared<FlyBuffer>();
+    buf->write(bytes.data(), bytes.size());
+    return buf;
+}
 
 static fly::WriteErrorType write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
     return db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
@@ -223,7 +231,7 @@ TEST_F(DatabaseTest, GetObjNameReturnsDbIdColonName) {
     CMString base_path = test_dir_ + "/obj_name_test";
     Database db(base_path);
 
-    CMString obj_name = db.get_obj_name("output/result");
+    CMString obj_name = db.get_full_name("output/result");
     CMString expected = db.get_db_id() + ":output/result";
     EXPECT_EQ(obj_name, expected);
 }
@@ -235,7 +243,7 @@ TEST_F(DatabaseTest, GetObjNameDifferentDbDifferentResult) {
     Database db_b(base_b);
 
     // Same object name, different databases → different full names
-    EXPECT_NE(db_a.get_obj_name("output/result"), db_b.get_obj_name("output/result"));
+    EXPECT_NE(db_a.get_full_name("output/result"), db_b.get_full_name("output/result"));
 }
 
 TEST_F(DatabaseTest, DbIdIsBase62Format) {
@@ -733,6 +741,246 @@ TEST_F(DatabaseTest, DbIdPrefixIsPathDerived) {
     CMString id_b = db_b.get_db_id();
     EXPECT_NE(id_a1.substr(0, kPrefixLen), id_b.substr(0, kPrefixLen))
         << "different paths should yield different prefixes";
+}
+
+// =============================================================================
+// Var service tests.
+// These run with WorkerAgentContext wired so that set/get/remove operate
+// directly on the same Database instance (simulating the master process, where
+// var funcs point at the authoritative local store). This isolates the
+// Database var logic from the network layer.
+// =============================================================================
+
+class DatabaseVarTest : public ::testing::Test {
+protected:
+    CMString test_dir_;
+    CMSharedPtr<Database> db_;
+
+    void SetUp() override {
+        test_dir_ = "/tmp/fly_test_var_" + std::to_string(::getpid());
+        std::filesystem::create_directories(test_dir_);
+        db_ = CMMakeShared<Database>(test_dir_);
+
+        // Wire WorkerAgentContext var funcs to the authoritative local store,
+        // as the master process would.
+        fly::WorkerAgentContext::set_set_var_func(
+            [this](const fly::CMString& full_name,
+                   FlyBufferPtr v, const fly::CMString& tn) {
+                fly::CMString db_id, short_name;
+                if (!fly::split_full_name(full_name, db_id, short_name)) return false;
+                return db_->master_set_var(short_name, v, tn);
+            });
+        fly::WorkerAgentContext::set_get_var_func(
+            [this](const fly::CMString& full_name) {
+                fly::CMString db_id, short_name;
+                if (!fly::split_full_name(full_name, db_id, short_name)) {
+                    return std::make_tuple(false, FlyBufferPtr{}, fly::CMString{});
+                }
+                auto [ok, v, tn] = db_->master_get_var(short_name);
+                return std::make_tuple(ok, v, tn);
+            });
+        fly::WorkerAgentContext::set_remove_var_func(
+            [this](const fly::CMString& full_name) {
+                fly::CMString db_id, short_name;
+                if (fly::split_full_name(full_name, db_id, short_name)) {
+                    db_->master_remove_var(short_name);
+                }
+            });
+    }
+
+    void TearDown() override {
+        fly::WorkerAgentContext::clear();
+        db_.reset();
+        std::filesystem::remove_all(test_dir_);
+    }
+};
+
+TEST_F(DatabaseVarTest, SetGetRoundTrip) {
+    auto val = make_var_buf("deadbeef");
+    ASSERT_TRUE(db_->set_var("counter", val, "int"));
+
+    auto [ok, got, tn] = db_->get_var("counter");
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(got);
+    EXPECT_EQ(got->size(), 8u);
+    // value bytes equal.
+    EXPECT_EQ(fly::CMString(got->data(), got->size()), "deadbeef");
+    EXPECT_EQ(tn, "int");
+}
+
+TEST_F(DatabaseVarTest, GetMissingReturnsFalse) {
+    auto [ok, got, tn] = db_->get_var("nope");
+    EXPECT_FALSE(ok);
+    EXPECT_FALSE(got);
+}
+
+TEST_F(DatabaseVarTest, ImmutableRejectsSecondSet) {
+    auto v1 = make_var_buf("aaa");
+    ASSERT_TRUE(db_->set_var("k", v1, "str"));
+
+    auto v2 = make_var_buf("bbb");
+    EXPECT_FALSE(db_->set_var("k", v2, "str"));  // rejected: immutable
+
+    // Original value preserved.
+    auto [ok, got, tn] = db_->get_var("k");
+    ASSERT_TRUE(ok);
+    EXPECT_EQ(fly::CMString(got->data(), got->size()), "aaa");
+}
+
+TEST_F(DatabaseVarTest, LocalCacheAfterSet) {
+    // After set_var succeeds, the local cache must hold the value (zero-copy
+    // shared FlyBufferPtr) so a subsequent get_var hits the cache, not master.
+    auto val = make_var_buf("cached");
+    ASSERT_TRUE(db_->set_var("x", val, "str"));
+
+    // Drop the master func; a cache hit must still succeed.
+    fly::WorkerAgentContext::set_get_var_func(
+        [](const fly::CMString&) {
+            return std::make_tuple(false, FlyBufferPtr{}, fly::CMString{});
+        });
+    auto [ok, got, tn] = db_->get_var("x");
+    ASSERT_TRUE(ok);
+    EXPECT_EQ(fly::CMString(got->data(), got->size()), "cached");
+}
+
+TEST_F(DatabaseVarTest, GetFetchesFromMasterOnCacheMiss) {
+    // Seed the master store directly; local cache is empty.
+    auto val = make_var_buf("from_master");
+    ASSERT_TRUE(db_->master_set_var("remote_key", val, "int"));
+
+    // get_var must fetch from master (via context) and cache locally.
+    auto [ok, got, tn] = db_->get_var("remote_key");
+    ASSERT_TRUE(ok);
+    EXPECT_EQ(fly::CMString(got->data(), got->size()), "from_master");
+}
+
+TEST_F(DatabaseVarTest, RemoveClearsLocalAndMaster) {
+    auto val = make_var_buf("rm");
+    ASSERT_TRUE(db_->set_var("to_remove", val, "str"));
+    ASSERT_TRUE(db_->master_has_var("to_remove"));
+
+    db_->remove_var("to_remove");
+
+    EXPECT_FALSE(db_->master_has_var("to_remove"));
+    auto [ok, got, tn] = db_->get_var("to_remove");
+    EXPECT_FALSE(ok);
+}
+
+TEST_F(DatabaseVarTest, InjectVarPopulatesLocalCache) {
+    // Simulate TaskAssignMessage var_payloads injection on a worker.
+    auto val = make_var_buf("injected");
+    db_->inject_var("inj", val, "int");
+
+    // get_var hits local cache (master func would say miss).
+    fly::WorkerAgentContext::set_get_var_func(
+        [](const fly::CMString&) {
+            return std::make_tuple(false, FlyBufferPtr{}, fly::CMString{});
+        });
+    auto [ok, got, tn] = db_->get_var("inj");
+    ASSERT_TRUE(ok);
+    EXPECT_EQ(fly::CMString(got->data(), got->size()), "injected");
+}
+
+TEST_F(DatabaseVarTest, FreezeRejectsSetVar) {
+    db_->freeze();
+    ASSERT_TRUE(db_->is_frozen());
+
+    auto val = make_var_buf("after_freeze");
+    EXPECT_FALSE(db_->set_var("frozen_key", val, "int"));
+    EXPECT_FALSE(db_->master_has_var("frozen_key"));
+}
+
+TEST_F(DatabaseVarTest, FreezePersistsVarsToDisk) {
+    auto v1 = make_var_buf("persist1");
+    auto v2 = make_var_buf("persist2");
+    ASSERT_TRUE(db_->set_var("pv1", v1, "int"));
+    ASSERT_TRUE(db_->set_var("pv2", v2, "str"));
+
+    db_->freeze();
+
+    // _VARS file must exist and be non-empty (magic + count header = 16 bytes).
+    std::filesystem::path vars_file = std::string(test_dir_) + "/_VARS";
+    ASSERT_TRUE(std::filesystem::exists(vars_file));
+    EXPECT_GE(std::filesystem::file_size(vars_file), 16u);
+}
+
+TEST_F(DatabaseVarTest, LoadVarsFromDiskRestoresStore) {
+    // Write vars and freeze (persists _VARS), then drop the in-memory store by
+    // destroying this db and constructing a fresh one on the same path.
+    auto v1 = make_var_buf("rv1");
+    auto v2 = make_var_buf("rv2bytes");
+    ASSERT_TRUE(db_->set_var("rk1", v1, "int"));
+    ASSERT_TRUE(db_->set_var("rk2", v2, "str"));
+    db_->freeze();
+
+    db_.reset();
+    fly::WorkerAgentContext::clear();
+
+    // Re-open: existing db (db_id regenerated from path, but _VARS is read
+    // because the path existed). Use a non-empty existing_db_id to skip the
+    // new-db branch so _DB_META isn't rewritten; _VARS loads regardless.
+    db_ = CMMakeShared<Database>(test_dir_, "", 0, "", "reused_id");
+
+    // Vars restored into the in-memory store.
+    EXPECT_TRUE(db_->master_has_var("rk1"));
+    EXPECT_TRUE(db_->master_has_var("rk2"));
+
+    auto [ok1, got1, tn1] = db_->master_get_var("rk1");
+    ASSERT_TRUE(ok1);
+    EXPECT_EQ(fly::CMString(got1->data(), got1->size()), "rv1");
+    EXPECT_EQ(tn1, "int");
+
+    auto [ok2, got2, tn2] = db_->master_get_var("rk2");
+    ASSERT_TRUE(ok2);
+    EXPECT_EQ(fly::CMString(got2->data(), got2->size()), "rv2bytes");
+    EXPECT_EQ(tn2, "str");
+}
+
+TEST_F(DatabaseVarTest, DropLocalVarClearsCache) {
+    auto val = make_var_buf("drop_me");
+    ASSERT_TRUE(db_->set_var("d", val, "str"));
+    EXPECT_TRUE(db_->master_has_var("d"));
+
+    // drop_local_var clears the local cache. In the master-process test fixture
+    // local == master store, so after drop the var is gone entirely.
+    db_->drop_local_var("d");
+    EXPECT_FALSE(db_->master_has_var("d"));
+}
+
+TEST_F(DatabaseVarTest, MasterRemoveClearAllVars) {
+    auto v1 = make_var_buf("a");
+    auto v2 = make_var_buf("b");
+    ASSERT_TRUE(db_->set_var("c1", v1, "int"));
+    ASSERT_TRUE(db_->set_var("c2", v2, "int"));
+
+    db_->master_remove_var("");  // empty name clears all
+    EXPECT_FALSE(db_->master_has_var("c1"));
+    EXPECT_FALSE(db_->master_has_var("c2"));
+}
+
+TEST_F(DatabaseVarTest, LargeVarWarnsButStores) {
+    // A var with serialized size > 1K should log a warning but still store
+    // successfully — the warning is advisory, not a rejection.
+    CMString big(2048, 'x');  // 2K payload
+    auto val = make_var_buf(big);
+    ASSERT_TRUE(db_->set_var("big_var", val, "bytes"));
+
+    // Stored retrievably.
+    auto [ok, got, tn] = db_->get_var("big_var");
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(got);
+    EXPECT_EQ(got->size(), 2048u);
+}
+
+TEST_F(DatabaseVarTest, SmallVarNoWarning) {
+    // Exactly 1K (1024 bytes) is the boundary; <= 1024 should NOT warn.
+    CMString exact_1k(1024, 'y');
+    auto val = make_var_buf(exact_1k);
+    ASSERT_TRUE(db_->set_var("boundary_var", val, "bytes"));
+
+    auto [ok, got, tn] = db_->get_var("boundary_var");
+    ASSERT_TRUE(ok);
+    EXPECT_EQ(got->size(), 1024u);
 }
 
 }

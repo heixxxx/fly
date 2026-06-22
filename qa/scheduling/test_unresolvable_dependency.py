@@ -45,7 +45,7 @@ def test_unresolvable_dependency():
 
     write_data(db, "real_key", 1)
 
-    read_data(db, "result", [db.get_obj_name("phantom")])
+    read_data(db, "result", [db.get_full_name("phantom")])
 
     for i in range(20):
         failed = master.failed_tasks

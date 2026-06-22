@@ -19,7 +19,7 @@ def test_write_frozen_db_fails():
     write_data(db3, "pre", "exists")
     wait_completed(master, 1)
 
-    freeze_db(db3, [db3.get_obj_name("pre")])
+    freeze_db(db3, [db3.get_full_name("pre")])
     wait_completed(master, 2)
     assert db3.is_frozen()
 

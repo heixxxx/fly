@@ -211,8 +211,16 @@ class _Database:
     def remove_object(self, name: str):
         # 删除对象索引（本地上移除，通知Master广播删除）
 
-    def get_obj_name(self, name: str) -> str:
+    def get_full_name(self, name: str) -> str:
         # 返回 "{db_id}:{name}" 唯一标识符
+
+    def set_var(self, name: str, value):
+        # 存储小对象（同步等待 master 确认）。var 不可变：同名再次 set 会被拒绝。
+        # 序列化后 > 1K 打印警告（建议改用 write_object）。
+    def get_var(self, name: str):
+        # 读取小对象（本地缓存 miss 时回源 master）。不存在返回 None。
+    def remove_var(self, name: str):
+        # 删除小对象（异步，立即清本地缓存，通知 master 广播删除）。
 
     def get_db_id(self) -> str
     def freeze(self)
@@ -298,6 +306,23 @@ def as_task(inputs=None, requires=None):
 @as_task(requires=lambda db, k: ([k], 1.0)) # 动态决定
 ```
 
+**vars 参数形式**（小对象预取）:
+
+声明 task 需要的 var 变量，master 在调度时将已存在的 var 数据 inline 进
+`TaskAssignMessage` 一次性发给 worker，worker 执行前注入本地缓存，避免额外网络往返。
+
+- `list[str]`：var 全名列表（`db.get_full_name(name)` 生成）。
+- `callable(*args, **kwargs) -> list[str]`：提交时动态解析。
+
+var 不存在仅打印 WARN，不影响调度。var 的真实数据依赖靠 `write_object`
+隐式确定（同连接 FIFO 保证顺序）。
+
+```python
+@as_task(vars=lambda db: [db.get_full_name("counter")])  # 声明需要 counter var
+def read_counter(db):
+    return db.get_var("counter")
+```
+
 **用户脚本 vs 仓库模块**:
 - `__main__`（用户脚本）：函数被 pickle 序列化到 task_name 字段，Worker 通过反序列化重建函数
 - 仓库模块：函数注册到 `_task_registry`，Worker 通过 `importlib.import_module` 加载
@@ -315,11 +340,11 @@ def _serialize_args(args):
     return result
 ```
 
-> **注意**: inputs 使用 `db.get_obj_name()` 生成 full name（`db_id:object_name`），确保与 DataService / DependencyGraph 命名空间一致。
+> **注意**: inputs 使用 `db.get_full_name()` 生成 full name（`db_id:object_name`），确保与 DataService / DependencyGraph 命名空间一致。
 
 ```python
 # 正确
-@as_task(inputs=lambda db, key: [db.get_obj_name(f"input/{key}")])
+@as_task(inputs=lambda db, key: [db.get_full_name(f"input/{key}")])
 
 # 错误 — 短名无法匹配 DataService 索引
 @as_task(inputs=lambda db, key: [f"input/{key}"])
@@ -524,7 +549,7 @@ launch_workers([{"role": "hybrid"}])
 
 db = open_db("/data/project")
 
-@as_task(inputs=lambda db, name: [db.get_obj_name(f"input/{name}")])
+@as_task(inputs=lambda db, name: [db.get_full_name(f"input/{name}")])
 def process_data(db, name):
     raw = db.read_object(f"input/{name}")
     result = algorithm(raw)
@@ -575,7 +600,7 @@ restart_failed_tasks("/path/to/failed_tasks.bin")
 ```
 
 **依赖命名规范**:
-- Task 的 inputs 必须使用 `db.get_obj_name()` 生成 full name (db_id:object_name)，与 DataService / mark_data_ready 命名空间一致
+- Task 的 inputs 必须使用 `db.get_full_name()` 生成 full name (db_id:object_name)，与 DataService / mark_data_ready 命名空间一致
 
 ---
 
@@ -674,6 +699,6 @@ master.load_db("/new/location/project")  # db_id 从 _DB_META 读取，不受路
 | `_Database` 内部类 + `open_db()` 工厂 | 隐藏 C++ 实现细节，统一创建入口 |
 | is_cpp 双路径序列化 | C++ 导出类型走 bitsery（高效），Python 类型走 pickle（兼容） |
 | `__fly_db__:` 协议传递 Database | 轻量级 db_id 传递，Worker 端按需创建 |
-| get_obj_name 自动拼 db_id | 多 DB 场景下同名对象去重 |
+| get_full_name 自动拼 db_id | 多 DB 场景下同名对象去重 |
 | _fly_original_func 保存原始函数 | Worker 端执行原始函数而非 wrapper |
 | thread-local last_error_type | C++ exception 跨 nanobind 丢失类型信息 |

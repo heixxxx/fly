@@ -24,7 +24,7 @@ def write_data_task(db, idx):
     db.write_object("test." + str(idx), obj)
 
 
-@as_task(inputs=lambda db, names, out_key: [db.get_obj_name(n) for n in names])
+@as_task(inputs=lambda db, names, out_key: [db.get_full_name(n) for n in names])
 def concurrent_read_task(db, names, out_key):
     short_names = [n.split(":")[-1] if ":" in n else n for n in names]
     total, local_count, remote_count = ex_test_parallel_read(db, short_names)
@@ -54,4 +54,4 @@ def entry_task(db):
 
     # Phase 3: freeze depends on all 3 summaries
     summary_keys = ["summary.1", "summary.2", "summary.3"]
-    freeze_db_task(db, [db.get_obj_name(k) for k in summary_keys])
+    freeze_db_task(db, [db.get_full_name(k) for k in summary_keys])

@@ -53,7 +53,7 @@ TEST_F(DataServiceTest, OnObjectWrittenAndFlushEnablesLocalRead) {
     write_raw(db, "local/obj", "hello", false);
     fly::DataService::instance()->drain_write_back();
 
-    CMString full = db.get_obj_name("local/obj");
+    CMString full = db.get_full_name("local/obj");
     EXPECT_TRUE(ds_->has_local_object(full));
 
     auto [found, result] = ds_->try_read_local(full);
@@ -141,16 +141,16 @@ TEST_F(DataServiceTest, MultipleObjectsInSameDatabase) {
     write_raw(db, "multi/c", "data_c", false);
     fly::DataService::instance()->drain_write_back();
 
-    EXPECT_TRUE(ds_->has_local_object(db.get_obj_name("multi/a")));
-    EXPECT_TRUE(ds_->has_local_object(db.get_obj_name("multi/b")));
-    EXPECT_TRUE(ds_->has_local_object(db.get_obj_name("multi/c")));
+    EXPECT_TRUE(ds_->has_local_object(db.get_full_name("multi/a")));
+    EXPECT_TRUE(ds_->has_local_object(db.get_full_name("multi/b")));
+    EXPECT_TRUE(ds_->has_local_object(db.get_full_name("multi/c")));
 
-    auto [fa, ra] = ds_->try_read_local(db.get_obj_name("multi/a"));
+    auto [fa, ra] = ds_->try_read_local(db.get_full_name("multi/a"));
     EXPECT_TRUE(fa);
     CMString da(ra.data_buffer_.begin(), ra.data_buffer_.end());
     EXPECT_EQ(da, "data_a");
 
-    auto [fb, rb] = ds_->try_read_local(db.get_obj_name("multi/b"));
+    auto [fb, rb] = ds_->try_read_local(db.get_full_name("multi/b"));
     EXPECT_TRUE(fb);
     CMString db2(rb.data_buffer_.begin(), rb.data_buffer_.end());
     EXPECT_EQ(db2, "data_b");
@@ -163,7 +163,7 @@ TEST_F(DataServiceTest, TypedObjectReadableViaDataService) {
     db.write_pickle_bytes("typed/ds_obj", "typed_payload", 13, "MyType");
     fly::DataService::instance()->drain_write_back();
 
-    CMString full = db.get_obj_name("typed/ds_obj");
+    CMString full = db.get_full_name("typed/ds_obj");
     auto [found, result] = ds_->try_read_local(full);
     EXPECT_TRUE(found);
     EXPECT_EQ(result.py_name_, "MyType");
@@ -218,7 +218,7 @@ TEST_F(DataServiceTest, RemoveLocalIndexMakesObjectUnreadable) {
     write_raw(db, "remove/local", "data", false);
     fly::DataService::instance()->drain_write_back();
 
-    CMString full = db.get_obj_name("remove/local");
+    CMString full = db.get_full_name("remove/local");
     EXPECT_TRUE(ds_->has_local_object(full));
 
     ds_->remove_local_index(full);
@@ -237,8 +237,8 @@ TEST_F(DataServiceTest, RemoveLocalIndexOnlyAffectsTarget) {
     write_raw(db, "remove/me", "remove_data", false);
     fly::DataService::instance()->drain_write_back();
 
-    CMString keep_full = db.get_obj_name("keep/me");
-    CMString remove_full = db.get_obj_name("remove/me");
+    CMString keep_full = db.get_full_name("keep/me");
+    CMString remove_full = db.get_full_name("remove/me");
 
     ds_->remove_local_index(remove_full);
 
@@ -694,7 +694,7 @@ TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsImmediatelyWhenComplete) {
     write_raw(db, "wait/obj", "wait_data", false);
     fly::DataService::instance()->drain_write_back();
 
-    CMString full = db.get_obj_name("wait/obj");
+    CMString full = db.get_full_name("wait/obj");
     auto [found, result] = ds_->try_read_local_or_wait(full, 100);
     EXPECT_TRUE(found);
     CMString data(result.data_buffer_.begin(), result.data_buffer_.end());
@@ -729,7 +729,7 @@ TEST_F(DataServiceTest, TryReadLocalRawReturnsData) {
     write_raw(db, "raw/obj", "raw_data", false);
     fly::DataService::instance()->drain_write_back();
 
-    CMString full = db.get_obj_name("raw/obj");
+    CMString full = db.get_full_name("raw/obj");
     auto [found, raw] = ds_->try_read_local_raw(full);
     EXPECT_TRUE(found);
     EXPECT_FALSE(!raw || raw->empty());
@@ -748,7 +748,7 @@ TEST_F(DataServiceTest, TryReadLocalRawOrWaitReturnsData) {
     write_raw(db, "rawwait/obj", "rawwait_data", false);
     fly::DataService::instance()->drain_write_back();
 
-    CMString full = db.get_obj_name("rawwait/obj");
+    CMString full = db.get_full_name("rawwait/obj");
     auto [found, raw, py_name] = ds_->try_read_local_raw_or_wait(full, 100);
     EXPECT_TRUE(found);
     EXPECT_FALSE(!raw || raw->empty());
@@ -776,7 +776,7 @@ TEST_F(DataServiceTest, TryReadRemoteReturnsLocalIfAvailable) {
     write_raw(db, "remote/local_obj", "local_data", false);
     fly::DataService::instance()->drain_write_back();
 
-    CMString full = db.get_obj_name("remote/local_obj");
+    CMString full = db.get_full_name("remote/local_obj");
     auto [found, result] = ds_->try_read_remote(full);
     EXPECT_TRUE(found);
     CMString data(result.data_buffer_.begin(), result.data_buffer_.end());
@@ -801,7 +801,7 @@ TEST_F(DataServiceTest, ReadRawCompressedReturnsLocalRaw) {
     write_raw(db, "comp/obj", "comp_data", false);
     fly::DataService::instance()->drain_write_back();
 
-    CMString full = db.get_obj_name("comp/obj");
+    CMString full = db.get_full_name("comp/obj");
     auto [found, raw, py_name, hash, can_still] = ds_->read_raw_compressed(full);
     EXPECT_TRUE(found);
     EXPECT_FALSE(!raw || raw->empty());
@@ -1054,7 +1054,7 @@ TEST_F(DataServiceTest, TryReadLocalRawReturnsCompressedData) {
     write_raw(db, "raw/obj", "payload", false);
     ds_->drain_write_back();
 
-    CMString full = db.get_obj_name("raw/obj");
+    CMString full = db.get_full_name("raw/obj");
     auto [found, comp] = ds_->try_read_local_raw(full);
     EXPECT_TRUE(found);
     EXPECT_FALSE(!comp || comp->empty());
@@ -1078,7 +1078,7 @@ TEST_F(DataServiceTest, TryReadLocalRawServesFromLowCache) {
     write_raw(db, "serve/obj", "payload", false);
     ds_->drain_write_back();
 
-    CMString full = db.get_obj_name("serve/obj");
+    CMString full = db.get_full_name("serve/obj");
     fly::ObjectCache::instance().clear();
 
     // Populate low tier via read_object_compressed.
@@ -1109,7 +1109,7 @@ TEST_F(DataServiceTest, TryReadLocalRawPopulatesLowCache) {
     write_raw(db, "pop/obj", "data", false);
     ds_->drain_write_back();
 
-    CMString full = db.get_obj_name("pop/obj");
+    CMString full = db.get_full_name("pop/obj");
     fly::ObjectCache::instance().clear();
     EXPECT_EQ(fly::ObjectCache::instance().low_size(), 0u);
 
@@ -1130,7 +1130,7 @@ TEST_F(DataServiceTest, TryReadLocalRawOrWaitImmediateForComplete) {
     write_raw(db, "rw/obj", "data", false);
     ds_->drain_write_back();
 
-    CMString full = db.get_obj_name("rw/obj");
+    CMString full = db.get_full_name("rw/obj");
     auto [found, comp, py_name] = ds_->try_read_local_raw_or_wait(full, 1000);
     EXPECT_TRUE(found);
     EXPECT_FALSE(!comp || comp->empty());
@@ -1159,7 +1159,7 @@ TEST_F(DataServiceTest, TryReadLocalOrWaitImmediateForComplete) {
     write_raw(db, "ow/obj", "hello", false);
     ds_->drain_write_back();
 
-    CMString full = db.get_obj_name("ow/obj");
+    CMString full = db.get_full_name("ow/obj");
     auto [found, result] = ds_->try_read_local_or_wait(full, 1000);
     EXPECT_TRUE(found);
 }

@@ -28,7 +28,7 @@ def task_name(name: str):
     return decorator
 
 
-def as_task(inputs=None, requires=None):
+def as_task(inputs=None, requires=None, vars=None):
     """将函数注册为可分发任务。
 
     装饰器会拦截函数调用，将任务提交给 Agent（Master 或 Worker）执行。
@@ -43,6 +43,12 @@ def as_task(inputs=None, requires=None):
                   到匹配属性最多的 idle worker
                 - timeout > 0: 数据依赖满足后限时等待；到期后降级调度
             - callable(*args, **kwargs): 返回上述任一形式，在提交时动态解析
+        vars: 任务声明需要的 var 变量名列表，支持以下形式：
+            - list[str]: var 名列表（短名，与 write_object 一致）
+            - callable(*args, **kwargs) -> list[str]: 提交时动态解析
+            master 在发送 task 时将已存在的 var 数据 inline 进消息一次性发给
+            worker（减少 worker→master 请求次数）。var 不存在仅打印 warn，不
+            影响调度。var 的真实依赖关系靠 write_object 隐式确定（见 db.set_var）。
 
     Usage::
 
@@ -57,6 +63,10 @@ def as_task(inputs=None, requires=None):
         @as_task(requires=(["gpu"], 5.0))  # 5秒后降级
         def soft_gpu_task(db):
             ...
+
+        @as_task(vars=["counter"])  # 声明需要 counter var，master 调度时带入
+        def read_counter(db):
+            return db.get_var("counter")
     """
     def decorator(func):
         name = getattr(func, '_fly_task_name', None) or func.__name__
@@ -99,6 +109,8 @@ def as_task(inputs=None, requires=None):
             else:
                 caps, attr_timeout = list(resolved), -1.0
 
+            resolved_vars = vars(*args, **kwargs) if callable(vars) else (vars or [])
+
             serialized = _serialize_args(args)
 
             task_name = func_payload if func_payload is not None else name
@@ -109,11 +121,12 @@ def as_task(inputs=None, requires=None):
             agent.submit(task_name, module, serialized, task_inputs,
                          required_capabilities=caps,
                          attribute_timeout=attr_timeout,
-                         write_context_hash=write_context_hash)
+                         write_context_hash=write_context_hash,
+                         vars=resolved_vars)
             DBG(
                 f"Task submitted via {agent.mode}: "
                 f"name={name}, module={module}, inputs={task_inputs}, "
-                f"requires={caps}, attr_timeout={attr_timeout}")
+                f"requires={caps}, attr_timeout={attr_timeout}, vars={resolved_vars}")
 
         wrapper._fly_original_func = func
         wrapper._fly_task_name = name
@@ -130,12 +143,12 @@ def wait_obj(inputs=None, poll_interval=0.1, timeout=None):
 
     Args:
         inputs: 与 @as_task 相同，callable(*args, **kwargs) -> list[str]，
-                返回依赖对象的全名列表（需用 db.get_obj_name() 获取）。
+                返回依赖对象的全名列表（需用 db.get_full_name() 获取）。
         poll_interval: 轮询间隔（秒），默认 0.1 秒。
         timeout: 超时秒数。None（默认）= 永远等待，直到数据可读或确认无法产出。
 
     Usage:
-        @wait_obj(inputs=lambda db, key: [db.get_obj_name("dep1")])
+        @wait_obj(inputs=lambda db, key: [db.get_full_name("dep1")])
         def process(db, key):
             return db.read_object(key)
 
@@ -228,7 +241,7 @@ def _wait_for_objects(deps, poll_interval, timeout=None):
 def _serialize_args(args):
     result = []
     for arg in args:
-        if hasattr(arg, 'get_db_id') and hasattr(arg, 'get_obj_name'):
+        if hasattr(arg, 'get_db_id') and hasattr(arg, 'get_full_name'):
             base_path = arg._db.get_base_path()
             data_path = arg._db.get_data_path()
             result.append(f"__fly_db__:{arg.get_db_id()}:{base_path}:{data_path}")

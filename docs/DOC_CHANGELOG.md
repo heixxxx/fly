@@ -2,6 +2,38 @@
 
 ---
 
+## 2026-06-22: var 小数据存储服务 + get_obj_name→get_full_name 重命名
+
+### var 小数据存储服务（db.set_var / get_var / remove_var）
+
+新增轻量级小对象 KV 服务，绕开 `write_object` 的压缩/缓存/WriteBackQueue/依赖图全套机制：
+
+- **db 由 db 直接管理**：Database 内建 `var_store_`（FlyBufferPtr 载体），master 进程 Database 实例为权威存储，worker 经 WorkerAgentContext 同步到 master。
+- **零拷贝**：内存层全程 FlyBufferPtr 共享；消息边界用 `mutable` 字段 + `std::move`；Python 对象用 FlyBuffer 的 file-protocol（`pickle.dump(value, buf)` / `pickle.load(buf)` via readinto）；C++ 对象用 `__getstate_buffer__` / `__setstate_from_buffer__`。
+- **全程全名**：var 名用 `db.get_full_name(name)`（`db_id:short_name`），消息无冗余 db_id，master 用 `split_full_name`（基于 db_id_len 固定切分）定位 Database。
+- **隐式依赖**：set_var/get_var 同步，依赖 master reactor 单线程 FIFO 保证"set_var 后 write_object 的数据依赖满足时，var 一定可取"。
+- **@as_task(vars=...)**：task 声明所需 var，master 调度时 inline 带入 TaskAssignMessage。
+- **freeze 持久化**：freeze 时 `_VARS` 文件持久化未删除 var，load_db 恢复。
+- **不变性**：var 写入后不可改，重复 set 被拒绝；freeze 后 set_var 被拒绝。
+
+### get_obj_name → get_full_name 全仓重命名
+
+var 与 object 共用 `db_id:short_name` 命名空间，`get_obj_name` 名称对 var 有歧义，统一为中性 `get_full_name`。涉及 solver/mapreduce/e2e_tasks/单测等 30+ 处。
+
+### FlyBuffer file-protocol 接口
+
+FlyBuffer 新增 `read(n)` / `readline()` / `readinto(bytearray)` / `seek(n)` / `pos`，支持作为 `pickle.load` 的 file-like 对象（readinto 零拷贝写入 pickle 工作缓冲），消除 var get_var 的中间 Python bytes 拷贝。
+
+### executor 三阶段执行
+
+重构 worker task 执行为 `preprocess`（db 创建/注册 + var 注入）/ `execute`（调用 task 函数）/ `postprocess`（空函数预留扩展点）。
+
+### FLY_EXPORT_SERIALIZE 序列化接口
+
+移除 `__getstate__`/`__setstate__`（bytes 版，无生产使用），改为 `__setstate_from_buffer__(FlyBufferPtr)`（零拷贝反序列化填充）。
+
+---
+
 ## 2026-06-21: attribute_timeout — 属性依赖超时降级
 
 ### `@as_task(requires=...)` 支持 tuple/callable 形式

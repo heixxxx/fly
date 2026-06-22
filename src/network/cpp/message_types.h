@@ -41,10 +41,15 @@ enum class MessageType : uint8_t {
     BACKUP_ASSIGN = 31,
     BACKUP_COMPLETE = 32,
     HEARTBEAT_ACK = 33,
+    VAR_SET = 34,        // worker → master: set var (synchronous, awaits VAR_ACK)
+    VAR_GET = 35,        // worker → master: get var (synchronous, awaits VAR_ACK)
+    VAR_ACK = 36,        // master → worker: unified set/get response
+    VAR_REMOVE = 37,     // worker → master: remove var (async, no ack)
+    VAR_BROADCAST = 38,  // master → worker: broadcast removal / modification-reject (async)
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 33;
+    return raw >= 1 && raw <= 38;
 }
 
 struct MessageHeader {
@@ -136,6 +141,18 @@ struct DataLocation {
     FLY_SERIALIZE(object_name, worker_id, host, port);
 };
 
+// A var name/value pair inlined into TaskAssignMessage, so workers receive declared
+// vars in one shot (no extra round-trip to master). value is serialized bytes
+// (pickle for Python objects, FLY_ENCODE_TO_BYTES for C++ exported objects);
+// type_name carries the Python type name for deserialization dispatch.
+struct VarPayload {
+    CMString var_name;
+    CMString value;
+    CMString type_name;
+
+    FLY_SERIALIZE(var_name, value, type_name);
+};
+
 struct TaskAssignMessage {
     MessageHeader header_;
     uint64_t task_id_ = 0;
@@ -144,10 +161,11 @@ struct TaskAssignMessage {
     CMVector<CMString> args_;
     CMString write_context_hash_;
     CMVector<DataLocation> dependency_locations_;  // Pre-fetched locations of input data.
+    CMVector<VarPayload> var_payloads_;            // Pre-fetched declared vars.
 
     static constexpr MessageType msg_type_ = MessageType::TASK_ASSIGN;
 
-    FLY_SERIALIZE(header_, task_id_, task_name_, task_module_, args_, write_context_hash_, dependency_locations_);
+    FLY_SERIALIZE(header_, task_id_, task_name_, task_module_, args_, write_context_hash_, dependency_locations_, var_payloads_);
 };
 
 struct TaskCompleteMessage {
@@ -221,8 +239,9 @@ struct TaskSubmitMessage {
     CMVector<CMString> required_capabilities_;
     float attribute_timeout_ = -1.0f;  // <0=死等, 0=立即降级, >0=限时降级
     CMString write_context_hash_;
+    CMVector<CMString> vars_;          // declared var names for inline delivery
     static constexpr MessageType msg_type_ = MessageType::TASK_SUBMIT;
-    FLY_SERIALIZE(header_, task_name_, task_module_, args_, inputs_, required_capabilities_, attribute_timeout_, write_context_hash_);
+    FLY_SERIALIZE(header_, task_name_, task_module_, args_, inputs_, required_capabilities_, attribute_timeout_, write_context_hash_, vars_);
 };
 
 struct DbPathRequestMessage {
@@ -393,6 +412,77 @@ struct BackupCompleteMessage {
 
     static constexpr MessageType msg_type_ = MessageType::BACKUP_COMPLETE;
     FLY_SERIALIZE(header_, worker_id_, object_name_, db_id_, success_, error_message_);
+};
+
+// =============================================================================
+// Var service messages — lightweight small-object KV bypassing write_object's
+// compression / cache / WriteBackQueue / dependency-graph machinery.
+// value_ carries already-serialized bytes (pickle or FLY_ENCODE_TO_BYTES).
+// =============================================================================
+
+// worker → master: set var (synchronous, awaits VAR_ACK).
+// var_name_ is the FULL name (db_id:short_name); db_id is split on the master.
+struct VarSetMessage {
+    MessageHeader header_;
+    CMString var_name_;
+    // mutable: the reactor hands msg as const T&, but the decoded msg is a
+    // local that is destroyed right after the handler returns. Marking value_
+    // mutable lets the handler std::move it into a FlyBuffer (zero-copy) without
+    // changing the reactor's const-handler contract.
+    mutable CMString value_;
+    CMString type_name_;
+
+    static constexpr MessageType msg_type_ = MessageType::VAR_SET;
+    FLY_SERIALIZE(header_, var_name_, value_, type_name_);
+};
+
+// worker → master: get var (synchronous, awaits VAR_ACK).
+// var_name_ is the FULL name (db_id:short_name).
+struct VarGetMessage {
+    MessageHeader header_;
+    CMString var_name_;
+
+    static constexpr MessageType msg_type_ = MessageType::VAR_GET;
+    FLY_SERIALIZE(header_, var_name_);
+};
+
+// master → worker: unified response for VAR_SET / VAR_GET.
+// var_name_ is the FULL name (db_id:short_name).
+// On VAR_GET: success_=false means the var does not exist.
+// On VAR_SET: success_=false means rejected (frozen or immutable).
+struct VarAckMessage {
+    MessageHeader header_;
+    CMString var_name_;
+    bool success_ = false;
+    // mutable: same rationale as VarSetMessage.value_ — allows the worker
+    // handler to std::move the value bytes into a FlyBuffer (zero-copy).
+    mutable CMString value_;
+    CMString type_name_;
+    CMString error_message_;
+
+    static constexpr MessageType msg_type_ = MessageType::VAR_ACK;
+    FLY_SERIALIZE(header_, var_name_, success_, value_, type_name_, error_message_);
+};
+
+// worker → master: remove var (async, no ack expected).
+// var_name_ is the FULL name (db_id:short_name). Empty means clear all.
+struct VarRemoveMessage {
+    MessageHeader header_;
+    CMString var_name_;
+
+    static constexpr MessageType msg_type_ = MessageType::VAR_REMOVE;
+    FLY_SERIALIZE(header_, var_name_);
+};
+
+// master → worker: broadcast a var removal or modification-reject (async).
+// var_name_ is the FULL name (db_id:short_name). Empty means clear all.
+struct VarBroadcastMessage {
+    MessageHeader header_;
+    CMString var_name_;
+    bool is_modification_reject_ = false;
+
+    static constexpr MessageType msg_type_ = MessageType::VAR_BROADCAST;
+    FLY_SERIALIZE(header_, var_name_, is_modification_reject_);
 };
 
 }  // namespace fly

@@ -11,7 +11,7 @@ def failing_task(db, key, error_msg):
     raise RuntimeError(error_msg)
 
 
-@as_task(inputs=lambda db, key, value: [db.get_obj_name("phantom")])
+@as_task(inputs=lambda db, key, value: [db.get_full_name("phantom")])
 def write_data_needs_phantom(db, key, value):
     db.write_object(key, value)
 
@@ -141,14 +141,14 @@ def compute_sum(db, read_key_a, read_key_b, result_key):
     db.write_object(result_key, a + b)
 
 
-@as_task(inputs=lambda target_db, source_db, source_key, target_key: [source_db.get_obj_name(source_key)])
+@as_task(inputs=lambda target_db, source_db, source_key, target_key: [source_db.get_full_name(source_key)])
 def cross_db_copy(target_db, source_db, source_key, target_key):
     data = source_db.read_object(source_key)
     target_db.write_object(target_key, data)
 
 
 @as_task(inputs=lambda target_db, db_a, db_b, key_a, key_b, target_key:
-         [db_a.get_obj_name(key_a), db_b.get_obj_name(key_b)])
+         [db_a.get_full_name(key_a), db_b.get_full_name(key_b)])
 def cross_db_sum(target_db, db_a, db_b, key_a, key_b, target_key):
     a = db_a.read_object(key_a)
     b = db_b.read_object(key_b)
@@ -162,14 +162,14 @@ def add_alpha_property(db, key, value):
     db.write_object(key, value)
 
 
-@as_task(inputs=lambda target_db, source_db, source_key, target_key: [source_db.get_obj_name(source_key)],
+@as_task(inputs=lambda target_db, source_db, source_key, target_key: [source_db.get_full_name(source_key)],
          requires=["alpha"])
 def alpha_cross_db_copy(target_db, source_db, source_key, target_key):
     data = source_db.read_object(source_key)
     target_db.write_object(target_key, data)
 
 
-@as_task(inputs=lambda target_db, source_db, source_key, target_key: [source_db.get_obj_name(source_key)],
+@as_task(inputs=lambda target_db, source_db, source_key, target_key: [source_db.get_full_name(source_key)],
          requires=["gpu"])
 def gpu_cross_db_copy(target_db, source_db, source_key, target_key):
     data = source_db.read_object(source_key)
@@ -177,7 +177,7 @@ def gpu_cross_db_copy(target_db, source_db, source_key, target_key):
 
 
 @as_task(inputs=lambda target_db, db_raw, db_feat, key_raw, key_feat, target_key:
-         [db_raw.get_obj_name(key_raw), db_feat.get_obj_name(key_feat)])
+         [db_raw.get_full_name(key_raw), db_feat.get_full_name(key_feat)])
 def triple_db_sum(target_db, db_raw, db_feat, key_raw, key_feat, target_key):
     raw_val = db_raw.read_object(key_raw)
     feat_val = db_feat.read_object(key_feat)
@@ -194,7 +194,7 @@ def wait_obj_then_process(db, dep_key, result_key):
     This tests the Worker-side @wait_obj scenario.
     """
 
-    @wait_obj(inputs=lambda d, k: [d.get_obj_name(k)])
+    @wait_obj(inputs=lambda d, k: [d.get_full_name(k)])
     def wait_for_data(d, k):
         return d.read_object(k)
 
@@ -241,7 +241,47 @@ def gpu_write_large_temp(db, key, size):
 
 
 # Task 2: runs on CPU worker, depends on task 1's output, reads it remotely.
-@as_task(inputs=lambda db, source_key: [db.get_obj_name(source_key)])
+@as_task(inputs=lambda db, source_key: [db.get_full_name(source_key)])
 def cpu_read_large_remote(db, source_key):
     data = db.read_object(source_key)
     return len(data)
+
+
+# ── Var service tasks ──
+
+@as_task()
+def set_var_task(db, name, value):
+    """Set a var (small object)."""
+    db.set_var(name, value)
+
+
+@as_task()
+def get_var_task(db, name):
+    """Read a var and return it (or None)."""
+    return db.get_var(name)
+
+
+@as_task()
+def remove_var_task(db, name):
+    """Remove a var."""
+    db.remove_var(name)
+
+
+@as_task()
+def set_var_and_write(db, var_name, var_value, obj_key, obj_value):
+    """Set a var THEN write an object — establishes the implicit dependency:
+    once obj_key's data dependency is satisfied, var_name is guaranteed
+    retrievable on master (same-connection FIFO)."""
+    db.set_var(var_name, var_value)
+    db.write_object(obj_key, obj_value)
+
+
+@as_task(inputs=lambda db, obj_key, var_name: [db.get_full_name(obj_key)],
+         vars=lambda db, obj_key, var_name: [db.get_full_name(var_name)])
+def read_obj_and_var(db, obj_key, var_name):
+    """Task that depends on obj_key (data dep) AND declares var_name (inline var).
+    The var is inlined by master into TaskAssignMessage, so get_var hits the local
+    cache without a round-trip."""
+    obj_val = db.read_object(obj_key)
+    var_val = db.get_var(var_name)
+    return (obj_val, var_val)

@@ -2,12 +2,14 @@
 #include <storage/cpp/compressor.h>
 #include <network/cpp/data_client.h>
 #include <serialization/cpp/object_header.h>
+#include <serialization/cpp/serialization_macros.h>
 #include <storage/cpp/object_cache.h>
 #include <storage/cpp/compression_utils.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <core/cpp/config.h>
 #include <log/cpp/logger.h>
 #include <common/cpp/writer_id.h>
+#include <common/cpp/worker_context.h>
 #include <filesystem>
 #include <fstream>
 #include <chrono>
@@ -41,6 +43,10 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
     if (fs::exists(frozen_marker)) {
         is_frozen_ = true;
     }
+
+    // Restore vars from a prior freeze (_VARS file) if present. Applies to both
+    // fresh opens and load_db scenarios — absence of the file is a no-op.
+    load_vars_from_disk();
 
     auto config = Config::instance();
     CMString comp_type_str = config->get_str("compression_type");
@@ -353,6 +359,9 @@ void Database::freeze() {
     fly::DataService::instance()->cleanup_temp_entries(db_id_);
     fly::WorkerAgentContext::notify_freeze(db_id_);
 
+    // Persist non-deleted vars alongside the frozen db.
+    flush_vars_to_disk();
+
     // TODO: freeze 后处理 — 从聚合文件中真正删除 removed_objects_ 的数据
     // 当前聚合文件可能包含多个对象，删除单个对象需要重写整个文件
     // 完整实现需要在数据压缩(compaction)功能中完成
@@ -466,7 +475,7 @@ CMString Database::get_writer_id() const {
     return writer_id_;
 }
 
-CMString Database::get_obj_name(const CMString& name) const {
+CMString Database::get_full_name(const CMString& name) const {
     return full_name(name);
 }
 
@@ -654,6 +663,220 @@ void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compresse
     }
 
     DBG("[TEMP-PUT] put_temp_data complete: obj={}", object_name);
+}
+
+// =============================================================================
+// Var service implementation
+// =============================================================================
+
+// _VARS file magic header ("VARS" in little-endian int64).
+static constexpr int64_t VARS_FILE_MAGIC = 0x53524156;  // 'V','A','R','S' LE
+
+bool Database::set_var(const CMString& var_name, FlyBufferPtr value, const CMString& type_name) {
+    // var is db data: freeze makes it immutable too (same gate as write_object).
+    if (check_frozen()) {
+        ERR("set_var rejected: db {} is frozen", db_id_);
+        return false;
+    }
+    // Size warning: var is for small objects; >1K serialized is too large.
+    if (value && value->size() > 1024) {
+        WARN("var '{}' serialized size {} > 1K, too large for var (consider write_object)",
+             var_name, value->size());
+    }
+
+    // var_store_ keys on the short name; the context receives the full name.
+    CMString full = full_name(var_name);
+    bool ok = fly::WorkerAgentContext::set_var(full, value, type_name);
+    if (ok) {
+        // Master accepted — cache locally (zero-copy shared FlyBufferPtr).
+        std::lock_guard<std::mutex> lk(var_mutex_);
+        var_store_[var_name] = VarEntry{value, type_name};
+    }
+    // On rejection (frozen / immutable) leave the local cache untouched: the
+    // existing entry (if any) is the authoritative master value.
+    return ok;
+}
+
+std::tuple<bool, FlyBufferPtr, CMString> Database::get_var(const CMString& var_name) {
+    // Local cache first (zero-copy).
+    {
+        std::lock_guard<std::mutex> lk(var_mutex_);
+        auto it = var_store_.find(var_name);
+        if (it != var_store_.end()) {
+            return {true, it->second.value_, it->second.type_name_};
+        }
+    }
+    // Miss → ask master (synchronous) via the full name.
+    CMString full = full_name(var_name);
+    auto [success, value, type_name] = fly::WorkerAgentContext::get_var(full);
+    if (success && value) {
+        // Cache the fetched value locally (zero-copy shared).
+        std::lock_guard<std::mutex> lk(var_mutex_);
+        var_store_[var_name] = VarEntry{value, type_name};
+    }
+    return {success, value, type_name};
+}
+
+void Database::remove_var(const CMString& var_name) {
+    // Clear local cache immediately; master notified asynchronously via full name.
+    {
+        std::lock_guard<std::mutex> lk(var_mutex_);
+        var_store_.erase(var_name);
+    }
+    CMString full = full_name(var_name);
+    fly::WorkerAgentContext::remove_var(full);
+}
+
+void Database::inject_var(const CMString& var_name, FlyBufferPtr value, const CMString& type_name) {
+    // Worker-side local cache population from TaskAssignMessage var_payloads.
+    // Overwrites any existing local entry (master authoritative).
+    std::lock_guard<std::mutex> lk(var_mutex_);
+    var_store_[var_name] = VarEntry{value, type_name};
+}
+
+void Database::drop_local_var(const CMString& var_name) {
+    std::lock_guard<std::mutex> lk(var_mutex_);
+    var_store_.erase(var_name);
+}
+
+// ---- Master authoritative operations (no network) ----
+
+bool Database::master_set_var(const CMString& var_name, FlyBufferPtr value, const CMString& type_name) {
+    if (check_frozen()) {
+        ERR("master_set_var rejected: db {} is frozen", db_id_);
+        return false;
+    }
+    std::lock_guard<std::mutex> lk(var_mutex_);
+    if (var_store_.count(var_name)) {
+        // Immutable: a var may only be written once.
+        ERR("master_set_var rejected: var '{}' already exists (immutable)", var_name);
+        return false;
+    }
+    var_store_[var_name] = VarEntry{value, type_name};
+    return true;
+}
+
+std::tuple<bool, FlyBufferPtr, CMString> Database::master_get_var(const CMString& var_name) {
+    std::lock_guard<std::mutex> lk(var_mutex_);
+    auto it = var_store_.find(var_name);
+    if (it == var_store_.end()) {
+        return {false, nullptr, ""};
+    }
+    return {true, it->second.value_, it->second.type_name_};
+}
+
+void Database::master_remove_var(const CMString& var_name) {
+    std::lock_guard<std::mutex> lk(var_mutex_);
+    if (var_name.empty()) {
+        var_store_.clear();
+    } else {
+        var_store_.erase(var_name);
+    }
+}
+
+bool Database::master_has_var(const CMString& var_name) {
+    std::lock_guard<std::mutex> lk(var_mutex_);
+    return var_store_.count(var_name) > 0;
+}
+
+// ---- Persistence (_VARS file) ----
+
+void Database::flush_vars_to_disk() {
+    // Snapshot shared FlyBufferPtrs under lock (zero-copy — shared_ptr refcount,
+    // no byte copy), write outside lock to avoid blocking readers.
+    CMVector<std::tuple<CMString, FlyBufferPtr, CMString>> snapshot;  // (name, buf, type_name)
+    {
+        std::lock_guard<std::mutex> lk(var_mutex_);
+        snapshot.reserve(var_store_.size());
+        for (const auto& [name, entry] : var_store_) {
+            snapshot.emplace_back(name, entry.value_, entry.type_name_);
+        }
+    }
+
+    CMString vars_path = base_path_ + "/_VARS";
+    std::ofstream ofs(vars_path, std::ios::binary | std::ios::trunc);
+    if (!ofs.is_open()) {
+        ERR("flush_vars_to_disk: cannot open {}", vars_path);
+        return;
+    }
+
+    int64_t magic = VARS_FILE_MAGIC;
+    int64_t count = static_cast<int64_t>(snapshot.size());
+    ofs.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+    ofs.write(reinterpret_cast<const char*>(&count), sizeof(count));
+
+    for (const auto& [name, buf, type_name] : snapshot) {
+        int64_t name_len = static_cast<int64_t>(name.size());
+        ofs.write(reinterpret_cast<const char*>(&name_len), sizeof(name_len));
+        ofs.write(name.data(), name_len);
+
+        // Read directly from the shared FlyBuffer — no copy.
+        int64_t val_len = buf ? static_cast<int64_t>(buf->size()) : 0;
+        ofs.write(reinterpret_cast<const char*>(&val_len), sizeof(val_len));
+        if (val_len > 0) {
+            ofs.write(buf->data(), val_len);
+        }
+
+        int64_t tn_len = static_cast<int64_t>(type_name.size());
+        ofs.write(reinterpret_cast<const char*>(&tn_len), sizeof(tn_len));
+        ofs.write(type_name.data(), tn_len);
+    }
+    ofs.flush();
+    DBG("flush_vars_to_disk: wrote {} vars to {}", count, vars_path);
+}
+
+void Database::load_vars_from_disk() {
+    CMString vars_path = base_path_ + "/_VARS";
+    if (!fs::exists(vars_path)) {
+        return;  // No _VARS file — nothing to load.
+    }
+
+    std::ifstream ifs(vars_path, std::ios::binary);
+    if (!ifs.is_open()) {
+        ERR("load_vars_from_disk: cannot open {}", vars_path);
+        return;
+    }
+
+    int64_t magic = 0;
+    ifs.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+    if (!ifs || magic != VARS_FILE_MAGIC) {
+        ERR("load_vars_from_disk: bad magic in {}", vars_path);
+        return;
+    }
+
+    int64_t count = 0;
+    ifs.read(reinterpret_cast<char*>(&count), sizeof(count));
+    if (!ifs || count < 0) {
+        ERR("load_vars_from_disk: bad count in {}", vars_path);
+        return;
+    }
+
+    std::lock_guard<std::mutex> lk(var_mutex_);
+    for (int64_t i = 0; i < count; ++i) {
+        int64_t name_len = 0;
+        ifs.read(reinterpret_cast<char*>(&name_len), sizeof(name_len));
+        if (!ifs || name_len < 0) break;
+        CMString name(static_cast<size_t>(name_len), '\0');
+        ifs.read(name.data(), name_len);
+
+        int64_t val_len = 0;
+        ifs.read(reinterpret_cast<char*>(&val_len), sizeof(val_len));
+        if (!ifs || val_len < 0) break;
+        CMString value_bytes(static_cast<size_t>(val_len), '\0');
+        ifs.read(value_bytes.data(), val_len);
+
+        int64_t tn_len = 0;
+        ifs.read(reinterpret_cast<char*>(&tn_len), sizeof(tn_len));
+        if (!ifs || tn_len < 0) break;
+        CMString type_name(static_cast<size_t>(tn_len), '\0');
+        ifs.read(type_name.data(), tn_len);
+
+        // Zero-copy into a fresh FlyBufferPtr (take moves the CMString).
+        auto buf = CMMakeShared<FlyBuffer>();
+        buf->take(std::move(value_bytes));
+        var_store_[std::move(name)] = VarEntry{buf, std::move(type_name)};
+    }
+    DBG("load_vars_from_disk: loaded {} vars from {}", count, vars_path);
 }
 
 

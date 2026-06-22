@@ -309,10 +309,14 @@ TEST_F(ObjectCacheDbTest, WriteObjectPopulatesLowTierOnFlush) {
     src.s = "wt_data";
     db.write_object("wt/obj", src, "CacheItem", false);
 
-    EXPECT_EQ(ObjectCache::instance().low_size(), 0u);
+    // commit_write populates the low-tier cache IMMEDIATELY (before master
+    // registration), so remote reads triggered by the subsequent
+    // schedule_tasks can be served without waiting for the disk write.
+    EXPECT_EQ(ObjectCache::instance().low_size(), 1u)
+        << "write_object should populate low tier immediately (before flush)";
     fly::DataService::instance()->drain_write_back();
     EXPECT_EQ(ObjectCache::instance().low_size(), 1u)
-        << "write_object should populate low tier after flush";
+        << "low tier entry persists across drain";
 
     ObjectCache::instance().clear();
 }
@@ -335,7 +339,7 @@ TEST_F(ObjectCacheDbTest, ReadObjectCompressedPopulatesLowTier) {
     db.write_pickle_bytes("obj", "payload", 7, "bytes", false);
     fly::DataService::instance()->drain_write_back();
 
-    CMString full = db.get_obj_name("obj");
+    CMString full = db.get_full_name("obj");
     // write_pickle_bytes already populated low tier via write-through (complete_).
     EXPECT_EQ(ObjectCache::instance().low_size(), 1u);
 
@@ -363,7 +367,7 @@ TEST_F(ObjectCacheDbTest, ReadObjectCompressedMissDoesNotPopulate) {
 // A second read hits the cache and returns the same instance.
 TEST_F(ObjectCacheDbTest, ReadObjectPopulatesHighTier) {
     Database db(test_dir_ + "/high");
-    CMString full = db.get_obj_name("obj");
+    CMString full = db.get_full_name("obj");
 
     CacheItem src;
     src.n = 99;

@@ -123,6 +123,16 @@ void WorkerAgent::start() {
             DBG("HeartbeatAck received from master");
         });
 
+    reactor_->register_handler<VarAckMessage>(
+        [this](uint64_t conn_id, const VarAckMessage& msg) {
+            on_var_ack(conn_id, msg);
+        });
+
+    reactor_->register_handler<VarBroadcastMessage>(
+        [this](uint64_t conn_id, const VarBroadcastMessage& msg) {
+            on_var_broadcast(conn_id, msg);
+        });
+
     reactor_->on_disconnect([this](uint64_t conn_id) {
         on_disconnect(conn_id);
     });
@@ -209,7 +219,8 @@ void WorkerAgent::submit_task(const CMString& name, const CMString& module,
                                const CMVector<CMString>& inputs,
                                const CMVector<CMString>& required_capabilities,
                                float attribute_timeout,
-                               const CMString& write_context_hash) {
+                               const CMString& write_context_hash,
+                               const CMVector<CMString>& vars) {
     // No reactor means start() failed (e.g. master unreachable) — nothing to
     // send to. Fail soft rather than crash; caller observes no progress.
     if (!reactor_) {
@@ -224,6 +235,7 @@ void WorkerAgent::submit_task(const CMString& name, const CMString& module,
     msg.required_capabilities_ = required_capabilities;
     msg.attribute_timeout_ = attribute_timeout;
     msg.write_context_hash_ = write_context_hash;
+    msg.vars_ = vars;
     reactor_->send(master_conn_, msg);
 }
 
@@ -285,6 +297,7 @@ void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
     task.task_module_ = msg.task_module_;
     task.args_ = msg.args_;
     task.write_context_hash_ = msg.write_context_hash_;
+    task.var_payloads_ = msg.var_payloads_;
 
     {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);
@@ -314,6 +327,11 @@ bool WorkerAgent::poll_task() {
         execute_internal_task(task);
     } else if (executor_) {
         begin_task(task.task_id_, task.write_context_hash_);
+        // Stage inlined vars for the Python executor to inject before the task runs.
+        if (!task.var_payloads_.empty()) {
+            std::lock_guard<std::mutex> lk(pending_task_vars_mutex_);
+            pending_task_vars_ = std::move(task.var_payloads_);
+        }
         auto result = executor_->execute(
             task.task_id_, task.task_name_, task.task_module_, task.args_);
         auto tracked_writes = end_task(task.task_id_);
@@ -453,6 +471,19 @@ void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_has
     });
     WorkerAgentContext::set_backup_request_func([this](const CMString& db_id, const CMString& object_name) {
         request_backup(db_id, object_name);
+    });
+    // Var funcs: route to master over the network (synchronous set/get).
+    // Names are FULL (db_id:short_name); forwarded as-is over the wire.
+    WorkerAgentContext::set_set_var_func([this](const CMString& full_var_name,
+                                                FlyBufferPtr value, const CMString& type_name) -> bool {
+        return set_var_sync(full_var_name, value, type_name);
+    });
+    WorkerAgentContext::set_get_var_func([this](const CMString& full_var_name)
+        -> std::tuple<bool, FlyBufferPtr, CMString> {
+        return get_var_sync(full_var_name);
+    });
+    WorkerAgentContext::set_remove_var_func([this](const CMString& full_var_name) {
+        remove_var_async(full_var_name);
     });
 }
 
@@ -701,6 +732,142 @@ void WorkerAgent::on_write_register_ack(uint64_t conn_id, const WriteRegisterAck
         it->second->completed_ = true;
     }
     pending_write_reg_cv_.notify_all();
+}
+
+// =============================================================================
+// Var service: synchronous set/get (block on master VAR_ACK), async remove.
+// =============================================================================
+
+bool WorkerAgent::set_var_sync(const CMString& full_var_name,
+                               FlyBufferPtr value, const CMString& type_name) {
+    if (!registered_) return false;
+
+    auto pending = CMMakeShared<PendingVarOp>();
+    pending->var_name_ = full_var_name;
+    {
+        std::lock_guard<std::mutex> lock(pending_var_mutex_);
+        pending_var_ops_[full_var_name] = pending;
+    }
+
+    VarSetMessage msg;
+    msg.var_name_ = full_var_name;  // full name on the wire
+    // Network boundary copy (reactor single-segment message): the FlyBufferPtr
+    // bytes are copied into the message CMString. This is the one unavoidable
+    // copy at the wire boundary.
+    if (value) {
+        msg.value_.assign(value->data(), value->size());
+    }
+    msg.type_name_ = type_name;
+    reactor_->send(master_conn_, msg);
+
+    DBG("VarSet sent: var={}", full_var_name);
+
+    bool result = false;
+    {
+        std::unique_lock<std::mutex> lock(pending_var_mutex_);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (true) {
+            if (pending->completed_) {
+                result = pending->success_;
+                break;
+            }
+            if (pending_var_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
+                ERR("VarSet timeout: var={}", full_var_name);
+                break;
+            }
+        }
+        pending_var_ops_.erase(full_var_name);
+    }
+    return result;
+}
+
+std::tuple<bool, FlyBufferPtr, CMString> WorkerAgent::get_var_sync(const CMString& full_var_name) {
+    if (!registered_) return {false, nullptr, ""};
+
+    auto pending = CMMakeShared<PendingVarOp>();
+    pending->var_name_ = full_var_name;
+    {
+        std::lock_guard<std::mutex> lock(pending_var_mutex_);
+        pending_var_ops_[full_var_name] = pending;
+    }
+
+    VarGetMessage msg;
+    msg.var_name_ = full_var_name;  // full name on the wire
+    reactor_->send(master_conn_, msg);
+
+    DBG("VarGet sent: var={}", full_var_name);
+
+    std::unique_lock<std::mutex> lock(pending_var_mutex_);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (true) {
+        if (pending->completed_) {
+            return {pending->success_, pending->value_, pending->type_name_};
+        }
+        if (pending_var_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
+            ERR("VarGet timeout: var={}", full_var_name);
+            return {false, nullptr, ""};
+        }
+    }
+}
+
+void WorkerAgent::remove_var_async(const CMString& full_var_name) {
+    if (!registered_) return;
+    VarRemoveMessage msg;
+    msg.var_name_ = full_var_name;  // full name on the wire
+    reactor_->send(master_conn_, msg);
+    DBG("VarRemove sent (async): var={}", full_var_name);
+}
+
+CMVector<VarPayload> WorkerAgent::take_pending_task_vars() {
+    std::lock_guard<std::mutex> lk(pending_task_vars_mutex_);
+    CMVector<VarPayload> result = std::move(pending_task_vars_);
+    pending_task_vars_.clear();
+    return result;
+}
+
+void WorkerAgent::on_var_ack(uint64_t conn_id, const VarAckMessage& msg) {
+    touch_master_contact();
+
+    CMSharedPtr<PendingVarOp> to_complete;
+    {
+        std::lock_guard<std::mutex> lock(pending_var_mutex_);
+        auto it = pending_var_ops_.find(msg.var_name_);
+        if (it != pending_var_ops_.end()) {
+            to_complete = it->second;
+        }
+    }
+
+    if (to_complete) {
+        to_complete->success_ = msg.success_;
+        to_complete->error_message_ = msg.error_message_;
+        to_complete->type_name_ = msg.type_name_;
+        if (msg.success_ && !msg.value_.empty()) {
+            // value_ is mutable: std::move it into the FlyBuffer (zero-copy). The
+            // decoded ack msg is a local destroyed after this handler returns.
+            auto buf = CMMakeShared<FlyBuffer>();
+            buf->take(std::move(msg.value_));
+            to_complete->value_ = buf;
+        }
+        to_complete->completed_ = true;
+        pending_var_cv_.notify_all();
+    }
+}
+
+void WorkerAgent::on_var_broadcast(uint64_t conn_id, const VarBroadcastMessage& msg) {
+    touch_master_contact();
+
+    // msg.var_name_ is a FULL name; split to locate the Database and the short
+    // name to drop from its local cache.
+    CMString db_id, short_name;
+    if (fly::split_full_name(msg.var_name_, db_id, short_name)) {
+        auto it = databases_.find(db_id);
+        if (it != databases_.end()) {
+            it->second->drop_local_var(short_name);
+        }
+    }
+    if (msg.is_modification_reject_) {
+        ERR("Var modification rejected by master (immutable): var={}", msg.var_name_);
+    }
 }
 
 void WorkerAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg) {

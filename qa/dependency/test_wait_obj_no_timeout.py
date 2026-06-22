@@ -54,7 +54,7 @@ assert wait_for(lambda: len(master.completed_tasks) >= 1)
 # there are no pending/running tasks.
 raised = False
 try:
-    @wait_obj(inputs=lambda d, k: [d.get_obj_name(k)])
+    @wait_obj(inputs=lambda d, k: [d.get_full_name(k)])
     def read_phantom(d, k):
         return d.read_object(k)
 
