@@ -33,6 +33,10 @@ public:
                                 const char* data, int64_t data_size,
                                 const CMString& py_name, bool backup = false);
 
+    fly::WriteErrorType commit_stream(const CMString& object_name,
+                                      FlyBufferPtr record,
+                                      const CMString& py_name, bool backup = false);
+
     CMString compress_pickle_bytes(const char* data, int64_t data_size,
                                    const CMString& py_name);
 
@@ -90,7 +94,7 @@ public:
 
     // ---- Var service: lightweight small-object KV managed by this Database ----
     // value is an already-serialized FlyBufferPtr (pickle for Python objects,
-    // FLY_ENCODE_TO_BYTES for C++ exported objects). Zero-copy in-process: the
+    // FLY_ENCODE_TO_BUFFER for C++ exported objects). Zero-copy in-process: the
     // shared FlyBufferPtr is shared between local cache, WorkerAgentContext,
     // and TaskAssignMessage construction.
     //

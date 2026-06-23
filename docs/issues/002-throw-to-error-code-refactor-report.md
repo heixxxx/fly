@@ -64,7 +64,7 @@ Worker write 失败
 
 ### P0-1: `database.h` 模板 `read_object<T>` 空 buffer crash
 
-**现象**: `read_raw()` 返回空 `ReadResult{}`，模板直接传给 `FLY_DECODE_FROM_BYTES` → 段错误。
+**现象**: `read_raw()` 返回空 `ReadResult{}`，模板直接传给 `FLY_DECODE_FROM_BUFFER` → 段错误。
 
 **修复**: 在模板中增加 `result.data_buffer.empty()` 检查，返回 nullptr。
 

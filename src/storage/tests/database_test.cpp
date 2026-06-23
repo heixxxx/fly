@@ -9,7 +9,7 @@
 
 namespace {
 
-// Build a FlyBufferPtr from raw bytes (simulates pickle/FLY_ENCODE_TO_BYTES output).
+// Build a FlyBufferPtr from raw bytes (simulates pickle/FLY_ENCODE_TO_BUFFER output).
 static FlyBufferPtr make_var_buf(const CMString& bytes) {
     auto buf = CMMakeShared<FlyBuffer>();
     buf->write(bytes.data(), bytes.size());

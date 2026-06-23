@@ -80,8 +80,8 @@ FLY_FIELD(field)
 |----|------|------|
 | `FLY_ENCODE(obj, out_str)` | 编码到 CMString | 文件/网络传输 |
 | `FLY_DECODE(str, Type, obj)` | 从 CMString 解码 | 读取 |
-| `FLY_ENCODE_TO_BYTES(obj, buf)` | 编码到 FlyBuffer | Python 绑定 |
-| `FLY_DECODE_FROM_BYTES(buf, Type, obj)` | 从 FlyBuffer 解码 | Python 绑定 |
+| `FLY_ENCODE_TO_BUFFER(obj, buf)` | 编码到 FlyBuffer | Python 绑定 |
+| `FLY_DECODE_FROM_BUFFER(buf, Type, obj)` | 从 FlyBuffer 解码 | Python 绑定 |
 
 ---
 

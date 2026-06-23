@@ -42,12 +42,12 @@ CMSharedPtr<T> read_object(const CMString& object_name) {
     CMString full = full_name(object_name);
     auto result = fly::DataService::instance().read_raw(full);
     auto obj = CMMakeShared<T>();
-    FLY_DECODE_FROM_BYTES(result.data_buffer, T, *obj);  // ← 空 buffer 时 throw/crash
+    FLY_DECODE_FROM_BUFFER(result.data_buffer, T, *obj);  // ← 空 buffer 时 throw/crash
     return obj;
 }
 ```
 
-**根因**: `read_raw()` 现在失败返回空 `ReadResult{}`，但模板方法不检查就直接传给 `FLY_DECODE_FROM_BYTES`。
+**根因**: `read_raw()` 现在失败返回空 `ReadResult{}`，但模板方法不检查就直接传给 `FLY_DECODE_FROM_BUFFER`。
 
 **修复**:
 ```cpp
@@ -60,7 +60,7 @@ CMSharedPtr<T> read_object(const CMString& object_name) {
         return nullptr;
     }
     auto obj = CMMakeShared<T>();
-    FLY_DECODE_FROM_BYTES(result.data_buffer, T, *obj);
+    FLY_DECODE_FROM_BUFFER(result.data_buffer, T, *obj);
     return obj;
 }
 ```
@@ -256,7 +256,7 @@ try {
 | 行号 | 上下文 | 建议 |
 |------|--------|------|
 | 269 | `FLY_DECODE` 反序列化失败 | 改为返回 `bool` |
-| 288 | `FLY_DECODE_FROM_BYTES` 反序列化失败 | 改为返回 `bool` |
+| 288 | `FLY_DECODE_FROM_BUFFER` 反序列化失败 | 改为返回 `bool` |
 
 **注意**: 这是宏，改动影响全局。当前有 7 个 `catch(...)` 块依赖这些 throw。建议分阶段处理：先保持宏不变，后续单独重构。
 

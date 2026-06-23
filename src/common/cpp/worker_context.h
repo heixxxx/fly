@@ -94,7 +94,7 @@ public:
     // func splits off db_id to locate the Database; the worker func sends the
     // full name over the wire.
     // set_var: synchronous. Returns true on success (var stored on master).
-    // value is an already-serialized FlyBufferPtr (pickle or FLY_ENCODE_TO_BYTES).
+    // value is an already-serialized FlyBufferPtr (pickle or FLY_ENCODE_TO_BUFFER).
     static void set_set_var_func(std::function<bool(const CMString& full_var_name,
                                                      FlyBufferPtr value, const CMString& type_name)> func) {
         set_var_func_ = std::move(func);

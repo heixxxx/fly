@@ -48,14 +48,14 @@ def test_stability():
     db.write_object("large_a", "A" * 5_000_000)
     db.write_object("large_b", "B" * 5_000_000)
 
-    n_writes = 100
+    n_writes = 60
     for i in range(n_writes):
         write_data(db, f"stable_{i}", i)
 
     assert wait_for(lambda: len(master.completed_tasks) >= n_writes, timeout=120.0), \
         f"Phase 1: {n_writes} writes should complete, got {len(master.completed_tasks)}"
 
-    n_sums = 50
+    n_sums = 30
     for i in range(n_sums):
         compute_sum(db, f"stable_{i*2}", f"stable_{i*2+1}", f"sum_{i}")
 

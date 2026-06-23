@@ -207,6 +207,33 @@ fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
     return commit_write(object_name, full, record, cr.original_size_, cr.chunk_count_, backup);
 }
 
+fly::WriteErrorType Database::commit_stream(const CMString& object_name,
+                                     FlyBufferPtr record,
+                                     const CMString& py_name, bool backup) {
+    CMString full = full_name(object_name);
+    if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return fly::WriteErrorType::FROZEN_DB; }
+
+    // The incoming FlyBufferPtr may carry a nanobind py_deleter (if it crossed
+    // the Python↔C++ boundary). commit_write stores it in ObjectCache, which is
+    // destructed from non-Python threads (e.g. reactor thread's remove_local_index).
+    // A py_deleter would try to acquire the GIL on those threads → deadlock if
+    // the task executor thread holds the GIL. Create a pure-C++ copy to strip
+    // the nanobind deleter.
+    auto pure_record = CMMakeShared<FlyBuffer>();
+    pure_record->write(record->data(), record->size());
+
+    int64_t original_size = 0;
+    int32_t chunk_count = 0;
+    try {
+        int64_t off = 0;
+        ObjectHeader hdr = ObjectHeader::deserialize({pure_record->data(), pure_record->size()}, off);
+        original_size = static_cast<int64_t>(hdr.total_size_);
+        chunk_count = static_cast<int32_t>(hdr.chunk_count_);
+    } catch (...) {}
+
+    return commit_write(object_name, full, pure_record, original_size, chunk_count, backup);
+}
+
 CMString Database::compress_pickle_bytes(const char* data, int64_t data_size,
                                           const CMString& py_name) {
     FlyBuffer buf;

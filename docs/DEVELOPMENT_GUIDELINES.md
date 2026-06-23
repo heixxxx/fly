@@ -349,10 +349,10 @@ FLY_DECODE(bytes, MyStruct, decoded);
 
 // 编码到 FlyBuffer（uint8_t 类型，Python 绑定使用）
 FlyBuffer buf;
-FLY_ENCODE_TO_BYTES(obj, buf);
+FLY_ENCODE_TO_BUFFER(obj, buf);
 
 // 从 FlyBuffer 解码
-FLY_DECODE_FROM_BYTES(buf, MyType, decoded);
+FLY_DECODE_FROM_BUFFER(buf, MyType, decoded);
 ```
 
 ### 4.3 导出宏

@@ -298,21 +298,21 @@ void map_elem(S& s, T& v) {
         output = std::move(fly_dec_msg_); \
     } while(0)
 
-// FLY_ENCODE_TO_BYTES: Serialize msg to output (FlyBuffer)
-#define FLY_ENCODE_TO_BYTES(msg, output) \
+// FLY_ENCODE_TO_BUFFER: Serialize msg to output (FlyBuffer)
+#define FLY_ENCODE_TO_BUFFER(msg, output) \
     do { \
         auto fly_enc_size_ = bitsery::quickSerialization<FlyOutputAdapter>(output, msg); \
         output.resize(fly_enc_size_); \
     } while(0)
 
-// FLY_DECODE_FROM_BYTES: Deserialize input (FlyBuffer) to msg of type msg_type
-#define FLY_DECODE_FROM_BYTES(input, msg_type, output) \
+// FLY_DECODE_FROM_BUFFER: Deserialize input (FlyBuffer) to msg of type msg_type
+#define FLY_DECODE_FROM_BUFFER(input, msg_type, output) \
     do { \
         msg_type fly_dec_msg_; \
         auto fly_dec_result_ = bitsery::quickDeserialization<FlyInputAdapter>( \
             {input.begin(), input.size()}, fly_dec_msg_); \
         if (fly_dec_result_.first != bitsery::ReaderError::NoError || !fly_dec_result_.second) { \
-            throw std::runtime_error("FLY_DECODE_FROM_BYTES: deserialization failed"); \
+            throw std::runtime_error("FLY_DECODE_FROM_BUFFER: deserialization failed"); \
         } \
         output = std::move(fly_dec_msg_); \
     } while(0)

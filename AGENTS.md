@@ -92,7 +92,7 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 - **C++20 / gcc12** — use `CMString`, `CMVector`, etc. from `common/cpp/common_types.h`
 - **Module-style includes**: `<module/cpp/file.h>` NOT `"../cpp/file.h"`
 - **Macros over raw APIs**: use `FLY_SERIALIZE_*` not bitsery, `FLY_EXPORT_*` not nanobind
-- **Must pass full test suite before completing** — cpp/python unit tests + QA tests must all pass
+- **Must pass full test suite before committing** — cpp/python unit tests + QA tests must ALL pass, ZERO failures allowed. No exceptions, no "pre-existing" excuses. If a test fails, fix it before committing.
 - **Never blame "pre-existing bugs"** — all crashes/instability are assumed from your changes
 - **Fix crashes immediately** — no deferring, no marking as "known issues"
 

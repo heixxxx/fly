@@ -54,7 +54,7 @@ namespace fly_export = nanobind;
     .def("__getstate_buffer__", [](const Cls& obj) -> CMSharedPtr<FlyBuffer> { \
         auto buf = CMMakeShared<FlyBuffer>(); \
         auto& fly_buf_ref_ = *buf; \
-        FLY_ENCODE_TO_BYTES(obj, fly_buf_ref_); \
+        FLY_ENCODE_TO_BUFFER(obj, fly_buf_ref_); \
         return buf; \
     }) \
     .def("__setstate_from_buffer__", [](Cls& obj, const CMSharedPtr<FlyBuffer>& buf) { \
@@ -78,5 +78,28 @@ namespace fly_export = nanobind;
     }) \
     .def_static("_read_from_db", [](Database& db, const CMString& name, const CMString& cache = "low") -> CMSharedPtr<Cls> { \
         return db.read_object<Cls>(name, cache); \
+    }) \
+    .def("__getstate__", [](const Cls& obj) -> fly_export::bytes { \
+        auto buf = CMMakeShared<FlyBuffer>(); \
+        auto& fly_buf_ref_ = *buf; \
+        FLY_ENCODE_TO_BUFFER(obj, fly_buf_ref_); \
+        return fly_export::bytes(buf->data(), buf->size()); \
+    }) \
+    .def("__setstate__", [](Cls& obj, fly_export::bytes state) { \
+        ::new (&obj) Cls(); \
+        const char* data = state.c_str(); \
+        size_t size = state.size(); \
+        if (size >= sizeof(uint32_t)) { \
+            uint32_t fly_magic_; \
+            std::memcpy(&fly_magic_, data, sizeof(uint32_t)); \
+            if (fly_magic_ == FLY_OBJECT_MAGIC) { \
+                DecompressingStreamBuf fly_dsbuf_(data, size); \
+                std::istream fly_is_(&fly_dsbuf_); \
+                FLY_DECODE_FROM_STREAM(fly_is_, Cls, obj); \
+                return; \
+            } \
+        } \
+        std::string s(data, size); \
+        FLY_DECODE(s, Cls, obj); \
     }) \
     .def_prop_ro("is_cpp", [](const Cls&) { return true; })

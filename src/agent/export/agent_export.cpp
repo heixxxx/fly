@@ -197,7 +197,7 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
 // Exported so the Python executor can read master-inlined vars.
 FLY_EXPORT_CLASS(fly::VarPayload, "EXVarPayload")
     FLY_EXPORT_READONLY_ATTR("var_name", &fly::VarPayload::var_name)
-    // value holds arbitrary serialized bytes (pickle / FLY_ENCODE_TO_BYTES) that may
+    // value holds arbitrary serialized bytes (pickle / FLY_ENCODE_TO_BUFFER) that may
     // not be valid UTF-8; expose as raw bytes, not str.
     FLY_EXPORT_READONLY_PROPERTY("value",
         [](const fly::VarPayload& vp) -> fly_export::bytes {

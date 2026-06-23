@@ -11,6 +11,7 @@
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/decompress_helper.h>
 #include <storage/cpp/decompressing_streambuf.h>
+#include <storage/cpp/fly_stream.h>
 #include <common/cpp/write_context_hash.h>
 #include <common/cpp/error_types.h>
 #include <nanobind/operators.h>
@@ -73,6 +74,40 @@ FLY_EXPORT_CLASS(FlyBuffer, "FlyBuffer")
     FLY_EXPORT_DEF("seek", [](FlyBuffer& buf, int64_t p) { buf.seek(static_cast<size_t>(p)); })
     FLY_EXPORT_READONLY_PROPERTY("size", &FlyBuffer::size)
     FLY_EXPORT_READONLY_PROPERTY("pos", &FlyBuffer::pos);
+
+// FlyStream
+FLY_EXPORT_CLASS(FlyStream, "FlyStream")
+    FLY_EXPORT_INIT(CompressionType, int64_t, const CMString&)
+    FLY_EXPORT_INIT(CompressionType, int64_t)
+    FLY_EXPORT_INIT(FlyBufferPtr)
+    FLY_EXPORT_DEF("write", [](FlyStream& s, fly_export::bytes data) {
+        s.write(data.c_str(), data.size());
+    })
+    FLY_EXPORT_DEF("flush", [](FlyStream& s) { s.flush(); })
+    FLY_EXPORT_DEF("finish", [](FlyStream& s) -> FlyBufferPtr { return s.finish_write(); })
+    FLY_EXPORT_DEF("read", [](FlyStream& s, int64_t n) -> fly_export::bytes {
+        CMString d = (n < 0) ? s.read_all() : s.read(static_cast<size_t>(n));
+        return fly_export::bytes(d.data(), d.size());
+    })
+    FLY_EXPORT_DEF("readline", [](FlyStream& s) -> fly_export::bytes {
+        CMString d = s.readline();
+        return fly_export::bytes(d.data(), d.size());
+    })
+    FLY_EXPORT_DEF("readinto", [](FlyStream& s, fly_export::object b) -> int64_t {
+        Py_buffer view;
+        if (PyObject_GetBuffer(b.ptr(), &view, PyBUF_WRITABLE) < 0) {
+            PyErr_Clear();
+            if (PyObject_GetBuffer(b.ptr(), &view, PyBUF_SIMPLE) < 0)
+                throw fly_export::type_error("readinto() expects a buffer");
+        }
+        auto n = static_cast<int64_t>(s.readinto(static_cast<char*>(view.buf), static_cast<size_t>(view.len)));
+        PyBuffer_Release(&view);
+        return n;
+    })
+    FLY_EXPORT_DEF("writable", [](const FlyStream& s) { return s.is_write_mode(); })
+    FLY_EXPORT_DEF("readable", [](const FlyStream& s) { return !s.is_write_mode(); })
+    FLY_EXPORT_READONLY_PROPERTY("total_uncompressed", &FlyStream::total_uncompressed)
+    FLY_EXPORT_READONLY_PROPERTY("chunk_count", &FlyStream::chunk_count);
 
 FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     // Zero-copy write: access Python bytes directly without copying
@@ -229,6 +264,15 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
                                                         static_cast<int64_t>(data.size()),
                                                         py_name);
         return fly_export::bytes(compressed.data(), compressed.size());
+    })
+    FLY_EXPORT_DEF("_commit_stream", [](Database& db, const CMString& name,
+                                         FlyBufferPtr buf, const CMString& py_name,
+                                         bool backup) -> int {
+        return static_cast<int>(db.commit_stream(name, buf, py_name, backup));
+    })
+    FLY_EXPORT_DEF("_commit_stream", [](Database& db, const CMString& name,
+                                         FlyBufferPtr buf, const CMString& py_name) -> int {
+        return static_cast<int>(db.commit_stream(name, buf, py_name, false));
     })
     FLY_EXPORT_DEF("write_object_raw", [](Database& db, const CMString& name, const CMString& data, bool backup) -> int {
         return static_cast<int>(db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup));

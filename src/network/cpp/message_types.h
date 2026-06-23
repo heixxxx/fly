@@ -143,7 +143,7 @@ struct DataLocation {
 
 // A var name/value pair inlined into TaskAssignMessage, so workers receive declared
 // vars in one shot (no extra round-trip to master). value is serialized bytes
-// (pickle for Python objects, FLY_ENCODE_TO_BYTES for C++ exported objects);
+// (pickle for Python objects, FLY_ENCODE_TO_BUFFER for C++ exported objects);
 // type_name carries the Python type name for deserialization dispatch.
 struct VarPayload {
     CMString var_name;
@@ -417,7 +417,7 @@ struct BackupCompleteMessage {
 // =============================================================================
 // Var service messages — lightweight small-object KV bypassing write_object's
 // compression / cache / WriteBackQueue / dependency-graph machinery.
-// value_ carries already-serialized bytes (pickle or FLY_ENCODE_TO_BYTES).
+// value_ carries already-serialized bytes (pickle or FLY_ENCODE_TO_BUFFER).
 // =============================================================================
 
 // worker → master: set var (synchronous, awaits VAR_ACK).

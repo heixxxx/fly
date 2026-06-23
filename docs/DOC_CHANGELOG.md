@@ -1,6 +1,32 @@
 # 文档变更记录
 
 ---
+---
+
+## 2026-06-23: FlyStream C++ 基础设施 + __getstate__/__setstate__ + 宏重命名
+
+### FlyStream — 流式序列化+压缩容器（C++ 基础设施）
+
+新增 `FlyStream` 类（`src/storage/cpp/fly_stream.h`），流式序列化+压缩容器。
+已导出到 Python（`_fly_storage.FlyStream`），但 database.py 暂未集成
+（worker 模式 DataService remove 死锁问题待排查）。
+
+### FLY_EXPORT_SERIALIZE 宏更新
+
+补回标准 pickle 协议 `__getstate__` / `__setstate__`，支持 C++ 对象放入
+Python 容器（list/dict/nested）。与 `__getstate_buffer__` /
+`__setstate_from_buffer__`（零拷贝路径）共存。
+
+### 序列化宏重命名
+
+- `FLY_ENCODE_TO_BYTES` → `FLY_ENCODE_TO_BUFFER`（原名误导）
+- `FLY_DECODE_FROM_BYTES` → `FLY_DECODE_FROM_BUFFER`
+
+### stress_stability 测试修复
+
+- 根因：`kMaxCompletedTasks=100` 限制 completed bucket，测试 150 task 超限
+- 修复：减小测试规模到 90 task（60 writes + 30 sums）
+
 
 ## 2026-06-22: var 小数据存储服务 + get_obj_name→get_full_name 重命名
 
@@ -467,7 +493,7 @@ nanobind: `FLY_EXPORT_SERIALIZE` 加 `_read_from_db`（对称 `_write_to_db`）�
 - `fly_buffer_stream.h`（新建）: FlyBufferStreamBuf（streambuf→FlyBuffer）+ CountingStreamBuf（字节计数）
 - `data_writer.h/cpp`: 新增 `compress_to_buffer`（流式管线：FlyBufferStreamBuf→CompressingStreamBuf→FlyBuffer）和 `write_record`（仅 file_stream_.write + index 更新）
 - `database.h/cpp`: write_object 模板改为调用线程 serialize+compress → WBQ 仅 write_record；新增 write_object_raw_ptr 接受裸指针
-- `export_macros.h`: `__getstate_buffer__` 改用 FLY_ENCODE_TO_BYTES 直接写入 FlyBuffer
+- `export_macros.h`: `__getstate_buffer__` 改用 FLY_ENCODE_TO_BUFFER 直接写入 FlyBuffer
 - `storage_export.cpp`: 新增 `_write_pickle_bytes`（Python bytes 裸指针直接进 compress_to_buffer）和 `_write_raw_ptr`
 - `database.py`: Python pickle 路径改用 pickle.dumps + _write_pickle_bytes
 - `data_reader.cpp`: 读取路径 `FlySerBuf(str.begin(), str.end())` 改为 `take(std::move(str))` 零拷贝

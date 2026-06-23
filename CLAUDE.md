@@ -198,7 +198,7 @@ Agent 禁止直接调用 bitsery/nanobind 原始 API，必须通过以下宏。
 ### 序列化
 
 FlyBuffer 是统一字节缓冲区（内部存储为 CMString），兼容 bitsery adapter 和 Python pickle：
-- `FLY_ENCODE_TO_BYTES` 直接写入 FlyBuffer（零拷贝）
+- `FLY_ENCODE_TO_BUFFER` 直接写入 FlyBuffer（零拷贝）
 - `FlyBufferStreamBuf` 将 `std::streambuf` 桥接到 FlyBuffer（流式管线）
 - `FlySerBuf` 是 FlyBuffer 的别名，用于 bitsery 内部
 
@@ -209,8 +209,8 @@ FLY_SERIALIZE(field1, field2);
 // 编码/解码
 FLY_ENCODE(struct_obj, output_string);
 FLY_DECODE(input_string, StructType, output_obj);
-FLY_ENCODE_TO_BYTES(obj, output_buffer);    // → FlyBuffer
-FLY_DECODE_FROM_BYTES(buffer, StructType, output_obj);
+FLY_ENCODE_TO_BUFFER(obj, output_buffer);    // → FlyBuffer
+FLY_DECODE_FROM_BUFFER(buffer, StructType, output_obj);
 ```
 
 ### 日志

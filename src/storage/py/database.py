@@ -33,11 +33,21 @@ class _Database:
 
         # write_object / _write_pickle_bytes return a WriteErrorType int (OK=success).
         # DUPLICATE_SKIPPED is benign (same object already written) — not raised.
+        py_name = type(obj).__name__
         if hasattr(obj, "_write_to_db"):
-            err = EXStgWriteErrorType(obj._write_to_db(self._db, name, type(obj).__name__, backup))
+            err = EXStgWriteErrorType(obj._write_to_db(self._db, name, py_name, backup))
         else:
-            data = pickle.dumps(obj)
-            err = EXStgWriteErrorType(self._db._write_pickle_bytes(name, data, type(obj).__name__, backup))
+            from _fly_storage import FlyStream, EXStgCompressionType
+            from core import get_config as _gc
+            _cfg = _gc()
+            _cm = {"none": EXStgCompressionType.NONE, "lz4": EXStgCompressionType.LZ4,
+                   "zlib": EXStgCompressionType.ZLIB, "zstd": EXStgCompressionType.ZSTD}
+            stream = FlyStream(_cm.get(_cfg.get_str("compression_type"), EXStgCompressionType.LZ4),
+                               _cfg.get_int("serialize_chunk_size"), py_name)
+            pickle.dump(obj, stream)
+            stream.flush()
+            buf = stream.finish()
+            err = EXStgWriteErrorType(self._db._commit_stream(name, buf, py_name, backup))
 
         if err != EXStgWriteErrorType.OK and err != EXStgWriteErrorType.DUPLICATE_SKIPPED:
             msg = self._WRITE_ERROR_MESSAGES.get(err, f"Write error (type={err})")
@@ -151,7 +161,7 @@ class _Database:
         type_name = type(value).__name__
         if hasattr(value, '__getstate_buffer__'):
             # C++ exported object: zero-copy. __getstate_buffer__ returns a
-            # FlyBufferPtr (FLY_ENCODE_TO_BYTES, non-streaming) that is stored
+            # FlyBufferPtr (FLY_ENCODE_TO_BUFFER, non-streaming) that is stored
             # directly via shared ownership.
             buf = value.__getstate_buffer__()
             ok = self._db._set_var_buffer(name, buf, type_name)
