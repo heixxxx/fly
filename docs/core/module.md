@@ -68,8 +68,8 @@ private:
 | `track_writes` | 0 | 是否启用写入跟踪（0=关闭, 1=开启） |
 | `data_server_threads` | 1 | 数据传输线程池大小 |
 | `compression_level` | 0 | 压缩级别 |
-| `compression_threshold` | 128 | 压缩阈值（字节） |
-| `compression_stream_chunk_size` | 4194304 | 压缩流块大小（4MB） |
+| `compression_threshold` | 4096 | 跳过压缩阈值（字节）。payload ≤ 此值时直接 passthrough 存储，避免小对象的压缩/解压开销。仅在阈值 < `serialize_chunk_size` 时生效 |
+| `serialize_chunk_size` | 4194304 | 压缩流块大小（4MB） |
 | `dependency_update_mode` | 0 | 依赖更新模式 |
 | `interactive` | 0 | 交互模式（0=关闭, 1=开启） |
 | `cli_master_port` | 0 | CLI 指定的 Master 端口 |

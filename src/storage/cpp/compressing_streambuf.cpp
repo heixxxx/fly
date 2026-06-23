@@ -3,10 +3,12 @@
 
 CompressingStreamBuf::CompressingStreamBuf(std::ostream& dest,
                                            CMUniquePtr<Compressor> compressor,
-                                           int64_t chunk_size)
+                                           int64_t chunk_size,
+                                           int64_t compression_threshold)
     : dest_(dest)
     , compressor_(std::move(compressor))
-    , chunk_size_(chunk_size) {
+    , chunk_size_(chunk_size)
+    , compression_threshold_(compression_threshold) {
     buffer_.reserve(static_cast<size_t>(chunk_size));
 }
 
@@ -58,10 +60,30 @@ void CompressingStreamBuf::flush_chunk() {
 
     total_uncompressed_ += static_cast<int64_t>(buffer_.size());
 
+    // Small-object fast path: if a compressor is configured but the buffered
+    // payload is at or below the threshold, skip compression entirely and write
+    // the bytes raw. The decision is made on the first chunk.
+    //
+    // Safety constraint: skip is only allowed when compression_threshold_ <
+    // chunk_size_. Proof: an under-full buffer (size < chunk_size_) is always
+    // the final chunk, so if the *first* chunk is under-full (size <= threshold
+    // < chunk_size_) the whole payload fit in one chunk — no mixing of raw and
+    // compressed chunks. Without this guard (threshold >= chunk_size), the
+    // first full chunk (size == chunk_size <= threshold) would be written raw
+    // while any following chunks would compress, producing a mixed-format
+    // record that the read-side cannot decode. Sets skipped_ so callers can
+    // correct the ObjectHeader.compression_type_ to NONE for read-back.
+    bool skip = compressor_ && chunk_count_ == 0 &&
+                compression_threshold_ < chunk_size_ &&
+                static_cast<int64_t>(buffer_.size()) <= compression_threshold_;
+    if (skip) {
+        skipped_ = true;
+    }
+
     // Zero-copy: use string_view to avoid constructing CMString
     std::string_view input(buffer_.data(), buffer_.size());
 
-    if (compressor_) {
+    if (compressor_ && !skip) {
         CompressedChunk chunk = compressor_->compress(input);
 
         int32_t uncomp_size = chunk.uncompressed_size_;

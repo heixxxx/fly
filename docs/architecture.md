@@ -245,7 +245,7 @@ read_object 经两层 LRU 缓存加速，进程级单例：
 - 命中统计：`ObjectCache::Stats` 提供 per-tier hits/misses/puts/evictions 计数
 
 **写入流程**：
-1. 调用线程序列化 + 压缩（`compress_to_buffer` 流式管线）
+1. 调用线程序列化 + 压缩（`compress_to_buffer` 流式管线）。小对象优化：payload ≤ `compression_threshold`（默认 4KB）时跳过压缩走 raw passthrough，header 记 NONE，读取端透明处理
 2. WBQ 后台线程仅执行 `write_record` 磁盘写入
 3. `write_object` 开始时即触发依赖满足（无需等异步落盘完成）
 

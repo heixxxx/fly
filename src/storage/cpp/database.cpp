@@ -53,6 +53,7 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
     compression_type_ = CompressorFactory::type_from_name(comp_type_str);
     compression_level_ = static_cast<int>(config->get_int("compression_level"));
     serialize_chunk_size_ = config->get_int("serialize_chunk_size");
+    compression_threshold_ = config->get_int("compression_threshold");
 
     writer_ = CMMakeUnique<DataWriter>(
         base_path_, data_path_, writer_id_,
@@ -93,12 +94,15 @@ Database::CompressResult Database::compress_buffered_data(
         auto compressor = compression_type_ != CompressionType::NONE
             ? CompressorFactory::create(compression_type_) : nullptr;
         CompressingStreamBuf csbuf(counting_stream, std::move(compressor),
-                                    serialize_chunk_size_);
+                                    serialize_chunk_size_, compression_threshold_);
         std::ostream os(&csbuf);
         os.write(data, static_cast<std::streamsize>(data_size));
         os.flush();
         total_uncompressed = csbuf.total_uncompressed();
         chunk_count = csbuf.chunk_count();
+        // Small payloads skip compression internally; record the actual format
+        // so the read-side picks the matching (de)compressor path.
+        header.compression_type_ = static_cast<uint8_t>(csbuf.effective_compression_type());
     }
     counting_stream.flush();
 

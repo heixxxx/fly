@@ -173,6 +173,9 @@ private:
     CompressionType compression_type_ = CompressionType::NONE;
     int compression_level_ = 0;
     int64_t serialize_chunk_size_ = 4194304;
+    // Payloads at or below this size skip compression (raw passthrough). Read
+    // from config "compression_threshold" (default 4096).
+    int64_t compression_threshold_ = 4096;
 
     CMUniquePtr<DataWriter> writer_;
     CMUniquePtr<DataReader> reader_;
@@ -216,12 +219,15 @@ fly::WriteErrorType Database::write_object(const CMString& object_name, const T&
         auto compressor = compression_type_ != CompressionType::NONE
             ? CompressorFactory::create(compression_type_) : nullptr;
         CompressingStreamBuf csbuf(counting_stream, std::move(compressor),
-                                    serialize_chunk_size_);
+                                    serialize_chunk_size_, compression_threshold_);
         std::ostream os(&csbuf);
         obj.fly_serialize(os);
         os.flush();
         total_uncompressed = csbuf.total_uncompressed();
         chunk_count = csbuf.chunk_count();
+        // Small payloads skip compression internally; record the actual format
+        // so the read-side picks the matching (de)compressor path.
+        header.compression_type_ = static_cast<uint8_t>(csbuf.effective_compression_type());
     }
     counting_stream.flush();
 

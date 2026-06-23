@@ -1,7 +1,8 @@
 #include <storage/cpp/fly_stream.h>
 #include <cstring>
 
-FlyStream::FlyStream(CompressionType comp_type, int64_t chunk_size, const CMString& py_name)
+FlyStream::FlyStream(CompressionType comp_type, int64_t chunk_size, const CMString& py_name,
+                     int64_t compression_threshold)
     : is_write_mode_(true), py_name_(py_name) {
     write_buf_ = CMMakeShared<FlyBuffer>();
     fly_buf_sb_ = CMMakeUnique<FlyBufferStreamBuf>(*write_buf_);
@@ -14,7 +15,8 @@ FlyStream::FlyStream(CompressionType comp_type, int64_t chunk_size, const CMStri
     CMString hdr = header.serialize();
     counting_os_->write(hdr.data(), static_cast<std::streamsize>(hdr.size()));
     auto comp = comp_type != CompressionType::NONE ? CompressorFactory::create(comp_type) : nullptr;
-    compress_sb_ = CMMakeUnique<CompressingStreamBuf>(*counting_os_, std::move(comp), chunk_size);
+    compress_sb_ = CMMakeUnique<CompressingStreamBuf>(*counting_os_, std::move(comp),
+                                                      chunk_size, compression_threshold);
     compress_os_ = CMMakeUnique<std::ostream>(compress_sb_.get());
 }
 
@@ -35,7 +37,9 @@ void FlyStream::flush() { compress_os_->flush(); }
 FlyBufferPtr FlyStream::finish_write() {
     compress_os_->flush();
     ObjectHeader header;
-    header.compression_type_ = static_cast<uint8_t>(compress_sb_->compression_type());
+    // Small payloads skip compression inside CompressingStreamBuf; record the
+    // actual on-disk format so the read-side picks the matching path.
+    header.compression_type_ = static_cast<uint8_t>(compress_sb_->effective_compression_type());
     header.total_size_ = static_cast<uint64_t>(compress_sb_->total_uncompressed());
     header.chunk_count_ = static_cast<uint32_t>(compress_sb_->chunk_count());
     header.py_name_ = py_name_;

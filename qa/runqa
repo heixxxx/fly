@@ -6,6 +6,17 @@ Runs each test_*.py as a fly subprocess.
   - log directory: {test_dir}/{test_name}/ (cleaned before each run)
   - Fly's output → {test_dir}/{test_name}/fly.log
   - Runner's output → terminal + qa.log
+
+Selecting which tests to run (zero, one, or many positional args):
+  runqa                        # all test_*.py under qa/ (recursive)
+  runqa qa/storage             # a directory → every test_*.py under it
+  runqa qa/storage/test_x.py   # a single file
+  runqa qa/storage qa/var      # multiple directories/files at once
+  runqa qa/solver/test_gold*.py  # shell-globbed files also accepted
+
+A directory is scanned recursively for test_*.py; an explicit .py file is run
+as-is regardless of its name. Non-existent paths are rejected up front instead
+of being passed to fly and failing with an opaque error.
 """
 import subprocess
 import sys
@@ -36,6 +47,32 @@ def log(msg=""):
 
 def find_tests():
     return sorted(glob.glob(os.path.join(SCRIPT_DIR, "**", "test_*.py"), recursive=True))
+
+
+def collect_tests(paths):
+    """Resolve positional args into a sorted, de-duplicated list of test files.
+
+    Each path may be:
+      - a .py file   → included as-is (name need not match test_*.py)
+      - a directory  → every test_*.py under it, recursively
+    Non-existent paths abort with a clear error so the caller never hands fly
+    a bad path (which would surface as IsADirectoryError / FileNotFoundError
+    from deep inside the runner).
+    """
+    collected = set()
+    for p in paths:
+        ap = os.path.abspath(p)
+        if os.path.isdir(ap):
+            hits = glob.glob(os.path.join(ap, "**", "test_*.py"), recursive=True)
+            if not hits:
+                log(f"Warning: no test_*.py found under {p!r}")
+            collected.update(hits)
+        elif os.path.isfile(ap):
+            collected.add(ap)
+        else:
+            log(f"Error: path does not exist: {p!r}")
+            sys.exit(2)
+    return sorted(collected)
 
 
 def run_one(test_path, timeout=20):
@@ -157,8 +194,14 @@ def run_one(test_path, timeout=20):
 def main():
     global _log_file
 
-    parser = argparse.ArgumentParser(description="Fly QA Test Runner")
-    parser.add_argument("test_file", nargs="?", help="Run a single test file")
+    parser = argparse.ArgumentParser(
+        description="Fly QA Test Runner",
+        epilog="With no arguments, runs every test_*.py under qa/. A directory "
+               "argument is scanned recursively for test_*.py.",
+    )
+    parser.add_argument("paths", nargs="*",
+                        help="Test files and/or directories to run "
+                             "(default: all test_*.py under qa/)")
     parser.add_argument("-j", type=int, default=0,
                         help="Max parallel tests (0=unlimited, default=0)")
     parser.add_argument("-t", "--timeout", type=int, default=20,
@@ -176,10 +219,7 @@ def main():
             cwd=PROJECT_ROOT, check=True,
         )
 
-    if args.test_file:
-        tests = [args.test_file]
-    else:
-        tests = find_tests()
+    tests = collect_tests(args.paths) if args.paths else find_tests()
 
     # Clean and create qa log directory
     qa_log_dir = os.path.join(SCRIPT_DIR, "logs")

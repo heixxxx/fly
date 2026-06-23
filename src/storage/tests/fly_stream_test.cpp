@@ -28,3 +28,44 @@ TEST(FlyStreamBasicTest, MultipleWrites) {
     FlyStream r(buf); auto rec = r.read(12);
     EXPECT_EQ(std::string(rec.data(), 12), "AAAABBBBCCCC");
 }
+
+// A small payload written through an LZ4 FlyStream skips compression: the
+// recorded header.compression_type_ becomes NONE, and reading it back via
+// FlyStream still roundtrips correctly (read-side transparently handles NONE).
+TEST(FlyStreamBasicTest, SmallPayloadSkipsCompression) {
+    std::string payload = "hello small world";  // 17 bytes < default 4096 threshold
+    FlyStream w(CompressionType::LZ4, 4194304, "SmallObj");
+    w.write(payload.data(), payload.size());
+    w.flush();
+    auto buf = w.finish_write();
+    ASSERT_NE(buf, nullptr);
+
+    // Header.compression_type_ must reflect the actual (skipped) format.
+    int64_t off = 0;
+    auto hdr = ObjectHeader::deserialize({buf->data(), buf->size()}, off);
+    EXPECT_EQ(static_cast<CompressionType>(hdr.compression_type_), CompressionType::NONE);
+    EXPECT_EQ(hdr.py_name_, "SmallObj");
+
+    // Read back via FlyStream: NONE path still returns the original bytes.
+    FlyStream r(buf);
+    CMString recovered = r.read(payload.size());
+    EXPECT_EQ(std::string(recovered.data(), recovered.size()), payload);
+}
+
+// A large payload through an LZ4 FlyStream is actually compressed, so the
+// header keeps compression_type_ = LZ4.
+TEST(FlyStreamBasicTest, LargePayloadStillCompresses) {
+    std::string payload(10000, 'X');
+    FlyStream w(CompressionType::LZ4, 4194304, "BigObj");
+    w.write(payload.data(), payload.size());
+    w.flush();
+    auto buf = w.finish_write();
+
+    int64_t off = 0;
+    auto hdr = ObjectHeader::deserialize({buf->data(), buf->size()}, off);
+    EXPECT_EQ(static_cast<CompressionType>(hdr.compression_type_), CompressionType::LZ4);
+
+    FlyStream r(buf);
+    CMString recovered = r.read(payload.size());
+    EXPECT_EQ(std::string(recovered.data(), recovered.size()), payload);
+}

@@ -11,7 +11,11 @@
 
 class FlyStream {
 public:
-    FlyStream(CompressionType comp_type, int64_t chunk_size, const CMString& py_name = {});
+    // compression_threshold: payloads at or below this size skip compression.
+    // Defaults to 4096 to match Database; pass 0 to force compression of every
+    // payload.
+    FlyStream(CompressionType comp_type, int64_t chunk_size, const CMString& py_name = {},
+              int64_t compression_threshold = 4096);
     explicit FlyStream(FlyBufferPtr data);
     ~FlyStream();
     FlyStream(const FlyStream&) = delete;

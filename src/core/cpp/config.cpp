@@ -104,6 +104,7 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"data_server_threads", 4},
     {"compression_level", 0},
     {"serialize_chunk_size", 4194304},
+    {"compression_threshold", 4096},  // skip compression for payloads <= this size
     {"dependency_update_mode", 0},
     {"fail_unscheduleable_tasks", 1},
     {"read_cache_size", 1073741824},
