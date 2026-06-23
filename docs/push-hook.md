@@ -14,9 +14,15 @@ git `pre-push` hook：在每次 `git push` 前自动执行完整校验流水线�
 
 ## 安装
 
-hook 位于 `.git/hooks/pre-push`（已可执行）。git 会自动发现 `.git/hooks/` 下的 hook，无需额外配置。
+hook 源文件纳入版本控制于 `scripts/pre-push`（带可执行权限位）。本地通过符号链接激活：
 
-> 注：`.git/` 不在版本控制内，所以此 hook 仅对当前本地仓库生效。新 clone 的仓库需另行安装（见末尾"在新环境安装"）。
+```bash
+ln -sf ../../scripts/pre-push .git/hooks/pre-push
+```
+
+git 会自动发现 `.git/hooks/` 下的 hook，无需额外配置。
+
+> hook 内容和权限位随 `scripts/pre-push` 同步到远端，编辑后提交即对所有环境生效。
 
 ## 绕过
 
@@ -55,19 +61,17 @@ hook 位于 `.git/hooks/pre-push`（已可执行）。git 会自动发现 `.git/
 
 ## 在新环境安装
 
-在新 clone 的仓库中：
+hook 脚本已纳入版本控制（`scripts/pre-push`，带可执行权限位），新 clone 的仓库只需创建一个符号链接指向它：
 
 ```bash
-# 从已有仓库复制（或按本文档重写）
-cat > .git/hooks/pre-push <<'EOF'
-# …同本仓库 .git/hooks/pre-push 内容…
-EOF
+ln -sf ../../scripts/pre-push .git/hooks/pre-push
+```
+
+或直接拷贝（保留权限）：
+
+```bash
+cp scripts/pre-push .git/hooks/pre-push
 chmod +x .git/hooks/pre-push
 ```
 
-或从原仓库直接拷贝：
-
-```bash
-cp /path/to/origin/fly/.git/hooks/pre-push .git/hooks/pre-push
-chmod +x .git/hooks/pre-push
-```
+> 将 hook 纳入版本控制确保了脚本内容和权限位（100755）随仓库同步，避免 `.git/hooks/` 不被 git 跟踪导致的权限丢失问题。修改 hook 时直接编辑 `scripts/pre-push`，提交后所有环境一致。

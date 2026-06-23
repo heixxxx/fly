@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+#
+# pre-push hook: 在 git push 前自动执行 build -> unit test -> QA test。
+# 仅当三步全部通过、零失败时才放行 push。
+#
+# 流程：
+#   1. BUILD      -> ./fly.sh build           (bazel build + clangd 刷新)
+#   2. UNIT TEST  -> ./fly.sh test            (bazel test //src/...)
+#   3. QA TEST    -> ./fly.sh install && ./qa/runqa -j 4   (全量 QA)
+#
+# 任一阶段失败即 exit 1，阻止 push。
+#
+# 禁止以 git push --no-verify 绕过 —— 见 docs/push-hook.md。
+#
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# 消费 git 喂入的 stdin (本 hook 不依赖其内容，但保持读取语义完整)。
+cat >/dev/null
+
+# --- 计时与横幅 ------------------------------------------------------------------
+fmt_duration() {
+    # $1=开始秒 $2=结束秒 -> 打印 "Xs"
+    local d=$(( $2 - $1 ))
+    printf '%ds' "$d"
+}
+
+# 失败时通过 trap 输出统一阻断横幅。BLOCK_STAGE 由各阶段在进入时设置。
+BLOCK_STAGE=""
+on_error() {
+    local exit_code=$?
+    echo
+    echo "============================== PUSH BLOCKED =============================="
+    echo "  阶段 [${BLOCK_STAGE:-unknown}] 失败 (exit $exit_code)，push 已阻止。"
+    echo "  请修复失败根因后重试。禁止使用 git push --no-verify 绕过。"
+    echo "=========================================================================="
+    exit "$exit_code"
+}
+trap on_error ERR
+
+# --- 阶段执行 --------------------------------------------------------------------
+echo "============================== pre-push gate =============================="
+echo "  仓库: $REPO_ROOT"
+echo "  即将执行 build -> unit test -> QA test，全部通过才放行 push。"
+echo "=========================================================================="
+
+# [1/3] BUILD
+BLOCK_STAGE="1/3 BUILD"
+BUILD_START=$(date +%s)
+echo
+echo "=== [1/3] BUILD ==="
+./fly.sh build
+BUILD_END=$(date +%s)
+echo "=== [1/3] BUILD OK ($(fmt_duration "$BUILD_START" "$BUILD_END")) ==="
+
+# [2/3] UNIT TEST
+BLOCK_STAGE="2/3 UNIT TEST"
+TEST_START=$(date +%s)
+echo
+echo "=== [2/3] UNIT TEST ==="
+./fly.sh test
+TEST_END=$(date +%s)
+echo "=== [2/3] UNIT TEST OK ($(fmt_duration "$TEST_START" "$TEST_END")) ==="
+
+# [3/3] QA TEST (runqa 依赖 build/bin/fly，需先 install)
+BLOCK_STAGE="3/3 QA TEST"
+QA_START=$(date +%s)
+echo
+echo "=== [3/3] QA TEST ==="
+echo "--- refresh build/bin/fly (runqa 依赖) ---"
+./fly.sh install
+echo "--- runqa -j 4 -t 25 (全量 QA) ---"
+./qa/runqa -j 4 -t 25
+QA_END=$(date +%s)
+echo "=== [3/3] QA TEST OK ($(fmt_duration "$QA_START" "$QA_END")) ==="
+
+# --- 放行 -----------------------------------------------------------------------
+trap - ERR
+echo
+echo "============================== PUSH ALLOWED =============================="
+echo "  build + unit test + QA test 全部通过，放行 push。"
+echo "=========================================================================="
+exit 0
