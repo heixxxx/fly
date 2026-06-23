@@ -23,7 +23,6 @@ import sys
 import os
 import time
 import argparse
-import glob
 import signal
 import shutil
 import threading
@@ -46,7 +45,23 @@ def log(msg=""):
 
 
 def find_tests():
-    return sorted(glob.glob(os.path.join(SCRIPT_DIR, "**", "test_*.py"), recursive=True))
+    """Discover every test_*.py under qa/, returning canonical real paths.
+
+    Uses os.walk(followlinks=False) instead of glob('**') because glob's '**'
+    follows symlinked directories — a '{dir}.latest -> {dir}' symlink (fly's
+    standard log-dir artifact) would make every test under {dir} appear twice,
+    once per path, breaking de-duplication and causing parallel DB-path
+    collisions. We also skip fly's log artifacts ('.latest', '*.N', 'logs')
+    so only real test sources are collected.
+    """
+    tests = set()
+    for root, dirs, files in os.walk(SCRIPT_DIR, followlinks=False):
+        # Skip log-residue entries in-place so os.walk doesn't descend into them.
+        dirs[:] = [d for d in dirs if not _is_log_artifact(d)]
+        for f in files:
+            if f.startswith("test_") and f.endswith(".py"):
+                tests.add(os.path.realpath(os.path.join(root, f)))
+    return sorted(tests)
 
 
 def collect_tests(paths):
@@ -54,25 +69,60 @@ def collect_tests(paths):
 
     Each path may be:
       - a .py file   → included as-is (name need not match test_*.py)
-      - a directory  → every test_*.py under it, recursively
-    Non-existent paths abort with a clear error so the caller never hands fly
-    a bad path (which would surface as IsADirectoryError / FileNotFoundError
-    from deep inside the runner).
+      - a directory  → every test_*.py under it, recursively (no symlink follow)
+    Every result is canonicalised with realpath so that the SAME test reached
+    via different routes (e.g. qa/storage vs the qa/storage.latest symlink, or
+    an explicit file that also lives under a given directory) collapses to one
+    entry. This guarantees run_one always sees an identical test_dir/log_dir
+    for a given case, regardless of how it was requested — so the run
+    environment never varies with the input path.
+    Non-existent paths abort with a clear error instead of being passed to fly.
     """
     collected = set()
     for p in paths:
         ap = os.path.abspath(p)
-        if os.path.isdir(ap):
-            hits = glob.glob(os.path.join(ap, "**", "test_*.py"), recursive=True)
+        # Resolve symlinks on the INPUT itself first, so a directory given via
+        # its .latest symlink is treated as the real directory.
+        rp = os.path.realpath(ap)
+        if os.path.isdir(rp):
+            hits = set()
+            for root, dirs, files in os.walk(rp, followlinks=False):
+                dirs[:] = [d for d in dirs if not _is_log_artifact(d)]
+                for f in files:
+                    if f.startswith("test_") and f.endswith(".py"):
+                        hits.add(os.path.realpath(os.path.join(root, f)))
             if not hits:
                 log(f"Warning: no test_*.py found under {p!r}")
             collected.update(hits)
-        elif os.path.isfile(ap):
-            collected.add(ap)
+        elif os.path.isfile(rp):
+            collected.add(rp)
         else:
             log(f"Error: path does not exist: {p!r}")
             sys.exit(2)
     return sorted(collected)
+
+
+def _is_log_artifact(name):
+    """True for fly's per-test log residues that must never be scanned.
+
+    - '{stem}.latest'  : symlink to the active log dir (fly's resolve_log_dir)
+    - '{stem}.N'       : rotated historical log dirs (case.1, case.2, ...)
+    - 'logs'           : multi-phase helper log tree
+    - hidden dotfiles  : editor/OS cruft
+    """
+    if name.startswith("."):
+        return True
+    if name == "logs":
+        return True
+    if name.endswith(".latest"):
+        return True
+    # {stem}.N rotated dirs: suffix is all digits after the last dot, and there
+    # is a stem before it (avoid treating 'foo.py' as an artifact).
+    if "." in name:
+        stem, _, suffix = name.rpartition(".")
+        if stem and suffix.isdigit():
+            return True
+    return False
 
 
 def run_one(test_path, timeout=20):

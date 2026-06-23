@@ -57,6 +57,8 @@
 # QA 测试（需先构建）
 ./fly.sh build //src/main/cpp:fly
 ./qa/runqa -j 4 -t 40
+./qa/runqa -j 4 qa/storage        # 只跑某目录
+./qa/runqa qa/storage/test_x.py   # 只跑单个 case
 ```
 
 ### QA 测试与 test 模块
@@ -71,7 +73,7 @@ QA 测试按模块分类在 `qa/<category>/` 子目录下（api/backup/dependenc
 2. **若需新任务**：在 `e2e_tasks.py` 中添加，遵循现有命名风格（动词_名词，如 `write_data`）
 3. **若需新 C++ 测试对象**：在 `src/test/cpp/test_object.h` 添加新类 + `src/test/export/test_export.cpp` 添加导出
 4. **编写 QA 脚本**：在 `qa/<category>/` 目录创建新 `test_<name>.py` 文件，直接 import e2e_tasks 中的任务（无需 sys.path 操作）
-5. **runqa 自动发现**：`test_*.py` 文件自动被 runqa 的 glob 递归发现，无需手动注册
+5. **runqa 自动发现**：`test_*.py` 文件由 runqa 经 `os.walk` 递归发现（跳过 `.latest`/`.N` 日志残留与符号链接目录，避免重复收集），无需手动注册。runqa 也可显式指定目录或单文件：`./qa/runqa qa/storage` 或 `./qa/runqa qa/storage/test_x.py`
 
 **test 模块不是用户可见的框架功能**，它仅为测试提供基础设施，不导出任何公共 API。
 
