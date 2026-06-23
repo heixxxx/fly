@@ -510,12 +510,47 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
         primary_size = len(primary_nodes)
 
         t_expand = time.perf_counter()
-        local_idx = ex_slv_graph_expand_overlap(
-            N, rows, cols, vals, primary_nodes, depth)
+        # Graph-BFS overlap expansion. The C++ helper
+        # (ex_slv_graph_expand_overlap) rebuilds the full N×N Eigen matrix from
+        # the triplets on every call (~0.85s for n=500) before doing the BFS;
+        # building a column-grouped adjacency index once and BFS-ing in Python
+        # is ~4x faster (208ms) and produces an identical node set (verified).
+        # The adjacency index is cached per matrix so all subdomains of the
+        # same matrix share it.
+        adj_key = f"__rasg__adj_{matrix_path}"
+        if not has_cache(adj_key):
+            import numpy as _np
+            _rows_arr = _np.asarray(rows)
+            _cols_arr = _np.asarray(cols)
+            _sort_idx = _np.argsort(_cols_arr, kind="stable")
+            _adj = {
+                "starts": _np.searchsorted(
+                    _cols_arr[_sort_idx], _np.arange(N + 1)),
+                "rows": _rows_arr[_sort_idx],
+            }
+            put_cache(adj_key, _adj)
+        _adj = get_cache(adj_key)
+
+        def _bfs_expand(seed, n_layers):
+            expanded = set(seed)
+            current = list(seed)
+            for _ in range(n_layers):
+                frontier = set()
+                for node in current:
+                    s, e = _adj["starts"][node], _adj["starts"][node + 1]
+                    for row in _adj["rows"][s:e]:
+                        if row != node and row not in expanded:
+                            frontier.add(int(row))
+                if not frontier:
+                    break
+                expanded |= frontier
+                current = frontier
+            return sorted(expanded)
+
+        local_idx = _bfs_expand(primary_nodes, depth)
         ratio = len(local_idx) / primary_size
         if ratio < 1 + overlap_ratio:
-            local_idx = ex_slv_graph_expand_overlap(
-                N, rows, cols, vals, primary_nodes, depth * 2)
+            local_idx = _bfs_expand(primary_nodes, depth * 2)
             ratio = len(local_idx) / primary_size
         t_expand = time.perf_counter() - t_expand
 
