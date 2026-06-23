@@ -227,7 +227,8 @@ def _is_coarse(db):
 
 
 def _compute_deps(db, sd_id, step, neighbor_ids):
-    deps = [db.get_full_name("__rasg__coord")]
+    deps = [db.get_full_name("__rasg__coord"),
+            db.get_full_name(f"__rasg__setup_ready_{sd_id}")]
     if step > 0:
         use_coarse = _is_coarse(db)
         for n in neighbor_ids:
@@ -317,6 +318,9 @@ def ras_graph_coord(db, matrix_path, nsd, overlap_ratio,
         _prebuild_coarse_in_coord(db, n, N, matrix_path)
         _prebuild_coarse_grid(db, nsd)
         INFO("[RASG] Coarse grid pre-build dispatched")
+
+    for sd_id in range(nsd):
+        ras_graph_setup(db, sd_id, nsd, neighbor_ids_all[sd_id])
 
     for sd_id in range(nsd):
         ras_graph_compute(db, sd_id, 0, nsd, neighbor_ids_all[sd_id])
@@ -579,6 +583,132 @@ def _apply_coarse_correction(db, step, nsd):
          f"write={t_write*1000:.0f}ms")
 
 
+# ── Setup (separate task: matrix setup + need_map, decoupled from iteration) ──
+
+@as_task(inputs=lambda db, sd_id, nsd, neighbor_ids:
+         [db.get_full_name("__rasg__coord")],
+         requires=lambda db, sd_id, nsd, neighbor_ids:
+         [f"sd_{sd_id}"])
+def ras_graph_setup(db, sd_id, nsd, neighbor_ids):
+    """Per-subdomain setup: BFS expand, rank-filter extract, build solver.
+    Decoupled from iteration so compute is purely iterative. Pinned to worker
+    sd_{sd_id} (same as compute) to share process-local caches."""
+    import numpy as np
+    from _fly_solver import EXSlvSubdomainSolver
+    from fly import get_cache, put_cache, has_cache
+
+    setup_key = f"__rasg__setup_{sd_id}"
+    if has_cache(setup_key):
+        db.write_object(f"__rasg__setup_ready_{sd_id}", True, save_to_db=False)
+        return
+
+    coord = db.read_object("__rasg__coord")
+    matrix_path = coord["matrix_path"]
+    N = coord["N"]
+    depth = coord["depth"]
+    overlap_ratio = coord["overlap_ratio"]
+    primary_nodes = coord["primary_sets"][sd_id]
+    global_owner = coord["global_owner"]
+    all_primary_sets = coord["primary_sets"]
+
+    data = _get_matrix_data(matrix_path)
+    rows, cols, vals, b = data["rows"], data["cols"], data["vals"], data["b"]
+    primary_size = len(primary_nodes)
+
+    # BFS overlap expansion (cached adjacency index shared across subdomains).
+    adj_key = f"__rasg__adj_{matrix_path}"
+    if not has_cache(adj_key):
+        _ra = np.asarray(rows); _ca = np.asarray(cols)
+        _si = np.argsort(_ca, kind="stable")
+        put_cache(adj_key, {
+            "starts": np.searchsorted(_ca[_si], np.arange(N + 1)),
+            "rows": _ra[_si],
+        })
+    _adj = get_cache(adj_key)
+
+    def _bfs(seed, layers):
+        expanded = set(seed); current = list(seed)
+        for _ in range(layers):
+            frontier = set()
+            for node in current:
+                s, e = _adj["starts"][node], _adj["starts"][node + 1]
+                for row in _adj["rows"][s:e]:
+                    if row != node and row not in expanded:
+                        frontier.add(int(row))
+            if not frontier: break
+            expanded |= frontier; current = frontier
+        return sorted(expanded)
+
+    local_idx = _bfs(primary_nodes, depth)
+    ratio = len(local_idx) / primary_size
+    if ratio < 1 + overlap_ratio:
+        local_idx = _bfs(primary_nodes, depth * 2)
+        ratio = len(local_idx) / primary_size
+
+    local_idx_map = {g: p for p, g in enumerate(local_idx)}
+    primary_local_pos = [local_idx_map[g] for g in primary_nodes]
+
+    # Rank-array filter for subdomain matrix + outside connections.
+    rows_arr = np.asarray(rows); cols_arr = np.asarray(cols); vals_arr = np.asarray(vals)
+    _rank = np.full(N, -1, dtype=np.int32)
+    _rank[local_idx] = np.arange(len(local_idx))
+    row_rank = _rank[rows_arr]; col_rank = _rank[cols_arr]
+    in_local = (row_rank >= 0) & (col_rank >= 0)
+    a_rows = row_rank[in_local]; a_cols = col_rank[in_local]; a_vals = vals_arr[in_local]
+    size = len(local_idx)
+    is_outside = ((col_rank >= 0) & (row_rank < 0) &
+                  (rows_arr != cols_arr) & (vals_arr != 0.0))
+    out_pos = col_rank[is_outside]; out_gidx = rows_arr[is_outside]; out_coeffs = vals_arr[is_outside]
+    b_local = b[local_idx]
+
+    neighbor_needed = {}
+    for i, g in enumerate(out_gidx):
+        owner = global_owner.get(int(g), -1)
+        if owner >= 0 and owner != sd_id:
+            neighbor_needed.setdefault(owner, []).append(i)
+    actual_neighbor_ids = sorted(neighbor_needed.keys())
+
+    neighbor_recv_idx = {}
+    need_map = {}
+    for nb_id in actual_neighbor_ids:
+        nb_pm = {g: p for p, g in enumerate(all_primary_sets[nb_id])}
+        recv_positions = []; need_global = []
+        for ci in neighbor_needed[nb_id]:
+            og = int(out_gidx[ci])
+            recv_positions.append(nb_pm.get(og, -1))
+            need_global.append(og)
+        neighbor_recv_idx[nb_id] = recv_positions
+        need_map[nb_id] = np.array(need_global, dtype=np.int64)
+
+    setup_data = {
+        "sd_id": sd_id,
+        "local_indices": np.array(local_idx, dtype=np.int64),
+        "primary_local_pos": np.array(primary_local_pos, dtype=np.int64),
+        "b_orig": np.array(b_local, dtype=np.float64),
+        "outside_local_pos": np.array(out_pos, dtype=np.int64),
+        "outside_global_idx": np.array(out_gidx, dtype=np.int64),
+        "outside_coeffs": np.array(out_coeffs, dtype=np.float64),
+        "neighbor_ids": actual_neighbor_ids,
+        "neighbor_recv_idx": neighbor_recv_idx,
+        "neighbor_needed": neighbor_needed,
+        "need_map": need_map,
+        "a_rows": np.array(a_rows, dtype=np.int64),
+        "a_cols": np.array(a_cols, dtype=np.int64),
+        "a_vals": np.array(a_vals, dtype=np.float64),
+        "size": size,
+    }
+    put_cache(setup_key, setup_data)
+
+    solver = EXSlvSubdomainSolver.from_coo(
+        size, a_rows.tolist(), a_cols.tolist(), a_vals.tolist())
+    put_cache(f"__rasg__solver_{sd_id}", solver)
+
+    db.write_object(f"__rasg__need_{sd_id}", need_map, save_to_db=False)
+    db.write_object(f"__rasg__setup_ready_{sd_id}", True, save_to_db=False)
+    INFO(f"[RASG SETUP] sd={sd_id} primary={primary_size} "
+         f"extended={len(local_idx)} ratio={ratio:.2f}x neighbors={actual_neighbor_ids}")
+
+
 # ── Compute (dispatched to workers via @as_task) ────────────────
 
 @as_task(inputs=lambda db, sd_id, step, nsd, neighbor_ids:
@@ -604,165 +734,10 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
     global_owner = coord["global_owner"]
     all_primary_sets = coord["primary_sets"]
 
-    # ── Build setup_data (was done in coord, now done on worker) ──
+    # Setup done by ras_graph_setup (same worker via requires=sd_{sd_id}).
     setup_key = f"__rasg__setup_{sd_id}"
-    t_expand = None
-    t_extract = None
-    if not has_cache(setup_key):
-        data = _get_matrix_data(matrix_path)
-        rows = data["rows"]
-        cols = data["cols"]
-        vals = data["vals"]
-        b = data["b"]
-
-        primary_size = len(primary_nodes)
-
-        t_expand = time.perf_counter()
-        # Graph-BFS overlap expansion. The C++ helper
-        # (ex_slv_graph_expand_overlap) rebuilds the full N×N Eigen matrix from
-        # the triplets on every call (~0.85s for n=500) before doing the BFS;
-        # building a column-grouped adjacency index once and BFS-ing in Python
-        # is ~4x faster (208ms) and produces an identical node set (verified).
-        # The adjacency index is cached per matrix so all subdomains of the
-        # same matrix share it.
-        adj_key = f"__rasg__adj_{matrix_path}"
-        if not has_cache(adj_key):
-            import numpy as _np
-            _rows_arr = _np.asarray(rows)
-            _cols_arr = _np.asarray(cols)
-            _sort_idx = _np.argsort(_cols_arr, kind="stable")
-            _adj = {
-                "starts": _np.searchsorted(
-                    _cols_arr[_sort_idx], _np.arange(N + 1)),
-                "rows": _rows_arr[_sort_idx],
-            }
-            put_cache(adj_key, _adj)
-        _adj = get_cache(adj_key)
-
-        def _bfs_expand(seed, n_layers):
-            expanded = set(seed)
-            current = list(seed)
-            for _ in range(n_layers):
-                frontier = set()
-                for node in current:
-                    s, e = _adj["starts"][node], _adj["starts"][node + 1]
-                    for row in _adj["rows"][s:e]:
-                        if row != node and row not in expanded:
-                            frontier.add(int(row))
-                if not frontier:
-                    break
-                expanded |= frontier
-                current = frontier
-            return sorted(expanded)
-
-        local_idx = _bfs_expand(primary_nodes, depth)
-        ratio = len(local_idx) / primary_size
-        if ratio < 1 + overlap_ratio:
-            local_idx = _bfs_expand(primary_nodes, depth * 2)
-            ratio = len(local_idx) / primary_size
-        t_expand = time.perf_counter() - t_expand
-
-        INFO(f"[RASG EXPAND] sd={sd_id} primary={primary_size} "
-             f"extended={len(local_idx)} ratio={ratio:.2f}x depth={depth} "
-             f"t={t_expand*1000:.0f}ms")
-
-        local_idx_map = {gidx: pos for pos, gidx in enumerate(local_idx)}
-        primary_local_pos = [local_idx_map[gidx] for gidx in primary_nodes]
-
-        t_extract = time.perf_counter()
-        # Extract the subdomain matrix and outside connections via a rank-array
-        # filter over the global COO triplets, instead of calling the C++
-        # helpers (ex_slv_extract_subdomain_matrix / ex_slv_find_outside_
-        # connections). Those helpers rebuild the full N×N Eigen matrix from
-        # the triplets on every call (~1.2s each for n=500, nnz~1.25M) before
-        # slicing out the local part — pure waste, since a rank lookup tells
-        # us each element's local position in O(1). The vectorised filter is
-        # ~150x faster (12ms vs 1863ms) and produces byte-identical triplets
-        # (verified: same nnz, same (row,col) pairs, same values).
-        import numpy as _np
-        rows_arr = _np.asarray(rows)
-        cols_arr = _np.asarray(cols)
-        vals_arr = _np.asarray(vals)
-        _rank = _np.full(N, -1, dtype=_np.int32)
-        _rank[local_idx] = _np.arange(len(local_idx))
-        row_rank = _rank[rows_arr]
-        col_rank = _rank[cols_arr]
-        # Subdomain matrix: both endpoints local → renumber to local indices.
-        in_local = (row_rank >= 0) & (col_rank >= 0)
-        a_rows = row_rank[in_local]
-        a_cols = col_rank[in_local]
-        a_vals = vals_arr[in_local]
-        size = len(local_idx)
-        # Outside connections: column is a local node (gidx at local position
-        # col_rank), row is outside the subdomain, off-diagonal, non-zero —
-        # mirrors fly::find_outside_connections iterating A[:,gidx] nonzeros.
-        is_outside = ((col_rank >= 0) & (row_rank < 0) &
-                      (rows_arr != cols_arr) & (vals_arr != 0.0))
-        out_pos = col_rank[is_outside]
-        out_gidx = rows_arr[is_outside]
-        out_coeffs = vals_arr[is_outside]
-        t_extract = time.perf_counter() - t_extract
-
-        # b is a numpy array (from _load_matrix); numpy accepts a Python list
-        # as a fancy index, gathering all local entries in one C call instead
-        # of a per-element Python loop.
-        b_local = b[local_idx]
-
-        neighbor_needed = {}
-        for i, gidx in enumerate(out_gidx):
-            owner = global_owner.get(gidx, -1)
-            if owner >= 0 and owner != sd_id:
-                if owner not in neighbor_needed:
-                    neighbor_needed[owner] = []
-                neighbor_needed[owner].append(i)
-
-        actual_neighbor_ids = sorted(neighbor_needed.keys())
-
-        neighbor_recv_idx = {}
-        for nb_id in actual_neighbor_ids:
-            nb_primary_map = {gidx: pos for pos, gidx in enumerate(all_primary_sets[nb_id])}
-            recv_positions = []
-            for conn_i in neighbor_needed[nb_id]:
-                outside_gidx = out_gidx[conn_i]
-                recv_positions.append(nb_primary_map.get(outside_gidx, -1))
-            neighbor_recv_idx[nb_id] = recv_positions
-
-        import numpy as np
-        setup_data = {
-            "sd_id": sd_id,
-            "local_indices": np.array(local_idx, dtype=np.int64),
-            "primary_local_pos": np.array(primary_local_pos, dtype=np.int64),
-            "b_orig": np.array(b_local, dtype=np.float64),
-            "outside_local_pos": np.array(out_pos, dtype=np.int64),
-            "outside_global_idx": np.array(out_gidx, dtype=np.int64),
-            "outside_coeffs": np.array(out_coeffs, dtype=np.float64),
-            "neighbor_ids": actual_neighbor_ids,
-            "neighbor_recv_idx": neighbor_recv_idx,
-            "neighbor_needed": neighbor_needed,
-            "a_rows": np.array(a_rows, dtype=np.int64),
-            "a_cols": np.array(a_cols, dtype=np.int64),
-            "a_vals": np.array(a_vals, dtype=np.float64),
-            "size": size,
-        }
-        put_cache(setup_key, setup_data)
-        INFO(f"[RASG SETUP] sd={sd_id} t_expand={t_expand*1000:.0f}ms "
-             f"t_extract={t_extract*1000:.0f}ms")
-
     setup = get_cache(setup_key)
-
-    # ── Build solver (cached) ──
-    solver_key = f"__rasg__solver_{sd_id}"
-    t_solver_build = None
-    if not has_cache(solver_key):
-        t0 = time.perf_counter()
-        solver = EXSlvSubdomainSolver.from_coo(
-            setup["size"],
-            setup["a_rows"].tolist(),
-            setup["a_cols"].tolist(),
-            setup["a_vals"].tolist())
-        t_solver_build = time.perf_counter() - t0
-        put_cache(solver_key, solver)
-    solver = get_cache(solver_key)
+    solver = get_cache(f"__rasg__solver_{sd_id}")
 
 
     # ── Load tol/omega config ──
