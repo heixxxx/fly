@@ -440,8 +440,10 @@ def _apply_coarse_correction(db, step, nsd):
     x_global = np.zeros(N, dtype=np.float64)
     for sd_id in range(nsd):
         x_sd = db.read_object(f"__rasg__x_{sd_id}_{step}")
-        for pos, gidx in enumerate(primary_sets[sd_id]):
-            x_global[gidx] = x_sd[pos]
+        # Vectorised scatter: assign all primary nodes of this subdomain in one
+        # numpy fancy-index call instead of a per-node Python loop (the loop
+        # dominates coarse-correction cost over 9 iterations).
+        x_global[np.asarray(primary_sets[sd_id])] = x_sd
     t_assemble = time.perf_counter() - t_assemble
 
     t_residual = time.perf_counter()
@@ -458,11 +460,13 @@ def _apply_coarse_correction(db, step, nsd):
     t_write = time.perf_counter()
     for sd_id in range(nsd):
         x_sd = db.read_object(f"__rasg__x_{sd_id}_{step}")
-        corrected = list(x_sd)
-        for pos, gidx in enumerate(primary_sets[sd_id]):
-            corrected[pos] += e_fine[gidx]
+        # Vectorised correction: add the coarse-grid error at this subdomain's
+        # primary nodes in one numpy operation (was a per-node Python loop).
+        ps = np.asarray(primary_sets[sd_id])
+        corrected = np.array(x_sd, dtype=np.float64)
+        corrected += e_fine[ps]
         db.write_object(f"__rasg__xc_{sd_id}_{step}",
-                        np.array(corrected, dtype=np.float64), save_to_db=False)
+                        corrected, save_to_db=False)
     t_write = time.perf_counter() - t_write
 
     t_total = time.perf_counter() - t_coarse_start
@@ -479,6 +483,7 @@ def _apply_coarse_correction(db, step, nsd):
          requires=lambda db, sd_id, step, nsd, neighbor_ids:
          [f"sd_{sd_id}"])
 def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
+    import numpy as np
     from _fly_solver import (EXSlvSubdomainSolver, ex_slv_ras_bupdated_solve,
                               ex_slv_graph_expand_overlap,
                               ex_slv_extract_subdomain_matrix,
@@ -667,7 +672,7 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
     omega_strategy = get_cache(omega_key)
 
     # ── Read neighbor values ──
-    outside_coeffs = setup["outside_coeffs"].tolist()
+    outside_coeffs = setup["outside_coeffs"]
     neighbor_values = [0.0] * len(outside_coeffs)
     use_coarse = _is_coarse(db)
 
@@ -712,39 +717,45 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
 
     # ── RAS solve ──
     t_solve_start = time.perf_counter()
+    # setup arrays are already numpy (④ optimization); pass them directly to
+    # the C++ helper instead of re-converting via .tolist() on every iteration
+    # (was ~30ms/iter wasted on redundant Python-list construction).
     x_local = ex_slv_ras_bupdated_solve(
-        solver, setup["b_orig"].tolist(),
-        setup["outside_local_pos"].tolist(), outside_coeffs,
+        solver, setup["b_orig"],
+        setup["outside_local_pos"], outside_coeffs,
         neighbor_values, 1.0)
     t_solve = time.perf_counter() - t_solve_start
 
-    primary_local_pos = setup["primary_local_pos"].tolist()
-    x_primary = [x_local[pos] for pos in primary_local_pos]
+    # Vectorised primary extraction: gather x_local at primary positions in one
+    # numpy call (was a per-element Python loop over ~15k primary nodes).
+    primary_local_pos = setup["primary_local_pos"]
+    x_primary = np.asarray(x_local, dtype=np.float64)[primary_local_pos]
 
     if step > 0 and omega != 1.0 and has_cache(prev_x_key):
-        prev_x = get_cache(prev_x_key)
-        x_primary = [(1.0 - omega) * p + omega * n
-                     for p, n in zip(prev_x, x_primary)]
+        prev_x = np.asarray(get_cache(prev_x_key), dtype=np.float64)
+        # Vectorised relaxation (was a per-element Python loop).
+        x_primary = (1.0 - omega) * prev_x + omega * x_primary
 
     # ── Convergence check ──
     converged_local = False
     max_delta = 0.0
     if step > 0 and has_cache(prev_x_key):
-        prev_x = get_cache(prev_x_key)
-        max_delta = max(abs(a - b) for a, b in zip(x_primary, prev_x))
+        prev_x = np.asarray(get_cache(prev_x_key), dtype=np.float64)
+        # Vectorised convergence check (was a per-element abs/max Python loop).
+        max_delta = float(np.max(np.abs(x_primary - prev_x)))
         converged_local = max_delta < tol
 
     if has_cache(prev2_x_key):
         put_cache(prev3_x_key, get_cache(prev2_x_key))
     if has_cache(prev_x_key):
         put_cache(prev2_x_key, get_cache(prev_x_key))
-    put_cache(prev_x_key, list(x_primary))
+    put_cache(prev_x_key, x_primary)
 
     # ── Write results ──
     import numpy as np
     t_write_start = time.perf_counter()
     db.write_object(f"__rasg__x_{sd_id}_{step}",
-                    np.array(x_primary, dtype=np.float64), save_to_db=False)
+                    x_primary, save_to_db=False)
     db.write_object(f"__rasg__conv_{sd_id}_{step}", converged_local,
                     save_to_db=False)
     if step > 0 and omega_strategy == "adaptive":
