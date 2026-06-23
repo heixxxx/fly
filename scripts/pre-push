@@ -72,8 +72,8 @@ echo
 echo "=== [3/3] QA TEST ==="
 echo "--- refresh build/bin/fly (runqa 依赖) ---"
 ./fly.sh install
-echo "--- runqa -j 4 -t 25 (全量 QA) ---"
-./qa/runqa -j 4 -t 25
+echo "--- runqa -j 4 -t 20 (全量 QA) ---"
+./qa/runqa -j 4 -t 20
 QA_END=$(date +%s)
 echo "=== [3/3] QA TEST OK ($(fmt_duration "$QA_START" "$QA_END")) ==="
 

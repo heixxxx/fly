@@ -8,7 +8,12 @@ cc_library(
     srcs = ["solver.cpp"],
     hdrs = ["solver.h"],
     strip_include_prefix = "/src",
-    copts = ["-std=c++20"],
+    # Eigen's template-heavy sparse solvers (SimplicialLDLT) are extremely
+    # sensitive to optimization: unoptimized (-O0 fastbuild) LDLT of an 82k-dim
+    # Poisson submatrix takes ~1.5s, dominating setup. -O2 brings it down
+    # substantially. Pin -O2 here regardless of the global compilation_mode so
+    # the solver stays fast even in fastbuild/debug builds.
+    copts = ["-std=c++20", "-O2"],
     linkstatic = False,
     deps = [
         "@eigen//:eigen",
