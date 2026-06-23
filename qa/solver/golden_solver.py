@@ -7,6 +7,7 @@ Each test_golden_*.py calls run_golden(n_side, nsd, overlap, ...) which:
 """
 import os
 import shutil
+import threading
 
 import numpy as np
 from scipy import sparse
@@ -16,6 +17,7 @@ from _fly_log import INFO
 from fly import open_db, get_config
 from fly.runtime import get_agent
 from solver import solve_ras_graph, generate_poisson_matrix
+from solver.ras_graph import compute_exact_solution
 
 
 def run_golden(n_side, nsd, overlap_ratio=0.30, max_iter=200, tol=1e-8, omega=1.0):
@@ -29,13 +31,22 @@ def run_golden(n_side, nsd, overlap_ratio=0.30, max_iter=200, tol=1e-8, omega=1.
 
     get_config().set_int("fail_unscheduleable_tasks", 1)
 
-    generate_poisson_matrix(n_side, matrix_path)
+    # Generate the matrix WITHOUT the exact solution (splu is ~1.4s for n=500).
+    # The exact solution is only needed for post-solve verification, so compute
+    # it on a background thread overlapped with the distributed solve. The coord
+    # process is mostly idle (light scheduling) while workers compute, so splu
+    # can use a spare time-slice instead of blocking the critical path.
+    generate_poisson_matrix(n_side, matrix_path, compute_exact=False)
+
     golden = np.load(matrix_path, allow_pickle=False)
-    x_exact = golden["x_exact"]
-    rows, cols, vals = golden["rows"], golden["cols"], golden["vals"]
     b = golden["b"]
     N_val = int(golden["N"])
-    A_sp = sparse.csc_matrix((vals, (rows, cols)), shape=(N_val, N_val))
+
+    exact_result = {}
+    def _compute_exact():
+        exact_result["x"] = compute_exact_solution(n_side, matrix_path)
+    exact_thread = threading.Thread(target=_compute_exact, daemon=True)
+    exact_thread.start()
 
     db = open_db(db_path)
     sol = solve_ras_graph(db, matrix_path, nsd,
@@ -46,8 +57,19 @@ def run_golden(n_side, nsd, overlap_ratio=0.30, max_iter=200, tol=1e-8, omega=1.
     iters = sol["iters"]
     converged = sol["converged"]
 
+    # Wait for the background exact-solution computation. Under CPU contention
+    # (-j4) the thread may still be running; under normal load it finishes long
+    # before the solve does.
+    exact_thread.join()
+    x_exact = exact_result["x"]
+
     rel_error = np.linalg.norm(x_ras - x_exact) / np.linalg.norm(x_exact)
     max_error = np.max(np.abs(x_ras - x_exact))
+    # Residual ||b - A x||: build A_sp once here for verification only. The
+    # distributed solver works on subdomains, so this is the sole place the
+    # full matrix is assembled.
+    A_sp = sparse.csc_matrix((golden["vals"], (golden["rows"], golden["cols"])),
+                             shape=(N_val, N_val))
     rel_res = np.linalg.norm(b - A_sp @ x_ras) / np.linalg.norm(b)
 
     status = "PASS" if converged and rel_error < 1e-4 else "FAIL"

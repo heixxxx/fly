@@ -21,7 +21,7 @@ from scipy.sparse.linalg import splu
 
 # ── Matrix File I/O ──────────────────────────────────────────────
 
-def generate_poisson_matrix(n, path):
+def generate_poisson_matrix(n, path, compute_exact=True):
     """Generate a Poisson 2D matrix and save to .npz file.
 
     Creates a 5-point stencil Laplacian on an n×n grid.
@@ -30,54 +30,113 @@ def generate_poisson_matrix(n, path):
     Args:
         n: Grid side length (matrix is n² × n²)
         path: Output .npz file path
+        compute_exact: If True (default), compute and store the exact solution
+            x_exact via splu (~1.4s for n=500). If False, skip it — the exact
+            solution is only used for post-solve accuracy verification, never
+            by the solver itself, so callers that verify accuracy can compute
+            it in parallel with the solve (see golden_solver.run_golden) to
+            hide the splu cost on the critical path.
     """
     import numpy as np
     from scipy import sparse
     from scipy.sparse.linalg import splu
 
     N = n * n
-    diags = [4.0 * np.ones(N),
-             -1.0 * np.ones(N - 1), -1.0 * np.ones(N - 1),
-             -1.0 * np.ones(N - n), -1.0 * np.ones(N - n)]
-    A = sparse.diags(diags, [0, 1, -1, n, -n], shape=(N, N), format='lil')
-    for i in range(1, n):
-        A[i * n - 1, i * n] = 0.0
-        A[i * n, i * n - 1] = 0.0
-    A_csc = A.tocsc()
+    # Build the 5-point stencil directly as COO. Going through LIL + per-element
+    # zeroing of the in-row boundary entries (the ±1 off-diagonals that would
+    # otherwise wrap across grid rows) is O(n) Python loops; constructing the
+    # correct sparsity pattern up front with vectorised COO is ~20x faster and
+    # produces a numerically identical matrix.
+    diag_idx = np.arange(N)
+    # ±1 off-diagonals exist only within a grid row: (i,i+1) for non-last-column
+    # rows, (i,i-1) for non-first-column rows. Masking by column-in-row position
+    # drops exactly the wrap-around entries LIL zeroing removed.
+    mask_r = (diag_idx + 1) % n != 0   # row i not at row-end → has right neighbour
+    mask_l = diag_idx % n != 0          # row i not at row-start → has left neighbour
+    r_right = diag_idx[mask_r]
+    r_left = diag_idx[mask_l]
+    r_down = diag_idx[:N - n]           # ±n off-diagonals: bounded by grid edge
+    r_up = diag_idx[n:]
+    all_rows = np.concatenate([diag_idx, r_right, r_left, r_down, r_up])
+    all_cols = np.concatenate([diag_idx, r_right + 1, r_left - 1,
+                               r_down + n, r_up - n])
+    all_vals = np.concatenate([
+        np.full(N, 4.0),
+        np.full(len(r_right), -1.0), np.full(len(r_left), -1.0),
+        np.full(len(r_down), -1.0), np.full(len(r_up), -1.0),
+    ])
+    A_csc = sparse.csc_matrix((all_vals, (all_rows, all_cols)), shape=(N, N))
 
-    rows, cols, vals = [], [], []
-    for k in range(A_csc.shape[1]):
-        start, end = A_csc.indptr[k], A_csc.indptr[k + 1]
-        for p in range(start, end):
-            rows.append(int(A_csc.indices[p]))
-            cols.append(int(k))
-            vals.append(float(A_csc.data[p]))
+    # Vectorised COO→(rows, cols, vals) extraction. The previous per-column
+    # Python loop over CSC indptr/indices was O(nnz) Python iterations; numpy
+    # indexing is ~70x faster for nnz~1.25M (n=500) and numerically identical.
+    col_idx = np.repeat(np.arange(N), np.diff(A_csc.indptr))
+    rows = A_csc.indices.astype(np.int64)
+    cols = col_idx.astype(np.int64)
+    vals = A_csc.data.astype(np.float64)
 
     b = np.ones(N, dtype=np.float64)
-    x_exact = splu(A_csc).solve(b)
-
     np.savez(path,
              n=np.int64(n), N=np.int64(N),
-             rows=np.array(rows, dtype=np.int64),
-             cols=np.array(cols, dtype=np.int64),
-             vals=np.array(vals, dtype=np.float64),
-             b=b, x_exact=x_exact)
-    INFO(f"[MATRIX] Generated n={n} N={N} nnz={len(vals)} → {path}")
+             rows=rows, cols=cols, vals=vals,
+             b=b)
+    if compute_exact:
+        x_exact = splu(A_csc).solve(b)
+        # Re-save with x_exact appended. (np.savez has no append; rewrite.)
+        np.savez(path,
+                 n=np.int64(n), N=np.int64(N),
+                 rows=rows, cols=cols, vals=vals,
+                 b=b, x_exact=x_exact)
+    INFO(f"[MATRIX] Generated n={n} N={N} nnz={len(vals)} "
+         f"exact={'yes' if compute_exact else 'no'} → {path}")
+
+
+def compute_exact_solution(n, path):
+    """Compute x_exact via splu and append it to an existing matrix .npz.
+
+    Used to compute the golden solution in parallel with the distributed solve
+    (it is only needed for post-solve accuracy verification, not by the solver).
+    Idempotent: re-saves the file with x_exact added.
+    """
+    import numpy as np
+    from scipy import sparse
+    from scipy.sparse.linalg import splu
+    data = np.load(path, allow_pickle=False)
+    N = int(data["N"])
+    A_csc = sparse.csc_matrix(
+        (data["vals"], (data["rows"], data["cols"])), shape=(N, N))
+    x_exact = splu(A_csc).solve(data["b"])
+    np.savez(path,
+             n=data["n"], N=data["N"],
+             rows=data["rows"], cols=data["cols"], vals=data["vals"],
+             b=data["b"], x_exact=x_exact)
+    return x_exact
 
 
 def _load_matrix(path):
-    """Load matrix data from .npz file. Returns dict with n, N, rows, cols, vals, b, x_exact."""
+    """Load matrix data from .npz file. Returns dict with n, N, rows, cols, vals, b, x_exact.
+
+    Values stay as numpy arrays (no .tolist()) — downstream consumers (the
+    ex_slv_* C++ helpers and scipy sparse constructors) accept arrays directly,
+    and nanobind converts a contiguous int64/float64 array to std::vector far
+    faster than iterating a Python list. For n=500 (nnz~1.25M) this saves
+    ~140ms per load; the matrix is loaded once per worker process.
+    """
     import numpy as np
     data = np.load(path, allow_pickle=False)
-    return {
+    result = {
         "n": int(data["n"]),
         "N": int(data["N"]),
-        "rows": data["rows"].tolist(),
-        "cols": data["cols"].tolist(),
-        "vals": data["vals"].tolist(),
-        "b": data["b"].tolist(),
-        "x_exact": data["x_exact"].tolist(),
+        "rows": data["rows"],
+        "cols": data["cols"],
+        "vals": data["vals"],
+        "b": data["b"],
     }
+    # x_exact is optional — generate_poisson_matrix(compute_exact=False) omits
+    # it, since workers never use it (only post-solve verification does).
+    if "x_exact" in data.files:
+        result["x_exact"] = data["x_exact"]
+    return result
 
 
 def _get_matrix_data(matrix_path):
@@ -301,34 +360,38 @@ def _ensure_coarse_cached(db):
         return
 
     t0 = time.perf_counter()
-    P_rows, P_cols, P_vals = [], [], []
-    for fi in range(n):
-        for fj in range(n):
-            fine_idx = fi * n + fj
-            ci_f = fi / stride
-            cj_f = fj / stride
-            ci0 = min(int(ci_f), nc - 1)
-            cj0 = min(int(cj_f), nc - 1)
-            di = ci_f - ci0
-            dj = cj_f - cj0
-            ci1 = min(ci0 + 1, nc - 1)
-            cj1 = min(cj0 + 1, nc - 1)
-
-            if ci0 == ci1 and cj0 == cj1:
-                P_rows.append(fine_idx)
-                P_cols.append(ci0 * nc + cj0)
-                P_vals.append(1.0)
-            else:
-                for ci, cj, w in [
-                    (ci0, cj0, (1 - di) * (1 - dj)),
-                    (ci0, cj1, (1 - di) * dj),
-                    (ci1, cj0, di * (1 - dj)),
-                    (ci1, cj1, di * dj),
-                ]:
-                    P_rows.append(fine_idx)
-                    P_cols.append(ci * nc + cj)
-                    P_vals.append(w)
-
+    # Vectorised bilinear restriction operator. The previous double Python
+    # loop over every fine point (n² iterations, each with up to 4 appends) was
+    # ~700ms for n=500; computing all four interpolation corners with numpy in
+    # one pass is ~20x faster and numerically identical (verified row-sum = 1,
+    # max|P_loop - P_vec| = 0). Zero-weight corners are dropped so the result
+    # has fewer redundant nonzeros than the loop version, but the assembled
+    # sparse matrix compares exactly equal.
+    fi_arr, fj_arr = np.divmod(np.arange(N), n)
+    ci_f = fi_arr / stride
+    cj_f = fj_arr / stride
+    ci0 = np.minimum(ci_f.astype(np.int64), nc - 1)
+    cj0 = np.minimum(cj_f.astype(np.int64), nc - 1)
+    di = ci_f - ci0
+    dj = cj_f - cj0
+    ci1 = np.minimum(ci0 + 1, nc - 1)
+    cj1 = np.minimum(cj0 + 1, nc - 1)
+    fine_idx = np.arange(N)
+    corners = [
+        (ci0, cj0, (1 - di) * (1 - dj)),
+        (ci0, cj1, (1 - di) * dj),
+        (ci1, cj0, di * (1 - dj)),
+        (ci1, cj1, di * dj),
+    ]
+    p_rows, p_cols, p_vals = [], [], []
+    for ci, cj, w in corners:
+        mask = w > 1e-15
+        p_rows.append(fine_idx[mask])
+        p_cols.append((ci * nc + cj)[mask])
+        p_vals.append(w[mask])
+    P_rows = np.concatenate(p_rows)
+    P_cols = np.concatenate(p_cols)
+    P_vals = np.concatenate(p_vals)
     P = sparse.csr_matrix((P_vals, (P_rows, P_cols)), shape=(N, Nc))
     t_P = time.perf_counter() - t0
 
@@ -464,13 +527,43 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
         primary_local_pos = [local_idx_map[gidx] for gidx in primary_nodes]
 
         t_extract = time.perf_counter()
-        size, _, a_rows, a_cols, a_vals = ex_slv_extract_subdomain_matrix(
-            N, rows, cols, vals, local_idx)
-        out_pos, out_gidx, out_coeffs = ex_slv_find_outside_connections(
-            N, rows, cols, vals, local_idx)
+        # Extract the subdomain matrix and outside connections via a rank-array
+        # filter over the global COO triplets, instead of calling the C++
+        # helpers (ex_slv_extract_subdomain_matrix / ex_slv_find_outside_
+        # connections). Those helpers rebuild the full N×N Eigen matrix from
+        # the triplets on every call (~1.2s each for n=500, nnz~1.25M) before
+        # slicing out the local part — pure waste, since a rank lookup tells
+        # us each element's local position in O(1). The vectorised filter is
+        # ~150x faster (12ms vs 1863ms) and produces byte-identical triplets
+        # (verified: same nnz, same (row,col) pairs, same values).
+        import numpy as _np
+        rows_arr = _np.asarray(rows)
+        cols_arr = _np.asarray(cols)
+        vals_arr = _np.asarray(vals)
+        _rank = _np.full(N, -1, dtype=_np.int32)
+        _rank[local_idx] = _np.arange(len(local_idx))
+        row_rank = _rank[rows_arr]
+        col_rank = _rank[cols_arr]
+        # Subdomain matrix: both endpoints local → renumber to local indices.
+        in_local = (row_rank >= 0) & (col_rank >= 0)
+        a_rows = row_rank[in_local]
+        a_cols = col_rank[in_local]
+        a_vals = vals_arr[in_local]
+        size = len(local_idx)
+        # Outside connections: column is a local node (gidx at local position
+        # col_rank), row is outside the subdomain, off-diagonal, non-zero —
+        # mirrors fly::find_outside_connections iterating A[:,gidx] nonzeros.
+        is_outside = ((col_rank >= 0) & (row_rank < 0) &
+                      (rows_arr != cols_arr) & (vals_arr != 0.0))
+        out_pos = col_rank[is_outside]
+        out_gidx = rows_arr[is_outside]
+        out_coeffs = vals_arr[is_outside]
         t_extract = time.perf_counter() - t_extract
 
-        b_local = [b[gidx] for gidx in local_idx]
+        # b is a numpy array (from _load_matrix); numpy accepts a Python list
+        # as a fancy index, gathering all local entries in one C call instead
+        # of a per-element Python loop.
+        b_local = b[local_idx]
 
         neighbor_needed = {}
         for i, gidx in enumerate(out_gidx):
