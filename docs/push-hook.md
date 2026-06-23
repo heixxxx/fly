@@ -8,7 +8,7 @@ git `pre-push` hook：在每次 `git push` 前自动执行完整校验流水线�
 |------|------|------|
 | 1/3 BUILD | `./fly.sh build` | bazel build `//src/...` + 刷新 `compile_commands.json` |
 | 2/3 UNIT TEST | `./fly.sh test` | bazel test `//src/...`，任一用例失败即非零退出 |
-| 3/3 QA TEST | `./fly.sh install && ./qa/runqa -j 4` | install 生成 `build/bin/fly`，runqa 跑**全量** QA（4 路并发，单测 20s 超时） |
+| 3/3 QA TEST | `./fly.sh install && ./qa/runqa -j 4 -t 25` | install 生成 `build/bin/fly`，runqa 跑**全量** QA（4 路并发，单测 25s 超时） |
 
 任一阶段失败立即报错并阻止 push，输出统一的 `PUSH BLOCKED` 横幅并指明失败阶段与退出码。
 
@@ -51,7 +51,7 @@ hook 位于 `.git/hooks/pre-push`（已可执行）。git 会自动发现 `.git/
 
 ### 耗时参考
 
-完整流水线耗时取决于 build 增量和 QA 用例规模。QA 全量约 103 个测试，默认 `-j 4` 并发、单测 20s 超时上限。
+完整流水线耗时取决于 build 增量和 QA 用例规模。QA 全量约 103 个测试，默认 `-j 4` 并发、单测 25s 超时上限（最慢的 `test_golden_n500_sd4_coarse` 单跑约 9s，`-j4` 全量并发下 CPU 超分膨胀到 ~22s，故预留 25s）。
 
 ## 在新环境安装
 
