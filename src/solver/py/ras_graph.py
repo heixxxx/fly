@@ -311,6 +311,10 @@ def ras_graph_coord(db, matrix_path, nsd, overlap_ratio,
     # Pre-build coarse grid on all workers before iteration loop.
     if omega == "coarse":
         INFO("[RASG] Pre-building coarse grid on all workers...")
+        # Build P + Galerkin Ac ONCE here (coord) and publish to DB, so workers
+        # skip the redundant full A_fine rebuild (220ms x4) + Galerkin and only
+        # do the LU step. Helps most under -j4 CPU contention.
+        _prebuild_coarse_in_coord(db, n, N, matrix_path)
         _prebuild_coarse_grid(db, nsd)
         INFO("[RASG] Coarse grid pre-build dispatched")
 
@@ -327,6 +331,80 @@ def _prebuild_coarse_task(db):
     _ensure_coarse_cached(db)
 
 
+def _build_coarse_operators(n, N, matrix_path):
+    """Build global coarse-grid P (restriction) and Galerkin Ac on the coord
+    process. Returns serialisable raw sparse data (COO for P, CSC for Ac) so
+    workers can rebuild the sparse objects and do only the LU step, instead of
+    each worker redundantly rebuilding the full A_fine (220ms) + Galerkin.
+    Returns None if the coarse grid is too small to be useful.
+    """
+    from scipy import sparse
+
+    data = _get_matrix_data(matrix_path)
+    rows = np.asarray(data["rows"])
+    cols = np.asarray(data["cols"])
+    vals = np.asarray(data["vals"])
+
+    stride = max(2, n // 125)
+    nc = n // stride
+    Nc = nc * nc
+    if Nc < 10:
+        return None
+
+    fi_arr, fj_arr = np.divmod(np.arange(N), n)
+    ci_f = fi_arr / stride
+    cj_f = fj_arr / stride
+    ci0 = np.minimum(ci_f.astype(np.int64), nc - 1)
+    cj0 = np.minimum(cj_f.astype(np.int64), nc - 1)
+    di = ci_f - ci0
+    dj = cj_f - cj0
+    ci1 = np.minimum(ci0 + 1, nc - 1)
+    cj1 = np.minimum(cj0 + 1, nc - 1)
+    fine_idx = np.arange(N)
+    pr, pc, pv = [], [], []
+    for ci, cj, w in [
+        (ci0, cj0, (1 - di) * (1 - dj)),
+        (ci0, cj1, (1 - di) * dj),
+        (ci1, cj0, di * (1 - dj)),
+        (ci1, cj1, di * dj),
+    ]:
+        mask = w > 1e-15
+        pr.append(fine_idx[mask])
+        pc.append((ci * nc + cj)[mask])
+        pv.append(w[mask])
+    P_rows = np.concatenate(pr)
+    P_cols = np.concatenate(pc)
+    P_vals = np.concatenate(pv)
+    P = sparse.csr_matrix((P_vals, (P_rows, P_cols)), shape=(N, Nc))
+
+    A_fine = sparse.csr_matrix((vals, (rows, cols)), shape=(N, N))
+    Ac = (P.T @ (A_fine @ P)).tocsc()
+
+    return {
+        "P_rows": P_rows, "P_cols": P_cols, "P_vals": P_vals,
+        "N": N, "Nc": Nc,
+        "Ac_indptr": Ac.indptr.astype(np.int64),
+        "Ac_indices": Ac.indices.astype(np.int64),
+        "Ac_data": Ac.data.astype(np.float64),
+        "Ac_shape": (int(Ac.shape[0]), int(Ac.shape[1])),
+        "b": np.asarray(data["b"], dtype=np.float64),
+        "stride": stride,
+    }
+
+
+def _prebuild_coarse_in_coord(db, n, N, matrix_path):
+    """Coord-side: build coarse operators once, publish raw data to DB."""
+    t0 = time.perf_counter()
+    result = _build_coarse_operators(n, N, matrix_path)
+    if result is None:
+        INFO("[RASG COARSE] Skipping: coarse grid too small")
+        db.write_object("__rasg__coarse_prebuilt", {"skip": True}, save_to_db=False)
+        return
+    db.write_object("__rasg__coarse_prebuilt", result, save_to_db=False)
+    INFO(f"[RASG COARSE] coord prebuild: {(time.perf_counter()-t0)*1000:.0f}ms "
+         f"Nc={result['Nc']}")
+
+
 def _prebuild_coarse_grid(db, nsd):
     """Dispatch coarse grid build to all workers in parallel."""
     for sd_id in range(nsd):
@@ -338,12 +416,47 @@ def _ensure_coarse_cached(db):
     if has_cache("__rasg__coarse_lu"):
         return
 
-    INFO("[COARSE] building coarse grid...")
+    # Fast path: coord pre-built P + Galerkin Ac and published the raw sparse
+    # data to DB. Rebuild the sparse objects from those arrays and do only the
+    # LU step, skipping the redundant per-worker full A_fine rebuild + Galerkin
+    # (was 220ms + 22ms per worker; now ~55ms LU only).
+    try:
+        prebuilt = db.read_object("__rasg__coarse_prebuilt")
+    except Exception:
+        prebuilt = None
+
+    if prebuilt is not None:
+        if prebuilt.get("skip"):
+            INFO("[RASG COARSE] Skipping: coarse grid too small (coord)")
+            return
+        if "Ac_indptr" in prebuilt:
+            from scipy import sparse
+            from scipy.sparse.linalg import splu
+            t0 = time.perf_counter()
+            P = sparse.csr_matrix(
+                (prebuilt["P_vals"], (prebuilt["P_rows"], prebuilt["P_cols"])),
+                shape=(prebuilt["N"], prebuilt["Nc"]))
+            Ac = sparse.csc_matrix(
+                (prebuilt["Ac_data"], prebuilt["Ac_indices"],
+                 prebuilt["Ac_indptr"]),
+                shape=prebuilt["Ac_shape"])
+            Ac_lu = splu(Ac)
+            put_cache("__rasg__coarse_lu", Ac_lu)
+            put_cache("__rasg__coarse_P", P)
+            put_cache("__rasg__coarse_b", prebuilt["b"])
+            put_cache("__rasg__coarse_stride", prebuilt["stride"])
+            INFO(f"[RASG COARSE] Built from coord prebuilt (LU only): "
+                 f"Nc={prebuilt['Nc']} t={(time.perf_counter()-t0)*1000:.0f}ms")
+            return
+
+    # Legacy fallback: coord did not prebuild (e.g. older coord path) — build
+    # everything on this worker.
+    INFO("[COARSE] building coarse grid (legacy path)...")
+    from scipy.sparse.linalg import splu
 
     coord = db.read_object("__rasg__coord")
     N = coord["N"]
     n = coord["n"]
-    INFO(f"[COARSE] coord read: N={N} n={n}")
     matrix_path = coord["matrix_path"]
 
     data = _get_matrix_data(matrix_path)
@@ -354,19 +467,10 @@ def _ensure_coarse_cached(db):
     stride = max(2, n // 125)
     nc = n // stride
     Nc = nc * nc
-
     if Nc < 10:
         INFO(f"[RASG COARSE] Skipping: coarse grid too small (nc={nc})")
         return
 
-    t0 = time.perf_counter()
-    # Vectorised bilinear restriction operator. The previous double Python
-    # loop over every fine point (n² iterations, each with up to 4 appends) was
-    # ~700ms for n=500; computing all four interpolation corners with numpy in
-    # one pass is ~20x faster and numerically identical (verified row-sum = 1,
-    # max|P_loop - P_vec| = 0). Zero-weight corners are dropped so the result
-    # has fewer redundant nonzeros than the loop version, but the assembled
-    # sparse matrix compares exactly equal.
     fi_arr, fj_arr = np.divmod(np.arange(N), n)
     ci_f = fi_arr / stride
     cj_f = fj_arr / stride
@@ -377,14 +481,13 @@ def _ensure_coarse_cached(db):
     ci1 = np.minimum(ci0 + 1, nc - 1)
     cj1 = np.minimum(cj0 + 1, nc - 1)
     fine_idx = np.arange(N)
-    corners = [
+    p_rows, p_cols, p_vals = [], [], []
+    for ci, cj, w in [
         (ci0, cj0, (1 - di) * (1 - dj)),
         (ci0, cj1, (1 - di) * dj),
         (ci1, cj0, di * (1 - dj)),
         (ci1, cj1, di * dj),
-    ]
-    p_rows, p_cols, p_vals = [], [], []
-    for ci, cj, w in corners:
+    ]:
         mask = w > 1e-15
         p_rows.append(fine_idx[mask])
         p_cols.append((ci * nc + cj)[mask])
@@ -393,28 +496,17 @@ def _ensure_coarse_cached(db):
     P_cols = np.concatenate(p_cols)
     P_vals = np.concatenate(p_vals)
     P = sparse.csr_matrix((P_vals, (P_rows, P_cols)), shape=(N, Nc))
-    t_P = time.perf_counter() - t0
-
-    t0 = time.perf_counter()
     A_fine = sparse.csr_matrix((vals, (rows, cols)), shape=(N, N))
-    t_A = time.perf_counter() - t0
-
-    t0 = time.perf_counter()
     Ac = (P.T @ (A_fine @ P)).tocsc()
-    t_Galerkin = time.perf_counter() - t0
-
-    t0 = time.perf_counter()
     Ac_lu = splu(Ac)
-    t_LU = time.perf_counter() - t0
 
     put_cache("__rasg__coarse_lu", Ac_lu)
     put_cache("__rasg__coarse_P", P)
     put_cache("__rasg__coarse_A", A_fine)
     put_cache("__rasg__coarse_b", np.array(data["b"], dtype=np.float64))
     put_cache("__rasg__coarse_stride", stride)
-    INFO(f"[RASG COARSE] Built on worker: stride={stride} nc={nc} "
-         f"Nc={Nc} nnz={Ac.nnz} t_P={t_P*1000:.0f}ms t_A={t_A*1000:.0f}ms "
-         f"t_Galerkin={t_Galerkin*1000:.0f}ms t_LU={t_LU*1000:.0f}ms")
+    INFO(f"[RASG COARSE] Built on worker (legacy): stride={stride} nc={nc} "
+         f"Nc={Nc} nnz={Ac.nnz}")
 
 
 def _apply_coarse_correction(db, step, nsd):
@@ -429,8 +521,19 @@ def _apply_coarse_correction(db, step, nsd):
 
     Ac_lu = get_cache("__rasg__coarse_lu")
     P = get_cache("__rasg__coarse_P")
-    A_fine = get_cache("__rasg__coarse_A")
     b_fine = get_cache("__rasg__coarse_b")
+    # A_fine is needed only for the residual r = b - A x. The coord-prebuilt
+    # fast path does not cache it (only one worker runs coarse correction, so
+    # building it lazily here once is cheaper than 4 workers all rebuilding it).
+    from fly import has_cache as _has, put_cache as _put
+    if not _has("__rasg__coarse_A"):
+        coord = db.read_object("__rasg__coord")
+        md = _get_matrix_data(coord["matrix_path"])
+        _put("__rasg__coarse_A", sparse.csr_matrix(
+            (np.asarray(md["vals"]), (np.asarray(md["rows"]),
+             np.asarray(md["cols"]))),
+            shape=(coord["N"], coord["N"])))
+    A_fine = get_cache("__rasg__coarse_A")
 
     cfg = db.read_object("__rasg__cfg")
     N = cfg["N"]
@@ -661,6 +764,7 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
         put_cache(solver_key, solver)
     solver = get_cache(solver_key)
 
+
     # ── Load tol/omega config ──
     tol_key = "__rasg__tol"
     omega_key = "__rasg__omega"
@@ -779,12 +883,6 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
     t_total = time.perf_counter() - t_compute_start
     parts = [f"[RASG COMPUTE] sd={sd_id} step={step} omega={omega:.4f} "
              f"conv_local={converged_local} t_total={t_total*1000:.0f}ms"]
-    if t_expand is not None:
-        parts.append(f" expand={t_expand*1000:.0f}ms")
-    if t_extract is not None:
-        parts.append(f" extract={t_extract*1000:.0f}ms")
-    if t_solver_build is not None:
-        parts.append(f" solver_build={t_solver_build*1000:.0f}ms")
     if t_read_neighbors is not None:
         parts.append(f" read_nb={t_read_neighbors*1000:.0f}ms")
     parts.append(f" solve={t_solve*1000:.0f}ms write={t_write*1000:.0f}ms")
