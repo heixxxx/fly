@@ -1,9 +1,9 @@
 """Shared helper for golden solver accuracy tests.
 
 Each test_golden_*.py calls run_golden(n_side, nsd, overlap, ...) which:
-1. Generates a Poisson matrix with known exact solution
+1. Loads a Poisson matrix with known exact solution
 2. Solves it with the distributed RAS solver
-3. Asserts convergence and accuracy against scipy SPLU
+3. Asserts convergence and accuracy against the exact solution
 """
 import os
 import shutil
@@ -20,10 +20,30 @@ from solver import solve_ras_graph, generate_poisson_matrix
 from solver.ras_graph import compute_exact_solution
 
 
+_MATRIX_DIR = os.path.join(os.path.dirname(__file__), "matrices")
+
+
+def _get_matrix(n_side, matrix_path):
+    """Return (golden_data, has_exact).
+
+    Prefer a pre-generated matrix file (matrices/poisson_n{n}.npz, with x_exact
+    computed offline). Fall back to on-the-fly generation (without x_exact) when
+    the file is absent. The Poisson stencil is deterministic, so the pre-built
+    file is byte-identical to a freshly generated one.
+    """
+    prebuilt = os.path.join(_MATRIX_DIR, f"poisson_n{n_side}.npz")
+    if os.path.exists(prebuilt):
+        shutil.copy(prebuilt, matrix_path)
+        data = np.load(matrix_path, allow_pickle=False)
+        return data, "x_exact" in data.files
+    generate_poisson_matrix(n_side, matrix_path, compute_exact=False)
+    data = np.load(matrix_path, allow_pickle=False)
+    return data, False
+
+
 def run_golden(n_side, nsd, overlap_ratio=0.30, max_iter=200, tol=1e-8, omega=1.0):
     label = f"n={n_side} nsd={nsd} ratio={overlap_ratio:.0%} omega={omega}"
     db_path = f"/tmp/fly_golden_n{n_side}_sd{nsd}_r{int(overlap_ratio*100)}_o{str(omega).replace('.','_')}"
-    # Use unique matrix path per process to avoid concurrent read/write conflicts
     matrix_path = f"/tmp/fly_golden_matrix_n{n_side}_{os.getpid()}.npz"
 
     if os.path.isdir(db_path):
@@ -31,22 +51,29 @@ def run_golden(n_side, nsd, overlap_ratio=0.30, max_iter=200, tol=1e-8, omega=1.
 
     get_config().set_int("fail_unscheduleable_tasks", 1)
 
-    # Generate the matrix WITHOUT the exact solution (splu is ~1.4s for n=500).
-    # The exact solution is only needed for post-solve verification, so compute
-    # it on a background thread overlapped with the distributed solve. The coord
-    # process is mostly idle (light scheduling) while workers compute, so splu
-    # can use a spare time-slice instead of blocking the critical path.
-    generate_poisson_matrix(n_side, matrix_path, compute_exact=False)
-
-    golden = np.load(matrix_path, allow_pickle=False)
+    # Load the matrix. Pre-generated files carry x_exact (computed offline), so
+    # no splu runs at QA time at all. Only the fallback path (no pre-built file)
+    # computes x_exact, overlapped with the solve for small n / serial for large.
+    golden, has_exact = _get_matrix(n_side, matrix_path)
     b = golden["b"]
     N_val = int(golden["N"])
 
-    exact_result = {}
-    def _compute_exact():
-        exact_result["x"] = compute_exact_solution(n_side, matrix_path)
-    exact_thread = threading.Thread(target=_compute_exact, daemon=True)
-    exact_thread.start()
+    exact_thread = None
+    if has_exact:
+        x_exact = golden["x_exact"]
+    else:
+        # No precomputed exact solution: compute it overlapped with the solve.
+        # Only overlap for small matrices (n<=700) -- for large n splu dominates
+        # and a background thread steals a core from the 4 RAS workers.
+        exact_result = {}
+        def _compute_exact():
+            exact_result["x"] = compute_exact_solution(n_side, matrix_path)
+        if n_side <= 700:
+            exact_thread = threading.Thread(target=_compute_exact, daemon=True)
+            exact_thread.start()
+        else:
+            _compute_exact()
+            x_exact = exact_result["x"]
 
     db = open_db(db_path)
     sol = solve_ras_graph(db, matrix_path, nsd,
@@ -57,17 +84,13 @@ def run_golden(n_side, nsd, overlap_ratio=0.30, max_iter=200, tol=1e-8, omega=1.
     iters = sol["iters"]
     converged = sol["converged"]
 
-    # Wait for the background exact-solution computation. Under CPU contention
-    # (-j4) the thread may still be running; under normal load it finishes long
-    # before the solve does.
-    exact_thread.join()
-    x_exact = exact_result["x"]
+    if exact_thread is not None:
+        exact_thread.join()
+        x_exact = exact_result["x"]
 
     rel_error = np.linalg.norm(x_ras - x_exact) / np.linalg.norm(x_exact)
     max_error = np.max(np.abs(x_ras - x_exact))
-    # Residual ||b - A x||: build A_sp once here for verification only. The
-    # distributed solver works on subdomains, so this is the sole place the
-    # full matrix is assembled.
+    # Residual ||b - A x||: build A_sp once here for verification only.
     A_sp = sparse.csc_matrix((golden["vals"], (golden["rows"], golden["cols"])),
                              shape=(N_val, N_val))
     rel_res = np.linalg.norm(b - A_sp @ x_ras) / np.linalg.norm(b)
