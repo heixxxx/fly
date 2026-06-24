@@ -39,6 +39,13 @@ LocalIndex 新增 BEGIN/END/ABORT 三个段边界标记（不含 task_id）。wo
   追加最终解决方案章节
 - `docs/storage/module.md`：补充写入事务语义 + WriteBackQueue clear_pending
 
+### 测试补充（大对象 + 多对象跨文件）
+
+- DataWriter 单测 +3：AbortLargeObjectInEmptyFile / AbortLargeObjectTriggersRollover /
+  AbortMultipleObjectsAcrossFiles（验证 abort 的 data 文件 truncate 含跨 rollover 多文件）
+- QA test_mixed_write_fail：大对象(>1MB)触发 rollover + 多小对象跨文件 →
+  task 失败 abort → load_db 脏数据不恢复 → restart 大对象数据正确
+
 ---
 ---
 

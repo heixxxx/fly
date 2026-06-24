@@ -399,6 +399,146 @@ TEST_F(DataWriterTest, AbortAcrossRollover) {
     EXPECT_FALSE(idx.find_entry("obj/dirty2").has_value());
 }
 
+TEST_F(DataWriterTest, AbortLargeObjectInEmptyFile) {
+    // BEGIN 时文件为空，写一个超过 threshold 的大对象（不触发 rollover，直接写入空文件）
+    // abort 后应 truncate 回 0
+    CMString base_path = test_dir_ + "/abort_large_empty";
+    CMString data_file = base_path + "/data_abort5_001.dat";
+
+    {
+        DataWriter writer(base_path, "", "abort5", 200);   // threshold=200
+
+        writer.mark_begin();   // 此时 current_file_size_ == 0
+
+        // 大对象：500 字节 >> threshold 200。但因 current_file_size_==0 不 rollover
+        CMString data(500, 'L');
+        auto rec = make_record(data);
+        writer.write_record("obj/large_dirty", rec.original_size_, rec.chunk_count_, rec.buffer);
+        writer.flush();
+
+        EXPECT_GT(file_size(data_file), 400);   // 大对象已写入
+
+        writer.abort_segment();
+        writer.flush();
+
+        // truncate 回 BEGIN 偏移 0
+        EXPECT_EQ(file_size(data_file), 0);
+
+        writer.close();
+    }
+
+    LocalIndex idx(base_path + "/abort5.idx");
+    idx.load();
+    EXPECT_FALSE(idx.find_entry("obj/large_dirty").has_value());
+}
+
+TEST_F(DataWriterTest, AbortLargeObjectTriggersRollover) {
+    // BEGIN 时文件非空，写大对象触发 rollover 到新文件
+    // abort 后新文件应被删除，原文件 truncate 回 BEGIN 偏移
+    CMString base_path = test_dir_ + "/abort_large_rollover";
+    CMString file1 = base_path + "/data_abort6_001.dat";
+    CMString file2 = base_path + "/data_abort6_002.dat";
+
+    {
+        DataWriter writer(base_path, "", "abort6", 200);
+
+        // 先写段外小对象占位 _001.dat
+        CMString data0(100, 'P');
+        auto rec0 = make_record(data0);
+        writer.write_record("obj/keep", rec0.original_size_, rec0.chunk_count_, rec0.buffer);
+        writer.flush();
+        int64_t begin_offset = file_size(file1);
+        EXPECT_GT(begin_offset, 0);
+
+        writer.mark_begin();   // 回滚点 = _001.dat 偏移 begin_offset
+
+        // 大对象：500 字节 >> threshold。begin_offset + 500 > 200 且 begin_offset > 0 → rollover
+        CMString big(500, 'L');
+        auto rec = make_record(big);
+        writer.write_record("obj/large_dirty", rec.original_size_, rec.chunk_count_, rec.buffer);
+        writer.flush();
+
+        EXPECT_TRUE(std::filesystem::exists(file2));   // rollover 产生了 _002.dat
+        EXPECT_GT(file_size(file2), 400);              // 大对象在 _002.dat
+
+        writer.abort_segment();
+        writer.flush();
+
+        // _002.dat 删除，_001.dat truncate 回 begin_offset
+        EXPECT_FALSE(std::filesystem::exists(file2));
+        EXPECT_EQ(file_size(file1), begin_offset);
+
+        writer.close();
+    }
+
+    LocalIndex idx(base_path + "/abort6.idx");
+    idx.load();
+    EXPECT_TRUE(idx.find_entry("obj/keep").has_value());
+    EXPECT_FALSE(idx.find_entry("obj/large_dirty").has_value());
+}
+
+TEST_F(DataWriterTest, AbortMultipleObjectsAcrossFiles) {
+    // 场景：a/b/c 写入文件 A，d/e/f 触发阈值 rollover 到文件 B。
+    // abort 后 B 应删除，A truncate 回 BEGIN 偏移，a-f 全部从 idx 丢弃。
+    //
+    // 用极小 threshold（1）强制每次写入都 rollover（首个写空文件除外）。
+    // mark_begin 前写一个段外 keep 占位 _001，BEGIN 后 a 写 _001（触发 rollover
+    // 条件 current>0），b→_002, c→_003... 但我们要测的是"a/b/c 在同一文件"，
+    // 所以用大 threshold 让 a/b/c 聚合在一个文件，d 触发 rollover。
+    //
+    // 直接构造 FlyBuffer 写入原始字节（绕过压缩），精确控制大小：
+    CMString base_path = test_dir_ + "/abort_multi_files";
+    CMString file1 = base_path + "/data_abort7_001.dat";
+
+    auto make_raw = [](int size, char fill) -> FlyBuffer {
+        FlyBuffer buf;
+        buf.write(CMString(size, fill).data(), size);
+        return buf;
+    };
+
+    {
+        // threshold=300: a/b/c 各 80 字节累计 240 < 300（在 _001），d 80 字节
+        // 240+80=320 > 300 且 240>0 → rollover 到 _002，e/f 在 _002
+        DataWriter writer(base_path, "", "abort7", 300);
+
+        writer.mark_begin();   // 回滚点 = _001.dat 偏移 0
+
+        for (char c : {'a', 'b', 'c'}) {
+            auto buf = make_raw(80, c);
+            writer.write_record(CMString("obj/") + c, 80, 1, buf);
+        }
+        writer.flush();
+        EXPECT_FALSE(std::filesystem::exists(base_path + "/data_abort7_002.dat"))
+            << "a/b/c should fit in _001";
+
+        for (char c : {'d', 'e', 'f'}) {
+            auto buf = make_raw(80, c);
+            writer.write_record(CMString("obj/") + c, 80, 1, buf);
+        }
+        writer.flush();
+        CMString file2 = base_path + "/data_abort7_002.dat";
+        EXPECT_TRUE(std::filesystem::exists(file2)) << "d should trigger rollover to _002";
+        EXPECT_GT(file_size(file2), 0);
+
+        writer.abort_segment();
+        writer.flush();
+
+        // _002.dat 删除，_001.dat truncate 回 BEGIN 偏移 0
+        EXPECT_FALSE(std::filesystem::exists(file2));
+        EXPECT_EQ(file_size(file1), 0);
+
+        writer.close();
+    }
+
+    // idx: a-f 全部丢弃（ABORT 段）
+    LocalIndex idx(base_path + "/abort7.idx");
+    idx.load();
+    for (char c : {'a', 'b', 'c', 'd', 'e', 'f'}) {
+        EXPECT_FALSE(idx.find_entry(CMString("obj/") + c).has_value())
+            << "obj/" << c << " should be discarded";
+    }
+}
+
 TEST_F(DataWriterTest, BeginEndThenAbortNextSegment) {
     // 第一段 BEGIN→ADD→END（提交），第二段 BEGIN→ADD→abort（撤销）
     // 验证第一段数据保留，第二段回滚

@@ -106,6 +106,39 @@ def dag_node(db, node_id, deps):
         raise RuntimeError(f"dag_node {node_id} intentional failure")
 
 
+@as_task()
+def mixed_size_write_fail(db, small_count, large_size, fail=True):
+    """写入混合大小对象后失败（验证跨文件 abort + load_db + restart）。
+
+    段内写入序列（aggregation_threshold 默认 1MB）：
+      small_0..small_N: 小对象，聚合在第一个 .dat
+      large: >1MB 大对象，触发 rollover 到新 .dat
+      after_large_0/1: 小对象，写入 large 之后的 .dat
+    然后抛异常 → 整段 abort（删除新 .dat + truncate 原 .dat）
+
+    fail=False 时（restart 场景）写入相同的 key 但不失败，供验证数据正确。
+    """
+    import os
+
+    fail = fail and os.environ.get("FLY_MIXED_FAIL", "1") != "0"
+
+    # 段内：先写一批小对象
+    for i in range(small_count):
+        db.write_object(f"mixed/small_{i}", i * 100)
+
+    # 大对象触发 rollover（>1MB）
+    big_data = list(range(large_size))
+    db.write_object("mixed/large", big_data)
+
+    # 大对象之后再写小对象（落在 large 之后的文件）
+    db.write_object("mixed/after_large_0", "after0")
+    db.write_object("mixed/after_large_1", "after1")
+
+    if fail:
+        db.write_object("mixed/dirty", "should_be_cleaned")
+        raise RuntimeError("mixed_size_write_fail intentional failure")
+
+
 @as_task(inputs=lambda db, task_id, dep_key:
          [db.get_full_name(dep_key)] if dep_key else [])
 def fail_write_task(db, task_id, dep_key=""):
