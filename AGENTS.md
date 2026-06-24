@@ -101,6 +101,7 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 - **Must pass full test suite before committing** — cpp/python unit tests + QA tests must ALL pass, ZERO failures allowed. No exceptions, no "pre-existing" excuses. If a test fails, fix it before committing.
 - **Never blame "pre-existing bugs"** — all crashes/instability are assumed from your changes
 - **Fix crashes immediately** — no deferring, no marking as "known issues"
+- **Never `rm -rf qa/*/test_*` or any `test_*` glob in qa/** — the glob matches both `test_x.py` source files and `test_x/` log dirs, routinely deleting test sources. Clean qa/ with `git clean -fd qa/` (untracked only) or by precise paths. Put useful non-test resources in dedicated subdirs (e.g. `qa/solver/matrices/`), never loose under test dirs.
 
 ## Stability: Zero Tolerance
 
