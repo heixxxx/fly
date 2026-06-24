@@ -54,6 +54,31 @@ void WriteBackQueue::drain() {
     });
 }
 
+void WriteBackQueue::clear_pending() {
+    size_t dropped = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        dropped = queue_.size();
+        queue_.clear();
+        // 递减被丢弃请求的 pending_ 计数（enqueue 时 pending_++ 过）。
+        // 不在 worker_loop 执行的请求的 on_complete_ 不会执行，调用方需
+        // 自行清理 DataService/ObjectCache。注意：正在 worker_loop 执行的那
+        // 个（已 pop 出 queue）不在 queue_ 内，其 pending_ 由 worker_loop
+        // 完成后正常递减。
+        if (pending_ >= dropped) {
+            pending_ -= dropped;
+        } else {
+            pending_ = 0;
+        }
+    }
+    // 队列已空，唤醒 drain / backpressure 等待者。
+    // （正在执行的那个的 pending_ 仍 >0，drain 会等它完成；若它也已被某种
+    // 方式终止，pending_ 归零后 cv_drained_ 唤醒。）
+    cv_drained_.notify_all();
+    cv_backpressure_.notify_all();
+    (void)dropped;
+}
+
 size_t WriteBackQueue::pending_count() const {
     return pending_;
 }

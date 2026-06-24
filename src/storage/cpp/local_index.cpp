@@ -38,7 +38,8 @@ bool read_header(std::ifstream& ifs, IdxOpType& op, int64_t& body_size) {
         sz |= static_cast<uint64_t>(buf[1 + i]) << (i * 8);
     }
     body_size = static_cast<int64_t>(sz);
-    return body_size > 0;
+    // 标记记录(BEGIN/END/ABORT)携带空 body(body_size=0)，需允许。
+    return body_size >= 0;
 }
 
 }
@@ -122,6 +123,29 @@ void LocalIndex::append_remove(const CMString& object_name) {
     ofs.write(body.data(), body.size());
 }
 
+void LocalIndex::append_marker(IdxOpType op) {
+    // 标记记录仅 8 字节 header，body 为空。不修改 entries_ —— BEGIN/END/ABORT
+    // 的 pending 区语义在 load() 时解释，写入时只落盘标记本身。
+    std::ofstream ofs(idx_path_, std::ios::binary | std::ios::app);
+    if (!ofs.is_open()) {
+        ERR("Failed to open index file: {}", idx_path_); return;
+    }
+    write_header(ofs, op, 0);
+    ofs.flush();
+}
+
+void LocalIndex::mark_begin() {
+    append_marker(IdxOpType::BEGIN);
+}
+
+void LocalIndex::mark_end() {
+    append_marker(IdxOpType::END);
+}
+
+void LocalIndex::mark_abort() {
+    append_marker(IdxOpType::ABORT);
+}
+
 void LocalIndex::save() {
     CMUnorderedMap<CMString, CMVector<IndexEntry>> adds_snapshot;
     CMUnorderedSet<CMString> removes_snapshot;
@@ -172,6 +196,7 @@ void LocalIndex::load() {
     entries_.clear();
     pending_adds_.clear();
     pending_removes_.clear();
+    had_unclosed_segment_ = false;
 
     if (!std::filesystem::exists(idx_path_)) {
         modified_ = false;
@@ -197,8 +222,12 @@ void LocalIndex::load() {
     ifs.read(reinterpret_cast<char*>(&first_byte), sizeof(first_byte));
     ifs.seekg(0, std::ios::beg);
 
+    // 新格式：首字节是任一已知 op（含 BEGIN/END/ABORT 标记）。
     bool is_new_format = (first_byte == static_cast<uint8_t>(IdxOpType::ADD) ||
-                          first_byte == static_cast<uint8_t>(IdxOpType::REMOVE));
+                          first_byte == static_cast<uint8_t>(IdxOpType::REMOVE) ||
+                          first_byte == static_cast<uint8_t>(IdxOpType::BEGIN) ||
+                          first_byte == static_cast<uint8_t>(IdxOpType::END) ||
+                          first_byte == static_cast<uint8_t>(IdxOpType::ABORT));
 
     if (!is_new_format) {
         int64_t legacy_size = 0;
@@ -229,31 +258,67 @@ void LocalIndex::load() {
         return;
     }
 
+    // 新格式 op log：带 pending 区的事务状态机。
+    //
+    //   显式事务：BEGIN 后的 ADD 进 pending，END 提交，ABORT 丢弃。
+    //   隐式事务：段外 ADD（无 BEGIN 包裹）直接进 entries_（master 写入兼容）。
+    //   崩溃遗留：EOF 时 pending 非空 → 自然丢弃。
+    bool in_segment = false;
+    CMUnorderedMap<CMString, CMVector<IndexEntry>> pending;
+
     while (true) {
         IdxOpType op;
         int64_t body_size = 0;
         if (!read_header(ifs, op, body_size)) break;
 
+        // 截断容错：剩余字节不足一个完整 body，停止解析（崩溃留下的半截记录）。
         if (ifs.tellg() + body_size > file_size) break;
 
-        CMString body(body_size, '\0');
-        ifs.read(body.data(), body_size);
-        if (!ifs) break;
+        CMString body;
+        if (body_size > 0) {
+            body.resize(static_cast<size_t>(body_size));
+            ifs.read(body.data(), body_size);
+            if (!ifs) break;
+        }
 
         if (op == IdxOpType::ADD) {
-            AddRecord record;
             try {
+                AddRecord record;
                 FLY_DECODE(body, AddRecord, record);
-                entries_[record.object_name_] = std::move(record.entries_);
+                if (in_segment) {
+                    pending[record.object_name_] = std::move(record.entries_);
+                } else {
+                    // 隐式事务：段外 ADD 直接生效（向后兼容 + master 写入）。
+                    entries_[record.object_name_] = std::move(record.entries_);
+                }
             } catch (...) {}
         } else if (op == IdxOpType::REMOVE) {
-            AddRecord record;
             try {
+                AddRecord record;
                 FLY_DECODE(body, AddRecord, record);
                 entries_.erase(record.object_name_);
+                pending.erase(record.object_name_);
             } catch (...) {}
+        } else if (op == IdxOpType::BEGIN) {
+            in_segment = true;
+            pending.clear();
+        } else if (op == IdxOpType::END) {
+            // 提交 pending 进 entries_。
+            for (auto& [k, v] : pending) {
+                entries_[k] = std::move(v);
+            }
+            pending.clear();
+            in_segment = false;
+        } else if (op == IdxOpType::ABORT) {
+            // 丢弃 pending（整段撤销）。
+            pending.clear();
+            in_segment = false;
         }
     }
+
+    // 诊断：EOF 时仍处于段内且 pending 非空 → 崩溃遗留的未闭合段。
+    had_unclosed_segment_ = in_segment && !pending.empty();
+    // pending 中未提交的记录在此自然丢弃，不入 entries_。
 
     ifs.close();
     modified_ = false;
@@ -268,6 +333,7 @@ void LocalIndex::compact() {
             ERR("Failed to create compact file: {}", tmp_path); return;
         }
 
+        // compact 只保留已提交的 entries_，产物是无标记的干净 idx（段外 ADD 形式）。
         for (auto& [name, entries] : entries_) {
             AddRecord record;
             record.object_name_ = name;
@@ -304,4 +370,9 @@ CMVector<IndexEntry> LocalIndex::get_all_entries() const {
         }
     }
     return result;
+}
+
+bool LocalIndex::had_unclosed_segment() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return had_unclosed_segment_;
 }

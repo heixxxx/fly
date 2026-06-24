@@ -79,6 +79,11 @@ public:
     void begin_task(uint64_t task_id, const CMString& write_context_hash = "");
     void record_write(const CMString& db_id, const CMString& object_name);
     CMVector<CMString> end_task(uint64_t task_id);
+
+    // task 成功时对所有涉及的 db 打 END（提交写入段）。
+    void commit_task_segments(const CMVector<CMString>& written_objects);
+    // task 失败时本地撤销脏写入（idx ABORT + data truncate + 清内存）。
+    void cleanup_failed_task_writes(const CMVector<CMString>& dirty_objects);
     
     bool is_registered() const;
     

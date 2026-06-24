@@ -38,6 +38,7 @@ public:
         get_var_func_ = nullptr;
         remove_var_func_ = nullptr;
         last_error_type_ = TaskErrorType::UNKNOWN;
+        transaction_mode_ = false;
     }
 
     static void record_write(const CMString& db_id, const CMString& object_name) {
@@ -59,6 +60,17 @@ public:
 
     static bool is_active() {
         return record_write_func_ != nullptr;
+    }
+
+    // 事务模式：仅 worker task 上下文激活（begin_task 设、end_task/clear 清）。
+    // master 直接 write_object 时不激活——其 ADD 为段外隐式事务，立即生效。
+    // 用于区分"worker task 写入需 BEGIN/END 包裹"与"master 写入直接落盘"。
+    static void set_transaction_mode(bool enabled) {
+        transaction_mode_ = enabled;
+    }
+
+    static bool is_transaction_mode() {
+        return transaction_mode_;
     }
 
     static void notify_object_removed(const CMString& db_id, const CMString& object_name) {
@@ -169,6 +181,7 @@ private:
     static inline thread_local std::function<void(const CMString&)> remove_var_func_;
     static inline thread_local TaskErrorType last_error_type_ = TaskErrorType::UNKNOWN;
     static inline thread_local CMString current_write_hash_;
+    static inline thread_local bool transaction_mode_ = false;
 };
 
 }  // namespace fly

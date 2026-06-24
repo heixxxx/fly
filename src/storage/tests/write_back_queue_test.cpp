@@ -197,4 +197,88 @@ TEST_F(WriteBackQueueTest, StopDrainsRemaining) {
     EXPECT_EQ(execute_count.load(), 3);
 }
 
+// =============================================================================
+// clear_pending 测试 —— 清空未处理请求（task 异常撤销用）
+// =============================================================================
+
+TEST_F(WriteBackQueueTest, ClearPendingDropsQueuedTasks) {
+    // 用一个 blocking 请求卡住 worker_loop，再 enqueue 几个，clear_pending 后
+    // 这些未开始的应被丢弃（execute/on_complete 都不执行）。
+    fly::WriteBackQueue queue(1000);
+    queue.start();
+
+    std::atomic<bool> blocker_done{false};
+    std::mutex blocker_mtx;
+    std::condition_variable blocker_cv;
+
+    // 第一个请求：阻塞 worker_loop
+    fly::WriteRequest blocking_req;
+    blocking_req.execute_ = [&blocker_done, &blocker_mtx, &blocker_cv]() {
+        std::unique_lock<std::mutex> lock(blocker_mtx);
+        blocker_cv.wait(lock, [&blocker_done]() { return blocker_done.load(); });
+    };
+    blocking_req.on_complete_ = []() {};
+    queue.enqueue(std::move(blocking_req));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));   // 确保阻塞请求已开始执行
+
+    // enqueue 3 个后续请求（此时 worker_loop 被卡住，它们都在 queue 里未处理）
+    std::atomic<int> dropped_execute_count{0};
+    std::atomic<int> dropped_complete_count{0};
+    for (int i = 0; i < 3; i++) {
+        fly::WriteRequest req;
+        req.execute_ = [&dropped_execute_count]() { dropped_execute_count++; };
+        req.on_complete_ = [&dropped_complete_count]() { dropped_complete_count++; };
+        queue.enqueue(std::move(req));
+    }
+
+    EXPECT_EQ(dropped_execute_count.load(), 0);
+
+    // clear_pending：丢弃 queue 中未处理的 3 个请求
+    queue.clear_pending();
+
+    // 解除阻塞，让 worker_loop 完成 blocking_req
+    {
+        std::lock_guard<std::mutex> lock(blocker_mtx);
+        blocker_done = true;
+    }
+    blocker_cv.notify_all();
+
+    queue.drain();
+
+    // 被丢弃的请求：execute 和 on_complete 都不应执行
+    EXPECT_EQ(dropped_execute_count.load(), 0);
+    EXPECT_EQ(dropped_complete_count.load(), 0);
+
+    queue.stop();
+}
+
+TEST_F(WriteBackQueueTest, ClearPendingThenEnqueueAgain) {
+    // clear_pending 后队列应能正常继续 enqueue 和处理
+    fly::WriteBackQueue queue;
+    queue.start();
+
+    // enqueue 几个然后立刻 clear（worker_loop 可能还没开始处理）
+    std::atomic<int> count{0};
+    for (int i = 0; i < 3; i++) {
+        fly::WriteRequest req;
+        req.execute_ = [&count]() { count++; };
+        req.on_complete_ = []() {};
+        queue.enqueue(std::move(req));
+    }
+    queue.clear_pending();
+
+    // 再 enqueue 一个，应该正常处理
+    std::atomic<bool> done{false};
+    fly::WriteRequest req;
+    req.execute_ = [&done]() { done = true; };
+    req.on_complete_ = []() {};
+    queue.enqueue(std::move(req));
+    queue.drain();
+
+    EXPECT_TRUE(done.load());
+
+    queue.stop();
+}
+
 }

@@ -1022,6 +1022,12 @@ void DataService::drain_write_back() {
     }
 }
 
+void DataService::clear_write_back() {
+    if (write_back_queue_) {
+        write_back_queue_->clear_pending();
+    }
+}
+
 bool DataService::is_write_back_running() const {
     return write_back_queue_ && write_back_queue_->is_running();
 }

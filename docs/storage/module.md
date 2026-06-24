@@ -18,7 +18,7 @@
 | ObjectCache | `cpp/object_cache.h` | 两层 LRU 读缓存 |
 | DataWriter | `cpp/data_writer.h/cpp` | 纯落盘写入聚合器 |
 | DataReader | `cpp/data_reader.h/cpp` | 纯读取字节流 |
-| WriteBackQueue | `cpp/write_back_queue.h/cpp` | 异步写入队列 |
+| WriteBackQueue | `cpp/write_back_queue.h/cpp` | 异步写入队列（支持 clear_pending 丢弃脏写） |
 | StorageManager | `cpp/storage_manager.h/cpp` | Database 生命周期管理 |
 
 ---
@@ -53,6 +53,18 @@ write_object(name, obj)
   └─ 4. 异步落盘
         → WBQ 后台线程执行磁盘写入
 ```
+
+### 写入事务（task 失败时的脏数据清理）
+
+worker task 的写入被 BEGIN/END 段标记包裹（事务化）。task 失败时整段撤销，避免重跑时二次写入冲突：
+
+- **BEGIN**：task 首次写入时打，记录 data 文件偏移作为回滚点
+- **END**：task 成功时打，提交段内所有 ADD 进 idx entries_
+- **ABORT**：task 失败时打，丢弃段内 ADD + data 文件 truncate 回回滚点
+
+master 直接 write_object 不打标记（隐式事务，ADD 立即生效）。崩溃（进程死亡）→ 无 END/ABORT → load_db 时 pending 区自动丢弃未提交的脏 ADD。
+
+异常清理由 `Database::abort_task_writes` 执行：`clear_pending`（清 WBQ 未落盘脏写）→ `abort_segment`（idx ABORT + data truncate）→ 清 DataService/ObjectCache 内存。详见 `docs/issues/001-failed-task-rerun-write-duplication.md`。
 
 ### Temp 写入流程（save_to_db=False）
 

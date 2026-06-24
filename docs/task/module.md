@@ -127,11 +127,14 @@ task_status_        → {task_id → 当前状态}
 
 ## 任务调度失败检测
 
-当 `fail_unscheduleable_tasks=1` 时，`schedule_tasks()` 执行两项检查：
+`schedule_tasks()` 执行两项检查：
 
-**Capability 检查**: 遍历就绪任务，检查是否有 Worker 具备所需能力。如果没有，任务标记为 FAILED。
+**Dependency 检查**（始终执行，不受开关控制）: 如果没有就绪任务且没有运行中的任务，说明剩余 pending 任务的依赖永远无法满足（上游 task 失败导致数据被清理），标记为 FAILED 并持久化。这是确定性失败，应即时判定——不受 `fail_unscheduleable_tasks` 开关影响。
 
-**Dependency 检查**: 如果没有就绪任务且没有运行中的任务，说明剩余 pending 任务的依赖永远无法满足，标记为 FAILED。
+**Capability 检查**（仅 `fail_unscheduleable_tasks=1` 时）: 遍历就绪任务，检查是否有 Worker 具备所需能力。如果没有，任务标记为 FAILED。
+
+> 注意：worker 运行时失败的 task（异常/读不到数据）通过 `on_task_failed` 处理时，
+> 也会持久化到 `failed_tasks.bin`（与调度失败一致），供 `restart_failed_tasks` 恢复。
 
 ---
 

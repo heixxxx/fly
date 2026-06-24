@@ -97,6 +97,77 @@ void DataWriter::close() {
     closed_ = true;
 }
 
+void DataWriter::mark_begin() {
+    // 记录当前 data 文件位置作为回滚点，供 ABORT 时 truncate。
+    segment_point_.file_index_ = file_index_;
+    segment_point_.file_offset_ = current_file_size_;
+    segment_point_.active_ = true;
+    index_->mark_begin();
+}
+
+void DataWriter::mark_end() {
+    segment_point_.active_ = false;
+    index_->mark_end();
+}
+
+void DataWriter::abort_segment() {
+    if (!segment_point_.active_) {
+        // 本 db 本 task 无写入（段未开），no-op。
+        return;
+    }
+
+    // 先 flush，保证当前缓冲区内的脏字节落盘，truncate 才能精确截断。
+    if (file_stream_.is_open()) {
+        file_stream_.flush();
+    }
+    // idx 打 ABORT：整段 pending 撤销，无需逐个 REMOVE。
+    index_->mark_abort();
+
+    // data 文件 truncate 回回滚点，回收脏字节的磁盘占用。
+    rollback_data_file();
+
+    segment_point_.active_ = false;
+}
+
+void DataWriter::rollback_data_file() {
+    // 关闭当前流，准备 truncate。
+    if (file_stream_.is_open()) {
+        file_stream_.close();
+    }
+
+    CMString write_dir = data_path_.empty() ? base_path_ : data_path_;
+
+    // 情况1：BEGIN 后发生过 rollover（本 task 写出的 .dat 超过 1 个）。
+    //   删除回滚点之后新创建的所有 .dat（file_index_ 递减回回滚点序号）。
+    while (file_index_ > segment_point_.file_index_) {
+        CMString path = write_dir + "/" + get_file_name(file_index_);
+        std::error_code ec;
+        fs::remove(path, ec);   // 忽略不存在
+        file_index_--;
+    }
+
+    // 情况2（或情况1的收尾）：截断回滚点 .dat 到 BEGIN 时记录的偏移。
+    CMString rollback_file = write_dir + "/" + get_file_name(segment_point_.file_index_);
+    std::error_code ec;
+    if (segment_point_.file_offset_ == 0) {
+        // 回滚点是文件开头：直接清空文件（resize_file 到 0）。
+        fs::resize_file(rollback_file, 0, ec);
+    } else {
+        fs::resize_file(rollback_file, static_cast<uintmax_t>(segment_point_.file_offset_), ec);
+    }
+    if (ec) {
+        ERR("Failed to truncate data file {}: {}", rollback_file, ec.message());
+    }
+
+    // 重新打开该文件继续追加，重置内存位置游标。
+    current_file_ = get_file_name(segment_point_.file_index_);
+    current_file_size_ = segment_point_.file_offset_;
+    file_stream_.open(rollback_file, std::ios::binary | std::ios::app);
+    if (!file_stream_.is_open()) {
+        ERR("Failed to reopen data file after rollback: {}", rollback_file);
+    }
+}
+
 int64_t DataWriter::total_bytes_written() const {
     return total_bytes_;
 }
@@ -138,7 +209,12 @@ void DataWriter::create_new_file() {
 }
 
 CMString DataWriter::get_current_file_name() {
+    return get_file_name(file_index_);
+}
+
+CMString DataWriter::get_file_name(int32_t index) const {
     std::ostringstream oss;
-    oss << "data_" << writer_id_ << "_" << std::setfill('0') << std::setw(3) << file_index_ << ".dat";
+    oss << "data_" << writer_id_ << "_" << std::setfill('0')
+        << std::setw(3) << index << ".dat";
     return oss.str();
 }

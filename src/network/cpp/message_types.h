@@ -188,10 +188,15 @@ struct TaskFailedMessage {
     bool recoverable_ = false;
     CMString error_message_;
     TaskErrorType error_type_ = TaskErrorType::UNKNOWN;
+    // 失败 task 已写出的脏对象列表（db_id:short_name 全名）。
+    // worker 在 task 失败后已本地撤销（idx ABORT + data truncate），master
+    // 据此清理 remote_idx / provenance / graph，并广播 OBJECT_REMOVED 通知其他
+    // worker 清缓存。
+    CMVector<CMString> dirty_objects_;
 
     static constexpr MessageType msg_type_ = MessageType::TASK_FAILED;
 
-    FLY_SERIALIZE(header_, task_id_, worker_id_, recoverable_, error_message_, error_type_);
+    FLY_SERIALIZE(header_, task_id_, worker_id_, recoverable_, error_message_, error_type_, dirty_objects_);
 };
 
 struct DataReadyMessage {

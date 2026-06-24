@@ -339,17 +339,25 @@ bool WorkerAgent::poll_task() {
         if (result.status_ == TaskExecStatus::SUCCESS) {
             auto error_type = WorkerAgentContext::get_last_error_type();
             if (error_type != TaskErrorType::UNKNOWN) {
+                // write-rejection 失败：task 逻辑成功，但某次 write 被 master 拒绝。
+                // 撤销本 task 已写入的脏对象。
+                cleanup_failed_task_writes(tracked_writes);
+
                 TaskFailedMessage failed;
                 failed.task_id_ = task.task_id_;
                 failed.worker_id_ = worker_id_;
                 failed.error_message_ = "Write registration rejected: error_type=" +
                     std::to_string(static_cast<int>(error_type));
                 failed.error_type_ = error_type;
+                failed.dirty_objects_ = std::move(tracked_writes);
                 reactor_->send(master_conn_, failed);
 
                 ERR("Task marked failed: task_id={}, write error_type={}",
                     task.task_id_, static_cast<int>(error_type));
             } else {
+                // 成功：对所有涉及的 db 打 END（提交写入段）。
+                commit_task_segments(tracked_writes);
+
                 TaskCompleteMessage complete;
                 complete.task_id_ = task.task_id_;
                 complete.worker_id_ = worker_id_;
@@ -365,11 +373,15 @@ bool WorkerAgent::poll_task() {
                 INFO("TaskComplete sent: task_id={}, outputs={}", tid, out_count);
             }
         } else {
+            // 异常失败：撤销本 task 已写入的脏对象。
+            cleanup_failed_task_writes(tracked_writes);
+
             TaskFailedMessage failed;
             failed.task_id_ = task.task_id_;
             failed.worker_id_ = worker_id_;
             failed.error_message_ = result.error_;
             failed.error_type_ = WorkerAgentContext::get_last_error_type();
+            failed.dirty_objects_ = std::move(tracked_writes);
             reactor_->send(master_conn_, failed);
 
             ERR("TaskFailed sent: task_id={}, error={}", task.task_id_, result.error_);
@@ -447,6 +459,9 @@ void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_has
     current_task_id_ = task_id;
     current_writes_.clear();
     current_write_hash_ = write_context_hash;
+    // 激活事务模式：本 task 的 write_object 会被 BEGIN/END 包裹（pending 区语义）。
+    // master 直接 write_object 不激活此模式（段外隐式事务，ADD 立即生效）。
+    WorkerAgentContext::set_transaction_mode(true);
     WorkerAgentContext::set_current_write_hash(write_context_hash);
     WorkerAgentContext::set_last_error_type(TaskErrorType::UNKNOWN);
     WorkerAgentContext::set_record_write_func([this](const CMString& db_id, const CMString& name) {
@@ -512,6 +527,43 @@ CMVector<CMString> WorkerAgent::end_task(uint64_t task_id) {
     current_writes_.clear();
     current_task_id_ = 0;
     return writes;
+}
+
+void WorkerAgent::commit_task_segments(const CMVector<CMString>& written_objects) {
+    // task 成功：对所有涉及写入的 db 打 END，提交写入段。
+    // 段未开（db 无写入）的 mark_write_end 是 no-op（DataWriter::segment_active_==false）。
+    CMUnorderedSet<CMString> involved_dbs;
+    for (const auto& full : written_objects) {
+        CMString db_id, short_name;
+        if (fly::split_full_name(full, db_id, short_name)) {
+            involved_dbs.insert(db_id);
+        }
+    }
+    for (const auto& db_id : involved_dbs) {
+        auto it = databases_.find(db_id);
+        if (it != databases_.end()) {
+            // 先 drain 保证段内所有 ADD 已落盘，再打 END 提交。
+            fly::DataService::instance()->drain_write_back();
+            it->second->mark_write_end();
+        }
+    }
+}
+
+void WorkerAgent::cleanup_failed_task_writes(const CMVector<CMString>& dirty_objects) {
+    // task 失败：按 db_id 分组，对每个 db 调 abort_task_writes 撤销写入。
+    // idx 打 ABORT（整段 pending 撤销）+ data 文件 truncate 回滚 + 清运行时内存。
+    CMUnorderedMap<CMString, CMVector<CMString>> by_db;
+    for (const auto& full : dirty_objects) {
+        CMString db_id, short_name;
+        if (fly::split_full_name(full, db_id, short_name)) {
+            by_db[db_id].push_back(full);
+        }
+    }
+    for (auto& [db_id, full_names] : by_db) {
+        auto it = databases_.find(db_id);
+        if (it == databases_.end()) continue;
+        it->second->abort_task_writes(full_names);
+    }
 }
 
 void WorkerAgent::request_database_freeze(const CMString& db_id) {
@@ -968,6 +1020,10 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
 
             LocalIndex idx(idx_path);
             idx.load();
+            if (idx.had_unclosed_segment()) {
+                WARN("Detected unclosed write segment in {} (crashed task), "
+                     "its data was discarded on load", idx_path);
+            }
             auto all_entries = idx.get_all_entries();
 
             if (!all_entries.empty()) {

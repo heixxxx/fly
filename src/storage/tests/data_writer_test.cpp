@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/data_writer.h>
+#include <storage/cpp/local_index.h>
 #include <storage/cpp/compressing_streambuf.h>
 #include <storage/cpp/fly_buffer_stream.h>
 #include <serialization/cpp/fly_buffer.h>
@@ -291,6 +292,154 @@ TEST_F(DataWriterTest, HostStoredInEntry) {
     EXPECT_EQ(entry->host_, "192.168.1.1");
 
     writer.close();
+}
+
+// =============================================================================
+// abort_segment 测试 —— data 文件 truncate 回滚
+// =============================================================================
+
+// 辅助：获取 data 文件大小
+static int64_t file_size(const CMString& path) {
+    std::error_code ec;
+    auto sz = std::filesystem::file_size(path, ec);
+    return ec ? -1 : static_cast<int64_t>(sz);
+}
+
+TEST_F(DataWriterTest, AbortSegmentTruncatesDataFile) {
+    // BEGIN → 写 obj1 → abort_segment：data 文件 truncate 回 BEGIN 偏移(0)
+    CMString base_path = test_dir_ + "/abort_truncate";
+    CMString data_file;
+
+    {
+        DataWriter writer(base_path, "", "abort1", 100000);
+        data_file = base_path + "/data_abort1_001.dat";
+
+        writer.mark_begin();
+        CMString data(500, 'X');
+        auto rec = make_record(data);
+        writer.write_record("obj/dirty", rec.original_size_, rec.chunk_count_, rec.buffer);
+        writer.flush();
+
+        // 此时 data 文件有内容
+        EXPECT_GT(file_size(data_file), 0);
+        int64_t dirty_size = file_size(data_file);
+
+        writer.abort_segment();
+        writer.flush();
+
+        // abort 后 data 文件应 truncate 回 BEGIN 偏移(0)
+        EXPECT_EQ(file_size(data_file), 0);
+        EXPECT_LT(file_size(data_file), dirty_size);
+
+        writer.close();
+    }
+}
+
+TEST_F(DataWriterTest, AbortNoOpWhenSegmentNotOpened) {
+    // 未 mark_begin 直接 abort_segment：no-op，不应崩溃
+    CMString base_path = test_dir_ + "/abort_noop";
+    DataWriter writer(base_path, "", "abort2", 100000);
+
+    EXPECT_FALSE(writer.segment_active());
+    writer.abort_segment();   // no-op
+    EXPECT_FALSE(writer.segment_active());
+
+    writer.close();
+}
+
+TEST_F(DataWriterTest, AbortAcrossRollover) {
+    // BEGIN → 写超过 threshold 触发 rollover（产生 _002.dat）→ abort
+    // 应回滚：删除 _002.dat + truncate _001.dat 回 BEGIN 偏移
+    CMString base_path = test_dir_ + "/abort_rollover";
+    CMString file1 = base_path + "/data_abort3_001.dat";
+    CMString file2 = base_path + "/data_abort3_002.dat";
+
+    {
+        DataWriter writer(base_path, "", "abort3", 200);   // 小 threshold 触发 rollover
+
+        // 先写一个段外记录占位 _001.dat（让 BEGIN 偏移 > 0）
+        CMString data0(100, 'P');
+        auto rec0 = make_record(data0);
+        writer.write_record("obj/keep", rec0.original_size_, rec0.chunk_count_, rec0.buffer);
+        writer.flush();
+        int64_t begin_offset = file_size(file1);
+        EXPECT_GT(begin_offset, 0);
+
+        writer.mark_begin();   // 记录回滚点 = 当前 _001.dat 偏移
+
+        // 写大记录触发 rollover 到 _002.dat
+        CMString data1(300, 'A');
+        auto rec1 = make_record(data1);
+        writer.write_record("obj/dirty1", rec1.original_size_, rec1.chunk_count_, rec1.buffer);
+        writer.flush();
+
+        CMString data2(300, 'B');
+        auto rec2 = make_record(data2);
+        writer.write_record("obj/dirty2", rec2.original_size_, rec2.chunk_count_, rec2.buffer);
+        writer.flush();
+
+        EXPECT_TRUE(std::filesystem::exists(file2));   // rollover 产生了 _002.dat
+
+        writer.abort_segment();
+        writer.flush();
+
+        // _002.dat 应被删除，_001.dat 应 truncate 回 BEGIN 偏移
+        EXPECT_FALSE(std::filesystem::exists(file2));
+        EXPECT_EQ(file_size(file1), begin_offset);
+
+        writer.close();
+    }
+
+    // 验证段外记录 obj/keep 仍可读（idx 里保留）
+    // abort 后再 load idx，只有段外的 keep
+    LocalIndex idx(base_path + "/abort3.idx");
+    idx.load();
+    EXPECT_TRUE(idx.find_entry("obj/keep").has_value());
+    EXPECT_FALSE(idx.find_entry("obj/dirty1").has_value());
+    EXPECT_FALSE(idx.find_entry("obj/dirty2").has_value());
+}
+
+TEST_F(DataWriterTest, BeginEndThenAbortNextSegment) {
+    // 第一段 BEGIN→ADD→END（提交），第二段 BEGIN→ADD→abort（撤销）
+    // 验证第一段数据保留，第二段回滚
+    CMString base_path = test_dir_ + "/two_segments";
+    CMString data_file = base_path + "/data_abort4_001.dat";
+
+    {
+        DataWriter writer(base_path, "", "abort4", 100000);
+
+        // 第一段：提交
+        writer.mark_begin();
+        CMString d1(200, '1');
+        auto r1 = make_record(d1);
+        writer.write_record("obj/committed", r1.original_size_, r1.chunk_count_, r1.buffer);
+        writer.flush();
+        writer.mark_end();
+
+        int64_t committed_size = file_size(data_file);
+        EXPECT_GT(committed_size, 0);
+
+        // 第二段：撤销
+        writer.mark_begin();
+        CMString d2(300, '2');
+        auto r2 = make_record(d2);
+        writer.write_record("obj/rolledback", r2.original_size_, r2.chunk_count_, r2.buffer);
+        writer.flush();
+        EXPECT_GT(file_size(data_file), committed_size);   // 第二段写入了更多字节
+
+        writer.abort_segment();
+        writer.flush();
+
+        // data 文件应回滚到第一段 END 后的大小
+        EXPECT_EQ(file_size(data_file), committed_size);
+
+        writer.close();
+    }
+
+    LocalIndex idx(base_path + "/abort4.idx");
+    idx.load();
+    EXPECT_TRUE(idx.find_entry("obj/committed").has_value());
+    EXPECT_FALSE(idx.find_entry("obj/rolledback").has_value());
 }
 
 }

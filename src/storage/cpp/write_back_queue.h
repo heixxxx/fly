@@ -34,6 +34,12 @@ public:
     // Wait for all pending writes to complete
     void drain();
 
+    // 丢弃所有未处理的写请求（已在 worker_loop 执行的那个会自然完成），递减
+    // 它们的 pending_ 计数，并唤醒 drain/backpressure 等待者。用于 task 异常
+    // 清理：脏数据本要丢弃，无需先落盘再 truncate。被丢弃请求的 on_complete_
+    // 不会执行，调用方需自行清理 DataService/ObjectCache。
+    void clear_pending();
+
     size_t pending_count() const;
 
 private:

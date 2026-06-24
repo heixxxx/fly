@@ -3,6 +3,45 @@
 ---
 ---
 
+## 2026-06-25: 失败 Task 脏数据清理（事务化段标记 + 异常清理）
+
+### idx op log 事务化段标记
+
+LocalIndex 新增 BEGIN/END/ABORT 三个段边界标记（不含 task_id）。worker task
+写入被 BEGIN/END 包裹，ADD 进 pending 区，END 提交 / ABORT 回滚。崩溃遗留的
+未闭合段在 load_db 时自动丢弃（pending 区语义）。
+
+- `local_index.h/cpp`：新增 IdxOpType::BEGIN/END/ABORT、mark_begin/end/abort、
+  had_unclosed_segment 诊断、load pending 区状态机
+- `data_writer.h/cpp`：mark_begin 记录 data 偏移回滚点；abort_segment 执行
+  data 文件 truncate（含跨 rollover 多文件）
+- `write_back_queue.h/cpp`：新增 clear_pending 丢弃未落盘脏写（比 drain 高效）
+
+### 异常清理路径
+
+- `database.h/cpp`：abort_task_writes（clear_pending + ABORT + truncate + 清内存）
+- `worker_agent.cpp`：BEGIN 在 task 首次写入打（WBQ execute lambda）；成功打 END；
+  失败走 cleanup_failed_task_writes
+- `worker_context.h`：新增 transaction_mode 区分 worker task 与 master 写入
+- `message_types.h`：TaskFailedMessage 新增 dirty_objects_ 字段
+- `master_agent.cpp`：on_task_failed 清理 dirty_objects 的 remote_idx/provenance/
+  依赖图 + 广播 OBJECT_REMOVED
+
+### 连带修复
+
+- `master_agent.cpp`：on_task_failed 增加持久化 failed task（之前只有调度失败
+  才持久化）；schedule_tasks 依赖不可解检测移到 fail_unscheduleable_tasks
+  开关之前（修复上游失败后下游 pending task 40s 才判失败的延迟）
+
+### 文档更新
+
+- `docs/issues/001-failed-task-rerun-write-duplication.md`：状态改为 Resolved，
+  追加最终解决方案章节
+- `docs/storage/module.md`：补充写入事务语义 + WriteBackQueue clear_pending
+
+---
+---
+
 ## 2026-06-23: FlyStream C++ 基础设施 + __getstate__/__setstate__ + 宏重命名
 
 ### FlyStream — 流式序列化+压缩容器（C++ 基础设施）

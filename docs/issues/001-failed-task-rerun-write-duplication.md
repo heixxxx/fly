@@ -1,8 +1,8 @@
 # Issue #001: 失败 Task 重跑导致的写入数据重复及 load_db 读取错误
 
-**状态**: Open
+**状态**: Resolved（2026-06-25）— 通过事务化段标记 + 异常清理解决
 **严重程度**: High — 数据正确性
-**影响模块**: `storage`（LocalIndex, DataService, DataReader）
+**影响模块**: `storage`（LocalIndex, DataService, DataWriter, WriteBackQueue）
 **创建日期**: 2026-05-24
 
 ---
@@ -380,3 +380,48 @@ if (obj_entries.size() > 1) {
 | `src/storage/cpp/data_reader.cpp:182-218` | `read_from_entries()` — 多条 entry 拼接 |
 | `src/storage/cpp/data_writer.cpp` | DataWriter — 追加写入 data 文件 |
 | `src/agent/cpp/master_agent.cpp` | `restart_failed_tasks()` — 重跑入口 |
+
+---
+
+## 9. 最终解决方案（2026-06-25 实施）
+
+上述方案 A/B 是针对"重复写入后读取损坏"的补救。最终采用了**根因方案**——事务化段标记 + 异常清理，从源头消除失败 task 的脏数据。
+
+### 核心设计：idx op log 事务化段标记
+
+在 idx op log 引入三个段边界标记（不含 task_id，纯段边界）：
+
+| 标记 | 语义 | idx 行为 | data 文件行为 |
+|------|------|---------|--------------|
+| `BEGIN` | task 写入段开始 | 后续 ADD 进 pending 区 | 记录当前 data 偏移为回滚点 |
+| `END` | 段成功提交 | pending 提交进 entries_ | 保留 |
+| `ABORT` | 段异常撤销 | pending 丢弃 | data 文件 truncate 回 BEGIN 偏移 |
+
+两种写入模式：
+- **显式事务**（worker task 写入）：BEGIN 包裹的 ADD 进 pending，END 提交 / ABORT 回滚
+- **隐式事务**（master 直接 write_object，无 task 状态）：ADD 不在任何段内，立即生效
+
+`load()` 的 pending 区状态机：BEGIN → ADD 进 pending；END → pending 提交；ABORT → pending 丢弃；EOF 时 pending 非空 → 丢弃（崩溃遗留）。
+
+### 异常清理（非崩溃）
+
+worker 检测到 task 失败 → `Database::abort_task_writes()`：
+1. `WriteBackQueue::clear_pending()` 清空未落盘的脏写（比 drain 高效）
+2. `DataWriter::abort_segment()`：idx 打 ABORT + data 文件 truncate 回回滚点
+3. 清运行时内存（DataService.local_idx_ / ObjectCache）
+
+worker 向 master 发 `TaskFailedMessage`（新增 `dirty_objects_` 字段），master 清理 remote_idx/provenance/依赖图 + 广播 OBJECT_REMOVED。
+
+### 崩溃恢复
+
+崩溃 → 进程死亡 → idx 留下未闭合段（BEGIN 无 END/ABORT）→ load_db 时 pending 区自动丢弃脏 ADD（`had_unclosed_segment()` 诊断告警）。
+
+### 连带修复
+
+1. `on_task_failed` 增加持久化 failed task（之前只有调度失败才持久化，运行时失败的 task 不写 failed_tasks.bin，restart 无法恢复）
+2. `schedule_tasks` 依赖不可解检测移到 `fail_unscheduleable_tasks` 开关之前（之前上游失败导致数据清理后，下游 pending task 要等 40s 才被判失败）
+
+### 测试
+
+- C++ 单测：LocalIndex 段标记（8 个）、DataWriter abort truncate（4 个）、WriteBackQueue clear_pending（2 个）
+- QA：`test_task_failure_cleanup`（异常清理端到端）、`test_load_db_abort`（崩溃遗留段 load_db 丢弃）、`test_chain_failure_restart`（21 节点 DAG 连锁失败 + 跨进程 restart）

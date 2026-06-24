@@ -209,6 +209,8 @@ public:
     void stop_write_back();
     void enqueue_write_back(fly::WriteRequest&& task);
     void drain_write_back();
+    // 丢弃 WBQ 中所有未处理的写请求（task 异常撤销用）。详见 WriteBackQueue::clear_pending。
+    void clear_write_back();
     bool is_write_back_running() const;
 
     // ============================================================

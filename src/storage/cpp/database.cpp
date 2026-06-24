@@ -159,7 +159,15 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
     auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : std::function<void(const fly::CMString&, const fly::CMString&)>{};
     CMString write_hash = fly::WorkerAgentContext::get_current_write_hash();
 
-    auto execute = [w, name = full, original_size, chunk_count, record, write_hash]() {
+    // 仅 worker task 上下文打 BEGIN（transaction_mode 激活时）。master 直接
+    // write_object 时 transaction_mode 未激活，其 ADD 为段外隐式事务，load 时
+    // 直接生效。mark_begin 记录 data 偏移回滚点，后续 mark_end 提交 /
+    // abort_segment 回滚。WBQ 单线程串行，segment_active 判断与设置无竞态。
+    bool in_task_context = fly::WorkerAgentContext::is_transaction_mode();
+    auto execute = [w, name = full, original_size, chunk_count, record, write_hash, in_task_context]() {
+        if (in_task_context && !w->segment_active()) {
+            w->mark_begin();
+        }
         w->write_record(name, original_size, chunk_count, *record, write_hash);
         w->flush();
     };
@@ -430,6 +438,37 @@ void Database::remove_index_entry(const CMString& object_name) {
     writer_->remove_entry(full);
     fly::ObjectCache::instance().remove(full);
     INFO("Index entry removed: {}", full);
+}
+
+void Database::mark_write_begin() {
+    writer_->mark_begin();
+}
+
+void Database::mark_write_end() {
+    writer_->mark_end();
+}
+
+void Database::abort_task_writes(const CMVector<CMString>& dirty_full_names) {
+    // 1. 先清空 WBQ 中尚未开始的脏写请求（比 drain 更高效，避免先落盘再删）。
+    fly::DataService::instance()->clear_write_back();
+    // 2. drain 正在执行的那个写（已 pop 出 queue，clear_pending 丢不掉它）：
+    //    等它自然完成，保证 truncate 时文件状态确定。它落盘的脏字节会被
+    //    下一步 truncate 回收，on_complete_ 更新的 local_idx_ 会在第 4 步清理。
+    fly::DataService::instance()->drain_write_back();
+
+    // 3. idx 打 ABORT + data 文件 truncate 回滚点。
+    writer_->abort_segment();
+
+    // 4. 清运行时内存中被本 task 污染的对象。
+    //    （clear_pending 跳过了未开始请求的 on_complete_，drain 完成的那个
+    //    请求的 on_complete_ 更新了 local_idx_；ABORT 标记只在 load 时丢弃
+    //    pending，运行时内存需主动清。）
+    for (const auto& full : dirty_full_names) {
+        fly::DataService::instance()->remove_local_index(full);
+        fly::ObjectCache::instance().remove(full);
+    }
+
+    INFO("Task writes aborted: {} dirty objects, db_id={}", dirty_full_names.size(), db_id_);
 }
 
 DbMeta Database::load_meta() const {

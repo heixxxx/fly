@@ -408,6 +408,56 @@ void MasterAgent::schedule_tasks() {
         }
     }
 
+    // 依赖不可解检测：上游 task 失败导致数据被清理后，依赖该数据的 pending
+    // task 永远无法就绪。此时若 ready 空（无 task 可调度）且无 running task
+    // （无 task 可能产出该数据），应立即判定这些 pending task 失败，而非空等。
+    // 这与属性死锁（fail_unscheduleable_tasks 开关控制）是不同的失败模式，
+    // 不受该开关影响 —— 数据依赖丢失是确定性的，应即时失败并持久化供 restart。
+    {
+        auto pending = graph_->get_pending_tasks();
+        if (!pending.empty()) {
+            auto ready = graph_->get_ready_tasks();
+            if (ready.empty() && !metadata_->has_tasks_with_status(TaskStatus::RUNNING)) {
+                for (uint64_t task_id : pending) {
+                    auto deps = graph_->get_task_dependencies(task_id);
+                    CMString dep_list;
+                    for (size_t i = 0; i < deps.size(); i++) {
+                        if (i > 0) dep_list += ",";
+                        dep_list += deps[i];
+                    }
+                    CMString error_msg = "Unresolvable data dependencies: [" + dep_list + "]";
+
+                    FailedTaskRecord record;
+                    record.task_id_ = task_id;
+                    auto task_opt2 = metadata_->get_task(task_id);
+                    if (task_opt2) {
+                        record.name_ = task_opt2->name_;
+                        record.outputs_ = task_opt2->outputs_;
+                        record.inputs_ = task_opt2->inputs_;
+                        record.required_capabilities_ = task_opt2->required_capabilities_;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(task_args_mutex_);
+                        record.module_ = task_modules_.count(task_id) ? task_modules_[task_id] : "";
+                        record.args_ = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
+                    }
+                    record.error_message_ = error_msg;
+
+                    graph_->remove_task(task_id);
+                    metadata_->fail_task(task_id, error_msg);
+                    {
+                        std::lock_guard<std::mutex> lk(task_args_mutex_);
+                        task_modules_.erase(task_id);
+                        task_args_.erase(task_id);
+                    }
+
+                    persist_failed_task(record);
+                    ERR("Task {} failed: {}", task_id, error_msg);
+                }
+            }
+        }
+    }
+
     if (Config::instance()->get_int("fail_unscheduleable_tasks") != 1) return;
 
     auto remaining = graph_->get_ready_tasks();
@@ -457,46 +507,6 @@ void MasterAgent::schedule_tasks() {
 
             persist_failed_task(record);
             ERR("Task {} failed: {}", task_id, error_msg);
-        }
-    }
-
-    auto pending = graph_->get_pending_tasks();
-    if (!pending.empty()) {
-        auto ready = graph_->get_ready_tasks();
-        if (ready.empty() && !metadata_->has_tasks_with_status(TaskStatus::RUNNING)) {
-            for (uint64_t task_id : pending) {
-                auto deps = graph_->get_task_dependencies(task_id);
-                CMString dep_list;
-                for (size_t i = 0; i < deps.size(); i++) {
-                    if (i > 0) dep_list += ",";
-                    dep_list += deps[i];
-                }
-                CMString error_msg = "Unresolvable data dependencies: [" + dep_list + "]";
-
-                FailedTaskRecord record;
-                record.task_id_ = task_id;
-                auto task_opt2 = metadata_->get_task(task_id);
-                if (task_opt2) {
-                    record.name_ = task_opt2->name_;
-                    record.outputs_ = task_opt2->outputs_;
-                }
-                record.module_ = task_modules_.count(task_id) ? task_modules_[task_id] : "";
-                record.args_ = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
-                record.inputs_ = deps;
-                record.required_capabilities_ = graph_->get_task_requirements(task_id).capabilities_;
-                record.error_message_ = error_msg;
-
-                graph_->remove_task(task_id);
-                metadata_->fail_task(task_id, error_msg);
-                {
-                    std::lock_guard<std::mutex> lk(task_args_mutex_);
-                    task_modules_.erase(task_id);
-                    task_args_.erase(task_id);
-                }
-
-                persist_failed_task(record);
-            ERR("Task {} failed: {}", task_id, error_msg);
-            }
         }
     }
 }
@@ -844,10 +854,47 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
     metadata_->fail_task(msg.task_id_, msg.error_message_);
     graph_->remove_task(msg.task_id_);
 
+    // 在 erase task_modules_/task_args_ 前构建 FailedTaskRecord 并持久化，
+    // 供 restart_failed_tasks 读取。运行时失败的 task（异常/读不到数据）
+    // 也应可 restart，与调度时失败的 task 一致。
     {
-        std::lock_guard<std::mutex> lk(task_args_mutex_);
-        task_modules_.erase(msg.task_id_);
-        task_args_.erase(msg.task_id_);
+        FailedTaskRecord record;
+        record.task_id_ = msg.task_id_;
+        record.error_message_ = msg.error_message_;
+        auto task_opt = metadata_->get_task(msg.task_id_);
+        if (task_opt) {
+            record.name_ = task_opt->name_;
+            record.outputs_ = task_opt->outputs_;
+            record.inputs_ = task_opt->inputs_;
+            record.required_capabilities_ = task_opt->required_capabilities_;
+        }
+        {
+            std::lock_guard<std::mutex> lk(task_args_mutex_);
+            record.module_ = task_modules_.count(msg.task_id_) ? task_modules_[msg.task_id_] : "";
+            record.args_ = task_args_.count(msg.task_id_) ? task_args_[msg.task_id_] : CMVector<CMString>();
+            task_modules_.erase(msg.task_id_);
+            task_args_.erase(msg.task_id_);
+        }
+        persist_failed_task(record);
+    }
+
+    // 清理失败 task 已写出的脏对象：worker 已本地撤销（idx ABORT + data truncate），
+    // master 据此清理 remote_idx / provenance / 依赖图，并广播 OBJECT_REMOVED
+    // 通知其他 worker 清缓存，避免读到失效数据。
+    for (const auto& obj : msg.dirty_objects_) {
+        DataService::instance()->remove_remote_index(obj);
+        {
+            std::lock_guard<std::mutex> lk(provenance_mutex_);
+            write_provenance_.erase(obj);
+        }
+        graph_->mark_data_removed(obj);
+
+        CMString db_id, short_name;
+        if (fly::split_full_name(obj, db_id, short_name)) {
+            broadcast_object_removed(db_id, short_name);
+        }
+        WARN("Dirty object cleaned after task failure: task_id={}, object={}",
+             msg.task_id_, obj);
     }
 
     if (msg.error_type_ == TaskErrorType::WRITE_REGISTRATION_TIMEOUT ||
@@ -1632,6 +1679,10 @@ void MasterAgent::rebuild_remote_idx_for_worker(const CMString& db_id,
 
         LocalIndex idx(idx_path);
         idx.load();
+        if (idx.had_unclosed_segment()) {
+            WARN("rebuild_remote_idx: detected unclosed write segment in {} "
+                 "(crashed task), its entries were discarded", idx_path);
+        }
         auto entries = idx.get_all_entries();
 
         for (const auto& entry : entries) {

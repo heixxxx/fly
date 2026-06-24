@@ -71,6 +71,16 @@ public:
     void remove_object(const CMString& object_name);
     void remove_index_entry(const CMString& object_name);
 
+    // 写入段标记（委托 writer_）。task 写入第一个对象时打 BEGIN，成功时打 END。
+    // master 直接 write_object 不打标记（隐式事务，ADD 落盘即生效）。
+    void mark_write_begin();
+    void mark_write_end();
+
+    // task 异常撤销：清空 WBQ 未落盘的脏写 + idx 打 ABORT + data 文件 truncate 回滚 +
+    // 清运行时内存（DataService.local_idx_ / ObjectCache）中本 task 的脏对象。
+    // dirty_full_names 是本 task 已写出的对象全名列表（db_id:short_name）。
+    void abort_task_writes(const CMVector<CMString>& dirty_full_names);
+
     void put_temp(const CMString& object_name, const CMString& compressed_data);
     std::pair<bool, CMString> get_temp(const CMString& object_name);
     bool has_temp(const CMString& object_name);

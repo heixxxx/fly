@@ -622,4 +622,144 @@ TEST_F(LocalIndexTest, RemoveEntryReturnsFalseAfterAlreadyRemoved) {
     EXPECT_FALSE(index.remove_entry("obj/del"));
 }
 
+// =============================================================================
+// 段标记（BEGIN/END/ABORT）测试 —— 事务化 pending 区语义
+// =============================================================================
+
+TEST_F(LocalIndexTest, BeginEndCommit) {
+    // BEGIN → ADD → END：load 后 obj1 在 entries_（正常提交）
+    {
+        LocalIndex index(make_idx_path("begin_end_commit"));
+        index.mark_begin();
+        index.add_entry({"obj/1", "d1.dat", 0, 10, false, 0});
+        index.save();
+        index.mark_end();
+    }
+    LocalIndex index(make_idx_path("begin_end_commit"));
+    index.load();
+    EXPECT_EQ(index.entry_count(), 1);
+    EXPECT_TRUE(index.find_entry("obj/1").has_value());
+    EXPECT_FALSE(index.had_unclosed_segment());
+}
+
+TEST_F(LocalIndexTest, BeginAbortDropped) {
+    // BEGIN → ADD → ABORT：load 后 entries_ 为空（整段撤销）
+    {
+        LocalIndex index(make_idx_path("begin_abort"));
+        index.mark_begin();
+        index.add_entry({"obj/1", "d1.dat", 0, 10, false, 0});
+        index.save();
+        index.mark_abort();
+    }
+    LocalIndex index(make_idx_path("begin_abort"));
+    index.load();
+    EXPECT_EQ(index.entry_count(), 0);
+    EXPECT_FALSE(index.find_entry("obj/1").has_value());
+    EXPECT_FALSE(index.had_unclosed_segment());   // ABORT 闭合了段
+}
+
+TEST_F(LocalIndexTest, BeginNoEndDroppedOnLoad) {
+    // BEGIN → ADD → [EOF 无 END/ABORT]：模拟崩溃，load 后 pending 丢弃
+    {
+        LocalIndex index(make_idx_path("begin_no_end"));
+        index.mark_begin();
+        index.add_entry({"obj/1", "d1.dat", 0, 10, false, 0});
+        index.save();
+        // 不打 END/ABORT，直接析构（模拟崩溃）
+    }
+    LocalIndex index(make_idx_path("begin_no_end"));
+    index.load();
+    EXPECT_EQ(index.entry_count(), 0);
+    EXPECT_FALSE(index.find_entry("obj/1").has_value());
+    EXPECT_TRUE(index.had_unclosed_segment());   // 检测到未闭合段
+}
+
+TEST_F(LocalIndexTest, MultipleSegmentsMixed) {
+    // (BEGIN→ADD a→END)(BEGIN→ADD b→[EOF])：load 后只有 a
+    {
+        LocalIndex index(make_idx_path("multi_seg"));
+        index.mark_begin();
+        index.add_entry({"obj/a", "da.dat", 0, 10, false, 0});
+        index.save();
+        index.mark_end();
+        index.mark_begin();
+        index.add_entry({"obj/b", "db.dat", 10, 20, false, 0});
+        index.save();
+        // 第二段无 END，模拟崩溃
+    }
+    LocalIndex index(make_idx_path("multi_seg"));
+    index.load();
+    EXPECT_EQ(index.entry_count(), 1);
+    EXPECT_TRUE(index.find_entry("obj/a").has_value());
+    EXPECT_FALSE(index.find_entry("obj/b").has_value());
+    EXPECT_TRUE(index.had_unclosed_segment());
+}
+
+TEST_F(LocalIndexTest, LegacyNoMarkersDirectEffect) {
+    // 纯 ADD 无标记（旧格式 / master 隐式事务）：load 后直接生效
+    {
+        LocalIndex index(make_idx_path("legacy_no_markers"));
+        index.add_entry({"obj/1", "d1.dat", 0, 10, false, 0});
+        index.add_entry({"obj/2", "d2.dat", 10, 20, false, 0});
+        index.save();
+    }
+    LocalIndex index(make_idx_path("legacy_no_markers"));
+    index.load();
+    EXPECT_EQ(index.entry_count(), 2);
+    EXPECT_FALSE(index.had_unclosed_segment());
+}
+
+TEST_F(LocalIndexTest, BeginAsFirstRecordFormatDetection) {
+    // BEGIN 是首字节：格式检测必须正确识别为新格式（回归）
+    {
+        LocalIndex index(make_idx_path("begin_first"));
+        index.mark_begin();
+        index.add_entry({"obj/1", "d1.dat", 0, 10, false, 0});
+        index.save();
+        index.mark_end();
+    }
+    LocalIndex index(make_idx_path("begin_first"));
+    index.load();
+    // 若格式检测错误（误判 legacy），entries_ 会为空
+    EXPECT_EQ(index.entry_count(), 1);
+    EXPECT_TRUE(index.find_entry("obj/1").has_value());
+}
+
+TEST_F(LocalIndexTest, ImplicitAndExplicitMixed) {
+    // 段外 ADD（隐式）+ 段内 ADD（显式提交）：两者都应保留
+    {
+        LocalIndex index(make_idx_path("mixed_implicit_explicit"));
+        index.add_entry({"obj/implicit", "d0.dat", 0, 10, false, 0});   // 段外，立即生效
+        index.save();
+        index.mark_begin();
+        index.add_entry({"obj/explicit", "d1.dat", 10, 20, false, 0});
+        index.save();
+        index.mark_end();
+    }
+    LocalIndex index(make_idx_path("mixed_implicit_explicit"));
+    index.load();
+    EXPECT_EQ(index.entry_count(), 2);
+    EXPECT_TRUE(index.find_entry("obj/implicit").has_value());
+    EXPECT_TRUE(index.find_entry("obj/explicit").has_value());
+}
+
+TEST_F(LocalIndexTest, AbortDropsOnlyPendingSegment) {
+    // 段外 ADD + (BEGIN→ADD→ABORT)：段外保留，段内丢弃
+    {
+        LocalIndex index(make_idx_path("abort_keeps_implicit"));
+        index.add_entry({"obj/keep", "d0.dat", 0, 10, false, 0});   // 段外
+        index.save();
+        index.mark_begin();
+        index.add_entry({"obj/drop", "d1.dat", 10, 20, false, 0});
+        index.save();
+        index.mark_abort();
+    }
+    LocalIndex index(make_idx_path("abort_keeps_implicit"));
+    index.load();
+    EXPECT_EQ(index.entry_count(), 1);
+    EXPECT_TRUE(index.find_entry("obj/keep").has_value());
+    EXPECT_FALSE(index.find_entry("obj/drop").has_value());
+    EXPECT_FALSE(index.had_unclosed_segment());
+}
+
 }
