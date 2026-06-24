@@ -217,13 +217,22 @@ def _is_adaptive(db):
         return False
 
 
+_COARSE_CACHE = {}
+
 def _is_coarse(db):
+    # Cache the result: omega mode is fixed for the whole solve, so reading
+    # __rasg__cfg from DB every compute call (8 iters × 4 workers) is pure
+    # waste. Memoise after the first read.
+    if "v" in _COARSE_CACHE:
+        return _COARSE_CACHE["v"]
     try:
         cfg = db.read_object("__rasg__cfg")
         omega = cfg.get("omega", 1.0)
-        return isinstance(omega, str) and "coarse" in omega
+        v = isinstance(omega, str) and "coarse" in omega
     except Exception:
-        return False
+        v = False
+    _COARSE_CACHE["v"] = v
+    return v
 
 
 def _compute_deps(db, sd_id, step, neighbor_ids):
@@ -545,8 +554,12 @@ def _apply_coarse_correction(db, step, nsd):
 
     t_assemble = time.perf_counter()
     x_global = np.zeros(N, dtype=np.float64)
+    # Cache each subdomain's x to reuse in the correction loop below — avoids a
+    # second DB read of __rasg__x_* (was ~8MB redundant read/step at n=1000).
+    x_sd_cache = {}
     for sd_id in range(nsd):
         x_sd = db.read_object(f"__rasg__x_{sd_id}_{step}")
+        x_sd_cache[sd_id] = x_sd
         # Vectorised scatter: assign all primary nodes of this subdomain in one
         # numpy fancy-index call instead of a per-node Python loop (the loop
         # dominates coarse-correction cost over 9 iterations).
@@ -566,11 +579,9 @@ def _apply_coarse_correction(db, step, nsd):
 
     t_write = time.perf_counter()
     for sd_id in range(nsd):
-        x_sd = db.read_object(f"__rasg__x_{sd_id}_{step}")
-        # Vectorised correction: add the coarse-grid error at this subdomain's
-        # primary nodes in one numpy operation (was a per-node Python loop).
+        # Reuse the value read during assembly — no second DB read.
+        corrected = np.array(x_sd_cache[sd_id], dtype=np.float64)
         ps = np.asarray(primary_sets[sd_id])
-        corrected = np.array(x_sd, dtype=np.float64)
         corrected += e_fine[ps]
         db.write_object(f"__rasg__xc_{sd_id}_{step}",
                         corrected, save_to_db=False)
@@ -739,7 +750,6 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
     setup = get_cache(setup_key)
     solver = get_cache(f"__rasg__solver_{sd_id}")
 
-
     # ── Load tol/omega config ──
     tol_key = "__rasg__tol"
     omega_key = "__rasg__omega"
@@ -853,7 +863,6 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
                 db.remove_object(f"__rasg__xc_{sd_id}_{step - 2}")
             except Exception:
                 pass
-
     # ── Timing log ──
     t_total = time.perf_counter() - t_compute_start
     parts = [f"[RASG COMPUTE] sd={sd_id} step={step} omega={omega:.4f} "
