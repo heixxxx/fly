@@ -13,9 +13,7 @@
 不会被错误调度。`on_task_complete` 非 stream 分支补齐 `update_dependency_location_cache`。
 
 - `master_agent.cpp::do_write_register`：可见性登记段按 `streaming_mode` 分流（master 自写 worker_id_==0 强制即时，无 TaskCompleteMessage 触发时机）
-- `master_agent.cpp::on_task_complete`：非 stream 分支补 `update_dependency_location_cache` + `record_worker_info`
-- `message_types.h::WrittenObject`：新增 `db_id_` 字段（complete 消息带上，供非 stream 模式补做 record_worker_info）
-- `worker_agent.cpp`：构造 WrittenObject 时从 full name 解析 db_id 填入
+- `master_agent.cpp::on_task_complete`：非 stream 分支补 `update_dependency_location_cache` + `record_worker_info`（db_id 由 master 用 `split_full_name` 从 object_name_ 反解，不冗余传输）
 - `master_agent.h`：`on_task_complete`/`on_task_failed` 移至 public（供测试直接调用）
 - `database.h/cpp`：新增 `worker_info_count()`（读 _DB_META 统计 worker 记录数，供测试验证）
 

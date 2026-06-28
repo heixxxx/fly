@@ -1247,7 +1247,6 @@ TEST(MasterAgentTest, NonStreamCompleteRecordsWorkerInfo) {
     complete.worker_id_ = 1;
     WrittenObject wo;
     wo.object_name_ = obj_x;
-    wo.db_id_ = db_id;
     wo.size_bytes_ = 100;
     complete.written_objects_.push_back(wo);
     master.on_task_complete(0, complete);

@@ -791,10 +791,14 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
             if (!streaming_mode) {
                 // 非 stream 模式：write register 时只做了校验（provenance/frozen），
                 // 可见性登记延迟到此处统一完成（task 级原子性）。
+                // db_id 从 object_name_ 反解（"db_id:short_name" 固定前缀格式）。
                 graph_->mark_data_ready(wo.object_name_);
                 DataService::instance()->update_remote_idx(wo.object_name_, worker_id, addr.host_, addr.port_, wo.size_bytes_);
                 update_dependency_location_cache(wo.object_name_, worker_id, addr.host_, addr.port_);
-                record_worker_info(wo.object_name_, wo.db_id_, worker_id, "");
+                CMString db_id, short_name;
+                if (fly::split_full_name(wo.object_name_, db_id, short_name)) {
+                    record_worker_info(wo.object_name_, db_id, worker_id, "");
+                }
                 DBG("Recorded data location (non-stream, task complete): {} -> worker {}", wo.object_name_, worker_id);
             }
         }

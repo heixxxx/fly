@@ -171,11 +171,10 @@ struct TaskAssignMessage {
 // task 成功写出的对象条目：对象全名 + 压缩后字节数。
 // size_bytes_ 用于 master 的 data locality 调度亲和度打分（数据传输成本）。
 struct WrittenObject {
-    CMString object_name_;
+    CMString object_name_;   // full name: "db_id:short_name"（db_id 为固定 10 字符前缀）
     int64_t size_bytes_ = 0;
-    CMString db_id_;   // 写入所属 db（用于 task complete 时 record_worker_info，非 stream 模式必需）
 
-    FLY_SERIALIZE(object_name_, size_bytes_, db_id_);
+    FLY_SERIALIZE(object_name_, size_bytes_);
 };
 
 struct TaskCompleteMessage {
