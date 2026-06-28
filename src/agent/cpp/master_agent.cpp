@@ -799,26 +799,14 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
         metadata_->update_task_status(msg.task_id_, TaskStatus::COMPLETED);
         remove_persisted_task(msg.task_id_);
 
-        for (const auto& db_id : msg.frozen_dbs_) {
-            {
-                std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
-                frozen_dbs_.insert(db_id);
-            }
-            auto it = db_instances_.find(db_id);
-            if (it != db_instances_.end()) {
-                it->second->freeze();
-            }
-            INFO("DB frozen: db_id={}", db_id);
-
-            DatabaseFreezeNotification freeze_msg;
-            freeze_msg.db_id_ = db_id;
-            {
-                std::lock_guard<std::mutex> lk(workers_mutex_);
-                for (const auto& [wid, cid] : worker_to_conn_) {
-                    reactor_->send(cid, freeze_msg);
-                }
-            }
+        // 非 stream 模式：task 成功 → pending frozen 迁移到 confirmed + 广播。
+        // stream 模式下 pending 为空（freeze 已在 on_database_freeze_request 即时确认），此处 no-op。
+        // msg.frozen_dbs_ 仅用于日志校验；迁移按 task_id 从 pending 精确提取。
+        if (!msg.frozen_dbs_.empty()) {
+            DBG("Task complete frozen_dbs (declared): task_id={}, count={}",
+                msg.task_id_, msg.frozen_dbs_.size());
         }
+        commit_pending_frozen(msg.task_id_);
 
         {
             std::lock_guard<std::mutex> lk(task_args_mutex_);
@@ -896,6 +884,10 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
             static_cast<int>(msg.error_type_), msg.task_id_, msg.error_message_);
     }
 
+    // 非 stream 模式：task 失败 → 按 task_id 回滚 pending frozen（防永久死锁）。
+    // stream 模式下 pending 为空，此处 no-op。
+    rollback_pending_frozen(msg.task_id_);
+
     schedule_tasks();
     notify_drain_if_active();
 }
@@ -918,6 +910,13 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
     WARN("Worker disconnected: worker_id={}", worker_id);
 
     auto tasks_to_recover = metadata_->get_task_ids_by_worker(worker_id);
+
+    // 崩溃恢复：worker 断连可能意味着进程崩溃（收不到失败消息），必须按 task_id
+    // 清掉这些 task 声明的 pending frozen，否则该 db 会被永久标"冻结中" → 后续所有
+    // 写被拒 → 死锁级 bug。这是 Q1 选 task_id 而非 db_id 的核心理由。
+    for (uint64_t task_id : tasks_to_recover) {
+        rollback_pending_frozen(task_id);
+    }
 
     if (draining_.load()) {
         // During shutdown: mark running tasks as FAILED so drain can complete.
@@ -1017,7 +1016,56 @@ void MasterAgent::register_database(const CMString& db_id, const CMString& base_
 
 bool MasterAgent::is_db_frozen(const CMString& db_id) const {
     std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
-    return frozen_dbs_.count(db_id) > 0;
+    return frozen_dbs_.count(db_id) > 0 || pending_frozen_dbs_.count(db_id) > 0;
+}
+
+bool MasterAgent::is_db_pending_frozen(const CMString& db_id) const {
+    std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
+    return pending_frozen_dbs_.count(db_id) > 0;
+}
+
+void MasterAgent::commit_pending_frozen(uint64_t task_id) {
+    // task 成功：该 task 的 pending 项迁移到 confirmed + 广播给所有 worker。
+    CMVector<CMString> committed;
+    {
+        std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
+        for (auto it = pending_frozen_dbs_.begin(); it != pending_frozen_dbs_.end(); ) {
+            if (it->second == task_id) {
+                if (frozen_dbs_.insert(it->first).second) {
+                    committed.push_back(it->first);   // 仅广播新增的 confirmed
+                }
+                it = pending_frozen_dbs_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    // 本地 freeze + 广播（task 成功后才广播）
+    for (const auto& db_id : committed) {
+        auto it = db_instances_.find(db_id);
+        if (it != db_instances_.end()) it->second->freeze();
+        INFO("DB frozen (committed by task): db_id={}, task_id={}", db_id, task_id);
+        DatabaseFreezeNotification broadcast_msg;
+        broadcast_msg.db_id_ = db_id;
+        std::lock_guard<std::mutex> wlk(workers_mutex_);
+        for (const auto& [wid, cid] : worker_to_conn_) {
+            reactor_->send(cid, broadcast_msg);
+        }
+    }
+}
+
+void MasterAgent::rollback_pending_frozen(uint64_t task_id) {
+    // task 失败/崩溃：按 task_id 清除 pending（worker 本地 reset 由失败处理流程负责）。
+    // 这是覆盖崩溃失败的关键：master 收不到失败消息，只能靠 task_id 反查清理。
+    std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
+    for (auto it = pending_frozen_dbs_.begin(); it != pending_frozen_dbs_.end(); ) {
+        if (it->second == task_id) {
+            WARN("Rolling back pending freeze: db_id={}, task_id={}", it->first, task_id);
+            it = pending_frozen_dbs_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& base_path, const CMString& data_path, uint64_t writer_id) {
@@ -1712,32 +1760,55 @@ void MasterAgent::on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg
 }
 
 void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg) {
+    bool streaming_mode = (Config::instance()->get_int("dependency_update_mode") == 0);
+
+    DatabaseFreezeAckMessage ack;
+    ack.db_id_ = msg.db_id_;
+    bool accepted = false;
+    bool should_broadcast = false;   // stream 模式即时广播；非 stream 延迟到 commit
+
     {
         std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
-        if (frozen_dbs_.count(msg.db_id_)) {
-            WARN("DB already frozen, ignoring duplicate freeze request: db_id={}", msg.db_id_);
-            return;
+        bool already = frozen_dbs_.count(msg.db_id_) > 0 || pending_frozen_dbs_.count(msg.db_id_) > 0;
+        if (already) {
+            // 冲突：db 已被本 task 或其他 task freeze（业务流程错误）→ fail-fast
+            ack.success_ = false;
+            ack.error_type_ = TaskErrorType::DB_ALREADY_FROZEN;
+            WARN("Freeze rejected (already frozen/pending): db_id={}, task_id={}",
+                 msg.db_id_, msg.task_id_);
+        } else if (streaming_mode) {
+            // stream 模式：即时确认（保持原语义）
+            frozen_dbs_.insert(msg.db_id_);
+            ack.success_ = true;
+            accepted = true;
+            should_broadcast = true;
+            INFO("DatabaseFreezeRequest (stream): db_id={}", msg.db_id_);
+        } else {
+            // 非 stream 模式：登记 pending（记 task_id），不广播、不本地 freeze
+            pending_frozen_dbs_[msg.db_id_] = msg.task_id_;
+            ack.success_ = true;
+            accepted = true;
+            INFO("DatabaseFreezeRequest (non-stream pending): db_id={}, task_id={}",
+                 msg.db_id_, msg.task_id_);
         }
-
-        INFO("DatabaseFreezeRequest: db_id={}", msg.db_id_);
-
-        frozen_dbs_.insert(msg.db_id_);
     }
 
-    auto it = db_instances_.find(msg.db_id_);
-    if (it != db_instances_.end()) {
-        it->second->freeze();
-    }
+    // 回 ack（两种模式都回，让 worker 同步确认 freeze 是否被接受）
+    reactor_->send(conn_id, ack);
 
-    DatabaseFreezeNotification broadcast_msg = msg;
-    {
-        std::lock_guard<std::mutex> lk(workers_mutex_);
+    if (accepted && streaming_mode) {
+        // stream 模式的本地 freeze + 广播
+        auto it = db_instances_.find(msg.db_id_);
+        if (it != db_instances_.end()) {
+            it->second->freeze();
+        }
+        DatabaseFreezeNotification broadcast_msg = msg;
+        std::lock_guard<std::mutex> wlk(workers_mutex_);
         for (const auto& [wid, cid] : worker_to_conn_) {
             reactor_->send(cid, broadcast_msg);
         }
+        INFO("DB frozen and broadcasted (stream): db_id={}", msg.db_id_);
     }
-
-    INFO("DB frozen and broadcasted: db_id={}", msg.db_id_);
 }
 
 void MasterAgent::on_master_freeze(const CMString& db_id) {

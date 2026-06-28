@@ -45,10 +45,11 @@ enum class MessageType : uint8_t {
     VAR_ACK = 36,        // master → worker: unified set/get response
     VAR_REMOVE = 37,     // worker → master: remove var (async, no ack)
     VAR_BROADCAST = 38,  // master → worker: broadcast removal / modification-reject (async)
+    DATABASE_FREEZE_ACK = 39,  // master → worker: freeze ack (success / DB_ALREADY_FROZEN)
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 38;
+    return raw >= 1 && raw <= 39;
 }
 
 struct MessageHeader {
@@ -346,10 +347,24 @@ struct IdxLoadAckMessage {
 struct DatabaseFreezeNotification {
     MessageHeader header_;
     CMString db_id_;
+    uint64_t task_id_ = 0;   // 非 stream 模式下 master 登记 pending frozen 需要（worker 在 begin_task 期间填充）
 
     static constexpr MessageType msg_type_ = MessageType::DATABASE_FREEZE;
 
-    FLY_SERIALIZE(header_, db_id_);
+    FLY_SERIALIZE(header_, db_id_, task_id_);
+};
+
+// master → worker: freeze 请求的同步 ack。worker 据此判断 freeze 是否被接受。
+// 失败（success_=false）通常为 DB_ALREADY_FROZEN（该 db 已被本 task 或其他 task freeze）。
+struct DatabaseFreezeAckMessage {
+    MessageHeader header_;
+    CMString db_id_;
+    bool success_ = true;
+    TaskErrorType error_type_ = TaskErrorType::UNKNOWN;
+
+    static constexpr MessageType msg_type_ = MessageType::DATABASE_FREEZE_ACK;
+
+    FLY_SERIALIZE(header_, db_id_, success_, error_type_);
 };
 
 struct RemoveRequestMessage {

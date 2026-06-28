@@ -34,7 +34,8 @@ task_modules_:    task_id → module_name
 task_args_:       task_id → args[]
 db_registry_:     db_id → {base_path → data_path}
 db_instances_:    db_id → shared_ptr<Database>
-frozen_dbs_:      set<db_id>
+frozen_dbs_:            set<db_id>                  # 已确认冻结（task 完成后）
+pending_frozen_dbs_:    map<db_id, task_id>         # 非 stream 模式待确认（task 内声明，task 完成提交/失败回滚）
 ```
 
 ### 启动流程
@@ -247,16 +248,22 @@ Worker.on_shutdown()
 
 ```
 Worker 任务执行中调用 db.freeze():
-  → Database::freeze() (本地)
+  → Database::freeze() (本地落盘 + 标记)
   → WorkerAgentContext::notify_freeze(db_id)
-  → 发送 DatabaseFreezeNotification 给 Master
+  → request_database_freeze: 同步等 ack（发送 DatabaseFreezeNotification 带 task_id）
 
-Master 收到:
-  → frozen_dbs_.insert(db_id)
-  → broadcast 给所有 Worker
+Master 收到 (on_database_freeze_request):
+  冲突检查：db 已 frozen/pending → 回 ack DB_ALREADY_FROZEN（fail-fast）
+  stream 模式（默认）：即时 frozen_dbs_.insert + 本地 freeze + 广播 → 回 ack success
+  非 stream 模式：pending_frozen_dbs_[db_id] = task_id（不广播、不本地 freeze）→ 回 ack success
 
-Worker 收到广播:
-  → databases_[db_id]->freeze() (本地冻结)
+  task 完成（on_task_complete）→ commit_pending_frozen(task_id):
+    pending 中 task_id 匹配的项 → frozen_dbs_ + 本地 freeze + 广播
+  task 失败/崩溃（on_task_failed / on_disconnect）→ rollback_pending_frozen(task_id):
+    按 task_id 清除 pending（防永久死锁）
+
+Worker 收到广播 (on_database_freeze_notification):
+  → databases_[db_id]->freeze() (本地冻结，幂等去重)
 ```
 
 ### Worker 断连恢复

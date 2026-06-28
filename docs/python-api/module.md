@@ -442,8 +442,11 @@ def create_executor(worker) -> callable:
         #    - "__fly_db__:" → 创建/获取 _Database
         #    - hex string → pickle.loads
         # 5. output = original_func(*deserialized_args)
-        # 6. 检测 frozen_dbs (执行前后对比)
-        # 7. 返回 {task_id, status, output, error, frozen_dbs}
+        # 6. drain_write_back() 落盘
+        # 7. 返回 {task_id, status, output, error, outputs, frozen_dbs}
+        #    注：frozen_dbs 不再由 executor 差集推断。freeze 是 task 内主动行为，
+        #    Database::freeze() 执行时已即时发 DatabaseFreezeNotification 给 master
+        #    登记 pending；task 完成时 master 按 task_id 提交 pending → confirmed。
     return executor
 ```
 

@@ -9,6 +9,11 @@ Execution is split into three phases:
   - execute:    call the resolved task function with the prepared arguments.
   - postprocess: hook for any post-execution work (currently a no-op, reserved
     for future use such as cleanup or metrics).
+
+Freeze handling: freeze is an active behavior within a task — Database::freeze()
+fires an immediate DatabaseFreezeNotification to master (which registers it as
+"pending" in non-stream mode). No before/after snapshot diffing is done here;
+master commits pending freezes by task_id on task completion.
 """
 import importlib
 import pickle
@@ -162,36 +167,30 @@ def create_executor(worker):
             'output': '',
             'error': '',
             'outputs': [],
+            # frozen_dbs 保留以兼容消息结构，但 master 不再依赖它做 commit：
+            # freeze 是 task 内主动行为，发生时已通过 DatabaseFreezeNotification 即时
+            # 通知 master 登记 pending；task 完成时 master 按 task_id 从 pending 迁移。
+            # 旧的"遍历 _db_cache 拍前后快照算差集"已删除（不可靠且冗余）。
             'frozen_dbs': [],
         }
-
-        _frozen_before = set()
 
         try:
             # Phase 1: preprocess (db creation, var injection, etc.)
             deserialized_args = preprocess(task_id, task_name, task_module, args)
 
-            for db_id, db_obj in worker._db_cache.items():
-                if db_obj.is_frozen():
-                    _frozen_before.add(db_id)
-
             # Phase 2: execute
             output = execute(task_id, task_name, task_module, deserialized_args)
 
+            # 落盘：保证 task 函数返回时所有 write 已真正落盘并触发 record_write。
+            # （drain 的迁移到 postprocess 是 WP3 的工作，WP1 保持原位。）
             from _fly_storage import ex_stg_get_data_service
             ex_stg_get_data_service().drain_write_back()
-
-            frozen_dbs = []
-            for db_id, db_obj in worker._db_cache.items():
-                if db_obj.is_frozen() and db_id not in _frozen_before:
-                    frozen_dbs.append(db_id)
 
             # Phase 3: postprocess
             postprocess(task_id, output)
 
             result['status'] = 0
             result['output'] = str(output) if output is not None else ""
-            result['frozen_dbs'] = frozen_dbs
 
         except Exception as e:
             result['status'] = 1

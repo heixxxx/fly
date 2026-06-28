@@ -256,25 +256,28 @@ def test_executor_exception_handling():
 def test_executor_freeze_detection():
     worker = MockWorker()
     executor = create_executor(worker)
-    
+
     temp_dir = tempfile.mkdtemp(prefix="test_executor_freeze_")
     db_id = f"freeze_db_{_unique_id()}"
-    
+
     db_marker = f"__fly_db__:{db_id}:{temp_dir}:"
     pickled_args = [db_marker]
-    
+
     result = executor(
         task_id=6,
         task_name="freeze_task",
         task_module="test_executor_tasks",
         args=pickled_args
     )
-    
+
     assert result['task_id'] == 6
     assert result['status'] == 0
-    assert db_id in result['frozen_dbs']
-    
-    for db_id_key, db_obj in worker._db_cache.items():
+    # freeze 是 task 内主动行为：db.freeze() 已执行，db 对象本地 is_frozen。
+    # executor 不再用差集推断 frozen_dbs（freeze 通知由 Database::freeze() 即时发 master）。
+    db_obj = worker._db_cache[db_id]
+    assert db_obj.is_frozen()
+
+    for did_key, db_obj in worker._db_cache.items():
         db_obj._db.reset()
     worker._db_cache.clear()
 

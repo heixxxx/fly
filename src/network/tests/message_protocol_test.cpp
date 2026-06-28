@@ -345,30 +345,81 @@ TEST(MessageProtocolTest, DbPathRequestResponseMessages) {
     DbPathRequestMessage req;
     req.header_.type_ = MessageType::DB_PATH_REQUEST;
     req.db_id_ = "my_database";
-    
+
     CMString encoded_req = MessageProtocol::encode(req);
     CMString buffer = encoded_req;
-    
+
     DbPathRequestMessage decoded_req;
     EXPECT_TRUE(MessageProtocol::decode(buffer, decoded_req));
     EXPECT_EQ(decoded_req.db_id_, "my_database");
-    
+
     DbPathResponseMessage resp;
     resp.header_.type_ = MessageType::DB_PATH_RESPONSE;
     resp.db_id_ = "my_database";
     resp.base_path_ = "/data/base";
     resp.data_path_ = "/data/base/data";
     resp.success_ = true;
-    
+
     CMString encoded_resp = MessageProtocol::encode(resp);
     CMString buffer_resp = encoded_resp;
-    
+
     DbPathResponseMessage decoded_resp;
     EXPECT_TRUE(MessageProtocol::decode(buffer_resp, decoded_resp));
     EXPECT_EQ(decoded_resp.db_id_, "my_database");
     EXPECT_EQ(decoded_resp.base_path_, "/data/base");
     EXPECT_EQ(decoded_resp.data_path_, "/data/base/data");
     EXPECT_TRUE(decoded_resp.success_);
+}
+
+TEST(MessageProtocolTest, DatabaseFreezeNotificationRoundTrip) {
+    DatabaseFreezeNotification msg;
+    msg.header_.type_ = MessageType::DATABASE_FREEZE;
+    msg.db_id_ = "frozen_db_001";
+    msg.task_id_ = 42;   // 非 stream 模式 master 登记 pending frozen 需要 task_id
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    DatabaseFreezeNotification decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.db_id_, "frozen_db_001");
+    EXPECT_EQ(decoded.task_id_, 42u);
+    EXPECT_TRUE(buffer.empty());
+}
+
+TEST(MessageProtocolTest, DatabaseFreezeAckRoundTripSuccess) {
+    DatabaseFreezeAckMessage ack;
+    ack.header_.type_ = MessageType::DATABASE_FREEZE_ACK;
+    ack.db_id_ = "frozen_db_001";
+    ack.success_ = true;
+
+    CMString encoded = MessageProtocol::encode(ack);
+    CMString buffer = encoded;
+
+    DatabaseFreezeAckMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.db_id_, "frozen_db_001");
+    EXPECT_TRUE(decoded.success_);
+    EXPECT_EQ(decoded.error_type_, TaskErrorType::UNKNOWN);
+    EXPECT_TRUE(buffer.empty());
+}
+
+TEST(MessageProtocolTest, DatabaseFreezeAckRoundTripConflict) {
+    // 冲突场景：db 已被其他 task freeze，master 拒绝 → fail-fast
+    DatabaseFreezeAckMessage ack;
+    ack.header_.type_ = MessageType::DATABASE_FREEZE_ACK;
+    ack.db_id_ = "already_frozen_db";
+    ack.success_ = false;
+    ack.error_type_ = TaskErrorType::DB_ALREADY_FROZEN;
+
+    CMString encoded = MessageProtocol::encode(ack);
+    CMString buffer = encoded;
+
+    DatabaseFreezeAckMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.db_id_, "already_frozen_db");
+    EXPECT_FALSE(decoded.success_);
+    EXPECT_EQ(decoded.error_type_, TaskErrorType::DB_ALREADY_FROZEN);
 }
 
 TEST(MessageProtocolTest, WriteRegisterAndAckMessages) {
@@ -612,7 +663,8 @@ TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::VAR_ACK)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::VAR_REMOVE)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::VAR_BROADCAST)));
-    EXPECT_FALSE(is_valid_message_type(39));  // upper bound is 38
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DATABASE_FREEZE_ACK)));
+    EXPECT_FALSE(is_valid_message_type(40));  // upper bound is 39
 }
 
 }  // namespace fly

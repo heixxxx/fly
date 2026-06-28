@@ -12,6 +12,7 @@ enum class TaskErrorType {
     WRITE_REGISTRATION_TIMEOUT = 4,
     WRITE_PROVENANCE_MISMATCH = 5,
     WRITE_DUPLICATE_SKIPPED = 6,
+    DB_ALREADY_FROZEN = 7,   // freeze requested on an already-(pending-)frozen db (业务流程错误)
 };
 
 // Write operation result code. Independent from TaskErrorType (which is the

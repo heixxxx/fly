@@ -53,6 +53,14 @@ struct PendingBackup {
     bool success_ = false;
 };
 
+// Pending state for a synchronous freeze request (awaits master DATABASE_FREEZE_ACK).
+struct PendingFreezeAck {
+    CMString db_id_;
+    bool completed_ = false;
+    bool success_ = false;
+    TaskErrorType error_type_ = TaskErrorType::UNKNOWN;
+};
+
 // Pending state for a synchronous var set/get (awaits master VAR_ACK).
 struct PendingVarOp {
     CMString var_name_;
@@ -191,6 +199,11 @@ private:
     std::condition_variable pending_var_cv_;
     CMUnorderedMap<CMString, CMSharedPtr<PendingVarOp>> pending_var_ops_;
 
+    // Pending freeze requests (keyed by db_id, awaiting master DATABASE_FREEZE_ACK).
+    std::mutex pending_freeze_mutex_;
+    std::condition_variable pending_freeze_cv_;
+    CMUnorderedMap<CMString, CMSharedPtr<PendingFreezeAck>> pending_freezes_;
+
     // Vars inlined into the current task's TaskAssignMessage; consumed by the
     // Python executor via take_pending_task_vars() before the task runs.
     CMVector<VarPayload> pending_task_vars_;
@@ -206,6 +219,7 @@ private:
     void on_remove_command(uint64_t conn_id, const RemoveCommandMessage& msg);
     void on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg);
     void on_database_freeze_notification(uint64_t conn_id, const DatabaseFreezeNotification& msg);
+    void on_database_freeze_ack(uint64_t conn_id, const DatabaseFreezeAckMessage& msg);
     void execute_internal_task(const PendingTask& task);
     void on_disconnect(uint64_t conn_id);
 

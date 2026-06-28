@@ -82,6 +82,12 @@ public:
 
     void register_database(const CMString& db_id, const CMString& base_path, const CMString& data_path = "");
     bool is_db_frozen(const CMString& db_id) const;
+    // 非 stream 模式 pending frozen 状态机（WP1）。
+    // is_db_frozen 覆盖 confirmed ∪ pending（跨 task 写注册拦截）。
+    // commit/rollback 按 task_id 精确迁移/清除 pending（task 成功迁移+广播，失败/崩溃回滚）。
+    bool is_db_pending_frozen(const CMString& db_id) const;
+    void commit_pending_frozen(uint64_t task_id);    // task 成功：pending→confirmed + 广播
+    void rollback_pending_frozen(uint64_t task_id);  // task 失败/崩溃：按 task_id 清 pending
     CMSharedPtr<Database> get_or_create_database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0);
 
     std::tuple<bool, FlyBufferPtr, CMString, bool> request_remote_data(const CMString& object_name);
@@ -156,6 +162,10 @@ private:
     CMUnorderedMap<CMString, CMUnorderedMap<CMString, CMString>> db_registry_;
     CMUnorderedMap<CMString, CMSharedPtr<Database>> db_instances_;
     CMUnorderedSet<CMString> frozen_dbs_;
+    // 非 stream 模式 pending frozen：db_id → task_id（待 task 完成确认）。
+    // task 内 freeze 时登记 pending（拒其他 task 写，但不广播）；task 成功迁移到
+    // frozen_dbs_ + 广播，task 失败/崩溃按 task_id 回滚清除（防永久死锁）。
+    CMUnorderedMap<CMString, uint64_t> pending_frozen_dbs_;
     mutable std::mutex frozen_dbs_mutex_;
     static std::atomic<uint64_t> remote_task_counter_;
 

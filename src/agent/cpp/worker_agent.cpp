@@ -107,6 +107,11 @@ void WorkerAgent::start() {
             on_database_freeze_notification(conn_id, msg);
         });
 
+    reactor_->register_handler<DatabaseFreezeAckMessage>(
+        [this](uint64_t conn_id, const DatabaseFreezeAckMessage& msg) {
+            on_database_freeze_ack(conn_id, msg);
+        });
+
     reactor_->register_handler<RemoveAckMessage>(
         [this](uint64_t conn_id, const RemoveAckMessage& msg) {
             on_remove_ack(conn_id, msg);
@@ -567,10 +572,43 @@ void WorkerAgent::cleanup_failed_task_writes(const CMVector<CMString>& dirty_obj
 void WorkerAgent::request_database_freeze(const CMString& db_id) {
     if (!registered_) return;
 
+    // 同步等 ack（仿 register_write_with_master 的 pending+cv 模式）：
+    // 非 stream 模式 master 登记 pending；冲突时回 DB_ALREADY_FROZEN 联动 task 失败。
+    auto pending = CMMakeShared<PendingFreezeAck>();
+    pending->db_id_ = db_id;
+    {
+        std::lock_guard<std::mutex> lock(pending_freeze_mutex_);
+        pending_freezes_[db_id] = pending;
+    }
+
     DatabaseFreezeNotification msg;
     msg.db_id_ = db_id;
+    msg.task_id_ = current_task_id_;   // 非 stream 模式 master 登记 pending 需要
     reactor_->send(master_conn_, msg);
-    INFO("Freeze notification sent: db_id={}", db_id);
+    INFO("Freeze notification sent: db_id={}, task_id={}", db_id, current_task_id_);
+
+    {
+        std::unique_lock<std::mutex> lock(pending_freeze_mutex_);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!pending->completed_) {
+            if (pending_freeze_cv_.wait_until(lock, deadline) == std::cv_status::timeout) break;
+        }
+        pending_freezes_.erase(db_id);
+        if (!pending->completed_) {
+            // 超时（master 无响应）→ 当失败处理，联动 task 失败
+            WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
+            ERR("Freeze ack timeout: db_id={}", db_id);
+            return;
+        }
+        if (!pending->success_) {
+            // 冲突（DB_ALREADY_FROZEN）→ 联动 task 失败（poll_task 检查 last_error_type）
+            WorkerAgentContext::set_last_error_type(pending->error_type_);
+            ERR("Freeze rejected: db_id={}, error_type={}", db_id,
+                static_cast<int>(pending->error_type_));
+            return;
+        }
+    }
+    INFO("Freeze acked: db_id={}", db_id);
 }
 
 std::tuple<bool, FlyBufferPtr, CMString, bool> WorkerAgent::request_remote_data(const CMString& object_name) {
@@ -1062,6 +1100,18 @@ void WorkerAgent::on_database_freeze_notification(uint64_t conn_id, const Databa
         it->second->freeze();
         INFO("Worker local database frozen: db_id={}", msg.db_id_);
     }
+}
+
+void WorkerAgent::on_database_freeze_ack(uint64_t conn_id, const DatabaseFreezeAckMessage& msg) {
+    touch_master_contact();
+    std::lock_guard<std::mutex> lock(pending_freeze_mutex_);
+    auto it = pending_freezes_.find(msg.db_id_);
+    if (it != pending_freezes_.end()) {
+        it->second->success_ = msg.success_;
+        it->second->error_type_ = msg.error_type_;
+        it->second->completed_ = true;
+    }
+    pending_freeze_cv_.notify_all();
 }
 
 void WorkerAgent::request_object_remove(const CMString& db_id, const CMString& object_name) {

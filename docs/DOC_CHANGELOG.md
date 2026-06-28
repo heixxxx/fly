@@ -3,6 +3,22 @@
 ---
 ---
 
+## 2026-06-28: Freeze 延迟可见 + ack 通道 + 崩溃恢复（WP1）
+
+### freeze 通知双路径冗余消除 + 非 stream 模式 task 级原子性
+
+freeze 从"差集推断 + 延迟补发"重构为"task 内主动即时通知 + 按 task_id 提交/回滚"。
+非 stream 模式（`dependency_update_mode != 0`）下，freeze 在 task 内声明为 pending，
+task 成功才迁移到 confirmed + 广播；task 失败/崩溃按 task_id 回滚（防永久死锁）。
+
+- `message_types.h`：`DatabaseFreezeNotification` 新增 `task_id_`；新增 `DatabaseFreezeAckMessage`（success + error_type）；`DATABASE_FREEZE_ACK=39`
+- `error_types.h`：新增 `TaskErrorType::DB_ALREADY_FROZEN=7`（冲突 fail-fast）
+- `master_agent.h/cpp`：新增 `pending_frozen_dbs_`（map<db_id,task_id>）；`is_db_frozen` 改查 confirmed ∪ pending；新增 `is_db_pending_frozen` / `commit_pending_frozen` / `rollback_pending_frozen`；`on_database_freeze_request` 分流（stream 即时 / 非 stream pending）+ 冲突检测回 ack；`on_task_complete` 调 commit；`on_task_failed`/`on_disconnect` 调 rollback
+- `worker_agent.h/cpp`：`request_database_freeze` 从 fire-and-forget 改同步等 ack（pending+cv，5s 超时）；`DatabaseFreezeNotification` 带当前 task_id；新增 `on_database_freeze_ack` handler + reactor 注册
+- `executor.py`：删除 frozen 差集计算（遍历 `_db_cache` 两次 + 前后快照）；freeze 由即时通知 + task_id 提交负责
+
+---
+
 ## 2026-06-28: 数据 Locality 调度 + 写入注册统一 + size 链路
 
 ### 数据 Locality 调度（Config `locality_scheduling_enabled`，默认 1 开启）

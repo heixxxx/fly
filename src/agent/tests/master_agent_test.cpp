@@ -866,6 +866,209 @@ TEST(MasterAgentTest, RegisterDatabaseAndIsFrozen) {
     wait_for_running(master, false);
 }
 
+// =============================================================================
+// Non-stream mode: pending frozen state machine (WP1)
+// 非 stream 模式 = task 级原子性：freeze 在 task 内声明为 pending，
+// task 成功才迁移到 confirmed + 广播；task 失败/崩溃则按 task_id 回滚 pending。
+// =============================================================================
+
+// T2: 非 stream 模式下 worker 在 task 内 freeze → master 登记为 pending →
+//     is_db_frozen 覆盖 pending（跨 task 写注册拦截）；task 成功后迁移到 confirmed。
+TEST(MasterAgentTest, NonStreamFreezePendingThenCommit) {
+    fly::DataService::instance()->reset();
+    Config::instance()->set_int("dependency_update_mode", 1);   // 非 stream 模式
+    TempDir tmpdir;
+    CMString db_id = db32("nstream_freeze_commit");
+
+    MasterAgent master("127.0.0.1", 0);
+    master.register_database(db_id, tmpdir.path());
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(501, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // 模拟 task 内 freeze：begin_task 设 current_task_id_，然后 freeze
+    worker.begin_task(1001, "");
+    worker.request_database_freeze(db_id);
+
+    // pending 登记：is_db_frozen 应覆盖 pending（跨 task 写注册需被拦截）
+    wait_for([&] { return master.is_db_frozen(db_id); }, 50, 20);
+    EXPECT_TRUE(master.is_db_frozen(db_id));          // confirmed ∪ pending
+    EXPECT_TRUE(master.is_db_pending_frozen(db_id));  // 仅 pending（未提交）
+
+    // 模拟 task 成功：commit_pending_frozen 把 pending 迁移到 confirmed
+    master.commit_pending_frozen(1001);
+    EXPECT_TRUE(master.is_db_frozen(db_id));           // 仍是 frozen
+    EXPECT_FALSE(master.is_db_pending_frozen(db_id));  // 但不再是 pending（已 confirmed）
+
+    worker.end_task(1001);
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("dependency_update_mode", 0);   // 恢复默认
+}
+
+// T4a: 非 stream 模式 task 失败 → rollback_pending_frozen 按 task_id 清 pending。
+TEST(MasterAgentTest, NonStreamFreezeRollbackOnTaskFailed) {
+    fly::DataService::instance()->reset();
+    Config::instance()->set_int("dependency_update_mode", 1);
+    TempDir tmpdir;
+    CMString db_id = db32("nstream_freeze_rollback");
+
+    MasterAgent master("127.0.0.1", 0);
+    master.register_database(db_id, tmpdir.path());
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(501, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    worker.begin_task(2002, "");
+    worker.request_database_freeze(db_id);
+    wait_for([&] { return master.is_db_pending_frozen(db_id); }, 50, 20);
+    EXPECT_TRUE(master.is_db_frozen(db_id));   // pending 状态下也算 frozen
+
+    // 模拟 task 失败：rollback_pending_frozen 清掉该 task 的 pending
+    master.rollback_pending_frozen(2002);
+    EXPECT_FALSE(master.is_db_frozen(db_id));          // 回滚后不再 frozen
+    EXPECT_FALSE(master.is_db_pending_frozen(db_id));  // pending 也清了
+
+    worker.end_task(2002);
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("dependency_update_mode", 0);
+}
+
+// T4b: 非 stream 模式 task 成功只提交自己的 pending —— 另一个 task 的 pending 不受影响。
+TEST(MasterAgentTest, NonStreamCommitDoesNotAffectOtherTaskPending) {
+    fly::DataService::instance()->reset();
+    Config::instance()->set_int("dependency_update_mode", 1);
+    TempDir tmpdir_a, tmpdir_b;
+    CMString db_a = db32("frzA_committwo");   // 前 10 字符 "frzA_commi"
+    CMString db_b = db32("frzB_committwo");   // 前 10 字符 "frzB_commi"
+
+    MasterAgent master("127.0.0.1", 0);
+    master.register_database(db_a, tmpdir_a.path());
+    master.register_database(db_b, tmpdir_b.path());
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(501, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // task 3001 freeze db_a
+    worker.begin_task(3001, "");
+    worker.request_database_freeze(db_a);
+    // task 3002 freeze db_b
+    worker.begin_task(3002, "");
+    worker.request_database_freeze(db_b);
+    wait_for([&] { return master.is_db_pending_frozen(db_a) && master.is_db_pending_frozen(db_b); }, 50, 20);
+
+    // task 3001 成功：只提交 db_a，db_b 仍是 pending
+    master.commit_pending_frozen(3001);
+    EXPECT_FALSE(master.is_db_pending_frozen(db_a));   // a 已 confirmed
+    EXPECT_TRUE(master.is_db_frozen(db_a));
+    EXPECT_TRUE(master.is_db_pending_frozen(db_b));    // b 仍 pending
+    EXPECT_TRUE(master.is_db_frozen(db_b));            // 但 b 仍算 frozen（pending）
+
+    worker.end_task(3002);
+    worker.end_task(3001);
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("dependency_update_mode", 0);
+}
+
+// T3: 冲突 fail-fast —— 对已 (pending) frozen 的 db 再次 freeze → master 拒绝 →
+//     worker 收到 DB_ALREADY_FROZEN ack → WorkerAgentContext 记录错误类型。
+TEST(MasterAgentTest, NonStreamFreezeConflictRejected) {
+    fly::DataService::instance()->reset();
+    Config::instance()->set_int("dependency_update_mode", 1);
+    TempDir tmpdir;
+    CMString db_id = db32("nstream_freeze_conflict");
+
+    MasterAgent master("127.0.0.1", 0);
+    master.register_database(db_id, tmpdir.path());
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(501, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // 第一次 freeze 成功（pending）
+    worker.begin_task(4001, "");
+    worker.request_database_freeze(db_id);
+    wait_for([&] { return master.is_db_pending_frozen(db_id); }, 50, 20);
+
+    // 第二次 freeze 同一 db（模拟另一 task 业务流程错误）→ 应被拒绝
+    worker.begin_task(4002, "");
+    worker.request_database_freeze(db_id);
+
+    // worker 收到 DB_ALREADY_FROZEN ack → last_error_type 被设置
+    wait_for([&] {
+        return WorkerAgentContext::get_last_error_type() == TaskErrorType::DB_ALREADY_FROZEN;
+    }, 50, 20);
+    EXPECT_EQ(WorkerAgentContext::get_last_error_type(), TaskErrorType::DB_ALREADY_FROZEN);
+
+    worker.end_task(4002);
+    worker.end_task(4001);
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("dependency_update_mode", 0);
+}
+
+// T5: 崩溃恢复 —— worker 有正在跑的 task 且该 task 声明了 pending freeze →
+//     worker 断连（模拟崩溃）→ master on_disconnect 按 task_id 清 pending（防死锁）。
+//     这是 Q1 选 task_id 而非 db_id 的核心理由：崩溃时 master 收不到失败消息。
+TEST(MasterAgentTest, NonStreamFreezeClearedOnWorkerCrash) {
+    fly::DataService::instance()->reset();
+    Config::instance()->set_int("dependency_update_mode", 1);
+    TempDir tmpdir;
+    CMString db_id = db32("nstream_freeze_crash");
+
+    MasterAgent master("127.0.0.1", 0);
+    master.register_database(db_id, tmpdir.path());
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // 提交一个 task（让它在 worker 上 RUNNING，这样断连时 master 能反查到 task_id）
+    master.submit_task(5005, "crash_task", "test_module", {"arg1"}, {}, {});
+    wait_for([&] {
+        auto r = master.get_running_tasks();
+        for (auto id : r) { if (id == 5005) return true; }
+        return false;
+    }, 50, 20);
+
+    // 该 task 在执行中声明了 pending freeze
+    worker.begin_task(5005, "");
+    worker.request_database_freeze(db_id);
+    wait_for([&] { return master.is_db_pending_frozen(db_id); }, 50, 20);
+    EXPECT_TRUE(master.is_db_frozen(db_id));   // pending → 写注册被拦截
+
+    // 模拟 worker 崩溃：stop() 触发断连
+    worker.stop();
+
+    // master on_disconnect 应按 task_id 清掉 pending（防永久死锁）
+    wait_for([&] { return !master.is_db_frozen(db_id); }, 100, 30);
+    EXPECT_FALSE(master.is_db_frozen(db_id));          // pending 已清
+    EXPECT_FALSE(master.is_db_pending_frozen(db_id));  // 不再残留
+
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("dependency_update_mode", 0);
+}
+
 // --- get_or_create_database ---
 
 TEST(MasterAgentTest, GetOrCreateDatabase) {
