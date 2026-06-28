@@ -88,6 +88,9 @@ public:
     bool is_db_pending_frozen(const CMString& db_id) const;
     void commit_pending_frozen(uint64_t task_id);    // task 成功：pending→confirmed + 广播
     void rollback_pending_frozen(uint64_t task_id);  // task 失败/崩溃：按 task_id 清 pending
+    // 消息处理入口（public 供测试直接调用，reactor 通过 lambda 调用）：
+    void on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg);
+    void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
     CMSharedPtr<Database> get_or_create_database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0);
 
     std::tuple<bool, FlyBufferPtr, CMString, bool> request_remote_data(const CMString& object_name);
@@ -179,8 +182,6 @@ private:
 
     void on_worker_register(uint64_t conn_id, const RegisterMessage& msg);
     void on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg);
-    void on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg);
-    void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
     void on_disconnect(uint64_t conn_id);
     void on_error(uint64_t conn_id, int error_code);
     void on_data_query_dispatch(uint64_t conn_id, const DataQueryMessage& msg);

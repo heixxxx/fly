@@ -789,9 +789,12 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
 
         for (const auto& wo : msg.written_objects_) {
             if (!streaming_mode) {
+                // 非 stream 模式：write register 时只做了校验（provenance/frozen），
+                // 可见性登记延迟到此处统一完成（task 级原子性）。
                 graph_->mark_data_ready(wo.object_name_);
                 DataService::instance()->update_remote_idx(wo.object_name_, worker_id, addr.host_, addr.port_, wo.size_bytes_);
-                DBG("Recorded data location: {} -> worker {}", wo.object_name_, worker_id);
+                update_dependency_location_cache(wo.object_name_, worker_id, addr.host_, addr.port_);
+                DBG("Recorded data location (non-stream, task complete): {} -> worker {}", wo.object_name_, worker_id);
             }
         }
 
@@ -1165,15 +1168,29 @@ WriteRegisterAckMessage MasterAgent::do_write_register(const WriteRegisterMessag
 
     if (registered_ok) {
         ack.success_ = true;
-        graph_->mark_data_ready(msg.object_name_);
-        auto addr = DataService::instance()->get_worker_address(msg.worker_id_);
-        DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_, msg.size_bytes_);
-        update_dependency_location_cache(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
-        record_worker_info(msg.object_name_, msg.db_id_, msg.worker_id_, msg.writer_id_);
-        if (msg.worker_id_ == 0 && Config::instance()->get_int("auto_backup_enabled") == 1) {
-            evaluate_and_trigger_backup(msg.object_name_, 0, msg.db_id_);
+
+        // Q2 决策：可见性登记段按模式分流。
+        // master 自写（worker_id_==0）强制即时登记 —— master 进程无 task 三阶段
+        // （不设 transaction_mode、无 TaskCompleteMessage），没有延迟登记的触发时机。
+        // stream 模式（默认）：即时 mark_data_ready + update_remote_idx + schedule。
+        // 非 stream 模式：仅 ack 成功，可见性登记延迟到 on_task_complete 的 written_objects_
+        //   统一处理（task 级原子性 —— 失败回滚后下游 task 不会被错误调度）。
+        bool master_self_write = (msg.worker_id_ == 0);
+        bool streaming_mode = master_self_write ||
+                             (Config::instance()->get_int("dependency_update_mode") == 0);
+        if (streaming_mode) {
+            graph_->mark_data_ready(msg.object_name_);
+            auto addr = DataService::instance()->get_worker_address(msg.worker_id_);
+            DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_, msg.size_bytes_);
+            update_dependency_location_cache(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
+            record_worker_info(msg.object_name_, msg.db_id_, msg.worker_id_, msg.writer_id_);
+            if (master_self_write && Config::instance()->get_int("auto_backup_enabled") == 1) {
+                evaluate_and_trigger_backup(msg.object_name_, 0, msg.db_id_);
+            }
+            schedule_tasks();
         }
-        schedule_tasks();
+        // 非 stream 模式：provenance 已登记（校验段），但 mark_data_ready /
+        // update_remote_idx / record_worker_info 延迟到 task 完成时统一处理。
     }
 
     return ack;

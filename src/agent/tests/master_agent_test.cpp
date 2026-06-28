@@ -1069,6 +1069,143 @@ TEST(MasterAgentTest, NonStreamFreezeClearedOnWorkerCrash) {
     Config::instance()->set_int("dependency_update_mode", 0);
 }
 
+// =============================================================================
+// Non-stream mode: write register visibility delay (WP2)
+// 非 stream 模式 = task 级原子性：write register 即时校验（provenance + frozen），
+// 但可见性登记（mark_data_ready + update_remote_idx）延迟到 task 成功完成。
+// 这保证 task 失败回滚后，下游 task 不会被错误调度。
+// =============================================================================
+
+// WP2-T1: 非 stream 模式下 worker write register 成功（ack success），但下游依赖 task
+//         不会立即 ready（mark_data_ready 延迟）；task complete 后才 ready。
+TEST(MasterAgentTest, NonStreamWriteRegisterDelaysDataReady) {
+    fly::DataService::instance()->reset();
+    Config::instance()->set_int("dependency_update_mode", 1);   // 非 stream 模式
+    TempDir tmpdir;
+    CMString db_id = db32("nswr");
+
+    MasterAgent master("127.0.0.1", 0);
+    master.register_database(db_id, tmpdir.path());
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    CMString obj_x = db_id + ":obj_x";
+
+    // 先提交 task 7000（产出 obj_x）→ 它 ready 并被调度到 worker（running）
+    master.submit_task(7000, "producer", "test_module", {"arg"},
+                       {}, {obj_x}, {}, -1.0f, "", {});
+    wait_for([&] {
+        auto running = master.get_running_tasks();
+        return std::find(running.begin(), running.end(), 7000) != running.end();
+    }, 50, 20);
+
+    // 再提交依赖 obj_x 的 task 7001 → 因 obj_x 未 ready（7000 未完成），7001 进 pending
+    master.submit_task(7001, "consumer", "test_module", {"arg"},
+                       {obj_x}, {}, {}, -1.0f, "", {});
+    {
+        auto pending = master.get_pending_tasks();
+        EXPECT_NE(std::find(pending.begin(), pending.end(), 7001), pending.end());
+    }
+
+    // worker 在 task 7000 内 write obj_x（注册成功，但非 stream 模式不 mark_data_ready）
+    worker.begin_task(7000, "");
+    auto [ack_msg, err_type] = worker.register_write_with_master(db_id, "obj_x", 100);
+    EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);   // 校验通过，ack 成功
+
+    // 关键断言：write 后 7001 仍在 pending（mark_data_ready 被延迟）
+    wait_for([&] { return true; }, 5, 20);
+    {
+        auto pending = master.get_pending_tasks();
+        EXPECT_NE(std::find(pending.begin(), pending.end(), 7001), pending.end());
+    }
+
+    // 模拟 task 7000 完成：发 TaskCompleteMessage（含 written_objects obj_x）
+    TaskCompleteMessage complete;
+    complete.task_id_ = 7000;
+    complete.worker_id_ = 1;
+    WrittenObject wo;
+    wo.object_name_ = obj_x;
+    wo.size_bytes_ = 100;
+    complete.written_objects_.push_back(wo);
+    master.on_task_complete(0, complete);
+
+    // task complete 后 mark_data_ready 触发 → 7001 移出 pending（可被调度）
+    wait_for([&] {
+        auto pending = master.get_pending_tasks();
+        return std::find(pending.begin(), pending.end(), 7001) == pending.end();
+    }, 50, 20);
+    {
+        auto pending = master.get_pending_tasks();
+        EXPECT_EQ(std::find(pending.begin(), pending.end(), 7001), pending.end());
+    }
+
+    worker.end_task(7000);
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("dependency_update_mode", 0);
+}
+
+// WP2-T2: stream 模式下（默认）write register 即时 mark_data_ready，
+//         下游依赖 task 立即 ready（回归保护：stream 行为不变）。
+TEST(MasterAgentTest, StreamWriteRegisterImmediateDataReady) {
+    fly::DataService::instance()->reset();
+    Config::instance()->set_int("dependency_update_mode", 0);   // stream 模式（默认）
+    TempDir tmpdir;
+    CMString db_id = db32("swr");
+
+    MasterAgent master("127.0.0.1", 0);
+    master.register_database(db_id, tmpdir.path());
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    CMString obj_y = db_id + ":obj_y";
+
+    // 先提交 task 7003（产出 obj_y）→ running
+    master.submit_task(7003, "producer2", "test_module", {"arg"},
+                       {}, {obj_y}, {}, -1.0f, "", {});
+    wait_for([&] {
+        auto running = master.get_running_tasks();
+        return std::find(running.begin(), running.end(), 7003) != running.end();
+    }, 50, 20);
+
+    // 提交依赖 obj_y 的 task 7004 → pending
+    master.submit_task(7004, "consumer2", "test_module", {"arg"},
+                       {obj_y}, {}, {}, -1.0f, "", {});
+    {
+        auto pending = master.get_pending_tasks();
+        EXPECT_NE(std::find(pending.begin(), pending.end(), 7004), pending.end());
+    }
+
+    // stream 模式：write register 即时 mark_data_ready
+    worker.begin_task(7003, "");
+    auto [ack_msg, err_type] = worker.register_write_with_master(db_id, "obj_y", 100);
+    EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);
+
+    // 关键断言：write 后 7004 立即移出 pending（即时 mark_data_ready）
+    wait_for([&] {
+        auto pending = master.get_pending_tasks();
+        return std::find(pending.begin(), pending.end(), 7004) == pending.end();
+    }, 50, 20);
+    {
+        auto pending = master.get_pending_tasks();
+        EXPECT_EQ(std::find(pending.begin(), pending.end(), 7004), pending.end());  // 已 ready
+    }
+
+    worker.end_task(7003);
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+}
+
 // --- get_or_create_database ---
 
 TEST(MasterAgentTest, GetOrCreateDatabase) {

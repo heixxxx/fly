@@ -3,6 +3,21 @@
 ---
 ---
 
+## 2026-06-28: write register 可见性延迟（非 stream 模式 task 级原子性 WP2）
+
+### 非 stream 模式下 mark_data_ready 延迟到 task 完成
+
+`do_write_register` 拆分为校验段（provenance + frozen 检查，两种模式都即时）和可见性登记段
+（mark_data_ready + update_remote_idx + schedule_tasks）。非 stream 模式下可见性登记
+延迟到 `on_task_complete` 的 written_objects_ 统一处理，保证 task 失败回滚后下游 task
+不会被错误调度。`on_task_complete` 非 stream 分支补齐 `update_dependency_location_cache`。
+
+- `master_agent.cpp::do_write_register`：可见性登记段按 `streaming_mode` 分流（master 自写 worker_id_==0 强制即时，无 TaskCompleteMessage 触发时机）
+- `master_agent.cpp::on_task_complete`：非 stream 分支补 `update_dependency_location_cache`
+- `master_agent.h`：`on_task_complete`/`on_task_failed` 移至 public（供测试直接调用）
+
+---
+
 ## 2026-06-28: Freeze 延迟可见 + ack 通道 + 崩溃恢复（WP1）
 
 ### freeze 通知双路径冗余消除 + 非 stream 模式 task 级原子性
