@@ -7,8 +7,8 @@ Execution is split into three phases:
   - preprocess: prepare all task arguments (db creation/registration, remote
     data prefetch, var injection from the inlined TaskAssignMessage payloads).
   - execute:    call the resolved task function with the prepared arguments.
-  - postprocess: hook for any post-execution work (currently a no-op, reserved
-    for future use such as cleanup or metrics).
+  - postprocess: drain the write-back queue so every write issued during
+    execute is flushed to disk before the C++ layer collects tracked writes.
 
 Freeze handling: freeze is an active behavior within a task — Database::freeze()
 fires an immediate DatabaseFreezeNotification to master (which registers it as
