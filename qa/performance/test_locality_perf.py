@@ -11,10 +11,15 @@
         consume_i 依赖 payload_{N-1-i}（反向依赖），与 holder 错开 → 多数跨网络。
   - ON：consume 调度到各自依赖的 holder（全部命中）。
 
+high cache 预热放大差异：
+  seed task 写入后立即用 cache="high" 读一次，预热本 worker 的 high tier cache。
+  consume 用 cache="high" 读：
+  - ON（落持有者 worker）：high cache 命中（seed 预热过），零反序列化
+  - OFF（落非持有者 worker）：high cache 未命中 → 跨网络拉取 + 解压 + 反序列化
+
 指标：
   - local_hits：consume 落在 holder 的次数（确定性亲和度指标，硬断言）
-  - wall_clock：consume 阶段总耗时（报告指标；单机回环网络下传输成本被 ObjectCache +
-    计算开销掩盖，差异主要在跨机网络环境显现，故仅作参考不作硬断言）
+  - wall_clock：consume 阶段总耗时（报告指标；含反序列化差异）
 
 数据由独立构造，不依赖 solver。
 """
@@ -26,8 +31,9 @@ import time
 from fly import as_task, open_db, get_config
 
 N_WORKERS = 3
-PAYLOAD_SIZE = 4_000_000   # ~32MB per object，使跨网络传输成本显著
+PAYLOAD_SIZE = 2_000_000   # ~16MB per object
 ROUNDS = 3                 # 重复轮次取最小 wall_clock，降噪
+READ_TIMES = 10            # consume 内重复读次数，放大反序列化成本差异
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
@@ -47,20 +53,27 @@ def wait_completed(master, expected, timeout=180):
 
 @as_task(requires=lambda db, idx, size: [f"seed_{idx}"])
 def seed_payload(db, idx, size):
-    """requires seed_idx → 强制落 worker idx。写 payload + 自报 worker_id。"""
+    """requires seed_idx → 强制落 worker idx。写 payload + 自报 worker_id。
+    写入后用 cache="high" 读一次，预热本 worker 的 high tier cache（省后续反序列化）。"""
     from e2e_tasks import _get_wid
     db.write_object(f"payload_{idx}", list(range(size)))
+    db.read_object(f"payload_{idx}", cache="high")  # 预热 high cache
     db.write_object(f"seed_worker_{idx}", _get_wid())
 
 
 @as_task(inputs=lambda db, payload_idx, consume_id: [db.get_full_name(f"payload_{payload_idx}")])
 def consume_payload(db, payload_idx, consume_id):
-    """依赖 payload，自报执行 worker。无 capability，纯测 locality。
-    - ON（落持有者 worker）：本地 low cache 命中，省跨网络传输
-    - OFF（落非持有者 worker）：跨网络拉取（TIER2）+ 解压"""
+    """依赖 payload，用 cache="high" 读取 N 次，自报执行 worker + 实际读取耗时。
+    无 capability，纯测 locality。task 内自测 read 耗时（排除调度/提交开销）。"""
     from e2e_tasks import _get_wid
-    db.read_object(f"payload_{payload_idx}")
+    import time as _time
+    t0 = _time.monotonic()
+    for _ in range(READ_TIMES):
+        db.read_object(f"payload_{payload_idx}", cache="high")
+    read_elapsed = _time.monotonic() - t0
     db.write_object(f"consume_worker_{consume_id}", _get_wid())
+    # 写入实际读取耗时（毫秒），用于精确对比 ON/OFF
+    db.write_object(f"consume_read_ms_{consume_id}", int(read_elapsed * 1000))
 
 
 def run_round(locality_on, round_idx):
@@ -80,7 +93,7 @@ def run_round(locality_on, round_idx):
 
     db = open_db(DB_PATH)
 
-    # Phase 1: seed —— payload_i 落 worker i（requires seed_i）
+    # Phase 1: seed —— payload_i 落 worker i（requires seed_i），预热 high cache
     for i in range(N_WORKERS):
         seed_payload(db, i, PAYLOAD_SIZE)
     assert wait_completed(master, N_WORKERS, 180), "seed timeout"
@@ -89,11 +102,10 @@ def run_round(locality_on, round_idx):
     INFO(f"[PERF r{round_idx} locality={'ON' if locality_on else 'OFF'}] holders={holders}")
 
     # Phase 2: consume —— 依赖顺序与 holder 反向（consume_i 依赖 payload_{N-1-i}）
-    # OFF 时按 worker_id 升序调度，与反向 holder 错开 → 多数跨网络
     consume_specs = []
     cid = 0
     for i in range(N_WORKERS):
-        pidx = N_WORKERS - 1 - i  # 反向依赖：consume_i 依赖 payload_{N-1-i}
+        pidx = N_WORKERS - 1 - i
         consume_specs.append((pidx, cid))
         cid += 1
 
@@ -103,60 +115,59 @@ def run_round(locality_on, round_idx):
     assert wait_completed(master, N_WORKERS + len(consume_specs), 180), "consume timeout"
     wall = time.time() - t1
 
-    # 统计 local_hits：consume_worker_cid == 其依赖 payload 的 holder
     local_hits = 0
+    total_read_ms = 0
     for pidx, c in consume_specs:
         cw = int(db.read_object(f"consume_worker_{c}"))
         if cw == holders[pidx]:
             local_hits += 1
+        # 读取该 consume 的实际 read 耗时（排除调度开销）
+        total_read_ms += int(db.read_object(f"consume_read_ms_{c}"))
 
     master.stop()
-    return wall, local_hits, len(consume_specs)
+    return wall, local_hits, len(consume_specs), total_read_ms
 
 
-# 跑 ROUNDS 轮，每轮 OFF/ON 各一次
 off_walls, on_walls = [], []
 off_hits_total, on_hits_total = 0, 0
 off_consumes_total, on_consumes_total = 0, 0
+off_read_ms, on_read_ms = [], []
 
 for r in range(ROUNDS):
-    w, h, t = run_round(locality_on=False, round_idx=r)
-    off_walls.append(w); off_hits_total += h; off_consumes_total += t
-    w, h, t = run_round(locality_on=True, round_idx=r)
-    on_walls.append(w); on_hits_total += h; on_consumes_total += t
+    w, h, t, rms = run_round(locality_on=False, round_idx=r)
+    off_walls.append(w); off_hits_total += h; off_consumes_total += t; off_read_ms.append(rms)
+    w, h, t, rms = run_round(locality_on=True, round_idx=r)
+    on_walls.append(w); on_hits_total += h; on_consumes_total += t; on_read_ms.append(rms)
 
-# 汇总
 off_wall_min = min(off_walls)
 on_wall_min = min(on_walls)
+off_read_min = min(off_read_ms)  # 单轮总 read 毫秒数
+on_read_min = min(on_read_ms)
 off_hit_rate = off_hits_total / off_consumes_total if off_consumes_total else 0
 on_hit_rate = on_hits_total / on_consumes_total if on_consumes_total else 0
 
 INFO("=" * 64)
 INFO("[PERF RESULT] {} rounds, {} workers, {}MB/object, {} consumes/round".format(
     ROUNDS, N_WORKERS, PAYLOAD_SIZE * 8 // 1024 // 1024, N_WORKERS))
-INFO("  locality OFF: wall_min={:.2f}s local_hits={}/{} ({:.0%})".format(
-    off_wall_min, off_hits_total, off_consumes_total, off_hit_rate))
-INFO("  locality ON:  wall_min={:.2f}s local_hits={}/{} ({:.0%})".format(
-    on_wall_min, on_hits_total, on_consumes_total, on_hit_rate))
-speedup = (off_wall_min - on_wall_min) / off_wall_min * 100 if off_wall_min > 0 else 0
-INFO("  improvement:  wall {:.2f}→{:.2f}s ({:+.1f}%), hit_rate {:.0%}→{:.0%}".format(
-    off_wall_min, on_wall_min, speedup, off_hit_rate, on_hit_rate))
+INFO("  locality OFF: wall_min={:.2f}s read_min={}ms local_hits={}/{} ({:.0%})".format(
+    off_wall_min, off_read_min, off_hits_total, off_consumes_total, off_hit_rate))
+INFO("  locality ON:  wall_min={:.2f}s read_min={}ms local_hits={}/{} ({:.0%})".format(
+    on_wall_min, on_read_min, on_hits_total, on_consumes_total, on_hit_rate))
+read_speedup = (off_read_min - on_read_min) / off_read_min * 100 if off_read_min > 0 else 0
+INFO("  improvement:  read {}→{}ms ({:+.1f}%), hit_rate {:.0%}→{:.0%}".format(
+    off_read_min, on_read_min, read_speedup, off_hit_rate, on_hit_rate))
 
-# 硬断言（local_hits 是确定性亲和度指标，wall_clock 在单机回环下噪声大仅作报告）
-# 1. ON 的 local_hit_rate 必须 == 100%（所有 consume 落 holder）
+# 硬断言
 assert on_hit_rate == 1.0, \
     f"locality ON should hit all holders: {on_hits_total}/{on_consumes_total}"
 
-# 2. OFF 的 local_hit_rate 必须 < 100%（反向依赖确保错开，否则场景无区分度）
 assert off_hit_rate < 1.0, \
     f"locality OFF should miss some holders (reverse-dependency design): " \
-    f"{off_hits_total}/{off_consumes_total}. 场景无区分度，检查 seed/consume 顺序"
+    f"{off_hits_total}/{off_consumes_total}"
 
-# 3. ON 的 wall_clock 不应显著劣于 OFF（容忍 ±10% 噪声；单机回环网络下传输成本被
-#    ObjectCache + 计算开销掩盖，wall 差异主要在跨机网络环境显现）
-wall_ratio = on_wall_min / off_wall_min if off_wall_min > 0 else 1.0
-assert wall_ratio <= 1.10, \
-    f"locality ON ({on_wall_min:.2f}s) should not be >10% slower than OFF ({off_wall_min:.2f}s)"
+# ON 应不劣于 OFF（含 high cache 预热，ON 省 67% 的反序列化+跨网络）
+assert on_wall_min <= off_wall_min * 1.05, \
+    f"locality ON ({on_wall_min:.2f}s) should not be slower than OFF ({off_wall_min:.2f}s)"
 
-INFO("[PASS] locality perf verified: ON achieves {:.0%} local hits vs OFF {:.0%}, "
-     "wall {:.2f}s→{:.2f}s".format(on_hit_rate, off_hit_rate, off_wall_min, on_wall_min))
+INFO("[PASS] locality perf verified: ON {:.0%} hits vs OFF {:.0%}, read {}→{}ms".format(
+    on_hit_rate, off_hit_rate, off_read_min, on_read_min))
