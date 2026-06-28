@@ -102,6 +102,9 @@ public:
     void write_db_meta_header();
     void append_worker_info_to_meta(const WorkerInfo& info);
 
+    // 读取已登记的 worker 数量（用于验证 record_worker_info 是否生效）。
+    size_t worker_info_count() const;
+
     // ---- Var service: lightweight small-object KV managed by this Database ----
     // value is an already-serialized FlyBufferPtr (pickle for Python objects,
     // FLY_ENCODE_TO_BUFFER for C++ exported objects). Zero-copy in-process: the

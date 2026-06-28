@@ -626,6 +626,33 @@ void Database::append_worker_info_to_meta(const WorkerInfo& info) {
         info.worker_id_, info.hostname_);
 }
 
+size_t Database::worker_info_count() const {
+    // 读 _DB_META 文件，统计已登记的 WorkerInfo 记录数（跳过 header）。
+    CMString meta_path = base_path_ + "/_DB_META";
+    if (!fs::exists(meta_path)) return 0;
+
+    std::ifstream ifs(meta_path, std::ios::binary);
+    if (!ifs.is_open()) return 0;
+
+    int64_t header_size = 0;
+    ifs.read(reinterpret_cast<char*>(&header_size), sizeof(header_size));
+    if (!ifs || header_size <= 0) return 0;
+    ifs.ignore(header_size);   // 跳过 header
+    if (!ifs) return 0;
+
+    size_t count = 0;
+    while (true) {
+        int64_t record_size = 0;
+        ifs.read(reinterpret_cast<char*>(&record_size), sizeof(record_size));
+        if (!ifs || record_size <= 0) break;
+        CMString record_data(record_size, '\0');
+        ifs.read(record_data.data(), record_size);
+        if (!ifs) break;
+        count++;
+    }
+    return count;
+}
+
 CMString Database::generate_db_id(const CMString& base_path) {
     // Format: <4 char path-hash><6 char random> = 10 char base62
     //   - path-hash (deterministic): FNV-1a 32-bit of base_path -> prefix base62 chars.

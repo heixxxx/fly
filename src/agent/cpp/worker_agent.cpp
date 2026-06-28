@@ -371,11 +371,24 @@ bool WorkerAgent::poll_task() {
                     int64_t sz = 0;
                     auto it = current_write_sizes_.find(name);
                     if (it != current_write_sizes_.end()) sz = it->second;
-                    complete.written_objects_.push_back({name, sz});
+                    WrittenObject wo;
+                    wo.object_name_ = name;
+                    wo.size_bytes_ = sz;
+                    CMString db_id, short_name;
+                    if (fly::split_full_name(name, db_id, short_name)) {
+                        wo.db_id_ = std::move(db_id);
+                    }
+                    complete.written_objects_.push_back(std::move(wo));
                 }
                 // 声明性输出（task 装饰器声明，非实际 write，size=0）。
                 for (auto& out : result.outputs_) {
-                    complete.written_objects_.push_back({std::move(out), 0});
+                    WrittenObject wo;
+                    wo.object_name_ = out;
+                    CMString db_id, short_name;
+                    if (fly::split_full_name(out, db_id, short_name)) {
+                        wo.db_id_ = std::move(db_id);
+                    }
+                    complete.written_objects_.push_back(std::move(wo));
                 }
                 complete.frozen_dbs_ = std::move(result.frozen_dbs_);
                 reactor_->send(master_conn_, complete);

@@ -1206,6 +1206,64 @@ TEST(MasterAgentTest, StreamWriteRegisterImmediateDataReady) {
     wait_for_running(master, false);
 }
 
+// WP2-T3: 非 stream 模式下 task complete 时 record_worker_info 被正确调用（技术债修复）。
+//         WrittenObject 带 db_id_ 后，complete 时 master 能补做 record_worker_info，
+//         db meta (_DB_META) 应含 worker 写入者记录。
+TEST(MasterAgentTest, NonStreamCompleteRecordsWorkerInfo) {
+    fly::DataService::instance()->reset();
+    Config::instance()->set_int("dependency_update_mode", 1);   // 非 stream 模式
+    ProcessInfo::instance()->set_hostname("test_host_info");    // record_worker_info 需要 hostname
+    TempDir tmpdir;
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // get_or_create_database 真正创建 master 侧 db 对象（写 _DB_META header + 入 db_instances_）
+    auto db_obj = master.get_or_create_database(tmpdir.path(), "", 0);
+    ASSERT_NE(db_obj, nullptr);
+    CMString db_id = db_obj->get_db_id();
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    CMString obj_x = db_id + ":obj_x";
+
+    // 提交产出 obj_x 的 task 让它 running
+    master.submit_task(8000, "producer3", "test_module", {"arg"},
+                       {}, {obj_x}, {}, -1.0f, "", {});
+    wait_for([&] {
+        auto running = master.get_running_tasks();
+        return std::find(running.begin(), running.end(), 8000) != running.end();
+    }, 50, 20);
+
+    worker.begin_task(8000, "");
+    worker.register_write_with_master(db_id, "obj_x", 100);
+
+    // task complete（written_objects 带 db_id_）
+    TaskCompleteMessage complete;
+    complete.task_id_ = 8000;
+    complete.worker_id_ = 1;
+    WrittenObject wo;
+    wo.object_name_ = obj_x;
+    wo.db_id_ = db_id;
+    wo.size_bytes_ = 100;
+    complete.written_objects_.push_back(wo);
+    master.on_task_complete(0, complete);
+
+    // master 的 record_worker_info 调用了 db->append_worker_info_to_meta，
+    // 写入 _DB_META。通过读同一 base_path 的 _DB_META 文件验证。
+    Database verify_db(tmpdir.path(), "", 0);
+    EXPECT_GT(verify_db.worker_info_count(), 0u);   // record_worker_info 生效
+
+    worker.end_task(8000);
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("dependency_update_mode", 0);
+}
+
 // --- get_or_create_database ---
 
 TEST(MasterAgentTest, GetOrCreateDatabase) {

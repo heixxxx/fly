@@ -794,6 +794,7 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
                 graph_->mark_data_ready(wo.object_name_);
                 DataService::instance()->update_remote_idx(wo.object_name_, worker_id, addr.host_, addr.port_, wo.size_bytes_);
                 update_dependency_location_cache(wo.object_name_, worker_id, addr.host_, addr.port_);
+                record_worker_info(wo.object_name_, wo.db_id_, worker_id, "");
                 DBG("Recorded data location (non-stream, task complete): {} -> worker {}", wo.object_name_, worker_id);
             }
         }

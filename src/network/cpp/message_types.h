@@ -173,8 +173,9 @@ struct TaskAssignMessage {
 struct WrittenObject {
     CMString object_name_;
     int64_t size_bytes_ = 0;
+    CMString db_id_;   // 写入所属 db（用于 task complete 时 record_worker_info，非 stream 模式必需）
 
-    FLY_SERIALIZE(object_name_, size_bytes_);
+    FLY_SERIALIZE(object_name_, size_bytes_, db_id_);
 };
 
 struct TaskCompleteMessage {
