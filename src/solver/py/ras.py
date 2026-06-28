@@ -126,7 +126,15 @@ def ras_check(db, iteration, num_subdomains):
 
 # ── Master-side: wait for solution ──
 
-@wait_obj(inputs=lambda db: [db.get_full_name("__ras__sol")])
+# Wait on __ras__ok, not __ras__sol. ras_check writes the four result objects
+# in order (__ras__sol, __ras__final_res, __ras__iters, __ras__ok) and each
+# write_object blocks until the master acks its WriteRegister, so by the time
+# the last one (__ras__ok) is registered with the master, the three predecessors
+# are guaranteed already visible there. Waiting only on __ras__sol left a
+# read-after-ready race: master unblocked the moment __ras__sol was ready and
+# read the companions before the worker's later WriteRegister messages arrived
+# → EOFError on empty data.
+@wait_obj(inputs=lambda db: [db.get_full_name("__ras__ok")])
 def get_ras_solution(db):
     """Block on Master until RAS solver writes final solution."""
     return {

@@ -3,6 +3,58 @@
 ---
 ---
 
+## 2026-06-28: solver QA flaky 修复（wait_obj 等待序列最后一个对象）
+
+### 现象
+
+全量 QA 高并发跑 solver 时偶发 flaky，失败 case 为 `test_solver_ras_n6_sd2_ov2.py`
+（及同族 `test_solver_ras_*`）。复现率：同 case 6 并发跑 120 次失败 3 次；全量
+并发第 1 轮即可复现。报错固定为：
+
+```
+EOFError: Ran out of input
+  File "solver/ras.py", line 134, in get_ras_solution
+    "residual": db.read_object("__ras__final_res"),
+```
+
+### 根因
+
+`ras_check` 收尾时在**同一个 worker** 内串行写出 4 个对象，顺序固定：
+
+```python
+db.write_object("__ras__sol", x)          # ①
+db.write_object("__ras__final_res", res)  # ②
+db.write_object("__ras__iters", nxt)      # ③
+db.write_object("__ras__ok", ...)         # ④ 最后
+```
+
+而 master 侧 `get_ras_solution` 的 `@wait_obj` **只等 `__ras__sol`（①）**，解除阻塞
+后在函数体内读 ②③④。`write_object` 的 WriteRegister 是同步往返 ack，但 master 收到
+① 的 WriteRegister 并 `mark_data_ready` 后即解除 `@wait_obj`，此刻 ②③④ 的
+WriteRegister 尚未到达 master（高并发下 CPU 抢占放大了这个窗口）→ `read_object`
+对空数据解 pickle 抛 `EOFError`。典型的 read-after-ready 竞态。
+
+### 修复
+
+`@wait_obj` 的等待目标从 `__ras__sol` 改为 `__ras__ok`（序列中最后一个）。由于
+同一 worker 内 WriteRegister 串行同步往返，等到 `__ras__ok` 就绪即蕴含 ①②③ 早已
+注册可读（详见 `docs/storage/module.md`「同一 worker 内连续写入的顺序保证」）。
+
+- `src/solver/py/ras.py::get_ras_solution`：`@wait_obj` inputs 从
+  `[__ras__sol]` → `[__ras__ok]`
+- `docs/storage/module.md`：新增「同一 worker 内连续写入的顺序保证」节，明确
+  stream 模式（默认）下「等待序列最后一个对象即可安全读取前置伴随对象」的语义，
+  并记录反模式
+- `ras_graph.py` 的 `get_ras_graph_solution` 经核查**无需改**：其 `__rasg__sol`
+  是收尾序列（converged → iters → sol）的最后一个、且是依赖图锚点，等 sol 已正确
+
+### 验证
+
+- 同 case 6 并发压测 180 次：0 失败（修复前 120 次失败 3 次）
+- 全量 solver QA 高并发 10 轮：每轮 25/25 全过（修复前第 1 轮即失败）
+
+---
+
 ## 2026-06-28: write register 可见性延迟（非 stream 模式 task 级原子性 WP2）
 
 ### 非 stream 模式下 mark_data_ready 延迟到 task 完成

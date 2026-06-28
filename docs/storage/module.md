@@ -197,6 +197,37 @@ raw payload 通过 shared_ptr 共享引用 ObjectCache 中的数据，避免拷�
 错误时序：register_write → compress → cache.put_low
 ```
 
+### 同一 worker 内连续写入的顺序保证
+
+`write_object`（含 `save_to_db=False` 的 temp 写入）对 master 的 WriteRegister 是
+**同步往返**：worker 发出 WriteRegister 后在条件变量上阻塞，直到收到 master 的 ack
+才返回（`WorkerAgent::request_write_register` → `on_write_register_ack`）。因此同一
+worker 内连续多个 `write_object` 调用，WriteRegister 到达 master 的顺序与调用顺序
+严格一致（同一连接、串行发起）。
+
+**在默认 stream 模式下**（`dependency_update_mode==0`），master 在 `do_write_register`
+处理 WriteRegister 时**立即** `mark_data_ready` + `update_remote_idx`（见上文「写入流程」
+时序约束）。结合同步往返 ack，得到以下保证：worker 串行写入 `A → B → C` 时，worker
+收到 `C` 的 ack 即意味着 master 已依次对 `A`、`B`、`C` 完成 `mark_data_ready`——三者
+对读取均已可见。
+
+**推论（read-after-ready 不竞态）**：`@wait_obj` 只需等待序列中**最后一个**对象，
+其函数体内读取前置伴随对象是安全的。因为「最后一个对象就绪」蕴含「其前序对象早已
+注册可读」，无需把所有伴随对象都列入 `@wait_obj` 的 inputs。
+
+**反模式（曾导致 solver QA flaky）**：让 `@wait_obj` 等待序列中**非最后**的对象，
+然后在函数体内读取**在其之后**才写入的伴随对象。例如 RAS solver 收尾时
+`ras_check` 串行写出 `__ras__sol → __ras__final_res → __ras__iters → __ras__ok`，
+旧代码 `@wait_obj` 只等 `__ras__sol`，解除阻塞后立即读 `__ras__final_res/iters/ok`，
+而这些对象的 WriteRegister 尚未到达 master → `read_object` 对空数据解 pickle
+抛 `EOFError`。修复：`@wait_obj` 改为等待最后的 `__ras__ok`，前三个伴随对象此时
+必然已注册可读。详见 `docs/DOC_CHANGELOG.md`。
+
+> **非 stream 模式**（`dependency_update_mode!=0`）下，可见性登记（`mark_data_ready`
+> 等）不在 WriteRegister 时即时完成，而是延迟到 `on_task_complete` 对该 task 的
+> `written_objects_` 统一处理（task 级原子性）。该模式下的可见性语义由 task 完成
+> 消息驱动，不依赖上述「ack 即可见」推论。
+
 ---
 
 ## 设计决策
