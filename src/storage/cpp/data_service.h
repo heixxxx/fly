@@ -23,16 +23,14 @@ namespace fly {
 inline constexpr size_t db_id_len() { return 10; }
 
 // Split a full name "db_id:short_name" into (db_id, short_name) at the fixed
-// db_id offset. The separator at position db_id_len() must be ':'. Returns
-// false if the name is too short or malformed.
-inline bool split_full_name(const CMString& full, CMString& db_id, CMString& short_name) {
-    // Need at least db_id + ':' + 1 char short name. Allow empty short for
-    // "clear all" sentinels (full == "db_id:").
-    if (full.size() < db_id_len() + 1) return false;
-    if (full[db_id_len()] != ':') return false;
-    db_id = full.substr(0, db_id_len());
-    short_name = full.substr(db_id_len() + 1);
-    return true;
+// db_id offset. The separator at position db_id_len() must be ':'.
+// Returns {db_id, short_name}; db_id 为空表示输入过短或格式错误（调用方判空即可）。
+// 允许 short_name 为空（"db_id:" 是 "clear all" 哨兵）。
+inline std::pair<CMString, CMString> split_full_name(const CMString& full) {
+    if (full.size() < db_id_len() + 1 || full[db_id_len()] != ':') {
+        return {{}, {}};
+    }
+    return {full.substr(0, db_id_len()), full.substr(db_id_len() + 1)};
 }
 
 struct RemoteObjectMeta {

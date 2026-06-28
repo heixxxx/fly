@@ -766,14 +766,14 @@ protected:
         fly::WorkerAgentContext::set_set_var_func(
             [this](const fly::CMString& full_name,
                    FlyBufferPtr v, const fly::CMString& tn) {
-                fly::CMString db_id, short_name;
-                if (!fly::split_full_name(full_name, db_id, short_name)) return false;
+                auto [db_id, short_name] = fly::split_full_name(full_name);
+                if (db_id.empty()) return false;
                 return db_->master_set_var(short_name, v, tn);
             });
         fly::WorkerAgentContext::set_get_var_func(
             [this](const fly::CMString& full_name) {
-                fly::CMString db_id, short_name;
-                if (!fly::split_full_name(full_name, db_id, short_name)) {
+                auto [db_id, short_name] = fly::split_full_name(full_name);
+                if (db_id.empty()) {
                     return std::make_tuple(false, FlyBufferPtr{}, fly::CMString{});
                 }
                 auto [ok, v, tn] = db_->master_get_var(short_name);
@@ -781,8 +781,8 @@ protected:
             });
         fly::WorkerAgentContext::set_remove_var_func(
             [this](const fly::CMString& full_name) {
-                fly::CMString db_id, short_name;
-                if (fly::split_full_name(full_name, db_id, short_name)) {
+                auto [db_id, short_name] = fly::split_full_name(full_name);
+                if (!db_id.empty()) {
                     db_->master_remove_var(short_name);
                 }
             });

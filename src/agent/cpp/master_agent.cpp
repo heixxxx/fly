@@ -337,8 +337,8 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
     // vars are FULL names (db_id:short_name); split each to locate the Database.
     if (!vars.empty()) {
         for (const auto& full_var : vars) {
-            CMString db_id, short_name;
-            if (!split_full_name(full_var, db_id, short_name)) continue;
+            auto [db_id, short_name] = split_full_name(full_var);
+            if (db_id.empty()) continue;
             auto db_it = db_instances_.find(db_id);
             if (db_it != db_instances_.end() && !db_it->second->master_has_var(short_name)) {
                 WARN("task {} declares var '{}' but it does not exist on master (db={})",
@@ -564,8 +564,8 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
     // to locate the Database and fetch the short-named value.
     if (!declared_vars.empty()) {
         for (const auto& full_var : declared_vars) {
-            CMString db_id, short_name;
-            if (!split_full_name(full_var, db_id, short_name)) continue;
+            auto [db_id, short_name] = split_full_name(full_var);
+            if (db_id.empty()) continue;
             auto db_it = db_instances_.find(db_id);
             if (db_it == db_instances_.end()) continue;
             auto [found, value, type_name] = db_it->second->master_get_var(short_name);
@@ -795,8 +795,8 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
                 graph_->mark_data_ready(wo.object_name_);
                 DataService::instance()->update_remote_idx(wo.object_name_, worker_id, addr.host_, addr.port_, wo.size_bytes_);
                 update_dependency_location_cache(wo.object_name_, worker_id, addr.host_, addr.port_);
-                CMString db_id, short_name;
-                if (fly::split_full_name(wo.object_name_, db_id, short_name)) {
+                auto [db_id, short_name] = fly::split_full_name(wo.object_name_);
+                if (!db_id.empty()) {
                     record_worker_info(wo.object_name_, db_id, worker_id, "");
                 }
                 DBG("Recorded data location (non-stream, task complete): {} -> worker {}", wo.object_name_, worker_id);
@@ -877,8 +877,8 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
         }
         graph_->mark_data_removed(obj);
 
-        CMString db_id, short_name;
-        if (fly::split_full_name(obj, db_id, short_name)) {
+        auto [db_id, short_name] = fly::split_full_name(obj);
+        if (!db_id.empty()) {
             broadcast_object_removed(db_id, short_name);
         }
         WARN("Dirty object cleaned after task failure: task_id={}, object={}",
@@ -1267,9 +1267,8 @@ void MasterAgent::on_var_set(uint64_t conn_id, const VarSetMessage& msg) {
     VarAckMessage ack;
     ack.var_name_ = msg.var_name_;  // echo the full name
 
-    CMString db_id, short_name;
-    auto it = (!split_full_name(msg.var_name_, db_id, short_name))
-        ? db_instances_.end() : db_instances_.find(db_id);
+    auto [db_id, short_name] = split_full_name(msg.var_name_);
+    auto it = db_id.empty() ? db_instances_.end() : db_instances_.find(db_id);
     if (it == db_instances_.end()) {
         ack.success_ = false;
         ack.error_message_ = "db not found on master";
@@ -1301,9 +1300,8 @@ void MasterAgent::on_var_get(uint64_t conn_id, const VarGetMessage& msg) {
     VarAckMessage ack;
     ack.var_name_ = msg.var_name_;  // echo the full name
 
-    CMString db_id, short_name;
-    auto it = (!split_full_name(msg.var_name_, db_id, short_name))
-        ? db_instances_.end() : db_instances_.find(db_id);
+    auto [db_id, short_name] = split_full_name(msg.var_name_);
+    auto it = db_id.empty() ? db_instances_.end() : db_instances_.find(db_id);
     if (it == db_instances_.end()) {
         ack.success_ = false;
         reactor_->send(conn_id, ack);
@@ -1323,8 +1321,8 @@ void MasterAgent::on_var_get(uint64_t conn_id, const VarGetMessage& msg) {
 }
 
 void MasterAgent::on_var_remove(uint64_t conn_id, const VarRemoveMessage& msg) {
-    CMString db_id, short_name;
-    if (split_full_name(msg.var_name_, db_id, short_name)) {
+    auto [db_id, short_name] = split_full_name(msg.var_name_);
+    if (!db_id.empty()) {
         auto it = db_instances_.find(db_id);
         if (it != db_instances_.end()) {
             it->second->master_remove_var(short_name);
@@ -1563,23 +1561,23 @@ void MasterAgent::setup_write_context() {
     // split off db_id to locate the Database, then query with the short name.
     WorkerAgentContext::set_set_var_func([this](const CMString& full_var_name,
                                                 FlyBufferPtr value, const CMString& type_name) -> bool {
-        CMString db_id, short_name;
-        if (!split_full_name(full_var_name, db_id, short_name)) return false;
+        auto [db_id, short_name] = split_full_name(full_var_name);
+        if (db_id.empty()) return false;
         auto it = db_instances_.find(db_id);
         if (it == db_instances_.end()) return false;
         return it->second->master_set_var(short_name, value, type_name);
     });
     WorkerAgentContext::set_get_var_func([this](const CMString& full_var_name)
         -> std::tuple<bool, FlyBufferPtr, CMString> {
-        CMString db_id, short_name;
-        if (!split_full_name(full_var_name, db_id, short_name)) return {false, nullptr, ""};
+        auto [db_id, short_name] = split_full_name(full_var_name);
+        if (db_id.empty()) return {false, nullptr, ""};
         auto it = db_instances_.find(db_id);
         if (it == db_instances_.end()) return {false, nullptr, ""};
         return it->second->master_get_var(short_name);
     });
     WorkerAgentContext::set_remove_var_func([this](const CMString& full_var_name) {
-        CMString db_id, short_name;
-        if (split_full_name(full_var_name, db_id, short_name)) {
+        auto [db_id, short_name] = split_full_name(full_var_name);
+        if (!db_id.empty()) {
             auto it = db_instances_.find(db_id);
             if (it != db_instances_.end()) {
                 it->second->master_remove_var(short_name);

@@ -537,8 +537,8 @@ void WorkerAgent::commit_task_segments(const CMVector<CMString>& written_objects
     // 段未开（db 无写入）的 mark_write_end 是 no-op（DataWriter::segment_active_==false）。
     CMUnorderedSet<CMString> involved_dbs;
     for (const auto& full : written_objects) {
-        CMString db_id, short_name;
-        if (fly::split_full_name(full, db_id, short_name)) {
+        auto [db_id, short_name] = fly::split_full_name(full);
+        if (!db_id.empty()) {
             involved_dbs.insert(db_id);
         }
     }
@@ -557,8 +557,8 @@ void WorkerAgent::cleanup_failed_task_writes(const CMVector<CMString>& dirty_obj
     // idx 打 ABORT（整段 pending 撤销）+ data 文件 truncate 回滚 + 清运行时内存。
     CMUnorderedMap<CMString, CMVector<CMString>> by_db;
     for (const auto& full : dirty_objects) {
-        CMString db_id, short_name;
-        if (fly::split_full_name(full, db_id, short_name)) {
+        auto [db_id, short_name] = fly::split_full_name(full);
+        if (!db_id.empty()) {
             by_db[db_id].push_back(full);
         }
     }
@@ -951,8 +951,8 @@ void WorkerAgent::on_var_broadcast(uint64_t conn_id, const VarBroadcastMessage& 
 
     // msg.var_name_ is a FULL name; split to locate the Database and the short
     // name to drop from its local cache.
-    CMString db_id, short_name;
-    if (fly::split_full_name(msg.var_name_, db_id, short_name)) {
+    auto [db_id, short_name] = fly::split_full_name(msg.var_name_);
+    if (!db_id.empty()) {
         auto it = databases_.find(db_id);
         if (it != databases_.end()) {
             it->second->drop_local_var(short_name);
