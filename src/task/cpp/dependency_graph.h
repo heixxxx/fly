@@ -29,7 +29,9 @@ public:
     CMVector<uint64_t> get_ready_tasks() const;
     CMVector<uint64_t> get_pending_tasks() const;
     bool is_task_ready(uint64_t task_id) const;
-    TaskRequirements get_task_requirements(uint64_t task_id) const;
+    // 返回 task requirements 的 const 引用（无值拷贝）。找不到时返回静态空对象
+    // （空 capabilities + 默认 timeout=-1），调用方依赖此默认值语义。
+    const TaskRequirements& get_task_requirements(uint64_t task_id) const;
     // 返回 task 进入 ready 的时间点（用于 attribute timeout 判断）
     std::optional<std::chrono::steady_clock::time_point>
     get_task_ready_timestamp(uint64_t task_id) const;

@@ -39,6 +39,7 @@ struct RemoteObjectMeta {
     CMVector<uint64_t> workers_;
     uint64_t read_count_ = 0;
     int64_t last_access_time_ = 0;   // epoch seconds
+    int64_t size_bytes_ = 0;         // 压缩后字节数（data locality 调度亲和度打分用）
 };
 
 struct BackupDecision {
@@ -135,18 +136,24 @@ public:
     // Remote Index Management
     // ============================================================
 
+    // 登记/更新远程对象位置。size_bytes > 0 时更新对象的压缩字节数；
+    // size_bytes == 0 时保持已记录的 size 不变（防御 rebuild 等无 size 的路径）。
     void update_remote_idx(const CMString& object_name,
                             uint64_t worker_id,
                             const CMString& host,
-                            int32_t port);
+                            int32_t port,
+                            int64_t size_bytes = 0);
 
     void add_remote_location(const CMString& object_name, uint64_t worker_id);
     void remove_remote_location(const CMString& object_name);
     void remove_remote_location(const CMString& object_name, uint64_t worker_id);
+    // 返回持有该对象的 worker_id 列表（按值拷贝，在内部锁保护下完成，调用方拿独立副本，线程安全）。
     CMVector<uint64_t> get_remote_workers(const CMString& object_name) const;
 
     bool has_remote_location(const CMString& object_name) const;
     RemoteObjectInfo lookup_remote_idx(const CMString& object_name) const;
+    // 返回对象的压缩后字节数（未登记返回 0）。
+    int64_t get_remote_size(const CMString& object_name) const;
 
     void remove_remote_index(const CMString& object_name);
 

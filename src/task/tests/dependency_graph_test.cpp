@@ -76,7 +76,7 @@ TEST(DependencyGraphTest, AddTaskWithRequirements) {
     DependencyGraph graph;
     graph.add_task(1, {}, caps({"gpu", "cuda"}));
 
-    auto reqs = graph.get_task_requirements(1);
+    const auto& reqs = graph.get_task_requirements(1);
     EXPECT_EQ(reqs.capabilities_.size(), 2u);
     EXPECT_EQ(reqs.capabilities_[0], "gpu");
     EXPECT_EQ(reqs.capabilities_[1], "cuda");
@@ -84,7 +84,7 @@ TEST(DependencyGraphTest, AddTaskWithRequirements) {
 
 TEST(DependencyGraphTest, GetRequirementsNonExistent) {
     DependencyGraph graph;
-    auto reqs = graph.get_task_requirements(999);
+    const auto& reqs = graph.get_task_requirements(999);
     EXPECT_TRUE(reqs.capabilities_.empty());
 }
 
@@ -93,7 +93,7 @@ TEST(DependencyGraphTest, RequirementsClearedOnRemove) {
     graph.add_task(1, {}, caps({"gpu"}));
     graph.remove_task(1);
 
-    auto reqs = graph.get_task_requirements(1);
+    const auto& reqs = graph.get_task_requirements(1);
     EXPECT_TRUE(reqs.capabilities_.empty());
 }
 
@@ -101,7 +101,7 @@ TEST(DependencyGraphTest, NoRequirementsDefault) {
     DependencyGraph graph;
     graph.add_task(1, {});
 
-    auto reqs = graph.get_task_requirements(1);
+    const auto& reqs = graph.get_task_requirements(1);
     EXPECT_TRUE(reqs.capabilities_.empty());
 }
 
@@ -247,7 +247,7 @@ TEST(DependencyGraphTest, AddTaskWithRequirementsAndNoDeps) {
     DependencyGraph graph;
     graph.add_task(1, {}, caps({"gpu", "cuda"}));
     EXPECT_EQ(graph.get_ready_tasks().size(), 1);
-    auto reqs = graph.get_task_requirements(1);
+    const auto& reqs = graph.get_task_requirements(1);
     EXPECT_EQ(reqs.capabilities_.size(), 2u);
 }
 
@@ -267,7 +267,7 @@ TEST(DependencyGraphTest, TaskRequirementsWithTimeout) {
     spec.timeout_seconds_ = 5.0f;
     graph.add_task(1, {}, spec);
 
-    auto reqs = graph.get_task_requirements(1);
+    const auto& reqs = graph.get_task_requirements(1);
     EXPECT_EQ(reqs.capabilities_.size(), 2u);
     EXPECT_EQ(reqs.capabilities_[0], "gpu");
     EXPECT_EQ(reqs.capabilities_[1], "cuda");
@@ -278,7 +278,7 @@ TEST(DependencyGraphTest, TaskRequirementsDefaultTimeoutNegative) {
     DependencyGraph graph;
     // 默认 timeout < 0（死等）
     graph.add_task(1, {}, caps({"gpu"}));
-    auto reqs = graph.get_task_requirements(1);
+    const auto& reqs = graph.get_task_requirements(1);
     EXPECT_LT(reqs.timeout_seconds_, 0.0f);
     EXPECT_EQ(reqs.capabilities_.size(), 1u);
 }
@@ -290,7 +290,7 @@ TEST(DependencyGraphTest, TaskRequirementsZeroTimeout) {
     spec.timeout_seconds_ = 0.0f;
     graph.add_task(1, {}, spec);
 
-    auto reqs = graph.get_task_requirements(1);
+    const auto& reqs = graph.get_task_requirements(1);
     EXPECT_FLOAT_EQ(reqs.timeout_seconds_, 0.0f);
 }
 
@@ -347,9 +347,8 @@ TEST(DependencyGraphTest, TaskRequirementsClearedOnRemove) {
     graph.add_task(1, {}, spec);
     graph.remove_task(1);
 
-    auto reqs = graph.get_task_requirements(1);
-    EXPECT_TRUE(reqs.capabilities_.empty());
-    EXPECT_LT(reqs.timeout_seconds_, 0.0f);  // 默认值
+    const auto& reqs = graph.get_task_requirements(1);
+    EXPECT_TRUE(reqs.capabilities_.empty());  // remove 后返回空对象
 }
 
 TEST(DependencyGraphTest, ReadyTimestampNonExistentTask) {

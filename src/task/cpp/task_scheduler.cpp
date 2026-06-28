@@ -22,19 +22,20 @@ ScheduleResult TaskScheduler::schedule_next() {
     auto now = std::chrono::steady_clock::now();
 
     for (uint64_t task_id : ready_tasks) {
-        auto reqs = graph_->get_task_requirements(task_id);
+        const auto& reqs = graph_->get_task_requirements(task_id);
+        float timeout = reqs.timeout_seconds_;
         bool allow_degrade = false;
 
-        if (reqs.timeout_seconds_ >= 0.0f) {
+        if (timeout >= 0.0f) {
             // timeout >= 0：判断是否允许降级
-            if (reqs.timeout_seconds_ == 0.0f) {
+            if (timeout == 0.0f) {
                 allow_degrade = true;  // 立即降级（仅检查一次）
             } else {
                 auto ready_time = graph_->get_task_ready_timestamp(task_id);
                 if (ready_time.has_value()) {
                     double elapsed =
                         std::chrono::duration<double>(now - ready_time.value()).count();
-                    if (elapsed >= reqs.timeout_seconds_) {
+                    if (elapsed >= timeout) {
                         allow_degrade = true;  // 已超时，允许降级
                     }
                 }
@@ -66,7 +67,7 @@ ScheduleResult TaskScheduler::schedule_next() {
 
         if (degraded) {
             DBG("[SCHED] task={} degraded-scheduled to worker={} (timeout={})",
-                task_id, worker_id, reqs.timeout_seconds_);
+                task_id, worker_id, timeout);
         }
         return {task_id, worker_id, true, degraded};
     }
@@ -88,7 +89,60 @@ CMVector<ScheduleResult> TaskScheduler::schedule_all_available() {
     return results;
 }
 
-void TaskScheduler::set_locality_preference(bool /*enabled*/) {
+void TaskScheduler::set_locality_preference(bool enabled) {
+    locality_enabled_ = enabled;
+}
+
+// 计算 worker 对 required capabilities 的匹配数。
+static size_t capability_match_count(WorkerManager* manager, uint64_t wid,
+                                     const CMVector<CMString>& reqs) {
+    auto info_opt = manager->get_worker(wid);
+    if (!info_opt) return 0;
+    auto& info = info_opt->get();
+    size_t match_count = 0;
+    for (const auto& req : reqs) {
+        for (const auto& cap : info.capabilities_) {
+            if (cap == req) { match_count++; break; }
+        }
+    }
+    return match_count;
+}
+
+// 为 task 计算各 worker 的 locality 分数，写入持久缓冲区 score_buf_（复用，无 per-task 分配）。
+// score_buf_ 按 worker_id 直接索引（下标=worker_id）。score = worker 持有的输入数据总字节数
+// （越大越优，0=未持有任何输入）。复杂度 O(deps × avg_holders)，无内层线性查找。
+size_t TaskScheduler::compute_scores(uint64_t task_id) {
+    auto deps = graph_->get_task_dependencies(task_id);
+    auto all_workers = manager_->get_all_workers();
+
+    // 算出 max_worker_id，按 worker_id 直接索引（下标=worker_id）。容量只增不减。
+    uint64_t max_id = 0;
+    for (const auto& w : all_workers) {
+        if (w.worker_id_ > max_id) max_id = w.worker_id_;
+    }
+    score_buf_.clear();
+    score_buf_.resize(max_id + 1);
+    for (const auto& w : all_workers) {
+        score_buf_[w.worker_id_] = {w.worker_id_, 0};
+    }
+
+    if (deps.empty()) {
+        return score_buf_.size();
+    }
+
+    // 依赖驱动：只遍历每个依赖的持有者，给持有者加分。get_remote_workers 返回 const 引用（无拷贝），
+    // holder 的 worker_id 直接作为 score_buf_ 下标（O(1)）。
+    auto ds = DataService::instance();
+    for (const auto& obj : deps) {
+        auto holders = ds->get_remote_workers(obj);  // 按值返回（锁内拷贝），线程安全
+        int64_t sz = ds->get_remote_size(obj);
+        for (uint64_t h : holders) {
+            if (h < score_buf_.size()) {
+                score_buf_[h].score += sz;
+            }
+        }
+    }
+    return score_buf_.size();
 }
 
 uint64_t TaskScheduler::select_best_worker(uint64_t task_id, bool allow_degrade) {
@@ -97,41 +151,62 @@ uint64_t TaskScheduler::select_best_worker(uint64_t task_id, bool allow_degrade)
         return 0;
     }
 
-    auto reqs = graph_->get_task_requirements(task_id);
-    if (reqs.capabilities_.empty()) {
+    // idle_workers 转 set 便于 O(1) 查询（避免 locality 阶段反复线性查找）
+    CMUnorderedSet<uint64_t> idle_set(idle_workers.begin(), idle_workers.end());
+
+    const TaskRequirements& reqs = graph_->get_task_requirements(task_id);
+    const CMVector<CMString>& caps = reqs.capabilities_;
+
+    // 仅在 locality 启用时算分。caps 为空时也走 locality（无 capability 约束，纯按数据亲和选 worker）。
+    bool use_locality = locality_enabled_;
+    if (use_locality) {
+        compute_scores(task_id);
+    }
+
+    if (caps.empty()) {
+        // 无 capability 要求：阶段 B locality 偏好（按 score 升序选首个 idle 的）。
+        if (use_locality && !score_buf_.empty()) {
+            std::sort(score_buf_.begin(), score_buf_.end(), score_desc_compare);
+            for (const auto& entry : score_buf_) {
+                if (idle_set.count(entry.worker_id)) {
+                    return entry.worker_id;
+                }
+            }
+        }
         return idle_workers[0];
     }
 
-    // 单次遍历：完整匹配立即返回；顺便记录最佳部分匹配（降级时使用）
+    // 阶段 A：capability 完整匹配立即返回；顺便记录全局最佳部分匹配。
     uint64_t best_partial_worker = 0;
     size_t best_partial_count = 0;
-
     for (uint64_t wid : idle_workers) {
-        auto info_opt = manager_->get_worker(wid);
-        if (!info_opt) continue;
-        auto& info = info_opt->get();
-
-        size_t match_count = 0;
-        for (const auto& req : reqs.capabilities_) {
-            bool found = false;
-            for (const auto& cap : info.capabilities_) {
-                if (cap == req) { found = true; break; }
-            }
-            if (found) match_count++;
+        size_t match_count = capability_match_count(manager_, wid, caps);
+        if (match_count == caps.size()) {
+            return wid;  // 完整匹配，强约束优先
         }
-
-        // 完整匹配：立即返回，无需继续遍历
-        if (match_count == reqs.capabilities_.size()) {
-            return wid;
-        }
-        // 顺便记录匹配属性最多的 worker（降级时使用）
-        if (allow_degrade && match_count > best_partial_count) {
+        if (match_count > best_partial_count) {
             best_partial_count = match_count;
             best_partial_worker = wid;
         }
     }
 
-    // 无完整匹配：允许降级则返回最佳部分匹配（匹配数可能为 0，此时回退到第一个 idle worker）
+    // 阶段 B：locality 偏好（仅 use_locality）。
+    // 不变量：选中的 worker 的 capability 匹配数不得低于全局最佳部分匹配数，
+    // 且必须有至少部分匹配（best_partial_count > 0）—— 无任何 worker 匹配时不调度（交阶段 C/waiting），
+    // 避免 locality 绕过 capability 死锁检测。
+    if (use_locality && !score_buf_.empty() && best_partial_count > 0) {
+        // 按 score 降序遍历，找 score 最大（持有输入最多）且 capability 不降级的 idle worker。
+        std::sort(score_buf_.begin(), score_buf_.end(), score_desc_compare);
+        for (const auto& entry : score_buf_) {
+            if (!idle_set.count(entry.worker_id)) continue;
+            size_t match_count = capability_match_count(manager_, entry.worker_id, caps);
+            if (match_count >= best_partial_count) {
+                return entry.worker_id;
+            }
+        }
+    }
+
+    // 阶段 C：兜底（原 allow_degrade 逻辑）。
     if (allow_degrade) {
         return best_partial_worker != 0 ? best_partial_worker : idle_workers[0];
     }

@@ -3,6 +3,44 @@
 ---
 ---
 
+## 2026-06-28: 数据 Locality 调度 + 写入注册统一 + size 链路
+
+### 数据 Locality 调度（Config `locality_scheduling_enabled`，默认 1 开启）
+
+scheduler 按数据亲和度选 worker：对每个 ready task，计算各 worker 持有其输入数据的总量（score），
+选 score 最大且不降低 capability 匹配质量的 idle worker。三阶段算法：capability 完整匹配优先 →
+locality 偏好 → 兜底。scheduler 直接查 DataService placement 算分，持久 score 缓冲区复用。
+
+- `task_scheduler.h/cpp`：`locality_enabled_` 开关、`compute_scores`（依赖驱动，score_buf_ 按 worker_id 索引）、`select_best_worker` 三阶段算法
+- `dependency_graph.h`：`get_task_requirements` 改返回 `const TaskRequirements&`（无值拷贝）
+- `core/config.cpp`：新增 `locality_scheduling_enabled`（默认 1）
+
+### 写入注册统一到 WriteRegisterMessage（删除 DataReadyMessage）
+
+所有写入注册（worker 写 / master 自写 / backup）统一走 `WriteRegisterMessage` → `do_write_register`。
+删除冗余的 `DataReadyMessage`（其核心动作 mark_data_ready/update_remote_idx/schedule 已由 WriteRegister 覆盖）。
+master 自写改为同步调 `do_write_register`（丢弃 ack，零网络开销）。
+
+- `message_types.h`：删除 `DataReadyMessage` + `MessageType::DATA_READY`；`WriteRegisterMessage` 加 `writer_id_` + `size_bytes_`；新增 `WrittenObject` 结构体
+- `master_agent.cpp`：抽 `do_write_register` 纯逻辑函数；`on_data_ready`/`on_master_record_write` 删除；`record_worker_info`/`evaluate_and_trigger_backup` 从原 on_data_ready 抽出迁入 do_write_register
+- `worker_agent.cpp`：`record_write` 删除 streaming 分支（保留 `current_writes_` 收集）
+
+### size 链路（RemoteObjectMeta.size_bytes_）
+
+数据对象的压缩后字节数随写入注册传递到 master placement table，供 locality 调度亲和度打分。
+
+- `data_service.h/cpp`：`RemoteObjectMeta` 加 `size_bytes_`；`update_remote_idx` 加 size 参数（size>0 才更新，size==0 保持原值，防御 rebuild 路径）；新增 `get_remote_size`
+- `worker_context.h`：`register_write`/`record_write`/`set_register_func`/`set_record_write_func` 签名加 `int64_t compressed_size`
+- `database.cpp`：`commit_write`/`do_backup_write`/`put_temp_data` 三处 register 调用带 size
+- `TaskCompleteMessage.written_objects_` 改为 `CMVector<WrittenObject>`（含 size）
+
+### 模块依赖
+
+task 模块（本质是调度模块）新增对 storage 的依赖（scheduler 查 DataService placement 算分）。
+`task/cpp/BUILD` 加 `fly_storage` 依赖，`fly_task_so` 用 `dynamic_deps` 引用 `fly_storage_so`。
+
+---
+
 ## 2026-06-25: 失败 Task 脏数据清理（事务化段标记 + 异常清理）
 
 ### idx op log 事务化段标记

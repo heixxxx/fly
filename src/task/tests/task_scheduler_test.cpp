@@ -590,4 +590,163 @@ TEST(TaskSchedulerTest, DegradeScheduleThenUnconstrainedTaskSchedules) {
     EXPECT_FALSE(results[1].degraded_);
 }
 
+// ===== Data Locality 调度测试（T1-T6）=====
+// scheduler 直接查 DataService::instance() 算分（task 模块本质是调度模块，依赖 storage 是
+// 核心职责）。测试通过 update_remote_idx 预填 placement，每个 case 用唯一 db_id 避免污染，
+// 结束 remove_remote_index 清理。
+
+// T1: locality_enabled=false 时行为与现状完全一致（回归保护）。
+TEST(TaskSchedulerTest, LocalityDisabledFallsBackToOriginal) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    // task 依赖 obj，obj 在 worker 2。但 locality 关闭，应选 worker 1（默认排序首位）。
+    graph.add_task(1, {"db_t1:obj"}, {});
+    graph.mark_data_ready("db_t1:obj");
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+    manager.register_worker(2, "127.0.0.1", 8081, {});
+    DataService::instance()->update_remote_idx("db_t1:obj", 2, "127.0.0.1", 8081, 100);
+
+    TaskScheduler scheduler(&graph, &manager);
+    scheduler.set_locality_preference(false);  // 关闭
+    auto result = scheduler.schedule_next();
+
+    EXPECT_TRUE(result.scheduled_);
+    EXPECT_EQ(result.worker_id_, 1u);  // 非 locality 指向的 2
+
+    DataService::instance()->remove_remote_index("db_t1:obj");
+}
+
+// T2: 启用 locality，task 无 capability，输入对象在 worker 2 → 调度到 worker 2。
+TEST(TaskSchedulerTest, LocalityNoCapabilityPrefersHolder) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    graph.add_task(1, {"db_t2:obj"}, {});
+    graph.mark_data_ready("db_t2:obj");
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+    manager.register_worker(2, "127.0.0.1", 8081, {});
+    DataService::instance()->update_remote_idx("db_t2:obj", 2, "127.0.0.1", 8081, 100);
+
+    TaskScheduler scheduler(&graph, &manager);
+    scheduler.set_locality_preference(true);
+    auto result = scheduler.schedule_next();
+
+    EXPECT_TRUE(result.scheduled_);
+    EXPECT_EQ(result.worker_id_, 2u);  // 持有者，零传输成本
+
+    DataService::instance()->remove_remote_index("db_t2:obj");
+}
+
+// T3: 启用 locality，持有者 worker 不 idle → 退到 score 次优的 idle worker。
+TEST(TaskSchedulerTest, LocalityHolderBusyFallsToNextIdle) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    // obj 在 worker 3，但 worker 3 未注册（不存在）→ 只有 worker 1/2 idle。
+    // 二者都不持有 obj，score 相同（都=size），按 worker_id 升序选 worker 1。
+    graph.add_task(1, {"db_t3:obj"}, {});
+    graph.mark_data_ready("db_t3:obj");
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+    manager.register_worker(2, "127.0.0.1", 8081, {});
+    DataService::instance()->update_remote_idx("db_t3:obj", 3, "127.0.0.1", 8082, 100);
+
+    TaskScheduler scheduler(&graph, &manager);
+    scheduler.set_locality_preference(true);
+    auto result = scheduler.schedule_next();
+
+    EXPECT_TRUE(result.scheduled_);
+    EXPECT_EQ(result.worker_id_, 1u);  // 无 idle 持有者，score 相同选最小 worker_id
+
+    DataService::instance()->remove_remote_index("db_t3:obj");
+}
+
+// T4: capability 完整匹配优先于 locality（强约束 > 软偏好）。
+TEST(TaskSchedulerTest, LocalityYieldsToFullCapabilityMatch) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    // task 需要 gpu，输入 obj 在 worker 2（无 gpu）。worker 1 有 gpu（完整匹配）。
+    // locality 想去 worker 2，但 capability 完整匹配优先 → worker 1。
+    graph.add_task(1, {"db_t4:obj"}, caps({"gpu"}));
+    graph.mark_data_ready("db_t4:obj");
+    manager.register_worker(1, "127.0.0.1", 8080, {"gpu"});
+    manager.register_worker(2, "127.0.0.1", 8081, {});
+    DataService::instance()->update_remote_idx("db_t4:obj", 2, "127.0.0.1", 8081, 100);
+
+    TaskScheduler scheduler(&graph, &manager);
+    scheduler.set_locality_preference(true);
+    auto result = scheduler.schedule_next();
+
+    EXPECT_TRUE(result.scheduled_);
+    EXPECT_EQ(result.worker_id_, 1u);  // 完整匹配优先
+    EXPECT_FALSE(result.degraded_);
+
+    DataService::instance()->remove_remote_index("db_t4:obj");
+}
+
+// T5: locality 不降低 capability 质量。
+// 持有者 worker 的 capability 匹配数 < 全局最佳 → 阶段 B 不选，退兜底。
+TEST(TaskSchedulerTest, LocalityDoesNotDegradeCapabilityQuality) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    // task 需要 [a,b,c]。worker 1 持有 obj 但只匹配 {a}（1），worker 2 匹配 {a,b}（2）。
+    // 全局最佳=worker2(2)。持有者 worker1 匹配数 1 < 2 → 阶段 B 不选 worker1。
+    // 阶段 C allow_degrade=false（死等）→ waiting。
+    graph.add_task(1, {"db_t5:obj"}, caps({"a", "b", "c"}));
+    graph.mark_data_ready("db_t5:obj");
+    manager.register_worker(1, "127.0.0.1", 8080, {"a"});
+    manager.register_worker(2, "127.0.0.1", 8081, {"a", "b"});
+    DataService::instance()->update_remote_idx("db_t5:obj", 1, "127.0.0.1", 8080, 100);
+
+    TaskScheduler scheduler(&graph, &manager);
+    scheduler.set_locality_preference(true);
+    auto result = scheduler.schedule_next();
+
+    EXPECT_TRUE(result.scheduled_);
+    EXPECT_EQ(result.worker_id_, 2u);  // 选能力达标的 worker2，不为 locality 选能力弱的 worker1
+
+    DataService::instance()->remove_remote_index("db_t5:obj");
+}
+
+// T6: task 无输入对象 → compute_scores 全 0，退原行为（选 worker_id 升序首位）。
+TEST(TaskSchedulerTest, LocalityNoInputsFallsBack) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    graph.add_task(1, {}, {});  // 无输入对象
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+    manager.register_worker(2, "127.0.0.1", 8081, {});
+
+    TaskScheduler scheduler(&graph, &manager);
+    scheduler.set_locality_preference(true);  // 即使启用，无输入也退原行为
+    auto result = scheduler.schedule_next();
+
+    EXPECT_TRUE(result.scheduled_);
+    EXPECT_EQ(result.worker_id_, 1u);  // idle_workers[0]，原行为
+}
+
+
+// T7: task 要求无人具备的 capability，locality 启用时应 waiting（不调度），交死锁检测。
+// 防御 best_partial_count==0 时 locality 绕过 capability 约束的 bug。
+TEST(TaskSchedulerTest, LocalityNoCapabilityMatchStaysWaiting) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    // task 需要 gpu，两个 worker 都无 gpu。obj 在 worker 2（locality 想去 worker 2）。
+    graph.add_task(1, {"db_t7:obj"}, caps({"gpu"}));
+    graph.mark_data_ready("db_t7:obj");
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+    manager.register_worker(2, "127.0.0.1", 8081, {});
+    DataService::instance()->update_remote_idx("db_t7:obj", 2, "127.0.0.1", 8081, 100);
+
+    TaskScheduler scheduler(&graph, &manager);
+    scheduler.set_locality_preference(true);
+    auto result = scheduler.schedule_next();
+
+    EXPECT_FALSE(result.scheduled_);  // 无 capability 匹配，locality 不应绕过
+
+    DataService::instance()->remove_remote_index("db_t7:obj");
+}
 }  // namespace fly

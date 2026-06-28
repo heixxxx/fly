@@ -313,9 +313,28 @@ std::optional<CMVector<IndexEntry>> DataService::find_local_entries(const CMStri
 void DataService::update_remote_idx(const CMString& object_name,
                                       uint64_t worker_id,
                                       const CMString& host,
-                                      int32_t port) {
+                                      int32_t port,
+                                      int64_t size_bytes) {
     register_worker(worker_id, host, port);
     add_remote_location(object_name, worker_id);
+    if (size_bytes > 0) {
+        auto [db_id, short_name] = split_full(object_name);
+        std::lock_guard<std::mutex> lock(mutex_);
+        remote_idx_[db_id][short_name].size_bytes_ = size_bytes;
+    }
+}
+
+int64_t DataService::get_remote_size(const CMString& object_name) const {
+    auto [db_id, short_name] = split_full(object_name);
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto db_it = remote_idx_.find(db_id);
+    if (db_it != remote_idx_.end()) {
+        auto it = db_it->second.find(short_name);
+        if (it != db_it->second.end()) {
+            return it->second.size_bytes_;
+        }
+    }
+    return 0;
 }
 
 void DataService::add_remote_location(const CMString& object_name, uint64_t worker_id) {
@@ -359,7 +378,7 @@ CMVector<uint64_t> DataService::get_remote_workers(const CMString& object_name) 
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
         if (it != db_it->second.end()) {
-            return it->second.workers_;
+            return it->second.workers_;  // 拷贝（锁内完成），调用方拿独立副本
         }
     }
     return {};

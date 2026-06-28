@@ -136,7 +136,7 @@ TEST(MasterAgentTest, SetupWriteContext_ActivatesWorkerAgentContext) {
     WorkerAgentContext::clear();
 }
 
-TEST(MasterAgentTest, SetupWriteContext_MasterRunning_RecordWriteUpdatesRemoteIdx) {
+TEST(MasterAgentTest, SetupWriteContext_MasterRunning_RegisterWriteUpdatesRemoteIdx) {
     WorkerAgentContext::clear();
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -147,13 +147,16 @@ TEST(MasterAgentTest, SetupWriteContext_MasterRunning_RecordWriteUpdatesRemoteId
     CMString obj_name = "test_obj_setup_write";
     CMString full_name = db_id + ":" + obj_name;
 
-    // Record write via WorkerAgentContext → triggers on_master_record_write
-    WorkerAgentContext::record_write(db_id, obj_name);
+    // master 自写走 register 路径（on_master_register_write → do_write_register）。
+    // record_write_func 现为 no-op，不再触发 placement 更新。
+    auto [msg, err_type] = WorkerAgentContext::register_write(db_id, obj_name, 100);
+    EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);
 
-    // on_data_ready should have updated remote_idx
+    // do_write_register 应已更新 remote_idx（worker_id=0 = master 自写）
     EXPECT_TRUE(DataService::instance()->has_remote_location(full_name));
     auto info = DataService::instance()->lookup_remote_idx(full_name);
     EXPECT_EQ(info.worker_id_, 0u);
+    EXPECT_EQ(DataService::instance()->get_remote_size(full_name), 100);
 
     master.stop();
     wait_for_running(master, false);
@@ -173,13 +176,10 @@ TEST(MasterAgentTest, SetupWriteContext_MasterNotRunning_RecordWriteNoOp) {
     CMString obj_name = "test_obj_noop";
     CMString full_name = db_id + ":" + obj_name;
 
-    // on_master_record_write returns early when !running_
-    WorkerAgentContext::record_write(db_id, obj_name);
+    // master record_write_func 现为 no-op；register_write 在 !running_ 时返回 UNKNOWN 不登记
+    WorkerAgentContext::record_write(db_id, obj_name, 100);
 
-    // remote_idx should NOT be updated (worker_id=0 not registered, so addr is empty)
-    // on_data_ready still runs — it will call update_remote_idx with empty host
-    // But the early return in on_master_record_write means nothing happens
-    // Actually, on_master_record_write checks running_ and returns early
+    // remote_idx should NOT be updated（master 未 running）
     EXPECT_FALSE(DataService::instance()->has_remote_location(full_name));
 
     WorkerAgentContext::clear();
@@ -1318,9 +1318,86 @@ TEST(MasterAgentTest, OnMasterRegisterWriteNotRunning) {
     master.setup_write_context();
 
     CMString db_id = db32("reg_norun");
-    auto [msg, err_type] = WorkerAgentContext::register_write(db_id, "test_obj");
+    auto [msg, err_type] = WorkerAgentContext::register_write(db_id, "test_obj", 100);
 
     WorkerAgentContext::clear();
 }
 
+
+// size==0 时 update_remote_idx 不覆盖已记录的 size（防御 rebuild 等无 size 路径清零）。
+TEST(DataServiceLocalityTest, UpdateRemoteIdxSizeZeroPreservesExistingSize) {
+    auto ds = DataService::instance();
+    CMString obj = "db_size0:obj";
+
+    ds->update_remote_idx(obj, 1, "127.0.0.1", 9001, 5000);
+    EXPECT_EQ(ds->get_remote_size(obj), 5000);
+
+    // 再次 update（如 on_task_complete 的冗余路径或 rebuild）传 size=0，应保持原值。
+    ds->update_remote_idx(obj, 2, "127.0.0.1", 9002, 0);
+    EXPECT_EQ(ds->get_remote_size(obj), 5000);
+    auto holders = ds->get_remote_workers(obj);
+    EXPECT_EQ(holders.size(), 2u);
+
+    ds->remove_remote_index(obj);
+}
+
+// backup 副本 size 幂等：同一对象的多个副本登记的 size 一致。
+TEST(DataServiceLocalityTest, BackupReplicaSizeIdempotent) {
+    auto ds = DataService::instance();
+    CMString obj = "db_bkup:obj";
+
+    ds->update_remote_idx(obj, 1, "127.0.0.1", 9001, 8000);
+    EXPECT_EQ(ds->get_remote_size(obj), 8000);
+
+    // backup 副本（worker 2）size 应等于原 size。
+    ds->update_remote_idx(obj, 2, "127.0.0.1", 9002, 8000);
+    EXPECT_EQ(ds->get_remote_size(obj), 8000);
+
+    // 再次 backup（worker 3）传 size=0（internal backup task 路径），size 仍保持原值。
+    ds->update_remote_idx(obj, 3, "127.0.0.1", 9003, 0);
+    EXPECT_EQ(ds->get_remote_size(obj), 8000);
+
+    auto holders = ds->get_remote_workers(obj);
+    EXPECT_EQ(holders.size(), 3u);
+
+    ds->remove_remote_index(obj);
+}
+
+// master 自写对象（worker_id==0）+ auto_backup_enabled 时，do_write_register 应正确执行
+// backup 评估分支（迁移自原 on_data_ready 的 worker_id==0 路径）。
+// 验证：① 不崩溃；② 对象正确登记 placement + size；③ backup 评估路径被走通（即使单 master 无 backup worker）。
+TEST(MasterAgentTest, MasterSelfWriteWithAutoBackupEnabled) {
+    WorkerAgentContext::clear();
+    Config::instance()->set_int("auto_backup_enabled", 1);
+    Config::instance()->set_int("backup_replicas", 2);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    master.setup_write_context();
+    wait_for_running(master, true);
+
+    CMString db_id = db32("test_self_bk");
+    CMString obj_name = "self_bk_obj";
+    CMString full_name = db_id + ":" + obj_name;
+
+    // master 自写，auto_backup_enabled=1 → do_write_register 进入 evaluate_and_trigger_backup 分支。
+    // 单 master 无其它 worker 做 backup 目标，trigger_auto_backup 会 no-op，但路径必须走通不崩溃。
+    auto [msg, err_type] = WorkerAgentContext::register_write(db_id, obj_name, 100);
+    EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);
+
+    // placement + size 正确登记（backup 评估的前提）。
+    EXPECT_TRUE(DataService::instance()->has_remote_location(full_name));
+    auto info = DataService::instance()->lookup_remote_idx(full_name);
+    EXPECT_EQ(info.worker_id_, 0u);
+    EXPECT_EQ(DataService::instance()->get_remote_size(full_name), 100);
+
+    master.stop();
+    wait_for_running(master, false);
+    WorkerAgentContext::clear();
+
+    // 恢复默认配置（避免污染其它测试）。
+    Config::instance()->set_int("auto_backup_enabled", 0);
+
+    DataService::instance()->remove_remote_index(full_name);
+}
 }  // namespace fly

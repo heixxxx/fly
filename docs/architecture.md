@@ -187,7 +187,7 @@ def next_task(db, name):
 
 **任务调度策略**：
 - 默认策略：FIFO
-- Worker选择：数据locality优先，尽量调度到数据所在的Worker
+- 数据 locality 调度（Config `locality_scheduling_enabled`，默认 1 开启）：启用后 scheduler 按 worker 持有的输入数据总量（score）选亲和性最优的 idle worker。三阶段算法：① capability 完整匹配优先（强约束）；② locality 偏好（score 最大且不降低 capability 质量）；③ 兜底（allow_degrade）。scheduler 直接查 DataService placement 算分，持久 score 缓冲区复用。
 - 核心约束：Worker同一时刻最多执行一个任务
 
 ### 3.3 数据存储
@@ -556,9 +556,9 @@ Phase 3: 定向 idx 加载
 | HeartbeatMessage | W→M | 心跳 |
 | TaskSubmitMessage | 任意→M | 任务提交 |
 | TaskAssignMessage | M→W | 任务分配 |
-| TaskCompleteMessage | W→M | 任务完成 |
+| TaskCompleteMessage | W→M | 任务完成（含 written_objects 带 size） |
 | TaskFailedMessage | W→M | 任务失败 |
-| DataReadyMessage | W→M | 数据就绪 |
+| WriteRegisterMessage | W→M | 数据写入注册（placement 登记 + provenance + size，统一入口） |
 | DataQueryMessage | W→M | 数据位置查询 |
 | DataLocationMessage | M→W | 数据位置响应 |
 | DataRequestMessage | W→W | 数据请求 |

@@ -132,7 +132,8 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
     //    and schedule dependent tasks — by which point the cache is populated
     //    and remote reads can be served immediately.
     fly::DataService::instance()->on_write_started(db_id_, full);
-    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
+    int64_t compressed_size = static_cast<int64_t>(record->size());
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name, compressed_size);
 
     if (reg_error_type == fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED) {
         fly::ObjectCache::instance().remove(full);
@@ -173,7 +174,7 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
     };
 
     auto complete = [full, db_id = this->db_id_, object_name,
-                     caller_record_func, caller_backup_func, w, backup]() {
+                     caller_record_func, caller_backup_func, w, backup, compressed_size]() {
         auto ds = fly::DataService::instance();
         auto entries = w->get_all_entries(full);
         if (entries.has_value()) {
@@ -181,7 +182,7 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
         }
         ds->on_object_flushed(full);
         if (caller_record_func) {
-            caller_record_func(db_id, object_name);
+            caller_record_func(db_id, object_name, compressed_size);
         }
         if (backup && caller_backup_func) {
             caller_backup_func(db_id, object_name);
@@ -330,7 +331,8 @@ void Database::do_backup_write(const CMString& full, const CMString& object_name
     auto saved_hash = fly::WorkerAgentContext::get_current_write_hash();
     fly::WorkerAgentContext::clear_current_write_hash();
 
-    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
+    int64_t backup_compressed_size = static_cast<int64_t>(compressed_data.size());
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name, backup_compressed_size);
     if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
         ds->on_write_failed(db_id_, full, reg_error);
         fly::WorkerAgentContext::set_current_write_hash(saved_hash);
@@ -353,7 +355,7 @@ void Database::do_backup_write(const CMString& full, const CMString& object_name
     };
 
     auto complete = [full, db_id = db_id_, object_name,
-                     caller_record_func, w, saved_hash]() {
+                     caller_record_func, w, saved_hash, backup_compressed_size]() {
         fly::WorkerAgentContext::set_current_write_hash(saved_hash);
         auto dsvc = fly::DataService::instance();
         auto entries = w->get_all_entries(full);
@@ -362,7 +364,7 @@ void Database::do_backup_write(const CMString& full, const CMString& object_name
         }
         dsvc->on_object_flushed(full);
         if (caller_record_func) {
-            caller_record_func(db_id, object_name);
+            caller_record_func(db_id, object_name, backup_compressed_size);
         }
     };
 
@@ -725,7 +727,8 @@ void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compresse
 
     // Step 3: Register with master so other workers can discover this data.
     // By now the data is readable on this worker's DataServer.
-    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name);
+    int64_t temp_compressed_size = static_cast<int64_t>(compressed_data->size());
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name, temp_compressed_size);
     if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
         ERR("[TEMP-PUT] register_write failed for '{}': {}", object_name, reg_error);
         fly::DataService::instance()->on_write_failed(db_id_, full, reg_error);

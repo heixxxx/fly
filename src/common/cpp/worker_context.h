@@ -11,7 +11,7 @@ namespace fly {
 
 class WorkerAgentContext {
 public:
-    static void set_record_write_func(std::function<void(const CMString& db_id, const CMString& name)> func) {
+    static void set_record_write_func(std::function<void(const CMString& db_id, const CMString& name, int64_t size)> func) {
         record_write_func_ = std::move(func);
     }
 
@@ -41,19 +41,19 @@ public:
         transaction_mode_ = false;
     }
 
-    static void record_write(const CMString& db_id, const CMString& object_name) {
+    static void record_write(const CMString& db_id, const CMString& object_name, int64_t size) {
         if (record_write_func_) {
-            record_write_func_(db_id, object_name);
+            record_write_func_(db_id, object_name, size);
         }
     }
 
-    static void set_register_func(std::function<std::pair<CMString, TaskErrorType>(const CMString&, const CMString&)> func) {
+    static void set_register_func(std::function<std::pair<CMString, TaskErrorType>(const CMString&, const CMString&, int64_t)> func) {
         register_func_ = std::move(func);
     }
 
-    static std::pair<CMString, TaskErrorType> register_write(const CMString& db_id, const CMString& object_name) {
+    static std::pair<CMString, TaskErrorType> register_write(const CMString& db_id, const CMString& object_name, int64_t compressed_size) {
         if (register_func_) {
-            return register_func_(db_id, object_name);
+            return register_func_(db_id, object_name, compressed_size);
         }
         return {"", TaskErrorType::UNKNOWN};
     }
@@ -167,11 +167,11 @@ public:
         current_write_hash_.clear();
     }
 
-    static std::function<void(const CMString&, const CMString&)>& current_record_func() { return record_write_func_; }
+    static std::function<void(const CMString&, const CMString&, int64_t)>& current_record_func() { return record_write_func_; }
 
 private:
-    static inline thread_local std::function<void(const CMString&, const CMString&)> record_write_func_;
-    static inline thread_local std::function<std::pair<CMString, TaskErrorType>(const CMString&, const CMString&)> register_func_;
+    static inline thread_local std::function<void(const CMString&, const CMString&, int64_t)> record_write_func_;
+    static inline thread_local std::function<std::pair<CMString, TaskErrorType>(const CMString&, const CMString&, int64_t)> register_func_;
     static inline thread_local std::function<void(const CMString&, const CMString&)> notify_removed_func_;
     static inline thread_local std::function<void(const CMString&)> freeze_func_;
     static inline thread_local std::function<void(const CMString&, const CMString&)> remove_request_func_;

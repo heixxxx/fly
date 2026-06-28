@@ -194,7 +194,7 @@ TEST(MessageProtocolTest, TaskCompleteMessage) {
     msg.header_.type_ = MessageType::TASK_COMPLETE;
     msg.task_id_ = 50;
     msg.worker_id_ = 1;
-    msg.written_objects_ = {"obj1", "obj2"};
+    msg.written_objects_ = {WrittenObject{"obj1", 100}, WrittenObject{"obj2", 200}};
     msg.frozen_dbs_ = {"db_a"};
     
     CMString encoded = MessageProtocol::encode(msg);
@@ -227,21 +227,49 @@ TEST(MessageProtocolTest, TaskFailedMessage) {
     EXPECT_EQ(decoded.error_message_, "connection lost");
 }
 
-TEST(MessageProtocolTest, DataReadyMessage) {
-    DataReadyMessage msg;
-    msg.header_.type_ = MessageType::DATA_READY;
+TEST(MessageProtocolTest, WriteRegisterMessageWithSizeAndWriter) {
+    WriteRegisterMessage msg;
+    msg.header_.type_ = MessageType::WRITE_REGISTER;
     msg.worker_id_ = 5;
     msg.object_name_ = "db_abc:result/output";
     msg.db_id_ = "db_abc";
-    
+    msg.write_context_hash_ = "hash123";
+    msg.writer_id_ = "w_abc";
+    msg.size_bytes_ = 1234567;
+
     CMString encoded = MessageProtocol::encode(msg);
     CMString buffer = encoded;
-    
-    DataReadyMessage decoded;
+
+    WriteRegisterMessage decoded;
     EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
     EXPECT_EQ(decoded.worker_id_, 5u);
     EXPECT_EQ(decoded.object_name_, "db_abc:result/output");
     EXPECT_EQ(decoded.db_id_, "db_abc");
+    EXPECT_EQ(decoded.write_context_hash_, "hash123");
+    EXPECT_EQ(decoded.writer_id_, "w_abc");
+    EXPECT_EQ(decoded.size_bytes_, 1234567);
+}
+
+TEST(MessageProtocolTest, TaskCompleteWrittenObjects) {
+    TaskCompleteMessage msg;
+    msg.header_.type_ = MessageType::TASK_COMPLETE;
+    msg.task_id_ = 10;
+    msg.worker_id_ = 3;
+    msg.written_objects_.push_back(WrittenObject{"db1:obj_a", 4096});
+    msg.written_objects_.push_back(WrittenObject{"db1:obj_b", 1048576});
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    TaskCompleteMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.task_id_, 10u);
+    EXPECT_EQ(decoded.worker_id_, 3u);
+    ASSERT_EQ(decoded.written_objects_.size(), 2u);
+    EXPECT_EQ(decoded.written_objects_[0].object_name_, "db1:obj_a");
+    EXPECT_EQ(decoded.written_objects_[0].size_bytes_, 4096);
+    EXPECT_EQ(decoded.written_objects_[1].object_name_, "db1:obj_b");
+    EXPECT_EQ(decoded.written_objects_[1].size_bytes_, 1048576);
 }
 
 TEST(MessageProtocolTest, DataLocationMessage) {

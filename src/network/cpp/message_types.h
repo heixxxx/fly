@@ -15,7 +15,6 @@ enum class MessageType : uint8_t {
     TASK_ASSIGN = 5,
     TASK_COMPLETE = 6,
     TASK_FAILED = 7,
-    DATA_READY = 8,
     DATA_QUERY = 9,
     DATA_LOCATION = 10,
     DATA_REQUEST = 11,
@@ -168,11 +167,20 @@ struct TaskAssignMessage {
     FLY_SERIALIZE(header_, task_id_, task_name_, task_module_, args_, write_context_hash_, dependency_locations_, var_payloads_);
 };
 
+// task 成功写出的对象条目：对象全名 + 压缩后字节数。
+// size_bytes_ 用于 master 的 data locality 调度亲和度打分（数据传输成本）。
+struct WrittenObject {
+    CMString object_name_;
+    int64_t size_bytes_ = 0;
+
+    FLY_SERIALIZE(object_name_, size_bytes_);
+};
+
 struct TaskCompleteMessage {
     MessageHeader header_;
     uint64_t task_id_ = 0;
     uint64_t worker_id_ = 0;
-    CMVector<CMString> written_objects_;
+    CMVector<WrittenObject> written_objects_;
     CMVector<CMString> frozen_dbs_;
     bool is_internal_ = false;  // backup 等内部任务，不参与依赖图和 metadata
 
@@ -197,18 +205,6 @@ struct TaskFailedMessage {
     static constexpr MessageType msg_type_ = MessageType::TASK_FAILED;
 
     FLY_SERIALIZE(header_, task_id_, worker_id_, recoverable_, error_message_, error_type_, dirty_objects_);
-};
-
-struct DataReadyMessage {
-    MessageHeader header_;
-    uint64_t worker_id_ = 0;
-    CMString object_name_;
-    CMString db_id_;
-    CMString writer_id_;
-
-    static constexpr MessageType msg_type_ = MessageType::DATA_READY;
-
-    FLY_SERIALIZE(header_, worker_id_, object_name_, db_id_, writer_id_);
 };
 
 struct DataQueryMessage {
@@ -280,10 +276,12 @@ struct WriteRegisterMessage {
     CMString object_name_;
     CMString db_id_;
     CMString write_context_hash_;
+    CMString writer_id_;        // writer 进程标识（db meta recorded_workers_ 登记用）
+    int64_t size_bytes_ = 0;    // 压缩后字节数（数据 locality 调度亲和度打分用）
 
     static constexpr MessageType msg_type_ = MessageType::WRITE_REGISTER;
 
-    FLY_SERIALIZE(header_, worker_id_, object_name_, db_id_, write_context_hash_);
+    FLY_SERIALIZE(header_, worker_id_, object_name_, db_id_, write_context_hash_, writer_id_, size_bytes_);
 };
 
 struct WriteRegisterAckMessage {

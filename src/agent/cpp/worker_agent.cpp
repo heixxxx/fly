@@ -361,9 +361,16 @@ bool WorkerAgent::poll_task() {
                 TaskCompleteMessage complete;
                 complete.task_id_ = task.task_id_;
                 complete.worker_id_ = worker_id_;
-                complete.written_objects_ = std::move(tracked_writes);
+                // 实际写出对象（含 size，从 current_write_sizes_ 取）。
+                for (const auto& name : tracked_writes) {
+                    int64_t sz = 0;
+                    auto it = current_write_sizes_.find(name);
+                    if (it != current_write_sizes_.end()) sz = it->second;
+                    complete.written_objects_.push_back({name, sz});
+                }
+                // 声明性输出（task 装饰器声明，非实际 write，size=0）。
                 for (auto& out : result.outputs_) {
-                    complete.written_objects_.push_back(std::move(out));
+                    complete.written_objects_.push_back({std::move(out), 0});
                 }
                 complete.frozen_dbs_ = std::move(result.frozen_dbs_);
                 reactor_->send(master_conn_, complete);
@@ -458,17 +465,18 @@ void WorkerAgent::on_db_path_response(const DbPathResponseMessage& msg) {
 void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_hash) {
     current_task_id_ = task_id;
     current_writes_.clear();
+    current_write_sizes_.clear();
     current_write_hash_ = write_context_hash;
     // 激活事务模式：本 task 的 write_object 会被 BEGIN/END 包裹（pending 区语义）。
     // master 直接 write_object 不激活此模式（段外隐式事务，ADD 立即生效）。
     WorkerAgentContext::set_transaction_mode(true);
     WorkerAgentContext::set_current_write_hash(write_context_hash);
     WorkerAgentContext::set_last_error_type(TaskErrorType::UNKNOWN);
-    WorkerAgentContext::set_record_write_func([this](const CMString& db_id, const CMString& name) {
-        record_write(db_id, name);
+    WorkerAgentContext::set_record_write_func([this](const CMString& db_id, const CMString& name, int64_t size) {
+        record_write(db_id, name, size);
     });
-    WorkerAgentContext::set_register_func([this](const CMString& db_id, const CMString& name) -> std::pair<CMString, TaskErrorType> {
-        return register_write_with_master(db_id, name);
+    WorkerAgentContext::set_register_func([this](const CMString& db_id, const CMString& name, int64_t size) -> std::pair<CMString, TaskErrorType> {
+        return register_write_with_master(db_id, name, size);
     });
     WorkerAgentContext::set_notify_removed_func([this](const CMString& db_id, const CMString& name) {
         CMString full_name = db_id + ":" + name;
@@ -502,21 +510,10 @@ void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_has
     });
 }
 
-void WorkerAgent::record_write(const CMString& db_id, const CMString& object_name) {
-     CMString full_name = db_id + ":" + object_name;
-     current_writes_.push_back(full_name);
-
-    if (registered_ && Config::instance()->get_int("dependency_update_mode") == 0) {
-        DataReadyMessage msg;
-        msg.worker_id_ = worker_id_;
-        msg.object_name_ = full_name;
-        msg.db_id_ = db_id;
-        auto db_it = databases_.find(db_id);
-        if (db_it != databases_.end()) {
-            msg.writer_id_ = db_it->second->get_writer_id();
-        }
-        reactor_->send(master_conn_, msg);
-    }
+void WorkerAgent::record_write(const CMString& db_id, const CMString& object_name, int64_t size) {
+    CMString full_name = db_id + ":" + object_name;
+    current_writes_.push_back(full_name);
+    current_write_sizes_[full_name] = size;
 }
 
 CMVector<CMString> WorkerAgent::end_task(uint64_t task_id) {
@@ -525,6 +522,7 @@ CMVector<CMString> WorkerAgent::end_task(uint64_t task_id) {
     current_write_hash_.clear();
     auto writes = std::move(current_writes_);
     current_writes_.clear();
+    current_write_sizes_.clear();
     current_task_id_ = 0;
     return writes;
 }
@@ -701,7 +699,7 @@ CMSharedPtr<Database> WorkerAgent::get_database(const CMString& db_id) const {
     return nullptr;
 }
 
-std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const CMString& db_id, const CMString& object_name) {
+std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const CMString& db_id, const CMString& object_name, int64_t compressed_size) {
     if (!registered_) return {"", TaskErrorType::UNKNOWN};
     CMString full_name = db_id + ":" + object_name;
     CMString ctx_hash = fly::WorkerAgentContext::get_current_write_hash();
@@ -746,6 +744,11 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
     msg.object_name_ = full_name;
     msg.db_id_ = db_id;
     msg.write_context_hash_ = ctx_hash;
+    msg.size_bytes_ = compressed_size;
+    auto db_it = databases_.find(db_id);
+    if (db_it != databases_.end()) {
+        msg.writer_id_ = db_it->second->get_writer_id();
+    }
     reactor_->send(master_conn_, msg);
 
     INFO("WriteRegister sent: object={}", full_name);
@@ -1193,7 +1196,11 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
         TaskCompleteMessage complete;
         complete.task_id_ = 0;  // internal task 不需要 task_id
         complete.worker_id_ = worker_id_;
-        complete.written_objects_.push_back(db_id + ":" + object_name);
+        // internal backup task：size=0。时序约定：backup 副本的真实 size 已由 do_backup_write
+        // 的 register 路径（同步，先于本 TaskComplete）登记给 master；此处 TaskComplete 仅通知
+        // 对象位置。master on_task_complete 的 is_internal_ 分支调 update_remote_idx(..., size_bytes_=0)，
+        // 因 size_bytes==0 时保持原 size 不变，不会覆盖已登记的真实 size。
+        complete.written_objects_.push_back({db_id + ":" + object_name, 0});
         complete.is_internal_ = true;
         reactor_->send(master_conn_, complete);
 

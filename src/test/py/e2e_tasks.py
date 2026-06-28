@@ -436,3 +436,22 @@ def read_obj_and_var(db, obj_key, var_name):
     obj_val = db.read_object(obj_key)
     var_val = db.get_var(var_name)
     return (obj_val, var_val)
+
+
+# ── Data locality scheduling tasks ──
+# locality_consume: 依赖一个上游对象，自报执行它的 worker_id。
+# 用于验证 data locality 调度：依赖 task 应被调度到持有其输入对象的 worker。
+
+@as_task()
+def write_payload_with_worker(db, payload_key, worker_key, size):
+    """写入大对象 payload_key，并把执行 worker_id 写入 worker_key（自报身份）。
+    这样测试能从对象内容读出哪个 worker 持有 payload_key。"""
+    db.write_object(payload_key, list(range(size)))
+    db.write_object(worker_key, _get_wid())
+
+
+@as_task(inputs=lambda db, source_key, result_key: [db.get_full_name(source_key)])
+def locality_consume(db, source_key, result_key):
+    """读取依赖对象，把执行 worker 的 id 写入结果。用于断言调度亲和性。"""
+    db.read_object(source_key)
+    db.write_object(result_key, _get_wid())

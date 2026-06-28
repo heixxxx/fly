@@ -77,7 +77,7 @@ public:
     void set_executor(CMSharedPtr<TaskExecutor> executor);
 
     void begin_task(uint64_t task_id, const CMString& write_context_hash = "");
-    void record_write(const CMString& db_id, const CMString& object_name);
+    void record_write(const CMString& db_id, const CMString& object_name, int64_t size);
     CMVector<CMString> end_task(uint64_t task_id);
 
     // task 成功时对所有涉及的 db 打 END（提交写入段）。
@@ -108,7 +108,7 @@ public:
 
     bool request_db_path(const CMString& db_id);
 
-    std::pair<CMString, TaskErrorType> register_write_with_master(const CMString& db_id, const CMString& object_name);
+    std::pair<CMString, TaskErrorType> register_write_with_master(const CMString& db_id, const CMString& object_name, int64_t compressed_size);
     void request_database_freeze(const CMString& db_id);
     void request_object_remove(const CMString& db_id, const CMString& object_name);
     void request_backup(const CMString& db_id, const CMString& object_name);
@@ -158,6 +158,7 @@ private:
 
     uint64_t current_task_id_ = 0;
     CMVector<CMString> current_writes_;
+    CMUnorderedMap<CMString, int64_t> current_write_sizes_;  // obj 全名 → 压缩后字节数（与 current_writes_ 同生命周期）
     CMString current_write_hash_;
     
     mutable std::mutex task_queue_mutex_;

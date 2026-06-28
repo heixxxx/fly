@@ -169,13 +169,16 @@ private:
 
     void on_worker_register(uint64_t conn_id, const RegisterMessage& msg);
     void on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg);
-    void on_data_ready(uint64_t conn_id, const DataReadyMessage& msg);
     void on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg);
     void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
     void on_disconnect(uint64_t conn_id);
     void on_error(uint64_t conn_id, int error_code);
     void on_data_query_dispatch(uint64_t conn_id, const DataQueryMessage& msg);
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
+    WriteRegisterAckMessage do_write_register(const WriteRegisterMessage& msg);
+    void record_worker_info(const CMString& object_name, const CMString& db_id,
+                            uint64_t worker_id, const CMString& writer_id);
+    void evaluate_and_trigger_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_id);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
     void on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg);
@@ -197,10 +200,8 @@ private:
     void remove_persisted_task(uint64_t task_id);
     CMString get_failed_tasks_file_path() const;
 
-    void on_master_record_write(const CMString& db_id, const CMString& name);
-
     void on_master_freeze(const CMString& db_id);
-    std::pair<CMString, TaskErrorType> on_master_register_write(const CMString& db_id, const CMString& name);
+    std::pair<CMString, TaskErrorType> on_master_register_write(const CMString& db_id, const CMString& name, int64_t compressed_size);
 
     std::atomic<bool> fatal_error_{false};
 

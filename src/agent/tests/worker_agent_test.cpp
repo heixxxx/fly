@@ -48,18 +48,18 @@ TEST(WorkerAgentContextTest, DefaultNotActive) {
 TEST(WorkerAgentContextTest, SetAndClear) {
     int calls = 0;
     WorkerAgentContext::set_record_write_func(
-        [&calls](const CMString& db_id, const CMString& name) {
+        [&calls](const CMString& db_id, const CMString& name, int64_t size) {
             calls++;
         }
     );
     EXPECT_TRUE(WorkerAgentContext::is_active());
-    
-    WorkerAgentContext::record_write(db32("db1"), "obj1");
+
+    WorkerAgentContext::record_write(db32("db1"), "obj1", 100);
     EXPECT_EQ(calls, 1);
-    
+
     WorkerAgentContext::clear();
     EXPECT_FALSE(WorkerAgentContext::is_active());
-    WorkerAgentContext::record_write(db32("db1"), "obj2");
+    WorkerAgentContext::record_write(db32("db1"), "obj2", 100);
     EXPECT_EQ(calls, 1);
 }
 
@@ -79,8 +79,8 @@ TEST(WorkerAgentTest, RecordWrites) {
     CMString db_abc = db32("db_abc");
     
     worker.begin_task(100);
-    worker.record_write(db_abc, "output/result");
-    worker.record_write(db_abc, "output/intermediate");
+    worker.record_write(db_abc, "output/result", 200);
+    worker.record_write(db_abc, "output/intermediate", 300);
     auto writes = worker.end_task(100);
     
     EXPECT_EQ(writes.size(), 2u);
@@ -94,12 +94,12 @@ TEST(WorkerAgentTest, MultipleTasksSequential) {
     CMString db2 = db32("db2");
 
     worker.begin_task(1);
-    worker.record_write(db1, "a");
+    worker.record_write(db1, "a", 50);
     auto writes1 = worker.end_task(1);
     EXPECT_EQ(writes1.size(), 1u);
 
     worker.begin_task(2);
-    worker.record_write(db2, "b");
+    worker.record_write(db2, "b", 60);
     auto writes2 = worker.end_task(2);
     EXPECT_EQ(writes2.size(), 1u);
     EXPECT_EQ(writes2[0], db2 + ":b");
@@ -111,8 +111,8 @@ TEST(WorkerAgentTest, WriteTrackingWithDatabase) {
 
     worker.begin_task(200);
 
-    worker.record_write(db_hash_aaa, "output/result");
-    worker.record_write(db_hash_aaa, "output/log");
+    worker.record_write(db_hash_aaa, "output/result", 100);
+    worker.record_write(db_hash_aaa, "output/log", 100);
 
     auto writes = worker.end_task(200);
     ASSERT_EQ(writes.size(), 2u);
@@ -127,8 +127,8 @@ TEST(WorkerAgentTest, MultiDbSameObjectNameTracking) {
 
     worker.begin_task(300);
 
-    worker.record_write(db_proj_a, "output/result");
-    worker.record_write(db_proj_b, "output/result");
+    worker.record_write(db_proj_a, "output/result", 100);
+    worker.record_write(db_proj_b, "output/result", 100);
 
     auto writes = worker.end_task(300);
     ASSERT_EQ(writes.size(), 2u);
@@ -142,7 +142,7 @@ TEST(WorkerAgentTest, EndTaskClearsTracking) {
     CMString db1 = db32("db1");
 
     worker.begin_task(1);
-    worker.record_write(db1, "obj1");
+    worker.record_write(db1, "obj1", 100);
     auto writes1 = worker.end_task(1);
     EXPECT_EQ(writes1.size(), 1u);
 
@@ -769,7 +769,7 @@ TEST_F(IdxLoadTest, OnWriteRegisterAckSuccess) {
     ASSERT_TRUE(wait_until_registered(worker));
 
     CMString db_id = db32("writereg_ok");
-    auto [msg, err_type] = worker.register_write_with_master(db_id, "obj1");
+    auto [msg, err_type] = worker.register_write_with_master(db_id, "obj1", 100);
     EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);
 
     worker.stop();
@@ -791,7 +791,7 @@ TEST_F(IdxLoadTest, OnWriteRegisterAckFailure) {
     worker.request_database_freeze(db_id);
     wait_for([&] { return true; }, 5, 20);
 
-    auto [msg, err_type] = worker.register_write_with_master(db_id, "obj_fail");
+    auto [msg, err_type] = worker.register_write_with_master(db_id, "obj_fail", 100);
     EXPECT_NE(err_type, TaskErrorType::UNKNOWN);
     EXPECT_FALSE(msg.empty());
 
@@ -838,7 +838,7 @@ TEST(WorkerAgentTest, RecordWriteWithoutBeginEnd) {
     CMString db_id = db32("no_begin");
 
     worker.begin_task(1);
-    worker.record_write(db_id, "output/data");
+    worker.record_write(db_id, "output/data", 100);
     auto writes = worker.end_task(1);
 
     EXPECT_EQ(writes.size(), 1u);

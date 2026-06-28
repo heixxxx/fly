@@ -181,10 +181,13 @@ read_object("key")
 write_object("key", obj)
     │
     ├─ 1. 调用线程序列化 + 压缩（compress_to_buffer 流式管线）
-    ├─ 2. 触发依赖满足（on_data_ready）
-    ├─ 3. WBQ 后台线程执行 write_record 磁盘写入
-    └─ 4. DataReadyMessage → Master 更新索引
+    ├─ 2. register_write → WriteRegisterMessage → Master do_write_register
+    │      （provenance 校验 + mark_data_ready + update_remote_idx 带 size + schedule）
+    └─ 3. WBQ 后台线程执行 write_record 磁盘写入
 ```
+
+> 写入注册统一走 `WriteRegisterMessage` → `do_write_register` 单一入口（master 自写也走此路径，同步调用）。
+> 携带压缩后 `size_bytes_` 用于数据 locality 调度亲和度打分。
 
 ---
 

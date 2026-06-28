@@ -271,7 +271,7 @@ TEST_F(DatabaseTest, DbIdIsNotBasePath) {
 TEST_F(DatabaseTest, WriteObjectTracksWrite) {
     CMVector<CMString> recorded_writes;
     fly::WorkerAgentContext::set_record_write_func(
-        [&recorded_writes](const CMString& db_id, const CMString& name) {
+        [&recorded_writes](const CMString& db_id, const CMString& name, int64_t size) {
             recorded_writes.push_back(db_id + ":" + name);
         }
     );
@@ -290,7 +290,7 @@ TEST_F(DatabaseTest, WriteObjectTracksWrite) {
 TEST_F(DatabaseTest, WriteTypedObjectTracksWrite) {
     CMVector<CMString> recorded_writes;
     fly::WorkerAgentContext::set_record_write_func(
-        [&recorded_writes](const CMString& db_id, const CMString& name) {
+        [&recorded_writes](const CMString& db_id, const CMString& name, int64_t size) {
             recorded_writes.push_back(db_id + ":" + name);
         }
     );

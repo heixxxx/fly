@@ -160,13 +160,14 @@ void DependencyGraph::remove_task(uint64_t task_id) {
     task_requirements_.erase(task_id);
 }
 
-TaskRequirements DependencyGraph::get_task_requirements(uint64_t task_id) const {
+const TaskRequirements& DependencyGraph::get_task_requirements(uint64_t task_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = task_requirements_.find(task_id);
     if (it != task_requirements_.end()) {
         return it->second;
     }
-    return {};
+    static const TaskRequirements empty{};
+    return empty;
 }
 
 std::optional<std::chrono::steady_clock::time_point>

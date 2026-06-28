@@ -4,6 +4,8 @@
 #include <core/cpp/process_info.h>
 #include <core/cpp/graceful_exit.h>
 #include <storage/cpp/local_index.h>
+#include <algorithm>
+#include <unordered_set>
 #include <thread>
 #include <chrono>
 #include <filesystem>
@@ -61,11 +63,6 @@ void MasterAgent::start() {
     reactor_->register_handler<TaskFailedMessage>(
         [this](uint64_t conn_id, const TaskFailedMessage& msg) {
             on_task_failed(conn_id, msg);
-        });
-
-    reactor_->register_handler<DataReadyMessage>(
-        [this](uint64_t conn_id, const DataReadyMessage& msg) {
-            on_data_ready(conn_id, msg);
         });
 
     reactor_->register_handler<TaskSubmitMessage>(
@@ -160,6 +157,7 @@ void MasterAgent::start() {
     });
 
     scheduler_ = CMMakeUnique<TaskScheduler>(graph_.get(), worker_manager_.get());
+    scheduler_->set_locality_preference(Config::instance()->get_int("locality_scheduling_enabled") == 1);
     metadata_ = CMMakeUnique<TaskManager>();
 
     heartbeat_monitor_ = CMMakeUnique<HeartbeatMonitor>(
@@ -399,7 +397,12 @@ void MasterAgent::schedule_tasks() {
             pending.empty() ? 0 : pending[0],
             std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
     }
-    
+
+    // 每次调度前从 Config 同步开关，使运行时 set_int("locality_scheduling_enabled")
+    // 即时生效（无需重启进程）。scheduler 启用后自行查询 DataService 算分。
+    scheduler_->set_locality_preference(
+        Config::instance()->get_int("locality_scheduling_enabled") == 1);
+
     auto results = scheduler_->schedule_all_available();
 
     for (const auto& result : results) {
@@ -466,7 +469,7 @@ void MasterAgent::schedule_tasks() {
     // 才 fail 掉死等(timeout<0)的 task。限时(>=0)的 task 会被降级调度，不在此处 fail。
     bool has_running = metadata_->has_tasks_with_status(TaskStatus::RUNNING);
     for (uint64_t task_id : remaining) {
-        auto requirements = graph_->get_task_requirements(task_id);
+        const auto& requirements = graph_->get_task_requirements(task_id);
         if (requirements.capabilities_.empty()) continue;
         // 仅死等(timeout<0)的 task 才适用属性死锁 fail；timeout>=0 的会被降级调度
         if (requirements.timeout_seconds_ >= 0.0f) continue;
@@ -712,73 +715,62 @@ void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
     DBG("Heartbeat from worker_id={}", worker_id);
 }
 
-void MasterAgent::on_data_ready(uint64_t conn_id, const DataReadyMessage& msg) {
-    INFO("DataReady: object={}, worker_id={}", msg.object_name_, msg.worker_id_);
-
-    graph_->mark_data_ready(msg.object_name_);
-
-    auto addr = DataService::instance()->get_worker_address(msg.worker_id_);
-
-    DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
-
-    if (msg.worker_id_ == 0 && Config::instance()->get_int("auto_backup_enabled") == 1) {
-        auto target_replicas = static_cast<uint32_t>(Config::instance()->get_int("backup_replicas"));
-        auto decision = DataService::instance()->evaluate_auto_backup(msg.object_name_, 0, target_replicas);
-        if (decision.should_backup_) {
-            CMString db_id = msg.object_name_;
-            auto colon_pos = msg.object_name_.find(':');
-            if (colon_pos != CMString::npos) {
-                db_id = msg.object_name_.substr(0, colon_pos);
-            }
-            trigger_auto_backup(msg.object_name_, 0, db_id);
-        }
-    }
-
+// 登记写入该 db 的 worker 元数据（db meta recorded_workers_）。
+// 从原 on_data_ready 的非冗余逻辑抽出，供 do_write_register 复用。
+void MasterAgent::record_worker_info(const CMString& object_name, const CMString& db_id,
+                                      uint64_t worker_id, const CMString& writer_id_in) {
     CMString hostname;
     CMString ip;
-    if (msg.worker_id_ == 0) {
+    if (worker_id == 0) {
         hostname = ProcessInfo::instance()->hostname();
         ip = host_;
     } else {
-        auto host_it = worker_to_hostname_.find(msg.worker_id_);
+        auto host_it = worker_to_hostname_.find(worker_id);
         if (host_it != worker_to_hostname_.end()) {
             hostname = host_it->second;
         }
-        auto ip_it = worker_to_ip_.find(msg.worker_id_);
+        auto ip_it = worker_to_ip_.find(worker_id);
         if (ip_it != worker_to_ip_.end()) {
             ip = ip_it->second;
         }
     }
 
-    if (!hostname.empty()) {
-        CMString writer_id = msg.writer_id_;
-        if (writer_id.empty()) {
-            auto db_it2 = db_instances_.find(msg.db_id_);
-            if (db_it2 != db_instances_.end()) {
-                writer_id = db_it2->second->get_writer_id();
-            }
-        }
+    if (hostname.empty()) return;
 
-        auto key = std::make_tuple(msg.db_id_, hostname, writer_id);
-        {
-            std::lock_guard<std::mutex> lk(recorded_workers_mutex_);
-            if (recorded_workers_.find(key) == recorded_workers_.end()) {
-                recorded_workers_.insert(key);
-                auto db_it = db_instances_.find(msg.db_id_);
-                if (db_it != db_instances_.end()) {
-                    ::WorkerInfo info;
-                    info.worker_id_ = msg.worker_id_;
-                    info.writer_id_ = writer_id;
-                    info.hostname_ = hostname;
-                    info.ip_address_ = ip;
-                    info.launch_command_ = "";
-                    db_it->second->append_worker_info_to_meta(info);
-                }
-            }
+    CMString writer_id = writer_id_in;
+    if (writer_id.empty()) {
+        auto db_it2 = db_instances_.find(db_id);
+        if (db_it2 != db_instances_.end()) {
+            writer_id = db_it2->second->get_writer_id();
         }
     }
 
-    schedule_tasks();
+    auto key = std::make_tuple(db_id, hostname, writer_id);
+    {
+        std::lock_guard<std::mutex> lk(recorded_workers_mutex_);
+        if (recorded_workers_.find(key) == recorded_workers_.end()) {
+            recorded_workers_.insert(key);
+            auto db_it = db_instances_.find(db_id);
+            if (db_it != db_instances_.end()) {
+                ::WorkerInfo info;
+                info.worker_id_ = worker_id;
+                info.writer_id_ = writer_id;
+                info.hostname_ = hostname;
+                info.ip_address_ = ip;
+                info.launch_command_ = "";
+                db_it->second->append_worker_info_to_meta(info);
+            }
+        }
+    }
+}
+
+// master 自写对象（worker_id==0）的 auto-backup 评估。从原 on_data_ready 抽出。
+void MasterAgent::evaluate_and_trigger_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_id) {
+    auto target_replicas = static_cast<uint32_t>(Config::instance()->get_int("backup_replicas"));
+    auto decision = DataService::instance()->evaluate_auto_backup(object_name, source_worker_id, target_replicas);
+    if (decision.should_backup_) {
+        trigger_auto_backup(object_name, source_worker_id, db_id);
+    }
 }
 
 void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg) {
@@ -795,11 +787,11 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
     if (!msg.is_internal_) {
         bool streaming_mode = (Config::instance()->get_int("dependency_update_mode") == 0);
 
-        for (const auto& data_path : msg.written_objects_) {
+        for (const auto& wo : msg.written_objects_) {
             if (!streaming_mode) {
-                graph_->mark_data_ready(data_path);
-                DataService::instance()->update_remote_idx(data_path, worker_id, addr.host_, addr.port_);
-                DBG("Recorded data location: {} -> worker {}", data_path, worker_id);
+                graph_->mark_data_ready(wo.object_name_);
+                DataService::instance()->update_remote_idx(wo.object_name_, worker_id, addr.host_, addr.port_, wo.size_bytes_);
+                DBG("Recorded data location: {} -> worker {}", wo.object_name_, worker_id);
             }
         }
 
@@ -835,9 +827,9 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
         }
     } else {
         // Internal tasks (backup, etc.) always update remote_idx
-        for (const auto& data_path : msg.written_objects_) {
-            DataService::instance()->update_remote_idx(data_path, worker_id, addr.host_, addr.port_);
-            DBG("Internal task: recorded data location: {} -> worker {}", data_path, worker_id);
+        for (const auto& wo : msg.written_objects_) {
+            DataService::instance()->update_remote_idx(wo.object_name_, worker_id, addr.host_, addr.port_, wo.size_bytes_);
+            DBG("Internal task: recorded data location: {} -> worker {}", wo.object_name_, worker_id);
         }
     }
 
@@ -1087,13 +1079,18 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
     reactor_->send(conn_id, response);
 }
 
-void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg) {
+// 纯逻辑：处理 WriteRegister 的全部业务（provenance/mark_data_ready/update_remote_idx 带 size/
+// schedule_tasks/recorded_workers_ 登记/auto-backup 评估），返回 ack。调用方决定是否回 ACK。
+// worker 路径：on_write_register 调本函数后 reactor_->send(ack)。
+// master 自写路径：on_master_register_write 调本函数后丢弃 ack。
+WriteRegisterAckMessage MasterAgent::do_write_register(const WriteRegisterMessage& msg) {
     DBG("WriteRegister: worker={}, object={}, db_id={}", msg.worker_id_, msg.object_name_, msg.db_id_);
 
     WriteRegisterAckMessage ack;
     ack.object_name_ = msg.object_name_;
     ack.db_id_ = msg.db_id_;
 
+    bool registered_ok = false;
     if (is_db_frozen(msg.db_id_)) {
         ack.success_ = false;
         ack.error_message_ = "Database frozen: " + msg.db_id_;
@@ -1104,19 +1101,9 @@ void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage
         auto it = write_provenance_.find(msg.object_name_);
         if (it == write_provenance_.end()) {
             write_provenance_[msg.object_name_] = msg.write_context_hash_;
-            ack.success_ = true;
-            graph_->mark_data_ready(msg.object_name_);
-            auto addr = DataService::instance()->get_worker_address(msg.worker_id_);
-            DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
-            update_dependency_location_cache(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
-            schedule_tasks();
+            registered_ok = true;
         } else if (it->second == msg.write_context_hash_) {
-            ack.success_ = true;
-            graph_->mark_data_ready(msg.object_name_);
-            auto addr = DataService::instance()->get_worker_address(msg.worker_id_);
-            DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
-            update_dependency_location_cache(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
-            schedule_tasks();
+            registered_ok = true;
         } else {
             ack.success_ = false;
             ack.error_message_ = "Write provenance mismatch for " + msg.object_name_ +
@@ -1125,14 +1112,27 @@ void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage
             ERR("WriteRegister rejected: provenance mismatch for {}", msg.object_name_);
         }
     } else {
+        registered_ok = true;
+    }
+
+    if (registered_ok) {
         ack.success_ = true;
         graph_->mark_data_ready(msg.object_name_);
         auto addr = DataService::instance()->get_worker_address(msg.worker_id_);
-        DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
+        DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_, msg.size_bytes_);
         update_dependency_location_cache(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
+        record_worker_info(msg.object_name_, msg.db_id_, msg.worker_id_, msg.writer_id_);
+        if (msg.worker_id_ == 0 && Config::instance()->get_int("auto_backup_enabled") == 1) {
+            evaluate_and_trigger_backup(msg.object_name_, 0, msg.db_id_);
+        }
         schedule_tasks();
     }
 
+    return ack;
+}
+
+void MasterAgent::on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg) {
+    auto ack = do_write_register(msg);
     reactor_->send(conn_id, ack);
 }
 
@@ -1479,11 +1479,11 @@ void MasterAgent::restart_failed_tasks(const CMString& file_path) {
 }
 
 void MasterAgent::setup_write_context() {
-    WorkerAgentContext::set_record_write_func([this](const CMString& db_id, const CMString& name) {
-        on_master_record_write(db_id, name);
-    });
-    WorkerAgentContext::set_register_func([this](const CMString& db_id, const CMString& name) -> std::pair<CMString, TaskErrorType> {
-        return on_master_register_write(db_id, name);
+    // master 自写对象的 record 阶段无需处理（register 已含全部 placement/schedule 逻辑）。
+    // 留一个空 record_write_func 仅满足 is_active() 探测，不触发任何动作。
+    WorkerAgentContext::set_record_write_func([](const CMString&, const CMString&, int64_t) {});
+    WorkerAgentContext::set_register_func([this](const CMString& db_id, const CMString& name, int64_t compressed_size) -> std::pair<CMString, TaskErrorType> {
+        return on_master_register_write(db_id, name, compressed_size);
     });
     WorkerAgentContext::set_freeze_func([this](const CMString& db_id) {
         on_master_freeze(db_id);
@@ -1519,28 +1519,25 @@ void MasterAgent::setup_write_context() {
     });
 }
 
-void MasterAgent::on_master_record_write(const CMString& db_id, const CMString& name) {
-    if (!running_.load()) return;
-    DataReadyMessage msg;
+std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const CMString& db_id, const CMString& name, int64_t compressed_size) {
+    if (!running_.load()) return {"", TaskErrorType::UNKNOWN};
+    // master 自写走统一的 WriteRegisterMessage 路径（worker_id=0），与 worker 行为对称。
+    // 同步调用 do_write_register，丢弃 ack（master 自写无需网络 ACK）。
+    WriteRegisterMessage msg;
     msg.worker_id_ = 0;
     msg.object_name_ = db_id + ":" + name;
     msg.db_id_ = db_id;
+    msg.size_bytes_ = compressed_size;
     auto db_it = db_instances_.find(db_id);
     if (db_it != db_instances_.end()) {
         msg.writer_id_ = db_it->second->get_writer_id();
     }
-    on_data_ready(0, msg);
-}
-
-std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const CMString& db_id, const CMString& name) {
-    if (!running_.load()) return {"", TaskErrorType::UNKNOWN};
-    CMString full = db_id + ":" + name;
-    graph_->mark_data_ready(full);
-
-    auto addr = DataService::instance()->get_worker_address(0);
-    DataService::instance()->update_remote_idx(full, 0, addr.host_, addr.port_);
-
-    schedule_tasks();
+    auto ack = do_write_register(msg);
+    if (!ack.success_) {
+        return {ack.error_message_, ack.error_type_};
+    }
+    // 成功：返回空 error_message + UNKNOWN（TaskErrorType::UNKNOWN 在本 codebase 语义为"无错误"哨兵，
+    // 多处 `if (err_type != UNKNOWN)` 据此判断失败，与字面"未知错误"无关，沿用既有约定）。
     return {"", TaskErrorType::UNKNOWN};
 }
 
