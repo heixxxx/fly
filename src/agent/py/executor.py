@@ -152,13 +152,17 @@ def create_executor(worker):
         original_func = _resolve_func(task_name, task_module)
         return original_func(*deserialized_args)
 
-    def postprocess(task_id, result):
-        """Phase 3: post-execution hook (currently a no-op).
+    def postprocess(task_id):
+        """Phase 3: post-execution cleanup.
 
-        Reserved for future work such as per-task cleanup, metrics, or
-        cache warming. Returning the result unchanged keeps the contract simple.
+        Drains the write-back queue so that every write_object issued during
+        execute has been flushed to disk and its record_write callback fired
+        (populating the C++ current_writes_ list that end_task collects). This
+        must run only on the success path — on failure, dirty writes are rolled
+        back by the C++ cleanup_failed_task_writes, so draining would be wrong.
         """
-        return result
+        from _fly_storage import ex_stg_get_data_service
+        ex_stg_get_data_service().drain_write_back()
 
     def executor(task_id: int, task_name: str, task_module: str, args: list) -> dict:
         result = {
@@ -181,13 +185,9 @@ def create_executor(worker):
             # Phase 2: execute
             output = execute(task_id, task_name, task_module, deserialized_args)
 
-            # 落盘：保证 task 函数返回时所有 write 已真正落盘并触发 record_write。
-            # （drain 的迁移到 postprocess 是 WP3 的工作，WP1 保持原位。）
-            from _fly_storage import ex_stg_get_data_service
-            ex_stg_get_data_service().drain_write_back()
-
-            # Phase 3: postprocess
-            postprocess(task_id, output)
+            # Phase 3: postprocess (drain write-back so writes are flushed &
+            # recorded before C++ end_task collects them)
+            postprocess(task_id)
 
             result['status'] = 0
             result['output'] = str(output) if output is not None else ""
