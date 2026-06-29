@@ -26,4 +26,27 @@ enum class WriteErrorType {
     DUPLICATE_SKIPPED = 4,     // duplicate write of same object (benign, not an error)
 };
 
+// Remote read result code. Returned by DataClientPool::request /
+// DataClient::request_compressed_data and propagated through the
+// DirectCompressedReadCallback to the TIER2 multi-replica retry loop in
+// DataService::read_raw_compressed. The classification drives retry policy:
+//
+//   NONE            — success
+//   DATA_NOT_READY  — transient: peer is still writing the object; the TIER2
+//                     loop may retry indefinitely (data is expected to appear)
+//   OBJECT_NOT_FOUND— permanent for THIS replica: this worker no longer holds
+//                     the object; TIER2 removes the replica and moves on
+//   NETWORK         — transient: connection / decode / protocol error; TIER2
+//                     retries the replica but under a bounded deadline (a fully
+//                     unreachable peer must not be retried forever)
+//   SHUTDOWN        — permanent: the pool is being stopped; abort immediately,
+//                     do not retry
+enum class ReadError {
+    NONE = 0,
+    DATA_NOT_READY = 1,
+    OBJECT_NOT_FOUND = 2,
+    NETWORK = 3,
+    SHUTDOWN = 4,
+};
+
 }  // namespace fly

@@ -48,11 +48,12 @@ TEST_F(DataTransferTest, DataServerReturnsObjectNotFoundForUnknownObject) {
     int port = ds_->get_data_port();
 
     DataClientPool pool(4);
-    auto [success, data, py_name, hash, error] = pool.request(
+    auto [success, data, py_name, hash, error, rerr] = pool.request(
         "127.0.0.1", port, db_id + ":nonexistent", 0, 0, 5000);
 
     EXPECT_FALSE(success);
     EXPECT_EQ(error, "OBJECT_NOT_FOUND");
+    EXPECT_EQ(rerr, ReadError::OBJECT_NOT_FOUND);
 }
 
 TEST_F(DataTransferTest, DataServerReturnsDataForCompletedWrite) {
@@ -90,14 +91,16 @@ TEST_F(DataTransferTest, DataServerReturnsDataForCompletedWrite) {
     int port = ds_->get_data_port();
 
     DataClientPool pool(4);
-    auto [success, data, py_name, hash, error] = pool.request(
+    auto [success, data, py_name, hash, error, rerr] = pool.request(
         "127.0.0.1", port, full, 0, 0, 5000);
 
     EXPECT_TRUE(success) << "error: " << error;
     EXPECT_FALSE(!data || data->empty());
 }
 
-TEST_F(DataTransferTest, DataClientPoolRetriesOnDataNotReady) {
+// After the read-path hardening change, the pool does NOT internally retry
+// DATA_NOT_READY — it returns immediately so the TIER2 layer owns retry policy.
+TEST_F(DataTransferTest, DataClientPoolReturnsDataNotReadyImmediately) {
     std::string db_id(fly::db_id_len(), 'd');
     ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
@@ -108,44 +111,18 @@ TEST_F(DataTransferTest, DataClientPoolRetriesOnDataNotReady) {
     ds_->start_data_server("127.0.0.1", 0, 2);
     int port = ds_->get_data_port();
 
-    std::atomic<bool> write_done(false);
-    std::thread writer([&]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-        std::string test_data = "delayed data content";
-
-        auto record = CMMakeShared<FlyBuffer>();
-        ObjectHeader header;
-        header.total_size_ = test_data.size();
-        header.chunk_count_ = 1;
-        header.py_name_ = "bytes";
-        header.py_name_len_ = 5;
-        header.compression_type_ = 0;
-        CMString header_bytes = header.serialize();
-        record->write(header_bytes.data(), header_bytes.size());
-        record->write(test_data.data(), test_data.size());
-
-        DataWriter dw(test_dir_, test_dir_ + "/data", "test2", 0);
-        dw.write_record(full, test_data.size(), 1, *record, "");
-        dw.flush();
-
-        auto entries = dw.get_all_entries(full);
-        if (entries.has_value()) {
-            ds_->on_write_completed(db_id, full, entries.value());
-        }
-        ds_->on_object_flushed(full);
-        write_done.store(true);
-    });
-
     DataClientPool pool(2);
-    auto [success, data, py_name, hash, error] = pool.request(
+    auto start = std::chrono::steady_clock::now();
+    auto [success, data, py_name, hash, error, rerr] = pool.request(
         "127.0.0.1", port, full, 0, 0, 30000);
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - start).count();
 
-    writer.join();
-
-    EXPECT_TRUE(success) << "error: " << error;
-    EXPECT_FALSE(!data || data->empty());
-    EXPECT_TRUE(write_done.load());
+    // Must return promptly (well under the previous 100ms poll interval) and
+    // classify the cause as DATA_NOT_READY.
+    EXPECT_FALSE(success);
+    EXPECT_EQ(rerr, ReadError::DATA_NOT_READY);
+    EXPECT_LT(elapsed_ms, 50);
 }
 
 TEST_F(DataTransferTest, DataServerHandlesConcurrentRequestsBeyondThreadCount) {
@@ -189,7 +166,7 @@ TEST_F(DataTransferTest, DataServerHandlesConcurrentRequestsBeyondThreadCount) {
     CMVector<std::thread> threads;
     for (int i = 0; i < 6; ++i) {
         threads.emplace_back([&, i]() {
-            auto [ok, data, py_name, hash, error] = pool.request(
+            auto [ok, data, py_name, hash, error, rerr] = pool.request(
                 "127.0.0.1", port, db_id + ":obj_" + std::to_string(i), 0, 0, 10000);
             if (ok) success_count.fetch_add(1);
         });

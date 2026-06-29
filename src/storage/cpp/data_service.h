@@ -6,6 +6,7 @@
 #include <storage/cpp/temp_store.h>
 #include <common/cpp/common_types.h>
 #include <common/cpp/concurrent_map.h>
+#include <common/cpp/error_types.h>
 #include <cstdint>
 #include <mutex>
 #include <utility>
@@ -80,9 +81,20 @@ public:
     ~DataService();
 
     static CMSharedPtr<DataService> instance();
-    using RemoteCompressedReadCallback = std::function<std::tuple<bool, FlyBufferPtr, CMString, bool>(
+    // TIER3 callback: query master for ALL replica locations of the object,
+    // populate local remote_idx with them, and signal the outcome. It does NOT
+    // fetch object data — reading is TIER2's job.
+    //   returns (locations_refreshed, can_still_produce):
+    //     - locations_refreshed=true  : master returned >=1 replica; remote_idx
+    //       updated; read_raw_compressed re-enters TIER2 to try them.
+    //     - locations_refreshed=false : master has no location; can_still_produce
+    //       indicates whether some task may still produce the object.
+    using RemoteCompressedReadCallback = std::function<std::tuple<bool, bool>(
         const CMString& object_name)>;
-    using DirectCompressedReadCallback = std::function<std::tuple<bool, FlyBufferPtr, CMString, CMString>(
+    // Returns (found, data, py_name, write_context_hash, read_error). read_error
+    // classifies a failure so TIER2 can decide: DATA_NOT_READY/NETWORK keep the
+    // replica for retry, OBJECT_NOT_FOUND drops it, SHUTDOWN aborts.
+    using DirectCompressedReadCallback = std::function<std::tuple<bool, FlyBufferPtr, CMString, CMString, ReadError>(
         const CMString& host, int32_t port, const CMString& object_name)>;
 
     // ============================================================
@@ -150,6 +162,9 @@ public:
 
     bool has_remote_location(const CMString& object_name) const;
     RemoteObjectInfo lookup_remote_idx(const CMString& object_name) const;
+    // 返回对象的全部副本地址（每个副本含 worker_id/host/port）。无记录返回空。
+    // 与 lookup_remote_idx（只返回首个）相对，供 TIER2 多副本轮询使用。
+    CMVector<RemoteObjectInfo> lookup_all_remote_idx(const CMString& object_name) const;
     // 返回对象的压缩后字节数（未登记返回 0）。
     int64_t get_remote_size(const CMString& object_name) const;
 

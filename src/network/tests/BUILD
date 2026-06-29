@@ -80,6 +80,17 @@ cc_test(
 )
 
 cc_test(
+    name = "data_client_pool_test",
+    srcs = ["data_client_pool_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/network/cpp:fly_network",
+        "//src/storage/cpp:fly_storage",
+    ],
+    copts = ["-std=c++20"],
+)
+
+cc_test(
     name = "metadata_client_test",
     srcs = ["metadata_client_test.cpp"],
     deps = [

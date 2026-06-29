@@ -103,12 +103,24 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
     }
 
     result.found_ = response.success_;
-    result.worker_id_ = response.worker_id_;
-    result.host_ = response.data_host_;
-    result.port_ = response.data_port_;
     result.can_still_produce_ = response.can_still_produce_;
     if (!response.success_) {
         result.error_ = "Master has no location for " + object_name;
+    } else {
+        // Populate all replicas; mirror the first one into the convenience fields.
+        for (const auto& dl : response.locations_) {
+            ReplicaLocation rl;
+            rl.worker_id_ = dl.worker_id;
+            rl.host_ = dl.host;
+            rl.port_ = dl.port;
+            result.all_locations_.push_back(std::move(rl));
+        }
+        if (!result.all_locations_.empty()) {
+            const auto& first = result.all_locations_.front();
+            result.worker_id_ = first.worker_id_;
+            result.host_ = first.host_;
+            result.port_ = first.port_;
+        }
     }
     return result;
 }

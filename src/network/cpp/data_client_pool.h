@@ -1,6 +1,7 @@
 #pragma once
 
 #include <common/cpp/common_types.h>
+#include <common/cpp/error_types.h>
 #include <serialization/cpp/fly_buffer.h>
 #include <cstdint>
 #include <mutex>
@@ -31,7 +32,18 @@ public:
     DataClientPool(const DataClientPool&) = delete;
     DataClientPool& operator=(const DataClientPool&) = delete;
 
-    std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> request(
+    // Issue a single data read against one peer's DataServer.
+    //
+    // Returns (success, data, py_name, write_context_hash, error_message, read_error):
+    //   - On success: success=true, data/py_name/hash populated.
+    //   - On failure: success=false, read_error classifies the cause (drives the
+    //     TIER2 retry policy in DataService::read_raw_compressed). error_message
+    //     is the human-readable string for logging only.
+    //
+    // NOTE: DATA_NOT_READY is NO LONGER internally polled. It is returned as
+    // ReadError::DATA_NOT_READY so the caller (TIER2) owns the backoff/retry
+    // policy. The pool performs exactly one request per call.
+    std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> request(
         const CMString& host,
         int port,
         const CMString& object_name,

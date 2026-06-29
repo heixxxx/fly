@@ -275,22 +275,26 @@ TEST(MessageProtocolTest, TaskCompleteWrittenObjects) {
 TEST(MessageProtocolTest, DataLocationMessage) {
     DataLocationMessage msg;
     msg.header_.type_ = MessageType::DATA_LOCATION;
-    msg.worker_id_ = 7;
     msg.file_path_ = "/data/worker7/output.bin";
     msg.object_name_ = "task_result";
-    msg.data_host_ = "10.0.0.7";
-    msg.data_port_ = 9001;
+    DataLocation dl;
+    dl.object_name = "task_result";
+    dl.worker_id = 7;
+    dl.host = "10.0.0.7";
+    dl.port = 9001;
+    msg.locations_.push_back(dl);
     msg.success_ = true;
-    
+
     CMString encoded = MessageProtocol::encode(msg);
     CMString buffer = encoded;
-    
+
     DataLocationMessage decoded;
     EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
-    EXPECT_EQ(decoded.worker_id_, 7u);
     EXPECT_EQ(decoded.file_path_, "/data/worker7/output.bin");
-    EXPECT_EQ(decoded.data_host_, "10.0.0.7");
-    EXPECT_EQ(decoded.data_port_, 9001);
+    ASSERT_EQ(decoded.locations_.size(), 1u);
+    EXPECT_EQ(decoded.locations_[0].worker_id, 7u);
+    EXPECT_EQ(decoded.locations_[0].host, "10.0.0.7");
+    EXPECT_EQ(decoded.locations_[0].port, 9001);
     EXPECT_TRUE(decoded.success_);
 }
 

@@ -4,6 +4,7 @@
 #include <network/cpp/connection_manager.h>
 #include <network/cpp/message_types.h>
 #include <network/cpp/data_client.h>
+#include <network/cpp/data_client_pool.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/data_service.h>
 #include <task/cpp/dependency_graph.h>
@@ -12,6 +13,7 @@
 #include <task/cpp/task_manager.h>
 #include <task/cpp/heartbeat_monitor.h>
 #include <log/cpp/logger.h>
+#include <core/cpp/config.h>
 #include <common/cpp/common_types.h>
 #include <common/cpp/worker_context.h>
 #include <serialization/cpp/serialization_macros.h>
@@ -113,6 +115,10 @@ private:
     CMString host_;
     uint16_t port_;
     int32_t data_server_port_ = 0;
+    // Pool for master-initiated direct reads (TIER2). Mirrors worker's pool so
+    // master read_object goes TIER1 → TIER2 (no TIER3: master is the location
+    // authority).
+    DataClientPool data_client_pool_{Config::instance()->get_int("data_client_pool_size")};
     std::atomic<bool> running_{false};
 
     std::atomic<bool> draining_{false};

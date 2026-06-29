@@ -186,26 +186,43 @@ void MasterAgent::start() {
     data_server_port_ = static_cast<int32_t>(dsInst->get_data_port());
     DataService::instance()->register_worker(0, host_, data_server_port_);
 
-    // Master reads its own data by looking up remote_idx directly — no network
-    // DataQuery to self. A self-DataQuery would go through the reactor's epoll,
-    // which doesn't guarantee ordering against worker WriteRegister on a
-    // different fd. Direct lookup + DataClient::request_compressed_data avoids
-    // the race entirely (the read sees remote_idx via mutex, same as
-    // WriteRegister updates).
-    dsInst->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, bool> {
+    // Master is the location authority: its remote_idx already holds every
+    // replica, so read_object goes TIER1 → TIER2 only (no TIER3 — querying
+    // itself would be a self-referential no-op and historically raced with
+    // WriteRegister on a different reactor fd). Register a direct handler so
+    // TIER2 can fetch from the owning worker's DataServer via the pool,
+    // mirroring the worker side.
+    dsInst->set_direct_compressed_read_handler(
+        [this](const CMString& host, int32_t port,
+               const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, CMString, ReadError> {
+            uint64_t rid = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) ^
+                           static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+            auto [success, data, py_name, hash, error, rerr] =
+                data_client_pool_.request(host, port, name, 0, rid);
+            if (!success) {
+                ERR("master direct read failed for {}: {}", name, error);
+                return {false, nullptr, {}, {}, rerr};
+            }
+            return {true, data, std::move(py_name), std::move(hash), ReadError::NONE};
+        });
+
+    // Master's TIER3 is a pure LOCAL lookup (no network DataQuery to self —
+    // that historically raced with WriteRegister on a different reactor fd).
+    // remote_idx is authoritative here, so "query master for location" reduces
+    // to consulting it directly. This handler exists so that, when TIER2 has no
+    // replica yet, read_raw_compressed still returns a meaningful
+    // can_still_produce (has_pending||has_running) — which wait_obj relies on to
+    // distinguish "object may still be produced" from "truly missing".
+    dsInst->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, bool> {
         auto ds = DataService::instance();
-        auto loc = ds->lookup_remote_idx(name);
-        if (loc.worker_id_ == 0 || loc.host_.empty()) {
-            bool has_pending = !graph_->get_pending_tasks().empty();
-            bool has_running = metadata_->has_tasks_with_status(TaskStatus::RUNNING);
-            return {false, nullptr, {}, has_pending || has_running};
+        // If remote_idx already lists replicas, signal "refreshed" so TIER2
+        // retries them; otherwise compute can_still_produce locally.
+        if (ds->has_remote_location(name)) {
+            return {true, false};
         }
-        auto [success, data, py_name, hash, error] =
-            DataClient::request_compressed_data(loc.host_, loc.port_, name);
-        if (success) {
-            return {true, data, std::move(py_name), false};
-        }
-        return {false, nullptr, {}, false};
+        bool has_pending = !graph_->get_pending_tasks().empty();
+        bool has_running = metadata_->has_tasks_with_status(TaskStatus::RUNNING);
+        return {false, has_pending || has_running};
     });
 
     sigterm_received_ = false;
@@ -1097,14 +1114,18 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
     response.object_name_ = msg.object_name_;
 
     if (DataService::instance()->has_remote_location(msg.object_name_)) {
-        auto loc = DataService::instance()->lookup_remote_idx(msg.object_name_);
-        DBG("[TEMP-QUERY] DataQuery FOUND: obj={}, worker_id={}, host={}, port={}",
-            msg.object_name_, loc.worker_id_, loc.host_, loc.port_);
-        response.worker_id_ = loc.worker_id_;
-        response.data_host_ = loc.host_;
-        response.data_port_ = loc.port_;
+        auto all_locs = DataService::instance()->lookup_all_remote_idx(msg.object_name_);
+        DBG("[TEMP-QUERY] DataQuery FOUND: obj={}, replicas={}", msg.object_name_, all_locs.size());
         response.success_ = true;
         response.can_still_produce_ = false;
+        for (const auto& loc : all_locs) {
+            DataLocation dl;
+            dl.object_name = msg.object_name_;
+            dl.worker_id = loc.worker_id_;
+            dl.host = loc.host_;
+            dl.port = loc.port_;
+            response.locations_.push_back(std::move(dl));
+        }
 
         if (Config::instance()->get_int("auto_backup_enabled") == 1) {
             DataService::instance()->record_remote_access(msg.object_name_);
@@ -1115,13 +1136,13 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
             auto decision = DataService::instance()->evaluate_auto_backup(msg.object_name_, threshold, target_replicas);
             INFO("[AUTO-BACKUP] obj={}, read_count={}, current_replicas={}, target={}, should_backup={}",
                  msg.object_name_, decision.read_count_, decision.current_replicas_, target_replicas, decision.should_backup_);
-            if (decision.should_backup_) {
+            if (decision.should_backup_ && !all_locs.empty()) {
                 CMString db_id = msg.object_name_;
                 auto colon_pos = msg.object_name_.find(':');
                 if (colon_pos != CMString::npos) {
                     db_id = msg.object_name_.substr(0, colon_pos);
                 }
-                trigger_auto_backup(msg.object_name_, loc.worker_id_, db_id);
+                trigger_auto_backup(msg.object_name_, all_locs.front().worker_id_, db_id);
             }
         }
     } else {

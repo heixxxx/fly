@@ -3,6 +3,7 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/local_index.h>
 #include <storage/cpp/decompressing_streambuf.h>
+#include <serialization/cpp/fly_buffer.h>
 #include <filesystem>
 #include <istream>
 #include <chrono>
@@ -187,6 +188,30 @@ TEST_F(DataServiceTest, RemoteIdxSupportsMultipleWorkers) {
     EXPECT_EQ(info.worker_id_, 1u);
     EXPECT_EQ(info.host_, "host_a");
     EXPECT_EQ(info.port_, 8000);
+}
+
+TEST_F(DataServiceTest, LookupAllRemoteIdxReturnsEveryReplica) {
+    CMString full = db32("allrepl") + ":obj";
+    ds_->update_remote_idx(full, 1, "host_a", 8000);
+    ds_->update_remote_idx(full, 2, "host_b", 9000);
+    ds_->update_remote_idx(full, 3, "host_c", 7000);
+
+    // Must return ALL replicas (worker + host + port), not just the first.
+    auto all = ds_->lookup_all_remote_idx(full);
+    EXPECT_EQ(all.size(), 3u);
+
+    // Each replica's address must resolve via worker_registry_.
+    std::set<uint64_t> seen_wids;
+    for (const auto& loc : all) {
+        EXPECT_FALSE(loc.host_.empty());
+        seen_wids.insert(loc.worker_id_);
+    }
+    EXPECT_EQ(seen_wids.size(), 3u);
+}
+
+TEST_F(DataServiceTest, LookupAllRemoteIdxEmptyForUnknownObject) {
+    auto all = ds_->lookup_all_remote_idx(db32("none") + ":missing");
+    EXPECT_TRUE(all.empty());
 }
 
 TEST_F(DataServiceTest, RegisterDatabaseAndLocalRead) {
@@ -930,19 +955,79 @@ TEST_F(DataServiceTest, FindLocalEntriesReturnsData) {
 
 TEST_F(DataServiceTest, SetRemoteCompressedReadHandler) {
     bool called = false;
-    ds_->set_remote_compressed_read_handler([&called](const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, bool> {
+    ds_->set_remote_compressed_read_handler([&called](const CMString& name) -> std::tuple<bool, bool> {
         called = true;
-        return std::make_tuple(false, nullptr, CMString{}, false);
+        return std::make_tuple(false, false);
     });
     EXPECT_NO_THROW(ds_->set_remote_compressed_read_handler(nullptr));
 }
 
 TEST_F(DataServiceTest, SetDirectCompressedReadHandler) {
     ds_->set_direct_compressed_read_handler(
-        [](const CMString& host, int32_t port, const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, CMString> {
-            return std::make_tuple(false, nullptr, CMString{}, CMString{});
+        [](const CMString& host, int32_t port, const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, CMString, fly::ReadError> {
+            return std::make_tuple(false, nullptr, CMString{}, CMString{}, fly::ReadError::NETWORK);
         });
     EXPECT_NO_THROW(ds_->set_direct_compressed_read_handler(nullptr));
+}
+
+// TIER2 multi-replica failover: when the first replica returns a typed error,
+// read_raw_compressed must move on to the next replica instead of giving up.
+TEST_F(DataServiceTest, Tier2FailoverToNextReplicaOnObjectNotFound) {
+    CMString full = db32("tier2") + ":obj";
+    // Two replicas: W1 (will return OBJECT_NOT_FOUND) and W2 (has data).
+    ds_->update_remote_idx(full, 1, "host_a", 8000);
+    ds_->update_remote_idx(full, 2, "host_b", 9000);
+
+    // Build a tiny valid compressed payload so W2 "returns data".
+    std::string payload = "hello";
+    fly::CMSharedPtr<FlyBuffer> data = fly::CMMakeShared<FlyBuffer>();
+    data->write(payload.data(), payload.size());
+
+    int call_count = 0;
+    ds_->set_direct_compressed_read_handler(
+        [&](const CMString& host, int32_t port, const CMString& name)
+            -> std::tuple<bool, fly::CMSharedPtr<FlyBuffer>, CMString, CMString, fly::ReadError> {
+            call_count++;
+            if (host == "host_a") {
+                // W1 no longer holds the object → permanent for this replica.
+                return {false, nullptr, {}, {}, fly::ReadError::OBJECT_NOT_FOUND};
+            }
+            // W2 returns the data.
+            return {true, data, CMString("bytes"), {}, fly::ReadError::NONE};
+        });
+
+    auto [found, raw, py_name, hash, can_still] = ds_->read_raw_compressed(full);
+    EXPECT_TRUE(found);
+    ASSERT_TRUE(raw && !raw->empty());
+    EXPECT_EQ(call_count, 2);  // tried W1, then W2
+}
+
+// TIER2 must remove a replica that returned OBJECT_NOT_FOUND, so a subsequent
+// read goes straight to the surviving replica.
+TEST_F(DataServiceTest, Tier2RemovesReplicaOnObjectNotFound) {
+    CMString full = db32("tier2rm") + ":obj";
+    ds_->update_remote_idx(full, 1, "host_a", 8000);
+    ds_->update_remote_idx(full, 2, "host_b", 9000);
+
+    fly::CMSharedPtr<FlyBuffer> data = fly::CMMakeShared<FlyBuffer>();
+    data->write("x", 1);
+
+    ds_->set_direct_compressed_read_handler(
+        [&](const CMString& host, int32_t port, const CMString& name)
+            -> std::tuple<bool, fly::CMSharedPtr<FlyBuffer>, CMString, CMString, fly::ReadError> {
+            if (host == "host_a") {
+                return {false, nullptr, {}, {}, fly::ReadError::OBJECT_NOT_FOUND};
+            }
+            return {true, data, CMString("bytes"), {}, fly::ReadError::NONE};
+        });
+
+    auto [found, raw, py_name, hash, can_still] = ds_->read_raw_compressed(full);
+    EXPECT_TRUE(found);
+
+    // W1 must have been pruned: only W2 remains.
+    auto workers = ds_->get_remote_workers(full);
+    ASSERT_EQ(workers.size(), 1u);
+    EXPECT_EQ(workers[0], 2u);
 }
 
 TEST_F(DataServiceTest, DataServerStartStop) {
@@ -1164,19 +1249,25 @@ TEST_F(DataServiceTest, TryReadLocalOrWaitImmediateForComplete) {
     EXPECT_TRUE(found);
 }
 
-// try_read_remote invokes the configured remote read handler and returns its result.
-TEST_F(DataServiceTest, TryReadRemoteUsesHandler) {
+// try_read_remote invokes the configured remote read handler. Under the new
+// model the handler is a pure location query (returns refreshed signal, no
+// data); without a direct handler the read cannot fetch, so it fails — but the
+// handler must still have been invoked.
+TEST_F(DataServiceTest, TryReadRemoteInvokesHandler) {
     CMString full = db32("remote_db") + ":rmt_obj";
-    ds_->update_remote_idx(full, 7, "10.0.0.7", 5000);
 
+    bool handler_called = false;
     ds_->set_remote_compressed_read_handler(
-        [&full](const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, bool> {
+        [&full, &handler_called](const CMString& name) -> std::tuple<bool, bool> {
             EXPECT_EQ(name, full);
-            auto buf = CMMakeShared<FlyBuffer>(); buf->take(CMString("compressed_payload")); return {true, buf, "bytes", false};
+            handler_called = true;
+            // Report "master knows of no location" to terminate cleanly.
+            return {false, false};
         });
 
     auto [found, result] = ds_->try_read_remote(full);
-    EXPECT_TRUE(found);
+    EXPECT_FALSE(found);
+    EXPECT_TRUE(handler_called);
 }
 
 // is_write_in_progress reflects on_write_started / on_write_completed lifecycle.

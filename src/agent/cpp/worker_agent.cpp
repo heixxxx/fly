@@ -51,20 +51,20 @@ void WorkerAgent::start() {
     data_server_port_ = static_cast<int32_t>(dsInst->get_data_port());
     INFO("data server listening on port {}", data_server_port_);
 
-    dsInst->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, bool> {
+    dsInst->set_remote_compressed_read_handler([this](const CMString& name) -> std::tuple<bool, bool> {
         return request_remote_data(name);
     });
     dsInst->set_direct_compressed_read_handler(
         [this](const CMString& host, int32_t port,
-               const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, CMString> {
+               const CMString& name) -> std::tuple<bool, FlyBufferPtr, CMString, CMString, ReadError> {
             uint64_t rid = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) ^
                            static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-            auto [success, data, py_name, hash, error] = data_client_pool_.request(host, port, name, worker_id_, rid);
+            auto [success, data, py_name, hash, error, rerr] = data_client_pool_.request(host, port, name, worker_id_, rid);
             if (!success) {
                 ERR("pooled request_compressed_data failed for {}: {}", name, error);
-                return {false, nullptr, {}, {}};
+                return {false, nullptr, {}, {}, rerr};
             }
-            return {true, data, std::move(py_name), std::move(hash)};
+            return {true, data, std::move(py_name), std::move(hash), ReadError::NONE};
         });
 
     reactor_->register_handler<RegisterAckMessage>(
@@ -287,11 +287,13 @@ void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
 void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
     touch_master_contact();
 
-    // Store pre-fetched dependency locations for this task.
+    // Pre-fetched dependency locations go straight into the persistent
+    // remote_idx (single source of truth) so the first read hits TIER2 instead
+    // of falling through to a TIER3 master query. dependency_locations_ already
+    // carries all replicas.
     if (!msg.dependency_locations_.empty()) {
-        std::lock_guard<std::mutex> lock(prefetched_mutex_);
         for (const auto& loc : msg.dependency_locations_) {
-            prefetched_locations_[loc.object_name] = {loc.worker_id, loc.host, loc.port};
+            DataService::instance()->update_remote_idx(loc.object_name, loc.worker_id, loc.host, loc.port);
             DBG("[PREFETCH] obj={} worker_id={} host={} port={}", loc.object_name, loc.worker_id, loc.host, loc.port);
         }
     }
@@ -611,55 +613,24 @@ void WorkerAgent::request_database_freeze(const CMString& db_id) {
     INFO("Freeze acked: db_id={}", db_id);
 }
 
-std::tuple<bool, FlyBufferPtr, CMString, bool> WorkerAgent::request_remote_data(const CMString& object_name) {
-    // Try pre-fetched location first (from TaskAssignMessage).
-    {
-        std::lock_guard<std::mutex> lock(prefetched_mutex_);
-        auto it = prefetched_locations_.find(object_name);
-        if (it != prefetched_locations_.end()) {
-            auto [wid, host, port] = it->second;
-            prefetched_locations_.erase(it);
-
-            uint64_t request_id = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) ^
-                                  static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-
-            auto [success, data, py_name, hash, error] = data_client_pool_.request(
-                host, port, object_name, worker_id_, request_id, 30000);
-
-            if (success) {
-                DataService::instance()->update_remote_idx(object_name, wid, host, port);
-                return {true, data, std::move(py_name), false};
-            }
-            // Prefetch miss — fall through to master query.
-        }
-    }
-
-    // Fallback: query master for location.
+std::tuple<bool, bool> WorkerAgent::request_remote_data(const CMString& object_name) {
+    // TIER3: pure location query. Ask master for ALL replicas, refresh local
+    // remote_idx, and signal read_raw_compressed to re-enter TIER2 (which owns
+    // the actual reads + backoff). We do NOT fetch object data here.
     auto location = metadata_client_.query_data_location(
         master_host_, master_port_, object_name);
 
     if (!location.found_) {
-        return {false, nullptr, {}, location.can_still_produce_};
+        return {false, location.can_still_produce_};
     }
 
-    uint64_t request_id = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())) ^
-                          static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-
-    auto [success, data, py_name, hash, error] = data_client_pool_.request(
-        location.host_, location.port_, object_name, worker_id_, request_id, 30000);
-
-    if (success) {
-        DataService::instance()->update_remote_idx(object_name, location.worker_id_, location.host_, location.port_);
-        return {true, data, std::move(py_name), false};
+    // Populate remote_idx with every replica master returned, so TIER2 can
+    // iterate all of them.
+    for (const auto& rl : location.all_locations_) {
+        DataService::instance()->update_remote_idx(object_name, rl.worker_id_, rl.host_, rl.port_);
     }
 
-    auto recheck = metadata_client_.query_data_location(
-        master_host_, master_port_, object_name);
-    if (!recheck.found_) {
-        return {false, nullptr, {}, recheck.can_still_produce_};
-    }
-
-    return {false, nullptr, {}, recheck.can_still_produce_};
+    return {true, location.can_still_produce_};
 }
 
 std::pair<bool, ReadResult> WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,

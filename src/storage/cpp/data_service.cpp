@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <utility>
 #include <cstring>
+#include <random>
 
 namespace fly {
 
@@ -21,6 +22,10 @@ namespace {
 // inline db_id_len() function in the header. Kept here as an implementation
 // detail — split_full() uses it directly for fixed-offset parsing.
 constexpr size_t kDbIdLen = db_id_len();
+
+// Thread-local RNG for backoff jitter. Seeded once per thread; safe under the
+// multi-threaded TIER2 retry loop.
+thread_local std::mt19937 g_backoff_rng{std::random_device{}()};
 }  // namespace
 
 CMSharedPtr<DataService> DataService::instance() {
@@ -410,6 +415,24 @@ RemoteObjectInfo DataService::lookup_remote_idx(const CMString& object_name) con
         }
     }
     return RemoteObjectInfo{};
+}
+
+CMVector<RemoteObjectInfo> DataService::lookup_all_remote_idx(const CMString& object_name) const {
+    auto [db_id, short_name] = split_full(object_name);
+    std::lock_guard<std::mutex> lock(mutex_);
+    CMVector<RemoteObjectInfo> out;
+    auto db_it = remote_idx_.find(db_id);
+    if (db_it == remote_idx_.end()) return out;
+    auto it = db_it->second.find(short_name);
+    if (it == db_it->second.end()) return out;
+    out.reserve(it->second.workers_.size());
+    for (uint64_t wid : it->second.workers_) {
+        auto wit = worker_registry_.find(wid);
+        if (wit != worker_registry_.end()) {
+            out.push_back(wit->second);
+        }
+    }
+    return out;
 }
 
 void DataService::remove_remote_index(const CMString& object_name) {
@@ -941,38 +964,97 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
         return {true, raw, std::move(py_name), std::move(write_hash), false};
     }
 
-    auto info = lookup_remote_idx(object_name);
-    DBG("[TIER2] remote_idx lookup: obj={}, worker_id={}, host={}", object_name, info.worker_id_, info.host_);
-    if (info.worker_id_ != 0 && !info.host_.empty()) {
-        DirectCompressedReadCallback cb;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            cb = direct_compressed_read_handler_;
-        }
-        if (cb) {
-            auto [cb_found, cb_data, cb_py_name, cb_hash] = cb(info.host_, info.port_, object_name);
-            DBG("[TIER2] obj={}, cb_found={}", object_name, cb_found);
-            if (cb_found) return {true, cb_data, std::move(cb_py_name), std::move(cb_hash), false};
-            remove_remote_location(object_name, info.worker_id_);
-        }
+    // ── TIER2/TIER3 orchestration ──
+    // TIER2: iterate every known replica (local remote_idx) once per round with
+    // exponential backoff. On full failure, TIER3 queries master for ALL replica
+    // locations, refreshes remote_idx, and re-enters TIER2 once (tier3_queried
+    // guards against TIER2↔TIER3 bouncing). If TIER3 also has no location, fail.
+    DirectCompressedReadCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cb = direct_compressed_read_handler_;
     }
-
     RemoteCompressedReadCallback remote_cb;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         remote_cb = remote_compressed_read_handler_;
     }
-    if (remote_cb) {
-        auto [cb_found, cb_data, cb_py_name, cb_can_still_produce] = remote_cb(object_name);
-        DBG("[TIER3] obj={}, found={}, can_produce={}", object_name, cb_found, cb_can_still_produce);
-        if (cb_found && cb_data && !cb_data->empty()) {
-            return {true, cb_data, std::move(cb_py_name), {}, false};
-        }
-        return {false, nullptr, {}, {}, cb_can_still_produce};
-    }
 
-    DBG("[TIER3] obj={}, no remote_cb", object_name);
-    return {false, nullptr, {}, {}, false};
+    constexpr int64_t kInitialDelayMs = 10;
+    constexpr int64_t kMaxDelayMs = 500;
+    constexpr auto kNetworkDeadline = std::chrono::seconds(30);
+
+    bool tier3_queried = false;
+    bool last_can_still_produce = false;
+
+    while (true) {
+        // ── TIER2 round ──
+        if (cb) {
+            int64_t delay_ms = kInitialDelayMs;
+            auto net_start = std::chrono::steady_clock::now();
+            bool tier2_done = false;
+
+            while (!tier2_done) {
+                auto replicas = lookup_all_remote_idx(object_name);
+                if (replicas.empty()) {
+                    break;  // no local replicas → need TIER3 to populate
+                }
+
+                bool saw_not_ready = false;
+                for (const auto& loc : replicas) {
+                    auto [cb_found, cb_data, cb_py_name, cb_hash, cb_rerr] =
+                        cb(loc.host_, loc.port_, object_name);
+                    if (cb_found) {
+                        DBG("[TIER2] obj={}, hit worker={}", object_name, loc.worker_id_);
+                        return {true, cb_data, std::move(cb_py_name), std::move(cb_hash), false};
+                    }
+                    if (cb_rerr == ReadError::OBJECT_NOT_FOUND) {
+                        remove_remote_location(object_name, loc.worker_id_);
+                    } else if (cb_rerr == ReadError::DATA_NOT_READY) {
+                        saw_not_ready = true;
+                    } else if (cb_rerr == ReadError::SHUTDOWN) {
+                        return {false, nullptr, {}, {}, false};
+                    }
+                    // NETWORK: transient, keep replica, retry next round.
+                }
+
+                // Round fully failed. DATA_NOT_READY → unbounded; else bound by
+                // the network deadline.
+                if (!saw_not_ready &&
+                    std::chrono::steady_clock::now() - net_start >= kNetworkDeadline) {
+                    tier2_done = true;
+                    break;
+                }
+
+                int64_t jitter = std::max<int64_t>(1, delay_ms / 10);
+                std::uniform_int_distribution<int64_t> dist(-jitter, jitter);
+                int64_t actual = delay_ms + dist(g_backoff_rng);
+                std::this_thread::sleep_for(std::chrono::milliseconds(actual));
+                delay_ms = std::min(delay_ms * 2, kMaxDelayMs);
+            }
+        }
+
+        // ── TIER2 exhausted: either no replicas or all rounds failed ──
+        if (tier3_queried) {
+            // Already queried master and retried TIER2 — give up.
+            return {false, nullptr, {}, {}, last_can_still_produce};
+        }
+        if (!remote_cb) {
+            // No TIER3 handler (e.g. master process): nothing more to do.
+            return {false, nullptr, {}, {}, false};
+        }
+
+        // ── TIER3: pure location query ──
+        auto [refreshed, csp] = remote_cb(object_name);
+        tier3_queried = true;
+        last_can_still_produce = csp;
+        DBG("[TIER3] obj={}, refreshed={}, can_produce={}", object_name, refreshed, csp);
+        if (!refreshed) {
+            // Master has no location either — fail with master's verdict.
+            return {false, nullptr, {}, {}, csp};
+        }
+        // Locations refreshed → loop back to re-enter TIER2 with the new replicas.
+    }
 }
 
 // ============================================================

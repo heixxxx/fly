@@ -8,8 +8,19 @@ namespace fly {
 
 class Transport;
 
+// A single replica location returned by master.
+struct ReplicaLocation {
+    uint64_t worker_id_ = 0;
+    CMString host_;
+    int32_t port_ = 0;
+};
+
 class MetadataClient {
 public:
+    // Result of query_data_location. all_locations_ holds every replica master
+    // knows about (authoritative when found_). The single worker_id_/host_/port_
+    // fields mirror all_locations_[0] for convenience when only one replica is
+    // needed.
     struct DataLocation {
         bool found_ = false;
         uint64_t worker_id_ = 0;
@@ -17,6 +28,7 @@ public:
         int32_t port_ = 0;
         CMString error_;
         bool can_still_produce_ = false;
+        CMVector<ReplicaLocation> all_locations_;
     };
 
     explicit MetadataClient(CMSharedPtr<Transport> transport);

@@ -21,7 +21,7 @@ DataClientPool::~DataClientPool() {
     stop();
 }
 
-std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::request(
+std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClientPool::request(
     const CMString& host,
     int port,
     const CMString& object_name,
@@ -30,7 +30,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
     int timeout_ms)
 {
     if (stopped_.load()) {
-        return {false, nullptr, "", "", "Pool stopped"};
+        return {false, nullptr, "", "", "Pool stopped", ReadError::SHUTDOWN};
     }
 
     {
@@ -39,7 +39,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
             return stopped_.load() || active_count_.load() < static_cast<int>(pool_size_);
         });
         if (stopped_.load()) {
-            return {false, nullptr, "", "", "Pool stopped"};
+            return {false, nullptr, "", "", "Pool stopped", ReadError::SHUTDOWN};
         }
         active_count_.fetch_add(1);
     }
@@ -52,7 +52,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
     int fd = transport_->create_connection(host, port);
     if (fd < 0) {
         release_slot();
-        return {false, nullptr, "", "", "Failed to connect to " + host + ":" + std::to_string(port)};
+        return {false, nullptr, "", "",
+                "Failed to connect to " + host + ":" + std::to_string(port),
+                ReadError::NETWORK};
     }
 
     transport_->set_recv_timeout(fd, 30000);
@@ -64,8 +66,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
     req.request_id_ = request_id;
     CMString encoded_req = MessageProtocol::encode(req);
 
-    constexpr int POLL_INTERVAL_MS = 100;
-
+    // NOTE: this pool performs exactly ONE request per call. DATA_NOT_READY is
+    // returned to the caller (ReadError::DATA_NOT_READY) so the TIER2 layer
+    // owns backoff/retry policy. No internal polling loop here.
     while (true) {
         // send all
         const char* send_ptr = encoded_req.data();
@@ -76,7 +79,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
                 ERR("[DCP] send failed: obj={} fd={} errno={}", object_name, fd, errno);
                 transport_->close(fd);
                 release_slot();
-                return {false, nullptr, "", "", "Connection lost sending request for " + object_name};
+                return {false, nullptr, "", "",
+                        "Connection lost sending request for " + object_name,
+                        ReadError::NETWORK};
             }
             send_ptr += n;
             send_remaining -= static_cast<size_t>(n);
@@ -93,7 +98,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
                 ERR("[DCP] recv header failed: obj={} fd={} errno={}", object_name, fd, errno);
                 transport_->close(fd);
                 release_slot();
-                return {false, nullptr, "", "", "Connection lost for " + object_name};
+                return {false, nullptr, "", "",
+                        "Connection lost for " + object_name,
+                        ReadError::NETWORK};
             }
             header_received += static_cast<size_t>(n);
         }
@@ -106,7 +113,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
             ERR("[DCP] invalid total_len={}: obj={} fd={}", total_len, object_name, fd);
             transport_->close(fd);
             release_slot();
-            return {false, nullptr, "", "", "Invalid response for " + object_name};
+            return {false, nullptr, "", "",
+                    "Invalid response for " + object_name,
+                    ReadError::NETWORK};
         }
 
         // 2. Read 5B sub-header [4B small_fields_len][1B has_raw]
@@ -117,7 +126,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
             if (n <= 0) {
                 transport_->close(fd);
                 release_slot();
-                return {false, nullptr, "", "", "Connection lost for " + object_name};
+                return {false, nullptr, "", "",
+                        "Connection lost for " + object_name,
+                        ReadError::NETWORK};
             }
             sub_received += static_cast<size_t>(n);
         }
@@ -135,7 +146,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
                 if (n <= 0) {
                     transport_->close(fd);
                     release_slot();
-                    return {false, nullptr, "", "", "Connection lost for " + object_name};
+                    return {false, nullptr, "", "",
+                            "Connection lost for " + object_name,
+                            ReadError::NETWORK};
                 }
                 sf_received += static_cast<size_t>(n);
             }
@@ -145,7 +158,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
             ERR("[DCP] decode failed: obj={} fd={}", object_name, fd);
             transport_->close(fd);
             release_slot();
-            return {false, nullptr, "", "", "Failed to decode response for " + object_name};
+            return {false, nullptr, "", "",
+                    "Failed to decode response for " + object_name,
+                    ReadError::NETWORK};
         }
 
         // 4. If has_raw: read raw payload directly into FlyBuffer
@@ -162,7 +177,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
                     ERR("[DCP] recv raw failed: obj={} fd={} errno={}", object_name, fd, errno);
                     transport_->close(fd);
                     release_slot();
-                    return {false, nullptr, "", "", "Connection lost receiving payload for " + object_name};
+                    return {false, nullptr, "", "",
+                            "Connection lost receiving payload for " + object_name,
+                            ReadError::NETWORK};
                 }
                 raw_received += static_cast<size_t>(n);
             }
@@ -174,22 +191,20 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClientPool::req
             transport_->close(fd);
             release_slot();
             return {true, data_buf, response.py_name_,
-                    response.write_context_hash_, ""};
+                    response.write_context_hash_, "", ReadError::NONE};
         }
 
-        if (response.error_message_ == "DATA_NOT_READY") {
-            if (stopped_.load()) {
-                transport_->close(fd);
-                release_slot();
-                return {false, nullptr, "", "", "Pool stopped"};
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
-            continue;
-        }
-
+        // Failure: classify and return. DATA_NOT_READY and OBJECT_NOT_FOUND are
+        // protocol-level; everything else is NETWORK. The caller (TIER2) decides
+        // whether/how to retry — the pool does not poll.
         transport_->close(fd);
         release_slot();
-        return {false, nullptr, "", "", response.error_message_};
+        ReadError rerr = (response.error_message_ == "DATA_NOT_READY")
+                             ? ReadError::DATA_NOT_READY
+                         : (response.error_message_ == "OBJECT_NOT_FOUND")
+                             ? ReadError::OBJECT_NOT_FOUND
+                             : ReadError::NETWORK;
+        return {false, nullptr, "", "", response.error_message_, rerr};
     }
 }
 

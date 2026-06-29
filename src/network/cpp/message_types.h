@@ -217,19 +217,21 @@ struct DataQueryMessage {
     FLY_SERIALIZE(header_, object_name_);
 };
 
+// Master → worker response to DataQueryMessage. Carries ALL replica locations
+// of the requested object (not just one), so the worker can populate its local
+// remote_idx and let TIER2 iterate every replica. locations_ is authoritative
+// when success_ is true (may be empty if the object exists nowhere yet).
 struct DataLocationMessage {
     MessageHeader header_;
-    uint64_t worker_id_ = 0;
     CMString file_path_;
     CMString object_name_;
-    CMString data_host_;
-    int32_t data_port_ = 0;
+    CMVector<DataLocation> locations_;
     bool success_ = false;
     bool can_still_produce_ = false;
 
     static constexpr MessageType msg_type_ = MessageType::DATA_LOCATION;
 
-    FLY_SERIALIZE(header_, worker_id_, file_path_, object_name_, data_host_, data_port_, success_, can_still_produce_);
+    FLY_SERIALIZE(header_, file_path_, object_name_, locations_, success_, can_still_produce_);
 };
 
 struct TaskSubmitMessage {

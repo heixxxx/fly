@@ -37,11 +37,20 @@ TEST(MetadataClientTest, DataLocationMessageEncodeDecode) {
     msg.header_.type_ = MessageType::DATA_LOCATION;
     msg.header_.message_id_ = 42;
     msg.header_.timestamp_ = 1234567890;
-    msg.worker_id_ = 100;
     msg.file_path_ = "/data/worker100/db/object.bin";
     msg.object_name_ = "test/object";
-    msg.data_host_ = "192.168.1.5";
-    msg.data_port_ = 9001;
+    DataLocation dl1;
+    dl1.object_name = "test/object";
+    dl1.worker_id = 100;
+    dl1.host = "192.168.1.5";
+    dl1.port = 9001;
+    DataLocation dl2;
+    dl2.object_name = "test/object";
+    dl2.worker_id = 200;
+    dl2.host = "192.168.1.6";
+    dl2.port = 9002;
+    msg.locations_.push_back(dl1);
+    msg.locations_.push_back(dl2);
     msg.success_ = true;
 
     CMString encoded = MessageProtocol::encode(msg);
@@ -52,11 +61,15 @@ TEST(MetadataClientTest, DataLocationMessageEncodeDecode) {
     EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
 
     EXPECT_EQ(decoded.header_.message_id_, 42u);
-    EXPECT_EQ(decoded.worker_id_, 100u);
     EXPECT_EQ(decoded.file_path_, "/data/worker100/db/object.bin");
     EXPECT_EQ(decoded.object_name_, "test/object");
-    EXPECT_EQ(decoded.data_host_, "192.168.1.5");
-    EXPECT_EQ(decoded.data_port_, 9001);
+    ASSERT_EQ(decoded.locations_.size(), 2u);
+    EXPECT_EQ(decoded.locations_[0].worker_id, 100u);
+    EXPECT_EQ(decoded.locations_[0].host, "192.168.1.5");
+    EXPECT_EQ(decoded.locations_[0].port, 9001);
+    EXPECT_EQ(decoded.locations_[1].worker_id, 200u);
+    EXPECT_EQ(decoded.locations_[1].host, "192.168.1.6");
+    EXPECT_EQ(decoded.locations_[1].port, 9002);
     EXPECT_TRUE(decoded.success_);
 }
 
