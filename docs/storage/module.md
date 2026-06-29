@@ -82,7 +82,7 @@ write_temp_pickle(name, data)
 
 ### 读取流程
 
-读取路径采用三级 fallback 设计：
+读取路径采用三级 fallback + 多副本轮询 + 分类重试设计：
 
 ```
 read_object_compressed(name)
@@ -94,12 +94,26 @@ read_object_compressed(name)
             ├─ Tier 1 (本地): try_read_local_raw
             │   → ObjectCache → local_idx → temp 数据
             │
-            ├─ Tier 2 (直连): lookup_remote_idx → DataClient
-            │   → 直接连接目标 Worker 读取
+            ├─ Tier 2 (多副本直连 + 退避): lookup_all_remote_idx
+            │   → 遍历 remote_idx 中该对象的【全部副本】，逐个直连取数
+            │   → 失败按 ReadError 分类: OBJECT_NOT_FOUND 删副本 / DATA_NOT_READY
+            │     无限重试 / NETWORK 30s 限 / SHUTDOWN 立即终止
+            │   → 一轮全失败后退避: 10ms 起 ×2 上限 500ms ±10% 抖动
             │
-            └─ Tier 3 (Master 代理): query_data_location → DataClient
-                → 查询 Master 获取位置，再连接目标 Worker
+            └─ Tier 3 (位置查询 + 重入 TIER2): remote_compressed_read_handler
+                → 向 master 查询对象的【全部副本】(DataLocationMessage.locations_)
+                → 回填本地 remote_idx → 无条件重入 TIER2
+                → master 也无位置时返回 can_still_produce,终止
 ```
+
+**两层职责正交**：TIER2 负责「读取数据 + 退避重试」，TIER3 负责「查询位置 + 回填」。
+TIER3 不取数，查到位置后重入 TIER2 让它取。`tier3_queried` 标志防止 TIER2↔TIER3 无限弹跳（TIER3 最多查一次）。
+
+**master 进程特殊路径**：master 是位置权威，自己的 remote_idx 即全部副本。master
+注册 direct handler（用 DataClientPool，与 worker 对称）走 TIER2，TIER3 handler 是
+纯本地查询（`has_remote_location` + `has_pending||has_running`），不走网络——保留它
+是为让 TIER2 无副本时能返回 `can_still_produce`（wait_obj 依赖此信号判断对象是否可能
+仍被产出）。
 
 ---
 
@@ -112,14 +126,33 @@ read_object_compressed(name)
 ### 索引管理
 
 - **本地索引 (local_idx)**: 跟踪本地数据的写入状态（INCOMPLETE → COMPLETE），管理 temp 数据的 LRU 缓存和淘汰
-- **远程索引 (remote_idx)**: 维护 object_name → (worker_id, host, port) 的映射，支持快速查找数据位置
+- **远程索引 (remote_idx)**: 维护 object_name → **副本列表** (`RemoteObjectMeta.workers_`，可多副本) 的映射，支持多副本查找。`lookup_all_remote_idx` 返回全部副本供 TIER2 轮询；`lookup_remote_idx`（单值，front）供 auto-backup 选源等单点场景
 - **Worker 注册 (worker_registry)**: 管理 Worker 的地址信息
 
-### 远程读取的三级 fallback
+### 远程读取的三级 fallback（含多副本容错）
 
 1. **Tier 1 (本地)**: 检查 ObjectCache → 本地索引 → temp 数据
-2. **Tier 2 (直连)**: 通过 remote_idx 直接连接目标 Worker
-3. **Tier 3 (Master 代理)**: 查询 Master 获取数据位置，再连接目标 Worker
+2. **Tier 2 (多副本直连)**: `lookup_all_remote_idx` 取该对象的**全部副本**，逐个用
+   `DirectCompressedReadCallback`（底层 `DataClientPool`）直连取数。失败按 `ReadError`
+   分类决策（见下「ReadError 分类与重试策略」）。一轮全失败后退避再轮询。
+3. **Tier 3 (位置查询)**: `RemoteCompressedReadCallback` 向 master 查询全部副本，
+   回填本地 `remote_idx` 后**重入 TIER2**。master 无位置时返回 `can_still_produce` 终止。
+
+### ReadError 分类与重试策略
+
+底层 `DataClientPool::request` 对失败做**单次**请求（不再内部轮询 DATA_NOT_READY），
+返回 `ReadError` 枚举驱动 TIER2 重试决策：
+
+| ReadError | 含义 | TIER2 策略 |
+|-----------|------|-----------|
+| `NONE` | 成功 | 返回数据 |
+| `DATA_NOT_READY` | 对方正在写该对象（瞬时） | 保留副本，**无限重试**（数据可期，不可主动失败） |
+| `OBJECT_NOT_FOUND` | 该副本不再持有此对象（永久） | `remove_remote_location` 删该副本 |
+| `NETWORK` | 连接/超时/协议错误（瞬时） | 保留副本，有限重试（30s deadline，永久不可达不无限重试） |
+| `SHUTDOWN` | pool 被停止 | 立即终止 |
+
+**退避参数**：初始 10ms，每次 ×2，上限 500ms，每次 ±10% 随机抖动（`thread_local
+std::mt19937`，避免请求风暴）。`DATA_NOT_READY` 存在时本轮不受 deadline 限制。
 
 ### Temp 数据管理
 
@@ -130,8 +163,11 @@ read_object_compressed(name)
 ### 远程索引更新时机
 
 - WriteRegister 时：Master 更新 remote_idx
-- Tier 3 读取成功后：Worker 缓存 remote_idx
-- 依赖位置预取：TaskAssignMessage 携带依赖数据位置
+- TIER3 位置查询成功后：Worker 回填全部副本到 remote_idx
+- **任务分配时预取**：`on_task_assign` 收到 `TaskAssignMessage.dependency_locations_`
+  （已是多副本 `CMVector<DataLocation>`）时**直接全部回填** remote_idx，使首轮读命中
+  TIER2 而非落 TIER3。预取数据与持久索引统一为单一数据源（不再有 `prefetched_locations_`
+  临时缓存）。
 
 ---
 
@@ -236,6 +272,8 @@ worker 内连续多个 `write_object` 调用，WriteRegister 到达 master 的�
 |------|------|
 | 流式序列化+压缩管线 | 避免中间 buffer 拷贝 |
 | 三级 fallback 读取 | 本地优先，减少网络 IO |
+| 多副本轮询 + 分类重试 | TIER2 遍历全部副本，按 ReadError 区分瞬时/永久错误决定保留/删除，提升容错 |
+| 指数退避 + 抖动 | 避免请求风暴，DATA_NOT_READY 可期则无限重试，NETWORK 永久不可达则有限重试 |
 | 两层 LRU 缓存 | low 层省 IO，high 层省反序列化 |
 | 零拷贝 shared_ptr | temp 数据和远程读避免拷贝 |
 | writev scatter-gather | 合并 header+payload 发送 |

@@ -3,6 +3,61 @@
 ---
 ---
 
+## 2026-06-29: 读路径多副本容错 + TIER2 指数退避重构
+
+### 背景
+
+此前 `read_object` 的远程读路径是「单副本单次直连 + pool 内部 DATA_NOT_READY 轮询」。
+存在三个问题：(1) `lookup_remote_idx` 只取 `workers_.front()`，多副本存储从未被利用，
+首副本失败即整体失败；(2) `DataClientPool` 内部无限轮询 DATA_NOT_READY 且无总超时，
+与上层退避叠加导致耗时失控；(3) master TIER3 自读 handler 网络失败时 `can_still_produce`
+硬编码 false，语义不一致。
+
+### 改造
+
+读路径重构为「TIER2 多副本轮询 + 分类重试 + TIER3 纯位置查询」架构：
+
+- **ReadError 枚举**（`common/cpp/error_types.h`）：NONE/DATA_NOT_READY/OBJECT_NOT_FOUND/
+  NETWORK/SHUTDOWN，驱动 TIER2 重试策略。
+- **DataClientPool 改单次请求语义**：删除 DATA_NOT_READY 内部轮询，透传 ReadError。
+  重试职责上移到 TIER2，避免双重退避叠加。
+- **TIER2 多副本轮询**（`DataService::read_raw_compressed`）：
+  - `lookup_all_remote_idx` 遍历全部副本，每个试一次
+  - OBJECT_NOT_FOUND 删副本；DATA_NOT_READY 无限重试；NETWORK 30s 限；SHUTDOWN 立即终止
+  - 指数退避 10ms→500ms ×2 ±10% 抖动（`thread_local std::mt19937`）
+- **TIER3 改纯位置查询**：查 master 全部副本 → 回填 remote_idx → 重入 TIER2
+  （`tier3_queried` 标志防 TIER2↔TIER3 弹跳）。DataLocationMessage 协议改为
+  `CMVector<DataLocation> locations_`（多副本，不向后兼容）。
+- **master 读路径**：TIER1 → TIER2（注册 direct handler，用 DataClientPool，与 worker
+  对称）+ 本地非网络 TIER3 handler（返回 `can_still_produce`，供 wait_obj 判断对象是否
+  可能仍被产出）。
+- **预取回填 remote_idx**：删 `prefetched_locations_` 临时缓存，`on_task_assign` 收到
+  `dependency_locations_`（多副本）时直接全部回填 remote_idx，使首轮读命中 TIER2。
+  统一为单一数据源。
+
+### 调试中修复的两个真实回归
+
+1. master 删 TIER3 后丢失 `can_still_produce` 信号 → wait_obj 误判对象无法产出而 raise。
+   修复：恢复 master 的 TIER3 handler 为纯本地查询（不走网络，不违反「master 不 self-
+   DataQuery」本意）。
+2. master `data_client_pool_` 在 `do_drain_and_stop` 中被 stop，与 master 对象的
+   start/stop/start 复用模式冲突（DataClientPool.stop 单向不可逆）。修复：移除该
+   stop，pool 随 master 析构（=进程退出）清理。
+
+### 验证
+
+- 单元测试：49/49（新增 `data_client_pool_test` 验证 DATA_NOT_READY 透传/error 分类；
+  `data_service_test` 新增 `lookup_all_remote_idx`、TIER2 failover、副本删除用例）
+- 全量 QA：110/110
+- 高并发回归：5 轮 × 110/110 = 零失败
+
+### 文档更新
+
+- `docs/storage/module.md`：重写「读取流程」三级 fallback 流程图、新增「ReadError
+  分类与重试策略」表、更新 remote_idx 多副本描述、远程索引更新时机、设计决策表。
+
+---
+
 ## 2026-06-28: solver QA flaky 修复（wait_obj 等待序列最后一个对象）
 
 ### 现象
