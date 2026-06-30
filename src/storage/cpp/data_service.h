@@ -180,6 +180,11 @@ public:
 
     RemoteObjectInfo get_worker_address(uint64_t worker_id) const;
 
+    // Snapshot of all registered data-server peers (worker_id → host:port).
+    // Used by the bandwidth-probe thread to pick probe targets. Returns a
+    // detached copy under the internal lock.
+    CMVector<RemoteObjectInfo> get_all_workers() const;
+
     // ============================================================
     // Read Operations (3-tier fallback)
     // ============================================================

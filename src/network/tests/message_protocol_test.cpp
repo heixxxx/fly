@@ -668,7 +668,46 @@ TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::VAR_REMOVE)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::VAR_BROADCAST)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DATABASE_FREEZE_ACK)));
-    EXPECT_FALSE(is_valid_message_type(40));  // upper bound is 39
+    EXPECT_FALSE(is_valid_message_type(42));  // upper bound is 41
+}
+
+// Net-probe messages (network-aware read priority): request asks the peer to
+// echo back a payload of a given size; response carries that payload so the
+// caller can measure round-trip throughput.
+TEST(MessageProtocolTest, NetProbeRequestEncodeDecode) {
+    NetProbeRequestMessage req;
+    req.header_.type_ = MessageType::NET_PROBE_REQUEST;
+    req.payload_size_ = 256 * 1024;
+    req.probe_seq_ = 77;
+
+    CMString encoded = MessageProtocol::encode(req);
+    CMString buffer = encoded;
+
+    NetProbeRequestMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.payload_size_, 256u * 1024u);
+    EXPECT_EQ(decoded.probe_seq_, 77u);
+    EXPECT_TRUE(buffer.empty());
+}
+
+TEST(MessageProtocolTest, NetProbeResponseCarriesPayload) {
+    NetProbeResponseMessage resp;
+    resp.header_.type_ = MessageType::NET_PROBE_RESPONSE;
+    resp.probe_seq_ = 77;
+    resp.payload_.resize(4096);
+    for (size_t i = 0; i < resp.payload_.size(); ++i) {
+        resp.payload_[i] = static_cast<uint8_t>(i & 0xFF);
+    }
+
+    CMString encoded = MessageProtocol::encode(resp);
+    CMString buffer = encoded;
+
+    NetProbeResponseMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.probe_seq_, 77u);
+    ASSERT_EQ(decoded.payload_.size(), 4096u);
+    EXPECT_EQ(decoded.payload_[0], 0u);
+    EXPECT_EQ(decoded.payload_[4095], 255u);
 }
 
 }  // namespace fly

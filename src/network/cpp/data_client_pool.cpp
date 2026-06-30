@@ -3,6 +3,7 @@
 #include <network/cpp/tcp_socket.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
+#include <network/cpp/net_quality_monitor.h>
 #include <log/cpp/logger.h>
 #include <cstring>
 #include <chrono>
@@ -59,6 +60,11 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
 
     transport_->set_recv_timeout(fd, 30000);
     transport_->set_send_timeout(fd, 30000);
+
+    // Passive RTT probe: time the round-trip. Only completed exchanges (the two
+    // returns below that read a full response) record a sample; mid-recv
+    // failures bail out early and skip this.
+    auto rtt_start = std::chrono::steady_clock::now();
 
     DataRequestMessage req;
     req.object_name_ = object_name;
@@ -188,6 +194,10 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
         if (response.success_) {
             DBG("[DCP] success: obj={} fd={} data_size={}", object_name, fd,
                 data_buf ? data_buf->size() : 0);
+            double rtt_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - rtt_start)
+                                .count();
+            NetQualityMonitor::instance().update_rtt(host, rtt_ms);
             transport_->close(fd);
             release_slot();
             return {true, data_buf, response.py_name_,
@@ -196,7 +206,12 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
 
         // Failure: classify and return. DATA_NOT_READY and OBJECT_NOT_FOUND are
         // protocol-level; everything else is NETWORK. The caller (TIER2) decides
-        // whether/how to retry — the pool does not poll.
+        // whether/how to retry — the pool does not poll. A full response was
+        // still exchanged, so this is a valid RTT sample.
+        double rtt_ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - rtt_start)
+                            .count();
+        NetQualityMonitor::instance().update_rtt(host, rtt_ms);
         transport_->close(fd);
         release_slot();
         ReadError rerr = (response.error_message_ == "DATA_NOT_READY")

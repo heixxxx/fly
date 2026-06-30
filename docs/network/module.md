@@ -21,6 +21,7 @@
 | IOThreadPool | `cpp/io_thread_pool.h/cpp` | 通用线程池 |
 | DataClient | `cpp/data_client.h/cpp` | 阻塞 TCP 数据客户端 |
 | DataClientPool | `cpp/data_client_pool.h/cpp` | 数据客户端连接池 |
+| NetQualityMonitor | `cpp/net_quality_monitor.h/cpp` | per-host 网络质量评分表（RTT/带宽） |
 | MetadataClient | `cpp/metadata_client.h/cpp` | 阻塞 TCP 元数据查询客户端 |
 
 ---
@@ -175,6 +176,29 @@ reactor_->run()
 ### 使用场景
 
 Worker 读取远程数据时，通过 DataClientPool 并发请求多个 Worker，避免无限并发导致连接爆炸。
+
+---
+
+## NetQualityMonitor
+
+### 核心职责
+
+进程内单例，维护 `host → {rtt_ms, bandwidth_mbps}` 的网络质量评分表，供 DataService TIER2 远程读按连接性排序副本。
+
+### 数据来源（两种，互补）
+
+- **被动 RTT**：`DataClientPool::request` / `DataClient::request_compressed_data` 在每次完整往返（含 DATA_NOT_READY/OBJECT_NOT_FOUND 等协议级响应）后，记录 connect→收完响应的耗时，调 `update_rtt`。连接失败不计。零额外探测流量。
+- **主动带宽探测**：WorkerAgent 的 `bandwidth_probe_thread_`（仿 heartbeat 四件套，`net_probe_enabled` 控制）周期性对 `DataService::get_all_workers()` 返回的每个 peer 发 `NET_PROBE_REQUEST`，peer 的 DataServer 按请求 `payload_size_` 回 `NET_PROBE_RESPONSE`，探测线程据往返耗时算 RTT+带宽，调 `update_rtt` + `update_bandwidth`。
+
+### 评分与排序
+
+- `score(host) = w_rtt/max(rtt,1) + w_bw*bandwidth`（权重/ttl 为编译期常量，network 层无 Config 依赖）。
+- 无数据 → score=0；超过 ttl 的陈旧数据 → 视为无数据。
+- 消费侧（`DataService::read_raw_compressed` TIER2）用 `std::stable_sort` + lambda 调 `score()` 排序副本：等分（含冷启动无数据）保持注册顺序，行为与未启用一致。
+
+### 分层
+
+纯 network 层组件（仅依赖 CMString），不认识 RemoteObjectInfo。排序逻辑由 storage 层 DataService 完成，避免循环依赖。
 
 ---
 

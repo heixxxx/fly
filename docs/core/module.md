@@ -74,6 +74,10 @@ private:
 | `interactive` | 0 | 交互模式（0=关闭, 1=开启） |
 | `cli_master_port` | 0 | CLI 指定的 Master 端口 |
 | `fail_unscheduleable_tasks` | 1 | 不可调度任务立即失败（1=立即fail并持久化, 0=保持等待） |
+| `net_probe_enabled` | 1 | 网络感知远程读优先级总开关（1=开启, 0=关闭，TIER2 排序降级为 no-op） |
+| `net_probe_interval_ms` | 30000 | 主动带宽探测周期（毫秒） |
+| `net_probe_payload_kb` | 256 | 带宽探测 payload 大小（KB） |
+| `net_probe_timeout_ms` | 3000 | 单次带宽探测超时（毫秒） |
 
 #### string 配置项
 

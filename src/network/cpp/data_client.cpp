@@ -3,7 +3,9 @@
 #include <network/cpp/tcp_socket.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
+#include <network/cpp/net_quality_monitor.h>
 #include <cstring>
+#include <chrono>
 
 namespace fly {
 
@@ -39,6 +41,11 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClient::request
 
     transport->set_send_timeout(fd, timeout_ms);
     transport->set_recv_timeout(fd, timeout_ms);
+
+    // Passive RTT probe: time the full request/response round-trip. Only a
+    // completed exchange (even a DATA_NOT_READY verdict) yields a meaningful
+    // sample; the mid-function early returns below skip this.
+    auto rtt_start = std::chrono::steady_clock::now();
 
     DataRequestMessage req;
     req.object_name_ = object_name;
@@ -110,6 +117,10 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClient::request
     }
 
     transport->close(fd);
+    double rtt_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - rtt_start)
+                        .count();
+    NetQualityMonitor::instance().update_rtt(host, rtt_ms);
     return {response.success_, buf, response.py_name_,
             response.write_context_hash_, response.error_message_};
 }

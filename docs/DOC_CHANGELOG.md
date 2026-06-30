@@ -3,6 +3,28 @@
 ---
 ---
 
+## 2026-06-30: 网络感知远程读优先级（NetQualityMonitor + 带宽探测）
+
+### 背景
+
+集群中不同机器间的时延、带宽不对称。`read_object` 远程读（TIER2 多副本轮询）此前按副本**注册顺序**遍历，与连接质量无关——慢链路的副本会被优先尝试，拖累整体读路径，无法利用集群网络带宽加速。
+
+### 改造
+
+新增**网络感知读优先级**：远程读优先向连接性最好的副本请求。两个子功能：
+
+- **后台带宽/连接性测试服务**：每个 worker 的 `bandwidth_probe_thread_`（仿 heartbeat 四件套，`net_probe_enabled` 控制）周期性探测 `DataService::get_all_workers()` 返回的 peer，发 `NET_PROBE_REQUEST`，peer 的 DataServer 回 `NET_PROBE_RESPONSE`，测 RTT + 带宽。同时被动 RTT 在真实远程读（`DataClientPool::request`）时零成本采集。
+- **read_object 触发远程读时按连接性排序**：TIER2 取出副本后用 `std::stable_sort` + `NetQualityMonitor::score(host)` 降序排序，等分（含冷启动无数据）保持注册顺序兜底。`net_probe_enabled=0` 时排序降级为 no-op，零回归。
+
+### 文档更新
+
+| 文件 | 更新 |
+|------|------|
+| `docs/core/module.md` | 配置项表新增 `net_probe_enabled`/`net_probe_interval_ms`/`net_probe_payload_kb`/`net_probe_timeout_ms` |
+| `docs/network/module.md` | 组件表 + 新增 `## NetQualityMonitor` 章节（数据来源、评分排序、分层） |
+| `docs/storage/module.md` | TIER2 描述加入网络质量排序；DataServer 加入消息 dispatch（DATA_REQUEST + NET_PROBE_REQUEST） |
+| `CLAUDE.md` | 网络层文件表加 `net_quality_monitor`；消息枚举数更新为 40 |
+
 ## 2026-06-29: 读路径多副本容错 + TIER2 指数退避重构
 
 ### 背景

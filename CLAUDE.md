@@ -151,8 +151,9 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 | `tcp_connection_manager.h/cpp` | TcpConnectionManager — 基于 Transport+EpollMultiplexer |
 | `reactor.h/cpp` | 单线程事件循环（持有 ConnectionManager） |
 | `message_protocol.h/cpp` | MessageProtocol（通用帧协议）+ DataResponseProtocol（两段式，避免大 payload 用户态拷贝） |
-| `message_types.h` | 33 种消息枚举 / 29 种消息结构定义（含 MessageHeader，含 IdxLoadCommand/Ack） |
+| `message_types.h` | 40 种消息枚举 / 消息结构定义（含 MessageHeader，含 IdxLoadCommand/Ack；NET_PROBE_REQUEST/RESPONSE 走数据面短连接供带宽探测） |
 | `data_client_pool.h/cpp` | 并发限制的数据请求池（pool_size 限制 in-flight 请求数） |
+| `net_quality_monitor.h/cpp` | per-host 网络质量评分表（RTT/带宽 EMA），供 DataService TIER2 按连接性排序远程读副本；被动 RTT 采集 + 主动带宽探测双数据源 |
 
 ### 任务系统层 (src/task/)
 

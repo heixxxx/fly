@@ -7,6 +7,9 @@
 #include <network/cpp/data_client.h>
 #include <network/cpp/data_client_pool.h>
 #include <network/cpp/metadata_client.h>
+#include <network/cpp/tcp_socket.h>
+#include <network/cpp/message_protocol.h>
+#include <network/cpp/net_quality_monitor.h>
 #include <thread>
 #include <chrono>
 #include <functional>
@@ -162,6 +165,14 @@ void WorkerAgent::start() {
     heartbeat_running_ = true;
     heartbeat_thread_ = std::thread([this] { heartbeat_loop(); });
 
+    if (Config::instance()->get_int("net_probe_enabled")) {
+        probe_running_ = true;
+        probe_thread_ = std::thread([this] { bandwidth_probe_loop(); });
+        INFO("Bandwidth probe thread started (interval={}ms payload={}KB)",
+             Config::instance()->get_int("net_probe_interval_ms"),
+             Config::instance()->get_int("net_probe_payload_kb"));
+    }
+
     {
         auto now = std::chrono::system_clock::now().time_since_epoch();
         last_master_contact_.store(
@@ -188,6 +199,10 @@ void WorkerAgent::do_cleanup() {
 
     if (heartbeat_thread_.joinable()) {
         heartbeat_thread_.join();
+    }
+
+    if (probe_thread_.joinable()) {
+        probe_thread_.join();
     }
 
     if (reactor_thread_.joinable()) {
@@ -273,6 +288,88 @@ void WorkerAgent::heartbeat_loop() {
                 initiate_shutdown("master timeout");
                 break;
             }
+        }
+    }
+}
+
+// Background bandwidth probe. On each interval it walks every known data-server
+// peer, sends a NET_PROBE_REQUEST, and times the full round-trip of the echoed
+// payload. RTT and throughput feed NetQualityMonitor, which TIER2 consults to
+// order replicas. The probe reuses the short-lived data-plane connection (same
+// path as a real read), so the measurement reflects the actual read channel.
+void WorkerAgent::bandwidth_probe_loop() {
+    const int64_t interval_ms = Config::instance()->get_int("net_probe_interval_ms");
+    const uint32_t payload_kb = static_cast<uint32_t>(
+        Config::instance()->get_int("net_probe_payload_kb"));
+    const int timeout_ms = static_cast<int>(
+        Config::instance()->get_int("net_probe_timeout_ms"));
+    const size_t payload_bytes = static_cast<size_t>(payload_kb) * 1024;
+
+    while (probe_running_) {
+        {
+            std::unique_lock<std::mutex> lock(probe_mutex_);
+            probe_cv_.wait_for(lock, std::chrono::milliseconds(interval_ms),
+                                 [this]{ return !probe_running_.load(); });
+        }
+        if (!probe_running_) break;
+
+        auto peers = DataService::instance()->get_all_workers();
+        for (const auto& peer : peers) {
+            if (!probe_running_) break;
+            if (peer.worker_id_ == worker_id_) continue;  // skip self
+
+            auto transport = create_tcp_transport();
+            int fd = transport->create_connection(peer.host_, peer.port_);
+            if (fd < 0) {
+                DBG("[PROBE] connect failed: {}:{} errno={}", peer.host_, peer.port_, errno);
+                continue;
+            }
+            transport->set_recv_timeout(fd, timeout_ms);
+            transport->set_send_timeout(fd, timeout_ms);
+
+            NetProbeRequestMessage req;
+            req.payload_size_ = payload_bytes;
+            req.probe_seq_ = peer.worker_id_;
+            CMString encoded = MessageProtocol::encode(req);
+
+            auto t0 = std::chrono::steady_clock::now();
+            bool ok = transport->send_all(fd, encoded.data(), encoded.size());
+            // Read the response frame: 5B header, then payload_len bytes.
+            char hdr[5];
+            for (size_t got = 0; ok && got < 5;) {
+                ssize_t n = transport->recv(fd, hdr + got, 5 - got);
+                if (n <= 0) { ok = false; break; }
+                got += static_cast<size_t>(n);
+            }
+            uint32_t total_len = 0;
+            if (ok) {
+                total_len =
+                    (static_cast<uint32_t>(static_cast<unsigned char>(hdr[0])) << 24) |
+                    (static_cast<uint32_t>(static_cast<unsigned char>(hdr[1])) << 16) |
+                    (static_cast<uint32_t>(static_cast<unsigned char>(hdr[2])) << 8) |
+                    static_cast<uint32_t>(static_cast<unsigned char>(hdr[3]));
+            }
+            uint32_t remain = (ok && total_len >= 1) ? total_len - 1 : 0;
+            CMString rest(remain, '\0');
+            for (size_t got = 0; ok && got < remain;) {
+                ssize_t n = transport->recv(fd, rest.data() + got, remain - got);
+                if (n <= 0) { ok = false; break; }
+                got += static_cast<size_t>(n);
+            }
+            transport->close(fd);
+
+            if (!ok) {
+                DBG("[PROBE] exchange failed: {}:{}", peer.host_, peer.port_);
+                continue;
+            }
+            double rtt_ms = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - t0).count();
+            double mbps = (rtt_ms > 0)
+                ? (static_cast<double>(payload_bytes) * 8.0) / (rtt_ms / 1000.0) / 1e6
+                : 0.0;
+            NetQualityMonitor::instance().update_rtt(peer.host_, rtt_ms);
+            NetQualityMonitor::instance().update_bandwidth(peer.host_, mbps);
+            DBG("[PROBE] {}:{} rtt={:.2f}ms bw={:.1f}Mbps", peer.host_, peer.port_, rtt_ms, mbps);
         }
     }
 }
@@ -449,6 +546,11 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
         heartbeat_running_ = false;
     }
     heartbeat_cv_.notify_all();
+    {
+        std::lock_guard<std::mutex> lock(probe_mutex_);
+        probe_running_ = false;
+    }
+    probe_cv_.notify_all();
     task_queue_cv_.notify_all();
     if (reactor_) {
         reactor_->stop();

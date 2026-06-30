@@ -46,10 +46,12 @@ enum class MessageType : uint8_t {
     VAR_REMOVE = 37,     // worker → master: remove var (async, no ack)
     VAR_BROADCAST = 38,  // master → worker: broadcast removal / modification-reject (async)
     DATABASE_FREEZE_ACK = 39,  // master → worker: freeze ack (success / DB_ALREADY_FROZEN)
+    NET_PROBE_REQUEST = 40,   // worker → peer (data plane): measure RTT/bandwidth
+    NET_PROBE_RESPONSE = 41,  // peer → worker: echoes back a payload of requested size
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 39;
+    return raw >= 1 && raw <= 41;
 }
 
 struct MessageHeader {
@@ -130,6 +132,29 @@ struct DataResponseMessage {
     static constexpr MessageType msg_type_ = MessageType::DATA_RESPONSE;
 
     FLY_SERIALIZE(header_, object_name_, success_, error_message_, py_name_, write_context_hash_);
+};
+
+// Bandwidth probe (data plane). Request asks the peer to echo a payload of
+// payload_size_ bytes; response carries payload_ so the caller measures the
+// round-trip throughput of a real data-plane exchange.
+struct NetProbeRequestMessage {
+    MessageHeader header_;
+    uint32_t payload_size_ = 0;  // bytes the peer should echo back
+    uint64_t probe_seq_ = 0;
+
+    static constexpr MessageType msg_type_ = MessageType::NET_PROBE_REQUEST;
+
+    FLY_SERIALIZE(header_, payload_size_, probe_seq_);
+};
+
+struct NetProbeResponseMessage {
+    MessageHeader header_;
+    uint64_t probe_seq_ = 0;
+    CMVector<uint8_t> payload_;
+
+    static constexpr MessageType msg_type_ = MessageType::NET_PROBE_RESPONSE;
+
+    FLY_SERIALIZE(header_, probe_seq_, payload_);
 };
 
 struct DataLocation {

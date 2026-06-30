@@ -96,6 +96,9 @@ read_object_compressed(name)
             │
             ├─ Tier 2 (多副本直连 + 退避): lookup_all_remote_idx
             │   → 遍历 remote_idx 中该对象的【全部副本】，逐个直连取数
+            │   → 副本按网络质量排序（NetQualityMonitor.score）：连接性更好的副本优先
+            │     尝试。stable_sort 保证等分（含无数据的冷启动副本）保持注册顺序，行为与
+            │     未启用时一致。net_probe_enabled=0 时排序降级为 no-op。
             │   → 失败按 ReadError 分类: OBJECT_NOT_FOUND 删副本 / DATA_NOT_READY
             │     无限重试 / NETWORK 30s 限 / SHUTDOWN 立即终止
             │   → 一轮全失败后退避: 10ms 起 ×2 上限 500ms ±10% 抖动
@@ -179,17 +182,16 @@ std::mt19937`，避免请求风暴）。`DATA_NOT_READY` 存在时本轮不受 d
 
 ### 架构
 
-- **epoll 线程池**: 接收连接和请求，解析 DataRequestMessage
+- **epoll 线程池**: 接收连接和请求，按消息类型 dispatch（`MessageProtocol::get_type`）
 - **send 线程池**: 执行实际数据发送，避免阻塞 epoll 线程
 - **SendTask 队列**: epoll 线程提交发送任务，send 线程消费
 
-### 工作流程
+### 消息 dispatch
 
-1. epoll 线程接收 DataRequestMessage
-2. 查询 DataService.try_read_local_raw() 获取数据
-3. 使用 DataResponseProtocol 两段式编码（header + raw payload）
-4. 提交 SendTask 到 send_queue
-5. send 线程执行实际发送
+数据面承载两类消息（按帧头 type 字节路由）：
+
+- **DATA_REQUEST**：现有读流程。查 `DataService.try_read_local_raw()` 取数，`DataResponseProtocol` 两段式编码，提交 SendTask。
+- **NET_PROBE_REQUEST**（网络感知读优先级）：按请求的 `payload_size_` 生成 dummy payload，编码 `NetProbeResponseMessage`，提交 SendTask。供对端的 BandwidthProbeThread 测往返带宽。
 
 ### 零拷贝设计
 

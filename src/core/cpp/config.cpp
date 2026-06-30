@@ -111,6 +111,10 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"read_cache_size", 1073741824},
     {"temp_store_size", 2147483648},
     {"data_client_pool_size", 4},
+    {"net_probe_enabled", 1},          // 网络感知远程读优先级：1=开启(默认), 0=关闭(排序降级 no-op)
+    {"net_probe_interval_ms", 30000},  // 主动带宽探测周期(ms)
+    {"net_probe_payload_kb", 256},     // 探测 payload 大小(KB)
+    {"net_probe_timeout_ms", 3000},    // 单次探测超时(ms)
 };
 
 const CMUnorderedMap<CMString, CMString> Config::STR_DEFAULTS = {

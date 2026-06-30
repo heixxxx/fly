@@ -161,6 +161,14 @@ private:
     std::atomic<bool> heartbeat_running_{false};
     std::mutex heartbeat_mutex_;
     std::condition_variable heartbeat_cv_;
+
+    // Bandwidth probe thread (network-aware read priority). Periodically
+    // measures RTT/bandwidth to every known data-server peer so TIER2 can
+    // prefer better-connected replicas.
+    std::thread probe_thread_;
+    std::atomic<bool> probe_running_{false};
+    std::mutex probe_mutex_;
+    std::condition_variable probe_cv_;
     
     CMSharedPtr<TaskExecutor> executor_;
 
@@ -228,6 +236,7 @@ private:
     void on_var_broadcast(uint64_t conn_id, const VarBroadcastMessage& msg);
     
     void heartbeat_loop();
+    void bandwidth_probe_loop();
     void touch_master_contact();
     void initiate_shutdown(const CMString& reason);
     void do_cleanup();

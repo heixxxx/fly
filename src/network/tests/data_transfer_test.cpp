@@ -6,6 +6,7 @@
 #include <serialization/cpp/fly_buffer.h>
 #include <network/cpp/data_client.h>
 #include <network/cpp/data_client_pool.h>
+#include <network/cpp/tcp_socket.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
 #include <log/cpp/logger.h>
@@ -174,6 +175,63 @@ TEST_F(DataTransferTest, DataServerHandlesConcurrentRequestsBeyondThreadCount) {
     for (auto& t : threads) t.join();
 
     EXPECT_EQ(success_count.load(), 6);
+}
+
+// DataServer echoes a NET_PROBE_REQUEST as a NET_PROBE_RESPONSE carrying the
+// requested payload size. This is the server half of the bandwidth probe used
+// by the network-aware read-priority feature.
+TEST_F(DataTransferTest, DataServerEchoesNetProbeRequest) {
+    ds_->start_data_server("127.0.0.1", 0, 2);
+    int port = ds_->get_data_port();
+
+    auto transport = create_tcp_transport();
+    int fd = transport->create_connection("127.0.0.1", port);
+    ASSERT_GE(fd, 0);
+    transport->set_recv_timeout(fd, 5000);
+    transport->set_send_timeout(fd, 5000);
+
+    NetProbeRequestMessage req;
+    req.payload_size_ = 8192;
+    req.probe_seq_ = 42;
+    CMString encoded = MessageProtocol::encode(req);
+    ASSERT_TRUE(transport->send_all(fd, encoded.data(), encoded.size()));
+
+    // Read 5B frame header [4B total_len][1B type].
+    char hdr[5];
+    size_t got = 0;
+    while (got < 5) {
+        ssize_t n = transport->recv(fd, hdr + got, 5 - got);
+        ASSERT_GT(n, 0);
+        got += static_cast<size_t>(n);
+    }
+    uint32_t total_len =
+        (static_cast<uint32_t>(static_cast<unsigned char>(hdr[0])) << 24) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(hdr[1])) << 16) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(hdr[2])) << 8) |
+        static_cast<uint32_t>(static_cast<unsigned char>(hdr[3]));
+    ASSERT_EQ(static_cast<uint8_t>(hdr[4]),
+              static_cast<uint8_t>(MessageType::NET_PROBE_RESPONSE));
+
+    // total_len = 1(type, already read) + payload_len. Read the remaining
+    // payload bytes, then reassemble the full frame for decode.
+    uint32_t payload_len = total_len - 1;
+    CMString rest(payload_len, '\0');
+    size_t rgot = 0;
+    while (rgot < payload_len) {
+        ssize_t n = transport->recv(fd, rest.data() + rgot, payload_len - rgot);
+        ASSERT_GT(n, 0) << "recv rest failed at offset " << rgot << "/" << payload_len;
+        rgot += static_cast<size_t>(n);
+    }
+    CMString frame;
+    frame.assign(hdr, 5);
+    frame += rest;
+
+    NetProbeResponseMessage resp;
+    ASSERT_TRUE(MessageProtocol::decode(frame, resp));
+    EXPECT_EQ(resp.probe_seq_, 42u);
+    EXPECT_EQ(resp.payload_.size(), 8192u);
+
+    transport->close(fd);
 }
 
 }  // namespace fly

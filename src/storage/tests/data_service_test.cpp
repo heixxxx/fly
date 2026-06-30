@@ -3,6 +3,7 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/local_index.h>
 #include <storage/cpp/decompressing_streambuf.h>
+#include <network/cpp/net_quality_monitor.h>
 #include <serialization/cpp/fly_buffer.h>
 #include <filesystem>
 #include <istream>
@@ -31,6 +32,12 @@ protected:
     void SetUp() override {
         test_dir_ = "/tmp/fly_test_ds_" + std::to_string(::getpid());
         std::filesystem::create_directories(test_dir_);
+        // DataService is a process-wide singleton shared across tests. Prior
+        // tests may have left handler lambdas (capturing local references) and
+        // index state behind; without a reset a later test that walks TIER2/TIER3
+        // can invoke a dangling lambda → use-after-free. reset() clears the
+        // handlers and all indexes so every test starts from a clean slate.
+        ds_->reset();
     }
 
     void TearDown() override {
@@ -125,6 +132,22 @@ TEST_F(DataServiceTest, RegisterWorkerAndGetAddress) {
     auto addr2 = ds_->get_worker_address(2);
     EXPECT_EQ(addr2.host_, "10.0.0.2");
     EXPECT_EQ(addr2.port_, 8002);
+}
+
+// get_all_workers returns a detached snapshot of every registered data-server
+// peer. The bandwidth-probe thread uses it to pick its targets.
+TEST_F(DataServiceTest, GetAllWorkersReturnsSnapshot) {
+    ds_->register_worker(9101, "probe_a", 9101);
+    ds_->register_worker(9102, "probe_b", 9102);
+
+    auto peers = ds_->get_all_workers();
+    bool has_a = false, has_b = false;
+    for (const auto& p : peers) {
+        if (p.worker_id_ == 9101) { has_a = true; EXPECT_EQ(p.host_, "probe_a"); }
+        if (p.worker_id_ == 9102) { has_b = true; EXPECT_EQ(p.host_, "probe_b"); }
+    }
+    EXPECT_TRUE(has_a);
+    EXPECT_TRUE(has_b);
 }
 
 TEST_F(DataServiceTest, GetWorkerAddressReturnsEmptyForUnknown) {
@@ -1279,6 +1302,60 @@ TEST_F(DataServiceTest, IsWriteInProgressReflectsLifecycle) {
 
     ds_->on_write_started(db_id, full);
     EXPECT_TRUE(ds_->is_write_in_progress(full));
+}
+
+// TIER2 must try replicas in net-quality order: the better-scored host is
+// contacted first. Two replicas registered as host_a then host_b; we score
+// host_b higher, so the contact order must flip to b, a. Each replica returns
+// OBJECT_NOT_FOUND so the full round is observed (no early success shortcut).
+TEST_F(DataServiceTest, Tier2PrefersHigherScoredReplica) {
+    auto& mon = fly::NetQualityMonitor::instance();
+    mon.clear();
+    CMString full = db32("tiersort") + ":obj";
+    ds_->update_remote_idx(full, 1, "host_a", 8000);
+    ds_->update_remote_idx(full, 2, "host_b", 9000);
+    mon.update_rtt("host_b", 1.0);   // host_b: low RTT → high score
+    mon.update_rtt("host_a", 200.0); // host_a: high RTT → low score
+
+    std::vector<CMString> order;
+    ds_->set_direct_compressed_read_handler(
+        [&](const CMString& host, int32_t /*port*/, const CMString& /*name*/)
+            -> std::tuple<bool, fly::CMSharedPtr<FlyBuffer>, CMString, CMString, fly::ReadError> {
+            order.push_back(host);
+            return {false, nullptr, {}, {}, fly::ReadError::OBJECT_NOT_FOUND};
+        });
+
+    ds_->read_raw_compressed(full);
+
+    ASSERT_EQ(order.size(), 2u);
+    EXPECT_EQ(order[0], "host_b");  // higher score first
+    EXPECT_EQ(order[1], "host_a");
+    mon.clear();
+}
+
+// With equal (or no) scores, stable_sort must preserve registration order, so
+// cold-start behavior is identical to before the feature.
+TEST_F(DataServiceTest, Tier2KeepsRegistrationOrderWhenScoresEqual) {
+    auto& mon = fly::NetQualityMonitor::instance();
+    mon.clear();
+    CMString full = db32("tierstable") + ":obj";
+    ds_->update_remote_idx(full, 1, "host_a", 8000);
+    ds_->update_remote_idx(full, 2, "host_b", 9000);
+
+    std::vector<CMString> order;
+    ds_->set_direct_compressed_read_handler(
+        [&](const CMString& host, int32_t /*port*/, const CMString& /*name*/)
+            -> std::tuple<bool, fly::CMSharedPtr<FlyBuffer>, CMString, CMString, fly::ReadError> {
+            order.push_back(host);
+            return {false, nullptr, {}, {}, fly::ReadError::OBJECT_NOT_FOUND};
+        });
+
+    ds_->read_raw_compressed(full);
+
+    ASSERT_EQ(order.size(), 2u);
+    EXPECT_EQ(order[0], "host_a");  // registration order preserved
+    EXPECT_EQ(order[1], "host_b");
+    mon.clear();
 }
 
 }

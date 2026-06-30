@@ -233,6 +233,32 @@ void DataServer::on_readable(int fd) {
         CMString frame(buf.data(), frame_size);
         buf.erase(0, frame_size);
 
+        // Dispatch by message type. The data plane now carries both read
+        // requests and bandwidth probes; the type byte routes each frame.
+        MessageType mtype = MessageProtocol::get_type(frame);
+
+        if (mtype == MessageType::NET_PROBE_REQUEST) {
+            NetProbeRequestMessage preq;
+            if (!MessageProtocol::decode(frame, preq)) {
+                ERR("[DS-DECODE] fd={} probe decode failed", fd);
+                break;
+            }
+            NetProbeResponseMessage presp;
+            presp.probe_seq_ = preq.probe_seq_;
+            presp.payload_.assign(preq.payload_size_, 0);
+            CMString encoded = MessageProtocol::encode(presp);
+            {
+                std::lock_guard<std::mutex> slk(send_mutex_);
+                SendTask task;
+                task.fd = fd;
+                task.data = std::move(encoded);
+                send_queue_.push(std::move(task));
+            }
+            send_cv_.notify_one();
+            pushed_response = true;
+            continue;
+        }
+
         DataRequestMessage req;
         if (!MessageProtocol::decode(frame, req)) {
             ERR("[DS-DECODE] fd={} decode failed", fd);

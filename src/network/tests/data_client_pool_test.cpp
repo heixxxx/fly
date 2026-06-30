@@ -11,6 +11,7 @@
 #include <serialization/cpp/fly_buffer.h>
 #include <network/cpp/data_client.h>
 #include <network/cpp/data_client_pool.h>
+#include <network/cpp/net_quality_monitor.h>
 #include <common/cpp/error_types.h>
 #include <log/cpp/logger.h>
 #include <filesystem>
@@ -99,6 +100,34 @@ TEST_F(DataClientPoolTest, ObjectNotFoundIsTyped) {
 
     EXPECT_FALSE(success);
     EXPECT_EQ(rerr, ReadError::OBJECT_NOT_FOUND);
+}
+
+// A completed exchange (even a protocol-level failure like OBJECT_NOT_FOUND)
+// feeds a passive RTT sample into NetQualityMonitor, so the host becomes ranked.
+TEST_F(DataClientPoolTest, CompletedExchangeFeedsPassiveRtt) {
+    NetQualityMonitor::instance().clear();
+    std::string db_id(fly::db_id_len(), 'f');
+    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_->start_data_server("127.0.0.1", 0, 2);
+    int port = ds_->get_data_port();
+
+    DataClientPool pool(2);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", port, db_id + ":missing", 0, 0, 5000);
+
+    ASSERT_EQ(rerr, ReadError::OBJECT_NOT_FOUND);
+    // A full round-trip completed → the loopback host now has a positive score.
+    EXPECT_GT(NetQualityMonitor::instance().score("127.0.0.1"), 0.0);
+
+    NetQualityMonitor::instance().clear();
+}
+
+// A connection that never completes (no server) must NOT record a sample.
+TEST_F(DataClientPoolTest, FailedConnectionFeedsNoSample) {
+    NetQualityMonitor::instance().clear();
+    DataClientPool pool(2);
+    pool.request("127.0.0.1", 1, "dead:beef", 0, 0, 1000);  // connect fails
+    EXPECT_DOUBLE_EQ(NetQualityMonitor::instance().score("127.0.0.1"), 0.0);
 }
 
 }  // namespace fly

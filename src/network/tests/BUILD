@@ -7,6 +7,16 @@ load("@rules_python//python:defs.bzl", "py_test")
 load("@rules_cc//cc:defs.bzl", "cc_test")
 
 cc_test(
+    name = "net_quality_monitor_test",
+    srcs = ["net_quality_monitor_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/network/cpp:fly_network",
+    ],
+    copts = ["-std=c++20"],
+)
+
+cc_test(
     name = "tcp_connection_manager_test",
     srcs = ["tcp_connection_manager_test.cpp"],
     deps = [

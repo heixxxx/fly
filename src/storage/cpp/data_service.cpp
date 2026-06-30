@@ -6,6 +6,7 @@
 #include <storage/cpp/compression_utils.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/object_cache.h>
+#include <network/cpp/net_quality_monitor.h>
 #include <serialization/cpp/object_header.h>
 #include <core/cpp/config.h>
 #include <log/cpp/logger.h>
@@ -465,6 +466,16 @@ RemoteObjectInfo DataService::get_worker_address(uint64_t worker_id) const {
         return it->second;
     }
     return RemoteObjectInfo{};
+}
+
+CMVector<RemoteObjectInfo> DataService::get_all_workers() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    CMVector<RemoteObjectInfo> out;
+    out.reserve(worker_registry_.size());
+    for (const auto& [wid, info] : worker_registry_) {
+        out.push_back(info);
+    }
+    return out;
 }
 
 // ============================================================
@@ -1001,6 +1012,18 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
                 }
 
                 bool saw_not_ready = false;
+                // Prefer better-connected replicas first. stable_sort keeps the
+                // registration order for equal scores, so unknown peers (score
+                // 0) stay in their original position — behavior is unchanged
+                // before any quality data is gathered. Disabled via config →
+                // no-op (registration order preserved exactly as before).
+                if (Config::instance()->get_int("net_probe_enabled")) {
+                    std::stable_sort(replicas.begin(), replicas.end(),
+                        [](const RemoteObjectInfo& a, const RemoteObjectInfo& b) {
+                            return NetQualityMonitor::instance().score(a.host_) >
+                                   NetQualityMonitor::instance().score(b.host_);
+                        });
+                }
                 for (const auto& loc : replicas) {
                     auto [cb_found, cb_data, cb_py_name, cb_hash, cb_rerr] =
                         cb(loc.host_, loc.port_, object_name);
