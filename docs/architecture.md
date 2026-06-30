@@ -187,7 +187,7 @@ def next_task(db, name):
 
 **任务调度策略**：
 - 默认策略：FIFO
-- 数据 locality 调度（Config `locality_scheduling_enabled`，默认 1 开启）：启用后 scheduler 按 worker 持有的输入数据总量（score）选亲和性最优的 idle worker。三阶段算法：① capability 完整匹配优先（强约束）；② locality 偏好（score 最大且不降低 capability 质量）；③ 兜底（allow_degrade）。scheduler 直接查 DataService placement 算分，持久 score 缓冲区复用。
+- 数据 locality 调度（Config `locality_scheduling_enabled`，默认 1 开启）：启用后 scheduler 按 worker 持有的输入数据总量（score）选亲和性最优的 idle worker。三阶段算法：① capability 完整匹配优先（强约束）；② locality 偏好（score 最大且不降低 capability 质量）；③ 兜底（allow_degrade）。**分层无环**：master 在 `schedule_tasks()` 入口按 task 依赖预计算 `locality_hint_`（POD，worker_id→持有字节数）注入 graph，scheduler 只消费此 hint，不接触 DataService（见 [`locality-decoupling-fix-plan.md`](locality-decoupling-fix-plan.md)）。持久 score 缓冲区复用。
 - 核心约束：Worker同一时刻最多执行一个任务
 
 ### 3.3 数据存储

@@ -3,6 +3,7 @@
 > 对应计划：[`locality-scheduling-plan.md`](locality-scheduling-plan.md)
 > Review 范围：`git diff HEAD` 全部改动（23 文件，+544/-233 行）
 > 评审日期：2026-06-28
+> **2026-06-30 更新**：§1 P0 / §5 P0（分层依赖 + 测试隔离）已修复，见 [`locality-decoupling-fix-plan.md`](locality-decoupling-fix-plan.md)。
 
 ---
 
@@ -22,7 +23,16 @@
 
 ### 🔴 P0 严重：工作流 C 完全未实现，scheduler 反向依赖 Storage
 
-**这是本次 review 最关键的发现。**
+> **2026-06-30 RESOLVED**：已按 [`locality-decoupling-fix-plan.md`](locality-decoupling-fix-plan.md) 方案 A 修复。
+> `TaskRequirements` 增加 `locality_hint_` POD 字段，`DependencyGraph::set_task_locality_hint` 注入，
+> master 在 `schedule_tasks()` 入口预计算聚合，`compute_scores` 改为只消费 hint。
+> `task_scheduler.h` 删除 `#include <storage/cpp/data_service.h>`，
+> `src/task/cpp/BUILD` 删除 `fly_storage` / `fly_storage_so` 依赖。
+> `bazel query deps(//src/task/cpp:fly_task)` 确认依赖闭包不含任何 storage target。
+> 测试 T1–T7 改用 `inject_hint` 注入，`grep DataService task_scheduler_test.cpp` 仅余注释文字。
+> 全量单测 50/50 + QA 111/111 通过。
+
+**这是本次 review 最关键的发现。**（以下为原始记录，保留以备溯源）
 
 计划 §2.3 工作流 C/D 的核心设计原则（§2.1 原则 6）：
 
@@ -185,6 +195,9 @@ grep 全文件无引用，死代码，应删除。
 覆盖维度完整，性能测试有硬断言 + 实测数据（计划 §6.2）。
 
 ### 🔴 P0：测试架构与设计原则背离（同 §1）
+
+> **2026-06-30 RESOLVED**：随 §1 P0 一并修复。单测改用 `inject_hint` 注入 POD hint，
+> 不再触碰 `DataService::instance()`。每个测试天然隔离，无需手动 `remove_remote_index` 清理。
 
 单测注释声称"不依赖真实 DataService，用 fake DependencyGraph"，实际直接调真实 `DataService::instance()`。后果：
 

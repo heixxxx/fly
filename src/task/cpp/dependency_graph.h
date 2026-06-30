@@ -13,16 +13,28 @@ namespace fly {
 // timeout_seconds_ 取值语义：
 //   <0  死等，必须满足 capabilities_ 才调度（默认值，纯 list 形式的等价语义）
 //   ==0 数据依赖满足后仅检查一次，无完整匹配立即降级到匹配属性最多的 idle worker
-//   >0  数据依赖满足后限时等待；到期后无论属性是否满足，都降级调度
+//   >0 数据依赖满足后限时等待；到期后无论属性是否满足，都降级调度
 struct TaskRequirements {
     CMVector<CMString> capabilities_;
     float timeout_seconds_ = -1.0f;
+
+    // Locality hint：master 预计算的 worker→亲和分（worker 持有的输入字节数）。
+    // scheduler 只消费此 POD，不接触 DataService，从而解除 task→storage 的分层依赖。
+    // 空 = 无 locality 信息（退 FIFO）。纯进程内临场数据，不参与序列化
+    // （TaskRequirements 不跨进程；跨进程消息用独立字段，见 message_types.h）。
+    // 每个 entry = (worker_id, 该 worker 持有的输入数据总字节数)。
+    CMVector<std::pair<uint64_t, int64_t>> locality_hint_{};
 };
 
 class DependencyGraph {
 public:
     void add_task(uint64_t task_id, const CMVector<CMString>& inputs,
                   const TaskRequirements& requirements = {});
+    // master 在 schedule 前按 task 依赖查 DataService 预计算 locality_hint_，写入此结构。
+    // scheduler 只读不查。线程安全（内部加锁，与其它 getter 一致）。
+    // task 不存在时静默忽略（与 get_task_requirements 找不到返回静态空的语义对称）。
+    void set_task_locality_hint(uint64_t task_id,
+                                CMVector<std::pair<uint64_t, int64_t>> hint);
     void mark_data_ready(const CMString& data_path);
     void mark_data_removed(const CMString& data_path);
     bool is_data_ready(const CMString& data_path) const;

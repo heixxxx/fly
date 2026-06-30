@@ -110,9 +110,11 @@ static size_t capability_match_count(WorkerManager* manager, uint64_t wid,
 
 // 为 task 计算各 worker 的 locality 分数，写入持久缓冲区 score_buf_（复用，无 per-task 分配）。
 // score_buf_ 按 worker_id 直接索引（下标=worker_id）。score = worker 持有的输入数据总字节数
-// （越大越优，0=未持有任何输入）。复杂度 O(deps × avg_holders)，无内层线性查找。
+// （越大越优，0=未持有任何输入）。
+//
+// scheduler 不接触 DataService：直接消费 master 预计算的 locality_hint_（POD）。
+// hint 每个 entry = (worker_id, 该 worker 持有的输入字节数)，master 已聚合完毕，直接赋值。
 size_t TaskScheduler::compute_scores(uint64_t task_id) {
-    auto deps = graph_->get_task_dependencies(task_id);
     auto all_workers = manager_->get_all_workers();
 
     // 算出 max_worker_id，按 worker_id 直接索引（下标=worker_id）。容量只增不减。
@@ -126,20 +128,13 @@ size_t TaskScheduler::compute_scores(uint64_t task_id) {
         score_buf_[w.worker_id_] = {w.worker_id_, 0};
     }
 
-    if (deps.empty()) {
-        return score_buf_.size();
-    }
-
-    // 依赖驱动：只遍历每个依赖的持有者，给持有者加分。get_remote_workers 返回 const 引用（无拷贝），
-    // holder 的 worker_id 直接作为 score_buf_ 下标（O(1)）。
-    auto ds = DataService::instance();
-    for (const auto& obj : deps) {
-        auto holders = ds->get_remote_workers(obj);  // 按值返回（锁内拷贝），线程安全
-        int64_t sz = ds->get_remote_size(obj);
-        for (uint64_t h : holders) {
-            if (h < score_buf_.size()) {
-                score_buf_[h].score += sz;
-            }
+    // 消费 master 预计算的 locality_hint_（POD）。master 是数据位置权威，
+    // 在 schedule_tasks() 入口按 task 依赖查 DataService 预聚合后注入。
+    // hint 为空（无输入对象 / 未注入）→ 所有 score 保持 0，退原行为（按 worker_id 升序选）。
+    const TaskRequirements& reqs = graph_->get_task_requirements(task_id);
+    for (const auto& [wid, score] : reqs.locality_hint_) {
+        if (wid < score_buf_.size()) {
+            score_buf_[wid].score = score;  // master 已聚合，直接赋值
         }
     }
     return score_buf_.size();

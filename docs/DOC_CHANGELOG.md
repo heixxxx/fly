@@ -200,6 +200,37 @@ master 自写改为同步调 `do_write_register`（丢弃 ack，零网络开销�
 task 模块（本质是调度模块）新增对 storage 的依赖（scheduler 查 DataService placement 算分）。
 `task/cpp/BUILD` 加 `fly_storage` 依赖，`fly_task_so` 用 `dynamic_deps` 引用 `fly_storage_so`。
 
+> ⚠️ **2026-06-30 已撤销**：见下方 2026-06-30 条目。scheduler 改为消费 master 预计算的
+> `locality_hint_` POD，task→storage 依赖重新解除，恢复六层架构 BUILD 级无环。
+
+---
+
+## 2026-06-30: Locality 分层解耦 + 长时运行内存分析
+
+### 架构修复：task→storage 分层依赖解除
+
+`scheduler` 不再直接查 `DataService`，改为消费 master 预计算的 locality hint：
+
+- `TaskRequirements` 新增 `locality_hint_` 字段（POD，`CMVector<std::pair<uint64_t,int64_t>>`，worker_id→持有输入字节数）。不参与序列化（`TaskRequirements` 不跨进程）。
+- `DependencyGraph::set_task_locality_hint()` 新增 setter。
+- `TaskScheduler::compute_scores()` 改读 `locality_hint_`，删除 `DataService::instance()` 调用。
+- `src/task/cpp/BUILD` 删除 `fly_storage` / `fly_storage_so` 依赖；`task_scheduler.h` 删除 `<storage/cpp/data_service.h>` include。
+- `MasterAgent::schedule_tasks()` 入口预计算 hint 注入 graph（master 合法持有 DataService）。
+- 测试 T1–T7 改用 `inject_hint` 注入，移除 DataService singleton 依赖。
+- 验证：`bazel query deps(//src/task/cpp:fly_task)` 依赖闭包零 storage；单测 50/50 + QA 111/111。
+
+### 新增文档
+
+- `docs/roadmap.md` — 增强路线图（P0 locality 已完成；P1 含 F5 优先级 / F3 role / M1 内存观察项）
+- `docs/locality-decoupling-fix-plan.md` — 解耦方案与验证清单
+- `docs/memory-growth-analysis.md` — 长时运行内存增长分析（数据对象元信息无上限累积，十万级可接受）
+- `docs/competitor-analysis.md` — 竞品分析（此前已生成，本次随附）
+
+### 受影响文档同步
+
+- `docs/architecture.md` §3.2 locality 描述：从"scheduler 直接查 DataService"改为"消费 master 预计算 hint"。
+- `docs/locality-scheduling-review.md` §1/§5 P0：标记 RESOLVED。
+
 ---
 
 ## 2026-06-25: 失败 Task 脏数据清理（事务化段标记 + 异常清理）

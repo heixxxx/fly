@@ -1,7 +1,6 @@
 #pragma once
 
 #include <common/cpp/common_types.h>
-#include <storage/cpp/data_service.h>
 #include <task/cpp/dependency_graph.h>
 #include <task/cpp/worker_manager.h>
 #include <cstdint>

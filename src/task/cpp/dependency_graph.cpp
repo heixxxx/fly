@@ -30,6 +30,17 @@ void DependencyGraph::add_task(uint64_t task_id, const CMVector<CMString>& input
         pending == 0 ? "READY" : "PENDING");
 }
 
+void DependencyGraph::set_task_locality_hint(
+        uint64_t task_id, CMVector<std::pair<uint64_t, int64_t>> hint) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = task_requirements_.find(task_id);
+    if (it != task_requirements_.end()) {
+        it->second.locality_hint_ = std::move(hint);
+    }
+    // task 不存在时静默忽略：set 可能在 add_task 之前调用（防御），
+    // 与 get_task_requirements 的"找不到返回静态空"语义对称。
+}
+
 bool DependencyGraph::check_and_move_to_ready(uint64_t task_id) {
     // Called under lock. Returns true if task moved from pending to ready.
     if (completed_tasks_.count(task_id)) return false;
