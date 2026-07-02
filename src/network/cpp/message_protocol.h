@@ -9,6 +9,25 @@
 
 namespace fly {
 
+// Big-endian 32-bit integer read/write — shared by MessageProtocol and
+// DataResponseProtocol frame parsing, and by all data/metadata clients and
+// data_server that read frame headers off the wire.
+inline uint32_t read_be32(const char* p) {
+    return (static_cast<uint32_t>(static_cast<unsigned char>(p[0])) << 24) |
+           (static_cast<uint32_t>(static_cast<unsigned char>(p[1])) << 16) |
+           (static_cast<uint32_t>(static_cast<unsigned char>(p[2])) <<  8) |
+            static_cast<uint32_t>(static_cast<unsigned char>(p[3]));
+}
+inline uint32_t read_be32(const CMString& s, size_t off = 0) {
+    return read_be32(s.data() + off);
+}
+inline void write_be32(char* p, uint32_t v) {
+    p[0] = static_cast<char>((v >> 24) & 0xFF);
+    p[1] = static_cast<char>((v >> 16) & 0xFF);
+    p[2] = static_cast<char>((v >>  8) & 0xFF);
+    p[3] = static_cast<char>( v        & 0xFF);
+}
+
 class MessageProtocol {
 public:
     template<typename T>
@@ -19,12 +38,7 @@ public:
         uint32_t total_len = static_cast<uint32_t>(1 + payload.size());
         CMString frame;
         frame.resize(4 + 1 + payload.size());
-        
-        frame[0] = static_cast<char>((total_len >> 24) & 0xFF);
-        frame[1] = static_cast<char>((total_len >> 16) & 0xFF);
-        frame[2] = static_cast<char>((total_len >> 8) & 0xFF);
-        frame[3] = static_cast<char>(total_len & 0xFF);
-        
+        write_be32(&frame[0], total_len);
         frame[4] = static_cast<char>(static_cast<uint8_t>(T::msg_type_));
         
         std::copy(payload.begin(), payload.end(), frame.begin() + 5);
@@ -34,13 +48,9 @@ public:
     template<typename T>
     static bool decode(CMString& buffer, T& msg) {
         if (buffer.size() < 5) return false;
-        
-        uint32_t total_len = 
-            (static_cast<uint32_t>(static_cast<unsigned char>(buffer[0])) << 24) |
-            (static_cast<uint32_t>(static_cast<unsigned char>(buffer[1])) << 16) |
-            (static_cast<uint32_t>(static_cast<unsigned char>(buffer[2])) << 8) |
-            static_cast<uint32_t>(static_cast<unsigned char>(buffer[3]));
-        
+
+        uint32_t total_len = read_be32(buffer);
+
         if (total_len < 1) return false;
         if (buffer.size() < 4 + total_len) return false;
         
@@ -65,13 +75,9 @@ public:
     
     static MessageType get_type(const CMString& buffer) {
         if (buffer.size() < 5) return MessageType::REGISTER;
-        
-        uint32_t total_len = 
-            (static_cast<uint32_t>(static_cast<unsigned char>(buffer[0])) << 24) |
-            (static_cast<uint32_t>(static_cast<unsigned char>(buffer[1])) << 16) |
-            (static_cast<uint32_t>(static_cast<unsigned char>(buffer[2])) << 8) |
-            static_cast<uint32_t>(static_cast<unsigned char>(buffer[3]));
-        
+
+        uint32_t total_len = read_be32(buffer);
+
         if (total_len < 1) return MessageType::REGISTER;
         if (buffer.size() < 4 + total_len) return MessageType::REGISTER;
         
@@ -83,12 +89,8 @@ public:
     
     static uint32_t get_total_size(const CMString& buffer) {
         if (buffer.size() < 4) return 0;
-        
-        return 
-            (static_cast<uint32_t>(static_cast<unsigned char>(buffer[0])) << 24) |
-            (static_cast<uint32_t>(static_cast<unsigned char>(buffer[1])) << 16) |
-            (static_cast<uint32_t>(static_cast<unsigned char>(buffer[2])) << 8) |
-            static_cast<uint32_t>(static_cast<unsigned char>(buffer[3]));
+
+        return read_be32(buffer);
     }
     
     static uint32_t get_payload_size(const CMString& buffer) {
@@ -132,15 +134,9 @@ public:
 
         result.header_segment.resize(4 + 1 + 4 + 1 + small_fields_len);
         char* p = &result.header_segment[0];
-        auto write_be32 = [&](uint32_t v) {
-            *p++ = static_cast<char>((v >> 24) & 0xFF);
-            *p++ = static_cast<char>((v >> 16) & 0xFF);
-            *p++ = static_cast<char>((v >> 8) & 0xFF);
-            *p++ = static_cast<char>(v & 0xFF);
-        };
-        write_be32(total_len);
+        write_be32(p, total_len); p += 4;
         *p++ = static_cast<char>(static_cast<uint8_t>(MessageType::DATA_RESPONSE));
-        write_be32(small_fields_len);
+        write_be32(p, small_fields_len); p += 4;
         *p++ = has_raw ? 1 : 0;
         std::memcpy(p, small_payload.data(), small_fields_len);
 
@@ -155,11 +151,7 @@ public:
     // Call after reading the first 10 bytes (5 frame header + 5 sub-header).
     static void parse_sub_header(const char* sub_header,
                                   uint32_t& small_fields_len, bool& has_raw) {
-        small_fields_len =
-            (static_cast<uint32_t>(static_cast<unsigned char>(sub_header[0])) << 24) |
-            (static_cast<uint32_t>(static_cast<unsigned char>(sub_header[1])) << 16) |
-            (static_cast<uint32_t>(static_cast<unsigned char>(sub_header[2])) << 8) |
-            static_cast<uint32_t>(static_cast<unsigned char>(sub_header[3]));
+        small_fields_len = read_be32(sub_header);
         has_raw = sub_header[4] != 0;
     }
 

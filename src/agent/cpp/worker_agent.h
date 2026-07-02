@@ -8,6 +8,7 @@
 #include <network/cpp/metadata_client.h>
 #include <core/cpp/config.h>
 #include <agent/cpp/task_executor.h>
+#include <agent/cpp/pending_rpc_map.h>
 #include <common/cpp/worker_context.h>
 #include <storage/cpp/database.h>
 #include <common/cpp/common_types.h>
@@ -184,33 +185,22 @@ private:
     
     CMUnorderedMap<CMString, CMSharedPtr<Database>> databases_;
 
-    std::mutex pending_db_path_mutex_;
-    std::condition_variable pending_db_path_cv_;
-    CMUnorderedMap<CMString, CMSharedPtr<PendingDbPath>> pending_db_paths_;
+    PendingRpcMap<CMString, PendingDbPath> pending_db_paths_;
 
-    std::mutex pending_write_reg_mutex_;
-    std::condition_variable pending_write_reg_cv_;
-    CMUnorderedMap<CMString, CMSharedPtr<PendingWriteRegister>> pending_write_regs_;
+    PendingRpcMap<CMString, PendingWriteRegister> pending_write_regs_;
 
     struct PendingRemove {
-        std::mutex mutex_;
-        std::condition_variable cv_;
         bool completed_ = false;
         bool success_ = false;
     };
 
-    std::mutex pending_remove_mutex_;
-    CMUnorderedMap<CMString, CMSharedPtr<PendingRemove>> pending_removes_;
+    PendingRpcMap<CMString, PendingRemove> pending_removes_;
 
     // Pending var set/get operations (keyed by var_name, awaiting master VAR_ACK).
-    std::mutex pending_var_mutex_;
-    std::condition_variable pending_var_cv_;
-    CMUnorderedMap<CMString, CMSharedPtr<PendingVarOp>> pending_var_ops_;
+    PendingRpcMap<CMString, PendingVarOp> pending_var_ops_;
 
     // Pending freeze requests (keyed by db_id, awaiting master DATABASE_FREEZE_ACK).
-    std::mutex pending_freeze_mutex_;
-    std::condition_variable pending_freeze_cv_;
-    CMUnorderedMap<CMString, CMSharedPtr<PendingFreezeAck>> pending_freezes_;
+    PendingRpcMap<CMString, PendingFreezeAck> pending_freezes_;
 
     // Vars inlined into the current task's TaskAssignMessage; consumed by the
     // Python executor via take_pending_task_vars() before the task runs.

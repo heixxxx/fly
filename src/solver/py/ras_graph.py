@@ -344,19 +344,17 @@ def _prebuild_coarse_task(db):
     _ensure_coarse_cached(db)
 
 
-def _build_coarse_operators(n, N, matrix_path):
-    """Build global coarse-grid P (restriction) and Galerkin Ac on the coord
-    process. Returns serialisable raw sparse data (COO for P, CSC for Ac) so
-    workers can rebuild the sparse objects and do only the LU step, instead of
-    each worker redundantly rebuilding the full A_fine (220ms) + Galerkin.
-    Returns None if the coarse grid is too small to be useful.
+def _compute_coarse_arrays(n, N, rows, cols, vals):
+    """Shared bilinear interpolation + Galerkin projection for the coarse grid.
+
+    Builds the restriction operator P (fine → coarse via bilinear interpolation)
+    and the Galerkin coarse operator Ac = P^T A_fine P. Returns None when the
+    coarse grid is too small to be useful.
+
+    Used by both _build_coarse_operators (coord prebuild, returns serialisable
+    raw data) and the legacy worker-side fallback in _ensure_coarse_cached.
     """
     from scipy import sparse
-
-    data = _get_matrix_data(matrix_path)
-    rows = np.asarray(data["rows"])
-    cols = np.asarray(data["cols"])
-    vals = np.asarray(data["vals"])
 
     stride = max(2, n // 125)
     nc = n // stride
@@ -389,13 +387,31 @@ def _build_coarse_operators(n, N, matrix_path):
     P_cols = np.concatenate(pc)
     P_vals = np.concatenate(pv)
     P = sparse.csr_matrix((P_vals, (P_rows, P_cols)), shape=(N, Nc))
-
     A_fine = sparse.csr_matrix((vals, (rows, cols)), shape=(N, N))
     Ac = (P.T @ (A_fine @ P)).tocsc()
+    return P, P_rows, P_cols, P_vals, A_fine, Ac, stride, nc, Nc
+
+
+def _build_coarse_operators(n, N, matrix_path):
+    """Build global coarse-grid P (restriction) and Galerkin Ac on the coord
+    process. Returns serialisable raw sparse data (COO for P, CSC for Ac) so
+    workers can rebuild the sparse objects and do only the LU step, instead of
+    each worker redundantly rebuilding the full A_fine (220ms) + Galerkin.
+    Returns None if the coarse grid is too small to be useful.
+    """
+    data = _get_matrix_data(matrix_path)
+    rows = np.asarray(data["rows"])
+    cols = np.asarray(data["cols"])
+    vals = np.asarray(data["vals"])
+
+    result = _compute_coarse_arrays(n, N, rows, cols, vals)
+    if result is None:
+        return None
+    P, P_rows, P_cols, P_vals, A_fine, Ac, stride, _nc, Nc = result
 
     return {
         "P_rows": P_rows, "P_cols": P_cols, "P_vals": P_vals,
-        "N": N, "Nc": Nc,
+        "N": N, "Nc": int(Nc),
         "Ac_indptr": Ac.indptr.astype(np.int64),
         "Ac_indices": Ac.indices.astype(np.int64),
         "Ac_data": Ac.data.astype(np.float64),
@@ -477,40 +493,11 @@ def _ensure_coarse_cached(db):
     cols = data["cols"]
     vals = data["vals"]
 
-    stride = max(2, n // 125)
-    nc = n // stride
-    Nc = nc * nc
-    if Nc < 10:
-        INFO(f"[RASG COARSE] Skipping: coarse grid too small (nc={nc})")
+    result = _compute_coarse_arrays(n, N, rows, cols, vals)
+    if result is None:
+        INFO(f"[RASG COARSE] Skipping: coarse grid too small")
         return
-
-    fi_arr, fj_arr = np.divmod(np.arange(N), n)
-    ci_f = fi_arr / stride
-    cj_f = fj_arr / stride
-    ci0 = np.minimum(ci_f.astype(np.int64), nc - 1)
-    cj0 = np.minimum(cj_f.astype(np.int64), nc - 1)
-    di = ci_f - ci0
-    dj = cj_f - cj0
-    ci1 = np.minimum(ci0 + 1, nc - 1)
-    cj1 = np.minimum(cj0 + 1, nc - 1)
-    fine_idx = np.arange(N)
-    p_rows, p_cols, p_vals = [], [], []
-    for ci, cj, w in [
-        (ci0, cj0, (1 - di) * (1 - dj)),
-        (ci0, cj1, (1 - di) * dj),
-        (ci1, cj0, di * (1 - dj)),
-        (ci1, cj1, di * dj),
-    ]:
-        mask = w > 1e-15
-        p_rows.append(fine_idx[mask])
-        p_cols.append((ci * nc + cj)[mask])
-        p_vals.append(w[mask])
-    P_rows = np.concatenate(p_rows)
-    P_cols = np.concatenate(p_cols)
-    P_vals = np.concatenate(p_vals)
-    P = sparse.csr_matrix((P_vals, (P_rows, P_cols)), shape=(N, Nc))
-    A_fine = sparse.csr_matrix((vals, (rows, cols)), shape=(N, N))
-    Ac = (P.T @ (A_fine @ P)).tocsc()
+    P, _P_rows, _P_cols, _P_vals, A_fine, Ac, stride, nc, Nc = result
     Ac_lu = splu(Ac)
 
     put_cache("__rasg__coarse_lu", Ac_lu)

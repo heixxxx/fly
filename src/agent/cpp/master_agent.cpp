@@ -1,4 +1,5 @@
 #include <agent/cpp/master_agent.h>
+#include <agent/cpp/data_fetch.h>
 #include <log/cpp/logger.h>
 #include <core/cpp/config.h>
 #include <core/cpp/process_info.h>
@@ -1451,19 +1452,7 @@ std::tuple<bool, FlyBufferPtr, CMString, bool> MasterAgent::request_remote_data(
 
 std::pair<bool, ReadResult> MasterAgent::request_data_from_worker(const CMString& host, int32_t port,
                                                                    const CMString& object_name) {
-    INFO("Direct DataClient request to {}:{} for {}", host, port, object_name);
-
-    auto [success, compressed_data, py_name, hash, error] = DataClient::request_compressed_data(host, port, object_name);
-
-    if (!success) {
-        ERR("request_data_from_worker failed for {}: {}", object_name, error);
-        return {false, ReadResult{}};
-    }
-
-    ReadResult result;
-    result.data_buffer_.assign(compressed_data->data(), compressed_data->data() + compressed_data->size());
-    result.py_name_ = std::move(py_name);
-    return {true, std::move(result)};
+    return fetch_from_worker(host, port, object_name);
 }
 
 CMString MasterAgent::get_failed_tasks_file_path() const {

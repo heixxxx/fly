@@ -35,4 +35,16 @@ public:
     virtual void close(int fd) = 0;
 };
 
+// Read exactly n bytes from fd (partial-read loop). Returns false on EOF/error.
+// Shared by DataClient, DataClientPool, and MetadataClient for frame reads.
+inline bool recv_exact(Transport* transport, int fd, char* buf, size_t n) {
+    size_t received = 0;
+    while (received < n) {
+        ssize_t r = transport->recv(fd, buf + received, n - received);
+        if (r <= 0) return false;
+        received += static_cast<size_t>(r);
+    }
+    return true;
+}
+
 }  // namespace fly

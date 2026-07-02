@@ -216,11 +216,7 @@ void DataServer::on_readable(int fd) {
     bool pushed_response = false;
 
     while (buf.size() >= 5) {
-        uint32_t total_len =
-            (static_cast<uint32_t>(static_cast<unsigned char>(buf[0])) << 24) |
-            (static_cast<uint32_t>(static_cast<unsigned char>(buf[1])) << 16) |
-            (static_cast<uint32_t>(static_cast<unsigned char>(buf[2])) << 8) |
-            static_cast<uint32_t>(static_cast<unsigned char>(buf[3]));
+        uint32_t total_len = read_be32(buf);
 
         if (total_len < 1) {
             ERR("[DS-FRAME] fd={} invalid total_len=0", fd);

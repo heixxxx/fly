@@ -9,21 +9,6 @@
 
 namespace fly {
 
-namespace {
-
-// Read exactly n bytes from fd (partial-read loop).
-bool recv_exact(Transport* transport, int fd, char* buf, size_t n) {
-    size_t received = 0;
-    while (received < n) {
-        ssize_t r = transport->recv(fd, buf + received, n - received);
-        if (r <= 0) return false;
-        received += static_cast<size_t>(r);
-    }
-    return true;
-}
-
-}  // namespace
-
 std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClient::request_compressed_data(
     const CMString& host,
     int port,
@@ -66,11 +51,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString> DataClient::request
         transport->close(fd);
         return {false, nullptr, "", "", "Timeout receiving response header for " + object_name};
     }
-    uint32_t total_len =
-        (static_cast<uint32_t>(static_cast<unsigned char>(frame_header[0])) << 24) |
-        (static_cast<uint32_t>(static_cast<unsigned char>(frame_header[1])) << 16) |
-        (static_cast<uint32_t>(static_cast<unsigned char>(frame_header[2])) << 8) |
-        static_cast<uint32_t>(static_cast<unsigned char>(frame_header[3]));
+    uint32_t total_len = read_be32(frame_header);
     if (total_len < 6) {  // 1(type)+4(small_len)+1(has_raw) minimum
         transport->close(fd);
         return {false, nullptr, "", "", "Invalid response frame size for " + object_name};

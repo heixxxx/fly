@@ -7,6 +7,7 @@
 #include <network/cpp/data_client.h>
 #include <network/cpp/data_client_pool.h>
 #include <network/cpp/metadata_client.h>
+#include <agent/cpp/data_fetch.h>
 #include <network/cpp/tcp_socket.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/net_quality_monitor.h>
@@ -343,11 +344,7 @@ void WorkerAgent::bandwidth_probe_loop() {
             }
             uint32_t total_len = 0;
             if (ok) {
-                total_len =
-                    (static_cast<uint32_t>(static_cast<unsigned char>(hdr[0])) << 24) |
-                    (static_cast<uint32_t>(static_cast<unsigned char>(hdr[1])) << 16) |
-                    (static_cast<uint32_t>(static_cast<unsigned char>(hdr[2])) << 8) |
-                    static_cast<uint32_t>(static_cast<unsigned char>(hdr[3]));
+                total_len = read_be32(hdr);
             }
             uint32_t remain = (ok && total_len >= 1) ? total_len - 1 : 0;
             CMString rest(remain, '\0');
@@ -559,16 +556,12 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
 
 void WorkerAgent::on_db_path_response(const DbPathResponseMessage& msg) {
     touch_master_contact();
-
-    std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
-    auto it = pending_db_paths_.find(msg.db_id_);
-    if (it != pending_db_paths_.end()) {
-        it->second->base_path_ = msg.base_path_;
-        it->second->data_path_ = msg.data_path_;
-        it->second->success_ = msg.success_;
-        it->second->completed_ = true;
-    }
-    pending_db_path_cv_.notify_all();
+    pending_db_paths_.complete(msg.db_id_, [&](PendingDbPath& p) {
+        p.base_path_ = msg.base_path_;
+        p.data_path_ = msg.data_path_;
+        p.success_ = msg.success_;
+        p.completed_ = true;
+    });
 }
 
 void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_hash) {
@@ -680,10 +673,7 @@ void WorkerAgent::request_database_freeze(const CMString& db_id) {
     // 非 stream 模式 master 登记 pending；冲突时回 DB_ALREADY_FROZEN 联动 task 失败。
     auto pending = CMMakeShared<PendingFreezeAck>();
     pending->db_id_ = db_id;
-    {
-        std::lock_guard<std::mutex> lock(pending_freeze_mutex_);
-        pending_freezes_[db_id] = pending;
-    }
+    pending_freezes_.emplace(db_id, pending);
 
     DatabaseFreezeNotification msg;
     msg.db_id_ = db_id;
@@ -691,26 +681,21 @@ void WorkerAgent::request_database_freeze(const CMString& db_id) {
     reactor_->send(master_conn_, msg);
     INFO("Freeze notification sent: db_id={}, task_id={}", db_id, current_task_id_);
 
-    {
-        std::unique_lock<std::mutex> lock(pending_freeze_mutex_);
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (!pending->completed_) {
-            if (pending_freeze_cv_.wait_until(lock, deadline) == std::cv_status::timeout) break;
-        }
-        pending_freezes_.erase(db_id);
-        if (!pending->completed_) {
-            // 超时（master 无响应）→ 当失败处理，联动 task 失败
-            WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
-            ERR("Freeze ack timeout: db_id={}", db_id);
-            return;
-        }
-        if (!pending->success_) {
-            // 冲突（DB_ALREADY_FROZEN）→ 联动 task 失败（poll_task 检查 last_error_type）
-            WorkerAgentContext::set_last_error_type(pending->error_type_);
-            ERR("Freeze rejected: db_id={}, error_type={}", db_id,
-                static_cast<int>(pending->error_type_));
-            return;
-        }
+    auto result = pending_freezes_.wait_for(db_id, std::chrono::seconds(5),
+        [](const CMSharedPtr<PendingFreezeAck>& p) { return p->completed_; });
+    pending_freezes_.erase(db_id);
+    if (!result) {
+        // 超时（master 无响应）→ 当失败处理，联动 task 失败
+        WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
+        ERR("Freeze ack timeout: db_id={}", db_id);
+        return;
+    }
+    if (!pending->success_) {
+        // 冲突（DB_ALREADY_FROZEN）→ 联动 task 失败（poll_task 检查 last_error_type）
+        WorkerAgentContext::set_last_error_type(pending->error_type_);
+        ERR("Freeze rejected: db_id={}, error_type={}", db_id,
+            static_cast<int>(pending->error_type_));
+        return;
     }
     INFO("Freeze acked: db_id={}", db_id);
 }
@@ -737,19 +722,7 @@ std::tuple<bool, bool> WorkerAgent::request_remote_data(const CMString& object_n
 
 std::pair<bool, ReadResult> WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,
                                                                    const CMString& object_name) {
-
-    auto [success, compressed_data, py_name, hash, error] = DataClient::request_compressed_data(
-        host, port, object_name, worker_id_, 0);
-
-    if (!success) {
-        ERR("request_data_from_worker failed for {}: {}", object_name, error);
-        return {false, ReadResult{}};
-    }
-
-    ReadResult result;
-    result.data_buffer_.assign(compressed_data->data(), compressed_data->data() + compressed_data->size());
-    result.py_name_ = std::move(py_name);
-    return {true, std::move(result)};
+    return fetch_from_worker(host, port, object_name, worker_id_);
 }
 
 void WorkerAgent::register_database(const CMString& db_id, CMSharedPtr<Database> db) {
@@ -763,10 +736,7 @@ bool WorkerAgent::request_db_path(const CMString& db_id) {
     }
     auto pending = CMMakeShared<PendingDbPath>();
     pending->db_id_ = db_id;
-    {
-        std::lock_guard<std::mutex> lock(pending_db_path_mutex_);
-        pending_db_paths_[db_id] = pending;
-    }
+    pending_db_paths_.emplace(db_id, pending);
 
     DbPathRequestMessage req;
     req.db_id_ = db_id;
@@ -774,30 +744,19 @@ bool WorkerAgent::request_db_path(const CMString& db_id) {
 
     INFO("Sent DbPathRequest for db_id={}", db_id);
 
-    {
-        std::unique_lock<std::mutex> lock(pending_db_path_mutex_);
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (true) {
-            if (pending->completed_) {
-                pending_db_paths_.erase(db_id);
-                if (pending->success_ && !pending->base_path_.empty()) {
-                    // Reuse the master-assigned db_id instead of generating a
-                    // fresh random one. Without this, the worker's Database
-                    // would get a different db_id than the master recorded,
-                    // so object names (db_id:short_name) built here would
-                    // never match the master's remote_idx lookups.
-                    auto db = CMMakeShared<Database>(pending->base_path_, pending->data_path_,
-                                                     worker_id_, data_server_host_, db_id);
-                    databases_[db_id] = db;
-                    return true;
-                }
-                return false;
-            }
-            if (pending_db_path_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
-                break;
-            }
-        }
-        pending_db_paths_.erase(db_id);
+    auto result = pending_db_paths_.wait_for(db_id, std::chrono::seconds(5),
+        [](const CMSharedPtr<PendingDbPath>& p) { return p->completed_; });
+    pending_db_paths_.erase(db_id);
+    if (result && result->success_ && !result->base_path_.empty()) {
+        // Reuse the master-assigned db_id instead of generating a
+        // fresh random one. Without this, the worker's Database
+        // would get a different db_id than the master recorded,
+        // so object names (db_id:short_name) built here would
+        // never match the master's remote_idx lookups.
+        auto db = CMMakeShared<Database>(result->base_path_, result->data_path_,
+                                         worker_id_, data_server_host_, db_id);
+        databases_[db_id] = db;
+        return true;
     }
     return false;
 }
@@ -845,10 +804,7 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
 
     auto pending = CMMakeShared<PendingWriteRegister>();
     pending->object_name_ = full_name;
-    {
-        std::lock_guard<std::mutex> lock(pending_write_reg_mutex_);
-        pending_write_regs_[full_name] = pending;
-    }
+    pending_write_regs_.emplace(full_name, pending);
 
     WriteRegisterMessage msg;
     msg.worker_id_ = worker_id_;
@@ -864,23 +820,15 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
 
     INFO("WriteRegister sent: object={}", full_name);
 
-    {
-        std::unique_lock<std::mutex> lock(pending_write_reg_mutex_);
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (true) {
-            if (pending->completed_) {
-                pending_write_regs_.erase(full_name);
-                if (!pending->success_) {
-                    WorkerAgentContext::set_last_error_type(pending->error_type_);
-                    return {pending->error_message_, pending->error_type_};
-                }
-                return {"", TaskErrorType::UNKNOWN};
-            }
-            if (pending_write_reg_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
-                break;
-            }
-        }
-        pending_write_regs_.erase(full_name);
+    auto result = pending_write_regs_.wait_for(full_name, std::chrono::seconds(5),
+        [](const CMSharedPtr<PendingWriteRegister>& p) { return p->completed_; });
+    pending_write_regs_.erase(full_name);
+    if (result && !result->success_) {
+        WorkerAgentContext::set_last_error_type(result->error_type_);
+        return {result->error_message_, result->error_type_};
+    }
+    if (result) {
+        return {"", TaskErrorType::UNKNOWN};
     }
     WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
     return {"Write registration timeout for: " + full_name, TaskErrorType::WRITE_REGISTRATION_TIMEOUT};
@@ -888,16 +836,12 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
 
 void WorkerAgent::on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg) {
     touch_master_contact();
-
-    std::lock_guard<std::mutex> lock(pending_write_reg_mutex_);
-    auto it = pending_write_regs_.find(msg.object_name_);
-    if (it != pending_write_regs_.end()) {
-        it->second->success_ = msg.success_;
-        it->second->error_message_ = msg.error_message_;
-        it->second->error_type_ = msg.error_type_;
-        it->second->completed_ = true;
-    }
-    pending_write_reg_cv_.notify_all();
+    pending_write_regs_.complete(msg.object_name_, [&](PendingWriteRegister& p) {
+        p.success_ = msg.success_;
+        p.error_message_ = msg.error_message_;
+        p.error_type_ = msg.error_type_;
+        p.completed_ = true;
+    });
 }
 
 // =============================================================================
@@ -910,10 +854,7 @@ bool WorkerAgent::set_var_sync(const CMString& full_var_name,
 
     auto pending = CMMakeShared<PendingVarOp>();
     pending->var_name_ = full_var_name;
-    {
-        std::lock_guard<std::mutex> lock(pending_var_mutex_);
-        pending_var_ops_[full_var_name] = pending;
-    }
+    pending_var_ops_.emplace(full_var_name, pending);
 
     VarSetMessage msg;
     msg.var_name_ = full_var_name;  // full name on the wire
@@ -928,23 +869,14 @@ bool WorkerAgent::set_var_sync(const CMString& full_var_name,
 
     DBG("VarSet sent: var={}", full_var_name);
 
-    bool result = false;
-    {
-        std::unique_lock<std::mutex> lock(pending_var_mutex_);
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (true) {
-            if (pending->completed_) {
-                result = pending->success_;
-                break;
-            }
-            if (pending_var_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
-                ERR("VarSet timeout: var={}", full_var_name);
-                break;
-            }
-        }
-        pending_var_ops_.erase(full_var_name);
+    auto result = pending_var_ops_.wait_for(full_var_name, std::chrono::seconds(5),
+        [](const CMSharedPtr<PendingVarOp>& p) { return p->completed_; });
+    pending_var_ops_.erase(full_var_name);
+    if (!result) {
+        ERR("VarSet timeout: var={}", full_var_name);
+        return false;
     }
-    return result;
+    return result->success_;
 }
 
 std::tuple<bool, FlyBufferPtr, CMString> WorkerAgent::get_var_sync(const CMString& full_var_name) {
@@ -952,10 +884,7 @@ std::tuple<bool, FlyBufferPtr, CMString> WorkerAgent::get_var_sync(const CMStrin
 
     auto pending = CMMakeShared<PendingVarOp>();
     pending->var_name_ = full_var_name;
-    {
-        std::lock_guard<std::mutex> lock(pending_var_mutex_);
-        pending_var_ops_[full_var_name] = pending;
-    }
+    pending_var_ops_.emplace(full_var_name, pending);
 
     VarGetMessage msg;
     msg.var_name_ = full_var_name;  // full name on the wire
@@ -963,17 +892,14 @@ std::tuple<bool, FlyBufferPtr, CMString> WorkerAgent::get_var_sync(const CMStrin
 
     DBG("VarGet sent: var={}", full_var_name);
 
-    std::unique_lock<std::mutex> lock(pending_var_mutex_);
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (true) {
-        if (pending->completed_) {
-            return {pending->success_, pending->value_, pending->type_name_};
-        }
-        if (pending_var_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
-            ERR("VarGet timeout: var={}", full_var_name);
-            return {false, nullptr, ""};
-        }
+    auto result = pending_var_ops_.wait_for(full_var_name, std::chrono::seconds(5),
+        [](const CMSharedPtr<PendingVarOp>& p) { return p->completed_; });
+    pending_var_ops_.erase(full_var_name);
+    if (!result) {
+        ERR("VarGet timeout: var={}", full_var_name);
+        return {false, nullptr, ""};
     }
+    return {result->success_, result->value_, result->type_name_};
 }
 
 void WorkerAgent::remove_var_async(const CMString& full_var_name) {
@@ -994,15 +920,9 @@ CMVector<VarPayload> WorkerAgent::take_pending_task_vars() {
 void WorkerAgent::on_var_ack(uint64_t conn_id, const VarAckMessage& msg) {
     touch_master_contact();
 
-    CMSharedPtr<PendingVarOp> to_complete;
-    {
-        std::lock_guard<std::mutex> lock(pending_var_mutex_);
-        auto it = pending_var_ops_.find(msg.var_name_);
-        if (it != pending_var_ops_.end()) {
-            to_complete = it->second;
-        }
-    }
-
+    // Two-phase: take the shared_ptr out under the lock, then mutate it
+    // outside the lock (FlyBuffer construction must not hold the map lock).
+    auto to_complete = pending_var_ops_.take_for_complete(msg.var_name_);
     if (to_complete) {
         to_complete->success_ = msg.success_;
         to_complete->error_message_ = msg.error_message_;
@@ -1015,7 +935,7 @@ void WorkerAgent::on_var_ack(uint64_t conn_id, const VarAckMessage& msg) {
             to_complete->value_ = buf;
         }
         to_complete->completed_ = true;
-        pending_var_cv_.notify_all();
+        pending_var_ops_.notify_all();
     }
 }
 
@@ -1177,24 +1097,18 @@ void WorkerAgent::on_database_freeze_notification(uint64_t conn_id, const Databa
 
 void WorkerAgent::on_database_freeze_ack(uint64_t conn_id, const DatabaseFreezeAckMessage& msg) {
     touch_master_contact();
-    std::lock_guard<std::mutex> lock(pending_freeze_mutex_);
-    auto it = pending_freezes_.find(msg.db_id_);
-    if (it != pending_freezes_.end()) {
-        it->second->success_ = msg.success_;
-        it->second->error_type_ = msg.error_type_;
-        it->second->completed_ = true;
-    }
-    pending_freeze_cv_.notify_all();
+    pending_freezes_.complete(msg.db_id_, [&](PendingFreezeAck& p) {
+        p.success_ = msg.success_;
+        p.error_type_ = msg.error_type_;
+        p.completed_ = true;
+    });
 }
 
 void WorkerAgent::request_object_remove(const CMString& db_id, const CMString& object_name) {
     CMString full = db_id + ":" + object_name;
 
     auto pending = CMMakeShared<PendingRemove>();
-    {
-        std::lock_guard<std::mutex> lock(pending_remove_mutex_);
-        pending_removes_[full] = pending;
-    }
+    pending_removes_.emplace(full, pending);
 
     RemoveRequestMessage msg;
     msg.db_id_ = db_id;
@@ -1202,20 +1116,14 @@ void WorkerAgent::request_object_remove(const CMString& db_id, const CMString& o
     reactor_->send(master_conn_, msg);
     INFO("RemoveRequest sent: {}", full);
 
-    std::unique_lock<std::mutex> lock(pending->mutex_);
-    if (!pending->cv_.wait_for(lock, std::chrono::seconds(30), [&]() { return pending->completed_; })) {
-        std::lock_guard<std::mutex> rm_lock(pending_remove_mutex_);
-        pending_removes_.erase(full);
+    auto result = pending_removes_.wait_for(full, std::chrono::seconds(30),
+        [](const CMSharedPtr<PendingRemove>& p) { return p->completed_; });
+    pending_removes_.erase(full);
+    if (!result) {
         ERR("Remove request timed out: {}", full);
         return;
     }
-
-    {
-        std::lock_guard<std::mutex> rm_lock(pending_remove_mutex_);
-        pending_removes_.erase(full);
-    }
-
-    if (!pending->success_) {
+    if (!result->success_) {
         ERR("Remove request failed: {}", full);
     }
 }
@@ -1223,22 +1131,10 @@ void WorkerAgent::request_object_remove(const CMString& db_id, const CMString& o
 void WorkerAgent::on_remove_ack(uint64_t conn_id, const RemoveAckMessage& msg) {
     touch_master_contact();
     INFO("RemoveAck received: object={}, success={}", msg.object_name_, msg.success_);
-
-    CMSharedPtr<PendingRemove> pending;
-    {
-        std::lock_guard<std::mutex> lock(pending_remove_mutex_);
-        auto it = pending_removes_.find(msg.object_name_);
-        if (it != pending_removes_.end()) {
-            pending = it->second;
-        }
-    }
-
-    if (pending) {
-        std::lock_guard<std::mutex> lock(pending->mutex_);
-        pending->success_ = msg.success_;
-        pending->completed_ = true;
-        pending->cv_.notify_one();
-    }
+    pending_removes_.complete(msg.object_name_, [&](PendingRemove& p) {
+        p.success_ = msg.success_;
+        p.completed_ = true;
+    });
 }
 
 void WorkerAgent::on_remove_command(uint64_t conn_id, const RemoveCommandMessage& msg) {

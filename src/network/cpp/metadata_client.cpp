@@ -51,22 +51,13 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
 
     // recv header (5 bytes)
     char header[5] = {};
-    size_t header_received = 0;
-    while (header_received < 5) {
-        ssize_t n = transport_->recv(fd, header + header_received, 5 - header_received);
-        if (n <= 0) {
-            result.error_ = "Timeout receiving DataLocation header for " + object_name;
-            transport_->close(fd);
-            return result;
-        }
-        header_received += static_cast<size_t>(n);
+    if (!recv_exact(transport_.get(), fd, header, 5)) {
+        result.error_ = "Timeout receiving DataLocation header for " + object_name;
+        transport_->close(fd);
+        return result;
     }
 
-    uint32_t total_len =
-        (static_cast<uint32_t>(static_cast<unsigned char>(header[0])) << 24) |
-        (static_cast<uint32_t>(static_cast<unsigned char>(header[1])) << 16) |
-        (static_cast<uint32_t>(static_cast<unsigned char>(header[2])) << 8) |
-        static_cast<uint32_t>(static_cast<unsigned char>(header[3]));
+    uint32_t total_len = read_be32(header);
 
     if (total_len < 1 || total_len > 16 * 1024 * 1024) {
         result.error_ = "Invalid DataLocation frame size for " + object_name;
@@ -76,15 +67,10 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
 
     uint32_t payload_len = total_len - 1;
     CMString payload(payload_len, '\0');
-    size_t payload_received = 0;
-    while (payload_received < payload_len) {
-        ssize_t n = transport_->recv(fd, payload.data() + payload_received, payload_len - payload_received);
-        if (n <= 0) {
-            result.error_ = "Timeout receiving DataLocation payload for " + object_name;
-            transport_->close(fd);
-            return result;
-        }
-        payload_received += static_cast<size_t>(n);
+    if (!recv_exact(transport_.get(), fd, payload.data(), payload_len)) {
+        result.error_ = "Timeout receiving DataLocation payload for " + object_name;
+        transport_->close(fd);
+        return result;
     }
 
     transport_->close(fd);

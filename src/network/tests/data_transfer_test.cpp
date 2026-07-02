@@ -204,11 +204,7 @@ TEST_F(DataTransferTest, DataServerEchoesNetProbeRequest) {
         ASSERT_GT(n, 0);
         got += static_cast<size_t>(n);
     }
-    uint32_t total_len =
-        (static_cast<uint32_t>(static_cast<unsigned char>(hdr[0])) << 24) |
-        (static_cast<uint32_t>(static_cast<unsigned char>(hdr[1])) << 16) |
-        (static_cast<uint32_t>(static_cast<unsigned char>(hdr[2])) << 8) |
-        static_cast<uint32_t>(static_cast<unsigned char>(hdr[3]));
+    uint32_t total_len = read_be32(hdr);
     ASSERT_EQ(static_cast<uint8_t>(hdr[4]),
               static_cast<uint8_t>(MessageType::NET_PROBE_RESPONSE));
 
