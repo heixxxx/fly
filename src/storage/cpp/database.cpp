@@ -4,7 +4,6 @@
 #include <serialization/cpp/object_header.h>
 #include <serialization/cpp/serialization_macros.h>
 #include <storage/cpp/object_cache.h>
-#include <storage/cpp/compression_utils.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <core/cpp/config.h>
 #include <log/cpp/logger.h>

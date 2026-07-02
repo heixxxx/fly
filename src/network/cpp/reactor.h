@@ -69,12 +69,8 @@ public:
         return transport_->connect(host, port);
     }
 
-    void set_handler_pool(CMUniquePtr<HandlerThreadPool> pool);
-    HandlerThreadPool* get_handler_pool() { return handler_pool_.get(); }
-
 private:
     CMUniquePtr<ConnectionManager> transport_;
-    CMUniquePtr<HandlerThreadPool> handler_pool_;
     
     CMUnorderedMap<uint64_t, CMString> recv_buffers_;
     

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <storage/cpp/database.h>
-#include <storage/cpp/data_writer.h>
 #include <common/cpp/common_types.h>
 #include <common/cpp/concurrent_map.h>
 #include <memory>
@@ -20,12 +19,9 @@ public:
         const CMString& data_path = ""
     );
 
-    CMSharedPtr<DataWriter> get_writer(uint64_t worker_id);
-
     void close_all();
     void reset();
 
 private:
     ConcurrentUnorderedMap<CMString, CMSharedPtr<Database>> databases_;
-    ConcurrentUnorderedMap<uint64_t, CMSharedPtr<DataWriter>> writers_;
 };

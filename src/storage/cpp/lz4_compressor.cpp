@@ -109,14 +109,6 @@ int32_t Lz4Compressor::decompress_to(std::string_view compressed_data,
     return result;
 }
 
-CompressedChunk Lz4Compressor::compress_chunk(const CMString& input) {
-    return compress(input);
-}
-
-CMString Lz4Compressor::decompress_chunk(int32_t uncompressed_size, const CMString& compressed_data) {
-    return decompress(uncompressed_size, compressed_data);
-}
-
 CompressionType Lz4Compressor::type() const {
     return CompressionType::LZ4;
 }

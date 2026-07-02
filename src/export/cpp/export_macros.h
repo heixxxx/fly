@@ -38,10 +38,6 @@ namespace fly_export = nanobind;
 
 #define FLY_EXPORT_METHOD(export_name, func) .def(export_name, func)
 
-#define FLY_EXPORT_STATIC_METHOD(export_name, func) .def_static(export_name, func)
-
-#define FLY_EXPORT_PROPERTY(export_name, getter, setter) .def_prop_rw(export_name, getter, setter)
-
 #define FLY_EXPORT_READONLY_PROPERTY(export_name, getter) .def_prop_ro(export_name, getter)
 
 #define FLY_EXPORT_FUNCTION(export_name, func) m.def(export_name, func)

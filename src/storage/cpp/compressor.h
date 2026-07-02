@@ -37,10 +37,6 @@ public:
     virtual int32_t decompress_to(std::string_view compressed_data,
                                   char* output, size_t output_size) = 0;
 
-    // Each call produces an independently decompressible block for streaming.
-    virtual CompressedChunk compress_chunk(const CMString& input) = 0;
-    virtual CMString decompress_chunk(int32_t uncompressed_size, const CMString& compressed_data) = 0;
-
     virtual CompressionType type() const = 0;
     virtual CMString name() const = 0;
 };

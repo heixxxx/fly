@@ -37,7 +37,6 @@ public:
     virtual uint64_t connect(const CMString& address, int port) = 0;
 
     virtual ssize_t send(uint64_t conn_id, const CMString& data) = 0;
-    virtual ssize_t recv(uint64_t conn_id, CMString& buffer, size_t max_size) = 0;
 
     virtual CMVector<TransportEvent> poll(int timeout_ms) = 0;
 

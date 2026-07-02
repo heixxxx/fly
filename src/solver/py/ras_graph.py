@@ -728,10 +728,7 @@ def ras_graph_setup(db, sd_id, nsd, neighbor_ids):
          [f"sd_{sd_id}"])
 def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
     import numpy as np
-    from _fly_solver import (EXSlvSubdomainSolver, ex_slv_ras_bupdated_solve,
-                              ex_slv_graph_expand_overlap,
-                              ex_slv_extract_subdomain_matrix,
-                              ex_slv_find_outside_connections)
+    from _fly_solver import ex_slv_ras_bupdated_solve
     from fly import get_cache, put_cache, has_cache
 
     t_compute_start = time.perf_counter()

@@ -47,12 +47,9 @@
 // TrustedConfig: disables data validation for internal trusted data.
 // When enabled, maxSize parameters on text/container are placeholder only.
 struct FlyTrustedConfig {
-    static constexpr bitsery::EndiannessType Endianness_ = bitsery::EndiannessType::LittleEndian;
-    static constexpr bool CheckAdapterErrors_ = true;
-    static constexpr bool CheckDataErrors_ = false;
-    static constexpr bitsery::EndiannessType Endianness = Endianness_;
-    static constexpr bool CheckAdapterErrors = CheckAdapterErrors_;
-    static constexpr bool CheckDataErrors = CheckDataErrors_;
+    static constexpr bitsery::EndiannessType Endianness = bitsery::EndiannessType::LittleEndian;
+    static constexpr bool CheckAdapterErrors = true;
+    static constexpr bool CheckDataErrors = false;
 };
 
 // Max size placeholder — only used for bitsery container/text size parameters.
@@ -160,22 +157,9 @@ using FlyInputStreamAdapter = bitsery::InputStreamAdapter;
         } \
     } while(0)
 
-// --- Explicit string width macros ---
-// bitsery text<N> where N = sizeof(char_type), NOT length prefix size.
-// The length prefix is always variable-length (1-4 bytes, max ~1GB).
-// CMString = std::string (char), always use FLY_STR / FLY_FIELD.
-// For u16string/u32string fields, use FLY_STR_U16 / FLY_STR_U32.
-
-#define FLY_STR(field)          fly_ser::text(s, o.field)
-#define FLY_STR_U16(field)      fly_ser::text_u16(s, o.field)
-#define FLY_STR_U32(field)      fly_ser::text_u32(s, o.field)
-#define FLY_VEC(field)          fly_ser::container(s, o.field)
-#define FLY_VEC_F(field, fn)    s.container(o.field, FLY_MAX_SIZE, fn)
-#define FLY_MAP(field, fn)      fly_ser::map(s, o.field, fn)
-#define FLY_OBJ(field)          s.object(o.field)
-#define FLY_BOOL(field)         s.boolValue(o.field)
-
+// =============================================================================
 // Internal helpers — used inside lambdas where variables (not obj.field) are serialized
+// =============================================================================
 namespace fly_ser {
 
 // --- Type traits for dispatch ---
@@ -214,16 +198,6 @@ void text(S& s, T& str) {
 }
 
 template<typename S, typename T>
-void text_u16(S& s, T& str) {
-    s.text2b(str, FLY_MAX_SIZE);
-}
-
-template<typename S, typename T>
-void text_u32(S& s, T& str) {
-    s.text4b(str, FLY_MAX_SIZE);
-}
-
-template<typename S, typename T>
 void object(S& s, T& obj) {
     s.object(obj);
 }
@@ -241,11 +215,6 @@ void container(S& s, T& c) {
     } else {
         s.container(c, FLY_MAX_SIZE, [](S& s, E& e) { s.object(e); });
     }
-}
-
-template<typename S, typename T, typename F>
-void map(S& s, T& m, F&& fn) {
-    s.ext(m, bitsery::ext::StdMap{FLY_MAX_SIZE}, std::forward<F>(fn));
 }
 
 // --- Map element dispatch (for key/val inside StdMap lambdas) ---

@@ -11,8 +11,6 @@ public:
     CMString decompress(int32_t uncompressed_size, const CMString& compressed_data) override;
     int32_t decompress_to(std::string_view compressed_data,
                           char* output, size_t output_size) override;
-    CompressedChunk compress_chunk(const CMString& input) override;
-    CMString decompress_chunk(int32_t uncompressed_size, const CMString& compressed_data) override;
 
     CompressionType type() const override;
     CMString name() const override;

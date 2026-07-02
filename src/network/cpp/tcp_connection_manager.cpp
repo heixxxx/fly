@@ -140,39 +140,6 @@ void TcpConnectionManager::drain_write_buffer(uint64_t conn_id, int fd) {
     }
 }
 
-ssize_t TcpConnectionManager::recv(uint64_t conn_id, CMString& buffer, size_t max_size) {
-    int fd;
-    {
-        std::lock_guard<std::mutex> lock(conn_mutex_);
-        auto it = conn_to_fd_.find(conn_id);
-        if (it == conn_to_fd_.end() || it->second < 0) {
-            return -1;
-        }
-        fd = it->second;
-    }
-
-    buffer.resize(max_size);
-
-    ssize_t received = transport_->recv(fd, buffer.data(), max_size);
-
-    if (received < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            buffer.clear();
-            return 0;
-        }
-        buffer.clear();
-        return -1;
-    }
-
-    if (received == 0) {
-        buffer.clear();
-        return -1;
-    }
-
-    buffer.resize(received);
-    return received;
-}
-
 CMVector<TransportEvent> TcpConnectionManager::poll(int timeout_ms) {
     CMVector<TransportEvent> events;
 

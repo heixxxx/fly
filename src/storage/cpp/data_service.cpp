@@ -3,7 +3,6 @@
 #include <storage/cpp/data_reader.h>
 #include <storage/cpp/temp_store.h>
 #include <storage/cpp/compressor.h>
-#include <storage/cpp/compression_utils.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/object_cache.h>
 #include <network/cpp/net_quality_monitor.h>

@@ -111,14 +111,6 @@ int32_t ZlibCompressor::decompress_to(std::string_view compressed_data,
     return static_cast<int32_t>(dest_len);
 }
 
-CompressedChunk ZlibCompressor::compress_chunk(const CMString& input) {
-    return compress(input);
-}
-
-CMString ZlibCompressor::decompress_chunk(int32_t uncompressed_size, const CMString& compressed_data) {
-    return decompress(uncompressed_size, compressed_data);
-}
-
 CompressionType ZlibCompressor::type() const {
     return CompressionType::ZLIB;
 }

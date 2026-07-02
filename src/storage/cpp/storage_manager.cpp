@@ -24,28 +24,13 @@ CMSharedPtr<Database> StorageManager::get_or_create_database(
     });
 }
 
-CMSharedPtr<DataWriter> StorageManager::get_writer(uint64_t worker_id) {
-    return writers_.get_or_insert(worker_id, [&]() {
-        return CMMakeShared<DataWriter>(
-            "/tmp/fly_worker_" + std::to_string(worker_id),
-            "",
-            "",
-            1048576
-        );
-    });
-}
-
 void StorageManager::close_all() {
     databases_.iterate([](const CMString& path, CMSharedPtr<Database>& db) {
         if (!db->is_frozen()) {
             db->freeze();
         }
     });
-    writers_.iterate([](const uint64_t& id, CMSharedPtr<DataWriter>& writer) {
-        writer->close();
-    });
     databases_.clear();
-    writers_.clear();
 }
 
 void StorageManager::reset() {
@@ -53,5 +38,4 @@ void StorageManager::reset() {
         fly::DataService::instance()->unregister_database(db->get_db_id());
     });
     databases_.clear();
-    writers_.clear();
 }

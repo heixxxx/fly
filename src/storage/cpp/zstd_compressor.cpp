@@ -106,14 +106,6 @@ int32_t ZstdCompressor::decompress_to(std::string_view compressed_data,
     return static_cast<int32_t>(result);
 }
 
-CompressedChunk ZstdCompressor::compress_chunk(const CMString& input) {
-    return compress(input);
-}
-
-CMString ZstdCompressor::decompress_chunk(int32_t uncompressed_size, const CMString& compressed_data) {
-    return decompress(uncompressed_size, compressed_data);
-}
-
 CompressionType ZstdCompressor::type() const {
     return CompressionType::ZSTD;
 }

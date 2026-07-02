@@ -34,14 +34,6 @@ public:
         return static_cast<int32_t>(copy_size);
     }
 
-    CompressedChunk compress_chunk(const CMString& input) override {
-        return compress(input);
-    }
-
-    CMString decompress_chunk(int32_t uncompressed_size, const CMString& compressed_data) override {
-        return decompress(uncompressed_size, compressed_data);
-    }
-
     CompressionType type() const override { return CompressionType::NONE; }
     CMString name() const override { return "none"; }
 };

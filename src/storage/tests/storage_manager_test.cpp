@@ -51,29 +51,10 @@ TEST_F(StorageManagerTest, DifferentPathsCreateDifferentDatabases) {
     EXPECT_NE(db1.get(), db2.get());
 }
 
-TEST_F(StorageManagerTest, GetWriterByWorkerId) {
-    track_cleanup("/tmp/fly_worker_1");
-    auto writer1 = StorageManager::instance()->get_writer(1);
-    auto writer2 = StorageManager::instance()->get_writer(1);
-
-    EXPECT_EQ(writer1.get(), writer2.get());
-}
-
-TEST_F(StorageManagerTest, DifferentWorkerIdsCreateDifferentWriters) {
-    track_cleanup("/tmp/fly_worker_10");
-    track_cleanup("/tmp/fly_worker_20");
-    auto writer1 = StorageManager::instance()->get_writer(10);
-    auto writer2 = StorageManager::instance()->get_writer(20);
-
-    EXPECT_NE(writer1.get(), writer2.get());
-}
-
 TEST_F(StorageManagerTest, CloseAll) {
     CMString base_path = "/tmp/fly_test_sm_close_" + std::to_string(::getpid());
     track_cleanup(base_path);
-    track_cleanup("/tmp/fly_worker_1");
     StorageManager::instance()->get_or_create_database(base_path, "");
-    StorageManager::instance()->get_writer(1);
 
     StorageManager::instance()->close_all();
 }
@@ -112,35 +93,11 @@ TEST_F(StorageManagerTest, GetOrCreateDatabaseCacheHitWithAndWithoutDataPath) {
     EXPECT_EQ(db2.get(), db3.get());
 }
 
-TEST_F(StorageManagerTest, GetWriterCreatesWorkerDirectory) {
-    int worker_id = 42;
-    std::string expected_path = "/tmp/fly_worker_" + std::to_string(worker_id);
-    track_cleanup(expected_path);
-
-    auto writer = StorageManager::instance()->get_writer(worker_id);
-
-    EXPECT_TRUE(std::filesystem::exists(expected_path));
-    EXPECT_TRUE(std::filesystem::is_directory(expected_path));
-}
-
-TEST_F(StorageManagerTest, GetWriterReturnsSameInstanceForSameWorkerId) {
-    int worker_id = 123;
-    track_cleanup("/tmp/fly_worker_123");
-
-    auto writer1 = StorageManager::instance()->get_writer(worker_id);
-    auto writer2 = StorageManager::instance()->get_writer(worker_id);
-
-    EXPECT_EQ(writer1.get(), writer2.get());
-}
-
-TEST_F(StorageManagerTest, CloseAllFreezesDatabaseAndClosesWriters) {
+TEST_F(StorageManagerTest, CloseAllFreezesDatabase) {
     CMString base_path = "/tmp/fly_test_sm_close_" + std::to_string(::getpid());
-    CMString worker_dir = "/tmp/fly_worker_close_" + std::to_string(::getpid());
     track_cleanup(base_path);
-    track_cleanup(worker_dir);
 
     auto db = StorageManager::instance()->get_or_create_database(base_path, "");
-    auto writer = StorageManager::instance()->get_writer(1);
 
     StorageManager::instance()->close_all();
 
