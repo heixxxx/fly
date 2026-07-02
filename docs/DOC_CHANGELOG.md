@@ -1105,3 +1105,38 @@ nanobind: `FLY_EXPORT_SERIALIZE` 加 `_read_from_db`（对称 `_write_to_db`）�
 |------|------|------|
 | `config.cpp:66` | `large_file_threshold = 10485710` | **已修正**: 改为 64MB (`67108864`)，新增 `large_file_threshold_kb = 65536`，database.cpp 使用 `large_file_threshold_kb * 1024` |
 | `master_client.h/cpp` | `MasterClient` 命名不准确 | **已修正**: 重命名为 `MetadataClient`，功能为元数据查询 |
+---
+
+## 2026-07-02/03 代码瘦身与重复消除重构
+
+### 一、死代码与冗余抽象清理（commit 534510f）
+
+基于 `docs/redundancy-audit-report.md` 三轮复核（静态 grep + 运行时覆盖率 + 设计文档交叉验证），清理 7 项确认无生产消费方的代码：
+
+**真无用代码（FNDA:0 + grep 0 调用）**：
+- `ras_graph.py` 删 4 个死导入（保留 `ex_slv_ras_bupdated_solve`）
+- `ConnectionManager::recv` 接口+实现、`MessageProtocol::decode_header`、`Reactor::set_handler_pool`/`get_handler_pool`/`handler_pool_` 成员（保留 HandlerThreadPool 类，文档排期阶段 2）
+- serialization 删 8 个旧字段宏（`FLY_STR/FLY_VEC/FLY_MAP/FLY_OBJ/FLY_BOOL` 等）+ `FlyTrustedConfig` 冗余字段 + `text_u16/text_u32/map` helper
+- export_macros 删 `FLY_EXPORT_STATIC_METHOD`/`FLY_EXPORT_PROPERTY`
+
+**被替代/降级代码**：
+- ReadCache low tier（被 C++ ObjectCache 取代），LFU 算法测试重构为走 high tier
+- `compress_chunk`/`decompress_chunk` + 整个 `compression_utils` 子系统（生产 0 调用，roadmap F4 降级）
+- `StorageManager::get_writer` + `writers_`（生产不可达的孤立闭环）
+
+**文档同步**：
+- `serialization/module.md`、`DEVELOPMENT_GUIDELINES.md`：删除已移除旧字段宏的描述，改为"FLY_FIELD 是唯一字段宏"
+- `coverage-testing.md`：删除 `compression_utils.cpp` 条目
+
+### 二、重复代码消除（commit 82ac5b3）
+
+消除 5 项重复代码（跳过项6 C++/Python BFS——参考实现 vs 生产实现有意独立）：
+
+- **BE32 解析统一**：`message_protocol.h` 抽 `read_be32`/`write_be32`，替换 10 处手写大端解析 + 2 处写入
+- **recv_exact 抽取**：`transport_interface.h` 加共享 `recv_exact`，消除 data_client/data_client_pool(4处)/metadata_client(2处) 的内联循环
+- **fetch_from_worker**：新建 `agent/cpp/data_fetch.h`，master/worker 的 `request_data_from_worker` 委托
+- **PendingRpcMap 模板**：新建 `agent/cpp/pending_rpc_map.h`，5 套 Pending（DbPath/WriteRegister/Freeze/VarOp/Remove）迁移到模板实例，消除 15 个 mutex/cv/map 成员；PendingRemove 双锁收敛为单锁
+- **coarse grid 去重**：`ras_graph.py` 抽 `_compute_coarse_arrays`，`_build_coarse_operators` 与 legacy fallback 共享
+
+**文档同步**：
+- `CLAUDE.md`：transport_interface 补 `recv_exact`、message_protocol 补 `read_be32/write_be32`、agent 层补 `pending_rpc_map.h`/`data_fetch.h`

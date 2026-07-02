@@ -144,13 +144,13 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 
 | 文件 | 职责 |
 |------|------|
-| `transport_interface.h` | Transport 抽象接口（socket 操作薄包装） |
+| `transport_interface.h` | Transport 抽象接口（socket 操作薄包装）+ 共享 `recv_exact`（循环 recv 直到读满）|
 | `tcp_socket.h/cpp` | TCPSocketTransport — POSIX TCP 实现 |
 | `epoll_multiplexer.h/cpp` | EpollMultiplexer 抽象接口 + 实现（事件复用） |
 | `connection_manager.h` | ConnectionManager 抽象接口（conn_id 管理 + 事件分发）；`connect()` 失败返回 0 不抛（0=失败 sentinel，conn_id 从 1 起） |
 | `tcp_connection_manager.h/cpp` | TcpConnectionManager — 基于 Transport+EpollMultiplexer |
 | `reactor.h/cpp` | 单线程事件循环（持有 ConnectionManager） |
-| `message_protocol.h/cpp` | MessageProtocol（通用帧协议）+ DataResponseProtocol（两段式，避免大 payload 用户态拷贝） |
+| `message_protocol.h/cpp` | MessageProtocol（通用帧协议）+ DataResponseProtocol（两段式，避免大 payload 用户态拷贝）+ 共享 `read_be32`/`write_be32`（大端 32 位整数读写，全网络层帧解析共用） |
 | `message_types.h` | 40 种消息枚举 / 消息结构定义（含 MessageHeader，含 IdxLoadCommand/Ack；NET_PROBE_REQUEST/RESPONSE 走数据面短连接供带宽探测） |
 | `data_client_pool.h/cpp` | 并发限制的数据请求池（pool_size 限制 in-flight 请求数） |
 | `net_quality_monitor.h/cpp` | per-host 网络质量评分表（RTT/带宽 EMA），供 DataService TIER2 按连接性排序远程读副本；被动 RTT 采集 + 主动带宽探测双数据源 |
@@ -174,6 +174,8 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 | `master_agent.h/cpp` | Master 节点：失败任务持久化、写入注册依赖满足、load_db 恢复、register_worker(0) 自注册 |
 | `worker_agent.h/cpp` | Worker 节点：任务执行、动态属性、on_idx_load_command() 按 writer_ids 加载 |
 | `task_executor.h/cpp` | 任务执行器 |
+| `pending_rpc_map.h` | PendingRpcMap 模板：worker_agent 5 套同步 RPC（DbPath/WriteRegister/Freeze/VarOp/Remove）共享的 mutex+cv+map 基础设施，消除重复样板 |
+| `data_fetch.h` | fetch_from_worker free function：master/worker 共享的 DataClient 远程读取封装 |
 | `py/agent.py` | Master/Worker/FlyAgent Python 类 |
 | `py/executor.py` | Python 侧任务执行器 |
 | `py/__init__.py` | 导出 Master, Worker, FlyAgent |

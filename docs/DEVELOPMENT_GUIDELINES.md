@@ -298,16 +298,9 @@ FLY_FIELD(inner);        // Obj → object(serialize)
 | `std::map<K,V>` | `s.ext(StdMap{...}, [](auto& s, k, v) { ... })` | key+val 自动嵌套分发 |
 | 具有 `serialize()` 的类型 | `s.object(o.field)` | 递归序列化 |
 
-**仅当需要自定义 lambda 时才使用其他宏：**
+**`FLY_FIELD` 是唯一的字段序列化宏**（自动按类型分发：map/vector/string/fundamental/enum/object）。早期版本的 `FLY_VAL`/`FLY_STR`/`FLY_VEC`/`FLY_VEC_F`/`FLY_MAP`/`FLY_OBJ`/`FLY_BOOL` 等显式宏已移除。
 
-| 宏 | 用途 | 示例 |
-|----|------|------|
-| `FLY_VEC_F(field, lambda)` | 容器字段（自定义元素序列化） | `FLY_VEC_F(strs, [](auto& s, auto& e) { fly_ser::text(s, e); })` |
-| `FLY_MAP(field, lambda)` | map 字段（自定义 key/val 序列化） | `FLY_MAP(m, [](auto& s, auto& k, auto& v) { fly_ser::text(s, k); fly_ser::value(s, v); })` |
-| `FLY_BOOL(field)` | bool 值 | `FLY_BOOL(flag)` |
-| `FLY_VAL, FLY_STR, FLY_VEC, FLY_OBJ` | 精确控制（极少需要） | `FLY_VAL(count)` |
-
-**lambda 内变量辅助函数**（在 `FLY_VEC_F` 等 lambda 内部使用，用于序列化变量而非 struct 字段）：
+**lambda 内变量辅助函数**（在 `FLY_FIELD` 无法覆盖的自定义 lambda 场景使用，用于序列化变量而非 struct 字段）：
 
 | 函数 | 用途 |
 |------|------|

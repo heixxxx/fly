@@ -54,14 +54,9 @@ struct IndexEntry {
 
 | 宏 | 用途 | 分发目标 |
 |----|------|----------|
-| `FLY_FIELD(field)` | **统一宏（推荐）** | 自动检测类型并分发 |
-| `FLY_VAL(field)` | 定长值 | `fly_ser::value()` |
-| `FLY_STR(field)` | 字符串 | `fly_ser::text()` |
-| `FLY_VEC(field)` | 容器 | `fly_ser::container()` |
-| `FLY_VEC_F(field, fn)` | 容器（自定义元素序列化） | `s.container()` |
-| `FLY_MAP(field, fn)` | 映射 | `fly_ser::map()` |
-| `FLY_OBJ(field)` | 对象 | `s.object()` |
-| `FLY_BOOL(field)` | 布尔值 | `s.boolValue()` |
+| `FLY_FIELD(field)` | **统一宏（唯一推荐）** | 自动检测类型并分发（见下方逻辑） |
+
+> `FLY_FIELD` 是唯一的字段序列化宏（自动按类型分发）。早期版本的 `FLY_VAL`/`FLY_STR`/`FLY_VEC`/`FLY_VEC_F`/`FLY_MAP`/`FLY_OBJ`/`FLY_BOOL` 等显式宏已移除——`FLY_FIELD` 的自动分发完全覆盖了它们的场景。
 
 ### FLY_FIELD 自动分发逻辑
 

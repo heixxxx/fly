@@ -206,7 +206,6 @@ genhtml /tmp/coverage_html_ready.info \
 | task_scheduler.cpp | 96.4% | 100% | 56 | 优秀 |
 | io_thread_pool.cpp | 96.1% | 100% | 77 | 优秀 |
 | data_reader.cpp | 96.3% | 88.2% | 54 | 优秀 |
-| compression_utils.cpp | 94.9% | 100% | 39 | 优秀 |
 | lz4_compressor.cpp | 94.9% | 69.2% | 39 | 良好 |
 | logger.cpp | 94.7% | 100% | 94 | 优秀 |
 | data_writer.cpp | 94.1% | 87.5% | 85 | 良好 |
