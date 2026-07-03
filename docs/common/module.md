@@ -14,9 +14,9 @@
 |------|------|
 | `common_types.h` | 容器类型别名 + 智能指针别名定义 |
 | `writer_id.h` | generate_writer_id()（8-char hex UUID） |
-| `writer_context.h` | WorkerAgentContext（回调模式） |
+| `worker_context.h` | WorkerAgentContext（回调模式） |
 | `error_types.h` | WriteErrorType 枚举 |
-| `fly_buffer.h` | FlyBuffer + FlyBufferPtr 定义 |
+| `fly_buffer.h` | FlyBuffer + FlyBufferPtr 定义（通用零拷贝字节缓冲区，跨 storage/network/agent/export 共用） |
 | `BUILD` | Bazel 构建配置 |
 
 ---
@@ -134,29 +134,60 @@ CMString generate_writer_id();
 ## WorkerAgentContext
 
 ```cpp
-// WorkerAgent 上下文（回调模式，解耦 Database 和 WorkerAgent）
+// WorkerAgent 上下文（回调模式，解耦 Database 和 WorkerAgent）。
+// 全静态 + thread_local：无实例数据，按线程注入回调。
 class WorkerAgentContext {
 public:
-    using RegisterWriteFunc = std::function<void(const CMString&, const CMString&)>;
-    using RecordWriteFunc = std::function<void(const CMString&, const CMString&, int64_t, int32_t)>;
-    using OnObjectRemovedFunc = std::function<void(const CMString&, const CMString&)>;
+    // ---- 写入跟踪回调（worker task 上下文激活）----
+    static void set_record_write_func(std::function<void(const CMString& db_id,
+                                                         const CMString& name, int64_t size)> func);
+    static void record_write(const CMString& db_id, const CMString& object_name, int64_t size);
 
-    void register_write(const CMString& db_id, const CMString& object_name);
-    void record_write(const CMString& db_id, const CMString& object_name,
-                      int64_t original_size, int32_t chunk_count);
-    void on_object_removed(const CMString& db_id, const CMString& object_name);
+    // ---- 注册写入（同步等 master ack，返回 error + error_type）----
+    static void set_register_func(std::function<std::pair<CMString, TaskErrorType>(
+        const CMString&, const CMString&, int64_t)> func);
+    static std::pair<CMString, TaskErrorType> register_write(const CMString& db_id,
+        const CMString& object_name, int64_t compressed_size);
 
-    // 设置回调
-    void set_register_write_func(RegisterWriteFunc func);
-    void set_record_write_func(RecordWriteFunc func);
-    void set_on_object_removed_func(OnObjectRemovedFunc func);
+    // ---- 其他写入事件回调 ----
+    static void set_notify_removed_func(std::function<void(const CMString&, const CMString&)> func);
+    static void set_freeze_func(std::function<void(const CMString&)> func);
+    static void set_remove_request_func(std::function<void(const CMString&, const CMString&)> func);
+    static void set_backup_request_func(std::function<void(const CMString&, const CMString&)> func);
+
+    // ---- Var 服务（轻量 KV，full_var_name = "db_id:short_name"）----
+    // value 是已序列化的 FlyBufferPtr（pickle 或 FLY_ENCODE_TO_BUFFER）。
+    static void set_set_var_func(std::function<bool(const CMString& full_var_name,
+        FlyBufferPtr value, const CMString& type_name)> func);
+    static void set_get_var_func(std::function<std::tuple<bool, FlyBufferPtr, CMString>(
+        const CMString& full_var_name)> func);
+    static void set_remove_var_func(std::function<void(const CMString& full_var_name)> func);
+
+    // ---- 事务模式（worker task 写入需 BEGIN/END 包裹；master 直接写则否）----
+    static void set_transaction_mode(bool enabled);
+    static bool is_transaction_mode();
+
+    // ---- 错误/哈希上下文（task 执行期间）----
+    static void set_last_error_type(TaskErrorType type);
+    static TaskErrorType get_last_error_type();
+    static void set_current_write_hash(const CMString& hash);
+
+    // ---- 清理（end_task 时）----
+    static void clear();
+
+private:
+    static inline thread_local std::function<...> record_write_func_;
+    static inline thread_local std::function<...> register_func_;
+    // ... 其余回调皆为 static inline thread_local
 };
 ```
 
 **设计要点**:
 - 使用 `std::function` 回调实现解耦，Database 不依赖 WorkerAgent
+- **全静态 + thread_local**：无实例数据，按线程注入回调（worker 主线程在 `begin_task` 设、`end_task`/`clear` 清）
 - 放在 `common` 模块是因为 Database（storage 层）和 WorkerAgent（agent 层）都需要访问
 - 避免循环依赖：common → (无依赖)，storage → common，agent → common
+- Var 服务回调以 `FlyBufferPtr` 为参数类型（本文件 include `<common/cpp/fly_buffer.h>`）
 
 ---
 

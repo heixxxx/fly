@@ -16,6 +16,8 @@
 | `bitsery_ext/version.h` | bitsery 版本扩展 |
 | `object_header.h` | 对象头结构（用于存储层标记 Python 类型名） |
 
+> 注：`FlyBuffer`/`FlyBufferPtr` 原在此模块下（早期名 `FlySerBuf`），因实为跨 5 模块共用的通用零拷贝缓冲区，已迁至 `src/common/cpp/fly_buffer.h`。本模块仅通过 `serialization_macros.h` 引用它作为 `FLY_ENCODE_TO_BUFFER` 的载体。
+
 ---
 
 ## 宏体系

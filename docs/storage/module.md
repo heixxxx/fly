@@ -159,9 +159,11 @@ std::mt19937`，避免请求风暴）。`DATA_NOT_READY` 存在时本轮不受 d
 
 ### Temp 数据管理
 
-- temp 数据存储为 shared_ptr，实现零拷贝读取
-- LRU 淘汰策略：超过内存限制时淘汰最久未访问的 temp 数据
-- 淘汰的数据可溢出到 TempStore（磁盘）
+- temp 数据统一由 DataService 管理（`local_idx_` 中 `temp_compressed_data_` 字段 + LRU + `temp_eviction_store_` 磁盘溢出层）。Database 不自持 TempStore
+- temp 数据存储为 `FlyBufferPtr`（shared_ptr），实现零拷贝读取
+- LRU 淘汰策略：超过内存限制（`temp_store_size`，默认 2GB）时淘汰最久未访问的 temp 数据
+- 淘汰的数据溢出到 `DataService::temp_eviction_store_`（磁盘），读取路径（`try_read_local*`）在 `temp_compressed_data_` 已 reset 时回退到该层
+- `remove_local_index` / `cleanup_temp_entries` 会完整清理 temp 数据（local_idx 条目 + LRU 队列 + eviction store）
 
 ### 远程索引更新时机
 

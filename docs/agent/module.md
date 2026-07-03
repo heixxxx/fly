@@ -15,7 +15,7 @@ Agent 层是框架的最高 C++ 层，封装 Master 和 Worker 的完整业务�
 | MasterAgent | `cpp/master_agent.h/cpp` | Master 节点管理 |
 | WorkerAgent | `cpp/worker_agent.h/cpp` | Worker 节点执行 |
 | TaskExecutor | `cpp/task_executor.h/cpp` | 任务执行器 |
-| WorkerAgentContext | `cpp/worker_context.h` | 写入跟踪上下文 |
+| WorkerAgentContext | `common/cpp/worker_context.h`（位于 common 模块，agent 与 storage 共用以避免循环依赖） | 写入跟踪上下文 |
 
 ---
 

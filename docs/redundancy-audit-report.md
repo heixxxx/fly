@@ -240,7 +240,7 @@ MasterAgent 持"何时检查"（线程+cv），HeartbeatMonitor 封"怎么判定
 |---|------|------|------|
 | 1 | common 反向依赖 serialization | `worker_context.h:5` include fly_buffer.h | 真问题（循环依赖风险） |
 | 2 | FlyBuffer 归属错位 | 跨 storage/network/common 用，却在 serialization | 真问题 |
-| 3 | worker_context.h 错放 common | 仅 agent+storage 用，文件名与类名不符 | 真问题 |
+| 3 | worker_context.h 错放 common | 仅 agent+storage 用（`WorkerAgentContext`，非 `WorkerContext`）；放 common 是 module.md 明确记录的有意决策（打破 storage↔agent 循环依赖），非随手乱放 | 有意妥协 + 文档过时（详见 `docs/fifth-class-verification.md`） |
 | 4 | Database/DataService TempStore 双持 | 见 3.8 | 真冗余 |
 | 5 | log 模块 Boost.PP 依赖 | `logger.h:74-115` 格式化宏 | 轻度越界 |
 | 6 | common 充当杂物间 | writer_id/write_context_hash/test_helpers 仅 1-2 模块用 | 轻度 |
