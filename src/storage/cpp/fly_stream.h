@@ -3,7 +3,7 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/fly_buffer_stream.h>
 #include <storage/cpp/compressor.h>
-#include <serialization/cpp/fly_buffer.h>
+#include <common/cpp/fly_buffer.h>
 #include <serialization/cpp/object_header.h>
 #include <common/cpp/common_types.h>
 #include <ostream>

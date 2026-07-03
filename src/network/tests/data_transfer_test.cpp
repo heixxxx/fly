@@ -3,7 +3,7 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/data_writer.h>
 #include <serialization/cpp/object_header.h>
-#include <serialization/cpp/fly_buffer.h>
+#include <common/cpp/fly_buffer.h>
 #include <network/cpp/data_client.h>
 #include <network/cpp/data_client_pool.h>
 #include <network/cpp/tcp_socket.h>

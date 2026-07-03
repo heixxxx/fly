@@ -2,7 +2,7 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <common/cpp/worker_context.h>
-#include <serialization/cpp/fly_buffer.h>
+#include <common/cpp/fly_buffer.h>
 #include <filesystem>
 #include <fstream>
 #include <istream>
@@ -641,38 +641,6 @@ TEST_F(DatabaseTest, DatabaseWithExistingDbId) {
         EXPECT_EQ(db.get_db_id(), existing_id);
         EXPECT_EQ(db.get_base_path(), base_path);
     }
-}
-
-TEST_F(DatabaseTest, TempStorePutGetHasRemove) {
-    CMString base_path = test_dir_ + "/temp_store";
-    Database db(base_path);
-
-    CMString compressed = "compressed_temp_data";
-    db.put_temp("temp/obj", compressed);
-
-    EXPECT_TRUE(db.has_temp("temp/obj"));
-
-    auto [found, data] = db.get_temp("temp/obj");
-    EXPECT_TRUE(found);
-    EXPECT_EQ(data, compressed);
-
-    db.remove_temp("temp/obj");
-    EXPECT_FALSE(db.has_temp("temp/obj"));
-}
-
-TEST_F(DatabaseTest, TempGetReturnsFalseForMissing) {
-    CMString base_path = test_dir_ + "/temp_missing";
-    Database db(base_path);
-
-    auto [found, data] = db.get_temp("missing/temp");
-    EXPECT_FALSE(found);
-}
-
-TEST_F(DatabaseTest, TempHasReturnsFalseForMissing) {
-    CMString base_path = test_dir_ + "/temp_has_missing";
-    Database db(base_path);
-
-    EXPECT_FALSE(db.has_temp("never/temp"));
 }
 
 TEST_F(DatabaseTest, RemoveIndexEntry) {

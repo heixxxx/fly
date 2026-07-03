@@ -3,7 +3,7 @@
 #include <storage/cpp/local_index.h>
 #include <storage/cpp/compressing_streambuf.h>
 #include <storage/cpp/fly_buffer_stream.h>
-#include <serialization/cpp/fly_buffer.h>
+#include <common/cpp/fly_buffer.h>
 #include <serialization/cpp/object_header.h>
 #include <filesystem>
 #include <fstream>

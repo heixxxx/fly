@@ -17,7 +17,7 @@
 
 #include <common/cpp/common_types.h>
 #include <core/cpp/config.h>
-#include <serialization/cpp/fly_buffer.h>
+#include <common/cpp/fly_buffer.h>
 #include <any>
 #include <atomic>
 #include <chrono>

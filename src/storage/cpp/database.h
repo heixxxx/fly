@@ -81,10 +81,6 @@ public:
     // dirty_full_names 是本 task 已写出的对象全名列表（db_id:short_name）。
     void abort_task_writes(const CMVector<CMString>& dirty_full_names);
 
-    void put_temp(const CMString& object_name, const CMString& compressed_data);
-    std::pair<bool, CMString> get_temp(const CMString& object_name);
-    bool has_temp(const CMString& object_name);
-    void remove_temp(const CMString& object_name);
     void mark_temp(const CMString& object_name);
     void put_temp_data(const CMString& object_name, FlyBufferPtr compressed_data);
 
@@ -194,7 +190,6 @@ private:
     CMUniquePtr<DataReader> reader_;
     CMUnorderedSet<CMString> removed_objects_;
     CMUnorderedSet<CMString> temp_objects_;
-    CMUniquePtr<fly::TempStore> temp_store_;
 
     // Var store: var_name → VarEntry. Mutex guards all access (set/get/remove
     // may come from task-execution threads; freeze snapshots under the lock).

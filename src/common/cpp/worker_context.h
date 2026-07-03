@@ -2,7 +2,7 @@
 
 #include <common/cpp/common_types.h>
 #include <common/cpp/error_types.h>
-#include <serialization/cpp/fly_buffer.h>
+#include <common/cpp/fly_buffer.h>
 #include <stdexcept>
 #include <utility>
 #include <functional>

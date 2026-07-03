@@ -1,6 +1,6 @@
 #include <export/cpp/export_macros.h>
 #include <serialization/cpp/serialization_macros.h>
-#include <serialization/cpp/fly_buffer.h>
+#include <common/cpp/fly_buffer.h>
 #include <serialization/cpp/object_header.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/storage_manager.h>
@@ -302,17 +302,6 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_METHOD("get_writer_id", &Database::get_writer_id)
     FLY_EXPORT_METHOD("reset", &Database::reset)
     FLY_EXPORT_METHOD("remove_object", &Database::remove_object)
-    FLY_EXPORT_DEF("_put_temp", [](Database& db, const CMString& name, fly_export::bytes data) {
-        CMString compressed(data.c_str(), data.size());
-        db.put_temp(name, compressed);
-    })
-    FLY_EXPORT_DEF("_get_temp", [](Database& db, const CMString& name) -> fly_export::tuple {
-        auto [found, data] = db.get_temp(name);
-        if (!found) return fly_export::make_tuple(false, fly_export::bytes());
-        return fly_export::make_tuple(true, fly_export::bytes(data.data(), data.size()));
-    })
-    FLY_EXPORT_DEF("_has_temp", &Database::has_temp)
-    FLY_EXPORT_DEF("_remove_temp", &Database::remove_temp)
     FLY_EXPORT_DEF("_mark_temp", [](Database& db, const CMString& name) {
         db.mark_temp(name);
     })
@@ -495,15 +484,6 @@ FLY_EXPORT_CLASS(fly::TempStore, "EXStgTempStore")
     FLY_EXPORT_METHOD("cleanup_all", &fly::TempStore::cleanup_all)
     FLY_EXPORT_METHOD("mem_bytes", &fly::TempStore::mem_bytes)
     FLY_EXPORT_METHOD("max_bytes", &fly::TempStore::max_bytes);
-
-FLY_EXPORT_FUNCTION("ex_stg_mark_temp_entry", [](const CMString& object_name, fly_export::bytes compressed_data) {
-    CMString data(compressed_data.c_str(), compressed_data.size());
-    fly::DataService::instance()->mark_temp_entry(object_name, data);
-});
-
-FLY_EXPORT_FUNCTION("ex_stg_unmark_temp_entry", [](const CMString& object_name) {
-    fly::DataService::instance()->unmark_temp_entry(object_name);
-});
 
 // ObjectCache diagnostics (test/observability).
 FLY_EXPORT_FUNCTION("ex_stg_cache_high_size", []() -> size_t {

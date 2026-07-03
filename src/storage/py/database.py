@@ -138,7 +138,6 @@ class _Database:
         self._db.reset()
 
     def remove_object(self, name: str):
-        self._db._remove_temp(name)
         self._db.remove_object(name)
 
     # ---- Var service: lightweight small-object KV ----

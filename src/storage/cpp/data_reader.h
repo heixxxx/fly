@@ -2,7 +2,7 @@
 
 #include <storage/cpp/local_index.h>
 #include <serialization/cpp/object_header.h>
-#include <serialization/cpp/fly_buffer.h>
+#include <common/cpp/fly_buffer.h>
 #include <common/cpp/common_types.h>
 #include <log/cpp/logger.h>
 #include <cstdint>

@@ -4,7 +4,7 @@
 #include <storage/cpp/local_index.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <network/cpp/net_quality_monitor.h>
-#include <serialization/cpp/fly_buffer.h>
+#include <common/cpp/fly_buffer.h>
 #include <filesystem>
 #include <istream>
 #include <chrono>
@@ -552,50 +552,6 @@ TEST_F(DataServiceTest, WriteCompletedOnlyAffectsTargetDb) {
     CMVector<IndexEntry> entries_b = {eb};
     ds_->on_write_completed(db_b, full_b, entries_b);
     EXPECT_TRUE(ds_->has_local_object(full_b));
-}
-
-TEST_F(DataServiceTest, MarkTempEntryAndGet) {
-    CMString name = "temp/obj";
-    CMString data = "temp_data_payload";
-
-    ds_->mark_temp_entry(name, data);
-    EXPECT_TRUE(ds_->is_temp_entry(name));
-
-    auto [found, result] = ds_->get_temp_data(name);
-    EXPECT_TRUE(found);
-    EXPECT_EQ(result, data);
-}
-
-TEST_F(DataServiceTest, UnmarkTempEntry) {
-    CMString name = "temp/remove";
-    CMString data = "to_remove";
-
-    ds_->mark_temp_entry(name, data);
-    EXPECT_TRUE(ds_->is_temp_entry(name));
-
-    ds_->unmark_temp_entry(name);
-    EXPECT_FALSE(ds_->is_temp_entry(name));
-
-    auto [found, result] = ds_->get_temp_data(name);
-    EXPECT_FALSE(found);
-}
-
-TEST_F(DataServiceTest, IsTempEntryReturnsFalseForMissing) {
-    EXPECT_FALSE(ds_->is_temp_entry("never/temp"));
-}
-
-TEST_F(DataServiceTest, GetTempDataReturnsFalseForMissing) {
-    auto [found, result] = ds_->get_temp_data("no/temp");
-    EXPECT_FALSE(found);
-}
-
-TEST_F(DataServiceTest, MarkTempEntrySameKey) {
-    CMString name = "temp/same";
-    ds_->mark_temp_entry(name, "data1");
-
-    auto [found, result] = ds_->get_temp_data(name);
-    EXPECT_TRUE(found);
-    EXPECT_EQ(result, "data1");
 }
 
 TEST_F(DataServiceTest, HasDatabaseReturnsTrue) {

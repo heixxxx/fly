@@ -1,7 +1,7 @@
 #pragma once
 
 #include <common/cpp/common_types.h>
-#include <serialization/cpp/fly_buffer.h>
+#include <common/cpp/fly_buffer.h>
 #include <cstdint>
 #include <tuple>
 

@@ -208,11 +208,6 @@ public:
 
     std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> read_raw_compressed(const CMString& object_name);
 
-    void mark_temp_entry(const CMString& object_name, const CMString& compressed_data);
-    void unmark_temp_entry(const CMString& object_name);
-    bool is_temp_entry(const CMString& object_name) const;
-    std::pair<bool, CMString> get_temp_data(const CMString& object_name) const;
-
     void on_temp_write_started(const CMString& db_id, const CMString& object_name);
     void on_temp_write(const CMString& db_id, const CMString& object_name, FlyBufferPtr compressed_data);
     void cleanup_temp_entries(const CMString& db_id);
@@ -294,8 +289,6 @@ private:
     CMUnorderedMap<uint64_t, RemoteObjectInfo> worker_registry_;
 
     CMUnorderedMap<CMString, DbPaths> db_paths_;
-
-    ConcurrentUnorderedMap<CMString, CMString> temp_entries_;
 
     CMVector<CMString> temp_lru_order_;
     int64_t temp_total_bytes_ = 0;

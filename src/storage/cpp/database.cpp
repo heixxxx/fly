@@ -60,7 +60,6 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
         host_
     );
     reader_ = CMMakeUnique<DataReader>(base_path_, data_path_, writer_id_);
-    temp_store_ = CMMakeUnique<fly::TempStore>();
 }
 
 Database::~Database() {
@@ -712,26 +711,6 @@ CMString Database::generate_db_id(const CMString& base_path) {
 
 void Database::ensure_directory_exists(const CMString& path) {
     fs::create_directories(path);
-}
-
-void Database::put_temp(const CMString& object_name, const CMString& compressed_data) {
-    CMString full = full_name(object_name);
-    temp_store_->put(full, compressed_data);
-    fly::DataService::instance()->mark_temp_entry(full, compressed_data);
-}
-
-std::pair<bool, CMString> Database::get_temp(const CMString& object_name) {
-    return temp_store_->get(full_name(object_name));
-}
-
-bool Database::has_temp(const CMString& object_name) {
-    return temp_store_->has(full_name(object_name));
-}
-
-void Database::remove_temp(const CMString& object_name) {
-    CMString full = full_name(object_name);
-    temp_store_->remove(full);
-    fly::DataService::instance()->unmark_temp_entry(full);
 }
 
 void Database::mark_temp(const CMString& object_name) {

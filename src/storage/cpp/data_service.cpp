@@ -1155,24 +1155,6 @@ bool DataService::is_write_back_running() const {
     return write_back_queue_ && write_back_queue_->is_running();
 }
 
-void DataService::mark_temp_entry(const CMString& object_name, const CMString& compressed_data) {
-    temp_entries_.insert(object_name, compressed_data);
-}
-
-void DataService::unmark_temp_entry(const CMString& object_name) {
-    temp_entries_.erase(object_name);
-}
-
-bool DataService::is_temp_entry(const CMString& object_name) const {
-    return temp_entries_.contains(object_name);
-}
-
-std::pair<bool, CMString> DataService::get_temp_data(const CMString& object_name) const {
-    auto val = temp_entries_.find(object_name);
-    if (val.has_value()) return {true, *val};
-    return {false, {}};
-}
-
 void DataService::on_temp_write_started(const CMString& db_id, const CMString& object_name) {
     if (!temp_eviction_store_) {
         temp_max_bytes_ = Config::instance()->get_int("temp_store_size");

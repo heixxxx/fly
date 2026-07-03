@@ -38,7 +38,7 @@
 
 #include <bitsery/ext/std_map.h>
 #include <common/cpp/common_types.h>
-#include <serialization/cpp/fly_buffer.h>
+#include <common/cpp/fly_buffer.h>
 #include <cstdint>
 #include <stdexcept>
 #include <fstream>

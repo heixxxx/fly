@@ -2,7 +2,7 @@
 #include <storage/cpp/object_cache.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/decompressing_streambuf.h>
-#include <serialization/cpp/fly_buffer.h>
+#include <common/cpp/fly_buffer.h>
 #include <serialization/cpp/serialization_macros.h>
 #include <thread>
 #include <chrono>
