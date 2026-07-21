@@ -212,7 +212,7 @@ scheduler_->set_locality_preference(...);
 | 项 | 状态 | 解锁条件 |
 |---|---|---|
 | F1 SSH 多机 | 功能已具备，待验证 | 多机/容器化测试环境就绪 |
-| F2 Freeze 聚合 | 降级 | 出现 load_db worker 不齐备的真实痛点时 |
+| F2 Freeze 聚合 | 降级 | 出现 load_db worker 不齐备的真实痛点时（设计方案见 [`db-merge-design.md`](db-merge-design.md)） |
 | F4 大对象分片 | 降级 | 出现单对象传输成为瓶颈的实测证据时 |
 
 ### ⛔ 明确不做（本阶段）

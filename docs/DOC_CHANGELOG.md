@@ -3,6 +3,23 @@
 ---
 ---
 
+## 2026-07-22: DB Merge（Freeze 后处理）设计文档
+
+### 背景
+
+`docs/architecture.md` §5.3 设想的 Database Freeze 后处理（idx 合并 → `merged.idx` + `_META` 聚合）长期未实现（`docs/roadmap.md` §4 决策②已将 F2 降级）。经 2026-07-22 源码重新核实，缺口分三层：idx 未 compact、`removed_objects_` 的 `.dat` 物理数据未回收、跨 worker idx 聚合完全空白。本次给出分阶段设计与开放问题，供后续裁定。
+
+### 新增文档
+
+| 文件 | 内容 |
+|------|------|
+| `docs/db-merge-design.md` | DB Merge 设计与实现方案：现状缺口三层定义、load_db 约束分析、分阶段方案（A: idx compact / B: `.dat` compaction / C: `merged.idx` 聚合）、7 个待确认开放问题、交付顺序 |
+
+### 关键结论
+
+- architecture.md §5.3 设想的 `IdxRequest/IdxResponse`（走消息体传 idx）在当前"共享 FS"架构下冗余——`IdxLoadCommand`（load_db 在用）已证明"master/worker 直读 `base_path/<writer_id>.idx`"更简单，方案 C-1 复用此范式，不新增消息类型。
+- `merged.idx` 的唯一独立价值是"某 writer 机器不可达时的索引 fallback"，常规场景下与 load_db 重读各 idx 等价（后者已可用），故是否做方案 C 取决于跨机不可达痛点是否真实。
+
 ## 2026-06-30: 网络感知远程读优先级（NetQualityMonitor + 带宽探测）
 
 ### 背景
