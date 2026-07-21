@@ -1818,7 +1818,6 @@ void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFre
     DatabaseFreezeAckMessage ack;
     ack.db_id_ = msg.db_id_;
     bool accepted = false;
-    bool should_broadcast = false;   // stream 模式即时广播；非 stream 延迟到 commit
 
     {
         std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
@@ -1834,7 +1833,6 @@ void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFre
             frozen_dbs_.insert(msg.db_id_);
             ack.success_ = true;
             accepted = true;
-            should_broadcast = true;
             INFO("DatabaseFreezeRequest (stream): db_id={}", msg.db_id_);
         } else {
             // 非 stream 模式：登记 pending（记 task_id），不广播、不本地 freeze
