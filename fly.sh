@@ -81,6 +81,52 @@ refresh_clangd() {
     echo ">>> compile_commands.json updated ($count targets)"
 }
 
+# Install the pre-push git hook (幂等软链).
+#
+# git 不会随 clone 自动安装 hooks（安全设计），所以 scripts/pre-push 虽然纳入
+# 版本控制，仍需手动激活。这里在 do_install 时幂等地把它软链到
+# .git/hooks/pre-push，让门禁对当前环境生效。软链（而非复制）使得后续对
+# scripts/pre-push 的修改无需重新安装即对所有环境生效。
+#
+# 幂等策略：
+#   - 链接已存在且 target 正确 → 静默跳过
+#   - 链接断开 / 指向他处 → 重建
+#   - .git/hooks/pre-push 是普通文件（非我们建的软链）→ 警告但不覆盖
+#   - scripts/pre-push 缺失 → 警告，不阻断 install
+install_hooks() {
+    local hook_src="$FLY_ROOT/scripts/pre-push"
+    local hook_dst
+    hook_dst="$(git rev-parse --git-dir 2>/dev/null)/hooks/pre-push"
+    if [ -z "$hook_dst" ]; then
+        echo "WARNING: not in a git repo, skipping pre-push hook install" >&2
+        return 0
+    fi
+
+    if [ ! -f "$hook_src" ]; then
+        echo "WARNING: scripts/pre-push not found, skipping pre-push hook install" >&2
+        return 0
+    fi
+
+    # 确保源脚本可执行（软链不携带权限位，git 跟踪的 100755 在某些 checkout 下可能丢失）
+    chmod +x "$hook_src" 2>/dev/null || true
+
+    # 已正确软链 → 幂等跳过
+    if [ -L "$hook_dst" ] && [ "$(readlink -f "$hook_dst")" = "$(readlink -f "$hook_src")" ]; then
+        return 0
+    fi
+
+    # 已存在但不是我们的软链（普通文件/他人软链）→ 警告不覆盖，避免破坏用户自定义
+    if [ -e "$hook_dst" ] && [ ! -L "$hook_dst" ]; then
+        echo "WARNING: $hook_dst exists and is not a symlink; not overwriting." >&2
+        echo "         To activate the project pre-push hook, remove it and rerun ./fly.sh install." >&2
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$hook_dst")"
+    ln -sf "$hook_src" "$hook_dst"
+    echo ">>> Installed pre-push hook: $hook_dst -> $hook_src"
+}
+
 do_install() {
     cd "$FLY_ROOT"
     local build_dir="$FLY_ROOT/build"
@@ -202,6 +248,9 @@ WRAPPER
     done
 
     echo ">>> Install complete: $build_dir/bin/fly"
+
+    # 顺带激活 pre-push 门禁 hook（幂等，见 install_hooks 注释）。
+    install_hooks
 }
 
 case "${1:-build}" in
