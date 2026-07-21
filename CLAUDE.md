@@ -43,6 +43,8 @@
 
 **必须使用 `./fly.sh` 而非裸 `bazel` 命令！** 直接使用 `bazel build` 不会刷新 `compile_commands.json`，导致 clangd 无法工作。
 
+**Python 第三方依赖（cloudpickle/numpy/scipy/pytest）由 bazel 管理，无需手动 `pip install`。** `MODULE.bazel` 的 `pip.parse` 从 `requirements_lock.txt`（由 `requirements.in` 经 `pip-compile` 生成）拉取 wheel：`py_test` 走 bazel 沙箱 hermetic 拿包；`./fly.sh install` 把 wheel 复制到 `build/python/lib/python3.12/site-packages/`，生产 `fly` 二进制（嵌入 libpython）从这里加载，不依赖系统 site-packages。新增 Python 包：编辑 `requirements.in` → `pip-compile requirements.in` → 在用到的 `py_library`/`py_test` 加 `requirement("<pkg>")` → 生产代码还需把包加进 `tools/BUILD` 的 `fly_third_party_py`。
+
 ```bash
 ./fly.sh build [target...]     # 构建 + 刷新 clangd
 ./fly.sh test [target...]      # 测试 + 刷新 clangd

@@ -1,6 +1,7 @@
 package(default_visibility = ["//visibility:public"])
 
 load("@rules_python//python:defs.bzl", "py_library", "py_test")
+load("@pip//:requirements.bzl", "requirement")
 
 py_library(
     name = "test_executor_tasks",
@@ -54,6 +55,7 @@ py_test(
         "//src/storage/export:_fly_storage.so",
         "//src/agent/export:_fly_agent.so",
         ":test_executor_tasks",
+        requirement("cloudpickle"),  # test calls cloudpickle.dumps directly
     ],
     imports = [
         ".",

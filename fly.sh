@@ -157,6 +157,50 @@ WRAPPER
         [ -f "$py" ] && ln -sf "$py" "$build_dir/python/fly/"
     done
 
+    # Third-party Python packages (cloudpickle/numpy/scipy) from bazel @pip hub.
+    #
+    # Production `fly` embeds libpython and imports these packages at runtime.
+    # Unlike the .so bindings above, the @pip wheels are NOT bazel runfiles for
+    # the cc_binary, so we copy them into a standard site-packages layout that
+    # setup_sys_path() in main.cpp adds to sys.path. This makes the installed
+    # binary hermetic — it no longer reads cloudpickle/numpy/scipy from the
+    # system site-packages.
+    #
+    # pytest is intentionally NOT copied: it is a test-only dep consumed by
+    # py_test targets in the bazel sandbox, never imported by production fly.
+    #
+    # We copy (not symlink) the unpacked wheel tree because (1) wheels unpack
+    # to multi-file directory trees, (2) bazel's external repos may be evicted
+    # by `bazel clean`/disk pressure, breaking symlinks, and (3) scipy bundles
+    # native .so libraries in scipy.libs/ whose permissions must be preserved.
+    local pip_site="$build_dir/python/lib/python3.12/site-packages"
+    mkdir -p "$pip_site"
+    local output_base
+    output_base="$(bazel --nohome_rc info output_base 2>/dev/null)"
+    local pkg repo_root build_file_path
+    for pkg in cloudpickle numpy scipy; do
+        # Resolve the wheel's extracted repo root via cquery. The
+        # :extracted_whl_files target emits a BUILD.bazel at the repo root;
+        # we parse its path to locate site-packages/ without hardcoding the
+        # internal "rules_python++pip+pip_312_<pkg>" repo-name string.
+        build_file_path="$(bazel --nohome_rc cquery "@pip//$pkg:extracted_whl_files" \
+            --output=starlark \
+            --starlark:expr='str([f.path for f in target.files.to_list() if f.basename == "BUILD.bazel"][0])' \
+            2>/dev/null)"
+        if [ -z "$build_file_path" ]; then
+            echo "ERROR: failed to resolve @pip//$pkg wheel layout" >&2
+            exit 1
+        fi
+        repo_root="$(dirname "$output_base/$build_file_path")"
+        if [ ! -d "$repo_root/site-packages" ]; then
+            echo "ERROR: $pkg site-packages not found at $repo_root/site-packages" >&2
+            exit 1
+        fi
+        # "site-packages/." merges the unpacked wheel contents (package dir +
+        # .dist-info) into our combined site-packages root.
+        cp -r "$repo_root/site-packages/." "$pip_site/"
+    done
+
     echo ">>> Install complete: $build_dir/bin/fly"
 }
 

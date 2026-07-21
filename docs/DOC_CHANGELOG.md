@@ -1140,3 +1140,36 @@ nanobind: `FLY_EXPORT_SERIALIZE` 加 `_read_from_db`（对称 `_write_to_db`）�
 
 **文档同步**：
 - `CLAUDE.md`：transport_interface 补 `recv_exact`、message_protocol 补 `read_be32/write_be32`、agent 层补 `pending_rpc_map.h`/`data_fetch.h`
+
+### Python 依赖 hermetic 化 + 构建清理（本轮）
+
+**问题根因**：Python 第三方包（cloudpickle/numpy/scipy/pytest）此前靠系统 site-packages 隐式解析——`.bazelrc` 硬编码 `PYTHONPATH=/usr/local/lib/python3.12/site-packages` 给 py_test，生产 `fly`（嵌入 libpython）靠系统 `/usr/lib/python3.12/site-packages`。换机器或缺包即崩（曾导致 QA 44 个测试失败、user_task_test 6/15 失败）。
+
+**方案 B-重：双路径 hermetic**
+
+- `MODULE.bazel` 加 `pip.parse` 扩展（rules_python），从 `requirements_lock.txt`（pip-compile 从 `requirements.in` 生成）拉取 wheel
+- 5 个 `py_library`/`py_test` 的 BUILD 加 `load("@pip//:requirements.bzl", "requirement")` + 对应 `requirement("<pkg>")`：
+  - `src/agent/py`（executor.py）、`src/task/py`（task.py）、`src/fly`（mapreduce.py）→ cloudpickle
+  - `src/solver/py`（ras_graph.py）→ numpy + scipy
+  - `src/fly/tests:user_task_test` → cloudpickle
+- `fly.sh do_install` 新增段：用 `bazel cquery @pip//<pkg>:extracted_whl_files` 定位 wheel 解压路径，`cp -r` 复制到 `build/python/lib/python3.12/site-packages/`（cloudpickle+numpy+scipy，约 168M；pytest 不复制，仅 py_test 沙箱用）
+- `src/main/cpp/main.cpp::setup_sys_path()` 在 build 布局加一行 `sys.path.insert` 注入 site-packages（含存在性检查，无 install 时静默跳过）
+- `.bazelrc` 删硬编码 `PYTHONPATH`（改由 `requirement()` 显式声明）
+
+**验证**（系统卸载 cloudpickle 的最严苛条件）：C++ 单测 50/50，QA 106/106 真实通过，py_test 与生产 fly 双路径均从 bazel wheel 加载。
+
+**架构边界澄清**：`fly` 是 cc_binary 嵌入 `libpython3.12.so`，依赖"动态库 + importable Python 模块"，**不依赖 python3 可执行解释器**（grep 确认无 subprocess/exec python）。libpython 本身仍为系统依赖（同 libc 级别），完全 hermetic 化它需切 rules_python hermetic libpython，不在本轮范围。
+
+**规则版本**：`MODULE.bazel` `rules_python` 1.2.0 → 1.7.0（实际因传递依赖早解析到 1.7.0，声明同步消除版本不匹配警告）。
+
+**僵尸文件清理**：
+- 删 `qa/BUILD`（693 行，39 个 py_test 全部引用 `3e59ff6` QA 目录重构后不存在的顶层 `qa/*.py`，无任何消费者，`fly.sh` 只用 `//src/...`；QA 实际入口是 `qa/runqa`）
+- `git rm --cached` 两个误提交产物 `qa/var/persistence_db/_VARS`、`qa/var/test_var_freeze/db/_VARS`
+- `.gitignore` 补 `qa/*/test_*/`（覆盖无数字后缀产物目录）、`_VARS`、清理游离 `-e ` 行
+
+**死变量清理**：`master_agent.cpp::on_database_freeze_request` 删 `should_broadcast`（stream 分支赋值后从未读取，广播逻辑实际用 `accepted && streaming_mode` 判断，等价无副作用）。
+
+**文档同步**：
+- `CLAUDE.md`：构建区加"Python 第三方依赖"段，说明 hermetic pip + 新增包流程
+- `DEVELOPMENT_GUIDELINES.md 7.1`：`.bazelrc` 配置同步实际内容，删 stale 的 `--enable_bzlmod=false`，加"不要用 PYTHONPATH action_env"警示
+- 新增 `requirements.in`（高层规格）、`requirements_lock.txt`（pin 版本锁）、`tools/BUILD`（聚合 `fly_third_party_py` filegroup）

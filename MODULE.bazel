@@ -8,7 +8,7 @@ module(
 # =============================================================================
 
 bazel_dep(name = "rules_cc", version = "0.2.14")
-bazel_dep(name = "rules_python", version = "1.2.0")
+bazel_dep(name = "rules_python", version = "1.7.0")
 bazel_dep(name = "googletest", version = "1.17.0.bcr.2")
 bazel_dep(name = "fmt", version = "12.1.0")
 
@@ -18,6 +18,21 @@ python.toolchain(
     python_version = "3.12",
 )
 use_repo(python, "python_3_12")
+
+# Third-party Python packages (cloudpickle / numpy / scipy / pytest) via pip.
+# pip.parse reads the pinned lock (requirements_lock.txt, generated from
+# requirements.in by pip-compile) and exposes a @pip hub. BUILD files pull
+# individual packages via `load("@pip//:requirements.bzl", "requirement")` and
+# `requirement("<pkg>")` in deps. This makes py_test hermetic (wheels come from
+# the bazel sandbox, not the system site-packages) and gives fly.sh install a
+# canonical source to copy wheels from into build/ for the production binary.
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "pip",
+    python_version = "3.12",
+    requirements_lock = "//:requirements_lock.txt",
+)
+use_repo(pip, "pip")
 
 # =============================================================================
 # Non-BCR Dependencies (via http_archive with custom BUILD files)

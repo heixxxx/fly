@@ -1,6 +1,7 @@
 package(default_visibility = ["//visibility:public"])
 
 load("@rules_python//python:defs.bzl", "py_library")
+load("@pip//:requirements.bzl", "requirement")
 
 py_library(
     name = "fly_agent_py",
@@ -10,6 +11,7 @@ py_library(
         "//src/storage/export:_fly_storage.so",
         "//src/log/export:_fly_log.so",
         "//src/core/export:_fly_core.so",
+        requirement("cloudpickle"),  # executor.py: user-task deserialization
     ],
     imports = [
         "../agent/export",

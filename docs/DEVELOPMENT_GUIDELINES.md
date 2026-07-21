@@ -563,12 +563,15 @@ ASSERT_TRUE(registered);
 ### 7.1 .bazelrc 配置
 
 ```
-build --cxxopt=-std=c++20
+build --copt=-std=c++20
 build --host_cxxopt=-std=c++20
-build --enable_bzlmod=false
 build --action_env=PATH
 test --test_output=errors
+build --repo_env=CC=gcc-12
+build --repo_env=CXX=g++-12
 ```
+
+项目使用 **Bzlmod**（`MODULE.bazel`），不用 `--enable_bzlmod=false`。C++ 第三方依赖（eigen/googletest/nanobind/bitsery/robin_map）通过 `MODULE.bazel` 的 `http_archive` 锁定；Python 第三方依赖（cloudpickle/numpy/scipy/pytest）通过 `pip.parse` 扩展从 `requirements_lock.txt` 拉取——**不要在 `.bazelrc` 加 `--action_env=PYTHONPATH=...`**，那是 hermetic 化前的旧机制，会让 py_test 依赖系统 site-packages。
 
 ### 7.2 Visibility 规范
 

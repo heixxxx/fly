@@ -1,6 +1,7 @@
 package(default_visibility = ["//visibility:public"])
 
 load("@rules_python//python:defs.bzl", "py_library")
+load("@pip//:requirements.bzl", "requirement")
 
 py_library(
     name = "fly_py",
@@ -11,6 +12,7 @@ py_library(
         "//src/log/export:_fly_log.so",
         "//src/storage/py:fly_storage_py",
         "//src/task:task_pkg",
+        requirement("cloudpickle"),  # mapreduce.py: fn serialization
     ],
     imports = [
         "..",

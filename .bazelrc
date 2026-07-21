@@ -8,10 +8,6 @@ build --action_env=PATH
 # Test output
 test --test_output=errors
 
-# Python system site-packages for py_test targets
-test --action_env=PYTHONPATH=/usr/local/lib/python3.12/site-packages
-build --action_env=PYTHONPATH=/usr/local/lib/python3.12/site-packages
-
 # GCC 12 toolchain
 build --repo_env=CC=gcc-12
 build --repo_env=CXX=g++-12

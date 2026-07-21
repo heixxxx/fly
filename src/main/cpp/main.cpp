@@ -200,6 +200,15 @@ static void setup_sys_path() {
         ps += "sys.path.insert(0, '" + (py_dir / "test").string() + "')\n";
         ps += "sys.path.insert(0, '" + (py_dir / "solver").string() + "')\n";
         ps += "sys.path.insert(0, '" + py_dir.string() + "')\n";
+        // Third-party packages (cloudpickle/numpy/scipy) copied by fly.sh install
+        // from bazel @pip wheels. Added after fly's own modules so production fly
+        // is hermetic — it imports them from here, not the system site-packages.
+        // Falls through silently if absent (e.g. dev builds without install) so
+        // the binary still runs when third-party deps aren't bundled.
+        auto third_party_site = py_dir / "lib" / "python3.12" / "site-packages";
+        if (std::filesystem::exists(third_party_site)) {
+            ps += "sys.path.insert(0, '" + third_party_site.string() + "')\n";
+        }
         // Expose the wrapper script path so Python (get_fly_binary) can spawn
         // fly subprocesses without guessing. The wrapper sets FLY_BUILD and
         // LD_LIBRARY_PATH, so it must be preferred over the raw fly.bin.

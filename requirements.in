@@ -1,0 +1,27 @@
+# Fly Python dependencies — high-level spec (human-edited).
+#
+# This is the INPUT to pip-compile. The fully-pinned lock file
+# requirements_lock.txt is generated from it and is what bazel's pip.parse
+# consumes (see MODULE.bazel). Edit this file, then regenerate the lock:
+#
+#     pip-compile --resolver=backtracking requirements.in
+#
+# The C++/bazel build is self-contained (eigen, googletest, nanobind, bitsery
+# are pinned in MODULE.bazel). The packages below are the Python third-party
+# deps imported by production code (src/) and QA tests (qa/). Before this file
+# existed, they were resolved from the system site-packages implicitly, which
+# broke on any machine without them installed (QA 44-test failure root cause).
+
+# cloudpickle — user-script task serialization (src/task/py/task.py,
+#   src/agent/py/executor.py, src/fly/mapreduce.py). Without it production
+#   code falls back to stdlib pickle, which cannot pickle lambdas / nested
+#   functions under __main__, breaking user-script tasks and mapreduce.
+cloudpickle>=3.0
+
+# numpy / scipy — distributed RAS solver (src/solver/py/ras_graph.py uses
+#   scipy.sparse + splu). Only stable APIs; no version-sensitive features.
+numpy>=1.26
+scipy>=1.11
+
+# pytest — Python unit test runner (some src/**/tests/test_*.py cases).
+pytest>=7.0
