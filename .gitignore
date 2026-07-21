@@ -42,6 +42,7 @@ qa_logs/
 *.idx
 _DB_META
 _FROZEN
+_VARS
 
 # Bazel lock file
 MODULE.bazel.lock
@@ -49,8 +50,13 @@ MODULE.bazel.lock
 # open-mem: Auto-generated folder context files.
 # Uncomment to exclude from version control (recommended for large projects):
 # **/AGENTS.md
--e 
-# QA test logs & run artifacts (numeric suffix dirs, not .py files)
+# QA test logs & run artifacts.
+# runqa writes per-test output to {test_dir}/{test_name}/ — these dirs are
+# produced at test time, never source. Match both bare names (test_foo/) and
+# numeric-suffix rerun dirs (test_foo.1/, test_foo.2/). The trailing content
+# rules below catch stragglers (.fly_config, failed_tasks.bin, etc.).
+qa/*/test_*/
+qa/**/test_*/
 qa/*/test_*.[0-9]*
 qa/**/test_*.[0-9]*
 qa/**/logs/
