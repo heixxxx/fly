@@ -3,22 +3,33 @@
 ---
 ---
 
-## 2026-07-22: DB Merge（Freeze 后处理）设计文档
+## 2026-07-22: DB Merge（Freeze 后处理）设计文档（v2，修正数据本地性前提）
 
 ### 背景
 
-`docs/architecture.md` §5.3 设想的 Database Freeze 后处理（idx 合并 → `merged.idx` + `_META` 聚合）长期未实现（`docs/roadmap.md` §4 决策②已将 F2 降级）。经 2026-07-22 源码重新核实，缺口分三层：idx 未 compact、`removed_objects_` 的 `.dat` 物理数据未回收、跨 worker idx 聚合完全空白。本次给出分阶段设计与开放问题，供后续裁定。
+`docs/architecture.md` §5.3 设想的 Database Freeze 后处理（idx 合并 → `merged.idx` + `_META` 聚合）长期未实现（`docs/roadmap.md` §4 决策②已将 F2 降级）。经 2026-07-22 源码核实，缺口分三层：idx 未 compact、`removed_objects_` 的 `.dat` 物理数据未回收、跨 worker idx 聚合完全空白。
+
+### v1 → v2 关键修正
+
+v1 基于错误前提"master/worker 共享 FS，可直读 idx 文件"，故判定 `IdxRequest/IdxResponse` 冗余、`merged.idx` 价值有限。用户纠正：**fly 多机运行时每个 worker 在本地磁盘写 db 数据，`.dat` 不共享，读走 DataServer TCP**（`data_writer.cpp:23` data_path 可独立于 base_path；`data_server.cpp` 网络服务数据）。据此重写：
+
+| 项 | v1（错误） | v2（修正） |
+|----|-----------|-----------|
+| 数据本地性 | 假设共享 FS 直读 idx | 多机本地磁盘：`.dat` 各 worker 本地，读走 TCP；idx base_path 共享性场景相关 |
+| IdxRequest/Response | 判定冗余不实现 | **多机本地磁盘下必要**，纳入方案 C（枚举槽位 15/16 已预留） |
+| merged.idx 价值 | "仅 worker 不可达的 fallback" | "让 master 不依赖各原 worker 本地 idx 可达即持有全局调度视图"——核心价值 |
 
 ### 新增文档
 
 | 文件 | 内容 |
 |------|------|
-| `docs/db-merge-design.md` | DB Merge 设计与实现方案：现状缺口三层定义、load_db 约束分析、分阶段方案（A: idx compact / B: `.dat` compaction / C: `merged.idx` 聚合）、7 个待确认开放问题、交付顺序 |
+| `docs/db-merge-design.md` | DB Merge v2 方案：数据本地性模型（§1）、现状缺口三层（§2）、load_db 局限（§3）、分阶段方案（A: idx compact 纯本地 / B: `.dat` compaction 纯本地 / C: 网络聚合 merged.idx 跨机）、7 个待确认开放问题（含 Q7 多机 base_path 一致性）、v1→v2 变更说明 |
 
-### 关键结论
+### 关键结论（v2）
 
-- architecture.md §5.3 设想的 `IdxRequest/IdxResponse`（走消息体传 idx）在当前"共享 FS"架构下冗余——`IdxLoadCommand`（load_db 在用）已证明"master/worker 直读 `base_path/<writer_id>.idx`"更简单，方案 C-1 复用此范式，不新增消息类型。
-- `merged.idx` 的唯一独立价值是"某 writer 机器不可达时的索引 fallback"，常规场景下与 load_db 重读各 idx 等价（后者已可用），故是否做方案 C 取决于跨机不可达痛点是否真实。
+- **缺口 A/B（idx compact、`.dat` compaction）与本地性无关**，纯本进程文件操作，任何部署形态都该做，是纯收益。
+- **缺口 C（跨 worker 聚合）的价值恰在多机本地磁盘场景**：让 master 在不依赖各原 worker 机器本地 idx 可达的前提下，持有一份全局索引视图，用于依赖图可见性/调度/对象存在性。freeze 是天然聚合时机（全员已 flush，idx 稳定）。
+- **merged.idx 只聚合索引，不聚合数据本体**——读取仍需网络回源到原 worker DataServer。数据冗余是 backup 机制（§5.4）职责，与本方案正交。
 
 ## 2026-06-30: 网络感知远程读优先级（NetQualityMonitor + 带宽探测）
 
