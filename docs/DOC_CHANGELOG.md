@@ -3,6 +3,38 @@
 ---
 ---
 
+## 2026-07-22: DB Merge 设计方案（v3 — 对齐设计契约 + 主动 API）
+
+### 背景
+
+`docs/architecture.md` §5.3 设想的 Database Freeze 后处理长期未实现。经多轮源码核实 + 设计文档核对，
+方案收敛为：提供 **`fly.merge_db(path)` 主动 API**（用户显式调用，不绑 freeze），把分散在各 worker
+本地 `data_path` 的 `.dat` 数据通过网络聚合到 master 可达的共享 `base_path`，产出自包含数据库目录。
+
+### v2 → v3 关键修正（对齐 `architecture.md §3.3` 双路径设计契约）
+
+| 项 | v2 | v3 |
+|----|----|----|
+| base_path 共享性 | "场景相关"（含糊） | **设计契约：共享**（§3.3 明确"所有 Master/Worker 可访问"） |
+| 本地化对象 | idx + data 都可能本地 | **仅 `.dat`（data_path）本地**；idx/meta 在共享 base_path |
+| idx 传输 | 判必要（需 IdxRequest/Response） | **冗余**——索引已在共享盘，master 直读 `<writer_id>.idx` |
+| `.dat` 传输 | 提及 | **核心**，复用 backup 已验证的 `read_raw_compressed` + `do_backup_write`（零解压落盘） |
+| 触发时机 | freeze 自动/离线 | **用户主动 API**（`fly.merge_db`） |
+| 新消息类型 | 新增 IdxRequest/Response | **不新增**（复用 DATA_REQUEST/RESPONSE msg=11/12） |
+
+### 新增/更新文档
+
+| 文件 | 内容 |
+|------|------|
+| `docs/db-merge-design.md` | v3 完整方案：双路径契约（§1）、复用 backup 范式（§2，含时序图）、`merge_db` API 4 阶段流程（§3）、实现触点（§4，不新增消息/模块）、7 个开放问题、v1→v2→v3 变更说明 |
+
+### 关键结论（v3）
+
+- **索引/元数据天然全局可见**（在共享 base_path），master 可直接 `LocalIndex::load` 读所有 `<writer_id>.idx`。
+- **真正本地化的是 `.dat` 数据本体**（`data_path`），这才是 merge 要搬运的对象，必须走网络。
+- **backup 机制已实现完整的跨机 `.dat` 搬运范式**（`read_raw_compressed` → `DATA_REQUEST/RESPONSE` → `do_backup_write`），merge 直接复用，不造新轮子。
+- **不新增消息类型、不新增模块、不占 task 槽**（走数据面直连，仿 `db.backup_object` 手动路径）。
+
 ## 2026-07-22: DB Merge（Freeze 后处理）设计文档（v2，修正数据本地性前提）
 
 ### 背景

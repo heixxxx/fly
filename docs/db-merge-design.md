@@ -1,372 +1,283 @@
-# DB Merge（Freeze 后处理）设计与实现方案
+# DB Merge 设计与实现方案
 
 > 状态：**设计中**（未实现）
-> 制定日期：2026-07-22（v2 — 修正数据本地性前提）
-> 关联：`docs/architecture.md` §5.3、§5.6；`docs/roadmap.md` §2.2-F2、§4 决策②、§五降级区；`docs/adr/0001-db-meta-and-load-db.md`
+> 制定日期：2026-07-22（v3 — 对齐设计契约 + 主动 API）
+> 关联：`docs/architecture.md` §3.3、§5.3、§5.4、§5.6；`docs/roadmap.md` §2.2-F2、§4 决策②；`docs/adr/0001-db-meta-and-load-db.md`
 
 ---
 
 ## 0. 摘要
 
-**DB Merge = Database Freeze 后处理**。当前 `db.freeze()` 只完成"打标记 + 刷盘 + 通知各方打标记"，
-跨 worker / 跨 writer 的聚合产物**完全未实现**。
+提供 **`fly.merge_db(path)` 主动 API**：用户显式调用，把一个已 freeze 的 db 中分散在各 worker 本地磁盘（`data_path`）的 `.dat` 数据，**通过网络**聚合到 master 可达的 `base_path`（共享存储），产出一个**自包含、可独立加载**的合并数据库目录。
 
-**v2 关键修正**（相比 v1 草案）：fly 多机运行时每个 worker 把 `.idx` + `.dat` 写到**本进程/本机本地路径**
-（`data_writer.cpp:23`，`data_path` 可独立于 `base_path`），数据读取走 **DataServer TCP 网络协议**
-（`data_server.cpp`，非共享文件系统）。因此本方案 v1 基于"共享 FS"的推论不成立，已重写。
+**核心设计依据**（`architecture.md §3.3` 的双路径契约）：
+- `base_path`（**共享存储，必填**）：所有 Master/Worker 可访问，存 `_DB_META` / `_FROZEN` / `_VARS` / `<writer_id>.idx`。
+- `data_path`（**本地磁盘，可选**）：仅写数据的进程可访问，存 `.dat`。不填则退化到 base_path。
 
-本文档给出：
-1. 数据本地性模型（§1，方案的物理基础）
-2. 现状缺口的三层定义（§2）
-3. load_db 的现有能力与局限（§3，受本地性约束）
-4. 修正后的分阶段方案（§4）
-5. 必须先拍板的开放问题（§5）
+因此：
+- **索引/元数据天然全局可见**（在共享 base_path）—— master 可直接读所有 `<writer_id>.idx`，**不需要任何新消息类型**来传 idx。
+- **真正本地化的是 `.dat` 数据本体**——这是 merge 要搬运的对象，必须走网络。
+- **backup 机制已实现"跨机拉 `.dat` 字节 + 零解压落盘"的完整范式**，直接复用。
 
 ---
 
-## 1. 数据本地性模型（方案的物理基础，必须先对齐）
+## 1. 存储模型（对齐设计契约）
 
-### 1.1 谁写在哪里
+### 1.1 双路径契约（`architecture.md §3.3`）
 
-| 产物 | 写入位置 | 由谁写 | 多机时物理位置 |
-|------|----------|--------|----------------|
-| `_DB_META`（writer 登记表） | `base_path` | Database 构造时写 header（`database.cpp:579`），master 在 task 完成时追加 WorkerInfo（`master_agent.cpp:802`） | **base_path 是否共享见 §1.3** |
-| `_FROZEN` / `_VARS` | `base_path` | freeze 时写（`database.cpp:558,573,874`） | 同上 |
-| `<writer_id>.idx` | `base_path` | DataWriter 构造（`data_writer.cpp:26`） | **base_path 是否共享见 §1.3** |
-| `.dat`（`data_<wid>_<NNN>.dat`） | `data_path_.empty() ? base_path_ : data_path_`（`data_writer.cpp:23`） | DataWriter::write_record | **写数据的 worker 本地**（`open_db(path, data_path)` 的 data_path 常指向本地盘） |
+```python
+db = open_db("/shared/project_a")                          # 仅共享路径
+db = open_db("/shared/project_b", data_path="/ssd/local")  # 共享 + 本地（高性能写）
+```
 
-### 1.2 谁读谁（网络 vs 文件系统）
+| 路径 | 说明 | 必填 | 存什么 | 多机可访问性 |
+|------|------|------|--------|--------------|
+| `base_path` | 共享存储路径 | 是 | `_DB_META`、`_FROZEN`、`_VARS`、`<writer_id>.idx` | ✅ 所有 Master/Worker |
+| `data_path` | 本地磁盘路径 | 否 | `data_<wid>_<NNN>.dat`（压缩数据本体） | ❌ 仅写它的进程 |
 
-- **数据本体（`.dat`）**：远程读走 **DataServer TCP**（`data_server.cpp` 监听 socket + epoll + send_thread）。
-  `DataService` 的 `remote_idx_` 记录每个对象的 `(worker_id, host, port)`，读时连对应 worker 的 DataServer 拉压缩字节。
-  **从不依赖共享 FS 读 `.dat`**。
-- **索引（`.idx`）/ 元数据（`_DB_META`）**：load_db 通过 `IdxLoadCommandMessage` 把 `base_path` 发给 worker，
-  worker 读 `base_path/<writer_id>.idx`（`worker_agent.cpp:1049`）；master 也读同一 `base_path/<writer_id>.idx`
-  重建 `remote_idx_`（`master_agent.cpp:1772`）。**这条路径隐含"读 idx 的进程能访问到 base_path 文件"**。
+代码印证（`data_writer.cpp:23,26`）：`.idx` 写 `base_path`，`.dat` 写 `data_path_.empty() ? base_path_ : data_path_`。
+`_DB_META`/`_FROZEN`/`_VARS` 全部写 `base_path`（`database.cpp:475,558,573,874`）。
 
-### 1.3 base_path 的共享性 —— 当前代码的真实假设
+### 1.2 数据读取协议（`architecture.md §5.1`）
 
-ADR-0001 §3 "Master 同一 Host 约束"原文："`worker_0.idx`（Master 数据）的数据文件可能在本地磁盘，
-跨机启动时 Master 无法判断是否应加载 `worker_0.idx`，简化初始实现，避免 hostname 匹配的复杂逻辑。"
+读对象走 5 层 fallback，**数据本体走网络**：
+1. ObjectCache high（反序列化对象）
+2. ObjectCache low（压缩字节）
+3. 本地 `local_idx` → 本地 `.dat`
+4. `remote_idx` → `DataClientPool.request()` **直连目标 Worker 的 DataServer（TCP）**
+5. agent 层兜底（worker 问 master 拿位置，再直连）
 
-结合代码事实：
-- **现状（单机 / 共享 FS 场景）**：所有进程的 `base_path` 指向同一目录（NFS / 同机），idx/meta 共享可读。
-  load_db 的 `master_agent.cpp:1772` 直接读 `base_path/<writer_id>.idx` 在此场景成立。
-- **多机本地磁盘场景（fly 明确支持）**：每个 worker 的 `data_path` 指向自己机器本地盘，`.dat` 不跨机共享；
-  idx/meta 的 `base_path` 可能也各写各的本地路径。此时 **master 无法用 `base_path/<writer_id>.idx` 直接读**，
-  load_db 的主路径在此场景**部分失效**——它依赖 `send_idx_load_to_worker` 把活派给"该 hostname 的 worker"
-  去读该机器本地的 idx（`agent.py:332-340`），master 自己的 `rebuild_remote_idx_for_worker` 读 idx 那步
-  在纯本地磁盘多机下会因路径不可达而 skip（`master_agent.cpp:1773-1776` 的 `exists` 检查会失败）。
+DataServer（`data_server.cpp`）独立 epoll + send_thread_pool，`DATA_REQUEST`（msg_type=11）handler 调 `DataService::try_read_local_raw` 取本地 `.dat` 字节，`DataResponseProtocol` 两段式零拷贝回传。**与 task scheduler 完全解耦**——拉字节不占 task 执行槽。
 
-> **这是 freeze 后处理方案必须回答的核心问题**：freeze 聚合产物的"权威存放位置"在哪里，
-> 以及它如何被 master 在不依赖所有原 worker 机器可达的情况下访问到。
+### 1.3 merge 要解决什么
+
+- **不是**索引聚合（索引已在共享 base_path，master 可直读全部 `<writer_id>.idx`）。
+- **是**数据本体聚合：把分散在各 worker `data_path`（本地盘）的 `.dat`，搬到 master 可达位置，让数据库目录**自包含**——后续 `load_db` 无需原 worker 机器在线即可读取全部数据。
 
 ---
 
-## 2. 现状缺口（三层，经源码核实）
+## 2. 复用 backup 范式（已验证的跨机数据搬运）
 
-### 2.1 缺口 A：idx 未 compact（轻量，已有半成品）
+backup 是 fly 已实现的"跨 host 拉 `.dat` 字节零解压落盘"机制，merge 直接复用其原语。
 
-- `LocalIndex::compact()`（`local_index.cpp:327`）**已实现但无任何生产调用方**。
-  产物：把操作日志（BEGIN/ADD/END/REMOVE）重写为无标记的干净 ADD 段外条目（原子 `.compact` + rename）。
-- freeze 路径（`database.cpp:390-412`）未调 compact。
-- 影响：`<writer_id>.idx` 含历史 REMOVE/BEGIN/END 噪声，体积膨胀，load 读放大。
-- **本地性影响**：compact 是**纯本地操作**（改写本进程的 idx 文件），不涉及跨机，方案独立、低风险。
+### 2.1 backup 完整时序（参照）
 
-### 2.2 缺口 B：`removed_objects_` 的 `.dat` 物理数据未回收（中量，有 TODO）
+```
+触发端（3 入口殊途同归）
+  ├─ 自动：master_agent.cpp:809 evaluate_and_trigger_backup（写完/读计数超阈值）
+  └─ 手动：db.backup_object(name) → Database::backup_object（database.cpp:376）
+       │
+       ▼ 核心：跨机拉压缩字节
+  DataService::read_raw_compressed(full_name)   data_service.cpp:932
+    ├─ Tier-1 本地：try_read_local_raw → ObjectCache / local_idx → 本地 .dat
+    └─ Tier-2 跨机：DataClientPool.request(host,port,name,...)
+         ─── DATA_REQUEST(msg=11) ───▶ 源 worker DataServer
+         ◀── DATA_RESPONSE(msg=12) + raw 压缩字节（两段式零拷贝）───
+       │
+       ▼ 落盘（零解压）
+  Database::do_backup_write(full, name, compressed, hash)   database.cpp:325
+    ├─ register_write（正常登记路径）
+    ├─ writer_->write_record(... compressed_data ...)  ← 压缩字节直写 .dat，不解压
+    └─ on_write_completed → local_idx / remote_idx 自动登记
+```
 
-- `database.cpp:404-411` 显式 TODO：freeze 只记日志，聚合 `.dat` 中被 `remove_object()` 删掉的对象数据仍占空间。
-- `.dat` 结构（`data_writer.cpp:35`）：`data_<writer_id>_<NNN>.dat`，多对象追加，`IndexEntry.offset_/size_` 定位。
-- 删除单对象需重写整个 `.dat` → 即 compaction。
-- **本地性影响**：`.dat` 在写它的 worker 本地，compaction 也是**纯本地操作**（本进程重写自己的 `.dat` + 更新自己的 idx）。
-  不需要跨机搬数据。影响是磁盘膨胀，与跨机无关。
+### 2.2 merge 直接复用的原语
 
-### 2.3 缺口 C：跨 worker 索引聚合产物（重量，完全空白）
+| 原语 | 位置 | 用途 |
+|------|------|------|
+| `DataService::read_raw_compressed(name)` | `data_service.cpp:932` | **拉单个对象压缩字节**（本地优先，自动跨机回退）。merge 拉数据的核心。 |
+| `DataService::try_read_local_raw(name)` | `data_service.cpp:582` | 纯本地压缩字节读（DataServer 服务端也用它）。 |
+| `Database::do_backup_write(full, name, data, hash)` | `database.cpp:325` | **把压缩字节落盘到目标 .dat + .idx**，走正常 DataWriter 路径，索引自动登记。 |
+| `DataRequestMessage` / `DataResponseMessage` | `message_types.h:110,124` | 跨机拉单对象字节的消息（msg_type=11/12）。**无需新增**。 |
+| `select_backup_worker(source)` | `master_agent.cpp:2021` | 选目标 worker 策略（跨机优先），merge 选源/目标可借鉴。 |
 
-- architecture.md §5.3 设想的 "master 收集所有 worker idx → 合并 → 写 `merged.idx` + `_META`" **零实现**。
-- `MessageType::IDX_REQUEST=15` / `IDX_RESPONSE=16`（`message_types.h:24-25`）**仅有枚举槽位，
-  无 struct、无 handler、无 register**。
-- **本地性影响（v2 修正的核心）**：在多机本地磁盘模型下，master **没有共享 FS 可直接读所有 worker 的 idx**。
-  要聚合必须**通过网络**向各 worker 拉 idx 内容。这正是 `IDX_REQUEST/RESPONSE`（走消息体传 idx）的**真实用武之地**
-  —— v1 认为"冗余"是因为错把 idx 也当成共享 FS 上的文件；v2 修正后，**网络拉取 idx 是多机本地磁盘场景下的必要路径**。
+### 2.3 关键结论
+
+- **拉单个对象字节**：现成 API（`read_raw_compressed`）。
+- **拉一个 writer 的全部对象**：无批量协议，必须**逐对象循环**（先从共享 base_path 读该 writer 的 `.idx` 拿对象清单，再循环 `read_raw_compressed`）。
+- **落盘**：现成 API（`do_backup_write`，零解压）。
+- **`__backup_object` internal task 路径可选**：backup 的自动路径走 task scheduler（占一个 task 槽），手动路径（`db.backup_object`）不走 scheduler（进程内直连 DataServer）。**merge 选后者范式**——不占 task 槽，数据面直连。
 
 ---
 
-## 3. load_db：现有能力与局限（受本地性约束）
+## 3. merge_db API 设计
 
-### 3.1 load_db 当前流程（ADR-0001）
+### 3.1 API 形态
 
-`agent.py:276 load_db`：
-1. 读 `_DB_META`（`agent.py:286-298`）拿 `db_id` + `WorkerInfo`（含 hostname）。
-2. 按 hostname 分组 writer_ids（`agent.py:303-305`）。
-3. 缺 worker 的 hostname → spawn 新 worker 传 `--host`（`agent.py:314-323`）。
-4. 对每个 hostname，`send_idx_load_to_worker(db_id, path, writer_ids, worker_id)`（`agent.py:340`）
-   → 该 host 的 worker 读 `base_path/<writer_id>.idx` 填本地 `local_idx_`（`worker_agent.cpp:1049`）。
-5. master 收 `IdxLoadAck` 后，**自己重开 `base_path/<writer_id>.idx`** 重建 `remote_idx_`
-   （`master_agent.cpp:1772`，`rebuild_remote_idx_for_worker`）。
+```python
+fly.merge_db(path: str, target_path: str = "", target_data_path: str = "") -> '_Database'
+```
 
-### 3.2 load_db 的两种工作前提
+- **`path`**：源 db 的 `base_path`（共享存储，已 freeze）。
+- **`target_path`**（可选）：合并产物的 `base_path`。默认 `path + ".merged"`。产物自包含（`_DB_META` + 全部 `.idx` + 全部 `.dat` 在此目录）。
+- **`target_data_path`**（可选）：产物 `data_path`。默认空（`.dat` 写 target_path，纯自包含）。
+- **返回**：合并后的 `_Database` 句柄（已 register，可直接 read）。
+- **约束**：master-only（仿 `load_db`，只在 `Master` 类定义，`Worker` 调用自然 `AttributeError`）。
 
-| 场景 | 步骤 4（worker 读 idx） | 步骤 5（master 读 idx） | 结果 |
-|------|-------------------------|-------------------------|------|
-| **base_path 共享**（单机/NFS） | ✅ worker 读共享 FS | ✅ master 读同一共享 FS | 全索引恢复 |
-| **base_path 本地磁盘多机** | ✅ worker 读自己机器本地 idx | ❌ master 读 `base_path/<wid>.idx` 因路径在远端机器而 `exists==false`，skip（`master_agent.cpp:1773`） | **worker local_idx 恢复，master remote_idx 缺失** → 调度/依赖图看不到对象 |
+### 3.2 前置条件
 
-### 3.3 推论：freeze 后处理的真实价值
+- 源 db **必须已 freeze**（`is_db_frozen(db_id)` 或 `path/_FROZEN` 存在）。
+  - freeze 保证：全员已 flush（`.dat` 落盘完整）、idx 稳定、无并发写。
+  - 未 freeze → 抛 `RuntimeError("merge_db requires frozen db; call db.freeze() first")`。
+- 源 db 的所有 writer 对应的 worker **当前在线**（merge 是"趁热聚合"，不是崩溃恢复）。
+  - worker 离线 → 该 writer 的对象拉取失败 → **尽力而为**：跳过 + 在产物 `_DB_META` 记录缺失 writer 列表（见 §5-Q2）。
 
-- worker 本地的 idx/数据 compaction（缺口 A/B）**与本地性无关**，任何场景都该做，是纯收益。
-- 跨 worker 聚合（缺口 C）的价值**恰恰在多机本地磁盘场景**：让 master 在**不依赖各原 worker 机器持续可达**的前提下，
-  持有一份聚合后的全局索引，用于依赖图可见性、调度决策、对象存在性查询。
-- freeze 是天然的聚合时机：所有 worker 已 flush 完毕，idx 稳定，是拉取并聚合的全局唯一一致的快照点。
+### 3.3 merge 流程（master 主导，4 阶段）
+
+```
+fly.merge_db(path, target_path, target_data_path)
+   │
+   ▼ Phase 1: 校验 + 读源 meta
+   ├─ 检查 path/_FROZEN 存在（freeze 前置）
+   ├─ 读 path/_DB_META：db_id + WorkerInfo 列表（writer_id, hostname, worker_id）
+   └─ 在 target_path 创建空目标 Database（新 db_id 或复用源 db_id，见 Q1）
+      → 写 target_path/_DB_META header
+   │
+   ▼ Phase 2: master 从共享 base_path 读全部 idx（无需网络）
+   ├─ 对每个 WorkerInfo.writer_id：
+   │    读 path/<writer_id>.idx（LocalIndex::load，已是共享 FS）
+   │    → 收集 (writer_id → [IndexEntry]) 映射
+   └─ 此时 master 持有"全局对象清单"：每个对象在哪个 worker、哪个 .dat 的 offset/size
+   │
+   ▼ Phase 3: 逐对象跨机拉 .dat 字节 → 落盘到 target（复用 backup 原语）
+   ├─ 对每个对象 obj（按 writer 分组，便于日志/进度）：
+   │    compressed = DataService::read_raw_compressed(obj.full_name)
+   │      ├─ 本地命中（master 自写对象 / 已 cache）→ 直接用
+   │      └─ 跨机 → DataClientPool → 源 worker DataServer → 回传压缩字节
+   │    target_db.do_backup_write(obj.full_name, obj.short_name, compressed, hash)
+   │      ├─ 零解压直写 target_path/<new_writer>.idx + target_data_path/*.dat
+   │      └─ 自动登记 target 的 local_idx
+   ├─ 失败处理：单个对象失败 → 记 missing_objects，继续（尽力而为）
+   └─ 进度日志：每 N 个对象打印 progress
+   │
+   ▼ Phase 4: 收尾
+   ├─ drain_write_back（确保 target 全部落盘）
+   ├─ target_db.freeze()（产物是不可变的快照）
+   ├─ 在 target_path/_DB_META 末尾追加 merge 完成标记：
+   │    源 db_id、merge 时间、缺失 writer/对象列表（若有）
+   └─ 返回 target_db 句柄
+```
+
+### 3.4 为什么不需要新消息类型
+
+- **idx 传输**：master 从共享 `base_path` 直读 `<writer_id>.idx`（`LocalIndex::load`）。这是 load_db 已验证的路径（`master_agent.cpp:1772 rebuild_remote_idx_for_worker`）。
+- **`.dat` 传输**：复用 `DATA_REQUEST/RESPONSE`（msg=11/12），通过 `read_raw_compressed`。
+- architecture.md §5.3 设想的 `IdxRequest/IdxResponse`（msg=15/16）在双路径契约下**冗余**——索引已在共享盘。
+  - 处置：保留枚举槽位（删会动 enum 数值），加注释标 reserved/unused（见 Q5）。
 
 ---
 
-## 4. 分层实现方案（独立可交付）
+## 4. 实现触点
 
-> 三层缺口相互独立，可分别交付。A/B 纯本地；C 才涉及网络与多机。
+### 4.1 Python 层（主逻辑，仿 `Master.load_db`）
 
-### 4.1 方案 A：freeze 触发 idx compact（缺口 A，推荐先做，纯本地）
+| 文件 | 改动 |
+|------|------|
+| `src/fly/__init__.py` | 定义 `merge_db(path, target_path="", target_data_path="")` 委托 `get_agent().merge_db(...)`；加 `__all__`（仿 `load_db` line 71-82, 190） |
+| `src/agent/py/agent.py` | `Master` 类（line 98）加 `merge_db` 方法，实现 §3.3 的 4 阶段。**不动 `Worker` 类**（继承结构自然阻拦） |
 
-**目标**：freeze 时把本进程的 `<writer_id>.idx` 从操作日志格式压成干净快照。
+### 4.2 C++ 层（暴露必要能力）
 
-**改动点（2 处 + 测试）**：
-- `database.cpp:freeze()`（line 390-412）：在 `drain_write_back()` 之后、`on_flush()` 之前，调本 db writer 的
-  `LocalIndex::compact()`。
-- 测试：`src/storage/tests/database_test.cpp` 新增用例：写+删若干对象 → freeze → 断言 idx 文件无 REMOVE/BEGIN/END 标记，
-  且 `LocalIndex::load()` 能读回全部存活对象。
+现有 C++ 接口已覆盖大部分需求（`agent_export.cpp:65-194` 的 `EXAgentMaster`）：
+- `get_or_create_database(base_path, data_path, writer_id)` → 已有
+- `is_db_frozen(db_id)` → 已有
+- `register_database(db_id, base_path, data_path)` → 已有
 
-**风险**：低。compact 用临时文件 + rename 原子替换（`local_index.cpp:328,352`）；freeze 期拒绝后续写（`check_frozen()`）。
+**可能需新增**（取决于实现选择）：
+| 文件 | 改动 | 必要性 |
+|------|------|--------|
+| `src/storage/cpp/database.{h,cpp}` | `read_raw_compressed` 若未对 master 进程暴露，加包装；或直接用 DataService 单例 | 中（master 进程也能调 DataService::instance()） |
+| `src/storage/cpp/database.cpp` | `do_backup_write` 已是 private（`database.cpp:325`），merge 若跨 db 调用需暴露或新增 `merge_write` 公开接口 | 高 |
+| `src/storage/export/storage_export.cpp` | 若新增 `Database::merge_write`，加 `FLY_EXPORT_METHOD`（仿 line 294 `freeze`） | 跟随上一项 |
+| `src/agent/export/agent_export.cpp` | 若 `Master.merge_db` 需要新 C++ helper（如 `get_all_idx_entries(path)` 批量读 idx），加 `FLY_EXPORT_METHOD` | 视实现 |
 
-**本地性**：✅ 纯本进程文件操作，不涉及网络、不涉及跨机。
+### 4.3 不需要触碰
 
-### 4.2 方案 B：freeze 触发 `.dat` compaction（缺口 B，纯本地）
+- **消息类型**（`message_types.h`）：不新增。复用 `DATA_REQUEST/RESPONSE`。
+- **MessageProtocol / Reactor / DataServer**：泛型，自动适配。
+- **fly.sh install / main.cpp**：不新增模块，现有 storage/agent .so 已挂载。
+- **task scheduler**：merge 走数据面直连，不占 task 槽（仿 `db.backup_object` 手动路径）。
 
-**目标**：freeze 时把本进程被 `remove_object()` 标记的对象数据从本地 `.dat` 物理删除。
+### 4.4 测试
 
-**设计要点**：
-- 遍历 compact 后的 idx 中存活对象的 `(file_name, offset, size)`，按 `.dat` 分组。
-- 对每个本地 `data_<wid>_<NNN>.dat`：新建临时 `.dat`，按 offset 升序拷贝存活段，重建对象→新 offset 映射，
-  写新 idx（指向新 `.dat`），原子 rename。删除孤儿 `.dat`。
-- `IndexEntry.host_` / `write_context_hash_` 不变。
-
-**改动点**：`database.cpp` 新增 `compact_dat_files()`，在 freeze 的 compact idx 之后调用；
-需 `DataWriter` 暴露 dat 文件枚举/重建能力。
-
-**风险**：中。重写 `.dat` 是本地 I/O 密集操作。**建议加配置开关** `freeze_compact_dat`（默认关或按
-removed 占比阈值触发），见 §5-Q3。
-
-**本地性**：✅ 纯本进程本地文件操作（`.dat` 在写它的 worker 本地）。**不需要跨机搬数据**——
-每个 worker 只 compact 自己写的 `.dat`。
-
-**关键澄清**：方案 B **不是**把数据搬到 master，而是各 worker 各自回收自己本地 `.dat` 的死空间。
-聚合数据副本（跨机冗余）是现有 backup 机制（§5.4 / `master_agent.cpp:808`）的职责，与本方案正交。
-
-### 4.3 方案 C：跨 worker 索引网络聚合 → `merged.idx`（缺口 C）
-
-> v2 修正：此方案必须**通过网络拉取**各 worker 的 idx（多机本地磁盘下无共享 FS），
-> 正是 `IDX_REQUEST/IDX_RESPONSE` 消息的真实用途。不再视为"冗余"。
-
-#### 4.3.1 流程（freeze 后处理，master 主导）
-
-```
-freeze 全员广播完成（现有 on_database_freeze_request 已广播）
-    │
-    ▼ master 触发聚合（异步后台任务，不阻塞 freeze ack）
-    │
-    ├─ 从 _DB_META 取全部 WorkerInfo（writer_id + hostname + worker_id）
-    │
-    ├─ 对每个 writer，向其所属 worker 发 IdxRequestMessage(db_id, writer_id, base_path)
-    │     │  （MessageType::IDX_REQUEST=15 槽位已预留，需补 struct + handler）
-    │     ▼
-    │  Worker 收 IdxRequest：
-    │     ├─ 读本地 base_path/<writer_id>.idx（方案 A compact 后的干净格式）
-    │     ├─ 序列化全部 IndexEntry 为字节流
-    │     └─ 回 IdxResponseMessage(db_id, writer_id, entries_bytes)  (type=16)
-    │        （若 idx 文件不存在 / 本 worker 无此 db → 回空 entries + success=false）
-    │
-    ├─ master 收集所有 IdxResponse（带超时 + 部分成功语义，见 §5-Q2）
-    │
-    ├─ 合并全部 entries 到 base_path/merged.idx
-    │     格式 = 多 AddRecord 顺序排列（与 LocalIndex::compact 产物同构），
-    │     每个 entry 保留原始 IndexEntry 全字段（含 host_, file_name_, offset_, size_）
-    │     ── 注意：merged.idx 只聚合"索引"，不含 .dat 数据本体（见 §5-Q4）
-    │
-    └─ 收尾 _DB_META：追加 freeze 完成标记（不新建 _META，见 §5-Q1）
-```
-
-#### 4.3.2 merged.idx 的语义边界（必须明确）
-
-`merged.idx` 是**全局索引视图**，不是数据副本：
-- 它记录"每个对象在哪个 worker（host:port）的哪个本地 `.dat` 的 offset/size"。
-- 读取该对象时，master 用 merged.idx 定位 → 仍需**网络回源**到该 worker 的 DataServer 拉 `.dat` 字节。
-- 因此：**merged.idx 解决的是"索引可见性"，不解决"数据可用性"**。若某 worker 机器彻底宕机，
-  其对象的索引在 merged.idx 里可见，但读取仍会失败（除非有 backup 副本，那是另一机制）。
-
-#### 4.3.3 load_db 如何消费 merged.idx（关键改动）
-
-`agent.py:load_db` Phase 3 增加基于 merged.idx 的 master 自恢复路径，**不依赖各原 worker 机器的本地 idx 可达**：
-
-```
-Phase 3':
-if base_path/merged.idx 存在（说明 db 经历过 freeze 聚合）:
-    master 直接 load merged.idx → 重建 remote_idx_（含每个对象的 host:port 定位）
-    # 这步不再依赖 master 能读到各 worker 本地的 <writer_id>.idx
-    # 解决了 §3.2 多机本地磁盘场景下 master remote_idx 缺失问题
-    
-    各 worker 的 local_idx 恢复仍走原 IdxLoadCommand 路径（读各自机器本地 idx）
-    # 但若某 worker 机器不在/无对应 worker，其 local_idx 不可恢复——
-    # 此时该机器对象的"读"需走 remote 路径（master remote_idx 有定位，连该 host 的 DataServer）
-else:
-    退化到原 IdxLoadCommand 路径（base_path 共享场景）
-```
-
-**价值**：freeze 后产出的 `merged.idx` 让后续任何 `load_db`（即使部分原 worker 机器已下线）
-都能恢复 master 的全局调度视图——这是 v1 方案低估的核心价值，在多机本地磁盘模型下是真实痛点。
-
-#### 4.3.4 消息定义（新增，补全死枚举）
-
-`message_types.h`（枚举 15/16 已预留，补 struct）：
-
-```cpp
-struct IdxRequestMessage {
-    MessageHeader header_;
-    CMString db_id_;
-    CMString writer_id_;       // 请求哪个 writer 的 idx
-    CMString base_path_;       // worker 从此路径读 <writer_id>.idx
-    static constexpr MessageType msg_type_ = MessageType::IDX_REQUEST;
-    FLY_SERIALIZE(header_, db_id_, writer_id_, base_path_);
-};
-
-struct IdxResponseMessage {
-    MessageHeader header_;
-    CMString db_id_;
-    CMString writer_id_;
-    bool success_ = false;
-    CMString error_message_;
-    CMVector<IndexEntry> entries_;   // 直接传结构体数组（复用 IndexEntry 的 FLY_SERIALIZE）
-    static constexpr MessageType msg_type_ = MessageType::IDX_RESPONSE;
-    FLY_SERIALIZE(header_, db_id_, writer_id_, success_, error_message_, entries_);
-};
-```
-
-**大小考量**（见 §5-Q5）：大 db 的 idx 可达百万级 entry。两种选择：
-- (a) 单条 IdxResponse 装全部 entries —— 简单，但大 db 时单消息过大，需确认 MessageProtocol 的帧长度上限。
-- (b) 分页/流式（IdxResponse 带 `has_more` + `page_no`）—— 复杂，但安全。
-
-### 4.4 交付顺序（v2 调整）
-
-| 阶段 | 内容 | 本地性 | 风险 | 前置条件 |
-|------|------|--------|------|----------|
-| **P0** | 方案 A：freeze idx compact | 纯本地 | 低 | 无；独立可交付 |
-| **P1** | 方案 B：freeze `.dat` compaction（带开关） | 纯本地 | 中 | Q3 裁定 |
-| **P2** | 方案 C：网络聚合 `merged.idx` + load_db 消费 | 跨机网络 | 中高 | Q1/Q2/Q4/Q5 裁定；新增消息类型 |
-
-> A/B 与本地性解耦，任何部署形态都该做。C 是多机本地磁盘场景下的真实需求，
-> 但也是改动最大、需最多决策的一层。
+| 类型 | 文件 | 内容 |
+|------|------|------|
+| 单元 | `src/storage/tests/database_test.cpp` | `do_backup_write` / `merge_write` 跨 db 落盘正确性 |
+| QA（两阶段 run） | `qa/storage/test_merge_db.py`（仿 `qa/.../test_load_db.py`） | run1: 多 worker 各写本地 data_path → freeze；run2: `merge_db` → 校验产物自包含、可读全部对象、源 worker 不在线也能读 |
 
 ---
 
 ## 5. 开放问题（需确认）
 
-> v1 的部分问题（Q1 `_META` 命名、Q6 backup 关系、Q7 死枚举）因方案明确化已收敛，下表为 v2 精简后的待决项。
+### Q1. 产物 db_id：复用源还是新生成？
 
-### Q1. `_META` vs `_DB_META`：新建还是收尾？
+- **复用源 db_id**：产物与源同 id，object_name（`db_id:short`）不变，`load_db` 直接可用。但两个目录同 db_id 可能混淆。
+- **新生成 db_id**：产物独立，object_name 需重映射（`old_db_id:short → new_db_id:short`），`do_backup_write` 时要改 full_name。复杂。
+- **推荐**：复用源 db_id。产物视为源的"合并快照"，语义清晰。用户若需独立 id，复制目录后改 `_DB_META` header。
 
-- architecture.md §5.3 写"写 `_META`"，但 `_DB_META` 已是 writer 登记表（ADR-0001）。
-- **推荐**：不新建 `_META`，freeze 完成时在 `_DB_META` 末尾追加 freeze 完成标记（或 header 加 `frozen_at`）。
-  理由：单一元数据源；load_db 已读 `_DB_META`，零额外读路径。
+### Q2. 源 worker 部分离线的语义
 
-### Q2. IdxResponse 部分成功语义（多机不可达）
+- 尽力而为（推荐）：跳过离线 writer 的对象，产物 `_DB_META` 记录缺失列表。用户可后续对缺失部分重试。
+- 全有或全无：任一离线即失败。过严，多机常态难满足。
 
-- 某 worker 机器宕机 → 它的 IdxRequest 超时/失败。聚合是否：
-  - (a) **尽力而为**：跳过失败 writer，merged.idx 只含可达 worker 的索引（推荐，实用）。
-  - (b) **全有或全无**：任一失败则不产出 merged.idx（过严，多机常态下难满足）。
-- **推荐 (a)**，并在 `_DB_META` freeze 标记里记录"聚合缺失的 writer 列表"，供 load_db 知情。
+### Q3. 进度反馈与中断恢复
 
-### Q3. 方案 B 的 compaction 开关 / 阈值？
+- 大 db（百万对象）merge 耗时长。是否需要：
+  - 进度回调（`on_progress(current, total)`）？
+  - 中断恢复（写 `target_path/_MERGE_PROGRESS`，重跑跳过已完成对象）？
+- **推荐**：一期只做进度日志（每 N 对象 INFO），不做恢复。复杂度留待真实痛点。
 
-- 重写 `.dat` 是本地重 I/O。
-- **推荐**：`freeze_compact_dat`（默认 0=关）+ 触发阈值（如 removed 占比 > 20% 才做）。方案 A（idx compact）轻量，默认开。
+### Q4. 合并后源 db 的处置
 
-### Q4. merged.idx 的数据可用性边界（需对用户文档化）
+- merge 不删源（源仍在各 worker 本地）。
+- 用户若要清理源：手动删 `path` 目录 + 各 worker `data_path` 下对应 `.dat`（见 Q6 多机清理难题）。
 
-- 重申 §4.3.2：**merged.idx 只恢复索引，不恢复数据本体**。某 worker 机器彻底不可达时，其对象索引可见但读取仍失败。
-- 是否接受此边界？若要"机器宕机也能读"，需 freeze 时连带聚合 `.dat` 数据字节到 master（=数据副本，
-  量级远大于索引，与 backup 机制重叠）。**推荐：不在此方案做数据聚合，保持与 backup 正交。**
+### Q5. `IDX_REQUEST/IDX_RESPONSE`（msg=15/16）死枚举处置
 
-### Q5. IdxResponse 大 db 的分页策略
+- 双路径契约下确认冗余。
+- **推荐**：保留槽位 + 加注释 `// reserved, unused — idx is on shared base_path, see db-merge-design.md`。不删（避免动 enum 数值）。
 
-- 单条消息装百万级 entry 可能超帧上限。
-- **需确认**：MessageProtocol 的帧长度上限是多少？是否已有大 payload 的处理范式（参考两段式 DataResponse）？
-- 若上限足够大或可配置 → 选 §4.3.4 (a) 单条；否则选 (b) 分页。**实现前必须核实此项**。
+### Q6. 多机 data_path 物理位置不一致（清理难题）
 
-### Q6. 聚合触发时机：在线（freeze 同步）还是离线（独立命令）？
+- 各 worker 的 `data_path` 是各自机器本地路径（字符串可能相同，物理位置不同）。
+- `_DB_META` 只记 `hostname`，不记每个 writer 的 `data_path` 字符串。
+- **影响**：merge 产物自包含后，源数据清理需用户在各机器手动处理（fly 无法跨机删文件，除非新增协议）。
+- **本方案不解决**：merge 只负责"聚合到 target"，源清理是运维操作。但需文档明确告知用户。
 
-- **在线**：freeze handler 广播后自动触发聚合（异步后台任务，不阻塞 freeze ack）。语义简单（freeze 完成≈聚合完成）。
-- **离线**：提供 `fly.merge_db(path)` 或 CLI，用户显式触发。
-- **推荐**：在线异步（后台任务），freeze ack 只表示"全员已 frozen"，聚合完成后写 merged.idx + _DB_META 标记。
-  load_db 以"merged.idx 存在 + _DB_META freeze 标记"为聚合完成的判定。
+### Q7. 并发拉取
 
-### Q7. 多机 base_path 不一致问题（v2 新增，最深的问题）
-
-- 多机本地磁盘场景下，每个 worker 的 `base_path` 可能是各自机器的本地路径（如 `/data/mydb`），
-  字符串相同但物理位置不同。`_DB_META` 里只记 `hostname`，不记每个 writer 的 base_path。
-- 这导致：(a) IdxRequest 传给 worker 的 `base_path` 该填什么？(b) merged.idx 里的 IndexEntry 如何标注
-  "这个对象在哪个机器"？当前 `IndexEntry.host_` 字段（`index_entry.h:15`）记录写入时 host，可用于此。
-- **需确认**：多机部署时，`open_db(path, data_path)` 的 path 是用户传入的"逻辑路径"（各机器相同字符串）
-  还是"每机器不同物理路径"？这决定 base_path 是否需要随 WorkerInfo 持久化。
+- 逐对象串行 `read_raw_compressed` 对大 db 慢。是否并发？
+- `mapreduce.py:98 _mr_full_merge_task` 已用 `ThreadPoolExecutor` 并发读。
+- **推荐**：一期可串行（简单，DataServer 自带 send_thread_pool 并发服务）；若慢再加 ThreadPoolExecutor 客户端并发。注意 `do_backup_write` 的线程安全（WriteBackQueue 是否支持并发 enqueue，需核实）。
 
 ---
 
-## 6. 受影响文件预估（按阶段）
-
-### 方案 A（纯本地）
-- `src/storage/cpp/database.cpp` — freeze() 调 compact
-- `src/storage/tests/database_test.cpp` — 新增 freeze+compact 用例
-
-### 方案 B（纯本地）
-- `src/storage/cpp/database.{h,cpp}` — `compact_dat_files()`
-- `src/storage/cpp/data_writer.{h,cpp}` — dat 枚举/重建能力
-- `src/core/cpp/config.cpp` — `freeze_compact_dat` 开关
-- 测试：`database_test.cpp` / 新 `compaction_test.cpp`
-
-### 方案 C（跨机网络 + 新消息）
-- `src/network/cpp/message_types.h` — 补 `IdxRequestMessage` / `IdxResponseMessage`（枚举 15/16 已在）
-- `src/network/tests/message_protocol_test.cpp` — round-trip 测试
-- `src/agent/cpp/master_agent.{h,cpp}` — 聚合主控：发 IdxRequest、收 IdxResponse、写 merged.idx、_DB_META 收尾
-- `src/agent/cpp/worker_agent.{h,cpp}` — IdxRequest handler：读本地 idx 回 entries
-- `src/agent/py/agent.py:load_db` — Phase 3' merged.idx 消费路径
-- `src/storage/cpp/local_index.{h,cpp}` — 复用 load/encode，可能加 `load_merged()` / `write_merged()`
-- `src/storage/cpp/db_meta.{h,cpp}` — freeze 完成标记
-- 测试：`master_agent_test.cpp`（聚合 + 部分失败）+ agent 侧 load_db 消费 merged.idx 用例
-
----
-
-## 7. 与现有文档的对齐（实现后需同步修订）
+## 6. 与现有文档的对齐（实现后修订）
 
 | 文档 | 修订点 |
 |------|--------|
-| `docs/architecture.md` §5.3 | 标注 freeze 后处理已实现哪些层（A/B/C）；澄清 `_META` 实为 `_DB_META` 收尾 |
-| `docs/architecture.md` §6.3 消息表 | `IDX_REQUEST/RESPONSE` 从"reserved"改为"已实现"，填字段 |
-| `docs/architecture.md` §1.x 数据本地性 | 补充"多机本地磁盘"模型的明确描述（当前文档对此含糊） |
-| `docs/roadmap.md` §五降级区 F2 | 按实际交付更新状态 |
-| `docs/adr/` | 新增 ADR：记录"为何 freeze 聚合走网络 IdxRequest 而非共享 FS"（多机本地磁盘前提） |
-| `docs/adr/0001-db-meta-and-load-db.md` §3 | "Master 同一 Host 约束" 若被方案 C 解除，需更新 |
-| `CLAUDE.md` / `docs/storage/module.md` | freeze 流程 + DataServer/idx 本地性描述更新 |
+| `docs/architecture.md` §5.3 | freeze 后处理：明确"不在 freeze 时自动聚合"；指向 `fly.merge_db` 主动 API |
+| `docs/architecture.md` §3.3 | 补充 `merge_db` API 说明（base_path 共享契约下，data 聚合的网络路径） |
+| `docs/architecture.md` §6.3 消息表 | `IDX_REQUEST/RESPONSE` 标 reserved/unused + 指向本文档 |
+| `docs/roadmap.md` §五降级区 F2 | 从"降级"改为"主动 API 方案见 db-merge-design.md" |
+| `docs/adr/` | 新增 ADR：记录"merge 复用 backup 网络范式 + 索引走共享 base_path，不引入新消息"的决策 |
+| `CLAUDE.md` / `docs/storage/module.md` | 补充 merge_db API 与数据本地性说明 |
 
 ---
 
-## 8. v1 → v2 变更说明
+## 7. v1 → v2 → v3 变更说明
 
-| 项 | v1（错误前提） | v2（修正前提） |
-|----|----------------|----------------|
-| 数据本地性 | 假设 master/worker 共享 FS，直读 idx | 多机本地磁盘：`.dat` 在各 worker 本地，读走 DataServer TCP；idx 的 base_path 共享性是场景相关 |
-| IdxRequest/Response | 判定为"冗余，不实现" | 判定为"多机本地磁盘场景下必要"，纳入方案 C |
-| merged.idx 价值 | "仅 worker 不可达时的索引 fallback" | "让 master 在不依赖各原 worker 机器本地 idx 可达时，持有全局调度视图"——核心价值 |
-| 方案 C 路径 | master 本地聚合（读共享 FS） | master 主导 + 网络拉取各 worker idx（IdqRequest/Response） |
-| 开放问题 | 7 项 | 精简 + 新增 Q7（多机 base_path 一致性，最深问题） |
+| 项 | v1 | v2 | v3（本版） |
+|----|----|----|-----------|
+| base_path 共享性 | 假设共享 | "场景相关"（含糊） | **设计契约：共享**（`architecture.md §3.3` 明确） |
+| 真正本地化的对象 | 未区分 | idx + data 都可能本地 | **仅 `.dat`（data_path）本地**；idx/meta 在共享 base_path |
+| idx 传输 | 判冗余 | 判必要（网络） | **冗余**（索引在共享盘，master 直读） |
+| `.dat` 传输 | 未深入 | 提及 | **核心**，复用 backup 的 `read_raw_compressed` + `do_backup_write` |
+| 触发时机 | freeze 自动 | freeze 自动/离线 | **用户主动 API**（`fly.merge_db`），不绑 freeze |
+| 新消息类型 | 不新增 | 新增 IdxRequest/Response | **不新增**（复用 DATA_REQUEST/RESPONSE） |
+| 方案重心 | 三层缺口 | 数据本地性 | **主动 API + 复用 backup 范式** |
 
 ---
 
-*文档制定日期：2026-07-22（v2）*
-*基于 commit `e1aac14` 的源码核实 + 用户对数据本地性前提的纠正*
+*文档制定日期：2026-07-22（v3）*
+*基于 `architecture.md §3.3` 双路径契约 + commit `e1aac14` 源码核实*
