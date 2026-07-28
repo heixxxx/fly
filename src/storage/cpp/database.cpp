@@ -472,7 +472,11 @@ void Database::abort_task_writes(const CMVector<CMString>& dirty_full_names) {
 }
 
 DbMeta Database::load_meta() const {
-    CMString meta_path = base_path_ + "/_DB_META";
+    return load_meta_from_path(base_path_);
+}
+
+DbMeta Database::load_meta_from_path(const CMString& base_path) {
+    CMString meta_path = base_path + "/_DB_META";
     std::ifstream ifs(meta_path, std::ios::binary);
     if (!ifs.is_open()) {
         ERR("Cannot open meta file: {}", meta_path);
@@ -485,7 +489,6 @@ DbMeta Database::load_meta() const {
         ERR("Invalid _DB_META header size");
         return {};
     }
-
     CMString header_data(header_size, '\0');
     ifs.read(header_data.data(), header_size);
     if (!ifs) {

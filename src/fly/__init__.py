@@ -82,6 +82,30 @@ def load_db(path: str) -> '_Database':
     return get_agent().load_db(path)
 
 
+def merge_db(path: str, data_path: str = "", base_path: str = "",
+             local_workers: int = 4, delete_source: bool = True) -> '_Database':
+    """Merge a frozen database's data onto the master host.
+
+    把分散在各源 host 本地 data_path 的 .dat 数据通过网络集中到 master host，
+    产出一个 data 自包含、索引沿用共享 base_path 的合并数据库。
+
+    Must be called on the Master node. Source db must be frozen (``db.freeze()``).
+
+    Args:
+        path: 源 db 的 base_path（共享存储，必须已 freeze）。
+        data_path: 产物 data_path（master host 本地）。默认 ``path + ".merged_data"``。
+        base_path: 产物 base_path。默认空=复用源 ``path``（idx 在共享盘，零搬迁）。
+        local_workers: master host 无同 host worker 时拉起的 local worker 数（并发度）。
+        delete_source: merge 全部成功后是否自动删源各 host 的原 .dat。
+
+    Returns:
+        合并后的 ``_Database`` 句柄。
+
+    See ``docs/db-merge-design.md`` for design details.
+    """
+    return get_agent().merge_db(path, data_path, base_path, local_workers, delete_source)
+
+
 def launch_workers(configs: list):
     """Launch local worker processes.
 
@@ -187,7 +211,7 @@ def __getattr__(name):
 
 
 __all__ = [
-    'open_db', 'load_db', 'get_config', 'get_work_directory',
+    'open_db', 'load_db', 'merge_db', 'get_config', 'get_work_directory',
     'as_task', 'task_name', 'wait_obj',
     'launch_workers', 'wait_tasks',
     'restart_failed_tasks', 'get_task_error',

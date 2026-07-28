@@ -134,6 +134,11 @@ void MasterAgent::start() {
             on_idx_load_ack(conn_id, msg);
         });
 
+    reactor_->register_handler<DeleteDataAckMessage>(
+        [this](uint64_t conn_id, const DeleteDataAckMessage& msg) {
+            on_delete_data_ack(conn_id, msg);
+        });
+
     reactor_->register_handler<VarSetMessage>(
         [this](uint64_t conn_id, const VarSetMessage& msg) {
             on_var_set(conn_id, msg);
@@ -868,6 +873,8 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
             DataService::instance()->update_remote_idx(wo.object_name_, worker_id, addr.host_, addr.port_, wo.size_bytes_);
             DBG("Internal task: recorded data location: {} -> worker {}", wo.object_name_, worker_id);
         }
+        // merge task 完成路由（若是 merge task）。
+        on_merge_task_complete(msg.task_id_, worker_id, msg.written_objects_);
     }
 
     schedule_tasks();
@@ -936,6 +943,9 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
     // 非 stream 模式：task 失败 → 按 task_id 回滚 pending frozen（防永久死锁）。
     // stream 模式下 pending 为空，此处 no-op。
     rollback_pending_frozen(msg.task_id_);
+
+    // merge task 失败路由（若是 merge task，让 wait_merge_tasks_complete 收到失败信号）。
+    on_merge_task_failed(msg.task_id_, msg.error_message_);
 
     schedule_tasks();
     notify_drain_if_active();
@@ -2058,6 +2068,268 @@ void MasterAgent::trigger_auto_backup(const CMString& object_name, uint64_t sour
     backup_msg.db_id_ = db_id;
 
     on_backup_request(0, backup_msg);
+}
+
+// =============================================================================
+// DB Merge support — fly.merge_db 主动 API。详见 docs/db-merge-design.md §3.4。
+// =============================================================================
+
+uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
+                                       const CMString& short_name, const CMString& db_id,
+                                       const CMString& base_path, const CMString& target_data_path,
+                                       const CMString& source_host) {
+    uint64_t merge_task_id = remote_task_counter_.fetch_add(1);
+
+    // 登记初始 pending 状态（wait_merge_tasks_complete 等待此表）。
+    {
+        std::lock_guard<std::mutex> lk(merge_task_mutex_);
+        merge_task_states_[merge_task_id] = MergeTaskState{};
+    }
+
+    CMString full_name = db_id + ":" + short_name;
+    // 把源对象位置注入 task dependency_locations_，让 target worker 的 read_raw_compressed
+    // 直接 TIER2 命中（无需 TIER3 回查 master）。源位置从 remote_idx 取。
+    {
+        auto workers = DataService::instance()->get_remote_workers(full_name);
+        if (!workers.empty()) {
+            auto addr = DataService::instance()->get_worker_address(workers.front());
+            std::lock_guard<std::mutex> lk(dep_loc_mutex_);
+            task_dependency_locations_[merge_task_id][full_name] =
+                CachedLocation{workers.front(), addr.host_, addr.port_};
+        }
+    }
+
+    worker_manager_->assign_task(target_worker_id, merge_task_id);
+
+    TaskAssignMessage assign;
+    assign.task_id_ = merge_task_id;
+    assign.task_name_ = "__merge_object";
+    assign.task_module_ = "__fly_internal";
+    // args: [short_name, db_id, base_path, target_data_path, source_host]
+    assign.args_ = {short_name, db_id, base_path, target_data_path, source_host};
+    // write_context_hash 从 provenance 取（保持对象来源可追溯）。
+    {
+        std::lock_guard<std::mutex> lk(provenance_mutex_);
+        auto prov_it = write_provenance_.find(full_name);
+        if (prov_it != write_provenance_.end()) {
+            assign.write_context_hash_ = prov_it->second;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> wlk(workers_mutex_);
+        auto it = worker_to_conn_.find(target_worker_id);
+        if (it == worker_to_conn_.end()) {
+            ERR("send_merge_task: target worker_id={} not connected", target_worker_id);
+            std::lock_guard<std::mutex> mlk(merge_task_mutex_);
+            merge_task_states_[merge_task_id].completed_ = true;
+            merge_task_states_[merge_task_id].success_ = false;
+            merge_task_states_[merge_task_id].error_message_ = "target worker not connected";
+            merge_task_cv_.notify_all();
+            return merge_task_id;
+        }
+        reactor_->send(it->second, assign);
+    }
+
+    INFO("Merge task assigned: task_id={}, target_worker={}, object={}, target_data_path={}",
+         merge_task_id, target_worker_id, full_name, target_data_path);
+    return merge_task_id;
+}
+
+void MasterAgent::on_merge_task_complete(uint64_t task_id, uint64_t worker_id, const CMVector<WrittenObject>& written_objects) {
+    std::lock_guard<std::mutex> lk(merge_task_mutex_);
+    auto it = merge_task_states_.find(task_id);
+    if (it == merge_task_states_.end()) return;  // 非 merge task，忽略
+    it->second.completed_ = true;
+    it->second.success_ = true;
+    it->second.worker_id_ = worker_id;
+    for (const auto& wo : written_objects) {
+        it->second.written_objects_.push_back(wo.object_name_);
+    }
+    merge_task_cv_.notify_all();
+}
+
+void MasterAgent::on_merge_task_failed(uint64_t task_id, const CMString& error_message) {
+    std::lock_guard<std::mutex> lk(merge_task_mutex_);
+    auto it = merge_task_states_.find(task_id);
+    if (it == merge_task_states_.end()) return;
+    it->second.completed_ = true;
+    it->second.success_ = false;
+    it->second.error_message_ = error_message;
+    merge_task_cv_.notify_all();
+}
+
+bool MasterAgent::wait_merge_tasks_complete(const CMVector<uint64_t>& task_ids,
+                                              int64_t timeout_seconds,
+                                              CMVector<CMString>* completed_objects,
+                                              CMVector<CMString>* failed_objects) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+    bool all_ok = true;
+
+    for (uint64_t tid : task_ids) {
+        std::unique_lock<std::mutex> lk(merge_task_mutex_);
+        if (!merge_task_cv_.wait_until(lk, deadline, [this, tid] {
+            auto it = merge_task_states_.find(tid);
+            return it != merge_task_states_.end() && it->second.completed_;
+        })) {
+            // 超时：本 task 未完成。
+            all_ok = false;
+            if (failed_objects) {
+                failed_objects->push_back("TIMEOUT:merge_task_" + std::to_string(tid));
+            }
+            continue;
+        }
+        auto it = merge_task_states_.find(tid);
+        if (it->second.success_) {
+            if (completed_objects) {
+                for (const auto& name : it->second.written_objects_) {
+                    completed_objects->push_back(name);
+                }
+            }
+        } else {
+            all_ok = false;
+            if (failed_objects) {
+                failed_objects->push_back(it->second.error_message_.empty()
+                    ? ("FAILED:merge_task_" + std::to_string(tid))
+                    : it->second.error_message_);
+            }
+        }
+    }
+
+    // 不在此 erase merge_task_states_ —— cleanup_after_merge 需要读取 (object→worker)
+    // 精确映射来重建 remote_idx。cleanup 完成后负责清理这批 task 状态。
+
+    return all_ok;
+}
+
+void MasterAgent::send_delete_data(uint64_t source_worker_id,
+                                    const CMString& db_id, const CMString& base_path,
+                                    const CMVector<CMString>& writer_ids) {
+    CMString ack_key = db_id + ":" + std::to_string(source_worker_id);
+    {
+        std::lock_guard<std::mutex> lk(delete_ack_mutex_);
+        pending_delete_acks_[ack_key] = PendingDeleteData{};
+    }
+
+    DeleteDataMessage msg;
+    msg.db_id_ = db_id;
+    msg.base_path_ = base_path;
+    msg.writer_ids_ = writer_ids;
+
+    {
+        std::lock_guard<std::mutex> wlk(workers_mutex_);
+        auto it = worker_to_conn_.find(source_worker_id);
+        if (it == worker_to_conn_.end()) {
+            ERR("send_delete_data: source worker_id={} not connected", source_worker_id);
+            std::lock_guard<std::mutex> dlk(delete_ack_mutex_);
+            auto& p = pending_delete_acks_[ack_key];
+            p.completed_ = true;
+            p.success_ = false;
+            p.error_message_ = "source worker not connected";
+            delete_ack_cv_.notify_all();
+            return;
+        }
+        reactor_->send(it->second, msg);
+    }
+    INFO("DeleteData sent: worker_id={}, db_id={}, writer_ids_count={}",
+         source_worker_id, db_id, writer_ids.size());
+}
+
+void MasterAgent::on_delete_data_ack(uint64_t conn_id, const DeleteDataAckMessage& msg) {
+    // worker_id_ 在 ack 里带回；用它和 db_id 组成 key 找到 pending 项。
+    CMString ack_key = msg.db_id_ + ":" + std::to_string(msg.worker_id_);
+    std::lock_guard<std::mutex> lk(delete_ack_mutex_);
+    auto it = pending_delete_acks_.find(ack_key);
+    if (it == pending_delete_acks_.end()) {
+        DBG("DeleteDataAck for unknown key={}, ignoring", ack_key);
+        return;
+    }
+    it->second.completed_ = true;
+    it->second.success_ = msg.success_;
+    it->second.deleted_count_ = msg.deleted_count_;
+    it->second.error_message_ = msg.error_message_;
+    delete_ack_cv_.notify_all();
+    INFO("DeleteDataAck: worker_id={}, db_id={}, success={}, deleted={}",
+         msg.worker_id_, msg.db_id_, msg.success_, msg.deleted_count_);
+}
+
+void MasterAgent::cleanup_after_merge(const CMString& db_id,
+                                       const CMVector<CMString>& merged_object_full_names,
+                                       const CMVector<uint64_t>& source_worker_ids,
+                                       const CMVector<uint64_t>& merge_target_worker_ids,
+                                       const CMString& merge_base_path,
+                                       const CMString& merge_data_path) {
+    auto ds = DataService::instance();
+
+    // 1. 广播 MergeCleanupMessage 给所有 worker：清旧 local_idx/remote_idx，
+    //    按新路径 register_database + load 新 idx 重建 local_idx（同 host/共享 FS 可本地直读）。
+    //    exempt = merge target workers（已持有效 local_idx，跳过重建）。
+    MergeCleanupMessage cleanup_msg;
+    cleanup_msg.db_id_ = db_id;
+    cleanup_msg.base_path_ = merge_base_path;
+    cleanup_msg.data_path_ = merge_data_path;
+    cleanup_msg.exempt_worker_ids_ = merge_target_worker_ids;
+    {
+        std::lock_guard<std::mutex> wlk(workers_mutex_);
+        for (const auto& [wid, cid] : worker_to_conn_) {
+            reactor_->send(cid, cleanup_msg);
+        }
+    }
+    INFO("cleanup_after_merge: broadcast MergeCleanup for db_id={} to {} workers "
+         "(exempt merge targets: {})", db_id, worker_to_conn_.size(), merge_target_worker_ids.size());
+
+    // 2. 清 master 自身旧索引。
+    //    local_idx_：restore_master_idx 灌入的源 entry（指向已删源 .dat），整体清掉。
+    //    remote_idx_：整体清掉，然后用 merge_task_states_ 的精确 (object→worker) 映射重建。
+    //    必须整体清+重建（而非只删源 replica）——因为 MergeCleanup 广播后，各 worker（多进程
+    //    下独立，单进程测试共享单例）会清自己的索引；master 的 remote_idx 是全局权威视图，
+    //    必须在最后定稿为"只含实际持有数据的 merge worker"的精确状态。
+    //    用 merge_task_states_（on_merge_task_complete 记录的 worker_id）而非全量
+    //    merge_target_worker_ids，避免过度登记未实际持有数据的 worker。
+    ds->clear_local_index_for_db(db_id);
+    ds->clear_remote_index_for_db(db_id);
+
+    // 3. 从 merge_task_states_ 取精确映射，重建 remote_idx（每个对象→实际持有的 merge worker）。
+    CMUnorderedMap<CMString, CMVector<uint64_t>> obj_to_workers;  // object_name → 持有它的 worker 列表
+    {
+        std::lock_guard<std::mutex> mlk(merge_task_mutex_);
+        for (const auto& [tid, state] : merge_task_states_) {
+            if (state.success_ && state.worker_id_ != 0) {
+                for (const auto& obj : state.written_objects_) {
+                    obj_to_workers[obj].push_back(state.worker_id_);
+                }
+            }
+        }
+    }
+    int rebuilt = 0;
+    for (const auto& [obj_name, workers] : obj_to_workers) {
+        for (uint64_t wid : workers) {
+            auto addr = ds->get_worker_address(wid);
+            ds->update_remote_idx(obj_name, wid, addr.host_, addr.port_);
+        }
+        graph_->mark_data_ready(obj_name);
+        ++rebuilt;
+    }
+
+    // 4. 更新 db_registry_[db_id] 指向 merge 路径（让后续 DbPathRequest 返回正确路径）。
+    register_database(db_id, merge_base_path, merge_data_path);
+
+    // 5. 清理本批 merge task 状态（wait_merge_tasks_complete 推迟到此处 erase，
+    //    以便本方法读取 (object→worker) 精确映射）。
+    {
+        std::lock_guard<std::mutex> mlk(merge_task_mutex_);
+        for (auto it = merge_task_states_.begin(); it != merge_task_states_.end(); ) {
+            if (it->second.completed_) {
+                it = merge_task_states_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    INFO("cleanup_after_merge: done, db_id={}, rebuilt remote_idx for {} objects (precise worker mapping), "
+         "local_idx cleared, db_registry updated to base={} data={}",
+         db_id, rebuilt, merge_base_path, merge_data_path);
 }
 
 }  // namespace fly

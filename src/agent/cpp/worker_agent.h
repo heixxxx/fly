@@ -11,6 +11,7 @@
 #include <agent/cpp/pending_rpc_map.h>
 #include <common/cpp/worker_context.h>
 #include <storage/cpp/database.h>
+#include <storage/cpp/data_writer.h>
 #include <common/cpp/common_types.h>
 #include <cstdint>
 #include <thread>
@@ -185,6 +186,13 @@ private:
     
     CMUnorderedMap<CMString, CMSharedPtr<Database>> databases_;
 
+    // Merge 专用 DataWriter 缓存：target_data_path → writer。
+    // merge_db 把各源 host 的 data 集中到 master host 的 target_data_path，
+    // 按 target_data_path 复用同一个 writer（设计 §5.3：每源 host 一个 writer），
+    // 避免 per-object 构造造成文件爆炸。worker 退出时由 ~DataWriter 落盘 idx。
+    CMUnorderedMap<CMString, CMUniquePtr<DataWriter>> merge_writers_;
+    std::mutex merge_writers_mutex_;
+
     PendingRpcMap<CMString, PendingDbPath> pending_db_paths_;
 
     PendingRpcMap<CMString, PendingWriteRegister> pending_write_regs_;
@@ -218,7 +226,16 @@ private:
     void on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg);
     void on_database_freeze_notification(uint64_t conn_id, const DatabaseFreezeNotification& msg);
     void on_database_freeze_ack(uint64_t conn_id, const DatabaseFreezeAckMessage& msg);
+    void on_delete_data(uint64_t conn_id, const DeleteDataMessage& msg);
+    void on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& msg);
     void execute_internal_task(const PendingTask& task);
+    // __merge_object：跨机拉源对象压缩字节，落到 merge target_data_path（master host 本地）。
+    // 不构造 Database（避免 DataService 全局状态污染），用独立 DataWriter 直接落盘 + 手动 register。
+    // 详见 docs/db-merge-design.md §3.4 / §5.1（方案 B）。
+    void execute_merge_object(uint64_t task_id, const CMString& short_name, const CMString& db_id,
+                              const CMString& base_path, const CMString& target_data_path);
+    // 获取或创建 merge 专用 DataWriter（按 target_data_path 缓存，跨 task 复用，每源 host 一个 writer）。
+    DataWriter* get_or_create_merge_writer(const CMString& base_path, const CMString& target_data_path);
     void on_disconnect(uint64_t conn_id);
 
     // Var service handlers.

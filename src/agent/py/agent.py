@@ -1,5 +1,6 @@
 import os
 import sys
+import socket
 import threading
 import subprocess
 from abc import ABC, abstractmethod
@@ -347,6 +348,217 @@ class Master(FlyAgent):
         time.sleep(1.0)
 
         return temp_db
+
+    def merge_db(self, path: str, data_path: str = "", base_path: str = "",
+                 local_workers: int = 4, delete_source: bool = True):
+        """Merge a frozen database's data onto the master host.
+
+        把分散在各源 host 本地 data_path 的 .dat 数据通过网络集中到 master host，
+        产出一个 data 自包含、索引沿用共享 base_path 的合并数据库。
+
+        **阻塞调用**：本方法在返回前会完成全部 merge 工作（等待已有 task → 派发 merge task
+        → 等待完成 → 删源 → 状态清理）。调用方（用户脚本）在 merge 完成前不会继续执行后续代码。
+
+        **前置等待**：若调用时仍有 pending/running task，会先等待它们全部完成，保证 merge
+        期间数据分布稳定。
+
+        详见 docs/db-merge-design.md。
+
+        Args:
+            path: 源 db 的 base_path（共享存储，必须已 freeze）。
+            data_path: 产物 data_path（master host 本地）。默认 path + ".merged_data"。
+            base_path: 产物 base_path。默认空=复用源 path（idx/_DB_META 在共享盘，零搬迁）。
+            local_workers: master host 无同 host worker 时拉起的 local worker 数（并发度）。
+            delete_source: merge 全部成功后是否自动删源各 host 的原 .dat。
+
+        Returns:
+            合并后的 _Database 句柄。
+        """
+        import os
+        import time
+        from collections import defaultdict
+        try:
+            from storage.database import _Database
+        except ImportError:
+            from database import _Database
+
+        # ── Phase 1: 校验 + 读源 meta ──────────────────────────────────
+        if not os.path.isdir(path):
+            raise RuntimeError(f"merge_db: path does not exist: {path}")
+        if not os.path.isfile(os.path.join(path, "_FROZEN")):
+            raise RuntimeError(
+                f"merge_db: source db not frozen (no _FROZEN marker at {path}); "
+                "call db.freeze() first")
+
+        if not os.path.isfile(os.path.join(path, "_DB_META")):
+            raise RuntimeError(f"merge_db: no _DB_META found at {path}")
+
+        if not self._running:
+            self.start()
+
+        # 限制 1：merge 开始前，必须等待所有 pending/running task 完成。
+        # 保证 merge 期间数据分布稳定（freeze 已禁止该 db 的写入，但其他 db 的 task
+        # 可能仍在运行，其完成会改变 master/worker 状态）。merge 派发的 __merge_object
+        # task 在此之后才提交，不会被本等待误拦。
+        if self._agent.get_pending_tasks() or self._agent.get_running_tasks():
+            INFO("merge_db: waiting for pending/running tasks to complete before merge")
+            self.wait_for_all_tasks(timeout=3600)
+
+        # 静态读 _DB_META（不构造 Database，避免在已 open_db 的进程内重复 register base_path）。
+        meta = _Database.load_meta_from_path(path)
+        if not meta or not meta.db_id:
+            raise RuntimeError(f"merge_db: invalid _DB_META at {path}")
+        db_id = meta.db_id
+
+        merge_base_path = base_path if base_path else path
+        merge_data_path = data_path if data_path else (path + ".merged_data")
+        os.makedirs(merge_data_path, exist_ok=True)
+
+        # 按源 hostname 分组 writer_ids（一个 writer 属于一个 host）。
+        # _DB_META 的 WorkerInfo 是权威的 hostname 映射，但不一定覆盖全部 idx 文件
+        # （master 进程自写 _DB_META header 时的 writer_id 等）。所以以磁盘 idx 文件为全集，
+        # hostname 从 _DB_META 查，缺失的归到 source_hosts 第一个（避免漏删）。
+        import glob
+        writer_to_hostname = {}
+        for w in meta.workers:
+            writer_to_hostname[w.writer_id] = w.hostname
+
+        hostname_to_writer_ids = defaultdict(list)
+        idx_files = glob.glob(os.path.join(merge_base_path, "*.idx"))
+        for idx_file in idx_files:
+            writer_id = os.path.basename(idx_file)[:-4]  # 去掉 .idx
+            hostname = writer_to_hostname.get(writer_id)
+            if hostname is None:
+                # idx 文件不在 _DB_META 中：归到第一个已知 source host，或默认 host。
+                hostname = (meta.workers[0].hostname if meta.workers else "unknown")
+            hostname_to_writer_ids[hostname].append(writer_id)
+        source_hosts = list(hostname_to_writer_ids.keys())
+        INFO(f"merge_db: db_id={db_id}, source_hosts={source_hosts}, "
+             f"target_data_path={merge_data_path}, "
+             f"idx_files={len(idx_files)}, meta_workers={len(meta.workers)}")
+
+        # ── Phase 2: 确保目标 worker 池（master host）+ 源 host worker 就位 ──
+        existing_by_hostname = defaultdict(list)
+        for worker_id, hostname in self._agent.get_worker_hostnames():
+            existing_by_hostname[hostname].append(worker_id)
+
+        # 确保每个源 host 有在线 worker（用于被跨机读 + 接收删源命令）。
+        spawned_source = 0
+        for hostname in source_hosts:
+            if not existing_by_hostname.get(hostname):
+                self._spawn_process_worker(self._next_worker_id, {"host": hostname})
+                self._next_worker_id += 1
+                spawned_source += 1
+        if spawned_source > 0:
+            self._expected_workers += spawned_source
+            self.wait_for_all_workers(timeout=30.0)
+            existing_by_hostname = defaultdict(list)
+            for worker_id, hostname in self._agent.get_worker_hostnames():
+                existing_by_hostname[hostname].append(worker_id)
+
+        # 确保 master host 有 target worker（不传 host 的 local worker，与 master 同机）。
+        master_hostname = socket.gethostname()
+        master_host_workers = existing_by_hostname.get(master_hostname, [])
+        spawned_local = 0
+        if not master_host_workers:
+            for _ in range(max(1, local_workers)):
+                self._spawn_process_worker(self._next_worker_id, {})
+                self._next_worker_id += 1
+                spawned_local += 1
+            self._expected_workers += spawned_local
+            self.wait_for_all_workers(timeout=30.0)
+            existing_by_hostname = defaultdict(list)
+            for worker_id, hostname in self._agent.get_worker_hostnames():
+                existing_by_hostname[hostname].append(worker_id)
+            master_host_workers = existing_by_hostname.get(master_hostname, [])
+        if not master_host_workers:
+            raise RuntimeError(
+                f"merge_db: no target workers on master host '{master_hostname}'")
+
+        INFO(f"merge_db: target worker pool (master host) = {master_host_workers}")
+
+        # ── Phase 3: master 从共享 base_path 读全部 idx（按 writer 分组对象清单）──
+        writer_to_entries = {}
+        for hostname, writer_ids in hostname_to_writer_ids.items():
+            for writer_id in writer_ids:
+                entries = self._agent.restore_master_idx(db_id, merge_base_path, writer_id)
+                if entries:
+                    writer_to_entries[writer_id] = (hostname, entries)
+
+        # ── Phase 4: 派发 __merge_object tasks（按源 host 分配 target worker）──
+        # 设计 §5.3：每源 host 固定派给 master host 一个 target worker（轮转分配）。
+        host_to_target = {}
+        for i, hostname in enumerate(source_hosts):
+            host_to_target[hostname] = master_host_workers[i % len(master_host_workers)]
+
+        all_task_ids = []
+        task_count = 0
+        for writer_id, (hostname, entries) in writer_to_entries.items():
+            target_worker = host_to_target[hostname]
+            for entry in entries:
+                full = entry.object_name
+                # 剥 db_id 前缀得到 short_name
+                prefix = db_id + ":"
+                short_name = full[len(prefix):] if full.startswith(prefix) else full
+                task_id = self._agent.send_merge_task(
+                    target_worker, short_name, db_id,
+                    merge_base_path, merge_data_path, hostname)
+                all_task_ids.append(task_id)
+                task_count += 1
+
+        INFO(f"merge_db: dispatched {task_count} merge tasks across "
+             f"{len(master_host_workers)} target workers")
+
+        # 等待全部完成（"全部成功才删源"语义）。
+        ok, completed, failed = self._agent.wait_merge_tasks_complete(
+            all_task_ids, 3600)  # 1h timeout for large db
+        if ok:
+            INFO(f"merge_db: all {len(completed)} objects merged successfully")
+        else:
+            WARN(f"merge_db: {len(failed)} tasks failed (not deleting source). "
+                 f"First failure: {failed[0] if failed else 'unknown'}")
+
+        # ── Phase 5: 全部成功 → 统一删源 + 状态清理 ──────────────────────
+        source_worker_ids = []
+        if ok and delete_source:
+            for hostname, writer_ids in hostname_to_writer_ids.items():
+                host_workers = existing_by_hostname.get(hostname, [])
+                if not host_workers:
+                    WARN(f"merge_db: no worker on source host '{hostname}' to delete, "
+                         f"skipping {len(writer_ids)} writer_ids")
+                    continue
+                source_worker = host_workers[0]
+                source_worker_ids.append(source_worker)
+                self._agent.send_delete_data(
+                    source_worker, db_id, merge_base_path, writer_ids)
+                INFO(f"merge_db: sent DeleteData to worker {source_worker} on host "
+                     f"'{hostname}' for {len(writer_ids)} writers")
+            # 给删源 ack 一点时间（删源是 fire-and-forget，不阻塞返回）。
+            time.sleep(1.0)
+
+        # 状态清理（无论是否删源，merge 已改变数据分布，旧索引都失效）：
+        # 广播 MergeCleanup 让各 worker 清旧 local_idx/remote_idx + 按新路径重建 local_idx；
+        # master 自身清旧索引 + 重建 remote_idx（指向 merge target）+ 更新 db_registry。
+        if ok:
+            self._agent.cleanup_after_merge(
+                db_id, completed, source_worker_ids, master_host_workers,
+                merge_base_path, merge_data_path)
+            INFO("merge_db: cleanup_after_merge done (broadcast + master state rebuilt)")
+            # 给 worker 处理 MergeCleanup 一点时间。
+            time.sleep(0.5)
+
+        # 产物 db 句柄：用源 db_id 构造（保持 object_name = db_id:short 一致）。
+        # 用 with_id 避免生成新 db_id 触发 base_path 重复注册 ERROR。
+        # read_object 走 master remote_idx（merge task 已登记对象位置到 merge worker）。
+        try:
+            from _fly_storage import ex_stg_create_database_with_id
+            merged_db = _Database.__new__(_Database)
+            merged_db._db = ex_stg_create_database_with_id(
+                merge_base_path, merge_data_path, 0, db_id)
+        except ImportError:
+            merged_db = _Database(merge_base_path, merge_data_path)
+        INFO(f"merge_db: done, ok={ok}, merged_data at {merge_data_path}")
+        return merged_db
 
     def set_worker_property(self, prop):
         WARN("set_worker_property called on Master, ignoring")

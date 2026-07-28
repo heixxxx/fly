@@ -1,283 +1,408 @@
 # DB Merge 设计与实现方案
 
-> 状态：**设计中**（未实现）
-> 制定日期：2026-07-22（v3 — 对齐设计契约 + 主动 API）
-> 关联：`docs/architecture.md` §3.3、§5.3、§5.4、§5.6；`docs/roadmap.md` §2.2-F2、§4 决策②；`docs/adr/0001-db-meta-and-load-db.md`
+> 状态：**已实现**（v4 设计 + TDD 实现，2026-07-28）
+> 制定日期：2026-07-22（v4 设计定稿）；实现完成：2026-07-28
+> 关联：`docs/architecture.md` §3.3（双路径契约）、§5.3（freeze 后处理）、§5.4（backup）；`docs/adr/0001-db-meta-and-load-db.md`
+>
+> **实现状态**：
+> - ✅ 消息类型 `DeleteDataMessage`/`DeleteDataAck`（msg=42/43）+ `MergeCleanupMessage`（msg=44）+ round-trip 测试
+> - ✅ worker 端 `__merge_object` internal task（方案 B 独立 DataWriter）+ `on_delete_data` handler + `on_merge_cleanup` handler
+> - ✅ master 端 `send_merge_task` / `send_delete_data` / `wait_merge_tasks_complete` + `on_delete_data_ack` + `cleanup_after_merge`
+> - ✅ C++ 集成测试 `IdxLoadTest.MergeObjectEndToEnd`（master 派发 merge + delete + cleanup 全流程）
+> - ✅ Python `Master.merge_db` 5 阶段编排（含前置 task 等待 + 阻塞语义）+ `fly.merge_db` 导出
+> - ✅ merge 后状态清理：广播 MergeCleanup → 各 worker 清旧 local_idx/remote_idx + 按新路径 load idx 重建 local_idx（同 host/共享 FS 可本地直读 .dat）
+> - ✅ QA 测试 `qa/storage/test_merge_db.py`（merge + 删源 + 清理）+ `test_merge_db_waits_for_tasks.py`（前置 task 等待限制）
+> - ✅ 全量回归：50/50 C++ 单测 + 113/113 QA 通过
 
 ---
 
 ## 0. 摘要
 
-提供 **`fly.merge_db(path)` 主动 API**：用户显式调用，把一个已 freeze 的 db 中分散在各 worker 本地磁盘（`data_path`）的 `.dat` 数据，**通过网络**聚合到 master 可达的 `base_path`（共享存储），产出一个**自包含、可独立加载**的合并数据库目录。
+提供 **`fly.merge_db(path, ...)` 主动 API**：用户显式调用，把分散在各源 host 本地 `data_path` 的 `.dat` 数据**通过网络集中到 master host**，产出一个 data 自包含、索引沿用源共享 `base_path` 的合并数据库。
 
-**核心设计依据**（`architecture.md §3.3` 的双路径契约）：
-- `base_path`（**共享存储，必填**）：所有 Master/Worker 可访问，存 `_DB_META` / `_FROZEN` / `_VARS` / `<writer_id>.idx`。
-- `data_path`（**本地磁盘，可选**）：仅写数据的进程可访问，存 `.dat`。不填则退化到 base_path。
+**核心定位**（区别于 backup）：
+- backup = 跨机**冗余副本**（容灾，多副本）
+- merge = 跨机**数据集中**（聚合到单 host，源清理）
 
-因此：
-- **索引/元数据天然全局可见**（在共享 base_path）—— master 可直接读所有 `<writer_id>.idx`，**不需要任何新消息类型**来传 idx。
-- **真正本地化的是 `.dat` 数据本体**——这是 merge 要搬运的对象，必须走网络。
-- **backup 机制已实现"跨机拉 `.dat` 字节 + 零解压落盘"的完整范式**，直接复用。
+**五个已定决策**：
+1. db_id 复用源（object_name 不变）
+2. base_path 默认复用源（idx/_DB_META 在共享盘，零搬迁），API 参数可覆盖
+3. data 集中到 master host 本地 data_path
+4. 最终 data 文件按**源 host 数**约束（每源 host 的数据 → master host 上一个独立 writer）
+5. 并发走 task scheduler 派发 internal task（绕开 thread_local 障碍）；master host 无同 host worker → API 参数 `local_workers`（默认值）拉起
+
+**两个关键实现决策**：
+6. 新增 `__merge_object` internal task（task args 带 target_data_path，绕开 db_registry 单映射限制）
+7. 自动删源：master 发删除消息给各源 host worker；**必须所有 merge task 全部成功才统一删**（失败则全保留，可重试）
 
 ---
 
-## 1. 存储模型（对齐设计契约）
-
-### 1.1 双路径契约（`architecture.md §3.3`）
+## 1. 存储模型（设计契约，`architecture.md §3.3`）
 
 ```python
-db = open_db("/shared/project_a")                          # 仅共享路径
-db = open_db("/shared/project_b", data_path="/ssd/local")  # 共享 + 本地（高性能写）
+db = open_db("/shared/project_a", data_path="/ssd/local")  # 共享 + 本地
 ```
 
-| 路径 | 说明 | 必填 | 存什么 | 多机可访问性 |
-|------|------|------|--------|--------------|
-| `base_path` | 共享存储路径 | 是 | `_DB_META`、`_FROZEN`、`_VARS`、`<writer_id>.idx` | ✅ 所有 Master/Worker |
-| `data_path` | 本地磁盘路径 | 否 | `data_<wid>_<NNN>.dat`（压缩数据本体） | ❌ 仅写它的进程 |
+| 路径 | 共享性 | 存什么 |
+|------|--------|--------|
+| `base_path` | **共享**（所有 Master/Worker 可访问） | `_DB_META`、`_FROZEN`、`_VARS`、`<writer_id>.idx` |
+| `data_path` | **本地**（仅写它的进程） | `data_<wid>_<NNN>.dat`（压缩数据本体） |
 
-代码印证（`data_writer.cpp:23,26`）：`.idx` 写 `base_path`，`.dat` 写 `data_path_.empty() ? base_path_ : data_path_`。
-`_DB_META`/`_FROZEN`/`_VARS` 全部写 `base_path`（`database.cpp:475,558,573,874`）。
+代码印证：`.idx`/`_DB_META`/`_FROZEN` 全写 `base_path`（`database.cpp:475,558,573`）；`.dat` 写 `data_path_.empty() ? base_path_ : data_path_`（`data_writer.cpp:23,26`）。
 
-### 1.2 数据读取协议（`architecture.md §5.1`）
-
-读对象走 5 层 fallback，**数据本体走网络**：
-1. ObjectCache high（反序列化对象）
-2. ObjectCache low（压缩字节）
-3. 本地 `local_idx` → 本地 `.dat`
-4. `remote_idx` → `DataClientPool.request()` **直连目标 Worker 的 DataServer（TCP）**
-5. agent 层兜底（worker 问 master 拿位置，再直连）
-
-DataServer（`data_server.cpp`）独立 epoll + send_thread_pool，`DATA_REQUEST`（msg_type=11）handler 调 `DataService::try_read_local_raw` 取本地 `.dat` 字节，`DataResponseProtocol` 两段式零拷贝回传。**与 task scheduler 完全解耦**——拉字节不占 task 执行槽。
-
-### 1.3 merge 要解决什么
-
-- **不是**索引聚合（索引已在共享 base_path，master 可直读全部 `<writer_id>.idx`）。
-- **是**数据本体聚合：把分散在各 worker `data_path`（本地盘）的 `.dat`，搬到 master 可达位置，让数据库目录**自包含**——后续 `load_db` 无需原 worker 机器在线即可读取全部数据。
+**推论**：
+- 索引天然全局可见（共享盘），merge **不需要搬索引**。
+- 真正分散的是 `.dat`（各 host 本地盘），merge 的核心工作就是把它集中到 master host。
+- 跨机读 `.dat` 走 DataServer TCP（`DATA_REQUEST/RESPONSE` msg=11/12），已有完整范式。
 
 ---
 
-## 2. 复用 backup 范式（已验证的跨机数据搬运）
+## 2. API 设计
 
-backup 是 fly 已实现的"跨 host 拉 `.dat` 字节零解压落盘"机制，merge 直接复用其原语。
+### 2.1 签名
 
-### 2.1 backup 完整时序（参照）
-
-```
-触发端（3 入口殊途同归）
-  ├─ 自动：master_agent.cpp:809 evaluate_and_trigger_backup（写完/读计数超阈值）
-  └─ 手动：db.backup_object(name) → Database::backup_object（database.cpp:376）
-       │
-       ▼ 核心：跨机拉压缩字节
-  DataService::read_raw_compressed(full_name)   data_service.cpp:932
-    ├─ Tier-1 本地：try_read_local_raw → ObjectCache / local_idx → 本地 .dat
-    └─ Tier-2 跨机：DataClientPool.request(host,port,name,...)
-         ─── DATA_REQUEST(msg=11) ───▶ 源 worker DataServer
-         ◀── DATA_RESPONSE(msg=12) + raw 压缩字节（两段式零拷贝）───
-       │
-       ▼ 落盘（零解压）
-  Database::do_backup_write(full, name, compressed, hash)   database.cpp:325
-    ├─ register_write（正常登记路径）
-    ├─ writer_->write_record(... compressed_data ...)  ← 压缩字节直写 .dat，不解压
-    └─ on_write_completed → local_idx / remote_idx 自动登记
+```python
+fly.merge_db(
+    path: str,                      # 源 db 的 base_path（共享存储，必须已 freeze）
+    data_path: str = "",            # 产物 data_path（master host 本地）。默认 path + ".merged_data"
+    base_path: str = "",            # 产物 base_path。默认="" 表示复用源 path（idx 不搬）
+    local_workers: int = 4,         # master host 无同 host worker 时拉起的 local worker 数（并发度）
+    delete_source: bool = True,     # merge 全部成功后是否自动删源各 host 的原 .dat
+) -> '_Database'
 ```
 
-### 2.2 merge 直接复用的原语
+- **master-only**（仿 `load_db`，只在 `Master` 类定义，`Worker` 调用自然 `AttributeError`）。
+- 返回合并后的 `_Database` 句柄（已 register，可直接 read）。
 
-| 原语 | 位置 | 用途 |
+### 2.2 前置条件与调用约束
+
+- 源 db **必须已 freeze**（`path/_FROZEN` 存在）。freeze 保证全员 flush、idx 稳定、无并发写。
+  - 未 freeze → `RuntimeError("merge_db requires frozen db; call db.freeze() first")`。
+- 源 db 的所有 writer 对应的 host **当前有在线 worker**（merge 期间需要这些 worker 既作数据源、又可能作删除执行者）。
+  - 某 host 无在线 worker → 仿 `load_db` 流程，spawn 一个 `--host` 匹配的 worker（见 §3.2 Phase 2）。
+
+**调用约束**（保证 merge 期间数据分布稳定）：
+
+1. **前置等待**：调用 `merge_db` 时若仍有 pending/running task（任何 db 的），会**先等待它们全部完成**（`wait_for_all_tasks`，1h 超时）再开始 merge。freeze 已禁止该 db 的写入，但其他 db 的 task 完成可能改变 master/worker 状态，必须等齐。merge 派发的 `__merge_object` task 在等待之后才提交，不会被本等待误拦。
+2. **阻塞调用**：`merge_db` 是同步阻塞调用——在返回前完成全部工作（等待已有 task → 派发 merge task → 等待完成 → 删源 → 状态清理）。调用方（用户脚本）在 merge 完成前不会继续执行后续代码。master 主线程执行用户脚本，reactor 在独立线程处理消息，两者不冲突。
+
+---
+
+## 3. merge 完整流程（master 主导，5 阶段）
+
+### Phase 1: 校验 + 前置等待 + 读源 meta
+
+```
+├─ 检查 path/_FROZEN 存在（freeze 前置）
+├─ 若有 pending/running task：wait_for_all_tasks(1h)  # 限制 1：保证数据分布稳定
+├─ 读 path/_DB_META：db_id + WorkerInfo 列表（writer_id, hostname, worker_id）
+├─ 构造产物路径：
+│    merge_base_path = base_path if base_path else path   # 默认复用源
+│    merge_data_path = data_path if data_path else path + ".merged_data"
+└─ 在 master host 创建 merge_data_path 目录（本地）
+```
+
+**db_id 复用源**（决策 1）：object_name `db_id:short` 不变，`__merge_object` task 可直接用源 db_id 拉源对象。
+
+### Phase 2: 确保目标 worker 池就位
+
+```
+├─ 从 _DB_META 提取所有源 hostname 集合：source_hosts = {w.hostname for w in meta.workers}
+├─ 查 master host 上现有同 host worker：
+│    master_host_workers = [wid for wid, h in get_worker_hostnames() if h == master_hostname]
+├─ 若 master_host_workers 为空：
+│    按 local_workers 数 spawn local worker（_spawn_process_worker，不传 --host，自然同 master host）
+│    wait_for_all_workers(timeout=30)
+│    master_host_workers = 重新查询
+└─ 确认所有 source_hosts 也有在线 worker（无则 spawn --host 匹配的，仿 load_db Phase 2）
+```
+
+**目标 worker 池** = master host 上的 worker（用于执行 `__merge_object` 落盘 + 后续删源）。
+**源 worker 池** = 各 source_host 上的 worker（用于被跨机读 + 接收删除命令）。
+
+### Phase 3: master 直读共享 base_path 的全部 idx（无网络）
+
+```
+├─ 对每个 WorkerInfo.writer_id：
+│    LocalIndex idx(path + "/" + writer_id + ".idx"); idx.load()
+│    entries = idx.get_all_entries()  # IndexEntry 列表（含 object_name, file_name, offset, size, host, hash）
+└─ 按 source_host 分组：host_to_entries = {hostname: [IndexEntry, ...]}
+   （IndexEntry.host_ 字段记录写入时 host，用于分组）
+```
+
+master 此时持有"每个源 host 上有哪些对象"的完整清单。
+
+### Phase 4: 派发 `__merge_object` tasks（并发，按源 host 分配目标 worker）
+
+**关键设计**（决策 4 + 6）：
+- 最终 data 文件按源 host 数约束 → 每个源 host 的对象，固定派给 master host 上**同一个目标 worker**。
+- 这样每个目标 writer 只写自己负责的那批对象，文件数 = 源 host 数（受 aggregation_threshold 切分）。
+- 目标 worker 池轮转分配：`target_worker = master_host_workers[i % len(master_host_workers)]`。
+
+```
+target_assignments = {}  # hostname → target_worker_id
+for i, hostname in enumerate(source_hosts):
+    target_assignments[hostname] = master_host_workers[i % len(master_host_workers)]
+
+pending_merge_tasks = []  # 跟踪所有派发的 task，用于 Phase 5 的"全部完成"判定
+for hostname, entries in host_to_entries.items():
+    target_worker = target_assignments[hostname]
+    for entry in entries:
+        short_name = strip_db_id_prefix(entry.object_name)  # "db_id:short" → "short"
+        # 派发 __merge_object internal task
+        task_id = remote_task_counter_.fetch_add(1)
+        TaskAssignMessage:
+            task_name_ = "__merge_object"
+            task_module_ = "__fly_internal"
+            args_ = {short_name, db_id, merge_data_path, source_host=hostname}
+            write_context_hash_ = entry.write_context_hash_
+        reactor_->send(target_worker_conn, assign)
+        pending_merge_tasks.append((task_id, hostname, short_name))
+```
+
+**`__merge_object` task 执行体**（worker 端 `execute_internal_task` 分支，**方案 B：独立 DataWriter，不构造 Database**）：
+
+```cpp
+if (task.task_name_ == "__merge_object") {
+    // args: [short_name, db_id, base_path, target_data_path, source_host]
+    execute_merge_object(task.task_id_, short_name, db_id, base_path, target_data_path);
+}
+
+void execute_merge_object(task_id, short_name, db_id, base_path, target_data_path) {
+    full = db_id + ":" + short_name;
+    ds = DataService::instance();
+
+    // 1. 跨机拉源压缩字节（本地必 miss，自动 TIER2/TIER3 回源）。
+    auto [found, comp, ...] = ds->read_raw_compressed(full);
+
+    // 2. 解析 ObjectHeader 拿 total_size / chunk_count。
+    ObjectHeader header = ObjectHeader::deserialize(comp, ...);
+
+    // 3. 独立 DataWriter 落盘（不构造 Database，避免 DataService 全局状态污染）。
+    //    见 §5.1：Database 构造会 register/析构会 unregister，污染 db_paths_。
+    DataWriter* writer = get_or_create_merge_writer(base_path, target_data_path);
+    ds->register_database(db_id, base_path, target_data_path, writer->writer_id());
+    ds->on_write_started(db_id, full);
+    writer->write_record(full, header.total_size_, header.chunk_count_, *comp, source_hash);
+    writer->flush();
+
+    // 4. 登记 local_idx_（让本 worker DataServer 能服务 merge 后的对象）。
+    //    只登记本次新写的 entry（get_last_entry），不登记从源 idx 加载的历史 entry。
+    auto last = writer->get_last_entry(full);
+    if (last) { ds->on_write_completed(db_id, full, {last.value()}); ds->on_object_flushed(full); }
+
+    // 5. TaskComplete（不调 register_write_with_master——db 已 freeze 会被拒；
+    //    master 的 on_task_complete internal 分支已调 update_remote_idx 登记对象位置）。
+    TaskCompleteMessage complete; complete.task_id_ = task_id;
+    complete.is_internal_ = true;
+    complete.written_objects_.push_back({full, comp->size()});
+    reactor_->send(master_conn_, complete);
+}
+```
+
+**为何不用 `Database::backup_object`（方案 A）**：见 §5.1。构造 Database 会覆盖 `db_paths_[db_id]` 或触发 base_path 唯一性失败；析构会 `unregister_database` 污染全局；`do_backup_write` 需 Database 成员。方案 B 用独立 DataWriter 完全绕开。
+
+**merge_writer 缓存**：worker 维护 `merge_writers_`（target_data_path → DataWriter），跨 task 复用同一 writer（设计 §5.3：每源 host 一个 writer），避免 per-object 构造造成文件爆炸。
+
+**并发保证**：
+- task scheduler 原生并发（每 worker 一个 task 槽，多 worker 并行）。
+- master host 上多个 local worker → 多个 task 槽 → 多对象并行拉取 + 落盘。
+- DataServer send_thread_pool 并行服务跨机读请求。
+- 每个 target worker 各自的 merge_writer 互不干扰。
+
+### Phase 5: 等待全部完成 + 统一删源（决策 7）
+
+```
+├─ 等待 pending_merge_tasks 全部 TaskComplete（带总超时，如 3600s）
+│    逐个 ack 标记完成；任一 TaskFailed → 记录失败，继续等其他（不立即 abort）
+│
+├─ 判定：
+│    if 全部成功 and delete_source:
+│        进入删源流程（见下）
+│    elif 有失败:
+│        不删源（保留源 .dat），返回部分成功结果 + 缺失对象列表
+│        用户可修正后重试（重试时已成功的对象会被再次拉取覆盖，幂等）
+│
+└─ 删源流程（仅全部成功时执行）：
+     对每个 source_host：
+       找该 host 上一个在线 worker（源 worker 池）
+       发送 DeleteDataMessage(db_id, source_host 的 writer_ids, path)
+         ← 新增消息类型（见 §4.1）
+       worker 收到后：删除本地 data_path 下对应 writer_id 的 .dat 文件
+       回 DeleteDataAck
+     等待所有 DeleteDataAck
+     在源 _DB_META 追加 merge 完成标记（merge 时间、产物路径、已删源 host 列表）
+```
+
+**"全部完成才统一删"的语义保证**：
+- merge task 部分失败时，源 .dat 完整保留 → 用户重试 merge 仍能拉到全部源数据。
+- 只有 100% 成功才删源 → 删源后产物是唯一副本，但此时已验证完整。
+- 删源失败（某 host worker 离线）→ 该 host 的源保留，记入 _DB_META，不阻塞其他 host 删除。
+
+---
+
+## 4. 新增内容清单
+
+### 4.1 新增消息类型（2 个）
+
+| 消息 | 方向 | 字段 | 用途 |
+|------|------|------|------|
+| `DeleteDataMessage` | M→W | `db_id_`, `CMVector<CMString> writer_ids_`, `CMString base_path_` | 命令 worker 删除本地 data_path 下指定 writer 的 .dat |
+| `DeleteDataAck` | W→M | `worker_id_`, `db_id_`, `bool success_`, `CMString error_message_`, `int32_t deleted_count_`, `CMVector<CMString> deleted_writer_ids_` | 删除结果回报 |
+
+枚举槽位：在 `MessageType` 现有最大值后追加（当前 max=41，新增 42/43）。无需复用 `IDX_REQUEST/RESPONSE`（15/16）——那是 idx 传输的死代码，merge 不需要（索引在共享盘）。
+
+### 4.2 新增 internal task
+
+`__merge_object`（task_name，`task_module_="__fly_internal"`），在 `worker_agent.cpp:execute_internal_task` 加分支（仿 `__backup_object` line 1175）。
+
+### 4.3 新增 C++ 方法
+
+| 文件 | 方法 | 用途 |
 |------|------|------|
-| `DataService::read_raw_compressed(name)` | `data_service.cpp:932` | **拉单个对象压缩字节**（本地优先，自动跨机回退）。merge 拉数据的核心。 |
-| `DataService::try_read_local_raw(name)` | `data_service.cpp:582` | 纯本地压缩字节读（DataServer 服务端也用它）。 |
-| `Database::do_backup_write(full, name, data, hash)` | `database.cpp:325` | **把压缩字节落盘到目标 .dat + .idx**，走正常 DataWriter 路径，索引自动登记。 |
-| `DataRequestMessage` / `DataResponseMessage` | `message_types.h:110,124` | 跨机拉单对象字节的消息（msg_type=11/12）。**无需新增**。 |
-| `select_backup_worker(source)` | `master_agent.cpp:2021` | 选目标 worker 策略（跨机优先），merge 选源/目标可借鉴。 |
+| `master_agent.{h,cpp}` | `send_merge_task(target_worker, short_name, db_id, target_data_path, source_host)` | 派发单个 `__merge_object` task |
+| `master_agent.{h,cpp}` | `send_delete_data(worker_id, db_id, writer_ids, base_path)` | 派发删除命令 |
+| `master_agent.{h,cpp}` | `wait_merge_tasks_complete(task_ids, timeout)` | 等待一批 task 全部完成（复用现有 pending task 机制） |
 
-### 2.3 关键结论
-
-- **拉单个对象字节**：现成 API（`read_raw_compressed`）。
-- **拉一个 writer 的全部对象**：无批量协议，必须**逐对象循环**（先从共享 base_path 读该 writer 的 `.idx` 拿对象清单，再循环 `read_raw_compressed`）。
-- **落盘**：现成 API（`do_backup_write`，零解压）。
-- **`__backup_object` internal task 路径可选**：backup 的自动路径走 task scheduler（占一个 task 槽），手动路径（`db.backup_object`）不走 scheduler（进程内直连 DataServer）。**merge 选后者范式**——不占 task 槽，数据面直连。
-
----
-
-## 3. merge_db API 设计
-
-### 3.1 API 形态
-
-```python
-fly.merge_db(path: str, target_path: str = "", target_data_path: str = "") -> '_Database'
-```
-
-- **`path`**：源 db 的 `base_path`（共享存储，已 freeze）。
-- **`target_path`**（可选）：合并产物的 `base_path`。默认 `path + ".merged"`。产物自包含（`_DB_META` + 全部 `.idx` + 全部 `.dat` 在此目录）。
-- **`target_data_path`**（可选）：产物 `data_path`。默认空（`.dat` 写 target_path，纯自包含）。
-- **返回**：合并后的 `_Database` 句柄（已 register，可直接 read）。
-- **约束**：master-only（仿 `load_db`，只在 `Master` 类定义，`Worker` 调用自然 `AttributeError`）。
-
-### 3.2 前置条件
-
-- 源 db **必须已 freeze**（`is_db_frozen(db_id)` 或 `path/_FROZEN` 存在）。
-  - freeze 保证：全员已 flush（`.dat` 落盘完整）、idx 稳定、无并发写。
-  - 未 freeze → 抛 `RuntimeError("merge_db requires frozen db; call db.freeze() first")`。
-- 源 db 的所有 writer 对应的 worker **当前在线**（merge 是"趁热聚合"，不是崩溃恢复）。
-  - worker 离线 → 该 writer 的对象拉取失败 → **尽力而为**：跳过 + 在产物 `_DB_META` 记录缺失 writer 列表（见 §5-Q2）。
-
-### 3.3 merge 流程（master 主导，4 阶段）
-
-```
-fly.merge_db(path, target_path, target_data_path)
-   │
-   ▼ Phase 1: 校验 + 读源 meta
-   ├─ 检查 path/_FROZEN 存在（freeze 前置）
-   ├─ 读 path/_DB_META：db_id + WorkerInfo 列表（writer_id, hostname, worker_id）
-   └─ 在 target_path 创建空目标 Database（新 db_id 或复用源 db_id，见 Q1）
-      → 写 target_path/_DB_META header
-   │
-   ▼ Phase 2: master 从共享 base_path 读全部 idx（无需网络）
-   ├─ 对每个 WorkerInfo.writer_id：
-   │    读 path/<writer_id>.idx（LocalIndex::load，已是共享 FS）
-   │    → 收集 (writer_id → [IndexEntry]) 映射
-   └─ 此时 master 持有"全局对象清单"：每个对象在哪个 worker、哪个 .dat 的 offset/size
-   │
-   ▼ Phase 3: 逐对象跨机拉 .dat 字节 → 落盘到 target（复用 backup 原语）
-   ├─ 对每个对象 obj（按 writer 分组，便于日志/进度）：
-   │    compressed = DataService::read_raw_compressed(obj.full_name)
-   │      ├─ 本地命中（master 自写对象 / 已 cache）→ 直接用
-   │      └─ 跨机 → DataClientPool → 源 worker DataServer → 回传压缩字节
-   │    target_db.do_backup_write(obj.full_name, obj.short_name, compressed, hash)
-   │      ├─ 零解压直写 target_path/<new_writer>.idx + target_data_path/*.dat
-   │      └─ 自动登记 target 的 local_idx
-   ├─ 失败处理：单个对象失败 → 记 missing_objects，继续（尽力而为）
-   └─ 进度日志：每 N 个对象打印 progress
-   │
-   ▼ Phase 4: 收尾
-   ├─ drain_write_back（确保 target 全部落盘）
-   ├─ target_db.freeze()（产物是不可变的快照）
-   ├─ 在 target_path/_DB_META 末尾追加 merge 完成标记：
-   │    源 db_id、merge 时间、缺失 writer/对象列表（若有）
-   └─ 返回 target_db 句柄
-```
-
-### 3.4 为什么不需要新消息类型
-
-- **idx 传输**：master 从共享 `base_path` 直读 `<writer_id>.idx`（`LocalIndex::load`）。这是 load_db 已验证的路径（`master_agent.cpp:1772 rebuild_remote_idx_for_worker`）。
-- **`.dat` 传输**：复用 `DATA_REQUEST/RESPONSE`（msg=11/12），通过 `read_raw_compressed`。
-- architecture.md §5.3 设想的 `IdxRequest/IdxResponse`（msg=15/16）在双路径契约下**冗余**——索引已在共享盘。
-  - 处置：保留枚举槽位（删会动 enum 数值），加注释标 reserved/unused（见 Q5）。
-
----
-
-## 4. 实现触点
-
-### 4.1 Python 层（主逻辑，仿 `Master.load_db`）
+### 4.4 新增 Python API
 
 | 文件 | 改动 |
 |------|------|
-| `src/fly/__init__.py` | 定义 `merge_db(path, target_path="", target_data_path="")` 委托 `get_agent().merge_db(...)`；加 `__all__`（仿 `load_db` line 71-82, 190） |
-| `src/agent/py/agent.py` | `Master` 类（line 98）加 `merge_db` 方法，实现 §3.3 的 4 阶段。**不动 `Worker` 类**（继承结构自然阻拦） |
+| `src/fly/__init__.py` | 定义 `merge_db(...)` 委托 `get_agent().merge_db(...)`；加 `__all__`（仿 `load_db` line 71-82） |
+| `src/agent/py/agent.py` | `Master` 类加 `merge_db` 方法，实现 §3 的 5 阶段编排。**不动 `Worker` 类** |
+| `src/agent/export/agent_export.cpp` | `FLY_EXPORT_METHOD` 暴露 §4.3 的 C++ 方法（仿现有 `send_idx_load_to_worker`） |
 
-### 4.2 C++ 层（暴露必要能力）
+### 4.5 不需要触碰
 
-现有 C++ 接口已覆盖大部分需求（`agent_export.cpp:65-194` 的 `EXAgentMaster`）：
-- `get_or_create_database(base_path, data_path, writer_id)` → 已有
-- `is_db_frozen(db_id)` → 已有
-- `register_database(db_id, base_path, data_path)` → 已有
+- **索引传输消息**：不需要。idx 在共享 base_path，master 直读。
+- **MessageProtocol / Reactor / DataServer**：泛型，自动适配新消息。
+- **fly.sh install / main.cpp**：不新增模块。
+- **DataWriter / LocalIndex**：merge 落盘复用现有路径，不改。
 
-**可能需新增**（取决于实现选择）：
-| 文件 | 改动 | 必要性 |
-|------|------|--------|
-| `src/storage/cpp/database.{h,cpp}` | `read_raw_compressed` 若未对 master 进程暴露，加包装；或直接用 DataService 单例 | 中（master 进程也能调 DataService::instance()） |
-| `src/storage/cpp/database.cpp` | `do_backup_write` 已是 private（`database.cpp:325`），merge 若跨 db 调用需暴露或新增 `merge_write` 公开接口 | 高 |
-| `src/storage/export/storage_export.cpp` | 若新增 `Database::merge_write`，加 `FLY_EXPORT_METHOD`（仿 line 294 `freeze`） | 跟随上一项 |
-| `src/agent/export/agent_export.cpp` | 若 `Master.merge_db` 需要新 C++ helper（如 `get_all_idx_entries(path)` 批量读 idx），加 `FLY_EXPORT_METHOD` | 视实现 |
+---
 
-### 4.3 不需要触碰
+## 5. 关键设计权衡记录
 
-- **消息类型**（`message_types.h`）：不新增。复用 `DATA_REQUEST/RESPONSE`。
-- **MessageProtocol / Reactor / DataServer**：泛型，自动适配。
-- **fly.sh install / main.cpp**：不新增模块，现有 storage/agent .so 已挂载。
-- **task scheduler**：merge 走数据面直连，不占 task 槽（仿 `db.backup_object` 手动路径）。
+### 5.1 为何不直接用 `__backup_object`（而新增 `__merge_object` + 方案 B 独立 DataWriter）
 
-### 4.4 测试
+`__backup_object`（`worker_agent.cpp:1175`）通过 `request_db_path(db_id)` 拿 db 路径——但 `db_registry_` 是 `db_id → {base_path, data_path}` **全局单映射**（`master_agent.cpp:1124`），无法让不同 worker 对同 db_id 用不同 data_path。
 
-| 类型 | 文件 | 内容 |
+merge 需要目标 worker 落盘到 **master host 本地 data_path**（不同于源 data_path）。实现上评估了两个方案，最终选 **方案 B（独立 DataWriter，不构造 Database）**：
+
+| 方案 | 问题 | 结论 |
 |------|------|------|
-| 单元 | `src/storage/tests/database_test.cpp` | `do_backup_write` / `merge_write` 跨 db 落盘正确性 |
-| QA（两阶段 run） | `qa/storage/test_merge_db.py`（仿 `qa/.../test_load_db.py`） | run1: 多 worker 各写本地 data_path → freeze；run2: `merge_db` → 校验产物自包含、可读全部对象、源 worker 不在线也能读 |
+| A：构造临时 `Database`（base_path=源, data_path=target, db_id=源） | 构造时 `Database::Database` 调 `DataService::register_database`（`database.cpp:30`），覆盖 `db_paths_[db_id]` 或触发 base_path 唯一性失败（`data_service.cpp:104-108`）；析构调 `unregister_database`（`database.cpp:68`）污染全局；`do_backup_write` 还依赖 Database 成员 | ❌ 全局状态污染 |
+| **B：独立 `DataWriter` + 手动 DataService 登记** | DataWriter 不依赖 DataService/Database 全局状态（`data_writer.cpp` 自包含）；手动 `register_database` + `on_write_completed` 登记 local_idx_；不调 `register_write_with_master`（db 已 freeze 会被拒，改由 master `on_task_complete` internal 分支 `update_remote_idx`） | ✅ 已采用 |
+
+### 5.2 为何并发走 task scheduler 而非 master 进程内 ThreadPool
+
+`WorkerAgentContext` 全部是 `thread_local`（`worker_context.h:173-184`，`register_func_`/`record_write_func_` 等）。master 进程内开 ThreadPool 并发调 `do_backup_write` 时，worker 线程拿不到 master 注入的 callback → 失败。
+
+走 task scheduler 派发到独立 worker 进程，每个 worker 进程有自己的 `WorkerAgentContext`（main 线程注入 callback），天然支持并发。多个 master host local worker = 多进程并发 = 多 task 槽并行。
+
+### 5.3 为何 data 文件按源 host 数约束（而非合并成单文件）
+
+- **避免单巨型 .dat**：大 db 合并成单文件，后续读放大、删困难。
+- **按源 host 分组落盘**：每源 host 的数据 → master host 上一个独立 writer（一组 `data_<wid>_*.dat`），受 `aggregation_threshold` 自然切分。文件数 = 源 host 数 × 切分段数，可控。
+- **语义清晰**：merge 后能追溯"这批数据来自哪个源 host"。
+
+### 5.4 "全部完成才统一删源"的语义
+
+- **强一致性**：merge task 部分失败时源完整保留 → 重试幂等（已成功对象会被覆盖）。
+- **删源原子性**：只在 100% 成功后触发删源；删源本身尽力而为（某 host 失败不阻塞其他），失败项记入 _DB_META。
+- **代价**：大 db merge 期间双份数据（源 + 产物），需 master host 有足够磁盘。
+
+### 5.5 删源实现细节：删 data_dir 全部 .dat（而非按 writer_id 前缀）
+
+实现中发现：idx 的 `file_name_` 字段（指向 .dat）在跨进程写入场景下**可能与磁盘 .dat 文件名不一致**——master 进程和 worker 进程各自 `open_db` 创建 Database（不同 writer_id），写到同一共享 base_path，导致 idx entry 的 file_name（某进程 writer_id）与实际 .dat（另一进程 writer_id）错配。
+
+因此 `on_delete_data` 的实现不依赖 idx 解析 file_name，而是**删除源 data_dir 下全部 `data_*.dat`**。安全性保证：data_dir 是该 db 的 data_path（一个 db 一个 data_dir），所有 .dat 都属于该 db，merge 全量迁移后全删是正确的。
+
+### 5.6 merge 后状态清理：广播 MergeCleanupMessage + worker 自主重建 local_idx
+
+**问题**：merge 改变数据分布后，各进程残留的旧索引会导致读路径失效：
+- master / 各 worker 的 `local_idx_[db_id]` 仍指向已删源 .dat → TIER1 读必失败 + `Data file not found` ERR 日志
+- master / 各 worker 的 `remote_idx_[db_id]` 缓存了失效的源 worker 位置 → TIER2 远程读试源 worker（源下线时卡 30s 超时）
+
+**方案**：merge 全部成功 + 删源完成后，master 广播 `MergeCleanupMessage(db_id, base_path, data_path, exempt_worker_ids)` 给**所有 worker**，并清理自身状态：
+
+master 侧（`cleanup_after_merge`）：
+1. 广播 MergeCleanup（exempt = merge target workers，它们的新 local_idx 有效，跳过）
+2. 清自身 `local_idx_[db_id]` + `remote_idx_[db_id]`（`DataService::clear_local_index_for_db` / `clear_remote_index_for_db`，不清 ObjectCache——数据内容未变，cache 仍是正确副本）
+3. 重建 `remote_idx_`：对每个 merge 对象登记 merge target worker 位置（`update_remote_idx`），让调度/读路径找到数据
+4. 更新 `db_registry_[db_id]` 指向 merge 路径
+
+worker 侧（`on_merge_cleanup`）：
+1. 若本 worker 在 exempt 列表（merge target）→ 跳过（保留有效 local_idx）
+2. 否则清旧 `local_idx_[db_id]` + `remote_idx_[db_id]`
+3. `register_database(db_id, base_path, data_path, ...)` 更新 db_paths_
+4. **遍历共享 base_path 下所有 `.idx`，load 新 entry 到 local_idx**（新 idx 由 merge worker 写在共享盘）
+   - 若 data_path 可达（同机本地盘或共享 FS）→ 后续读可**本地直读 .dat**，不走远程读
+   - 若不可达 → local_idx 有 entry 但 .dat 读不到，TIER1 失败后回退 TIER2/TIER3（仍正确）
+
+**为什么让 worker load 新 idx 而非只清理**：merge 后 idx 在共享 base_path（master 也可达），让能访问 data_path 的 worker 重建 local_idx 后，本地读成立——减少跨机读，这正是 merge "数据集中"的核心价值。只清理而不重建会让所有 worker 都依赖远程读，浪费了集中化的收益。
+
+**不清 ObjectCache 的理由**：merge 是数据**位置迁移**，对象**内容未变**。ObjectCache 存的是压缩字节副本（位置无关），命中即返回正确数据。清了反而逼重拉，浪费。
+
+### 5.7 merge_db 读 meta 不构造 Database（静态 load_meta）
+
+`merge_db` 在已 `open_db` 的 master 进程内调用时，若构造 `_Database(path)` 读 meta 会生成新 db_id（`generate_db_id` 含随机后缀），与 open_db 的 db_id 不同但 base_path 相同 → 触发 `DataService::register_database` 的 base_path 唯一性 ERROR。
+
+修复：新增 `Database::load_meta_from_path(path)` 静态方法（不构造实例、不 register），导出为 `ex_stg_load_meta_from_path`，Python `_Database.load_meta_from_path` 包装。merge_db 用它读 meta。
+
+### 5.8 产物 db 句柄用源 db_id 构造（with_id）
+
+merge_db 返回的产物句柄用 `ex_stg_create_database_with_id(base, data, 0, db_id)` 构造（源 db_id），避免生成新 db_id 触发 base_path 重复注册。object_name 保持 `源db_id:short` 一致，read_object 走 master remote_idx（merge task 已登记对象位置到 merge worker）。
 
 ---
 
-## 5. 开放问题（需确认）
+## 6. 实现步骤建议（TDD）
 
-### Q1. 产物 db_id：复用源还是新生成？
-
-- **复用源 db_id**：产物与源同 id，object_name（`db_id:short`）不变，`load_db` 直接可用。但两个目录同 db_id 可能混淆。
-- **新生成 db_id**：产物独立，object_name 需重映射（`old_db_id:short → new_db_id:short`），`do_backup_write` 时要改 full_name。复杂。
-- **推荐**：复用源 db_id。产物视为源的"合并快照"，语义清晰。用户若需独立 id，复制目录后改 `_DB_META` header。
-
-### Q2. 源 worker 部分离线的语义
-
-- 尽力而为（推荐）：跳过离线 writer 的对象，产物 `_DB_META` 记录缺失列表。用户可后续对缺失部分重试。
-- 全有或全无：任一离线即失败。过严，多机常态难满足。
-
-### Q3. 进度反馈与中断恢复
-
-- 大 db（百万对象）merge 耗时长。是否需要：
-  - 进度回调（`on_progress(current, total)`）？
-  - 中断恢复（写 `target_path/_MERGE_PROGRESS`，重跑跳过已完成对象）？
-- **推荐**：一期只做进度日志（每 N 对象 INFO），不做恢复。复杂度留待真实痛点。
-
-### Q4. 合并后源 db 的处置
-
-- merge 不删源（源仍在各 worker 本地）。
-- 用户若要清理源：手动删 `path` 目录 + 各 worker `data_path` 下对应 `.dat`（见 Q6 多机清理难题）。
-
-### Q5. `IDX_REQUEST/IDX_RESPONSE`（msg=15/16）死枚举处置
-
-- 双路径契约下确认冗余。
-- **推荐**：保留槽位 + 加注释 `// reserved, unused — idx is on shared base_path, see db-merge-design.md`。不删（避免动 enum 数值）。
-
-### Q6. 多机 data_path 物理位置不一致（清理难题）
-
-- 各 worker 的 `data_path` 是各自机器本地路径（字符串可能相同，物理位置不同）。
-- `_DB_META` 只记 `hostname`，不记每个 writer 的 `data_path` 字符串。
-- **影响**：merge 产物自包含后，源数据清理需用户在各机器手动处理（fly 无法跨机删文件，除非新增协议）。
-- **本方案不解决**：merge 只负责"聚合到 target"，源清理是运维操作。但需文档明确告知用户。
-
-### Q7. 并发拉取
-
-- 逐对象串行 `read_raw_compressed` 对大 db 慢。是否并发？
-- `mapreduce.py:98 _mr_full_merge_task` 已用 `ThreadPoolExecutor` 并发读。
-- **推荐**：一期可串行（简单，DataServer 自带 send_thread_pool 并发服务）；若慢再加 ThreadPoolExecutor 客户端并发。注意 `do_backup_write` 的线程安全（WriteBackQueue 是否支持并发 enqueue，需核实）。
+| 步骤 | 内容 | 验证 |
+|------|------|------|
+| 1 | 新增 `DeleteDataMessage`/`DeleteDataAck` 消息 + round-trip 测试 | `message_protocol_test.cpp` |
+| 2 | worker 端 `__merge_object` task 分支（构造临时 Database + `backup_object`） | `worker_agent_test.cpp` 单测：mock 源对象 → merge 到 target_data_path |
+| 3 | master 端 `send_merge_task` / `send_delete_data` / `wait_merge_tasks_complete` | `master_agent_test.cpp` 单测 |
+| 4 | Python `Master.merge_db` 5 阶段编排 | QA 两阶段 run（见下） |
+| 5 | `fly.merge_db` 导出 + `__all__` | `test_executor.py` 风格 |
+| 6 | QA: 多 host 写本地 data_path → freeze → merge_db → 校验产物自包含 + 源已删 | `qa/storage/test_merge_db.py` |
 
 ---
 
-## 6. 与现有文档的对齐（实现后修订）
+## 7. 开放问题（少量，不阻塞实现）
 
-| 文档 | 修订点 |
-|------|--------|
-| `docs/architecture.md` §5.3 | freeze 后处理：明确"不在 freeze 时自动聚合"；指向 `fly.merge_db` 主动 API |
-| `docs/architecture.md` §3.3 | 补充 `merge_db` API 说明（base_path 共享契约下，data 聚合的网络路径） |
-| `docs/architecture.md` §6.3 消息表 | `IDX_REQUEST/RESPONSE` 标 reserved/unused + 指向本文档 |
-| `docs/roadmap.md` §五降级区 F2 | 从"降级"改为"主动 API 方案见 db-merge-design.md" |
-| `docs/adr/` | 新增 ADR：记录"merge 复用 backup 网络范式 + 索引走共享 base_path，不引入新消息"的决策 |
-| `CLAUDE.md` / `docs/storage/module.md` | 补充 merge_db API 与数据本地性说明 |
+### Q1. `merge_data_path` 的默认值
 
----
+默认 `path + ".merged_data"`。但若 base_path 复用源（默认），则 data_path 也在源 base_path 同目录下——可能与其他 db 的 data_path 冲突？需确认 master host 本地路径唯一性。**倾向**：默认用 `path + ".merged_data"`，用户也可显式传。
 
-## 7. v1 → v2 → v3 变更说明
+### Q2. merge 期间源 db 的读并发
 
-| 项 | v1 | v2 | v3（本版） |
-|----|----|----|-----------|
-| base_path 共享性 | 假设共享 | "场景相关"（含糊） | **设计契约：共享**（`architecture.md §3.3` 明确） |
-| 真正本地化的对象 | 未区分 | idx + data 都可能本地 | **仅 `.dat`（data_path）本地**；idx/meta 在共享 base_path |
-| idx 传输 | 判冗余 | 判必要（网络） | **冗余**（索引在共享盘，master 直读） |
-| `.dat` 传输 | 未深入 | 提及 | **核心**，复用 backup 的 `read_raw_compressed` + `do_backup_write` |
-| 触发时机 | freeze 自动 | freeze 自动/离线 | **用户主动 API**（`fly.merge_db`），不绑 freeze |
-| 新消息类型 | 不新增 | 新增 IdxRequest/Response | **不新增**（复用 DATA_REQUEST/RESPONSE） |
-| 方案重心 | 三层缺口 | 数据本地性 | **主动 API + 复用 backup 范式** |
+merge 时源 worker 仍可能被其他任务读。`__merge_object` 的 `read_raw_compressed` 是只读拉取，不影响源。删源阶段才需保证无并发读（freeze 已保证无新写，但读仍在）。**倾向**：删源前再次确认无活跃读（或接受读失败，因为 freeze 后 read-only db 通常无持续读）。
+
+### Q3. 产物 freeze 状态
+
+merge 完成后产物是否自动 freeze？**倾向**：是。产物是不可变快照，freeze 后语义清晰，且防止误写。在 Phase 5 末尾调 `target_db.freeze()`。
+
+### Q4. IDX_REQUEST/RESPONSE 死枚举（15/16）处置
+
+确认冗余（索引在共享盘）。**倾向**：保留槽位 + 加注释 `// reserved, unused — idx is on shared base_path, see db-merge-design.md`。
 
 ---
 
-*文档制定日期：2026-07-22（v3）*
-*基于 `architecture.md §3.3` 双路径契约 + commit `e1aac14` 源码核实*
+## 8. v1 → v2 → v3 → v4 演进
+
+| 维度 | v1 | v2 | v3 | v4（定稿） |
+|------|----|----|----|-----------|
+| 前提 | 共享 FS | data 本地 | base_path 共享契约 | 同 v3 |
+| 触发 | freeze 自动 | freeze/离线 | 主动 API | **主动 API** |
+| 搬运对象 | idx 合并 | idx+data | .dat（复用 backup） | **.dat 集中到 master host** |
+| 并发 | 未明 | 网络 idx | 未明 | **task scheduler + local workers** |
+| 文件组织 | merged.idx | merged.idx | 自包含单目录 | **按源 host 数约束** |
+| 删源 | 不涉及 | 不涉及 | 不涉及 | **全部成功后统一删** |
+| 新消息 | 无 | IdxReq/Resp | 无 | **DeleteData + Ack** |
+| base_path | 新建 | 新建 | 新建 | **默认复用源** |
+
+---
+
+*文档制定日期：2026-07-22（v4 定稿）*
+*基于 `architecture.md §3.3` 双路径契约 + commit `e1aac14` 源码核实 + 用户 7 项决策*

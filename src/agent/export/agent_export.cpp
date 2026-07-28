@@ -5,6 +5,7 @@
 #include <agent/cpp/worker_agent.h>
 #include <storage/cpp/data_service.h>
 #include <memory>
+#include <tuple>
 
 FLY_EXPORT_MODULE(_fly_agent) {
 
@@ -191,6 +192,49 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                                             const fly::CMVector<fly::CMString>& writer_ids,
                                                             uint64_t worker_id) {
         self.rebuild_remote_idx_for_worker(db_id, base_path, writer_ids, worker_id);
+    })
+    // ── DB Merge support (fly.merge_db 主动 API) ──
+    // 派发单个 __merge_object internal task，返回 task_id。
+    FLY_EXPORT_METHOD("send_merge_task", [](fly::MasterAgent& self,
+                                              uint64_t target_worker_id,
+                                              const fly::CMString& short_name,
+                                              const fly::CMString& db_id,
+                                              const fly::CMString& base_path,
+                                              const fly::CMString& target_data_path,
+                                              const fly::CMString& source_host) -> uint64_t {
+        return self.send_merge_task(target_worker_id, short_name, db_id, base_path, target_data_path, source_host);
+    })
+    // 命令源 worker 删除本地 .dat。
+    FLY_EXPORT_METHOD("send_delete_data", [](fly::MasterAgent& self,
+                                               uint64_t source_worker_id,
+                                               const fly::CMString& db_id,
+                                               const fly::CMString& base_path,
+                                               const fly::CMVector<fly::CMString>& writer_ids) {
+        self.send_delete_data(source_worker_id, db_id, base_path, writer_ids);
+    })
+    // 等待一批 merge task 完成。返回 (all_ok, completed_objects, failed_objects)。
+    // 注意：lambda body 内不能有"顶层逗号"（预处理器不识别花括号分组，会把多变量声明的
+    // 逗号当成宏参数分隔），所以 completed/failed 分别声明。
+    // 用 fly_export::make_tuple 返回 Python tuple（std::tuple 的 nanobind 转换需额外注册，
+    // 直接构造 Python tuple 更简单）。
+    FLY_EXPORT_METHOD("wait_merge_tasks_complete", [](fly::MasterAgent& self,
+                                                        const fly::CMVector<uint64_t>& task_ids,
+                                                        int64_t timeout_seconds) -> fly_export::object {
+        fly::CMVector<fly::CMString> completed;
+        fly::CMVector<fly::CMString> failed;
+        bool ok = self.wait_merge_tasks_complete(task_ids, timeout_seconds, &completed, &failed);
+        return fly_export::make_tuple(ok, std::move(completed), std::move(failed));
+    })
+    // merge 全部成功后的状态清理：广播 MergeCleanup + 清 master 自身旧索引 + 重建 remote_idx。
+    FLY_EXPORT_METHOD("cleanup_after_merge", [](fly::MasterAgent& self,
+                                                  const fly::CMString& db_id,
+                                                  const fly::CMVector<fly::CMString>& merged_object_full_names,
+                                                  const fly::CMVector<uint64_t>& source_worker_ids,
+                                                  const fly::CMVector<uint64_t>& merge_target_worker_ids,
+                                                  const fly::CMString& merge_base_path,
+                                                  const fly::CMString& merge_data_path) {
+        self.cleanup_after_merge(db_id, merged_object_full_names, source_worker_ids,
+                                  merge_target_worker_ids, merge_base_path, merge_data_path);
     });
 
 // VarPayload: a {var_name, value, type_name} triple inlined into TaskAssignMessage.

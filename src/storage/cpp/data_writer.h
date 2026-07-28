@@ -53,6 +53,7 @@ public:
 
     int64_t total_bytes_written() const;
     int32_t file_count() const;
+    CMString writer_id() const { return writer_id_; }
 
     std::optional<IndexEntry> get_last_entry(const CMString& object_name);
     std::optional<CMVector<IndexEntry>> get_all_entries(const CMString& object_name);

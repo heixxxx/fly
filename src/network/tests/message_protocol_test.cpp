@@ -668,7 +668,11 @@ TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::VAR_REMOVE)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::VAR_BROADCAST)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DATABASE_FREEZE_ACK)));
-    EXPECT_FALSE(is_valid_message_type(42));  // upper bound is 41
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DELETE_DATA)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DELETE_DATA_ACK)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MERGE_CLEANUP)));
+    EXPECT_FALSE(is_valid_message_type(45));  // upper bound is 44
+    EXPECT_FALSE(is_valid_message_type(0));
 }
 
 // Net-probe messages (network-aware read priority): request asks the peer to
@@ -708,6 +712,90 @@ TEST(MessageProtocolTest, NetProbeResponseCarriesPayload) {
     ASSERT_EQ(decoded.payload_.size(), 4096u);
     EXPECT_EQ(decoded.payload_[0], 0u);
     EXPECT_EQ(decoded.payload_[4095], 255u);
+}
+
+TEST(MessageProtocolTest, DeleteDataMessageRoundTrip) {
+    DeleteDataMessage msg;
+    msg.header_.type_ = MessageType::DELETE_DATA;
+    msg.db_id_ = "abc123def4";
+    msg.base_path_ = "/shared/proj_a";
+    msg.writer_ids_ = {"worker_0", "worker_1", "worker_2"};
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    DeleteDataMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.db_id_, "abc123def4");
+    EXPECT_EQ(decoded.base_path_, "/shared/proj_a");
+    ASSERT_EQ(decoded.writer_ids_.size(), 3u);
+    EXPECT_EQ(decoded.writer_ids_[0], "worker_0");
+    EXPECT_EQ(decoded.writer_ids_[1], "worker_1");
+    EXPECT_EQ(decoded.writer_ids_[2], "worker_2");
+    EXPECT_TRUE(buffer.empty());
+}
+
+TEST(MessageProtocolTest, DeleteDataAckRoundTrip) {
+    DeleteDataAckMessage ack;
+    ack.header_.type_ = MessageType::DELETE_DATA_ACK;
+    ack.worker_id_ = 7;
+    ack.db_id_ = "abc123def4";
+    ack.success_ = true;
+    ack.deleted_count_ = 3;
+    ack.error_message_ = "";
+    ack.deleted_writer_ids_ = {"worker_0", "worker_1", "worker_2"};
+
+    CMString encoded = MessageProtocol::encode(ack);
+    CMString buffer = encoded;
+
+    DeleteDataAckMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.worker_id_, 7u);
+    EXPECT_EQ(decoded.db_id_, "abc123def4");
+    EXPECT_TRUE(decoded.success_);
+    EXPECT_EQ(decoded.deleted_count_, 3);
+    ASSERT_EQ(decoded.deleted_writer_ids_.size(), 3u);
+    EXPECT_EQ(decoded.deleted_writer_ids_[0], "worker_0");
+}
+
+TEST(MessageProtocolTest, DeleteDataAckFailurePath) {
+    DeleteDataAckMessage ack;
+    ack.header_.type_ = MessageType::DELETE_DATA_ACK;
+    ack.db_id_ = "xyz789";
+    ack.success_ = false;
+    ack.error_message_ = "data_path not accessible";
+    ack.deleted_writer_ids_ = {};  // 部分成功时可能为空
+
+    CMString encoded = MessageProtocol::encode(ack);
+    CMString buffer = encoded;
+
+    DeleteDataAckMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_FALSE(decoded.success_);
+    EXPECT_EQ(decoded.error_message_, "data_path not accessible");
+    EXPECT_TRUE(decoded.deleted_writer_ids_.empty());
+}
+
+TEST(MessageProtocolTest, MergeCleanupMessageRoundTrip) {
+    MergeCleanupMessage msg;
+    msg.header_.type_ = MessageType::MERGE_CLEANUP;
+    msg.db_id_ = "merge_db_002";
+    msg.base_path_ = "/shared/db";
+    msg.data_path_ = "/ssd/merged_data";
+    msg.exempt_worker_ids_ = {5, 6};  // merge target workers 免清理
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    MergeCleanupMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.db_id_, "merge_db_002");
+    EXPECT_EQ(decoded.base_path_, "/shared/db");
+    EXPECT_EQ(decoded.data_path_, "/ssd/merged_data");
+    ASSERT_EQ(decoded.exempt_worker_ids_.size(), 2u);
+    EXPECT_EQ(decoded.exempt_worker_ids_[0], 5u);
+    EXPECT_EQ(decoded.exempt_worker_ids_[1], 6u);
+    EXPECT_TRUE(buffer.empty());
 }
 
 }  // namespace fly

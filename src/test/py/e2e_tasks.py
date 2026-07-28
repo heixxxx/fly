@@ -7,6 +7,14 @@ def write_data(db, key, value):
 
 
 @as_task()
+def slow_write(db, key, value, delay):
+    """写入对象前 sleep delay 秒（用于测试 merge_db 的前置 task 等待限制）。"""
+    import time
+    time.sleep(delay)
+    db.write_object(key, value)
+
+
+@as_task()
 def failing_task(db, key, error_msg):
     raise RuntimeError(error_msg)
 
@@ -190,6 +198,19 @@ def write_after_freeze(db, key, value):
 def fanout_write(db, keys, values):
     for k, v in zip(keys, values):
         write_data(db, k, v)
+
+
+@as_task(inputs=lambda db, keys, expected: [db.get_full_name(k) for k in keys])
+def fanout_read_verify(db, keys, expected):
+    """读取多个对象并校验值，全部正确返回 True（用于验证 merge 后数据可读）。
+
+    声明全部 keys 为数据依赖，确保 task 在这些对象就绪后才调度执行。
+    """
+    for k, exp in zip(keys, expected):
+        val = db.read_object(k)
+        if val != exp:
+            return False
+    return True
 
 
 @as_task(requires=["gpu"])

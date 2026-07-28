@@ -133,6 +133,16 @@ public:
 
     void remove_local_index(const CMString& object_name);
 
+    // 整 db 清除 local_idx_（不碰 ObjectCache —— 用于 merge 后清理：数据位置迁移，
+    // 内容未变，cache 仍是正确副本）。merge_db 把源对象迁到 master host 后，
+    // master/源 worker 的 local_idx_ 仍残留指向已删源 .dat 的 entry，导致 TIER1
+    // 读必失败 + ERR 日志。此接口整体清掉一个 db 的 local_idx_。
+    void clear_local_index_for_db(const CMString& db_id);
+
+    // 整 db 清除 remote_idx_（不碰 ObjectCache）。merge 后各 worker 缓存的源 worker
+    // 位置已失效（源 .dat 已删），不清会导致 TIER2 远程读试源 worker 失败。
+    void clear_remote_index_for_db(const CMString& db_id);
+
     bool has_local_object(const CMString& object_name) const;
 
     void on_object_flushed(const CMString& object_name);

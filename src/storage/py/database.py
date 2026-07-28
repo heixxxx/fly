@@ -134,6 +134,15 @@ class _Database:
     def load_meta(self):
         return self._db.load_meta()
 
+    @staticmethod
+    def load_meta_from_path(base_path: str):
+        """静态读 _DB_META，不构造 Database 实例（不触发 DataService register）。
+
+        用于 merge_db 等场景：在已 open_db 的进程内读 meta 而不重复注册 base_path。
+        """
+        from _fly_storage import ex_stg_load_meta_from_path
+        return ex_stg_load_meta_from_path(base_path)
+
     def reset(self):
         self._db.reset()
 

@@ -48,10 +48,13 @@ enum class MessageType : uint8_t {
     DATABASE_FREEZE_ACK = 39,  // master → worker: freeze ack (success / DB_ALREADY_FROZEN)
     NET_PROBE_REQUEST = 40,   // worker → peer (data plane): measure RTT/bandwidth
     NET_PROBE_RESPONSE = 41,  // peer → worker: echoes back a payload of requested size
+    DELETE_DATA = 42,         // master → worker: 删除本地 data_path 下指定 writer 的 .dat（merge 后清理源）
+    DELETE_DATA_ACK = 43,     // worker → master: 删除结果回报
+    MERGE_CLEANUP = 44,       // master → worker (broadcast): merge 完成后清理 local_idx 残留
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 41;
+    return raw >= 1 && raw <= 44;
 }
 
 struct MessageHeader {
@@ -528,6 +531,62 @@ struct VarBroadcastMessage {
 
     static constexpr MessageType msg_type_ = MessageType::VAR_BROADCAST;
     FLY_SERIALIZE(header_, var_name_, is_modification_reject_);
+};
+
+// =============================================================================
+// DB Merge — merge_db 主动 API 的源清理消息。
+// merge_db 把分散在各源 host 本地 data_path 的 .dat 集中到 master host 后，
+// master 向各源 host worker 发 DELETE_DATA 命令删除已迁移的源 .dat。
+// 详见 docs/db-merge-design.md §4.1。
+// =============================================================================
+
+// master → worker: 命令 worker 删除本地 data_path 下指定 writer 的 .dat 文件。
+// writer_ids_ 列出待删 writer；worker 删除这些 writer 在 base_path_ 对应 data_path 下的所有 .dat。
+struct DeleteDataMessage {
+    MessageHeader header_;
+    CMString db_id_;
+    CMString base_path_;            // 源 db base_path（worker 据此定位 data_path）
+    CMVector<CMString> writer_ids_; // 待删 writer 列表
+
+    static constexpr MessageType msg_type_ = MessageType::DELETE_DATA;
+    FLY_SERIALIZE(header_, db_id_, base_path_, writer_ids_);
+};
+
+// worker → master: 删除结果回报。
+struct DeleteDataAckMessage {
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMString db_id_;
+    bool success_ = false;
+    int32_t deleted_count_ = 0;     // 实际删除的 .dat 文件数
+    CMString error_message_;
+    CMVector<CMString> deleted_writer_ids_;  // 成功删除的 writer 列表
+
+    static constexpr MessageType msg_type_ = MessageType::DELETE_DATA_ACK;
+    FLY_SERIALIZE(header_, worker_id_, db_id_, success_, deleted_count_, error_message_, deleted_writer_ids_);
+};
+
+// master → worker (broadcast): merge 全部确认成功后，命令各 worker 清理旧 local_idx_[db_id]
+// + remote_idx_[db_id]，并按新路径（base_path + data_path）重建 local_idx，使同 host / 共享 FS
+// 的 worker 能直接本地读 .dat（不再走远程读）。
+//
+// merge 把源数据迁到 master host 的 data_path 后：
+//  - 各 worker 旧的 local_idx/remote_idx 残留指向已删源 .dat 的位置 → 读必失败
+//  - 新 idx 在共享 base_path（merge worker 写的 <merge_writer_id>.idx）
+//  - 新 .dat 在 data_path（master host 本地或共享盘）
+// worker 收到此消息后清旧索引，并尝试 load 新 idx 重建 local_idx：
+//  - 若 data_path 可达（同机本地盘或共享 FS）→ 本地直读 .dat
+//  - 若不可达 → local_idx 为空，读走 TIER2/TIER3 回源到持有数据的 worker
+// 详见 docs/db-merge-design.md §5.5（merge 后状态清理）。
+struct MergeCleanupMessage {
+    MessageHeader header_;
+    CMString db_id_;
+    CMString base_path_;       // merge 后 base_path（idx 所在，通常复用源共享 base_path）
+    CMString data_path_;       // merge 后 data_path（.dat 所在，master host 本地）
+    CMVector<uint64_t> exempt_worker_ids_;  // merge target worker（已持有效 local_idx，跳过重建）
+
+    static constexpr MessageType msg_type_ = MessageType::MERGE_CLEANUP;
+    FLY_SERIALIZE(header_, db_id_, base_path_, data_path_, exempt_worker_ids_);
 };
 
 }  // namespace fly

@@ -240,6 +240,18 @@ void DataService::remove_local_index(const CMString& object_name) {
     }
 }
 
+void DataService::clear_local_index_for_db(const CMString& db_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    local_idx_.erase(db_id);
+    DBG("clear_local_index_for_db: cleared local_idx for db_id={}", db_id);
+}
+
+void DataService::clear_remote_index_for_db(const CMString& db_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    remote_idx_.erase(db_id);
+    DBG("clear_remote_index_for_db: cleared remote_idx for db_id={}", db_id);
+}
+
 bool DataService::has_local_object(const CMString& object_name) const {
     auto [db_id, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);

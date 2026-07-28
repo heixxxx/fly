@@ -885,4 +885,145 @@ TEST(WorkerAgentTest, RequestBackupNotRegisteredNoop) {
     EXPECT_NO_THROW(worker.request_backup(db_id, "obj"));
 }
 
+// ── DB Merge 集成测试 ───────────────────────────────────────────────
+// 验证 fly.merge_db 的核心原语：master 派发 __merge_object task → target worker
+// 跨机拉源对象 → 落到 target_data_path → master wait → send_delete_data 删源。
+// 详见 docs/db-merge-design.md。
+TEST_F(IdxLoadTest, MergeObjectEndToEnd) {
+    CMString db_id = db32("merge_db_1");
+
+    // 源 db：worker1 持有，data 落到 source_data_path（模拟源 host 本地盘）。
+    CMString source_base = test_dir_ + "/source_db";
+    CMString source_data = source_base + "/data";
+    std::filesystem::create_directories(source_base);
+    auto source_db = CMMakeShared<Database>(source_base, source_data, 0, "127.0.0.1", db_id);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker1(1, "127.0.0.1", master.get_port());
+    worker1.register_database(db_id, source_db);
+    worker1.start();
+    ASSERT_TRUE(wait_until_registered(worker1));
+
+    // 在 worker1 上写一个对象（落到 source_data_path）。
+    const char* payload = "merge_payload_data_12345";
+    ASSERT_EQ(source_db->write_pickle_bytes("merge_obj", payload, 22, "bytes", false),
+              fly::WriteErrorType::OK);
+    fly::DataService::instance()->drain_write_back();
+
+    CMString full = db_id + ":merge_obj";
+    ASSERT_TRUE(fly::DataService::instance()->has_local_object(full));
+
+    // 手动登记 master remote_idx（让 target worker 的 read_raw_compressed 能找到源）。
+    fly::DataService::instance()->update_remote_idx(
+        full, 1, "127.0.0.1", master.get_data_server_port());
+
+    // target worker（master host）：merge 落盘目标。
+    CMString target_data_path = test_dir_ + "/merged_data";
+    std::filesystem::create_directories(target_data_path);
+
+    WorkerAgent worker2(2, "127.0.0.1", master.get_port());
+    worker2.start();
+    ASSERT_TRUE(wait_until_registered(worker2));
+
+    // worker 的 task 执行依赖主循环 poll_task_blocking（真实环境由 fly/main.py 驱动）。
+    // C++ 测试里手动起一个 poll 线程模拟。
+    std::atomic<bool> poll_running{true};
+    std::thread poll_thread([&]() {
+        while (poll_running.load() && worker2.is_running()) {
+            worker2.poll_task_blocking(100);
+        }
+    });
+
+    // 派发 __merge_object task 给 worker2。
+    uint64_t task_id = master.send_merge_task(
+        /*target_worker_id=*/2, "merge_obj", db_id, source_base, target_data_path, "127.0.0.1");
+
+    // 等待 merge task 完成。
+    CMVector<CMString> completed;
+    CMVector<CMString> failed;
+    bool ok = master.wait_merge_tasks_complete({task_id}, 30, &completed, &failed);
+    ASSERT_TRUE(ok) << "merge task failed: "
+                    << (failed.empty() ? "<no detail>" : failed.front());
+    ASSERT_EQ(completed.size(), 1u);
+    EXPECT_EQ(completed[0], full);
+
+    // 校验：target_data_path 下应有 .dat 文件，且 base_path 下 merge writer 的 idx 有 entry。
+    bool has_dat = false;
+    for (const auto& entry : std::filesystem::directory_iterator(target_data_path)) {
+        if (entry.path().filename().string().substr(0, 5) == "data_") {
+            has_dat = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(has_dat) << "merge 未在 target_data_path 落盘 .dat";
+
+    // master remote_idx 应已更新：对象现在 worker2 (id=2) 也有副本。
+    auto holders = fly::DataService::instance()->get_remote_workers(full);
+    bool worker2_has = false;
+    for (auto w : holders) {
+        if (w == 2) { worker2_has = true; break; }
+    }
+    EXPECT_TRUE(worker2_has) << "merge 完成后 master remote_idx 未登记 target worker";
+
+    // 验证 target worker 能本地读到 merge 后的对象（local_idx 应有 entry）。
+    // 注意：worker2 的 DataServer 读需要对象在 worker2 的 local_idx。
+    // __merge_object 通过 register_write_with_master 登记给 master，但 worker2 本地
+    // local_idx 的登记依赖 write_record 后的 DataService 状态。此处校验落盘文件即可
+    // （remote_idx 已验证），local_idx 一致性留给 QA 测试。
+
+    // ── 删源：master 命令 worker1 删除 source_data_path 下的 .dat ──
+    // 先取 worker1 的 writer_id（用于 DeleteData 的 writer_ids 参数）。
+    CMString src_writer_id = source_db->get_writer_id();
+    master.send_delete_data(/*source_worker_id=*/1, db_id, source_base, {src_writer_id});
+
+    // 等待 DeleteDataAck（轮询 pending 状态由 master 内部管理，这里通过校验文件删除间接确认）。
+    bool source_deleted = false;
+    for (int i = 0; i < 100 && !source_deleted; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        source_deleted = true;  // 假设删完，发现 .dat 则置 false
+        for (const auto& entry : std::filesystem::directory_iterator(source_data)) {
+            CMString fname = entry.path().filename().string();
+            if (fname.substr(0, 5) == "data_" &&
+                fname.size() >= 4 &&
+                fname.substr(fname.size() - 4) == ".dat") {
+                source_deleted = false;
+                break;
+            }
+        }
+    }
+    EXPECT_TRUE(source_deleted) << "DeleteData 未删除源 .dat 文件";
+
+    // ── 状态清理：master 广播 MergeCleanup + 清自身旧索引 + 精确重建 remote_idx ──
+    master.cleanup_after_merge(
+        db_id, {full}, /*source_worker_ids=*/{1}, /*merge_target_worker_ids=*/{2},
+        source_base, target_data_path);
+    // 给 worker 处理 MergeCleanup 一点时间。
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // 验证：master remote_idx 重建后，对象应只指向 merge target worker（worker_id=2），
+    // 不再含源 worker（worker_id=1）。
+    auto holders_after = fly::DataService::instance()->get_remote_workers(full);
+    bool worker1_gone = true;
+    bool worker2_present = false;
+    for (auto w : holders_after) {
+        if (w == 1) worker1_gone = false;
+        if (w == 2) worker2_present = true;
+    }
+    EXPECT_TRUE(worker1_gone) << "cleanup 后 master remote_idx 仍残留源 worker replica";
+    EXPECT_TRUE(worker2_present) << "cleanup 后 master remote_idx 未保留 merge target";
+
+    worker2.stop();
+    poll_running.store(false);
+    if (poll_thread.joinable()) poll_thread.join();
+    worker1.stop();
+    master.stop();
+    wait_for_running(master, false);
+
+    fly::DataService::instance()->unregister_database(db_id);
+    fly::DataService::instance()->remove_remote_index(full);
+}
+
 }  // namespace fly

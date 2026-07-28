@@ -442,6 +442,12 @@ FLY_EXPORT_FUNCTION("ex_stg_create_database_with_id", [](const CMString& base_pa
     return CMMakeShared<Database>(base_path, data_path, writer_id, "", db_id);
 });
 
+// 静态读 _DB_META，不构造 Database（避免 merge_db 重复 register base_path）。
+FLY_EXPORT_FUNCTION("ex_stg_load_meta_from_path",
+    [](const CMString& base_path) -> DbMeta {
+        return Database::load_meta_from_path(base_path);
+    });
+
 FLY_EXPORT_FUNCTION("ex_stg_compute_write_context_hash",
     [](const CMString& task_name, const CMString& task_module,
        const CMVector<CMString>& args, const CMVector<CMString>& inputs) -> CMString {

@@ -85,6 +85,9 @@ public:
     void put_temp_data(const CMString& object_name, FlyBufferPtr compressed_data);
 
     DbMeta load_meta() const;
+    // 静态读 _DB_META，不构造 Database 实例（不触发 DataService register_database，
+    // 避免 merge_db 在已 open_db 的进程内重复注册同 base_path）。
+    static DbMeta load_meta_from_path(const CMString& base_path);
 
     CMString get_db_id() const;
     void set_db_id(const CMString& db_id);

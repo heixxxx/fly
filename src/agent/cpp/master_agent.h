@@ -111,6 +111,42 @@ public:
                                         const CMVector<CMString>& writer_ids, uint64_t worker_id);
     void set_master_hostname(const CMString& hostname);
 
+    // ── DB Merge support (fly.merge_db 主动 API) ──────────────────────────
+    // 派发单个 __merge_object internal task 给 target_worker：跨机拉源对象，
+    // 落到 target_data_path（master host 本地）。返回派发的 task_id（用于 wait_merge_tasks_complete）。
+    // 详见 docs/db-merge-design.md §3.4。
+    uint64_t send_merge_task(uint64_t target_worker_id,
+                              const CMString& short_name, const CMString& db_id,
+                              const CMString& base_path, const CMString& target_data_path,
+                              const CMString& source_host);
+    // 命令 source_worker 删除本地 data_path 下指定 writer 的 .dat（merge 成功后清理源）。
+    void send_delete_data(uint64_t source_worker_id,
+                           const CMString& db_id, const CMString& base_path,
+                           const CMVector<CMString>& writer_ids);
+    // 等待一批 merge task 全部完成（TaskComplete/TaskFailed）。返回全部成功的对象名列表；
+    // 失败的对象在 failed_objects。merge 的"全部成功才删源"语义依赖此同步点（设计 §5.4）。
+    bool wait_merge_tasks_complete(const CMVector<uint64_t>& task_ids,
+                                    int64_t timeout_seconds,
+                                    CMVector<CMString>* completed_objects = nullptr,
+                                    CMVector<CMString>* failed_objects = nullptr);
+    // merge 全部成功后的状态清理：
+    //  1. 广播 MergeCleanupMessage 给所有 worker，命令它们清 local_idx_[db_id]
+    //     （exempt_worker_ids = merge target workers，保留它们有效的新 local_idx）
+    //  2. 清 master 自身 DataService local_idx_[db_id]（restore_master_idx 灌入的源 entry）
+    //  3. 清 master remote_idx_ 里指向源 worker 的 replica（保留 merge worker replica），
+    //     避免首读试源 worker（源下线时卡 30s 网络超时）
+    //  4. 更新 db_registry_[db_id] 指向 merge 路径（让后续 DbPathRequest 返回正确路径）
+    // 不清 ObjectCache（数据内容未变，cache 是正确副本）。
+    void cleanup_after_merge(const CMString& db_id,
+                              const CMVector<CMString>& merged_object_full_names,
+                              const CMVector<uint64_t>& source_worker_ids,
+                              const CMVector<uint64_t>& merge_target_worker_ids,
+                              const CMString& merge_base_path,
+                              const CMString& merge_data_path);
+    // merge task 完成/失败回调（由 on_task_complete / on_task_failed 的 internal 分支调用）。
+    void on_merge_task_complete(uint64_t task_id, uint64_t worker_id, const CMVector<WrittenObject>& written_objects);
+    void on_merge_task_failed(uint64_t task_id, const CMString& error_message);
+
 private:
     CMString host_;
     uint16_t port_;
@@ -178,6 +214,32 @@ private:
     mutable std::mutex frozen_dbs_mutex_;
     static std::atomic<uint64_t> remote_task_counter_;
 
+    // ── Merge task 跟踪（fly.merge_db）──────────────────────────────────
+    // 每个 merge __merge_object task 的状态，由 on_merge_task_complete/Failed 更新，
+    // wait_merge_tasks_complete 等待。设计 §5.4：全部成功才删源。
+    struct MergeTaskState {
+        bool completed_ = false;
+        bool success_ = false;
+        CMString error_message_;
+        CMVector<CMString> written_objects_;  // 成功时填入（full_name 列表）
+        uint64_t worker_id_ = 0;  // 执行 merge task 的 worker（精确的对象持有者）
+    };
+    CMUnorderedMap<uint64_t, MergeTaskState> merge_task_states_;
+    mutable std::mutex merge_task_mutex_;
+    std::condition_variable merge_task_cv_;
+
+    // ── DeleteData ack 跟踪（merge 删源）──────────────────────────────
+    // key = (db_id + ":" + worker_id) 的字符串，避免多 worker/db 并发删除时 ack 串台。
+    struct PendingDeleteData {
+        bool completed_ = false;
+        bool success_ = false;
+        int32_t deleted_count_ = 0;
+        CMString error_message_;
+    };
+    CMUnorderedMap<CMString, PendingDeleteData> pending_delete_acks_;
+    mutable std::mutex delete_ack_mutex_;
+    std::condition_variable delete_ack_cv_;
+
     void schedule_tasks();
     void assign_task_to_worker(uint64_t task_id, uint64_t worker_id);
     void update_dependency_location_cache(const CMString& object_name, uint64_t worker_id, const CMString& host, int32_t port);
@@ -201,6 +263,7 @@ private:
     void on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg);
     void on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg);
     void on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg);
+    void on_delete_data_ack(uint64_t conn_id, const DeleteDataAckMessage& msg);
 
     // Var service handlers.
     void on_var_set(uint64_t conn_id, const VarSetMessage& msg);
