@@ -32,6 +32,10 @@ bash qa/run_qa_tests.sh        # Legacy wrapper, same thing
 
 **QA case 脚本不需要 `sys.path.insert`** — fly 启动时已自动配好所有模块路径。获取 fly binary 路径用 `get_fly_binary()`，不要硬编码 `bazel-bin/...`。
 
+### 开发流程：直接推送到 main（不建分支）
+
+当前处于早期开发阶段，**直接在 `main` 分支提交并推送，不创建 feature 分支**。commit 后直接 `git push`（pre-push hook 自动跑全量校验）。待项目进入稳定期再切换为分支模型。
+
 ### Pre-push hook（push 前自动校验）
 
 `.git/hooks/pre-push` 在每次 `git push` 前自动跑 **build → unit test → 全量 QA**，任一阶段失败即阻止 push。**禁止以 `git push --no-verify` 绕过** —— 失败时必须修复根因让流水线自然通过。详见 [`docs/push-hook.md`](docs/push-hook.md)。
