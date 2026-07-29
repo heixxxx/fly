@@ -536,6 +536,31 @@ def document(doc: UserDoc):
 
 _HELP_REGISTRY: dict = {}   # api_name -> UserDoc（模块级全局）
 
+# 延迟加载钩子：help 查询前调用，触发重业务模块（如 solver）的 @document 注册。
+# 由 bootstrap 注册，避免 userdoc 直接依赖业务模块（保持 userdoc 纯粹）。
+_HELP_LAZY_LOADERS: list = []   # list[callable]
+_HELP_LAZY_DONE = False
+
+
+def register_lazy_loader(loader):
+    """注册一个延迟加载钩子（callable，无参）。help 首次查询时统一触发，幂等。"""
+    global _HELP_LAZY_DONE
+    _HELP_LAZY_LOADERS.append(loader)
+    _HELP_LAZY_DONE = False     # 新钩子注册后重置，确保下次 help 触发
+
+
+def _run_lazy_loaders():
+    """触发所有延迟加载钩子（幂等，仅首次执行）。"""
+    global _HELP_LAZY_DONE
+    if _HELP_LAZY_DONE:
+        return
+    for loader in _HELP_LAZY_LOADERS:
+        try:
+            loader()
+        except Exception:
+            pass
+    _HELP_LAZY_DONE = True
+
 
 def _format_param_line(p):
     """渲染单行参数说明：name : type [required/default] desc。"""
@@ -622,6 +647,9 @@ def help(keyword=None, detail=False, all=False):
 
     经 ``from fly import help`` 引入，不污染 builtins。
     """
+    # 触发延迟加载钩子（如 solver 的 @document 注册），确保查询前 registry 完整
+    _run_lazy_loaders()
+
     # all=True：输出全部 API 的完整详情
     if all:
         if not _HELP_REGISTRY:
