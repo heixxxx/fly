@@ -1347,8 +1347,8 @@ void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_n
 
 void WorkerAgent::on_delete_data(uint64_t conn_id, const DeleteDataMessage& msg) {
     touch_master_contact();
-    INFO("DeleteData received: db_id={}, base_path={}, writer_ids_count={}",
-         msg.db_id_, msg.base_path_, msg.writer_ids_.size());
+    INFO("DeleteData received: db_id={}, data_path={}, writer_ids_count={}",
+         msg.db_id_, msg.data_path_, msg.writer_ids_.size());
 
     DeleteDataAckMessage ack;
     ack.worker_id_ = worker_id_;
@@ -1357,19 +1357,11 @@ void WorkerAgent::on_delete_data(uint64_t conn_id, const DeleteDataMessage& msg)
     int32_t deleted = 0;
     CMVector<CMString> deleted_writers;
     try {
-        // 取源 db 的 data_path：先查本地 databases_，否则用 DbPathRequest 向 master 要。
-        CMString data_path;
-        auto db_it = databases_.find(msg.db_id_);
-        if (db_it != databases_.end()) {
-            data_path = db_it->second->get_data_path();
-        } else {
-            request_db_path(msg.db_id_);
-            auto db = get_database(msg.db_id_);
-            if (db) {
-                data_path = db->get_data_path();
-            }
-        }
-        CMString data_dir = data_path.empty() ? msg.base_path_ : data_path;
+        // 直接用消息显式指定的 data_path_（源 data_path），不查 db_registry ——
+        // cleanup_after_merge 会把 master 的 db_registry 更新到 merge 路径，若删源在
+        // cleanup 之后执行，db_registry 解析会拿到错误的（merge 后的）路径。
+        // data_path_ 空时兜底用 base_path_（向后兼容无 data_path_ 的旧调用方）。
+        CMString data_dir = msg.data_path_.empty() ? msg.base_path_ : msg.data_path_;
 
         // merge 语义：全部数据已迁到 master host，源 data_dir 下所有 .dat 都应清理。
         // data_dir 是该 db 的 data_path（一个 db 一个 data_dir），删全部 .dat 是安全的。
@@ -1410,53 +1402,57 @@ void WorkerAgent::on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& 
     touch_master_contact();
     auto ds = DataService::instance();
 
-    // 检查本 worker 是否在免清理列表（merge target worker 已持有效 local_idx，跳过）。
+    // 检查本 worker 是否在免清理列表（merge target worker 已持有效 local_idx，跳过清理）。
     bool exempt = false;
     for (uint64_t wid : msg.exempt_worker_ids_) {
         if (wid == worker_id_) { exempt = true; break; }
     }
-    if (exempt) {
-        INFO("MergeCleanup: worker_id={} exempt (merge target), keeping state for db_id={}",
-             worker_id_, msg.db_id_);
-        return;
-    }
 
-    // 1. 清旧索引（指向已删源 .dat / 失效源 worker 位置）。
-    //    不碰 ObjectCache（数据内容未变，cache 仍是正确副本）。
-    ds->clear_local_index_for_db(msg.db_id_);
-    ds->clear_remote_index_for_db(msg.db_id_);
+    if (!exempt) {
+        // 1. 清旧索引（指向已删源 .dat / 失效源 worker 位置）。
+        //    不碰 ObjectCache（数据内容未变，cache 仍是正确副本）。
+        ds->clear_local_index_for_db(msg.db_id_);
+        ds->clear_remote_index_for_db(msg.db_id_);
 
-    // 2. 更新 db_paths_ 指向 merge 后的新路径。
-    ds->register_database(msg.db_id_, msg.base_path_, msg.data_path_, "");
+        // 2. 更新 db_paths_ 指向 merge 后的新路径。
+        ds->register_database(msg.db_id_, msg.base_path_, msg.data_path_, "");
 
-    // 3. 尝试 load 新 idx 重建 local_idx（新 idx 由 merge worker 写在共享 base_path）。
-    //    若 data_path 可达（同机本地盘或共享 FS），后续读可本地直读 .dat，不走远程读。
-    //    遍历 base_path 下所有 *.idx 文件（merge 后的 idx 集合）。
-    int32_t loaded = 0;
-    try {
-        namespace fs = std::filesystem;
-        if (fs::exists(msg.base_path_)) {
-            for (const auto& entry : fs::directory_iterator(msg.base_path_)) {
-                CMString fname = entry.path().filename().string();
-                if (fname.size() >= 4 &&
-                    fname.substr(fname.size() - 4) == ".idx") {
-                    LocalIndex idx(entry.path().string());
-                    idx.load();
-                    auto entries = idx.get_all_entries();
-                    if (!entries.empty()) {
-                        ds->restore_entries(msg.db_id_, entries);
-                        ++loaded;
+        // 3. 尝试 load 新 idx 重建 local_idx（新 idx 由 merge worker 写在共享 base_path）。
+        //    若 data_path 可达（同机本地盘或共享 FS），后续读可本地直读 .dat，不走远程读。
+        int32_t loaded = 0;
+        try {
+            namespace fs = std::filesystem;
+            if (fs::exists(msg.base_path_)) {
+                for (const auto& entry : fs::directory_iterator(msg.base_path_)) {
+                    CMString fname = entry.path().filename().string();
+                    if (fname.size() >= 4 &&
+                        fname.substr(fname.size() - 4) == ".idx") {
+                        LocalIndex idx(entry.path().string());
+                        idx.load();
+                        auto entries = idx.get_all_entries();
+                        if (!entries.empty()) {
+                            ds->restore_entries(msg.db_id_, entries);
+                            ++loaded;
+                        }
                     }
                 }
             }
+        } catch (const std::exception& e) {
+            WARN("MergeCleanup: failed to load idx from {}: {}", msg.base_path_, e.what());
         }
-    } catch (const std::exception& e) {
-        WARN("MergeCleanup: failed to load idx from {}: {}", msg.base_path_, e.what());
+        INFO("MergeCleanup: db_id={}, cleared old idx, loaded {} new idx files, "
+             "base={} data={} on worker_id={}",
+             msg.db_id_, loaded, msg.base_path_, msg.data_path_, worker_id_);
+    } else {
+        INFO("MergeCleanup: worker_id={} exempt (merge target), keeping state for db_id={}",
+             worker_id_, msg.db_id_);
     }
 
-    INFO("MergeCleanup: db_id={}, cleared old idx, loaded {} new idx files, "
-         "base={} data={} on worker_id={}",
-         msg.db_id_, loaded, msg.base_path_, msg.data_path_, worker_id_);
+    // 无论 exempt 与否，都回 MergeCleanupAck（master 的全局一致性屏障需要收齐所有 worker）。
+    MergeCleanupAckMessage ack;
+    ack.worker_id_ = worker_id_;
+    ack.db_id_ = msg.db_id_;
+    reactor_->send(conn_id, ack);
 }
 
 }  // namespace fly

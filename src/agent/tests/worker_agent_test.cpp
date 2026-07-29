@@ -969,29 +969,33 @@ TEST_F(IdxLoadTest, MergeObjectEndToEnd) {
     EXPECT_TRUE(worker2_has) << "merge 完成后 master remote_idx 未登记 target worker";
 
     // 验证 target worker 能本地读到 merge 后的对象（local_idx 应有 entry）。
-    // 注意：worker2 的 DataServer 读需要对象在 worker2 的 local_idx。
-    // __merge_object 通过 register_write_with_master 登记给 master，但 worker2 本地
-    // local_idx 的登记依赖 write_record 后的 DataService 状态。此处校验落盘文件即可
-    // （remote_idx 已验证），local_idx 一致性留给 QA 测试。
+    // __merge_object 不调 register_write_with_master（db 已 freeze 会被拒），而是通过
+    // TaskComplete(is_internal_=true) 回报，master 的 on_task_complete internal 分支调
+    // update_remote_idx 登记对象位置（已由上方 worker2_has 验证）。worker2 本地 local_idx
+    // 的登记由 execute_merge_object 的 on_write_completed 完成（此处校验落盘文件即可，
+    // local_idx 一致性留给 QA 多进程测试）。
 
     // ── 删源：master 命令 worker1 删除 source_data_path 下的 .dat ──
     // 先取 worker1 的 writer_id（用于 DeleteData 的 writer_ids 参数）。
     CMString src_writer_id = source_db->get_writer_id();
-    master.send_delete_data(/*source_worker_id=*/1, db_id, source_base, {src_writer_id});
+    master.send_delete_data(/*source_worker_id=*/1, db_id, source_base,
+                            /*data_path=*/source_data, {src_writer_id});
 
-    // 等待 DeleteDataAck（轮询 pending 状态由 master 内部管理，这里通过校验文件删除间接确认）。
-    bool source_deleted = false;
-    for (int i = 0; i < 100 && !source_deleted; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        source_deleted = true;  // 假设删完，发现 .dat 则置 false
-        for (const auto& entry : std::filesystem::directory_iterator(source_data)) {
-            CMString fname = entry.path().filename().string();
-            if (fname.substr(0, 5) == "data_" &&
-                fname.size() >= 4 &&
-                fname.substr(fname.size() - 4) == ".dat") {
-                source_deleted = false;
-                break;
-            }
+    // 同步等待 DeleteDataAck（验证 ack 等待机制工作，且消除轮询的 flaky）。
+    fly::CMVector<uint64_t> del_failed;
+    bool del_ok = master.wait_delete_data_acks({1}, db_id, 10, &del_failed);
+    EXPECT_TRUE(del_ok) << "DeleteData ack should succeed";
+    EXPECT_TRUE(del_failed.empty()) << "no failed source workers expected";
+
+    // 校验源 .dat 已删除（ack 成功即已删，这里二次确认文件确实没了）。
+    bool source_deleted = true;
+    for (const auto& entry : std::filesystem::directory_iterator(source_data)) {
+        CMString fname = entry.path().filename().string();
+        if (fname.substr(0, 5) == "data_" &&
+            fname.size() >= 4 &&
+            fname.substr(fname.size() - 4) == ".dat") {
+            source_deleted = false;
+            break;
         }
     }
     EXPECT_TRUE(source_deleted) << "DeleteData 未删除源 .dat 文件";

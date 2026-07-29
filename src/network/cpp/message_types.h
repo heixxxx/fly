@@ -50,11 +50,12 @@ enum class MessageType : uint8_t {
     NET_PROBE_RESPONSE = 41,  // peer → worker: echoes back a payload of requested size
     DELETE_DATA = 42,         // master → worker: 删除本地 data_path 下指定 writer 的 .dat（merge 后清理源）
     DELETE_DATA_ACK = 43,     // worker → master: 删除结果回报
-    MERGE_CLEANUP = 44,       // master → worker (broadcast): merge 完成后清理 local_idx 残留
+    MERGE_CLEANUP = 44,       // master → worker (broadcast): merge 完成后清理 local_idx/remote_idx 残留
+    MERGE_CLEANUP_ACK = 45,   // worker → master: cleanup 完成回报（merge_db 返回前的全局一致性屏障）
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 44;
+    return raw >= 1 && raw <= 45;
 }
 
 struct MessageHeader {
@@ -540,16 +541,20 @@ struct VarBroadcastMessage {
 // 详见 docs/db-merge-design.md §4.1。
 // =============================================================================
 
-// master → worker: 命令 worker 删除本地 data_path 下指定 writer 的 .dat 文件。
-// writer_ids_ 列出待删 writer；worker 删除这些 writer 在 base_path_ 对应 data_path 下的所有 .dat。
+// master → worker: 命令 worker 删除本地 data_path 下的 .dat 文件（merge 后清理源）。
+// data_path_ 显式指定待删目录（源 data_path），worker 不再依赖 db_registry 解析 ——
+// 因为 cleanup_after_merge 会把 master 的 db_registry 更新到 merge 路径，若删源在
+// cleanup 之后执行，db_registry 解析会拿到错误的（merge 后的）路径。显式传 data_path
+// 消除该隐式顺序依赖（详见 docs/issues/006-merge-db-review-findings.md 遗漏点 1）。
 struct DeleteDataMessage {
     MessageHeader header_;
     CMString db_id_;
-    CMString base_path_;            // 源 db base_path（worker 据此定位 data_path）
+    CMString base_path_;            // 源 db base_path（用于日志/兜底）
+    CMString data_path_;            // 显式指定待删 .dat 所在目录（源 data_path）
     CMVector<CMString> writer_ids_; // 待删 writer 列表
 
     static constexpr MessageType msg_type_ = MessageType::DELETE_DATA;
-    FLY_SERIALIZE(header_, db_id_, base_path_, writer_ids_);
+    FLY_SERIALIZE(header_, db_id_, base_path_, data_path_, writer_ids_);
 };
 
 // worker → master: 删除结果回报。
@@ -587,6 +592,20 @@ struct MergeCleanupMessage {
 
     static constexpr MessageType msg_type_ = MessageType::MERGE_CLEANUP;
     FLY_SERIALIZE(header_, db_id_, base_path_, data_path_, exempt_worker_ids_);
+};
+
+// worker → master: cleanup 完成回报。这是 merge_db 返回前的"全局一致性屏障"：
+// master 广播 MergeCleanup 后，必须等待所有 worker 回此 ack，才能保证 merge_db 返回时
+// 全局状态一致（worker 已清旧索引 + 按新路径重建 local_idx）。否则用户在 merge_db 返回后
+// 立即读，可能命中 worker 正在清理的中间态。master 收齐 ack 后才重建自身 remote_idx，
+// 保证 master 与 worker 的最终状态一致。
+struct MergeCleanupAckMessage {
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMString db_id_;
+
+    static constexpr MessageType msg_type_ = MessageType::MERGE_CLEANUP_ACK;
+    FLY_SERIALIZE(header_, worker_id_, db_id_);
 };
 
 }  // namespace fly

@@ -139,6 +139,11 @@ void MasterAgent::start() {
             on_delete_data_ack(conn_id, msg);
         });
 
+    reactor_->register_handler<MergeCleanupAckMessage>(
+        [this](uint64_t conn_id, const MergeCleanupAckMessage& msg) {
+            on_merge_cleanup_ack(conn_id, msg);
+        });
+
     reactor_->register_handler<VarSetMessage>(
         [this](uint64_t conn_id, const VarSetMessage& msg) {
             on_var_set(conn_id, msg);
@@ -1676,6 +1681,18 @@ CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_id,
     return entries;
 }
 
+CMVector<IndexEntry> MasterAgent::read_idx_entries(const CMString& base_path,
+                                                    const CMString& writer_id) {
+    CMString idx_path = base_path + "/" + writer_id + ".idx";
+    if (!std::filesystem::exists(idx_path)) {
+        WARN("read_idx_entries: idx file not found: {}", idx_path);
+        return {};
+    }
+    LocalIndex idx(idx_path);
+    idx.load();
+    return idx.get_all_entries();
+}
+
 void MasterAgent::send_idx_load_commands(const CMString& db_id,
                                            const CMString& base_path,
                                            const CMVector<CMString>& writer_ids) {
@@ -2204,6 +2221,7 @@ bool MasterAgent::wait_merge_tasks_complete(const CMVector<uint64_t>& task_ids,
 
 void MasterAgent::send_delete_data(uint64_t source_worker_id,
                                     const CMString& db_id, const CMString& base_path,
+                                    const CMString& data_path,
                                     const CMVector<CMString>& writer_ids) {
     CMString ack_key = db_id + ":" + std::to_string(source_worker_id);
     {
@@ -2214,6 +2232,19 @@ void MasterAgent::send_delete_data(uint64_t source_worker_id,
     DeleteDataMessage msg;
     msg.db_id_ = db_id;
     msg.base_path_ = base_path;
+    // data_path：显式传入优先；否则从 master db_registry 查（删源在 cleanup 前执行，
+    // 此时 db_registry 仍是源的 data_path）。
+    if (!data_path.empty()) {
+        msg.data_path_ = data_path;
+    } else {
+        auto it = db_registry_.find(db_id);
+        if (it != db_registry_.end()) {
+            auto dp_it = it->second.find("data_path");
+            if (dp_it != it->second.end()) {
+                msg.data_path_ = dp_it->second;
+            }
+        }
+    }
     msg.writer_ids_ = writer_ids;
 
     {
@@ -2231,8 +2262,49 @@ void MasterAgent::send_delete_data(uint64_t source_worker_id,
         }
         reactor_->send(it->second, msg);
     }
-    INFO("DeleteData sent: worker_id={}, db_id={}, writer_ids_count={}",
-         source_worker_id, db_id, writer_ids.size());
+    INFO("DeleteData sent: worker_id={}, db_id={}, data_path={}, writer_ids_count={}",
+         source_worker_id, db_id, data_path, writer_ids.size());
+}
+
+bool MasterAgent::wait_delete_data_acks(const CMVector<uint64_t>& source_worker_ids,
+                                          const CMString& db_id,
+                                          int64_t timeout_seconds,
+                                          CMVector<uint64_t>* failed_workers) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+    bool all_ok = true;
+
+    for (uint64_t src_wid : source_worker_ids) {
+        CMString ack_key = db_id + ":" + std::to_string(src_wid);
+        std::unique_lock<std::mutex> lk(delete_ack_mutex_);
+        if (!delete_ack_cv_.wait_until(lk, deadline, [this, &ack_key] {
+            auto it = pending_delete_acks_.find(ack_key);
+            return it != pending_delete_acks_.end() && it->second.completed_;
+        })) {
+            // 超时：本 worker 的 ack 未返回。
+            all_ok = false;
+            if (failed_workers) failed_workers->push_back(src_wid);
+            WARN("wait_delete_data_acks: timeout for worker_id={}, db_id={}", src_wid, db_id);
+            continue;
+        }
+        auto it = pending_delete_acks_.find(ack_key);
+        if (!it->second.success_) {
+            all_ok = false;
+            if (failed_workers) failed_workers->push_back(src_wid);
+            WARN("wait_delete_data_acks: worker_id={} delete failed: {}",
+                 src_wid, it->second.error_message_);
+        }
+    }
+
+    // 清理已处理的 ack 状态（防内存泄漏 —— 此前 on_delete_data_ack 只标 completed 不 erase）。
+    {
+        std::lock_guard<std::mutex> lk(delete_ack_mutex_);
+        for (uint64_t src_wid : source_worker_ids) {
+            CMString ack_key = db_id + ":" + std::to_string(src_wid);
+            pending_delete_acks_.erase(ack_key);
+        }
+    }
+
+    return all_ok;
 }
 
 void MasterAgent::on_delete_data_ack(uint64_t conn_id, const DeleteDataAckMessage& msg) {
@@ -2261,9 +2333,23 @@ void MasterAgent::cleanup_after_merge(const CMString& db_id,
                                        const CMString& merge_data_path) {
     auto ds = DataService::instance();
 
-    // 1. 广播 MergeCleanupMessage 给所有 worker：清旧 local_idx/remote_idx，
+    // 1. 登记本轮 cleanup 的 pending（期望 ack 数 = 当前在线 worker 数）。
+    //    所有 worker（含 exempt 的 merge target）收到 MergeCleanup 后都回 ack：
+    //    exempt worker 不清理但立即回 ack；非 exempt worker 清理完再回 ack。
+    //    master 必须收齐全部 ack 才能保证全局状态一致（merge_db 返回前的屏障）。
+    uint64_t expected_acks = 0;
+    {
+        std::lock_guard<std::mutex> wlk(workers_mutex_);
+        expected_acks = worker_to_conn_.size();
+    }
+    {
+        std::lock_guard<std::mutex> mlk(merge_cleanup_mutex_);
+        pending_merge_cleanups_[db_id] = PendingMergeCleanup{expected_acks, 0};
+    }
+
+    // 2. 广播 MergeCleanupMessage 给所有 worker：清旧 local_idx/remote_idx，
     //    按新路径 register_database + load 新 idx 重建 local_idx（同 host/共享 FS 可本地直读）。
-    //    exempt = merge target workers（已持有效 local_idx，跳过重建）。
+    //    exempt = merge target workers（已持有效 local_idx，跳过清理但回 ack）。
     MergeCleanupMessage cleanup_msg;
     cleanup_msg.db_id_ = db_id;
     cleanup_msg.base_path_ = merge_base_path;
@@ -2276,23 +2362,36 @@ void MasterAgent::cleanup_after_merge(const CMString& db_id,
         }
     }
     INFO("cleanup_after_merge: broadcast MergeCleanup for db_id={} to {} workers "
-         "(exempt merge targets: {})", db_id, worker_to_conn_.size(), merge_target_worker_ids.size());
+         "(exempt merge targets: {})", db_id, expected_acks, merge_target_worker_ids.size());
 
-    // 2. 清 master 自身旧索引。
-    //    local_idx_：restore_master_idx 灌入的源 entry（指向已删源 .dat），整体清掉。
-    //    remote_idx_：整体清掉，然后用 merge_task_states_ 的精确 (object→worker) 映射重建。
-    //    必须整体清+重建（而非只删源 replica）——因为 MergeCleanup 广播后，各 worker（多进程
-    //    下独立，单进程测试共享单例）会清自己的索引；master 的 remote_idx 是全局权威视图，
-    //    必须在最后定稿为"只含实际持有数据的 merge worker"的精确状态。
-    //    用 merge_task_states_（on_merge_task_complete 记录的 worker_id）而非全量
-    //    merge_target_worker_ids，避免过度登记未实际持有数据的 worker。
+    // 3. 等待所有 worker 回 MergeCleanupAck（全局一致性屏障）。
+    //    超时则告警但继续（尽力而为，不阻塞用户太久）。
+    {
+        std::unique_lock<std::mutex> mlk(merge_cleanup_mutex_);
+        bool all_acked = merge_cleanup_cv_.wait_for(mlk, std::chrono::seconds(30),
+            [this, &db_id] {
+                auto it = pending_merge_cleanups_.find(db_id);
+                return it != pending_merge_cleanups_.end() &&
+                       it->second.received_count_ >= it->second.expected_count_;
+            });
+        if (!all_acked) {
+            auto it = pending_merge_cleanups_.find(db_id);
+            uint64_t got = (it != pending_merge_cleanups_.end()) ? it->second.received_count_ : 0;
+            WARN("cleanup_after_merge: timeout waiting for MergeCleanupAck: "
+                 "db_id={}, expected={}, received={}", db_id, expected_acks, got);
+        }
+        pending_merge_cleanups_.erase(db_id);
+    }
+
+    // 4. 所有 worker 已清理完毕 → master 重建自身 remote_idx。
+    //    此时各 worker 的 local_idx/remote_idx 已是新状态，master 在此后重建不会被覆盖
+    //    （worker 不再碰这个 db 的索引）。从 merge_task_states_ 取精确 (object→worker) 映射。
     ds->clear_local_index_for_db(db_id);
     ds->clear_remote_index_for_db(db_id);
 
-    // 3. 从 merge_task_states_ 取精确映射，重建 remote_idx（每个对象→实际持有的 merge worker）。
-    CMUnorderedMap<CMString, CMVector<uint64_t>> obj_to_workers;  // object_name → 持有它的 worker 列表
+    CMUnorderedMap<CMString, CMVector<uint64_t>> obj_to_workers;
     {
-        std::lock_guard<std::mutex> mlk(merge_task_mutex_);
+        std::lock_guard<std::mutex> tlk(merge_task_mutex_);
         for (const auto& [tid, state] : merge_task_states_) {
             if (state.success_ && state.worker_id_ != 0) {
                 for (const auto& obj : state.written_objects_) {
@@ -2311,13 +2410,12 @@ void MasterAgent::cleanup_after_merge(const CMString& db_id,
         ++rebuilt;
     }
 
-    // 4. 更新 db_registry_[db_id] 指向 merge 路径（让后续 DbPathRequest 返回正确路径）。
+    // 5. 更新 db_registry_[db_id] 指向 merge 路径。
     register_database(db_id, merge_base_path, merge_data_path);
 
-    // 5. 清理本批 merge task 状态（wait_merge_tasks_complete 推迟到此处 erase，
-    //    以便本方法读取 (object→worker) 精确映射）。
+    // 6. 清理本批 merge task 状态（wait_merge_tasks_complete 推迟到此处 erase）。
     {
-        std::lock_guard<std::mutex> mlk(merge_task_mutex_);
+        std::lock_guard<std::mutex> tlk(merge_task_mutex_);
         for (auto it = merge_task_states_.begin(); it != merge_task_states_.end(); ) {
             if (it->second.completed_) {
                 it = merge_task_states_.erase(it);
@@ -2330,6 +2428,21 @@ void MasterAgent::cleanup_after_merge(const CMString& db_id,
     INFO("cleanup_after_merge: done, db_id={}, rebuilt remote_idx for {} objects (precise worker mapping), "
          "local_idx cleared, db_registry updated to base={} data={}",
          db_id, rebuilt, merge_base_path, merge_data_path);
+}
+
+void MasterAgent::on_merge_cleanup_ack(uint64_t conn_id, const MergeCleanupAckMessage& msg) {
+    std::lock_guard<std::mutex> lk(merge_cleanup_mutex_);
+    auto it = pending_merge_cleanups_.find(msg.db_id_);
+    if (it == pending_merge_cleanups_.end()) {
+        DBG("MergeCleanupAck for unknown db_id={}, ignoring", msg.db_id_);
+        return;
+    }
+    it->second.received_count_++;
+    DBG("MergeCleanupAck: db_id={}, worker_id={}, received={}/{}",
+        msg.db_id_, msg.worker_id_, it->second.received_count_, it->second.expected_count_);
+    if (it->second.received_count_ >= it->second.expected_count_) {
+        merge_cleanup_cv_.notify_all();
+    }
 }
 
 }  // namespace fly

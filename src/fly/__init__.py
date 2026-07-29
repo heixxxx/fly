@@ -95,7 +95,8 @@ def merge_db(path: str, data_path: str = "", base_path: str = "",
         path: 源 db 的 base_path（共享存储，必须已 freeze）。
         data_path: 产物 data_path（master host 本地）。默认 ``path + ".merged_data"``。
         base_path: 产物 base_path。默认空=复用源 ``path``（idx 在共享盘，零搬迁）。
-        local_workers: master host 无同 host worker 时拉起的 local worker 数（并发度）。
+        local_workers: 仅当 master host **无**同 host worker 时拉起的 worker 数上限；
+            已存在则不补齐，使用现有 worker 数作为并发度。
         delete_source: merge 全部成功后是否自动删源各 host 的原 .dat。
 
     Returns:

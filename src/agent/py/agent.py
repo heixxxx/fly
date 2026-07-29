@@ -368,7 +368,8 @@ class Master(FlyAgent):
             path: 源 db 的 base_path（共享存储，必须已 freeze）。
             data_path: 产物 data_path（master host 本地）。默认 path + ".merged_data"。
             base_path: 产物 base_path。默认空=复用源 path（idx/_DB_META 在共享盘，零搬迁）。
-            local_workers: master host 无同 host worker 时拉起的 local worker 数（并发度）。
+            local_workers: 仅当 master host **无**同 host worker 时拉起的 worker 数上限；
+                已存在则不补齐，使用现有 worker 数作为并发度。
             delete_source: merge 全部成功后是否自动删源各 host 的原 .dat。
 
         Returns:
@@ -478,10 +479,13 @@ class Master(FlyAgent):
         INFO(f"merge_db: target worker pool (master host) = {master_host_workers}")
 
         # ── Phase 3: master 从共享 base_path 读全部 idx（按 writer 分组对象清单）──
+        # 用 read_idx_entries（轻量读，不灌 master local_idx / 不 mark_data_ready），
+        # 避免"先污染再清理"绕路（restore_master_idx 会副作用地建立 master local 视图，
+        # 但 master 不持 .dat，这些 entry 无效，需 cleanup 兜底清理）。
         writer_to_entries = {}
         for hostname, writer_ids in hostname_to_writer_ids.items():
             for writer_id in writer_ids:
-                entries = self._agent.restore_master_idx(db_id, merge_base_path, writer_id)
+                entries = self._agent.read_idx_entries(merge_base_path, writer_id)
                 if entries:
                     writer_to_entries[writer_id] = (hostname, entries)
 
@@ -529,23 +533,31 @@ class Master(FlyAgent):
                     continue
                 source_worker = host_workers[0]
                 source_worker_ids.append(source_worker)
+                # data_path 传空 → C++ send_delete_data 从 db_registry 查源 data_path
+                # （此时 cleanup 未执行，db_registry 仍是源的）。
                 self._agent.send_delete_data(
-                    source_worker, db_id, merge_base_path, writer_ids)
+                    source_worker, db_id, merge_base_path, "", writer_ids)
                 INFO(f"merge_db: sent DeleteData to worker {source_worker} on host "
                      f"'{hostname}' for {len(writer_ids)} writers")
-            # 给删源 ack 一点时间（删源是 fire-and-forget，不阻塞返回）。
-            time.sleep(1.0)
+            # 同步等待全部 DeleteDataAck（替换原先的 sleep 兜底，消除 flaky + 内存泄漏）。
+            if source_worker_ids:
+                del_ok, del_failed = self._agent.wait_delete_data_acks(
+                    source_worker_ids, db_id, 60)
+                if del_ok:
+                    INFO(f"merge_db: all source deletes confirmed")
+                else:
+                    WARN(f"merge_db: {len(del_failed)} source deletes failed/timed out "
+                         f"(workers={del_failed}), source .dat may remain")
 
         # 状态清理（无论是否删源，merge 已改变数据分布，旧索引都失效）：
         # 广播 MergeCleanup 让各 worker 清旧 local_idx/remote_idx + 按新路径重建 local_idx；
         # master 自身清旧索引 + 重建 remote_idx（指向 merge target）+ 更新 db_registry。
+        # 删源 ack 已保证 worker 在线且响应过，紧随其后的广播时序确定（无需额外 sleep）。
         if ok:
             self._agent.cleanup_after_merge(
                 db_id, completed, source_worker_ids, master_host_workers,
                 merge_base_path, merge_data_path)
             INFO("merge_db: cleanup_after_merge done (broadcast + master state rebuilt)")
-            # 给 worker 处理 MergeCleanup 一点时间。
-            time.sleep(0.5)
 
         # 产物 db 句柄：用源 db_id 构造（保持 object_name = db_id:short 一致）。
         # 用 with_id 避免生成新 db_id 触发 base_path 重复注册 ERROR。

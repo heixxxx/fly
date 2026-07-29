@@ -671,7 +671,7 @@ TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DELETE_DATA)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DELETE_DATA_ACK)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MERGE_CLEANUP)));
-    EXPECT_FALSE(is_valid_message_type(45));  // upper bound is 44
+    EXPECT_FALSE(is_valid_message_type(46));  // upper bound is 45
     EXPECT_FALSE(is_valid_message_type(0));
 }
 
@@ -719,6 +719,7 @@ TEST(MessageProtocolTest, DeleteDataMessageRoundTrip) {
     msg.header_.type_ = MessageType::DELETE_DATA;
     msg.db_id_ = "abc123def4";
     msg.base_path_ = "/shared/proj_a";
+    msg.data_path_ = "/ssd/source_data";
     msg.writer_ids_ = {"worker_0", "worker_1", "worker_2"};
 
     CMString encoded = MessageProtocol::encode(msg);
@@ -728,6 +729,7 @@ TEST(MessageProtocolTest, DeleteDataMessageRoundTrip) {
     ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
     EXPECT_EQ(decoded.db_id_, "abc123def4");
     EXPECT_EQ(decoded.base_path_, "/shared/proj_a");
+    EXPECT_EQ(decoded.data_path_, "/ssd/source_data");
     ASSERT_EQ(decoded.writer_ids_.size(), 3u);
     EXPECT_EQ(decoded.writer_ids_[0], "worker_0");
     EXPECT_EQ(decoded.writer_ids_[1], "worker_1");
@@ -795,6 +797,22 @@ TEST(MessageProtocolTest, MergeCleanupMessageRoundTrip) {
     ASSERT_EQ(decoded.exempt_worker_ids_.size(), 2u);
     EXPECT_EQ(decoded.exempt_worker_ids_[0], 5u);
     EXPECT_EQ(decoded.exempt_worker_ids_[1], 6u);
+    EXPECT_TRUE(buffer.empty());
+}
+
+TEST(MessageProtocolTest, MergeCleanupAckRoundTrip) {
+    MergeCleanupAckMessage ack;
+    ack.header_.type_ = MessageType::MERGE_CLEANUP_ACK;
+    ack.worker_id_ = 7;
+    ack.db_id_ = "merge_db_002";
+
+    CMString encoded = MessageProtocol::encode(ack);
+    CMString buffer = encoded;
+
+    MergeCleanupAckMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.worker_id_, 7u);
+    EXPECT_EQ(decoded.db_id_, "merge_db_002");
     EXPECT_TRUE(buffer.empty());
 }
 

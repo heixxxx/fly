@@ -103,6 +103,9 @@ public:
 
     // load_db support methods
     CMVector<IndexEntry> restore_master_idx(const CMString& db_id, const CMString& base_path, const CMString& writer_id);
+    // 轻量读 idx：只返回 entries 列表，不调 restore_entries（不灌 master local_idx）也不
+    // mark_data_ready。用于 merge_db Phase 3 取对象清单派发 task，避免"先污染再清理"绕路。
+    CMVector<IndexEntry> read_idx_entries(const CMString& base_path, const CMString& writer_id);
     void send_idx_load_commands(const CMString& db_id, const CMString& base_path, const CMVector<CMString>& writer_ids);
     void rebuild_remote_idx(const CMString& db_id, const CMString& base_path, const CMVector<::WorkerInfo>& workers);
     void send_idx_load_to_worker(const CMString& db_id, const CMString& base_path,
@@ -119,10 +122,19 @@ public:
                               const CMString& short_name, const CMString& db_id,
                               const CMString& base_path, const CMString& target_data_path,
                               const CMString& source_host);
-    // 命令 source_worker 删除本地 data_path 下指定 writer 的 .dat（merge 成功后清理源）。
+    // 命令 source_worker 删除本地 data_path 下的 .dat（merge 成功后清理源）。
+    // data_path 显式传入（源 data_path），worker 不查 db_registry —— cleanup 会改
+    // master 的 db_registry 到 merge 路径，db_registry 解析会拿错路径。
     void send_delete_data(uint64_t source_worker_id,
                            const CMString& db_id, const CMString& base_path,
+                           const CMString& data_path,
                            const CMVector<CMString>& writer_ids);
+    // 等待一批 DeleteData 的 ack 全部返回。返回是否全部成功；
+    // 失败的 worker_id 在 failed_workers。wait 返回后 erase 对应 ack_key（防内存泄漏）。
+    bool wait_delete_data_acks(const CMVector<uint64_t>& source_worker_ids,
+                                const CMString& db_id,
+                                int64_t timeout_seconds,
+                                CMVector<uint64_t>* failed_workers = nullptr);
     // 等待一批 merge task 全部完成（TaskComplete/TaskFailed）。返回全部成功的对象名列表；
     // 失败的对象在 failed_objects。merge 的"全部成功才删源"语义依赖此同步点（设计 §5.4）。
     bool wait_merge_tasks_complete(const CMVector<uint64_t>& task_ids,
@@ -240,6 +252,17 @@ private:
     mutable std::mutex delete_ack_mutex_;
     std::condition_variable delete_ack_cv_;
 
+    // ── MergeCleanup ack 跟踪（merge_db 返回前的全局一致性屏障）──
+    // master 广播 MergeCleanup 后，必须等所有 worker 回 ack 才能重建自身 remote_idx +
+    // 让 merge_db 返回。key = db_id（一次 merge_db 的 cleanup 是单 db 全员广播）。
+    struct PendingMergeCleanup {
+        uint64_t expected_count_ = 0;   // 期望的 ack 数（广播时的 worker 数）
+        uint64_t received_count_ = 0;   // 已收到的 ack 数
+    };
+    CMUnorderedMap<CMString, PendingMergeCleanup> pending_merge_cleanups_;
+    mutable std::mutex merge_cleanup_mutex_;
+    std::condition_variable merge_cleanup_cv_;
+
     void schedule_tasks();
     void assign_task_to_worker(uint64_t task_id, uint64_t worker_id);
     void update_dependency_location_cache(const CMString& object_name, uint64_t worker_id, const CMString& host, int32_t port);
@@ -264,6 +287,7 @@ private:
     void on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg);
     void on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg);
     void on_delete_data_ack(uint64_t conn_id, const DeleteDataAckMessage& msg);
+    void on_merge_cleanup_ack(uint64_t conn_id, const MergeCleanupAckMessage& msg);
 
     // Var service handlers.
     void on_var_set(uint64_t conn_id, const VarSetMessage& msg);
