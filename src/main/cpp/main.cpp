@@ -337,6 +337,7 @@ int main(int argc, char* argv[]) {
 
     int rc = PyRun_SimpleString(
         "import sys\n"
+        "import fly.bootstrap\n"
         "from fly.main import run\n"
         "sys.exit(run())\n"
     );

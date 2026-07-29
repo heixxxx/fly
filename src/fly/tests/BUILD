@@ -69,3 +69,12 @@ py_test(
         "../task/py",
     ],
 )
+
+py_test(
+    name = "userdoc_test",
+    srcs = ["test_userdoc.py"],
+    main = "test_userdoc.py",
+    deps = [
+        "//src/fly:fly_py",
+    ],
+)

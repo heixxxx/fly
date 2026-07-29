@@ -20,8 +20,24 @@ Project 子类的参考。业务流程实现在 :mod:`solver.flows`，通过
 """
 
 from fly.project import Project
+from fly import UserDoc, Schema, document
 
 
+# SolverProject 的 UserDoc：校验 __init__(base_path) + help 文档
+solver_project_doc = UserDoc("RAS solver 的 Project 模板，管理 build_matrix / solve 两个流程。")
+solver_project_doc.add_param("base_path",
+    schema=Schema(str, check=lambda s: len(s) > 0, error="must not be empty"),
+    required=True, desc="project 目录路径（不存在则创建）")
+solver_project_doc.add_example("基础用法",
+    code='''proj = SolverProject("./my_project")
+matrix_db = proj.build_matrix(name="matrix", matrix_path="poisson.npz")
+result_db = proj.solve(name="solve", matrix_db=matrix_db, nsd=4)
+proj.wait_frozen("solve", timeout=120)''',
+    desc="建库 → 构建矩阵 → 求解 → 等待冻结")
+solver_project_doc.add_keyword(["solver", "ras", "project", "matrix"])
+
+
+@document(solver_project_doc)
 class SolverProject(Project):
     """RAS solver 的 Project 模板。
 

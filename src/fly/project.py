@@ -52,6 +52,12 @@ def register_flow(target_cls):
             WARN(f"register_flow: overriding existing flow '{func.__name__}' "
                  f"on {target_cls.__name__}")
         setattr(target_cls, func.__name__, func)
+        # UserDoc owner 回填：@document 装饰器在内层先执行，把 doc 挂在 func._fly_userdoc
+        # 上（此时 owner=None）；本装饰器在外层后执行，回填 owner=所属类，零耦合（仅 getattr
+        # 检测属性，不 import userdoc 模块）。详见 fly.userdoc。
+        doc = getattr(func, "_fly_userdoc", None)
+        if doc is not None:
+            doc._owner = target_cls
         # 类级注册表（内省/list_flows 用）。每个子类持有自己的表，避免共享基类表。
         if "_flows" not in target_cls.__dict__:
             target_cls._flows = {}

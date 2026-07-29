@@ -31,6 +31,7 @@ except ImportError:
     cloudpickle = None
 
 from fly import as_task
+from fly import UserDoc, Schema, document
 
 # ---------------------------------------------------------------------------
 # Serialization helpers
@@ -151,6 +152,65 @@ def _mr_copy_to_output(db, src_key, dst_key):
 # MapReduceJob
 # ---------------------------------------------------------------------------
 
+# ── UserDoc：类构造 + 各公开方法的校验与 help 文档 ──────────────────────
+# 类装饰器执行时会回填类内方法 doc 的 owner=MapReduceJob。
+
+_mr_class_doc = UserDoc("四阶段 MapReduce 流水线：Partition → Process → Merge → Finalize。")
+_mr_class_doc.add_param("db", schema=Schema("_Database"), required=True,
+                        desc="fly.open_db() 创建的数据库实例")
+_mr_class_doc.add_param("output_name", schema=Schema(str, check=lambda s: len(s) > 0,
+                                                     error="must not be empty"),
+                        required=True, desc="最终结果的持久化对象名")
+_mr_class_doc.add_param("keep_intermediate", schema=Schema(bool), required=False,
+                        default=False, desc="True 则保留中间临时对象")
+_mr_class_doc.add_example("基础用法",
+    code='''mr = MapReduceJob(db, output_name="result")
+mr.set_partitioner(lambda data: [data[i::3] for i in range(3)])
+mr.set_processor(lambda part: sum(part))
+mr.set_merger(lambda a, b: a + b, "summary")
+mr.run([1, 2, 3, 4, 5, 6, 7, 8, 9])
+fly.wait_tasks()
+result = mr.get()''',
+    desc="分区 → 处理 → 合并 → 取结果")
+_mr_class_doc.add_keyword(["mapreduce", "partition", "merge", "pipeline"])
+
+_mr_set_partitioner_doc = UserDoc("设置分区函数。fn(完整输入) → list[分片数据]。")
+_mr_set_partitioner_doc.add_param("fn", schema=Schema(object, check=callable, error="must be callable", desc="callable"),
+                                  required=True, desc="分区函数")
+
+_mr_set_pre_partitioned_doc = UserDoc("跳过分区阶段，直接用 db 中已有对象作分片。")
+_mr_set_pre_partitioned_doc.add_param("names", schema=Schema.list(Schema(str), min_len=1),
+                                      required=True, desc="db 中已写好的分片对象名列表")
+
+_mr_set_processor_doc = UserDoc("设置处理函数。fn(分片数据) → 处理结果。")
+_mr_set_processor_doc.add_param("fn", schema=Schema(object, check=callable, error="must be callable", desc="callable"),
+                                required=True, desc="处理函数")
+
+_mr_set_merger_doc = UserDoc("设置合并函数。fn(a, b) → 合并结果。")
+_mr_set_merger_doc.add_param("fn", schema=Schema(object, check=callable, error="must be callable", desc="callable"),
+                             required=True, desc="二元合并函数")
+_mr_set_merger_doc.add_param("merge_type",
+    schema=Schema(str, check=lambda s: s in ("summary", "full"),
+                 error="must be 'summary' or 'full', got {value}"),
+    required=False, default="summary",
+    desc="'summary' 多级树合并（数据小）；'full' 单级合并（数据大）")
+
+_mr_set_finalizer_doc = UserDoc("设置最终处理函数（可选）。fn(合并结果) → 最终结果。")
+_mr_set_finalizer_doc.add_param("fn", schema=Schema(object, check=callable, error="must be callable", desc="callable"),
+                                required=True, desc="最终处理函数")
+
+_mr_run_doc = UserDoc("提交全部 MapReduce 阶段为分布式任务，非阻塞。")
+_mr_run_doc.add_param("input_data", schema=Schema(object),
+                      required=False, default=None, none_ok=True,
+                      desc="分区输入数据；未调 set_pre_partitioned 时必填")
+
+_mr_get_doc = UserDoc("读取最终结果。master 侧应先 wait_tasks()。")
+_mr_get_doc.add_param("db", schema=Schema("_Database"), required=False, default=None,
+                      none_ok=True,
+                      desc="数据库覆盖（worker task 内需显式传入）；None 用构造时的 db")
+
+
+@document(_mr_class_doc)
 class MapReduceJob:
     """Four-stage MapReduce pipeline: Partition → Process → Merge → Finalize.
 
@@ -185,6 +245,7 @@ class MapReduceJob:
 
     # ── Configuration (chainable) ───────────────────────────────────────
 
+    @document(_mr_set_partitioner_doc)
     def set_partitioner(self, fn):
         """Set partitioning function: fn(iterable) → list[partition_data].
 
@@ -194,6 +255,7 @@ class MapReduceJob:
         self._partition_fn = fn
         return self
 
+    @document(_mr_set_pre_partitioned_doc)
     def set_pre_partitioned(self, names: list):
         """Skip the partition phase. *names* are existing object names in db.
 
@@ -203,11 +265,13 @@ class MapReduceJob:
         self._pre_partitioned_names = list(names)
         return self
 
+    @document(_mr_set_processor_doc)
     def set_processor(self, fn):
         """Set processing function: fn(partition_data) → processed_data."""
         self._process_fn = fn
         return self
 
+    @document(_mr_set_merger_doc)
     def set_merger(self, fn, merge_type: str = "summary"):
         """Set merge function: fn(a, b) → merged.
 
@@ -221,6 +285,7 @@ class MapReduceJob:
         self._merge_type = merge_type
         return self
 
+    @document(_mr_set_finalizer_doc)
     def set_finalizer(self, fn):
         """Set finalize function: fn(merged_data) → final_result.  Optional."""
         self._finalize_fn = fn
@@ -228,6 +293,7 @@ class MapReduceJob:
 
     # ── Execution ───────────────────────────────────────────────────────
 
+    @document(_mr_run_doc)
     def run(self, input_data=None):
         """Submit all MapReduce stages as distributed tasks.
 
@@ -373,6 +439,7 @@ class MapReduceJob:
 
     # ── Result Retrieval ────────────────────────────────────────────────
 
+    @document(_mr_get_doc)
     def get(self, db=None):
         """Read the final result from the database.
 

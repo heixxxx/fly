@@ -41,6 +41,7 @@ except ImportError:
     from task.py.task import as_task, task_name, wait_obj
 
 from fly.runtime import get_agent
+from fly.userdoc import UserDoc, Schema, document, help
 from fly.mapreduce import MapReduceJob
 from fly.project import Project, register_flow
 
@@ -252,6 +253,7 @@ __all__ = [
     'get_agent', 'MapReduceJob',
     'put_cache', 'get_cache', 'has_cache', 'remove_cache', 'clear_cache',
     'Project', 'register_flow', 'open_project', 'load_project',
+    'UserDoc', 'Schema', 'document', 'help',
 ]
 
 

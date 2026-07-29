@@ -21,6 +21,7 @@ import numpy as np
 from _fly_log import INFO
 
 from fly import register_flow, as_task
+from fly import UserDoc, Schema, document
 from solver.project import SolverProject
 from solver.ras_graph import solve_ras_graph as _solve_ras_graph  # noqa: F401 (legacy compat)
 from solver.ras_graph import ras_graph_coord, _load_matrix
@@ -71,7 +72,22 @@ def _solve_kickoff_task(db, matrix_db, nsd, overlap_ratio,
 
 # ── build_matrix：读文件 → 矩阵存入 db → 返回 db（异步）──────────────
 
+build_matrix_doc = UserDoc("读 .npz 矩阵文件，存入 name 的 db，异步返回。")
+build_matrix_doc.add_param("name",
+    schema=Schema(str, check=lambda s: len(s) > 0, error="must not be empty"),
+    required=True, desc="db 子目录名 + Project 内部 key")
+build_matrix_doc.add_param("matrix_path",
+    schema=Schema(str, check=lambda s: len(s) > 0, error="must not be empty"),
+    required=True, desc=".npz 矩阵文件路径（COO 格式）")
+build_matrix_doc.add_example("构建矩阵",
+    code='''matrix_db = proj.build_matrix(name="matrix", matrix_path="poisson.npz")
+proj.wait_frozen("matrix", timeout=60)''',
+    desc="读 npz 文件建库，等待冻结后可用")
+build_matrix_doc.add_keyword(["matrix", "npz", "solver", "input"])
+
+
 @register_flow(SolverProject)
+@document(build_matrix_doc)
 def build_matrix(self, name: str, matrix_path: str):
     """流程 API 1：读 .npz 矩阵文件 → 矩阵存入 ``name`` 的 db → 返回该 db。
 
@@ -86,7 +102,7 @@ def build_matrix(self, name: str, matrix_path: str):
     Returns:
         存矩阵数据的 ``_Database`` 句柄（freeze 异步进行中，可用 wait_frozen 等待）。
     """
-    # ── Step 1: 检查输入 ──
+    # ── Step 1: 检查输入（文件存在性，schema 无法覆盖）──
     import os as _os
     if not _os.path.isfile(matrix_path):
         raise ValueError(f"build_matrix: matrix file not found: {matrix_path}")
@@ -107,7 +123,43 @@ def build_matrix(self, name: str, matrix_path: str):
 
 # ── solve：读 matrix_db 矩阵 → 求解 → 返回 db（异步）─────────────────
 
+solve_doc = UserDoc("求解 matrix_db 中的矩阵，结果存入 name 的 db，异步返回。")
+solve_doc.add_param("name",
+    schema=Schema(str, check=lambda s: len(s) > 0, error="must not be empty"),
+    required=True, desc="求解结果 db 的子目录名")
+solve_doc.add_param("matrix_db",
+    schema=Schema("_Database"),
+    required=True, desc="含 read_object('matrix') 的数据源 db（显式传入）")
+solve_doc.add_param("nsd",
+    schema=Schema(int, check=lambda n: n >= 1, error="must be >= 1, got {value}"),
+    required=True, desc="子域数（须有 >= nsd 个带 sd_i attributes 的 worker 在线）")
+solve_doc.add_param("overlap_ratio",
+    schema=Schema(float, check=lambda x: 0 <= x <= 1, error="must be in [0,1], got {value}"),
+    required=False, default=0.50, desc="子域重叠比例")
+solve_doc.add_param("max_iter",
+    schema=Schema(int, check=lambda n: n >= 1, error="must be >= 1"),
+    required=False, default=100, desc="最大迭代数")
+solve_doc.add_param("tol",
+    schema=Schema(float, check=lambda x: x >= 0, error="must be >= 0"),
+    required=False, default=1e-8, desc="收敛阈值")
+solve_doc.add_param("omega",
+    schema=Schema.any_of(
+        Schema((int, float), check=lambda w: 0 < w <= 2, error="number must be in (0,2]"),
+        Schema(str, check=lambda w: w in ("coarse", "adaptive"),
+               error="must be 'coarse' or 'adaptive'")),
+    required=False, default=1.0, desc="松弛策略（数值或 'coarse'/'adaptive'）")
+solve_doc.add_example("基础求解",
+    code='''matrix_db = proj.build_matrix(name="matrix", matrix_path="poisson.npz")
+result_db = proj.solve(name="solve", matrix_db=matrix_db, nsd=4)
+proj.wait_frozen("solve", timeout=120)''',
+    desc="单矩阵异步求解，返回 db 后等待冻结")
+solve_doc.add_example("adaptive 松弛",
+    code='''result_db = proj.solve(name="solve", matrix_db=matrix_db, nsd=4, omega="adaptive")''')
+solve_doc.add_keyword(["ras", "solver", "linear", "iterative", "solve"])
+
+
 @register_flow(SolverProject)
+@document(solve_doc)
 def solve(self, name: str, matrix_db, nsd,
           overlap_ratio=0.50, max_iter=100, tol=1e-8, omega=1.0):
     """流程 API 2：读 ``matrix_db`` 的矩阵 → 求解 → 结果存入 ``name`` 的 db → 返回该 db。
@@ -137,22 +189,17 @@ def solve(self, name: str, matrix_db, nsd,
         存求解过程的 ``_Database`` 句柄（求解异步进行中；__rasg__sol 就绪后可读结果，
         可用 wait_frozen 等待整库 frozen）。
     """
-    # ── Step 1: 检查输入 ──
-    if nsd < 1:
-        raise ValueError(f"solve: nsd must be >= 1, got {nsd}")
-    if matrix_db is None:
-        raise ValueError("solve: matrix_db must be provided explicitly")
-
-    # ── Step 2: 创建求解 db ──
+    # ── Step 1: 创建求解 db ──
+    # （nsd>=1 / matrix_db 非 None 已由 @document 的 schema 校验覆盖）
     db = self._create_db(name)
 
-    # ── Step 3: 提交入口 task（kickoff：依赖 matrix_db 的 matrix）──
+    # ── Step 2: 提交入口 task（kickoff：依赖 matrix_db 的 matrix）──
     # master 在 matrix ready 后调度 kickoff；kickoff 在 worker 上读 matrix、还原 npz、
     # 调 ras_graph_coord（coord 非阻塞，提交第一轮 compute/check 后返回，check 在 worker
     # 内提交下一轮，整个迭代链由 master 调度自驱动）。
     _solve_kickoff_task(db, matrix_db, nsd, overlap_ratio, max_iter, tol, omega)
 
-    # ── Step 4: 提交 freeze task（依赖求解完成标记 __rasg__sol）──
+    # ── Step 3: 提交 freeze task（依赖求解完成标记 __rasg__sol）──
     _freeze_db_task(db, self._freeze_task_deps(db, ["__rasg__sol"]))
 
     INFO(f"[SolverProject] solve submitted: name={name}, nsd={nsd}, omega={omega}")

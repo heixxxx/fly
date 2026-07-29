@@ -136,6 +136,7 @@ def _run_worker():
 def _run_master():
     import atexit
     from _fly_core import ex_core_get_process_info
+    from fly.bootstrap import get_script_namespace
 
     # Start Python coverage if FLY_PYCOVERAGE is set
     global _fly_worker_cov  # reuse same global name for cleanup
@@ -163,20 +164,26 @@ def _run_master():
     script_path = proc.script_path()
     interactive = proc.interactive()
 
+    # 用户脚本/交互 shell 的命名空间：由 bootstrap 预加载 fly + solver 并注入公共 API，
+    # 使用户脚本零 import 即可直接 help() / SolverProject() / open_db()。
+    # 脚本与 shell 共享同一份 ns，使脚本里定义的符号在随后进入 shell 时仍可用。
+    script_ns = get_script_namespace()
+
     if script_path:
         sys.argv = [script_path]
         sys._fly_script_path = script_path
         script_dir = os.path.dirname(os.path.abspath(script_path))
         if script_dir not in sys.path:
             sys.path.insert(0, script_dir)
+        script_ns["__file__"] = script_path
         with open(script_path) as f:
             compiled = compile(f.read(), script_path, "exec")
-            exec(compiled, {"__name__": "__main__", "__file__": script_path})
+        exec(compiled, script_ns)
 
     if interactive:
         # -i flag: enter interactive shell after script (or directly).
         # stop() will be called by _cleanup when user exits.
-        code.interact(banner="Fly Shell", exitmsg="")
+        code.interact(banner="Fly Shell", local=script_ns, exitmsg="")
     elif script_path:
         # Script mode (non-interactive): auto-stop after script completes.
         from fly.runtime import get_agent
