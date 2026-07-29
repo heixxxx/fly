@@ -12,6 +12,7 @@ from _fly_solver import (
 )
 from solver.ras import solve_ras
 from solver.ras_graph import solve_ras_graph, generate_poisson_matrix
+from solver.project import SolverProject
 
 __all__ = [
     'EXSlvSubdomainInfo',
@@ -27,4 +28,5 @@ __all__ = [
     'solve_ras',
     'solve_ras_graph',
     'generate_poisson_matrix',
+    'SolverProject',
 ]

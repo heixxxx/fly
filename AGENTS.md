@@ -22,7 +22,7 @@
 ```bash
 ./fly.sh build //src/main/cpp:fly
 ./fly.sh install               # Creates build/ with symlinks
-./qa/runqa                     # Preferred runner (supports -j concurrency)
+./qa/runqa                     # Preferred runner (default 4 parallel, capped at 32; -j N override)
 ./qa/runqa qa/storage          # Run a single category dir
 ./qa/runqa qa/storage/test_x.py  # Run a single case
 bash qa/run_qa_tests.sh        # Legacy wrapper, same thing

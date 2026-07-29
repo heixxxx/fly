@@ -1,0 +1,394 @@
+"""Project — 业务流程管理对象（比 db 更高一级的管理单元）。
+
+Project 把一条业务流程的多个步骤打包，统一管理各步骤产生的 db。
+
+核心设计：
+1. **流程注册制**：基类只提供机制（建库/取库/冻结/持久化/load），不含业务流程；
+   每个流程 API 是普通函数，通过 ``@register_flow(子类)`` 注入到指定 Project 子类，
+   实现拆分到不同模块，避免基类臃肿。
+2. **flow 自己建库返回**：不暴露通用 create_db；每个 flow 内部 ``self._create_db(name)``
+   建库并 ``return db``。``name`` = db 子目录名 = Project 内部 key；重名 → WARN + 自动递增。
+3. **跨流程数据依赖显式传**：flow 间不默认传数据；需用另一 db 数据时由用户显式传 db 对象
+   （如 ``solve(name, matrix_db, ...)``），支持 project 内/外 db 作输入。
+
+详见 docs/project-design.md。
+"""
+
+import json
+import os
+import time
+import uuid
+
+from _fly_log import WARN, INFO, DBG
+
+
+_PROJECT_META = "_PROJECT_META.json"
+
+
+def register_flow(target_cls):
+    """把函数注册为 ``target_cls`` 的流程方法（业务流程 API）。
+
+    注册后 func 成为 target_cls 的方法，可通过 target_cls 实例调用，
+    ``self`` 自动绑定为该 Project 实例，可访问 ``self._create_db`` / ``self.get_db`` 等。
+
+    注册时函数直接 ``setattr`` 到类上（描述符协议让实例访问时自动绑 self），
+    与类体内定义的方法行为完全一致。
+
+    Args:
+        target_cls: 目标 Project 子类（如 SolverProject）。传 Project 基类
+            则所有子类实例都获得该方法（慎用，会污染所有子类）。
+
+    Example::
+
+        @register_flow(SolverProject)
+        def build_matrix(self, name, matrix_path):
+            db = self._create_db(name)
+            ...
+            return db
+    """
+    def decorator(func):
+        existing = target_cls.__dict__.get(func.__name__)
+        if existing is not None:
+            WARN(f"register_flow: overriding existing flow '{func.__name__}' "
+                 f"on {target_cls.__name__}")
+        setattr(target_cls, func.__name__, func)
+        # 类级注册表（内省/list_flows 用）。每个子类持有自己的表，避免共享基类表。
+        if "_flows" not in target_cls.__dict__:
+            target_cls._flows = {}
+        target_cls._flows[func.__name__] = func
+        DBG(f"register_flow: '{func.__name__}' registered on {target_cls.__name__}")
+        return func
+    return decorator
+
+
+class Project:
+    """业务流程管理对象基类。
+
+    Project 自身只存必要元信息（下属 db 的路径列表 + 状态），不存实质数据。
+    通过 ``_PROJECT_META.json`` 持久化，``load()`` 全量恢复所有 db。
+
+    业务流程（flow）通过 :func:`register_flow` 注册到子类，基类不含任何具体流程。
+    """
+
+    # 类级注册表：flow_name -> func（内省/list_flows 用）。子类各自持有。
+    _flows = {}
+
+    def __init__(self, base_path: str):
+        self.base_path = os.path.abspath(base_path)
+        os.makedirs(self.base_path, exist_ok=True)
+
+        meta_path = os.path.join(self.base_path, _PROJECT_META)
+        self._db_cache = {}      # actual_name -> _Database（避免重复 load/open）
+        self._meta_path = meta_path
+
+        if os.path.isfile(meta_path):
+            # 已存在 project：读回绑定（不重建目录）。
+            with open(meta_path, "r", encoding="utf-8") as f:
+                self._meta = json.load(f)
+        else:
+            # 新建 project。
+            self._meta = {
+                "class": f"{type(self).__module__}.{type(self).__name__}",
+                "project_id": uuid.uuid4().hex[:6],
+                "created_at": int(time.time()),
+                "dbs": {},
+            }
+            self.save()
+
+    # ── protected：供注册的 flow 内部建库 ──────────────────────────────
+
+    def _create_db(self, name: str, data_path: str = ""):
+        """flow 内部建库（不暴露终端用户）。
+
+        在 project 主目录下创建 ``<name>`` 子目录作为 db base_path，
+        调 ``fly.open_db``（已存在则自动递增 ``name.1``/``name.2``），
+        记入 meta 并缓存句柄。
+
+        Args:
+            name: db 子目录名 + Project 内部 key（logical_name）。
+                重名 → WARN 提醒（实际目录由 open_db 自动递增）。
+            data_path: 可选 db data_path（透传给 open_db）。
+
+        Returns:
+            ``_Database`` 句柄。
+        """
+        from fly import open_db
+
+        db_base = os.path.join(self.base_path, name)
+
+        # 检测 logical_name 重名 → WARN 提醒（意见1）。
+        existing = [v for v in self._meta["dbs"].values()
+                    if v.get("logical_name") == name]
+        if existing:
+            WARN(f"Project: db name '{name}' already exists, "
+                 f"creating a new variant (e.g. '{name}.1')")
+
+        db = open_db(db_base, data_path)
+        actual_name = os.path.relpath(db.get_base_path(), self.base_path)
+        actual_name = actual_name.replace(os.sep, "/")
+
+        self._meta["dbs"][actual_name] = {
+            "logical_name": name,
+            "base_path": db.get_base_path(),
+            "db_id": db.get_db_id(),
+            # 浮点秒：同名多次运行可能密集发生，int 秒无法区分先后。
+            "created_at": time.time(),
+        }
+        self._db_cache[actual_name] = db
+        self.save()
+        DBG(f"Project._create_db: name={name}, actual={actual_name}, "
+            f"db_id={db.get_db_id()}")
+        return db
+
+    def _freeze_task_deps(self, db, depends_on: list) -> list:
+        """flow 内部 helper：构造 freeze task 的 inputs（依赖对象 full_name）。
+
+        freeze 作为异步 task（非 flow 内同步调用）：它在依赖对象写完后由 master 调度，
+        task 内调 db.freeze() 通知 master（stream 模式即时确认+广播；非 stream 模式
+        task 成功时 commit_pending_frozen + 广播）。详见 docs/project-design.md §6.7。
+
+        Args:
+            db: flow 内 ``_create_db`` 返回的 db 句柄（用它拼 full_name，避免重名递增
+                时 logical_name 与 actual_name 不一致的歧义）。
+            depends_on: 依赖的短对象名列表（在 db 命名空间下），这些对象写完后 freeze
+                task 才被调度。
+
+        Returns:
+            full_name 列表，供 @as_task(inputs=...) 使用。
+        """
+        return [db.get_full_name(short) for short in depends_on]
+
+    # ── 公共 API ──────────────────────────────────────────────────────
+
+    def get_db(self, name: str, latest: bool = False):
+        """取回指定 db 句柄。
+
+        语义：
+        - 默认（latest=False）：按 **actual_name**（磁盘子目录名）精确匹配。
+          重名递增产生的 ``db.1``/``db.2`` 是独立 actual_name，需显式
+          ``get_db('db.1')`` 获取。
+        - latest=True：把 name 当作 logical_name，取该名 created_at 最大者
+          （即同名多次运行中最新的一次）。
+
+        命中缓存直接返回；否则 ``load_db`` 恢复（master-only）。
+
+        Args:
+            name: actual_name（默认）或 logical_name（latest=True 时）。
+            latest: 若 True，按 logical_name 取最新版。
+
+        Returns:
+            ``_Database`` 句柄。
+
+        Raises:
+            KeyError: 该 name 不存在。
+        """
+        actual = self._resolve_actual_name(name, latest=latest)
+        if actual is None:
+            raise KeyError(f"Project has no db named '{name}'. "
+                           f"Available: {self.list_dbs()}")
+        if actual in self._db_cache:
+            return self._db_cache[actual]
+        # 缓存未命中（如重新绑定 Project / load 后未访问过）。
+        # 注意：不能用 open_db——它会因 _DB_META 已存在而递增创建空库（read→EOF）。
+        # 已 freeze 的库走 load_db（恢复索引，master-only）；未 freeze 的库说明
+        # 同进程刚建（必在缓存），缓存未命中即等价于跨进程/重新绑定，按既有库 load。
+        from fly import load_db
+        base_path = self._meta["dbs"][actual]["base_path"]
+        db = load_db(base_path)
+        self._db_cache[actual] = db
+        return db
+
+    def freeze_db(self, name: str, latest: bool = False):
+        """同步冻结指定 db（master 本地 freeze，阻塞到完成）。
+
+        用于纯管理场景（非 flow 异步路径）。flow 内部应改用提交 freeze task
+        （见 ``_freeze_task_deps``）以保持异步范式。
+
+        Args:
+            name: actual_name（默认）或 logical_name（latest=True 时）。
+        """
+        db = self.get_db(name)
+        db.freeze()
+
+    def is_db_frozen(self, name: str, latest: bool = False) -> bool:
+        """查询 db 是否已 frozen（懒查询 master 权威状态）。
+
+        flow 提交 freeze task 后立即返回 db，frozen 是"将来态"。本方法实时向
+        master 查询（``MasterAgent::is_db_frozen``，覆盖 confirmed ∪ pending），
+        返回当前真实状态，不依赖 meta 缓存。
+
+        master-only（worker 进程无此 API）。
+
+        Args:
+            name: actual_name（默认）或 logical_name（latest=True 时）。
+            latest: 若 True，按 logical_name 取最新版。
+        """
+        from fly.runtime import get_agent
+        actual = self._resolve_actual_name(name, latest=latest)
+        if actual is None:
+            return False
+        db_id = self._meta["dbs"][actual]["db_id"]
+        return get_agent()._agent.is_db_frozen(db_id)
+
+    def wait_frozen(self, name: str, timeout: float = 3600.0, interval: float = 0.5,
+                    latest: bool = False):
+        """阻塞等待某 db 的异步 freeze task 完成（轮询 master 状态）。
+
+        flow 提交 freeze task 后，freeze 由 master 调度在依赖数据写完后执行。
+        本方法轮询 db 句柄本进程 frozen 标志（master 已 commit 并广播后置位）。
+
+        Args:
+            name: actual_name（默认）或 logical_name（latest=True 时）。
+            timeout: 最大等待秒数（默认 3600）。
+            interval: 轮询间隔（默认 0.5s）。
+            latest: 若 True，按 logical_name 取最新版。
+
+        Returns:
+            True 若 confirmed frozen；False 若超时。
+        """
+        import time as _t
+        t0 = _t.time()
+        actual = self._resolve_actual_name(name, latest=latest)
+        if actual is None:
+            return False
+        db = self.get_db(name, latest=latest)
+        while _t.time() - t0 < timeout:
+            if db.is_frozen():
+                return True
+            _t.sleep(interval)
+        return False
+
+    def freeze_all(self):
+        """同步冻结所有未 frozen 的 db（master 本地，阻塞）。"""
+        from fly.runtime import get_agent
+        agent = get_agent()
+        for actual, info in self._meta["dbs"].items():
+            db_id = info["db_id"]
+            if not agent._agent.is_db_frozen(db_id):
+                db = self._db_cache.get(actual)
+                if db is None:
+                    from fly import open_db
+                    db = open_db(info["base_path"])
+                    self._db_cache[actual] = db
+                db.freeze()
+
+    def list_dbs(self) -> list:
+        """返回所有 db 的 actual_name（磁盘子目录名，即 get_db 的精确匹配键）。"""
+        return list(self._meta["dbs"].keys())
+
+    def list_flows(self) -> list:
+        """返回已注册到本类（及基类）的 flow 名（内省用）。"""
+        # 收集本类及所有基类的 _flows（MRO 顺序，去重，子类覆盖基类）。
+        flows = {}
+        for cls in reversed(type(self).__mro__):
+            flows.update(getattr(cls, "_flows", {}))
+        return sorted(flows.keys())
+
+    # ── 持久化 ────────────────────────────────────────────────────────
+
+    def save(self):
+        """把内存 meta dump 成 _PROJECT_META.json。"""
+        tmp = self._meta_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self._meta, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, self._meta_path)
+
+    @classmethod
+    def load(cls, base_path: str) -> "Project":
+        """读 _PROJECT_META.json + 动态还原子类 + 对每个 db 调 fly.load_db。
+
+        master-only（内部用 fly.load_db，worker 调用会 AttributeError）。
+        全量恢复所有 db 的索引 + 按需拉起 worker。
+
+        Args:
+            base_path: Project 主目录路径。
+
+        Returns:
+            还原出的子类实例（如 SolverProject）；class 路径失效则回退基类。
+        """
+        from fly.runtime import _mode
+        meta_path = os.path.join(base_path, _PROJECT_META)
+        if not os.path.isfile(meta_path):
+            raise RuntimeError(f"load_project: no {_PROJECT_META} at {base_path}")
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+
+        # 按 meta["class"] 动态还原真实子类。
+        real_cls = cls
+        cls_path = meta.get("class")
+        if cls_path:
+            try:
+                import importlib
+                mod_name, _, qualname = cls_path.rpartition(".")
+                mod = importlib.import_module(mod_name)
+                real_cls = getattr(mod, qualname)
+                # import 子类模块时，其顶层 import flows（如 solver.project
+                # import solver.flows）会触发 @register_flow 注册，flow 随之可用。
+            except (ImportError, AttributeError) as e:
+                WARN(f"load_project: cannot restore class '{cls_path}' ({e}), "
+                     f"falling back to base Project (flows unavailable)")
+                real_cls = cls
+
+        proj = real_cls.__new__(real_cls)
+        proj.base_path = os.path.abspath(base_path)
+        proj._meta = meta
+        proj._meta_path = meta_path
+        proj._db_cache = {}
+
+        # 全量 load_db 恢复每个 db（master-only）。
+        if _mode != "master":
+            raise RuntimeError("load_project is master-only (uses fly.load_db)")
+
+        from fly import load_db
+        for actual, info in meta["dbs"].items():
+            bp = info["base_path"]
+            if not os.path.isdir(bp):
+                WARN(f"load_project: db base_path missing, skipping: {bp}")
+                continue
+            try:
+                proj._db_cache[actual] = load_db(bp)
+                INFO(f"load_project: restored db '{actual}' ({info.get('db_id')})")
+            except Exception as e:
+                WARN(f"load_project: failed to load db '{actual}' at {bp}: {e}")
+        DBG(f"load_project: restored {len(proj._db_cache)} dbs, "
+            f"class={real_cls.__name__}")
+        return proj
+
+    # ── 内部辅助 ──────────────────────────────────────────────────────
+
+    def _resolve_actual_name(self, name: str, latest: bool = False):
+        """name → actual_name。
+
+        - latest=False（默认）：按 actual_name（磁盘子目录名）精确匹配。
+          重名递增产生的 'db.1'/'db.2' 是独立 actual_name，需显式传入。
+        - latest=True：把 name 当 logical_name，取 created_at 最大者（同名最新版）。
+
+        找不到返回 None。
+        """
+        dbs = self._meta["dbs"]
+        if not latest:
+            return name if name in dbs else None
+        candidates = [(actual, info) for actual, info in dbs.items()
+                      if info.get("logical_name") == name]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[1].get("created_at", 0), reverse=True)
+        return candidates[0][0]
+
+    # ── pickle 支持（仿 MapReduceJob，便于作 task 参数传递）────────────
+
+    def __getstate__(self):
+        return {
+            "base_path": self.base_path,
+            "meta": self._meta,
+        }
+
+    def __setstate__(self, state):
+        self.base_path = state["base_path"]
+        self._meta = state["meta"]
+        self._meta_path = os.path.join(self.base_path, _PROJECT_META)
+        self._db_cache = {}
+
+    def __repr__(self):
+        return (f"{type(self).__name__}(path={self.base_path!r}, "
+                f"dbs={self.list_dbs()})")

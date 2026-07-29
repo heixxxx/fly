@@ -241,6 +241,32 @@ def run_one(test_path, timeout=20):
     }
 
 
+_MAX_PARALLEL = 32
+
+
+def _resolve_max_workers(j):
+    """Resolve the -j value to a ThreadPoolExecutor max_workers.
+
+    - j > 0: that many workers, capped at _MAX_PARALLEL (32).
+    - j == 0: unlimited, but still capped at 32 — unbounded parallelism lets
+      heavy cases (e.g. n=500 coarse solve) starve each other for CPU/memory
+      and time out, so we never actually run unbounded.
+    - j < 0: treated as 0 (unlimited → capped).
+    """
+    if j <= 0:
+        return _MAX_PARALLEL
+    return min(j, _MAX_PARALLEL)
+
+
+def _parallelism_label(j):
+    """Human-readable parallelism label for the header."""
+    if j <= 0:
+        return f"unlimited (capped at {_MAX_PARALLEL})"
+    if j > _MAX_PARALLEL:
+        return f"{j} (capped at {_MAX_PARALLEL})"
+    return str(j)
+
+
 def main():
     global _log_file
 
@@ -252,8 +278,9 @@ def main():
     parser.add_argument("paths", nargs="*",
                         help="Test files and/or directories to run "
                              "(default: all test_*.py under qa/)")
-    parser.add_argument("-j", type=int, default=0,
-                        help="Max parallel tests (0=unlimited, default=0)")
+    parser.add_argument("-j", type=int, default=4,
+                        help="Max parallel tests (default=4, max=32). 0=unlimited "
+                             "(capped at 32 to avoid overload-induced timeouts)")
     parser.add_argument("-t", "--timeout", type=int, default=20,
                         help="Per-test timeout in seconds (default=20)")
     args = parser.parse_args()
@@ -284,12 +311,12 @@ def main():
     log("=" * 50)
     log(f"Fly binary:   {FLY_BIN}")
     log(f"Tests to run: {len(tests)}")
-    log(f"Parallelism:  {'unlimited' if args.j == 0 else args.j}")
+    log(f"Parallelism:  {_parallelism_label(args.j)}")
     log(f"Timeout:      {args.timeout}s per test")
     log("=" * 50)
     log()
 
-    max_workers = None if args.j == 0 else args.j
+    max_workers = _resolve_max_workers(args.j)
     results = []
     t_total_start = time.monotonic()
 

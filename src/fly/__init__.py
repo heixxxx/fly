@@ -42,6 +42,38 @@ except ImportError:
 
 from fly.runtime import get_agent
 from fly.mapreduce import MapReduceJob
+from fly.project import Project, register_flow
+
+
+def open_project(path: str) -> 'Project':
+    """Create or bind a Project at ``path``.
+
+    Returns a base ``Project`` instance (mechanism shell, no business flows).
+    To use flows, construct a concrete subclass (e.g. ``SolverProject(path)``)
+    or restore one via :func:`load_project`.
+
+    Args:
+        path: Directory path for the project (created if absent).
+
+    Returns:
+        A ``Project`` instance.
+    """
+    return Project(path)
+
+
+def load_project(path: str) -> 'Project':
+    """Restore a Project from a previous run (master-only).
+
+    Reads ``_PROJECT_META.json``, dynamically restores the real subclass
+    (so registered flows are available), and fully ``load_db``-s every db.
+
+    Args:
+        path: Directory path of the existing project.
+
+    Returns:
+        A ``Project`` (or subclass) instance with all dbs restored.
+    """
+    return Project.load(path)
 
 
 def open_db(path: str, data_path: str = "") -> '_Database':
@@ -219,6 +251,7 @@ __all__ = [
     'completed_tasks', 'pending_tasks', 'running_tasks', 'failed_tasks',
     'get_agent', 'MapReduceJob',
     'put_cache', 'get_cache', 'has_cache', 'remove_cache', 'clear_cache',
+    'Project', 'register_flow', 'open_project', 'load_project',
 ]
 
 

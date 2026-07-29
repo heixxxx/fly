@@ -68,3 +68,5 @@ massif.out.*
 .open-mem
 .fly_config
 _test_db_id
+# ZCode agent session artifacts
+.zcode/

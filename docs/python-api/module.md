@@ -705,3 +705,73 @@ master.load_db("/new/location/project")  # db_id 从 _DB_META 读取，不受路
 | get_full_name 自动拼 db_id | 多 DB 场景下同名对象去重 |
 | _fly_original_func 保存原始函数 | Worker 端执行原始函数而非 wrapper |
 | thread-local last_error_type | C++ exception 跨 nanobind 丢失类型信息 |
+
+---
+
+## Project — 业务流程管理对象
+
+Project 是比 db 更高一级的管理单元，把一条业务流程的多个步骤打包，由 Project 统一管理各步骤产生的 db。**纯 Python**，零 C++。详见 [`docs/project-design.md`](../project-design.md)。
+
+### 核心 API
+
+```python
+fly.open_project(path) -> "Project"        # 新建/绑定（基类 Project，纯机制壳）
+fly.load_project(path) -> "Project"         # 全量恢复（master-only，还原真实子类）
+fly.register_flow(target_cls)               # 装饰器：注册业务流程到 Project 子类
+fly.Project                                 # 基类（供继承）
+```
+
+### 设计要点
+
+- **流程注册制**：基类只提供机制（建库/取库/冻结/持久化/load），不含业务流程；每个流程 API 是普通函数，通过 `@register_flow(子类)` 注入到指定子类，实现拆分到不同模块。
+- **flow 异步 4 步原则**：master 侧 flow 只做 ①检查输入 ②建库 ③提交入口 task（`@as_task`，非阻塞）④提交 freeze task（`@as_task`，inputs 依赖入口 task 写的数据），提交后**立即返回 db**。重计算在 worker task 异步执行，进度由 master 依赖图调度推进。flow **不负责 worker 池管理**——用户脚本预先唤起必要 worker。
+- **freeze 作为 task**：依赖上游数据写完后由 master 调度执行，task 内 `db.freeze()` 通知 master 更新 frozen 状态。
+- **flow 自己建库返回**：不暴露通用 `create_db`；每个 flow 内部 `self._create_db(name)` 建库并 `return db`。`name` = db 子目录名（actual_name）；重名 → WARN + 自动递增（`name.1`）。
+- **跨流程数据依赖显式传**：flow 间不默认传数据；需用另一 db 数据时由用户显式传 db 对象（如 `solve(name, matrix_db, ...)`），该 db 作为入口 task 的 inputs 依赖源，master 自动在数据 ready 后调度。
+
+### Project 基类方法
+
+| 方法 | 可见性 | 说明 |
+|------|--------|------|
+| `_create_db(name, data_path="")` | protected | flow 内部建库；重名 WARN + 递增；返回 db |
+| `_freeze_task_deps(db, depends_on)` | protected | 构造 freeze task 的 inputs（依赖对象 full_name） |
+| `get_db(name, latest=False)` | public | 取 db：默认 actual_name 精确匹配；latest=True 取同名最新版 |
+| `is_db_frozen(name, latest=False)` | public | 懒查询 master frozen 状态（master-only） |
+| `wait_frozen(name, timeout, latest=False)` | public | 阻塞等异步 freeze 完成 |
+| `freeze_db(name)` / `freeze_all()` | public | 同步冻结（非 flow 路径） |
+| `list_dbs()` / `list_flows()` | public | 内省（list_dbs 返回 actual_name） |
+| `load(path)` | classmethod | 读 meta + 还原子类 + 全量 load_db（master-only） |
+
+### 使用示例（SolverProject 模板，异步）
+
+```python
+import fly
+from solver import SolverProject
+
+fly.launch_workers([{"attributes": [f"sd_{i}"]} for i in range(4)])  # 用户唤起 worker
+proj = SolverProject("./my_project")
+matrix_db = proj.build_matrix(name="matrix", matrix_path="poisson_n20.npz")  # 异步返回
+result_db = proj.solve(name="solve", matrix_db=matrix_db, nsd=4, omega=1.0)  # 异步返回
+proj.wait_frozen("solve")                  # 等求解 + freeze 完成
+result = result_db.read_object("__rasg__sol")
+
+# 跨进程恢复
+proj2 = fly.load_project("./my_project")    # 自动还原为 SolverProject
+proj2.get_db("matrix")                       # 取回矩阵 db
+```
+
+### 二次开发（注册自己的 flow）
+
+```python
+import fly
+
+class MyPipeline(fly.Project):
+    pass
+
+# flows.py（独立模块）
+@fly.register_flow(MyPipeline)
+def my_flow(self, name, **kw):
+    db = self._create_db(name)
+    # ... 业务逻辑 ...
+    return db
+```
