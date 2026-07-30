@@ -838,6 +838,55 @@ def test_help_hidden_not_in_output():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# register_module（业务模块统一接入范式 — userdoc 侧）
+# ═══════════════════════════════════════════════════════════════════════════
+# 注：_LazyAttr 代理与 get_script_namespace 的惰性加载行为依赖 fly 运行时
+# （bootstrap.py 顶部 import fly），由 qa/api/test_userdoc_e2e.py 端到端覆盖
+# （验证 SolverProject 实例化、help 惰性加载、类方法转发）。此处只测 userdoc
+# 纯 Python 侧的 register_module 注册逻辑。
+
+def test_register_module_populates_table():
+    """register_module 把符号登记进 _REGISTERED_MODULES + 注册 help 延迟钩子。"""
+    _fresh_registry()
+    saved = dict(userdoc._REGISTERED_MODULES)
+    saved_loaders = list(userdoc._HELP_LAZY_LOADERS)
+    userdoc._REGISTERED_MODULES.clear()
+    userdoc._HELP_LAZY_LOADERS.clear()
+    userdoc._HELP_LAZY_DONE = False
+    try:
+        userdoc.register_module("MyClass", "mymod:MyClass")
+        assert userdoc._REGISTERED_MODULES["MyClass"] == "mymod:MyClass"
+        assert len(userdoc._HELP_LAZY_LOADERS) >= 1
+    finally:
+        userdoc._REGISTERED_MODULES.clear()
+        userdoc._REGISTERED_MODULES.update(saved)
+        userdoc._HELP_LAZY_LOADERS[:] = saved_loaders
+
+
+def test_register_module_help_loader_triggers_import():
+    """register_module 注册的 help 钩子在 _run_lazy_loaders 时 import 目标模块。"""
+    import sys, types
+    _fresh_registry()
+    saved_loaders = list(userdoc._HELP_LAZY_LOADERS)
+    userdoc._HELP_LAZY_LOADERS.clear()
+    userdoc._HELP_LAZY_DONE = False
+    # 构造假模块
+    fake = types.ModuleType("fakebiz_for_test")
+    sys.modules["fakebiz_for_test"] = fake
+    loaded_before = "fakebiz_for_test" in sys.modules
+    try:
+        userdoc.register_module("FakeSym", "fakebiz_for_test:FakeSym")
+        userdoc._HELP_LAZY_DONE = False
+        userdoc._run_lazy_loaders()   # 触发钩子 → __import__("fakebiz_for_test")
+        assert "fakebiz_for_test" in sys.modules
+        # 幂等：再跑不重复 import（_HELP_LAZY_DONE=True）
+        userdoc._run_lazy_loaders()
+    finally:
+        userdoc._HELP_LAZY_LOADERS[:] = saved_loaders
+        userdoc._HELP_LAZY_DONE = False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 运行入口
 # ═══════════════════════════════════════════════════════════════════════════
 

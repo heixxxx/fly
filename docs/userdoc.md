@@ -246,9 +246,8 @@ ValueError: launch_workers: parameter validation failed:
 
 ## 开箱即用机制
 
-Fly 启动时由 C++ 入口预执行 `import fly.bootstrap`，该模块预加载 fly + solver
-（触发 `@document` 注册填充 help registry），并为用户脚本构建含全部公共 API 的命名空间。
-因此用户脚本中**零 import** 即可直接使用：
+Fly 启动时由 C++ 入口预执行 `import fly.bootstrap`，为用户脚本构建含全部公共 API 的
+命名空间。因此用户脚本中**零 import** 即可直接使用：
 
 ```python
 # 用户脚本，无需任何 import
@@ -257,4 +256,29 @@ proj = SolverProject("./my_project")
 db = open_db("./my_db")
 ```
 
-详见 `src/fly/bootstrap.py`。
+### 惰性加载（零启动开销）
+
+重业务模块（如 solver，import 耗 ~244ms 的 numpy/scipy）**不在启动时加载**，而是：
+- 入口类（`SolverProject`）以惰性代理注入命名空间，**首次实例化时**才 import solver
+- help 系统**首次查询时**才触发 solver 的 `@document` 注册（延迟钩子）
+
+不用 solver 的脚本/进程：零 solver 开销，启动耗时与无业务模块时持平。
+
+### 接入新业务模块（1 行声明）
+
+新增业务模块的入口类要开箱即用，只需在 `src/fly/bootstrap.py` 的 `_LAZY_MODULES`
+声明表加一行：
+
+```python
+# src/fly/bootstrap.py
+_LAZY_MODULES = {
+    "SolverProject": "solver:SolverProject",
+    "Pipeline": "pipeline:Pipeline",   # ← 新模块，仅此一行
+}
+```
+
+框架自动完成：惰性代理注入命名空间 + help 查询时触发模块加载 + `@document` 注册。
+**无需写代理类、无需写 help 钩子、无需改其他代码。**
+
+模块自身的 API（flow/方法）用 `@document` 装饰即可（见前文「为自定义 API 添加」），
+模块首次被访问时这些装饰器才执行，自动注册进 help。

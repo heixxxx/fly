@@ -562,6 +562,34 @@ def _run_lazy_loaders():
     _HELP_LAZY_DONE = True
 
 
+# 已注册的业务模块入口：symbol_name -> "module:attr" 惰性目标。
+# 由 :func:`register_module` 填充，bootstrap 据此向用户命名空间注入惰性代理。
+_REGISTERED_MODULES: dict = {}
+
+
+def register_module(name, target):
+    """注册一个业务模块入口，使其惰性加载 + help 自动注册。
+
+    业务模块的入口类（如 ``SolverProject``）通过本调用声明后，会以惰性代理形式
+    注入用户脚本命名空间——首次实例化时才 import 目标模块（避免启动开销），
+    同时注册为 help 延迟钩子，使 help 查询时触发该模块的 ``@document`` 注册。
+
+    Args:
+        name: 暴露到用户命名空间的符号名（如 ``"SolverProject"``）。
+        target: ``"module:attr"`` 形式的惰性加载目标（如 ``"solver:SolverProject"``）。
+            首次访问该符号时才执行 ``importlib.import_module(module)``。
+
+    Note:
+        受惰性约束，本调用应在 **fly 自身的 bootstrap 阶段** 调用（不在启动时
+        import 业务模块）。新增业务模块只需在 bootstrap 的声明表加一行。
+        幂等：重复注册同名符号覆盖旧值。
+    """
+    _REGISTERED_MODULES[name] = target
+    # 注册为 help 延迟钩子：import 目标模块即触发其 @document 注册
+    mod_name = target.split(":", 1)[0]
+    register_lazy_loader(lambda mn=mod_name: __import__(mn))
+
+
 def _format_param_line(p):
     """渲染单行参数说明：name : type [required/default] desc。"""
     schema = p["schema"]
