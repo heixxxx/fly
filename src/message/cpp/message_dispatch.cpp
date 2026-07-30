@@ -48,4 +48,25 @@ void emit_system_message(LogLevel level, const CMString& domain_id, int32_t sour
     }
 }
 
+// ---- 配额变更回调 ----
+// master 进程绑定此回调为 broadcast_message_limits（把配额同步给所有 worker）。
+// worker 进程 / 单测不绑定 → no-op。
+namespace {
+LimitChangeCallback& limit_change_slot() {
+    static LimitChangeCallback cb;
+    return cb;
+}
+}  // namespace
+
+void set_limit_change_callback(LimitChangeCallback cb) {
+    limit_change_slot() = std::move(cb);
+}
+
+void notify_limit_changed() {
+    const auto& cb = limit_change_slot();
+    if (cb) {
+        cb();
+    }
+}
+
 }  // namespace fly

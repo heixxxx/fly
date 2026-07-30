@@ -1,11 +1,15 @@
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-try:
-    from agent.agent import FlyAgent, Master, Worker
-except ImportError:
-    from agent.py.agent import FlyAgent, Master, Worker
+# agent 模块依赖 fly（register_message_id / message），若在 fly/__init__.py 执行期间
+# 顶层导入 agent 会形成循环。改用延迟导入：agent 在首次 get_agent() 时才加载，
+# 此时 fly 已完成初始化。类型注解用 TYPE_CHECKING 仅用于静态检查，运行时不触发导入。
+if TYPE_CHECKING:
+    try:
+        from agent.agent import FlyAgent
+    except ImportError:
+        from agent.py.agent import FlyAgent  # noqa: F401
 
-_agent: Optional[FlyAgent] = None
+_agent: "Optional[FlyAgent]" = None
 
 _mode: str = "master"
 
@@ -25,14 +29,20 @@ def configure_master():
     _mode = "master"
 
 
-def get_agent() -> FlyAgent:
+def get_agent() -> "FlyAgent":
     global _agent
     if _agent is None:
         _agent = _create_agent()
     return _agent
 
 
-def _create_agent() -> FlyAgent:
+def _create_agent() -> "FlyAgent":
+    # 延迟导入 agent：避免 fly/__init__.py 初始化期间触发循环导入。
+    try:
+        from agent.agent import Master, Worker
+    except ImportError:
+        from agent.py.agent import Master, Worker
+
     from _fly_log import DBG
     from _fly_core import ex_core_get_process_info
 

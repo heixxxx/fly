@@ -141,6 +141,11 @@ void WorkerAgent::start() {
             on_message_count_request(conn_id, msg);
         });
 
+    reactor_->register_handler<MessageLimitSyncMessage>(
+        [this](uint64_t conn_id, const MessageLimitSyncMessage& msg) {
+            on_message_limit_sync(conn_id, msg);
+        });
+
     reactor_->register_handler<RemoveAckMessage>(
         [this](uint64_t conn_id, const RemoveAckMessage& msg) {
             on_remove_ack(conn_id, msg);
@@ -968,8 +973,8 @@ void WorkerAgent::on_message_count_request(uint64_t conn_id, const MessageCountR
     // summary 屏障：把本地 message 触发计数（id 级 + domain 级两套）上报给 master。
     MessageCountReportMessage report;
     report.worker_id_ = worker_id_;
-    auto id_counts = MessageRegistry::instance().id_counts_snapshot();
-    auto dom_counts = MessageRegistry::instance().domain_counts_snapshot();
+    auto id_counts = MessageRegistry::instance().trigger_id_counts_snapshot();
+    auto dom_counts = MessageRegistry::instance().trigger_domain_counts_snapshot();
     for (const auto& [k, v] : id_counts) {
         report.id_keys_.push_back(k);
         report.id_values_.push_back(v);
@@ -984,6 +989,15 @@ void WorkerAgent::on_message_count_request(uint64_t conn_id, const MessageCountR
         // 兜底：conn_id 为 0（理论不会发生）时回 master_conn_。
         reactor_->send(master_conn_, report);
     }
+}
+
+void WorkerAgent::on_message_limit_sync(uint64_t /*conn_id*/, const MessageLimitSyncMessage& msg) {
+    // 收到 master 的配额全量快照：整体替换本地 Registry 配额。
+    // 不清零 trigger/emit 计数——配额改变时，emit 计数保留，按新配额继续判定
+    // （调大可继续输出，调小立即受限），trigger 计数持续累加供 summary。
+    MessageRegistry::instance().apply_limits_snapshot(
+        msg.global_limit_, msg.domain_keys_, msg.domain_values_,
+        msg.id_keys_, msg.id_values_);
 }
 
 CMVector<VarPayload> WorkerAgent::take_pending_task_vars() {

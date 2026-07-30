@@ -34,6 +34,13 @@ void set_system_sink_func(SystemSinkFunc func);
 // domain_id 通常为 "FLY::0000"。source 用于多行信息的行号区分。
 void emit_system_message(LogLevel level, const CMString& domain_id, int32_t source, const CMString& msg);
 
+// ---- 配额变更回调（master → worker 同步触发点）----
+// 用户调 set_*_limit 后触发。master 进程绑定此回调为「广播配额给所有 worker」，
+// worker 进程 / 单测不绑定（回调为空时 no-op）。详见 docs/message-system.md §10。
+using LimitChangeCallback = std::function<void()>;
+void set_limit_change_callback(LimitChangeCallback cb);
+void notify_limit_changed();
+
 }  // namespace fly
 
 // --- MSG 宏 ---
@@ -45,7 +52,7 @@ void emit_system_message(LogLevel level, const CMString& domain_id, int32_t sour
 //
 // 逻辑：
 //   1. 查 id 绑定的级别；未注册 → 丢弃（不计次数，视为非法）。
-//   2. try_consume（先 +1 id/domain 两套计数，再检查两层配额）。
+//   2. try_emit（trigger 计数 +1；配额判定用 emit 计数，详见 MessageRegistry）。
 //      - 任一层超限 → 丢弃（不写 debug log，不推送；次数已计）。
 //      - 两层通过 → 用 id 绑定的级别写本地 debug log（带 [DOMAIN::NNNN] <source> 前缀）+ push_message 推送。
 //
@@ -58,7 +65,7 @@ void emit_system_message(LogLevel level, const CMString& domain_id, int32_t sour
         const ::fly::CMString& _msg_domain = (domain_id); \
         ::fly::LogLevel _msg_level; \
         if (::fly::MessageRegistry::instance().get_level(_msg_domain, _msg_level)) { \
-            if (::fly::MessageRegistry::instance().try_consume(_msg_domain)) { \
+            if (::fly::MessageRegistry::instance().try_emit(_msg_domain)) { \
                 ::fly::CMString _msg_text = ::fly::format_log(FMT_STRING(fmt_str), ##__VA_ARGS__); \
                 ::fly::CMString _msg_prefix = "[" + _msg_domain + "] <" + std::to_string(source) + "> "; \
                 ::fly::Logger::instance()->log(_msg_level, _msg_prefix + _msg_text); \

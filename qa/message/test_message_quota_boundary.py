@@ -11,7 +11,7 @@ from _fly_log import INFO
 from fly import (
     open_db, get_config, get_work_directory, as_task,
     message, register_message_id,
-    set_message_id_limit, set_master_print_id_limit,
+    set_message_global_limit,
 )
 from _msgtest import wait_for, get_message_log_content
 
@@ -45,12 +45,12 @@ def worker_send(db):
     register_message_id("BDMZERO::0001", "INFO")
 
     # id 配额 -1：发 15 次全部通过。
-    set_message_id_limit(-1)  # 注意：这是全局 id 配额，影响后续所有 id
+    set_message_global_limit(-1)  # 注意：这是全局默认配额，影响后续所有 id
     for i in range(15):
         message("BDUNLIM::0001", 1, f"u{i}")
 
     # id 配额 0：禁止，第一次也丢弃，但计数 1。
-    set_message_id_limit(0)
+    set_message_global_limit(0)
     message("BDZERO::0001", 1, "should be blocked")
     return "ok"
 

@@ -46,10 +46,14 @@ public:
     void print_summary(const MessageCounts& master_counts,
                        const CMVector<std::pair<uint64_t, MessageCounts>>& worker_reports);
 
-    // master 打印配额设置：控制 worker 推送来的 message 在 master 侧是否打印
-    // （独立于各 worker 的触发计数配额，避免双算）。语义同 MessageRegistry 配额：
-    // -1 = 不限制；0 = 禁止；N = 上限 N 次。默认 id=20，domain=-1（不限）。
-    void set_print_id_limit(int32_t limit);
+    // master 打印配额设置（三层链式优先级，与 MessageRegistry 对称：
+    // per-id > per-domain > global，仅第一个显式设置的层级生效）。
+    // 独立于各 worker 的触发计数配额（避免双算）。语义：-1 = 不限制；0 = 禁止；N = 上限 N 次。
+    //   - set_print_global_limit：全局默认打印配额（默认 20）。
+    //   - set_print_id_limit(domain_id, limit)：per-id 打印配额，覆盖 global 与 domain。
+    //   - set_print_domain_limit(domain, limit)：per-domain 打印配额，覆盖 global。
+    void set_print_global_limit(int32_t limit);
+    void set_print_id_limit(const CMString& domain_id, int32_t limit);
     void set_print_domain_limit(const CMString& domain, int32_t limit);
 
     // 构造为 public（参照 Logger），供 CMMakeShared 访问。
@@ -61,8 +65,8 @@ private:
     CMString level_str(LogLevel level) const;
 
     // master 打印配额：控制 worker 推送来的 message 是否打印（不影响触发计数，
-    // 避免与各 worker 的触发计数在 summary 里双算）。与 MessageRegistry 配额语义一致
-    // （默认 20，-1 不限，0 禁止），但这是独立的「master 打印侧」计数器。
+    // 避免与各 worker 的触发计数在 summary 里双算）。链式优先级 per-id > domain > global，
+    // 仅取第一个显式设置的层级。
     bool print_within_limit(const CMString& domain_id);
 
     CMString filename_;
@@ -70,8 +74,9 @@ private:
     std::mutex mutex_;
     bool inited_ = false;
 
-    int32_t print_id_limit_ = 20;
-    CMUnorderedMap<CMString, int32_t> print_domain_limits_;  // 未设 = -1
+    int32_t print_id_limit_ = 20;                            // global 默认打印配额
+    CMUnorderedMap<CMString, int32_t> print_id_overrides_;   // per-id 显式；未设 = 下沉
+    CMUnorderedMap<CMString, int32_t> print_domain_limits_;  // per-domain 显式；未设 = 下沉
     CMUnorderedMap<CMString, uint64_t> print_id_counts_;     // 已打印次数
     CMUnorderedMap<CMString, uint64_t> print_domain_counts_;
 };

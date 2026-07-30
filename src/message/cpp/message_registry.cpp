@@ -25,9 +25,14 @@ bool MessageRegistry::get_level(const CMString& domain_id, LogLevel& out_level) 
     return true;
 }
 
-void MessageRegistry::set_id_limit(int32_t limit) {
+void MessageRegistry::set_global_limit(int32_t limit) {
     std::lock_guard<std::mutex> lock(mutex_);
     id_limit_ = limit;
+}
+
+void MessageRegistry::set_id_limit(const CMString& domain_id, int32_t limit) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    id_overrides_[domain_id] = limit;
 }
 
 void MessageRegistry::set_domain_limit(const CMString& domain, int32_t limit) {
@@ -35,44 +40,77 @@ void MessageRegistry::set_domain_limit(const CMString& domain, int32_t limit) {
     domain_limits_[domain] = limit;
 }
 
-bool MessageRegistry::id_within_limit(const CMString& domain_id) const {
-    // -1 = 不限制；0 = 禁止（try_consume 先 +1 再判断，故 count>=1 时 1<=0 false 必然超限）。
-    // count 在 try_consume 里已 +1，故用 count <= limit 判定「第 count 次是否仍允许」。
-    if (id_limit_ < 0) return true;
-    auto it = id_counts_.find(domain_id);
-    uint64_t count = (it != id_counts_.end()) ? it->second : 0;
-    return count <= static_cast<uint64_t>(id_limit_);
+int32_t MessageRegistry::resolve_effective_limit(const CMString& domain_id,
+                                                 const CMString& domain) const {
+    // 链式优先级：per-id > per-domain > global。仅取第一个「显式设置」的层级。
+    auto id_it = id_overrides_.find(domain_id);
+    if (id_it != id_overrides_.end()) return id_it->second;
+    auto dom_it = domain_limits_.find(domain);
+    if (dom_it != domain_limits_.end()) return dom_it->second;
+    return id_limit_;
 }
 
-bool MessageRegistry::domain_within_limit(const CMString& domain) const {
-    auto it = domain_limits_.find(domain);
-    int32_t limit = (it != domain_limits_.end()) ? it->second : -1;  // 默认 -1=不限
-    if (limit < 0) return true;
-    auto cit = domain_counts_.find(domain);
-    uint64_t count = (cit != domain_counts_.end()) ? cit->second : 0;
-    return count <= static_cast<uint64_t>(limit);
-}
-
-bool MessageRegistry::try_consume(const CMString& domain_id) {
+bool MessageRegistry::try_emit(const CMString& domain_id) {
     CMString domain = extract_domain(domain_id);
 
     std::lock_guard<std::mutex> lock(mutex_);
-    // 先累加两套计数（无论是否超限丢弃，触发次数都 +1）。
-    id_counts_[domain_id]++;
-    domain_counts_[domain]++;
+    // 1. 记录触发（无论是否输出，trigger_count 都 +1；进 summary）。
+    trigger_id_counts_[domain_id]++;
+    trigger_domain_counts_[domain]++;
 
-    // 再检查两层配额（同时生效，任一超限即丢弃）。
-    return id_within_limit(domain_id) && domain_within_limit(domain);
+    // 2. 配额判定用 emit_count（仅记已成功输出的次数）。
+    int32_t limit = resolve_effective_limit(domain_id, domain);
+    if (limit >= 0 && emit_id_counts_[domain_id] >= static_cast<uint64_t>(limit)) {
+        return false;  // 超限丢弃（trigger 已计，emit 不增）
+    }
+    // 3. 允许输出，emit_count +1。
+    emit_id_counts_[domain_id]++;
+    return true;
 }
 
-CMUnorderedMap<CMString, uint64_t> MessageRegistry::id_counts_snapshot() const {
+CMUnorderedMap<CMString, uint64_t> MessageRegistry::trigger_id_counts_snapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return id_counts_;
+    return trigger_id_counts_;
 }
 
-CMUnorderedMap<CMString, uint64_t> MessageRegistry::domain_counts_snapshot() const {
+CMUnorderedMap<CMString, uint64_t> MessageRegistry::trigger_domain_counts_snapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return domain_counts_;
+    return trigger_domain_counts_;
+}
+
+void MessageRegistry::get_all_limits(int32_t& global_limit,
+                                     CMVector<CMString>& domain_keys, CMVector<int32_t>& domain_values,
+                                     CMVector<CMString>& id_keys, CMVector<int32_t>& id_values) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    global_limit = id_limit_;
+    domain_keys.clear();
+    domain_values.clear();
+    for (const auto& [k, v] : domain_limits_) {
+        domain_keys.push_back(k);
+        domain_values.push_back(v);
+    }
+    id_keys.clear();
+    id_values.clear();
+    for (const auto& [k, v] : id_overrides_) {
+        id_keys.push_back(k);
+        id_values.push_back(v);
+    }
+}
+
+void MessageRegistry::apply_limits_snapshot(int32_t global_limit,
+                                            const CMVector<CMString>& domain_keys, const CMVector<int32_t>& domain_values,
+                                            const CMVector<CMString>& id_keys, const CMVector<int32_t>& id_values) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // 整体替换配额（不清零 trigger/emit 计数，支持运行时动态修改）。
+    id_limit_ = global_limit;
+    domain_limits_.clear();
+    for (size_t i = 0; i < domain_keys.size() && i < domain_values.size(); ++i) {
+        domain_limits_[domain_keys[i]] = domain_values[i];
+    }
+    id_overrides_.clear();
+    for (size_t i = 0; i < id_keys.size() && i < id_values.size(); ++i) {
+        id_overrides_[id_keys[i]] = id_values[i];
+    }
 }
 
 CMString MessageRegistry::extract_domain(const CMString& domain_id) {
@@ -84,9 +122,11 @@ CMString MessageRegistry::extract_domain(const CMString& domain_id) {
 void MessageRegistry::reset_for_testing() {
     std::lock_guard<std::mutex> lock(mutex_);
     registered_ids_.clear();
-    id_counts_.clear();
-    domain_counts_.clear();
+    trigger_id_counts_.clear();
+    trigger_domain_counts_.clear();
+    emit_id_counts_.clear();
     id_limit_ = 20;
+    id_overrides_.clear();
     domain_limits_.clear();
 }
 

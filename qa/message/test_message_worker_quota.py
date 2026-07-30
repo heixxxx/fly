@@ -11,7 +11,7 @@ import shutil
 from _fly_log import INFO
 from fly import (
     open_db, get_config, get_work_directory, as_task,
-    message, register_message_id, set_message_id_limit, set_message_domain_limit,
+    message, register_message_id,
 )
 from _msgtest import wait_for, get_message_log_content, get_worker_debug_log
 

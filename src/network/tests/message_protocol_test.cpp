@@ -675,7 +675,8 @@ TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::LOG_MESSAGE)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MSG_COUNT_REQUEST)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MSG_COUNT_REPORT)));
-    EXPECT_FALSE(is_valid_message_type(49));  // upper bound is 48
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MSG_LIMIT_SYNC)));
+    EXPECT_FALSE(is_valid_message_type(50));  // upper bound is 49
     EXPECT_FALSE(is_valid_message_type(0));
 }
 
@@ -887,6 +888,30 @@ TEST(MessageProtocolTest, MessageCountReportRoundTrip) {
     ASSERT_EQ(decoded.domain_values_.size(), 2u);
     EXPECT_EQ(decoded.domain_values_[0], 30u);
     EXPECT_EQ(decoded.domain_values_[1], 2u);
+    EXPECT_TRUE(buffer.empty());
+}
+
+TEST(MessageProtocolTest, MessageLimitSyncRoundTrip) {
+    MessageLimitSyncMessage sync;
+    sync.header_.type_ = MessageType::MSG_LIMIT_SYNC;
+    sync.global_limit_ = 15;
+    sync.domain_keys_ = {"SOLVER", "SYS"};
+    sync.domain_values_ = {100, 50};
+    sync.id_keys_ = {"SOLVER::0047", "SYS::0001"};
+    sync.id_values_ = {5, 10};
+
+    CMString encoded = MessageProtocol::encode(sync);
+    CMString buffer = encoded;
+
+    MessageLimitSyncMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.global_limit_, 15);
+    ASSERT_EQ(decoded.domain_keys_.size(), 2u);
+    EXPECT_EQ(decoded.domain_keys_[0], "SOLVER");
+    EXPECT_EQ(decoded.domain_values_[0], 100);
+    ASSERT_EQ(decoded.id_keys_.size(), 2u);
+    EXPECT_EQ(decoded.id_keys_[0], "SOLVER::0047");
+    EXPECT_EQ(decoded.id_values_[0], 5);
     EXPECT_TRUE(buffer.empty());
 }
 

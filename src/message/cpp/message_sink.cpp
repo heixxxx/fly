@@ -85,9 +85,14 @@ void MessageSink::handle_local(LogLevel level, const CMString& domain_id, int32_
     write_line(line);
 }
 
-void MessageSink::set_print_id_limit(int32_t limit) {
+void MessageSink::set_print_global_limit(int32_t limit) {
     std::lock_guard<std::mutex> lock(mutex_);
     print_id_limit_ = limit;
+}
+
+void MessageSink::set_print_id_limit(const CMString& domain_id, int32_t limit) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    print_id_overrides_[domain_id] = limit;
 }
 
 void MessageSink::set_print_domain_limit(const CMString& domain, int32_t limit) {
@@ -97,22 +102,25 @@ void MessageSink::set_print_domain_limit(const CMString& domain, int32_t limit) 
 
 bool MessageSink::print_within_limit(const CMString& domain_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    // 先累加打印计数（无论是否超限丢弃，print counts 都 +1）。
-    print_id_counts_[domain_id]++;
     CMString domain = MessageRegistry::extract_domain(domain_id);
-    print_domain_counts_[domain]++;
 
-    // id 配额（默认 20，-1 不限）。
-    if (print_id_limit_ >= 0 && print_id_counts_[domain_id] > static_cast<uint64_t>(print_id_limit_)) {
-        return false;
+    // 链式优先级选出唯一生效配额（per-id > domain > global），三层语义统一为「每 id 独立计数」。
+    auto id_it = print_id_overrides_.find(domain_id);
+    int32_t limit;
+    if (id_it != print_id_overrides_.end()) {
+        limit = id_it->second;
+    } else {
+        auto dom_it = print_domain_limits_.find(domain);
+        limit = (dom_it != print_domain_limits_.end()) ? dom_it->second : print_id_limit_;
     }
-    // domain 配额（默认 -1 不限，未设则跳过）。
-    auto dit = print_domain_limits_.find(domain);
-    if (dit != print_domain_limits_.end() && dit->second >= 0) {
-        if (print_domain_counts_[domain] > static_cast<uint64_t>(dit->second)) {
-            return false;
-        }
+
+    // 配额判定用「已打印计数」emit 语义：先判，通过才 +1（与 MessageRegistry::try_emit 对齐）。
+    // 这样动态调大配额时不会因历史打印数过大而永远打不出（emit 计数只记已成功打印的）。
+    if (limit >= 0 && print_id_counts_[domain_id] >= static_cast<uint64_t>(limit)) {
+        return false;  // 超限丢弃
     }
+    print_id_counts_[domain_id]++;
+    print_domain_counts_[domain]++;
     return true;
 }
 

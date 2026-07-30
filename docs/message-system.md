@@ -35,37 +35,76 @@ fly 现有的 debug log 系统（DBG/INFO/WARN/ERR）每个进程仅写自己的
 
 ---
 
-## 3. 配额机制（两层独立配额）
+## 3. 配额机制（两套计数 + 三层链式优先级 + master→worker 同步）
 
-| 层级 | 默认配额 | 含义 |
-|------|---------|------|
-| **domain 配额（粗）** | `-1`（不限制），显式设置才生效 | 该 domain 下所有 id 共享的输出上限 |
-| **message id 配额（细）** | `20`（每 id 独立） | 单条 message id 的输出上限 |
+### 3.1 两套计数模型（核心设计）
+
+一条 message 维护**两套独立计数**，彻底解耦「触发统计」与「配额判定」：
+
+| 计数 | 含义 | 用途 | 配额改变时 |
+|------|------|------|-----------|
+| **trigger_count**（触发计数） | 每次调用 message() 都 +1，无论是否实际输出 | summary 统计「触发了多少次」 | 不重置，持续累加 |
+| **emit_count**（输出计数） | 仅在实际成功输出（写 log / 推送）时 +1 | 配额判定「还能输出多少次」 | 保留（配额始终限制 emit_count） |
+
+> **为什么需要两套计数？** 动态修改配额时，若用单一计数（trigger=emit），会出现 bug：
+> limit=2 触发 100 次（计数 100），调大 limit=20 后，100 > 20 恒超限，永远发不出。
+> 两套计数解耦后：trigger=100（summary），emit=2（实际只输出了 2 次），调大 limit=20 后
+> emit=2 < 20，可继续输出 18 条。
+
+### 3.2 三层配额链式优先级
+
+配额按**链式优先级**生效：**per-id > per-domain > global**，仅取第一个「显式设置」的层级，
+其余层**完全不检查**。配额始终限制的是 **emit_count**。
+
+| 层级 | API（Python） | 默认 | 含义 |
+|------|--------------|------|------|
+| **per-id（最细）** | `set_message_id_limit(domain_id, limit)` | —（未设） | 为单个 message id 设独立配额。设了 per-id 的 id 只看这一层。 |
+| **per-domain** | `set_message_domain_limit(domain, limit)` | —（未设） | 语义与 global 相同（**每 id 独立计数**），仅对该 domain 内 id 生效，覆盖 global。不是跨 id 共享。 |
+| **global（兜底）** | `set_message_global_limit(limit)` | `20` | 所有未设配额的 id 的默认值。永远有值，但不屏蔽上层。 |
+
+### 优先级链（resolve_effective_limit）
+
+```
+触发一条 message(id) 时：
+  1. trigger_count[id]++（无论是否输出）
+  2. 选出生效配额（链式，第一个显式设置的）：
+     - per-id 设了? → 是：用 per-id
+     - 否则 domain 设了? → 是：用 domain
+     - 否则 → 用 global
+  3. if emit_count[id] >= 生效配额: 超限丢弃（trigger 已计）
+     else: emit_count[id]++（允许输出）
+```
+
+> **关键**：不是多层 AND 检查。global 永远有值（默认 20），但它只在「per-id 和 domain 都没设」时
+> 才生效——不会因为「global 有值」就屏蔽 domain。
 
 ### 配额语义
-- `-1` = 不限制；`0` = 完全禁止；`N` = 上限 N 次。
+- `-1` = 不限制；`0` = 完全禁止；`N` = emit_count 上限 N 次。
+- 超限：丢弃（不打印/不推送），但 **trigger_count 仍 +1**（进 summary）。
 
-### 关键规则：计数与配额分离
-- **触发次数永远累加**：不论是否超限丢弃，每次调用都让 id 计数 +1、domain 计数 +1。
-- **配额仅控制是否打印/发送**，不影响计数累加。
-- 发送一条 message 时，**同时检查 domain 配额和 id 配额**，任一层超限即丢弃（仍各计一次数）。
+### 3.3 单一 limit 同时控制两处（统一 API）
 
-### 配额作用的两个维度（避免 summary 双算）
+`set_message_*_limit` 一个 limit 同时设置 worker 发送配额 + master 打印配额（同一值）：
 
-这是本系统最关键的设计决策，需重点 review：
+1. **worker 发送配额**（worker 进程 `MessageRegistry`）：每 worker 每 id 最多输出 limit 条（emit_count）。
+   - 控制该 worker 是否在本地 debug log 打印、是否推送 master（源头控流量，防单点刷屏）。
+2. **master 打印配额**（master 进程 `MessageSink`）：master 汇聚打印总量 limit 条（master 总量限流）。
+   - 不记 trigger（触发在 worker 已计，避免 summary 双算）；用 Sink 独立的打印 emit 计数。
 
-message 的「触发」发生在**产生 message 的进程**（worker 或 master）。但 message 还会经过两层配额：
+> 单一 API 设置两处，用户无需关心「worker 配额」和「master 打印配额」的区别。
+> 多 worker 时 master 会丢弃 `(N-1)×limit` 条（master 总量限流语义）。
 
-1. **worker 本地配额**（worker 进程的 `MessageRegistry`）：
-   - 控制该 worker 是否在本地 debug log 打印、是否推送 master。
-   - 超限：本地不打印、不推送 master，但仍累计 worker 本地的触发次数。
+### 3.4 master → worker 配额运行时同步
 
-2. **master 打印配额**（master 进程的 `MessageSink`，独立于 `MessageRegistry`）：
-   - 控制推送到 master 的 message（worker 推来的 + master 自身的）是否在 master 侧打印（`message.log` + terminal）。
-   - **不记触发次数** —— 触发发生在 worker，已由 worker 的 `MessageRegistry` 记录。若 master 也用 `MessageRegistry::try_consume` 计数，会导致 summary 把同一次触发在 worker 和 master 各算一次（双算）。
-   - 因此 master 用 `MessageSink` 内独立的 `print_counts_` 做打印配额，与 `MessageRegistry` 的触发计数完全隔离。
+worker 是独立子进程，用户在 master 脚本里调 `set_message_*_limit` 只改 master 内存。
+通过 **MSG_LIMIT_SYNC 广播**（全量快照）同步给所有 worker：
 
-> **为什么有两套配额？** worker 配额从源头控制流量（避免 worker 疯狂推送）；master 配额在汇聚点控制输出（避免 terminal 刷屏）。两者独立，各管各的维度，summary 只统计触发次数（来源：各进程的 `MessageRegistry`）。
+- **触发时机**：`set_*_limit` 调用后立即广播（`notify_limit_changed` 回调 → master `broadcast_message_limits`）。
+- **新 worker 上线**：`on_worker_register` 回 ack 后补发当前全量配额（worker 子进程是全新进程，拿不到 master 脚本设的配额）。
+- **worker 接收**：`on_message_limit_sync` → `apply_limits_snapshot` 整体替换本地配额（**不清零 trigger/emit 计数**）。
+- **全量快照语义**：master 维护当前所有配额，每次广播整份；幂等、支持动态修改、无需序号防乱序。
+
+> 这使得 worker log 的打印条数真正受用户控制（修复前 worker 拿默认值 20，不受控）。
 
 ---
 
@@ -75,12 +114,13 @@ message 的「触发」发生在**产生 message 的进程**（worker 或 master
 
 | 组件 | 位置 | 职责 |
 |------|------|------|
-| `MessageRegistry` | `src/message/cpp/` | 进程级单例：白名单（id→级别）、id/domain 两套触发计数、id/domain 配额。`try_consume()` 是核心方法。 |
-| `MessageSink` | `src/message/cpp/` | **仅 master 进程**单例：写 `message.log` + 输出 terminal + summary。含独立的 master 打印配额。 |
-| `MSG` 宏 | `src/message/cpp/message_macros.h` | C++ 侧发送入口：查级别→try_consume→写本地 debug log→push_message。 |
+| `MessageRegistry` | `src/message/cpp/` | 进程级单例：白名单（id→级别）、两套计数（trigger/emit）、三层配额。`try_emit()` 是核心方法。 |
+| `MessageSink` | `src/message/cpp/` | **仅 master 进程**单例：写 `message.log` + 输出 terminal + summary。含独立的 master 打印配额（emit 计数）。 |
+| `MSG` 宏 | `src/message/cpp/message_macros.h` | C++ 侧发送入口：查级别→try_emit→写本地 debug log→push_message。 |
 | `push_message` / `set_message_push_func` | `src/message/cpp/` | 全局推送函数指针：worker 绑定为「发送 master」，master 绑定为 `MessageSink::handle_local`。 |
+| `notify_limit_changed` / `set_limit_change_callback` | `src/message/cpp/` | 配额变更回调：master 绑定为 broadcast_message_limits，set_*_limit 后触发同步。 |
 | `emit_system_message` / `set_system_sink_func` | `src/message/cpp/` | 系统 message（FLY::0000）：豁免配额，master 走 sink，worker 仅本地 debug log。 |
-| `LogMessage` / `MessageCountRequestMessage` / `MessageCountReportMessage` | `src/network/cpp/message_types.h` | 三个网络消息类型。 |
+| `LogMessage` / `MessageCountRequestMessage` / `MessageCountReportMessage` / `MessageLimitSyncMessage` | `src/network/cpp/message_types.h` | 四个网络消息类型。 |
 | `SystemInfo` | `src/core/cpp/` | 收集机器/网络/运行时信息并格式化（FLY::0000 启动信息）。 |
 | `build_info.h` | `src/build_info/`（bazel genrule 生成） | git commit / build type / build time，构建时注入。 |
 
@@ -89,30 +129,37 @@ message 的「触发」发生在**产生 message 的进程**（worker 或 master
 ```
 【worker 进程 — MSG("SOLVER::0047", source, "...") 或 fly.message(id, source, msg)】
   1. MessageRegistry::get_level(id)  → 未注册则丢弃（不计次数）
-  2. MessageRegistry::try_consume(id) → id/domain 计数各 +1，检查两层配额
-     ├─ 任一层超限 → 丢弃（本地不打印、不推送；次数已计）
-     └─ 两层通过
+  2. MessageRegistry::try_emit(id) → trigger_count +1；按三层配额判定 emit_count
+     ├─ emit_count >= 生效配额 → 超限丢弃（trigger 已计，emit 不增；本地不打印、不推送）
+     └─ 通过（emit_count++）
         ├─ 写 worker 本地 debug log（带 [DOMAIN::NNNN] <source> 前缀）
         └─ push_message → WorkerAgentContext → WorkerAgent::send_message_to_master
            → reactor_->send(master_conn_, LogMessage{worker_id, level, id, source, msg})
 
 【master 进程 — MSG(...)/fly.message(...)（本进程）】
-  1. get_level + try_consume（master 自己的 MessageRegistry，记录 master 触发次数）
-     ├─ 超限 → 丢弃（master 计数仍 +1）
+  1. get_level + try_emit（master 自己的 MessageRegistry，记录 master trigger/emit 计数）
+     ├─ 超限 → 丢弃（trigger 仍 +1）
      └─ 通过 → push_message → set_message_push_func 绑定的 MessageSink::handle_local
         → message.log + terminal
 
 【master 进程 — 收到 worker 的 LogMessage】
   on_log_message(conn_id, msg)
    → MessageSink::handle_remote(worker_id, level, id, source, msg)
-     内部 print_within_limit（master 打印配额，独立计数，不双算）
+     内部 print_within_limit（master 打印配额，用 Sink 独立 emit 计数，不碰 Registry trigger，不双算）
      ├─ 超限 → 丢弃
      └─ 通过 → message.log（带 [workerN] 标注）+ terminal
+
+【配额变更 — master → worker 同步】
+  用户 set_*_limit（master 脚本）
+   → export 层同时设 Registry + Sink + notify_limit_changed()
+   → MasterAgent::broadcast_message_limits() → 广播 MSG_LIMIT_SYNC（全量快照）给所有在线 worker
+   → worker on_message_limit_sync → apply_limits_snapshot（整体替换本地配额，不清零计数）
+  新 worker 上线时 on_worker_register 补发一次当前配额。
 
 【进程结束 — summary（master 主动拉取）】
   master stop() 新增 Phase（发 ShutdownMessage 之前）:
     广播 MSG_COUNT_REQUEST → 等所有 worker 回 MSG_COUNT_REPORT（计数屏障，复刻 MergeCleanupAck，30s 超时）
-    → MessageSink::print_summary(master 本地 MessageRegistry 计数 + 各 worker 上报计数合并)
+    → MessageSink::print_summary(master 本地 trigger 计数 + 各 worker 上报 trigger 计数合并)
 
 【master/worker 启动 — FLY::0000 启动信息】
   start() 末尾: SystemInfo::format_startup_info(role, port) → 逐行 emit_system_message
@@ -198,7 +245,7 @@ message 的「触发」发生在**产生 message 的进程**（worker 或 master
 | `STOR::0003` | INFO | load_db 恢复完成 | `agent.py` `load_db` 返回前 | 1 | 系统就绪里程碑 |
 | `SOLVER::0001` | INFO | RAS 求解进度 | `ras_graph.py` `ras_graph_check` | 2=每10轮 / 1=收敛 | 迭代收敛观察 |
 
-**注册位置**：C++ 侧 id 在 `MasterAgent::start()` 注册（`MessageRegistry::instance().register_id`）；Python 侧在模块顶层注册（`_msg.register_message_id`，agent.py / ras_graph.py）。
+**注册位置**：C++ 侧 id 在 `MasterAgent::start()` 注册（`MessageRegistry::instance().register_id`）；Python 侧在模块顶层注册（`fly.register_message_id`，agent.py / ras_graph.py）。
 
 **排除的高频/调试节点**（不加 message）：task 完成、普通 task 失败（有 re-queue）、心跳/revive、自动备份、merge cleanup ack。
 
@@ -215,13 +262,12 @@ MessageRegistry::instance().register_id("SOLVER::0047", LogLevel::INFO);
 // 发送 message（级别由 id 查表，source 为触发位置标识不参与配额）
 MSG("SOLVER::0047", 3, "收敛于 {}", residual);
 
-// 配额设置
-MessageRegistry::instance().set_id_limit(20);              // 全局 id 配额（默认 20；-1 不限；0 禁止）
-MessageRegistry::instance().set_domain_limit("SOLVER", 100); // 单 domain 配额（默认 -1 不限）
-
-// master 打印配额（MessageSink，独立于 MessageRegistry）
-MessageSink::instance()->set_print_id_limit(20);
-MessageSink::instance()->set_print_domain_limit("SOLVER", 100);
+// 配额设置（三层链式优先级：per-id > per-domain > global）。
+// 注意：C++ 直接调 Registry 只影响当前进程。要同时设 worker + master 并同步 worker，
+// 应走 Python 公开 API（fly.set_message_*_limit，见 §6.2）。
+MessageRegistry::instance().set_global_limit(20);                   // global 默认（默认 20；-1 不限；0 禁止）
+MessageRegistry::instance().set_id_limit("SOLVER::0047", 5);        // per-id：仅对 SOLVER::0047 生效
+MessageRegistry::instance().set_domain_limit("SOLVER", 100);        // per-domain：SOLVER 域每 id 独立
 ```
 
 **MSG 宏逻辑**：
@@ -229,7 +275,7 @@ MessageSink::instance()->set_print_domain_limit("SOLVER", 100);
 #define MSG(domain_id, source, fmt_str, ...) \
     do { \
         // 1. 查级别；未注册丢弃
-        // 2. try_consume（计数 +1，检查 id/domain 两层配额）
+        // 2. try_emit（trigger_count +1；按链式优先级选一层配额，用 emit_count 判定）
         // 3. 通过则写本地 debug log（[DOMAIN::NNNN] <source> 前缀）+ push_message
     } while (0)
 ```
@@ -245,22 +291,72 @@ fly.register_message_id("SOLVER::0047", "INFO")
 # 发送（级别由 id 决定，source 标注位置）
 fly.message("SOLVER::0047", 3, "收敛于 0.001")
 
-# 配额
-fly.set_message_id_limit(20)                 # worker 进程 id 配额
-fly.set_message_domain_limit("SOLVER", 100)  # worker 进程 domain 配额
-fly.set_master_print_id_limit(20)            # master 打印 id 配额
-fly.set_master_print_domain_limit("SOLVER", 100)  # master 打印 domain 配额
+# 配额（三层链式优先级：per-id > per-domain > global，仅第一个显式设置的生效）。
+# 单一 limit 同时设 worker 发送配额 + master 打印配额，并自动广播给所有 worker。
+fly.set_message_global_limit(20)                    # global 默认
+fly.set_message_id_limit("SOLVER::0047", 5)         # per-id
+fly.set_message_domain_limit("SOLVER", 100)         # per-domain
 ```
 
 ### 6.3 网络 message 类型
 
-`MessageType` 新增 3 个（上界 45→48）：
+`MessageType` 新增 4 个（上界 45→49）：
 
 | 类型 | 方向 | 用途 |
 |------|------|------|
 | `LOG_MESSAGE = 46` | worker → master | 推送高价值 message（async, no ack）。字段：worker_id, level, domain_id, source, msg。 |
 | `MSG_COUNT_REQUEST = 47` | master → worker (broadcast) | 请求上报 message 触发次数（summary 屏障）。 |
-| `MSG_COUNT_REPORT = 48` | worker → master | 上报本地 id/domain 两套计数。字段：worker_id, id_keys/id_values, domain_keys/domain_values。 |
+| `MSG_COUNT_REPORT = 48` | worker → master | 上报本地 trigger 计数（id/domain 两套）。字段：worker_id, id_keys/id_values, domain_keys/domain_values。 |
+| `MSG_LIMIT_SYNC = 49` | master → worker (broadcast) | 同步配额设置（全量快照）。字段：global_limit, domain_keys/values, id_keys/values。set_*_limit 后触发 + 新 worker 上线补发。 |
+
+### 6.4 禁止直接使用底层接口
+
+message 系统在 C++ 侧通过 nanobind 导出底层绑定（`_fly_message.so`，函数名如 `send_message` /
+`register_message_id` / `set_global_limit` / `set_id_limit` 等）。Python 公开 API（`fly.*`）是这些
+底层绑定的薄包装，提供文档、参数校验、签名一致性。**业务代码必须用公开包装，禁止直接用底层绑定。**
+
+#### Python 侧
+
+**必须**用 `fly.*` 公开 API：
+
+```python
+from fly import register_message_id, message, set_message_global_limit
+
+register_message_id("SOLVER::0047", "INFO")
+message("SOLVER::0047", 3, "收敛于 0.001")
+set_message_global_limit(20)
+```
+
+**禁止**直接 `import _fly_message`（`_msg`）并调用其底层函数：
+
+```python
+import _fly_message as _msg
+_msg.send_message(...)        # ❌ 禁止：绕过包装层
+_msg.register_message_id(...) # ❌ 禁止
+_msg.set_global_limit(...)    # ❌ 禁止
+```
+
+> 底层绑定 `_fly_message.*` **仅允许在 `src/fly/__init__.py` 包装层内部使用**，其它任何位置
+> （业务模块、solver、storage、QA 测试）都应通过 `fly.*` 访问。
+
+#### C++ 侧
+
+**必须**用 `MSG` 宏 + `MessageRegistry` / `MessageSink` 公开方法：
+
+```cpp
+MessageRegistry::instance().register_id("SOLVER::0047", LogLevel::INFO);
+MSG("SOLVER::0047", 3, "收敛于 {}", residual);
+MessageRegistry::instance().set_global_limit(20);
+```
+
+**禁止**绕过 `MSG` 宏直接拼装底层调用（如直接调 `push_message` / `try_consume` 而跳过注册检查、
+本地 debug log 写入等）——`MSG` 宏封装了完整的「查级别→配额→本地落盘→推送」流程，绕过会破坏一致性。
+
+#### 原因
+
+- **签名演进**：底层导出签名可能随实现调整，包装层屏蔽变化、保证向后兼容。
+- **文档与校验**：包装层提供 docstring、参数语义说明、非法值校验（如非法 level 抛 `ValueError`）。
+- **一致性**：`MSG` 宏 / `fly.message` 封装了完整的处理流程，避免业务代码拼装出错（漏配额检查、漏本地落盘等）。
 
 ---
 
@@ -439,3 +535,65 @@ bazel sandbox 里 genrule 无法访问 `.git`。`local = True` 禁用 sandbox，
 ### 13.3 问题 4.2：register_message_id 非法级别静默降级
 - **原状**：`parse_level` 对非法级别字符串（如 `"BOGUS"`）静默降级为 INFO。
 - **修复**：非法级别直接抛 `ValueError`（`invalid message level '...': must be INFO / WARN / ERROR`）。
+
+### 13.4 增强：per-id 配额 + 三层链式优先级语义变更
+
+**原状**：配额是「两层独立（id + domain）同时检查，任一超限即丢弃」的 AND 语义，且无法为单个
+特定 message id 设独立配额（只能设全局默认 id 配额）。
+
+**变更**：配额改为**三层链式优先级**（per-id > per-domain > global），仅取第一个显式设置的层级
+生效，其余层完全不检查（不是 AND）。
+
+- 新增 per-id 配额层：`set_id_limit(domain_id, limit)`（C++）/ `set_message_id_limit(domain_id, limit)`（Python）。
+- 原 `set_id_limit(int)` 全局默认重命名为 `set_global_limit(int)`（C++）/ `set_message_global_limit(limit)`（Python）。
+- master 打印配额（`MessageSink`）对称三层化：`set_print_global_limit` / `set_print_id_limit(domain_id, limit)` /
+  `set_print_domain_limit`。
+- domain 层语义保持，改为「未设 per-id 时才看 domain」。
+- 计数仍按 id 和 domain 两套独立累加（summary 不受影响）。
+- `MessageRegistry` 内删除旧 `id_within_limit` / `domain_within_limit`，新增 `resolve_effective_limit`
+  统一做链式解析；`MessageSink` 新增对称 `resolve_print_limit`。
+
+**测试**：
+- C++ 单测 `message_registry_test.cpp`：`set_id_limit(N)` → `set_global_limit(N)`；重写原「两层 AND」
+  用例为「per-id 优先于 domain」优先级验证；新增 per-id 覆盖 / 回退 / 三层优先级用例。
+- 新增端到端 `qa/message/test_message_per_id_quota.py`：验证链式优先级（per-id 生效、per-id 屏蔽 domain、
+  per-id 未设时 domain 接管、master 打印 per-id 对称）。
+
+> **语义变更说明**：这是**破坏性 API 变更**。原「id + domain 同时检查」的调用方需重新确认配额行为——
+> 设了 per-id 的 id 现在只看 per-id，domain 配额对它不再生效。
+
+### 13.5 规范：禁止直接使用底层接口
+
+**原状**：`src/agent/py/agent.py` 有 4 处直接 `import _fly_message as _msg` 调用底层绑定
+（`_msg.register_message_id` / `_msg.send_message`），绕过了 `fly.*` 公开包装。
+
+**修复**：
+- `agent.py` 迁移为 `from fly import register_message_id, message`，全部改用公开 API。
+- 文档新增 §6.4「禁止直接使用底层接口」，明确：业务代码必须用 `fly.*`（Python）/ `MSG` 宏 +
+  `MessageRegistry`（C++），底层绑定 `_fly_message.*` 仅允许 `fly/__init__.py` 包装层使用。
+- `grep` 验证：`src/`、`qa/` 中除 `fly/__init__.py` 外无 `_msg.*` 残留。
+
+### 13.6 重构：两套计数模型 + 统一配额 API + master→worker 同步
+
+针对三个问题做了架构级重构：
+
+**(1) 单一计数导致动态配额失效（bug）**：
+- **原状**：`try_consume` 用单一计数（trigger=emit）判配额。limit=2 触发 100 次后调大 limit=20，
+  计数 100 > 20 恒超限，永远发不出——调大配额失效。
+- **修复**：改为**两套计数**——trigger_count（触发次数，进 summary，永不重置）+ emit_count
+  （输出次数，判配额）。配额始终限制 emit_count。调大配额时 emit_count 远小于新 limit，可继续输出。
+- 删除 `try_consume`，新增 `try_emit`（先 trigger++，再用 emit 判定，通过才 emit++）。
+
+**(2) worker 配额不同步（缺陷）**：
+- **原状**：worker 是独立子进程，master 脚本设的 `set_message_*_limit` 只改 master 内存，worker 拿默认值 20——worker log 打印条数、推送配额完全不受控。
+- **修复**：新增 `MSG_LIMIT_SYNC = 49` 消息（全量快照）。`set_*_limit` 后 master `broadcast_message_limits` 广播给所有 worker；新 worker 上线 `on_worker_register` 补发。worker `on_message_limit_sync` → `apply_limits_snapshot` 整体替换本地配额（不清零计数）。
+
+**(3) API 语义不清晰（master print 冗余）**：
+- **原状**：`set_master_print_*` 一套独立 API（3 个），与 worker 配额分开设，语义模糊。
+- **修复**：**删除** `set_master_print_global_limit` / `set_master_print_id_limit` / `set_master_print_domain_limit`。`set_*_limit` 改为**单一 limit 同时设 Registry（worker 发送）+ Sink（master 打印）**。用户面对的就是 3 个 API，语义 = 「输出配额」。
+
+**验证**：
+- C++ 单测：registry 两套计数（含动态配额大→小/小→大）+ 快照 + protocol 新消息类型。
+- QA：`test_message_limit_sync.py`（worker 不设配额，验证 master 设的同步生效）；
+  `test_message_dynamic_quota.py`（动态改大改小，验证两套计数解耦）。
+- 全量 message QA + 全量 QA 不回归。

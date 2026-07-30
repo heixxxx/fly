@@ -1,9 +1,9 @@
 """测试 6：domain 配额（worker 本地 + master 打印）。
 
 覆盖：
-  - worker 本地 domain 配额：同 domain 多 id 共享配额，超限丢弃但仍计数
-  - master 打印 domain 配额：控制同 domain 推送 message 的打印上限
-  - domain 配额与 id 配额同时生效（任一超限即丢弃）
+  - worker 本地 domain 配额：语义与 global 相同（每 id 独立计数），仅对该 domain 生效，覆盖 global。
+    两个 id 各自独立，互不影响（不是跨 id 共享）。
+  - master 打印 domain 配额：控制同 domain 推送 message 的打印上限（同样每 id 独立）。
 """
 import os
 import shutil
@@ -11,7 +11,7 @@ from _fly_log import INFO
 from fly import (
     open_db, get_config, get_work_directory, as_task,
     message, register_message_id,
-    set_message_domain_limit, set_master_print_domain_limit,
+    set_message_domain_limit,
 )
 from _msgtest import wait_for, get_message_log_content, get_worker_debug_log
 
@@ -32,8 +32,6 @@ register_message_id("DOMQ::0002", "INFO")
 from fly.runtime import get_agent
 master = get_agent()
 
-# master 打印 domain 配额设为很大（不限制），由 worker 本地 domain 配额主导测试。
-set_master_print_domain_limit("DOMQ", -1)
 master.launch_local_workers([{}])
 assert wait_for(lambda: master._agent.get_connection_count() >= 1)
 
@@ -44,15 +42,19 @@ db = open_db(DB_PATH)
 def worker_send(db):
     register_message_id("DOMQ::0001", "INFO")
     register_message_id("DOMQ::0002", "INFO")
-    # worker 本地设 domain 配额 = 4：同 domain 下两个 id 共享 4 次。
+    # worker 本地设 domain 配额 = 4：语义与 global 相同（每 id 独立计数），
+    # 仅对该 domain 内 id 生效，覆盖 global 默认。不是跨 id 共享。
     set_message_domain_limit("DOMQ", 4)
-    # 发 DOMQ::0001 三次，DOMQ::0002 三次，共 6 次；前 4 次通过 domain 配额，后 2 次丢弃。
+    # DOMQ::0001 发 5 次 → 该 id 独立配额 4，前 4 次通过、第 5 次丢弃。
     message("DOMQ::0001", 1, "a1")
     message("DOMQ::0001", 1, "a2")
     message("DOMQ::0001", 1, "a3")
+    message("DOMQ::0001", 1, "a4")
+    message("DOMQ::0001", 1, "a5")  # 该 id 第 5 次 → 超限
+    # DOMQ::0002 发 3 次 → 该 id 独立配额 4，3 < 4 全通过（与 DOMQ::0001 互不影响）。
     message("DOMQ::0002", 2, "b1")
-    message("DOMQ::0002", 2, "b2")  # domain 第 5 次 → 超限
-    message("DOMQ::0002", 2, "b3")  # domain 第 6 次 → 超限
+    message("DOMQ::0002", 2, "b2")
+    message("DOMQ::0002", 2, "b3")
     return "ok"
 
 
@@ -65,17 +67,17 @@ master.stop()
 content = get_message_log_content()
 worker1_log = get_worker_debug_log(1)
 
-# 验证 1：domain 配额 4 → 只有 4 条进 message.log（worker 本地配额控制推送）。
-total_dom = content.count("[DOMQ::0001]") + content.count("[DOMQ::0002]")
-assert total_dom == 4, f"domain 配额=4，应有 4 条进 message.log，实际 {total_dom}"
+# 验证 1：DOMQ::0001 每 id 独立配额 4 → 4 条进 message.log；DOMQ::0002 3 条。
+assert content.count("[DOMQ::0001]") == 4, f"DOMQ::0001 应有 4 条，实际 {content.count('[DOMQ::0001]')}"
+assert content.count("[DOMQ::0002]") == 3, f"DOMQ::0002 应有 3 条，实际 {content.count('[DOMQ::0002]')}"
 
-# 验证 2：worker 本地 debug log 也只有 4 条（domain 配额同时控制本地打印）。
-total_worker = worker1_log.count("[DOMQ::0001]") + worker1_log.count("[DOMQ::0002]")
-assert total_worker == 4, f"worker 本地应有 4 条，实际 {total_worker}"
+# 验证 2：worker 本地 debug log 同步受控（DOMQ::0001 4 条，DOMQ::0002 3 条）。
+assert worker1_log.count("[DOMQ::0001]") == 4, f"worker DOMQ::0001 应有 4 条，实际 {worker1_log.count('[DOMQ::0001]')}"
+assert worker1_log.count("[DOMQ::0002]") == 3, f"worker DOMQ::0002 应有 3 条，实际 {worker1_log.count('[DOMQ::0002]')}"
 
-# 验证 3：summary 反映总触发 6 次（含超限丢弃的 2 次）。
-assert "DOMQ::0001 : 3" in content, f"summary DOMQ::0001 应为 3:\n{content}"
+# 验证 3：summary 反映总触发次数（DOMQ::0001 含超限丢弃共 5，DOMQ::0002 共 3，domain 合计 8）。
+assert "DOMQ::0001 : 5" in content, f"summary DOMQ::0001 应为 5:\n{content}"
 assert "DOMQ::0002 : 3" in content, f"summary DOMQ::0002 应为 3:\n{content}"
-assert "DOMQ : 6" in content, f"summary domain DOMQ 应为 6:\n{content}"
+assert "DOMQ : 8" in content, f"summary domain DOMQ 应为 8:\n{content}"
 
 INFO(f"[PASS] test_message_domain_quota")

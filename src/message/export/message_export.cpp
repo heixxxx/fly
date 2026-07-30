@@ -19,7 +19,7 @@ static fly::LogLevel parse_level(const fly::CMString& s) {
 static void py_message(const fly::CMString& domain_id, int32_t source, const fly::CMString& msg) {
     fly::LogLevel level;
     if (!fly::MessageRegistry::instance().get_level(domain_id, level)) return;  // 未注册丢弃
-    if (!fly::MessageRegistry::instance().try_consume(domain_id)) return;
+    if (!fly::MessageRegistry::instance().try_emit(domain_id)) return;
     fly::Logger::instance()->log(level, "[" + domain_id + "] <" + std::to_string(source) + "> " + msg);
     fly::push_message(level, domain_id, source, msg);
 }
@@ -32,25 +32,28 @@ FLY_EXPORT_FUNCTION("register_message_id", [](const fly::CMString& domain_id, co
     fly::MessageRegistry::instance().register_id(domain_id, parse_level(level_str));
 });
 
-// 设置全局 message id 配额（默认 20；-1 不限；0 禁止）。
-FLY_EXPORT_FUNCTION("set_id_limit", [](int32_t limit) {
-    fly::MessageRegistry::instance().set_id_limit(limit);
+// 设置全局默认 message 配额（兜底，默认 20；-1 不限；0 禁止）。仅对未设 per-id /
+// per-domain 的 id 生效（链式优先级 per-id > domain > global，取第一个显式设置的）。
+// 同时设置 worker 发送配额（Registry）+ master 打印配额（Sink），用同一 limit 值。
+// master 进程会广播给所有 worker（支持运行时动态修改）。
+FLY_EXPORT_FUNCTION("set_global_limit", [](int32_t limit) {
+    fly::MessageRegistry::instance().set_global_limit(limit);
+    fly::MessageSink::instance()->set_print_global_limit(limit);
+    fly::notify_limit_changed();
 });
 
-// 设置 domain 配额（默认 -1 不限；0 禁止；N 上限）。
+// 设置单个 message id 的独立配额（per-id，覆盖 global 与 domain）。
+FLY_EXPORT_FUNCTION("set_id_limit", [](const fly::CMString& domain_id, int32_t limit) {
+    fly::MessageRegistry::instance().set_id_limit(domain_id, limit);
+    fly::MessageSink::instance()->set_print_id_limit(domain_id, limit);
+    fly::notify_limit_changed();
+});
+
+// 设置 domain 配额（per-domain，覆盖 global；未设的 domain 下沉到 global）。
 FLY_EXPORT_FUNCTION("set_domain_limit", [](const fly::CMString& domain, int32_t limit) {
     fly::MessageRegistry::instance().set_domain_limit(domain, limit);
-});
-
-// master 打印配额：控制 worker 推送来的 message 在 master 侧是否打印。
-// 独立于各 worker 的触发计数配额（避免 summary 双算）。默认 id=20，domain=-1。
-// 仅在 master 进程生效（worker 进程调 MessageSink 无意义但不报错）。
-FLY_EXPORT_FUNCTION("set_master_print_id_limit", [](int32_t limit) {
-    fly::MessageSink::instance()->set_print_id_limit(limit);
-});
-
-FLY_EXPORT_FUNCTION("set_master_print_domain_limit", [](const fly::CMString& domain, int32_t limit) {
     fly::MessageSink::instance()->set_print_domain_limit(domain, limit);
+    fly::notify_limit_changed();
 });
 
 // Python 侧 message 发送入口。级别由 id 绑定决定（注册时指定），不接收 level 参数。

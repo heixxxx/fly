@@ -71,6 +71,12 @@ void MasterAgent::start() {
     fly::MessageRegistry::instance().register_id("AGENT::0002", fly::LogLevel::WARN);
     fly::MessageRegistry::instance().register_id("FLY::0001", fly::LogLevel::INFO);
 
+    // 绑定配额变更回调：用户 set_*_limit 后触发，把当前配额广播给所有在线 worker
+    // （支持运行时动态修改）。worker 上线时 on_worker_register 也会补发一次。
+    fly::set_limit_change_callback([this]() {
+        broadcast_message_limits();
+    });
+
     reactor_->register_handler<RegisterMessage>(
         [this](uint64_t conn_id, const RegisterMessage& msg) {
             on_worker_register(conn_id, msg);
@@ -800,6 +806,13 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     MSG("AGENT::0001", 1, "worker {} online (hostname={}, {}:{})",
         worker_id, msg.hostname_, msg.data_server_host_, msg.data_server_port_);
 
+    // 补发当前配额给新 worker（worker 子进程是全新进程，拿不到 master 脚本设的配额）。
+    MessageLimitSyncMessage limit_msg;
+    fly::MessageRegistry::instance().get_all_limits(
+        limit_msg.global_limit_, limit_msg.domain_keys_, limit_msg.domain_values_,
+        limit_msg.id_keys_, limit_msg.id_values_);
+    reactor_->send(conn_id, limit_msg);
+
     // 新 worker 注册后，ready 的 task 可能可调度（含等待属性的 task）
     schedule_tasks();
 }
@@ -1386,9 +1399,22 @@ void MasterAgent::broadcast_object_removed(const CMString& db_id, const CMString
     }
 }
 
-// =============================================================================
-// Var service handlers
-// =============================================================================
+void MasterAgent::broadcast_message_limits() {
+    // 从 master 的 MessageRegistry 取当前所有配额设置（全量快照），广播给所有在线 worker。
+    // worker 收到后整体替换本地配额（不清零计数）。支持运行时动态修改：每次 set_*_limit 触发。
+    MessageLimitSyncMessage msg;
+    fly::MessageRegistry::instance().get_all_limits(
+        msg.global_limit_, msg.domain_keys_, msg.domain_values_,
+        msg.id_keys_, msg.id_values_);
+
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        for (const auto& [worker_id, conn_id] : worker_to_conn_) {
+            (void)worker_id;
+            reactor_->send(conn_id, msg);
+        }
+    }
+}
 
 void MasterAgent::on_var_set(uint64_t conn_id, const VarSetMessage& msg) {
     VarAckMessage ack;
@@ -2555,8 +2581,8 @@ void MasterAgent::collect_and_print_message_summary() {
     if (expected == 0) {
         // 无 worker（单进程模式）：仅用 master 自身计数打印 summary。
         MessageCounts master_counts;
-        master_counts.id_counts_ = fly::MessageRegistry::instance().id_counts_snapshot();
-        master_counts.domain_counts_ = fly::MessageRegistry::instance().domain_counts_snapshot();
+        master_counts.id_counts_ = fly::MessageRegistry::instance().trigger_id_counts_snapshot();
+        master_counts.domain_counts_ = fly::MessageRegistry::instance().trigger_domain_counts_snapshot();
         MessageSink::instance()->print_summary(master_counts, {});
         return;
     }
@@ -2588,8 +2614,8 @@ void MasterAgent::collect_and_print_message_summary() {
         lk.unlock();
 
         MessageCounts master_counts;
-        master_counts.id_counts_ = fly::MessageRegistry::instance().id_counts_snapshot();
-        master_counts.domain_counts_ = fly::MessageRegistry::instance().domain_counts_snapshot();
+        master_counts.id_counts_ = fly::MessageRegistry::instance().trigger_id_counts_snapshot();
+        master_counts.domain_counts_ = fly::MessageRegistry::instance().trigger_domain_counts_snapshot();
         MessageSink::instance()->print_summary(master_counts, reports);
     }
 }

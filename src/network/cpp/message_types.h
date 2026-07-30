@@ -56,10 +56,11 @@ enum class MessageType : uint8_t {
     LOG_MESSAGE = 46,         // worker → master: 高价值日志推送（async, no ack）
     MSG_COUNT_REQUEST = 47,   // master → worker (broadcast): 请求上报 message 触发次数（summary 屏障）
     MSG_COUNT_REPORT = 48,    // worker → master: 上报本地 message 触发次数（id/domain 两套计数）
+    MSG_LIMIT_SYNC = 49,      // master → worker (broadcast): 同步 message 配额设置（全量快照）
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 48;
+    return raw >= 1 && raw <= 49;
 }
 
 struct MessageHeader {
@@ -656,6 +657,22 @@ struct MessageCountReportMessage {
 
     static constexpr MessageType msg_type_ = MessageType::MSG_COUNT_REPORT;
     FLY_SERIALIZE(header_, worker_id_, id_keys_, id_values_, domain_keys_, domain_values_);
+};
+
+// master → worker (broadcast): 同步 message 配额设置（全量快照）。
+// master 在用户 set_*_limit 后（或新 worker 注册补发时）广播当前所有配额设置。
+// worker 收到后整体替换本地 Registry 配额（不清零已触发计数，支持运行时动态修改）。
+// 三层配额链式优先级（per-id > per-domain > global），详见 docs/message-system.md §3。
+struct MessageLimitSyncMessage {
+    MessageHeader header_;
+    int32_t global_limit_ = 20;                  // global 默认配额
+    CMVector<CMString> domain_keys_;             // per-domain 显式配额的 domain 名
+    CMVector<int32_t> domain_values_;            // 与 domain_keys_ 一一对应
+    CMVector<CMString> id_keys_;                 // per-id 显式配额的 message id（"DOMAIN::NNNN"）
+    CMVector<int32_t> id_values_;                // 与 id_keys_ 一一对应
+
+    static constexpr MessageType msg_type_ = MessageType::MSG_LIMIT_SYNC;
+    FLY_SERIALIZE(header_, global_limit_, domain_keys_, domain_values_, id_keys_, id_values_);
 };
 
 }  // namespace fly

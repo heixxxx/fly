@@ -80,6 +80,10 @@ public:
 
     void broadcast_object_removed(const CMString& db_id, const CMString& object_name);
 
+    // message 配额同步：把当前所有配额设置（全量快照）广播给所有在线 worker。
+    // 由 set_limit_change_callback 触发（用户 set_*_limit 后）。
+    void broadcast_message_limits();
+
     uint16_t get_port() const { return port_; }
     int32_t get_data_server_port() const { return data_server_port_; }
 

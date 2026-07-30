@@ -248,9 +248,9 @@ def message(domain_id: str, source: int, msg: str):
 
     行为分进程：
       - worker 进程：message 写本地 debug log（带 ``[DOMAIN::NNNN] <source>`` 前缀），
-        并推送到 master（受 worker 本地 id/domain 两层配额控制，超限不推送但仍计数）。
+        并推送到 master（受 worker 本地三层配额控制，超限不推送但仍计数）。
       - master 进程：message 写本地 debug log + 直写 message.log + 输出 terminal
-        （受 master 全局 id/domain 两层配额控制）。
+        （受 master 打印三层配额控制）。
 
     Args:
         domain_id: message id，如 ``"SOLVER::0047"``。未注册则丢弃。
@@ -275,49 +275,60 @@ def register_message_id(domain_id: str, level: str = "INFO"):
     _msg.register_message_id(domain_id, level)
 
 
-def set_message_id_limit(limit: int):
-    """设置全局 message id 配额（每个 id 独立计数，默认 20）。
+def set_message_global_limit(limit: int):
+    """设置全局默认 message 配额（兜底，默认 20）。
+
+    仅对未显式设置 per-id / per-domain 配额的 id 生效。配额优先级链：
+    **per-id > per-domain > global**，仅取第一个显式设置的层级（详见 :func:`set_message_id_limit`）。
+
+    单一 limit 同时控制两处（用户无需分别设置）：
+      - **worker 发送配额**：每 worker 每 id 最多输出 limit 条（源头控流量）。
+      - **master 打印配额**：master 汇聚打印总量 limit 条（master 总量限流）。
+    master 进程调用后会自动广播给所有 worker（支持运行时动态修改配额）。
 
     Args:
         limit: ``-1`` = 不限制；``0`` = 完全禁止；``N`` = 上限 N 次。
     """
-    _msg.set_id_limit(limit)
+    _msg.set_global_limit(limit)
+
+
+def set_message_id_limit(domain_id: str, limit: int):
+    """设置单个 message id 的独立配额（per-id，覆盖 global 与 domain）。
+
+    配额优先级链（链式，仅第一个显式设置的层级生效，其余层完全不检查）：
+
+      1. **per-id**（最细）：本接口为单个 id 设独立配额。设了 per-id 的 id 只看这一层，
+         domain / global 都不检查。
+      2. **per-domain**（见 :func:`set_message_domain_limit`）：未设 per-id 时，
+         看该 id 所属 domain 的配额。
+      3. **global**（见 :func:`set_message_global_limit`，默认 20）：未设 per-id 且未设
+         per-domain 时，用全局默认兜底。global 永远有值，但不因为「有值」就屏蔽上层。
+
+    单一 limit 同时控制 worker 发送配额 + master 打印配额（详见 :func:`set_message_global_limit`），
+    并自动同步给所有 worker。
+
+    Args:
+        domain_id: message id，如 ``"SOLVER::0047"``。
+        limit: ``-1`` = 不限制；``0`` = 完全禁止；``N`` = 上限 N 次。
+    """
+    _msg.set_id_limit(domain_id, limit)
 
 
 def set_message_domain_limit(domain: str, limit: int):
-    """设置某个 domain 的配额（该 domain 下所有 id 共享，默认 -1 不限制）。
+    """设置某个 domain 的配额（per-domain，覆盖 global）。
 
-    与 message id 配额同时生效，任一层超限即丢弃（但仍各计一次数）。
+    该 domain 下所有未设 per-id 配额的 id 各自独立计数（语义同 global，每 id 独立），
+    仅对该 domain 内 id 生效。未显式设置的 domain 下沉到 global。
+    优先级链 per-id > per-domain > global，详见 :func:`set_message_id_limit`。
+
+    单一 limit 同时控制 worker 发送配额 + master 打印配额（详见 :func:`set_message_global_limit`），
+    并自动同步给所有 worker。
 
     Args:
         domain: domain 名（如 ``"SOLVER"``）。
         limit: ``-1`` = 不限制；``0`` = 完全禁止；``N`` = 上限 N 次。
     """
     _msg.set_domain_limit(domain, limit)
-
-
-def set_master_print_id_limit(limit: int):
-    """设置 master 进程的 message 打印配额（每个 id 独立，默认 20）。
-
-    控制各 worker 推送来的 message 在 master 侧是否打印（message.log + terminal）。
-    独立于各 worker 的触发计数配额（避免 summary 双算）。仅在 master 进程生效。
-
-    Args:
-        limit: ``-1`` = 不限制；``0`` = 完全禁止；``N`` = 上限 N 次。
-    """
-    _msg.set_master_print_id_limit(limit)
-
-
-def set_master_print_domain_limit(domain: str, limit: int):
-    """设置 master 进程某 domain 的打印配额（该 domain 下所有 id 共享，默认 -1 不限）。
-
-    与 master id 打印配额同时生效，任一超限即丢弃。仅在 master 进程生效。
-
-    Args:
-        domain: domain 名（如 ``"SOLVER"``）。
-        limit: ``-1`` = 不限制；``0`` = 完全禁止；``N`` = 上限 N 次。
-    """
-    _msg.set_master_print_domain_limit(domain, limit)
 
 
 def __getattr__(name):
@@ -344,8 +355,8 @@ __all__ = [
     'put_cache', 'get_cache', 'has_cache', 'remove_cache', 'clear_cache',
     'Project', 'register_flow', 'open_project', 'load_project',
     'UserDoc', 'Schema', 'document', 'help', 'register_module',
-    'message', 'register_message_id', 'set_message_id_limit', 'set_message_domain_limit',
-    'set_master_print_id_limit', 'set_master_print_domain_limit',
+    'message', 'register_message_id',
+    'set_message_global_limit', 'set_message_id_limit', 'set_message_domain_limit',
 ]
 
 

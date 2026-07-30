@@ -7,14 +7,17 @@ from abc import ABC, abstractmethod
 
 from _fly_agent import EXAgentMaster, EXAgentWorker, EXTaskExecutor, EXTaskExecStatus
 from _fly_log import DBG, INFO, WARN, ERR
-import _fly_message as _msg
 
 from .executor import create_executor
 
+# message 系统：业务代码必须用 fly.* 公开包装，禁止直接用 _fly_message 底层绑定。
+# （见 docs/message-system.md §6.4「禁止直接使用底层接口」）
+from fly import register_message_id, message
+
 # 注册 storage domain 的流程性 message id（模块加载时注册）。
 # STOR::0002: merge_db 完成；STOR::0003: load_db 恢复完成。
-_msg.register_message_id("STOR::0002", "INFO")
-_msg.register_message_id("STOR::0003", "INFO")
+register_message_id("STOR::0002", "INFO")
+register_message_id("STOR::0003", "INFO")
 
 
 class FlyAgent(ABC):
@@ -354,8 +357,7 @@ class Master(FlyAgent):
         time.sleep(1.0)
 
         # 流程 message：load_db 恢复完成（系统就绪里程碑）。
-        _msg.send_message("STOR::0003", 1,
-                          f"load_db done: path={path}")
+        message("STOR::0003", 1, f"load_db done: path={path}")
         return temp_db
 
     def merge_db(self, path: str, data_path: str = "", base_path: str = "",
@@ -580,9 +582,9 @@ class Master(FlyAgent):
             merged_db = _Database(merge_base_path, merge_data_path)
         INFO(f"merge_db: done, ok={ok}, merged_data at {merge_data_path}")
         # 流程 message：merge_db 完成（跨机数据集中里程碑）。
-        _msg.send_message("STOR::0002", 1,
-                          f"merge_db done: db_id={db_id}, objects={len(completed)}, "
-                          f"data_path={merge_data_path}")
+        message("STOR::0002", 1,
+                f"merge_db done: db_id={db_id}, objects={len(completed)}, "
+                f"data_path={merge_data_path}")
         return merged_db
 
     def set_worker_property(self, prop):

@@ -138,6 +138,9 @@ public:
     // 收到 master 的 MSG_COUNT_REQUEST：把本地 message 触发计数上报（summary 屏障）。
     void on_message_count_request(uint64_t conn_id, const MessageCountRequestMessage& msg);
 
+    // 收到 master 的 MSG_LIMIT_SYNC：整体替换本地配额（不清零计数，支持动态修改）。
+    void on_message_limit_sync(uint64_t conn_id, const MessageLimitSyncMessage& msg);
+
     // Called by the Python executor after _deserialize_args: returns the var
     // payloads inlined by master into the current task's TaskAssignMessage, so
     // they can be injected into the freshly-created Database(s) before the task
