@@ -131,6 +131,13 @@ public:
     std::tuple<bool, FlyBufferPtr, CMString> get_var_sync(const CMString& full_var_name);
     void remove_var_async(const CMString& full_var_name);
 
+    // Message 日志：把配额内的高价值 message 推送到 master（async, no ack）。
+    // 由 WorkerAgentContext::push_message（begin_task 绑定）触发，发送 LogMessage。
+    void send_message_to_master(LogLevel level, const CMString& domain_id, int32_t source, const CMString& msg);
+
+    // 收到 master 的 MSG_COUNT_REQUEST：把本地 message 触发计数上报（summary 屏障）。
+    void on_message_count_request(uint64_t conn_id, const MessageCountRequestMessage& msg);
+
     // Called by the Python executor after _deserialize_args: returns the var
     // payloads inlined by master into the current task's TaskAssignMessage, so
     // they can be injected into the freshly-created Database(s) before the task

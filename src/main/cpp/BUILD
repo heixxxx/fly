@@ -11,6 +11,7 @@ cc_binary(
         "//src/core/cpp:fly_core",
         "//src/serialization/cpp:fly_serialization",
         "//src/log/cpp:fly_log",
+        "//src/message/cpp:fly_message",
         "//src/storage/cpp:fly_storage",
         "//src/network/cpp:fly_network",
         "//src/task/cpp:fly_task",
@@ -22,6 +23,7 @@ cc_binary(
         "//src/core/cpp:fly_core_so",
         "//src/serialization/cpp:fly_serialization_so",
         "//src/log/cpp:fly_log_so",
+        "//src/message/cpp:fly_message_so",
         "//src/storage/cpp:fly_storage_so",
         "//src/network/cpp:fly_network_so",
         "//src/task/cpp:fly_task_so",
@@ -37,5 +39,6 @@ cc_binary(
         "//src/log/export:_fly_log.so",
         "//src/task/export:_fly_task.so",
         "//src/solver/export:_fly_solver.so",
+        "//src/message/export:_fly_message.so",
     ],
 )

@@ -52,6 +52,13 @@ inline void log_write(LogLevel level, fmt::format_string<T...> fmt, const T&... 
     fly::Logger::instance()->vlog(level, fmt, fmt::make_format_args(args...));
 }
 
+// 格式化并返回结果字符串（复用 fmt 编译期校验）。供 MSG_* 等需要先得到格式化
+// 文本、再分别写日志/推送的场景使用。符号在 fly_log 内，调用方无需直接链接 fmt。
+template <typename... T>
+inline CMString format_log(fmt::format_string<T...> fmt, const T&... args) {
+    return fmt::vformat(fmt, fmt::make_format_args(args...));
+}
+
 }  // namespace fly
 
 // --- Logging macros ---

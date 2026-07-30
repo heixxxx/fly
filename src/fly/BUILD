@@ -10,6 +10,7 @@ py_library(
         "//src/agent/py:fly_agent_py",
         "//src/core/py:fly_core_py",
         "//src/log/export:_fly_log.so",
+        "//src/message/export:_fly_message.so",
         "//src/storage/py:fly_storage_py",
         "//src/task:task_pkg",
         requirement("cloudpickle"),  # mapreduce.py: fn serialization
@@ -21,6 +22,7 @@ py_library(
         "../task/py",
         "../agent/py",
         "../log/export",
+        "../message/export",
         "../storage/export",
         "../core/export",
         "../agent/export",

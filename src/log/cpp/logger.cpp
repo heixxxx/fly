@@ -31,7 +31,9 @@ void Logger::init(const CMString& base_dir, uint64_t worker_id) {
         inst->file_.close();
     }
     inst->filename_ = filename;
-    inst->dual_output_ = (worker_id == 0);
+    // dual_output 全部置 false：所有进程的 debug log 只落盘，不再进 terminal。
+    // terminal 的唯一输出来源是 message 系统（master 进程的 MessageSink）。
+    inst->dual_output_ = false;
     inst->level_ = LogLevel::DEBUG;
     inst->file_.open(inst->filename_, std::ios::out | std::ios::app);
 }

@@ -11,12 +11,17 @@ Task topology:
 """
 
 from fly import as_task, wait_obj
+from fly import register_message_id, message
 from _fly_log import DBG, INFO
 import math
 import time
 import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import splu
+
+# 注册 solver domain 的流程性 message id（模块加载时注册）。
+# SOLVER::0001: RAS 求解进度（每 10 轮迭代汇报收敛状态，收敛/结束时汇报最终结果）。
+register_message_id("SOLVER::0001", "INFO")
 
 
 # ── Matrix File I/O ──────────────────────────────────────────────
@@ -936,9 +941,18 @@ def ras_graph_check(db, step, nsd, max_iter, tol, neighbor_ids_all):
     DBG(f"[RASG CHECK] step={step} converged={all_converged} "
         f"flags={conv_flags}")
 
+    # 流程性 message：每 10 轮汇报迭代进度（source=2），便于观察收敛趋势。
+    if not all_converged and (step + 1) % 10 == 0 and step < max_iter - 1:
+        message("SOLVER::0001", 2,
+                f"RAS iterating: step={step + 1}, n={cfg['n']}, nsd={nsd}")
+
     if all_converged or step >= max_iter - 1:
         db.write_object("__rasg__converged", all_converged, save_to_db=False)
         db.write_object("__rasg__iters", step + 1, save_to_db=False)
+        # 收敛/达到上限时汇报最终结果（source=1 标注收敛节点）。
+        status = "converged" if all_converged else "maxiter reached"
+        message("SOLVER::0001", 1,
+                f"RAS {status}: iters={step + 1}, n={cfg['n']}, nsd={nsd}")
         ras_graph_assemble(db, nsd, step)
     else:
         for sd_id in range(nsd):

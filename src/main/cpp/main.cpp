@@ -199,6 +199,7 @@ static void setup_sys_path() {
         ps += "sys.path.insert(0, '" + (py_dir / "task").string() + "')\n";
         ps += "sys.path.insert(0, '" + (py_dir / "test").string() + "')\n";
         ps += "sys.path.insert(0, '" + (py_dir / "solver").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (py_dir / "message").string() + "')\n";
         ps += "sys.path.insert(0, '" + py_dir.string() + "')\n";
         // Third-party packages (cloudpickle/numpy/scipy) copied by fly.sh install
         // from bazel @pip wheels. Added after fly's own modules so production fly
@@ -223,6 +224,7 @@ static void setup_sys_path() {
         ps += "sys.path.insert(0, '" + (build_dir / "src" / "task" / "export").string() + "')\n";
         ps += "sys.path.insert(0, '" + (build_dir / "src" / "test" / "export").string() + "')\n";
         ps += "sys.path.insert(0, '" + (build_dir / "src" / "solver" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (build_dir / "src" / "message" / "export").string() + "')\n";
         auto project_root = build_dir.parent_path();
         ps += "sys.path.insert(0, '" + (project_root / "src").string() + "')\n";
         ps += "sys._fly_binary = '" + (build_dir / "src" / "main" / "cpp" / "fly").string() + "'\n";
@@ -235,6 +237,7 @@ static void setup_sys_path() {
     ps += "import _fly_task\n";
     ps += "import _fly_test\n";
     ps += "import _fly_solver\n";
+    ps += "import _fly_message\n";
 
     PyRun_SimpleString(ps.c_str());
 }

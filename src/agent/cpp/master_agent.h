@@ -13,6 +13,7 @@
 #include <task/cpp/task_manager.h>
 #include <task/cpp/heartbeat_monitor.h>
 #include <log/cpp/logger.h>
+#include <message/cpp/message_sink.h>
 #include <core/cpp/config.h>
 #include <common/cpp/common_types.h>
 #include <common/cpp/worker_context.h>
@@ -263,6 +264,18 @@ private:
     mutable std::mutex merge_cleanup_mutex_;
     std::condition_variable merge_cleanup_cv_;
 
+    // ── Message summary 屏障（进程结束前收集各 worker 的 message 触发次数）──
+    // master stop() 广播 MSG_COUNT_REQUEST 后，等所有 worker 回 MSG_COUNT_REPORT。
+    // 复刻 MergeCleanupAck 的计数屏障模式（expected/received + cv）。
+    struct PendingMsgCount {
+        uint64_t expected_count_ = 0;
+        uint64_t received_count_ = 0;
+    };
+    PendingMsgCount pending_msg_count_;
+    CMVector<std::pair<uint64_t, MessageCounts>> collected_msg_counts_;
+    mutable std::mutex msg_count_mutex_;
+    std::condition_variable msg_count_cv_;
+
     void schedule_tasks();
     void assign_task_to_worker(uint64_t task_id, uint64_t worker_id);
     void update_dependency_location_cache(const CMString& object_name, uint64_t worker_id, const CMString& host, int32_t port);
@@ -288,6 +301,12 @@ private:
     void on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg);
     void on_delete_data_ack(uint64_t conn_id, const DeleteDataAckMessage& msg);
     void on_merge_cleanup_ack(uint64_t conn_id, const MergeCleanupAckMessage& msg);
+
+    // Message 日志系统 handlers。
+    void on_log_message(uint64_t conn_id, const LogMessage& msg);
+    void on_message_count_report(uint64_t conn_id, const MessageCountReportMessage& msg);
+    // 进程结束前收集各 worker 的 message 计数并打印 summary（stop Phase 内调用）。
+    void collect_and_print_message_summary();
 
     // Var service handlers.
     void on_var_set(uint64_t conn_id, const VarSetMessage& msg);

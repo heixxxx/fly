@@ -2,6 +2,7 @@
 
 #include <common/cpp/common_types.h>
 #include <common/cpp/error_types.h>
+#include <log/cpp/logger.h>  // LogLevel（LogMessage.level_ 用）
 #include <serialization/cpp/serialization_macros.h>
 #include <cstdint>
 
@@ -52,10 +53,13 @@ enum class MessageType : uint8_t {
     DELETE_DATA_ACK = 43,     // worker → master: 删除结果回报
     MERGE_CLEANUP = 44,       // master → worker (broadcast): merge 完成后清理 local_idx/remote_idx 残留
     MERGE_CLEANUP_ACK = 45,   // worker → master: cleanup 完成回报（merge_db 返回前的全局一致性屏障）
+    LOG_MESSAGE = 46,         // worker → master: 高价值日志推送（async, no ack）
+    MSG_COUNT_REQUEST = 47,   // master → worker (broadcast): 请求上报 message 触发次数（summary 屏障）
+    MSG_COUNT_REPORT = 48,    // worker → master: 上报本地 message 触发次数（id/domain 两套计数）
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 45;
+    return raw >= 1 && raw <= 48;
 }
 
 struct MessageHeader {
@@ -606,6 +610,52 @@ struct MergeCleanupAckMessage {
 
     static constexpr MessageType msg_type_ = MessageType::MERGE_CLEANUP_ACK;
     FLY_SERIALIZE(header_, worker_id_, db_id_);
+};
+
+// =============================================================================
+// Message 日志系统 — 高价值信息的远程推送与 summary 收集。
+// worker 把配额内的高价值 message 推送到 master；master 集中写 message.log +
+// 输出 terminal。进程结束前 master 主动广播请求，收集各 worker 的 message 触发
+// 次数，合并打印 summary。详见 docs/message-system.md。
+// =============================================================================
+
+// worker → master: 推送高价值 message（async, no ack）。
+// domain_id_ 格式 "DOMAIN::NNNN"。worker 在本地 debug log 已打印（带 [DOMAIN::NNNN] 前缀），
+// master 收到后写 message.log + 输出 terminal（受 master 侧 message id/domain 两层配额控制）。
+// source_ 用于区分同一 id 的不同触发位置（不参与配额，仅作打印标注）。
+struct LogMessage {
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    LogLevel level_ = LogLevel::INFO;
+    CMString domain_id_;   // "DOMAIN::NNNN"
+    int32_t source_ = 0;   // 触发位置标识（业务自定义，打印为 [DOMAIN::NNNN] <source> msg）
+    CMString msg_;
+
+    static constexpr MessageType msg_type_ = MessageType::LOG_MESSAGE;
+    FLY_SERIALIZE(header_, worker_id_, level_, domain_id_, source_, msg_);
+};
+
+// master → worker (broadcast): 请求 worker 上报本地 message 触发次数（summary 屏障）。
+// master stop() 在发 ShutdownMessage 之前广播此消息，等所有 worker 回 MSG_COUNT_REPORT。
+struct MessageCountRequestMessage {
+    MessageHeader header_;
+
+    static constexpr MessageType msg_type_ = MessageType::MSG_COUNT_REQUEST;
+    FLY_SERIALIZE(header_);
+};
+
+// worker → master: 上报本地 message 触发次数（id 级 + domain 级两套计数）。
+// keys_/values_ 一一对应；master 收齐所有 worker 后合并 + 自身计数打印 summary。
+struct MessageCountReportMessage {
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMVector<CMString> id_keys_;          // 如 ["SOLVER::0047", "SYS::0001"]
+    CMVector<uint64_t> id_values_;        // 与 id_keys_ 一一对应
+    CMVector<CMString> domain_keys_;      // 如 ["SOLVER", "SYS"]
+    CMVector<uint64_t> domain_values_;    // 与 domain_keys_ 一一对应
+
+    static constexpr MessageType msg_type_ = MessageType::MSG_COUNT_REPORT;
+    FLY_SERIALIZE(header_, worker_id_, id_keys_, id_values_, domain_keys_, domain_values_);
 };
 
 }  // namespace fly

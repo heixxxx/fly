@@ -15,6 +15,7 @@ cc_library(
         "//src/common/cpp:fly_common_types",
         "//src/core/cpp:fly_core",
         "//src/log/cpp:fly_log",
+        "//src/message/cpp:fly_message",
         "//src/network/cpp:fly_network",
         "//src/serialization/cpp:fly_serialization",
         "//src/storage/cpp:fly_storage",
@@ -29,6 +30,7 @@ cc_shared_library(
     dynamic_deps = [
         "//src/core/cpp:fly_core_so",
         "//src/log/cpp:fly_log_so",
+        "//src/message/cpp:fly_message_so",
         "//src/network/cpp:fly_network_so",
         "//src/storage/cpp:fly_storage_so",
         "//src/task/cpp:fly_task_so",

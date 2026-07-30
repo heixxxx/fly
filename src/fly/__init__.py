@@ -19,6 +19,7 @@ Example::
 import os
 
 from _fly_log import WARN
+import _fly_message as _msg
 
 try:
     from storage.database import _Database
@@ -230,6 +231,95 @@ def clear_cache():
     get_agent().clear_cache()
 
 
+# =============================================================================
+# Message 日志系统 — 高价值信息的远程推送与集中收集。
+# =============================================================================
+#
+# message 的级别由 id 决定：注册时绑定级别（INFO/WARN/ERROR），发送时不传级别。
+# 见 register_message_id / message。
+
+
+def message(domain_id: str, source: int, msg: str):
+    """发送一条高价值 message。
+
+    message id 格式 ``"DOMAIN::NNNN"``（domain 大写，id 4 位补零，如 ``"SOLVER::0047"``）。
+    仅注册过的 domain_id 才会被打印/发送（见 :func:`register_message_id`）。
+    **级别由 id 决定**（注册时绑定），本接口不接收 level 参数。
+
+    行为分进程：
+      - worker 进程：message 写本地 debug log（带 ``[DOMAIN::NNNN] <source>`` 前缀），
+        并推送到 master（受 worker 本地 id/domain 两层配额控制，超限不推送但仍计数）。
+      - master 进程：message 写本地 debug log + 直写 message.log + 输出 terminal
+        （受 master 全局 id/domain 两层配额控制）。
+
+    Args:
+        domain_id: message id，如 ``"SOLVER::0047"``。未注册则丢弃。
+        source: 触发位置标识（int，业务自定义）。打印为 ``[DOMAIN::NNNN] <source> msg``，
+            用于同一 id 在不同位置触发时快速定位。不参与配额。
+        msg: message 文本。
+    """
+    _msg.send_message(domain_id, source, msg)
+
+
+def register_message_id(domain_id: str, level: str = "INFO"):
+    """注册一个合法 message id 进白名单并绑定其级别。
+
+    各模块在 Python 模块初始化时调用，注册自己 domain 下的合法 id。
+    只有注册过的 id 才能被 :func:`message` 打印/发送。**级别在此绑定**，
+    发送时按 id 查级别，调用点不再传级别。
+
+    Args:
+        domain_id: message id，如 ``"SOLVER::0047"``。
+        level: ``"INFO"`` / ``"WARN"`` / ``"ERROR"``（默认 ``"INFO"``）。
+    """
+    _msg.register_message_id(domain_id, level)
+
+
+def set_message_id_limit(limit: int):
+    """设置全局 message id 配额（每个 id 独立计数，默认 20）。
+
+    Args:
+        limit: ``-1`` = 不限制；``0`` = 完全禁止；``N`` = 上限 N 次。
+    """
+    _msg.set_id_limit(limit)
+
+
+def set_message_domain_limit(domain: str, limit: int):
+    """设置某个 domain 的配额（该 domain 下所有 id 共享，默认 -1 不限制）。
+
+    与 message id 配额同时生效，任一层超限即丢弃（但仍各计一次数）。
+
+    Args:
+        domain: domain 名（如 ``"SOLVER"``）。
+        limit: ``-1`` = 不限制；``0`` = 完全禁止；``N`` = 上限 N 次。
+    """
+    _msg.set_domain_limit(domain, limit)
+
+
+def set_master_print_id_limit(limit: int):
+    """设置 master 进程的 message 打印配额（每个 id 独立，默认 20）。
+
+    控制各 worker 推送来的 message 在 master 侧是否打印（message.log + terminal）。
+    独立于各 worker 的触发计数配额（避免 summary 双算）。仅在 master 进程生效。
+
+    Args:
+        limit: ``-1`` = 不限制；``0`` = 完全禁止；``N`` = 上限 N 次。
+    """
+    _msg.set_master_print_id_limit(limit)
+
+
+def set_master_print_domain_limit(domain: str, limit: int):
+    """设置 master 进程某 domain 的打印配额（该 domain 下所有 id 共享，默认 -1 不限）。
+
+    与 master id 打印配额同时生效，任一超限即丢弃。仅在 master 进程生效。
+
+    Args:
+        domain: domain 名（如 ``"SOLVER"``）。
+        limit: ``-1`` = 不限制；``0`` = 完全禁止；``N`` = 上限 N 次。
+    """
+    _msg.set_master_print_domain_limit(domain, limit)
+
+
 def __getattr__(name):
     if name == "completed_tasks":
         return get_agent().completed_tasks
@@ -254,6 +344,8 @@ __all__ = [
     'put_cache', 'get_cache', 'has_cache', 'remove_cache', 'clear_cache',
     'Project', 'register_flow', 'open_project', 'load_project',
     'UserDoc', 'Schema', 'document', 'help',
+    'message', 'register_message_id', 'set_message_id_limit', 'set_message_domain_limit',
+    'set_master_print_id_limit', 'set_master_print_domain_limit',
 ]
 
 

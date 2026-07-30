@@ -37,6 +37,7 @@ public:
         set_var_func_ = nullptr;
         get_var_func_ = nullptr;
         remove_var_func_ = nullptr;
+        push_message_func_ = nullptr;
         last_error_type_ = TaskErrorType::UNKNOWN;
         transaction_mode_ = false;
     }
@@ -145,6 +146,21 @@ public:
         }
     }
 
+    // ---- Message 推送（高价值日志远程上报）----
+    // level 用 uint8_t 传 LogLevel 的 underlying 值（避免 common 模块依赖 log 模块）。
+    // source 为触发位置标识（仅打印标注，不参与配额）。
+    // WorkerAgent::begin_task 绑定为发送 LogMessage 到 master；非 task 上下文为 no-op。
+    // 注意：此处仅负责「推送」，白名单检查 / 配额 / 本地 debug log 已由 MSG 宏在上游完成。
+    static void set_push_message_func(std::function<void(uint8_t level, const CMString& domain_id, int32_t source, const CMString& msg)> func) {
+        push_message_func_ = std::move(func);
+    }
+
+    static void push_message(uint8_t level, const CMString& domain_id, int32_t source, const CMString& msg) {
+        if (push_message_func_) {
+            push_message_func_(level, domain_id, source, msg);
+        }
+    }
+
     static std::function<void(const CMString&, const CMString&)>& current_backup_func() { return backup_request_func_; }
 
     static void set_last_error_type(TaskErrorType type) {
@@ -179,6 +195,7 @@ private:
     static inline thread_local std::function<bool(const CMString&, FlyBufferPtr, const CMString&)> set_var_func_;
     static inline thread_local std::function<std::tuple<bool, FlyBufferPtr, CMString>(const CMString&)> get_var_func_;
     static inline thread_local std::function<void(const CMString&)> remove_var_func_;
+    static inline thread_local std::function<void(uint8_t, const CMString&, int32_t, const CMString&)> push_message_func_;
     static inline thread_local TaskErrorType last_error_type_ = TaskErrorType::UNKNOWN;
     static inline thread_local CMString current_write_hash_;
     static inline thread_local bool transaction_mode_ = false;

@@ -671,7 +671,11 @@ TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DELETE_DATA)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DELETE_DATA_ACK)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MERGE_CLEANUP)));
-    EXPECT_FALSE(is_valid_message_type(46));  // upper bound is 45
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MERGE_CLEANUP_ACK)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::LOG_MESSAGE)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MSG_COUNT_REQUEST)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MSG_COUNT_REPORT)));
+    EXPECT_FALSE(is_valid_message_type(49));  // upper bound is 48
     EXPECT_FALSE(is_valid_message_type(0));
 }
 
@@ -813,6 +817,76 @@ TEST(MessageProtocolTest, MergeCleanupAckRoundTrip) {
     ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
     EXPECT_EQ(decoded.worker_id_, 7u);
     EXPECT_EQ(decoded.db_id_, "merge_db_002");
+    EXPECT_TRUE(buffer.empty());
+}
+
+// =============================================================================
+// Message 日志系统 — round-trip 序列化测试。
+// =============================================================================
+
+TEST(MessageProtocolTest, LogMessageRoundTrip) {
+    LogMessage msg;
+    msg.header_.type_ = MessageType::LOG_MESSAGE;
+    msg.worker_id_ = 3;
+    msg.level_ = LogLevel::WARN;
+    msg.domain_id_ = "SOLVER::0047";
+    msg.source_ = 12;
+    msg.msg_ = "收敛于 0.001，迭代 47 轮";
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    LogMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.worker_id_, 3u);
+    EXPECT_EQ(decoded.level_, LogLevel::WARN);
+    EXPECT_EQ(decoded.domain_id_, "SOLVER::0047");
+    EXPECT_EQ(decoded.source_, 12);
+    EXPECT_EQ(decoded.msg_, "收敛于 0.001，迭代 47 轮");
+    EXPECT_TRUE(buffer.empty());
+}
+
+TEST(MessageProtocolTest, MessageCountRequestRoundTrip) {
+    MessageCountRequestMessage req;
+    req.header_.type_ = MessageType::MSG_COUNT_REQUEST;
+    req.header_.message_id_ = 99;
+
+    CMString encoded = MessageProtocol::encode(req);
+    CMString buffer = encoded;
+
+    MessageCountRequestMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.header_.message_id_, 99u);
+    EXPECT_TRUE(buffer.empty());
+}
+
+TEST(MessageProtocolTest, MessageCountReportRoundTrip) {
+    MessageCountReportMessage report;
+    report.header_.type_ = MessageType::MSG_COUNT_REPORT;
+    report.worker_id_ = 5;
+    report.id_keys_ = {"SOLVER::0047", "SYS::0001"};
+    report.id_values_ = {30, 2};
+    report.domain_keys_ = {"SOLVER", "SYS"};
+    report.domain_values_ = {30, 2};
+
+    CMString encoded = MessageProtocol::encode(report);
+    CMString buffer = encoded;
+
+    MessageCountReportMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.worker_id_, 5u);
+    ASSERT_EQ(decoded.id_keys_.size(), 2u);
+    EXPECT_EQ(decoded.id_keys_[0], "SOLVER::0047");
+    EXPECT_EQ(decoded.id_keys_[1], "SYS::0001");
+    ASSERT_EQ(decoded.id_values_.size(), 2u);
+    EXPECT_EQ(decoded.id_values_[0], 30u);
+    EXPECT_EQ(decoded.id_values_[1], 2u);
+    ASSERT_EQ(decoded.domain_keys_.size(), 2u);
+    EXPECT_EQ(decoded.domain_keys_[0], "SOLVER");
+    EXPECT_EQ(decoded.domain_keys_[1], "SYS");
+    ASSERT_EQ(decoded.domain_values_.size(), 2u);
+    EXPECT_EQ(decoded.domain_values_[0], 30u);
+    EXPECT_EQ(decoded.domain_values_[1], 2u);
     EXPECT_TRUE(buffer.empty());
 }
 

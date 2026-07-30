@@ -1,7 +1,11 @@
 #include <agent/cpp/master_agent.h>
 #include <agent/cpp/data_fetch.h>
 #include <log/cpp/logger.h>
+#include <message/cpp/message_macros.h>
+#include <message/cpp/message_registry.h>
 #include <core/cpp/config.h>
+#include <core/cpp/system_info.h>
+#include <sstream>
 #include <core/cpp/process_info.h>
 #include <core/cpp/graceful_exit.h>
 #include <storage/cpp/local_index.h>
@@ -45,6 +49,27 @@ void MasterAgent::start() {
     reactor_ = CMMakeUnique<Reactor>(std::move(transport));
 
     port_ = static_cast<uint16_t>(reactor_->get_bound_port());
+
+    // master 进程：初始化 MessageSink（打开 message.log）+ 把 MSG 宏的 push 绑定为
+    // 本进程直写（master 自身 message 直接进 message.log + terminal，不走网络）。
+    MessageSink::instance()->init(Config::instance()->get_str("log_dir"));
+    fly::set_message_push_func([](fly::LogLevel level, const fly::CMString& domain_id, int32_t source, const fly::CMString& msg) {
+        MessageSink::instance()->handle_local(level, domain_id, source, msg);
+    });
+    // system sink（FLY::0000 等）：master 绑定为 MessageSink，使系统 message 进 message.log + terminal。
+    // 豁免 master 打印配额（honor_quota=false）—— FLY::0000 是基础信息，必须输出。
+    fly::set_system_sink_func([](fly::LogLevel level, const fly::CMString& domain_id, int32_t source, const fly::CMString& msg) {
+        MessageSink::instance()->handle_local(level, domain_id, source, msg, /*honor_quota=*/false);
+    });
+
+    // 注册 master 侧用到的流程性 message id（白名单 + 级别绑定）。
+    // STOR::0001: 数据库 freeze 完成；TASK::0001: task 不可恢复失败；
+    // AGENT::0001: worker 注册；AGENT::0002: worker 断开；FLY::0001: master drain 完成。
+    fly::MessageRegistry::instance().register_id("STOR::0001", fly::LogLevel::INFO);
+    fly::MessageRegistry::instance().register_id("TASK::0001", fly::LogLevel::ERROR);
+    fly::MessageRegistry::instance().register_id("AGENT::0001", fly::LogLevel::INFO);
+    fly::MessageRegistry::instance().register_id("AGENT::0002", fly::LogLevel::WARN);
+    fly::MessageRegistry::instance().register_id("FLY::0001", fly::LogLevel::INFO);
 
     reactor_->register_handler<RegisterMessage>(
         [this](uint64_t conn_id, const RegisterMessage& msg) {
@@ -144,6 +169,16 @@ void MasterAgent::start() {
             on_merge_cleanup_ack(conn_id, msg);
         });
 
+    reactor_->register_handler<LogMessage>(
+        [this](uint64_t conn_id, const LogMessage& msg) {
+            on_log_message(conn_id, msg);
+        });
+
+    reactor_->register_handler<MessageCountReportMessage>(
+        [this](uint64_t conn_id, const MessageCountReportMessage& msg) {
+            on_message_count_report(conn_id, msg);
+        });
+
     reactor_->register_handler<VarSetMessage>(
         [this](uint64_t conn_id, const VarSetMessage& msg) {
             on_var_set(conn_id, msg);
@@ -240,6 +275,19 @@ void MasterAgent::start() {
 
     INFO("MasterAgent started, reactor thread running");
 
+    // FLY::0000：打印启动基础信息（豁免配额，master 进 system.log + terminal）。
+    // system_info 多行文本逐行经 emit_system_message 输出，source=0 表启动信息。
+    {
+        CMString info = SystemInfo::format_startup_info("master", port_);
+        std::istringstream iss(info);
+        CMString line;
+        while (std::getline(iss, line)) {
+            if (!line.empty()) {
+                fly::emit_system_message(fly::LogLevel::INFO, "FLY::0000", 0, line);
+            }
+        }
+    }
+
     register_shutdown_callback([this]() {
         this->stop();
         fly::Logger::shutdown();
@@ -272,6 +320,10 @@ void MasterAgent::stop() {
 
     INFO("Drain: all tasks completed, shutting down workers");
 
+    // Message summary：发 Shutdown 前收集各 worker 的 message 触发计数并打印 summary。
+    // 必须在 worker 仍连接时广播请求（worker 断开后无法上报）。
+    collect_and_print_message_summary();
+
     // Phase 2: All tasks done — now send shutdown to workers.
     {
         std::lock_guard<std::mutex> lk(workers_mutex_);
@@ -300,6 +352,8 @@ void MasterAgent::stop() {
 
 void MasterAgent::do_drain_and_stop() {
     INFO("MasterAgent performing full cleanup");
+    // 流程 message：master drain 完成（与 FLY::0000 启动信息对称的关闭里程碑）。
+    MSG("FLY::0001", 1, "master drain complete, shutting down");
 
     shutdown_requested_ = true;
 
@@ -742,6 +796,10 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     ack.master_port_ = static_cast<int32_t>(port_);
     reactor_->send(conn_id, ack);
 
+    // 流程 message：worker 上线（集群扩容里程碑）。
+    MSG("AGENT::0001", 1, "worker {} online (hostname={}, {}:{})",
+        worker_id, msg.hostname_, msg.data_server_host_, msg.data_server_port_);
+
     // 新 worker 注册后，ready 的 task 可能可调度（含等待属性的 task）
     schedule_tasks();
 }
@@ -943,6 +1001,9 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
         fatal_error_ = true;
         ERR("FATAL: unrecoverable error (type={}) for task_id={}: {}",
             static_cast<int>(msg.error_type_), msg.task_id_, msg.error_message_);
+        // 流程 message：不可恢复 task 失败（ERROR 级，用户必须知道）。
+        MSG("TASK::0001", 1, "task {} failed (unrecoverable, type={}): {}",
+            msg.task_id_, static_cast<int>(msg.error_type_), msg.error_message_);
     }
 
     // 非 stream 模式：task 失败 → 按 task_id 回滚 pending frozen（防永久死锁）。
@@ -972,6 +1033,10 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
     worker_manager_->update_worker_status(worker_id, WorkerStatus::DEAD);
 
     WARN("Worker disconnected: worker_id={}", worker_id);
+    // 流程 message：worker 掉线（非 drain 期才打，drain 期属正常关闭会刷屏）。
+    if (!draining_.load()) {
+        MSG("AGENT::0002", 1, "worker {} offline", worker_id);
+    }
 
     auto tasks_to_recover = metadata_->get_task_ids_by_worker(worker_id);
 
@@ -1115,6 +1180,8 @@ void MasterAgent::commit_pending_frozen(uint64_t task_id) {
         for (const auto& [wid, cid] : worker_to_conn_) {
             reactor_->send(cid, broadcast_msg);
         }
+        // 流程 message：freeze 完成（不可逆里程碑）。
+        MSG("STOR::0001", 1, "db {} frozen (committed by task {})", db_id, task_id);
     }
 }
 
@@ -1910,6 +1977,9 @@ void MasterAgent::on_master_freeze(const CMString& db_id) {
             reactor_->send(cid, msg);
         }
     }
+
+    // 流程 message：master 直接 freeze 完成（不可逆里程碑）。
+    MSG("STOR::0001", 2, "db {} frozen (master direct)", db_id);
 }
 
 std::atomic<bool> MasterAgent::sigterm_received_{false};
@@ -2442,6 +2512,85 @@ void MasterAgent::on_merge_cleanup_ack(uint64_t conn_id, const MergeCleanupAckMe
         msg.db_id_, msg.worker_id_, it->second.received_count_, it->second.expected_count_);
     if (it->second.received_count_ >= it->second.expected_count_) {
         merge_cleanup_cv_.notify_all();
+    }
+}
+
+void MasterAgent::on_log_message(uint64_t conn_id, const LogMessage& msg) {
+    // master 收到 worker 推送的高价值 message：用 master 独立的打印配额控制是否打印
+    // （MessageSink::handle_remote 内部 print_within_limit），不记触发次数——
+    // 触发发生在 worker，已由 worker 的 MessageRegistry 记录，避免 summary 双算。
+    (void)conn_id;
+    MessageSink::instance()->handle_remote(msg.worker_id_, msg.level_, msg.domain_id_, msg.source_, msg.msg_);
+}
+
+void MasterAgent::on_message_count_report(uint64_t conn_id, const MessageCountReportMessage& msg) {
+    // summary 屏障：收集一个 worker 上报的两套计数，凑齐 expected 后唤醒。
+    MessageCounts counts;
+    auto n = msg.id_keys_.size();
+    for (size_t i = 0; i < n; ++i) {
+        counts.id_counts_[msg.id_keys_[i]] = msg.id_values_[i];
+    }
+    auto dn = msg.domain_keys_.size();
+    for (size_t i = 0; i < dn; ++i) {
+        counts.domain_counts_[msg.domain_keys_[i]] = msg.domain_values_[i];
+    }
+
+    std::lock_guard<std::mutex> lk(msg_count_mutex_);
+    collected_msg_counts_.push_back(std::make_pair(msg.worker_id_, std::move(counts)));
+    pending_msg_count_.received_count_++;
+    if (pending_msg_count_.received_count_ >= pending_msg_count_.expected_count_) {
+        msg_count_cv_.notify_all();
+    }
+}
+
+void MasterAgent::collect_and_print_message_summary() {
+    // master stop() 在发 ShutdownMessage 之前调用：广播 MSG_COUNT_REQUEST → 等所有 worker
+    // 上报（复刻 MergeCleanupAck 屏障，30s 超时容错）→ 合并 master 自身 + 各 worker 计数打印 summary。
+    uint64_t expected = 0;
+    {
+        std::lock_guard<std::mutex> wlk(workers_mutex_);
+        expected = worker_to_conn_.size();
+    }
+
+    if (expected == 0) {
+        // 无 worker（单进程模式）：仅用 master 自身计数打印 summary。
+        MessageCounts master_counts;
+        master_counts.id_counts_ = fly::MessageRegistry::instance().id_counts_snapshot();
+        master_counts.domain_counts_ = fly::MessageRegistry::instance().domain_counts_snapshot();
+        MessageSink::instance()->print_summary(master_counts, {});
+        return;
+    }
+
+    // 登记本轮 pending 并广播请求。
+    {
+        std::lock_guard<std::mutex> lk(msg_count_mutex_);
+        pending_msg_count_ = {expected, 0};
+        collected_msg_counts_.clear();
+    }
+    {
+        std::lock_guard<std::mutex> wlk(workers_mutex_);
+        MessageCountRequestMessage req;
+        for (const auto& [wid, cid] : worker_to_conn_) {
+            reactor_->send(cid, req);
+        }
+    }
+
+    // 等所有 worker 上报（30s 超时容错，复刻 merge_cleanup_cv 模式）。
+    {
+        std::unique_lock<std::mutex> lk(msg_count_mutex_);
+        bool all_reported = msg_count_cv_.wait_for(lk, std::chrono::seconds(30),
+            [this] { return pending_msg_count_.received_count_ >= pending_msg_count_.expected_count_; });
+        if (!all_reported) {
+            WARN("Message summary timeout (30s), {}/{} workers reported",
+                 pending_msg_count_.received_count_, pending_msg_count_.expected_count_);
+        }
+        auto reports = collected_msg_counts_;  // 拷贝出来，避免持锁调用 print_summary
+        lk.unlock();
+
+        MessageCounts master_counts;
+        master_counts.id_counts_ = fly::MessageRegistry::instance().id_counts_snapshot();
+        master_counts.domain_counts_ = fly::MessageRegistry::instance().domain_counts_snapshot();
+        MessageSink::instance()->print_summary(master_counts, reports);
     }
 }
 

@@ -1,6 +1,10 @@
 #include <agent/cpp/worker_agent.h>
 #include <log/cpp/logger.h>
+#include <message/cpp/message_macros.h>
+#include <message/cpp/message_registry.h>
 #include <core/cpp/config.h>
+#include <core/cpp/system_info.h>
+#include <sstream>
 #include <core/cpp/process_info.h>
 #include <core/cpp/graceful_exit.h>
 #include <storage/cpp/data_service.h>
@@ -47,6 +51,12 @@ void WorkerAgent::start() {
     }
     INFO("connected, master_conn={}", master_conn_);
     reactor_ = CMMakeUnique<Reactor>(std::move(transport));
+
+    // worker 进程：MSG 宏的 push 委托给 WorkerAgentContext（task 内绑定为发送 master）。
+    // 非 task 上下文 context func 为 null → push no-op（符合需求）。
+    fly::set_message_push_func([](fly::LogLevel level, const fly::CMString& domain_id, int32_t source, const fly::CMString& msg) {
+        fly::WorkerAgentContext::push_message(static_cast<uint8_t>(level), domain_id, source, msg);
+    });
 
     data_server_host_ = ProcessInfo::instance()->data_server_host();
     auto dsInst = DataService::instance();
@@ -126,6 +136,11 @@ void WorkerAgent::start() {
             on_merge_cleanup(conn_id, msg);
         });
 
+    reactor_->register_handler<MessageCountRequestMessage>(
+        [this](uint64_t conn_id, const MessageCountRequestMessage& msg) {
+            on_message_count_request(conn_id, msg);
+        });
+
     reactor_->register_handler<RemoveAckMessage>(
         [this](uint64_t conn_id, const RemoveAckMessage& msg) {
             on_remove_ack(conn_id, msg);
@@ -191,6 +206,19 @@ void WorkerAgent::start() {
     }
 
     running_ = true;
+
+    // FLY::0000：打印启动基础信息（豁免配额，worker 仅本地 debug log，不发送 master）。
+    // worker 不绑定 system sink → emit_system_message 只写本地 debug log。
+    {
+        fly::CMString info = fly::SystemInfo::format_startup_info("worker", data_server_port_);
+        std::istringstream iss(info);
+        fly::CMString line;
+        while (std::getline(iss, line)) {
+            if (!line.empty()) {
+                fly::emit_system_message(fly::LogLevel::INFO, "FLY::0000", 0, line);
+            }
+        }
+    }
 
     register_shutdown_callback([this]() {
         this->stop();
@@ -620,6 +648,11 @@ void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_has
     WorkerAgentContext::set_remove_var_func([this](const CMString& full_var_name) {
         remove_var_async(full_var_name);
     });
+    // Message 推送：task 内 MSG 宏 / fly.message() 经 context 路由到 master。
+    // level 用 uint8_t（LogLevel 的 underlying 值）传递，common 模块不依赖 log。
+    WorkerAgentContext::set_push_message_func([this](uint8_t level, const CMString& domain_id, int32_t source, const CMString& msg) {
+        send_message_to_master(static_cast<LogLevel>(level), domain_id, source, msg);
+    });
 }
 
 void WorkerAgent::record_write(const CMString& db_id, const CMString& object_name, int64_t size) {
@@ -918,6 +951,39 @@ void WorkerAgent::remove_var_async(const CMString& full_var_name) {
     msg.var_name_ = full_var_name;  // full name on the wire
     reactor_->send(master_conn_, msg);
     DBG("VarRemove sent (async): var={}", full_var_name);
+}
+
+void WorkerAgent::send_message_to_master(LogLevel level, const CMString& domain_id, int32_t source, const CMString& msg) {
+    if (!registered_ || master_conn_ == 0) return;
+    LogMessage m;
+    m.worker_id_ = worker_id_;
+    m.level_ = level;
+    m.domain_id_ = domain_id;
+    m.source_ = source;
+    m.msg_ = msg;
+    reactor_->send(master_conn_, m);
+}
+
+void WorkerAgent::on_message_count_request(uint64_t conn_id, const MessageCountRequestMessage& /*msg*/) {
+    // summary 屏障：把本地 message 触发计数（id 级 + domain 级两套）上报给 master。
+    MessageCountReportMessage report;
+    report.worker_id_ = worker_id_;
+    auto id_counts = MessageRegistry::instance().id_counts_snapshot();
+    auto dom_counts = MessageRegistry::instance().domain_counts_snapshot();
+    for (const auto& [k, v] : id_counts) {
+        report.id_keys_.push_back(k);
+        report.id_values_.push_back(v);
+    }
+    for (const auto& [k, v] : dom_counts) {
+        report.domain_keys_.push_back(k);
+        report.domain_values_.push_back(v);
+    }
+    if (conn_id != 0) {
+        reactor_->send(conn_id, report);
+    } else if (master_conn_ != 0) {
+        // 兜底：conn_id 为 0（理论不会发生）时回 master_conn_。
+        reactor_->send(master_conn_, report);
+    }
 }
 
 CMVector<VarPayload> WorkerAgent::take_pending_task_vars() {
