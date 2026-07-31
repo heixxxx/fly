@@ -119,7 +119,7 @@ master_conn_:        到 Master 的连接 ID
 task_queue_:         queue<PendingTask> (Reactor→Main 传递)
 databases_:          db_id → shared_ptr<Database>
 current_task_id_:    当前任务 ID
-current_writes_:     当前写入记录
+current_writes_:     当前写入记录 CMVector<WriteRecord>（full_name + 压缩字节数，单一容器保证同生命周期）
 prefetched_locations_: 预取的依赖数据位置
 ```
 

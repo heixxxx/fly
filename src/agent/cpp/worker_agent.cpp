@@ -493,7 +493,8 @@ bool WorkerAgent::poll_task() {
                 failed.error_message_ = "Write registration rejected: error_type=" +
                     std::to_string(static_cast<int>(error_type));
                 failed.error_type_ = error_type;
-                failed.dirty_objects_ = std::move(tracked_writes);
+                // dirty_objects_ 是全名列表（master 据此清理 remote_idx/provenance）。
+                for (const auto& w : tracked_writes) failed.dirty_objects_.push_back(w.full_name_);
                 reactor_->send(master_conn_, failed);
 
                 ERR("Task marked failed: task_id={}, write error_type={}",
@@ -505,12 +506,10 @@ bool WorkerAgent::poll_task() {
                 TaskCompleteMessage complete;
                 complete.task_id_ = task.task_id_;
                 complete.worker_id_ = worker_id_;
-                // 实际写出对象（含 size，从 current_write_sizes_ 取）。
-                for (const auto& name : tracked_writes) {
-                    int64_t sz = 0;
-                    auto it = current_write_sizes_.find(name);
-                    if (it != current_write_sizes_.end()) sz = it->second;
-                    complete.written_objects_.push_back({name, sz});
+                // 实际写出对象（含 size）：size 直接取自 WriteRecord（原并行 map 在
+                // end_task 中被清空导致恒为 0 的死代码，现已随容器合并修复）。
+                for (const auto& w : tracked_writes) {
+                    complete.written_objects_.push_back({w.full_name_, w.size_bytes_});
                 }
                 // 声明性输出（task 装饰器声明，非实际 write，size=0）。
                 for (auto& out : result.outputs_) {
@@ -532,7 +531,7 @@ bool WorkerAgent::poll_task() {
             failed.worker_id_ = worker_id_;
             failed.error_message_ = result.error_;
             failed.error_type_ = WorkerAgentContext::get_last_error_type();
-            failed.dirty_objects_ = std::move(tracked_writes);
+            for (const auto& w : tracked_writes) failed.dirty_objects_.push_back(w.full_name_);
             reactor_->send(master_conn_, failed);
 
             ERR("TaskFailed sent: task_id={}, error={}", task.task_id_, result.error_);
@@ -610,7 +609,6 @@ void WorkerAgent::on_db_path_response(const DbPathResponseMessage& msg) {
 void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_hash) {
     current_task_id_ = task_id;
     current_writes_.clear();
-    current_write_sizes_.clear();
     current_write_hash_ = write_context_hash;
     // 激活事务模式：本 task 的 write_object 会被 BEGIN/END 包裹（pending 区语义）。
     // master 直接 write_object 不激活此模式（段外隐式事务，ADD 立即生效）。
@@ -662,27 +660,25 @@ void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_has
 
 void WorkerAgent::record_write(const CMString& db_id, const CMString& object_name, int64_t size) {
     CMString full_name = db_id + ":" + object_name;
-    current_writes_.push_back(full_name);
-    current_write_sizes_[full_name] = size;
+    current_writes_.push_back({full_name, size});
 }
 
-CMVector<CMString> WorkerAgent::end_task(uint64_t task_id) {
+CMVector<WriteRecord> WorkerAgent::end_task(uint64_t task_id) {
     WorkerAgentContext::clear();
     WorkerAgentContext::clear_current_write_hash();
     current_write_hash_.clear();
     auto writes = std::move(current_writes_);
     current_writes_.clear();
-    current_write_sizes_.clear();
     current_task_id_ = 0;
     return writes;
 }
 
-void WorkerAgent::commit_task_segments(const CMVector<CMString>& written_objects) {
+void WorkerAgent::commit_task_segments(const CMVector<WriteRecord>& written_objects) {
     // task 成功：对所有涉及写入的 db 打 END，提交写入段。
     // 段未开（db 无写入）的 mark_write_end 是 no-op（DataWriter::segment_active_==false）。
     CMUnorderedSet<CMString> involved_dbs;
-    for (const auto& full : written_objects) {
-        auto [db_id, short_name] = fly::split_full_name(full);
+    for (const auto& w : written_objects) {
+        auto [db_id, short_name] = fly::split_full_name(w.full_name_);
         if (!db_id.empty()) {
             involved_dbs.insert(db_id);
         }
@@ -697,14 +693,14 @@ void WorkerAgent::commit_task_segments(const CMVector<CMString>& written_objects
     }
 }
 
-void WorkerAgent::cleanup_failed_task_writes(const CMVector<CMString>& dirty_objects) {
+void WorkerAgent::cleanup_failed_task_writes(const CMVector<WriteRecord>& dirty_objects) {
     // task 失败：按 db_id 分组，对每个 db 调 abort_task_writes 撤销写入。
     // idx 打 ABORT（整段 pending 撤销）+ data 文件 truncate 回滚 + 清运行时内存。
     CMUnorderedMap<CMString, CMVector<CMString>> by_db;
-    for (const auto& full : dirty_objects) {
-        auto [db_id, short_name] = fly::split_full_name(full);
+    for (const auto& w : dirty_objects) {
+        auto [db_id, short_name] = fly::split_full_name(w.full_name_);
         if (!db_id.empty()) {
-            by_db[db_id].push_back(full);
+            by_db[db_id].push_back(w.full_name_);
         }
     }
     for (auto& [db_id, full_names] : by_db) {

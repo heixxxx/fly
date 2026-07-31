@@ -3,6 +3,25 @@
 ---
 ---
 
+## 2026-07-31: WriteRecord 合并 current_writes_/sizes_ + 修复 TaskComplete size 上报死代码
+
+### 背景
+worker 侧 task 写入记录此前由两个并行容器持有：`current_writes_`（`CMVector<CMString>` 对象全名）+ `current_write_sizes_`（`CMUnorderedMap<CMString,int64_t>` 全名→压缩字节数）。二者须同键同生命周期，push/clear 成对调用。
+
+### 改动
+- 新增 `WriteRecord { full_name_; size_bytes_ }`（`worker_agent.h`），`current_writes_` 改为 `CMVector<WriteRecord>`，删除 `current_write_sizes_` 并行 map。
+- `record_write` push 一条 WriteRecord；`end_task` 返回 `CMVector<WriteRecord>`，不再分别 clear。
+- 消费方（commit_task_segments / cleanup_failed_task_writes / TaskFailedMessage.dirty_objects_）改为取 `.full_name_`；TaskComplete 的 `written_objects_` 直接用 WriteRecord 的 size。
+
+### 修复的潜在死代码（size 上报恒为 0）
+原 `end_task` 先 `current_write_sizes_.clear()`，随后 `TaskComplete` 构造时从该 map 查 size —— map 已空，`written_objects_[i].size_bytes_` 恒为 0。该值用于 data locality 调度亲和度打分（`RemoteObjectInfo.size_bytes_`）。
+**实际影响评估**：master 的 `WriteRegister` 路径（`do_write_register`）在写入时已带正确 size 调 `update_remote_idx`，且契约"size==0 时保持已有值不变"使 TaskComplete 的 0 不会覆盖正确值 —— 故此为永远走不到预期效果的死代码，无活跃故障。本次随容器合并让其如其注释所述工作（"实际写出对象（含 size）"），运行时行为不变（QA 全绿佐证）。这也补完了 `docs/locality-scheduling-plan.md` 原设计要求的"current_writes_ 携带 size"（实现时退化成了双容器）。
+
+### 新增/更新文档
+- 更新 [`docs/agent/module.md`](agent/module.md) — `current_writes_` 类型说明改为 `CMVector<WriteRecord>`
+
+---
+
 ## 2026-07-31: TaskSubmissionSpec — task 数据结构统一（消除字段复制漏改）
 
 ### 背景

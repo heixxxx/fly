@@ -84,8 +84,12 @@ TEST(WorkerAgentTest, RecordWrites) {
     auto writes = worker.end_task(100);
     
     EXPECT_EQ(writes.size(), 2u);
-    EXPECT_EQ(writes[0], db_abc + ":output/result");
-    EXPECT_EQ(writes[1], db_abc + ":output/intermediate");
+    EXPECT_EQ(writes[0].full_name_, db_abc + ":output/result");
+    EXPECT_EQ(writes[1].full_name_, db_abc + ":output/intermediate");
+    // size 必须随 WriteRecord 正确携带（回归保护：原并行 map 在 end_task 中被
+    // 清空，导致 TaskComplete 上报的 size 恒为 0）。
+    EXPECT_EQ(writes[0].size_bytes_, 200);
+    EXPECT_EQ(writes[1].size_bytes_, 300);
 }
 
 TEST(WorkerAgentTest, MultipleTasksSequential) {
@@ -102,7 +106,7 @@ TEST(WorkerAgentTest, MultipleTasksSequential) {
     worker.record_write(db2, "b", 60);
     auto writes2 = worker.end_task(2);
     EXPECT_EQ(writes2.size(), 1u);
-    EXPECT_EQ(writes2[0], db2 + ":b");
+    EXPECT_EQ(writes2[0].full_name_, db2 + ":b");
 }
 
 TEST(WorkerAgentTest, WriteTrackingWithDatabase) {
@@ -116,8 +120,8 @@ TEST(WorkerAgentTest, WriteTrackingWithDatabase) {
 
     auto writes = worker.end_task(200);
     ASSERT_EQ(writes.size(), 2u);
-    EXPECT_EQ(writes[0], db_hash_aaa + ":output/result");
-    EXPECT_EQ(writes[1], db_hash_aaa + ":output/log");
+    EXPECT_EQ(writes[0].full_name_, db_hash_aaa + ":output/result");
+    EXPECT_EQ(writes[1].full_name_, db_hash_aaa + ":output/log");
 }
 
 TEST(WorkerAgentTest, MultiDbSameObjectNameTracking) {
@@ -132,9 +136,9 @@ TEST(WorkerAgentTest, MultiDbSameObjectNameTracking) {
 
     auto writes = worker.end_task(300);
     ASSERT_EQ(writes.size(), 2u);
-    EXPECT_NE(writes[0], writes[1]);
-    EXPECT_EQ(writes[0], db_proj_a + ":output/result");
-    EXPECT_EQ(writes[1], db_proj_b + ":output/result");
+    EXPECT_NE(writes[0].full_name_, writes[1].full_name_);
+    EXPECT_EQ(writes[0].full_name_, db_proj_a + ":output/result");
+    EXPECT_EQ(writes[1].full_name_, db_proj_b + ":output/result");
 }
 
 TEST(WorkerAgentTest, EndTaskClearsTracking) {
@@ -842,7 +846,7 @@ TEST(WorkerAgentTest, RecordWriteWithoutBeginEnd) {
     auto writes = worker.end_task(1);
 
     EXPECT_EQ(writes.size(), 1u);
-    EXPECT_EQ(writes[0], db_id + ":output/data");
+    EXPECT_EQ(writes[0].full_name_, db_id + ":output/data");
 }
 
 TEST(WorkerAgentTest, SetWorkerPropertyMultiple) {

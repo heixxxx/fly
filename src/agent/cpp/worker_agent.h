@@ -31,6 +31,15 @@ struct PendingTask {
     CMVector<VarPayload> var_payloads_;  // Pre-fetched vars from TaskAssignMessage.
 };
 
+// WriteRecord — task 执行期间一次写出的对象记录（全名 + 压缩后字节数）。
+// 取代原先 current_writes_(vector<name>) + current_write_sizes_(map<name,size>)
+// 两个并行容器：单一容器保证 name 与 size 同生命周期，避免分别 clear 导致
+// 的 size 丢失（原 end_task 先 clear size map，随后查 size 恒得 0）。
+struct WriteRecord {
+    CMString full_name_;
+    int64_t size_bytes_ = 0;
+};;
+
 struct PendingDbPath {
     CMString db_id_;
     CMString base_path_;
@@ -87,12 +96,12 @@ public:
 
     void begin_task(uint64_t task_id, const CMString& write_context_hash = "");
     void record_write(const CMString& db_id, const CMString& object_name, int64_t size);
-    CMVector<CMString> end_task(uint64_t task_id);
+    CMVector<WriteRecord> end_task(uint64_t task_id);
 
     // task 成功时对所有涉及的 db 打 END（提交写入段）。
-    void commit_task_segments(const CMVector<CMString>& written_objects);
+    void commit_task_segments(const CMVector<WriteRecord>& written_objects);
     // task 失败时本地撤销脏写入（idx ABORT + data truncate + 清内存）。
-    void cleanup_failed_task_writes(const CMVector<CMString>& dirty_objects);
+    void cleanup_failed_task_writes(const CMVector<WriteRecord>& dirty_objects);
     
     bool is_registered() const;
     
@@ -183,8 +192,7 @@ private:
     CMSharedPtr<TaskExecutor> executor_;
 
     uint64_t current_task_id_ = 0;
-    CMVector<CMString> current_writes_;
-    CMUnorderedMap<CMString, int64_t> current_write_sizes_;  // obj 全名 → 压缩后字节数（与 current_writes_ 同生命周期）
+    CMVector<WriteRecord> current_writes_;  // 本 task 的写出记录（全名 + 压缩字节数）
     CMString current_write_hash_;
     
     mutable std::mutex task_queue_mutex_;
