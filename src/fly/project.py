@@ -273,8 +273,13 @@ class Project:
             if not agent._agent.is_db_frozen(db_id):
                 db = self._db_cache.get(actual)
                 if db is None:
-                    from fly import open_db
-                    db = open_db(info["base_path"])
+                    # 缓存未命中（跨进程重新绑定 Project 等）。必须用 load_db 恢复
+                    # 已有库——不能用 open_db：它会因 _DB_META 已存在而递增创建
+                    # 一个空库（见 get_db 同款陷阱，L198 注释），freeze 那个空库
+                    # 对原 db_id 无效，is_db_frozen 仍为 False。load_db 是
+                    # master-only，freeze_all 本身即 master 本地操作，语义匹配。
+                    from fly import load_db
+                    db = load_db(info["base_path"])
                     self._db_cache[actual] = db
                 db.freeze()
 

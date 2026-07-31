@@ -52,18 +52,23 @@ class _Database:
         if err != EXStgWriteErrorType.OK and err != EXStgWriteErrorType.DUPLICATE_SKIPPED:
             msg = self._WRITE_ERROR_MESSAGES.get(err, f"Write error (type={err})")
             raise RuntimeError(f"{msg}: {name}")
+        # New value landed — drop any stale Python high-tier cache entry so a
+        # subsequent read_object(cache="high") reflects the new value.
+        self._invalidate_read_cache(name)
         return ""
 
     def _write_temp(self, name: str, obj) -> str:
         if hasattr(obj, "_write_to_db"):
             result = obj._write_to_db(self._db, name, type(obj).__name__, False)
             self._db._mark_temp(name)
+            self._invalidate_read_cache(name)
             return result
         data = pickle.dumps(obj)
         py_name = type(obj).__name__
         # Compress + register + store in one C++ call — avoids
         # compress→Python bytes→CMString roundtrip.
         self._db._write_temp_pickle(name, data, py_name)
+        self._invalidate_read_cache(name)
         return ""
 
     def read_object(self, name: str, backup: bool = False, cache: str = "low"):
@@ -104,11 +109,36 @@ class _Database:
         data, _ = self._db._read_decompressed(name, backup)
         return pickle.loads(data)
 
+    def _invalidate_read_cache(self, name: str):
+        """Drop any cached Python (high-tier) entry for `name`.
+
+        The C++ ObjectCache auto-invalidates on write/remove (object_cache.h
+        contract), but the parallel Python ReadCache is a separate structure
+        that read_object populates for pickle objects with cache="high".
+        Without this invalidation, write(A)->read(A,"high")->write(A,new) leaves
+        a stale object in the cache and the next read(A,"high") returns it.
+
+        Harmless when no entry exists (ReadCache.remove handles misses) and
+        when the object is a C++ one (never cached here). Called after every
+        successful write/remove path below.
+        """
+        try:
+            try:
+                from storage.py.read_cache import get_read_cache
+            except ImportError:
+                from storage.read_cache import get_read_cache
+            get_read_cache().remove(f"{self.get_db_id()}:{name}")
+        except Exception:
+            # Cache invalidation must never break a successful write/remove.
+            pass
+
     def backup_object(self, name: str):
         self._db.backup_object(name)
 
     def write_object_raw(self, name: str, data: str, backup: bool = False) -> str:
-        return self._db.write_object_raw(name, data, backup)
+        ret = self._db.write_object_raw(name, data, backup)
+        self._invalidate_read_cache(name)
+        return ret
 
     def read_object_raw(self, name: str) -> str:
         return self._db.read_object_raw(name)
@@ -148,6 +178,9 @@ class _Database:
 
     def remove_object(self, name: str):
         self._db.remove_object(name)
+        # Drop any cached Python high-tier entry so a subsequent read_object
+        # sees "not found" rather than the removed object's stale reference.
+        self._invalidate_read_cache(name)
 
     # ---- Var service: lightweight small-object KV ----
     # set_var/get_var/remove_var bypass write_object's compression / cache /

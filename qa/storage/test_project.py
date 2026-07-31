@@ -156,4 +156,122 @@ def test_load_project_two_processes():
 test_basic_mechanism()
 print(file=sys.stderr)
 test_load_project_two_processes()
+
+
+# ── Phase 3: 同步 freeze 管理 + 边界 + load 错误 ───────────────────
+
+def test_sync_freeze_and_edges():
+    """覆盖同步 freeze 管理 (freeze_db / freeze_all) + 未解析/超时边界 + get_db KeyError。
+
+    这些路径在 test_basic_mechanism 里未触及：那里走的是 flow 异步 freeze；
+    这里用 make_db flow 造数据，但在 freeze 落定前/后断言同步管理方法与边界返回值。
+
+    关键：未冻结的 db 必须通过 flow 造数据（worker 才能写入），所以用一个"只写
+    不 freeze"的 flow（make_db_unfrozen）制造未冻结状态，再驱动 freeze_db/freeze_all。
+    """
+    from _fly_log import INFO, WARN
+    from fly import launch_workers, as_task
+    from fly.runtime import get_agent
+    from fly.project import register_flow
+
+    path = os.path.join(LOG_DIR, "project_sync")
+    cleanup(path)
+    launch_workers([{}])
+    assert get_agent().wait_for_workers(1), "1 worker should connect"
+
+    # 一个"只写不 freeze"的 flow：复用 demo_project 的 _write_val_task 写数据，
+    # 但不提交 freeze task，从而留下一个有数据、未冻结的 db。
+    from demo_project import _write_val_task, _demo_freeze_task, DemoProject as _DP
+
+    @register_flow(_DP)
+    def make_db_unfrozen(self, name, value):
+        """建库 + 写值，但不 freeze（用于测试同步 freeze 管理方法）。"""
+        db = self._create_db(name)
+        _write_val_task(db, value, None)
+        return db
+
+    proj = _DP(path)
+    db_a = proj.make_db_unfrozen(name="db_a", value=1)
+    assert _wait_completed(1), "db_a write task should complete"
+
+    # is_db_frozen 对未冻结的 db → False（覆盖 confirmed ∪ pending 都为空的真路径）。
+    assert proj.is_db_frozen("db_a") is False, "db_a should not be frozen yet"
+    # is_db_frozen 对未解析的 name → False（L233-235 短路分支）。
+    assert proj.is_db_frozen("nope") is False, "unresolved name should return False"
+    # wait_frozen 对未冻结 db + 极短 timeout → False（L261-265 超时分支）。
+    assert proj.wait_frozen("db_a", timeout=0.1) is False, \
+        "wait_frozen should time out (False) on an unfrozen db"
+    # wait_frozen 对未解析 name → False（L257-259 短路）。
+    assert proj.wait_frozen("nope", timeout=0.1) is False
+
+    # freeze_db：同步冻结（L207-217，整方法此前未测）。阻塞到完成。
+    proj.freeze_db("db_a")
+    assert proj.is_db_frozen("db_a") is True, "freeze_db should freeze db_a"
+
+    # freeze_all：再造第二个未冻结 db，freeze_all 应把所有未冻结库一并冻结。
+    # 关键：把 db_b 从缓存移除，强制走 cache-miss → load_db 分支（L274-278）。
+    # 此前 freeze_all 在该分支误用 open_db（会递增创建空库，freeze 对原 db_id
+    # 无效）；现已改用 load_db，此处回归该修复。
+    db_b = proj.make_db_unfrozen(name="db_b", value=2)
+    assert _wait_completed(2), "db_b write task should complete"
+    assert proj.is_db_frozen("db_b") is False, "db_b should be unfrozen before freeze_all"
+    proj._db_cache.pop("db_b", None)   # force the cache-miss -> load_db path
+    proj.freeze_all()
+    assert proj.is_db_frozen("db_b") is True, "freeze_all should freeze db_b (load_db path)"
+    # load_db 恢复的句柄应能读到原数据（证明冻结的是真库，非 open_db 的空库）。
+    assert proj.get_db("db_b").read_object("val") == 2, \
+        "load_db-restored db_b should still have its written data"
+
+    # get_db KeyError（L192-194）：请求不存在的 name 应抛 KeyError。
+    raised = False
+    try:
+        proj.get_db("does_not_exist")
+    except KeyError:
+        raised = True
+    assert raised, "get_db on a missing name should raise KeyError"
+
+    # register_flow override WARN（L50-53）：在同一类上重复注册同名 flow 应 WARN。
+    @register_flow(_DP)
+    def make_db_unfrozen(self, name, value):  # noqa: F811 (intentional override)
+        """Override to exercise the WARN-on-existing branch."""
+        return self._create_db(name)
+    assert "make_db_unfrozen" in _DP._flows, "re-registered flow should be in _flows"
+    INFO("[PASS] test_sync_freeze_and_edges")
+
+    get_agent().stop()
+
+
+def _wait_completed(n, timeout=30.0):
+    """Poll the current master's completed-task count to >= n."""
+    import time as _t
+    from fly.runtime import get_agent
+    agent = get_agent()
+    t0 = _t.time()
+    while _t.time() - t0 < timeout:
+        if len(agent.completed_tasks) >= n:
+            return True
+        _t.sleep(0.5)
+    return False
+
+
+def test_load_project_errors():
+    """覆盖 Project.load 的错误分支：无 meta → RuntimeError。"""
+    from _fly_log import INFO
+
+    # 无 _PROJECT_META.json 的目录 → RuntimeError（L317-318）。
+    empty = os.path.join(LOG_DIR, "project_empty")
+    cleanup(empty)
+    os.makedirs(empty, exist_ok=True)
+    raised = False
+    try:
+        Project.load(empty)
+    except RuntimeError as e:
+        raised = "_PROJECT_META" in str(e)
+    assert raised, "Project.load on a dir without meta should raise RuntimeError"
+    INFO("[PASS] test_load_project_errors")
+
+
+test_sync_freeze_and_edges()
+print(file=sys.stderr)
+test_load_project_errors()
 print("\nAll Project E2E tests passed!", file=sys.stderr)
