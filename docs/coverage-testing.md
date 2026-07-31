@@ -4,15 +4,16 @@
 
 本项目使用 GCC gcov + lcov 进行 C++ 代码覆盖率检测。编译使用 `--config=coverage`（定义在 `.bazelrc`），该配置启用 `--copt=--coverage --linkopt=--coverage` 并设置 `--spawn_strategy=standalone` 以保留 gcno 文件。
 
-**当前 C++ 覆盖率** (2026-06-15，仅源文件，不含测试/系统头)：
-- 行覆盖率: 84.5% (4874/5766)
-- 函数覆盖率: 78.3% (783/1000)
-- 分支覆盖率: 47.9% (4206/8788)
+**当前 C++ 覆盖率** (2026-07-31，仅源文件 `.cpp`，不含测试/系统头/虚拟头)：
+- 行覆盖率: 77.9% (6528/8377) — 主进程数据（worker gcda 未合并，保守下界）
+- 函数覆盖率: 70.7% (1572/2224)
+- 分支覆盖率: 42.9% (5710/13298)
 
-**当前 Python 覆盖率** (2026-06-15，全部 Python 模块，Master + Worker 合并，全量 QA)：
-- 行覆盖率: 53% (674/1307 stmts)
-- 分支覆盖率: 60% (202/334 branches)
-- 模块数: 13 个文件被追踪
+**当前 Python 覆盖率** (2026-07-31，全部 Python 模块，Master + Worker 合并，全量 QA)：
+- 行覆盖率: 60.2% (1247/2091 stmts) — ⚠️ 含方法论缺陷，实际更高（见 §12）
+- 分支覆盖率: 62.0% (383/618 branches)
+
+> 完整的覆盖率分析报告（含未覆盖代码业务场景、改进建议）：[`coverage-report-2026-07-31.md`](coverage-report-2026-07-31.md)
 
 ## 2. 环境要求
 
@@ -20,8 +21,10 @@
 |------|------|------|
 | gcc-12 | 12.5.0 | 编译带覆盖率标志的二进制 |
 | gcov-12 | 12.5.0 | 解析 gcno/gcda（**必须与 gcc 版本匹配**） |
-| lcov | 任意 | 收集和生成覆盖率报告 |
+| lcov | **2.0+** | 收集和生成覆盖率报告（1.14/1.16 不支持 worker gcda 合并所需错误处理） |
 | genhtml | 任意 | 生成 HTML 可视化报告 |
+
+> **lcov 升级**：Ubuntu 20.04 apt 源仅提供 1.14，需从源码安装 2.0。2.0 依赖 perl 模块 `Capture::Tiny`/`DateTime`（`apt install libcapture-tiny-perl libdatetime-perl libdatetime-format-iso8601-perl`）。
 
 ## 3. 完整流程
 
@@ -184,6 +187,7 @@ genhtml /tmp/coverage_html_ready.info \
 | 2026-06-05a | 88.4% (C++) + 82% (Python MR) | 81.9% / 100% | **源文件 + Python MR** | 44+51QA | MapReduce 框架，Worker 覆盖率基础设施 |
 | 2026-06-05b | 88.0% (4303/4887) C++ + 54% (667/1268) Python | 81.7% / — | **源文件 + 全部 Python** | 44+51QA | 修复 lcov 收集时机，扩展 Python 覆盖率到所有模块 |
 | 2026-06-15 | 84.5% (4874/5766) C++ + 53% (674/1307) Python | 78.3% / — | **源文件 + 全部 Python** | 44+74QA | 网络层重构(Transport/ConnectionManager) + db_id 重构 + connect 非致命化。C++ 总行数增加（新增网络抽象层、tcp_socket/connection_manager 等），新文件覆盖率待提升致总数下降 |
+| 2026-07-31 | 77.9% (6528/8377) C++ + 60.2% (1247/2091) Python | 70.7% / — | **源文件 + 全部 Python** | 52+131QA | message 系统重构 + lcov 升级 2.0。⚠️ 两项方法论缺陷致虚低：worker gcda 未合并（data_client 等显 0%）、Python import 早于 coverage.start。详见 §12 |
 
 > 注意：2026-06-03 的 90.2% 包含测试文件和系统头，不可与 06-04 的 88.4%（纯源文件）直接比较。逐文件对比见 §5。
 
@@ -524,3 +528,28 @@ Python 覆盖率数据分两部分：
 4. 运行 `coverage combine` — 自动发现所有 `.coverage.*` 文件并合并为新的 `.coverage`
 
 > **注意**：不能直接 `cp /tmp/.coverage.fly.worker_* . && coverage combine`，因为原始 `.coverage` 会被 combine 覆盖导致数据丢失。
+
+## 12. 已知方法论限制（导致覆盖率虚低）
+
+当前覆盖率收集基础设施存在两个缺陷，使测量结果**系统性低于真实覆盖**。详见 [`coverage-report-2026-07-31.md`](coverage-report-2026-07-31.md) §4。
+
+### 12.1 Python：fly 包 import 早于 coverage.start()
+
+**现象**：`fly/__init__.py`(36%)、`main.py`(11%)、`bootstrap.py`(31%) 虚低，但函数在 QA 中被大量调用。
+
+**根因**：`src/fly/main.py::_run_master()` 在 `from fly.bootstrap import ...`（触发 fly 包加载）**之后**才 `coverage.start()`。coverage 无法测量「先 import 后 start」的模块。
+
+**修复方向**：用 `coverage.process_startup()` + sitecustomize.py，在解释器启动最早期注入 coverage（官方多进程方案）。
+
+### 12.2 C++：worker 子进程 gcda 未合并
+
+**现象**：`data_client.cpp`、`decompress_helper.cpp` 显示 0%，但实际被 QA 远程读测试执行（gcda 在 worker 目录，未纳入 capture）。
+
+**根因**：worker 用 `GCOV_PREFIX` 把 gcda 写到 `/tmp/.../gcov_workers/worker_*/`，但 `lcov --capture` 只从 `bazel-bin/src/*/cpp/_objs` 收集。lcov 2.0 的 `--build-directory` 路径映射有 bug（gcda/gcno 路径前缀错位），无法配对。
+
+**影响**：当前 C++ 77.9% 是**主进程保守下界**。worker 执行的代码（远程读、解压、worker agent 大部分逻辑）未计入。
+
+**修复方向**（待实施）：
+- 方案 A：QA 阶段去掉 `GCOV_PREFIX`，让 worker 直接写 `bazel-bin`（gcov runtime 串行累加，接受低概率并发风险）。
+- 方案 B：写 Python gcda 合并工具（解析 gcda 计数表，把 worker gcda 累加到主进程 gcda）。
+- 修复后预期 C++ 提升至 ~82%，且消除误导性 0%。

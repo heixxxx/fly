@@ -133,7 +133,7 @@ measure_cpp() {
         --output-file "$cpp_dir/coverage_raw.info" \
         --rc lcov_branch_coverage=1 \
         --gcov-tool /usr/bin/gcov-12 \
-        --ignore-errors source,mismatch 2>&1 | tail -3
+        --ignore-errors source 2>&1 | tail -3
 
     # Filter system headers and test files
     lcov --remove "$cpp_dir/coverage_raw.info" \

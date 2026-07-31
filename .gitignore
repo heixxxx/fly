@@ -70,3 +70,8 @@ massif.out.*
 _test_db_id
 # ZCode agent session artifacts
 .zcode/
+# Coverage data artifacts (gcov/coverage.py 残留，勿提交)
+.coverage
+.coverage.*
+*.gcda
+*.gcno
