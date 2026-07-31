@@ -4,13 +4,17 @@
 #include <storage/cpp/temp_store.h>
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/decompressing_streambuf.h>
+#include <storage/cpp/db_meta.h>
 #include <storage/cpp/object_cache.h>
 #include <network/cpp/net_quality_monitor.h>
 #include <serialization/cpp/object_header.h>
+#include <serialization/cpp/serialization_macros.h>
 #include <core/cpp/config.h>
 #include <log/cpp/logger.h>
 #include <chrono>
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <utility>
 #include <cstring>
 #include <random>
@@ -78,6 +82,7 @@ void DataService::reset() {
     remote_idx_.clear();
     worker_registry_.clear();
     db_paths_.clear();
+    migrated_db_paths_.clear();
     remote_compressed_read_handler_ = nullptr;
     direct_compressed_read_handler_ = nullptr;
     temp_lru_order_.clear();
@@ -118,6 +123,110 @@ void DataService::unregister_database(const CMString& db_id) {
 bool DataService::has_database(const CMString& db_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return db_paths_.find(db_id) != db_paths_.end();
+}
+
+// ============================================================
+// DB Migration Redirect
+// ============================================================
+
+namespace {
+// 读取 {base_path}/_MIGRATED_TO 的 MigrationHeader。不存在或解析失败返回空 target。
+MigrationHeader read_migration_marker(const CMString& base_path) {
+    MigrationHeader header;
+    CMString meta_path = base_path + "/_MIGRATED_TO";
+    if (!std::filesystem::exists(meta_path)) return header;
+
+    std::ifstream ifs(meta_path, std::ios::binary);
+    if (!ifs.is_open()) return header;
+
+    int64_t size = 0;
+    ifs.read(reinterpret_cast<char*>(&size), sizeof(size));
+    if (!ifs || size <= 0) return header;
+
+    CMString bytes(static_cast<size_t>(size), '\0');
+    ifs.read(bytes.data(), size);
+    if (!ifs) return header;
+
+    try {
+        FLY_DECODE(bytes, MigrationHeader, header);
+    } catch (...) {
+        header = MigrationHeader{};
+    }
+    return header;
+}
+}  // namespace
+
+CMString DataService::resolve_migrated_path(const CMString& base_path) {
+    // 1. 查缓存。
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = migrated_db_paths_.find(base_path);
+        if (it != migrated_db_paths_.end()) {
+            return it->second;
+        }
+    }
+
+    // 2. miss → stat _MIGRATED_TO，链式展平 A→B→C。
+    //    用本地 visited 防环（理论上不应出现，防御性）。
+    CMString resolved = base_path;
+    CMVector<CMString> visited;
+    while (true) {
+        if (std::find(visited.begin(), visited.end(), resolved) != visited.end()) {
+            ERR("resolve_migrated_path: cycle detected at '{}', stopping", resolved);
+            break;
+        }
+        visited.push_back(resolved);
+
+        auto header = read_migration_marker(resolved);
+        if (header.target_base_path_.empty()) {
+            break;  // 无迁移文件，resolved 即最终值
+        }
+        resolved = header.target_base_path_;
+    }
+
+    // 3. 缓存最终结果（含"无迁移"——resolved==base_path 也缓存，避免重复 stat）。
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        migrated_db_paths_[base_path] = resolved;
+    }
+    return resolved;
+}
+
+void DataService::set_migrated_path(const CMString& source_base_path,
+                                     const CMString& target_base_path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (target_base_path.empty()) {
+        migrated_db_paths_.erase(source_base_path);
+    } else {
+        migrated_db_paths_[source_base_path] = target_base_path;
+    }
+}
+
+void DataService::write_migration_marker(const CMString& source_base_path,
+                                          const CMString& target_base_path,
+                                          const CMString& target_data_path) {
+    MigrationHeader header;
+    header.target_base_path_ = target_base_path;
+    header.target_data_path_ = target_data_path;
+    header.migrated_at_ = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    CMString encoded;
+    FLY_ENCODE(header, encoded);
+
+    CMString meta_path = source_base_path + "/_MIGRATED_TO";
+    std::ofstream ofs(meta_path, std::ios::binary);
+    if (!ofs.is_open()) {
+        ERR("Failed to open _MIGRATED_TO for writing: {}", meta_path);
+        return;
+    }
+    int64_t size = static_cast<int64_t>(encoded.size());
+    ofs.write(reinterpret_cast<const char*>(&size), sizeof(size));
+    ofs.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
+    ofs.close();
+
+    INFO("Wrote _MIGRATED_TO: source={}, target_base={}, target_data={}",
+         source_base_path, target_base_path, target_data_path);
 }
 
 // ============================================================

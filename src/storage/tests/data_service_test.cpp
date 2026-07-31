@@ -1316,4 +1316,72 @@ TEST_F(DataServiceTest, Tier2KeepsRegistrationOrderWhenScoresEqual) {
     mon.clear();
 }
 
+// ── DB Migration Redirect (resolve_migrated_path) ──
+
+TEST_F(DataServiceTest, ResolveMigratedPath_NoMigration_ReturnsOriginal) {
+    CMString path_a = test_dir_ + "/db_no_migrate";
+    std::filesystem::create_directories(path_a);
+
+    // 无 _MIGRATED_TO 文件 → 返回原 path
+    EXPECT_EQ(ds_->resolve_migrated_path(path_a), path_a);
+}
+
+TEST_F(DataServiceTest, ResolveMigratedPath_SingleHop_ReturnsTarget) {
+    CMString path_a = test_dir_ + "/db_source";
+    CMString path_b = test_dir_ + "/db_target";
+    std::filesystem::create_directories(path_a);
+    std::filesystem::create_directories(path_b);
+
+    // 写 _MIGRATED_TO: A → B
+    fly::DataService::write_migration_marker(path_a, path_b, path_b + "/data");
+
+    EXPECT_EQ(ds_->resolve_migrated_path(path_a), path_b);
+}
+
+TEST_F(DataServiceTest, ResolveMigratedPath_ChainedHop_Flattened) {
+    // 链式迁移 A → B → C，resolve(A) 应返回 C（展平）
+    CMString path_a = test_dir_ + "/chain_a";
+    CMString path_b = test_dir_ + "/chain_b";
+    CMString path_c = test_dir_ + "/chain_c";
+    for (const auto& p : {path_a, path_b, path_c}) {
+        std::filesystem::create_directories(p);
+    }
+
+    fly::DataService::write_migration_marker(path_a, path_b, path_b + "/data");
+    fly::DataService::write_migration_marker(path_b, path_c, path_c + "/data");
+
+    EXPECT_EQ(ds_->resolve_migrated_path(path_a), path_c);
+}
+
+TEST_F(DataServiceTest, ResolveMigratedPath_CachedOnSecondCall) {
+    CMString path_a = test_dir_ + "/db_cached_src";
+    CMString path_b = test_dir_ + "/db_cached_tgt";
+    std::filesystem::create_directories(path_a);
+    std::filesystem::create_directories(path_b);
+
+    fly::DataService::write_migration_marker(path_a, path_b, path_b + "/data");
+
+    // 第一次：stat 文件解析
+    EXPECT_EQ(ds_->resolve_migrated_path(path_a), path_b);
+    // 删除 _MIGRATED_TO 文件，第二次应仍返回缓存值（证明走了缓存）
+    std::filesystem::remove(path_a + "/_MIGRATED_TO");
+    EXPECT_EQ(ds_->resolve_migrated_path(path_a), path_b);
+}
+
+TEST_F(DataServiceTest, SetMigratedPath_UpdatesCache) {
+    CMString path_a = test_dir_ + "/db_set_src";
+    CMString path_b = test_dir_ + "/db_set_tgt";
+    std::filesystem::create_directories(path_a);
+    std::filesystem::create_directories(path_b);
+
+    // 主动设置缓存（merge 后 master 调用，不写文件）
+    ds_->set_migrated_path(path_a, path_b);
+    EXPECT_EQ(ds_->resolve_migrated_path(path_a), path_b);
+
+    // 清除缓存
+    ds_->set_migrated_path(path_a, "");
+    // 清除后 resolve 会 stat 文件（无 _MIGRATED_TO）→ 返回原 path
+    EXPECT_EQ(ds_->resolve_migrated_path(path_a), path_a);
+}
+
 }

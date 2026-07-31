@@ -111,6 +111,26 @@ public:
     bool has_database(const CMString& db_id) const;
 
     // ============================================================
+    // DB Migration Redirect (替代 db_id 的逻辑锚点)
+    // ============================================================
+
+    // 解析 base_path：若 {base_path}/_MIGRATED_TO 存在，返回迁移 target 的 base_path
+    // （链式迁移 A→B→C 递归展平）；否则返回 base_path 原值。结果缓存进
+    // migrated_db_paths_（path 未变期间只 stat 一次）。merge 后 master 主动调
+    // set_migrated_path 更新缓存，避免重复 stat。
+    CMString resolve_migrated_path(const CMString& base_path);
+
+    // 主动更新/清除迁移缓存（merge 产生新迁移后 master 调用）。
+    // target 为空表示清除该 source 的迁移记录。
+    void set_migrated_path(const CMString& source_base_path,
+                            const CMString& target_base_path);
+
+    // 在 source_base_path 写 _MIGRATED_TO 迁移标识文件。merge 跨 path 时调用。
+    static void write_migration_marker(const CMString& source_base_path,
+                                        const CMString& target_base_path,
+                                        const CMString& target_data_path);
+
+    // ============================================================
     // Local Index Management
     // ============================================================
 
@@ -299,6 +319,11 @@ private:
     CMUnorderedMap<uint64_t, RemoteObjectInfo> worker_registry_;
 
     CMUnorderedMap<CMString, DbPaths> db_paths_;
+
+    // 迁移重定向缓存：source_base_path → resolved target_base_path（链式展平）。
+    // resolve_migrated_path miss 时 stat _MIGRATED_TO 一次并缓存。merge 后 master
+    // 主动 set_migrated_path 更新。
+    CMUnorderedMap<CMString, CMString> migrated_db_paths_;
 
     CMVector<CMString> temp_lru_order_;
     int64_t temp_total_bytes_ = 0;
