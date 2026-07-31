@@ -635,18 +635,34 @@ class Master(FlyAgent):
             cmd.extend(["--worker-attributes", attrs_str])
 
         env = os.environ.copy()
+
+        # C++ coverage (gcov) gcda relocation.
+        #
+        # Two modes, selected by whether GCOV_PREFIX_STRIP is set:
+        #
+        #  - New mode (GCOV_PREFIX_STRIP set, used by tools/measure_coverage.sh):
+        #    The parent already pointed GCOV_PREFIX at the execroot with
+        #    GCOV_PREFIX_STRIP=3 so gcda land where lcov scans, regardless of
+        #    cwd.  Workers must inherit these EXACT values — overriding
+        #    GCOV_PREFIX here would send worker gcda to execroot/worker_N/...
+        #    and lcov would miss them again (the §12.2 flaw).  QA runs serially
+        #    (-j 1) in this mode, so concurrent gcda writes are not a concern.
+        #
+        #  - Legacy mode (GCOV_PREFIX set but no STRIP): isolate each worker
+        #    under GCOV_PREFIX/worker_N/ as before.
         gcov_prefix = os.environ.get("GCOV_PREFIX", "")
-        if gcov_prefix:
+        gcov_strip = os.environ.get("GCOV_PREFIX_STRIP", "")
+        if gcov_prefix and not gcov_strip:
             worker_cov_dir = gcov_prefix + f"/worker_{worker_id}"
             os.makedirs(worker_cov_dir, exist_ok=True)
             env["GCOV_PREFIX"] = worker_cov_dir
 
-        # Python coverage: per-worker data file so parallel writes don't conflict
+        # Python coverage: started at interpreter boot via sitecustomize.py
+        # (see docs/coverage-testing.md §12.1). Workers inherit FLY_PYCOVERAGE
+        # and start their own coverage automatically — no per-worker data file
+        # needed; parallel mode in .coveragerc gives each process its own file.
         if os.environ.get("FLY_PYCOVERAGE"):
             env["FLY_PYCOVERAGE"] = "1"
-            env["FLY_PYCOVERAGE_DATA"] = f"/tmp/.coverage.fly.worker_{worker_id}"
-            if os.environ.get("FLY_PYCOVERAGE_RCFILE"):
-                env["FLY_PYCOVERAGE_RCFILE"] = os.environ["FLY_PYCOVERAGE_RCFILE"]
 
         log_file = open(log_path, "a")
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,

@@ -20,14 +20,27 @@ def init():
     INFO(f"Fly initialized: mode={agent.mode}")
 
 
-def _cleanup():
-    cov = globals().get('_fly_worker_cov')
-    if cov is not None:
-        try:
+def _stop_coverage():
+    """Flush coverage data on exit.
+
+    Coverage is now started at interpreter boot via sitecustomize.py (see
+    docs/coverage-testing.md §12.1).  ``coverage.process_startup`` registers
+    its own atexit saver, but C++ ``graceful_exit.cpp`` may call ``_exit()``,
+    which skips Python atexit handlers.  This explicit stop/save covers that
+    path and is harmless when no coverage is running.
+    """
+    try:
+        import coverage
+        cov = coverage.Coverage.current()
+        if cov is not None:
             cov.stop()
             cov.save()
-        except Exception:
-            pass
+    except Exception:
+        pass
+
+
+def _cleanup():
+    _stop_coverage()
 
     try:
         from fly.runtime import get_agent, reset
@@ -66,44 +79,17 @@ def _redirect_worker_io(worker_id, log_dir):
     sys.stderr = log_file
 
 
-def _save_worker_coverage():
-    cov = globals().get('_fly_worker_cov')
-    if cov is not None:
-        try:
-            cov.stop()
-            cov.save()
-        except Exception:
-            pass
-
-
 def _run_worker():
     import time
-    import atexit
     from _fly_core import ex_core_get_process_info, ex_core_get_config
     from fly.runtime import get_agent
 
     proc = ex_core_get_process_info()
     cfg = ex_core_get_config()
 
-    # Start Python coverage if FLY_PYCOVERAGE env var is set (passed from Master)
-    global _fly_worker_cov
-    _fly_worker_cov = None
-    if os.environ.get("FLY_PYCOVERAGE"):
-        try:
-            import coverage
-            data_file = os.environ.get("FLY_PYCOVERAGE_DATA",
-                                       "/tmp/.coverage.fly.worker_" + str(proc.worker_id()))
-            rcfile = os.environ.get("FLY_PYCOVERAGE_RCFILE")
-            kwargs = dict(branch=True, data_file=data_file,
-                          source=["fly", "agent", "storage", "task"])
-            if rcfile and os.path.exists(rcfile):
-                kwargs["config_file"] = rcfile
-            _fly_worker_cov = coverage.Coverage(**kwargs)
-            _fly_worker_cov.start()
-            atexit.register(_save_worker_coverage)
-        except Exception as e:
-            with open("/tmp/fly_worker_cov_error.txt", "a") as f:
-                f.write("coverage start failed: " + str(e) + "\n")
+    # Coverage is now started at interpreter boot via sitecustomize.py
+    # (see docs/coverage-testing.md §12.1).  No coverage.start() here — it
+    # would miss the fly-package imports that already ran before _run_worker.
 
     _redirect_worker_io(proc.worker_id(), cfg.get_str("log_dir"))
 
@@ -122,41 +108,16 @@ def _run_worker():
 
     agent.stop()
     INFO("Worker agent stopped")
-
-    # Save coverage on normal exit (atexit also saves as safety net)
-    if _fly_worker_cov is not None:
-        try:
-            _fly_worker_cov.stop()
-            _fly_worker_cov.save()
-            INFO("Worker coverage data saved")
-        except Exception as e:
-            INFO("Worker coverage save failed: " + str(e))
+    # Coverage stop/save is handled centrally by _cleanup() -> _stop_coverage().
 
 
 def _run_master():
-    import atexit
     from _fly_core import ex_core_get_process_info
     from fly.bootstrap import get_script_namespace
 
-    # Start Python coverage if FLY_PYCOVERAGE is set
-    global _fly_worker_cov  # reuse same global name for cleanup
-    _fly_worker_cov = None
-    if os.environ.get("FLY_PYCOVERAGE"):
-        try:
-            import coverage
-            data_file = os.environ.get("FLY_PYCOVERAGE_DATA",
-                                       "/tmp/.coverage.fly.master." + str(os.getpid()))
-            kwargs = dict(branch=True, data_file=data_file,
-                          source=["fly", "agent", "storage", "task"])
-            rcfile = os.environ.get("FLY_PYCOVERAGE_RCFILE")
-            if rcfile and os.path.exists(rcfile):
-                kwargs["config_file"] = rcfile
-            _fly_worker_cov = coverage.Coverage(**kwargs)
-            _fly_worker_cov.start()
-            atexit.register(_save_worker_coverage)
-        except Exception as e:
-            with open("/tmp/fly_master_cov_error.txt", "a") as f:
-                f.write("master coverage start failed: " + str(e) + "\n")
+    # Coverage is now started at interpreter boot via sitecustomize.py
+    # (see docs/coverage-testing.md §12.1).  No coverage.start() here — it
+    # would miss the fly-package imports that already ran before _run_master.
 
     init()
 

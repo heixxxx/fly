@@ -1,0 +1,50 @@
+# Coverage configuration for Fly (loaded via coverage.process_startup in
+# sitecustomize.py).  See docs/coverage-testing.md §12.1 for why this file
+# exists — it fixes the "fly package imported before coverage.start()" flaw.
+#
+# Each process (master + workers) writes an independent data file (parallel
+# mode); they are merged later with `coverage combine`.
+
+[run]
+# Branch coverage — matches the C++ lcov branch metric.
+branch = True
+# parallel=True: each process gets its own .coverage.<host>.<pid>.<rand> file.
+# Mandatory here because master and N worker processes all run concurrently
+# and would otherwise clobber a single shared .coverage file.
+parallel = True
+# Absolute data_file — critical for runqa, which runs each test with
+# cwd = the test directory (qa/<cat>/<test>/). With the default relative
+# ".coverage", parallel-mode data files scattered across qa/*/, and
+# `coverage combine` (run from the project root) only found the handful in
+# the root — silently dropping most worker data and showing read_cache.py etc.
+# as 0%. Pinning to an absolute path collects every process's data in one
+# place regardless of cwd.
+data_file = /tmp/fly_py_coverage/.coverage
+# concurrency=thread: Fly is multi-threaded (task scheduler, io thread pool).
+# Without this, coverage's C tracer deadlocks or loses data under threads.
+concurrency = thread
+# Measure exactly the project's Python packages.  C++ binding modules
+# (_fly_*) are excluded automatically (they aren't importable Python source).
+source =
+    fly
+    agent
+    storage
+    task
+# Gracefully handle SIGTERM (master sends SIGTERM to workers on shutdown) so
+# the atexit handler still flushes coverage data on signal-driven exits.
+sigterm = True
+
+[paths]
+# Map the two on-disk layouts (build/ symlinks vs bazel-bin) to a single
+# logical "fly" source root so combined data isn't split across path variants.
+source =
+    fly
+    /root/fly/src/fly
+    */src/fly
+
+[report]
+# Files matching these patterns are excluded from the report (test helpers,
+# generated bootstrap).  Keep this conservative — we want to see real gaps.
+omit =
+    */tests/*
+    */_fly_*

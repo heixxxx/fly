@@ -207,6 +207,15 @@ WRAPPER
         [ -f "$py" ] && ln -sf "$py" "$build_dir/python/fly/"
     done
 
+    # sitecustomize.py + .coveragerc MUST live at the top of build/python/
+    # (which PYTHONPATH puts on sys.path before `site` runs) so CPython's
+    # auto-import of sitecustomize fires before any `import fly`. This is what
+    # makes early coverage instrumentation work — see sitecustomize.py docstring
+    # and docs/coverage-testing.md §12.1. Symlink (not copy) keeps them in sync
+    # with src/fly/ on edits.
+    ln -sf "$FLY_ROOT/src/fly/sitecustomize.py" "$build_dir/python/sitecustomize.py"
+    ln -sf "$FLY_ROOT/src/fly/.coveragerc" "$build_dir/python/.coveragerc"
+
     # Third-party Python packages (cloudpickle/numpy/scipy) from bazel @pip hub.
     #
     # Production `fly` embeds libpython and imports these packages at runtime.
