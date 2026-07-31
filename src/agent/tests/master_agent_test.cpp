@@ -1150,6 +1150,64 @@ TEST(MasterAgentTest, NonStreamWriteRegisterDelaysDataReady) {
     Config::instance()->set_int("dependency_update_mode", 0);
 }
 
+// batch（非 stream）模式下，TaskComplete 的 written_objects_.size_bytes_ 是
+// remote_idx 的唯一 size 来源（do_write_register 在 batch 模式跳过 update_remote_idx）。
+// 本测试驱动真实 worker 的 size 携带链路（record_write→end_task→TaskComplete），
+// 验证 master remote_idx 记录的是真实 size 而非 0。
+// 回归保护：原 current_write_sizes_ 时序 bug（end_task 先 clear map，TaskComplete
+// 构造时查 size 恒得 0）导致 batch 模式对象 size 永久为 0 → locality 打分失准。
+TEST(MasterAgentTest, NonStreamTaskCompleteCarriesRealSize) {
+    fly::DataService::instance()->reset();
+    Config::instance()->set_int("dependency_update_mode", 1);   // batch 模式
+    TempDir tmpdir;
+    CMString db_id = db32("nssz");
+
+    MasterAgent master("127.0.0.1", 0);
+    master.register_database(db_id, tmpdir.path());
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    CMString obj_a = db_id + ":obj_a";
+
+    // worker 在 task 内写对象：register（向 master 校验/provenance）+ record（本地记录写出）。
+    // 真实流程里两者由 commit_write 落盘完成回调同时触发；测试显式调用以驱动 size 链路。
+    worker.begin_task(8000, "");
+    auto [ack_msg, err_type] = worker.register_write_with_master(db_id, "obj_a", 100);
+    EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);   // batch 模式：校验通过
+    worker.record_write(db_id, "obj_a", 100);      // 记录写出（full_name + size）
+
+    // batch 模式下，do_write_register 跳过 update_remote_idx —— 对象登记前 remote_idx 无记录
+    EXPECT_FALSE(DataService::instance()->has_remote_location(obj_a));
+
+    // end_task 返回带 size 的 WriteRecord（验证 worker 端 size 携带正确）
+    auto writes = worker.end_task(8000);
+    ASSERT_EQ(writes.size(), 1u);
+    EXPECT_EQ(writes[0].full_name_, obj_a);
+    EXPECT_EQ(writes[0].size_bytes_, 100);   // 关键：size 随 WriteRecord 携带，未丢失
+
+    // 用 end_task 返回的 WriteRecord 构造 TaskComplete（模拟 worker 真实上报路径）
+    TaskCompleteMessage complete;
+    complete.task_id_ = 8000;
+    complete.worker_id_ = 1;
+    for (const auto& w : writes) {
+        complete.written_objects_.push_back({w.full_name_, w.size_bytes_});
+    }
+    master.on_task_complete(0, complete);
+
+    // batch 模式下 TaskComplete 触发 update_remote_idx —— size 必须是真实值 100
+    EXPECT_TRUE(DataService::instance()->has_remote_location(obj_a));
+    EXPECT_EQ(DataService::instance()->get_remote_size(obj_a), 100);
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("dependency_update_mode", 0);
+}
+
 // WP2-T2: stream 模式下（默认）write register 即时 mark_data_ready，
 //         下游依赖 task 立即 ready（回归保护：stream 行为不变）。
 TEST(MasterAgentTest, StreamWriteRegisterImmediateDataReady) {
