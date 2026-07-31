@@ -1,6 +1,7 @@
 #pragma once
 
 #include <common/cpp/common_types.h>
+#include <serialization/cpp/serialization_macros.h>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -18,22 +19,44 @@ enum class TaskStatus : uint8_t {
 
 inline constexpr int kMaxCompletedTasks = 100;
 
-struct TaskMetadata {
-    uint64_t task_id_ = 0;
+// TaskSubmissionSpec — task 提交时确定、全生命周期不可变的字段集合。
+//
+// 设计目的：消除 task 数据在多个结构（TaskMetadata / FailedTaskRecord /
+// 网络消息）间的重复定义与手动逐字段复制。新增 task 提交字段时只需在此
+// 一处定义 + 其 FLY_SERIALIZE，所有内嵌该 spec 的持有方自动获得该字段
+// 并正确序列化，从结构上杜绝"加字段漏改某处"（如本次 priority bug：
+// FailedTaskRecord 漏存、restart_failed_tasks 漏传）。
+//
+// 持有方通过组合（内嵌 TaskSubmissionSpec submission_）复用，而非各自
+// 重复声明同名字段。FLY_FIELD 的 else 分支（s.object）原生支持嵌套
+// 可序列化对象，父结构 FLY_SERIALIZE(submission_, ...) 即可整体序列化。
+struct TaskSubmissionSpec {
     CMString name_;
-    TaskStatus status_ = TaskStatus::PENDING;
+    CMString module_;
+    CMVector<CMString> args_;
     CMVector<CMString> inputs_;
     CMVector<CMString> outputs_;
-    CMString config_;
     CMVector<CMString> required_capabilities_;
     float attribute_timeout_ = -1.0f;  // <0=死等, 0=立即降级, >0=限时降级
-    int priority_ = 10;                // 任务优先级（worker 崩溃恢复时还原）
+    int priority_ = 10;                // 任务优先级（数值越大越先调度）
+    CMString write_context_hash_;      // 对象写入来源 provenance（运行时可被覆盖）
+    CMVector<CMString> vars_;          // 声明的 var 全名列表（@as_task(vars=...)）
+
+    FLY_SERIALIZE(name_, module_, args_, inputs_, outputs_,
+                  required_capabilities_, attribute_timeout_, priority_,
+                  write_context_hash_, vars_);
+};
+
+struct TaskMetadata {
+    uint64_t task_id_ = 0;
+    TaskSubmissionSpec submission_;    // 提交时确定的不变字段（单一来源）
+    TaskStatus status_ = TaskStatus::PENDING;
+    CMString config_;
     uint64_t created_at_ = 0;
     uint64_t started_at_ = 0;
     uint64_t completed_at_ = 0;
     CMString error_message_;
     uint64_t assigned_worker_id_ = 0;
-    CMString write_context_hash_;
 };
 
 using TaskMetadataPtr = CMSharedPtr<TaskMetadata>;
@@ -41,13 +64,9 @@ using TaskMetadataPtr = CMSharedPtr<TaskMetadata>;
 class TaskManager {
 public:
     // ── Mutation ────────────────────────────────────────────────────
-    void create_task(uint64_t task_id, const CMString& name,
-                     const CMVector<CMString>& inputs,
-                     const CMVector<CMString>& outputs,
-                     const CMString& config,
-                     const CMVector<CMString>& required_capabilities = {},
-                     float attribute_timeout = -1.0f,
-                     int priority = 10);
+    // create_task 接收完整的 TaskSubmissionSpec，避免逐字段复制导致的漏传。
+    void create_task(uint64_t task_id, const TaskSubmissionSpec& spec,
+                     const CMString& config = "{}");
 
     void update_task_status(uint64_t task_id, TaskStatus status);
     void set_error(uint64_t task_id, const CMString& error);

@@ -3,6 +3,35 @@
 ---
 ---
 
+## 2026-07-31: TaskSubmissionSpec — task 数据结构统一（消除字段复制漏改）
+
+### 背景
+task 数据此前散落在 7 个结构（TaskMetadata / FailedTaskRecord / TaskRequirements / 2 个网络 message / PendingTask / Python 提交参数）+ 3 个并行 map（task_modules_ / task_args_ / task_vars_），共 13 个手动逐字段复制点。新增 priority 字段时因此漏改（`FailedTaskRecord` 漏存、`restart_failed_tasks` 漏传），暴露结构性缺陷：加一个字段需手动同步 5+ 处，漏改几乎不可避免。
+
+### 改动（组合模式收敛）
+- **新增 `TaskSubmissionSpec`**（`src/task/cpp/task_manager.h`）：提取 task 提交时全生命周期不变的字段集（name/module/args/inputs/outputs/caps/attribute_timeout/priority/write_context_hash/vars）为单一 struct，含 `FLY_SERIALIZE`。
+- **`TaskMetadata` / `FailedTaskRecord` 组合复用** `submission_`，而非各自重复声明同名字段。`FailedTaskRecord` 的 `FLY_SERIALIZE` 从 10 字段塌缩为 `FLY_SERIALIZE(task_id_, submission_, error_message_)` —— 新增字段自动随 spec 序列化，从根上消除"漏加序列化 → 静默丢字段"。
+- **删除 3 个并行 map + `task_args_mutex_`**：module/args/vars 统一从 `metadata_->get_task(id)->submission_`（shared_ptr 快照，线程安全）读取，消除"两段式上锁拷贝"。
+- **`MasterAgent::submit_task`** 主签名改为 `(task_id, const TaskSubmissionSpec&)`（2 参数），消除 11 个位置参数的错位风险；保留位置参数便利重载服务测试。
+- **4 处 FailedTaskRecord 构造收敛为 1 个 `make_failed_record(task_id, error_msg)` helper**（`submission_` 整体拷贝）。
+- **`restart_failed_tasks`** 改为 `submit_task(id, record.submission_)` 一行，彻底消除位置参数漏传。
+- **顺带修正**：`task_export.cpp` 的 `create_task` export 此前漏 priority 参数（"加字段漏一处"的活证据），现随 spec 统一修正。
+
+### 不改动（边界）
+- `TaskRequirements` 保持独立（DependencyGraph 的调度视图，含 locality_hint_，职责不同）。
+- 网络消息字段集 / wire format 不变（TaskSubmitMessage / TaskAssignMessage 构造时从 spec 取所需字段）。
+- Python 签名不变（`as_task` / `submit` 关键字参数保持，组合改造在 C++ 层）。
+
+### 新增/更新文档
+- 更新 [`docs/agent/module.md`](agent/module.md) — 移除已删除的 task_modules_/task_args_，补 submission_ 单一来源说明
+- 更新 [`docs/redundancy-audit-report.md`](redundancy-audit-report.md) §3.5 — 标注"三 map 有意分离"决策已推翻
+- 更新 [`docs/ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) §2.8 — task_args_mutex_ 嵌套锁风险已随 map 删除而解决
+
+### 关键结论
+用组合模式收敛复制点，新增 task 提交字段时只需改 `TaskSubmissionSpec` 定义 + 其 `FLY_SERIALIZE` 一处，所有持有方（TaskMetadata / FailedTaskRecord / 经 spec 构造的 message）自动获得该字段。priority 式漏改从结构上不再可能。
+
+---
+
 ## 2026-07-31: Task Priority（任务优先级）实现
 
 ### 背景

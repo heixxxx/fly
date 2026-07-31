@@ -187,9 +187,13 @@ MasterAgent 持"何时检查"（线程+cv），HeartbeatMonitor 封"怎么判定
 
 非空壳——`set_exec_func`/`clear_exec_func` 内部做 GIL 管理（`PyGILState_Ensure/Release`），因 `std::function` 持 Python 对象引用。让 agent 核心不 `#include <Python.h>`。与 `WorkerAgentContext` 的 std::function 回调解耦是同一设计模式（`agent/module.md:295-301`）。
 
-### 3.5 task_modules_/args_/vars_ 三 map vs TaskManager = 调度元数据 vs 执行负载分离（有意设计）
+### 3.5 ~~task_modules_/args_/vars_ 三 map vs TaskManager = 调度元数据 vs 执行负载分离（有意设计）~~ [决策已推翻 2026-07-31]
 
-`TaskMetadata` 刻意不存 module/args（只有 name/inputs/outputs/config/capabilities）。三 map 存"执行负载"（Python 模块名、序列化参数），只有 `assign_task_to_worker` 和 `build_failed_record` 读。合并进 TaskMetadata 会让 scheduler 接触执行负载 + 查询时无谓拷贝大 args。可改进点：三 map 合一为 `TaskPayload`（减少锁竞争），但非过度抽象。
+**原结论（已失效）**：`TaskMetadata` 刻意不存 module/args，三 map 存"执行负载"，合并会让 scheduler 接触执行负载 + 无谓拷贝大 args。
+
+**推翻原因**：该分离导致 task 数据散落在 3 个并行 map + 多个结构，字段靠手动复制同步。新增 priority 字段时因此漏改（`FailedTaskRecord` 漏存、`restart_failed_tasks` 漏传），暴露结构性缺陷。
+
+**新方案**：引入 `TaskSubmissionSpec`（`task/cpp/task_manager.h`），将提交时不变的字段集收敛为单一 struct，`TaskMetadata` / `FailedTaskRecord` 组合复用。module/args/vars 不再单独存 map，统一从 `metadata_->get_task(id)->submission_`（shared_ptr 快照）读取，消除了"两段式上锁拷贝"和字段同步遗漏。scheduler 仍只消费 `TaskRequirements`（调度视图），不接触执行负载——原担忧不成立。详见 `docs/DOC_CHANGELOG.md` 2026-07-31 TaskSubmissionSpec 条目。
 
 ### 3.6 ObjectCache 两层 LRU（有意设计）
 

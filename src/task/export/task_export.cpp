@@ -31,12 +31,13 @@ FLY_EXPORT_CLASS(fly::WorkerInfo, "EXTaskWorkerInfo")
 
 FLY_EXPORT_CLASS(fly::TaskMetadata, "EXTaskTaskMetadata")
     FLY_EXPORT_READONLY_ATTR("task_id", &fly::TaskMetadata::task_id_)
-    FLY_EXPORT_READONLY_ATTR("name", &fly::TaskMetadata::name_)
+    // 提交字段现统一存储在 submission_，通过 lambda getter 暴露保持 Python API 不变。
+    FLY_EXPORT_READONLY_PROPERTY("name", [](const fly::TaskMetadata& m) { return m.submission_.name_; })
     FLY_EXPORT_READONLY_ATTR("status", &fly::TaskMetadata::status_)
-    FLY_EXPORT_READONLY_ATTR("inputs", &fly::TaskMetadata::inputs_)
-    FLY_EXPORT_READONLY_ATTR("outputs", &fly::TaskMetadata::outputs_)
+    FLY_EXPORT_READONLY_PROPERTY("inputs", [](const fly::TaskMetadata& m) { return m.submission_.inputs_; })
+    FLY_EXPORT_READONLY_PROPERTY("outputs", [](const fly::TaskMetadata& m) { return m.submission_.outputs_; })
     FLY_EXPORT_READONLY_ATTR("config", &fly::TaskMetadata::config_)
-    FLY_EXPORT_READONLY_ATTR("required_capabilities", &fly::TaskMetadata::required_capabilities_)
+    FLY_EXPORT_READONLY_PROPERTY("required_capabilities", [](const fly::TaskMetadata& m) { return m.submission_.required_capabilities_; })
     FLY_EXPORT_READONLY_ATTR("created_at", &fly::TaskMetadata::created_at_)
     FLY_EXPORT_READONLY_ATTR("started_at", &fly::TaskMetadata::started_at_)
     FLY_EXPORT_READONLY_ATTR("completed_at", &fly::TaskMetadata::completed_at_)
@@ -95,8 +96,15 @@ FLY_EXPORT_CLASS(fly::TaskScheduler, "EXTaskTaskScheduler")
 
 FLY_EXPORT_CLASS(fly::TaskManager, "EXTaskManager")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_METHOD("create_task", [](fly::TaskManager& self, uint64_t task_id, const fly::CMString& name, const fly::CMVector<fly::CMString>& inputs, const fly::CMVector<fly::CMString>& outputs, const fly::CMString& config, const fly::CMVector<fly::CMString>& required_capabilities, float attribute_timeout) {
-        self.create_task(task_id, name, inputs, outputs, config, required_capabilities, attribute_timeout);
+    FLY_EXPORT_METHOD("create_task", [](fly::TaskManager& self, uint64_t task_id, const fly::CMString& name, const fly::CMVector<fly::CMString>& inputs, const fly::CMVector<fly::CMString>& outputs, const fly::CMString& config, const fly::CMVector<fly::CMString>& required_capabilities, float attribute_timeout, int priority) {
+        fly::TaskSubmissionSpec spec;
+        spec.name_ = name;
+        spec.inputs_ = inputs;
+        spec.outputs_ = outputs;
+        spec.required_capabilities_ = required_capabilities;
+        spec.attribute_timeout_ = attribute_timeout;
+        spec.priority_ = priority;
+        self.create_task(task_id, spec, config);
     })
     FLY_EXPORT_METHOD("update_task_status", &fly::TaskManager::update_task_status)
     FLY_EXPORT_METHOD("set_error", &fly::TaskManager::set_error)

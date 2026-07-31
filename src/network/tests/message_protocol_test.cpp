@@ -333,16 +333,18 @@ TEST(MessageProtocolTest, TaskSubmitMessage) {
     msg.task_module_ = "my_module";
     msg.args_ = {"a1", "a2"};
     msg.inputs_ = {"input1", "input2"};
-    
+    msg.priority_ = 20;  // 非 default（默认 10），验证 priority 跨进程序列化往返
+
     CMString encoded = MessageProtocol::encode(msg);
     CMString buffer = encoded;
-    
+
     TaskSubmitMessage decoded;
     EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
     EXPECT_EQ(decoded.task_name_, "my_task");
     EXPECT_EQ(decoded.task_module_, "my_module");
     EXPECT_EQ(decoded.args_.size(), 2u);
     EXPECT_EQ(decoded.inputs_.size(), 2u);
+    EXPECT_EQ(decoded.priority_, 20);  // worker→master 递归提交场景 priority 透传
 }
 
 TEST(MessageProtocolTest, DbPathRequestResponseMessages) {

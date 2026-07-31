@@ -100,7 +100,17 @@ void MasterAgent::start() {
         [this](uint64_t conn_id, const TaskSubmitMessage& msg) {
             INFO("TaskSubmit received: task_name={}, module={}", msg.task_name_, msg.task_module_);
             uint64_t task_id = ++remote_task_counter_;
-            submit_task(task_id, msg.task_name_, msg.task_module_, msg.args_, msg.inputs_, {}, msg.required_capabilities_, msg.attribute_timeout_, msg.write_context_hash_, msg.vars_, msg.priority_);
+            TaskSubmissionSpec spec;
+            spec.name_ = msg.task_name_;
+            spec.module_ = msg.task_module_;
+            spec.args_ = msg.args_;
+            spec.inputs_ = msg.inputs_;
+            spec.required_capabilities_ = msg.required_capabilities_;
+            spec.attribute_timeout_ = msg.attribute_timeout_;
+            spec.write_context_hash_ = msg.write_context_hash_;
+            spec.vars_ = msg.vars_;
+            spec.priority_ = msg.priority_;
+            submit_task(task_id, spec);
         });
 
     reactor_->register_handler<DbPathRequestMessage>(
@@ -391,8 +401,6 @@ void MasterAgent::do_drain_and_stop() {
         conn_to_worker_.clear();
         worker_to_conn_.clear();
     }
-    task_modules_.clear();
-    task_args_.clear();
 
     running_ = false;
 }
@@ -401,30 +409,14 @@ bool MasterAgent::is_running() const {
     return running_;
 }
 
-void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
-                               const CMString& module, const CMVector<CMString>& args,
-                               const CMVector<CMString>& inputs,
-                               const CMVector<CMString>& outputs,
-                               const CMVector<CMString>& required_capabilities,
-                               float attribute_timeout,
-                               const CMString& write_context_hash,
-                               const CMVector<CMString>& vars,
-                               int priority) {
-    INFO("submit_task: id={}, name={}, attr_timeout={}, vars={}", task_id, name, attribute_timeout, vars.size());
-
-    // module/args/vars must be set before graph_->add_task (concurrency: reactor thread's
-    // schedule_tasks reads task_modules_ when task becomes ready)
-    {
-        std::lock_guard<std::mutex> lk(task_args_mutex_);
-        task_modules_[task_id] = module;
-        task_args_[task_id] = args;
-        task_vars_[task_id] = vars;
-    }
+void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) {
+    INFO("submit_task: id={}, name={}, attr_timeout={}, vars={}",
+         task_id, spec.name_, spec.attribute_timeout_, spec.vars_.size());
 
     // Var existence check (advisory only — does not affect scheduling).
     // vars are FULL names (db_id:short_name); split each to locate the Database.
-    if (!vars.empty()) {
-        for (const auto& full_var : vars) {
+    if (!spec.vars_.empty()) {
+        for (const auto& full_var : spec.vars_) {
             auto [db_id, short_name] = split_full_name(full_var);
             if (db_id.empty()) continue;
             auto db_it = db_instances_.find(db_id);
@@ -435,20 +427,19 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
         }
     }
 
-    metadata_->create_task(task_id, name, inputs, outputs, "{}", required_capabilities, attribute_timeout, priority);
-    metadata_->set_write_context_hash(task_id, write_context_hash);
+    metadata_->create_task(task_id, spec);
 
     TaskRequirements reqs;
-    reqs.capabilities_ = required_capabilities;
-    reqs.timeout_seconds_ = attribute_timeout;
-    reqs.priority_ = priority;
-    graph_->add_task(task_id, inputs, reqs);
+    reqs.capabilities_ = spec.required_capabilities_;
+    reqs.timeout_seconds_ = spec.attribute_timeout_;
+    reqs.priority_ = spec.priority_;
+    graph_->add_task(task_id, spec.inputs_, reqs);
 
     // Pre-fetch dependency locations at submit time (earliest possible point).
     {
         auto ds = DataService::instance();
         std::lock_guard<std::mutex> lock(dep_loc_mutex_);
-        for (const auto& dep : inputs) {
+        for (const auto& dep : spec.inputs_) {
             auto loc = ds->lookup_remote_idx(dep);
             if (loc.worker_id_ != 0 && !loc.host_.empty()) {
                 task_dependency_locations_[task_id][dep] = {loc.worker_id_, loc.host_, loc.port_};
@@ -463,13 +454,37 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
         auto ready = graph_->get_ready_tasks();
         auto deps = graph_->get_task_dependencies(task_id);
         DBG("[DEP] submit: id={} name={} deps={} ready={} pending={} is_ready={}",
-             task_id, name, deps.size(), ready.size(), pending.size(), is_ready);
+             task_id, spec.name_, deps.size(), ready.size(), pending.size(), is_ready);
         for (const auto& dep : deps) {
             DBG("[DEP]   dep={} data_ready={}", dep, graph_->is_data_ready(dep));
         }
     }
 
     schedule_tasks();
+}
+
+void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
+                               const CMString& module, const CMVector<CMString>& args,
+                               const CMVector<CMString>& inputs,
+                               const CMVector<CMString>& outputs,
+                               const CMVector<CMString>& required_capabilities,
+                               float attribute_timeout,
+                               const CMString& write_context_hash,
+                               const CMVector<CMString>& vars,
+                               int priority) {
+    // 位置参数便利重载：组装 spec 转发到主签名，避免每处调用点手写组装。
+    TaskSubmissionSpec spec;
+    spec.name_ = name;
+    spec.module_ = module;
+    spec.args_ = args;
+    spec.inputs_ = inputs;
+    spec.outputs_ = outputs;
+    spec.required_capabilities_ = required_capabilities;
+    spec.attribute_timeout_ = attribute_timeout;
+    spec.write_context_hash_ = write_context_hash;
+    spec.vars_ = vars;
+    spec.priority_ = priority;
+    submit_task(task_id, spec);
 }
 
 void MasterAgent::schedule_tasks() {
@@ -542,29 +557,10 @@ void MasterAgent::schedule_tasks() {
                     }
                     CMString error_msg = "Unresolvable data dependencies: [" + dep_list + "]";
 
-                    FailedTaskRecord record;
-                    record.task_id_ = task_id;
-                    auto task_opt2 = metadata_->get_task(task_id);
-                    if (task_opt2) {
-                        record.name_ = task_opt2->name_;
-                        record.outputs_ = task_opt2->outputs_;
-                        record.inputs_ = task_opt2->inputs_;
-                        record.required_capabilities_ = task_opt2->required_capabilities_;
-                    }
-                    {
-                        std::lock_guard<std::mutex> lk(task_args_mutex_);
-                        record.module_ = task_modules_.count(task_id) ? task_modules_[task_id] : "";
-                        record.args_ = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
-                    }
-                    record.error_message_ = error_msg;
+                    FailedTaskRecord record = make_failed_record(task_id, error_msg);
 
                     graph_->remove_task(task_id);
                     metadata_->fail_task(task_id, error_msg);
-                    {
-                        std::lock_guard<std::mutex> lk(task_args_mutex_);
-                        task_modules_.erase(task_id);
-                        task_args_.erase(task_id);
-                    }
 
                     persist_failed_task(record);
                     ERR("Task {} failed: {}", task_id, error_msg);
@@ -596,29 +592,10 @@ void MasterAgent::schedule_tasks() {
             }
             CMString error_msg = "No worker with required capabilities: [" + cap_list + "]";
 
-            FailedTaskRecord record;
-            record.task_id_ = task_id;
-            auto task_opt = metadata_->get_task(task_id);
-            if (task_opt) {
-                record.name_ = task_opt->name_;
-                record.inputs_ = task_opt->inputs_;
-                record.outputs_ = task_opt->outputs_;
-            }
-            {
-                std::lock_guard<std::mutex> lk(task_args_mutex_);
-                record.module_ = task_modules_.count(task_id) ? task_modules_[task_id] : "";
-                record.args_ = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
-            }
-            record.required_capabilities_ = requirements.capabilities_;
-            record.error_message_ = error_msg;
+            FailedTaskRecord record = make_failed_record(task_id, error_msg);
 
             graph_->remove_task(task_id);
             metadata_->fail_task(task_id, error_msg);
-            {
-                std::lock_guard<std::mutex> lk(task_args_mutex_);
-                task_modules_.erase(task_id);
-                task_args_.erase(task_id);
-            }
 
             persist_failed_task(record);
             ERR("Task {} failed: {}", task_id, error_msg);
@@ -658,24 +635,21 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
 
     TaskAssignMessage msg;
     msg.task_id_ = task_id;
+    // task 完整提交字段统一从 metadata_->get_task(id)->submission_ 读取（shared_ptr
+    // 快照，不可变读线程安全），取代原先 name 从 metadata、module/args/vars 从
+    // 并行 map 的两段式上锁拷贝。
     auto task_opt3 = metadata_->get_task(task_id);
-    msg.task_name_ = task_opt3 ? task_opt3->name_ : "";
-    CMVector<CMString> declared_vars;
-    {
-        std::lock_guard<std::mutex> lk(task_args_mutex_);
-        msg.task_module_ = task_modules_[task_id];
-        msg.args_ = task_args_[task_id];
-        auto vit = task_vars_.find(task_id);
-        if (vit != task_vars_.end()) {
-            declared_vars = vit->second;
-        }
-    }
+    if (task_opt3) {
+        const auto& s = task_opt3->submission_;
+        msg.task_name_ = s.name_;
+        msg.task_module_ = s.module_;
+        msg.args_ = s.args_;
+        msg.write_context_hash_ = s.write_context_hash_;
 
-    // Inline declared vars into the TaskAssignMessage so the worker receives
-    // them in one shot (no extra round-trip). vars are FULL names; split each
-    // to locate the Database and fetch the short-named value.
-    if (!declared_vars.empty()) {
-        for (const auto& full_var : declared_vars) {
+        // Inline declared vars into the TaskAssignMessage so the worker receives
+        // them in one shot (no extra round-trip). vars are FULL names; split each
+        // to locate the Database and fetch the short-named value.
+        for (const auto& full_var : s.vars_) {
             auto [db_id, short_name] = split_full_name(full_var);
             if (db_id.empty()) continue;
             auto db_it = db_instances_.find(db_id);
@@ -692,7 +666,7 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
     }
 
     if (task_opt3) {
-        msg.write_context_hash_ = task_opt3->write_context_hash_;
+        const auto& s = task_opt3->submission_;
 
         // Populate dependency locations from cache + direct lookup.
         auto ds = DataService::instance();
@@ -707,7 +681,7 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
             }
         }
         // Also look up any dependencies not in cache (e.g. ready tasks that weren't pending).
-        for (const auto& dep : task_opt3->inputs_) {
+        for (const auto& dep : s.inputs_) {
             bool already_cached = false;
             for (const auto& loc : msg.dependency_locations_) {
                 if (loc.object_name == dep) {
@@ -938,12 +912,8 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
                 msg.task_id_, msg.frozen_dbs_.size());
         }
         commit_pending_frozen(msg.task_id_);
-
-        {
-            std::lock_guard<std::mutex> lk(task_args_mutex_);
-            task_modules_.erase(msg.task_id_);
-            task_args_.erase(msg.task_id_);
-        }
+        // task 的 module/args/vars 随 TaskMetadata.submission_ 存活，状态迁移到
+        // COMPLETED 即完成生命周期管理，无需单独清理并行 map。
     } else {
         // Internal tasks (backup, etc.) always update remote_idx
         for (const auto& wo : msg.written_objects_) {
@@ -967,27 +937,10 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
     metadata_->fail_task(msg.task_id_, msg.error_message_);
     graph_->remove_task(msg.task_id_);
 
-    // 在 erase task_modules_/task_args_ 前构建 FailedTaskRecord 并持久化，
-    // 供 restart_failed_tasks 读取。运行时失败的 task（异常/读不到数据）
-    // 也应可 restart，与调度时失败的 task 一致。
+    // 运行时失败的 task（异常/读不到数据）也应可 restart，与调度时失败的 task 一致。
+    // make_failed_record 从 metadata.submission_ 整体拷贝，无需逐字段复制。
     {
-        FailedTaskRecord record;
-        record.task_id_ = msg.task_id_;
-        record.error_message_ = msg.error_message_;
-        auto task_opt = metadata_->get_task(msg.task_id_);
-        if (task_opt) {
-            record.name_ = task_opt->name_;
-            record.outputs_ = task_opt->outputs_;
-            record.inputs_ = task_opt->inputs_;
-            record.required_capabilities_ = task_opt->required_capabilities_;
-        }
-        {
-            std::lock_guard<std::mutex> lk(task_args_mutex_);
-            record.module_ = task_modules_.count(msg.task_id_) ? task_modules_[msg.task_id_] : "";
-            record.args_ = task_args_.count(msg.task_id_) ? task_args_[msg.task_id_] : CMVector<CMString>();
-            task_modules_.erase(msg.task_id_);
-            task_args_.erase(msg.task_id_);
-        }
+        FailedTaskRecord record = make_failed_record(msg.task_id_, msg.error_message_);
         persist_failed_task(record);
     }
 
@@ -1075,14 +1028,15 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
             auto task_opt4 = metadata_->get_task(task_id);
             if (!task_opt4) continue;
 
+            const auto& s = task_opt4->submission_;
             graph_->remove_task(task_id);
             TaskRequirements reqs;
-            reqs.capabilities_ = task_opt4->required_capabilities_;
-            reqs.timeout_seconds_ = task_opt4->attribute_timeout_;
-            reqs.priority_ = task_opt4->priority_;
-            graph_->add_task(task_id, task_opt4->inputs_, reqs);
+            reqs.capabilities_ = s.required_capabilities_;
+            reqs.timeout_seconds_ = s.attribute_timeout_;
+            reqs.priority_ = s.priority_;
+            graph_->add_task(task_id, s.inputs_, reqs);
             metadata_->unassign_task(task_id);
-            WARN("Recovered task from dead worker: task_id={}, name={}", task_id, task_opt4->name_);
+            WARN("Recovered task from dead worker: task_id={}, name={}", task_id, s.name_);
         }
 
         if (!tasks_to_recover.empty()) {
@@ -1657,8 +1611,9 @@ void MasterAgent::restart_failed_tasks(const CMString& file_path) {
 
     for (auto& record : records) {
         metadata_->remove_task(record.task_id_);
-        submit_task(record.task_id_, record.name_, record.module_, record.args_,
-                    record.inputs_, record.outputs_, record.required_capabilities_);
+        // record.submission_ 携带完整的提交字段（含 priority/attribute_timeout/vars），
+        // 整体传入 submit_task，消除原先 11 个位置参数的错位/漏传风险。
+        submit_task(record.task_id_, record.submission_);
     }
 
     INFO("Restarted {} failed tasks", record_count);
@@ -2025,8 +1980,6 @@ void MasterAgent::check_shutdown_request() {
                     conn_to_worker_.clear();
                     worker_to_conn_.clear();
                 }
-                task_modules_.clear();
-                task_args_.clear();
                 running_ = false;
             });
         }
@@ -2045,27 +1998,19 @@ void MasterAgent::persist_pending_tasks() {
 
     INFO("Persisting {} pending tasks on shutdown", pending.size());
     for (const auto& task : pending) {
-        auto record = build_failed_record(task->task_id_);
-        record.error_message_ = "Master shutdown: task still pending";
+        auto record = make_failed_record(task->task_id_,
+                                         "Master shutdown: task still pending");
         persist_failed_task(record);
     }
 }
 
-FailedTaskRecord MasterAgent::build_failed_record(uint64_t task_id) {
+FailedTaskRecord MasterAgent::make_failed_record(uint64_t task_id, const CMString& error_msg) {
     FailedTaskRecord record;
     record.task_id_ = task_id;
-    auto task_opt6 = metadata_->get_task(task_id);
-    if (task_opt6) {
-        record.name_ = task_opt6->name_;
-        {
-            std::lock_guard<std::mutex> lk(task_args_mutex_);
-            record.module_ = task_modules_.count(task_id) ? task_modules_[task_id] : "";
-            record.args_ = task_args_.count(task_id) ? task_args_[task_id] : CMVector<CMString>();
-        }
-        record.inputs_ = task_opt6->inputs_;
-        record.outputs_ = task_opt6->outputs_;
-        record.required_capabilities_ = task_opt6->required_capabilities_;
-        record.error_message_ = task_opt6->error_message_;
+    record.error_message_ = error_msg;
+    // 整体拷贝 submission_——新增字段自动包含，无需手动逐字段同步。
+    if (auto t = metadata_->get_task(task_id)) {
+        record.submission_ = t->submission_;
     }
     return record;
 }

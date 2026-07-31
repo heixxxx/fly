@@ -13,6 +13,7 @@ cc_library(
     deps = [
         "//src/common/cpp:fly_common_types",
         "//src/log/cpp:fly_log",
+        "//src/serialization/cpp:fly_serialization",
     ],
 )
 
@@ -22,6 +23,7 @@ cc_shared_library(
     deps = [":fly_task"],
     dynamic_deps = [
         "//src/log/cpp:fly_log_so",
+        "//src/serialization/cpp:fly_serialization_so",
     ],
     visibility = ["//visibility:public"],
 )

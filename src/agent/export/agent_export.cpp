@@ -82,7 +82,11 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                          const fly::CMString& name,
                                          const fly::CMString& module,
                                          const fly::CMVector<fly::CMString>& args) {
-        self.submit_task(task_id, name, module, args, {}, {});
+        fly::TaskSubmissionSpec spec;
+        spec.name_ = name;
+        spec.module_ = module;
+        spec.args_ = args;
+        self.submit_task(task_id, spec);
     })
     FLY_EXPORT_METHOD("submit_task_with_deps", [](fly::MasterAgent& self, uint64_t task_id,
                                                    const fly::CMString& name,
@@ -90,7 +94,13 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                                    const fly::CMVector<fly::CMString>& args,
                                                    const fly::CMVector<fly::CMString>& inputs,
                                                    const fly::CMVector<fly::CMString>& outputs) {
-        self.submit_task(task_id, name, module, args, inputs, outputs, {});
+        fly::TaskSubmissionSpec spec;
+        spec.name_ = name;
+        spec.module_ = module;
+        spec.args_ = args;
+        spec.inputs_ = inputs;
+        spec.outputs_ = outputs;
+        self.submit_task(task_id, spec);
     })
     FLY_EXPORT_METHOD("submit_task_with_requirements", [](fly::MasterAgent& self, uint64_t task_id,
                                                              const fly::CMString& name,
@@ -103,7 +113,18 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                                              const fly::CMString& write_context_hash,
                                                              const fly::CMVector<fly::CMString>& vars,
                                                              int priority) {
-        self.submit_task(task_id, name, module, args, inputs, outputs, required_capabilities, attribute_timeout, write_context_hash, vars, priority);
+        fly::TaskSubmissionSpec spec;
+        spec.name_ = name;
+        spec.module_ = module;
+        spec.args_ = args;
+        spec.inputs_ = inputs;
+        spec.outputs_ = outputs;
+        spec.required_capabilities_ = required_capabilities;
+        spec.attribute_timeout_ = attribute_timeout;
+        spec.write_context_hash_ = write_context_hash;
+        spec.vars_ = vars;
+        spec.priority_ = priority;
+        self.submit_task(task_id, spec);
     })
     FLY_EXPORT_METHOD("register_database", [](fly::MasterAgent& self,
                                                 const fly::CMString& db_id,

@@ -1,25 +1,44 @@
 #include <gtest/gtest.h>
 #include <task/cpp/task_manager.h>
+#include <serialization/cpp/serialization_macros.h>
 
 namespace fly {
 
+// 测试辅助：用提交字段构造 TaskSubmissionSpec，保持测试紧凑。
+// caps/timeout/priority 用默认值（调度测试另有覆盖）。
+TaskSubmissionSpec mk_spec(const CMString& name,
+                           const CMVector<CMString>& inputs = {},
+                           const CMVector<CMString>& outputs = {},
+                           const CMVector<CMString>& caps = {},
+                           float timeout = -1.0f,
+                           int priority = 10) {
+    TaskSubmissionSpec s;
+    s.name_ = name;
+    s.inputs_ = inputs;
+    s.outputs_ = outputs;
+    s.required_capabilities_ = caps;
+    s.attribute_timeout_ = timeout;
+    s.priority_ = priority;
+    return s;
+}
+
 TEST(TaskManagerTest, CreateTask) {
     TaskManager manager;
-    manager.create_task(1, "test_task", {"input/a"}, {"output/b"}, "{}");
+    manager.create_task(1, mk_spec("test_task", {"input/a"}, {"output/b"}), "{}");
 
     EXPECT_TRUE(manager.has_task(1));
     auto task = manager.get_task(1);
     ASSERT_NE(task, nullptr);
-    EXPECT_EQ(task->name_, "test_task");
+    EXPECT_EQ(task->submission_.name_, "test_task");
     EXPECT_EQ(task->status_, TaskStatus::PENDING);
-    EXPECT_EQ(task->inputs_.size(), 1);
-    EXPECT_EQ(task->outputs_.size(), 1);
+    EXPECT_EQ(task->submission_.inputs_.size(), 1);
+    EXPECT_EQ(task->submission_.outputs_.size(), 1);
     EXPECT_EQ(task->config_, "{}");
 }
 
 TEST(TaskManagerTest, UpdateTaskStatus) {
     TaskManager manager;
-    manager.create_task(1, "test", {}, {}, "");
+    manager.create_task(1, mk_spec("test"), "");
 
     manager.update_task_status(1, TaskStatus::RUNNING);
     EXPECT_EQ(manager.get_task(1)->status_, TaskStatus::RUNNING);
@@ -30,7 +49,7 @@ TEST(TaskManagerTest, UpdateTaskStatus) {
 
 TEST(TaskManagerTest, SetError) {
     TaskManager manager;
-    manager.create_task(1, "test", {}, {}, "");
+    manager.create_task(1, mk_spec("test"), "");
     manager.update_task_status(1, TaskStatus::FAILED);
     manager.set_error(1, "segmentation fault");
 
@@ -39,7 +58,7 @@ TEST(TaskManagerTest, SetError) {
 
 TEST(TaskManagerTest, SetAssignedWorker) {
     TaskManager manager;
-    manager.create_task(1, "test", {}, {}, "");
+    manager.create_task(1, mk_spec("test"), "");
     manager.set_assigned_worker(1, 42);
 
     EXPECT_EQ(manager.get_task(1)->assigned_worker_id_, 42);
@@ -47,7 +66,7 @@ TEST(TaskManagerTest, SetAssignedWorker) {
 
 TEST(TaskManagerTest, SetTimestamps) {
     TaskManager manager;
-    manager.create_task(1, "test", {}, {}, "");
+    manager.create_task(1, mk_spec("test"), "");
     manager.set_timestamps(1, 100, 200, 300);
 
     auto task = manager.get_task(1);
@@ -59,9 +78,9 @@ TEST(TaskManagerTest, SetTimestamps) {
 
 TEST(TaskManagerTest, GetTasksByStatus) {
     TaskManager manager;
-    manager.create_task(1, "task1", {}, {}, "");
-    manager.create_task(2, "task2", {}, {}, "");
-    manager.create_task(3, "task3", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
+    manager.create_task(2, mk_spec("task2"), "");
+    manager.create_task(3, mk_spec("task3"), "");
 
     manager.update_task_status(1, TaskStatus::COMPLETED);
     manager.update_task_status(2, TaskStatus::RUNNING);
@@ -81,8 +100,8 @@ TEST(TaskManagerTest, GetTasksByStatus) {
 
 TEST(TaskManagerTest, GetAllTasks) {
     TaskManager manager;
-    manager.create_task(1, "task1", {}, {}, "");
-    manager.create_task(2, "task2", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
+    manager.create_task(2, mk_spec("task2"), "");
 
     auto all = manager.get_all_tasks();
     EXPECT_EQ(all.size(), 2);
@@ -90,7 +109,7 @@ TEST(TaskManagerTest, GetAllTasks) {
 
 TEST(TaskManagerTest, RemoveTask) {
     TaskManager manager;
-    manager.create_task(1, "test", {}, {}, "");
+    manager.create_task(1, mk_spec("test"), "");
     manager.remove_task(1);
 
     EXPECT_FALSE(manager.has_task(1));
@@ -120,7 +139,7 @@ TEST(TaskManagerTest, SetTimestampsNonExistent) {
 
 TEST(TaskManagerTest, SetTimestampsWithZeroValuesSkips) {
     TaskManager manager;
-    manager.create_task(1, "test", {}, {}, "");
+    manager.create_task(1, mk_spec("test"), "");
     manager.set_timestamps(1, 100, 200, 300);
 
     auto task = manager.get_task(1);
@@ -143,13 +162,13 @@ TEST(TaskManagerTest, SetTimestampsWithZeroValuesSkips) {
 
 TEST(TaskManagerTest, CreateTaskOverwritesExisting) {
     TaskManager manager;
-    manager.create_task(1, "first", {}, {}, "");
-    manager.create_task(1, "second", {"input/a"}, {"output/b"}, "{}");
+    manager.create_task(1, mk_spec("first"), "");
+    manager.create_task(1, mk_spec("second", {"input/a"}, {"output/b"}), "{}");
 
     auto task = manager.get_task(1);
-    EXPECT_EQ(task->name_, "second");
-    EXPECT_EQ(task->inputs_.size(), 1);
-    EXPECT_EQ(task->outputs_.size(), 1);
+    EXPECT_EQ(task->submission_.name_, "second");
+    EXPECT_EQ(task->submission_.inputs_.size(), 1);
+    EXPECT_EQ(task->submission_.outputs_.size(), 1);
 }
 
 TEST(TaskManagerTest, GetTaskNonExistent) {
@@ -169,7 +188,7 @@ TEST(TaskManagerTest, RemoveTaskNonExistent) {
 
 TEST(TaskManagerTest, GetTasksByStatusEmptyWhenNoneMatch) {
     TaskManager manager;
-    manager.create_task(1, "test", {}, {}, "");
+    manager.create_task(1, mk_spec("test"), "");
     manager.update_task_status(1, TaskStatus::COMPLETED);
 
     auto running = manager.get_tasks_by_status(TaskStatus::RUNNING);
@@ -187,7 +206,7 @@ TEST(TaskManagerTest, GetAllTasksEmpty) {
 
 TEST(TaskManagerTest, UpdateTaskStatusAutoTimestamps) {
     TaskManager manager;
-    manager.create_task(1, "test", {}, {}, "");
+    manager.create_task(1, mk_spec("test"), "");
     EXPECT_EQ(manager.get_task(1)->started_at_, 0);
 
     manager.update_task_status(1, TaskStatus::RUNNING);
@@ -199,19 +218,19 @@ TEST(TaskManagerTest, UpdateTaskStatusAutoTimestamps) {
 
 TEST(TaskManagerTest, TaskWithCapabilities) {
     TaskManager manager;
-    manager.create_task(1, "gpu_task", {}, {}, "{}", {"gpu", "cuda"});
+    manager.create_task(1, mk_spec("gpu_task", {}, {}, {"gpu", "cuda"}), "{}");
     auto task = manager.get_task(1);
-    EXPECT_EQ(task->required_capabilities_.size(), 2);
-    EXPECT_EQ(task->required_capabilities_[0], "gpu");
-    EXPECT_EQ(task->required_capabilities_[1], "cuda");
+    EXPECT_EQ(task->submission_.required_capabilities_.size(), 2);
+    EXPECT_EQ(task->submission_.required_capabilities_[0], "gpu");
+    EXPECT_EQ(task->submission_.required_capabilities_[1], "cuda");
 }
 
 TEST(TaskManagerTest, GetTasksByStatusMultipleStatuses) {
     TaskManager manager;
-    manager.create_task(1, "task1", {}, {}, "");
-    manager.create_task(2, "task2", {}, {}, "");
-    manager.create_task(3, "task3", {}, {}, "");
-    manager.create_task(4, "task4", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
+    manager.create_task(2, mk_spec("task2"), "");
+    manager.create_task(3, mk_spec("task3"), "");
+    manager.create_task(4, mk_spec("task4"), "");
 
     manager.update_task_status(1, TaskStatus::RUNNING);
     manager.update_task_status(2, TaskStatus::COMPLETED);
@@ -236,9 +255,9 @@ TEST(TaskManagerTest, GetTasksByStatusMultipleStatuses) {
 
 TEST(TaskManagerTest, GetAllTasksMultiple) {
     TaskManager manager;
-    manager.create_task(10, "t10", {}, {}, "");
-    manager.create_task(20, "t20", {}, {}, "");
-    manager.create_task(30, "t30", {}, {}, "");
+    manager.create_task(10, mk_spec("t10"), "");
+    manager.create_task(20, mk_spec("t20"), "");
+    manager.create_task(30, mk_spec("t30"), "");
 
     auto all = manager.get_all_tasks();
     EXPECT_EQ(all.size(), 3);
@@ -246,7 +265,7 @@ TEST(TaskManagerTest, GetAllTasksMultiple) {
 
 TEST(TaskManagerTest, SetErrorOverwritesPrevious) {
     TaskManager manager;
-    manager.create_task(1, "test", {}, {}, "");
+    manager.create_task(1, mk_spec("test"), "");
 
     manager.set_error(1, "first error");
     EXPECT_EQ(manager.get_task(1)->error_message_, "first error");
@@ -257,7 +276,7 @@ TEST(TaskManagerTest, SetErrorOverwritesPrevious) {
 
 TEST(TaskManagerTest, SetAssignedWorkerOverwrites) {
     TaskManager manager;
-    manager.create_task(1, "test", {}, {}, "");
+    manager.create_task(1, mk_spec("test"), "");
 
     manager.set_assigned_worker(1, 42);
     EXPECT_EQ(manager.get_task(1)->assigned_worker_id_, 42);
@@ -268,7 +287,7 @@ TEST(TaskManagerTest, SetAssignedWorkerOverwrites) {
 
 TEST(TaskManagerTest, UpdateTaskStatusRunningSetsStartedAtOnce) {
     TaskManager manager;
-    manager.create_task(1, "test", {}, {}, "");
+    manager.create_task(1, mk_spec("test"), "");
     EXPECT_EQ(manager.get_task(1)->started_at_, 0);
 
     manager.update_task_status(1, TaskStatus::RUNNING);
@@ -281,7 +300,7 @@ TEST(TaskManagerTest, UpdateTaskStatusRunningSetsStartedAtOnce) {
 
 TEST(TaskManagerTest, UpdateTaskStatusFailedSetsCompletedAt) {
     TaskManager manager;
-    manager.create_task(1, "test", {}, {}, "");
+    manager.create_task(1, mk_spec("test"), "");
 
     manager.update_task_status(1, TaskStatus::FAILED);
     EXPECT_GT(manager.get_task(1)->completed_at_, 0);
@@ -292,14 +311,14 @@ TEST(TaskManagerTest, CreateTaskInitializesFields) {
     TaskManager manager;
     CMVector<CMString> inputs = {"input/a", "input/b"};
     CMVector<CMString> outputs = {"output/c"};
-    manager.create_task(42, "my_task", inputs, outputs, "{\"key\":\"val\"}");
+    manager.create_task(42, mk_spec("my_task", inputs, outputs), "{\"key\":\"val\"}");
 
     auto task = manager.get_task(42);
     EXPECT_EQ(task->task_id_, 42);
-    EXPECT_EQ(task->name_, "my_task");
+    EXPECT_EQ(task->submission_.name_, "my_task");
     EXPECT_EQ(task->status_, TaskStatus::PENDING);
-    EXPECT_EQ(task->inputs_.size(), 2);
-    EXPECT_EQ(task->outputs_.size(), 1);
+    EXPECT_EQ(task->submission_.inputs_.size(), 2);
+    EXPECT_EQ(task->submission_.outputs_.size(), 1);
     EXPECT_EQ(task->config_, "{\"key\":\"val\"}");
     EXPECT_EQ(task->assigned_worker_id_, 0);
     EXPECT_TRUE(task->error_message_.empty());
@@ -307,13 +326,13 @@ TEST(TaskManagerTest, CreateTaskInitializesFields) {
 
 TEST(TaskManagerTest, RemoveTaskThenRecreate) {
     TaskManager manager;
-    manager.create_task(1, "first", {}, {}, "");
+    manager.create_task(1, mk_spec("first"), "");
     manager.remove_task(1);
     EXPECT_FALSE(manager.has_task(1));
 
-    manager.create_task(1, "second", {}, {}, "");
+    manager.create_task(1, mk_spec("second"), "");
     EXPECT_TRUE(manager.has_task(1));
-    EXPECT_EQ(manager.get_task(1)->name_, "second");
+    EXPECT_EQ(manager.get_task(1)->submission_.name_, "second");
 }
 
 // ── New tests for optimized API ────────────────────────────────────
@@ -322,7 +341,7 @@ TEST(TaskManagerTest, HasTasksWithStatus) {
     TaskManager manager;
     EXPECT_FALSE(manager.has_tasks_with_status(TaskStatus::RUNNING));
 
-    manager.create_task(1, "task1", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
     EXPECT_TRUE(manager.has_tasks_with_status(TaskStatus::PENDING));
     EXPECT_FALSE(manager.has_tasks_with_status(TaskStatus::RUNNING));
 
@@ -335,9 +354,9 @@ TEST(TaskManagerTest, CountTasksByStatus) {
     TaskManager manager;
     EXPECT_EQ(manager.count_tasks_by_status(TaskStatus::PENDING), 0);
 
-    manager.create_task(1, "task1", {}, {}, "");
-    manager.create_task(2, "task2", {}, {}, "");
-    manager.create_task(3, "task3", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
+    manager.create_task(2, mk_spec("task2"), "");
+    manager.create_task(3, mk_spec("task3"), "");
     EXPECT_EQ(manager.count_tasks_by_status(TaskStatus::PENDING), 3);
 
     manager.update_task_status(1, TaskStatus::RUNNING);
@@ -351,7 +370,7 @@ TEST(TaskManagerTest, CountTasksByStatus) {
 
 TEST(TaskManagerTest, FailTask) {
     TaskManager manager;
-    manager.create_task(1, "task1", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
 
     manager.fail_task(1, "out of memory");
     auto task = manager.get_task(1);
@@ -364,7 +383,7 @@ TEST(TaskManagerTest, FailTask) {
 
 TEST(TaskManagerTest, FailTaskAlreadyFailed) {
     TaskManager manager;
-    manager.create_task(1, "task1", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
     manager.fail_task(1, "first error");
     manager.fail_task(1, "second error");
 
@@ -375,7 +394,7 @@ TEST(TaskManagerTest, FailTaskAlreadyFailed) {
 
 TEST(TaskManagerTest, AssignTask) {
     TaskManager manager;
-    manager.create_task(1, "task1", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
 
     manager.assign_task(1, 42);
     auto task = manager.get_task(1);
@@ -388,7 +407,7 @@ TEST(TaskManagerTest, AssignTask) {
 
 TEST(TaskManagerTest, UnassignTask) {
     TaskManager manager;
-    manager.create_task(1, "task1", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
     manager.assign_task(1, 42);
     EXPECT_EQ(manager.get_task(1)->status_, TaskStatus::RUNNING);
 
@@ -402,9 +421,9 @@ TEST(TaskManagerTest, UnassignTask) {
 
 TEST(TaskManagerTest, GetTaskIdsByStatus) {
     TaskManager manager;
-    manager.create_task(1, "task1", {}, {}, "");
-    manager.create_task(2, "task2", {}, {}, "");
-    manager.create_task(3, "task3", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
+    manager.create_task(2, mk_spec("task2"), "");
+    manager.create_task(3, mk_spec("task3"), "");
 
     manager.update_task_status(1, TaskStatus::RUNNING);
     manager.update_task_status(2, TaskStatus::RUNNING);
@@ -419,9 +438,9 @@ TEST(TaskManagerTest, GetTaskIdsByStatus) {
 
 TEST(TaskManagerTest, GetTaskIdsByWorker) {
     TaskManager manager;
-    manager.create_task(1, "task1", {}, {}, "");
-    manager.create_task(2, "task2", {}, {}, "");
-    manager.create_task(3, "task3", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
+    manager.create_task(2, mk_spec("task2"), "");
+    manager.create_task(3, mk_spec("task3"), "");
 
     manager.assign_task(1, 42);
     manager.assign_task(2, 42);
@@ -440,19 +459,19 @@ TEST(TaskManagerTest, GetTaskIdsByWorker) {
 
 TEST(TaskManagerTest, SetWriteContextHash) {
     TaskManager manager;
-    manager.create_task(1, "task1", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
 
     manager.set_write_context_hash(1, "abc123");
-    EXPECT_EQ(manager.get_task(1)->write_context_hash_, "abc123");
+    EXPECT_EQ(manager.get_task(1)->submission_.write_context_hash_, "abc123");
 
     manager.set_write_context_hash(1, "def456");
-    EXPECT_EQ(manager.get_task(1)->write_context_hash_, "def456");
+    EXPECT_EQ(manager.get_task(1)->submission_.write_context_hash_, "def456");
 }
 
 TEST(TaskManagerTest, StatusCountsAfterRemove) {
     TaskManager manager;
-    manager.create_task(1, "task1", {}, {}, "");
-    manager.create_task(2, "task2", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
+    manager.create_task(2, mk_spec("task2"), "");
     manager.update_task_status(1, TaskStatus::RUNNING);
     EXPECT_EQ(manager.count_tasks_by_status(TaskStatus::RUNNING), 1);
     EXPECT_EQ(manager.count_tasks_by_status(TaskStatus::PENDING), 1);
@@ -468,7 +487,7 @@ TEST(TaskManagerTest, StatusCountsAfterRemove) {
 TEST(TaskManagerTest, AutoCleanupCompletedTasks) {
     TaskManager manager;
     for (int i = 0; i < kMaxCompletedTasks + 10; i++) {
-        manager.create_task(i, "task", {}, {}, "");
+        manager.create_task(i, mk_spec("task"), "");
         manager.update_task_status(i, TaskStatus::COMPLETED);
     }
     EXPECT_EQ(manager.count_tasks_by_status(TaskStatus::COMPLETED), kMaxCompletedTasks);
@@ -484,20 +503,20 @@ TEST(TaskManagerTest, CompoundOperationsNonExistent) {
 
 TEST(TaskManagerTest, SharedPtrLifetime) {
     TaskManager manager;
-    manager.create_task(1, "task1", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
     auto task = manager.get_task(1);
     ASSERT_NE(task, nullptr);
 
     // Remove task — shared_ptr should still be valid.
     manager.remove_task(1);
-    EXPECT_EQ(task->name_, "task1");
+    EXPECT_EQ(task->submission_.name_, "task1");
     EXPECT_EQ(manager.get_task(1), nullptr);
 }
 
 TEST(TaskManagerTest, GetTasksByStatusReturnsSharedPtrs) {
     TaskManager manager;
-    manager.create_task(1, "task1", {}, {}, "");
-    manager.create_task(2, "task2", {}, {}, "");
+    manager.create_task(1, mk_spec("task1"), "");
+    manager.create_task(2, mk_spec("task2"), "");
     manager.update_task_status(1, TaskStatus::RUNNING);
 
     auto running = manager.get_tasks_by_status(TaskStatus::RUNNING);
@@ -506,8 +525,61 @@ TEST(TaskManagerTest, GetTasksByStatusReturnsSharedPtrs) {
     EXPECT_EQ(running[0]->task_id_, 1);
 
     // Modify via shared_ptr — visible to all holders.
-    running[0]->name_ = "modified";
-    EXPECT_EQ(manager.get_task(1)->name_, "modified");
+    running[0]->submission_.name_ = "modified";
+    EXPECT_EQ(manager.get_task(1)->submission_.name_, "modified");
+}
+
+// TaskSubmissionSpec 序列化往返：验证嵌套 struct 经 FLY_SERIALIZE 整体序列化
+// 后字段不丢。这是 FailedTaskRecord 持久化（落盘/restart）的基础——若 spec 的
+// FLY_SERIALIZE 漏加字段，磁盘读回会取默认值（priority bug 的原始形态）。
+TEST(TaskSubmissionSpecTest, SerializeRoundTripPreservesAllFields) {
+    TaskSubmissionSpec original;
+    original.name_ = "my_task";
+    original.module_ = "my_module";
+    original.args_ = {"arg1", "arg2"};
+    original.inputs_ = {"in1", "in2"};
+    original.outputs_ = {"out1"};
+    original.required_capabilities_ = {"gpu", "cuda"};
+    original.attribute_timeout_ = 5.0f;
+    original.priority_ = 20;
+    original.write_context_hash_ = "abc123";
+    original.vars_ = {"db:var1", "db:var2"};
+
+    // 序列化
+    CMString encoded;
+    FLY_ENCODE(original, encoded);
+
+    // 反序列化
+    TaskSubmissionSpec decoded;
+    FLY_DECODE(encoded, TaskSubmissionSpec, decoded);
+
+    EXPECT_EQ(decoded.name_, "my_task");
+    EXPECT_EQ(decoded.module_, "my_module");
+    EXPECT_EQ(decoded.args_.size(), 2u);
+    EXPECT_EQ(decoded.inputs_.size(), 2u);
+    EXPECT_EQ(decoded.outputs_.size(), 1u);
+    EXPECT_EQ(decoded.required_capabilities_.size(), 2u);
+    EXPECT_EQ(decoded.required_capabilities_[0], "gpu");
+    EXPECT_FLOAT_EQ(decoded.attribute_timeout_, 5.0f);
+    EXPECT_EQ(decoded.priority_, 20);
+    EXPECT_EQ(decoded.write_context_hash_, "abc123");
+    EXPECT_EQ(decoded.vars_.size(), 2u);
+}
+
+// 默认构造的 spec 应保留默认值（priority=10, attribute_timeout=-1.0 死等）。
+// 验证向后兼容：未显式设值的字段不会因序列化往返变成垃圾值。
+TEST(TaskSubmissionSpecTest, DefaultValuesSurviveRoundTrip) {
+    TaskSubmissionSpec original;  // 全默认
+
+    CMString encoded;
+    FLY_ENCODE(original, encoded);
+    TaskSubmissionSpec decoded;
+    FLY_DECODE(encoded, TaskSubmissionSpec, decoded);
+
+    EXPECT_EQ(decoded.priority_, 10);
+    EXPECT_FLOAT_EQ(decoded.attribute_timeout_, -1.0f);
+    EXPECT_TRUE(decoded.args_.empty());
+    EXPECT_TRUE(decoded.vars_.empty());
 }
 
 }  // namespace fly

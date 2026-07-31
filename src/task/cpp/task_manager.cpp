@@ -56,13 +56,8 @@ void TaskManager::maybe_cleanup_completed() {
 
 // ── Mutation ───────────────────────────────────────────────────────
 
-void TaskManager::create_task(uint64_t task_id, const CMString& name,
-                                    const CMVector<CMString>& inputs,
-                                    const CMVector<CMString>& outputs,
-                                    const CMString& config,
-                                    const CMVector<CMString>& required_capabilities,
-                                    float attribute_timeout,
-                                    int priority) {
+void TaskManager::create_task(uint64_t task_id, const TaskSubmissionSpec& spec,
+                                    const CMString& config) {
     std::lock_guard<std::mutex> lock(mutex_);
     // Remove existing entry if overwriting.
     auto st_it = task_status_.find(task_id);
@@ -72,14 +67,9 @@ void TaskManager::create_task(uint64_t task_id, const CMString& name,
 
     auto meta = CMMakeShared<TaskMetadata>();
     meta->task_id_ = task_id;
-    meta->name_ = name;
+    meta->submission_ = spec;          // 整体赋值，无逐字段复制
     meta->status_ = TaskStatus::PENDING;
-    meta->inputs_ = inputs;
-    meta->outputs_ = outputs;
     meta->config_ = config;
-    meta->required_capabilities_ = required_capabilities;
-    meta->attribute_timeout_ = attribute_timeout;
-    meta->priority_ = priority;
     meta->created_at_ = now_ms();
     meta->started_at_ = 0;
     meta->completed_at_ = 0;
@@ -152,7 +142,7 @@ void TaskManager::set_write_context_hash(uint64_t task_id, const CMString& hash)
     if (st_it == task_status_.end()) return;
     auto it = buckets_[si(st_it->second)].find(task_id);
     if (it != buckets_[si(st_it->second)].end()) {
-        it->second->write_context_hash_ = hash;
+        it->second->submission_.write_context_hash_ = hash;
     }
 }
 

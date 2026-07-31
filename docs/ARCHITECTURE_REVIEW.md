@@ -79,12 +79,12 @@
 - **问题**: 一个 `mutable std::mutex mutex_` 保护 `local_idx_`、`remote_idx_`、`worker_registry_`、`db_paths_` 等所有共享数据。高并发场景下成为性能瓶颈，且某些方法内部先锁 mutex_ 再锁 cv_mutex_，存在死锁风险。
 - **建议**: 按数据域拆分锁（如 idx_mutex_, registry_mutex_）。
 
-### 2.8 MasterAgent 多锁嵌套风险 [已记录]
+### 2.8 MasterAgent 多锁嵌套风险 [已解决 2026-07-31]
 
 - **严重程度**: 中
 - **文件**: `src/agent/cpp/master_agent.h:119-191`
-- **问题**: `schedule_tasks()` 方法中可能同时持有 `schedule_mutex_` + `task_args_mutex_` + `workers_mutex_`，嵌套加锁顺序需仔细维护。
-- **建议**: 文档化锁获取顺序，考虑使用层次锁（hierarchical locking）或 `std::scoped_lock` 多锁。
+- **问题**: ~~`schedule_tasks()` 方法中可能同时持有 `schedule_mutex_` + `task_args_mutex_` + `workers_mutex_`，嵌套加锁顺序需仔细维护。~~ **[已解决]** `task_args_mutex_` 随 `task_modules_`/`task_args_`/`task_vars_` 三 map 一并删除（引入 `TaskSubmissionSpec` 后，task 字段统一从 `metadata_->get_task(id)->submission_` 的 shared_ptr 快照读取，不再需要独立锁）。现 `schedule_tasks()` 仅可能持有 `schedule_mutex_` + `workers_mutex_`。
+- **建议**: ~~文档化锁获取顺序，考虑使用层次锁（hierarchical locking）或 `std::scoped_lock` 多锁。~~
 
 ---
 

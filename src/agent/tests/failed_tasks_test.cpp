@@ -66,12 +66,14 @@ protected:
     FailedTaskRecord make_record(uint64_t id, const CMString& name) {
         FailedTaskRecord r;
         r.task_id_ = id;
-        r.name_ = name;
-        r.module_ = "mod_" + name;
-        r.args_ = {"arg1", "arg2"};
-        r.inputs_ = {"in1"};
-        r.outputs_ = {"out1"};
-        r.required_capabilities_ = {"gpu"};
+        r.submission_.name_ = name;
+        r.submission_.module_ = "mod_" + name;
+        r.submission_.args_ = {"arg1", "arg2"};
+        r.submission_.inputs_ = {"in1"};
+        r.submission_.outputs_ = {"out1"};
+        r.submission_.required_capabilities_ = {"gpu"};
+        r.submission_.attribute_timeout_ = 2.5f;  // 限时降级（非默认 -1.0 死等）
+        r.submission_.priority_ = 20;             // 高优先级（非默认 10）
         r.error_message_ = "failed: " + name;
         return r;
     }
@@ -83,10 +85,13 @@ TEST_F(FailedTasksTest, AppendAndReadSingle) {
     auto records = read_all_records(file_path_);
     ASSERT_EQ(records.size(), 1u);
     EXPECT_EQ(records[0].task_id_, 1u);
-    EXPECT_EQ(records[0].name_, "task_a");
-    EXPECT_EQ(records[0].module_, "mod_task_a");
-    EXPECT_EQ(records[0].args_.size(), 2u);
+    EXPECT_EQ(records[0].submission_.name_, "task_a");
+    EXPECT_EQ(records[0].submission_.module_, "mod_task_a");
+    EXPECT_EQ(records[0].submission_.args_.size(), 2u);
     EXPECT_EQ(records[0].error_message_, "failed: task_a");
+    // priority + attribute_timeout 必须在序列化往返后保留（restart 恢复依赖）
+    EXPECT_EQ(records[0].submission_.priority_, 20);
+    EXPECT_FLOAT_EQ(records[0].submission_.attribute_timeout_, 2.5f);
 }
 
 TEST_F(FailedTasksTest, AppendMultipleSequential) {
@@ -99,7 +104,7 @@ TEST_F(FailedTasksTest, AppendMultipleSequential) {
     EXPECT_EQ(records[0].task_id_, 1u);
     EXPECT_EQ(records[1].task_id_, 2u);
     EXPECT_EQ(records[2].task_id_, 3u);
-    EXPECT_EQ(records[2].name_, "task_c");
+    EXPECT_EQ(records[2].submission_.name_, "task_c");
 }
 
 TEST_F(FailedTasksTest, ReadFromNonExistentFile) {
@@ -151,6 +156,65 @@ TEST_F(FailedTasksTest, RewriteAllRemovedDeletesFile) {
     EXPECT_FALSE(std::filesystem::exists(file_path_));
     auto reloaded = read_all_records(file_path_);
     EXPECT_TRUE(reloaded.empty());
+}
+
+// ── priority + attribute_timeout 持久化往返（崩溃恢复 restart 不丢调度参数）──
+// 回归保护：FailedTaskRecord 必须完整保留 priority_ 和 attribute_timeout_，
+// 否则 @as_task(priority=20, requires=(["gpu"], 5.0)) 失败重启后会退化为
+// priority=10 + 死等 gpu，调度语义被破坏。
+
+TEST_F(FailedTasksTest, PriorityAndTimeoutSurviveRoundTrip) {
+    // 三档 priority + 三档 attribute_timeout 的组合，全部用非默认值
+    FailedTaskRecord high_prio_soft_gpu;
+    high_prio_soft_gpu.task_id_ = 1;
+    high_prio_soft_gpu.submission_.name_ = "high_soft";
+    high_prio_soft_gpu.submission_.required_capabilities_ = {"gpu"};
+    high_prio_soft_gpu.submission_.attribute_timeout_ = 5.0f;   // 限时降级
+    high_prio_soft_gpu.submission_.priority_ = 20;              // 抢先
+
+    FailedTaskRecord low_prio_background;
+    low_prio_background.task_id_ = 2;
+    low_prio_background.submission_.name_ = "low_bg";
+    low_prio_background.submission_.attribute_timeout_ = -1.0f;  // 死等
+    low_prio_background.submission_.priority_ = 1;               // 让路
+
+    FailedTaskRecord immediate_degrade;
+    immediate_degrade.task_id_ = 3;
+    immediate_degrade.submission_.name_ = "immediate";
+    immediate_degrade.submission_.required_capabilities_ = {"tpu"};
+    immediate_degrade.submission_.attribute_timeout_ = 0.0f;     // 立即降级
+    immediate_degrade.submission_.priority_ = 15;
+
+    write_test_record(file_path_, high_prio_soft_gpu);
+    write_test_record(file_path_, low_prio_background);
+    write_test_record(file_path_, immediate_degrade);
+
+    auto records = read_all_records(file_path_);
+    ASSERT_EQ(records.size(), 3u);
+
+    EXPECT_EQ(records[0].submission_.priority_, 20);
+    EXPECT_FLOAT_EQ(records[0].submission_.attribute_timeout_, 5.0f);
+    EXPECT_EQ(records[0].submission_.required_capabilities_, CMVector<CMString>{"gpu"});
+
+    EXPECT_EQ(records[1].submission_.priority_, 1);
+    EXPECT_FLOAT_EQ(records[1].submission_.attribute_timeout_, -1.0f);
+
+    EXPECT_EQ(records[2].submission_.priority_, 15);
+    EXPECT_FLOAT_EQ(records[2].submission_.attribute_timeout_, 0.0f);
+    EXPECT_EQ(records[2].submission_.required_capabilities_, CMVector<CMString>{"tpu"});
+}
+
+TEST_F(FailedTasksTest, DefaultPriorityAndTimeoutWhenUnset) {
+    // 默认构造的 record（不显式设置 priority/timeout）应保留默认值
+    FailedTaskRecord r;
+    r.task_id_ = 42;
+    r.submission_.name_ = "default_vals";
+    write_test_record(file_path_, r);
+
+    auto records = read_all_records(file_path_);
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(records[0].submission_.priority_, 10);              // 默认 priority
+    EXPECT_FLOAT_EQ(records[0].submission_.attribute_timeout_, -1.0f);  // 默认死等
 }
 
 }  // namespace

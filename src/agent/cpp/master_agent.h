@@ -25,18 +25,15 @@
 
 namespace fly {
 
+// FailedTaskRecord — 持久化到 failed_tasks.bin 的失败 task 记录，供
+// restart_failed_tasks 读回重新提交。内嵌 TaskSubmissionSpec 复用提交字段，
+// 新增提交字段时自动随 spec 持久化（无需手动同步 FLY_SERIALIZE 列表）。
 struct FailedTaskRecord {
     uint64_t task_id_ = 0;
-    CMString name_;
-    CMString module_;
-    CMVector<CMString> args_;
-    CMVector<CMString> inputs_;
-    CMVector<CMString> outputs_;
-    CMVector<CMString> required_capabilities_;
+    TaskSubmissionSpec submission_;    // 提交时的完整不变字段（restart 还原用）
     CMString error_message_;
 
-    FLY_SERIALIZE(task_id_, name_, module_, args_, inputs_, outputs_,
-                  required_capabilities_, error_message_);
+    FLY_SERIALIZE(task_id_, submission_, error_message_);
 };
 
 struct FailedTaskFile {
@@ -58,6 +55,11 @@ public:
     void add_worker_hostname(uint64_t worker_id, const CMString& hostname);
     size_t get_connection_count() const;
 
+    // submit_task 接收完整的 TaskSubmissionSpec，避免 11 个位置参数导致的
+    // 错位/漏传（位置参数同类，编译器无法捕获）。调用方先组装 spec 再传入。
+    void submit_task(uint64_t task_id, const TaskSubmissionSpec& spec);
+    // 位置参数便利重载：内部组装 spec 转发到上面的主签名。生产代码应优先
+    // 用 spec 形式；此重载主要服务测试与少量不便组装 spec 的调用点。
     void submit_task(uint64_t task_id, const CMString& name,
                     const CMString& module, const CMVector<CMString>& args,
                     const CMVector<CMString>& inputs = {},
@@ -201,11 +203,10 @@ private:
     std::mutex attr_timeout_check_mutex_;
     std::condition_variable attr_timeout_check_cv_;
 
-    CMUnorderedMap<uint64_t, CMString> task_modules_;
-    CMUnorderedMap<uint64_t, CMVector<CMString>> task_args_;
-    // Declared var names per task (from @as_task(vars=...)).
-    CMUnorderedMap<uint64_t, CMVector<CMString>> task_vars_;
-    mutable std::mutex task_args_mutex_;
+    // task 提交时的完整不变字段统一存储在 TaskMetadata.submission_ 里
+    // （通过 metadata_->get_task(id)->submission_ 访问），不再需要单独维护
+    // module/args/vars 的并行 map。单一来源消除了"两段式上锁拷贝"和字段
+    // 同步遗漏（如本次 priority bug 的根源）。
 
     // Pre-fetched dependency locations: task_id → {object_name → (worker_id, host, port)}.
     // Updated on write_register, consumed on assign_task_to_worker.
@@ -342,7 +343,10 @@ private:
     void check_shutdown_request();
     void do_drain_and_stop();
     void persist_pending_tasks();
-    FailedTaskRecord build_failed_record(uint64_t task_id);
+    // 从 TaskMetadata 构造 FailedTaskRecord（统一入口，消除 4 处手动复制）。
+    // error_msg 覆盖 record 的错误信息（失败原因由调用方提供，metadata 里
+    // 的 error_message_ 此时可能尚未设置或语义不同）。
+    FailedTaskRecord make_failed_record(uint64_t task_id, const CMString& error_msg);
     void notify_drain_if_active();
 };
 

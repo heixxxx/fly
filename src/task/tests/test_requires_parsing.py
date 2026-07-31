@@ -45,7 +45,7 @@ class _FakeAgent:
 
     def submit(self, name, module, args, inputs=None,
                required_capabilities=None, attribute_timeout=-1.0,
-               write_context_hash="", vars=None):
+               write_context_hash="", vars=None, priority=10):
         self.last_submit = {
             'name': name,
             'module': module,
@@ -55,17 +55,18 @@ class _FakeAgent:
             'attribute_timeout': attribute_timeout,
             'write_context_hash': write_context_hash,
             'vars': vars,
+            'priority': priority,
         }
 
 
-def _make_wrapper(requires=None, vars=None):
-    """构造一个带指定 requires/vars 的 as_task wrapper，返回 (wrapper, fake_agent, restore)"""
+def _make_wrapper(requires=None, vars=None, priority=10):
+    """构造一个带指定 requires/vars/priority 的 as_task wrapper，返回 (wrapper, fake_agent, restore)"""
     import fly.runtime as runtime
     fake_agent = _FakeAgent()
     orig_get_agent = runtime.get_agent
     runtime.get_agent = lambda: fake_agent
 
-    @task_mod.as_task(requires=requires, vars=vars)
+    @task_mod.as_task(requires=requires, vars=vars, priority=priority)
     def my_task(db):
         pass
 
@@ -83,6 +84,7 @@ def test_requires_pure_list():
         restore()
     assert agent.last_submit['required_capabilities'] == ["gpu"]
     assert agent.last_submit['attribute_timeout'] == -1.0
+    assert agent.last_submit['priority'] == 10  # 默认优先级（向后兼容回归保护）
 
 
 def test_requires_tuple_positive_timeout():
@@ -220,6 +222,64 @@ def test_vars_combined_with_requires():
     assert agent.last_submit['vars'] == ["cfg"]
 
 
+# ---- priority 参数解析测试 ----
+
+def test_priority_default_is_ten():
+    """不指定 priority → 默认 10（向后兼容：所有 task 同值，退化为 FIFO）"""
+    wrapper, agent, restore = _make_wrapper()
+    try:
+        wrapper(None)
+    finally:
+        restore()
+    assert agent.last_submit['priority'] == 10
+
+
+def test_priority_high_value_passed_through():
+    """高优先级 priority=20 完整透传到 agent.submit"""
+    wrapper, agent, restore = _make_wrapper(priority=20)
+    try:
+        wrapper(None)
+    finally:
+        restore()
+    assert agent.last_submit['priority'] == 20
+
+
+def test_priority_low_value_passed_through():
+    """低优先级 priority=1（让路）完整透传到 agent.submit"""
+    wrapper, agent, restore = _make_wrapper(priority=1)
+    try:
+        wrapper(None)
+    finally:
+        restore()
+    assert agent.last_submit['priority'] == 1
+
+
+def test_priority_combined_with_requires_and_vars():
+    """priority + requires(capability+timeout) + vars 三者组合，各自独立透传"""
+    wrapper, agent, restore = _make_wrapper(
+        requires=(["gpu"], 2.0), vars=["cfg"], priority=15)
+    try:
+        wrapper(None)
+    finally:
+        restore()
+    assert agent.last_submit['required_capabilities'] == ["gpu"]
+    assert agent.last_submit['attribute_timeout'] == 2.0
+    assert agent.last_submit['vars'] == ["cfg"]
+    assert agent.last_submit['priority'] == 15
+
+
+def test_priority_combined_with_high_value_requires():
+    """priority + 高优先级 capability 组合（典型关键路径抢先场景）"""
+    wrapper, agent, restore = _make_wrapper(requires=["gpu"], priority=20)
+    try:
+        wrapper(None)
+    finally:
+        restore()
+    assert agent.last_submit['required_capabilities'] == ["gpu"]
+    assert agent.last_submit['attribute_timeout'] == -1.0
+    assert agent.last_submit['priority'] == 20
+
+
 if __name__ == "__main__":
     test_requires_pure_list()
     print("PASS: test_requires_pure_list")
@@ -247,4 +307,14 @@ if __name__ == "__main__":
     print("PASS: test_vars_none_defaults_to_empty")
     test_vars_combined_with_requires()
     print("PASS: test_vars_combined_with_requires")
-    print("\nAll requires + vars parsing tests passed!")
+    test_priority_default_is_ten()
+    print("PASS: test_priority_default_is_ten")
+    test_priority_high_value_passed_through()
+    print("PASS: test_priority_high_value_passed_through")
+    test_priority_low_value_passed_through()
+    print("PASS: test_priority_low_value_passed_through")
+    test_priority_combined_with_requires_and_vars()
+    print("PASS: test_priority_combined_with_requires_and_vars")
+    test_priority_combined_with_high_value_requires()
+    print("PASS: test_priority_combined_with_high_value_requires")
+    print("\nAll requires + vars + priority parsing tests passed!")
