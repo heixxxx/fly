@@ -278,8 +278,9 @@ struct TaskSubmitMessage {
     float attribute_timeout_ = -1.0f;  // <0=死等, 0=立即降级, >0=限时降级
     CMString write_context_hash_;
     CMVector<CMString> vars_;          // declared var names for inline delivery
+    int priority_ = 10;               // 任务优先级（worker→master 透传，递归提交场景）
     static constexpr MessageType msg_type_ = MessageType::TASK_SUBMIT;
-    FLY_SERIALIZE(header_, task_name_, task_module_, args_, inputs_, required_capabilities_, attribute_timeout_, write_context_hash_, vars_);
+    FLY_SERIALIZE(header_, task_name_, task_module_, args_, inputs_, required_capabilities_, attribute_timeout_, write_context_hash_, vars_, priority_);
 };
 
 struct DbPathRequestMessage {

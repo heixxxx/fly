@@ -28,7 +28,7 @@ def task_name(name: str):
     return decorator
 
 
-def as_task(inputs=None, requires=None, vars=None):
+def as_task(inputs=None, requires=None, vars=None, priority=10):
     """将函数注册为可分发任务。
 
     装饰器会拦截函数调用，将任务提交给 Agent（Master 或 Worker）执行。
@@ -49,6 +49,11 @@ def as_task(inputs=None, requires=None, vars=None):
             master 在发送 task 时将已存在的 var 数据 inline 进消息一次性发给
             worker（减少 worker→master 请求次数）。var 不存在仅打印 warn，不
             影响调度。var 的真实依赖关系靠 write_object 隐式确定（见 db.set_var）。
+        priority: 任务优先级（int，默认 10）。数值越大越优先调度。多个 ready task
+            竞争有限 worker 时，priority 高的先调度；同 priority 内按提交顺序（FIFO）。
+            默认 10 取中点值，可双向调节：<10 让路（如后台清理），>10 抢先（如关键路径）。
+            高优先级 task 若暂无可匹配 worker（如缺 capability），跳过它继续调度低优先级
+            （head-of-line skip，不阻塞后续任务）。
 
     Usage::
 
@@ -67,6 +72,14 @@ def as_task(inputs=None, requires=None, vars=None):
         @as_task(vars=["counter"])  # 声明需要 counter var，master 调度时带入
         def read_counter(db):
             return db.get_var("counter")
+
+        @as_task(priority=20)  # 高优先级，抢在普通任务前调度
+        def critical_task(db):
+            ...
+
+        @as_task(requires=["gpu"], priority=5)  # 低优先级，让路给 priority>5 的任务
+        def background_task(db):
+            ...
     """
     def decorator(func):
         name = getattr(func, '_fly_task_name', None) or func.__name__
@@ -122,7 +135,8 @@ def as_task(inputs=None, requires=None, vars=None):
                          required_capabilities=caps,
                          attribute_timeout=attr_timeout,
                          write_context_hash=write_context_hash,
-                         vars=resolved_vars)
+                         vars=resolved_vars,
+                         priority=priority)
             DBG(
                 f"Task submitted via {agent.mode}: "
                 f"name={name}, module={module}, inputs={task_inputs}, "

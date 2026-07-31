@@ -190,10 +190,12 @@ scheduler_->set_locality_preference(...);
 
 ### 🟡 P1 — 本阶段可选，视精力推进
 
-**[F5] 任务优先级**
-- `TaskRequirements` 加 `int priority_ = 0`
-- `schedule_next()` 的 ready_tasks 按 priority 降序排序后再遍历
-- 改动小、收益明确（多流程并行 / 调试抢占）
+**[F5] 任务优先级** — ✅ **已完成（2026-07-31）**
+- `TaskRequirements` 加 `int priority_ = 10`（默认中点值，可双向调节：<10 让路，>10 抢先）
+- `get_ready_tasks()` 按 `(priority desc, task_id asc)` 排序；scheduler first-fit 天然实现 head-of-line skip（高优先级缺 worker 不阻塞低优先级）
+- 全链路透传：TaskMetadata（worker 崩溃恢复）+ TaskSubmitMessage（worker→master 递归提交）+ Python `@as_task(priority=N)` 独立关键字
+- 完全向后兼容：所有现有 task 默认 10（同值），排序退化为 task_id 升序 = 现状 FIFO
+- 验证：全量单测 52/52 + 全量 QA 135/135 通过；详见 [`docs/priority-scheduling-design.md`](priority-scheduling-design.md)
 
 **[F3] Worker role 调度**
 - `_spawn_process_worker` 消费 role 字段传给 worker

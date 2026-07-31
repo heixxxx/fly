@@ -356,4 +356,40 @@ TEST(DependencyGraphTest, ReadyTimestampNonExistentTask) {
     EXPECT_FALSE(graph.get_task_ready_timestamp(999).has_value());
 }
 
+// ===== TaskRequirements (priority) 新增测试 =====
+
+TEST(DependencyGraphTest, TaskRequirementsPriorityField) {
+    DependencyGraph graph;
+    TaskRequirements spec;
+    spec.capabilities_ = {"gpu"};
+    spec.priority_ = 25;
+    graph.add_task(1, {}, spec);
+
+    const auto& reqs = graph.get_task_requirements(1);
+    EXPECT_EQ(reqs.priority_, 25);
+    EXPECT_EQ(reqs.capabilities_.size(), 1u);
+}
+
+TEST(DependencyGraphTest, TaskRequirementsDefaultPriorityTen) {
+    DependencyGraph graph;
+    // 默认 priority = 10（中点值，可双向调节）
+    graph.add_task(1, {}, caps({"gpu"}));
+    const auto& reqs = graph.get_task_requirements(1);
+    EXPECT_EQ(reqs.priority_, 10);
+}
+
+TEST(DependencyGraphTest, TaskRequirementsPriorityClearedOnRemove) {
+    DependencyGraph graph;
+    TaskRequirements spec;
+    spec.capabilities_ = {"gpu"};
+    spec.priority_ = 15;
+    graph.add_task(1, {}, spec);
+    graph.remove_task(1);
+
+    const auto& reqs = graph.get_task_requirements(1);
+    // remove 后返回静态空对象，priority 应为默认值 10
+    EXPECT_EQ(reqs.priority_, 10);
+    EXPECT_TRUE(reqs.capabilities_.empty());
+}
+
 }  // namespace fly

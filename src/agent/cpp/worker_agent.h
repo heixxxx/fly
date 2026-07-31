@@ -102,7 +102,8 @@ public:
                      const CMVector<CMString>& required_capabilities = {},
                      float attribute_timeout = -1.0f,
                      const CMString& write_context_hash = "",
-                     const CMVector<CMString>& vars = {});
+                     const CMVector<CMString>& vars = {},
+                     int priority = 10);
     
     bool has_pending_task() const;
     bool poll_task();

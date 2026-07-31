@@ -100,7 +100,7 @@ void MasterAgent::start() {
         [this](uint64_t conn_id, const TaskSubmitMessage& msg) {
             INFO("TaskSubmit received: task_name={}, module={}", msg.task_name_, msg.task_module_);
             uint64_t task_id = ++remote_task_counter_;
-            submit_task(task_id, msg.task_name_, msg.task_module_, msg.args_, msg.inputs_, {}, msg.required_capabilities_, msg.attribute_timeout_, msg.write_context_hash_, msg.vars_);
+            submit_task(task_id, msg.task_name_, msg.task_module_, msg.args_, msg.inputs_, {}, msg.required_capabilities_, msg.attribute_timeout_, msg.write_context_hash_, msg.vars_, msg.priority_);
         });
 
     reactor_->register_handler<DbPathRequestMessage>(
@@ -408,7 +408,8 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
                                const CMVector<CMString>& required_capabilities,
                                float attribute_timeout,
                                const CMString& write_context_hash,
-                               const CMVector<CMString>& vars) {
+                               const CMVector<CMString>& vars,
+                               int priority) {
     INFO("submit_task: id={}, name={}, attr_timeout={}, vars={}", task_id, name, attribute_timeout, vars.size());
 
     // module/args/vars must be set before graph_->add_task (concurrency: reactor thread's
@@ -434,12 +435,13 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
         }
     }
 
-    metadata_->create_task(task_id, name, inputs, outputs, "{}", required_capabilities, attribute_timeout);
+    metadata_->create_task(task_id, name, inputs, outputs, "{}", required_capabilities, attribute_timeout, priority);
     metadata_->set_write_context_hash(task_id, write_context_hash);
 
     TaskRequirements reqs;
     reqs.capabilities_ = required_capabilities;
     reqs.timeout_seconds_ = attribute_timeout;
+    reqs.priority_ = priority;
     graph_->add_task(task_id, inputs, reqs);
 
     // Pre-fetch dependency locations at submit time (earliest possible point).
@@ -1077,6 +1079,7 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
             TaskRequirements reqs;
             reqs.capabilities_ = task_opt4->required_capabilities_;
             reqs.timeout_seconds_ = task_opt4->attribute_timeout_;
+            reqs.priority_ = task_opt4->priority_;
             graph_->add_task(task_id, task_opt4->inputs_, reqs);
             metadata_->unassign_task(task_id);
             WARN("Recovered task from dead worker: task_id={}, name={}", task_id, task_opt4->name_);

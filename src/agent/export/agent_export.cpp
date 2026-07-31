@@ -101,8 +101,9 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                                              const fly::CMVector<fly::CMString>& required_capabilities,
                                                              float attribute_timeout,
                                                              const fly::CMString& write_context_hash,
-                                                             const fly::CMVector<fly::CMString>& vars) {
-        self.submit_task(task_id, name, module, args, inputs, outputs, required_capabilities, attribute_timeout, write_context_hash, vars);
+                                                             const fly::CMVector<fly::CMString>& vars,
+                                                             int priority) {
+        self.submit_task(task_id, name, module, args, inputs, outputs, required_capabilities, attribute_timeout, write_context_hash, vars, priority);
     })
     FLY_EXPORT_METHOD("register_database", [](fly::MasterAgent& self,
                                                 const fly::CMString& db_id,
@@ -263,8 +264,9 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
                                          const fly::CMVector<fly::CMString>& required_capabilities,
                                          float attribute_timeout,
                                          const fly::CMString& write_context_hash,
-                                         const fly::CMVector<fly::CMString>& vars) {
-        self.submit_task(name, module, args, inputs, required_capabilities, attribute_timeout, write_context_hash, vars);
+                                         const fly::CMVector<fly::CMString>& vars,
+                                         int priority) {
+        self.submit_task(name, module, args, inputs, required_capabilities, attribute_timeout, write_context_hash, vars, priority);
     })
     FLY_EXPORT_METHOD("take_pending_task_vars", [](fly::WorkerAgent& self) -> fly::CMVector<fly::VarPayload> {
         return self.take_pending_task_vars();

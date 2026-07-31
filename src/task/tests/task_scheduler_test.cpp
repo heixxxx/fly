@@ -19,6 +19,14 @@ static TaskRequirements caps_timeout(CMVector<CMString> c, float timeout) {
     return r;
 }
 
+// 构造含 capabilities + priority 的 TaskRequirements（照抄 caps_timeout 范式）
+static TaskRequirements caps_priority(CMVector<CMString> c, int priority) {
+    TaskRequirements r;
+    r.capabilities_ = std::move(c);
+    r.priority_ = priority;
+    return r;
+}
+
 TEST(TaskSchedulerTest, ScheduleNoReadyTasks) {
     DependencyGraph graph;
     WorkerManager manager;
@@ -742,5 +750,68 @@ TEST(TaskSchedulerTest, LocalityNoCapabilityMatchStaysWaiting) {
     auto result = scheduler.schedule_next();
 
     EXPECT_FALSE(result.scheduled_);  // 无 capability 匹配，locality 不应绕过
+}
+
+// ===== Task Priority 调度测试 =====
+// get_ready_tasks 按 (priority desc, task_id asc) 排序：高优先级先调度，同优先级内 FIFO。
+// head-of-line skip：高优先级 task 若无可匹配 worker，跳过它调度低优先级（不阻塞）。
+
+// P1: priority 高的 task 先被调度（多 worker 空闲，多 task 优先级不同）。
+TEST(TaskSchedulerTest, PriorityOrdersReadyTasks) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    // task 1 (priority=10 默认), task 2 (priority=15), task 3 (priority=20)
+    graph.add_task(1, {}, caps_priority({}, 10));
+    graph.add_task(2, {}, caps_priority({}, 15));
+    graph.add_task(3, {}, caps_priority({}, 20));
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+    manager.register_worker(2, "127.0.0.1", 8081, {});
+
+    TaskScheduler scheduler(&graph, &manager);
+    auto results = scheduler.schedule_all_available();
+
+    ASSERT_EQ(results.size(), 2u);
+    EXPECT_EQ(results[0].task_id_, 3);   // priority=20 先调度
+    EXPECT_EQ(results[1].task_id_, 2);   // priority=15 次之
+    // task 1 (priority=10) 因 worker 不够（仅 2 个 worker）未调度
+}
+
+// P2: 同 priority 内按 task_id 升序（回归保护，等价现有 FIFO 行为）。
+TEST(TaskSchedulerTest, PriorityEqualFallsBackToTaskId) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    // 三个 task 都 priority=10（默认值），应按 task_id 升序调度（现状 FIFO）
+    graph.add_task(1, {}, caps_priority({}, 10));
+    graph.add_task(2, {}, caps_priority({}, 10));
+    graph.add_task(3, {}, caps_priority({}, 10));
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+    manager.register_worker(2, "127.0.0.1", 8081, {});
+
+    TaskScheduler scheduler(&graph, &manager);
+    auto results = scheduler.schedule_all_available();
+
+    ASSERT_EQ(results.size(), 2u);
+    EXPECT_EQ(results[0].task_id_, 1);   // task_id 升序
+    EXPECT_EQ(results[1].task_id_, 2);
+}
+
+// P3: head-of-line skip —— 高优先级 task 缺 capability 跳过，不阻塞低优先级。
+TEST(TaskSchedulerTest, PrioritySkipDoesNotBlockLower) {
+    DependencyGraph graph;
+    WorkerManager manager;
+
+    // task 1 priority=15 但需要 gpu（无 gpu worker）→ 跳过
+    graph.add_task(1, {}, caps_priority({"gpu"}, 15));
+    // task 2 priority=10 无 capability 要求 → 应被调度（不被 task 1 阻塞）
+    graph.add_task(2, {}, caps_priority({}, 10));
+    manager.register_worker(1, "127.0.0.1", 8080, {});  // 无 gpu
+
+    TaskScheduler scheduler(&graph, &manager);
+    auto results = scheduler.schedule_all_available();
+
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_EQ(results[0].task_id_, 2);   // task 1 因缺 capability 跳过，task 2 调度
 }
 }  // namespace fly

@@ -55,10 +55,11 @@ FLY_EXPORT_CLASS(fly::DependencyGraph, "EXTaskDependencyGraph")
     FLY_EXPORT_METHOD("add_task", [](fly::DependencyGraph& self, uint64_t task_id, const fly::CMVector<fly::CMString>& inputs) {
         self.add_task(task_id, inputs);
     })
-    FLY_EXPORT_METHOD("add_task_with_requirements", [](fly::DependencyGraph& self, uint64_t task_id, const fly::CMVector<fly::CMString>& inputs, const fly::CMVector<fly::CMString>& required_capabilities, float attribute_timeout) {
+    FLY_EXPORT_METHOD("add_task_with_requirements", [](fly::DependencyGraph& self, uint64_t task_id, const fly::CMVector<fly::CMString>& inputs, const fly::CMVector<fly::CMString>& required_capabilities, float attribute_timeout, int priority) {
         fly::TaskRequirements reqs;
         reqs.capabilities_ = required_capabilities;
         reqs.timeout_seconds_ = attribute_timeout;
+        reqs.priority_ = priority;
         self.add_task(task_id, inputs, reqs);
     })
     FLY_EXPORT_METHOD("mark_data_ready", [](fly::DependencyGraph& self, const fly::CMString& data_path) {

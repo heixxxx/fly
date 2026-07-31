@@ -124,7 +124,18 @@ void DependencyGraph::mark_data_removed(const CMString& data_path) {
 CMVector<uint64_t> DependencyGraph::get_ready_tasks() const {
     std::lock_guard<std::mutex> lock(mutex_);
     CMVector<uint64_t> result(ready_tasks_.begin(), ready_tasks_.end());
-    std::sort(result.begin(), result.end());
+    // 按 (priority desc, task_id asc) 排序：高优先级先调度，同优先级内 FIFO。
+    // 读 task_requirements_ 由 mutex_ 保护（add_task/remove_task 同持此锁），线程安全。
+    std::sort(result.begin(), result.end(),
+        [this](uint64_t a, uint64_t b) {
+            int pa = 10, pb = 10;   // 默认 priority=10
+            auto ita = task_requirements_.find(a);
+            auto itb = task_requirements_.find(b);
+            if (ita != task_requirements_.end()) pa = ita->second.priority_;
+            if (itb != task_requirements_.end()) pb = itb->second.priority_;
+            if (pa != pb) return pa > pb;       // priority 降序
+            return a < b;                        // 同 priority 内 task_id 升序（FIFO）
+        });
     return result;
 }
 

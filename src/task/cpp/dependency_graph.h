@@ -24,6 +24,11 @@ struct TaskRequirements {
     // （TaskRequirements 不跨进程；跨进程消息用独立字段，见 message_types.h）。
     // 每个 entry = (worker_id, 该 worker 持有的输入数据总字节数)。
     CMVector<std::pair<uint64_t, int64_t>> locality_hint_{};
+
+    // 任务优先级：数值越大越优先调度。默认 10（中点值，可双向调节：<10 让路，>10 抢先）。
+    // 仅影响 ready task 的调度顺序（get_ready_tasks 按 priority 降序 + task_id 升序排）。
+    // head-of-line skip：高优先级 task 若无可匹配 worker，跳过它调度低优先级（不阻塞）。
+    int priority_ = 10;
 };
 
 class DependencyGraph {

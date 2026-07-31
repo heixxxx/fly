@@ -3,6 +3,27 @@
 ---
 ---
 
+## 2026-07-31: Task Priority（任务优先级）实现
+
+### 背景
+`docs/roadmap.md` §五 [F5] 标注 P1。scheduler 此前纯 FIFO（task_id 升序），无法表达"多流程并行时某条流程更重要""后台清理让路"等优先级需求。
+
+### 改动
+- `TaskRequirements` 加 `int priority_ = 10`（默认中点值，双向可调：<10 让路，>10 抢先）。
+- `get_ready_tasks()` 按 `(priority desc, task_id asc)` 排序；head-of-line skip（高优先级缺 worker 不阻塞低优先级）。
+- 全链路透传：TaskMetadata（崩溃恢复）+ TaskSubmitMessage（worker→master 递归提交）+ Python `@as_task(priority=N)` 独立关键字。
+- 完全向后兼容：所有现有 task 默认 10（同值），排序退化为 task_id 升序 = 现状 FIFO。
+
+### 新增/更新文档
+- 新增 [`docs/priority-scheduling-design.md`](priority-scheduling-design.md) — 设计方案 + 新旧示例
+- 更新 `docs/roadmap.md` — [F5] 标记 ✅ 已完成
+- 更新 `docs/architecture.md` §3.2 — 任务调度策略补 priority 说明
+
+### 关键结论
+默认值取中点 10（非 0），让优先级双向可调。决定向后兼容性的是"默认值是否全部一致"，而非值为多少。
+
+---
+
 ## 2026-07-22: DB Merge 设计方案（v3 — 对齐设计契约 + 主动 API）
 
 ### 背景

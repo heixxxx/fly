@@ -30,7 +30,8 @@ class FlyAgent(ABC):
     @abstractmethod
     def submit(self, name: str, module: str, args: list,
                inputs: list = None,
-               write_context_hash: str = "") -> int:
+               write_context_hash: str = "",
+               priority: int = 10) -> int:
         raise NotImplementedError
 
     @abstractmethod
@@ -150,7 +151,8 @@ class Master(FlyAgent):
                required_capabilities: list = None,
                attribute_timeout: float = -1.0,
                write_context_hash: str = "",
-               vars: list = None) -> int:
+               vars: list = None,
+               priority: int = 10) -> int:
         with self._lock:
             self._task_counter += 1
             task_id = self._task_counter
@@ -161,7 +163,7 @@ class Master(FlyAgent):
         self._agent.submit_task_with_requirements(
             task_id, name, module, args, inputs or [], [],
             required_capabilities or [], attribute_timeout, write_context_hash,
-            vars or [])
+            vars or [], priority)
         DBG(f"Task submitted: id={task_id}, name={name}, "
             f"requires={required_capabilities}, attr_timeout={attribute_timeout}, "
             f"vars={vars}")
@@ -730,12 +732,13 @@ class Worker(FlyAgent):
                required_capabilities: list = None,
                attribute_timeout: float = -1.0,
                write_context_hash: str = "",
-               vars: list = None) -> int:
+               vars: list = None,
+               priority: int = 10) -> int:
         return self._agent.submit_task(name, module, args, inputs or [],
                                        required_capabilities or [],
                                        attribute_timeout,
                                        write_context_hash,
-                                       vars or [])
+                                       vars or [], priority)
 
     def get_database(self, db_id: str):
         if db_id not in self._db_cache:

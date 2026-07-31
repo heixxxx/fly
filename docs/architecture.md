@@ -186,7 +186,8 @@ def next_task(db, name):
 ```
 
 **任务调度策略**：
-- 默认策略：FIFO
+- 默认策略：FIFO（同优先级内按 task_id 升序）
+- 任务优先级（`priority`，默认 10）：`@as_task(priority=N)` 设置，数值越大越优先调度。`get_ready_tasks()` 按 `(priority desc, task_id asc)` 排序。head-of-line skip：高优先级 task 若暂无可匹配 worker（如缺 capability），跳过它继续调度低优先级（不阻塞）。默认 10 取中点值，可双向调节：<10 让路，>10 抢先。全链路透传（TaskMetadata 崩溃恢复 + TaskSubmitMessage 递归提交）。详见 [`priority-scheduling-design.md`](priority-scheduling-design.md)。
 - 数据 locality 调度（Config `locality_scheduling_enabled`，默认 1 开启）：启用后 scheduler 按 worker 持有的输入数据总量（score）选亲和性最优的 idle worker。三阶段算法：① capability 完整匹配优先（强约束）；② locality 偏好（score 最大且不降低 capability 质量）；③ 兜底（allow_degrade）。**分层无环**：master 在 `schedule_tasks()` 入口按 task 依赖预计算 `locality_hint_`（POD，worker_id→持有字节数）注入 graph，scheduler 只消费此 hint，不接触 DataService（见 [`locality-decoupling-fix-plan.md`](locality-decoupling-fix-plan.md)）。持久 score 缓冲区复用。
 - 核心约束：Worker同一时刻最多执行一个任务
 

@@ -27,6 +27,7 @@ struct TaskMetadata {
     CMString config_;
     CMVector<CMString> required_capabilities_;
     float attribute_timeout_ = -1.0f;  // <0=死等, 0=立即降级, >0=限时降级
+    int priority_ = 10;                // 任务优先级（worker 崩溃恢复时还原）
     uint64_t created_at_ = 0;
     uint64_t started_at_ = 0;
     uint64_t completed_at_ = 0;
@@ -45,7 +46,8 @@ public:
                      const CMVector<CMString>& outputs,
                      const CMString& config,
                      const CMVector<CMString>& required_capabilities = {},
-                     float attribute_timeout = -1.0f);
+                     float attribute_timeout = -1.0f,
+                     int priority = 10);
 
     void update_task_status(uint64_t task_id, TaskStatus status);
     void set_error(uint64_t task_id, const CMString& error);
