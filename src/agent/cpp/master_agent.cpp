@@ -759,10 +759,8 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
         worker_to_conn_[worker_id] = conn_id;
     }
 
-    worker_to_hostname_[worker_id] = msg.hostname_;
-    worker_to_ip_[worker_id] = msg.ip_address_;
-
-    worker_manager_->register_worker(worker_id, host_, port_, msg.attributes_);
+    worker_manager_->register_worker(worker_id, host_, port_, msg.attributes_,
+                                      msg.hostname_, msg.ip_address_);
 
     DataService::instance();
     if (msg.data_server_port_ > 0) {
@@ -822,14 +820,9 @@ void MasterAgent::record_worker_info(const CMString& object_name, const CMString
         hostname = ProcessInfo::instance()->hostname();
         ip = host_;
     } else {
-        auto host_it = worker_to_hostname_.find(worker_id);
-        if (host_it != worker_to_hostname_.end()) {
-            hostname = host_it->second;
-        }
-        auto ip_it = worker_to_ip_.find(worker_id);
-        if (ip_it != worker_to_ip_.end()) {
-            ip = ip_it->second;
-        }
+        // hostname/ip 统一从 WorkerManager 取（受 mutex_ 保护，消除原并行 map 的无锁访问）。
+        hostname = worker_manager_->get_hostname(worker_id);
+        ip = worker_manager_->get_ip_address(worker_id);
     }
 
     if (hostname.empty()) return;
@@ -1064,14 +1057,20 @@ CMVector<uint64_t> MasterAgent::get_connected_workers() const {
 
 CMVector<std::pair<uint64_t, CMString>> MasterAgent::get_worker_hostnames() const {
     CMVector<std::pair<uint64_t, CMString>> result;
-    for (const auto& [worker_id, hostname] : worker_to_hostname_) {
-        result.push_back({worker_id, hostname});
+    // 遍历 WorkerManager（hostname 已收编进 WorkerInfo），取代原并行 map。
+    for (const auto& info : worker_manager_->get_all_workers()) {
+        result.push_back({info.worker_id_, info.hostname_});
     }
     return result;
 }
 
 void MasterAgent::add_worker_hostname(uint64_t worker_id, const CMString& hostname) {
-    worker_to_hostname_[worker_id] = hostname;
+    // 转发到 WorkerManager（hostname 收编进 WorkerInfo）。若 worker 未注册则先注册，
+    // 兼容测试在无网络注册流程下直接设置拓扑的场景。
+    if (!worker_manager_->get_worker(worker_id)) {
+        worker_manager_->register_worker(worker_id, "", 0, {});
+    }
+    worker_manager_->set_hostname(worker_id, hostname);
 }
 
 size_t MasterAgent::get_connection_count() const {
@@ -1745,8 +1744,8 @@ void MasterAgent::rebuild_remote_idx(const CMString& db_id,
     }
 
     CMUnorderedMap<CMString, CMVector<uint64_t>> hostname_to_new_workers;
-    for (const auto& [worker_id, hostname] : worker_to_hostname_) {
-        hostname_to_new_workers[hostname].push_back(worker_id);
+    for (const auto& info : worker_manager_->get_all_workers()) {
+        hostname_to_new_workers[info.hostname_].push_back(info.worker_id_);
     }
 
     for (const auto& w : workers) {
@@ -2066,25 +2065,21 @@ void MasterAgent::on_backup_request(uint64_t conn_id, const BackupRequestMessage
 uint64_t MasterAgent::select_backup_worker(uint64_t source_worker_id) {
     std::lock_guard<std::mutex> lk(workers_mutex_);
 
-    CMString source_hostname;
-    auto host_it = worker_to_hostname_.find(source_worker_id);
-    if (host_it != worker_to_hostname_.end()) {
-        source_hostname = host_it->second;
-    }
+    // hostname + status 统一来自 WorkerInfo（一次遍历，取代原 hostname map 遍历
+    // + 逐个 get_worker 查 status 的双源 join）。
+    CMString source_hostname = worker_manager_->get_hostname(source_worker_id);
 
     uint64_t fallback_worker = 0;
-    for (const auto& [worker_id, hostname] : worker_to_hostname_) {
-        if (worker_id == source_worker_id) continue;
-        if (worker_id == 0) continue;
+    for (const auto& info : worker_manager_->get_all_workers()) {
+        if (info.worker_id_ == source_worker_id) continue;
+        if (info.worker_id_ == 0) continue;
+        if (info.status_ == WorkerStatus::DEAD) continue;
 
-        auto worker_info_opt = worker_manager_->get_worker(worker_id);
-        if (!worker_info_opt || worker_info_opt->get().status_ == WorkerStatus::DEAD) continue;
-
-        if (hostname != source_hostname) {
-            return worker_id;
+        if (info.hostname_ != source_hostname) {
+            return info.worker_id_;
         }
         if (fallback_worker == 0) {
-            fallback_worker = worker_id;
+            fallback_worker = info.worker_id_;
         }
     }
 

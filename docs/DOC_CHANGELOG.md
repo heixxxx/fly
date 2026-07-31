@@ -3,6 +3,26 @@
 ---
 ---
 
+## 2026-07-31: WorkerInfo 收编 hostname/ip — 消除 worker 数据 4 容器散落 + 并发隐患
+
+### 背景
+worker 的网络拓扑属性（hostname/ip）此前散落在 master 的 2 个并行 map（`worker_to_hostname_`/`worker_to_ip_`），与 `WorkerManager::WorkerInfo`（持有 status/capabilities/heartbeat 等调度状态）分离。`add_worker_hostname`/`get_worker_hostnames` 等 API 横跨两套数据源。
+
+### 改动
+- `WorkerInfo`（`task/cpp/worker_manager.h`）新增 `hostname_`/`ip_address_` 字段。
+- `WorkerManager::register_worker` 增加 hostname/ip 参数（带默认值，兼容旧调用）；新增 `set_hostname`/`get_hostname`/`get_ip_address`，统一受 `mutex_` 保护。
+- master 删除 `worker_to_hostname_`/`worker_to_ip_` 两个并行 map，所有读取改经 WorkerManager。
+- `select_backup_worker` 从原"hostname map 遍历 + 逐个 get_worker 查 status 的双源 join"简化为一次 `get_all_workers()` 遍历（WorkerInfo 同时含 hostname+status）。
+- `add_worker_hostname`/`get_worker_hostnames` API 保留（转发到 WorkerManager），测试无需改动。
+
+### 修复的并发隐患
+原 `worker_to_hostname_`/`worker_to_ip_` 的所有访问（注册写、record_worker_info 读、backup/rebuild 遍历）**均无锁**，reactor 线程注册 worker 写 hostname 与其他线程读存在数据竞争。收编进 WorkerInfo 后由 `WorkerManager::mutex_` 统一保护（`get_all_workers`/`get_hostname` 锁内拷贝返回）。
+
+### 文档影响
+无活跃文档描述 `fly::WorkerInfo` 字段清单或 `worker_to_hostname_` map（`docs/db-merge-design.md` 引用的 `get_worker_hostnames()` API 签名不变，仍准确）。`docs/adr/0001` 等历史文档提及的 `WorkerInfo` 是 storage 模块的 db_meta 持久化结构（同名不同物），不受影响。
+
+---
+
 ## 2026-07-31: WriteRecord 合并 current_writes_/sizes_ + 修复 TaskComplete size 上报死代码
 
 ### 背景

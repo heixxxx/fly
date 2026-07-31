@@ -329,8 +329,9 @@ private:
 
     std::atomic<bool> fatal_error_{false};
 
-    CMUnorderedMap<uint64_t, CMString> worker_to_hostname_;
-    CMUnorderedMap<uint64_t, CMString> worker_to_ip_;
+    // worker 的 hostname/ip 已收编进 WorkerManager::WorkerInfo（受其 mutex_ 保护），
+    // 不再单独维护并行 map——消除原 worker_to_hostname_/worker_to_ip_ 的无锁数据竞争。
+
     CMUnorderedSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
     mutable std::mutex recorded_workers_mutex_;
 

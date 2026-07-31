@@ -5,7 +5,8 @@
 namespace fly {
 
 void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
-                                      uint16_t port, const CMVector<CMString>& capabilities) {
+                                      uint16_t port, const CMVector<CMString>& capabilities,
+                                      const CMString& hostname, const CMString& ip_address) {
     std::lock_guard<std::mutex> lock(mutex_);
     WorkerInfo info;
     info.worker_id_ = worker_id;
@@ -16,6 +17,8 @@ void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
     info.last_heartbeat_ = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     info.current_task_id_ = 0;
+    info.hostname_ = hostname;
+    info.ip_address_ = ip_address;
     workers_[worker_id] = info;
 }
 
@@ -98,6 +101,35 @@ void WorkerManager::update_capabilities(uint64_t worker_id,
             caps.erase(cit);
         }
     }
+}
+
+void WorkerManager::set_hostname(uint64_t worker_id, const CMString& hostname, const CMString& ip_address) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = workers_.find(worker_id);
+    if (it != workers_.end()) {
+        it->second.hostname_ = hostname;
+        if (!ip_address.empty()) {
+            it->second.ip_address_ = ip_address;
+        }
+    }
+}
+
+CMString WorkerManager::get_hostname(uint64_t worker_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = workers_.find(worker_id);
+    if (it != workers_.end()) {
+        return it->second.hostname_;
+    }
+    return "";
+}
+
+CMString WorkerManager::get_ip_address(uint64_t worker_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = workers_.find(worker_id);
+    if (it != workers_.end()) {
+        return it->second.ip_address_;
+    }
+    return "";
 }
 
 std::optional<std::reference_wrapper<WorkerInfo>> WorkerManager::get_worker(uint64_t worker_id) {
