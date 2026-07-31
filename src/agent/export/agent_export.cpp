@@ -125,30 +125,6 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     FLY_EXPORT_METHOD("get_idle_workers", &fly::MasterAgent::get_idle_workers)
     FLY_EXPORT_METHOD("get_port", &fly::MasterAgent::get_port)
     FLY_EXPORT_METHOD("get_data_server_port", &fly::MasterAgent::get_data_server_port)
-    FLY_EXPORT_DEF("request_remote_data", [](fly::MasterAgent& self, const fly::CMString& object_name) -> fly_export::tuple {
-        auto [found, data, py_name, can_still_produce] = self.request_remote_data(object_name);
-        if (!found) return fly_export::make_tuple(
-            fly_export::bytes(), fly::CMString());
-        return fly_export::make_tuple(
-            fly_export::bytes(data ? data->data() : "", data ? data->size() : 0),
-            py_name
-        );
-    })
-    FLY_EXPORT_METHOD("request_data_from_worker", [](fly::MasterAgent& self,
-                                                        const fly::CMString& host,
-                                                        int32_t port,
-                                                        const fly::CMString& object_name) -> fly_export::tuple {
-        auto pair = self.request_data_from_worker(host, port, object_name);
-        if (!pair.first) return fly_export::make_tuple(
-            fly_export::bytes(), fly::CMString());
-        auto& result = pair.second;
-        return fly_export::make_tuple(
-            fly_export::bytes(
-                result.data_buffer_.data(),
-                result.data_buffer_.size()),
-            result.py_name_
-        );
-    })
     FLY_EXPORT_METHOD("restart_failed_tasks", [](fly::MasterAgent& self, const fly::CMString& file_path) {
         self.restart_failed_tasks(file_path);
     })
@@ -305,21 +281,6 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     FLY_EXPORT_DEF("request_remote_data", [](fly::WorkerAgent& self, const fly::CMString& object_name) -> fly_export::tuple {
         auto [refreshed, can_still_produce] = self.request_remote_data(object_name);
         return fly_export::make_tuple(refreshed, can_still_produce);
-    })
-    FLY_EXPORT_METHOD("request_data_from_worker", [](fly::WorkerAgent& self,
-                                                        const fly::CMString& host,
-                                                        int32_t port,
-                                                        const fly::CMString& object_name) -> fly_export::tuple {
-        auto pair = self.request_data_from_worker(host, port, object_name);
-        if (!pair.first) return fly_export::make_tuple(
-            fly_export::bytes(), fly::CMString());
-        auto& result = pair.second;
-        return fly_export::make_tuple(
-            fly_export::bytes(
-                result.data_buffer_.data(),
-                result.data_buffer_.size()),
-            result.py_name_
-        );
     })
     FLY_EXPORT_METHOD("request_db_path", [](fly::WorkerAgent& self,
                                                const fly::CMString& db_id) -> bool {

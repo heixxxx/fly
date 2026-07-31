@@ -1,5 +1,4 @@
 #include <agent/cpp/master_agent.h>
-#include <agent/cpp/data_fetch.h>
 #include <log/cpp/logger.h>
 #include <message/cpp/message_macros.h>
 #include <message/cpp/message_registry.h>
@@ -1536,31 +1535,6 @@ void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage
     schedule_tasks();
 
     INFO("RemoveRequest completed: object={}, workers_notified={}", msg.object_name_, worker_ids.size());
-}
-
-std::tuple<bool, FlyBufferPtr, CMString, bool> MasterAgent::request_remote_data(const CMString& object_name) {
-    DataService::instance();
-
-    auto info = DataService::instance()->lookup_remote_idx(object_name);
-    if (info.host_.empty()) {
-        bool has_pending = !graph_->get_pending_tasks().empty();
-        bool has_running = metadata_->has_tasks_with_status(TaskStatus::RUNNING);
-        return {false, nullptr, {}, has_pending || has_running};
-    }
-
-    auto [success, data, py_name, hash, error] = DataClient::request_compressed_data(info.host_, info.port_, object_name);
-
-    if (!success) {
-        ERR("request_remote_data compressed failed for {}: {}", object_name, error);
-        return {false, nullptr, {}, false};
-    }
-
-    return {true, data, std::move(py_name), false};
-}
-
-std::pair<bool, ReadResult> MasterAgent::request_data_from_worker(const CMString& host, int32_t port,
-                                                                   const CMString& object_name) {
-    return fetch_from_worker(host, port, object_name);
 }
 
 CMString MasterAgent::get_failed_tasks_file_path() const {

@@ -3,7 +3,6 @@
 #include <network/cpp/reactor.h>
 #include <network/cpp/connection_manager.h>
 #include <network/cpp/message_types.h>
-#include <network/cpp/data_client.h>
 #include <network/cpp/data_client_pool.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/data_service.h>
@@ -99,10 +98,6 @@ public:
     void on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg);
     void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
     CMSharedPtr<Database> get_or_create_database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0);
-
-    std::tuple<bool, FlyBufferPtr, CMString, bool> request_remote_data(const CMString& object_name);
-    std::pair<bool, ReadResult> request_data_from_worker(const CMString& host, int32_t port,
-                                         const CMString& object_name);
 
     void setup_write_context();
 

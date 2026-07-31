@@ -1,6 +1,5 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/compressor.h>
-#include <network/cpp/data_client.h>
 #include <serialization/cpp/object_header.h>
 #include <serialization/cpp/serialization_macros.h>
 #include <storage/cpp/object_cache.h>

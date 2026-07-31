@@ -3,7 +3,6 @@
 #include <network/cpp/reactor.h>
 #include <network/cpp/transport_interface.h>
 #include <network/cpp/message_types.h>
-#include <network/cpp/data_client.h>
 #include <network/cpp/data_client_pool.h>
 #include <network/cpp/metadata_client.h>
 #include <core/cpp/config.h>
@@ -113,8 +112,6 @@ public:
     CMSharedPtr<Database> get_database(const CMString& db_id) const;
     
     std::tuple<bool, bool> request_remote_data(const CMString& object_name);
-    std::pair<bool, ReadResult> request_data_from_worker(const CMString& host, int32_t port,
-                                                          const CMString& object_name);
 
     bool request_db_path(const CMString& db_id);
 

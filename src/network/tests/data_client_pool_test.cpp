@@ -9,7 +9,6 @@
 #include <storage/cpp/data_service.h>
 #include <serialization/cpp/object_header.h>
 #include <common/cpp/fly_buffer.h>
-#include <network/cpp/data_client.h>
 #include <network/cpp/data_client_pool.h>
 #include <network/cpp/net_quality_monitor.h>
 #include <common/cpp/error_types.h>

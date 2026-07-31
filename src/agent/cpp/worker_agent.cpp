@@ -8,10 +8,8 @@
 #include <core/cpp/process_info.h>
 #include <core/cpp/graceful_exit.h>
 #include <storage/cpp/data_service.h>
-#include <network/cpp/data_client.h>
 #include <network/cpp/data_client_pool.h>
 #include <network/cpp/metadata_client.h>
-#include <agent/cpp/data_fetch.h>
 #include <network/cpp/tcp_socket.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/net_quality_monitor.h>
@@ -766,11 +764,6 @@ std::tuple<bool, bool> WorkerAgent::request_remote_data(const CMString& object_n
     }
 
     return {true, location.can_still_produce_};
-}
-
-std::pair<bool, ReadResult> WorkerAgent::request_data_from_worker(const CMString& host, int32_t port,
-                                                                   const CMString& object_name) {
-    return fetch_from_worker(host, port, object_name, worker_id_);
 }
 
 void WorkerAgent::register_database(const CMString& db_id, CMSharedPtr<Database> db) {

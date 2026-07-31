@@ -36,7 +36,7 @@ public:
 };
 
 // Read exactly n bytes from fd (partial-read loop). Returns false on EOF/error.
-// Shared by DataClient, DataClientPool, and MetadataClient for frame reads.
+// Shared by DataClientPool and MetadataClient for frame reads.
 inline bool recv_exact(Transport* transport, int fd, char* buf, size_t n) {
     size_t received = 0;
     while (received < n) {
