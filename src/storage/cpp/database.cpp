@@ -543,6 +543,13 @@ CMString Database::get_data_path() const {
     return data_path_;
 }
 
+void Database::set_paths(const CMString& base_path, const CMString& data_path) {
+    // Merge 产物落到新路径：更新本对象 + re-register 进 DataService（upsert db_paths_）。
+    base_path_ = base_path;
+    data_path_ = data_path;
+    fly::DataService::instance()->register_database(db_id_, base_path_, data_path_, writer_id_);
+}
+
 CMString Database::get_writer_id() const {
     return writer_id_;
 }

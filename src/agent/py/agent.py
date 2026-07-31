@@ -301,13 +301,14 @@ class Master(FlyAgent):
         if not self._running:
             self.start()
 
-        temp_db = _Database(path)
-        meta = temp_db.load_meta()
+        # 静态读 _DB_META（不构造 Database，避免与 register_database 建的权威 Database
+        # 共享 DataService::db_paths_ 导致析构竞争 erase）。
+        meta = _Database.load_meta_from_path(path)
         if not meta or not meta.db_id:
             raise RuntimeError(f"No valid _DB_META found at {path}")
 
-        # Phase 1: Master self-recovery — register db paths, no idx loading
-        temp_db._db.set_db_id(meta.db_id)
+        # Phase 1: Master self-recovery — register db paths, no idx loading.
+        # register_database 内部构造权威 Database 插入 db_instances_（路径唯一权威源）。
         self._agent.register_database(meta.db_id, path, "")
 
         # Phase 2: Assign workers by hostname
@@ -360,7 +361,11 @@ class Master(FlyAgent):
 
         # 流程 message：load_db 恢复完成（系统就绪里程碑）。
         message("STOR::0003", 1, f"load_db done: path={path}")
-        return temp_db
+        # 返回权威 Database 句柄：直接复用 db_instances_ 里的对象（register_database 已建），
+        # 不再单独构造临时 Database（避免析构 unregister DataService::db_paths_ 的竞争）。
+        db = _Database.__new__(_Database)
+        db._db = self._agent.get_database(meta.db_id)
+        return db
 
     def merge_db(self, path: str, data_path: str = "", base_path: str = "",
                  local_workers: int = 4, delete_source: bool = True):
@@ -572,16 +577,12 @@ class Master(FlyAgent):
                 merge_base_path, merge_data_path)
             INFO("merge_db: cleanup_after_merge done (broadcast + master state rebuilt)")
 
-        # 产物 db 句柄：用源 db_id 构造（保持 object_name = db_id:short 一致）。
-        # 用 with_id 避免生成新 db_id 触发 base_path 重复注册 ERROR。
+        # 产物 db 句柄：复用 cleanup_after_merge 在 db_instances_ 建好的权威 Database
+        # （用源 db_id，保持 object_name = db_id:short 一致）。不再单独构造临时 Database，
+        # 避免其析构 unregister DataService::db_paths_ 的竞争。
         # read_object 走 master remote_idx（merge task 已登记对象位置到 merge worker）。
-        try:
-            from _fly_storage import ex_stg_create_database_with_id
-            merged_db = _Database.__new__(_Database)
-            merged_db._db = ex_stg_create_database_with_id(
-                merge_base_path, merge_data_path, 0, db_id)
-        except ImportError:
-            merged_db = _Database(merge_base_path, merge_data_path)
+        merged_db = _Database.__new__(_Database)
+        merged_db._db = self._agent.get_database(db_id)
         INFO(f"merge_db: done, ok={ok}, merged_data at {merge_data_path}")
         # 流程 message：merge_db 完成（跨机数据集中里程碑）。
         message("STOR::0002", 1,

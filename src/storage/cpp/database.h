@@ -93,6 +93,9 @@ public:
     void set_db_id(const CMString& db_id);
     CMString get_base_path() const;
     CMString get_data_path() const;
+    // Merge-only：跨机数据集中后产物落在新路径，master 用它更新既有 Database 的路径，
+    // 同步 re-register 进 DataService（复用 set_db_id 的 upsert 模式）。非 merge 场景禁止调用。
+    void set_paths(const CMString& base_path, const CMString& data_path);
     CMString get_full_name(const CMString& name) const;
     CMString get_writer_id() const;
 

@@ -120,10 +120,11 @@ void MasterAgent::start() {
             DbPathResponseMessage response;
             response.db_id_ = msg.db_id_;
 
-            auto it = db_registry_.find(msg.db_id_);
-            if (it != db_registry_.end()) {
-                response.base_path_ = it->second["base_path"];
-                response.data_path_ = it->second["data_path"];
+            // 路径权威源收敛到 db_instances_（Database 内嵌 base_path_/data_path_）。
+            auto it = db_instances_.find(msg.db_id_);
+            if (it != db_instances_.end()) {
+                response.base_path_ = it->second->get_base_path();
+                response.data_path_ = it->second->get_data_path();
                 response.success_ = true;
             } else {
                 response.base_path_ = "";
@@ -1104,11 +1105,10 @@ CMString MasterAgent::get_task_error(uint64_t task_id) const {
 
 void MasterAgent::register_database(const CMString& db_id, const CMString& base_path, const CMString& data_path) {
     INFO("register_database: db_id={}, base_path={}, data_path={}", db_id, base_path, data_path);
-
-    CMUnorderedMap<CMString, CMString> path_info;
-    path_info["base_path"] = base_path;
-    path_info["data_path"] = data_path;
-    db_registry_[db_id] = path_info;
+    // Database 是 master 进程路径唯一权威源：构造对象插入 db_instances_，路径内嵌于对象，
+    // DataService::db_paths_ 由 Database 构造时自动 register。
+    auto db = CMMakeShared<Database>(base_path, data_path, 0, "", db_id);
+    db_instances_[db_id] = db;
 }
 
 bool MasterAgent::is_db_frozen(const CMString& db_id) const {
@@ -1168,12 +1168,17 @@ void MasterAgent::rollback_pending_frozen(uint64_t task_id) {
 }
 
 CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& base_path, const CMString& data_path, uint64_t writer_id) {
+    // Database 是 master 进程 DB 路径的【唯一权威源】：路径内嵌于对象，DataService::db_paths_
+    // 由 Database 构造时自动 register，无需手动双写第二份字符串副本。
     auto db = CMMakeShared<Database>(base_path, data_path, writer_id);
     CMString db_id = db->get_db_id();
     db_instances_[db_id] = db;
-    db_registry_[db_id]["base_path"] = base_path;
-    db_registry_[db_id]["data_path"] = data_path;
     return db;
+}
+
+CMSharedPtr<Database> MasterAgent::get_database(const CMString& db_id) const {
+    auto it = db_instances_.find(db_id);
+    return it != db_instances_.end() ? it->second : nullptr;
 }
 
 CMVector<uint64_t> MasterAgent::get_idle_workers() const {
@@ -1853,14 +1858,13 @@ void MasterAgent::on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg
     }
 
     // Master reads the same idx files from shared filesystem and updates remote_idx_
-    auto it = db_registry_.find(msg.db_id_);
-    if (it == db_registry_.end()) {
+    auto it = db_instances_.find(msg.db_id_);
+    if (it == db_instances_.end()) {
         ERR("IdxLoadAck: unknown db_id={}", msg.db_id_);
         return;
     }
 
-    const CMString& base_path = it->second["base_path"];
-    rebuild_remote_idx_for_worker(msg.db_id_, base_path, msg.loaded_writer_ids_, msg.worker_id_);
+    rebuild_remote_idx_for_worker(msg.db_id_, it->second->get_base_path(), msg.loaded_writer_ids_, msg.worker_id_);
 }
 
 void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg) {
@@ -2245,17 +2249,14 @@ void MasterAgent::send_delete_data(uint64_t source_worker_id,
     DeleteDataMessage msg;
     msg.db_id_ = db_id;
     msg.base_path_ = base_path;
-    // data_path：显式传入优先；否则从 master db_registry 查（删源在 cleanup 前执行，
-    // 此时 db_registry 仍是源的 data_path）。
+    // data_path：显式传入优先；否则从 master db_instances_ 查（删源在 cleanup 前执行，
+    // 此时 Database 仍是源的 data_path）。
     if (!data_path.empty()) {
         msg.data_path_ = data_path;
     } else {
-        auto it = db_registry_.find(db_id);
-        if (it != db_registry_.end()) {
-            auto dp_it = it->second.find("data_path");
-            if (dp_it != it->second.end()) {
-                msg.data_path_ = dp_it->second;
-            }
+        auto it = db_instances_.find(db_id);
+        if (it != db_instances_.end()) {
+            msg.data_path_ = it->second->get_data_path();
         }
     }
     msg.writer_ids_ = writer_ids;
@@ -2423,8 +2424,19 @@ void MasterAgent::cleanup_after_merge(const CMString& db_id,
         ++rebuilt;
     }
 
-    // 5. 更新 db_registry_[db_id] 指向 merge 路径。
-    register_database(db_id, merge_base_path, merge_data_path);
+    // 5. 更新 db_instances_[db_id] 的 Database 路径指向 merge 路径。
+    //    Database 是 master 进程路径唯一权威源；set_paths 同步 re-register 进
+    //    DataService::db_paths_（merge 前旧 Database 析构会 unregister，但新值紧随 upsert）。
+    //    _VARS 存在共享 base_path（merge 后默认不变），重建对象构造时仍会从原位加载，var 状态不丢。
+    auto db_it = db_instances_.find(db_id);
+    if (db_it != db_instances_.end()) {
+        db_it->second->set_paths(merge_base_path, merge_data_path);
+    } else {
+        // merge 产物句柄由 Python 经 ex_stg_create_database_with_id 构造，未进 master
+        // db_instances_。这里用同 db_id 重建并登记，保证 master 路径权威源与新路径一致。
+        auto db = CMMakeShared<Database>(merge_base_path, merge_data_path, 0, "", db_id);
+        db_instances_[db_id] = db;
+    }
 
     // 6. 清理本批 merge task 状态（wait_merge_tasks_complete 推迟到此处 erase）。
     {
@@ -2439,7 +2451,7 @@ void MasterAgent::cleanup_after_merge(const CMString& db_id,
     }
 
     INFO("cleanup_after_merge: done, db_id={}, rebuilt remote_idx for {} objects (precise worker mapping), "
-         "local_idx cleared, db_registry updated to base={} data={}",
+         "local_idx cleared, db_instances_ path updated to base={} data={}",
          db_id, rebuilt, merge_base_path, merge_data_path);
 }
 

@@ -89,6 +89,9 @@ public:
     uint16_t get_port() const { return port_; }
     int32_t get_data_server_port() const { return data_server_port_; }
 
+    // 登记一个【外部已知 db_id】的 db 路径（master 自写用 get_or_create_database 自动生成 id；
+    // 此处用于 load/merge 等已从 _DB_META 读出 db_id 的场景）。Database 是路径唯一权威源，
+    // 故内部构造 Database 插入 db_instances_（替代原 db_registry_ 字符串副本）。
     void register_database(const CMString& db_id, const CMString& base_path, const CMString& data_path = "");
     bool is_db_frozen(const CMString& db_id) const;
     // 非 stream 模式 pending frozen 状态机（WP1）。
@@ -101,6 +104,9 @@ public:
     void on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg);
     void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
     CMSharedPtr<Database> get_or_create_database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0);
+    // 取 db_instances_ 里的权威 Database（load_db/merge 复用，避免 Python 端再构造一个
+    // 会触发 DataService::unregister 析构副作用的临时 Database）。miss 返回 nullptr。
+    CMSharedPtr<Database> get_database(const CMString& db_id) const;
 
     void setup_write_context();
 
@@ -150,7 +156,8 @@ public:
     //  2. 清 master 自身 DataService local_idx_[db_id]（restore_master_idx 灌入的源 entry）
     //  3. 清 master remote_idx_ 里指向源 worker 的 replica（保留 merge worker replica），
     //     避免首读试源 worker（源下线时卡 30s 网络超时）
-    //  4. 更新 db_registry_[db_id] 指向 merge 路径（让后续 DbPathRequest 返回正确路径）
+    //  4. 更新 db_instances_[db_id] 的 Database 路径（set_paths）指向 merge 路径，
+    //     让后续 DbPathRequest 返回正确路径（Database 现是 master 进程路径唯一权威源）。
     // 不清 ObjectCache（数据内容未变，cache 是正确副本）。
     void cleanup_after_merge(const CMString& db_id,
                               const CMVector<CMString>& merged_object_full_names,
@@ -218,7 +225,9 @@ private:
     CMUnorderedMap<uint64_t, CMUnorderedMap<CMString, CachedLocation>> task_dependency_locations_;
     mutable std::mutex dep_loc_mutex_;
 
-    CMUnorderedMap<CMString, CMUnorderedMap<CMString, CMString>> db_registry_;
+    // db_instances_ 是 master 进程内 DB 路径的【唯一权威源】（收敛自原 db_registry_ 字符串副本）。
+    // Database 对象内嵌 base_path_/data_path_（merge 后用 set_paths 更新），DbPathRequest/
+    // IdxLoadAck/send_delete_data 均从此读路径，消除手动双写与 merge 后副本分叉。
     CMUnorderedMap<CMString, CMSharedPtr<Database>> db_instances_;
     CMUnorderedSet<CMString> frozen_dbs_;
     // 非 stream 模式 pending frozen：db_id → task_id（待 task 完成确认）。

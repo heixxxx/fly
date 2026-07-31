@@ -139,6 +139,10 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                                       uint64_t writer_id) -> CMSharedPtr<Database> {
         return self.get_or_create_database(base_path, data_path, writer_id);
     })
+    FLY_EXPORT_METHOD("get_database", [](fly::MasterAgent& self,
+                                         const fly::CMString& db_id) -> CMSharedPtr<Database> {
+        return self.get_database(db_id);
+    })
     FLY_EXPORT_METHOD("get_pending_tasks", &fly::MasterAgent::get_pending_tasks)
     FLY_EXPORT_METHOD("get_running_tasks", &fly::MasterAgent::get_running_tasks)
     FLY_EXPORT_METHOD("get_completed_tasks", &fly::MasterAgent::get_completed_tasks)
