@@ -1385,16 +1385,16 @@ void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_n
     DataWriter* writer = get_or_create_merge_writer(base_path, target_data_path);
     ds->register_database(db_id, base_path, target_data_path, writer->writer_id());
 
-    // 4. 落盘（零解压直写 .dat + idx）。
+    // 4. 落盘（零解压直写 .dat + idx）。LocalIndex 只存 short_name。
     ds->on_write_started(db_id, full);
     CMString merge_hash = source_hash;
-    writer->write_record(full, header.total_size_, header.chunk_count_, *comp_data, merge_hash);
+    writer->write_record(short_name, header.total_size_, header.chunk_count_, *comp_data, merge_hash);
     writer->flush();
 
     // 5. 登记 local_idx_（让本 worker 的 DataServer / read_raw_compressed 能本地命中）。
     //    只登记本次 write_record 新写的 entry（get_last_entry），不登记从源 idx 加载的
     //    历史 entry（它们的 file_name_ 指向源 .dat，在本 worker 不存在）。
-    auto last_entry_opt = writer->get_last_entry(full);
+    auto last_entry_opt = writer->get_last_entry(short_name);
     if (last_entry_opt.has_value()) {
         CMVector<IndexEntry> new_entries;
         new_entries.push_back(last_entry_opt.value());

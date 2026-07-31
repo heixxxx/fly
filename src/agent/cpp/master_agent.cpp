@@ -1701,8 +1701,10 @@ CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_id,
 
     if (!entries.empty()) {
         DataService::instance()->restore_entries(db_id, entries);
+        // entry.object_name_ 是 short_name（LocalIndex 不再存 db_id 前缀），
+        // DependencyGraph 用 full_name 作 key，这里拼接。
         for (const auto& entry : entries) {
-            graph_->mark_data_ready(entry.object_name_);
+            graph_->mark_data_ready(db_id + ":" + entry.object_name_);
         }
         INFO("restore_master_idx: restored {} entries for db_id={}", entries.size(), db_id);
     }
@@ -1786,8 +1788,10 @@ void MasterAgent::rebuild_remote_idx(const CMString& db_id,
         auto addr = DataService::instance()->get_worker_address(new_worker_id);
 
         for (const auto& entry : entries) {
-            DataService::instance()->update_remote_idx(entry.object_name_, new_worker_id, addr.host_, addr.port_);
-            graph_->mark_data_ready(entry.object_name_);
+            // entry.object_name_ 是 short_name（LocalIndex 不再存 db_id 前缀），拼接 full。
+            CMString full = db_id + ":" + entry.object_name_;
+            DataService::instance()->update_remote_idx(full, new_worker_id, addr.host_, addr.port_);
+            graph_->mark_data_ready(full);
         }
         INFO("rebuild_remote_idx: mapped {} entries from writer_id={} to new worker_id={}",
              entries.size(), w.writer_id_, new_worker_id);
@@ -1840,8 +1844,10 @@ void MasterAgent::rebuild_remote_idx_for_worker(const CMString& db_id,
         auto entries = idx.get_all_entries();
 
         for (const auto& entry : entries) {
-            DataService::instance()->update_remote_idx(entry.object_name_, worker_id, addr.host_, addr.port_);
-            graph_->mark_data_ready(entry.object_name_);
+            // entry.object_name_ 是 short_name（LocalIndex 不再存 db_id 前缀），拼接 full。
+            CMString full = db_id + ":" + entry.object_name_;
+            DataService::instance()->update_remote_idx(full, worker_id, addr.host_, addr.port_);
+            graph_->mark_data_ready(full);
         }
         INFO("rebuild_remote_idx_for_worker: mapped {} entries from writer_id={} to worker_id={}",
              entries.size(), writer_id, worker_id);

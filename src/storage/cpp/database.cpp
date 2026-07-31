@@ -162,18 +162,21 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
     // 直接生效。mark_begin 记录 data 偏移回滚点，后续 mark_end 提交 /
     // abort_segment 回滚。WBQ 单线程串行，segment_active 判断与设置无竞态。
     bool in_task_context = fly::WorkerAgentContext::is_transaction_mode();
-    auto execute = [w, name = full, original_size, chunk_count, record, write_hash, in_task_context]() {
+    // LocalIndex 是 per-(db,writer) 的，idx 文件天然属于本 db，entry 只需存 short_name
+    // （db_id 前缀在同文件内 100% 冗余）。write_record/get_all_entries 传 short_name；
+    // DataService 层（on_write_completed/on_object_flushed）仍用 full_name 作 key。
+    auto execute = [w, short_name = object_name, original_size, chunk_count, record, write_hash, in_task_context]() {
         if (in_task_context && !w->segment_active()) {
             w->mark_begin();
         }
-        w->write_record(name, original_size, chunk_count, *record, write_hash);
+        w->write_record(short_name, original_size, chunk_count, *record, write_hash);
         w->flush();
     };
 
     auto complete = [full, db_id = this->db_id_, object_name,
                      caller_record_func, caller_backup_func, w, backup, compressed_size]() {
         auto ds = fly::DataService::instance();
-        auto entries = w->get_all_entries(full);
+        auto entries = w->get_all_entries(object_name);
         if (entries.has_value()) {
             ds->on_write_completed(db_id, full, entries.value());
         }
@@ -346,8 +349,8 @@ void Database::do_backup_write(const CMString& full, const CMString& object_name
     auto record = CMMakeShared<FlyBuffer>();
     record->take(std::move(compressed_data));
 
-    auto execute = [w, name = full, header, record, backup_hash]() {
-        w->write_record(name, header.total_size_, header.chunk_count_, *record, backup_hash);
+    auto execute = [w, short_name = object_name, header, record, backup_hash]() {
+        w->write_record(short_name, header.total_size_, header.chunk_count_, *record, backup_hash);
         w->flush();
     };
 
@@ -355,7 +358,7 @@ void Database::do_backup_write(const CMString& full, const CMString& object_name
                      caller_record_func, w, saved_hash, backup_compressed_size]() {
         fly::WorkerAgentContext::set_current_write_hash(saved_hash);
         auto dsvc = fly::DataService::instance();
-        auto entries = w->get_all_entries(full);
+        auto entries = w->get_all_entries(object_name);
         if (entries.has_value()) {
             dsvc->on_write_completed(db_id, full, entries.value());
         }
@@ -422,7 +425,8 @@ void Database::remove_object(const CMString& object_name) {
 
     fly::WorkerAgentContext::request_remove(db_id_, object_name);
 
-    writer_->remove_entry(full);
+    // LocalIndex 只存 short_name（idx 文件天然属于本 db）。
+    writer_->remove_entry(object_name);
 
     fly::DataService::instance()->remove_local_index(full);
 
@@ -434,7 +438,7 @@ void Database::remove_object(const CMString& object_name) {
 void Database::remove_index_entry(const CMString& object_name) {
     CMString full = full_name(object_name);
     removed_objects_.insert(full);
-    writer_->remove_entry(full);
+    writer_->remove_entry(object_name);
     fly::ObjectCache::instance().remove(full);
     INFO("Index entry removed: {}", full);
 }

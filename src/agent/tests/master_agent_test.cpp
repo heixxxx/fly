@@ -203,15 +203,15 @@ TEST(MasterAgentTest, RestoreMasterIdx_ExistingIdxFile) {
     CMString db_id = db32("test_db_restore_existing");
     CMString base_path = tmpdir.path();
 
-    // Create idx file with entries
+    // Create idx file with entries (LocalIndex stores short_name only)
     IndexEntry entry1;
-    entry1.object_name_ = db_id + ":obj_restore_1";
+    entry1.object_name_ = "obj_restore_1";
     entry1.file_name_ = "data_0.bin";
     entry1.offset_ = 0;
     entry1.size_ = 100;
 
     IndexEntry entry2;
-    entry2.object_name_ = db_id + ":obj_restore_2";
+    entry2.object_name_ = "obj_restore_2";
     entry2.file_name_ = "data_0.bin";
     entry2.offset_ = 100;
     entry2.size_ = 200;
@@ -222,8 +222,8 @@ TEST(MasterAgentTest, RestoreMasterIdx_ExistingIdxFile) {
     auto entries = master.restore_master_idx(db_id, base_path, "master000");
 
     ASSERT_EQ(entries.size(), 2u);
-    EXPECT_EQ(entries[0].object_name_, db_id + ":obj_restore_1");
-    EXPECT_EQ(entries[1].object_name_, db_id + ":obj_restore_2");
+    EXPECT_EQ(entries[0].object_name_, "obj_restore_1");
+    EXPECT_EQ(entries[1].object_name_, "obj_restore_2");
 
     // DataService local_idx should be populated
     EXPECT_TRUE(DataService::instance()->has_local_object(db_id + ":obj_restore_1"));
@@ -269,11 +269,11 @@ TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
     CMString db_id = db32("test_db_restore_multi");
     CMString base_path = tmpdir.path();
 
-    // Create multiple entries
+    // Create multiple entries (LocalIndex stores short_name only)
     CMVector<IndexEntry> entries_writer0;
     for (int i = 0; i < 5; i++) {
         IndexEntry e;
-        e.object_name_ = db_id + ":" + fmt::format("multi_obj_{}", i);
+        e.object_name_ = fmt::format("multi_obj_{}", i);
         e.file_name_ = "data_0.bin";
         e.offset_ = i * 100;
         e.size_ = 100;
@@ -286,7 +286,7 @@ TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
 
     ASSERT_EQ(entries.size(), 5u);
     for (int i = 0; i < 5; i++) {
-        EXPECT_EQ(entries[i].object_name_, db_id + ":" + fmt::format("multi_obj_{}", i));
+        EXPECT_EQ(entries[i].object_name_, fmt::format("multi_obj_{}", i));
     }
 
     // Cleanup
@@ -303,9 +303,9 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MasterEntries) {
     CMString base_path = tmpdir.path();
     CMString full = db_id + ":master_obj_1";
 
-    // Create master's idx with entries
+    // Create master's idx with entries (LocalIndex stores short_name only)
     IndexEntry entry;
-    entry.object_name_ = full;
+    entry.object_name_ = "master_obj_1";
     entry.file_name_ = "data_0.bin";
     entry.offset_ = 0;
     entry.size_ = 50;
@@ -342,9 +342,9 @@ TEST(MasterAgentTest, RebuildRemoteIdx_WorkerEntries_NoNewWorkers_Skipped) {
     CMString base_path = tmpdir.path();
     CMString full = db_id + ":worker_obj_skip";
 
-    // Create worker_5.idx with entries
+    // Create worker_5.idx with entries (LocalIndex stores short_name only)
     IndexEntry entry;
-    entry.object_name_ = full;
+    entry.object_name_ = "worker_obj_skip";
     entry.file_name_ = "data_5.bin";
     entry.offset_ = 0;
     entry.size_ = 50;
@@ -387,9 +387,9 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultipleWorkers) {
     CMString full_master = db_id + ":multi_master_obj";
     CMString full_worker = db_id + ":multi_worker_obj";
 
-    // Create master's idx
+    // Create master's idx (LocalIndex stores short_name only)
     IndexEntry master_entry;
-    master_entry.object_name_ = full_master;
+    master_entry.object_name_ = "multi_master_obj";
     master_entry.file_name_ = "data_0.bin";
     master_entry.offset_ = 0;
     master_entry.size_ = 50;
@@ -397,7 +397,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultipleWorkers) {
 
     // Create worker's idx
     IndexEntry worker_entry;
-    worker_entry.object_name_ = full_worker;
+    worker_entry.object_name_ = "multi_worker_obj";
     worker_entry.file_name_ = "data_3.bin";
     worker_entry.offset_ = 0;
     worker_entry.size_ = 100;
@@ -452,9 +452,9 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
     CMString full_a = db_id + ":worker_a_data";
     CMString full_b = db_id + ":worker_b_data";
 
-    // Master (worker_id=0) on "host_master"
+    // Master (worker_id=0) on "host_master" (LocalIndex stores short_name only)
     IndexEntry master_entry;
-    master_entry.object_name_ = full_m;
+    master_entry.object_name_ = "master_data";
     master_entry.file_name_ = "data_m.bin";
     master_entry.offset_ = 0;
     master_entry.size_ = 50;
@@ -462,7 +462,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
 
     // Worker A (worker_id=1) on "host_a"
     IndexEntry worker_a_entry;
-    worker_a_entry.object_name_ = full_a;
+    worker_a_entry.object_name_ = "worker_a_data";
     worker_a_entry.file_name_ = "data_a.bin";
     worker_a_entry.offset_ = 0;
     worker_a_entry.size_ = 80;
@@ -470,7 +470,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
 
     // Worker B (worker_id=2) on "host_b"
     IndexEntry worker_b_entry;
-    worker_b_entry.object_name_ = full_b;
+    worker_b_entry.object_name_ = "worker_b_data";
     worker_b_entry.file_name_ = "data_b.bin";
     worker_b_entry.offset_ = 0;
     worker_b_entry.size_ = 120;
@@ -536,9 +536,9 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
     CMString full_w = db_id + ":w_obj";
     CMString full_r = db_id + ":r_obj";
 
-    // Master (worker_id=0) on "host_local"
+    // Master (worker_id=0) on "host_local" (LocalIndex stores short_name only)
     IndexEntry master_entry;
-    master_entry.object_name_ = full_m;
+    master_entry.object_name_ = "m_obj";
     master_entry.file_name_ = "data_m.bin";
     master_entry.offset_ = 0;
     master_entry.size_ = 50;
@@ -546,7 +546,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
 
     // Worker (worker_id=5) on same "host_local"
     IndexEntry worker_entry;
-    worker_entry.object_name_ = full_w;
+    worker_entry.object_name_ = "w_obj";
     worker_entry.file_name_ = "data_w.bin";
     worker_entry.offset_ = 0;
     worker_entry.size_ = 80;
@@ -554,7 +554,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
 
     // Remote Worker (worker_id=3) on "host_remote"
     IndexEntry remote_entry;
-    remote_entry.object_name_ = full_r;
+    remote_entry.object_name_ = "r_obj";
     remote_entry.file_name_ = "data_r.bin";
     remote_entry.offset_ = 0;
     remote_entry.size_ = 120;
@@ -613,9 +613,9 @@ TEST(MasterAgentTest, RebuildRemoteIdx_PartialHostCoverage) {
     CMString full_avail = db_id + ":avail_obj";
     CMString full_off = db_id + ":offline_obj";
 
-    // Worker A on "host_available"
+    // Worker A on "host_available" (LocalIndex stores short_name only)
     IndexEntry entry_a;
-    entry_a.object_name_ = full_avail;
+    entry_a.object_name_ = "avail_obj";
     entry_a.file_name_ = "data_a.bin";
     entry_a.offset_ = 0;
     entry_a.size_ = 50;
@@ -623,7 +623,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_PartialHostCoverage) {
 
     // Worker B on "host_offline"
     IndexEntry entry_b;
-    entry_b.object_name_ = full_off;
+    entry_b.object_name_ = "offline_obj";
     entry_b.file_name_ = "data_b.bin";
     entry_b.offset_ = 0;
     entry_b.size_ = 80;

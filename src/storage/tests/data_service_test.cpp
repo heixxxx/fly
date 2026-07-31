@@ -441,8 +441,10 @@ TEST_F(DataServiceTest, RestoreEntriesFromLocalIndexFile) {
 
     ds_->restore_entries(original_db_id, all_entries);
 
+    // entry.object_name_ 是 short_name（LocalIndex 不再存 db_id 前缀），
+    // has_local_object 用 full_name 作 key，需拼接。
     for (const auto& e : all_entries) {
-        EXPECT_TRUE(ds_->has_local_object(e.object_name_));
+        EXPECT_TRUE(ds_->has_local_object(original_db_id + ":" + e.object_name_));
     }
 }
 

@@ -209,6 +209,41 @@ scheduler_->set_locality_preference(...);
 - **不做**：不给 `local_idx_`（worker 自写对象索引）加淘汰——它是磁盘 idx 的内存镜像，淘汰会破坏写/读语义
 - **当前结论**：十几小时 / 十万级对象的典型 run，内存增长在几十 MB 量级，**可接受，不阻塞**
 
+**[S1] 存储层内存/磁盘优化清单**（2026-08-01 db_id 废弃调研发现）
+
+> 来源：调研"idx 文件名存储方式与 db_id 冗余"时逐项核实源码得出。S1-1 在本批 db_id 废弃改造中修复，S1-2/3/4 作为后续优化方向记录。
+
+| 编号 | 问题 | 位置 | 量级 | 状态 |
+|------|------|------|------|------|
+| **S1-1** | 磁盘 idx 文件每条记录的 `object_name_` 冗余存 db_id 前缀（`db_id:short`）— 同一 .idx 文件天然属于同一 db，前缀 100% 冗余 | `LocalIndex::entries_` key + `IndexEntry.object_name_`（`local_index.h:69`、`index_entry.h:8`） | 每条 11 字节 × N；百万对象 ≈ 10 MB 磁盘 | ✅ **已修复**（db_id 废弃改造：LocalIndex 改存 short_name） |
+| **S1-2** | `LocalObjectInfo` 每对象含独立 `std::mutex` + `std::condition_variable`（用于写完成等待） | `data_service.h:72-73` | libc++ 下 ~90-100 B/对象固定开销；百万对象 ≈ 100 MB | 🟡 待优化（见下） |
+| **S1-3** | `remote_idx_` / `write_provenance_` 无上限累积（= M1 的 R1/R2） | `data_service.h:295`、`master_agent.h:347` | master 随全局对象数线性增长；百万对象 ≈ 100 MB+ | 🟡 = M1，待对象量真实过百万时启动 |
+| **S1-4** | master `recorded_workers_` 从不清理（= M1 的 R5） | `master_agent.h` | 每个 (db,writer) 一条，量极小 | ⚪ 极低优先级 |
+
+**S1-2 的优化方向**（`LocalObjectInfo` 的 mutex+cv 开销）：
+
+当前每个未完成/等待中的写对象各持一份 `mutex`+`cv`，用于读路径 `try_read_local_raw_or_wait` 阻塞等待写完成。这是单对象百字节级开销的主项（远大于 S1-1 的 11 字节前缀）。百万对象时仅 mutex+cv 就占 ~100 MB。
+
+可行方向（待启动）：
+- 共享等待：把 per-object 的 mutex+cv 改为 per-db 或全局的等待机制（如 `std::condition_variable_any` + 一个集中的 `unordered_set<写中对象>`），用一次 hash 查找替代每对象一份同步原语
+- 代价：等待唤醒粒度变粗（notify 时需 broadcast 或按 key 路由），实现复杂度上升
+- 触发阈值：单 worker 写 >100 万对象、或 `local_idx_` 内存成为瓶颈时
+
+**当前结论**：S1-1 已在 db_id 废弃改造中修复；S1-2/S1-3 在十万级对象量级下内存可控（数十 MB），**不阻塞，待真实痛点触发**。与 M1 同属"对象量过百万"的待办集合。
+
+**[S2] db_id 废弃 — 改用 db_path + `_MIGRATED_TO` 迁移重定向**（2026-08-01 决策，详见 [`docs/adr/0002-deprecate-db-id.md`](adr/0002-deprecate-db-id.md)）
+
+**背景**：`db_id`（10 字符 base62）最初引入是为了缩短 db 唯一标识符、节省内存（早期 idx 每条记录存 `db_id:short` 全名）。经 2026-08-01 调研核实：内存层 `local_idx_`/`remote_idx_` 已用嵌套 map 良好归类，db_id 只作每 db 一份的外层 key，**不随对象数膨胀**；真正随对象数增长的内存项是 `LocalObjectInfo` 的 mutex+cv（S1-2）和 `remote_idx_` 无上限累积（S1-3），与标识符无关。db_id 的唯一不可替代角色是"跨 db 依赖的逻辑锚点"——merge 改物理路径时让 object_name 保持稳定。
+
+**决策**：废弃 db_id，改用 `db_path`（base_path）作 db 唯一标识符。用"源 path 永久保留 + `_MIGRATED_TO` 迁移指针文件"替代 db_id 作为稳定锚点：
+- merge 跨 path 时在源 base_path 写 `_MIGRATED_TO`（指向 target），源目录保留 `_DB_META`/`_FROZEN`/`_MIGRATED_TO`，删除 `.dat`/`.idx`
+- `DataService::resolve_migrated_path` 单点重定向解析（含缓存），Database 构造 / register_database 入口调用
+- `full_name = "db_path:short"`（冒号拼接），split 用 `rfind(':')`；base_path 在创建时校验不含 `:`（双保险）
+- 默认 merge（base_path 不变）零迁移开销，只 data_path 变
+- ADR 0001 第 4 条（db_id 持久化）**作废**：idx 改存 short_name 后不再编码 db 标识，mismatch 链条已断
+
+**收益**：消除 db_id 生成/碰撞检测/定长 split/db_id↔path 映射等复杂度；idx 文件 name 部分约减 30-50%（S1-1）；标识符回归天然唯一（path）。
+
 ### ⏸️ 降级 / 待环境
 
 | 项 | 状态 | 解锁条件 |

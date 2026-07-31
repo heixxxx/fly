@@ -113,6 +113,38 @@ TEST_F(LocalIndexTest, LoadFromNonExistentFile) {
     EXPECT_EQ(index.entry_count(), 0);
 }
 
+// 契约：LocalIndex 是 per-(db,writer) 的，idx 文件天然属于同一个 db，
+// 因此 entry 的 object_name_ 只存 short_name（不冗余存 db_id 前缀）。
+// save→load 循环后 entry.object_name_ 必须仍是 short_name，不含 ":" 前缀。
+TEST_F(LocalIndexTest, EntryObjectNameIsShortNameNoDbIdPrefix) {
+    CMString idx_path = make_idx_path("short_name_contract");
+
+    {
+        LocalIndex index(idx_path);
+        // 模拟 Database::commit_write 传入的 short_name（无 db_id 前缀）
+        index.add_entry({"matrix", "data_001.dat", 0, 100, false, 0});
+        index.add_entry({"result/obj_1", "data_001.dat", 100, 200, false, 0});
+        index.save();
+    }
+
+    LocalIndex loaded(idx_path);
+    loaded.load();
+
+    auto all = loaded.get_all_entries();
+    ASSERT_EQ(all.size(), 2u);
+    // 每个 entry.object_name_ 必须是 short_name，不含 ":" 分隔符前缀
+    for (const auto& e : all) {
+        EXPECT_NE(e.object_name_, CMString{});
+        // short_name 不应含 ":" —— db_id 前缀形式（如 "abc123:obj"）不应出现
+        EXPECT_EQ(e.object_name_.find(':'), CMString::npos)
+            << "entry.object_name_ should be short_name without ':' but got: " << e.object_name_;
+    }
+
+    // find_entry 用 short_name 查询（与 add_entry 的 key 一致）
+    EXPECT_TRUE(loaded.find_entry("matrix").has_value());
+    EXPECT_TRUE(loaded.find_entry("result/obj_1").has_value());
+}
+
 TEST_F(LocalIndexTest, GetAllEntries) {
     LocalIndex index(make_idx_path("get_all"));
 
