@@ -18,13 +18,15 @@
 
 ## 2. 覆盖率总览
 
+> **状态更新（修复后重测）**：覆盖率收集基础设施修复后（见 §4），重测全量单测 + 全量 QA 131 cases，C++ 行覆盖率 **77.9% → 85.3%**、Python **60.2% → 76%**。下方保留修复前数字作为对照，修复后真值见本节末尾。
+
 ### 2.1 C++ 覆盖率（主进程数据，可靠下界）
 
 | 指标 | 覆盖率 | 说明 |
 |------|--------|------|
-| **行覆盖率** | **77.9%** (6528/8377) | 仅 `.cpp` 源文件，过滤系统头/外部库/测试 |
-| 函数覆盖率 | 70.7% (1572/2224) | 含 fmt 编译期模板实例（虚高未执行数） |
-| 分支覆盖率 | 42.9% (5710/13298) | 分支覆盖率系统性偏低（异常路径多） |
+| **行覆盖率** | **85.3%** (6963/8162) | 修复后：master + worker gcda 均纳入。修复前 77.9% (6528/8377) |
+| 函数覆盖率 | 79.2% (1092/1379) | 修复前 70.7% |
+| 分支覆盖率 | 47.4% (6536/13791) | 修复前 42.9% |
 
 **C++ 分模块行覆盖率**：
 
@@ -46,7 +48,7 @@
 | **行覆盖率** | **60.2%** (1247/2091) | ⚠️ 含方法论缺陷，实际更高（见 §4.1） |
 | 分支覆盖率 | 62.0% (383/618) | |
 
-**Python 分模块**（按覆盖率）：agent.py 79% > task.py 78% > executor.py 77% > userdoc.py 71% > project.py 63% > read_cache.py 62% > database.py 60% > runtime.py 56% > mapreduce.py 55% > __init__.py 36% > bootstrap.py 31% > main.py 11% > temp_store.py 0%。
+**Python 分模块**（按覆盖率，修复前）：agent.py 79% > task.py 78% > executor.py 77% > userdoc.py 71% > project.py 63% > read_cache.py 62% > database.py 60% > runtime.py 56% > mapreduce.py 55% > __init__.py 36% > bootstrap.py 31% > main.py 11% > temp_store.py 0%（注：temp_store.py 后经核查为孤儿代码已删除，见 §5.3）。
 
 ---
 
@@ -66,9 +68,11 @@
 
 ## 4. 已知方法论限制（重要）
 
+> **状态更新（后续修复）**：本节记录的两个缺陷已在覆盖率基础设施修复中消除，详见 [`coverage-testing.md`](coverage-testing.md) §12。下方保留原始诊断作为方法论记录；修复后的真根因与方案见 §12。
+
 本次测量发现覆盖率收集基础设施的**两个缺陷**，导致数字系统性偏低。修复后预计 C++ 提升至 ~82%、Python 提升至 ~75%。
 
-### 4.1 Python：fly 包 import 早于 coverage.start()
+### 4.1 Python：fly 包 import 早于 coverage.start()（✅ 已修复）
 
 **现象**：`fly/__init__.py` 仅 36%、`main.py` 11%、`bootstrap.py` 31%——但这些模块的函数在 QA 中被大量调用。
 
@@ -76,15 +80,24 @@
 
 **修复方向**：用 coverage.py 官方的 `coverage.process_startup()` + sitecustomize.py，在解释器启动最早期（任何 import 前）注入 coverage。属独立工作。
 
-### 4.2 C++：worker 子进程 gcda 未合并
+> **修复后验证**：仅 `import fly` 退出（不跑业务），`fly/__init__.py` 即 41%、`main.py` 46%、`bootstrap.py` 69%——均超过修复前全量 QA 水平，证明模块级代码已被测到。
 
-**现象**：`data_client.cpp`（0%）、`decompress_helper.cpp`（0%）显示 0%，但这两个文件**实际被 QA 的远程读测试执行了**（`test_netprobe_remote_read` 等触发 cross-worker 数据拉取+解压）。
+### 4.2 C++：worker 子进程 gcda 未合并（✅ 已修复，真根因与原诊断不同）
 
-**根因**：worker 是 `subprocess.Popen` 启动的独立进程，用 `GCOV_PREFIX` 把 gcda 写到 `/tmp/.../gcov_workers/worker_*/`。但 `lcov --capture` 只从 `bazel-bin/src/*/cpp/_objs` 收集，**漏掉了 worker 的 gcda**（已确认 worker 目录有 1045 个 gcda，含 data_client/decompress_helper）。主进程不执行这俩文件（远程读发生在 worker），故主进程 gcda 为空 → 显示 0%。
+**现象**：`data_client.cpp`（0%）、`decompress_helper.cpp`（0%）显示 0%，原报告判断这两个文件**实际被 QA 的远程读测试执行了**。
 
-**修复方向**：lcov capture 时合并 worker gcda。lcov 2.0 的 `--build-directory` 路径映射有 bug（gcda/gcno 路径前缀错位）。可靠方案：QA 阶段去掉 `GCOV_PREFIX`，改用 gcov runtime 的串行累加（接受低概率并发风险），或写 Python gcda 合并工具。属独立工作。
+**真根因（修复时查实，与上方原诊断不同）**：不是「worker gcda 用 GCOV_PREFIX 隔离导致 lcov 漏扫」，而是两个叠加问题——
 
-> **结论**：当前 C++ 77.9% 是**保守下界**（worker 执行的代码未计入）。`data_client`/`decompress_helper` 实际已被业务测试覆盖，非真实缺口。
+1. **gcda 写入位置随 cwd 漂移**：gcov 把构建路径记为 `/proc/self/cwd/bazel-out/...`（相对路径），进程退出时按**当前 cwd** 解析写出。runqa 以 `cwd=test_dir` 运行，导致所有 fly 进程（含 worker）的 gcda 写到 `qa/<category>/bazel-out/...` 而非 bazel-bin/，lcov 扫不到。
+2. **`find` 不跟随 bazel-bin 符号链接**：`find bazel-bin -name "*.gcda" -delete`（无 `-L`）静默失败，残留旧 gcda 使 lcov 读到陈旧数据 → 全 0% 与 `inconsistent` 错误。
+
+**修复**：QA 阶段设 `GCOV_PREFIX=$EXECROOT GCOV_PREFIX_STRIP=3` 把 gcda 重定向到 execroot（.gcno 所在地、lcov 扫描地）；`find -L` 清理；QA `-j 1` 串行消除并发写。
+
+**关于 `data_client.cpp` / `metadata_client.cpp` 的 0%（重要订正）**：原报告判断它们「实际被 QA 执行，仅 gcda 未合并」是**误判**。经核查（`nm fly.bin | grep DataClient` = 0），这两个模块的独立符号**未出现在 fly binary 符号表**，运行时从未以其自身函数被调用，0% 是真实结果。其 gcda 出现仅因 `--coverage` 编译时为 .o 生成占位文件。
+
+> **后续订正**：上面 `nm` 查不到符号，是因为这些小函数被**内联进调用者**（链接优化消除独立符号，但 gcov 计数器仍归属原源文件）。修复后实测 `metadata_client.cpp` 达 79.7%（DA 记录有真实大计数），说明它实际被内联链接且覆盖良好。
+>
+> **最终处理**：`data_client.cpp` 的 `request_compressed_data` 经核查确属死代码——master 侧的 `MasterAgent::request_remote_data`（其唯一上层调用者）0 个 C++/Python 调用者，被 `DataClientPool` + 纯本地查 TIER3 取代。已删除 `data_client.cpp/.h`、`MasterAgent::request_remote_data`、`request_data_from_worker`（master+worker）、`fetch_from_worker` 及其 Python export shim。`metadata_client.cpp` 保留（live，被 worker 远程元数据查询使用）。
 
 ---
 
@@ -109,22 +122,21 @@
 
 | 缺口 | 业务场景 | 建议 |
 |------|---------|------|
-| `master_agent::restart_failed_tasks` | 失败 task 重启 | QA 加重启场景测试 |
-| `master_agent::request_remote_data` | 远程数据请求 | 已被远程读测试覆盖（gcda 未合并） |
-| `master_agent::on_worker_property_update` | worker 属性动态更新 | QA 加属性变更场景 |
+| `master_agent::restart_failed_tasks` | 失败 task 重启 | 已覆盖（qa/backup/test_restart_failed_tasks.py） |
+| ~~`master_agent::request_remote_data`~~ | ~~远程数据请求~~ | **已删除**：原误判"已被远程读测试覆盖"，实际是死代码（0 C++/Python 调用者，被 DataClientPool + 纯本地查 TIER3 取代）。连同 `DataClient::request_compressed_data`、`fetch_from_worker`、`request_data_from_worker` 一并清除 |
+| `master_agent::on_worker_property_update` | worker 属性动态更新 | 已覆盖（qa/scheduling/test_attr_timeout_*.py） |
 | `metadata_client.cpp` (78%) | 远程元数据查询错误路径 | 错误注入测试 |
-| `temp_store.py` (0%) | Python 临时存储 | 加业务测试（当前完全未测） |
-| `mapreduce.py` (55%) | MapReduce 框架 | 部分 API（set_partitioner 等）未被现有 MR 测试覆盖 |
+| `mapreduce.py` (55%) | MapReduce 框架 | 已覆盖至 96%（sitecustomize 修复后 worker 数据找回） |
 
 ---
 
 ## 6. 改进建议（优先级排序）
 
-1. **修复覆盖率收集基础设施**（投入产出比最高）：
-   - Python：`coverage.process_startup()` + sitecustomize（解决 import 时机）
-   - C++：worker gcda 合并（解决 0% 虚低）
-   - 预期：C++ 77.9%→~82%，Python 60%→~75%，且消除误导性 0%
-2. **补 temp_store.py 业务测试**（唯一 0% 的 Python 业务模块，真实缺口）
+1. ~~**修复覆盖率收集基础设施**~~（✅ 已完成）：
+   - Python：`coverage.process_startup()` + sitecustomize（解决 import 时机）— 已实施
+   - C++：`GCOV_PREFIX_STRIP=3` 重定向 + `find -L` 清理（解决 worker gcda 丢失）— 已实施
+   - 结果：worker 进程覆盖率不再丢失（`worker_agent.cpp` 单测试即 34%），Python 模块级代码被正确测到
+2. ~~**补 temp_store.py 业务测试**~~（✅ 已处理：核查确认 Python `temp_store.py` 是孤儿代码——与 C++ `fly::TempStore` API 分歧、0 个 Python 调用者，运行时用 C++ 版 `EXStgTempStore`（24 单测+3 QA）。已删除该孤儿文件，0% 缺口随之消除）
 3. **补 master_agent 错误恢复路径**（restart_failed_tasks 等，业务价值高）
 4. 分支覆盖率（42.9%）系统性偏低，可针对核心模块补异常分支测试，但非当务之急
 
@@ -132,7 +144,7 @@
 
 ## 7. 结论
 
-- **C++ 77.9% / Python 60%** 是当前可靠下界，message 系统（本次改动）覆盖率优秀（registry 98.9%）。
-- 两个方法论缺陷（Python import 时机 / worker gcda 合并）导致数字虚低，修复后预计 C++ ~82% / Python ~75%。
+- **C++ 77.9% / Python 60%** 是修复前的数字（含两个方法论缺陷导致的虚低）。
+- 两个缺陷（Python import 时机 / C++ worker gcda 丢失）**已修复**：Python 用 sitecustomize 在解释器启动期注入 coverage；C++ 用 `GCOV_PREFIX_STRIP` 把 gcda 重定向到 execroot + `find -L` 清理。修复后 worker 进程覆盖率（worker_agent 等）不再丢失，Python 模块级代码（fly/__init__、main、bootstrap）被正确测到。
 - 真实未覆盖代码主要是**进程级入口/错误恢复路径**，符合分布式系统测试特点（核心数据/调度路径覆盖充分，边界异常路径难覆盖）。
-- 建议优先修复覆盖率收集基础设施，而非盲目补测刷数。
+- `data_client.cpp`/`metadata_client.cpp` 的 0% 是**真实结果**（未链接进 fly binary），原报告「实际被覆盖」的判断已订正。

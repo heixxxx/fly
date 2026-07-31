@@ -349,7 +349,6 @@
 | fly/main.py | `src/fly/main.py` | 204行关键逻辑无单元测试 | 中 |
 | fly/runtime.py | `src/fly/runtime.py` | Agent 工厂模式无独立测试 | 中 |
 | solver/py/ras_graph.py | `src/solver/py/ras_graph.py` | 809行复杂算法无独立测试 | 中 |
-| storage/py/temp_store.py | `src/storage/py/temp_store.py` | disk spillover 逻辑未独立测试 | 中 |
 | fly/mapreduce.py | `src/fly/mapreduce.py` | MapReduceJob 逻辑仅 QA 覆盖 | 中 |
 | ReadCache 并发 | `src/storage/py/read_cache.py` | threading.Lock 无并发单元测试 | 低 |
 | wait_obj | `src/task/py/task.py` | 轮询策略、can_still_produce 无独立测试 | 低 |
