@@ -41,7 +41,7 @@ struct WriteRecord {
 };;
 
 struct PendingDbPath {
-    CMString db_id_;
+    CMString db_path_;
     CMString base_path_;
     CMString data_path_;
     bool completed_ = false;
@@ -58,14 +58,14 @@ struct PendingWriteRegister {
 
 struct PendingBackup {
     CMString object_name_;
-    CMString db_id_;
+    CMString db_path_;
     bool completed_ = false;
     bool success_ = false;
 };
 
 // Pending state for a synchronous freeze request (awaits master DATABASE_FREEZE_ACK).
 struct PendingFreezeAck {
-    CMString db_id_;
+    CMString db_path_;
     bool completed_ = false;
     bool success_ = false;
     TaskErrorType error_type_ = TaskErrorType::UNKNOWN;
@@ -95,7 +95,7 @@ public:
     void set_executor(CMSharedPtr<TaskExecutor> executor);
 
     void begin_task(uint64_t task_id, const CMString& write_context_hash = "");
-    void record_write(const CMString& db_id, const CMString& object_name, int64_t size);
+    void record_write(const CMString& db_path, const CMString& object_name, int64_t size);
     CMVector<WriteRecord> end_task(uint64_t task_id);
 
     // task 成功时对所有涉及的 db 打 END（提交写入段）。
@@ -118,17 +118,17 @@ public:
     bool poll_task();
     bool poll_task_blocking(int timeout_ms = 100);
     
-    void register_database(const CMString& db_id, CMSharedPtr<Database> db);
-    CMSharedPtr<Database> get_database(const CMString& db_id) const;
+    void register_database(const CMString& db_path, CMSharedPtr<Database> db);
+    CMSharedPtr<Database> get_database(const CMString& db_path) const;
     
     std::tuple<bool, bool> request_remote_data(const CMString& object_name);
 
-    bool request_db_path(const CMString& db_id);
+    bool request_db_path(const CMString& db_path);
 
-    std::pair<CMString, TaskErrorType> register_write_with_master(const CMString& db_id, const CMString& object_name, int64_t compressed_size);
-    void request_database_freeze(const CMString& db_id);
-    void request_object_remove(const CMString& db_id, const CMString& object_name);
-    void request_backup(const CMString& db_id, const CMString& object_name);
+    std::pair<CMString, TaskErrorType> register_write_with_master(const CMString& db_path, const CMString& object_name, int64_t compressed_size);
+    void request_database_freeze(const CMString& db_path);
+    void request_object_remove(const CMString& db_path, const CMString& object_name);
+    void request_backup(const CMString& db_path, const CMString& object_name);
 
     // Var service: synchronous set/get (block on master VAR_ACK) and async remove.
     // These are bound to WorkerAgentContext var funcs at begin_task time, so
@@ -223,7 +223,7 @@ private:
     // Pending var set/get operations (keyed by var_name, awaiting master VAR_ACK).
     PendingRpcMap<CMString, PendingVarOp> pending_var_ops_;
 
-    // Pending freeze requests (keyed by db_id, awaiting master DATABASE_FREEZE_ACK).
+    // Pending freeze requests (keyed by db_path, awaiting master DATABASE_FREEZE_ACK).
     PendingRpcMap<CMString, PendingFreezeAck> pending_freezes_;
 
     // Vars inlined into the current task's TaskAssignMessage; consumed by the
@@ -248,7 +248,7 @@ private:
     // __merge_object：跨机拉源对象压缩字节，落到 merge target_data_path（master host 本地）。
     // 不构造 Database（避免 DataService 全局状态污染），用独立 DataWriter 直接落盘 + 手动 register。
     // 详见 docs/db-merge-design.md §3.4 / §5.1（方案 B）。
-    void execute_merge_object(uint64_t task_id, const CMString& short_name, const CMString& db_id,
+    void execute_merge_object(uint64_t task_id, const CMString& short_name, const CMString& db_path,
                               const CMString& base_path, const CMString& target_data_path);
     // 获取或创建 merge 专用 DataWriter（按 target_data_path 缓存，跨 task 复用，每源 host 一个 writer）。
     DataWriter* get_or_create_merge_writer(const CMString& base_path, const CMString& target_data_path);

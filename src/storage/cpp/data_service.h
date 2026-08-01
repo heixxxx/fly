@@ -17,7 +17,7 @@
 
 namespace fly {
 
-// db_id 废弃：现在 db_id == db_path（base_path）。full_name = "db_path:short_name"。
+// db_path 废弃：现在 db_path == db_path（base_path）。full_name = "db_path:short_name"。
 // split 用 rfind(':') —— short_name 是逻辑对象名（如 "matrix"、"result/obj"）不含 ':'，
 // 最后一个 ':' 必是分隔符。db_path 在 Database 构造时校验不含 ':'（双保险）。
 inline std::pair<CMString, CMString> split_full_name(const CMString& full) {
@@ -55,7 +55,7 @@ enum class CompletionState {
 };
 
 struct LocalObjectInfo {
-    CMString db_id_;
+    CMString db_path_;
     CMVector<IndexEntry> entries_;
     bool flushed_ = false;
     CompletionState completion_state_ = CompletionState::INCOMPLETE;
@@ -95,17 +95,17 @@ public:
     // Database Registry
     // ============================================================
 
-    void register_database(const CMString& db_id,
+    void register_database(const CMString& db_path,
                             const CMString& base_path,
                             const CMString& data_path,
                             const CMString& writer_id = "");
 
-    void unregister_database(const CMString& db_id);
+    void unregister_database(const CMString& db_path);
 
-    bool has_database(const CMString& db_id) const;
+    bool has_database(const CMString& db_path) const;
 
     // ============================================================
-    // DB Migration Redirect (替代 db_id 的逻辑锚点)
+    // DB Migration Redirect (替代 db_path 的逻辑锚点)
     // ============================================================
 
     // 解析 base_path：若 {base_path}/_MIGRATED_TO 存在，返回迁移 target 的 base_path
@@ -132,20 +132,20 @@ public:
     // Local Index Management
     // ============================================================
 
-    void on_object_written(const CMString& db_id,
+    void on_object_written(const CMString& db_path,
                             const CMString& object_name,
                             const IndexEntry& entry);
 
-    void on_flush(const CMString& db_id);
+    void on_flush(const CMString& db_path);
 
-    void on_write_started(const CMString& db_id,
+    void on_write_started(const CMString& db_path,
                            const CMString& object_name);
 
-    void on_write_completed(const CMString& db_id,
+    void on_write_completed(const CMString& db_path,
                              const CMString& object_name,
                              const CMVector<IndexEntry>& entries);
 
-    void on_write_failed(const CMString& db_id,
+    void on_write_failed(const CMString& db_path,
                           const CMString& object_name,
                           const CMString& error_message);
 
@@ -155,17 +155,17 @@ public:
     // 内容未变，cache 仍是正确副本）。merge_db 把源对象迁到 master host 后，
     // master/源 worker 的 local_idx_ 仍残留指向已删源 .dat 的 entry，导致 TIER1
     // 读必失败 + ERR 日志。此接口整体清掉一个 db 的 local_idx_。
-    void clear_local_index_for_db(const CMString& db_id);
+    void clear_local_index_for_db(const CMString& db_path);
 
     // 整 db 清除 remote_idx_（不碰 ObjectCache）。merge 后各 worker 缓存的源 worker
     // 位置已失效（源 .dat 已删），不清会导致 TIER2 远程读试源 worker 失败。
-    void clear_remote_index_for_db(const CMString& db_id);
+    void clear_remote_index_for_db(const CMString& db_path);
 
     bool has_local_object(const CMString& object_name) const;
 
     void on_object_flushed(const CMString& object_name);
 
-    void restore_entries(const CMString& db_id,
+    void restore_entries(const CMString& db_path,
                            const CMVector<IndexEntry>& entries);
 
     std::optional<CMVector<IndexEntry>> find_local_entries(const CMString& object_name) const;
@@ -236,9 +236,9 @@ public:
 
     std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> read_raw_compressed(const CMString& object_name);
 
-    void on_temp_write_started(const CMString& db_id, const CMString& object_name);
-    void on_temp_write(const CMString& db_id, const CMString& object_name, FlyBufferPtr compressed_data);
-    void cleanup_temp_entries(const CMString& db_id);
+    void on_temp_write_started(const CMString& db_path, const CMString& object_name);
+    void on_temp_write(const CMString& db_path, const CMString& object_name, FlyBufferPtr compressed_data);
+    void cleanup_temp_entries(const CMString& db_path);
 
     // ============================================================
     // Data Server (independent data transfer network layer)
@@ -293,7 +293,7 @@ private:
     // ============================================================
 
     static std::pair<CMString, CMString> split_full(const CMString& full);
-    CMString get_db_id_for_object(const CMString& object_name) const;
+    CMString get_db_path_for_object(const CMString& object_name) const;
 
     // ============================================================
     // Private Helpers — Read Operations
@@ -306,11 +306,11 @@ private:
 
     mutable std::mutex mutex_;
 
-    CMUnorderedMap<CMString /*db_id*/,
+    CMUnorderedMap<CMString /*db_path*/,
         CMUnorderedMap<CMString /*short_name*/,
             CMSharedPtr<LocalObjectInfo>>> local_idx_;
 
-    CMUnorderedMap<CMString /*db_id*/,
+    CMUnorderedMap<CMString /*db_path*/,
         CMUnorderedMap<CMString /*short_name*/,
             RemoteObjectMeta>> remote_idx_;
 

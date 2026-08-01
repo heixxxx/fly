@@ -47,7 +47,7 @@ if r1.returncode != 0:
     print(r1.stdout, file=sys.stderr)
     sys.exit(1)
 
-assert os.path.isfile(os.path.join(DB_PATH, "_test_db_id")), "marker file should exist"
+assert os.path.isfile(os.path.join(DB_PATH, "_test_db_path")), "marker file should exist"
 print("  Run 1 passed", file=sys.stderr)
 
 print("── Run 2: load_db, verify dirty data absent ──", file=sys.stderr)

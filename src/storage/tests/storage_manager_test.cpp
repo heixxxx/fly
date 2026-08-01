@@ -111,11 +111,11 @@ TEST_F(StorageManagerTest, ResetUnregistersDatabaseFromDataService) {
     auto db = StorageManager::instance()->get_or_create_database(base_path, "");
 
     auto ds = fly::DataService::instance();
-    EXPECT_TRUE(ds->has_database(db->get_db_id()));
+    EXPECT_TRUE(ds->has_database(db->get_db_path()));
 
     StorageManager::instance()->reset();
 
-    EXPECT_FALSE(ds->has_database(db->get_db_id()));
+    EXPECT_FALSE(ds->has_database(db->get_db_path()));
 }
 
 }

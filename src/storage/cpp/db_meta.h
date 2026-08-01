@@ -15,18 +15,18 @@ struct WorkerInfo {
 };
 
 struct DbMetaHeader {
-    CMString db_id_;
+    CMString db_path_;
     int64_t created_at_ = 0;
 
-    FLY_SERIALIZE(db_id_, created_at_)
+    FLY_SERIALIZE(db_path_, created_at_)
 };
 
 struct DbMeta {
-    CMString db_id_;
+    CMString db_path_;
     int64_t created_at_ = 0;
     CMVector<WorkerInfo> workers_;
 
-    FLY_SERIALIZE(db_id_, created_at_, workers_)
+    FLY_SERIALIZE(db_path_, created_at_, workers_)
 };
 
 // db 迁移标识文件 _MIGRATED_TO 的内容。
@@ -34,7 +34,7 @@ struct DbMeta {
 // merge 跨 path 时（base_path 变化），在源 base_path 根目录写此文件，指向 merge
 // 产物路径。源目录保留 _DB_META/_FROZEN/_MIGRATED_TO，删除 .dat/.idx。访问源 path
 // 时 DataService::resolve_migrated_path 检测此文件并重定向到 target，让 db_path 作为
-// 稳定锚点（源 path 永远存在，通过迁移指针找到最终数据），替代 db_id 的逻辑锚点作用。
+// 稳定锚点（源 path 永远存在，通过迁移指针找到最终数据），替代 db_path 的逻辑锚点作用。
 //
 // 落盘格式同 _DB_META：[8B size][bitsery bytes]。
 struct MigrationHeader {

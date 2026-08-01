@@ -33,7 +33,7 @@ for _ in range(40):
 assert master.worker_count >= 1, "Worker should connect"
 
 db = open_db(DB_PATH)
-db_id = db.get_db_id()
+db_path = db.get_db_path()
 
 # Submit tasks that write via worker
 write_data(db, "moved/alpha", 42)
@@ -53,10 +53,10 @@ assert db.read_object("moved/master_key") == "master_value"
 assert db.read_object("moved/dict") == {"x": 1}
 
 # Write marker
-with open(os.path.join(DB_PATH, "_test_db_id"), "w") as f:
-    f.write(db_id)
+with open(os.path.join(DB_PATH, "_test_db_path"), "w") as f:
+    f.write(db_path)
 
 assert os.path.isfile(os.path.join(DB_PATH, "_DB_META")), "_DB_META should exist"
 
-INFO(f"[RUN1_MOVED] Created DB at {DB_PATH}: db_id={db_id}")
+INFO(f"[RUN1_MOVED] Created DB at {DB_PATH}: db_path={db_path}")
 INFO(f"[RUN1_MOVED] Wrote 4 objects (2 worker, 2 master)")

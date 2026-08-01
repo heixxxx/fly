@@ -18,40 +18,40 @@
 
 namespace fs = std::filesystem;
 
-Database::Database(const CMString& base_path, const CMString& data_path, uint64_t worker_id, const CMString& host, const CMString& existing_db_id)
+Database::Database(const CMString& base_path, const CMString& data_path, uint64_t worker_id, const CMString& host, const CMString& existing_db_path)
     : base_path_(base_path)
     , data_path_(data_path)
     , writer_id_(generate_writer_id())
-    , db_id_(base_path)  // db_id 废弃：现在是 base_path 的别名（稳定锚点）
+    , db_path_(base_path)  // db_id 废弃：现在是 base_path 的别名（稳定锚点）
     , host_(host) {
     (void)worker_id;  // worker_id kept for API compat; writer_id_ is used for file naming
-    (void)existing_db_id;  // 废弃参数（db_id 不再外部指定）
+    (void)existing_db_path;  // 废弃参数（db_id 不再外部指定）
 
     // 校验 base_path 不含 ':' —— full_name = "db_path:short" 用 ':' 分隔，
     // base_path 含 ':' 会导致 split 歧义。源头拒绝，双保险。
     if (base_path_.find(':') != CMString::npos) {
         ERR("Database base_path must not contain ':' (would break full_name split): '{}'", base_path_);
         base_path_.clear();
-        db_id_.clear();
+        db_path_.clear();
         return;
     }
 
     // 跟随迁移：若 base_path/_MIGRATED_TO 存在，重定向 base_path_/data_path_ 到 target
-    // （物理读取位置），但 db_id_ 保持源 base_path（逻辑锚点）。
-    // db_id_ 是跨 db 依赖/索引的稳定 key（DependencyGraph、local_idx_、remote_idx_ 都用它），
+    // （物理读取位置），但 db_path_ 保持源 base_path（逻辑锚点）。
+    // db_path_ 是跨 db 依赖/索引的稳定 key（DependencyGraph、local_idx_、remote_idx_ 都用它），
     // 迁移不应改变它 —— 否则 object_name 前缀变化导致索引 miss。
     CMString resolved = fly::DataService::instance()->resolve_migrated_path(base_path_);
     if (resolved != base_path_) {
         CMString target_data = fly::DataService::instance()->read_migrated_data_path(base_path_);
-        INFO("Database migrated: base_path '{}' -> '{}', data_path '{}' -> '{}' (db_id keeps source '{}')",
-             base_path_, resolved, data_path_, target_data, db_id_);
+        INFO("Database migrated: base_path '{}' -> '{}', data_path '{}' -> '{}' (db_path keeps source '{}')",
+             base_path_, resolved, data_path_, target_data, db_path_);
         base_path_ = resolved;
         if (!target_data.empty()) {
             data_path_ = target_data;
         }
     }
 
-    fly::DataService::instance()->register_database(db_id_, base_path_, data_path_, writer_id_);
+    fly::DataService::instance()->register_database(db_path_, base_path_, data_path_, writer_id_);
 
     ensure_directory_exists(base_path_);
     if (!data_path_.empty()) {
@@ -89,8 +89,8 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
 
 Database::~Database() {
     fly::DataService::instance()->drain_write_back();
-    fly::DataService::instance()->cleanup_temp_entries(db_id_);
-    fly::DataService::instance()->unregister_database(db_id_);
+    fly::DataService::instance()->cleanup_temp_entries(db_path_);
+    fly::DataService::instance()->unregister_database(db_path_);
 }
 
 Database::CompressResult Database::compress_buffered_data(
@@ -154,25 +154,25 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
     // 2. Register write with master. Only NOW does the master mark data ready
     //    and schedule dependent tasks — by which point the cache is populated
     //    and remote reads can be served immediately.
-    fly::DataService::instance()->on_write_started(db_id_, full);
+    fly::DataService::instance()->on_write_started(db_path_, full);
     int64_t compressed_size = static_cast<int64_t>(record->size());
-    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name, compressed_size);
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_path_, object_name, compressed_size);
 
     if (reg_error_type == fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED) {
         fly::ObjectCache::instance().remove(full);
-        fly::DataService::instance()->on_write_failed(db_id_, full, "duplicate skipped");
+        fly::DataService::instance()->on_write_failed(db_path_, full, "duplicate skipped");
         fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED);
         return fly::WriteErrorType::DUPLICATE_SKIPPED;
     }
     if (reg_error_type == fly::TaskErrorType::WRITE_PROVENANCE_MISMATCH) {
         fly::ObjectCache::instance().remove(full);
-        fly::DataService::instance()->on_write_failed(db_id_, full, reg_error);
+        fly::DataService::instance()->on_write_failed(db_path_, full, reg_error);
         ERR("Write registration failed: {} (type={})", reg_error, static_cast<int>(reg_error_type));
         return fly::WriteErrorType::REGISTRATION_FAILED;
     }
     if (reg_error_type == fly::TaskErrorType::WRITE_REGISTRATION_TIMEOUT) {
         fly::ObjectCache::instance().remove(full);
-        fly::DataService::instance()->on_write_failed(db_id_, full, reg_error);
+        fly::DataService::instance()->on_write_failed(db_path_, full, reg_error);
         ERR("Write registration timeout: {}", reg_error);
         return fly::WriteErrorType::REGISTRATION_TIMEOUT;
     }
@@ -199,19 +199,19 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
         w->flush();
     };
 
-    auto complete = [full, db_id = this->db_id_, object_name,
+    auto complete = [full, db_path = this->db_path_, object_name,
                      caller_record_func, caller_backup_func, w, backup, compressed_size]() {
         auto ds = fly::DataService::instance();
         auto entries = w->get_all_entries(object_name);
         if (entries.has_value()) {
-            ds->on_write_completed(db_id, full, entries.value());
+            ds->on_write_completed(db_path, full, entries.value());
         }
         ds->on_object_flushed(full);
         if (caller_record_func) {
-            caller_record_func(db_id, object_name, compressed_size);
+            caller_record_func(db_path, object_name, compressed_size);
         }
         if (backup && caller_backup_func) {
-            caller_backup_func(db_id, object_name);
+            caller_backup_func(db_path, object_name);
         }
     };
 
@@ -352,15 +352,15 @@ CMString Database::read_object_py_name(const CMString& object_name) {
 
 void Database::do_backup_write(const CMString& full, const CMString& object_name, CMString compressed_data, const CMString& source_hash) {
     auto ds = fly::DataService::instance();
-    ds->on_write_started(db_id_, full);
+    ds->on_write_started(db_path_, full);
 
     auto saved_hash = fly::WorkerAgentContext::get_current_write_hash();
     fly::WorkerAgentContext::clear_current_write_hash();
 
     int64_t backup_compressed_size = static_cast<int64_t>(compressed_data.size());
-    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name, backup_compressed_size);
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_path_, object_name, backup_compressed_size);
     if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
-        ds->on_write_failed(db_id_, full, reg_error);
+        ds->on_write_failed(db_path_, full, reg_error);
         fly::WorkerAgentContext::set_current_write_hash(saved_hash);
         ERR("do_backup_write: register_write failed for '{}': {}", object_name, reg_error);
         return;
@@ -380,17 +380,17 @@ void Database::do_backup_write(const CMString& full, const CMString& object_name
         w->flush();
     };
 
-    auto complete = [full, db_id = db_id_, object_name,
+    auto complete = [full, db_path = db_path_, object_name,
                      caller_record_func, w, saved_hash, backup_compressed_size]() {
         fly::WorkerAgentContext::set_current_write_hash(saved_hash);
         auto dsvc = fly::DataService::instance();
         auto entries = w->get_all_entries(object_name);
         if (entries.has_value()) {
-            dsvc->on_write_completed(db_id, full, entries.value());
+            dsvc->on_write_completed(db_path, full, entries.value());
         }
         dsvc->on_object_flushed(full);
         if (caller_record_func) {
-            caller_record_func(db_id, object_name, backup_compressed_size);
+            caller_record_func(db_path, object_name, backup_compressed_size);
         }
     };
 
@@ -422,9 +422,9 @@ void Database::freeze() {
     fly::DataService::instance()->drain_write_back();
     is_frozen_ = true;
     create_frozen_marker();
-    fly::DataService::instance()->on_flush(db_id_);
-    fly::DataService::instance()->cleanup_temp_entries(db_id_);
-    fly::WorkerAgentContext::notify_freeze(db_id_);
+    fly::DataService::instance()->on_flush(db_path_);
+    fly::DataService::instance()->cleanup_temp_entries(db_path_);
+    fly::WorkerAgentContext::notify_freeze(db_path_);
 
     // Persist non-deleted vars alongside the frozen db.
     flush_vars_to_disk();
@@ -449,7 +449,7 @@ void Database::remove_object(const CMString& object_name) {
     CMString full = full_name(object_name);
     removed_objects_.insert(full);
 
-    fly::WorkerAgentContext::request_remove(db_id_, object_name);
+    fly::WorkerAgentContext::request_remove(db_path_, object_name);
 
     // LocalIndex 只存 short_name（idx 文件天然属于本 db）。
     writer_->remove_entry(object_name);
@@ -497,7 +497,7 @@ void Database::abort_task_writes(const CMVector<CMString>& dirty_full_names) {
         fly::ObjectCache::instance().remove(full);
     }
 
-    INFO("Task writes aborted: {} dirty objects, db_id={}", dirty_full_names.size(), db_id_);
+    INFO("Task writes aborted: {} dirty objects, db_path={}", dirty_full_names.size(), db_path_);
 }
 
 DbMeta Database::load_meta() const {
@@ -548,20 +548,14 @@ DbMeta Database::load_meta_from_path(const CMString& base_path) {
     }
 
     DbMeta meta;
-    meta.db_id_ = header.db_id_;
+    meta.db_path_ = header.db_path_;
     meta.created_at_ = header.created_at_;
     meta.workers_ = std::move(workers);
     return meta;
 }
 
-CMString Database::get_db_id() const {
-    return db_id_;  // db_id 废弃：== base_path_（别名），保留接口供过渡期调用方
-}
-
-void Database::set_db_id(const CMString& db_id) {
-    // db_id 废弃：no-op（db_id_ 现在是 base_path 别名，不再外部指定）。
-    // 保留接口仅为过渡期调用方兼容，后续阶段删除。
-    (void)db_id;
+CMString Database::get_db_path() const {
+    return db_path_;  // db_id 废弃：== base_path_（别名），保留接口供过渡期调用方
 }
 
 CMString Database::get_base_path() const {
@@ -575,18 +569,18 @@ CMString Database::get_data_path() const {
 void Database::set_paths(const CMString& base_path, const CMString& data_path) {
     // Merge 产物落到新路径：更新 base_path_/data_path_ + re-register 进 DataService。
     //
-    // db_id_ 保持不变（源 base_path）——它是跨 db 依赖的逻辑锚点（DependencyGraph 用
-    // full_name = "db_id:short" 作 key）。merge 改物理路径但 db_id_ 不变，保证 solver 的
+    // db_path_ 保持不变（源 base_path）——它是跨 db 依赖的逻辑锚点（DependencyGraph 用
+    // full_name = "db_id:short" 作 key）。merge 改物理路径但 db_path_ 不变，保证 solver 的
     // build_matrix→merge→solve 链不断（matrix_db 句柄的 get_full_name 仍产生源 path 前缀）。
     //
     // 跨 path merge 时，cleanup_after_merge 在源 base_path 写 _MIGRATED_TO，访问源 path
-    // 的代码经 resolve_migrated_path 重定向到 target。db_paths_ 用 db_id_（源 path）注册，
+    // 的代码经 resolve_migrated_path 重定向到 target。db_paths_ 用 db_path_（源 path）注册，
     // 指向新的 base_path_/data_path_（target）。
     auto ds = fly::DataService::instance();
     base_path_ = base_path;
     data_path_ = data_path;
-    // re-register：db_id_（源 path，稳定锚点）作 key，指向新 base_path/data_path。
-    ds->register_database(db_id_, base_path_, data_path_, writer_id_);
+    // re-register：db_path_（源 path，稳定锚点）作 key，指向新 base_path/data_path。
+    ds->register_database(db_path_, base_path_, data_path_, writer_id_);
 }
 
 CMString Database::get_writer_id() const {
@@ -598,7 +592,7 @@ CMString Database::get_full_name(const CMString& name) const {
 }
 
 CMString Database::full_name(const CMString& short_name) const {
-    return db_id_ + ":" + short_name;
+    return db_path_ + ":" + short_name;
 }
 
 void Database::reset() {
@@ -631,7 +625,7 @@ void Database::write_db_meta_header() {
     int64_t created_at = std::chrono::duration_cast<std::chrono::seconds>(
         now.time_since_epoch()).count();
 
-    DbMetaHeader header{db_id_, created_at};
+    DbMetaHeader header{db_path_, created_at};
     CMString encoded;
     FLY_ENCODE(header, encoded);
 
@@ -645,7 +639,7 @@ void Database::write_db_meta_header() {
     ofs.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
     ofs.close();
 
-    DBG("Wrote _DB_META header: db_id={}, base_path={}", db_id_, base_path_);
+    DBG("Wrote _DB_META header: db_path={}, base_path={}", db_path_, base_path_);
 }
 
 void Database::append_worker_info_to_meta(const WorkerInfo& info) {
@@ -712,21 +706,21 @@ void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compresse
     DBG("[TEMP-PUT] put_temp_data: obj={}, full={}, data_size={}", object_name, full, compressed_data ? compressed_data->size() : 0);
 
     // Step 1: Add local idx entry (INCOMPLETE, is_temp=true)
-    fly::DataService::instance()->on_temp_write_started(db_id_, full);
+    fly::DataService::instance()->on_temp_write_started(db_path_, full);
 
     // Step 2: Store temp data and mark COMPLETE — must happen BEFORE register_write.
     // register_write is synchronous (blocks for ACK). Master dispatches dependent
     // tasks immediately on receiving WriteRegister. If data isn't stored yet,
     // other workers' reads will fail.
-    fly::DataService::instance()->on_temp_write(db_id_, full, compressed_data);
+    fly::DataService::instance()->on_temp_write(db_path_, full, compressed_data);
 
     // Step 3: Register with master so other workers can discover this data.
     // By now the data is readable on this worker's DataServer.
     int64_t temp_compressed_size = static_cast<int64_t>(compressed_data->size());
-    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_id_, object_name, temp_compressed_size);
+    auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_path_, object_name, temp_compressed_size);
     if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
         ERR("[TEMP-PUT] register_write failed for '{}': {}", object_name, reg_error);
-        fly::DataService::instance()->on_write_failed(db_id_, full, reg_error);
+        fly::DataService::instance()->on_write_failed(db_path_, full, reg_error);
         return;
     }
 
@@ -743,7 +737,7 @@ static constexpr int64_t VARS_FILE_MAGIC = 0x53524156;  // 'V','A','R','S' LE
 bool Database::set_var(const CMString& var_name, FlyBufferPtr value, const CMString& type_name) {
     // var is db data: freeze makes it immutable too (same gate as write_object).
     if (check_frozen()) {
-        ERR("set_var rejected: db {} is frozen", db_id_);
+        ERR("set_var rejected: db {} is frozen", db_path_);
         return false;
     }
     // Size warning: var is for small objects; >1K serialized is too large.
@@ -811,7 +805,7 @@ void Database::drop_local_var(const CMString& var_name) {
 
 bool Database::master_set_var(const CMString& var_name, FlyBufferPtr value, const CMString& type_name) {
     if (check_frozen()) {
-        ERR("master_set_var rejected: db {} is frozen", db_id_);
+        ERR("master_set_var rejected: db {} is frozen", db_path_);
         return false;
     }
     std::lock_guard<std::mutex> lk(var_mutex_);

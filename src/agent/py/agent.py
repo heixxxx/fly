@@ -304,18 +304,18 @@ class Master(FlyAgent):
         # 静态读 _DB_META（不构造 Database，避免与 register_database 建的权威 Database
         # 共享 DataService::db_paths_ 导致析构竞争 erase）。
         meta = _Database.load_meta_from_path(path)
-        # db_id 废弃：_DB_META 的 db_id 字段可能过期（搬目录），不再用它作 db_id。
+        # db_path 废弃：_DB_META 的 db_path 字段可能过期（搬目录），不再用它作 db_path。
         # 用 created_at > 0 判断 _DB_META 是否有效（corrupt/空文件时 created_at == 0）。
         if not meta or meta.created_at <= 0:
             raise RuntimeError(f"No valid _DB_META found at {path}")
 
-        # db_id 废弃：db_id == base_path（即 path）。不用 meta.db_id（旧 _DB_META 存的可能是
-        # 搬目录前的旧 path）。用当前 path 作 db_id，确保与 Database 构造一致。
-        db_id = path
+        # db_path 废弃：db_path == base_path（即 path）。不用 meta.db_path（旧 _DB_META 存的可能是
+        # 搬目录前的旧 path）。用当前 path 作 db_path，确保与 Database 构造一致。
+        db_path = path
 
         # Phase 1: Master self-recovery — register db paths, no idx loading.
         # register_database 内部构造权威 Database 插入 db_instances_（路径唯一权威源）。
-        self._agent.register_database(db_id, path, "")
+        self._agent.register_database(db_path, path, "")
 
         # Phase 2: Assign workers by hostname
         # Group WorkerInfo by hostname -> writer_ids
@@ -356,7 +356,7 @@ class Master(FlyAgent):
                 continue
             # Use first available worker on this hostname
             worker_id = workers[0]
-            self._agent.send_idx_load_to_worker(db_id, path, writer_ids, worker_id)
+            self._agent.send_idx_load_to_worker(db_path, path, writer_ids, worker_id)
             INFO(f"load_db: sent {len(writer_ids)} writer_ids to worker {worker_id} on host {hostname}")
 
         # Phase 4: Wait for all acks (on_idx_load_ack handles remote_idx rebuild)
@@ -370,7 +370,7 @@ class Master(FlyAgent):
         # 返回权威 Database 句柄：直接复用 db_instances_ 里的对象（register_database 已建），
         # 不再单独构造临时 Database（避免析构 unregister DataService::db_paths_ 的竞争）。
         db = _Database.__new__(_Database)
-        db._db = self._agent.get_database(db_id)
+        db._db = self._agent.get_database(db_path)
         return db
 
     def merge_db(self, path: str, data_path: str = "", base_path: str = "",
@@ -433,8 +433,8 @@ class Master(FlyAgent):
         meta = _Database.load_meta_from_path(path)
         if not meta:
             raise RuntimeError(f"merge_db: invalid _DB_META at {path}")
-        # db_id 废弃：db_id == base_path（即源 path）。不用 meta.db_id（可能过期）。
-        db_id = path
+        # db_path 废弃：db_path == base_path（即源 path）。不用 meta.db_path（可能过期）。
+        db_path = path
 
         merge_base_path = base_path if base_path else path
         merge_data_path = data_path if data_path else (path + ".merged_data")
@@ -451,8 +451,8 @@ class Master(FlyAgent):
 
         hostname_to_writer_ids = defaultdict(list)
         # idx 文件在源 base_path（共享盘）。跨 path merge 时 merge_base_path 是产物新路径，
-        # 但 idx 还在源 path（db_id == 源 path）。从源 path 读 idx。
-        source_idx_path = db_id  # db_id == 源 base_path
+        # 但 idx 还在源 path（db_path == 源 path）。从源 path 读 idx。
+        source_idx_path = db_path  # db_path == 源 base_path
         idx_files = glob.glob(os.path.join(source_idx_path, "*.idx"))
         for idx_file in idx_files:
             writer_id = os.path.basename(idx_file)[:-4]  # 去掉 .idx
@@ -462,7 +462,7 @@ class Master(FlyAgent):
                 hostname = (meta.workers[0].hostname if meta.workers else "unknown")
             hostname_to_writer_ids[hostname].append(writer_id)
         source_hosts = list(hostname_to_writer_ids.keys())
-        INFO(f"merge_db: db_id={db_id}, source_hosts={source_hosts}, "
+        INFO(f"merge_db: db_path={db_path}, source_hosts={source_hosts}, "
              f"target_data_path={merge_data_path}, "
              f"idx_files={len(idx_files)}, meta_workers={len(meta.workers)}")
 
@@ -528,10 +528,10 @@ class Master(FlyAgent):
         for writer_id, (hostname, entries) in writer_to_entries.items():
             target_worker = host_to_target[hostname]
             for entry in entries:
-                # entry.object_name 是 short_name（LocalIndex 不再存 db_id 前缀，阶段1 改造）
+                # entry.object_name 是 short_name（LocalIndex 不再存 db_path 前缀，阶段1 改造）
                 short_name = entry.object_name
                 task_id = self._agent.send_merge_task(
-                    target_worker, short_name, db_id,
+                    target_worker, short_name, db_path,
                     merge_base_path, merge_data_path, hostname)
                 all_task_ids.append(task_id)
                 task_count += 1
@@ -562,13 +562,13 @@ class Master(FlyAgent):
                 # data_path 传空 → C++ send_delete_data 从 db_registry 查源 data_path
                 # （此时 cleanup 未执行，db_registry 仍是源的）。
                 self._agent.send_delete_data(
-                    source_worker, db_id, merge_base_path, "", writer_ids)
+                    source_worker, db_path, merge_base_path, "", writer_ids)
                 INFO(f"merge_db: sent DeleteData to worker {source_worker} on host "
                      f"'{hostname}' for {len(writer_ids)} writers")
             # 同步等待全部 DeleteDataAck（替换原先的 sleep 兜底，消除 flaky + 内存泄漏）。
             if source_worker_ids:
                 del_ok, del_failed = self._agent.wait_delete_data_acks(
-                    source_worker_ids, db_id, 60)
+                    source_worker_ids, db_path, 60)
                 if del_ok:
                     INFO(f"merge_db: all source deletes confirmed")
                 else:
@@ -581,20 +581,20 @@ class Master(FlyAgent):
         # 删源 ack 已保证 worker 在线且响应过，紧随其后的广播时序确定（无需额外 sleep）。
         if ok:
             self._agent.cleanup_after_merge(
-                db_id, completed, source_worker_ids, master_host_workers,
+                db_path, completed, source_worker_ids, master_host_workers,
                 merge_base_path, merge_data_path)
             INFO("merge_db: cleanup_after_merge done (broadcast + master state rebuilt)")
 
         # 产物 db 句柄：复用 cleanup_after_merge 在 db_instances_ 建好的权威 Database
-        # （用源 db_id，保持 object_name = db_id:short 一致）。不再单独构造临时 Database，
+        # （用源 db_path，保持 object_name = db_path:short 一致）。不再单独构造临时 Database，
         # 避免其析构 unregister DataService::db_paths_ 的竞争。
         # read_object 走 master remote_idx（merge task 已登记对象位置到 merge worker）。
         merged_db = _Database.__new__(_Database)
-        merged_db._db = self._agent.get_database(db_id)
+        merged_db._db = self._agent.get_database(db_path)
         INFO(f"merge_db: done, ok={ok}, merged_data at {merge_data_path}")
         # 流程 message：merge_db 完成（跨机数据集中里程碑）。
         message("STOR::0002", 1,
-                f"merge_db done: db_id={db_id}, objects={len(completed)}, "
+                f"merge_db done: db_path={db_path}, objects={len(completed)}, "
                 f"data_path={merge_data_path}")
         return merged_db
 
@@ -749,11 +749,11 @@ class Worker(FlyAgent):
                                        write_context_hash,
                                        vars or [], priority)
 
-    def get_database(self, db_id: str):
-        if db_id not in self._db_cache:
+    def get_database(self, db_path: str):
+        if db_path not in self._db_cache:
             raise RuntimeError(
-                f"Unknown db_id: {db_id}, need master info (Phase 3)")
-        return self._db_cache[db_id]
+                f"Unknown db_path: {db_path}, need master info (Phase 3)")
+        return self._db_cache[db_path]
 
     def stop(self):
         if self._executor is not None:

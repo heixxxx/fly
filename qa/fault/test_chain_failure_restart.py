@@ -63,7 +63,7 @@ if r1.returncode != 0:
     print(f"Run 1 FAILED (exit={r1.returncode})", file=sys.stderr)
     print(r1.stdout, file=sys.stderr)
     sys.exit(1)
-assert os.path.isfile(os.path.join(DB_PATH, "_test_db_id")), "marker should exist"
+assert os.path.isfile(os.path.join(DB_PATH, "_test_db_path")), "marker should exist"
 print("  Run 1 passed", file=sys.stderr)
 
 # ── Run 2: load_db + restart → 全部成功 ──

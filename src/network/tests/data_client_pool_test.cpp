@@ -41,9 +41,9 @@ protected:
 
     // Bring up a DataServer whose state for `full` is "write in progress"
     // (on_write_started without on_write_completed), so reads return DATA_NOT_READY.
-    int start_server_with_in_progress_write(const CMString& db_id, const CMString& full) {
-        ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
-        ds_->on_write_started(db_id, full);
+    int start_server_with_in_progress_write(const CMString& db_path, const CMString& full) {
+        ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
+        ds_->on_write_started(db_path, full);
         ds_->start_data_server("127.0.0.1", 0, 2);
         return ds_->get_data_port();
     }
@@ -51,9 +51,9 @@ protected:
 
 // After the change: pool returns ReadError::DATA_NOT_READY instead of looping.
 TEST_F(DataClientPoolTest, DataNotReadyIsPassthroughNotPolled) {
-    std::string db_id = "/testd";
-    std::string full = db_id + ":notready";
-    int port = start_server_with_in_progress_write(db_id, full);
+    std::string db_path = "/testd";
+    std::string full = db_path + ":notready";
+    int port = start_server_with_in_progress_write(db_path, full);
 
     DataClientPool pool(2);
     uint64_t rid = 0;
@@ -88,14 +88,14 @@ TEST_F(DataClientPoolTest, ConnectionFailureMapsToNetworkError) {
 
 // OBJECT_NOT_FOUND is still passed through, typed.
 TEST_F(DataClientPoolTest, ObjectNotFoundIsTyped) {
-    std::string db_id = "/teste";
-    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    std::string db_path = "/teste";
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
     ds_->start_data_server("127.0.0.1", 0, 2);
     int port = ds_->get_data_port();
 
     DataClientPool pool(2);
     auto [success, data, py_name, hash, error, rerr] =
-        pool.request("127.0.0.1", port, db_id + ":missing", 0, 0, 5000);
+        pool.request("127.0.0.1", port, db_path + ":missing", 0, 0, 5000);
 
     EXPECT_FALSE(success);
     EXPECT_EQ(rerr, ReadError::OBJECT_NOT_FOUND);
@@ -105,14 +105,14 @@ TEST_F(DataClientPoolTest, ObjectNotFoundIsTyped) {
 // feeds a passive RTT sample into NetQualityMonitor, so the host becomes ranked.
 TEST_F(DataClientPoolTest, CompletedExchangeFeedsPassiveRtt) {
     NetQualityMonitor::instance().clear();
-    std::string db_id = "/testf";
-    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    std::string db_path = "/testf";
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
     ds_->start_data_server("127.0.0.1", 0, 2);
     int port = ds_->get_data_port();
 
     DataClientPool pool(2);
     auto [success, data, py_name, hash, error, rerr] =
-        pool.request("127.0.0.1", port, db_id + ":missing", 0, 0, 5000);
+        pool.request("127.0.0.1", port, db_path + ":missing", 0, 0, 5000);
 
     ASSERT_EQ(rerr, ReadError::OBJECT_NOT_FOUND);
     // A full round-trip completed → the loopback host now has a positive score.

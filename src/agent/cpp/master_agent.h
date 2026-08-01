@@ -80,7 +80,7 @@ public:
 
     void restart_failed_tasks(const CMString& file_path);
 
-    void broadcast_object_removed(const CMString& db_id, const CMString& object_name);
+    void broadcast_object_removed(const CMString& db_path, const CMString& object_name);
 
     // message 配额同步：把当前所有配额设置（全量快照）广播给所有在线 worker。
     // 由 set_limit_change_callback 触发（用户 set_*_limit 后）。
@@ -89,15 +89,15 @@ public:
     uint16_t get_port() const { return port_; }
     int32_t get_data_server_port() const { return data_server_port_; }
 
-    // 登记一个【外部已知 db_id】的 db 路径（master 自写用 get_or_create_database 自动生成 id；
-    // 此处用于 load/merge 等已从 _DB_META 读出 db_id 的场景）。Database 是路径唯一权威源，
+    // 登记一个【外部已知 db_path】的 db 路径（master 自写用 get_or_create_database 自动生成 id；
+    // 此处用于 load/merge 等已从 _DB_META 读出 db_path 的场景）。Database 是路径唯一权威源，
     // 故内部构造 Database 插入 db_instances_（替代原 db_registry_ 字符串副本）。
-    void register_database(const CMString& db_id, const CMString& base_path, const CMString& data_path = "");
-    bool is_db_frozen(const CMString& db_id) const;
+    void register_database(const CMString& db_path, const CMString& base_path, const CMString& data_path = "");
+    bool is_db_frozen(const CMString& db_path) const;
     // 非 stream 模式 pending frozen 状态机（WP1）。
     // is_db_frozen 覆盖 confirmed ∪ pending（跨 task 写注册拦截）。
     // commit/rollback 按 task_id 精确迁移/清除 pending（task 成功迁移+广播，失败/崩溃回滚）。
-    bool is_db_pending_frozen(const CMString& db_id) const;
+    bool is_db_pending_frozen(const CMString& db_path) const;
     void commit_pending_frozen(uint64_t task_id);    // task 成功：pending→confirmed + 广播
     void rollback_pending_frozen(uint64_t task_id);  // task 失败/崩溃：按 task_id 清 pending
     // 消息处理入口（public 供测试直接调用，reactor 通过 lambda 调用）：
@@ -106,20 +106,20 @@ public:
     CMSharedPtr<Database> get_or_create_database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0);
     // 取 db_instances_ 里的权威 Database（load_db/merge 复用，避免 Python 端再构造一个
     // 会触发 DataService::unregister 析构副作用的临时 Database）。miss 返回 nullptr。
-    CMSharedPtr<Database> get_database(const CMString& db_id) const;
+    CMSharedPtr<Database> get_database(const CMString& db_path) const;
 
     void setup_write_context();
 
     // load_db support methods
-    CMVector<IndexEntry> restore_master_idx(const CMString& db_id, const CMString& base_path, const CMString& writer_id);
+    CMVector<IndexEntry> restore_master_idx(const CMString& db_path, const CMString& base_path, const CMString& writer_id);
     // 轻量读 idx：只返回 entries 列表，不调 restore_entries（不灌 master local_idx）也不
     // mark_data_ready。用于 merge_db Phase 3 取对象清单派发 task，避免"先污染再清理"绕路。
     CMVector<IndexEntry> read_idx_entries(const CMString& base_path, const CMString& writer_id);
-    void send_idx_load_commands(const CMString& db_id, const CMString& base_path, const CMVector<CMString>& writer_ids);
-    void rebuild_remote_idx(const CMString& db_id, const CMString& base_path, const CMVector<::WorkerInfo>& workers);
-    void send_idx_load_to_worker(const CMString& db_id, const CMString& base_path,
+    void send_idx_load_commands(const CMString& db_path, const CMString& base_path, const CMVector<CMString>& writer_ids);
+    void rebuild_remote_idx(const CMString& db_path, const CMString& base_path, const CMVector<::WorkerInfo>& workers);
+    void send_idx_load_to_worker(const CMString& db_path, const CMString& base_path,
                                   const CMVector<CMString>& writer_ids, uint64_t worker_id);
-    void rebuild_remote_idx_for_worker(const CMString& db_id, const CMString& base_path,
+    void rebuild_remote_idx_for_worker(const CMString& db_path, const CMString& base_path,
                                         const CMVector<CMString>& writer_ids, uint64_t worker_id);
     void set_master_hostname(const CMString& hostname);
 
@@ -128,20 +128,20 @@ public:
     // 落到 target_data_path（master host 本地）。返回派发的 task_id（用于 wait_merge_tasks_complete）。
     // 详见 docs/db-merge-design.md §3.4。
     uint64_t send_merge_task(uint64_t target_worker_id,
-                              const CMString& short_name, const CMString& db_id,
+                              const CMString& short_name, const CMString& db_path,
                               const CMString& base_path, const CMString& target_data_path,
                               const CMString& source_host);
     // 命令 source_worker 删除本地 data_path 下的 .dat（merge 成功后清理源）。
     // data_path 显式传入（源 data_path），worker 不查 db_registry —— cleanup 会改
     // master 的 db_registry 到 merge 路径，db_registry 解析会拿错路径。
     void send_delete_data(uint64_t source_worker_id,
-                           const CMString& db_id, const CMString& base_path,
+                           const CMString& db_path, const CMString& base_path,
                            const CMString& data_path,
                            const CMVector<CMString>& writer_ids);
     // 等待一批 DeleteData 的 ack 全部返回。返回是否全部成功；
     // 失败的 worker_id 在 failed_workers。wait 返回后 erase 对应 ack_key（防内存泄漏）。
     bool wait_delete_data_acks(const CMVector<uint64_t>& source_worker_ids,
-                                const CMString& db_id,
+                                const CMString& db_path,
                                 int64_t timeout_seconds,
                                 CMVector<uint64_t>* failed_workers = nullptr);
     // 等待一批 merge task 全部完成（TaskComplete/TaskFailed）。返回全部成功的对象名列表；
@@ -151,15 +151,15 @@ public:
                                     CMVector<CMString>* completed_objects = nullptr,
                                     CMVector<CMString>* failed_objects = nullptr);
     // merge 全部成功后的状态清理：
-    //  1. 广播 MergeCleanupMessage 给所有 worker，命令它们清 local_idx_[db_id]
+    //  1. 广播 MergeCleanupMessage 给所有 worker，命令它们清 local_idx_[db_path]
     //     （exempt_worker_ids = merge target workers，保留它们有效的新 local_idx）
-    //  2. 清 master 自身 DataService local_idx_[db_id]（restore_master_idx 灌入的源 entry）
+    //  2. 清 master 自身 DataService local_idx_[db_path]（restore_master_idx 灌入的源 entry）
     //  3. 清 master remote_idx_ 里指向源 worker 的 replica（保留 merge worker replica），
     //     避免首读试源 worker（源下线时卡 30s 网络超时）
-    //  4. 更新 db_instances_[db_id] 的 Database 路径（set_paths）指向 merge 路径，
+    //  4. 更新 db_instances_[db_path] 的 Database 路径（set_paths）指向 merge 路径，
     //     让后续 DbPathRequest 返回正确路径（Database 现是 master 进程路径唯一权威源）。
     // 不清 ObjectCache（数据内容未变，cache 是正确副本）。
-    void cleanup_after_merge(const CMString& db_id,
+    void cleanup_after_merge(const CMString& db_path,
                               const CMVector<CMString>& merged_object_full_names,
                               const CMVector<uint64_t>& source_worker_ids,
                               const CMVector<uint64_t>& merge_target_worker_ids,
@@ -230,7 +230,7 @@ private:
     // IdxLoadAck/send_delete_data 均从此读路径，消除手动双写与 merge 后副本分叉。
     CMUnorderedMap<CMString, CMSharedPtr<Database>> db_instances_;
     CMUnorderedSet<CMString> frozen_dbs_;
-    // 非 stream 模式 pending frozen：db_id → task_id（待 task 完成确认）。
+    // 非 stream 模式 pending frozen：db_path → task_id（待 task 完成确认）。
     // task 内 freeze 时登记 pending（拒其他 task 写，但不广播）；task 成功迁移到
     // frozen_dbs_ + 广播，task 失败/崩溃按 task_id 回滚清除（防永久死锁）。
     CMUnorderedMap<CMString, uint64_t> pending_frozen_dbs_;
@@ -252,7 +252,7 @@ private:
     std::condition_variable merge_task_cv_;
 
     // ── DeleteData ack 跟踪（merge 删源）──────────────────────────────
-    // key = (db_id + ":" + worker_id) 的字符串，避免多 worker/db 并发删除时 ack 串台。
+    // key = (db_path + ":" + worker_id) 的字符串，避免多 worker/db 并发删除时 ack 串台。
     struct PendingDeleteData {
         bool completed_ = false;
         bool success_ = false;
@@ -265,7 +265,7 @@ private:
 
     // ── MergeCleanup ack 跟踪（merge_db 返回前的全局一致性屏障）──
     // master 广播 MergeCleanup 后，必须等所有 worker 回 ack 才能重建自身 remote_idx +
-    // 让 merge_db 返回。key = db_id（一次 merge_db 的 cleanup 是单 db 全员广播）。
+    // 让 merge_db 返回。key = db_path（一次 merge_db 的 cleanup 是单 db 全员广播）。
     struct PendingMergeCleanup {
         uint64_t expected_count_ = 0;   // 期望的 ack 数（广播时的 worker 数）
         uint64_t received_count_ = 0;   // 已收到的 ack 数
@@ -301,9 +301,9 @@ private:
     void on_data_query_dispatch(uint64_t conn_id, const DataQueryMessage& msg);
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
     WriteRegisterAckMessage do_write_register(const WriteRegisterMessage& msg);
-    void record_worker_info(const CMString& object_name, const CMString& db_id,
+    void record_worker_info(const CMString& object_name, const CMString& db_path,
                             uint64_t worker_id, const CMString& writer_id);
-    void evaluate_and_trigger_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_id);
+    void evaluate_and_trigger_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_path);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
     void on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg);
@@ -327,14 +327,14 @@ private:
     void on_backup_request(uint64_t conn_id, const BackupRequestMessage& msg);
     uint64_t select_backup_worker(uint64_t source_worker_id);
 
-    void trigger_auto_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_id);
+    void trigger_auto_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_path);
 
     void persist_failed_task(const FailedTaskRecord& record);
     void remove_persisted_task(uint64_t task_id);
     CMString get_failed_tasks_file_path() const;
 
-    void on_master_freeze(const CMString& db_id);
-    std::pair<CMString, TaskErrorType> on_master_register_write(const CMString& db_id, const CMString& name, int64_t compressed_size);
+    void on_master_freeze(const CMString& db_path);
+    std::pair<CMString, TaskErrorType> on_master_register_write(const CMString& db_path, const CMString& name, int64_t compressed_size);
 
     std::atomic<bool> fatal_error_{false};
 

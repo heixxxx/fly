@@ -102,17 +102,17 @@ TEST_F(DatabaseTest, LoadMetaFromFrozenDatabase) {
     db.freeze();
 
     DbMeta meta = db.load_meta();
-    EXPECT_EQ(meta.db_id_, db.get_db_id());
+    EXPECT_EQ(meta.db_path_, db.get_db_path());
     EXPECT_GT(meta.created_at_, 0);
 }
 
 TEST_F(DatabaseTest, GetDbIdEqualsBasePath) {
-    // db_id 废弃：db_id 现在是 base_path 的别名（不再随机生成）。
+    // db_path 废弃：db_path 现在是 base_path 的别名（不再随机生成）。
     CMString base_path = test_dir_ + "/id_check";
     Database db(base_path);
 
-    EXPECT_EQ(db.get_db_id(), base_path);
-    EXPECT_FALSE(db.get_db_id().empty());
+    EXPECT_EQ(db.get_db_path(), base_path);
+    EXPECT_FALSE(db.get_db_path().empty());
 }
 
 TEST_F(DatabaseTest, BasePathWithColonRejected) {
@@ -120,14 +120,14 @@ TEST_F(DatabaseTest, BasePathWithColonRejected) {
     // Database 构造时拒绝含 ':' 的 base_path（双保险）。
     CMString bad_path = test_dir_ + "/bad:path";
     Database db(bad_path);
-    // 拒绝后 base_path_ 清空，db_id_ 也清空（不产生有效对象）
+    // 拒绝后 base_path_ 清空，db_path_ 也清空（不产生有效对象）
     EXPECT_TRUE(db.get_base_path().empty())
         << "base_path with ':' should be rejected, got: " << db.get_base_path();
-    EXPECT_TRUE(db.get_db_id().empty());
+    EXPECT_TRUE(db.get_db_path().empty());
 }
 
 TEST_F(DatabaseTest, FullNameIsDbPathColonShort) {
-    // full_name = "db_path:short_name"（db_id 废弃后的契约）
+    // full_name = "db_path:short_name"（db_path 废弃后的契约）
     CMString base_path = test_dir_ + "/fullname_check";
     Database db(base_path);
     EXPECT_EQ(db.get_full_name("matrix"), base_path + ":matrix");
@@ -252,7 +252,7 @@ TEST_F(DatabaseTest, GetObjNameReturnsDbIdColonName) {
     Database db(base_path);
 
     CMString obj_name = db.get_full_name("output/result");
-    CMString expected = db.get_db_id() + ":output/result";
+    CMString expected = db.get_db_path() + ":output/result";
     EXPECT_EQ(obj_name, expected);
 }
 
@@ -271,8 +271,8 @@ TEST_F(DatabaseTest, GetObjNameDifferentDbDifferentResult) {
 TEST_F(DatabaseTest, WriteObjectTracksWrite) {
     CMVector<CMString> recorded_writes;
     fly::WorkerAgentContext::set_record_write_func(
-        [&recorded_writes](const CMString& db_id, const CMString& name, int64_t size) {
-            recorded_writes.push_back(db_id + ":" + name);
+        [&recorded_writes](const CMString& db_path, const CMString& name, int64_t size) {
+            recorded_writes.push_back(db_path + ":" + name);
         }
     );
 
@@ -284,14 +284,14 @@ TEST_F(DatabaseTest, WriteObjectTracksWrite) {
     fly::WorkerAgentContext::clear();
 
     ASSERT_EQ(recorded_writes.size(), 1u);
-    EXPECT_EQ(recorded_writes[0], db.get_db_id() + ":test/obj");
+    EXPECT_EQ(recorded_writes[0], db.get_db_path() + ":test/obj");
 }
 
 TEST_F(DatabaseTest, WriteTypedObjectTracksWrite) {
     CMVector<CMString> recorded_writes;
     fly::WorkerAgentContext::set_record_write_func(
-        [&recorded_writes](const CMString& db_id, const CMString& name, int64_t size) {
-            recorded_writes.push_back(db_id + ":" + name);
+        [&recorded_writes](const CMString& db_path, const CMString& name, int64_t size) {
+            recorded_writes.push_back(db_path + ":" + name);
         }
     );
 
@@ -303,7 +303,7 @@ TEST_F(DatabaseTest, WriteTypedObjectTracksWrite) {
     fly::WorkerAgentContext::clear();
 
     ASSERT_EQ(recorded_writes.size(), 1u);
-    EXPECT_EQ(recorded_writes[0], db.get_db_id() + ":typed/obj");
+    EXPECT_EQ(recorded_writes[0], db.get_db_path() + ":typed/obj");
 }
 
 TEST_F(DatabaseTest, NoTrackingWithoutContext) {
@@ -354,8 +354,8 @@ TEST_F(DatabaseTest, RemoveObjectFailsWhenFrozen) {
 TEST_F(DatabaseTest, RemoveObjectTrampolineRequestsRemove) {
     CMVector<CMString> remove_requests;
     fly::WorkerAgentContext::set_remove_request_func(
-        [&remove_requests](const CMString& db_id, const CMString& name) {
-            remove_requests.push_back(db_id + ":" + name);
+        [&remove_requests](const CMString& db_path, const CMString& name) {
+            remove_requests.push_back(db_path + ":" + name);
         }
     );
 
@@ -369,7 +369,7 @@ TEST_F(DatabaseTest, RemoveObjectTrampolineRequestsRemove) {
     fly::WorkerAgentContext::clear();
 
     ASSERT_EQ(remove_requests.size(), 1u);
-    EXPECT_EQ(remove_requests[0], db.get_db_id() + ":notify/obj");
+    EXPECT_EQ(remove_requests[0], db.get_db_path() + ":notify/obj");
 }
 
 // ─── _DB_META incremental format tests ───
@@ -388,7 +388,7 @@ TEST_F(DatabaseTest, DbMetaHeaderWrittenOnConstruction) {
 
     // Load meta and verify header fields
     DbMeta meta = db.load_meta();
-    EXPECT_EQ(meta.db_id_, db.get_db_id());
+    EXPECT_EQ(meta.db_path_, db.get_db_path());
 }
 
 TEST_F(DatabaseTest, AppendWorkerInfoToMeta) {
@@ -462,7 +462,7 @@ TEST_F(DatabaseTest, LoadMetaReadsIncrementalFormat) {
     db.append_worker_info_to_meta(w3);
 
     DbMeta meta = db.load_meta();
-    EXPECT_EQ(meta.db_id_, db.get_db_id());
+    EXPECT_EQ(meta.db_path_, db.get_db_path());
     EXPECT_GT(meta.created_at_, 0);
     ASSERT_EQ(meta.workers_.size(), 3u);
     EXPECT_EQ(meta.workers_[0].worker_id_, 1u);
@@ -476,7 +476,7 @@ TEST_F(DatabaseTest, LoadMetaNoWorkers) {
 
     // No WorkerInfo appended
     DbMeta meta = db.load_meta();
-    EXPECT_EQ(meta.db_id_, db.get_db_id());
+    EXPECT_EQ(meta.db_path_, db.get_db_path());
     EXPECT_GT(meta.created_at_, 0);
     EXPECT_TRUE(meta.workers_.empty());
 }
@@ -617,7 +617,7 @@ TEST_F(DatabaseTest, LoadMetaEmptyAfterCorruption) {
     }
 
     DbMeta meta = db.load_meta();
-    EXPECT_TRUE(meta.db_id_.empty());
+    EXPECT_TRUE(meta.db_path_.empty());
 }
 
 TEST_F(DatabaseTest, RemoveIndexEntry) {
@@ -660,7 +660,7 @@ TEST_F(DatabaseTest, MultipleObjectsSameDbMeta) {
     fly::DataService::instance()->drain_write_back();
 
     DbMeta meta = db.load_meta();
-    EXPECT_EQ(meta.db_id_, db.get_db_id());
+    EXPECT_EQ(meta.db_path_, db.get_db_path());
 }
 
 // =============================================================================
@@ -686,14 +686,14 @@ protected:
         fly::WorkerAgentContext::set_set_var_func(
             [this](const fly::CMString& full_name,
                    FlyBufferPtr v, const fly::CMString& tn) {
-                auto [db_id, short_name] = fly::split_full_name(full_name);
-                if (db_id.empty()) return false;
+                auto [db_path, short_name] = fly::split_full_name(full_name);
+                if (db_path.empty()) return false;
                 return db_->master_set_var(short_name, v, tn);
             });
         fly::WorkerAgentContext::set_get_var_func(
             [this](const fly::CMString& full_name) {
-                auto [db_id, short_name] = fly::split_full_name(full_name);
-                if (db_id.empty()) {
+                auto [db_path, short_name] = fly::split_full_name(full_name);
+                if (db_path.empty()) {
                     return std::make_tuple(false, FlyBufferPtr{}, fly::CMString{});
                 }
                 auto [ok, v, tn] = db_->master_get_var(short_name);
@@ -701,8 +701,8 @@ protected:
             });
         fly::WorkerAgentContext::set_remove_var_func(
             [this](const fly::CMString& full_name) {
-                auto [db_id, short_name] = fly::split_full_name(full_name);
-                if (!db_id.empty()) {
+                auto [db_path, short_name] = fly::split_full_name(full_name);
+                if (!db_path.empty()) {
                     db_->master_remove_var(short_name);
                 }
             });
@@ -836,7 +836,7 @@ TEST_F(DatabaseVarTest, LoadVarsFromDiskRestoresStore) {
     db_.reset();
     fly::WorkerAgentContext::clear();
 
-    // Re-open: existing db (db_id regenerated from path, but _VARS is read
+    // Re-open: existing db (db_path regenerated from path, but _VARS is read
     // because the path existed). Use a non-empty existing_db_id to skip the
     // new-db branch so _DB_META isn't rewritten; _VARS loads regardless.
     db_ = CMMakeShared<Database>(test_dir_, "", 0, "", "reused_id");

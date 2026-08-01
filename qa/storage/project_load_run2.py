@@ -4,7 +4,7 @@
   - fly.load_project 读 _PROJECT_META.json，动态还原成 DemoProject 子类
   - 注册的 flow（make_db）在恢复后的实例上可用
   - db 索引已全量 load，可读回对象
-  - db_id 不变（与 run1 一致）
+  - db_path 不变（与 run1 一致）
 """
 import os
 import sys
@@ -26,11 +26,11 @@ assert "make_db" in proj.list_flows(), \
 db = proj.get_db("step1")
 assert db.read_object("val") == 12345, "val should be readable after load"
 
-# db_id 不变。
-with open(os.path.join(PROJ_PATH, "_run1_db_id")) as f:
-    run1_db_id = f.read().strip()
-assert db.get_db_id() == run1_db_id, \
-    f"db_id changed: run1={run1_db_id}, run2={db.get_db_id()}"
+# db_path 不变。
+with open(os.path.join(PROJ_PATH, "_run1_db_path")) as f:
+    run1_db_path = f.read().strip()
+assert db.get_db_path() == run1_db_path, \
+    f"db_path changed: run1={run1_db_path}, run2={db.get_db_path()}"
 
 print(f"[RUN2] load_project ok: class={type(proj).__name__}, "
-      f"flows={proj.list_flows()}, db_id={db.get_db_id()}", file=sys.stderr)
+      f"flows={proj.list_flows()}, db_path={db.get_db_path()}", file=sys.stderr)

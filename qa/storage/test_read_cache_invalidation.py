@@ -53,8 +53,8 @@ def assert_cached(key):
     except ImportError:
         from storage.read_cache import get_read_cache
     rc = get_read_cache()
-    db_id = db.get_db_id()
-    return rc.get(f"{db_id}:{key}", "high") is not None
+    db_path = db.get_db_path()
+    return rc.get(f"{db_path}:{key}", "high") is not None
 
 
 cleanup()

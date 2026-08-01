@@ -66,9 +66,9 @@ assert after_size <= baseline_size + 1, \
 
 INFO("[RUN1] data file truncated after task failure (dirty bytes recovered)")
 
-# 4. 保存 db_id 给 run2
-with open(os.path.join(DB_PATH, "_test_db_id"), "w") as f:
-    f.write(db.get_db_id())
+# 4. 保存 db_path 给 run2
+with open(os.path.join(DB_PATH, "_test_db_path"), "w") as f:
+    f.write(db.get_db_path())
 
-INFO(f"[RUN1] db_id={db.get_db_id()}")
+INFO(f"[RUN1] db_path={db.get_db_path()}")
 INFO("[RUN1] PASS: abort cleanup verified, exiting for load_db verification")

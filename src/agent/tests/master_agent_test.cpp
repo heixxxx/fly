@@ -10,7 +10,7 @@
 
 using namespace fly::test;
 
-// db_id 废弃：db_id 现在是 base_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_id。
+// db_path 废弃：db_path 现在是 base_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_path。
 static CMString db32(const CMString& hint) {
     return "/test/" + hint;
 }
@@ -142,13 +142,13 @@ TEST(MasterAgentTest, SetupWriteContext_MasterRunning_RegisterWriteUpdatesRemote
     master.setup_write_context();
     wait_for_running(master, true);
 
-    CMString db_id = db32("test_db_setup_write");
+    CMString db_path = db32("test_db_setup_write");
     CMString obj_name = "test_obj_setup_write";
-    CMString full_name = db_id + ":" + obj_name;
+    CMString full_name = db_path + ":" + obj_name;
 
     // master 自写走 register 路径（on_master_register_write → do_write_register）。
     // record_write_func 现为 no-op，不再触发 placement 更新。
-    auto [msg, err_type] = WorkerAgentContext::register_write(db_id, obj_name, 100);
+    auto [msg, err_type] = WorkerAgentContext::register_write(db_path, obj_name, 100);
     EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);
 
     // do_write_register 应已更新 remote_idx（worker_id=0 = master 自写）
@@ -171,12 +171,12 @@ TEST(MasterAgentTest, SetupWriteContext_MasterNotRunning_RecordWriteNoOp) {
     // Do NOT start — running_ is false
     master.setup_write_context();
 
-    CMString db_id = db32("test_db_noop");
+    CMString db_path = db32("test_db_noop");
     CMString obj_name = "test_obj_noop";
-    CMString full_name = db_id + ":" + obj_name;
+    CMString full_name = db_path + ":" + obj_name;
 
     // master record_write_func 现为 no-op；register_write 在 !running_ 时返回 UNKNOWN 不登记
-    WorkerAgentContext::record_write(db_id, obj_name, 100);
+    WorkerAgentContext::record_write(db_path, obj_name, 100);
 
     // remote_idx should NOT be updated（master 未 running）
     EXPECT_FALSE(DataService::instance()->has_remote_location(full_name));
@@ -199,7 +199,7 @@ TEST(MasterAgentTest, SetupWriteContext_ClearDeactivatesContext) {
 
 TEST(MasterAgentTest, RestoreMasterIdx_ExistingIdxFile) {
     TempDir tmpdir;
-    CMString db_id = db32("test_db_restore_existing");
+    CMString db_path = db32("test_db_restore_existing");
     CMString base_path = tmpdir.path();
 
     // Create idx file with entries (LocalIndex stores short_name only)
@@ -218,34 +218,34 @@ TEST(MasterAgentTest, RestoreMasterIdx_ExistingIdxFile) {
     create_idx_file(base_path, "master000", {entry1, entry2});
 
     MasterAgent master("127.0.0.1", 0);
-    auto entries = master.restore_master_idx(db_id, base_path, "master000");
+    auto entries = master.restore_master_idx(db_path, base_path, "master000");
 
     ASSERT_EQ(entries.size(), 2u);
     EXPECT_EQ(entries[0].object_name_, "obj_restore_1");
     EXPECT_EQ(entries[1].object_name_, "obj_restore_2");
 
     // DataService local_idx should be populated
-    EXPECT_TRUE(DataService::instance()->has_local_object(db_id + ":obj_restore_1"));
-    EXPECT_TRUE(DataService::instance()->has_local_object(db_id + ":obj_restore_2"));
+    EXPECT_TRUE(DataService::instance()->has_local_object(db_path + ":obj_restore_1"));
+    EXPECT_TRUE(DataService::instance()->has_local_object(db_path + ":obj_restore_2"));
 
     // Cleanup
-    DataService::instance()->remove_local_index(db_id + ":obj_restore_1");
-    DataService::instance()->remove_local_index(db_id + ":obj_restore_2");
+    DataService::instance()->remove_local_index(db_path + ":obj_restore_1");
+    DataService::instance()->remove_local_index(db_path + ":obj_restore_2");
 }
 
 TEST(MasterAgentTest, RestoreMasterIdx_NonExistentIdxFile) {
     TempDir tmpdir;
-    CMString db_id = db32("test_db_restore_missing");
+    CMString db_path = db32("test_db_restore_missing");
 
     MasterAgent master("127.0.0.1", 0);
-    auto entries = master.restore_master_idx(db_id, tmpdir.path(), "w999");
+    auto entries = master.restore_master_idx(db_path, tmpdir.path(), "w999");
 
     EXPECT_TRUE(entries.empty());
 }
 
 TEST(MasterAgentTest, RestoreMasterIdx_EmptyIdxFile) {
     TempDir tmpdir;
-    CMString db_id = db32("test_db_restore_empty");
+    CMString db_path = db32("test_db_restore_empty");
     CMString base_path = tmpdir.path();
 
     // Create idx file with no entries
@@ -258,14 +258,14 @@ TEST(MasterAgentTest, RestoreMasterIdx_EmptyIdxFile) {
     }
 
     MasterAgent master("127.0.0.1", 0);
-    auto entries = master.restore_master_idx(db_id, base_path, "master000");
+    auto entries = master.restore_master_idx(db_path, base_path, "master000");
 
     EXPECT_TRUE(entries.empty());
 }
 
 TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
     TempDir tmpdir;
-    CMString db_id = db32("test_db_restore_multi");
+    CMString db_path = db32("test_db_restore_multi");
     CMString base_path = tmpdir.path();
 
     // Create multiple entries (LocalIndex stores short_name only)
@@ -281,7 +281,7 @@ TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
     create_idx_file(base_path, "master000", entries_writer0);
 
     MasterAgent master("127.0.0.1", 0);
-    auto entries = master.restore_master_idx(db_id, base_path, "master000");
+    auto entries = master.restore_master_idx(db_path, base_path, "master000");
 
     ASSERT_EQ(entries.size(), 5u);
     for (int i = 0; i < 5; i++) {
@@ -290,7 +290,7 @@ TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
 
     // Cleanup
     for (int i = 0; i < 5; i++) {
-        DataService::instance()->remove_local_index(db_id + ":" + fmt::format("multi_obj_{}", i));
+        DataService::instance()->remove_local_index(db_path + ":" + fmt::format("multi_obj_{}", i));
     }
 }
 
@@ -298,9 +298,9 @@ TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
 
 TEST(MasterAgentTest, RebuildRemoteIdx_MasterEntries) {
     TempDir tmpdir;
-    CMString db_id = db32("test_db_rebuild_master");
+    CMString db_path = db32("test_db_rebuild_master");
     CMString base_path = tmpdir.path();
-    CMString full = db_id + ":master_obj_1";
+    CMString full = db_path + ":master_obj_1";
 
     // Create master's idx with entries (LocalIndex stores short_name only)
     IndexEntry entry;
@@ -322,7 +322,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MasterEntries) {
     DataService::instance()->register_worker(10, "127.0.0.1", 9999);
     master.add_worker_hostname(10, "localhost");
 
-    master.rebuild_remote_idx(db_id, base_path, {master_worker});
+    master.rebuild_remote_idx(db_path, base_path, {master_worker});
 
     // Master entries now map to the new worker on same hostname
     EXPECT_TRUE(DataService::instance()->has_remote_location(full));
@@ -337,9 +337,9 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MasterEntries) {
 
 TEST(MasterAgentTest, RebuildRemoteIdx_WorkerEntries_NoNewWorkers_Skipped) {
     TempDir tmpdir;
-    CMString db_id = db32("test_db_rebuild_no_new_workers");
+    CMString db_path = db32("test_db_rebuild_no_new_workers");
     CMString base_path = tmpdir.path();
-    CMString full = db_id + ":worker_obj_skip";
+    CMString full = db_path + ":worker_obj_skip";
 
     // Create worker_5.idx with entries (LocalIndex stores short_name only)
     IndexEntry entry;
@@ -357,7 +357,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_WorkerEntries_NoNewWorkers_Skipped) {
     old_worker.hostname_ = "testhost_skipped";
 
     MasterAgent master("127.0.0.1", 0);
-    master.rebuild_remote_idx(db_id, base_path, {old_worker});
+    master.rebuild_remote_idx(db_path, base_path, {old_worker});
 
     // No new workers with matching hostname → entry should NOT be in remote_idx
     EXPECT_FALSE(DataService::instance()->has_remote_location(full));
@@ -365,7 +365,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_WorkerEntries_NoNewWorkers_Skipped) {
 
 TEST(MasterAgentTest, RebuildRemoteIdx_MissingIdxFile_Skipped) {
     TempDir tmpdir;
-    CMString db_id = db32("test_db_rebuild_missing_idx");
+    CMString db_path = db32("test_db_rebuild_missing_idx");
     CMString base_path = tmpdir.path();
 
     // WorkerInfo for a worker whose idx file doesn't exist
@@ -376,15 +376,15 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MissingIdxFile_Skipped) {
 
     MasterAgent master("127.0.0.1", 0);
     // Should not crash, just WARN and skip
-    master.rebuild_remote_idx(db_id, base_path, {missing_worker});
+    master.rebuild_remote_idx(db_path, base_path, {missing_worker});
 }
 
 TEST(MasterAgentTest, RebuildRemoteIdx_MultipleWorkers) {
     TempDir tmpdir;
-    CMString db_id = db32("test_db_rebuild_multi");
+    CMString db_path = db32("test_db_rebuild_multi");
     CMString base_path = tmpdir.path();
-    CMString full_master = db_id + ":multi_master_obj";
-    CMString full_worker = db_id + ":multi_worker_obj";
+    CMString full_master = db_path + ":multi_master_obj";
+    CMString full_worker = db_path + ":multi_worker_obj";
 
     // Create master's idx (LocalIndex stores short_name only)
     IndexEntry master_entry;
@@ -417,7 +417,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultipleWorkers) {
     DataService::instance()->register_worker(10, "127.0.0.1", 9999);
     master.add_worker_hostname(10, "master_host");
 
-    master.rebuild_remote_idx(db_id, base_path, {w0, w3});
+    master.rebuild_remote_idx(db_path, base_path, {w0, w3});
 
     // master entries → mapped to new worker_id=10 on "master_host"
     EXPECT_TRUE(DataService::instance()->has_remote_location(full_master));
@@ -435,21 +435,21 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultipleWorkers) {
 
 TEST(MasterAgentTest, RebuildRemoteIdx_EmptyWorkers_Noop) {
     TempDir tmpdir;
-    CMString db_id = db32("test_db_rebuild_empty_workers");
+    CMString db_path = db32("test_db_rebuild_empty_workers");
     CMString base_path = tmpdir.path();
 
     MasterAgent master("127.0.0.1", 0);
     // Empty workers vector → no iteration, no crash
-    master.rebuild_remote_idx(db_id, base_path, {});
+    master.rebuild_remote_idx(db_path, base_path, {});
 }
 
 TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
     TempDir tmpdir;
-    CMString db_id = db32("test_db_multi_host");
+    CMString db_path = db32("test_db_multi_host");
     CMString base_path = tmpdir.path();
-    CMString full_m = db_id + ":master_data";
-    CMString full_a = db_id + ":worker_a_data";
-    CMString full_b = db_id + ":worker_b_data";
+    CMString full_m = db_path + ":master_data";
+    CMString full_a = db_path + ":worker_a_data";
+    CMString full_b = db_path + ":worker_b_data";
 
     // Master (worker_id=0) on "host_master" (LocalIndex stores short_name only)
     IndexEntry master_entry;
@@ -499,7 +499,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
     DataService::instance()->register_worker(300, "10.0.0.3", 8003);
     master.add_worker_hostname(300, "host_b");
 
-    master.rebuild_remote_idx(db_id, base_path, {w_master, w_a, w_b});
+    master.rebuild_remote_idx(db_path, base_path, {w_master, w_a, w_b});
 
     // master → worker 100 on host_master
     EXPECT_TRUE(DataService::instance()->has_remote_location(full_m));
@@ -529,11 +529,11 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
 
 TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
     TempDir tmpdir;
-    CMString db_id = db32("test_db_same_host_merge");
+    CMString db_path = db32("test_db_same_host_merge");
     CMString base_path = tmpdir.path();
-    CMString full_m = db_id + ":m_obj";
-    CMString full_w = db_id + ":w_obj";
-    CMString full_r = db_id + ":r_obj";
+    CMString full_m = db_path + ":m_obj";
+    CMString full_w = db_path + ":w_obj";
+    CMString full_r = db_path + ":r_obj";
 
     // Master (worker_id=0) on "host_local" (LocalIndex stores short_name only)
     IndexEntry master_entry;
@@ -581,7 +581,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
     DataService::instance()->register_worker(20, "192.168.1.2", 9002);
     master.add_worker_hostname(20, "host_remote");
 
-    master.rebuild_remote_idx(db_id, base_path, {w_m, w5, w3});
+    master.rebuild_remote_idx(db_path, base_path, {w_m, w5, w3});
 
     // Both master and worker_id=5 on host_local → mapped to worker 10
     auto info_m = DataService::instance()->lookup_remote_idx(full_m);
@@ -607,10 +607,10 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
 
 TEST(MasterAgentTest, RebuildRemoteIdx_PartialHostCoverage) {
     TempDir tmpdir;
-    CMString db_id = db32("test_db_partial_host");
+    CMString db_path = db32("test_db_partial_host");
     CMString base_path = tmpdir.path();
-    CMString full_avail = db_id + ":avail_obj";
-    CMString full_off = db_id + ":offline_obj";
+    CMString full_avail = db_path + ":avail_obj";
+    CMString full_off = db_path + ":offline_obj";
 
     // Worker A on "host_available" (LocalIndex stores short_name only)
     IndexEntry entry_a;
@@ -644,7 +644,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_PartialHostCoverage) {
     DataService::instance()->register_worker(50, "10.0.0.10", 7000);
     master.add_worker_hostname(50, "host_available");
 
-    master.rebuild_remote_idx(db_id, base_path, {wa, wb});
+    master.rebuild_remote_idx(db_path, base_path, {wa, wb});
 
     // host_available → mapped
     EXPECT_TRUE(DataService::instance()->has_remote_location(full_avail));
@@ -835,13 +835,13 @@ TEST(MasterAgentTest, OnDisconnectRecoversRunningTasks) {
 TEST(MasterAgentTest, RegisterDatabaseAndIsFrozen) {
     fly::DataService::instance()->reset();
     TempDir tmpdir;
-    CMString db_id = db32("test_db_reg_freeze");
+    CMString db_path = db32("test_db_reg_freeze");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_id, tmpdir.path());
+    master.register_database(db_path, tmpdir.path());
 
     // Not frozen initially
-    EXPECT_FALSE(master.is_db_frozen(db_id));
+    EXPECT_FALSE(master.is_db_frozen(db_path));
 
     // Unknown db is also not frozen
     EXPECT_FALSE(master.is_db_frozen(db32("unknown_db_freeze")));
@@ -854,11 +854,11 @@ TEST(MasterAgentTest, RegisterDatabaseAndIsFrozen) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    worker.request_database_freeze(db_id);
+    worker.request_database_freeze(db_path);
 
     // Wait for master to process the freeze
-    wait_for([&] { return master.is_db_frozen(db_id); }, 50, 20);
-    EXPECT_TRUE(master.is_db_frozen(db_id));
+    wait_for([&] { return master.is_db_frozen(db_path); }, 50, 20);
+    EXPECT_TRUE(master.is_db_frozen(db_path));
 
     worker.stop();
     master.stop();
@@ -877,10 +877,10 @@ TEST(MasterAgentTest, NonStreamFreezePendingThenCommit) {
     fly::DataService::instance()->reset();
     Config::instance()->set_int("dependency_update_mode", 1);   // 非 stream 模式
     TempDir tmpdir;
-    CMString db_id = db32("nstream_freeze_commit");
+    CMString db_path = db32("nstream_freeze_commit");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_id, tmpdir.path());
+    master.register_database(db_path, tmpdir.path());
     master.start();
     wait_for_running(master, true);
 
@@ -890,17 +890,17 @@ TEST(MasterAgentTest, NonStreamFreezePendingThenCommit) {
 
     // 模拟 task 内 freeze：begin_task 设 current_task_id_，然后 freeze
     worker.begin_task(1001, "");
-    worker.request_database_freeze(db_id);
+    worker.request_database_freeze(db_path);
 
     // pending 登记：is_db_frozen 应覆盖 pending（跨 task 写注册需被拦截）
-    wait_for([&] { return master.is_db_frozen(db_id); }, 50, 20);
-    EXPECT_TRUE(master.is_db_frozen(db_id));          // confirmed ∪ pending
-    EXPECT_TRUE(master.is_db_pending_frozen(db_id));  // 仅 pending（未提交）
+    wait_for([&] { return master.is_db_frozen(db_path); }, 50, 20);
+    EXPECT_TRUE(master.is_db_frozen(db_path));          // confirmed ∪ pending
+    EXPECT_TRUE(master.is_db_pending_frozen(db_path));  // 仅 pending（未提交）
 
     // 模拟 task 成功：commit_pending_frozen 把 pending 迁移到 confirmed
     master.commit_pending_frozen(1001);
-    EXPECT_TRUE(master.is_db_frozen(db_id));           // 仍是 frozen
-    EXPECT_FALSE(master.is_db_pending_frozen(db_id));  // 但不再是 pending（已 confirmed）
+    EXPECT_TRUE(master.is_db_frozen(db_path));           // 仍是 frozen
+    EXPECT_FALSE(master.is_db_pending_frozen(db_path));  // 但不再是 pending（已 confirmed）
 
     worker.end_task(1001);
     worker.stop();
@@ -914,10 +914,10 @@ TEST(MasterAgentTest, NonStreamFreezeRollbackOnTaskFailed) {
     fly::DataService::instance()->reset();
     Config::instance()->set_int("dependency_update_mode", 1);
     TempDir tmpdir;
-    CMString db_id = db32("nstream_freeze_rollback");
+    CMString db_path = db32("nstream_freeze_rollback");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_id, tmpdir.path());
+    master.register_database(db_path, tmpdir.path());
     master.start();
     wait_for_running(master, true);
 
@@ -926,14 +926,14 @@ TEST(MasterAgentTest, NonStreamFreezeRollbackOnTaskFailed) {
     ASSERT_TRUE(wait_until_registered(worker));
 
     worker.begin_task(2002, "");
-    worker.request_database_freeze(db_id);
-    wait_for([&] { return master.is_db_pending_frozen(db_id); }, 50, 20);
-    EXPECT_TRUE(master.is_db_frozen(db_id));   // pending 状态下也算 frozen
+    worker.request_database_freeze(db_path);
+    wait_for([&] { return master.is_db_pending_frozen(db_path); }, 50, 20);
+    EXPECT_TRUE(master.is_db_frozen(db_path));   // pending 状态下也算 frozen
 
     // 模拟 task 失败：rollback_pending_frozen 清掉该 task 的 pending
     master.rollback_pending_frozen(2002);
-    EXPECT_FALSE(master.is_db_frozen(db_id));          // 回滚后不再 frozen
-    EXPECT_FALSE(master.is_db_pending_frozen(db_id));  // pending 也清了
+    EXPECT_FALSE(master.is_db_frozen(db_path));          // 回滚后不再 frozen
+    EXPECT_FALSE(master.is_db_pending_frozen(db_path));  // pending 也清了
 
     worker.end_task(2002);
     worker.stop();
@@ -989,10 +989,10 @@ TEST(MasterAgentTest, NonStreamFreezeConflictRejected) {
     fly::DataService::instance()->reset();
     Config::instance()->set_int("dependency_update_mode", 1);
     TempDir tmpdir;
-    CMString db_id = db32("nstream_freeze_conflict");
+    CMString db_path = db32("nstream_freeze_conflict");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_id, tmpdir.path());
+    master.register_database(db_path, tmpdir.path());
     master.start();
     wait_for_running(master, true);
 
@@ -1002,12 +1002,12 @@ TEST(MasterAgentTest, NonStreamFreezeConflictRejected) {
 
     // 第一次 freeze 成功（pending）
     worker.begin_task(4001, "");
-    worker.request_database_freeze(db_id);
-    wait_for([&] { return master.is_db_pending_frozen(db_id); }, 50, 20);
+    worker.request_database_freeze(db_path);
+    wait_for([&] { return master.is_db_pending_frozen(db_path); }, 50, 20);
 
     // 第二次 freeze 同一 db（模拟另一 task 业务流程错误）→ 应被拒绝
     worker.begin_task(4002, "");
-    worker.request_database_freeze(db_id);
+    worker.request_database_freeze(db_path);
 
     // worker 收到 DB_ALREADY_FROZEN ack → last_error_type 被设置
     wait_for([&] {
@@ -1025,15 +1025,15 @@ TEST(MasterAgentTest, NonStreamFreezeConflictRejected) {
 
 // T5: 崩溃恢复 —— worker 有正在跑的 task 且该 task 声明了 pending freeze →
 //     worker 断连（模拟崩溃）→ master on_disconnect 按 task_id 清 pending（防死锁）。
-//     这是 Q1 选 task_id 而非 db_id 的核心理由：崩溃时 master 收不到失败消息。
+//     这是 Q1 选 task_id 而非 db_path 的核心理由：崩溃时 master 收不到失败消息。
 TEST(MasterAgentTest, NonStreamFreezeClearedOnWorkerCrash) {
     fly::DataService::instance()->reset();
     Config::instance()->set_int("dependency_update_mode", 1);
     TempDir tmpdir;
-    CMString db_id = db32("nstream_freeze_crash");
+    CMString db_path = db32("nstream_freeze_crash");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_id, tmpdir.path());
+    master.register_database(db_path, tmpdir.path());
     master.start();
     wait_for_running(master, true);
 
@@ -1051,17 +1051,17 @@ TEST(MasterAgentTest, NonStreamFreezeClearedOnWorkerCrash) {
 
     // 该 task 在执行中声明了 pending freeze
     worker.begin_task(5005, "");
-    worker.request_database_freeze(db_id);
-    wait_for([&] { return master.is_db_pending_frozen(db_id); }, 50, 20);
-    EXPECT_TRUE(master.is_db_frozen(db_id));   // pending → 写注册被拦截
+    worker.request_database_freeze(db_path);
+    wait_for([&] { return master.is_db_pending_frozen(db_path); }, 50, 20);
+    EXPECT_TRUE(master.is_db_frozen(db_path));   // pending → 写注册被拦截
 
     // 模拟 worker 崩溃：stop() 触发断连
     worker.stop();
 
     // master on_disconnect 应按 task_id 清掉 pending（防永久死锁）
-    wait_for([&] { return !master.is_db_frozen(db_id); }, 100, 30);
-    EXPECT_FALSE(master.is_db_frozen(db_id));          // pending 已清
-    EXPECT_FALSE(master.is_db_pending_frozen(db_id));  // 不再残留
+    wait_for([&] { return !master.is_db_frozen(db_path); }, 100, 30);
+    EXPECT_FALSE(master.is_db_frozen(db_path));          // pending 已清
+    EXPECT_FALSE(master.is_db_pending_frozen(db_path));  // 不再残留
 
     master.stop();
     wait_for_running(master, false);
@@ -1081,10 +1081,10 @@ TEST(MasterAgentTest, NonStreamWriteRegisterDelaysDataReady) {
     fly::DataService::instance()->reset();
     Config::instance()->set_int("dependency_update_mode", 1);   // 非 stream 模式
     TempDir tmpdir;
-    CMString db_id = db32("nswr");
+    CMString db_path = db32("nswr");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_id, tmpdir.path());
+    master.register_database(db_path, tmpdir.path());
     master.start();
     wait_for_running(master, true);
 
@@ -1092,7 +1092,7 @@ TEST(MasterAgentTest, NonStreamWriteRegisterDelaysDataReady) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    CMString obj_x = db_id + ":obj_x";
+    CMString obj_x = db_path + ":obj_x";
 
     // 先提交 task 7000（产出 obj_x）→ 它 ready 并被调度到 worker（running）
     master.submit_task(7000, "producer", "test_module", {"arg"},
@@ -1112,7 +1112,7 @@ TEST(MasterAgentTest, NonStreamWriteRegisterDelaysDataReady) {
 
     // worker 在 task 7000 内 write obj_x（注册成功，但非 stream 模式不 mark_data_ready）
     worker.begin_task(7000, "");
-    auto [ack_msg, err_type] = worker.register_write_with_master(db_id, "obj_x", 100);
+    auto [ack_msg, err_type] = worker.register_write_with_master(db_path, "obj_x", 100);
     EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);   // 校验通过，ack 成功
 
     // 关键断言：write 后 7001 仍在 pending（mark_data_ready 被延迟）
@@ -1159,10 +1159,10 @@ TEST(MasterAgentTest, NonStreamTaskCompleteCarriesRealSize) {
     fly::DataService::instance()->reset();
     Config::instance()->set_int("dependency_update_mode", 1);   // batch 模式
     TempDir tmpdir;
-    CMString db_id = db32("nssz");
+    CMString db_path = db32("nssz");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_id, tmpdir.path());
+    master.register_database(db_path, tmpdir.path());
     master.start();
     wait_for_running(master, true);
 
@@ -1170,14 +1170,14 @@ TEST(MasterAgentTest, NonStreamTaskCompleteCarriesRealSize) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    CMString obj_a = db_id + ":obj_a";
+    CMString obj_a = db_path + ":obj_a";
 
     // worker 在 task 内写对象：register（向 master 校验/provenance）+ record（本地记录写出）。
     // 真实流程里两者由 commit_write 落盘完成回调同时触发；测试显式调用以驱动 size 链路。
     worker.begin_task(8000, "");
-    auto [ack_msg, err_type] = worker.register_write_with_master(db_id, "obj_a", 100);
+    auto [ack_msg, err_type] = worker.register_write_with_master(db_path, "obj_a", 100);
     EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);   // batch 模式：校验通过
-    worker.record_write(db_id, "obj_a", 100);      // 记录写出（full_name + size）
+    worker.record_write(db_path, "obj_a", 100);      // 记录写出（full_name + size）
 
     // batch 模式下，do_write_register 跳过 update_remote_idx —— 对象登记前 remote_idx 无记录
     EXPECT_FALSE(DataService::instance()->has_remote_location(obj_a));
@@ -1213,10 +1213,10 @@ TEST(MasterAgentTest, StreamWriteRegisterImmediateDataReady) {
     fly::DataService::instance()->reset();
     Config::instance()->set_int("dependency_update_mode", 0);   // stream 模式（默认）
     TempDir tmpdir;
-    CMString db_id = db32("swr");
+    CMString db_path = db32("swr");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_id, tmpdir.path());
+    master.register_database(db_path, tmpdir.path());
     master.start();
     wait_for_running(master, true);
 
@@ -1224,7 +1224,7 @@ TEST(MasterAgentTest, StreamWriteRegisterImmediateDataReady) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    CMString obj_y = db_id + ":obj_y";
+    CMString obj_y = db_path + ":obj_y";
 
     // 先提交 task 7003（产出 obj_y）→ running
     master.submit_task(7003, "producer2", "test_module", {"arg"},
@@ -1244,7 +1244,7 @@ TEST(MasterAgentTest, StreamWriteRegisterImmediateDataReady) {
 
     // stream 模式：write register 即时 mark_data_ready
     worker.begin_task(7003, "");
-    auto [ack_msg, err_type] = worker.register_write_with_master(db_id, "obj_y", 100);
+    auto [ack_msg, err_type] = worker.register_write_with_master(db_path, "obj_y", 100);
     EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);
 
     // 关键断言：write 后 7004 立即移出 pending（即时 mark_data_ready）
@@ -1264,7 +1264,7 @@ TEST(MasterAgentTest, StreamWriteRegisterImmediateDataReady) {
 }
 
 // WP2-T3: 非 stream 模式下 task complete 时 record_worker_info 被正确调用（技术债修复）。
-//         WrittenObject 带 db_id_ 后，complete 时 master 能补做 record_worker_info，
+//         WrittenObject 带 db_path_ 后，complete 时 master 能补做 record_worker_info，
 //         db meta (_DB_META) 应含 worker 写入者记录。
 TEST(MasterAgentTest, NonStreamCompleteRecordsWorkerInfo) {
     fly::DataService::instance()->reset();
@@ -1279,13 +1279,13 @@ TEST(MasterAgentTest, NonStreamCompleteRecordsWorkerInfo) {
     // get_or_create_database 真正创建 master 侧 db 对象（写 _DB_META header + 入 db_instances_）
     auto db_obj = master.get_or_create_database(tmpdir.path(), "", 0);
     ASSERT_NE(db_obj, nullptr);
-    CMString db_id = db_obj->get_db_id();
+    CMString db_path = db_obj->get_db_path();
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    CMString obj_x = db_id + ":obj_x";
+    CMString obj_x = db_path + ":obj_x";
 
     // 提交产出 obj_x 的 task 让它 running
     master.submit_task(8000, "producer3", "test_module", {"arg"},
@@ -1296,9 +1296,9 @@ TEST(MasterAgentTest, NonStreamCompleteRecordsWorkerInfo) {
     }, 50, 20);
 
     worker.begin_task(8000, "");
-    worker.register_write_with_master(db_id, "obj_x", 100);
+    worker.register_write_with_master(db_path, "obj_x", 100);
 
-    // task complete（written_objects 带 db_id_）
+    // task complete（written_objects 带 db_path_）
     TaskCompleteMessage complete;
     complete.task_id_ = 8000;
     complete.worker_id_ = 1;
@@ -1332,19 +1332,19 @@ TEST(MasterAgentTest, GetOrCreateDatabase) {
     auto db = master.get_or_create_database(tmpdir1.path());
     ASSERT_NE(db, nullptr);
 
-    CMString db_id = db->get_db_id();
-    // db_id 废弃：db_id == base_path（不再是固定长度随机串）
-    EXPECT_EQ(db_id, tmpdir1.path());
+    CMString db_path = db->get_db_path();
+    // db_path 废弃：db_path == base_path（不再是固定长度随机串）
+    EXPECT_EQ(db_path, tmpdir1.path());
     EXPECT_FALSE(db->get_writer_id().empty());
     EXPECT_EQ(db->get_base_path(), tmpdir1.path());
 
     auto db2 = master.get_or_create_database(tmpdir2.path());
     ASSERT_NE(db2, nullptr);
-    EXPECT_EQ(db2->get_db_id(), tmpdir2.path());
-    EXPECT_NE(db->get_db_id(), db2->get_db_id());
+    EXPECT_EQ(db2->get_db_path(), tmpdir2.path());
+    EXPECT_NE(db->get_db_path(), db2->get_db_path());
 
-    DataService::instance()->unregister_database(db->get_db_id());
-    DataService::instance()->unregister_database(db2->get_db_id());
+    DataService::instance()->unregister_database(db->get_db_path());
+    DataService::instance()->unregister_database(db2->get_db_path());
 }
 
 // --- get_task_error ---
@@ -1716,11 +1716,11 @@ TEST(MasterAgentTest, GetTaskErrorForNonExistentReturnsEmpty) {
 
 TEST(MasterAgentTest, RegisterDatabaseStoresPathInfo) {
     MasterAgent master("127.0.0.1", 0);
-    CMString db_id = db32("reg_test");
+    CMString db_path = db32("reg_test");
     CMString base = "/tmp/test_base_" + std::to_string(::getpid());
 
-    master.register_database(db_id, base, base + "/data");
-    EXPECT_FALSE(master.is_db_frozen(db_id));
+    master.register_database(db_path, base, base + "/data");
+    EXPECT_FALSE(master.is_db_frozen(db_path));
 }
 
 TEST(MasterAgentTest, GetWorkerHostnamesEmpty) {
@@ -1772,8 +1772,8 @@ TEST(MasterAgentTest, OnMasterRegisterWriteNotRunning) {
     MasterAgent master("127.0.0.1", 0);
     master.setup_write_context();
 
-    CMString db_id = db32("reg_norun");
-    auto [msg, err_type] = WorkerAgentContext::register_write(db_id, "test_obj", 100);
+    CMString db_path = db32("reg_norun");
+    auto [msg, err_type] = WorkerAgentContext::register_write(db_path, "test_obj", 100);
 
     WorkerAgentContext::clear();
 }
@@ -1831,13 +1831,13 @@ TEST(MasterAgentTest, MasterSelfWriteWithAutoBackupEnabled) {
     master.setup_write_context();
     wait_for_running(master, true);
 
-    CMString db_id = db32("test_self_bk");
+    CMString db_path = db32("test_self_bk");
     CMString obj_name = "self_bk_obj";
-    CMString full_name = db_id + ":" + obj_name;
+    CMString full_name = db_path + ":" + obj_name;
 
     // master 自写，auto_backup_enabled=1 → do_write_register 进入 evaluate_and_trigger_backup 分支。
     // 单 master 无其它 worker 做 backup 目标，trigger_auto_backup 会 no-op，但路径必须走通不崩溃。
-    auto [msg, err_type] = WorkerAgentContext::register_write(db_id, obj_name, 100);
+    auto [msg, err_type] = WorkerAgentContext::register_write(db_path, obj_name, 100);
     EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);
 
     // placement + size 正确登记（backup 评估的前提）。

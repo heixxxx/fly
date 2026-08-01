@@ -226,7 +226,7 @@ class MapReduceJob:
 
     def __init__(self, db, output_name: str, keep_intermediate: bool = False):
         self._db = db
-        self._db_id = db.get_db_id()
+        self._db_path = db.get_db_path()
         self._output_name = output_name
         self._keep_intermediate = keep_intermediate
         self._job_id = None
@@ -316,7 +316,7 @@ class MapReduceJob:
             self._num_partitions = len(self._pre_partitioned_names)
             # Partition keys = the pre-existing object short names
             for name in self._pre_partitioned_names:
-                # Strip db_id prefix if present
+                # Strip db_path prefix if present
                 short = name.split(":")[-1] if ":" in name else name
                 self._intermediate_keys.append(f"__mr__{self._job_id}__part__placeholder")
             # We don't write partition objects — process tasks will read
@@ -458,18 +458,18 @@ class MapReduceJob:
         return db.read_object(self._output_name)
 
     def get_output_name(self) -> str:
-        """Return full object name (db_id:output_name) for dependency declaration.
+        """Return full object name (db_path:output_name) for dependency declaration.
 
         Use this in ``@as_task(inputs=lambda db, mr: [mr.get_output_name()])``
         to create a dependency on this job's result.
         """
-        return f"{self._db_id}:{self._output_name}"
+        return f"{self._db_path}:{self._output_name}"
 
     # ── Pickle support ──────────────────────────────────────────────────
 
     def __getstate__(self):
         return {
-            "_db_id": self._db_id,
+            "_db_path": self._db_path,
             "_output_name": self._output_name,
             "_keep_intermediate": self._keep_intermediate,
             "_job_id": self._job_id,

@@ -15,14 +15,14 @@ from fly.runtime import get_agent
 
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 
-# 读取 run1 保存的 db_id
-with open(os.path.join(DB_PATH, "_test_db_id")) as f:
-    expected_db_id = f.read().strip()
+# 读取 run1 保存的 db_path
+with open(os.path.join(DB_PATH, "_test_db_path")) as f:
+    expected_db_path = f.read().strip()
 
 master = get_agent()
 
 # load_db 恢复之前的数据库（含正常数据 + 已 abort 的段）
-# load_db 返回已 set_db_id 的 Database 对象，直接使用，不要 open_db（会创建新 db）
+# load_db 返回已 set_db_path 的 Database 对象，直接使用，不要 open_db（会创建新 db）
 db = master.load_db(DB_PATH)
 INFO(f"[RUN2] load_db result: {db}")
 
@@ -35,8 +35,8 @@ assert master.worker_count >= 1, "Worker should connect after load_db"
 
 time.sleep(1.0)  # 等 idx load 完成
 
-assert db.get_db_id() == expected_db_id, \
-    f"db_id mismatch: {db.get_db_id()} != {expected_db_id}"
+assert db.get_db_path() == expected_db_path, \
+    f"db_path mismatch: {db.get_db_path()} != {expected_db_path}"
 
 # 1. 正常数据应可读
 baseline = db.read_object("baseline")

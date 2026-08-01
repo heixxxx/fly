@@ -6,7 +6,7 @@
 
 using namespace fly::test;
 
-// db_id 废弃：db_id 现在是 base_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_id。
+// db_path 废弃：db_path 现在是 base_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_path。
 static CMString db32(const CMString& hint) {
     return "/test/" + hint;
 }
@@ -47,7 +47,7 @@ TEST(WorkerAgentContextTest, DefaultNotActive) {
 TEST(WorkerAgentContextTest, SetAndClear) {
     int calls = 0;
     WorkerAgentContext::set_record_write_func(
-        [&calls](const CMString& db_id, const CMString& name, int64_t size) {
+        [&calls](const CMString& db_path, const CMString& name, int64_t size) {
             calls++;
         }
     );
@@ -252,8 +252,8 @@ TEST(WorkerAgentTest, GetDatabaseUnknownReturnsNull) {
 TEST(WorkerAgentTest, RequestDatabaseFreezeNotRegistered) {
     // Worker not started → registered_ is false → request_database_freeze returns early
     WorkerAgent worker(1, "127.0.0.1", 0);
-    CMString db_id = db32("no_reg_db");
-    EXPECT_NO_THROW(worker.request_database_freeze(db_id));
+    CMString db_path = db32("no_reg_db");
+    EXPECT_NO_THROW(worker.request_database_freeze(db_path));
 }
 
 // submit_task on a worker whose start() failed (no reactor) must not crash.
@@ -318,15 +318,15 @@ protected:
 };
 
 TEST_F(IdxLoadTest, WorkerProcessesSingleIdxFile) {
-    CMString db_id = db32("test_db");
+    CMString db_path = db32("test_db");
     IndexEntry entry;
-    entry.object_name_ = db_id + ":obj_alpha";
+    entry.object_name_ = db_path + ":obj_alpha";
     entry.file_name_ = "data_0.bin";
     entry.offset_ = 0;
     entry.size_ = 100;
     create_test_idx_file(test_dir_, "w0000005", {entry});
 
-    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -336,23 +336,23 @@ TEST_F(IdxLoadTest, WorkerProcessesSingleIdxFile) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    master.send_idx_load_commands(db_id, test_dir_, {"w0000005"});
-    wait_for([&]{ return ds_->has_local_object(db_id + ":obj_alpha"); }, 100, 10);
+    master.send_idx_load_commands(db_path, test_dir_, {"w0000005"});
+    wait_for([&]{ return ds_->has_local_object(db_path + ":obj_alpha"); }, 100, 10);
 
-    EXPECT_TRUE(ds_->has_local_object(db_id + ":obj_alpha"));
+    EXPECT_TRUE(ds_->has_local_object(db_path + ":obj_alpha"));
 
     worker.stop();
     master.stop();
     wait_for_running(master, false);
 
-    ds_->unregister_database(db_id);
-    ds_->remove_local_index(db_id + ":obj_alpha");
+    ds_->unregister_database(db_path);
+    ds_->remove_local_index(db_path + ":obj_alpha");
 }
 
 TEST_F(IdxLoadTest, WorkerProcessesMultipleIdxFiles) {
-    CMString db_id = db32("test_db");
-    CMString full_one = db_id + ":obj_one";
-    CMString full_two = db_id + ":obj_two";
+    CMString db_path = db32("test_db");
+    CMString full_one = db_path + ":obj_one";
+    CMString full_two = db_path + ":obj_two";
 
     IndexEntry e1;
     e1.object_name_ = full_one;
@@ -369,7 +369,7 @@ TEST_F(IdxLoadTest, WorkerProcessesMultipleIdxFiles) {
     create_test_idx_file(test_dir_, "w0000010", {e1});
     create_test_idx_file(test_dir_, "w0000020", {e2});
 
-    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -379,7 +379,7 @@ TEST_F(IdxLoadTest, WorkerProcessesMultipleIdxFiles) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    master.send_idx_load_commands(db_id, test_dir_, {"w0000010", "w0000020"});
+    master.send_idx_load_commands(db_path, test_dir_, {"w0000010", "w0000020"});
     wait_for([&]{ return ds_->has_local_object(full_one) && ds_->has_local_object(full_two); }, 100, 10);
 
     EXPECT_TRUE(ds_->has_local_object(full_one));
@@ -389,14 +389,14 @@ TEST_F(IdxLoadTest, WorkerProcessesMultipleIdxFiles) {
     master.stop();
     wait_for_running(master, false);
 
-    ds_->unregister_database(db_id);
+    ds_->unregister_database(db_path);
     ds_->remove_local_index(full_one);
     ds_->remove_local_index(full_two);
 }
 
 TEST_F(IdxLoadTest, WorkerSkipsMissingIdxFiles) {
-    CMString db_id = db32("test_db");
-    CMString full = db_id + ":obj_exists";
+    CMString db_path = db32("test_db");
+    CMString full = db_path + ":obj_exists";
 
     IndexEntry entry;
     entry.object_name_ = full;
@@ -405,7 +405,7 @@ TEST_F(IdxLoadTest, WorkerSkipsMissingIdxFiles) {
     entry.size_ = 100;
     create_test_idx_file(test_dir_, "w0000005", {entry});
 
-    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -415,7 +415,7 @@ TEST_F(IdxLoadTest, WorkerSkipsMissingIdxFiles) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    master.send_idx_load_commands(db_id, test_dir_, {"w0000005", "w0000099"});
+    master.send_idx_load_commands(db_path, test_dir_, {"w0000005", "w0000099"});
     wait_for([&]{ return ds_->has_local_object(full); }, 100, 10);
 
     EXPECT_TRUE(ds_->has_local_object(full));
@@ -424,13 +424,13 @@ TEST_F(IdxLoadTest, WorkerSkipsMissingIdxFiles) {
     master.stop();
     wait_for_running(master, false);
 
-    ds_->unregister_database(db_id);
+    ds_->unregister_database(db_path);
     ds_->remove_local_index(full);
 }
 
 TEST_F(IdxLoadTest, WorkerHandlesEmptyOldWorkerIds) {
-    CMString db_id = db32("test_db");
-    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    CMString db_path = db32("test_db");
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -440,7 +440,7 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyOldWorkerIds) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    master.send_idx_load_commands(db_id, test_dir_, {});
+    master.send_idx_load_commands(db_path, test_dir_, {});
     wait_for_running(master, true);
 
     EXPECT_TRUE(worker.is_running());
@@ -449,17 +449,17 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyOldWorkerIds) {
     master.stop();
     wait_for_running(master, false);
 
-    ds_->unregister_database(db_id);
+    ds_->unregister_database(db_path);
 }
 
 TEST_F(IdxLoadTest, WorkerHandlesEmptyIdxFile) {
-    CMString db_id = db32("test_db");
+    CMString db_path = db32("test_db");
     CMString idx_path = test_dir_ + "/w0000030.idx";
     {
         std::ofstream ofs(idx_path, std::ios::binary);
     }
 
-    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -469,7 +469,7 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyIdxFile) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    master.send_idx_load_commands(db_id, test_dir_, {"w0000030"});
+    master.send_idx_load_commands(db_path, test_dir_, {"w0000030"});
     wait_for_running(master, true);
 
     EXPECT_TRUE(worker.is_running());
@@ -478,13 +478,13 @@ TEST_F(IdxLoadTest, WorkerHandlesEmptyIdxFile) {
     master.stop();
     wait_for_running(master, false);
 
-    ds_->unregister_database(db_id);
+    ds_->unregister_database(db_path);
 }
 
 TEST_F(IdxLoadTest, WorkerLoadsMultipleEntriesPerIdx) {
-    CMString db_id = db32("test_db");
-    CMString full_a = db_id + ":block_a";
-    CMString full_b = db_id + ":block_b";
+    CMString db_path = db32("test_db");
+    CMString full_a = db_path + ":block_a";
+    CMString full_b = db_path + ":block_b";
 
     IndexEntry e1;
     e1.object_name_ = full_a;
@@ -506,7 +506,7 @@ TEST_F(IdxLoadTest, WorkerLoadsMultipleEntriesPerIdx) {
 
     create_test_idx_file(test_dir_, "w0000040", {e1, e2, e3});
 
-    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -516,7 +516,7 @@ TEST_F(IdxLoadTest, WorkerLoadsMultipleEntriesPerIdx) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    master.send_idx_load_commands(db_id, test_dir_, {"w0000040"});
+    master.send_idx_load_commands(db_path, test_dir_, {"w0000040"});
     wait_for([&]{ return ds_->has_local_object(full_a) && ds_->has_local_object(full_b); }, 100, 10);
 
     EXPECT_TRUE(ds_->has_local_object(full_a));
@@ -526,18 +526,18 @@ TEST_F(IdxLoadTest, WorkerLoadsMultipleEntriesPerIdx) {
     master.stop();
     wait_for_running(master, false);
 
-    ds_->unregister_database(db_id);
+    ds_->unregister_database(db_path);
     ds_->remove_local_index(full_a);
     ds_->remove_local_index(full_b);
 }
 
 TEST_F(IdxLoadTest, OnRemoveCommandExtractsShortName) {
-    CMString db_id = db32("remove_cmd_test");
-    CMString full = db_id + ":target_obj";
+    CMString db_path = db32("remove_cmd_test");
+    CMString full = db_path + ":target_obj";
     CMString base_path = test_dir_ + "/remove_cmd_db";
     std::filesystem::create_directories(base_path);
 
-    auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_id);
+    auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_path);
     db->write_pickle_bytes("target_obj", "remove_test_data", 16, "bytes", false);
     fly::DataService::instance()->drain_write_back();
 
@@ -546,7 +546,7 @@ TEST_F(IdxLoadTest, OnRemoveCommandExtractsShortName) {
     wait_for_running(master, true);
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
-    worker.register_database(db_id, db);
+    worker.register_database(db_path, db);
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
@@ -557,13 +557,13 @@ TEST_F(IdxLoadTest, OnRemoveCommandExtractsShortName) {
     entry.size_ = 100;
     entry.is_large_ = false;
     entry.block_count_ = 0;
-    ds_->on_object_written(db_id, full, entry);
-    ds_->on_flush(db_id);
+    ds_->on_object_written(db_path, full, entry);
+    ds_->on_flush(db_path);
     ASSERT_TRUE(ds_->has_local_object(full));
 
     ds_->update_remote_idx(full, 1, "127.0.0.1", master.get_data_server_port());
 
-    worker.request_object_remove(db_id, "target_obj");
+    worker.request_object_remove(db_path, "target_obj");
 
     EXPECT_FALSE(ds_->has_local_object(full));
 
@@ -571,20 +571,20 @@ TEST_F(IdxLoadTest, OnRemoveCommandExtractsShortName) {
     master.stop();
     wait_for_running(master, false);
 
-    ds_->unregister_database(db_id);
+    ds_->unregister_database(db_path);
 }
 
 TEST(WorkerAgentTest, RegisterAndGetDatabase) {
     WorkerAgent worker(1, "127.0.0.1", 0);
     CMString base_path = make_temp_dir("reg_db");
-    // db_id 废弃：db_id == base_path（不再外部指定），Database 构造用 base_path 注册
+    // db_path 废弃：db_path == base_path（不再外部指定），Database 构造用 base_path 注册
     auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", base_path);
-    CMString db_id = db->get_db_id();  // == base_path
-    worker.register_database(db_id, db);
+    CMString db_path = db->get_db_path();  // == base_path
+    worker.register_database(db_path, db);
 
-    auto retrieved = worker.get_database(db_id);
+    auto retrieved = worker.get_database(db_path);
     ASSERT_NE(retrieved, nullptr);
-    EXPECT_EQ(retrieved->get_db_id(), db_id);
+    EXPECT_EQ(retrieved->get_db_path(), db_path);
 
     EXPECT_EQ(worker.get_database("/test/unknown"), nullptr);
 
@@ -593,30 +593,30 @@ TEST(WorkerAgentTest, RegisterAndGetDatabase) {
 
 TEST(WorkerAgentTest, RegisterDatabaseOverwritesExisting) {
     WorkerAgent worker(1, "127.0.0.1", 0);
-    CMString db_id = db32("over_db");
+    CMString db_path = db32("over_db");
     CMString base1 = make_temp_dir("over1");
     CMString base2 = make_temp_dir("over2");
 
-    auto db1 = CMMakeShared<Database>(base1, base1 + "/data", 0, "", db_id);
-    auto db2 = CMMakeShared<Database>(base2, base2 + "/data", 0, "", db_id);
+    auto db1 = CMMakeShared<Database>(base1, base1 + "/data", 0, "", db_path);
+    auto db2 = CMMakeShared<Database>(base2, base2 + "/data", 0, "", db_path);
 
-    worker.register_database(db_id, db1);
-    EXPECT_EQ(worker.get_database(db_id), db1);
+    worker.register_database(db_path, db1);
+    EXPECT_EQ(worker.get_database(db_path), db1);
 
-    worker.register_database(db_id, db2);
-    EXPECT_EQ(worker.get_database(db_id), db2);
+    worker.register_database(db_path, db2);
+    EXPECT_EQ(worker.get_database(db_path), db2);
 
     std::filesystem::remove_all(base1);
     std::filesystem::remove_all(base2);
 }
 
 TEST_F(IdxLoadTest, OnDbPathResponseSuccess) {
-    CMString db_id = db32("pathresp_ok");
+    CMString db_path = db32("pathresp_ok");
     CMString base_path = test_dir_ + "/pathresp_db";
     std::filesystem::create_directories(base_path);
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_id, base_path, base_path + "/data");
+    master.register_database(db_path, base_path, base_path + "/data");
     master.start();
     wait_for_running(master, true);
 
@@ -625,11 +625,11 @@ TEST_F(IdxLoadTest, OnDbPathResponseSuccess) {
     ASSERT_TRUE(wait_until_registered(worker));
 
     bool result = false;
-    std::thread t([&] { result = worker.request_db_path(db_id); });
+    std::thread t([&] { result = worker.request_db_path(db_path); });
     t.join();
 
     EXPECT_TRUE(result);
-    EXPECT_NE(worker.get_database(db_id), nullptr);
+    EXPECT_NE(worker.get_database(db_path), nullptr);
 
     worker.stop();
     master.stop();
@@ -660,22 +660,22 @@ TEST_F(IdxLoadTest, OnDbPathResponseFailure) {
 }
 
 TEST_F(IdxLoadTest, OnDatabaseFreezeNotification) {
-    CMString db_id = db32("freeze_ntf");
+    CMString db_path = db32("freeze_ntf");
     CMString base_path = test_dir_ + "/freeze_ntf_db";
     std::filesystem::create_directories(base_path);
 
-    auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_id);
+    auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_path);
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
-    worker.register_database(db_id, db);
+    worker.register_database(db_path, db);
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    worker.request_database_freeze(db_id);
+    worker.request_database_freeze(db_path);
     wait_for([&] { return db->is_frozen(); }, 50, 20);
     EXPECT_TRUE(db->is_frozen());
 
@@ -685,26 +685,26 @@ TEST_F(IdxLoadTest, OnDatabaseFreezeNotification) {
 }
 
 TEST_F(IdxLoadTest, OnDatabaseFreezeNotificationAlreadyFrozen) {
-    CMString db_id = db32("freeze_twice");
+    CMString db_path = db32("freeze_twice");
     CMString base_path = test_dir_ + "/freeze2_db";
     std::filesystem::create_directories(base_path);
 
-    auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_id);
+    auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_path);
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
 
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
-    worker.register_database(db_id, db);
+    worker.register_database(db_path, db);
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    worker.request_database_freeze(db_id);
+    worker.request_database_freeze(db_path);
     wait_for([&] { return db->is_frozen(); }, 50, 20);
     ASSERT_TRUE(db->is_frozen());
 
-    worker.request_database_freeze(db_id);
+    worker.request_database_freeze(db_path);
     wait_for([&] { return true; }, 5, 20);
     EXPECT_TRUE(db->is_frozen());
 
@@ -714,8 +714,8 @@ TEST_F(IdxLoadTest, OnDatabaseFreezeNotificationAlreadyFrozen) {
 }
 
 TEST_F(IdxLoadTest, OnObjectRemovedHandler) {
-    CMString db_id = db32("objrm_hdl");
-    CMString full = db_id + ":target_obj";
+    CMString db_path = db32("objrm_hdl");
+    CMString full = db_path + ":target_obj";
 
     IndexEntry entry;
     entry.object_name_ = full;
@@ -725,9 +725,9 @@ TEST_F(IdxLoadTest, OnObjectRemovedHandler) {
     entry.is_large_ = false;
     entry.block_count_ = 0;
 
-    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
-    ds_->on_object_written(db_id, full, entry);
-    ds_->on_flush(db_id);
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
+    ds_->on_object_written(db_path, full, entry);
+    ds_->on_flush(db_path);
     ASSERT_TRUE(ds_->has_local_object(full));
 
     MasterAgent master("127.0.0.1", 0);
@@ -738,7 +738,7 @@ TEST_F(IdxLoadTest, OnObjectRemovedHandler) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    master.broadcast_object_removed(db_id, "target_obj");
+    master.broadcast_object_removed(db_path, "target_obj");
     wait_for([&] { return !ds_->has_local_object(full); }, 50, 20);
     EXPECT_FALSE(ds_->has_local_object(full));
 
@@ -746,7 +746,7 @@ TEST_F(IdxLoadTest, OnObjectRemovedHandler) {
     master.stop();
     wait_for_running(master, false);
 
-    ds_->unregister_database(db_id);
+    ds_->unregister_database(db_path);
 }
 
 TEST_F(IdxLoadTest, OnShutdownViaMasterStop) {
@@ -772,8 +772,8 @@ TEST_F(IdxLoadTest, OnWriteRegisterAckSuccess) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    CMString db_id = db32("writereg_ok");
-    auto [msg, err_type] = worker.register_write_with_master(db_id, "obj1", 100);
+    CMString db_path = db32("writereg_ok");
+    auto [msg, err_type] = worker.register_write_with_master(db_path, "obj1", 100);
     EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);
 
     worker.stop();
@@ -782,7 +782,7 @@ TEST_F(IdxLoadTest, OnWriteRegisterAckSuccess) {
 }
 
 TEST_F(IdxLoadTest, OnWriteRegisterAckFailure) {
-    CMString db_id = db32("writereg_fail");
+    CMString db_path = db32("writereg_fail");
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -792,10 +792,10 @@ TEST_F(IdxLoadTest, OnWriteRegisterAckFailure) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    worker.request_database_freeze(db_id);
+    worker.request_database_freeze(db_path);
     wait_for([&] { return true; }, 5, 20);
 
-    auto [msg, err_type] = worker.register_write_with_master(db_id, "obj_fail", 100);
+    auto [msg, err_type] = worker.register_write_with_master(db_path, "obj_fail", 100);
     EXPECT_NE(err_type, TaskErrorType::UNKNOWN);
     EXPECT_FALSE(msg.empty());
 
@@ -839,14 +839,14 @@ TEST(WorkerAgentTest, BeginTaskWithWriteContextHash) {
 
 TEST(WorkerAgentTest, RecordWriteWithoutBeginEnd) {
     WorkerAgent worker(1, "127.0.0.1", 0);
-    CMString db_id = db32("no_begin");
+    CMString db_path = db32("no_begin");
 
     worker.begin_task(1);
-    worker.record_write(db_id, "output/data", 100);
+    worker.record_write(db_path, "output/data", 100);
     auto writes = worker.end_task(1);
 
     EXPECT_EQ(writes.size(), 1u);
-    EXPECT_EQ(writes[0].full_name_, db_id + ":output/data");
+    EXPECT_EQ(writes[0].full_name_, db_path + ":output/data");
 }
 
 TEST(WorkerAgentTest, SetWorkerPropertyMultiple) {
@@ -885,8 +885,8 @@ TEST(WorkerAgentTest, HasPendingTaskEmpty) {
 
 TEST(WorkerAgentTest, RequestBackupNotRegisteredNoop) {
     WorkerAgent worker(1, "127.0.0.1", 0);
-    CMString db_id = db32("backup_db");
-    EXPECT_NO_THROW(worker.request_backup(db_id, "obj"));
+    CMString db_path = db32("backup_db");
+    EXPECT_NO_THROW(worker.request_backup(db_path, "obj"));
 }
 
 // ── DB Merge 集成测试 ───────────────────────────────────────────────
@@ -894,19 +894,19 @@ TEST(WorkerAgentTest, RequestBackupNotRegisteredNoop) {
 // 跨机拉源对象 → 落到 target_data_path → master wait → send_delete_data 删源。
 // 详见 docs/db-merge-design.md。
 TEST_F(IdxLoadTest, MergeObjectEndToEnd) {
-    // db_id 废弃：db_id == base_path。源 db 的 db_id 就是 source_base。
+    // db_path 废弃：db_path == base_path。源 db 的 db_path 就是 source_base。
     CMString source_base = test_dir_ + "/source_db";
     CMString source_data = source_base + "/data";
     std::filesystem::create_directories(source_base);
     auto source_db = CMMakeShared<Database>(source_base, source_data, 0, "127.0.0.1", source_base);
-    CMString db_id = source_db->get_db_id();  // == source_base
+    CMString db_path = source_db->get_db_path();  // == source_base
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
 
     WorkerAgent worker1(1, "127.0.0.1", master.get_port());
-    worker1.register_database(db_id, source_db);
+    worker1.register_database(db_path, source_db);
     worker1.start();
     ASSERT_TRUE(wait_until_registered(worker1));
 
@@ -916,7 +916,7 @@ TEST_F(IdxLoadTest, MergeObjectEndToEnd) {
               fly::WriteErrorType::OK);
     fly::DataService::instance()->drain_write_back();
 
-    CMString full = db_id + ":merge_obj";
+    CMString full = db_path + ":merge_obj";
     ASSERT_TRUE(fly::DataService::instance()->has_local_object(full));
 
     // 手动登记 master remote_idx（让 target worker 的 read_raw_compressed 能找到源）。
@@ -942,7 +942,7 @@ TEST_F(IdxLoadTest, MergeObjectEndToEnd) {
 
     // 派发 __merge_object task 给 worker2。
     uint64_t task_id = master.send_merge_task(
-        /*target_worker_id=*/2, "merge_obj", db_id, source_base, target_data_path, "127.0.0.1");
+        /*target_worker_id=*/2, "merge_obj", db_path, source_base, target_data_path, "127.0.0.1");
 
     // 等待 merge task 完成。
     CMVector<CMString> completed;
@@ -981,12 +981,12 @@ TEST_F(IdxLoadTest, MergeObjectEndToEnd) {
     // ── 删源：master 命令 worker1 删除 source_data_path 下的 .dat ──
     // 先取 worker1 的 writer_id（用于 DeleteData 的 writer_ids 参数）。
     CMString src_writer_id = source_db->get_writer_id();
-    master.send_delete_data(/*source_worker_id=*/1, db_id, source_base,
+    master.send_delete_data(/*source_worker_id=*/1, db_path, source_base,
                             /*data_path=*/source_data, {src_writer_id});
 
     // 同步等待 DeleteDataAck（验证 ack 等待机制工作，且消除轮询的 flaky）。
     fly::CMVector<uint64_t> del_failed;
-    bool del_ok = master.wait_delete_data_acks({1}, db_id, 10, &del_failed);
+    bool del_ok = master.wait_delete_data_acks({1}, db_path, 10, &del_failed);
     EXPECT_TRUE(del_ok) << "DeleteData ack should succeed";
     EXPECT_TRUE(del_failed.empty()) << "no failed source workers expected";
 
@@ -1005,7 +1005,7 @@ TEST_F(IdxLoadTest, MergeObjectEndToEnd) {
 
     // ── 状态清理：master 广播 MergeCleanup + 清自身旧索引 + 精确重建 remote_idx ──
     master.cleanup_after_merge(
-        db_id, {full}, /*source_worker_ids=*/{1}, /*merge_target_worker_ids=*/{2},
+        db_path, {full}, /*source_worker_ids=*/{1}, /*merge_target_worker_ids=*/{2},
         source_base, target_data_path);
     // 给 worker 处理 MergeCleanup 一点时间。
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -1029,7 +1029,7 @@ TEST_F(IdxLoadTest, MergeObjectEndToEnd) {
     master.stop();
     wait_for_running(master, false);
 
-    fly::DataService::instance()->unregister_database(db_id);
+    fly::DataService::instance()->unregister_database(db_path);
     fly::DataService::instance()->remove_remote_index(full);
 }
 

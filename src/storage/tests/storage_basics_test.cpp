@@ -109,14 +109,14 @@ TEST(WorkerInfoTest, SerializeDeserialize) {
 TEST(DbMetaTest, DefaultValues) {
     DbMeta meta;
     EXPECT_EQ(meta.created_at_, 0);
-    EXPECT_TRUE(meta.db_id_.empty());
+    EXPECT_TRUE(meta.db_path_.empty());
     EXPECT_TRUE(meta.workers_.empty());
 }
 
 TEST(DbMetaTest, AggregateInit) {
     DbMeta meta{"/data/db1", 1715500000, {}};
     
-    EXPECT_EQ(meta.db_id_, "/data/db1");
+    EXPECT_EQ(meta.db_path_, "/data/db1");
     EXPECT_EQ(meta.created_at_, 1715500000);
 }
 
@@ -145,7 +145,7 @@ TEST(DbMetaTest, SerializeDeserialize) {
     DbMeta decoded;
     FLY_DECODE(bytes, DbMeta, decoded);
     
-    EXPECT_EQ(decoded.db_id_, "/db/test");
+    EXPECT_EQ(decoded.db_path_, "/db/test");
     EXPECT_EQ(decoded.created_at_, 1715500000);
     EXPECT_EQ(decoded.workers_.size(), 2);
     EXPECT_EQ(decoded.workers_[0].worker_id_, 1);
@@ -156,7 +156,7 @@ TEST(DbMetaTest, SerializeDeserialize) {
 
 TEST(DbMetaHeaderTest, DefaultValues) {
     DbMetaHeader header;
-    EXPECT_TRUE(header.db_id_.empty());
+    EXPECT_TRUE(header.db_path_.empty());
     EXPECT_EQ(header.created_at_, 0);
 }
 
@@ -170,7 +170,7 @@ TEST(DbMetaHeaderTest, SerializeDeserialize) {
     DbMetaHeader decoded;
     FLY_DECODE(bytes, DbMetaHeader, decoded);
     
-    EXPECT_EQ(decoded.db_id_, "abc123");
+    EXPECT_EQ(decoded.db_path_, "abc123");
     EXPECT_EQ(decoded.created_at_, 1715500000);
 }
 

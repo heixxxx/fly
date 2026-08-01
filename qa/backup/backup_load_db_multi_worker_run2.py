@@ -16,10 +16,10 @@ from fly.runtime import get_agent
 
 get_config().set_int("fail_unscheduleable_tasks", 0)
 
-# Read original db_id from Run 1
-marker_path = os.path.join(DB_PATH, "_test_db_id")
+# Read original db_path from Run 1
+marker_path = os.path.join(DB_PATH, "_test_db_path")
 with open(marker_path) as f:
-    original_db_id = f.read().strip()
+    original_db_path = f.read().strip()
 
 master = get_agent()
 
@@ -32,9 +32,9 @@ assert master.wait_for_workers(1), \
 # Load DB — should assign idx files per hostname to connected workers
 db = load_db(DB_PATH)
 
-# Verify db_id preserved
-assert db.get_db_id() == original_db_id, \
-    f"db_id mismatch: {db.get_db_id()} != {original_db_id}"
+# Verify db_path preserved
+assert db.get_db_path() == original_db_path, \
+    f"db_path mismatch: {db.get_db_path()} != {original_db_path}"
 
 # idx loading is synchronous (IdxLoadCommand -> IdxLoadAck is fast)
 # No need to wait

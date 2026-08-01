@@ -32,7 +32,7 @@ for _ in range(40):
 assert master.worker_count >= 1, "Worker should connect"
 
 db = open_db(DB_PATH)
-db_id = db.get_db_id()
+db_path = db.get_db_path()
 
 # 提交混合大小写入 task（3 小 + 1 大(200000 元素 ~1.6MB) + 2 小 + dirty），然后失败
 mixed_size_write_fail(db, 3, 50000, True)
@@ -70,7 +70,7 @@ failed_file = os.path.join(get_config().get_str("log_dir"), "failed_tasks.bin")
 assert os.path.isfile(failed_file), f"failed_tasks.bin should exist: {failed_file}"
 INFO(f"[RUN1] failed_tasks.bin persisted")
 
-with open(os.path.join(DB_PATH, "_test_db_id"), "w") as f:
-    f.write(db_id)
+with open(os.path.join(DB_PATH, "_test_db_path"), "w") as f:
+    f.write(db_path)
 
-INFO(f"[RUN1] db_id={db_id}, exiting for run2")
+INFO(f"[RUN1] db_path={db_path}, exiting for run2")

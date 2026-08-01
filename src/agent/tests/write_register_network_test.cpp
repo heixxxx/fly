@@ -66,18 +66,18 @@ TEST_F(WriteRegisterNetworkTest, MasterAcceptsWriteRegisterForNormalDb) {
 }
 
 TEST_F(WriteRegisterNetworkTest, MasterRejectsWriteToFrozenDb) {
-    CMString frozen_db_id = "frozen_test_db_123";
+    CMString frozen_db_path = "frozen_test_db_123";
 
     WriteRegisterAckMessage ack;
     ack.object_name_ = "test/obj";
-    ack.db_id_ = frozen_db_id;
+    ack.db_path_ = frozen_db_path;
     ack.success_ = false;
-    ack.error_message_ = "Database frozen: " + frozen_db_id;
+    ack.error_message_ = "Database frozen: " + frozen_db_path;
     ack.error_type_ = TaskErrorType::WRITE_TO_FROZEN_DB;
 
     EXPECT_FALSE(ack.success_);
     EXPECT_EQ(ack.error_type_, TaskErrorType::WRITE_TO_FROZEN_DB);
-    EXPECT_EQ(ack.error_message_, "Database frozen: " + frozen_db_id);
+    EXPECT_EQ(ack.error_message_, "Database frozen: " + frozen_db_path);
 
     WriteRegisterAckMessage fresh_ack;
     EXPECT_EQ(fresh_ack.error_type_, TaskErrorType::UNKNOWN);
@@ -117,7 +117,7 @@ TEST_F(WriteRegisterNetworkTest, FatalErrorOnWriteToFrozenDb) {
 TEST_F(WriteRegisterNetworkTest, WriteRegisterAckCarriesErrorType) {
     WriteRegisterAckMessage ack;
     ack.object_name_ = "test/obj";
-    ack.db_id_ = "test_db";
+    ack.db_path_ = "test_db";
     ack.success_ = false;
     ack.error_message_ = "Database frozen: test_db";
     ack.error_type_ = TaskErrorType::WRITE_TO_FROZEN_DB;
@@ -127,7 +127,7 @@ TEST_F(WriteRegisterNetworkTest, WriteRegisterAckCarriesErrorType) {
 
     WriteRegisterAckMessage success_ack;
     success_ack.object_name_ = "test/obj2";
-    success_ack.db_id_ = "test_db2";
+    success_ack.db_path_ = "test_db2";
     success_ack.success_ = true;
     success_ack.error_type_ = TaskErrorType::UNKNOWN;
 

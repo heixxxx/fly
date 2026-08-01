@@ -23,8 +23,8 @@ with open(os.path.join(DB_PATH, "_test_dag")) as f:
         deps = [int(x) for x in deps_str.split(",") if x] if deps_str else []
         DAG[nid] = deps
 
-with open(os.path.join(DB_PATH, "_test_db_id")) as f:
-    expected_db_id = f.read().strip()
+with open(os.path.join(DB_PATH, "_test_db_path")) as f:
+    expected_db_path = f.read().strip()
 
 from fly.runtime import get_agent
 master = get_agent()
@@ -39,8 +39,8 @@ for _ in range(40):
 assert master.worker_count >= 1, "Worker should connect after load_db"
 time.sleep(1.0)
 
-assert db.get_db_id() == expected_db_id, \
-    f"db_id mismatch: {db.get_db_id()} != {expected_db_id}"
+assert db.get_db_path() == expected_db_path, \
+    f"db_path mismatch: {db.get_db_path()} != {expected_db_path}"
 
 # restart failed tasks。run1 与 run2 共用同一 log_dir，fly 递增后 run1 落在 .1
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))

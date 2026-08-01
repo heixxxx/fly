@@ -35,14 +35,14 @@ except ImportError:
 from _fly_agent import EXTaskExecResult, EXTaskExecStatus
 from _fly_log import INFO, ERR
 
-# db_id is a fixed-length (10 char) prefix of a full name "db_id:short_name".
+# db_path is a fixed-length (10 char) prefix of a full name "db_path:short_name".
 # Used to split an inlined var's full name into the short name for local cache
 # injection. Kept in sync with fly::db_id_len() (data_service.h).
 _DB_ID_LEN = 10
 
 
 def _split_full_name(full_name):
-    """Split 'db_id:short_name' -> (db_id, short_name). db_id is fixed 10 chars."""
+    """Split 'db_path:short_name' -> (db_path, short_name). db_path is fixed 10 chars."""
     if len(full_name) < _DB_ID_LEN + 2 or full_name[_DB_ID_LEN] != ':':
         return None, None
     return full_name[:_DB_ID_LEN], full_name[_DB_ID_LEN + 1:]
@@ -53,30 +53,29 @@ def _deserialize_args(args: list, worker) -> list:
     for arg in args:
         if isinstance(arg, str) and arg.startswith("__fly_db__:"):
             parts = arg.split(":", 3)
-            db_id = parts[1]
-            if db_id not in worker._db_cache:
+            db_path = parts[1]
+            if db_path not in worker._db_cache:
                 base_path = parts[2] if len(parts) > 2 else ""
                 data_path = parts[3] if len(parts) > 3 else ""
                 from _fly_storage import ex_stg_get_data_service
                 ds = ex_stg_get_data_service()
-                if ds.has_database(db_id):
-                    from _fly_storage import ex_stg_create_database_with_id
+                if ds.has_database(db_path):
+                    from _fly_storage import ex_stg_create_database_with_path
                     try:
                         from storage.database import _Database
                     except ImportError:
                         from database import _Database
                     db = _Database.__new__(_Database)
-                    db._db = ex_stg_create_database_with_id(base_path, data_path, worker._worker_id, db_id)
+                    db._db = ex_stg_create_database_with_path(base_path, data_path, worker._worker_id, db_path)
                 else:
                     try:
                         from storage.database import _Database
                     except ImportError:
                         from database import _Database
                     db = _Database(base_path, data_path, worker._worker_id)
-                    db._db.set_db_id(db_id)
-                worker._agent.register_database(db_id, db._db)
-                worker._db_cache[db_id] = db
-            result.append(worker._db_cache[db_id])
+                worker._agent.register_database(db_path, db._db)
+                worker._db_cache[db_path] = db
+            result.append(worker._db_cache[db_path])
         else:
             result.append(pickle.loads(bytes.fromhex(arg)))
     return result
@@ -125,7 +124,7 @@ def create_executor(worker):
         deserialized_args = _deserialize_args(args, worker)
 
         # Inject inlined vars. Each VarPayload.var_name is a FULL name
-        # (db_id:short_name); split to find the right Database and inject the
+        # (db_path:short_name); split to find the right Database and inject the
         # short name into its local cache.
         try:
             pending_vars = worker._agent.take_pending_task_vars()
@@ -134,10 +133,10 @@ def create_executor(worker):
         if pending_vars:
             from _fly_storage import FlyBuffer
             for vp in pending_vars:
-                db_id, short_name = _split_full_name(vp.var_name)
-                if db_id is None:
+                db_path, short_name = _split_full_name(vp.var_name)
+                if db_path is None:
                     continue
-                db_obj = worker._db_cache.get(db_id)
+                db_obj = worker._db_cache.get(db_path)
                 if db_obj is not None:
                     # vp.value is raw bytes (from the wire); wrap into a FlyBuffer
                     # for _inject_var (which takes FlyBufferPtr, zero-copy in C++).

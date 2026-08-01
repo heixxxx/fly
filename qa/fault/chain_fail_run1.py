@@ -52,7 +52,7 @@ for _ in range(40):
 assert master.worker_count >= 4, f"Need 4 workers, got {master.worker_count}"
 
 db = open_db(DB_PATH)
-db_id = db.get_db_id()
+db_path = db.get_db_path()
 
 # 提交所有 DAG 节点
 for node_id, deps in DAG.items():
@@ -109,11 +109,11 @@ failed_file = os.path.join(get_config().get_str("log_dir"), "failed_tasks.bin")
 assert os.path.isfile(failed_file), f"failed_tasks.bin should exist at {failed_file}"
 INFO(f"[RUN1] failed_tasks.bin persisted at {failed_file}")
 
-with open(os.path.join(DB_PATH, "_test_db_id"), "w") as f:
-    f.write(db_id)
+with open(os.path.join(DB_PATH, "_test_db_path"), "w") as f:
+    f.write(db_path)
 # 保存 DAG 拓扑给 run2 验证
 with open(os.path.join(DB_PATH, "_test_dag"), "w") as f:
     for nid, deps in DAG.items():
         f.write(f"{nid}:{','.join(map(str, deps))}\n")
 
-INFO(f"[RUN1] db_id={db_id}, exiting for run2 to load_db + restart")
+INFO(f"[RUN1] db_path={db_path}, exiting for run2 to load_db + restart")

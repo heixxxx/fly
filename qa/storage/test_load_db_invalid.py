@@ -16,7 +16,7 @@ def test_load_db_invalid_meta():
     from fly.runtime import get_agent
     master = get_agent()
 
-    # Create a directory with an empty _DB_META file (no valid db_id)
+    # Create a directory with an empty _DB_META file (no valid db_path)
     os.makedirs(DB_PATH, exist_ok=True)
     with open(os.path.join(DB_PATH, "_DB_META"), "w") as f:
         f.write("")

@@ -1,13 +1,13 @@
 """E2E test: merge 后用源 db 句柄读数据（solver build→merge→solve 链不断）。
 
-验证 db_id 废弃后的核心业务连续性场景：
+验证 db_path 废弃后的核心业务连续性场景：
   1. 建 db A，写 matrix 数据（模拟 solver build_matrix）
   2. merge db A（默认 base_path 不变，只 data_path 集中）
   3. 把【merge 前的 db A 句柄】传给后续 task（模拟 solve kickoff 读 matrix）
   4. task 在 worker 上用旧句柄 read_object("matrix") 成功
 
 这是 solver build_matrix→merge→solve 链不断的核心保障：
-  - db_id（源 path）作逻辑锚点不变 → DependencyGraph 依赖 key 稳定
+  - db_path（源 path）作逻辑锚点不变 → DependencyGraph 依赖 key 稳定
   - merge 后 data_path 集中，旧句柄的 db_paths_ 指向新 data_path → 读字节命中产物
 """
 from _fly_log import INFO
@@ -64,14 +64,14 @@ time.sleep(0.5)
 db.freeze()
 assert db.is_frozen()
 
-INFO(f"[MERGE-SOLVE] matrix written + frozen, db_id={db.get_db_id()}")
+INFO(f"[MERGE-SOLVE] matrix written + frozen, db_path={db.get_db_path()}")
 
 # ── Phase 2: merge（默认 base_path 不变，data_path 集中）──
 merged_db = merge_db(DB_PATH, delete_source=True)
 INFO("[MERGE-SOLVE] merge done")
 
 # ── Phase 3: 用【merge 前的 db 句柄】在 worker 上读 matrix（模拟 solve kickoff）──
-# 这是核心验证：旧句柄 db 的 db_id（源 path）作锚点不变，DependencyGraph 依赖 key 稳定。
+# 这是核心验证：旧句柄 db 的 db_path（源 path）作锚点不变，DependencyGraph 依赖 key 稳定。
 # task 的 inputs 不显式依赖（简化测试），直接在 worker 读。
 _read_matrix_task(db, 8)
 wait_tasks(timeout=30)

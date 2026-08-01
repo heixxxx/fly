@@ -15,8 +15,8 @@ static void write_raw(Database& db, const CMString& name, const CMString& data, 
     db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
 }
 
-// db_id 废弃：db_id 现在是 base_path 的别名（不含 ':'，否则 split 歧义）。
-// db32() 生成不含 ':' 的 db_id 用于测试。保留函数名 db32 仅为调用点兼容。
+// db_path 废弃：db_path 现在是 base_path 的别名（不含 ':'，否则 split 歧义）。
+// db32() 生成不含 ':' 的 db_path 用于测试。保留函数名 db32 仅为调用点兼容。
 static CMString db32(const CMString& hint) {
     // 用路径风格（含 '/' 但不含 ':'），模拟真实 base_path。
     return "/test/" + hint;
@@ -69,10 +69,10 @@ TEST_F(DataServiceTest, OnObjectWrittenAndFlushEnablesLocalRead) {
 }
 
 TEST_F(DataServiceTest, IncompleteObjectNotReadable) {
-    CMString db_id = db32("test_db");
-    CMString full = db_id + ":pending/obj";
+    CMString db_path = db32("test_db");
+    CMString full = db_path + ":pending/obj";
 
-    ds_->on_write_started(db_id, full);
+    ds_->on_write_started(db_path, full);
     EXPECT_FALSE(ds_->has_local_object(full));
 
     auto [found, result] = ds_->try_read_local(full);
@@ -80,8 +80,8 @@ TEST_F(DataServiceTest, IncompleteObjectNotReadable) {
 }
 
 TEST_F(DataServiceTest, WriteCompletedMarksObjectReadable) {
-    CMString db_id = db32("flush_db");
-    CMString full = db_id + ":flush/obj";
+    CMString db_path = db32("flush_db");
+    CMString full = db_path + ":flush/obj";
     IndexEntry entry;
     entry.object_name_ = full;
     entry.file_name_ = "test.dat";
@@ -90,11 +90,11 @@ TEST_F(DataServiceTest, WriteCompletedMarksObjectReadable) {
     entry.is_large_ = false;
     entry.block_count_ = 0;
 
-    ds_->on_write_started(db_id, full);
+    ds_->on_write_started(db_path, full);
     EXPECT_FALSE(ds_->has_local_object(full));
 
     CMVector<IndexEntry> entries = {entry};
-    ds_->on_write_completed(db_id, full, entries);
+    ds_->on_write_completed(db_path, full, entries);
     EXPECT_TRUE(ds_->has_local_object(full));
 }
 
@@ -236,13 +236,13 @@ TEST_F(DataServiceTest, LookupAllRemoteIdxEmptyForUnknownObject) {
 }
 
 TEST_F(DataServiceTest, RegisterDatabaseAndLocalRead) {
-    CMString db_id = db32("manual_db");
+    CMString db_path = db32("manual_db");
     CMString base_path = test_dir_ + "/reg_db";
     std::filesystem::create_directories(base_path);
 
-    ds_->register_database(db_id, base_path, "");
+    ds_->register_database(db_path, base_path, "");
 
-    CMString full = db_id + ":manual/obj";
+    CMString full = db_path + ":manual/obj";
     IndexEntry entry;
     entry.object_name_ = full;
     entry.file_name_ = "test.dat";
@@ -251,8 +251,8 @@ TEST_F(DataServiceTest, RegisterDatabaseAndLocalRead) {
     entry.is_large_ = false;
     entry.block_count_ = 0;
 
-    ds_->on_object_written(db_id, full, entry);
-    ds_->on_flush(db_id);
+    ds_->on_object_written(db_path, full, entry);
+    ds_->on_flush(db_path);
 
     EXPECT_TRUE(ds_->has_local_object(full));
 }
@@ -319,14 +319,14 @@ TEST_F(DataServiceTest, RemoveRemoteIndexOnlyAffectsTarget) {
 }
 
 TEST_F(DataServiceTest, RestoreEntriesMakesObjectsReadable) {
-    CMString db_id = db32("restore_db");
+    CMString db_path = db32("restore_db");
     CMString base_path = test_dir_ + "/restore_test";
     std::filesystem::create_directories(base_path);
-    ds_->register_database(db_id, base_path, "");
+    ds_->register_database(db_path, base_path, "");
 
     CMVector<IndexEntry> entries;
     IndexEntry e1;
-    e1.object_name_ = db_id + ":obj_a";
+    e1.object_name_ = db_path + ":obj_a";
     e1.file_name_ = "test.dat";
     e1.offset_ = 0;
     e1.size_ = 5;
@@ -335,7 +335,7 @@ TEST_F(DataServiceTest, RestoreEntriesMakesObjectsReadable) {
     entries.push_back(e1);
 
     IndexEntry e2;
-    e2.object_name_ = db_id + ":obj_b";
+    e2.object_name_ = db_path + ":obj_b";
     e2.file_name_ = "test.dat";
     e2.offset_ = 10;
     e2.size_ = 7;
@@ -343,21 +343,21 @@ TEST_F(DataServiceTest, RestoreEntriesMakesObjectsReadable) {
     e2.block_count_ = 0;
     entries.push_back(e2);
 
-    ds_->restore_entries(db_id, entries);
+    ds_->restore_entries(db_path, entries);
 
-    EXPECT_TRUE(ds_->has_local_object(db_id + ":obj_a"));
-    EXPECT_TRUE(ds_->has_local_object(db_id + ":obj_b"));
+    EXPECT_TRUE(ds_->has_local_object(db_path + ":obj_a"));
+    EXPECT_TRUE(ds_->has_local_object(db_path + ":obj_b"));
 }
 
 TEST_F(DataServiceTest, RestoreEntriesMultipleEntriesPerObject) {
-    CMString db_id = db32("multi_db");
+    CMString db_path = db32("multi_db");
     CMString base_path = test_dir_ + "/restore_multi";
     std::filesystem::create_directories(base_path);
-    ds_->register_database(db_id, base_path, "");
+    ds_->register_database(db_path, base_path, "");
 
     CMVector<IndexEntry> entries;
     IndexEntry e1;
-    e1.object_name_ = db_id + ":large_obj";
+    e1.object_name_ = db_path + ":large_obj";
     e1.file_name_ = "data_0.dat";
     e1.offset_ = 0;
     e1.size_ = 100;
@@ -366,7 +366,7 @@ TEST_F(DataServiceTest, RestoreEntriesMultipleEntriesPerObject) {
     entries.push_back(e1);
 
     IndexEntry e2;
-    e2.object_name_ = db_id + ":large_obj";
+    e2.object_name_ = db_path + ":large_obj";
     e2.file_name_ = "data_0.dat";
     e2.offset_ = 100;
     e2.size_ = 200;
@@ -374,31 +374,31 @@ TEST_F(DataServiceTest, RestoreEntriesMultipleEntriesPerObject) {
     e2.block_count_ = 1;
     entries.push_back(e2);
 
-    ds_->restore_entries(db_id, entries);
+    ds_->restore_entries(db_path, entries);
 
-    EXPECT_TRUE(ds_->has_local_object(db_id + ":large_obj"));
+    EXPECT_TRUE(ds_->has_local_object(db_path + ":large_obj"));
 }
 
 TEST_F(DataServiceTest, RestoreEntriesAppendsToExisting) {
-    CMString db_id = db32("append_db");
+    CMString db_path = db32("append_db");
     CMString base_path = test_dir_ + "/restore_append";
     std::filesystem::create_directories(base_path);
-    ds_->register_database(db_id, base_path, "");
+    ds_->register_database(db_path, base_path, "");
 
     IndexEntry e1;
-    e1.object_name_ = db_id + ":obj";
+    e1.object_name_ = db_path + ":obj";
     e1.file_name_ = "test.dat";
     e1.offset_ = 0;
     e1.size_ = 5;
     e1.is_large_ = false;
     e1.block_count_ = 0;
-    ds_->on_object_written(db_id, db_id + ":obj", e1);
-    ds_->on_flush(db_id);
-    EXPECT_TRUE(ds_->has_local_object(db_id + ":obj"));
+    ds_->on_object_written(db_path, db_path + ":obj", e1);
+    ds_->on_flush(db_path);
+    EXPECT_TRUE(ds_->has_local_object(db_path + ":obj"));
 
     CMVector<IndexEntry> restore_entries_vec;
     IndexEntry e2;
-    e2.object_name_ = db_id + ":new_obj";
+    e2.object_name_ = db_path + ":new_obj";
     e2.file_name_ = "test.dat";
     e2.offset_ = 100;
     e2.size_ = 10;
@@ -406,10 +406,10 @@ TEST_F(DataServiceTest, RestoreEntriesAppendsToExisting) {
     e2.block_count_ = 0;
     restore_entries_vec.push_back(e2);
 
-    ds_->restore_entries(db_id, restore_entries_vec);
+    ds_->restore_entries(db_path, restore_entries_vec);
 
-    EXPECT_TRUE(ds_->has_local_object(db_id + ":obj"));
-    EXPECT_TRUE(ds_->has_local_object(db_id + ":new_obj"));
+    EXPECT_TRUE(ds_->has_local_object(db_path + ":obj"));
+    EXPECT_TRUE(ds_->has_local_object(db_path + ":new_obj"));
 }
 
 TEST_F(DataServiceTest, RestoreEntriesEmptyVectorIsNoop) {
@@ -432,25 +432,25 @@ TEST_F(DataServiceTest, RestoreEntriesFromLocalIndexFile) {
     auto all_entries = source_idx.get_all_entries();
     ASSERT_FALSE(all_entries.empty());
 
-    CMString original_db_id = db.get_db_id();
+    CMString original_db_path = db.get_db_path();
     CMString restore_base = test_dir_ + "/restored_db";
     std::filesystem::create_directories(restore_base);
-    ds_->register_database(original_db_id, restore_base, "");
+    ds_->register_database(original_db_path, restore_base, "");
 
-    ds_->restore_entries(original_db_id, all_entries);
+    ds_->restore_entries(original_db_path, all_entries);
 
-    // entry.object_name_ 是 short_name（LocalIndex 不再存 db_id 前缀），
+    // entry.object_name_ 是 short_name（LocalIndex 不再存 db_path 前缀），
     // has_local_object 用 full_name 作 key，需拼接。
     for (const auto& e : all_entries) {
-        EXPECT_TRUE(ds_->has_local_object(original_db_id + ":" + e.object_name_));
+        EXPECT_TRUE(ds_->has_local_object(original_db_path + ":" + e.object_name_));
     }
 }
 
 TEST_F(DataServiceTest, DbPathWithSlashesHandledCorrectly) {
-    // db_id 废弃后 db_id == db_path（含 '/'，不含 ':'）。
+    // db_path 废弃后 db_path == db_path（含 '/'，不含 ':'）。
     // full_name = "db_path:short"，split 用 rfind(':') 正确切分。
-    CMString db_id = db32("path_test");  // "/test/path_test"
-    CMString full = db_id + ":obj/with/slashes";
+    CMString db_path = db32("path_test");  // "/test/path_test"
+    CMString full = db_path + ":obj/with/slashes";
 
     IndexEntry entry;
     entry.object_name_ = full;
@@ -460,8 +460,8 @@ TEST_F(DataServiceTest, DbPathWithSlashesHandledCorrectly) {
     entry.is_large_ = false;
     entry.block_count_ = 0;
 
-    ds_->on_object_written(db_id, full, entry);
-    ds_->on_flush(db_id);
+    ds_->on_object_written(db_path, full, entry);
+    ds_->on_flush(db_path);
 
     EXPECT_TRUE(ds_->has_local_object(full));
 }
@@ -492,8 +492,8 @@ TEST_F(DataServiceTest, ShortFullNameTreatedAsNoDbId) {
 }
 
 TEST_F(DataServiceTest, RemoveIndexByShortName) {
-    CMString db_id = db32("remove_short");
-    CMString full = db_id + ":remove_target";
+    CMString db_path = db32("remove_short");
+    CMString full = db_path + ":remove_target";
 
     IndexEntry entry;
     entry.object_name_ = full;
@@ -503,8 +503,8 @@ TEST_F(DataServiceTest, RemoveIndexByShortName) {
     entry.is_large_ = false;
     entry.block_count_ = 0;
 
-    ds_->on_object_written(db_id, full, entry);
-    ds_->on_flush(db_id);
+    ds_->on_object_written(db_path, full, entry);
+    ds_->on_flush(db_path);
     EXPECT_TRUE(ds_->has_local_object(full));
 
     ds_->remove_local_index(full);
@@ -547,11 +547,11 @@ TEST_F(DataServiceTest, WriteCompletedOnlyAffectsTargetDb) {
 }
 
 TEST_F(DataServiceTest, HasDatabaseReturnsTrue) {
-    CMString db_id = db32("has_db");
+    CMString db_path = db32("has_db");
     CMString base_path = test_dir_ + "/has_db";
     std::filesystem::create_directories(base_path);
-    ds_->register_database(db_id, base_path, "");
-    EXPECT_TRUE(ds_->has_database(db_id));
+    ds_->register_database(db_path, base_path, "");
+    EXPECT_TRUE(ds_->has_database(db_path));
 }
 
 TEST_F(DataServiceTest, HasDatabaseReturnsFalseForUnknown) {
@@ -559,14 +559,14 @@ TEST_F(DataServiceTest, HasDatabaseReturnsFalseForUnknown) {
 }
 
 TEST_F(DataServiceTest, UnregisterDatabaseRemovesIt) {
-    CMString db_id = db32("unreg_db");
+    CMString db_path = db32("unreg_db");
     CMString base_path = test_dir_ + "/unreg_db";
     std::filesystem::create_directories(base_path);
-    ds_->register_database(db_id, base_path, "");
-    EXPECT_TRUE(ds_->has_database(db_id));
+    ds_->register_database(db_path, base_path, "");
+    EXPECT_TRUE(ds_->has_database(db_path));
 
-    ds_->unregister_database(db_id);
-    EXPECT_FALSE(ds_->has_database(db_id));
+    ds_->unregister_database(db_path);
+    EXPECT_FALSE(ds_->has_database(db_path));
 }
 
 TEST_F(DataServiceTest, RemoveRemoteLocationByWorkerId) {
@@ -595,8 +595,8 @@ TEST_F(DataServiceTest, RemoveRemoteLocationByWorkerIdCleansUpWhenEmpty) {
 }
 
 TEST_F(DataServiceTest, OnObjectWrittenSetsComplete) {
-    CMString db_id = db32("flush_obj_db");
-    CMString full = db_id + ":flush/obj";
+    CMString db_path = db32("flush_obj_db");
+    CMString full = db_path + ":flush/obj";
     IndexEntry entry;
     entry.object_name_ = full;
     entry.file_name_ = "test.dat";
@@ -605,21 +605,21 @@ TEST_F(DataServiceTest, OnObjectWrittenSetsComplete) {
     entry.is_large_ = false;
     entry.block_count_ = 0;
 
-    ds_->on_object_written(db_id, full, entry);
+    ds_->on_object_written(db_path, full, entry);
     EXPECT_TRUE(ds_->has_local_object(full));
 }
 
 TEST_F(DataServiceTest, OnWriteStartedCreatesEntry) {
-    CMString db_id = db32("start_db");
-    CMString full = db_id + ":started/obj";
+    CMString db_path = db32("start_db");
+    CMString full = db_path + ":started/obj";
 
-    ds_->on_write_started(db_id, full);
+    ds_->on_write_started(db_path, full);
     EXPECT_FALSE(ds_->has_local_object(full));
 }
 
 TEST_F(DataServiceTest, OnWriteFailedRemovesEntry) {
-    CMString db_id = db32("fail_db");
-    CMString full = db_id + ":failed/obj";
+    CMString db_path = db32("fail_db");
+    CMString full = db_path + ":failed/obj";
     IndexEntry entry;
     entry.object_name_ = full;
     entry.file_name_ = "test.dat";
@@ -628,11 +628,11 @@ TEST_F(DataServiceTest, OnWriteFailedRemovesEntry) {
     entry.is_large_ = false;
     entry.block_count_ = 0;
 
-    ds_->on_object_written(db_id, full, entry);
-    ds_->on_flush(db_id);
+    ds_->on_object_written(db_path, full, entry);
+    ds_->on_flush(db_path);
     EXPECT_TRUE(ds_->has_local_object(full));
 
-    ds_->on_write_failed(db_id, full, "error msg");
+    ds_->on_write_failed(db_path, full, "error msg");
     EXPECT_FALSE(ds_->has_local_object(full));
 }
 
@@ -678,8 +678,8 @@ TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsFalseForMissingDb) {
 }
 
 TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsFalseForMissingEntry) {
-    CMString db_id = db32("wait_missing");
-    auto [found, result] = ds_->try_read_local_or_wait(db_id + ":no_entry", 100);
+    CMString db_path = db32("wait_missing");
+    auto [found, result] = ds_->try_read_local_or_wait(db_path + ":no_entry", 100);
     EXPECT_FALSE(found);
 }
 
@@ -698,21 +698,21 @@ TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsImmediatelyWhenComplete) {
 }
 
 TEST_F(DataServiceTest, TryReadLocalOrWaitTimeoutOnIncomplete) {
-    CMString db_id = db32("wait_timeout");
-    CMString full = db_id + ":pending_obj";
+    CMString db_path = db32("wait_timeout");
+    CMString full = db_path + ":pending_obj";
 
-    ds_->on_write_started(db_id, full);
+    ds_->on_write_started(db_path, full);
 
     auto [found, result] = ds_->try_read_local_or_wait(full, 50);
     EXPECT_FALSE(found);
 }
 
 TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsFalseOnFailed) {
-    CMString db_id = db32("wait_fail");
-    CMString full = db_id + ":fail_obj";
+    CMString db_path = db32("wait_fail");
+    CMString full = db_path + ":fail_obj";
 
-    ds_->on_write_started(db_id, full);
-    ds_->on_write_failed(db_id, full, "test error");
+    ds_->on_write_started(db_path, full);
+    ds_->on_write_failed(db_path, full, "test error");
 
     auto [found, result] = ds_->try_read_local_or_wait(full, 100);
     EXPECT_FALSE(found);
@@ -757,9 +757,9 @@ TEST_F(DataServiceTest, TryReadLocalRawOrWaitReturnsFalseForMissing) {
 }
 
 TEST_F(DataServiceTest, TryReadLocalRawOrWaitTimeoutOnIncomplete) {
-    CMString db_id = db32("raw_timeout");
-    CMString full = db_id + ":incomplete_raw";
-    ds_->on_write_started(db_id, full);
+    CMString db_path = db32("raw_timeout");
+    CMString full = db_path + ":incomplete_raw";
+    ds_->on_write_started(db_path, full);
 
     auto [found, raw, py_name] = ds_->try_read_local_raw_or_wait(full, 50);
     EXPECT_FALSE(found);
@@ -810,17 +810,17 @@ TEST_F(DataServiceTest, ReadRawCompressedReturnsFalseForMissing) {
 }
 
 TEST_F(DataServiceTest, RegisterDatabaseDuplicateUpdatesExisting) {
-    CMString db_id = db32("dup_db");
+    CMString db_path = db32("dup_db");
     CMString base1 = test_dir_ + "/dup_db1";
     CMString base2 = test_dir_ + "/dup_db2";
     std::filesystem::create_directories(base1);
     std::filesystem::create_directories(base2);
 
-    ds_->register_database(db_id, base1, "");
-    EXPECT_TRUE(ds_->has_database(db_id));
+    ds_->register_database(db_path, base1, "");
+    EXPECT_TRUE(ds_->has_database(db_path));
 
-    ds_->register_database(db_id, base2, "");
-    EXPECT_TRUE(ds_->has_database(db_id));
+    ds_->register_database(db_path, base2, "");
+    EXPECT_TRUE(ds_->has_database(db_path));
 }
 
 TEST_F(DataServiceTest, RegisterDatabaseDuplicateBasePathRejected) {
@@ -846,14 +846,14 @@ TEST_F(DataServiceTest, RemoveRemoteLocationByFullObject) {
 }
 
 TEST_F(DataServiceTest, RestoreEntriesWithShortObjectNames) {
-    CMString db_id = db32("short_db");
+    CMString db_path = db32("short_db");
     CMString base_path = test_dir_ + "/short_restore";
     std::filesystem::create_directories(base_path);
-    ds_->register_database(db_id, base_path, "");
+    ds_->register_database(db_path, base_path, "");
 
     CMVector<IndexEntry> entries;
     IndexEntry e;
-    e.object_name_ = db_id + ":simple_name";
+    e.object_name_ = db_path + ":simple_name";
     e.file_name_ = "test.dat";
     e.offset_ = 0;
     e.size_ = 10;
@@ -861,15 +861,15 @@ TEST_F(DataServiceTest, RestoreEntriesWithShortObjectNames) {
     e.block_count_ = 0;
     entries.push_back(e);
 
-    ds_->restore_entries(db_id, entries);
-    EXPECT_TRUE(ds_->has_local_object(db_id + ":simple_name"));
+    ds_->restore_entries(db_path, entries);
+    EXPECT_TRUE(ds_->has_local_object(db_path + ":simple_name"));
 }
 
 TEST_F(DataServiceTest, OnWriteStartedAndCompletedCycle) {
-    CMString db_id = db32("cycle_db");
-    CMString full = db_id + ":cycle/obj";
+    CMString db_path = db32("cycle_db");
+    CMString full = db_path + ":cycle/obj";
 
-    ds_->on_write_started(db_id, full);
+    ds_->on_write_started(db_path, full);
     EXPECT_FALSE(ds_->has_local_object(full));
 
     IndexEntry entry;
@@ -881,23 +881,23 @@ TEST_F(DataServiceTest, OnWriteStartedAndCompletedCycle) {
     entry.block_count_ = 0;
 
     CMVector<IndexEntry> entries = {entry};
-    ds_->on_write_completed(db_id, full, entries);
+    ds_->on_write_completed(db_path, full, entries);
     ds_->on_object_flushed(full);
 
     EXPECT_TRUE(ds_->has_local_object(full));
 }
 
 TEST_F(DataServiceTest, OnWriteCompletedForMissingDbIsNoop) {
-    CMString db_id = db32("missing_db_wc");
-    CMString full = db_id + ":missing/obj";
+    CMString db_path = db32("missing_db_wc");
+    CMString full = db_path + ":missing/obj";
     CMVector<IndexEntry> entries;
-    EXPECT_NO_THROW(ds_->on_write_completed(db_id, full, entries));
+    EXPECT_NO_THROW(ds_->on_write_completed(db_path, full, entries));
 }
 
 TEST_F(DataServiceTest, OnWriteFailedForMissingDbIsNoop) {
-    CMString db_id = db32("missing_db_wf");
-    CMString full = db_id + ":missing/obj";
-    EXPECT_NO_THROW(ds_->on_write_failed(db_id, full, "error"));
+    CMString db_path = db32("missing_db_wf");
+    CMString full = db_path + ":missing/obj";
+    EXPECT_NO_THROW(ds_->on_write_failed(db_path, full, "error"));
 }
 
 TEST_F(DataServiceTest, OnFlushForMissingDbIsNoop) {
@@ -905,8 +905,8 @@ TEST_F(DataServiceTest, OnFlushForMissingDbIsNoop) {
 }
 
 TEST_F(DataServiceTest, FindLocalEntriesReturnsData) {
-    CMString db_id = db32("find_db");
-    CMString full = db_id + ":find/obj";
+    CMString db_path = db32("find_db");
+    CMString full = db_path + ":find/obj";
     IndexEntry entry;
     entry.object_name_ = full;
     entry.file_name_ = "test.dat";
@@ -915,8 +915,8 @@ TEST_F(DataServiceTest, FindLocalEntriesReturnsData) {
     entry.is_large_ = false;
     entry.block_count_ = 0;
 
-    ds_->on_object_written(db_id, full, entry);
-    ds_->on_flush(db_id);
+    ds_->on_object_written(db_path, full, entry);
+    ds_->on_flush(db_path);
 
     auto found = ds_->find_local_entries(full);
     ASSERT_TRUE(found.has_value());
@@ -1023,13 +1023,13 @@ TEST_F(DataServiceTest, EnqueueWriteBackAutoStarts) {
 }
 
 TEST_F(DataServiceTest, ResetClearsAllState) {
-    CMString db_id = db32("reset_db");
-    ds_->register_database(db_id, test_dir_, "");
+    CMString db_path = db32("reset_db");
+    ds_->register_database(db_path, test_dir_, "");
     ds_->register_worker(1, "host", 8000);
 
     ds_->reset();
 
-    EXPECT_FALSE(ds_->has_database(db_id));
+    EXPECT_FALSE(ds_->has_database(db_path));
 }
 
 // ============================================================
@@ -1194,11 +1194,11 @@ TEST_F(DataServiceTest, TryReadLocalRawOrWaitImmediateForComplete) {
 
 // try_read_local_raw_or_wait times out for an object that never completes.
 TEST_F(DataServiceTest, TryReadLocalRawOrWaitTimesOut) {
-    CMString db_id = db32("waitraw_db");
-    CMString full = db_id + ":never_obj";
+    CMString db_path = db32("waitraw_db");
+    CMString full = db_path + ":never_obj";
     // Register db so lookup doesn't early-return on unknown db.
-    ds_->register_database(db_id, test_dir_ + "/waitraw", "", "writer_x");
-    ds_->on_write_started(db_id, full);
+    ds_->register_database(db_path, test_dir_ + "/waitraw", "", "writer_x");
+    ds_->on_write_started(db_path, full);
 
     auto t0 = std::chrono::steady_clock::now();
     auto [found, comp, py_name] = ds_->try_read_local_raw_or_wait(full, 200);
@@ -1243,12 +1243,12 @@ TEST_F(DataServiceTest, TryReadRemoteInvokesHandler) {
 
 // is_write_in_progress reflects on_write_started / on_write_completed lifecycle.
 TEST_F(DataServiceTest, IsWriteInProgressReflectsLifecycle) {
-    CMString db_id = db32("wip_db");
-    CMString full = db_id + ":wip_obj";
-    ds_->register_database(db_id, test_dir_ + "/wip", "", "writer_w");
+    CMString db_path = db32("wip_db");
+    CMString full = db_path + ":wip_obj";
+    ds_->register_database(db_path, test_dir_ + "/wip", "", "writer_w");
     EXPECT_FALSE(ds_->is_write_in_progress(full));
 
-    ds_->on_write_started(db_id, full);
+    ds_->on_write_started(db_path, full);
     EXPECT_TRUE(ds_->is_write_in_progress(full));
 }
 

@@ -15,7 +15,7 @@ static void write_raw(Database& db, const CMString& name, const CMString& data, 
 
 #define TEST_LOG(fmt, ...) fprintf(stderr, "[TEST_DEBUG] %s:%d " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__)
 
-// db_id 废弃：db_id 现在是 base_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_id。
+// db_path 废弃：db_path 现在是 base_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_path。
 static CMString db32(const CMString& hint) {
     return "/test/" + hint;
 }
@@ -37,9 +37,9 @@ protected:
 };
 
 TEST_F(WriteRegistrationTest, OnWriteStartedCreatesIncompleteEntry) {
-    CMString db_id = db32("test_db");
-    CMString full = db_id + ":start_obj";
-    ds_->on_write_started(db_id, full);
+    CMString db_path = db32("test_db");
+    CMString full = db_path + ":start_obj";
+    ds_->on_write_started(db_path, full);
 
     EXPECT_FALSE(ds_->has_local_object(full));
 
@@ -49,14 +49,14 @@ TEST_F(WriteRegistrationTest, OnWriteStartedCreatesIncompleteEntry) {
 }
 
 TEST_F(WriteRegistrationTest, OnWriteCompletedMakesEntryReadable) {
-    CMString db_id = db32("comp_db");
-    CMString full = db_id + ":comp_obj";
+    CMString db_path = db32("comp_db");
+    CMString full = db_path + ":comp_obj";
 
-    ds_->on_write_started(db_id, full);
+    ds_->on_write_started(db_path, full);
 
     CMString base_path = test_dir_ + "/comp_db";
     std::filesystem::create_directories(base_path);
-    ds_->register_database(db_id, base_path, "");
+    ds_->register_database(db_path, base_path, "");
 
     IndexEntry entry;
     entry.object_name_ = full;
@@ -67,19 +67,19 @@ TEST_F(WriteRegistrationTest, OnWriteCompletedMakesEntryReadable) {
     entry.block_count_ = 0;
 
     CMVector<IndexEntry> entries = {entry};
-    ds_->on_write_completed(db_id, full, entries);
-    ds_->on_flush(db_id);
+    ds_->on_write_completed(db_path, full, entries);
+    ds_->on_flush(db_path);
 
     EXPECT_TRUE(ds_->has_local_object(full));
     TEST_LOG("on_write_completed + flush: entry readable (correct)");
 }
 
 TEST_F(WriteRegistrationTest, OnWriteFailedRemovesEntry) {
-    CMString db_id = db32("fail_db");
-    CMString full = db_id + ":fail_obj";
+    CMString db_path = db32("fail_db");
+    CMString full = db_path + ":fail_obj";
 
-    ds_->on_write_started(db_id, full);
-    ds_->on_write_failed(db_id, full, "registration rejected");
+    ds_->on_write_started(db_path, full);
+    ds_->on_write_failed(db_path, full, "registration rejected");
 
     EXPECT_FALSE(ds_->has_local_object(full));
 
@@ -122,14 +122,14 @@ TEST_F(WriteRegistrationTest, WaitCompletionSucceedsForCompleteEntry) {
 }
 
 TEST_F(WriteRegistrationTest, WaitReturnsFalseForFailedEntry) {
-    CMString db_id = db32("waitfail_db");
-    CMString full = db_id + ":waitfail_obj";
+    CMString db_path = db32("waitfail_db");
+    CMString full = db_path + ":waitfail_obj";
 
-    ds_->on_write_started(db_id, full);
+    ds_->on_write_started(db_path, full);
 
     std::thread failer([&]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        ds_->on_write_failed(db_id, full, "rejected");
+        ds_->on_write_failed(db_path, full, "rejected");
         TEST_LOG("failer thread: write failed");
     });
 
@@ -141,10 +141,10 @@ TEST_F(WriteRegistrationTest, WaitReturnsFalseForFailedEntry) {
 }
 
 TEST_F(WriteRegistrationTest, WaitTimesOutForIncompleteEntry) {
-    CMString db_id = db32("timeout_db");
-    CMString full = db_id + ":timeout_obj";
+    CMString db_path = db32("timeout_db");
+    CMString full = db_path + ":timeout_obj";
 
-    ds_->on_write_started(db_id, full);
+    ds_->on_write_started(db_path, full);
 
     auto start = std::chrono::steady_clock::now();
     auto [found, result] = ds_->try_read_local_or_wait(full, 200);

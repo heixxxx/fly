@@ -17,11 +17,11 @@ from fly.runtime import get_agent
 get_config().set_int("fail_unscheduleable_tasks", 0)
 
 
-# Read original db_id from marker file
-marker_path = os.path.join(DB_PATH, "_test_db_id")
+# Read original db_path from marker file
+marker_path = os.path.join(DB_PATH, "_test_db_path")
 assert os.path.isfile(marker_path), f"Marker file not found: {marker_path}"
 with open(marker_path) as f:
-    original_db_id = f.read().strip()
+    original_db_path = f.read().strip()
 
 master = get_agent()
 
@@ -31,9 +31,9 @@ master = get_agent()
 # ── Load DB from Run 1 ──
 db = load_db(DB_PATH)
 
-# Verify db_id matches
-assert db.get_db_id() == original_db_id, \
-    f"db_id mismatch: {db.get_db_id()} != {original_db_id}"
+# Verify db_path matches
+assert db.get_db_path() == original_db_path, \
+    f"db_path mismatch: {db.get_db_path()} != {original_db_path}"
 
 # ── Read back Run 1 master-written data (available immediately) ──
 assert db.read_object("stage1/master_only") == "from_master", \
@@ -84,7 +84,7 @@ assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "_FROZEN should exist"
 
 # Verify load_meta
 meta = db.load_meta()
-assert meta.db_id == original_db_id
+assert meta.db_path == original_db_path
 assert meta.created_at > 0
 
 INFO(f"[RUN2] All data verified, DB frozen successfully")

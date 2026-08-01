@@ -23,7 +23,7 @@ def main():
     try:
         # Create database
         db = open_db(os.path.join(tmpdir, "test_db"))
-        print(f"Database created: {db.get_db_id()}")
+        print(f"Database created: {db.get_db_path()}")
 
         # Generate test data (10MB)
         data_size = 10 * 1024 * 1024

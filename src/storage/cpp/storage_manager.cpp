@@ -35,7 +35,7 @@ void StorageManager::close_all() {
 
 void StorageManager::reset() {
     databases_.iterate([](const CMString& path, const CMSharedPtr<Database>& db) {
-        fly::DataService::instance()->unregister_database(db->get_db_id());
+        fly::DataService::instance()->unregister_database(db->get_db_path());
     });
     databases_.clear();
 }

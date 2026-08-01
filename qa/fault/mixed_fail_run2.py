@@ -13,8 +13,8 @@ from fly import get_config
 
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 
-with open(os.path.join(DB_PATH, "_test_db_id")) as f:
-    expected_db_id = f.read().strip()
+with open(os.path.join(DB_PATH, "_test_db_path")) as f:
+    expected_db_path = f.read().strip()
 
 from fly.runtime import get_agent
 
@@ -32,8 +32,8 @@ for _ in range(40):
 assert master.worker_count >= 1, "Worker should connect after load_db"
 time.sleep(1.0)
 
-assert db.get_db_id() == expected_db_id, \
-    f"db_id mismatch: {db.get_db_id()} != {expected_db_id}"
+assert db.get_db_path() == expected_db_path, \
+    f"db_path mismatch: {db.get_db_path()} != {expected_db_path}"
 
 # load_db 后脏数据不应恢复（abort 段被丢弃）
 for key in ["mixed/small_0", "mixed/large", "mixed/dirty"]:

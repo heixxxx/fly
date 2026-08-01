@@ -87,7 +87,7 @@ def test_db_meta_incremental_format():
 
         meta = db.load_meta()
         assert meta is not None
-        assert meta.db_id == db.get_db_id()
+        assert meta.db_path == db.get_db_path()
         assert meta.created_at > 0
         assert len(meta.workers) == 0
 
@@ -125,7 +125,7 @@ def test_load_db_two_processes():
     # Verify DB artifacts exist after Run 1
     assert os.path.isdir(DB_PATH_P2), "DB directory should exist after Run 1"
     assert os.path.isfile(os.path.join(DB_PATH_P2, "_DB_META")), "_DB_META should exist"
-    assert os.path.isfile(os.path.join(DB_PATH_P2, "_test_db_id")), "Marker file should exist"
+    assert os.path.isfile(os.path.join(DB_PATH_P2, "_test_db_path")), "Marker file should exist"
     assert not os.path.isfile(os.path.join(DB_PATH_P2, "_FROZEN")), \
         "Should NOT be frozen after Run 1"
 

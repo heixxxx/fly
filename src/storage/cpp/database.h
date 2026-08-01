@@ -23,9 +23,9 @@
 
 class Database {
 public:
-    // existing_db_id 参数已废弃（db_id 机制移除：db_id_ 现在是 base_path 的别名），
+    // existing_db_path 参数已废弃（db_id 机制移除：db_path_ 现在是 base_path 的别名），
     // 保留签名仅为过渡期调用方兼容，值被忽略。
-    Database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0, const CMString& host = "", const CMString& existing_db_id = "");
+    Database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0, const CMString& host = "", const CMString& existing_db_path = "");
     ~Database();
 
     Database(const Database&) = delete;
@@ -91,12 +91,11 @@ public:
     // 避免 merge_db 在已 open_db 的进程内重复注册同 base_path）。
     static DbMeta load_meta_from_path(const CMString& base_path);
 
-    CMString get_db_id() const;
-    void set_db_id(const CMString& db_id);
+    CMString get_db_path() const;
     CMString get_base_path() const;
     CMString get_data_path() const;
     // Merge-only：跨机数据集中后产物落在新路径，master 用它更新既有 Database 的路径，
-    // 同步 re-register 进 DataService（复用 set_db_id 的 upsert 模式）。非 merge 场景禁止调用。
+    // 同步 re-register 进 DataService（复用 set_db_path 的 upsert 模式）。非 merge 场景禁止调用。
     void set_paths(const CMString& base_path, const CMString& data_path);
     CMString get_full_name(const CMString& name) const;
     CMString get_writer_id() const;
@@ -182,7 +181,7 @@ private:
     CMString base_path_;
     CMString data_path_;
     CMString writer_id_;
-    CMString db_id_;
+    CMString db_path_;
     CMString host_;
     std::atomic<bool> is_frozen_{false};
 

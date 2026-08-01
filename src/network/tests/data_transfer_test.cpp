@@ -41,15 +41,15 @@ TEST_F(DataTransferTest, DataServiceStartDataServer) {
 }
 
 TEST_F(DataTransferTest, DataServerReturnsObjectNotFoundForUnknownObject) {
-    std::string db_id = "/testb";
-    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    std::string db_path = "/testb";
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
 
     ds_->start_data_server("127.0.0.1", 0, 2);
     int port = ds_->get_data_port();
 
     DataClientPool pool(4);
     auto [success, data, py_name, hash, error, rerr] = pool.request(
-        "127.0.0.1", port, db_id + ":nonexistent", 0, 0, 5000);
+        "127.0.0.1", port, db_path + ":nonexistent", 0, 0, 5000);
 
     EXPECT_FALSE(success);
     EXPECT_EQ(error, "OBJECT_NOT_FOUND");
@@ -57,13 +57,13 @@ TEST_F(DataTransferTest, DataServerReturnsObjectNotFoundForUnknownObject) {
 }
 
 TEST_F(DataTransferTest, DataServerReturnsDataForCompletedWrite) {
-    std::string db_id = "/testc";
-    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    std::string db_path = "/testc";
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
 
-    std::string full = db_id + ":myobj";
+    std::string full = db_path + ":myobj";
     std::string test_data = "hello world test data";
 
-    ds_->on_write_started(db_id, full);
+    ds_->on_write_started(db_path, full);
 
     auto record = CMMakeShared<FlyBuffer>();
     ObjectHeader header;
@@ -82,7 +82,7 @@ TEST_F(DataTransferTest, DataServerReturnsDataForCompletedWrite) {
 
     auto entries = writer.get_all_entries(full);
     ASSERT_TRUE(entries.has_value());
-    ds_->on_write_completed(db_id, full, entries.value());
+    ds_->on_write_completed(db_path, full, entries.value());
     ds_->on_object_flushed(full);
 
     EXPECT_EQ(ds_->has_local_object(full), true);
@@ -101,12 +101,12 @@ TEST_F(DataTransferTest, DataServerReturnsDataForCompletedWrite) {
 // After the read-path hardening change, the pool does NOT internally retry
 // DATA_NOT_READY — it returns immediately so the TIER2 layer owns retry policy.
 TEST_F(DataTransferTest, DataClientPoolReturnsDataNotReadyImmediately) {
-    std::string db_id = "/testd";
-    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    std::string db_path = "/testd";
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
 
-    std::string full = db_id + ":myobj";
+    std::string full = db_path + ":myobj";
 
-    ds_->on_write_started(db_id, full);
+    ds_->on_write_started(db_path, full);
 
     ds_->start_data_server("127.0.0.1", 0, 2);
     int port = ds_->get_data_port();
@@ -126,15 +126,15 @@ TEST_F(DataTransferTest, DataClientPoolReturnsDataNotReadyImmediately) {
 }
 
 TEST_F(DataTransferTest, DataServerHandlesConcurrentRequestsBeyondThreadCount) {
-    std::string db_id = "/teste";
-    ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
+    std::string db_path = "/teste";
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
 
     for (int i = 0; i < 6; ++i) {
         std::string name = "obj_" + std::to_string(i);
-        std::string full = db_id + ":" + name;
+        std::string full = db_path + ":" + name;
         std::string test_data = "data for object " + std::to_string(i);
 
-        ds_->on_write_started(db_id, full);
+        ds_->on_write_started(db_path, full);
 
         auto record = CMMakeShared<FlyBuffer>();
         ObjectHeader header;
@@ -153,7 +153,7 @@ TEST_F(DataTransferTest, DataServerHandlesConcurrentRequestsBeyondThreadCount) {
 
         auto entries = writer.get_all_entries(full);
         ASSERT_TRUE(entries.has_value());
-        ds_->on_write_completed(db_id, full, entries.value());
+        ds_->on_write_completed(db_path, full, entries.value());
         ds_->on_object_flushed(full);
     }
 
@@ -167,7 +167,7 @@ TEST_F(DataTransferTest, DataServerHandlesConcurrentRequestsBeyondThreadCount) {
     for (int i = 0; i < 6; ++i) {
         threads.emplace_back([&, i]() {
             auto [ok, data, py_name, hash, error, rerr] = pool.request(
-                "127.0.0.1", port, db_id + ":obj_" + std::to_string(i), 0, 0, 10000);
+                "127.0.0.1", port, db_path + ":obj_" + std::to_string(i), 0, 0, 10000);
             if (ok) success_count.fetch_add(1);
         });
     }

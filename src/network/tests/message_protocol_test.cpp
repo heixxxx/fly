@@ -232,7 +232,7 @@ TEST(MessageProtocolTest, WriteRegisterMessageWithSizeAndWriter) {
     msg.header_.type_ = MessageType::WRITE_REGISTER;
     msg.worker_id_ = 5;
     msg.object_name_ = "db_abc:result/output";
-    msg.db_id_ = "db_abc";
+    msg.db_path_ = "db_abc";
     msg.write_context_hash_ = "hash123";
     msg.writer_id_ = "w_abc";
     msg.size_bytes_ = 1234567;
@@ -244,7 +244,7 @@ TEST(MessageProtocolTest, WriteRegisterMessageWithSizeAndWriter) {
     EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
     EXPECT_EQ(decoded.worker_id_, 5u);
     EXPECT_EQ(decoded.object_name_, "db_abc:result/output");
-    EXPECT_EQ(decoded.db_id_, "db_abc");
+    EXPECT_EQ(decoded.db_path_, "db_abc");
     EXPECT_EQ(decoded.write_context_hash_, "hash123");
     EXPECT_EQ(decoded.writer_id_, "w_abc");
     EXPECT_EQ(decoded.size_bytes_, 1234567);
@@ -350,18 +350,18 @@ TEST(MessageProtocolTest, TaskSubmitMessage) {
 TEST(MessageProtocolTest, DbPathRequestResponseMessages) {
     DbPathRequestMessage req;
     req.header_.type_ = MessageType::DB_PATH_REQUEST;
-    req.db_id_ = "my_database";
+    req.db_path_ = "my_database";
 
     CMString encoded_req = MessageProtocol::encode(req);
     CMString buffer = encoded_req;
 
     DbPathRequestMessage decoded_req;
     EXPECT_TRUE(MessageProtocol::decode(buffer, decoded_req));
-    EXPECT_EQ(decoded_req.db_id_, "my_database");
+    EXPECT_EQ(decoded_req.db_path_, "my_database");
 
     DbPathResponseMessage resp;
     resp.header_.type_ = MessageType::DB_PATH_RESPONSE;
-    resp.db_id_ = "my_database";
+    resp.db_path_ = "my_database";
     resp.base_path_ = "/data/base";
     resp.data_path_ = "/data/base/data";
     resp.success_ = true;
@@ -371,7 +371,7 @@ TEST(MessageProtocolTest, DbPathRequestResponseMessages) {
 
     DbPathResponseMessage decoded_resp;
     EXPECT_TRUE(MessageProtocol::decode(buffer_resp, decoded_resp));
-    EXPECT_EQ(decoded_resp.db_id_, "my_database");
+    EXPECT_EQ(decoded_resp.db_path_, "my_database");
     EXPECT_EQ(decoded_resp.base_path_, "/data/base");
     EXPECT_EQ(decoded_resp.data_path_, "/data/base/data");
     EXPECT_TRUE(decoded_resp.success_);
@@ -380,7 +380,7 @@ TEST(MessageProtocolTest, DbPathRequestResponseMessages) {
 TEST(MessageProtocolTest, DatabaseFreezeNotificationRoundTrip) {
     DatabaseFreezeNotification msg;
     msg.header_.type_ = MessageType::DATABASE_FREEZE;
-    msg.db_id_ = "frozen_db_001";
+    msg.db_path_ = "frozen_db_001";
     msg.task_id_ = 42;   // 非 stream 模式 master 登记 pending frozen 需要 task_id
 
     CMString encoded = MessageProtocol::encode(msg);
@@ -388,7 +388,7 @@ TEST(MessageProtocolTest, DatabaseFreezeNotificationRoundTrip) {
 
     DatabaseFreezeNotification decoded;
     EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
-    EXPECT_EQ(decoded.db_id_, "frozen_db_001");
+    EXPECT_EQ(decoded.db_path_, "frozen_db_001");
     EXPECT_EQ(decoded.task_id_, 42u);
     EXPECT_TRUE(buffer.empty());
 }
@@ -396,7 +396,7 @@ TEST(MessageProtocolTest, DatabaseFreezeNotificationRoundTrip) {
 TEST(MessageProtocolTest, DatabaseFreezeAckRoundTripSuccess) {
     DatabaseFreezeAckMessage ack;
     ack.header_.type_ = MessageType::DATABASE_FREEZE_ACK;
-    ack.db_id_ = "frozen_db_001";
+    ack.db_path_ = "frozen_db_001";
     ack.success_ = true;
 
     CMString encoded = MessageProtocol::encode(ack);
@@ -404,7 +404,7 @@ TEST(MessageProtocolTest, DatabaseFreezeAckRoundTripSuccess) {
 
     DatabaseFreezeAckMessage decoded;
     EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
-    EXPECT_EQ(decoded.db_id_, "frozen_db_001");
+    EXPECT_EQ(decoded.db_path_, "frozen_db_001");
     EXPECT_TRUE(decoded.success_);
     EXPECT_EQ(decoded.error_type_, TaskErrorType::UNKNOWN);
     EXPECT_TRUE(buffer.empty());
@@ -414,7 +414,7 @@ TEST(MessageProtocolTest, DatabaseFreezeAckRoundTripConflict) {
     // 冲突场景：db 已被其他 task freeze，master 拒绝 → fail-fast
     DatabaseFreezeAckMessage ack;
     ack.header_.type_ = MessageType::DATABASE_FREEZE_ACK;
-    ack.db_id_ = "already_frozen_db";
+    ack.db_path_ = "already_frozen_db";
     ack.success_ = false;
     ack.error_type_ = TaskErrorType::DB_ALREADY_FROZEN;
 
@@ -423,7 +423,7 @@ TEST(MessageProtocolTest, DatabaseFreezeAckRoundTripConflict) {
 
     DatabaseFreezeAckMessage decoded;
     EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
-    EXPECT_EQ(decoded.db_id_, "already_frozen_db");
+    EXPECT_EQ(decoded.db_path_, "already_frozen_db");
     EXPECT_FALSE(decoded.success_);
     EXPECT_EQ(decoded.error_type_, TaskErrorType::DB_ALREADY_FROZEN);
 }
@@ -433,7 +433,7 @@ TEST(MessageProtocolTest, WriteRegisterAndAckMessages) {
     wr.header_.type_ = MessageType::WRITE_REGISTER;
     wr.worker_id_ = 10;
     wr.object_name_ = "obj_key";
-    wr.db_id_ = "db1";
+    wr.db_path_ = "db1";
     
     CMString encoded_wr = MessageProtocol::encode(wr);
     CMString buffer_wr = encoded_wr;
@@ -442,12 +442,12 @@ TEST(MessageProtocolTest, WriteRegisterAndAckMessages) {
     EXPECT_TRUE(MessageProtocol::decode(buffer_wr, decoded_wr));
     EXPECT_EQ(decoded_wr.worker_id_, 10u);
     EXPECT_EQ(decoded_wr.object_name_, "obj_key");
-    EXPECT_EQ(decoded_wr.db_id_, "db1");
+    EXPECT_EQ(decoded_wr.db_path_, "db1");
     
     WriteRegisterAckMessage ack;
     ack.header_.type_ = MessageType::WRITE_REGISTER_ACK;
     ack.object_name_ = "obj_key";
-    ack.db_id_ = "db1";
+    ack.db_path_ = "db1";
     ack.success_ = true;
     ack.error_message_ = "";
     
@@ -458,14 +458,14 @@ TEST(MessageProtocolTest, WriteRegisterAndAckMessages) {
     EXPECT_TRUE(MessageProtocol::decode(buffer_ack, decoded_ack));
     EXPECT_TRUE(decoded_ack.success_);
     EXPECT_EQ(decoded_ack.object_name_, "obj_key");
-    EXPECT_EQ(decoded_ack.db_id_, "db1");
+    EXPECT_EQ(decoded_ack.db_path_, "db1");
 }
 
 TEST(MessageProtocolTest, WriteRegisterAckFailure) {
     WriteRegisterAckMessage ack;
     ack.header_.type_ = MessageType::WRITE_REGISTER_ACK;
     ack.object_name_ = "bad_obj";
-    ack.db_id_ = "bad_db";
+    ack.db_path_ = "bad_db";
     ack.success_ = false;
     ack.error_message_ = "database is frozen";
     ack.error_type_ = TaskErrorType::WRITE_TO_FROZEN_DB;
@@ -724,7 +724,7 @@ TEST(MessageProtocolTest, NetProbeResponseCarriesPayload) {
 TEST(MessageProtocolTest, DeleteDataMessageRoundTrip) {
     DeleteDataMessage msg;
     msg.header_.type_ = MessageType::DELETE_DATA;
-    msg.db_id_ = "abc123def4";
+    msg.db_path_ = "abc123def4";
     msg.base_path_ = "/shared/proj_a";
     msg.data_path_ = "/ssd/source_data";
     msg.writer_ids_ = {"worker_0", "worker_1", "worker_2"};
@@ -734,7 +734,7 @@ TEST(MessageProtocolTest, DeleteDataMessageRoundTrip) {
 
     DeleteDataMessage decoded;
     ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
-    EXPECT_EQ(decoded.db_id_, "abc123def4");
+    EXPECT_EQ(decoded.db_path_, "abc123def4");
     EXPECT_EQ(decoded.base_path_, "/shared/proj_a");
     EXPECT_EQ(decoded.data_path_, "/ssd/source_data");
     ASSERT_EQ(decoded.writer_ids_.size(), 3u);
@@ -748,7 +748,7 @@ TEST(MessageProtocolTest, DeleteDataAckRoundTrip) {
     DeleteDataAckMessage ack;
     ack.header_.type_ = MessageType::DELETE_DATA_ACK;
     ack.worker_id_ = 7;
-    ack.db_id_ = "abc123def4";
+    ack.db_path_ = "abc123def4";
     ack.success_ = true;
     ack.deleted_count_ = 3;
     ack.error_message_ = "";
@@ -760,7 +760,7 @@ TEST(MessageProtocolTest, DeleteDataAckRoundTrip) {
     DeleteDataAckMessage decoded;
     ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
     EXPECT_EQ(decoded.worker_id_, 7u);
-    EXPECT_EQ(decoded.db_id_, "abc123def4");
+    EXPECT_EQ(decoded.db_path_, "abc123def4");
     EXPECT_TRUE(decoded.success_);
     EXPECT_EQ(decoded.deleted_count_, 3);
     ASSERT_EQ(decoded.deleted_writer_ids_.size(), 3u);
@@ -770,7 +770,7 @@ TEST(MessageProtocolTest, DeleteDataAckRoundTrip) {
 TEST(MessageProtocolTest, DeleteDataAckFailurePath) {
     DeleteDataAckMessage ack;
     ack.header_.type_ = MessageType::DELETE_DATA_ACK;
-    ack.db_id_ = "xyz789";
+    ack.db_path_ = "xyz789";
     ack.success_ = false;
     ack.error_message_ = "data_path not accessible";
     ack.deleted_writer_ids_ = {};  // 部分成功时可能为空
@@ -788,7 +788,7 @@ TEST(MessageProtocolTest, DeleteDataAckFailurePath) {
 TEST(MessageProtocolTest, MergeCleanupMessageRoundTrip) {
     MergeCleanupMessage msg;
     msg.header_.type_ = MessageType::MERGE_CLEANUP;
-    msg.db_id_ = "merge_db_002";
+    msg.db_path_ = "merge_db_002";
     msg.base_path_ = "/shared/db";
     msg.data_path_ = "/ssd/merged_data";
     msg.exempt_worker_ids_ = {5, 6};  // merge target workers 免清理
@@ -798,7 +798,7 @@ TEST(MessageProtocolTest, MergeCleanupMessageRoundTrip) {
 
     MergeCleanupMessage decoded;
     ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
-    EXPECT_EQ(decoded.db_id_, "merge_db_002");
+    EXPECT_EQ(decoded.db_path_, "merge_db_002");
     EXPECT_EQ(decoded.base_path_, "/shared/db");
     EXPECT_EQ(decoded.data_path_, "/ssd/merged_data");
     ASSERT_EQ(decoded.exempt_worker_ids_.size(), 2u);
@@ -811,7 +811,7 @@ TEST(MessageProtocolTest, MergeCleanupAckRoundTrip) {
     MergeCleanupAckMessage ack;
     ack.header_.type_ = MessageType::MERGE_CLEANUP_ACK;
     ack.worker_id_ = 7;
-    ack.db_id_ = "merge_db_002";
+    ack.db_path_ = "merge_db_002";
 
     CMString encoded = MessageProtocol::encode(ack);
     CMString buffer = encoded;
@@ -819,7 +819,7 @@ TEST(MessageProtocolTest, MergeCleanupAckRoundTrip) {
     MergeCleanupAckMessage decoded;
     ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
     EXPECT_EQ(decoded.worker_id_, 7u);
-    EXPECT_EQ(decoded.db_id_, "merge_db_002");
+    EXPECT_EQ(decoded.db_path_, "merge_db_002");
     EXPECT_TRUE(buffer.empty());
 }
 

@@ -294,8 +294,7 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_METHOD("freeze", &Database::freeze)
     FLY_EXPORT_METHOD("is_frozen", &Database::is_frozen)
     FLY_EXPORT_METHOD("load_meta", &Database::load_meta)
-    FLY_EXPORT_METHOD("get_db_id", &Database::get_db_id)
-    FLY_EXPORT_METHOD("set_db_id", &Database::set_db_id)
+    FLY_EXPORT_METHOD("get_db_path", &Database::get_db_path)
     FLY_EXPORT_METHOD("get_base_path", &Database::get_base_path)
     FLY_EXPORT_METHOD("get_data_path", &Database::get_data_path)
     FLY_EXPORT_METHOD("get_full_name", &Database::get_full_name)
@@ -417,7 +416,7 @@ FLY_EXPORT_CLASS(IndexEntry, "EXStgIndexEntry")
 FLY_EXPORT_CLASS(DbMeta, "EXStgDbMeta")
     FLY_EXPORT_INIT()
     FLY_EXPORT_INIT(CMString, int64_t)
-    FLY_EXPORT_READONLY_ATTR("db_id", &DbMeta::db_id_)
+    FLY_EXPORT_READONLY_ATTR("db_path", &DbMeta::db_path_)
     FLY_EXPORT_READONLY_ATTR("created_at", &DbMeta::created_at_)
     FLY_EXPORT_ATTR("workers", &DbMeta::workers_)
     FLY_EXPORT_SERIALIZE(DbMeta);
@@ -438,8 +437,8 @@ FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& base_path, cons
     return CMMakeShared<Database>(base_path, data_path, writer_id);
 });
 
-FLY_EXPORT_FUNCTION("ex_stg_create_database_with_id", [](const CMString& base_path, const CMString& data_path, uint64_t writer_id, const CMString& db_id) -> CMSharedPtr<Database> {
-    return CMMakeShared<Database>(base_path, data_path, writer_id, "", db_id);
+FLY_EXPORT_FUNCTION("ex_stg_create_database_with_path", [](const CMString& base_path, const CMString& data_path, uint64_t writer_id, const CMString& db_path) -> CMSharedPtr<Database> {
+    return CMMakeShared<Database>(base_path, data_path, writer_id, "", db_path);
 });
 
 // 静态读 _DB_META，不构造 Database（避免 merge_db 重复 register base_path）。

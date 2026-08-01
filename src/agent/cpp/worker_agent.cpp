@@ -598,7 +598,7 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
 
 void WorkerAgent::on_db_path_response(const DbPathResponseMessage& msg) {
     touch_master_contact();
-    pending_db_paths_.complete(msg.db_id_, [&](PendingDbPath& p) {
+    pending_db_paths_.complete(msg.db_path_, [&](PendingDbPath& p) {
         p.base_path_ = msg.base_path_;
         p.data_path_ = msg.data_path_;
         p.success_ = msg.success_;
@@ -615,31 +615,31 @@ void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_has
     WorkerAgentContext::set_transaction_mode(true);
     WorkerAgentContext::set_current_write_hash(write_context_hash);
     WorkerAgentContext::set_last_error_type(TaskErrorType::UNKNOWN);
-    WorkerAgentContext::set_record_write_func([this](const CMString& db_id, const CMString& name, int64_t size) {
-        record_write(db_id, name, size);
+    WorkerAgentContext::set_record_write_func([this](const CMString& db_path, const CMString& name, int64_t size) {
+        record_write(db_path, name, size);
     });
-    WorkerAgentContext::set_register_func([this](const CMString& db_id, const CMString& name, int64_t size) -> std::pair<CMString, TaskErrorType> {
-        return register_write_with_master(db_id, name, size);
+    WorkerAgentContext::set_register_func([this](const CMString& db_path, const CMString& name, int64_t size) -> std::pair<CMString, TaskErrorType> {
+        return register_write_with_master(db_path, name, size);
     });
-    WorkerAgentContext::set_notify_removed_func([this](const CMString& db_id, const CMString& name) {
-        CMString full_name = db_id + ":" + name;
+    WorkerAgentContext::set_notify_removed_func([this](const CMString& db_path, const CMString& name) {
+        CMString full_name = db_path + ":" + name;
         ObjectRemovedMessage msg;
         msg.object_name_ = full_name;
-        msg.db_id_ = db_id;
+        msg.db_path_ = db_path;
         reactor_->send(master_conn_, msg);
         INFO("ObjectRemoved sent to master: {}", full_name);
     });
-    WorkerAgentContext::set_freeze_func([this](const CMString& db_id) {
-        request_database_freeze(db_id);
+    WorkerAgentContext::set_freeze_func([this](const CMString& db_path) {
+        request_database_freeze(db_path);
     });
-    WorkerAgentContext::set_remove_request_func([this](const CMString& db_id, const CMString& object_name) {
-        request_object_remove(db_id, object_name);
+    WorkerAgentContext::set_remove_request_func([this](const CMString& db_path, const CMString& object_name) {
+        request_object_remove(db_path, object_name);
     });
-    WorkerAgentContext::set_backup_request_func([this](const CMString& db_id, const CMString& object_name) {
-        request_backup(db_id, object_name);
+    WorkerAgentContext::set_backup_request_func([this](const CMString& db_path, const CMString& object_name) {
+        request_backup(db_path, object_name);
     });
     // Var funcs: route to master over the network (synchronous set/get).
-    // Names are FULL (db_id:short_name); forwarded as-is over the wire.
+    // Names are FULL (db_path:short_name); forwarded as-is over the wire.
     WorkerAgentContext::set_set_var_func([this](const CMString& full_var_name,
                                                 FlyBufferPtr value, const CMString& type_name) -> bool {
         return set_var_sync(full_var_name, value, type_name);
@@ -658,8 +658,8 @@ void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_has
     });
 }
 
-void WorkerAgent::record_write(const CMString& db_id, const CMString& object_name, int64_t size) {
-    CMString full_name = db_id + ":" + object_name;
+void WorkerAgent::record_write(const CMString& db_path, const CMString& object_name, int64_t size) {
+    CMString full_name = db_path + ":" + object_name;
     current_writes_.push_back({full_name, size});
 }
 
@@ -678,13 +678,13 @@ void WorkerAgent::commit_task_segments(const CMVector<WriteRecord>& written_obje
     // 段未开（db 无写入）的 mark_write_end 是 no-op（DataWriter::segment_active_==false）。
     CMUnorderedSet<CMString> involved_dbs;
     for (const auto& w : written_objects) {
-        auto [db_id, short_name] = fly::split_full_name(w.full_name_);
-        if (!db_id.empty()) {
-            involved_dbs.insert(db_id);
+        auto [db_path, short_name] = fly::split_full_name(w.full_name_);
+        if (!db_path.empty()) {
+            involved_dbs.insert(db_path);
         }
     }
-    for (const auto& db_id : involved_dbs) {
-        auto it = databases_.find(db_id);
+    for (const auto& db_path : involved_dbs) {
+        auto it = databases_.find(db_path);
         if (it != databases_.end()) {
             // 先 drain 保证段内所有 ADD 已落盘，再打 END 提交。
             fly::DataService::instance()->drain_write_back();
@@ -694,54 +694,54 @@ void WorkerAgent::commit_task_segments(const CMVector<WriteRecord>& written_obje
 }
 
 void WorkerAgent::cleanup_failed_task_writes(const CMVector<WriteRecord>& dirty_objects) {
-    // task 失败：按 db_id 分组，对每个 db 调 abort_task_writes 撤销写入。
+    // task 失败：按 db_path 分组，对每个 db 调 abort_task_writes 撤销写入。
     // idx 打 ABORT（整段 pending 撤销）+ data 文件 truncate 回滚 + 清运行时内存。
     CMUnorderedMap<CMString, CMVector<CMString>> by_db;
     for (const auto& w : dirty_objects) {
-        auto [db_id, short_name] = fly::split_full_name(w.full_name_);
-        if (!db_id.empty()) {
-            by_db[db_id].push_back(w.full_name_);
+        auto [db_path, short_name] = fly::split_full_name(w.full_name_);
+        if (!db_path.empty()) {
+            by_db[db_path].push_back(w.full_name_);
         }
     }
-    for (auto& [db_id, full_names] : by_db) {
-        auto it = databases_.find(db_id);
+    for (auto& [db_path, full_names] : by_db) {
+        auto it = databases_.find(db_path);
         if (it == databases_.end()) continue;
         it->second->abort_task_writes(full_names);
     }
 }
 
-void WorkerAgent::request_database_freeze(const CMString& db_id) {
+void WorkerAgent::request_database_freeze(const CMString& db_path) {
     if (!registered_) return;
 
     // 同步等 ack（仿 register_write_with_master 的 pending+cv 模式）：
     // 非 stream 模式 master 登记 pending；冲突时回 DB_ALREADY_FROZEN 联动 task 失败。
     auto pending = CMMakeShared<PendingFreezeAck>();
-    pending->db_id_ = db_id;
-    pending_freezes_.emplace(db_id, pending);
+    pending->db_path_ = db_path;
+    pending_freezes_.emplace(db_path, pending);
 
     DatabaseFreezeNotification msg;
-    msg.db_id_ = db_id;
+    msg.db_path_ = db_path;
     msg.task_id_ = current_task_id_;   // 非 stream 模式 master 登记 pending 需要
     reactor_->send(master_conn_, msg);
-    INFO("Freeze notification sent: db_id={}, task_id={}", db_id, current_task_id_);
+    INFO("Freeze notification sent: db_path={}, task_id={}", db_path, current_task_id_);
 
-    auto result = pending_freezes_.wait_for(db_id, std::chrono::seconds(5),
+    auto result = pending_freezes_.wait_for(db_path, std::chrono::seconds(5),
         [](const CMSharedPtr<PendingFreezeAck>& p) { return p->completed_; });
-    pending_freezes_.erase(db_id);
+    pending_freezes_.erase(db_path);
     if (!result) {
         // 超时（master 无响应）→ 当失败处理，联动 task 失败
         WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
-        ERR("Freeze ack timeout: db_id={}", db_id);
+        ERR("Freeze ack timeout: db_path={}", db_path);
         return;
     }
     if (!pending->success_) {
         // 冲突（DB_ALREADY_FROZEN）→ 联动 task 失败（poll_task 检查 last_error_type）
         WorkerAgentContext::set_last_error_type(pending->error_type_);
-        ERR("Freeze rejected: db_id={}, error_type={}", db_id,
+        ERR("Freeze rejected: db_path={}, error_type={}", db_path,
             static_cast<int>(pending->error_type_));
         return;
     }
-    INFO("Freeze acked: db_id={}", db_id);
+    INFO("Freeze acked: db_path={}", db_path);
 }
 
 std::tuple<bool, bool> WorkerAgent::request_remote_data(const CMString& object_name) {
@@ -764,53 +764,53 @@ std::tuple<bool, bool> WorkerAgent::request_remote_data(const CMString& object_n
     return {true, location.can_still_produce_};
 }
 
-void WorkerAgent::register_database(const CMString& db_id, CMSharedPtr<Database> db) {
-    databases_[db_id] = std::move(db);
+void WorkerAgent::register_database(const CMString& db_path, CMSharedPtr<Database> db) {
+    databases_[db_path] = std::move(db);
 }
 
-bool WorkerAgent::request_db_path(const CMString& db_id) {
-    auto it = databases_.find(db_id);
+bool WorkerAgent::request_db_path(const CMString& db_path) {
+    auto it = databases_.find(db_path);
     if (it != databases_.end()) {
         return true;
     }
     auto pending = CMMakeShared<PendingDbPath>();
-    pending->db_id_ = db_id;
-    pending_db_paths_.emplace(db_id, pending);
+    pending->db_path_ = db_path;
+    pending_db_paths_.emplace(db_path, pending);
 
     DbPathRequestMessage req;
-    req.db_id_ = db_id;
+    req.db_path_ = db_path;
     reactor_->send(master_conn_, req);
 
-    INFO("Sent DbPathRequest for db_id={}", db_id);
+    INFO("Sent DbPathRequest for db_path={}", db_path);
 
-    auto result = pending_db_paths_.wait_for(db_id, std::chrono::seconds(5),
+    auto result = pending_db_paths_.wait_for(db_path, std::chrono::seconds(5),
         [](const CMSharedPtr<PendingDbPath>& p) { return p->completed_; });
-    pending_db_paths_.erase(db_id);
+    pending_db_paths_.erase(db_path);
     if (result && result->success_ && !result->base_path_.empty()) {
-        // Reuse the master-assigned db_id instead of generating a
+        // Reuse the master-assigned db_path instead of generating a
         // fresh random one. Without this, the worker's Database
-        // would get a different db_id than the master recorded,
-        // so object names (db_id:short_name) built here would
+        // would get a different db_path than the master recorded,
+        // so object names (db_path:short_name) built here would
         // never match the master's remote_idx lookups.
         auto db = CMMakeShared<Database>(result->base_path_, result->data_path_,
-                                         worker_id_, data_server_host_, db_id);
-        databases_[db_id] = db;
+                                         worker_id_, data_server_host_, db_path);
+        databases_[db_path] = db;
         return true;
     }
     return false;
 }
 
-CMSharedPtr<Database> WorkerAgent::get_database(const CMString& db_id) const {
-    auto it = databases_.find(db_id);
+CMSharedPtr<Database> WorkerAgent::get_database(const CMString& db_path) const {
+    auto it = databases_.find(db_path);
     if (it != databases_.end()) {
         return it->second;
     }
     return nullptr;
 }
 
-std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const CMString& db_id, const CMString& object_name, int64_t compressed_size) {
+std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const CMString& db_path, const CMString& object_name, int64_t compressed_size) {
     if (!registered_) return {"", TaskErrorType::UNKNOWN};
-    CMString full_name = db_id + ":" + object_name;
+    CMString full_name = db_path + ":" + object_name;
     CMString ctx_hash = fly::WorkerAgentContext::get_current_write_hash();
 
     if (!ctx_hash.empty()) {
@@ -848,10 +848,10 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
     WriteRegisterMessage msg;
     msg.worker_id_ = worker_id_;
     msg.object_name_ = full_name;
-    msg.db_id_ = db_id;
+    msg.db_path_ = db_path;
     msg.write_context_hash_ = ctx_hash;
     msg.size_bytes_ = compressed_size;
-    auto db_it = databases_.find(db_id);
+    auto db_it = databases_.find(db_path);
     if (db_it != databases_.end()) {
         msg.writer_id_ = db_it->second->get_writer_id();
     }
@@ -1025,9 +1025,9 @@ void WorkerAgent::on_var_broadcast(uint64_t conn_id, const VarBroadcastMessage& 
 
     // msg.var_name_ is a FULL name; split to locate the Database and the short
     // name to drop from its local cache.
-    auto [db_id, short_name] = fly::split_full_name(msg.var_name_);
-    if (!db_id.empty()) {
-        auto it = databases_.find(db_id);
+    auto [db_path, short_name] = fly::split_full_name(msg.var_name_);
+    if (!db_path.empty()) {
+        auto it = databases_.find(db_path);
         if (it != databases_.end()) {
             it->second->drop_local_var(short_name);
         }
@@ -1113,18 +1113,18 @@ CMVector<CMString> WorkerAgent::get_worker_properties() const {
 
 void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg) {
     touch_master_contact();
-    INFO("IdxLoadCommand received: db_id={}, base_path={}, writer_ids_count={}",
-         msg.db_id_, msg.base_path_, msg.writer_ids_.size());
+    INFO("IdxLoadCommand received: db_path={}, base_path={}, writer_ids_count={}",
+         msg.db_path_, msg.base_path_, msg.writer_ids_.size());
 
     IdxLoadAckMessage ack;
     ack.worker_id_ = worker_id_;
-    ack.db_id_ = msg.db_id_;
+    ack.db_path_ = msg.db_path_;
 
     int32_t loaded = 0;
     CMVector<CMString> loaded_writer_ids;
     try {
         auto dsRef = DataService::instance();
-        dsRef->register_database(msg.db_id_, msg.base_path_, "");
+        dsRef->register_database(msg.db_path_, msg.base_path_, "");
 
         for (const auto& writer_id : msg.writer_ids_) {
             CMString idx_path = msg.base_path_ + "/" + writer_id + ".idx";
@@ -1142,7 +1142,7 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
             auto all_entries = idx.get_all_entries();
 
             if (!all_entries.empty()) {
-                dsRef->restore_entries(msg.db_id_, all_entries);
+                dsRef->restore_entries(msg.db_path_, all_entries);
                 loaded_writer_ids.push_back(writer_id);
                 loaded++;
             }
@@ -1151,11 +1151,11 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
         ack.success_ = true;
         ack.loaded_count_ = loaded;
         ack.loaded_writer_ids_ = loaded_writer_ids;
-        INFO("IdxLoad complete: db_id={}, loaded {} idx files", msg.db_id_, loaded);
+        INFO("IdxLoad complete: db_path={}, loaded {} idx files", msg.db_path_, loaded);
     } catch (const std::exception& e) {
         ack.success_ = false;
         ack.error_message_ = e.what();
-        ERR("IdxLoad failed: db_id={}, error={}", msg.db_id_, e.what());
+        ERR("IdxLoad failed: db_path={}, error={}", msg.db_path_, e.what());
     }
 
     reactor_->send(conn_id, ack);
@@ -1163,36 +1163,36 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
 
 void WorkerAgent::on_database_freeze_notification(uint64_t conn_id, const DatabaseFreezeNotification& msg) {
     touch_master_contact();
-    INFO("DatabaseFreezeNotification received: db_id={}", msg.db_id_);
+    INFO("DatabaseFreezeNotification received: db_path={}", msg.db_path_);
 
-    auto it = databases_.find(msg.db_id_);
+    auto it = databases_.find(msg.db_path_);
     if (it != databases_.end()) {
         if (it->second->is_frozen()) {
-            INFO("DB already frozen, ignoring broadcast: db_id={}", msg.db_id_);
+            INFO("DB already frozen, ignoring broadcast: db_path={}", msg.db_path_);
             return;
         }
         it->second->freeze();
-        INFO("Worker local database frozen: db_id={}", msg.db_id_);
+        INFO("Worker local database frozen: db_path={}", msg.db_path_);
     }
 }
 
 void WorkerAgent::on_database_freeze_ack(uint64_t conn_id, const DatabaseFreezeAckMessage& msg) {
     touch_master_contact();
-    pending_freezes_.complete(msg.db_id_, [&](PendingFreezeAck& p) {
+    pending_freezes_.complete(msg.db_path_, [&](PendingFreezeAck& p) {
         p.success_ = msg.success_;
         p.error_type_ = msg.error_type_;
         p.completed_ = true;
     });
 }
 
-void WorkerAgent::request_object_remove(const CMString& db_id, const CMString& object_name) {
-    CMString full = db_id + ":" + object_name;
+void WorkerAgent::request_object_remove(const CMString& db_path, const CMString& object_name) {
+    CMString full = db_path + ":" + object_name;
 
     auto pending = CMMakeShared<PendingRemove>();
     pending_removes_.emplace(full, pending);
 
     RemoveRequestMessage msg;
-    msg.db_id_ = db_id;
+    msg.db_path_ = db_path;
     msg.object_name_ = full;
     reactor_->send(master_conn_, msg);
     INFO("RemoveRequest sent: {}", full);
@@ -1225,11 +1225,11 @@ void WorkerAgent::on_remove_command(uint64_t conn_id, const RemoveCommandMessage
     DataService::instance()->remove_local_index(msg.object_name_);
     DataService::instance()->remove_remote_index(msg.object_name_);
 
-    auto db_it = databases_.find(msg.db_id_);
+    auto db_it = databases_.find(msg.db_path_);
     if (db_it != databases_.end()) {
         auto& db = db_it->second;
         CMString short_name = msg.object_name_;
-        CMString prefix = msg.db_id_ + ":";
+        CMString prefix = msg.db_path_ + ":";
         if (short_name.substr(0, prefix.size()) == prefix) {
             short_name = short_name.substr(prefix.size());
         }
@@ -1238,15 +1238,15 @@ void WorkerAgent::on_remove_command(uint64_t conn_id, const RemoveCommandMessage
     }
 }
 
-void WorkerAgent::request_backup(const CMString& db_id, const CMString& object_name) {
+void WorkerAgent::request_backup(const CMString& db_path, const CMString& object_name) {
     if (!registered_) return;
 
-    CMString full_name = db_id + ":" + object_name;
+    CMString full_name = db_path + ":" + object_name;
 
     BackupRequestMessage msg;
     msg.worker_id_ = worker_id_;
     msg.object_name_ = full_name;
-    msg.db_id_ = db_id;
+    msg.db_path_ = db_path;
     reactor_->send(master_conn_, msg);
 
     INFO("BackupRequest sent: object={}", full_name);
@@ -1255,7 +1255,7 @@ void WorkerAgent::request_backup(const CMString& db_id, const CMString& object_n
 void WorkerAgent::execute_internal_task(const PendingTask& task) {
     if (task.task_name_ == "__backup_object") {
         if (task.args_.size() < 2) {
-            ERR("Internal backup task: insufficient args (expected object_name, db_id)");
+            ERR("Internal backup task: insufficient args (expected object_name, db_path)");
             TaskFailedMessage failed;
             failed.task_id_ = task.task_id_;
             failed.worker_id_ = worker_id_;
@@ -1265,12 +1265,12 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
         }
 
         CMString object_name = task.args_[0];
-        CMString db_id = task.args_[1];
+        CMString db_path = task.args_[1];
 
-        auto db = get_database(db_id);
+        auto db = get_database(db_path);
         if (!db) {
-            if (!request_db_path(db_id)) {
-                ERR("Internal backup: failed to get db_path for db_id={}", db_id);
+            if (!request_db_path(db_path)) {
+                ERR("Internal backup: failed to get db_path for db_path={}", db_path);
                 TaskFailedMessage failed;
                 failed.task_id_ = task.task_id_;
                 failed.worker_id_ = worker_id_;
@@ -1278,9 +1278,9 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
                 reactor_->send(master_conn_, failed);
                 return;
             }
-            db = get_database(db_id);
+            db = get_database(db_path);
             if (!db) {
-                ERR("Internal backup: still no database for db_id={}", db_id);
+                ERR("Internal backup: still no database for db_path={}", db_path);
                 TaskFailedMessage failed;
                 failed.task_id_ = task.task_id_;
                 failed.worker_id_ = worker_id_;
@@ -1300,17 +1300,17 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
         // 的 register 路径（同步，先于本 TaskComplete）登记给 master；此处 TaskComplete 仅通知
         // 对象位置。master on_task_complete 的 is_internal_ 分支调 update_remote_idx(..., size_bytes_=0)，
         // 因 size_bytes==0 时保持原 size 不变，不会覆盖已登记的真实 size。
-        complete.written_objects_.push_back({db_id + ":" + object_name, 0});
+        complete.written_objects_.push_back({db_path + ":" + object_name, 0});
         complete.is_internal_ = true;
         reactor_->send(master_conn_, complete);
 
-        INFO("Internal backup complete: object={}, db_id={}", object_name, db_id);
+        INFO("Internal backup complete: object={}, db_path={}", object_name, db_path);
     } else if (task.task_name_ == "__merge_object") {
-        // args: [short_name, db_id, base_path, target_data_path, source_host]
+        // args: [short_name, db_path, base_path, target_data_path, source_host]
         // base_path = 源 db 共享 base_path（用于 idx 落盘到共享盘，master 可直读）
         // target_data_path = master host 本地 data_path（.dat 集中目标）
         if (task.args_.size() < 4) {
-            ERR("Internal merge task: insufficient args (expected short_name, db_id, base_path, target_data_path)");
+            ERR("Internal merge task: insufficient args (expected short_name, db_path, base_path, target_data_path)");
             TaskFailedMessage failed;
             failed.task_id_ = task.task_id_;
             failed.worker_id_ = worker_id_;
@@ -1319,11 +1319,11 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
             return;
         }
         CMString short_name = task.args_[0];
-        CMString db_id = task.args_[1];
+        CMString db_path = task.args_[1];
         CMString base_path = task.args_[2];
         CMString target_data_path = task.args_[3];
 
-        execute_merge_object(task.task_id_, short_name, db_id, base_path, target_data_path);
+        execute_merge_object(task.task_id_, short_name, db_path, base_path, target_data_path);
     } else {
         WARN("Unknown internal task: name={}", task.task_name_);
         TaskFailedMessage failed;
@@ -1353,10 +1353,10 @@ DataWriter* WorkerAgent::get_or_create_merge_writer(const CMString& base_path,
     return raw;
 }
 
-void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_name, const CMString& db_id,
+void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_name, const CMString& db_path,
                                         const CMString& base_path, const CMString& target_data_path) {
-    CMString full = db_id + ":" + short_name;
-    INFO("Internal merge: object={}, db_id={}, target_data_path={}", short_name, db_id, target_data_path);
+    CMString full = db_path + ":" + short_name;
+    INFO("Internal merge: object={}, db_path={}, target_data_path={}", short_name, db_path, target_data_path);
 
     auto ds = DataService::instance();
 
@@ -1383,10 +1383,10 @@ void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_n
     //    register_database 幂等（已注册则更新）；不构造 Database 避免析构副作用。
     //    这让本 worker 的 DataServer 能服务 merge 后的对象（try_read_local_raw 查 db_paths_）。
     DataWriter* writer = get_or_create_merge_writer(base_path, target_data_path);
-    ds->register_database(db_id, base_path, target_data_path, writer->writer_id());
+    ds->register_database(db_path, base_path, target_data_path, writer->writer_id());
 
     // 4. 落盘（零解压直写 .dat + idx）。LocalIndex 只存 short_name。
-    ds->on_write_started(db_id, full);
+    ds->on_write_started(db_path, full);
     CMString merge_hash = source_hash;
     writer->write_record(short_name, header.total_size_, header.chunk_count_, *comp_data, merge_hash);
     writer->flush();
@@ -1398,7 +1398,7 @@ void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_n
     if (last_entry_opt.has_value()) {
         CMVector<IndexEntry> new_entries;
         new_entries.push_back(last_entry_opt.value());
-        ds->on_write_completed(db_id, full, new_entries);
+        ds->on_write_completed(db_path, full, new_entries);
         ds->on_object_flushed(full);
     }
 
@@ -1413,17 +1413,17 @@ void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_n
     complete.is_internal_ = true;
     reactor_->send(master_conn_, complete);
 
-    INFO("Internal merge complete: object={}, db_id={}, bytes={}", short_name, db_id, comp_size);
+    INFO("Internal merge complete: object={}, db_path={}, bytes={}", short_name, db_path, comp_size);
 }
 
 void WorkerAgent::on_delete_data(uint64_t conn_id, const DeleteDataMessage& msg) {
     touch_master_contact();
-    INFO("DeleteData received: db_id={}, data_path={}, writer_ids_count={}",
-         msg.db_id_, msg.data_path_, msg.writer_ids_.size());
+    INFO("DeleteData received: db_path={}, data_path={}, writer_ids_count={}",
+         msg.db_path_, msg.data_path_, msg.writer_ids_.size());
 
     DeleteDataAckMessage ack;
     ack.worker_id_ = worker_id_;
-    ack.db_id_ = msg.db_id_;
+    ack.db_path_ = msg.db_path_;
 
     int32_t deleted = 0;
     CMVector<CMString> deleted_writers;
@@ -1458,12 +1458,12 @@ void WorkerAgent::on_delete_data(uint64_t conn_id, const DeleteDataMessage& msg)
         ack.success_ = true;
         ack.deleted_count_ = deleted;
         ack.deleted_writer_ids_ = std::move(deleted_writers);
-        INFO("DeleteData complete: db_id={}, removed {} .dat files from {}",
-             msg.db_id_, deleted, data_dir);
+        INFO("DeleteData complete: db_path={}, removed {} .dat files from {}",
+             msg.db_path_, deleted, data_dir);
     } catch (const std::exception& e) {
         ack.success_ = false;
         ack.error_message_ = e.what();
-        ERR("DeleteData failed: db_id={}, error={}", msg.db_id_, e.what());
+        ERR("DeleteData failed: db_path={}, error={}", msg.db_path_, e.what());
     }
 
     reactor_->send(conn_id, ack);
@@ -1482,11 +1482,11 @@ void WorkerAgent::on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& 
     if (!exempt) {
         // 1. 清旧索引（指向已删源 .dat / 失效源 worker 位置）。
         //    不碰 ObjectCache（数据内容未变，cache 仍是正确副本）。
-        ds->clear_local_index_for_db(msg.db_id_);
-        ds->clear_remote_index_for_db(msg.db_id_);
+        ds->clear_local_index_for_db(msg.db_path_);
+        ds->clear_remote_index_for_db(msg.db_path_);
 
         // 2. 更新 db_paths_ 指向 merge 后的新路径。
-        ds->register_database(msg.db_id_, msg.base_path_, msg.data_path_, "");
+        ds->register_database(msg.db_path_, msg.base_path_, msg.data_path_, "");
 
         // 3. 尝试 load 新 idx 重建 local_idx（新 idx 由 merge worker 写在共享 base_path）。
         //    若 data_path 可达（同机本地盘或共享 FS），后续读可本地直读 .dat，不走远程读。
@@ -1502,7 +1502,7 @@ void WorkerAgent::on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& 
                         idx.load();
                         auto entries = idx.get_all_entries();
                         if (!entries.empty()) {
-                            ds->restore_entries(msg.db_id_, entries);
+                            ds->restore_entries(msg.db_path_, entries);
                             ++loaded;
                         }
                     }
@@ -1511,18 +1511,18 @@ void WorkerAgent::on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& 
         } catch (const std::exception& e) {
             WARN("MergeCleanup: failed to load idx from {}: {}", msg.base_path_, e.what());
         }
-        INFO("MergeCleanup: db_id={}, cleared old idx, loaded {} new idx files, "
+        INFO("MergeCleanup: db_path={}, cleared old idx, loaded {} new idx files, "
              "base={} data={} on worker_id={}",
-             msg.db_id_, loaded, msg.base_path_, msg.data_path_, worker_id_);
+             msg.db_path_, loaded, msg.base_path_, msg.data_path_, worker_id_);
     } else {
-        INFO("MergeCleanup: worker_id={} exempt (merge target), keeping state for db_id={}",
-             worker_id_, msg.db_id_);
+        INFO("MergeCleanup: worker_id={} exempt (merge target), keeping state for db_path={}",
+             worker_id_, msg.db_path_);
     }
 
     // 无论 exempt 与否，都回 MergeCleanupAck（master 的全局一致性屏障需要收齐所有 worker）。
     MergeCleanupAckMessage ack;
     ack.worker_id_ = worker_id_;
-    ack.db_id_ = msg.db_id_;
+    ack.db_path_ = msg.db_path_;
     reactor_->send(conn_id, ack);
 }
 

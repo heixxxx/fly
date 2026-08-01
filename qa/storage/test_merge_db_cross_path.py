@@ -1,6 +1,6 @@
 """E2E test: 跨 path merge_db + 源句柄读重定向。
 
-验证 db_id 废弃后的迁移重定向机制（_MIGRATED_TO）：
+验证 db_path 废弃后的迁移重定向机制（_MIGRATED_TO）：
   1. 在源 path 建 db，写数据，freeze
   2. 跨 path merge（base_path=新路径）—— 源 path 保留，写 _MIGRATED_TO 指向新路径
   3. 用【源 path 的 db 句柄】读数据 —— 应自动重定向到 merge 产物，读到正确数据
@@ -51,8 +51,8 @@ time.sleep(0.5)
 db.freeze()
 assert db.is_frozen()
 
-source_db_id = db.get_db_id()
-INFO(f"[CROSS-PATH] source db_id={source_db_id}, path={DB_PATH}")
+source_db_path = db.get_db_path()
+INFO(f"[CROSS-PATH] source db_path={source_db_path}, path={DB_PATH}")
 
 # ── Phase 2: 跨 path merge（base_path=MERGE_BASE）──
 # 源 path（DB_PATH）保留，写 _MIGRATED_TO 指向 MERGE_BASE。

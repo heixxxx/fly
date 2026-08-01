@@ -34,7 +34,7 @@ assert master.wait_for_workers(2), \
     f"Both workers should connect, got {master.worker_count}"
 
 db = open_db(DB_PATH)
-db_id = db.get_db_id()
+db_path = db.get_db_path()
 
 # Write data with backup — triggers cross-host backup
 write_data_backup(db, "shared/alpha_data", 42)
@@ -56,14 +56,14 @@ assert len(completed) >= 6, f"Expected 6 completed tasks, got {len(completed)}"
 # Use wait_for_all_tasks with expected=None to wait for ALL tasks including backups
 master.wait_for_all_tasks(expected=None, timeout=10)
 
-# Save db_id for Run 2
-with open(os.path.join(DB_PATH, "_test_db_id"), "w") as f:
-    f.write(db_id)
+# Save db_path for Run 2
+with open(os.path.join(DB_PATH, "_test_db_path"), "w") as f:
+    f.write(db_path)
 
 # Verify data is readable
 assert db.read_object("shared/alpha_data") == 42
 assert db.read_object("shared/beta_data") == 99
 
-INFO(f"[RUN1] db_id={db_id}, wrote 3 objects with backup")
+INFO(f"[RUN1] db_path={db_path}, wrote 3 objects with backup")
 
 master.stop()

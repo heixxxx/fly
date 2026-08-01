@@ -66,7 +66,7 @@ def ras_sd_solve(db, sd_id, iteration):
     x = db.read_object(f"__ras__x_{iteration}")
     b = [1.0] * A["size"]
 
-    key = f"__ras__sv_{db.get_db_id()}_{sd_id}"
+    key = f"__ras__sv_{db.get_db_path()}_{sd_id}"
     if not has_cache(key):
         solver = EXSlvSubdomainSolver.from_coo(
             sd["sz"], sd["lr"], sd["lc"], sd["lv"])

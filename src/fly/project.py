@@ -136,14 +136,14 @@ class Project:
         self._meta["dbs"][actual_name] = {
             "logical_name": name,
             "base_path": db.get_base_path(),
-            "db_id": db.get_db_id(),
+            "db_path": db.get_db_path(),
             # 浮点秒：同名多次运行可能密集发生，int 秒无法区分先后。
             "created_at": time.time(),
         }
         self._db_cache[actual_name] = db
         self.save()
         DBG(f"Project._create_db: name={name}, actual={actual_name}, "
-            f"db_id={db.get_db_id()}")
+            f"db_path={db.get_db_path()}")
         return db
 
     def _freeze_task_deps(self, db, depends_on: list) -> list:
@@ -233,8 +233,8 @@ class Project:
         actual = self._resolve_actual_name(name, latest=latest)
         if actual is None:
             return False
-        db_id = self._meta["dbs"][actual]["db_id"]
-        return get_agent()._agent.is_db_frozen(db_id)
+        db_path = self._meta["dbs"][actual]["db_path"]
+        return get_agent()._agent.is_db_frozen(db_path)
 
     def wait_frozen(self, name: str, timeout: float = 3600.0, interval: float = 0.5,
                     latest: bool = False):
@@ -269,14 +269,14 @@ class Project:
         from fly.runtime import get_agent
         agent = get_agent()
         for actual, info in self._meta["dbs"].items():
-            db_id = info["db_id"]
-            if not agent._agent.is_db_frozen(db_id):
+            db_path = info["db_path"]
+            if not agent._agent.is_db_frozen(db_path):
                 db = self._db_cache.get(actual)
                 if db is None:
                     # 缓存未命中（跨进程重新绑定 Project 等）。必须用 load_db 恢复
                     # 已有库——不能用 open_db：它会因 _DB_META 已存在而递增创建
                     # 一个空库（见 get_db 同款陷阱，L198 注释），freeze 那个空库
-                    # 对原 db_id 无效，is_db_frozen 仍为 False。load_db 是
+                    # 对原 db_path 无效，is_db_frozen 仍为 False。load_db 是
                     # master-only，freeze_all 本身即 master 本地操作，语义匹配。
                     from fly import load_db
                     db = load_db(info["base_path"])
@@ -358,7 +358,7 @@ class Project:
                 continue
             try:
                 proj._db_cache[actual] = load_db(bp)
-                INFO(f"load_project: restored db '{actual}' ({info.get('db_id')})")
+                INFO(f"load_project: restored db '{actual}' ({info.get('db_path')})")
             except Exception as e:
                 WARN(f"load_project: failed to load db '{actual}' at {bp}: {e}")
         DBG(f"load_project: restored {len(proj._db_cache)} dbs, "

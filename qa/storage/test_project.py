@@ -79,7 +79,7 @@ def test_basic_mechanism():
 
     # get_db 精确匹配 actual_name（命中缓存）。
     db1b = proj.get_db("step1")
-    assert db1b.get_db_id() == db1.get_db_id()
+    assert db1b.get_db_path() == db1.get_db_path()
 
     # 重名 → WARN + 自动递增：第二次 make_db("step1") 实际建 step1.1。
     proj.make_db(name="step1", value=200)
@@ -210,7 +210,7 @@ def test_sync_freeze_and_edges():
 
     # freeze_all：再造第二个未冻结 db，freeze_all 应把所有未冻结库一并冻结。
     # 关键：把 db_b 从缓存移除，强制走 cache-miss → load_db 分支（L274-278）。
-    # 此前 freeze_all 在该分支误用 open_db（会递增创建空库，freeze 对原 db_id
+    # 此前 freeze_all 在该分支误用 open_db（会递增创建空库，freeze 对原 db_path
     # 无效）；现已改用 load_db，此处回归该修复。
     db_b = proj.make_db_unfrozen(name="db_b", value=2)
     assert _wait_completed(2), "db_b write task should complete"

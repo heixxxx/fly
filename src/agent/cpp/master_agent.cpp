@@ -115,13 +115,13 @@ void MasterAgent::start() {
 
     reactor_->register_handler<DbPathRequestMessage>(
         [this](uint64_t conn_id, const DbPathRequestMessage& msg) {
-            INFO("DbPathRequest received: db_id={}", msg.db_id_);
+            INFO("DbPathRequest received: db_path={}", msg.db_path_);
 
             DbPathResponseMessage response;
-            response.db_id_ = msg.db_id_;
+            response.db_path_ = msg.db_path_;
 
             // 路径权威源收敛到 db_instances_（Database 内嵌 base_path_/data_path_）。
-            auto it = db_instances_.find(msg.db_id_);
+            auto it = db_instances_.find(msg.db_path_);
             if (it != db_instances_.end()) {
                 response.base_path_ = it->second->get_base_path();
                 response.data_path_ = it->second->get_data_path();
@@ -415,15 +415,15 @@ void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) 
          task_id, spec.name_, spec.attribute_timeout_, spec.vars_.size());
 
     // Var existence check (advisory only — does not affect scheduling).
-    // vars are FULL names (db_id:short_name); split each to locate the Database.
+    // vars are FULL names (db_path:short_name); split each to locate the Database.
     if (!spec.vars_.empty()) {
         for (const auto& full_var : spec.vars_) {
-            auto [db_id, short_name] = split_full_name(full_var);
-            if (db_id.empty()) continue;
-            auto db_it = db_instances_.find(db_id);
+            auto [db_path, short_name] = split_full_name(full_var);
+            if (db_path.empty()) continue;
+            auto db_it = db_instances_.find(db_path);
             if (db_it != db_instances_.end() && !db_it->second->master_has_var(short_name)) {
                 WARN("task {} declares var '{}' but it does not exist on master (db={})",
-                     task_id, short_name, db_id);
+                     task_id, short_name, db_path);
             }
         }
     }
@@ -651,9 +651,9 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
         // them in one shot (no extra round-trip). vars are FULL names; split each
         // to locate the Database and fetch the short-named value.
         for (const auto& full_var : s.vars_) {
-            auto [db_id, short_name] = split_full_name(full_var);
-            if (db_id.empty()) continue;
-            auto db_it = db_instances_.find(db_id);
+            auto [db_path, short_name] = split_full_name(full_var);
+            if (db_path.empty()) continue;
+            auto db_it = db_instances_.find(db_path);
             if (db_it == db_instances_.end()) continue;
             auto [found, value, type_name] = db_it->second->master_get_var(short_name);
             if (found && value) {
@@ -813,7 +813,7 @@ void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
 
 // 登记写入该 db 的 worker 元数据（db meta recorded_workers_）。
 // 从原 on_data_ready 的非冗余逻辑抽出，供 do_write_register 复用。
-void MasterAgent::record_worker_info(const CMString& object_name, const CMString& db_id,
+void MasterAgent::record_worker_info(const CMString& object_name, const CMString& db_path,
                                       uint64_t worker_id, const CMString& writer_id_in) {
     CMString hostname;
     CMString ip;
@@ -830,18 +830,18 @@ void MasterAgent::record_worker_info(const CMString& object_name, const CMString
 
     CMString writer_id = writer_id_in;
     if (writer_id.empty()) {
-        auto db_it2 = db_instances_.find(db_id);
+        auto db_it2 = db_instances_.find(db_path);
         if (db_it2 != db_instances_.end()) {
             writer_id = db_it2->second->get_writer_id();
         }
     }
 
-    auto key = std::make_tuple(db_id, hostname, writer_id);
+    auto key = std::make_tuple(db_path, hostname, writer_id);
     {
         std::lock_guard<std::mutex> lk(recorded_workers_mutex_);
         if (recorded_workers_.find(key) == recorded_workers_.end()) {
             recorded_workers_.insert(key);
-            auto db_it = db_instances_.find(db_id);
+            auto db_it = db_instances_.find(db_path);
             if (db_it != db_instances_.end()) {
                 ::WorkerInfo info;
                 info.worker_id_ = worker_id;
@@ -856,11 +856,11 @@ void MasterAgent::record_worker_info(const CMString& object_name, const CMString
 }
 
 // master 自写对象（worker_id==0）的 auto-backup 评估。从原 on_data_ready 抽出。
-void MasterAgent::evaluate_and_trigger_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_id) {
+void MasterAgent::evaluate_and_trigger_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_path) {
     auto target_replicas = static_cast<uint32_t>(Config::instance()->get_int("backup_replicas"));
     auto decision = DataService::instance()->evaluate_auto_backup(object_name, source_worker_id, target_replicas);
     if (decision.should_backup_) {
-        trigger_auto_backup(object_name, source_worker_id, db_id);
+        trigger_auto_backup(object_name, source_worker_id, db_path);
     }
 }
 
@@ -882,13 +882,13 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
             if (!streaming_mode) {
                 // 非 stream 模式：write register 时只做了校验（provenance/frozen），
                 // 可见性登记延迟到此处统一完成（task 级原子性）。
-                // db_id 从 object_name_ 反解（"db_id:short_name" 固定前缀格式）。
+                // db_path 从 object_name_ 反解（"db_path:short_name" 固定前缀格式）。
                 graph_->mark_data_ready(wo.object_name_);
                 DataService::instance()->update_remote_idx(wo.object_name_, worker_id, addr.host_, addr.port_, wo.size_bytes_);
                 update_dependency_location_cache(wo.object_name_, worker_id, addr.host_, addr.port_);
-                auto [db_id, short_name] = fly::split_full_name(wo.object_name_);
-                if (!db_id.empty()) {
-                    record_worker_info(wo.object_name_, db_id, worker_id, "");
+                auto [db_path, short_name] = fly::split_full_name(wo.object_name_);
+                if (!db_path.empty()) {
+                    record_worker_info(wo.object_name_, db_path, worker_id, "");
                 }
                 DBG("Recorded data location (non-stream, task complete): {} -> worker {}", wo.object_name_, worker_id);
             }
@@ -949,9 +949,9 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
         }
         graph_->mark_data_removed(obj);
 
-        auto [db_id, short_name] = fly::split_full_name(obj);
-        if (!db_id.empty()) {
-            broadcast_object_removed(db_id, short_name);
+        auto [db_path, short_name] = fly::split_full_name(obj);
+        if (!db_path.empty()) {
+            broadcast_object_removed(db_path, short_name);
         }
         WARN("Dirty object cleaned after task failure: task_id={}, object={}",
              msg.task_id_, obj);
@@ -1003,7 +1003,7 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
 
     // 崩溃恢复：worker 断连可能意味着进程崩溃（收不到失败消息），必须按 task_id
     // 清掉这些 task 声明的 pending frozen，否则该 db 会被永久标"冻结中" → 后续所有
-    // 写被拒 → 死锁级 bug。这是 Q1 选 task_id 而非 db_id 的核心理由。
+    // 写被拒 → 死锁级 bug。这是 Q1 选 task_id 而非 db_path 的核心理由。
     for (uint64_t task_id : tasks_to_recover) {
         rollback_pending_frozen(task_id);
     }
@@ -1103,22 +1103,22 @@ CMString MasterAgent::get_task_error(uint64_t task_id) const {
     return "";
 }
 
-void MasterAgent::register_database(const CMString& db_id, const CMString& base_path, const CMString& data_path) {
-    INFO("register_database: db_id={}, base_path={}, data_path={}", db_id, base_path, data_path);
+void MasterAgent::register_database(const CMString& db_path, const CMString& base_path, const CMString& data_path) {
+    INFO("register_database: db_path={}, base_path={}, data_path={}", db_path, base_path, data_path);
     // Database 是 master 进程路径唯一权威源：构造对象插入 db_instances_，路径内嵌于对象，
     // DataService::db_paths_ 由 Database 构造时自动 register。
-    auto db = CMMakeShared<Database>(base_path, data_path, 0, "", db_id);
-    db_instances_[db_id] = db;
+    auto db = CMMakeShared<Database>(base_path, data_path, 0, "", db_path);
+    db_instances_[db_path] = db;
 }
 
-bool MasterAgent::is_db_frozen(const CMString& db_id) const {
+bool MasterAgent::is_db_frozen(const CMString& db_path) const {
     std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
-    return frozen_dbs_.count(db_id) > 0 || pending_frozen_dbs_.count(db_id) > 0;
+    return frozen_dbs_.count(db_path) > 0 || pending_frozen_dbs_.count(db_path) > 0;
 }
 
-bool MasterAgent::is_db_pending_frozen(const CMString& db_id) const {
+bool MasterAgent::is_db_pending_frozen(const CMString& db_path) const {
     std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
-    return pending_frozen_dbs_.count(db_id) > 0;
+    return pending_frozen_dbs_.count(db_path) > 0;
 }
 
 void MasterAgent::commit_pending_frozen(uint64_t task_id) {
@@ -1138,18 +1138,18 @@ void MasterAgent::commit_pending_frozen(uint64_t task_id) {
         }
     }
     // 本地 freeze + 广播（task 成功后才广播）
-    for (const auto& db_id : committed) {
-        auto it = db_instances_.find(db_id);
+    for (const auto& db_path : committed) {
+        auto it = db_instances_.find(db_path);
         if (it != db_instances_.end()) it->second->freeze();
-        INFO("DB frozen (committed by task): db_id={}, task_id={}", db_id, task_id);
+        INFO("DB frozen (committed by task): db_path={}, task_id={}", db_path, task_id);
         DatabaseFreezeNotification broadcast_msg;
-        broadcast_msg.db_id_ = db_id;
+        broadcast_msg.db_path_ = db_path;
         std::lock_guard<std::mutex> wlk(workers_mutex_);
         for (const auto& [wid, cid] : worker_to_conn_) {
             reactor_->send(cid, broadcast_msg);
         }
         // 流程 message：freeze 完成（不可逆里程碑）。
-        MSG("STOR::0001", 1, "db {} frozen (committed by task {})", db_id, task_id);
+        MSG("STOR::0001", 1, "db {} frozen (committed by task {})", db_path, task_id);
     }
 }
 
@@ -1159,7 +1159,7 @@ void MasterAgent::rollback_pending_frozen(uint64_t task_id) {
     std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
     for (auto it = pending_frozen_dbs_.begin(); it != pending_frozen_dbs_.end(); ) {
         if (it->second == task_id) {
-            WARN("Rolling back pending freeze: db_id={}, task_id={}", it->first, task_id);
+            WARN("Rolling back pending freeze: db_path={}, task_id={}", it->first, task_id);
             it = pending_frozen_dbs_.erase(it);
         } else {
             ++it;
@@ -1171,13 +1171,13 @@ CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& base_p
     // Database 是 master 进程 DB 路径的【唯一权威源】：路径内嵌于对象，DataService::db_paths_
     // 由 Database 构造时自动 register，无需手动双写第二份字符串副本。
     auto db = CMMakeShared<Database>(base_path, data_path, writer_id);
-    CMString db_id = db->get_db_id();
-    db_instances_[db_id] = db;
+    CMString db_path = db->get_db_path();
+    db_instances_[db_path] = db;
     return db;
 }
 
-CMSharedPtr<Database> MasterAgent::get_database(const CMString& db_id) const {
-    auto it = db_instances_.find(db_id);
+CMSharedPtr<Database> MasterAgent::get_database(const CMString& db_path) const {
+    auto it = db_instances_.find(db_path);
     return it != db_instances_.end() ? it->second : nullptr;
 }
 
@@ -1216,12 +1216,12 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
             INFO("[AUTO-BACKUP] obj={}, read_count={}, current_replicas={}, target={}, should_backup={}",
                  msg.object_name_, decision.read_count_, decision.current_replicas_, target_replicas, decision.should_backup_);
             if (decision.should_backup_ && !all_locs.empty()) {
-                CMString db_id = msg.object_name_;
+                CMString db_path = msg.object_name_;
                 auto colon_pos = msg.object_name_.find(':');
                 if (colon_pos != CMString::npos) {
-                    db_id = msg.object_name_.substr(0, colon_pos);
+                    db_path = msg.object_name_.substr(0, colon_pos);
                 }
-                trigger_auto_backup(msg.object_name_, all_locs.front().worker_id_, db_id);
+                trigger_auto_backup(msg.object_name_, all_locs.front().worker_id_, db_path);
             }
         }
     } else {
@@ -1240,18 +1240,18 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
 // worker 路径：on_write_register 调本函数后 reactor_->send(ack)。
 // master 自写路径：on_master_register_write 调本函数后丢弃 ack。
 WriteRegisterAckMessage MasterAgent::do_write_register(const WriteRegisterMessage& msg) {
-    DBG("WriteRegister: worker={}, object={}, db_id={}", msg.worker_id_, msg.object_name_, msg.db_id_);
+    DBG("WriteRegister: worker={}, object={}, db_path={}", msg.worker_id_, msg.object_name_, msg.db_path_);
 
     WriteRegisterAckMessage ack;
     ack.object_name_ = msg.object_name_;
-    ack.db_id_ = msg.db_id_;
+    ack.db_path_ = msg.db_path_;
 
     bool registered_ok = false;
-    if (is_db_frozen(msg.db_id_)) {
+    if (is_db_frozen(msg.db_path_)) {
         ack.success_ = false;
-        ack.error_message_ = "Database frozen: " + msg.db_id_;
+        ack.error_message_ = "Database frozen: " + msg.db_path_;
         ack.error_type_ = TaskErrorType::WRITE_TO_FROZEN_DB;
-        WARN("WriteRegister rejected: db {} is frozen", msg.db_id_);
+        WARN("WriteRegister rejected: db {} is frozen", msg.db_path_);
     } else if (!msg.write_context_hash_.empty()) {
         std::lock_guard<std::mutex> lk(provenance_mutex_);
         auto it = write_provenance_.find(msg.object_name_);
@@ -1288,9 +1288,9 @@ WriteRegisterAckMessage MasterAgent::do_write_register(const WriteRegisterMessag
             auto addr = DataService::instance()->get_worker_address(msg.worker_id_);
             DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_, msg.size_bytes_);
             update_dependency_location_cache(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
-            record_worker_info(msg.object_name_, msg.db_id_, msg.worker_id_, msg.writer_id_);
+            record_worker_info(msg.object_name_, msg.db_path_, msg.worker_id_, msg.writer_id_);
             if (master_self_write && Config::instance()->get_int("auto_backup_enabled") == 1) {
-                evaluate_and_trigger_backup(msg.object_name_, 0, msg.db_id_);
+                evaluate_and_trigger_backup(msg.object_name_, 0, msg.db_path_);
             }
             schedule_tasks();
         }
@@ -1319,7 +1319,7 @@ void MasterAgent::on_worker_property_update(uint64_t conn_id, const WorkerProper
 }
 
 void MasterAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg) {
-    INFO("ObjectRemoved: object={}, db_id={}", msg.object_name_, msg.db_id_);
+    INFO("ObjectRemoved: object={}, db_path={}", msg.object_name_, msg.db_path_);
 
     DataService::instance()->remove_remote_index(msg.object_name_);
     {
@@ -1338,8 +1338,8 @@ void MasterAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage
     }
 }
 
-void MasterAgent::broadcast_object_removed(const CMString& db_id, const CMString& object_name) {
-    CMString full = db_id + ":" + object_name;
+void MasterAgent::broadcast_object_removed(const CMString& db_path, const CMString& object_name) {
+    CMString full = db_path + ":" + object_name;
 
     DataService::instance()->remove_remote_index(full);
     {
@@ -1349,7 +1349,7 @@ void MasterAgent::broadcast_object_removed(const CMString& db_id, const CMString
 
     ObjectRemovedMessage msg;
     msg.object_name_ = full;
-    msg.db_id_ = db_id;
+    msg.db_path_ = db_path;
 
     {
         std::lock_guard<std::mutex> lk(workers_mutex_);
@@ -1380,8 +1380,8 @@ void MasterAgent::on_var_set(uint64_t conn_id, const VarSetMessage& msg) {
     VarAckMessage ack;
     ack.var_name_ = msg.var_name_;  // echo the full name
 
-    auto [db_id, short_name] = split_full_name(msg.var_name_);
-    auto it = db_id.empty() ? db_instances_.end() : db_instances_.find(db_id);
+    auto [db_path, short_name] = split_full_name(msg.var_name_);
+    auto it = db_path.empty() ? db_instances_.end() : db_instances_.find(db_path);
     if (it == db_instances_.end()) {
         ack.success_ = false;
         ack.error_message_ = "db not found on master";
@@ -1413,8 +1413,8 @@ void MasterAgent::on_var_get(uint64_t conn_id, const VarGetMessage& msg) {
     VarAckMessage ack;
     ack.var_name_ = msg.var_name_;  // echo the full name
 
-    auto [db_id, short_name] = split_full_name(msg.var_name_);
-    auto it = db_id.empty() ? db_instances_.end() : db_instances_.find(db_id);
+    auto [db_path, short_name] = split_full_name(msg.var_name_);
+    auto it = db_path.empty() ? db_instances_.end() : db_instances_.find(db_path);
     if (it == db_instances_.end()) {
         ack.success_ = false;
         reactor_->send(conn_id, ack);
@@ -1434,9 +1434,9 @@ void MasterAgent::on_var_get(uint64_t conn_id, const VarGetMessage& msg) {
 }
 
 void MasterAgent::on_var_remove(uint64_t conn_id, const VarRemoveMessage& msg) {
-    auto [db_id, short_name] = split_full_name(msg.var_name_);
-    if (!db_id.empty()) {
-        auto it = db_instances_.find(db_id);
+    auto [db_path, short_name] = split_full_name(msg.var_name_);
+    if (!db_path.empty()) {
+        auto it = db_instances_.find(db_path);
         if (it != db_instances_.end()) {
             it->second->master_remove_var(short_name);
             // Broadcast the removal (full name) to all workers so they drop caches.
@@ -1457,7 +1457,7 @@ void MasterAgent::broadcast_var(const CMString& full_var_name, bool is_modificat
 }
 
 void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg) {
-    INFO("RemoveRequest: object={}, db_id={}", msg.object_name_, msg.db_id_);
+    INFO("RemoveRequest: object={}, db_path={}", msg.object_name_, msg.db_path_);
 
     graph_->mark_data_removed(msg.object_name_);
 
@@ -1474,7 +1474,7 @@ void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage
         }
         if (worker_conn_id == 0) continue;
         RemoveCommandMessage cmd;
-        cmd.db_id_ = msg.db_id_;
+        cmd.db_path_ = msg.db_path_;
         cmd.object_name_ = msg.object_name_;
         reactor_->send(worker_conn_id, cmd);
         INFO("RemoveCommand sent to worker_id={}: object={}", wid, msg.object_name_);
@@ -1488,7 +1488,7 @@ void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage
     }
 
     RemoveAckMessage ack;
-    ack.db_id_ = msg.db_id_;
+    ack.db_path_ = msg.db_path_;
     ack.object_name_ = msg.object_name_;
     ack.success_ = true;
     reactor_->send(conn_id, ack);
@@ -1627,35 +1627,35 @@ void MasterAgent::setup_write_context() {
     // master 自写对象的 record 阶段无需处理（register 已含全部 placement/schedule 逻辑）。
     // 留一个空 record_write_func 仅满足 is_active() 探测，不触发任何动作。
     WorkerAgentContext::set_record_write_func([](const CMString&, const CMString&, int64_t) {});
-    WorkerAgentContext::set_register_func([this](const CMString& db_id, const CMString& name, int64_t compressed_size) -> std::pair<CMString, TaskErrorType> {
-        return on_master_register_write(db_id, name, compressed_size);
+    WorkerAgentContext::set_register_func([this](const CMString& db_path, const CMString& name, int64_t compressed_size) -> std::pair<CMString, TaskErrorType> {
+        return on_master_register_write(db_path, name, compressed_size);
     });
-    WorkerAgentContext::set_freeze_func([this](const CMString& db_id) {
-        on_master_freeze(db_id);
+    WorkerAgentContext::set_freeze_func([this](const CMString& db_path) {
+        on_master_freeze(db_path);
     });
     // Var funcs: master process operates directly on the authoritative Database
-    // store (no network). The context passes FULL var names (db_id:short_name);
-    // split off db_id to locate the Database, then query with the short name.
+    // store (no network). The context passes FULL var names (db_path:short_name);
+    // split off db_path to locate the Database, then query with the short name.
     WorkerAgentContext::set_set_var_func([this](const CMString& full_var_name,
                                                 FlyBufferPtr value, const CMString& type_name) -> bool {
-        auto [db_id, short_name] = split_full_name(full_var_name);
-        if (db_id.empty()) return false;
-        auto it = db_instances_.find(db_id);
+        auto [db_path, short_name] = split_full_name(full_var_name);
+        if (db_path.empty()) return false;
+        auto it = db_instances_.find(db_path);
         if (it == db_instances_.end()) return false;
         return it->second->master_set_var(short_name, value, type_name);
     });
     WorkerAgentContext::set_get_var_func([this](const CMString& full_var_name)
         -> std::tuple<bool, FlyBufferPtr, CMString> {
-        auto [db_id, short_name] = split_full_name(full_var_name);
-        if (db_id.empty()) return {false, nullptr, ""};
-        auto it = db_instances_.find(db_id);
+        auto [db_path, short_name] = split_full_name(full_var_name);
+        if (db_path.empty()) return {false, nullptr, ""};
+        auto it = db_instances_.find(db_path);
         if (it == db_instances_.end()) return {false, nullptr, ""};
         return it->second->master_get_var(short_name);
     });
     WorkerAgentContext::set_remove_var_func([this](const CMString& full_var_name) {
-        auto [db_id, short_name] = split_full_name(full_var_name);
-        if (!db_id.empty()) {
-            auto it = db_instances_.find(db_id);
+        auto [db_path, short_name] = split_full_name(full_var_name);
+        if (!db_path.empty()) {
+            auto it = db_instances_.find(db_path);
             if (it != db_instances_.end()) {
                 it->second->master_remove_var(short_name);
                 broadcast_var(full_var_name, false);
@@ -1664,16 +1664,16 @@ void MasterAgent::setup_write_context() {
     });
 }
 
-std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const CMString& db_id, const CMString& name, int64_t compressed_size) {
+std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const CMString& db_path, const CMString& name, int64_t compressed_size) {
     if (!running_.load()) return {"", TaskErrorType::UNKNOWN};
     // master 自写走统一的 WriteRegisterMessage 路径（worker_id=0），与 worker 行为对称。
     // 同步调用 do_write_register，丢弃 ack（master 自写无需网络 ACK）。
     WriteRegisterMessage msg;
     msg.worker_id_ = 0;
-    msg.object_name_ = db_id + ":" + name;
-    msg.db_id_ = db_id;
+    msg.object_name_ = db_path + ":" + name;
+    msg.db_path_ = db_path;
     msg.size_bytes_ = compressed_size;
-    auto db_it = db_instances_.find(db_id);
+    auto db_it = db_instances_.find(db_path);
     if (db_it != db_instances_.end()) {
         msg.writer_id_ = db_it->second->get_writer_id();
     }
@@ -1686,7 +1686,7 @@ std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const C
     return {"", TaskErrorType::UNKNOWN};
 }
 
-CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_id,
+CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_path,
                                                        const CMString& base_path,
                                                        const CMString& writer_id) {
     CMString idx_path = base_path + "/" + writer_id + ".idx";
@@ -1700,13 +1700,13 @@ CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_id,
     auto entries = idx.get_all_entries();
 
     if (!entries.empty()) {
-        DataService::instance()->restore_entries(db_id, entries);
-        // entry.object_name_ 是 short_name（LocalIndex 不再存 db_id 前缀），
+        DataService::instance()->restore_entries(db_path, entries);
+        // entry.object_name_ 是 short_name（LocalIndex 不再存 db_path 前缀），
         // DependencyGraph 用 full_name 作 key，这里拼接。
         for (const auto& entry : entries) {
-            graph_->mark_data_ready(db_id + ":" + entry.object_name_);
+            graph_->mark_data_ready(db_path + ":" + entry.object_name_);
         }
-        INFO("restore_master_idx: restored {} entries for db_id={}", entries.size(), db_id);
+        INFO("restore_master_idx: restored {} entries for db_path={}", entries.size(), db_path);
     }
 
     return entries;
@@ -1724,11 +1724,11 @@ CMVector<IndexEntry> MasterAgent::read_idx_entries(const CMString& base_path,
     return idx.get_all_entries();
 }
 
-void MasterAgent::send_idx_load_commands(const CMString& db_id,
+void MasterAgent::send_idx_load_commands(const CMString& db_path,
                                            const CMString& base_path,
                                            const CMVector<CMString>& writer_ids) {
     IdxLoadCommandMessage msg;
-    msg.db_id_ = db_id;
+    msg.db_path_ = db_path;
     msg.base_path_ = base_path;
     msg.writer_ids_ = writer_ids;
 
@@ -1736,13 +1736,13 @@ void MasterAgent::send_idx_load_commands(const CMString& db_id,
         std::lock_guard<std::mutex> lk(workers_mutex_);
         for (const auto& [worker_id, conn_id] : worker_to_conn_) {
             reactor_->send(conn_id, msg);
-            INFO("Sent IdxLoadCommand to worker_id={}: db_id={}, writer_ids_count={}",
-                 worker_id, db_id, writer_ids.size());
+            INFO("Sent IdxLoadCommand to worker_id={}: db_path={}, writer_ids_count={}",
+                 worker_id, db_path, writer_ids.size());
         }
     }
 }
 
-void MasterAgent::rebuild_remote_idx(const CMString& db_id,
+void MasterAgent::rebuild_remote_idx(const CMString& db_path,
                                        const CMString& base_path,
                                        const CMVector<::WorkerInfo>& workers) {
     CMUnorderedMap<CMString, CMString> old_id_to_hostname;
@@ -1788,8 +1788,8 @@ void MasterAgent::rebuild_remote_idx(const CMString& db_id,
         auto addr = DataService::instance()->get_worker_address(new_worker_id);
 
         for (const auto& entry : entries) {
-            // entry.object_name_ 是 short_name（LocalIndex 不再存 db_id 前缀），拼接 full。
-            CMString full = db_id + ":" + entry.object_name_;
+            // entry.object_name_ 是 short_name（LocalIndex 不再存 db_path 前缀），拼接 full。
+            CMString full = db_path + ":" + entry.object_name_;
             DataService::instance()->update_remote_idx(full, new_worker_id, addr.host_, addr.port_);
             graph_->mark_data_ready(full);
         }
@@ -1802,12 +1802,12 @@ void MasterAgent::set_master_hostname(const CMString& hostname) {
     ProcessInfo::instance()->set_hostname(hostname);
 }
 
-void MasterAgent::send_idx_load_to_worker(const CMString& db_id,
+void MasterAgent::send_idx_load_to_worker(const CMString& db_path,
                                             const CMString& base_path,
                                             const CMVector<CMString>& writer_ids,
                                             uint64_t worker_id) {
     IdxLoadCommandMessage msg;
-    msg.db_id_ = db_id;
+    msg.db_path_ = db_path;
     msg.base_path_ = base_path;
     msg.writer_ids_ = writer_ids;
 
@@ -1818,11 +1818,11 @@ void MasterAgent::send_idx_load_to_worker(const CMString& db_id,
         return;
     }
     reactor_->send(it->second, msg);
-    INFO("Sent IdxLoadCommand to worker_id={}: db_id={}, writer_ids_count={}",
-         worker_id, db_id, writer_ids.size());
+    INFO("Sent IdxLoadCommand to worker_id={}: db_path={}, writer_ids_count={}",
+         worker_id, db_path, writer_ids.size());
 }
 
-void MasterAgent::rebuild_remote_idx_for_worker(const CMString& db_id,
+void MasterAgent::rebuild_remote_idx_for_worker(const CMString& db_path,
                                                    const CMString& base_path,
                                                    const CMVector<CMString>& writer_ids,
                                                    uint64_t worker_id) {
@@ -1844,8 +1844,8 @@ void MasterAgent::rebuild_remote_idx_for_worker(const CMString& db_id,
         auto entries = idx.get_all_entries();
 
         for (const auto& entry : entries) {
-            // entry.object_name_ 是 short_name（LocalIndex 不再存 db_id 前缀），拼接 full。
-            CMString full = db_id + ":" + entry.object_name_;
+            // entry.object_name_ 是 short_name（LocalIndex 不再存 db_path 前缀），拼接 full。
+            CMString full = db_path + ":" + entry.object_name_;
             DataService::instance()->update_remote_idx(full, worker_id, addr.host_, addr.port_);
             graph_->mark_data_ready(full);
         }
@@ -1855,8 +1855,8 @@ void MasterAgent::rebuild_remote_idx_for_worker(const CMString& db_id,
 }
 
 void MasterAgent::on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg) {
-    INFO("IdxLoadAck: worker_id={}, db_id={}, success={}, loaded_count={}, writer_ids={}",
-         msg.worker_id_, msg.db_id_, msg.success_, msg.loaded_count_, msg.loaded_writer_ids_.size());
+    INFO("IdxLoadAck: worker_id={}, db_path={}, success={}, loaded_count={}, writer_ids={}",
+         msg.worker_id_, msg.db_path_, msg.success_, msg.loaded_count_, msg.loaded_writer_ids_.size());
 
     if (!msg.success_) {
         ERR("IdxLoadAck failed from worker_id={}: {}", msg.worker_id_, msg.error_message_);
@@ -1864,44 +1864,44 @@ void MasterAgent::on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg
     }
 
     // Master reads the same idx files from shared filesystem and updates remote_idx_
-    auto it = db_instances_.find(msg.db_id_);
+    auto it = db_instances_.find(msg.db_path_);
     if (it == db_instances_.end()) {
-        ERR("IdxLoadAck: unknown db_id={}", msg.db_id_);
+        ERR("IdxLoadAck: unknown db_path={}", msg.db_path_);
         return;
     }
 
-    rebuild_remote_idx_for_worker(msg.db_id_, it->second->get_base_path(), msg.loaded_writer_ids_, msg.worker_id_);
+    rebuild_remote_idx_for_worker(msg.db_path_, it->second->get_base_path(), msg.loaded_writer_ids_, msg.worker_id_);
 }
 
 void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg) {
     bool streaming_mode = (Config::instance()->get_int("dependency_update_mode") == 0);
 
     DatabaseFreezeAckMessage ack;
-    ack.db_id_ = msg.db_id_;
+    ack.db_path_ = msg.db_path_;
     bool accepted = false;
 
     {
         std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
-        bool already = frozen_dbs_.count(msg.db_id_) > 0 || pending_frozen_dbs_.count(msg.db_id_) > 0;
+        bool already = frozen_dbs_.count(msg.db_path_) > 0 || pending_frozen_dbs_.count(msg.db_path_) > 0;
         if (already) {
             // 冲突：db 已被本 task 或其他 task freeze（业务流程错误）→ fail-fast
             ack.success_ = false;
             ack.error_type_ = TaskErrorType::DB_ALREADY_FROZEN;
-            WARN("Freeze rejected (already frozen/pending): db_id={}, task_id={}",
-                 msg.db_id_, msg.task_id_);
+            WARN("Freeze rejected (already frozen/pending): db_path={}, task_id={}",
+                 msg.db_path_, msg.task_id_);
         } else if (streaming_mode) {
             // stream 模式：即时确认（保持原语义）
-            frozen_dbs_.insert(msg.db_id_);
+            frozen_dbs_.insert(msg.db_path_);
             ack.success_ = true;
             accepted = true;
-            INFO("DatabaseFreezeRequest (stream): db_id={}", msg.db_id_);
+            INFO("DatabaseFreezeRequest (stream): db_path={}", msg.db_path_);
         } else {
             // 非 stream 模式：登记 pending（记 task_id），不广播、不本地 freeze
-            pending_frozen_dbs_[msg.db_id_] = msg.task_id_;
+            pending_frozen_dbs_[msg.db_path_] = msg.task_id_;
             ack.success_ = true;
             accepted = true;
-            INFO("DatabaseFreezeRequest (non-stream pending): db_id={}, task_id={}",
-                 msg.db_id_, msg.task_id_);
+            INFO("DatabaseFreezeRequest (non-stream pending): db_path={}, task_id={}",
+                 msg.db_path_, msg.task_id_);
         }
     }
 
@@ -1910,7 +1910,7 @@ void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFre
 
     if (accepted && streaming_mode) {
         // stream 模式的本地 freeze + 广播
-        auto it = db_instances_.find(msg.db_id_);
+        auto it = db_instances_.find(msg.db_path_);
         if (it != db_instances_.end()) {
             it->second->freeze();
         }
@@ -1919,25 +1919,25 @@ void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFre
         for (const auto& [wid, cid] : worker_to_conn_) {
             reactor_->send(cid, broadcast_msg);
         }
-        INFO("DB frozen and broadcasted (stream): db_id={}", msg.db_id_);
+        INFO("DB frozen and broadcasted (stream): db_path={}", msg.db_path_);
     }
 }
 
-void MasterAgent::on_master_freeze(const CMString& db_id) {
+void MasterAgent::on_master_freeze(const CMString& db_path) {
     if (!running_.load()) return;
 
     {
         std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
-        if (frozen_dbs_.count(db_id)) {
-            WARN("DB already frozen, ignoring duplicate freeze: db_id={}", db_id);
+        if (frozen_dbs_.count(db_path)) {
+            WARN("DB already frozen, ignoring duplicate freeze: db_path={}", db_path);
             return;
         }
 
-        frozen_dbs_.insert(db_id);
+        frozen_dbs_.insert(db_path);
     }
 
     DatabaseFreezeNotification msg;
-    msg.db_id_ = db_id;
+    msg.db_path_ = db_path;
     {
         std::lock_guard<std::mutex> lk(workers_mutex_);
         for (const auto& [wid, cid] : worker_to_conn_) {
@@ -1946,7 +1946,7 @@ void MasterAgent::on_master_freeze(const CMString& db_id) {
     }
 
     // 流程 message：master 直接 freeze 完成（不可逆里程碑）。
-    MSG("STOR::0001", 2, "db {} frozen (master direct)", db_id);
+    MSG("STOR::0001", 2, "db {} frozen (master direct)", db_path);
 }
 
 std::atomic<bool> MasterAgent::sigterm_received_{false};
@@ -2049,7 +2049,7 @@ void MasterAgent::on_backup_request(uint64_t conn_id, const BackupRequestMessage
     worker_manager_->assign_task(backup_worker_id, backup_task_id);
 
     CMString short_name = msg.object_name_;
-    CMString prefix = msg.db_id_ + ":";
+    CMString prefix = msg.db_path_ + ":";
     if (short_name.substr(0, prefix.size()) == prefix) {
         short_name = short_name.substr(prefix.size());
     }
@@ -2058,7 +2058,7 @@ void MasterAgent::on_backup_request(uint64_t conn_id, const BackupRequestMessage
     assign.task_id_ = backup_task_id;
     assign.task_name_ = "__backup_object";
     assign.task_module_ = "__fly_internal";
-    assign.args_ = {short_name, msg.db_id_};
+    assign.args_ = {short_name, msg.db_path_};
 
     {
         std::lock_guard<std::mutex> lk(provenance_mutex_);
@@ -2099,13 +2099,13 @@ uint64_t MasterAgent::select_backup_worker(uint64_t source_worker_id) {
     return fallback_worker;
 }
 
-void MasterAgent::trigger_auto_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_id) {
+void MasterAgent::trigger_auto_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_path) {
     INFO("Auto-backup triggered: object={}, source_worker={}", object_name, source_worker_id);
 
     BackupRequestMessage backup_msg;
     backup_msg.worker_id_ = source_worker_id;
     backup_msg.object_name_ = object_name;
-    backup_msg.db_id_ = db_id;
+    backup_msg.db_path_ = db_path;
 
     on_backup_request(0, backup_msg);
 }
@@ -2115,7 +2115,7 @@ void MasterAgent::trigger_auto_backup(const CMString& object_name, uint64_t sour
 // =============================================================================
 
 uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
-                                       const CMString& short_name, const CMString& db_id,
+                                       const CMString& short_name, const CMString& db_path,
                                        const CMString& base_path, const CMString& target_data_path,
                                        const CMString& source_host) {
     uint64_t merge_task_id = remote_task_counter_.fetch_add(1);
@@ -2126,7 +2126,7 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
         merge_task_states_[merge_task_id] = MergeTaskState{};
     }
 
-    CMString full_name = db_id + ":" + short_name;
+    CMString full_name = db_path + ":" + short_name;
     // 把源对象位置注入 task dependency_locations_，让 target worker 的 read_raw_compressed
     // 直接 TIER2 命中（无需 TIER3 回查 master）。源位置从 remote_idx 取。
     {
@@ -2145,8 +2145,8 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
     assign.task_id_ = merge_task_id;
     assign.task_name_ = "__merge_object";
     assign.task_module_ = "__fly_internal";
-    // args: [short_name, db_id, base_path, target_data_path, source_host]
-    assign.args_ = {short_name, db_id, base_path, target_data_path, source_host};
+    // args: [short_name, db_path, base_path, target_data_path, source_host]
+    assign.args_ = {short_name, db_path, base_path, target_data_path, source_host};
     // write_context_hash 从 provenance 取（保持对象来源可追溯）。
     {
         std::lock_guard<std::mutex> lk(provenance_mutex_);
@@ -2243,24 +2243,24 @@ bool MasterAgent::wait_merge_tasks_complete(const CMVector<uint64_t>& task_ids,
 }
 
 void MasterAgent::send_delete_data(uint64_t source_worker_id,
-                                    const CMString& db_id, const CMString& base_path,
+                                    const CMString& db_path, const CMString& base_path,
                                     const CMString& data_path,
                                     const CMVector<CMString>& writer_ids) {
-    CMString ack_key = db_id + ":" + std::to_string(source_worker_id);
+    CMString ack_key = db_path + ":" + std::to_string(source_worker_id);
     {
         std::lock_guard<std::mutex> lk(delete_ack_mutex_);
         pending_delete_acks_[ack_key] = PendingDeleteData{};
     }
 
     DeleteDataMessage msg;
-    msg.db_id_ = db_id;
+    msg.db_path_ = db_path;
     msg.base_path_ = base_path;
     // data_path：显式传入优先；否则从 master db_instances_ 查（删源在 cleanup 前执行，
     // 此时 Database 仍是源的 data_path）。
     if (!data_path.empty()) {
         msg.data_path_ = data_path;
     } else {
-        auto it = db_instances_.find(db_id);
+        auto it = db_instances_.find(db_path);
         if (it != db_instances_.end()) {
             msg.data_path_ = it->second->get_data_path();
         }
@@ -2282,19 +2282,19 @@ void MasterAgent::send_delete_data(uint64_t source_worker_id,
         }
         reactor_->send(it->second, msg);
     }
-    INFO("DeleteData sent: worker_id={}, db_id={}, data_path={}, writer_ids_count={}",
-         source_worker_id, db_id, data_path, writer_ids.size());
+    INFO("DeleteData sent: worker_id={}, db_path={}, data_path={}, writer_ids_count={}",
+         source_worker_id, db_path, data_path, writer_ids.size());
 }
 
 bool MasterAgent::wait_delete_data_acks(const CMVector<uint64_t>& source_worker_ids,
-                                          const CMString& db_id,
+                                          const CMString& db_path,
                                           int64_t timeout_seconds,
                                           CMVector<uint64_t>* failed_workers) {
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
     bool all_ok = true;
 
     for (uint64_t src_wid : source_worker_ids) {
-        CMString ack_key = db_id + ":" + std::to_string(src_wid);
+        CMString ack_key = db_path + ":" + std::to_string(src_wid);
         std::unique_lock<std::mutex> lk(delete_ack_mutex_);
         if (!delete_ack_cv_.wait_until(lk, deadline, [this, &ack_key] {
             auto it = pending_delete_acks_.find(ack_key);
@@ -2303,7 +2303,7 @@ bool MasterAgent::wait_delete_data_acks(const CMVector<uint64_t>& source_worker_
             // 超时：本 worker 的 ack 未返回。
             all_ok = false;
             if (failed_workers) failed_workers->push_back(src_wid);
-            WARN("wait_delete_data_acks: timeout for worker_id={}, db_id={}", src_wid, db_id);
+            WARN("wait_delete_data_acks: timeout for worker_id={}, db_path={}", src_wid, db_path);
             continue;
         }
         auto it = pending_delete_acks_.find(ack_key);
@@ -2319,7 +2319,7 @@ bool MasterAgent::wait_delete_data_acks(const CMVector<uint64_t>& source_worker_
     {
         std::lock_guard<std::mutex> lk(delete_ack_mutex_);
         for (uint64_t src_wid : source_worker_ids) {
-            CMString ack_key = db_id + ":" + std::to_string(src_wid);
+            CMString ack_key = db_path + ":" + std::to_string(src_wid);
             pending_delete_acks_.erase(ack_key);
         }
     }
@@ -2328,8 +2328,8 @@ bool MasterAgent::wait_delete_data_acks(const CMVector<uint64_t>& source_worker_
 }
 
 void MasterAgent::on_delete_data_ack(uint64_t conn_id, const DeleteDataAckMessage& msg) {
-    // worker_id_ 在 ack 里带回；用它和 db_id 组成 key 找到 pending 项。
-    CMString ack_key = msg.db_id_ + ":" + std::to_string(msg.worker_id_);
+    // worker_id_ 在 ack 里带回；用它和 db_path 组成 key 找到 pending 项。
+    CMString ack_key = msg.db_path_ + ":" + std::to_string(msg.worker_id_);
     std::lock_guard<std::mutex> lk(delete_ack_mutex_);
     auto it = pending_delete_acks_.find(ack_key);
     if (it == pending_delete_acks_.end()) {
@@ -2341,11 +2341,11 @@ void MasterAgent::on_delete_data_ack(uint64_t conn_id, const DeleteDataAckMessag
     it->second.deleted_count_ = msg.deleted_count_;
     it->second.error_message_ = msg.error_message_;
     delete_ack_cv_.notify_all();
-    INFO("DeleteDataAck: worker_id={}, db_id={}, success={}, deleted={}",
-         msg.worker_id_, msg.db_id_, msg.success_, msg.deleted_count_);
+    INFO("DeleteDataAck: worker_id={}, db_path={}, success={}, deleted={}",
+         msg.worker_id_, msg.db_path_, msg.success_, msg.deleted_count_);
 }
 
-void MasterAgent::cleanup_after_merge(const CMString& db_id,
+void MasterAgent::cleanup_after_merge(const CMString& db_path,
                                        const CMVector<CMString>& merged_object_full_names,
                                        const CMVector<uint64_t>& source_worker_ids,
                                        const CMVector<uint64_t>& merge_target_worker_ids,
@@ -2364,14 +2364,14 @@ void MasterAgent::cleanup_after_merge(const CMString& db_id,
     }
     {
         std::lock_guard<std::mutex> mlk(merge_cleanup_mutex_);
-        pending_merge_cleanups_[db_id] = PendingMergeCleanup{expected_acks, 0};
+        pending_merge_cleanups_[db_path] = PendingMergeCleanup{expected_acks, 0};
     }
 
     // 2. 广播 MergeCleanupMessage 给所有 worker：清旧 local_idx/remote_idx，
     //    按新路径 register_database + load 新 idx 重建 local_idx（同 host/共享 FS 可本地直读）。
     //    exempt = merge target workers（已持有效 local_idx，跳过清理但回 ack）。
     MergeCleanupMessage cleanup_msg;
-    cleanup_msg.db_id_ = db_id;
+    cleanup_msg.db_path_ = db_path;
     cleanup_msg.base_path_ = merge_base_path;
     cleanup_msg.data_path_ = merge_data_path;
     cleanup_msg.exempt_worker_ids_ = merge_target_worker_ids;
@@ -2381,33 +2381,33 @@ void MasterAgent::cleanup_after_merge(const CMString& db_id,
             reactor_->send(cid, cleanup_msg);
         }
     }
-    INFO("cleanup_after_merge: broadcast MergeCleanup for db_id={} to {} workers "
-         "(exempt merge targets: {})", db_id, expected_acks, merge_target_worker_ids.size());
+    INFO("cleanup_after_merge: broadcast MergeCleanup for db_path={} to {} workers "
+         "(exempt merge targets: {})", db_path, expected_acks, merge_target_worker_ids.size());
 
     // 3. 等待所有 worker 回 MergeCleanupAck（全局一致性屏障）。
     //    超时则告警但继续（尽力而为，不阻塞用户太久）。
     {
         std::unique_lock<std::mutex> mlk(merge_cleanup_mutex_);
         bool all_acked = merge_cleanup_cv_.wait_for(mlk, std::chrono::seconds(30),
-            [this, &db_id] {
-                auto it = pending_merge_cleanups_.find(db_id);
+            [this, &db_path] {
+                auto it = pending_merge_cleanups_.find(db_path);
                 return it != pending_merge_cleanups_.end() &&
                        it->second.received_count_ >= it->second.expected_count_;
             });
         if (!all_acked) {
-            auto it = pending_merge_cleanups_.find(db_id);
+            auto it = pending_merge_cleanups_.find(db_path);
             uint64_t got = (it != pending_merge_cleanups_.end()) ? it->second.received_count_ : 0;
             WARN("cleanup_after_merge: timeout waiting for MergeCleanupAck: "
-                 "db_id={}, expected={}, received={}", db_id, expected_acks, got);
+                 "db_path={}, expected={}, received={}", db_path, expected_acks, got);
         }
-        pending_merge_cleanups_.erase(db_id);
+        pending_merge_cleanups_.erase(db_path);
     }
 
     // 4. 所有 worker 已清理完毕 → master 重建自身 remote_idx。
     //    此时各 worker 的 local_idx/remote_idx 已是新状态，master 在此后重建不会被覆盖
     //    （worker 不再碰这个 db 的索引）。从 merge_task_states_ 取精确 (object→worker) 映射。
-    ds->clear_local_index_for_db(db_id);
-    ds->clear_remote_index_for_db(db_id);
+    ds->clear_local_index_for_db(db_path);
+    ds->clear_remote_index_for_db(db_path);
 
     CMUnorderedMap<CMString, CMVector<uint64_t>> obj_to_workers;
     {
@@ -2431,29 +2431,29 @@ void MasterAgent::cleanup_after_merge(const CMString& db_id,
     }
 
     // 5. 路径更新 + 迁移标识（跨 path merge 时写 _MIGRATED_TO）。
-    //    db_id == 源 base_path（db_id 废弃后）。merge_base_path 是产物路径。
+    //    db_path == 源 base_path（db_path 废弃后）。merge_base_path 是产物路径。
     //    - 默认 merge（base_path 不变，只 data_path 变）：无需 _MIGRATED_TO，set_paths 更新 data_path。
     //    - 跨 path merge（base_path 变）：在源 base_path 写 _MIGRATED_TO 指向产物，
     //      更新迁移缓存，让后续用源 path 的访问（如 solver 持有的旧 db 句柄）重定向到产物。
-    if (db_id != merge_base_path) {
+    if (db_path != merge_base_path) {
         // 跨 path merge：写迁移标识 + 更新缓存。
-        fly::DataService::write_migration_marker(db_id, merge_base_path, merge_data_path);
-        ds->set_migrated_path(db_id, merge_base_path);
-        INFO("cleanup_after_merge: cross-path migration {} -> {}", db_id, merge_base_path);
+        fly::DataService::write_migration_marker(db_path, merge_base_path, merge_data_path);
+        ds->set_migrated_path(db_path, merge_base_path);
+        INFO("cleanup_after_merge: cross-path migration {} -> {}", db_path, merge_base_path);
     }
 
-    // 更新 db_instances_[db_id] 的 Database 路径指向 merge 路径。
+    // 更新 db_instances_[db_path] 的 Database 路径指向 merge 路径。
     //    Database 是 master 进程路径唯一权威源；set_paths 同步 re-register 进
-    //    DataService::db_paths_。db_instances_ 保留源 db_id 作 key（转发锚点），
+    //    DataService::db_paths_。db_instances_ 保留源 db_path 作 key（转发锚点），
     //    内部 Database 的 base_path_ 指向 merge 产物。
-    auto db_it = db_instances_.find(db_id);
+    auto db_it = db_instances_.find(db_path);
     if (db_it != db_instances_.end()) {
         db_it->second->set_paths(merge_base_path, merge_data_path);
     } else {
         // merge 产物句柄由 Python 经 ex_stg_create_database_with_id 构造，未进 master
-        // db_instances_。这里用源 db_id 重建并登记，保证 master 路径权威源与新路径一致。
-        auto db = CMMakeShared<Database>(merge_base_path, merge_data_path, 0, "", db_id);
-        db_instances_[db_id] = db;
+        // db_instances_。这里用源 db_path 重建并登记，保证 master 路径权威源与新路径一致。
+        auto db = CMMakeShared<Database>(merge_base_path, merge_data_path, 0, "", db_path);
+        db_instances_[db_path] = db;
     }
 
     // 6. 清理本批 merge task 状态（wait_merge_tasks_complete 推迟到此处 erase）。
@@ -2468,21 +2468,21 @@ void MasterAgent::cleanup_after_merge(const CMString& db_id,
         }
     }
 
-    INFO("cleanup_after_merge: done, db_id={}, rebuilt remote_idx for {} objects (precise worker mapping), "
+    INFO("cleanup_after_merge: done, db_path={}, rebuilt remote_idx for {} objects (precise worker mapping), "
          "local_idx cleared, db_instances_ path updated to base={} data={}",
-         db_id, rebuilt, merge_base_path, merge_data_path);
+         db_path, rebuilt, merge_base_path, merge_data_path);
 }
 
 void MasterAgent::on_merge_cleanup_ack(uint64_t conn_id, const MergeCleanupAckMessage& msg) {
     std::lock_guard<std::mutex> lk(merge_cleanup_mutex_);
-    auto it = pending_merge_cleanups_.find(msg.db_id_);
+    auto it = pending_merge_cleanups_.find(msg.db_path_);
     if (it == pending_merge_cleanups_.end()) {
-        DBG("MergeCleanupAck for unknown db_id={}, ignoring", msg.db_id_);
+        DBG("MergeCleanupAck for unknown db_path={}, ignoring", msg.db_path_);
         return;
     }
     it->second.received_count_++;
-    DBG("MergeCleanupAck: db_id={}, worker_id={}, received={}/{}",
-        msg.db_id_, msg.worker_id_, it->second.received_count_, it->second.expected_count_);
+    DBG("MergeCleanupAck: db_path={}, worker_id={}, received={}/{}",
+        msg.db_path_, msg.worker_id_, it->second.received_count_, it->second.expected_count_);
     if (it->second.received_count_ >= it->second.expected_count_) {
         merge_cleanup_cv_.notify_all();
     }

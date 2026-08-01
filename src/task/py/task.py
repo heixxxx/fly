@@ -255,10 +255,10 @@ def _wait_for_objects(deps, poll_interval, timeout=None):
 def _serialize_args(args):
     result = []
     for arg in args:
-        if hasattr(arg, 'get_db_id') and hasattr(arg, 'get_full_name'):
+        if hasattr(arg, 'get_db_path') and hasattr(arg, 'get_full_name'):
             base_path = arg._db.get_base_path()
             data_path = arg._db.get_data_path()
-            result.append(f"__fly_db__:{arg.get_db_id()}:{base_path}:{data_path}")
+            result.append(f"__fly_db__:{arg.get_db_path()}:{base_path}:{data_path}")
         else:
             result.append(pickle.dumps(arg).hex())
     return result

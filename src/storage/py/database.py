@@ -93,8 +93,8 @@ class _Database:
             except ImportError:
                 from storage.read_cache import get_read_cache
             rc = get_read_cache()
-            db_id = self.get_db_id()
-            key = f"{db_id}:{name}"
+            db_path = self.get_db_path()
+            key = f"{db_path}:{name}"
             obj = rc.get(key, "high")
             if obj is not None:
                 return obj
@@ -127,7 +127,7 @@ class _Database:
                 from storage.py.read_cache import get_read_cache
             except ImportError:
                 from storage.read_cache import get_read_cache
-            get_read_cache().remove(f"{self.get_db_id()}:{name}")
+            get_read_cache().remove(f"{self.get_db_path()}:{name}")
         except Exception:
             # Cache invalidation must never break a successful write/remove.
             pass
@@ -146,8 +146,8 @@ class _Database:
     def get_full_name(self, name: str) -> str:
         return self._db.get_full_name(name)
 
-    def get_db_id(self) -> str:
-        return self._db.get_db_id()
+    def get_db_path(self) -> str:
+        return self._db.get_db_path()
 
     def get_base_path(self) -> str:
         return self._db.get_base_path()
@@ -251,4 +251,4 @@ class _Database:
         self._db._remove_var(name)
 
     def __repr__(self):
-        return f"Database(db_id={self.get_db_id()})"
+        return f"Database(db_path={self.get_db_path()})"
