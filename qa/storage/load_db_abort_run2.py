@@ -22,7 +22,7 @@ with open(os.path.join(DB_PATH, "_test_db_path")) as f:
 master = get_agent()
 
 # load_db 恢复之前的数据库（含正常数据 + 已 abort 的段）
-# load_db 返回已 set_db_path 的 Database 对象，直接使用，不要 open_db（会创建新 db）
+# load_db 返回 Database 对象，直接使用，不要 open_db（会创建新 db）
 db = master.load_db(DB_PATH)
 INFO(f"[RUN2] load_db result: {db}")
 
