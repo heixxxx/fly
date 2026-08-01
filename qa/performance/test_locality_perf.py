@@ -37,9 +37,10 @@ READ_TIMES = 10            # consume 内重复读次数，放大反序列化成�
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 
 
-def cleanup():
-    if os.path.isdir(DB_PATH):
-        shutil.rmtree(DB_PATH, ignore_errors=True)
+def cleanup(db_path=None):
+    target = db_path or DB_PATH
+    if os.path.isdir(target):
+        shutil.rmtree(target, ignore_errors=True)
 
 
 def wait_completed(master, expected, timeout=180):
@@ -78,7 +79,10 @@ def consume_payload(db, payload_idx, consume_id):
 
 def run_round(locality_on, round_idx):
     """跑一轮，返回 (wall_clock, local_hits, total_consumes)。"""
-    cleanup()
+    # 每轮用独立 db_path，避免跨轮 DataService local_idx/remote_idx 残留导致
+    # db.read_object 读到旧值（holders 错位 → local_hits 误判）。
+    round_db_path = f"{DB_PATH}_r{round_idx}_{'on' if locality_on else 'off'}"
+    cleanup(round_db_path)
     get_config().set_int("locality_scheduling_enabled", 1 if locality_on else 0)
 
     from fly.runtime import get_agent
@@ -91,7 +95,7 @@ def run_round(locality_on, round_idx):
         time.sleep(0.5)
     assert master.worker_count >= N_WORKERS, f"workers {master.worker_count}/{N_WORKERS}"
 
-    db = open_db(DB_PATH)
+    db = open_db(round_db_path)
 
     # Phase 1: seed —— payload_i 落 worker i（requires seed_i），预热 high cache
     for i in range(N_WORKERS):

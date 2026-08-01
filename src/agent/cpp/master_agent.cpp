@@ -522,7 +522,8 @@ void MasterAgent::schedule_tasks() {
             CMUnorderedMap<uint64_t, int64_t> acc;  // worker_id → 持有输入累计字节数
             for (const auto& obj : deps) {
                 int64_t sz = ds->get_remote_size(obj);
-                for (uint64_t h : ds->get_remote_workers(obj)) {
+                auto holders = ds->get_remote_workers(obj);
+                for (uint64_t h : holders) {
                     acc[h] += sz;
                 }
             }
