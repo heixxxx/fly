@@ -77,7 +77,7 @@ def test_index_entry_attributes():
 def test_db_meta_creation():
     from _fly_storage import EXStgDbMeta
     meta = EXStgDbMeta()
-    assert meta.db_path == ""
+    assert meta.created_at == 0  # default DbMeta
     assert meta.created_at == 0
 
 

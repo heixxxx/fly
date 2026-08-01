@@ -109,23 +109,21 @@ TEST(WorkerInfoTest, SerializeDeserialize) {
 TEST(DbMetaTest, DefaultValues) {
     DbMeta meta;
     EXPECT_EQ(meta.created_at_, 0);
-    EXPECT_TRUE(meta.db_path_.empty());
     EXPECT_TRUE(meta.workers_.empty());
 }
 
 TEST(DbMetaTest, AggregateInit) {
-    DbMeta meta{"/data/db1", 1715500000, {}};
-    
-    EXPECT_EQ(meta.db_path_, "/data/db1");
+    DbMeta meta{1715500000, {}};
+
     EXPECT_EQ(meta.created_at_, 1715500000);
 }
 
 TEST(DbMetaTest, AddWorkerInfo) {
-    DbMeta meta{"/data/db", 1715500000, {}};
-    
+    DbMeta meta{1715500000, {}};
+
     WorkerInfo worker{1, "w0000001", "localhost", "127.0.0.1", "cmd"};
     meta.workers_.push_back(worker);
-    
+
     EXPECT_EQ(meta.workers_.size(), 1);
     EXPECT_EQ(meta.workers_[0].worker_id_, 1);
     EXPECT_EQ(meta.workers_[0].writer_id_, "w0000001");
@@ -133,19 +131,18 @@ TEST(DbMetaTest, AddWorkerInfo) {
 }
 
 TEST(DbMetaTest, SerializeDeserialize) {
-    DbMeta meta{"/db/test", 1715500000, {
+    DbMeta meta{1715500000, {
         {1, "w0000001", "host1", "10.0.0.1", "cmd1"},
         {2, "w0000002", "host2", "10.0.0.2", "cmd2"}
     }};
-    
+
     CMString bytes;
     FLY_ENCODE(meta, bytes);
     EXPECT_GT(bytes.size(), 0);
-    
+
     DbMeta decoded;
     FLY_DECODE(bytes, DbMeta, decoded);
-    
-    EXPECT_EQ(decoded.db_path_, "/db/test");
+
     EXPECT_EQ(decoded.created_at_, 1715500000);
     EXPECT_EQ(decoded.workers_.size(), 2);
     EXPECT_EQ(decoded.workers_[0].worker_id_, 1);
@@ -156,21 +153,19 @@ TEST(DbMetaTest, SerializeDeserialize) {
 
 TEST(DbMetaHeaderTest, DefaultValues) {
     DbMetaHeader header;
-    EXPECT_TRUE(header.db_path_.empty());
     EXPECT_EQ(header.created_at_, 0);
 }
 
 TEST(DbMetaHeaderTest, SerializeDeserialize) {
-    DbMetaHeader header{"abc123", 1715500000};
-    
+    DbMetaHeader header{1715500000};
+
     CMString bytes;
     FLY_ENCODE(header, bytes);
     EXPECT_GT(bytes.size(), 0);
-    
+
     DbMetaHeader decoded;
     FLY_DECODE(bytes, DbMetaHeader, decoded);
-    
-    EXPECT_EQ(decoded.db_path_, "abc123");
+
     EXPECT_EQ(decoded.created_at_, 1715500000);
 }
 

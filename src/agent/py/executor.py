@@ -35,28 +35,29 @@ except ImportError:
 from _fly_agent import EXTaskExecResult, EXTaskExecStatus
 from _fly_log import INFO, ERR
 
-# db_path is a fixed-length (10 char) prefix of a full name "db_path:short_name".
-# Used to split an inlined var's full name into the short name for local cache
-# injection. Kept in sync with fly::db_id_len() (data_service.h).
-_DB_ID_LEN = 10
+# db_path（base_path）是 full_name "db_path:short_name" 的前缀（变长，含 '/'）。
+# split 用 rfind(':') —— short_name 是逻辑对象名不含 ':'，最后一个 ':' 必是分隔符。
+# 与 C++ data_service.h 的 split_full_name 保持一致。
 
 
 def _split_full_name(full_name):
-    """Split 'db_path:short_name' -> (db_path, short_name). db_path is fixed 10 chars."""
-    if len(full_name) < _DB_ID_LEN + 2 or full_name[_DB_ID_LEN] != ':':
+    """Split 'db_path:short_name' -> (db_path, short_name). Uses rfind(':')."""
+    pos = full_name.rfind(':')
+    if pos < 0:
         return None, None
-    return full_name[:_DB_ID_LEN], full_name[_DB_ID_LEN + 1:]
+    return full_name[:pos], full_name[pos + 1:]
 
 
 def _deserialize_args(args: list, worker) -> list:
     result = []
     for arg in args:
         if isinstance(arg, str) and arg.startswith("__fly_db__:"):
-            parts = arg.split(":", 3)
-            db_path = parts[1]
+            # 格式：__fly_db__:{base_path}:{data_path}（db_path == base_path，不再单独传）
+            parts = arg.split(":", 2)
+            base_path = parts[1] if len(parts) > 1 else ""
+            data_path = parts[2] if len(parts) > 2 else ""
+            db_path = base_path  # db_path == base_path（db_id 废弃后）
             if db_path not in worker._db_cache:
-                base_path = parts[2] if len(parts) > 2 else ""
-                data_path = parts[3] if len(parts) > 3 else ""
                 from _fly_storage import ex_stg_get_data_service
                 ds = ex_stg_get_data_service()
                 if ds.has_database(db_path):

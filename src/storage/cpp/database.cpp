@@ -22,10 +22,10 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
     : base_path_(base_path)
     , data_path_(data_path)
     , writer_id_(generate_writer_id())
-    , db_path_(base_path)  // db_id 废弃：现在是 base_path 的别名（稳定锚点）
+    , db_path_(base_path)  // db_path_ == base_path（稳定锚点，跨 db 依赖的逻辑 key）
     , host_(host) {
     (void)worker_id;  // worker_id kept for API compat; writer_id_ is used for file naming
-    (void)existing_db_path;  // 废弃参数（db_id 不再外部指定）
+    (void)existing_db_path;  // 废弃参数（db_path 不再外部指定，值被忽略）
 
     // 校验 base_path 不含 ':' —— full_name = "db_path:short" 用 ':' 分隔，
     // base_path 含 ':' 会导致 split 歧义。源头拒绝，双保险。
@@ -189,7 +189,7 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
     // abort_segment 回滚。WBQ 单线程串行，segment_active 判断与设置无竞态。
     bool in_task_context = fly::WorkerAgentContext::is_transaction_mode();
     // LocalIndex 是 per-(db,writer) 的，idx 文件天然属于本 db，entry 只需存 short_name
-    // （db_id 前缀在同文件内 100% 冗余）。write_record/get_all_entries 传 short_name；
+    // （前缀在同文件内 100% 冗余）。write_record/get_all_entries 传 short_name；
     // DataService 层（on_write_completed/on_object_flushed）仍用 full_name 作 key。
     auto execute = [w, short_name = object_name, original_size, chunk_count, record, write_hash, in_task_context]() {
         if (in_task_context && !w->segment_active()) {
@@ -548,14 +548,13 @@ DbMeta Database::load_meta_from_path(const CMString& base_path) {
     }
 
     DbMeta meta;
-    meta.db_path_ = header.db_path_;
     meta.created_at_ = header.created_at_;
     meta.workers_ = std::move(workers);
     return meta;
 }
 
 CMString Database::get_db_path() const {
-    return db_path_;  // db_id 废弃：== base_path_（别名），保留接口供过渡期调用方
+    return db_path_;  // == base_path_（别名），保留接口供调用方
 }
 
 CMString Database::get_base_path() const {
@@ -570,7 +569,7 @@ void Database::set_paths(const CMString& base_path, const CMString& data_path) {
     // Merge 产物落到新路径：更新 base_path_/data_path_ + re-register 进 DataService。
     //
     // db_path_ 保持不变（源 base_path）——它是跨 db 依赖的逻辑锚点（DependencyGraph 用
-    // full_name = "db_id:short" 作 key）。merge 改物理路径但 db_path_ 不变，保证 solver 的
+    // full_name = "db_path:short" 作 key）。merge 改物理路径但 db_path_ 不变，保证 solver 的
     // build_matrix→merge→solve 链不断（matrix_db 句柄的 get_full_name 仍产生源 path 前缀）。
     //
     // 跨 path merge 时，cleanup_after_merge 在源 base_path 写 _MIGRATED_TO，访问源 path
@@ -625,7 +624,7 @@ void Database::write_db_meta_header() {
     int64_t created_at = std::chrono::duration_cast<std::chrono::seconds>(
         now.time_since_epoch()).count();
 
-    DbMetaHeader header{db_path_, created_at};
+    DbMetaHeader header{created_at};
     CMString encoded;
     FLY_ENCODE(header, encoded);
 

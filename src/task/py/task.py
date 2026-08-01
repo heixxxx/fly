@@ -258,7 +258,8 @@ def _serialize_args(args):
         if hasattr(arg, 'get_db_path') and hasattr(arg, 'get_full_name'):
             base_path = arg._db.get_base_path()
             data_path = arg._db.get_data_path()
-            result.append(f"__fly_db__:{arg.get_db_path()}:{base_path}:{data_path}")
+            # db_path == base_path（db_id 废弃后），不再单独序列化 db_path
+            result.append(f"__fly_db__:{base_path}:{data_path}")
         else:
             result.append(pickle.dumps(arg).hex())
     return result

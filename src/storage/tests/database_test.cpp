@@ -102,7 +102,7 @@ TEST_F(DatabaseTest, LoadMetaFromFrozenDatabase) {
     db.freeze();
 
     DbMeta meta = db.load_meta();
-    EXPECT_EQ(meta.db_path_, db.get_db_path());
+    EXPECT_GT(meta.created_at_, 0);  // _DB_META valid (db_path field removed)
     EXPECT_GT(meta.created_at_, 0);
 }
 
@@ -388,7 +388,7 @@ TEST_F(DatabaseTest, DbMetaHeaderWrittenOnConstruction) {
 
     // Load meta and verify header fields
     DbMeta meta = db.load_meta();
-    EXPECT_EQ(meta.db_path_, db.get_db_path());
+    EXPECT_GT(meta.created_at_, 0);  // _DB_META valid (db_path field removed)
 }
 
 TEST_F(DatabaseTest, AppendWorkerInfoToMeta) {
@@ -462,7 +462,7 @@ TEST_F(DatabaseTest, LoadMetaReadsIncrementalFormat) {
     db.append_worker_info_to_meta(w3);
 
     DbMeta meta = db.load_meta();
-    EXPECT_EQ(meta.db_path_, db.get_db_path());
+    EXPECT_GT(meta.created_at_, 0);  // _DB_META valid (db_path field removed)
     EXPECT_GT(meta.created_at_, 0);
     ASSERT_EQ(meta.workers_.size(), 3u);
     EXPECT_EQ(meta.workers_[0].worker_id_, 1u);
@@ -476,7 +476,7 @@ TEST_F(DatabaseTest, LoadMetaNoWorkers) {
 
     // No WorkerInfo appended
     DbMeta meta = db.load_meta();
-    EXPECT_EQ(meta.db_path_, db.get_db_path());
+    EXPECT_GT(meta.created_at_, 0);  // _DB_META valid (db_path field removed)
     EXPECT_GT(meta.created_at_, 0);
     EXPECT_TRUE(meta.workers_.empty());
 }
@@ -617,7 +617,7 @@ TEST_F(DatabaseTest, LoadMetaEmptyAfterCorruption) {
     }
 
     DbMeta meta = db.load_meta();
-    EXPECT_TRUE(meta.db_path_.empty());
+    EXPECT_EQ(meta.created_at_, 0);  // corrupt _DB_META
 }
 
 TEST_F(DatabaseTest, RemoveIndexEntry) {
@@ -660,7 +660,7 @@ TEST_F(DatabaseTest, MultipleObjectsSameDbMeta) {
     fly::DataService::instance()->drain_write_back();
 
     DbMeta meta = db.load_meta();
-    EXPECT_EQ(meta.db_path_, db.get_db_path());
+    EXPECT_GT(meta.created_at_, 0);  // _DB_META valid (db_path field removed)
 }
 
 // =============================================================================
@@ -837,7 +837,7 @@ TEST_F(DatabaseVarTest, LoadVarsFromDiskRestoresStore) {
     fly::WorkerAgentContext::clear();
 
     // Re-open: existing db (db_path regenerated from path, but _VARS is read
-    // because the path existed). Use a non-empty existing_db_id to skip the
+    // because the path existed). Use a non-empty existing_db_path to skip the
     // new-db branch so _DB_META isn't rewritten; _VARS loads regardless.
     db_ = CMMakeShared<Database>(test_dir_, "", 0, "", "reused_id");
 

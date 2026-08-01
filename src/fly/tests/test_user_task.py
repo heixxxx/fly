@@ -24,8 +24,8 @@ class MockAgent:
     def __init__(self):
         self.registered_dbs = []
 
-    def register_database(self, db_id, db):
-        self.registered_dbs.append(db_id)
+    def register_database(self, db_path, db):
+        self.registered_dbs.append(db_path)
 
 
 def _make_func_in_main_module(func, name=None):

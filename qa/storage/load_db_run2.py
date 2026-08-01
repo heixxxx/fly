@@ -82,9 +82,8 @@ assert db.is_frozen(), "DB should be frozen"
 # Verify _FROZEN marker
 assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "_FROZEN should exist"
 
-# Verify load_meta
+# Verify load_meta（db_path 字段已删，只验证 created_at）
 meta = db.load_meta()
-assert meta.db_path == original_db_path
 assert meta.created_at > 0
 
 INFO(f"[RUN2] All data verified, DB frozen successfully")

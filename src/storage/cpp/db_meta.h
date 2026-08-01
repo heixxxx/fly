@@ -15,18 +15,16 @@ struct WorkerInfo {
 };
 
 struct DbMetaHeader {
-    CMString db_path_;
     int64_t created_at_ = 0;
 
-    FLY_SERIALIZE(db_path_, created_at_)
+    FLY_SERIALIZE(created_at_)
 };
 
 struct DbMeta {
-    CMString db_path_;
     int64_t created_at_ = 0;
     CMVector<WorkerInfo> workers_;
 
-    FLY_SERIALIZE(db_path_, created_at_, workers_)
+    FLY_SERIALIZE(created_at_, workers_)
 };
 
 // db 迁移标识文件 _MIGRATED_TO 的内容。

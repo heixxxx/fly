@@ -79,7 +79,7 @@ TEST(WriteContextHashTest, HashIsHexString) {
 
 TEST(IndexEntryV2Test, SerializeDeserializeWithWriteContextHash) {
     IndexEntry entry;
-    entry.object_name_ = "db_id:test_obj";
+    entry.object_name_ = "db_path:test_obj";
     entry.file_name_ = "data_abc_001.dat";
     entry.offset_ = 1024;
     entry.size_ = 512;

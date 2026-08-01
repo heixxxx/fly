@@ -23,7 +23,7 @@
 
 class Database {
 public:
-    // existing_db_path 参数已废弃（db_id 机制移除：db_path_ 现在是 base_path 的别名），
+    // existing_db_path 参数已废弃（db_path_ 现在是 base_path 的别名），
     // 保留签名仅为过渡期调用方兼容，值被忽略。
     Database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0, const CMString& host = "", const CMString& existing_db_path = "");
     ~Database();
@@ -80,7 +80,7 @@ public:
 
     // task 异常撤销：清空 WBQ 未落盘的脏写 + idx 打 ABORT + data 文件 truncate 回滚 +
     // 清运行时内存（DataService.local_idx_ / ObjectCache）中本 task 的脏对象。
-    // dirty_full_names 是本 task 已写出的对象全名列表（db_id:short_name）。
+    // dirty_full_names 是本 task 已写出的对象全名列表（db_path:short_name）。
     void abort_task_writes(const CMVector<CMString>& dirty_full_names);
 
     void mark_temp(const CMString& object_name);

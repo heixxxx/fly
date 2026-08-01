@@ -84,7 +84,7 @@ assert db.is_frozen(), "DB should be frozen"
 assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "_FROZEN should exist"
 
 meta = db.load_meta()
-INFO(f"[RUN2_MOVED] meta: db_path={meta.db_path}, created_at={meta.created_at}")
+INFO(f"[RUN2_MOVED] meta: created_at={meta.created_at}")
 # db_path 废弃：搬目录后 _DB_META 里的 db_path（旧 path）与当前 db.get_db_path()（新 path）
 # 不同是预期的。只验证 _DB_META 有效（created_at > 0）。
 assert meta.created_at > 0, f"meta.created_at={meta.created_at}"

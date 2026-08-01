@@ -87,7 +87,7 @@ def test_db_meta_incremental_format():
 
         meta = db.load_meta()
         assert meta is not None
-        assert meta.db_path == db.get_db_path()
+        # db_path 字段已删（db_id 废弃），只验证 created_at + workers
         assert meta.created_at > 0
         assert len(meta.workers) == 0
 

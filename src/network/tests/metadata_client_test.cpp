@@ -92,14 +92,14 @@ TEST(MetadataClientTest, DataQueryMessageEncodeDecode) {
     DataQueryMessage req;
     req.header_.type_ = MessageType::DATA_QUERY;
     req.header_.message_id_ = 55;
-    req.object_name_ = "db_id:some/key";
+    req.object_name_ = "db_path:some/key";
 
     CMString encoded = MessageProtocol::encode(req);
     CMString buffer = encoded;
 
     DataQueryMessage decoded;
     EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
-    EXPECT_EQ(decoded.object_name_, "db_id:some/key");
+    EXPECT_EQ(decoded.object_name_, "db_path:some/key");
 }
 
 }  // namespace fly
