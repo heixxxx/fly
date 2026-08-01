@@ -304,12 +304,18 @@ class Master(FlyAgent):
         # 静态读 _DB_META（不构造 Database，避免与 register_database 建的权威 Database
         # 共享 DataService::db_paths_ 导致析构竞争 erase）。
         meta = _Database.load_meta_from_path(path)
-        if not meta or not meta.db_id:
+        # db_id 废弃：_DB_META 的 db_id 字段可能过期（搬目录），不再用它作 db_id。
+        # 用 created_at > 0 判断 _DB_META 是否有效（corrupt/空文件时 created_at == 0）。
+        if not meta or meta.created_at <= 0:
             raise RuntimeError(f"No valid _DB_META found at {path}")
+
+        # db_id 废弃：db_id == base_path（即 path）。不用 meta.db_id（旧 _DB_META 存的可能是
+        # 搬目录前的旧 path）。用当前 path 作 db_id，确保与 Database 构造一致。
+        db_id = path
 
         # Phase 1: Master self-recovery — register db paths, no idx loading.
         # register_database 内部构造权威 Database 插入 db_instances_（路径唯一权威源）。
-        self._agent.register_database(meta.db_id, path, "")
+        self._agent.register_database(db_id, path, "")
 
         # Phase 2: Assign workers by hostname
         # Group WorkerInfo by hostname -> writer_ids
@@ -350,7 +356,7 @@ class Master(FlyAgent):
                 continue
             # Use first available worker on this hostname
             worker_id = workers[0]
-            self._agent.send_idx_load_to_worker(meta.db_id, path, writer_ids, worker_id)
+            self._agent.send_idx_load_to_worker(db_id, path, writer_ids, worker_id)
             INFO(f"load_db: sent {len(writer_ids)} writer_ids to worker {worker_id} on host {hostname}")
 
         # Phase 4: Wait for all acks (on_idx_load_ack handles remote_idx rebuild)
@@ -364,7 +370,7 @@ class Master(FlyAgent):
         # 返回权威 Database 句柄：直接复用 db_instances_ 里的对象（register_database 已建），
         # 不再单独构造临时 Database（避免析构 unregister DataService::db_paths_ 的竞争）。
         db = _Database.__new__(_Database)
-        db._db = self._agent.get_database(meta.db_id)
+        db._db = self._agent.get_database(db_id)
         return db
 
     def merge_db(self, path: str, data_path: str = "", base_path: str = "",
@@ -425,9 +431,10 @@ class Master(FlyAgent):
 
         # 静态读 _DB_META（不构造 Database，避免在已 open_db 的进程内重复 register base_path）。
         meta = _Database.load_meta_from_path(path)
-        if not meta or not meta.db_id:
+        if not meta:
             raise RuntimeError(f"merge_db: invalid _DB_META at {path}")
-        db_id = meta.db_id
+        # db_id 废弃：db_id == base_path（即源 path）。不用 meta.db_id（可能过期）。
+        db_id = path
 
         merge_base_path = base_path if base_path else path
         merge_data_path = data_path if data_path else (path + ".merged_data")

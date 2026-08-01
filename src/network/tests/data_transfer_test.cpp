@@ -41,7 +41,7 @@ TEST_F(DataTransferTest, DataServiceStartDataServer) {
 }
 
 TEST_F(DataTransferTest, DataServerReturnsObjectNotFoundForUnknownObject) {
-    std::string db_id(fly::db_id_len(), 'b');
+    std::string db_id = "/testb";
     ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     ds_->start_data_server("127.0.0.1", 0, 2);
@@ -57,7 +57,7 @@ TEST_F(DataTransferTest, DataServerReturnsObjectNotFoundForUnknownObject) {
 }
 
 TEST_F(DataTransferTest, DataServerReturnsDataForCompletedWrite) {
-    std::string db_id(fly::db_id_len(), 'c');
+    std::string db_id = "/testc";
     ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     std::string full = db_id + ":myobj";
@@ -101,7 +101,7 @@ TEST_F(DataTransferTest, DataServerReturnsDataForCompletedWrite) {
 // After the read-path hardening change, the pool does NOT internally retry
 // DATA_NOT_READY — it returns immediately so the TIER2 layer owns retry policy.
 TEST_F(DataTransferTest, DataClientPoolReturnsDataNotReadyImmediately) {
-    std::string db_id(fly::db_id_len(), 'd');
+    std::string db_id = "/testd";
     ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     std::string full = db_id + ":myobj";
@@ -126,7 +126,7 @@ TEST_F(DataTransferTest, DataClientPoolReturnsDataNotReadyImmediately) {
 }
 
 TEST_F(DataTransferTest, DataServerHandlesConcurrentRequestsBeyondThreadCount) {
-    std::string db_id(fly::db_id_len(), 'e');
+    std::string db_id = "/teste";
     ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
 
     for (int i = 0; i < 6; ++i) {

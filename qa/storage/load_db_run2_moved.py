@@ -18,11 +18,10 @@ from fly.runtime import get_agent
 get_config().set_int("fail_unscheduleable_tasks", 0)
 
 
-# Read original db_id from marker file
+# db_id 废弃：db_id == base_path。搬目录后 db_id 自然变成新 path。
+# _test_db_id marker 仅用于跨进程确认 _DB_META 存在（不再比对 db_id）。
 marker_path = os.path.join(DB_PATH, "_test_db_id")
 assert os.path.isfile(marker_path), f"Marker file not found: {marker_path}"
-with open(marker_path) as f:
-    original_db_id = f.read().strip()
 
 master = get_agent()
 
@@ -32,8 +31,9 @@ master = get_agent()
 # ── Load DB from MOVED path ──
 db = load_db(DB_PATH)
 
-assert db.get_db_id() == original_db_id, \
-    f"db_id mismatch: {db.get_db_id()} != {original_db_id}"
+# db_id 废弃：db_id 现在是 base_path 别名，搬目录后 == 当前 DB_PATH
+assert db.get_db_id() == DB_PATH, \
+    f"db_id should equal current path: {db.get_db_id()} != {DB_PATH}"
 
 # ── Read master-written data (immediate) ──
 assert db.read_object("moved/master_key") == "master_value", \
@@ -85,7 +85,8 @@ assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "_FROZEN should exist"
 
 meta = db.load_meta()
 INFO(f"[RUN2_MOVED] meta: db_id={meta.db_id}, created_at={meta.created_at}")
-assert meta.db_id == original_db_id, f"meta.db_id={meta.db_id} != {original_db_id}"
+# db_id 废弃：搬目录后 _DB_META 里的 db_id（旧 path）与当前 db.get_db_id()（新 path）
+# 不同是预期的。只验证 _DB_META 有效（created_at > 0）。
 assert meta.created_at > 0, f"meta.created_at={meta.created_at}"
 
 INFO(f"[RUN2_MOVED] All verified, DB frozen at new path {DB_PATH}")

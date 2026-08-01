@@ -17,21 +17,15 @@
 
 namespace fly {
 
-// Canonical db_id length. db_id is base62 (4 path-hash + 6 random chars),
-// followed by ':' then the short object name. Used to split a full object name
-// at a fixed offset (no separator scan). Defined as a function over an internal
-// constant so the length stays an implementation detail of the .cpp.
-inline constexpr size_t db_id_len() { return 10; }
-
-// Split a full name "db_id:short_name" into (db_id, short_name) at the fixed
-// db_id offset. The separator at position db_id_len() must be ':'.
-// Returns {db_id, short_name}; db_id 为空表示输入过短或格式错误（调用方判空即可）。
-// 允许 short_name 为空（"db_id:" 是 "clear all" 哨兵）。
+// db_id 废弃：现在 db_id == db_path（base_path）。full_name = "db_path:short_name"。
+// split 用 rfind(':') —— short_name 是逻辑对象名（如 "matrix"、"result/obj"）不含 ':'，
+// 最后一个 ':' 必是分隔符。db_path 在 Database 构造时校验不含 ':'（双保险）。
 inline std::pair<CMString, CMString> split_full_name(const CMString& full) {
-    if (full.size() < db_id_len() + 1 || full[db_id_len()] != ':') {
+    auto pos = full.rfind(':');
+    if (pos == CMString::npos) {
         return {{}, {}};
     }
-    return {full.substr(0, db_id_len()), full.substr(db_id_len() + 1)};
+    return {full.substr(0, pos), full.substr(pos + 1)};
 }
 
 struct RemoteObjectMeta {

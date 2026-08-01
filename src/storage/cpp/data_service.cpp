@@ -22,11 +22,6 @@
 namespace fly {
 
 namespace {
-// Single source of truth for db_id length; exposed externally via the
-// inline db_id_len() function in the header. Kept here as an implementation
-// detail — split_full() uses it directly for fixed-offset parsing.
-constexpr size_t kDbIdLen = db_id_len();
-
 // Thread-local RNG for backoff jitter. Seeded once per thread; safe under the
 // multi-threaded TIER2 retry loop.
 thread_local std::mt19937 g_backoff_rng{std::random_device{}()};
@@ -603,13 +598,13 @@ CMVector<RemoteObjectInfo> DataService::get_all_workers() const {
 // ============================================================
 
 std::pair<CMString, CMString> DataService::split_full(const CMString& full) {
-    // Fixed-length split: db_id is exactly kDbIdLen base62 chars followed by ':'.
-    // Avoids a separator scan; relies on the invariant that every full object
-    // name produced by Database::full_name() is "<db_id>:<short_name>".
-    if (full.size() > kDbIdLen && full[kDbIdLen] == ':') {
-        return {full.substr(0, kDbIdLen), full.substr(kDbIdLen + 1)};
+    // db_id 废弃：db_id == db_path（base_path，含 '/'）。full_name = "db_path:short"。
+    // 用 rfind(':') 切分 —— short_name 不含 ':'，最后一个 ':' 必是分隔符。
+    auto pos = full.rfind(':');
+    if (pos == CMString::npos) {
+        return {CMString{}, full};
     }
-    return {CMString{}, full};
+    return {full.substr(0, pos), full.substr(pos + 1)};
 }
 
 CMString DataService::get_db_id_for_object(const CMString& object_name) const {

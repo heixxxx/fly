@@ -6,10 +6,9 @@
 
 using namespace fly::test;
 
+// db_id 废弃：db_id 现在是 base_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_id。
 static CMString db32(const CMString& hint) {
-    CMString r = hint;
-    r.resize(fly::db_id_len(), '_');
-    return r;
+    return "/test/" + hint;
 }
 
 namespace fly {
@@ -577,16 +576,17 @@ TEST_F(IdxLoadTest, OnRemoveCommandExtractsShortName) {
 
 TEST(WorkerAgentTest, RegisterAndGetDatabase) {
     WorkerAgent worker(1, "127.0.0.1", 0);
-    CMString db_id = db32("reg_db");
     CMString base_path = make_temp_dir("reg_db");
-    auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", db_id);
+    // db_id 废弃：db_id == base_path（不再外部指定），Database 构造用 base_path 注册
+    auto db = CMMakeShared<Database>(base_path, base_path + "/data", 0, "", base_path);
+    CMString db_id = db->get_db_id();  // == base_path
     worker.register_database(db_id, db);
 
     auto retrieved = worker.get_database(db_id);
     ASSERT_NE(retrieved, nullptr);
     EXPECT_EQ(retrieved->get_db_id(), db_id);
 
-    EXPECT_EQ(worker.get_database(db32("unknown")), nullptr);
+    EXPECT_EQ(worker.get_database("/test/unknown"), nullptr);
 
     std::filesystem::remove_all(base_path);
 }
@@ -894,13 +894,12 @@ TEST(WorkerAgentTest, RequestBackupNotRegisteredNoop) {
 // 跨机拉源对象 → 落到 target_data_path → master wait → send_delete_data 删源。
 // 详见 docs/db-merge-design.md。
 TEST_F(IdxLoadTest, MergeObjectEndToEnd) {
-    CMString db_id = db32("merge_db_1");
-
-    // 源 db：worker1 持有，data 落到 source_data_path（模拟源 host 本地盘）。
+    // db_id 废弃：db_id == base_path。源 db 的 db_id 就是 source_base。
     CMString source_base = test_dir_ + "/source_db";
     CMString source_data = source_base + "/data";
     std::filesystem::create_directories(source_base);
-    auto source_db = CMMakeShared<Database>(source_base, source_data, 0, "127.0.0.1", db_id);
+    auto source_db = CMMakeShared<Database>(source_base, source_data, 0, "127.0.0.1", source_base);
+    CMString db_id = source_db->get_db_id();  // == source_base
 
     MasterAgent master("127.0.0.1", 0);
     master.start();

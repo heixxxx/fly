@@ -15,10 +15,9 @@ static void write_raw(Database& db, const CMString& name, const CMString& data, 
 
 #define TEST_LOG(fmt, ...) fprintf(stderr, "[TEST_DEBUG] %s:%d " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__)
 
+// db_id 废弃：db_id 现在是 base_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_id。
 static CMString db32(const CMString& hint) {
-    CMString r = hint;
-    r.resize(fly::db_id_len(), '_');
-    return r;
+    return "/test/" + hint;
 }
 
 class WriteRegistrationTest : public ::testing::Test {

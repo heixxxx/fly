@@ -51,7 +51,7 @@ protected:
 
 // After the change: pool returns ReadError::DATA_NOT_READY instead of looping.
 TEST_F(DataClientPoolTest, DataNotReadyIsPassthroughNotPolled) {
-    std::string db_id(fly::db_id_len(), 'd');
+    std::string db_id = "/testd";
     std::string full = db_id + ":notready";
     int port = start_server_with_in_progress_write(db_id, full);
 
@@ -88,7 +88,7 @@ TEST_F(DataClientPoolTest, ConnectionFailureMapsToNetworkError) {
 
 // OBJECT_NOT_FOUND is still passed through, typed.
 TEST_F(DataClientPoolTest, ObjectNotFoundIsTyped) {
-    std::string db_id(fly::db_id_len(), 'e');
+    std::string db_id = "/teste";
     ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
     ds_->start_data_server("127.0.0.1", 0, 2);
     int port = ds_->get_data_port();
@@ -105,7 +105,7 @@ TEST_F(DataClientPoolTest, ObjectNotFoundIsTyped) {
 // feeds a passive RTT sample into NetQualityMonitor, so the host becomes ranked.
 TEST_F(DataClientPoolTest, CompletedExchangeFeedsPassiveRtt) {
     NetQualityMonitor::instance().clear();
-    std::string db_id(fly::db_id_len(), 'f');
+    std::string db_id = "/testf";
     ds_->register_database(db_id, test_dir_, test_dir_ + "/data");
     ds_->start_data_server("127.0.0.1", 0, 2);
     int port = ds_->get_data_port();

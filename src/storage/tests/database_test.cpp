@@ -106,12 +106,32 @@ TEST_F(DatabaseTest, LoadMetaFromFrozenDatabase) {
     EXPECT_GT(meta.created_at_, 0);
 }
 
-TEST_F(DatabaseTest, GetDbIdIsHashed) {
+TEST_F(DatabaseTest, GetDbIdEqualsBasePath) {
+    // db_id 废弃：db_id 现在是 base_path 的别名（不再随机生成）。
     CMString base_path = test_dir_ + "/id_check";
     Database db(base_path);
 
-    EXPECT_NE(db.get_db_id(), base_path);
+    EXPECT_EQ(db.get_db_id(), base_path);
     EXPECT_FALSE(db.get_db_id().empty());
+}
+
+TEST_F(DatabaseTest, BasePathWithColonRejected) {
+    // full_name = "db_path:short" 用 ':' 分隔，base_path 含 ':' 会破坏 split。
+    // Database 构造时拒绝含 ':' 的 base_path（双保险）。
+    CMString bad_path = test_dir_ + "/bad:path";
+    Database db(bad_path);
+    // 拒绝后 base_path_ 清空，db_id_ 也清空（不产生有效对象）
+    EXPECT_TRUE(db.get_base_path().empty())
+        << "base_path with ':' should be rejected, got: " << db.get_base_path();
+    EXPECT_TRUE(db.get_db_id().empty());
+}
+
+TEST_F(DatabaseTest, FullNameIsDbPathColonShort) {
+    // full_name = "db_path:short_name"（db_id 废弃后的契约）
+    CMString base_path = test_dir_ + "/fullname_check";
+    Database db(base_path);
+    EXPECT_EQ(db.get_full_name("matrix"), base_path + ":matrix");
+    EXPECT_EQ(db.get_full_name("result/obj_1"), base_path + ":result/obj_1");
 }
 
 TEST_F(DatabaseTest, GetBasePath) {
@@ -244,26 +264,6 @@ TEST_F(DatabaseTest, GetObjNameDifferentDbDifferentResult) {
 
     // Same object name, different databases → different full names
     EXPECT_NE(db_a.get_full_name("output/result"), db_b.get_full_name("output/result"));
-}
-
-TEST_F(DatabaseTest, DbIdIsBase62Format) {
-    CMString base_path = test_dir_ + "/uuid_test";
-    Database db(base_path);
-    CMString db_id = db.get_db_id();
-    // db_id: 4 path-hash + 6 random = 10 base62 chars
-    EXPECT_EQ(db_id.size(), fly::db_id_len());
-    for (char c : db_id) {
-        EXPECT_TRUE((c >= '0' && c <= '9')
-                    || (c >= 'a' && c <= 'z')
-                    || (c >= 'A' && c <= 'Z'))
-            << "non-base62 char in db_id: " << c;
-    }
-}
-
-TEST_F(DatabaseTest, DbIdIsNotBasePath) {
-    CMString base_path = test_dir_ + "/not_path";
-    Database db(base_path);
-    EXPECT_NE(db.get_db_id(), base_path);
 }
 
 // ─── Write tracking tests ───
@@ -592,18 +592,6 @@ TEST_F(DatabaseTest, GetWriterIdIsNotEmpty) {
     EXPECT_FALSE(db.get_writer_id().empty());
 }
 
-TEST_F(DatabaseTest, SetDbIdUpdatesRegistration) {
-    CMString base_path = test_dir_ + "/set_dbid";
-    Database db(base_path);
-
-    CMString old_id = db.get_db_id();
-    CMString new_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    db.set_db_id(new_id);
-
-    EXPECT_EQ(db.get_db_id(), new_id);
-    EXPECT_NE(db.get_db_id(), old_id);
-}
-
 TEST_F(DatabaseTest, RemoveObjectOnFrozenIsNoop) {
     CMString base_path = test_dir_ + "/remove_frozen_noop";
     Database db(base_path);
@@ -630,17 +618,6 @@ TEST_F(DatabaseTest, LoadMetaEmptyAfterCorruption) {
 
     DbMeta meta = db.load_meta();
     EXPECT_TRUE(meta.db_id_.empty());
-}
-
-TEST_F(DatabaseTest, DatabaseWithExistingDbId) {
-    CMString base_path = test_dir_ + "/existing_id";
-    CMString existing_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-
-    {
-        Database db(base_path, "", 0, "", existing_id);
-        EXPECT_EQ(db.get_db_id(), existing_id);
-        EXPECT_EQ(db.get_base_path(), base_path);
-    }
 }
 
 TEST_F(DatabaseTest, RemoveIndexEntry) {
@@ -684,31 +661,6 @@ TEST_F(DatabaseTest, MultipleObjectsSameDbMeta) {
 
     DbMeta meta = db.load_meta();
     EXPECT_EQ(meta.db_id_, db.get_db_id());
-}
-
-// db_id = <4-char path-hash prefix><6-char random suffix>.
-// Same base_path -> same prefix (deterministic), different suffix (random).
-// Different base_path -> different prefix with overwhelming probability.
-TEST_F(DatabaseTest, DbIdPrefixIsPathDerived) {
-    constexpr size_t kPrefixLen = 4;
-    CMString path_a = test_dir_ + "/prefix_a";
-    CMString path_b = test_dir_ + "/prefix_b";
-
-    // Two dbs on the SAME path: identical prefix, different full id.
-    Database db_a1(path_a);
-    Database db_a2(path_a);
-    CMString id_a1 = db_a1.get_db_id();
-    CMString id_a2 = db_a2.get_db_id();
-    EXPECT_EQ(id_a1.substr(0, kPrefixLen), id_a2.substr(0, kPrefixLen))
-        << "same path must yield same prefix";
-    EXPECT_NE(id_a1, id_a2)
-        << "random suffix must differ between two dbs on the same path";
-
-    // A db on a DIFFERENT path: prefix differs.
-    Database db_b(path_b);
-    CMString id_b = db_b.get_db_id();
-    EXPECT_NE(id_a1.substr(0, kPrefixLen), id_b.substr(0, kPrefixLen))
-        << "different paths should yield different prefixes";
 }
 
 // =============================================================================

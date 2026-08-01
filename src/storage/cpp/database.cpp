@@ -22,18 +22,38 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
     : base_path_(base_path)
     , data_path_(data_path)
     , writer_id_(generate_writer_id())
-    , db_id_(existing_db_id.empty() ? generate_db_id(base_path) : existing_db_id)
+    , db_id_(base_path)  // db_id 废弃：现在是 base_path 的别名（稳定锚点）
     , host_(host) {
     (void)worker_id;  // worker_id kept for API compat; writer_id_ is used for file naming
+    (void)existing_db_id;  // 废弃参数（db_id 不再外部指定）
+
+    // 校验 base_path 不含 ':' —— full_name = "db_path:short" 用 ':' 分隔，
+    // base_path 含 ':' 会导致 split 歧义。源头拒绝，双保险。
+    if (base_path_.find(':') != CMString::npos) {
+        ERR("Database base_path must not contain ':' (would break full_name split): '{}'", base_path_);
+        base_path_.clear();
+        db_id_.clear();
+        return;
+    }
+
+    // 跟随迁移：若 base_path/_MIGRATED_TO 存在，重定向到 target（链式展平）。
+    // 解析后的路径才是数据的真正位置（merge 跨 path 后源 path 变成迁移指针）。
+    CMString resolved = fly::DataService::instance()->resolve_migrated_path(base_path_);
+    if (resolved != base_path_) {
+        INFO("Database migrated: '{}' -> '{}', following redirect", base_path_, resolved);
+        base_path_ = resolved;
+        db_id_ = resolved;
+    }
 
     fly::DataService::instance()->register_database(db_id_, base_path_, data_path_, writer_id_);
 
-    if (existing_db_id.empty()) {
-        ensure_directory_exists(base_path_);
-        if (!data_path_.empty()) {
-            ensure_directory_exists(data_path_);
-        }
+    ensure_directory_exists(base_path_);
+    if (!data_path_.empty()) {
+        ensure_directory_exists(data_path_);
+    }
 
+    // 仅当 _DB_META 不存在时才写（新建 db）；load/merge 场景 _DB_META 已存在则跳过。
+    if (!fs::exists(base_path_ + "/_DB_META")) {
         write_db_meta_header();
     }
 
@@ -529,14 +549,13 @@ DbMeta Database::load_meta_from_path(const CMString& base_path) {
 }
 
 CMString Database::get_db_id() const {
-    return db_id_;
+    return db_id_;  // db_id 废弃：== base_path_（别名），保留接口供过渡期调用方
 }
 
 void Database::set_db_id(const CMString& db_id) {
-    auto ds = fly::DataService::instance();
-    ds->unregister_database(db_id_);
-    ds->register_database(db_id, base_path_, data_path_, writer_id_);
-    db_id_ = db_id;
+    // db_id 废弃：no-op（db_id_ 现在是 base_path 别名，不再外部指定）。
+    // 保留接口仅为过渡期调用方兼容，后续阶段删除。
+    (void)db_id;
 }
 
 CMString Database::get_base_path() const {
@@ -548,10 +567,17 @@ CMString Database::get_data_path() const {
 }
 
 void Database::set_paths(const CMString& base_path, const CMString& data_path) {
-    // Merge 产物落到新路径：更新本对象 + re-register 进 DataService（upsert db_paths_）。
+    // Merge 产物落到新路径：更新本对象 + re-register 进 DataService。
+    // db_id_ 是 base_path 别名，同步更新。旧 base_path 的迁移缓存由 cleanup_after_merge
+    // 通过 set_migrated_path 处理。
+    auto ds = fly::DataService::instance();
+    if (base_path_ != base_path) {
+        ds->unregister_database(db_id_);  // 注销旧 base_path 作 key
+    }
     base_path_ = base_path;
+    db_id_ = base_path;
     data_path_ = data_path;
-    fly::DataService::instance()->register_database(db_id_, base_path_, data_path_, writer_id_);
+    ds->register_database(db_id_, base_path_, data_path_, writer_id_);
 }
 
 CMString Database::get_writer_id() const {
@@ -662,64 +688,6 @@ size_t Database::worker_info_count() const {
         count++;
     }
     return count;
-}
-
-CMString Database::generate_db_id(const CMString& base_path) {
-    // Format: <4 char path-hash><6 char random> = 10 char base62
-    //   - path-hash (deterministic): FNV-1a 32-bit of base_path -> prefix base62 chars.
-    //     Same path -> same prefix. Enables collision detection when a migrated db
-    //     is loaded (its id occupies db_paths_) and a new db is then created on the
-    //     original path: identical prefix makes the collision observable.
-    //   - random suffix: remaining base62 chars (~35.7 bit). Re-rolled on collision retry.
-    static constexpr char kBase62[] =
-        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    static constexpr uint64_t kBase = 62;
-    static constexpr size_t kPrefixLen = 4;  // path-hash chars (deterministic)
-    static constexpr size_t kSuffixLen = 6;  // random chars
-    static_assert(kPrefixLen + kSuffixLen == 10, "prefix+suffix length mismatch");
-    // Runtime guard: keep in sync with the canonical db_id_len(). (A static_assert
-    // on the inline constexpr function is rejected by GCC via virtual includes.)
-    assert(kPrefixLen + kSuffixLen == fly::db_id_len());
-
-    // --- Deterministic prefix: FNV-1a 32-bit over base_path ---
-    uint32_t hash = 2166136261u;
-    for (char c : base_path) {
-        hash ^= static_cast<uint8_t>(c);
-        hash *= 16777619u;
-    }
-    uint32_t prefix_val = hash % (kBase * kBase * kBase * kBase);  // 62^kPrefixLen
-    char prefix[kPrefixLen];
-    for (int i = kPrefixLen - 1; i >= 0; --i) {
-        prefix[i] = kBase62[prefix_val % kBase];
-        prefix_val /= kBase;
-    }
-
-    // --- Random suffix (re-rolled on collision) ---
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<int> dist(0, 61);
-
-    auto ds = fly::DataService::instance();
-    constexpr int kMaxRetries = 10;
-    for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
-        char suffix[kSuffixLen];
-        for (size_t i = 0; i < kSuffixLen; ++i) {
-            suffix[i] = kBase62[dist(gen)];
-        }
-        CMString id(prefix, kPrefixLen);
-        id.append(suffix, kSuffixLen);
-        if (!ds->has_database(id)) {
-            return id;
-        }
-        WARN("db_id collision on prefix '{}', retrying (attempt {}/{})", id.substr(0, kPrefixLen), attempt + 1, kMaxRetries);
-    }
-    // Extremely unlikely (62^kSuffixLen ~ 56 billion suffix space). Return the last candidate
-    // rather than blocking construction; DataService registration will surface any
-    // real conflict downstream.
-    ERR("db_id collision exhausted retries for path '{}'", base_path);
-    CMString fallback(prefix, kPrefixLen);
-    for (size_t i = 0; i < kSuffixLen; ++i) fallback.push_back(kBase62[dist(gen)]);
-    return fallback;
 }
 
 void Database::ensure_directory_exists(const CMString& path) {

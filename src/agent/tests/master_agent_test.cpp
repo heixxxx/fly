@@ -10,10 +10,9 @@
 
 using namespace fly::test;
 
+// db_id 废弃：db_id 现在是 base_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_id。
 static CMString db32(const CMString& hint) {
-    CMString r = hint;
-    r.resize(fly::db_id_len(), '_');
-    return r;
+    return "/test/" + hint;
 }
 
 namespace fly {
@@ -1334,13 +1333,14 @@ TEST(MasterAgentTest, GetOrCreateDatabase) {
     ASSERT_NE(db, nullptr);
 
     CMString db_id = db->get_db_id();
-    EXPECT_EQ(db_id.size(), fly::db_id_len());
+    // db_id 废弃：db_id == base_path（不再是固定长度随机串）
+    EXPECT_EQ(db_id, tmpdir1.path());
     EXPECT_FALSE(db->get_writer_id().empty());
     EXPECT_EQ(db->get_base_path(), tmpdir1.path());
 
     auto db2 = master.get_or_create_database(tmpdir2.path());
     ASSERT_NE(db2, nullptr);
-    EXPECT_EQ(db2->get_db_id().size(), fly::db_id_len());
+    EXPECT_EQ(db2->get_db_id(), tmpdir2.path());
     EXPECT_NE(db->get_db_id(), db2->get_db_id());
 
     DataService::instance()->unregister_database(db->get_db_id());

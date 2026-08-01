@@ -15,13 +15,11 @@ static void write_raw(Database& db, const CMString& name, const CMString& data, 
     db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
 }
 
-// Generate a fixed-length db_id (canonical db_id_len()). Uses '_' padding
-// (a base62-safe filler) so the result never contains ':' — split_full() can
-// parse it by fixed offset. Kept as db32() for call-site compatibility.
+// db_id 废弃：db_id 现在是 base_path 的别名（不含 ':'，否则 split 歧义）。
+// db32() 生成不含 ':' 的 db_id 用于测试。保留函数名 db32 仅为调用点兼容。
 static CMString db32(const CMString& hint) {
-    CMString r = hint;
-    r.resize(fly::db_id_len(), '_');
-    return r;
+    // 用路径风格（含 '/' 但不含 ':'），模拟真实 base_path。
+    return "/test/" + hint;
 }
 
 class DataServiceTest : public ::testing::Test {
@@ -448,9 +446,11 @@ TEST_F(DataServiceTest, RestoreEntriesFromLocalIndexFile) {
     }
 }
 
-TEST_F(DataServiceTest, ShortNameWithColonsHandledCorrectly) {
-    CMString db_id = db32("colon_test");
-    CMString full = db_id + ":obj/with:colons:inside";
+TEST_F(DataServiceTest, DbPathWithSlashesHandledCorrectly) {
+    // db_id 废弃后 db_id == db_path（含 '/'，不含 ':'）。
+    // full_name = "db_path:short"，split 用 rfind(':') 正确切分。
+    CMString db_id = db32("path_test");  // "/test/path_test"
+    CMString full = db_id + ":obj/with/slashes";
 
     IndexEntry entry;
     entry.object_name_ = full;
@@ -466,22 +466,12 @@ TEST_F(DataServiceTest, ShortNameWithColonsHandledCorrectly) {
     EXPECT_TRUE(ds_->has_local_object(full));
 }
 
-TEST_F(DataServiceTest, DbIdCanonicalLen) {
-    CMString db_id(fly::db_id_len(), 'a');
-    CMString full = db_id + ":my_obj";
-
-    IndexEntry entry;
-    entry.object_name_ = full;
-    entry.file_name_ = "test.dat";
-    entry.offset_ = 0;
-    entry.size_ = 5;
-    entry.is_large_ = false;
-    entry.block_count_ = 0;
-
-    ds_->on_object_written(db_id, full, entry);
-    ds_->on_flush(db_id);
-
-    EXPECT_TRUE(ds_->has_local_object(full));
+TEST_F(DataServiceTest, SplitFullRfindHandlesLongDbPath) {
+    // db_path 变长（不再是固定 10 字符），rfind(':') 必须正确切分。
+    // 验证 split_full_name 对长 db_path + short 的切分。
+    auto [db, short_name] = fly::split_full_name("/a/very/long/db/path:my_obj");
+    EXPECT_EQ(db, "/a/very/long/db/path");
+    EXPECT_EQ(short_name, "my_obj");
 }
 
 TEST_F(DataServiceTest, ShortFullNameTreatedAsNoDbId) {
