@@ -7,23 +7,23 @@
 namespace fs = std::filesystem;
 
 DataWriter::DataWriter(
-    const CMString& base_path,
+    const CMString& db_path,
     const CMString& data_path,
     const CMString& writer_id,
     int64_t aggregation_threshold,
     const CMString& host
 )
-    : base_path_(base_path)
+    : db_path_(db_path)
     , data_path_(data_path)
     , writer_id_(writer_id.empty() ? generate_writer_id() : writer_id)
     , host_(host)
     , aggregation_threshold_(aggregation_threshold) {
 
-    fs::create_directories(base_path_);
-    CMString write_dir = data_path_.empty() ? base_path_ : data_path_;
+    fs::create_directories(db_path_);
+    CMString write_dir = data_path_.empty() ? db_path_ : data_path_;
     fs::create_directories(write_dir);
 
-    CMString idx_path = base_path_ + "/" + writer_id_ + ".idx";
+    CMString idx_path = db_path_ + "/" + writer_id_ + ".idx";
     index_ = CMMakeUnique<LocalIndex>(idx_path);
 
     if (fs::exists(idx_path)) {
@@ -135,7 +135,7 @@ void DataWriter::rollback_data_file() {
         file_stream_.close();
     }
 
-    CMString write_dir = data_path_.empty() ? base_path_ : data_path_;
+    CMString write_dir = data_path_.empty() ? db_path_ : data_path_;
 
     // 情况1：BEGIN 后发生过 rollover（本 task 写出的 .dat 超过 1 个）。
     //   删除回滚点之后新创建的所有 .dat（file_index_ 递减回回滚点序号）。
@@ -194,7 +194,7 @@ void DataWriter::create_new_file() {
     }
 
     current_file_ = get_current_file_name();
-    CMString write_dir = data_path_.empty() ? base_path_ : data_path_;
+    CMString write_dir = data_path_.empty() ? db_path_ : data_path_;
     CMString file_path = write_dir + "/" + current_file_;
 
     fs::create_directories(write_dir);

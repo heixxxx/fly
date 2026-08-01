@@ -4,7 +4,7 @@ Scenarios:
   1. open_db on existing path auto-renames to path.1
   2. port property: master.port > 0 after start
   3. data_path parameter sets get_data_path()
-  4. get_base_path() and get_data_path() return correct values
+  4. get_db_path() and get_data_path() return correct values
 """
 from _fly_log import INFO
 import time
@@ -47,10 +47,10 @@ def test_open_db_path_conflict_auto_rename():
     db2 = open_db(DB_PATH)
     assert os.path.isdir(DB_PATH + ".1"), \
         f"Second DB dir should auto-rename to {DB_PATH}.1"
-    assert db1.get_base_path() == DB_PATH, \
-        f"db1 base_path should be {DB_PATH}, got {db1.get_base_path()}"
-    assert db2.get_base_path() == DB_PATH + ".1", \
-        f"db2 base_path should be {DB_PATH}.1, got {db2.get_base_path()}"
+    assert db1.get_db_path() == DB_PATH, \
+        f"db1 db_path should be {DB_PATH}, got {db1.get_db_path()}"
+    assert db2.get_db_path() == DB_PATH + ".1", \
+        f"db2 db_path should be {DB_PATH}.1, got {db2.get_db_path()}"
 
     INFO("[PASS] test_open_db_path_conflict_auto_rename: "
           "second open_db auto-renames to path.1")
@@ -94,8 +94,8 @@ def test_data_path_parameter():
           f"data_path={CUSTOM_DATA_PATH} returned by get_data_path()")
 
 
-def test_get_base_path_get_data_path_getters():
-    """get_base_path() == DB_PATH, get_data_path() returns '' or data_path."""
+def test_get_db_path_get_data_path_getters():
+    """get_db_path() == DB_PATH, get_data_path() returns '' or data_path."""
     cleanup()
 
     from fly.runtime import get_agent
@@ -108,17 +108,17 @@ def test_get_base_path_get_data_path_getters():
     assert master.worker_count >= 1
 
     db = open_db(DB_PATH)
-    base_path = db.get_base_path()
+    db_path = db.get_db_path()
     data_path = db.get_data_path()
-    assert base_path == DB_PATH, \
-        f"get_base_path() should be '{DB_PATH}', got '{base_path}'"
+    assert db_path == DB_PATH, \
+        f"get_db_path() should be '{DB_PATH}', got '{db_path}'"
     assert isinstance(data_path, str), \
         f"get_data_path() should return str, got {type(data_path)}"
     assert data_path == "", \
         f"get_data_path() should be '' when not set, got '{data_path}'"
 
-    INFO("[PASS] test_get_base_path_get_data_path_getters: "
-          f"base_path={base_path}, data_path='{data_path}'")
+    INFO("[PASS] test_get_db_path_get_data_path_getters: "
+          f"db_path={db_path}, data_path='{data_path}'")
 
 
 test_open_db_path_conflict_auto_rename()
@@ -127,5 +127,5 @@ test_port_property()
 INFO("")
 test_data_path_parameter()
 INFO("")
-test_get_base_path_get_data_path_getters()
+test_get_db_path_get_data_path_getters()
 INFO("\nAll open_db edge case E2E tests passed!")

@@ -42,7 +42,7 @@ TEST_F(DataTransferTest, DataServiceStartDataServer) {
 
 TEST_F(DataTransferTest, DataServerReturnsObjectNotFoundForUnknownObject) {
     std::string db_path = "/testb";
-    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_path, test_dir_ + "/data");
 
     ds_->start_data_server("127.0.0.1", 0, 2);
     int port = ds_->get_data_port();
@@ -58,7 +58,7 @@ TEST_F(DataTransferTest, DataServerReturnsObjectNotFoundForUnknownObject) {
 
 TEST_F(DataTransferTest, DataServerReturnsDataForCompletedWrite) {
     std::string db_path = "/testc";
-    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_path, test_dir_ + "/data");
 
     std::string full = db_path + ":myobj";
     std::string test_data = "hello world test data";
@@ -102,7 +102,7 @@ TEST_F(DataTransferTest, DataServerReturnsDataForCompletedWrite) {
 // DATA_NOT_READY — it returns immediately so the TIER2 layer owns retry policy.
 TEST_F(DataTransferTest, DataClientPoolReturnsDataNotReadyImmediately) {
     std::string db_path = "/testd";
-    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_path, test_dir_ + "/data");
 
     std::string full = db_path + ":myobj";
 
@@ -127,7 +127,7 @@ TEST_F(DataTransferTest, DataClientPoolReturnsDataNotReadyImmediately) {
 
 TEST_F(DataTransferTest, DataServerHandlesConcurrentRequestsBeyondThreadCount) {
     std::string db_path = "/teste";
-    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
+    ds_->register_database(db_path, test_dir_ + "/data");
 
     for (int i = 0; i < 6; ++i) {
         std::string name = "obj_" + std::to_string(i);

@@ -63,7 +63,7 @@ def _solve_kickoff_task(db, matrix_db, nsd, overlap_ratio,
     from solver.ras_graph import ras_graph_coord
 
     m = matrix_db.read_object("matrix")      # matrix_db 由闭包/参数传入
-    work_npz = os.path.join(db.get_base_path(), "matrix.npz")
+    work_npz = os.path.join(db.get_db_path(), "matrix.npz")
     np.savez(work_npz,
              n=np.int64(m["n"]), N=np.int64(m["N"]),
              rows=m["rows"], cols=m["cols"], vals=m["vals"], b=m["b"])

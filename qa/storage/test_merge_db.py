@@ -79,7 +79,7 @@ INFO(f"[MERGE] merged data_path .dat count: {merged_dat}")
 assert merged_dat > 0, "merged data_path should have .dat files"
 
 # 校验：产物应能读到全部对象（merged_db 句柄读，走 master remote_idx/local）。
-# 注意：merged_db 的 idx 在共享 base_path（复用源），data 在 merged_data_path。
+# 注意：merged_db 的 idx 在共享 db_path（复用源），data 在 merged_data_path。
 # master remote_idx 已被 merge task 的 register 更新，指向 master host worker。
 assert merged_db.read_object("merge/x") == 100, "merged db should read merge/x"
 assert merged_db.read_object("merge/y") == 200, "merged db should read merge/y"

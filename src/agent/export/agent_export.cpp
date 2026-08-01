@@ -128,16 +128,15 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     })
     FLY_EXPORT_METHOD("register_database", [](fly::MasterAgent& self,
                                                 const fly::CMString& db_path,
-                                                const fly::CMString& base_path,
                                                 const fly::CMString& data_path) {
-        self.register_database(db_path, base_path, data_path);
+        self.register_database(db_path, data_path);
     })
     FLY_EXPORT_METHOD("is_db_frozen", &fly::MasterAgent::is_db_frozen)
     FLY_EXPORT_METHOD("get_or_create_database", [](fly::MasterAgent& self,
-                                                      const fly::CMString& base_path,
+                                                      const fly::CMString& db_path,
                                                       const fly::CMString& data_path,
                                                       uint64_t writer_id) -> CMSharedPtr<Database> {
-        return self.get_or_create_database(base_path, data_path, writer_id);
+        return self.get_or_create_database(db_path, data_path, writer_id);
     })
     FLY_EXPORT_METHOD("get_database", [](fly::MasterAgent& self,
                                          const fly::CMString& db_path) -> CMSharedPtr<Database> {
@@ -164,62 +163,56 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     })
     FLY_EXPORT_METHOD("restore_master_idx", [](fly::MasterAgent& self,
                                                   const fly::CMString& db_path,
-                                                  const fly::CMString& base_path,
-                                                  const fly::CMString& writer_id) -> fly::CMVector<IndexEntry> {
-        return self.restore_master_idx(db_path, base_path, writer_id);
+                                                                                                    const fly::CMString& writer_id) -> fly::CMVector<IndexEntry> {
+        return self.restore_master_idx(db_path, writer_id);
     })
     // 轻量读 idx（不灌 master local_idx，不 mark_data_ready）—— merge_db Phase 3 专用。
     FLY_EXPORT_METHOD("read_idx_entries", [](fly::MasterAgent& self,
-                                               const fly::CMString& base_path,
+                                               const fly::CMString& db_path,
                                                const fly::CMString& writer_id) -> fly::CMVector<IndexEntry> {
-        return self.read_idx_entries(base_path, writer_id);
+        return self.read_idx_entries(db_path, writer_id);
     })
     FLY_EXPORT_METHOD("send_idx_load_commands", [](fly::MasterAgent& self,
                                                      const fly::CMString& db_path,
-                                                     const fly::CMString& base_path,
-                                                     const fly::CMVector<fly::CMString>& writer_ids) {
-        self.send_idx_load_commands(db_path, base_path, writer_ids);
+                                                                                                          const fly::CMVector<fly::CMString>& writer_ids) {
+        self.send_idx_load_commands(db_path, writer_ids);
     })
     FLY_EXPORT_METHOD("rebuild_remote_idx", [](fly::MasterAgent& self,
                                                    const fly::CMString& db_path,
-                                                   const fly::CMString& base_path,
-                                                   const fly::CMVector<::WorkerInfo>& workers) {
-        self.rebuild_remote_idx(db_path, base_path, workers);
+                                                                                                      const fly::CMVector<::WorkerInfo>& workers) {
+        self.rebuild_remote_idx(db_path, workers);
     })
     FLY_EXPORT_METHOD("set_master_hostname", &fly::MasterAgent::set_master_hostname)
     FLY_EXPORT_METHOD("send_idx_load_to_worker", [](fly::MasterAgent& self,
                                                       const fly::CMString& db_path,
-                                                      const fly::CMString& base_path,
-                                                      const fly::CMVector<fly::CMString>& writer_ids,
+                                                                                                            const fly::CMVector<fly::CMString>& writer_ids,
                                                       uint64_t worker_id) {
-        self.send_idx_load_to_worker(db_path, base_path, writer_ids, worker_id);
+        self.send_idx_load_to_worker(db_path, writer_ids, worker_id);
     })
     FLY_EXPORT_METHOD("rebuild_remote_idx_for_worker", [](fly::MasterAgent& self,
                                                             const fly::CMString& db_path,
-                                                            const fly::CMString& base_path,
-                                                            const fly::CMVector<fly::CMString>& writer_ids,
+                                                                                                                        const fly::CMVector<fly::CMString>& writer_ids,
                                                             uint64_t worker_id) {
-        self.rebuild_remote_idx_for_worker(db_path, base_path, writer_ids, worker_id);
+        self.rebuild_remote_idx_for_worker(db_path, writer_ids, worker_id);
     })
     // ── DB Merge support (fly.merge_db 主动 API) ──
     // 派发单个 __merge_object internal task，返回 task_id。
     FLY_EXPORT_METHOD("send_merge_task", [](fly::MasterAgent& self,
                                               uint64_t target_worker_id,
                                               const fly::CMString& short_name,
-                                              const fly::CMString& db_path,
-                                              const fly::CMString& base_path,
+                                              const fly::CMString& source_db_path,
+                                              const fly::CMString& target_db_path,
                                               const fly::CMString& target_data_path,
                                               const fly::CMString& source_host) -> uint64_t {
-        return self.send_merge_task(target_worker_id, short_name, db_path, base_path, target_data_path, source_host);
+        return self.send_merge_task(target_worker_id, short_name, source_db_path, target_db_path, target_data_path, source_host);
     })
     // 命令源 worker 删除本地 .dat（data_path 显式传入）。
     FLY_EXPORT_METHOD("send_delete_data", [](fly::MasterAgent& self,
                                                uint64_t source_worker_id,
                                                const fly::CMString& db_path,
-                                               const fly::CMString& base_path,
-                                               const fly::CMString& data_path,
+                                                                                              const fly::CMString& data_path,
                                                const fly::CMVector<fly::CMString>& writer_ids) {
-        self.send_delete_data(source_worker_id, db_path, base_path, data_path, writer_ids);
+        self.send_delete_data(source_worker_id, db_path, data_path, writer_ids);
     })
     // 等待一批 DeleteData 的 ack 全部返回。返回 (all_ok, failed_worker_ids)。
     FLY_EXPORT_METHOD("wait_delete_data_acks", [](fly::MasterAgent& self,
@@ -249,10 +242,10 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                                   const fly::CMVector<fly::CMString>& merged_object_full_names,
                                                   const fly::CMVector<uint64_t>& source_worker_ids,
                                                   const fly::CMVector<uint64_t>& merge_target_worker_ids,
-                                                  const fly::CMString& merge_base_path,
+                                                  const fly::CMString& merge_db_path,
                                                   const fly::CMString& merge_data_path) {
         self.cleanup_after_merge(db_path, merged_object_full_names, source_worker_ids,
-                                  merge_target_worker_ids, merge_base_path, merge_data_path);
+                                  merge_target_worker_ids, merge_db_path, merge_data_path);
     });
 
 // VarPayload: a {var_name, value, type_name} triple inlined into TaskAssignMessage.

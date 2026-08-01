@@ -6,16 +6,16 @@
 namespace fs = std::filesystem;
 
 DataReader::DataReader(
-    const CMString& base_path,
+    const CMString& db_path,
     const CMString& data_path,
     const CMString& writer_id
 )
-    : base_path_(base_path)
+    : db_path_(db_path)
     , data_path_(data_path)
     , writer_id_(writer_id) {
 
-    CMString read_dir = data_path_.empty() ? base_path_ : data_path_;
-    CMString idx_path = base_path_ + "/" + writer_id_ + ".idx";
+    CMString read_dir = data_path_.empty() ? db_path_ : data_path_;
+    CMString idx_path = db_path_ + "/" + writer_id_ + ".idx";
 
     index_ = CMMakeUnique<LocalIndex>(idx_path);
     if (fs::exists(idx_path)) {
@@ -37,9 +37,9 @@ CMString DataReader::find_file_path(const CMString& file_name) {
         }
     }
 
-    CMString base_path_file = base_path_ + "/" + file_name;
-    if (fs::exists(base_path_file)) {
-        return base_path_file;
+    CMString db_path_file = db_path_ + "/" + file_name;
+    if (fs::exists(db_path_file)) {
+        return db_path_file;
     }
 
     ERR("Data file not found: {}", file_name);

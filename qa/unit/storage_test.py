@@ -111,7 +111,7 @@ def test_database_getters(temp_dir):
     os.makedirs(data_path, exist_ok=True)
     db = ex_stg_create_database(temp_dir, data_path, 0)
 
-    assert db.get_base_path() == temp_dir
+    assert db.get_db_path() == temp_dir
     assert db.get_data_path() == data_path
 
 

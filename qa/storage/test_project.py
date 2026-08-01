@@ -117,7 +117,7 @@ def test_basic_mechanism():
     # pickle 支持（作 task 参数传递）。
     blob = pickle.dumps(proj2)
     proj3 = pickle.loads(blob)
-    assert proj3.base_path == proj2.base_path
+    assert proj3.db_path == proj2.db_path
     assert proj3._db_cache == {}
 
     # repr。

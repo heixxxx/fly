@@ -293,11 +293,10 @@ struct DbPathRequestMessage {
 struct DbPathResponseMessage {
     MessageHeader header_;
     CMString db_path_;
-    CMString base_path_;
     CMString data_path_;
     bool success_ = false;
     static constexpr MessageType msg_type_ = MessageType::DB_PATH_RESPONSE;
-    FLY_SERIALIZE(header_, db_path_, base_path_, data_path_, success_);
+    FLY_SERIALIZE(header_, db_path_, data_path_, success_);
 };
 
 struct ShutdownMessage {
@@ -359,12 +358,11 @@ struct ObjectRemovedMessage {
 struct IdxLoadCommandMessage {
     MessageHeader header_;
     CMString db_path_;
-    CMString base_path_;
     CMVector<CMString> writer_ids_;
 
     static constexpr MessageType msg_type_ = MessageType::IDX_LOAD_COMMAND;
 
-    FLY_SERIALIZE(header_, db_path_, base_path_, writer_ids_);
+    FLY_SERIALIZE(header_, db_path_, writer_ids_);
 };
 
 struct IdxLoadAckMessage {
@@ -555,12 +553,11 @@ struct VarBroadcastMessage {
 struct DeleteDataMessage {
     MessageHeader header_;
     CMString db_path_;
-    CMString base_path_;            // 源 db base_path（用于日志/兜底）
     CMString data_path_;            // 显式指定待删 .dat 所在目录（源 data_path）
     CMVector<CMString> writer_ids_; // 待删 writer 列表
 
     static constexpr MessageType msg_type_ = MessageType::DELETE_DATA;
-    FLY_SERIALIZE(header_, db_path_, base_path_, data_path_, writer_ids_);
+    FLY_SERIALIZE(header_, db_path_, data_path_, writer_ids_);
 };
 
 // worker → master: 删除结果回报。
@@ -578,12 +575,12 @@ struct DeleteDataAckMessage {
 };
 
 // master → worker (broadcast): merge 全部确认成功后，命令各 worker 清理旧 local_idx_[db_path]
-// + remote_idx_[db_path]，并按新路径（base_path + data_path）重建 local_idx，使同 host / 共享 FS
+// + remote_idx_[db_path]，并按新路径（db_path + data_path）重建 local_idx，使同 host / 共享 FS
 // 的 worker 能直接本地读 .dat（不再走远程读）。
 //
 // merge 把源数据迁到 master host 的 data_path 后：
 //  - 各 worker 旧的 local_idx/remote_idx 残留指向已删源 .dat 的位置 → 读必失败
-//  - 新 idx 在共享 base_path（merge worker 写的 <merge_writer_id>.idx）
+//  - 新 idx 在共享 db_path（merge worker 写的 <merge_writer_id>.idx）
 //  - 新 .dat 在 data_path（master host 本地或共享盘）
 // worker 收到此消息后清旧索引，并尝试 load 新 idx 重建 local_idx：
 //  - 若 data_path 可达（同机本地盘或共享 FS）→ 本地直读 .dat
@@ -591,13 +588,12 @@ struct DeleteDataAckMessage {
 // 详见 docs/db-merge-design.md §5.5（merge 后状态清理）。
 struct MergeCleanupMessage {
     MessageHeader header_;
-    CMString db_path_;
-    CMString base_path_;       // merge 后 base_path（idx 所在，通常复用源共享 base_path）
+    CMString db_path_;       // merge 后 db_path（idx 所在，通常复用源共享 db_path）
     CMString data_path_;       // merge 后 data_path（.dat 所在，master host 本地）
     CMVector<uint64_t> exempt_worker_ids_;  // merge target worker（已持有效 local_idx，跳过重建）
 
     static constexpr MessageType msg_type_ = MessageType::MERGE_CLEANUP;
-    FLY_SERIALIZE(header_, db_path_, base_path_, data_path_, exempt_worker_ids_);
+    FLY_SERIALIZE(header_, db_path_, data_path_, exempt_worker_ids_);
 };
 
 // worker → master: cleanup 完成回报。这是 merge_db 返回前的"全局一致性屏障"：

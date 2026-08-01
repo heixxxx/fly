@@ -362,7 +362,6 @@ TEST(MessageProtocolTest, DbPathRequestResponseMessages) {
     DbPathResponseMessage resp;
     resp.header_.type_ = MessageType::DB_PATH_RESPONSE;
     resp.db_path_ = "my_database";
-    resp.base_path_ = "/data/base";
     resp.data_path_ = "/data/base/data";
     resp.success_ = true;
 
@@ -372,7 +371,6 @@ TEST(MessageProtocolTest, DbPathRequestResponseMessages) {
     DbPathResponseMessage decoded_resp;
     EXPECT_TRUE(MessageProtocol::decode(buffer_resp, decoded_resp));
     EXPECT_EQ(decoded_resp.db_path_, "my_database");
-    EXPECT_EQ(decoded_resp.base_path_, "/data/base");
     EXPECT_EQ(decoded_resp.data_path_, "/data/base/data");
     EXPECT_TRUE(decoded_resp.success_);
 }
@@ -725,7 +723,6 @@ TEST(MessageProtocolTest, DeleteDataMessageRoundTrip) {
     DeleteDataMessage msg;
     msg.header_.type_ = MessageType::DELETE_DATA;
     msg.db_path_ = "abc123def4";
-    msg.base_path_ = "/shared/proj_a";
     msg.data_path_ = "/ssd/source_data";
     msg.writer_ids_ = {"worker_0", "worker_1", "worker_2"};
 
@@ -735,7 +732,6 @@ TEST(MessageProtocolTest, DeleteDataMessageRoundTrip) {
     DeleteDataMessage decoded;
     ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
     EXPECT_EQ(decoded.db_path_, "abc123def4");
-    EXPECT_EQ(decoded.base_path_, "/shared/proj_a");
     EXPECT_EQ(decoded.data_path_, "/ssd/source_data");
     ASSERT_EQ(decoded.writer_ids_.size(), 3u);
     EXPECT_EQ(decoded.writer_ids_[0], "worker_0");
@@ -789,7 +785,6 @@ TEST(MessageProtocolTest, MergeCleanupMessageRoundTrip) {
     MergeCleanupMessage msg;
     msg.header_.type_ = MessageType::MERGE_CLEANUP;
     msg.db_path_ = "merge_db_002";
-    msg.base_path_ = "/shared/db";
     msg.data_path_ = "/ssd/merged_data";
     msg.exempt_worker_ids_ = {5, 6};  // merge target workers 免清理
 
@@ -799,7 +794,6 @@ TEST(MessageProtocolTest, MergeCleanupMessageRoundTrip) {
     MergeCleanupMessage decoded;
     ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
     EXPECT_EQ(decoded.db_path_, "merge_db_002");
-    EXPECT_EQ(decoded.base_path_, "/shared/db");
     EXPECT_EQ(decoded.data_path_, "/ssd/merged_data");
     ASSERT_EQ(decoded.exempt_worker_ids_.size(), 2u);
     EXPECT_EQ(decoded.exempt_worker_ids_[0], 5u);

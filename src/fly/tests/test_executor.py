@@ -90,7 +90,7 @@ def test_deserialize_fly_db_marker():
 
     assert len(result) == 1
     assert isinstance(result[0], _Database)
-    # cache key == base_path（db_path == base_path，不再单独传）
+    # cache key == db_path（db_path == db_path，不再单独传）
     assert "/tmp/fly_test_marker_db" in worker._db_cache
     assert "/tmp/fly_test_marker_db" in worker._agent.registered_dbs
 
@@ -111,7 +111,7 @@ def test_deserialize_fly_db_with_data_path():
     result = _deserialize_args(args, worker)
 
     assert isinstance(result[0], _Database)
-    # cache key == base_path（temp_dir）
+    # cache key == db_path（temp_dir）
     assert temp_dir in worker._db_cache
     
     for db_path_key, db_obj in worker._db_cache.items():

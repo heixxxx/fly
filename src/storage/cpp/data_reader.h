@@ -19,7 +19,7 @@ struct ReadResult {
 class DataReader {
 public:
     DataReader(
-        const CMString& base_path,
+        const CMString& db_path,
         const CMString& data_path,
         const CMString& writer_id
     );
@@ -41,7 +41,7 @@ public:
 private:
     FlyBufferPtr read_from_file(const CMString& file_path, int64_t offset, int64_t size);
 
-    CMString base_path_;
+    CMString db_path_;
     CMString data_path_;
     CMString writer_id_;
 

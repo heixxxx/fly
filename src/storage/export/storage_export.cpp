@@ -295,7 +295,6 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_METHOD("is_frozen", &Database::is_frozen)
     FLY_EXPORT_METHOD("load_meta", &Database::load_meta)
     FLY_EXPORT_METHOD("get_db_path", &Database::get_db_path)
-    FLY_EXPORT_METHOD("get_base_path", &Database::get_base_path)
     FLY_EXPORT_METHOD("get_data_path", &Database::get_data_path)
     FLY_EXPORT_METHOD("get_full_name", &Database::get_full_name)
     FLY_EXPORT_METHOD("get_writer_id", &Database::get_writer_id)
@@ -398,8 +397,8 @@ FLY_EXPORT_FUNCTION("ex_stg_get_data_service", []() { return fly::DataService::i
 FLY_EXPORT_CLASS(StorageManager, "EXStgStorageManager")
     FLY_EXPORT_METHOD("close_all", &StorageManager::close_all)
     FLY_EXPORT_METHOD("reset", &StorageManager::reset)
-    FLY_EXPORT_DEF("get_or_create_database", [](StorageManager& sm, const CMString& base_path) -> CMSharedPtr<Database> {
-        return sm.get_or_create_database(base_path);
+    FLY_EXPORT_DEF("get_or_create_database", [](StorageManager& sm, const CMString& db_path) -> CMSharedPtr<Database> {
+        return sm.get_or_create_database(db_path);
     });
 
 FLY_EXPORT_CLASS(IndexEntry, "EXStgIndexEntry")
@@ -432,20 +431,20 @@ FLY_EXPORT_CLASS(WorkerInfo, "EXStgWorkerInfo")
 
 FLY_EXPORT_FUNCTION("ex_stg_get_storage_manager", []() { return StorageManager::instance(); });
 
-FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& base_path, const CMString& data_path, uint64_t writer_id) -> CMSharedPtr<Database> {
-    return CMMakeShared<Database>(base_path, data_path, writer_id, "", "");
+FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& db_path, const CMString& data_path, uint64_t writer_id) -> CMSharedPtr<Database> {
+    return CMMakeShared<Database>(db_path, data_path, writer_id, "", "");
 });
 
-FLY_EXPORT_FUNCTION("ex_stg_create_database_with_path", [](const CMString& base_path, const CMString& data_path, uint64_t writer_id, const CMString& /*db_path*/) -> CMSharedPtr<Database> {
-    // db_path 参数保留仅为签名兼容（== base_path，existing_db_path 已废弃忽略）。
+FLY_EXPORT_FUNCTION("ex_stg_create_database_with_path", [](const CMString& db_path, const CMString& data_path, uint64_t writer_id, const CMString& /*db_path*/) -> CMSharedPtr<Database> {
+    // db_path 参数保留仅为签名兼容（== db_path，existing_db_path 已废弃忽略）。
     // 等价于 ex_stg_create_database。
-    return CMMakeShared<Database>(base_path, data_path, writer_id);
+    return CMMakeShared<Database>(db_path, data_path, writer_id);
 });
 
-// 静态读 _DB_META，不构造 Database（避免 merge_db 重复 register base_path）。
+// 静态读 _DB_META，不构造 Database（避免 merge_db 重复 register db_path）。
 FLY_EXPORT_FUNCTION("ex_stg_load_meta_from_path",
-    [](const CMString& base_path) -> DbMeta {
-        return Database::load_meta_from_path(base_path);
+    [](const CMString& db_path) -> DbMeta {
+        return Database::load_meta_from_path(db_path);
     });
 
 FLY_EXPORT_FUNCTION("ex_stg_compute_write_context_hash",

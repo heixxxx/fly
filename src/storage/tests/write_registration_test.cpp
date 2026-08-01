@@ -15,7 +15,7 @@ static void write_raw(Database& db, const CMString& name, const CMString& data, 
 
 #define TEST_LOG(fmt, ...) fprintf(stderr, "[TEST_DEBUG] %s:%d " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__)
 
-// db_path 废弃：db_path 现在是 base_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_path。
+// db_path 废弃：db_path 现在是 db_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_path。
 static CMString db32(const CMString& hint) {
     return "/test/" + hint;
 }
@@ -49,14 +49,13 @@ TEST_F(WriteRegistrationTest, OnWriteStartedCreatesIncompleteEntry) {
 }
 
 TEST_F(WriteRegistrationTest, OnWriteCompletedMakesEntryReadable) {
-    CMString db_path = db32("comp_db");
+    CMString db_path = test_dir_ + "/comp_db";
+    std::filesystem::create_directories(db_path);
     CMString full = db_path + ":comp_obj";
 
     ds_->on_write_started(db_path, full);
 
-    CMString base_path = test_dir_ + "/comp_db";
-    std::filesystem::create_directories(base_path);
-    ds_->register_database(db_path, base_path, "");
+    ds_->register_database(db_path, "");
 
     IndexEntry entry;
     entry.object_name_ = full;
@@ -89,8 +88,8 @@ TEST_F(WriteRegistrationTest, OnWriteFailedRemovesEntry) {
 }
 
 TEST_F(WriteRegistrationTest, WaitCompletionSucceedsForCompleteEntry) {
-    CMString base_path = test_dir_ + "/wait_real_db";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/wait_real_db";
+    Database db(db_path);
     CMString full = db.get_full_name("writereg/wait_real");
     std::mutex mtx;
     std::condition_variable cv;
@@ -157,8 +156,8 @@ TEST_F(WriteRegistrationTest, WaitTimesOutForIncompleteEntry) {
 }
 
 TEST_F(WriteRegistrationTest, WaitReturnsImmediatelyForCompleteEntry) {
-    CMString base_path = test_dir_ + "/imm_real_db";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/imm_real_db";
+    Database db(db_path);
     write_raw(db, "writereg/imm_real", "imm_data", false);
     fly::DataService::instance()->drain_write_back();
 
@@ -176,8 +175,8 @@ TEST_F(WriteRegistrationTest, WaitReturnsImmediatelyForCompleteEntry) {
 }
 
 TEST_F(WriteRegistrationTest, ConcurrentWaitersOnSameEntry) {
-    CMString base_path = test_dir_ + "/conc_real_db";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/conc_real_db";
+    Database db(db_path);
     CMString full = db.get_full_name("writereg/conc_real");
 
     std::atomic<int> success_count{0};
@@ -236,8 +235,8 @@ TEST_F(WriteRegistrationTest, TaskErrorTypeValues) {
 }
 
 TEST_F(WriteRegistrationTest, FullTwoPhaseWriteViaDatabase) {
-    CMString base_path = test_dir_ + "/twophase";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/twophase";
+    Database db(db_path);
 
     write_raw(db, "twophase/obj", "hello_twophase", false);
     fly::DataService::instance()->drain_write_back();

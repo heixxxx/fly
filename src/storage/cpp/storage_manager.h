@@ -15,7 +15,7 @@ public:
     StorageManager& operator=(const StorageManager&) = delete;
 
     CMSharedPtr<Database> get_or_create_database(
-        const CMString& base_path,
+        const CMString& db_path,
         const CMString& data_path = ""
     );
 

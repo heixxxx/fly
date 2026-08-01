@@ -17,7 +17,7 @@
 
 namespace fly {
 
-// db_path 废弃：现在 db_path == db_path（base_path）。full_name = "db_path:short_name"。
+// db_path 废弃：现在 db_path == db_path（db_path）。full_name = "db_path:short_name"。
 // split 用 rfind(':') —— short_name 是逻辑对象名（如 "matrix"、"result/obj"）不含 ':'，
 // 最后一个 ':' 必是分隔符。db_path 在 Database 构造时校验不含 ':'（双保险）。
 inline std::pair<CMString, CMString> split_full_name(const CMString& full) {
@@ -96,7 +96,6 @@ public:
     // ============================================================
 
     void register_database(const CMString& db_path,
-                            const CMString& base_path,
                             const CMString& data_path,
                             const CMString& writer_id = "");
 
@@ -108,24 +107,24 @@ public:
     // DB Migration Redirect (替代 db_path 的逻辑锚点)
     // ============================================================
 
-    // 解析 base_path：若 {base_path}/_MIGRATED_TO 存在，返回迁移 target 的 base_path
-    // （链式迁移 A→B→C 递归展平）；否则返回 base_path 原值。结果缓存进
+    // 解析 db_path：若 {db_path}/_MIGRATED_TO 存在，返回迁移 target 的 db_path
+    // （链式迁移 A→B→C 递归展平）；否则返回 db_path 原值。结果缓存进
     // migrated_db_paths_（path 未变期间只 stat 一次）。merge 后 master 主动调
     // set_migrated_path 更新缓存，避免重复 stat。
-    CMString resolve_migrated_path(const CMString& base_path);
+    CMString resolve_migrated_path(const CMString& db_path);
 
-    // 读 {base_path}/_MIGRATED_TO 的 target_data_path。无迁移文件返回空。
+    // 读 {db_path}/_MIGRATED_TO 的 target_data_path。无迁移文件返回空。
     // Database 构造跟随迁移时用此获取 target 的 data_path（源 data_path 已失效）。
-    CMString read_migrated_data_path(const CMString& base_path);
+    CMString read_migrated_data_path(const CMString& db_path);
 
     // 主动更新/清除迁移缓存（merge 产生新迁移后 master 调用）。
     // target 为空表示清除该 source 的迁移记录。
-    void set_migrated_path(const CMString& source_base_path,
-                            const CMString& target_base_path);
+    void set_migrated_path(const CMString& source_db_path,
+                            const CMString& target_db_path);
 
-    // 在 source_base_path 写 _MIGRATED_TO 迁移标识文件。merge 跨 path 时调用。
-    static void write_migration_marker(const CMString& source_base_path,
-                                        const CMString& target_base_path,
+    // 在 source_db_path 写 _MIGRATED_TO 迁移标识文件。merge 跨 path 时调用。
+    static void write_migration_marker(const CMString& source_db_path,
+                                        const CMString& target_db_path,
                                         const CMString& target_data_path);
 
     // ============================================================
@@ -283,7 +282,7 @@ public:
 
 private:
     struct DbPaths {
-        CMString base_path_;
+        CMString db_path_;
         CMString data_path_;
         CMString writer_id_;
     };
@@ -318,7 +317,7 @@ private:
 
     CMUnorderedMap<CMString, DbPaths> db_paths_;
 
-    // 迁移重定向缓存：source_base_path → resolved target_base_path（链式展平）。
+    // 迁移重定向缓存：source_db_path → resolved target_db_path（链式展平）。
     // resolve_migrated_path miss 时 stat _MIGRATED_TO 一次并缓存。merge 后 master
     // 主动 set_migrated_path 更新。
     CMUnorderedMap<CMString, CMString> migrated_db_paths_;

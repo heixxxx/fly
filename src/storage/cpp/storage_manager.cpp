@@ -12,15 +12,15 @@ CMSharedPtr<StorageManager> StorageManager::instance() {
 StorageManager::StorageManager() = default;
 
 CMSharedPtr<Database> StorageManager::get_or_create_database(
-    const CMString& base_path,
+    const CMString& db_path,
     const CMString& data_path) {
 
-    return databases_.get_or_insert(base_path, [&]() {
-        fs::create_directories(base_path);
+    return databases_.get_or_insert(db_path, [&]() {
+        fs::create_directories(db_path);
         if (!data_path.empty()) {
             fs::create_directories(data_path);
         }
-        return CMMakeShared<Database>(base_path, data_path);
+        return CMMakeShared<Database>(db_path, data_path);
     });
 }
 

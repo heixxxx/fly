@@ -15,10 +15,10 @@ static void write_raw(Database& db, const CMString& name, const CMString& data, 
     db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
 }
 
-// db_path 废弃：db_path 现在是 base_path 的别名（不含 ':'，否则 split 歧义）。
+// db_path 废弃：db_path 现在是 db_path 的别名（不含 ':'，否则 split 歧义）。
 // db32() 生成不含 ':' 的 db_path 用于测试。保留函数名 db32 仅为调用点兼容。
 static CMString db32(const CMString& hint) {
-    // 用路径风格（含 '/' 但不含 ':'），模拟真实 base_path。
+    // 用路径风格（含 '/' 但不含 ':'），模拟真实 db_path。
     return "/test/" + hint;
 }
 
@@ -53,8 +53,8 @@ TEST_F(DataServiceTest, HasLocalObjectReturnsFalseWhenEmpty) {
 }
 
 TEST_F(DataServiceTest, OnObjectWrittenAndFlushEnablesLocalRead) {
-    CMString base_path = test_dir_ + "/local_read";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/local_read";
+    Database db(db_path);
 
     write_raw(db, "local/obj", "hello", false);
     fly::DataService::instance()->drain_write_back();
@@ -155,8 +155,8 @@ TEST_F(DataServiceTest, GetWorkerAddressReturnsEmptyForUnknown) {
 }
 
 TEST_F(DataServiceTest, MultipleObjectsInSameDatabase) {
-    CMString base_path = test_dir_ + "/multi_obj";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/multi_obj";
+    Database db(db_path);
 
     write_raw(db, "multi/a", "data_a", false);
     write_raw(db, "multi/b", "data_b", false);
@@ -179,8 +179,8 @@ TEST_F(DataServiceTest, MultipleObjectsInSameDatabase) {
 }
 
 TEST_F(DataServiceTest, TypedObjectReadableViaDataService) {
-    CMString base_path = test_dir_ + "/typed_ds";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/typed_ds";
+    Database db(db_path);
 
     db.write_pickle_bytes("typed/ds_obj", "typed_payload", 13, "MyType");
     fly::DataService::instance()->drain_write_back();
@@ -236,11 +236,10 @@ TEST_F(DataServiceTest, LookupAllRemoteIdxEmptyForUnknownObject) {
 }
 
 TEST_F(DataServiceTest, RegisterDatabaseAndLocalRead) {
-    CMString db_path = db32("manual_db");
-    CMString base_path = test_dir_ + "/reg_db";
-    std::filesystem::create_directories(base_path);
+    CMString db_path = test_dir_ + "/reg_db";
+    std::filesystem::create_directories(db_path);
 
-    ds_->register_database(db_path, base_path, "");
+    ds_->register_database(db_path, "");
 
     CMString full = db_path + ":manual/obj";
     IndexEntry entry;
@@ -258,8 +257,8 @@ TEST_F(DataServiceTest, RegisterDatabaseAndLocalRead) {
 }
 
 TEST_F(DataServiceTest, RemoveLocalIndexMakesObjectUnreadable) {
-    CMString base_path = test_dir_ + "/remove_local";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/remove_local";
+    Database db(db_path);
 
     write_raw(db, "remove/local", "data", false);
     fly::DataService::instance()->drain_write_back();
@@ -276,8 +275,8 @@ TEST_F(DataServiceTest, RemoveLocalIndexMakesObjectUnreadable) {
 }
 
 TEST_F(DataServiceTest, RemoveLocalIndexOnlyAffectsTarget) {
-    CMString base_path = test_dir_ + "/remove_one_local";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/remove_one_local";
+    Database db(db_path);
 
     write_raw(db, "keep/me", "keep_data", false);
     write_raw(db, "remove/me", "remove_data", false);
@@ -319,10 +318,9 @@ TEST_F(DataServiceTest, RemoveRemoteIndexOnlyAffectsTarget) {
 }
 
 TEST_F(DataServiceTest, RestoreEntriesMakesObjectsReadable) {
-    CMString db_path = db32("restore_db");
-    CMString base_path = test_dir_ + "/restore_test";
-    std::filesystem::create_directories(base_path);
-    ds_->register_database(db_path, base_path, "");
+    CMString db_path = test_dir_ + "/restore_test";
+    std::filesystem::create_directories(db_path);
+    ds_->register_database(db_path, "");
 
     CMVector<IndexEntry> entries;
     IndexEntry e1;
@@ -350,10 +348,9 @@ TEST_F(DataServiceTest, RestoreEntriesMakesObjectsReadable) {
 }
 
 TEST_F(DataServiceTest, RestoreEntriesMultipleEntriesPerObject) {
-    CMString db_path = db32("multi_db");
-    CMString base_path = test_dir_ + "/restore_multi";
-    std::filesystem::create_directories(base_path);
-    ds_->register_database(db_path, base_path, "");
+    CMString db_path = test_dir_ + "/restore_multi";
+    std::filesystem::create_directories(db_path);
+    ds_->register_database(db_path, "");
 
     CMVector<IndexEntry> entries;
     IndexEntry e1;
@@ -380,10 +377,9 @@ TEST_F(DataServiceTest, RestoreEntriesMultipleEntriesPerObject) {
 }
 
 TEST_F(DataServiceTest, RestoreEntriesAppendsToExisting) {
-    CMString db_path = db32("append_db");
-    CMString base_path = test_dir_ + "/restore_append";
-    std::filesystem::create_directories(base_path);
-    ds_->register_database(db_path, base_path, "");
+    CMString db_path = test_dir_ + "/restore_append";
+    std::filesystem::create_directories(db_path);
+    ds_->register_database(db_path, "");
 
     IndexEntry e1;
     e1.object_name_ = db_path + ":obj";
@@ -418,14 +414,14 @@ TEST_F(DataServiceTest, RestoreEntriesEmptyVectorIsNoop) {
 }
 
 TEST_F(DataServiceTest, RestoreEntriesFromLocalIndexFile) {
-    CMString base_path = test_dir_ + "/restore_from_idx";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/restore_from_idx";
+    Database db(db_path);
 
     write_raw(db, "idx/obj1", "data1", false);
     write_raw(db, "idx/obj2", "data2", false);
     fly::DataService::instance()->drain_write_back();
 
-    CMString idx_path = base_path + "/" + db.get_writer_id() + ".idx";
+    CMString idx_path = db_path + "/" + db.get_writer_id() + ".idx";
 
     LocalIndex source_idx(idx_path);
     source_idx.load();
@@ -547,10 +543,9 @@ TEST_F(DataServiceTest, WriteCompletedOnlyAffectsTargetDb) {
 }
 
 TEST_F(DataServiceTest, HasDatabaseReturnsTrue) {
-    CMString db_path = db32("has_db");
-    CMString base_path = test_dir_ + "/has_db";
-    std::filesystem::create_directories(base_path);
-    ds_->register_database(db_path, base_path, "");
+    CMString db_path = test_dir_ + "/has_db";
+    std::filesystem::create_directories(db_path);
+    ds_->register_database(db_path, "");
     EXPECT_TRUE(ds_->has_database(db_path));
 }
 
@@ -559,10 +554,9 @@ TEST_F(DataServiceTest, HasDatabaseReturnsFalseForUnknown) {
 }
 
 TEST_F(DataServiceTest, UnregisterDatabaseRemovesIt) {
-    CMString db_path = db32("unreg_db");
-    CMString base_path = test_dir_ + "/unreg_db";
-    std::filesystem::create_directories(base_path);
-    ds_->register_database(db_path, base_path, "");
+    CMString db_path = test_dir_ + "/unreg_db";
+    std::filesystem::create_directories(db_path);
+    ds_->register_database(db_path, "");
     EXPECT_TRUE(ds_->has_database(db_path));
 
     ds_->unregister_database(db_path);
@@ -684,8 +678,8 @@ TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsFalseForMissingEntry) {
 }
 
 TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsImmediatelyWhenComplete) {
-    CMString base_path = test_dir_ + "/wait_read";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/wait_read";
+    Database db(db_path);
 
     write_raw(db, "wait/obj", "wait_data", false);
     fly::DataService::instance()->drain_write_back();
@@ -719,8 +713,8 @@ TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsFalseOnFailed) {
 }
 
 TEST_F(DataServiceTest, TryReadLocalRawReturnsData) {
-    CMString base_path = test_dir_ + "/raw_read";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/raw_read";
+    Database db(db_path);
 
     write_raw(db, "raw/obj", "raw_data", false);
     fly::DataService::instance()->drain_write_back();
@@ -738,8 +732,8 @@ TEST_F(DataServiceTest, TryReadLocalRawReturnsFalseForMissing) {
 }
 
 TEST_F(DataServiceTest, TryReadLocalRawOrWaitReturnsData) {
-    CMString base_path = test_dir_ + "/raw_wait";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/raw_wait";
+    Database db(db_path);
 
     write_raw(db, "rawwait/obj", "rawwait_data", false);
     fly::DataService::instance()->drain_write_back();
@@ -766,8 +760,8 @@ TEST_F(DataServiceTest, TryReadLocalRawOrWaitTimeoutOnIncomplete) {
 }
 
 TEST_F(DataServiceTest, TryReadRemoteReturnsLocalIfAvailable) {
-    CMString base_path = test_dir_ + "/remote_local";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/remote_local";
+    Database db(db_path);
 
     write_raw(db, "remote/local_obj", "local_data", false);
     fly::DataService::instance()->drain_write_back();
@@ -791,8 +785,8 @@ TEST_F(DataServiceTest, TryReadRemoteSetsCanStillProduceFlag) {
 }
 
 TEST_F(DataServiceTest, ReadRawCompressedReturnsLocalRaw) {
-    CMString base_path = test_dir_ + "/raw_comp";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/raw_comp";
+    Database db(db_path);
 
     write_raw(db, "comp/obj", "comp_data", false);
     fly::DataService::instance()->drain_write_back();
@@ -823,19 +817,6 @@ TEST_F(DataServiceTest, RegisterDatabaseDuplicateUpdatesExisting) {
     EXPECT_TRUE(ds_->has_database(db_path));
 }
 
-TEST_F(DataServiceTest, RegisterDatabaseDuplicateBasePathRejected) {
-    CMString db1 = db32("first_db");
-    CMString db2 = db32("second_db");
-    CMString base = test_dir_ + "/shared_base";
-
-    std::filesystem::create_directories(base);
-    ds_->register_database(db1, base, "");
-    ds_->register_database(db2, base, "");
-
-    EXPECT_TRUE(ds_->has_database(db1));
-    EXPECT_FALSE(ds_->has_database(db2));
-}
-
 TEST_F(DataServiceTest, RemoveRemoteLocationByFullObject) {
     CMString full = db32("rr_full") + ":obj";
     ds_->update_remote_idx(full, 1, "host_a", 8000);
@@ -846,10 +827,9 @@ TEST_F(DataServiceTest, RemoveRemoteLocationByFullObject) {
 }
 
 TEST_F(DataServiceTest, RestoreEntriesWithShortObjectNames) {
-    CMString db_path = db32("short_db");
-    CMString base_path = test_dir_ + "/short_restore";
-    std::filesystem::create_directories(base_path);
-    ds_->register_database(db_path, base_path, "");
+    CMString db_path = test_dir_ + "/short_restore";
+    std::filesystem::create_directories(db_path);
+    ds_->register_database(db_path, "");
 
     CMVector<IndexEntry> entries;
     IndexEntry e;
@@ -1105,8 +1085,8 @@ TEST_F(DataServiceTest, RemoteObjectMetaResetClearsAccess) {
 
 // try_read_local_raw returns (found, compressed_bytes) for a flushed object.
 TEST_F(DataServiceTest, TryReadLocalRawReturnsCompressedData) {
-    CMString base_path = test_dir_ + "/raw_read";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/raw_read";
+    Database db(db_path);
     write_raw(db, "raw/obj", "payload", false);
     ds_->drain_write_back();
 
@@ -1129,8 +1109,8 @@ TEST_F(DataServiceTest, TryReadLocalRawReturnsFalseForUnknown) {
 // .dat files after populating the cache — if it still returns data, it came
 // from the low-tier cache, not disk.
 TEST_F(DataServiceTest, TryReadLocalRawServesFromLowCache) {
-    CMString base_path = test_dir_ + "/serve_cache";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/serve_cache";
+    Database db(db_path);
     write_raw(db, "serve/obj", "payload", false);
     ds_->drain_write_back();
 
@@ -1143,7 +1123,7 @@ TEST_F(DataServiceTest, TryReadLocalRawServesFromLowCache) {
     ASSERT_EQ(fly::ObjectCache::instance().low_size(), 1u);
 
     // Delete on-disk data files so a disk read would fail.
-    for (auto& p : std::filesystem::directory_iterator(base_path)) {
+    for (auto& p : std::filesystem::directory_iterator(db_path)) {
         if (p.path().extension() == ".dat") {
             std::filesystem::remove(p.path());
         }
@@ -1160,8 +1140,8 @@ TEST_F(DataServiceTest, TryReadLocalRawServesFromLowCache) {
 // try_read_local_raw populates the low tier after a disk read, so subsequent
 // calls hit the cache.
 TEST_F(DataServiceTest, TryReadLocalRawPopulatesLowCache) {
-    CMString base_path = test_dir_ + "/populate_cache";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/populate_cache";
+    Database db(db_path);
     write_raw(db, "pop/obj", "data", false);
     ds_->drain_write_back();
 
@@ -1181,8 +1161,8 @@ TEST_F(DataServiceTest, TryReadLocalRawPopulatesLowCache) {
 
 // try_read_local_raw_or_wait returns immediately for a complete object (no wait).
 TEST_F(DataServiceTest, TryReadLocalRawOrWaitImmediateForComplete) {
-    CMString base_path = test_dir_ + "/raw_wait";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/raw_wait";
+    Database db(db_path);
     write_raw(db, "rw/obj", "data", false);
     ds_->drain_write_back();
 
@@ -1197,7 +1177,7 @@ TEST_F(DataServiceTest, TryReadLocalRawOrWaitTimesOut) {
     CMString db_path = db32("waitraw_db");
     CMString full = db_path + ":never_obj";
     // Register db so lookup doesn't early-return on unknown db.
-    ds_->register_database(db_path, test_dir_ + "/waitraw", "", "writer_x");
+    ds_->register_database(test_dir_ + "/waitraw", "", "writer_x");
     ds_->on_write_started(db_path, full);
 
     auto t0 = std::chrono::steady_clock::now();
@@ -1210,8 +1190,8 @@ TEST_F(DataServiceTest, TryReadLocalRawOrWaitTimesOut) {
 
 // try_read_local_or_wait (decoded) returns immediately for complete object.
 TEST_F(DataServiceTest, TryReadLocalOrWaitImmediateForComplete) {
-    CMString base_path = test_dir_ + "/or_wait";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/or_wait";
+    Database db(db_path);
     write_raw(db, "ow/obj", "hello", false);
     ds_->drain_write_back();
 
@@ -1245,7 +1225,7 @@ TEST_F(DataServiceTest, TryReadRemoteInvokesHandler) {
 TEST_F(DataServiceTest, IsWriteInProgressReflectsLifecycle) {
     CMString db_path = db32("wip_db");
     CMString full = db_path + ":wip_obj";
-    ds_->register_database(db_path, test_dir_ + "/wip", "", "writer_w");
+    ds_->register_database(test_dir_ + "/wip", "", "writer_w");
     EXPECT_FALSE(ds_->is_write_in_progress(full));
 
     ds_->on_write_started(db_path, full);

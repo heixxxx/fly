@@ -92,7 +92,7 @@ public:
     // 登记一个【外部已知 db_path】的 db 路径（master 自写用 get_or_create_database 自动生成 id；
     // 此处用于 load/merge 等已从 _DB_META 读出 db_path 的场景）。Database 是路径唯一权威源，
     // 故内部构造 Database 插入 db_instances_（替代原 db_registry_ 字符串副本）。
-    void register_database(const CMString& db_path, const CMString& base_path, const CMString& data_path = "");
+    void register_database(const CMString& db_path, const CMString& data_path = "");
     bool is_db_frozen(const CMString& db_path) const;
     // 非 stream 模式 pending frozen 状态机（WP1）。
     // is_db_frozen 覆盖 confirmed ∪ pending（跨 task 写注册拦截）。
@@ -103,7 +103,7 @@ public:
     // 消息处理入口（public 供测试直接调用，reactor 通过 lambda 调用）：
     void on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg);
     void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
-    CMSharedPtr<Database> get_or_create_database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0);
+    CMSharedPtr<Database> get_or_create_database(const CMString& db_path, const CMString& data_path = "", uint64_t writer_id = 0);
     // 取 db_instances_ 里的权威 Database（load_db/merge 复用，避免 Python 端再构造一个
     // 会触发 DataService::unregister 析构副作用的临时 Database）。miss 返回 nullptr。
     CMSharedPtr<Database> get_database(const CMString& db_path) const;
@@ -111,15 +111,15 @@ public:
     void setup_write_context();
 
     // load_db support methods
-    CMVector<IndexEntry> restore_master_idx(const CMString& db_path, const CMString& base_path, const CMString& writer_id);
+    CMVector<IndexEntry> restore_master_idx(const CMString& db_path, const CMString& writer_id);
     // 轻量读 idx：只返回 entries 列表，不调 restore_entries（不灌 master local_idx）也不
     // mark_data_ready。用于 merge_db Phase 3 取对象清单派发 task，避免"先污染再清理"绕路。
-    CMVector<IndexEntry> read_idx_entries(const CMString& base_path, const CMString& writer_id);
-    void send_idx_load_commands(const CMString& db_path, const CMString& base_path, const CMVector<CMString>& writer_ids);
-    void rebuild_remote_idx(const CMString& db_path, const CMString& base_path, const CMVector<::WorkerInfo>& workers);
-    void send_idx_load_to_worker(const CMString& db_path, const CMString& base_path,
+    CMVector<IndexEntry> read_idx_entries(const CMString& db_path, const CMString& writer_id);
+    void send_idx_load_commands(const CMString& db_path, const CMVector<CMString>& writer_ids);
+    void rebuild_remote_idx(const CMString& db_path, const CMVector<::WorkerInfo>& workers);
+    void send_idx_load_to_worker(const CMString& db_path,
                                   const CMVector<CMString>& writer_ids, uint64_t worker_id);
-    void rebuild_remote_idx_for_worker(const CMString& db_path, const CMString& base_path,
+    void rebuild_remote_idx_for_worker(const CMString& db_path,
                                         const CMVector<CMString>& writer_ids, uint64_t worker_id);
     void set_master_hostname(const CMString& hostname);
 
@@ -128,14 +128,16 @@ public:
     // 落到 target_data_path（master host 本地）。返回派发的 task_id（用于 wait_merge_tasks_complete）。
     // 详见 docs/db-merge-design.md §3.4。
     uint64_t send_merge_task(uint64_t target_worker_id,
-                              const CMString& short_name, const CMString& db_path,
-                              const CMString& base_path, const CMString& target_data_path,
+                              const CMString& short_name,
+                              const CMString& source_db_path,
+                              const CMString& target_db_path,
+                              const CMString& target_data_path,
                               const CMString& source_host);
     // 命令 source_worker 删除本地 data_path 下的 .dat（merge 成功后清理源）。
     // data_path 显式传入（源 data_path），worker 不查 db_registry —— cleanup 会改
     // master 的 db_registry 到 merge 路径，db_registry 解析会拿错路径。
     void send_delete_data(uint64_t source_worker_id,
-                           const CMString& db_path, const CMString& base_path,
+                           const CMString& db_path,
                            const CMString& data_path,
                            const CMVector<CMString>& writer_ids);
     // 等待一批 DeleteData 的 ack 全部返回。返回是否全部成功；
@@ -163,7 +165,7 @@ public:
                               const CMVector<CMString>& merged_object_full_names,
                               const CMVector<uint64_t>& source_worker_ids,
                               const CMVector<uint64_t>& merge_target_worker_ids,
-                              const CMString& merge_base_path,
+                              const CMString& merge_db_path,
                               const CMString& merge_data_path);
     // merge task 完成/失败回调（由 on_task_complete / on_task_failed 的 internal 分支调用）。
     void on_merge_task_complete(uint64_t task_id, uint64_t worker_id, const CMVector<WrittenObject>& written_objects);
@@ -226,7 +228,7 @@ private:
     mutable std::mutex dep_loc_mutex_;
 
     // db_instances_ 是 master 进程内 DB 路径的【唯一权威源】（收敛自原 db_registry_ 字符串副本）。
-    // Database 对象内嵌 base_path_/data_path_（merge 后用 set_paths 更新），DbPathRequest/
+    // Database 对象内嵌 db_path_/data_path_（merge 后用 set_paths 更新），DbPathRequest/
     // IdxLoadAck/send_delete_data 均从此读路径，消除手动双写与 merge 后副本分叉。
     CMUnorderedMap<CMString, CMSharedPtr<Database>> db_instances_;
     CMUnorderedSet<CMString> frozen_dbs_;

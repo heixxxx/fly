@@ -469,23 +469,23 @@ def test_document_class_basic():
     """类装饰器：api_name=类名，校验 __init__ 参数。"""
     _fresh_registry()
     doc = UserDoc("测试类")
-    doc.add_param("base_path", schema=Schema(str, check=lambda s: len(s) > 0,
+    doc.add_param("db_path", schema=Schema(str, check=lambda s: len(s) > 0,
                                              error="must not be empty"),
                   required=True, desc="路径")
 
     class Base:
-        def __init__(self, base_path: str):
-            self.base_path = base_path
+        def __init__(self, db_path: str):
+            self.db_path = db_path
 
     @document(doc)
     class Child(Base):
         pass
 
     assert doc._api_name == "Child"
-    assert str(doc._signature) == "(base_path: str)"
+    assert str(doc._signature) == "(db_path: str)"
     # 合法构造
     c = Child("/valid")
-    assert c.base_path == "/valid"
+    assert c.db_path == "/valid"
     assert "Child" in userdoc._HELP_REGISTRY
 
 
@@ -493,13 +493,13 @@ def test_document_class_validates_init():
     """类装饰器：非法 __init__ 参数被校验拦截。"""
     _fresh_registry()
     doc = UserDoc("测试类")
-    doc.add_param("base_path", schema=Schema(str, check=lambda s: len(s) > 0,
+    doc.add_param("db_path", schema=Schema(str, check=lambda s: len(s) > 0,
                                              error="must not be empty"),
                   required=True)
 
     class Base:
-        def __init__(self, base_path):
-            self.base_path = base_path
+        def __init__(self, db_path):
+            self.db_path = db_path
 
     @document(doc)
     class Child(Base):
@@ -525,13 +525,13 @@ def test_document_class_base_untouched():
     """类装饰器只包装子类 __init__，不影响基类。"""
     _fresh_registry()
     doc = UserDoc("测试类")
-    doc.add_param("base_path", schema=Schema(str, check=lambda s: len(s) > 0,
+    doc.add_param("db_path", schema=Schema(str, check=lambda s: len(s) > 0,
                                              error="must not be empty"),
                   required=True)
 
     class Base:
-        def __init__(self, base_path):
-            self.base_path = base_path
+        def __init__(self, db_path):
+            self.db_path = db_path
 
     @document(doc)
     class Child(Base):
@@ -539,7 +539,7 @@ def test_document_class_base_untouched():
 
     # Base 不受影响：空字符串允许（基类无校验）
     b = Base("")
-    assert b.base_path == ""
+    assert b.db_path == ""
 
 
 def test_document_class_owner_none():
@@ -562,11 +562,11 @@ def test_document_class_prototype():
     """类装饰器 help prototype 形如 ClassName(...)。"""
     _fresh_registry()
     doc = UserDoc("测试类")
-    doc.add_param("base_path", schema=Schema(str), required=True)
+    doc.add_param("db_path", schema=Schema(str), required=True)
     doc.add_param("mode", schema=Schema(str), required=False, default="r")
 
     class Base:
-        def __init__(self, base_path, mode="r"):
+        def __init__(self, db_path, mode="r"):
             pass
 
     @document(doc)
@@ -575,7 +575,7 @@ def test_document_class_prototype():
 
     proto = doc._render_prototype()
     assert proto.startswith("MyClass(")
-    assert "base_path" in proto and "mode='r'" in proto
+    assert "db_path" in proto and "mode='r'" in proto
 
 
 # ═══════════════════════════════════════════════════════════════════════════

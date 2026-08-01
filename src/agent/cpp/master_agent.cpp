@@ -120,14 +120,14 @@ void MasterAgent::start() {
             DbPathResponseMessage response;
             response.db_path_ = msg.db_path_;
 
-            // 路径权威源收敛到 db_instances_（Database 内嵌 base_path_/data_path_）。
+            // 路径权威源收敛到 db_instances_（Database 内嵌 db_path_/data_path_）。
             auto it = db_instances_.find(msg.db_path_);
             if (it != db_instances_.end()) {
-                response.base_path_ = it->second->get_base_path();
+                response.db_path_ = it->second->get_db_path();
                 response.data_path_ = it->second->get_data_path();
                 response.success_ = true;
             } else {
-                response.base_path_ = "";
+                response.db_path_ = "";
                 response.data_path_ = "";
                 response.success_ = false;
             }
@@ -1103,11 +1103,11 @@ CMString MasterAgent::get_task_error(uint64_t task_id) const {
     return "";
 }
 
-void MasterAgent::register_database(const CMString& db_path, const CMString& base_path, const CMString& data_path) {
-    INFO("register_database: db_path={}, base_path={}, data_path={}", db_path, base_path, data_path);
+void MasterAgent::register_database(const CMString& db_path, const CMString& data_path) {
+    INFO("register_database: db_path={}, data_path={}", db_path, data_path);
     // Database 是 master 进程路径唯一权威源：构造对象插入 db_instances_，路径内嵌于对象，
     // DataService::db_paths_ 由 Database 构造时自动 register。
-    auto db = CMMakeShared<Database>(base_path, data_path, 0, "", db_path);
+    auto db = CMMakeShared<Database>(db_path, data_path, 0, "", db_path);
     db_instances_[db_path] = db;
 }
 
@@ -1167,11 +1167,10 @@ void MasterAgent::rollback_pending_frozen(uint64_t task_id) {
     }
 }
 
-CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& base_path, const CMString& data_path, uint64_t writer_id) {
+CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& db_path, const CMString& data_path, uint64_t writer_id) {
     // Database 是 master 进程 DB 路径的【唯一权威源】：路径内嵌于对象，DataService::db_paths_
     // 由 Database 构造时自动 register，无需手动双写第二份字符串副本。
-    auto db = CMMakeShared<Database>(base_path, data_path, writer_id);
-    CMString db_path = db->get_db_path();
+    auto db = CMMakeShared<Database>(db_path, data_path, writer_id);
     db_instances_[db_path] = db;
     return db;
 }
@@ -1687,9 +1686,8 @@ std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const C
 }
 
 CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_path,
-                                                       const CMString& base_path,
-                                                       const CMString& writer_id) {
-    CMString idx_path = base_path + "/" + writer_id + ".idx";
+                                                                                                              const CMString& writer_id) {
+    CMString idx_path = db_path + "/" + writer_id + ".idx";
     if (!std::filesystem::exists(idx_path)) {
         WARN("restore_master_idx: idx file not found: {}", idx_path);
         return {};
@@ -1712,9 +1710,9 @@ CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_path,
     return entries;
 }
 
-CMVector<IndexEntry> MasterAgent::read_idx_entries(const CMString& base_path,
+CMVector<IndexEntry> MasterAgent::read_idx_entries(const CMString& db_path,
                                                     const CMString& writer_id) {
-    CMString idx_path = base_path + "/" + writer_id + ".idx";
+    CMString idx_path = db_path + "/" + writer_id + ".idx";
     if (!std::filesystem::exists(idx_path)) {
         WARN("read_idx_entries: idx file not found: {}", idx_path);
         return {};
@@ -1725,11 +1723,10 @@ CMVector<IndexEntry> MasterAgent::read_idx_entries(const CMString& base_path,
 }
 
 void MasterAgent::send_idx_load_commands(const CMString& db_path,
-                                           const CMString& base_path,
-                                           const CMVector<CMString>& writer_ids) {
+                                                                                      const CMVector<CMString>& writer_ids) {
     IdxLoadCommandMessage msg;
     msg.db_path_ = db_path;
-    msg.base_path_ = base_path;
+    msg.db_path_ = db_path;
     msg.writer_ids_ = writer_ids;
 
     {
@@ -1743,8 +1740,7 @@ void MasterAgent::send_idx_load_commands(const CMString& db_path,
 }
 
 void MasterAgent::rebuild_remote_idx(const CMString& db_path,
-                                       const CMString& base_path,
-                                       const CMVector<::WorkerInfo>& workers) {
+                                                                              const CMVector<::WorkerInfo>& workers) {
     CMUnorderedMap<CMString, CMString> old_id_to_hostname;
     for (const auto& w : workers) {
         old_id_to_hostname[std::to_string(w.worker_id_)] = w.hostname_;
@@ -1761,7 +1757,7 @@ void MasterAgent::rebuild_remote_idx(const CMString& db_path,
             continue;
         }
 
-        CMString idx_path = base_path + "/" + w.writer_id_ + ".idx";
+        CMString idx_path = db_path + "/" + w.writer_id_ + ".idx";
         if (!std::filesystem::exists(idx_path)) {
             WARN("rebuild_remote_idx: idx file not found: {}", idx_path);
             continue;
@@ -1803,12 +1799,11 @@ void MasterAgent::set_master_hostname(const CMString& hostname) {
 }
 
 void MasterAgent::send_idx_load_to_worker(const CMString& db_path,
-                                            const CMString& base_path,
-                                            const CMVector<CMString>& writer_ids,
+                                                                                        const CMVector<CMString>& writer_ids,
                                             uint64_t worker_id) {
     IdxLoadCommandMessage msg;
     msg.db_path_ = db_path;
-    msg.base_path_ = base_path;
+    msg.db_path_ = db_path;
     msg.writer_ids_ = writer_ids;
 
     std::lock_guard<std::mutex> lk(workers_mutex_);
@@ -1823,13 +1818,12 @@ void MasterAgent::send_idx_load_to_worker(const CMString& db_path,
 }
 
 void MasterAgent::rebuild_remote_idx_for_worker(const CMString& db_path,
-                                                   const CMString& base_path,
-                                                   const CMVector<CMString>& writer_ids,
+                                                                                                      const CMVector<CMString>& writer_ids,
                                                    uint64_t worker_id) {
     auto addr = DataService::instance()->get_worker_address(worker_id);
 
     for (const auto& writer_id : writer_ids) {
-        CMString idx_path = base_path + "/" + writer_id + ".idx";
+        CMString idx_path = db_path + "/" + writer_id + ".idx";
         if (!std::filesystem::exists(idx_path)) {
             WARN("rebuild_remote_idx_for_worker: idx file not found: {}", idx_path);
             continue;
@@ -1870,7 +1864,7 @@ void MasterAgent::on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg
         return;
     }
 
-    rebuild_remote_idx_for_worker(msg.db_path_, it->second->get_base_path(), msg.loaded_writer_ids_, msg.worker_id_);
+    rebuild_remote_idx_for_worker(msg.db_path_, msg.loaded_writer_ids_, msg.worker_id_);
 }
 
 void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg) {
@@ -2115,8 +2109,10 @@ void MasterAgent::trigger_auto_backup(const CMString& object_name, uint64_t sour
 // =============================================================================
 
 uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
-                                       const CMString& short_name, const CMString& db_path,
-                                       const CMString& base_path, const CMString& target_data_path,
+                                       const CMString& short_name,
+                                       const CMString& source_db_path,
+                                       const CMString& target_db_path,
+                                       const CMString& target_data_path,
                                        const CMString& source_host) {
     uint64_t merge_task_id = remote_task_counter_.fetch_add(1);
 
@@ -2126,7 +2122,7 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
         merge_task_states_[merge_task_id] = MergeTaskState{};
     }
 
-    CMString full_name = db_path + ":" + short_name;
+    CMString full_name = source_db_path + ":" + short_name;
     // 把源对象位置注入 task dependency_locations_，让 target worker 的 read_raw_compressed
     // 直接 TIER2 命中（无需 TIER3 回查 master）。源位置从 remote_idx 取。
     {
@@ -2145,8 +2141,8 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
     assign.task_id_ = merge_task_id;
     assign.task_name_ = "__merge_object";
     assign.task_module_ = "__fly_internal";
-    // args: [short_name, db_path, base_path, target_data_path, source_host]
-    assign.args_ = {short_name, db_path, base_path, target_data_path, source_host};
+    // args: [short_name, source_db_path, target_db_path, target_data_path, source_host]
+    assign.args_ = {short_name, source_db_path, target_db_path, target_data_path, source_host};
     // write_context_hash 从 provenance 取（保持对象来源可追溯）。
     {
         std::lock_guard<std::mutex> lk(provenance_mutex_);
@@ -2243,7 +2239,7 @@ bool MasterAgent::wait_merge_tasks_complete(const CMVector<uint64_t>& task_ids,
 }
 
 void MasterAgent::send_delete_data(uint64_t source_worker_id,
-                                    const CMString& db_path, const CMString& base_path,
+                                    const CMString& db_path,
                                     const CMString& data_path,
                                     const CMVector<CMString>& writer_ids) {
     CMString ack_key = db_path + ":" + std::to_string(source_worker_id);
@@ -2254,7 +2250,7 @@ void MasterAgent::send_delete_data(uint64_t source_worker_id,
 
     DeleteDataMessage msg;
     msg.db_path_ = db_path;
-    msg.base_path_ = base_path;
+    msg.db_path_ = db_path;
     // data_path：显式传入优先；否则从 master db_instances_ 查（删源在 cleanup 前执行，
     // 此时 Database 仍是源的 data_path）。
     if (!data_path.empty()) {
@@ -2349,7 +2345,7 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
                                        const CMVector<CMString>& merged_object_full_names,
                                        const CMVector<uint64_t>& source_worker_ids,
                                        const CMVector<uint64_t>& merge_target_worker_ids,
-                                       const CMString& merge_base_path,
+                                       const CMString& merge_db_path,
                                        const CMString& merge_data_path) {
     auto ds = DataService::instance();
 
@@ -2371,8 +2367,7 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     //    按新路径 register_database + load 新 idx 重建 local_idx（同 host/共享 FS 可本地直读）。
     //    exempt = merge target workers（已持有效 local_idx，跳过清理但回 ack）。
     MergeCleanupMessage cleanup_msg;
-    cleanup_msg.db_path_ = db_path;
-    cleanup_msg.base_path_ = merge_base_path;
+    cleanup_msg.db_path_ = db_path;  // 源 db_path（worker 清旧索引用 + ack 匹配 pending key）
     cleanup_msg.data_path_ = merge_data_path;
     cleanup_msg.exempt_worker_ids_ = merge_target_worker_ids;
     {
@@ -2408,6 +2403,11 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     //    （worker 不再碰这个 db 的索引）。从 merge_task_states_ 取精确 (object→worker) 映射。
     ds->clear_local_index_for_db(db_path);
     ds->clear_remote_index_for_db(db_path);
+    // 跨 path merge 时也清 target 命名空间（merge worker 用 target 落盘/上报）。
+    if (merge_db_path != db_path) {
+        ds->clear_local_index_for_db(merge_db_path);
+        ds->clear_remote_index_for_db(merge_db_path);
+    }
 
     CMUnorderedMap<CMString, CMVector<uint64_t>> obj_to_workers;
     {
@@ -2431,28 +2431,28 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     }
 
     // 5. 路径更新 + 迁移标识（跨 path merge 时写 _MIGRATED_TO）。
-    //    db_path == 源 base_path（db_path 废弃后）。merge_base_path 是产物路径。
-    //    - 默认 merge（base_path 不变，只 data_path 变）：无需 _MIGRATED_TO，set_paths 更新 data_path。
-    //    - 跨 path merge（base_path 变）：在源 base_path 写 _MIGRATED_TO 指向产物，
+    //    db_path == 源 db_path（db_path 废弃后）。merge_db_path 是产物路径。
+    //    - 默认 merge（db_path 不变，只 data_path 变）：无需 _MIGRATED_TO，set_paths 更新 data_path。
+    //    - 跨 path merge（db_path 变）：在源 db_path 写 _MIGRATED_TO 指向产物，
     //      更新迁移缓存，让后续用源 path 的访问（如 solver 持有的旧 db 句柄）重定向到产物。
-    if (db_path != merge_base_path) {
+    if (db_path != merge_db_path) {
         // 跨 path merge：写迁移标识 + 更新缓存。
-        fly::DataService::write_migration_marker(db_path, merge_base_path, merge_data_path);
-        ds->set_migrated_path(db_path, merge_base_path);
-        INFO("cleanup_after_merge: cross-path migration {} -> {}", db_path, merge_base_path);
+        fly::DataService::write_migration_marker(db_path, merge_db_path, merge_data_path);
+        ds->set_migrated_path(db_path, merge_db_path);
+        INFO("cleanup_after_merge: cross-path migration {} -> {}", db_path, merge_db_path);
     }
 
     // 更新 db_instances_[db_path] 的 Database 路径指向 merge 路径。
     //    Database 是 master 进程路径唯一权威源；set_paths 同步 re-register 进
     //    DataService::db_paths_。db_instances_ 保留源 db_path 作 key（转发锚点），
-    //    内部 Database 的 base_path_ 指向 merge 产物。
+    //    内部 Database 的 db_path_ 指向 merge 产物。
     auto db_it = db_instances_.find(db_path);
     if (db_it != db_instances_.end()) {
-        db_it->second->set_paths(merge_base_path, merge_data_path);
+        db_it->second->set_paths(merge_db_path, merge_data_path);
     } else {
         // merge 产物句柄由 Python 经 ex_stg_create_database_with_id 构造，未进 master
         // db_instances_。这里用源 db_path 重建并登记，保证 master 路径权威源与新路径一致。
-        auto db = CMMakeShared<Database>(merge_base_path, merge_data_path, 0, "", db_path);
+        auto db = CMMakeShared<Database>(merge_db_path, merge_data_path, 0, "", db_path);
         db_instances_[db_path] = db;
     }
 
@@ -2470,7 +2470,7 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
 
     INFO("cleanup_after_merge: done, db_path={}, rebuilt remote_idx for {} objects (precise worker mapping), "
          "local_idx cleared, db_instances_ path updated to base={} data={}",
-         db_path, rebuilt, merge_base_path, merge_data_path);
+         db_path, rebuilt, merge_db_path, merge_data_path);
 }
 
 void MasterAgent::on_merge_cleanup_ack(uint64_t conn_id, const MergeCleanupAckMessage& msg) {

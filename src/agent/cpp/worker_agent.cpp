@@ -599,7 +599,7 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
 void WorkerAgent::on_db_path_response(const DbPathResponseMessage& msg) {
     touch_master_contact();
     pending_db_paths_.complete(msg.db_path_, [&](PendingDbPath& p) {
-        p.base_path_ = msg.base_path_;
+        p.db_path_ = msg.db_path_;
         p.data_path_ = msg.data_path_;
         p.success_ = msg.success_;
         p.completed_ = true;
@@ -786,13 +786,13 @@ bool WorkerAgent::request_db_path(const CMString& db_path) {
     auto result = pending_db_paths_.wait_for(db_path, std::chrono::seconds(5),
         [](const CMSharedPtr<PendingDbPath>& p) { return p->completed_; });
     pending_db_paths_.erase(db_path);
-    if (result && result->success_ && !result->base_path_.empty()) {
+    if (result && result->success_ && !result->db_path_.empty()) {
         // Reuse the master-assigned db_path instead of generating a
         // fresh random one. Without this, the worker's Database
         // would get a different db_path than the master recorded,
         // so object names (db_path:short_name) built here would
         // never match the master's remote_idx lookups.
-        auto db = CMMakeShared<Database>(result->base_path_, result->data_path_,
+        auto db = CMMakeShared<Database>(result->db_path_, result->data_path_,
                                          worker_id_, data_server_host_, db_path);
         databases_[db_path] = db;
         return true;
@@ -1113,8 +1113,8 @@ CMVector<CMString> WorkerAgent::get_worker_properties() const {
 
 void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg) {
     touch_master_contact();
-    INFO("IdxLoadCommand received: db_path={}, base_path={}, writer_ids_count={}",
-         msg.db_path_, msg.base_path_, msg.writer_ids_.size());
+    INFO("IdxLoadCommand received: db_path={}, db_path={}, writer_ids_count={}",
+         msg.db_path_, msg.db_path_, msg.writer_ids_.size());
 
     IdxLoadAckMessage ack;
     ack.worker_id_ = worker_id_;
@@ -1124,10 +1124,10 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
     CMVector<CMString> loaded_writer_ids;
     try {
         auto dsRef = DataService::instance();
-        dsRef->register_database(msg.db_path_, msg.base_path_, "");
+        dsRef->register_database(msg.db_path_, "");
 
         for (const auto& writer_id : msg.writer_ids_) {
-            CMString idx_path = msg.base_path_ + "/" + writer_id + ".idx";
+            CMString idx_path = msg.db_path_ + "/" + writer_id + ".idx";
             if (!std::filesystem::exists(idx_path)) {
                 WARN("idx file not found: {}", idx_path);
                 continue;
@@ -1306,11 +1306,12 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
 
         INFO("Internal backup complete: object={}, db_path={}", object_name, db_path);
     } else if (task.task_name_ == "__merge_object") {
-        // args: [short_name, db_path, base_path, target_data_path, source_host]
-        // base_path = 源 db 共享 base_path（用于 idx 落盘到共享盘，master 可直读）
+        // args: [short_name, source_db_path, target_db_path, target_data_path, source_host]
+        // source_db_path = 源 db_path（拉源数据用，源数据登记在此命名空间）
+        // target_db_path = merge 产物 db_path（落盘/上报用，master 索引用此 key）
         // target_data_path = master host 本地 data_path（.dat 集中目标）
         if (task.args_.size() < 4) {
-            ERR("Internal merge task: insufficient args (expected short_name, db_path, base_path, target_data_path)");
+            ERR("Internal merge task: insufficient args");
             TaskFailedMessage failed;
             failed.task_id_ = task.task_id_;
             failed.worker_id_ = worker_id_;
@@ -1319,11 +1320,11 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
             return;
         }
         CMString short_name = task.args_[0];
-        CMString db_path = task.args_[1];
-        CMString base_path = task.args_[2];
+        CMString source_db_path = task.args_[1];
+        CMString target_db_path = task.args_[2];
         CMString target_data_path = task.args_[3];
 
-        execute_merge_object(task.task_id_, short_name, db_path, base_path, target_data_path);
+        execute_merge_object(task.task_id_, short_name, source_db_path, target_db_path, target_data_path);
     } else {
         WARN("Unknown internal task: name={}", task.task_name_);
         TaskFailedMessage failed;
@@ -1334,7 +1335,7 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
     }
 }
 
-DataWriter* WorkerAgent::get_or_create_merge_writer(const CMString& base_path,
+DataWriter* WorkerAgent::get_or_create_merge_writer(const CMString& db_path,
                                                      const CMString& target_data_path) {
     std::lock_guard<std::mutex> lk(merge_writers_mutex_);
     auto it = merge_writers_.find(target_data_path);
@@ -1342,34 +1343,37 @@ DataWriter* WorkerAgent::get_or_create_merge_writer(const CMString& base_path,
         return it->second.get();
     }
     // 每个 target_data_path 独占一个 writer_id（merge 专用，避免与源 writer_id 冲突）。
-    // idx 写 base_path（共享盘，master 可直读）；.dat 写 target_data_path（master host 本地）。
+    // idx 写 db_path（共享盘，master 可直读）；.dat 写 target_data_path（master host 本地）。
     CMString merge_writer_id = generate_writer_id();
     int64_t threshold = Config::instance()->get_int("aggregation_threshold");
     auto writer = CMMakeUnique<DataWriter>(
-        base_path, target_data_path, merge_writer_id, threshold, data_server_host_);
+        db_path, target_data_path, merge_writer_id, threshold, data_server_host_);
     DataWriter* raw = writer.get();
     merge_writers_[target_data_path] = std::move(writer);
     INFO("Created merge writer: target_data_path={}, writer_id={}", target_data_path, merge_writer_id);
     return raw;
 }
 
-void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_name, const CMString& db_path,
-                                        const CMString& base_path, const CMString& target_data_path) {
-    CMString full = db_path + ":" + short_name;
-    INFO("Internal merge: object={}, db_path={}, target_data_path={}", short_name, db_path, target_data_path);
+void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_name,
+                                        const CMString& source_db_path, const CMString& target_db_path,
+                                        const CMString& target_data_path) {
+    // 拉源用 source_db_path（源数据登记在源命名空间），落盘/上报用 target_db_path（产物命名空间）。
+    CMString source_full = source_db_path + ":" + short_name;
+    CMString target_full = target_db_path + ":" + short_name;
+    INFO("Internal merge: object={}, source={}, target_db_path={}, target_data_path={}",
+         short_name, source_db_path, target_db_path, target_data_path);
 
     auto ds = DataService::instance();
 
-    // 1. 跨机拉源对象压缩字节。本地必 miss（merge worker 未写过该对象），自动走 TIER2/TIER3
-    //    回源到持有该对象的源 host worker 的 DataServer。
+    // 1. 跨机拉源对象压缩字节（用 source_full 查源命名空间的 remote_idx/local_idx）。
     auto [found, comp_data, py_name, source_hash, can_still_produce] =
-        ds->read_raw_compressed(full);
+        ds->read_raw_compressed(source_full);
     if (!found || !comp_data || comp_data->empty()) {
-        ERR("Internal merge: no data for '{}'", full);
+        ERR("Internal merge: no data for '{}'", source_full);
         TaskFailedMessage failed;
         failed.task_id_ = task_id;
         failed.worker_id_ = worker_id_;
-        failed.error_message_ = "Internal merge: source object unavailable: " + full;
+        failed.error_message_ = "Internal merge: source object unavailable: " + source_full;
         reactor_->send(master_conn_, failed);
         return;
     }
@@ -1379,41 +1383,36 @@ void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_n
     ObjectHeader header = ObjectHeader::deserialize(
         CMString(comp_data->data(), comp_data->size()), h_off);
 
-    // 3. 确保 DataService 知道这个 db 的路径（base_path 共享读 idx，target_data_path 本地 .dat）。
-    //    register_database 幂等（已注册则更新）；不构造 Database 避免析构副作用。
-    //    这让本 worker 的 DataServer 能服务 merge 后的对象（try_read_local_raw 查 db_paths_）。
-    DataWriter* writer = get_or_create_merge_writer(base_path, target_data_path);
-    ds->register_database(db_path, base_path, target_data_path, writer->writer_id());
+    // 3. 用 target_db_path 落盘（产物命名空间）。register_database 让本 worker 的 DataServer
+    //    能服务 merge 后的对象。
+    DataWriter* writer = get_or_create_merge_writer(target_db_path, target_data_path);
+    ds->register_database(target_db_path, target_data_path, writer->writer_id());
 
     // 4. 落盘（零解压直写 .dat + idx）。LocalIndex 只存 short_name。
-    ds->on_write_started(db_path, full);
+    ds->on_write_started(target_db_path, target_full);
     CMString merge_hash = source_hash;
     writer->write_record(short_name, header.total_size_, header.chunk_count_, *comp_data, merge_hash);
     writer->flush();
 
-    // 5. 登记 local_idx_（让本 worker 的 DataServer / read_raw_compressed 能本地命中）。
-    //    只登记本次 write_record 新写的 entry（get_last_entry），不登记从源 idx 加载的
-    //    历史 entry（它们的 file_name_ 指向源 .dat，在本 worker 不存在）。
+    // 5. 登记 local_idx_（target 命名空间）。
     auto last_entry_opt = writer->get_last_entry(short_name);
     if (last_entry_opt.has_value()) {
         CMVector<IndexEntry> new_entries;
         new_entries.push_back(last_entry_opt.value());
-        ds->on_write_completed(db_path, full, new_entries);
-        ds->on_object_flushed(full);
+        ds->on_write_completed(target_db_path, target_full, new_entries);
+        ds->on_object_flushed(target_full);
     }
 
-    // 6. TaskComplete。master 的 on_task_complete internal 分支会调 update_remote_idx 登记
-    //    对象位置（指向本 worker）。不调 register_write_with_master——那会被 frozen db 检查拒绝
-    //    （merge 是数据迁移不是新写，db 已 freeze，master 用 on_task_complete 的 internal 路径绕过）。
+    // 6. TaskComplete（上报用 target_full，master 用 target 命名空间重建索引）。
     int64_t comp_size = static_cast<int64_t>(comp_data->size());
     TaskCompleteMessage complete;
     complete.task_id_ = task_id;
     complete.worker_id_ = worker_id_;
-    complete.written_objects_.push_back({full, comp_size});
+    complete.written_objects_.push_back({target_full, comp_size});
     complete.is_internal_ = true;
     reactor_->send(master_conn_, complete);
 
-    INFO("Internal merge complete: object={}, db_path={}, bytes={}", short_name, db_path, comp_size);
+    INFO("Internal merge complete: object={}, target_db_path={}, bytes={}", short_name, target_db_path, comp_size);
 }
 
 void WorkerAgent::on_delete_data(uint64_t conn_id, const DeleteDataMessage& msg) {
@@ -1431,8 +1430,8 @@ void WorkerAgent::on_delete_data(uint64_t conn_id, const DeleteDataMessage& msg)
         // 直接用消息显式指定的 data_path_（源 data_path），不查 db_registry ——
         // cleanup_after_merge 会把 master 的 db_registry 更新到 merge 路径，若删源在
         // cleanup 之后执行，db_registry 解析会拿到错误的（merge 后的）路径。
-        // data_path_ 空时兜底用 base_path_（向后兼容无 data_path_ 的旧调用方）。
-        CMString data_dir = msg.data_path_.empty() ? msg.base_path_ : msg.data_path_;
+        // data_path_ 空时兜底用 db_path_（向后兼容无 data_path_ 的旧调用方）。
+        CMString data_dir = msg.data_path_.empty() ? msg.db_path_ : msg.data_path_;
 
         // merge 语义：全部数据已迁到 master host，源 data_dir 下所有 .dat 都应清理。
         // data_dir 是该 db 的 data_path（一个 db 一个 data_dir），删全部 .dat 是安全的。
@@ -1486,15 +1485,15 @@ void WorkerAgent::on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& 
         ds->clear_remote_index_for_db(msg.db_path_);
 
         // 2. 更新 db_paths_ 指向 merge 后的新路径。
-        ds->register_database(msg.db_path_, msg.base_path_, msg.data_path_, "");
+        ds->register_database(msg.db_path_, msg.data_path_, "");
 
-        // 3. 尝试 load 新 idx 重建 local_idx（新 idx 由 merge worker 写在共享 base_path）。
+        // 3. 尝试 load 新 idx 重建 local_idx（新 idx 由 merge worker 写在共享 db_path）。
         //    若 data_path 可达（同机本地盘或共享 FS），后续读可本地直读 .dat，不走远程读。
         int32_t loaded = 0;
         try {
             namespace fs = std::filesystem;
-            if (fs::exists(msg.base_path_)) {
-                for (const auto& entry : fs::directory_iterator(msg.base_path_)) {
+            if (fs::exists(msg.db_path_)) {
+                for (const auto& entry : fs::directory_iterator(msg.db_path_)) {
                     CMString fname = entry.path().filename().string();
                     if (fname.size() >= 4 &&
                         fname.substr(fname.size() - 4) == ".idx") {
@@ -1509,11 +1508,11 @@ void WorkerAgent::on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& 
                 }
             }
         } catch (const std::exception& e) {
-            WARN("MergeCleanup: failed to load idx from {}: {}", msg.base_path_, e.what());
+            WARN("MergeCleanup: failed to load idx from {}: {}", msg.db_path_, e.what());
         }
         INFO("MergeCleanup: db_path={}, cleared old idx, loaded {} new idx files, "
              "base={} data={} on worker_id={}",
-             msg.db_path_, loaded, msg.base_path_, msg.data_path_, worker_id_);
+             msg.db_path_, loaded, msg.db_path_, msg.data_path_, worker_id_);
     } else {
         INFO("MergeCleanup: worker_id={} exempt (merge target), keeping state for db_path={}",
              worker_id_, msg.db_path_);

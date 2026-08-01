@@ -92,7 +92,7 @@ INFO("[PASS] help(无匹配) 给提示")
 sp_detail = _capture("SolverProject")
 assert "SolverProject" in sp_detail
 assert "Prototype" in sp_detail
-assert "base_path" in sp_detail        # __init__ 参数
+assert "db_path" in sp_detail        # __init__ 参数
 INFO("[PASS] help('SolverProject') 返回类详情")
 
 # ── 6b. 多匹配场景：'set' 匹配 MapReduceJob 的多个 set_* 方法 ──────────

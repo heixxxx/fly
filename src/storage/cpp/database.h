@@ -23,9 +23,9 @@
 
 class Database {
 public:
-    // existing_db_path 参数已废弃（db_path_ 现在是 base_path 的别名），
+    // existing_db_path 参数已废弃（db_path_ 现在是 db_path 的别名），
     // 保留签名仅为过渡期调用方兼容，值被忽略。
-    Database(const CMString& base_path, const CMString& data_path = "", uint64_t writer_id = 0, const CMString& host = "", const CMString& existing_db_path = "");
+    Database(const CMString& db_path, const CMString& data_path = "", uint64_t writer_id = 0, const CMString& host = "", const CMString& existing_db_path = "");
     ~Database();
 
     Database(const Database&) = delete;
@@ -88,15 +88,14 @@ public:
 
     DbMeta load_meta() const;
     // 静态读 _DB_META，不构造 Database 实例（不触发 DataService register_database，
-    // 避免 merge_db 在已 open_db 的进程内重复注册同 base_path）。
-    static DbMeta load_meta_from_path(const CMString& base_path);
+    // 避免 merge_db 在已 open_db 的进程内重复注册同 db_path）。
+    static DbMeta load_meta_from_path(const CMString& db_path);
 
     CMString get_db_path() const;
-    CMString get_base_path() const;
     CMString get_data_path() const;
     // Merge-only：跨机数据集中后产物落在新路径，master 用它更新既有 Database 的路径，
     // 同步 re-register 进 DataService非 merge 场景禁止调用。
-    void set_paths(const CMString& base_path, const CMString& data_path);
+    void set_paths(const CMString& db_path, const CMString& data_path);
     CMString get_full_name(const CMString& name) const;
     CMString get_writer_id() const;
 
@@ -167,7 +166,7 @@ private:
                                      int32_t chunk_count,
                                      bool backup);
 
-    // Var persistence: flush non-deleted vars to {base_path}/_VARS at freeze time;
+    // Var persistence: flush non-deleted vars to {db_path}/_VARS at freeze time;
     // load them back at construction if the file exists.
     void flush_vars_to_disk();
     void load_vars_from_disk();
@@ -178,10 +177,9 @@ private:
         CMString type_name_;
     };
 
-    CMString base_path_;
+    CMString db_path_;
     CMString data_path_;
     CMString writer_id_;
-    CMString db_path_;
     CMString host_;
     std::atomic<bool> is_frozen_{false};
 

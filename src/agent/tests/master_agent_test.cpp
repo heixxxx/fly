@@ -10,7 +10,7 @@
 
 using namespace fly::test;
 
-// db_path 废弃：db_path 现在是 base_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_path。
+// db_path 废弃：db_path 现在是 db_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_path。
 static CMString db32(const CMString& hint) {
     return "/test/" + hint;
 }
@@ -106,9 +106,9 @@ private:
     CMString path_;
 };
 
-void create_idx_file(const CMString& base_path, const CMString& writer_id,
+void create_idx_file(const CMString& db_path, const CMString& writer_id,
                      const CMVector<IndexEntry>& entries) {
-    CMString idx_path = base_path + "/" + writer_id + ".idx";
+    CMString idx_path = db_path + "/" + writer_id + ".idx";
     LocalIndex idx(idx_path);
     for (const auto& e : entries) {
         idx.add_entry(e);
@@ -199,8 +199,7 @@ TEST(MasterAgentTest, SetupWriteContext_ClearDeactivatesContext) {
 
 TEST(MasterAgentTest, RestoreMasterIdx_ExistingIdxFile) {
     TempDir tmpdir;
-    CMString db_path = db32("test_db_restore_existing");
-    CMString base_path = tmpdir.path();
+    CMString db_path = tmpdir.path();
 
     // Create idx file with entries (LocalIndex stores short_name only)
     IndexEntry entry1;
@@ -215,10 +214,10 @@ TEST(MasterAgentTest, RestoreMasterIdx_ExistingIdxFile) {
     entry2.offset_ = 100;
     entry2.size_ = 200;
 
-    create_idx_file(base_path, "master000", {entry1, entry2});
+    create_idx_file(db_path, "master000", {entry1, entry2});
 
     MasterAgent master("127.0.0.1", 0);
-    auto entries = master.restore_master_idx(db_path, base_path, "master000");
+    auto entries = master.restore_master_idx(db_path, "master000");
 
     ASSERT_EQ(entries.size(), 2u);
     EXPECT_EQ(entries[0].object_name_, "obj_restore_1");
@@ -238,18 +237,17 @@ TEST(MasterAgentTest, RestoreMasterIdx_NonExistentIdxFile) {
     CMString db_path = db32("test_db_restore_missing");
 
     MasterAgent master("127.0.0.1", 0);
-    auto entries = master.restore_master_idx(db_path, tmpdir.path(), "w999");
+    auto entries = master.restore_master_idx(db_path, "w999");
 
     EXPECT_TRUE(entries.empty());
 }
 
 TEST(MasterAgentTest, RestoreMasterIdx_EmptyIdxFile) {
     TempDir tmpdir;
-    CMString db_path = db32("test_db_restore_empty");
-    CMString base_path = tmpdir.path();
+    CMString db_path = tmpdir.path();
 
     // Create idx file with no entries
-    CMString idx_path = base_path + "/master000.idx";
+    CMString idx_path = db_path + "/master000.idx";
     {
         // LocalIndex with no entries → save writes nothing (not modified)
         // So we need to touch the file manually to create an empty file
@@ -258,15 +256,14 @@ TEST(MasterAgentTest, RestoreMasterIdx_EmptyIdxFile) {
     }
 
     MasterAgent master("127.0.0.1", 0);
-    auto entries = master.restore_master_idx(db_path, base_path, "master000");
+    auto entries = master.restore_master_idx(db_path, "master000");
 
     EXPECT_TRUE(entries.empty());
 }
 
 TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
     TempDir tmpdir;
-    CMString db_path = db32("test_db_restore_multi");
-    CMString base_path = tmpdir.path();
+    CMString db_path = tmpdir.path();
 
     // Create multiple entries (LocalIndex stores short_name only)
     CMVector<IndexEntry> entries_writer0;
@@ -278,10 +275,10 @@ TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
         e.size_ = 100;
         entries_writer0.push_back(e);
     }
-    create_idx_file(base_path, "master000", entries_writer0);
+    create_idx_file(db_path, "master000", entries_writer0);
 
     MasterAgent master("127.0.0.1", 0);
-    auto entries = master.restore_master_idx(db_path, base_path, "master000");
+    auto entries = master.restore_master_idx(db_path, "master000");
 
     ASSERT_EQ(entries.size(), 5u);
     for (int i = 0; i < 5; i++) {
@@ -298,8 +295,7 @@ TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
 
 TEST(MasterAgentTest, RebuildRemoteIdx_MasterEntries) {
     TempDir tmpdir;
-    CMString db_path = db32("test_db_rebuild_master");
-    CMString base_path = tmpdir.path();
+    CMString db_path = tmpdir.path();
     CMString full = db_path + ":master_obj_1";
 
     // Create master's idx with entries (LocalIndex stores short_name only)
@@ -309,7 +305,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MasterEntries) {
     entry.offset_ = 0;
     entry.size_ = 50;
 
-    create_idx_file(base_path, "master000", {entry});
+    create_idx_file(db_path, "master000", {entry});
 
     // WorkerInfo for master (worker_id=0, hostname="localhost")
     ::WorkerInfo master_worker;
@@ -322,7 +318,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MasterEntries) {
     DataService::instance()->register_worker(10, "127.0.0.1", 9999);
     master.add_worker_hostname(10, "localhost");
 
-    master.rebuild_remote_idx(db_path, base_path, {master_worker});
+    master.rebuild_remote_idx(db_path, {master_worker});
 
     // Master entries now map to the new worker on same hostname
     EXPECT_TRUE(DataService::instance()->has_remote_location(full));
@@ -337,8 +333,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MasterEntries) {
 
 TEST(MasterAgentTest, RebuildRemoteIdx_WorkerEntries_NoNewWorkers_Skipped) {
     TempDir tmpdir;
-    CMString db_path = db32("test_db_rebuild_no_new_workers");
-    CMString base_path = tmpdir.path();
+    CMString db_path = tmpdir.path();
     CMString full = db_path + ":worker_obj_skip";
 
     // Create worker_5.idx with entries (LocalIndex stores short_name only)
@@ -348,7 +343,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_WorkerEntries_NoNewWorkers_Skipped) {
     entry.offset_ = 0;
     entry.size_ = 50;
 
-    create_idx_file(base_path, "worker005", {entry});
+    create_idx_file(db_path, "worker005", {entry});
 
     // WorkerInfo for old worker_id=5, but no new workers registered
     ::WorkerInfo old_worker;
@@ -357,7 +352,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_WorkerEntries_NoNewWorkers_Skipped) {
     old_worker.hostname_ = "testhost_skipped";
 
     MasterAgent master("127.0.0.1", 0);
-    master.rebuild_remote_idx(db_path, base_path, {old_worker});
+    master.rebuild_remote_idx(db_path, {old_worker});
 
     // No new workers with matching hostname → entry should NOT be in remote_idx
     EXPECT_FALSE(DataService::instance()->has_remote_location(full));
@@ -365,8 +360,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_WorkerEntries_NoNewWorkers_Skipped) {
 
 TEST(MasterAgentTest, RebuildRemoteIdx_MissingIdxFile_Skipped) {
     TempDir tmpdir;
-    CMString db_path = db32("test_db_rebuild_missing_idx");
-    CMString base_path = tmpdir.path();
+    CMString db_path = tmpdir.path();
 
     // WorkerInfo for a worker whose idx file doesn't exist
     ::WorkerInfo missing_worker;
@@ -376,13 +370,12 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MissingIdxFile_Skipped) {
 
     MasterAgent master("127.0.0.1", 0);
     // Should not crash, just WARN and skip
-    master.rebuild_remote_idx(db_path, base_path, {missing_worker});
+    master.rebuild_remote_idx(db_path, {missing_worker});
 }
 
 TEST(MasterAgentTest, RebuildRemoteIdx_MultipleWorkers) {
     TempDir tmpdir;
-    CMString db_path = db32("test_db_rebuild_multi");
-    CMString base_path = tmpdir.path();
+    CMString db_path = tmpdir.path();
     CMString full_master = db_path + ":multi_master_obj";
     CMString full_worker = db_path + ":multi_worker_obj";
 
@@ -392,7 +385,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultipleWorkers) {
     master_entry.file_name_ = "data_0.bin";
     master_entry.offset_ = 0;
     master_entry.size_ = 50;
-    create_idx_file(base_path, "master000", {master_entry});
+    create_idx_file(db_path, "master000", {master_entry});
 
     // Create worker's idx
     IndexEntry worker_entry;
@@ -400,7 +393,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultipleWorkers) {
     worker_entry.file_name_ = "data_3.bin";
     worker_entry.offset_ = 0;
     worker_entry.size_ = 100;
-    create_idx_file(base_path, "worker003", {worker_entry});
+    create_idx_file(db_path, "worker003", {worker_entry});
 
     ::WorkerInfo w0;
     w0.worker_id_ = 0;
@@ -417,7 +410,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultipleWorkers) {
     DataService::instance()->register_worker(10, "127.0.0.1", 9999);
     master.add_worker_hostname(10, "master_host");
 
-    master.rebuild_remote_idx(db_path, base_path, {w0, w3});
+    master.rebuild_remote_idx(db_path, {w0, w3});
 
     // master entries → mapped to new worker_id=10 on "master_host"
     EXPECT_TRUE(DataService::instance()->has_remote_location(full_master));
@@ -435,18 +428,16 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultipleWorkers) {
 
 TEST(MasterAgentTest, RebuildRemoteIdx_EmptyWorkers_Noop) {
     TempDir tmpdir;
-    CMString db_path = db32("test_db_rebuild_empty_workers");
-    CMString base_path = tmpdir.path();
+    CMString db_path = tmpdir.path();
 
     MasterAgent master("127.0.0.1", 0);
     // Empty workers vector → no iteration, no crash
-    master.rebuild_remote_idx(db_path, base_path, {});
+    master.rebuild_remote_idx(db_path, {});
 }
 
 TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
     TempDir tmpdir;
-    CMString db_path = db32("test_db_multi_host");
-    CMString base_path = tmpdir.path();
+    CMString db_path = tmpdir.path();
     CMString full_m = db_path + ":master_data";
     CMString full_a = db_path + ":worker_a_data";
     CMString full_b = db_path + ":worker_b_data";
@@ -457,7 +448,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
     master_entry.file_name_ = "data_m.bin";
     master_entry.offset_ = 0;
     master_entry.size_ = 50;
-    create_idx_file(base_path, "w_master", {master_entry});
+    create_idx_file(db_path, "w_master", {master_entry});
 
     // Worker A (worker_id=1) on "host_a"
     IndexEntry worker_a_entry;
@@ -465,7 +456,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
     worker_a_entry.file_name_ = "data_a.bin";
     worker_a_entry.offset_ = 0;
     worker_a_entry.size_ = 80;
-    create_idx_file(base_path, "w_hosta", {worker_a_entry});
+    create_idx_file(db_path, "w_hosta", {worker_a_entry});
 
     // Worker B (worker_id=2) on "host_b"
     IndexEntry worker_b_entry;
@@ -473,7 +464,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
     worker_b_entry.file_name_ = "data_b.bin";
     worker_b_entry.offset_ = 0;
     worker_b_entry.size_ = 120;
-    create_idx_file(base_path, "w_hostb", {worker_b_entry});
+    create_idx_file(db_path, "w_hostb", {worker_b_entry});
 
     ::WorkerInfo w_master;
     w_master.worker_id_ = 0;
@@ -499,7 +490,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
     DataService::instance()->register_worker(300, "10.0.0.3", 8003);
     master.add_worker_hostname(300, "host_b");
 
-    master.rebuild_remote_idx(db_path, base_path, {w_master, w_a, w_b});
+    master.rebuild_remote_idx(db_path, {w_master, w_a, w_b});
 
     // master → worker 100 on host_master
     EXPECT_TRUE(DataService::instance()->has_remote_location(full_m));
@@ -529,8 +520,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_MultiHost_MappedToCorrectWorkers) {
 
 TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
     TempDir tmpdir;
-    CMString db_path = db32("test_db_same_host_merge");
-    CMString base_path = tmpdir.path();
+    CMString db_path = tmpdir.path();
     CMString full_m = db_path + ":m_obj";
     CMString full_w = db_path + ":w_obj";
     CMString full_r = db_path + ":r_obj";
@@ -541,7 +531,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
     master_entry.file_name_ = "data_m.bin";
     master_entry.offset_ = 0;
     master_entry.size_ = 50;
-    create_idx_file(base_path, "w_m", {master_entry});
+    create_idx_file(db_path, "w_m", {master_entry});
 
     // Worker (worker_id=5) on same "host_local"
     IndexEntry worker_entry;
@@ -549,7 +539,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
     worker_entry.file_name_ = "data_w.bin";
     worker_entry.offset_ = 0;
     worker_entry.size_ = 80;
-    create_idx_file(base_path, "w_w5", {worker_entry});
+    create_idx_file(db_path, "w_w5", {worker_entry});
 
     // Remote Worker (worker_id=3) on "host_remote"
     IndexEntry remote_entry;
@@ -557,7 +547,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
     remote_entry.file_name_ = "data_r.bin";
     remote_entry.offset_ = 0;
     remote_entry.size_ = 120;
-    create_idx_file(base_path, "w_r3", {remote_entry});
+    create_idx_file(db_path, "w_r3", {remote_entry});
 
     ::WorkerInfo w_m;
     w_m.worker_id_ = 0;
@@ -581,7 +571,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
     DataService::instance()->register_worker(20, "192.168.1.2", 9002);
     master.add_worker_hostname(20, "host_remote");
 
-    master.rebuild_remote_idx(db_path, base_path, {w_m, w5, w3});
+    master.rebuild_remote_idx(db_path, {w_m, w5, w3});
 
     // Both master and worker_id=5 on host_local → mapped to worker 10
     auto info_m = DataService::instance()->lookup_remote_idx(full_m);
@@ -607,8 +597,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_SameHostMasterAndWorker_Merged) {
 
 TEST(MasterAgentTest, RebuildRemoteIdx_PartialHostCoverage) {
     TempDir tmpdir;
-    CMString db_path = db32("test_db_partial_host");
-    CMString base_path = tmpdir.path();
+    CMString db_path = tmpdir.path();
     CMString full_avail = db_path + ":avail_obj";
     CMString full_off = db_path + ":offline_obj";
 
@@ -618,7 +607,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_PartialHostCoverage) {
     entry_a.file_name_ = "data_a.bin";
     entry_a.offset_ = 0;
     entry_a.size_ = 50;
-    create_idx_file(base_path, "w_avail", {entry_a});
+    create_idx_file(db_path, "w_avail", {entry_a});
 
     // Worker B on "host_offline"
     IndexEntry entry_b;
@@ -626,7 +615,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_PartialHostCoverage) {
     entry_b.file_name_ = "data_b.bin";
     entry_b.offset_ = 0;
     entry_b.size_ = 80;
-    create_idx_file(base_path, "w_off", {entry_b});
+    create_idx_file(db_path, "w_off", {entry_b});
 
     ::WorkerInfo wa;
     wa.worker_id_ = 1;
@@ -644,7 +633,7 @@ TEST(MasterAgentTest, RebuildRemoteIdx_PartialHostCoverage) {
     DataService::instance()->register_worker(50, "10.0.0.10", 7000);
     master.add_worker_hostname(50, "host_available");
 
-    master.rebuild_remote_idx(db_path, base_path, {wa, wb});
+    master.rebuild_remote_idx(db_path, {wa, wb});
 
     // host_available → mapped
     EXPECT_TRUE(DataService::instance()->has_remote_location(full_avail));
@@ -838,7 +827,7 @@ TEST(MasterAgentTest, RegisterDatabaseAndIsFrozen) {
     CMString db_path = db32("test_db_reg_freeze");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_path, tmpdir.path());
+    master.register_database(tmpdir.path(), "");
 
     // Not frozen initially
     EXPECT_FALSE(master.is_db_frozen(db_path));
@@ -880,7 +869,7 @@ TEST(MasterAgentTest, NonStreamFreezePendingThenCommit) {
     CMString db_path = db32("nstream_freeze_commit");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_path, tmpdir.path());
+    master.register_database(tmpdir.path(), "");
     master.start();
     wait_for_running(master, true);
 
@@ -917,7 +906,7 @@ TEST(MasterAgentTest, NonStreamFreezeRollbackOnTaskFailed) {
     CMString db_path = db32("nstream_freeze_rollback");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_path, tmpdir.path());
+    master.register_database(tmpdir.path(), "");
     master.start();
     wait_for_running(master, true);
 
@@ -947,12 +936,12 @@ TEST(MasterAgentTest, NonStreamCommitDoesNotAffectOtherTaskPending) {
     fly::DataService::instance()->reset();
     Config::instance()->set_int("dependency_update_mode", 1);
     TempDir tmpdir_a, tmpdir_b;
-    CMString db_a = db32("frzA_committwo");   // 前 10 字符 "frzA_commi"
-    CMString db_b = db32("frzB_committwo");   // 前 10 字符 "frzB_commi"
+    CMString db_a = tmpdir_a.path();
+    CMString db_b = tmpdir_b.path();
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_a, tmpdir_a.path());
-    master.register_database(db_b, tmpdir_b.path());
+    master.register_database(db_a, "");
+    master.register_database(db_b, "");
     master.start();
     wait_for_running(master, true);
 
@@ -992,7 +981,7 @@ TEST(MasterAgentTest, NonStreamFreezeConflictRejected) {
     CMString db_path = db32("nstream_freeze_conflict");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_path, tmpdir.path());
+    master.register_database(tmpdir.path(), "");
     master.start();
     wait_for_running(master, true);
 
@@ -1030,10 +1019,10 @@ TEST(MasterAgentTest, NonStreamFreezeClearedOnWorkerCrash) {
     fly::DataService::instance()->reset();
     Config::instance()->set_int("dependency_update_mode", 1);
     TempDir tmpdir;
-    CMString db_path = db32("nstream_freeze_crash");
+    CMString db_path = tmpdir.path();
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_path, tmpdir.path());
+    master.register_database(tmpdir.path(), "");
     master.start();
     wait_for_running(master, true);
 
@@ -1084,7 +1073,7 @@ TEST(MasterAgentTest, NonStreamWriteRegisterDelaysDataReady) {
     CMString db_path = db32("nswr");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_path, tmpdir.path());
+    master.register_database(tmpdir.path(), "");
     master.start();
     wait_for_running(master, true);
 
@@ -1162,7 +1151,7 @@ TEST(MasterAgentTest, NonStreamTaskCompleteCarriesRealSize) {
     CMString db_path = db32("nssz");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_path, tmpdir.path());
+    master.register_database(tmpdir.path(), "");
     master.start();
     wait_for_running(master, true);
 
@@ -1216,7 +1205,7 @@ TEST(MasterAgentTest, StreamWriteRegisterImmediateDataReady) {
     CMString db_path = db32("swr");
 
     MasterAgent master("127.0.0.1", 0);
-    master.register_database(db_path, tmpdir.path());
+    master.register_database(tmpdir.path(), "");
     master.start();
     wait_for_running(master, true);
 
@@ -1309,7 +1298,7 @@ TEST(MasterAgentTest, NonStreamCompleteRecordsWorkerInfo) {
     master.on_task_complete(0, complete);
 
     // master 的 record_worker_info 调用了 db->append_worker_info_to_meta，
-    // 写入 _DB_META。通过读同一 base_path 的 _DB_META 文件验证。
+    // 写入 _DB_META。通过读同一 db_path 的 _DB_META 文件验证。
     Database verify_db(tmpdir.path(), "", 0);
     EXPECT_GT(verify_db.worker_info_count(), 0u);   // record_worker_info 生效
 
@@ -1333,10 +1322,10 @@ TEST(MasterAgentTest, GetOrCreateDatabase) {
     ASSERT_NE(db, nullptr);
 
     CMString db_path = db->get_db_path();
-    // db_path 废弃：db_path == base_path（不再是固定长度随机串）
+    // db_path 废弃：db_path == db_path（不再是固定长度随机串）
     EXPECT_EQ(db_path, tmpdir1.path());
     EXPECT_FALSE(db->get_writer_id().empty());
-    EXPECT_EQ(db->get_base_path(), tmpdir1.path());
+    EXPECT_EQ(db->get_db_path(), tmpdir1.path());
 
     auto db2 = master.get_or_create_database(tmpdir2.path());
     ASSERT_NE(db2, nullptr);
@@ -1719,7 +1708,7 @@ TEST(MasterAgentTest, RegisterDatabaseStoresPathInfo) {
     CMString db_path = db32("reg_test");
     CMString base = "/tmp/test_base_" + std::to_string(::getpid());
 
-    master.register_database(db_path, base, base + "/data");
+    master.register_database(base, base + "/data");
     EXPECT_FALSE(master.is_db_frozen(db_path));
 }
 

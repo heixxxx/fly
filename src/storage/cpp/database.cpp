@@ -18,52 +18,48 @@
 
 namespace fs = std::filesystem;
 
-Database::Database(const CMString& base_path, const CMString& data_path, uint64_t worker_id, const CMString& host, const CMString& existing_db_path)
-    : base_path_(base_path)
+Database::Database(const CMString& db_path, const CMString& data_path, uint64_t worker_id, const CMString& host, const CMString& existing_db_path)
+    : db_path_(db_path)
     , data_path_(data_path)
     , writer_id_(generate_writer_id())
-    , db_path_(base_path)  // db_path_ == base_path（稳定锚点，跨 db 依赖的逻辑 key）
     , host_(host) {
     (void)worker_id;  // worker_id kept for API compat; writer_id_ is used for file naming
-    (void)existing_db_path;  // 废弃参数（db_path 不再外部指定，值被忽略）
+    (void)existing_db_path;  // 废弃参数（值被忽略）
 
-    // 校验 base_path 不含 ':' —— full_name = "db_path:short" 用 ':' 分隔，
-    // base_path 含 ':' 会导致 split 歧义。源头拒绝，双保险。
-    if (base_path_.find(':') != CMString::npos) {
-        ERR("Database base_path must not contain ':' (would break full_name split): '{}'", base_path_);
-        base_path_.clear();
+    // 校验 db_path 不含 ':' —— full_name = "db_path:short" 用 ':' 分隔，
+    // db_path 含 ':' 会导致 split 歧义。源头拒绝，双保险。
+    if (db_path_.find(':') != CMString::npos) {
+        ERR("Database db_path must not contain ':' (would break full_name split): '{}'", db_path_);
         db_path_.clear();
         return;
     }
 
-    // 跟随迁移：若 base_path/_MIGRATED_TO 存在，重定向 base_path_/data_path_ 到 target
-    // （物理读取位置），但 db_path_ 保持源 base_path（逻辑锚点）。
-    // db_path_ 是跨 db 依赖/索引的稳定 key（DependencyGraph、local_idx_、remote_idx_ 都用它），
-    // 迁移不应改变它 —— 否则 object_name 前缀变化导致索引 miss。
-    CMString resolved = fly::DataService::instance()->resolve_migrated_path(base_path_);
-    if (resolved != base_path_) {
-        CMString target_data = fly::DataService::instance()->read_migrated_data_path(base_path_);
-        INFO("Database migrated: base_path '{}' -> '{}', data_path '{}' -> '{}' (db_path keeps source '{}')",
-             base_path_, resolved, data_path_, target_data, db_path_);
-        base_path_ = resolved;
+    // 跟随迁移：若 db_path/_MIGRATED_TO 存在，重定向 db_path_/data_path_ 到 target。
+    // 跨 path merge 后源 path 保留 _MIGRATED_TO 指针，新进程 load_db(源path) 时跟随到 target。
+    CMString resolved = fly::DataService::instance()->resolve_migrated_path(db_path_);
+    if (resolved != db_path_) {
+        CMString target_data = fly::DataService::instance()->read_migrated_data_path(db_path_);
+        INFO("Database migrated: db_path '{}' -> '{}', data_path '{}' -> '{}'",
+             db_path_, resolved, data_path_, target_data);
+        db_path_ = resolved;
         if (!target_data.empty()) {
             data_path_ = target_data;
         }
     }
 
-    fly::DataService::instance()->register_database(db_path_, base_path_, data_path_, writer_id_);
+    fly::DataService::instance()->register_database(db_path_, data_path_, writer_id_);
 
-    ensure_directory_exists(base_path_);
+    ensure_directory_exists(db_path_);
     if (!data_path_.empty()) {
         ensure_directory_exists(data_path_);
     }
 
     // 仅当 _DB_META 不存在时才写（新建 db）；load/merge 场景 _DB_META 已存在则跳过。
-    if (!fs::exists(base_path_ + "/_DB_META")) {
+    if (!fs::exists(db_path_ + "/_DB_META")) {
         write_db_meta_header();
     }
 
-    CMString frozen_marker = base_path_ + "/_FROZEN";
+    CMString frozen_marker = db_path_ + "/_FROZEN";
     if (fs::exists(frozen_marker)) {
         is_frozen_ = true;
     }
@@ -80,11 +76,11 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
     compression_threshold_ = config->get_int("compression_threshold");
 
     writer_ = CMMakeUnique<DataWriter>(
-        base_path_, data_path_, writer_id_,
+        db_path_, data_path_, writer_id_,
         config->get_int("aggregation_threshold"),
         host_
     );
-    reader_ = CMMakeUnique<DataReader>(base_path_, data_path_, writer_id_);
+    reader_ = CMMakeUnique<DataReader>(db_path_, data_path_, writer_id_);
 }
 
 Database::~Database() {
@@ -501,11 +497,11 @@ void Database::abort_task_writes(const CMVector<CMString>& dirty_full_names) {
 }
 
 DbMeta Database::load_meta() const {
-    return load_meta_from_path(base_path_);
+    return load_meta_from_path(db_path_);
 }
 
-DbMeta Database::load_meta_from_path(const CMString& base_path) {
-    CMString meta_path = base_path + "/_DB_META";
+DbMeta Database::load_meta_from_path(const CMString& db_path) {
+    CMString meta_path = db_path + "/_DB_META";
     std::ifstream ifs(meta_path, std::ios::binary);
     if (!ifs.is_open()) {
         ERR("Cannot open meta file: {}", meta_path);
@@ -554,32 +550,24 @@ DbMeta Database::load_meta_from_path(const CMString& base_path) {
 }
 
 CMString Database::get_db_path() const {
-    return db_path_;  // == base_path_（别名），保留接口供调用方
-}
-
-CMString Database::get_base_path() const {
-    return base_path_;
+    return db_path_;
 }
 
 CMString Database::get_data_path() const {
     return data_path_;
 }
 
-void Database::set_paths(const CMString& base_path, const CMString& data_path) {
-    // Merge 产物落到新路径：更新 base_path_/data_path_ + re-register 进 DataService。
-    //
-    // db_path_ 保持不变（源 base_path）——它是跨 db 依赖的逻辑锚点（DependencyGraph 用
-    // full_name = "db_path:short" 作 key）。merge 改物理路径但 db_path_ 不变，保证 solver 的
-    // build_matrix→merge→solve 链不断（matrix_db 句柄的 get_full_name 仍产生源 path 前缀）。
-    //
-    // 跨 path merge 时，cleanup_after_merge 在源 base_path 写 _MIGRATED_TO，访问源 path
-    // 的代码经 resolve_migrated_path 重定向到 target。db_paths_ 用 db_path_（源 path）注册，
-    // 指向新的 base_path_/data_path_（target）。
+void Database::set_paths(const CMString& db_path, const CMString& data_path) {
+    // Merge 产物落到新路径：更新 db_path_/data_path_ + re-register 进 DataService。
+    // db_path_ 是 Database 唯一路径标识，merge 后所有句柄（底层共享同一 C++ 对象）
+    // 的 db_path_ 同时变为 target，full_name 自然产生 target path 前缀。
+    // merge 的 wait_for_all_tasks 前提保证 merge 时无 pending task，不需要旧 path 锚点。
     auto ds = fly::DataService::instance();
-    base_path_ = base_path;
+    // unregister 旧 db_path（merge 前的源 path），再注册新的。
+    ds->unregister_database(db_path_);
+    db_path_ = db_path;
     data_path_ = data_path;
-    // re-register：db_path_（源 path，稳定锚点）作 key，指向新 base_path/data_path。
-    ds->register_database(db_path_, base_path_, data_path_, writer_id_);
+    ds->register_database(db_path_, data_path_, writer_id_);
 }
 
 CMString Database::get_writer_id() const {
@@ -596,7 +584,7 @@ CMString Database::full_name(const CMString& short_name) const {
 
 void Database::reset() {
     is_frozen_ = false;
-    CMString frozen_marker = base_path_ + "/_FROZEN";
+    CMString frozen_marker = db_path_ + "/_FROZEN";
     if (fs::exists(frozen_marker)) {
         fs::remove(frozen_marker);
     }
@@ -604,20 +592,20 @@ void Database::reset() {
 
 bool Database::check_frozen() {
     if (is_frozen_) {
-        ERR("Database is frozen: {}", base_path_);
+        ERR("Database is frozen: {}", db_path_);
         return true;
     }
     return false;
 }
 
 void Database::create_frozen_marker() {
-    CMString frozen_path = base_path_ + "/_FROZEN";
+    CMString frozen_path = db_path_ + "/_FROZEN";
     std::ofstream ofs(frozen_path);
     ofs.close();
 }
 
 void Database::write_db_meta_header() {
-    CMString meta_path = base_path_ + "/_DB_META";
+    CMString meta_path = db_path_ + "/_DB_META";
     if (fs::exists(meta_path)) return;  // don't overwrite
 
     auto now = std::chrono::system_clock::now();
@@ -638,11 +626,11 @@ void Database::write_db_meta_header() {
     ofs.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
     ofs.close();
 
-    DBG("Wrote _DB_META header: db_path={}, base_path={}", db_path_, base_path_);
+    DBG("Wrote _DB_META header: db_path={}, db_path={}", db_path_, db_path_);
 }
 
 void Database::append_worker_info_to_meta(const WorkerInfo& info) {
-    CMString meta_path = base_path_ + "/_DB_META";
+    CMString meta_path = db_path_ + "/_DB_META";
     if (!fs::exists(meta_path)) {
         ERR("_DB_META file not found, cannot append worker info: {}", meta_path);
         return;
@@ -667,7 +655,7 @@ void Database::append_worker_info_to_meta(const WorkerInfo& info) {
 
 size_t Database::worker_info_count() const {
     // 读 _DB_META 文件，统计已登记的 WorkerInfo 记录数（跳过 header）。
-    CMString meta_path = base_path_ + "/_DB_META";
+    CMString meta_path = db_path_ + "/_DB_META";
     if (!fs::exists(meta_path)) return 0;
 
     std::ifstream ifs(meta_path, std::ios::binary);
@@ -854,7 +842,7 @@ void Database::flush_vars_to_disk() {
         }
     }
 
-    CMString vars_path = base_path_ + "/_VARS";
+    CMString vars_path = db_path_ + "/_VARS";
     std::ofstream ofs(vars_path, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) {
         ERR("flush_vars_to_disk: cannot open {}", vars_path);
@@ -887,7 +875,7 @@ void Database::flush_vars_to_disk() {
 }
 
 void Database::load_vars_from_disk() {
-    CMString vars_path = base_path_ + "/_VARS";
+    CMString vars_path = db_path_ + "/_VARS";
     if (!fs::exists(vars_path)) {
         return;  // No _VARS file — nothing to load.
     }

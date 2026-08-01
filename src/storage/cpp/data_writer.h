@@ -19,7 +19,7 @@ struct SegmentRollbackPoint {
 class DataWriter {
 public:
     DataWriter(
-        const CMString& base_path,
+        const CMString& db_path,
         const CMString& data_path,
         const CMString& writer_id,
         int64_t aggregation_threshold,
@@ -66,7 +66,7 @@ private:
     // 把 data 文件 truncate 回 segment_point_，并重新打开回滚点 .dat 继续追加。
     void rollback_data_file();
 
-    CMString base_path_;
+    CMString db_path_;
     CMString data_path_;
     CMString writer_id_;
     CMString host_;

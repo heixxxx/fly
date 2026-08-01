@@ -65,8 +65,8 @@ protected:
 };
 
 TEST_F(DataWriterTest, WriteRecordPersistsData) {
-    CMString base_path = test_dir_ + "/write_rec";
-    DataWriter writer(base_path, "", "c1d2e3f4", 1024);
+    CMString db_path = test_dir_ + "/write_rec";
+    DataWriter writer(db_path, "", "c1d2e3f4", 1024);
 
     CMString data = "record data here";
     auto rec = make_record(data);
@@ -82,8 +82,8 @@ TEST_F(DataWriterTest, WriteRecordPersistsData) {
 }
 
 TEST_F(DataWriterTest, WriteRecordThresholdRollover) {
-    CMString base_path = test_dir_ + "/rollover";
-    DataWriter writer(base_path, "", "c1d2e3f4", 10);
+    CMString db_path = test_dir_ + "/rollover";
+    DataWriter writer(db_path, "", "c1d2e3f4", 10);
 
     CMString data1(200, 'A');
     auto r1 = make_record(data1);
@@ -99,8 +99,8 @@ TEST_F(DataWriterTest, WriteRecordThresholdRollover) {
 }
 
 TEST_F(DataWriterTest, WriteRecordAfterCloseLogs) {
-    CMString base_path = test_dir_ + "/rec_close";
-    DataWriter writer(base_path, "", "c1d2e3f4", 1024);
+    CMString db_path = test_dir_ + "/rec_close";
+    DataWriter writer(db_path, "", "c1d2e3f4", 1024);
 
     CMString data = "temp";
     auto rec = make_record(data);
@@ -111,8 +111,8 @@ TEST_F(DataWriterTest, WriteRecordAfterCloseLogs) {
 }
 
 TEST_F(DataWriterTest, MultipleRecords) {
-    CMString base_path = test_dir_ + "/multi";
-    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+    CMString db_path = test_dir_ + "/multi";
+    DataWriter writer(db_path, "", "a1b2c3d4", 1024);
 
     CMString data1 = "hello world";
     auto r1 = make_record(data1);
@@ -136,8 +136,8 @@ TEST_F(DataWriterTest, MultipleRecords) {
 }
 
 TEST_F(DataWriterTest, RemoveEntry) {
-    CMString base_path = test_dir_ + "/remove";
-    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+    CMString db_path = test_dir_ + "/remove";
+    DataWriter writer(db_path, "", "a1b2c3d4", 1024);
 
     CMString data = "to be removed";
     auto rec = make_record(data);
@@ -153,9 +153,9 @@ TEST_F(DataWriterTest, RemoveEntry) {
 }
 
 TEST_F(DataWriterTest, WriteWithCustomDataPath) {
-    CMString base_path = test_dir_ + "/base_custom";
+    CMString db_path = test_dir_ + "/base_custom";
     CMString data_path = test_dir_ + "/data_custom";
-    DataWriter writer(base_path, data_path, "a1b2c3d4", 1024);
+    DataWriter writer(db_path, data_path, "a1b2c3d4", 1024);
 
     CMString data = "hello";
     auto rec = make_record(data);
@@ -168,8 +168,8 @@ TEST_F(DataWriterTest, WriteWithCustomDataPath) {
 }
 
 TEST_F(DataWriterTest, FileCountIncrements) {
-    CMString base_path = test_dir_ + "/count_base";
-    DataWriter writer(base_path, "", "a1b2c3d4", 20);
+    CMString db_path = test_dir_ + "/count_base";
+    DataWriter writer(db_path, "", "a1b2c3d4", 20);
 
     EXPECT_EQ(writer.file_count(), 1);
 
@@ -187,8 +187,8 @@ TEST_F(DataWriterTest, FileCountIncrements) {
 }
 
 TEST_F(DataWriterTest, DoubleCloseIsSafe) {
-    CMString base_path = test_dir_ + "/double_close";
-    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+    CMString db_path = test_dir_ + "/double_close";
+    DataWriter writer(db_path, "", "a1b2c3d4", 1024);
 
     CMString data = "close test";
     auto rec = make_record(data);
@@ -198,8 +198,8 @@ TEST_F(DataWriterTest, DoubleCloseIsSafe) {
 }
 
 TEST_F(DataWriterTest, RemoveEntryReturnsFalseForMissing) {
-    CMString base_path = test_dir_ + "/remove_miss";
-    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+    CMString db_path = test_dir_ + "/remove_miss";
+    DataWriter writer(db_path, "", "a1b2c3d4", 1024);
 
     EXPECT_FALSE(writer.remove_entry("nonexistent_obj"));
 
@@ -207,8 +207,8 @@ TEST_F(DataWriterTest, RemoveEntryReturnsFalseForMissing) {
 }
 
 TEST_F(DataWriterTest, GetAllEntriesReturnsNulloptForMissing) {
-    CMString base_path = test_dir_ + "/get_all_miss";
-    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+    CMString db_path = test_dir_ + "/get_all_miss";
+    DataWriter writer(db_path, "", "a1b2c3d4", 1024);
 
     auto entries = writer.get_all_entries("no_such_obj");
     EXPECT_FALSE(entries.has_value());
@@ -217,8 +217,8 @@ TEST_F(DataWriterTest, GetAllEntriesReturnsNulloptForMissing) {
 }
 
 TEST_F(DataWriterTest, WriteRecordWithWriteContextHash) {
-    CMString base_path = test_dir_ + "/ctx_hash";
-    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+    CMString db_path = test_dir_ + "/ctx_hash";
+    DataWriter writer(db_path, "", "a1b2c3d4", 1024);
 
     CMString data = "ctx hash data";
     auto rec = make_record(data);
@@ -232,8 +232,8 @@ TEST_F(DataWriterTest, WriteRecordWithWriteContextHash) {
 }
 
 TEST_F(DataWriterTest, TotalBytesAccumulatesAcrossRecords) {
-    CMString base_path = test_dir_ + "/total_bytes";
-    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+    CMString db_path = test_dir_ + "/total_bytes";
+    DataWriter writer(db_path, "", "a1b2c3d4", 1024);
 
     CMString d1 = "first";
     auto r1 = make_record(d1);
@@ -249,8 +249,8 @@ TEST_F(DataWriterTest, TotalBytesAccumulatesAcrossRecords) {
 }
 
 TEST_F(DataWriterTest, GetAllEntriesForSingleObject) {
-    CMString base_path = test_dir_ + "/get_all";
-    DataWriter writer(base_path, "", "a1b2c3d4", 1024);
+    CMString db_path = test_dir_ + "/get_all";
+    DataWriter writer(db_path, "", "a1b2c3d4", 1024);
 
     CMString data = "single";
     auto rec = make_record(data);
@@ -264,24 +264,24 @@ TEST_F(DataWriterTest, GetAllEntriesForSingleObject) {
 }
 
 TEST_F(DataWriterTest, FlushAfterWritePersistsIndex) {
-    CMString base_path = test_dir_ + "/flush_idx";
+    CMString db_path = test_dir_ + "/flush_idx";
     CMString writer_id = "f1ush2id";
 
     {
-        DataWriter writer(base_path, "", writer_id, 1024);
+        DataWriter writer(db_path, "", writer_id, 1024);
         CMString data = "flush test";
         auto rec = make_record(data);
         writer.write_record("flush/obj", rec.original_size_, rec.chunk_count_, rec.buffer);
         writer.flush();
 
-        EXPECT_TRUE(std::filesystem::exists(base_path + "/" + writer_id + ".idx"));
+        EXPECT_TRUE(std::filesystem::exists(db_path + "/" + writer_id + ".idx"));
         writer.close();
     }
 }
 
 TEST_F(DataWriterTest, HostStoredInEntry) {
-    CMString base_path = test_dir_ + "/host_test";
-    DataWriter writer(base_path, "", "a1b2c3d4", 1024, "192.168.1.1");
+    CMString db_path = test_dir_ + "/host_test";
+    DataWriter writer(db_path, "", "a1b2c3d4", 1024, "192.168.1.1");
 
     CMString data = "host data";
     auto rec = make_record(data);
@@ -307,12 +307,12 @@ static int64_t file_size(const CMString& path) {
 
 TEST_F(DataWriterTest, AbortSegmentTruncatesDataFile) {
     // BEGIN → 写 obj1 → abort_segment：data 文件 truncate 回 BEGIN 偏移(0)
-    CMString base_path = test_dir_ + "/abort_truncate";
+    CMString db_path = test_dir_ + "/abort_truncate";
     CMString data_file;
 
     {
-        DataWriter writer(base_path, "", "abort1", 100000);
-        data_file = base_path + "/data_abort1_001.dat";
+        DataWriter writer(db_path, "", "abort1", 100000);
+        data_file = db_path + "/data_abort1_001.dat";
 
         writer.mark_begin();
         CMString data(500, 'X');
@@ -337,8 +337,8 @@ TEST_F(DataWriterTest, AbortSegmentTruncatesDataFile) {
 
 TEST_F(DataWriterTest, AbortNoOpWhenSegmentNotOpened) {
     // 未 mark_begin 直接 abort_segment：no-op，不应崩溃
-    CMString base_path = test_dir_ + "/abort_noop";
-    DataWriter writer(base_path, "", "abort2", 100000);
+    CMString db_path = test_dir_ + "/abort_noop";
+    DataWriter writer(db_path, "", "abort2", 100000);
 
     EXPECT_FALSE(writer.segment_active());
     writer.abort_segment();   // no-op
@@ -350,12 +350,12 @@ TEST_F(DataWriterTest, AbortNoOpWhenSegmentNotOpened) {
 TEST_F(DataWriterTest, AbortAcrossRollover) {
     // BEGIN → 写超过 threshold 触发 rollover（产生 _002.dat）→ abort
     // 应回滚：删除 _002.dat + truncate _001.dat 回 BEGIN 偏移
-    CMString base_path = test_dir_ + "/abort_rollover";
-    CMString file1 = base_path + "/data_abort3_001.dat";
-    CMString file2 = base_path + "/data_abort3_002.dat";
+    CMString db_path = test_dir_ + "/abort_rollover";
+    CMString file1 = db_path + "/data_abort3_001.dat";
+    CMString file2 = db_path + "/data_abort3_002.dat";
 
     {
-        DataWriter writer(base_path, "", "abort3", 200);   // 小 threshold 触发 rollover
+        DataWriter writer(db_path, "", "abort3", 200);   // 小 threshold 触发 rollover
 
         // 先写一个段外记录占位 _001.dat（让 BEGIN 偏移 > 0）
         CMString data0(100, 'P');
@@ -392,7 +392,7 @@ TEST_F(DataWriterTest, AbortAcrossRollover) {
 
     // 验证段外记录 obj/keep 仍可读（idx 里保留）
     // abort 后再 load idx，只有段外的 keep
-    LocalIndex idx(base_path + "/abort3.idx");
+    LocalIndex idx(db_path + "/abort3.idx");
     idx.load();
     EXPECT_TRUE(idx.find_entry("obj/keep").has_value());
     EXPECT_FALSE(idx.find_entry("obj/dirty1").has_value());
@@ -402,11 +402,11 @@ TEST_F(DataWriterTest, AbortAcrossRollover) {
 TEST_F(DataWriterTest, AbortLargeObjectInEmptyFile) {
     // BEGIN 时文件为空，写一个超过 threshold 的大对象（不触发 rollover，直接写入空文件）
     // abort 后应 truncate 回 0
-    CMString base_path = test_dir_ + "/abort_large_empty";
-    CMString data_file = base_path + "/data_abort5_001.dat";
+    CMString db_path = test_dir_ + "/abort_large_empty";
+    CMString data_file = db_path + "/data_abort5_001.dat";
 
     {
-        DataWriter writer(base_path, "", "abort5", 200);   // threshold=200
+        DataWriter writer(db_path, "", "abort5", 200);   // threshold=200
 
         writer.mark_begin();   // 此时 current_file_size_ == 0
 
@@ -427,7 +427,7 @@ TEST_F(DataWriterTest, AbortLargeObjectInEmptyFile) {
         writer.close();
     }
 
-    LocalIndex idx(base_path + "/abort5.idx");
+    LocalIndex idx(db_path + "/abort5.idx");
     idx.load();
     EXPECT_FALSE(idx.find_entry("obj/large_dirty").has_value());
 }
@@ -435,12 +435,12 @@ TEST_F(DataWriterTest, AbortLargeObjectInEmptyFile) {
 TEST_F(DataWriterTest, AbortLargeObjectTriggersRollover) {
     // BEGIN 时文件非空，写大对象触发 rollover 到新文件
     // abort 后新文件应被删除，原文件 truncate 回 BEGIN 偏移
-    CMString base_path = test_dir_ + "/abort_large_rollover";
-    CMString file1 = base_path + "/data_abort6_001.dat";
-    CMString file2 = base_path + "/data_abort6_002.dat";
+    CMString db_path = test_dir_ + "/abort_large_rollover";
+    CMString file1 = db_path + "/data_abort6_001.dat";
+    CMString file2 = db_path + "/data_abort6_002.dat";
 
     {
-        DataWriter writer(base_path, "", "abort6", 200);
+        DataWriter writer(db_path, "", "abort6", 200);
 
         // 先写段外小对象占位 _001.dat
         CMString data0(100, 'P');
@@ -471,7 +471,7 @@ TEST_F(DataWriterTest, AbortLargeObjectTriggersRollover) {
         writer.close();
     }
 
-    LocalIndex idx(base_path + "/abort6.idx");
+    LocalIndex idx(db_path + "/abort6.idx");
     idx.load();
     EXPECT_TRUE(idx.find_entry("obj/keep").has_value());
     EXPECT_FALSE(idx.find_entry("obj/large_dirty").has_value());
@@ -487,8 +487,8 @@ TEST_F(DataWriterTest, AbortMultipleObjectsAcrossFiles) {
     // 所以用大 threshold 让 a/b/c 聚合在一个文件，d 触发 rollover。
     //
     // 直接构造 FlyBuffer 写入原始字节（绕过压缩），精确控制大小：
-    CMString base_path = test_dir_ + "/abort_multi_files";
-    CMString file1 = base_path + "/data_abort7_001.dat";
+    CMString db_path = test_dir_ + "/abort_multi_files";
+    CMString file1 = db_path + "/data_abort7_001.dat";
 
     auto make_raw = [](int size, char fill) -> FlyBuffer {
         FlyBuffer buf;
@@ -499,7 +499,7 @@ TEST_F(DataWriterTest, AbortMultipleObjectsAcrossFiles) {
     {
         // threshold=300: a/b/c 各 80 字节累计 240 < 300（在 _001），d 80 字节
         // 240+80=320 > 300 且 240>0 → rollover 到 _002，e/f 在 _002
-        DataWriter writer(base_path, "", "abort7", 300);
+        DataWriter writer(db_path, "", "abort7", 300);
 
         writer.mark_begin();   // 回滚点 = _001.dat 偏移 0
 
@@ -508,7 +508,7 @@ TEST_F(DataWriterTest, AbortMultipleObjectsAcrossFiles) {
             writer.write_record(CMString("obj/") + c, 80, 1, buf);
         }
         writer.flush();
-        EXPECT_FALSE(std::filesystem::exists(base_path + "/data_abort7_002.dat"))
+        EXPECT_FALSE(std::filesystem::exists(db_path + "/data_abort7_002.dat"))
             << "a/b/c should fit in _001";
 
         for (char c : {'d', 'e', 'f'}) {
@@ -516,7 +516,7 @@ TEST_F(DataWriterTest, AbortMultipleObjectsAcrossFiles) {
             writer.write_record(CMString("obj/") + c, 80, 1, buf);
         }
         writer.flush();
-        CMString file2 = base_path + "/data_abort7_002.dat";
+        CMString file2 = db_path + "/data_abort7_002.dat";
         EXPECT_TRUE(std::filesystem::exists(file2)) << "d should trigger rollover to _002";
         EXPECT_GT(file_size(file2), 0);
 
@@ -531,7 +531,7 @@ TEST_F(DataWriterTest, AbortMultipleObjectsAcrossFiles) {
     }
 
     // idx: a-f 全部丢弃（ABORT 段）
-    LocalIndex idx(base_path + "/abort7.idx");
+    LocalIndex idx(db_path + "/abort7.idx");
     idx.load();
     for (char c : {'a', 'b', 'c', 'd', 'e', 'f'}) {
         EXPECT_FALSE(idx.find_entry(CMString("obj/") + c).has_value())
@@ -542,11 +542,11 @@ TEST_F(DataWriterTest, AbortMultipleObjectsAcrossFiles) {
 TEST_F(DataWriterTest, BeginEndThenAbortNextSegment) {
     // 第一段 BEGIN→ADD→END（提交），第二段 BEGIN→ADD→abort（撤销）
     // 验证第一段数据保留，第二段回滚
-    CMString base_path = test_dir_ + "/two_segments";
-    CMString data_file = base_path + "/data_abort4_001.dat";
+    CMString db_path = test_dir_ + "/two_segments";
+    CMString data_file = db_path + "/data_abort4_001.dat";
 
     {
-        DataWriter writer(base_path, "", "abort4", 100000);
+        DataWriter writer(db_path, "", "abort4", 100000);
 
         // 第一段：提交
         writer.mark_begin();
@@ -576,7 +576,7 @@ TEST_F(DataWriterTest, BeginEndThenAbortNextSegment) {
         writer.close();
     }
 
-    LocalIndex idx(base_path + "/abort4.idx");
+    LocalIndex idx(db_path + "/abort4.idx");
     idx.load();
     EXPECT_TRUE(idx.find_entry("obj/committed").has_value());
     EXPECT_FALSE(idx.find_entry("obj/rolledback").has_value());

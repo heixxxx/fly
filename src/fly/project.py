@@ -79,11 +79,11 @@ class Project:
     # 类级注册表：flow_name -> func（内省/list_flows 用）。子类各自持有。
     _flows = {}
 
-    def __init__(self, base_path: str):
-        self.base_path = os.path.abspath(base_path)
-        os.makedirs(self.base_path, exist_ok=True)
+    def __init__(self, db_path: str):
+        self.db_path = os.path.abspath(db_path)
+        os.makedirs(self.db_path, exist_ok=True)
 
-        meta_path = os.path.join(self.base_path, _PROJECT_META)
+        meta_path = os.path.join(self.db_path, _PROJECT_META)
         self._db_cache = {}      # actual_name -> _Database（避免重复 load/open）
         self._meta_path = meta_path
 
@@ -106,7 +106,7 @@ class Project:
     def _create_db(self, name: str, data_path: str = ""):
         """flow 内部建库（不暴露终端用户）。
 
-        在 project 主目录下创建 ``<name>`` 子目录作为 db base_path，
+        在 project 主目录下创建 ``<name>`` 子目录作为 db db_path，
         调 ``fly.open_db``（已存在则自动递增 ``name.1``/``name.2``），
         记入 meta 并缓存句柄。
 
@@ -120,7 +120,7 @@ class Project:
         """
         from fly import open_db
 
-        db_base = os.path.join(self.base_path, name)
+        db_base = os.path.join(self.db_path, name)
 
         # 检测 logical_name 重名 → WARN 提醒（意见1）。
         existing = [v for v in self._meta["dbs"].values()
@@ -130,12 +130,12 @@ class Project:
                  f"creating a new variant (e.g. '{name}.1')")
 
         db = open_db(db_base, data_path)
-        actual_name = os.path.relpath(db.get_base_path(), self.base_path)
+        actual_name = os.path.relpath(db.get_db_path(), self.db_path)
         actual_name = actual_name.replace(os.sep, "/")
 
         self._meta["dbs"][actual_name] = {
             "logical_name": name,
-            "base_path": db.get_base_path(),
+            "db_path": db.get_db_path(),
             "db_path": db.get_db_path(),
             # 浮点秒：同名多次运行可能密集发生，int 秒无法区分先后。
             "created_at": time.time(),
@@ -199,8 +199,8 @@ class Project:
         # 已 freeze 的库走 load_db（恢复索引，master-only）；未 freeze 的库说明
         # 同进程刚建（必在缓存），缓存未命中即等价于跨进程/重新绑定，按既有库 load。
         from fly import load_db
-        base_path = self._meta["dbs"][actual]["base_path"]
-        db = load_db(base_path)
+        db_path = self._meta["dbs"][actual]["db_path"]
+        db = load_db(db_path)
         self._db_cache[actual] = db
         return db
 
@@ -279,7 +279,7 @@ class Project:
                     # 对原 db_path 无效，is_db_frozen 仍为 False。load_db 是
                     # master-only，freeze_all 本身即 master 本地操作，语义匹配。
                     from fly import load_db
-                    db = load_db(info["base_path"])
+                    db = load_db(info["db_path"])
                     self._db_cache[actual] = db
                 db.freeze()
 
@@ -305,22 +305,22 @@ class Project:
         os.replace(tmp, self._meta_path)
 
     @classmethod
-    def load(cls, base_path: str) -> "Project":
+    def load(cls, db_path: str) -> "Project":
         """读 _PROJECT_META.json + 动态还原子类 + 对每个 db 调 fly.load_db。
 
         master-only（内部用 fly.load_db，worker 调用会 AttributeError）。
         全量恢复所有 db 的索引 + 按需拉起 worker。
 
         Args:
-            base_path: Project 主目录路径。
+            db_path: Project 主目录路径。
 
         Returns:
             还原出的子类实例（如 SolverProject）；class 路径失效则回退基类。
         """
         from fly.runtime import _mode
-        meta_path = os.path.join(base_path, _PROJECT_META)
+        meta_path = os.path.join(db_path, _PROJECT_META)
         if not os.path.isfile(meta_path):
-            raise RuntimeError(f"load_project: no {_PROJECT_META} at {base_path}")
+            raise RuntimeError(f"load_project: no {_PROJECT_META} at {db_path}")
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
 
@@ -341,7 +341,7 @@ class Project:
                 real_cls = cls
 
         proj = real_cls.__new__(real_cls)
-        proj.base_path = os.path.abspath(base_path)
+        proj.db_path = os.path.abspath(db_path)
         proj._meta = meta
         proj._meta_path = meta_path
         proj._db_cache = {}
@@ -352,9 +352,9 @@ class Project:
 
         from fly import load_db
         for actual, info in meta["dbs"].items():
-            bp = info["base_path"]
+            bp = info["db_path"]
             if not os.path.isdir(bp):
-                WARN(f"load_project: db base_path missing, skipping: {bp}")
+                WARN(f"load_project: db db_path missing, skipping: {bp}")
                 continue
             try:
                 proj._db_cache[actual] = load_db(bp)
@@ -390,16 +390,16 @@ class Project:
 
     def __getstate__(self):
         return {
-            "base_path": self.base_path,
+            "db_path": self.db_path,
             "meta": self._meta,
         }
 
     def __setstate__(self, state):
-        self.base_path = state["base_path"]
+        self.db_path = state["db_path"]
         self._meta = state["meta"]
-        self._meta_path = os.path.join(self.base_path, _PROJECT_META)
+        self._meta_path = os.path.join(self.db_path, _PROJECT_META)
         self._db_cache = {}
 
     def __repr__(self):
-        return (f"{type(self).__name__}(path={self.base_path!r}, "
+        return (f"{type(self).__name__}(path={self.db_path!r}, "
                 f"dbs={self.list_dbs()})")

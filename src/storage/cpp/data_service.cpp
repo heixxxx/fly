@@ -92,22 +92,10 @@ void DataService::reset() {
 // ============================================================
 
 void DataService::register_database(const CMString& db_path,
-                                     const CMString& base_path,
                                      const CMString& data_path,
                                      const CMString& writer_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = db_paths_.find(db_path);
-    if (it != db_paths_.end()) {
-        it->second = {base_path, data_path, writer_id};
-        return;
-    }
-    for (const auto& [existing_id, paths] : db_paths_) {
-        if (paths.base_path_ == base_path) {
-            ERR("base_path '{}' already registered by database '{}'", base_path, existing_id);
-            return;
-        }
-    }
-    db_paths_[db_path] = {base_path, data_path, writer_id};
+    db_paths_[db_path] = {db_path, data_path, writer_id};
 }
 
 void DataService::unregister_database(const CMString& db_path) {
@@ -125,10 +113,10 @@ bool DataService::has_database(const CMString& db_path) const {
 // ============================================================
 
 namespace {
-// 读取 {base_path}/_MIGRATED_TO 的 MigrationHeader。不存在或解析失败返回空 target。
-MigrationHeader read_migration_marker(const CMString& base_path) {
+// 读取 {db_path}/_MIGRATED_TO 的 MigrationHeader。不存在或解析失败返回空 target。
+MigrationHeader read_migration_marker(const CMString& db_path) {
     MigrationHeader header;
-    CMString meta_path = base_path + "/_MIGRATED_TO";
+    CMString meta_path = db_path + "/_MIGRATED_TO";
     if (!std::filesystem::exists(meta_path)) return header;
 
     std::ifstream ifs(meta_path, std::ios::binary);
@@ -151,11 +139,11 @@ MigrationHeader read_migration_marker(const CMString& base_path) {
 }
 }  // namespace
 
-CMString DataService::resolve_migrated_path(const CMString& base_path) {
+CMString DataService::resolve_migrated_path(const CMString& db_path) {
     // 1. 查缓存。
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = migrated_db_paths_.find(base_path);
+        auto it = migrated_db_paths_.find(db_path);
         if (it != migrated_db_paths_.end()) {
             return it->second;
         }
@@ -163,7 +151,7 @@ CMString DataService::resolve_migrated_path(const CMString& base_path) {
 
     // 2. miss → stat _MIGRATED_TO，链式展平 A→B→C。
     //    用本地 visited 防环（理论上不应出现，防御性）。
-    CMString resolved = base_path;
+    CMString resolved = db_path;
     CMVector<CMString> visited;
     while (true) {
         if (std::find(visited.begin(), visited.end(), resolved) != visited.end()) {
@@ -173,63 +161,63 @@ CMString DataService::resolve_migrated_path(const CMString& base_path) {
         visited.push_back(resolved);
 
         auto header = read_migration_marker(resolved);
-        if (header.target_base_path_.empty()) {
+        if (header.target_db_path_.empty()) {
             break;  // 无迁移文件，resolved 即最终值
         }
-        resolved = header.target_base_path_;
+        resolved = header.target_db_path_;
     }
 
-    // 3. 缓存最终结果（含"无迁移"——resolved==base_path 也缓存，避免重复 stat）。
+    // 3. 缓存最终结果（含"无迁移"——resolved==db_path 也缓存，避免重复 stat）。
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        migrated_db_paths_[base_path] = resolved;
+        migrated_db_paths_[db_path] = resolved;
     }
     return resolved;
 }
 
-CMString DataService::read_migrated_data_path(const CMString& base_path) {
-    // 读源 base_path 的 _MIGRATED_TO，返回 target_data_path。
+CMString DataService::read_migrated_data_path(const CMString& db_path) {
+    // 读源 db_path 的 _MIGRATED_TO，返回 target_data_path。
     // 链式迁移：跟随到最终 target 的 data_path。
-    CMString current = base_path;
+    CMString current = db_path;
     CMVector<CMString> visited;
     while (true) {
         if (std::find(visited.begin(), visited.end(), current) != visited.end()) break;
         visited.push_back(current);
         auto header = read_migration_marker(current);
-        if (header.target_base_path_.empty()) {
-            // current 无迁移文件。若 current == base_path（无迁移），返回空；
+        if (header.target_db_path_.empty()) {
+            // current 无迁移文件。若 current == db_path（无迁移），返回空；
             // 否则返回最后一次迁移的 target_data_path（已在上一轮 header 里）。
             break;
         }
         // 记下本轮 target_data_path，继续跟随
-        if (header.target_base_path_ == current) break;  // 自环防御
-        current = header.target_base_path_;
+        if (header.target_db_path_ == current) break;  // 自环防御
+        current = header.target_db_path_;
         // 检查 target 是否还有进一步迁移；若无，header.target_data_path_ 就是最终值
         auto next_header = read_migration_marker(current);
-        if (next_header.target_base_path_.empty()) {
+        if (next_header.target_db_path_.empty()) {
             return header.target_data_path_;
         }
     }
-    // 回退：直接读 base_path 的 marker 取 data_path
-    auto h = read_migration_marker(base_path);
+    // 回退：直接读 db_path 的 marker 取 data_path
+    auto h = read_migration_marker(db_path);
     return h.target_data_path_;
 }
 
-void DataService::set_migrated_path(const CMString& source_base_path,
-                                     const CMString& target_base_path) {
+void DataService::set_migrated_path(const CMString& source_db_path,
+                                     const CMString& target_db_path) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (target_base_path.empty()) {
-        migrated_db_paths_.erase(source_base_path);
+    if (target_db_path.empty()) {
+        migrated_db_paths_.erase(source_db_path);
     } else {
-        migrated_db_paths_[source_base_path] = target_base_path;
+        migrated_db_paths_[source_db_path] = target_db_path;
     }
 }
 
-void DataService::write_migration_marker(const CMString& source_base_path,
-                                          const CMString& target_base_path,
+void DataService::write_migration_marker(const CMString& source_db_path,
+                                          const CMString& target_db_path,
                                           const CMString& target_data_path) {
     MigrationHeader header;
-    header.target_base_path_ = target_base_path;
+    header.target_db_path_ = target_db_path;
     header.target_data_path_ = target_data_path;
     header.migrated_at_ = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
@@ -237,7 +225,7 @@ void DataService::write_migration_marker(const CMString& source_base_path,
     CMString encoded;
     FLY_ENCODE(header, encoded);
 
-    CMString meta_path = source_base_path + "/_MIGRATED_TO";
+    CMString meta_path = source_db_path + "/_MIGRATED_TO";
     std::ofstream ofs(meta_path, std::ios::binary);
     if (!ofs.is_open()) {
         ERR("Failed to open _MIGRATED_TO for writing: {}", meta_path);
@@ -249,7 +237,7 @@ void DataService::write_migration_marker(const CMString& source_base_path,
     ofs.close();
 
     INFO("Wrote _MIGRATED_TO: source={}, target_base={}, target_data={}",
-         source_base_path, target_base_path, target_data_path);
+         source_db_path, target_db_path, target_data_path);
 }
 
 // ============================================================
@@ -626,7 +614,7 @@ CMVector<RemoteObjectInfo> DataService::get_all_workers() const {
 // ============================================================
 
 std::pair<CMString, CMString> DataService::split_full(const CMString& full) {
-    // db_path 废弃：db_path == db_path（base_path，含 '/'）。full_name = "db_path:short"。
+    // db_path 废弃：db_path == db_path（db_path，含 '/'）。full_name = "db_path:short"。
     // 用 rfind(':') 切分 —— short_name 不含 ':'，最后一个 ':' 必是分隔符。
     auto pos = full.rfind(':');
     if (pos == CMString::npos) {
@@ -652,7 +640,7 @@ ReadResult DataService::do_read_local_entries(const CMVector<IndexEntry>& entrie
 
 FlyBufferPtr DataService::do_read_raw_entries(const CMVector<IndexEntry>& entries,
                                             const DbPaths& paths) {
-    DataReader reader(paths.base_path_, paths.data_path_, paths.writer_id_);
+    DataReader reader(paths.db_path_, paths.data_path_, paths.writer_id_);
     return reader.read_raw_bytes(entries.back());
 }
 
@@ -1107,7 +1095,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
 
         CMString py_name;
         CMString write_hash;
-        if (!entries.empty() && !paths.base_path_.empty()) {
+        if (!entries.empty() && !paths.db_path_.empty()) {
             FlyBufferPtr entry_raw = do_read_raw_entries(entries, paths);
             if (entry_raw && !entry_raw->empty()) {
                 DecompressingStreamBuf dsbuf(entry_raw->data(), entry_raw->size());

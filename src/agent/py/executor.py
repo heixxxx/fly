@@ -35,7 +35,7 @@ except ImportError:
 from _fly_agent import EXTaskExecResult, EXTaskExecStatus
 from _fly_log import INFO, ERR
 
-# db_path（base_path）是 full_name "db_path:short_name" 的前缀（变长，含 '/'）。
+# db_path（db_path）是 full_name "db_path:short_name" 的前缀（变长，含 '/'）。
 # split 用 rfind(':') —— short_name 是逻辑对象名不含 ':'，最后一个 ':' 必是分隔符。
 # 与 C++ data_service.h 的 split_full_name 保持一致。
 
@@ -52,11 +52,11 @@ def _deserialize_args(args: list, worker) -> list:
     result = []
     for arg in args:
         if isinstance(arg, str) and arg.startswith("__fly_db__:"):
-            # 格式：__fly_db__:{base_path}:{data_path}（db_path == base_path，不再单独传）
+            # 格式：__fly_db__:{db_path}:{data_path}（db_path == db_path，不再单独传）
             parts = arg.split(":", 2)
-            base_path = parts[1] if len(parts) > 1 else ""
+            db_path = parts[1] if len(parts) > 1 else ""
             data_path = parts[2] if len(parts) > 2 else ""
-            db_path = base_path  # db_path == base_path
+            db_path = db_path  # db_path == db_path
             if db_path not in worker._db_cache:
                 from _fly_storage import ex_stg_get_data_service
                 ds = ex_stg_get_data_service()
@@ -67,13 +67,13 @@ def _deserialize_args(args: list, worker) -> list:
                     except ImportError:
                         from database import _Database
                     db = _Database.__new__(_Database)
-                    db._db = ex_stg_create_database_with_path(base_path, data_path, worker._worker_id, db_path)
+                    db._db = ex_stg_create_database_with_path(db_path, data_path, worker._worker_id, db_path)
                 else:
                     try:
                         from storage.database import _Database
                     except ImportError:
                         from database import _Database
-                    db = _Database(base_path, data_path, worker._worker_id)
+                    db = _Database(db_path, data_path, worker._worker_id)
                 worker._agent.register_database(db_path, db._db)
                 worker._db_cache[db_path] = db
             result.append(worker._db_cache[db_path])

@@ -42,7 +42,6 @@ struct WriteRecord {
 
 struct PendingDbPath {
     CMString db_path_;
-    CMString base_path_;
     CMString data_path_;
     bool completed_ = false;
     bool success_ = false;
@@ -248,10 +247,11 @@ private:
     // __merge_object：跨机拉源对象压缩字节，落到 merge target_data_path（master host 本地）。
     // 不构造 Database（避免 DataService 全局状态污染），用独立 DataWriter 直接落盘 + 手动 register。
     // 详见 docs/db-merge-design.md §3.4 / §5.1（方案 B）。
-    void execute_merge_object(uint64_t task_id, const CMString& short_name, const CMString& db_path,
-                              const CMString& base_path, const CMString& target_data_path);
+    void execute_merge_object(uint64_t task_id, const CMString& short_name,
+                              const CMString& source_db_path, const CMString& target_db_path,
+                              const CMString& target_data_path);
     // 获取或创建 merge 专用 DataWriter（按 target_data_path 缓存，跨 task 复用，每源 host 一个 writer）。
-    DataWriter* get_or_create_merge_writer(const CMString& base_path, const CMString& target_data_path);
+    DataWriter* get_or_create_merge_writer(const CMString& db_path, const CMString& target_data_path);
     void on_disconnect(uint64_t conn_id);
 
     // Var service handlers.

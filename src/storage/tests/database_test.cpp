@@ -51,8 +51,8 @@ protected:
 };
 
 TEST_F(DatabaseTest, WriteAndReadObject) {
-    CMString base_path = test_dir_ + "/write_read";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/write_read";
+    Database db(db_path);
 
     write_raw(db, "test/obj", "hello world", false);
     fly::DataService::instance()->drain_write_back();
@@ -62,8 +62,8 @@ TEST_F(DatabaseTest, WriteAndReadObject) {
 }
 
 TEST_F(DatabaseTest, FreezePreventsWrite) {
-    CMString base_path = test_dir_ + "/freeze_prevent";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/freeze_prevent";
+    Database db(db_path);
 
     write_raw(db, "test/obj", "data", false);
     db.freeze();
@@ -73,19 +73,19 @@ TEST_F(DatabaseTest, FreezePreventsWrite) {
 }
 
 TEST_F(DatabaseTest, FrozenMarkerCreated) {
-    CMString base_path = test_dir_ + "/frozen_marker";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/frozen_marker";
+    Database db(db_path);
 
     db.freeze();
 
-    std::ifstream ifs(base_path + "/_FROZEN");
+    std::ifstream ifs(db_path + "/_FROZEN");
     EXPECT_TRUE(ifs.good());
 }
 
 TEST_F(DatabaseTest, DoublePathReadPriority) {
-    CMString base_path = test_dir_ + "/shared_base";
+    CMString db_path = test_dir_ + "/shared_base";
     CMString data_path = test_dir_ + "/local_data";
-    Database db(base_path, data_path);
+    Database db(db_path, data_path);
 
     write_raw(db, "priority/test", "local_data", false);
     fly::DataService::instance()->drain_write_back();
@@ -95,8 +95,8 @@ TEST_F(DatabaseTest, DoublePathReadPriority) {
 }
 
 TEST_F(DatabaseTest, LoadMetaFromFrozenDatabase) {
-    CMString base_path = test_dir_ + "/meta_db";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/meta_db";
+    Database db(db_path);
 
     write_raw(db, "test/obj", "data", false);
     db.freeze();
@@ -107,51 +107,51 @@ TEST_F(DatabaseTest, LoadMetaFromFrozenDatabase) {
 }
 
 TEST_F(DatabaseTest, GetDbIdEqualsBasePath) {
-    // db_path 废弃：db_path 现在是 base_path 的别名（不再随机生成）。
-    CMString base_path = test_dir_ + "/id_check";
-    Database db(base_path);
+    // db_path 废弃：db_path 现在是 db_path 的别名（不再随机生成）。
+    CMString db_path = test_dir_ + "/id_check";
+    Database db(db_path);
 
-    EXPECT_EQ(db.get_db_path(), base_path);
+    EXPECT_EQ(db.get_db_path(), db_path);
     EXPECT_FALSE(db.get_db_path().empty());
 }
 
 TEST_F(DatabaseTest, BasePathWithColonRejected) {
-    // full_name = "db_path:short" 用 ':' 分隔，base_path 含 ':' 会破坏 split。
-    // Database 构造时拒绝含 ':' 的 base_path（双保险）。
+    // full_name = "db_path:short" 用 ':' 分隔，db_path 含 ':' 会破坏 split。
+    // Database 构造时拒绝含 ':' 的 db_path（双保险）。
     CMString bad_path = test_dir_ + "/bad:path";
     Database db(bad_path);
-    // 拒绝后 base_path_ 清空，db_path_ 也清空（不产生有效对象）
-    EXPECT_TRUE(db.get_base_path().empty())
-        << "base_path with ':' should be rejected, got: " << db.get_base_path();
+    // 拒绝后 db_path_ 清空，db_path_ 也清空（不产生有效对象）
+    EXPECT_TRUE(db.get_db_path().empty())
+        << "db_path with ':' should be rejected, got: " << db.get_db_path();
     EXPECT_TRUE(db.get_db_path().empty());
 }
 
 TEST_F(DatabaseTest, FullNameIsDbPathColonShort) {
     // full_name = "db_path:short_name"（db_path 废弃后的契约）
-    CMString base_path = test_dir_ + "/fullname_check";
-    Database db(base_path);
-    EXPECT_EQ(db.get_full_name("matrix"), base_path + ":matrix");
-    EXPECT_EQ(db.get_full_name("result/obj_1"), base_path + ":result/obj_1");
+    CMString db_path = test_dir_ + "/fullname_check";
+    Database db(db_path);
+    EXPECT_EQ(db.get_full_name("matrix"), db_path + ":matrix");
+    EXPECT_EQ(db.get_full_name("result/obj_1"), db_path + ":result/obj_1");
 }
 
 TEST_F(DatabaseTest, GetBasePath) {
-    CMString base_path = test_dir_ + "/path_check";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/path_check";
+    Database db(db_path);
 
-    EXPECT_EQ(db.get_base_path(), base_path);
+    EXPECT_EQ(db.get_db_path(), db_path);
 }
 
 TEST_F(DatabaseTest, GetDataPath) {
-    CMString base_path = test_dir_ + "/data_path_base";
+    CMString db_path = test_dir_ + "/data_path_base";
     CMString data_path = test_dir_ + "/data_path_local";
-    Database db(base_path, data_path);
+    Database db(db_path, data_path);
 
     EXPECT_EQ(db.get_data_path(), data_path);
 }
 
 TEST_F(DatabaseTest, ResetClearsFrozenState) {
-    CMString base_path = test_dir_ + "/reset_db";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/reset_db";
+    Database db(db_path);
 
     db.freeze();
     EXPECT_TRUE(db.is_frozen());
@@ -159,13 +159,13 @@ TEST_F(DatabaseTest, ResetClearsFrozenState) {
     db.reset();
     EXPECT_FALSE(db.is_frozen());
 
-    std::filesystem::path frozen_marker(base_path + "/_FROZEN");
+    std::filesystem::path frozen_marker(db_path + "/_FROZEN");
     EXPECT_FALSE(std::filesystem::exists(frozen_marker));
 }
 
 TEST_F(DatabaseTest, WriteMultipleObjects) {
-    CMString base_path = test_dir_ + "/multi_write";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/multi_write";
+    Database db(db_path);
 
     write_raw(db, "obj1", "data1", false);
     write_raw(db, "obj2", "data2", false);
@@ -178,8 +178,8 @@ TEST_F(DatabaseTest, WriteMultipleObjects) {
 }
 
 TEST_F(DatabaseTest, ReadNonexistentObjectThrows) {
-    CMString base_path = test_dir_ + "/nonexist";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/nonexist";
+    Database db(db_path);
 
     EXPECT_TRUE(read_raw_string(db, "no/such/object").empty());
 }
@@ -187,8 +187,8 @@ TEST_F(DatabaseTest, ReadNonexistentObjectThrows) {
 // ─── Typed write/read tests ───
 
 TEST_F(DatabaseTest, WriteAndReadTypedObject) {
-    CMString base_path = test_dir_ + "/typed";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/typed";
+    Database db(db_path);
 
     CMString data = "typed_data_content";
     db.write_pickle_bytes("typed/obj", data.data(), static_cast<int64_t>(data.size()), "TestType");
@@ -199,8 +199,8 @@ TEST_F(DatabaseTest, WriteAndReadTypedObject) {
 }
 
 TEST_F(DatabaseTest, TypedObjectPersistenceAcrossFlush) {
-    CMString base_path = test_dir_ + "/typed_flush";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/typed_flush";
+    Database db(db_path);
 
     CMString data = "persistent_data";
     db.write_pickle_bytes("persist/obj", data.data(), static_cast<int64_t>(data.size()), "PersistType");
@@ -211,8 +211,8 @@ TEST_F(DatabaseTest, TypedObjectPersistenceAcrossFlush) {
 }
 
 TEST_F(DatabaseTest, TypedObjectWithPyNameDetection) {
-    CMString base_path = test_dir_ + "/typed_pyname";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/typed_pyname";
+    Database db(db_path);
 
     db.write_pickle_bytes("named/obj", "some_data", 9, "MyCustomType");
     fly::DataService::instance()->drain_write_back();
@@ -223,8 +223,8 @@ TEST_F(DatabaseTest, TypedObjectWithPyNameDetection) {
 }
 
 TEST_F(DatabaseTest, MultipleTypedObjects) {
-    CMString base_path = test_dir_ + "/typed_multi";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/typed_multi";
+    Database db(db_path);
 
     db.write_pickle_bytes("type/a", "data_a", 6, "TypeA");
     db.write_pickle_bytes("type/b", "data_b", 6, "TypeB");
@@ -240,16 +240,16 @@ TEST_F(DatabaseTest, MultipleTypedObjects) {
 }
 
 TEST_F(DatabaseTest, CompressedNonexistentObjectReturnsEmpty) {
-    CMString base_path = test_dir_ + "/compressed_nonexist";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/compressed_nonexist";
+    Database db(db_path);
 
     auto [comp_data, py_name] = db.read_object_compressed("no/such/object");
     EXPECT_TRUE(!comp_data || comp_data->empty());
 }
 
 TEST_F(DatabaseTest, GetObjNameReturnsDbIdColonName) {
-    CMString base_path = test_dir_ + "/obj_name_test";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/obj_name_test";
+    Database db(db_path);
 
     CMString obj_name = db.get_full_name("output/result");
     CMString expected = db.get_db_path() + ":output/result";
@@ -276,8 +276,8 @@ TEST_F(DatabaseTest, WriteObjectTracksWrite) {
         }
     );
 
-    CMString base_path = test_dir_ + "/write_track";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/write_track";
+    Database db(db_path);
     write_raw(db, "test/obj", "data", false);
     fly::DataService::instance()->drain_write_back();
 
@@ -295,8 +295,8 @@ TEST_F(DatabaseTest, WriteTypedObjectTracksWrite) {
         }
     );
 
-    CMString base_path = test_dir_ + "/typed_track";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/typed_track";
+    Database db(db_path);
     db.write_pickle_bytes("typed/obj", "typed_data", 10, "TestType");
     fly::DataService::instance()->drain_write_back();
 
@@ -307,14 +307,14 @@ TEST_F(DatabaseTest, WriteTypedObjectTracksWrite) {
 }
 
 TEST_F(DatabaseTest, NoTrackingWithoutContext) {
-    CMString base_path = test_dir_ + "/no_track";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/no_track";
+    Database db(db_path);
     write_raw(db, "safe/obj", "data", false);
 }
 
 TEST_F(DatabaseTest, RemoveObjectPreventsRead) {
-    CMString base_path = test_dir_ + "/remove_obj";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/remove_obj";
+    Database db(db_path);
 
     write_raw(db, "test/obj", "hello world", false);
     fly::DataService::instance()->drain_write_back();
@@ -328,8 +328,8 @@ TEST_F(DatabaseTest, RemoveObjectPreventsRead) {
 }
 
 TEST_F(DatabaseTest, RemoveObjectOnlyAffectsTarget) {
-    CMString base_path = test_dir_ + "/remove_one";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/remove_one";
+    Database db(db_path);
 
     write_raw(db, "obj/a", "data_a", false);
     write_raw(db, "obj/b", "data_b", false);
@@ -342,8 +342,8 @@ TEST_F(DatabaseTest, RemoveObjectOnlyAffectsTarget) {
 }
 
 TEST_F(DatabaseTest, RemoveObjectFailsWhenFrozen) {
-    CMString base_path = test_dir_ + "/remove_frozen";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/remove_frozen";
+    Database db(db_path);
 
     write_raw(db, "test/obj", "data", false);
     db.freeze();
@@ -359,8 +359,8 @@ TEST_F(DatabaseTest, RemoveObjectTrampolineRequestsRemove) {
         }
     );
 
-    CMString base_path = test_dir_ + "/remove_trampoline";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/remove_trampoline";
+    Database db(db_path);
     write_raw(db, "notify/obj", "data", false);
     fly::DataService::instance()->drain_write_back();
 
@@ -375,11 +375,11 @@ TEST_F(DatabaseTest, RemoveObjectTrampolineRequestsRemove) {
 // ─── _DB_META incremental format tests ───
 
 TEST_F(DatabaseTest, DbMetaHeaderWrittenOnConstruction) {
-    CMString base_path = test_dir_ + "/meta_header";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/meta_header";
+    Database db(db_path);
 
     // _DB_META file should exist after construction
-    std::filesystem::path meta_path(base_path + "/_DB_META");
+    std::filesystem::path meta_path(db_path + "/_DB_META");
     EXPECT_TRUE(std::filesystem::exists(meta_path));
 
     // File should be non-empty
@@ -392,8 +392,8 @@ TEST_F(DatabaseTest, DbMetaHeaderWrittenOnConstruction) {
 }
 
 TEST_F(DatabaseTest, AppendWorkerInfoToMeta) {
-    CMString base_path = test_dir_ + "/meta_append";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/meta_append";
+    Database db(db_path);
 
     // Append first WorkerInfo
     WorkerInfo info1;
@@ -426,19 +426,19 @@ TEST_F(DatabaseTest, AppendWorkerInfoToMeta) {
 }
 
 TEST_F(DatabaseTest, FreezeOnlyWritesFrozenMarker) {
-    CMString base_path = test_dir_ + "/meta_freeze";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/meta_freeze";
+    Database db(db_path);
 
     write_raw(db, "test/obj", "data", false);
     fly::DataService::instance()->drain_write_back();
 
-    std::filesystem::path meta_path(base_path + "/_DB_META");
+    std::filesystem::path meta_path(db_path + "/_DB_META");
     auto meta_size_before = std::filesystem::file_size(meta_path);
 
     db.freeze();
 
     // _FROZEN should exist
-    std::filesystem::path frozen_path(base_path + "/_FROZEN");
+    std::filesystem::path frozen_path(db_path + "/_FROZEN");
     EXPECT_TRUE(std::filesystem::exists(frozen_path));
 
     // _DB_META size should not change (no rewrite)
@@ -447,8 +447,8 @@ TEST_F(DatabaseTest, FreezeOnlyWritesFrozenMarker) {
 }
 
 TEST_F(DatabaseTest, LoadMetaReadsIncrementalFormat) {
-    CMString base_path = test_dir_ + "/meta_incremental";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/meta_incremental";
+    Database db(db_path);
 
     write_raw(db, "data/obj1", "payload1", false);
     fly::DataService::instance()->drain_write_back();
@@ -471,8 +471,8 @@ TEST_F(DatabaseTest, LoadMetaReadsIncrementalFormat) {
 }
 
 TEST_F(DatabaseTest, LoadMetaNoWorkers) {
-    CMString base_path = test_dir_ + "/meta_no_workers";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/meta_no_workers";
+    Database db(db_path);
 
     // No WorkerInfo appended
     DbMeta meta = db.load_meta();
@@ -482,8 +482,8 @@ TEST_F(DatabaseTest, LoadMetaNoWorkers) {
 }
 
 TEST_F(DatabaseTest, AppendWorkerInfoIdempotent) {
-    CMString base_path = test_dir_ + "/meta_idempotent";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/meta_idempotent";
+    Database db(db_path);
 
     // Append same WorkerInfo twice — append is additive, no dedup
     WorkerInfo info;
@@ -504,8 +504,8 @@ TEST_F(DatabaseTest, AppendWorkerInfoIdempotent) {
 }
 
 TEST_F(DatabaseTest, FreezeDuringInFlightWrite) {
-    CMString base_path = test_dir_ + "/freeze_inflight";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/freeze_inflight";
+    Database db(db_path);
 
     // Write object but do NOT drain — data is in WBQ
     write_raw(db, "inflight/obj", "inflight_data", false);
@@ -524,8 +524,8 @@ TEST_F(DatabaseTest, FreezeDuringInFlightWrite) {
 }
 
 TEST_F(DatabaseTest, DoubleFreezeIsIdempotent) {
-    CMString base_path = test_dir_ + "/double_freeze";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/double_freeze";
+    Database db(db_path);
 
     write_raw(db, "before/freeze", "data", false);
     fly::DataService::instance()->drain_write_back();
@@ -536,15 +536,15 @@ TEST_F(DatabaseTest, DoubleFreezeIsIdempotent) {
     EXPECT_NO_THROW(db.freeze());
     EXPECT_TRUE(db.is_frozen());
 
-    std::ifstream ifs(base_path + "/_FROZEN");
+    std::ifstream ifs(db_path + "/_FROZEN");
     EXPECT_TRUE(ifs.good());
 
     EXPECT_EQ(write_raw(db, "after/freeze", "data2", false), fly::WriteErrorType::FROZEN_DB);
 }
 
 TEST_F(DatabaseTest, CompressPickleBytes) {
-    CMString base_path = test_dir_ + "/compress_bytes";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/compress_bytes";
+    Database db(db_path);
 
     CMString data = "compressible_test_data";
     CMString compressed = db.compress_pickle_bytes(data.data(), static_cast<int64_t>(data.size()), "bytes");
@@ -552,8 +552,8 @@ TEST_F(DatabaseTest, CompressPickleBytes) {
 }
 
 TEST_F(DatabaseTest, CompressPickleBytesTyped) {
-    CMString base_path = test_dir_ + "/compress_typed";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/compress_typed";
+    Database db(db_path);
 
     CMString data = "typed_compress";
     CMString compressed = db.compress_pickle_bytes(data.data(), static_cast<int64_t>(data.size()), "MyType");
@@ -565,8 +565,8 @@ TEST_F(DatabaseTest, CompressPickleBytesTyped) {
 }
 
 TEST_F(DatabaseTest, ReadNonexistentObjectCompressedReturnsEmpty) {
-    CMString base_path = test_dir_ + "/read_nonexist_comp";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/read_nonexist_comp";
+    Database db(db_path);
 
     auto [comp_data, py_name] = db.read_object_compressed("absent/object");
     EXPECT_TRUE(!comp_data || comp_data->empty());
@@ -574,8 +574,8 @@ TEST_F(DatabaseTest, ReadNonexistentObjectCompressedReturnsEmpty) {
 }
 
 TEST_F(DatabaseTest, WriteAndReadViaReadObjectCompressed) {
-    CMString base_path = test_dir_ + "/write_read_comp";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/write_read_comp";
+    Database db(db_path);
 
     write_raw(db, "comp/test", "compressed_payload", false);
     fly::DataService::instance()->drain_write_back();
@@ -586,15 +586,15 @@ TEST_F(DatabaseTest, WriteAndReadViaReadObjectCompressed) {
 }
 
 TEST_F(DatabaseTest, GetWriterIdIsNotEmpty) {
-    CMString base_path = test_dir_ + "/writer_id";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/writer_id";
+    Database db(db_path);
 
     EXPECT_FALSE(db.get_writer_id().empty());
 }
 
 TEST_F(DatabaseTest, RemoveObjectOnFrozenIsNoop) {
-    CMString base_path = test_dir_ + "/remove_frozen_noop";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/remove_frozen_noop";
+    Database db(db_path);
 
     write_raw(db, "freeze_rm/obj", "data", false);
     fly::DataService::instance()->drain_write_back();
@@ -606,10 +606,10 @@ TEST_F(DatabaseTest, RemoveObjectOnFrozenIsNoop) {
 }
 
 TEST_F(DatabaseTest, LoadMetaEmptyAfterCorruption) {
-    CMString base_path = test_dir_ + "/meta_corrupt";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/meta_corrupt";
+    Database db(db_path);
 
-    CMString meta_path = base_path + "/_DB_META";
+    CMString meta_path = db_path + "/_DB_META";
     {
         std::ofstream ofs(meta_path, std::ios::binary | std::ios::trunc);
         int64_t bad_size = -1;
@@ -621,8 +621,8 @@ TEST_F(DatabaseTest, LoadMetaEmptyAfterCorruption) {
 }
 
 TEST_F(DatabaseTest, RemoveIndexEntry) {
-    CMString base_path = test_dir_ + "/remove_idx";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/remove_idx";
+    Database db(db_path);
 
     write_raw(db, "ridx/obj", "data", false);
     fly::DataService::instance()->drain_write_back();
@@ -631,16 +631,16 @@ TEST_F(DatabaseTest, RemoveIndexEntry) {
 }
 
 TEST_F(DatabaseTest, WriteEmptyData) {
-    CMString base_path = test_dir_ + "/empty_write";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/empty_write";
+    Database db(db_path);
 
     write_raw(db, "empty/obj", "", false);
     fly::DataService::instance()->drain_write_back();
 }
 
 TEST_F(DatabaseTest, WriteLargeData) {
-    CMString base_path = test_dir_ + "/large_write";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/large_write";
+    Database db(db_path);
 
     CMString large_data(100000, 'X');
     write_raw(db, "large/obj", large_data, false);
@@ -652,8 +652,8 @@ TEST_F(DatabaseTest, WriteLargeData) {
 }
 
 TEST_F(DatabaseTest, MultipleObjectsSameDbMeta) {
-    CMString base_path = test_dir_ + "/multi_meta";
-    Database db(base_path);
+    CMString db_path = test_dir_ + "/multi_meta";
+    Database db(db_path);
 
     write_raw(db, "meta/a", "data_a", false);
     write_raw(db, "meta/b", "data_b", false);

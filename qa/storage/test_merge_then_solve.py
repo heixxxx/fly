@@ -2,7 +2,7 @@
 
 验证 db_path 废弃后的核心业务连续性场景：
   1. 建 db A，写 matrix 数据（模拟 solver build_matrix）
-  2. merge db A（默认 base_path 不变，只 data_path 集中）
+  2. merge db A（默认 db_path 不变，只 data_path 集中）
   3. 把【merge 前的 db A 句柄】传给后续 task（模拟 solve kickoff 读 matrix）
   4. task 在 worker 上用旧句柄 read_object("matrix") 成功
 
@@ -66,7 +66,7 @@ assert db.is_frozen()
 
 INFO(f"[MERGE-SOLVE] matrix written + frozen, db_path={db.get_db_path()}")
 
-# ── Phase 2: merge（默认 base_path 不变，data_path 集中）──
+# ── Phase 2: merge（默认 db_path 不变，data_path 集中）──
 merged_db = merge_db(DB_PATH, delete_source=True)
 INFO("[MERGE-SOLVE] merge done")
 

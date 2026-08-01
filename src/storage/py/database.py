@@ -11,15 +11,15 @@ _RETRY_INTERVAL_SEC = 1.0
 
 class _Database:
 
-    def __init__(self, base_path: str, data_path: str = "", writer_id: int = 0):
+    def __init__(self, db_path: str, data_path: str = "", writer_id: int = 0):
         from fly.runtime import _mode
         if _mode == "master":
             from fly.runtime import get_agent
             agent = get_agent()
-            self._db = agent._agent.get_or_create_database(base_path, data_path, writer_id)
+            self._db = agent._agent.get_or_create_database(db_path, data_path, writer_id)
         else:
             from _fly_storage import ex_stg_create_database
-            self._db = ex_stg_create_database(base_path, data_path, writer_id)
+            self._db = ex_stg_create_database(db_path, data_path, writer_id)
 
     _WRITE_ERROR_MESSAGES = {
         EXStgWriteErrorType.FROZEN_DB: "Write to frozen database",
@@ -149,9 +149,6 @@ class _Database:
     def get_db_path(self) -> str:
         return self._db.get_db_path()
 
-    def get_base_path(self) -> str:
-        return self._db.get_base_path()
-
     def get_data_path(self) -> str:
         return self._db.get_data_path()
 
@@ -165,13 +162,13 @@ class _Database:
         return self._db.load_meta()
 
     @staticmethod
-    def load_meta_from_path(base_path: str):
+    def load_meta_from_path(db_path: str):
         """静态读 _DB_META，不构造 Database 实例（不触发 DataService register）。
 
-        用于 merge_db 等场景：在已 open_db 的进程内读 meta 而不重复注册 base_path。
+        用于 merge_db 等场景：在已 open_db 的进程内读 meta 而不重复注册 db_path。
         """
         from _fly_storage import ex_stg_load_meta_from_path
-        return ex_stg_load_meta_from_path(base_path)
+        return ex_stg_load_meta_from_path(db_path)
 
     def reset(self):
         self._db.reset()

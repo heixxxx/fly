@@ -23,9 +23,9 @@ from fly.project import Project
 from fly import UserDoc, Schema, document
 
 
-# SolverProject 的 UserDoc：校验 __init__(base_path) + help 文档
+# SolverProject 的 UserDoc：校验 __init__(db_path) + help 文档
 solver_project_doc = UserDoc("RAS solver 的 Project 模板，管理 build_matrix / solve 两个流程。")
-solver_project_doc.add_param("base_path",
+solver_project_doc.add_param("db_path",
     schema=Schema(str, check=lambda s: len(s) > 0, error="must not be empty"),
     required=True, desc="project 目录路径（不存在则创建）")
 solver_project_doc.add_example("基础用法",

@@ -1,6 +1,6 @@
 """Run 2 of moved-DB load_db test.
 Loads DB from a NEW path (DB was moved by coordinator after Run 1).
-This tests that load_db uses the current path, not meta.base_path.
+This tests that load_db uses the current path, not meta.db_path.
 """
 from _fly_log import INFO
 import os
@@ -18,7 +18,7 @@ from fly.runtime import get_agent
 get_config().set_int("fail_unscheduleable_tasks", 0)
 
 
-# db_path 废弃：db_path == base_path。搬目录后 db_path 自然变成新 path。
+# db_path 废弃：db_path == db_path。搬目录后 db_path 自然变成新 path。
 # _test_db_path marker 仅用于跨进程确认 _DB_META 存在（不再比对 db_path）。
 marker_path = os.path.join(DB_PATH, "_test_db_path")
 assert os.path.isfile(marker_path), f"Marker file not found: {marker_path}"
@@ -31,7 +31,7 @@ master = get_agent()
 # ── Load DB from MOVED path ──
 db = load_db(DB_PATH)
 
-# db_path 废弃：db_path 现在是 base_path 别名，搬目录后 == 当前 DB_PATH
+# db_path 废弃：db_path 现在是 db_path 别名，搬目录后 == 当前 DB_PATH
 assert db.get_db_path() == DB_PATH, \
     f"db_path should equal current path: {db.get_db_path()} != {DB_PATH}"
 
