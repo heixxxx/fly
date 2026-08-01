@@ -2430,16 +2430,28 @@ void MasterAgent::cleanup_after_merge(const CMString& db_id,
         ++rebuilt;
     }
 
-    // 5. 更新 db_instances_[db_id] 的 Database 路径指向 merge 路径。
+    // 5. 路径更新 + 迁移标识（跨 path merge 时写 _MIGRATED_TO）。
+    //    db_id == 源 base_path（db_id 废弃后）。merge_base_path 是产物路径。
+    //    - 默认 merge（base_path 不变，只 data_path 变）：无需 _MIGRATED_TO，set_paths 更新 data_path。
+    //    - 跨 path merge（base_path 变）：在源 base_path 写 _MIGRATED_TO 指向产物，
+    //      更新迁移缓存，让后续用源 path 的访问（如 solver 持有的旧 db 句柄）重定向到产物。
+    if (db_id != merge_base_path) {
+        // 跨 path merge：写迁移标识 + 更新缓存。
+        fly::DataService::write_migration_marker(db_id, merge_base_path, merge_data_path);
+        ds->set_migrated_path(db_id, merge_base_path);
+        INFO("cleanup_after_merge: cross-path migration {} -> {}", db_id, merge_base_path);
+    }
+
+    // 更新 db_instances_[db_id] 的 Database 路径指向 merge 路径。
     //    Database 是 master 进程路径唯一权威源；set_paths 同步 re-register 进
-    //    DataService::db_paths_（merge 前旧 Database 析构会 unregister，但新值紧随 upsert）。
-    //    _VARS 存在共享 base_path（merge 后默认不变），重建对象构造时仍会从原位加载，var 状态不丢。
+    //    DataService::db_paths_。db_instances_ 保留源 db_id 作 key（转发锚点），
+    //    内部 Database 的 base_path_ 指向 merge 产物。
     auto db_it = db_instances_.find(db_id);
     if (db_it != db_instances_.end()) {
         db_it->second->set_paths(merge_base_path, merge_data_path);
     } else {
         // merge 产物句柄由 Python 经 ex_stg_create_database_with_id 构造，未进 master
-        // db_instances_。这里用同 db_id 重建并登记，保证 master 路径权威源与新路径一致。
+        // db_instances_。这里用源 db_id 重建并登记，保证 master 路径权威源与新路径一致。
         auto db = CMMakeShared<Database>(merge_base_path, merge_data_path, 0, "", db_id);
         db_instances_[db_id] = db;
     }

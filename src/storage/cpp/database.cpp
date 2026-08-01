@@ -567,16 +567,19 @@ CMString Database::get_data_path() const {
 }
 
 void Database::set_paths(const CMString& base_path, const CMString& data_path) {
-    // Merge 产物落到新路径：更新本对象 + re-register 进 DataService。
-    // db_id_ 是 base_path 别名，同步更新。旧 base_path 的迁移缓存由 cleanup_after_merge
-    // 通过 set_migrated_path 处理。
+    // Merge 产物落到新路径：更新 base_path_/data_path_ + re-register 进 DataService。
+    //
+    // db_id_ 保持不变（源 base_path）——它是跨 db 依赖的逻辑锚点（DependencyGraph 用
+    // full_name = "db_id:short" 作 key）。merge 改物理路径但 db_id_ 不变，保证 solver 的
+    // build_matrix→merge→solve 链不断（matrix_db 句柄的 get_full_name 仍产生源 path 前缀）。
+    //
+    // 跨 path merge 时，cleanup_after_merge 在源 base_path 写 _MIGRATED_TO，访问源 path
+    // 的代码经 resolve_migrated_path 重定向到 target。db_paths_ 用 db_id_（源 path）注册，
+    // 指向新的 base_path_/data_path_（target）。
     auto ds = fly::DataService::instance();
-    if (base_path_ != base_path) {
-        ds->unregister_database(db_id_);  // 注销旧 base_path 作 key
-    }
     base_path_ = base_path;
-    db_id_ = base_path;
     data_path_ = data_path;
+    // re-register：db_id_（源 path，稳定锚点）作 key，指向新 base_path/data_path。
     ds->register_database(db_id_, base_path_, data_path_, writer_id_);
 }
 
