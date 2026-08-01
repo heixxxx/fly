@@ -43,6 +43,8 @@ Fly 框架的 `open_db` 创建的 Database 在进程退出后无法恢复。虽�
 
 ### 4. `db_id` 持久化
 
+> ⚠️ **已作废（2026-08-01，见 [ADR 0002](0002-deprecate-db-id.md)）**：db_id 已废弃，改用 db_path + `_MIGRATED_TO` 迁移重定向。LocalIndex 改存 short_name 后 idx 不再编码 db 标识，"搬目录导致 mismatch"的理由失效。`_DB_META` 的 db_id 字段待后续清理阶段移除。
+
 **选择**: `db_id` 存储在 `_DB_META` header 中，`load_db` 直接读取使用。
 
 **理由**: 用户可能搬移 DB 目录到新路径，路径 hash 生成的 `db_id` 会变化，但 idx 中所有 `object_name` 仍是 `"old_db_id:obj"` 格式，导致 mismatch。
