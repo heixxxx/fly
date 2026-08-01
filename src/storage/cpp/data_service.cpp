@@ -187,6 +187,34 @@ CMString DataService::resolve_migrated_path(const CMString& base_path) {
     return resolved;
 }
 
+CMString DataService::read_migrated_data_path(const CMString& base_path) {
+    // 读源 base_path 的 _MIGRATED_TO，返回 target_data_path。
+    // 链式迁移：跟随到最终 target 的 data_path。
+    CMString current = base_path;
+    CMVector<CMString> visited;
+    while (true) {
+        if (std::find(visited.begin(), visited.end(), current) != visited.end()) break;
+        visited.push_back(current);
+        auto header = read_migration_marker(current);
+        if (header.target_base_path_.empty()) {
+            // current 无迁移文件。若 current == base_path（无迁移），返回空；
+            // 否则返回最后一次迁移的 target_data_path（已在上一轮 header 里）。
+            break;
+        }
+        // 记下本轮 target_data_path，继续跟随
+        if (header.target_base_path_ == current) break;  // 自环防御
+        current = header.target_base_path_;
+        // 检查 target 是否还有进一步迁移；若无，header.target_data_path_ 就是最终值
+        auto next_header = read_migration_marker(current);
+        if (next_header.target_base_path_.empty()) {
+            return header.target_data_path_;
+        }
+    }
+    // 回退：直接读 base_path 的 marker 取 data_path
+    auto h = read_migration_marker(base_path);
+    return h.target_data_path_;
+}
+
 void DataService::set_migrated_path(const CMString& source_base_path,
                                      const CMString& target_base_path) {
     std::lock_guard<std::mutex> lock(mutex_);

@@ -450,7 +450,10 @@ class Master(FlyAgent):
             writer_to_hostname[w.writer_id] = w.hostname
 
         hostname_to_writer_ids = defaultdict(list)
-        idx_files = glob.glob(os.path.join(merge_base_path, "*.idx"))
+        # idx 文件在源 base_path（共享盘）。跨 path merge 时 merge_base_path 是产物新路径，
+        # 但 idx 还在源 path（db_id == 源 path）。从源 path 读 idx。
+        source_idx_path = db_id  # db_id == 源 base_path
+        idx_files = glob.glob(os.path.join(source_idx_path, "*.idx"))
         for idx_file in idx_files:
             writer_id = os.path.basename(idx_file)[:-4]  # 去掉 .idx
             hostname = writer_to_hostname.get(writer_id)
@@ -510,7 +513,7 @@ class Master(FlyAgent):
         writer_to_entries = {}
         for hostname, writer_ids in hostname_to_writer_ids.items():
             for writer_id in writer_ids:
-                entries = self._agent.read_idx_entries(merge_base_path, writer_id)
+                entries = self._agent.read_idx_entries(source_idx_path, writer_id)
                 if entries:
                     writer_to_entries[writer_id] = (hostname, entries)
 
@@ -525,10 +528,8 @@ class Master(FlyAgent):
         for writer_id, (hostname, entries) in writer_to_entries.items():
             target_worker = host_to_target[hostname]
             for entry in entries:
-                full = entry.object_name
-                # 剥 db_id 前缀得到 short_name
-                prefix = db_id + ":"
-                short_name = full[len(prefix):] if full.startswith(prefix) else full
+                # entry.object_name 是 short_name（LocalIndex 不再存 db_id 前缀，阶段1 改造）
+                short_name = entry.object_name
                 task_id = self._agent.send_merge_task(
                     target_worker, short_name, db_id,
                     merge_base_path, merge_data_path, hostname)

@@ -114,6 +114,10 @@ public:
     // set_migrated_path 更新缓存，避免重复 stat。
     CMString resolve_migrated_path(const CMString& base_path);
 
+    // 读 {base_path}/_MIGRATED_TO 的 target_data_path。无迁移文件返回空。
+    // Database 构造跟随迁移时用此获取 target 的 data_path（源 data_path 已失效）。
+    CMString read_migrated_data_path(const CMString& base_path);
+
     // 主动更新/清除迁移缓存（merge 产生新迁移后 master 调用）。
     // target 为空表示清除该 source 的迁移记录。
     void set_migrated_path(const CMString& source_base_path,

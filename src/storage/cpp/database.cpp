@@ -36,13 +36,19 @@ Database::Database(const CMString& base_path, const CMString& data_path, uint64_
         return;
     }
 
-    // 跟随迁移：若 base_path/_MIGRATED_TO 存在，重定向到 target（链式展平）。
-    // 解析后的路径才是数据的真正位置（merge 跨 path 后源 path 变成迁移指针）。
+    // 跟随迁移：若 base_path/_MIGRATED_TO 存在，重定向 base_path_/data_path_ 到 target
+    // （物理读取位置），但 db_id_ 保持源 base_path（逻辑锚点）。
+    // db_id_ 是跨 db 依赖/索引的稳定 key（DependencyGraph、local_idx_、remote_idx_ 都用它），
+    // 迁移不应改变它 —— 否则 object_name 前缀变化导致索引 miss。
     CMString resolved = fly::DataService::instance()->resolve_migrated_path(base_path_);
     if (resolved != base_path_) {
-        INFO("Database migrated: '{}' -> '{}', following redirect", base_path_, resolved);
+        CMString target_data = fly::DataService::instance()->read_migrated_data_path(base_path_);
+        INFO("Database migrated: base_path '{}' -> '{}', data_path '{}' -> '{}' (db_id keeps source '{}')",
+             base_path_, resolved, data_path_, target_data, db_id_);
         base_path_ = resolved;
-        db_id_ = resolved;
+        if (!target_data.empty()) {
+            data_path_ = target_data;
+        }
     }
 
     fly::DataService::instance()->register_database(db_id_, base_path_, data_path_, writer_id_);
