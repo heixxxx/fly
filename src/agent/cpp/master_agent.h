@@ -89,7 +89,7 @@ public:
     uint16_t get_port() const { return port_; }
     int32_t get_data_server_port() const { return data_server_port_; }
 
-    // 登记一个【外部已知 db_path】的 db 路径（master 自写用 get_or_create_database 自动生成 id；
+    // 登记一个【外部已知 db_path】的 db 路径（master 自写用 get_or_create_database 构造；
     // 此处用于 load/merge 等已从 _DB_META 读出 db_path 的场景）。Database 是路径唯一权威源，
     // 故内部构造 Database 插入 db_instances_（替代原 db_registry_ 字符串副本）。
     void register_database(const CMString& db_path, const CMString& data_path = "");

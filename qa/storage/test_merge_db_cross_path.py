@@ -65,10 +65,18 @@ migrated_marker = os.path.join(DB_PATH, "_MIGRATED_TO")
 assert os.path.isfile(migrated_marker), f"_MIGRATED_TO should exist at {migrated_marker}"
 INFO(f"[CROSS-PATH] _MIGRATED_TO present at source path")
 
-# ── Phase 3: 验证迁移重定向机制 ──
-# _MIGRATED_TO 文件存在且非空（迁移机制核心：源 path 保留作指针指向 target）
+# ── Phase 3: 验证迁移重定向 + cross-path read ──
+# 3a. _MIGRATED_TO 文件存在且非空（迁移机制核心）
 marker_content_exists = os.path.getsize(migrated_marker) > 0
 assert marker_content_exists, "_MIGRATED_TO should not be empty"
 INFO("[CROSS-PATH] _MIGRATED_TO has content (migration marker valid)")
+
+# 3b. 产物句柄（merge_db 返回值）能读 merge 数据 —— 验证 cross-path read 路径完整：
+#     master remote_idx 用 target 前缀，worker cleanup 扫 target 目录 idx + restore 到 target 命名空间。
+assert merged_db.read_object("data/alpha") == 100, \
+    "merged db should read cross-path merged data"
+assert merged_db.read_object("data/beta") == 200, \
+    "merged db should read cross-path merged data"
+INFO("[CROSS-PATH] merged db reads cross-path data correctly")
 
 INFO("[PASS] test_merge_db_cross_path")

@@ -17,7 +17,7 @@
 
 namespace fly {
 
-// db_path 废弃：现在 db_path == db_path（db_path）。full_name = "db_path:short_name"。
+// full_name = "db_path:short_name"，split 用 rfind(':')（db_path 变长含 '/'）。
 // split 用 rfind(':') —— short_name 是逻辑对象名（如 "matrix"、"result/obj"）不含 ':'，
 // 最后一个 ':' 必是分隔符。db_path 在 Database 构造时校验不含 ':'（双保险）。
 inline std::pair<CMString, CMString> split_full_name(const CMString& full) {

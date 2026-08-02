@@ -205,7 +205,7 @@ struct TaskAssignMessage {
 // task 成功写出的对象条目：对象全名 + 压缩后字节数。
 // size_bytes_ 用于 master 的 data locality 调度亲和度打分（数据传输成本）。
 struct WrittenObject {
-    CMString object_name_;   // full name: "db_path:short_name"（db_path 为固定 10 字符前缀）
+    CMString object_name_;   // full name: "db_path:short_name"（db_path 变长，split 用 rfind(':')）
     int64_t size_bytes_ = 0;
 
     FLY_SERIALIZE(object_name_, size_bytes_);
@@ -588,12 +588,13 @@ struct DeleteDataAckMessage {
 // 详见 docs/db-merge-design.md §5.5（merge 后状态清理）。
 struct MergeCleanupMessage {
     MessageHeader header_;
-    CMString db_path_;       // merge 后 db_path（idx 所在，通常复用源共享 db_path）
+    CMString db_path_;       // 源 db_path（worker 清旧索引用 + ack 匹配 pending key）
     CMString data_path_;       // merge 后 data_path（.dat 所在，master host 本地）
+    CMString target_db_path_;  // merge 产物 db_path（idx 所在目录，cross-path 时 != db_path_）
     CMVector<uint64_t> exempt_worker_ids_;  // merge target worker（已持有效 local_idx，跳过重建）
 
     static constexpr MessageType msg_type_ = MessageType::MERGE_CLEANUP;
-    FLY_SERIALIZE(header_, db_path_, data_path_, exempt_worker_ids_);
+    FLY_SERIALIZE(header_, db_path_, data_path_, target_db_path_, exempt_worker_ids_);
 };
 
 // worker → master: cleanup 完成回报。这是 merge_db 返回前的"全局一致性屏障"：

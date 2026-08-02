@@ -56,7 +56,6 @@ def _deserialize_args(args: list, worker) -> list:
             parts = arg.split(":", 2)
             db_path = parts[1] if len(parts) > 1 else ""
             data_path = parts[2] if len(parts) > 2 else ""
-            db_path = db_path  # db_path == db_path
             if db_path not in worker._db_cache:
                 from _fly_storage import ex_stg_get_data_service
                 ds = ex_stg_get_data_service()

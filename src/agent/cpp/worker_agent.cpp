@@ -1479,21 +1479,26 @@ void WorkerAgent::on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& 
     }
 
     if (!exempt) {
-        // 1. 清旧索引（指向已删源 .dat / 失效源 worker 位置）。
+        // 1. 清旧索引（源命名空间，指向已删源 .dat / 失效源 worker 位置）。
         //    不碰 ObjectCache（数据内容未变，cache 仍是正确副本）。
         ds->clear_local_index_for_db(msg.db_path_);
         ds->clear_remote_index_for_db(msg.db_path_);
+        // cross-path 时也清 target 命名空间（merge worker 用 target 落盘/上报）。
+        if (msg.target_db_path_ != msg.db_path_) {
+            ds->clear_local_index_for_db(msg.target_db_path_);
+            ds->clear_remote_index_for_db(msg.target_db_path_);
+        }
 
-        // 2. 更新 db_paths_ 指向 merge 后的新路径。
-        ds->register_database(msg.db_path_, msg.data_path_, "");
+        // 2. 注册 target db_path（数据物理位置）。
+        ds->register_database(msg.target_db_path_, msg.data_path_, "");
 
-        // 3. 尝试 load 新 idx 重建 local_idx（新 idx 由 merge worker 写在共享 db_path）。
-        //    若 data_path 可达（同机本地盘或共享 FS），后续读可本地直读 .dat，不走远程读。
+        // 3. load target 目录的新 idx（merge worker 写在 target_db_path_），restore 到 target 命名空间。
+        //    若 data_path 可达（同机本地盘或共享 FS），后续读可本地直读 .dat。
         int32_t loaded = 0;
         try {
             namespace fs = std::filesystem;
-            if (fs::exists(msg.db_path_)) {
-                for (const auto& entry : fs::directory_iterator(msg.db_path_)) {
+            if (fs::exists(msg.target_db_path_)) {
+                for (const auto& entry : fs::directory_iterator(msg.target_db_path_)) {
                     CMString fname = entry.path().filename().string();
                     if (fname.size() >= 4 &&
                         fname.substr(fname.size() - 4) == ".idx") {
@@ -1501,18 +1506,18 @@ void WorkerAgent::on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& 
                         idx.load();
                         auto entries = idx.get_all_entries();
                         if (!entries.empty()) {
-                            ds->restore_entries(msg.db_path_, entries);
+                            ds->restore_entries(msg.target_db_path_, entries);
                             ++loaded;
                         }
                     }
                 }
             }
         } catch (const std::exception& e) {
-            WARN("MergeCleanup: failed to load idx from {}: {}", msg.db_path_, e.what());
+            WARN("MergeCleanup: failed to load idx from {}: {}", msg.target_db_path_, e.what());
         }
-        INFO("MergeCleanup: db_path={}, cleared old idx, loaded {} new idx files, "
-             "base={} data={} on worker_id={}",
-             msg.db_path_, loaded, msg.db_path_, msg.data_path_, worker_id_);
+        INFO("MergeCleanup: db_path={}, target={}, cleared old idx, loaded {} new idx files, "
+             "data={} on worker_id={}",
+             msg.db_path_, msg.target_db_path_, loaded, msg.data_path_, worker_id_);
     } else {
         INFO("MergeCleanup: worker_id={} exempt (merge target), keeping state for db_path={}",
              worker_id_, msg.db_path_);

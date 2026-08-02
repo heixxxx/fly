@@ -435,7 +435,7 @@ FLY_EXPORT_FUNCTION("ex_stg_create_database", [](const CMString& db_path, const 
     return CMMakeShared<Database>(db_path, data_path, writer_id, "", "");
 });
 
-FLY_EXPORT_FUNCTION("ex_stg_create_database_with_path", [](const CMString& db_path, const CMString& data_path, uint64_t writer_id, const CMString& /*db_path*/) -> CMSharedPtr<Database> {
+FLY_EXPORT_FUNCTION("ex_stg_create_database_with_path", [](const CMString& db_path, const CMString& data_path, uint64_t writer_id, const CMString& /*existing_db_path*/) -> CMSharedPtr<Database> {
     // db_path 参数保留仅为签名兼容（== db_path，existing_db_path 已废弃忽略）。
     // 等价于 ex_stg_create_database。
     return CMMakeShared<Database>(db_path, data_path, writer_id);

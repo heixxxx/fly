@@ -614,7 +614,7 @@ CMVector<RemoteObjectInfo> DataService::get_all_workers() const {
 // ============================================================
 
 std::pair<CMString, CMString> DataService::split_full(const CMString& full) {
-    // db_path 废弃：db_path == db_path（db_path，含 '/'）。full_name = "db_path:short"。
+    // full_name = "db_path:short"，split 用 rfind(':')。
     // 用 rfind(':') 切分 —— short_name 不含 ':'，最后一个 ':' 必是分隔符。
     auto pos = full.rfind(':');
     if (pos == CMString::npos) {

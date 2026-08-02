@@ -2370,6 +2370,7 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     MergeCleanupMessage cleanup_msg;
     cleanup_msg.db_path_ = db_path;  // 源 db_path（worker 清旧索引用 + ack 匹配 pending key）
     cleanup_msg.data_path_ = merge_data_path;
+    cleanup_msg.target_db_path_ = merge_db_path;  // 产物 db_path（idx 目录）
     cleanup_msg.exempt_worker_ids_ = merge_target_worker_ids;
     {
         std::lock_guard<std::mutex> wlk(workers_mutex_);
