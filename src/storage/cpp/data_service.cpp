@@ -249,32 +249,29 @@ void DataService::on_object_written(const CMString& db_path,
                                      const IndexEntry& entry) {
     auto [_, short_name] = split_full(object_name);
     std::lock_guard<std::mutex> lock(mutex_);
-    auto& info = local_idx_[db_path][short_name];
+    auto& info = local_idx_[db_path].objects_[short_name];
     if (!info) {
         info = CMMakeShared<LocalObjectInfo>();
     }
     info->db_path_ = db_path;
     info->entries_.push_back(entry);
     info->flushed_ = false;
-    info->completion_state_ = CompletionState::COMPLETE;
+    info->completion_state_.store(CompletionState::COMPLETE, std::memory_order_release);
 }
 
 void DataService::on_flush(const CMString& db_path) {
-    CMVector<CMSharedPtr<LocalObjectInfo>> to_notify;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto db_it = local_idx_.find(db_path);
-        if (db_it == local_idx_.end()) return;
-        for (auto& [name, info] : db_it->second) {
-            if (info) {
-                info->flushed_ = true;
-                to_notify.push_back(info);
-            }
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto db_it = local_idx_.find(db_path);
+    if (db_it == local_idx_.end()) return;
+    for (auto& [name, info] : db_it->second.objects_) {
+        if (info) {
+            info->flushed_ = true;
         }
     }
-    for (auto& info : to_notify) {
-        info->cv_.notify_all();
-    }
+    // 持锁 notify：cv 在 map value (DbLocalIndex) 内，锁外访问其引用有
+    // use-after-free 风险（db 条目可能被 merge 删除）。notify 本身不获取锁，
+    // 不会死锁；waiter 唤醒后重新抢 mutex_ 本就是串行的，convoy 影响可忽略。
+    db_it->second.write_cv_.notify_all();
 }
 
 void DataService::on_write_started(const CMString& db_path,
@@ -282,50 +279,41 @@ void DataService::on_write_started(const CMString& db_path,
     auto [_, short_name] = split_full(object_name);
     CMSharedPtr<LocalObjectInfo> info = CMMakeShared<LocalObjectInfo>();
     info->db_path_ = db_path;
-    info->completion_state_ = CompletionState::INCOMPLETE;
+    info->completion_state_.store(CompletionState::INCOMPLETE, std::memory_order_relaxed);
 
     std::lock_guard<std::mutex> lock(mutex_);
-    local_idx_[db_path][short_name] = info;
+    local_idx_[db_path].objects_[short_name] = info;
 }
 
 void DataService::on_write_completed(const CMString& db_path,
                                       const CMString& object_name,
                                       const CMVector<IndexEntry>& entries) {
     auto [_, short_name] = split_full(object_name);
-    CMSharedPtr<LocalObjectInfo> info;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto db_it = local_idx_.find(db_path);
-        if (db_it == local_idx_.end()) return;
-        auto it = db_it->second.find(short_name);
-        if (it == db_it->second.end() || !it->second) return;
-        info = it->second;
-        info->entries_ = entries;
-        info->completion_state_ = CompletionState::COMPLETE;
-    }
-    {
-        std::lock_guard<std::mutex> cv_lock(info->cv_mutex_);
-    }
-    info->cv_.notify_all();
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto db_it = local_idx_.find(db_path);
+    if (db_it == local_idx_.end()) return;
+    auto it = db_it->second.objects_.find(short_name);
+    if (it == db_it->second.objects_.end() || !it->second) return;
+    it->second->entries_ = entries;
+    it->second->completion_state_.store(CompletionState::COMPLETE, std::memory_order_release);
+    db_it->second.write_cv_.notify_all();
 }
 
 void DataService::on_write_failed(const CMString& db_path,
                                     const CMString& object_name,
                                     const CMString& error_message) {
     auto [_, short_name] = split_full(object_name);
-    CMSharedPtr<LocalObjectInfo> info;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto db_it = local_idx_.find(db_path);
-        if (db_it == local_idx_.end()) return;
-        auto it = db_it->second.find(short_name);
-        if (it == db_it->second.end() || !it->second) return;
-        info = it->second;
-        info->completion_state_ = CompletionState::FAILED;
-        info->error_message_ = error_message;
-        db_it->second.erase(it);
-    }
-    info->cv_.notify_all();
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto db_it = local_idx_.find(db_path);
+    if (db_it == local_idx_.end()) return;
+    auto it = db_it->second.objects_.find(short_name);
+    if (it == db_it->second.objects_.end() || !it->second) return;
+    it->second->completion_state_.store(CompletionState::FAILED, std::memory_order_release);
+    it->second->error_message_ = error_message;
+    db_it->second.objects_.erase(it);
+    // FAILED 也 notify：等待 INCOMPLETE→终态的 reader 被唤醒（predicate 返回 true，
+    // 重查为 FAILED → 返回 false 走 TIER2 兜底）。
+    db_it->second.write_cv_.notify_all();
 }
 
 void DataService::remove_local_index(const CMString& object_name) {
@@ -335,11 +323,11 @@ void DataService::remove_local_index(const CMString& object_name) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto db_it = local_idx_.find(db_path);
         if (db_it != local_idx_.end()) {
-            auto it = db_it->second.find(short_name);
-            if (it != db_it->second.end() && it->second && it->second->is_temp_) {
+            auto it = db_it->second.objects_.find(short_name);
+            if (it != db_it->second.objects_.end() && it->second && it->second->is_temp_) {
                 freed_bytes = it->second->temp_compressed_data_ ? static_cast<int64_t>(it->second->temp_compressed_data_->size()) : 0;
             }
-            db_it->second.erase(short_name);
+            db_it->second.objects_.erase(short_name);
         }
     }
     // Invalidate cached bytes (low/high tier) for this object so subsequent
@@ -377,31 +365,20 @@ bool DataService::has_local_object(const CMString& object_name) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto db_it = local_idx_.find(db_path);
     if (db_it == local_idx_.end()) return false;
-    auto it = db_it->second.find(short_name);
-    return it != db_it->second.end() && it->second &&
-           it->second->completion_state_ == CompletionState::COMPLETE;
+    auto it = db_it->second.objects_.find(short_name);
+    return it != db_it->second.objects_.end() && it->second &&
+           it->second->completion_state_.load(std::memory_order_acquire) == CompletionState::COMPLETE;
 }
 
 void DataService::on_object_flushed(const CMString& object_name) {
     auto [db_path, short_name] = split_full(object_name);
-    CMSharedPtr<LocalObjectInfo> info;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto db_it = local_idx_.find(db_path);
-        if (db_it != local_idx_.end()) {
-            auto it = db_it->second.find(short_name);
-            if (it != db_it->second.end() && it->second) {
-                it->second->flushed_ = true;
-                info = it->second;
-            }
-        }
-    }
-    if (info) {
-        {
-            std::lock_guard<std::mutex> cv_lock(info->cv_mutex_);
-        }
-        info->cv_.notify_all();
-    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto db_it = local_idx_.find(db_path);
+    if (db_it == local_idx_.end()) return;
+    auto it = db_it->second.objects_.find(short_name);
+    if (it == db_it->second.objects_.end() || !it->second) return;
+    it->second->flushed_ = true;
+    db_it->second.write_cv_.notify_all();
 }
 
 void DataService::restore_entries(const CMString& db_path,
@@ -414,7 +391,7 @@ void DataService::restore_entries(const CMString& db_path,
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    auto& db_map = local_idx_[db_path];
+    auto& db_map = local_idx_[db_path].objects_;
     for (auto& [short_name, obj_entries] : grouped) {
         auto& info = db_map[short_name];
         if (!info) {
@@ -424,7 +401,7 @@ void DataService::restore_entries(const CMString& db_path,
         for (auto& e : obj_entries) {
             info->entries_.push_back(std::move(e));
         }
-        info->completion_state_ = CompletionState::COMPLETE;
+        info->completion_state_.store(CompletionState::COMPLETE, std::memory_order_release);
         info->flushed_ = true;
     }
 
@@ -438,8 +415,8 @@ std::optional<CMVector<IndexEntry>> DataService::find_local_entries(const CMStri
     std::lock_guard<std::mutex> lock(mutex_);
     auto db_it = local_idx_.find(db_path);
     if (db_it == local_idx_.end()) return std::nullopt;
-    auto it = db_it->second.find(short_name);
-    if (it == db_it->second.end() || !it->second) return std::nullopt;
+    auto it = db_it->second.objects_.find(short_name);
+    if (it == db_it->second.objects_.end() || !it->second) return std::nullopt;
     return it->second->entries_;
 }
 
@@ -669,12 +646,12 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
         std::lock_guard<std::mutex> lock(mutex_);
         auto db_it = local_idx_.find(db_path);
         if (db_it == local_idx_.end()) return {false, ReadResult{}};
-        auto it = db_it->second.find(short_name);
-        if (it == db_it->second.end() || !it->second) {
+        auto it = db_it->second.objects_.find(short_name);
+        if (it == db_it->second.objects_.end() || !it->second) {
             return {false, ReadResult{}};
         }
         auto& info = *it->second;
-        if (info.completion_state_ != CompletionState::COMPLETE || !info.flushed_) {
+        if (info.completion_state_.load(std::memory_order_acquire) != CompletionState::COMPLETE || !info.flushed_) {
             return {false, ReadResult{}};
         }
 
@@ -711,7 +688,8 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
     return {true, std::move(result)};
 }
 
-std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& object_name) {
+std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& object_name,
+                                                               bool wait_local_write) {
     // Short-circuit: serve compressed bytes from the ObjectCache low tier when
     // available. This benefits both the remote DataServer serve path (which
     // calls this directly) and the local read_raw_compressed Tier-1 path —
@@ -725,35 +703,58 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
     DbPaths paths;
     bool is_temp = false;
     FlyBufferPtr temp_data;
-    int diag = 0;  // 0=not_found_db, 1=not_found_obj, 2=not_ready, 3=found_temp
 
+    // 锁内查找并填充读取所需字段。返回 diag：
+    //   0=not_found_db/no_path, 1=not_found_obj, 2=not_ready(INCOMPLETE/FAILED), 3=found
+    auto lookup_under_lock = [&]() -> int {
+        auto db_it = local_idx_.find(db_path);
+        if (db_it == local_idx_.end()) return 0;
+        auto it = db_it->second.objects_.find(short_name);
+        if (it == db_it->second.objects_.end() || !it->second) return 1;
+        auto& info = *it->second;
+        if (info.completion_state_.load(std::memory_order_acquire) != CompletionState::COMPLETE) {
+            return 2;  // INCOMPLETE 或 FAILED
+        }
+        if (info.is_temp_) {
+            is_temp = true;
+            temp_data = info.temp_compressed_data_;
+            return 3;
+        }
+        entries = info.entries_;
+        auto path_it = db_paths_.find(db_path);
+        if (path_it == db_paths_.end()) return 0;
+        paths = path_it->second;
+        return 3;
+    };
+
+    int diag = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        diag = lookup_under_lock();
+    }
+
+    // INCOMPLETE/FAILED 且调用方要求 wait 本地写完成：在 per-db cv 上 wait。
+    // wait 期间 mutex_ 释放（cv.wait 原子地释放锁并阻塞），WriteBackQueue 线程
+    // 能获锁设 COMPLETE/FAILED 并 notify_all 唤醒。predicate 用 atomic acquire 读，
+    // 确保看到 writer 的 release 写。无限等待（信任本地写最终完成）。
+    if (diag == 2 && wait_local_write) {
+        DBG("[TIER1-WAIT] obj={} INCOMPLETE, waiting for local write completion", object_name);
+        std::unique_lock<std::mutex> lk(mutex_);
         auto db_it = local_idx_.find(db_path);
-        if (db_it == local_idx_.end()) {
-            diag = 0;
-        } else {
-            auto it = db_it->second.find(short_name);
-            if (it == db_it->second.end() || !it->second) {
-                diag = 1;
-            } else {
-                auto& info = *it->second;
-                if (info.completion_state_ != CompletionState::COMPLETE) {
-                    diag = 2;
-                } else if (info.is_temp_) {
-                    is_temp = true;
-                    temp_data = info.temp_compressed_data_;
-                    diag = 3;
-                } else {
-                    entries = info.entries_;
-                    auto path_it = db_paths_.find(db_path);
-                    if (path_it == db_paths_.end()) {
-                        diag = 0;
-                    } else {
-                        paths = path_it->second;
-                        diag = 3;
-                    }
-                }
+        if (db_it != local_idx_.end()) {
+            // 找到对象引用，wait 其 completion_state_ 脱离 INCOMPLETE。
+            auto it = db_it->second.objects_.find(short_name);
+            if (it != db_it->second.objects_.end() && it->second) {
+                CMSharedPtr<LocalObjectInfo> info = it->second;  // 拷贝 shared_ptr 防悬空
+                db_it->second.write_cv_.wait(lk, [&] {
+                    return info->completion_state_.load(std::memory_order_acquire)
+                           != CompletionState::INCOMPLETE;
+                });
+                // 唤醒后重查：重新填充读取字段。lk 仍持有（wait 返回时已重新获锁）。
+                is_temp = false;
+                temp_data.reset();
+                entries.clear();
+                diag = lookup_under_lock();
             }
         }
     }
@@ -803,129 +804,9 @@ bool DataService::is_write_in_progress(const CMString& object_name) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto db_it = local_idx_.find(db_path);
     if (db_it == local_idx_.end()) return false;
-    auto it = db_it->second.find(short_name);
-    if (it == db_it->second.end() || !it->second) return false;
-    return it->second->completion_state_ == CompletionState::INCOMPLETE;
-}
-
-std::tuple<bool, FlyBufferPtr, CMString> DataService::try_read_local_raw_or_wait(
-        const CMString& object_name, int timeout_ms) {
-    auto [db_path, short_name] = split_full(object_name);
-    CMSharedPtr<LocalObjectInfo> info;
-    DbPaths paths;
-    bool is_temp = false;
-
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto db_it = local_idx_.find(db_path);
-        if (db_it == local_idx_.end()) return {false, nullptr, {}};
-        auto it = db_it->second.find(short_name);
-        if (it == db_it->second.end() || !it->second) {
-            return {false, nullptr, {}};
-        }
-        info = it->second;
-
-        bool readable = info->completion_state_ == CompletionState::COMPLETE;
-        if (readable) {
-            if (info->is_temp_) {
-                is_temp = true;
-            } else {
-                auto path_it = db_paths_.find(db_path);
-                if (path_it == db_paths_.end()) {
-                    return {false, nullptr, {}};
-                }
-                paths = path_it->second;
-            }
-        }
-    }
-
-    bool readable = info->completion_state_ == CompletionState::COMPLETE &&
-                    (info->is_temp_ || info->flushed_);
-    if (readable) {
-        if (is_temp) {
-            FlyBufferPtr temp_data = info->temp_compressed_data_;
-            if (!temp_data) {
-                if (temp_eviction_store_) {
-                    auto [found, data] = temp_eviction_store_->get(object_name);
-                    if (!found) return {false, nullptr, {}};
-                    temp_data = CMMakeShared<FlyBuffer>();
-                    temp_data->take(std::move(data));
-                } else {
-                    return {false, nullptr, {}};
-                }
-            }
-            CMString py_name;
-            DecompressingStreamBuf dsbuf(temp_data->data(), temp_data->size());
-            py_name = dsbuf.py_name();
-            return {true, temp_data, std::move(py_name)};
-        }
-
-        FlyBufferPtr raw = do_read_raw_entries(info->entries_, paths);
-        if (!raw || raw->empty()) return {false, nullptr, {}};
-        CMString py_name;
-        DecompressingStreamBuf dsbuf(raw->data(), raw->size());
-        py_name = dsbuf.py_name();
-        return {true, raw, std::move(py_name)};
-    }
-
-    if (info->completion_state_ == CompletionState::FAILED) {
-        return {false, nullptr, {}};
-    }
-
-    {
-        std::unique_lock<std::mutex> cv_lock(info->cv_mutex_);
-        auto pred = [&info]() {
-            return info->completion_state_ == CompletionState::FAILED ||
-                   info->completion_state_ == CompletionState::COMPLETE;
-        };
-
-        bool completed = true;
-        if (timeout_ms < 0) {
-            info->cv_.wait(cv_lock, pred);
-        } else {
-            completed = info->cv_.wait_for(cv_lock,
-                std::chrono::milliseconds(timeout_ms), pred);
-        }
-
-        if (!completed || info->completion_state_ == CompletionState::FAILED) {
-            return {false, nullptr, {}};
-        }
-    }
-
-    if (info->is_temp_) {
-        FlyBufferPtr temp_data = info->temp_compressed_data_;
-        if (!temp_data) {
-            if (temp_eviction_store_) {
-                auto [found, data] = temp_eviction_store_->get(object_name);
-                if (!found) return {false, nullptr, {}};
-                temp_data = CMMakeShared<FlyBuffer>();
-                temp_data->take(std::move(data));
-            } else {
-                return {false, nullptr, {}};
-            }
-        }
-        CMString py_name;
-        DecompressingStreamBuf dsbuf(temp_data->data(), temp_data->size());
-        py_name = dsbuf.py_name();
-        return {true, temp_data, std::move(py_name)};
-    }
-
-    DbPaths final_paths;
-    CMVector<IndexEntry> final_entries;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto path_it = db_paths_.find(db_path);
-        if (path_it == db_paths_.end()) return {false, nullptr, {}};
-        final_paths = path_it->second;
-        final_entries = info->entries_;
-    }
-
-    FlyBufferPtr raw = do_read_raw_entries(final_entries, final_paths);
-    if (!raw || raw->empty()) return {false, nullptr, {}};
-    CMString py_name;
-    DecompressingStreamBuf dsbuf(raw->data(), raw->size());
-    py_name = dsbuf.py_name();
-    return {true, raw, std::move(py_name)};
+    auto it = db_it->second.objects_.find(short_name);
+    if (it == db_it->second.objects_.end() || !it->second) return false;
+    return it->second->completion_state_.load(std::memory_order_acquire) == CompletionState::INCOMPLETE;
 }
 
 std::pair<bool, ReadResult> DataService::try_read_remote(const CMString& object_name) {
@@ -956,111 +837,6 @@ std::pair<bool, ReadResult> DataService::try_read_remote(const CMString& object_
     return {true, std::move(ret)};
 }
 
-std::pair<bool, ReadResult> DataService::try_read_local_or_wait(
-        const CMString& object_name, int timeout_ms) {
-    auto [db_path, short_name] = split_full(object_name);
-    CMSharedPtr<LocalObjectInfo> info;
-    DbPaths paths;
-    bool is_temp = false;
-
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto db_it = local_idx_.find(db_path);
-        if (db_it == local_idx_.end()) return {false, ReadResult{}};
-        auto it = db_it->second.find(short_name);
-        if (it == db_it->second.end() || !it->second) {
-            return {false, ReadResult{}};
-        }
-        info = it->second;
-
-        bool readable = info->completion_state_ == CompletionState::COMPLETE;
-        if (readable) {
-            if (info->is_temp_) {
-                is_temp = true;
-            } else {
-                auto path_it = db_paths_.find(db_path);
-                if (path_it == db_paths_.end()) {
-                    return {false, ReadResult{}};
-                }
-                paths = path_it->second;
-            }
-        }
-    }
-
-    bool readable2 = info->completion_state_ == CompletionState::COMPLETE;
-    if (readable2) {
-        if (is_temp) {
-            FlyBufferPtr temp_data = info->temp_compressed_data_;
-            if (!temp_data) {
-                if (temp_eviction_store_) {
-                    auto [found, data] = temp_eviction_store_->get(object_name);
-                    if (!found) return {false, ReadResult{}};
-                    temp_data = CMMakeShared<FlyBuffer>();
-                    temp_data->take(std::move(data));
-                } else {
-                    return {false, ReadResult{}};
-                }
-            }
-            return {true, decompress_raw(CMString(temp_data->data(), temp_data->size()))};
-        }
-        ReadResult read_result = do_read_local_entries(info->entries_, paths);
-        if (read_result.data_buffer_.empty()) return {false, ReadResult{}};
-        return {true, std::move(read_result)};
-    }
-
-    if (info->completion_state_ == CompletionState::FAILED) {
-        return {false, ReadResult{}};
-    }
-
-    {
-        std::unique_lock<std::mutex> cv_lock(info->cv_mutex_);
-        auto pred = [&info]() {
-            return info->completion_state_ == CompletionState::FAILED ||
-                   info->completion_state_ == CompletionState::COMPLETE;
-        };
-
-        bool completed = true;
-        if (timeout_ms < 0) {
-            info->cv_.wait(cv_lock, pred);
-        } else {
-            completed = info->cv_.wait_for(cv_lock,
-                std::chrono::milliseconds(timeout_ms), pred);
-        }
-
-        if (!completed || info->completion_state_ == CompletionState::FAILED) {
-            return {false, ReadResult{}};
-        }
-    }
-
-    if (info->is_temp_) {
-        FlyBufferPtr temp_data = info->temp_compressed_data_;
-        if (!temp_data) {
-            if (temp_eviction_store_) {
-                auto [found, data] = temp_eviction_store_->get(object_name);
-                if (!found) return {false, ReadResult{}};
-                temp_data = CMMakeShared<FlyBuffer>();
-                temp_data->take(std::move(data));
-            } else {
-                return {false, ReadResult{}};
-            }
-        }
-        return {true, decompress_raw(CMString(temp_data->data(), temp_data->size()))};
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto path_it = db_paths_.find(db_path);
-        if (path_it == db_paths_.end()) {
-            return {false, ReadResult{}};
-        }
-        paths = path_it->second;
-    }
-
-    ReadResult read_result = do_read_local_entries(info->entries_, paths);
-    if (read_result.data_buffer_.empty()) return {false, ReadResult{}};
-    return {true, std::move(read_result)};
-}
-
 std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_compressed(const CMString& object_name) {
     auto [found, raw] = try_read_local_raw(object_name);
     if (found) {
@@ -1072,8 +848,8 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
             std::lock_guard<std::mutex> lock(mutex_);
             auto db_it = local_idx_.find(db_path);
             if (db_it != local_idx_.end()) {
-                auto it = db_it->second.find(short_name);
-                if (it != db_it->second.end() && it->second) {
+                auto it = db_it->second.objects_.find(short_name);
+                if (it != db_it->second.objects_.end() && it->second) {
                     is_temp_entry = it->second->is_temp_;
                     if (!is_temp_entry) {
                         entries = it->second->entries_;
@@ -1239,8 +1015,8 @@ CMString DataService::get_write_context_hash(const CMString& object_name) const 
     std::lock_guard<std::mutex> lock(mutex_);
     auto db_it = local_idx_.find(db_path);
     if (db_it != local_idx_.end()) {
-        auto it = db_it->second.find(short_name);
-        if (it != db_it->second.end() && it->second && !it->second->entries_.empty()) {
+        auto it = db_it->second.objects_.find(short_name);
+        if (it != db_it->second.objects_.end() && it->second && !it->second->entries_.empty()) {
             return it->second->entries_.back().write_context_hash_;
         }
     }
@@ -1298,11 +1074,11 @@ void DataService::on_temp_write_started(const CMString& db_path, const CMString&
     CMSharedPtr<LocalObjectInfo> info = CMMakeShared<LocalObjectInfo>();
     info->db_path_ = db_path;
     info->is_temp_ = true;
-    info->completion_state_ = CompletionState::INCOMPLETE;
+    info->completion_state_.store(CompletionState::INCOMPLETE, std::memory_order_relaxed);
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        local_idx_[db_path][short_name] = info;
+        local_idx_[db_path].objects_[short_name] = info;
     }
 
     DBG("[TEMP-WRITE-STARTED] obj={}, db_path={}", object_name, db_path);
@@ -1322,9 +1098,9 @@ void DataService::on_temp_write(const CMString& db_path, const CMString& object_
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
-        auto& db_map = local_idx_[db_path];
-        auto it = db_map.find(short_name);
-        if (it == db_map.end() || !it->second) {
+        auto& db_entry = local_idx_[db_path];
+        auto it = db_entry.objects_.find(short_name);
+        if (it == db_entry.objects_.end() || !it->second) {
             ERR("[TEMP-WRITE] on_temp_write: no entry found for obj={}, db_path={}", object_name, db_path);
             return;
         }
@@ -1338,7 +1114,7 @@ void DataService::on_temp_write(const CMString& db_path, const CMString& object_
         }
 
         info->temp_compressed_data_ = std::move(compressed_data);
-        info->completion_state_ = CompletionState::COMPLETE;
+        info->completion_state_.store(CompletionState::COMPLETE, std::memory_order_release);
 
         temp_lru_order_.push_back(object_name);
         temp_total_bytes_ += data_size;
@@ -1353,8 +1129,8 @@ void DataService::on_temp_write(const CMString& db_path, const CMString& object_
             auto [old_db_path, old_short_name] = split_full(oldest);
             auto old_db_it = local_idx_.find(old_db_path);
             if (old_db_it != local_idx_.end()) {
-                auto old_ent = old_db_it->second.find(old_short_name);
-                if (old_ent != old_db_it->second.end() && old_ent->second && old_ent->second->is_temp_
+                auto old_ent = old_db_it->second.objects_.find(old_short_name);
+                if (old_ent != old_db_it->second.objects_.end() && old_ent->second && old_ent->second->is_temp_
                     && old_ent->second->temp_compressed_data_) {
                     int64_t freed = static_cast<int64_t>(old_ent->second->temp_compressed_data_->size());
                     temp_eviction_store_->put(oldest,
@@ -1365,12 +1141,10 @@ void DataService::on_temp_write(const CMString& db_path, const CMString& object_
                 }
             }
         }
-    }
 
-    {
-        std::lock_guard<std::mutex> cv_lock(info->cv_mutex_);
+        // temp 写完成也 notify：等待 temp 对象的 reader 唤醒。
+        db_entry.write_cv_.notify_all();
     }
-    info->cv_.notify_all();
 }
 
 void DataService::cleanup_temp_entries(const CMString& db_path) {
@@ -1380,11 +1154,11 @@ void DataService::cleanup_temp_entries(const CMString& db_path) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto db_it = local_idx_.find(db_path);
         if (db_it == local_idx_.end()) return;
-        for (auto it = db_it->second.begin(); it != db_it->second.end();) {
+        for (auto it = db_it->second.objects_.begin(); it != db_it->second.objects_.end();) {
             if (it->second && it->second->is_temp_) {
                 freed_bytes += it->second->temp_compressed_data_ ? static_cast<int64_t>(it->second->temp_compressed_data_->size()) : 0;
                 names_to_clean.push_back(db_path + ":" + it->first);
-                it = db_it->second.erase(it);
+                it = db_it->second.objects_.erase(it);
             } else {
                 ++it;
             }

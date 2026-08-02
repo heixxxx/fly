@@ -264,7 +264,10 @@ void DataServer::on_readable(int fd) {
         DataResponseMessage response;
         response.object_name_ = req.object_name_;
 
-        auto [found, raw_data] = data_service_.try_read_local_raw(req.object_name_);
+        // wait_local_write=false：DataServer IO 线程池（默认 4 线程）不能阻塞 wait，
+        // 否则并发请求易耗尽 serve 能力。INCOMPLETE 时返回 false，上层据此返回
+        // DATA_NOT_READY 让远程 reader 轮询重试。
+        auto [found, raw_data] = data_service_.try_read_local_raw(req.object_name_, /*wait_local_write=*/false);
 
         if (found) {
             response.success_ = true;

@@ -216,20 +216,80 @@ scheduler_->set_locality_preference(...);
 | 编号 | 问题 | 位置 | 量级 | 状态 |
 |------|------|------|------|------|
 | **S1-1** | 磁盘 idx 文件每条记录的 `object_name_` 冗余存 db_id 前缀（`db_id:short`）— 同一 .idx 文件天然属于同一 db，前缀 100% 冗余 | `LocalIndex::entries_` key + `IndexEntry.object_name_`（`local_index.h:69`、`index_entry.h:8`） | 每条 11 字节 × N；百万对象 ≈ 10 MB 磁盘 | ✅ **已修复**（db_id 废弃改造：LocalIndex 改存 short_name） |
-| **S1-2** | `LocalObjectInfo` 每对象含独立 `std::mutex` + `std::condition_variable`（用于写完成等待） | `data_service.h:72-73` | libc++ 下 ~90-100 B/对象固定开销；百万对象 ≈ 100 MB | 🟡 待优化（见下） |
-| **S1-3** | `remote_idx_` / `write_provenance_` 无上限累积（= M1 的 R1/R2） | `data_service.h:295`、`master_agent.h:347` | master 随全局对象数线性增长；百万对象 ≈ 100 MB+ | 🟡 = M1，待对象量真实过百万时启动 |
+| **S1-2** | `LocalObjectInfo` 每对象含独立 `std::mutex` + `std::condition_variable`（用于写完成等待） | `data_service.h:66-67` | libc++ 下 ~88 B/对象固定开销（mutex 40B + cv 48B）；百万对象 ≈ 88 MB | 🟡 待优化（见下，2026-08-02 已确认死代码） |
+| **S1-3** | `remote_idx_` / `write_provenance_` 无上限累积（= M1 的 R1/R2） | `data_service.h:312-314`、`master_agent.h:349` | master 随全局对象数线性增长；百万对象 ≈ 100 MB+ | 🟡 = M1，待对象量真实过百万时启动（见下，2026-08-02 调研补充） |
 | **S1-4** | master `recorded_workers_` 从不清理（= M1 的 R5） | `master_agent.h` | 每个 (db,writer) 一条，量极小 | ⚪ 极低优先级 |
 
 **S1-2 的优化方向**（`LocalObjectInfo` 的 mutex+cv 开销）：
 
-当前每个未完成/等待中的写对象各持一份 `mutex`+`cv`，用于读路径 `try_read_local_raw_or_wait` 阻塞等待写完成。这是单对象百字节级开销的主项（远大于 S1-1 的 11 字节前缀）。百万对象时仅 mutex+cv 就占 ~100 MB。
+当前每个未完成/等待中的写对象各持一份 `mutex`+`cv`，用于读路径 `try_read_local_raw_or_wait` 阻塞等待写完成。这是单对象百字节级开销的主项（远大于 S1-1 的 11 字节前缀）。百万对象时仅 mutex+cv 就占 ~88 MB。
+
+**2026-08-02 调研补充 — 实为死代码**：全树 grep 确认 `try_read_local_or_wait` / `try_read_local_raw_or_wait`（`data_service.cpp:811/959`）**无任何生产调用方**，仅被单元测试引用（`src/storage/tests/data_service_test.cpp`、`write_registration_test.cpp`）。生产读路径 `read_raw_compressed`（`data_service.cpp:1064`）走 3-tier + `can_still_produce` 语义（见 S4），**从不依赖 per-object cv**。写完成路径的 5 处 `notify_all()`（`data_service.cpp:276/309/328/403/1373`）在生产中唤醒空。
+
+**额外隐患（顺带可根治）**：`completion_state_` 是普通 enum，在锁外被裸读（`data_service.cpp:828/842/871/878-879/890...`），存在数据竞争。当前靠"空 `cv_lock` 块"（`{std::lock_guard<std::mutex> cv_lock(info->cv_mutex_);}` 立即析构，`:307/401/1371`）建立 release/acquire 屏障 —— 脆弱补丁。
 
 可行方向（待启动）：
-- 共享等待：把 per-object 的 mutex+cv 改为 per-db 或全局的等待机制（如 `std::condition_variable_any` + 一个集中的 `unordered_set<写中对象>`），用一次 hash 查找替代每对象一份同步原语
+- **直接删除死路径**（推荐）：删除 `cv_mutex_`/`cv_` 字段 + 两个 `_or_wait` 函数 + 5 处 `notify_all()` + 3 处空屏障块；`completion_state_` 改 `std::atomic<CompletionState>` 顺带根治数据竞争。生产零影响。
+- 共享等待（仅当未来确需同步等待 API）：把 per-object 的 mutex+cv 改为 per-db 或全局的等待机制（如 `std::condition_variable_any` + 一个集中的 `unordered_set<写中对象>`），用一次 hash 查找替代每对象一份同步原语
 - 代价：等待唤醒粒度变粗（notify 时需 broadcast 或按 key 路由），实现复杂度上升
 - 触发阈值：单 worker 写 >100 万对象、或 `local_idx_` 内存成为瓶颈时
 
+**S1-3 的优化方向**（2026-08-02 调研补充）：`remote_idx_` 与 `write_provenance_` 分属不同类、淘汰策略差异大，需分开处理。
+
+`remote_idx_` 淘汰策略（master vs worker）：
+- **worker 侧淘汰完全安全** —— miss 走 TIER3 回查 master（`worker_agent.cpp:747 request_remote_data`）刷新本地 `remote_idx_` 重填，重入 TIER2，仅多一次 master RPC（已有降级路径）。
+- **master 侧是 location authority，淘汰需谨慎** —— master 淘汰后 worker 查不到会误判对象不存在；但对象若真存在，`.idx` 在共享 FS 上，可经 `rebuild_remote_idx_for_worker`（`master_agent.cpp:1821`，读 `.idx` 重建）恢复。建议**优先淘汰 worker 侧，master 侧保守或配套"miss 时重建"**。
+
+`write_provenance_` 发现 **merge 漏清**（详见 S3）：`cleanup_after_merge`（`master_agent.cpp:2406-2412`）调 `clear_remote_index_for_db` / `clear_local_index_for_db` 清索引，**完全没碰 `write_provenance_`**。跨 path merge 后源 db_path 写 `_MIGRATED_TO` 重定向，源命名空间旧 provenance 条目成为孤立条目。
+
+已有可复用基础设施：
+- `RemoteObjectMeta`（`data_service.h:31-36`）已含 `read_count_` / `last_access_time_` / `size_bytes_`，与 `ObjectCache::evict()`（`object_cache.h:255-284`）的 score（`read_count/age`）+ 30s 保护窗口 + 1.5x 硬上限模式完全对应，可直接套用。
+- `decay_remote_access`（`data_service.cpp:1459-1474`）已实现访问计数衰减，但**未接线**（无周期线程调用）；配置 `backup_decay_interval` / `backup_decay_factor`（`config.cpp:98-99`）也无消费者，可作为周期淘汰线程的基础设施。
+- 建议新增配置：`{"remote_idx_max_entries", 0}`（0=unlimited 默认兼容，>0 触发淘汰），仿 `read_cache_size` / `temp_store_size`（`config.cpp:111-112`）格式。
+
 **当前结论**：S1-1 已在 db_id 废弃改造中修复；S1-2/S1-3 在十万级对象量级下内存可控（数十 MB），**不阻塞，待真实痛点触发**。与 M1 同属"对象量过百万"的待办集合。
+
+---
+
+**[S3] `write_provenance_` 健壮性不足**（2026-08-02 调研发现）
+
+`write_provenance_`（`master_agent.h:349`，仅 master 进程，`unordered_map<object_name, write_context_hash>`）守护核心不变量：**同一对象名只能被同一 write context 写出**，防止不同任务逻辑向同一对象名写入不同内容（破坏 fly 的确定性 / 可重现性保证）。校验在 `do_write_register`（`master_agent.cpp:1256-1259`）：对象不存在则登记 hash；存在且 hash 相同则允许（幂等重算）；存在但 hash 不同则拒绝（`WRITE_PROVENANCE_MISMATCH`）。该机制还支撑 backup task（`master_agent.cpp:2060`，备份任务继承源 provenance）和 merge task（`:2150`，merge 产物继承源 provenance）。**该机制当前不够完善健壮，需后续增强与优化**：
+
+| 子问题 | 详情 | 风险 |
+|--------|------|------|
+| **merge 漏清孤立条目** | `cleanup_after_merge`（`master_agent.cpp:2406-2412`）清 `remote_idx_` / `local_idx_` 但**完全没碰 `write_provenance_`**。跨 path merge 后源 db_path 写 `_MIGRATED_TO` 重定向，源命名空间旧 provenance 条目成为孤立条目（不会再以源 path 写入） | 内存缓慢泄漏；频繁 merge 场景加剧 |
+| **不持久化** | 进程重启后 `write_provenance_` 丢失（无 `save_to_file` / `load_from_file`），而 `remote_idx_` 可从 `.idx` 重建。重启后同一对象名被不同 context 重写时校验失效 | 破坏确定性保证（重启场景） |
+| **无淘汰机制** | 随全局对象数线性增长，百万条约 80-100 MB；与 S1-3 重叠 | 内存膨胀 |
+| **backup/merge hash 继承脆弱** | `master_agent.cpp:2060` / `:2150` 取 provenance hash 注入 backup/merge task，若 provenance 已丢失则继承失效 | 间接影响确定性 |
+
+现有清理点（已覆盖路径）：`on_task_failed`（`:949`，按 `dirty_objects_` 清）、`on_object_removed`（`:1327`）、`broadcast_object_removed`（`:1347`）、`on_remove_request`（`:1487`）。**漏清路径**：merge `cleanup_after_merge`（`:2406`）。
+
+增强方向（待启动，需进一步评审）：
+- **修复 merge 漏清**：`cleanup_after_merge` 在清源 db_path 索引后，按 `db_path + ":"` 前缀遍历清理 `write_provenance_` 孤立条目（跨 path merge 时 target 命名空间同理，新 WriteRegister 会重建）。
+- **持久化**：provenance 随 `.idx` / `_DB_META` 落盘，重启重建（与 `remote_idx_` 的 `rebuild_remote_idx_for_worker` 同构）。
+- **配套对象生命周期的受控淘汰**：不裸 LRU（会破坏校验），仅在对象从 `remote_idx_` / `local_idx_` 真正消失时才允许清对应 provenance。
+
+**[S4] TIER1 INCOMPLETE 状态无差别回退 TIER2 不合理**（2026-08-02 调研发现）
+
+读路径 `read_raw_compressed`（`data_service.cpp:1064`）TIER1 调 `try_read_local_raw`（`:714`），其对 `completion_state_` 的处理：
+
+```
+case COMPLETE + !is_temp → diag=3, 读 entries 落盘数据
+case COMPLETE + is_temp  → diag=3, 读 temp_compressed_data_
+case INCOMPLETE          → diag=2, 返回 {false, nullptr}  ← 回退 TIER2
+case FAILED              → diag=2, 返回 {false, nullptr}  ← 同样回退（未区分）
+```
+
+TIER1 返回 false 时，`read_raw_compressed` 无差别进入 TIER2 远程读，对两种本应有不同处理的场景一视同仁：
+
+| 场景 | 当前行为 | 问题 |
+|------|----------|------|
+| **本 worker 正在写（INCOMPLETE 是自己的异步写）** | 绕远程找其他副本；若无副本则 TIER3 回查 master（master 也没登记，因为 WriteRegister 在写完成后才上报）→ `can_still_produce` 退避轮询等到本 worker 自己写完 | 缺"等待本地写完成"快路径，本 worker 拥有最新数据却绕大圈；与 S1-2 per-object cv 被删后无本地等待机制强相关 |
+| **写失败（FAILED）** | 当 INCOMPLETE 处理，回退 TIER2 找副本 | 语义不准；靠 `on_write_failed`（`data_service.cpp:326`）很快移除条目兜底，窗口小但存在 |
+
+修复方向（待启动）：
+- TIER1 区分 INCOMPLETE / FAILED：FAILED 直接返回失败（不回退远程）；INCOMPLETE 本地写则走"本地等待"快路径。
+- 补"本地写完成 → 唤醒本地读者"信号：替代被删的 per-object cv（见 S1-2），用 per-db 共享 cv 或更轻量机制，避免本 worker 写时绕远程读。
 
 **[S2] db_id 废弃 — 改用 db_path + `_MIGRATED_TO` 迁移重定向**（2026-08-01 决策，详见 [`docs/adr/0002-deprecate-db-id.md`](adr/0002-deprecate-db-id.md)）
 

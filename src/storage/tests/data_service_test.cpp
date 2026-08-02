@@ -8,6 +8,10 @@
 #include <filesystem>
 #include <istream>
 #include <chrono>
+#include <thread>
+#include <atomic>
+#include <future>
+#include <vector>
 
 namespace {
 
@@ -666,52 +670,6 @@ TEST_F(DataServiceTest, FindLocalEntriesReturnsNoneForMissing) {
     EXPECT_FALSE(entries.has_value());
 }
 
-TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsFalseForMissingDb) {
-    auto [found, result] = ds_->try_read_local_or_wait("no_such_object", 100);
-    EXPECT_FALSE(found);
-}
-
-TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsFalseForMissingEntry) {
-    CMString db_path = db32("wait_missing");
-    auto [found, result] = ds_->try_read_local_or_wait(db_path + ":no_entry", 100);
-    EXPECT_FALSE(found);
-}
-
-TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsImmediatelyWhenComplete) {
-    CMString db_path = test_dir_ + "/wait_read";
-    Database db(db_path);
-
-    write_raw(db, "wait/obj", "wait_data", false);
-    fly::DataService::instance()->drain_write_back();
-
-    CMString full = db.get_full_name("wait/obj");
-    auto [found, result] = ds_->try_read_local_or_wait(full, 100);
-    EXPECT_TRUE(found);
-    CMString data(result.data_buffer_.begin(), result.data_buffer_.end());
-    EXPECT_EQ(data, "wait_data");
-}
-
-TEST_F(DataServiceTest, TryReadLocalOrWaitTimeoutOnIncomplete) {
-    CMString db_path = db32("wait_timeout");
-    CMString full = db_path + ":pending_obj";
-
-    ds_->on_write_started(db_path, full);
-
-    auto [found, result] = ds_->try_read_local_or_wait(full, 50);
-    EXPECT_FALSE(found);
-}
-
-TEST_F(DataServiceTest, TryReadLocalOrWaitReturnsFalseOnFailed) {
-    CMString db_path = db32("wait_fail");
-    CMString full = db_path + ":fail_obj";
-
-    ds_->on_write_started(db_path, full);
-    ds_->on_write_failed(db_path, full, "test error");
-
-    auto [found, result] = ds_->try_read_local_or_wait(full, 100);
-    EXPECT_FALSE(found);
-}
-
 TEST_F(DataServiceTest, TryReadLocalRawReturnsData) {
     CMString db_path = test_dir_ + "/raw_read";
     Database db(db_path);
@@ -729,34 +687,6 @@ TEST_F(DataServiceTest, TryReadLocalRawReturnsFalseForMissing) {
     auto [found, raw] = ds_->try_read_local_raw("missing/obj");
     EXPECT_FALSE(found);
     EXPECT_TRUE(!raw);
-}
-
-TEST_F(DataServiceTest, TryReadLocalRawOrWaitReturnsData) {
-    CMString db_path = test_dir_ + "/raw_wait";
-    Database db(db_path);
-
-    write_raw(db, "rawwait/obj", "rawwait_data", false);
-    fly::DataService::instance()->drain_write_back();
-
-    CMString full = db.get_full_name("rawwait/obj");
-    auto [found, raw, py_name] = ds_->try_read_local_raw_or_wait(full, 100);
-    EXPECT_TRUE(found);
-    EXPECT_FALSE(!raw || raw->empty());
-    EXPECT_EQ(py_name, "bytes");
-}
-
-TEST_F(DataServiceTest, TryReadLocalRawOrWaitReturnsFalseForMissing) {
-    auto [found, raw, py_name] = ds_->try_read_local_raw_or_wait("missing_raw/obj", 50);
-    EXPECT_FALSE(found);
-}
-
-TEST_F(DataServiceTest, TryReadLocalRawOrWaitTimeoutOnIncomplete) {
-    CMString db_path = db32("raw_timeout");
-    CMString full = db_path + ":incomplete_raw";
-    ds_->on_write_started(db_path, full);
-
-    auto [found, raw, py_name] = ds_->try_read_local_raw_or_wait(full, 50);
-    EXPECT_FALSE(found);
 }
 
 TEST_F(DataServiceTest, TryReadRemoteReturnsLocalIfAvailable) {
@@ -1159,47 +1089,6 @@ TEST_F(DataServiceTest, TryReadLocalRawPopulatesLowCache) {
     fly::ObjectCache::instance().clear();
 }
 
-// try_read_local_raw_or_wait returns immediately for a complete object (no wait).
-TEST_F(DataServiceTest, TryReadLocalRawOrWaitImmediateForComplete) {
-    CMString db_path = test_dir_ + "/raw_wait";
-    Database db(db_path);
-    write_raw(db, "rw/obj", "data", false);
-    ds_->drain_write_back();
-
-    CMString full = db.get_full_name("rw/obj");
-    auto [found, comp, py_name] = ds_->try_read_local_raw_or_wait(full, 1000);
-    EXPECT_TRUE(found);
-    EXPECT_FALSE(!comp || comp->empty());
-}
-
-// try_read_local_raw_or_wait times out for an object that never completes.
-TEST_F(DataServiceTest, TryReadLocalRawOrWaitTimesOut) {
-    CMString db_path = db32("waitraw_db");
-    CMString full = db_path + ":never_obj";
-    // Register db so lookup doesn't early-return on unknown db.
-    ds_->register_database(test_dir_ + "/waitraw", "", "writer_x");
-    ds_->on_write_started(db_path, full);
-
-    auto t0 = std::chrono::steady_clock::now();
-    auto [found, comp, py_name] = ds_->try_read_local_raw_or_wait(full, 200);
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                       std::chrono::steady_clock::now() - t0).count();
-    EXPECT_FALSE(found);
-    EXPECT_GE(elapsed, 150);
-}
-
-// try_read_local_or_wait (decoded) returns immediately for complete object.
-TEST_F(DataServiceTest, TryReadLocalOrWaitImmediateForComplete) {
-    CMString db_path = test_dir_ + "/or_wait";
-    Database db(db_path);
-    write_raw(db, "ow/obj", "hello", false);
-    ds_->drain_write_back();
-
-    CMString full = db.get_full_name("ow/obj");
-    auto [found, result] = ds_->try_read_local_or_wait(full, 1000);
-    EXPECT_TRUE(found);
-}
-
 // try_read_remote invokes the configured remote read handler. Under the new
 // model the handler is a pure location query (returns refreshed signal, no
 // data); without a direct handler the read cannot fetch, so it fails — but the
@@ -1230,6 +1119,105 @@ TEST_F(DataServiceTest, IsWriteInProgressReflectsLifecycle) {
 
     ds_->on_write_started(db_path, full);
     EXPECT_TRUE(ds_->is_write_in_progress(full));
+}
+
+// TIER1 快速唤醒：对象处于 INCOMPLETE 时，try_read_local_raw(wait=true) 阻塞等待
+// 本地写完成，被 on_write_completed 唤醒后返回数据。验证 per-db cv + notify_all
+// 的核心读路径——替代旧的 per-object cv + _or_wait 死代码路径。
+// 用 future + 超时断言防死锁卡测试（wait 是无限等待，若 notify 丢失会永久阻塞）。
+TEST_F(DataServiceTest, TIER1WaitsForLocalWriteComplete) {
+    CMString db_path = db32("tier1wait_db");
+    CMString full = db_path + ":pending_obj";
+    ds_->register_database(test_dir_ + "/tier1wait", "", "writer_t1");
+
+    // 先标记 INCOMPLETE（模拟异步写开始）。
+    ds_->on_write_started(db_path, full);
+    EXPECT_TRUE(ds_->is_write_in_progress(full));
+
+    // reader 线程：调 try_read_local_raw(wait=true)，应阻塞直到写完成。
+    auto reader = std::async(std::launch::async, [&]() {
+        return ds_->try_read_local_raw(full, /*wait_local_write=*/true);
+    });
+
+    // 确认 reader 已进入 wait（尚未完成）。短暂 sleep 让 reader 抢到锁进入 wait。
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(reader.wait_for(std::chrono::seconds(0)), std::future_status::timeout)
+        << "reader should be blocked waiting for write completion";
+
+    // 写完成：唤醒 reader。
+    IndexEntry entry;
+    entry.object_name_ = full;
+    entry.file_name_ = "test.dat";
+    entry.offset_ = 0;
+    entry.size_ = 4;
+    entry.is_large_ = false;
+    entry.block_count_ = 1;
+    CMVector<IndexEntry> entries = {entry};
+    ds_->on_write_completed(db_path, full, entries);
+
+    // reader 应被唤醒并返回（但数据因无真实 .dat 文件会读失败 → found=false）。
+    // 关键断言：reader 不再阻塞（被唤醒），而非返回值（无真实数据）。
+    ASSERT_EQ(reader.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+        << "reader was not woken within 5s — notify lost?";
+}
+
+// TIER1 遇 FAILED：try_read_local_raw(wait=true) 被 on_write_failed 唤醒后返回 false，
+// 让上层 read_raw_compressed 走 TIER2 兜底。
+TEST_F(DataServiceTest, TIER1ReturnsFalseOnFailedAfterWait) {
+    CMString db_path = db32("tier1fail_db");
+    CMString full = db_path + ":fail_obj";
+    ds_->register_database(test_dir_ + "/tier1fail", "", "writer_t2");
+
+    ds_->on_write_started(db_path, full);
+
+    auto reader = std::async(std::launch::async, [&]() {
+        return ds_->try_read_local_raw(full, /*wait_local_write=*/true);
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(reader.wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+
+    ds_->on_write_failed(db_path, full, "test failure");
+
+    auto [found, raw] = reader.get();
+    EXPECT_FALSE(found) << "FAILED object should return false (fallback to TIER2)";
+}
+
+// 多 waiter 并发等待同一 db 的写完成：notify_all 应唤醒所有 waiter。
+// 验证 per-db cv 的 notify_all 策略不会丢失唤醒（notify_one 会随机唤醒导致丢失）。
+TEST_F(DataServiceTest, TIER1MultipleWaitersAllWoken) {
+    CMString db_path = db32("tier1conc_db");
+    CMString full = db_path + ":conc_obj";
+    ds_->register_database(test_dir_ + "/tier1conc", "", "writer_t3");
+
+    ds_->on_write_started(db_path, full);
+
+    constexpr int kWaiters = 5;
+    std::vector<std::future<std::pair<bool, FlyBufferPtr>>> readers;
+    for (int i = 0; i < kWaiters; ++i) {
+        readers.emplace_back(std::async(std::launch::async, [&]() {
+            return ds_->try_read_local_raw(full, /*wait_local_write=*/true);
+        }));
+    }
+
+    // 确认所有 reader 已进入 wait。
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    for (auto& r : readers) {
+        EXPECT_EQ(r.wait_for(std::chrono::seconds(0)), std::future_status::timeout)
+            << "all readers should be blocked before write completes";
+    }
+
+    // 写完成：notify_all 应唤醒所有 reader。
+    IndexEntry entry;
+    entry.object_name_ = full;
+    CMVector<IndexEntry> entries = {entry};
+    ds_->on_write_completed(db_path, full, entries);
+
+    for (auto& r : readers) {
+        ASSERT_EQ(r.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+            << "a reader was not woken within 5s — notify_all lost a waiter?";
+        r.get();  // 取结果（无真实数据，found=false，但不阻塞即通过）
+    }
 }
 
 // TIER2 must try replicas in net-quality order: the better-scored host is

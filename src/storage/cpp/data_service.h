@@ -57,14 +57,22 @@ enum class CompletionState {
 struct LocalObjectInfo {
     CMString db_path_;
     CMVector<IndexEntry> entries_;
+    // atomic：锁外可被读路径 acquire 读（如 try_read_local_raw 的 predicate），
+    // 写路径在 mutex_ 保护下 release 写。替代旧的"空 cv_lock 块"屏障补丁。
+    std::atomic<CompletionState> completion_state_{CompletionState::INCOMPLETE};
     bool flushed_ = false;
-    CompletionState completion_state_ = CompletionState::INCOMPLETE;
     CMString error_message_;
     bool is_temp_ = false;
     FlyBufferPtr temp_compressed_data_;  // shared_ptr: zero-copy reads, automatic lifetime
+};
 
-    std::mutex cv_mutex_;
-    std::condition_variable cv_;
+// per-db 本地索引：一个 db_path 下所有对象的索引 + 一个共享 cv。
+// cv 用于读路径等待本 db 任意对象的写完成（替代旧的 per-object mutex+cv，
+// 避免 88B/对象 × 百万对象的内存爆炸）。notify_all 唤醒该 db 所有 waiter，
+// 各自 predicate 检查目标对象 completion_state_，未完成则重睡。
+struct DbLocalIndex {
+    CMUnorderedMap<CMString /*short_name*/, CMSharedPtr<LocalObjectInfo>> objects_;
+    std::condition_variable write_cv_;
 };
 
 class DataServer;
@@ -221,17 +229,17 @@ public:
 
     std::pair<bool, ReadResult> try_read_local(const CMString& object_name);
 
-    std::pair<bool, FlyBufferPtr> try_read_local_raw(const CMString& object_name);
+    // wait_local_write=true（默认）：遇 INCOMPLETE 时在 per-db cv 上 wait 本地写完成
+    // （无限等待，信任本地写最终完成；FAILED 唤醒后返回 false 走 TIER2）。用于本地
+    // read_raw_compressed 的 TIER1 快路径。wait_local_write=false：INCOMPLETE 立即返回
+    // false（上层据 is_write_in_progress 判定 DATA_NOT_READY）。用于 DataServer 远程
+    // serve 路径——IO 线程池（默认 4 线程）不能阻塞，避免并发 wait 耗尽 serve 能力。
+    std::pair<bool, FlyBufferPtr> try_read_local_raw(const CMString& object_name,
+                                                      bool wait_local_write = true);
 
     bool is_write_in_progress(const CMString& object_name) const;
 
-    std::tuple<bool, FlyBufferPtr, CMString> try_read_local_raw_or_wait(
-        const CMString& object_name, int timeout_ms = -1);
-
     std::pair<bool, ReadResult> try_read_remote(const CMString& object_name);
-
-    std::pair<bool, ReadResult> try_read_local_or_wait(const CMString& object_name,
-                                                        int timeout_ms = 3000);
 
     std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> read_raw_compressed(const CMString& object_name);
 
@@ -305,9 +313,7 @@ private:
 
     mutable std::mutex mutex_;
 
-    CMUnorderedMap<CMString /*db_path*/,
-        CMUnorderedMap<CMString /*short_name*/,
-            CMSharedPtr<LocalObjectInfo>>> local_idx_;
+    CMUnorderedMap<CMString /*db_path*/, DbLocalIndex> local_idx_;
 
     CMUnorderedMap<CMString /*db_path*/,
         CMUnorderedMap<CMString /*short_name*/,
