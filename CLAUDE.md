@@ -63,6 +63,34 @@
 ./qa/runqa qa/storage/test_x.py   # 只跑单个 case
 ```
 
+### ⚠️ 跑单个 gtest 用例的陷阱（bazel 缓存 + gtest filter）
+
+调试期常需跑单个 gtest 用例。这里有两个**极易踩的坑**，会让测试"看起来 PASSED 其实没跑到"：
+
+**坑 1（主因）：gtest filter 语法 — 不带 suite 名会匹配 0 个测试。**
+gtest filter 针对完整测试名 `TestSuite.TestName` 做通配匹配（仅支持 `*` / `?`，**非子串**）。
+`--gtest_filter=Foo` **不会**匹配 `TestSuite.Foo`。必须写完整名 `TestSuite.Foo` 或带通配 `*Foo`。
+查准测试名：`bazel-bin/src/.../xxx_test --gtest_list_tests`。
+
+**坑 2（放大坑 1）：gtest 匹配 0 个测试时退出码仍是 0（[googletest#3820](https://github.com/google/googletest/issues/3820)，设计如此不修）。**
+bazel 看到 exit 0 就判 PASSED，并把结果缓存。于是"改了断言却仍 PASSED"——**断言压根没执行**。
+
+**正确的跑单个用例命令**（强制重跑 + 流式输出 + 完整 filter）：
+```bash
+bazel test --cache_test_results=no --test_output=streamed \
+           --test_arg=--gtest_filter='MasterAgentTest.NonStreamWriteRegisterDelaysDataReady' \
+           //src/agent/tests:master_agent_test
+```
+注意 `--test_output=streamed` 会显示 gtest 的 `Running N tests` —— **务必核对 N≥1**（N=0 即踩了坑 1）。
+
+**最可靠的诊断手段**：直接执行二进制，完全绕过 bazel 缓存，stdout 全是自己控制的：
+```bash
+bazel build //src/agent/tests:master_agent_test
+bazel-bin/src/agent/tests/master_agent_test --gtest_filter='*NonStreamWriteRegisterDelaysDataReady'
+```
+
+**bazel 缓存本身是健康的**：源码改动 → 二进制重编 → 内容 digest 变化 → 缓存失效。`--cache_test_results=no`（`--nocache_test_results`）能保证重跑，但**挡不住坑 2**（重跑后仍 0 匹配仍 exit 0）。看 bazel 输出的 `Executed N out of M test`：N=0 就是没跑到，与是否 cached 无关。
+
 ### QA 测试与 test 模块
 
 QA 测试按模块分类在 `qa/<category>/` 子目录下（api/backup/dependency/fault/mapreduce/performance/scheduling/solver/storage/stress/write_provenance），使用 `src/test/py/e2e_tasks.py` 中定义的 @as_task 任务。
