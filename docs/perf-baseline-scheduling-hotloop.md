@@ -46,3 +46,58 @@
 2. **H2-b 消除 get_ready_tasks 每次 sort**：引入有序结构维护 ready 顺序，避免每查必排。
 
 优化后数据将补充到本文档对比。
+
+---
+
+## 优化后数据（H2-a + H2-b）— 2026-08-04
+
+### 改造方案
+
+- **H2-a**：select_best_worker 接受 idle_workers/idle_set 参数（const 引用），由 schedule_next 一次获取后循环内复用，消除内部重取与 set 重建。零架构改动。
+- **H2-b**：ready_tasks_ 从 `CMUnorderedSet<uint64_t>` 改为 `std::set<std::pair<int,uint64_t>>`，key = `{-priority, task_id}`（priority 降序、同优先级 task_id 升序 FIFO）。插入即有序，get_ready_tasks 直接遍历取 task_id，**删除 std::sort**。priority 在 task 生命周期内不可变（add_task 时确定），key 稳定。
+
+### 优化前后对比（核心指标）
+
+| 场景 | 规模 | 原始基线 | 优化后 | 提升 |
+|------|------|---------|--------|------|
+| A 大批次调度 | 50 task | 20219 | 145206 | **7.2x** |
+| A 大批次调度 | 200 task | 3878 | 91739 | **23.7x** |
+| A 大批次调度 | 1000 task | 575 | 30591 | **53.2x** |
+| B get_ready_tasks | size=100 | 8118 | 486451 | **59.9x** |
+| B get_ready_tasks | size=2000 | 275 | 23333 | **84.8x** |
+| C 反复调度 | 10000 task | 38375 | 73501 | 1.9x |
+
+### 关键结论：O(N²) 退化被彻底消除
+
+**优化前**：场景 A 从 50t→1000t 吞吐降 35x（O(N²) 退化），B 场景 size=2000 仅 275 ops/sec。
+**优化后**：场景 A 从 50t→1000t 吞吐仅降 4.7x（**接近线性，O(N²) 消除**），B 场景 size=2000 达 23333 ops/sec（85x）。
+
+### 伸缩性曲线对比
+
+```
+场景 A (schedule_all_available 大批次调度)：
+tasks/sec
+  140000 │ ●优化后(145206)
+  120000 │
+  100000 │       ●优化后(91739)
+   80000 │
+   60000 │
+   40000 │                    ●优化后(30591)
+   20000 │
+       0 │───●优化前(20219)────────────────────
+            50t       200t       1000t
+         优化前: O(N²) 退化(35x下降)   优化后: 近线性(4.7x下降)
+```
+
+### 维护点（H2-b 改造涉及）
+
+ready_tasks_ 类型变更后，5 处访问点改造：
+- `add_task` / `check_and_move_to_ready`：insert `{-priority, task_id}`
+- `remove_task` / `mark_data_removed`：erase 需查 priority 构造完整 key（task_requirements_ 此时仍在）
+- `is_task_ready` / `check_and_move_to_ready` 早期判断：查 priority 构造 key 或 find_if
+- `get_ready_tasks`：遍历 set 取 `.second`，**删除 sort**
+
+### 验证
+
+- task unit test 全绿（含 task_scheduler_test T1-T7 全套调度测试、dependency_graph_test）
+- master_agent 单测、全量 QA 139/139、stability 50/50 零 crash

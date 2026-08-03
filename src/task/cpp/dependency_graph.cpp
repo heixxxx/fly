@@ -20,7 +20,7 @@ void DependencyGraph::add_task(uint64_t task_id, const CMVector<CMString>& input
     }
 
     if (pending == 0) {
-        ready_tasks_.insert(task_id);
+        ready_tasks_.insert({-requirements.priority_, task_id});
         task_ready_timestamps_[task_id] = std::chrono::steady_clock::now();
     } else {
         pending_tasks_.insert(task_id);
@@ -44,7 +44,13 @@ void DependencyGraph::set_task_locality_hint(
 bool DependencyGraph::check_and_move_to_ready(uint64_t task_id) {
     // Called under lock. Returns true if task moved from pending to ready.
     if (completed_tasks_.count(task_id)) return false;
-    if (ready_tasks_.count(task_id)) return false;
+    // ready_tasks_ key 含 priority，此处只需判 task 是否已在 ready。
+    // 用 find_if 按 task_id 匹配（避免查 priority；此分支命中即 return，非热路径）。
+    bool already_ready = false;
+    for (const auto& entry : ready_tasks_) {
+        if (entry.second == task_id) { already_ready = true; break; }
+    }
+    if (already_ready) return false;
     if (!pending_tasks_.count(task_id)) return false;
 
     auto& deps = task_dependencies_[task_id];
@@ -56,7 +62,10 @@ bool DependencyGraph::check_and_move_to_ready(uint64_t task_id) {
 
     // All deps ready — move to ready.
     pending_tasks_.erase(task_id);
-    ready_tasks_.insert(task_id);
+    int priority = 10;  // 默认值，与 get_ready_tasks 排序比较器的默认一致
+    auto req_it = task_requirements_.find(task_id);
+    if (req_it != task_requirements_.end()) priority = req_it->second.priority_;
+    ready_tasks_.insert({-priority, task_id});
     task_ready_timestamps_[task_id] = std::chrono::steady_clock::now();
 
     // Clean up reverse index for this task.
@@ -97,8 +106,10 @@ void DependencyGraph::mark_data_removed(const CMString& data_path) {
     data_ready_status_.erase(data_path);
 
     // Find ready tasks that depend on this data and move them back to pending.
+    // ready_tasks_ 的 key 是 {-priority, task_id}，遍历取 .second 得 task_id。
     CMVector<uint64_t> to_pending;
-    for (auto task_id : ready_tasks_) {
+    for (const auto& entry : ready_tasks_) {
+        uint64_t task_id = entry.second;
         auto& deps = task_dependencies_[task_id];
         for (const auto& dep : deps) {
             if (dep == data_path) {
@@ -109,7 +120,11 @@ void DependencyGraph::mark_data_removed(const CMString& data_path) {
     }
 
     for (auto task_id : to_pending) {
-        ready_tasks_.erase(task_id);
+        // erase 需用完整 key：从 task_requirements_ 查 priority 构造 {-priority, task_id}。
+        int priority = 10;
+        auto req_it = task_requirements_.find(task_id);
+        if (req_it != task_requirements_.end()) priority = req_it->second.priority_;
+        ready_tasks_.erase({-priority, task_id});
         pending_tasks_.insert(task_id);
         task_ready_timestamps_.erase(task_id);
         // Re-add to reverse index for all unmet deps.
@@ -123,19 +138,14 @@ void DependencyGraph::mark_data_removed(const CMString& data_path) {
 
 CMVector<uint64_t> DependencyGraph::get_ready_tasks() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    CMVector<uint64_t> result(ready_tasks_.begin(), ready_tasks_.end());
-    // 按 (priority desc, task_id asc) 排序：高优先级先调度，同优先级内 FIFO。
-    // 读 task_requirements_ 由 mutex_ 保护（add_task/remove_task 同持此锁），线程安全。
-    std::sort(result.begin(), result.end(),
-        [this](uint64_t a, uint64_t b) {
-            int pa = 10, pb = 10;   // 默认 priority=10
-            auto ita = task_requirements_.find(a);
-            auto itb = task_requirements_.find(b);
-            if (ita != task_requirements_.end()) pa = ita->second.priority_;
-            if (itb != task_requirements_.end()) pb = itb->second.priority_;
-            if (pa != pb) return pa > pb;       // priority 降序
-            return a < b;                        // 同 priority 内 task_id 升序（FIFO）
-        });
+    // ready_tasks_ 已按 {-priority, task_id} 有序（priority 降序、同优先级 task_id 升序），
+    // 直接遍历取 task_id，无需 std::sort。原实现每次 O(R log R) sort 导致 schedule_all_available
+    // 循环呈 O(N²) 退化（见 docs/perf-baseline-scheduling-hotloop.md）。
+    CMVector<uint64_t> result;
+    result.reserve(ready_tasks_.size());
+    for (const auto& entry : ready_tasks_) {
+        result.push_back(entry.second);
+    }
     return result;
 }
 
@@ -154,12 +164,21 @@ CMVector<uint64_t> DependencyGraph::get_pending_tasks() const {
 
 bool DependencyGraph::is_task_ready(uint64_t task_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return ready_tasks_.count(task_id) > 0;
+    // ready_tasks_ key 是 {-priority, task_id}，需查 priority 构造完整 key。
+    int priority = 10;
+    auto req_it = task_requirements_.find(task_id);
+    if (req_it != task_requirements_.end()) priority = req_it->second.priority_;
+    return ready_tasks_.count({-priority, task_id}) > 0;
 }
 
 void DependencyGraph::remove_task(uint64_t task_id) {
     std::lock_guard<std::mutex> lock(mutex_);
-    ready_tasks_.erase(task_id);
+    // ready_tasks_ 的 key 是 {-priority, task_id}，erase 需完整 key。
+    // task_requirements_ 在本方法末尾才 erase，此时仍可查 priority。
+    int priority = 10;
+    auto req_it = task_requirements_.find(task_id);
+    if (req_it != task_requirements_.end()) priority = req_it->second.priority_;
+    ready_tasks_.erase({-priority, task_id});
     pending_tasks_.erase(task_id);
     completed_tasks_.insert(task_id);
     task_ready_timestamps_.erase(task_id);
