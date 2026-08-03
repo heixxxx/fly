@@ -540,7 +540,10 @@ def _apply_coarse_correction(db, step, nsd):
             shape=(coord["N"], coord["N"])))
     A_fine = get_cache("__rasg__coarse_A")
 
-    cfg = db.read_object("__rasg__cfg")
+    # cfg 含 primary_sets（大对象，与 coord 同构），首次读后缓存，后续粗校正 O(1) 复用。
+    if not _has("__rasg__cfg_cache"):
+        _put("__rasg__cfg_cache", db.read_object("__rasg__cfg"))
+    cfg = get_cache("__rasg__cfg_cache")
     N = cfg["N"]
     primary_sets = cfg["primary_sets"]
 
@@ -908,7 +911,11 @@ def ras_graph_check(db, step, nsd, max_iter, tol, neighbor_ids_all):
     conv_flags = [db.read_object(f"__rasg__conv_{i}_{step}") for i in range(nsd)]
     all_converged = all(conv_flags)
 
-    cfg = db.read_object("__rasg__cfg")
+    # cfg 含 primary_sets（大对象），首次读后缓存，后续迭代 O(1) 复用。
+    from fly import has_cache as _hc, put_cache as _pc, get_cache as _gc
+    if not _hc("__rasg__cfg_cache"):
+        _pc("__rasg__cfg_cache", db.read_object("__rasg__cfg"))
+    cfg = _gc("__rasg__cfg_cache")
     omega_strategy = cfg.get("omega", 1.0)
     use_coarse = _is_coarse(db)
 
