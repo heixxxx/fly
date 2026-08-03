@@ -88,6 +88,21 @@ std::optional<CMVector<IndexEntry>> LocalIndex::find_all_entries(const CMString&
     return it->second;
 }
 
+std::ofstream& LocalIndex::append_stream() {
+    if (idx_append_stream_.is_open()) {
+        return idx_append_stream_;
+    }
+    // 惰性打开（append 模式）。失败由调用方检查 is_open 判定。
+    idx_append_stream_.open(idx_path_, std::ios::binary | std::ios::app);
+    return idx_append_stream_;
+}
+
+void LocalIndex::reset_append_stream() {
+    if (idx_append_stream_.is_open()) {
+        idx_append_stream_.close();
+    }
+}
+
 void LocalIndex::append_add(const CMString& object_name, const CMVector<IndexEntry>& entries) {
     AddRecord record;
     record.object_name_ = object_name;
@@ -96,7 +111,7 @@ void LocalIndex::append_add(const CMString& object_name, const CMVector<IndexEnt
     CMString body;
     FLY_ENCODE(record, body);
 
-    std::ofstream ofs(idx_path_, std::ios::binary | std::ios::app);
+    std::ofstream& ofs = append_stream();
     if (!ofs.is_open()) {
         ERR("Failed to open index file: {}", idx_path_); return;
     }
@@ -114,7 +129,7 @@ void LocalIndex::append_remove(const CMString& object_name) {
     CMString body;
     FLY_ENCODE(record, body);
 
-    std::ofstream ofs(idx_path_, std::ios::binary | std::ios::app);
+    std::ofstream& ofs = append_stream();
     if (!ofs.is_open()) {
         ERR("Failed to open index file: {}", idx_path_); return;
     }
@@ -126,7 +141,7 @@ void LocalIndex::append_remove(const CMString& object_name) {
 void LocalIndex::append_marker(IdxOpType op) {
     // 标记记录仅 8 字节 header，body 为空。不修改 entries_ —— BEGIN/END/ABORT
     // 的 pending 区语义在 load() 时解释，写入时只落盘标记本身。
-    std::ofstream ofs(idx_path_, std::ios::binary | std::ios::app);
+    std::ofstream& ofs = append_stream();
     if (!ofs.is_open()) {
         ERR("Failed to open index file: {}", idx_path_); return;
     }
@@ -165,6 +180,13 @@ void LocalIndex::save() {
     for (auto& name : removes_snapshot) {
         append_remove(name);
     }
+
+    // 复用持久追加流后必须显式 flush —— idx 文件是 WAL，save() 返回即要求
+    // 记录已落盘（崩溃后 load() 要能读到已提交的段）。原实现每次 append 用
+    // 独立 ofstream，靠析构 flush；现在复用流，save 末尾显式 flush 保同等语义。
+    if (idx_append_stream_.is_open()) {
+        idx_append_stream_.flush();
+    }
 }
 
 void LocalIndex::save_legacy() {
@@ -186,6 +208,9 @@ void LocalIndex::save_legacy() {
     ofs.write(reinterpret_cast<const char*>(&size), sizeof(size));
     ofs.write(bytes.data(), bytes.size());
     ofs.close();
+
+    // truncate 重写了文件，持久追加流的 fd（若已打开）位置/状态不再可靠，重置。
+    reset_append_stream();
 
     std::lock_guard<std::mutex> lock(mutex_);
     modified_ = false;
@@ -350,6 +375,9 @@ void LocalIndex::compact() {
     }
 
     std::filesystem::rename(tmp_path, idx_path_);
+
+    // rename 后旧 fd 指向被 unlink 的旧 inode，必须重置追加流。
+    reset_append_stream();
 }
 
 int64_t LocalIndex::entry_count() const {

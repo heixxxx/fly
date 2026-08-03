@@ -65,6 +65,14 @@ private:
     void append_remove(const CMString& object_name);
     void append_marker(IdxOpType op);
 
+    // 获取追加模式的持久 ofstream。append_add/remove/marker 共用同一个流，
+    // 避免每次追加都 open/write/close 一次 syscall 组（写入热路径放大点）。
+    // 流在首次 append 时惰性打开，写失败时 reopen 重试一次。
+    // compact()/save_legacy() 用 truncate 模式重写文件后必须调 reset_append_stream()
+    // 使旧 fd 失效（rename 后旧 fd 指向被 unlink 的 inode）。
+    std::ofstream& append_stream();
+    void reset_append_stream();
+
     CMString idx_path_;
     CMUnorderedMap<CMString, CMVector<IndexEntry>> entries_;
 
@@ -72,6 +80,10 @@ private:
     CMUnorderedSet<CMString> pending_removes_;
     bool modified_ = false;
     mutable std::mutex mutex_;
+
+    // 持久追加流。mutex_ 不保护 append 操作本身（写序由 WriteBackQueue 单线程
+    // 保证），但保护 reset_append_stream（compact 路径）与 append 的并发。
+    std::ofstream idx_append_stream_;
 
     // load() 诊断结果：加载结束时 pending 区是否非空(检测到崩溃遗留的未闭合段)。
     bool had_unclosed_segment_ = false;
