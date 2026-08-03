@@ -323,6 +323,25 @@ TIER1 返回 false 时，`read_raw_compressed` 无差别进入 TIER2 远程读�
 
 **验证**：storage unit test 16/16（含新增 concurrency_bench）、master_agent + task 单测、全量 QA 139/139、stability 50/50 零 crash。
 
+**[S8] task 调度热循环优化（H2-a 冗余重取 + H2-b get_ready_tasks sort）** — ✅ **已完成（2026-08-04）**
+
+> 数据驱动：先建并发 benchmark 跑出优化前基线（揭示 O(N²) 退化），优化后跑对比数据验证提升量级。详见 [`docs/perf-baseline-scheduling-hotloop.md`](perf-baseline-scheduling-hotloop.md)。
+
+| 子项 | 问题 | 方案 | 效果 |
+|------|------|------|------|
+| **S8-1 (H2-a)** | select_best_worker 内重取 idle + 重建 idle_set（每 ready task 一次）；schedule_next 已取过，纯冗余 | select_best_worker 接受 idle_workers/idle_set 参数（const 引用），schedule_next 一次获取循环内复用。零架构改动 | 常数提升 ~5-10% |
+| **S8-2 (H2-b)** | get_ready_tasks 每次 std::sort（O(R log R)），schedule_all_available 循环 N 次 → O(N² log N)，ready 积压时调度吞吐急剧退化（基线：1000t 仅 575 tasks/sec） | ready_tasks_ 从 unordered_set 改 std::set<pair<{-priority,task_id}>>，插入即有序，get_ready_tasks 删 sort 直接遍历。priority 不可变，key 稳定 | 1000t **53x**（575→30591），O(N²)→近线性 |
+
+**优化前后对比**（vs 原始基线，H2-a+H2-b 合计）：
+- 场景 A（大批次调度）1000t：575 → 30591 tasks/sec（**53.2x**）
+- 场景 A（大批次调度）200t：3878 → 91739 tasks/sec（**23.7x**）
+- 场景 B（get_ready_tasks）size=2000：275 → 23333 ops/sec（**84.8x**）
+- O(N²) 退化彻底消除：1000t vs 50t 吞吐降从 35x 缩至 4.7x（近线性）
+
+**架构变更说明**（H2-b，已与用户讨论确认）：ready_tasks_ 数据结构变更（unordered_set → std::set），封装在 DependencyGraph 内，外部 API 不变。priority 在 task 生命周期内不可变（add_task 时确定，无运行时 set_priority），故 set key 稳定。涉及 5 处维护点（add/check_and_move/remove/mark_data_removed/is_task_ready/get_ready_tasks）。
+
+**验证**：task unit test 全绿（含 task_scheduler_test T1-T7 全套调度测试、dependency_graph_test）、master_agent 单测、全量 QA 139/139、stability 50/50 零 crash。
+
 **[S2] db_id 废弃 — 改用 db_path + `_MIGRATED_TO` 迁移重定向**（2026-08-01 决策，详见 [`docs/adr/0002-deprecate-db-id.md`](adr/0002-deprecate-db-id.md)）
 
 **背景**：`db_id`（10 字符 base62）最初引入是为了缩短 db 唯一标识符、节省内存（早期 idx 每条记录存 `db_id:short` 全名）。经 2026-08-01 调研核实：内存层 `local_idx_`/`remote_idx_` 已用嵌套 map 良好归类，db_id 只作每 db 一份的外层 key，**不随对象数膨胀**；真正随对象数增长的内存项是 `LocalObjectInfo` 的 mutex+cv（S1-2）和 `remote_idx_` 无上限累积（S1-3），与标识符无关。db_id 的唯一不可替代角色是"跨 db 依赖的逻辑锚点"——merge 改物理路径时让 object_name 保持稳定。
