@@ -18,6 +18,9 @@ ScheduleResult TaskScheduler::schedule_next() {
     if (idle_workers.empty()) {
         return {0, 0, false, false};
     }
+    // idle_set 一次构建，循环内复用（原 select_best_worker 每 ready task 重建一次）。
+    // 单次 schedule_next 至多调度 1 个 task（成功即 return），idle 在循环内不变。
+    CMUnorderedSet<uint64_t> idle_set(idle_workers.begin(), idle_workers.end());
 
     auto now = std::chrono::steady_clock::now();
 
@@ -43,7 +46,7 @@ ScheduleResult TaskScheduler::schedule_next() {
         }
         // timeout < 0（死等）：allow_degrade 保持 false
 
-        uint64_t worker_id = select_best_worker(task_id, allow_degrade);
+        uint64_t worker_id = select_best_worker(task_id, allow_degrade, idle_workers, idle_set);
         if (worker_id == 0) continue;  // waiting，不阻塞后续 task 调度
 
         // 判断是否为降级调度：允许降级且 worker 非完整匹配
@@ -140,14 +143,12 @@ size_t TaskScheduler::compute_scores(uint64_t task_id) {
     return score_buf_.size();
 }
 
-uint64_t TaskScheduler::select_best_worker(uint64_t task_id, bool allow_degrade) {
-    auto idle_workers = manager_->get_idle_workers();
+uint64_t TaskScheduler::select_best_worker(uint64_t task_id, bool allow_degrade,
+                                             const CMVector<uint64_t>& idle_workers,
+                                             const CMUnorderedSet<uint64_t>& idle_set) {
     if (idle_workers.empty()) {
         return 0;
     }
-
-    // idle_workers 转 set 便于 O(1) 查询（避免 locality 阶段反复线性查找）
-    CMUnorderedSet<uint64_t> idle_set(idle_workers.begin(), idle_workers.end());
 
     const TaskRequirements& reqs = graph_->get_task_requirements(task_id);
     const CMVector<CMString>& caps = reqs.capabilities_;
