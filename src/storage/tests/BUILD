@@ -153,3 +153,16 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+# 并发 micro-benchmark：测量 DataService 索引访问的锁并发性。独立 target，
+# 不进常规 test 套件（按需运行测吞吐，输出 ops/sec 对比数据）。运行：
+#   ./fly.sh test //src/storage/tests:data_service_concurrency_bench
+cc_test(
+    name = "data_service_concurrency_bench",
+    srcs = ["data_service_concurrency_bench.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/storage/cpp:fly_storage",
+    ],
+    copts = ["-std=c++20"],
+)

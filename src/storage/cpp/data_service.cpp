@@ -69,10 +69,16 @@ DataService::~DataService() {
 // ============================================================
 
 void DataService::reset() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    // 先在锁外停止后台服务：stop_data_server/drain_write_back/stop_write_back
+    // 操作的是 data_server_/write_back_queue_（独立资源，不需要 DataService 的索引锁）。
+    // 必须锁外执行：drain_write_back 会等 WBQ worker 跑完，而 WBQ worker 完成写时
+    // 回调 on_write_completed 需要获取 mutex_ —— 若 reset 持锁调 drain，构成
+    // AB-BA 死锁（reset 持锁等 worker，worker 等 lock）。
     stop_data_server();
     drain_write_back();
     stop_write_back();
+
+    std::lock_guard<std::mutex> lock(mutex_);
     local_idx_.clear();
     remote_idx_.clear();
     worker_registry_.clear();
