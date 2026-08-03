@@ -291,6 +291,20 @@ TIER1 返回 false 时，`read_raw_compressed` 无差别进入 TIER2 远程读�
 - TIER1 区分 INCOMPLETE / FAILED：FAILED 直接返回失败（不回退远程）；INCOMPLETE 本地写则走"本地等待"快路径。
 - 补"本地写完成 → 唤醒本地读者"信号：替代被删的 per-object cv（见 S1-2），用 per-db 共享 cv 或更轻量机制，避免本 worker 写时绕远程读。
 
+**[S5] 存储层读写热路径 IO/syscall 放大优化** — ✅ **已完成（2026-08-03）**
+
+> 来源：2026-08-02 分布式任务/文件系统架构性能瓶颈调研。经三层架构（storage/task/network）全面审查 + 8 份历史性能文档交叉核实，确认零拷贝优化（read-write-optimization / zero-copy-analysis）、S1-2、S4 等已完成，识别出 3 个真实存在、未被历史优化覆盖、零架构改动的局部实现瓶颈，全部修复。
+
+| 子项 | 问题 | 位置 | 状态 |
+|------|------|------|------|
+| **S5-1** | LocalIndex 每次 append（append_add/remove/marker）都 `std::ofstream ofs(idx_path_, app)` 重开文件 —— 每个 `write_object` 经 `commit_write → WBQ → write_record + flush → save → append_add` 触发 1 次 open/write/close syscall 组，批量写 N 个小对象 = N 次重开 | `local_index.cpp:99-148` | ✅ 已修复：持久 `idx_append_stream_` 成员复用，惰性打开，`save()` 末尾显式 flush 保 WAL 持久化语义，`compact/save_legacy` 的 truncate/rename 路径经 `reset_append_stream()` 重置 |
+| **S5-2** | `do_read_raw_entries`（TIER1 ObjectCache miss 冷读路径）每次 `new DataReader`，构造函数 `index_->load()` 全量解析 `.idx` 文件构建 entries_ map，但调用方传入的 entry 已来自 `local_idx_` 内存索引，`read_raw_bytes(IndexEntry&)` 只用 db_path/data_path 定位文件，LocalIndex entries_ 完全没消费 —— 纯冗余 IO + 反序列化 | `data_service.cpp:618-622` + `data_reader.cpp:8-24` | ✅ 已修复：新增静态 `DataReader::read_raw_from_entry(entry, db_path, data_path)` 直接定位文件 + 区间读取，不构造 DataReader、不 load idx；`find_file_path`/`read_from_file` 重构为静态核心消除重复 |
+| **S5-3** | `Database::reader_`（`CMUniquePtr<DataReader>`）是死成员 —— 构造时创建（触发一次 idx 全量 load + 持有 entries_ map 内存到析构），但全树 grep 确认其方法零调用 | `database.h:194` + `database.cpp:83` | ✅ 已修复：删除 reader_ 成员及构造。每个 Database 构造省去一次无用 idx 解析与常驻 LocalIndex 内存 |
+
+**设计原则**：零架构改动、零并发模型变更、零协议改动。三个优化点都是局部实现层（单文件/单方法级），写序仍由 WriteBackQueue 单线程保证，读路径功能等价（entry 已知）。仅触碰 ObjectCache miss 的冷读路径与 idx 落盘路径，命中缓存的热对象不受影响。
+
+**验证**：storage unit test 15/15、全量 cpp unit test 52/52、全量 QA 139/139、stability 50/50 零 crash。
+
 **[S2] db_id 废弃 — 改用 db_path + `_MIGRATED_TO` 迁移重定向**（2026-08-01 决策，详见 [`docs/adr/0002-deprecate-db-id.md`](adr/0002-deprecate-db-id.md)）
 
 **背景**：`db_id`（10 字符 base62）最初引入是为了缩短 db 唯一标识符、节省内存（早期 idx 每条记录存 `db_id:short` 全名）。经 2026-08-01 调研核实：内存层 `local_idx_`/`remote_idx_` 已用嵌套 map 良好归类，db_id 只作每 db 一份的外层 key，**不随对象数膨胀**；真正随对象数增长的内存项是 `LocalObjectInfo` 的 mutex+cv（S1-2）和 `remote_idx_` 无上限累积（S1-3），与标识符无关。db_id 的唯一不可替代角色是"跨 db 依赖的逻辑锚点"——merge 改物理路径时让 object_name 保持稳定。

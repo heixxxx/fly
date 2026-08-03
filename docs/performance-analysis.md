@@ -4,6 +4,58 @@
 
 ---
 
+## 0. 存储层读写热路径瓶颈定位与修复（2026-08-03）
+
+> 来源：分布式任务/文件系统架构性能瓶颈调研（storage/task/network 三层 + 8 份历史性能文档交叉核实）。
+
+### 已完成的优化（不在此重复）
+
+下列优化在历史迭代中已完成，本次调研核实其状态，避免重复工作：
+
+| 优化 | 文档 | 效果 |
+|------|------|------|
+| 读写路径零拷贝 | [`read-write-optimization.md`](read-write-optimization.md) | 读取 137→342 MB/s (+150%)，写入 113→120 MB/s (+6%) |
+| 数据面 wire 传输零拷贝 | [`zero-copy-analysis.md`](zero-copy-analysis.md) | DataResponseProtocol 两段式 + writev + FlyBufferPtr 共享，raw 全程零拷贝 |
+| 热路径 INFO→DBG | （profiling_report.md 反映旧 commit，当前已修复） | 消除读取热路径 ~3000 条/轮 INFO 日志开销 |
+
+### 本次修复的瓶颈（S5，详见 [`roadmap.md`](roadmap.md) §S5）
+
+经源码逐行核实，识别出 3 个真实存在、未被历史优化覆盖、零架构改动的局部实现瓶颈：
+
+**S5-1 LocalIndex 追加流复用（写入热路径 syscall 放大）**
+
+- **瓶颈**：`local_index.cpp` 的 `append_add`/`append_remove`/`append_marker` 每次都 `std::ofstream ofs(idx_path_, app)` 重开文件。调用链 `write_object → commit_write → WriteBackQueue execute → write_record + flush → index_->save() → append_add`，每个对象写入触发 1 次 open/write/close syscall 组，批量写 N 个小对象 = N 次重开。
+- **修复**：LocalIndex 持有持久 `idx_append_stream_` 成员复用，惰性打开。`save()` 末尾显式 `flush` 保 WAL 持久化语义（原实现靠独立 ofstream 析构 flush，复用流后必须显式 flush）。`compact()`/`save_legacy()` 的 truncate/rename 路径经 `reset_append_stream()` 重置旧 fd。
+- **影响面**：仅写入热路径，读路径与并发模型不变。写序仍由 WriteBackQueue 单线程保证。
+
+**S5-2 DataReader 冷读路径消除冗余 idx 全量解析（冷读延迟放大）**
+
+- **瓶颈**：`data_service.cpp:do_read_raw_entries`（TIER1 ObjectCache low tier miss 时进入）每次 `new DataReader`，构造函数 `index_->load()` 全量打开并解析整个 `.idx` 文件构建 entries_ map。但调用方传入的 entry 已来自 `local_idx_` 内存索引，`read_raw_bytes(IndexEntry&)` 只用 db_path/data_path 定位文件，DataReader 的 LocalIndex entries_ 完全没消费。
+- **修复**：新增静态 `DataReader::read_raw_from_entry(entry, db_path, data_path)`，基于已知 entry + 路径直接定位文件 + 区间读取，不构造 DataReader、不 load idx。`find_file_path`/`read_from_file` 重构为静态核心消除重复。
+- **影响面**：仅 ObjectCache miss 的冷读路径（首次读 / 缓存外的对象）。命中缓存的热对象走 `get_low` 直接返回，不受影响。
+
+**S5-3 Database 死成员 reader_ 清理（消除无用 idx load + 常驻内存）**
+
+- **瓶颈**：`Database::reader_`（`CMUniquePtr<DataReader>`）在构造时创建，触发一次 idx 全量 load 并持有 LocalIndex（entries_ map）内存到析构，但全树 grep 确认其方法（`read_raw_bytes`/`exists`/`find_entry`/`find_all_entries`）零调用 —— 纯死成员。每个 Database 构造白白付出一次 idx 解析 + 常驻一份 LocalIndex 内存。
+- **修复**：删除 reader_ 成员及构造。DataReader 类保留（S5-2 静态方法 + data_reader_test 仍守护其 API）。
+
+### 架构级瓶颈（已记录，本次不动）
+
+下列触及并发模型/协议/架构，风险高，且 roadmap 已降级或标注待真实痛点触发，本次明确排除：
+
+- **Reactor 单线程同步模型**（`HandlerThreadPool` 死代码未接线）—— ARCHITECTURE_REVIEW §3.1，接线需 handler 线程安全全面审计
+- **`schedule_mutex_` 全局串行化** —— 调度吞吐天花板；reactor 已单线程，竞争主要来自 200ms attr-tick
+- **WriteBackQueue 单 worker 线程** —— 写入吞吐硬瓶颈，改多线程需处理 idx 文件并发与写序
+- **DataClientPool 短连接 + 默认 4 并发** —— 远程读吞吐天花板，roadmap F4 已降级
+- **DataService 单 mutex** —— ARCHITECTURE_REVIEW §2.7 待办，分片锁方案成熟但属并发模型改动
+- **S1-3/S3**（remote_idx/provenance 无上限累积）—— roadmap 标注待对象量真实过百万时启动
+
+### 验证
+
+storage unit test 15/15、全量 cpp unit test 52/52、全量 QA 139/139、stability 50/50 零 crash。
+
+---
+
 ## 1. 内存分配器对比测试
 
 ### 1.1 测试方法
