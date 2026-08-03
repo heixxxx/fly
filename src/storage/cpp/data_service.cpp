@@ -617,8 +617,9 @@ ReadResult DataService::do_read_local_entries(const CMVector<IndexEntry>& entrie
 
 FlyBufferPtr DataService::do_read_raw_entries(const CMVector<IndexEntry>& entries,
                                             const DbPaths& paths) {
-    DataReader reader(paths.db_path_, paths.data_path_, paths.writer_id_);
-    return reader.read_raw_bytes(entries.back());
+    // entry 已由调用方从 local_idx_ 内存索引取得，直接静态读取，避免 new DataReader
+    // 触发 idx 文件全量解析（entries_ map 在此路径从未被消费，纯冗余）。
+    return DataReader::read_raw_from_entry(entries.back(), paths.db_path_, paths.data_path_);
 }
 
 // ============================================================

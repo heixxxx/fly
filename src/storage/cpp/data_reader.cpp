@@ -30,14 +30,20 @@ bool DataReader::exists(const CMString& object_name) {
 }
 
 CMString DataReader::find_file_path(const CMString& file_name) {
-    if (!data_path_.empty()) {
-        CMString local_path = data_path_ + "/" + file_name;
+    return find_file_path(file_name, db_path_, data_path_);
+}
+
+CMString DataReader::find_file_path(const CMString& file_name,
+                                    const CMString& db_path,
+                                    const CMString& data_path) {
+    if (!data_path.empty()) {
+        CMString local_path = data_path + "/" + file_name;
         if (fs::exists(local_path)) {
             return local_path;
         }
     }
 
-    CMString db_path_file = db_path_ + "/" + file_name;
+    CMString db_path_file = db_path + "/" + file_name;
     if (fs::exists(db_path_file)) {
         return db_path_file;
     }
@@ -65,6 +71,16 @@ FlyBufferPtr DataReader::read_raw_bytes(const CMString& object_name) {
 
 FlyBufferPtr DataReader::read_raw_bytes(const IndexEntry& entry) {
     CMString file_path = find_file_path(entry.file_name_);
+    return read_from_file(file_path, entry.offset_, entry.size_);
+}
+
+FlyBufferPtr DataReader::read_raw_from_entry(const IndexEntry& entry,
+                                            const CMString& db_path,
+                                            const CMString& data_path) {
+    // 与 read_raw_bytes(IndexEntry&) 等价，但不构造完整 DataReader、不 load idx。
+    // 调用方（DataService::do_read_raw_entries）已从 local_idx_ 内存索引取得 entry，
+    // 此处只需用 db_path/data_path 定位文件 + 区间读取。
+    CMString file_path = find_file_path(entry.file_name_, db_path, data_path);
     return read_from_file(file_path, entry.offset_, entry.size_);
 }
 
