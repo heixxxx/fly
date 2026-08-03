@@ -78,18 +78,34 @@ void DataService::reset() {
     drain_write_back();
     stop_write_back();
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    local_idx_.clear();
-    remote_idx_.clear();
-    worker_registry_.clear();
-    db_paths_.clear();
-    migrated_db_paths_.clear();
-    remote_compressed_read_handler_ = nullptr;
-    direct_compressed_read_handler_ = nullptr;
-    temp_lru_order_.clear();
-    temp_total_bytes_ = 0;
-    if (temp_eviction_store_) {
-        temp_eviction_store_->cleanup_all();
+    // 逐域清空（分片锁后无单一 mutex_，各域独立加写锁）。后台服务已在锁外停止，
+    // 此时无并发写线程，逐域加锁仅为与可能并发的读线程建立 happens-before。
+    {
+        std::unique_lock<std::shared_mutex> lock(local_mutex_);
+        local_idx_.clear();
+        temp_lru_order_.clear();
+        temp_total_bytes_ = 0;
+        if (temp_eviction_store_) {
+            temp_eviction_store_->cleanup_all();
+        }
+    }
+    {
+        std::unique_lock<std::shared_mutex> lock(remote_mutex_);
+        remote_idx_.clear();
+    }
+    {
+        std::unique_lock<std::shared_mutex> lock(worker_mutex_);
+        worker_registry_.clear();
+    }
+    {
+        std::unique_lock<std::shared_mutex> lock(db_paths_mutex_);
+        db_paths_.clear();
+        migrated_db_paths_.clear();
+    }
+    {
+        std::unique_lock<std::shared_mutex> lock(cb_mutex_);
+        remote_compressed_read_handler_ = nullptr;
+        direct_compressed_read_handler_ = nullptr;
     }
 }
 
@@ -100,17 +116,17 @@ void DataService::reset() {
 void DataService::register_database(const CMString& db_path,
                                      const CMString& data_path,
                                      const CMString& writer_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(db_paths_mutex_);
     db_paths_[db_path] = {db_path, data_path, writer_id};
 }
 
 void DataService::unregister_database(const CMString& db_path) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(db_paths_mutex_);
     db_paths_.erase(db_path);
 }
 
 bool DataService::has_database(const CMString& db_path) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(db_paths_mutex_);
     return db_paths_.find(db_path) != db_paths_.end();
 }
 
@@ -148,7 +164,7 @@ MigrationHeader read_migration_marker(const CMString& db_path) {
 CMString DataService::resolve_migrated_path(const CMString& db_path) {
     // 1. 查缓存。
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::shared_lock<std::shared_mutex> lock(db_paths_mutex_);
         auto it = migrated_db_paths_.find(db_path);
         if (it != migrated_db_paths_.end()) {
             return it->second;
@@ -175,7 +191,7 @@ CMString DataService::resolve_migrated_path(const CMString& db_path) {
 
     // 3. 缓存最终结果（含"无迁移"——resolved==db_path 也缓存，避免重复 stat）。
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(db_paths_mutex_);
         migrated_db_paths_[db_path] = resolved;
     }
     return resolved;
@@ -211,7 +227,7 @@ CMString DataService::read_migrated_data_path(const CMString& db_path) {
 
 void DataService::set_migrated_path(const CMString& source_db_path,
                                      const CMString& target_db_path) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(db_paths_mutex_);
     if (target_db_path.empty()) {
         migrated_db_paths_.erase(source_db_path);
     } else {
@@ -254,7 +270,7 @@ void DataService::on_object_written(const CMString& db_path,
                                      const CMString& object_name,
                                      const IndexEntry& entry) {
     auto [_, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(local_mutex_);
     auto& info = local_idx_[db_path].objects_[short_name];
     if (!info) {
         info = CMMakeShared<LocalObjectInfo>();
@@ -266,7 +282,7 @@ void DataService::on_object_written(const CMString& db_path,
 }
 
 void DataService::on_flush(const CMString& db_path) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(local_mutex_);
     auto db_it = local_idx_.find(db_path);
     if (db_it == local_idx_.end()) return;
     for (auto& [name, info] : db_it->second.objects_) {
@@ -276,7 +292,7 @@ void DataService::on_flush(const CMString& db_path) {
     }
     // 持锁 notify：cv 在 map value (DbLocalIndex) 内，锁外访问其引用有
     // use-after-free 风险（db 条目可能被 merge 删除）。notify 本身不获取锁，
-    // 不会死锁；waiter 唤醒后重新抢 mutex_ 本就是串行的，convoy 影响可忽略。
+    // 不会死锁；waiter 唤醒后重新抢 local_mutex_ 本就是串行的，convoy 影响可忽略。
     db_it->second.write_cv_.notify_all();
 }
 
@@ -287,7 +303,7 @@ void DataService::on_write_started(const CMString& db_path,
     info->db_path_ = db_path;
     info->completion_state_.store(CompletionState::INCOMPLETE, std::memory_order_relaxed);
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(local_mutex_);
     local_idx_[db_path].objects_[short_name] = info;
 }
 
@@ -295,7 +311,7 @@ void DataService::on_write_completed(const CMString& db_path,
                                       const CMString& object_name,
                                       const CMVector<IndexEntry>& entries) {
     auto [_, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(local_mutex_);
     auto db_it = local_idx_.find(db_path);
     if (db_it == local_idx_.end()) return;
     auto it = db_it->second.objects_.find(short_name);
@@ -309,7 +325,7 @@ void DataService::on_write_failed(const CMString& db_path,
                                     const CMString& object_name,
                                     const CMString& error_message) {
     auto [_, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(local_mutex_);
     auto db_it = local_idx_.find(db_path);
     if (db_it == local_idx_.end()) return;
     auto it = db_it->second.objects_.find(short_name);
@@ -326,7 +342,7 @@ void DataService::remove_local_index(const CMString& object_name) {
     auto [db_path, short_name] = split_full(object_name);
     int64_t freed_bytes = 0;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(local_mutex_);
         auto db_it = local_idx_.find(db_path);
         if (db_it != local_idx_.end()) {
             auto it = db_it->second.objects_.find(short_name);
@@ -341,7 +357,7 @@ void DataService::remove_local_index(const CMString& object_name) {
     fly::ObjectCache::instance().remove(object_name);
 
     if (freed_bytes > 0) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(local_mutex_);
         auto lru_it = std::find(temp_lru_order_.begin(), temp_lru_order_.end(), object_name);
         if (lru_it != temp_lru_order_.end()) {
             temp_lru_order_.erase(lru_it);
@@ -355,20 +371,20 @@ void DataService::remove_local_index(const CMString& object_name) {
 }
 
 void DataService::clear_local_index_for_db(const CMString& db_path) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(local_mutex_);
     local_idx_.erase(db_path);
     DBG("clear_local_index_for_db: cleared local_idx for db_path={}", db_path);
 }
 
 void DataService::clear_remote_index_for_db(const CMString& db_path) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
     remote_idx_.erase(db_path);
     DBG("clear_remote_index_for_db: cleared remote_idx for db_path={}", db_path);
 }
 
 bool DataService::has_local_object(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(local_mutex_);
     auto db_it = local_idx_.find(db_path);
     if (db_it == local_idx_.end()) return false;
     auto it = db_it->second.objects_.find(short_name);
@@ -378,7 +394,7 @@ bool DataService::has_local_object(const CMString& object_name) const {
 
 void DataService::on_object_flushed(const CMString& object_name) {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(local_mutex_);
     auto db_it = local_idx_.find(db_path);
     if (db_it == local_idx_.end()) return;
     auto it = db_it->second.objects_.find(short_name);
@@ -396,7 +412,7 @@ void DataService::restore_entries(const CMString& db_path,
         grouped[key].push_back(e);
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(local_mutex_);
     auto& db_map = local_idx_[db_path].objects_;
     for (auto& [short_name, obj_entries] : grouped) {
         auto& info = db_map[short_name];
@@ -418,7 +434,7 @@ void DataService::restore_entries(const CMString& db_path,
 
 std::optional<CMVector<IndexEntry>> DataService::find_local_entries(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(local_mutex_);
     auto db_it = local_idx_.find(db_path);
     if (db_it == local_idx_.end()) return std::nullopt;
     auto it = db_it->second.objects_.find(short_name);
@@ -435,18 +451,20 @@ void DataService::update_remote_idx(const CMString& object_name,
                                       const CMString& host,
                                       int32_t port,
                                       int64_t size_bytes) {
+    // 三次独立加锁不嵌套（register_worker 用 worker 锁，add_remote_location/size
+    // 用 remote 锁），与分片前语义等价，无死锁风险。
     register_worker(worker_id, host, port);
     add_remote_location(object_name, worker_id);
     if (size_bytes > 0) {
         auto [db_path, short_name] = split_full(object_name);
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(remote_mutex_);
         remote_idx_[db_path][short_name].size_bytes_ = size_bytes;
     }
 }
 
 int64_t DataService::get_remote_size(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
@@ -459,7 +477,7 @@ int64_t DataService::get_remote_size(const CMString& object_name) const {
 
 void DataService::add_remote_location(const CMString& object_name, uint64_t worker_id) {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
     auto& meta = remote_idx_[db_path][short_name];
     if (std::find(meta.workers_.begin(), meta.workers_.end(), worker_id) == meta.workers_.end()) {
         meta.workers_.push_back(worker_id);
@@ -468,7 +486,7 @@ void DataService::add_remote_location(const CMString& object_name, uint64_t work
 
 void DataService::remove_remote_location(const CMString& object_name) {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
         db_it->second.erase(short_name);
@@ -477,7 +495,7 @@ void DataService::remove_remote_location(const CMString& object_name) {
 
 void DataService::remove_remote_location(const CMString& object_name, uint64_t worker_id) {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
@@ -493,7 +511,7 @@ void DataService::remove_remote_location(const CMString& object_name, uint64_t w
 
 CMVector<uint64_t> DataService::get_remote_workers(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
@@ -506,7 +524,7 @@ CMVector<uint64_t> DataService::get_remote_workers(const CMString& object_name) 
 
 bool DataService::has_remote_location(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
@@ -517,7 +535,11 @@ bool DataService::has_remote_location(const CMString& object_name) const {
 
 RemoteObjectInfo DataService::lookup_remote_idx(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    // 跨域读：remote_idx（worker_id 列表）+ worker_registry（host/port）。
+    // 双 shared_lock 并发持有，shared_lock 互相兼容，无死锁；worker_registry 保持
+    // 地址唯一权威，无冗余数据漏改风险。
+    std::shared_lock<std::shared_mutex> rlock(remote_mutex_);
+    std::shared_lock<std::shared_mutex> wlock(worker_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
@@ -534,7 +556,9 @@ RemoteObjectInfo DataService::lookup_remote_idx(const CMString& object_name) con
 
 CMVector<RemoteObjectInfo> DataService::lookup_all_remote_idx(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    // 跨域读：双 shared_lock（同 lookup_remote_idx）。
+    std::shared_lock<std::shared_mutex> rlock(remote_mutex_);
+    std::shared_lock<std::shared_mutex> wlock(worker_mutex_);
     CMVector<RemoteObjectInfo> out;
     auto db_it = remote_idx_.find(db_path);
     if (db_it == remote_idx_.end()) return out;
@@ -552,7 +576,7 @@ CMVector<RemoteObjectInfo> DataService::lookup_all_remote_idx(const CMString& ob
 
 void DataService::remove_remote_index(const CMString& object_name) {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
         db_it->second.erase(short_name);
@@ -569,12 +593,12 @@ void DataService::remove_remote_index(const CMString& object_name) {
 void DataService::register_worker(uint64_t worker_id,
                                    const CMString& host,
                                    int32_t port) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(worker_mutex_);
     worker_registry_[worker_id] = {worker_id, host, port};
 }
 
 RemoteObjectInfo DataService::get_worker_address(uint64_t worker_id) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(worker_mutex_);
     auto it = worker_registry_.find(worker_id);
     if (it != worker_registry_.end()) {
         return it->second;
@@ -583,7 +607,7 @@ RemoteObjectInfo DataService::get_worker_address(uint64_t worker_id) const {
 }
 
 CMVector<RemoteObjectInfo> DataService::get_all_workers() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(worker_mutex_);
     CMVector<RemoteObjectInfo> out;
     out.reserve(worker_registry_.size());
     for (const auto& [wid, info] : worker_registry_) {
@@ -633,12 +657,12 @@ FlyBufferPtr DataService::do_read_raw_entries(const CMVector<IndexEntry>& entrie
 // ============================================================
 
 void DataService::set_remote_compressed_read_handler(RemoteCompressedReadCallback cb) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(cb_mutex_);
     remote_compressed_read_handler_ = std::move(cb);
 }
 
 void DataService::set_direct_compressed_read_handler(DirectCompressedReadCallback cb) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(cb_mutex_);
     direct_compressed_read_handler_ = std::move(cb);
 }
 
@@ -649,8 +673,16 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
     bool is_temp = false;
     FlyBufferPtr temp_data;
 
+    // db_paths_ 运行期几乎不变（register 在启动期），先取快照再查 local_idx_。
+    // 两段独立 shared_lock，无跨域死锁。
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::shared_lock<std::shared_mutex> lock(db_paths_mutex_);
+        auto path_it = db_paths_.find(db_path);
+        if (path_it == db_paths_.end()) return {false, ReadResult{}};
+        paths = path_it->second;
+    }
+    {
+        std::shared_lock<std::shared_mutex> lock(local_mutex_);
         auto db_it = local_idx_.find(db_path);
         if (db_it == local_idx_.end()) return {false, ReadResult{}};
         auto it = db_it->second.objects_.find(short_name);
@@ -667,12 +699,6 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
             temp_data = info.temp_compressed_data_;
         } else {
             entries = info.entries_;
-
-            auto path_it = db_paths_.find(db_path);
-            if (path_it == db_paths_.end()) {
-                return {false, ReadResult{}};
-            }
-            paths = path_it->second;
         }
     }
 
@@ -711,6 +737,16 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
     bool is_temp = false;
     FlyBufferPtr temp_data;
 
+    // db_paths_ 运行期几乎不变（register 在启动期），先取快照再查 local_idx_，
+    // 避免 lookup lambda 跨 local+db_paths 两锁。db_paths 锁独立于 local 锁。
+    {
+        std::shared_lock<std::shared_mutex> lock(db_paths_mutex_);
+        auto path_it = db_paths_.find(db_path);
+        if (path_it != db_paths_.end()) {
+            paths = path_it->second;
+        }
+    }
+
     // 锁内查找并填充读取所需字段。返回 diag：
     //   0=not_found_db/no_path, 1=not_found_obj, 2=not_ready(INCOMPLETE/FAILED), 3=found
     auto lookup_under_lock = [&]() -> int {
@@ -728,42 +764,44 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
             return 3;
         }
         entries = info.entries_;
-        auto path_it = db_paths_.find(db_path);
-        if (path_it == db_paths_.end()) return 0;
-        paths = path_it->second;
+        if (paths.db_path_.empty()) return 0;  // db_paths_ 无此 db（上面未取到）
         return 3;
     };
 
     int diag = 0;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
+    if (wait_local_write) {
+        // wait 路径需 unique_lock（cv.wait 要求独占，wait 期间释放，唤醒后重获）。
+        std::unique_lock<std::shared_mutex> lk(local_mutex_);
         diag = lookup_under_lock();
-    }
 
-    // INCOMPLETE/FAILED 且调用方要求 wait 本地写完成：在 per-db cv 上 wait。
-    // wait 期间 mutex_ 释放（cv.wait 原子地释放锁并阻塞），WriteBackQueue 线程
-    // 能获锁设 COMPLETE/FAILED 并 notify_all 唤醒。predicate 用 atomic acquire 读，
-    // 确保看到 writer 的 release 写。无限等待（信任本地写最终完成）。
-    if (diag == 2 && wait_local_write) {
-        DBG("[TIER1-WAIT] obj={} INCOMPLETE, waiting for local write completion", object_name);
-        std::unique_lock<std::mutex> lk(mutex_);
-        auto db_it = local_idx_.find(db_path);
-        if (db_it != local_idx_.end()) {
-            // 找到对象引用，wait 其 completion_state_ 脱离 INCOMPLETE。
-            auto it = db_it->second.objects_.find(short_name);
-            if (it != db_it->second.objects_.end() && it->second) {
-                CMSharedPtr<LocalObjectInfo> info = it->second;  // 拷贝 shared_ptr 防悬空
-                db_it->second.write_cv_.wait(lk, [&] {
-                    return info->completion_state_.load(std::memory_order_acquire)
-                           != CompletionState::INCOMPLETE;
-                });
-                // 唤醒后重查：重新填充读取字段。lk 仍持有（wait 返回时已重新获锁）。
-                is_temp = false;
-                temp_data.reset();
-                entries.clear();
-                diag = lookup_under_lock();
+        // INCOMPLETE/FAILED 且调用方要求 wait 本地写完成：在 per-db cv 上 wait。
+        // wait 期间 local_mutex_ 释放（cv.wait 原子地释放锁并阻塞），WriteBackQueue
+        // 线程能获锁设 COMPLETE/FAILED 并 notify_all 唤醒。predicate 用 atomic
+        // acquire 读，确保看到 writer 的 release 写。无限等待（信任本地写最终完成）。
+        if (diag == 2) {
+            DBG("[TIER1-WAIT] obj={} INCOMPLETE, waiting for local write completion", object_name);
+            auto db_it = local_idx_.find(db_path);
+            if (db_it != local_idx_.end()) {
+                auto it = db_it->second.objects_.find(short_name);
+                if (it != db_it->second.objects_.end() && it->second) {
+                    CMSharedPtr<LocalObjectInfo> info = it->second;  // 拷贝 shared_ptr 防悬空
+                    db_it->second.write_cv_.wait(lk, [&] {
+                        return info->completion_state_.load(std::memory_order_acquire)
+                               != CompletionState::INCOMPLETE;
+                    });
+                    // 唤醒后重查：重新填充读取字段。lk 仍持有（wait 返回时已重新获锁）。
+                    is_temp = false;
+                    temp_data.reset();
+                    entries.clear();
+                    diag = lookup_under_lock();
+                }
             }
         }
+    } else {
+        // DataServer 远程 serve 热路径（wait_local_write=false）：纯读，用 shared_lock
+        // 允许多 epoll 线程并发查 local_idx_，互不阻塞。
+        std::shared_lock<std::shared_mutex> lock(local_mutex_);
+        diag = lookup_under_lock();
     }
 
     switch (diag) {
@@ -808,7 +846,7 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
 
 bool DataService::is_write_in_progress(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(local_mutex_);
     auto db_it = local_idx_.find(db_path);
     if (db_it == local_idx_.end()) return false;
     auto it = db_it->second.objects_.find(short_name);
@@ -851,8 +889,12 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
         bool is_temp_entry = false;
         DbPaths paths;
         CMVector<IndexEntry> entries;
+        // TIER1 命中后查 local_idx_ + db_paths_ 取 entries/is_temp/paths（用于解析
+        // py_name/write_hash）。双 shared_lock 跨域读，与 try_read_local_raw 一致。
+        // 注：此二次查询无法直接复用 try_read_local_raw 的结果（其签名返回
+        // found/compressed_bytes，不含 entries/paths），保持独立查询以保证语义清晰。
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::shared_lock<std::shared_mutex> llock(local_mutex_);
             auto db_it = local_idx_.find(db_path);
             if (db_it != local_idx_.end()) {
                 auto it = db_it->second.objects_.find(short_name);
@@ -863,6 +905,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
                     }
                 }
             }
+        }
+        {
+            std::shared_lock<std::shared_mutex> plock(db_paths_mutex_);
             auto path_it = db_paths_.find(db_path);
             if (path_it != db_paths_.end()) {
                 paths = path_it->second;
@@ -896,12 +941,12 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
     // guards against TIER2↔TIER3 bouncing). If TIER3 also has no location, fail.
     DirectCompressedReadCallback cb;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::shared_lock<std::shared_mutex> lock(cb_mutex_);
         cb = direct_compressed_read_handler_;
     }
     RemoteCompressedReadCallback remote_cb;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::shared_lock<std::shared_mutex> lock(cb_mutex_);
         remote_cb = remote_compressed_read_handler_;
     }
 
@@ -1019,7 +1064,7 @@ int DataService::get_data_port() const {
 
 CMString DataService::get_write_context_hash(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(local_mutex_);
     auto db_it = local_idx_.find(db_path);
     if (db_it != local_idx_.end()) {
         auto it = db_it->second.objects_.find(short_name);
@@ -1084,7 +1129,7 @@ void DataService::on_temp_write_started(const CMString& db_path, const CMString&
     info->completion_state_.store(CompletionState::INCOMPLETE, std::memory_order_relaxed);
 
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(local_mutex_);
         local_idx_[db_path].objects_[short_name] = info;
     }
 
@@ -1103,7 +1148,7 @@ void DataService::on_temp_write(const CMString& db_path, const CMString& object_
 
     CMSharedPtr<LocalObjectInfo> info;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(local_mutex_);
 
         auto& db_entry = local_idx_[db_path];
         auto it = db_entry.objects_.find(short_name);
@@ -1158,7 +1203,7 @@ void DataService::cleanup_temp_entries(const CMString& db_path) {
     CMVector<CMString> names_to_clean;
     int64_t freed_bytes = 0;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(local_mutex_);
         auto db_it = local_idx_.find(db_path);
         if (db_it == local_idx_.end()) return;
         for (auto it = db_it->second.objects_.begin(); it != db_it->second.objects_.end();) {
@@ -1173,7 +1218,7 @@ void DataService::cleanup_temp_entries(const CMString& db_path) {
     }
 
     if (!names_to_clean.empty()) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::shared_mutex> lock(local_mutex_);
         for (const auto& name : names_to_clean) {
             auto lru_it = std::find(temp_lru_order_.begin(), temp_lru_order_.end(), name);
             if (lru_it != temp_lru_order_.end()) {
@@ -1194,7 +1239,7 @@ void DataService::cleanup_temp_entries(const CMString& db_path) {
 
 void DataService::record_remote_access(const CMString& object_name) {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it == remote_idx_.end()) return;
     auto obj_it = db_it->second.find(short_name);
@@ -1209,7 +1254,7 @@ BackupDecision DataService::evaluate_auto_backup(const CMString& object_name,
                                                    uint64_t threshold,
                                                    uint32_t target_replicas) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(remote_mutex_);
     BackupDecision decision;
     decision.target_replicas_ = target_replicas;
     decision.read_count_ = 0;
@@ -1238,7 +1283,7 @@ BackupDecision DataService::evaluate_auto_backup(const CMString& object_name,
 }
 
 void DataService::decay_remote_access(int64_t protection_seconds, int decay_factor_percent) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
     int64_t current_time = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     
@@ -1256,7 +1301,7 @@ void DataService::decay_remote_access(int64_t protection_seconds, int decay_fact
 
 uint64_t DataService::get_access_read_count(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it == remote_idx_.end()) return 0;
     auto obj_it = db_it->second.find(short_name);

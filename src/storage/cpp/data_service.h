@@ -9,6 +9,7 @@
 #include <common/cpp/error_types.h>
 #include <cstdint>
 #include <mutex>
+#include <shared_mutex>
 #include <utility>
 #include <atomic>
 #include <functional>
@@ -72,7 +73,10 @@ struct LocalObjectInfo {
 // 各自 predicate 检查目标对象 completion_state_，未完成则重睡。
 struct DbLocalIndex {
     CMUnorderedMap<CMString /*short_name*/, CMSharedPtr<LocalObjectInfo>> objects_;
-    std::condition_variable write_cv_;
+    // condition_variable_any：可配合 shared_mutex 的 unique_lock（std::condition_variable
+    // 只接受 unique_lock<std::mutex>）。wait 仅用于本地读等待写完成路径（非 DataServer
+    // 并发读热路径），condition_variable_any 的额外开销可接受。
+    std::condition_variable_any write_cv_;
 };
 
 class DataServer;
@@ -311,7 +315,21 @@ private:
     FlyBufferPtr do_read_raw_entries(const CMVector<IndexEntry>& entries,
                                  const DbPaths& paths);
 
-    mutable std::mutex mutex_;
+    // 分片锁：按数据域拆分，读多写少场景用 shared_mutex（读 shared_lock 并发、写
+    // unique_lock 独占）。替代原单一 mutex_ 的全串行化（多线程并发读吞吐反而低于
+    // 单线程的负伸缩，见 docs/perf-baseline-dataservice-lock.md）。
+    //   local_mutex_   : local_idx_（含 DbLocalIndex.objects_ + write_cv_）+ temp 相关
+    //   remote_mutex_  : remote_idx_
+    //   worker_mutex_  : worker_registry_（地址唯一权威）
+    //   db_paths_mutex_: db_paths_ + migrated_db_paths_
+    // cv（write_cv_）绑定 local_mutex_：wait/notify 在其 unique_lock 下进行。
+    // 跨域读（lookup_remote_idx/lookup_all_remote_idx）持 remote+worker 双 shared_lock，
+    // shared_lock 互相兼容，无死锁。
+    mutable std::shared_mutex local_mutex_;
+    mutable std::shared_mutex remote_mutex_;
+    mutable std::shared_mutex worker_mutex_;
+    mutable std::shared_mutex db_paths_mutex_;
+    mutable std::shared_mutex cb_mutex_;        // 2 个 read handler callback
 
     CMUnorderedMap<CMString /*db_path*/, DbLocalIndex> local_idx_;
 
