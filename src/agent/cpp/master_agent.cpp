@@ -491,10 +491,42 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
 void MasterAgent::schedule_tasks() {
     if (draining_.load()) return;
 
+    // 每次调度前从 Config 同步开关，使运行时 set_int("locality_scheduling_enabled")
+    // 即时生效（无需重启进程）。scheduler 启用后消费 master 预计算的 locality_hint_ 算分。
+    bool locality_on =
+        Config::instance()->get_int("locality_scheduling_enabled") == 1;
+
+    // locality 预计算在 schedule_mutex_ 锁外执行：DataService 查询（get_remote_size/
+    // get_remote_workers）自带锁，不依赖 schedule_mutex_。锁外算好 hint 后，持锁注入
+    // graph + schedule_all_available，缩短 schedule_mutex_ 持锁时间（reactor 线程与
+    // attr-tick 线程的竞争窗口）。
+    // hint 略陈旧无害：remote_idx 更新会再次触发 schedule_tasks()，预计算重做；
+    // set_task_locality_hint 对已不存在的 task 静默忽略，新就绪 task 下次补算。
+    if (locality_on) {
+        auto ready_snapshot = graph_->get_ready_tasks();
+        if (!ready_snapshot.empty()) {
+            auto ds = DataService::instance();
+            for (uint64_t tid : ready_snapshot) {
+                auto deps = graph_->get_task_dependencies(tid);
+                if (deps.empty()) continue;  // 无依赖，hint 留空（scheduler 退 FIFO）
+                CMUnorderedMap<uint64_t, int64_t> acc;  // worker_id → 持有输入累计字节数
+                for (const auto& obj : deps) {
+                    int64_t sz = ds->get_remote_size(obj);
+                    auto holders = ds->get_remote_workers(obj);
+                    for (uint64_t h : holders) {
+                        acc[h] += sz;
+                    }
+                }
+                graph_->set_task_locality_hint(tid,
+                    CMVector<std::pair<uint64_t, int64_t>>(acc.begin(), acc.end()));
+            }
+        }
+    }
+
     std::lock_guard<std::mutex> lock(schedule_mutex_);
     auto ready = graph_->get_ready_tasks();
     auto idle = worker_manager_->get_idle_workers();
-    
+
     if (ready.empty() && !graph_->get_pending_tasks().empty()) {
         auto pending = graph_->get_pending_tasks();
         DBG("[SCHED] schedule_tasks: ready={}, idle={}, pending={} (first_pending={}) "
@@ -503,34 +535,7 @@ void MasterAgent::schedule_tasks() {
             std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
     }
 
-    // 每次调度前从 Config 同步开关，使运行时 set_int("locality_scheduling_enabled")
-    // 即时生效（无需重启进程）。scheduler 启用后消费 master 预计算的 locality_hint_ 算分。
-    bool locality_on =
-        Config::instance()->get_int("locality_scheduling_enabled") == 1;
     scheduler_->set_locality_preference(locality_on);
-
-    // 预计算 locality hint 注入 graph。master（Layer 4）合法持有 DataService，
-    // 按 ready task 的依赖对象聚合"每个 worker 持有的输入字节数"，scheduler
-    // （Layer 3）只消费此 POD，不接触 DataService，从而维持 task→storage 分层无环。
-    // hint 失效无需额外处理：remote_idx 每次更新都会再次触发 schedule_tasks()，
-    // 预计算在其入口重做，hint 总是最新。
-    if (locality_on && !ready.empty()) {
-        auto ds = DataService::instance();
-        for (uint64_t tid : ready) {
-            auto deps = graph_->get_task_dependencies(tid);
-            if (deps.empty()) continue;  // 无依赖，hint 留空（scheduler 退 FIFO）
-            CMUnorderedMap<uint64_t, int64_t> acc;  // worker_id → 持有输入累计字节数
-            for (const auto& obj : deps) {
-                int64_t sz = ds->get_remote_size(obj);
-                auto holders = ds->get_remote_workers(obj);
-                for (uint64_t h : holders) {
-                    acc[h] += sz;
-                }
-            }
-            graph_->set_task_locality_hint(tid,
-                CMVector<std::pair<uint64_t, int64_t>>(acc.begin(), acc.end()));
-        }
-    }
 
     auto results = scheduler_->schedule_all_available();
 
