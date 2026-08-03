@@ -305,6 +305,24 @@ TIER1 返回 false 时，`read_raw_compressed` 无差别进入 TIER2 远程读�
 
 **验证**：storage unit test 15/15、全量 cpp unit test 52/52、全量 QA 139/139、stability 50/50 零 crash。
 
+**[S7] DataService 锁分片 + schedule 锁范围优化** — ✅ **已完成（2026-08-03）**
+
+> 数据驱动：先建并发 benchmark 跑出优化前基线（揭示单 mutex 并发负伸缩），优化后跑对比数据验证提升量级。详见 [`docs/perf-baseline-dataservice-lock.md`](perf-baseline-dataservice-lock.md)。
+
+| 子项 | 问题 | 方案 | 效果 |
+|------|------|------|------|
+| **S7-1** | DataService 单 `std::mutex` 保护所有数据域，多线程并发读被串行化，吞吐随线程数下降（负伸缩）：8 线程跨域 lookup 仅单线程 27%（948 vs 3516 ops/sec） | 拆 5 把 `std::shared_mutex`（local/remote/worker/db_paths/cb），读 shared_lock 并发、写 unique_lock 独占；跨域读双 shared_lock；cv 改 condition_variable_any；无数据冗余（worker_registry 地址唯一权威） | 8 线程提升 **16x**（场景 A：948→15226 ops/sec）；从负伸缩转正伸缩。详见基线文档对比表 |
+| **S7-2** | schedule_tasks 在持 schedule_mutex_ 下查 DataService 预计算 locality hint，DataService 自带锁不依赖 schedule_mutex_ | locality 预计算移出锁外（锁外算 hint，持锁注入 graph + schedule_all_available） | 缩短 schedule_mutex_ 持锁时间（reactor 与 attr-tick 竞争窗口） |
+
+**放弃的方案**：attr-tick 条件触发（仅限时 task 才触发 schedule_tasks）。实测破坏 attr timeout 语义——attr timeout 的 task 在 ready_tasks_（等匹配 worker）而非 pending_tasks_，按 pending 判断漏掉降级场景导致 task 卡死。attr-tick 无条件触发是语义必需（推进降级 + 死锁检测），不可加条件。
+
+**设计要点**（回应用户反馈）：
+- **无数据冗余**：不把 host/port 冗余进 RemoteObjectMeta，避免双份数据源漏改风险。跨域读用双 shared_lock（互相兼容并发），worker_registry 保持地址唯一权威。
+- **cv 兼容**：std::condition_variable 只接受 unique_lock<std::mutex>，分片后 cv 改 std::condition_variable_any 配合 shared_mutex。wait 仅用于本地读等待写完成（非 DataServer 并发读热路径）。
+- **reset 死锁修复**（前置）：锁外 drain/stop_write_back，逐域清空。消除持锁调 drain 与 WBQ 回调 on_write_completed 需锁的 AB-BA 死锁隐患。
+
+**验证**：storage unit test 16/16（含新增 concurrency_bench）、master_agent + task 单测、全量 QA 139/139、stability 50/50 零 crash。
+
 **[S2] db_id 废弃 — 改用 db_path + `_MIGRATED_TO` 迁移重定向**（2026-08-01 决策，详见 [`docs/adr/0002-deprecate-db-id.md`](adr/0002-deprecate-db-id.md)）
 
 **背景**：`db_id`（10 字符 base62）最初引入是为了缩短 db 唯一标识符、节省内存（早期 idx 每条记录存 `db_id:short` 全名）。经 2026-08-01 调研核实：内存层 `local_idx_`/`remote_idx_` 已用嵌套 map 良好归类，db_id 只作每 db 一份的外层 key，**不随对象数膨胀**；真正随对象数增长的内存项是 `LocalObjectInfo` 的 mutex+cv（S1-2）和 `remote_idx_` 无上限累积（S1-3），与标识符无关。db_id 的唯一不可替代角色是"跨 db 依赖的逻辑锚点"——merge 改物理路径时让 object_name 保持稳定。

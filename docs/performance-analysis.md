@@ -39,20 +39,57 @@
 - **瓶颈**：`Database::reader_`（`CMUniquePtr<DataReader>`）在构造时创建，触发一次 idx 全量 load 并持有 LocalIndex（entries_ map）内存到析构，但全树 grep 确认其方法（`read_raw_bytes`/`exists`/`find_entry`/`find_all_entries`）零调用 —— 纯死成员。每个 Database 构造白白付出一次 idx 解析 + 常驻一份 LocalIndex 内存。
 - **修复**：删除 reader_ 成员及构造。DataReader 类保留（S5-2 静态方法 + data_reader_test 仍守护其 API）。
 
-### 架构级瓶颈（已记录，本次不动）
+### 架构级瓶颈（部分已优化，详见 §0B）
 
-下列触及并发模型/协议/架构，风险高，且 roadmap 已降级或标注待真实痛点触发，本次明确排除：
+下列触及并发模型/协议/架构，其中两项经数据验证已优化（S7），其余仍排除：
 
-- **Reactor 单线程同步模型**（`HandlerThreadPool` 死代码未接线）—— ARCHITECTURE_REVIEW §3.1，接线需 handler 线程安全全面审计
-- **`schedule_mutex_` 全局串行化** —— 调度吞吐天花板；reactor 已单线程，竞争主要来自 200ms attr-tick
-- **WriteBackQueue 单 worker 线程** —— 写入吞吐硬瓶颈，改多线程需处理 idx 文件并发与写序
-- **DataClientPool 短连接 + 默认 4 并发** —— 远程读吞吐天花板，roadmap F4 已降级
-- **DataService 单 mutex** —— ARCHITECTURE_REVIEW §2.7 待办，分片锁方案成熟但属并发模型改动
-- **S1-3/S3**（remote_idx/provenance 无上限累积）—— roadmap 标注待对象量真实过百万时启动
+- **Reactor 单线程同步模型**（`HandlerThreadPool` 死代码未接线）—— ARCHITECTURE_REVIEW §3.1，接线需 handler 线程安全全面审计（仍排除）
+- ~~**`schedule_mutex_` 全局串行化**~~ —— 调度吞吐天花板。**S7-2 已部分优化**：locality 预计算移出锁外缩短持锁时间（详见 §0B）。attr-tick 条件触发方案经实测破坏 attr timeout 语义已放弃
+- **WriteBackQueue 单 worker 线程** —— 写入吞吐硬瓶颈，改多线程需处理 idx 文件并发与写序（仍排除）
+- **DataClientPool 短连接 + 默认 4 并发** —— 远程读吞吐天花板，roadmap F4 已降级（仍排除）
+- ~~**DataService 单 mutex**~~ —— ARCHITECTURE_REVIEW §2.7 待办。**S7-1 已优化**：分片 shared_mutex，并发读从负伸缩转为正伸缩，8线程提升 16x（详见 §0B）
+- **S1-3/S3**（remote_idx/provenance 无上限累积）—— roadmap 标注待对象量真实过百万时启动（仍排除）
 
 ### 验证
 
-storage unit test 15/15、全量 cpp unit test 52/52、全量 QA 139/139、stability 50/50 零 crash。
+storage unit test 16/16、全量 cpp unit test、全量 QA 139/139、stability 50/50 零 crash。
+
+---
+
+## 0B. DataService 锁分片 + schedule 锁范围优化（S7，2026-08-03）
+
+> 数据驱动优化：先建并发 benchmark 跑出优化前基线（揭示负伸缩），优化后跑对比数据验证提升量级。详见 [`perf-baseline-dataservice-lock.md`](perf-baseline-dataservice-lock.md)。
+
+### S7-1：DataService 分片 shared_mutex（消除并发读负伸缩）
+
+**瓶颈定位**（benchmark 基线）：单 `std::mutex mutex_` 保护所有数据域，多线程并发读被串行化 + 锁竞争，导致吞吐随线程数下降（负伸缩）：
+- 场景 A（跨域 lookup）8 线程仅单线程 27%（948 vs 3516 ops/sec）
+- 场景 C（local+remote 混合）2+2 线程仅 1+1 的 39%
+
+**方案**：拆为 5 把 `std::shared_mutex`（local/remote/worker/db_paths/cb）。读 `shared_lock`（并发）、写 `unique_lock`（独占）。跨域读（lookup_all_remote_idx）持 remote+worker 双 shared_lock（互相兼容，无死锁）。cv 改 `condition_variable_any` 配合 shared_mutex。**无数据冗余**（worker_registry 保持地址唯一权威）。
+
+**优化前后对比**（ops/sec，5轮×500ms 取中位数）：
+
+| 场景 | 线程数 | 优化前 | 优化后 | 提升 |
+|------|--------|--------|--------|------|
+| A 跨域 lookup | 8 | 948 | 15226 | **16.1x** |
+| B 读写混合 | 7读+1写 | 892 | 15786 | **17.7x** |
+| C local+remote | 4+4 | 256800 | 4465200 | **17.4x** |
+| D 单域读 | 8 | 958 | 14674 | **15.3x** |
+
+**核心收益**：从负伸缩转为正伸缩——8线程吞吐达单线程 4.5x（场景 A），local 读与 remote 读完全独立并发（场景 C）。
+
+### S7-2：locality 预计算移出 schedule_mutex_ 锁外
+
+**瓶颈**：schedule_tasks 在持 schedule_mutex_ 下查 DataService 预计算 locality hint，DataService 查询自带锁，不依赖 schedule_mutex_。
+
+**方案**：锁外取 ready 快照 + 算 hint，再持锁注入 graph + schedule_all_available。缩短持锁时间（reactor 与 attr-tick 竞争窗口）。
+
+**放弃的方案**：attr-tick 条件触发（仅限时 task 才触发 schedule_tasks）。实测破坏 attr timeout 语义——attr timeout 的 task 在 ready_tasks_（等匹配 worker）而非 pending_tasks_，按 pending 判断漏掉降级场景导致 task 卡死。attr-tick 无条件触发是语义必需（推进降级 + 死锁检测），不可加条件。
+
+### 验证
+
+storage unit test 16/16（含新增 concurrency_bench）、master_agent + task 单测、全量 QA 139/139、stability 50/50 零 crash。
 
 ---
 
