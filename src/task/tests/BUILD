@@ -53,3 +53,16 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+# 调度热循环 micro-benchmark：测量 schedule_next/get_ready_tasks 的开销。
+# 独立 target，不进常规 test 套件（按需运行测吞吐）。运行：
+#   ./fly.sh test //src/task/tests:scheduling_hotloop_bench
+cc_test(
+    name = "scheduling_hotloop_bench",
+    srcs = ["scheduling_hotloop_bench.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/task/cpp:fly_task",
+    ],
+    copts = ["-std=c++20"],
+)
