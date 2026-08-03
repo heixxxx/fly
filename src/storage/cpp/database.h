@@ -191,7 +191,6 @@ private:
     int64_t compression_threshold_ = 4096;
 
     CMUniquePtr<DataWriter> writer_;
-    CMUniquePtr<DataReader> reader_;
     CMUnorderedSet<CMString> removed_objects_;
     CMUnorderedSet<CMString> temp_objects_;
 

@@ -80,7 +80,6 @@ Database::Database(const CMString& db_path, const CMString& data_path, uint64_t 
         config->get_int("aggregation_threshold"),
         host_
     );
-    reader_ = CMMakeUnique<DataReader>(db_path_, data_path_, writer_id_);
 }
 
 Database::~Database() {
