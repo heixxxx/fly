@@ -974,12 +974,20 @@ def ras_graph_check(db, step, nsd, max_iter, tol, neighbor_ids_all):
     db.get_full_name(f"__rasg__x_{i}_{final_step}") for i in range(nsd)
 ])
 def ras_graph_assemble(db, nsd, final_step):
-    cfg = db.read_object("__rasg__cfg")
+    import numpy as np
+    from fly import has_cache, put_cache, get_cache
+
+    # cfg 含 primary_sets（大对象），首次读后缓存复用（与 compute/coarse 一致）。
+    if not has_cache("__rasg__cfg_cache"):
+        put_cache("__rasg__cfg_cache", db.read_object("__rasg__cfg"))
+    cfg = get_cache("__rasg__cfg_cache")
     N = cfg["N"]
     primary_sets = cfg["primary_sets"]
     use_coarse = _is_coarse(db)
 
-    x = [0.0] * N
+    # numpy 向量化 scatter（替代原 Python 逐元素循环，n=1000 下 100 万次循环）。
+    # 与 _apply_coarse_correction 的 assemble 阶段一致：x_global[primary_set] = x_sd。
+    x_global = np.zeros(N, dtype=np.float64)
     for sd_id in range(nsd):
         if use_coarse:
             xc_name = db.get_full_name(f"__rasg__xc_{sd_id}_{final_step}")
@@ -991,10 +999,9 @@ def ras_graph_assemble(db, nsd, final_step):
                 x_sd = db.read_object(f"__rasg__x_{sd_id}_{final_step}")
         else:
             x_sd = db.read_object(f"__rasg__x_{sd_id}_{final_step}")
-        for pos, gidx in enumerate(primary_sets[sd_id]):
-            x[gidx] = x_sd[pos]
+        x_global[np.asarray(primary_sets[sd_id])] = x_sd
 
-    db.write_object("__rasg__sol", x, save_to_db=True)
+    db.write_object("__rasg__sol", x_global, save_to_db=True)
 
     # Cleanup remaining temp data from the final iteration.
     for i in range(nsd):
