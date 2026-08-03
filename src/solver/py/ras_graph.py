@@ -725,14 +725,14 @@ def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
 
     t_compute_start = time.perf_counter()
 
-    coord = db.read_object("__rasg__coord")
-    matrix_path = coord["matrix_path"]
-    N = coord["N"]
-    depth = coord["depth"]
-    overlap_ratio = coord["overlap_ratio"]
-    primary_nodes = coord["primary_sets"][sd_id]
-    global_owner = coord["global_owner"]
-    all_primary_sets = coord["primary_sets"]
+    # coord 在整个求解过程中是常量（setup 阶段写入后不变），含 primary_sets（每子域
+    # ~62500 节点）+ global_owner（百万节点 dict），反序列化开销大（n=1000 实测 ~130ms）。
+    # 首次读取后缓存到进程级 cache，后续迭代 O(1) 命中，消除每迭代的大对象反序列化。
+    # 注意：函数体内不再使用 coord 的任何字段（setup/solver 已含全部所需数据），保留
+    # 读取仅为与 _compute_deps 的依赖声明语义对称（coord 就绪由调度器保证）。
+    coord_cache_key = "__rasg__coord_cache"
+    if not has_cache(coord_cache_key):
+        put_cache(coord_cache_key, db.read_object("__rasg__coord"))
 
     # Setup done by ras_graph_setup (same worker via requires=sd_{sd_id}).
     setup_key = f"__rasg__setup_{sd_id}"
