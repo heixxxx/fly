@@ -67,21 +67,12 @@ void PeerRpcServer::set_response_handler(ResponseHandler handler) {
 }
 
 void PeerRpcServer::server_loop() {
-    INFO("PeerRpcServer server_loop started, running={}", running_.load());
-    int poll_count = 0;
     while (running_.load()) {
-        auto events = transport_->poll(10);  // 10ms timeout（频繁检查 DATA，避免被 CPU 密集 compute 饿死）
-        poll_count++;
-        if (!events.empty()) {
-            INFO("PeerRpcServer poll#{} returned {} events", poll_count, events.size());
-        }
-        if (poll_count % 100 == 0) {
-            INFO("PeerRpcServer still polling (count={})", poll_count);
-        }
+        auto events = transport_->poll(10);  // 10ms timeout
         for (auto& event : events) {
             switch (event.type_) {
                 case TransportEventType::CONNECT: {
-                    INFO("PeerRpcServer CONNECT conn_id={}", event.conn_id_);
+                    DBG("PeerRpcServer CONNECT conn_id={}", event.conn_id_);
                     std::lock_guard<std::mutex> lk(buf_mutex_);
                     recv_bufs_[event.conn_id_];
                     break;
@@ -106,11 +97,7 @@ void PeerRpcServer::server_loop() {
                             uint8_t raw_type = static_cast<uint8_t>(buf[4]);
                             if (raw_type == static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST)) {
                                 PeerRpcRequestMessage msg;
-                                if (!MessageProtocol::decode(buf, msg)) {
-                                    ERR("PeerRpcServer decode PEER_RPC_REQUEST failed, buf_size={}", buf.size());
-                                    break;
-                                }
-                                INFO("PeerRpcServer decoded request rpc_id={} payload_size={}", msg.rpc_id_, msg.payload_.size());
+                                if (!MessageProtocol::decode(buf, msg)) break;
                                 if (request_handler_) {
                                     auto resp = request_handler_(event.conn_id_, msg.rpc_id_,
                                                                   msg.src_worker_id_, msg.payload_);
@@ -138,9 +125,7 @@ void PeerRpcServer::server_loop() {
                     recv_bufs_.erase(event.conn_id_);
                     break;
                 }
-                default:  // ERROR or unknown
-                    ERR("PeerRpcServer unknown event type={} conn_id={}",
-                        static_cast<int>(event.type_), event.conn_id_);
+                default:  // ERROR
                     break;
             }
         }
