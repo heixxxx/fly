@@ -676,7 +676,9 @@ TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MSG_COUNT_REQUEST)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MSG_COUNT_REPORT)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MSG_LIMIT_SYNC)));
-    EXPECT_FALSE(is_valid_message_type(50));  // upper bound is 49
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE)));
+    EXPECT_FALSE(is_valid_message_type(52));  // upper bound is 51
     EXPECT_FALSE(is_valid_message_type(0));
 }
 
