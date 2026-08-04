@@ -14,19 +14,67 @@
 
 业务级 API，允许 task 内通过 agent 实例与其他 worker 建立长连接并 RPC 通信。
 
-**业务 API（Python）**：
+#### PeerChannelGroup：可传递的 channel 工厂（核心抽象）
+
+将地址交换 + listen/connect + RPC + 失败传播封装为一个**可 pickle 的轻量对象**，通过 task 参数传递。业务代码完全不接触 DB 协调细节、不约定字符串名。
+
 ```python
-agent = get_agent()
-# 建立/复用长连接，带重试（对端可能未就绪）
-chan = agent.connect_peer(target_worker_id, retries=2, retry_interval=0.5)
-resp_bytes = chan.rpc(request_bytes, timeout=30)   # 请求-响应（带 rpc_id）
-chan.close()                                        # 主动关闭
+# coord/master 侧创建一次
+group = agent.create_channel_group()
+# 内部生成唯一 id（uuid），作为 DB temp 对象名的后缀（避免并发求解会话冲突）
+
+# 通过 task 参数传递（group 随 task pickle 序列化到各 worker）
+submit_task(check_daemon, group=group)
+for sd in range(nsd):
+    submit_task(compute_daemon, group=group, sd=sd)
 ```
 
-**故障处理（内置）**：
-- **启动时重试**：connect_peer 带 retries=2，每次间隔 retry_interval，覆盖"对端 task 未启动"的时序窗口
-- **运行时重连**：RPC 断连后自动重连 2 次，覆盖网络瞬断
-- **重连失败/超时**：rpc() 抛 `PeerDisconnected` / `RpcTimeout` 异常，调用方据以判断对端失败
+**check 侧（监听方）**：
+```python
+def check_daemon(db, group):
+    listener = group.listen(db)     # 内部：绑定端口 + write_object(temp, {host,port})
+    chans = listener.accept_n(nsd)  # 接受 nsd 个连接 → {sd_or_id: PeerChannel}
+    # ... RPC 迭代 ...
+    listener.close()
+
+# compute 侧（连接方）
+def compute_daemon(db, group, sd):
+    chan = group.connect(db)        # 内部：wait_obj 读地址 + connect_peer 长连接
+    resp = chan.rpc(req, timeout=30)
+    chan.close()
+```
+
+**PeerChannelGroup 设计**：
+```python
+class PeerChannelGroup:
+    """可 pickle 的 channel 工厂。仅含唯一 id，无连接状态（连接状态在 worker 本地建）。"""
+    def __init__(self, group_id: str = None):
+        self.group_id = group_id or str(uuid.uuid4())
+    # 内部 temp 对象名 = f"__fly_chan_{self.group_id}"
+    def listen(self, db) -> PeerListener: ...   # db 依赖传入
+    def connect(self, db) -> PeerChannel: ...   # db 依赖传入
+    # __getstate__/__setstate__ 仅 pickle group_id（轻量，随 task 参数传递）
+```
+
+**为什么能随 task 参数传递**：
+- task 参数（args_）经 cloudpickle 序列化（executor.py:23），可 pickle 对象即可
+- PeerChannelGroup 只含一个 uuid 字符串，pickle 后几十字节
+- worker 侧反序列化拿到同 group_id 的实例 → listen/connect 用 `__fly_chan_{group_id}` 作为 DB temp 名 → check 和 compute 天然匹配（同一个 id）
+
+**业务完全无感知**：不传字符串名、不写 write_object/wait_obj、不管 host/port。只创建 group → 传参 → listen/connect。
+
+#### 故障处理（三层检测，冗余覆盖）
+
+失败信号按响应速度排序，任一触发即视为对端失败：
+
+| 层 | 信号 | 触发条件 | 响应速度 | 机制 |
+|----|------|---------|---------|------|
+| 1（最快）| **主动告知** | 对端正常退出（solve 异常/done/错误），退出前发 `notify_failure` | 立即 | `chan.notify_failure(reason)` → 对端 rpc 立即返回 error |
+| 2 | **断连** | 对端进程死/网络断，TCP RST | 秒级 | 内置 2 次重连，仍失败抛 `PeerDisconnected` |
+| 3（兜底）| **超时** | 对端无响应（卡死/慢） | timeout（默认 30s） | rpc(timeout) 到期抛 `RpcTimeout` |
+
+- **正常运行时重连**：RPC 断连后自动重连 2 次（覆盖网络瞬断），仍失败才抛 PeerDisconnected
+- **重连/超时/主动告知** 三者均导致 task 退出失败，由调用方（while 循环）catch 异常后 break
 
 **fly 序列化辅助**（payload 不强制格式，fly 提供 helper）：
 ```python
@@ -35,14 +83,15 @@ from fly import serialize_array, deserialize_array   # numpy ↔ bytes
 
 **C++ 实现**：
 - 新增**独立业务端口**（WorkerAgent 监听，独立于 DataServer，隔离清晰 + 生命周期独立）
-- 新增消息类型：`PEER_RPC_REQUEST`（rpc_id + src_worker_id + payload bytes）、`PEER_RPC_RESPONSE`（rpc_id + payload bytes）
+- 新增消息类型：
+  - `PEER_RPC_REQUEST`（rpc_id + src_worker_id + payload bytes）
+  - `PEER_RPC_RESPONSE`（rpc_id + status[ok/error] + payload bytes）— status=error 用于主动告知
+  - 断连由 reactor 的 on_disconnect 检测
 - PeerChannel 内部 `queue<response> + cv`，reactor 线程按 rpc_id 匹配入队
 - payload 在 wire 上是裸 bytes（业务自定义序列化），不经 bitsery/pickle
 - **主动退出监听接口**：`chan.close()` + WorkerAgent 业务端口在 task 结束/worker shutdown 时彻底关闭
 
-**连接拓扑**：星型。compute 各自 connect 到 check worker 的业务端口。check accept nsd 条连接。
-
-**业务端口注册**：check worker 启动业务端口后（OS 动态分配端口），将端口注册到 master（worker_registry 扩展或写 session_info 到 DB）。compute 通过 master 查询或读 DB 获取 check 的业务端口地址（带重试，覆盖 check 未就绪）。
+**连接拓扑**：星型。compute 各自 connect 到 check worker 的业务端口。check accept nsd 条连接。地址交换由 PeerChannelGroup 的 listen/connect 内部用 DB temp + wait_obj 自动完成（复用 `_wait_for_objects`）。
 
 ### 特性 2：迭代流程重构（基于特性 1）
 
@@ -60,67 +109,151 @@ from fly import serialize_array, deserialize_array   # numpy ↔ bytes
 结束: check 判定收敛 → 通知所有 compute done → 各 task 退出 → 关闭 chan/端口
 ```
 
-**常驻 compute task 伪代码**：
+**常驻 compute task 伪代码**（group 作为 task 参数传入）：
 ```python
 @as_task(requires=[f"sd_{sd}"])
-def ras_graph_compute_daemon(db, sd, nsd):
+def ras_graph_compute_daemon(db, group, sd, nsd):
     setup()                                          # 一次性 LDLT 分解
-    info = db.read_object("__rasg__session_info")    # 角色分配（一次性）
-    chan = agent.connect_peer(info["check_worker_id"], retries=2)  # 带重试
+    chan = group.connect(db)                         # 内部 wait_obj + connect_peer
     step = 0
     while True:
         x = solve_local_step(step)
         try:
             resp = chan.rpc(serialize({"step": step, "x": x, "conv": conv_local}), timeout=30)
-        except (RpcTimeout, PeerDisconnected):
-            break   # RPC 失败 = check 失败 = 整次求解失败，退出
-        result = deserialize(resp)
+            result = deserialize(resp)
+        except (RpcTimeout, PeerDisconnected, PeerFailed) as e:
+            break   # RPC 失败 = check 失败或网络不可恢复，退出
         if result["action"] == "done": break
         apply_correction(result["xc"]); step += 1
     chan.close()
 ```
 
-**常驻 check task 伪代码**：
+**常驻 check task 伪代码**（group 作为 task 参数传入）：
 ```python
 @as_task
-def ras_graph_check_daemon(db, nsd):
-    info = db.read_object("__rasg__session_info")
-    register_rpc_port(info)                          # 注册业务端口供 compute 查询
-    chans = accept_all_compute_connections(info)    # accept nsd 条
+def ras_graph_check_daemon(db, group, nsd):
+    listener = group.listen(db)                      # 内部绑定端口 + write_object(temp)
+    chans = listener.accept_n(nsd)                   # {sd_or_idx: PeerChannel}
     while True:
         try:
-            contribs = [deserialize(chans[sd].rpc_wait(timeout=30)) for sd in range(nsd)]  # 收齐 nsd 份
-        except (RpcTimeout, PeerDisconnected):
-            break   # 某 compute 失败 = 整次求解失败，退出
+            # 收齐 nsd 份；任一超时/断连/失败 → 检测到不可恢复错误
+            contribs = {}
+            for i in range(nsd):
+                resp = chans[i].rpc_wait(timeout=30)   # 等该 compute 发来本轮解
+                contribs[i] = deserialize(resp)
+        except (RpcTimeout, PeerDisconnected, PeerFailed) as e:
+            # ★ 主动 fan-out 通知其余存活的 compute 失败（不等超时连锁）
+            for i in range(nsd):
+                try: chans[i].notify_failure(f"peer failed: {e}")
+                except Exception: pass
+            break
         x_global = assemble(contribs)
         if all_converged(contribs):
-            for sd: chans[sd].rpc(serialize({"action": "done"}))
+            for i in range(nsd): chans[i].rpc(serialize({"action": "done"}))
             write_solution(); break
-        corrected = coarse_correct(x_global)
-        for sd: chans[sd].rpc(serialize({"action": "continue", "xc": corrected[sd]}))
-    close_all(chans)
+        try:
+            corrected = coarse_correct(x_global)
+            for i in range(nsd):
+                chans[i].rpc(serialize({"action": "continue", "xc": corrected[i]}))
+        except Exception as e:
+            # ★ check 自身错误，主动 fan-out 通知所有 compute
+            for i in range(nsd):
+                try: chans[i].notify_failure(f"check error: {e}")
+                except Exception: pass
+            break
+    listener.close()
 ```
 
-**coord 协调对象**（一次性，非每轮）：
-solve_ras_graph 在 master 侧启动 nsd+1 个 worker 后，写 `__rasg__session_info` 到 DB：
-```json
-{"check_worker_id": <master 指派>, "compute_workers": [{"sd": 0, "worker_id": ...}, ...]}
+**coord 协调**（一次性）：
+solve_ras_graph 在 master 侧启动 nsd+1 个 worker 后：
+```python
+group = agent.create_channel_group()   # 创建可传递的 channel 工厂
+submit_task(check_daemon, group=group)
+for sd in range(nsd):
+    submit_task(compute_daemon, group=group, sd=sd)
 ```
-各常驻 task 启动时读一次，得知角色。check 的业务端口地址由 check 启动后注册（compute 重试查询）。
+group 随 task 参数 pickle 传递到各 worker。check/compute 用同一个 group_id 的 listen/connect 自动匹配地址。无需 session_info 存 check 地址（channel 内部处理）。
 
-## 三、失败传播（RPC 驱动，无需 master 介入取消）
+### channel 完整封装（listen/connect 内置 DB 地址交换）
 
-**核心思想**：RPC 的超时 + 断连天然构成"心跳"——每次 RPC 既是数据交换也是存活确认。任一方停止响应，对方在 timeout 内感知，各自退出失败。
+channel 进一步包装，业务代码完全不接触 DB 协调细节。listen/connect 内部直接集成 `write_object`(temp)/`wait_obj`，地址交换/端口发现/等待对端就绪全部内置。**db 作为依赖传入**（channel 持有 db 引用）。
 
-### 逐场景验证
+```python
+# check 侧（监听方）
+chan = agent.listen(db, "__rasg__check_channel")
+    # 内部自动：① 绑定业务端口（OS 动态分配）
+    #          ② db.write_object("__rasg__check_channel", {host, rpc_port}, save_to_db=False)
+    #          ③ 返回 PeerChannel（含 accept_n 能力）
+chans = chan.accept_n(nsd)   # 接受 nsd 个 compute 连接，返回 {sd: PeerChannel}
 
-| 失败场景 | 谁先感知 | 如何传播 | 结果 |
-|---------|---------|---------|------|
-| compute A 崩溃 | check 的 `rpc_wait(A)` 超时 | check 退出；其余 compute 的 `rpc(check)` 断连 → 退出 | 全部失败 ✅ |
-| check 崩溃 | 所有 compute 的 `rpc(check)` 超时/断连 | 各 compute 退出 | 全部失败 ✅ |
-| compute A solve 异常 | A 自身 TaskFailed | A 不再发 RPC → check 等 A 超时 → check 退出 → 其余 compute rpc(check) 断连 → 退出 | 全部失败 ✅ |
-| 网络瞬断 | RPC 超时 | 内置 2 次重连，恢复则继续 | 瞬断恢复 ✅ |
-| 永久断连 | 重连 2 次失败 | 按崩溃场景传播 | 全部失败 ✅ |
+# compute 侧（连接方）
+chan = agent.connect(db, "__rasg__check_channel")
+    # 内部自动：① wait_obj 等 check 写入地址（_wait_for_objects 复用）
+    #          ② 读地址 {host, rpc_port}
+    #          ③ connect_peer 建立长连接（带重试）
+    #          ④ 返回 PeerChannel
+resp = chan.rpc(req, timeout=30)
+```
+
+**业务只感知**：一个 DB 对象名（`"__rasg__check_channel"`）+ listen/connect/rpc。host/port/temp/wait_obj 全部隐藏。
+
+## 三、失败传播（主动通知优先 + 被动检测兜底）
+
+**核心原则**：channel 的退出**不依赖超时/断连的连锁失败**。检测到不可恢复错误的节点，**主动发送错误信息给其他节点**，让它们立即失败退出。超时/断连只是"检测失败"的手段，检测到后必须主动通知。
+
+### 三层失败检测（按响应速度）
+
+| 层 | 信号 | 触发条件 | 响应速度 |
+|----|------|---------|---------|
+| 1 | **主动通知** | 某方检测到不可恢复错误，退出前 fan-out 通知所有连接的对端 | 立即 |
+| 2 | **断连** | 对端进程死/网络断，TCP RST | 秒级 |
+| 3 | **超时** | 对端无响应（兜底） | timeout（默认 30s） |
+
+### 主动失败通知的核心场景（check 作为协调者 fan-out）
+
+check 持有所有 compute 的 channel，有责任在检测到任一失败后**主动通知其余 compute**：
+
+```
+compute A 崩溃:
+  → check 的 chan[A].rpc_wait() 超时/断连，重连 2 次失败（检测到 A 不可恢复）
+  → check 不只是自己退出，而是主动 fan-out：
+      for sd in 其余存活的 compute:
+          chans[sd].notify_failure("compute A failed, abort solve")
+  → 其余 compute 的 rpc 立即收到 error 响应，立即退出（不等超时）
+  → check 自己也退出
+  → master 收到所有 task TaskFailed
+
+check 自己粗校正异常:
+  → catch 异常
+  → for sd in 所有 compute: chans[sd].notify_failure("coarse correction failed")
+  → 各 compute 立即退出
+
+compute solve 异常:
+  → 该 compute 主动 chan.notify_failure("solve error") 通知 check
+  → check 收到后 fan-out 通知其余 compute（同 compute 崩溃场景）
+```
+
+### check 崩溃场景（被动检测，无 fan-out）
+
+check 崩溃时无法主动通知 → 各 compute 靠断连/超时检测自行退出。这是不对称的（check 是协调者，有 fan-out 责任；compute 是叶子，检测到 check 失败自行退出即可）。但 check 崩溃相对少见（check 只做 IO + scipy，计算轻量）。
+
+### 逐场景验证（含主动通知）
+
+| 失败场景 | 检测方 | 传播方式 | 其余节点退出速度 |
+|---------|--------|---------|----------------|
+| compute A 崩溃 | check（断连/超时） | check **主动 fan-out** notify 其余 compute | **立即**（不等超时） |
+| check 崩溃 | 各 compute（断连） | 无 fan-out，各自检测退出 | 秒级（断连） |
+| compute A solve 异常 | A→check（notify）→check fan-out 其余 | 主动通知链 | **立即** |
+| check 粗校正异常 | check 自身 | check **主动 fan-out** 所有 compute | **立即** |
+| 网络瞬断 | 断连 | 2 次重连恢复 | 恢复继续 |
+| 永久断连 | 重连失败 | 主动 fan-out（check 侧）/ 断连退出（compute 侧） | 立即/秒级 |
+
+### notify_failure 的实现
+
+复用 rpc 响应通道（不新增消息类型）：
+- `chan.notify_failure(reason)` 内部发一条特殊的 rpc，response 的 status=error + payload=reason
+- 对端的 `chan.rpc()` 收到 status=error 立即抛 `PeerFailed(reason)` 异常
+- 若对端不在 rpc 等待中（如 check 在做粗校正），failure 入 channel 的 queue，下次 rpc/recv 时取出
 
 ### 失败传播链（自动）
 ```
