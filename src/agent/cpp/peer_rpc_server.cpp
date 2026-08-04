@@ -67,15 +67,21 @@ void PeerRpcServer::set_response_handler(ResponseHandler handler) {
 }
 
 void PeerRpcServer::server_loop() {
+    INFO("PeerRpcServer server_loop started, running={}", running_.load());
+    int poll_count = 0;
     while (running_.load()) {
         auto events = transport_->poll(100);  // 100ms timeout
+        poll_count++;
         if (!events.empty()) {
-            DBG("PeerRpcServer poll returned {} events", events.size());
+            INFO("PeerRpcServer poll#{} returned {} events", poll_count, events.size());
+        }
+        if (poll_count % 100 == 0) {
+            INFO("PeerRpcServer still polling (count={})", poll_count);
         }
         for (auto& event : events) {
             switch (event.type_) {
                 case TransportEventType::CONNECT: {
-                    DBG("PeerRpcServer new connection conn_id={}", event.conn_id_);
+                    INFO("PeerRpcServer CONNECT conn_id={}", event.conn_id_);
                     std::lock_guard<std::mutex> lk(buf_mutex_);
                     recv_bufs_[event.conn_id_];
                     break;
@@ -93,13 +99,18 @@ void PeerRpcServer::server_loop() {
                         // 循环切帧（一次可能收多个帧）
                         auto& buf = it->second;
                         while (true) {
-                            auto type = MessageProtocol::get_type(buf);
-                            if (type == MessageType::REGISTER && buf.size() < 5) {
-                                break;  // 不完整，等更多数据
-                            }
-                            if (type == MessageType::PEER_RPC_REQUEST) {
+                            // 帧完整性检查：4B total_len + 1B type + payload
+                            if (buf.size() < 5) break;  // 不足 header，等更多数据
+                            uint32_t total_len = MessageProtocol::get_total_size(buf);
+                            if (total_len < 1 || buf.size() < 4 + total_len) break;  // 帧不完整
+                            uint8_t raw_type = static_cast<uint8_t>(buf[4]);
+                            if (raw_type == static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST)) {
                                 PeerRpcRequestMessage msg;
-                                if (!MessageProtocol::decode(buf, msg)) break;
+                                if (!MessageProtocol::decode(buf, msg)) {
+                                    ERR("PeerRpcServer decode PEER_RPC_REQUEST failed, buf_size={}", buf.size());
+                                    break;
+                                }
+                                INFO("PeerRpcServer decoded request rpc_id={} payload_size={}", msg.rpc_id_, msg.payload_.size());
                                 if (request_handler_) {
                                     auto resp = request_handler_(event.conn_id_, msg.rpc_id_,
                                                                   msg.src_worker_id_, msg.payload_);
@@ -107,7 +118,7 @@ void PeerRpcServer::server_loop() {
                                         send_response(event.conn_id_, msg.rpc_id_, 0, resp.value());
                                     }
                                 }
-                            } else if (type == MessageType::PEER_RPC_RESPONSE) {
+                            } else if (raw_type == static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE)) {
                                 PeerRpcResponseMessage msg;
                                 if (!MessageProtocol::decode(buf, msg)) break;
                                 if (response_handler_) {
@@ -127,7 +138,9 @@ void PeerRpcServer::server_loop() {
                     recv_bufs_.erase(event.conn_id_);
                     break;
                 }
-                default:  // ERROR
+                default:  // ERROR or unknown
+                    ERR("PeerRpcServer unknown event type={} conn_id={}",
+                        static_cast<int>(event.type_), event.conn_id_);
                     break;
             }
         }

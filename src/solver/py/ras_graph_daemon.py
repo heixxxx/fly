@@ -366,6 +366,8 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
             db.write_object("__rasg__sol", x_global)
             db.write_object("__rasg__iters", step + 1)
             db.write_object("__rasg__converged", all_converged)
+            sol_full = db.get_full_name("__rasg__sol")
+            print(f"[CHECK DAEMON] wrote sol, full_name={sol_full}", flush=True)
             for sd in range(nsd):
                 c = contributions[sd]
                 listener.respond(c["conn_id"], c["rpc_id"],
@@ -412,6 +414,7 @@ def get_ras_graph_solution_v2(db, timeout=3600):
     from _fly_storage import ex_stg_get_data_service
     ds = ex_stg_get_data_service()
     sol_name = db.get_full_name("__rasg__sol")
+    print(f"[GET_SOL] waiting for sol_name={sol_name}", flush=True)
     deadline = _t.monotonic() + timeout
     while _t.monotonic() < deadline:
         if ds.has_local_object(sol_name) or ds.has_remote_location(sol_name):
