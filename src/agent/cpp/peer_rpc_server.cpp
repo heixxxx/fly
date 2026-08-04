@@ -69,6 +69,9 @@ void PeerRpcServer::set_response_handler(ResponseHandler handler) {
 void PeerRpcServer::server_loop() {
     while (running_.load()) {
         auto events = transport_->poll(100);  // 100ms timeout
+        if (!events.empty()) {
+            DBG("PeerRpcServer poll returned {} events", events.size());
+        }
         for (auto& event : events) {
             switch (event.type_) {
                 case TransportEventType::CONNECT: {
@@ -133,7 +136,10 @@ void PeerRpcServer::server_loop() {
 
 bool PeerRpcServer::send_request(uint64_t conn_id, uint64_t rpc_id,
                                   uint64_t src_worker_id, const CMString& payload) {
-    if (!transport_) return false;
+    if (!transport_) {
+        ERR("PeerRpcServer send_request: no transport");
+        return false;
+    }
     PeerRpcRequestMessage msg;
     msg.rpc_id_ = rpc_id;
     msg.src_worker_id_ = src_worker_id;

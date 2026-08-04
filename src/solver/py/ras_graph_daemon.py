@@ -283,13 +283,14 @@ def compute_daemon_task(db, group_id, sd, nsd, omega_strategy):
             "sd": sd, "step": step, "conv": converged_local,
             "x": serialize_array(x_primary),
         })
+        print(f"[COMPUTE sd={sd} step={step}] sending RPC...", flush=True)
         try:
             status, resp = chan.rpc(payload, timeout=30)
         except Exception as e:
             INFO(f"[COMPUTE DAEMON sd={sd}] RPC failed at step={step}: {e}")
             break
-        if status != 0:
-            INFO(f"[COMPUTE DAEMON sd={sd}] check reported failure at step={step}")
+        if status != 1:  # 1=ok, 2=error(notify_failure), 3=timeout/disconnect
+            INFO(f"[COMPUTE DAEMON sd={sd}] check reported failure at step={step} status={status}")
             break
 
         result = pickle.loads(resp)
@@ -299,7 +300,9 @@ def compute_daemon_task(db, group_id, sd, nsd, omega_strategy):
         # continue：应用粗校正（xc 是 check 校正后的本子域解）
         if "xc" in result:
             xc = deserialize_array(result["xc"])
-            put_cache(prev_x_key, xc)
+            # 不覆盖 prev_x_key（收敛检查需用上次 solve 的 x_primary）。
+            # xc 单独存，供下一轮读邻居时用（coarse 模式读 xc）。
+            put_cache(f"__rasg__xc_{sd}_{step}", xc)
         step += 1
 
     chan.close()

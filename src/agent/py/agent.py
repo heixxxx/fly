@@ -850,11 +850,9 @@ class PeerChannel:
 
     def rpc(self, payload, timeout=30):
         """请求-响应（同步）。payload: bytes。返回 (status, response_bytes)。
-        status: 0=ok, 2=error(notify_failure), 3=timeout/disconnect。"""
-        # bytes → str（latin-1 二进制安全），C++ CMString 接收
+        status: 1=ok, 2=error(notify_failure), 3=timeout/disconnect。"""
         payload_str = payload.decode('latin-1') if isinstance(payload, bytes) else payload
         status, resp_str = self._agent.peer_rpc_call(self._conn_id, payload_str, int(timeout * 1000))
-        # str → bytes
         return status, resp_str.encode('latin-1') if isinstance(resp_str, str) else resp_str
 
     def notify_failure(self, reason):
