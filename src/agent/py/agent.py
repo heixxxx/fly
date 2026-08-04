@@ -849,13 +849,18 @@ class PeerChannel:
         self._conn_id = conn_id
 
     def rpc(self, payload, timeout=30):
-        """请求-响应（同步）。返回 (status, response_bytes)。
+        """请求-响应（同步）。payload: bytes。返回 (status, response_bytes)。
         status: 0=ok, 2=error(notify_failure), 3=timeout/disconnect。"""
-        return self._agent.peer_rpc_call(self._conn_id, payload, int(timeout * 1000))
+        # bytes → str（latin-1 二进制安全），C++ CMString 接收
+        payload_str = payload.decode('latin-1') if isinstance(payload, bytes) else payload
+        status, resp_str = self._agent.peer_rpc_call(self._conn_id, payload_str, int(timeout * 1000))
+        # str → bytes
+        return status, resp_str.encode('latin-1') if isinstance(resp_str, str) else resp_str
 
     def notify_failure(self, reason):
         """主动告知对端失败退出。"""
-        self._agent.peer_rpc_notify_failure(self._conn_id, reason)
+        reason_str = reason.decode('latin-1') if isinstance(reason, bytes) else reason
+        self._agent.peer_rpc_notify_failure(self._conn_id, reason_str)
 
     def close(self):
         self._agent.peer_rpc_close(self._conn_id)
@@ -870,14 +875,18 @@ class PeerListener:
     def accept_one(self, timeout=30):
         """阻塞等下一个请求。返回 (conn_id, rpc_id, src_worker_id, payload_bytes)。
         超时返回 rpc_id=0。处理完后调 respond() 回响应。"""
-        return self._agent.peer_rpc_recv_request(int(timeout * 1000))
+        conn_id, rpc_id, src, payload_str = self._agent.peer_rpc_recv_request(int(timeout * 1000))
+        payload = payload_str.encode('latin-1') if isinstance(payload_str, str) else payload_str
+        return conn_id, rpc_id, src, payload
 
     def respond(self, conn_id, rpc_id, payload):
-        """回响应给请求方。"""
-        self._agent.peer_rpc_respond(conn_id, rpc_id, payload)
+        """回响应给请求方。payload: bytes。"""
+        payload_str = payload.decode('latin-1') if isinstance(payload, bytes) else payload
+        self._agent.peer_rpc_respond(conn_id, rpc_id, payload_str)
 
     def notify_failure(self, conn_id, reason):
-        self._agent.peer_rpc_notify_failure(conn_id, reason)
+        reason_str = reason.decode('latin-1') if isinstance(reason, bytes) else reason
+        self._agent.peer_rpc_notify_failure(conn_id, reason_str)
 
     def close(self):
         self._agent.stop_peer_rpc()
@@ -910,17 +919,17 @@ class PeerChannelGroup:
         return f"__fly_chan_{self.group_id}"
 
     def listen(self, db):
-        """服务端：绑定业务端口 + 发布地址到 DB temp。返回 PeerListener。"""
+        """服务端：绑定业务端口 + 发布地址到 DB（跨 worker 可见）。返回 PeerListener。"""
         from fly.runtime import get_agent
-        import socket as _socket
         agent = get_agent()
-        host = _socket.gethostname()
+        # 用 127.0.0.1（单机 worker 场景）。跨机时由 ProcessInfo --host 覆盖。
+        host = "127.0.0.1"
         port = agent.start_peer_rpc_listen(host, 0)
         if port <= 0:
             raise RuntimeError("PeerChannelGroup.listen: failed to bind port")
-        # 发布地址到 DB temp（compute 的 connect 会 wait_obj 读）
-        db.write_object(self._temp_name(), {"host": host, "port": port}, save_to_db=False)
-        INFO(f"[PeerChannelGroup] listen on {host}:{port} (group={self.group_id})")
+        # 发布地址到 DB（save_to_db=True 默认，注册 master 使 compute 可经 TIER2/TIER3 读）
+        db.write_object(self._temp_name(), {"host": host, "port": port})
+        print(f"[PeerChannelGroup] listen on {host}:{port} (group={self.group_id})", flush=True)
         return PeerListener(agent, port)
 
     def connect(self, db, timeout=60):
@@ -930,19 +939,25 @@ class PeerChannelGroup:
         agent = get_agent()
         temp_name = db.get_full_name(self._temp_name())
         ds = ex_stg_get_data_service()
-        # wait_obj：轮询等 check 写入地址
-        deadline = _time.monotonic() + timeout
-        while _time.monotonic() < deadline:
+        # wait_obj：轮询等 check 写入地址。复用 _wait_for_objects 的三级查询逻辑。
+        import time as _t
+        deadline = _t.monotonic() + timeout
+        while _t.monotonic() < deadline:
             if ds.has_local_object(temp_name) or ds.has_remote_location(temp_name):
                 break
-            _time.sleep(0.1)
+            # 主动触发 TIER3 查 master（发现对象位置）
+            found, _, _, _ = ds.try_read_remote(temp_name)
+            if found:
+                break
+            _t.sleep(0.1)
         else:
             raise TimeoutError(f"PeerChannelGroup.connect: check not ready within {timeout}s")
         info = db.read_object(self._temp_name())
+        print(f"[PeerChannelGroup] connecting to {info['host']}:{info['port']}", flush=True)
         conn_id = agent.peer_rpc_connect(info["host"], info["port"])
         if conn_id == 0:
             raise ConnectionError(f"PeerChannelGroup.connect: failed to connect {info}")
-        DBG(f"[PeerChannelGroup] connected to {info['host']}:{info['port']} conn_id={conn_id}")
+        print(f"[PeerChannelGroup] connected conn_id={conn_id}", flush=True)
         return PeerChannel(agent, conn_id)
 
 
