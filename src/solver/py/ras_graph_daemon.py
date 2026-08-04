@@ -406,8 +406,17 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
     INFO(f"[CHECK DAEMON] exited at step={step}")
 
 
-@wait_obj(inputs=lambda db: [db.get_full_name("__rasg__sol")])
 def get_ras_graph_solution_v2(db, timeout=3600):
+    """轮询等 __rasg__sol（不用 @wait_obj 避免 can_still_produce 竞态）。"""
+    import time as _t
+    from _fly_storage import ex_stg_get_data_service
+    ds = ex_stg_get_data_service()
+    sol_name = db.get_full_name("__rasg__sol")
+    deadline = _t.monotonic() + timeout
+    while _t.monotonic() < deadline:
+        if ds.has_local_object(sol_name) or ds.has_remote_location(sol_name):
+            break
+        _t.sleep(0.2)
     return {
         "x": db.read_object("__rasg__sol"),
         "iters": db.read_object("__rasg__iters"),
