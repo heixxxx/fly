@@ -77,50 +77,78 @@
 
 ## 特性 2：迭代重构（基于特性 1）
 
-### 步骤 2.1：solve_ras_graph 改造（启动 nsd+1 + 创建 group）
-- `ras_graph.py` solve_ras_graph：
-  - n_workers = nsd + 1（一个 check 无 sd 属性 + nsd 个 compute 带 sd 属性）
-  - 创建 PeerChannelGroup（master 侧，随 task 参数传递）
-  - 提交 ras_graph_check_daemon（无 requires）+ nsd 个 ras_graph_compute_daemon（requires=[sd_X]）
-  - master 随机调度，check 落任意 worker，compute 落对应 sd worker
-- coord task 保留（预构建矩阵/分区/coarse），但不再提交迭代 task（由 daemon 驱动）
+特性 2 包含三个子优化：常驻 task 迭代重构 + 分块矩阵 setup + 树形归约。三者协同：
+
+### 步骤 2.1：分块矩阵 setup 优化（coord 预分块发布）
+
+**问题**（实测）：当前每 worker 全量加载矩阵（130MB）+ 各自 BFS 扩展(633ms) + rank filter(52ms) + adjacency 构建(85ms)。这些步骤都依赖全量矩阵，但每子域只需要自己的子块。
+
+**优化**：coord task（master 侧，单进程）一次性预分块：
+- coord 构建全量 adjacency（一次 argsort）+ 对每子域做 BFS 扩展 + rank filter
+- 提取每子域的 `{local_indices, a_rows, a_cols, a_vals, b_orig, outside_coeffs, neighbor_*}` 并发布到 DB（`__rasg__subdomain_{sd}`，save_to_db=False temp）
+- compute daemon 启动时直接读自己的子域数据（跳过全量矩阵加载 + BFS + rank filter），只做 LDLT 分解（固有，不可省）
+
+**收益**：
+- 消除每 worker 的全量矩阵加载（130MB × 4 → coord 一次 130MB）+ adjacency 重复构建（85ms × 4 → coord 一次）
+- BFS 扩展在 coord 单进程做（nsd 次，但共享已构建的 adjacency，避免每 worker 重复 argsort）
+- compute daemon 的 setup 只剩 LDLT 分解（~1171ms，固有）
+
+**注意**：coord 的 BFS 仍是 Python 循环（633ms × nsd），但相比 4 worker 各自全量加载 + 重复 BFS，coord 复用 adjacency 更优。后续可进一步用 numpy 向量化 BFS（csr index），但非本次必需。
+
+**验证**：setup 时间对比（worker 侧 setup 从 ~1.9s 降到 ~1.2s 仅 LDLT）。
+
+### 步骤 2.2：solve_ras_graph 改造（启动 nsd+1 + 创建 group + coord 预分块）
+- n_workers = nsd + 1（一个 check 无 sd 属性 + nsd 个 compute 带 sd 属性）
+- 创建 PeerChannelGroup（master 侧，随 task 参数传递）
+- coord task 增强：原 coord 逻辑 + 步骤 2.1 的预分块发布
+- 提交 ras_graph_check_daemon（无 requires）+ nsd 个 ras_graph_compute_daemon（requires=[sd_X]）
+- master 随机调度，check 落任意 worker，compute 落对应 sd worker
 - **验证**：编译 + 基本启动
 
-### 步骤 2.2：ras_graph_compute_daemon（常驻 while task）
-- 新建 compute daemon task：
-  - setup()（一次性 LDLT 分解，复用现有 ras_graph_setup 逻辑）
-  - chan = group.connect(db)（wait_obj + connect_peer）
-  - while True：solve_local_step → chan.rpc(check, {step, x, conv}) → 收 reply → continue/done/error
-  - 三层失败 catch（RpcTimeout/PeerDisconnected/PeerFailed）→ break
-  - chan.close()
-- 复用现有 setup 的 BFS/rank filter/LDLT 逻辑（ras_graph_setup 抽取为可复用函数）
+### 步骤 2.3：ras_graph_compute_daemon（常驻 while task）
+- setup：读预分块子域数据（步骤 2.1）→ LDLT 分解（固有）
+- chan = group.connect(db)（wait_obj + connect_peer）
+- while True：solve_local_step → chan.rpc(check, {step, x, conv}) → 收 reply → continue/done/error
+- 三层失败 catch（RpcTimeout/PeerDisconnected/PeerFailed）→ break
+- chan.close()
 - **验证**：单 compute 启动 + RPC 连通
 
-### 步骤 2.3：ras_graph_check_daemon（常驻 while task + 主动 fan-out）
-- 新建 check daemon task：
-  - listener = group.listen(db)（绑端口 + write temp）
-  - chans = listener.accept_n(nsd)
-  - while True：
-    - 收齐 nsd 份（chans[i].rpc_wait，带 timeout）
-    - 失败 catch → **主动 fan-out** notify_failure 其余 → break
-    - assemble + coarse_correct（复用 _apply_coarse_correction 逻辑）
-    - 收敛 → rpc done 所有 + write sol → break
-    - 否则 → rpc continue + xc 各 compute
-  - check 自身异常 → fan-out notify 所有
-  - listener.close()
+### 步骤 2.4：ras_graph_check_daemon（常驻 while task + 树形归约 + 主动 fan-out）
+- listener = group.listen(db)（绑端口 + write temp）
+- chans = listener.accept_n(nsd)
+- while True：
+  - **收齐 nsd 份**：当前设计是串行 `for i: chans[i].rpc_wait()`。优化为**并发收齐**（所有 chan 同时 rpc_wait，非串行逐个）—— 这不是严格树形归约，但消除了串行等待。真正的树形归约（compute 间两两配对归约再上报 check）作为后续可选优化（见步骤 2.6）
+  - 失败 catch → **主动 fan-out** notify_failure 其余 → break
+  - assemble + coarse_correct（复用 _apply_coarse_correction 逻辑）
+  - 收敛 → rpc done 所有 + write sol → break
+  - 否则 → rpc continue + xc 各 compute
+- check 自身异常 → fan-out notify 所有
+- listener.close()
 - **验证**：端到端 n=50 小规模收敛
 
-### 步骤 2.4：清理旧 task 链代码
-- 保留 ras_graph_coord（预构建）+ setup（抽取）+ 新 daemon
-- 移除/废弃 ras_graph_compute（旧每轮 task）+ ras_graph_check（旧提交下一轮）
-- 保留 fallback（omega != "coarse" 的非 daemon 路径，或全部切 daemon）
+### 步骤 2.5：清理旧 task 链代码
+- 保留 ras_graph_coord（增强预分块）+ 新 daemon
+- 移除/废弃 ras_graph_compute（旧每轮 task）+ ras_graph_check（旧提交下一轮）+ ras_graph_setup（合并进 coord 预分块）
 - **验证**：编译 + 小规模收敛
 
-### 步骤 2.5：特性 2 验证
+### 步骤 2.6（可选）：树形归约优化
+**背景**：当前 check 串行/并发收齐 nsd 份。nsd 大时（16+），check 成为瓶颈。树形归约让 compute 间两两配对归约部分和，最终只 1 份上报 check。
+
+**前提**：特性 1 的 PeerChannelGroup 已落地（RPC 直连 ~1ms/步，使树形可行——之前 DB 通路 12ms/步 时树形不划算）。
+
+**设计**（基于 allreduce-log-nsd-feasibility.md）：
+- compute 间按 log₂(nsd) 步配对，每步 PeerChannelGroup RPC 交换部分和
+- 最终每子域的归约结果上报 check
+- check 的 assemble 从读 nsd 份降到读 1 份（或归约后的少量数据）
+
+**实施时机**：nsd ≤ 8 时 check 并发收齐已够快（步骤 2.4），树形收益有限。nsd ≥ 16 时再实施。本次作为可选，视步骤 2.5 实测结果决定。
+
+### 步骤 2.7：特性 2 验证
 - n=1000 nsd=4 coarse 性能对比（预期 14.4s → ~10s）
 - 精度一致性（rel_err 3.37e-12）
 - stability 50 轮
 - 失败传播测试（杀一个 compute worker，确认整组失败）
+- 分块 setup 收益验证（worker setup 时间对比）
 - 全量 QA 零回归
 - **提交**
 

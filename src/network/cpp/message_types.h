@@ -62,7 +62,7 @@ enum class MessageType : uint8_t {
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 49;
+    return raw >= 1 && raw <= 51;
 }
 
 struct MessageHeader {
@@ -673,6 +673,31 @@ struct MessageLimitSyncMessage {
 
     static constexpr MessageType msg_type_ = MessageType::MSG_LIMIT_SYNC;
     FLY_SERIALIZE(header_, global_limit_, domain_keys_, domain_values_, id_keys_, id_values_);
+};
+
+// ── 业务 RPC（worker ↔ peer，独立业务端口）──────────────────────
+// PeerChannelGroup 的底层传输：请求-响应式 RPC，payload 是裸 bytes
+// （业务自定义序列化，不经 bitsery/pickle 的 DB 包装）。
+// rpc_id 匹配请求与响应；status 区分正常响应与主动失败通知（notify_failure）。
+struct PeerRpcRequestMessage {
+    MessageHeader header_;
+    uint64_t rpc_id_ = 0;           // 请求 id（PendingRpcMap 匹配响应）
+    uint64_t src_worker_id_ = 0;    // 发送方 worker id（调试/路由用）
+    CMString payload_;              // 裸 bytes（业务序列化）
+
+    static constexpr MessageType msg_type_ = MessageType::PEER_RPC_REQUEST;
+    FLY_SERIALIZE(header_, rpc_id_, src_worker_id_, payload_);
+};
+
+// status_: 0=正常响应, 1=主动失败通知（notify_failure，payload_ 是 reason）
+struct PeerRpcResponseMessage {
+    MessageHeader header_;
+    uint64_t rpc_id_ = 0;
+    uint8_t status_ = 0;            // 0=ok, 1=error(notify_failure)
+    CMString payload_;              // 裸 bytes（业务序列化 / 失败 reason）
+
+    static constexpr MessageType msg_type_ = MessageType::PEER_RPC_RESPONSE;
+    FLY_SERIALIZE(header_, rpc_id_, status_, payload_);
 };
 
 }  // namespace fly
