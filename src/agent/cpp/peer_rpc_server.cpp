@@ -34,7 +34,7 @@ int PeerRpcServer::listen(const CMString& host, int port, RequestHandler handler
     }
     running_.store(true);
     thread_ = std::thread(&PeerRpcServer::server_loop, this);
-    INFO("PeerRpcServer listening on {}:{}", host, bound_port);
+    INFO("PeerRpcServer listening on {}:{} running={}", host, bound_port, running_.load());
     return bound_port;
 }
 
@@ -70,7 +70,7 @@ void PeerRpcServer::server_loop() {
     INFO("PeerRpcServer server_loop started, running={}", running_.load());
     int poll_count = 0;
     while (running_.load()) {
-        auto events = transport_->poll(100);  // 100ms timeout
+        auto events = transport_->poll(10);  // 10ms timeout（频繁检查 DATA，避免被 CPU 密集 compute 饿死）
         poll_count++;
         if (!events.empty()) {
             INFO("PeerRpcServer poll#{} returned {} events", poll_count, events.size());

@@ -285,7 +285,7 @@ def compute_daemon_task(db, group_id, sd, nsd, omega_strategy):
         })
         print(f"[COMPUTE sd={sd} step={step}] sending RPC...", flush=True)
         try:
-            status, resp = chan.rpc(payload, timeout=30)
+            status, resp = chan.rpc(payload, timeout=120)
         except Exception as e:
             INFO(f"[COMPUTE DAEMON sd={sd}] RPC failed at step={step}: {e}")
             break
@@ -333,7 +333,7 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
         failed = False
         for _ in range(nsd):
             try:
-                conn_id, rpc_id, src, payload = listener.accept_one(timeout=60)
+                conn_id, rpc_id, src, payload = listener.accept_one(timeout=120)
             except Exception:
                 failed = True
                 break
