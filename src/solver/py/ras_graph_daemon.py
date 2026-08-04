@@ -15,6 +15,127 @@ from fly import as_task, wait_obj
 from agent import PeerChannelGroup, serialize_array, deserialize_array
 
 
+def _do_setup(db, sd, nsd):
+    """内联 setup（从 ras_graph_setup 抽取核心逻辑，不经 @as_task 装饰器）。
+
+    返回 (setup_dict, solver)。结果也 put_cache 供复用。
+    """
+    from fly import get_cache, put_cache, has_cache
+    from solver.ras_graph import (_get_matrix_data, _factor_nsd,
+                                   _compute_grid_neighbors)
+    from _fly_solver import EXSlvSubdomainSolver
+    import numpy as np
+
+    setup_key = f"__rasg__setup_{sd}"
+    solver_key = f"__rasg__solver_{sd}"
+    if has_cache(setup_key) and has_cache(solver_key):
+        return get_cache(setup_key), get_cache(solver_key)
+
+    coord = db.read_object("__rasg__coord")
+    matrix_path = coord["matrix_path"]
+    N = coord["N"]
+    depth = coord["depth"]
+    overlap_ratio = coord["overlap_ratio"]
+    primary_nodes = coord["primary_sets"][sd]
+    global_owner = coord["global_owner"]
+    all_primary_sets = coord["primary_sets"]
+
+    data = _get_matrix_data(matrix_path)
+    rows, cols, vals = data["rows"], data["cols"], data["vals"]
+    b = data["b"]
+    primary_size = len(primary_nodes)
+
+    # BFS overlap expansion（与 ras_graph_setup 一致）
+    adj_key = f"__rasg__adj_{matrix_path}"
+    if not has_cache(adj_key):
+        _ra = np.asarray(rows); _ca = np.asarray(cols)
+        _si = np.argsort(_ca, kind="stable")
+        put_cache(adj_key, {
+            "starts": np.searchsorted(_ca[_si], np.arange(N + 1)),
+            "rows": _ra[_si],
+        })
+    _adj = get_cache(adj_key)
+
+    def _bfs(seed, layers):
+        expanded = set(seed); current = list(seed)
+        for _ in range(layers):
+            frontier = set()
+            for node in current:
+                s, e = _adj["starts"][node], _adj["starts"][node + 1]
+                for row in _adj["rows"][s:e]:
+                    if row != node and row not in expanded:
+                        frontier.add(int(row))
+            if not frontier: break
+            expanded |= frontier; current = frontier
+        return sorted(expanded)
+
+    local_idx = _bfs(primary_nodes, depth)
+    ratio = len(local_idx) / primary_size
+    if ratio < 1 + overlap_ratio:
+        local_idx = _bfs(primary_nodes, depth * 2)
+        ratio = len(local_idx) / primary_size
+
+    local_idx_map = {g: p for p, g in enumerate(local_idx)}
+    primary_local_pos = [local_idx_map[g] for g in primary_nodes]
+
+    # rank filter
+    rows_arr = np.asarray(rows); cols_arr = np.asarray(cols); vals_arr = np.asarray(vals)
+    _rank = np.full(N, -1, dtype=np.int32)
+    _rank[local_idx] = np.arange(len(local_idx))
+    row_rank = _rank[rows_arr]; col_rank = _rank[cols_arr]
+    in_local = (row_rank >= 0) & (col_rank >= 0)
+    a_rows = row_rank[in_local]; a_cols = col_rank[in_local]; a_vals = vals_arr[in_local]
+    size = len(local_idx)
+    is_outside = ((col_rank >= 0) & (row_rank < 0) & (rows_arr != cols_arr) & (vals_arr != 0.0))
+    out_pos = col_rank[is_outside]; out_gidx = rows_arr[is_outside]; out_coeffs = vals_arr[is_outside]
+    b_local = b[local_idx]
+
+    neighbor_needed = {}
+    for i, g in enumerate(out_gidx):
+        owner = global_owner.get(int(g), -1)
+        if owner >= 0 and owner != sd:
+            neighbor_needed.setdefault(owner, []).append(i)
+    actual_neighbor_ids = sorted(neighbor_needed.keys())
+
+    neighbor_recv_idx = {}
+    need_map = {}
+    for nb_id in actual_neighbor_ids:
+        nb_pm = {g: p for p, g in enumerate(all_primary_sets[nb_id])}
+        recv_positions = []; need_global = []
+        for ci in neighbor_needed[nb_id]:
+            og = int(out_gidx[ci])
+            recv_positions.append(nb_pm.get(og, -1))
+            need_global.append(og)
+        neighbor_recv_idx[nb_id] = recv_positions
+        need_map[nb_id] = np.array(need_global, dtype=np.int64)
+
+    setup_data = {
+        "sd_id": sd,
+        "local_indices": np.array(local_idx, dtype=np.int64),
+        "primary_local_pos": np.array(primary_local_pos, dtype=np.int64),
+        "b_orig": np.array(b_local, dtype=np.float64),
+        "outside_local_pos": np.array(out_pos, dtype=np.int64),
+        "outside_global_idx": np.array(out_gidx, dtype=np.int64),
+        "outside_coeffs": np.array(out_coeffs, dtype=np.float64),
+        "neighbor_ids": actual_neighbor_ids,
+        "neighbor_recv_idx": neighbor_recv_idx,
+        "neighbor_needed": neighbor_needed,
+        "need_map": need_map,
+        "a_rows": np.array(a_rows, dtype=np.int64),
+        "a_cols": np.array(a_cols, dtype=np.int64),
+        "a_vals": np.array(a_vals, dtype=np.float64),
+        "size": size,
+    }
+    put_cache(setup_key, setup_data)
+
+    solver = EXSlvSubdomainSolver.from_coo(
+        size, a_rows.tolist(), a_cols.tolist(), a_vals.tolist())
+    put_cache(solver_key, solver)
+
+    INFO(f"[SETUP sd={sd}] primary={primary_size} extended={len(local_idx)} ratio={ratio:.2f}x neighbors={actual_neighbor_ids}")
+    return setup_data, solver
+
+
 def _coord_prebuild(db, matrix_path, nsd, overlap_ratio, max_iter, tol, omega):
     """coord 预构建（写 coord/cfg/coarse），不提交 compute/check task。
 
@@ -107,16 +228,11 @@ def solve_ras_graph_v2(db, matrix_path, nsd,
          [f"sd_{sd}"])
 def compute_daemon_task(db, group_id, sd, nsd, omega_strategy):
     """常驻 compute task：setup → connect check → while 循环 solve + RPC。"""
-    from _fly_solver import ex_slv_ras_bupdated_solve
+    from _fly_solver import ex_slv_ras_bupdated_solve, EXSlvSubdomainSolver
     from fly import get_cache, put_cache, has_cache
-    from solver.ras_graph import ras_graph_setup, _compute_grid_neighbors, _factor_nsd
 
-    # ── Setup（复用 ras_graph_setup）──
-    nsd_x, nsd_y = _factor_nsd(nsd)
-    neighbor_ids = _compute_grid_neighbors(nsd_x, nsd_y)[sd]
-    ras_graph_setup(db, sd, nsd, neighbor_ids)
-    setup = get_cache(f"__rasg__setup_{sd}")
-    solver = get_cache(f"__rasg__solver_{sd}")
+    # ── Setup（内联，不调 ras_graph_setup 避免 @as_task 装饰器问题）──
+    setup, solver = _do_setup(db, sd, nsd)
 
     cfg = db.read_object("__rasg__cfg")
     tol = cfg["tol"]
