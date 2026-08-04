@@ -64,46 +64,44 @@ n=1000 nsd=4 coarse：**27.1s → 14.4s（-47%）**，精度全程一致（11 it
 
 ## 四、更新的优化方向（按性价比排序）
 
-### 🟢 方向 1：深化现有 RAS + coarse（最匹配 fly 范式，低风险）
+### 🟡 方向 1：深化现有 RAS + coarse（边际收益小，S9 已摘完低垂果实）
 
-**理由**：RAS 的"每子域完整 solve"是粗粒度 task，与 fly 的"分布式任务"范式天然匹配，通信占比仅 ~10%（vs PCG 的 93%）。当前已收敛 11 迭代/14.4s，与 PCG+AMG 同量级。
+**实测评估**（setup 7.1s 分解，n=1000 nsd=4 单子域）：
 
-**具体优化点**：
-1. **初始化 49% 是最大块**——矩阵加载（每 worker 130MB）+ 子域 LDLT。方向：
-   - 矩阵分块存储（每 worker 只读自己的行块，非全量）—— 需 solver 改造，从"每 worker 全量矩阵"变"coord 预分块发布"
-   - worker 进程复用（roadmap 已记录方向）—— 消除 worker 启动 ~1.9s
-2. **粗校正 IO（assemble 40ms + write 50ms）**——归约式批处理：单次 DB 操作读/写所有子域，而非循环 nsd 次
-3. **调度间隙 22%**——已被 S8 优化（调度热循环），剩余是框架固有
+| 步骤 | 耗时 | 可优化性 |
+|------|------|---------|
+| 矩阵 np.load + tolist | ~130ms | ❌ 已很快（原假设"分块存储省 130MB"实测只值 130ms，不值得改造） |
+| adjacency 构建（argsort） | ~85ms | ❌ 已 cache 共享 |
+| **BFS overlap 扩展** | **~633ms** | ⚠️ Python set 循环，C++ 化可加速但工作量大 |
+| rank filter | ~52ms | ❌ 已很快 |
+| **LDLT 分解（Eigen -O2）** | **~1171ms** | ❌ 算法固有，C++ 已优化 |
 
-**风险**：低。纯 solver 应用层 + 框架优化，不触碰算法正确性。
+**结论**：初始化的大头是 **BFS（633ms）+ LDLT 分解（1171ms）**，都是算法固有 CPU 计算，非框架/IO 问题。矩阵分块存储（原计划）实测只值 ~130ms，性价比低。**S9 已把框架层面的低垂果实摘完**。
 
-### 🟡 方向 2：给 fly 增加轻量 reduce 原语（框架层，中风险，解锁新能力）
+剩余可考虑的点（收益有限）：
+- worker 进程复用（消除 worker 启动 ~1.9s）—— 框架层，roadmap 已记录
+- BFS C++ 化（633ms→~50ms？）—— 工作量大，收益不确定
+- 粗校正 IO 归约批处理（assemble 40ms + write 50ms）—— 收益 ~90ms/次
 
-**理由**：这是让 fly 支撑细粒度迭代法（PCG/CG）的**关键基础设施缺口**。当前跨 worker 归约 ~70ms（assemble），补齐后可降到 ~1ms。
+**风险/收益比已不划算**。真正的提升空间转向迭代重构（方向 2）。
 
-**设计**：
-- master reactor 增加一个 `REDUCE` 消息类型（控制消息，复用 master↔worker 已有 TCP 长连接，无新握手）
-- worker 发 8 字节 payload（dot product 局部和）+ reduce_id
-- master 累加所有 worker 的值（O(nsd) 纳秒级），通过控制消息广播结果
-- **不经 pickle/DB/ObjectCache**，往返 ~1ms（单次 reactor 消息延迟）
+### 🟢 方向 2：迭代重构 — 常驻 task + 轻量 RPC（确认方向，已有完整设计）
 
-**收益**：
-- 粗校正的 assemble（读 4 子域解算 residual）可用 reduce 优化部分归约
-- **解锁 fly 上实现 PCG/CG 的能力**（归约从 70ms→1ms，通信占比从 93%→~30%）
-- 范数收敛判定、AMG coarse residual 等都受益
+这是当前**真正的提升空间**。消除调度间隙（3.1s，22%）+ DB 数据交换开销，预估 14.4s → ~10s（-30%）。
 
-**风险**：中。触及 master agent + 消息协议，需保证不破坏现有控制消息流。但这是"加法"（新消息类型），不改现有路径。
+**完整设计**详见 [iter-refactor-design.md](iter-refactor-design.md)。核心两个特性：
+1. **轻量 RPC 接口（PeerChannelGroup）**：可 pickle 的 channel 工厂随 task 参数传递，listen/connect 内置 DB 地址交换，RPC 式通信，三层故障检测（主动通知 > 断连 > 超时）+ 2 次重连
+2. **迭代重构**：nsd+1 个常驻 while task（compute RPC 直连 check），消除每轮 task 调度 + DB read/write
 
-**判断**：若未来要在 fly 上实现 PCG 等细粒度迭代法，这是**必要前置**。若只深耕 RAS，优先级低于方向 1。
+**实施顺序**：特性 1（RPC 接口）独立交付验证 → 特性 2（迭代重构）基于特性 1。
 
-### 🔴 方向 3：Chebyshev 迭代（适配 fly halo 友好特性，算法变更）
+### 🔴 方向 3：Chebyshev / reduce 原语（已被方向 2 取代，不再单独考虑）
 
-**理由**：[SC19 paper](https://sc19.supercomputing.org/proceedings/workshops/workshop_files/ws_lasalss104s2-file1.pdf) 指出 Chebyshev 迭代**无 dot product**，只需 halo exchange（fly 已支持且 ~5-10ms 可接受）。
+迭代重构（方向 2）用 PeerChannelGroup + 常驻 task 直接解决了通信开销问题。reduce 原语和 Chebyshev 迭代是之前的备选方案，现已被更优的迭代重构设计取代。
 
-**权衡**：
-- ✅ 避免 Allreduce，完全适配 fly 的"halo 友好"特性
-- ❌ 收敛慢于 PCG（需更多迭代）
-- ❌ 需预估特征值范围（λ_max/λ_min），额外 setup 成本
+### 🔴 方向 3（旧）：Chebyshev 迭代
+
+~~[SC19 paper](https://sc19.supercomputing.org/proceedings/workshops/workshop_files/ws_lasalss104s2-file1.pdf) 指出 Chebyshev 迭代**无 dot product**，只需 halo exchange（fly 已支持且 ~5-10ms 可接受）。~~
 - ❌ 算法变更，需重新验证精度/收敛性
 
 **判断**：仅当方向 2（reduce 原语）不实施时才考虑。若 reduce 原语补齐，PCG 优于 Chebyshev。
@@ -115,23 +113,21 @@ n=1000 nsd=4 coarse：**27.1s → 14.4s（-47%）**，精度全程一致（11 it
 - ❌ 在 fly 上实现 MPI 风格树形 Allreduce（常数项差 100x，master RPC 更优）
 - ❌ 全局 LU 直接法（n=1000 已 OOM，且违背迭代法可扩展性优势）
 
-## 六、决策建议
+## 六、决策建议（更新）
 
-**短期（本阶段）**：聚焦**方向 1（深化 RAS）**。具体优先：
-1. 矩阵分块存储（消除每 worker 全量加载 130MB，初始化 49% 的大头）
-2. 粗校正 IO 归约式批处理
-3. worker 进程复用（roadmap 已记录）
+**本阶段**：方向 1（深化 RAS）实测边际收益小（S9 已摘完框架低垂果实，剩余是 BFS/LDLT 算法固有成本）。**直接转向方向 2（迭代重构）**——这是当前唯一有实质提升空间（-30%）的方向。
 
-**中期（若要扩展求解器算法）**：先做**方向 2（轻量 reduce 原语）**，这是解锁 PCG/CG 的基础设施。补齐后评估 fly 上 PCG vs RAS 的性能对比。
+**实施路径**（方向 2，已有完整设计 [iter-refactor-design.md](iter-refactor-design.md)）：
+1. 特性 1：轻量 RPC 接口（PeerChannelGroup）—— 独立交付，验证 RPC 延迟
+2. 特性 2：迭代重构（常驻 task）—— 基于特性 1
 
-**不做**：GPU 相关（除非硬件变为多卡 + 有 MPI）、MPI 重构（除非放弃 fly 范式）。
+**不做**：GPU 相关（除非硬件变为多卡 + 有 MPI）、MPI 重构（除非放弃 fly 范式）、矩阵分块存储（实测只值 130ms）。
 
 ## 七、参考文档
 
+- [iter-refactor-design.md](iter-refactor-design.md) — **迭代重构完整设计（当前优先方向）**
 - [perf-n1000-optimization.md](perf-n1000-optimization.md) — S9 优化历程与数据
 - [gpu-acceleration-analysis.md](gpu-acceleration-analysis.md) — GPU 直接法实测否决
 - [gpu-distributed-solver-survey.md](gpu-distributed-solver-survey.md) — GPU 分布式库架构冲突
 - [fly-distributed-solver-paradigm-analysis.md](fly-distributed-solver-paradigm-analysis.md) — fly 实现 PCG 的通信瓶颈
 - [allreduce-log-nsd-feasibility.md](allreduce-log-nsd-feasibility.md) — Allreduce O(log nsd) 分析
-- [../../docs/solver/performance.md](../../docs/solver/performance.md) — 历史 solver 性能基线
-- [../../docs/matrix-solver-analysis.md](../../docs/matrix-solver-analysis.md) — RAS 算法理论
