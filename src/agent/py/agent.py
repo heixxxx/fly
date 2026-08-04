@@ -798,5 +798,154 @@ class Worker(FlyAgent):
     def restart_failed_tasks(self, file_path: str):
         WARN("restart_failed_tasks called on Worker, ignoring")
 
+    # ── 业务 RPC（PeerChannelGroup 底层透传）──────────────────────
+    def start_peer_rpc_listen(self, host="", port=0):
+        return self._agent.start_peer_rpc_listen(host, port)
+    def peer_rpc_connect(self, host, port, retries=2, retry_interval_ms=500):
+        return self._agent.peer_rpc_connect(host, port, retries, retry_interval_ms)
+    def peer_rpc_call(self, conn_id, payload, timeout_ms=30000):
+        return self._agent.peer_rpc_call(conn_id, payload, timeout_ms)
+    def peer_rpc_respond(self, conn_id, rpc_id, payload):
+        return self._agent.peer_rpc_respond(conn_id, rpc_id, payload)
+    def peer_rpc_recv_request(self, timeout_ms=30000):
+        return self._agent.peer_rpc_recv_request(timeout_ms)
+    def peer_rpc_notify_failure(self, conn_id, reason):
+        return self._agent.peer_rpc_notify_failure(conn_id, reason)
+    def peer_rpc_close(self, conn_id):
+        self._agent.peer_rpc_close(conn_id)
+    def stop_peer_rpc(self):
+        self._agent.stop_peer_rpc()
+    def peer_rpc_port(self):
+        return self._agent.peer_rpc_port()
 
-__all__ = ['FlyAgent', 'Master', 'Worker']
+
+# ============================================================
+# PeerChannelGroup — 可传递的业务 RPC channel 工厂
+# ============================================================
+
+import uuid as _uuid
+import time as _time
+
+def serialize_array(arr):
+    """numpy array → bytes（含 dtype/shape，零拷贝 buffer 协议）。"""
+    import numpy as _np
+    a = _np.asarray(arr)
+    dt = a.dtype.str.encode()  # 如 b'<f8'
+    return bytes([len(dt)]) + dt + a.shape[0].to_bytes(4, 'little') + a.tobytes()
+
+def deserialize_array(data):
+    """bytes → numpy array（serialize_array 的逆）。"""
+    import numpy as _np
+    dt_len = data[0]
+    dtype = _np.dtype(data[1:1+dt_len].decode())
+    shape0 = int.from_bytes(data[1+dt_len:5+dt_len], 'little')
+    return _np.frombuffer(data[5+dt_len:], dtype=dtype).reshape(shape0).copy()
+
+
+class PeerChannel:
+    """客户端侧 channel（compute worker 用）。连接到 check 的业务端口。"""
+    def __init__(self, agent, conn_id):
+        self._agent = agent
+        self._conn_id = conn_id
+
+    def rpc(self, payload, timeout=30):
+        """请求-响应（同步）。返回 (status, response_bytes)。
+        status: 0=ok, 2=error(notify_failure), 3=timeout/disconnect。"""
+        return self._agent.peer_rpc_call(self._conn_id, payload, int(timeout * 1000))
+
+    def notify_failure(self, reason):
+        """主动告知对端失败退出。"""
+        self._agent.peer_rpc_notify_failure(self._conn_id, reason)
+
+    def close(self):
+        self._agent.peer_rpc_close(self._conn_id)
+
+
+class PeerListener:
+    """服务端侧 listener（check worker 用）。accept compute 连接。"""
+    def __init__(self, agent, port):
+        self._agent = agent
+        self._port = port
+
+    def accept_one(self, timeout=30):
+        """阻塞等下一个请求。返回 (conn_id, rpc_id, src_worker_id, payload_bytes)。
+        超时返回 rpc_id=0。处理完后调 respond() 回响应。"""
+        return self._agent.peer_rpc_recv_request(int(timeout * 1000))
+
+    def respond(self, conn_id, rpc_id, payload):
+        """回响应给请求方。"""
+        self._agent.peer_rpc_respond(conn_id, rpc_id, payload)
+
+    def notify_failure(self, conn_id, reason):
+        self._agent.peer_rpc_notify_failure(conn_id, reason)
+
+    def close(self):
+        self._agent.stop_peer_rpc()
+
+    @property
+    def port(self):
+        return self._port
+
+
+class PeerChannelGroup:
+    """可 pickle 的 channel 工厂。仅含唯一 group_id，随 task 参数传递。
+
+    Usage（check 侧）:
+        listener = group.listen(db)
+        conn_id, rpc_id, _, payload = listener.accept_one()
+        listener.respond(conn_id, rpc_id, response_bytes)
+
+    Usage（compute 侧）:
+        chan = group.connect(db)
+        status, resp = chan.rpc(request_bytes)
+    """
+    def __init__(self, group_id=None):
+        self.group_id = group_id or str(_uuid.uuid4())
+
+    def __reduce__(self):
+        # 仅 pickle group_id（轻量，随 task 参数传递）
+        return (PeerChannelGroup, (self.group_id,))
+
+    def _temp_name(self):
+        return f"__fly_chan_{self.group_id}"
+
+    def listen(self, db):
+        """服务端：绑定业务端口 + 发布地址到 DB temp。返回 PeerListener。"""
+        from fly.runtime import get_agent
+        import socket as _socket
+        agent = get_agent()
+        host = _socket.gethostname()
+        port = agent.start_peer_rpc_listen(host, 0)
+        if port <= 0:
+            raise RuntimeError("PeerChannelGroup.listen: failed to bind port")
+        # 发布地址到 DB temp（compute 的 connect 会 wait_obj 读）
+        db.write_object(self._temp_name(), {"host": host, "port": port}, save_to_db=False)
+        INFO(f"[PeerChannelGroup] listen on {host}:{port} (group={self.group_id})")
+        return PeerListener(agent, port)
+
+    def connect(self, db, timeout=60):
+        """客户端：wait_obj 读 check 地址 + connect_peer。返回 PeerChannel。"""
+        from fly.runtime import get_agent
+        from _fly_storage import ex_stg_get_data_service
+        agent = get_agent()
+        temp_name = db.get_full_name(self._temp_name())
+        ds = ex_stg_get_data_service()
+        # wait_obj：轮询等 check 写入地址
+        deadline = _time.monotonic() + timeout
+        while _time.monotonic() < deadline:
+            if ds.has_local_object(temp_name) or ds.has_remote_location(temp_name):
+                break
+            _time.sleep(0.1)
+        else:
+            raise TimeoutError(f"PeerChannelGroup.connect: check not ready within {timeout}s")
+        info = db.read_object(self._temp_name())
+        conn_id = agent.peer_rpc_connect(info["host"], info["port"])
+        if conn_id == 0:
+            raise ConnectionError(f"PeerChannelGroup.connect: failed to connect {info}")
+        DBG(f"[PeerChannelGroup] connected to {info['host']}:{info['port']} conn_id={conn_id}")
+        return PeerChannel(agent, conn_id)
+
+
+__all__ = ['FlyAgent', 'Master', 'Worker',
+           'PeerChannelGroup', 'PeerChannel', 'PeerListener',
+           'serialize_array', 'deserialize_array']

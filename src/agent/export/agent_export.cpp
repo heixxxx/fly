@@ -316,6 +316,55 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     })
     FLY_EXPORT_METHOD("get_worker_properties", [](fly::WorkerAgent& self) {
         return self.get_worker_properties();
+    })
+
+    // ── 业务 RPC（PeerChannelGroup 底层）──────────────────────────
+    FLY_EXPORT_METHOD("start_peer_rpc_listen", [](fly::WorkerAgent& self,
+                                                      const fly::CMString& host,
+                                                      int port) {
+        return self.start_peer_rpc_listen(host, port);
+    })
+    FLY_EXPORT_METHOD("peer_rpc_connect", [](fly::WorkerAgent& self,
+                                                const fly::CMString& host,
+                                                int port,
+                                                int retries,
+                                                int retry_interval_ms) {
+        return self.peer_rpc_connect(host, port, retries, retry_interval_ms);
+    })
+    FLY_EXPORT_METHOD("peer_rpc_call", [](fly::WorkerAgent& self,
+                                             uint64_t conn_id,
+                                             const fly::CMString& payload,
+                                             int timeout_ms) {
+        auto result = self.peer_rpc_call(conn_id, payload, timeout_ms);
+        uint8_t status = result.first;
+        fly::CMString resp = std::move(result.second);
+        return fly_export::make_tuple(status, resp);
+    })
+    FLY_EXPORT_METHOD("peer_rpc_respond", [](fly::WorkerAgent& self,
+                                                uint64_t conn_id,
+                                                uint64_t rpc_id,
+                                                const fly::CMString& payload) {
+        return self.peer_rpc_respond(conn_id, rpc_id, payload);
+    })
+    FLY_EXPORT_METHOD("peer_rpc_recv_request", [](fly::WorkerAgent& self,
+                                                     int timeout_ms) {
+        auto req = self.peer_rpc_recv_request(timeout_ms);
+        return fly_export::make_tuple(req.conn_id_, req.rpc_id_, req.src_worker_id_, req.payload_);
+    })
+    FLY_EXPORT_METHOD("peer_rpc_notify_failure", [](fly::WorkerAgent& self,
+                                                        uint64_t conn_id,
+                                                        const fly::CMString& reason) {
+        return self.peer_rpc_notify_failure(conn_id, reason);
+    })
+    FLY_EXPORT_METHOD("peer_rpc_close", [](fly::WorkerAgent& self,
+                                              uint64_t conn_id) {
+        self.peer_rpc_close(conn_id);
+    })
+    FLY_EXPORT_METHOD("stop_peer_rpc", [](fly::WorkerAgent& self) {
+        self.stop_peer_rpc();
+    })
+    FLY_EXPORT_METHOD("peer_rpc_port", [](fly::WorkerAgent& self) {
+        return self.peer_rpc_port();
     });
 
 }
