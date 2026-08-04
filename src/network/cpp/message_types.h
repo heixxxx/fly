@@ -57,6 +57,8 @@ enum class MessageType : uint8_t {
     MSG_COUNT_REQUEST = 47,   // master → worker (broadcast): 请求上报 message 触发次数（summary 屏障）
     MSG_COUNT_REPORT = 48,    // worker → master: 上报本地 message 触发次数（id/domain 两套计数）
     MSG_LIMIT_SYNC = 49,      // master → worker (broadcast): 同步 message 配额设置（全量快照）
+    PEER_RPC_REQUEST = 50,    // worker → peer (业务RPC): 请求（rpc_id + src_worker + payload）
+    PEER_RPC_RESPONSE = 51,   // peer → worker (业务RPC): 响应（rpc_id + status + payload）
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
