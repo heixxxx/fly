@@ -8,6 +8,7 @@
 #include <core/cpp/config.h>
 #include <agent/cpp/task_executor.h>
 #include <agent/cpp/pending_rpc_map.h>
+#include <agent/cpp/peer_rpc_server.h>
 #include <common/cpp/worker_context.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/data_writer.h>
@@ -68,6 +69,13 @@ struct PendingFreezeAck {
     bool completed_ = false;
     bool success_ = false;
     TaskErrorType error_type_ = TaskErrorType::UNKNOWN;
+};
+
+// Pending state for a peer RPC（业务 RPC 请求-响应）。rpc_id 匹配请求与响应。
+// status_: 0=未完成, 1=正常响应, 2=主动失败通知(notify_failure), 3=超时/断连。
+struct PendingPeerRpc {
+    std::atomic<uint8_t> status_{0};     // 0=pending, 1=ok, 2=error, 3=timeout/disconnect
+    CMString payload_;                    // 响应 payload（ok）或失败 reason（error）
 };
 
 // Pending state for a synchronous var set/get (awaits master VAR_ACK).
@@ -159,6 +167,41 @@ public:
     void remove_worker_property(const CMVector<CMString>& props);
     CMVector<CMString> get_worker_properties() const;
 
+    // ── 业务 RPC（PeerChannelGroup 底层）──────────────────────────
+    // 启动业务端口（服务端）。返回端口（0=失败/已启动）。
+    // request_handler 为 nullptr 时表示仅客户端模式（不收请求）。
+    int start_peer_rpc_listen(const CMString& host, int port = 0);
+
+    // 客户端：连接到目标 host:port（带 retries 重试）。返回 conn_id（0=失败）。
+    uint64_t peer_rpc_connect(const CMString& host, int port,
+                               int retries = 2, int retry_interval_ms = 500);
+
+    // 客户端：发送 RPC 请求并等待响应（同步）。返回 {status, payload}。
+    // status: 0=ok, 2=error(notify_failure), 3=timeout/disconnect。
+    std::pair<uint8_t, CMString> peer_rpc_call(uint64_t conn_id,
+                                                const CMString& payload,
+                                                int timeout_ms = 30000);
+
+    // 服务端：发送响应（对应收到的 rpc_id）。
+    bool peer_rpc_respond(uint64_t conn_id, uint64_t rpc_id,
+                          const CMString& payload);
+
+    // 服务端：阻塞等待下一个请求（Python while 循环用）。
+    // 返回 {conn_id, rpc_id, src_worker_id, payload}；超时返回 rpc_id=0。
+    struct PeerRpcRequest { uint64_t conn_id_; uint64_t rpc_id_; uint64_t src_worker_id_; CMString payload_; };
+    PeerRpcRequest peer_rpc_recv_request(int timeout_ms = 30000);
+
+    // 任一方：主动告知对端失败（status=1）。
+    bool peer_rpc_notify_failure(uint64_t conn_id, const CMString& reason);
+
+    // 关闭指定连接。
+    void peer_rpc_close(uint64_t conn_id);
+
+    // 关闭业务端口（主动退出监听）。
+    void stop_peer_rpc();
+
+    int32_t peer_rpc_port() const { return peer_rpc_port_; }
+
 private:
     uint64_t worker_id_;
     CMString master_host_;
@@ -224,6 +267,21 @@ private:
 
     // Pending freeze requests (keyed by db_path, awaiting master DATABASE_FREEZE_ACK).
     PendingRpcMap<CMString, PendingFreezeAck> pending_freezes_;
+
+    // 业务 RPC：请求-响应匹配（key=rpc_id）。send_peer_rpc 发请求后 wait_for，
+    // on_peer_rpc_response 收到响应后 complete。
+    PendingRpcMap<uint64_t, PendingPeerRpc> pending_peer_rpcs_;
+    std::atomic<uint64_t> next_rpc_id_{1};
+
+    // 独立业务端口（PeerRpcServer）。worker 间轻量 RPC，与 reactor/DataServer 隔离。
+    // start() 时由业务代码（Python PeerChannelGroup）按需启动，stop() 时关闭。
+    CMUniquePtr<PeerRpcServer> peer_rpc_server_;
+    int32_t peer_rpc_port_ = 0;
+
+    // 服务端收到的请求队列（PeerRpcServer 回调入队，peer_rpc_recv_request 出队）。
+    CMVector<PeerRpcRequest> peer_rpc_incoming_;
+    std::mutex peer_rpc_incoming_mutex_;
+    std::condition_variable peer_rpc_incoming_cv_;
 
     // Vars inlined into the current task's TaskAssignMessage; consumed by the
     // Python executor via take_pending_task_vars() before the task runs.

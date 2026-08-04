@@ -239,6 +239,13 @@ void WorkerAgent::stop() {
 void WorkerAgent::do_cleanup() {
     data_client_pool_.stop();
 
+    // 关闭业务 RPC 端口（如已启动）。
+    if (peer_rpc_server_) {
+        peer_rpc_server_->stop();
+        peer_rpc_server_.reset();
+        peer_rpc_port_ = 0;
+    }
+
     if (heartbeat_thread_.joinable()) {
         heartbeat_thread_.join();
     }
@@ -1528,6 +1535,120 @@ void WorkerAgent::on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& 
     ack.worker_id_ = worker_id_;
     ack.db_path_ = msg.db_path_;
     reactor_->send(conn_id, ack);
+}
+
+// ============================================================
+// 业务 RPC（PeerChannelGroup 底层）
+// ============================================================
+
+int WorkerAgent::start_peer_rpc_listen(const CMString& host, int port) {
+    if (peer_rpc_server_) {
+        return peer_rpc_port_;  // 已启动
+    }
+    peer_rpc_server_ = CMMakeUnique<PeerRpcServer>();
+    // 服务端角色：request_handler 收到请求 → 入队（Python while 循环的 recv_request 取出处理）
+    int bound_port = peer_rpc_server_->listen(host, port,
+        [this](uint64_t conn_id, uint64_t rpc_id, uint64_t src_worker_id,
+               const CMString& payload) -> std::optional<CMString> {
+            {
+                std::lock_guard<std::mutex> lk(peer_rpc_incoming_mutex_);
+                peer_rpc_incoming_.push_back({conn_id, rpc_id, src_worker_id, payload});
+            }
+            peer_rpc_incoming_cv_.notify_one();
+            return std::nullopt;  // 异步处理（Python 层 peer_rpc_respond 回响应）
+        });
+    // response_handler（客户端角色：收响应路由到 PendingRpcMap）
+    peer_rpc_server_->set_response_handler(
+        [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, const CMString& payload) {
+            pending_peer_rpcs_.complete(rpc_id, [&](PendingPeerRpc& p) {
+                p.status_.store(status == 1 ? 2 : 1, std::memory_order_release);
+                p.payload_ = payload;
+            });
+        });
+    peer_rpc_port_ = bound_port;  // listen 返回的实际端口
+    return peer_rpc_port_;
+}
+
+uint64_t WorkerAgent::peer_rpc_connect(const CMString& host, int port,
+                                        int retries, int retry_interval_ms) {
+    if (!peer_rpc_server_) {
+        // 仅客户端模式：创建 PeerRpcServer 但不 listen
+        peer_rpc_server_ = CMMakeUnique<PeerRpcServer>();
+        peer_rpc_server_->set_response_handler(
+            [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, const CMString& payload) {
+                pending_peer_rpcs_.complete(rpc_id, [&](PendingPeerRpc& p) {
+                    p.status_.store(status == 1 ? 2 : 1, std::memory_order_release);
+                    p.payload_ = payload;
+                });
+            });
+    }
+    return peer_rpc_server_->connect_peer(host, port, retries, retry_interval_ms);
+}
+
+std::pair<uint8_t, CMString> WorkerAgent::peer_rpc_call(uint64_t conn_id,
+                                                         const CMString& payload,
+                                                         int timeout_ms) {
+    if (!peer_rpc_server_) return {3, "peer rpc not initialized"};
+
+    uint64_t rpc_id = next_rpc_id_.fetch_add(1, std::memory_order_relaxed);
+    auto pending = CMMakeShared<PendingPeerRpc>();
+    pending_peer_rpcs_.emplace(rpc_id, pending);
+
+    if (!peer_rpc_server_->send_request(conn_id, rpc_id, worker_id_, payload)) {
+        pending_peer_rpcs_.erase(rpc_id);
+        return {3, "send_request failed"};
+    }
+
+    auto result = pending_peer_rpcs_.wait_for(rpc_id, std::chrono::milliseconds(timeout_ms),
+        [](const CMSharedPtr<PendingPeerRpc>& p) {
+            return p->status_.load(std::memory_order_acquire) != 0;
+        });
+    pending_peer_rpcs_.erase(rpc_id);
+
+    if (!result) {
+        return {3, "timeout"};  // 超时
+    }
+    uint8_t status = result->status_.load(std::memory_order_acquire);
+    return {status, std::move(result->payload_)};
+}
+
+bool WorkerAgent::peer_rpc_respond(uint64_t conn_id, uint64_t rpc_id,
+                                    const CMString& payload) {
+    if (!peer_rpc_server_) return false;
+    return peer_rpc_server_->send_response(conn_id, rpc_id, 0, payload);
+}
+
+WorkerAgent::PeerRpcRequest WorkerAgent::peer_rpc_recv_request(int timeout_ms) {
+    std::unique_lock<std::mutex> lk(peer_rpc_incoming_mutex_);
+    if (peer_rpc_incoming_.empty()) {
+        peer_rpc_incoming_cv_.wait_for(lk, std::chrono::milliseconds(timeout_ms),
+            [this] { return !peer_rpc_incoming_.empty(); });
+    }
+    if (peer_rpc_incoming_.empty()) {
+        return {0, 0, 0, ""};  // 超时
+    }
+    auto req = std::move(peer_rpc_incoming_.front());
+    peer_rpc_incoming_.erase(peer_rpc_incoming_.begin());
+    return req;
+}
+
+bool WorkerAgent::peer_rpc_notify_failure(uint64_t conn_id, const CMString& reason) {
+    if (!peer_rpc_server_) return false;
+    return peer_rpc_server_->notify_failure(conn_id, reason);
+}
+
+void WorkerAgent::peer_rpc_close(uint64_t conn_id) {
+    if (peer_rpc_server_) {
+        peer_rpc_server_->close_connection(conn_id);
+    }
+}
+
+void WorkerAgent::stop_peer_rpc() {
+    if (peer_rpc_server_) {
+        peer_rpc_server_->stop();
+        peer_rpc_server_.reset();
+        peer_rpc_port_ = 0;
+    }
 }
 
 }  // namespace fly
