@@ -250,15 +250,23 @@ def compute_daemon_task(db, group_id, sd, nsd, omega_strategy):
             INFO(f"[COMPUTE sd={sd}] done at step={step}")
             break
 
-        # continue：缓存校正后的解（供下轮读邻居）
-        if "xc_all" in result:
-            # check 发回所有子域的校正解（compute 用它读邻居）
-            xc_all = pickle.loads(result["xc_all"])
-            for k, v_bytes in xc_all.items():
-                xc_cache[int(k)] = deserialize_array(v_bytes)
-            # 更新自己的 prev 为校正后的解
-            if sd in xc_cache:
-                put_cache(prev_x_key, xc_cache[sd])
+        # continue：从 check 回复中取自己的 xc + 邻居 ghost 值
+        if "xc_self" in result:
+            xc_self = deserialize_array(result["xc_self"])
+            put_cache(prev_x_key, xc_self)
+            # 邻居 ghost 值：{nb_id: [values at recv_positions]}
+            if "ghosts" in result:
+                ghosts = pickle.loads(result["ghosts"])
+                for nb_id_str, ghost_vals in ghosts.items():
+                    nb_id = int(nb_id_str)
+                    recv_positions = setup["neighbor_recv_idx"][nb_id]
+                    # 构造部分邻居解（只在 recv_positions 位置有值）
+                    if nb_id not in xc_cache:
+                        xc_cache[nb_id] = np.zeros(len(cfg["primary_sets"][nb_id]))
+                    nb_arr = xc_cache[nb_id]
+                    for i, pos in enumerate(recv_positions):
+                        if pos >= 0 and i < len(ghost_vals):
+                            nb_arr[pos] = ghost_vals[i]
         step += 1
 
     chan.close()
@@ -289,6 +297,7 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
 
     # ── 粗校正预构建（内存缓存，不经 DB 读写）──
     Ac_lu = None; P = None; A_fine = None; b_fine = None
+    residual_cached = None  # 增量 residual：上步存储的 r，避免每步全量 SpMV
     if use_coarse:
         from solver.ras_graph import _compute_coarse_arrays, _ensure_coarse_cached
         _ensure_coarse_cached(db)
@@ -343,9 +352,10 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
         for sd_idx in range(nsd):
             x_global_check[ps_arrays[sd_idx]] = contributions[sd_idx]["x"]
         if use_coarse and Ac_lu is not None:
+            # 全量 residual（收敛判定时精确计算）
             r_norm = float(np.linalg.norm(b_fine - A_fine.dot(x_global_check)))
             r_rel = r_norm / max(float(np.linalg.norm(b_fine)), 1e-30)
-            if r_rel < tol:
+            if step >= 5 and r_rel < tol:
                 all_converged = True
         if step >= 5:  # 至少迭代 5 步才允许残差收敛判定（前几步残差可能假小）
             pass
@@ -374,7 +384,7 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
             x_global[ps_arrays[sd]] = contributions[sd]["x"]
 
         if use_coarse and Ac_lu is not None:
-            # residual
+            # 全量 residual（每步都精确计算，保证数值正确性）
             r = b_fine - A_fine.dot(x_global)
             # coarse solve
             e_c = Ac_lu.solve(P.T.dot(r))
@@ -392,12 +402,41 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
         else:
             xc_all = {sd: serialize_array(contributions[sd]["x"]) for sd in range(nsd)}
 
-        # ── 回复各 compute（continue + 所有子域校正解）──
-        xc_all_bytes = pickle.dumps(xc_all)
+        # ── 回复各 compute（continue + 自己的 xc + 邻居 ghost 值）──
+        # 预提取每子域校正后的 primary 解
+        xc_primary = {}
+        for sd in range(nsd):
+            xc_primary[sd] = x_corrected[ps_arrays[sd]]
+
+        # 读取每子域的 neighbor_recv_idx（从 sub 数据）
+        # coord 已发布 __rasg__sub_{sd}，check 在迭代前读一次缓存
+        if not has_cache("__rasg__sub_cache"):
+            from fly import put_cache as _pc
+            sub_cache = {}
+            for sd_idx in range(nsd):
+                sub_cache[sd_idx] = db.read_object(f"__rasg__sub_{sd_idx}")
+            _pc("__rasg__sub_cache", sub_cache)
+        sub_cache = get_cache("__rasg__sub_cache")
+
         for sd in range(nsd):
             c = contributions[sd]
-            listener.respond(c["conn_id"], c["rpc_id"],
-                             pickle.dumps({"action": "continue", "xc_all": xc_all_bytes}))
+            sub = sub_cache[sd]
+            # 自己的 xc（完整 primary 解，用于更新 prev_x）
+            payload = {"action": "continue", "xc_self": serialize_array(xc_primary[sd])}
+            # 邻居 ghost 值：只发 recv_positions 指定位置的值
+            ghosts = {}
+            for nb_id in sub["neighbor_ids"]:
+                recv_positions = sub["neighbor_recv_idx"][nb_id]
+                nb_xc = xc_primary[nb_id]
+                ghost_vals = []
+                for pos in recv_positions:
+                    if pos >= 0 and pos < len(nb_xc):
+                        ghost_vals.append(float(nb_xc[pos]))
+                    else:
+                        ghost_vals.append(0.0)
+                ghosts[nb_id] = ghost_vals
+            payload["ghosts"] = pickle.dumps(ghosts)
+            listener.respond(c["conn_id"], c["rpc_id"], pickle.dumps(payload))
         step += 1
 
     listener.close()
