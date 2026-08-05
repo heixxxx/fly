@@ -182,13 +182,20 @@ def compute_daemon_task(db, group_id, sd, nsd, omega_strategy):
     """常驻 compute：读预分块子域数据 → LDLT setup → connect check → while solve + RPC。"""
     from _fly_solver import ex_slv_ras_bupdated_solve, EXSlvSubdomainSolver
     from fly import get_cache, put_cache, has_cache
+    from core import get_config as _get_config
 
     # ── 读预分块子域数据（coord 已做 BFS/rank-filter）──
     sub = db.read_object(f"__rasg__sub_{sd}")
     cfg = db.read_object("__rasg__cfg")
     tol = cfg["tol"]
 
-    # LDLT 分解（唯一不可省的计算）
+    # 运行时 OpenMP 线程数控制（默认 0=单线程）
+    openmp_threads = _get_config().get_int("solver_openmp_threads")
+    if openmp_threads > 0:
+        EXSlvSubdomainSolver.set_num_threads(openmp_threads)
+        INFO(f"[COMPUTE sd={sd}] OpenMP enabled, threads={openmp_threads}")
+
+    # LDLT 分解
     solver = EXSlvSubdomainSolver.from_coo(
         sub["size"], sub["a_rows"].tolist(), sub["a_cols"].tolist(), sub["a_vals"].tolist())
     setup = sub  # sub 就是 setup（coord 预提取的）
@@ -459,8 +466,14 @@ def _wait_solution(db, timeout=3600):
         if ds.has_local_object(sol_name) or ds.has_remote_location(sol_name):
             break
         time.sleep(0.2)
-    return {
-        "x": db.read_object("__rasg__sol"),
-        "iters": db.read_object("__rasg__iters"),
-        "converged": db.read_object("__rasg__converged"),
-    }
+    # 读结果时加重试（check 写 sol/iters/converged 可能有时序竞态）
+    for attempt in range(5):
+        try:
+            return {
+                "x": db.read_object("__rasg__sol"),
+                "iters": db.read_object("__rasg__iters"),
+                "converged": db.read_object("__rasg__converged"),
+            }
+        except Exception:
+            time.sleep(0.5)
+    raise RuntimeError("_wait_solution: failed to read solution after 5 retries")

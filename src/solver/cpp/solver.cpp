@@ -2,6 +2,9 @@
 #include <cmath>
 #include <algorithm>
 #include <unordered_set>
+#ifdef EIGEN_HAS_OPENMP
+#include <omp.h>
+#endif
 
 namespace fly {
 
@@ -141,6 +144,23 @@ Eigen::SparseMatrix<double> extract_subdomain_matrix_oras(
 
     A_local.makeCompressed();
     return A_local;
+}
+
+// 静态成员初始化：0 = 用 Eigen 默认（omp_get_max_threads），> 0 = 指定线程数
+int SubdomainSolver::num_threads_ = 0;
+
+void SubdomainSolver::set_num_threads(int num_threads) {
+    num_threads_ = num_threads;
+    // Eigen 用环境变量 EIGEN_NUM_THREADS 或 omp_set_num_threads 控制并行
+#ifdef EIGEN_HAS_OPENMP
+    if (num_threads > 0) {
+        omp_set_num_threads(num_threads);
+    }
+#endif
+}
+
+int SubdomainSolver::get_num_threads() {
+    return num_threads_;
 }
 
 SubdomainSolver::SubdomainSolver(const Eigen::SparseMatrix<double>& local_A) {

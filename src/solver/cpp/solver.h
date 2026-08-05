@@ -46,8 +46,16 @@ public:
     explicit SubdomainSolver(const Eigen::SparseMatrix<double>& local_A);
     Eigen::VectorXd solve(const Eigen::VectorXd& local_rhs) const;
 
+    // 设置分解并行线程数（运行时控制）。
+    // Eigen 的 SimplicialLDLT 在分解阶段支持 OpenMP 并行（需编译时 -fopenmp）。
+    // num_threads <= 0 表示用 Eigen 默认（omp_get_max_threads）。
+    // 必须在构造前调用（分解在构造函数中执行）。
+    static void set_num_threads(int num_threads);
+    static int get_num_threads();
+
 private:
     Eigen::SimplicialLDLT<Eigen::SparseMatrix<double>> solver_;
+    static int num_threads_;
 };
 
 // Compute residual: ||b - A*x||_2

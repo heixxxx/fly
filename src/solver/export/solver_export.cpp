@@ -44,6 +44,12 @@ FLY_EXPORT_CLASS(fly::SubdomainSolver, "EXSlvSubdomainSolver")
     FLY_EXPORT_DEF("solve", [](const fly::SubdomainSolver& self,
                                 const std::vector<double>& rhs) -> std::vector<double> {
         return vec_to_std(self.solve(std_to_vec(rhs)));
+    })
+    FLY_EXPORT_DEF("set_num_threads", [](int n) {
+        fly::SubdomainSolver::set_num_threads(n);
+    })
+    FLY_EXPORT_DEF("get_num_threads", []() {
+        return fly::SubdomainSolver::get_num_threads();
     });
 
 FLY_EXPORT_FUNCTION("ex_slv_partition_1d", [](int n, int num_parts, int overlap) {

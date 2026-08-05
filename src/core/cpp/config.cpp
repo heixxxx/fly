@@ -115,6 +115,7 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"net_probe_interval_ms", 30000},  // 主动带宽探测周期(ms)
     {"net_probe_payload_kb", 256},     // 探测 payload 大小(KB)
     {"net_probe_timeout_ms", 3000},    // 单次探测超时(ms)
+    {"solver_openmp_threads", 0},      // Eigen LDLT 分解并行线程数：0=单线程默认，>0=OpenMP多线程
 };
 
 const CMUnorderedMap<CMString, CMString> Config::STR_DEFAULTS = {
