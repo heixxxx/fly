@@ -31,21 +31,23 @@ def solve_ras_graph_v2(db, matrix_path, nsd,
         assert master.wait_for_workers(n_workers), f"{n_workers} workers should connect"
 
     INFO(f"[RASG V2] nsd={nsd} n_workers={n_workers}")
-    _coord_prebuild(db, matrix_path, nsd, overlap_ratio, max_iter, tol, omega)
 
     group = PeerChannelGroup()
     INFO(f"[RASG V2] group_id={group.group_id[:8]}")
 
+    # coord 预构建（含 coord/cfg/coarse 写 DB + 每完成一个 sub_{sd} 提交 compute daemon）
+    _coord_prebuild_pipeline(db, matrix_path, nsd, overlap_ratio, max_iter, tol, omega,
+                              group.group_id)
+
+    # coord 写完后提交 check daemon（check 依赖 coord/cfg/coarse 已就绪）
     check_daemon_task(db, group.group_id, nsd, max_iter, tol, omega)
-    for sd in range(nsd):
-        compute_daemon_task(db, group.group_id, sd, nsd, omega)
 
     return _wait_solution(db)
 
 
-def _coord_prebuild(db, matrix_path, nsd, overlap_ratio, max_iter, tol, omega):
-    """coord 预构建 + 分块提取：coord 一次性做矩阵加载/分区/coarse 预构建 +
-    每子域 BFS/rank-filter/LDLT 数据提取，发布到 DB。compute 直接读子域块。"""
+def _coord_prebuild_pipeline(db, matrix_path, nsd, overlap_ratio, max_iter, tol, omega, group_id):
+    """coord 预构建 + 流水线提交：每完成一个 sub_{sd} 立即提交 compute daemon，
+    让 LDLT 分解与剩余 BFS 并行。"""
     from solver.ras_graph import (_load_matrix, _partition_primary_2d,
                                    _estimate_depth, _compute_grid_neighbors,
                                    _prebuild_coarse_in_coord, _prebuild_coarse_grid,
@@ -87,26 +89,25 @@ def _coord_prebuild(db, matrix_path, nsd, overlap_ratio, max_iter, tol, omega):
 
     # ── 分块提取：coord 一次性为每子域做 BFS + rank-filter ──
     rows_arr = np.asarray(rows); cols_arr = np.asarray(cols); vals_arr = np.asarray(vals)
-    # 构建 adjacency（共享）
-    _si = np.argsort(cols_arr, kind="stable")
-    adj_starts = np.searchsorted(cols_arr[_si], np.arange(N + 1))
-    adj_rows_sorted = rows_arr[_si]
+    # 向量化 BFS：用 scipy sparse 矩阵乘法（279ms vs Python 775ms/子域）
+    import scipy.sparse as sp
+    A_bool = sp.csr_matrix((np.ones(len(rows_arr)), (rows_arr, cols_arr)), shape=(N, N))
 
-    def _bfs(seed, layers):
-        expanded = set(seed); current = list(seed)
-        for _ in range(layers):
-            frontier = set()
-            for node in current:
-                s, e = adj_starts[node], adj_starts[node + 1]
-                for row in adj_rows_sorted[s:e]:
-                    if row != node and row not in expanded:
-                        frontier.add(int(row))
-            if not frontier: break
-            expanded |= frontier; current = frontier
-        return sorted(expanded)
+    def _bfs(seed_indices, depth):
+        mask = np.zeros(N, dtype=np.float64)
+        mask[seed_indices] = 1.0
+        expanded = np.zeros(N, dtype=bool)
+        expanded[seed_indices] = True
+        for _ in range(depth):
+            neighbors = A_bool.dot(mask)
+            new = (neighbors > 0) & (~expanded)
+            if not new.any(): break
+            expanded |= new
+            mask[new] = 1.0
+        return np.where(expanded)[0]
 
     for sd in range(nsd):
-        primary_nodes = primary_sets[sd]
+        primary_nodes = np.asarray(primary_sets[sd])
         local_idx = _bfs(primary_nodes, depth)
         ratio = len(local_idx) / len(primary_nodes)
         if ratio < 1 + overlap_ratio:
@@ -161,7 +162,10 @@ def _coord_prebuild(db, matrix_path, nsd, overlap_ratio, max_iter, tol, omega):
         db.write_object(f"__rasg__sub_{sd}", subdomain_data, save_to_db=False)
         INFO(f"[RASG V2 COORD] subdomain {sd}: primary={len(primary_nodes)} extended={len(local_idx)} ratio={ratio:.2f}x neighbors={actual_neighbor_ids}")
 
-    # coarse 预构建
+        # ★ 流水线：sub_{sd} 写完后立即提交 compute daemon，LDLT 与剩余 BFS 并行
+        compute_daemon_task(db, group_id, sd, nsd, omega)
+
+    # coarse 预构建（在所有 compute daemon 已提交后，check daemon 提交前）
     if omega == "coarse":
         _prebuild_coarse_in_coord(db, n, N, matrix_path)
         _prebuild_coarse_grid(db, nsd)
