@@ -18,7 +18,13 @@ from agent import PeerChannelGroup, serialize_array, deserialize_array
 def solve_ras_graph_v2(db, matrix_path, nsd,
                        overlap_ratio=0.50, max_iter=100, tol=1e-8,
                        omega=1.0, max_concurrent_compute=None):
-    """nsd+1 worker（1 check + nsd compute），常驻 daemon + RPC 直连。"""
+    """nsd+1 worker（1 check + nsd compute），常驻 daemon + RPC 直连。
+
+    OpenMP 加速 LDLT 分解（可选）：编译时加 --define=solver_openmp=1。
+    适合核数充裕（≥ 2×nsd）的机器，让 Eigen 分解并行化。
+    核数紧张时（≤ 2×nsd）反而因 CPU 过竞争变慢，保持默认（不开 OpenMP）。
+    用法：./fly.sh build --define=solver_openmp=1 //src/main/cpp:fly
+    """
     from fly.runtime import get_agent
 
     n_workers = nsd + 1
