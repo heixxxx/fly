@@ -12,8 +12,19 @@
 #include <optional>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace fly {
+
+// 线上协议 status（PeerRpcResponseMessage.status_ 字段的取值）。
+// 与 WorkerAgent 内部 PeerRpcStatus 分开：BYE 是连接管理信号，在
+// response_handler 层拦截处理，不传到 pending RPC / 调用方。
+enum class PeerRpcWireStatus : uint8_t {
+    OK              = 0,  // 正常响应
+    NOTIFY_FAILURE  = 1,  // 主动失败通知（rpc_id=0，payload=reason）
+    RESPOND_FAILURE = 2,  // 对单个请求回失败（精确匹配 rpc_id）
+    BYE             = 3,  // 主动断连信号（优雅关闭握手）
+};
 
 // PeerRpcServer — 独立业务端口，提供 worker 间的轻量 RPC（请求-响应）通信。
 //
@@ -79,8 +90,12 @@ public:
     // 主动告知对端失败（status=1，payload=reason）。任一方可调。
     bool notify_failure(uint64_t conn_id, const CMString& reason);
 
-    // 关闭指定连接。
+    // 关闭指定连接（直接 TCP close，不发 BYE）。
     void close_connection(uint64_t conn_id);
+
+    // 主动断连：发 BYE → 同步等服务端回 BYE_ACK（5s 超时）→ close。
+    // 客户端侧优雅关闭握手。BYE 丢失或超时时直接 close（DISCONNECT 兜底）。
+    bool send_bye(uint64_t conn_id);
 
     bool is_connected(uint64_t conn_id) const;
 
@@ -91,6 +106,8 @@ public:
 
 private:
     void server_loop();
+    // 服务端收到 BYE 的处理：回 BYE_ACK + close + 标记。
+    void handle_bye(uint64_t conn_id);
 
     CMUniquePtr<ConnectionManager> transport_;
     std::thread thread_;
@@ -102,6 +119,16 @@ private:
     // 每连接的接收缓冲（累积半截帧，MessageProtocol::decode 原地切帧）
     std::mutex buf_mutex_;
     std::unordered_map<uint64_t, CMString> recv_bufs_;
+
+    // BYE 握手状态：
+    //   bye_closed_conns_：已通过 BYE 正常关闭的 conn（DISCONNECT 时静默，不触发 disconnect_handler）
+    //   bye_ack_conns_：   客户端侧收到的 BYE_ACK（send_bye 的 wait 条件）
+    //   bye_pending_conns_：客户端已发 BYE 待 ACK 的 conn（区分服务端收到的 BYE vs 客户端收到的 BYE_ACK）
+    std::mutex bye_mutex_;
+    std::condition_variable bye_cv_;
+    std::unordered_set<uint64_t> bye_closed_conns_;
+    std::unordered_set<uint64_t> bye_ack_conns_;
+    std::unordered_set<uint64_t> bye_pending_conns_;
 };
 
 }  // namespace fly

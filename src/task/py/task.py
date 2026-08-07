@@ -160,6 +160,7 @@ def wait_obj(inputs=None, poll_interval=0.1, timeout=None):
                 返回依赖对象的全名列表（需用 db.get_full_name() 获取）。
         poll_interval: 轮询间隔（秒），默认 0.1 秒。
         timeout: 超时秒数。None（默认）= 永远等待，直到数据可读或确认无法产出。
+                调用方可通过 kwargs["timeout"] 覆盖此默认值（函数需接受 timeout 参数）。
 
     Usage:
         @wait_obj(inputs=lambda db, key: [db.get_full_name("dep1")])
@@ -173,7 +174,9 @@ def wait_obj(inputs=None, poll_interval=0.1, timeout=None):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             deps = inputs(*args, **kwargs) if inputs else []
-            _wait_for_objects(deps, poll_interval, timeout)
+            # 装饰时固定 timeout 作为默认，允许调用方通过 kwargs["timeout"] 覆盖。
+            effective_timeout = kwargs.get("timeout", timeout)
+            _wait_for_objects(deps, poll_interval, effective_timeout)
             return func(*args, **kwargs)
 
         wrapper._fly_original_func = func

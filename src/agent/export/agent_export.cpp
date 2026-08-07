@@ -319,6 +319,7 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     })
 
     // ── 业务 RPC（PeerChannelGroup 底层）──────────────────────────
+    // payload 参数全程用 nanobind bytes（零拷贝），消除 Python 侧 latin-1 编解码 hack。
     FLY_EXPORT_METHOD("start_peer_rpc_listen", [](fly::WorkerAgent& self,
                                                       const fly::CMString& host,
                                                       int port) {
@@ -333,28 +334,45 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     })
     FLY_EXPORT_METHOD("peer_rpc_call", [](fly::WorkerAgent& self,
                                              uint64_t conn_id,
-                                             const fly::CMString& payload,
+                                             fly_export::bytes payload,
                                              int timeout_ms) {
-        auto result = self.peer_rpc_call(conn_id, payload, timeout_ms);
-        uint8_t status = result.first;
-        fly::CMString resp = std::move(result.second);
-        return fly_export::make_tuple(status, resp);
+        fly::CMString payload_str(payload.c_str(), payload.size());
+        auto result = self.peer_rpc_call(conn_id, payload_str, timeout_ms);
+        return fly_export::make_tuple(
+            result.first,
+            fly_export::bytes(result.second.data(), result.second.size()));
     })
     FLY_EXPORT_METHOD("peer_rpc_respond", [](fly::WorkerAgent& self,
                                                 uint64_t conn_id,
                                                 uint64_t rpc_id,
-                                                const fly::CMString& payload) {
-        return self.peer_rpc_respond(conn_id, rpc_id, payload);
+                                                fly_export::bytes payload) {
+        fly::CMString payload_str(payload.c_str(), payload.size());
+        return self.peer_rpc_respond(conn_id, rpc_id, payload_str);
+    })
+    FLY_EXPORT_METHOD("peer_rpc_respond_failure", [](fly::WorkerAgent& self,
+                                                        uint64_t conn_id,
+                                                        uint64_t rpc_id,
+                                                        fly_export::bytes reason) {
+        fly::CMString reason_str(reason.c_str(), reason.size());
+        return self.peer_rpc_respond_failure(conn_id, rpc_id, reason_str);
     })
     FLY_EXPORT_METHOD("peer_rpc_recv_request", [](fly::WorkerAgent& self,
                                                      int timeout_ms) {
-        auto req = self.peer_rpc_recv_request(timeout_ms);
-        return fly_export::make_tuple(req.conn_id_, req.rpc_id_, req.src_worker_id_, req.payload_);
+        try {
+            auto req = self.peer_rpc_recv_request(timeout_ms);
+            return fly_export::make_tuple(
+                req.conn_id_, req.rpc_id_, req.src_worker_id_,
+                fly_export::bytes(req.payload_.data(), req.payload_.size()));
+        } catch (const std::runtime_error&) {
+            // 错误断连：re-throw，nanobind 自动翻译为 Python RuntimeError
+            throw;
+        }
     })
     FLY_EXPORT_METHOD("peer_rpc_notify_failure", [](fly::WorkerAgent& self,
                                                         uint64_t conn_id,
-                                                        const fly::CMString& reason) {
-        return self.peer_rpc_notify_failure(conn_id, reason);
+                                                        fly_export::bytes reason) {
+        fly::CMString reason_str(reason.c_str(), reason.size());
+        return self.peer_rpc_notify_failure(conn_id, reason_str);
     })
     FLY_EXPORT_METHOD("peer_rpc_close", [](fly::WorkerAgent& self,
                                               uint64_t conn_id) {

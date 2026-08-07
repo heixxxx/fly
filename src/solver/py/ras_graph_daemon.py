@@ -250,7 +250,7 @@ def compute_daemon_task(db, group_id, sd, nsd, omega_strategy):
             "x": serialize_array(x_primary),
         })
         try:
-            status, resp = chan.rpc(payload, timeout=30)
+            status, resp = chan.rpc(payload)
         except Exception as e:
             INFO(f"[COMPUTE sd={sd}] RPC failed at step={step}: {e}")
             break
@@ -339,7 +339,10 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
         failed = False
         for _ in range(nsd):
             try:
-                conn_id, rpc_id, src, payload = listener.accept_one(timeout=30)
+                conn_id, rpc_id, src, payload = listener.accept_one()
+            except RuntimeError as e:
+                ERR(f"[CHECK] peer error at step={step}: {e}")
+                failed = True; break
             except Exception:
                 failed = True; break
             if rpc_id == 0:
@@ -354,7 +357,7 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
         if failed or len(contributions) < nsd:
             ERR(f"[CHECK] only {len(contributions)}/{nsd} at step={step}")
             for sd, c in contributions.items():
-                listener.notify_failure(c["conn_id"], "peer timeout")
+                listener.notify_failure(c["conn_id"], b"peer timeout")
             break
 
         all_converged = all(c["conv"] for c in contributions.values())

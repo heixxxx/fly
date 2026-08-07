@@ -12,7 +12,7 @@ from .executor import create_executor
 
 # message 系统：业务代码必须用 fly.* 公开包装，禁止直接用 _fly_message 底层绑定。
 # （见 docs/message-system.md §6.4「禁止直接使用底层接口」）
-from fly import register_message_id, message
+from fly import register_message_id, message, wait_obj as _wait_obj
 
 # 注册 storage domain 的流程性 message id（模块加载时注册）。
 # STOR::0002: merge_db 完成；STOR::0003: load_db 恢复完成。
@@ -799,6 +799,7 @@ class Worker(FlyAgent):
         WARN("restart_failed_tasks called on Worker, ignoring")
 
     # ── 业务 RPC（PeerChannelGroup 底层透传）──────────────────────
+    # payload 全程用 bytes（nanobind 零拷贝），无 latin-1 编解码。
     def start_peer_rpc_listen(self, host="", port=0):
         return self._agent.start_peer_rpc_listen(host, port)
     def peer_rpc_connect(self, host, port, retries=2, retry_interval_ms=500):
@@ -807,6 +808,8 @@ class Worker(FlyAgent):
         return self._agent.peer_rpc_call(conn_id, payload, timeout_ms)
     def peer_rpc_respond(self, conn_id, rpc_id, payload):
         return self._agent.peer_rpc_respond(conn_id, rpc_id, payload)
+    def peer_rpc_respond_failure(self, conn_id, rpc_id, reason):
+        return self._agent.peer_rpc_respond_failure(conn_id, rpc_id, reason)
     def peer_rpc_recv_request(self, timeout_ms=30000):
         return self._agent.peer_rpc_recv_request(timeout_ms)
     def peer_rpc_notify_failure(self, conn_id, reason):
@@ -852,26 +855,43 @@ class PeerRpcStatus:
 
 
 class PeerChannel:
-    """客户端侧 channel（compute worker 用）。连接到 check 的业务端口。"""
+    """客户端侧 channel（compute worker 用）。连接到 check 的业务端口。
+
+    生命周期：正常结束时手动调 close()（发 BYE 握手 + 关闭）；异常退出时
+    __del__ 兜底自动 close。故障由断连事件驱动，rpc 无默认超时。"""
     def __init__(self, agent, conn_id):
         self._agent = agent
         self._conn_id = conn_id
+        self._closed = False
 
-    def rpc(self, payload, timeout=30):
+    def rpc(self, payload, timeout=None):
         """请求-响应（同步）。payload: bytes。返回 (status, response_bytes)。
-        status 见 PeerRpcStatus：OK=正常, ERROR=对端 notify_failure,
-        FAILED=超时/断连/send 失败。调用方判断 status != PeerRpcStatus.OK 即失败。"""
-        payload_str = payload.decode('latin-1') if isinstance(payload, bytes) else payload
-        status, resp_str = self._agent.peer_rpc_call(self._conn_id, payload_str, int(timeout * 1000))
-        return status, resp_str.encode('latin-1') if isinstance(resp_str, str) else resp_str
+        timeout=None（默认）：无限等待，故障由断连事件驱动（check 崩溃 → FAILED）。
+        status 见 PeerRpcStatus：OK=正常, ERROR=对端 notify_failure/respond_failure,
+        FAILED=断连/send 失败。"""
+        if not isinstance(payload, (bytes, bytearray)):
+            raise TypeError(f"payload must be bytes, got {type(payload).__name__}")
+        timeout_ms = int(timeout * 1000) if timeout is not None else 0
+        return self._agent.peer_rpc_call(self._conn_id, bytes(payload), timeout_ms)
 
     def notify_failure(self, reason):
-        """主动告知对端失败退出。"""
-        reason_str = reason.decode('latin-1') if isinstance(reason, bytes) else reason
-        self._agent.peer_rpc_notify_failure(self._conn_id, reason_str)
+        """主动告知对端失败退出。reason: bytes。"""
+        if not isinstance(reason, (bytes, bytearray)):
+            raise TypeError(f"reason must be bytes, got {type(reason).__name__}")
+        self._agent.peer_rpc_notify_failure(self._conn_id, bytes(reason))
 
     def close(self):
-        self._agent.peer_rpc_close(self._conn_id)
+        """优雅关闭：发 BYE 握手 + 关闭。幂等。"""
+        if not self._closed:
+            self._closed = True
+            self._agent.peer_rpc_close(self._conn_id)
+
+    def __del__(self):
+        """GC 回收时自动关闭（异常路径兜底）。"""
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class PeerListener:
@@ -880,21 +900,33 @@ class PeerListener:
         self._agent = agent
         self._port = port
 
-    def accept_one(self, timeout=30):
+    def accept_one(self, timeout=None):
         """阻塞等下一个请求。返回 (conn_id, rpc_id, src_worker_id, payload_bytes)。
-        超时返回 rpc_id=0。处理完后调 respond() 回响应。"""
-        conn_id, rpc_id, src, payload_str = self._agent.peer_rpc_recv_request(int(timeout * 1000))
-        payload = payload_str.encode('latin-1') if isinstance(payload_str, str) else payload_str
+        timeout=None（默认）：无限等待，只由请求到达或错误断连唤醒。
+        错误断连（compute 崩溃/网络断，无 BYE）时抛 RuntimeError。
+        超时（仅 timeout>0 时可能）返回 (0, 0, 0, b'')。"""
+        timeout_ms = int(timeout * 1000) if timeout is not None else 0
+        conn_id, rpc_id, src, payload = self._agent.peer_rpc_recv_request(timeout_ms)
         return conn_id, rpc_id, src, payload
 
     def respond(self, conn_id, rpc_id, payload):
-        """回响应给请求方。payload: bytes。"""
-        payload_str = payload.decode('latin-1') if isinstance(payload, bytes) else payload
-        self._agent.peer_rpc_respond(conn_id, rpc_id, payload_str)
+        """回正常响应给请求方（status=OK）。payload: bytes。"""
+        if not isinstance(payload, (bytes, bytearray)):
+            raise TypeError(f"payload must be bytes, got {type(payload).__name__}")
+        self._agent.peer_rpc_respond(conn_id, rpc_id, bytes(payload))
+
+    def respond_failure(self, conn_id, rpc_id, reason):
+        """对单个请求回失败（status=ERROR）。只让这一个请求的调用方收到失败，
+        不影响同连接上其他 pending 请求。reason: bytes。"""
+        if not isinstance(reason, (bytes, bytearray)):
+            raise TypeError(f"reason must be bytes, got {type(reason).__name__}")
+        self._agent.peer_rpc_respond_failure(conn_id, rpc_id, bytes(reason))
 
     def notify_failure(self, conn_id, reason):
-        reason_str = reason.decode('latin-1') if isinstance(reason, bytes) else reason
-        self._agent.peer_rpc_notify_failure(conn_id, reason_str)
+        """主动告知对端失败（status=全局通知, rpc_id=0）。reason: bytes。"""
+        if not isinstance(reason, (bytes, bytearray)):
+            raise TypeError(f"reason must be bytes, got {type(reason).__name__}")
+        self._agent.peer_rpc_notify_failure(conn_id, bytes(reason))
 
     def close(self):
         self._agent.stop_peer_rpc()
@@ -941,32 +973,28 @@ class PeerChannelGroup:
         return PeerListener(agent, port)
 
     def connect(self, db, timeout=60):
-        """客户端：wait_obj 读 check 地址 + connect_peer。返回 PeerChannel。"""
+        """客户端：等 check 发布的地址就绪 + connect_peer。返回 PeerChannel。
+
+        地址就绪等待复用 @wait_obj（三级查询：local_idx → remote_idx → master probe），
+        替代原来的手写 while+sleep 轮询。"""
         from fly.runtime import get_agent
-        from _fly_storage import ex_stg_get_data_service
         agent = get_agent()
-        temp_name = db.get_full_name(self._temp_name())
-        ds = ex_stg_get_data_service()
-        # wait_obj：轮询等 check 写入地址。复用 _wait_for_objects 的三级查询逻辑。
-        import time as _t
-        deadline = _t.monotonic() + timeout
-        while _t.monotonic() < deadline:
-            if ds.has_local_object(temp_name) or ds.has_remote_location(temp_name):
-                break
-            # 主动触发 TIER3 查 master（发现对象位置）
-            found, _, _, _ = ds.try_read_remote(temp_name)
-            if found:
-                break
-            _t.sleep(0.1)
-        else:
-            raise TimeoutError(f"PeerChannelGroup.connect: check not ready within {timeout}s")
-        info = db.read_object(self._temp_name())
+        info = _read_peer_address(self, db, timeout=timeout)
         print(f"[PeerChannelGroup] connecting to {info['host']}:{info['port']}", flush=True)
         conn_id = agent.peer_rpc_connect(info["host"], info["port"])
         if conn_id == 0:
             raise ConnectionError(f"PeerChannelGroup.connect: failed to connect {info}")
         print(f"[PeerChannelGroup] connected conn_id={conn_id}", flush=True)
         return PeerChannel(agent, conn_id)
+
+
+@_wait_obj(inputs=lambda group, db, **kw: [db.get_full_name(group._temp_name())])
+def _read_peer_address(group, db, timeout=60):
+    """等 check 发布的地址对象就绪后读取（@wait_obj 阻塞直到 master 可见）。
+
+    group 是 PeerChannelGroup 实例（需访问 _temp_name）；db 是 Database。
+    timeout 透传给 @wait_obj（None=永远等）。"""
+    return db.read_object(group._temp_name())
 
 
 __all__ = ['FlyAgent', 'Master', 'Worker',

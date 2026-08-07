@@ -82,7 +82,16 @@ void PeerRpcServer::server_loop() {
                     break;
                 }
                 case TransportEventType::DATA: {
-                    CMString appended;
+                    // 锁内只做 append + 切帧（decode），handler 回调移到锁外，
+                    // 避免慢回调阻塞其他连接的接收。
+                    struct DecodedMsg {
+                        bool is_request;         // true=REQUEST, false=RESPONSE
+                        uint64_t rpc_id;
+                        uint64_t src_worker_id;  // REQUEST only
+                        uint8_t status;          // RESPONSE only
+                        CMString payload;
+                    };
+                    CMVector<DecodedMsg> decoded_msgs;
                     {
                         std::lock_guard<std::mutex> lk(buf_mutex_);
                         auto it = recv_bufs_.find(event.conn_id_);
@@ -101,23 +110,52 @@ void PeerRpcServer::server_loop() {
                             uint8_t raw_type = static_cast<uint8_t>(buf[4]);
                             if (raw_type == static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST)) {
                                 PeerRpcRequestMessage msg;
-                                if (!MessageProtocol::decode(buf, msg)) break;
-                                if (request_handler_) {
-                                    auto resp = request_handler_(event.conn_id_, msg.rpc_id_,
-                                                                  msg.src_worker_id_, msg.payload_);
-                                    if (resp.has_value()) {
-                                        send_response(event.conn_id_, msg.rpc_id_, 0, resp.value());
-                                    }
+                                // decode 失败时 buf 不会被消费（erase 只在成功时执行），
+                                // 会导致下次循环读到同一坏帧 → 无限循环。
+                                // 改为：丢弃坏帧并 WARN，继续处理后续帧。
+                                if (!MessageProtocol::decode(buf, msg)) {
+                                    WARN("PeerRpcServer: corrupt REQUEST frame ({}B), discarding",
+                                         4 + total_len);
+                                    buf.erase(0, 4 + total_len);
+                                    continue;
                                 }
+                                decoded_msgs.push_back({true, msg.rpc_id_, msg.src_worker_id_,
+                                                        0, std::move(msg.payload_)});
                             } else if (raw_type == static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE)) {
                                 PeerRpcResponseMessage msg;
-                                if (!MessageProtocol::decode(buf, msg)) break;
-                                if (response_handler_) {
-                                    response_handler_(event.conn_id_, msg.rpc_id_, msg.status_, msg.payload_);
+                                if (!MessageProtocol::decode(buf, msg)) {
+                                    WARN("PeerRpcServer: corrupt RESPONSE frame ({}B), discarding",
+                                         4 + total_len);
+                                    buf.erase(0, 4 + total_len);
+                                    continue;
                                 }
+                                decoded_msgs.push_back({false, msg.rpc_id_, 0,
+                                                        msg.status_, std::move(msg.payload_)});
                             } else {
                                 buf.clear();  // 未知类型，清缓冲防积压
                                 break;
+                            }
+                        }
+                    }
+                    // 锁外调 handler（回调可能耗时，不应持锁）
+                    for (auto& dm : decoded_msgs) {
+                        if (dm.is_request) {
+                            if (request_handler_) {
+                                auto resp = request_handler_(event.conn_id_, dm.rpc_id,
+                                                              dm.src_worker_id, dm.payload);
+                                if (resp.has_value()) {
+                                    send_response(event.conn_id_, dm.rpc_id,
+                                                   static_cast<uint8_t>(PeerRpcWireStatus::OK),
+                                                   resp.value());
+                                }
+                            }
+                        } else {
+                            // BYE 握手：status=BYE 是连接管理信号，
+                            // 不走 response_handler（不传到 pending RPC）。
+                            if (dm.status == static_cast<uint8_t>(PeerRpcWireStatus::BYE)) {
+                                handle_bye(event.conn_id_);
+                            } else if (response_handler_) {
+                                response_handler_(event.conn_id_, dm.rpc_id, dm.status, dm.payload);
                             }
                         }
                     }
@@ -129,10 +167,17 @@ void PeerRpcServer::server_loop() {
                         std::lock_guard<std::mutex> lk(buf_mutex_);
                         recv_bufs_.erase(event.conn_id_);
                     }
-                    // 通知调用方 fail 该连接上的所有 pending RPC，避免 rpc_call 死等。
-                    // 对端关闭连接（如 check 收敛后 stop_peer_rpc）时，compute 的
-                    // pending RPC 必须被唤醒并返回错误，否则 task 卡 RUNNING。
-                    if (disconnect_handler_) {
+                    // BYE 握手区分：已标记 bye_closed 的 conn 是正常关闭，静默；
+                    // 否则是错误断连（崩溃/网络断），触发 disconnect_handler 通知调用方。
+                    // 同时唤醒 send_bye 的 wait（对端关了，BYE_ACK 不会来了）。
+                    bool is_bye;
+                    {
+                        std::lock_guard<std::mutex> lk(bye_mutex_);
+                        is_bye = bye_closed_conns_.erase(event.conn_id_) > 0;
+                        bye_pending_conns_.erase(event.conn_id_);
+                    }
+                    bye_cv_.notify_all();
+                    if (!is_bye && disconnect_handler_) {
                         disconnect_handler_(event.conn_id_);
                     }
                     break;
@@ -172,8 +217,9 @@ bool PeerRpcServer::send_response(uint64_t conn_id, uint64_t rpc_id,
 }
 
 bool PeerRpcServer::notify_failure(uint64_t conn_id, const CMString& reason) {
-    // notify_failure = status=1 的 response（无需对应 request，rpc_id=0）
-    return send_response(conn_id, 0, 1, reason);
+    // notify_failure = NOTIFY_FAILURE 的 response（无需对应 request，rpc_id=0）
+    return send_response(conn_id, 0,
+                          static_cast<uint8_t>(PeerRpcWireStatus::NOTIFY_FAILURE), reason);
 }
 
 void PeerRpcServer::close_connection(uint64_t conn_id) {
@@ -181,6 +227,64 @@ void PeerRpcServer::close_connection(uint64_t conn_id) {
     transport_->close(conn_id);
     std::lock_guard<std::mutex> lk(buf_mutex_);
     recv_bufs_.erase(conn_id);
+}
+
+void PeerRpcServer::handle_bye(uint64_t conn_id) {
+    // 服务端收到客户端 BYE：回 BYE_ACK + close + 标记。
+    // 双方都用 PeerRpcWireStatus::BYE 的 PeerRpcResponse 表示。
+    bool is_client_bye;  // 本端是否是客户端（已发 BYE 待 ACK）
+    {
+        std::lock_guard<std::mutex> lk(bye_mutex_);
+        is_client_bye = bye_pending_conns_.erase(conn_id) > 0;
+    }
+    if (is_client_bye) {
+        // 客户端收到服务端回的 BYE_ACK：唤醒 send_bye 的 wait。
+        {
+            std::lock_guard<std::mutex> lk(bye_mutex_);
+            bye_ack_conns_.insert(conn_id);
+        }
+        bye_cv_.notify_all();
+    } else {
+        // 服务端收到客户端 BYE：回 BYE_ACK + close + 标记正常关闭。
+        DBG("PeerRpcServer BYE received conn_id={}, sending BYE_ACK + close", conn_id);
+        send_response(conn_id, 0,
+                       static_cast<uint8_t>(PeerRpcWireStatus::BYE), "");  // BYE_ACK
+        {
+            std::lock_guard<std::mutex> lk(bye_mutex_);
+            bye_closed_conns_.insert(conn_id);
+        }
+        close_connection(conn_id);
+    }
+}
+
+bool PeerRpcServer::send_bye(uint64_t conn_id) {
+    // 客户端：发 BYE → 同步等服务端回 BYE_ACK（5s 超时）→ close。
+    // BYE 丢失或超时时直接 close（DISCONNECT 兜底）。
+    {
+        std::lock_guard<std::mutex> lk(bye_mutex_);
+        bye_pending_conns_.insert(conn_id);
+    }
+    DBG("PeerRpcServer sending BYE conn_id={}", conn_id);
+    send_response(conn_id, 0,
+                   static_cast<uint8_t>(PeerRpcWireStatus::BYE), "");
+
+    // 等服务端回 BYE_ACK（bye_ack_conns），或 DISCONNECT 发生（bye_closed / bye_pending 被 erase）。
+    std::unique_lock<std::mutex> lk(bye_mutex_);
+    bye_cv_.wait_for(lk, std::chrono::seconds(5), [&] {
+        return bye_ack_conns_.count(conn_id) > 0 || bye_pending_conns_.count(conn_id) == 0;
+    });
+    bool got_ack = bye_ack_conns_.erase(conn_id) > 0;
+    bye_pending_conns_.erase(conn_id);
+    bye_closed_conns_.insert(conn_id);  // 标记正常关闭（DISCONNECT 时静默）
+    lk.unlock();
+
+    if (got_ack) {
+        DBG("PeerRpcServer BYE_ACK received conn_id={}, closing", conn_id);
+    } else {
+        WARN("PeerRpcServer BYE timeout (no ACK), force close conn_id={}", conn_id);
+    }
+    close_connection(conn_id);  // 幂等（服务端可能已 close）
+    return true;
 }
 
 bool PeerRpcServer::is_connected(uint64_t conn_id) const {
@@ -204,7 +308,10 @@ void PeerRpcServer::stop() {
                 active_conns.push_back(conn_id);
             }
         }
+        // 跳过已通过 BYE 正常关闭的 conn（它们不是错误断连）。
+        std::lock_guard<std::mutex> bye_lk(bye_mutex_);
         for (uint64_t conn_id : active_conns) {
+            if (bye_closed_conns_.count(conn_id) > 0) continue;
             disconnect_handler_(conn_id);
         }
     }
@@ -220,6 +327,13 @@ void PeerRpcServer::stop() {
         std::lock_guard<std::mutex> lk(buf_mutex_);
         recv_bufs_.clear();
     }
+    {
+        std::lock_guard<std::mutex> lk(bye_mutex_);
+        bye_closed_conns_.clear();
+        bye_ack_conns_.clear();
+        bye_pending_conns_.clear();
+    }
+    bye_cv_.notify_all();
     transport_.reset();
     request_handler_ = nullptr;
     response_handler_ = nullptr;

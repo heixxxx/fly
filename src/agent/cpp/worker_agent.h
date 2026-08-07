@@ -76,9 +76,10 @@ struct PendingFreezeAck {
 enum class PeerRpcStatus : uint8_t {
     PENDING   = 0,   // 未完成（wait_for 的 predicate 检查 != PENDING）
     OK        = 1,   // 正常响应
-    ERROR     = 2,   // 对端主动 notify_failure（payload 为 reason）
+    ERROR     = 2,   // 对端主动 notify_failure / respond_failure（payload 为 reason）
     FAILED    = 3,   // 超时 / 连接断开 / send 失败（payload 为原因描述）
 };
+// 线上协议 status 见 PeerRpcWireStatus（peer_rpc_server.h）。
 
 // Pending state for a peer RPC（业务 RPC 请求-响应）。rpc_id 匹配请求与响应。
 struct PendingPeerRpc {
@@ -191,9 +192,15 @@ public:
                                                 const CMString& payload,
                                                 int timeout_ms = 30000);
 
-    // 服务端：发送响应（对应收到的 rpc_id）。
+    // 服务端：发送响应（对应收到的 rpc_id，status=0 OK）。
     bool peer_rpc_respond(uint64_t conn_id, uint64_t rpc_id,
                           const CMString& payload);
+
+    // 服务端：对单个请求回失败（status=2 ERROR，精确匹配该 rpc_id 的 pending）。
+    // 与 notify_failure（status=1, rpc_id=0 全局通知）的区别：respond_failure 只
+    // 让这一个请求的调用方收到失败，不影响同连接上其他 pending 请求。
+    bool peer_rpc_respond_failure(uint64_t conn_id, uint64_t rpc_id,
+                                   const CMString& reason);
 
     // 服务端：阻塞等待下一个请求（Python while 循环用）。
     // 返回 {conn_id, rpc_id, src_worker_id, payload}；超时返回 rpc_id=0。
@@ -289,6 +296,8 @@ private:
 
     // 服务端收到的请求队列（PeerRpcServer 回调入队，peer_rpc_recv_request 出队）。
     CMVector<PeerRpcRequest> peer_rpc_incoming_;
+    // 错误断连的 conn 队列（disconnect_handler 入队，peer_rpc_recv_request 检查后抛异常）。
+    CMVector<uint64_t> peer_rpc_error_conns_;
     std::mutex peer_rpc_incoming_mutex_;
     std::condition_variable peer_rpc_incoming_cv_;
 
@@ -319,6 +328,9 @@ private:
                               const CMString& target_data_path);
     // 获取或创建 merge 专用 DataWriter（按 target_data_path 缓存，跨 task 复用，每源 host 一个 writer）。
     DataWriter* get_or_create_merge_writer(const CMString& db_path, const CMString& target_data_path);
+    // 注册 PeerRpcServer 的 response_handler + disconnect_handler。
+    // start_peer_rpc_listen 和 peer_rpc_connect 共用，避免重复代码。
+    void ensure_peer_rpc_handlers();
     void on_disconnect(uint64_t conn_id);
 
     // Var service handlers.

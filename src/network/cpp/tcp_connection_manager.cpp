@@ -315,6 +315,10 @@ CMString TcpConnectionManager::drain_socket(int fd, size_t max_size) {
             return buffer;
         }
         if (n == 0) {
+            // EOF (FIN)。若已读到了数据，先返回数据（DATA 事件），
+            // 让下一轮 poll 产生 DISCONNECT。直接 clear 会丢弃已读数据，
+            // 导致"数据 + FIN 同时到达"时丢消息（如 BYE + close 的 FIN）。
+            if (total > 0) break;
             buffer.clear();
             return buffer;
         }

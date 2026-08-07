@@ -1541,6 +1541,40 @@ void WorkerAgent::on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& 
 // 业务 RPC（PeerChannelGroup 底层）
 // ============================================================
 
+void WorkerAgent::ensure_peer_rpc_handlers() {
+    // response_handler（客户端角色：收响应路由到 PendingRpcMap）
+    // 线上 status: OK / NOTIFY_FAILURE(全局) / RESPOND_FAILURE(单请求)；
+    // 统一映射为内部 PeerRpcStatus：OK → OK, 其他 → ERROR。
+    peer_rpc_server_->set_response_handler(
+        [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, const CMString& payload) {
+            pending_peer_rpcs_.complete(rpc_id, [&](PendingPeerRpc& p) {
+                p.status_.store(static_cast<uint8_t>(
+                    status == static_cast<uint8_t>(PeerRpcWireStatus::OK)
+                        ? PeerRpcStatus::OK : PeerRpcStatus::ERROR),
+                    std::memory_order_release);
+                p.payload_ = payload;
+            });
+        });
+    // disconnect_handler：P2P 错误断连时（无 BYE）触发。
+    // 1. fail 该连接上所有 pending RPC（compute 的 chan.rpc 立即收到 FAILED）。
+    // 2. 入队 error_conns + notify cv（check 的 accept_one 被唤醒并抛异常）。
+    peer_rpc_server_->set_disconnect_handler(
+        [this](uint64_t conn_id) {
+            pending_peer_rpcs_.complete_all_if(
+                [conn_id](const PendingPeerRpc& p) { return p.conn_id_ == conn_id; },
+                [](PendingPeerRpc& p) {
+                    p.status_.store(static_cast<uint8_t>(PeerRpcStatus::FAILED),
+                                    std::memory_order_release);
+                    p.payload_ = "peer connection closed";
+                });
+            {
+                std::lock_guard<std::mutex> lk(peer_rpc_incoming_mutex_);
+                peer_rpc_error_conns_.push_back(conn_id);
+            }
+            peer_rpc_incoming_cv_.notify_one();
+        });
+}
+
 int WorkerAgent::start_peer_rpc_listen(const CMString& host, int port) {
     if (peer_rpc_server_) {
         return peer_rpc_port_;  // 已启动
@@ -1557,30 +1591,7 @@ int WorkerAgent::start_peer_rpc_listen(const CMString& host, int port) {
             peer_rpc_incoming_cv_.notify_one();
             return std::nullopt;  // 异步处理（Python 层 peer_rpc_respond 回响应）
         });
-    // response_handler（客户端角色：收响应路由到 PendingRpcMap）
-    // 线上 status: 0=正常, 1=notify_failure；转内部 PeerRpcStatus。
-    peer_rpc_server_->set_response_handler(
-        [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, const CMString& payload) {
-            pending_peer_rpcs_.complete(rpc_id, [&](PendingPeerRpc& p) {
-                p.status_.store(static_cast<uint8_t>(
-                    status == 1 ? PeerRpcStatus::ERROR : PeerRpcStatus::OK),
-                    std::memory_order_release);
-                p.payload_ = payload;
-            });
-        });
-    // disconnect_handler：P2P 连接断开时 fail 该连接上所有 pending RPC，
-    // 避免 compute 的 chan.rpc 死等已关闭的 check 连接（check 收敛退出后
-    // stop_peer_rpc 关闭所有连接，compute 必须立即收到失败并退出 task）。
-    peer_rpc_server_->set_disconnect_handler(
-        [this](uint64_t conn_id) {
-            pending_peer_rpcs_.complete_all_if(
-                [conn_id](const PendingPeerRpc& p) { return p.conn_id_ == conn_id; },
-                [](PendingPeerRpc& p) {
-                    p.status_.store(static_cast<uint8_t>(PeerRpcStatus::FAILED),
-                                    std::memory_order_release);
-                    p.payload_ = "peer connection closed";
-                });
-        });
+    ensure_peer_rpc_handlers();
     peer_rpc_port_ = bound_port;  // listen 返回的实际端口
     return peer_rpc_port_;
 }
@@ -1590,26 +1601,7 @@ uint64_t WorkerAgent::peer_rpc_connect(const CMString& host, int port,
     if (!peer_rpc_server_) {
         // 仅客户端模式：创建 PeerRpcServer 但不 listen
         peer_rpc_server_ = CMMakeUnique<PeerRpcServer>();
-        peer_rpc_server_->set_response_handler(
-            [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, const CMString& payload) {
-                pending_peer_rpcs_.complete(rpc_id, [&](PendingPeerRpc& p) {
-                    p.status_.store(static_cast<uint8_t>(
-                        status == 1 ? PeerRpcStatus::ERROR : PeerRpcStatus::OK),
-                        std::memory_order_release);
-                    p.payload_ = payload;
-                });
-            });
-        // 客户端模式同样需要 disconnect handler：check 连接断开时 fail pending
-        peer_rpc_server_->set_disconnect_handler(
-            [this](uint64_t conn_id) {
-                pending_peer_rpcs_.complete_all_if(
-                    [conn_id](const PendingPeerRpc& p) { return p.conn_id_ == conn_id; },
-                    [](PendingPeerRpc& p) {
-                        p.status_.store(static_cast<uint8_t>(PeerRpcStatus::FAILED),
-                                        std::memory_order_release);
-                        p.payload_ = "peer connection closed";
-                    });
-            });
+        ensure_peer_rpc_handlers();
     }
     return peer_rpc_server_->connect_peer(host, port, retries, retry_interval_ms);
 }
@@ -1631,7 +1623,11 @@ std::pair<uint8_t, CMString> WorkerAgent::peer_rpc_call(uint64_t conn_id,
         return {static_cast<uint8_t>(PeerRpcStatus::FAILED), "send_request failed"};
     }
 
-    auto result = pending_peer_rpcs_.wait_for(rpc_id, std::chrono::milliseconds(timeout_ms),
+    // timeout_ms <= 0：无限等待（只由响应到达或错误断连唤醒，由 disconnect_handler 保证）。
+    auto wait_duration = (timeout_ms > 0)
+        ? std::chrono::milliseconds(timeout_ms)
+        : std::chrono::hours(24);  // 实际无限，disconnect_handler 保证唤醒
+    auto result = pending_peer_rpcs_.wait_for(rpc_id, wait_duration,
         [](const CMSharedPtr<PendingPeerRpc>& p) {
             return p->status_.load(std::memory_order_acquire)
                    != static_cast<uint8_t>(PeerRpcStatus::PENDING);
@@ -1648,17 +1644,48 @@ std::pair<uint8_t, CMString> WorkerAgent::peer_rpc_call(uint64_t conn_id,
 bool WorkerAgent::peer_rpc_respond(uint64_t conn_id, uint64_t rpc_id,
                                     const CMString& payload) {
     if (!peer_rpc_server_) return false;
-    return peer_rpc_server_->send_response(conn_id, rpc_id, 0, payload);
+    return peer_rpc_server_->send_response(conn_id, rpc_id,
+        static_cast<uint8_t>(PeerRpcWireStatus::OK), payload);
+}
+
+bool WorkerAgent::peer_rpc_respond_failure(uint64_t conn_id, uint64_t rpc_id,
+                                            const CMString& reason) {
+    if (!peer_rpc_server_) return false;
+    // RESPOND_FAILURE：精确匹配该 rpc_id 的 pending，只 fail 这一个请求。
+    // 区别于 notify_failure（NOTIFY_FAILURE, rpc_id=0 全局通知）。
+    return peer_rpc_server_->send_response(conn_id, rpc_id,
+        static_cast<uint8_t>(PeerRpcWireStatus::RESPOND_FAILURE), reason);
 }
 
 WorkerAgent::PeerRpcRequest WorkerAgent::peer_rpc_recv_request(int timeout_ms) {
     std::unique_lock<std::mutex> lk(peer_rpc_incoming_mutex_);
-    if (peer_rpc_incoming_.empty()) {
-        peer_rpc_incoming_cv_.wait_for(lk, std::chrono::milliseconds(timeout_ms),
-            [this] { return !peer_rpc_incoming_.empty(); });
+    // 优先检查错误断连（任何 compute 崩溃都意味着收不齐 nsd 个请求）。
+    auto check_error = [this]() -> bool {
+        if (!peer_rpc_error_conns_.empty()) {
+            peer_rpc_error_conns_.clear();
+            return true;
+        }
+        return false;
+    };
+    if (check_error()) {
+        throw std::runtime_error("peer connection error: remote disconnected");
     }
     if (peer_rpc_incoming_.empty()) {
-        return {0, 0, 0, ""};  // 超时
+        // timeout_ms <= 0：无限等待，只由请求到达或错误断连唤醒。
+        auto pred = [this] {
+            return !peer_rpc_incoming_.empty() || !peer_rpc_error_conns_.empty();
+        };
+        if (timeout_ms <= 0) {
+            peer_rpc_incoming_cv_.wait(lk, pred);
+        } else {
+            peer_rpc_incoming_cv_.wait_for(lk, std::chrono::milliseconds(timeout_ms), pred);
+        }
+    }
+    if (check_error()) {
+        throw std::runtime_error("peer connection error: remote disconnected");
+    }
+    if (peer_rpc_incoming_.empty()) {
+        return {0, 0, 0, ""};  // 超时（仅在 timeout_ms > 0 时可能）
     }
     auto req = std::move(peer_rpc_incoming_.front());
     peer_rpc_incoming_.erase(peer_rpc_incoming_.begin());
@@ -1671,8 +1698,9 @@ bool WorkerAgent::peer_rpc_notify_failure(uint64_t conn_id, const CMString& reas
 }
 
 void WorkerAgent::peer_rpc_close(uint64_t conn_id) {
+    // 优雅关闭：发 BYE → 等服务端 BYE_ACK → close。
     if (peer_rpc_server_) {
-        peer_rpc_server_->close_connection(conn_id);
+        peer_rpc_server_->send_bye(conn_id);
     }
 }
 
