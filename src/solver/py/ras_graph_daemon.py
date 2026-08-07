@@ -12,7 +12,7 @@ import pickle
 import numpy as np
 from _fly_log import DBG, INFO, WARN, ERR
 from fly import as_task
-from agent import PeerChannelGroup, serialize_array, deserialize_array
+from agent import PeerChannelGroup, PeerRpcStatus, serialize_array, deserialize_array
 
 
 def solve_ras_graph_v2(db, matrix_path, nsd,
@@ -30,9 +30,9 @@ def solve_ras_graph_v2(db, matrix_path, nsd,
     n_workers = nsd + 1
     master = get_agent()
     if not master.is_running() or master.worker_count < n_workers:
-        worker_configs = [{"attributes": ["check"]}]
-        for w in range(nsd):
-            worker_configs.append({"attributes": [f"sd_{w}"]})
+        # 所有 worker 均为普通 worker（无 attributes），check/compute task 均无
+        # requires，随机分派到任意 idle worker。简化配置、减少 attribute 匹配延迟。
+        worker_configs = [{"attributes": []} for _ in range(n_workers)]
         master.launch_local_workers(worker_configs)
         assert master.wait_for_workers(n_workers), f"{n_workers} workers should connect"
 
@@ -177,7 +177,7 @@ def _coord_prebuild_pipeline(db, matrix_path, nsd, overlap_ratio, max_iter, tol,
         _prebuild_coarse_grid(db, nsd)
 
 
-@as_task(requires=lambda db, group_id, sd, nsd, omega: [f"sd_{sd}"])
+@as_task(requires=lambda db, group_id, sd, nsd, omega: [])
 def compute_daemon_task(db, group_id, sd, nsd, omega_strategy):
     """常驻 compute：读预分块子域数据 → LDLT setup → connect check → while solve + RPC。"""
     from _fly_solver import ex_slv_ras_bupdated_solve, EXSlvSubdomainSolver
@@ -203,7 +203,7 @@ def compute_daemon_task(db, group_id, sd, nsd, omega_strategy):
 
     # ── Connect check ──
     group = PeerChannelGroup(group_id)
-    chan = group.connect(db, timeout=120)
+    chan = group.connect(db, timeout=30)
     INFO(f"[COMPUTE sd={sd}] connected to check")
 
     # ── 迭代循环 ──
@@ -250,11 +250,11 @@ def compute_daemon_task(db, group_id, sd, nsd, omega_strategy):
             "x": serialize_array(x_primary),
         })
         try:
-            status, resp = chan.rpc(payload, timeout=120)
+            status, resp = chan.rpc(payload, timeout=30)
         except Exception as e:
             INFO(f"[COMPUTE sd={sd}] RPC failed at step={step}: {e}")
             break
-        if status != 1:
+        if status != PeerRpcStatus.OK:
             INFO(f"[COMPUTE sd={sd}] check failure at step={step} status={status}")
             break
 
@@ -286,7 +286,7 @@ def compute_daemon_task(db, group_id, sd, nsd, omega_strategy):
     INFO(f"[COMPUTE sd={sd}] exited at step={step}")
 
 
-@as_task(requires=lambda db, group_id, nsd, max_iter, tol, omega: ["check"])
+@as_task(requires=lambda db, group_id, nsd, max_iter, tol, omega: [])
 def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
     """常驻 check：listen → accept → 收齐 nsd 份 → 内联粗校正 → 回复 → 循环。
 
@@ -300,7 +300,6 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
     group = PeerChannelGroup(group_id)
     listener = group.listen(db)
     INFO(f"[CHECK] listening port={listener.port}")
-
     coord = db.read_object("__rasg__coord")
     N = coord["N"]
     n = coord["n"]
@@ -340,7 +339,7 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
         failed = False
         for _ in range(nsd):
             try:
-                conn_id, rpc_id, src, payload = listener.accept_one(timeout=120)
+                conn_id, rpc_id, src, payload = listener.accept_one(timeout=30)
             except Exception:
                 failed = True; break
             if rpc_id == 0:
@@ -380,12 +379,19 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
             x_global = np.zeros(N, dtype=np.float64)
             for sd in range(nsd):
                 x_global[ps_arrays[sd]] = contributions[sd]["x"]
+            # 先 respond done 再 write_object：让 compute 尽快收到 done 退出，
+            # 避免在 write_object 的同步 register_write 期间 compute 因 RPC
+            # 超时（连接被 check stop PeerRpcServer 关闭）卡在 RUNNING，
+            # 导致 master stop() drain phase 死等。
+            for sd in range(nsd):
+                c = contributions[sd]
+                try:
+                    listener.respond(c["conn_id"], c["rpc_id"], pickle.dumps({"action": "done"}))
+                except Exception:
+                    pass
             db.write_object("__rasg__sol", x_global)
             db.write_object("__rasg__iters", step + 1)
             db.write_object("__rasg__converged", all_converged)
-            for sd in range(nsd):
-                c = contributions[sd]
-                listener.respond(c["conn_id"], c["rpc_id"], pickle.dumps({"action": "done"}))
             INFO(f"[CHECK] converged={all_converged} at step={step}")
             break
 
@@ -457,23 +463,23 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
 
 
 def _wait_solution(db, timeout=3600):
-    """轮询等 __rasg__sol（不用 @wait_obj 避免 can_still_produce 竞态）。"""
+    """轮询等 __rasg__converged（check 最后写的对象）。
+
+    check 按 sol → iters → converged 顺序写，每个 write_object(save_to_db=True)
+    内部 register_write 同步等 master ACK。converged 的 ACK 到达 master 意味着
+    三者都已注册，read 必命中 TIER2，不再 EOFError。
+
+    参考 ras.py v1 get_ras_solution 对同类 read-after-ready 竞态的修复。"""
     from _fly_storage import ex_stg_get_data_service
     ds = ex_stg_get_data_service()
-    sol_name = db.get_full_name("__rasg__sol")
+    converged_name = db.get_full_name("__rasg__converged")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if ds.has_local_object(sol_name) or ds.has_remote_location(sol_name):
+        if ds.has_local_object(converged_name) or ds.has_remote_location(converged_name):
             break
         time.sleep(0.2)
-    # 读结果时加重试（check 写 sol/iters/converged 可能有时序竞态）
-    for attempt in range(5):
-        try:
-            return {
-                "x": db.read_object("__rasg__sol"),
-                "iters": db.read_object("__rasg__iters"),
-                "converged": db.read_object("__rasg__converged"),
-            }
-        except Exception:
-            time.sleep(0.5)
-    raise RuntimeError("_wait_solution: failed to read solution after 5 retries")
+    return {
+        "x": db.read_object("__rasg__sol"),
+        "iters": db.read_object("__rasg__iters"),
+        "converged": db.read_object("__rasg__converged"),
+    }

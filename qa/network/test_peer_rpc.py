@@ -7,7 +7,7 @@ compute 发 RPC 请求，check 收到回响应。测往返延迟。
 """
 import os, time, tempfile
 from fly import open_db, get_config, as_task, wait_tasks
-from agent import PeerChannelGroup, serialize_array, deserialize_array
+from agent import PeerChannelGroup, PeerRpcStatus, serialize_array, deserialize_array
 import numpy as np
 
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "rpc_db")
@@ -57,6 +57,7 @@ def compute_task(db, group_id):
         t0 = time.perf_counter()
         status, resp = chan.rpc(serialize_array(arr), timeout=10)
         elapsed = (time.perf_counter() - t0) * 1000
+        assert status == PeerRpcStatus.OK, f"rpc {i} failed status={status}"
         result = deserialize_array(resp)
         expected = arr * 2
         ok = np.allclose(result, expected)

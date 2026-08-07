@@ -7,6 +7,7 @@
 #include <common/cpp/common_types.h>
 #include <common/cpp/concurrent_map.h>
 #include <common/cpp/error_types.h>
+#include <common/cpp/writer_pref_rwlock.h>
 #include <cstdint>
 #include <mutex>
 #include <shared_mutex>
@@ -15,6 +16,7 @@
 #include <functional>
 #include <string>
 #include <condition_variable>
+#include <chrono>
 
 namespace fly {
 
@@ -200,6 +202,7 @@ public:
     CMVector<uint64_t> get_remote_workers(const CMString& object_name) const;
 
     bool has_remote_location(const CMString& object_name) const;
+
     RemoteObjectInfo lookup_remote_idx(const CMString& object_name) const;
     // 返回对象的全部副本地址（每个副本含 worker_id/host/port）。无记录返回空。
     // 与 lookup_remote_idx（只返回首个）相对，供 TIER2 多副本轮询使用。
@@ -326,7 +329,11 @@ private:
     // 跨域读（lookup_remote_idx/lookup_all_remote_idx）持 remote+worker 双 shared_lock，
     // shared_lock 互相兼容，无死锁。
     mutable std::shared_mutex local_mutex_;
-    mutable std::shared_mutex remote_mutex_;
+    // remote_mutex_ 用写者优先锁：CPU 饥饿下，读者（has_remote_location 轮询、
+    // DataQuery lookup）持 shared_lock 期间被 OS 抢占会饿死写者（update_remote_idx
+    // 的 add_remote_location 需 unique_lock）。写者优先保证写者申请后新读者阻塞，
+    // 写者不会无限等待。详见 writer_pref_rwlock.h。
+    mutable WriterPrefRwLock remote_mutex_;
     mutable std::shared_mutex worker_mutex_;
     mutable std::shared_mutex db_paths_mutex_;
     mutable std::shared_mutex cb_mutex_;        // 2 个 read handler callback

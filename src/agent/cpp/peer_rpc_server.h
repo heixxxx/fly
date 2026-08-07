@@ -42,6 +42,10 @@ public:
         uint64_t conn_id, uint64_t rpc_id, uint8_t status,
         const CMString& payload)>;
 
+    // 连接断开回调（客户端角色）：P2P 连接断开时调用（对端关闭/网络断）。
+    // WorkerAgent 用它 fail 该 conn_id 上所有 pending RPC，避免 rpc_call 死等。
+    using DisconnectHandler = std::function<void(uint64_t conn_id)>;
+
     PeerRpcServer();
     ~PeerRpcServer();
 
@@ -54,6 +58,9 @@ public:
 
     // 设置响应到达回调（客户端角色）。收到 PEER_RPC_RESPONSE 时调用。
     void set_response_handler(ResponseHandler handler);
+
+    // 设置连接断开回调（客户端角色）。P2P 连接断开时调用。
+    void set_disconnect_handler(DisconnectHandler handler);
 
     // 客户端：连接到目标 host:port，返回 conn_id（0=失败）。
     // 带 retries 次重试（覆盖对端未就绪）。
@@ -90,6 +97,7 @@ private:
     std::atomic<bool> running_{false};
     RequestHandler request_handler_;
     ResponseHandler response_handler_;
+    DisconnectHandler disconnect_handler_;
 
     // 每连接的接收缓冲（累积半截帧，MessageProtocol::decode 原地切帧）
     std::mutex buf_mutex_;

@@ -71,11 +71,20 @@ struct PendingFreezeAck {
     TaskErrorType error_type_ = TaskErrorType::UNKNOWN;
 };
 
+// PeerRpc 状态码：peer_rpc_call 的返回值 + PendingPeerRpc::status_ 的取值。
+// 用 uint8_t 存储（atomic 兼容），枚举值作为语义标签，消除魔法数字。
+enum class PeerRpcStatus : uint8_t {
+    PENDING   = 0,   // 未完成（wait_for 的 predicate 检查 != PENDING）
+    OK        = 1,   // 正常响应
+    ERROR     = 2,   // 对端主动 notify_failure（payload 为 reason）
+    FAILED    = 3,   // 超时 / 连接断开 / send 失败（payload 为原因描述）
+};
+
 // Pending state for a peer RPC（业务 RPC 请求-响应）。rpc_id 匹配请求与响应。
-// status_: 0=未完成, 1=正常响应, 2=主动失败通知(notify_failure), 3=超时/断连。
 struct PendingPeerRpc {
-    std::atomic<uint8_t> status_{0};     // 0=pending, 1=ok, 2=error, 3=timeout/disconnect
+    std::atomic<uint8_t> status_{static_cast<uint8_t>(PeerRpcStatus::PENDING)};
     CMString payload_;                    // 响应 payload（ok）或失败 reason（error）
+    uint64_t conn_id_ = 0;               // 发请求的 P2P 连接（disconnect 时按此匹配 fail）
 };
 
 // Pending state for a synchronous var set/get (awaits master VAR_ACK).

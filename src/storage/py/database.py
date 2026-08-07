@@ -100,6 +100,14 @@ class _Database:
                 return obj
             # Zero-copy: use _read_decompressed to avoid intermediate copies
             data, _ = self._db._read_decompressed(name, backup)
+            # read_object_compressed 在所有 tier miss 时返回 nullptr，_read_decompressed
+            # 翻译成空 bytes（storage_export.cpp）。不检查直接 pickle.loads(b'') 会抛
+            # 误导性的 EOFError: Ran out of input，掩盖"对象不存在/尚未可见"的真相。
+            # 这里前置检查，把语义还原成标准的"读不到"异常。
+            if not data:
+                raise KeyError(
+                    f"Object '{name}' not found (no data — not yet visible to master "
+                    f"or never written)")
             obj = pickle.loads(data)
             rc.put(key, "high", obj)
             return obj
@@ -107,6 +115,10 @@ class _Database:
         # pickle object, cache="low"/"none": C++ low tier handles byte caching.
         # Zero-copy: use _read_decompressed to avoid intermediate copies
         data, _ = self._db._read_decompressed(name, backup)
+        if not data:
+            raise KeyError(
+                f"Object '{name}' not found (no data — not yet visible to master "
+                f"or never written)")
         return pickle.loads(data)
 
     def _invalidate_read_cache(self, name: str):

@@ -90,7 +90,7 @@ void DataService::reset() {
         }
     }
     {
-        std::unique_lock<std::shared_mutex> lock(remote_mutex_);
+        std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
         remote_idx_.clear();
     }
     {
@@ -377,7 +377,7 @@ void DataService::clear_local_index_for_db(const CMString& db_path) {
 }
 
 void DataService::clear_remote_index_for_db(const CMString& db_path) {
-    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
+    std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     remote_idx_.erase(db_path);
     DBG("clear_remote_index_for_db: cleared remote_idx for db_path={}", db_path);
 }
@@ -457,14 +457,14 @@ void DataService::update_remote_idx(const CMString& object_name,
     add_remote_location(object_name, worker_id);
     if (size_bytes > 0) {
         auto [db_path, short_name] = split_full(object_name);
-        std::unique_lock<std::shared_mutex> lock(remote_mutex_);
+        std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
         remote_idx_[db_path][short_name].size_bytes_ = size_bytes;
     }
 }
 
 int64_t DataService::get_remote_size(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::shared_lock<std::shared_mutex> lock(remote_mutex_);
+    std::shared_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
@@ -477,7 +477,7 @@ int64_t DataService::get_remote_size(const CMString& object_name) const {
 
 void DataService::add_remote_location(const CMString& object_name, uint64_t worker_id) {
     auto [db_path, short_name] = split_full(object_name);
-    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
+    std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     auto& meta = remote_idx_[db_path][short_name];
     if (std::find(meta.workers_.begin(), meta.workers_.end(), worker_id) == meta.workers_.end()) {
         meta.workers_.push_back(worker_id);
@@ -486,7 +486,7 @@ void DataService::add_remote_location(const CMString& object_name, uint64_t work
 
 void DataService::remove_remote_location(const CMString& object_name) {
     auto [db_path, short_name] = split_full(object_name);
-    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
+    std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
         db_it->second.erase(short_name);
@@ -495,7 +495,7 @@ void DataService::remove_remote_location(const CMString& object_name) {
 
 void DataService::remove_remote_location(const CMString& object_name, uint64_t worker_id) {
     auto [db_path, short_name] = split_full(object_name);
-    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
+    std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
@@ -511,7 +511,7 @@ void DataService::remove_remote_location(const CMString& object_name, uint64_t w
 
 CMVector<uint64_t> DataService::get_remote_workers(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::shared_lock<std::shared_mutex> lock(remote_mutex_);
+    std::shared_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
@@ -524,7 +524,7 @@ CMVector<uint64_t> DataService::get_remote_workers(const CMString& object_name) 
 
 bool DataService::has_remote_location(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::shared_lock<std::shared_mutex> lock(remote_mutex_);
+    std::shared_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
         auto it = db_it->second.find(short_name);
@@ -533,12 +533,13 @@ bool DataService::has_remote_location(const CMString& object_name) const {
     return false;
 }
 
+
 RemoteObjectInfo DataService::lookup_remote_idx(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
     // 跨域读：remote_idx（worker_id 列表）+ worker_registry（host/port）。
     // 双 shared_lock 并发持有，shared_lock 互相兼容，无死锁；worker_registry 保持
     // 地址唯一权威，无冗余数据漏改风险。
-    std::shared_lock<std::shared_mutex> rlock(remote_mutex_);
+    std::shared_lock<fly::WriterPrefRwLock> rlock(remote_mutex_);
     std::shared_lock<std::shared_mutex> wlock(worker_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
@@ -557,7 +558,7 @@ RemoteObjectInfo DataService::lookup_remote_idx(const CMString& object_name) con
 CMVector<RemoteObjectInfo> DataService::lookup_all_remote_idx(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
     // 跨域读：双 shared_lock（同 lookup_remote_idx）。
-    std::shared_lock<std::shared_mutex> rlock(remote_mutex_);
+    std::shared_lock<fly::WriterPrefRwLock> rlock(remote_mutex_);
     std::shared_lock<std::shared_mutex> wlock(worker_mutex_);
     CMVector<RemoteObjectInfo> out;
     auto db_it = remote_idx_.find(db_path);
@@ -576,7 +577,7 @@ CMVector<RemoteObjectInfo> DataService::lookup_all_remote_idx(const CMString& ob
 
 void DataService::remove_remote_index(const CMString& object_name) {
     auto [db_path, short_name] = split_full(object_name);
-    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
+    std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it != remote_idx_.end()) {
         db_it->second.erase(short_name);
@@ -1239,7 +1240,7 @@ void DataService::cleanup_temp_entries(const CMString& db_path) {
 
 void DataService::record_remote_access(const CMString& object_name) {
     auto [db_path, short_name] = split_full(object_name);
-    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
+    std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it == remote_idx_.end()) return;
     auto obj_it = db_it->second.find(short_name);
@@ -1254,7 +1255,7 @@ BackupDecision DataService::evaluate_auto_backup(const CMString& object_name,
                                                    uint64_t threshold,
                                                    uint32_t target_replicas) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::shared_lock<std::shared_mutex> lock(remote_mutex_);
+    std::shared_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     BackupDecision decision;
     decision.target_replicas_ = target_replicas;
     decision.read_count_ = 0;
@@ -1283,7 +1284,7 @@ BackupDecision DataService::evaluate_auto_backup(const CMString& object_name,
 }
 
 void DataService::decay_remote_access(int64_t protection_seconds, int decay_factor_percent) {
-    std::unique_lock<std::shared_mutex> lock(remote_mutex_);
+    std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     int64_t current_time = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     
@@ -1301,7 +1302,7 @@ void DataService::decay_remote_access(int64_t protection_seconds, int decay_fact
 
 uint64_t DataService::get_access_read_count(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
-    std::shared_lock<std::shared_mutex> lock(remote_mutex_);
+    std::shared_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
     if (db_it == remote_idx_.end()) return 0;
     auto obj_it = db_it->second.find(short_name);

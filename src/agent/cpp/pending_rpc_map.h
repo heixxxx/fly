@@ -90,6 +90,19 @@ public:
         cv_.notify_all();
     }
 
+    // Batch complete: run filler on every entry matching pred, wake all waiters.
+    // 用于连接断开时批量 fail 该连接上的所有 pending（P2P 场景下对端断 = 全失败）。
+    template <typename Pred, typename Filler>
+    void complete_all_if(Pred pred, Filler filler) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& [key, pending] : map_) {
+            if (pred(*pending)) {
+                filler(*pending);
+            }
+        }
+        cv_.notify_all();
+    }
+
     // Two-phase complete (step 1): pop the shared_ptr out under the lock so the
     // caller can mutate it outside the lock (e.g. constructing a FlyBuffer).
     // The entry is re-inserted by return_for_complete() after mutation.

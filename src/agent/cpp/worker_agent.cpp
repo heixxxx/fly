@@ -1558,12 +1558,28 @@ int WorkerAgent::start_peer_rpc_listen(const CMString& host, int port) {
             return std::nullopt;  // 异步处理（Python 层 peer_rpc_respond 回响应）
         });
     // response_handler（客户端角色：收响应路由到 PendingRpcMap）
+    // 线上 status: 0=正常, 1=notify_failure；转内部 PeerRpcStatus。
     peer_rpc_server_->set_response_handler(
         [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, const CMString& payload) {
             pending_peer_rpcs_.complete(rpc_id, [&](PendingPeerRpc& p) {
-                p.status_.store(status == 1 ? 2 : 1, std::memory_order_release);
+                p.status_.store(static_cast<uint8_t>(
+                    status == 1 ? PeerRpcStatus::ERROR : PeerRpcStatus::OK),
+                    std::memory_order_release);
                 p.payload_ = payload;
             });
+        });
+    // disconnect_handler：P2P 连接断开时 fail 该连接上所有 pending RPC，
+    // 避免 compute 的 chan.rpc 死等已关闭的 check 连接（check 收敛退出后
+    // stop_peer_rpc 关闭所有连接，compute 必须立即收到失败并退出 task）。
+    peer_rpc_server_->set_disconnect_handler(
+        [this](uint64_t conn_id) {
+            pending_peer_rpcs_.complete_all_if(
+                [conn_id](const PendingPeerRpc& p) { return p.conn_id_ == conn_id; },
+                [](PendingPeerRpc& p) {
+                    p.status_.store(static_cast<uint8_t>(PeerRpcStatus::FAILED),
+                                    std::memory_order_release);
+                    p.payload_ = "peer connection closed";
+                });
         });
     peer_rpc_port_ = bound_port;  // listen 返回的实际端口
     return peer_rpc_port_;
@@ -1577,9 +1593,22 @@ uint64_t WorkerAgent::peer_rpc_connect(const CMString& host, int port,
         peer_rpc_server_->set_response_handler(
             [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, const CMString& payload) {
                 pending_peer_rpcs_.complete(rpc_id, [&](PendingPeerRpc& p) {
-                    p.status_.store(status == 1 ? 2 : 1, std::memory_order_release);
+                    p.status_.store(static_cast<uint8_t>(
+                        status == 1 ? PeerRpcStatus::ERROR : PeerRpcStatus::OK),
+                        std::memory_order_release);
                     p.payload_ = payload;
                 });
+            });
+        // 客户端模式同样需要 disconnect handler：check 连接断开时 fail pending
+        peer_rpc_server_->set_disconnect_handler(
+            [this](uint64_t conn_id) {
+                pending_peer_rpcs_.complete_all_if(
+                    [conn_id](const PendingPeerRpc& p) { return p.conn_id_ == conn_id; },
+                    [](PendingPeerRpc& p) {
+                        p.status_.store(static_cast<uint8_t>(PeerRpcStatus::FAILED),
+                                        std::memory_order_release);
+                        p.payload_ = "peer connection closed";
+                    });
             });
     }
     return peer_rpc_server_->connect_peer(host, port, retries, retry_interval_ms);
@@ -1588,25 +1617,29 @@ uint64_t WorkerAgent::peer_rpc_connect(const CMString& host, int port,
 std::pair<uint8_t, CMString> WorkerAgent::peer_rpc_call(uint64_t conn_id,
                                                          const CMString& payload,
                                                          int timeout_ms) {
-    if (!peer_rpc_server_) return {3, "peer rpc not initialized"};
+    if (!peer_rpc_server_) {
+        return {static_cast<uint8_t>(PeerRpcStatus::FAILED), "peer rpc not initialized"};
+    }
 
     uint64_t rpc_id = next_rpc_id_.fetch_add(1, std::memory_order_relaxed);
     auto pending = CMMakeShared<PendingPeerRpc>();
+    pending->conn_id_ = conn_id;
     pending_peer_rpcs_.emplace(rpc_id, pending);
 
     if (!peer_rpc_server_->send_request(conn_id, rpc_id, worker_id_, payload)) {
         pending_peer_rpcs_.erase(rpc_id);
-        return {3, "send_request failed"};
+        return {static_cast<uint8_t>(PeerRpcStatus::FAILED), "send_request failed"};
     }
 
     auto result = pending_peer_rpcs_.wait_for(rpc_id, std::chrono::milliseconds(timeout_ms),
         [](const CMSharedPtr<PendingPeerRpc>& p) {
-            return p->status_.load(std::memory_order_acquire) != 0;
+            return p->status_.load(std::memory_order_acquire)
+                   != static_cast<uint8_t>(PeerRpcStatus::PENDING);
         });
     pending_peer_rpcs_.erase(rpc_id);
 
     if (!result) {
-        return {3, "timeout"};  // 超时
+        return {static_cast<uint8_t>(PeerRpcStatus::FAILED), "timeout"};
     }
     uint8_t status = result->status_.load(std::memory_order_acquire);
     return {status, std::move(result->payload_)};

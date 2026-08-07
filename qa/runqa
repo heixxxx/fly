@@ -258,6 +258,27 @@ def _resolve_max_workers(j):
     return min(j, _MAX_PARALLEL)
 
 
+def _resolve_default_parallelism():
+    """Compute the default -j based on CPU cores.
+
+    Heavy solver tests each spawn nsd+1 worker processes doing CPU-bound numpy.
+    Running 4 such tests concurrently on a 6-core box saturates all cores
+    (loadavg >> nproc), starving the master reactor thread and causing message
+    processing delays that trigger hangs/timeouts. Cap the default to leave
+    headroom: at most min(nproc, 4), and on low-core boxes (< 8) use nproc-2
+    to reserve cores for master reactor + OS.
+    """
+    try:
+        nproc = os.cpu_count() or 4
+    except NotImplementedError:
+        nproc = 4
+    if nproc <= 4:
+        return max(1, nproc - 1)
+    if nproc < 8:
+        return max(2, nproc - 2)
+    return 4
+
+
 def _parallelism_label(j):
     """Human-readable parallelism label for the header."""
     if j <= 0:
@@ -278,9 +299,15 @@ def main():
     parser.add_argument("paths", nargs="*",
                         help="Test files and/or directories to run "
                              "(default: all test_*.py under qa/)")
-    parser.add_argument("-j", type=int, default=4,
-                        help="Max parallel tests (default=4, max=32). 0=unlimited "
-                             "(capped at 32 to avoid overload-induced timeouts)")
+    _default_j = _resolve_default_parallelism()
+    parser.add_argument("-j", type=int, default=_default_j,
+                        help=f"Max parallel tests (default={_default_j} based on CPU "
+                             f"cores, max=32). 0=unlimited (capped at 32 to avoid "
+                             f"overload-induced timeouts)")
+    parser.add_argument("--no-shuffle", action="store_true",
+                        help="Disable random test order (default: shuffle to spread "
+                             "heavy solver tests among lightweight ones, reducing "
+                             "concurrent CPU-bound load spikes)")
     parser.add_argument("-t", "--timeout", type=int, default=20,
                         help="Per-test timeout in seconds (default=20)")
     args = parser.parse_args()
@@ -297,6 +324,16 @@ def main():
         )
 
     tests = collect_tests(args.paths) if args.paths else find_tests()
+
+    # 随机打乱测试顺序（可 --no-shuffle 关闭）。
+    # find_tests 返回 sorted 顺序，solver 等重测试（每个起 nsd+1 worker 做 CPU-bound
+    # numpy）会聚集在一起，并发跑时瞬间打满 CPU。打乱后重测试分散到轻量测试之间，
+    # 降低同一时刻多个重测试叠加的概率，缓解 CPU 饥饿导致的消息处理延迟。
+    if not args.no_shuffle:
+        import random
+        shuffled = list(tests)
+        random.shuffle(shuffled)
+        tests = shuffled
 
     # Clean and create qa log directory
     qa_log_dir = os.path.join(SCRIPT_DIR, "logs")

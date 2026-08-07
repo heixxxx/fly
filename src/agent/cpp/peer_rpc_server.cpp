@@ -66,6 +66,10 @@ void PeerRpcServer::set_response_handler(ResponseHandler handler) {
     response_handler_ = std::move(handler);
 }
 
+void PeerRpcServer::set_disconnect_handler(DisconnectHandler handler) {
+    disconnect_handler_ = std::move(handler);
+}
+
 void PeerRpcServer::server_loop() {
     while (running_.load()) {
         auto events = transport_->poll(10);  // 10ms timeout
@@ -121,8 +125,16 @@ void PeerRpcServer::server_loop() {
                 }
                 case TransportEventType::DISCONNECT: {
                     DBG("PeerRpcServer connection closed conn_id={}", event.conn_id_);
-                    std::lock_guard<std::mutex> lk(buf_mutex_);
-                    recv_bufs_.erase(event.conn_id_);
+                    {
+                        std::lock_guard<std::mutex> lk(buf_mutex_);
+                        recv_bufs_.erase(event.conn_id_);
+                    }
+                    // 通知调用方 fail 该连接上的所有 pending RPC，避免 rpc_call 死等。
+                    // 对端关闭连接（如 check 收敛后 stop_peer_rpc）时，compute 的
+                    // pending RPC 必须被唤醒并返回错误，否则 task 卡 RUNNING。
+                    if (disconnect_handler_) {
+                        disconnect_handler_(event.conn_id_);
+                    }
                     break;
                 }
                 default:  // ERROR
@@ -177,6 +189,26 @@ bool PeerRpcServer::is_connected(uint64_t conn_id) const {
 
 void PeerRpcServer::stop() {
     running_.store(false);
+
+    // 优雅退出：关闭连接前，先对每个活跃连接触发 disconnect_handler，
+    // 确保本端 pending RPC 被立即 fail（而非依赖 close_all 的 DISCONNECT
+    // 事件被即将退出的 server_loop 处理——那不可靠，因为 running_=false
+    // 后 loop 可能不再处理事件）。
+    // 对端的 pending 释放由对端自己的 transport 检测 FIN 后触发，不依赖这里。
+    if (disconnect_handler_) {
+        std::vector<uint64_t> active_conns;
+        {
+            std::lock_guard<std::mutex> lk(buf_mutex_);
+            active_conns.reserve(recv_bufs_.size());
+            for (const auto& [conn_id, _] : recv_bufs_) {
+                active_conns.push_back(conn_id);
+            }
+        }
+        for (uint64_t conn_id : active_conns) {
+            disconnect_handler_(conn_id);
+        }
+    }
+
     if (transport_) {
         transport_->stop_listening();
         transport_->close_all();
@@ -191,6 +223,7 @@ void PeerRpcServer::stop() {
     transport_.reset();
     request_handler_ = nullptr;
     response_handler_ = nullptr;
+    disconnect_handler_ = nullptr;
     DBG("PeerRpcServer stopped");
 }
 

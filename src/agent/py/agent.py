@@ -842,6 +842,15 @@ def deserialize_array(data):
     return _np.frombuffer(data[5+dt_len:], dtype=dtype).reshape(shape0).copy()
 
 
+class PeerRpcStatus:
+    """PeerRpc 状态码（与 C++ PeerRpcStatus 枚举对应）。
+    peer_rpc_call / chan.rpc 的返回 status 取这些值。"""
+    PENDING = 0    # 未完成（内部用，不会作为返回值）
+    OK = 1         # 正常响应
+    ERROR = 2      # 对端主动 notify_failure（resp 为 reason）
+    FAILED = 3     # 超时 / 连接断开 / send 失败（resp 为原因描述）
+
+
 class PeerChannel:
     """客户端侧 channel（compute worker 用）。连接到 check 的业务端口。"""
     def __init__(self, agent, conn_id):
@@ -850,7 +859,8 @@ class PeerChannel:
 
     def rpc(self, payload, timeout=30):
         """请求-响应（同步）。payload: bytes。返回 (status, response_bytes)。
-        status: 1=ok, 2=error(notify_failure), 3=timeout/disconnect。"""
+        status 见 PeerRpcStatus：OK=正常, ERROR=对端 notify_failure,
+        FAILED=超时/断连/send 失败。调用方判断 status != PeerRpcStatus.OK 即失败。"""
         payload_str = payload.decode('latin-1') if isinstance(payload, bytes) else payload
         status, resp_str = self._agent.peer_rpc_call(self._conn_id, payload_str, int(timeout * 1000))
         return status, resp_str.encode('latin-1') if isinstance(resp_str, str) else resp_str
@@ -960,5 +970,5 @@ class PeerChannelGroup:
 
 
 __all__ = ['FlyAgent', 'Master', 'Worker',
-           'PeerChannelGroup', 'PeerChannel', 'PeerListener',
+           'PeerChannelGroup', 'PeerChannel', 'PeerListener', 'PeerRpcStatus',
            'serialize_array', 'deserialize_array']
