@@ -1,12 +1,11 @@
-"""E2E test: 跨 path merge_db + 源句柄读重定向。
+"""E2E test: 跨 path merge_db + 源彻底删除（db chain 机制）。
 
-验证 db_path 废弃后的迁移重定向机制（_MIGRATED_TO）：
+验证 db chain 机制取代 _MIGRATED_TO 后的跨 path merge 行为：
   1. 在源 path 建 db，写数据，freeze
-  2. 跨 path merge（db_path=新路径）—— 源 path 保留，写 _MIGRATED_TO 指向新路径
-  3. 用【源 path 的 db 句柄】读数据 —— 应自动重定向到 merge 产物，读到正确数据
-
-这是 solver build_matrix→merge→solve 链不断的核心保障：merge 后旧 db 句柄
-（指向源 path）仍能 read_object 成功（经 resolve_migrated_path 路由到 target）。
+  2. 跨 path merge（db_path=新路径）—— **源 path 彻底删除**，不写 _MIGRATED_TO
+  3. merge 产物句柄能读全部数据
+  4. _DB_CHAIN 在 target 继承 source 身份（uid 不变）
+  5. 源 path 不再存在（无遗留）
 """
 from _fly_log import INFO
 import os
@@ -55,28 +54,40 @@ source_db_path = db.get_db_path()
 INFO(f"[CROSS-PATH] source db_path={source_db_path}, path={DB_PATH}")
 
 # ── Phase 2: 跨 path merge（db_path=MERGE_BASE）──
-# 源 path（DB_PATH）保留，写 _MIGRATED_TO 指向 MERGE_BASE。
+# db chain 机制：源 path 彻底删除，不写 _MIGRATED_TO。
 merged_db = merge_db(DB_PATH, merge_db_path=MERGE_BASE, delete_source=True)
 INFO(f"[CROSS-PATH] merge done, merged_db path={merged_db.get_db_path()}")
 
-# 验证源 path 仍存在（保留作迁移锚点），且有 _MIGRATED_TO 文件
-assert os.path.isdir(DB_PATH), "source path must be preserved as migration anchor"
-migrated_marker = os.path.join(DB_PATH, "_MIGRATED_TO")
-assert os.path.isfile(migrated_marker), f"_MIGRATED_TO should exist at {migrated_marker}"
-INFO(f"[CROSS-PATH] _MIGRATED_TO present at source path")
+# 验证源 path 已彻底删除（无遗留，不再像旧机制保留作迁移锚点）
+assert not os.path.isdir(DB_PATH), \
+    f"source path should be deleted after merge (db chain mechanism), but {DB_PATH} still exists"
+INFO(f"[CROSS-PATH] source path deleted (no _MIGRATED_TO residue)")
 
-# ── Phase 3: 验证迁移重定向 + cross-path read ──
-# 3a. _MIGRATED_TO 文件存在且非空（迁移机制核心）
-marker_content_exists = os.path.getsize(migrated_marker) > 0
-assert marker_content_exists, "_MIGRATED_TO should not be empty"
-INFO("[CROSS-PATH] _MIGRATED_TO has content (migration marker valid)")
-
-# 3b. 产物句柄（merge_db 返回值）能读 merge 数据 —— 验证 cross-path read 路径完整：
-#     master remote_idx 用 target 前缀，worker cleanup 扫 target 目录 idx + restore 到 target 命名空间。
+# ── Phase 3: 验证产物数据可读 + _DB_CHAIN 继承 ──
+# 3a. 产物句柄（merge_db 返回值）能读 merge 数据
 assert merged_db.read_object("data/alpha") == 100, \
     "merged db should read cross-path merged data"
 assert merged_db.read_object("data/beta") == 200, \
     "merged db should read cross-path merged data"
 INFO("[CROSS-PATH] merged db reads cross-path data correctly")
+
+# 3b. 验证 _DB_CHAIN 在 target 继承 source 身份（uid 存在、有 absorbed_from）
+target_chain_path = os.path.join(MERGE_BASE, "_DB_CHAIN")
+assert os.path.isfile(target_chain_path), \
+    f"_DB_CHAIN should exist at target {target_chain_path}"
+
+try:
+    from storage.py.db_chain import DbChainFile
+except ImportError:
+    from db_chain import DbChainFile
+
+target_cf = DbChainFile(MERGE_BASE)
+target_chain = target_cf.read()
+assert target_chain is not None, "target _DB_CHAIN should be readable"
+assert target_chain.get("uid") is not None, "target should inherit source uid"
+assert DB_PATH in target_chain.get("absorbed_from", []), \
+    f"target absorbed_from should contain source path {DB_PATH}"
+INFO(f"[CROSS-PATH] target _DB_CHAIN: uid={target_chain['uid']}, "
+     f"absorbed_from={target_chain.get('absorbed_from')}")
 
 INFO("[PASS] test_merge_db_cross_path")

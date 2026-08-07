@@ -371,6 +371,18 @@ class Master(FlyAgent):
         # 不再单独构造临时 Database（避免析构 unregister DataService::db_paths_ 的竞争）。
         db = _Database.__new__(_Database)
         db._db = self._agent.get_database(db_path)
+        # 恢复 _DB_CHAIN 链信息（uid/role/logical_name）+ 注册 uid→path 映射
+        try:
+            from storage.py.db_chain import DbChainFile
+        except ImportError:
+            from db_chain import DbChainFile
+        db._chain_file = DbChainFile(db_path)
+        db._chain_uid = None
+        db._chain_role = None
+        db._chain_logical_name = None
+        db._load_chain_info()
+        # next 自愈：检查并补齐缺失的 next 边（建链 crash 自愈）
+        db._heal_next_edges()
         return db
 
     def merge_db(self, path: str, data_path: str = "", merge_db_path: str = "",
@@ -586,18 +598,115 @@ class Master(FlyAgent):
                 merge_db_path, merge_data_path)
             INFO("merge_db: cleanup_after_merge done (broadcast + master state rebuilt)")
 
+        # ── db chain 更新（取代 _MIGRATED_TO 机制）──
+        # target 继承 source 身份（uid 不变）+ absorbed_from 记录旧 path +
+        # 更新直接邻居的 prev/next 中的 db_path + 彻底删源目录。
+        if ok:
+            self._update_chain_on_merge(db_path, merge_db_path, merge_data_path)
+
         # 产物 db 句柄：复用 cleanup_after_merge 在 db_instances_ 建好的权威 Database
         # （用源 db_path，保持 object_name = db_path:short 一致）。不再单独构造临时 Database，
         # 避免其析构 unregister DataService::db_paths_ 的竞争。
         # read_object 走 master remote_idx（merge task 已登记对象位置到 merge worker）。
         merged_db = _Database.__new__(_Database)
         merged_db._db = self._agent.get_database(db_path)
+        # 恢复 _DB_CHAIN 链信息
+        try:
+            from storage.py.db_chain import DbChainFile
+        except ImportError:
+            from db_chain import DbChainFile
+        merged_db._chain_file = DbChainFile(merge_db_path)
+        merged_db._chain_uid = None
+        merged_db._chain_role = None
+        merged_db._chain_logical_name = None
+        merged_db._load_chain_info()
         INFO(f"merge_db: done, ok={ok}, merged_data at {merge_data_path}")
         # 流程 message：merge_db 完成（跨机数据集中里程碑）。
         message("STOR::0002", 1,
                 f"merge_db done: db_path={db_path}, objects={len(completed)}, "
                 f"data_path={merge_data_path}")
         return merged_db
+
+    def _update_chain_on_merge(self, source_path, target_path, target_data_path):
+        """merge 后更新 db chain：target 继承 source 身份 + 更新邻居 + 彻底删源。
+
+        按 docs/db-chain-design.md §7.3：
+        5a. 读 source._DB_CHAIN（拿 uid, role, prev, next）
+        5b. target._DB_CHAIN 继承 source 身份 + absorbed_from 追加 source_path
+        5c. master uid_to_path_ 更新
+        5d. 靠 source.next[] 更新下游 S.prev[uid].db_path = target_path
+        5e. 靠 source.prev[] 更新上游 P.next[uid].db_path = target_path
+        5g. 彻底删除 source_path 目录
+        """
+        import os
+        import shutil
+
+        try:
+            from storage.py.db_chain import DbChainFile, make_chain, update_edge_path
+        except ImportError:
+            from db_chain import DbChainFile, make_chain, update_edge_path
+        try:
+            from storage.py.chain_registry import get_registry
+        except ImportError:
+            from chain_registry import get_registry
+
+        source_cf = DbChainFile(source_path)
+        source_chain = source_cf.read()
+
+        if source_chain is None:
+            # 旧 db 无 _DB_CHAIN → 无链更新，但仍删源目录（如果有 _MIGRATED_TO 兼容）
+            INFO(f"_update_chain_on_merge: source has no _DB_CHAIN at {source_path}, "
+                 f"skipping chain update")
+            return
+
+        uid = source_chain.get("uid")
+        role = source_chain.get("role")
+        logical_name = source_chain.get("logical_name")
+        prev_edges = source_chain.get("prev", [])
+        next_edges = source_chain.get("next", [])
+        absorbed = source_chain.get("absorbed_from", [])
+
+        # 5b. target 继承 source 身份 + absorbed_from 追加 source_path
+        target_cf = DbChainFile(target_path)
+        new_absorbed = list(absorbed) + [source_path]
+        target_chain = make_chain(uid, role, logical_name,
+                                  prev=prev_edges, next_=next_edges,
+                                  absorbed_from=new_absorbed)
+        target_cf.write_new(target_chain)
+        INFO(f"_update_chain_on_merge: target _DB_CHAIN written at {target_path}, "
+             f"uid={uid}, role={role}, absorbed_from={new_absorbed}")
+
+        # 5c. master uid_to_path_ 更新
+        registry = get_registry()
+        registry.update_path(uid, target_path)
+
+        # 5d. 靠 source.next[] 更新下游 S.prev[uid].db_path = target_path
+        for edge in next_edges:
+            downstream_path = edge.get("db_path")
+            if not downstream_path or not os.path.isdir(downstream_path):
+                continue
+            downstream_cf = DbChainFile(downstream_path)
+            downstream_cf.update_neighbor_path(uid, target_path, is_next=False)
+            INFO(f"_update_chain_on_merge: updated downstream {downstream_path} "
+                 f"prev[{uid[:8]}].db_path -> {target_path}")
+
+        # 5e. 靠 source.prev[] 更新上游 P.next[uid].db_path = target_path
+        for edge in prev_edges:
+            upstream_path = edge.get("db_path")
+            if not upstream_path or not os.path.isdir(upstream_path):
+                continue
+            upstream_cf = DbChainFile(upstream_path)
+            upstream_cf.update_neighbor_path(uid, target_path, is_next=True)
+            INFO(f"_update_chain_on_merge: updated upstream {upstream_path} "
+                 f"next[{uid[:8]}].db_path -> {target_path}")
+
+        # 5g. 彻底删除 source_path 目录（含 _DB_META/_FROZEN/_DB_CHAIN/.idx，全部）
+        #     必须在邻居更新之后
+        try:
+            shutil.rmtree(source_path, ignore_errors=False)
+            INFO(f"_update_chain_on_merge: deleted source directory {source_path}")
+        except Exception as e:
+            WARN(f"_update_chain_on_merge: failed to delete source {source_path}: {e}")
 
     def set_worker_property(self, prop):
         WARN("set_worker_property called on Master, ignoring")

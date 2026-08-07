@@ -34,8 +34,9 @@ Database::Database(const CMString& db_path, const CMString& data_path, uint64_t 
         return;
     }
 
-    // 跟随迁移：若 db_path/_MIGRATED_TO 存在，重定向 db_path_/data_path_ 到 target。
-    // 跨 path merge 后源 path 保留 _MIGRATED_TO 指针，新进程 load_db(源path) 时跟随到 target。
+    // 迁移跟随：_MIGRATED_TO 机制已废弃（db chain 取代）。
+    // resolve_migrated_path 现在对新 db 总是返回原始 path（_MIGRATED_TO 不再写入）。
+    // 旧 db 如有 _MIGRATED_TO 残留仍可跟随（兼容），但新 merge 不再产生此文件。
     CMString resolved = fly::DataService::instance()->resolve_migrated_path(db_path_);
     if (resolved != db_path_) {
         CMString target_data = fly::DataService::instance()->read_migrated_data_path(db_path_);

@@ -103,7 +103,7 @@ class Project:
 
     # ── protected：供注册的 flow 内部建库 ──────────────────────────────
 
-    def _create_db(self, name: str, data_path: str = ""):
+    def _create_db(self, name: str, data_path: str = "", db_cls=None, prev=None):
         """flow 内部建库（不暴露终端用户）。
 
         在 project 主目录下创建 ``<name>`` 子目录作为 db db_path，
@@ -114,6 +114,8 @@ class Project:
             name: db 子目录名 + Project 内部 key（logical_name）。
                 重名 → WARN 提醒（实际目录由 open_db 自动递增）。
             data_path: 可选 db data_path（透传给 open_db）。
+            db_cls: _Database 子类（决定 role）。默认 _Database（无 role）。
+            prev: 前驱 db 句柄列表（DAG 边）。默认 None（无前驱）。
 
         Returns:
             ``_Database`` 句柄。
@@ -129,14 +131,14 @@ class Project:
             WARN(f"Project: db name '{name}' already exists, "
                  f"creating a new variant (e.g. '{name}.1')")
 
-        db = open_db(db_base, data_path)
+        db = open_db(db_base, data_path, db_cls=db_cls, prev=prev, logical_name=name)
         actual_name = os.path.relpath(db.get_db_path(), self.db_path)
         actual_name = actual_name.replace(os.sep, "/")
 
         self._meta["dbs"][actual_name] = {
             "logical_name": name,
             "db_path": db.get_db_path(),
-            "db_path": db.get_db_path(),
+            "uid": db.get_uid(),     # db chain uid（用于跨 run 迁移追踪）
             # 浮点秒：同名多次运行可能密集发生，int 秒无法区分先后。
             "created_at": time.time(),
         }

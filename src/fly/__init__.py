@@ -78,7 +78,8 @@ def load_project(path: str) -> 'Project':
     return Project.load(path)
 
 
-def open_db(path: str, data_path: str = "") -> '_Database':
+def open_db(path: str, data_path: str = "", db_cls=None, prev=None,
+            logical_name=None) -> '_Database':
     """Open a new database.
 
     If ``path`` already contains a database, auto-creates a numbered variant
@@ -87,6 +88,9 @@ def open_db(path: str, data_path: str = "") -> '_Database':
     Args:
         path: Directory path for the database.
         data_path: Optional separate path for data storage.
+        db_cls: _Database 子类（决定 role）。默认 _Database（无 role）。
+        prev: 前驱 db 句柄列表（DAG 边）。默认 None（无前驱）。
+        logical_name: db 的逻辑名（用于 _DB_CHAIN）。默认取 path basename。
 
     Returns:
         A ``_Database`` instance.
@@ -99,7 +103,37 @@ def open_db(path: str, data_path: str = "") -> '_Database':
     if actual_path != path:
         WARN(f"open_db: path '{path}' already contains a database, "
              f"creating new database at '{actual_path}'")
-    return _Database(actual_path, data_path)
+
+    cls = db_cls or _Database
+    db = cls(actual_path, data_path)
+
+    # 初始化 _DB_CHAIN
+    try:
+        from storage.py.db_chain import generate_uid, make_edge
+    except ImportError:
+        from db_chain import generate_uid, make_edge
+    role = cls.role if cls.role is not None else None
+    uid = generate_uid(actual_path, role)
+    lname = logical_name or os.path.basename(actual_path)
+
+    # 构造前驱边
+    prev_edges = []
+    if prev:
+        for prev_db in prev:
+            prev_uid = prev_db.get_uid()
+            prev_role = prev_db.get_role()
+            prev_lname = prev_db._chain_logical_name or os.path.basename(prev_db.get_db_path())
+            prev_edges.append(make_edge(prev_uid, prev_role, prev_lname, prev_db.get_db_path()))
+
+    db._init_chain(uid, role, lname, prev_edges)
+
+    # 回填前驱的 next（双向链）
+    if prev:
+        self_edge = make_edge(uid, role, lname, actual_path)
+        for prev_db in prev:
+            prev_db._add_next_to_chain(self_edge)
+
+    return db
 
 
 def load_db(path: str) -> '_Database':

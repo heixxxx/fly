@@ -3,6 +3,7 @@
 package(default_visibility = ["//visibility:public"])
 
 load("@rules_cc//cc:defs.bzl", "cc_test")
+load("@rules_python//python:defs.bzl", "py_test")
 
 cc_test(
     name = "object_cache_test",
@@ -165,4 +166,13 @@ cc_test(
         "//src/storage/cpp:fly_storage",
     ],
     copts = ["-std=c++20"],
+)
+
+# db_chain 纯 Python 测试（不依赖 C++ runtime，stub _fly_log）
+py_test(
+    name = "db_chain_test",
+    srcs = ["test_db_chain.py"],
+    main = "test_db_chain.py",
+    deps = ["//src/storage/py:fly_storage_py"],
+    imports = ["../py"],
 )

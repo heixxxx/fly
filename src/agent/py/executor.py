@@ -52,33 +52,84 @@ def _deserialize_args(args: list, worker) -> list:
     result = []
     for arg in args:
         if isinstance(arg, str) and arg.startswith("__fly_db__:"):
-            # 格式：__fly_db__:{db_path}:{data_path}（db_path == db_path，不再单独传）
-            parts = arg.split(":", 2)
-            db_path = parts[1] if len(parts) > 1 else ""
-            data_path = parts[2] if len(parts) > 2 else ""
-            if db_path not in worker._db_cache:
+            # 支持两种格式：
+            #   新格式（db chain）：__fly_db__:{uid}:{db_path}:{data_path}
+            #   旧格式：__fly_db__:{db_path}:{data_path}
+            parts = arg.split(":")
+            # parts[0] = "__fly_db__"
+            uid = None
+            db_path = ""
+            data_path = ""
+            if len(parts) == 4:
+                # 新格式：__fly_db__:uid:db_path:data_path
+                uid = parts[1]
+                db_path = parts[2]
+                data_path = parts[3]
+            elif len(parts) == 3:
+                # 旧格式：__fly_db__:db_path:data_path
+                db_path = parts[1]
+                data_path = parts[2]
+            else:
+                db_path = parts[1] if len(parts) > 1 else ""
+                data_path = parts[2] if len(parts) > 2 else ""
+
+            # 用 uid 作 cache key（优先），fallback 到 db_path
+            cache_key = uid or db_path
+            if cache_key not in worker._db_cache:
                 from _fly_storage import ex_stg_get_data_service
                 ds = ex_stg_get_data_service()
+
+                # 选子类：读 _DB_CHAIN 的 role 查注册表
+                cls = _resolve_db_cls(db_path)
+
                 if ds.has_database(db_path):
                     from _fly_storage import ex_stg_create_database_with_path
-                    try:
-                        from storage.database import _Database
-                    except ImportError:
-                        from database import _Database
-                    db = _Database.__new__(_Database)
+                    db = cls.__new__(cls)
                     db._db = ex_stg_create_database_with_path(db_path, data_path, worker._worker_id, db_path)
                 else:
-                    try:
-                        from storage.database import _Database
-                    except ImportError:
-                        from database import _Database
-                    db = _Database(db_path, data_path, worker._worker_id)
+                    db = cls(db_path, data_path, worker._worker_id)
+
+                # 恢复 _DB_CHAIN 链信息
+                try:
+                    from storage.py.db_chain import DbChainFile
+                except ImportError:
+                    from db_chain import DbChainFile
+                db._chain_file = DbChainFile(db_path)
+                db._chain_uid = None
+                db._chain_role = None
+                db._chain_logical_name = None
+                db._load_chain_info()
+
                 worker._agent.register_database(db_path, db._db)
-                worker._db_cache[db_path] = db
-            result.append(worker._db_cache[db_path])
+                worker._db_cache[cache_key] = db
+                # 也用 db_path 缓存（旧格式 fallback）
+                if uid:
+                    worker._db_cache[db_path] = db
+            result.append(worker._db_cache[cache_key])
         else:
             result.append(pickle.loads(bytes.fromhex(arg)))
     return result
+
+
+def _resolve_db_cls(db_path):
+    """读 _DB_CHAIN 的 role，查 _ROLE_REGISTRY 选子类。旧 db 无 _DB_CHAIN 返回基类。"""
+    try:
+        from storage.py.db_chain import DbChainFile
+    except ImportError:
+        from db_chain import DbChainFile
+    try:
+        from storage.py.database import _Database
+    except ImportError:
+        from database import _Database
+
+    cf = DbChainFile(db_path)
+    chain = cf.read()
+    if chain is None:
+        return _Database
+    role = chain.get("role")
+    if role and role in _Database._ROLE_REGISTRY:
+        return _Database._ROLE_REGISTRY[role]
+    return _Database
 
 
 def create_executor(worker):

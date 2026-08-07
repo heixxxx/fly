@@ -2437,17 +2437,11 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
         ++rebuilt;
     }
 
-    // 5. 路径更新 + 迁移标识（跨 path merge 时写 _MIGRATED_TO）。
-    //    db_path == 源 db_path（db_path 废弃后）。merge_db_path 是产物路径。
-    //    - 默认 merge（db_path 不变，只 data_path 变）：无需 _MIGRATED_TO，set_paths 更新 data_path。
-    //    - 跨 path merge（db_path 变）：在源 db_path 写 _MIGRATED_TO 指向产物，
-    //      更新迁移缓存，让后续用源 path 的访问（如 solver 持有的旧 db 句柄）重定向到产物。
-    if (db_path != merge_db_path) {
-        // 跨 path merge：写迁移标识 + 更新缓存。
-        fly::DataService::write_migration_marker(db_path, merge_db_path, merge_data_path);
-        ds->set_migrated_path(db_path, merge_db_path);
-        INFO("cleanup_after_merge: cross-path migration {} -> {}", db_path, merge_db_path);
-    }
+    // 5. 路径更新（db chain 机制取代 _MIGRATED_TO）。
+    //    db_path == 源 db_path。merge_db_path 是产物路径。
+    //    set_paths 更新 Database 的内部路径指向 merge 产物。
+    //    链更新（target _DB_CHAIN 继承 + 邻居更新 + 彻底删源）由 Python 编排层负责，
+    //    不再写 _MIGRATED_TO（机制废弃，由 _DB_CHAIN.absorbed_from + master uid map 取代）。
 
     // 更新 db_instances_[db_path] 的 Database 路径指向 merge 路径。
     //    Database 是 master 进程路径唯一权威源；set_paths 同步 re-register 进

@@ -23,6 +23,7 @@ from _fly_log import INFO
 from fly import register_flow, as_task
 from fly import UserDoc, Schema, document
 from solver.project import SolverProject
+from solver.dbs import MatrixDb, SolveDb
 from solver.ras_graph import solve_ras_graph as _solve_ras_graph  # noqa: F401 (legacy compat)
 from solver.ras_graph import ras_graph_coord, _load_matrix
 
@@ -49,20 +50,30 @@ def _freeze_db_task(db, dep_keys):
 
 # ── 内部 task：solve kickoff（依赖 matrix_db 的 matrix，worker 执行）──
 #
-# 这是异步 solve 的关键：通过 inputs 依赖 matrix_db 的 "matrix" 对象，
-# master 在 matrix 写完后才调度本 task。本 task 在 worker 上读 matrix、还原
-# 工作 npz、调 ras_graph_coord（coord 非阻塞，自驱动整个迭代链）。这样 solve
-# flow 提交本 task 后即可立即返回 db，求解进度完全由 master 调度推进。
+# 这是异步 solve 的关键：通过 inputs 依赖链上前驱 matrix db 的 "matrix" 对象，
+# master 在 matrix 写完后才调度本 task。本 task 在 worker 上沿 db chain 找到
+# matrix db（find_db(role="matrix")）、读 matrix、还原工作 npz、调 ras_graph_coord
+# （coord 非阻塞，自驱动整个迭代链）。这样 solve flow 提交本 task 后即可立即
+# 返回 db，求解进度完全由 master 调度推进。
+#
+# db chain 范式：kickoff 不再需要 matrix_db 作为参数透传——靠 db 自身的 DAG
+# 前驱链找到 matrix db。但 inputs 声明仍需 matrix 对象的全名以建立调度依赖。
 
-@as_task(inputs=lambda db, matrix_db, nsd, overlap_ratio, max_iter, tol, omega:
-         [matrix_db.get_full_name("matrix")])
-def _solve_kickoff_task(db, matrix_db, nsd, overlap_ratio,
+@as_task(inputs=lambda db, matrix_full_name, nsd, overlap_ratio, max_iter, tol, omega:
+         [matrix_full_name])
+def _solve_kickoff_task(db, matrix_full_name, nsd, overlap_ratio,
                         max_iter, tol, omega):
     import os
     import numpy as np
     from solver.ras_graph import ras_graph_coord
 
-    m = matrix_db.read_object("matrix")      # matrix_db 由闭包/参数传入
+    # 沿 db chain 向前找 matrix db（role=matrix）
+    matrix_db = db.find_db(role="matrix")
+    if matrix_db is None:
+        raise RuntimeError("solve kickoff: cannot find matrix db in chain "
+                           "(role=matrix not found in DAG predecessors)")
+
+    m = matrix_db.read_object("matrix")
     work_npz = os.path.join(db.get_db_path(), "matrix.npz")
     np.savez(work_npz,
              n=np.int64(m["n"]), N=np.int64(m["N"]),
@@ -107,8 +118,8 @@ def build_matrix(self, name: str, matrix_path: str):
     if not _os.path.isfile(matrix_path):
         raise ValueError(f"build_matrix: matrix file not found: {matrix_path}")
 
-    # ── Step 2: 创建矩阵 db ──
-    db = self._create_db(name)
+    # ── Step 2: 创建矩阵 db（role=matrix，无前驱）──
+    db = self._create_db(name, db_cls=MatrixDb)
 
     # ── Step 3: 提交入口 task（写 matrix，worker 执行，非阻塞）──
     m = _load_matrix(matrix_path)            # master 本地读文件（快）
@@ -128,7 +139,8 @@ solve_doc.add_param("name",
     schema=Schema(str, check=lambda s: len(s) > 0, error="must not be empty"),
     required=True, desc="求解结果 db 的子目录名")
 solve_doc.add_param("matrix_db",
-    schema=Schema("_Database"),
+    schema=Schema(object, check=lambda x: hasattr(x, 'read_object') and hasattr(x, 'get_full_name'),
+                  error="must be a _Database (or subclass) instance"),
     required=True, desc="含 read_object('matrix') 的数据源 db（显式传入）")
 solve_doc.add_param("nsd",
     schema=Schema(int, check=lambda n: n >= 1, error="must be >= 1, got {value}"),
@@ -189,15 +201,16 @@ def solve(self, name: str, matrix_db, nsd,
         存求解过程的 ``_Database`` 句柄（求解异步进行中；__rasg__sol 就绪后可读结果，
         可用 wait_frozen 等待整库 frozen）。
     """
-    # ── Step 1: 创建求解 db ──
+    # ── Step 1: 创建求解 db（role=solve，前驱=matrix_db 建立 DAG 边）──
     # （nsd>=1 / matrix_db 非 None 已由 @document 的 schema 校验覆盖）
-    db = self._create_db(name)
+    db = self._create_db(name, db_cls=SolveDb, prev=[matrix_db])
 
-    # ── Step 2: 提交入口 task（kickoff：依赖 matrix_db 的 matrix）──
-    # master 在 matrix ready 后调度 kickoff；kickoff 在 worker 上读 matrix、还原 npz、
-    # 调 ras_graph_coord（coord 非阻塞，提交第一轮 compute/check 后返回，check 在 worker
-    # 内提交下一轮，整个迭代链由 master 调度自驱动）。
-    _solve_kickoff_task(db, matrix_db, nsd, overlap_ratio, max_iter, tol, omega)
+    # ── Step 2: 提交入口 task（kickoff：沿 chain 找 matrix db）──
+    # master 在 matrix ready 后调度 kickoff；kickoff 在 worker 上沿 db chain
+    # find_db(role="matrix") 找到 matrix db、读 matrix、还原 npz、调 ras_graph_coord。
+    # inputs 声明 matrix 对象全名以建立调度依赖（master 在 matrix 写完后才调度 kickoff）。
+    matrix_full_name = matrix_db.get_full_name("matrix")
+    _solve_kickoff_task(db, matrix_full_name, nsd, overlap_ratio, max_iter, tol, omega)
 
     # ── Step 3: 提交 freeze task（依赖求解完成标记 __rasg__sol）──
     _freeze_db_task(db, self._freeze_task_deps(db, ["__rasg__sol"]))

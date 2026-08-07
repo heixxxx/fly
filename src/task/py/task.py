@@ -261,8 +261,13 @@ def _serialize_args(args):
         if hasattr(arg, 'get_db_path') and hasattr(arg, 'get_full_name'):
             db_path = arg._db.get_db_path()
             data_path = arg._db.get_data_path()
-            # db_path == db_path，不再单独序列化 db_path
-            result.append(f"__fly_db__:{db_path}:{data_path}")
+            uid = getattr(arg, 'get_uid', lambda: None)()
+            # 新格式含 uid（db chain 支持）：__fly_db__:{uid}:{db_path}:{data_path}
+            # 旧 db 无 uid 时仍用旧格式：__fly_db__:{db_path}:{data_path}
+            if uid:
+                result.append(f"__fly_db__:{uid}:{db_path}:{data_path}")
+            else:
+                result.append(f"__fly_db__:{db_path}:{data_path}")
         else:
             result.append(pickle.dumps(arg).hex())
     return result

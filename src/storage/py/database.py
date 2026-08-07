@@ -11,6 +11,19 @@ _RETRY_INTERVAL_SEC = 1.0
 
 class _Database:
 
+    # ── 子类机制：role + 自动注册 ──────────────────────────────
+    # 基类 role=None（裸 db / 旧 db）。子类通过类属性声明 role：
+    #   class MatrixDb(_Database):
+    #       role = "matrix"
+    # 定义时自动注册到 _ROLE_REGISTRY，find_db 按 role 重建子类实例。
+    role = None
+    _ROLE_REGISTRY = {}
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if cls.role is not None:
+            _Database._ROLE_REGISTRY[cls.role] = cls
+
     def __init__(self, db_path: str, data_path: str = "", writer_id: int = 0):
         from fly.runtime import _mode
         if _mode == "master":
@@ -20,6 +33,21 @@ class _Database:
         else:
             from _fly_storage import ex_stg_create_database
             self._db = ex_stg_create_database(db_path, data_path, writer_id)
+
+        # chain 管理器（用于 _DB_CHAIN 文件读写）
+        try:
+            try:
+                from storage.py.db_chain import DbChainFile
+            except ImportError:
+                from db_chain import DbChainFile
+        except ImportError:
+            from db_chain import DbChainFile
+        self._chain_file = DbChainFile(db_path)
+
+        # 从 _DB_CHAIN 恢复 uid/role（已存在的 db），否则后续由 _init_chain 初始化
+        self._chain_uid = None
+        self._chain_role = None
+        self._chain_logical_name = None
 
     _WRITE_ERROR_MESSAGES = {
         EXStgWriteErrorType.FROZEN_DB: "Write to frozen database",
@@ -258,6 +286,302 @@ class _Database:
         """Remove a var. Asynchronous (local cache cleared immediately,
         master notified without waiting for ack)."""
         self._db._remove_var(name)
+
+    # ── DB Chain：构造与链管理 ─────────────────────────────────
+
+    @classmethod
+    def _wrap(cls, db_path: str, data_path: str = ""):
+        """获取/复用 C++ Database 指针，包装成 cls 实例（不建库）。
+
+        master: 走 MasterAgent::get_or_create_database（权威 map 复用同一 C++ 对象）。
+        worker: 走 ex_stg_create_database。
+        不重复建库——同 db_path 的 C++ Database 全进程唯一。
+
+        与 __init__ 的区别：__init__ 调用 open_db 逻辑（建库+写 meta），
+        _wrap 只获取已存在 db 的句柄（load 场景）。find_db 用 _wrap 构造前驱。
+        """
+        instance = cls.__new__(cls)   # 不调 __init__
+        from fly.runtime import _mode
+        if _mode == "master":
+            from fly.runtime import get_agent
+            instance._db = get_agent()._agent.get_or_create_database(db_path, data_path, 0)
+        else:
+            from _fly_storage import ex_stg_create_database
+            instance._db = ex_stg_create_database(db_path, data_path, 0)
+
+        try:
+            from storage.py.db_chain import DbChainFile
+        except ImportError:
+            from db_chain import DbChainFile
+        instance._chain_file = DbChainFile(db_path)
+        instance._chain_uid = None
+        instance._chain_role = None
+        instance._chain_logical_name = None
+        instance._load_chain_info()
+        return instance
+
+    def _init_chain(self, uid, role, logical_name, prev_edges=None):
+        """新建 db 时写入 _DB_CHAIN（首次写入，非 read-modify-write）。
+
+        Args:
+            uid: 逻辑身份。
+            role: 角色。
+            logical_name: 逻辑名。
+            prev_edges: 前驱边列表 [{uid, role, logical_name, db_path}]。
+        """
+        try:
+            from storage.py.db_chain import make_chain
+        except ImportError:
+            from db_chain import make_chain
+        chain = make_chain(uid, role, logical_name, prev=prev_edges or [])
+        self._chain_file.write_new(chain)
+        self._chain_uid = uid
+        self._chain_role = role
+        self._chain_logical_name = logical_name
+
+        # 注册到进程级 uid↔path 映射
+        try:
+            from storage.py.chain_registry import get_registry
+        except ImportError:
+            from chain_registry import get_registry
+        get_registry().register(uid, self.get_db_path())
+
+    def _load_chain_info(self):
+        """从磁盘 _DB_CHAIN 恢复 uid/role/logical_name（load_db / _wrap 时调用）。"""
+        chain = self._chain_file.read()
+        if chain is not None:
+            self._chain_uid = chain.get("uid")
+            self._chain_role = chain.get("role")
+            self._chain_logical_name = chain.get("logical_name")
+            # 注册到进程级映射
+            if self._chain_uid:
+                try:
+                    from storage.py.chain_registry import get_registry
+                except ImportError:
+                    from chain_registry import get_registry
+                get_registry().register(self._chain_uid, self.get_db_path())
+        # 旧 db 无 _DB_CHAIN → uid/role 均为 None，视为叶子
+
+    def get_uid(self):
+        """db 的逻辑身份 uid（旧 db 无 _DB_CHAIN 时为 None）。"""
+        return self._chain_uid
+
+    def get_role(self):
+        """db 的角色 role（旧 db 无 _DB_CHAIN 时为 None）。"""
+        if self._chain_role is not None:
+            return self._chain_role
+        # 子类的 role 类属性优先
+        return type(self).role
+
+    def _get_chain_data(self):
+        """读完整 _DB_CHAIN dict（并发安全 LOCK_SH）。无则返回 None。"""
+        return self._chain_file.read()
+
+    # ── DB Chain：查询 API ─────────────────────────────────────
+
+    def find_db(self, role=None, logical_name=None, uid=None):
+        """沿自身 DAG 向前（BFS），返回距离最近的一个匹配前驱。
+
+        匹配条件：uid 精确相等，或 role/logical_name 任一非 None 即参与匹配（AND 组合）。
+        多匹配：返回跳数最少者；同跳数按 prev 声明顺序取第一个。
+        找不到返回 None。
+
+        返回对应 role 子类实例（按 _DB_CHAIN 记录的 role 查 _ROLE_REGISTRY 重建）。
+        """
+        results = self._bfs_search(role, logical_name, uid, find_all=False)
+        return results[0] if results else None
+
+    def find_all_dbs(self, role=None, logical_name=None):
+        """返回 DAG 中所有匹配前驱列表（按 BFS 距离排序）。"""
+        return self._bfs_search(role, logical_name, None, find_all=True)
+
+    def prevs(self):
+        """返回直接前驱列表（仅一层，不递归）。"""
+        chain = self._get_chain_data()
+        if chain is None:
+            return []
+        return [self._reconstruct(edge) for edge in chain.get("prev", [])]
+
+    def nexts(self):
+        """返回直接后继列表（仅一层，不递归）。"""
+        chain = self._get_chain_data()
+        if chain is None:
+            return []
+        return [self._reconstruct(edge) for edge in chain.get("next", [])]
+
+    def _bfs_search(self, role, logical_name, uid, find_all):
+        """BFS 遍历 DAG 前驱，收集匹配的 db 实例。
+
+        Returns:
+            list of _Database 实例（按 BFS 距离排序）。find_all=False 时最多返回 1 个。
+        """
+        try:
+            from storage.py.db_chain import match_edge
+        except ImportError:
+            from db_chain import match_edge
+        try:
+            from storage.py.chain_registry import get_registry
+        except ImportError:
+            from chain_registry import get_registry
+
+        chain = self._get_chain_data()
+        if chain is None:
+            return []
+
+        registry = get_registry()
+        queue = []  # [(edge, depth)]
+        visited = set()
+        results = []
+
+        # 初始层：自己的直接前驱
+        for edge in chain.get("prev", []):
+            edge_uid = edge.get("uid")
+            if edge_uid is None or edge_uid in visited:
+                continue
+            visited.add(edge_uid)
+            if match_edge(edge, role, logical_name, uid):
+                results.append((edge, 0))
+                if not find_all:
+                    return [self._reconstruct(results[0][0])]
+            queue.append((edge, 0))
+
+        # BFS 展开
+        while queue:
+            cur_edge, depth = queue.pop(0)
+            cur_path = cur_edge.get("db_path")
+            if not cur_path:
+                continue
+
+            # 读前驱的 _DB_CHAIN 继续展开
+            try:
+                from storage.py.db_chain import DbChainFile
+            except ImportError:
+                from db_chain import DbChainFile
+            prev_cf = DbChainFile(cur_path)
+            prev_chain = prev_cf.read()
+            if prev_chain is None:
+                continue
+
+            for next_edge in prev_chain.get("prev", []):
+                next_uid = next_edge.get("uid")
+                if next_uid is None or next_uid in visited:
+                    continue
+                visited.add(next_uid)
+                if match_edge(next_edge, role, logical_name, uid):
+                    results.append((next_edge, depth + 1))
+                    if not find_all:
+                        return [self._reconstruct(results[0][0])]
+                queue.append((next_edge, depth + 1))
+
+        return [self._reconstruct(edge) for edge, _ in results]
+
+    def _reconstruct(self, edge):
+        """根据边节点重建 db 子类实例。
+
+        先查 master uid→path 映射拿最新 path（merge 后可能变了），
+        再按 role 查 _ROLE_REGISTRY 选子类，用 _wrap 构造。
+        """
+        try:
+            from storage.py.chain_registry import get_registry
+        except ImportError:
+            from chain_registry import get_registry
+        uid = edge.get("uid")
+        edge_path = edge.get("db_path")
+
+        # 优先查注册表拿最新 path（merge 后更新过）
+        actual_path = edge_path
+        if uid:
+            resolved = get_registry().resolve_uid(uid)
+            if resolved:
+                actual_path = resolved
+
+        if not actual_path:
+            return None
+
+        # 按 role 选子类
+        role = edge.get("role")
+        cls = _Database._ROLE_REGISTRY.get(role, _Database) if role else _Database
+        return cls._wrap(actual_path)
+
+    # ── DB Chain：建链辅助（供 _create_db / open_db 调用）─────
+
+    def _add_next_to_chain(self, edge):
+        """向后继列表追加一条边（建链时回填上游的 next）。"""
+        try:
+            from storage.py.db_chain import append_edge
+        except ImportError:
+            from db_chain import append_edge
+        def add_next(d):
+            d["next"], _ = append_edge(d.get("next", []), edge)
+            return d
+        self._chain_file.update(add_next)
+
+    def _update_neighbor_path(self, uid, new_path, is_next):
+        """merge 时更新邻居 _DB_CHAIN 中指向自己的 db_path。
+
+        Args:
+            uid: 被迁移 db 的 uid。
+            new_path: 迁移后的新 path。
+            is_next: True → 更新邻居的 next[]；False → 更新邻居的 prev[]。
+        """
+        try:
+            from storage.py.db_chain import update_edge_path
+        except ImportError:
+            from db_chain import update_edge_path
+        field = "next" if is_next else "prev"
+        def update_field(d):
+            update_edge_path(d.get(field, []), uid, new_path)
+            return d
+        self._chain_file.update(update_field)
+
+    # ── DB Chain：next 自愈（load 时校验补齐）─────────────────
+
+    def _heal_next_edges(self):
+        """校验并补齐缺失的 next 边（建链 crash 自愈）。
+
+        遍历自身的 prev[]，检查每个前驱的 next[] 是否包含自己。
+        若缺失则回填（prev 是权威边，next 是可重建的缓存）。
+
+        在 load_db / Project.load 时调用。
+        """
+        chain = self._get_chain_data()
+        if chain is None:
+            return
+
+        self_uid = chain.get("uid")
+        self_role = chain.get("role")
+        self_lname = chain.get("logical_name")
+        self_path = self.get_db_path()
+        if not self_uid:
+            return
+
+        for prev_edge in chain.get("prev", []):
+            prev_path = prev_edge.get("db_path")
+            prev_uid = prev_edge.get("uid")
+            if not prev_path or not prev_uid:
+                continue
+
+            # 读前驱的 _DB_CHAIN，检查 next 是否含自己
+            try:
+                from storage.py.db_chain import DbChainFile, make_edge, find_edge, append_edge
+            except ImportError:
+                from db_chain import DbChainFile, make_edge, find_edge, append_edge
+
+            prev_cf = DbChainFile(prev_path)
+            prev_chain = prev_cf.read()
+            if prev_chain is None:
+                continue
+
+            existing = find_edge(prev_chain.get("next", []), self_uid)
+            if existing is None:
+                # 缺失 → 回填
+                self_edge = make_edge(self_uid, self_role, self_lname, self_path)
+
+                def heal_upstream(d, edge=self_edge):
+                    d["next"], _ = append_edge(d.get("next", []), edge)
+                    return d
+
+                prev_cf.update(heal_upstream)
 
     def __repr__(self):
         return f"Database(db_path={self.get_db_path()})"

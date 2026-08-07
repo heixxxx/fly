@@ -52,3 +52,5 @@ class SolverProject(Project):
 # 必须在 SolverProject 类定义之后 import flows，使 @register_flow 执行时
 # SolverProject 已存在。import solver.flows 触发 flow 注册。
 import solver.flows  # noqa: E402,F401
+# import dbs 触发 MatrixDb/SolveDb 的 role 注册（_ROLE_REGISTRY）。
+import solver.dbs  # noqa: E402,F401
