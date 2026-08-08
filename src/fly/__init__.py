@@ -21,6 +21,12 @@ import os
 from _fly_log import WARN
 import _fly_message as _msg
 
+# db chain 模块级 import（避免 open_db 热路径 try/except）
+try:
+    from storage.py.db_chain import generate_uid, make_edge
+except ImportError:
+    from db_chain import generate_uid, make_edge
+
 try:
     from storage.database import _Database
 except ImportError:
@@ -108,10 +114,6 @@ def open_db(path: str, data_path: str = "", db_cls=None, prev=None,
     db = cls(actual_path, data_path)
 
     # 初始化 _DB_CHAIN
-    try:
-        from storage.py.db_chain import generate_uid, make_edge
-    except ImportError:
-        from db_chain import generate_uid, make_edge
     role = cls.role if cls.role is not None else None
     uid = generate_uid(actual_path, role)
     lname = logical_name or os.path.basename(actual_path)

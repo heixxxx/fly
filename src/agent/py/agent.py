@@ -8,6 +8,16 @@ from abc import ABC, abstractmethod
 from _fly_agent import EXAgentMaster, EXAgentWorker, EXTaskExecutor, EXTaskExecStatus
 from _fly_log import DBG, INFO, WARN, ERR
 
+# db chain 模块级 import（避免热路径 try/except）
+try:
+    from storage.py.db_chain import DbChainFile, make_chain
+except ImportError:
+    from db_chain import DbChainFile, make_chain
+try:
+    from storage.py.chain_registry import get_registry
+except ImportError:
+    from chain_registry import get_registry
+
 from .executor import create_executor
 
 # message 系统：业务代码必须用 fly.* 公开包装，禁止直接用 _fly_message 底层绑定。
@@ -372,10 +382,6 @@ class Master(FlyAgent):
         db = _Database.__new__(_Database)
         db._db = self._agent.get_database(db_path)
         # 恢复 _DB_CHAIN 链信息（uid/role/logical_name）+ 注册 uid→path 映射
-        try:
-            from storage.py.db_chain import DbChainFile
-        except ImportError:
-            from db_chain import DbChainFile
         db._chain_file = DbChainFile(db_path)
         db._chain_uid = None
         db._chain_role = None
@@ -611,10 +617,6 @@ class Master(FlyAgent):
         merged_db = _Database.__new__(_Database)
         merged_db._db = self._agent.get_database(db_path)
         # 恢复 _DB_CHAIN 链信息
-        try:
-            from storage.py.db_chain import DbChainFile
-        except ImportError:
-            from db_chain import DbChainFile
         merged_db._chain_file = DbChainFile(merge_db_path)
         merged_db._chain_uid = None
         merged_db._chain_role = None
@@ -640,16 +642,6 @@ class Master(FlyAgent):
         """
         import os
         import shutil
-
-        try:
-            from storage.py.db_chain import DbChainFile, make_chain, update_edge_path
-        except ImportError:
-            from db_chain import DbChainFile, make_chain, update_edge_path
-        try:
-            from storage.py.chain_registry import get_registry
-        except ImportError:
-            from chain_registry import get_registry
-
         source_cf = DbChainFile(source_path)
         source_chain = source_cf.read()
 
@@ -701,12 +693,18 @@ class Master(FlyAgent):
                  f"next[{uid[:8]}].db_path -> {target_path}")
 
         # 5g. 彻底删除 source_path 目录（含 _DB_META/_FROZEN/_DB_CHAIN/.idx，全部）
-        #     必须在邻居更新之后
-        try:
-            shutil.rmtree(source_path, ignore_errors=False)
-            INFO(f"_update_chain_on_merge: deleted source directory {source_path}")
-        except Exception as e:
-            WARN(f"_update_chain_on_merge: failed to delete source {source_path}: {e}")
+        #     必须在邻居更新之后。
+        #     同 path merge（source_path == target_path）：不删源——源就是产物本身。
+        #     跨 path merge（source_path != target_path）：删源，产物在 target。
+        if os.path.abspath(source_path) != os.path.abspath(target_path):
+            try:
+                shutil.rmtree(source_path, ignore_errors=False)
+                INFO(f"_update_chain_on_merge: deleted source directory {source_path}")
+            except Exception as e:
+                WARN(f"_update_chain_on_merge: failed to delete source {source_path}: {e}")
+        else:
+            INFO(f"_update_chain_on_merge: same-path merge, source=target={source_path}, "
+                 f"no deletion needed")
 
     def set_worker_property(self, prop):
         WARN("set_worker_property called on Master, ignoring")

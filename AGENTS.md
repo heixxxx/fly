@@ -120,6 +120,13 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 - **Repro scripts must have timeout** — prevent hangs eating your whole night
 - **Load `/systematic-debugging-analysis` skill first** — follow its workflow
 
+### QA Debug 日志保护规则（必须遵守）
+
+- **一次只跑一轮 runqa**，失败后**立即停下来看日志**。绝不在失败后继续跑下一轮——runqa 的 `run_one` 在每次运行前会清理该 case 的历史日志（`{test_dir}/{test_name}/fly.log`），下一轮会覆盖失败轮的日志，导致**永久丢失失败现场**。
+- **多轮稳定性测试用 `-j4` 跑一次**（147 个 case 一次跑完），而非 for 循环跑多轮。要验证多轮稳定性，每轮之间必须**检查是否有失败**，有失败则立即停止分析，不得继续。
+- **失败日志位置**：`qa/{category}/{test_name}/fly.log`（stdout+stderr 合并）、`master.log`、`worker1.log` 等。这些是分析 timeout/fail 的唯一现场。
+- **runqa 的 `qa/logs/qa.log`** 每轮重建（覆盖），但 per-case 的 `fly.log` 只被同 case 下一轮覆盖。
+
 ## Config vs ProcessInfo
 
 - **Config**: shared across all processes, synced by master before starting workers. heartbeat/backup/compression/log_dir

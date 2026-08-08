@@ -166,18 +166,30 @@ def run():
         else:
             _run_master()
     except SystemExit:
-        _cleanup()
+        _safe_cleanup()
         raise
     except KeyboardInterrupt:
         print("", file=sys.stderr)
     except Exception:
         import traceback
         traceback.print_exc(file=sys.stderr)
-        _cleanup()
+        _safe_cleanup()
         return 1
 
-    _cleanup()
+    _safe_cleanup()
     return 0
+
+
+def _safe_cleanup():
+    """_cleanup with full error logging — never lets cleanup exceptions
+    escape silently (which would cause a non-zero exit code with no traceback,
+    turning real failures into opaque timeouts/FAILED in runqa)."""
+    try:
+        _cleanup()
+    except Exception:
+        import traceback
+        print("[fly] WARNING: _cleanup() raised an exception:", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
 
 
 __all__ = ["init", "run"]

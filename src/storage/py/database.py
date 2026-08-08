@@ -5,6 +5,22 @@ from _fly_storage import (
     EXStgWriteErrorType,
 )
 
+# 模块级 import db_chain（避免每次 _Database.__init__ 做 try/except import）
+try:
+    from storage.py.db_chain import (
+        DbChainFile, generate_uid, make_chain, make_edge,
+        find_edge, update_edge_path, remove_edge, append_edge, match_edge,
+    )
+except ImportError:
+    from db_chain import (
+        DbChainFile, generate_uid, make_chain, make_edge,
+        find_edge, update_edge_path, remove_edge, append_edge, match_edge,
+    )
+try:
+    from storage.py.chain_registry import get_registry
+except ImportError:
+    from chain_registry import get_registry
+
 _MAX_RETRIES = 3
 _RETRY_INTERVAL_SEC = 1.0
 
@@ -35,13 +51,6 @@ class _Database:
             self._db = ex_stg_create_database(db_path, data_path, writer_id)
 
         # chain 管理器（用于 _DB_CHAIN 文件读写）
-        try:
-            try:
-                from storage.py.db_chain import DbChainFile
-            except ImportError:
-                from db_chain import DbChainFile
-        except ImportError:
-            from db_chain import DbChainFile
         self._chain_file = DbChainFile(db_path)
 
         # 从 _DB_CHAIN 恢复 uid/role（已存在的 db），否则后续由 _init_chain 初始化
@@ -309,10 +318,6 @@ class _Database:
             from _fly_storage import ex_stg_create_database
             instance._db = ex_stg_create_database(db_path, data_path, 0)
 
-        try:
-            from storage.py.db_chain import DbChainFile
-        except ImportError:
-            from db_chain import DbChainFile
         instance._chain_file = DbChainFile(db_path)
         instance._chain_uid = None
         instance._chain_role = None
@@ -329,10 +334,6 @@ class _Database:
             logical_name: 逻辑名。
             prev_edges: 前驱边列表 [{uid, role, logical_name, db_path}]。
         """
-        try:
-            from storage.py.db_chain import make_chain
-        except ImportError:
-            from db_chain import make_chain
         chain = make_chain(uid, role, logical_name, prev=prev_edges or [])
         self._chain_file.write_new(chain)
         self._chain_uid = uid
@@ -340,10 +341,6 @@ class _Database:
         self._chain_logical_name = logical_name
 
         # 注册到进程级 uid↔path 映射
-        try:
-            from storage.py.chain_registry import get_registry
-        except ImportError:
-            from chain_registry import get_registry
         get_registry().register(uid, self.get_db_path())
 
     def _load_chain_info(self):
@@ -355,10 +352,6 @@ class _Database:
             self._chain_logical_name = chain.get("logical_name")
             # 注册到进程级映射
             if self._chain_uid:
-                try:
-                    from storage.py.chain_registry import get_registry
-                except ImportError:
-                    from chain_registry import get_registry
                 get_registry().register(self._chain_uid, self.get_db_path())
         # 旧 db 无 _DB_CHAIN → uid/role 均为 None，视为叶子
 
@@ -415,14 +408,6 @@ class _Database:
         Returns:
             list of _Database 实例（按 BFS 距离排序）。find_all=False 时最多返回 1 个。
         """
-        try:
-            from storage.py.db_chain import match_edge
-        except ImportError:
-            from db_chain import match_edge
-        try:
-            from storage.py.chain_registry import get_registry
-        except ImportError:
-            from chain_registry import get_registry
 
         chain = self._get_chain_data()
         if chain is None:
@@ -481,10 +466,6 @@ class _Database:
         先查 master uid→path 映射拿最新 path（merge 后可能变了），
         再按 role 查 _ROLE_REGISTRY 选子类，用 _wrap 构造。
         """
-        try:
-            from storage.py.chain_registry import get_registry
-        except ImportError:
-            from chain_registry import get_registry
         uid = edge.get("uid")
         edge_path = edge.get("db_path")
 
@@ -507,10 +488,6 @@ class _Database:
 
     def _add_next_to_chain(self, edge):
         """向后继列表追加一条边（建链时回填上游的 next）。"""
-        try:
-            from storage.py.db_chain import append_edge
-        except ImportError:
-            from db_chain import append_edge
         def add_next(d):
             d["next"], _ = append_edge(d.get("next", []), edge)
             return d
@@ -524,10 +501,6 @@ class _Database:
             new_path: 迁移后的新 path。
             is_next: True → 更新邻居的 next[]；False → 更新邻居的 prev[]。
         """
-        try:
-            from storage.py.db_chain import update_edge_path
-        except ImportError:
-            from db_chain import update_edge_path
         field = "next" if is_next else "prev"
         def update_field(d):
             update_edge_path(d.get(field, []), uid, new_path)

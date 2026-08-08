@@ -24,6 +24,20 @@ try:
 except ImportError:
     cloudpickle = None
 
+# 模块级 import db_chain（避免每次 _deserialize_args 做 try/except import）
+try:
+    from storage.py.db_chain import DbChainFile
+except ImportError:
+    from db_chain import DbChainFile
+try:
+    from storage.py.chain_registry import get_registry
+except ImportError:
+    from chain_registry import get_registry
+try:
+    from storage.py.database import _Database
+except ImportError:
+    from database import _Database
+
 try:
     from task.task import _USER_MODULE, _USER_FUNC_PREFIX
 except ImportError:
@@ -55,7 +69,8 @@ def _deserialize_args(args: list, worker) -> list:
             # 支持两种格式：
             #   新格式（db chain）：__fly_db__:{uid}:{db_path}:{data_path}
             #   旧格式：__fly_db__:{db_path}:{data_path}
-            parts = arg.split(":")
+            # 用 maxsplit 防止 data_path 含 ':' 被过度拆分。
+            parts = arg.split(":", 3)  # maxsplit=3 → 最多 4 段
             # parts[0] = "__fly_db__"
             uid = None
             db_path = ""
@@ -79,8 +94,17 @@ def _deserialize_args(args: list, worker) -> list:
                 from _fly_storage import ex_stg_get_data_service
                 ds = ex_stg_get_data_service()
 
-                # 选子类：读 _DB_CHAIN 的 role 查注册表
-                cls = _resolve_db_cls(db_path)
+                # 读 _DB_CHAIN 一次（role + chain info），避免重复 flock + I/O。
+                # 失败（文件不存在/损坏）时安全 fallback 到基类 _Database。
+                chain_data = None
+                try:
+                    chain_data = DbChainFile(db_path).read()
+                except Exception:
+                    pass
+
+                # 按 role 选子类（_Database / DbChainFile / get_registry 已模块级 import）
+                role = chain_data.get("role") if chain_data else None
+                cls = _Database._ROLE_REGISTRY.get(role, _Database) if role else _Database
 
                 if ds.has_database(db_path):
                     from _fly_storage import ex_stg_create_database_with_path
@@ -89,16 +113,13 @@ def _deserialize_args(args: list, worker) -> list:
                 else:
                     db = cls(db_path, data_path, worker._worker_id)
 
-                # 恢复 _DB_CHAIN 链信息
-                try:
-                    from storage.py.db_chain import DbChainFile
-                except ImportError:
-                    from db_chain import DbChainFile
+                # 从已读的 chain_data 恢复链信息（不再重复读文件）
                 db._chain_file = DbChainFile(db_path)
-                db._chain_uid = None
-                db._chain_role = None
-                db._chain_logical_name = None
-                db._load_chain_info()
+                db._chain_uid = chain_data.get("uid") if chain_data else None
+                db._chain_role = role
+                db._chain_logical_name = chain_data.get("logical_name") if chain_data else None
+                if db._chain_uid:
+                    get_registry().register(db._chain_uid, db.get_db_path())
 
                 worker._agent.register_database(db_path, db._db)
                 worker._db_cache[cache_key] = db
@@ -109,27 +130,6 @@ def _deserialize_args(args: list, worker) -> list:
         else:
             result.append(pickle.loads(bytes.fromhex(arg)))
     return result
-
-
-def _resolve_db_cls(db_path):
-    """读 _DB_CHAIN 的 role，查 _ROLE_REGISTRY 选子类。旧 db 无 _DB_CHAIN 返回基类。"""
-    try:
-        from storage.py.db_chain import DbChainFile
-    except ImportError:
-        from db_chain import DbChainFile
-    try:
-        from storage.py.database import _Database
-    except ImportError:
-        from database import _Database
-
-    cf = DbChainFile(db_path)
-    chain = cf.read()
-    if chain is None:
-        return _Database
-    role = chain.get("role")
-    if role and role in _Database._ROLE_REGISTRY:
-        return _Database._ROLE_REGISTRY[role]
-    return _Database
 
 
 def create_executor(worker):
