@@ -125,11 +125,44 @@ def _is_log_artifact(name):
     return False
 
 
+def _load_pyt(pyt_path):
+    """Load a .pyt config file, returning a dict with setup/teardown callables.
+
+    The pyt file is exec'd in a fresh namespace. Expected variables:
+      - test (str, optional): the python test file name (defaults to pyt stem + ".py").
+      - setup() (callable, optional): pre-test actions (create data, clean, set env).
+      - teardown() (callable, optional): post-test cleanup.
+
+    Returns:
+        dict with keys 'test', 'setup', 'teardown' (setup/teardown may be None).
+    """
+    ns = {}
+    with open(pyt_path) as f:
+        exec(compile(f.read(), pyt_path, "exec"), ns)
+    pyt_stem = os.path.splitext(os.path.basename(pyt_path))[0]
+    return {
+        "test": ns.get("test", pyt_stem + ".py"),
+        "setup": ns.get("setup", None),
+        "teardown": ns.get("teardown", None),
+    }
+
+
 def run_one(test_path, timeout=20):
     abs_test_path = os.path.abspath(test_path)
     test_dir = os.path.dirname(abs_test_path)
-    name = os.path.basename(test_path)
+    name = os.path.basename(abs_test_path)
     stem = os.path.splitext(name)[0]
+
+    # Check for pyt config (same stem, .pyt extension)
+    pyt_path = os.path.join(test_dir, stem + ".pyt")
+    pyt_cfg = None
+    if os.path.isfile(pyt_path):
+        try:
+            pyt_cfg = _load_pyt(pyt_path)
+        except Exception as e:
+            log(f"  ✗ ERROR   pyt-load    {name} ({e})")
+            return {"name": name, "ms": 0, "ok": False, "status": "ERROR",
+                    "log": pyt_path}
 
     # Log directory: {test_dir}/{test_name}/
     log_dir = os.path.join(test_dir, stem)
@@ -172,6 +205,15 @@ def run_one(test_path, timeout=20):
 
     t0 = time.monotonic()
 
+    # ── pyt setup (pre-test actions: create data, clean, set env) ──
+    if pyt_cfg and pyt_cfg["setup"] is not None:
+        try:
+            pyt_cfg["setup"]()
+        except Exception as e:
+            log(f"  ✗ ERROR   setup-fail  {name} ({e})")
+            return {"name": name, "ms": 0, "ok": False, "status": "ERROR",
+                    "log": log_dir}
+
     # Set up environment based on FLY_BIN location
     env = os.environ.copy()
     # FLY_BIN is /root/fly/build/bin/fly, so build_dir is /root/fly/build
@@ -213,6 +255,13 @@ def run_one(test_path, timeout=20):
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     ok = (not timed_out) and proc.returncode == 0
     status = "TIMEOUT" if timed_out else ("PASSED" if ok else "FAILED")
+
+    # ── pyt teardown (post-test cleanup) ──
+    if pyt_cfg and pyt_cfg["teardown"] is not None:
+        try:
+            pyt_cfg["teardown"]()
+        except Exception as e:
+            log(f"  WARNING  teardown-fail  {name} ({e})")
 
     # Write output to log file
     out_log = os.path.join(log_dir, "fly.log")
@@ -310,6 +359,9 @@ def main():
                              "concurrent CPU-bound load spikes)")
     parser.add_argument("-t", "--timeout", type=int, default=20,
                         help="Per-test timeout in seconds (default=20)")
+    parser.add_argument("--fail-fast", action="store_true",
+                        help="Stop on first failure (cancel remaining tests). "
+                             "Preserves failed test logs from being overwritten.")
     args = parser.parse_args()
 
     if not os.path.isfile(FLY_BIN) or not os.access(FLY_BIN, os.X_OK):
@@ -355,12 +407,23 @@ def main():
 
     max_workers = _resolve_max_workers(args.j)
     results = []
+    fail_fast_triggered = False
     t_total_start = time.monotonic()
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(run_one, t, args.timeout): t for t in tests}
         for fut in as_completed(futures):
-            results.append(fut.result())
+            r = fut.result()
+            results.append(r)
+            if args.fail_fast and not r["ok"]:
+                fail_fast_triggered = True
+                log(f"\n!!! FAIL-FAST: stopping after first failure: {r['name']}")
+                log("!!! Remaining tests cancelled. Failed test logs preserved.")
+                # Cancel all not-yet-started futures, then shutdown without waiting.
+                for f in futures:
+                    f.cancel()
+                pool.shutdown(wait=False, cancel_futures=True)
+                break
 
     total_ms = int((time.monotonic() - t_total_start) * 1000)
 
