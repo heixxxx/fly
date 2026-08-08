@@ -12,7 +12,7 @@ import shutil
 
 
 
-from e2e_tasks import write_data, compute_sum
+from test import write_data, compute_sum
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 

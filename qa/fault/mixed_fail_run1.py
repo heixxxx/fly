@@ -7,7 +7,7 @@ from _fly_log import INFO, ERR
 import os
 import time
 
-from e2e_tasks import mixed_size_write_fail
+from test import mixed_size_write_fail
 from fly import open_db, get_config
 
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")

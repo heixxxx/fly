@@ -11,8 +11,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 from helpers import setup_master_n_workers
 from fly import open_db
-from test_tasks import entry_task
-from e2e_tasks import write_after_freeze
+from test import entry_task
+from test import write_after_freeze
 
 
 def test_concurrent_read():

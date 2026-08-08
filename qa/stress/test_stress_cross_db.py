@@ -13,7 +13,7 @@ DB_B = "/tmp/fly_e2e_stress_crossdb_b"
 DB_C = "/tmp/fly_e2e_stress_crossdb_c"
 
 
-from e2e_tasks import write_data, cross_db_copy, triple_db_sum
+from test import write_data, cross_db_copy, triple_db_sum
 from fly import open_db, get_config
 
 

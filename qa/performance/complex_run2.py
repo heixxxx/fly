@@ -4,7 +4,7 @@ import os
 import shutil
 import time
 
-from e2e_tasks import (write_data, cross_db_copy, cross_db_sum,
+from test import (write_data, cross_db_copy, cross_db_sum,
                        add_alpha_property, alpha_cross_db_copy,
                        gpu_cross_db_copy, triple_db_sum)
 from fly import open_db, load_db

@@ -54,7 +54,7 @@ def solve_ras_graph_v2(db, matrix_path, nsd,
 def _coord_prebuild_pipeline(db, matrix_path, nsd, overlap_ratio, max_iter, tol, omega, group_id):
     """coord 预构建 + 流水线提交：每完成一个 sub_{sd} 立即提交 compute daemon，
     让 LDLT 分解与剩余 BFS 并行。"""
-    from solver.ras_graph import (_load_matrix, _partition_primary_2d,
+    from .ras_graph import (_load_matrix, _partition_primary_2d,
                                    _estimate_depth, _compute_grid_neighbors,
                                    _prebuild_coarse_in_coord, _prebuild_coarse_grid,
                                    _get_matrix_data)
@@ -311,7 +311,7 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
     Ac_lu = None; P = None; A_fine = None; b_fine = None
     residual_cached = None  # 增量 residual：上步存储的 r，避免每步全量 SpMV
     if use_coarse:
-        from solver.ras_graph import _compute_coarse_arrays, _ensure_coarse_cached
+        from .ras_graph import _compute_coarse_arrays, _ensure_coarse_cached
         _ensure_coarse_cached(db)
         if has_cache("__rasg__coarse_lu"):
             Ac_lu = get_cache("__rasg__coarse_lu")
@@ -319,7 +319,7 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
             b_fine = get_cache("__rasg__coarse_b")
         # A_fine 需构建一次（用于 residual r = b - A·x）
         if not has_cache("__rasg__coarse_A"):
-            from solver.ras_graph import _get_matrix_data
+            from .ras_graph import _get_matrix_data
             md = _get_matrix_data(matrix_path)
             A_fine = sp.csr_matrix(
                 (np.asarray(md["vals"]), (np.asarray(md["rows"]), np.asarray(md["cols"]))),

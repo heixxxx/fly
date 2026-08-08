@@ -11,7 +11,7 @@ import shutil
 DB_PATHS = [f"/tmp/fly_e2e_stress_multidb_{i}" for i in range(4)]
 
 
-from e2e_tasks import write_data
+from test import write_data
 from fly import open_db, get_config
 
 

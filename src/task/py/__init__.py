@@ -1,4 +1,2 @@
-from .task import as_task, task_name, wait_obj
-from .task import _USER_MODULE, _USER_FUNC_PREFIX
-
-__all__ = ['as_task', 'task_name', 'wait_obj']
+from .task import *
+from .task import USER_MODULE, USER_FUNC_PREFIX, task_registry

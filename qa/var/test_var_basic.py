@@ -5,7 +5,7 @@ from fly import get_work_directory
 
 DB_PATH = os.path.join(get_work_directory(), "db")
 
-from e2e_tasks import set_var_task, get_var_task, remove_var_task
+from test import set_var_task, get_var_task, remove_var_task
 from fly import open_db, get_config, get_work_directory
 
 

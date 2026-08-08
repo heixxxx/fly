@@ -1,6 +1,3 @@
-# Re-export task module members for Bazel runfiles compatibility.
-try:
-    from task.py.task import _task_registry, as_task, task_name, wait_obj
-    from task.py.task import _USER_MODULE, _USER_FUNC_PREFIX
-except ImportError:
-    pass
+# task 包入口。Python 源码在 task/py/ 子包。
+# from task import * 拿到 py 子包的全部公共符号。
+from task.py import *  # noqa: F401,F403

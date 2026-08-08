@@ -1,6 +1,6 @@
 """Regression test for Python ReadCache invalidation on write/remove.
 
-Bug fixed here: `_Database.read_object(cache="high")` populates the
+Bug fixed here: `Database.read_object(cache="high")` populates the
 process-local Python ReadCache for pickle objects, but write_object /
 remove_object used to NOT invalidate it. So the sequence
   write(A) -> read(A, high) [caches] -> write(A, new) -> read(A, high)
@@ -26,7 +26,7 @@ import time
 import os
 import shutil
 
-from e2e_tasks import write_data
+from test import write_data
 from fly import open_db, get_config
 
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
@@ -49,9 +49,9 @@ def wait_for(condition, timeout=60.0, interval=0.5):
 def assert_cached(key):
     """Confirm `key` is actually resident in the Python high-tier cache."""
     try:
-        from storage.py.read_cache import get_read_cache
+        from storage import get_read_cache
     except ImportError:
-        from storage.read_cache import get_read_cache
+        from storage import get_read_cache
     rc = get_read_cache()
     db_path = db.get_db_path()
     return rc.get(f"{db_path}:{key}", "high") is not None

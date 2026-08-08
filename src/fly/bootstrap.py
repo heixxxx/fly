@@ -84,12 +84,14 @@ _register_lazy_modules()
 def get_script_namespace():
     """构建注入用户脚本/交互 shell 的全局命名空间（零 import 开箱即用）。
 
-    返回的 dict 含 fly 全部公共 API（``__all__``）+ 所有已注册业务模块入口
+    返回的 dict 含 fly 全部公共 API（非下划线开头的符号）+ 所有已注册业务模块入口
     （惰性代理），供 :func:`fly.main._run_master` 的 ``exec`` 与 ``code.interact`` 使用。
     """
     ns = {"__name__": "__main__"}
-    # 注入 fly.__all__ 中的全部公共符号
-    for name in getattr(fly, "__all__", []):
+    # 注入 fly 的全部公共符号（非下划线开头）
+    for name in dir(fly):
+        if name.startswith("_"):
+            continue
         try:
             ns[name] = getattr(fly, name)
         except AttributeError:

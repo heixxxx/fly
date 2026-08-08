@@ -27,7 +27,7 @@ import time
 import os
 import shutil
 
-from e2e_tasks import write_temp_large
+from test import write_temp_large
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 

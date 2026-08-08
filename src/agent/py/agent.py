@@ -287,10 +287,7 @@ class Master(FlyAgent):
 
     def load_db(self, path: str):
         import os
-        try:
-            from storage.database import _Database
-        except ImportError:
-            from database import _Database
+        from storage import Database
         from collections import defaultdict
 
         if not os.path.isdir(path):
@@ -303,7 +300,7 @@ class Master(FlyAgent):
 
         # 静态读 _DB_META（不构造 Database，避免与 register_database 建的权威 Database
         # 共享 DataService::db_paths_ 导致析构竞争 erase）。
-        meta = _Database.load_meta_from_path(path)
+        meta = Database.load_meta_from_path(path)
         # db_path 废弃：_DB_META 的 db_path 字段可能过期（搬目录），不再用它作 db_path。
         # 用 created_at > 0 判断 _DB_META 是否有效（corrupt/空文件时 created_at == 0）。
         if not meta or meta.created_at <= 0:
@@ -369,7 +366,7 @@ class Master(FlyAgent):
         message("STOR::0003", 1, f"load_db done: path={path}")
         # 返回权威 Database 句柄：直接复用 db_instances_ 里的对象（register_database 已建），
         # 不再单独构造临时 Database（避免析构 unregister DataService::db_paths_ 的竞争）。
-        db = _Database.__new__(_Database)
+        db = Database.__new__(Database)
         db._db = self._agent.get_database(db_path)
         return db
 
@@ -397,15 +394,12 @@ class Master(FlyAgent):
             delete_source: merge 全部成功后是否自动删源各 host 的原 .dat。
 
         Returns:
-            合并后的 _Database 句柄。
+            合并后的 Database 句柄。
         """
         import os
         import time
         from collections import defaultdict
-        try:
-            from storage.database import _Database
-        except ImportError:
-            from database import _Database
+        from storage import Database
 
         # ── Phase 1: 校验 + 读源 meta ──────────────────────────────────
         if not os.path.isdir(path):
@@ -430,7 +424,7 @@ class Master(FlyAgent):
             self.wait_for_all_tasks(timeout=3600)
 
         # 静态读 _DB_META（不构造 Database，避免在已 open_db 的进程内重复 register db_path）。
-        meta = _Database.load_meta_from_path(path)
+        meta = Database.load_meta_from_path(path)
         if not meta:
             raise RuntimeError(f"merge_db: invalid _DB_META at {path}")
         # db_path == 源 path（db 唯一标识）。merge_db_path 是产物路径（用户可覆盖）。
@@ -590,7 +584,7 @@ class Master(FlyAgent):
         # （用源 db_path，保持 object_name = db_path:short 一致）。不再单独构造临时 Database，
         # 避免其析构 unregister DataService::db_paths_ 的竞争。
         # read_object 走 master remote_idx（merge task 已登记对象位置到 merge worker）。
-        merged_db = _Database.__new__(_Database)
+        merged_db = Database.__new__(Database)
         merged_db._db = self._agent.get_database(db_path)
         INFO(f"merge_db: done, ok={ok}, merged_data at {merge_data_path}")
         # 流程 message：merge_db 完成（跨机数据集中里程碑）。
@@ -997,6 +991,3 @@ def _read_peer_address(group, db, timeout=60):
     return db.read_object(group._temp_name())
 
 
-__all__ = ['FlyAgent', 'Master', 'Worker',
-           'PeerChannelGroup', 'PeerChannel', 'PeerListener', 'PeerRpcStatus',
-           'serialize_array', 'deserialize_array']

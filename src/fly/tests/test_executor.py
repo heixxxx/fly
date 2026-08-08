@@ -19,14 +19,8 @@ sys.path.insert(0, os.path.join(_project_root, 'src'))
 
 sys.path.insert(0, _this_dir)
 
-try:
-    from agent.executor import create_executor, _deserialize_args
-except ImportError:
-    from executor import create_executor, _deserialize_args
-try:
-    from storage.database import _Database
-except ImportError:
-    from database import _Database
+from agent import create_executor, deserialize_args
+from storage import Database
 import _fly_log as log
 import _fly_storage as storage
 
@@ -74,7 +68,7 @@ def test_deserialize_pickle_args():
     pickled = pickle.dumps(original).hex()
     
     args = [pickled, pickle.dumps([1, 2, 3]).hex()]
-    result = _deserialize_args(args, worker)
+    result = deserialize_args(args, worker)
     
     assert result[0] == original
     assert result[1] == [1, 2, 3]
@@ -86,10 +80,10 @@ def test_deserialize_fly_db_marker():
     db_marker = "__fly_db__:/tmp/fly_test_marker_db:"
     args = [db_marker]
 
-    result = _deserialize_args(args, worker)
+    result = deserialize_args(args, worker)
 
     assert len(result) == 1
-    assert isinstance(result[0], _Database)
+    assert isinstance(result[0], Database)
     # cache key == db_path（db_path == db_path，不再单独传）
     assert "/tmp/fly_test_marker_db" in worker._db_cache
     assert "/tmp/fly_test_marker_db" in worker._agent.registered_dbs
@@ -108,9 +102,9 @@ def test_deserialize_fly_db_with_data_path():
     db_marker = f"__fly_db__:{temp_dir}:{data_dir}"
     args = [db_marker]
 
-    result = _deserialize_args(args, worker)
+    result = deserialize_args(args, worker)
 
-    assert isinstance(result[0], _Database)
+    assert isinstance(result[0], Database)
     # cache key == db_path（temp_dir）
     assert temp_dir in worker._db_cache
     
@@ -127,10 +121,10 @@ def test_deserialize_cached_db():
     db_marker = f"__fly_db__:{temp_dir}:"
     
     args1 = [db_marker]
-    result1 = _deserialize_args(args1, worker)
+    result1 = deserialize_args(args1, worker)
     
     args2 = [db_marker]
-    result2 = _deserialize_args(args2, worker)
+    result2 = deserialize_args(args2, worker)
     
     assert result1[0] is result2[0]
     assert len(worker._agent.registered_dbs) == 1
@@ -149,10 +143,10 @@ def test_deserialize_mixed_args():
     db_marker = f"__fly_db__:{temp_dir}:"
     
     args = [pickle_arg, db_marker, pickle.dumps(123).hex()]
-    result = _deserialize_args(args, worker)
+    result = deserialize_args(args, worker)
     
     assert result[0] == {"data": "test"}
-    assert isinstance(result[1], _Database)
+    assert isinstance(result[1], Database)
     assert result[2] == 123
     
     for db_path_key, db_obj in worker._db_cache.items():

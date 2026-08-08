@@ -9,7 +9,7 @@ _MAX_RETRIES = 3
 _RETRY_INTERVAL_SEC = 1.0
 
 
-class _Database:
+class Database:
 
     def __init__(self, db_path: str, data_path: str = "", writer_id: int = 0):
         from fly.runtime import _mode
@@ -88,10 +88,7 @@ class _Database:
             return cls._read_from_db(self._db, name, cache)
 
         if cache == "high":
-            try:
-                from storage.py.read_cache import get_read_cache
-            except ImportError:
-                from storage.read_cache import get_read_cache
+            from storage import get_read_cache
             rc = get_read_cache()
             db_path = self.get_db_path()
             key = f"{db_path}:{name}"
@@ -135,10 +132,7 @@ class _Database:
         successful write/remove path below.
         """
         try:
-            try:
-                from storage.py.read_cache import get_read_cache
-            except ImportError:
-                from storage.read_cache import get_read_cache
+            from storage import get_read_cache
             get_read_cache().remove(f"{self.get_db_path()}:{name}")
         except Exception:
             # Cache invalidation must never break a successful write/remove.

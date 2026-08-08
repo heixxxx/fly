@@ -224,9 +224,11 @@ def run_one(test_path, timeout=20):
     if not ok:
         if timed_out:
             log(f"    (timed out after {timeout}s)")
+        # 失败时把完整 fly.log 路径 + 尾部 15 行写入 qa.log，方便定位（无需重跑）。
+        log(f"    [log: {out_log}]")
         try:
             lines = stdout.decode("utf-8", errors="replace").split("\n")
-            for line in lines[-10:]:
+            for line in lines[-15:]:
                 if line.strip():
                     log(f"    {line.rstrip()}")
         except Exception:

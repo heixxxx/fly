@@ -48,7 +48,7 @@ def _deserialize_fn(hex_str):
 
 
 # ---------------------------------------------------------------------------
-# Internal task definitions (registered in _task_registry via @as_task)
+# Internal task definitions (registered in task_registry via @as_task)
 # ---------------------------------------------------------------------------
 
 @as_task()
@@ -156,7 +156,7 @@ def _mr_copy_to_output(db, src_key, dst_key):
 # 类装饰器执行时会回填类内方法 doc 的 owner=MapReduceJob。
 
 _mr_class_doc = UserDoc("四阶段 MapReduce 流水线：Partition → Process → Merge → Finalize。")
-_mr_class_doc.add_param("db", schema=Schema("_Database"), required=True,
+_mr_class_doc.add_param("db", schema=Schema("Database"), required=True,
                         desc="fly.open_db() 创建的数据库实例")
 _mr_class_doc.add_param("output_name", schema=Schema(str, check=lambda s: len(s) > 0,
                                                      error="must not be empty"),
@@ -205,7 +205,7 @@ _mr_run_doc.add_param("input_data", schema=Schema(object),
                       desc="分区输入数据；未调 set_pre_partitioned 时必填")
 
 _mr_get_doc = UserDoc("读取最终结果。master 侧应先 wait_tasks()。")
-_mr_get_doc.add_param("db", schema=Schema("_Database"), required=False, default=None,
+_mr_get_doc.add_param("db", schema=Schema("Database"), required=False, default=None,
                       none_ok=True,
                       desc="数据库覆盖（worker task 内需显式传入）；None 用构造时的 db")
 

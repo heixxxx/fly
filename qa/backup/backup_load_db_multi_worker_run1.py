@@ -10,7 +10,7 @@ import shutil
 
 
 
-from e2e_tasks import write_data, write_data_backup
+from test import write_data, write_data_backup
 from fly import open_db, get_config
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent

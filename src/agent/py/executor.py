@@ -24,13 +24,7 @@ try:
 except ImportError:
     cloudpickle = None
 
-try:
-    from task.task import _USER_MODULE, _USER_FUNC_PREFIX
-except ImportError:
-    try:
-        from task import _USER_MODULE, _USER_FUNC_PREFIX
-    except ImportError:
-        from fly.task import _USER_MODULE, _USER_FUNC_PREFIX
+from task import USER_MODULE, USER_FUNC_PREFIX
 
 from _fly_agent import EXTaskExecResult, EXTaskExecStatus
 from _fly_log import INFO, ERR
@@ -48,7 +42,7 @@ def _split_full_name(full_name):
     return full_name[:pos], full_name[pos + 1:]
 
 
-def _deserialize_args(args: list, worker) -> list:
+def deserialize_args(args: list, worker) -> list:
     result = []
     for arg in args:
         if isinstance(arg, str) and arg.startswith("__fly_db__:"):
@@ -61,18 +55,12 @@ def _deserialize_args(args: list, worker) -> list:
                 ds = ex_stg_get_data_service()
                 if ds.has_database(db_path):
                     from _fly_storage import ex_stg_create_database_with_path
-                    try:
-                        from storage.database import _Database
-                    except ImportError:
-                        from database import _Database
-                    db = _Database.__new__(_Database)
+                    from storage import Database
+                    db = Database.__new__(Database)
                     db._db = ex_stg_create_database_with_path(db_path, data_path, worker._worker_id, db_path)
                 else:
-                    try:
-                        from storage.database import _Database
-                    except ImportError:
-                        from database import _Database
-                    db = _Database(db_path, data_path, worker._worker_id)
+                    from storage import Database
+                    db = Database(db_path, data_path, worker._worker_id)
                 worker._agent.register_database(db_path, db._db)
                 worker._db_cache[db_path] = db
             result.append(worker._db_cache[db_path])
@@ -90,23 +78,17 @@ def create_executor(worker):
 
     def _resolve_func(task_name, task_module):
         """Resolve the original task function from its name/module."""
-        if task_module == _USER_MODULE:
-            if not task_name.startswith(_USER_FUNC_PREFIX):
+        if task_module == USER_MODULE:
+            if not task_name.startswith(USER_FUNC_PREFIX):
                 raise ValueError(
                     f"Worker received from_user task but task_name "
                     f"lacks serialized payload: {task_name!r}"
                 )
-            payload_hex = task_name[len(_USER_FUNC_PREFIX):]
+            payload_hex = task_name[len(USER_FUNC_PREFIX):]
             deserializer = cloudpickle if cloudpickle is not None else pickle
             return deserializer.loads(bytes.fromhex(payload_hex))
-        try:
-            from task.task import _task_registry
-        except ImportError:
-            try:
-                from task import _task_registry
-            except ImportError:
-                from fly.task import _task_registry
-        registered = _task_registry.get((task_module, task_name))
+        from task import task_registry
+        registered = task_registry.get((task_module, task_name))
         if registered is not None:
             return getattr(registered, '_fly_original_func', registered)
         module = importlib.import_module(task_module)
@@ -121,7 +103,7 @@ def create_executor(worker):
           Database local caches so get_var hits locally during execute.
         Returns the deserialized argument list.
         """
-        deserialized_args = _deserialize_args(args, worker)
+        deserialized_args = deserialize_args(args, worker)
 
         # Inject inlined vars. Each VarPayload.var_name is a FULL name
         # (db_path:short_name); split to find the right Database and inject the
@@ -204,4 +186,3 @@ def create_executor(worker):
     return executor
 
 
-__all__ = ['create_executor']

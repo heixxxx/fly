@@ -24,7 +24,7 @@ import shutil
 NUM_SHARED_TASKS = 10
 
 
-from e2e_tasks import (alpha_write, beta_write, gamma_write,
+from test import (alpha_write, beta_write, gamma_write,
                         shared_write, add_shared_on_beta,
                         add_shared_on_gamma, remove_shared_on_beta)
 from fly import open_db, get_config

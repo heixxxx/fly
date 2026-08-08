@@ -13,7 +13,7 @@ import traceback
 
 from fly import open_db, get_config, MapReduceJob, wait_tasks
 from fly.runtime import get_agent
-from e2e_tasks import mr_downstream_read
+from test import mr_downstream_read
 
 passed = 0
 failed = 0

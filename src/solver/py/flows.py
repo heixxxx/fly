@@ -22,9 +22,9 @@ from _fly_log import INFO
 
 from fly import register_flow, as_task
 from fly import UserDoc, Schema, document
-from solver.project import SolverProject
-from solver.ras_graph import solve_ras_graph as _solve_ras_graph  # noqa: F401 (legacy compat)
-from solver.ras_graph import ras_graph_coord, _load_matrix
+from .project import SolverProject
+from .ras_graph import solve_ras_graph as _solve_ras_graph  # noqa: F401 (legacy compat)
+from .ras_graph import ras_graph_coord, _load_matrix
 
 
 # ── 内部 task：写矩阵（worker 执行，非阻塞）──────────────────────────
@@ -60,7 +60,7 @@ def _solve_kickoff_task(db, matrix_db, nsd, overlap_ratio,
                         max_iter, tol, omega):
     import os
     import numpy as np
-    from solver.ras_graph import ras_graph_coord
+    from .ras_graph import ras_graph_coord
 
     m = matrix_db.read_object("matrix")      # matrix_db 由闭包/参数传入
     work_npz = os.path.join(db.get_db_path(), "matrix.npz")
@@ -100,7 +100,7 @@ def build_matrix(self, name: str, matrix_path: str):
         matrix_path: .npz 矩阵文件路径（COO 格式，见 ras_graph._load_matrix）。
 
     Returns:
-        存矩阵数据的 ``_Database`` 句柄（freeze 异步进行中，可用 wait_frozen 等待）。
+        存矩阵数据的 ``Database`` 句柄（freeze 异步进行中，可用 wait_frozen 等待）。
     """
     # ── Step 1: 检查输入（文件存在性，schema 无法覆盖）──
     import os as _os
@@ -128,7 +128,7 @@ solve_doc.add_param("name",
     schema=Schema(str, check=lambda s: len(s) > 0, error="must not be empty"),
     required=True, desc="求解结果 db 的子目录名")
 solve_doc.add_param("matrix_db",
-    schema=Schema("_Database"),
+    schema=Schema("Database"),
     required=True, desc="含 read_object('matrix') 的数据源 db（显式传入）")
 solve_doc.add_param("nsd",
     schema=Schema(int, check=lambda n: n >= 1, error="must be >= 1, got {value}"),
@@ -186,7 +186,7 @@ def solve(self, name: str, matrix_db, nsd,
         omega: 松弛策略（1.0 / "coarse" / "adaptive"）。
 
     Returns:
-        存求解过程的 ``_Database`` 句柄（求解异步进行中；__rasg__sol 就绪后可读结果，
+        存求解过程的 ``Database`` 句柄（求解异步进行中；__rasg__sol 就绪后可读结果，
         可用 wait_frozen 等待整库 frozen）。
     """
     # ── Step 1: 创建求解 db ──

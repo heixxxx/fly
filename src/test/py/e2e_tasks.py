@@ -237,50 +237,50 @@ def remove_gpu_property(db, key):
     db.write_object(key, "removed")
 
 
-def _get_wid():
+def get_wid():
     from fly.runtime import get_agent
     return get_agent()._agent.get_worker_id()
 
 
 @as_task(requires=["alpha"])
 def alpha_write(db, key):
-    db.write_object(key, _get_wid())
+    db.write_object(key, get_wid())
 
 
 @as_task(requires=["beta"])
 def beta_write(db, key):
-    db.write_object(key, _get_wid())
+    db.write_object(key, get_wid())
 
 
 @as_task(requires=["gamma"])
 def gamma_write(db, key):
-    db.write_object(key, _get_wid())
+    db.write_object(key, get_wid())
 
 
 @as_task(requires=["shared"])
 def shared_write(db, key):
-    db.write_object(key, _get_wid())
+    db.write_object(key, get_wid())
 
 
 @as_task(requires=["beta"])
 def add_shared_on_beta(db, key):
     from fly.runtime import get_agent
     get_agent().set_worker_property("shared")
-    db.write_object(key, _get_wid())
+    db.write_object(key, get_wid())
 
 
 @as_task(requires=["gamma"])
 def add_shared_on_gamma(db, key):
     from fly.runtime import get_agent
     get_agent().set_worker_property("shared")
-    db.write_object(key, _get_wid())
+    db.write_object(key, get_wid())
 
 
 @as_task(requires=["beta"])
 def remove_shared_on_beta(db, key):
     from fly.runtime import get_agent
     get_agent().remove_worker_property("shared")
-    db.write_object(key, _get_wid())
+    db.write_object(key, get_wid())
 
 
 @as_task()
@@ -468,11 +468,11 @@ def write_payload_with_worker(db, payload_key, worker_key, size):
     """写入大对象 payload_key，并把执行 worker_id 写入 worker_key（自报身份）。
     这样测试能从对象内容读出哪个 worker 持有 payload_key。"""
     db.write_object(payload_key, list(range(size)))
-    db.write_object(worker_key, _get_wid())
+    db.write_object(worker_key, get_wid())
 
 
 @as_task(inputs=lambda db, source_key, result_key: [db.get_full_name(source_key)])
 def locality_consume(db, source_key, result_key):
     """读取依赖对象，把执行 worker 的 id 写入结果。用于断言调度亲和性。"""
     db.read_object(source_key)
-    db.write_object(result_key, _get_wid())
+    db.write_object(result_key, get_wid())

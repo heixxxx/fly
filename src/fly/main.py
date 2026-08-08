@@ -180,4 +180,3 @@ def run():
     return 0
 
 
-__all__ = ["init", "run"]

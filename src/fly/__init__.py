@@ -21,25 +21,9 @@ import os
 from _fly_log import WARN
 import _fly_message as _msg
 
-try:
-    from storage.database import _Database
-except ImportError:
-    from storage.py.database import _Database
-
-try:
-    from core import get_config
-except ImportError:
-    from core.py import get_config
-
-try:
-    from core import get_work_directory
-except ImportError:
-    from core.py import get_work_directory
-
-try:
-    from task.task import as_task, task_name, wait_obj
-except ImportError:
-    from task.py.task import as_task, task_name, wait_obj
+from storage import Database
+from core import get_config, get_work_directory
+from task import as_task, task_name, wait_obj
 
 from fly.runtime import get_agent
 from fly.userdoc import UserDoc, Schema, document, help, register_module
@@ -78,7 +62,7 @@ def load_project(path: str) -> 'Project':
     return Project.load(path)
 
 
-def open_db(path: str, data_path: str = "") -> '_Database':
+def open_db(path: str, data_path: str = "") -> 'Database':
     """Open a new database.
 
     If ``path`` already contains a database, auto-creates a numbered variant
@@ -89,7 +73,7 @@ def open_db(path: str, data_path: str = "") -> '_Database':
         data_path: Optional separate path for data storage.
 
     Returns:
-        A ``_Database`` instance.
+        A ``Database`` instance.
     """
     actual_path = path
     n = 0
@@ -99,10 +83,10 @@ def open_db(path: str, data_path: str = "") -> '_Database':
     if actual_path != path:
         WARN(f"open_db: path '{path}' already contains a database, "
              f"creating new database at '{actual_path}'")
-    return _Database(actual_path, data_path)
+    return Database(actual_path, data_path)
 
 
-def load_db(path: str) -> '_Database':
+def load_db(path: str) -> 'Database':
     """Load an existing database from a previous run.
 
     Must be called on the Master node.
@@ -111,13 +95,13 @@ def load_db(path: str) -> '_Database':
         path: Directory path of the existing database.
 
     Returns:
-        A ``_Database`` instance.
+        A ``Database`` instance.
     """
     return get_agent().load_db(path)
 
 
 def merge_db(path: str, data_path: str = "", merge_db_path: str = "",
-             local_workers: int = 4, delete_source: bool = True) -> '_Database':
+             local_workers: int = 4, delete_source: bool = True) -> 'Database':
     """Merge a frozen database's data onto the master host.
 
     把分散在各源 host 本地 data_path 的 .dat 数据通过网络集中到 master host，
@@ -134,7 +118,7 @@ def merge_db(path: str, data_path: str = "", merge_db_path: str = "",
         delete_source: merge 全部成功后是否自动删源各 host 的原 .dat。
 
     Returns:
-        合并后的 ``_Database`` 句柄。
+        合并后的 ``Database`` 句柄。
 
     See ``docs/db-merge-design.md`` for design details.
     """
@@ -343,21 +327,6 @@ def __getattr__(name):
     if name == "port":
         return get_agent().port
     raise AttributeError(f"module 'fly' has no attribute {name}")
-
-
-__all__ = [
-    'open_db', 'load_db', 'merge_db', 'get_config', 'get_work_directory',
-    'as_task', 'task_name', 'wait_obj',
-    'launch_workers', 'wait_tasks',
-    'restart_failed_tasks', 'get_task_error',
-    'completed_tasks', 'pending_tasks', 'running_tasks', 'failed_tasks',
-    'get_agent', 'MapReduceJob',
-    'put_cache', 'get_cache', 'has_cache', 'remove_cache', 'clear_cache',
-    'Project', 'register_flow', 'open_project', 'load_project',
-    'UserDoc', 'Schema', 'document', 'help', 'register_module',
-    'message', 'register_message_id',
-    'set_message_global_limit', 'set_message_id_limit', 'set_message_domain_limit',
-]
 
 
 def get_fly_binary() -> str:

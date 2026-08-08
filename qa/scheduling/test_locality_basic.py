@@ -15,7 +15,7 @@ import os
 import shutil
 import time
 
-from e2e_tasks import write_payload_with_worker, locality_consume
+from test import write_payload_with_worker, locality_consume
 from fly import open_db, get_config
 
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")

@@ -10,7 +10,7 @@ import os
 import sys
 
 import fly
-from demo_project import DemoProject
+from test import DemoProject
 
 PROJ_PATH = os.environ["FLY_PROJ_PATH"]
 

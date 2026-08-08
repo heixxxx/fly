@@ -11,7 +11,7 @@ import time
 import glob
 
 
-from e2e_tasks import partial_write_then_fail, write_data
+from test import partial_write_then_fail, write_data
 from fly import open_db, get_config
 
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")

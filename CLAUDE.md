@@ -107,6 +107,12 @@ QA 测试按模块分类在 `qa/<category>/` 子目录下（api/backup/dependenc
 
 **test 模块不是用户可见的框架功能**，它仅为测试提供基础设施，不导出任何公共 API。
 
+**runqa 日志行为**（定位失败时必须遵守）：
+- `qa/logs/qa.log`：每次 runqa 运行全量清理重建，记录所有终端输出（含 ✓/✗ + 失败尾部 15 行 + fly.log 路径）
+- 每个测试的 `fly.log`：`{test_dir}/{test_name}/fly.log`，**运行前清理历史，运行后覆盖**
+- **定位失败测试**：直接读 `qa/logs/qa.log`（含失败详情和 fly.log 路径），不要重跑覆盖
+- **禁止反复重跑同一个测试**——每次重跑会覆盖 fly.log，丢失上一次失败的现场
+
 ### 测试稳定性（零容忍）
 
 **所有测试必须每次运行都通过。**
@@ -149,6 +155,27 @@ CMUnorderedMap<K, V> h; // std::unordered_map<K, V>
 | Python so | `_fly_storage.so` |
 | 导出类型 | `EXStgDatabase` (EX+模块缩写+类型名) |
 | 导出函数 | `ex_stg_create_database` (ex_模块缩写_函数名) |
+
+### Python 包布局与 import 规范
+
+两种运行布局（build install / bazel runfiles）的物理结构已统一，跨模块 import 一律写 `from module import symbol`（包根 re-export），**禁止** `from module.py.xxx import` 或 `from module.xxx import`。
+
+**模块结构**（源码树与 build 布局一致）：
+```
+src/storage/
+  __init__.py          # from storage.py import *（re-export 到包根）
+  py/
+    __init__.py        # from .database import *（级联到 py 包）
+    database.py
+    read_cache.py
+```
+
+**规则**：
+1. **跨模块 import**：`from storage import Database`（包根导符号）
+2. **模块内部跨文件**：用相对导入 `from .ras_graph import _load_matrix`
+3. **`_` 前缀规则**：只有完全确定仅模块内部使用的函数/类/变量才用 `_` 前缀对外隐藏；否则一律不加 `_` 前缀，允许通过 `from module import *` 导出给外部使用
+4. **禁止 `__all__`**：跨模块导出靠 `from .submod import *` 级联 + 默认行为（非 `_` 开头的名字自动导出），不维护 `__all__` 列表
+5. **公共 API 入口**：用户可见 API 从 `from fly import xxx` 获取，`fly` 从各模块 import 再 re-export
 
 ---
 

@@ -19,7 +19,7 @@ import shutil
 
 from _fly_log import INFO, ERR
 
-from e2e_tasks import partial_write_then_fail, write_data, write_multiple
+from test import partial_write_then_fail, write_data, write_multiple
 from fly import open_db, get_config
 
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
