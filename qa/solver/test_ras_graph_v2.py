@@ -6,8 +6,8 @@ from scipy.sparse.linalg import splu
 import numpy as np
 
 from fly import open_db, get_config
-from solver.ras_graph import generate_poisson_matrix
-from solver.ras_graph_daemon import solve_ras_graph_v2
+from solver import generate_poisson_matrix
+from solver import solve_ras_graph_v2
 
 N_SIDE = 50
 NSD = 4

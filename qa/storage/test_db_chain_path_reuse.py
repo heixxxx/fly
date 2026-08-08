@@ -20,17 +20,14 @@ MATRIX_PATH = os.path.join(DB_BASE, "matrix")
 SOLVE_PATH = os.path.join(DB_BASE, "solve")
 MERGE_TARGET = os.path.join(DB_BASE, "shared_matrix")
 
-try:
-    from storage.py.database import _Database
-except ImportError:
-    from database import _Database
+from storage import Database
 
 
-class MatrixDb(_Database):
+class MatrixDb(Database):
     role = "matrix"
 
 
-class SolveDb(_Database):
+class SolveDb(Database):
     role = "solve"
 
 
@@ -53,7 +50,7 @@ while time.time() - t0 < 10:
 assert master.worker_count >= 1
 
 # ── t0: 建 matrix_db_A（uid=A）+ 写数据 D_A ──
-from e2e_tasks import write_data
+from test import write_data
 matrix_db_A = open_db(MATRIX_PATH, db_cls=MatrixDb, logical_name="matrix")
 uid_A = matrix_db_A.get_uid()
 write_data(matrix_db_A, "data/original", 100)

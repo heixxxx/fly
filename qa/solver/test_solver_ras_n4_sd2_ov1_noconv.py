@@ -27,7 +27,7 @@ assert master.wait_for_workers(NSD), f"workers should connect"
 db = open_db(DB_PATH)
 
 # Override config: restart=3, max_restarts=1 → very limited iterations
-from solver.ras import solve_ras
+from solver import solve_ras
 
 result = solve_ras(db, N, NSD, OVERLAP)
 

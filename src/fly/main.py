@@ -190,6 +190,3 @@ def _safe_cleanup():
         import traceback
         print("[fly] WARNING: _cleanup() raised an exception:", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
-
-
-__all__ = ["init", "run"]

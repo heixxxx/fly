@@ -5,7 +5,7 @@ import os
 
 
 
-from e2e_tasks import write_data
+from test import write_data
 from fly import load_db, get_config
 DB_PATH = os.environ.get("FLY_DB_PATH") or os.path.join(get_config().get_str("log_dir"), "db")
 

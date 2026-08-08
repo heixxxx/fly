@@ -6,7 +6,7 @@ import glob
 
 
 
-from e2e_tasks import write_temp
+from test import write_temp
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 

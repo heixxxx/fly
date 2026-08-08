@@ -20,5 +20,3 @@ def get_work_directory():
     return ex_core_get_work_directory()
 
 
-__all__ = ['Config', 'get_config', 'ProcessInfo', 'get_process_info',
-           'get_work_directory']

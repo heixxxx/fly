@@ -5,31 +5,22 @@ from _fly_storage import (
     EXStgWriteErrorType,
 )
 
-# 模块级 import db_chain（避免每次 _Database.__init__ 做 try/except import）
-try:
-    from storage.py.db_chain import (
-        DbChainFile, generate_uid, make_chain, make_edge,
-        find_edge, update_edge_path, remove_edge, append_edge, match_edge,
-    )
-except ImportError:
-    from db_chain import (
-        DbChainFile, generate_uid, make_chain, make_edge,
-        find_edge, update_edge_path, remove_edge, append_edge, match_edge,
-    )
-try:
-    from storage.py.chain_registry import get_registry
-except ImportError:
-    from chain_registry import get_registry
+# db_chain 模块（同包相对导入）
+from .db_chain import (
+    DbChainFile, generate_uid, make_chain, make_edge,
+    find_edge, update_edge_path, remove_edge, append_edge, match_edge,
+)
+from .chain_registry import get_registry
 
 _MAX_RETRIES = 3
 _RETRY_INTERVAL_SEC = 1.0
 
 
-class _Database:
+class Database:
 
     # ── 子类机制：role + 自动注册 ──────────────────────────────
     # 基类 role=None（裸 db / 旧 db）。子类通过类属性声明 role：
-    #   class MatrixDb(_Database):
+    #   class MatrixDb(Database):
     #       role = "matrix"
     # 定义时自动注册到 _ROLE_REGISTRY，find_db 按 role 重建子类实例。
     role = None
@@ -38,7 +29,7 @@ class _Database:
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         if cls.role is not None:
-            _Database._ROLE_REGISTRY[cls.role] = cls
+            Database._ROLE_REGISTRY[cls.role] = cls
 
     def __init__(self, db_path: str, data_path: str = "", writer_id: int = 0):
         from fly.runtime import _mode
@@ -125,10 +116,7 @@ class _Database:
             return cls._read_from_db(self._db, name, cache)
 
         if cache == "high":
-            try:
-                from storage.py.read_cache import get_read_cache
-            except ImportError:
-                from storage.read_cache import get_read_cache
+            from storage import get_read_cache
             rc = get_read_cache()
             db_path = self.get_db_path()
             key = f"{db_path}:{name}"
@@ -172,10 +160,7 @@ class _Database:
         successful write/remove path below.
         """
         try:
-            try:
-                from storage.py.read_cache import get_read_cache
-            except ImportError:
-                from storage.read_cache import get_read_cache
+            from storage import get_read_cache
             get_read_cache().remove(f"{self.get_db_path()}:{name}")
         except Exception:
             # Cache invalidation must never break a successful write/remove.
@@ -481,7 +466,7 @@ class _Database:
 
         # 按 role 选子类
         role = edge.get("role")
-        cls = _Database._ROLE_REGISTRY.get(role, _Database) if role else _Database
+        cls = Database._ROLE_REGISTRY.get(role, Database) if role else Database
         return cls._wrap(actual_path)
 
     # ── DB Chain：建链辅助（供 _create_db / open_db 调用）─────

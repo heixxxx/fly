@@ -4,7 +4,7 @@ import os
 import shutil
 import time
 
-from e2e_tasks import write_data, cross_db_copy, freeze_db
+from test import write_data, cross_db_copy, freeze_db
 from fly import open_db
 from fly import get_config
 _DB_DIR = os.environ.get("FLY_DB_DIR") or get_config().get_str("log_dir")

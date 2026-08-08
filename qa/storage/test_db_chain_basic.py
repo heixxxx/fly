@@ -19,13 +19,10 @@ DB_BASE = os.path.join(get_config().get_str("log_dir"), "db_chain_basic")
 
 # ── 定义 db 子类 ──────────────────────────────────────────────────
 
-try:
-    from storage.py.database import _Database
-except ImportError:
-    from storage.database import _Database
+from storage import Database
 
 
-class MatrixDb(_Database):
+class MatrixDb(Database):
     """存储输入矩阵的 db。role=matrix。"""
     role = "matrix"
 
@@ -33,7 +30,7 @@ class MatrixDb(_Database):
         return self.read_object("matrix")
 
 
-class SolveDb(_Database):
+class SolveDb(Database):
     """存储求解过程与结果的 db。role=solve。"""
     role = "solve"
 
@@ -41,7 +38,7 @@ class SolveDb(_Database):
         return self.read_object("__rasg__sol")
 
 
-class AnalysisDb(_Database):
+class AnalysisDb(Database):
     """存储误差分析的 db。role=analysis。"""
     role = "analysis"
 

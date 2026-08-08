@@ -23,7 +23,7 @@ import shutil
 
 from _fly_log import INFO
 
-from e2e_tasks import write_data, compute_sum
+from test import write_data, compute_sum
 from fly import open_db, get_config
 
 # runqa passes --log-dir {test_dir}/{test_name}/ to fly, which fly stores in

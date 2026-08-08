@@ -39,18 +39,18 @@ def wait_completed(master, expected, timeout=60):
 # 写大对象的 task，强制 requires=["holder"]（必落 worker 0）。
 @as_task(requires=["holder"])
 def write_on_holder(db, payload_key, worker_key, size):
-    from e2e_tasks import _get_wid
+    from test import get_wid
     db.write_object(payload_key, list(range(size)))
-    db.write_object(worker_key, _get_wid())
+    db.write_object(worker_key, get_wid())
 
 
 # 依赖 big_obj 且 requires=["gpu"]（必落 worker 1，与 locality 偏好冲突）。
 @as_task(inputs=lambda db, source_key, result_key: [db.get_full_name(source_key)],
          requires=["gpu"])
 def consume_on_gpu(db, source_key, result_key):
-    from e2e_tasks import _get_wid
+    from test import get_wid
     db.read_object(source_key)
-    db.write_object(result_key, _get_wid())
+    db.write_object(result_key, get_wid())
 
 
 cleanup()

@@ -13,7 +13,7 @@ import threading
 
 
 
-from e2e_tasks import write_data, failing_task
+from test import write_data, failing_task
 from fly import open_db, get_config, wait_obj
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 from fly.runtime import get_agent

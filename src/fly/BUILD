@@ -8,11 +8,16 @@ py_library(
     srcs = glob(["*.py"]),
     deps = [
         "//src/agent/py:fly_agent_py",
+        "//src/agent:agent_pkg",
         "//src/core/py:fly_core_py",
+        "//src/core:core_pkg",
         "//src/log/export:_fly_log.so",
+        "//src/log:log_pkg",
         "//src/message/export:_fly_message.so",
         "//src/storage/py:fly_storage_py",
+        "//src/storage:storage_pkg",
         "//src/task:task_pkg",
+        "//src/network:network_pkg",
         requirement("cloudpickle"),  # mapreduce.py: fn serialization
     ],
     imports = [

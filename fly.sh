@@ -172,35 +172,24 @@ WRAPPER
         [ -f "$so" ] && ln -sf "$so" "$build_dir/lib/"
     done
 
-    # Python modules: .so files + Python source
-    for mod in core log network task test; do
+    # Python modules: .so 到模块根（sys.path 包含模块目录让 import _fly_X 可用），
+    # .py 到 py/ 子目录（与源码树 src/X/py/ 结构一致，让两种布局的 import 路径统一）。
+    # 模块根 __init__.py 从 src/X/__init__.py 软链（让模块成为合法 Python 包）。
+    for mod in core log network task test storage agent solver message; do
         local so="$bazel_bin/src/$mod/export/_fly_${mod}.so"
         [ -f "$so" ] && ln -sf "$so" "$build_dir/python/$mod/"
-        for py in "$FLY_ROOT/src/$mod/py/"*.py; do
-            [ -f "$py" ] && ln -sf "$py" "$build_dir/python/$mod/"
-        done
+        # 模块根 __init__.py（message 无 Python 源码，跳过）
+        if [ -f "$FLY_ROOT/src/$mod/__init__.py" ]; then
+            ln -sf "$FLY_ROOT/src/$mod/__init__.py" "$build_dir/python/$mod/__init__.py"
+        fi
+        # py/ 子包（log/message 无 Python 源码，跳过）
+        if [ -d "$FLY_ROOT/src/$mod/py" ]; then
+            mkdir -p "$build_dir/python/$mod/py"
+            for py in "$FLY_ROOT/src/$mod/py/"*.py; do
+                [ -f "$py" ] && ln -sf "$py" "$build_dir/python/$mod/py/"
+            done
+        fi
     done
-
-    # Storage (has extra _fly_storage.so naming)
-    ln -sf "$bazel_bin/src/storage/export/_fly_storage.so" "$build_dir/python/storage/"
-    for py in "$FLY_ROOT/src/storage/py/"*.py; do
-        [ -f "$py" ] && ln -sf "$py" "$build_dir/python/storage/"
-    done
-
-    # Agent
-    ln -sf "$bazel_bin/src/agent/export/_fly_agent.so" "$build_dir/python/agent/"
-    for py in "$FLY_ROOT/src/agent/py/"*.py; do
-        [ -f "$py" ] && ln -sf "$py" "$build_dir/python/agent/"
-    done
-
-    # Solver
-    ln -sf "$bazel_bin/src/solver/export/_fly_solver.so" "$build_dir/python/solver/"
-    for py in "$FLY_ROOT/src/solver/py/"*.py; do
-        [ -f "$py" ] && ln -sf "$py" "$build_dir/python/solver/"
-    done
-
-    # Message
-    ln -sf "$bazel_bin/src/message/export/_fly_message.so" "$build_dir/python/message/"
 
     # fly package
     for py in "$FLY_ROOT/src/fly/"*.py; do

@@ -24,7 +24,7 @@ import shutil
 
 
 
-from e2e_tasks import write_data, write_data_needs_phantom, gpu_write
+from test import write_data, write_data_needs_phantom, gpu_write
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 from fly import get_config

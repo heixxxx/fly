@@ -50,7 +50,7 @@ def _wrap_schema(value):
 
 
 def _type_name(t):
-    """类型/类名串的显示名。int→'int'，(int,float)→'int | float'，'_Database'→'_Database'。"""
+    """类型/类名串的显示名。int→'int'，(int,float)→'int | float'，'Database'→'Database'。"""
     if isinstance(t, str):
         return t
     if isinstance(t, tuple):
@@ -84,7 +84,7 @@ class Schema:
     """校验规则。详见模块 docstring。
 
     Args:
-        type: Python 类型 / 类型元组 / 类名字符串（如 ``"_Database"``）。
+        type: Python 类型 / 类型元组 / 类名字符串（如 ``"Database"``）。
         check: 纯判定函数 ``fn(value) -> bool``。``True`` 通过，``False`` 失败。
         error: 失败消息，与 check 分离。可为模板 str（支持 ``{value}`` 占位）、
             ``callable(value) -> str``、或 ``None``（默认消息）。

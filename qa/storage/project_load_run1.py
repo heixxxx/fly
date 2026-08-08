@@ -9,7 +9,7 @@ import sys
 
 from fly import get_config, launch_workers
 from fly.runtime import get_agent
-from demo_project import DemoProject
+from test import DemoProject
 
 PROJ_PATH = os.environ["FLY_PROJ_PATH"]
 

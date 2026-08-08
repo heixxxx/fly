@@ -16,17 +16,14 @@ from fly.runtime import get_agent
 
 DB_BASE = os.path.join(get_config().get_str("log_dir"), "db_chain_task")
 
-try:
-    from storage.py.database import _Database
-except ImportError:
-    from database import _Database
+from storage import Database
 
 
-class MatrixDb(_Database):
+class MatrixDb(Database):
     role = "matrix"
 
 
-class SolveDb(_Database):
+class SolveDb(Database):
     role = "solve"
 
 
@@ -60,7 +57,7 @@ def verify_chain_task(db):
     """在 worker 上验证 db 的链信息。
 
     注意：worker 进程不知道 QA 测试里定义的 MatrixDb/SolveDb 子类
-    （它们没被 import 到 worker），所以 type 可能是基类 _Database。
+    （它们没被 import 到 worker），所以 type 可能是基类 Database。
     但 uid/role 来自磁盘 _DB_CHAIN，find_db 也读磁盘，所以这些是正确的。
     子类机制在 SolverProject 场景下有效（solver.dbs 模块被 worker import）。
     """

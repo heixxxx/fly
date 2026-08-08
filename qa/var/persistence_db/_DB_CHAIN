@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "uid": "84be55f44d2b",
+  "role": null,
+  "logical_name": "persistence_db",
+  "created_at": 1786172176.159887,
+  "prev": [],
+  "next": [],
+  "absorbed_from": []
+}

@@ -17,7 +17,7 @@ from _fly_log import INFO
 from fly import open_db, get_config
 from fly.runtime import get_agent
 from solver import solve_ras_graph, generate_poisson_matrix
-from solver.ras_graph import compute_exact_solution
+from solver import compute_exact_solution
 
 
 _MATRIX_DIR = os.path.join(os.path.dirname(__file__), "matrices")

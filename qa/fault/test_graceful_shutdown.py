@@ -19,7 +19,7 @@ import struct
 
 
 
-from e2e_tasks import write_data, read_data
+from test import write_data, read_data
 from fly import open_db, get_config
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "db")
 from fly import get_config

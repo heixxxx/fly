@@ -23,7 +23,7 @@ import time
 import shutil
 
 from fly import as_task, open_db, merge_db, get_config
-from e2e_tasks import write_data
+from test import write_data
 
 DB_PATH = os.path.join(get_config().get_str("log_dir"), "merge_paths_db")
 from fly.runtime import get_agent

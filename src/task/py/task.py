@@ -7,10 +7,10 @@ except ImportError:
 
 from _fly_log import DBG
 
-_task_registry = {}
+task_registry = {}
 
-_USER_MODULE = "from_user"
-_USER_FUNC_PREFIX = "__user_func__:"
+USER_MODULE = "from_user"
+USER_FUNC_PREFIX = "__user_func__:"
 
 
 def task_name(name: str):
@@ -86,14 +86,14 @@ def as_task(inputs=None, requires=None, vars=None, priority=10):
         module = func.__module__ or "__main__"
 
         if module == "__main__":
-            module = _USER_MODULE
+            module = USER_MODULE
 
         task_requires = requires or []
 
-        if module == _USER_MODULE:
+        if module == USER_MODULE:
             try:
                 serializer = cloudpickle if cloudpickle is not None else pickle
-                func_payload = _USER_FUNC_PREFIX + serializer.dumps(func).hex()
+                func_payload = USER_FUNC_PREFIX + serializer.dumps(func).hex()
             except Exception as exc:
                 raise ValueError(
                     f"Failed to serialize user task function {name!r}. "
@@ -102,7 +102,7 @@ def as_task(inputs=None, requires=None, vars=None, priority=10):
                 ) from exc
         else:
             func_payload = None
-            _task_registry[(module, name)] = func
+            task_registry[(module, name)] = func
 
         def wrapper(*args, **kwargs):
             from fly.runtime import get_agent
@@ -273,4 +273,3 @@ def _serialize_args(args):
     return result
 
 
-__all__ = ['as_task', 'task_name', 'wait_obj']

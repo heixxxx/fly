@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from helpers import cleanup, setup_master, wait_completed, DB_PATH
 from fly import open_db
-from e2e_tasks import write_data
+from test import write_data
 
 
 def test_worker_db_write():

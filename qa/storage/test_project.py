@@ -16,7 +16,7 @@ import subprocess
 
 from fly import get_fly_binary, get_config
 from fly.project import Project, register_flow
-from demo_project import DemoProject, make_db   # noqa: F401 (make_db triggers registration on import)
+from test import DemoProject, make_db   # noqa: F401 (make_db triggers registration on import)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
@@ -181,7 +181,7 @@ def test_sync_freeze_and_edges():
 
     # 一个"只写不 freeze"的 flow：复用 demo_project 的 _write_val_task 写数据，
     # 但不提交 freeze task，从而留下一个有数据、未冻结的 db。
-    from demo_project import _write_val_task, _demo_freeze_task, DemoProject as _DP
+    from test.py.demo_project import _write_val_task, _demo_freeze_task, DemoProject as _DP
 
     @register_flow(_DP)
     def make_db_unfrozen(self, name, value):

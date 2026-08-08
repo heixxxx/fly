@@ -24,30 +24,13 @@ try:
 except ImportError:
     cloudpickle = None
 
-# 模块级 import db_chain（避免每次 _deserialize_args 做 try/except import）
-try:
-    from storage.py.db_chain import DbChainFile
-except ImportError:
-    from db_chain import DbChainFile
-try:
-    from storage.py.chain_registry import get_registry
-except ImportError:
-    from chain_registry import get_registry
-try:
-    from storage.py.database import _Database
-except ImportError:
-    from database import _Database
-
-try:
-    from task.task import _USER_MODULE, _USER_FUNC_PREFIX
-except ImportError:
-    try:
-        from task import _USER_MODULE, _USER_FUNC_PREFIX
-    except ImportError:
-        from fly.task import _USER_MODULE, _USER_FUNC_PREFIX
+from task import USER_MODULE, USER_FUNC_PREFIX
 
 from _fly_agent import EXTaskExecResult, EXTaskExecStatus
 from _fly_log import INFO, ERR
+
+from storage import Database, DbChainFile
+from storage import get_registry as get_chain_registry
 
 # db_path（db_path）是 full_name "db_path:short_name" 的前缀（变长，含 '/'）。
 # split 用 rfind(':') —— short_name 是逻辑对象名不含 ':'，最后一个 ':' 必是分隔符。
@@ -62,49 +45,43 @@ def _split_full_name(full_name):
     return full_name[:pos], full_name[pos + 1:]
 
 
-def _deserialize_args(args: list, worker) -> list:
+def deserialize_args(args: list, worker) -> list:
     result = []
     for arg in args:
         if isinstance(arg, str) and arg.startswith("__fly_db__:"):
             # 支持两种格式：
             #   新格式（db chain）：__fly_db__:{uid}:{db_path}:{data_path}
             #   旧格式：__fly_db__:{db_path}:{data_path}
-            # 用 maxsplit 防止 data_path 含 ':' 被过度拆分。
-            parts = arg.split(":", 3)  # maxsplit=3 → 最多 4 段
-            # parts[0] = "__fly_db__"
+            parts = arg.split(":", 3)  # maxsplit=3 防止 data_path 含 ':' 被过度拆分
             uid = None
             db_path = ""
             data_path = ""
             if len(parts) == 4:
-                # 新格式：__fly_db__:uid:db_path:data_path
                 uid = parts[1]
                 db_path = parts[2]
                 data_path = parts[3]
             elif len(parts) == 3:
-                # 旧格式：__fly_db__:db_path:data_path
                 db_path = parts[1]
                 data_path = parts[2]
             else:
                 db_path = parts[1] if len(parts) > 1 else ""
                 data_path = parts[2] if len(parts) > 2 else ""
 
-            # 用 uid 作 cache key（优先），fallback 到 db_path
             cache_key = uid or db_path
             if cache_key not in worker._db_cache:
                 from _fly_storage import ex_stg_get_data_service
                 ds = ex_stg_get_data_service()
 
-                # 读 _DB_CHAIN 一次（role + chain info），避免重复 flock + I/O。
-                # 失败（文件不存在/损坏）时安全 fallback 到基类 _Database。
+                # 读 _DB_CHAIN 一次（role + chain info），失败时安全 fallback 到基类。
                 chain_data = None
                 try:
                     chain_data = DbChainFile(db_path).read()
                 except Exception:
                     pass
 
-                # 按 role 选子类（_Database / DbChainFile / get_registry 已模块级 import）
+                # 按 role 选子类
                 role = chain_data.get("role") if chain_data else None
-                cls = _Database._ROLE_REGISTRY.get(role, _Database) if role else _Database
+                cls = Database._ROLE_REGISTRY.get(role, Database) if role else Database
 
                 if ds.has_database(db_path):
                     from _fly_storage import ex_stg_create_database_with_path
@@ -113,17 +90,16 @@ def _deserialize_args(args: list, worker) -> list:
                 else:
                     db = cls(db_path, data_path, worker._worker_id)
 
-                # 从已读的 chain_data 恢复链信息（不再重复读文件）
+                # 从已读的 chain_data 恢复链信息（不重复读文件）
                 db._chain_file = DbChainFile(db_path)
                 db._chain_uid = chain_data.get("uid") if chain_data else None
                 db._chain_role = role
                 db._chain_logical_name = chain_data.get("logical_name") if chain_data else None
                 if db._chain_uid:
-                    get_registry().register(db._chain_uid, db.get_db_path())
+                    get_chain_registry().register(db._chain_uid, db.get_db_path())
 
                 worker._agent.register_database(db_path, db._db)
                 worker._db_cache[cache_key] = db
-                # 也用 db_path 缓存（旧格式 fallback）
                 if uid:
                     worker._db_cache[db_path] = db
             result.append(worker._db_cache[cache_key])
@@ -141,23 +117,17 @@ def create_executor(worker):
 
     def _resolve_func(task_name, task_module):
         """Resolve the original task function from its name/module."""
-        if task_module == _USER_MODULE:
-            if not task_name.startswith(_USER_FUNC_PREFIX):
+        if task_module == USER_MODULE:
+            if not task_name.startswith(USER_FUNC_PREFIX):
                 raise ValueError(
                     f"Worker received from_user task but task_name "
                     f"lacks serialized payload: {task_name!r}"
                 )
-            payload_hex = task_name[len(_USER_FUNC_PREFIX):]
+            payload_hex = task_name[len(USER_FUNC_PREFIX):]
             deserializer = cloudpickle if cloudpickle is not None else pickle
             return deserializer.loads(bytes.fromhex(payload_hex))
-        try:
-            from task.task import _task_registry
-        except ImportError:
-            try:
-                from task import _task_registry
-            except ImportError:
-                from fly.task import _task_registry
-        registered = _task_registry.get((task_module, task_name))
+        from task import task_registry
+        registered = task_registry.get((task_module, task_name))
         if registered is not None:
             return getattr(registered, '_fly_original_func', registered)
         module = importlib.import_module(task_module)
@@ -172,7 +142,7 @@ def create_executor(worker):
           Database local caches so get_var hits locally during execute.
         Returns the deserialized argument list.
         """
-        deserialized_args = _deserialize_args(args, worker)
+        deserialized_args = deserialize_args(args, worker)
 
         # Inject inlined vars. Each VarPayload.var_name is a FULL name
         # (db_path:short_name); split to find the right Database and inject the
@@ -255,4 +225,3 @@ def create_executor(worker):
     return executor
 
 
-__all__ = ['create_executor']

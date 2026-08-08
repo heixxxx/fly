@@ -84,7 +84,7 @@ class Project:
         os.makedirs(self.db_path, exist_ok=True)
 
         meta_path = os.path.join(self.db_path, _PROJECT_META)
-        self._db_cache = {}      # actual_name -> _Database（避免重复 load/open）
+        self._db_cache = {}      # actual_name -> Database（避免重复 load/open）
         self._meta_path = meta_path
 
         if os.path.isfile(meta_path):
@@ -118,7 +118,7 @@ class Project:
             prev: 前驱 db 句柄列表（DAG 边）。默认 None（无前驱）。
 
         Returns:
-            ``_Database`` 句柄。
+            ``Database`` 句柄。
         """
         from fly import open_db
 
@@ -185,7 +185,7 @@ class Project:
             latest: 若 True，按 logical_name 取最新版。
 
         Returns:
-            ``_Database`` 句柄。
+            ``Database`` 句柄。
 
         Raises:
             KeyError: 该 name 不存在。

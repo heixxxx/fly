@@ -19,9 +19,11 @@ from _fly_log import INFO
 
 # Import the class directly. Both layouts are on sys.path under fly.
 try:
-    from storage.py.read_cache import ReadCache, _PROTECTION_SEC, _HARD_LIMIT_RATIO
+    from storage import ReadCache
+    from storage.py.read_cache import _PROTECTION_SEC, _HARD_LIMIT_RATIO
 except ImportError:
-    from storage.read_cache import ReadCache, _PROTECTION_SEC, _HARD_LIMIT_RATIO
+    from storage import ReadCache
+    from storage.py.read_cache import _PROTECTION_SEC, _HARD_LIMIT_RATIO
 
 
 def _entry_age(rc, key, seconds):

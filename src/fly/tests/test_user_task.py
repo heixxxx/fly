@@ -7,10 +7,7 @@ try:
 except ImportError:
     cloudpickle = None
 
-try:
-    from agent.executor import create_executor
-except ImportError:
-    from executor import create_executor
+from agent import create_executor
 
 
 class MockWorker:
@@ -87,7 +84,7 @@ def _user_bad_task(db):
 
 
 def test_as_task_user_script_serializes_func():
-    from task.py.task import as_task
+    from task import as_task
 
     _make_func_in_main_module(_user_my_task, "my_task")
     decorated = as_task()(_user_my_task)
@@ -98,7 +95,7 @@ def test_as_task_user_script_serializes_func():
 
 
 def test_as_task_user_script_unpickleable_raises():
-    from task.py.task import as_task
+    from task import as_task
 
     class _Unpickleable:
         def __reduce__(self):
@@ -119,36 +116,36 @@ def test_as_task_user_script_unpickleable_raises():
 
 
 def test_as_task_repo_module_registers_in_registry():
-    from task.py.task import as_task, _task_registry
+    from task import as_task, task_registry
 
     _make_func_in_module(_user_repo_task, "my_repo_module", "repo_task")
     decorated = as_task()(_user_repo_task)
 
-    assert ("my_repo_module", "repo_task") in _task_registry
-    assert _task_registry[("my_repo_module", "repo_task")] is _user_repo_task
+    assert ("my_repo_module", "repo_task") in task_registry
+    assert task_registry[("my_repo_module", "repo_task")] is _user_repo_task
     assert decorated._fly_original_func is _user_repo_task
     assert decorated._fly_task_name == "repo_task"
 
-    del _task_registry[("my_repo_module", "repo_task")]
+    del task_registry[("my_repo_module", "repo_task")]
     print("  PASS: test_as_task_repo_module_registers_in_registry")
 
 
 def test_as_task_user_script_does_not_register():
-    from task.py.task import as_task, _task_registry
+    from task import as_task, task_registry
 
     _make_func_in_main_module(_user_task_reg, "user_task")
-    before_keys = set(_task_registry.keys())
+    before_keys = set(task_registry.keys())
 
     as_task()(_user_task_reg)
 
-    after_keys = set(_task_registry.keys())
+    after_keys = set(task_registry.keys())
     new_keys = after_keys - before_keys
     assert len(new_keys) == 0, f"Unexpected registry entries: {new_keys}"
     print("  PASS: test_as_task_user_script_does_not_register")
 
 
 def test_as_task_task_name_preserved():
-    from task.py.task import as_task, task_name
+    from task import as_task, task_name
 
     _make_func_in_main_module(_user_named_task, "original_name")
     inner = as_task()(_user_named_task)

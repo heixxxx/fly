@@ -20,22 +20,16 @@ MATRIX_PATH = os.path.join(DB_BASE, "matrix")
 SOLVE_PATH = os.path.join(DB_BASE, "solve")
 MERGE_TARGET = os.path.join(DB_BASE, "matrix_merged")
 
-try:
-    from storage.py.database import _Database
-except ImportError:
-    from database import _Database
+from storage import Database
 
-try:
-    from storage.py.db_chain import DbChainFile
-except ImportError:
-    from db_chain import DbChainFile
+from storage import DbChainFile
 
 
-class MatrixDb(_Database):
+class MatrixDb(Database):
     role = "matrix"
 
 
-class SolveDb(_Database):
+class SolveDb(Database):
     role = "solve"
 
 
@@ -72,7 +66,7 @@ assert found.get_uid() == matrix_uid
 print(f"  pre-merge find_db(matrix): uid={found.get_uid()} ✓")
 
 # ── Step 3: 写数据到 matrix + freeze（merge 前置条件）──
-from e2e_tasks import write_data
+from test import write_data
 write_data(matrix_db, "data/x", 42)
 assert master.wait_for_all_tasks(timeout=10) or len(master.completed_tasks) >= 1
 time.sleep(0.5)

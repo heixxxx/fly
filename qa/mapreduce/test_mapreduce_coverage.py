@@ -58,7 +58,7 @@ def test_full_merge():
 def test_pre_partitioned():
     db = fresh_db("pre_part")
 
-    from e2e_tasks import write_data
+    from test import write_data
     write_data(db, "shard_0", [1, 2, 3])
     write_data(db, "shard_1", [4, 5, 6])
     assert wait_tasks(timeout=30.0)
@@ -135,7 +135,7 @@ def test_downstream_dependency():
     mr.set_merger(lambda a, b: a + b, "summary")
     mr.run([10, 20, 30, 40])
 
-    from e2e_tasks import mr_downstream_read
+    from test import mr_downstream_read
     mr_downstream_read(db, mr, "downstream_output")
 
     assert wait_tasks(timeout=60.0)

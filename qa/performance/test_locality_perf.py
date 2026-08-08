@@ -56,23 +56,23 @@ def wait_completed(master, expected, timeout=180):
 def seed_payload(db, idx, size):
     """requires seed_idx → 强制落 worker idx。写 payload + 自报 worker_id。
     写入后用 cache="high" 读一次，预热本 worker 的 high tier cache（省后续反序列化）。"""
-    from e2e_tasks import _get_wid
+    from test import get_wid
     db.write_object(f"payload_{idx}", list(range(size)))
     db.read_object(f"payload_{idx}", cache="high")  # 预热 high cache
-    db.write_object(f"seed_worker_{idx}", _get_wid())
+    db.write_object(f"seed_worker_{idx}", get_wid())
 
 
 @as_task(inputs=lambda db, payload_idx, consume_id: [db.get_full_name(f"payload_{payload_idx}")])
 def consume_payload(db, payload_idx, consume_id):
     """依赖 payload，用 cache="high" 读取 N 次，自报执行 worker + 实际读取耗时。
     无 capability，纯测 locality。task 内自测 read 耗时（排除调度/提交开销）。"""
-    from e2e_tasks import _get_wid
+    from test import get_wid
     import time as _time
     t0 = _time.monotonic()
     for _ in range(READ_TIMES):
         db.read_object(f"payload_{payload_idx}", cache="high")
     read_elapsed = _time.monotonic() - t0
-    db.write_object(f"consume_worker_{consume_id}", _get_wid())
+    db.write_object(f"consume_worker_{consume_id}", get_wid())
     # 写入实际读取耗时（毫秒），用于精确对比 ON/OFF
     db.write_object(f"consume_read_ms_{consume_id}", int(read_elapsed * 1000))
 
