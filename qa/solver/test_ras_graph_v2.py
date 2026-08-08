@@ -43,7 +43,7 @@ def main():
 
     x_ras = np.asarray(result["x"])
     rel_err = np.linalg.norm(x_ras - x_exact) / np.linalg.norm(x_exact)
-    print(f"\n=== RESULT ===")
+    print("\n=== RESULT ===")
     print(f"  iters={result['iters']} converged={result['converged']}")
     print(f"  time={elapsed:.2f}s")
     print(f"  rel_err={rel_err:.3e}")

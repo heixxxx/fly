@@ -67,7 +67,7 @@ mr.set_finalizer(sort_by_freq)
 mr.run(texts)
 
 assert wait_tasks(timeout=60.0), \
-    f"Tasks should complete, " \
+    "Tasks should complete, " \
     f"completed={len(master.completed_tasks)}, failed={len(master.failed_tasks)}"
 
 assert len(master.failed_tasks) == 0, \

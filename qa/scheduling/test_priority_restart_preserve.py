@@ -108,11 +108,11 @@ restart_task_id = p1_failed[0]
 
 assert new_completed[0] == restart_task_id, (
     f"Phase 2: restarted high-priority task (id={restart_task_id}, priority=20) "
-    f"should complete FIRST after restart (priority preserved). "
+    "should complete FIRST after restart (priority preserved). "
     f"Got order={new_completed} — if a smaller-id default-priority task came first, "
-    f"priority was LOST during restart (regression).")
+    "priority was LOST during restart (regression).")
 assert new_completed[1] != restart_task_id, (
-    f"Phase 2: second completion should be the default-priority task. "
+    "Phase 2: second completion should be the default-priority task. "
     f"Got order={new_completed}")
 
 # 端到端正确性：两个对象都写入成功
@@ -124,5 +124,5 @@ assert not os.path.isfile(failed_file), \
     "Phase 2: failed_tasks.bin should be deleted after successful restart"
 
 master.stop()
-INFO(f"[PASS] priority + attr_timeout preserved across restart: "
+INFO("[PASS] priority + attr_timeout preserved across restart: "
      f"order={new_completed} (high-prio id={restart_task_id} first)")

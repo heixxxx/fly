@@ -45,4 +45,4 @@ INFO(f"Workers connected: {master.worker_count}")
 run_one(N, NSD)
 
 master.stop()
-INFO(f"[DONE] RAS2 benchmark complete")
+INFO("[DONE] RAS2 benchmark complete")

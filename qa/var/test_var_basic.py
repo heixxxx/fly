@@ -84,4 +84,4 @@ assert wait_for(lambda: len(master.completed_tasks) >= 10)
 assert len(master.failed_tasks) == 0
 
 master.stop()
-INFO(f"[PASS] test_var_basic")
+INFO("[PASS] test_var_basic")

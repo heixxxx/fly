@@ -75,4 +75,4 @@ assert local_count == 2, f"master 自身 2 条应全进 message.log，实际 {lo
 # 验证 3：summary 反映 trigger 计数（MQUOTA::0001 worker 触发 5 次，配额不影响计数）。
 assert "MQUOTA::0001 : 5" in content, f"summary 应显示 worker 触发 5 次:\n{content}"
 
-INFO(f"[PASS] test_message_master_quota")
+INFO("[PASS] test_message_master_quota")

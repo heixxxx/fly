@@ -58,7 +58,7 @@ def test_concurrent_writes():
         val = db.read_object(f"concurrent_{i}")
         assert val == i, f"concurrent_{i} should be {i}, got {val}"
 
-    INFO(f"[PASS] test_concurrent_writes: 50 objects written by 2 workers, all readable")
+    INFO("[PASS] test_concurrent_writes: 50 objects written by 2 workers, all readable")
 
 
 test_concurrent_writes()

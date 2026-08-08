@@ -95,7 +95,7 @@ def main():
     wait_tasks()  # 两个 task 都正常完成 = RPC 往返成功
 
     print("[PASS] peer RPC round-trip (check responded 3x + compute rpc 3x + 3 small ping)")
-    print(f"  check avg respond time reported in worker log (~0.26ms)")
+    print("  check avg respond time reported in worker log (~0.26ms)")
     master.stop()
 
 

@@ -89,6 +89,6 @@ print(f"       path={found.get_db_path()} ✓")
 
 # ── 验证数据正确：找到的是 D_A（original=100），不是 D_B（new=200）──
 assert found.read_object("data/original") == 100, "should read original data D_A"
-print(f"  data verification: found.read('data/original')=100 ✓ (D_A, not D_B)")
+print("  data verification: found.read('data/original')=100 ✓ (D_A, not D_B)")
 
 print("\nALL PASSED")

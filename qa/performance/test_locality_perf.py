@@ -166,7 +166,7 @@ assert on_hit_rate == 1.0, \
     f"locality ON should hit all holders: {on_hits_total}/{on_consumes_total}"
 
 assert off_hit_rate < 1.0, \
-    f"locality OFF should miss some holders (reverse-dependency design): " \
+    "locality OFF should miss some holders (reverse-dependency design): " \
     f"{off_hits_total}/{off_consumes_total}"
 
 # ON 应不劣于 OFF（含 high cache 预热，ON 省 67% 的反序列化+跨网络）

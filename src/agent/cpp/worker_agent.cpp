@@ -1120,8 +1120,8 @@ CMVector<CMString> WorkerAgent::get_worker_properties() const {
 
 void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg) {
     touch_master_contact();
-    INFO("IdxLoadCommand received: db_path={}, db_path={}, writer_ids_count={}",
-         msg.db_path_, msg.db_path_, msg.writer_ids_.size());
+    INFO("IdxLoadCommand received: db_path={}, writer_ids_count={}",
+         msg.db_path_, msg.writer_ids_.size());
 
     IdxLoadAckMessage ack;
     ack.worker_id_ = worker_id_;

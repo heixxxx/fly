@@ -317,7 +317,7 @@ class UserDoc:
     def _check_frozen(self):
         if self._frozen:
             raise RuntimeError(f"UserDoc '{self._api_name}' is frozen; "
-                               f"cannot modify after register_help()")
+                               "cannot modify after register_help()")
 
     def add_param(self, name, schema, *, required=True,
                   default=_NO_DEFAULT, desc="", hidden=False, none_ok=False):
@@ -722,4 +722,4 @@ def help(keyword=None, detail=False, all=False):
     for doc in sorted(matched, key=lambda d: d._api_name):
         owner = doc._owner.__name__ if doc._owner else "-"
         print(f"  {doc._api_name:<24} {owner:<20}")
-    print(f"\nUse help('<exact_name>') for details.")
+    print("\nUse help('<exact_name>') for details.")

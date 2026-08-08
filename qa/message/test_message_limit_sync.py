@@ -72,4 +72,4 @@ assert master_count == 3, f"master message.log 应有 3 条，实际 {master_cou
 # 验证 3：summary trigger 计数 = 5（配额不影响计数）。
 assert "SYNC::0001 : 5" in content, f"summary 应显示触发 5 次:\n{content}"
 
-INFO(f"[PASS] test_message_limit_sync")
+INFO("[PASS] test_message_limit_sync")

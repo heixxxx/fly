@@ -60,7 +60,7 @@ assert wait_for(lambda: len(master.completed_tasks) >= 1)
 time.sleep(0.5)
 db.freeze()
 assert db.is_frozen()
-INFO(f"[CROSS-SOLVE] matrix written + frozen")
+INFO("[CROSS-SOLVE] matrix written + frozen")
 
 # ── Phase 2: cross-path merge（merge_db_path != 源 path）──
 merged_db = merge_db(DB_PATH, merge_db_path=MERGE_DB_PATH, delete_source=True)

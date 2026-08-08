@@ -281,11 +281,9 @@ void DataServer::on_readable(int fd) {
             }
         } else {
             response.success_ = false;
-            if (data_service_.is_write_in_progress(req.object_name_)) {
-                response.error_message_ = "DATA_NOT_READY";
-            } else {
-                response.error_message_ = "OBJECT_NOT_FOUND";
-            }
+            response.status_ = data_service_.is_write_in_progress(req.object_name_)
+                               ? ResponseStatus::NOT_READY
+                               : ResponseStatus::NOT_FOUND;
         }
 
         // Two-segment encode: small fields via bitsery, raw payload referenced

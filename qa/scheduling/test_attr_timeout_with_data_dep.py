@@ -74,4 +74,4 @@ assert elapsed >= 2.0, \
 
 master.stop()
 INFO(f"[PASS] data dep + attr timeout: task degraded after {elapsed:.2f}s "
-     f"(timeout=2s started after dep satisfied)")
+     "(timeout=2s started after dep satisfied)")

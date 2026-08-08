@@ -111,7 +111,7 @@ Database::CompressResult Database::compress_buffered_data(
     int32_t chunk_count = 0;
     {
         auto compressor = compression_type_ != CompressionType::NONE
-            ? CompressorFactory::create(compression_type_) : nullptr;
+            ? CompressorFactory::create(compression_type_, compression_level_) : nullptr;
         CompressingStreamBuf csbuf(counting_stream, std::move(compressor),
                                     serialize_chunk_size_, compression_threshold_);
         std::ostream os(&csbuf);
@@ -626,7 +626,7 @@ void Database::write_db_meta_header() {
     ofs.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
     ofs.close();
 
-    DBG("Wrote _DB_META header: db_path={}, db_path={}", db_path_, db_path_);
+    DBG("Wrote _DB_META header: db_path={}", db_path_);
 }
 
 void Database::append_worker_info_to_meta(const WorkerInfo& info) {

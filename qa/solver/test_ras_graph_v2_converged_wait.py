@@ -41,7 +41,7 @@ def main():
     assert int(result["iters"]) > 0
     assert isinstance(result["converged"], (bool, np.bool_))
 
-    print(f"\n=== RESULT ===")
+    print("\n=== RESULT ===")
     print(f"  iters={int(result['iters'])} converged={bool(result['converged'])}")
     print(f"  time={elapsed:.2f}s")
     assert bool(result["converged"]), "Did not converge"

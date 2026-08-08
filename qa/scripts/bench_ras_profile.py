@@ -160,4 +160,4 @@ if os.path.isdir(db_path):
     shutil.rmtree(db_path, ignore_errors=True)
 
 master.stop()
-INFO(f"[DONE] RAS profile complete")
+INFO("[DONE] RAS profile complete")

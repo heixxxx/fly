@@ -70,4 +70,4 @@ assert wait_for(lambda: len(master.completed_tasks) >= 3)
 assert len(master.failed_tasks) == 0
 
 master.stop()
-INFO(f"[PASS] test_var_immutable")
+INFO("[PASS] test_var_immutable")

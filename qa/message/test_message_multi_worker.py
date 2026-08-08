@@ -77,4 +77,4 @@ multims_lines = content.count("[MULTIMS::0001]")
 assert multi_lines == 14, f"MULTI::0001 message 行应为 14，实际 {multi_lines}"
 assert multims_lines == 3, f"MULTIMS::0001 message 行应为 3，实际 {multims_lines}"
 
-INFO(f"[PASS] test_message_multi_worker")
+INFO("[PASS] test_message_multi_worker")

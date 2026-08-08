@@ -46,18 +46,22 @@ bash qa/run_qa_tests.sh        # Legacy wrapper, same thing
 
 When adding a new symbol to `from fly import ...`:
 
-1. **Define** in `src/task/py/task.py` (or appropriate module)
-2. **Export** from `src/task/py/__init__.py` (add to `__all__`)
-3. **Export** from `src/task/__init__.py` (Bazel runfiles compat, try/except)
-4. **Import** in `src/fly/__init__.py` (try/except for both path layouts)
-5. **Add to `__all__`** in `src/fly/__init__.py`
+1. **Define** in `src/<module>/py/<file>.py`（不加 `_` 前缀，允许 `import *` 导出）
+2. **级联 re-export**：`src/<module>/py/__init__.py` 用 `from .<file> import *`，`src/<module>/__init__.py` 用 `from <module>.py import *`
+3. **Import in `src/fly/__init__.py`**：裸 `from <module> import <symbol>`（包根导入，两种布局统一）
 
 ```python
-try:
-    from task.task import as_task        # Bazel runfiles (task/__init__.py re-exports)
-except ImportError:
-    from task.py.task import as_task     # Direct Python (standard package path)
+# src/task/py/__init__.py
+from .task import *
+
+# src/task/__init__.py
+from task.py import *  # noqa: F401,F403
+
+# src/fly/__init__.py
+from task import as_task, task_name, wait_obj
 ```
+
+**禁止** `__all__`、`try/except` 双布局 import、`from <module>.py.xxx import`。详见 [`CLAUDE.md`](CLAUDE.md) §3「Python 包布局与 import 规范」。
 
 ---
 

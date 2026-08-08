@@ -38,16 +38,16 @@ public:
     CMString name() const override { return "none"; }
 };
 
-CMUniquePtr<Compressor> CompressorFactory::create(CompressionType type) {
+CMUniquePtr<Compressor> CompressorFactory::create(CompressionType type, int level) {
     switch (type) {
         case CompressionType::NONE:
             return CMMakeUnique<NoneCompressor>();
         case CompressionType::LZ4:
-            return CMMakeUnique<Lz4Compressor>();
+            return CMMakeUnique<Lz4Compressor>(level < 0 ? 1 : level);
         case CompressionType::ZLIB:
-            return CMMakeUnique<ZlibCompressor>();
+            return CMMakeUnique<ZlibCompressor>(level < 0 ? 6 : level);
         case CompressionType::ZSTD:
-            return CMMakeUnique<ZstdCompressor>();
+            return CMMakeUnique<ZstdCompressor>(level < 0 ? 3 : level);
     }
     ERR("Unknown compression type"); return nullptr;
 }

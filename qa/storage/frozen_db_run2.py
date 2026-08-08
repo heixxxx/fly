@@ -27,7 +27,7 @@ except RuntimeError as e:
     assert "frozen" in str(e).lower(), \
         f"Expected frozen DB error, got: {e}"
     INFO(f"[RUN2] write_object on frozen DB raised RuntimeError as expected: {e}")
-INFO(f"[RUN2] write_object on frozen DB returned empty as expected")
+INFO("[RUN2] write_object on frozen DB returned empty as expected")
 
 assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), \
     "_FROZEN marker should still exist after load_db"

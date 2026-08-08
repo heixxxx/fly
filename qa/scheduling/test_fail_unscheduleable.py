@@ -65,9 +65,9 @@ def test_fail_unscheduleable_tasks_enabled():
             break
         time.sleep(0.5)
     assert db.read_object("alpha_result") == 1, \
-        f"alpha task should still complete normally"
+        "alpha task should still complete normally"
 
-    INFO(f"[PASS] test_fail_unscheduleable_tasks_enabled: "
+    INFO("[PASS] test_fail_unscheduleable_tasks_enabled: "
           f"task failed with '{error_msg}'")
 
 

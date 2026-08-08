@@ -49,7 +49,7 @@ def wait_failed(expected, timeout=15):
 
 failed = wait_failed(1, timeout=15)
 assert len(failed) >= 1, \
-    f"dead-wait task should fail (no worker can acquire property), " \
+    "dead-wait task should fail (no worker can acquire property), " \
     f"failed={len(failed)}, completed={len(master.completed_tasks)}"
 
 master.stop()

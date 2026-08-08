@@ -73,7 +73,7 @@ def wait_completed(expected, timeout=15):
 
 completed = wait_completed(completed_base + 2, timeout=15)
 assert db.read_object("gpu_result") == 77, \
-    f"gpu task should be scheduled after property change"
+    "gpu task should be scheduled after property change"
 
 master.stop()
 INFO("[PASS] attr property change: waiting task scheduled immediately after gpu added")

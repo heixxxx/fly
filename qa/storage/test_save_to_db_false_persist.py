@@ -59,4 +59,4 @@ with open(os.path.join(DB_PATH, "_test_db_path"), "w") as f:
 assert os.path.isfile(os.path.join(DB_PATH, "_DB_META")), "_DB_META should exist"
 
 INFO(f"[RUN1_MOVED] Created DB at {DB_PATH}: db_path={db_path}")
-INFO(f"[RUN1_MOVED] Wrote 4 objects (2 worker, 2 master)")
+INFO("[RUN1_MOVED] Wrote 4 objects (2 worker, 2 master)")

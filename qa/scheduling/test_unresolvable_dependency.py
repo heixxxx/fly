@@ -67,9 +67,9 @@ def test_unresolvable_dependency():
             break
         time.sleep(0.5)
     assert db.read_object("real_key") == 1, \
-        f"write_data task should still complete normally"
+        "write_data task should still complete normally"
 
-    INFO(f"[PASS] test_unresolvable_dependency: "
+    INFO("[PASS] test_unresolvable_dependency: "
           f"task failed with '{error_msg}'")
 
 

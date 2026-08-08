@@ -43,7 +43,9 @@ public:
 
 class CompressorFactory {
 public:
-    static CMUniquePtr<Compressor> create(CompressionType type);
+    // level < 0 时用各 Compressor 的默认级别（Zlib=6 / Zstd=3 / Lz4=1），
+    // 否则透传给具体 Compressor（Zlib/Zstd: 压缩级别；Lz4: acceleration）。
+    static CMUniquePtr<Compressor> create(CompressionType type, int level = -1);
     static CMUniquePtr<Compressor> create_from_name(const CMString& name);
 
     static CompressionType type_from_name(const CMString& name);

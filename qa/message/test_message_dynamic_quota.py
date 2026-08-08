@@ -132,4 +132,4 @@ assert dnbg_count == 5, f"DNBG::0001 小→大应有 5 条（改大后恢复输�
 # summary trigger = 3 + 4 = 7（trigger 持续累加，含丢弃的）。
 assert "DNBG::0001 : 7" in content, f"summary DNBG::0001 trigger 应为 7:\n{content}"
 
-INFO(f"[PASS] test_message_dynamic_quota")
+INFO("[PASS] test_message_dynamic_quota")

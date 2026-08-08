@@ -49,4 +49,4 @@ assert val == large_data, "Large object HIGH cache failed"
 val = db.read_object("large_obj", cache="high")
 assert val == large_data, "Large object HIGH cache hit failed"
 
-INFO(f"[PASS] test_read_cache_large_objects: large object caching verified")
+INFO("[PASS] test_read_cache_large_objects: large object caching verified")

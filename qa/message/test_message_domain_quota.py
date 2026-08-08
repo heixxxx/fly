@@ -80,4 +80,4 @@ assert "DOMQ::0001 : 5" in content, f"summary DOMQ::0001 应为 5:\n{content}"
 assert "DOMQ::0002 : 3" in content, f"summary DOMQ::0002 应为 3:\n{content}"
 assert "DOMQ : 8" in content, f"summary domain DOMQ 应为 8:\n{content}"
 
-INFO(f"[PASS] test_message_domain_quota")
+INFO("[PASS] test_message_domain_quota")

@@ -68,4 +68,4 @@ assert worker_count == 20, f"worker1 本地 debug log 应有 20 条，实际 {wo
 summary_block = content
 assert "WQUOTA::0001 : 22" in summary_block, f"summary 应显示 WQUOTA::0001 触发 22 次:\n{summary_block}"
 
-INFO(f"[PASS] test_message_worker_quota (id 配额)")
+INFO("[PASS] test_message_worker_quota (id 配额)")

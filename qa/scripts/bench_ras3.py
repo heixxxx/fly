@@ -56,7 +56,7 @@ INFO(f"Workers connected: {master.worker_count}")
 configs = [(N, NSD)]
 
 # First run ras.py to get baseline
-INFO(f"\n--- RAS (centralized matvec) ---")
+INFO("\n--- RAS (centralized matvec) ---")
 for n, nsd in configs:
     times_ras = []
     for trial in range(TRIALS):
@@ -71,7 +71,7 @@ for n, nsd in configs:
             times_ras.append(None)
 
 # Then run ras3.py
-INFO(f"\n--- RAS3 (distributed matvec) ---")
+INFO("\n--- RAS3 (distributed matvec) ---")
 for n, nsd in configs:
     times_ras3 = []
     for trial in range(TRIALS):

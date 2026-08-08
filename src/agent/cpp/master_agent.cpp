@@ -1732,7 +1732,6 @@ void MasterAgent::send_idx_load_commands(const CMString& db_path,
                                                                                       const CMVector<CMString>& writer_ids) {
     IdxLoadCommandMessage msg;
     msg.db_path_ = db_path;
-    msg.db_path_ = db_path;
     msg.writer_ids_ = writer_ids;
 
     {
@@ -1808,7 +1807,6 @@ void MasterAgent::send_idx_load_to_worker(const CMString& db_path,
                                                                                         const CMVector<CMString>& writer_ids,
                                             uint64_t worker_id) {
     IdxLoadCommandMessage msg;
-    msg.db_path_ = db_path;
     msg.db_path_ = db_path;
     msg.writer_ids_ = writer_ids;
 
@@ -2255,7 +2253,6 @@ void MasterAgent::send_delete_data(uint64_t source_worker_id,
     }
 
     DeleteDataMessage msg;
-    msg.db_path_ = db_path;
     msg.db_path_ = db_path;
     // data_path：显式传入优先；否则从 master db_instances_ 查（删源在 cleanup 前执行，
     // 此时 Database 仍是源的 data_path）。

@@ -56,7 +56,7 @@ secret = db.read_object("local/alpha_secret")
 assert secret == 777, f"local/alpha_secret should be 777, got {secret}"
 
 blob = db.read_object("local/alpha_blob")
-assert blob == "x" * 1000, f"local/alpha_blob length mismatch"
+assert blob == "x" * 1000, "local/alpha_blob length mismatch"
 
 # ── Verify NON-BACKUP data from host-beta is readable ──
 beta_only = db.read_object("local/beta_only")

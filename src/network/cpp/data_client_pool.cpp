@@ -188,9 +188,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
         NetQualityMonitor::instance().update_rtt(host, rtt_ms);
         transport_->close(fd);
         release_slot();
-        ReadError rerr = (response.error_message_ == "DATA_NOT_READY")
+        ReadError rerr = (response.status_ == ResponseStatus::NOT_READY)
                              ? ReadError::DATA_NOT_READY
-                         : (response.error_message_ == "OBJECT_NOT_FOUND")
+                         : (response.status_ == ResponseStatus::NOT_FOUND)
                              ? ReadError::OBJECT_NOT_FOUND
                              : ReadError::NETWORK;
         return {false, nullptr, "", "", response.error_message_, rerr};

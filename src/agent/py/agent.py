@@ -576,7 +576,7 @@ class Master(FlyAgent):
                 del_ok, del_failed = self._agent.wait_delete_data_acks(
                     source_worker_ids, db_path, 60)
                 if del_ok:
-                    INFO(f"merge_db: all source deletes confirmed")
+                    INFO("merge_db: all source deletes confirmed")
                 else:
                     WARN(f"merge_db: {len(del_failed)} source deletes failed/timed out "
                          f"(workers={del_failed}), source .dat may remain")
@@ -635,7 +635,7 @@ class Master(FlyAgent):
         if source_chain is None:
             # 旧 db 无 _DB_CHAIN → 无链更新，但仍删源目录（如果有 _MIGRATED_TO 兼容）
             INFO(f"_update_chain_on_merge: source has no _DB_CHAIN at {source_path}, "
-                 f"skipping chain update")
+                 "skipping chain update")
             return
 
         uid = source_chain.get("uid")
@@ -691,7 +691,7 @@ class Master(FlyAgent):
                 WARN(f"_update_chain_on_merge: failed to delete source {source_path}: {e}")
         else:
             INFO(f"_update_chain_on_merge: same-path merge, source=target={source_path}, "
-                 f"no deletion needed")
+                 "no deletion needed")
 
     def set_worker_property(self, prop):
         WARN("set_worker_property called on Master, ignoring")

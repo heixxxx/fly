@@ -92,8 +92,8 @@ def main():
 
     db.reset()
     print("\nLarge transfer profiling test passed!")
-    print(f"Perf data hint: run under 'perf record -e cpu-cycles ./build/bin/fly qa/test_large_transfer_profile.py'")
-    print(f"Then 'perf report' to see hot copy functions (memcpy/memmove/__memcpy_sse)")
+    print("Perf data hint: run under 'perf record -e cpu-cycles ./build/bin/fly qa/test_large_transfer_profile.py'")
+    print("Then 'perf report' to see hot copy functions (memcpy/memmove/__memcpy_sse)")
 
 
 if __name__ == "__main__":

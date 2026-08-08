@@ -22,7 +22,7 @@ if os.path.isdir(DB_PATH):
 get_config().set_int("fail_unscheduleable_tasks", 1)
 master = get_agent()
 master.launch_local_workers([{"attributes": [f"sd_{i}"]} for i in range(NSD)])
-assert master.wait_for_workers(NSD), f"workers should connect"
+assert master.wait_for_workers(NSD), "workers should connect"
 
 db = open_db(DB_PATH)
 
@@ -39,4 +39,4 @@ assert result["converged"], \
     f"GMRES-RAS should converge for n={N} nsd={NSD} ov={OVERLAP} (res={result['residual']:.2e})"
 
 master.stop()
-INFO(f"[PASS] test_solver_ras_n4_sd2_ov1_noconv")
+INFO("[PASS] test_solver_ras_n4_sd2_ov1_noconv")

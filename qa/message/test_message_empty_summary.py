@@ -33,4 +33,4 @@ assert "By domain" in summary
 # 验证 2：无 message 时的空提示分支。
 assert "no message triggered" in summary, f"应有 no message triggered 提示:\n{summary}"
 
-INFO(f"[PASS] test_message_empty_summary")
+INFO("[PASS] test_message_empty_summary")

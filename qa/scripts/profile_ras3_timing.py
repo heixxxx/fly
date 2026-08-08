@@ -50,7 +50,7 @@ del db
 if os.path.isdir(db_path):
     shutil.rmtree(db_path, ignore_errors=True)
 
-INFO(f"\n=== Timing Summary ===")
+INFO("\n=== Timing Summary ===")
 INFO(f"RAS:  {t_ras:.3f}s")
 INFO(f"RAS3: {t_ras3:.3f}s")
 INFO(f"Ratio: {t_ras3/t_ras:.2f}x")

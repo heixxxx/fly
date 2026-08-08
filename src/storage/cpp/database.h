@@ -228,7 +228,7 @@ fly::WriteErrorType Database::write_object(const CMString& object_name, const T&
     int32_t chunk_count = 0;
     {
         auto compressor = compression_type_ != CompressionType::NONE
-            ? CompressorFactory::create(compression_type_) : nullptr;
+            ? CompressorFactory::create(compression_type_, compression_level_) : nullptr;
         CompressingStreamBuf csbuf(counting_stream, std::move(compressor),
                                     serialize_chunk_size_, compression_threshold_);
         std::ostream os(&csbuf);

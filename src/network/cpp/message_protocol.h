@@ -74,16 +74,16 @@ public:
     }
     
     static MessageType get_type(const CMString& buffer) {
-        if (buffer.size() < 5) return MessageType::REGISTER;
+        if (buffer.size() < 5) return MessageType::INVALID;
 
         uint32_t total_len = read_be32(buffer);
 
-        if (total_len < 1) return MessageType::REGISTER;
-        if (buffer.size() < 4 + total_len) return MessageType::REGISTER;
-        
+        if (total_len < 1) return MessageType::INVALID;
+        if (buffer.size() < 4 + total_len) return MessageType::INVALID;
+
         uint8_t raw_type = static_cast<uint8_t>(buffer[4]);
-        if (!is_valid_message_type(raw_type)) return MessageType::REGISTER;
-        
+        if (!is_valid_message_type(raw_type)) return MessageType::INVALID;
+
         return static_cast<MessageType>(raw_type);
     }
     

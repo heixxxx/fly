@@ -295,3 +295,91 @@ TEST_F(Lz4CompressorTest, DecompressGarbageData) {
     EXPECT_TRUE(compressor_->decompress(100, garbage_data).empty());
 }
 
+// ── compression_level 透传测试 ──────────────────────────────────────
+//
+// Bug B4: CompressorFactory::create(type) 不接受 level 参数，database.cpp 读取的
+// compression_level_ 配置写后不读，各 Compressor 用硬编码默认值。用户调
+// compression_level 配置静默不生效。
+//
+// 修复: CompressorFactory::create(type, level) 透传 level 给各 Compressor。
+// 验证: 同一输入、不同 level → 不同的 compressed_size（证明 level 实际生效）。
+
+// 构造可压缩但 level 敏感的输入：半结构化数据（伪随机字节 + 重复模式混合），
+// 使 zlib/zstd 在不同 level 下压缩率有可观测差异。
+// 纯重复数据（如 "ABCDE" 循环）对 zstd 即使 level=1 也压到极限，无法区分 level。
+static CMString make_compressible_input(size_t size) {
+    CMString input;
+    input.reserve(size);
+    uint32_t state = 12345;
+    for (size_t i = 0; i < size; ++i) {
+        // LCG 伪随机 + 每 7 字节插入一次重复的 ASCII 块
+        state = state * 1103515245u + 12345u;
+        char c = (i % 7 == 0) ? char('A' + (i / 7) % 26)
+                              : char('a' + (state >> 16) % 26);
+        input.push_back(c);
+    }
+    return input;
+}
+
+TEST(CompressorFactoryTest, ZlibLevelAffectsCompression) {
+    // Bug 复现: factory 带 level 重载，不同 level 应产生不同压缩大小。
+    // zlib level 1（最快）vs level 9（最好）压缩率差异显著。
+    auto input = make_compressible_input(16384);
+
+    auto c1 = CompressorFactory::create(CompressionType::ZLIB, 1);
+    auto c9 = CompressorFactory::create(CompressionType::ZLIB, 9);
+    ASSERT_NE(c1, nullptr);
+    ASSERT_NE(c9, nullptr);
+
+    auto chunk1 = c1->compress(input);
+    auto chunk9 = c9->compress(input);
+
+    // level 9 应比 level 1 压得更小（对高度重复的输入差异显著）。
+    EXPECT_GT(chunk1.compressed_size_, chunk9.compressed_size_)
+        << "level=1 (" << chunk1.compressed_size_ << ") should be larger than "
+        << "level=9 (" << chunk9.compressed_size_ << ")";
+
+    // 两者都应能正确解压回原数据。
+    EXPECT_EQ(c1->decompress(chunk1.uncompressed_size_, chunk1.data_), input);
+    EXPECT_EQ(c9->decompress(chunk9.uncompressed_size_, chunk9.data_), input);
+}
+
+TEST(CompressorFactoryTest, ZstdLevelAffectsCompression) {
+    // 用带明确重复子串的数据（zstd 高 level 能发现更远的匹配）。
+    // 构造: 大量重复段落（每段 256 字节，段落间有部分重叠）。
+    CMString input;
+    input.reserve(32768);
+    for (int block = 0; block < 128; ++block) {
+        // 每 256 字节一个块，块内有 200 字节相同 + 56 字节变化
+        char c = char('A' + block % 20);
+        for (int i = 0; i < 200; ++i) input.push_back(c);
+        for (int i = 0; i < 56; ++i) input.push_back(char('a' + (block + i) % 26));
+    }
+
+    auto c1 = CompressorFactory::create(CompressionType::ZSTD, 1);
+    auto c19 = CompressorFactory::create(CompressionType::ZSTD, 19);
+    ASSERT_NE(c1, nullptr);
+    ASSERT_NE(c19, nullptr);
+
+    auto chunk1 = c1->compress(input);
+    auto chunk19 = c19->compress(input);
+
+    EXPECT_GT(chunk1.compressed_size_, chunk19.compressed_size_)
+        << "zstd level=1 (" << chunk1.compressed_size_ << ") should be larger than "
+        << "level=19 (" << chunk19.compressed_size_ << ")";
+
+    EXPECT_EQ(c1->decompress(chunk1.uncompressed_size_, chunk1.data_), input);
+    EXPECT_EQ(c19->decompress(chunk19.uncompressed_size_, chunk19.data_), input);
+}
+
+TEST(CompressorFactoryTest, DefaultLevelStillWorks) {
+    // level=-1（默认）应与现有行为一致，不破坏未改动的调用点。
+    auto comp = CompressorFactory::create(CompressionType::ZLIB);
+    ASSERT_NE(comp, nullptr);
+
+    auto input = make_compressible_input(256);
+    auto chunk = comp->compress(input);
+    EXPECT_EQ(comp->decompress(chunk.uncompressed_size_, chunk.data_), input);
+}
+
+

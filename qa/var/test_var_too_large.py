@@ -58,4 +58,4 @@ assert wait_for(lambda: len(master.completed_tasks) >= 2)
 assert len(master.failed_tasks) == 0, f"assert_var failed: {master.failed_tasks}"
 
 master.stop()
-INFO(f"[PASS] test_var_too_large")
+INFO("[PASS] test_var_too_large")

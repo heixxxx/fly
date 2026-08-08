@@ -120,7 +120,7 @@ def create_executor(worker):
         if task_module == USER_MODULE:
             if not task_name.startswith(USER_FUNC_PREFIX):
                 raise ValueError(
-                    f"Worker received from_user task but task_name "
+                    "Worker received from_user task but task_name "
                     f"lacks serialized payload: {task_name!r}"
                 )
             payload_hex = task_name[len(USER_FUNC_PREFIX):]

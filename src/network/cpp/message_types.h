@@ -9,6 +9,7 @@
 namespace fly {
 
 enum class MessageType : uint8_t {
+    INVALID = 0,      // 哨兵：解析失败 / 未初始化。不参与序列化，不注册 handler。
     REGISTER = 1,
     REGISTER_ACK = 2,
     HEARTBEAT = 3,
@@ -66,7 +67,7 @@ inline bool is_valid_message_type(uint8_t raw) {
 }
 
 struct MessageHeader {
-    MessageType type_ = MessageType::REGISTER;
+    MessageType type_ = MessageType::INVALID;
     uint32_t message_id_ = 0;
     uint64_t timestamp_ = 0;
 
@@ -129,6 +130,15 @@ struct DataRequestMessage {
     FLY_SERIALIZE(header_, object_name_, requesting_worker_id_, request_id_);
 };
 
+// Response status for data read operations. Replaces the old magic-string
+// convention where error_message_ carried "DATA_NOT_READY"/"OBJECT_NOT_FOUND".
+enum class ResponseStatus : uint8_t {
+    SUCCESS   = 0,
+    NOT_READY = 1,   // 写入进行中，client 应轮询重试
+    NOT_FOUND = 2,   // 对象不存在
+    ERROR     = 3,   // 其他错误
+};
+
 // DataResponseMessage carries small fields via bitsery; the large compressed_data
 // payload is transmitted as a separate raw segment after the encoded message
 // (see DataResponseProtocol). This avoids bitsery serializing the large blob.
@@ -136,13 +146,14 @@ struct DataResponseMessage {
     MessageHeader header_;
     CMString object_name_;
     bool success_ = false;
-    CMString error_message_;
+    ResponseStatus status_ = ResponseStatus::SUCCESS;  // 协议状态码（取代 error_message_ 魔法字符串）
+    CMString error_message_;                           // 自由文本诊断（仅给人看，不承载状态码）
     CMString py_name_;
     CMString write_context_hash_;
 
     static constexpr MessageType msg_type_ = MessageType::DATA_RESPONSE;
 
-    FLY_SERIALIZE(header_, object_name_, success_, error_message_, py_name_, write_context_hash_);
+    FLY_SERIALIZE(header_, object_name_, success_, status_, error_message_, py_name_, write_context_hash_);
 };
 
 // Bandwidth probe (data plane). Request asks the peer to echo a payload of

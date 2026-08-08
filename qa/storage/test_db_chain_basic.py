@@ -102,7 +102,7 @@ print(f"  find_db(solve) from analysis: uid={found_solve.get_uid()} ✓")
 # ── Step 7: find_db 找不到的情况 ──
 not_found = analysis_db.find_db(role="nonexistent")
 assert not_found is None, "should not find nonexistent role"
-print(f"  find_db(nonexistent) from analysis: None ✓")
+print("  find_db(nonexistent) from analysis: None ✓")
 
 # ── Step 8: prevs / nexts 双向链 ──
 analysis_prevs = analysis_db.prevs()
@@ -135,6 +135,6 @@ print(f"  find_db(uid={matrix_db.get_uid()[:8]}): ✓")
 found_by_name = analysis_db.find_db(logical_name="matrix")
 assert found_by_name is not None
 assert found_by_name.get_uid() == matrix_db.get_uid()
-print(f"  find_db(logical_name=matrix): ✓")
+print("  find_db(logical_name=matrix): ✓")
 
 print("\nALL PASSED")

@@ -51,7 +51,7 @@ assert alpha == 42, f"moved/alpha should be 42, got {alpha}"
 beta = db.read_object("moved/beta")
 assert beta == 58, f"moved/beta should be 58, got {beta}"
 
-INFO(f"[RUN2_MOVED] Successfully read all data from moved DB")
+INFO("[RUN2_MOVED] Successfully read all data from moved DB")
 
 # ── New tasks ──
 compute_sum(db, "moved/alpha", "moved/beta", "moved/sum")
@@ -77,7 +77,7 @@ except Exception as e:
     raise
 
 # Freeze
-INFO(f"[RUN2_MOVED] Freezing DB...")
+INFO("[RUN2_MOVED] Freezing DB...")
 db.freeze()
 INFO(f"[RUN2_MOVED] Frozen. is_frozen={db.is_frozen()}")
 assert db.is_frozen(), "DB should be frozen"

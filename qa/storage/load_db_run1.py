@@ -67,5 +67,5 @@ with open(os.path.join(DB_PATH, "_test_db_path"), "w") as f:
 assert os.path.isfile(os.path.join(DB_PATH, "_DB_META")), "_DB_META should exist"
 
 INFO(f"[RUN1] Created DB: db_path={db_path}, path={DB_PATH}")
-INFO(f"[RUN1] Wrote 5 objects (3 via worker, 2 via master)")
-INFO(f"[RUN1] NOT freezing — exiting for Run 2 to load_db")
+INFO("[RUN1] Wrote 5 objects (3 via worker, 2 via master)")
+INFO("[RUN1] NOT freezing — exiting for Run 2 to load_db")

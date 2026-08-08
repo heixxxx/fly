@@ -75,4 +75,4 @@ assert "BDZERO::0001 : 1" in content, f"配额 0 summary 应计数 1:\n{content}
 # 验证 3：summary 显示 BDUNLIM::0001 触发 15 次。
 assert "BDUNLIM::0001 : 15" in content, f"summary 应显示 15 次:\n{content}"
 
-INFO(f"[PASS] test_message_quota_boundary")
+INFO("[PASS] test_message_quota_boundary")

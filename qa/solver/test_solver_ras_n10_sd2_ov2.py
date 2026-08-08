@@ -39,7 +39,7 @@ if os.path.isdir(DB_PATH):
 get_config().set_int("fail_unscheduleable_tasks", 1)
 master = get_agent()
 master.launch_local_workers([{"attributes": [f"sd_{i}"]} for i in range(NSD)])
-assert master.wait_for_workers(NSD), f"workers should connect"
+assert master.wait_for_workers(NSD), "workers should connect"
 
 db = open_db(DB_PATH)
 x_ref = scipy_reference(N)
@@ -59,4 +59,4 @@ INFO(f"OK iters={result['iters']:3d} res={result['residual']:.2e} "
       f"err={error:.2e} time={elapsed:.2f}s workers={NSD}")
 
 master.stop()
-INFO(f"[PASS] test_solver_ras_n10_sd2_ov2")
+INFO("[PASS] test_solver_ras_n10_sd2_ov2")

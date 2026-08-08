@@ -60,7 +60,7 @@ def test_no_matching_worker_never_completes():
             break
         time.sleep(0.5)
     assert db.read_object("alpha_result") == 1, \
-        f"alpha task should complete normally"
+        "alpha task should complete normally"
 
     total_completed = len(master.completed_tasks)
     assert total_completed == 1, \

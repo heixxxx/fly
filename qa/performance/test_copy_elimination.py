@@ -57,7 +57,7 @@ def main():
             print(f"  Got size: {len(result)}")
             return 1
 
-        print(f"\n=== Summary ===")
+        print("\n=== Summary ===")
         print(f"Write: {write_time:.3f}s ({data_size / write_time / 1024 / 1024:.1f} MB/s)")
         print(f"Read:  {read_time:.3f}s ({data_size / read_time / 1024 / 1024:.1f} MB/s)")
 

@@ -38,6 +38,6 @@ for node in block:
         if nbr not in block:
             depth1_new.add(nbr)
 print(f'\nManual BFS depth=1: {len(depth1_new)} new nodes')
-print(f'Expected: ~360 (perimeter of 10x10 block * 1 layer)')
+print('Expected: ~360 (perimeter of 10x10 block * 1 layer)')
 total = len(block) + len(depth1_new)
 print(f'Total after depth=1: {total} (ratio={total/100:.2f}x)')

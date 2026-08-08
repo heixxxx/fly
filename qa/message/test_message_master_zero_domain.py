@@ -73,4 +73,4 @@ assert "MZDOM::0001 : 3" in content, f"summary MZDOM::0001 应为 3:\n{content}"
 assert "MZDOM::0002 : 2" in content, f"summary MZDOM::0002 应为 2:\n{content}"
 assert "MZDOM : 5" in content, f"summary domain MZDOM 应为 5:\n{content}"
 
-INFO(f"[PASS] test_message_master_domain_quota")
+INFO("[PASS] test_message_master_domain_quota")

@@ -212,7 +212,7 @@ else:
         for pos, gidx in enumerate(primary_sets[sd_id]):
             x_global[gidx] = x_primary[sd_id][pos]
     x_final = np.array(x_global)
-    INFO(f"  MAX ITER reached")
+    INFO("  MAX ITER reached")
 
 rel_error = np.linalg.norm(x_final - x_exact) / np.linalg.norm(x_exact)
 max_error = np.max(np.abs(x_final - x_exact))

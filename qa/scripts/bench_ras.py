@@ -60,4 +60,4 @@ avg = sum(times) / len(times)
 INFO(f"=== RESULT: n={N} nsd={NSD} avg={avg:.3f}s min={min(times):.3f}s max={max(times):.3f}s ===")
 
 master.stop()
-INFO(f"[DONE] RAS benchmark complete")
+INFO("[DONE] RAS benchmark complete")

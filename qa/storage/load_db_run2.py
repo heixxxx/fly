@@ -56,7 +56,7 @@ assert beta == 200, f"stage1/beta should be 200, got {beta}"
 gamma = db.read_object("stage1/gamma")
 assert gamma == "hello", f"stage1/gamma should be 'hello', got {gamma}"
 
-INFO(f"[RUN2] Successfully read back all Run 1 data")
+INFO("[RUN2] Successfully read back all Run 1 data")
 
 # ── Submit new tasks that read Run 1 data and produce results ──
 compute_sum(db, "stage1/alpha", "stage1/beta", "stage2/sum")
@@ -86,5 +86,5 @@ assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "_FROZEN should exist"
 meta = db.load_meta()
 assert meta.created_at > 0
 
-INFO(f"[RUN2] All data verified, DB frozen successfully")
+INFO("[RUN2] All data verified, DB frozen successfully")
 INFO(f"[RUN2] stage2/sum = {stage2_sum} (100 + 200 from Run 1)")

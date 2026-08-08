@@ -84,4 +84,4 @@ assert "UNREG::9999" not in content, "未注册 id 不应进 message.log"
 assert "[BASICMS::0001] <10> master hello" in master_log, \
     "master 自身 message 未写本地 debug log"
 
-INFO(f"[PASS] test_message_basic")
+INFO("[PASS] test_message_basic")

@@ -409,7 +409,6 @@ def main():
 
     max_workers = _resolve_max_workers(args.j)
     results = []
-    fail_fast_triggered = False
     t_total_start = time.monotonic()
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -418,7 +417,6 @@ def main():
             r = fut.result()
             results.append(r)
             if args.fail_fast and not r["ok"]:
-                fail_fast_triggered = True
                 log(f"\n!!! FAIL-FAST: stopping after first failure: {r['name']}")
                 log("!!! Remaining tests cancelled. Failed test logs preserved.")
                 # Cancel all not-yet-started futures, then shutdown without waiting.
@@ -439,7 +437,6 @@ def main():
     log("Summary")
     log("=" * 50)
     for r in results:
-        mark = "✓" if r["ok"] else "✗"
         if r["ok"]:
             passed += 1
         else:

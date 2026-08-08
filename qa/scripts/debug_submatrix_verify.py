@@ -72,7 +72,7 @@ for i in range(len(out_gidx)):
 #   b_local[local_pos] -= A[local_idx[local_pos], outside_gidx] * x[outside_gidx]
 
 # Verify by checking the global matrix A_sp
-INFO(f"\nVerifying outside connections against global matrix:")
+INFO("\nVerifying outside connections against global matrix:")
 for i in range(len(out_gidx)):
     local_gidx = local_idx[out_pos[i]]
     outside_gidx = out_gidx[i]
@@ -97,7 +97,7 @@ x_local = ex_slv_ras_bupdated_solve(
     b_local, out_pos, out_coeffs, neighbor_values)
 
 # Check: x_local should match x_exact at local positions
-INFO(f"\nVerifying solution with exact neighbor values:")
+INFO("\nVerifying solution with exact neighbor values:")
 max_err = 0
 for i, gidx in enumerate(local_idx):
     err = abs(x_local[i] - x_exact[gidx])
@@ -126,7 +126,7 @@ INFO(f"A * x_exact - b residual: {np.linalg.norm(full_global):.2e}")
 
 # Verify: does restriction of global matrix give same as A_sub?
 # For each (i,j) in A_sub, A_sub[i,j] should equal A[local_idx[i], local_idx[j]]
-INFO(f"\nVerifying submatrix extraction:")
+INFO("\nVerifying submatrix extraction:")
 err_count = 0
 for i in range(min(size, 30)):
     for j in range(min(size, 30)):
@@ -138,4 +138,4 @@ for i in range(min(size, 30)):
             err_count += 1
 INFO(f"Total mismatches: {err_count}")
 
-INFO(f"\n=== DONE ===")
+INFO("\n=== DONE ===")

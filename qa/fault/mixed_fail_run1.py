@@ -68,7 +68,7 @@ INFO("[RUN1] all dirty objects cleaned by abort")
 # 验证 failed_tasks.bin 持久化
 failed_file = os.path.join(get_config().get_str("log_dir"), "failed_tasks.bin")
 assert os.path.isfile(failed_file), f"failed_tasks.bin should exist: {failed_file}"
-INFO(f"[RUN1] failed_tasks.bin persisted")
+INFO("[RUN1] failed_tasks.bin persisted")
 
 with open(os.path.join(DB_PATH, "_test_db_path"), "w") as f:
     f.write(db_path)

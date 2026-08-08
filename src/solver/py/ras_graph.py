@@ -222,22 +222,16 @@ def _is_adaptive(db):
         return False
 
 
-_COARSE_CACHE = {}
-
 def _is_coarse(db):
-    # Cache the result: omega mode is fixed for the whole solve, so reading
-    # __rasg__cfg from DB every compute call (8 iters × 4 workers) is pure
-    # waste. Memoise after the first read.
-    if "v" in _COARSE_CACHE:
-        return _COARSE_CACHE["v"]
+    # omega 模式每次从 DB 读取（cfg 是小对象，经 ObjectCache 实为内存命中）。
+    # 不可缓存：worker 进程常驻，会跨多个 solve（不同 omega）复用，
+    # 模块级缓存会泄漏上一次 solve 的 omega 判断。
     try:
         cfg = db.read_object("__rasg__cfg")
         omega = cfg.get("omega", 1.0)
-        v = isinstance(omega, str) and "coarse" in omega
+        return isinstance(omega, str) and "coarse" in omega
     except Exception:
-        v = False
-    _COARSE_CACHE["v"] = v
-    return v
+        return False
 
 
 def _compute_deps(db, sd_id, step, neighbor_ids):
@@ -479,7 +473,7 @@ def _ensure_coarse_cached(db):
             put_cache("__rasg__coarse_P", P)
             put_cache("__rasg__coarse_b", prebuilt["b"])
             put_cache("__rasg__coarse_stride", prebuilt["stride"])
-            INFO(f"[RASG COARSE] Built from coord prebuilt (LU only): "
+            INFO("[RASG COARSE] Built from coord prebuilt (LU only): "
                  f"Nc={prebuilt['Nc']} t={(time.perf_counter()-t0)*1000:.0f}ms")
             return
 
@@ -500,7 +494,7 @@ def _ensure_coarse_cached(db):
 
     result = _compute_coarse_arrays(n, N, rows, cols, vals)
     if result is None:
-        INFO(f"[RASG COARSE] Skipping: coarse grid too small")
+        INFO("[RASG COARSE] Skipping: coarse grid too small")
         return
     P, _P_rows, _P_cols, _P_vals, A_fine, Ac, stride, nc, Nc = result
     Ac_lu = splu(Ac)
@@ -941,9 +935,9 @@ def ras_graph_check(db, step, nsd, max_iter, tol, neighbor_ids_all):
              f"max_err={global_max:.2e} ratio={math.log10(global_max/tol):.1f}"
              f"{' [DIVERGE]' if prev_err and global_max > prev_err * 1.1 else ''}")
     elif not all_converged and step == 0 and omega_strategy == "adaptive":
-        db.write_object(f"__rasg__gomega_1", 1.5,
+        db.write_object("__rasg__gomega_1", 1.5,
                         save_to_db=False)
-        INFO(f"[RASG ADAPTIVE] step=0 gomega=1.5000 (initial)")
+        INFO("[RASG ADAPTIVE] step=0 gomega=1.5000 (initial)")
 
     DBG(f"[RASG CHECK] step={step} converged={all_converged} "
         f"flags={conv_flags}")

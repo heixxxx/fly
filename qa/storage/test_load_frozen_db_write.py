@@ -35,7 +35,7 @@ def test_freeze_rejects_worker_write():
     freeze_db(db, [])
     assert wait_for(lambda: len(master.completed_tasks) >= 1)
     write_after_freeze(db, "after_freeze_key", "value")
-    assert wait_for(lambda: len(master.completed_tasks) >= 2), f"write should complete silently"
+    assert wait_for(lambda: len(master.completed_tasks) >= 2), "write should complete silently"
     assert not master.failed_tasks, f"Unexpected failures: {master.failed_tasks}"
     INFO("[PASS] test_freeze_rejects_worker_write")
 

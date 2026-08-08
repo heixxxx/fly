@@ -290,13 +290,12 @@ case "${1:-build}" in
         detect_python_paths
         echo ">>> Quick check: $targets"
         bazel build $targets
-        local test_output
         test_output=$(bazel test //src/... --test_output=errors 2>&1)
-        local test_exit=$?
+        test_exit=$?
         echo "$test_output" | tail -20
         if [ $test_exit -ne 0 ]; then
             echo ">>> TESTS FAILED (exit code: $test_exit)"
-            return $test_exit
+            exit $test_exit
         fi
         refresh_clangd
         echo ">>> Check complete."

@@ -124,7 +124,7 @@ for sd_id in range(NSD):
     })
 
 # Run with exact neighbor values — should give exact answer
-INFO(f"\n=== Test with exact neighbor values ===")
+INFO("\n=== Test with exact neighbor values ===")
 for sd_id in range(NSD):
     s = setups[sd_id]
     neighbor_values = [x_exact[gidx] for gidx in s["outside_global_idx"]]
@@ -138,7 +138,7 @@ for sd_id in range(NSD):
     INFO(f"  sd={sd_id}: max_err vs exact={max_err:.2e}")
 
 # Run RAS iteration (Jacobi: save all before update)
-INFO(f"\n=== RAS iteration (Jacobi) ===")
+INFO("\n=== RAS iteration (Jacobi) ===")
 x_primary = [None] * NSD
 
 for step in range(50):
@@ -190,7 +190,7 @@ rel_err = np.linalg.norm(x_np - x_exact) / np.linalg.norm(x_exact)
 INFO(f"\nFinal rel_err={rel_err:.2e}")
 
 # Now: what if we DON'T restrict — use full local solution?
-INFO(f"\n=== Full local solution (no RAS restriction) at step 0 ===")
+INFO("\n=== Full local solution (no RAS restriction) at step 0 ===")
 for sd_id in range(NSD):
     s = setups[sd_id]
     neighbor_values = [0.0] * len(s["outside_coeffs"])
@@ -204,4 +204,4 @@ for sd_id in range(NSD):
                           for i in range(len(primary_sets[sd_id])))
     INFO(f"  sd={sd_id}: max_err_full_local={max_err:.2e} max_err_primary={max_err_primary:.2e}")
 
-INFO(f"\n=== DONE ===")
+INFO("\n=== DONE ===")

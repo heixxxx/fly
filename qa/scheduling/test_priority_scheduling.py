@@ -60,10 +60,10 @@ assert len(completed) >= 2, f"Expected 2 completed tasks, got {len(completed)}"
 # high_prio_write 后提交但 priority=20，应先于 priority=5 的 low_prio_write 完成
 # task_id 是递增分配的：low=1, high=2
 assert completed[0] == 2, (
-    f"High-priority task (id=2, priority=20) should complete first, "
+    "High-priority task (id=2, priority=20) should complete first, "
     f"got order={completed}")
 assert completed[1] == 1, (
-    f"Low-priority task (id=1, priority=5) should complete second, "
+    "Low-priority task (id=1, priority=5) should complete second, "
     f"got order={completed}")
 
 # 校验对象值确实写入（正确性）
@@ -72,4 +72,4 @@ assert db.read_object("high") == 2
 
 master.stop()
 INFO(f"[PASS] priority scheduling: completion order={completed} "
-     f"(high-priority id=2 first, low-priority id=1 second)")
+     "(high-priority id=2 first, low-priority id=1 second)")

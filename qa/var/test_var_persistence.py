@@ -33,7 +33,7 @@ def main():
     )
     assert result.returncode == 0, f"run2 failed: {result.stderr}"
 
-    INFO(f"[PASS] test_var_persistence")
+    INFO("[PASS] test_var_persistence")
 
 
 main()

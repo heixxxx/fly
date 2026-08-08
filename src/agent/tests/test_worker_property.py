@@ -59,8 +59,8 @@ def test_get_properties_returns_copy():
     props1 = worker.get_worker_properties()
     worker.set_worker_property(["gpu"])
     props2 = worker.get_worker_properties()
-    assert len(props1) == 1, f"Original snapshot should be unchanged"
-    assert len(props2) == 2, f"New snapshot should have 2 properties"
+    assert len(props1) == 1, "Original snapshot should be unchanged"
+    assert len(props2) == 2, "New snapshot should have 2 properties"
     print("PASS: test_get_properties_returns_copy")
 
 

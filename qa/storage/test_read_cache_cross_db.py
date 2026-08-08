@@ -58,4 +58,4 @@ val2 = db2.read_object("shared_key", cache="high")
 assert val1 == 42, f"db1 HIGH expected 42, got {val1}"
 assert val2 == 99, f"db2 HIGH expected 99, got {val2}"
 
-INFO(f"[PASS] test_read_cache_cross_db: cross-DB cache isolation verified")
+INFO("[PASS] test_read_cache_cross_db: cross-DB cache isolation verified")

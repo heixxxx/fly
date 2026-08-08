@@ -63,4 +63,4 @@ assert "Fly Startup Info (worker)" not in content, \
 # summary 块里不应出现 "FLY::0000"（说明没进 MessageRegistry 触发计数）。
 assert "FLY::0000" not in summary, f"FLY::0000 应豁免配额，不应进 summary:\n{summary}"
 
-INFO(f"[PASS] test_startup_info")
+INFO("[PASS] test_startup_info")

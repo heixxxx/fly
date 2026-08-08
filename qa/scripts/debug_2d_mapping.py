@@ -147,7 +147,7 @@ for sd_id in range(4):
 
 # Now: run one iteration manually and compare with exact
 INFO(f"\n{'='*60}")
-INFO(f"Manual 1-step verification")
+INFO("Manual 1-step verification")
 INFO(f"{'='*60}")
 
 setups = []
@@ -246,4 +246,4 @@ for sd_id in range(4):
     max_err = max(abs(x_primary[i] - x_exact[primary_sets[sd_id][i]]) for i in range(len(x_primary)))
     INFO(f"  sd={sd_id} step=1: max_err={max_err:.2e}")
 
-INFO(f"\n=== DONE ===")
+INFO("\n=== DONE ===")

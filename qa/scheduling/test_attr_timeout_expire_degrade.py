@@ -48,7 +48,7 @@ def wait_completed(expected, timeout=20):
 
 completed = wait_completed(1, timeout=20)
 assert len(completed) >= 1, \
-    f"soft_gpu_write should degrade-schedule after timeout, " \
+    "soft_gpu_write should degrade-schedule after timeout, " \
     f"completed={len(completed)}, failed={master.failed_tasks}"
 
 assert db.read_object("result") == 42, \

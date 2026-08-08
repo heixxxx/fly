@@ -61,7 +61,7 @@ INFO(f"[CROSS-PATH] merge done, merged_db path={merged_db.get_db_path()}")
 # 验证源 path 已彻底删除（无遗留，不再像旧机制保留作迁移锚点）
 assert not os.path.isdir(DB_PATH), \
     f"source path should be deleted after merge (db chain mechanism), but {DB_PATH} still exists"
-INFO(f"[CROSS-PATH] source path deleted (no _MIGRATED_TO residue)")
+INFO("[CROSS-PATH] source path deleted (no _MIGRATED_TO residue)")
 
 # ── Phase 3: 验证产物数据可读 + _DB_CHAIN 继承 ──
 # 3a. 产物句柄（merge_db 返回值）能读 merge 数据

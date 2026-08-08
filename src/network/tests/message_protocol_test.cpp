@@ -913,4 +913,93 @@ TEST(MessageProtocolTest, MessageLimitSyncRoundTrip) {
     EXPECT_TRUE(buffer.empty());
 }
 
+// ── DataResponseMessage status 枚举传递 ────────────────────────────
+//
+// Bug T2: DataResponseMessage 没有 status 字段，data_server 用 error_message_
+// 魔法字符串（"DATA_NOT_READY"/"OBJECT_NOT_FOUND"）承载状态码，client 字面量比较。
+// 拼写/大小写/协议演进都会静默破坏分派。
+//
+// 修复: DataResponseMessage 加 ResponseStatus 枚举字段，server 填枚举、client 按枚举判。
+
+TEST(MessageProtocolTest, DataResponseStatusEnumRoundTrip) {
+    // NOT_READY 状态应通过序列化保留
+    DataResponseMessage resp;
+    resp.header_.type_ = MessageType::DATA_RESPONSE;
+    resp.object_name_ = "db:test_obj";
+    resp.success_ = false;
+    resp.status_ = ResponseStatus::NOT_READY;
+
+    CMString encoded = MessageProtocol::encode(resp);
+    CMString buffer = encoded;
+
+    DataResponseMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.status_, ResponseStatus::NOT_READY);
+    EXPECT_EQ(decoded.object_name_, "db:test_obj");
+}
+
+TEST(MessageProtocolTest, DataResponseStatusAllValues) {
+    // 所有状态值都应正确 round-trip
+    for (auto s : {ResponseStatus::SUCCESS, ResponseStatus::NOT_READY,
+                   ResponseStatus::NOT_FOUND, ResponseStatus::ERROR}) {
+        DataResponseMessage resp;
+        resp.header_.type_ = MessageType::DATA_RESPONSE;
+        resp.status_ = s;
+
+        CMString encoded = MessageProtocol::encode(resp);
+        CMString buffer = encoded;
+
+        DataResponseMessage decoded;
+        ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+        EXPECT_EQ(decoded.status_, s)
+            << "status " << static_cast<int>(s) << " did not round-trip";
+    }
+}
+
+// ── get_type 错误路径不应返回合法消息类型 ──────────────────────────
+//
+// Bug T1: get_type 在所有错误路径（buffer 太短、total_len 非法、type 非法）
+// 都 return MessageType::REGISTER（值=1，合法高频类型）。调用方无法区分
+// "真注册消息"和"解析失败"。
+//
+// 修复: 错误路径返回 MessageType::INVALID（值=0，哨兵）。
+
+TEST(MessageProtocolTest, GetTypeEmptyBufferReturnsInvalid) {
+    CMString empty;
+    // BUG: 当前返回 REGISTER（合法类型），应返回 INVALID。
+    EXPECT_EQ(MessageProtocol::get_type(empty), MessageType::INVALID);
+}
+
+TEST(MessageProtocolTest, GetTypeTooShortBufferReturnsInvalid) {
+    CMString short_buf(4, '\0');  // 只有 4 字节，不够 5 字节帧头
+    EXPECT_EQ(MessageProtocol::get_type(short_buf), MessageType::INVALID);
+}
+
+TEST(MessageProtocolTest, GetTypeInvalidTotalLenReturnsInvalid) {
+    // total_len=0 是非法的（合法帧至少 1 字节 type）
+    CMString bad;
+    bad.resize(5, '\0');  // [4B total_len=0][1B type]
+    // total_len field 全 0
+    EXPECT_EQ(MessageProtocol::get_type(bad), MessageType::INVALID);
+}
+
+TEST(MessageProtocolTest, GetTypeInvalidTypeByteReturnsInvalid) {
+    // 构造一个 total_len 合法但 type 字节为 0 的帧（0 = INVALID，不在合法范围）
+    CMString bad;
+    bad.resize(6, '\0');
+    char* p = &bad[0];
+    write_be32(p, 1);     // total_len=1（合法：至少 1 字节 type）
+    p[4] = 0;             // type=0 (INVALID)
+    EXPECT_EQ(MessageProtocol::get_type(bad), MessageType::INVALID);
+}
+
+TEST(MessageProtocolTest, GetTypeValidRegisterStillWorks) {
+    // 确保合法 REGISTER 消息仍正确返回 REGISTER（不是 INVALID）
+    RegisterMessage reg_msg;
+    reg_msg.worker_id_ = 1;
+    CMString encoded = MessageProtocol::encode(reg_msg);
+    EXPECT_EQ(MessageProtocol::get_type(encoded), MessageType::REGISTER);
+}
+
+
 }  // namespace fly

@@ -97,7 +97,7 @@ def as_task(inputs=None, requires=None, vars=None, priority=10):
             except Exception as exc:
                 raise ValueError(
                     f"Failed to serialize user task function {name!r}. "
-                    f"User-script tasks must be pickle-serializable. "
+                    "User-script tasks must be pickle-serializable. "
                     f"Original error: {exc}"
                 ) from exc
         else:

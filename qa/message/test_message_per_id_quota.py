@@ -71,4 +71,4 @@ assert perid1_count == 3, "per-id 应屏蔽宽松的 domain 配额"
 # 验证 3：summary 反映 trigger 计数（per-id 配额不影响计数）。
 assert "PERID::0001 : 5" in content, f"summary 应显示 worker 触发 5 次:\n{content}"
 
-INFO(f"[PASS] test_message_per_id_quota")
+INFO("[PASS] test_message_per_id_quota")

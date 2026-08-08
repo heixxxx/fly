@@ -315,9 +315,7 @@ class MapReduceJob:
         if self._pre_partitioned_names is not None:
             self._num_partitions = len(self._pre_partitioned_names)
             # Partition keys = the pre-existing object short names
-            for name in self._pre_partitioned_names:
-                # Strip db_path prefix if present
-                short = name.split(":")[-1] if ":" in name else name
+            for _ in self._pre_partitioned_names:
                 self._intermediate_keys.append(f"__mr__{self._job_id}__part__placeholder")
             # We don't write partition objects — process tasks will read
             # the pre-existing objects directly.  Build partition_keys as

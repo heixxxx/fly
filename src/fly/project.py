@@ -339,7 +339,7 @@ class Project:
                 # import solver.flows）会触发 @register_flow 注册，flow 随之可用。
             except (ImportError, AttributeError) as e:
                 WARN(f"load_project: cannot restore class '{cls_path}' ({e}), "
-                     f"falling back to base Project (flows unavailable)")
+                     "falling back to base Project (flows unavailable)")
                 real_cls = cls
 
         proj = real_cls.__new__(real_cls)

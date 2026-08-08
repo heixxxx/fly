@@ -48,4 +48,4 @@ assert db.is_frozen(), "DB should be frozen after freeze()"
 
 assert os.path.isfile(os.path.join(DB_PATH, "_FROZEN")), "_FROZEN marker should exist"
 
-INFO(f"[RUN1] Created DB, wrote 3 objects, frozen successfully")
+INFO("[RUN1] Created DB, wrote 3 objects, frozen successfully")

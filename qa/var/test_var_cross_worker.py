@@ -70,4 +70,4 @@ assert wait_for(lambda: len(master.completed_tasks) >= 2), "consumer task did no
 assert len(master.failed_tasks) == 0, f"consumer task failed: {master.failed_tasks}"
 
 master.stop()
-INFO(f"[PASS] test_var_cross_worker")
+INFO("[PASS] test_var_cross_worker")

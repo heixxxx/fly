@@ -80,4 +80,4 @@ assert wait_for(lambda: len(master.completed_tasks) >= 4)
 assert len(master.failed_tasks) == 0
 
 master.stop()
-INFO(f"[PASS] test_var_freeze")
+INFO("[PASS] test_var_freeze")

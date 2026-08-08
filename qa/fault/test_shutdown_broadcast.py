@@ -46,7 +46,7 @@ def test_shutdown_broadcast():
     assert master.wait_for_workers(2), \
         f"Both workers should connect, got {master.worker_count}"
 
-    INFO(f"  Phase 1: 2 workers connected")
+    INFO("  Phase 1: 2 workers connected")
 
     db = open_db(DB_PATH)
 
@@ -83,11 +83,11 @@ def test_shutdown_broadcast():
         except PermissionError:
             pass
 
-    INFO(f"  Phase 5: all worker processes exited gracefully")
+    INFO("  Phase 5: all worker processes exited gracefully")
 
     # -- Phase 6: Verify no worker procs left --
     assert len(master.get_worker_pids()) == 0, \
-        f"Phase 6: no workers should be running"
+        "Phase 6: no workers should be running"
 
     INFO("[PASS] test_shutdown_broadcast")
 

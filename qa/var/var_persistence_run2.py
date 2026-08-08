@@ -41,4 +41,4 @@ assert wait_for(lambda: len(master.completed_tasks) >= 2)
 assert len(master.failed_tasks) == 0, f"persistence assertion failed: {master.failed_tasks}"
 
 master.stop()
-INFO(f"[PASS] var_persistence_run2")
+INFO("[PASS] var_persistence_run2")

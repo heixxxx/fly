@@ -132,7 +132,7 @@ class Database:
             if not data:
                 raise KeyError(
                     f"Object '{name}' not found (no data — not yet visible to master "
-                    f"or never written)")
+                    "or never written)")
             obj = pickle.loads(data)
             rc.put(key, "high", obj)
             return obj
@@ -143,7 +143,7 @@ class Database:
         if not data:
             raise KeyError(
                 f"Object '{name}' not found (no data — not yet visible to master "
-                f"or never written)")
+                "or never written)")
         return pickle.loads(data)
 
     def _invalidate_read_cache(self, name: str):
@@ -422,11 +422,7 @@ class Database:
             if not cur_path:
                 continue
 
-            # 读前驱的 _DB_CHAIN 继续展开
-            try:
-                from storage.py.db_chain import DbChainFile
-            except ImportError:
-                from db_chain import DbChainFile
+            # 读前驱的 _DB_CHAIN 继续展开（DbChainFile 顶层已 import）
             prev_cf = DbChainFile(cur_path)
             prev_chain = prev_cf.read()
             if prev_chain is None:
@@ -519,12 +515,7 @@ class Database:
             if not prev_path or not prev_uid:
                 continue
 
-            # 读前驱的 _DB_CHAIN，检查 next 是否含自己
-            try:
-                from storage.py.db_chain import DbChainFile, make_edge, find_edge, append_edge
-            except ImportError:
-                from db_chain import DbChainFile, make_edge, find_edge, append_edge
-
+            # 读前驱的 _DB_CHAIN，检查 next 是否含自己（符号顶层已 import）
             prev_cf = DbChainFile(prev_path)
             prev_chain = prev_cf.read()
             if prev_chain is None:

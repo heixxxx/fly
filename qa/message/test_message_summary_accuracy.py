@@ -93,4 +93,4 @@ assert sumw_lines == 5, (
 summs_lines = content.count("[SUMMS::0001]")
 assert summs_lines == 2, f"master 自身 2 条应全打印，实际 {summs_lines}"
 
-INFO(f"[PASS] test_message_summary_accuracy")
+INFO("[PASS] test_message_summary_accuracy")

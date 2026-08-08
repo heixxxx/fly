@@ -52,7 +52,6 @@ TEST_F(DataTransferTest, DataServerReturnsObjectNotFoundForUnknownObject) {
         "127.0.0.1", port, db_path + ":nonexistent", 0, 0, 5000);
 
     EXPECT_FALSE(success);
-    EXPECT_EQ(error, "OBJECT_NOT_FOUND");
     EXPECT_EQ(rerr, ReadError::OBJECT_NOT_FOUND);
 }
 

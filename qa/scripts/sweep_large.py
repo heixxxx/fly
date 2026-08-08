@@ -62,7 +62,7 @@ INFO(f"Matrix built: n={N_SIDE} N={N_val} nnz={len(vals)}")
 # Golden (if feasible)
 x_exact = None
 if COMPUTE_GOLDEN:
-    INFO(f"Computing golden solution via direct solve...")
+    INFO("Computing golden solution via direct solve...")
     t0 = time.time()
     A_sp = sparse.csc_matrix((vals,(rows,cols)), shape=(N_val,N_val))
     x_exact = splu(A_sp).solve(np.array(b))
@@ -255,9 +255,9 @@ def main():
 
     configs = [(n, nsd, ratio) for n, nsd, ratio in CONFIGS if n in target_n]
 
-    print(f"=== Large Matrix RAS Sweep ===")
+    print("=== Large Matrix RAS Sweep ===")
     print(f"Configs: {len(configs)}")
-    print(f"Direct solve baselines: n=1000→12.5s, n=2000→86.3s, n=3000→OOM")
+    print("Direct solve baselines: n=1000→12.5s, n=2000→86.3s, n=3000→OOM")
     print(f"Start: {datetime.now().strftime('%H:%M:%S')}")
     print()
 

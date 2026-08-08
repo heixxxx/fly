@@ -108,6 +108,6 @@ print(f"  target._DB_CHAIN absorbed_from={target_chain['absorbed_from']} ✓")
 
 # ── Step 8: 验证 merged data 可读 ──
 assert merged_db.read_object("data/x") == 42, "merged db should read data"
-print(f"  merged db reads data/x=42 ✓")
+print("  merged db reads data/x=42 ✓")
 
 print("\nALL PASSED")
