@@ -2469,6 +2469,14 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     INFO("cleanup_after_merge: done, db_path={}, rebuilt remote_idx for {} objects (precise worker mapping), "
          "local_idx cleared, db_instances_ path updated to base={} data={}",
          db_path, rebuilt, merge_db_path, merge_data_path);
+
+    // merge 完成后清除源 db_path 的 frozen 状态。源已被合并（delete_source 或
+    // path 复用），后续若新建同 path db，WriteRegister 不应被旧 frozen 记录误拒。
+    {
+        std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
+        frozen_dbs_.erase(db_path);
+        pending_frozen_dbs_.erase(db_path);
+    }
 }
 
 void MasterAgent::on_merge_cleanup_ack(uint64_t conn_id, const MergeCleanupAckMessage& msg) {

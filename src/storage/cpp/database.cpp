@@ -172,6 +172,12 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
         ERR("Write registration timeout: {}", reg_error);
         return fly::WriteErrorType::REGISTRATION_TIMEOUT;
     }
+    if (reg_error_type == fly::TaskErrorType::WRITE_TO_FROZEN_DB) {
+        fly::ObjectCache::instance().remove(full);
+        fly::DataService::instance()->on_write_failed(db_path_, full, reg_error);
+        ERR("Write rejected (db frozen): {} (type={})", reg_error, static_cast<int>(reg_error_type));
+        return fly::WriteErrorType::FROZEN_DB;
+    }
 
     // 3. Registration succeeded — enqueue background disk write.
     DataWriter* w = writer_.get();

@@ -245,6 +245,28 @@ def run_one(test_path, timeout=20):
         stdout, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
+        # Dump stacks before killing — helps diagnose flaky hangs.
+        try:
+            import subprocess as _sp
+            _diag = []
+            for _cpid in _sp.check_output(
+                ["pgrep", "-f", r"[/]build/bin/fly"], stderr=_sp.DEVNULL
+            ).split():
+                _cpid = _cpid.decode().strip()
+                _diag.append(f"--- pid={_cpid} wchan={open(f'/proc/{_cpid}/wchan').read()} ---")
+                # C++ stack via gdb (fast, 2s timeout)
+                try:
+                    _bt = _sp.check_output(
+                        ["gdb", "-batch", "-ex", "thread apply all bt", "-p", _cpid],
+                        stderr=_sp.DEVNULL, timeout=3).decode(errors="replace")
+                    _diag.append(_bt[:2000])
+                except Exception:
+                    _diag.append("(gdb failed)")
+            if _diag:
+                with open(os.path.join(log_dir, "hang_stacks.txt"), "w") as _f:
+                    _f.write("\n".join(_diag))
+        except Exception:
+            pass
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except ProcessLookupError:
