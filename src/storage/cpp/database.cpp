@@ -175,9 +175,17 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
 
     // 3. Registration succeeded — enqueue background disk write.
     DataWriter* w = writer_.get();
-    auto caller_record_func = fly::WorkerAgentContext::current_record_func();
     auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : std::function<void(const fly::CMString&, const fly::CMString&)>{};
     CMString write_hash = fly::WorkerAgentContext::get_current_write_hash();
+
+    // 同步 record_write：register 成功后立即记录写出对象，不放在异步 on_complete_
+    // 回调里。否则 task 在 write_object 返回后立即异常时（on_complete_ 尚未执行），
+    // current_writes_ 为空 → dirty_objects_ 为空 → master 不清理脏对象的
+    // provenance/remote_idx → 重写同 key 时 provenance mismatch。
+    auto caller_record_func = fly::WorkerAgentContext::current_record_func();
+    if (caller_record_func) {
+        caller_record_func(db_path_, object_name, compressed_size);
+    }
 
     // 仅 worker task 上下文打 BEGIN（transaction_mode 激活时）。master 直接
     // write_object 时 transaction_mode 未激活，其 ADD 为段外隐式事务，load 时
@@ -196,16 +204,13 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
     };
 
     auto complete = [full, db_path = this->db_path_, object_name,
-                     caller_record_func, caller_backup_func, w, backup, compressed_size]() {
+                     caller_backup_func, w, backup, compressed_size]() {
         auto ds = fly::DataService::instance();
         auto entries = w->get_all_entries(object_name);
         if (entries.has_value()) {
             ds->on_write_completed(db_path, full, entries.value());
         }
         ds->on_object_flushed(full);
-        if (caller_record_func) {
-            caller_record_func(db_path, object_name, compressed_size);
-        }
         if (backup && caller_backup_func) {
             caller_backup_func(db_path, object_name);
         }
@@ -366,7 +371,11 @@ void Database::do_backup_write(const CMString& full, const CMString& object_name
     ObjectHeader header = ObjectHeader::deserialize(compressed_data, h_off);
 
     DataWriter* w = writer_.get();
+    // 同步 record_write（同 commit_write 的修复理由：避免异步 on_complete_ 竞态）。
     auto caller_record_func = fly::WorkerAgentContext::current_record_func();
+    if (caller_record_func) {
+        caller_record_func(db_path_, object_name, backup_compressed_size);
+    }
     CMString backup_hash = source_hash;
     auto record = CMMakeShared<FlyBuffer>();
     record->take(std::move(compressed_data));
@@ -377,7 +386,7 @@ void Database::do_backup_write(const CMString& full, const CMString& object_name
     };
 
     auto complete = [full, db_path = db_path_, object_name,
-                     caller_record_func, w, saved_hash, backup_compressed_size]() {
+                     w, saved_hash]() {
         fly::WorkerAgentContext::set_current_write_hash(saved_hash);
         auto dsvc = fly::DataService::instance();
         auto entries = w->get_all_entries(object_name);
@@ -385,9 +394,6 @@ void Database::do_backup_write(const CMString& full, const CMString& object_name
             dsvc->on_write_completed(db_path, full, entries.value());
         }
         dsvc->on_object_flushed(full);
-        if (caller_record_func) {
-            caller_record_func(db_path, object_name, backup_compressed_size);
-        }
     };
 
     fly::WriteRequest req;
