@@ -77,7 +77,13 @@ void Reactor::run() {
     if (stop_requested_.load()) return;
     running_ = true;
     while (running_) {
-        run_once(10);
+        try {
+            run_once(10);
+        } catch (const std::exception& e) {
+            ERR("Reactor::run_once threw exception: {}", e.what());
+        } catch (...) {
+            ERR("Reactor::run_once threw unknown exception");
+        }
     }
 }
 

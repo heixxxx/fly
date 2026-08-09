@@ -2554,13 +2554,13 @@ void MasterAgent::collect_and_print_message_summary() {
         }
     }
 
-    // 等所有 worker 上报（30s 超时容错，复刻 merge_cleanup_cv 模式）。
+    // 等所有 worker 上报（5s 超时 — message summary 是诊断功能，不应阻塞退出流程）。
     {
         std::unique_lock<std::mutex> lk(msg_count_mutex_);
-        bool all_reported = msg_count_cv_.wait_for(lk, std::chrono::seconds(30),
+        bool all_reported = msg_count_cv_.wait_for(lk, std::chrono::seconds(5),
             [this] { return pending_msg_count_.received_count_ >= pending_msg_count_.expected_count_; });
         if (!all_reported) {
-            WARN("Message summary timeout (30s), {}/{} workers reported",
+            WARN("Message summary timeout (5s), {}/{} workers reported",
                  pending_msg_count_.received_count_, pending_msg_count_.expected_count_);
         }
         auto reports = collected_msg_counts_;  // 拷贝出来，避免持锁调用 print_summary
