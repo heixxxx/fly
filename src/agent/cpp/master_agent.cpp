@@ -997,6 +997,21 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
     }
     if (worker_id == 0) return;
 
+    // worker 断开时，如果正在等 message summary，减少 expected_count 并唤醒 CV，
+    // 避免 collect_and_print_message_summary 永远等一个已断开的 worker 的上报。
+    {
+        std::lock_guard<std::mutex> lk(msg_count_mutex_);
+        if (pending_msg_count_.expected_count_ > 0 &&
+            pending_msg_count_.received_count_ < pending_msg_count_.expected_count_) {
+            pending_msg_count_.expected_count_--;
+            DBG("[SUMMARY] worker {} disconnected during summary wait, expected_count now {}",
+                worker_id, pending_msg_count_.expected_count_);
+            if (pending_msg_count_.received_count_ >= pending_msg_count_.expected_count_) {
+                msg_count_cv_.notify_all();
+            }
+        }
+    }
+
     worker_manager_->update_worker_status(worker_id, WorkerStatus::DEAD);
 
     WARN("Worker disconnected: worker_id={}", worker_id);
@@ -2554,13 +2569,14 @@ void MasterAgent::collect_and_print_message_summary() {
         }
     }
 
-    // 等所有 worker 上报（5s 超时 — message summary 是诊断功能，不应阻塞退出流程）。
+    // 等所有 worker 上报（30s 超时容错）。
+    // on_disconnect 会在 worker 断开时减少 expected_count 并唤醒 CV。
     {
         std::unique_lock<std::mutex> lk(msg_count_mutex_);
-        bool all_reported = msg_count_cv_.wait_for(lk, std::chrono::seconds(5),
+        bool all_reported = msg_count_cv_.wait_for(lk, std::chrono::seconds(30),
             [this] { return pending_msg_count_.received_count_ >= pending_msg_count_.expected_count_; });
         if (!all_reported) {
-            WARN("Message summary timeout (5s), {}/{} workers reported",
+            WARN("Message summary timeout (30s), {}/{} workers reported",
                  pending_msg_count_.received_count_, pending_msg_count_.expected_count_);
         }
         auto reports = collected_msg_counts_;  // 拷贝出来，避免持锁调用 print_summary

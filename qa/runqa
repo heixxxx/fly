@@ -252,7 +252,7 @@ def run_one(test_path, timeout=20):
             _pgid = None
 
         # Dump stacks before killing — helps diagnose flaky hangs.
-        # 用 py-spy（快速，不 ptrace），不用 gdb（会留下 stopped 进程）。
+        # 不用 gdb（会留下 stopped 进程），用 /proc 内核栈 + py-spy Python 栈。
         try:
             import subprocess as _sp
             _diag = []
@@ -266,20 +266,30 @@ def run_one(test_path, timeout=20):
                     _cmdline = open(f"/proc/{_cpid}/cmdline").read().replace("\0", " ")[:120]
                 except Exception:
                     pass
-                _line = f"--- pid={_cpid} cmd={_cmdline}"
+                _diag.append(f"\n{'='*60}")
+                _diag.append(f"pid={_cpid} cmd={_cmdline}")
+                # 所有线程的内核栈 + wchan
                 try:
-                    _line += f" state={open(f'/proc/{_cpid}/stat').read().split()[2]}"
-                except Exception:
-                    pass
-                try:
-                    _line += f" wchan={open(f'/proc/{_cpid}/wchan').read()}"
-                except Exception:
-                    pass
-                _diag.append(_line)
-                # 内核栈（不需要 root 权限之外的任何东西，能看到线程卡在哪个内核函数）
-                try:
-                    _kstack = open(f"/proc/{_cpid}/stack").read().strip()
-                    _diag.append(f"kernel stack:\n{_kstack[:500]}")
+                    for _tid in os.listdir(f"/proc/{_cpid}/task"):
+                        _tcomm = ""
+                        _twchan = ""
+                        _tkstack = ""
+                        try:
+                            _tcomm = open(f"/proc/{_cpid}/task/{_tid}/comm").read().strip()
+                        except Exception:
+                            pass
+                        try:
+                            _twchan = open(f"/proc/{_cpid}/task/{_tid}/wchan").read().strip()
+                        except Exception:
+                            pass
+                        try:
+                            _tkstack = open(f"/proc/{_cpid}/task/{_tid}/stack").read().strip()
+                        except Exception:
+                            pass
+                        if _tkstack:
+                            _first = _tkstack.split("\n")[0]
+                            _diag.append(f"  tid={_tid} comm={_tcomm} wchan={_twchan}")
+                            _diag.append(f"    {_first}")
                 except Exception:
                     pass
                 # py-spy (Python stacks)
@@ -287,7 +297,7 @@ def run_one(test_path, timeout=20):
                     _py = _sp.check_output(
                         [os.path.expanduser("~/.local/bin/py-spy"), "dump", "--pid", _cpid],
                         stderr=_sp.DEVNULL, timeout=2).decode(errors="replace")
-                    _diag.append(_py[:2000])
+                    _diag.append(f"  Python stacks:\n{_py[:2000]}")
                 except Exception:
                     pass
             if _diag:
