@@ -261,22 +261,33 @@ def run_one(test_path, timeout=20):
             ).split()
             for _cpid in _pids:
                 _cpid = _cpid.decode().strip()
-                _line = f"--- pid={_cpid} "
+                _cmdline = ""
                 try:
-                    _line += f"state={open(f'/proc/{_cpid}/stat').read().split()[2]} "
+                    _cmdline = open(f"/proc/{_cpid}/cmdline").read().replace("\0", " ")[:120]
+                except Exception:
+                    pass
+                _line = f"--- pid={_cpid} cmd={_cmdline}"
+                try:
+                    _line += f" state={open(f'/proc/{_cpid}/stat').read().split()[2]}"
                 except Exception:
                     pass
                 try:
-                    _line += f"wchan={open(f'/proc/{_cpid}/wchan').read()}"
+                    _line += f" wchan={open(f'/proc/{_cpid}/wchan').read()}"
                 except Exception:
                     pass
                 _diag.append(_line)
-                # py-spy only (fast, no ptrace side-effects)
+                # 内核栈（不需要 root 权限之外的任何东西，能看到线程卡在哪个内核函数）
+                try:
+                    _kstack = open(f"/proc/{_cpid}/stack").read().strip()
+                    _diag.append(f"kernel stack:\n{_kstack[:500]}")
+                except Exception:
+                    pass
+                # py-spy (Python stacks)
                 try:
                     _py = _sp.check_output(
                         [os.path.expanduser("~/.local/bin/py-spy"), "dump", "--pid", _cpid],
                         stderr=_sp.DEVNULL, timeout=2).decode(errors="replace")
-                    _diag.append(_py[:3000])
+                    _diag.append(_py[:2000])
                 except Exception:
                     pass
             if _diag:
