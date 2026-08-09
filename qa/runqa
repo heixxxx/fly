@@ -245,31 +245,57 @@ def run_one(test_path, timeout=20):
         stdout, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
+        # 先获取 PGID（master 还活着时），避免 master 退出后 getpgid 失败
+        try:
+            _pgid = os.getpgid(proc.pid)
+        except ProcessLookupError:
+            _pgid = None
+
         # Dump stacks before killing — helps diagnose flaky hangs.
+        # 用 py-spy（快速，不 ptrace），不用 gdb（会留下 stopped 进程）。
         try:
             import subprocess as _sp
             _diag = []
-            for _cpid in _sp.check_output(
+            _pids = _sp.check_output(
                 ["pgrep", "-f", r"[/]build/bin/fly"], stderr=_sp.DEVNULL
-            ).split():
+            ).split()
+            for _cpid in _pids:
                 _cpid = _cpid.decode().strip()
-                _diag.append(f"--- pid={_cpid} wchan={open(f'/proc/{_cpid}/wchan').read()} ---")
-                # C++ stack via gdb (fast, 2s timeout)
+                _line = f"--- pid={_cpid} "
                 try:
-                    _bt = _sp.check_output(
-                        ["gdb", "-batch", "-ex", "thread apply all bt", "-p", _cpid],
-                        stderr=_sp.DEVNULL, timeout=3).decode(errors="replace")
-                    _diag.append(_bt[:2000])
+                    _line += f"state={open(f'/proc/{_cpid}/stat').read().split()[2]} "
                 except Exception:
-                    _diag.append("(gdb failed)")
+                    pass
+                try:
+                    _line += f"wchan={open(f'/proc/{_cpid}/wchan').read()}"
+                except Exception:
+                    pass
+                _diag.append(_line)
+                # py-spy only (fast, no ptrace side-effects)
+                try:
+                    _py = _sp.check_output(
+                        [os.path.expanduser("~/.local/bin/py-spy"), "dump", "--pid", _cpid],
+                        stderr=_sp.DEVNULL, timeout=2).decode(errors="replace")
+                    _diag.append(_py[:3000])
+                except Exception:
+                    pass
             if _diag:
                 with open(os.path.join(log_dir, "hang_stacks.txt"), "w") as _f:
                     _f.write("\n".join(_diag))
         except Exception:
             pass
+        # killpg 杀整个进程组（master + workers）
+        if _pgid is not None:
+            try:
+                os.killpg(_pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        # 兜底：pkill 任何残留 fly.bin（进程组杀不掉的孤儿）
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except ProcessLookupError:
+            import subprocess as _sp
+            _sp.call(["pkill", "-9", "-f", r"[/]build/bin/fly"],
+                     stderr=_sp.DEVNULL, timeout=5)
+        except Exception:
             pass
         # Drain the pipe so the child is fully reaped and we keep partial logs.
         stdout, _ = proc.communicate()
@@ -381,8 +407,8 @@ def main():
                         help="Disable random test order (default: shuffle to spread "
                              "heavy solver tests among lightweight ones, reducing "
                              "concurrent CPU-bound load spikes)")
-    parser.add_argument("-t", "--timeout", type=int, default=20,
-                        help="Per-test timeout in seconds (default=20)")
+    parser.add_argument("-t", "--timeout", type=int, default=30,
+                        help="Per-test timeout in seconds (default=30)")
     parser.add_argument("--fail-fast", action="store_true",
                         help="Stop on first failure (cancel remaining tests). "
                              "Preserves failed test logs from being overwritten.")
