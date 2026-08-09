@@ -145,12 +145,25 @@ Storage:     DB create/write/read/freeze, index operations,
 - ❌ Blame "pre-existing bugs" without evidence → assume your changes caused it
 - ❌ Attribute deadlock to "timing" without GDB evidence showing the lock chain
 
+## Work Directory Hygiene (MANDATORY)
+
+**NEVER use `/tmp` for intermediate task data.** Repeated writes to `/tmp` without cleanup can fill the disk and crash WSL2.
+
+Rules:
+1. **Intermediate files go in the project's `.work/` directory**, not `/tmp/`
+2. Create `.work/` on demand: `mkdir -p .work && cd .work`
+3. **Clean up before the task ends**: `rm -rf .work/` when done
+4. If `.work/` must persist across commands, clean it at the **end of the overall task**, not each command
+5. Never accumulate unbounded output (e.g. per-round log files in a loop) — overwrite a single file or clean as you go
+6. Repro scripts, diagnostic dumps, temporary patches — all go in `.work/`
+
 ## Success Criteria
 
 1. Root cause identified from log/GDB evidence
 2. Minimal fix applied, tests pass
 3. Debug logs removed
-4. No new issues introduced
+4. `.work/` cleaned up — no intermediate files left behind
+5. No new issues introduced
 
 ## Case Study: GIL Deadlock via nanobind py_deleter
 
