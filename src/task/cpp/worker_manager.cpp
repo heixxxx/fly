@@ -1,6 +1,7 @@
 #include <task/cpp/worker_manager.h>
 #include <algorithm>
 #include <chrono>
+#include <sstream>
 
 namespace fly {
 
@@ -208,6 +209,20 @@ size_t WorkerManager::get_idle_worker_count() {
         }
     }
     return count;
+}
+
+CMString WorkerManager::debug_worker_status() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::ostringstream oss;
+    oss << "workers=" << workers_.size() << " ";
+    for (const auto& [id, info] : workers_) {
+        const char* st = (info.status_ == WorkerStatus::IDLE)   ? "IDLE"
+                        : (info.status_ == WorkerStatus::BUSY)  ? "BUSY"
+                        : "OTHER";
+        oss << "[w" << id << "=" << st << " caps=" << info.capabilities_.size()
+            << " task=" << info.current_task_id_ << "] ";
+    }
+    return oss.str();
 }
 
 }  // namespace fly

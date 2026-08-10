@@ -40,7 +40,17 @@ def _stop_coverage():
 
 
 def _cleanup():
+    import time as _ct
+    _ct0 = _ct.monotonic()
+    def _clog(stage):
+        try:
+            from _fly_log import INFO as _INFO
+            _INFO("_cleanup stage '{}' took {:.3f}s".format(stage, _ct.monotonic() - _ct0))
+        except Exception:
+            pass
+
     _stop_coverage()
+    _clog("coverage_stop")
 
     try:
         from fly.runtime import get_agent, reset
@@ -50,6 +60,7 @@ def _cleanup():
             del agent
     except Exception:
         pass
+    _clog("agent_reset")
 
     try:
         from _fly_storage import ex_stg_get_data_service
@@ -59,6 +70,7 @@ def _cleanup():
         ds.stop_transfer_server()
     except Exception:
         pass
+    _clog("storage_drain")
 
     try:
         from _fly_storage import ex_stg_get_storage_manager
@@ -66,9 +78,11 @@ def _cleanup():
         sm.close_all()
     except Exception:
         pass
+    _clog("storage_close")
 
     import gc
     gc.collect()
+    _clog("gc_collect")
 
 
 def _redirect_worker_io(worker_id, log_dir):
@@ -104,10 +118,12 @@ def _run_worker():
 
     while agent.is_running():
         agent.poll_task_blocking(100)
+    import time as _wt
+    _wt0 = _wt.monotonic()
     INFO("Worker poll loop exited, running cleanup")
 
     agent.stop()
-    INFO("Worker agent stopped")
+    INFO("Worker agent stopped (agent.stop took {:.3f}s)".format(_wt.monotonic() - _wt0))
     # Coverage stop/save is handled centrally by _cleanup() -> _stop_coverage().
 
 
@@ -153,11 +169,84 @@ def _run_master():
             agent.stop()
 
 
+def _dump_on_signal(sig, frame):
+    """SIGUSR1 handler: dump all thread stacks (Python + native) to
+    .fly.{pid}.stack then exit.
+
+    Triggered by runqa (on timeout, before SIGKILL) or by Master.stop() (on
+    slow worker exit). Captures the exact location of the hang/latency for
+    both master and worker processes.
+
+    Writes two sections per thread:
+      - Python stack via sys._current_frames() (shows where each Python thread
+        is in interpreted code).
+      - Native kernel stack via /proc/self/task/<tid>/stack (shows where each
+        OS thread is blocked — futex/epoll/nanosleep — essential for C++/GIL
+        hangs the Python stack alone cannot reveal, e.g. the reactor thread
+        blocked on schedule_mutex_).
+    """
+    import os, traceback, threading
+    from _fly_core import ex_core_get_config
+    try:
+        log_dir = ex_core_get_config().get_str("log_dir")
+    except Exception:
+        log_dir = "."
+    pid = os.getpid()
+    path = os.path.join(log_dir, f".fly.{pid}.stack")
+    try:
+        with open(path, "w") as f:
+            f.write(f"=== SIGUSR1 stack dump (pid={pid}) sig={sig} ===\n")
+            # Section 1: Python thread stacks (interpreted frames).
+            f.write("\n########## Python thread stacks ##########\n")
+            for tid, stack in sys._current_frames().items():
+                tname = "?"
+                for t in threading.enumerate():
+                    if t.ident == tid:
+                        tname = t.name
+                        break
+                f.write(f"\n--- Python Thread {tname} (tid={tid}) ---\n")
+                traceback.print_stack(stack, file=f)
+            # Section 2: native kernel stacks for ALL OS threads (incl. C++).
+            # reactor / task-executor / data-server threads have no Python frame;
+            # only the kernel stack reveals where they are blocked.
+            f.write("\n########## Native kernel stacks (/proc/self/task) ##########\n")
+            try:
+                for t_ in os.listdir("/proc/self/task"):
+                    comm = "?"
+                    wchan = "?"
+                    kstack = ""
+                    try:
+                        comm = open(f"/proc/self/task/{t_}/comm").read().strip()
+                    except Exception:
+                        pass
+                    try:
+                        wchan = open(f"/proc/self/task/{t_}/wchan").read().strip()
+                    except Exception:
+                        pass
+                    try:
+                        kstack = open(f"/proc/self/task/{t_}/stack").read().strip()
+                    except Exception:
+                        pass  # 权限不足时为空（非 root），可接受
+                    f.write(f"\n--- OS Thread tid={t_} comm={comm} wchan={wchan} ---\n")
+                    if kstack:
+                        f.write(kstack + "\n")
+                    else:
+                        f.write("  (kernel stack unavailable)\n")
+            except Exception as _e:
+                f.write(f"(failed to read native stacks: {_e})\n")
+            f.write(f"\n=== end dump ===\n")
+    except Exception:
+        pass
+    # 直接退出，不跑 atexit（那个可能就是慢的原因）
+    os._exit(42)
+
+
 def run():
     def _sigterm_handler(sig, frame):
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, _sigterm_handler)
+    signal.signal(signal.SIGUSR1, _dump_on_signal)
 
     try:
         from fly.runtime import _config_is_worker_mode

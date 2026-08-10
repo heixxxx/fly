@@ -61,7 +61,7 @@ public:
     
     template<typename T>
     void send(uint64_t conn_id, const T& msg);
-    
+
     template<typename T>
     bool try_send(uint64_t conn_id, const T& msg);
     

@@ -82,6 +82,10 @@ ssize_t TcpConnectionManager::send(uint64_t conn_id, const CMString& data) {
         auto wbuf_it = write_buffers_.find(conn_id);
         if (wbuf_it != write_buffers_.end() && !wbuf_it->second.empty()) {
             wbuf_it->second.append(data);
+            // 防御：确保 EV_WRITE 已注册（drain 清空 buffer 后会移除 EV_WRITE；
+            // 若此刻新数据 append 进来而 EV_WRITE 未注册，buffer 永远不会 drain，
+            // 导致消息丢失 → master/worker 永远等不到该消息 → 调度/退出卡死）。
+            mod_epoll_events(fd, EV_READ | EV_WRITE);
             return static_cast<ssize_t>(data.size());
         }
     }
@@ -91,7 +95,9 @@ ssize_t TcpConnectionManager::send(uint64_t conn_id, const CMString& data) {
     if (sent < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             std::lock_guard<std::mutex> lock(conn_mutex_);
-            write_buffers_[conn_id] = data;
+            // append 而非覆盖：drain_write_buffer 可能在 send 释放 conn_mutex_ 的窗口里
+            // 部分消费了 write_buffers_，直接赋值会丢掉剩余数据。
+            write_buffers_[conn_id].append(data);
             mod_epoll_events(fd, EV_READ | EV_WRITE);
             return static_cast<ssize_t>(data.size());
         }
@@ -101,7 +107,8 @@ ssize_t TcpConnectionManager::send(uint64_t conn_id, const CMString& data) {
 
     if (static_cast<size_t>(sent) < data.size()) {
         std::lock_guard<std::mutex> lock(conn_mutex_);
-        write_buffers_[conn_id].assign(data.data() + sent, data.size() - sent);
+        // append 剩余数据，不覆盖 drain_write_buffer 可能残留的数据
+        write_buffers_[conn_id].append(data.data() + sent, data.size() - sent);
         mod_epoll_events(fd, EV_READ | EV_WRITE);
     }
 
@@ -137,6 +144,13 @@ void TcpConnectionManager::drain_write_buffer(uint64_t conn_id, int fd) {
     if (buf.empty()) {
         write_buffers_.erase(it);
         mod_epoll_events(fd, EV_READ);
+    } else {
+        // drain 后仍有残留：socket 持续不可写（消费端不读）。
+        // 大残留长时间不消 = 消息积压风险，WARN 落盘便于定位。
+        if (buf.size() > 1048576) {  // 1MB — 异常积压阈值
+            WARN("[WBUF] drain-leftover conn={} fd={} remaining={}",
+                 conn_id, fd, buf.size());
+        }
     }
 }
 

@@ -59,7 +59,9 @@ public:
     bool has_worker_with_all_capabilities(const CMVector<CMString>& capabilities) const;
     size_t get_worker_count();
     size_t get_idle_worker_count();
-    
+    // 诊断用：返回所有 worker 的 status/cap/task 简表（调度异常时定位状态不一致）。
+    CMString debug_worker_status();
+
 private:
     CMUnorderedMap<uint64_t, WorkerInfo> workers_;
     mutable std::mutex mutex_;

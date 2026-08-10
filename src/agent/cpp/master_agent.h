@@ -212,6 +212,18 @@ private:
     std::mutex attr_timeout_check_mutex_;
     std::condition_variable attr_timeout_check_cv_;
 
+    // 调度看门狗线程：周期检查 ready 任务是否长期得不到调度（调度卡死检测）。
+    // 发现 stall 时输出 WARN（强制 flush）—— INFO/DEBUG 默认不 flush，
+    // 卡死时进程被 SIGKILL 会丢缓冲日志，看门狗用 WARN 保证现场落盘。
+    std::thread sched_watchdog_thread_;
+    std::atomic<bool> sched_watchdog_running_{false};
+    std::mutex sched_watchdog_mutex_;
+    std::condition_variable sched_watchdog_cv_;
+    // 上一次 watchdog 看到的 (ready_count, last_ready_task_id)，用于检测停滞。
+    size_t sched_watchdog_last_ready_count_{0};
+    uint64_t sched_watchdog_last_ready_id_{0};
+    int sched_watchdog_stall_rounds_{0};
+
     // task 提交时的完整不变字段统一存储在 TaskMetadata.submission_ 里
     // （通过 metadata_->get_task(id)->submission_ 访问），不再需要单独维护
     // module/args/vars 的并行 map。单一来源消除了"两段式上锁拷贝"和字段
@@ -293,6 +305,7 @@ private:
     void update_dependency_location_cache(const CMString& object_name, uint64_t worker_id, const CMString& host, int32_t port);
     void heartbeat_check_loop();
     void attr_timeout_check_loop();
+    void sched_watchdog_loop();
 
     std::mutex schedule_mutex_;
 

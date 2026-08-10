@@ -251,6 +251,28 @@ def run_one(test_path, timeout=20):
         except ProcessLookupError:
             _pgid = None
 
+        # 发送 SIGUSR1 触发 fly 进程内置的 stack dump（master + 所有 worker）。
+        # 每个 fly 进程注册了 SIGUSR1 处理函数，把 Python 线程栈 + 原生内核栈
+        # 写到 {log_dir}/.fly.{pid}.stack 后 os._exit(42)。这比外部 py-spy/proc
+        # 转储更可靠（py-spy 在 GIL/C++ 区段常返回空栈）。
+        # 给 2s 让 handler 写完文件再走 fallback 转储 + SIGKILL。
+        try:
+            import subprocess as _sp
+            _usr1_pids = _sp.check_output(
+                ["pgrep", "-f", r"[/]build/bin/fly"], stderr=_sp.DEVNULL
+            ).split()
+            for _cpid in _usr1_pids:
+                _cpid = _cpid.decode().strip()
+                try:
+                    os.kill(int(_cpid), signal.SIGUSR1)
+                except Exception:
+                    pass
+            # 等 SIGUSR1 handler 写完 .fly.{pid}.stack + os._exit
+            import time as _stime
+            _stime.sleep(2.0)
+        except Exception:
+            pass
+
         # Dump stacks before killing — helps diagnose flaky hangs.
         # 不用 gdb（会留下 stopped 进程），用 /proc 内核栈 + py-spy Python 栈。
         try:

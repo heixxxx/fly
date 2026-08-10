@@ -55,6 +55,8 @@ public:
     get_task_ready_timestamp(uint64_t task_id) const;
     CMVector<CMString> get_task_dependencies(uint64_t task_id) const;
     void remove_task(uint64_t task_id);
+    // 已完成 task 总数（completed_tasks_ 的大小，remove_task 时累加）。
+    size_t completed_count() const;
 
 private:
     bool check_and_move_to_ready(uint64_t task_id);

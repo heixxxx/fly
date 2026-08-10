@@ -192,27 +192,52 @@ class Master(FlyAgent):
             f"{num_workers} workers launched")
 
     def stop(self):
+        import time as _t
+        import sys as _sys
+        import signal as _sig
+        _t0 = _t.monotonic()
+        def _log(msg):
+            _sys.stderr.write(f"[Master.stop] +{_t.monotonic()-_t0:.3f}s {msg}\n"); _sys.stderr.flush()
+
         # First stop the C++ Master agent so it sends ShutdownMessage to Workers.
         # Workers need graceful exit to flush gcov coverage data.
         if self._running:
             self._agent.stop()
             self._running = False
+            _log("C++ stop done")
 
         self._cache.clear()
         self._shared_config_path = None
 
         # Wait for Workers to exit gracefully (they received ShutdownMessage).
-        # This ensures atexit/__gcov_exit runs in Worker processes.
-        for proc in self._worker_procs:
-            if proc.poll() is None:
+        # 并行等待所有 worker（共享一个 5s deadline，避免串行累积）。
+        import time as _time
+        deadline = _time.monotonic() + 5.0
+        pending = [p for p in self._worker_procs if p.poll() is None]
+        while pending and _time.monotonic() < deadline:
+            pending = [p for p in pending if p.poll() is None]
+            if pending:
+                _time.sleep(0.05)
+        # 超时的 worker: 发 SIGUSR1 触发 stack dump 然后快速退出
+        for p in pending:
+            if p.poll() is None:
+                _log(f"worker pid={p.pid} timeout, sending SIGUSR1 (dump+exit)")
                 try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
+                    p.send_signal(_sig.SIGUSR1)
+                except Exception:
+                    p.terminate()
+        # 等 SIGUSR1 处理完（1s 足够写文件 + os._exit）
+        deadline2 = _time.monotonic() + 1.0
+        pending2 = [p for p in pending if p.poll() is None]
+        while pending2 and _time.monotonic() < deadline2:
+            pending2 = [p for p in pending2 if p.poll() is None]
+            if pending2:
+                _time.sleep(0.05)
+        for p in pending2:
+            if p.poll() is None:
+                _log(f"worker pid={p.pid} still alive after SIGUSR1, killing")
+                p.kill()
+        _log(f"all workers done (timed_out={len(pending)} killed={len(pending2)})")
         self._worker_procs.clear()
 
     @property

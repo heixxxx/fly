@@ -201,6 +201,11 @@ void DependencyGraph::remove_task(uint64_t task_id) {
     task_requirements_.erase(task_id);
 }
 
+size_t DependencyGraph::completed_count() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return completed_tasks_.size();
+}
+
 const TaskRequirements& DependencyGraph::get_task_requirements(uint64_t task_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = task_requirements_.find(task_id);

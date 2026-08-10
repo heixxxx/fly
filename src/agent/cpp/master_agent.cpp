@@ -231,6 +231,9 @@ void MasterAgent::start() {
     attr_timeout_check_running_ = true;
     attr_timeout_check_thread_ = std::thread([this] { attr_timeout_check_loop(); });
 
+    sched_watchdog_running_ = true;
+    sched_watchdog_thread_ = std::thread([this] { sched_watchdog_loop(); });
+
     reactor_thread_ = std::thread([this] {
         reactor_->run();
         if (drain_thread_.joinable()) {
@@ -317,6 +320,14 @@ void MasterAgent::stop() {
         return;
     }
 
+    // 高精度时间戳，定位 stop() 各阶段耗时（用于排查 runqa 偶发超时）。
+    auto _t0 = std::chrono::steady_clock::now();
+    auto _elapsed = [&]() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now() - _t0)
+            .count();
+    };
+
     INFO("MasterAgent stop() called, entering drain phase");
 
     // Phase 1: Wait for all running tasks to complete (workers are still alive).
@@ -326,25 +337,26 @@ void MasterAgent::stop() {
         while (true) {
             int running_count = metadata_->count_tasks_by_status(TaskStatus::RUNNING);
             if (running_count == 0) break;
-            INFO("Drain: waiting for {} running tasks to complete", running_count);
+            INFO("Drain: waiting for {} running tasks to complete (elapsed={}ms)", running_count, _elapsed());
             if (drain_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
-                WARN("Drain timeout (30s), {} tasks still running", running_count);
+                WARN("Drain timeout (30s), {} tasks still running (elapsed={}ms)", running_count, _elapsed());
                 break;
             }
         }
     }
 
-    INFO("Drain: all tasks completed, shutting down workers");
+    INFO("Drain: all tasks completed, shutting down workers (elapsed={}ms)", _elapsed());
 
     // Message summary：发 Shutdown 前收集各 worker 的 message 触发计数并打印 summary。
     // 必须在 worker 仍连接时广播请求（worker 断开后无法上报）。
     collect_and_print_message_summary();
+    INFO("Message summary done (elapsed={}ms)", _elapsed());
 
     // Phase 2: All tasks done — now send shutdown to workers.
     {
         std::lock_guard<std::mutex> lk(workers_mutex_);
         for (const auto& [worker_id, conn_id] : worker_to_conn_) {
-            INFO("Sending shutdown to worker_id={}", worker_id);
+            INFO("Sending shutdown to worker_id={} (elapsed={}ms)", worker_id, _elapsed());
             reactor_->send(conn_id, ShutdownMessage{});
         }
     }
@@ -356,14 +368,17 @@ void MasterAgent::stop() {
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         while (!worker_to_conn_.empty()) {
             if (workers_drained_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
-                WARN("Shutdown timeout (10s), {} workers still connected", worker_to_conn_.size());
+                WARN("Shutdown timeout (10s), {} workers still connected (elapsed={}ms)",
+                     worker_to_conn_.size(), _elapsed());
                 break;
             }
         }
     }
 
+    INFO("MasterAgent stop(): workers disconnected, persisting pending (elapsed={}ms)", _elapsed());
     persist_pending_tasks();
     do_drain_and_stop();
+    INFO("MasterAgent stop(): fully stopped (elapsed={}ms)", _elapsed());
 }
 
 void MasterAgent::do_drain_and_stop() {
@@ -383,6 +398,12 @@ void MasterAgent::do_drain_and_stop() {
         attr_timeout_check_running_ = false;
         attr_timeout_check_cv_.notify_all();
         attr_timeout_check_thread_.join();
+    }
+
+    if (sched_watchdog_thread_.joinable()) {
+        sched_watchdog_running_ = false;
+        sched_watchdog_cv_.notify_all();
+        sched_watchdog_thread_.join();
     }
 
     if (reactor_) {
@@ -543,6 +564,29 @@ void MasterAgent::schedule_tasks() {
         if (result.scheduled_) {
             assign_task_to_worker(result.task_id_, result.worker_id_);
         }
+    }
+
+    // 诊断：ready + idle 都非空但 schedule_all_available 没调出任何 task
+    // —— 指向 scheduler 内部 capability/locality 决策问题或 worker 状态不一致。
+    if (results.empty() && !ready.empty() && !idle.empty()) {
+        // 列出 ready task id（前 10 个）便于定位是哪些 task 卡住。
+        std::string ready_ids;
+        for (size_t i = 0; i < ready.size() && i < 10; ++i) {
+            ready_ids += std::to_string(ready[i]);
+            if (i + 1 < ready.size() && i + 1 < 10) ready_ids += ",";
+        }
+        WARN("[SCHED-DIAG] no task scheduled but ready=[{}] idle={} "
+             "(worker_status: {})", ready_ids, idle.size(),
+             worker_manager_->debug_worker_status());
+        // 检查每个 ready task 的 requirements，定位为何 select_best_worker 返回 0。
+        for (size_t i = 0; i < ready.size() && i < 5; ++i) {
+            uint64_t tid = ready[i];
+            auto reqs = graph_->get_task_requirements(tid);
+            WARN("[SCHED-DIAG]   task={} caps={} locality_hint={} timeout={}",
+                 tid, reqs.capabilities_.size(), reqs.locality_hint_.size(),
+                 reqs.timeout_seconds_);
+        }
+        Logger::instance()->flush();
     }
 
     // 依赖不可解检测：上游 task 失败导致数据被清理后，依赖该数据的 pending
@@ -753,6 +797,68 @@ void MasterAgent::attr_timeout_check_loop() {
 
         if (running_ && !draining_.load()) {
             schedule_tasks();
+        }
+    }
+}
+
+void MasterAgent::sched_watchdog_loop() {
+    // 调度看门狗：每 3s 检查 ready 队列是否停滞。
+    // 若连续 2 轮（6s）ready 队列内容不变（同 count + 同最小 task_id），
+    // 判定为调度卡死，输出 WARN + flush（INFO/DEBUG 不 flush，SIGKILL 会丢缓冲）。
+    // 同时主动触发一次 schedule_tasks，尝试自愈（看门狗线程不持有 schedule_mutex_
+    // 的任何依赖，可安全触发）。
+    while (sched_watchdog_running_) {
+        {
+            std::unique_lock<std::mutex> lock(sched_watchdog_mutex_);
+            sched_watchdog_cv_.wait_for(lock, std::chrono::seconds(3),
+                                         [this]{ return !sched_watchdog_running_.load(); });
+        }
+        if (!running_ || draining_.load()) continue;
+
+        auto ready = graph_->get_ready_tasks();
+        if (ready.empty()) {
+            sched_watchdog_stall_rounds_ = 0;
+            continue;
+        }
+        uint64_t min_id = ready.front();
+        for (auto tid : ready) if (tid < min_id) min_id = tid;
+
+        bool stalled = (ready.size() == sched_watchdog_last_ready_count_ &&
+                        min_id == sched_watchdog_last_ready_id_);
+        if (stalled) {
+            sched_watchdog_stall_rounds_++;
+        } else {
+            sched_watchdog_stall_rounds_ = 0;
+        }
+        sched_watchdog_last_ready_count_ = ready.size();
+        sched_watchdog_last_ready_id_ = min_id;
+
+        if (sched_watchdog_stall_rounds_ >= 2) {
+            // 连续 6s ready 队列未前进 → 调度卡死。输出诊断 + flush。
+            std::string ready_ids;
+            for (size_t i = 0; i < ready.size() && i < 15; ++i) {
+                ready_ids += std::to_string(ready[i]);
+                if (i + 1 < ready.size() && i + 1 < 15) ready_ids += ",";
+            }
+            WARN("[SCHED-WATCHDOG] stall detected: ready=[{}] ({} tasks) "
+                 "unchanged for {}s. idle_workers={} worker_status={}",
+                 ready_ids, ready.size(), sched_watchdog_stall_rounds_ * 3,
+                 worker_manager_->get_idle_worker_count(),
+                 worker_manager_->debug_worker_status());
+            // 检查每个 ready task 的 requirements。
+            for (size_t i = 0; i < ready.size() && i < 5; ++i) {
+                uint64_t tid = ready[i];
+                auto reqs = graph_->get_task_requirements(tid);
+                WARN("[SCHED-WATCHDOG]   task={} caps={} hint={} timeout={}",
+                     tid, reqs.capabilities_.size(), reqs.locality_hint_.size(),
+                     reqs.timeout_seconds_);
+            }
+            Logger::instance()->flush();
+            // 主动触发调度（看门狗线程不持有 schedule_mutex_，安全）。
+            schedule_tasks();
+        } else if (sched_watchdog_stall_rounds_ == 1) {
+            // 第一轮停滞：也 flush 一次，确保 ready 队列状态落盘（即使后续恢复）。
+            Logger::instance()->flush();
         }
     }
 }
@@ -1109,7 +1215,15 @@ CMVector<uint64_t> MasterAgent::get_running_tasks() const {
 }
 
 CMVector<uint64_t> MasterAgent::get_completed_tasks() const {
-    return metadata_->get_task_ids_by_status(TaskStatus::COMPLETED);
+    auto result = metadata_->get_task_ids_by_status(TaskStatus::COMPLETED);
+    // 诊断（WARN=flush）：当 Python 读取 completed_tasks 时，对比 metadata 与 graph
+    // 两套来源的已完成 task 数。若不一致 → 找到了"读不到"的根因。
+    size_t graph_count = graph_->completed_count();
+    if (result.size() != graph_count) {
+        WARN("[COMPLETED-MISMATCH] metadata_completed={} graph_completed={}",
+             result.size(), graph_count);
+    }
+    return result;
 }
 
 CMVector<uint64_t> MasterAgent::get_failed_tasks() const {
