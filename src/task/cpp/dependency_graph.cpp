@@ -1,12 +1,26 @@
 #include <task/cpp/dependency_graph.h>
 #include <log/cpp/logger.h>
 #include <algorithm>
+#include <cassert>
 
 namespace fly {
 
 void DependencyGraph::add_task(uint64_t task_id, const CMVector<CMString>& inputs,
                                 const TaskRequirements& requirements) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // add_task 语义为"新建"：task_id 必须唯一。重复 add 不会清理旧的
+    // ready_tasks_/pending_tasks_/data_to_pending_tasks_ 反向索引，导致 graph 内部
+    // 状态分叉（与 TaskManager::create_task 的 assert 对称）。rerun/task 恢复路径
+    // 必须 remove_task 在前（见 on_disconnect/schedule_tasks 的 remove+add 序列）。
+    // 命中此 assert = task_id 复用或跨线程竞态，立即崩溃暴露现场。
+    if (task_dependencies_.count(task_id) > 0) {
+        ERR("[FATAL] DependencyGraph::add_task: duplicate task_id={} — "
+            "must remove_task before re-adding. Aborting to expose the race.",
+            task_id);
+        assert(false && "add_task: duplicate task_id");
+    }
+
     task_dependencies_[task_id] = inputs;
     task_requirements_[task_id] = requirements;
 

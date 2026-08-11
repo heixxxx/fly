@@ -35,8 +35,6 @@ public:
                           const CMVector<CMString>& capabilities = {},
                           const CMString& hostname = "",
                           const CMString& ip_address = "");
-    void register_worker(uint64_t worker_id, const CMString& address,
-                          const CMVector<CMString>& capabilities);
     void unregister_worker(uint64_t worker_id);
     void update_worker_status(uint64_t worker_id, WorkerStatus status);
     void record_heartbeat(uint64_t worker_id);

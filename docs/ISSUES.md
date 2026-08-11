@@ -171,6 +171,7 @@
 | X-16 | `worker_attributes` parsing silent on malformed input | `runtime.py:52` | Low | FIXED — get_int 返回 INT64_MIN 表示无效值，调用方需检查 |
 | X-17 | Triple `gc.collect()` in cleanup | `main.py:48-50` | Low | FIXED — 改为单次 gc.collect() |
 | X-18 | Python API `__getattr__` hides properties from static analysis | `__init__.py` | Low | RECORD ONLY — 记录不修复 |
+| 007 | task 生命周期并发竞态审计（6 个残留问题） | [docs/issues/007](issues/007-task-lifecycle-concurrency-audit.md) | High | OPEN — H1/H2 高危竞态待修，详见 issue 文档 |
 
 ---
 

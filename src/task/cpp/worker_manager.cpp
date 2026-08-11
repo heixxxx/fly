@@ -1,4 +1,5 @@
 #include <task/cpp/worker_manager.h>
+#include <log/cpp/logger.h>
 #include <algorithm>
 #include <chrono>
 #include <sstream>
@@ -9,6 +10,15 @@ void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
                                       uint16_t port, const CMVector<CMString>& capabilities,
                                       const CMString& hostname, const CMString& ip_address) {
     std::lock_guard<std::mutex> lock(mutex_);
+    // worker 重连会用相同 worker_id 重新注册（合法）。但若旧 worker 仍处 BUSY（带着
+    // 未完成 task），静默覆盖成 IDLE 会丢失 task 关联 → task 永久孤儿。此处 WARN 暴露
+    // 这种异常重注册，便于及时发现（重连应先经 on_disconnect 清理旧状态）。
+    auto it = workers_.find(worker_id);
+    if (it != workers_.end() && it->second.status_ == WorkerStatus::BUSY) {
+        WARN("[WORKER-DUP] register_worker: worker_id={} re-registered while BUSY "
+             "(current_task_id={} lost) — possible unclean reconnect",
+             worker_id, it->second.current_task_id_);
+    }
     WorkerInfo info;
     info.worker_id_ = worker_id;
     info.address_ = address;
@@ -21,12 +31,6 @@ void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
     info.hostname_ = hostname;
     info.ip_address_ = ip_address;
     workers_[worker_id] = info;
-}
-
-void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
-                                      const CMVector<CMString>& capabilities) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    register_worker(worker_id, address, 18080, capabilities);
 }
 
 void WorkerManager::unregister_worker(uint64_t worker_id) {

@@ -1265,8 +1265,12 @@ CMString MasterAgent::get_task_error(uint64_t task_id) const {
 
 void MasterAgent::register_database(const CMString& db_path, const CMString& data_path) {
     INFO("register_database: db_path={}, data_path={}", db_path, data_path);
-    // Database 是 master 进程路径唯一权威源：构造对象插入 db_instances_，路径内嵌于对象，
-    // DataService::db_paths_ 由 Database 构造时自动 register。
+    // db_path 本该唯一：重复 register 会丢弃旧 Database 的状态（var_store_、writer_id、
+    // 冻结状态、对象状态）并覆盖 DataService::db_paths_。正常流程每个 db_path 只注册一次；
+    // merge 重建走独立路径（见 cleanup_after_merge）。命中此 WARN = 重复注册 bug。
+    if (db_instances_.count(db_path) > 0) {
+        WARN("[DB-DUP] register_database: db_path={} already exists — overwriting (possible bug)", db_path);
+    }
     auto db = CMMakeShared<Database>(db_path, data_path, 0, "", db_path);
     db_instances_[db_path] = db;
 }
@@ -1330,6 +1334,12 @@ void MasterAgent::rollback_pending_frozen(uint64_t task_id) {
 CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& db_path, const CMString& data_path, uint64_t writer_id) {
     // Database 是 master 进程 DB 路径的【唯一权威源】：路径内嵌于对象，DataService::db_paths_
     // 由 Database 构造时自动 register，无需手动双写第二份字符串副本。
+    //
+    // 方法名暗示"get or create"，但当前实现总是 create+覆盖。重复调用同 db_path 会丢弃
+    // 旧 Database 状态。命中此 WARN 说明调用方本该用 get_database 复用却误入了创建路径。
+    if (db_instances_.count(db_path) > 0) {
+        WARN("[DB-DUP] get_or_create_database: db_path={} already exists — recreating (possible bug, should reuse)", db_path);
+    }
     auto db = CMMakeShared<Database>(db_path, data_path, writer_id);
     db_instances_[db_path] = db;
     return db;
