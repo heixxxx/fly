@@ -36,8 +36,16 @@ private:
 
     CMUnorderedMap<uint64_t, CMString> write_buffers_;
 
+#ifdef FLY_ENABLE_TEST_HOOKS
+public:
+    // 测试可见（仅 FLY_ENABLE_TEST_HOOKS 编译时）：register_connection / unregister_connection
+    // 是 accept 路径的内部 helper，测试需直接调用以复现 fd 复用注册竞态（issue 007 Problem 6）。
+    // release 不定义该宏 → 保持 private。访问控制是调用点侧检查：fly_network 库无宏编译时
+    // 这些方法仍为 private，符号照常导出可链接。
+#endif
     uint64_t register_connection(int fd);
     void unregister_connection(uint64_t conn_id);
+private:
     CMString drain_socket(int fd, size_t max_size);
     void drain_write_buffer(uint64_t conn_id, int fd);
     void mod_epoll_events(int fd, uint32_t events);

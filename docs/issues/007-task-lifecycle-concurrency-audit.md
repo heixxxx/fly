@@ -14,20 +14,22 @@
 - ✅ `WorkerManager::register_worker` 重注册时旧状态 BUSY → WARN
 - ✅ `WorkerManager::register_worker` 3 参数重载递归锁 bug → 删除（死代码）
 
-**以下为未处理的残留问题**，按严重度排序。
+> **更新（2026-08-11）**：下方 6 个残留问题已全部按 TDD 流程修复（Red→Fix→Green），详见文末「修复记录」。全量 cpp 单元测试（55）+ QA（149）通过；测试钩子经 `FLY_ENABLE_TEST_HOOKS` 宏 + testonly 库变体 `fly_agent_test_hooks` 完全隔离，release `fly` 二进制零测试代码（符号表已验证）。
+
+**以下为残留问题**（已全部修复，按严重度排序）。
 
 ---
 
 ## 问题汇总
 
-| # | 严重度 | 类型 | 标题 |
-|---|--------|------|------|
-| 1 | 高 | 并发竞态 | `assign_task_to_worker` 发送/赋值乱序 + scheduler 预占 → worker 永久卡 BUSY |
-| 2 | 高 | 并发竞态 | `on_disconnect` snapshot 在 schedule_mutex_ 外 → task 永久孤儿 |
-| 3 | 中 | 逻辑顺序 | `DataService::on_write_started` 在重复检测前覆盖 COMPLETE 条目 |
-| 4 | 中 | 并发竞态 | backup/merge task 的 `worker_manager_->assign_task` 在 schedule_mutex_ 外 |
-| 5 | 低 | 静默覆盖 | `pending_delete_acks_` / `pending_merge_cleanups_` 重复触发重置计数器 |
-| 6 | 低 | 静默覆盖 | `TcpConnectionManager` 同 fd 重复注册 → conn_to_fd_ 孤儿条目 |
+| # | 严重度 | 类型 | 标题 | 状态 |
+|---|--------|------|------|------|
+| 1 | 高 | 并发竞态 | `assign_task_to_worker` 发送/赋值乱序 + scheduler 预占 → worker 永久卡 BUSY | ✅ 已修复 |
+| 2 | 高 | 并发竞态 | `on_disconnect` snapshot 在 schedule_mutex_ 外 → task 永久孤儿 | ✅ 已修复 |
+| 3 | 中 | 逻辑顺序 | `DataService::on_write_started` 在重复检测前覆盖 COMPLETE 条目 | ✅ 已修复 |
+| 4 | 中 | 并发竞态 | backup/merge task 的 `worker_manager_->assign_task` 在 schedule_mutex_ 外 | ✅ 已修复 |
+| 5 | 低 | 静默覆盖 | `pending_delete_acks_` / `pending_merge_cleanups_` 重复触发重置计数器 | ✅ 已修复 |
+| 6 | 低 | 静默覆盖 | `TcpConnectionManager` 同 fd 重复注册 → conn_to_fd_ 孤儿条目 | ✅ 已修复 |
 
 ---
 
@@ -198,3 +200,28 @@ backup/merge 的 assign_task 纳入 `schedule_mutex_`，或复用 `assign_task_t
 
 - `62b7355` — 根治 submit_task 与 on_task_complete 跨线程竞态（本次修复的主体）
 - `0423f67` — runqa 卡死诊断工具链 + write_buffers 健壮性修复（本次审计的基线）
+
+---
+
+## 修复记录（2026-08-11，TDD：Red→Fix→Green）
+
+6 个残留问题全部按 TDD 修复。并发类问题的确定性竞态复现用 `std::latch` 协调线程交错 + `#ifdef FLY_ENABLE_TEST_HOOKS` 宏包裹的测试钩子（testonly 库变体 `fly_agent_test_hooks` 激活，release 不带宏 → 钩子代码完全不进发布二进制）。
+
+| # | 修复（根因） | 测试 | 验证 |
+|---|------|------|------|
+| 1 | 删除 `assign_task_to_worker` 末尾冗余的 `worker_manager_->assign_task`（`task_scheduler.cpp:68` 已在 send 前赋值 BUSY；该冗余调用正是覆盖 `complete_task` 结果的元凶）。`complete_task` 保持锁外——同 task 的赋值必先于 send 先于 complete_task，无同 task 竞态；跨 task 重新赋值是 worker 完成后的正常复用。 | `master_agent_test.cpp Problem1_CompleteTaskClobberedByConcurrentAssign`：`std::latch` 强制 reactor 线程的 `complete_task` 落在 scheduler 线程赋值之前。修复前 W=BUSY（FAIL）；修复后 W=IDLE（PASS）。 | 确定性 |
+| 2 | `on_disconnect` 的 `update_worker_status(DEAD)` + `get_task_ids_by_worker` snapshot 纳入同一 `schedule_mutex_` 临界段，与 scheduler 的 `get_idle_workers→assign` 序列互斥：要么 snapshot 先（W 已 DEAD，scheduler 不再 assign 到 W），要么 scheduler 先完成 assign（snapshot 能看到 task 并恢复）。 | `OnDisconnectRecoversRunningTasks`（既有，真实 worker 端到端回归）+ `qa/diag/repro_p2_disconnect_orphan.py`（真实场景 assign-期-断连诊断）。 | 回归 + 诊断脚本（exit 0） |
+| 3 | `DataService::on_write_started` 检测到对象已 COMPLETE 则保留不动（仅 absent/INCOMPLETE/FAILED 时写 INCOMPLETE），不丢弃 entries_ 向量。 | `data_service_test.cpp OnWriteStartedDoesNotClobberCompleteEntry`：completed+entries 后再次 on_write_started，修复前 entries 被清空（FAIL）；修复后保留（PASS）。 | 确定性 |
+| 4 | `on_backup_request` / `send_merge_task` 的 `worker_manager_->assign_task` 纳入 `schedule_mutex_`，与 scheduler assign 序列互斥，避免 worker_manager 撕裂状态。已确认调用方均不持 `schedule_mutex_`（无递归死锁）。 | 审计 + Phase 7 backup/merge QA（149 全过）。并发竞态 post-fix 由序列化消除，确定性竞态测试不可构造（同 Problem 2）。 | 审计 + QA |
+| 5 | `send_delete_data` / `cleanup_after_merge` 插入 pending 条目前检查 key 是否已存在：存在则 WARN + 保留旧条目（不重置 completed/deleted_count 或 received/expected 计数），避免 ack 丢失致 wait 屏障永久超时。 | `master_agent_test.cpp Problem5_ResendDeleteDataDoesNotResetCompletedAck`：首轮 ack(completed,deleted=5) 后二次 send_delete_data，修复前重置为 {false,0}（FAIL）；修复后保留 {true,5}（PASS）。 | 确定性 |
+| 6 | `TcpConnectionManager::register_connection` 覆盖 `fd_to_conn_[fd]` 前检查是否已有该 fd：有则 WARN + 先清掉旧 conn 的 `conn_to_fd_` / `write_buffers_` 条目，避免孤儿。 | `tcp_connection_manager_test.cpp Problem6_DuplicateFdRegisterDoesNotLeakOrphan`：同 fd 二次注册，修复前 connection_count()==2（孤儿，FAIL）；修复后 ==1（PASS）。 | 确定性 |
+
+### 测试隔离机制
+- 所有测试专用代码用 `#ifdef FLY_ENABLE_TEST_HOOKS` 包裹（master_agent.h/cpp 的钩子成员/触发点/getter、tcp_connection_manager.h 的 `register_connection` 可见性）。
+- `src/agent/cpp/BUILD` 新增 testonly 库变体 `fly_agent_test_hooks`（`defines=["FLY_ENABLE_TEST_HOOKS"]`）；release 的 `fly_agent` / `fly_agent_so` / `fly` 二进制永不依赖它。
+- 验证：`nm` release `fly` 二进制搜 `_for_testing`/`test_hook`/`FLY_ENABLE_TEST` 符号数 = **0**；`libfly_agent_test_hooks.a` 含全部钩子符号。
+
+### 验证汇总
+- cpp 单元测试：**55 全过**。
+- 全量 QA（`runqa -j4`）：**149 全过，0 失败**。
+- release 隔离：发布二进制零测试代码。

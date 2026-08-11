@@ -298,6 +298,16 @@ int TcpConnectionManager::get_bound_port() const {
 
 uint64_t TcpConnectionManager::register_connection(int fd) {
     std::lock_guard<std::mutex> lock(conn_mutex_);
+    // Problem 6：同 fd 二次注册（双 accept / OS fd 复用）会覆盖 fd_to_conn_[fd]，而旧
+    // conn_id 的 conn_to_fd_ 条目仍残留 → 孤儿（永不被清理，connection_count 虚高，且
+    // 旧 conn_id 的 send 会经 conn_to_fd_ 误投到被复用的新 fd）。覆盖前先清掉旧 conn 条目。
+    auto existing = fd_to_conn_.find(fd);
+    if (existing != fd_to_conn_.end()) {
+        WARN("[TCP-DUP] register_connection: fd={} 已注册(旧 conn_id={})，先清理旧条目再重用",
+             fd, existing->second);
+        conn_to_fd_.erase(existing->second);
+        write_buffers_.erase(existing->second);  // 同 unregister_connection 语义
+    }
     uint64_t conn_id = next_conn_id_++;
     conn_to_fd_[conn_id] = fd;
     fd_to_conn_[fd] = conn_id;

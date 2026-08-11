@@ -299,12 +299,23 @@ void DataService::on_flush(const CMString& db_path) {
 void DataService::on_write_started(const CMString& db_path,
                                      const CMString& object_name) {
     auto [_, short_name] = split_full(object_name);
+
+    std::unique_lock<std::shared_mutex> lock(local_mutex_);
+    auto& objs = local_idx_[db_path].objects_;
+    auto it = objs.find(short_name);
+    if (it != objs.end() && it->second &&
+        it->second->completion_state_.load(std::memory_order_acquire) == CompletionState::COMPLETE) {
+        // Problem 3：对象已 COMPLETE（盘上数据完整 + entries_ 已就位）。重复写路径上
+        // commit_write 在 register_write（重复检测）之前调用本方法 —— 若此处用新的
+        // INCOMPLETE 无条件覆盖，会丢弃 entries_ 向量；随后 register_write 判定
+        // WRITE_DUPLICATE_SKIPPED 触发 on_write_failed erase 条目，导致等待该对象的本地
+        // 读取者掉落到 TIER2/远程（数据其实已完整在盘上）。保留 COMPLETE 条目不动即可。
+        return;
+    }
     CMSharedPtr<LocalObjectInfo> info = CMMakeShared<LocalObjectInfo>();
     info->db_path_ = db_path;
     info->completion_state_.store(CompletionState::INCOMPLETE, std::memory_order_relaxed);
-
-    std::unique_lock<std::shared_mutex> lock(local_mutex_);
-    local_idx_[db_path].objects_[short_name] = info;
+    objs[short_name] = info;
 }
 
 void DataService::on_write_completed(const CMString& db_path,

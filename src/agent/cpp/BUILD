@@ -37,3 +37,29 @@ cc_shared_library(
     ],
     visibility = ["//visibility:public"],
 )
+
+# fly_agent 的 testonly 变体：定义 FLY_ENABLE_TEST_HOOKS，激活 master_agent 中
+# #ifdef FLY_ENABLE_TEST_HOOKS 包裹的测试钩子与 getter。release 路径（fly_agent /
+# fly_agent_so / fly 二进制）永不依赖此 target，故钩子代码不进发布产物。
+# 仅供 cc_test 静态链接（linkstatic=True），不产出 .so、不参与 export 链。
+cc_library(
+    name = "fly_agent_test_hooks",
+    srcs = glob(["*.cpp"]),
+    hdrs = glob(["*.h"]),
+    strip_include_prefix = "/src",
+    copts = ["-std=c++20"],
+    defines = ["FLY_ENABLE_TEST_HOOKS"],
+    linkstatic = True,
+    linkopts = ["-lpthread"],
+    testonly = True,
+    deps = [
+        "//src/common/cpp:fly_common_types",
+        "//src/core/cpp:fly_core",
+        "//src/log/cpp:fly_log",
+        "//src/message/cpp:fly_message",
+        "//src/network/cpp:fly_network",
+        "//src/serialization/cpp:fly_serialization",
+        "//src/storage/cpp:fly_storage",
+        "//src/task/cpp:fly_task",
+    ],
+)

@@ -1342,4 +1342,44 @@ TEST_F(DataServiceTest, SetMigratedPath_UpdatesCache) {
     EXPECT_EQ(ds_->resolve_migrated_path(path_a), path_a);
 }
 
+// issue 007 — Problem 3（中）：on_write_started 在重复检测前覆盖 COMPLETE 条目。
+// 重复写路径上，对象已存在的 COMPLETE local_idx 条目（含 entries_）被新的 INCOMPLETE
+// 无条件覆盖（丢弃 entries_），随后 on_write_failed 又 erase → 等待该对象的本地读取者
+// 掉落到 TIER2/远程（数据其实已 COMPLETE 在盘上）。修复：on_write_started 拒绝覆盖
+// 已 COMPLETE 的条目（仅 absent/INCOMPLETE/FAILED 时写入）。
+TEST(DataServiceWriteLifecycleTest, OnWriteStartedDoesNotClobberCompleteEntry) {
+    auto ds = fly::DataService::instance();
+    CMString db = db32("p3_clobber");
+    CMString full = db + ":obj_p3";
+    ds->remove_local_index(full);
+
+    // 1) 首次 write_started → INCOMPLETE（无 entries）
+    ds->on_write_started(db, full);
+    auto e0 = ds->find_local_entries(full);
+    ASSERT_TRUE(e0.has_value());
+    EXPECT_TRUE(e0->empty());
+
+    // 2) write_completed → COMPLETE，写入 2 个 entries
+    fly::CMVector<IndexEntry> entries;
+    {
+        IndexEntry e1; e1.object_name_ = "obj_p3"; e1.file_name_ = "f1"; e1.offset_ = 0;  e1.size_ = 10;
+        IndexEntry e2; e2.object_name_ = "obj_p3"; e2.file_name_ = "f2"; e2.offset_ = 10; e2.size_ = 20;
+        entries.push_back(e1); entries.push_back(e2);
+    }
+    ds->on_write_completed(db, full, entries);
+    auto e_done = ds->find_local_entries(full);
+    ASSERT_TRUE(e_done.has_value());
+    EXPECT_EQ(e_done->size(), 2u);
+
+    // 3) 重复写路径：再次 write_started。修复前用 INCOMPLETE 覆盖 COMPLETE（entries 丢失）；
+    //    修复后保留 COMPLETE 条目。这是 Problem 3 的核心断言。
+    ds->on_write_started(db, full);
+    auto e_after = ds->find_local_entries(full);
+    ASSERT_TRUE(e_after.has_value()) << "条目仍应存在";
+    EXPECT_EQ(e_after->size(), 2u)
+        << "on_write_started 不应覆盖已 COMPLETE 条目的 entries（Problem 3：重复写覆盖导致读取者掉落 TIER2）";
+
+    ds->remove_local_index(full);
+}
+
 }

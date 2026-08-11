@@ -19,9 +19,10 @@ cc_test(
     srcs = ["master_agent_test.cpp"],
     deps = [
         "@googletest//:gtest_main",
-        "//src/agent/cpp:fly_agent",
+        "//src/agent/cpp:fly_agent_test_hooks",
     ],
     copts = ["-std=c++20"],
+    defines = ["FLY_ENABLE_TEST_HOOKS"],
 )
 
 cc_test(

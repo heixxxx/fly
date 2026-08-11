@@ -24,6 +24,7 @@ cc_test(
         "//src/network/cpp:fly_network",
     ],
     copts = ["-std=c++20"],
+    defines = ["FLY_ENABLE_TEST_HOOKS"],  # 暴露 register_connection 供 Problem 6 测试
 )
 
 cc_test(

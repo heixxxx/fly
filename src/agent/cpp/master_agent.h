@@ -22,6 +22,8 @@
 #include <atomic>
 #include <signal.h>
 #include <memory>
+#include <functional>
+#include <utility>
 
 namespace fly {
 
@@ -170,6 +172,38 @@ public:
     // merge task 完成/失败回调（由 on_task_complete / on_task_failed 的 internal 分支调用）。
     void on_merge_task_complete(uint64_t task_id, uint64_t worker_id, const CMVector<WrittenObject>& written_objects);
     void on_merge_task_failed(uint64_t task_id, const CMString& error_message);
+
+#ifdef FLY_ENABLE_TEST_HOOKS
+public:
+    // ── 测试专用接口：仅当编译期定义 FLY_ENABLE_TEST_HOOKS 时存在 ──
+    // release（fly_agent / fly_agent_so / fly 二进制）永不定义该宏 → 这些成员、
+    // 触发点与 helper 完全不出现在发布产物。仅 testonly 库变体 fly_agent_test_hooks 激活。
+    //
+    // 用于确定性复现 task 生命周期跨线程竞态：测试用 std::latch 在钩子点协调线程交错。
+    //   assign_task_send_hook_for_testing_         — assign_task_to_worker 在 reactor_->send
+    //                                                之后、metadata_/worker_manager 赋值之前触发
+    //                                                （scheduler 线程，持 schedule_mutex_）。
+    //   on_task_complete_prelock_hook_for_testing_ — on_task_complete 在获取 schedule_mutex_
+    //                                                之前触发（结构稳定点，不随 complete_task
+    //                                                位置移动；complete_task 在其上方/下方决定
+    //                                                竞态方向）。
+    std::function<void(uint64_t task_id, uint64_t worker_id)> assign_task_send_hook_for_testing_;
+    std::function<void(uint64_t task_id, uint64_t worker_id)> on_task_complete_prelock_hook_for_testing_;
+    // 注册一个不对应真实网络连接的 worker（fake_conn_id），使 assign_task_to_worker 的
+    // reactor_->send 安全 no-op（transport 对未知 conn_id 返回 -1）。用于无需真实 worker
+    // 进程即可驱动调度路径的确定性测试（消除真实 worker 异步完成对断言的干扰）。
+    void register_fake_worker_for_testing(uint64_t worker_id, uint64_t fake_conn_id);
+    // 撤销 register_fake_worker_for_testing 的登记（清 workers map + worker_manager 条目），
+    // 使 master.stop() 的 drain 不必为永不真实断连的 fake worker 等待 10s 超时。
+    void unregister_fake_worker_for_testing(uint64_t worker_id, uint64_t fake_conn_id);
+    // pending ack/cleanup 状态只读访问（复现 Problem 5 静默覆盖）。
+    // delete：返回 {completed, deleted_count}；merge cleanup：返回 {expected, received}。
+    std::pair<bool, int32_t> pending_delete_ack_state_for_testing(const CMString& ack_key) const;
+    std::pair<uint64_t, uint64_t> pending_merge_cleanup_counts_for_testing(const CMString& db_path) const;
+    // 直接注入 DeleteDataAck（绕过 reactor），驱动 pending 状态机用于测试。
+    void inject_delete_data_ack_for_testing(const DeleteDataAckMessage& msg) { on_delete_data_ack(0, msg); }
+private:
+#endif
 
 private:
     CMString host_;

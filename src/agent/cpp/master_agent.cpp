@@ -758,9 +758,25 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
     }
 
     reactor_->send(conn_id, msg);
+#ifdef FLY_ENABLE_TEST_HOOKS
+    // 钩子触发点：send 之后、metadata_ 赋值之前（scheduler 线程持 schedule_mutex_）。
+    // 测试在此用 std::latch 阻塞，让 reactor 线程的 on_task_complete 的 complete_task
+    // 抢先执行，验证「无冗余 assign 覆盖完成」（原 Problem 1 竞态的回归守护）。
+    if (assign_task_send_hook_for_testing_) {
+        assign_task_send_hook_for_testing_(task_id, worker_id);
+    }
+#endif
 
     metadata_->assign_task(task_id, worker_id);
-    worker_manager_->assign_task(worker_id, task_id);
+    // 注：此处不再调用 worker_manager_->assign_task(worker_id, task_id)。
+    // scheduler 在选中的瞬间已通过 TaskScheduler::schedule_next（task_scheduler.cpp:68）
+    // 把 worker 设为 BUSY 并记录 current_task_id —— 该调用发生在本函数 reactor_->send
+    // 之前，是赋值的唯一权威来源。此处再次 assign 是冗余，且会与 on_task_complete 的
+    // complete_task 交错：worker 极快完成时，complete_task 先把 worker 设回 IDLE，本函数
+    // 的冗余 assign 随即覆盖回 BUSY(current=已完成 task)，导致 worker 永久卡 BUSY、
+    // get_idle_workers 永不返回它（Problem 1）。complete_task 只能在 worker 收到
+    // TaskAssign（即本函数 send）之后触发，故 schedule_next 的赋值必先于 complete_task，
+    // 无同 task 竞态；跨 task 重新赋值是 worker 完成后的正常复用。
 }
 
 void MasterAgent::heartbeat_check_loop() {
@@ -1017,6 +1033,14 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
         // remove_task + update_task_status 必须原子（与 submit_task 的
         // create_task + add_task 互斥），否则 graph 与 metadata 的完成计数分叉。
         // schedule_mutex_ 串行化 task 生命周期复合操作。schedule_tasks() 留在锁外。
+#ifdef FLY_ENABLE_TEST_HOOKS
+        // 钩子触发点：获取 schedule_mutex_ 之前（结构稳定点）。complete_task 当前在其
+        // 上方（锁外）执行 —— 测试在此 count_down 通知 scheduler 线程「complete_task 已完成」，
+        // 让 scheduler 随后的 worker_manager_->assign_task 覆盖回 BUSY（即 Problem 1 竞态）。
+        if (on_task_complete_prelock_hook_for_testing_) {
+            on_task_complete_prelock_hook_for_testing_(msg.task_id_, worker_id);
+        }
+#endif
         {
             std::lock_guard<std::mutex> lk(schedule_mutex_);
             graph_->remove_task(msg.task_id_);
@@ -1136,15 +1160,28 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
         }
     }
 
-    worker_manager_->update_worker_status(worker_id, WorkerStatus::DEAD);
-
     WARN("Worker disconnected: worker_id={}", worker_id);
     // 流程 message：worker 掉线（非 drain 期才打，drain 期属正常关闭会刷屏）。
     if (!draining_.load()) {
         MSG("AGENT::0002", 1, "worker {} offline", worker_id);
     }
 
-    auto tasks_to_recover = metadata_->get_task_ids_by_worker(worker_id);
+    // Problem 2 fix：worker DEAD 标记 + task snapshot 必须在 schedule_mutex_ 内原子执行。
+    // 原实现 DEAD 标记（1163）与 snapshot（1171）均在锁外，可与 scheduler（持
+    // schedule_mutex_ 的 get_idle_workers → schedule_next:68 assign → assign_task_to_worker:762
+    // metadata assign）交错：snapshot 漏掉刚 assign 到 W 的 task → 该 task 永久孤儿
+    // （RUNNING@DEAD-W，graph 已 remove，无人恢复，集群容量慢性耗尽）。纳入锁后：
+    //   - on_disconnect 先获锁：W 标 DEAD 后释放，scheduler 的 get_idle_workers 排除 W，
+    //     不会把新 task assign 到 W；snapshot 一致无遗漏。
+    //   - scheduler 先获锁完成 assign：on_disconnect 等锁后取 snapshot，能看到该 task 并恢复。
+    // 锁序安全：schedule_mutex_ → worker_manager::mutex_（与 schedule_tasks 内
+    // get_idle_workers/assign_task 的获取顺序一致，无反向，不死锁）。
+    CMVector<uint64_t> tasks_to_recover;
+    {
+        std::lock_guard<std::mutex> lk(schedule_mutex_);
+        worker_manager_->update_worker_status(worker_id, WorkerStatus::DEAD);
+        tasks_to_recover = metadata_->get_task_ids_by_worker(worker_id);
+    }
 
     // 崩溃恢复：worker 断连可能意味着进程崩溃（收不到失败消息），必须按 task_id
     // 清掉这些 task 声明的 pending frozen，否则该 db 会被永久标"冻结中" → 后续所有
@@ -2208,7 +2245,15 @@ void MasterAgent::on_backup_request(uint64_t conn_id, const BackupRequestMessage
 
     uint64_t backup_task_id = remote_task_counter_.fetch_add(1);
 
-    worker_manager_->assign_task(backup_worker_id, backup_task_id);
+    // Problem 4：backup task 的 assign_task 纳入 schedule_mutex_，与 scheduler 的
+    // get_idle_workers→assign 序列互斥，避免 backup assign 与 scheduler assign 交错产生
+    // worker_manager 撕裂状态（同一 worker 被两边几乎同时赋不同 task）。
+    // on_backup_request 的调用方（reactor dispatch / trigger_auto_backup /
+    // evaluate_and_trigger_backup←do_write_register）均不持有 schedule_mutex_，无递归死锁。
+    {
+        std::lock_guard<std::mutex> lk(schedule_mutex_);
+        worker_manager_->assign_task(backup_worker_id, backup_task_id);
+    }
 
     CMString short_name = msg.object_name_;
     CMString prefix = msg.db_path_ + ":";
@@ -2303,7 +2348,13 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
         }
     }
 
-    worker_manager_->assign_task(target_worker_id, merge_task_id);
+    // Problem 4：merge task 的 assign_task 纳入 schedule_mutex_（同 on_backup_request），
+    // 与 scheduler 的 assign 序列互斥，避免 worker_manager 撕裂。send_merge_task 的调用方
+    // （merge_db API 流）不持有 schedule_mutex_，无递归死锁。
+    {
+        std::lock_guard<std::mutex> lk(schedule_mutex_);
+        worker_manager_->assign_task(target_worker_id, merge_task_id);
+    }
 
     TaskAssignMessage assign;
     assign.task_id_ = merge_task_id;
@@ -2413,7 +2464,17 @@ void MasterAgent::send_delete_data(uint64_t source_worker_id,
     CMString ack_key = db_path + ":" + std::to_string(source_worker_id);
     {
         std::lock_guard<std::mutex> lk(delete_ack_mutex_);
-        pending_delete_acks_[ack_key] = PendingDeleteData{};
+        auto it = pending_delete_acks_.find(ack_key);
+        if (it != pending_delete_acks_.end()) {
+            // Problem 5：ack_key 已有 pending 条目（首轮未完成 或 已完成未被 wait 消费）。
+            // 无条件 PendingDeleteData{} 覆盖会丢失首轮 ack 状态（ack 不会重发）→ 随后
+            // wait_delete_data_acks 永久超时。保留旧条目让首轮 wait 正确完成。
+            WARN("[DELETE-DUP] send_delete_data: ack_key={} 已有 pending 条目"
+                 "(completed={}, deleted={})，二次触发保留旧条目不重置",
+                 ack_key, it->second.completed_, it->second.deleted_count_);
+        } else {
+            pending_delete_acks_[ack_key] = PendingDeleteData{};
+        }
     }
 
     DeleteDataMessage msg;
@@ -2527,7 +2588,18 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     }
     {
         std::lock_guard<std::mutex> mlk(merge_cleanup_mutex_);
-        pending_merge_cleanups_[db_path] = PendingMergeCleanup{expected_acks, 0};
+        auto it = pending_merge_cleanups_.find(db_path);
+        if (it != pending_merge_cleanups_.end() &&
+            it->second.received_count_ < it->second.expected_count_) {
+            // Problem 5：同 db_path 首轮 cleanup 仍在进行中（received < expected）。无条件
+            // PendingMergeCleanup{expected, 0} 覆盖会把已收到的 ack 计数清零 → 屏障永完不成
+            // → merge_db 卡死。保留旧条目，让首轮屏障按原计数自然完成。
+            WARN("[MERGE-CLEANUP-DUP] cleanup_after_merge: db_path={} 首轮未完成"
+                 "(received={}/expected={})，二次触发保留旧条目不重置",
+                 db_path, it->second.received_count_, it->second.expected_count_);
+        } else {
+            pending_merge_cleanups_[db_path] = PendingMergeCleanup{expected_acks, 0};
+        }
     }
 
     // 2. 广播 MergeCleanupMessage 给所有 worker：清旧 local_idx/remote_idx，
@@ -2737,5 +2809,48 @@ void MasterAgent::collect_and_print_message_summary() {
         MessageSink::instance()->print_summary(master_counts, reports);
     }
 }
+
+#ifdef FLY_ENABLE_TEST_HOOKS
+// ── 测试专用接口（仅 FLY_ENABLE_TEST_HOOKS 编译时存在；release 不定义该宏）──
+void MasterAgent::register_fake_worker_for_testing(uint64_t worker_id, uint64_t fake_conn_id) {
+    // worker_manager 登记为 IDLE（含 hostname/ip，供 select_best_worker/get_worker_address 使用）；
+    // workers map 注入 fake conn 映射，使 assign_task_to_worker 能取到 conn_id。
+    // reactor_->send(fake_conn_id) 走 transport 对未知 conn_id 的安全 -1 分支（不崩溃、不触达真实 worker）。
+    worker_manager_->register_worker(worker_id, "127.0.0.1", 0, {}, "fake_host", "127.0.0.1");
+    std::lock_guard<std::mutex> lk(workers_mutex_);
+    conn_to_worker_[fake_conn_id] = worker_id;
+    worker_to_conn_[worker_id] = fake_conn_id;
+}
+
+void MasterAgent::unregister_fake_worker_for_testing(uint64_t worker_id, uint64_t fake_conn_id) {
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        conn_to_worker_.erase(fake_conn_id);
+        worker_to_conn_.erase(worker_id);
+    }
+    worker_manager_->unregister_worker(worker_id);
+    workers_drained_cv_.notify_all();  // 以防 stop() drain 正在等待 worker 断连
+}
+
+std::pair<bool, int32_t> MasterAgent::pending_delete_ack_state_for_testing(
+        const CMString& ack_key) const {
+    std::lock_guard<std::mutex> lk(delete_ack_mutex_);
+    auto it = pending_delete_acks_.find(ack_key);
+    if (it == pending_delete_acks_.end()) {
+        return {false, 0};
+    }
+    return {it->second.completed_, it->second.deleted_count_};
+}
+
+std::pair<uint64_t, uint64_t> MasterAgent::pending_merge_cleanup_counts_for_testing(
+        const CMString& db_path) const {
+    std::lock_guard<std::mutex> lk(merge_cleanup_mutex_);
+    auto it = pending_merge_cleanups_.find(db_path);
+    if (it == pending_merge_cleanups_.end()) {
+        return {0, 0};
+    }
+    return {it->second.expected_count_, it->second.received_count_};
+}
+#endif
 
 }  // namespace fly

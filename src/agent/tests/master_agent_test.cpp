@@ -7,6 +7,8 @@
 #include <serialization/cpp/serialization_macros.h>
 #include <thread>
 #include <chrono>
+#include <latch>
+#include <algorithm>
 
 using namespace fly::test;
 
@@ -1844,4 +1846,129 @@ TEST(MasterAgentTest, MasterSelfWriteWithAutoBackupEnabled) {
 
     DataService::instance()->remove_remote_index(full_name);
 }
+
+// =============================================================================
+// issue 007 — Problem 1（高）：assign_task_to_worker 发送/赋值乱序 + scheduler 预占
+//
+// on_task_complete 的 complete_task(worker_id) 原在 schedule_mutex_ 之外（993 行），
+// 可与 scheduler 线程 assign_task_to_worker 内的 worker_manager_->assign_task 交错：
+// scheduler 先于 send 处经 task_scheduler.cpp:68 把 worker 设 BUSY；当 reactor 线程
+// 极快完成 task 时，complete_task 设 IDLE 后，scheduler 紧接的冗余 assign_task
+// （master_agent.cpp:763）覆盖回 BUSY → worker 永久卡 BUSY，current_task_id 指向已完成 task。
+// 现有 [COMPLETED-MISMATCH] 诊断只比对 graph↔metadata，检测不到此 worker_manager 分叉。
+//
+// 确定性复现：两个 std::latch 强制 reactor 线程的 complete_task 落在 scheduler 线程的
+// worker_manager_->assign_task 之前（模拟 worker 极快完成的交错）。
+//   修复前：worker 终态 BUSY(current=task)  → EXPECT_TRUE(IDLE) 失败（Red）。
+//   修复后：worker 终态 IDLE                → 通过（Green）。
+// 不 start()：无后台调度/心跳线程，submit_task 末尾同步调 schedule_tasks，消除异步干扰。
+// =============================================================================
+TEST(MasterAgentTest, Problem1_CompleteTaskClobberedByConcurrentAssign) {
+    fly::DataService::instance()->reset();
+    TempDir tmpdir;  // on_task_complete→remove_persisted_task 会按 log_dir 建目录，须非空
+    Config::instance()->set_str("log_dir", tmpdir.path());
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();  // start() 内初始化 metadata_/graph_/worker_manager_/scheduler_
+    wait_for_running(master, true);
+
+    const uint64_t W = 7001;
+    const uint64_t T = 71001;
+    const uint64_t fake_conn = 900001;
+    master.register_fake_worker_for_testing(W, fake_conn);
+
+    // 两个 latch 协调线程交错：
+    //   go_latch   — scheduler 线程（assign 钩子）通知 reactor 线程开始 on_task_complete。
+    //   done_latch — reactor 线程（prelock 钩子）通知 scheduler 线程「complete_task 已完成」。
+    std::latch go_latch(1), done_latch(1);
+
+    master.assign_task_send_hook_for_testing_ = [&](uint64_t, uint64_t) {
+        // scheduler 线程、持 schedule_mutex_、send 之后、762/763 赋值之前。
+        go_latch.count_down();   // 通知 reactor 线程开始 on_task_complete
+        done_latch.wait();       // 等 reactor 线程完成 complete_task（prelock 信号）
+    };
+    master.on_task_complete_prelock_hook_for_testing_ = [&](uint64_t, uint64_t) {
+        // reactor 线程、获取 schedule_mutex_ 之前；此时 complete_task 已执行（修复前在其上方）。
+        done_latch.count_down();  // 通知 scheduler 线程：complete_task 已完成
+        // 返回后继续获取 schedule_mutex_（scheduler 持有 → 阻塞，直到 scheduler 释放）
+    };
+
+    std::thread reactor_t([&] {
+        go_latch.wait();
+        TaskCompleteMessage complete;
+        complete.task_id_ = T;
+        complete.worker_id_ = W;
+        complete.is_internal_ = false;
+        master.on_task_complete(0, complete);
+    });
+
+    // submit_task 同步触发 schedule_tasks → assign_task_to_worker → 钩子协调交错。
+    master.submit_task(T, "p1_task", "test_module", {"arg"}, {}, {});
+
+    reactor_t.join();  // 等 on_task_complete 完全结束（含锁内 remove_task/update_status）
+
+    auto idle = master.get_idle_workers();
+    bool w_idle = std::find(idle.begin(), idle.end(), W) != idle.end();
+    EXPECT_TRUE(w_idle) << "Worker W 应在其 task 完成后回到 IDLE；卡在 BUSY 说明 complete_task "
+                        << "被 scheduler 线程的并发 assign_task 覆盖（Problem 1 竞态）";
+
+    master.unregister_fake_worker_for_testing(W, fake_conn);  // 让 stop() drain 不等待 fake worker
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_str("log_dir", "");
+}
+
+// =============================================================================
+// issue 007 — Problem 5（低）：pending_delete_acks_ / pending_merge_cleanups_ 重复触发
+// 静默覆盖。send_delete_data 用 pending_delete_acks_[ack_key] = PendingDeleteData{} 无条件
+// 覆盖；若同 ack_key 首轮已完成（ack 已到，completed=true）但尚未被 wait_delete_data_acks
+// 消费，二次 send 会把 completed/deleted_count 清零 → ack 不会重发 → wait 永久超时。
+// 修复：插入前检查；ack_key 已有 pending 条目则 WARN + 保留旧条目（不重置）。
+// =============================================================================
+TEST(MasterAgentTest, Problem5_ResendDeleteDataDoesNotResetCompletedAck) {
+    fly::DataService::instance()->reset();
+    TempDir tmpdir;
+    Config::instance()->set_str("log_dir", tmpdir.path());
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    const uint64_t W = 7005;
+    const uint64_t fake_conn = 900005;
+    master.register_fake_worker_for_testing(W, fake_conn);
+
+    CMString db = "/diag_p5_db";
+    CMString ack_key = db + ":7005";
+
+    // 1) 首次 send_delete_data → 登记 pending（in-progress, completed=false）
+    master.send_delete_data(W, db, db + "/data", {"w1"});
+    auto s0 = master.pending_delete_ack_state_for_testing(ack_key);
+    EXPECT_FALSE(s0.first) << "首轮 send 后应 in-progress";
+
+    // 2) ack 回来 → completed=true, deleted_count=5
+    DeleteDataAckMessage ack;
+    ack.db_path_ = db;
+    ack.worker_id_ = W;
+    ack.success_ = true;
+    ack.deleted_count_ = 5;
+    master.inject_delete_data_ack_for_testing(ack);
+    auto s1 = master.pending_delete_ack_state_for_testing(ack_key);
+    ASSERT_TRUE(s1.first);
+    EXPECT_EQ(s1.second, 5);
+
+    // 3) 同 ack_key 二次 send_delete_data（首轮已完成未被 wait 消费 —— 模拟并发/重复触发）。
+    //    Problem 5：修复前 PendingDeleteData{} 覆盖 → {completed=false, deleted_count=0}
+    //    （首轮 ack 丢失，wait 会超时）；修复后保留 → {completed=true, deleted_count=5}。
+    master.send_delete_data(W, db, db + "/data", {"w1"});
+    auto s2 = master.pending_delete_ack_state_for_testing(ack_key);
+    EXPECT_TRUE(s2.first) << "二次 send 不应重置已完成的 ack（ack 不会重发，重置致 wait 超时）";
+    EXPECT_EQ(s2.second, 5) << "首轮 deleted_count 应保留";
+
+    master.unregister_fake_worker_for_testing(W, fake_conn);
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_str("log_dir", "");
+}
+
 }  // namespace fly

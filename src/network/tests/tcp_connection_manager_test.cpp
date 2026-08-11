@@ -412,4 +412,25 @@ TEST(TcpConnectionManagerTest, PeerCloseYieldsDisconnectEvent) {
     server.close_all();
 }
 
+// issue 007 — Problem 6（低）：TcpConnectionManager::register_connection 同 fd 二次注册
+// 覆盖 fd_to_conn_[fd]，旧 conn_id 的 conn_to_fd_ 条目变孤儿（永不被清理，connection_count
+// 虚高，且旧 conn_id 的 send 会误投到新 fd）。修复：覆盖前先 unregister 旧 conn 条目。
+TEST(TcpConnectionManagerTest, Problem6_DuplicateFdRegisterDoesNotLeakOrphan) {
+    TcpConnectionManager mgr;
+    const int fd = 4242;  // 假 fd：register_connection 只做 map 插入，无真实 socket 操作
+
+    uint64_t c1 = mgr.register_connection(fd);
+    EXPECT_GT(c1, 0u);
+    uint64_t c2 = mgr.register_connection(fd);  // 同 fd 二次注册（fd 复用 / 双 accept）
+    EXPECT_GT(c2, c1);
+
+    // 修复前：conn_to_fd_ 同时含 c1→fd 与 c2→fd（connection_count()==2，c1 孤儿）；
+    // 修复后：覆盖前清掉 c1，conn_to_fd_ 仅 c2→fd（connection_count()==1）。
+    EXPECT_EQ(mgr.connection_count(), 1u)
+        << "同 fd 二次注册不应遗留孤儿 conn 条目（Problem 6）";
+
+    // 二者应返回相同的 conn_id（旧 c1 失效后，按 fd 反查得到的是新 c2）。
+    EXPECT_NE(c1, c2);
+}
+
 }  // namespace fly
