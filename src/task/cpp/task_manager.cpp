@@ -1,5 +1,7 @@
 #include <task/cpp/task_manager.h>
+#include <log/cpp/logger.h>
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 
 namespace fly {
@@ -59,10 +61,18 @@ void TaskManager::maybe_cleanup_completed() {
 void TaskManager::create_task(uint64_t task_id, const TaskSubmissionSpec& spec,
                                     const CMString& config) {
     std::lock_guard<std::mutex> lock(mutex_);
-    // Remove existing entry if overwriting.
+
+    // create_task 语义为"新建"：task_id 必须唯一。重复 id 说明存在 task_id 复用或
+    // 跨线程竞态（如 submit_task 与 on_task_complete 交错）——这曾导致 graph 与
+    // metadata 的完成计数永久分叉（COMPLETED-MISMATCH），调度无限卡死。
+    // rerun 失败 task 必须先 remove_task 再 create_task（见 restart_failed_tasks），
+    // 不应依赖此处隐式覆盖。命中此 assert = 编程 bug，立即崩溃暴露现场。
     auto st_it = task_status_.find(task_id);
     if (st_it != task_status_.end()) {
-        buckets_[si(st_it->second)].erase(task_id);
+        ERR("[FATAL] create_task: duplicate task_id={} (current_status={}) — "
+            "rerun must call remove_task first. Aborting to expose the race.",
+            task_id, static_cast<int>(st_it->second));
+        assert(false && "create_task: duplicate task_id");
     }
 
     auto meta = CMMakeShared<TaskMetadata>();

@@ -75,3 +75,4 @@ _test_db_id
 .coverage.*
 *.gcda
 *.gcno
+qa/var/persistence_db/

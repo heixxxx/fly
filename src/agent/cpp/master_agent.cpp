@@ -449,13 +449,21 @@ void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) 
         }
     }
 
-    metadata_->create_task(task_id, spec);
-
     TaskRequirements reqs;
     reqs.capabilities_ = spec.required_capabilities_;
     reqs.timeout_seconds_ = spec.attribute_timeout_;
     reqs.priority_ = spec.priority_;
-    graph_->add_task(task_id, spec.inputs_, reqs);
+    // create_task + add_task 必须原子：两者分属 TaskManager / DependencyGraph 两个
+    // 独立锁结构，若与 on_task_complete 的 remove_task + update_task_status 交错，
+    // 会导致 graph 与 metadata 的完成计数永久分叉（COMPLETED-MISMATCH 卡死）。
+    // schedule_mutex_ 串行化所有 task 生命周期复合操作；锁内只做状态变更，不含
+    // 网络/调度/Dataservice，并发度影响可忽略。schedule_tasks() 留在锁外（它自身
+    // 获取此锁，锁内调用会重入死锁）。
+    {
+        std::lock_guard<std::mutex> lk(schedule_mutex_);
+        metadata_->create_task(task_id, spec);
+        graph_->add_task(task_id, spec.inputs_, reqs);
+    }
 
     // Pre-fetch dependency locations at submit time (earliest possible point).
     {
@@ -1006,18 +1014,24 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
             }
         }
 
-        graph_->remove_task(msg.task_id_);
-        metadata_->update_task_status(msg.task_id_, TaskStatus::COMPLETED);
-        remove_persisted_task(msg.task_id_);
+        // remove_task + update_task_status 必须原子（与 submit_task 的
+        // create_task + add_task 互斥），否则 graph 与 metadata 的完成计数分叉。
+        // schedule_mutex_ 串行化 task 生命周期复合操作。schedule_tasks() 留在锁外。
+        {
+            std::lock_guard<std::mutex> lk(schedule_mutex_);
+            graph_->remove_task(msg.task_id_);
+            metadata_->update_task_status(msg.task_id_, TaskStatus::COMPLETED);
+            remove_persisted_task(msg.task_id_);
 
-        // 非 stream 模式：task 成功 → pending frozen 迁移到 confirmed + 广播。
-        // stream 模式下 pending 为空（freeze 已在 on_database_freeze_request 即时确认），此处 no-op。
-        // msg.frozen_dbs_ 仅用于日志校验；迁移按 task_id 从 pending 精确提取。
-        if (!msg.frozen_dbs_.empty()) {
-            DBG("Task complete frozen_dbs (declared): task_id={}, count={}",
-                msg.task_id_, msg.frozen_dbs_.size());
+            // 非 stream 模式：task 成功 → pending frozen 迁移到 confirmed + 广播。
+            // stream 模式下 pending 为空（freeze 已在 on_database_freeze_request 即时确认），此处 no-op。
+            // msg.frozen_dbs_ 仅用于日志校验；迁移按 task_id 从 pending 精确提取。
+            if (!msg.frozen_dbs_.empty()) {
+                DBG("Task complete frozen_dbs (declared): task_id={}, count={}",
+                    msg.task_id_, msg.frozen_dbs_.size());
+            }
+            commit_pending_frozen(msg.task_id_);
         }
-        commit_pending_frozen(msg.task_id_);
         // task 的 module/args/vars 随 TaskMetadata.submission_ 存活，状态迁移到
         // COMPLETED 即完成生命周期管理，无需单独清理并行 map。
     } else {
@@ -1040,8 +1054,12 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
     uint64_t worker_id = msg.worker_id_;
 
     worker_manager_->complete_task(worker_id);
-    metadata_->fail_task(msg.task_id_, msg.error_message_);
-    graph_->remove_task(msg.task_id_);
+    // fail_task + remove_task 原子（同 on_task_complete 的状态变更段保护）。
+    {
+        std::lock_guard<std::mutex> lk(schedule_mutex_);
+        metadata_->fail_task(msg.task_id_, msg.error_message_);
+        graph_->remove_task(msg.task_id_);
+    }
 
     // 运行时失败的 task（异常/读不到数据）也应可 restart，与调度时失败的 task 一致。
     // make_failed_record 从 metadata.submission_ 整体拷贝，无需逐字段复制。
@@ -1137,7 +1155,9 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
 
     if (draining_.load()) {
         // During shutdown: mark running tasks as FAILED so drain can complete.
+        // fail_task + remove_task 原子（同 on_task_complete 的保护）。
         for (uint64_t task_id : tasks_to_recover) {
+            std::lock_guard<std::mutex> lk(schedule_mutex_);
             metadata_->fail_task(task_id, "Worker disconnected during shutdown");
             graph_->remove_task(task_id);
             WARN("Task failed due to shutdown disconnect: task_id={}", task_id);
@@ -1145,18 +1165,23 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
         notify_drain_if_active();  // Wake up stop() drain wait.
     } else {
         // Normal operation: re-queue tasks for recovery.
+        // remove_task + add_task + unassign_task 原子：三者分属 graph/metadata 两个
+        // 独立锁结构，若与 submit_task/on_task_complete 交错会导致状态分叉。
         for (uint64_t task_id : tasks_to_recover) {
             auto task_opt4 = metadata_->get_task(task_id);
             if (!task_opt4) continue;
 
             const auto& s = task_opt4->submission_;
-            graph_->remove_task(task_id);
             TaskRequirements reqs;
             reqs.capabilities_ = s.required_capabilities_;
             reqs.timeout_seconds_ = s.attribute_timeout_;
             reqs.priority_ = s.priority_;
-            graph_->add_task(task_id, s.inputs_, reqs);
-            metadata_->unassign_task(task_id);
+            {
+                std::lock_guard<std::mutex> lk(schedule_mutex_);
+                graph_->remove_task(task_id);
+                graph_->add_task(task_id, s.inputs_, reqs);
+                metadata_->unassign_task(task_id);
+            }
             WARN("Recovered task from dead worker: task_id={}, name={}", task_id, s.name_);
         }
 

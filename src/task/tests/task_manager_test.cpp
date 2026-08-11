@@ -160,16 +160,9 @@ TEST(TaskManagerTest, SetTimestampsWithZeroValuesSkips) {
     EXPECT_EQ(task->completed_at_, 600);
 }
 
-TEST(TaskManagerTest, CreateTaskOverwritesExisting) {
-    TaskManager manager;
-    manager.create_task(1, mk_spec("first"), "");
-    manager.create_task(1, mk_spec("second", {"input/a"}, {"output/b"}), "{}");
-
-    auto task = manager.get_task(1);
-    EXPECT_EQ(task->submission_.name_, "second");
-    EXPECT_EQ(task->submission_.inputs_.size(), 1);
-    EXPECT_EQ(task->submission_.outputs_.size(), 1);
-}
+// create_task 对已存在的 task_id 会 assert 崩溃（语义已从"隐式覆盖"改为"严格新建"）。
+// rerun 失败 task 必须先 remove_task 再 create_task，正确范式见 RemoveTaskThenRecreate。
+// 原 CreateTaskOverwritesExisting 测试验证的是已移除的 erase 覆盖语义，故删除。
 
 TEST(TaskManagerTest, GetTaskNonExistent) {
     TaskManager manager;
