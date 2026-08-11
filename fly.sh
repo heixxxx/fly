@@ -255,6 +255,34 @@ WRAPPER
     install_hooks
 }
 
+guard_init_py() {
+    # 自愈守卫：外部进程（IDE 工具链 / bazel worker 竞态）会把 src/*/__init__.py
+    # 截断为 0 字节空文件（已观察到 core/log/network/storage 等 py_library 包入口被清空）。
+    # 空的 __init__.py 破坏 Python 包 re-export 链：py_test 经 runfiles symlink 实时读源文件，
+    # 源文件一旦被截断 → ImportError: cannot import name 'X' from 'storage'（flaky 失败）。
+    #
+    # 此处【仅恢复空文件】（git checkout HEAD --），从不覆盖有内容文件（不阻塞合法编辑）。
+    # 注：曾尝试配合 chattr +i 锁定以防操作期间截断，但实测 +i 会致 bazel test 下长测试
+    # 集体 NO STATUS（exit 36，机制未明但 4/4 复现），故撤回 +i，仅保留启动时自愈。
+    local healed=0 f content
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        if [ -f "$f" ] && [ ! -s "$f" ]; then
+            content=$(git show "HEAD:$f" 2>/dev/null) || continue
+            if [ -n "$content" ] && git checkout HEAD -- "$f" 2>/dev/null; then
+                echo ">>> [guard_init_py] 恢复被截断的空文件: $f" >&2
+                healed=$((healed + 1))
+            fi
+        fi
+    done < <(git ls-files 'src/*/__init__.py' 2>/dev/null)
+    if [ "$healed" -gt 0 ]; then
+        echo ">>> [guard_init_py] 共恢复 $healed 个被截断的 __init__.py（疑似外部进程写入；若频繁出现请查 IDE 扩展/格式化器）" >&2
+    fi
+}
+
+# 任何 bazel 操作前先自愈被截断的包入口（截断会致 py_test ImportError flaky 失败）。
+guard_init_py
+
 case "${1:-build}" in
     build)
         shift || true
