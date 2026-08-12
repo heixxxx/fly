@@ -1,6 +1,15 @@
 #include <storage/cpp/write_back_queue.h>
+#include <log/cpp/logger.h>
+#include <core/cpp/graceful_exit.h>
+#include <common/cpp/error_types.h>
 
 namespace fly {
+
+namespace {
+// 落盘失败的最大重试次数（瞬时 IO 错误，如短暂的系统调用中断）。
+// 超过后视为确定性失败（磁盘满/权限/硬件），graceful_exit 避免静默数据丢失。
+constexpr int kMaxWriteBackRetries = 3;
+}  // namespace
 
 WriteBackQueue::WriteBackQueue(size_t high_watermark)
     : high_watermark_(high_watermark) {}
@@ -104,8 +113,51 @@ void WriteBackQueue::worker_loop() {
             }
         }
 
-        task.execute_();
-        task.on_complete_();
+        // P1-8: write-back 错误处理。
+        // 1) try-catch 防止 execute_/on_complete_ 抛异常导致 worker 线程崩溃
+        //    → pending_ 永不递减 → drain() 永久阻塞（~Database 死锁）。
+        // 2) execute_ 返回 bool：成功 → on_complete_（标记 COMPLETE）；
+        //    失败 → on_error_（标记失败）+ 重试瞬时错误 + 确定性失败 graceful_exit。
+        bool write_ok = false;
+        try {
+            for (int attempt = 0; attempt <= kMaxWriteBackRetries; ++attempt) {
+                write_ok = task.execute_();
+                if (write_ok) break;
+                if (attempt < kMaxWriteBackRetries) {
+                    ERR("[WRITE-BACK] disk write failed, retrying ({}/{})",
+                        attempt + 1, kMaxWriteBackRetries);
+                }
+            }
+        } catch (const std::exception& e) {
+            ERR("[WRITE-BACK] execute_ threw exception: {}", e.what());
+        } catch (...) {
+            ERR("[WRITE-BACK] execute_ threw unknown exception");
+        }
+
+        if (write_ok) {
+            try {
+                if (task.on_complete_) task.on_complete_();
+            } catch (const std::exception& e) {
+                ERR("[WRITE-BACK] on_complete_ threw exception: {}", e.what());
+            } catch (...) {
+                ERR("[WRITE-BACK] on_complete_ threw unknown exception");
+            }
+        } else {
+            // 落盘确定失败（重试耗尽）。通知 DataService 标记对象不可用，
+            // 然后 graceful_exit —— 数据完整性已被破坏，继续运行会让后续读
+            // 拿到"已注册但未落盘"的对象（local_idx 声称 COMPLETE 但实际丢失）。
+            ERR("[WRITE-BACK] persistent disk write failure after {} retries — "
+                "data integrity at risk, initiating graceful exit", kMaxWriteBackRetries);
+            try {
+                if (task.on_error_) task.on_error_();
+            } catch (...) {
+                // on_error_ 失败不阻塞退出决策
+            }
+            fly::graceful_exit(
+                "write-back persistent disk failure: object cannot be persisted "
+                "(disk full / IO error / permission denied)",
+                fly::TaskErrorType::UNKNOWN, 1);
+        }
 
         {
             std::lock_guard<std::mutex> lock(mutex_);

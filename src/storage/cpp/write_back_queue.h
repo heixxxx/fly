@@ -10,9 +10,14 @@
 
 namespace fly {
 
+// 写回请求。execute_ 返回 bool 表示落盘是否成功：
+//   true  → 成功，worker_loop 调 on_complete_（标记 COMPLETE + 通知）
+//   false → 落盘失败，worker_loop 调 on_error_（标记失败 + 重试/报错）
+// on_error_ 可选（无则走默认错误处理：ERR log + 确定性失败时 graceful_exit）。
 struct WriteRequest {
-    std::function<void()> execute_;      // Does the actual write (calls DataWriter methods)
-    std::function<void()> on_complete_;   // Notifies DataService + master after write
+    std::function<bool()> execute_;       // 落盘操作，返回是否成功
+    std::function<void()> on_complete_;   // 成功后通知 DataService + master
+    std::function<void()> on_error_;      // 失败时通知 DataService（标记对象不可用）
 };
 
 class WriteBackQueue {

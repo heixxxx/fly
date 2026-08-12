@@ -37,7 +37,18 @@ public:
                         const FlyBuffer& record,
                         const CMString& write_context_hash = "");
 
+    // 落盘 + 检查流状态。返回 false 表示 write/flush 失败（磁盘满/IO 错误），
+    // 调用方应据此标记对象写入失败而非错误地标记 COMPLETE。
+    bool write_record_checked(const CMString& object_name,
+                        int64_t original_size,
+                        int32_t chunk_count,
+                        const FlyBuffer& record,
+                        const CMString& write_context_hash = "");
+
     void flush();
+
+    // flush + 检查流状态。返回 false 表示 flush 失败。
+    bool flush_checked();
     void close();
 
     // 写入段标记（委托给 LocalIndex）。

@@ -201,12 +201,13 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
     // LocalIndex 是 per-(db,writer) 的，idx 文件天然属于本 db，entry 只需存 short_name
     // （前缀在同文件内 100% 冗余）。write_record/get_all_entries 传 short_name；
     // DataService 层（on_write_completed/on_object_flushed）仍用 full_name 作 key。
-    auto execute = [w, short_name = object_name, original_size, chunk_count, record, write_hash, in_task_context]() {
+    auto execute = [w, short_name = object_name, original_size, chunk_count, record, write_hash, in_task_context]() -> bool {
         if (in_task_context && !w->segment_active()) {
             w->mark_begin();
         }
-        w->write_record(short_name, original_size, chunk_count, *record, write_hash);
-        w->flush();
+        bool ok = w->write_record_checked(short_name, original_size, chunk_count, *record, write_hash);
+        ok = ok && w->flush_checked();
+        return ok;
     };
 
     auto complete = [full, db_path = this->db_path_, object_name,
@@ -222,9 +223,19 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
         }
     };
 
+    auto on_error = [full, db_path = this->db_path_, object_name]() {
+        // 落盘失败：撤销 ObjectCache + local_idx，通知 master 对象不可用。
+        fly::ObjectCache::instance().remove(full);
+        fly::DataService::instance()->on_write_failed(db_path, full,
+            "persistent disk write failure");
+        ERR("[WRITE-BACK] object {} persisted-failed: removed from cache, "
+            "notified master as unavailable", full);
+    };
+
     fly::WriteRequest req;
     req.execute_ = std::move(execute);
     req.on_complete_ = std::move(complete);
+    req.on_error_ = std::move(on_error);
     fly::DataService::instance()->enqueue_write_back(std::move(req));
 
     return fly::WriteErrorType::OK;
@@ -386,9 +397,10 @@ void Database::do_backup_write(const CMString& full, const CMString& object_name
     auto record = CMMakeShared<FlyBuffer>();
     record->take(std::move(compressed_data));
 
-    auto execute = [w, short_name = object_name, header, record, backup_hash]() {
-        w->write_record(short_name, header.total_size_, header.chunk_count_, *record, backup_hash);
-        w->flush();
+    auto execute = [w, short_name = object_name, header, record, backup_hash]() -> bool {
+        bool ok = w->write_record_checked(short_name, header.total_size_, header.chunk_count_, *record, backup_hash);
+        ok = ok && w->flush_checked();
+        return ok;
     };
 
     auto complete = [full, db_path = db_path_, object_name,
@@ -402,9 +414,15 @@ void Database::do_backup_write(const CMString& full, const CMString& object_name
         dsvc->on_object_flushed(full);
     };
 
+    auto on_error = [full, db_path = db_path_]() {
+        fly::DataService::instance()->on_write_failed(db_path, full,
+            "backup persistent disk write failure");
+    };
+
     fly::WriteRequest req;
     req.execute_ = std::move(execute);
     req.on_complete_ = std::move(complete);
+    req.on_error_ = std::move(on_error);
     ds->enqueue_write_back(std::move(req));
     ds->drain_write_back();
 }

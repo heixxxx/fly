@@ -922,7 +922,7 @@ TEST_F(DataServiceTest, EnqueueWriteBackAutoStarts) {
     EXPECT_FALSE(ds_->is_write_back_running());
 
     fly::WriteRequest req;
-    req.execute_ = []() {};
+    req.execute_ = []() -> bool { return true; };
     req.on_complete_ = []() {};
     ds_->enqueue_write_back(std::move(req));
 

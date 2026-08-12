@@ -1,10 +1,10 @@
 # Issue #002: throw → error code 重构评审及修复方案
 
-**状态**: Open
-**严重程度**: Critical — 存在 3 个潜在 crash 点
+**状态**: Resolved（storage 层核心闭环）— 3 个 P0 crash 全部修复，`src/storage/` 下 throw 已彻底消除（commit_write 返回 WriteErrorType，register_write 返回 pair）。network/serialization/core 仍有少量 throw 残留（TCPTransport 构造等启动错误），文档本身认定保留合理。
+**严重程度**: Critical — 存在 3 个潜在 crash 点（均已修复）
 **影响模块**: `storage`（database, data_reader, data_writer, compressors）、`agent`（master_agent, worker_agent）、`network`、`serialization`、`core`
 **创建日期**: 2026-05-27
-**关联重构**: 当前进行中的 throw → error code 重构（39 文件变更）
+**关联重构**: throw → error code 重构（39 文件变更）
 
 ---
 

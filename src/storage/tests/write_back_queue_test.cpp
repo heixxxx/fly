@@ -40,10 +40,11 @@ TEST_F(WriteBackQueueTest, BasicEnqueueAndDrain) {
 
     CMString file_path = test_dir_ + "/basic.txt";
     fly::WriteRequest req;
-    req.execute_ = [&file_path]() {
+    req.execute_ = [&file_path]() -> bool {
         std::ofstream ofs(file_path);
         ofs << "hello";
         ofs.close();
+        return true;
     };
     req.on_complete_ = []() {};
 
@@ -66,9 +67,10 @@ TEST_F(WriteBackQueueTest, MultipleTasksInOrder) {
 
     for (int i = 0; i < 5; i++) {
         fly::WriteRequest req;
-        req.execute_ = [&execution_order, &mtx, i]() {
+        req.execute_ = [&execution_order, &mtx, i]() -> bool {
             std::lock_guard<std::mutex> lock(mtx);
             execution_order.push_back(i);
+        return true;
         };
         req.on_complete_ = []() {};
         queue.enqueue(std::move(req));
@@ -94,9 +96,10 @@ TEST_F(WriteBackQueueTest, BackpressureAtThreshold) {
     std::condition_variable blocker_cv;
 
     fly::WriteRequest blocking_req;
-    blocking_req.execute_ = [&blocker_done, &blocker_mtx, &blocker_cv]() {
+    blocking_req.execute_ = [&blocker_done, &blocker_mtx, &blocker_cv]() -> bool {
         std::unique_lock<std::mutex> lock(blocker_mtx);
         blocker_cv.wait(lock, [&blocker_done]() { return blocker_done.load(); });
+        return true;
     };
     blocking_req.on_complete_ = []() {};
     queue.enqueue(std::move(blocking_req));
@@ -104,17 +107,17 @@ TEST_F(WriteBackQueueTest, BackpressureAtThreshold) {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     fly::WriteRequest req2;
-    req2.execute_ = [&execute_count]() { execute_count++; };
+    req2.execute_ = [&execute_count]() -> bool { execute_count++; return true; };
     req2.on_complete_ = []() {};
     queue.enqueue(std::move(req2));
 
     fly::WriteRequest req3;
-    req3.execute_ = [&execute_count]() { execute_count++; };
+    req3.execute_ = [&execute_count]() -> bool { execute_count++; return true; };
     req3.on_complete_ = []() {};
     queue.enqueue(std::move(req3));
 
     fly::WriteRequest req4;
-    req4.execute_ = [&execute_count]() { execute_count++; };
+    req4.execute_ = [&execute_count]() -> bool { execute_count++; return true; };
     req4.on_complete_ = []() {};
 
     std::atomic<bool> enqueue_done{false};
@@ -148,7 +151,7 @@ TEST_F(WriteBackQueueTest, DrainWaitsForAllTasks) {
 
     for (int i = 0; i < 5; i++) {
         fly::WriteRequest req;
-        req.execute_ = [&completed]() { completed++; };
+        req.execute_ = [&completed]() -> bool { completed++; return true; };
         req.on_complete_ = []() {};
         queue.enqueue(std::move(req));
     }
@@ -168,7 +171,7 @@ TEST_F(WriteBackQueueTest, CompletionCallbackCalled) {
     std::atomic<bool> complete_called{false};
 
     fly::WriteRequest req;
-    req.execute_ = [&execute_called]() { execute_called = true; };
+    req.execute_ = [&execute_called]() -> bool { execute_called = true; return true; };
     req.on_complete_ = [&complete_called]() { complete_called = true; };
     queue.enqueue(std::move(req));
 
@@ -188,7 +191,7 @@ TEST_F(WriteBackQueueTest, StopDrainsRemaining) {
 
     for (int i = 0; i < 3; i++) {
         fly::WriteRequest req;
-        req.execute_ = [&execute_count]() { execute_count++; };
+        req.execute_ = [&execute_count]() -> bool { execute_count++; return true; };
         req.on_complete_ = []() {};
         queue.enqueue(std::move(req));
     }
@@ -213,9 +216,10 @@ TEST_F(WriteBackQueueTest, ClearPendingDropsQueuedTasks) {
 
     // 第一个请求：阻塞 worker_loop
     fly::WriteRequest blocking_req;
-    blocking_req.execute_ = [&blocker_done, &blocker_mtx, &blocker_cv]() {
+    blocking_req.execute_ = [&blocker_done, &blocker_mtx, &blocker_cv]() -> bool {
         std::unique_lock<std::mutex> lock(blocker_mtx);
         blocker_cv.wait(lock, [&blocker_done]() { return blocker_done.load(); });
+        return true;
     };
     blocking_req.on_complete_ = []() {};
     queue.enqueue(std::move(blocking_req));
@@ -227,7 +231,7 @@ TEST_F(WriteBackQueueTest, ClearPendingDropsQueuedTasks) {
     std::atomic<int> dropped_complete_count{0};
     for (int i = 0; i < 3; i++) {
         fly::WriteRequest req;
-        req.execute_ = [&dropped_execute_count]() { dropped_execute_count++; };
+        req.execute_ = [&dropped_execute_count]() -> bool { dropped_execute_count++; return true; };
         req.on_complete_ = [&dropped_complete_count]() { dropped_complete_count++; };
         queue.enqueue(std::move(req));
     }
@@ -262,7 +266,7 @@ TEST_F(WriteBackQueueTest, ClearPendingThenEnqueueAgain) {
     std::atomic<int> count{0};
     for (int i = 0; i < 3; i++) {
         fly::WriteRequest req;
-        req.execute_ = [&count]() { count++; };
+        req.execute_ = [&count]() -> bool { count++; return true; };
         req.on_complete_ = []() {};
         queue.enqueue(std::move(req));
     }
@@ -271,7 +275,7 @@ TEST_F(WriteBackQueueTest, ClearPendingThenEnqueueAgain) {
     // 再 enqueue 一个，应该正常处理
     std::atomic<bool> done{false};
     fly::WriteRequest req;
-    req.execute_ = [&done]() { done = true; };
+    req.execute_ = [&done]() -> bool { done = true; return true; };
     req.on_complete_ = []() {};
     queue.enqueue(std::move(req));
     queue.drain();

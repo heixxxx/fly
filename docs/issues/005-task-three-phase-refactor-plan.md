@@ -1,6 +1,6 @@
 # 005 — Task 三阶段执行重构方案（freeze 延迟可见 + postprocess 重构 + C++ 三阶段编排上移）
 
-> 状态：**设计已确认（grill-me 通过，Q1-Q5 全部闭环）**，待实施
+> 状态：**已实施** — 四项设计点全部落地（pending frozen 按 task_id 回滚状态机、freeze ack 通道、postprocess drain、Python 三阶段编排 + 差集消除）。代码验证：`executor.py` preprocess→execute→postprocess 三阶段串接；`master_agent.cpp` `rollback_pending_frozen`/`commit_pending_frozen` 按 task_id 管理；`DatabaseFreezeAckMessage` 通道已建立。
 > 范围：worker task 执行链路、freeze 通知、write register 可见性、Python/C++ 三阶段编排边界
 > 设计原则：**非 stream 模式 = task 级原子性**（即时校验 + 延迟可见 + 整体回滚）；**C++ 提供原语，Python 负责调度**
 > 关键决策：pending frozen 按 task_id 清理（覆盖崩溃失败）+ freeze 加 ack 通道（冲突 fail-fast）+ drain 移入 postprocess + 三阶段编排上移 Python

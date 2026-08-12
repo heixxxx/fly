@@ -55,10 +55,10 @@
 - **Fix Applied**: Changed return type to `std::optional<IndexEntry>` (copy). Updated all callers including tests.
 
 ### P1-8: Write-back lambdas have no error handling
-- **Status**: PENDING
-- **File**: `src/storage/cpp/database.cpp:152-177`
-- **Risk**: Execute and complete lambdas have void return types and no error handling.
-- **Note**: Deferred. Design preference: use error codes and in-place handling rather than try/catch. Requires broader audit of write-back error paths.
+- **Status**: FIXED ✅
+- **Files**: `src/storage/cpp/write_back_queue.cpp`, `src/storage/cpp/database.cpp`, `src/storage/cpp/data_writer.cpp`, `src/storage/cpp/local_index.cpp`
+- **Risk**: Execute and complete lambdas have void return types and no error handling. Worker thread crash on exception → `pending_` stuck → `drain()` deadlock.
+- **Fix Applied**: worker_loop 加 try-catch 防止 worker 线程崩溃 + drain 死锁；WriteRequest 新增 error 回调通道；DataWriter/local_index 落盘方法返回 bool 错误标志并检查流状态；落盘失败时打 ERR log 并按错误类型重试（瞬时 IO 错误），确定性失败（磁盘满/权限）则 ERR + 退出进程避免静默数据丢失。
 
 ### P1-9: TCPTransport::send() blocks reactor thread up to 5 seconds
 - **Status**: FIXED ✅
@@ -119,10 +119,10 @@
 
 ## P3 — Low / Deferred
 
-### P3-17: [PENDING] No concurrency stress tests
-- **Status**: PENDING
+### P3-17: Concurrency stress test infrastructure
+- **Status**: PARTIAL — 基础设施已建立，覆盖面仍需扩展
 - **Risk**: Zero tests verify concurrent access to shared data structures. Data races will only manifest in production under load.
-- **Note**: Deferred — requires dedicated test infrastructure for concurrent scenarios.
+- **Fix Applied**: 已建立确定性并发测试基础设施 —— `src/storage/tests/data_service_concurrency_bench.cpp`（DataService 并发锁争用 micro-benchmark）、`src/agent/tests/master_agent_test.cpp`（用 `std::latch` 协调线程交错的竞态测试，经 `FLY_ENABLE_TEST_HOOKS` 隔离）、`src/task/tests/scheduling_hotloop_bench.cpp`（调度热循环 bench）。覆盖面仍限于 DataService / master_agent / scheduler，全模块并发覆盖待后续扩展。
 
 ### P3-18: Dead code cleanup
 - **Status**: FIXED ✅
@@ -135,11 +135,11 @@
   - `WorkerManager::record_heartbeat` — dead method
 - **Fix Applied**: Removed unused fields, methods, and enum values. `CANCELLED` retained in Python exports for API compatibility.
 
-### P3-19: [PENDING] MetadataClient success path untested
-- **Status**: PENDING
+### P3-19: MetadataClient success path untested
+- **Status**: FIXED ✅
 - **File**: `src/network/tests/metadata_client_test.cpp`
-- **Risk**: Only failure cases and message encoding are tested. No end-to-end query against a running server.
-- **Note**: Deferred — requires mock server infrastructure.
+- **Risk**: Only failure cases and message encoding were tested. No end-to-end query against a running server.
+- **Fix Applied**: 补充轻量 mock master server e2e 测试：多副本成功路径（`found_=true` + `all_locations_` 填充 + 便捷字段镜像）、`can_still_produce_` 透传、server 主动回 `success_=false`（对象不存在）路径、往返 object_name 一致性校验。
 
 ### P3-20: DataService violates SRP
 - **Status**: FIXED ✅
@@ -159,7 +159,7 @@
 | X-4 | `register_handler` copies entire receive buffer per message | `reactor.h:69-78` | Medium | FIXED — 去掉冗余拷贝，decode 已原地修改 buffer |
 | X-5 | `wait_until_running()` deadlock if stopped before run | `reactor.cpp` | Medium | FIXED — 增加 stop_requested_ 检测 + ERR 日志 + assert
 | X-6 | 4 MessageType enums with no struct definitions | `message_types.h:15-18` | Low | RECORD ONLY — 记录不处理 |
-| X-7 | `get_int` throws on unknown key, `get_str` returns empty | `config.cpp` | Medium | PENDING — 需全局约定无效值 |
+| X-7 | `get_int` throws on unknown key, `get_str` returns empty | `config.cpp` | Medium | FIXED ✅ — `get_int` 未知 key 返回 `INVALID_INT`（INT64_MIN）+ ERR log，不再 throw；`get_str` 返回空串 |
 | X-8 | Logger silently drops output before init() | `logger.cpp` | Medium | FIXED ✅ — pre-init 输出至 stdout |
 | X-9 | `common_types.h` global namespace pollution | `common_types.h:91-110` | Medium | RECORD ONLY — 期望行为 |
 | X-10 | `pickle.loads` arbitrary code execution risk | `task.py:168` | High | RECORD ONLY — 业务层已确认安全性，仅记录 |
@@ -171,17 +171,19 @@
 | X-16 | `worker_attributes` parsing silent on malformed input | `runtime.py:52` | Low | FIXED — get_int 返回 INT64_MIN 表示无效值，调用方需检查 |
 | X-17 | Triple `gc.collect()` in cleanup | `main.py:48-50` | Low | FIXED — 改为单次 gc.collect() |
 | X-18 | Python API `__getattr__` hides properties from static analysis | `__init__.py` | Low | RECORD ONLY — 记录不修复 |
-| 007 | task 生命周期并发竞态审计（6 个残留问题） | [docs/issues/007](issues/007-task-lifecycle-concurrency-audit.md) | High | OPEN — H1/H2 高危竞态待修，详见 issue 文档 |
+| 007 | task 生命周期并发竞态审计（6 个残留问题） | [docs/issues/007](issues/007-task-lifecycle-concurrency-audit.md) | High | FIXED ✅ — 6 个残留问题全部修复（commit 62b7355 + 312e535 + 95a9fc3） |
 
 ---
 
 ## Summary
 
+> Last updated: 2026-08-12
+
 | Category | Total | Fixed | Pending | Open |
 |----------|-------|-------|---------|------|
 | P0 — Critical | 4 | 4 | 0 | 0 |
-| P1 — High | 6 | 5 | 1 | 0 |
+| P1 — High | 6 | 6 | 0 | 0 |
 | P2 — Medium | 6 | 5 | 0 | 1 (closed: not a bug) |
-| P3 — Low | 4 | 2 | 2 | 0 |
-| X — Unprioritized | 18 | 8 | 1 | 9 |
-| **Total** | **38** | **24** | **4** | **10** |
+| P3 — Low | 4 | 3 | 1 (P3-17 partial) | 0 |
+| X — Unprioritized | 18 | 9 | 0 | 9 |
+| **Total** | **38** | **27** | **1** | **10** |

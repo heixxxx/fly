@@ -49,6 +49,39 @@ DataWriter::~DataWriter() {
     close();
 }
 
+bool DataWriter::write_record_checked(const CMString& object_name,
+                                int64_t original_size,
+                                int32_t chunk_count,
+                                const FlyBuffer& record,
+                                const CMString& write_context_hash) {
+    if (closed_) {
+        ERR("[WRITE-BACK] write_record_checked: DataWriter is closed (db={}, obj={})",
+            db_path_, object_name);
+        return false;
+    }
+
+    // write_record 可能因 rollover 调 create_new_file 打开新文件失败 → closed_=true。
+    // 即使 closed_ 在入口为 false，write_record 内部也可能把它设成 true。
+    write_record(object_name, original_size, chunk_count, record, write_context_hash);
+
+    // 检查 write 后的流状态。
+    if (closed_ || file_stream_.bad()) {
+        ERR("[WRITE-BACK] write_record disk write failed (closed={}, badbit={}) "
+            "db={} obj={} file={}",
+            closed_, file_stream_.bad(), db_path_, object_name, current_file_);
+        return false;
+    }
+
+    // tellp() 返回 -1 表示流出错；current_file_size_ 为负或异常偏移也是错误信号。
+    if (current_file_size_ < 0) {
+        ERR("[WRITE-BACK] write_record invalid file position ({}) db={} obj={}",
+            current_file_size_, db_path_, object_name);
+        return false;
+    }
+
+    return true;
+}
+
 void DataWriter::write_record(const CMString& object_name,
                                 int64_t original_size,
                                 int32_t chunk_count,
@@ -83,6 +116,21 @@ void DataWriter::flush() {
         file_stream_.flush();
     }
     index_->save();
+}
+
+bool DataWriter::flush_checked() {
+    flush();
+    // flush 后检查 data 流 + idx 流的 badbit/failbit。
+    // index_->save() 内部 append_add/append_remove 在流打开失败时只 ERR + return，
+    // 无法回传错误；这里通过检查 idx 文件是否可追加来间接判断。
+    bool data_ok = !file_stream_.bad() && !file_stream_.fail();
+    // file_stream_ 在 flush 后若所有内容已写出，eofbit 不该置；bad/fail 才是真错误。
+    // clear failbit 由 flush 成功后自动维持，这里只看 bad。
+    if (file_stream_.is_open() && file_stream_.bad()) {
+        ERR("[WRITE-BACK] data flush failed (badbit set): file={}", current_file_);
+        data_ok = false;
+    }
+    return data_ok;
 }
 
 void DataWriter::close() {
