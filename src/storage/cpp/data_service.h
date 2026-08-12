@@ -292,6 +292,9 @@ public:
                                          uint32_t target_replicas) const;
 
     void decay_remote_access(int64_t protection_seconds, int decay_factor_percent);
+    // backup 触发后衰减单个对象的 read_count（事件驱动，非后台全量扫描）。
+    // decay_factor_percent: read_count *= factor/100；0 或 >=100 不衰减。
+    void decay_after_backup(const CMString& object_name, int decay_factor_percent);
 
     uint64_t get_access_read_count(const CMString& object_name) const;
 

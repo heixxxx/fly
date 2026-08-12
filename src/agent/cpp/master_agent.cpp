@@ -2387,6 +2387,11 @@ void MasterAgent::trigger_auto_backup(const CMString& object_name, uint64_t sour
     backup_msg.db_path_ = db_path;
 
     on_backup_request(0, backup_msg);
+
+    // backup 触发后衰减该对象 read_count（事件驱动，非后台全量扫描）：
+    // 避免刚 backup 的对象因 read_count 持续高而反复触发。backup_decay_factor 控制衰减比例。
+    int decay_factor = static_cast<int>(Config::instance()->get_int("backup_decay_factor"));
+    DataService::instance()->decay_after_backup(object_name, decay_factor);
 }
 
 // =============================================================================

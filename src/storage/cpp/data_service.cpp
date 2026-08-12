@@ -1311,6 +1311,21 @@ void DataService::decay_remote_access(int64_t protection_seconds, int decay_fact
     }
 }
 
+void DataService::decay_after_backup(const CMString& object_name, int decay_factor_percent) {
+    // 事件驱动衰减：backup 触发后对该对象 read_count 衰减，避免 read_count 持续高反复触发 backup。
+    // 与 decay_remote_access（全量扫描）不同：只衰减刚 backup 的对象，O(1)。
+    auto [db_path, short_name] = split_full(object_name);
+    std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
+    auto db_it = remote_idx_.find(db_path);
+    if (db_it == remote_idx_.end()) return;
+    auto obj_it = db_it->second.find(short_name);
+    if (obj_it == db_it->second.end()) return;
+    auto& meta = obj_it->second;
+    if (meta.read_count_ > 0 && decay_factor_percent > 0 && decay_factor_percent < 100) {
+        meta.read_count_ = meta.read_count_ * static_cast<uint64_t>(decay_factor_percent) / 100u;
+    }
+}
+
 uint64_t DataService::get_access_read_count(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
     std::shared_lock<fly::WriterPrefRwLock> lock(remote_mutex_);

@@ -1001,6 +1001,33 @@ TEST_F(DataServiceTest, RemoteObjectMetaDecay) {
     EXPECT_EQ(ds_->get_access_read_count(full), 5u);
 }
 
+TEST_F(DataServiceTest, RemoteObjectMetaDecayAfterBackup) {
+    // backup 触发后对该对象 read_count 衰减（事件驱动，per-object，非全量扫描）。
+    // 对比 decay_remote_access（全量遍历），decay_after_backup 只衰减刚 backup 的对象。
+    CMString full = db32("decay_after_backup") + ":obj";
+    CMString other = db32("decay_after_backup") + ":other";  // 同 db 不同对象
+    ds_->update_remote_idx(full, 1, "host1", 1234);
+    ds_->update_remote_idx(other, 1, "host1", 1234);
+
+    for (int i = 0; i < 10; i++) {
+        ds_->record_remote_access(full);
+        ds_->record_remote_access(other);
+    }
+    EXPECT_EQ(ds_->get_access_read_count(full), 10u);
+    EXPECT_EQ(ds_->get_access_read_count(other), 10u);
+
+    // full 触发 backup → 只衰减 full，other 不受影响（per-object）
+    ds_->decay_after_backup(full, 50);
+    EXPECT_EQ(ds_->get_access_read_count(full), 5u);    // 减半
+    EXPECT_EQ(ds_->get_access_read_count(other), 10u);  // 不变（全量扫描才会动它）
+
+    // 0 / >=100 不衰减（防御：无效 decay_factor）
+    ds_->decay_after_backup(full, 0);
+    EXPECT_EQ(ds_->get_access_read_count(full), 5u);
+    ds_->decay_after_backup(full, 100);
+    EXPECT_EQ(ds_->get_access_read_count(full), 5u);
+}
+
 TEST_F(DataServiceTest, RemoteObjectMetaResetClearsAccess) {
     CMString full = db32("reset_test") + ":obj";
     ds_->update_remote_idx(full, 1, "host1", 1234);
