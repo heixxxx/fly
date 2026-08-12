@@ -1971,4 +1971,149 @@ TEST(MasterAgentTest, Problem5_ResendDeleteDataDoesNotResetCompletedAck) {
     Config::instance()->set_str("log_dir", "");
 }
 
+// Part A: master 自写经 on_master_register_write 取 current_write_hash 登记 provenance。
+// 原 on_master_register_write 漏设 write_context_hash_，master 自写走空 hash 旁路无保护。
+// 修复后：不同 context hash 写同对象应 mismatch，同 hash 重写幂等。
+TEST(MasterAgentTest, MasterSelfWriteRegistersProvenance) {
+    WorkerAgentContext::clear();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    master.setup_write_context();
+    wait_for_running(master, true);
+
+    CMString db_path = db32("prov_self_write");
+    CMString obj = "obj";
+
+    // 首次写：task context hash = H1，登记
+    WorkerAgentContext::set_current_write_hash("ctx_H1");
+    auto [_, type1] = WorkerAgentContext::register_write(db_path, obj, 100);
+    EXPECT_EQ(type1, TaskErrorType::UNKNOWN);
+
+    // 不同 hash 写同对象 → mismatch
+    WorkerAgentContext::set_current_write_hash("ctx_H2");
+    auto [__, type2] = WorkerAgentContext::register_write(db_path, obj, 100);
+    EXPECT_EQ(type2, TaskErrorType::WRITE_PROVENANCE_MISMATCH);
+
+    // 同 hash 重写 → 幂等允许
+    WorkerAgentContext::set_current_write_hash("ctx_H1");
+    auto [___, type3] = WorkerAgentContext::register_write(db_path, obj, 100);
+    EXPECT_EQ(type3, TaskErrorType::UNKNOWN);
+
+    WorkerAgentContext::clear_current_write_hash();
+    master.stop();
+    wait_for_running(master, false);
+    WorkerAgentContext::clear();
+    DataService::instance()->remove_remote_index(db_path + ":" + obj);
+}
+
+// Part B: restore_master_idx 从 idx entry 的 write_context_hash_ 重建 write_provenance_。
+// load 后用不同 hash 写同对象 → mismatch（provenance 已从 idx 恢复）。
+TEST(MasterAgentTest, RestoreIdxRebuildsProvenance) {
+    WorkerAgentContext::clear();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    master.setup_write_context();
+    wait_for_running(master, true);
+
+    TempDir tmp;
+    CMString db_path = tmp.path();
+
+    IndexEntry e;
+    e.object_name_ = "obj";
+    e.file_name_ = "data.dat";
+    e.offset_ = 0;
+    e.size_ = 100;
+    e.write_context_hash_ = "restored_H1";
+    create_idx_file(db_path, "w1", {e});
+
+    auto entries = master.restore_master_idx(db_path, "w1");
+    EXPECT_EQ(entries.size(), 1u);
+
+    // 不同 hash 写同对象 → mismatch（provenance 已从 idx 重建）
+    WorkerAgentContext::set_current_write_hash("other_H2");
+    auto [_, type] = WorkerAgentContext::register_write(db_path, "obj", 100);
+    EXPECT_EQ(type, TaskErrorType::WRITE_PROVENANCE_MISMATCH);
+
+    // 同 hash 写 → 幂等允许
+    WorkerAgentContext::set_current_write_hash("restored_H1");
+    auto [__, type2] = WorkerAgentContext::register_write(db_path, "obj", 100);
+    EXPECT_EQ(type2, TaskErrorType::UNKNOWN);
+
+    WorkerAgentContext::clear_current_write_hash();
+    master.stop();
+    wait_for_running(master, false);
+    WorkerAgentContext::clear();
+    DataService::instance()->remove_remote_index(db_path + ":obj");
+}
+
+// Part B frozen 守卫：_FROZEN marker 存在时 restore_master_idx 不重建 provenance。
+// 验证：frozen db restore 后写任意 hash 不触发 mismatch（provenance 未重建，首次登记）。
+TEST(MasterAgentTest, FrozenDbSkipsProvenanceRebuildOnLoad) {
+    WorkerAgentContext::clear();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    master.setup_write_context();
+    wait_for_running(master, true);
+
+    TempDir tmp;
+    CMString db_path = tmp.path();
+
+    IndexEntry e;
+    e.object_name_ = "obj";
+    e.file_name_ = "data.dat";
+    e.offset_ = 0;
+    e.size_ = 100;
+    e.write_context_hash_ = "frozen_H1";
+    create_idx_file(db_path, "w1", {e});
+    { std::ofstream f(db_path + "/_FROZEN"); f.put('1'); }  // 磁盘 frozen marker
+
+    master.restore_master_idx(db_path, "w1");
+
+    // frozen 守卫：provenance 未重建，写不同 hash 也是首次登记（UNKNOWN），不是 mismatch。
+    // （若守卫失效、provenance 被重建，则 frozen_H1 vs any_hash 会 mismatch。）
+    WorkerAgentContext::set_current_write_hash("any_hash");
+    auto [_, type] = WorkerAgentContext::register_write(db_path, "obj", 100);
+    EXPECT_EQ(type, TaskErrorType::UNKNOWN);
+
+    WorkerAgentContext::clear_current_write_hash();
+    master.stop();
+    wait_for_running(master, false);
+    WorkerAgentContext::clear();
+    DataService::instance()->remove_remote_index(db_path + ":obj");
+}
+
+// Part C: freeze 确认后该 db 的 write_provenance_ 立即清理。
+// freeze 后 is_db_frozen 拦下所有写入，provenance 无写入可拦截 → 清理释放内存。
+TEST(MasterAgentTest, FreezeClearsProvenance) {
+    fly::DataService::instance()->reset();
+    WorkerAgentContext::clear();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    master.setup_write_context();
+    wait_for_running(master, true);
+
+    CMString db_path = db32("freeze_prov");
+
+    // master 自写登记 provenance
+    WorkerAgentContext::set_current_write_hash("H1");
+    WorkerAgentContext::register_write(db_path, "obj", 100);
+    EXPECT_EQ(master.provenance_count_for_testing(db_path), 1u);
+
+    // worker 触发 freeze（stream 路径 → cleanup_provenance_for_db）
+    WorkerAgent worker(502, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+    worker.request_database_freeze(db_path);
+    wait_for([&] { return master.is_db_frozen(db_path); }, 50, 20);
+
+    EXPECT_EQ(master.provenance_count_for_testing(db_path), 0u) << "freeze 后 provenance 应清理";
+
+    WorkerAgentContext::clear_current_write_hash();
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    WorkerAgentContext::clear();
+    DataService::instance()->remove_remote_index(db_path + ":obj");
+}
+
 }  // namespace fly

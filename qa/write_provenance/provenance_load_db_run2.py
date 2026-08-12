@@ -43,4 +43,10 @@ assert len(master.failed_tasks) == 0, \
 val2 = db.read_object("prov_key")
 assert val2 == 42, f"Expected 42 after rerun, got {val2}"
 
-INFO("[RUN2] load_db + rerun idempotent, verified")
+# Part B: load_db 从 idx 重建 write_provenance_。用不同 context（value=999）写 prov_key，
+# 应被 provenance 拒（mismatch）—— 重建后 hash 与原 42 的 context 不匹配。
+write_data(db, "prov_key", 999)
+assert wait_for(lambda: len(master.failed_tasks) >= 1, timeout=30.0), \
+    f"不同 context 写应被重建的 provenance 拒（mismatch），got {len(master.failed_tasks)} failed"
+
+INFO("[RUN2] load_db rebuilds provenance: idempotent + mismatch verified")

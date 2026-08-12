@@ -903,4 +903,23 @@ TEST_F(DatabaseVarTest, SmallVarNoWarning) {
     EXPECT_EQ(got->size(), 1024u);
 }
 
+// Part A: 裸 write_object（无 task context）经 commit_write guard 填时间戳，
+// 落盘 idx entry 的 write_context_hash_ 应非空（原裸写入 hash 为空，绕过 provenance）。
+TEST_F(DatabaseTest, BareWriteObjectHasNonEmptyContextHash) {
+    fly::WorkerAgentContext::clear_current_write_hash();  // 确保无 task context
+    CMString db_path = test_dir_ + "/bare_hash";
+    Database db(db_path);
+
+    EXPECT_EQ(write_raw(db, "obj", "data", false), fly::WriteErrorType::OK);
+    fly::DataService::instance()->drain_write_back();
+
+    auto entries = fly::DataService::instance()->find_local_entries(db_path + ":obj");
+    ASSERT_TRUE(entries.has_value());
+    ASSERT_FALSE(entries.value().empty());
+    EXPECT_FALSE(entries.value()[0].write_context_hash_.empty())
+        << "裸写入 idx entry 应有 commit_write guard 填的时间戳 hash";
+
+    fly::DataService::instance()->remove_local_index(db_path + ":obj");
+}
+
 }

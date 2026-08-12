@@ -4,6 +4,7 @@
 #include <common/cpp/error_types.h>
 #include <common/cpp/write_context_hash.h>
 #include <filesystem>
+#include <set>
 #include <string>
 
 namespace {
@@ -193,6 +194,33 @@ TEST(IndexEntryV2Test, MultipleEntriesWithDifferentHashes) {
 
 TEST(WriteContextHashTest, NewErrorTypeExists) {
     EXPECT_EQ(static_cast<int>(fly::TaskErrorType::WRITE_PROVENANCE_MISMATCH), 5);
+}
+
+// === make_timestamp_hash tests ===
+
+TEST(TimestampHashTest, IsNonEmptyAndHex) {
+    CMString hash = make_timestamp_hash();
+    EXPECT_EQ(hash.size(), 32u);
+    EXPECT_FALSE(hash.empty());
+    for (char c : hash) {
+        EXPECT_TRUE((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))
+            << "Hash contains non-hex character: " << c;
+    }
+}
+
+TEST(TimestampHashTest, TwoCallsDiffer) {
+    CMString hash1 = make_timestamp_hash();
+    CMString hash2 = make_timestamp_hash();
+    EXPECT_NE(hash1, hash2);
+}
+
+TEST(TimestampHashTest, ManyCallsAllUnique) {
+    // counter 兜底保证：即使连续调用落同纳秒也必唯一。
+    std::set<CMString> seen;
+    for (int i = 0; i < 1000; ++i) {
+        seen.insert(make_timestamp_hash());
+    }
+    EXPECT_EQ(seen.size(), 1000u);
 }
 
 }

@@ -95,6 +95,8 @@ public:
     // 此处用于 load/merge 等已从 _DB_META 读出 db_path 的场景）。Database 是路径唯一权威源，
     // 故内部构造 Database 插入 db_instances_（替代原 db_registry_ 字符串副本）。
     void register_database(const CMString& db_path, const CMString& data_path = "");
+    // 诊断：返回某 db 的 provenance 条目数（测试验证 freeze 清理 / load 重建用）。
+    size_t provenance_count_for_testing(const CMString& db_path) const;
     bool is_db_frozen(const CMString& db_path) const;
     // 非 stream 模式 pending frozen 状态机（WP1）。
     // is_db_frozen 覆盖 confirmed ∪ pending（跨 task 写注册拦截）。
@@ -383,6 +385,7 @@ private:
     CMString get_failed_tasks_file_path() const;
 
     void on_master_freeze(const CMString& db_path);
+    void on_master_remove(const CMString& db_path, const CMString& object_name);  // master 进程内 remove（清 provenance + 通知 worker）
     std::pair<CMString, TaskErrorType> on_master_register_write(const CMString& db_path, const CMString& name, int64_t compressed_size);
 
     std::atomic<bool> fatal_error_{false};
@@ -393,8 +396,18 @@ private:
     CMUnorderedSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
     mutable std::mutex recorded_workers_mutex_;
 
-    CMUnorderedMap<CMString, CMString> write_provenance_;
+    // 按 db 分组：outer key = db_path，inner key = short_name，value = write_context_hash。
+    // 嵌套结构让 freeze 时 cleanup_provenance_for_db 一次 erase 整个 db，无需前缀扫描。
+    CMUnorderedMap<CMString, CMUnorderedMap<CMString, CMString>> write_provenance_;
     mutable std::mutex provenance_mutex_;
+
+    // provenance 嵌套访问封装（内部均持 provenance_mutex_）。
+    // 校验并登记：首次或 hash 一致返回 true；hash 冲突返回 false 并填 err_msg。
+    bool provenance_check_and_register(const CMString& db_path, const CMString& short_name,
+                                       const CMString& hash, CMString& err_msg);
+    void provenance_erase(const CMString& db_path, const CMString& short_name);   // erase inner；空则清 outer
+    void cleanup_provenance_for_db(const CMString& db_path);   // freeze 用：整体 erase outer
+    CMString provenance_lookup(const CMString& db_path, const CMString& short_name);  // backup 继承用
 
     static std::atomic<bool> sigterm_received_;
     static void sigterm_handler(int sig);

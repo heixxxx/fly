@@ -8,6 +8,7 @@
 #include <log/cpp/logger.h>
 #include <common/cpp/writer_id.h>
 #include <common/cpp/worker_context.h>
+#include <common/cpp/write_context_hash.h>
 #include <filesystem>
 #include <fstream>
 #include <chrono>
@@ -140,6 +141,21 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
                                            int64_t original_size,
                                            int32_t chunk_count,
                                            bool backup) {
+    // 裸写入（非 @as_task，无 task context）的 current_write_hash 为空。用时间戳填充，
+    // 使 provenance 校验对裸写入也生效（消灭 do_write_register 的空 hash 旁路），
+    // 并保证 register_write（内部 get_current_write_hash）与 write_record 落盘同一个值。
+    CMString write_hash = fly::WorkerAgentContext::get_current_write_hash();
+    bool self_set_hash = write_hash.empty();
+    if (self_set_hash) {
+        write_hash = make_timestamp_hash();
+        fly::WorkerAgentContext::set_current_write_hash(write_hash);
+    }
+    // RAII：仅当本函数 set 了 hash 时，任意 return 路径退出前 clear（恢复空状态）。
+    struct WriteHashGuard {
+        bool self;
+        ~WriteHashGuard() { if (self) fly::WorkerAgentContext::clear_current_write_hash(); }
+    } hash_guard{self_set_hash};
+
     // 1. Populate low-tier cache immediately — remote reads can serve from
     //    cache without waiting for the background disk write.
     {
@@ -182,7 +198,7 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
     // 3. Registration succeeded — enqueue background disk write.
     DataWriter* w = writer_.get();
     auto caller_backup_func = backup ? fly::WorkerAgentContext::current_backup_func() : std::function<void(const fly::CMString&, const fly::CMString&)>{};
-    CMString write_hash = fly::WorkerAgentContext::get_current_write_hash();
+    // write_hash 复用入口已取的值（task context hash 或裸写入时间戳），保证 register 与 record 一致。
 
     // 同步 record_write：register 成功后立即记录写出对象，不放在异步 on_complete_
     // 回调里。否则 task 在 write_object 返回后立即异常时（on_complete_ 尚未执行），

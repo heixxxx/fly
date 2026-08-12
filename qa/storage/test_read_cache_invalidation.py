@@ -77,22 +77,21 @@ assert val == 1, f"initial read failed: expected 1, got {val}"
 assert assert_cached("k"), "object should be cached in the Python high tier after read"
 
 # ── Scenario 1: write_object invalidation ──────────────────────────────
-# Overwrite from the SAME process that holds the cached entry. Before the fix
-# the cache served the stale value; after the fix it must reflect the new one.
+# provenance 禁止同名覆盖（不同 context）。合法重写 = 先 remove 再 write。
+# remove 清 Python high-tier cache + provenance；write 填新值，read 应见新值。
+db.remove_object("k")
 db.write_object("k", 2)
 val = db.read_object("k", cache="high")
 assert val == 2, f"write invalidation failed: expected 2, got {val} (stale cache)"
-INFO("[PASS] write_object invalidation: cached value refreshed after overwrite")
+INFO("[PASS] write_object invalidation: remove+rewrite refreshes cached value")
 
 # ── Scenario 2: write_object_raw invalidation ──────────────────────────
-# write_object_raw stores bytes under the name; the high-tier cache must drop
-# the prior pickle entry too.
+# 同样需先 remove（清 provenance + cache）再 write_object_raw 重写。
+db.remove_object("k")
 db.write_object_raw("k", "raw_value")
-# read_object on a raw-written object returns the raw string; ensure we are NOT
-# served the stale pickle (which would be the int 2).
 val = db.read_object_raw("k")
 assert val == "raw_value", f"raw read failed: expected 'raw_value', got {val!r}"
-INFO("[PASS] write_object_raw invalidation: high-tier entry dropped")
+INFO("[PASS] write_object_raw invalidation: remove+raw_write refreshes cache")
 
 # ── Scenario 3: remove_object invalidation ─────────────────────────────
 # Re-populate the high-tier cache with a fresh pickle object, then remove it.

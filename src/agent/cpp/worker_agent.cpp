@@ -8,6 +8,7 @@
 #include <core/cpp/process_info.h>
 #include <core/cpp/graceful_exit.h>
 #include <storage/cpp/data_service.h>
+#include <common/cpp/write_context_hash.h>
 #include <network/cpp/data_client_pool.h>
 #include <network/cpp/metadata_client.h>
 #include <network/cpp/tcp_socket.h>
@@ -819,6 +820,11 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
     if (!registered_) return {"", TaskErrorType::UNKNOWN};
     CMString full_name = db_path + ":" + object_name;
     CMString ctx_hash = fly::WorkerAgentContext::get_current_write_hash();
+    if (ctx_hash.empty()) {
+        // 未经 commit_write guard / 未设 task context 的路径，用时间戳 fallback，
+        // 保证 do_write_register 的 provenance 校验对裸写入也生效。
+        ctx_hash = make_timestamp_hash();
+    }
 
     if (!ctx_hash.empty()) {
         auto existing_entries = DataService::instance()->find_local_entries(full_name);

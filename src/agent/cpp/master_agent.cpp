@@ -8,6 +8,7 @@
 #include <core/cpp/process_info.h>
 #include <core/cpp/graceful_exit.h>
 #include <storage/cpp/local_index.h>
+#include <common/cpp/write_context_hash.h>
 #include <algorithm>
 #include <unordered_set>
 #include <thread>
@@ -1097,13 +1098,10 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
     // 通知其他 worker 清缓存，避免读到失效数据。
     for (const auto& obj : msg.dirty_objects_) {
         DataService::instance()->remove_remote_index(obj);
-        {
-            std::lock_guard<std::mutex> lk(provenance_mutex_);
-            write_provenance_.erase(obj);
-        }
+        auto [db_path, short_name] = fly::split_full_name(obj);
+        provenance_erase(db_path, short_name);
         graph_->mark_data_removed(obj);
 
-        auto [db_path, short_name] = fly::split_full_name(obj);
         if (!db_path.empty()) {
             broadcast_object_removed(db_path, short_name);
         }
@@ -1342,6 +1340,8 @@ void MasterAgent::commit_pending_frozen(uint64_t task_id) {
     for (const auto& db_path : committed) {
         auto it = db_instances_.find(db_path);
         if (it != db_instances_.end()) it->second->freeze();
+        // Part C: freeze 确认后 provenance 已失效，立即清理释放内存。
+        cleanup_provenance_for_db(db_path);
         INFO("DB frozen (committed by task): db_path={}, task_id={}", db_path, task_id);
         DatabaseFreezeNotification broadcast_msg;
         broadcast_msg.db_path_ = db_path;
@@ -1441,6 +1441,62 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
     reactor_->send(conn_id, response);
 }
 
+// === write_provenance_ 嵌套访问封装 ===
+// 外层 key=db_path，内层 key=short_name。所有方法内部持 provenance_mutex_。
+
+bool MasterAgent::provenance_check_and_register(const CMString& db_path, const CMString& short_name,
+                                                const CMString& hash, CMString& err_msg) {
+    if (hash.empty()) {
+        // 上游（commit_write 时间戳 / task context）应保证非空；空到达说明异常路径，
+        // 拒绝而非静默放行（消灭空 hash 旁路）。
+        err_msg = "Empty write_context_hash for " + db_path + ":" + short_name;
+        return false;
+    }
+    std::lock_guard<std::mutex> lk(provenance_mutex_);
+    auto& inner = write_provenance_[db_path];
+    auto it = inner.find(short_name);
+    if (it == inner.end()) {
+        inner[short_name] = hash;
+        return true;
+    }
+    if (it->second == hash) {
+        return true;
+    }
+    err_msg = "Write provenance mismatch for " + db_path + ":" + short_name +
+        ": existing hash=" + it->second + " new hash=" + hash;
+    return false;
+}
+
+void MasterAgent::provenance_erase(const CMString& db_path, const CMString& short_name) {
+    std::lock_guard<std::mutex> lk(provenance_mutex_);
+    auto outer = write_provenance_.find(db_path);
+    if (outer == write_provenance_.end()) return;
+    outer->second.erase(short_name);
+    if (outer->second.empty()) {
+        write_provenance_.erase(outer);  // 清空桶，避免累积空 inner map
+    }
+}
+
+void MasterAgent::cleanup_provenance_for_db(const CMString& db_path) {
+    std::lock_guard<std::mutex> lk(provenance_mutex_);
+    write_provenance_.erase(db_path);  // freeze 时整体释放
+}
+
+size_t MasterAgent::provenance_count_for_testing(const CMString& db_path) const {
+    std::lock_guard<std::mutex> lk(provenance_mutex_);
+    auto it = write_provenance_.find(db_path);
+    return it == write_provenance_.end() ? 0 : it->second.size();
+}
+
+CMString MasterAgent::provenance_lookup(const CMString& db_path, const CMString& short_name) {
+    std::lock_guard<std::mutex> lk(provenance_mutex_);
+    auto outer = write_provenance_.find(db_path);
+    if (outer == write_provenance_.end()) return {};
+    auto inner = outer->second.find(short_name);
+    if (inner == outer->second.end()) return {};
+    return inner->second;
+}
+
 // 纯逻辑：处理 WriteRegister 的全部业务（provenance/mark_data_ready/update_remote_idx 带 size/
 // schedule_tasks/recorded_workers_ 登记/auto-backup 评估），返回 ack。调用方决定是否回 ACK。
 // worker 路径：on_write_register 调本函数后 reactor_->send(ack)。
@@ -1458,23 +1514,17 @@ WriteRegisterAckMessage MasterAgent::do_write_register(const WriteRegisterMessag
         ack.error_message_ = "Database frozen: " + msg.db_path_;
         ack.error_type_ = TaskErrorType::WRITE_TO_FROZEN_DB;
         WARN("WriteRegister rejected: db {} is frozen", msg.db_path_);
-    } else if (!msg.write_context_hash_.empty()) {
-        std::lock_guard<std::mutex> lk(provenance_mutex_);
-        auto it = write_provenance_.find(msg.object_name_);
-        if (it == write_provenance_.end()) {
-            write_provenance_[msg.object_name_] = msg.write_context_hash_;
-            registered_ok = true;
-        } else if (it->second == msg.write_context_hash_) {
+    } else {
+        auto [prov_db, prov_short] = fly::split_full_name(msg.object_name_);
+        CMString err_msg;
+        if (provenance_check_and_register(prov_db, prov_short, msg.write_context_hash_, err_msg)) {
             registered_ok = true;
         } else {
             ack.success_ = false;
-            ack.error_message_ = "Write provenance mismatch for " + msg.object_name_ +
-                ": existing hash=" + it->second + " new hash=" + msg.write_context_hash_;
+            ack.error_message_ = err_msg;
             ack.error_type_ = TaskErrorType::WRITE_PROVENANCE_MISMATCH;
             ERR("WriteRegister rejected: provenance mismatch for {}", msg.object_name_);
         }
-    } else {
-        registered_ok = true;
     }
 
     if (registered_ok) {
@@ -1529,8 +1579,8 @@ void MasterAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage
 
     DataService::instance()->remove_remote_index(msg.object_name_);
     {
-        std::lock_guard<std::mutex> lk(provenance_mutex_);
-        write_provenance_.erase(msg.object_name_);
+        auto [db_path, short_name] = fly::split_full_name(msg.object_name_);
+        provenance_erase(db_path, short_name);
     }
 
     ObjectRemovedMessage broadcast_msg = msg;
@@ -1548,10 +1598,7 @@ void MasterAgent::broadcast_object_removed(const CMString& db_path, const CMStri
     CMString full = db_path + ":" + object_name;
 
     DataService::instance()->remove_remote_index(full);
-    {
-        std::lock_guard<std::mutex> lk(provenance_mutex_);
-        write_provenance_.erase(full);
-    }
+    provenance_erase(db_path, object_name);
 
     ObjectRemovedMessage msg;
     msg.object_name_ = full;
@@ -1662,13 +1709,13 @@ void MasterAgent::broadcast_var(const CMString& full_var_name, bool is_modificat
     }
 }
 
-void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg) {
-    INFO("RemoveRequest: object={}, db_path={}", msg.object_name_, msg.db_path_);
+void MasterAgent::on_master_remove(const CMString& db_path, const CMString& object_name) {
+    // master 进程内同步 remove（db.remove_object 经 request_remove_func 触发）。
+    // 清 graph/remote_idx/provenance + 通知持有对象的 worker 清 local data。
+    CMString full = db_path + ":" + object_name;
+    graph_->mark_data_removed(full);
 
-    graph_->mark_data_removed(msg.object_name_);
-
-    auto worker_ids = DataService::instance()->get_remote_workers(msg.object_name_);
-
+    auto worker_ids = DataService::instance()->get_remote_workers(full);
     for (auto wid : worker_ids) {
         uint64_t worker_conn_id = 0;
         {
@@ -1680,18 +1727,21 @@ void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage
         }
         if (worker_conn_id == 0) continue;
         RemoveCommandMessage cmd;
-        cmd.db_path_ = msg.db_path_;
-        cmd.object_name_ = msg.object_name_;
+        cmd.db_path_ = db_path;
+        cmd.object_name_ = full;
         reactor_->send(worker_conn_id, cmd);
-        INFO("RemoveCommand sent to worker_id={}: object={}", wid, msg.object_name_);
+        INFO("RemoveCommand sent to worker_id={}: object={}", wid, full);
     }
 
-    DataService::instance()->remove_remote_location(msg.object_name_);
+    DataService::instance()->remove_remote_location(full);
+    provenance_erase(db_path, object_name);
+    schedule_tasks();
+}
 
-    {
-        std::lock_guard<std::mutex> lk(provenance_mutex_);
-        write_provenance_.erase(msg.object_name_);
-    }
+void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg) {
+    INFO("RemoveRequest: object={}, db_path={}", msg.object_name_, msg.db_path_);
+    auto [db_path, short_name] = fly::split_full_name(msg.object_name_);
+    on_master_remove(db_path, short_name);
 
     RemoveAckMessage ack;
     ack.db_path_ = msg.db_path_;
@@ -1699,9 +1749,7 @@ void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage
     ack.success_ = true;
     reactor_->send(conn_id, ack);
 
-    schedule_tasks();
-
-    INFO("RemoveRequest completed: object={}, workers_notified={}", msg.object_name_, worker_ids.size());
+    INFO("RemoveRequest completed: object={}", msg.object_name_);
 }
 
 CMString MasterAgent::get_failed_tasks_file_path() const {
@@ -1839,6 +1887,11 @@ void MasterAgent::setup_write_context() {
     WorkerAgentContext::set_freeze_func([this](const CMString& db_path) {
         on_master_freeze(db_path);
     });
+    // master 进程内 remove_object：同步清 provenance + 通知 worker（原 request_remove no-op，
+    // 导致 master remove 不清 provenance，阻塞合法的 remove+rewrite 流程）。
+    WorkerAgentContext::set_remove_request_func([this](const CMString& db_path, const CMString& object_name) {
+        on_master_remove(db_path, object_name);
+    });
     // Var funcs: master process operates directly on the authoritative Database
     // store (no network). The context passes FULL var names (db_path:short_name);
     // split off db_path to locate the Database, then query with the short name.
@@ -1879,6 +1932,14 @@ std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const C
     msg.object_name_ = db_path + ":" + name;
     msg.db_path_ = db_path;
     msg.size_bytes_ = compressed_size;
+    // master 自写经 commit_write 已填时间戳（若 current_write_hash 空），此处取到非空，
+    // 使 do_write_register 的 provenance 校验对 master 自写也生效（原漏设导致无保护）。
+    msg.write_context_hash_ = WorkerAgentContext::get_current_write_hash();
+    if (msg.write_context_hash_.empty()) {
+        // 经 commit_write 时 guard 已填时间戳（此处取到非空）；未经 commit_write 的纯登记
+        // 路径（current_write_hash 空），用时间戳 fallback 保证非空，使 provenance 校验生效。
+        msg.write_context_hash_ = make_timestamp_hash();
+    }
     auto db_it = db_instances_.find(db_path);
     if (db_it != db_instances_.end()) {
         msg.writer_id_ = db_it->second->get_writer_id();
@@ -1908,8 +1969,16 @@ CMVector<IndexEntry> MasterAgent::restore_master_idx(const CMString& db_path,
         DataService::instance()->restore_entries(db_path, entries);
         // entry.object_name_ 是 short_name（LocalIndex 不再存 db_path 前缀），
         // DependencyGraph 用 full_name 作 key，这里拼接。
+        bool db_frozen = std::filesystem::exists(db_path + "/_FROZEN");
         for (const auto& entry : entries) {
             graph_->mark_data_ready(db_path + ":" + entry.object_name_);
+            // Part B: 从 idx entry 重建 write_provenance_（load 未 freeze db 时）。
+            // frozen db 不重建——freeze 后 do_write_register 第一道 is_db_frozen 拦下所有写入，
+            // provenance 已无写入可拦截，重建无意义（Part C 会在 freeze 时清理）。
+            if (!db_frozen && !entry.write_context_hash_.empty()) {
+                std::lock_guard<std::mutex> lk(provenance_mutex_);
+                write_provenance_[db_path][entry.object_name_] = entry.write_context_hash_;
+            }
         }
         INFO("restore_master_idx: restored {} entries for db_path={}", entries.size(), db_path);
     }
@@ -2108,6 +2177,9 @@ void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFre
     reactor_->send(conn_id, ack);
 
     if (accepted && streaming_mode) {
+        // Part C: freeze 确认后 provenance 已无写入可拦截（is_db_frozen 拦下所有后续写入），
+        // 立即清理释放内存。
+        cleanup_provenance_for_db(msg.db_path_);
         // stream 模式的本地 freeze + 广播
         auto it = db_instances_.find(msg.db_path_);
         if (it != db_instances_.end()) {
@@ -2134,6 +2206,9 @@ void MasterAgent::on_master_freeze(const CMString& db_path) {
 
         frozen_dbs_.insert(db_path);
     }
+
+    // Part C: freeze 确认后 provenance 已失效，立即清理释放内存。
+    cleanup_provenance_for_db(db_path);
 
     DatabaseFreezeNotification msg;
     msg.db_path_ = db_path;
@@ -2268,11 +2343,8 @@ void MasterAgent::on_backup_request(uint64_t conn_id, const BackupRequestMessage
     assign.args_ = {short_name, msg.db_path_};
 
     {
-        std::lock_guard<std::mutex> lk(provenance_mutex_);
-        auto prov_it = write_provenance_.find(msg.object_name_);
-        if (prov_it != write_provenance_.end()) {
-            assign.write_context_hash_ = prov_it->second;
-        }
+        auto [b_db, b_short] = fly::split_full_name(msg.object_name_);
+        assign.write_context_hash_ = provenance_lookup(b_db, b_short);
     }
 
     reactor_->send(backup_conn, assign);
@@ -2362,14 +2434,9 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
     assign.task_module_ = "__fly_internal";
     // args: [short_name, source_db_path, target_db_path, target_data_path, source_host]
     assign.args_ = {short_name, source_db_path, target_db_path, target_data_path, source_host};
-    // write_context_hash 从 provenance 取（保持对象来源可追溯）。
-    {
-        std::lock_guard<std::mutex> lk(provenance_mutex_);
-        auto prov_it = write_provenance_.find(full_name);
-        if (prov_it != write_provenance_.end()) {
-            assign.write_context_hash_ = prov_it->second;
-        }
-    }
+    // Part D: merge 产出新对象（新 write context），不再继承源 provenance hash。
+    // assign.write_context_hash_ 留空，worker 执行 merge task 时 commit_write guard 填时间戳。
+    // （源 db freeze 后 provenance 已被 Part C 清理，继承也无源可取。）
 
     {
         std::lock_guard<std::mutex> wlk(workers_mutex_);
