@@ -78,7 +78,7 @@ master.stop()
 INFO(f"[PASS] test_<feature>")
 ```
 
-### 多进程测试（协调器模式）
+### 多进程测试（协调器模式，legacy）—— 新测试请用 .pyt 机制（下节）
 
 如果测试需要跨进程重启（如 load_db），使用协调器模式：
 
@@ -106,6 +106,64 @@ assert result.returncode == 0, f"Failed: {result.stderr}"
 ```
 
 > **注意**：使用 `get_fly_binary()` 获取 fly 路径，不要硬编码 `bazel-bin/...`。`get_fly_binary()` 在任何场景（build/ 布局、bazel-bin/ 布局、tar 打包重定位）都能返回正确路径。
+
+### 多阶段复合测试（.pyt 机制，推荐）
+
+多阶段测试（跨进程重启、failed task + load_db + rerun 等）用 **`.pyt` 编排脚本 + `run_subcase` 原语**，不再手写 subprocess。比上面的协调器模式更声明式、更安全（sub case 失败即 case 失败）。
+
+**.pyt 是 case 单位**（编排脚本，python），在 runqa 进程 exec；调 `run_subcase` 起 fly 子进程跑各阶段（sub case，每个 fresh C++ singleton）。
+
+```
+qa/storage/
+├── test_load_db_two_processes.pyt   # 编排脚本（runqa 发现 *.pyt）
+├── load_db_run1.py                  # sub case（被 .pyt 调，非 test_ 前缀）
+└── load_db_run2.py
+```
+
+**`run_subcase` 原语**（runqa 注入 .pyt globals，直接用，无需 import）：
+
+```python
+run_subcase(script, timeout=30, setup=None, teardown=None, expect_pass=True, env=None)
+```
+- `script`：sub case .py 路径（相对 .pyt 目录或绝对）
+- `setup`/`teardown`：无参 callable，sub case 级预处理/后处理（teardown 无论成败都跑）
+- `expect_pass`：True=期望 fly 正常退出（默认）；**False=期望 fly 失败**（测试失败场景，如 failed task）。未达期望 → `raise SubcaseError` → .pyt 中断 → case 失败
+- `env`：per-subcase env（如 `{"FLY_DB_PATH": ...}`），不污染全局 os.environ（-j 并发安全）
+- 返回 `SubcaseResult`（`.ok`/`.status`/`.tail()` 等；失败时不返回，直接 raise）
+
+**示例**（failed task + load_db + rerun）：
+
+```python
+# failed_task_load_db_rerun.pyt
+import os, shutil
+DB = os.path.join(FLY_CASE_LOG_DIR, "my_db")   # FLY_CASE_LOG_DIR 是注入变量（case log 目录）
+
+def setup_clean():
+    if os.path.isdir(DB): shutil.rmtree(DB)
+
+run_subcase("failed_task_run.py", timeout=30, setup=setup_clean, expect_pass=False)  # 期望失败
+run_subcase("load_db_rerun.py", timeout=60)                                          # 默认期望成功
+shutil.rmtree(DB, ignore_errors=True)                                                # 成功路径清理 log 外产物
+INFO("[PASS] case passed")
+```
+
+**约定**：
+- **sub case .py 自包含**：db 路径在 .py 里显式写明（读 `FLY_CASE_LOG_DIR` 或硬编码）；setup/teardown 是副作用预处理/后处理，**不向 sub case 传参**
+- `FLY_CASE_DIR`/`FLY_CASE_LOG_DIR`/`FLY_CASE_STEM` 是 runqa **注入到 .pyt 的变量**（直接用，不依赖 `os.environ`，-j 并发 case 互不污染）
+- log 外产物（如 DB）须 .pyt 成功路径末尾显式清；失败残留由下次 setup 清
+- **sub case 未达 `expect_pass` 期望 → run_subcase raise → .pyt exec 中断 → 整个 case 失败**（fail-fast；teardown 仍跑）
+
+**发现机制**：runqa 发现 `*.pyt`（+ 过渡期 `test_*.py`）。同 stem 的 `test_*.py` 被 `.pyt` 接管（退为 sub case 脚本，不独立发现）。sub case 日志在 `{case_log_dir}/{N}_{script_stem}/fly.log`（N = sub case 序号，避免多阶段互相覆盖）。
+
+**expect_pass 期望矩阵**：
+
+| expect_pass | fly 结果 | 行为 |
+|---|---|---|
+| True（默认）| PASSED | 正常返回 |
+| True | FAILED / TIMEOUT | raise（不该失败/hang）|
+| False | FAILED | 正常返回（**预期失败达成**）|
+| False | PASSED | raise（**不该成功**——场景没复现）|
+| False | TIMEOUT | raise（hang 不是预期失败）|
 
 ### 任务函数
 
@@ -304,8 +362,9 @@ def test_part2():
 
 | 类型 | 命名 | 说明 |
 |------|------|------|
-| 测试文件 | `test_<name>.py` | runqa 自动发现并运行 |
-| 辅助脚本 | `<name>.py`（非 test_ 前缀） | 由测试文件通过 subprocess 调用 |
+| 测试文件 | `test_<name>.py` | runqa 自动发现，fly 进程跑（单进程 case） |
+| 编排脚本 | `<name>.pyt` | runqa 自动发现，runqa 进程 exec，调 run_subcase 编排多 sub case（复合 case） |
+| 辅助脚本 | `<name>.py`（非 test_ 前缀） | 由 test_*.py（subprocess）或 .pyt（run_subcase）调用的 sub case |
 
 ### DB 路径
 
