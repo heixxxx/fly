@@ -4,8 +4,8 @@ run1 建 db 在 path_a，move 到 path_b，run2 从 path_b load_db。db 在 case
 """
 import os, shutil
 
-path_a = os.path.join(os.environ["FLY_CASE_LOG_DIR"], "load_db_p3_run1")
-path_b = os.path.join(os.environ["FLY_CASE_LOG_DIR"], "load_db_p3_run2")
+path_a = os.path.join(FLY_CASE_LOG_DIR, "load_db_p3_run1")
+path_b = os.path.join(FLY_CASE_LOG_DIR, "load_db_p3_run2")
 
 def setup_clean():
     for p in [path_a, path_b]:

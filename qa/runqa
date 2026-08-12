@@ -321,8 +321,8 @@ def run_subcase(script, timeout=30, setup=None, teardown=None, expect_pass=True,
     expect_pass: True=期望 fly PASSED；False=期望 fly FAILED（如测试失败场景）。
                  PASSED/TIMEOUT 在 expect_pass=False 时都算未达期望（场景没复现 / hang）。
     """
-    case_dir = os.environ.get("FLY_CASE_DIR", os.getcwd())
-    case_log_dir = os.environ.get("FLY_CASE_LOG_DIR", case_dir)
+    case_dir = getattr(_case_state, "case_dir", os.getcwd())
+    case_log_dir = getattr(_case_state, "log_dir", case_dir)
     n = run_subcase._counter
     run_subcase._counter += 1
     script_abs = script if os.path.isabs(script) else os.path.join(case_dir, script)
@@ -355,6 +355,7 @@ def run_subcase(script, timeout=30, setup=None, teardown=None, expect_pass=True,
 
 
 run_subcase._counter = 0  # 每个 .pyt exec（run_pyt）重置
+_case_state = threading.local()  # per-thread case 上下文（并发安全：-j 每 case 一线程，互不污染）
 
 
 def _clean_case_logs(test_dir, stem):
@@ -397,18 +398,15 @@ def run_pyt(pyt_path, timeout=20):
 
     run_subcase._counter = 0  # 每 case 重置 sub case 序号
 
-    case_env = {
-        "FLY_CASE_DIR": pyt_dir,
-        "FLY_CASE_LOG_DIR": log_dir,
-        "FLY_CASE_STEM": stem,
-    }
-    saved_env = {k: os.environ.get(k) for k in case_env}
-    for k, v in case_env.items():
-        os.environ[k] = v
+    # thread_local 存 case 上下文（不污染全局 os.environ，-j 并发 case 互不干扰）。
+    _case_state.case_dir = pyt_dir
+    _case_state.log_dir = log_dir
+    _case_state.stem = stem
 
     def pyt_INFO(msg=""):
         log(f"    {msg}")
 
+    # FLY_CASE_* 注入为 .pyt 全局变量（.pyt 直接用 FLY_CASE_LOG_DIR 等，不依赖 os.environ）
     pyt_globals = {
         "__name__": "__main__",
         "__file__": abs_pyt,
@@ -418,6 +416,9 @@ def run_pyt(pyt_path, timeout=20):
         "SubcaseError": SubcaseError,
         "INFO": pyt_INFO,
         "os": os, "sys": sys, "shutil": shutil,
+        "FLY_CASE_DIR": pyt_dir,
+        "FLY_CASE_LOG_DIR": log_dir,
+        "FLY_CASE_STEM": stem,
     }
 
     t0 = time.monotonic()
@@ -443,11 +444,7 @@ def run_pyt(pyt_path, timeout=20):
         err_lines.append(f"{type(e).__name__}: {e}")
         err_lines.extend(traceback.format_exc().splitlines()[-15:])
     finally:
-        for k, old in saved_env.items():
-            if old is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = old
+        pass  # thread_local per-thread，无需恢复（下次 run_pyt 覆盖）
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     ok = (status == "PASSED")

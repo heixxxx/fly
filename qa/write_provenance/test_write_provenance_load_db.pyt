@@ -8,7 +8,7 @@ db 在 case log 目录（FLY_CASE_LOG_DIR/prov_db），自动随 case 清。两�
 """
 import os
 
-db_path = os.path.join(os.environ["FLY_CASE_LOG_DIR"], "prov_db")
+db_path = os.path.join(FLY_CASE_LOG_DIR, "prov_db")
 shared_env = {"FLY_DB_PATH": db_path}
 
 run_subcase("provenance_load_db_run1.py", timeout=60, env=shared_env)

@@ -4,7 +4,7 @@ run1 建库写数据，run2 load_db + 读 + 新 task + freeze。db 在 case log 
 """
 import os, shutil
 
-db_path = os.path.join(os.environ["FLY_CASE_LOG_DIR"], "load_db_p2")
+db_path = os.path.join(FLY_CASE_LOG_DIR, "load_db_p2")
 shared_env = {"FLY_DB_PATH": db_path}
 
 def setup_clean():
