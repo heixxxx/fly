@@ -42,9 +42,14 @@ time.sleep(1.0)
 assert db.get_db_path() == expected_db_path, \
     f"db_path mismatch: {db.get_db_path()} != {expected_db_path}"
 
-# restart failed tasks。run1 与 run2 共用同一 log_dir，fly 递增后 run1 落在 .1
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-failed_file = os.path.join(SCRIPT_DIR, "test_chain_failure_restart.1", "failed_tasks.bin")
+# restart failed tasks：读 run1 的 failed_tasks.bin。
+# .pyt 模式经 env FLY_RUN1_LOG_DIR 传 run1 的 log_dir；旧 subprocess wrapper 兼容 fallback。
+run1_log = os.environ.get("FLY_RUN1_LOG_DIR")
+if run1_log:
+    failed_file = os.path.join(run1_log, "failed_tasks.bin")
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    failed_file = os.path.join(SCRIPT_DIR, "test_chain_failure_restart.1", "failed_tasks.bin")
 assert os.path.isfile(failed_file), f"failed_tasks.bin should exist: {failed_file}"
 
 master.restart_failed_tasks(failed_file)

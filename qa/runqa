@@ -323,12 +323,13 @@ def run_subcase(script, timeout=30, setup=None, teardown=None, expect_pass=True,
     """
     case_dir = getattr(_case_state, "case_dir", os.getcwd())
     case_log_dir = getattr(_case_state, "log_dir", case_dir)
-    n = run_subcase._counter
-    run_subcase._counter += 1
+    n = getattr(_case_state, "counter", 0)
+    _case_state.counter = n + 1
     script_abs = script if os.path.isabs(script) else os.path.join(case_dir, script)
     script_stem = os.path.splitext(os.path.basename(script_abs))[0]
     sub_log_dir = os.path.join(case_log_dir, f"{n}_{script_stem}")
-    os.makedirs(sub_log_dir, exist_ok=True)
+    # 不预创建 sub_log_dir：让 fly --log-dir 自己创建。否则 fly 发现目录已存在会 resolve 到 .N
+    # 变体，导致 master 的 failed_tasks.bin/master.log 落在 .N 而非 sub_log_dir（跨 sub case 找不到）。
 
     extra_env = {
         "FLY_CASE_DIR": case_dir,
@@ -354,7 +355,6 @@ def run_subcase(script, timeout=30, setup=None, teardown=None, expect_pass=True,
     return result
 
 
-run_subcase._counter = 0  # 每个 .pyt exec（run_pyt）重置
 _case_state = threading.local()  # per-thread case 上下文（并发安全：-j 每 case 一线程，互不污染）
 
 
@@ -396,7 +396,7 @@ def run_pyt(pyt_path, timeout=20):
     log_dir = os.path.join(pyt_dir, stem)
     _clean_case_logs(pyt_dir, stem)
 
-    run_subcase._counter = 0  # 每 case 重置 sub case 序号
+    _case_state.counter = 0  # 每 case 重置 sub case 序号
 
     # thread_local 存 case 上下文（不污染全局 os.environ，-j 并发 case 互不干扰）。
     _case_state.case_dir = pyt_dir

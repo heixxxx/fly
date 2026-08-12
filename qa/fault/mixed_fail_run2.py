@@ -44,9 +44,13 @@ for key in ["mixed/small_0", "mixed/large", "mixed/dirty"]:
         pass
 INFO("[RUN2] dirty data not restored by load_db")
 
-# restart failed tasks
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-failed_file = os.path.join(SCRIPT_DIR, "test_mixed_write_fail.1", "failed_tasks.bin")
+# restart failed tasks：读 run1 的 failed_tasks.bin（.pyt 经 env 传；旧 wrapper fallback）。
+run1_log = os.environ.get("FLY_RUN1_LOG_DIR")
+if run1_log:
+    failed_file = os.path.join(run1_log, "failed_tasks.bin")
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    failed_file = os.path.join(SCRIPT_DIR, "test_mixed_write_fail.1", "failed_tasks.bin")
 assert os.path.isfile(failed_file), f"failed_tasks.bin should exist: {failed_file}"
 
 master.restart_failed_tasks(failed_file)
