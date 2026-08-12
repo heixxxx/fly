@@ -2,6 +2,8 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <utility>
+#include <vector>
 
 CMSharedPtr<Config> Config::instance() {
     static CMSharedPtr<Config> inst = CMMakeShared<Config>();
@@ -14,6 +16,7 @@ Config::Config() {
 }
 
 void Config::set_int(const CMString& key, int64_t value) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (workers_launched_) {
         throw std::runtime_error("Config must be set before workers are launched");
     }
@@ -21,6 +24,7 @@ void Config::set_int(const CMString& key, int64_t value) {
 }
 
 void Config::set_str(const CMString& key, const CMString& value) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (workers_launched_) {
         throw std::runtime_error("Config must be set before workers are launched");
     }
@@ -28,6 +32,7 @@ void Config::set_str(const CMString& key, const CMString& value) {
 }
 
 int64_t Config::get_int(const CMString& key) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = int_values_.find(key);
     auto default_it = INT_DEFAULTS.find(key);
     if (it != int_values_.end()) return it->second;
@@ -36,42 +41,51 @@ int64_t Config::get_int(const CMString& key) const {
     return INVALID_INT;
 }
 
-const CMString& Config::get_str(const CMString& key) const {
+CMString Config::get_str(const CMString& key) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = str_values_.find(key);
-    auto default_it = STR_DEFAULTS.find(key);
     if (it != str_values_.end()) return it->second;
+    auto default_it = STR_DEFAULTS.find(key);
     if (default_it != STR_DEFAULTS.end()) return default_it->second;
-    static const CMString empty = "";
-    return empty;
+    return "";
 }
 
 void Config::mark_workers_launched() {
+    std::lock_guard<std::mutex> lock(mutex_);
     workers_launched_ = true;
 }
 
 bool Config::is_workers_launched() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     return workers_launched_;
 }
 
 void Config::reset() {
+    std::lock_guard<std::mutex> lock(mutex_);
     int_values_ = INT_DEFAULTS;
     str_values_ = STR_DEFAULTS;
     workers_launched_ = false;
 }
 
 void Config::save_to_file(const CMString& path) const {
+    std::vector<std::pair<CMString, int64_t>> ints;
+    std::vector<std::pair<CMString, CMString>> strs;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& [k, v] : int_values_) ints.emplace_back(k, v);
+        for (const auto& [k, v] : str_values_) strs.emplace_back(k, v);
+    }
+    // 文件 IO 在锁外执行，避免阻塞并发 get_*（低频操作，快照语义可接受）
     std::ofstream ofs(path.c_str(), std::ios::trunc);
-    for (const auto& [k, v] : int_values_) {
-        ofs << "i " << k << " " << v << "\n";
-    }
-    for (const auto& [k, v] : str_values_) {
-        ofs << "s " << k << " " << v << "\n";
-    }
+    for (const auto& [k, v] : ints) ofs << "i " << k << " " << v << "\n";
+    for (const auto& [k, v] : strs) ofs << "s " << k << " " << v << "\n";
 }
 
 void Config::load_from_file(const CMString& path) {
     std::ifstream ifs(path.c_str());
     if (!ifs.is_open()) return;
+    std::vector<std::pair<CMString, int64_t>> ints;
+    std::vector<std::pair<CMString, CMString>> strs;
     CMString line;
     while (std::getline(ifs, line)) {
         if (line.size() < 3) continue;
@@ -82,11 +96,14 @@ void Config::load_from_file(const CMString& path) {
         CMString key = rest.substr(0, sp);
         CMString val = rest.substr(sp + 1);
         if (type == 'i') {
-            try { int_values_[key] = std::stoll(val); } catch (...) {}
+            try { ints.emplace_back(key, std::stoll(val)); } catch (...) {}
         } else if (type == 's') {
-            str_values_[key] = val;
+            strs.emplace_back(key, val);
         }
     }
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [k, v] : ints) int_values_[k] = v;
+    for (auto& [k, v] : strs) str_values_[k] = v;
 }
 
 const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {

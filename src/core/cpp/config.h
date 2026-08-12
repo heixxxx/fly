@@ -2,6 +2,7 @@
 
 #include <common/cpp/common_types.h>
 #include <cstdint>
+#include <mutex>
 #include <stdexcept>
 
 #include <climits>
@@ -18,7 +19,8 @@ public:
     void set_str(const CMString& key, const CMString& value);
 
     int64_t get_int(const CMString& key) const;
-    const CMString& get_str(const CMString& key) const;
+    // 返回 by value：锁内拷贝后释放，避免调用方持引用期间并发 set_str 触发 rehash 造成悬空引用
+    CMString get_str(const CMString& key) const;
 
     void mark_workers_launched();
     bool is_workers_launched() const;
@@ -28,6 +30,8 @@ public:
     void save_to_file(const CMString& path) const;
     void load_from_file(const CMString& path);
 
+    // 注意：返回底层 map 的 const 引用，非线程安全（不经锁）。仅供单线程调试/序列化快照使用，
+    // 持有期间若有并发 set_*/reset/load_from_file 会触发 data race。
     const CMUnorderedMap<CMString, int64_t>& all_ints() const { return int_values_; }
     const CMUnorderedMap<CMString, CMString>& all_strs() const { return str_values_; }
 
@@ -38,6 +42,10 @@ private:
     CMUnorderedMap<CMString, int64_t> int_values_;
     CMUnorderedMap<CMString, CMString> str_values_;
     bool workers_launched_ = false;
+    // 保护 int_values_/str_values_/workers_launched_ 的并发读写。
+    // Config 是进程内共享单例，get_* 从 reactor/heartbeat/scheduler 等多线程并发读取，
+    // set_* 经 FFI 暴露给 Python 可在运行时调用，故所有底层访问须持锁。leaf lock，无反向调用，无死锁风险。
+    mutable std::mutex mutex_;
 
     static const CMUnorderedMap<CMString, int64_t> INT_DEFAULTS;
     static const CMUnorderedMap<CMString, CMString> STR_DEFAULTS;
