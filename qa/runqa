@@ -58,8 +58,15 @@ def find_tests():
     for root, dirs, files in os.walk(SCRIPT_DIR, followlinks=False):
         # Skip log-residue entries in-place so os.walk doesn't descend into them.
         dirs[:] = [d for d in dirs if not _is_log_artifact(d)]
+        # .pyt 是 case 入口（编排脚本）；同 stem 的 test_*.py 被 .pyt 接管，
+        # 退为 sub case 脚本（被 .pyt 调），不独立发现。
+        pyt_stems = {os.path.splitext(f)[0] for f in files if f.endswith(".pyt")}
         for f in files:
-            if f.startswith("test_") and f.endswith(".py"):
+            if f.endswith(".pyt"):
+                tests.add(os.path.realpath(os.path.join(root, f)))
+            elif f.startswith("test_") and f.endswith(".py"):
+                if os.path.splitext(f)[0] in pyt_stems:
+                    continue  # 被 .pyt 接管
                 tests.add(os.path.realpath(os.path.join(root, f)))
     return sorted(tests)
 
@@ -88,8 +95,13 @@ def collect_tests(paths):
             hits = set()
             for root, dirs, files in os.walk(rp, followlinks=False):
                 dirs[:] = [d for d in dirs if not _is_log_artifact(d)]
+                pyt_stems = {os.path.splitext(f)[0] for f in files if f.endswith(".pyt")}
                 for f in files:
-                    if f.startswith("test_") and f.endswith(".py"):
+                    if f.endswith(".pyt"):
+                        hits.add(os.path.realpath(os.path.join(root, f)))
+                    elif f.startswith("test_") and f.endswith(".py"):
+                        if os.path.splitext(f)[0] in pyt_stems:
+                            continue
                         hits.add(os.path.realpath(os.path.join(root, f)))
             if not hits:
                 log(f"Warning: no test_*.py found under {p!r}")
@@ -147,7 +159,309 @@ def _load_pyt(pyt_path):
     }
 
 
+class SubcaseResult:
+    """单个 fly 进程（一个 sub case）的执行结果。"""
+    def __init__(self, status, returncode, stdout, log_path, elapsed_ms):
+        self.status = status            # PASSED / FAILED / TIMEOUT
+        self.returncode = returncode
+        self.stdout = stdout or b""
+        self.log_path = log_path
+        self.elapsed_ms = elapsed_ms
+        self.ok = (status == "PASSED")  # raw ok（基于 returncode）；run_subcase 按 expect_pass 调整
+
+    def tail(self, n=500):
+        try:
+            text = self.stdout.decode("utf-8", errors="replace")
+        except Exception:
+            return ""
+        return text[-n:] if len(text) > n else text
+
+    def __repr__(self):
+        return f"SubcaseResult(status={self.status}, rc={self.returncode}, ms={self.elapsed_ms})"
+
+
+class SubcaseError(Exception):
+    """run_subcase 未达 expect_pass 期望时抛出 → .pyt exec 中断 → 整个 case 失败。"""
+    def __init__(self, script, result, expect_pass):
+        self.script = script
+        self.result = result
+        self.expect_pass = expect_pass
+        want = "PASSED" if expect_pass else "FAILED"
+        super().__init__(f"{script}: expected {want} but got {result.status}")
+
+
+def _run_fly(script_path, log_dir, timeout, cwd, extra_env=None):
+    """跑一个 fly 进程：subprocess + 超时 + SIGUSR1 stack dump + killpg + hang_stacks。
+    fly stdout 写到 {log_dir}/fly.log。返回 SubcaseResult（status/returncode/stdout/log_path/elapsed）。
+    被 run_one（test_*.py 路径）与 run_subcase（.pyt 的 sub case）共用。"""
+    env = os.environ.copy()
+    build_dir = os.path.dirname(os.path.dirname(FLY_BIN))
+    lib_dir = os.path.join(build_dir, "lib")
+    python_dir = os.path.join(build_dir, "python")
+    env["LD_LIBRARY_PATH"] = lib_dir + ":" + env.get("LD_LIBRARY_PATH", "")
+    env["PYTHONPATH"] = lib_dir + ":" + python_dir + ":" + env.get("PYTHONPATH", "")
+    env["FLY_BUILD"] = build_dir
+    if extra_env:
+        env.update(extra_env)
+
+    t0 = time.monotonic()
+    # preexec_fn=os.setsid：fly + 其 worker 子进程放独立进程组，超时能 kill 整树。
+    proc = subprocess.Popen(
+        [FLY_BIN, "--log-dir", log_dir, script_path],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=cwd, env=env, preexec_fn=os.setsid,
+    )
+
+    timed_out = False
+    try:
+        stdout, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            _pgid = os.getpgid(proc.pid)
+        except ProcessLookupError:
+            _pgid = None
+        # SIGUSR1 触发 fly 内置 stack dump（写 {log_dir}/.fly.{pid}.stack 后 os._exit）
+        try:
+            import subprocess as _sp
+            _usr1_pids = _sp.check_output(
+                ["pgrep", "-f", r"[/]build/bin/fly"], stderr=_sp.DEVNULL
+            ).split()
+            for _cpid in _usr1_pids:
+                _cpid = _cpid.decode().strip()
+                try:
+                    os.kill(int(_cpid), signal.SIGUSR1)
+                except Exception:
+                    pass
+            import time as _stime
+            _stime.sleep(2.0)
+        except Exception:
+            pass
+        # /proc 内核栈 + py-spy Python 栈 → hang_stacks.txt
+        try:
+            import subprocess as _sp
+            _diag = []
+            _pids = _sp.check_output(
+                ["pgrep", "-f", r"[/]build/bin/fly"], stderr=_sp.DEVNULL
+            ).split()
+            for _cpid in _pids:
+                _cpid = _cpid.decode().strip()
+                _cmdline = ""
+                try:
+                    _cmdline = open(f"/proc/{_cpid}/cmdline").read().replace("\0", " ")[:120]
+                except Exception:
+                    pass
+                _diag.append(f"\n{'='*60}")
+                _diag.append(f"pid={_cpid} cmd={_cmdline}")
+                try:
+                    for _tid in os.listdir(f"/proc/{_cpid}/task"):
+                        _tcomm = _twchan = _tkstack = ""
+                        try:
+                            _tcomm = open(f"/proc/{_cpid}/task/{_tid}/comm").read().strip()
+                        except Exception:
+                            pass
+                        try:
+                            _twchan = open(f"/proc/{_cpid}/task/{_tid}/wchan").read().strip()
+                        except Exception:
+                            pass
+                        try:
+                            _tkstack = open(f"/proc/{_cpid}/task/{_tid}/stack").read().strip()
+                        except Exception:
+                            pass
+                        if _tkstack:
+                            _diag.append(f"  tid={_tid} comm={_tcomm} wchan={_twchan}")
+                            _diag.append(f"    {_tkstack.split(chr(10))[0]}")
+                except Exception:
+                    pass
+                try:
+                    _py = _sp.check_output(
+                        [os.path.expanduser("~/.local/bin/py-spy"), "dump", "--pid", _cpid],
+                        stderr=_sp.DEVNULL, timeout=2).decode(errors="replace")
+                    _diag.append(f"  Python stacks:\n{_py[:2000]}")
+                except Exception:
+                    pass
+            if _diag:
+                with open(os.path.join(log_dir, "hang_stacks.txt"), "w") as _f:
+                    _f.write("\n".join(_diag))
+        except Exception:
+            pass
+        if _pgid is not None:
+            try:
+                os.killpg(_pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        try:
+            import subprocess as _sp
+            _sp.call(["pkill", "-9", "-f", r"[/]build/bin/fly"],
+                     stderr=_sp.DEVNULL, timeout=5)
+        except Exception:
+            pass
+        stdout, _ = proc.communicate()
+
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    rc = proc.returncode if proc.returncode is not None else -1
+    ok_raw = (not timed_out) and proc.returncode == 0
+    status = "TIMEOUT" if timed_out else ("PASSED" if ok_raw else "FAILED")
+
+    out_log = os.path.join(log_dir, "fly.log")
+    with open(out_log, "wb") as f:
+        f.write(stdout or b"")
+
+    return SubcaseResult(status=status, returncode=rc, stdout=stdout or b"",
+                         log_path=out_log, elapsed_ms=elapsed_ms)
+
+
+def run_subcase(script, timeout=30, setup=None, teardown=None, expect_pass=True, env=None):
+    """跑一个 sub case（一个 fly 进程）。未达 expect_pass 期望 → raise SubcaseError
+    （.pyt exec 中断，整个 case 失败）。
+
+    script: sub case .py 路径（相对 FLY_CASE_DIR 或绝对）
+    timeout: 单阶段超时秒
+    setup/teardown: 无参 callable，sub case 级预处理/后处理（teardown 无论成败都跑）
+    expect_pass: True=期望 fly PASSED；False=期望 fly FAILED（如测试失败场景）。
+                 PASSED/TIMEOUT 在 expect_pass=False 时都算未达期望（场景没复现 / hang）。
+    """
+    case_dir = os.environ.get("FLY_CASE_DIR", os.getcwd())
+    case_log_dir = os.environ.get("FLY_CASE_LOG_DIR", case_dir)
+    n = run_subcase._counter
+    run_subcase._counter += 1
+    script_abs = script if os.path.isabs(script) else os.path.join(case_dir, script)
+    script_stem = os.path.splitext(os.path.basename(script_abs))[0]
+    sub_log_dir = os.path.join(case_log_dir, f"{n}_{script_stem}")
+    os.makedirs(sub_log_dir, exist_ok=True)
+
+    extra_env = {
+        "FLY_CASE_DIR": case_dir,
+        "FLY_CASE_LOG_DIR": case_log_dir,
+        "FLY_CASE_SUB_DIR": sub_log_dir,
+    }
+    if env:
+        extra_env.update(env)  # per-subcase env（如 FLY_DB_PATH），不污染全局 os.environ
+
+    if setup:
+        setup()
+    result = _run_fly(script_abs, sub_log_dir, timeout, case_dir, extra_env)
+    if teardown:
+        teardown()
+
+    if expect_pass:
+        result.ok = (result.status == "PASSED")
+    else:
+        result.ok = (result.status == "FAILED")  # 仅 FAILED 接受；PASSED/TIMEOUT 都未达期望
+
+    if not result.ok:
+        raise SubcaseError(script, result, expect_pass)
+    return result
+
+
+run_subcase._counter = 0  # 每个 .pyt exec（run_pyt）重置
+
+
+def _clean_case_logs(test_dir, stem):
+    """清 case 的旧日志：{stem}/、{stem}.latest、{stem}.N 轮转、helper logs/<prefix>/。
+    run_one（test_*.py）与 run_pyt（.pyt）共用，保证每次跑都是干净现场。"""
+    import glob as _glob
+    for variant in _glob.glob(os.path.join(test_dir, stem + "*")):
+        tail = os.path.basename(variant)
+        if tail == stem or tail == stem + ".latest" or (
+            tail.startswith(stem + ".") and tail[len(stem) + 1:].isdigit()
+        ):
+            if os.path.islink(variant) or os.path.isfile(variant):
+                os.remove(variant)
+            elif os.path.isdir(variant):
+                shutil.rmtree(variant, ignore_errors=True)
+    helper_log_base = os.path.join(test_dir, "logs")
+    if os.path.isdir(helper_log_base):
+        helper_prefix = stem.replace("test_", "", 1)
+        for entry in os.listdir(helper_log_base):
+            entry_path = os.path.join(helper_log_base, entry)
+            base = entry.split(".")[0]
+            if base == helper_prefix or base.startswith(helper_prefix + "_"):
+                if os.path.islink(entry_path) or os.path.isfile(entry_path):
+                    os.remove(entry_path)
+                elif os.path.isdir(entry_path):
+                    shutil.rmtree(entry_path, ignore_errors=True)
+
+
+def run_pyt(pyt_path, timeout=20):
+    """exec 一个 .pyt 编排脚本。注入 run_subcase 等符号到 .pyt globals。
+    .pyt 抛异常（SubcaseError/其他）→ case 失败；正常完成 → 成功。
+    timeout 参数仅兼容统一调用入口（.pyt 整体无超时，sub case 各自超时）。"""
+    abs_pyt = os.path.abspath(pyt_path)
+    pyt_dir = os.path.dirname(abs_pyt)
+    name = os.path.basename(abs_pyt)
+    stem = os.path.splitext(name)[0]  # 去 .pyt 后缀
+
+    log_dir = os.path.join(pyt_dir, stem)
+    _clean_case_logs(pyt_dir, stem)
+
+    run_subcase._counter = 0  # 每 case 重置 sub case 序号
+
+    case_env = {
+        "FLY_CASE_DIR": pyt_dir,
+        "FLY_CASE_LOG_DIR": log_dir,
+        "FLY_CASE_STEM": stem,
+    }
+    saved_env = {k: os.environ.get(k) for k in case_env}
+    for k, v in case_env.items():
+        os.environ[k] = v
+
+    def pyt_INFO(msg=""):
+        log(f"    {msg}")
+
+    pyt_globals = {
+        "__name__": "__main__",
+        "__file__": abs_pyt,
+        "__builtins__": __builtins__,
+        "run_subcase": run_subcase,
+        "SubcaseResult": SubcaseResult,
+        "SubcaseError": SubcaseError,
+        "INFO": pyt_INFO,
+        "os": os, "sys": sys, "shutil": shutil,
+    }
+
+    t0 = time.monotonic()
+    status = "PASSED"
+    err_lines = []
+    try:
+        with open(abs_pyt) as f:
+            code = compile(f.read(), abs_pyt, "exec")
+        exec(code, pyt_globals)
+    except SubcaseError as e:
+        status = "FAILED"
+        want = "PASSED" if e.expect_pass else "FAILED"
+        err_lines.append(f"sub case {e.script}: expected {want} but got {e.result.status}")
+        err_lines.append(f"  [log: {e.result.log_path}]")
+        err_lines.extend(f"  {ln}" for ln in e.result.tail(1200).splitlines()[-12:])
+    except SystemExit as e:
+        status = "PASSED" if (e.code == 0 or e.code is None) else "FAILED"
+        if status == "FAILED":
+            err_lines.append(f"SystemExit({e.code})")
+    except Exception as e:
+        status = "FAILED"
+        import traceback
+        err_lines.append(f"{type(e).__name__}: {e}")
+        err_lines.extend(traceback.format_exc().splitlines()[-15:])
+    finally:
+        for k, old in saved_env.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
+
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    ok = (status == "PASSED")
+
+    log(f"  {'✓ PASSED' if ok else '✗ ' + status}  {elapsed_ms:>6}ms  {name}")
+    for line in err_lines:
+        log(f"    {line}")
+
+    return {"name": name, "ms": elapsed_ms, "ok": ok, "status": status, "log": log_dir}
+
+
 def run_one(test_path, timeout=20):
+    if test_path.endswith(".pyt"):
+        return run_pyt(test_path, timeout)
     abs_test_path = os.path.abspath(test_path)
     test_dir = os.path.dirname(abs_test_path)
     name = os.path.basename(abs_test_path)
@@ -167,41 +481,7 @@ def run_one(test_path, timeout=20):
     # Log directory: {test_dir}/{test_name}/
     log_dir = os.path.join(test_dir, stem)
 
-    # Clean all previous logs for this case, including nested helper logs.
-    #
-    # fly's Logger.resolve_log_dir creates ".N" variants (case.1, case.2, ...)
-    # plus a "case.latest" symlink when the requested dir already exists.
-    # Multi-phase tests also produce helper logs under test_dir/logs/.
-    # We remove every variant and matching helper log so nothing accumulates.
-    # We do NOT pre-create log_dir — resolve_log_dir creates it directly.
-    import glob as _glob
-    for variant in _glob.glob(os.path.join(test_dir, stem + "*")):
-        tail = os.path.basename(variant)
-        if tail == stem or tail == stem + ".latest" or (
-            tail.startswith(stem + ".") and tail[len(stem) + 1:].isdigit()
-        ):
-            if os.path.islink(variant) or os.path.isfile(variant):
-                os.remove(variant)
-            elif os.path.isdir(variant):
-                shutil.rmtree(variant, ignore_errors=True)
-
-    # Clean helper log directories for multi-phase tests. Helpers write to
-    # test_dir/logs/<group>/ (e.g. logs/wait_obj/, logs/frozen_db/). Each
-    # group accumulates .N variants and .latest symlinks that must be cleaned.
-    # We match by comparing helper names against the case stem (test_wait_obj
-    # ↔ logs/wait_obj/). Safe under -j parallelism because each test only
-    # removes its own helper group, not the entire logs/ tree.
-    helper_log_base = os.path.join(test_dir, "logs")
-    if os.path.isdir(helper_log_base):
-        helper_prefix = stem.replace("test_", "", 1)
-        for entry in os.listdir(helper_log_base):
-            entry_path = os.path.join(helper_log_base, entry)
-            base = entry.split(".")[0]  # strip .N / .latest suffix
-            if base == helper_prefix or base.startswith(helper_prefix + "_"):
-                if os.path.islink(entry_path) or os.path.isfile(entry_path):
-                    os.remove(entry_path)
-                elif os.path.isdir(entry_path):
-                    shutil.rmtree(entry_path, ignore_errors=True)
+    _clean_case_logs(test_dir, stem)
 
     t0 = time.monotonic()
 
@@ -214,138 +494,7 @@ def run_one(test_path, timeout=20):
             return {"name": name, "ms": 0, "ok": False, "status": "ERROR",
                     "log": log_dir}
 
-    # Set up environment based on FLY_BIN location
-    env = os.environ.copy()
-    # FLY_BIN is /root/fly/build/bin/fly, so build_dir is /root/fly/build
-    build_dir = os.path.dirname(os.path.dirname(FLY_BIN))
-    lib_dir = os.path.join(build_dir, "lib")
-    python_dir = os.path.join(build_dir, "python")
-    env["LD_LIBRARY_PATH"] = lib_dir + ":" + env.get("LD_LIBRARY_PATH", "")
-    env["PYTHONPATH"] = lib_dir + ":" + python_dir + ":" + env.get("PYTHONPATH", "")
-    env["FLY_BUILD"] = build_dir
-
-    # Run test with cwd = test_dir. preexec_fn=os.setsid puts the fly process
-    # (and the worker subprocesses it spawns) in their own process group, so a
-    # timeout can kill the whole tree instead of orphaning workers.
-    proc = subprocess.Popen(
-        [FLY_BIN, "--log-dir", log_dir, abs_test_path],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=test_dir,
-        env=env,
-        preexec_fn=os.setsid,
-    )
-
-    # Capture output. A timeout must not crash the whole runner (it would
-    # propagate through the ThreadPoolExecutor and abort every other test) —
-    # kill the process group, salvage whatever output was produced, and mark
-    # the test as FAILED with status TIMEOUT.
-    timed_out = False
-    try:
-        stdout, _ = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        # 先获取 PGID（master 还活着时），避免 master 退出后 getpgid 失败
-        try:
-            _pgid = os.getpgid(proc.pid)
-        except ProcessLookupError:
-            _pgid = None
-
-        # 发送 SIGUSR1 触发 fly 进程内置的 stack dump（master + 所有 worker）。
-        # 每个 fly 进程注册了 SIGUSR1 处理函数，把 Python 线程栈 + 原生内核栈
-        # 写到 {log_dir}/.fly.{pid}.stack 后 os._exit(42)。这比外部 py-spy/proc
-        # 转储更可靠（py-spy 在 GIL/C++ 区段常返回空栈）。
-        # 给 2s 让 handler 写完文件再走 fallback 转储 + SIGKILL。
-        try:
-            import subprocess as _sp
-            _usr1_pids = _sp.check_output(
-                ["pgrep", "-f", r"[/]build/bin/fly"], stderr=_sp.DEVNULL
-            ).split()
-            for _cpid in _usr1_pids:
-                _cpid = _cpid.decode().strip()
-                try:
-                    os.kill(int(_cpid), signal.SIGUSR1)
-                except Exception:
-                    pass
-            # 等 SIGUSR1 handler 写完 .fly.{pid}.stack + os._exit
-            import time as _stime
-            _stime.sleep(2.0)
-        except Exception:
-            pass
-
-        # Dump stacks before killing — helps diagnose flaky hangs.
-        # 不用 gdb（会留下 stopped 进程），用 /proc 内核栈 + py-spy Python 栈。
-        try:
-            import subprocess as _sp
-            _diag = []
-            _pids = _sp.check_output(
-                ["pgrep", "-f", r"[/]build/bin/fly"], stderr=_sp.DEVNULL
-            ).split()
-            for _cpid in _pids:
-                _cpid = _cpid.decode().strip()
-                _cmdline = ""
-                try:
-                    _cmdline = open(f"/proc/{_cpid}/cmdline").read().replace("\0", " ")[:120]
-                except Exception:
-                    pass
-                _diag.append(f"\n{'='*60}")
-                _diag.append(f"pid={_cpid} cmd={_cmdline}")
-                # 所有线程的内核栈 + wchan
-                try:
-                    for _tid in os.listdir(f"/proc/{_cpid}/task"):
-                        _tcomm = ""
-                        _twchan = ""
-                        _tkstack = ""
-                        try:
-                            _tcomm = open(f"/proc/{_cpid}/task/{_tid}/comm").read().strip()
-                        except Exception:
-                            pass
-                        try:
-                            _twchan = open(f"/proc/{_cpid}/task/{_tid}/wchan").read().strip()
-                        except Exception:
-                            pass
-                        try:
-                            _tkstack = open(f"/proc/{_cpid}/task/{_tid}/stack").read().strip()
-                        except Exception:
-                            pass
-                        if _tkstack:
-                            _first = _tkstack.split("\n")[0]
-                            _diag.append(f"  tid={_tid} comm={_tcomm} wchan={_twchan}")
-                            _diag.append(f"    {_first}")
-                except Exception:
-                    pass
-                # py-spy (Python stacks)
-                try:
-                    _py = _sp.check_output(
-                        [os.path.expanduser("~/.local/bin/py-spy"), "dump", "--pid", _cpid],
-                        stderr=_sp.DEVNULL, timeout=2).decode(errors="replace")
-                    _diag.append(f"  Python stacks:\n{_py[:2000]}")
-                except Exception:
-                    pass
-            if _diag:
-                with open(os.path.join(log_dir, "hang_stacks.txt"), "w") as _f:
-                    _f.write("\n".join(_diag))
-        except Exception:
-            pass
-        # killpg 杀整个进程组（master + workers）
-        if _pgid is not None:
-            try:
-                os.killpg(_pgid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        # 兜底：pkill 任何残留 fly.bin（进程组杀不掉的孤儿）
-        try:
-            import subprocess as _sp
-            _sp.call(["pkill", "-9", "-f", r"[/]build/bin/fly"],
-                     stderr=_sp.DEVNULL, timeout=5)
-        except Exception:
-            pass
-        # Drain the pipe so the child is fully reaped and we keep partial logs.
-        stdout, _ = proc.communicate()
-
-    elapsed_ms = int((time.monotonic() - t0) * 1000)
-    ok = (not timed_out) and proc.returncode == 0
-    status = "TIMEOUT" if timed_out else ("PASSED" if ok else "FAILED")
+    result = _run_fly(abs_test_path, log_dir, timeout, test_dir)
 
     # ── pyt teardown (post-test cleanup) ──
     if pyt_cfg and pyt_cfg["teardown"] is not None:
@@ -354,32 +503,22 @@ def run_one(test_path, timeout=20):
         except Exception as e:
             log(f"  WARNING  teardown-fail  {name} ({e})")
 
-    # Write output to log file
-    out_log = os.path.join(log_dir, "fly.log")
-    with open(out_log, "wb") as f:
-        f.write(stdout)
+    log(f"  {'✓ PASSED' if result.ok else '✗ ' + result.status}  {result.elapsed_ms:>6}ms  {name}")
 
-    log(f"  {'✓ PASSED' if ok else '✗ ' + status}  {elapsed_ms:>6}ms  {name}")
-
-    if not ok:
-        if timed_out:
+    if not result.ok:
+        if result.status == "TIMEOUT":
             log(f"    (timed out after {timeout}s)")
-        # 失败时把完整 fly.log 路径 + 尾部 15 行写入 qa.log，方便定位（无需重跑）。
-        log(f"    [log: {out_log}]")
-        try:
-            lines = stdout.decode("utf-8", errors="replace").split("\n")
-            for line in lines[-15:]:
-                if line.strip():
-                    log(f"    {line.rstrip()}")
-        except Exception:
-            pass
+        log(f"    [log: {result.log_path}]")
+        for line in result.tail(1200).splitlines()[-15:]:
+            if line.strip():
+                log(f"    {line.rstrip()}")
 
     return {
         "name": name,
-        "ms": elapsed_ms,
-        "ok": ok,
-        "status": status,
-        "log": out_log,
+        "ms": result.elapsed_ms,
+        "ok": result.ok,
+        "status": result.status,
+        "log": result.log_path,
     }
 
 
