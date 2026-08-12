@@ -8,18 +8,183 @@
 #include <cstring>
 #include <chrono>
 #include <thread>
+#include <algorithm>
+#include <sys/socket.h>
 
 namespace fly {
 
 DataClientPool::DataClientPool(CMSharedPtr<Transport> transport, int64_t pool_size)
     : transport_(std::move(transport))
-    , pool_size_(pool_size > 0 ? pool_size : 2) {}
+    , pool_size_(pool_size > 0 ? pool_size : 2)
+    , max_fd_count_(2 * (pool_size > 0 ? pool_size : 2)) {}
 
 DataClientPool::DataClientPool(int64_t pool_size)
     : DataClientPool(create_tcp_transport(), pool_size) {}
 
 DataClientPool::~DataClientPool() {
     stop();
+}
+
+CMString DataClientPool::make_peer_key(const CMString& host, int port) {
+    return host + ":" + std::to_string(port);
+}
+
+bool DataClientPool::probe_fd_health(int fd) const {
+    // 廉价预检：getsockopt(SO_ERROR) 捕获连接级错误（RST/重置）。注意 TOCTOU——
+    // 通过后 send/recv 前仍可能断，故仅作预检，权威仍是 send/recv 失败即关。
+    int err = 0;
+    socklen_t len = sizeof(err);
+    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0) return false;
+    return err == 0;
+}
+
+int DataClientPool::try_acquire_idle_locked(const CMString& key) {
+    auto it = buckets_.find(key);
+    if (it == buckets_.end()) return -1;
+    for (auto& e : it->second) {
+        if (!e.in_use) {
+            e.in_use = true;
+            e.last_used = std::chrono::steady_clock::now();
+            return e.fd;
+        }
+    }
+    return -1;
+}
+
+bool DataClientPool::evict_one_idle_locked() {
+    // 反倾斜：选 idle 数最多的 peer（并列取其中最老 last_used），淘汰其最老 idle fd。
+    // 防止单 hot peer 独占连接配额，保留多样性以提高未来命中率。
+    const CMString* victim_peer = nullptr;
+    size_t max_idle = 0;
+    std::chrono::steady_clock::time_point victim_oldest =
+        std::chrono::steady_clock::time_point::max();
+    for (auto& [pk, bucket] : buckets_) {
+        size_t idle = 0;
+        auto oldest = std::chrono::steady_clock::time_point::max();
+        for (auto& e : bucket) {
+            if (!e.in_use) {
+                ++idle;
+                if (e.last_used < oldest) oldest = e.last_used;
+            }
+        }
+        if (idle == 0) continue;
+        if (idle > max_idle || (idle == max_idle && oldest < victim_oldest)) {
+            max_idle = idle;
+            victim_peer = &pk;
+            victim_oldest = oldest;
+        }
+    }
+    if (!victim_peer) return false;
+    auto& bucket = buckets_[*victim_peer];
+    auto vit = std::find_if(bucket.begin(), bucket.end(), [&](const FdEntry& e) {
+        return !e.in_use && e.last_used == victim_oldest;
+    });
+    if (vit == bucket.end()) return false;
+    transport_->close(vit->fd);
+    fd_to_peer_.erase(vit->fd);
+    bucket.erase(vit);
+    --total_fd_count_;
+    return true;
+}
+
+void DataClientPool::remove_fd_locked(int fd) {
+    auto pit = fd_to_peer_.find(fd);
+    if (pit == fd_to_peer_.end()) return;
+    auto& bucket = buckets_[pit->second];
+    bucket.erase(std::remove_if(bucket.begin(), bucket.end(),
+                                [fd](const FdEntry& e) { return e.fd == fd; }),
+                 bucket.end());
+    fd_to_peer_.erase(pit);
+    --total_fd_count_;
+}
+
+void DataClientPool::reap_expired_locked() {
+    auto now = std::chrono::steady_clock::now();
+    for (auto it = buckets_.begin(); it != buckets_.end();) {
+        auto& bucket = it->second;
+        for (auto bit = bucket.begin(); bit != bucket.end();) {
+            if (!bit->in_use &&
+                now - bit->last_used > std::chrono::seconds(kIdleTtlSec)) {
+                transport_->close(bit->fd);
+                fd_to_peer_.erase(bit->fd);
+                bit = bucket.erase(bit);
+                --total_fd_count_;
+            } else {
+                ++bit;
+            }
+        }
+        if (bucket.empty()) {
+            it = buckets_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+int DataClientPool::borrow_fd(const CMString& host, int port) {
+    const CMString key = make_peer_key(host, port);
+    while (true) {
+        int fd = -1;
+        bool need_new = false;
+        {
+            std::lock_guard<std::mutex> lk(mutex_);
+            reap_expired_locked();
+            fd = try_acquire_idle_locked(key);
+            if (fd < 0) {
+                if (total_fd_count_ >= max_fd_count_) {
+                    // 容量满：反倾斜淘汰一个 idle 腾配额（idle ≥ pool_size ≥ 1，必能淘汰）
+                    if (!evict_one_idle_locked()) return -1;
+                }
+                ++total_fd_count_;  // 预留配额，避免并发 connect 导致超限
+                need_new = true;
+            }
+        }
+        if (need_new) {
+            // connect 是阻塞系统调用，在锁外执行避免阻塞其他 borrow/release
+            int nfd = transport_->create_connection(host, port);
+            if (nfd < 0) {
+                std::lock_guard<std::mutex> lk(mutex_);
+                --total_fd_count_;  // 回退预留配额
+                return -1;
+            }
+            transport_->set_recv_timeout(nfd, 30000);
+            transport_->set_send_timeout(nfd, 30000);
+            transport_->set_nodelay(nfd);
+            std::lock_guard<std::mutex> lk(mutex_);
+            buckets_[key].push_back(
+                FdEntry{nfd, std::chrono::steady_clock::now(), true});
+            fd_to_peer_[nfd] = key;
+            return nfd;
+        }
+        // 复用 idle fd：锁外做 SO_ERROR 预检（已 in_use 占住，不会被他人复用）
+        if (probe_fd_health(fd)) return fd;
+        // 预检失败（半开）：关闭回收，循环重试
+        transport_->close(fd);
+        {
+            std::lock_guard<std::mutex> lk(mutex_);
+            remove_fd_locked(fd);
+        }
+    }
+}
+
+void DataClientPool::release_fd(int fd, bool healthy) {
+    if (!healthy) {
+        transport_->close(fd);
+        std::lock_guard<std::mutex> lk(mutex_);
+        remove_fd_locked(fd);
+        return;
+    }
+    std::lock_guard<std::mutex> lk(mutex_);
+    auto pit = fd_to_peer_.find(fd);
+    if (pit == fd_to_peer_.end()) return;  // 已不在池（stop 期间被清理），忽略
+    auto& bucket = buckets_[pit->second];
+    for (auto& e : bucket) {
+        if (e.fd == fd) {
+            e.in_use = false;
+            e.last_used = std::chrono::steady_clock::now();
+            break;
+        }
+    }
 }
 
 std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClientPool::request(
@@ -50,16 +215,13 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
         slot_cv_.notify_one();
     };
 
-    int fd = transport_->create_connection(host, port);
+    int fd = borrow_fd(host, port);
     if (fd < 0) {
         release_slot();
         return {false, nullptr, "", "",
                 "Failed to connect to " + host + ":" + std::to_string(port),
                 ReadError::NETWORK};
     }
-
-    transport_->set_recv_timeout(fd, 30000);
-    transport_->set_send_timeout(fd, 30000);
 
     // Passive RTT probe: time the round-trip. Only completed exchanges (the two
     // returns below that read a full response) record a sample; mid-recv
@@ -83,7 +245,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
             ssize_t n = transport_->send(fd, send_ptr, send_remaining);
             if (n < 0) {
                 ERR("[DCP] send failed: obj={} fd={} errno={}", object_name, fd, errno);
-                transport_->close(fd);
+                release_fd(fd, false);
                 release_slot();
                 return {false, nullptr, "", "",
                         "Connection lost sending request for " + object_name,
@@ -99,7 +261,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
         char frame_header[5];
         if (!recv_exact(transport_.get(), fd, frame_header, 5)) {
             ERR("[DCP] recv header failed: obj={} fd={} errno={}", object_name, fd, errno);
-            transport_->close(fd);
+            release_fd(fd, false);
             release_slot();
             return {false, nullptr, "", "",
                     "Connection lost for " + object_name,
@@ -108,7 +270,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
         uint32_t total_len = read_be32(frame_header);
         if (total_len < 6 || total_len > 256 * 1024 * 1024) {
             ERR("[DCP] invalid total_len={}: obj={} fd={}", total_len, object_name, fd);
-            transport_->close(fd);
+            release_fd(fd, false);
             release_slot();
             return {false, nullptr, "", "",
                     "Invalid response for " + object_name,
@@ -118,7 +280,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
         // 2. Read 5B sub-header [4B small_fields_len][1B has_raw]
         char sub_header[5];
         if (!recv_exact(transport_.get(), fd, sub_header, 5)) {
-            transport_->close(fd);
+            release_fd(fd, false);
             release_slot();
             return {false, nullptr, "", "",
                     "Connection lost for " + object_name,
@@ -132,7 +294,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
         CMString small_payload(small_fields_len, '\0');
         if (small_fields_len > 0) {
             if (!recv_exact(transport_.get(), fd, small_payload.data(), small_fields_len)) {
-                transport_->close(fd);
+                release_fd(fd, false);
                 release_slot();
                 return {false, nullptr, "", "",
                         "Connection lost for " + object_name,
@@ -142,7 +304,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
         DataResponseMessage response;
         if (!DataResponseProtocol::decode_small_fields(small_payload, response)) {
             ERR("[DCP] decode failed: obj={} fd={}", object_name, fd);
-            transport_->close(fd);
+            release_fd(fd, false);
             release_slot();
             return {false, nullptr, "", "",
                     "Failed to decode response for " + object_name,
@@ -157,7 +319,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
             data_buf->resize(raw_len);
             if (!recv_exact(transport_.get(), fd, data_buf->data(), raw_len)) {
                 ERR("[DCP] recv raw failed: obj={} fd={} errno={}", object_name, fd, errno);
-                transport_->close(fd);
+                release_fd(fd, false);
                 release_slot();
                 return {false, nullptr, "", "",
                         "Connection lost receiving payload for " + object_name,
@@ -172,7 +334,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
                                 std::chrono::steady_clock::now() - rtt_start)
                                 .count();
             NetQualityMonitor::instance().update_rtt(host, rtt_ms);
-            transport_->close(fd);
+            release_fd(fd, true);
             release_slot();
             return {true, data_buf, response.py_name_,
                     response.write_context_hash_, "", ReadError::NONE};
@@ -186,7 +348,7 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
                             std::chrono::steady_clock::now() - rtt_start)
                             .count();
         NetQualityMonitor::instance().update_rtt(host, rtt_ms);
-        transport_->close(fd);
+        release_fd(fd, true);
         release_slot();
         ReadError rerr = (response.status_ == ResponseStatus::NOT_READY)
                              ? ReadError::DATA_NOT_READY
@@ -203,6 +365,13 @@ void DataClientPool::stop() {
 
     std::unique_lock<std::mutex> lk(mutex_);
     slot_cv_.wait(lk, [&] { return active_count_.load() == 0; });
+    // 关闭并清空所有 keep-alive fd（此时无在飞 request 持有 fd）
+    for (auto& [key, bucket] : buckets_) {
+        for (auto& e : bucket) transport_->close(e.fd);
+    }
+    buckets_.clear();
+    fd_to_peer_.clear();
+    total_fd_count_ = 0;
 }
 
 }  // namespace fly

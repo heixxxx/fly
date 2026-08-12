@@ -10,6 +10,8 @@
 #include <serialization/cpp/object_header.h>
 #include <common/cpp/fly_buffer.h>
 #include <network/cpp/data_client_pool.h>
+#include <network/cpp/transport_interface.h>
+#include <network/cpp/tcp_socket.h>
 #include <network/cpp/net_quality_monitor.h>
 #include <common/cpp/error_types.h>
 #include <log/cpp/logger.h>
@@ -18,6 +20,7 @@
 #include <chrono>
 #include <future>
 #include <atomic>
+#include <vector>
 
 namespace fly {
 
@@ -127,6 +130,99 @@ TEST_F(DataClientPoolTest, FailedConnectionFeedsNoSample) {
     DataClientPool pool(2);
     pool.request("127.0.0.1", 1, "dead:beef", 0, 0, 1000);  // connect fails
     EXPECT_DOUBLE_EQ(NetQualityMonitor::instance().score("127.0.0.1"), 0.0);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// keep-alive 连接池改造测试
+// 用 CountingTransport 装饰真实 TCP transport，计数 create_connection/close
+// 调用以观测 fd 复用、并发多 fd、反倾斜淘汰行为。
+// ════════════════════════════════════════════════════════════════════
+class CountingTransport : public Transport {
+    CMSharedPtr<Transport> inner_;
+    std::atomic<int> connect_count_{0};
+    std::atomic<int> close_count_{0};
+public:
+    explicit CountingTransport(CMSharedPtr<Transport> inner) : inner_(std::move(inner)) {}
+    int connect_count() const { return connect_count_.load(std::memory_order_relaxed); }
+    int close_count() const { return close_count_.load(std::memory_order_relaxed); }
+
+    int create_listen_socket(const CMString& h, int p) override { return inner_->create_listen_socket(h, p); }
+    int accept_connection(int lfd) override { return inner_->accept_connection(lfd); }
+    int create_connection(const CMString& h, int p) override {
+        connect_count_.fetch_add(1, std::memory_order_relaxed);
+        return inner_->create_connection(h, p);
+    }
+    void set_nodelay(int fd) override { inner_->set_nodelay(fd); }
+    void set_nonblocking(int fd) override { inner_->set_nonblocking(fd); }
+    void set_recv_timeout(int fd, int t) override { inner_->set_recv_timeout(fd, t); }
+    void set_send_timeout(int fd, int t) override { inner_->set_send_timeout(fd, t); }
+    ssize_t send(int fd, const char* d, size_t n) override { return inner_->send(fd, d, n); }
+    ssize_t recv(int fd, char* b, size_t n) override { return inner_->recv(fd, b, n); }
+    bool send_all(int fd, const char* d, size_t n) override { return inner_->send_all(fd, d, n); }
+    bool sendv(int fd, const struct iovec* iov, int c) override { return inner_->sendv(fd, iov, c); }
+    int get_port(int fd) override { return inner_->get_port(fd); }
+    void close(int fd) override {
+        close_count_.fetch_add(1, std::memory_order_relaxed);
+        inner_->close(fd);
+    }
+};
+
+// 连续两次 request 同一 peer：第二次应复用第一次归还的 idle fd（connect 仅 1 次）。
+TEST_F(DataClientPoolTest, ReusesFdAcrossRequestsToSamePeer) {
+    ds_->register_database("/reuse", test_dir_, test_dir_ + "/data");
+    ds_->start_data_server("127.0.0.1", 0, 2);
+    int port = ds_->get_data_port();
+
+    auto transport = CMMakeShared<CountingTransport>(create_tcp_transport());
+    DataClientPool pool(transport, 2);
+
+    auto r1 = pool.request("127.0.0.1", port, "/reuse:missing", 0, 0, 5000);
+    auto r2 = pool.request("127.0.0.1", port, "/reuse:missing", 0, 0, 5000);
+
+    EXPECT_EQ(std::get<5>(r1), ReadError::OBJECT_NOT_FOUND);
+    EXPECT_EQ(std::get<5>(r2), ReadError::OBJECT_NOT_FOUND);
+    // 两次完整交换，第二次复用 idle fd → 仅 connect 一次
+    EXPECT_EQ(transport->connect_count(), 1);
+}
+
+// 并发 request 同一 peer：单 fd 同步收发无法并行，必然创建多个 fd 并行传输。
+TEST_F(DataClientPoolTest, ConcurrentRequestsToSamePeerUseMultipleFds) {
+    ds_->register_database("/conc", test_dir_, test_dir_ + "/data");
+    ds_->start_data_server("127.0.0.1", 0, 2);
+    int port = ds_->get_data_port();
+
+    auto transport = CMMakeShared<CountingTransport>(create_tcp_transport());
+    DataClientPool pool(transport, 4);  // 并发上限 4
+
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 4; ++i) {
+        threads.emplace_back([&]() {
+            pool.request("127.0.0.1", port, "/conc:missing", 0, 0, 5000);
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    EXPECT_GT(transport->connect_count(), 1);
+    EXPECT_LE(transport->connect_count(), 4);
+}
+
+// 达 fd 上限(2×pool_size)后为新 peer 新建连接，触发反倾斜淘汰：
+// 用 0.0.0.0 server + 127.0.0.x loopback 别名制造多个不同 peer key。
+TEST_F(DataClientPoolTest, EvictsByAntiSkewWhenFdLimitReached) {
+    ds_->register_database("/evict", test_dir_, test_dir_ + "/data");
+    ds_->start_data_server("0.0.0.0", 0, 2);
+    int port = ds_->get_data_port();
+
+    auto transport = CMMakeShared<CountingTransport>(create_tcp_transport());
+    DataClientPool pool(transport, 1);  // pool_size=1 → max_fd=2
+
+    pool.request("127.0.0.1", port, "/evict:m", 0, 0, 5000);
+    pool.request("127.0.0.2", port, "/evict:m", 0, 0, 5000);
+    pool.request("127.0.0.3", port, "/evict:m", 0, 0, 5000);
+
+    // 3 个不同 peer 各 connect 一次；max_fd=2 → 第三次必然淘汰过 ≥1 个 idle
+    EXPECT_EQ(transport->connect_count(), 3);
+    EXPECT_GE(transport->close_count(), 1);
 }
 
 }  // namespace fly
