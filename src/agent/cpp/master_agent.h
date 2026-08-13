@@ -204,6 +204,8 @@ public:
     std::pair<uint64_t, uint64_t> pending_merge_cleanup_counts_for_testing(const CMString& db_path) const;
     // 直接注入 DeleteDataAck（绕过 reactor），驱动 pending 状态机用于测试。
     void inject_delete_data_ack_for_testing(const DeleteDataAckMessage& msg) { on_delete_data_ack(0, msg); }
+    // 直接驱动 select_backup_worker（private），验证 host 级分散选择用于测试。
+    uint64_t select_backup_worker_for_testing(const CMString& object_name) { return select_backup_worker(object_name); }
 private:
 #endif
 
@@ -354,7 +356,6 @@ private:
     WriteRegisterAckMessage do_write_register(const WriteRegisterMessage& msg);
     void record_worker_info(const CMString& object_name, const CMString& db_path,
                             uint64_t worker_id, const CMString& writer_id);
-    void evaluate_and_trigger_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_path);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
     void on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg);
@@ -376,9 +377,15 @@ private:
     void broadcast_var(const CMString& full_var_name, bool is_modification_reject);
 
     void on_backup_request(uint64_t conn_id, const BackupRequestMessage& msg);
-    uint64_t select_backup_worker(uint64_t source_worker_id);
+    // 选 backup 目标 worker：避开对象所有现有副本的 host（host 级分散）；
+    // host 全冲突时 best-effort 回退到「无副本」的 worker。返回 0 = 无可用目标。
+    uint64_t select_backup_worker(const CMString& object_name);
 
     void trigger_auto_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_path);
+
+    // worker → master：聚合 worker 上报的 TIER2 读增量（EWMA 衰减），并据此判定 backup。
+    void on_worker_backup_suggest(uint64_t conn_id, const WorkerBackupSuggestMessage& msg);
+    void evaluate_and_maybe_backup(const CMString& object_name);
 
     void persist_failed_task(const FailedTaskRecord& record);
     void remove_persisted_task(uint64_t task_id);
@@ -395,6 +402,18 @@ private:
 
     CMUnorderedSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
     mutable std::mutex recorded_workers_mutex_;
+
+    // ── Auto-backup EWMA 聚合（worker suggest → master score → 判定 backup）──
+    // master 聚合多 worker 上报的 TIER2 读增量，按 suggest 接收时间做 EWMA 衰减。
+    // score = cumulative / replicas；backup → replicas++ → score 降 → 自然平衡（不 reset）。
+    struct ObjectBackupScore {
+        double cumulative_bytes_ = 0;   // EWMA 衰减后的累积字节
+        double cumulative_count_ = 0;   // EWMA 衰减后的累积次数
+        int64_t size_bytes_ = 0;        // 对象最新压缩后大小（大文件例外判定用）
+        int64_t last_suggest_time_ = 0; // 上次 suggest 到达时间（EWMA elapsed 用）
+    };
+    CMUnorderedMap<CMString, ObjectBackupScore> backup_scores_;
+    mutable std::mutex backup_scores_mutex_;
 
     // 按 db 分组：outer key = db_path，inner key = short_name，value = write_context_hash。
     // 嵌套结构让 freeze 时 cleanup_provenance_for_db 一次 erase 整个 db，无需前缀扫描。

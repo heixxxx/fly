@@ -60,10 +60,11 @@ enum class MessageType : uint8_t {
     MSG_LIMIT_SYNC = 49,      // master → worker (broadcast): 同步 message 配额设置（全量快照）
     PEER_RPC_REQUEST = 50,    // worker → peer (业务RPC): 请求（rpc_id + src_worker + payload）
     PEER_RPC_RESPONSE = 51,   // peer → worker (业务RPC): 响应（rpc_id + status + payload）
+    WORKER_BACKUP_SUGGEST = 52,  // worker → master: 上报 TIER2 读流量增量，master 聚合后判定 backup
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 51;
+    return raw >= 1 && raw <= 52;
 }
 
 struct MessageHeader {
@@ -478,6 +479,21 @@ struct BackupCompleteMessage {
 
     static constexpr MessageType msg_type_ = MessageType::BACKUP_COMPLETE;
     FLY_SERIALIZE(header_, worker_id_, object_name_, db_path_, success_, error_message_);
+};
+
+// worker → master: 上报本 worker 自上次 suggest 以来的 TIER2 读增量（count/bytes）。
+// master 用 EWMA 聚合多 worker suggest → score = cumulative/replicas → 判定 backup。
+// object_name_ 为 FULL name（db_path:short_name）；size_bytes_ 为最新观测的压缩后大小。
+struct WorkerBackupSuggestMessage {
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMString object_name_;
+    uint64_t delta_count_ = 0;     // worker 自上次 suggest 的增量次数
+    uint64_t delta_bytes_ = 0;     // worker 自上次 suggest 的增量字节
+    int64_t size_bytes_ = 0;       // 对象大小（最新观测，压缩后）
+
+    static constexpr MessageType msg_type_ = MessageType::WORKER_BACKUP_SUGGEST;
+    FLY_SERIALIZE(header_, worker_id_, object_name_, delta_count_, delta_bytes_, size_bytes_);
 };
 
 // =============================================================================

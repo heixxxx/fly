@@ -10,6 +10,7 @@
 #include <storage/cpp/local_index.h>
 #include <common/cpp/write_context_hash.h>
 #include <algorithm>
+#include <cmath>
 #include <unordered_set>
 #include <thread>
 #include <chrono>
@@ -169,6 +170,11 @@ void MasterAgent::start() {
     reactor_->register_handler<BackupRequestMessage>(
         [this](uint64_t conn_id, const BackupRequestMessage& msg) {
             on_backup_request(conn_id, msg);
+        });
+
+    reactor_->register_handler<WorkerBackupSuggestMessage>(
+        [this](uint64_t conn_id, const WorkerBackupSuggestMessage& msg) {
+            on_worker_backup_suggest(conn_id, msg);
         });
 
     reactor_->register_handler<IdxLoadAckMessage>(
@@ -992,15 +998,6 @@ void MasterAgent::record_worker_info(const CMString& object_name, const CMString
     }
 }
 
-// master 自写对象（worker_id==0）的 auto-backup 评估。从原 on_data_ready 抽出。
-void MasterAgent::evaluate_and_trigger_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_path) {
-    auto target_replicas = static_cast<uint32_t>(Config::instance()->get_int("backup_replicas"));
-    auto decision = DataService::instance()->evaluate_auto_backup(object_name, source_worker_id, target_replicas);
-    if (decision.should_backup_) {
-        trigger_auto_backup(object_name, source_worker_id, db_path);
-    }
-}
-
 void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg) {
     size_t written_count = msg.written_objects_.size();
     INFO("Task complete: task_id={}, written_objects={}", msg.task_id_, written_count);
@@ -1412,24 +1409,9 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
             response.locations_.push_back(std::move(dl));
         }
 
-        if (Config::instance()->get_int("auto_backup_enabled") == 1) {
-            DataService::instance()->record_remote_access(msg.object_name_);
-
-            auto threshold = static_cast<uint64_t>(Config::instance()->get_int("backup_threshold"));
-            auto target_replicas = static_cast<uint32_t>(Config::instance()->get_int("backup_replicas"));
-
-            auto decision = DataService::instance()->evaluate_auto_backup(msg.object_name_, threshold, target_replicas);
-            INFO("[AUTO-BACKUP] obj={}, read_count={}, current_replicas={}, target={}, should_backup={}",
-                 msg.object_name_, decision.read_count_, decision.current_replicas_, target_replicas, decision.should_backup_);
-            if (decision.should_backup_ && !all_locs.empty()) {
-                CMString db_path = msg.object_name_;
-                auto colon_pos = msg.object_name_.find(':');
-                if (colon_pos != CMString::npos) {
-                    db_path = msg.object_name_.substr(0, colon_pos);
-                }
-                trigger_auto_backup(msg.object_name_, all_locs.front().worker_id_, db_path);
-            }
-        }
+        // master 不再自行统计读流量判定 backup（master 有盲区：worker 缓存对象位置后不再查
+        // master，越热的对象 master 反而统计不到）。改由 worker 主动观测 TIER2 读流量并上报
+        // suggest（WorkerBackupSuggestMessage），master EWMA 聚合后判定（on_worker_backup_suggest）。
     } else {
         response.success_ = false;
         bool has_pending = !graph_->get_pending_tasks().empty();
@@ -1545,9 +1527,9 @@ WriteRegisterAckMessage MasterAgent::do_write_register(const WriteRegisterMessag
             DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_, msg.size_bytes_);
             update_dependency_location_cache(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
             record_worker_info(msg.object_name_, msg.db_path_, msg.worker_id_, msg.writer_id_);
-            if (master_self_write && Config::instance()->get_int("auto_backup_enabled") == 1) {
-                evaluate_and_trigger_backup(msg.object_name_, 0, msg.db_path_);
-            }
+            // master 自写对象（worker_id==0）的 backup 不再由 master 主动评估触发——
+            // 新设计下 master 不自统计读流量（有盲区）。master 写入的对象待 worker 跨机读取后，
+            // 由 worker 上报 suggest（WorkerBackupSuggestMessage）→ master EWMA 聚合判定 backup。
             schedule_tasks();
         }
         // 非 stream 模式：provenance 已登记（校验段），但 mark_data_ready /
@@ -2301,7 +2283,7 @@ FailedTaskRecord MasterAgent::make_failed_record(uint64_t task_id, const CMStrin
 void MasterAgent::on_backup_request(uint64_t conn_id, const BackupRequestMessage& msg) {
     INFO("BackupRequest: object={}, source_worker={}", msg.object_name_, msg.worker_id_);
 
-    uint64_t backup_worker_id = select_backup_worker(msg.worker_id_);
+    uint64_t backup_worker_id = select_backup_worker(msg.object_name_);
     if (backup_worker_id == 0) {
         ERR("No suitable backup worker found for object={}", msg.object_name_);
         return;
@@ -2324,7 +2306,7 @@ void MasterAgent::on_backup_request(uint64_t conn_id, const BackupRequestMessage
     // get_idle_workers→assign 序列互斥，避免 backup assign 与 scheduler assign 交错产生
     // worker_manager 撕裂状态（同一 worker 被两边几乎同时赋不同 task）。
     // on_backup_request 的调用方（reactor dispatch / trigger_auto_backup /
-    // evaluate_and_trigger_backup←do_write_register）均不持有 schedule_mutex_，无递归死锁。
+    // evaluate_and_maybe_backup←on_worker_backup_suggest）均不持有 schedule_mutex_，无递归死锁。
     {
         std::lock_guard<std::mutex> lk(schedule_mutex_);
         worker_manager_->assign_task(backup_worker_id, backup_task_id);
@@ -2351,29 +2333,39 @@ void MasterAgent::on_backup_request(uint64_t conn_id, const BackupRequestMessage
     INFO("Backup task assigned to worker_id={} for object={}", backup_worker_id, msg.object_name_);
 }
 
-uint64_t MasterAgent::select_backup_worker(uint64_t source_worker_id) {
+uint64_t MasterAgent::select_backup_worker(const CMString& object_name) {
+    // 现有副本的 worker_id（既是数据源，也是 host 去重的排除集）。
+    auto holders = DataService::instance()->get_remote_workers(object_name);
+    CMUnorderedSet<uint64_t> holder_set(holders.begin(), holders.end());
+
     std::lock_guard<std::mutex> lk(workers_mutex_);
+    auto all = worker_manager_->get_all_workers();  // 一次快照（含 hostname_）
 
-    // hostname + status 统一来自 WorkerInfo（一次遍历，取代原 hostname map 遍历
-    // + 逐个 get_worker 查 status 的双源 join）。
-    CMString source_hostname = worker_manager_->get_hostname(source_worker_id);
+    // 第一遍：建 holder host 集合（现有副本分布在哪些 host）。
+    CMUnorderedSet<CMString> holder_hosts;
+    for (const auto& info : all) {
+        if (holder_set.count(info.worker_id_)) holder_hosts.insert(info.hostname_);
+    }
 
+    // 第二遍：优先 host 全新的 worker；host 全冲突时 best-effort 回退到「无副本」的 worker
+    // （保证副本数增长，host 分散是尽力而为）。
     uint64_t fallback_worker = 0;
-    for (const auto& info : worker_manager_->get_all_workers()) {
-        if (info.worker_id_ == source_worker_id) continue;
-        if (info.worker_id_ == 0) continue;
+    for (const auto& info : all) {
+        if (holder_set.count(info.worker_id_)) continue;  // 已有副本，跳过
+        if (info.worker_id_ == 0) continue;                // master 不做 backup 目标
         if (info.status_ == WorkerStatus::DEAD) continue;
 
-        if (info.hostname_ != source_hostname) {
-            return info.worker_id_;
+        if (!holder_hosts.count(info.hostname_)) {
+            return info.worker_id_;  // host 全新 → 最优
         }
         if (fallback_worker == 0) {
-            fallback_worker = info.worker_id_;
+            fallback_worker = info.worker_id_;  // host 冲突但该 worker 无副本
         }
     }
 
     if (fallback_worker != 0) {
-        INFO("select_backup_worker: all workers on same host, using worker_id={}", fallback_worker);
+        INFO("select_backup_worker: no host-disjoint worker for obj={}, fallback to {}",
+             object_name, fallback_worker);
     }
     return fallback_worker;
 }
@@ -2387,11 +2379,74 @@ void MasterAgent::trigger_auto_backup(const CMString& object_name, uint64_t sour
     backup_msg.db_path_ = db_path;
 
     on_backup_request(0, backup_msg);
+    // 新设计：master 不再 decay_after_backup。backup → replicas++ → score = cumulative/replicas
+    // 自然下降，降到 < threshold 即停。cumulative 不 reset（reset 会导致持续热对象反复 backup）。
+}
 
-    // backup 触发后衰减该对象 read_count（事件驱动，非后台全量扫描）：
-    // 避免刚 backup 的对象因 read_count 持续高而反复触发。backup_decay_factor 控制衰减比例。
-    int decay_factor = static_cast<int>(Config::instance()->get_int("backup_decay_factor"));
-    DataService::instance()->decay_after_backup(object_name, decay_factor);
+void MasterAgent::on_worker_backup_suggest(uint64_t conn_id, const WorkerBackupSuggestMessage& msg) {
+    DBG("WorkerBackupSuggest: worker={}, obj={}, delta_count={}, delta_bytes={}, size={}",
+        msg.worker_id_, msg.object_name_, msg.delta_count_, msg.delta_bytes_, msg.size_bytes_);
+    int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    // EWMA 衰减：基于 suggest 到达频率（不受单次传输时间影响 → 不惩罚大对象）。
+    double dps = Config::instance()->get_int("master_ewma_decay_per_sec") / 100.0;
+    {
+        std::lock_guard<std::mutex> lk(backup_scores_mutex_);
+        auto& s = backup_scores_[msg.object_name_];
+        int64_t elapsed = now - s.last_suggest_time_;
+        if (elapsed > 0 && s.last_suggest_time_ > 0) {
+            double factor = std::pow(1.0 - dps, static_cast<double>(elapsed));
+            s.cumulative_bytes_ *= factor;
+            s.cumulative_count_ *= factor;
+        }
+        s.cumulative_bytes_ += static_cast<double>(msg.delta_bytes_);
+        s.cumulative_count_ += static_cast<double>(msg.delta_count_);
+        if (msg.size_bytes_ > 0) s.size_bytes_ = msg.size_bytes_;
+        s.last_suggest_time_ = now;
+    }
+    evaluate_and_maybe_backup(msg.object_name_);
+}
+
+void MasterAgent::evaluate_and_maybe_backup(const CMString& object_name) {
+    auto holders = DataService::instance()->get_remote_workers(object_name);
+    uint32_t replicas = static_cast<uint32_t>(holders.size());
+    double divisor = std::max(static_cast<double>(replicas), 1.0);
+
+    ObjectBackupScore s;
+    { std::lock_guard<std::mutex> lk(backup_scores_mutex_); s = backup_scores_[object_name]; }
+
+    double score_bytes = s.cumulative_bytes_ / divisor;
+    double score_count = s.cumulative_count_ / divisor;
+    double bytes_thr = static_cast<double>(Config::instance()->get_int("backup_bytes_threshold"));
+    double count_thr = static_cast<double>(Config::instance()->get_int("backup_count_threshold"));
+
+    // 双分数 OR：字节或次数任一超阈值即视为热点。
+    bool hot_bytes = bytes_thr > 0 && score_bytes >= bytes_thr;
+    bool hot_count = count_thr > 0 && score_count >= count_thr;
+    if (!hot_bytes && !hot_count) return;
+    if (holders.empty()) return;
+
+    // 副本上限：正常 max_backup_replicas；大文件 + 异常高分可突破上限。
+    uint32_t max_r = static_cast<uint32_t>(Config::instance()->get_int("max_backup_replicas"));
+    bool large_exception =
+        (s.size_bytes_ >= Config::instance()->get_int("backup_large_object_threshold")
+         && score_bytes >= static_cast<double>(Config::instance()->get_int("backup_high_score_threshold")));
+    uint32_t cap = large_exception
+        ? max_r + static_cast<uint32_t>(Config::instance()->get_int("backup_extra_slots"))
+        : max_r;
+    if (replicas >= cap) {
+        DBG("[AUTO-BACKUP] obj={}, replicas={}, cap={}, score_bytes={}, score_count={} → at cap, skip",
+            object_name, replicas, cap, score_bytes, score_count);
+        return;
+    }
+
+    auto [db_path, short_name] = fly::split_full_name(object_name);
+    INFO("[AUTO-BACKUP] obj={}, replicas={}, score_bytes={}, score_count={} → triggering backup",
+         object_name, replicas, score_bytes, score_count);
+    // 每次 suggest 触发一份 backup（async：BackupComplete 后 replicas 才增长）。
+    // score/replicas 反馈平衡：backup → replicas++ → score 降 → 自然收敛，避免一次循环多 backup
+    // 落到同一 worker（select_backup_worker 对同一 source 会重复选同一目标）。
+    trigger_auto_backup(object_name, holders.front(), db_path);
 }
 
 // =============================================================================

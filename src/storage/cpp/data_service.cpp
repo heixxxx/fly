@@ -6,6 +6,7 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/db_meta.h>
 #include <storage/cpp/object_cache.h>
+#include <common/cpp/worker_context.h>   // WorkerAgentContext::suggest_backup（maybe_suggest_backup 用）
 #include <network/cpp/net_quality_monitor.h>
 #include <serialization/cpp/object_header.h>
 #include <serialization/cpp/serialization_macros.h>
@@ -1000,6 +1001,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
                         cb(loc.host_, loc.port_, object_name);
                     if (cb_found) {
                         DBG("[TIER2] obj={}, hit worker={}", object_name, loc.worker_id_);
+                        // worker TIER2 跨 worker 读命中：累积读流量 + 检查 backup suggest
+                        record_remote_access(object_name, cb_data ? static_cast<int64_t>(cb_data->size()) : 0);
+                        maybe_suggest_backup(object_name);
                         return {true, cb_data, std::move(cb_py_name), std::move(cb_hash), false};
                     }
                     if (cb_rerr == ReadError::OBJECT_NOT_FOUND) {
@@ -1249,7 +1253,7 @@ void DataService::cleanup_temp_entries(const CMString& db_path) {
 // Auto-Backup Access Tracking (inline in remote_idx_)
 // ============================================================
 
-void DataService::record_remote_access(const CMString& object_name) {
+void DataService::record_remote_access(const CMString& object_name, int64_t size_bytes) {
     auto [db_path, short_name] = split_full(object_name);
     std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
@@ -1258,8 +1262,38 @@ void DataService::record_remote_access(const CMString& object_name) {
     if (obj_it == db_it->second.end()) return;
     auto& meta = obj_it->second;
     meta.read_count_++;
+    if (size_bytes > 0) {
+        meta.size_bytes_ = size_bytes;
+        meta.accumulated_bytes_ += size_bytes;
+    }
     meta.last_access_time_ = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+void DataService::maybe_suggest_backup(const CMString& object_name) {
+    // worker TIER2 读后检查：累积读流量达阈值 + cooldown 过 → suggest → reset。
+    // worker 不时间衰减（累积值精确反映自上次 suggest 的增量）。suggest 后 reset（清零重新累积）。
+    if (Config::instance()->get_int("auto_backup_enabled") != 1) return;
+    auto [db_path, short_name] = split_full(object_name);
+    std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
+    auto db_it = remote_idx_.find(db_path);
+    if (db_it == remote_idx_.end()) return;
+    auto obj_it = db_it->second.find(short_name);
+    if (obj_it == db_it->second.end()) return;
+    auto& meta = obj_it->second;
+    int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    int64_t cooldown = Config::instance()->get_int("worker_suggest_cooldown");
+    if (now - meta.last_suggest_time_ < cooldown) return;
+    uint64_t bytes_thr = static_cast<uint64_t>(Config::instance()->get_int("worker_suggest_bytes_threshold"));
+    uint64_t count_thr = static_cast<uint64_t>(Config::instance()->get_int("worker_suggest_count_threshold"));
+    if (meta.accumulated_bytes_ < bytes_thr && meta.read_count_ < count_thr) return;
+    // 达阈值 → suggest（经 WorkerAgentContext 回调，由 WorkerAgent 发消息给 master）
+    fly::WorkerAgentContext::suggest_backup(object_name, meta.read_count_, meta.accumulated_bytes_, meta.size_bytes_);
+    // reset（增量已上报，清零重新累积）
+    meta.read_count_ = 0;
+    meta.accumulated_bytes_ = 0;
+    meta.last_suggest_time_ = now;
 }
 
 BackupDecision DataService::evaluate_auto_backup(const CMString& object_name,

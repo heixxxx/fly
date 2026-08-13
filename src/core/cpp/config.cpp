@@ -97,6 +97,19 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"backup_replicas", 2},           // target number of backup copies (including original)
     {"backup_decay_interval", 300},   // decay check interval in seconds, 0=no decay
     {"backup_decay_factor", 50},      // decay factor percentage (read_count *= factor/100)
+    // ── auto-backup 双层重设计（worker suggest + master EWMA 聚合）──
+    // worker 侧：TIER2 读累积达阈值 + cooldown 过 → suggest → reset（worker 不时间衰减）。
+    {"worker_suggest_bytes_threshold", 1073741824},   // 1GB：worker 累积传输字节达此值触发 suggest
+    {"worker_suggest_count_threshold", 100},          // worker 累积读次数达此值触发 suggest
+    {"worker_suggest_cooldown", 60},                  // worker 两次 suggest 最小间隔（秒）
+    // master 侧：EWMA 聚合 worker suggest，score = cumulative/replicas 判定 backup（不 reset）。
+    {"master_ewma_decay_per_sec", 1},                 // master EWMA 每秒衰减百分比（1 = 1%/s）
+    {"backup_bytes_threshold", 10737418240},          // 每副本 10GB：score_bytes 超此值触发 backup
+    {"backup_count_threshold", 1000},                 // 每副本 1000 次：score_count 超此值触发 backup
+    {"max_backup_replicas", 3},                       // 正常副本上限（含原始）
+    {"backup_large_object_threshold", 1073741824},    // 1GB+ 视为大文件（可触发例外突破上限）
+    {"backup_high_score_threshold", 107374182400},    // 100GB：大文件 score_bytes 超此值触发例外
+    {"backup_extra_slots", 2},                        // 例外情况下在 max_backup_replicas 之外额外副本数
     {"aggregation_threshold", 1048576},
     {"large_file_threshold_kb", 65536},  // 64MB in KB (user-configurable)
     {"block_size", 134217728},

@@ -36,6 +36,8 @@ struct RemoteObjectMeta {
     uint64_t read_count_ = 0;
     int64_t last_access_time_ = 0;   // epoch seconds
     int64_t size_bytes_ = 0;         // 压缩后字节数（data locality 调度亲和度打分用）
+    uint64_t accumulated_bytes_ = 0; // 累积传输字节（worker suggest 用，suggest 后 reset）
+    int64_t last_suggest_time_ = 0;  // 上次 suggest 时间（cooldown 用）
 };
 
 struct BackupDecision {
@@ -285,7 +287,9 @@ public:
     // Auto-Backup Access Tracking (inline in remote_idx_)
     // ============================================================
 
-    void record_remote_access(const CMString& object_name);
+    void record_remote_access(const CMString& object_name, int64_t size_bytes = 0);
+    // worker TIER2 读后检查是否该上报 backup suggest（增量阈值 + cooldown + reset）
+    void maybe_suggest_backup(const CMString& object_name);
 
     BackupDecision evaluate_auto_backup(const CMString& object_name,
                                          uint64_t threshold,

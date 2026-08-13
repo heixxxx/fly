@@ -34,6 +34,7 @@ public:
         freeze_func_ = nullptr;
         remove_request_func_ = nullptr;
         backup_request_func_ = nullptr;
+        suggest_backup_func_ = nullptr;
         set_var_func_ = nullptr;
         get_var_func_ = nullptr;
         remove_var_func_ = nullptr;
@@ -99,6 +100,24 @@ public:
     static void request_backup(const CMString& db_path, const CMString& object_name) {
         if (backup_request_func_) {
             backup_request_func_(db_path, object_name);
+        }
+    }
+
+    // ---- Backup suggest（worker → master 读流量上报）----
+    // worker TIER2 读累积达阈值后上报增量（delta_count/delta_bytes）给 master，
+    // master EWMA 聚合判定 backup。object_name 为 FULL name。
+    // size_bytes 为对象最新压缩后大小（master 用于大文件例外判定）。
+    static void set_suggest_backup_func(std::function<void(const CMString& object_name,
+                                                            uint64_t delta_count,
+                                                            uint64_t delta_bytes,
+                                                            int64_t size_bytes)> func) {
+        suggest_backup_func_ = std::move(func);
+    }
+
+    static void suggest_backup(const CMString& object_name, uint64_t delta_count,
+                               uint64_t delta_bytes, int64_t size_bytes) {
+        if (suggest_backup_func_) {
+            suggest_backup_func_(object_name, delta_count, delta_bytes, size_bytes);
         }
     }
 
@@ -192,6 +211,7 @@ private:
     static inline thread_local std::function<void(const CMString&)> freeze_func_;
     static inline thread_local std::function<void(const CMString&, const CMString&)> remove_request_func_;
     static inline thread_local std::function<void(const CMString&, const CMString&)> backup_request_func_;
+    static inline thread_local std::function<void(const CMString&, uint64_t, uint64_t, int64_t)> suggest_backup_func_;
     static inline thread_local std::function<bool(const CMString&, FlyBufferPtr, const CMString&)> set_var_func_;
     static inline thread_local std::function<std::tuple<bool, FlyBufferPtr, CMString>(const CMString&)> get_var_func_;
     static inline thread_local std::function<void(const CMString&)> remove_var_func_;

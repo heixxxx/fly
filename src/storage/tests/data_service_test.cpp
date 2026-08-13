@@ -5,6 +5,8 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <network/cpp/net_quality_monitor.h>
 #include <common/cpp/fly_buffer.h>
+#include <common/cpp/worker_context.h>   // WorkerAgentContext::set_suggest_backup_func
+#include <core/cpp/config.h>
 #include <filesystem>
 #include <istream>
 #include <chrono>
@@ -1036,6 +1038,105 @@ TEST_F(DataServiceTest, RemoteObjectMetaResetClearsAccess) {
 
     ds_->reset();
     EXPECT_EQ(ds_->get_access_read_count(full), 0u);
+}
+
+// ── maybe_suggest_backup（worker TIER2 读累积 → suggest → reset）──
+
+// 捕获 suggest_backup 调用的辅助结构。
+struct SuggestCapture {
+    int call_count = 0;
+    CMString last_obj;
+    uint64_t last_delta_count = 0;
+    uint64_t last_delta_bytes = 0;
+    int64_t last_size_bytes = 0;
+};
+
+TEST_F(DataServiceTest, MaybeSuggestBackupTriggersAndResetsOnCountThreshold) {
+    Config::instance()->set_int("auto_backup_enabled", 1);
+    Config::instance()->set_int("worker_suggest_count_threshold", 5);
+    Config::instance()->set_int("worker_suggest_bytes_threshold", 1073741824);
+    Config::instance()->set_int("worker_suggest_cooldown", 60);
+
+    CMString full = db32("suggest_count") + ":obj";
+    ds_->update_remote_idx(full, 1, "host1", 1234);
+
+    SuggestCapture cap;
+    fly::WorkerAgentContext::set_suggest_backup_func(
+        [&cap](const CMString& obj, uint64_t dc, uint64_t db, int64_t sz) {
+            cap.call_count++;
+            cap.last_obj = obj;
+            cap.last_delta_count = dc;
+            cap.last_delta_bytes = db;
+            cap.last_size_bytes = sz;
+        });
+
+    // 累积 4 次（< threshold=5）→ 不 suggest
+    for (int i = 0; i < 4; i++) {
+        ds_->record_remote_access(full, 1024);
+        ds_->maybe_suggest_backup(full);
+    }
+    EXPECT_EQ(cap.call_count, 0);
+    EXPECT_EQ(ds_->get_access_read_count(full), 4u);
+
+    // 第 5 次（>= threshold）→ suggest + reset（read_count 归零）
+    ds_->record_remote_access(full, 1024);
+    ds_->maybe_suggest_backup(full);
+    EXPECT_EQ(cap.call_count, 1);
+    EXPECT_EQ(cap.last_obj, full);
+    EXPECT_EQ(cap.last_delta_count, 5u);
+    EXPECT_EQ(cap.last_delta_bytes, 5 * 1024ull);
+    EXPECT_EQ(cap.last_size_bytes, 1024);
+    // reset 后 read_count 归零
+    EXPECT_EQ(ds_->get_access_read_count(full), 0u);
+
+    fly::WorkerAgentContext::clear();
+    Config::instance()->set_int("auto_backup_enabled", 0);
+}
+
+TEST_F(DataServiceTest, MaybeSuggestBackupRespectsCooldown) {
+    Config::instance()->set_int("auto_backup_enabled", 1);
+    Config::instance()->set_int("worker_suggest_count_threshold", 3);
+    Config::instance()->set_int("worker_suggest_bytes_threshold", 1073741824);
+    Config::instance()->set_int("worker_suggest_cooldown", 3600);  // 长 cooldown 防跨测时间干扰
+
+    CMString full = db32("suggest_cooldown") + ":obj";
+    ds_->update_remote_idx(full, 1, "host1", 1234);
+
+    SuggestCapture cap;
+    fly::WorkerAgentContext::set_suggest_backup_func(
+        [&cap](const CMString&, uint64_t, uint64_t, int64_t) { cap.call_count++; });
+
+    // 首次达阈值 → suggest + reset
+    for (int i = 0; i < 3; i++) ds_->record_remote_access(full, 100);
+    ds_->maybe_suggest_backup(full);
+    EXPECT_EQ(cap.call_count, 1);
+
+    // cooldown 内再次累积达阈值 → 不 suggest（cooldown 未过）
+    for (int i = 0; i < 3; i++) ds_->record_remote_access(full, 100);
+    ds_->maybe_suggest_backup(full);
+    EXPECT_EQ(cap.call_count, 1);  // 仍只 1 次
+
+    fly::WorkerAgentContext::clear();
+    Config::instance()->set_int("auto_backup_enabled", 0);
+}
+
+TEST_F(DataServiceTest, MaybeSuggestBackupDisabledWhenAutoBackupOff) {
+    // auto_backup_enabled=0（默认）→ 即使累积达阈值也不 suggest
+    Config::instance()->set_int("auto_backup_enabled", 0);
+    Config::instance()->set_int("worker_suggest_count_threshold", 1);
+
+    CMString full = db32("suggest_disabled") + ":obj";
+    ds_->update_remote_idx(full, 1, "host1", 1234);
+
+    SuggestCapture cap;
+    fly::WorkerAgentContext::set_suggest_backup_func(
+        [&cap](const CMString&, uint64_t, uint64_t, int64_t) { cap.call_count++; });
+
+    ds_->record_remote_access(full, 1024);
+    ds_->maybe_suggest_backup(full);
+    EXPECT_EQ(cap.call_count, 0);  // 禁用 → 不 suggest
+
+    fly::WorkerAgentContext::clear();
 }
 
 // ─── Read API coverage (raw / wait / remote) ───

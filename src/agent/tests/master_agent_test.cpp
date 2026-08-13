@@ -1492,6 +1492,59 @@ TEST(MasterAgentTest, AddWorkerHostnameAndGetHostnames) {
     EXPECT_EQ(hostname_map[601], "host_beta");
 }
 
+// --- select_backup_worker host 级分散选择 ---
+
+// 副本在 W1@hostA；候选 W2@hostB（host 全新）、W3@hostA（冲突）→ 应选 W2（不选同 host 的 W3）。
+TEST(MasterAgentTest, SelectBackupWorkerPrefersHostDisjoint) {
+    MasterAgent master("127.0.0.1", 0);
+    master.add_worker_hostname(10, "host_a");
+    master.add_worker_hostname(20, "host_b");
+    master.add_worker_hostname(30, "host_a");
+
+    CMString obj = db32("backup_disjoint") + ":obj";
+    DataService::instance()->update_remote_idx(obj, 10, "10.0.0.1", 8001);
+
+    // W2@hostB 是唯一 host 全新的候选；W3@hostA 与 holder 冲突，仅作 fallback。
+    EXPECT_EQ(master.select_backup_worker_for_testing(obj), 20u);
+
+    DataService::instance()->remove_remote_index(obj);
+}
+
+// 副本在 W1@hostA、W2@hostB（所有 host 都被占）；仅剩 W3@hostA 无副本 → best-effort 回退选 W3。
+TEST(MasterAgentTest, SelectBackupWorkerFallbackWhenAllHostsOccupied) {
+    MasterAgent master("127.0.0.1", 0);
+    master.add_worker_hostname(10, "host_a");
+    master.add_worker_hostname(20, "host_b");
+    master.add_worker_hostname(30, "host_a");
+
+    CMString obj = db32("backup_fallback") + ":obj";
+    DataService::instance()->update_remote_idx(obj, 10, "10.0.0.1", 8001);
+    DataService::instance()->update_remote_idx(obj, 20, "10.0.0.2", 8002);
+
+    // hostA、hostB 都已有副本；W3@hostA 是唯一无副本的 worker → best-effort 回退选它。
+    EXPECT_EQ(master.select_backup_worker_for_testing(obj), 30u);
+
+    DataService::instance()->remove_remote_index(obj);
+}
+
+// 副本在 W1@hostA、W2@hostB；候选 W3@hostC（host 全新）、W4@hostA（冲突）→ 应避开两个 holder host 选 W3。
+TEST(MasterAgentTest, SelectBackupWorkerAvoidsAllHolderHosts) {
+    MasterAgent master("127.0.0.1", 0);
+    master.add_worker_hostname(10, "host_a");
+    master.add_worker_hostname(20, "host_b");
+    master.add_worker_hostname(30, "host_c");
+    master.add_worker_hostname(40, "host_a");
+
+    CMString obj = db32("backup_avoid_all") + ":obj";
+    DataService::instance()->update_remote_idx(obj, 10, "10.0.0.1", 8001);
+    DataService::instance()->update_remote_idx(obj, 20, "10.0.0.2", 8002);
+
+    // W3@hostC 是唯一 host 全新的候选（避开 hostA、hostB）；W4@hostA 冲突，不应被选。
+    EXPECT_EQ(master.select_backup_worker_for_testing(obj), 30u);
+
+    DataService::instance()->remove_remote_index(obj);
+}
+
 // --- Shutdown / Drain tests ---
 
 namespace {

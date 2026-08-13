@@ -678,8 +678,32 @@ TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MSG_LIMIT_SYNC)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE)));
-    EXPECT_FALSE(is_valid_message_type(52));  // upper bound is 51
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::WORKER_BACKUP_SUGGEST)));
+    EXPECT_FALSE(is_valid_message_type(53));  // upper bound is 52
     EXPECT_FALSE(is_valid_message_type(0));
+}
+
+// WorkerBackupSuggestMessage: worker → master 上报 TIER2 读增量（count/bytes/size）。
+TEST(MessageProtocolTest, WorkerBackupSuggestRoundTrip) {
+    WorkerBackupSuggestMessage msg;
+    msg.header_.type_ = MessageType::WORKER_BACKUP_SUGGEST;
+    msg.worker_id_ = 7;
+    msg.object_name_ = "my_db:hot_obj";
+    msg.delta_count_ = 150;
+    msg.delta_bytes_ = 2147483648ull;  // 2GB
+    msg.size_bytes_ = 536870912;       // 512MB
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    WorkerBackupSuggestMessage decoded;
+    EXPECT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.worker_id_, 7u);
+    EXPECT_EQ(decoded.object_name_, "my_db:hot_obj");
+    EXPECT_EQ(decoded.delta_count_, 150u);
+    EXPECT_EQ(decoded.delta_bytes_, 2147483648ull);
+    EXPECT_EQ(decoded.size_bytes_, 536870912);
+    EXPECT_TRUE(buffer.empty());
 }
 
 // Net-probe messages (network-aware read priority): request asks the peer to

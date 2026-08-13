@@ -646,6 +646,17 @@ void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_has
     WorkerAgentContext::set_backup_request_func([this](const CMString& db_path, const CMString& object_name) {
         request_backup(db_path, object_name);
     });
+    // Backup suggest：worker TIER2 读流量达阈值后上报增量给 master 聚合判定。
+    WorkerAgentContext::set_suggest_backup_func(
+        [this](const CMString& object_name, uint64_t delta_count, uint64_t delta_bytes, int64_t size_bytes) {
+            WorkerBackupSuggestMessage msg;
+            msg.worker_id_ = worker_id_;
+            msg.object_name_ = object_name;
+            msg.delta_count_ = delta_count;
+            msg.delta_bytes_ = delta_bytes;
+            msg.size_bytes_ = size_bytes;
+            reactor_->send(master_conn_, msg);
+        });
     // Var funcs: route to master over the network (synchronous set/get).
     // Names are FULL (db_path:short_name); forwarded as-is over the wire.
     WorkerAgentContext::set_set_var_func([this](const CMString& full_var_name,
