@@ -83,7 +83,16 @@ void DataServer::stop() {
     std::lock_guard<std::mutex> lk(start_mutex_);
     if (!running_.exchange(false)) return;
 
-    send_cv_.notify_all();
+    // notify 必须在 send_mutex_ 保护下：send_loop 的 wait(check pred) + wait() 是
+    // "持锁查 pred → 释放锁 wait" 的序列。若 notify 不持锁，可能在 send_loop 持锁
+    // 查 pred（pred=false，即将 wait）的窗口里发出，此时无 waiter → notify 落空 →
+    // send_loop 永久 wait → stop 的 join 永久 hang（lost wakeup）。持锁 notify 确保：
+    // 要么 send_loop 已 wait（释放锁，notify 唤醒它），要么 send_loop 在查 pred 时
+    // 看到 running_=false（pred=true，直接退出不 wait）。
+    {
+        std::lock_guard<std::mutex> slk(send_mutex_);
+        send_cv_.notify_all();
+    }
 
     if (listen_fd_ >= 0) {
         transport_->close(listen_fd_);
