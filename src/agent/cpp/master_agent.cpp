@@ -1,4 +1,5 @@
 #include <agent/cpp/master_agent.h>
+#include <agent/cpp/graceful_shutdown.h>
 #include <log/cpp/logger.h>
 #include <message/cpp/message_macros.h>
 #include <message/cpp/message_registry.h>
@@ -37,7 +38,6 @@ void MasterAgent::start() {
 
     draining_ = false;
     shutdown_requested_ = false;
-    fatal_error_ = false;
 
     graph_ = CMMakeUnique<DependencyGraph>();
     worker_manager_ = CMMakeUnique<WorkerManager>();
@@ -47,7 +47,10 @@ void MasterAgent::start() {
     auto transport = create_connection_manager("tcp");
     transport->listen(host_, port_);
 
-    reactor_ = CMMakeUnique<Reactor>(std::move(transport));
+    // handler 并行 lane：同连接消息严格保序（Register→*、WriteRegister→TaskComplete
+    // 等协议顺序依赖），跨连接并行。schedule_tasks 等重 handler 不再阻塞 reactor 线程。
+    size_t handler_lanes = static_cast<size_t>(Config::instance()->get_int("handler_lanes"));
+    reactor_ = CMMakeUnique<Reactor>(std::move(transport), handler_lanes);
 
     port_ = static_cast<uint16_t>(reactor_->get_bound_port());
 
@@ -123,6 +126,7 @@ void MasterAgent::start() {
             response.db_path_ = msg.db_path_;
 
             // 路径权威源收敛到 db_instances_（Database 内嵌 db_path_/data_path_）。
+            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
             auto it = db_instances_.find(msg.db_path_);
             if (it != db_instances_.end()) {
                 response.db_path_ = it->second->get_db_path();
@@ -243,9 +247,9 @@ void MasterAgent::start() {
 
     reactor_thread_ = std::thread([this] {
         reactor_->run();
-        if (drain_thread_.joinable()) {
-            drain_thread_.join();
-        }
+        // run() 退出后先等 lane 排空再 reset：reset 会先置空 reactor_ 成员再跑
+        // 析构（含池 join），迟到的 handler 经本对象 reactor_ 访问会解引用空指针。
+        reactor_->drain_handlers();
         DataService::instance()->stop_data_server();
         reactor_.reset();
     });
@@ -297,7 +301,6 @@ void MasterAgent::start() {
         return {false, has_pending || has_running};
     });
 
-    sigterm_received_ = false;
 
     INFO("MasterAgent started, reactor thread running");
 
@@ -420,10 +423,18 @@ void MasterAgent::do_drain_and_stop() {
         if (reactor_thread_.joinable()) {
             reactor_thread_.join();
         }
+        // 与 start() 内 reactor 线程尾部的 drain_handlers 同理：reset 前等 lane
+        // 排空，防止在途 handler 解引用已置空的 reactor_。
+        if (reactor_) {
+            reactor_->drain_handlers();
+        }
         reactor_.reset();
     }
 
-    db_instances_.clear();
+    {
+        std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+        db_instances_.clear();
+    }
 
     {
         std::lock_guard<std::mutex> lk(workers_mutex_);
@@ -448,6 +459,7 @@ void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) 
         for (const auto& full_var : spec.vars_) {
             auto [db_path, short_name] = split_full_name(full_var);
             if (db_path.empty()) continue;
+            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
             auto db_it = db_instances_.find(db_path);
             if (db_it != db_instances_.end() && !db_it->second->master_has_var(short_name)) {
                 WARN("task {} declares var '{}' but it does not exist on master (db={})",
@@ -643,7 +655,7 @@ void MasterAgent::schedule_tasks() {
     // 才 fail 掉死等(timeout<0)的 task。限时(>=0)的 task 会被降级调度，不在此处 fail。
     bool has_running = metadata_->has_tasks_with_status(TaskStatus::RUNNING);
     for (uint64_t task_id : remaining) {
-        const auto& requirements = graph_->get_task_requirements(task_id);
+        const auto requirements = graph_->get_task_requirements(task_id);
         if (requirements.capabilities_.empty()) continue;
         // 仅死等(timeout<0)的 task 才适用属性死锁 fail；timeout>=0 的会被降级调度
         if (requirements.timeout_seconds_ >= 0.0f) continue;
@@ -718,6 +730,7 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
         for (const auto& full_var : s.vars_) {
             auto [db_path, short_name] = split_full_name(full_var);
             if (db_path.empty()) continue;
+            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
             auto db_it = db_instances_.find(db_path);
             if (db_it == db_instances_.end()) continue;
             auto [found, value, type_name] = db_it->second->master_get_var(short_name);
@@ -792,6 +805,11 @@ void MasterAgent::heartbeat_check_loop() {
             std::unique_lock<std::mutex> lock(heartbeat_check_mutex_);
             heartbeat_check_cv_.wait_for(lock, std::chrono::seconds(5),
                                           [this]{ return !heartbeat_check_running_.load(); });
+        }
+
+        // SIGTERM 优雅退出：信号灯置位 → 触发完整 stop() 三阶段 drain（≤5s 延迟）。
+        if (graceful_shutdown_signalled()) {
+            trigger_graceful_shutdown();
         }
 
         if (running_ && !draining_.load()) {
@@ -973,6 +991,7 @@ void MasterAgent::record_worker_info(const CMString& object_name, const CMString
 
     CMString writer_id = writer_id_in;
     if (writer_id.empty()) {
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
         auto db_it2 = db_instances_.find(db_path);
         if (db_it2 != db_instances_.end()) {
             writer_id = db_it2->second->get_writer_id();
@@ -984,6 +1003,7 @@ void MasterAgent::record_worker_info(const CMString& object_name, const CMString
         std::lock_guard<std::mutex> lk(recorded_workers_mutex_);
         if (recorded_workers_.find(key) == recorded_workers_.end()) {
             recorded_workers_.insert(key);
+            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
             auto db_it = db_instances_.find(db_path);
             if (db_it != db_instances_.end()) {
                 ::WorkerInfo info;
@@ -1108,7 +1128,6 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
 
     if (msg.error_type_ == TaskErrorType::WRITE_REGISTRATION_TIMEOUT ||
         msg.error_type_ == TaskErrorType::EXECUTION_ERROR) {
-        fatal_error_ = true;
         ERR("FATAL: unrecoverable error (type={}) for task_id={}: {}",
             static_cast<int>(msg.error_type_), msg.task_id_, msg.error_message_);
         // 流程 message：不可恢复 task 失败（ERROR 级，用户必须知道）。
@@ -1300,6 +1319,7 @@ void MasterAgent::register_database(const CMString& db_path, const CMString& dat
     // db_path 本该唯一：重复 register 会丢弃旧 Database 的状态（var_store_、writer_id、
     // 冻结状态、对象状态）并覆盖 DataService::db_paths_。正常流程每个 db_path 只注册一次；
     // merge 重建走独立路径（见 cleanup_after_merge）。命中此 WARN = 重复注册 bug。
+    std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
     if (db_instances_.count(db_path) > 0) {
         WARN("[DB-DUP] register_database: db_path={} already exists — overwriting (possible bug)", db_path);
     }
@@ -1335,6 +1355,7 @@ void MasterAgent::commit_pending_frozen(uint64_t task_id) {
     }
     // 本地 freeze + 广播（task 成功后才广播）
     for (const auto& db_path : committed) {
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
         auto it = db_instances_.find(db_path);
         if (it != db_instances_.end()) it->second->freeze();
         // Part C: freeze 确认后 provenance 已失效，立即清理释放内存。
@@ -1371,6 +1392,7 @@ CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& db_pat
     //
     // 方法名暗示"get or create"，但当前实现总是 create+覆盖。重复调用同 db_path 会丢弃
     // 旧 Database 状态。命中此 WARN 说明调用方本该用 get_database 复用却误入了创建路径。
+    std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
     if (db_instances_.count(db_path) > 0) {
         WARN("[DB-DUP] get_or_create_database: db_path={} already exists — recreating (possible bug, should reuse)", db_path);
     }
@@ -1380,6 +1402,7 @@ CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& db_pat
 }
 
 CMSharedPtr<Database> MasterAgent::get_database(const CMString& db_path) const {
+    std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
     auto it = db_instances_.find(db_path);
     return it != db_instances_.end() ? it->second : nullptr;
 }
@@ -1491,21 +1514,30 @@ WriteRegisterAckMessage MasterAgent::do_write_register(const WriteRegisterMessag
     ack.db_path_ = msg.db_path_;
 
     bool registered_ok = false;
-    if (is_db_frozen(msg.db_path_)) {
-        ack.success_ = false;
-        ack.error_message_ = "Database frozen: " + msg.db_path_;
-        ack.error_type_ = TaskErrorType::WRITE_TO_FROZEN_DB;
-        WARN("WriteRegister rejected: db {} is frozen", msg.db_path_);
-    } else {
-        auto [prov_db, prov_short] = fly::split_full_name(msg.object_name_);
-        CMString err_msg;
-        if (provenance_check_and_register(prov_db, prov_short, msg.write_context_hash_, err_msg)) {
-            registered_ok = true;
-        } else {
+    {
+        // frozen 检查与 provenance 登记同一临界区（原 TOCTOU：检查与登记之间，
+        // 其他连接的 freeze commit + cleanup_provenance_for_db 可插入，已冻结 db
+        // 的 provenance 又被登记）。锁序 frozen_dbs_mutex_ → provenance_mutex_，
+        // 与 commit_pending_frozen 路径一致，无反向持锁。
+        std::lock_guard<std::mutex> flk(frozen_dbs_mutex_);
+        bool frozen = frozen_dbs_.count(msg.db_path_) > 0 ||
+                      pending_frozen_dbs_.count(msg.db_path_) > 0;
+        if (frozen) {
             ack.success_ = false;
-            ack.error_message_ = err_msg;
-            ack.error_type_ = TaskErrorType::WRITE_PROVENANCE_MISMATCH;
-            ERR("WriteRegister rejected: provenance mismatch for {}", msg.object_name_);
+            ack.error_message_ = "Database frozen: " + msg.db_path_;
+            ack.error_type_ = TaskErrorType::WRITE_TO_FROZEN_DB;
+            WARN("WriteRegister rejected: db {} is frozen", msg.db_path_);
+        } else {
+            auto [prov_db, prov_short] = fly::split_full_name(msg.object_name_);
+            CMString err_msg;
+            if (provenance_check_and_register(prov_db, prov_short, msg.write_context_hash_, err_msg)) {
+                registered_ok = true;
+            } else {
+                ack.success_ = false;
+                ack.error_message_ = err_msg;
+                ack.error_type_ = TaskErrorType::WRITE_PROVENANCE_MISMATCH;
+                ERR("WriteRegister rejected: provenance mismatch for {}", msg.object_name_);
+            }
         }
     }
 
@@ -1616,6 +1648,7 @@ void MasterAgent::on_var_set(uint64_t conn_id, const VarSetMessage& msg) {
     ack.var_name_ = msg.var_name_;  // echo the full name
 
     auto [db_path, short_name] = split_full_name(msg.var_name_);
+    std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
     auto it = db_path.empty() ? db_instances_.end() : db_instances_.find(db_path);
     if (it == db_instances_.end()) {
         ack.success_ = false;
@@ -1649,6 +1682,7 @@ void MasterAgent::on_var_get(uint64_t conn_id, const VarGetMessage& msg) {
     ack.var_name_ = msg.var_name_;  // echo the full name
 
     auto [db_path, short_name] = split_full_name(msg.var_name_);
+    std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
     auto it = db_path.empty() ? db_instances_.end() : db_instances_.find(db_path);
     if (it == db_instances_.end()) {
         ack.success_ = false;
@@ -1671,6 +1705,7 @@ void MasterAgent::on_var_get(uint64_t conn_id, const VarGetMessage& msg) {
 void MasterAgent::on_var_remove(uint64_t conn_id, const VarRemoveMessage& msg) {
     auto [db_path, short_name] = split_full_name(msg.var_name_);
     if (!db_path.empty()) {
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
         auto it = db_instances_.find(db_path);
         if (it != db_instances_.end()) {
             it->second->master_remove_var(short_name);
@@ -1801,6 +1836,9 @@ void rewrite_failed_records(const CMString& file_path, const CMVector<FailedTask
 }
 
 void MasterAgent::persist_failed_task(const FailedTaskRecord& record) {
+    // failed_tasks.bin 读改写互斥：调用方横跨 lane handler（on_task_complete/
+    // on_task_failed）与后台线程（attr-tick/watchdog 经 schedule_tasks）。
+    std::lock_guard<std::mutex> lk(failed_tasks_file_mutex_);
     CMString file_path = get_failed_tasks_file_path();
     append_failed_record(file_path, record);
 
@@ -1808,6 +1846,7 @@ void MasterAgent::persist_failed_task(const FailedTaskRecord& record) {
 }
 
 void MasterAgent::remove_persisted_task(uint64_t task_id) {
+    std::lock_guard<std::mutex> lk(failed_tasks_file_mutex_);
     CMString file_path = get_failed_tasks_file_path();
     if (!std::filesystem::exists(file_path)) return;
 
@@ -1832,21 +1871,28 @@ void MasterAgent::remove_persisted_task(uint64_t task_id) {
 }
 
 void MasterAgent::restart_failed_tasks(const CMString& file_path) {
-    if (!std::filesystem::exists(file_path)) {
-        WARN("No failed tasks file found at {}", file_path);
-        return;
-    }
+    // 文件互斥只覆盖 读取+删除：下面的 submit_task → schedule_tasks →
+    // persist_failed_task 会再取同一把锁，持锁重提交 = 自死锁（graceful_shutdown
+    // QA 实测：主线程同时持有 schedule_mutex_ + failed_tasks_file_mutex_ 后挂死）。
+    CMVector<FailedTaskRecord> records;
+    {
+        std::lock_guard<std::mutex> lk(failed_tasks_file_mutex_);
+        if (!std::filesystem::exists(file_path)) {
+            WARN("No failed tasks file found at {}", file_path);
+            return;
+        }
 
-    auto records = read_failed_records(file_path);
-    if (records.empty()) {
-        WARN("No failed tasks to restart");
-        return;
+        records = read_failed_records(file_path);
+        if (records.empty()) {
+            WARN("No failed tasks to restart");
+            return;
+        }
+
+        std::filesystem::remove(file_path);
     }
 
     size_t record_count = records.size();
     INFO("Restarting {} failed tasks", record_count);
-
-    std::filesystem::remove(file_path);
     INFO("Cleared failed tasks file {}", file_path);
 
     for (auto& record : records) {
@@ -1881,6 +1927,7 @@ void MasterAgent::setup_write_context() {
                                                 FlyBufferPtr value, const CMString& type_name) -> bool {
         auto [db_path, short_name] = split_full_name(full_var_name);
         if (db_path.empty()) return false;
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
         auto it = db_instances_.find(db_path);
         if (it == db_instances_.end()) return false;
         return it->second->master_set_var(short_name, value, type_name);
@@ -1889,6 +1936,7 @@ void MasterAgent::setup_write_context() {
         -> std::tuple<bool, FlyBufferPtr, CMString> {
         auto [db_path, short_name] = split_full_name(full_var_name);
         if (db_path.empty()) return {false, nullptr, ""};
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
         auto it = db_instances_.find(db_path);
         if (it == db_instances_.end()) return {false, nullptr, ""};
         return it->second->master_get_var(short_name);
@@ -1896,6 +1944,7 @@ void MasterAgent::setup_write_context() {
     WorkerAgentContext::set_remove_var_func([this](const CMString& full_var_name) {
         auto [db_path, short_name] = split_full_name(full_var_name);
         if (!db_path.empty()) {
+            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
             auto it = db_instances_.find(db_path);
             if (it != db_instances_.end()) {
                 it->second->master_remove_var(short_name);
@@ -1922,6 +1971,7 @@ std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const C
         // 路径（current_write_hash 空），用时间戳 fallback 保证非空，使 provenance 校验生效。
         msg.write_context_hash_ = make_timestamp_hash();
     }
+    std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
     auto db_it = db_instances_.find(db_path);
     if (db_it != db_instances_.end()) {
         msg.writer_id_ = db_it->second->get_writer_id();
@@ -2114,6 +2164,7 @@ void MasterAgent::on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg
     }
 
     // Master reads the same idx files from shared filesystem and updates remote_idx_
+    std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
     auto it = db_instances_.find(msg.db_path_);
     if (it == db_instances_.end()) {
         ERR("IdxLoadAck: unknown db_path={}", msg.db_path_);
@@ -2163,6 +2214,7 @@ void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFre
         // 立即清理释放内存。
         cleanup_provenance_for_db(msg.db_path_);
         // stream 模式的本地 freeze + 广播
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
         auto it = db_instances_.find(msg.db_path_);
         if (it != db_instances_.end()) {
             it->second->freeze();
@@ -2205,50 +2257,14 @@ void MasterAgent::on_master_freeze(const CMString& db_path) {
     MSG("STOR::0001", 2, "db {} frozen (master direct)", db_path);
 }
 
-std::atomic<bool> MasterAgent::sigterm_received_{false};
-
-void MasterAgent::sigterm_handler(int sig) {
-    sigterm_received_ = true;
-}
-
-void MasterAgent::check_shutdown_request() {
-    if ((sigterm_received_.load() || fatal_error_.load()) && !draining_.load()) {
-        if (!shutdown_requested_.exchange(true)) {
-            draining_ = true;
-            INFO("Shutdown requested (fatal_error={}, sigterm={}), triggering drain",
-                 fatal_error_.load(), sigterm_received_.load());
-
-            {
-                std::lock_guard<std::mutex> lk(workers_mutex_);
-                for (const auto& [wid, cid] : worker_to_conn_) {
-                    reactor_->send(cid, ShutdownMessage{});
-                }
-            }
-
-            reactor_->stop();
-            drain_thread_ = std::thread([this] {
-                persist_pending_tasks();
-                shutdown_requested_ = true;
-                if (heartbeat_check_thread_.joinable()) {
-                    heartbeat_check_running_ = false;
-                    heartbeat_check_cv_.notify_all();
-                    heartbeat_check_thread_.join();
-                }
-                if (attr_timeout_check_thread_.joinable()) {
-                    attr_timeout_check_running_ = false;
-                    attr_timeout_check_cv_.notify_all();
-                    attr_timeout_check_thread_.join();
-                }
-                db_instances_.clear();
-                {
-                    std::lock_guard<std::mutex> lk(workers_mutex_);
-                    conn_to_worker_.clear();
-                    worker_to_conn_.clear();
-                }
-                running_ = false;
-            });
-        }
-    }
+void MasterAgent::trigger_graceful_shutdown() {
+    // 幂等：只拉起一次 drain 线程。stop() 内部 draining_.exchange(true) 亦防重入。
+    if (graceful_stop_started_.exchange(true)) return;
+    INFO("Graceful shutdown requested (SIGTERM), starting stop() drain");
+    // 独立线程执行 stop()：stop() 会 join 本（heartbeat）线程，不能在自身上调用。
+    std::thread([this]() {
+        stop();
+    }).detach();
 }
 
 void MasterAgent::notify_drain_if_active() {
@@ -2611,6 +2627,7 @@ void MasterAgent::send_delete_data(uint64_t source_worker_id,
     if (!data_path.empty()) {
         msg.data_path_ = data_path;
     } else {
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
         auto it = db_instances_.find(db_path);
         if (it != db_instances_.end()) {
             msg.data_path_ = it->second->get_data_path();
@@ -2807,6 +2824,7 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     //    Database 是 master 进程路径唯一权威源；set_paths 同步 re-register 进
     //    DataService::db_paths_。db_instances_ 保留源 db_path 作 key（转发锚点），
     //    内部 Database 的 db_path_ 指向 merge 产物。
+    std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
     auto db_it = db_instances_.find(db_path);
     if (db_it != db_instances_.end()) {
         db_it->second->set_paths(merge_db_path, merge_data_path);

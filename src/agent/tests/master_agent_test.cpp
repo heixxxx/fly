@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include <agent/cpp/master_agent.h>
+#include <agent/cpp/graceful_shutdown.h>
+#include <csignal>
 #include <agent/cpp/worker_agent.h>
 #include <common/cpp/test_helpers.h>
 #include <core/cpp/config.h>
@@ -2167,6 +2169,46 @@ TEST(MasterAgentTest, FreezeClearsProvenance) {
     wait_for_running(master, false);
     WorkerAgentContext::clear();
     DataService::instance()->remove_remote_index(db_path + ":obj");
+}
+
+
+// ── SIGTERM 优雅退出 ────────────────────────────────────────────────────────
+
+TEST(GracefulShutdownTest, LampSetResetAndSignalDelivery) {
+    fly::reset_graceful_shutdown();
+    EXPECT_FALSE(fly::graceful_shutdown_signalled());
+
+    fly::set_graceful_shutdown();
+    EXPECT_TRUE(fly::graceful_shutdown_signalled());
+
+    fly::reset_graceful_shutdown();
+    EXPECT_FALSE(fly::graceful_shutdown_signalled());
+
+    // 真实信号路径：install 后 raise(SIGTERM)，handler 只置灯（SA_RESTART），
+    // 进程不退出、系统调用可重启。
+    fly::install_graceful_shutdown_handlers();
+    raise(SIGTERM);
+    EXPECT_TRUE(fly::graceful_shutdown_signalled());
+    fly::reset_graceful_shutdown();
+}
+
+TEST(GracefulShutdownTest, TriggerDrainsMasterViaFullStop) {
+    fly::reset_graceful_shutdown();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true, 100, 20);
+    ASSERT_TRUE(master.is_running());
+
+    // SIGTERM 语义 = 走完整 stop() 三阶段 drain（等 RUNNING task → shutdown
+    // 广播 → persist），在独立线程执行（stop 会 join heartbeat 线程）。
+    master.trigger_graceful_shutdown();
+
+    // 幂等：重复触发不再拉起第二个 drain 线程。
+    master.trigger_graceful_shutdown();
+
+    wait_for_running(master, false, 500, 20);
+    EXPECT_FALSE(master.is_running());
+    fly::reset_graceful_shutdown();
 }
 
 }  // namespace fly

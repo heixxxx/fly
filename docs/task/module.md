@@ -14,7 +14,7 @@
 |------|------|------|
 | DependencyGraph | `cpp/dependency_graph.h/cpp` | 任务依赖管理，数据就绪触发任务就绪 |
 | WorkerManager | `cpp/worker_manager.h/cpp` | Worker 注册/状态/能力管理 |
-| TaskScheduler | `cpp/task_scheduler.h/cpp` | FIFO 调度，依赖就绪检测 |
+| TaskScheduler | `cpp/task_scheduler.h/cpp` | 优先级调度（priority 降序，同优先级按提交序），依赖就绪检测；支持 locality 数据亲和打分（`locality_scheduling_enabled` 控制） |
 | TaskManager | `cpp/task_manager.h/cpp` | 任务元数据生命周期管理 |
 | HeartbeatMonitor | `cpp/heartbeat_monitor.h/cpp` | 心跳监控，超时检测 |
 

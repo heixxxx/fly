@@ -46,7 +46,7 @@
 
 经源码核实（`grep` worker_send/point_to_point/allreduce/MPI 全零命中）：
 - **fly worker 间无直接消息通信**，只能通过 DB 对象（DataClientPool 直连对端 DataServer 读对象）
-- DataClientPool 是**短连接**（每次 request 新建 TCP + close，无 keepalive，`data_client_pool.cpp:53,86,102...`）
+- ~~DataClientPool 是**短连接**~~ —— **已改 keep-alive 连接池**（commit a408523，2026-08-13）：同 peer 多 fd 跨 request 复用 + 反倾斜 LRU 淘汰 + 三重健康保护，仅首连需 connect
 - 并发受 `pool_size` 信号量限制（默认 4，`config data_client_pool_size`）
 
 ### 树形归约对 fly 的两层含义

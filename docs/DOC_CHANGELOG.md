@@ -3,6 +3,65 @@
 ---
 ---
 
+## 2026-08-14: HandlerThreadPool lane 并行分发 + SIGTERM 优雅退出接入
+
+### A. handler 并行分发（原 ARCHITECTURE_REVIEW §3.1 P1 项）
+- **机制**：`Reactor` 按 `handler_lanes`（Config，默认 4，0=内联）创建专用串行 lane。帧提取（recv_buffers_ 推进）留在 reactor 线程，decode+handler 投递到 `conn_id % lanes` 的 lane：同连接消息严格 FIFO 保序，跨连接并行。connect/disconnect/error 回调同经该 conn 的 lane，保证与在途消息先后关系。lane 队列无界（控制面消息不可丢），shutdown/`drain_handlers` 排空语义。
+- **前置并发修复**（并行化必要条件，其中 3 处为存量竞争）：
+  1. master `db_instances_` / worker `databases_` 加 `std::shared_mutex`（reactor/P/lane 线程 vs Python 线程注册/merge 改路径）
+  2. failed_tasks.bin append/读改写互斥（跨 lane handler 与 attr-tick/watchdog 线程）
+  3. `do_write_register` frozen 检查与 provenance 登记合并同一临界区（TOCTOU）
+  4. per-conn send mutex 改 `shared_ptr` 持有——disconnect erase 与并发 send 的「mutex 被持有时析构」use-after-free（存量隐患，MergeObjectEndToEnd 1/3 概率堆损坏实测复现，修复后 40/40 稳定）
+- **修复的接入期 bug**：lane 线程先于 `lanes_` vector 填充完成启动的悬空竞态；`request_db_path` 持读锁等待响应的自死锁；`reactor_.reset()` 先置空成员再析构导致迟到 handler 解引用空指针（新增 `Reactor::drain_handlers`，所有 reset 前调用）；`restart_failed_tasks` 持 failed_tasks 文件锁重提交 → `schedule_tasks → persist_failed_task` 再取同锁的自死锁（QA graceful_shutdown 等 6 case 实测挂死，gdb 查 mutex `__owner` 确认主线程双重持锁；修复为文件锁只覆盖读取+删除）。
+  5. `DependencyGraph::get_task_requirements` 返回引用在锁释放后悬空——与 `set_task_locality_hint`（move 赋值 locality_hint_）/`remove_task`（erase 节点）并发即 use-after-free（QA golden_n50_sd9 compute_scores 段错误实测；改按值返回锁内快照）。
+- 文档：`network/module.md`（Reactor 章节 + HandlerThreadPool 行）、`core/module.md`（handler_lanes 键）、`architecture.md`（线程模型 + 决策表）、`ARCHITECTURE_REVIEW.md` §3.1 标已解决。
+
+### B. SIGTERM 优雅退出（原 code-audit §2.1 死代码项）
+- 新增 `agent/cpp/graceful_shutdown.{h,cpp}`：进程级信号灯（`sigaction` + SA_RESTART，handler 内仅 atomic 写）。`main.cpp` 启动即注册（覆盖 Python 起动前窗口）。
+- master：heartbeat 检查线程（≤5s）发现信号灯 → `trigger_graceful_shutdown()`（幂等）在独立线程执行**完整 `stop()` 三阶段 drain**（等 RUNNING task → message summary → Shutdown 广播 → persist pending）。
+- worker：`is_running()` 观察信号灯，Python poll 循环（100ms）退出后走 `agent.stop()`。`main.py` 的 Python SIGTERM handler 首行同步置 C++ 信号灯（覆盖主线程阻塞在 C 调用、Python handler 无法执行的场景）。
+- 删除死代码：`check_shutdown_request`/`sigterm_handler`/`drain_thread_`/`fatal_error_`（原实现无 drain 等待、drain 线程不 join，直接接入语义是错的）。
+- 测试：`GracefulShutdownTest`（信号灯 set/reset/真实信号 / trigger → 完整 stop drain）；export `ex_agent_set_graceful_shutdown`。
+
+---
+---
+
+## 2026-08-14: 补记最近 commit 的文档同步（keep-alive 连接池 + auto_backup 双层重设计）
+
+> 以下两个 commit 此前未同步文档，本次补齐。
+
+### commit a408523 — DataClientPool keep-alive 连接池
+- `docs/network/module.md` DataClientPool 章节：重写为 keep-alive fd 复用语义（同 peer 多 fd、2×pool_size 容量模型、反倾斜+LRU 淘汰、三重健康保护、锁纪律）。
+- `docs/architecture.md` / `docs/architecture/overview.md` 架构图：Layer 2 描述改为 "keep-alive 连接池 + 并发限制"。
+- `docs/solver/allreduce-log-nsd-feasibility.md`："DataClientPool 是短连接" 标记过期，注明已落地 keep-alive（该文档 §103 的传输层优化建议已实现）。
+- `docs/ARCHITECTURE_REVIEW.md` §3.11：标记已解决（借出 SO_ERROR 预检 + 失败即关）。
+- `docs/performance-analysis.md`："短连接" 瓶颈项标记已消除。
+
+### commit 6791c7f + fd24481 — auto_backup 双层重设计（worker suggest + master EWMA 聚合）
+- `docs/architecture.md` §5.4 自动备份：重写为双层机制（worker `maybe_suggest_backup` 增量上报 + master EWMA 聚合 `score=cumulative/replicas` 判定、host 级分散选择、副本上限 + 大文件例外）；配置表替换为新 11 键；旧 4 键标注已废弃（新路径不消费，旧 evaluate/decay API 无生产调用方）。
+- `docs/architecture.md` §6.3 消息表：修正备份消息行（`BackupTaskMessage` 不存在 → `BackupRequestMessage`），新增 `WorkerBackupSuggestMessage`（=52）。
+- `docs/core/module.md` 配置表：backup 段同上对齐。
+
+### 其他同期 commit
+- 8419526（DataServer::stop lost wakeup）、6c82ec9（Config 线程安全）、684eb8e（bazel standalone）：内部修复/构建配置，无活跃文档描述受影响，无需更新。
+
+### 全量文档一致性审阅（同日）
+对照实现逐节核对活跃 module 文档并修复：
+- `docs/network/module.md`：删除不存在的 `DataClient` 类章节与组件表条目（已被 DataClientPool 取代）；Reactor 事件循环移除不存在的 `io_pool_->process_completions()`（Reactor 不持有 IOThreadPool）；send 线程安全改为 per-conn mutex（非内核 send 原子性）；epoll 改"水平触发 + ONESHOT"（无 EPOLLET）；组件表补 TcpConnectionManager / HandlerThreadPool；设计决策表去掉 UDP/RDMA 表述。
+- `docs/core/module.md`：配置表移除 8 个 ProcessInfo 字段（worker_mode/worker_id/master_port/master_host/data_server_host/script_path/interactive/cli_master_port 非 Config 键）、删除不存在的 `large_file_threshold`、`data_server_threads` 默认值 1→4、补 5 个缺失键（locality_scheduling_enabled/read_cache_size/temp_store_size/data_client_pool_size/solver_openmp_threads）；类声明对齐实现（`CMSharedPtr<Config>& instance()`、`get_str` 按值、`save_to_file/load_from_file`、mutex 成员）。
+- `docs/architecture.md`：CLI 参数表重写（删 `--worker_mode`/`--master`/`--role`，补 `--worker`/`--worker-id`/`--master-host`/`--master-port`/`--log-dir`/`--worker-attributes`/`--config-file`）；启动示例改 `set_int`/`set_str`（kwargs 风格 `set()` 不存在）；§5.3 Freeze 重写（DatabaseFreezeNotification + stream 即时/pending commit-rollback，db_path 键）；§4.x DataClient 表述全部改 DataClientPool；"33 种消息类型"→52；WorkerAgentContext 改 std::function；消息表 BackupTaskMessage→BackupRequestMessage、DatabaseFreezeMessage→DatabaseFreezeNotification。
+- `docs/task/module.md`：TaskScheduler "FIFO" → 优先级调度 + locality 数据亲和。
+- `docs/agent/module.md`：核心数据结构 db_id 键 → db_path（对齐 ADR 0002，删 db_registry_）。
+- `docs/solver/module.md`：组件表补 ras_graph_daemon.py / project.py / dbs.py / flows.py。
+
+### 状态标记回填（同日，第二轮）
+- `ARCHITECTURE_REVIEW.md`：§2.6 标已解决（6c82ec9 Config 线程安全）；§2.7 标已解决（S7-1 分片 shared_mutex）；§3.6 标已解决（de27cf9 于 2026-06-14 引入 write_buffers + EV_WRITE 异步排空，reactor 发送路径无同步等待；`send_all/sendv` 的 5s poll 仅存在于数据面专用线程）。
+- `roadmap.md`：A1（locality 分层）标已完成（1b2ad12）；F5（任务优先级）标已完成（500880c）；F2/F3 标注仍未实现。
+- `code-audit-2026-08-08.md`：§2.1 `.pyt` 死代码结论标反转（机制已启用并全量迁移）。
+
+---
+---
+
 ## 2026-07-31: WorkerInfo 收编 hostname/ip — 消除 worker 数据 4 容器散落 + 并发隐患
 
 ### 背景

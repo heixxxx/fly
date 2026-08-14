@@ -29,7 +29,7 @@
 | `agent/cpp/master_agent.cpp:1952-1996` | **整套 SIGTERM 优雅退出机制**（`sigterm_handler`/`check_shutdown_request`/`drain_thread_`）从未接通——main.cpp 没注册 `signal(SIGTERM,...)`，heartbeat loop 没调 `check_shutdown_request()` | ✅ 确认 |
 | `storage/cpp` 的 `_MIGRATED_TO` 机制 | 注释自述"机制已废弃（db chain 取代）"，但 `MigrationHeader`/4 个方法/`migrated_db_paths_` 缓存全保留，写侧（`write_migration_marker`/`set_migrated_path`）零调用，读侧永不触发。~130 行 + 每个 new db 一次 stat | ✅ 确认 |
 | `qa/scripts/` (23 个文件) | **全部 `debug_*.py`(9) + `bench_*.py`(10) + `sweep_*/profile_*`(4) 零引用**——runqa 只发现 `test_*.py`，这些一次性脚本从未被自动化调用，其中 `bench_ras3.py`/`profile_ras3_timing.py` import 不存在的 `solve_ras3`（dangling） | ✅ 确认 |
-| `qa/runqa:128-165,209-265` | **`.pyt` 配置机制**（~60 行 setup/teardown callable），全仓无 `.pyt` 文件，完整死代码 | ✅ `find` 0 文件 |
+| `qa/runqa:128-165,209-265` | ~~`.pyt` 配置机制完整死代码~~ | **结论已反转**：审查后 `.pyt` 机制被正式启用（acd23b9 机制落地 + 阶段 B-1/B-2 全量迁移），140+ 单进程 case 和 8 个复合 case 已全部转为 `.pyt`，现为 QA 主力机制（见 `qa/README.md`） |
 
 ### 2.2 写后不读的死字段 / 死变量
 

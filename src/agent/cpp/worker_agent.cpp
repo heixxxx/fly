@@ -1,4 +1,5 @@
 #include <agent/cpp/worker_agent.h>
+#include <agent/cpp/graceful_shutdown.h>
 #include <log/cpp/logger.h>
 #include <message/cpp/message_macros.h>
 #include <message/cpp/message_registry.h>
@@ -49,7 +50,10 @@ void WorkerAgent::start() {
         return;
     }
     INFO("connected, master_conn={}", master_conn_);
-    reactor_ = CMMakeUnique<Reactor>(std::move(transport));
+    // 与 master 对称：handler lane 并行（同连接保序）。worker 连接少（master+peers），
+    // lane 上界由配置控制。
+    size_t handler_lanes = static_cast<size_t>(Config::instance()->get_int("handler_lanes"));
+    reactor_ = CMMakeUnique<Reactor>(std::move(transport), handler_lanes);
 
     // worker 进程：MSG 宏的 push 委托给 WorkerAgentContext（task 内绑定为发送 master）。
     // 非 task 上下文 context func 为 null → push no-op（符合需求）。
@@ -258,9 +262,17 @@ void WorkerAgent::do_cleanup() {
     if (reactor_thread_.joinable()) {
         reactor_thread_.join();
     }
+    // reset 前等 lane 排空：reset 先置空 reactor_ 再析构，迟到的 handler 经本
+    // 对象 reactor_ 访问会解引用空指针（IdxLoad 空文件用例实测崩溃点）。
+    if (reactor_) {
+        reactor_->drain_handlers();
+    }
     reactor_.reset();
 
-    databases_.clear();
+    {
+        std::unique_lock<std::shared_mutex> db_lk(databases_mutex_);
+        databases_.clear();
+    }
 
     DataService::instance()->stop_data_server();
 
@@ -269,7 +281,9 @@ void WorkerAgent::do_cleanup() {
 }
 
 bool WorkerAgent::is_running() const {
-    return running_;
+    // SIGTERM 信号灯：Python poll 循环（每 100ms）观察到 false 即退出，
+    // 随后 main.py 调 agent.stop() 走完整清理。
+    return running_ && !graceful_shutdown_signalled();
 }
 
 uint64_t WorkerAgent::get_worker_id() const {
@@ -703,6 +717,7 @@ void WorkerAgent::commit_task_segments(const CMVector<WriteRecord>& written_obje
         }
     }
     for (const auto& db_path : involved_dbs) {
+        std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
         auto it = databases_.find(db_path);
         if (it != databases_.end()) {
             // 先 drain 保证段内所有 ADD 已落盘，再打 END 提交。
@@ -723,6 +738,7 @@ void WorkerAgent::cleanup_failed_task_writes(const CMVector<WriteRecord>& dirty_
         }
     }
     for (auto& [db_path, full_names] : by_db) {
+        std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
         auto it = databases_.find(db_path);
         if (it == databases_.end()) continue;
         it->second->abort_task_writes(full_names);
@@ -784,13 +800,19 @@ std::tuple<bool, bool> WorkerAgent::request_remote_data(const CMString& object_n
 }
 
 void WorkerAgent::register_database(const CMString& db_path, CMSharedPtr<Database> db) {
+    std::unique_lock<std::shared_mutex> db_lk(databases_mutex_);
     databases_[db_path] = std::move(db);
 }
 
 bool WorkerAgent::request_db_path(const CMString& db_path) {
-    auto it = databases_.find(db_path);
-    if (it != databases_.end()) {
-        return true;
+    // 锁只覆盖 find：后面 wait_for 要等 master 响应（lane 线程处理响应时需拿
+    // 写锁插入 databases_），持读锁等待 = 自死锁。
+    {
+        std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
+        auto it = databases_.find(db_path);
+        if (it != databases_.end()) {
+            return true;
+        }
     }
     auto pending = CMMakeShared<PendingDbPath>();
     pending->db_path_ = db_path;
@@ -813,13 +835,17 @@ bool WorkerAgent::request_db_path(const CMString& db_path) {
         // never match the master's remote_idx lookups.
         auto db = CMMakeShared<Database>(result->db_path_, result->data_path_,
                                          worker_id_, data_server_host_, db_path);
-        databases_[db_path] = db;
+        {
+            std::unique_lock<std::shared_mutex> db_lk(databases_mutex_);
+            databases_[db_path] = db;
+        }
         return true;
     }
     return false;
 }
 
 CMSharedPtr<Database> WorkerAgent::get_database(const CMString& db_path) const {
+    std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
     auto it = databases_.find(db_path);
     if (it != databases_.end()) {
         return it->second;
@@ -875,6 +901,7 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
     msg.db_path_ = db_path;
     msg.write_context_hash_ = ctx_hash;
     msg.size_bytes_ = compressed_size;
+    std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
     auto db_it = databases_.find(db_path);
     if (db_it != databases_.end()) {
         msg.writer_id_ = db_it->second->get_writer_id();
@@ -1051,6 +1078,7 @@ void WorkerAgent::on_var_broadcast(uint64_t conn_id, const VarBroadcastMessage& 
     // name to drop from its local cache.
     auto [db_path, short_name] = fly::split_full_name(msg.var_name_);
     if (!db_path.empty()) {
+        std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
         auto it = databases_.find(db_path);
         if (it != databases_.end()) {
             it->second->drop_local_var(short_name);
@@ -1189,6 +1217,7 @@ void WorkerAgent::on_database_freeze_notification(uint64_t conn_id, const Databa
     touch_master_contact();
     INFO("DatabaseFreezeNotification received: db_path={}", msg.db_path_);
 
+    std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
     auto it = databases_.find(msg.db_path_);
     if (it != databases_.end()) {
         if (it->second->is_frozen()) {
@@ -1249,6 +1278,7 @@ void WorkerAgent::on_remove_command(uint64_t conn_id, const RemoveCommandMessage
     DataService::instance()->remove_local_index(msg.object_name_);
     DataService::instance()->remove_remote_index(msg.object_name_);
 
+    std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
     auto db_it = databases_.find(msg.db_path_);
     if (db_it != databases_.end()) {
         auto& db = db_it->second;

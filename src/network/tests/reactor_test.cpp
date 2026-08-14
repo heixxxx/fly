@@ -2,7 +2,9 @@
 #include <network/cpp/reactor.h>
 #include <network/cpp/tcp_connection_manager.h>
 #include <network/cpp/connection_manager.h>
+#include <future>
 #include <thread>
+#include <mutex>
 #include <chrono>
 #include <atomic>
 
@@ -249,6 +251,166 @@ TEST(ReactorTest, ConnectAndDisconnectHandlersFire) {
 
     server_reactor.stop();
     server_thread.join();
+}
+
+// HandlerThreadPool 串行 lane：同 lane 任务严格按提交序执行，且全在同一专用线程。
+TEST(ReactorTest, HandlerThreadPoolLanePreservesOrder) {
+    HandlerThreadPool pool(0, 100, 2);
+    ASSERT_EQ(pool.lane_count(), 2u);
+
+    CMVector<int> order;
+    std::mutex order_mutex;
+    std::atomic<int> executed{0};
+    CMUnorderedSet<std::thread::id> threads;
+    constexpr int kTasks = 100;
+    for (int i = 0; i < kTasks; ++i) {
+        pool.submit_to_lane(0, [&, i] {
+            std::lock_guard<std::mutex> lk(order_mutex);
+            order.push_back(i);
+            threads.insert(std::this_thread::get_id());
+            executed++;
+        });
+    }
+    for (int i = 0; i < 300 && executed.load() < kTasks; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_EQ(executed.load(), kTasks);
+    EXPECT_EQ(order.size(), static_cast<size_t>(kTasks));
+    for (int i = 0; i < kTasks; ++i) {
+        EXPECT_EQ(order[static_cast<size_t>(i)], i) << "lane must be FIFO";
+    }
+    EXPECT_EQ(threads.size(), 1u) << "one lane = one dedicated thread";
+    pool.shutdown();
+}
+
+// 两个 lane 互不阻塞：lane0 的任务等 lane1 的任务放行（同一串行线程会超时死锁）。
+TEST(ReactorTest, HandlerThreadPoolLanesRunInParallel) {
+    HandlerThreadPool pool(0, 100, 2);
+    std::promise<void> lane1_ran;
+    auto fut = lane1_ran.get_future().share();
+    std::atomic<bool> lane0_done{false};
+
+    pool.submit_to_lane(1, [&] { lane1_ran.set_value(); });
+    pool.submit_to_lane(0, [&] {
+        // 最多等 2s：若 lane 串行（同线程），这里必然超时。
+        if (fut.wait_for(std::chrono::seconds(2)) == std::future_status::ready) {
+            lane0_done = true;
+        }
+    });
+
+    for (int i = 0; i < 300 && !lane0_done.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_TRUE(lane0_done.load()) << "lane0 must not be blocked by lane1";
+    pool.shutdown();
+}
+
+// Reactor lane dispatch：同连接消息按到达序执行，且在 reactor 线程之外执行。
+TEST(ReactorTest, LaneDispatchPreservesPerConnOrderOffReactorThread) {
+    auto server_cm = create_connection_manager("tcp");
+    server_cm->listen("127.0.0.1", 0);
+    int sport = server_cm->get_bound_port();
+
+    Reactor server_reactor(std::move(server_cm), 2);
+
+    std::mutex seq_mutex;
+    CMVector<uint64_t> worker_ids;
+    CMUnorderedSet<std::thread::id> handler_threads;
+    std::atomic<int> handled{0};
+    server_reactor.register_handler<HeartbeatMessage>(
+        [&](uint64_t, const HeartbeatMessage& msg) {
+            std::lock_guard<std::mutex> lk(seq_mutex);
+            worker_ids.push_back(msg.worker_id_);
+            handler_threads.insert(std::this_thread::get_id());
+            handled++;
+        });
+
+    std::thread server_thread([&] { server_reactor.run(); });
+    server_reactor.wait_until_running();
+
+    Reactor client_reactor(create_connection_manager("tcp"));
+    uint64_t client_conn = client_reactor.connect("127.0.0.1", sport);
+    ASSERT_GT(client_conn, 0);
+
+    // 同一连接连续发 3 条：dispatch 提取帧的顺序 = 到达序，lane FIFO 保证执行序。
+    for (uint64_t wid = 1; wid <= 3; ++wid) {
+        HeartbeatMessage hb;
+        hb.header_.type_ = MessageType::HEARTBEAT;
+        hb.worker_id_ = wid;
+        client_reactor.send(client_conn, hb);
+    }
+
+    for (int i = 0; i < 300 && handled.load() < 3; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_EQ(handled.load(), 3);
+
+    {
+        std::lock_guard<std::mutex> lk(seq_mutex);
+        ASSERT_EQ(worker_ids.size(), 3u);
+        for (uint64_t k = 0; k < 3; ++k) {
+            EXPECT_EQ(worker_ids[static_cast<size_t>(k)], k + 1) << "per-conn order must hold";
+        }
+        EXPECT_EQ(handler_threads.size(), 1u) << "same conn hashed to one lane";
+    }
+    EXPECT_NE(*handler_threads.begin(), server_thread.get_id())
+        << "handler must run off the reactor thread";
+
+    server_reactor.stop();
+    server_thread.join();
+    client_reactor.stop();
+}
+
+// lane 模式 shutdown 排空：stop 后、析构前仍在 lane 队列中的 handler 必须全部执行。
+// wid=0 的 handler 阻塞在 gate 上占住 lane，wid=1 排在其后；stop() 退出 run 循环
+// 后打开 gate —— 若 shutdown 丢弃队列，wid=1 将永远不执行。
+TEST(ReactorTest, LaneShutdownDrainsPendingHandlers) {
+    auto server_cm = create_connection_manager("tcp");
+    server_cm->listen("127.0.0.1", 0);
+    int sport = server_cm->get_bound_port();
+
+    std::atomic<bool> gate{false};
+    std::atomic<bool> first_started{false};
+    std::atomic<int> handled{0};
+    {
+        Reactor server_reactor(std::move(server_cm), 1);
+        server_reactor.register_handler<HeartbeatMessage>(
+            [&](uint64_t, const HeartbeatMessage& msg) {
+                if (msg.worker_id_ == 0) {
+                    first_started = true;
+                    for (int i = 0; i < 500 && !gate.load(); ++i) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    }
+                }
+                handled++;
+            });
+
+        std::thread server_thread([&] { server_reactor.run(); });
+        server_reactor.wait_until_running();
+
+        Reactor client_reactor(create_connection_manager("tcp"));
+        uint64_t client_conn = client_reactor.connect("127.0.0.1", sport);
+        ASSERT_GT(client_conn, 0);
+
+        for (uint64_t wid = 0; wid <= 1; ++wid) {
+            HeartbeatMessage hb;
+            hb.header_.type_ = MessageType::HEARTBEAT;
+            hb.worker_id_ = wid;
+            client_reactor.send(client_conn, hb);
+        }
+        // 等首条已进入 handler（占住唯一 lane），第二条已在 lane 队列排队。
+        for (int i = 0; i < 300 && !first_started.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ASSERT_TRUE(first_started.load());
+
+        server_reactor.stop();
+        server_thread.join();
+        gate = true;  // 放行；析构（作用域结束）必须排空 wid=1
+        client_reactor.stop();
+    }
+    // 作用域结束 = ~Reactor = handler_pool shutdown（join 前排空）。
+    EXPECT_EQ(handled.load(), 2) << "queued handler must drain on shutdown";
 }
 
 // HandlerThreadPool: submit a task, it executes, shutdown is clean.

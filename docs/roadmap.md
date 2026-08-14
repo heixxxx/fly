@@ -26,19 +26,19 @@
 
 | 编号 | 短板 | 证据 |
 |---|---|---|
-| **A1** | locality 实现违反六层分层：`TaskScheduler`（Layer 3）向下依赖 `DataService`（Layer 1） | `task_scheduler.h:4 #include <storage/cpp/data_service.h>`；`src/task/cpp/BUILD:16 deps += fly_storage` |
+| ~~**A1**~~ | ~~locality 实现违反六层分层：`TaskScheduler`（Layer 3）向下依赖 `DataService`（Layer 1）~~ | **✅ 已完成**（commit 1b2ad12：master 预计算 locality hint 注入 graph，scheduler 只消费 POD，解除 task→storage 依赖） |
 
-> 这是本路线图的**首要技术交付**，独立成节见 §3。
+> §3 的方案已按此执行完毕，保留作为决策记录。
 
 ### 2.2 功能空缺
 
 | 编号 | 短板 | 证据 | 处置 |
 |---|---|---|---|
 | **F1** | SSH / 多机 Worker 启动 | `launch_ssh_workers` 全仓库零命中；仅 `subprocess.Popen` 本机 | **功能已具备，降级**：见 §4 决策记录 ① |
-| **F2** | Freeze 后处理（idx 合并 / merged.idx / _META 聚合） | master 无 `IdxRequest` handler；`grep merged.idx src/` 零命中 | **降级**：见 §4 决策记录 ② |
-| **F3** | Worker role 调度（storage_only / hybrid 差异化） | `_spawn_process_worker` 忽略 role 字段；task_scheduler 不读 role | 保持 P1 |
+| **F2** | Freeze 后处理（idx 合并 / merged.idx / _META 聚合） | master 无 `IdxRequest` handler；`grep merged.idx src/` 零命中 | **降级**：见 §4 决策记录 ②（仍未实现） |
+| **F3** | Worker role 调度（storage_only / hybrid 差异化） | `_spawn_process_worker` 忽略 role 字段；task_scheduler 不读 role | 保持 P1（仍未实现） |
 | **F4** | 大对象分片传输 + 背压 | DataResponse 两段式但不分片；仅连接池并发限流，无 credit 流控 | **降级**：见 §4 决策记录 ⑤ |
-| **F5** | 任务优先级 | `TaskRequirements` 无 priority 字段；纯 FIFO | 保持 P1 |
+| **F5** | ~~任务优先级~~ | ~~`TaskRequirements` 无 priority 字段；纯 FIFO~~ | **✅ 已完成**（commit 500880c：`@as_task(priority=N)` 全链路优先级调度，ready_tasks_ 按 {-priority, task_id} 有序） |
 | **F6** | stage checkpoint 显式表达 | 无框架级 progress query | **不做**：见 §4 决策记录 ④ |
 | **F7** | 协议版本号 | `MessageHeader` 无 version 字段 | **不做**：见 §4 决策记录 ⑥ |
 

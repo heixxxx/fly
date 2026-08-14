@@ -243,6 +243,14 @@ def _dump_on_signal(sig, frame):
 
 def run():
     def _sigterm_handler(sig, frame):
+        # 先置 C++ 信号灯再退出：worker 的 C++ is_running() 轮询与 master 的
+        # heartbeat drain 线程由此观察到 SIGTERM（Python handler 只在主线程
+        # 字节码边界执行，若主线程阻塞在 C 调用中，仅剩信号灯通道生效）。
+        try:
+            from _fly_agent import ex_agent_set_graceful_shutdown
+            ex_agent_set_graceful_shutdown()
+        except Exception:
+            pass
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, _sigterm_handler)

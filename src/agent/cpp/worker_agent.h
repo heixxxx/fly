@@ -17,6 +17,7 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <shared_mutex>
 #include <condition_variable>
 #include <queue>
 #include <filesystem>
@@ -259,6 +260,9 @@ private:
     std::atomic<int> outstanding_tasks_{0};
     
     CMUnorderedMap<CMString, CMSharedPtr<Database>> databases_;
+    // databases_ 容器锁：reactor(lane) handler 与 Python 执行线程并发访问。
+    // databases_ 容器锁：reactor(lane) handler 与 Python 执行线程并发访问。
+    mutable std::shared_mutex databases_mutex_;
 
     // Merge 专用 DataWriter 缓存：target_data_path → writer。
     // merge_db 把各源 host 的 data 集中到 master host 的 target_data_path，

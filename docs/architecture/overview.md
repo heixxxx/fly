@@ -50,7 +50,7 @@
 │  - Reactor: 单线程事件循环                                │
 │  - Transport + EpollMultiplexer + ConnectionManager       │
 │  - MessageProtocol + DataResponseProtocol (两段式)        │
-│  - DataClientPool: 并发限制的数据请求池                   │
+│  - DataClientPool: keep-alive 连接池 + 并发限制的数据请求  │
 ├──────────────────────────────────────────────────────────┤
 │  Layer 1: 存储层 (src/storage/)                          │
 │  - Database: 统一存储接口                                 │

@@ -2,12 +2,19 @@
 #include <Python.h>
 #include <agent/cpp/task_executor.h>
 #include <agent/cpp/master_agent.h>
+#include <agent/cpp/graceful_shutdown.h>
 #include <agent/cpp/worker_agent.h>
 #include <storage/cpp/data_service.h>
 #include <memory>
 #include <tuple>
 
 FLY_EXPORT_MODULE(_fly_agent) {
+
+// SIGTERM 信号灯（main.py 的 Python handler 首行调用）：置位后 worker 的
+// is_running() 返回 false（poll 循环退出）、master heartbeat 线程触发 stop() drain。
+FLY_EXPORT_FUNCTION("ex_agent_set_graceful_shutdown", []() {
+    fly::set_graceful_shutdown();
+});
 
 FLY_EXPORT_ENUM(fly::TaskExecStatus, "EXTaskExecStatus")
     FLY_EXPORT_ENUM_VALUE("SUCCESS", fly::TaskExecStatus::SUCCESS)

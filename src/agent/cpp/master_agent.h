@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <thread>
 #include <atomic>
+#include <shared_mutex>
 #include <signal.h>
 #include <memory>
 #include <functional>
@@ -51,6 +52,9 @@ public:
     void start();
     void stop();
     bool is_running() const;
+    // SIGTERM 优雅退出入口（heartbeat 线程消费信号灯后调用；单测直接调用）。
+    // 独立线程执行完整 stop() drain，幂等。
+    void trigger_graceful_shutdown();
 
     CMVector<uint64_t> get_connected_workers() const;
     CMVector<std::pair<uint64_t, CMString>> get_worker_hostnames() const;
@@ -221,9 +225,9 @@ private:
 
     std::atomic<bool> draining_{false};
     std::atomic<bool> shutdown_requested_{false};
+    std::atomic<bool> graceful_stop_started_{false};
     std::mutex drain_mutex_;
     std::condition_variable drain_cv_;
-    std::thread drain_thread_;
 
     CMUniquePtr<Reactor> reactor_;
     std::thread reactor_thread_;
@@ -281,6 +285,11 @@ private:
     // Database 对象内嵌 db_path_/data_path_（merge 后用 set_paths 更新），DbPathRequest/
     // IdxLoadAck/send_delete_data 均从此读路径，消除手动双写与 merge 后副本分叉。
     CMUnorderedMap<CMString, CMSharedPtr<Database>> db_instances_;
+    // db_instances_ 容器锁：handler 并行（lane）与 Python 线程注册/merge 改路径
+    // 并发访问容器本身；Database 内部状态由各自锁保护，锁外使用 shared_ptr 即安全。
+    mutable std::shared_mutex db_instances_mutex_;
+    // failed_tasks.bin append/读改写互斥（跨线程调用方见 persist_failed_task 注释）。
+    std::mutex failed_tasks_file_mutex_;
     CMUnorderedSet<CMString> frozen_dbs_;
     // 非 stream 模式 pending frozen：db_path → task_id（待 task 完成确认）。
     // task 内 freeze 时登记 pending（拒其他 task 写，但不广播）；task 成功迁移到
@@ -395,7 +404,6 @@ private:
     void on_master_remove(const CMString& db_path, const CMString& object_name);  // master 进程内 remove（清 provenance + 通知 worker）
     std::pair<CMString, TaskErrorType> on_master_register_write(const CMString& db_path, const CMString& name, int64_t compressed_size);
 
-    std::atomic<bool> fatal_error_{false};
 
     // worker 的 hostname/ip 已收编进 WorkerManager::WorkerInfo（受其 mutex_ 保护），
     // 不再单独维护并行 map——消除原 worker_to_hostname_/worker_to_ip_ 的无锁数据竞争。
@@ -428,10 +436,7 @@ private:
     void cleanup_provenance_for_db(const CMString& db_path);   // freeze 用：整体 erase outer
     CMString provenance_lookup(const CMString& db_path, const CMString& short_name);  // backup 继承用
 
-    static std::atomic<bool> sigterm_received_;
-    static void sigterm_handler(int sig);
 
-    void check_shutdown_request();
     void do_drain_and_stop();
     void persist_pending_tasks();
     // 从 TaskMetadata 构造 FailedTaskRecord（统一入口，消除 4 处手动复制）。

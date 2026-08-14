@@ -26,24 +26,31 @@
 ```cpp
 class Config {
 public:
-    static Config& instance();          // 获取单例
+    static CMSharedPtr<Config>& instance();  // 获取单例（shared_ptr 语义，支持 reset 重建）
 
     void set_int(const CMString& key, int64_t value);
     void set_str(const CMString& key, const CMString& value);
 
     int64_t get_int(const CMString& key) const;
-    const CMString& get_str(const CMString& key) const;
+    CMString get_str(const CMString& key) const;   // 按值返回（线程安全）
 
     void mark_workers_launched();        // 标记 Worker 已启动，此后不可修改
     bool is_workers_launched() const;
     void reset();                        // 测试用重置
+    void save_to_file(const CMString& path) const;   // 持久化（master 同步给 worker）
+    void load_from_file(const CMString& path);       // 启动时加载
 
 private:
+    mutable std::mutex mutex_;           // set/get 线程安全
     CMMap<CMString, int64_t> int_values_;
     CMMap<CMString, CMString> str_values_;
     bool workers_launched_ = false;
 };
 ```
+
+> 注意：`worker_mode` / `worker_id` / `master_port` / `master_host` / `data_server_host` /
+> `script_path` / `interactive` / `cli_master_port` 是 **ProcessInfo**（每进程、不同步）的字段，
+> 不是 Config 键——由 main.cpp 解析 CLI 后写入 ProcessInfo。详见 architecture.md「Config vs ProcessInfo」。
 
 ### 配置项一览
 
@@ -51,33 +58,43 @@ private:
 
 | 配置键 | 默认值 | 说明 |
 |--------|--------|------|
-| `worker_mode` | 0 | Worker 模式（0=普通, 1=standalone） |
-| `worker_id` | 0 | Worker ID |
-| `master_port` | 8000 | Master 监听端口 |
 | `heartbeat_timeout` | 120 | 心跳超时（秒） |
 | `heartbeat_interval` | 5 | 心跳间隔（秒） |
-| `backup_threshold` | 100 | 备份阈值 |
+| `backup_threshold` | 100 | 已废弃（旧 auto_backup 判定，新路径不消费） |
 | `auto_backup_enabled` | 0 | 自动备份开关（0=关闭, 1=开启） |
-| `backup_replicas` | 2 | 备份副本数（包含原始文件） |
-| `backup_decay_interval` | 300 | 降频检查间隔（秒），0=不降频 |
-| `backup_decay_factor` | 50 | 降频因子（读取次数 *= factor/100） |
+| `backup_replicas` | 2 | 已废弃（旧 auto_backup 目标副本数，新路径不消费） |
+| `backup_decay_interval` | 300 | 已废弃（旧后台衰减扫描间隔，新路径不消费） |
+| `backup_decay_factor` | 50 | 已废弃（旧衰减因子，新路径不消费） |
+| `worker_suggest_count_threshold` | 100 | worker TIER2 累积读次数达此值触发 backup suggest |
+| `worker_suggest_bytes_threshold` | 1073741824 | worker TIER2 累积传输字节（1GB）达此值触发 suggest |
+| `worker_suggest_cooldown` | 60 | worker 两次 suggest 最小间隔（秒） |
+| `master_ewma_decay_per_sec` | 1 | master EWMA 每秒衰减百分比（1 = 1%/s） |
+| `backup_count_threshold` | 1000 | 每副本读次数达此值判定热点 |
+| `backup_bytes_threshold` | 10737418240 | 每副本传输字节（10GB）达此值判定热点 |
+| `max_backup_replicas` | 3 | 正常副本上限（含原始） |
+| `backup_large_object_threshold` | 1073741824 | 大文件判定阈值（1GB，可触发例外突破上限） |
+| `backup_high_score_threshold` | 107374182400 | 大文件 score_bytes（100GB）超此值触发例外 |
+| `backup_extra_slots` | 2 | 例外情况下超出 max_backup_replicas 的额外副本数 |
 | `aggregation_threshold` | 1048576 | 写入聚合阈值（1MB） |
-| `large_file_threshold` | 67108864 | 大文件阈值（64MB），已废弃，使用 `large_file_threshold_kb` |
 | `large_file_threshold_kb` | 65536 | 大文件阈值（64MB，单位 KB，用户可配置） |
 | `block_size` | 134217728 | 块大小（128MB） |
 | `track_writes` | 0 | 是否启用写入跟踪（0=关闭, 1=开启） |
-| `data_server_threads` | 1 | 数据传输线程池大小 |
+| `data_server_threads` | 4 | 数据传输线程池大小 |
 | `compression_level` | 0 | 压缩级别 |
 | `compression_threshold` | 4096 | 跳过压缩阈值（字节）。payload ≤ 此值时直接 passthrough 存储，避免小对象的压缩/解压开销。仅在阈值 < `serialize_chunk_size` 时生效 |
 | `serialize_chunk_size` | 4194304 | 压缩流块大小（4MB） |
 | `dependency_update_mode` | 0 | 依赖更新模式 |
-| `interactive` | 0 | 交互模式（0=关闭, 1=开启） |
-| `cli_master_port` | 0 | CLI 指定的 Master 端口 |
 | `fail_unscheduleable_tasks` | 1 | 不可调度任务立即失败（1=立即fail并持久化, 0=保持等待） |
 | `net_probe_enabled` | 1 | 网络感知远程读优先级总开关（1=开启, 0=关闭，TIER2 排序降级为 no-op） |
 | `net_probe_interval_ms` | 30000 | 主动带宽探测周期（毫秒） |
 | `net_probe_payload_kb` | 256 | 带宽探测 payload 大小（KB） |
 | `net_probe_timeout_ms` | 3000 | 单次带宽探测超时（毫秒） |
+| `locality_scheduling_enabled` | 1 | 数据亲和调度开关（1=开启, 0=关闭） |
+| `read_cache_size` | 1073741824 | ObjectCache 读缓存容量（1GB） |
+| `temp_store_size` | 2147483648 | temp 淘汰磁盘溢出层容量（2GB） |
+| `data_client_pool_size` | 4 | DataClientPool 并发上限 |
+| `handler_lanes` | 4 | 消息 handler 并行 lane 数（同连接串行、跨连接并行）；0=全部内联（legacy 单线程 reactor） |
+| `solver_openmp_threads` | 0 | solver C++ 核心 OpenMP 线程数（0=默认） |
 
 #### string 配置项
 
@@ -85,10 +102,9 @@ private:
 |--------|--------|------|
 | `transport_type` | "tcp" | 传输层类型 |
 | `compression_type` | "lz4" | 压缩算法（"lz4", "zstd", "none"） |
-| `data_server_host` | "127.0.0.1" | 数据服务器监听地址 |
-| `master_host` | "127.0.0.1" | Master 节点地址 |
 | `log_dir` | "fly_log" | 日志目录 |
-| `script_path` | "" | 脚本路径 |
+
+> `data_server_host` / `master_host` / `script_path` 属 ProcessInfo（每进程），非 Config string 键。
 
 ---
 

@@ -25,7 +25,7 @@ ScheduleResult TaskScheduler::schedule_next() {
     auto now = std::chrono::steady_clock::now();
 
     for (uint64_t task_id : ready_tasks) {
-        const auto& reqs = graph_->get_task_requirements(task_id);
+        const auto reqs = graph_->get_task_requirements(task_id);
         float timeout = reqs.timeout_seconds_;
         bool allow_degrade = false;
 
@@ -134,7 +134,7 @@ size_t TaskScheduler::compute_scores(uint64_t task_id) {
     // 消费 master 预计算的 locality_hint_（POD）。master 是数据位置权威，
     // 在 schedule_tasks() 入口按 task 依赖查 DataService 预聚合后注入。
     // hint 为空（无输入对象 / 未注入）→ 所有 score 保持 0，退原行为（按 worker_id 升序选）。
-    const TaskRequirements& reqs = graph_->get_task_requirements(task_id);
+    const TaskRequirements reqs = graph_->get_task_requirements(task_id);
     for (const auto& [wid, score] : reqs.locality_hint_) {
         if (wid < score_buf_.size()) {
             score_buf_[wid].score = score;  // master 已聚合，直接赋值
@@ -150,7 +150,7 @@ uint64_t TaskScheduler::select_best_worker(uint64_t task_id, bool allow_degrade,
         return 0;
     }
 
-    const TaskRequirements& reqs = graph_->get_task_requirements(task_id);
+    const TaskRequirements reqs = graph_->get_task_requirements(task_id);
     const CMVector<CMString>& caps = reqs.capabilities_;
 
     // 仅在 locality 启用时算分。caps 为空时也走 locality（无 capability 约束，纯按数据亲和选 worker）。

@@ -30,10 +30,9 @@ Master 节点管理，负责 Worker 注册、任务调度、数据就绪通知�
 ```
 conn_to_worker_:  conn_id → worker_id      // 连接双向映射
 worker_to_conn_:  worker_id → conn_id
-db_registry_:     db_id → {base_path → data_path}
-db_instances_:    db_id → shared_ptr<Database>
-frozen_dbs_:            set<db_id>                  # 已确认冻结（task 完成后）
-pending_frozen_dbs_:    map<db_id, task_id>         # 非 stream 模式待确认（task 内声明，task 完成提交/失败回滚）
+db_instances_:    db_path → shared_ptr<Database>   # 以 db_path 为键（ADR 0002，无 db_id）
+frozen_dbs_:            set<db_path>               # 已确认冻结（task 完成后）
+pending_frozen_dbs_:    map<db_path, task_id>      # 非 stream 模式待确认（task 内声明，task 完成提交/失败回滚）
 ```
 
 > **task 提交字段单一来源**：task 的完整不变字段（name/module/args/inputs/outputs/caps/timeout/priority/write_context_hash/vars）统一存储在 `TaskMetadata.submission_`（`TaskSubmissionSpec`，见 `task/cpp/task_manager.h`）。master 不再单独维护 module/args/vars 的并行 map —— 所有读取经 `metadata_->get_task(id)->submission_`（shared_ptr 快照，线程安全）。

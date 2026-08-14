@@ -65,19 +65,21 @@
 - **问题**: 所有成员变量都是 `static inline thread_local`，本质上是线程级全局状态容器。`clear()` 方法将 function 设为 nullptr，但在任务执行期间被意外调用会导致静默丢失回调。`is_active()` 仅检查 `record_write_func_` 不为空，无法判断其他回调的完整性。
 - **建议**: 改为实例对象，通过 TaskExecutor 传递而非依赖 thread_local。
 
-### 2.6 Config set_int/set_str 非线程安全 [建议]
+### 2.6 ~~Config set_int/set_str 非线程安全 [建议]~~（已解决 2026-08-13）
 
 - **严重程度**: 中
 - **文件**: `src/core/cpp/config.cpp:16-20`
-- **问题**: 修改 `int_values_` / `str_values_` 无锁保护，仅通过 `workers_launched_` 标志做运行时检查。
-- **建议**: 添加 mutex 或改为 `std::atomic` / concurrent hashmap。
+- **问题**: ~~修改 `int_values_` / `str_values_` 无锁保护，仅通过 `workers_launched_` 标志做运行时检查。~~
+- **建议**: ~~添加 mutex 或改为 `std::atomic` / concurrent hashmap。~~
+- **✅ 已解决**（commit 6c82ec9）：加 `std::mutex` 保护全部 set/get，`get_str` 改按值返回（原 const 引用返回存在悬垂风险）。
 
-### 2.7 DataService 单一 mutex 粒度 [建议]
+### 2.7 ~~DataService 单一 mutex 粒度 [建议]~~（已解决，S7-1 分片优化）
 
 - **严重程度**: 中
 - **文件**: `src/storage/cpp/data_service.h:253`
-- **问题**: 一个 `mutable std::mutex mutex_` 保护 `local_idx_`、`remote_idx_`、`worker_registry_`、`db_paths_` 等所有共享数据。高并发场景下成为性能瓶颈，且某些方法内部先锁 mutex_ 再锁 cv_mutex_，存在死锁风险。
-- **建议**: 按数据域拆分锁（如 idx_mutex_, registry_mutex_）。
+- **问题**: ~~一个 `mutable std::mutex mutex_` 保护 `local_idx_`、`remote_idx_`、`worker_registry_`、`db_paths_` 等所有共享数据。高并发场景下成为性能瓶颈，且某些方法内部先锁 mutex_ 再锁 cv_mutex_，存在死锁风险。~~
+- **建议**: ~~按数据域拆分锁（如 idx_mutex_, registry_mutex_）。~~
+- **✅ 已解决**（S7-1）：`remote_idx_` 按库分片 shared_mutex，并发读从负伸缩转为正伸缩，8 线程提升 16x（详见 `performance-analysis.md` §0B）。
 
 ### 2.8 MasterAgent 多锁嵌套风险 [已解决 2026-07-31]
 
@@ -90,12 +92,13 @@
 
 ## 三、网络通信问题
 
-### 3.1 HandlerThreadPool 定义但未使用 [待修复]
+### 3.1 ~~HandlerThreadPool 定义但未使用 [待修复]~~（已解决 2026-08-14）
 
-- **严重程度**: 高
-- **文件**: `src/network/cpp/reactor.cpp:101-103`
-- **问题**: `HandlerThreadPool` 已定义但 `handle_event` 中没有 `handler_pool_->submit()` 调用。所有 handler 在 reactor 线程中同步执行。如果某个 handler 阻塞（如 `schedule_tasks`），整个 reactor 停止处理所有连接。
-- **建议**: 将耗时 handler（schedule_tasks, on_task_complete 广播等）提交到 HandlerThreadPool 执行。
+- **严重程度**: ~~高~~ → 已解决
+- **文件**: `src/network/cpp/reactor.cpp`
+- **问题**: ~~`HandlerThreadPool` 已定义但 `handle_event` 中没有 `handler_pool_->submit()` 调用。所有 handler 在 reactor 线程中同步执行。~~
+- **建议**: ~~将耗时 handler 提交到 HandlerThreadPool 执行。~~
+- **✅ 已解决**（lane 并行分发）：`Reactor` 构造时按 `handler_lanes`（默认 4，0=内联）创建专用串行 lane。帧提取留在 reactor 线程，decode+handler 投递到 `conn_id % lanes` 的 lane——同连接消息严格保序（Register→*、WriteRegister→TaskComplete、Freeze→TaskComplete、ObjectRemoved→WriteRegister 等顺序依赖），跨连接并行，`schedule_tasks` 等重 handler 不再阻塞 reactor 线程。前置修复了 4 处并发隐患：master `db_instances_`/worker `databases_` 容器锁（shared_mutex）、failed_tasks.bin 文件互斥、do_write_register frozen 检查与 provenance 登记 TOCTOU、per-conn send mutex 生命周期（shared_ptr 保活，消除 disconnect erase 与并发 send 的 use-after-free——此为存量隐患，lane 并行化前即存在）。
 
 ### 3.2 connect 连接状态显式通知 [已处理 — 方向调整]
 
@@ -125,12 +128,14 @@
 - **文件**: `src/agent/cpp/worker_agent.cpp:393-398`
 - **验证结论**: 正确的设计决策。Master 是唯一调度源（DependencyGraph、WorkerManager、TaskManager 全在 Master 内存中），Master 丢失 = 全部调度状态丢失。即使 Worker 重连成功，新 Master 也不知道此 Worker 的 in-progress task，会导致重复执行或状态不一致。已有持久化恢复机制：Master 在 SIGTERM 路径 `persist_pending_tasks`，重启后从文件恢复，Worker 重启后重新注册。进程级重启（由 Python `main.py` / supervisor fork 新进程）是正确的恢复路径，而非 Worker 自行重连。
 
-### 3.6 Reactor send 可阻塞 30 秒 [待修复]
+### 3.6 ~~Reactor send 可阻塞 30 秒 [待修复]~~（已解决 — reactor 路径已非阻塞化）
 
-- **严重程度**: 高
-- **文件**: `src/network/cpp/tcp_transport.cpp:128-153`
-- **问题**: 非阻塞 socket 的 send 在 EAGAIN 时使用 `poll(POLLOUT, 30000)` 同步等待。reactor 线程的 send 操作会阻塞最多 30 秒。
-- **建议**: 改为异步发送（send queue + EPOLLOUT 触发实际发送），或大幅缩短超时（如 100ms）后断开连接。
+- **严重程度**: ~~高~~ → 无风险（reactor 路径）
+- **文件**: ~~`src/network/cpp/tcp_transport.cpp:128-153`~~
+- **问题**: ~~非阻塞 socket 的 send 在 EAGAIN 时使用 `poll(POLLOUT, 30000)` 同步等待。reactor 线程的 send 操作会阻塞最多 30 秒。~~
+- **建议**: ~~改为异步发送（send queue + EPOLLOUT 触发实际发送），或大幅缩短超时（如 100ms）后断开连接。~~
+- **✅ 已解决**（commit de27cf9，2026-06-14，早于本 review 复核期）：本 review 描述的 `tcp_transport.cpp` 已重构为 `TcpConnectionManager::send`——单次非阻塞 `::send`，EAGAIN/部分写时 append 到 `write_buffers_` 并注册 `EV_WRITE`，由 poll 循环的 `drain_write_buffer`（非阻塞，EAGAIN 即 break）异步排空。reactor 线程的发送路径不再有同步等待。
+  残留：`TCPSocketTransport::send_all/sendv` 中仍有 `poll(POLLOUT, 5000)`（原 30000），但消费方是**数据面专用线程**（DataServer send 线程池、worker 带宽探测线程、DataClientPool 调用方线程），均不在 reactor 线程，属有意设计。
 
 ### 3.7 消息无协议版本号 [建议]
 
@@ -160,12 +165,13 @@
 - **问题**: `request_remote_data` 有 3 次重试但间隔为 0，连续重试可能加剧过载。
 - **建议**: 添加指数退避间隔。
 
-### 3.11 DataClientPool release 不验证 fd 有效性 [建议]
+### 3.11 ~~DataClientPool release 不验证 fd 有效性 [建议]~~（已解决）
 
 - **严重程度**: 中
 - **文件**: `src/network/cpp/data_client_pool.cpp:122-141`
 - **问题**: `release()` 未用 `getsockopt(SO_ERROR)` 检查 fd 是否仍然有效，坏 fd 可能被放回池中。
 - **建议**: release 前检查连接状态。
+- **✅ 已解决**（commit a408523，keep-alive 连接池改造）：三重健康保护——idle TTL(60s) 清理 + 借出时 `SO_ERROR` 预检（`probe_fd_health`）+ send/recv 失败即 `release_fd(fd, healthy=false)` 关闭移除。
 
 ---
 

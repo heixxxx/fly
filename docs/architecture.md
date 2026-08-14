@@ -85,11 +85,15 @@ fly -i user_tasks.py
 | 参数 | Master模式 | Worker模式 |
 |------|-----------|-----------|
 | positional arg | 用户Python脚本路径 | 不适用 |
-| `--worker_mode` | 不设置 | 必须设置，标识Worker模式 |
-| `--master` | 不设置（自己就是Master） | Master地址 |
-| `--role` | 不适用 | hybrid / storage_only |
+| `--worker` | 不设置 | 设置即进入 Worker 模式 |
+| `--worker-id N` | 不适用 | Worker ID（默认 0） |
+| `--master-host HOST` | 不设置（自己就是Master） | Master 地址（默认 127.0.0.1） |
+| `--master-port PORT` | Master 监听端口 | Master 端口（默认 0） |
+| `--log-dir DIR` | 日志目录（默认 fly_log） | 同左 |
+| `--worker-attributes` | 不适用 | worker 属性（capability 匹配） |
+| `--host HOST` | 不适用 | 覆盖 hostname（用于多 host 测试） |
+| `--config-file PATH` | 启动时加载配置文件 | 同左 |
 | `-i` | 交互模式，执行后进入Python REPL | 不适用 |
-| `--host` | 不适用 | 覆盖 hostname（用于多 host 测试） |
 
 ### Master启动流程
 
@@ -124,18 +128,15 @@ from fly.runtime import get_agent
 # 获取全局单例Config（所有进程共享，master在启动worker前通过config文件同步）
 config = get_config()
 
-# 设置共享参数（必须在启动worker前）
-config.set(
-    heartbeat_timeout=120,
-    heartbeat_interval=5,
-    backup_threshold=100,
-    aggregation_threshold=1048576,      # 1MB
-    large_file_threshold=67108864,      # 64MB
-    block_size=134217728,               # 128MB
-    track_writes=1,                     # 启用写入跟踪
-    data_server_threads=2,              # Data Server线程池大小
-    log_dir="/path/to/logs",            # 所有进程共享的日志目录
-)
+# 设置共享参数（必须在启动worker前；set_int/set_str，无 kwargs 风格 set()）
+config.set_int("heartbeat_timeout", 120)
+config.set_int("heartbeat_interval", 5)
+config.set_int("aggregation_threshold", 1048576)       # 1MB
+config.set_int("large_file_threshold_kb", 65536)       # 64MB
+config.set_int("block_size", 134217728)                # 128MB
+config.set_int("track_writes", 1)                      # 启用写入跟踪
+config.set_int("data_server_threads", 4)               # Data Server线程池大小
+config.set_str("log_dir", "/path/to/logs")             # 所有进程共享的日志目录
 
 # 再次调用get_config()返回同一个实例
 config2 = get_config()  # config2 == config
@@ -305,7 +306,7 @@ wait_tasks(timeout=30.0)  # 返回 True/False
 │  - Reactor: 单线程事件循环                                       │
 │  - Transport + EpollMultiplexer + ConnectionManager              │
 │  - MessageProtocol + DataResponseProtocol (两段式)               │
-│  - DataClientPool: 并发限制的数据请求池                          │
+│  - DataClientPool: keep-alive 连接池 + 并发限制的数据请求      │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 1: 存储层                                                 │
 │  - Database: 统一存储接口                                        │
@@ -344,8 +345,9 @@ wait_tasks(timeout=30.0)  # 返回 True/False
 | Heartbeat Thread | 心跳发送 |
 
 **关键设计**：
-- 单线程 Reactor + I/O 线程池，避免锁竞争
-- DataClient 使用独立 TCP socket（独立于主 Reactor）
+- 单线程 Reactor（事件循环）+ handler lane 池：帧提取在 reactor 线程，handler 在
+  `conn_id % handler_lanes`（默认 4）的专用串行 lane 执行——同连接消息严格保序，跨连接并行
+- DataClientPool 使用独立 TCP socket（独立于主 Reactor，keep-alive 复用）
 - DataServer 采用 epoll + send_thread_pool 模式
 
 ### 4.3 核心设计决策
@@ -355,8 +357,8 @@ wait_tasks(timeout=30.0)  # 返回 True/False
 | nanobind 而非 pybind11 | 更小、更快、C++20 兼容 |
 | bitsery 而非 protobuf | header-only、版本化支持、无代码生成 |
 | CM 前缀容器别名 | 便于替换底层实现（如 absl） |
-| 单线程 Reactor + IOThreadPool | 事件驱动 + I/O 异步，避免锁竞争 |
-| DataClient 独立连接 | 每次读创建独立 socket，不走主 Reactor，多线程安全 |
+| 单线程 Reactor + handler 串行 lane | 事件循环不被重 handler 阻塞；同连接保序、跨连接并行 |
+| DataClientPool 独立连接 | keep-alive fd 复用，不走主 Reactor，多线程安全 |
 | DataService 进程级单例 | Master 和 Worker 共享，仅更新触发源不同 |
 | 三层降级读取 | 本地 → 缓存 → 远程，最大限度减少 Master 查询 |
 | 两段式 wire 协议 | DataResponseProtocol 避免大 payload 的用户态拷贝 |
@@ -390,7 +392,7 @@ Worker A 读取 object_name:
    └─ remote_compressed_read_handler(object_name)
        └─ Master 端：直接查本地 remote_idx（不走 reactor，避免 epoll 顺序不确定）
        └─ Worker 端：通过网络查询 Master
-       └─ DataClient.request_compressed_data() 直连目标 Worker B
+       └─ DataClientPool.request() 直连目标 Worker B
            └─ 单次尝试，返回 (found, can_still_produce)
            └─ can_still_produce=true 时 Python wait_obj 负责轮询重试
 ```
@@ -424,31 +426,28 @@ Worker A 写入 object_name:
 
 **写注册协议**：
 - Config.track_writes 启用时，记录每个任务写入的对象列表
-- WorkerAgentContext 使用C函数指针回调模式
+- WorkerAgentContext 使用 std::function 回调模式（common/cpp/worker_context.h）
 
 ### 5.3 Database Freeze
 
 ```
-任务调用 db.freeze():
+任务调用 db.freeze()：
 
 Worker端：
 ├─ 设置 is_frozen_ = true
 ├─ 在 base_path 创建 _FROZEN 标识文件
-├─ 发送 DatabaseFreezeMessage 到 Master
+├─ 发送 DatabaseFreezeNotification（带 task_id）到 Master
+├─ Master 回 DatabaseFreezeAckMessage（success / DB_ALREADY_FROZEN）
 └─ 后续 write_object() 调用抛出异常
 
-Master端（后台任务）：
-├─ 收到 DatabaseFreezeMessage
-├─ 记录 db_id + Worker 列表
-├─ 依次向相关 Worker 发送 IdxRequestMessage
-├─ 收集所有 IdxResponseMessage
-├─ 合并 idx 条目
-├─ 将聚合 idx 写入 base_path/merged.idx
-├─ 将数据库元信息写入 base_path/_META
-└─ 后处理完成
+Master端（on_database_freeze_request）：
+├─ stream 模式（dependency_update_mode==0）：即时置 frozen 并广播
+├─ 非 stream 模式：进 pending_frozen_dbs_（db_path → task_id），
+│   等 task 完成后 commit freeze，task 失败则 rollback
+└─ db_instances_ / frozen_dbs_ 均以 db_path 为键（无 db_id，见 ADR 0002）
 ```
 
-**注意**：idx合并、_META生成等后处理尚未实现。
+**注意**：合并 idx / merged.idx / _META 后处理未实现。
 
 ### 5.4 数据备份 (Backup)
 
@@ -464,19 +463,43 @@ Worker A 写入 object_name (backup=True):
 6. Master 更新 remote_idx（两个 worker 都有该对象）
 ```
 
-#### 自动备份（访问频率触发）
+#### 自动备份（双层：worker suggest + master EWMA 聚合）
 
-当 `auto_backup_enabled=1` 时，Master 在处理跨 Worker 读取请求时自动追踪访问频率，超过阈值后自动触发备份。
+当 `auto_backup_enabled=1` 时，自动备份由两层协作触发：
+
+**Worker 层（suggest 上报）**：worker TIER2 远程读后检查（`DataService::maybe_suggest_backup`）——
+累积读流量（次数/字节）达阈值且 cooldown 已过，向 master 发 `WorkerBackupSuggestMessage` 上报增量，
+然后 reset 清零重新累积（worker 不做时间衰减，累积值精确反映自上次 suggest 的增量）。
+
+**Master 层（EWMA 聚合 + 判定）**：`on_worker_backup_suggest` 对多 worker 的 suggest 做 EWMA 时间衰减聚合
+（按 suggest 到达频率衰减，不受单次传输时间影响 → 不惩罚大对象），然后 `evaluate_and_maybe_backup`：
+- `score = cumulative / replicas`（副本数越多、单副本负载越低；cumulative 不 reset——backup 后 replicas++ → score 自然下降收敛）
+- 双分数 OR：score_bytes 或 score_count 任一超阈值即视为热点
+- 副本上限 `max_backup_replicas`（含原始）；大文件 + 异常高分可突破上限至 `max + backup_extra_slots`
+- 每次 suggest 至多触发一份 backup（async，BackupComplete 后 replicas 才增长，score/replicas 反馈自然收敛）
+- 备份目标选择：`select_backup_worker` 优先选 host 全新的 worker（host 级分散），全冲突时 best-effort 回退到无副本的 worker
+
+> 旧设计（master 在 DataQuery 路径统计读次数 + 后台定时衰减）已移除——worker 缓存对象位置后不再查 master，
+> master 统计存在盲区；双层设计让真正执行远程读的 worker 负责上报。
 
 **相关配置**：
 
 | 配置键 | 默认值 | 说明 |
 |--------|--------|------|
 | `auto_backup_enabled` | 0 | 自动备份开关 |
-| `backup_threshold` | 100 | 触发自动备份的跨 Worker 读取次数 |
-| `backup_replicas` | 2 | 目标备份数 |
-| `backup_decay_interval` | 300 | 衰减检查间隔（秒） |
-| `backup_decay_factor` | 50 | 衰减因子百分比 |
+| `worker_suggest_count_threshold` | 100 | worker 累积读次数达此值触发 suggest |
+| `worker_suggest_bytes_threshold` | 1GB | worker 累积传输字节达此值触发 suggest |
+| `worker_suggest_cooldown` | 60 | worker 两次 suggest 最小间隔（秒） |
+| `master_ewma_decay_per_sec` | 1 | master EWMA 每秒衰减百分比（1 = 1%/s） |
+| `backup_count_threshold` | 1000 | 每副本读次数达此值判定热点 |
+| `backup_bytes_threshold` | 10GB | 每副本传输字节达此值判定热点 |
+| `max_backup_replicas` | 3 | 正常副本上限（含原始） |
+| `backup_large_object_threshold` | 1GB | 大文件判定阈值（可触发例外突破上限） |
+| `backup_high_score_threshold` | 100GB | 大文件 score_bytes 超此值触发例外 |
+| `backup_extra_slots` | 2 | 例外情况下超出 max_backup_replicas 的额外副本数 |
+
+> 旧键 `backup_threshold` / `backup_replicas` / `backup_decay_interval` / `backup_decay_factor` 仍在 Config 默认表中
+> 但新判定路径不消费；旧的 `evaluate_auto_backup` / `decay_after_backup` / `decay_remote_access` API 亦无生产调用方（仅测试引用）。
 
 ### 5.5 MapReduce 框架
 
@@ -564,11 +587,12 @@ Phase 3: 定向 idx 加载
 | DataLocationMessage | M→W | 数据位置响应 |
 | DataRequestMessage | W→W | 数据请求 |
 | DataResponseMessage | W→W | 数据响应（两段式） |
-| BackupTaskMessage | M→W | 备份任务 |
+| BackupRequestMessage | W→M | 备份请求（master 收到后向备份目标发 `TaskAssignMessage(__backup_object)`） |
+| WorkerBackupSuggestMessage | W→M | 上报 TIER2 读流量增量（auto_backup 双层设计的 worker 层，master EWMA 聚合后判定 backup） |
 | CleanupTaskMessage | M→W | 清理任务 |
 | CleanupCompleteMessage | W→M | 清理完成 |
 | UpdateAttributesMessage | W→M | 属性更新 |
-| DatabaseFreezeMessage | W→M | 数据库冻结 |
+| DatabaseFreezeNotification | W→M | 数据库冻结通知 |
 | IdxRequestMessage | M→W | 请求 idx 内容 |
 | IdxResponseMessage | W→M | 返回 idx 内容 |
 | ShutdownMessage | M→W | 关机广播 |
@@ -680,11 +704,11 @@ fly/
 - **Layer 2**：网络层（Reactor, TCP, 消息协议）
   - Transport + EpollMultiplexer + ConnectionManager 抽象
   - DataResponseProtocol 两段式传输
-  - DataClientPool 并发限制
-  - 33 种消息类型
+  - DataClientPool keep-alive 连接池 + 并发限制
+  - 52 种消息类型
 - **Layer 3**：任务系统层（DependencyGraph, TaskScheduler, WorkerManager）
 - **Layer 4**：Agent 层（MasterAgent, WorkerAgent, TaskExecutor）
-  - WorkerAgentContext C函数指针回调
+  - WorkerAgentContext std::function 回调
   - 失败任务持久化 + restart_failed_tasks
   - load_db 按 hostname 分配 worker
   - 动态 Worker 属性管理

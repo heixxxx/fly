@@ -46,7 +46,7 @@
 - **Reactor 单线程同步模型**（`HandlerThreadPool` 死代码未接线）—— ARCHITECTURE_REVIEW §3.1，接线需 handler 线程安全全面审计（仍排除）
 - ~~**`schedule_mutex_` 全局串行化**~~ —— 调度吞吐天花板。**S7-2 已部分优化**：locality 预计算移出锁外缩短持锁时间（详见 §0B）。attr-tick 条件触发方案经实测破坏 attr timeout 语义已放弃
 - **WriteBackQueue 单 worker 线程** —— 写入吞吐硬瓶颈，改多线程需处理 idx 文件并发与写序（仍排除）
-- **DataClientPool 短连接 + 默认 4 并发** —— 远程读吞吐天花板，roadmap F4 已降级（仍排除）
+- ~~**DataClientPool 短连接 + 默认 4 并发**~~ —— 连接建立开销已消除（keep-alive 连接池，commit a408523）；并发上限 `pool_size` 仍在，roadmap F4 流控已降级（仍排除）
 - ~~**DataService 单 mutex**~~ —— ARCHITECTURE_REVIEW §2.7 待办。**S7-1 已优化**：分片 shared_mutex，并发读从负伸缩转为正伸缩，8线程提升 16x（详见 §0B）
 - **S1-3/S3**（remote_idx/provenance 无上限累积）—— roadmap 标注待对象量真实过百万时启动（仍排除）
 

@@ -14,12 +14,13 @@
 |------|------|------|
 | Transport | `cpp/transport_interface.h` | Socket 操作抽象 |
 | TCPSocketTransport | `cpp/tcp_socket.h/cpp` | POSIX TCP 实现 |
-| EpollMultiplexer | `cpp/epoll_multiplexer.h/cpp` | 事件复用抽象 |
-| ConnectionManager | `cpp/connection_manager.h` | conn_id 管理 + 事件分发 |
-| Reactor | `cpp/reactor.h/cpp` | 单线程事件循环 |
-| MessageProtocol | `cpp/message_protocol.h/cpp` | 二进制帧协议 |
+| EpollMultiplexer | `cpp/epoll_multiplexer.h/cpp` | 事件复用抽象（水平触发 + EV_ONESHOT） |
+| ConnectionManager | `cpp/connection_manager.h` | conn_id 管理 + 事件分发（抽象接口，`create_connection_manager` 工厂） |
+| TcpConnectionManager | `cpp/tcp_connection_manager.h/cpp` | ConnectionManager 的 TCP 实现（conn↔fd 双映射、write_buffers_、drain） |
+| Reactor | `cpp/reactor.h/cpp` | 单线程事件循环（内含 HandlerThreadPool） |
+| HandlerThreadPool | `cpp/reactor.h/cpp` | 通用任务线程池（有界背压）+ 消息 handler 专用串行 lane（同 conn 保序、跨 conn 并行；shutdown 排空不丢） |
+| MessageProtocol | `cpp/message_protocol.h` | 二进制帧协议（header-only） |
 | IOThreadPool | `cpp/io_thread_pool.h/cpp` | 通用线程池 |
-| DataClient | `cpp/data_client.h/cpp` | 阻塞 TCP 数据客户端 |
 | DataClientPool | `cpp/data_client_pool.h/cpp` | 数据客户端连接池 |
 | NetQualityMonitor | `cpp/net_quality_monitor.h/cpp` | per-host 网络质量评分表（RTT/带宽） |
 | MetadataClient | `cpp/metadata_client.h/cpp` | 阻塞 TCP 元数据查询客户端 |
@@ -89,7 +90,7 @@ DataResponseMessage 的大 payload 不经 bitsery 序列化，作为帧尾 raw �
 
 发送侧：DataServer 用 encode 编码小字段段 + 直接引用 FlyBufferPtr 发送 raw 段（零用户态 copy）。
 
-接收侧：DataClient/DataClientPool 分步 recv（header → sub-header → small_fields → raw 直接进 FlyBuffer），零拷贝。
+接收侧：DataClientPool 分步 recv（header → sub-header → small_fields → raw 直接进 FlyBuffer），零拷贝。
 
 ### 粘包处理
 
@@ -101,7 +102,11 @@ dispatch_message 内 while 循环解析。数据不足则等待更多数据。
 
 ### 核心职责
 
-单线程事件循环，管理连接、分发消息、执行 IO 完成回调。
+单线程事件循环，管理连接、分发消息。`handler_lanes > 0`（默认 4，Config）时启用
+**lane 并行分发**：帧提取留在 reactor 线程，decode + handler 投递到
+`conn_id % lanes` 的专用串行 lane——同连接消息严格保序（Register→*、
+WriteRegister→TaskComplete 等协议顺序依赖），跨连接并行。connect/disconnect/error
+事件回调同样经该 conn 的 lane 执行，保证与在途消息的先后关系。
 
 ### 事件循环
 
@@ -115,9 +120,10 @@ reactor_->run()
               ├── DATA:       recv_buffers_ += data → dispatch_message()
               ├── DISCONNECT: 回调 + 清理 buffer
               └── ERROR:      回调 + 清理
-          → io_pool_->process_completions()
       }
 ```
+
+> Reactor 本身不持有 IOThreadPool（`IOThreadPool` 目前仅独立/测试使用，不在 Reactor 循环内）。
 
 ### Handler 注册
 
@@ -125,7 +131,7 @@ reactor_->run()
 
 ### 线程安全
 
-`reactor_->send()` 可在 Reactor 线程外调用。Linux `::send()` 对小帧是原子的。
+`reactor_->send()` 可在 Reactor 线程外调用：per-conn 互斥锁（`conn_send_mutexes_`）保证同一连接的发送串行化。
 
 ---
 
@@ -146,32 +152,24 @@ reactor_->run()
 
 ---
 
-## DataClient
-
-### 核心职责
-
-阻塞 TCP 数据客户端，用于 Worker 间数据传输。
-
-### 设计特点
-
-- 每次调用创建独立阻塞 TCP socket，完全不走主 Reactor
-- 避免多线程并发读数据时的连接冲突
-- 内置超时控制 (SO_SNDTIMEO + SO_RCVTIMEO + deadline)
-- 两段式接收：先解析帧头，再接收 raw payload 直接到 FlyBufferPtr
-
----
-
 ## DataClientPool
 
 ### 核心职责
 
-数据客户端连接池，支持并发请求控制。
+数据客户端连接池：keep-alive fd 复用 + 并发请求控制。
 
 ### 设计特点
 
-- 并发限制：pool_size（默认 2）限制同时 in-flight 的请求数
-- 使用 active_count_ + slot_cv_ 实现信号量语义
-- 与 DataClient 相同的两段式接收逻辑，零拷贝 raw payload
+- **keep-alive 连接复用**：同 peer 维持多条连接（单 fd 同步 request-response 无法并行），跨 request 复用 idle fd，避免高频远程读时反复 socket()+connect()+close()
+- **并发限制**：pool_size（默认 2）限制同时 in-flight 的请求数（slot 信号量：active_count_ + slot_cv_），保护对端不被压垮
+- **容量模型**：fd 总量上限 `2×pool_size`（in-use ≤ pool_size，余量给 idle 缓冲）。达上限需新建时 idle ≥ pool_size ≥ 1，总能淘汰，不阻塞
+- **反倾斜 + LRU 淘汰**：需淘汰时优先选 idle 数最多的 peer 里最老（last_used 最早）的 fd，防热点 peer 独占全部 idle 连接
+- **三重健康保护**：
+  1. idle TTL（60s）过期清理（防半开连接）
+  2. 借出时 `SO_ERROR` 预检（probe_fd_health），失败不开工
+  3. send/recv 失败即 `release_fd(fd, healthy=false)` 关闭并移除；完整交换 healthy=true 归还复用
+- 两段式接收（帧头 → raw payload 直接进 FlyBufferPtr），零拷贝
+- 锁纪律：probe/evict/reap 的 `::close` 在锁内（快），`connect` 在锁外（阻塞系统调用）；并发 connect 用配额预留避免超限
 
 ### 使用场景
 
@@ -187,7 +185,7 @@ Worker 读取远程数据时，通过 DataClientPool 并发请求多个 Worker�
 
 ### 数据来源（两种，互补）
 
-- **被动 RTT**：`DataClientPool::request` / `DataClient::request_compressed_data` 在每次完整往返（含 DATA_NOT_READY/OBJECT_NOT_FOUND 等协议级响应）后，记录 connect→收完响应的耗时，调 `update_rtt`。连接失败不计。零额外探测流量。
+- **被动 RTT**：`DataClientPool::request` 在每次完整往返（含 DATA_NOT_READY/OBJECT_NOT_FOUND 等协议级响应）后，记录 connect→收完响应的耗时，调 `update_rtt`。连接失败不计。零额外探测流量。
 - **主动带宽探测**：WorkerAgent 的 `bandwidth_probe_thread_`（仿 heartbeat 四件套，`net_probe_enabled` 控制）周期性对 `DataService::get_all_workers()` 返回的每个 peer 发 `NET_PROBE_REQUEST`，peer 的 DataServer 按请求 `payload_size_` 回 `NET_PROBE_RESPONSE`，探测线程据往返耗时算 RTT+带宽，调 `update_rtt` + `update_bandwidth`。
 
 ### 评分与排序
@@ -210,7 +208,7 @@ Worker 读取远程数据时，通过 DataClientPool 并发请求多个 Worker�
 
 ### 设计特点
 
-- 与 DataClient 类似，每次调用创建独立阻塞 TCP socket
+- 每次调用创建独立阻塞 TCP socket
 - Worker 在三层降级读取的 Layer 3 使用
 
 ---
@@ -255,12 +253,12 @@ Worker.master_liveness_check:
 
 | 决策 | 原因 |
 |------|------|
-| epoll 边缘触发 | 减少系统调用次数 |
+| epoll 水平触发 + ONESHOT | ONESHOT 防多线程惊群，处理完手动 rearm |
 | 单 Reactor 线程 | handler 无锁，避免 IO 多线程锁竞争 |
 | per-conn 拼接缓冲 | TCP 粘包/拆包安全处理 |
 | IOThreadPool completion pattern | 文件 I/O 不阻塞 Reactor |
-| DataClient 独立 socket | 多线程读无冲突 |
-| 工厂函数 | 支持未来替换 UDP/RDMA |
+| DataClientPool 独立 socket + keep-alive | 多线程读无冲突，fd 跨请求复用 |
+| 工厂函数 | 支持测试 Transport 注入 |
 | CV-based 心跳 | stop() 时可立即唤醒 |
 | HeartbeatAck 双向检测 | Worker 通过 ACK 检测 Master 存活 |
 | sendv scatter-gather | 合并 header+payload 发送 |

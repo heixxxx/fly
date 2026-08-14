@@ -2,6 +2,7 @@
 #include <core/cpp/config.h>
 #include <core/cpp/process_info.h>
 #include <log/cpp/logger.h>
+#include <agent/cpp/graceful_shutdown.h>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -258,6 +259,9 @@ static void print_usage(const char* prog) {
 int main(int argc, char* argv[]) {
     std::set_terminate(terminate_handler);
     signal(SIGABRT, sig_handler);
+    // SIGTERM → 优雅退出信号灯（master: heartbeat 线程触发 stop() drain；
+    // worker: is_running() 轮询退出）。SIGABRT/SIGSEGV 走崩溃捕获路径，不同语义。
+    fly::install_graceful_shutdown_handlers();
     signal(SIGSEGV, sig_handler);
 
     bool worker_mode = false;

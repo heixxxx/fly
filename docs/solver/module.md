@@ -13,6 +13,8 @@
 | 组件 | 文件 | 职责 |
 |------|------|------|
 | RAS Graph | `py/ras_graph.py` | 图重叠 RAS 求解器（主算法） |
+| RAS Graph Daemon | `py/ras_graph_daemon.py` | daemon 模式入口（常驻进程复用，含 `solver_openmp_threads` 配置消费） |
+| Project/DB/Flows | `py/project.py` `py/dbs.py` `py/flows.py` | 项目/数据库定义与流程封装 |
 | RAS Legacy | `py/ras.py` | 1D 分区 RAS 求解器（旧版） |
 | SubdomainSolver | `cpp/solver.h/cpp` | C++ 子域求解器（Eigen LDLT） |
 | MatrixUtils | `cpp/solver.cpp` | 矩阵构建、图扩展、子域提取 |
