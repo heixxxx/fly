@@ -149,8 +149,16 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"net_probe_payload_kb", 256},     // 探测 payload 大小(KB)
     {"net_probe_timeout_ms", 3000},    // 单次探测超时(ms)
     {"solver_openmp_threads", 0},      // Eigen LDLT 分解并行线程数：0=单线程默认，>0=OpenMP多线程
-    {"worker_register_timeout", 300},  // 唤起 worker 的注册超时(s)——两侧统一保活：master 占位符清理 + worker connect 重试总窗口（见 WorkerAgent::start）。默认 300=5min；0=不假设时限（无限）
-    {"worker_connect_retry_initial_ms", 500},  // connect 重试首次间隔(ms)，指数 ×2 递增（单次上限 10s 硬编码）
+    // worker 生命周期（用户确认语义）：
+    // - 首次注册：master 占位符不等待不假设超时（0=默认无限；>0 时超时清理占位符
+    //   并作为 wait_workers_registered 默认超时）；worker 首连重试窗口同此键（两侧一致）。
+    {"worker_register_timeout", 0},
+    // - 断连重连：worker 指数退避重连的宽限窗口，master 对断连 worker 的判死宽限
+    //   与之对等（宽限内 task 存活、不重调度；超时判死+快速失败）。0=不重连不宽限
+    //   （旧的"断连即死"逃生口）。
+    {"worker_reconnect_timeout", 120},
+    // - connect 重试首次间隔(ms)，指数 ×2 递增（单次上限 10s 硬编码），首连与重连共用。
+    {"worker_connect_retry_initial_ms", 500},
 };
 
 const CMUnorderedMap<CMString, CMString> Config::STR_DEFAULTS = {

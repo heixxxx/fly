@@ -2307,36 +2307,39 @@ TEST(MasterAgentTest, ExpectWorkerTimeoutCleanup) {
     Config::instance()->set_int("worker_register_timeout", 0);
 }
 
-TEST(MasterAgentTest, ExpectWorkerDefaultTimeoutIs300s) {
+TEST(MasterAgentTest, ExpectWorkerDefaultNoTimeout) {
     fly::DataService::instance()->reset();
     Config::instance()->reset();  // 显式恢复默认（前序用例可能 set 过非默认值，Config 单例跨用例共享）
-    // 不显式 set：默认 worker_register_timeout=300（两侧统一 5min 保活）。
+    // 默认 worker_register_timeout=0：master 占位符不等待不假设任何超时（用户确认
+    // 语义——bsub 慢调度下 worker 任意时刻注册都被接受）。
+    MasterAgent master("127.0.0.1", 0);
+
+    master.expect_worker(99);
+    // 任意遥远的检查点都不清理。
+    master.check_expected_worker_timeouts_for_testing(9999999999LL);
+    EXPECT_EQ(master.get_expected_worker_count(), 1u);
+    EXPECT_FALSE(master.all_workers_registered());
+}
+
+TEST(MasterAgentTest, ExpectWorkerExplicitTimeoutCleans) {
+    fly::DataService::instance()->reset();
+    Config::instance()->set_int("worker_register_timeout", 300);  // 显式启用超时
     MasterAgent master("127.0.0.1", 0);
 
     master.expect_worker(99);  // spawn 时间戳 = 真实 now
-    // 299s 后的检查点：仍在 5min 窗口内，不清理。
+    // 299s 后的检查点：仍在窗口内，不清理。
     master.check_expected_worker_timeouts_for_testing(
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count() + 299);
     EXPECT_EQ(master.get_expected_worker_count(), 1u);
 
-    // 301s 后的检查点：超过 5min 保活，清理。
+    // 301s 后的检查点：超时清理。
     master.check_expected_worker_timeouts_for_testing(
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count() + 301);
     EXPECT_EQ(master.get_expected_worker_count(), 0u);
     EXPECT_TRUE(master.all_workers_registered());
-}
-
-TEST(MasterAgentTest, ExpectWorkerZeroMeansNoTimeout) {
-    fly::DataService::instance()->reset();
-    Config::instance()->set_int("worker_register_timeout", 0);  // 显式 0 = 不假设时限
-    MasterAgent master("127.0.0.1", 0);
-
-    master.expect_worker(99);
-    master.check_expected_worker_timeouts_for_testing(9999999999LL);
-    EXPECT_EQ(master.get_expected_worker_count(), 1u);
-    EXPECT_FALSE(master.all_workers_registered());
+    Config::instance()->set_int("worker_register_timeout", 0);
 }
 
 }  // namespace fly
