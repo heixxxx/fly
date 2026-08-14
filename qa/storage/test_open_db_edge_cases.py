@@ -33,10 +33,7 @@ def test_open_db_path_conflict_auto_rename():
     from fly.runtime import get_agent
     master = get_agent()
     master.launch_local_workers([{}])
-    for i in range(40):
-        if master.worker_count >= 1:
-            break
-        time.sleep(0.5)
+    assert master.wait_workers_registered(timeout=60)
     assert master.worker_count >= 1, \
         "Worker should connect to master"
 
@@ -79,10 +76,7 @@ def test_data_path_parameter():
     from fly.runtime import get_agent
     master = get_agent()
     master.launch_local_workers([{}])
-    for i in range(40):
-        if master.worker_count >= 1:
-            break
-        time.sleep(0.5)
+    assert master.wait_workers_registered(timeout=60)
     assert master.worker_count >= 1
 
     db = open_db(DB_PATH_DATAPATH, data_path=CUSTOM_DATA_PATH)
@@ -101,10 +95,7 @@ def test_get_db_path_get_data_path_getters():
     from fly.runtime import get_agent
     master = get_agent()
     master.launch_local_workers([{}])
-    for i in range(40):
-        if master.worker_count >= 1:
-            break
-        time.sleep(0.5)
+    assert master.wait_workers_registered(timeout=60)
     assert master.worker_count >= 1
 
     db = open_db(DB_PATH)

@@ -62,10 +62,7 @@ master.launch_local_workers([
     {"attributes": ["holder"]},  # worker 1: 持有 holder 属性（写 task 落这里）
     {"attributes": ["gpu"]},     # worker 2: 持有 gpu 属性（consume 必落这里）
 ])
-for _ in range(40):
-    if master.worker_count >= 2:
-        break
-    time.sleep(0.5)
+assert master.wait_workers_registered(timeout=60)
 assert master.worker_count >= 2, f"Only {master.worker_count}/2 workers connected"
 
 db = open_db(DB_PATH)

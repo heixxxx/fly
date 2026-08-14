@@ -33,7 +33,7 @@ from fly.runtime import get_agent
 master = get_agent()
 
 master.launch_local_workers([{}])
-assert wait_for(lambda: master._agent.get_connection_count() >= 1)
+assert master.wait_workers_registered(timeout=60)
 
 db = open_db(DB_PATH)
 

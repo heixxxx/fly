@@ -38,7 +38,7 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 
 master = get_agent()
 master.launch_local_workers([{"host": "host_A"}, {"host": "host_B"}])
-assert wait_for(lambda: master.worker_count >= 2), "need 2 workers on different hosts"
+assert master.wait_workers_registered(timeout=60), "need 2 workers on different hosts"
 
 # 写对象（分散到不同 host worker，模拟多机数据）。
 db = open_db(DB_PATH)

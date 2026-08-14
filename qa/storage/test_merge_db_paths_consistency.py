@@ -62,7 +62,7 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 master = get_agent()
 # host_A / host_B 作为数据源（模拟多机分散数据）。
 master.launch_local_workers([{"host": "host_A"}, {"host": "host_B"}])
-assert wait_for(lambda: master.worker_count >= 2), "need host_A + host_B workers"
+assert master.wait_workers_registered(timeout=60), "need host_A + host_B workers"
 
 db = open_db(DB_PATH)
 write_data(db, "paths/k1", 111)
@@ -98,7 +98,7 @@ assert count_dat(merged_data_path) > 0, "merged data_path should have .dat"
 # 构造的 Database 指向不存在目录；回新 merge 路径则读成功。
 # requires=["host_c_reader"] 是子集匹配，强制 read task 只能调度到带该属性的 host_C。
 master.launch_local_workers([{"host": "host_C", "attributes": ["host_c_reader"]}])
-assert wait_for(lambda: master.worker_count >= 3), "host_C worker should connect"
+assert master.wait_workers_registered(timeout=60), "host_C worker should connect"
 INFO("[PATHS] host_C worker launched (fresh, no local data, with host_c_reader attr)")
 
 # 提交读 task（requires 强制到 host_C）。

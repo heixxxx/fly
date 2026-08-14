@@ -28,10 +28,7 @@ master = get_agent()
 master.launch_local_workers([{}])
 
 # Wait for worker
-for _ in range(40):
-    if master.worker_count >= 1:
-        break
-    time.sleep(0.5)
+assert master.wait_workers_registered(timeout=60)
 assert master.worker_count >= 1, "Worker should connect"
 
 db = open_db(DB_PATH)

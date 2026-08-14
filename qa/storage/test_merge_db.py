@@ -43,7 +43,7 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 master = get_agent()
 # launch 一个带 --host="host_A" 的 worker（模拟另一台机器的数据源）。
 master.launch_local_workers([{"host": "host_A"}])
-assert wait_for(lambda: master.worker_count >= 1), "host_A worker should connect"
+assert master.wait_workers_registered(timeout=60), "host_A worker should connect"
 
 db = open_db(DB_PATH)
 

@@ -46,7 +46,7 @@ def test_task_failure_cleanup():
     master = get_agent()
 
     master.launch_local_workers([{}])
-    assert wait_for(lambda: master.worker_count >= 1), "worker should connect"
+    assert master.wait_workers_registered(timeout=60), "worker should connect"
 
     db = open_db(DB_PATH)
 

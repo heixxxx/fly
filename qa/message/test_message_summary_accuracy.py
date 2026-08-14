@@ -40,7 +40,7 @@ master = get_agent()
 set_message_global_limit(5)
 
 master.launch_local_workers([{}, {}])
-assert wait_for(lambda: master._agent.get_connection_count() >= 2), "2 worker 未全连上"
+assert master.wait_workers_registered(timeout=60), "2 worker 未全连上"
 
 # master 自身发 2 条（master 自己的 Registry，配额内）。
 message("SUMMS::0001", 1, "master s1")

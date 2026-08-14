@@ -39,7 +39,7 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 
 master = get_agent()
 master.launch_local_workers([{}, {}])
-assert wait_for(lambda: master.worker_count >= 2)
+assert master.wait_workers_registered(timeout=60)
 
 db = open_db(DB_PATH)
 

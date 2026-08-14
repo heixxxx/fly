@@ -37,7 +37,7 @@ master = get_agent()
 set_message_global_limit(3)
 
 master.launch_local_workers([{}])
-assert wait_for(lambda: master._agent.get_connection_count() >= 1)
+assert master.wait_workers_registered(timeout=60)
 
 db = open_db(DB_PATH)
 

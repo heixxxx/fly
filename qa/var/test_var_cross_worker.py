@@ -34,7 +34,7 @@ master.launch_local_workers([
     {"attributes": ["producer"]},
     {"attributes": ["consumer"]},
 ])
-assert wait_for(lambda: master._agent.get_connection_count() >= 2)
+assert master.wait_workers_registered(timeout=60)
 
 db = open_db(DB_PATH)
 

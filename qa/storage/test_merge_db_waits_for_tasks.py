@@ -35,7 +35,7 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 
 master = get_agent()
 master.launch_local_workers([{"host": "host_A"}])
-assert wait_for(lambda: master.worker_count >= 1)
+assert master.wait_workers_registered(timeout=60)
 
 # 在 db1 写对象并 freeze（merge 的目标）。
 db = open_db(DB_PATH)

@@ -29,10 +29,7 @@ def setup_master():
     if not master._running:
         master.start()
     master.launch_local_workers([{"role": "hybrid"}])
-    for i in range(20):
-        if master._agent.get_connection_count() >= 1:
-            break
-        time.sleep(0.5)
+    assert master.wait_workers_registered(timeout=60)
     assert master._agent.get_connection_count() >= 1, "Worker not connected"
     return master
 
@@ -44,10 +41,7 @@ def setup_master_n_workers(n):
         master.start()
     configs = [{"role": "hybrid"} for _ in range(n)]
     master.launch_local_workers(configs)
-    for i in range(40):
-        if master._agent.get_connection_count() >= n:
-            break
-        time.sleep(0.5)
+    assert master.wait_workers_registered(timeout=60)
     assert master._agent.get_connection_count() >= n, \
         f"Only {master._agent.get_connection_count()}/{n} workers connected"
     return master

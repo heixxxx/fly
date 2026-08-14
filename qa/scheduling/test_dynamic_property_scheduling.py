@@ -44,10 +44,7 @@ def setup_three_workers():
         {"attributes": ["beta"]},
         {"attributes": ["gamma"]},
     ])
-    for i in range(40):
-        if master.worker_count >= 3:
-            break
-        time.sleep(0.5)
+    assert master.wait_workers_registered(timeout=60)
     assert master.worker_count >= 3, \
         f"Only {master.worker_count}/3 workers connected"
     return master

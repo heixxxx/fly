@@ -32,7 +32,7 @@ from fly.runtime import get_agent
 master = get_agent()
 # 启动 2 个 worker。
 master.launch_local_workers([{}, {}])
-assert wait_for(lambda: master._agent.get_connection_count() >= 2), "2 worker 未全连上"
+assert master.wait_workers_registered(timeout=60), "2 worker 未全连上"
 
 # master 自身发 3 次。
 message("MULTIMS::0001", 1, "master m1")

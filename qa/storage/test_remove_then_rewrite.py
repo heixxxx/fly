@@ -41,10 +41,7 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 from fly.runtime import get_agent
 master = get_agent()
 master.launch_local_workers([{}, {}])  # 2 worker，确保"别的 worker"存在
-for i in range(40):
-    if master.worker_count >= 2:
-        break
-    time.sleep(0.5)
+assert master.wait_workers_registered(timeout=60)
 assert master.worker_count >= 2, f"需要 2 个 worker，got {master.worker_count}"
 
 db = open_db(DB_PATH)

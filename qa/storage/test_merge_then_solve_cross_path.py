@@ -46,7 +46,7 @@ get_config().set_int("fail_unscaleable_tasks", 0)
 
 master = fly.get_agent()
 master.launch_local_workers([{"host": "host_A"}, {"host": "host_B"}])
-assert wait_for(lambda: master.worker_count >= 2), "need 2 workers"
+assert master.wait_workers_registered(timeout=60), "need 2 workers"
 
 # ── Phase 1: 建 db + 写 matrix + freeze ──
 db = open_db(DB_PATH)

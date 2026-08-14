@@ -46,10 +46,7 @@ def setup_workers_under_perf():
         {"attributes": ["gpu"]},
         {"attributes": []},
     ])
-    for i in range(40):
-        if master.worker_count >= 2:
-            break
-        time.sleep(0.5)
+    assert master.wait_workers_registered(timeout=60)
     assert master.worker_count >= 2, \
         f"Only {master.worker_count}/2 workers connected"
     return master

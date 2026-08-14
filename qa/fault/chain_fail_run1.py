@@ -45,10 +45,7 @@ master = get_agent()
 
 # 4 个 worker 让上下游并发，制造"读不到文件"窗口
 master.launch_local_workers([{}, {}, {}, {}])
-for _ in range(40):
-    if master.worker_count >= 4:
-        break
-    time.sleep(0.5)
+assert master.wait_workers_registered(timeout=60)
 assert master.worker_count >= 4, f"Need 4 workers, got {master.worker_count}"
 
 db = open_db(DB_PATH)

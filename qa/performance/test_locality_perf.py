@@ -89,10 +89,7 @@ def run_round(locality_on, round_idx):
     master = get_agent()
     worker_attrs = [{"attributes": [f"seed_{i}"]} for i in range(N_WORKERS)]
     master.launch_local_workers(worker_attrs)
-    for _ in range(60):
-        if master.worker_count >= N_WORKERS:
-            break
-        time.sleep(0.5)
+    assert master.wait_workers_registered(timeout=60)
     assert master.worker_count >= N_WORKERS, f"workers {master.worker_count}/{N_WORKERS}"
 
     db = open_db(round_db_path)

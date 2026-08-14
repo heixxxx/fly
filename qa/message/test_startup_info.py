@@ -18,7 +18,7 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 from fly.runtime import get_agent
 master = get_agent()
 master.launch_local_workers([{}])
-assert wait_for(lambda: master._agent.get_connection_count() >= 1), "worker 未连上"
+assert master.wait_workers_registered(timeout=60), "worker 未连上"
 
 master.stop()
 

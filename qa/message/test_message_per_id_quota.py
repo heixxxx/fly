@@ -38,7 +38,7 @@ set_message_id_limit("PERID::0001", 3)
 set_message_domain_limit("PERID", 100)  # 宽松，不应生效（per-id 优先）
 
 master.launch_local_workers([{}])
-assert wait_for(lambda: master._agent.get_connection_count() >= 1)
+assert master.wait_workers_registered(timeout=60)
 
 db = open_db(DB_PATH)
 

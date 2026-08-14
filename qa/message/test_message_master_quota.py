@@ -38,7 +38,7 @@ master = get_agent()
 set_message_global_limit(3)
 
 master.launch_local_workers([{}])
-assert wait_for(lambda: master._agent.get_connection_count() >= 1)
+assert master.wait_workers_registered(timeout=60)
 
 # master 自身在 worker task 前发 2 条（master 自身 Registry emit 配额=3，2 < 3 通过）。
 message("MLOCAL::0001", 1, "master local 1")

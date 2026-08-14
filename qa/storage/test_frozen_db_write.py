@@ -40,10 +40,7 @@ def test_frozen_db_write():
     master = get_agent()
 
     master.launch_local_workers([{}])
-    for i in range(40):
-        if master.worker_count >= 1:
-            break
-        time.sleep(0.5)
+    assert master.wait_workers_registered(timeout=60)
     assert master.worker_count >= 1
 
     db = open_db(DB_PATH)

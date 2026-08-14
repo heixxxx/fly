@@ -32,10 +32,7 @@ master = get_agent()
 db = master.load_db(DB_PATH)
 INFO(f"[RUN2] load_db: {db}")
 
-for _ in range(40):
-    if master.worker_count >= 1:
-        break
-    time.sleep(0.5)
+assert master.wait_workers_registered(timeout=60)
 assert master.worker_count >= 1, "Worker should connect after load_db"
 time.sleep(1.0)
 

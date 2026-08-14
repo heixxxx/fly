@@ -37,10 +37,7 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 master = get_agent()
 # Two Workers — tasks may be distributed across them
 master.launch_local_workers([{}, {}])
-for i in range(40):
-    if master.worker_count >= 2:
-        break
-    time.sleep(0.5)
+assert master.wait_workers_registered(timeout=60)
 assert master.worker_count >= 2
 
 db = open_db(DB_PATH)

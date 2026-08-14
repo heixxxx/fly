@@ -51,7 +51,7 @@ get_config().set_int("fail_unscheduleable_tasks", 1)
 # ── 用户预先唤起 solver worker（带 sd_i attributes，>= nsd 个）──
 # flow 不碰 worker；用户脚本负责 worker 池。
 launch_workers([{"attributes": [f"sd_{i}"]} for i in range(NSD)])
-assert wait_for(lambda: get_agent().worker_count >= NSD, timeout=30), \
+assert get_agent().wait_workers_registered(timeout=60), \
     f"{NSD} workers should connect"
 INFO(f"  {NSD} workers connected (user-managed)")
 

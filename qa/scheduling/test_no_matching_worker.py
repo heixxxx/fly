@@ -35,10 +35,7 @@ def test_no_matching_worker_never_completes():
     master.launch_local_workers([
         {"attributes": ["alpha"]},
     ])
-    for i in range(40):
-        if master.worker_count >= 1:
-            break
-        time.sleep(0.5)
+    assert master.wait_workers_registered(timeout=60)
     assert master.worker_count >= 1
 
     db = open_db(DB_PATH)
