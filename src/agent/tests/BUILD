@@ -26,6 +26,17 @@ cc_test(
 )
 
 cc_test(
+    name = "pending_rpc_map_test",
+    srcs = ["pending_rpc_map_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/agent/cpp:fly_agent_test_hooks",
+    ],
+    copts = ["-std=c++20"],
+    defines = ["FLY_ENABLE_TEST_HOOKS"],
+)
+
+cc_test(
     name = "worker_agent_test",
     srcs = ["worker_agent_test.cpp"],
     deps = [

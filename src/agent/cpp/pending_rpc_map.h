@@ -12,13 +12,9 @@
 //                         Returns the shared_ptr (or nullptr on timeout).
 //                         Erases the entry on timeout.
 //   - complete():         single-phase notify — lock, run filler on the entry,
-//                         notify_all. Used when filler needs no pre-work
-//                         outside the lock (DbPath/WriteReg/Freeze).
-//   - take_for_complete(): two-phase notify — lock, pop the shared_ptr out,
-//                         unlock. Caller mutates the entry outside the lock
-//                         (e.g. VarOp builds a FlyBuffer), then calls
-//                         notify_all/notify_one. Preserves the existing
-//                         two-phase pattern needed by VarOp/Remove.
+//                         notify_all. 字段写 + notify 全部持锁（防 lost wakeup，
+//                         参见 8419526 与 on_var_ack 案例）。
+//   - complete_all_if():  batch notify — filler on entries matching pred, 持锁。
 //
 // Thread-safety: each instance has its own mutex, so different RPC types do
 // not contend with each other (same granularity as the prior hand-written
@@ -28,6 +24,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <functional>
 
 namespace fly {
 
@@ -61,6 +58,11 @@ public:
         auto& pending = it->second;
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (!is_done(pending)) {
+#ifdef FLY_ENABLE_TEST_HOOKS
+            // 测试钩子：pred 判 false 后、进入 wait 前（仍持锁）触发。
+            // 用于 latch 强制线程交错，确定性复现/防回归 cv lost wakeup。
+            if (pre_sleep_hook_) pre_sleep_hook_();
+#endif
             if (cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
                 if (!is_done(pending)) {
                     map_.erase(it);
@@ -103,26 +105,23 @@ public:
         cv_.notify_all();
     }
 
-    // Two-phase complete (step 1): pop the shared_ptr out under the lock so the
-    // caller can mutate it outside the lock (e.g. constructing a FlyBuffer).
-    // The entry is re-inserted by return_for_complete() after mutation.
-    // Returns nullptr if the key is absent (e.g. waiter already timed out).
-    CMSharedPtr<Pending> take_for_complete(const Key& key) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto it = map_.find(key);
-        if (it == map_.end()) return nullptr;
-        // Leave the entry in the map but hand out a shared_ptr copy; the waiter
-        // may still be blocked on it. Caller mutates via the shared_ptr.
-        return it->second;
-    }
-
-    void notify_all() { cv_.notify_all(); }
-    void notify_one() { cv_.notify_one(); }
+    // 注意：曾有两阶段完成接口（take_for_complete + 锁外 notify_all），
+    // 因锁外写字段 + 无锁 notify 构成 data race 与 cv lost wakeup 窗口
+    //（on_var_ack 实际踩中，确定性复现见 pending_rpc_map_test）已删除。
+    // 完成路径必须经 complete()/complete_all_if()（字段写 + notify 全持锁）；
+    // 需要锁外预处理时，先算好结果再在 complete 的 filler 里做字段赋值。
 
 private:
     std::mutex mutex_;
     std::condition_variable cv_;
     CMUnorderedMap<Key, CMSharedPtr<Pending>> map_;
+
+#ifdef FLY_ENABLE_TEST_HOOKS
+public:
+    // 仅测试用（release 编译零开销）：wait_for 每次循环 pred==false 后、
+    // 进入 cv wait 前（仍持锁）调用。见 wait_for 内注释。
+    std::function<void()> pre_sleep_hook_;
+#endif
 };
 
 }  // namespace fly

@@ -468,8 +468,10 @@ void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
     {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);
         task_queue_.push(std::move(task));
+        // notify 持锁：防 lost wakeup（waiter 持锁查 pred 与进入 wait 之间的
+        // 窗口里无锁 notify 会落空），同 8419526 修复。
+        task_queue_cv_.notify_one();
     }
-    task_queue_cv_.notify_one();
     outstanding_tasks_++;
 }
 
@@ -602,17 +604,22 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
 
     registered_ = false;
     running_ = false;
+    // 三处 notify 均持对应锁发出（predicate 虽读 atomic flag，但无锁 notify 仍存在
+    // lost wakeup 窗口，waiter 只能靠超时兜底退出）。
     {
         std::lock_guard<std::mutex> lock(heartbeat_mutex_);
         heartbeat_running_ = false;
+        heartbeat_cv_.notify_all();
     }
-    heartbeat_cv_.notify_all();
     {
         std::lock_guard<std::mutex> lock(probe_mutex_);
         probe_running_ = false;
+        probe_cv_.notify_all();
     }
-    probe_cv_.notify_all();
-    task_queue_cv_.notify_all();
+    {
+        std::lock_guard<std::mutex> lock(task_queue_mutex_);
+        task_queue_cv_.notify_all();
+    }
     if (reactor_) {
         reactor_->stop();
     }
@@ -1052,23 +1059,23 @@ CMVector<VarPayload> WorkerAgent::take_pending_task_vars() {
 void WorkerAgent::on_var_ack(uint64_t conn_id, const VarAckMessage& msg) {
     touch_master_contact();
 
-    // Two-phase: take the shared_ptr out under the lock, then mutate it
-    // outside the lock (FlyBuffer construction must not hold the map lock).
-    auto to_complete = pending_var_ops_.take_for_complete(msg.var_name_);
-    if (to_complete) {
-        to_complete->success_ = msg.success_;
-        to_complete->error_message_ = msg.error_message_;
-        to_complete->type_name_ = msg.type_name_;
+    // 单相 complete：字段写 + notify 全部在 map 锁内。
+    // 原两阶段（take_for_complete 锁外写字段 + 无锁 notify_all）有 cv lost
+    // wakeup 窗口 + 非 atomic 字段 data race（与 8419526 DataServer::stop 同族），
+    // FlyBuffer 构造是纯内存操作（make_shared + move），持锁可接受。
+    pending_var_ops_.complete(msg.var_name_, [&](PendingVarOp& p) {
+        p.success_ = msg.success_;
+        p.error_message_ = msg.error_message_;
+        p.type_name_ = msg.type_name_;
         if (msg.success_ && !msg.value_.empty()) {
             // value_ is mutable: std::move it into the FlyBuffer (zero-copy). The
             // decoded ack msg is a local destroyed after this handler returns.
             auto buf = CMMakeShared<FlyBuffer>();
             buf->take(std::move(msg.value_));
-            to_complete->value_ = buf;
+            p.value_ = buf;
         }
-        to_complete->completed_ = true;
-        pending_var_ops_.notify_all();
-    }
+        p.completed_ = true;
+    });
 }
 
 void WorkerAgent::on_var_broadcast(uint64_t conn_id, const VarBroadcastMessage& msg) {
@@ -1615,10 +1622,11 @@ void WorkerAgent::ensure_peer_rpc_handlers() {
                     p.payload_ = "peer connection closed";
                 });
             {
+                // notify 持锁防 lost wakeup（同 8419526）。
                 std::lock_guard<std::mutex> lk(peer_rpc_incoming_mutex_);
                 peer_rpc_error_conns_.push_back(conn_id);
+                peer_rpc_incoming_cv_.notify_one();
             }
-            peer_rpc_incoming_cv_.notify_one();
         });
 }
 
@@ -1632,10 +1640,11 @@ int WorkerAgent::start_peer_rpc_listen(const CMString& host, int port) {
         [this](uint64_t conn_id, uint64_t rpc_id, uint64_t src_worker_id,
                const CMString& payload) -> std::optional<CMString> {
             {
+                // notify 持锁防 lost wakeup（同 8419526）。
                 std::lock_guard<std::mutex> lk(peer_rpc_incoming_mutex_);
                 peer_rpc_incoming_.push_back({conn_id, rpc_id, src_worker_id, payload});
+                peer_rpc_incoming_cv_.notify_one();
             }
-            peer_rpc_incoming_cv_.notify_one();
             return std::nullopt;  // 异步处理（Python 层 peer_rpc_respond 回响应）
         });
     ensure_peer_rpc_handlers();
