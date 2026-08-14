@@ -283,8 +283,8 @@ wait_tasks(timeout=30.0)  # 返回 True/False
 ```python
 from fly import wait_workers_registered, expect_workers
 
-# 等 launch_workers 唤起的全部 worker 注册完成（默认无限等，每 30s 打进度；
-# 超时可经 config 'worker_register_timeout' 或参数显式指定）
+# 等 launch_workers 唤起的全部 worker 注册完成（默认窗口 = config
+# 'worker_register_timeout'（300s），等待期间每 30s 打进度）
 wait_workers_registered()
 
 # 外部唤起（如 bsub 脚本直接跑 `fly --worker`）时手动登记占位符：
@@ -292,9 +292,15 @@ expect_workers([101, 102])          # 之后 bsub 提交对应 worker
 wait_workers_registered(timeout=600)
 ```
 
-超时语义：config `worker_register_timeout`（默认 0=不假设时限）；>0 时超时
-未注册的占位符由 master 清理（WARN 放弃等待）。`load_db`/`merge_db` 内部
-的补 spawn 等待已改用此机制。
+保活语义（**两侧统一**，共用 `worker_register_timeout`，默认 300s=5min）：
+- master 侧：唤起占位符保活——超时未注册即清理（heartbeat 线程 WARN 放弃）；
+  `wait_workers_registered()` 默认超时取此值。0=不假设时限（无限）。
+- worker 侧：connect master 失败按指数退避重试（首次间隔
+  `worker_connect_retry_initial_ms`=500ms，×2 递增，单次上限 10s），总窗口
+  同为 `worker_register_timeout`。仅覆盖瞬时网络抖动与 master 短时过载——
+  **master 挂 = 全群失败**，不做长期等待；master 中途断连（on_disconnect）
+  不重连。
+`load_db`/`merge_db` 内部的补 spawn 等待已改用此机制。
 
 **Worker能力说明**：
 - `role` 字段：hybrid（任务执行+数据存储）/ storage_only（仅数据存储）

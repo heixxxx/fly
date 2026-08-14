@@ -95,7 +95,8 @@ private:
 | `data_client_pool_size` | 4 | DataClientPool 并发上限 |
 | `handler_lanes` | 4 | 消息 handler 并行 lane 数（同连接串行、跨连接并行）；0=全部内联（legacy 单线程 reactor） |
 | `solver_openmp_threads` | 0 | solver C++ 核心 OpenMP 线程数（0=默认） |
-| `worker_register_timeout` | 0 | 唤起 worker 的注册超时（秒）。0=不假设时限（bsub/LSF 慢调度默认）；>0 时超时未注册的占位符被清理（WARN），并作为 `fly.wait_workers_registered()` 的默认超时。QA 需要短超时自行 `set_int` |
+| `worker_register_timeout` | 300 | 唤起 worker 的保活窗口（秒）——**两侧统一**：master 占位符超时清理（heartbeat 线程，WARN 放弃）+ `fly.wait_workers_registered()` 默认超时 + worker connect 指数退避重试的总窗口。默认 300=5min；0=不假设时限（无限，两侧语义一致）。QA 需要短窗口自行 `set_int` |
+| `worker_connect_retry_initial_ms` | 500 | worker connect master 重试的首次间隔（毫秒），指数 ×2 递增（单次上限 10s 硬编码）；总窗口由 `worker_register_timeout` 控制。仅覆盖瞬时网络抖动与 master 短时过载——master 挂 = 全群失败，不做长期等待 |
 
 #### string 配置项
 

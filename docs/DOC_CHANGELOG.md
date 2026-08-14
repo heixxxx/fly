@@ -3,6 +3,35 @@
 ---
 ---
 
+## 2026-08-14 (4): 17-commit 批次——merge 失败全链路 + connect 指数退避 + Config 读写锁 + 锁内 IO 拆除 + QA 等待批量改造
+
+### A. Config 读写锁（#5，a9d5aea）
+`std::mutex` → `std::shared_mutex`（高频 get_* 共享、低频 set_*/reset 独占）；删除全仓零调用方且无法持锁保护的 `all_ints()/all_strs()`；新增 SaveToFileConcurrentWithSetIsSafe 并发用例。
+
+### B. worker connect 指数退避 + 两侧统一保活（cf3bb9c, 7f4c476）
+`worker_register_timeout` 默认 0→300（5min，一个键控制两侧：master 占位符保活 + worker connect 重试总窗口 + wait_workers_registered 默认超时）。`WorkerAgent::start` connect 失败按 `worker_connect_retry_initial_ms`（500ms）×2（上限 10s）退避重试。领域约束：master 挂=全群失败，仅覆盖瞬时抖动与短时过载。
+
+### C. merge_db 失败全链路（6835625..049115b，6 commit）
+- C1 正确性 bug：execute_merge_object 写盘失败（write_record_checked/flush_checked/get_last_entry）走 TaskFailed，根除假成功（原 remote_idx 指向无数据对象+误判 ok 删源）。
+- C2：send_merge_task 未连接路径回滚 BUSY 槽（cancel_task_if_assigned 精确匹配）；internal task 不再以空 submission 污染 failed_tasks.bin。
+- C3 失败清理协议：MergeTaskState.db_path_ 按 db 精确清理（修跨 db 误用）；MergeCleanupMessage.purge_target_（源全保留，持有 merge writer 的 worker 自判删产物）；Python ok=False → cleanup + raise RuntimeError；merge_db 新参数 task_timeout。
+- C4 QA test_merge_fail_then_remerge（失败可见/源保留/产物清理/重 merge 全闭环）+ write_object 保存等级 `cache="none"`（仅落盘不进 low 缓存，数据搬运场景 + 注入前提）。
+- C5 空清单防误删源：idx 文件存在但 0 条目（损坏被误当真空）→ RuntimeError 拒绝（原 0 task 全"成功"→删源丢数据）。
+- C6 删源失败自动重试一轮；仍失败发 STOR::0004（ERROR，含残留 worker 清单）提醒手动删除。
+
+### D. Database 自保护 + 锁内 IO 全量拆除（8262fef, a1c210f）
+- D1：Database state_mutex_（路径成员/writer_ 操作/removed_/temp_/freeze check-and-set）；修两个前置 bug（on_master_register_write 递归 shared_mutex 死锁隐患、worker register_write_with_master 持读锁 5s 等待）。
+- D2-D4：db_instances_/databases_ 约 30 访问点临界区收敛为"find+拷 shared_ptr"，freeze/var/rebuild/_DB_META append/send/drain 全部出锁；写点锁外构造+二次检查插入。
+
+### E. QA 假设型等待批量改造（6f1028a，72 处）
+launch 后手写 for-sleep 38 处 + wait_for(worker_count) 34 处 → wait_workers_registered(timeout=60)。
+
+### F. 文档
+core/module.md（worker_register_timeout=300 两侧统一语义 + worker_connect_retry_initial_ms）；architecture.md §3.4（保活/重试语义）。
+
+---
+---
+
 ## 2026-08-14 (3): worker 唤起占位符 + 注册等待专用 API（不假设注册时限）
 
 ### A. 背景
