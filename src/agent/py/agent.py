@@ -274,6 +274,55 @@ class Master(FlyAgent):
             time.sleep(0.1)
         return False
 
+    def wait_workers_registered(self, timeout: float = None) -> bool:
+        """等所有尝试唤起的 worker（占位符）完成注册。
+
+        bsub（LSF）等慢调度场景：唤起请求发出后 worker 可能分钟级才真正启动，
+        不假设任何注册时限。timeout=None 时取 config 'worker_register_timeout'
+        （默认 0 = 无限等待，等待期间每 30s 打 INFO 进度）。
+        """
+        import time
+        from _fly_core import ex_core_get_config
+        if timeout is None:
+            cfg_timeout = ex_core_get_config().get_int("worker_register_timeout") or 0
+            timeout = float(cfg_timeout) if cfg_timeout > 0 else float("inf")
+        t0 = time.time()
+        last_report = t0
+        while True:
+            if self._agent.all_workers_registered():
+                return True
+            now = time.time()
+            if now - t0 >= timeout:
+                return False
+            if now - last_report >= 30.0:
+                INFO(f"wait_workers_registered: still waiting for "
+                     f"{self._agent.get_expected_worker_count()} worker(s) to "
+                     f"register ({now - t0:.0f}s elapsed)")
+                last_report = now
+            time.sleep(0.1)
+
+    def expect_workers(self, worker_ids):
+        """手动登记唤起占位符（外部唤起场景，如 bsub/LSF 调度脚本）。
+
+        launch_local_workers 会自动登记；此 API 供用户用自己的 launcher 起
+        `fly --worker` 时登记，使 wait_workers_registered 能等待它们注册。
+        """
+        for wid in worker_ids:
+            self._agent.expect_worker(int(wid))
+
+    def _wait_spawned_workers(self):
+        """补 spawn worker 后的统一等待：先等注册（不假设时限，config 控制），
+        再等 IDLE（原有语义，timeout 放宽到 max(30, config)）。
+        注册等待超时（仅 config>0 时可能）抛 TimeoutError，与原行为一致。"""
+        from _fly_core import ex_core_get_config
+        cfg_timeout = ex_core_get_config().get_int("worker_register_timeout") or 0
+        if not self.wait_workers_registered():
+            pending = self._agent.get_expected_worker_count()
+            raise TimeoutError(
+                f"{pending} worker(s) failed to register within {cfg_timeout}s")
+        idle_timeout = max(30.0, float(cfg_timeout)) if cfg_timeout > 0 else 30.0
+        self.wait_for_all_workers(timeout=idle_timeout)
+
     def wait_for_all_tasks(self, expected: int = None, timeout: float = 30.0):
         import time
         t0 = time.time()
@@ -364,7 +413,7 @@ class Master(FlyAgent):
 
         if spawned > 0:
             self._expected_workers += spawned
-            self.wait_for_all_workers(timeout=30.0)
+            self._wait_spawned_workers()
 
             # Refresh mapping after new workers connect
             existing_by_hostname = defaultdict(list)
@@ -510,7 +559,7 @@ class Master(FlyAgent):
                 spawned_source += 1
         if spawned_source > 0:
             self._expected_workers += spawned_source
-            self.wait_for_all_workers(timeout=30.0)
+            self._wait_spawned_workers()
             existing_by_hostname = defaultdict(list)
             for worker_id, hostname in self._agent.get_worker_hostnames():
                 existing_by_hostname[hostname].append(worker_id)
@@ -525,7 +574,7 @@ class Master(FlyAgent):
                 self._next_worker_id += 1
                 spawned_local += 1
             self._expected_workers += spawned_local
-            self.wait_for_all_workers(timeout=30.0)
+            self._wait_spawned_workers()
             existing_by_hostname = defaultdict(list)
             for worker_id, hostname in self._agent.get_worker_hostnames():
                 existing_by_hostname[hostname].append(worker_id)
@@ -734,6 +783,10 @@ class Master(FlyAgent):
     def _spawn_process_worker(self, worker_id: int, config: dict = None):
         import time
         from _fly_core import ex_core_get_config
+
+        # 先登记占位符再 spawn：若 spawn 后才 expect，worker 注册可能先到达，
+        # 转正 erase 落空 → 占位符永久泄漏，wait_workers_registered 永不返回。
+        self._agent.expect_worker(worker_id)
 
         cfg = ex_core_get_config()
         log_dir = cfg.get_str("log_dir")

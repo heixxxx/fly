@@ -179,6 +179,36 @@ def wait_tasks(timeout: float = 30.0):
     return get_agent().wait_for_all_tasks(timeout=timeout)
 
 
+def wait_workers_registered(timeout: float = None) -> bool:
+    """Block until every launched worker has registered with the master.
+
+    Designed for slow schedulers (bsub/LSF): after launching, workers may take
+    minutes to actually start. This API makes no default assumption about how
+    long registration takes.
+
+    Args:
+        timeout: Maximum seconds to wait. None = use config
+            ``worker_register_timeout`` (default 0 = wait indefinitely).
+
+    Returns:
+        True if all expected workers registered, False if timed out.
+    """
+    return get_agent().wait_workers_registered(timeout=timeout)
+
+
+def expect_workers(worker_ids):
+    """Register expected-worker placeholders for externally launched workers.
+
+    ``launch_workers`` registers placeholders automatically. Use this API when
+    launching workers yourself (e.g. via bsub/LSF running ``fly --worker``) so
+    that ``wait_workers_registered`` can wait for them.
+
+    Args:
+        worker_ids: Iterable of worker ids that will be launched.
+    """
+    get_agent().expect_workers(worker_ids)
+
+
 def restart_failed_tasks(path: str):
     """Re-submit previously failed tasks from a persisted file.
 
