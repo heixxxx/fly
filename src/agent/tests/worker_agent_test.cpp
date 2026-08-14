@@ -1042,6 +1042,73 @@ TEST_F(IdxLoadTest, MergeObjectEndToEnd) {
     fly::DataService::instance()->remove_remote_index(full);
 }
 
+// merge task 写盘失败必须走 TaskFailed（而非假 TaskComplete 导致 master
+// remote_idx 指向无数据对象、merge_db 误判成功删源）。
+// 注错钩子 merge_write_fail_for_testing_ 确定性驱动失败路径。
+TEST_F(IdxLoadTest, MergeObjectWriteFailReportsTaskFailed) {
+    CMString source_base = test_dir_ + "/fail_db";
+    CMString source_data = source_base + "/data";
+    std::filesystem::create_directories(source_base);
+    auto source_db = CMMakeShared<Database>(source_base, source_data, 0, "127.0.0.1", source_base);
+    CMString db_path = source_db->get_db_path();
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker1(1, "127.0.0.1", master.get_port());
+    worker1.register_database(db_path, source_db);
+    worker1.start();
+    ASSERT_TRUE(wait_until_registered(worker1));
+
+    const char* payload = "fail_payload_98765";
+    ASSERT_EQ(source_db->write_pickle_bytes("fail_obj", payload, 18, "bytes", false),
+              fly::WriteErrorType::OK);
+    fly::DataService::instance()->drain_write_back();
+    CMString full = db_path + ":fail_obj";
+    fly::DataService::instance()->update_remote_idx(
+        full, 1, "127.0.0.1", master.get_data_server_port());
+
+    CMString target_data_path = test_dir_ + "/fail_target_data";
+    std::filesystem::create_directories(target_data_path);
+    WorkerAgent worker2(2, "127.0.0.1", master.get_port());
+    worker2.merge_write_fail_for_testing_.insert("fail_obj");  // 注错：模拟写盘失败
+    worker2.start();
+    ASSERT_TRUE(wait_until_registered(worker2));
+
+    std::atomic<bool> poll_running{true};
+    std::thread poll_thread([&]() {
+        while (poll_running.load() && worker2.is_running()) {
+            worker2.poll_task_blocking(100);
+        }
+    });
+
+    uint64_t task_id = master.send_merge_task(2, "fail_obj", db_path, db_path,
+                                              target_data_path, "127.0.0.1");
+    CMVector<CMString> completed;
+    CMVector<CMString> failed;
+    bool ok = master.wait_merge_tasks_complete({task_id}, 10, &completed, &failed);
+
+    EXPECT_FALSE(ok);                       // merge 必须判失败
+    EXPECT_TRUE(completed.empty());         // 不允许假成功
+    ASSERT_EQ(failed.size(), 1u);           // 失败原因带回对象信息
+    EXPECT_NE(failed[0].find("fail_obj"), CMString::npos);
+
+    // master 不应把对象登记到 target worker（remote_idx 无 worker2 副本）。
+    for (auto w : fly::DataService::instance()->get_remote_workers(full)) {
+        EXPECT_NE(w, 2u);
+    }
+
+    poll_running.store(false);
+    if (poll_thread.joinable()) poll_thread.join();
+    worker1.stop();
+    worker2.stop();
+    master.stop();
+    wait_for_running(master, false);
+    fly::DataService::instance()->unregister_database(db_path);
+    fly::DataService::instance()->remove_remote_index(full);
+}
+
 // ── connect 指数退避重试 ──────────────────────────────────────────────
 // 领域约束：master 挂=全群失败，重试只覆盖瞬时抖动与 master 短时过载；
 // 总保活窗口与 master 占位符共用 worker_register_timeout（默认 300s）。

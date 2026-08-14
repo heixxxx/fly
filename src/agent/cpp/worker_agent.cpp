@@ -1479,19 +1479,47 @@ void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_n
     ds->register_database(target_db_path, target_data_path, writer->writer_id());
 
     // 4. 落盘（零解压直写 .dat + idx）。LocalIndex 只存 short_name。
+    // write_record_checked/flush_checked/get_last_entry 全链校验：任一失败走
+    // TaskFailed——否则 master 会据 TaskComplete 把 remote_idx 指向无数据对象
+    //（假成功，读时才炸，merge_db 误判 ok=True 后甚至删源）。
+    auto fail_merge_write = [&](const CMString& reason) {
+        ds->on_write_failed(target_db_path, target_full, reason);
+        TaskFailedMessage failed;
+        failed.task_id_ = task_id;
+        failed.worker_id_ = worker_id_;
+        failed.error_message_ = "Internal merge write failed (" + reason + "): " + short_name;
+        reactor_->send(master_conn_, failed);
+        ERR("{}", failed.error_message_);
+    };
+#ifdef FLY_ENABLE_TEST_HOOKS
+    // 测试注错：命中集合模拟写盘失败（确定性驱动 TaskFailed 路径）。
+    if (merge_write_fail_for_testing_.contains(short_name)) {
+        fail_merge_write("injected");
+        return;
+    }
+#endif
     ds->on_write_started(target_db_path, target_full);
     CMString merge_hash = source_hash;
-    writer->write_record(short_name, header.total_size_, header.chunk_count_, *comp_data, merge_hash);
-    writer->flush();
+    if (!writer->write_record_checked(short_name, header.total_size_, header.chunk_count_,
+                                       *comp_data, merge_hash)) {
+        fail_merge_write("write_record");
+        return;
+    }
+    if (!writer->flush_checked()) {
+        fail_merge_write("flush");
+        return;
+    }
 
     // 5. 登记 local_idx_（target 命名空间）。
     auto last_entry_opt = writer->get_last_entry(short_name);
-    if (last_entry_opt.has_value()) {
-        CMVector<IndexEntry> new_entries;
-        new_entries.push_back(last_entry_opt.value());
-        ds->on_write_completed(target_db_path, target_full, new_entries);
-        ds->on_object_flushed(target_full);
+    if (!last_entry_opt.has_value()) {
+        fail_merge_write("idx entry missing after write");
+        return;
     }
+    CMVector<IndexEntry> new_entries;
+    new_entries.push_back(last_entry_opt.value());
+    ds->on_write_completed(target_db_path, target_full, new_entries);
+    ds->on_object_flushed(target_full);
 
     // 6. TaskComplete（上报用 target_full，master 用 target 命名空间重建索引）。
     int64_t comp_size = static_cast<int64_t>(comp_data->size());

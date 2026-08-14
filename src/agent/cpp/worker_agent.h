@@ -364,6 +364,9 @@ public:
     // 仅测试用（release 编译零开销）：connect_master_with_retry 每次 connect 尝试的
     // 时间戳（验证指数退避递增）。
     CMVector<std::chrono::steady_clock::time_point> connect_attempts_for_testing_;
+    // 仅测试用：execute_merge_object 对命中 short_name 的对象模拟写盘失败
+    //（确定性验证 merge task 走 TaskFailed 而非假成功）。
+    CMUnorderedSet<CMString> merge_write_fail_for_testing_;
 #endif
 };
 
