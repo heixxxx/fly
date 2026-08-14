@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <agent/cpp/worker_agent.h>
+#include <core/cpp/config.h>
 #include <common/cpp/test_helpers.h>
 #include <thread>
 #include <chrono>
@@ -22,8 +23,13 @@ TEST(WorkerAgentTest, CreateWithId) {
 // start() fails cleanly — worker does NOT enter a live-but-unregistered state.
 // running_ stays false, no reactor/data-server created, stop() is a no-op.
 TEST(WorkerAgentTest, StartWithoutMaster) {
+    // 默认保活 300s 会重试很久：显式设短窗口保持本用例"快速失败"语义。
+    Config::instance()->set_int("worker_register_timeout", 1);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 10);
     WorkerAgent worker(1, "127.0.0.1", 0);  // port 0 = no master
     worker.start();
+    Config::instance()->set_int("worker_register_timeout", 300);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
 
     // Must not be running: connection failure aborts start().
     EXPECT_FALSE(worker.is_running());
@@ -222,6 +228,8 @@ TEST(WorkerAgentTest, GetWorkerPropertiesReturnsCopy) {
 // Double-stop safety on a failed-start worker: start() aborted (no master),
 // then explicit stop() + destructor stop() must not crash.
 TEST(WorkerAgentTest, DoubleStopNoCrash) {
+    Config::instance()->set_int("worker_register_timeout", 1);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 10);
     // start() fails -> running_=false, reactor_=nullptr
     // stop() guard `if (!reactor_ && !running_) return;` makes it a no-op.
     // Destructor calls stop() again — must still be safe.
@@ -235,6 +243,8 @@ TEST(WorkerAgentTest, DoubleStopNoCrash) {
         // Destructor double-stop when scope exits — must not crash.
     }
     // If we reach here, destructor double-stop on failed-start succeeded.
+    Config::instance()->set_int("worker_register_timeout", 300);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
 }
 
 TEST(WorkerAgentTest, StopBeforeStartNoCrash) {
@@ -259,6 +269,8 @@ TEST(WorkerAgentTest, RequestDatabaseFreezeNotRegistered) {
 // submit_task on a worker whose start() failed (no reactor) must not crash.
 // New contract: submit_task guards reactor_==nullptr and returns softly.
 TEST(WorkerAgentTest, SubmitTaskAfterFailedStart) {
+    Config::instance()->set_int("worker_register_timeout", 1);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 10);
     WorkerAgent worker(1, "127.0.0.1", 0);
     worker.start();
     EXPECT_FALSE(worker.is_running());
@@ -266,6 +278,8 @@ TEST(WorkerAgentTest, SubmitTaskAfterFailedStart) {
     // No reactor exists — submit_task must not dereference null; logs + returns.
     EXPECT_NO_THROW(worker.submit_task("test_task", "test_module", {}, {}));
     worker.stop();
+    Config::instance()->set_int("worker_register_timeout", 300);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
 }
 
 }  // namespace fly
@@ -1026,6 +1040,79 @@ TEST_F(IdxLoadTest, MergeObjectEndToEnd) {
 
     fly::DataService::instance()->unregister_database(db_path);
     fly::DataService::instance()->remove_remote_index(full);
+}
+
+// ── connect 指数退避重试 ──────────────────────────────────────────────
+// 领域约束：master 挂=全群失败，重试只覆盖瞬时抖动与 master 短时过载；
+// 总保活窗口与 master 占位符共用 worker_register_timeout（默认 300s）。
+
+// 场景：master 短暂不可用（过载重启窗口）→ worker 退避重试 → master 回来后连上。
+// 固定冷门端口保证 stop→start 重新 bind 同一端口。
+TEST(WorkerAgentTest, ConnectRetrySucceedsWhenMasterReturns) {
+    constexpr uint16_t kPort = 48765;
+    Config::instance()->set_int("worker_register_timeout", 10);  // 10s 保活窗口
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 50);
+
+    MasterAgent master("127.0.0.1", kPort);
+    master.start();
+    wait_for_running(master, true);
+    master.stop();
+    wait_for_running(master, false);   // 端口关闭：worker 第一轮 connect 必然失败
+
+    WorkerAgent worker(1, "127.0.0.1", kPort);
+    std::thread starter([&] { worker.start(); });
+    // worker 在重试中（50ms 间隔起）—— 给它几轮失败机会后 master 回到同端口。
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    master.start();
+    wait_for_running(master, true);
+
+    starter.join();
+    EXPECT_TRUE(worker.is_running());   // 10s 窗口内 master 已就绪，必然连上
+    worker.stop();
+
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("worker_register_timeout", 300);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
+}
+
+// 指数退避确定性验证：hooks 记录的尝试间隔递增（×2）。
+TEST(WorkerAgentTest, ConnectRetryExponentialBackoff) {
+    Config::instance()->set_int("worker_register_timeout", 1);      // 1s 窗口
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 40);
+
+    WorkerAgent worker(1, "127.0.0.1", 0);  // port 0：全部失败
+    worker.start();
+    EXPECT_FALSE(worker.is_running());
+
+    // 40ms initial ×2：间隔序列 40/80/160/320/640ms（1s 窗口内）。验证单调递增
+    // 且首间隔 ≈40ms（允许调度抖动）。
+    auto& attempts = worker.connect_attempts_for_testing_;
+    ASSERT_GE(attempts.size(), 3u);
+    std::vector<int64_t> gaps_ms;
+    for (size_t i = 1; i < attempts.size(); ++i) {
+        gaps_ms.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(
+            attempts[i] - attempts[i - 1]).count());
+    }
+    EXPECT_GE(gaps_ms[0], 35);                       // 首间隔 ≈ initial
+    for (size_t i = 1; i < gaps_ms.size(); ++i) {
+        EXPECT_GE(gaps_ms[i], gaps_ms[i - 1]);       // 单调递增（指数退避）
+    }
+    Config::instance()->set_int("worker_register_timeout", 300);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
+}
+
+// 保活窗口耗尽 → 干净失败（running_ false，与 StartWithoutMaster 契约一致）。
+TEST(WorkerAgentTest, ConnectRetryExhaustedCleanExit) {
+    Config::instance()->set_int("worker_register_timeout", 1);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 10);
+    WorkerAgent worker(1, "127.0.0.1", 0);
+    worker.start();
+    EXPECT_FALSE(worker.is_running());
+    EXPECT_FALSE(worker.is_registered());
+    worker.stop();  // no-op 安全
+    Config::instance()->set_int("worker_register_timeout", 300);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
 }
 
 }  // namespace fly

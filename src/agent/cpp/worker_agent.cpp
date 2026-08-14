@@ -31,6 +31,36 @@ WorkerAgent::~WorkerAgent() {
     stop();
 }
 
+// connect master 指数退避重试：initial=worker_connect_retry_initial_ms（默认
+// 500ms），倍率 ×2，单次 sleep 上限 10s；总保活窗口 = worker_register_timeout
+//（与 master 占位符共用一键，默认 300s=5min；0=无限重试）。
+uint64_t WorkerAgent::connect_master_with_retry(ConnectionManager& transport) {
+    const int64_t keepalive_s = Config::instance()->get_int("worker_register_timeout");
+    int64_t initial_ms = Config::instance()->get_int("worker_connect_retry_initial_ms");
+    if (initial_ms <= 0) initial_ms = 500;
+    const bool infinite = (keepalive_s <= 0);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(keepalive_s);
+
+    int64_t delay_ms = initial_ms;
+    int attempt = 0;
+    while (true) {
+        ++attempt;
+#ifdef FLY_ENABLE_TEST_HOOKS
+        connect_attempts_for_testing_.push_back(std::chrono::steady_clock::now());
+#endif
+        uint64_t conn = transport.connect(master_host_, master_port_);
+        if (conn != 0) return conn;
+        if (!infinite && std::chrono::steady_clock::now() >= deadline) {
+            return 0;
+        }
+        WARN("connect to master {}:{} failed (attempt {}), retry in {}ms{}",
+             master_host_, master_port_, attempt, delay_ms,
+             infinite ? "" : " (keepalive budget)");
+        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        delay_ms = std::min<int64_t>(delay_ms * 2, 10000);
+    }
+}
+
 void WorkerAgent::start() {
     if (running_) return;
 
@@ -39,13 +69,17 @@ void WorkerAgent::start() {
 
     auto transport = create_connection_manager("tcp");
     transport->listen("0.0.0.0", 0);
-    master_conn_ = transport->connect(master_host_, master_port_);
+    // connect 指数退避重试：覆盖瞬时网络抖动与 master 短时过载（listen backlog
+    // 满导致的拒绝/超时）。领域约束：master 挂 = 全群失败，不做"等 master 出现"
+    // 的长期等待——总保活窗口与 master 占位符共用 worker_register_timeout
+    //（两侧统一 5min；0=无限）。master 中途断连（on_disconnect）不重连。
+    master_conn_ = connect_master_with_retry(*transport);
     if (master_conn_ == 0) {
         // Connection failure is non-fatal at the network layer; for a worker it
         // is fatal: a worker cannot run without its master. Abort start() cleanly
         // (running_ stays false, no reactor/data-server created) and let the caller
         // observe is_running()==false and exit.
-        ERR("Failed to connect to master {}:{} — worker cannot start",
+        ERR("Failed to connect to master {}:{} after retries — worker cannot start",
             master_host_, master_port_);
         return;
     }
@@ -55,7 +89,6 @@ void WorkerAgent::start() {
     size_t handler_lanes = static_cast<size_t>(Config::instance()->get_int("handler_lanes"));
     reactor_ = CMMakeUnique<Reactor>(std::move(transport), handler_lanes);
 
-    // worker 进程：MSG 宏的 push 委托给 WorkerAgentContext（task 内绑定为发送 master）。
     // 非 task 上下文 context func 为 null → push no-op（符合需求）。
     fly::set_message_push_func([](fly::LogLevel level, const fly::CMString& domain_id, int32_t source, const fly::CMString& msg) {
         fly::WorkerAgentContext::push_message(static_cast<uint8_t>(level), domain_id, source, msg);

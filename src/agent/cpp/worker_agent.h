@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <thread>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <shared_mutex>
 #include <condition_variable>
@@ -344,6 +345,9 @@ private:
     
     void heartbeat_loop();
     void bandwidth_probe_loop();
+    // connect master 指数退避重试（见 worker_agent.cpp 实现处注释：窗口与 master
+    // 占位符共用 worker_register_timeout，两侧统一 5min 保活）。
+    uint64_t connect_master_with_retry(class ConnectionManager& transport);
     void touch_master_contact();
     void initiate_shutdown(const CMString& reason);
     void do_cleanup();
@@ -354,6 +358,13 @@ private:
     // Master liveness tracking — seconds since epoch (atomic for cross-thread access)
     std::atomic<int64_t> last_master_contact_{0};
     static constexpr int MASTER_TIMEOUT_SECONDS = 120;
+
+#ifdef FLY_ENABLE_TEST_HOOKS
+public:
+    // 仅测试用（release 编译零开销）：connect_master_with_retry 每次 connect 尝试的
+    // 时间戳（验证指数退避递增）。
+    CMVector<std::chrono::steady_clock::time_point> connect_attempts_for_testing_;
+#endif
 };
 
 }  // namespace fly
