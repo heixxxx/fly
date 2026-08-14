@@ -55,7 +55,15 @@ class Database:
         EXStgWriteErrorType.REGISTRATION_TIMEOUT: "Write registration timeout",
     }
 
-    def write_object(self, name: str, obj, backup: bool = False, save_to_db: bool = True) -> str:
+    def write_object(self, name: str, obj, backup: bool = False, save_to_db: bool = True,
+                     cache: str = "low") -> str:
+        """Write an object.
+
+        Args:
+            cache: 保存等级。``"low"``（默认）写入即填充 low-tier 压缩缓存
+                （读请求不等后台落盘即可命中）；``"none"`` 仅落盘不进缓存
+                （数据搬运/merge 等不希望中间对象挤占缓存的场景，读走索引+磁盘）。
+        """
         if not save_to_db:
             return self._write_temp(name, obj)
 
@@ -75,7 +83,8 @@ class Database:
             pickle.dump(obj, stream)
             stream.flush()
             buf = stream.finish()
-            err = EXStgWriteErrorType(self._db._commit_stream(name, buf, py_name, backup))
+            err = EXStgWriteErrorType(self._db._commit_stream(
+                name, buf, py_name, backup, cache != "none"))
 
         if err != EXStgWriteErrorType.OK and err != EXStgWriteErrorType.DUPLICATE_SKIPPED:
             msg = self._WRITE_ERROR_MESSAGES.get(err, f"Write error (type={err})")

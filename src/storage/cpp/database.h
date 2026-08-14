@@ -33,11 +33,13 @@ public:
 
     fly::WriteErrorType write_pickle_bytes(const CMString& object_name,
                                 const char* data, int64_t data_size,
-                                const CMString& py_name, bool backup = false);
+                                const CMString& py_name, bool backup = false,
+                                bool populate_cache = true);
 
     fly::WriteErrorType commit_stream(const CMString& object_name,
                                       FlyBufferPtr record,
-                                      const CMString& py_name, bool backup = false);
+                                      const CMString& py_name, bool backup = false,
+                                      bool populate_cache = true);
 
     CMString compress_pickle_bytes(const char* data, int64_t data_size,
                                    const CMString& py_name);
@@ -53,7 +55,8 @@ public:
 
     template<typename T>
     fly::WriteErrorType write_object(const CMString& object_name, const T& obj,
-                          const CMString& py_name, bool backup = false);
+                          const CMString& py_name, bool backup = false,
+                          bool populate_cache = true);
 
     // Cache tiers: "low" (default) and "high" populate/query the high-tier
     // cache (省反序列化); "none" bypasses all cache tiers and reads from source.
@@ -159,12 +162,14 @@ private:
     // Commit a compressed record: cache → register with master → enqueue disk write.
     // Shared by write_pickle_bytes and write_object<T>. On registration failure,
     // rolls back cache and local_idx, does not enqueue disk write.
+    // populate_cache=false（保存等级"none"）跳过 low-tier 缓存填充，仅落盘。
     fly::WriteErrorType commit_write(const CMString& object_name,
                                      const CMString& full,
                                      FlyBufferPtr record,
                                      int64_t original_size,
                                      int32_t chunk_count,
-                                     bool backup);
+                                     bool backup,
+                                     bool populate_cache = true);
 
     // Var persistence: flush non-deleted vars to {db_path}/_VARS at freeze time;
     // load them back at construction if the file exists.
@@ -202,7 +207,8 @@ private:
 
 template<typename T>
 fly::WriteErrorType Database::write_object(const CMString& object_name, const T& obj,
-                                const CMString& py_name, bool backup) {
+                                const CMString& py_name, bool backup,
+                                bool populate_cache) {
     CMString full = full_name(object_name);
     if (check_frozen()) {
         fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB);
@@ -248,7 +254,8 @@ fly::WriteErrorType Database::write_object(const CMString& object_name, const T&
     std::memcpy(record->data(), real_header.data(), real_header.size());
 
     // Commit: cache → register → enqueue disk write (shared logic).
-    return commit_write(object_name, full, record, total_uncompressed, chunk_count, backup);
+    return commit_write(object_name, full, record, total_uncompressed, chunk_count,
+                        backup, populate_cache);
 }
 
 template<typename T>

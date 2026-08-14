@@ -138,6 +138,23 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
         PyBuffer_Release(&view);
         return result;
     })
+    // 保存等级"none"（仅落盘不进 low 缓存）：数据搬运/merge 等场景用。
+    FLY_EXPORT_DEF("_write_pickle_bytes", [](Database& db, const CMString& name,
+                                              nanobind::handle data,
+                                              const CMString& py_name,
+                                              bool backup,
+                                              bool populate_cache) -> int {
+        Py_buffer view;
+        if (PyObject_GetBuffer(data.ptr(), &view, PyBUF_SIMPLE) < 0) {
+            return -1;  // Error
+        }
+        auto result = static_cast<int>(db.write_pickle_bytes(name,
+                                       static_cast<const char*>(view.buf),
+                                       static_cast<int64_t>(view.len), py_name,
+                                       backup, populate_cache));
+        PyBuffer_Release(&view);
+        return result;
+    })
     FLY_EXPORT_DEF("_read_streaming", [](Database& db, const CMString& name, bool backup) -> fly_export::tuple {
         auto [comp_data, py_name] = db.read_object_compressed(name, backup);
         return fly_export::make_tuple(
@@ -273,6 +290,12 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_DEF("_commit_stream", [](Database& db, const CMString& name,
                                          FlyBufferPtr buf, const CMString& py_name) -> int {
         return static_cast<int>(db.commit_stream(name, buf, py_name, false));
+    })
+    // 保存等级"none"（仅落盘不进 low 缓存）：数据搬运/merge 等场景用。
+    FLY_EXPORT_DEF("_commit_stream", [](Database& db, const CMString& name,
+                                         FlyBufferPtr buf, const CMString& py_name,
+                                         bool backup, bool populate_cache) -> int {
+        return static_cast<int>(db.commit_stream(name, buf, py_name, backup, populate_cache));
     })
     FLY_EXPORT_DEF("write_object_raw", [](Database& db, const CMString& name, const CMString& data, bool backup) -> int {
         return static_cast<int>(db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup));

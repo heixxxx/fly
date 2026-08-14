@@ -7,6 +7,12 @@ def write_data(db, key, value):
 
 
 @as_task()
+def write_data_no_cache(db, key, value):
+    """保存等级 "none"（仅落盘不进 low 缓存）的写入——数据搬运/失败注入场景用。"""
+    db.write_object(key, value, cache="none")
+
+
+@as_task()
 def slow_write(db, key, value, delay):
     """写入对象前 sleep delay 秒（用于测试 merge_db 的前置 task 等待限制）。"""
     import time

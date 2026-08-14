@@ -140,7 +140,8 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
                                            FlyBufferPtr record,
                                            int64_t original_size,
                                            int32_t chunk_count,
-                                           bool backup) {
+                                           bool backup,
+                                           bool populate_cache) {
     // 裸写入（非 @as_task，无 task context）的 current_write_hash 为空。用时间戳填充，
     // 使 provenance 校验对裸写入也生效（消灭 do_write_register 的空 hash 旁路），
     // 并保证 register_write（内部 get_current_write_hash）与 write_record 落盘同一个值。
@@ -158,7 +159,9 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
 
     // 1. Populate low-tier cache immediately — remote reads can serve from
     //    cache without waiting for the background disk write.
-    {
+    //    populate_cache=false（保存等级"none"，仅落盘）：跳过缓存填充——
+    //    数据搬运/merge 等场景不希望中间对象挤占缓存，读直接走索引+磁盘。
+    if (populate_cache) {
         size_t sz = original_size > 0 ? static_cast<size_t>(original_size) : record->size();
         fly::ObjectCache::instance().put_low(full, record, sz);
     }
@@ -270,19 +273,22 @@ void Database::write_temp_pickle(const CMString& object_name,
 
 fly::WriteErrorType Database::write_pickle_bytes(const CMString& object_name,
                                          const char* data, int64_t data_size,
-                                         const CMString& py_name, bool backup) {
+                                         const CMString& py_name, bool backup,
+                                         bool populate_cache) {
     CMString full = full_name(object_name);
     if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return fly::WriteErrorType::FROZEN_DB; }
 
     auto record = CMMakeShared<FlyBuffer>();
     auto cr = compress_buffered_data(data, data_size, py_name, *record);
 
-    return commit_write(object_name, full, record, cr.original_size_, cr.chunk_count_, backup);
+    return commit_write(object_name, full, record, cr.original_size_, cr.chunk_count_,
+                        backup, populate_cache);
 }
 
 fly::WriteErrorType Database::commit_stream(const CMString& object_name,
                                      FlyBufferPtr record,
-                                     const CMString& py_name, bool backup) {
+                                     const CMString& py_name, bool backup,
+                                     bool populate_cache) {
     CMString full = full_name(object_name);
     if (check_frozen()) { fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB); return fly::WriteErrorType::FROZEN_DB; }
 
@@ -304,7 +310,8 @@ fly::WriteErrorType Database::commit_stream(const CMString& object_name,
         chunk_count = static_cast<int32_t>(hdr.chunk_count_);
     } catch (...) {}
 
-    return commit_write(object_name, full, pure_record, original_size, chunk_count, backup);
+    return commit_write(object_name, full, pure_record, original_size, chunk_count,
+                        backup, populate_cache);
 }
 
 CMString Database::compress_pickle_bytes(const char* data, int64_t data_size,
