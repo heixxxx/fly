@@ -456,6 +456,7 @@ class Master(FlyAgent):
         return db
 
     def merge_db(self, path: str, data_path: str = "", merge_db_path: str = "",
+                 task_timeout: float = 3600.0,
                  local_workers: int = 4, delete_source: bool = True):
         """Merge a frozen database's data onto the master host.
 
@@ -619,14 +620,21 @@ class Master(FlyAgent):
         INFO(f"merge_db: dispatched {task_count} merge tasks across "
              f"{len(master_host_workers)} target workers")
 
-        # 等待全部完成（"全部成功才删源"语义）。
+        # 等待全部完成（"全部成功才删源"语义）。task_timeout 可调（QA 注错入口）。
         ok, completed, failed = self._agent.wait_merge_tasks_complete(
-            all_task_ids, 3600)  # 1h timeout for large db
+            all_task_ids, int(task_timeout))
         if ok:
             INFO(f"merge_db: all {len(completed)} objects merged successfully")
         else:
             WARN(f"merge_db: {len(failed)} tasks failed (not deleting source). "
                  f"First failure: {failed[0] if failed else 'unknown'}")
+            # 失败清理：源数据全保留（支撑重 merge）；按 db 精确清 master merge task
+            # 状态 + 广播 purge（merge target worker 删自己写的产物 .dat/.idx）。
+            self._agent.cleanup_failed_merge(db_path, merge_db_path, merge_data_path)
+            raise RuntimeError(
+                f"merge_db failed: {len(failed)} object(s) failed to merge "
+                f"(source data preserved for re-merge). First failure: "
+                f"{failed[0] if failed else 'unknown'}")
 
         # ── Phase 5: 全部成功 → 统一删源 + 状态清理 ──────────────────────
         source_worker_ids = []

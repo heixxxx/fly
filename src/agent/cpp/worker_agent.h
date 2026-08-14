@@ -325,6 +325,8 @@ private:
     void on_database_freeze_ack(uint64_t conn_id, const DatabaseFreezeAckMessage& msg);
     void on_delete_data(uint64_t conn_id, const DeleteDataMessage& msg);
     void on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& msg);
+    // 失败清理：删除本 worker merge writer 的产物文件（见 on_merge_cleanup purge 分支）。
+    void purge_merge_products(const MergeCleanupMessage& msg);
     void execute_internal_task(const PendingTask& task);
     // __merge_object：跨机拉源对象压缩字节，落到 merge target_data_path（master host 本地）。
     // 不构造 Database（避免 DataService 全局状态污染），用独立 DataWriter 直接落盘 + 手动 register。

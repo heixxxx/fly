@@ -86,6 +86,7 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     })
     FLY_EXPORT_METHOD("get_connection_count", &fly::MasterAgent::get_connection_count)
     FLY_EXPORT_METHOD("expect_worker", &fly::MasterAgent::expect_worker)
+    FLY_EXPORT_METHOD("cleanup_failed_merge", &fly::MasterAgent::cleanup_failed_merge)
     FLY_EXPORT_METHOD("get_expected_worker_count", &fly::MasterAgent::get_expected_worker_count)
     FLY_EXPORT_METHOD("all_workers_registered", &fly::MasterAgent::all_workers_registered)
     FLY_EXPORT_METHOD("submit_task", [](fly::MasterAgent& self, uint64_t task_id,

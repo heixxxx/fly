@@ -621,9 +621,11 @@ struct MergeCleanupMessage {
     CMString data_path_;       // merge 后 data_path（.dat 所在，master host 本地）
     CMString target_db_path_;  // merge 产物 db_path（idx 所在目录，cross-path 时 != db_path_）
     CMVector<uint64_t> exempt_worker_ids_;  // merge target worker（已持有效 local_idx，跳过重建）
+    bool purge_target_ = false;  // 失败清理模式：源命名空间全保留（重 merge 支撑）；
+                                 // 持有 target_data_path merge writer 的 worker 删除自己的产物
 
     static constexpr MessageType msg_type_ = MessageType::MERGE_CLEANUP;
-    FLY_SERIALIZE(header_, db_path_, data_path_, target_db_path_, exempt_worker_ids_);
+    FLY_SERIALIZE(header_, db_path_, data_path_, target_db_path_, exempt_worker_ids_, purge_target_);
 };
 
 // worker → master: cleanup 完成回报。这是 merge_db 返回前的"全局一致性屏障"：

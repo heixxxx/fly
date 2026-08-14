@@ -26,6 +26,7 @@
 #include <chrono>
 #include <functional>
 #include <utility>
+#include <memory>
 
 namespace fly {
 
@@ -131,6 +132,13 @@ public:
     decltype(auto) with_lock(Func&& func) {
         std::lock_guard<std::mutex> lock(mutex_);
         return func(map_);
+    }
+
+    // const 只读重载（诊断/测试钩子遍历）：func 收 const map 引用，禁止修改。
+    template <typename Func>
+    decltype(auto) with_lock(Func&& func) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return func(std::as_const(map_));
     }
 
     // 注意：曾有两阶段完成接口（take_for_complete + 锁外 notify_all），

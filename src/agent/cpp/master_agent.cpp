@@ -2529,7 +2529,10 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
     uint64_t merge_task_id = remote_task_counter_.fetch_add(1);
 
     // 登记初始 pending 状态（wait_merge_tasks_complete 等待此表）。
-    merge_task_states_.emplace(merge_task_id, CMMakeShared<MergeTaskState>());
+    // db_path_：失败清理按 db 精确匹配（跨 db 并发 merge 不互扰）。
+    auto state = CMMakeShared<MergeTaskState>();
+    state->db_path_ = source_db_path;
+    merge_task_states_.emplace(merge_task_id, state);
 
     CMString full_name = source_db_path + ":" + short_name;
     // 把源对象位置注入 task dependency_locations_，让 target worker 的 read_raw_compressed
@@ -2772,6 +2775,43 @@ void MasterAgent::on_delete_data_ack(uint64_t conn_id, const DeleteDataAckMessag
          msg.worker_id_, msg.db_path_, msg.success_, msg.deleted_count_);
 }
 
+void MasterAgent::cleanup_failed_merge(const CMString& db_path,
+                                         const CMString& merge_db_path,
+                                         const CMString& merge_data_path) {
+    // 1. 按 db 精确清 merge task 状态（不碰其它 db 的并发 merge 条目；
+    //    旧实现靠"下一次任意 merge 的全局 completed_ 扫描"兜底，跨 db 误清/漏清）。
+    size_t removed = 0;
+    merge_task_states_.with_lock([&](auto& m) {
+        for (auto it = m.begin(); it != m.end(); ) {
+            if (it->second->db_path_ == db_path) {
+                it = m.erase(it);
+                ++removed;
+            } else {
+                ++it;
+            }
+        }
+    });
+    INFO("cleanup_failed_merge: removed {} merge task state(s) for db_path={}",
+         removed, db_path);
+
+    // 2. 广播 purge（best-effort，不登记屏障不等 ack）：源命名空间全保留
+    //   （源数据支撑重 merge）；持有 target_data_path merge writer 的 worker
+    //   删除自己的产物 .dat/.idx（自判，无需 exempt 列表）。
+    MergeCleanupMessage msg;
+    msg.db_path_ = db_path;
+    msg.data_path_ = merge_data_path;
+    msg.target_db_path_ = merge_db_path;
+    msg.purge_target_ = true;
+    {
+        std::lock_guard<std::mutex> wlk(workers_mutex_);
+        for (const auto& [wid, cid] : worker_to_conn_) {
+            reactor_->send(cid, msg);
+        }
+    }
+    WARN("cleanup_failed_merge: purge broadcast for db_path={} (source data preserved "
+         "for re-merge)", db_path);
+}
+
 void MasterAgent::cleanup_after_merge(const CMString& db_path,
                                        const CMVector<CMString>& merged_object_full_names,
                                        const CMVector<uint64_t>& source_worker_ids,
@@ -2853,7 +2893,9 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     CMUnorderedMap<CMString, CMVector<uint64_t>> obj_to_workers;
     merge_task_states_.with_lock([&](auto& m) {
         for (const auto& [tid, state] : m) {
-            if (state->success_ && state->worker_id_ != 0) {
+            // 按 db 过滤：跨 db 的残留条目（含其它 merge 的遗留）不由本次 cleanup
+            // 重建——旧实现全表扫描会把陈旧 worker 写进 remote_idx。
+            if (state->db_path_ == db_path && state->success_ && state->worker_id_ != 0) {
                 for (const auto& obj : state->written_objects_) {
                     obj_to_workers[obj].push_back(state->worker_id_);
                 }
@@ -2893,9 +2935,9 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
 
     // 6. 清理本批 merge task 状态（wait_merge_tasks_complete 推迟到此处 erase）。
     //    按已完成清除（跨并发 merge_db 调用共享此表，completed 的都可安全清理）。
-    merge_task_states_.with_lock([](auto& m) {
+    merge_task_states_.with_lock([&](auto& m) {
         for (auto it = m.begin(); it != m.end(); ) {
-            if (it->second->completed_) {
+            if (it->second->db_path_ == db_path && it->second->completed_) {
                 it = m.erase(it);
             } else {
                 ++it;
@@ -3039,6 +3081,16 @@ std::pair<bool, int32_t> MasterAgent::pending_delete_ack_state_for_testing(
         return {false, 0};
     }
     return {p->completed_, p->deleted_count_};
+}
+
+size_t MasterAgent::merge_task_state_count_for_testing(const CMString& db_path) const {
+    return merge_task_states_.with_lock([&](const auto& m) {
+        size_t n = 0;
+        for (const auto& [tid, state] : m) {
+            if (state->db_path_ == db_path) ++n;
+        }
+        return n;
+    });
 }
 
 std::pair<uint64_t, uint64_t> MasterAgent::pending_merge_cleanup_counts_for_testing(

@@ -180,6 +180,12 @@ public:
     //  4. 更新 db_instances_[db_path] 的 Database 路径（set_paths）指向 merge 路径，
     //     让后续 DbPathRequest 返回正确路径（Database 现是 master 进程路径唯一权威源）。
     // 不清 ObjectCache（数据内容未变，cache 是正确副本）。
+    // merge_db 失败路径清理：按 db_path 精确清 merge_task_states_ + 广播 purge
+    //（MergeCleanupMessage.purge_target_=true：源命名空间全保留，持有该 target
+    // merge writer 的 worker 删除自己的产物 .dat/.idx）。best-effort，不等屏障。
+    void cleanup_failed_merge(const CMString& db_path,
+                               const CMString& merge_db_path,
+                               const CMString& merge_data_path);
     void cleanup_after_merge(const CMString& db_path,
                               const CMVector<CMString>& merged_object_full_names,
                               const CMVector<uint64_t>& source_worker_ids,
@@ -221,6 +227,8 @@ public:
     void inject_delete_data_ack_for_testing(const DeleteDataAckMessage& msg) { on_delete_data_ack(0, msg); }
     // 直接驱动 select_backup_worker（private），验证 host 级分散选择用于测试。
     uint64_t select_backup_worker_for_testing(const CMString& object_name) { return select_backup_worker(object_name); }
+    // 诊断：指定 db_path 的 merge task 状态条目数（失败清理精确性测试用）。
+    size_t merge_task_state_count_for_testing(const CMString& db_path) const;
     // 直接驱动 record_worker_info（private），验证同 tuple 只 append meta 一次。
     void record_worker_info_for_testing(const CMString& object_name, const CMString& db_path,
                                         uint64_t worker_id, const CMString& writer_id) {
@@ -339,6 +347,7 @@ private:
         CMString error_message_;
         CMVector<CMString> written_objects_;  // 成功时填入（full_name 列表）
         uint64_t worker_id_ = 0;  // 执行 merge task 的 worker（精确的对象持有者）
+        CMString db_path_;        // 源 db_path（失败清理按 db 精确匹配，不误清并发 merge）
     };
     PendingRpcMap<uint64_t, MergeTaskState> merge_task_states_;
 

@@ -1109,6 +1109,123 @@ TEST_F(IdxLoadTest, MergeObjectWriteFailReportsTaskFailed) {
     fly::DataService::instance()->remove_remote_index(full);
 }
 
+// C3: cleanup_failed_merge 按 db 精确清理（跨 db 并发 merge 不互扰）。
+// 未连接路径登记的失败状态即测试载体（completed_=true 保留至 cleanup）。
+TEST_F(IdxLoadTest, CleanupFailedMergeClearsOnlyOwnDb) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    CMString db1 = db32("c3_db1");
+    CMString db2 = db32("c3_db2");
+    // target worker 不存在 → 未连接路径：登记 + 标失败 + 回滚 assign。
+    master.send_merge_task(99, "obj_a", db1, db1, test_dir_ + "/t1", "127.0.0.1");
+    master.send_merge_task(98, "obj_b", db2, db2, test_dir_ + "/t2", "127.0.0.1");
+    EXPECT_EQ(master.merge_task_state_count_for_testing(db1), 1u);
+    EXPECT_EQ(master.merge_task_state_count_for_testing(db2), 1u);
+
+    master.cleanup_failed_merge(db1, db1, test_dir_ + "/t1");
+    EXPECT_EQ(master.merge_task_state_count_for_testing(db1), 0u);  // 本 db 精确清
+    EXPECT_EQ(master.merge_task_state_count_for_testing(db2), 1u);  // 其它 db 不动
+
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// C3: purge 广播——merge target worker 收到后删除自己写的产物 .dat/.idx 并清
+// target local_idx；源数据（源 worker 命名空间）不动。
+// 场景：merge task 实际成功（产物已写），随后整体失败清理（模拟部分对象失败）。
+TEST_F(IdxLoadTest, MergeFailedCleanupPurgesProducts) {
+    CMString source_base = test_dir_ + "/purge_db";
+    CMString source_data = source_base + "/data";
+    std::filesystem::create_directories(source_base);
+    auto source_db = CMMakeShared<Database>(source_base, source_data, 0, "127.0.0.1", source_base);
+    CMString db_path = source_db->get_db_path();
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker1(1, "127.0.0.1", master.get_port());
+    worker1.register_database(db_path, source_db);
+    worker1.start();
+    ASSERT_TRUE(wait_until_registered(worker1));
+
+    ASSERT_EQ(source_db->write_pickle_bytes("purge_obj", "purge_payload_1", 15, "bytes", false),
+              fly::WriteErrorType::OK);
+    fly::DataService::instance()->drain_write_back();
+    CMString full = db_path + ":purge_obj";
+    fly::DataService::instance()->update_remote_idx(
+        full, 1, "127.0.0.1", master.get_data_server_port());
+
+    CMString target_data_path = test_dir_ + "/purge_target_data";
+    std::filesystem::create_directories(target_data_path);
+    WorkerAgent worker2(2, "127.0.0.1", master.get_port());
+    worker2.start();
+    ASSERT_TRUE(wait_until_registered(worker2));
+
+    std::atomic<bool> poll_running{true};
+    std::thread poll_thread([&]() {
+        while (poll_running.load() && worker2.is_running()) {
+            worker2.poll_task_blocking(100);
+        }
+    });
+
+    uint64_t task_id = master.send_merge_task(2, "purge_obj", db_path, db_path,
+                                              target_data_path, "127.0.0.1");
+    CMVector<CMString> completed;
+    CMVector<CMString> failed;
+    ASSERT_TRUE(master.wait_merge_tasks_complete({task_id}, 30, &completed, &failed));
+    ASSERT_EQ(completed.size(), 1u);  // 产物已写出
+
+    // 整体失败清理：purge 广播（异步）→ worker2 删产物。
+    master.cleanup_failed_merge(db_path, db_path, target_data_path);
+
+    // 等待 purge 生效（终态断言：产物 .dat 消失 + merge task 状态清零）。
+    wait_for([&]() {
+        bool has_dat = false;
+        for (const auto& entry : std::filesystem::directory_iterator(target_data_path)) {
+            if (entry.path().filename().string().substr(0, 5) == "data_") has_dat = true;
+        }
+        return !has_dat;
+    }, 100, 20);
+    bool has_dat = false;
+    for (const auto& entry : std::filesystem::directory_iterator(target_data_path)) {
+        if (entry.path().filename().string().substr(0, 5) == "data_") has_dat = true;
+    }
+    EXPECT_FALSE(has_dat) << "merge products should be purged from target_data_path";
+    EXPECT_EQ(master.merge_task_state_count_for_testing(db_path), 0u);
+
+    // 源数据保留（重 merge 支撑）：源 .dat 文件仍在 + master remote_idx 仍登记
+    // 源 worker 位置。注：has_local_object 不适用于本单测——进程内 worker1/worker2
+    // 共享同一 DataService，worker2 purge 清 target worker 的 local_idx_[db_path]
+    //（真实多进程语义正确）在同进程里必然波及 worker1 的条目。
+    bool source_dat = false;
+    for (const auto& entry : std::filesystem::directory_iterator(source_data)) {
+        CMString fname = entry.path().filename().string();
+        if (fname.substr(0, 5) == "data_" && fname.size() >= 4 &&
+            fname.substr(fname.size() - 4) == ".dat") {
+            source_dat = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(source_dat) << "source .dat must be preserved for re-merge";
+    bool source_in_remote_idx = false;
+    for (auto w : fly::DataService::instance()->get_remote_workers(full)) {
+        if (w == 1) { source_in_remote_idx = true; break; }
+    }
+    EXPECT_TRUE(source_in_remote_idx) << "master remote_idx must keep source worker location";
+
+    poll_running.store(false);
+    if (poll_thread.joinable()) poll_thread.join();
+    worker1.stop();
+    worker2.stop();
+    master.stop();
+    wait_for_running(master, false);
+    fly::DataService::instance()->unregister_database(db_path);
+    fly::DataService::instance()->remove_remote_index(full);
+}
+
 // ── connect 指数退避重试 ──────────────────────────────────────────────
 // 领域约束：master 挂=全群失败，重试只覆盖瞬时抖动与 master 短时过载；
 // 总保活窗口与 master 占位符共用 worker_register_timeout（默认 300s）。

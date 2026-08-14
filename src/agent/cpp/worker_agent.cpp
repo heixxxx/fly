@@ -6,6 +6,7 @@
 #include <core/cpp/config.h>
 #include <core/cpp/system_info.h>
 #include <sstream>
+#include <iomanip>
 #include <core/cpp/process_info.h>
 #include <core/cpp/graceful_exit.h>
 #include <storage/cpp/data_service.h>
@@ -1586,9 +1587,51 @@ void WorkerAgent::on_delete_data(uint64_t conn_id, const DeleteDataMessage& msg)
     reactor_->send(conn_id, ack);
 }
 
+// 失败清理：持有该 target merge writer 的 worker 清 local_idx + 删除自己写下的
+// 产物文件（.dat + .idx）。文件名规则与 DataWriter 一致：data_{wid}_{idx}.dat
+//（data_path 下）、{wid}.idx（db_path 下）。非 merge target worker no-op。
+void WorkerAgent::purge_merge_products(const MergeCleanupMessage& msg) {
+    auto writer = merge_writers_.take(msg.data_path_);
+    if (!writer) {
+        return;  // 非 merge target worker（不持有该 target 的 writer）：什么都不动
+    }
+    DataService::instance()->clear_local_index_for_db(msg.target_db_path_);
+    CMSharedPtr<DataWriter> w = *writer;  // optional 解出 shared_ptr
+    writer.reset();
+    const CMString wid = w->writer_id();
+    const int32_t files = w->file_count();
+    w.reset();  // 先析构（flush idx），随后连文件一起删
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (int32_t i = 1; i <= files; ++i) {
+        std::ostringstream oss;
+        oss << "data_" << wid << "_" << std::setfill('0') << std::setw(3) << i << ".dat";
+        fs::remove(fs::path(msg.data_path_) / oss.str(), ec);
+    }
+    fs::remove(fs::path(msg.target_db_path_) / (wid + ".idx"), ec);
+    INFO("MergeCleanup(purge): removed merge products of writer {} ({} data files) "
+         "from target {}", wid, files, msg.data_path_);
+}
+
 void WorkerAgent::on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& msg) {
     touch_master_contact();
     auto ds = DataService::instance();
+
+    if (msg.purge_target_) {
+        // 失败清理模式：源命名空间（db_path_）全保留——源数据支撑重 merge。
+        // 只有持有该 target_data_path merge writer 的 worker（即 merge target worker）
+        // 才清 local_idx + 删产物；其它 worker（含源 worker）完全 no-op——
+        // 同 path merge 时 target_db_path_ == db_path_，无条件清会把源 worker 的
+        // 源索引一并清掉（数据在但不可读）。
+        purge_merge_products(msg);
+
+        MergeCleanupAckMessage ack;
+        ack.worker_id_ = worker_id_;
+        ack.db_path_ = msg.db_path_;
+        reactor_->send(conn_id, ack);  // master 未登记屏障时 no-op 忽略
+        return;
+    }
 
     // 检查本 worker 是否在免清理列表（merge target worker 已持有效 local_idx，跳过清理）。
     bool exempt = false;
