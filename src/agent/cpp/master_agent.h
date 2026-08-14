@@ -13,6 +13,7 @@
 #include <task/cpp/heartbeat_monitor.h>
 #include <log/cpp/logger.h>
 #include <message/cpp/message_sink.h>
+#include <agent/cpp/pending_rpc_map.h>
 #include <core/cpp/config.h>
 #include <common/cpp/common_types.h>
 #include <common/cpp/concurrent_map.h>
@@ -323,26 +324,26 @@ private:
 
     // ── DeleteData ack 跟踪（merge 删源）──────────────────────────────
     // key = (db_path + ":" + worker_id) 的字符串，避免多 worker/db 并发删除时 ack 串台。
+    // insert_if_absent 登记（Problem5 防重置）；wait 超时保留条目（erase_on_timeout=false，
+    // 由 wait 末尾统一清理）；on_delete_data_ack 走持锁 complete。
     struct PendingDeleteData {
         bool completed_ = false;
         bool success_ = false;
         int32_t deleted_count_ = 0;
         CMString error_message_;
     };
-    CMUnorderedMap<CMString, PendingDeleteData> pending_delete_acks_;
-    mutable std::mutex delete_ack_mutex_;
-    std::condition_variable delete_ack_cv_;
+    PendingRpcMap<CMString, PendingDeleteData> pending_delete_acks_;
 
     // ── MergeCleanup ack 跟踪（merge_db 返回前的全局一致性屏障）──
     // master 广播 MergeCleanup 后，必须等所有 worker 回 ack 才能重建自身 remote_idx +
     // 让 merge_db 返回。key = db_path（一次 merge_db 的 cleanup 是单 db 全员广播）。
+    // 计数屏障（expected/received）；on_merge_cleanup_ack 持锁 complete（无条件
+    // notify_all 替代原条件 notify，多出的空唤醒无害）。
     struct PendingMergeCleanup {
         uint64_t expected_count_ = 0;   // 期望的 ack 数（广播时的 worker 数）
         uint64_t received_count_ = 0;   // 已收到的 ack 数
     };
-    CMUnorderedMap<CMString, PendingMergeCleanup> pending_merge_cleanups_;
-    mutable std::mutex merge_cleanup_mutex_;
-    std::condition_variable merge_cleanup_cv_;
+    PendingRpcMap<CMString, PendingMergeCleanup> pending_merge_cleanups_;
 
     // ── Message summary 屏障（进程结束前收集各 worker 的 message 触发次数）──
     // master stop() 广播 MSG_COUNT_REQUEST 后，等所有 worker 回 MSG_COUNT_REPORT。

@@ -2616,17 +2616,15 @@ void MasterAgent::send_delete_data(uint64_t source_worker_id,
                                     const CMVector<CMString>& writer_ids) {
     CMString ack_key = db_path + ":" + std::to_string(source_worker_id);
     {
-        std::lock_guard<std::mutex> lk(delete_ack_mutex_);
-        auto it = pending_delete_acks_.find(ack_key);
-        if (it != pending_delete_acks_.end()) {
+        auto [existing, inserted] = pending_delete_acks_.insert_if_absent(
+            ack_key, CMMakeShared<PendingDeleteData>());
+        if (!inserted) {
             // Problem 5：ack_key 已有 pending 条目（首轮未完成 或 已完成未被 wait 消费）。
-            // 无条件 PendingDeleteData{} 覆盖会丢失首轮 ack 状态（ack 不会重发）→ 随后
-            // wait_delete_data_acks 永久超时。保留旧条目让首轮 wait 正确完成。
+            // 无条件覆盖会丢失首轮 ack 状态（ack 不会重发）→ 随后 wait_delete_data_acks
+            // 永久超时。保留旧条目让首轮 wait 正确完成。
             WARN("[DELETE-DUP] send_delete_data: ack_key={} 已有 pending 条目"
                  "(completed={}, deleted={})，二次触发保留旧条目不重置",
-                 ack_key, it->second.completed_, it->second.deleted_count_);
-        } else {
-            pending_delete_acks_[ack_key] = PendingDeleteData{};
+                 ack_key, existing->completed_, existing->deleted_count_);
         }
     }
 
@@ -2650,12 +2648,15 @@ void MasterAgent::send_delete_data(uint64_t source_worker_id,
         auto it = worker_to_conn_.find(source_worker_id);
         if (it == worker_to_conn_.end()) {
             ERR("send_delete_data: source worker_id={} not connected", source_worker_id);
-            std::lock_guard<std::mutex> dlk(delete_ack_mutex_);
-            auto& p = pending_delete_acks_[ack_key];
-            p.completed_ = true;
-            p.success_ = false;
-            p.error_message_ = "source worker not connected";
-            delete_ack_cv_.notify_all();
+            // 保持原有语义：无条件 upsert 标失败（与首轮 insert_if_absent 的保留
+            // 语义不一致是既有行为，迁移不改变）。PendingRpcMap 锁是 leaf，
+            // 在 workers_mutex_ 内调用与原嵌套锁序等价。
+            pending_delete_acks_.emplace(ack_key, CMMakeShared<PendingDeleteData>());
+            pending_delete_acks_.complete(ack_key, [](PendingDeleteData& p) {
+                p.completed_ = true;
+                p.success_ = false;
+                p.error_message_ = "source worker not connected";
+            });
             return;
         }
         reactor_->send(it->second, msg);
@@ -2673,34 +2674,35 @@ bool MasterAgent::wait_delete_data_acks(const CMVector<uint64_t>& source_worker_
 
     for (uint64_t src_wid : source_worker_ids) {
         CMString ack_key = db_path + ":" + std::to_string(src_wid);
-        std::unique_lock<std::mutex> lk(delete_ack_mutex_);
-        if (!delete_ack_cv_.wait_until(lk, deadline, [this, &ack_key] {
-            auto it = pending_delete_acks_.find(ack_key);
-            return it != pending_delete_acks_.end() && it->second.completed_;
-        })) {
+        // 原实现共享同一绝对 deadline（逐 key 剩余时间递减）→ 转换为相对 timeout。
+        // erase_on_timeout=false：超时保留条目，由本函数末尾统一清理（merge 语义）。
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        auto result = pending_delete_acks_.wait_for(
+            ack_key, remaining,
+            [](const CMSharedPtr<PendingDeleteData>& p) { return p->completed_; },
+            /*erase_on_timeout=*/false);
+        if (!result) {
             // 超时：本 worker 的 ack 未返回。
             all_ok = false;
             if (failed_workers) failed_workers->push_back(src_wid);
             WARN("wait_delete_data_acks: timeout for worker_id={}, db_path={}", src_wid, db_path);
             continue;
         }
-        auto it = pending_delete_acks_.find(ack_key);
-        if (!it->second.success_) {
+        if (!result->success_) {
             all_ok = false;
             if (failed_workers) failed_workers->push_back(src_wid);
             WARN("wait_delete_data_acks: worker_id={} delete failed: {}",
-                 src_wid, it->second.error_message_);
+                 src_wid, result->error_message_);
         }
     }
 
     // 清理已处理的 ack 状态（防内存泄漏 —— 此前 on_delete_data_ack 只标 completed 不 erase）。
-    {
-        std::lock_guard<std::mutex> lk(delete_ack_mutex_);
+    pending_delete_acks_.with_lock([&](auto& m) {
         for (uint64_t src_wid : source_worker_ids) {
-            CMString ack_key = db_path + ":" + std::to_string(src_wid);
-            pending_delete_acks_.erase(ack_key);
+            m.erase(db_path + ":" + std::to_string(src_wid));
         }
-    }
+    });
 
     return all_ok;
 }
@@ -2708,17 +2710,16 @@ bool MasterAgent::wait_delete_data_acks(const CMVector<uint64_t>& source_worker_
 void MasterAgent::on_delete_data_ack(uint64_t conn_id, const DeleteDataAckMessage& msg) {
     // worker_id_ 在 ack 里带回；用它和 db_path 组成 key 找到 pending 项。
     CMString ack_key = msg.db_path_ + ":" + std::to_string(msg.worker_id_);
-    std::lock_guard<std::mutex> lk(delete_ack_mutex_);
-    auto it = pending_delete_acks_.find(ack_key);
-    if (it == pending_delete_acks_.end()) {
+    if (pending_delete_acks_.find(ack_key) == nullptr) {
         DBG("DeleteDataAck for unknown key={}, ignoring", ack_key);
         return;
     }
-    it->second.completed_ = true;
-    it->second.success_ = msg.success_;
-    it->second.deleted_count_ = msg.deleted_count_;
-    it->second.error_message_ = msg.error_message_;
-    delete_ack_cv_.notify_all();
+    pending_delete_acks_.complete(ack_key, [&](PendingDeleteData& p) {
+        p.completed_ = true;
+        p.success_ = msg.success_;
+        p.deleted_count_ = msg.deleted_count_;
+        p.error_message_ = msg.error_message_;
+    });
     INFO("DeleteDataAck: worker_id={}, db_path={}, success={}, deleted={}",
          msg.worker_id_, msg.db_path_, msg.success_, msg.deleted_count_);
 }
@@ -2741,18 +2742,17 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
         expected_acks = worker_to_conn_.size();
     }
     {
-        std::lock_guard<std::mutex> mlk(merge_cleanup_mutex_);
-        auto it = pending_merge_cleanups_.find(db_path);
-        if (it != pending_merge_cleanups_.end() &&
-            it->second.received_count_ < it->second.expected_count_) {
-            // Problem 5：同 db_path 首轮 cleanup 仍在进行中（received < expected）。无条件
-            // PendingMergeCleanup{expected, 0} 覆盖会把已收到的 ack 计数清零 → 屏障永完不成
-            // → merge_db 卡死。保留旧条目，让首轮屏障按原计数自然完成。
+        // Problem 5：同 db_path 首轮 cleanup 仍在进行中（received < expected）时保留旧
+        // 条目（无条件覆盖会把已收到的 ack 计数清零 → 屏障永完不成 → merge_db 卡死）；
+        // 不存在或上轮已完成才登记新屏障。
+        auto existing = pending_merge_cleanups_.find(db_path);
+        if (existing && existing->received_count_ < existing->expected_count_) {
             WARN("[MERGE-CLEANUP-DUP] cleanup_after_merge: db_path={} 首轮未完成"
                  "(received={}/expected={})，二次触发保留旧条目不重置",
-                 db_path, it->second.received_count_, it->second.expected_count_);
+                 db_path, existing->received_count_, existing->expected_count_);
         } else {
-            pending_merge_cleanups_[db_path] = PendingMergeCleanup{expected_acks, 0};
+            pending_merge_cleanups_.emplace(
+                db_path, CMMakeShared<PendingMergeCleanup>(expected_acks, 0));
         }
     }
 
@@ -2776,16 +2776,15 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     // 3. 等待所有 worker 回 MergeCleanupAck（全局一致性屏障）。
     //    超时则告警但继续（尽力而为，不阻塞用户太久）。
     {
-        std::unique_lock<std::mutex> mlk(merge_cleanup_mutex_);
-        bool all_acked = merge_cleanup_cv_.wait_for(mlk, std::chrono::seconds(30),
-            [this, &db_path] {
-                auto it = pending_merge_cleanups_.find(db_path);
-                return it != pending_merge_cleanups_.end() &&
-                       it->second.received_count_ >= it->second.expected_count_;
-            });
+        bool all_acked = pending_merge_cleanups_.wait_for(
+            db_path, std::chrono::seconds(30),
+            [](const CMSharedPtr<PendingMergeCleanup>& p) {
+                return p->received_count_ >= p->expected_count_;
+            },
+            /*erase_on_timeout=*/false) != nullptr;
         if (!all_acked) {
-            auto it = pending_merge_cleanups_.find(db_path);
-            uint64_t got = (it != pending_merge_cleanups_.end()) ? it->second.received_count_ : 0;
+            auto p = pending_merge_cleanups_.find(db_path);
+            uint64_t got = p ? p->received_count_ : 0;
             WARN("cleanup_after_merge: timeout waiting for MergeCleanupAck: "
                  "db_path={}, expected={}, received={}", db_path, expected_acks, got);
         }
@@ -2871,18 +2870,17 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
 }
 
 void MasterAgent::on_merge_cleanup_ack(uint64_t conn_id, const MergeCleanupAckMessage& msg) {
-    std::lock_guard<std::mutex> lk(merge_cleanup_mutex_);
-    auto it = pending_merge_cleanups_.find(msg.db_path_);
-    if (it == pending_merge_cleanups_.end()) {
+    if (pending_merge_cleanups_.find(msg.db_path_) == nullptr) {
         DBG("MergeCleanupAck for unknown db_path={}, ignoring", msg.db_path_);
         return;
     }
-    it->second.received_count_++;
-    DBG("MergeCleanupAck: db_path={}, worker_id={}, received={}/{}",
-        msg.db_path_, msg.worker_id_, it->second.received_count_, it->second.expected_count_);
-    if (it->second.received_count_ >= it->second.expected_count_) {
-        merge_cleanup_cv_.notify_all();
-    }
+    // 持锁 complete：计数器 ++ + notify（原条件 notify 改无条件 notify_all，
+    // 未达标的 waiter 醒来重查谓词继续睡，空唤醒无害）。
+    pending_merge_cleanups_.complete(msg.db_path_, [&](PendingMergeCleanup& p) {
+        p.received_count_++;
+        DBG("MergeCleanupAck: db_path={}, worker_id={}, received={}/{}",
+            msg.db_path_, msg.worker_id_, p.received_count_, p.expected_count_);
+    });
 }
 
 void MasterAgent::on_log_message(uint64_t conn_id, const LogMessage& msg) {
@@ -2989,22 +2987,20 @@ void MasterAgent::unregister_fake_worker_for_testing(uint64_t worker_id, uint64_
 
 std::pair<bool, int32_t> MasterAgent::pending_delete_ack_state_for_testing(
         const CMString& ack_key) const {
-    std::lock_guard<std::mutex> lk(delete_ack_mutex_);
-    auto it = pending_delete_acks_.find(ack_key);
-    if (it == pending_delete_acks_.end()) {
+    auto p = pending_delete_acks_.find(ack_key);
+    if (!p) {
         return {false, 0};
     }
-    return {it->second.completed_, it->second.deleted_count_};
+    return {p->completed_, p->deleted_count_};
 }
 
 std::pair<uint64_t, uint64_t> MasterAgent::pending_merge_cleanup_counts_for_testing(
         const CMString& db_path) const {
-    std::lock_guard<std::mutex> lk(merge_cleanup_mutex_);
-    auto it = pending_merge_cleanups_.find(db_path);
-    if (it == pending_merge_cleanups_.end()) {
+    auto p = pending_merge_cleanups_.find(db_path);
+    if (!p) {
         return {0, 0};
     }
-    return {it->second.expected_count_, it->second.received_count_};
+    return {p->expected_count_, p->received_count_};
 }
 #endif
 
