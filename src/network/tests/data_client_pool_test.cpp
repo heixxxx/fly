@@ -20,6 +20,7 @@
 #include <chrono>
 #include <future>
 #include <atomic>
+#include <latch>
 #include <vector>
 
 namespace fly {
@@ -186,6 +187,8 @@ TEST_F(DataClientPoolTest, ReusesFdAcrossRequestsToSamePeer) {
 }
 
 // 并发 request 同一 peer：单 fd 同步收发无法并行，必然创建多个 fd 并行传输。
+// latch 屏障强制 4 个线程同时进入 request —— 无屏障时高负载下线程启动被
+// 串行化，首个请求完成归还 fd 后其余全部复用（connect=1），断言误报。
 TEST_F(DataClientPoolTest, ConcurrentRequestsToSamePeerUseMultipleFds) {
     ds_->register_database("/conc", test_dir_, test_dir_ + "/data");
     ds_->start_data_server("127.0.0.1", 0, 2);
@@ -194,9 +197,12 @@ TEST_F(DataClientPoolTest, ConcurrentRequestsToSamePeerUseMultipleFds) {
     auto transport = CMMakeShared<CountingTransport>(create_tcp_transport());
     DataClientPool pool(transport, 4);  // 并发上限 4
 
+    std::latch go(4);
     std::vector<std::thread> threads;
     for (int i = 0; i < 4; ++i) {
         threads.emplace_back([&]() {
+            go.count_down();
+            go.wait();  // 4 线程对齐后同时发起（池空 → 各自 connect）
             pool.request("127.0.0.1", port, "/conc:missing", 0, 0, 5000);
         });
     }
