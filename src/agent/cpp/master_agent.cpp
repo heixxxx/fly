@@ -2487,10 +2487,7 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
     uint64_t merge_task_id = remote_task_counter_.fetch_add(1);
 
     // 登记初始 pending 状态（wait_merge_tasks_complete 等待此表）。
-    {
-        std::lock_guard<std::mutex> lk(merge_task_mutex_);
-        merge_task_states_[merge_task_id] = MergeTaskState{};
-    }
+    merge_task_states_.emplace(merge_task_id, CMMakeShared<MergeTaskState>());
 
     CMString full_name = source_db_path + ":" + short_name;
     // 把源对象位置注入 task dependency_locations_，让 target worker 的 read_raw_compressed
@@ -2529,11 +2526,14 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
         auto it = worker_to_conn_.find(target_worker_id);
         if (it == worker_to_conn_.end()) {
             ERR("send_merge_task: target worker_id={} not connected", target_worker_id);
-            std::lock_guard<std::mutex> mlk(merge_task_mutex_);
-            merge_task_states_[merge_task_id].completed_ = true;
-            merge_task_states_[merge_task_id].success_ = false;
-            merge_task_states_[merge_task_id].error_message_ = "target worker not connected";
-            merge_task_cv_.notify_all();
+            // PendingRpcMap 锁是 leaf，在 workers_mutex_ 内调用与原嵌套锁序
+            // （workers_mutex_ → merge_task_mutex_）等价。条目由本函数开头 emplace，
+            // complete 必命中。
+            merge_task_states_.complete(merge_task_id, [](MergeTaskState& s) {
+                s.completed_ = true;
+                s.success_ = false;
+                s.error_message_ = "target worker not connected";
+            });
             return merge_task_id;
         }
         reactor_->send(it->second, assign);
@@ -2545,26 +2545,24 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
 }
 
 void MasterAgent::on_merge_task_complete(uint64_t task_id, uint64_t worker_id, const CMVector<WrittenObject>& written_objects) {
-    std::lock_guard<std::mutex> lk(merge_task_mutex_);
-    auto it = merge_task_states_.find(task_id);
-    if (it == merge_task_states_.end()) return;  // 非 merge task，忽略
-    it->second.completed_ = true;
-    it->second.success_ = true;
-    it->second.worker_id_ = worker_id;
-    for (const auto& wo : written_objects) {
-        it->second.written_objects_.push_back(wo.object_name_);
-    }
-    merge_task_cv_.notify_all();
+    if (merge_task_states_.find(task_id) == nullptr) return;  // 非 merge task，忽略
+    merge_task_states_.complete(task_id, [&](MergeTaskState& s) {
+        s.completed_ = true;
+        s.success_ = true;
+        s.worker_id_ = worker_id;
+        for (const auto& wo : written_objects) {
+            s.written_objects_.push_back(wo.object_name_);
+        }
+    });
 }
 
 void MasterAgent::on_merge_task_failed(uint64_t task_id, const CMString& error_message) {
-    std::lock_guard<std::mutex> lk(merge_task_mutex_);
-    auto it = merge_task_states_.find(task_id);
-    if (it == merge_task_states_.end()) return;
-    it->second.completed_ = true;
-    it->second.success_ = false;
-    it->second.error_message_ = error_message;
-    merge_task_cv_.notify_all();
+    if (merge_task_states_.find(task_id) == nullptr) return;
+    merge_task_states_.complete(task_id, [&](MergeTaskState& s) {
+        s.completed_ = true;
+        s.success_ = false;
+        s.error_message_ = error_message;
+    });
 }
 
 bool MasterAgent::wait_merge_tasks_complete(const CMVector<uint64_t>& task_ids,
@@ -2575,11 +2573,16 @@ bool MasterAgent::wait_merge_tasks_complete(const CMVector<uint64_t>& task_ids,
     bool all_ok = true;
 
     for (uint64_t tid : task_ids) {
-        std::unique_lock<std::mutex> lk(merge_task_mutex_);
-        if (!merge_task_cv_.wait_until(lk, deadline, [this, tid] {
-            auto it = merge_task_states_.find(tid);
-            return it != merge_task_states_.end() && it->second.completed_;
-        })) {
+        // 原实现共享同一绝对 deadline（逐 task 剩余时间递减）→ 转换为相对 timeout。
+        // erase_on_timeout=false：超时保留条目，cleanup_after_merge 还要消费
+        //（object→worker 映射重建 remote_idx）。
+        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        auto state = merge_task_states_.wait_for(
+            tid, remaining,
+            [](const CMSharedPtr<MergeTaskState>& s) { return s->completed_; },
+            /*erase_on_timeout=*/false);
+        if (!state) {
             // 超时：本 task 未完成。
             all_ok = false;
             if (failed_objects) {
@@ -2587,19 +2590,18 @@ bool MasterAgent::wait_merge_tasks_complete(const CMVector<uint64_t>& task_ids,
             }
             continue;
         }
-        auto it = merge_task_states_.find(tid);
-        if (it->second.success_) {
+        if (state->success_) {
             if (completed_objects) {
-                for (const auto& name : it->second.written_objects_) {
+                for (const auto& name : state->written_objects_) {
                     completed_objects->push_back(name);
                 }
             }
         } else {
             all_ok = false;
             if (failed_objects) {
-                failed_objects->push_back(it->second.error_message_.empty()
+                failed_objects->push_back(state->error_message_.empty()
                     ? ("FAILED:merge_task_" + std::to_string(tid))
-                    : it->second.error_message_);
+                    : state->error_message_);
             }
         }
     }
@@ -2803,16 +2805,15 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     }
 
     CMUnorderedMap<CMString, CMVector<uint64_t>> obj_to_workers;
-    {
-        std::lock_guard<std::mutex> tlk(merge_task_mutex_);
-        for (const auto& [tid, state] : merge_task_states_) {
-            if (state.success_ && state.worker_id_ != 0) {
-                for (const auto& obj : state.written_objects_) {
-                    obj_to_workers[obj].push_back(state.worker_id_);
+    merge_task_states_.with_lock([&](auto& m) {
+        for (const auto& [tid, state] : m) {
+            if (state->success_ && state->worker_id_ != 0) {
+                for (const auto& obj : state->written_objects_) {
+                    obj_to_workers[obj].push_back(state->worker_id_);
                 }
             }
         }
-    }
+    });
     int rebuilt = 0;
     for (const auto& [obj_name, workers] : obj_to_workers) {
         for (uint64_t wid : workers) {
@@ -2845,16 +2846,16 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     }
 
     // 6. 清理本批 merge task 状态（wait_merge_tasks_complete 推迟到此处 erase）。
-    {
-        std::lock_guard<std::mutex> tlk(merge_task_mutex_);
-        for (auto it = merge_task_states_.begin(); it != merge_task_states_.end(); ) {
-            if (it->second.completed_) {
-                it = merge_task_states_.erase(it);
+    //    按已完成清除（跨并发 merge_db 调用共享此表，completed 的都可安全清理）。
+    merge_task_states_.with_lock([](auto& m) {
+        for (auto it = m.begin(); it != m.end(); ) {
+            if (it->second->completed_) {
+                it = m.erase(it);
             } else {
                 ++it;
             }
         }
-    }
+    });
 
     INFO("cleanup_after_merge: done, db_path={}, rebuilt remote_idx for {} objects (precise worker mapping), "
          "local_idx cleared, db_instances_ path updated to base={} data={}",

@@ -310,7 +310,8 @@ private:
 
     // ── Merge task 跟踪（fly.merge_db）──────────────────────────────────
     // 每个 merge __merge_object task 的状态，由 on_merge_task_complete/Failed 更新，
-    // wait_merge_tasks_complete 等待。设计 §5.4：全部成功才删源。
+    // wait_merge_tasks_complete 等待（erase_on_timeout=false：超时保留，条目
+    // 生命周期跨 wait，由 cleanup_after_merge 统一消费+清理）。设计 §5.4：全部成功才删源。
     struct MergeTaskState {
         bool completed_ = false;
         bool success_ = false;
@@ -318,9 +319,7 @@ private:
         CMVector<CMString> written_objects_;  // 成功时填入（full_name 列表）
         uint64_t worker_id_ = 0;  // 执行 merge task 的 worker（精确的对象持有者）
     };
-    CMUnorderedMap<uint64_t, MergeTaskState> merge_task_states_;
-    mutable std::mutex merge_task_mutex_;
-    std::condition_variable merge_task_cv_;
+    PendingRpcMap<uint64_t, MergeTaskState> merge_task_states_;
 
     // ── DeleteData ack 跟踪（merge 删源）──────────────────────────────
     // key = (db_path + ":" + worker_id) 的字符串，避免多 worker/db 并发删除时 ack 串台。
