@@ -831,6 +831,8 @@ void MasterAgent::heartbeat_check_loop() {
 
             heartbeat_monitor_->check_all_workers(timestamp);
 
+            check_expected_worker_timeouts(timestamp);
+
             auto dead = heartbeat_monitor_->get_dead_workers();
             for (uint64_t worker_id : dead) {
                 WARN("worker timeout: {}", worker_id);
@@ -927,6 +929,9 @@ void MasterAgent::sched_watchdog_loop() {
 
 void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& msg) {
     uint64_t worker_id = msg.worker_id_;
+
+    // 唤起占位符转正：该 worker 已注册，不再占用 expected 集合。
+    expected_worker_ids_.erase(worker_id);
 
     {
         std::lock_guard<std::mutex> lk(workers_mutex_);
@@ -1291,6 +1296,40 @@ void MasterAgent::add_worker_hostname(uint64_t worker_id, const CMString& hostna
 size_t MasterAgent::get_connection_count() const {
     std::lock_guard<std::mutex> lk(workers_mutex_);
     return conn_to_worker_.size();
+}
+
+void MasterAgent::expect_worker(uint64_t worker_id) {
+    auto now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    // update（覆盖时间戳）：重复 expect 视为重新唤起，超时窗口从最后一次算起。
+    expected_worker_ids_.update(worker_id, [&](int64_t& t) { t = now; });
+    DBG("expected worker registered as placeholder: worker_id={}", worker_id);
+}
+
+size_t MasterAgent::get_expected_worker_count() const {
+    return expected_worker_ids_.size();
+}
+
+bool MasterAgent::all_workers_registered() const {
+    return expected_worker_ids_.size() == 0;
+}
+
+void MasterAgent::check_expected_worker_timeouts(int64_t now) {
+    // 0 = 不假设注册时限（默认；bsub 慢调度场景不清理）。
+    int64_t timeout = Config::instance()->get_int("worker_register_timeout");
+    if (timeout <= 0) return;
+    expected_worker_ids_.with_lock([&](auto& m) {
+        for (auto it = m.begin(); it != m.end(); ) {
+            if (now - it->second > timeout) {
+                WARN("worker {} did not register within {}s of launch "
+                     "(expected-worker placeholder expired, giving up)",
+                     it->first, timeout);
+                it = m.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    });
 }
 
 CMVector<uint64_t> MasterAgent::get_pending_tasks() const {

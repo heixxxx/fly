@@ -63,6 +63,15 @@ public:
     void add_worker_hostname(uint64_t worker_id, const CMString& hostname);
     size_t get_connection_count() const;
 
+    // ── expected workers（唤起占位符，bsub 等慢调度场景）──────────────
+    // master 尝试唤起 worker 后登记占位符；RegisterMessage 到达即转正（移除）。
+    // 占位符不参与调度、不进连接表——调度/心跳/stop 只认已注册 worker。
+    // 默认（worker_register_timeout=0）不假设任何注册时限；>0 时超时占位符由
+    // heartbeat 检查线程清理并 WARN。
+    void expect_worker(uint64_t worker_id);
+    size_t get_expected_worker_count() const;
+    bool all_workers_registered() const;
+
     // submit_task 接收完整的 TaskSubmissionSpec，避免 11 个位置参数导致的
     // 错位/漏传（位置参数同类，编译器无法捕获）。调用方先组装 spec 再传入。
     void submit_task(uint64_t task_id, const TaskSubmissionSpec& spec);
@@ -217,6 +226,14 @@ public:
                                         uint64_t worker_id, const CMString& writer_id) {
         record_worker_info(object_name, db_path, worker_id, writer_id);
     }
+    // 直接驱动 on_worker_register / 占位符超时清理（private），确定性测试注册
+    // 转正与超时清理逻辑（无需真实网络与 heartbeat 线程周期）。
+    void inject_worker_register_for_testing(uint64_t conn_id, const RegisterMessage& msg) {
+        on_worker_register(conn_id, msg);
+    }
+    void check_expected_worker_timeouts_for_testing(int64_t now) {
+        check_expected_worker_timeouts(now);
+    }
 private:
 #endif
 
@@ -247,6 +264,10 @@ private:
     std::condition_variable workers_drained_cv_;  // Notified when all workers disconnect during shutdown.
     CMUnorderedMap<uint64_t, uint64_t> conn_to_worker_;
     CMUnorderedMap<uint64_t, uint64_t> worker_to_conn_;
+
+    // 唤起占位符：worker_id → spawn 时间戳（epoch 秒）。注册到达转正（erase），
+    // 超时清理见 check_expected_worker_timeouts。重复 expect 刷新时间戳。
+    ConcurrentUnorderedMap<uint64_t, int64_t> expected_worker_ids_;
 
     CMUniquePtr<DependencyGraph> graph_;
     CMUniquePtr<WorkerManager> worker_manager_;
@@ -360,6 +381,9 @@ private:
     void assign_task_to_worker(uint64_t task_id, uint64_t worker_id);
     void update_dependency_location_cache(const CMString& object_name, uint64_t worker_id, const CMString& host, int32_t port);
     void heartbeat_check_loop();
+    // 清理超时未注册的唤起占位符（worker_register_timeout>0 时生效；由
+    // heartbeat_check_loop 周期调用，测试经 hook 直接驱动）。
+    void check_expected_worker_timeouts(int64_t now);
     void attr_timeout_check_loop();
     void sched_watchdog_loop();
 

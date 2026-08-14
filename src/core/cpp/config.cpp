@@ -147,6 +147,7 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"net_probe_payload_kb", 256},     // 探测 payload 大小(KB)
     {"net_probe_timeout_ms", 3000},    // 单次探测超时(ms)
     {"solver_openmp_threads", 0},      // Eigen LDLT 分解并行线程数：0=单线程默认，>0=OpenMP多线程
+    {"worker_register_timeout", 0},    // 唤起 worker 的注册超时(s)：0=不假设时限（bsub 慢调度默认）；>0=超时清理占位符，并作为 wait_workers_registered 默认超时
 };
 
 const CMUnorderedMap<CMString, CMString> Config::STR_DEFAULTS = {

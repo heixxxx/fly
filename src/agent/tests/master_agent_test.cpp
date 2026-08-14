@@ -2266,4 +2266,56 @@ TEST(MasterAgentTest, RecordWorkerInfoAppendsMetaOncePerTuple) {
     EXPECT_EQ(db_obj->worker_info_count(), 2u);
 }
 
+// ── expected workers（唤起占位符）────────────────────────────────────
+// bsub 等慢调度场景：master 唤起 worker 后只登记占位符，不假设注册时限；
+// RegisterMessage 到达即转正。全部用例确定性（直接驱动私有方法，无 sleep）。
+
+TEST(MasterAgentTest, ExpectWorkerPlaceholderClearedOnRegister) {
+    fly::DataService::instance()->reset();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();  // on_worker_register 会 reactor_->send：需 reactor 已构造
+    wait_for_running(master, true);
+
+    master.expect_worker(1);
+    EXPECT_EQ(master.get_expected_worker_count(), 1u);
+    EXPECT_FALSE(master.all_workers_registered());
+
+    RegisterMessage reg;
+    reg.worker_id_ = 1;
+    reg.data_server_port_ = 0;  // 跳过 DataService 登记
+    master.inject_worker_register_for_testing(100, reg);  // conn 100 未知：send 安全 no-op
+
+    EXPECT_TRUE(master.all_workers_registered());
+    EXPECT_EQ(master.get_expected_worker_count(), 0u);
+
+    master.stop();
+    wait_for_running(master, false);
+}
+
+TEST(MasterAgentTest, ExpectWorkerTimeoutCleanup) {
+    fly::DataService::instance()->reset();
+    Config::instance()->set_int("worker_register_timeout", 1);
+    MasterAgent master("127.0.0.1", 0);
+
+    master.expect_worker(99);  // 永不注册的占位符
+    EXPECT_FALSE(master.all_workers_registered());
+
+    // 1s 超时：遥远的检查点时间应清理（由 heartbeat_check_loop 周期调用，此处直接驱动）。
+    master.check_expected_worker_timeouts_for_testing(9999999999LL);
+    EXPECT_TRUE(master.all_workers_registered());
+    EXPECT_EQ(master.get_expected_worker_count(), 0u);
+    Config::instance()->set_int("worker_register_timeout", 0);
+}
+
+TEST(MasterAgentTest, ExpectWorkerDefaultNoTimeout) {
+    fly::DataService::instance()->reset();
+    MasterAgent master("127.0.0.1", 0);
+
+    master.expect_worker(99);
+    // 默认 worker_register_timeout=0（不假设时限）：任意迟的检查点都不清理。
+    master.check_expected_worker_timeouts_for_testing(9999999999LL);
+    EXPECT_EQ(master.get_expected_worker_count(), 1u);
+    EXPECT_FALSE(master.all_workers_registered());
+}
+
 }  // namespace fly
