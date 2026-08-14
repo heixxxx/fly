@@ -24,7 +24,7 @@ namespace fly {
 std::atomic<uint64_t> MasterAgent::remote_task_counter_{100000};
 
 MasterAgent::MasterAgent(const CMString& host, uint16_t port)
-    : host_(host), port_(port), running_(false),
+    : host_(host), port_(port), listen_port_(port), running_(false),
       graph_(CMMakeUnique<DependencyGraph>()),
       worker_manager_(CMMakeUnique<WorkerManager>()) {
 }
@@ -45,7 +45,9 @@ void MasterAgent::start() {
     INFO("MasterAgent start() called, listening on {}:{}", host_, port_);
 
     auto transport = create_connection_manager("tcp");
-    transport->listen(host_, port_);
+    // 用构造时的请求端口 bind：固定端口用户意图被尊重；port 0 每次拿全新临时端口，
+    // 避免重启复用旧端口在 close→rebind 窗口内被并发进程抢占（EADDRINUSE）。
+    transport->listen(host_, listen_port_);
 
     // handler 并行 lane：同连接消息严格保序（Register→*、WriteRegister→TaskComplete
     // 等协议顺序依赖），跨连接并行。schedule_tasks 等重 handler 不再阻塞 reactor 线程。

@@ -216,6 +216,10 @@ private:
 private:
     CMString host_;
     uint16_t port_;
+    // 构造时请求的监听端口：start() 每次用它 bind（port 0 = 每次拿全新临时端口）。
+    // 不缓存上次绑定结果——重启复用旧端口会在 close→rebind 窗口内被其他进程抢作
+    // 临时源端口，SO_REUSEADDR 拦不住活跃连接（-j4 高并发 QA 实测 EADDRINUSE）。
+    uint16_t listen_port_ = 0;
     int32_t data_server_port_ = 0;
     // Pool for master-initiated direct reads (TIER2). Mirrors worker's pool so
     // master read_object goes TIER1 → TIER2 (no TIER3: master is the location

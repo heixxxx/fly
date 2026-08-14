@@ -59,6 +59,39 @@ TEST(MasterAgentTest, CreateWithDifferentPorts) {
     EXPECT_FALSE(master2.is_running());
 }
 
+// 重启端口策略：port 0 时每次 start 拿全新临时端口（不复用上次绑定结果），
+// 固定端口时重启仍绑定用户指定端口。
+TEST(MasterAgentTest, RestartUsesRequestedPortNotLastBound) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true, 100, 20);
+    int port1 = master.get_port();
+    ASSERT_GT(port1, 0);
+    master.stop();
+    wait_for_running(master, false, 100, 20);
+
+    master.start();
+    wait_for_running(master, true, 100, 20);
+    // 必须成功绑定（回归：曾复用上次端口，close→rebind 窗口被并发进程抢占即
+    // "Failed to create listen socket"）。port 0 时新旧端口由内核分配，不做相等断言。
+    EXPECT_GT(master.get_port(), 0);
+    master.stop();
+    wait_for_running(master, false, 100, 20);
+
+    // 固定端口重启：仍绑定用户指定端口。
+    MasterAgent fixed("127.0.0.1", 28457);
+    fixed.start();
+    wait_for_running(fixed, true, 100, 20);
+    EXPECT_EQ(fixed.get_port(), 28457);
+    fixed.stop();
+    wait_for_running(fixed, false, 100, 20);
+    fixed.start();
+    wait_for_running(fixed, true, 100, 20);
+    EXPECT_EQ(fixed.get_port(), 28457);
+    fixed.stop();
+    wait_for_running(fixed, false, 100, 20);
+}
+
 TEST(MasterAgentTest, MultipleStartStop) {
     MasterAgent master("127.0.0.1", 0);
     

@@ -16,6 +16,12 @@
   5. `DependencyGraph::get_task_requirements` 返回引用在锁释放后悬空——与 `set_task_locality_hint`（move 赋值 locality_hint_）/`remove_task`（erase 节点）并发即 use-after-free（QA golden_n50_sd9 compute_scores 段错误实测；改按值返回锁内快照）。
 - 文档：`network/module.md`（Reactor 章节 + HandlerThreadPool 行）、`core/module.md`（handler_lanes 键）、`architecture.md`（线程模型 + 决策表）、`ARCHITECTURE_REVIEW.md` §3.1 标已解决。
 
+### C. master 重启端口策略修复（50 轮稳定性测试第 42 轮定位）
+- 50 轮全量 QA（-j4，每轮 153 case）第 42 轮 `test_locality_perf` 失败：`Failed to create listen socket`。
+- 根因（存量设计问题，与 lane 无关）：`MasterAgent::start()` 重启时复用上次绑定端口（首轮 ephemeral 绑定后 `port_` 被覆盖）——close→rebind 窗口内该端口可被并发进程抢作临时源端口，SO_REUSEADDR 对活跃连接无效（42 轮 × 每轮 6 次进程内重启 ≈ 252 次命中 1 次；单独复现 15/15 不触发）。
+- 修复：新增 `listen_port_`（构造请求端口），start() 每次按它 bind——port 0 = 每次拿全新临时端口，固定端口仍尊重用户意图。单测 `RestartUsesRequestedPortNotLastBound` 覆盖。
+- 修复后剩余 9 轮全绿，50 轮总计 41+9 全部通过。
+
 ### B. SIGTERM 优雅退出（原 code-audit §2.1 死代码项）
 - 新增 `agent/cpp/graceful_shutdown.{h,cpp}`：进程级信号灯（`sigaction` + SA_RESTART，handler 内仅 atomic 写）。`main.cpp` 启动即注册（覆盖 Python 起动前窗口）。
 - master：heartbeat 检查线程（≤5s）发现信号灯 → `trigger_graceful_shutdown()`（幂等）在独立线程执行**完整 `stop()` 三阶段 drain**（等 RUNNING task → message summary → Shutdown 广播 → persist pending）。
