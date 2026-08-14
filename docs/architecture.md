@@ -274,6 +274,28 @@ from fly import wait_tasks
 wait_tasks(timeout=30.0)  # 返回 True/False
 ```
 
+**等待 worker 注册（bsub/LSF 等慢调度场景）**：
+
+`launch_workers()` 唤起后只登记占位符（expected worker），**不假设 worker 会在
+任何固定时限内启动注册**——bsub 调度排队下 worker 可能分钟级才真正唤起。
+需要等全部唤起的 worker 完成注册时用专用 API：
+
+```python
+from fly import wait_workers_registered, expect_workers
+
+# 等 launch_workers 唤起的全部 worker 注册完成（默认无限等，每 30s 打进度；
+# 超时可经 config 'worker_register_timeout' 或参数显式指定）
+wait_workers_registered()
+
+# 外部唤起（如 bsub 脚本直接跑 `fly --worker`）时手动登记占位符：
+expect_workers([101, 102])          # 之后 bsub 提交对应 worker
+wait_workers_registered(timeout=600)
+```
+
+超时语义：config `worker_register_timeout`（默认 0=不假设时限）；>0 时超时
+未注册的占位符由 master 清理（WARN 放弃等待）。`load_db`/`merge_db` 内部
+的补 spawn 等待已改用此机制。
+
 **Worker能力说明**：
 - `role` 字段：hybrid（任务执行+数据存储）/ storage_only（仅数据存储）
 - **动态能力**: Worker 可在运行时动态设置/移除能力（GPU/CPU等），调度器实时匹配

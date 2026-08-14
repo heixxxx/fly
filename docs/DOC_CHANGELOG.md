@@ -3,6 +3,28 @@
 ---
 ---
 
+## 2026-08-14 (3): worker 唤起占位符 + 注册等待专用 API（不假设注册时限）
+
+### A. 背景
+bsub（LSF）调度场景：master 唤起 worker 的请求发出后，worker 可能分钟级才真正启动注册。原代码多处假设"worker 会在 N 秒内连接"（`wait_for_all_workers` 默认 30s、`load_db`/`merge_db` 硬编码 30s、QA `wait_for(worker_count, timeout=10)`），CPU 饱和压力测试实测误报。
+
+### B. 机制（8bd1ce6 + c545d7c + c76a967）
+- C++ MasterAgent 唤起占位符 `expected_worker_ids_`（ConcurrentUnorderedMap，worker_id → spawn 时间戳）：`expect_worker` 登记（重复=刷新时间戳）、`on_worker_register` 转正、heartbeat 检查线程按 config 清理超时项。占位符不参与调度/不进连接表——stop drain、心跳、调度行为零变化。
+- Config 新键 `worker_register_timeout`（默认 0=不假设时限；>0=超时清理占位符并作为等待 API 默认超时）。
+- Python：`_spawn_process_worker` Popen 前登记（顺序关键：防注册快于登记导致转正落空）；`Master.wait_workers_registered(timeout=None)`（无限等时每 30s 打 INFO 进度）；`load_db`/`merge_db` 三处硬编码 30s 收敛为 `_wait_spawned_workers()`。
+- 顶层导出 `fly.wait_workers_registered` / `fly.expect_workers`（外部唤起场景手动登记）。
+
+### C. QA
+- 新 case `test_wait_workers_registered`（正常注册 True / config 2s 幻影超时 False / 显式 timeout 优先）。
+- 脆弱等待改造（压力实测失败实例）：mapreduce 10 处 `wait_for(worker_count>=N, timeout=10)`、mixed_fail_run1/2 手写 20s 循环、project 3 处 `wait_for_workers(1)` → 新 API；temp_zero_copy subcase timeout 60→180（纯容量型）。
+
+### D. 文档
+- `docs/core/module.md` config 表：`worker_register_timeout` 键。
+- `docs/architecture.md` §3.4：等待 worker 注册章节（含 bsub 外部唤起用例）。
+
+---
+---
+
 ## 2026-08-14 (2): 锁使用收敛与封装改造（7 commit 系列）
 
 ### A. P0 — on_var_ack lost wakeup 修复（真实 bug，确定性复现）

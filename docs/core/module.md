@@ -95,6 +95,7 @@ private:
 | `data_client_pool_size` | 4 | DataClientPool 并发上限 |
 | `handler_lanes` | 4 | 消息 handler 并行 lane 数（同连接串行、跨连接并行）；0=全部内联（legacy 单线程 reactor） |
 | `solver_openmp_threads` | 0 | solver C++ 核心 OpenMP 线程数（0=默认） |
+| `worker_register_timeout` | 0 | 唤起 worker 的注册超时（秒）。0=不假设时限（bsub/LSF 慢调度默认）；>0 时超时未注册的占位符被清理（WARN），并作为 `fly.wait_workers_registered()` 的默认超时。QA 需要短超时自行 `set_int` |
 
 #### string 配置项
 
