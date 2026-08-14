@@ -3,6 +3,30 @@
 ---
 ---
 
+## 2026-08-14 (2): 锁使用收敛与封装改造（7 commit 系列）
+
+### A. P0 — on_var_ack lost wakeup 修复（真实 bug，确定性复现）
+- **根因**：`on_var_ack` 用 `take_for_complete` 取出 pending 后锁外写非 atomic 字段 + 调不持锁的 `PendingRpcMap::notify_all()`——cv lost wakeup（waiter 持锁查 pred 与进入 wait 之间的窗口里 notify 落空 → `get_var_sync`/`set_var_sync` 卡满 5s 超时）+ data race，与 8419526（DataServer::stop）同族。
+- **修复**：改持锁 `complete()`（FlyBuffer 构造为纯内存操作）；删除 `take_for_complete`/`notify_all`/`notify_one` 无锁接口（无调用者）；`worker_agent` 其余 4 处锁外 notify（`on_task_assign`、`initiate_shutdown` 三个 cv、peer_rpc 两个 handler）一并挪入锁内。
+- **确定性测试**：`PendingRpcMap` 加 `FLY_ENABLE_TEST_HOOKS` 专用 `pre_sleep_hook_`（wait_for 循环 pred==false 后、入 wait 前触发）+ `std::latch` 钉死窗口，red 用例复现（elapsed=1000ms 超时），修复后转 `CompleteDuringPredicateWindowWakesWaiter` 永久防回归。
+
+### B. 封装扩展（ConcurrentMap v2 / PendingRpcMap v2 / ConcurrentUnorderedSet）
+- `ConcurrentMapBase`：`update(key,f)`（锁内 RMW，miss 默认插入）、`take`/`take_any`（原子消费式读取）、`with_lock(f)`（持锁逃生口）、`get_or_insert` 内部 move 化；新增 `ConcurrentUnorderedSet`（`insert` 返回是否新插入）。首个单测 `concurrent_map_test`（此前零覆盖，含并发守恒用例）。
+- `PendingRpcMap`：`insert_if_absent`（Problem5 防重置）、`wait_for(..., erase_on_timeout)`（true=worker 侧超时即 erase；false=merge 侧条目跨 wait 生命周期）、`with_lock(f)`；`mutex_` mutable + `find` const 化。单测扩至 12 用例。
+
+### C. 迁移（删除 11 个裸 mutex 声明）
+- **P2（4 个单容器+单锁）**：`recorded_workers_`→ConcurrentUnorderedSet（append 副作用锁外恰好一次 + 消除嵌套锁）、`backup_scores_`→update（EWMA RMW；find 改不再隐式插入空条目）、`merge_writers_`→get_or_insert（unique_ptr→shared_ptr）、`task_dependency_locations_`→update/take（顺带把 submit 时的 `lookup_remote_idx` 预取挪出锁，原临界区含 DataService 读锁重活）。
+- **P1（master 4 套手写 map+mutex+cv 收敛 3 套）**：`pending_delete_acks_`/`pending_merge_cleanups_`/`merge_task_states_` → `PendingRpcMap`。语义冲突点逐一保真：Problem5 insert-if-absent（回归测试盯防）、wait 超时保留（cleanup_after_merge 统一消费）、持锁遍历/条件批量 erase（with_lock）、未连接失败路径的无条件 upsert 语义保持。有意偏差（已记录）：merge_cleanup 条件 notify→无条件 notify_all（空唤醒无害）、backup_scores find 不再残留空条目。`msg_count` 第 4 套（单值+旁挂 vector 非 map）有意保留手写。
+- 每套迁移以 characterization 测试先行（`RecordWorkerInfoAppendsMetaOncePerTuple`）+ Problem5/MergeObjectEndToEnd 回归铁门槛。
+
+### D. 文档
+- `DEVELOPMENT_GUIDELINES.md` 新增 **§13 并发与锁规范**：封装优先级表（ConcurrentMap > PendingRpcMap > 类级封装 > 裸 mutex）、"cv notify 必须持锁"铁律（两次事故案例 + 窗口机理 + 确定性测试模式）、锁内禁 IO（标注 db_instances_/databases_ 历史欠账为待专项）、并发测试写法（latch 确定性优先 / 禁 sleep-assert / 无屏障并发测试在高负载下会被串行化误报——data_client_pool_test 实例）。
+- `CLAUDE.md` §必须遵循 加第 6 条（并发封装优先 + notify 持锁 + 指针）；`AGENTS.md` Key Constraints 同步一行。
+
+### E. 顺带修复
+- `data_client_pool_test` 并发用例加 latch 屏障：无屏障时 pre-push 高负载下 4 线程被 OS 完全串行化，首请求归还 fd 后其余复用 → connect_count=1 误报（本次 push 实际触发）。
+
+
 ## 2026-08-14: HandlerThreadPool lane 并行分发 + SIGTERM 优雅退出接入
 
 ### A. handler 并行分发（原 ARCHITECTURE_REVIEW §3.1 P1 项）

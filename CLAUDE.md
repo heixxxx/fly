@@ -365,6 +365,7 @@ Task 失败时自动序列化到 `log_dir/failed_tasks.bin`。`restart_failed_ta
 3. **C++20 / gcc12**
 4. **模块式 include 路径**：`<module/cpp/file.h>` 格式
 5. **调试必须加载 `systematic-debugging-analysis` skill**：先加日志运行观察，禁止仅靠静态分析猜测
+6. **并发封装优先**：多线程共享的容器用 `ConcurrentMap`/`ConcurrentUnorderedSet`，pending 状态机（登记→等完成→消费）用 `PendingRpcMap`，禁止新增裸 mutex+容器成员对；cv notify 必须持锁。详见 `docs/DEVELOPMENT_GUIDELINES.md` §13
 
 ### 禁止事项
 

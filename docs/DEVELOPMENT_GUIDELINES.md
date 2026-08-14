@@ -756,6 +756,60 @@ bazel run //:refresh_compile_commands
 
 **规范**：测试代码与生产代码使用相同的宏模式。所有 `serialize()` 方法必须使用 `FLY_SERIALIZE_BEGIN(N) { ... } FLY_SERIALIZE_END` 声明，内部使用 `FLY_FIELD` 字段宏。
 
+## 13. 并发与锁规范
+
+### 13.1 封装优先级：禁止新增裸 mutex+容器对
+
+新增/修改被多线程访问的共享数据时，按以下优先级选择封装：
+
+| 优先级 | 方案 | 适用场景 | 位置 |
+|--------|------|----------|------|
+| 1 | `ConcurrentMap` / `ConcurrentUnorderedMap` / `ConcurrentUnorderedSet` | 单容器 + 单锁、无跨结构不变式 | `src/common/cpp/concurrent_map.h` |
+| 2 | `PendingRpcMap` | "登记 → 等完成 → 消费" 的 pending 状态机（map+mutex+cv 三合一） | `src/agent/cpp/pending_rpc_map.h` |
+| 3 | 类级封装（私有数据 + 封装访问方法） | 跨多个结构的复合不变式（如 `write_provenance_` 的 check-and-register） | 参照 `MasterAgent::provenance_*` |
+| 4 | 裸 mutex（最后手段） | 仅当锁保护的是跨容器调度不变式（如 `schedule_mutex_`），且数据全部 private、锁只出现在方法内 | `task_manager` / `dependency_graph` |
+
+**禁止**：新代码声明"裸 `std::mutex` + 并行容器"成员对——每处使用点都要手动加锁，后续开发极易漏加（历史上 on_var_ack 的两阶段完成路径因此引入 data race + lost wakeup）。
+
+`ConcurrentMap` 复合操作接口（避免多次加锁拼出非原子序列）：
+
+- `update(key, f)`：锁内读改写（miss 时默认构造插入）
+- `take(key)` / `take_any()`：原子"erase 并取走"
+- `get_or_insert(key, factory)`：find-or-create（factory 锁内执行）
+- `with_lock(f)`：最后逃生口——仅用于持锁遍历/条件 erase 等复合操作；**f 内禁止再获取本对象（自死锁）或做网络/磁盘 IO**
+- `ConcurrentUnorderedSet::insert` 返回是否新插入：去重判定与"副作用恰好一次"解耦，副作用放锁外
+
+`PendingRpcMap` 语义选择：
+
+- 完成路径**必须**走 `complete()` / `complete_all_if()`（字段写 + notify 全持锁）；无锁 notify 接口已因 lost wakeup 删除，禁止再引入
+- `wait_for(..., erase_on_timeout)`：`true`（默认）= 超时即 erase 防泄漏（worker 侧 RPC）；`false` = 条目生命周期跨 wait、由调用方统一清理（merge 侧）
+- `insert_if_absent`：ack 不会重发的场景防重置（Problem5 模式）
+
+### 13.2 铁律：cv notify 必须持锁
+
+**condition_variable 的 notify 必须在持有对应 mutex 的临界区内发出。**
+
+两次实际事故（均偶发、难复现、靠 gdb attach 定位）：
+
+- **8419526** `DataServer::stop`：send_cv notify 不持 send_mutex_ → master_agent_test 偶发 hang（~1/30）
+- **on_var_ack 修复**（见 git log "根除 PendingRpcMap 无锁 notify 接口"）：两阶段完成在锁外写字段 + 无锁 notify → `get_var_sync` 偶发卡满 5s 超时
+
+窗口机理：waiter 持锁查 predicate（false）→ notifier 无锁 notify（此时无 waiter，落空）→ waiter 进入 wait → 永久等待（直到超时兜底）。predicate 读 atomic **不能**消除该窗口，只能防 data race。确定性复现/防回归测试模式见 `src/agent/tests/pending_rpc_map_test.cpp` 的 `CompleteDuringPredicateWindowWakesWaiter`（`FLY_ENABLE_TEST_HOOKS` 钩子 + `std::latch` 钉死窗口）。
+
+同理：**锁内修改的共享字段（含经 predicate 读的）写入也必须在锁内**——否则与持锁读者构成 data race。
+
+### 13.3 锁内禁止 IO/网络
+
+临界区内禁止网络 send、文件系统重活、可能阻塞的调用——持锁阻塞会拖住所有等锁线程。既有的例外（`get_or_insert` factory 内 `fs::create_directories`）有注释标注，新代码不得效仿。
+
+历史欠账（已知、待专项清理，新改动不要扩大）：`db_instances_`/`databases_` 读锁内有 `reactor_->send`（master_agent.cpp 多处）、do_write_register 全流程（锁内跑完整写登记）。处理这些需要先拆锁再搬移，属独立重构主题。
+
+### 13.4 并发测试写法
+
+- **确定性优先**：用 `std::latch` + 测试钩子（`FLY_ENABLE_TEST_HOOKS`）强制线程交错，断言终态或耗时上限；先例：`master_agent_test.cpp` Problem1/Problem5、`pending_rpc_map_test.cpp`
+- **禁止 sleep-then-assert**（同 §6.4）；无同步屏障的"多线程并发"测试在高负载下会被 OS 串行化而误报（实例：data_client_pool_test 并发用例曾在 pre-push 高负载下误报，修复 = 加 latch 屏障）
+- 压力型并发测试（insert/take 守恒等）必须 join 后断言总量守恒，不依赖时序
+
 ---
 
 **文档更新历史**:
@@ -764,4 +818,5 @@ bazel run //:refresh_compile_commands
 - 2026-05-14: 更新序列化宏文档（FLY_SERIALIZE + Boost.PP），新增开发教训章节
 - 2026-05-14: 新增 `fly-build` skill — 构建必须使用 `./fly.sh`，禁止裸 `bazel build`
 - 2026-05-15: 重构导出宏文档（Section 4.3）：移除 module_var 参数，用户写大括号，新增命名规范 Section 2.4
+- 2026-08-14: 新增 Section 13 并发与锁规范（封装优先级 / notify 持锁铁律 / 锁内禁 IO / 并发测试写法），源于 on_var_ack lost wakeup 修复与 PendingRpcMap/ConcurrentMap 收敛改造
 - 2026-05-15: 修正序列化宏签名：`FLY_FIELD(field)` 替代 `FLY_FIELD(s, o, field)`，移除重复 Section 4.2.2

@@ -112,6 +112,7 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 - **Never `rm -rf qa/*/test_*` or any `test_*` glob in qa/** — the glob matches both `test_x.py` source files and `test_x/` log dirs, routinely deleting test sources. Clean qa/ with `git clean -fd qa/` (untracked only) or by precise paths. Put useful non-test resources in dedicated subdirs (e.g. `qa/solver/matrices/`), never loose under test dirs.
 - **Python 跨模块 import**：一律 `from module import symbol`（包根 re-export），禁止 `from module.py.xxx import`。`_` 前缀仅限完全确定模块内部使用的符号；其余一律不加前缀允许 `import *` 导出。禁止 `__all__`。详见 CLAUDE.md §3「Python 包布局与 import 规范」。
 - **定位 runqa 失败**：读 `qa/logs/qa.log`（含失败详情 + fly.log 路径），不要反复重跑覆盖 fly.log 丢失现场。
+- **并发封装优先**：多线程共享容器用 `ConcurrentMap`/`ConcurrentUnorderedSet`，pending 状态机（登记→等完成→消费）用 `PendingRpcMap`，禁止新增裸 mutex+容器成员对；cv notify 必须持锁。详见 `docs/DEVELOPMENT_GUIDELINES.md` §13。
 - **禁止使用 `/tmp` 存放中间任务数据** —— 中间文件放在项目 `.work/` 目录下，任务结束前 `rm -rf .work/` 清理。`/tmp` 无限累积会填满磁盘导致 WSL2 崩溃。
 
 ## Stability: Zero Tolerance
