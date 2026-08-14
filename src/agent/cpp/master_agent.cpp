@@ -2024,10 +2024,17 @@ std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const C
         // 路径（current_write_hash 空），用时间戳 fallback 保证非空，使 provenance 校验生效。
         msg.write_context_hash_ = make_timestamp_hash();
     }
-    std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-    auto db_it = db_instances_.find(db_path);
-    if (db_it != db_instances_.end()) {
-        msg.writer_id_ = db_it->second->get_writer_id();
+    {
+        // 锁内只 find + 拷 writer_id（值拷贝）——do_write_register 的完整登记链
+        //（provenance、frozen、stream 模式 mark_data_ready、record_worker_info、
+        // schedule_tasks）移出容器锁：原实现持 db 读锁跑全链，且 record_worker_info
+        // 会递归获取同一 shared_mutex（写者排队时潜在死锁）。与 worker 路径
+        // on_write_register（锁外裸调）对称。
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+        auto db_it = db_instances_.find(db_path);
+        if (db_it != db_instances_.end()) {
+            msg.writer_id_ = db_it->second->get_writer_id();
+        }
     }
     auto ack = do_write_register(msg);
     if (!ack.success_) {

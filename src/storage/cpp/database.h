@@ -199,6 +199,12 @@ private:
     CMUnorderedSet<CMString> removed_objects_;
     CMUnorderedSet<CMString> temp_objects_;
 
+    // 自保护锁：保护 db_path_/data_path_/writer_id_/writer_ 操作序列/
+    // removed_objects_/temp_objects_/freeze 的 check-and-set。master/worker
+    // 的容器锁（db_instances_/databases_）外经 shared_ptr 调用本对象方法的
+    // 前提（见 DEVELOPMENT_GUIDELINES §13 与锁内 IO 拆除前置）。
+    mutable std::mutex state_mutex_;
+
     // Var store: var_name → VarEntry. Mutex guards all access (set/get/remove
     // may come from task-execution threads; freeze snapshots under the lock).
     CMUnorderedMap<CMString, VarEntry> var_store_;

@@ -942,10 +942,15 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
     msg.db_path_ = db_path;
     msg.write_context_hash_ = ctx_hash;
     msg.size_bytes_ = compressed_size;
-    std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
-    auto db_it = databases_.find(db_path);
-    if (db_it != databases_.end()) {
-        msg.writer_id_ = db_it->second->get_writer_id();
+    {
+        // 锁内只 find + 拷 writer_id（同 request_db_path 的正面范式）——原实现的
+        // shared_lock 存活到函数尾，覆盖了 send 和 wait_for 的 5 秒同步等待，
+        // 持读锁空等会阻塞任何 register_database（unique）长达 5s。
+        std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
+        auto db_it = databases_.find(db_path);
+        if (db_it != databases_.end()) {
+            msg.writer_id_ = db_it->second->get_writer_id();
+        }
     }
     reactor_->send(master_conn_, msg);
 

@@ -465,15 +465,27 @@ void Database::backup_object(const CMString& object_name) {
 }
 
 void Database::freeze() {
-    if (is_frozen_) {
-        return;
+    {
+        // check-and-set 原子化：原实现"读 is_frozen_ → 置位"非原子，并发 freeze
+        // 可同时通过检查重复执行副作用（drain/marker/广播双份）。
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        if (is_frozen_.load(std::memory_order_relaxed)) {
+            return;
+        }
+        is_frozen_.store(true, std::memory_order_relaxed);
     }
     fly::DataService::instance()->drain_write_back();
-    is_frozen_ = true;
     create_frozen_marker();
-    fly::DataService::instance()->on_flush(db_path_);
-    fly::DataService::instance()->cleanup_temp_entries(db_path_);
-    fly::WorkerAgentContext::notify_freeze(db_path_);
+    CMString db_path_copy;
+    size_t removed_count = 0;
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        db_path_copy = db_path_;
+        removed_count = removed_objects_.size();
+    }
+    fly::DataService::instance()->on_flush(db_path_copy);
+    fly::DataService::instance()->cleanup_temp_entries(db_path_copy);
+    fly::WorkerAgentContext::notify_freeze(db_path_copy);
 
     // Persist non-deleted vars alongside the frozen db.
     flush_vars_to_disk();
@@ -481,10 +493,9 @@ void Database::freeze() {
     // TODO: freeze 后处理 — 从聚合文件中真正删除 removed_objects_ 的数据
     // 当前聚合文件可能包含多个对象，删除单个对象需要重写整个文件
     // 完整实现需要在数据压缩(compaction)功能中完成
-    if (!removed_objects_.empty()) {
-        uint64_t count = removed_objects_.size();
+    if (removed_count > 0) {
         INFO("freeze: {} objects marked for removal (disk cleanup pending compaction implementation)",
-             count);
+             removed_count);
     }
 }
 
@@ -495,34 +506,43 @@ bool Database::is_frozen() const {
 void Database::remove_object(const CMString& object_name) {
     if (check_frozen()) return;
 
-    CMString full = full_name(object_name);
-    removed_objects_.insert(full);
+    CMString full;
+    CMString db_path_copy;
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        full = db_path_ + ":" + object_name;
+        db_path_copy = db_path_;
+        removed_objects_.insert(full);
+        // LocalIndex 只存 short_name（idx 文件天然属于本 db）。
+        writer_->remove_entry(object_name);
+    }
 
-    fly::WorkerAgentContext::request_remove(db_path_, object_name);
-
-    // LocalIndex 只存 short_name（idx 文件天然属于本 db）。
-    writer_->remove_entry(object_name);
-
+    fly::WorkerAgentContext::request_remove(db_path_copy, object_name);
     fly::DataService::instance()->remove_local_index(full);
-
     fly::ObjectCache::instance().remove(full);
 
     INFO("Object removed: {}", full);
 }
 
 void Database::remove_index_entry(const CMString& object_name) {
-    CMString full = full_name(object_name);
-    removed_objects_.insert(full);
-    writer_->remove_entry(object_name);
+    CMString full;
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        full = db_path_ + ":" + object_name;
+        removed_objects_.insert(full);
+        writer_->remove_entry(object_name);
+    }
     fly::ObjectCache::instance().remove(full);
     INFO("Index entry removed: {}", full);
 }
 
 void Database::mark_write_begin() {
+    std::lock_guard<std::mutex> lk(state_mutex_);
     writer_->mark_begin();
 }
 
 void Database::mark_write_end() {
+    std::lock_guard<std::mutex> lk(state_mutex_);
     writer_->mark_end();
 }
 
@@ -535,7 +555,10 @@ void Database::abort_task_writes(const CMVector<CMString>& dirty_full_names) {
     fly::DataService::instance()->drain_write_back();
 
     // 3. idx 打 ABORT + data 文件 truncate 回滚点。
-    writer_->abort_segment();
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        writer_->abort_segment();
+    }
 
     // 4. 清运行时内存中被本 task 污染的对象。
     //    （clear_pending 跳过了未开始请求的 on_complete_，drain 完成的那个
@@ -546,7 +569,8 @@ void Database::abort_task_writes(const CMVector<CMString>& dirty_full_names) {
         fly::ObjectCache::instance().remove(full);
     }
 
-    INFO("Task writes aborted: {} dirty objects, db_path={}", dirty_full_names.size(), db_path_);
+    INFO("Task writes aborted: {} dirty objects, db_path={}", dirty_full_names.size(),
+         get_db_path());
 }
 
 DbMeta Database::load_meta() const {
@@ -603,10 +627,12 @@ DbMeta Database::load_meta_from_path(const CMString& db_path) {
 }
 
 CMString Database::get_db_path() const {
+    std::lock_guard<std::mutex> lk(state_mutex_);
     return db_path_;
 }
 
 CMString Database::get_data_path() const {
+    std::lock_guard<std::mutex> lk(state_mutex_);
     return data_path_;
 }
 
@@ -615,15 +641,23 @@ void Database::set_paths(const CMString& db_path, const CMString& data_path) {
     // db_path_ 是 Database 唯一路径标识，merge 后所有句柄（底层共享同一 C++ 对象）
     // 的 db_path_ 同时变为 target，full_name 自然产生 target path 前缀。
     // merge 的 wait_for_all_tasks 前提保证 merge 时无 pending task，不需要旧 path 锚点。
+    // 成员修改在 state_mutex_ 内（与并发 get_db_path 等 reader 互斥）；
+    // DataService re-register 在锁外（无反向调用本对象，安全）。
+    CMString old_db_path;
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        old_db_path = db_path_;
+        db_path_ = db_path;
+        data_path_ = data_path;
+    }
     auto ds = fly::DataService::instance();
     // unregister 旧 db_path（merge 前的源 path），再注册新的。
-    ds->unregister_database(db_path_);
-    db_path_ = db_path;
-    data_path_ = data_path;
-    ds->register_database(db_path_, data_path_, writer_id_);
+    ds->unregister_database(old_db_path);
+    ds->register_database(db_path, data_path, writer_id_);
 }
 
 CMString Database::get_writer_id() const {
+    std::lock_guard<std::mutex> lk(state_mutex_);
     return writer_id_;
 }
 
@@ -632,6 +666,7 @@ CMString Database::get_full_name(const CMString& name) const {
 }
 
 CMString Database::full_name(const CMString& short_name) const {
+    std::lock_guard<std::mutex> lk(state_mutex_);
     return db_path_ + ":" + short_name;
 }
 
@@ -683,7 +718,12 @@ void Database::write_db_meta_header() {
 }
 
 void Database::append_worker_info_to_meta(const WorkerInfo& info) {
-    CMString meta_path = db_path_ + "/_DB_META";
+    CMString meta_path;
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        meta_path = db_path_ + "/_DB_META";
+    }
+    // 文件 IO 在 state_mutex_ 外（append 副作用由 recorded_workers_ 去重保证恰好一次）。
     if (!fs::exists(meta_path)) {
         ERR("_DB_META file not found, cannot append worker info: {}", meta_path);
         return;
@@ -738,7 +778,8 @@ void Database::ensure_directory_exists(const CMString& path) {
 }
 
 void Database::mark_temp(const CMString& object_name) {
-    temp_objects_.insert(full_name(object_name));
+    std::lock_guard<std::mutex> lk(state_mutex_);
+    temp_objects_.insert(db_path_ + ":" + object_name);
 }
 
 void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compressed_data) {

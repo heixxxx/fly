@@ -6,6 +6,9 @@
 #include <filesystem>
 #include <fstream>
 #include <istream>
+#include <atomic>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -920,6 +923,63 @@ TEST_F(DatabaseTest, BareWriteObjectHasNonEmptyContextHash) {
         << "裸写入 idx entry 应有 commit_write guard 填的时间戳 hash";
 
     fly::DataService::instance()->remove_local_index(db_path + ":obj");
+}
+
+// ── Database 自保护（state_mutex_）─────────────────────────────────────
+// master/worker 的容器锁（db_instances_/databases_）外经 shared_ptr 调用
+// Database 方法的前提是对象自保护（DEVELOPMENT_GUIDELINES §13 拆锁前置）。
+
+// 并发 set_paths 与路径读取：无 data race（TSan 可验证），且任一时刻读到的
+// full_name 前缀与 get_db_path 一致（成员更新原子可见，不撕裂）。
+TEST_F(DatabaseTest, ConcurrentSetPathsWithReadersIsSafe) {
+    Database db(test_dir_, test_dir_ + "/data", 0, "", test_dir_);
+    CMString path_a = test_dir_ + "/pa";
+    CMString path_b = test_dir_ + "/pb";
+    std::filesystem::create_directories(path_a);
+    std::filesystem::create_directories(path_b);
+
+    std::atomic<bool> stop{false};
+    db.set_paths(path_a, path_a);  // 先离开初始路径，读者只见 pa/pb 两个合法值
+    std::vector<std::thread> threads;
+    std::atomic<int> inconsistencies{0};
+
+    for (int i = 0; i < 4; ++i) {
+        threads.emplace_back([&]() {
+            while (!stop.load(std::memory_order_relaxed)) {
+                // 每个返回值自身必须合法（是两个已知 path 之一/以其为前缀）——
+                // 锁保证单调用内部一致与无 data race；跨调用不要求原子快照
+                //（get_db_path 与 get_full_name 是两次独立加锁，中间值可变）。
+                CMString p = db.get_db_path();
+                CMString full = db.get_full_name("obj");
+                bool ok = (p == path_a || p == path_b) &&
+                          (full.rfind(path_a + ":", 0) == 0 ||
+                           full.rfind(path_b + ":", 0) == 0);
+                if (!ok) inconsistencies.fetch_add(1);
+            }
+        });
+    }
+    for (int i = 0; i < 50; ++i) {
+        db.set_paths(path_a, path_a);
+        db.set_paths(path_b, path_b);
+    }
+    stop.store(true, std::memory_order_relaxed);
+    for (auto& t : threads) t.join();
+
+    EXPECT_EQ(inconsistencies.load(), 0);
+}
+
+// 并发 freeze：check-and-set 原子化后只应有一个线程执行冻结副作用
+//（_FROZEN marker 只创建一次的语义由 atomic check-and-set 保证；本用例
+// 验证并发下无崩溃且终态 frozen）。
+TEST_F(DatabaseTest, ConcurrentFreezeIsSafe) {
+    Database db(test_dir_, test_dir_ + "/data", 0, "", test_dir_);
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 4; ++i) {
+        threads.emplace_back([&]() { db.freeze(); });
+    }
+    for (auto& t : threads) t.join();
+    EXPECT_TRUE(db.is_frozen());
+    EXPECT_TRUE(std::filesystem::exists(test_dir_ + "/_FROZEN"));
 }
 
 }
