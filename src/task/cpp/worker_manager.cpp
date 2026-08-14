@@ -81,6 +81,16 @@ void WorkerManager::complete_task(uint64_t worker_id) {
     }
 }
 
+void WorkerManager::cancel_task_if_assigned(uint64_t worker_id, uint64_t task_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = workers_.find(worker_id);
+    if (it != workers_.end() && it->second.current_task_id_ == task_id &&
+        it->second.status_ == WorkerStatus::BUSY) {
+        it->second.status_ = WorkerStatus::IDLE;
+        it->second.current_task_id_ = 0;
+    }
+}
+
 void WorkerManager::update_capabilities(uint64_t worker_id,
                                           const CMVector<CMString>& added,
                                           const CMVector<CMString>& removed) {

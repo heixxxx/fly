@@ -41,6 +41,9 @@ public:
     void set_heartbeat(uint64_t worker_id, uint64_t timestamp);
     void assign_task(uint64_t worker_id, uint64_t task_id);
     void complete_task(uint64_t worker_id);
+    // 精确回滚：仅当 worker 当前正持有 task_id 时才置回 IDLE（不误恢复 DEAD
+    // worker——send_merge_task 未连接路径的 assign 回滚用）。
+    void cancel_task_if_assigned(uint64_t worker_id, uint64_t task_id);
     void update_capabilities(uint64_t worker_id,
                               const CMVector<CMString>& added,
                               const CMVector<CMString>& removed);

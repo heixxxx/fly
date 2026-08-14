@@ -1121,7 +1121,10 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
 
     // 运行时失败的 task（异常/读不到数据）也应可 restart，与调度时失败的 task 一致。
     // make_failed_record 从 metadata.submission_ 整体拷贝，无需逐字段复制。
-    {
+    // internal task（__merge_object 等）不在 metadata：无 submission 可还原，
+    // 以空 submission 持久化会污染 failed_tasks.bin（restart_failed_tasks 恢复空
+    // task），跳过——merge task 的失败由 merge_task_states_ 状态机承载。
+    if (metadata_->get_task(msg.task_id_)) {
         FailedTaskRecord record = make_failed_record(msg.task_id_, msg.error_message_);
         persist_failed_task(record);
     }
@@ -2565,6 +2568,10 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
         auto it = worker_to_conn_.find(target_worker_id);
         if (it == worker_to_conn_.end()) {
             ERR("send_merge_task: target worker_id={} not connected", target_worker_id);
+            // 回滚上面的 assign：消息未送达，worker 永远不会回 TaskComplete/Failed，
+            // 不回滚则 BUSY 槽永久泄漏。cancel_task_if_assigned 精确匹配 task_id，
+            // 不会误恢复 on_disconnect 已标 DEAD 的 worker。
+            worker_manager_->cancel_task_if_assigned(target_worker_id, merge_task_id);
             // PendingRpcMap 锁是 leaf，在 workers_mutex_ 内调用与原嵌套锁序
             // （workers_mutex_ → merge_task_mutex_）等价。条目由本函数开头 emplace，
             // complete 必命中。

@@ -59,6 +59,32 @@ TEST(WorkerManagerTest, AssignAndCompleteTask) {
     EXPECT_EQ(manager.get_worker(1)->get().current_task_id_, 0);
 }
 
+// 精确回滚：cancel_task_if_assigned 只回滚"正持有该 task 的 BUSY worker"，
+// 不误动其它 task/状态（send_merge_task 未连接路径的 assign 回滚语义）。
+TEST(WorkerManagerTest, CancelTaskIfAssigned) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {});
+    manager.register_worker(2, "127.0.0.1", 8081, {});
+
+    manager.assign_task(1, 100);
+    manager.assign_task(2, 200);
+
+    // task_id 不匹配：不回滚。
+    manager.cancel_task_if_assigned(1, 999);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::BUSY);
+
+    // 精确匹配：回滚 worker1。
+    manager.cancel_task_if_assigned(1, 100);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::IDLE);
+    EXPECT_EQ(manager.get_worker(1)->get().current_task_id_, 0);
+    // 其它 worker 不受影响。
+    EXPECT_EQ(manager.get_worker(2)->get().status_, WorkerStatus::BUSY);
+
+    // IDLE worker 再 cancel：no-op（无任务可回滚）。
+    manager.cancel_task_if_assigned(1, 100);
+    EXPECT_EQ(manager.get_worker(1)->get().status_, WorkerStatus::IDLE);
+}
+
 TEST(WorkerManagerTest, GetIdleWorkers) {
     WorkerManager manager;
     manager.register_worker(1, "127.0.0.1", 8080, {});
