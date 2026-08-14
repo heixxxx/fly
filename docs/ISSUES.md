@@ -119,6 +119,18 @@
 
 ## P3 — Low / Deferred
 
+### P3-19: -j16 高压下偶发 worker 启动信息未写入本地 debug log（未定位）
+- **Status**: OPEN — 已捕获 1 次，30 轮定向复现失败（15 常规 + 15 饱和 -j8），待专项
+- **Evidence**（2026-08-15 高压稳定性测试第 5/10 轮，`test_startup_info`）：
+  worker1.log 完整缺少 `Fly Startup Info (worker)` 段（connect/DataServer/Register
+  等其余日志齐全）。emit_system_message 直写 Logger（message_dispatch.cpp:42），
+  打印路径未被改动。怀疑方向：Logger::resolve_log_dir 轮转目录在多进程高并发下的
+  竞争（写入轮转目录而测试读主目录）。
+- **Probability**: ~1/3000 case（两轮 -j16 完整压力共 20 轮出现 1 次；随后完整
+  10/10 轮全过）。
+- **Next**: 专项查 resolve_log_dir 并发轮转竞争（.latest symlink 与 .N 目录的
+  多进程互斥）。与 2026-08-15 G 系列（断连重连）无因果路径。
+
 ### P3-18: 退出期偶发 pure virtual method called（静态析构竞态，未定位）
 - **Status**: OPEN — 已捕获 1 次，45 轮定向复现失败，待专项
 - **Evidence**（2026-08-15 高压稳定性测试第 10/10 轮，`test_solver_ras_n4_sd2_ov1_noconv`）：
