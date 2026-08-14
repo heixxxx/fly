@@ -12,7 +12,7 @@ void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
     std::lock_guard<std::mutex> lock(mutex_);
     // worker 重连会用相同 worker_id 重新注册（合法）。但若旧 worker 仍处 BUSY（带着
     // 未完成 task），静默覆盖成 IDLE 会丢失 task 关联 → task 永久孤儿。此处 WARN 暴露
-    // 这种异常重注册，便于及时发现（重连应先经 on_disconnect 清理旧状态）。
+    // 这种异常重注册，便于及时发现（宽限内的重连应走 register_worker_reconnect）。
     auto it = workers_.find(worker_id);
     if (it != workers_.end() && it->second.status_ == WorkerStatus::BUSY) {
         WARN("[WORKER-DUP] register_worker: worker_id={} re-registered while BUSY "
@@ -31,6 +31,44 @@ void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
     info.hostname_ = hostname;
     info.ip_address_ = ip_address;
     workers_[worker_id] = info;
+}
+
+// 宽限内重连（断连宽限语义）：task 在 worker 上继续执行，重连后将正常上报
+// TaskComplete/TaskFailed——**保留 BUSY 与 current_task_id_**（覆盖为 IDLE 会让
+// 调度器立即派新 task，与迟到上报的状态迁移竞争）。地址/心跳刷新，task 关联不动。
+void WorkerManager::register_worker_reconnect(uint64_t worker_id, const CMString& address,
+                                               uint16_t port, const CMVector<CMString>& capabilities,
+                                               const CMString& hostname, const CMString& ip_address) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = workers_.find(worker_id);
+    if (it == workers_.end()) {
+        // 宽限中重连但条目不存在（理论上断连只标 DEAD 不删条目；防御）：按全新注册
+        //（已持锁，内联构造，不递归调用 register_worker——std::mutex 不可重入）。
+        WorkerInfo info;
+        info.worker_id_ = worker_id;
+        info.address_ = address;
+        info.port_ = port;
+        info.status_ = WorkerStatus::IDLE;
+        info.capabilities_ = capabilities;
+        info.last_heartbeat_ = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        info.current_task_id_ = 0;
+        info.hostname_ = hostname;
+        info.ip_address_ = ip_address;
+        workers_[worker_id] = info;
+        return;
+    }
+    WorkerInfo& info = it->second;
+    info.address_ = address;
+    info.port_ = port;
+    if (info.status_ != WorkerStatus::BUSY) {
+        info.status_ = WorkerStatus::IDLE;   // DEAD/IDLE → 恢复 IDLE
+    }  // BUSY：保留（task 关联不变，等其 Complete/Failed 收敛）
+    info.capabilities_ = capabilities;
+    info.last_heartbeat_ = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    info.hostname_ = hostname;
+    info.ip_address_ = ip_address;
 }
 
 void WorkerManager::unregister_worker(uint64_t worker_id) {

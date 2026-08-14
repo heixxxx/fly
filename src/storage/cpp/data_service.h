@@ -202,6 +202,9 @@ public:
     void remove_remote_location(const CMString& object_name, uint64_t worker_id);
     // 返回持有该对象的 worker_id 列表（按值拷贝，在内部锁保护下完成，调用方拿独立副本，线程安全）。
     CMVector<uint64_t> get_remote_workers(const CMString& object_name) const;
+    // 反查：remote_idx 中 holder 含 worker_id 的全部对象全名（数据全灭快速失败用；
+    // 判死低频事件，O(n) 遍历可接受）。
+    CMVector<CMString> get_objects_of_worker(uint64_t worker_id) const;
 
     bool has_remote_location(const CMString& object_name) const;
 

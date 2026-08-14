@@ -35,6 +35,12 @@ public:
                           const CMVector<CMString>& capabilities = {},
                           const CMString& hostname = "",
                           const CMString& ip_address = "");
+    // 断连宽限内的重连注册：保留 BUSY 与 current_task_id_（task 在 worker 上存活，
+    // 重连后正常上报收敛），仅刷新地址/心跳/能力。
+    void register_worker_reconnect(uint64_t worker_id, const CMString& address, uint16_t port,
+                                    const CMVector<CMString>& capabilities = {},
+                                    const CMString& hostname = "",
+                                    const CMString& ip_address = "");
     void unregister_worker(uint64_t worker_id);
     void update_worker_status(uint64_t worker_id, WorkerStatus status);
     void record_heartbeat(uint64_t worker_id);

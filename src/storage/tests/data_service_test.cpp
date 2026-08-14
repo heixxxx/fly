@@ -6,6 +6,7 @@
 #include <network/cpp/net_quality_monitor.h>
 #include <common/cpp/fly_buffer.h>
 #include <common/cpp/worker_context.h>   // WorkerAgentContext::set_suggest_backup_func
+#include <core/cpp/process_info.h>       // master/worker 进程语义切换（权威 remote_idx 保护测试）
 #include <core/cpp/config.h>
 #include <filesystem>
 #include <istream>
@@ -570,6 +571,9 @@ TEST_F(DataServiceTest, UnregisterDatabaseRemovesIt) {
 }
 
 TEST_F(DataServiceTest, RemoveRemoteLocationByWorkerId) {
+    // 踢副本是 worker 进程的自愈行为（master 进程豁免，见
+    // MasterProcessKeepsAuthoritativeLocationOnReadFailure）——显式切 worker 模式。
+    ProcessInfo::instance()->set_worker_mode(true);
     CMString full = db32("rr_worker") + ":obj";
     ds_->update_remote_idx(full, 1, "host_a", 8000);
     ds_->update_remote_idx(full, 2, "host_b", 9000);
@@ -582,9 +586,11 @@ TEST_F(DataServiceTest, RemoveRemoteLocationByWorkerId) {
     workers = ds_->get_remote_workers(full);
     EXPECT_EQ(workers.size(), 1u);
     EXPECT_EQ(workers[0], 2u);
+    ProcessInfo::instance()->set_worker_mode(false);
 }
 
 TEST_F(DataServiceTest, RemoveRemoteLocationByWorkerIdCleansUpWhenEmpty) {
+    ProcessInfo::instance()->set_worker_mode(true);
     CMString full = db32("rr_cleanup") + ":obj";
     ds_->update_remote_idx(full, 1, "host_a", 8000);
 
@@ -592,6 +598,7 @@ TEST_F(DataServiceTest, RemoveRemoteLocationByWorkerIdCleansUpWhenEmpty) {
 
     EXPECT_FALSE(ds_->has_remote_location(full));
     EXPECT_TRUE(ds_->get_remote_workers(full).empty());
+    ProcessInfo::instance()->set_worker_mode(false);
 }
 
 TEST_F(DataServiceTest, OnObjectWrittenSetsComplete) {
@@ -888,6 +895,7 @@ TEST_F(DataServiceTest, Tier2FailoverToNextReplicaOnObjectNotFound) {
 // TIER2 must remove a replica that returned OBJECT_NOT_FOUND, so a subsequent
 // read goes straight to the surviving replica.
 TEST_F(DataServiceTest, Tier2RemovesReplicaOnObjectNotFound) {
+    ProcessInfo::instance()->set_worker_mode(true);  // 踢副本为 worker 进程自愈行为
     CMString full = db32("tier2rm") + ":obj";
     ds_->update_remote_idx(full, 1, "host_a", 8000);
     ds_->update_remote_idx(full, 2, "host_b", 9000);
@@ -911,6 +919,7 @@ TEST_F(DataServiceTest, Tier2RemovesReplicaOnObjectNotFound) {
     auto workers = ds_->get_remote_workers(full);
     ASSERT_EQ(workers.size(), 1u);
     EXPECT_EQ(workers[0], 2u);
+    ProcessInfo::instance()->set_worker_mode(false);
 }
 
 TEST_F(DataServiceTest, DataServerStartStop) {
@@ -1353,6 +1362,7 @@ TEST_F(DataServiceTest, TIER1MultipleWaitersAllWoken) {
 // host_b higher, so the contact order must flip to b, a. Each replica returns
 // OBJECT_NOT_FOUND so the full round is observed (no early success shortcut).
 TEST_F(DataServiceTest, Tier2PrefersHigherScoredReplica) {
+    ProcessInfo::instance()->set_worker_mode(true);  // 全轮失败会走踢副本路径（worker 行为）
     auto& mon = fly::NetQualityMonitor::instance();
     mon.clear();
     CMString full = db32("tiersort") + ":obj";
@@ -1375,11 +1385,13 @@ TEST_F(DataServiceTest, Tier2PrefersHigherScoredReplica) {
     EXPECT_EQ(order[0], "host_b");  // higher score first
     EXPECT_EQ(order[1], "host_a");
     mon.clear();
+    ProcessInfo::instance()->set_worker_mode(false);
 }
 
 // With equal (or no) scores, stable_sort must preserve registration order, so
 // cold-start behavior is identical to before the feature.
 TEST_F(DataServiceTest, Tier2KeepsRegistrationOrderWhenScoresEqual) {
+    ProcessInfo::instance()->set_worker_mode(true);  // 全轮失败会走踢副本路径（worker 行为）
     auto& mon = fly::NetQualityMonitor::instance();
     mon.clear();
     CMString full = db32("tierstable") + ":obj";
@@ -1400,6 +1412,7 @@ TEST_F(DataServiceTest, Tier2KeepsRegistrationOrderWhenScoresEqual) {
     EXPECT_EQ(order[0], "host_a");  // registration order preserved
     EXPECT_EQ(order[1], "host_b");
     mon.clear();
+    ProcessInfo::instance()->set_worker_mode(false);
 }
 
 // ── DB Migration Redirect (resolve_migrated_path) ──
@@ -1508,6 +1521,50 @@ TEST(DataServiceWriteLifecycleTest, OnWriteStartedDoesNotClobberCompleteEntry) {
         << "on_write_started 不应覆盖已 COMPLETE 条目的 entries（Problem 3：重复写覆盖导致读取者掉落 TIER2）";
 
     ds->remove_local_index(full);
+}
+
+// ── 权威 remote_idx 保护（断连重连 G2，用户确认语义）────────────────────
+// master 进程的 remote_idx 是全集群唯一位置权威源——读失败踢副本是 worker 本地
+// 视图的自愈行为，master 进程豁免（worker 断连/挂掉不代表数据消失，权威视图
+// 不被读失败污染，否则 worker 重连后 master 再也找不到数据）。
+TEST_F(DataServiceTest, MasterProcessKeepsAuthoritativeLocationOnReadFailure) {
+    auto ds = fly::DataService::instance();
+    ProcessInfo::instance()->set_worker_mode(false);  // master 进程语义（测试进程默认即此）
+    CMString obj = "/auth_db:obj";
+    ds->update_remote_idx(obj, 7, "127.0.0.1", 9000);
+
+    // master 进程：读失败踢副本 → no-op（位置保留）。
+    ds->remove_remote_location(obj, 7);
+    auto holders = ds->get_remote_workers(obj);
+    ASSERT_EQ(holders.size(), 1u);
+    EXPECT_EQ(holders[0], 7u);
+
+    // worker 进程：踢副本保留（本地视图自愈）。
+    ProcessInfo::instance()->set_worker_mode(true);
+    ds->remove_remote_location(obj, 7);
+    holders = ds->get_remote_workers(obj);
+    EXPECT_TRUE(holders.empty()) << "worker-process local view eviction must keep working";
+    ProcessInfo::instance()->set_worker_mode(false);
+
+    ds->remove_remote_index(obj);
+}
+
+// 反查接口：get_objects_of_worker 返回该 worker 持有的全部对象全名。
+TEST_F(DataServiceTest, GetObjectsOfWorkerReverseLookup) {
+    auto ds = fly::DataService::instance();
+    CMString a = "/rev:a", b = "/rev:b";
+    ds->update_remote_idx(a, 11, "127.0.0.1", 1);
+    ds->update_remote_idx(b, 11, "127.0.0.1", 1);
+    ds->update_remote_idx(b, 12, "127.0.0.1", 1);  // b 双持有
+
+    auto objs = ds->get_objects_of_worker(11);
+    EXPECT_EQ(objs.size(), 2u);
+    auto objs12 = ds->get_objects_of_worker(12);
+    ASSERT_EQ(objs12.size(), 1u);
+    EXPECT_EQ(objs12[0], b);
+
+    ds->remove_remote_index(a);
+    ds->remove_remote_index(b);
 }
 
 }

@@ -7,6 +7,7 @@
 #include <storage/cpp/db_meta.h>
 #include <storage/cpp/object_cache.h>
 #include <common/cpp/worker_context.h>   // WorkerAgentContext::suggest_backup（maybe_suggest_backup 用）
+#include <core/cpp/process_info.h>       // master 进程豁免 remove_remote_location（权威 remote_idx 保护）
 #include <network/cpp/net_quality_monitor.h>
 #include <serialization/cpp/object_header.h>
 #include <serialization/cpp/serialization_macros.h>
@@ -506,6 +507,14 @@ void DataService::remove_remote_location(const CMString& object_name) {
 }
 
 void DataService::remove_remote_location(const CMString& object_name, uint64_t worker_id) {
+    // 权威 remote_idx 保护（用户确认语义）：master 进程的 remote_idx 是全集群唯一
+    // 位置权威源（TIER3 应答 + 调度位置注入都读它）——读失败踢副本是 worker 本地
+    // 视图的自愈行为，master 进程豁免：worker 断连/挂掉不代表数据消失（可能重连
+    // 恢复），权威视图不因读失败被污染（否则 worker 恢复后 master 再也找不到数据）。
+    // 显式 remove_object 路径走单参重载（全删），不受此保护影响。
+    if (!ProcessInfo::instance()->worker_mode()) {
+        return;
+    }
     auto [db_path, short_name] = split_full(object_name);
     std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
     auto db_it = remote_idx_.find(db_path);
@@ -532,6 +541,22 @@ CMVector<uint64_t> DataService::get_remote_workers(const CMString& object_name) 
         }
     }
     return {};
+}
+
+CMVector<CMString> DataService::get_objects_of_worker(uint64_t worker_id) const {
+    CMVector<CMString> objects;
+    std::shared_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
+    for (const auto& [db_path, objs] : remote_idx_) {
+        for (const auto& [short_name, meta] : objs) {
+            for (uint64_t holder : meta.workers_) {
+                if (holder == worker_id) {
+                    objects.push_back(db_path + ":" + short_name);
+                    break;
+                }
+            }
+        }
+    }
+    return objects;
 }
 
 bool DataService::has_remote_location(const CMString& object_name) const {

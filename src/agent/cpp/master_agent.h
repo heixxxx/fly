@@ -242,6 +242,13 @@ public:
     void check_expected_worker_timeouts_for_testing(int64_t now) {
         check_expected_worker_timeouts(now);
     }
+    void check_grace_deadlines_for_testing(int64_t now) {
+        check_grace_deadlines(now);
+    }
+    // 数据全灭测试用：驱动 graph 的 mark_data_ready（让依赖 task 进入可调度状态）。
+    void mark_data_ready_for_testing(const CMString& object_name) {
+        graph_->mark_data_ready(object_name);
+    }
 private:
 #endif
 
@@ -276,6 +283,12 @@ private:
     // 唤起占位符：worker_id → spawn 时间戳（epoch 秒）。注册到达转正（erase），
     // 超时清理见 check_expected_worker_timeouts。重复 expect 刷新时间戳。
     ConcurrentUnorderedMap<uint64_t, int64_t> expected_worker_ids_;
+
+    // 断连宽限表：worker_id → 判死截止时间（epoch 秒）。断连（网络闪断）时登记
+    //（worker_reconnect_timeout>0 才启用；宽限内 task 存活、不重调度、豁免心跳
+    // 判死），由 heartbeat 检查线程扫描超时 → handle_worker_death；宽限内重连
+    // 注册则 erase。0=断连即死（逃生口）不登记。
+    ConcurrentUnorderedMap<uint64_t, int64_t> grace_deadlines_;
 
     CMUniquePtr<DependencyGraph> graph_;
     CMUniquePtr<WorkerManager> worker_manager_;
@@ -393,6 +406,12 @@ private:
     // 清理超时未注册的唤起占位符（worker_register_timeout>0 时生效；由
     // heartbeat_check_loop 周期调用，测试经 hook 直接驱动）。
     void check_expected_worker_timeouts(int64_t now);
+    // 扫描断连宽限表：超时项 erase + handle_worker_death（判死路径统一入口）。
+    // 由 heartbeat_check_loop 周期调用，测试经 hook 直接驱动。
+    void check_grace_deadlines(int64_t now);
+    // worker 正式判死（宽限超时 / drain 期断连 / 断连即死模式）：标 DEAD +
+    // 恢复其 RUNNING task + rollback pending frozen + 数据全灭快速失败。
+    void handle_worker_death(uint64_t worker_id);
     void attr_timeout_check_loop();
     void sched_watchdog_loop();
 

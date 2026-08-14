@@ -75,6 +75,8 @@ void MasterAgent::start() {
     fly::MessageRegistry::instance().register_id("TASK::0001", fly::LogLevel::ERROR);
     fly::MessageRegistry::instance().register_id("AGENT::0001", fly::LogLevel::INFO);
     fly::MessageRegistry::instance().register_id("AGENT::0002", fly::LogLevel::WARN);
+    // AGENT::0003: worker 判死导致数据全灭（依赖 task 已快速失败，ERROR 级提醒用户）。
+    fly::MessageRegistry::instance().register_id("AGENT::0003", fly::LogLevel::ERROR);
     fly::MessageRegistry::instance().register_id("FLY::0001", fly::LogLevel::INFO);
 
     // 绑定配额变更回调：用户 set_*_limit 后触发，把当前配额广播给所有在线 worker
@@ -842,9 +844,19 @@ void MasterAgent::heartbeat_check_loop() {
             auto now = std::chrono::system_clock::now().time_since_epoch();
             auto timestamp = std::chrono::duration_cast<std::chrono::seconds>(now).count();
 
-            heartbeat_monitor_->check_all_workers(timestamp);
+            // 断连宽限中的 worker 豁免心跳判死（心跳缺失是断连的自然结果，
+            // 判死由宽限计时器统一负责，防 120s 心跳超时与宽限窗口撞车抢跑）。
+            CMVector<uint64_t> grace_exempt;
+            grace_deadlines_.with_lock([&](const auto& m) {
+                for (const auto& [wid, deadline] : m) {
+                    grace_exempt.push_back(wid);
+                }
+            });
+
+            heartbeat_monitor_->check_all_workers(timestamp, grace_exempt);
 
             check_expected_worker_timeouts(timestamp);
+            check_grace_deadlines(timestamp);
 
             auto dead = heartbeat_monitor_->get_dead_workers();
             for (uint64_t worker_id : dead) {
@@ -952,8 +964,19 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
         worker_to_conn_[worker_id] = conn_id;
     }
 
-    worker_manager_->register_worker(worker_id, host_, port_, msg.attributes_,
-                                      msg.hostname_, msg.ip_address_);
+    // 断连宽限内的重连：task 在 worker 上存活（RUNNING 保留），重连后将正常
+    // 上报 Complete/Failed——保留 BUSY 与 current_task_id_（覆盖为 IDLE 会让调度器
+    // 立即派新 task，与迟到上报的状态迁移竞争）。宽限外注册维持全新语义。
+    bool in_grace = (grace_deadlines_.erase(worker_id) > 0);
+    if (in_grace) {
+        worker_manager_->register_worker_reconnect(worker_id, host_, port_, msg.attributes_,
+                                                    msg.hostname_, msg.ip_address_);
+        INFO("Worker re-connected within grace: worker_id={}, conn_id={} "
+             "(task state preserved)", worker_id, conn_id);
+    } else {
+        worker_manager_->register_worker(worker_id, host_, port_, msg.attributes_,
+                                          msg.hostname_, msg.ip_address_);
+    }
 
     DataService::instance();
     if (msg.data_server_port_ > 0) {
@@ -1064,6 +1087,19 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
 
     uint64_t worker_id = msg.worker_id_;
 
+    // 迟到上报防串扰（断连宽限语义）：宽限超时判死后 task 已重排队给别的 worker，
+    // 原 worker 若迟到重连并上报——校验 task 当前 assigned worker 与上报者一致，
+    // 不符则丢弃（防止把别人正在跑的同 id task 错误标完成/置其 worker IDLE）。
+    if (auto t = metadata_->get_task(msg.task_id_)) {
+        if (t->assigned_worker_id_ != 0 && t->assigned_worker_id_ != worker_id) {
+            WARN("Stale task report dropped: task_id={} reported by worker {} but "
+                 "currently assigned to worker {} (worker likely exceeded grace and "
+                 "task was re-queued)",
+                 msg.task_id_, worker_id, t->assigned_worker_id_);
+            return;
+        }
+    }
+
     worker_manager_->complete_task(worker_id);
 
     DataService::instance();
@@ -1134,6 +1170,16 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
     ERR("Task failed: task_id={}, error={}", msg.task_id_, msg.error_message_);
 
     uint64_t worker_id = msg.worker_id_;
+
+    // 迟到上报防串扰（同 on_task_complete 的校验语义）。
+    if (auto t = metadata_->get_task(msg.task_id_)) {
+        if (t->assigned_worker_id_ != 0 && t->assigned_worker_id_ != worker_id) {
+            WARN("Stale task-failure report dropped: task_id={} reported by worker {} "
+                 "but currently assigned to worker {}",
+                 msg.task_id_, worker_id, t->assigned_worker_id_);
+            return;
+        }
+    }
 
     worker_manager_->complete_task(worker_id);
     // fail_task + remove_task 原子（同 on_task_complete 的状态变更段保护）。
@@ -1223,16 +1269,42 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
         MSG("AGENT::0002", 1, "worker {} offline", worker_id);
     }
 
-    // Problem 2 fix：worker DEAD 标记 + task snapshot 必须在 schedule_mutex_ 内原子执行。
-    // 原实现 DEAD 标记（1163）与 snapshot（1171）均在锁外，可与 scheduler（持
-    // schedule_mutex_ 的 get_idle_workers → schedule_next:68 assign → assign_task_to_worker:762
-    // metadata assign）交错：snapshot 漏掉刚 assign 到 W 的 task → 该 task 永久孤儿
-    // （RUNNING@DEAD-W，graph 已 remove，无人恢复，集群容量慢性耗尽）。纳入锁后：
-    //   - on_disconnect 先获锁：W 标 DEAD 后释放，scheduler 的 get_idle_workers 排除 W，
-    //     不会把新 task assign 到 W；snapshot 一致无遗漏。
-    //   - scheduler 先获锁完成 assign：on_disconnect 等锁后取 snapshot，能看到该 task 并恢复。
-    // 锁序安全：schedule_mutex_ → worker_manager::mutex_（与 schedule_tasks 内
-    // get_idle_workers/assign_task 的获取顺序一致，无反向，不死锁）。
+    // 断连处理（用户确认语义）：
+    //   drain 期 / worker_reconnect_timeout=0（断连即死逃生口）→ 立即判死。
+    //   正常运行期 → 登记宽限（grace_deadlines_）：task 存活（RUNNING 不动、
+    //   worker 状态不动——BUSY 保持使其不被调度）、豁免心跳判死，等 worker
+    //   指数退避重连；宽限超时由 check_grace_deadlines 走 handle_worker_death。
+    int64_t reconnect_grace = Config::instance()->get_int("worker_reconnect_timeout");
+    if (draining_.load() || reconnect_grace <= 0) {
+        handle_worker_death(worker_id);
+    } else {
+        auto now = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        grace_deadlines_.update(worker_id, [&](int64_t& t) { t = now + reconnect_grace; });
+        WARN("worker {} disconnected — grace period {}s (tasks stay RUNNING, awaiting reconnect)",
+             worker_id, reconnect_grace);
+    }
+
+    // Notify stop() that a worker has disconnected.
+    workers_drained_cv_.notify_one();
+}
+
+// worker 正式判死（宽限超时 / drain 期断连 / 断连即死模式）。
+// Problem 2 fix：worker DEAD 标记 + task snapshot 必须在 schedule_mutex_ 内原子执行。
+// 原实现 DEAD 标记与 snapshot 均在锁外，可与 scheduler（持 schedule_mutex_ 的
+// get_idle_workers → schedule_next:68 assign → assign_task_to_worker:762
+// metadata assign）交错：snapshot 漏掉刚 assign 到 W 的 task → 该 task 永久孤儿
+// （RUNNING@DEAD-W，graph 已 remove，无人恢复，集群容量慢性耗尽）。纳入锁后：
+//   - handle_worker_death 先获锁：W 标 DEAD 后释放，scheduler 的 get_idle_workers
+//     排除 W，不会把新 task assign 到 W；snapshot 一致无遗漏。
+//   - scheduler 先获锁完成 assign：handle_worker_death 等锁后取 snapshot，能看到
+//     该 task 并恢复。
+// 锁序安全：schedule_mutex_ → worker_manager::mutex_（与 schedule_tasks 内
+// get_idle_workers/assign_task 的获取顺序一致，无反向，不死锁）。
+void MasterAgent::handle_worker_death(uint64_t worker_id) {
+    WARN("worker {} declared dead (grace expired or immediate-death mode)", worker_id);
+    grace_deadlines_.erase(worker_id);
+
     CMVector<uint64_t> tasks_to_recover;
     {
         std::lock_guard<std::mutex> lk(schedule_mutex_);
@@ -1284,8 +1356,56 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
         }
     }
 
-    // Notify stop() that a worker has disconnected.
-    workers_drained_cv_.notify_one();
+    // 数据全灭快速失败：本次判死后，W 持有的对象中"全部 holder 均已 DEAD"的
+    //（单副本独占或多副本全灭），把依赖它们的等待调度 task 直接标失败——
+    // 避免每个 task 执行期逐个走死连接退避后才失败。运行中 task 不打断
+    //（自然读失败上报）。宽限中的其它 holder 不算失效（可能重连恢复）。
+    CMVector<CMString> held_objects = DataService::instance()->get_objects_of_worker(worker_id);
+    CMVector<CMString> lost_objects;
+    for (const auto& full : held_objects) {
+        bool any_alive = false;
+        for (uint64_t holder : DataService::instance()->get_remote_workers(full)) {
+            if (holder == worker_id) continue;
+            auto info = worker_manager_->get_worker(holder);
+            if (info.has_value() && info->get().status_ != WorkerStatus::DEAD) {
+                any_alive = true;
+                break;
+            }
+        }
+        if (!any_alive) {
+            lost_objects.push_back(full);
+        }
+    }
+    if (!lost_objects.empty()) {
+        CMUnorderedSet<CMString> lost_set(lost_objects.begin(), lost_objects.end());
+        // 撤销全灭对象的 ready 状态并把依赖 task 从 ready 拉回 pending
+        //（data_ready_status_ 不撤销的话，依赖 task 永远被认为可调度，
+        // 全是死 holder 的数据只会让执行期逐个读失败）。
+        for (const auto& full : lost_objects) {
+            graph_->mark_data_removed(full);
+        }
+        // 只 fail 等待调度（pending）的依赖 task；运行中的不打断（自然读失败上报）。
+        CMVector<uint64_t> running_ids = metadata_->get_task_ids_by_status(TaskStatus::RUNNING);
+        CMUnorderedSet<uint64_t> running_now(running_ids.begin(), running_ids.end());
+        for (uint64_t tid : graph_->get_pending_tasks()) {
+            if (running_now.count(tid)) continue;   // 已在执行：不打断
+            bool depends_on_lost = false;
+            for (const auto& dep : graph_->get_task_dependencies(tid)) {
+                if (lost_set.count(dep)) { depends_on_lost = true; break; }
+            }
+            if (!depends_on_lost) continue;
+            {
+                std::lock_guard<std::mutex> lk(schedule_mutex_);
+                metadata_->fail_task(tid, "data lost: all replicas unavailable (holder worker dead)");
+                graph_->remove_task(tid);
+            }
+            ERR("Task failed (data lost): task_id={} depends on object(s) whose only "
+                "holder (worker {}) is dead", tid, worker_id);
+        }
+        MSG("AGENT::0003", 2,
+            "worker {} dead: {} object(s) lost all replicas, dependent waiting tasks failed",
+            worker_id, lost_objects.size());
+    }
 }
 
 void MasterAgent::on_error(uint64_t conn_id, int error_code) {
@@ -1357,6 +1477,22 @@ void MasterAgent::check_expected_worker_timeouts(int64_t now) {
             }
         }
     });
+}
+
+void MasterAgent::check_grace_deadlines(int64_t now) {
+    // 宽限表通常为空（worker 在线时无登记）——with_lock 遍历仅在有断连时发生。
+    CMVector<uint64_t> expired;
+    grace_deadlines_.with_lock([&](const auto& m) {
+        for (const auto& [worker_id, deadline] : m) {
+            if (now >= deadline) {
+                expired.push_back(worker_id);
+            }
+        }
+    });
+    for (uint64_t worker_id : expired) {
+        // handle_worker_death 内部先 erase 宽限条目再处理，幂等。
+        handle_worker_death(worker_id);
+    }
 }
 
 CMVector<uint64_t> MasterAgent::get_pending_tasks() const {

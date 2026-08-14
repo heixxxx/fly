@@ -797,6 +797,7 @@ TEST(MasterAgentTest, OnDisconnectRecoversRunningTasks) {
     Logger::shutdown();
     Logger::init("test_logs/", 0);
     fly::DataService::instance()->reset();
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -830,6 +831,24 @@ TEST(MasterAgentTest, OnDisconnectRecoversRunningTasks) {
 
     worker.stop();
 
+    // ── 宽限期内（用户确认语义）：task 保持 RUNNING、不判死、不重调度 ──
+    wait_for([&]{
+        // 等 on_disconnect 完成（连接表移除）。
+        auto workers = master.get_connected_workers();
+        return workers.empty();
+    }, 100, 30);
+    {
+        auto r = master.get_running_tasks();
+        bool still = false;
+        for (auto id : r) { if (id == 42) { still = true; break; } }
+        EXPECT_TRUE(still) << "Task 42 must stay RUNNING during grace period";
+        EXPECT_TRUE(master.get_idle_workers().empty())
+            << "Disconnected-but-graced worker must not be schedulable";
+    }
+
+    // ── 宽限超时 → 判死 → task 重排队（原断连恢复语义）──
+    master.check_grace_deadlines_for_testing(9999999999LL);
+
     wait_for([&]{
         auto r = master.get_running_tasks();
         bool found = false;
@@ -842,14 +861,158 @@ TEST(MasterAgentTest, OnDisconnectRecoversRunningTasks) {
     for (auto id : running_after) {
         if (id == 42) { still_running = true; break; }
     }
-    EXPECT_FALSE(still_running) << "Task 42 should no longer be RUNNING after worker disconnect";
+    EXPECT_FALSE(still_running) << "Task 42 should no longer be RUNNING after grace expiry";
 
     auto failed = master.get_failed_tasks();
     bool task_failed = false;
     for (auto id : failed) {
         if (id == 42) { task_failed = true; break; }
     }
-    EXPECT_FALSE(task_failed) << "Task 42 should not be FAILED after worker disconnect";
+    EXPECT_FALSE(task_failed) << "Task 42 should be re-queued (not FAILED) after grace expiry";
+
+    master.stop();
+    wait_for_running(master, false);
+    Logger::shutdown();
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
+}
+
+// 宽限内重连：task 存活 + 迟到 Complete 正常收敛（防串扰 + BUSY 保留）。
+TEST(MasterAgentTest, ReconnectWithinGracePreservesTask) {
+    Logger::shutdown();
+    Logger::init("test_logs/", 0);
+    fly::DataService::instance()->reset();
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    master.submit_task(43, "grace_task", "test_module", {"arg"}, {}, {});
+    wait_for([&]{
+        auto r = master.get_running_tasks();
+        for (auto id : r) { if (id == 43) return true; }
+        return false;
+    }, 50, 20);
+
+    // 断连（worker 退出；模拟网络闪断的 master 视角）→ 宽限登记。
+    worker.stop();
+    wait_for([&]{ return master.get_connected_workers().empty(); }, 100, 30);
+
+    // worker 重连（新进程/新连接，同 worker_id）→ 宽限内重注册。
+    WorkerAgent worker_again(1, "127.0.0.1", master.get_port());
+    worker_again.start();
+    ASSERT_TRUE(wait_until_registered(worker_again));
+
+    // task 仍是 RUNNING（未被重排队）；worker 未被派新 task（BUSY 保留）。
+    {
+        auto r = master.get_running_tasks();
+        bool still = false;
+        for (auto id : r) { if (id == 43) { still = true; break; } }
+        EXPECT_TRUE(still) << "Task 43 must stay RUNNING across reconnect within grace";
+    }
+
+    // 迟到 Complete（重连后的上报）：assigned worker 一致 → 正常收敛。
+    TaskCompleteMessage complete;
+    complete.task_id_ = 43;
+    complete.worker_id_ = 1;
+    master.on_task_complete(0, complete);
+    {
+        auto completed = master.get_completed_tasks();
+        bool found = false;
+        for (auto id : completed) { if (id == 43) { found = true; break; } }
+        EXPECT_TRUE(found) << "Reconnected worker's report must complete the task";
+    }
+
+    worker_again.stop();
+    master.stop();
+    wait_for_running(master, false);
+    Logger::shutdown();
+}
+
+// 数据全灭快速失败：依赖"全部 holder 判死"对象的等待 task 直接失败；
+// 只死一个 holder（另一 holder 活着）不失败。
+// 稳定 pending 的手法：先派两个占位 task 占满 worker（测试 worker 无 executor，
+// task 派下即卡 RUNNING），依赖 task 无 idle worker 可派 → 停留队列。
+TEST(MasterAgentTest, AllReplicasDeadFailsWaitingTasks) {
+    Logger::shutdown();
+    Logger::init("test_logs/", 0);
+    fly::DataService::instance()->reset();
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
+    Config::instance()->set_int("fail_unscheduleable_tasks", 0);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent w1(1, "127.0.0.1", master.get_port());
+    WorkerAgent w2(2, "127.0.0.1", master.get_port());
+    w1.start();
+    w2.start();
+    ASSERT_TRUE(wait_until_registered(w1));
+    ASSERT_TRUE(wait_until_registered(w2));
+
+    // 占满两个 worker（task 无 executor，保持 RUNNING/占用状态）。
+    master.submit_task(40, "occupy_1", "test_module", {}, {}, {});
+    master.submit_task(41, "occupy_2", "test_module", {}, {}, {});
+    wait_for([&]{
+        auto running = master.get_running_tasks();
+        int n = 0;
+        for (auto id : running) { if (id == 40 || id == 41) ++n; }
+        return n >= 1;  // 至少一个被派下（局部性选择可能集中到同 worker，容忍）
+    }, 50, 20);
+
+    // 对象 D 双副本（worker1 + worker2）；对象 E 仅 worker1。
+    CMString D = "/g2db:dual";
+    CMString E = "/g2db:only";
+    fly::DataService::instance()->update_remote_idx(D, 1, "127.0.0.1", 1000);
+    fly::DataService::instance()->update_remote_idx(D, 2, "127.0.0.1", 1000);
+    fly::DataService::instance()->update_remote_idx(E, 1, "127.0.0.1", 1000);
+    master.mark_data_ready_for_testing(D);
+    master.mark_data_ready_for_testing(E);
+
+    // 依赖 D / E 的 task：数据 ready 但无空闲 worker → 停留调度队列（不被 assign）。
+    master.submit_task(50, "dep_D", "test_module", {"a"}, {D}, {});
+    master.submit_task(51, "dep_E", "test_module", {"a"}, {E}, {});
+    // 确认依赖 task 未 RUNNING。
+    wait_for([&]{
+        auto running = master.get_running_tasks();
+        for (auto id : running) {
+            if (id == 50 || id == 51) return false;
+        }
+        return true;
+    }, 10, 5);
+
+    // ── worker1 断连 → 宽限超时判死：D 仍有 worker2（活）→ dep_D 不失败；
+    //    E 全灭 → dep_E（队列中）直接失败（快速失败）。──
+    w1.stop();
+    wait_for([&]{
+        auto cs = master.get_connected_workers();
+        for (auto w : cs) { if (w == 1) return false; }
+        return true;
+    }, 100, 30);
+    master.check_grace_deadlines_for_testing(9999999999LL);
+
+    auto failed = master.get_failed_tasks();
+    bool dep_D_failed = false, dep_E_failed = false;
+    for (auto id : failed) {
+        if (id == 50) dep_D_failed = true;
+        if (id == 51) dep_E_failed = true;
+    }
+    EXPECT_FALSE(dep_D_failed) << "D still has a live holder (worker2) — dep task must NOT fail";
+    EXPECT_TRUE(dep_E_failed) << "E lost its only holder — dependent waiting task must fast-fail";
+
+    // ── worker2 也判死 → D 全灭 → dep_D 此时失败。──
+    w2.stop();
+    wait_for([&]{ return master.get_connected_workers().empty(); }, 100, 30);
+    master.check_grace_deadlines_for_testing(9999999999LL);
+    failed = master.get_failed_tasks();
+    dep_D_failed = false;
+    for (auto id : failed) { if (id == 50) dep_D_failed = true; }
+    EXPECT_TRUE(dep_D_failed) << "After all holders dead, dependent waiting task must fast-fail";
 
     master.stop();
     wait_for_running(master, false);
@@ -1084,7 +1247,12 @@ TEST(MasterAgentTest, NonStreamFreezeClearedOnWorkerCrash) {
     // 模拟 worker 崩溃：stop() 触发断连
     worker.stop();
 
-    // master on_disconnect 应按 task_id 清掉 pending（防永久死锁）
+    // 宽限语义（用户确认）：断连期 pending 保留（worker 可能重连恢复执行）；
+    // 宽限超时判死 → handle_worker_death 按 task_id 清 pending（防永久死锁）。
+    wait_for([&]{ return master.get_connected_workers().empty(); }, 100, 30);
+    master.check_grace_deadlines_for_testing(9999999999LL);
+
+    // 判死后 pending 应被清掉
     wait_for([&] { return !master.is_db_frozen(db_path); }, 100, 30);
     EXPECT_FALSE(master.is_db_frozen(db_path));          // pending 已清
     EXPECT_FALSE(master.is_db_pending_frozen(db_path));  // 不再残留

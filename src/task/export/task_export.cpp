@@ -124,7 +124,12 @@ FLY_EXPORT_CLASS(fly::TaskManager, "EXTaskManager")
 
 FLY_EXPORT_CLASS(fly::HeartbeatMonitor, "EXTaskHeartbeatMonitor")
     FLY_EXPORT_INIT(fly::WorkerManager*, uint64_t)
-    FLY_EXPORT_METHOD("check_all_workers", &fly::HeartbeatMonitor::check_all_workers)
+    // 保留单参签名（Python/QA 兼容）：exempt 默认空（宽限豁免由 master 内部传入）。
+    FLY_EXPORT_METHOD("check_all_workers",
+        [](fly::HeartbeatMonitor& self, uint64_t now) { self.check_all_workers(now, {}); })
+    FLY_EXPORT_METHOD("check_all_workers",
+        [](fly::HeartbeatMonitor& self, uint64_t now,
+           const fly::CMVector<uint64_t>& exempt) { self.check_all_workers(now, exempt); })
     FLY_EXPORT_METHOD("get_timeout", &fly::HeartbeatMonitor::get_timeout)
     FLY_EXPORT_METHOD("set_timeout", &fly::HeartbeatMonitor::set_timeout)
     FLY_EXPORT_METHOD("get_dead_workers", &fly::HeartbeatMonitor::get_dead_workers);
