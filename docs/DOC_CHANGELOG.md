@@ -42,8 +42,13 @@
 - `docs/architecture.md` §6.3 消息表：修正备份消息行（`BackupTaskMessage` 不存在 → `BackupRequestMessage`），新增 `WorkerBackupSuggestMessage`（=52）。
 - `docs/core/module.md` 配置表：backup 段同上对齐。
 
-### 其他同期 commit
-- 8419526（DataServer::stop lost wakeup）、6c82ec9（Config 线程安全）、684eb8e（bazel standalone）：内部修复/构建配置，无活跃文档描述受影响，无需更新。
+### 其他同期 commit（文档补齐 2026-08-14 第二轮）
+- 8419526（DataServer::stop lost wakeup）、6c82ec9（Config 线程安全）、684eb8e（bazel standalone）初判"无需更新"，复查发现 5 处缺口，本轮补齐：
+  - `docs/storage/module.md`：DataServer 新增「stop() 与 lost wakeup 唤醒纪律」子节（notify 持 send_mutex_ 的机理，cv 通用纪律）。
+  - `docs/core/module.md`：设计决策表「无需锁」改为 mutex_/by-value 三行（原表述与实现矛盾）。
+  - `docs/ARCHITECTURE_REVIEW.md` §3.10：重试无退避标已解决（TIER2 重构，旧文件行号失效）。
+  - `fly.sh` guard_init_py 注释：根因更正为「sandbox hardlink + bazel runfiles O_TRUNC」（strace 定位），test 路径已 standalone 根治、build 路径保留自愈。
+  - `docs/remaining-todo.md`：网络层 7 项状态翻转（HandlerThreadPool/send 非阻塞/退避/DCP fd/Config 锁/conn_send 锁 + 新增 lost wakeup、standalone 两项）。
 
 ### 全量文档一致性审阅（同日）
 对照实现逐节核对活跃 module 文档并修复：

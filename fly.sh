@@ -256,8 +256,12 @@ WRAPPER
 }
 
 guard_init_py() {
-    # 自愈守卫：外部进程（IDE 工具链 / bazel worker 竞态）会把 src/*/__init__.py
+    # 自愈守卫：bazel test 的 linux-sandbox 在并行 py_test 时会把 src/*/__init__.py
     # 截断为 0 字节空文件（已观察到 core/log/network/storage 等 py_library 包入口被清空）。
+    # 根因（strace 定位，2026-08-14）：bazel 创建 runfiles tree 时对 __init__.py 用
+    # O_TRUNC 建空 placeholder；sandbox 模式下该文件是 hardlink 到 src 源（共享 inode），
+    # 截断 runfiles 即截断源。test 路径已由 .bazelrc `test --spawn_strategy=standalone`
+    # 根治（standalone 的 runfiles 不经 sandbox hardlink）；build 路径仍走 sandbox，故保留此自愈。
     # 空的 __init__.py 破坏 Python 包 re-export 链：py_test 经 runfiles symlink 实时读源文件，
     # 源文件一旦被截断 → ImportError: cannot import name 'X' from 'storage'（flaky 失败）。
     #
@@ -276,7 +280,7 @@ guard_init_py() {
         fi
     done < <(git ls-files 'src/*/__init__.py' 2>/dev/null)
     if [ "$healed" -gt 0 ]; then
-        echo ">>> [guard_init_py] 共恢复 $healed 个被截断的 __init__.py（疑似外部进程写入；若频繁出现请查 IDE 扩展/格式化器）" >&2
+        echo ">>> [guard_init_py] 共恢复 $healed 个被截断的 __init__.py（test 路径已 standalone 根治；此处覆盖 build 路径，若 standalone 下仍出现请查 IDE/格式化器）" >&2
     fi
 }
 

@@ -152,7 +152,10 @@ config.set_int("track_writes", 1)
 
 | 决策 | 原因 |
 |------|------|
-| 静态局部变量单例 | 线程安全初始化，无需锁 |
+| 静态局部变量单例 | 线程安全初始化（C++11 magic statics），与访问锁无关 |
+| mutex_ 保护全部 get/set/reset/load | Config 是进程内共享单例：get_* 被 reactor/heartbeat/scheduler 多线程并发读，set_* 经 FFI 暴露给 Python 可运行时调用。无锁时并发 set 期间 unordered_map rehash 会导致读侧 UB（commit 6c82ec9） |
+| get_str 返回 by value | 锁内拷贝后释放，避免调用方持引用期间并发 set_str 触发 rehash 造成悬空引用（现有调用方均已 by-value copy，零改动） |
 | `mark_workers_launched` 保护 | 防止运行期修改导致不一致行为 |
 | int/str 双 Map | 简单高效，避免变体类型开销 |
-| 返回引用给 Python | Python 直接操作 C++ 单例，无拷贝 |
+| all_ints()/all_strs() 不持锁 | 返回底层 map 引用仅供单线程调试/序列化快照，显式标注非线程安全 |
+| 返回引用给 Python | Python 直接操作 C++ 单例，无拷贝（指 Python 绑定持有 Config 引用本身，get_str 值已拷贝） |

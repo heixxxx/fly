@@ -203,6 +203,14 @@ raw payload 通过 shared_ptr 共享引用 ObjectCache 中的数据，避免拷�
 
 当有 raw payload 时，使用 writev 系统调用将 header 和 payload 合并为一次发送，减少系统调用次数。
 
+### stop() 与 lost wakeup 唤醒纪律
+
+`stop()` 在置 `running_=false` 后，**必须持 `send_mutex_` 再 `send_cv_.notify_all()`**（commit 8419526）。
+
+机理：send_loop 的 wait 是「持锁查谓词 → 释放锁 wait」序列。若 notify 不持锁，可能落入 send_loop 持锁查谓词（谓词假、即将 wait）的窗口——此时无 waiter → notify 落空 → send_loop 永久 wait → stop() 的 join 永久 hang（lost wakeup）。持锁 notify 保证：要么 send_loop 已 wait（释放锁，notify 唤醒它），要么 send_loop 仍在查谓词（notify 被锁阻塞，随后查到 `running_=false` 谓词真直接退出）。
+
+这是 condition variable 的通用纪律：**notify 必须与修改共享状态的代码在同一个 mutex 保护下**（或共享状态为 atomic 且 notify 前已完成写入），否则存在 lost wakeup 窗口。
+
 ---
 
 ## ObjectCache

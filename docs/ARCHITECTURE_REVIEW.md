@@ -158,12 +158,15 @@
 - **问题**: buffer 不完整时 `get_type()` 返回 `MessageType::REGISTER` 作为默认值，可能误判消息类型。
 - **建议**: 返回 `std::optional<MessageType>` 或添加 `UNKNOWN` 哨兵类型。
 
-### 3.10 重试无退避 [建议]
+### 3.10 ~~重试无退避 [建议]~~（已解决 — 读路径重构）
 
 - **严重程度**: 中
-- **文件**: `src/agent/cpp/worker_agent.cpp:514-545`
+- **文件**: ~~`src/agent/cpp/worker_agent.cpp:514-545`~~（行号与描述均基于旧架构，已失效）
 - **问题**: `request_remote_data` 有 3 次重试但间隔为 0，连续重试可能加剧过载。
-- **建议**: 添加指数退避间隔。
+- **✅ 已解决**（读路径多副本容错重构，commit 0bb00f1）：
+  - `request_remote_data` 已重构为 **TIER3 纯位置查询**（不取数、不重试，master 不可达时 fail-fast）
+  - 指数退避在 **DataService TIER2**（`read_raw_compressed`）实现：10ms×2 上限 500ms + ±10% 抖动 + 30s 网络错误 deadline，DATA_NOT_READY 语义上移由 TIER2 拥有退避策略
+  - 详见 [`docs/storage/module.md`](storage/module.md)「ReadError 分类与重试策略」
 
 ### 3.11 ~~DataClientPool release 不验证 fd 有效性 [建议]~~（已解决）
 
