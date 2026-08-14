@@ -3,6 +3,33 @@
 ---
 ---
 
+## 2026-08-15 (1): worker 断连重连 + master 宽限（G 系列 4 commit）
+
+用户多轮收敛的最终语义：断连仅指网络闪断（master 挂=全群失败）；首次注册默认
+不假设任何超时；断连后两侧对等的 2min 宽限内 task 存活、worker 指数退避重连、
+重连后正确上报；master 权威 remote_idx 永不因读失败踢出；数据全灭快速失败。
+
+- **G1**（96d148f）：`worker_register_timeout` 默认 300→0（首注册不假设超时，
+  撤回早期"统一保活"方案）；新键 `worker_reconnect_timeout`（默认 120）。
+- **G2**（97c19b8）：master 断连宽限（grace_deadlines_，task 存活 RUNNING、
+  宽限内豁免心跳判死、重连注册保留 BUSY/task 关联、迟到上报 assigned 校验）；
+  权威 remote_idx 读失败保护（remove_remote_location 按 ProcessInfo 进程角色
+  豁免 master）；数据全灭快速失败（判死时全 holder 失效对象 → mark_data_removed
+  + 等待依赖 task 直接 fail，AGENT::0003；含多副本全灭，宽限中 holder 不算失效）。
+- **G3**（106848c）：worker 断连指数退避重连（reconnect_loop 常驻至 ack 确认或
+  宽限耗尽；连环闪断同线程处理）+ task 上报缓冲（pending_reports_，RegisterAck
+  后 flush）；master_conn_ 改 atomic；reconnect_timeout=0 逃生口保持断连即死。
+- **G4**（本 commit）：文档（core/module.md 两键最终语义、architecture.md
+  §3.4 两阶段生命周期+权威保护+全灭快速失败）。
+
+测试：G2 五用例（宽限保 task/超时恢复+全灭单副本失败/多副本全灭/重连保留/
+master 读失败保护）+ G3 三用例（闪断模拟 hook 存活+缓冲+送达/宽限耗尽退出/
+逃生口）；调试记录（临时对象迭代器对 SIGSEGV、master.stop 广播 Shutdown 不宜
+模拟闪断）；全量单测 57/57、全量 QA 156/156。
+
+---
+---
+
 ## 2026-08-14 (4): 17-commit 批次——merge 失败全链路 + connect 指数退避 + Config 读写锁 + 锁内 IO 拆除 + QA 等待批量改造
 
 ### A. Config 读写锁（#5，a9d5aea）

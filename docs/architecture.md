@@ -284,7 +284,7 @@ wait_tasks(timeout=30.0)  # 返回 True/False
 from fly import wait_workers_registered, expect_workers
 
 # 等 launch_workers 唤起的全部 worker 注册完成（默认窗口 = config
-# 'worker_register_timeout'（300s），等待期间每 30s 打进度）
+# 'worker_register_timeout'（默认 0=不假设时限，无限等），等待期间每 30s 打进度）
 wait_workers_registered()
 
 # 外部唤起（如 bsub 脚本直接跑 `fly --worker`）时手动登记占位符：
@@ -292,14 +292,29 @@ expect_workers([101, 102])          # 之后 bsub 提交对应 worker
 wait_workers_registered(timeout=600)
 ```
 
-保活语义（**两侧统一**，共用 `worker_register_timeout`，默认 300s=5min）：
-- master 侧：唤起占位符保活——超时未注册即清理（heartbeat 线程 WARN 放弃）；
-  `wait_workers_registered()` 默认超时取此值。0=不假设时限（无限）。
-- worker 侧：connect master 失败按指数退避重试（首次间隔
-  `worker_connect_retry_initial_ms`=500ms，×2 递增，单次上限 10s），总窗口
-  同为 `worker_register_timeout`。仅覆盖瞬时网络抖动与 master 短时过载——
-  **master 挂 = 全群失败**，不做长期等待；master 中途断连（on_disconnect）
-  不重连。
+worker 生命周期语义（用户确认，两阶段）：
+
+**首次注册**（`worker_register_timeout`，默认 0=master 不等待不假设任何超时）：
+- master 侧：唤起占位符无限期有效（worker 任意时刻注册都被接受）；显式设值
+  才启用超时清理并作为 `wait_workers_registered()` 默认超时。
+- worker 侧：首连失败按指数退避重试（首次间隔
+  `worker_connect_retry_initial_ms`=500ms，×2 递增，单次上限 10s），窗口同键。
+
+**断连重连**（`worker_reconnect_timeout`，默认 120s=2min，两侧对等）：
+- 断连仅指**网络闪断**（master 挂=全群失败——worker 最多多活宽限窗口后
+  干净退出）。
+- worker 侧：断连后指数退避重连（同上参数），期间 **task 继续执行**，完成的
+  TaskComplete/TaskFailed **缓冲**，重连注册确认后按序送达；宽限耗尽干净退出。
+- master 侧：宽限内 **不判死**——task 保持 RUNNING、worker 状态保留（BUSY
+  不被调度）、豁免心跳判死；重连注册保留 task 关联，迟到的上报经 assigned
+  worker 校验后正常收敛。宽限超时判死：task 重排队 + pending frozen 清理 +
+  **数据全灭快速失败**（该 worker 持有对象的全部 holder 均失效时，依赖这些
+  对象的等待 task 直接失败，流程 message AGENT::0003 提醒；运行中 task 不打断）。
+- **权威 remote_idx 保护**：master 的 remote_idx 是全集群唯一位置权威源，
+  master 进程读失败**永不踢出**条目（worker 断连≠数据消失，重连后位置必须
+  仍在）；worker 本地视图的踢副本保留（自愈，可 TIER3 刷新恢复）。
+- `worker_reconnect_timeout=0` 为"断连即死"逃生口（旧语义）。
+
 `load_db`/`merge_db` 内部的补 spawn 等待已改用此机制。
 
 **Worker能力说明**：

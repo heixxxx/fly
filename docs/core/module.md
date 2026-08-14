@@ -95,8 +95,9 @@ private:
 | `data_client_pool_size` | 4 | DataClientPool 并发上限 |
 | `handler_lanes` | 4 | 消息 handler 并行 lane 数（同连接串行、跨连接并行）；0=全部内联（legacy 单线程 reactor） |
 | `solver_openmp_threads` | 0 | solver C++ 核心 OpenMP 线程数（0=默认） |
-| `worker_register_timeout` | 300 | 唤起 worker 的保活窗口（秒）——**两侧统一**：master 占位符超时清理（heartbeat 线程，WARN 放弃）+ `fly.wait_workers_registered()` 默认超时 + worker connect 指数退避重试的总窗口。默认 300=5min；0=不假设时限（无限，两侧语义一致）。QA 需要短窗口自行 `set_int` |
-| `worker_connect_retry_initial_ms` | 500 | worker connect master 重试的首次间隔（毫秒），指数 ×2 递增（单次上限 10s 硬编码）；总窗口由 `worker_register_timeout` 控制。仅覆盖瞬时网络抖动与 master 短时过载——master 挂 = 全群失败，不做长期等待 |
+| `worker_register_timeout` | 0 | **首次注册**占位符超时（秒）。默认 0=master 不等待不假设任何超时（worker 任意时刻注册都被接受）；>0 时超时未注册的占位符被 heartbeat 线程清理（WARN），并作为 `fly.wait_workers_registered()` 默认超时。worker 首连重试窗口同此键（两侧一致）。 |
+| `worker_reconnect_timeout` | 120 | **断连重连**宽限窗口（秒），两侧对等：worker 断连后指数退避重连的总窗口（重连期间 task 在 worker 上继续执行、上报缓冲，重连后 flush）；master 对断连 worker 的判死宽限（宽限内 task 存活 RUNNING、不重调度、worker 状态保留、豁免心跳判死；超时判死 → task 重排队 + 数据全灭快速失败）。0=不重连不宽限（旧的"断连即死"逃生口）。master 挂=全群失败：worker 最多多活宽限窗口后干净退出。 |
+| `worker_connect_retry_initial_ms` | 500 | connect 重试首次间隔（毫秒），指数 ×2 递增（单次上限 10s 硬编码）；首连与断连重连共用。 |
 
 #### string 配置项
 
