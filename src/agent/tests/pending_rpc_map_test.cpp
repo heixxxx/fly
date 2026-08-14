@@ -107,6 +107,67 @@ TEST(PendingRpcMapTest, EmplaceOverwritesExisting) {
     EXPECT_EQ(map.find("k")->payload_, "v2");
 }
 
+TEST(PendingRpcMapTest, InsertIfAbsentKeepsExisting) {
+    // Problem5 防重置语义：已存在（尤其已 completed）的条目不被覆盖。
+    TestRpcMap map;
+    auto first = CMMakeShared<TestPending>();
+    first->completed_ = true;
+    first->payload_ = "first";
+    map.emplace("k", first);
+    auto second = CMMakeShared<TestPending>();
+    second->payload_ = "second";
+    auto [kept, inserted] = map.insert_if_absent("k", second);
+    EXPECT_FALSE(inserted);
+    EXPECT_EQ(kept, first);                 // 返回旧条目
+    EXPECT_EQ(map.find("k")->payload_, "first");  // map 未被覆盖
+}
+
+TEST(PendingRpcMapTest, InsertIfAbsentInsertsOnMiss) {
+    TestRpcMap map;
+    auto fresh = CMMakeShared<TestPending>();
+    auto [got, inserted] = map.insert_if_absent("k", fresh);
+    EXPECT_TRUE(inserted);
+    EXPECT_EQ(got, fresh);
+    EXPECT_EQ(map.find("k"), fresh);
+}
+
+TEST(PendingRpcMapTest, WaitForKeepsEntryOnTimeoutWhenEraseDisabled) {
+    // merge 语义：超时后条目必须保留（后续 cleanup 还要消费）。
+    TestRpcMap map;
+    map.emplace("k", CMMakeShared<TestPending>());
+    auto result = map.wait_for("k", std::chrono::milliseconds(50),
+                               [](const CMSharedPtr<TestPending>& p) { return p->completed_; },
+                               /*erase_on_timeout=*/false);
+    EXPECT_EQ(result, nullptr);         // 超时仍返回 null
+    EXPECT_NE(map.find("k"), nullptr);  // 但条目保留
+}
+
+TEST(PendingRpcMapTest, WithLockIteratesAndMutatesAtomically) {
+    // cleanup_after_merge 场景：持锁遍历取数 + 条件批量 erase。
+    TestRpcMap map;
+    auto done = CMMakeShared<TestPending>();
+    done->completed_ = true;
+    map.emplace("done", done);
+    map.emplace("pending", CMMakeShared<TestPending>());
+
+    CMVector<CMString> completed_keys;
+    map.with_lock([&](CMUnorderedMap<CMString, CMSharedPtr<TestPending>>& m) {
+        for (auto it = m.begin(); it != m.end();) {
+            if (it->second->completed_) {
+                completed_keys.push_back(it->first);
+                it = m.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    });
+
+    ASSERT_EQ(completed_keys.size(), 1u);
+    EXPECT_EQ(completed_keys[0], "done");
+    EXPECT_EQ(map.find("done"), nullptr);
+    EXPECT_NE(map.find("pending"), nullptr);
+}
+
 // ── lost wakeup 确定性用例 ──────────────────────────────────────────────
 //
 // 窗口：waiter 持锁查 pred（false）→ 【notifier 无锁写 + 无锁 notify 落空】→

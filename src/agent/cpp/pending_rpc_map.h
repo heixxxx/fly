@@ -25,6 +25,7 @@
 #include <condition_variable>
 #include <chrono>
 #include <functional>
+#include <utility>
 
 namespace fly {
 
@@ -38,20 +39,36 @@ public:
         return p;
     }
 
+    // Insert only if absent（Problem5 防重置语义：已存在条目——尤其已
+    // completed 的——不被覆盖，返回旧值）。返回 {existing_or_inserted, inserted}。
+    std::pair<CMSharedPtr<Pending>, bool> insert_if_absent(const Key& key, CMSharedPtr<Pending> p) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = map_.find(key);
+        if (it != map_.end()) {
+            return {it->second, false};
+        }
+        auto [inserted_it, ok] = map_.emplace(key, std::move(p));
+        return {inserted_it->second, true};
+    }
+
     // Look up without inserting (returns nullptr if absent).
-    CMSharedPtr<Pending> find(const Key& key) {
+    CMSharedPtr<Pending> find(const Key& key) const {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = map_.find(key);
         return it != map_.end() ? it->second : nullptr;
     }
 
     // Block until is_done(pending) returns true or timeout. On success returns
-    // the shared_ptr (still in the map); on timeout returns nullptr and erases.
+    // the shared_ptr (still in the map); on timeout returns nullptr.
+    // erase_on_timeout=true（默认，worker 侧 RPC 语义）：超时即 erase 防泄漏；
+    // =false（merge 侧语义）：条目生命周期跨越 wait（后续 cleanup 消费），
+    // 超时保留由调用方负责清理。
     // is_done is invoked under the lock; it must only read the pending entry.
     template <typename Pred>
     CMSharedPtr<Pending> wait_for(const Key& key,
                                   std::chrono::milliseconds timeout,
-                                  Pred is_done) {
+                                  Pred is_done,
+                                  bool erase_on_timeout = true) {
         std::unique_lock<std::mutex> lock(mutex_);
         auto it = map_.find(key);
         if (it == map_.end()) return nullptr;
@@ -65,7 +82,9 @@ public:
 #endif
             if (cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
                 if (!is_done(pending)) {
-                    map_.erase(it);
+                    if (erase_on_timeout) {
+                        map_.erase(it);
+                    }
                     return nullptr;
                 }
                 break;
@@ -105,6 +124,15 @@ public:
         cv_.notify_all();
     }
 
+    // 持锁逃生口：在 map 锁内对内部 map 做复合操作（持锁遍历取数、条件批量
+    // erase、计数器读改写、wait 超时后读最终状态）。func 内禁止再获取本对象
+    // 的锁（自死锁）或做网络/磁盘 IO。
+    template <typename Func>
+    decltype(auto) with_lock(Func&& func) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return func(map_);
+    }
+
     // 注意：曾有两阶段完成接口（take_for_complete + 锁外 notify_all），
     // 因锁外写字段 + 无锁 notify 构成 data race 与 cv lost wakeup 窗口
     //（on_var_ack 实际踩中，确定性复现见 pending_rpc_map_test）已删除。
@@ -112,7 +140,7 @@ public:
     // 需要锁外预处理时，先算好结果再在 complete 的 filler 里做字段赋值。
 
 private:
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::condition_variable cv_;
     CMUnorderedMap<Key, CMSharedPtr<Pending>> map_;
 
