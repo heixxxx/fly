@@ -180,3 +180,49 @@ TEST(ConfigTest, ConcurrentReadWriteIsSafe) {
 
     SUCCEED() << "concurrent read/write completed without crash";
 }
+
+// save_to_file（生产路径：launch worker 时 Python 调用，master C++ 线程并发 get_*）
+// 与并发 set/get 交错：快照必须一致（不崩溃、不丢已 set 的值）。
+TEST(ConfigTest, SaveToFileConcurrentWithSetIsSafe) {
+    auto config = Config::instance();
+    config->reset();
+    config->set_int("sv_key", 0);
+
+    std::atomic<bool> stop{false};
+    std::atomic<int> last_written{0};
+    std::vector<std::thread> threads;
+
+    threads.emplace_back([&]() {
+        int v = 0;
+        while (!stop.load(std::memory_order_relaxed)) {
+            config->set_int("sv_key", ++v);
+            last_written.store(v, std::memory_order_release);
+        }
+    });
+    for (int i = 0; i < 2; ++i) {
+        threads.emplace_back([&]() {
+            while (!stop.load(std::memory_order_relaxed)) {
+                config->get_int("sv_key");
+                config->get_str("transport_type");
+            }
+        });
+    }
+    // saver：独立线程持续快照（与 ConcurrentReadWriteIsSafe 对称的限时模型）
+    CMString path = "fly_config_save_test.tmp";
+    std::atomic<int> saves{0};
+    threads.emplace_back([&]() {
+        while (!stop.load(std::memory_order_relaxed)) {
+            config->save_to_file(path);
+            saves.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    stop.store(true, std::memory_order_relaxed);
+    for (auto& t : threads) t.join();
+    std::remove(path.c_str());
+
+    // 最后一次 set 的值必须可读（快照期间无丢失更新）
+    EXPECT_EQ(config->get_int("sv_key"), last_written.load(std::memory_order_acquire));
+    EXPECT_GT(saves.load(), 0);
+}

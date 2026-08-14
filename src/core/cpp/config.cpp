@@ -1,5 +1,7 @@
 #include "config.h"
 #include <cstdio>
+#include <mutex>
+#include <shared_mutex>
 #include <fstream>
 #include <sstream>
 #include <utility>
@@ -16,7 +18,7 @@ Config::Config() {
 }
 
 void Config::set_int(const CMString& key, int64_t value) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     if (workers_launched_) {
         throw std::runtime_error("Config must be set before workers are launched");
     }
@@ -24,7 +26,7 @@ void Config::set_int(const CMString& key, int64_t value) {
 }
 
 void Config::set_str(const CMString& key, const CMString& value) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     if (workers_launched_) {
         throw std::runtime_error("Config must be set before workers are launched");
     }
@@ -32,7 +34,7 @@ void Config::set_str(const CMString& key, const CMString& value) {
 }
 
 int64_t Config::get_int(const CMString& key) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     auto it = int_values_.find(key);
     auto default_it = INT_DEFAULTS.find(key);
     if (it != int_values_.end()) return it->second;
@@ -42,7 +44,7 @@ int64_t Config::get_int(const CMString& key) const {
 }
 
 CMString Config::get_str(const CMString& key) const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     auto it = str_values_.find(key);
     if (it != str_values_.end()) return it->second;
     auto default_it = STR_DEFAULTS.find(key);
@@ -51,17 +53,17 @@ CMString Config::get_str(const CMString& key) const {
 }
 
 void Config::mark_workers_launched() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     workers_launched_ = true;
 }
 
 bool Config::is_workers_launched() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     return workers_launched_;
 }
 
 void Config::reset() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     int_values_ = INT_DEFAULTS;
     str_values_ = STR_DEFAULTS;
     workers_launched_ = false;
@@ -71,7 +73,7 @@ void Config::save_to_file(const CMString& path) const {
     std::vector<std::pair<CMString, int64_t>> ints;
     std::vector<std::pair<CMString, CMString>> strs;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::shared_lock<std::shared_mutex> lock(mutex_);
         for (const auto& [k, v] : int_values_) ints.emplace_back(k, v);
         for (const auto& [k, v] : str_values_) strs.emplace_back(k, v);
     }
@@ -101,7 +103,7 @@ void Config::load_from_file(const CMString& path) {
             strs.emplace_back(key, val);
         }
     }
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     for (auto& [k, v] : ints) int_values_[k] = v;
     for (auto& [k, v] : strs) str_values_[k] = v;
 }
