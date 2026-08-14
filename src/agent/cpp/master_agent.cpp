@@ -128,16 +128,19 @@ void MasterAgent::start() {
             response.db_path_ = msg.db_path_;
 
             // 路径权威源收敛到 db_instances_（Database 内嵌 db_path_/data_path_）。
-            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-            auto it = db_instances_.find(msg.db_path_);
-            if (it != db_instances_.end()) {
-                response.db_path_ = it->second->get_db_path();
-                response.data_path_ = it->second->get_data_path();
-                response.success_ = true;
-            } else {
-                response.db_path_ = "";
-                response.data_path_ = "";
-                response.success_ = false;
+            {
+                // 锁内只取路径值拷贝；send 移出容器锁（D2 拆除锁内网络 IO）。
+                std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+                auto it = db_instances_.find(msg.db_path_);
+                if (it != db_instances_.end()) {
+                    response.db_path_ = it->second->get_db_path();
+                    response.data_path_ = it->second->get_data_path();
+                    response.success_ = true;
+                } else {
+                    response.db_path_ = "";
+                    response.data_path_ = "";
+                    response.success_ = false;
+                }
             }
 
             reactor_->send(conn_id, response);
@@ -461,9 +464,14 @@ void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) 
         for (const auto& full_var : spec.vars_) {
             auto [db_path, short_name] = split_full_name(full_var);
             if (db_path.empty()) continue;
-            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-            auto db_it = db_instances_.find(db_path);
-            if (db_it != db_instances_.end() && !db_it->second->master_has_var(short_name)) {
+            // 锁内只 find + 拷 shared_ptr（var 查询自保护，D2 拆除）。
+            CMSharedPtr<Database> db;
+            {
+                std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+                auto db_it = db_instances_.find(db_path);
+                if (db_it != db_instances_.end()) db = db_it->second;
+            }
+            if (db && !db->master_has_var(short_name)) {
                 WARN("task {} declares var '{}' but it does not exist on master (db={})",
                      task_id, short_name, db_path);
             }
@@ -744,10 +752,15 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
         for (const auto& full_var : s.vars_) {
             auto [db_path, short_name] = split_full_name(full_var);
             if (db_path.empty()) continue;
-            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-            auto db_it = db_instances_.find(db_path);
-            if (db_it == db_instances_.end()) continue;
-            auto [found, value, type_name] = db_it->second->master_get_var(short_name);
+            // 锁内只 find + 拷 shared_ptr；value 拷贝移出容器锁（D2 拆除）。
+            CMSharedPtr<Database> db;
+            {
+                std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+                auto db_it = db_instances_.find(db_path);
+                if (db_it != db_instances_.end()) db = db_it->second;
+            }
+            if (!db) continue;
+            auto [found, value, type_name] = db->master_get_var(short_name);
             if (found && value) {
                 VarPayload vp;
                 vp.var_name = full_var;  // keep the full name on the wire
@@ -1009,27 +1022,38 @@ void MasterAgent::record_worker_info(const CMString& object_name, const CMString
 
     CMString writer_id = writer_id_in;
     if (writer_id.empty()) {
-        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-        auto db_it2 = db_instances_.find(db_path);
-        if (db_it2 != db_instances_.end()) {
-            writer_id = db_it2->second->get_writer_id();
+        CMSharedPtr<Database> db;
+        {
+            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+            auto db_it2 = db_instances_.find(db_path);
+            if (db_it2 != db_instances_.end()) {
+                db = db_it2->second;
+            }
         }
+        if (db) writer_id = db->get_writer_id();
     }
 
     auto key = std::make_tuple(db_path, hostname, writer_id);
     // insert 返回是否新插入：append meta 的副作用在 set 锁外恰好执行一次，
     // 同时消除原 recorded_workers_mutex_ → db_instances_mutex_ 嵌套锁。
+    // append（_DB_META 文件 IO）在容器锁外执行（D2 拆除；Database 自 D1 起自保护）。
     if (recorded_workers_.insert(key)) {
-        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-        auto db_it = db_instances_.find(db_path);
-        if (db_it != db_instances_.end()) {
+        CMSharedPtr<Database> db;
+        {
+            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+            auto db_it = db_instances_.find(db_path);
+            if (db_it != db_instances_.end()) {
+                db = db_it->second;
+            }
+        }
+        if (db) {
             ::WorkerInfo info;
             info.worker_id_ = worker_id;
             info.writer_id_ = writer_id;
             info.hostname_ = hostname;
             info.ip_address_ = ip;
             info.launch_command_ = "";
-            db_it->second->append_worker_info_to_meta(info);
+            db->append_worker_info_to_meta(info);
         }
     }
 }
@@ -1372,11 +1396,13 @@ void MasterAgent::register_database(const CMString& db_path, const CMString& dat
     // db_path 本该唯一：重复 register 会丢弃旧 Database 的状态（var_store_、writer_id、
     // 冻结状态、对象状态）并覆盖 DataService::db_paths_。正常流程每个 db_path 只注册一次；
     // merge 重建走独立路径（见 cleanup_after_merge）。命中此 WARN = 重复注册 bug。
+    // Database 构造是重 IO（目录/_DB_META/_VARS/DataWriter），在容器锁外执行；
+    // 锁内二次检查 + 插入（D4 拆除——防写锁长时间阻塞高频读点）。
+    auto db = CMMakeShared<Database>(db_path, data_path, 0, "", db_path);
     std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
     if (db_instances_.count(db_path) > 0) {
         WARN("[DB-DUP] register_database: db_path={} already exists — overwriting (possible bug)", db_path);
     }
-    auto db = CMMakeShared<Database>(db_path, data_path, 0, "", db_path);
     db_instances_[db_path] = db;
 }
 
@@ -1408,9 +1434,14 @@ void MasterAgent::commit_pending_frozen(uint64_t task_id) {
     }
     // 本地 freeze + 广播（task 成功后才广播）
     for (const auto& db_path : committed) {
-        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-        auto it = db_instances_.find(db_path);
-        if (it != db_instances_.end()) it->second->freeze();
+        // 锁内只 find + 拷 shared_ptr：freeze（drain/marker/vars 落盘，重 IO）、
+        // provenance 清理、workers 广播全部移出容器锁（D2 拆除——原读锁延伸
+        // 覆盖 provenance_mutex_ + workers_mutex_ + reactor send 嵌套链）。
+        {
+            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+            auto it = db_instances_.find(db_path);
+            if (it != db_instances_.end()) it->second->freeze();
+        }
         // Part C: freeze 确认后 provenance 已失效，立即清理释放内存。
         cleanup_provenance_for_db(db_path);
         INFO("DB frozen (committed by task): db_path={}, task_id={}", db_path, task_id);
@@ -1445,11 +1476,12 @@ CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& db_pat
     //
     // 方法名暗示"get or create"，但当前实现总是 create+覆盖。重复调用同 db_path 会丢弃
     // 旧 Database 状态。命中此 WARN 说明调用方本该用 get_database 复用却误入了创建路径。
+    // 构造重 IO 在容器锁外；锁内二次检查 + 插入（D4 拆除）。
+    auto db = CMMakeShared<Database>(db_path, data_path, writer_id);
     std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
     if (db_instances_.count(db_path) > 0) {
         WARN("[DB-DUP] get_or_create_database: db_path={} already exists — recreating (possible bug, should reuse)", db_path);
     }
-    auto db = CMMakeShared<Database>(db_path, data_path, writer_id);
     db_instances_[db_path] = db;
     return db;
 }
@@ -1701,9 +1733,17 @@ void MasterAgent::on_var_set(uint64_t conn_id, const VarSetMessage& msg) {
     ack.var_name_ = msg.var_name_;  // echo the full name
 
     auto [db_path, short_name] = split_full_name(msg.var_name_);
-    std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-    auto it = db_path.empty() ? db_instances_.end() : db_instances_.find(db_path);
-    if (it == db_instances_.end()) {
+    // 锁内只 find + 拷 shared_ptr：var 族（var_mutex_ 自保护）与 send/broadcast
+    // 全部移出容器锁（D2 拆除：原实现持 db 读锁做 value 拷贝 + broadcast + send）。
+    CMSharedPtr<Database> db;
+    {
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+        auto it = db_path.empty() ? db_instances_.end() : db_instances_.find(db_path);
+        if (it != db_instances_.end()) {
+            db = it->second;
+        }
+    }
+    if (!db) {
         ack.success_ = false;
         ack.error_message_ = "db not found on master";
         reactor_->send(conn_id, ack);
@@ -1716,10 +1756,10 @@ void MasterAgent::on_var_set(uint64_t conn_id, const VarSetMessage& msg) {
     auto buf = CMMakeShared<FlyBuffer>();
     buf->take(std::move(msg.value_));
 
-    bool ok = it->second->master_set_var(short_name, buf, msg.type_name_);
+    bool ok = db->master_set_var(short_name, buf, msg.type_name_);
     ack.success_ = ok;
     if (!ok) {
-        if (it->second->is_frozen()) {
+        if (db->is_frozen()) {
             ack.error_message_ = "db frozen";
         } else {
             ack.error_message_ = "var already exists (immutable)";
@@ -1735,15 +1775,21 @@ void MasterAgent::on_var_get(uint64_t conn_id, const VarGetMessage& msg) {
     ack.var_name_ = msg.var_name_;  // echo the full name
 
     auto [db_path, short_name] = split_full_name(msg.var_name_);
-    std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-    auto it = db_path.empty() ? db_instances_.end() : db_instances_.find(db_path);
-    if (it == db_instances_.end()) {
+    CMSharedPtr<Database> db;
+    {
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+        auto it = db_path.empty() ? db_instances_.end() : db_instances_.find(db_path);
+        if (it != db_instances_.end()) {
+            db = it->second;
+        }
+    }
+    if (!db) {
         ack.success_ = false;
         reactor_->send(conn_id, ack);
         return;
     }
 
-    auto [found, value, type_name] = it->second->master_get_var(short_name);
+    auto [found, value, type_name] = db->master_get_var(short_name);
     ack.success_ = found;
     if (found && value) {
         // The var_store_ FlyBufferPtr is shared (other readers may hold it), so
@@ -1758,10 +1804,16 @@ void MasterAgent::on_var_get(uint64_t conn_id, const VarGetMessage& msg) {
 void MasterAgent::on_var_remove(uint64_t conn_id, const VarRemoveMessage& msg) {
     auto [db_path, short_name] = split_full_name(msg.var_name_);
     if (!db_path.empty()) {
-        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-        auto it = db_instances_.find(db_path);
-        if (it != db_instances_.end()) {
-            it->second->master_remove_var(short_name);
+        CMSharedPtr<Database> db;
+        {
+            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+            auto it = db_instances_.find(db_path);
+            if (it != db_instances_.end()) {
+                db = it->second;
+            }
+        }
+        if (db) {
+            db->master_remove_var(short_name);
             // Broadcast the removal (full name) to all workers so they drop caches.
             broadcast_var(msg.var_name_, false);
         }
@@ -1976,31 +2028,34 @@ void MasterAgent::setup_write_context() {
     // Var funcs: master process operates directly on the authoritative Database
     // store (no network). The context passes FULL var names (db_path:short_name);
     // split off db_path to locate the Database, then query with the short name.
-    WorkerAgentContext::set_set_var_func([this](const CMString& full_var_name,
+    // 锁内只 find + 拷 shared_ptr（var 族 var_mutex_ 自保护，D2 拆除）。
+    auto find_db = [this](const CMString& db_path) -> CMSharedPtr<Database> {
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+        auto it = db_instances_.find(db_path);
+        return it != db_instances_.end() ? it->second : nullptr;
+    };
+    WorkerAgentContext::set_set_var_func([this, find_db](const CMString& full_var_name,
                                                 FlyBufferPtr value, const CMString& type_name) -> bool {
         auto [db_path, short_name] = split_full_name(full_var_name);
         if (db_path.empty()) return false;
-        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-        auto it = db_instances_.find(db_path);
-        if (it == db_instances_.end()) return false;
-        return it->second->master_set_var(short_name, value, type_name);
+        auto db = find_db(db_path);
+        if (!db) return false;
+        return db->master_set_var(short_name, value, type_name);
     });
-    WorkerAgentContext::set_get_var_func([this](const CMString& full_var_name)
+    WorkerAgentContext::set_get_var_func([this, find_db](const CMString& full_var_name)
         -> std::tuple<bool, FlyBufferPtr, CMString> {
         auto [db_path, short_name] = split_full_name(full_var_name);
         if (db_path.empty()) return {false, nullptr, ""};
-        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-        auto it = db_instances_.find(db_path);
-        if (it == db_instances_.end()) return {false, nullptr, ""};
-        return it->second->master_get_var(short_name);
+        auto db = find_db(db_path);
+        if (!db) return {false, nullptr, ""};
+        return db->master_get_var(short_name);
     });
-    WorkerAgentContext::set_remove_var_func([this](const CMString& full_var_name) {
+    WorkerAgentContext::set_remove_var_func([this, find_db](const CMString& full_var_name) {
         auto [db_path, short_name] = split_full_name(full_var_name);
         if (!db_path.empty()) {
-            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-            auto it = db_instances_.find(db_path);
-            if (it != db_instances_.end()) {
-                it->second->master_remove_var(short_name);
+            auto db = find_db(db_path);
+            if (db) {
+                db->master_remove_var(short_name);
                 broadcast_var(full_var_name, false);
             }
         }
@@ -2224,11 +2279,14 @@ void MasterAgent::on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg
     }
 
     // Master reads the same idx files from shared filesystem and updates remote_idx_
-    std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-    auto it = db_instances_.find(msg.db_path_);
-    if (it == db_instances_.end()) {
-        ERR("IdxLoadAck: unknown db_path={}", msg.db_path_);
-        return;
+    // 锁内只做存在性判断：rebuild 读磁盘 idx 文件的重活移出容器锁（D2 拆除——
+    // 它根本不使用 Database 对象本身）。
+    {
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+        if (db_instances_.find(msg.db_path_) == db_instances_.end()) {
+            ERR("IdxLoadAck: unknown db_path={}", msg.db_path_);
+            return;
+        }
     }
 
     rebuild_remote_idx_for_worker(msg.db_path_, msg.loaded_writer_ids_, msg.worker_id_);
@@ -2273,11 +2331,13 @@ void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFre
         // Part C: freeze 确认后 provenance 已无写入可拦截（is_db_frozen 拦下所有后续写入），
         // 立即清理释放内存。
         cleanup_provenance_for_db(msg.db_path_);
-        // stream 模式的本地 freeze + 广播
-        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-        auto it = db_instances_.find(msg.db_path_);
-        if (it != db_instances_.end()) {
-            it->second->freeze();
+        // stream 模式的本地 freeze + 广播（D2 拆除：freeze 重 IO 与广播移出容器锁）
+        {
+            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+            auto it = db_instances_.find(msg.db_path_);
+            if (it != db_instances_.end()) {
+                it->second->freeze();
+            }
         }
         DatabaseFreezeNotification broadcast_msg = msg;
         std::lock_guard<std::mutex> wlk(workers_mutex_);
@@ -2929,14 +2989,23 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     //    Database 是 master 进程路径唯一权威源；set_paths 同步 re-register 进
     //    DataService::db_paths_。db_instances_ 保留源 db_path 作 key（转发锚点），
     //    内部 Database 的 db_path_ 指向 merge 产物。
-    std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-    auto db_it = db_instances_.find(db_path);
-    if (db_it != db_instances_.end()) {
-        db_it->second->set_paths(merge_db_path, merge_data_path);
+    //    锁内只做 find→取 shared_ptr / 插入决策；set_paths（re-register）与
+    //    Database 构造（重 IO）移出容器锁（D4 拆除，set_paths 自 D1 起自保护）。
+    CMSharedPtr<Database> existing_db;
+    {
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+        auto db_it = db_instances_.find(db_path);
+        if (db_it != db_instances_.end()) {
+            existing_db = db_it->second;
+        }
+    }
+    if (existing_db) {
+        existing_db->set_paths(merge_db_path, merge_data_path);
     } else {
         // merge 产物句柄由 Python 经 ex_stg_create_database_with_id 构造，未进 master
         // db_instances_。这里用源 db_path 重建并登记，保证 master 路径权威源与新路径一致。
         auto db = CMMakeShared<Database>(merge_db_path, merge_data_path, 0, "", db_path);
+        std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
         db_instances_[db_path] = db;
     }
 

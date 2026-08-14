@@ -758,12 +758,20 @@ void WorkerAgent::commit_task_segments(const CMVector<WriteRecord>& written_obje
         }
     }
     for (const auto& db_path : involved_dbs) {
-        std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
-        auto it = databases_.find(db_path);
-        if (it != databases_.end()) {
+        CMSharedPtr<Database> db;
+        {
+            // 锁内只 find + 拷 shared_ptr：drain（等磁盘写回）与 mark_write_end
+            // 移出容器锁（D3 拆除——原持读锁等 WBQ drain）。
+            std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
+            auto it = databases_.find(db_path);
+            if (it != databases_.end()) {
+                db = it->second;
+            }
+        }
+        if (db) {
             // 先 drain 保证段内所有 ADD 已落盘，再打 END 提交。
             fly::DataService::instance()->drain_write_back();
-            it->second->mark_write_end();
+            db->mark_write_end();
         }
     }
 }
@@ -779,10 +787,16 @@ void WorkerAgent::cleanup_failed_task_writes(const CMVector<WriteRecord>& dirty_
         }
     }
     for (auto& [db_path, full_names] : by_db) {
-        std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
-        auto it = databases_.find(db_path);
-        if (it == databases_.end()) continue;
-        it->second->abort_task_writes(full_names);
+        CMSharedPtr<Database> db;
+        {
+            // 锁内只 find + 拷 shared_ptr：abort（drain + truncate + 清内存）
+            // 移出容器锁（D3 拆除）。
+            std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
+            auto it = databases_.find(db_path);
+            if (it == databases_.end()) continue;
+            db = it->second;
+        }
+        db->abort_task_writes(full_names);
     }
 }
 
@@ -1124,10 +1138,17 @@ void WorkerAgent::on_var_broadcast(uint64_t conn_id, const VarBroadcastMessage& 
     // name to drop from its local cache.
     auto [db_path, short_name] = fly::split_full_name(msg.var_name_);
     if (!db_path.empty()) {
-        std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
-        auto it = databases_.find(db_path);
-        if (it != databases_.end()) {
-            it->second->drop_local_var(short_name);
+        CMSharedPtr<Database> db;
+        {
+            // 锁内只 find + 拷 shared_ptr（drop_local_var 自保护，D3 拆除）。
+            std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
+            auto it = databases_.find(db_path);
+            if (it != databases_.end()) {
+                db = it->second;
+            }
+        }
+        if (db) {
+            db->drop_local_var(short_name);
         }
     }
     if (msg.is_modification_reject_) {
@@ -1263,14 +1284,22 @@ void WorkerAgent::on_database_freeze_notification(uint64_t conn_id, const Databa
     touch_master_contact();
     INFO("DatabaseFreezeNotification received: db_path={}", msg.db_path_);
 
-    std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
-    auto it = databases_.find(msg.db_path_);
-    if (it != databases_.end()) {
-        if (it->second->is_frozen()) {
+    CMSharedPtr<Database> db;
+    {
+        // 锁内只 find + 拷 shared_ptr：freeze（drain/marker/vars 落盘重 IO）
+        // 移出容器锁（D3 拆除）。
+        std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
+        auto it = databases_.find(msg.db_path_);
+        if (it != databases_.end()) {
+            db = it->second;
+        }
+    }
+    if (db) {
+        if (db->is_frozen()) {
             INFO("DB already frozen, ignoring broadcast: db_path={}", msg.db_path_);
             return;
         }
-        it->second->freeze();
+        db->freeze();
         INFO("Worker local database frozen: db_path={}", msg.db_path_);
     }
 }
@@ -1324,10 +1353,17 @@ void WorkerAgent::on_remove_command(uint64_t conn_id, const RemoveCommandMessage
     DataService::instance()->remove_local_index(msg.object_name_);
     DataService::instance()->remove_remote_index(msg.object_name_);
 
-    std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
-    auto db_it = databases_.find(msg.db_path_);
-    if (db_it != databases_.end()) {
-        auto& db = db_it->second;
+    CMSharedPtr<Database> db;
+    {
+        // 锁内只 find + 拷 shared_ptr：remove_index_entry（idx 文件 IO）
+        // 移出容器锁（D3 拆除）。
+        std::shared_lock<std::shared_mutex> db_lk(databases_mutex_);
+        auto db_it = databases_.find(msg.db_path_);
+        if (db_it != databases_.end()) {
+            db = db_it->second;
+        }
+    }
+    if (db) {
         CMString short_name = msg.object_name_;
         CMString prefix = msg.db_path_ + ":";
         if (short_name.substr(0, prefix.size()) == prefix) {
