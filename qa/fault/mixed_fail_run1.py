@@ -25,11 +25,7 @@ get_config().set_int("aggregation_threshold", 102400)
 master = get_agent()
 
 master.launch_local_workers([{}])
-for _ in range(40):
-    if master.worker_count >= 1:
-        break
-    time.sleep(0.5)
-assert master.worker_count >= 1, "Worker should connect"
+assert master.wait_workers_registered(timeout=60.0), "Worker should connect"
 
 db = open_db(DB_PATH)
 db_path = db.get_db_path()

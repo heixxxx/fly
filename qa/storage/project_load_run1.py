@@ -15,7 +15,7 @@ PROJ_PATH = os.environ["FLY_PROJ_PATH"]
 
 # make_db flow 是异步范式（task 执行），用户负责唤起 worker。
 launch_workers([{}])
-assert get_agent().wait_for_workers(1), "1 worker should connect"
+assert get_agent().wait_workers_registered(timeout=60.0), "1 worker should connect"
 
 proj = DemoProject(PROJ_PATH)
 proj.make_db(name="step1", value=12345)

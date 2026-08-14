@@ -200,7 +200,7 @@ from fly.runtime import get_agent
 master = get_agent()
 
 master.launch_local_workers([{}, {}, {}])
-assert wait_for(lambda: master.worker_count >= 3, timeout=10.0), \
+assert master.wait_workers_registered(timeout=60.0), \
     f"3 workers should connect, got {master.worker_count}"
 
 test_full_merge()

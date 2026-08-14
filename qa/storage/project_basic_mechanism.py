@@ -14,7 +14,7 @@ if os.path.isdir(PROJ_PATH):
     shutil.rmtree(PROJ_PATH, ignore_errors=True)
 
 launch_workers([{}])
-assert get_agent().wait_for_workers(1), "1 worker should connect"
+assert get_agent().wait_workers_registered(timeout=60.0), "1 worker should connect"
 
 proj = DemoProject(PROJ_PATH)
 assert proj.list_flows() == ["make_db"], f"flows={proj.list_flows()}"

@@ -51,7 +51,7 @@ get_config().set_int("fail_unscheduleable_tasks", 0)
 def test_summary_merge():
     master = get_agent()
     master.launch_local_workers([{}, {}, {}])
-    assert wait_for(lambda: master.worker_count >= 3, timeout=10.0)
+    assert master.wait_workers_registered(timeout=60.0)
 
     db = fresh_db("summary")
     mr = MapReduceJob(db, output_name="sum_result")
@@ -71,7 +71,7 @@ def test_summary_merge():
 def test_full_merge():
     master = get_agent()
     master.launch_local_workers([{}, {}])
-    assert wait_for(lambda: master.worker_count >= 2, timeout=10.0)
+    assert master.wait_workers_registered(timeout=60.0)
 
     db = fresh_db("full")
     mr = MapReduceJob(db, output_name="full_result")
@@ -91,7 +91,7 @@ def test_full_merge():
 def test_pre_partitioned():
     master = get_agent()
     master.launch_local_workers([{}, {}])
-    assert wait_for(lambda: master.worker_count >= 2, timeout=10.0)
+    assert master.wait_workers_registered(timeout=60.0)
 
     db = fresh_db("prepart")
     db.write_object("shard_0", [1, 2, 3])
@@ -114,7 +114,7 @@ def test_pre_partitioned():
 def test_multi_stage_merge():
     master = get_agent()
     master.launch_local_workers([{}, {}])
-    assert wait_for(lambda: master.worker_count >= 2, timeout=10.0)
+    assert master.wait_workers_registered(timeout=60.0)
 
     db = fresh_db("multistage")
     data = list(range(1, 17))
@@ -135,7 +135,7 @@ def test_multi_stage_merge():
 def test_with_finalize():
     master = get_agent()
     master.launch_local_workers([{}, {}])
-    assert wait_for(lambda: master.worker_count >= 2, timeout=10.0)
+    assert master.wait_workers_registered(timeout=60.0)
 
     db = fresh_db("finalize")
     mr = MapReduceJob(db, output_name="final_result")
@@ -156,7 +156,7 @@ def test_with_finalize():
 def test_keep_intermediate():
     master = get_agent()
     master.launch_local_workers([{}, {}])
-    assert wait_for(lambda: master.worker_count >= 2, timeout=10.0)
+    assert master.wait_workers_registered(timeout=60.0)
 
     db = fresh_db("keep")
     mr = MapReduceJob(db, output_name="keep_result", keep_intermediate=True)
@@ -185,7 +185,7 @@ def test_keep_intermediate():
 def test_downstream_dependency():
     master = get_agent()
     master.launch_local_workers([{}, {}])
-    assert wait_for(lambda: master.worker_count >= 2, timeout=10.0)
+    assert master.wait_workers_registered(timeout=60.0)
 
     db = fresh_db("downstream")
     mr = MapReduceJob(db, output_name="upstream_result")

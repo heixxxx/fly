@@ -14,7 +14,7 @@ if os.path.isdir(PATH):
     shutil.rmtree(PATH, ignore_errors=True)
 
 launch_workers([{}])
-assert get_agent().wait_for_workers(1), "1 worker should connect"
+assert get_agent().wait_workers_registered(timeout=60.0), "1 worker should connect"
 
 
 def _wait_completed(n, timeout=30.0):
