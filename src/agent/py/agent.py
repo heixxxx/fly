@@ -21,6 +21,8 @@ from fly import register_message_id, message, wait_obj as _wait_obj
 # STOR::0002: merge_db 完成；STOR::0003: load_db 恢复完成。
 register_message_id("STOR::0002", "INFO")
 register_message_id("STOR::0003", "INFO")
+# STOR::0004: merge_db 删源失败（重试后）——提醒用户手动删除残留源 .dat。
+register_message_id("STOR::0004", "ERROR")
 
 
 class FlyAgent(ABC):
@@ -597,6 +599,22 @@ class Master(FlyAgent):
                 if entries:
                     writer_to_entries[writer_id] = (hostname, entries)
 
+        # 空 idx 防误删源：清单全空有两种成因，必须区分——
+        #   真空 db（目录下无 .idx 文件）：允许空合并（删源无损失）；
+        #   idx 存在但读出 0 条目（idx 损坏/读取失败被误当真空）：拒绝 merge——
+        #   否则 0 个 task 全部"成功"走"全成功删源"，源 .dat 全删而产物为空
+        #   = 数据丢失（plan 评审确认纳入的数据丢失级风险）。
+        if not writer_to_entries:
+            idx_files = ([f for f in os.listdir(source_idx_path)
+                          if f.endswith(".idx")]
+                         if os.path.isdir(source_idx_path) else [])
+            if idx_files:
+                raise RuntimeError(
+                    f"merge_db aborted: {len(idx_files)} idx file(s) exist under "
+                    f"{source_idx_path} but no entries were read (possible idx "
+                    f"corruption) — refusing to merge and delete source. db={db_path}")
+            INFO("merge_db: empty db (no idx files, no entries) — trivial empty merge")
+
         # ── Phase 4: 派发 __merge_object tasks（按源 host 分配 target worker）──
         # 设计 §5.3：每源 host 固定派给 master host 一个 target worker（轮转分配）。
         host_to_target = {}
@@ -638,6 +656,7 @@ class Master(FlyAgent):
 
         # ── Phase 5: 全部成功 → 统一删源 + 状态清理 ──────────────────────
         source_worker_ids = []
+        worker_to_writers = {}  # 重试用：失败 worker → 其 writer_ids
         if ok and delete_source:
             for hostname, writer_ids in hostname_to_writer_ids.items():
                 host_workers = existing_by_hostname.get(hostname, [])
@@ -647,21 +666,34 @@ class Master(FlyAgent):
                     continue
                 source_worker = host_workers[0]
                 source_worker_ids.append(source_worker)
+                worker_to_writers[source_worker] = writer_ids
                 # data_path 传空 → C++ send_delete_data 从 db_registry 查源 data_path
                 # （此时 cleanup 未执行，db_registry 仍是源的）。
                 self._agent.send_delete_data(
                     source_worker, db_path, "", writer_ids)
                 INFO(f"merge_db: sent DeleteData to worker {source_worker} on host "
                      f"'{hostname}' for {len(writer_ids)} writers")
-            # 同步等待全部 DeleteDataAck（替换原先的 sleep 兜底，消除 flaky + 内存泄漏）。
+            # 同步等待全部 DeleteDataAck；失败自动重试一轮（瞬时故障），仍失败发
+            # 流程 message 提醒用户手动删除（残留清单完整暴露）。
             if source_worker_ids:
                 del_ok, del_failed = self._agent.wait_delete_data_acks(
                     source_worker_ids, db_path, 60)
+                if not del_ok:
+                    INFO(f"merge_db: retrying source delete for workers={del_failed}")
+                    for w in del_failed:
+                        writers = worker_to_writers.get(w, [])
+                        if writers:
+                            self._agent.send_delete_data(w, db_path, "", writers)
+                    del_ok, del_failed = self._agent.wait_delete_data_acks(
+                        del_failed, db_path, 60)
                 if del_ok:
                     INFO("merge_db: all source deletes confirmed")
                 else:
-                    WARN(f"merge_db: {len(del_failed)} source deletes failed/timed out "
-                         f"(workers={del_failed}), source .dat may remain")
+                    WARN(f"merge_db: {len(del_failed)} source deletes failed after retry "
+                         f"(workers={del_failed}) — manual cleanup required")
+                    message("STOR::0004", 2,
+                            f"merge_db source delete failed (manual cleanup required): "
+                            f"db={db_path}, residual workers={list(del_failed)}")
 
         # 状态清理（无论是否删源，merge 已改变数据分布，旧索引都失效）：
         # 广播 MergeCleanup 让各 worker 清旧 local_idx/remote_idx + 按新路径重建 local_idx；
