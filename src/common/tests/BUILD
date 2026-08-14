@@ -13,3 +13,13 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "concurrent_map_test",
+    srcs = ["concurrent_map_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/common/cpp:fly_common_types",
+    ],
+    copts = ["-std=c++20"],
+)
