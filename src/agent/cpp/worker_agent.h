@@ -233,9 +233,24 @@ private:
     
     CMUniquePtr<Reactor> reactor_;
     std::thread reactor_thread_;
-    uint64_t master_conn_;
+    // master 连接（atomic：断连后重连线程更新，各 handler 线程读——隐式转换
+    // 运算符使既有读写点无需改动）。0=未连接。
+    std::atomic<uint64_t> master_conn_{0};
     CMString data_server_host_;
     int32_t data_server_port_ = 0;
+
+    // ── 断连重连（网络闪断，宽限窗口内指数退避；master 挂=全群失败，超时退出）──
+    std::atomic<bool> reconnecting_{false};
+    std::thread reconnect_thread_;
+    // 断连期间完成的 task 上报缓冲：重连注册确认后按序 flush（fire-and-forget
+    // 的其它消息不缓冲——心跳/注册自然恢复，task 结果不可丢）。
+    struct PendingReport {
+        bool is_complete_;
+        TaskCompleteMessage complete_;
+        TaskFailedMessage failed_;
+    };
+    std::mutex pending_reports_mutex_;
+    CMVector<PendingReport> pending_reports_;
     
     std::thread heartbeat_thread_;
     std::atomic<bool> heartbeat_running_{false};
@@ -346,6 +361,14 @@ private:
     void on_var_broadcast(uint64_t conn_id, const VarBroadcastMessage& msg);
     
     void heartbeat_loop();
+    // 断连重连线程：指数退避 reactor_->connect（initial ×2 上限 10s），总窗口
+    // worker_reconnect_timeout；成功 → 重发 Register（原 worker_id/data 端口）
+    // → RegisterAck 后 flush 缓冲；超时 → initiate_shutdown（干净退出）。
+    void reconnect_loop();
+    // task 上报出口：连接有效直发；重连中缓冲（重连后 flush）。
+    void send_master_or_buffer(const TaskCompleteMessage& msg);
+    void send_master_or_buffer(const TaskFailedMessage& msg);
+    void flush_pending_reports();
     void bandwidth_probe_loop();
     // connect master 指数退避重试（见 worker_agent.cpp 实现处注释：窗口与 master
     // 占位符共用 worker_register_timeout，两侧统一 5min 保活）。
@@ -369,6 +392,13 @@ public:
     // 仅测试用：execute_merge_object 对命中 short_name 的对象模拟写盘失败
     //（确定性验证 merge task 走 TaskFailed 而非假成功）。
     CMUnorderedSet<CMString> merge_write_fail_for_testing_;
+    // 仅测试用：断连期间缓冲的 task 上报数量（缓冲/flush 测试用）。
+    size_t pending_report_count_for_testing();
+    // 仅测试用：模拟 master 连接闪断（触发 on_disconnect 重连路径，不影响
+    // reactor 上的实际连接——master 保持在线，纯 worker 视角断连）。
+    void simulate_master_disconnect_for_testing() {
+        on_disconnect(master_conn_.load());
+    }
 #endif
 };
 

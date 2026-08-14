@@ -84,7 +84,7 @@ void WorkerAgent::start() {
             master_host_, master_port_);
         return;
     }
-    INFO("connected, master_conn={}", master_conn_);
+    INFO("connected, master_conn={}", master_conn_.load());
     // 与 master 对称：handler lane 并行（同连接保序）。worker 连接少（master+peers），
     // lane 上界由配置控制。
     size_t handler_lanes = static_cast<size_t>(Config::instance()->get_int("handler_lanes"));
@@ -285,6 +285,13 @@ void WorkerAgent::do_cleanup() {
         peer_rpc_port_ = 0;
     }
 
+    // 重连线程先于 reactor join（它在 connect 上自旋时依赖 reactor 存活；
+    // initiate_shutdown 置 running_=false 已让它退出）。
+    reconnecting_.store(false);
+    if (reconnect_thread_.joinable()) {
+        reconnect_thread_.join();
+    }
+
     if (heartbeat_thread_.joinable()) {
         heartbeat_thread_.join();
     }
@@ -475,6 +482,12 @@ void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
     touch_master_contact();
 
     INFO("RegisterAck received, registered");
+    if (reconnecting_.exchange(false)) {
+        // 重连注册确认：恢复心跳（heartbeat_loop 按 registered_ 发送）并按序
+        // flush 断连期间缓冲的 task 上报。
+        INFO("Reconnection complete — resuming heartbeats, flushing buffered reports");
+        flush_pending_reports();
+    }
 }
 
 void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
@@ -553,7 +566,7 @@ bool WorkerAgent::poll_task() {
                 failed.error_type_ = error_type;
                 // dirty_objects_ 是全名列表（master 据此清理 remote_idx/provenance）。
                 for (const auto& w : tracked_writes) failed.dirty_objects_.push_back(w.full_name_);
-                reactor_->send(master_conn_, failed);
+                send_master_or_buffer(failed);
 
                 ERR("Task marked failed: task_id={}, write error_type={}",
                     task.task_id_, static_cast<int>(error_type));
@@ -574,7 +587,7 @@ bool WorkerAgent::poll_task() {
                     complete.written_objects_.push_back({std::move(out), 0});
                 }
                 complete.frozen_dbs_ = std::move(result.frozen_dbs_);
-                reactor_->send(master_conn_, complete);
+                send_master_or_buffer(complete);
 
                 auto tid = task.task_id_;
                 auto out_count = complete.written_objects_.size();
@@ -590,7 +603,7 @@ bool WorkerAgent::poll_task() {
             failed.error_message_ = result.error_;
             failed.error_type_ = WorkerAgentContext::get_last_error_type();
             for (const auto& w : tracked_writes) failed.dirty_objects_.push_back(w.full_name_);
-            reactor_->send(master_conn_, failed);
+            send_master_or_buffer(failed);
 
             ERR("TaskFailed sent: task_id={}, error={}", task.task_id_, result.error_);
         }
@@ -619,11 +632,127 @@ void WorkerAgent::on_shutdown(const ShutdownMessage& msg) {
 }
 
 void WorkerAgent::on_disconnect(uint64_t conn_id) {
-    if (conn_id == master_conn_) {
-        WARN("Master connection lost, shutting down");
+    if (conn_id != master_conn_.load()) return;
+
+    // 网络闪断（master 挂=全群失败，但闪断不是挂）：宽限窗口内指数退避重连，
+    // task 在本 worker 上继续执行（master 侧 task 存活、宽限内不判死）。
+    // worker_reconnect_timeout=0（逃生口）维持旧的"断连即死"行为。
+    int64_t grace = Config::instance()->get_int("worker_reconnect_timeout");
+    if (grace <= 0) {
+        WARN("Master connection lost, shutting down (reconnect disabled)");
         initiate_shutdown("master connection lost");
+        return;
+    }
+
+    if (reconnecting_.exchange(true)) {
+        return;  // 重连线程已在跑（connect 自旋或 ack 等待中），连环闪断由它处理
+    }
+    WARN("Master connection lost — reconnecting with exponential backoff "
+         "(grace {}s, tasks keep running)", grace);
+    registered_ = false;   // 心跳暂停；RegisterAck 恢复
+    if (reconnect_thread_.joinable()) {
+        reconnect_thread_.join();  // 上一轮已结束未回收（join 立即返回）
+    }
+    reconnect_thread_ = std::thread([this] { reconnect_loop(); });
+}
+
+void WorkerAgent::reconnect_loop() {
+    const int64_t grace_s = Config::instance()->get_int("worker_reconnect_timeout");
+    int64_t initial_ms = Config::instance()->get_int("worker_connect_retry_initial_ms");
+    if (initial_ms <= 0) initial_ms = 500;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(grace_s);
+
+    int64_t delay_ms = initial_ms;
+    int attempt = 0;
+    // 外层循环常驻直到 RegisterAck 确认（reconnecting_ 清除）或宽限耗尽——
+    // 连接成功但 ack 未到又断连的连环闪断由同一线程自然处理（ack 等待超时
+    // 后落回重试），无需 on_disconnect 重启线程。
+    while (reconnecting_.load() && running_.load()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            reconnecting_.store(false);
+            ERR("Reconnect to master {}:{} failed within {}s grace — giving up",
+                master_host_, master_port_, grace_s);
+            initiate_shutdown("master reconnect grace expired");
+            return;
+        }
+
+        ++attempt;
+        uint64_t conn = reactor_->connect(master_host_, master_port_);
+        if (conn == 0) {
+            WARN("Reconnect attempt {} to master {}:{} failed, retry in {}ms",
+                 attempt, master_host_, master_port_, delay_ms);
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+            delay_ms = std::min<int64_t>(delay_ms * 2, 10000);
+            continue;
+        }
+
+        master_conn_ = conn;
+        WARN("Reconnected to master (attempt {}), re-registering as worker {}",
+             attempt, worker_id_);
+        RegisterMessage reg;
+        reg.worker_id_ = worker_id_;
+        reg.attributes_ = attributes_;
+        reg.data_server_host_ = data_server_host_;
+        reg.data_server_port_ = data_server_port_;
+        reg.hostname_ = ProcessInfo::instance()->hostname();
+        reg.ip_address_ = "";
+        reactor_->send(conn, reg);
+
+        // 等 RegisterAck（on_register_ack 清除 reconnecting_ 并 flush）。
+        // 超时未确认（连接又断 / master 未回）→ 落回重试循环。
+        const auto ack_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (reconnecting_.load() && running_.load() &&
+               std::chrono::steady_clock::now() < ack_deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        delay_ms = initial_ms;  // 新一轮退避从头开始
     }
 }
+
+void WorkerAgent::send_master_or_buffer(const TaskCompleteMessage& msg) {
+    if (!reconnecting_.load() && registered_.load()) {
+        reactor_->send(master_conn_.load(), msg);
+        return;
+    }
+    std::lock_guard<std::mutex> lk(pending_reports_mutex_);
+    pending_reports_.push_back({true, msg, TaskFailedMessage{}});
+    WARN("TaskComplete buffered (reconnecting): task_id={}", msg.task_id_);
+}
+
+void WorkerAgent::send_master_or_buffer(const TaskFailedMessage& msg) {
+    if (!reconnecting_.load() && registered_.load()) {
+        reactor_->send(master_conn_.load(), msg);
+        return;
+    }
+    std::lock_guard<std::mutex> lk(pending_reports_mutex_);
+    pending_reports_.push_back({false, TaskCompleteMessage{}, msg});
+    WARN("TaskFailed buffered (reconnecting): task_id={}", msg.task_id_);
+}
+
+void WorkerAgent::flush_pending_reports() {
+    CMVector<PendingReport> to_send;
+    {
+        std::lock_guard<std::mutex> lk(pending_reports_mutex_);
+        to_send = std::move(pending_reports_);
+        pending_reports_.clear();
+    }
+    if (to_send.empty()) return;
+    INFO("Flushing {} buffered task report(s) after reconnect", to_send.size());
+    for (const auto& r : to_send) {
+        if (r.is_complete_) {
+            reactor_->send(master_conn_.load(), r.complete_);
+        } else {
+            reactor_->send(master_conn_.load(), r.failed_);
+        }
+    }
+}
+
+#ifdef FLY_ENABLE_TEST_HOOKS
+size_t WorkerAgent::pending_report_count_for_testing() {
+    std::lock_guard<std::mutex> lk(pending_reports_mutex_);
+    return pending_reports_.size();
+}
+#endif
 
 void WorkerAgent::touch_master_contact() {
     auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -1396,7 +1525,7 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
             failed.task_id_ = task.task_id_;
             failed.worker_id_ = worker_id_;
             failed.error_message_ = "Internal backup: insufficient args";
-            reactor_->send(master_conn_, failed);
+            send_master_or_buffer(failed);
             return;
         }
 
@@ -1411,7 +1540,7 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
                 failed.task_id_ = task.task_id_;
                 failed.worker_id_ = worker_id_;
                 failed.error_message_ = "Internal backup: db_path request failed";
-                reactor_->send(master_conn_, failed);
+                send_master_or_buffer(failed);
                 return;
             }
             db = get_database(db_path);
@@ -1421,7 +1550,7 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
                 failed.task_id_ = task.task_id_;
                 failed.worker_id_ = worker_id_;
                 failed.error_message_ = "Internal backup: no database";
-                reactor_->send(master_conn_, failed);
+                send_master_or_buffer(failed);
                 return;
             }
         }
@@ -1438,7 +1567,7 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
         // 因 size_bytes==0 时保持原 size 不变，不会覆盖已登记的真实 size。
         complete.written_objects_.push_back({db_path + ":" + object_name, 0});
         complete.is_internal_ = true;
-        reactor_->send(master_conn_, complete);
+        send_master_or_buffer(complete);
 
         INFO("Internal backup complete: object={}, db_path={}", object_name, db_path);
     } else if (task.task_name_ == "__merge_object") {
@@ -1452,7 +1581,7 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
             failed.task_id_ = task.task_id_;
             failed.worker_id_ = worker_id_;
             failed.error_message_ = "Internal merge: insufficient args";
-            reactor_->send(master_conn_, failed);
+            send_master_or_buffer(failed);
             return;
         }
         CMString short_name = task.args_[0];
@@ -1467,7 +1596,7 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
         failed.task_id_ = task.task_id_;
         failed.worker_id_ = worker_id_;
         failed.error_message_ = "Unknown internal task: " + task.task_name_;
-        reactor_->send(master_conn_, failed);
+        send_master_or_buffer(failed);
     }
 }
 

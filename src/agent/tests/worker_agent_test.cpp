@@ -814,6 +814,10 @@ TEST_F(IdxLoadTest, OnWriteRegisterAckFailure) {
 }
 
 TEST_F(IdxLoadTest, InitiateShutdownFromOnDisconnect_ThenStop_CleansUp) {
+    // 逃生口语义（worker_reconnect_timeout=0）：断连即 shutdown（旧行为）。
+    // 默认（>0）下断连走重连宽限（见 DisconnectReconnectsAndReports）。
+    Config::instance()->set_int("worker_reconnect_timeout", 0);
+
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
@@ -833,6 +837,7 @@ TEST_F(IdxLoadTest, InitiateShutdownFromOnDisconnect_ThenStop_CleansUp) {
     EXPECT_FALSE(worker.is_running());
 
     fly::DataService::instance()->stop_data_server();
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
 }
 
 TEST(WorkerAgentTest, BeginTaskWithWriteContextHash) {
@@ -1295,7 +1300,85 @@ TEST(WorkerAgentTest, ConnectRetryExhaustedCleanExit) {
     EXPECT_FALSE(worker.is_running());
     EXPECT_FALSE(worker.is_registered());
     worker.stop();  // no-op 安全
-    Config::instance()->set_int("worker_register_timeout", 300);
+    Config::instance()->set_int("worker_register_timeout", 0);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
+}
+
+// ── 断连重连（网络闪断，G3）───────────────────────────────────────────
+// 模拟 worker 视角的 master 连接闪断（master 保持在线）→ worker 不退出、
+// task 继续执行且上报缓冲、指数退避重连成功后缓冲送达 master。
+// 不用 master.stop() 模拟闪断——stop 会广播 Shutdown（显式退出指令优先于重连）。
+TEST(WorkerAgentTest, DisconnectReconnectsAndReports) {
+    Config::instance()->set_int("worker_reconnect_timeout", 30);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 50);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // 派一个 internal task（unknown name → 执行时 TaskFailed 上报）。
+    master.submit_task(60, "bogus", "__fly_internal", {"a"}, {}, {});
+    wait_for([&]{ return worker.has_pending_task(); }, 50, 20);
+    ASSERT_TRUE(worker.has_pending_task()) << "internal task must reach worker";
+
+    // 模拟闪断：worker 进入重连（master 在线，重连会成功）。
+    worker.simulate_master_disconnect_for_testing();
+    EXPECT_FALSE(worker.is_registered());
+
+    // 断连期间 task 执行产出 TaskFailed → 缓冲（reconnecting_ 期间必缓冲）。
+    worker.poll_task();
+    EXPECT_TRUE(worker.is_running()) << "worker must stay alive during grace";
+    EXPECT_EQ(worker.pending_report_count_for_testing(), 1u)
+        << "TaskFailed must be buffered while disconnected";
+
+    // 指数退避重连（initial 50ms）→ RegisterAck → 缓冲送达 master。
+    wait_until_registered(worker);
+    EXPECT_TRUE(worker.is_registered()) << "worker should reconnect within grace";
+    EXPECT_EQ(worker.pending_report_count_for_testing(), 0u) << "buffer flushed on reconnect";
+
+    bool reached = false;
+    wait_for([&]{
+        auto failed = master.get_failed_tasks();
+        for (auto id : failed) { if (id == 60) { reached = true; return true; } }
+        return false;
+    }, 50, 20);
+    EXPECT_TRUE(reached) << "buffered TaskFailed must reach master after reconnect";
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
+}
+
+// 重连宽限耗尽 → 干净退出（master 挂=全群失败语义，worker 最多多活宽限期）。
+TEST(WorkerAgentTest, ReconnectTimeoutExhaustedCleanExit) {
+    constexpr uint16_t kPort = 48767;
+    Config::instance()->set_int("worker_reconnect_timeout", 1);    // 1s 宽限
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 10);
+
+    MasterAgent master("127.0.0.1", kPort);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", kPort);
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    master.stop();
+    wait_for_running(master, false);
+
+    // 宽限耗尽 → initiate_shutdown → is_running false（wait 覆盖 1s 退避 + 余量）。
+    bool exited = false;
+    wait_for([&]{ exited = !worker.is_running(); return exited; }, 50, 100);
+    EXPECT_TRUE(exited) << "worker must exit cleanly after reconnect grace expires";
+    worker.stop();
+
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
     Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
 }
 
