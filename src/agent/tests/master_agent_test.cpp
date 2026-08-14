@@ -2244,4 +2244,26 @@ TEST(GracefulShutdownTest, TriggerDrainsMasterViaFullStop) {
     fly::reset_graceful_shutdown();
 }
 
+// record_worker_info 去重：同 (db_path, hostname, writer_id) tuple 只 append
+// _DB_META 一次（ConcurrentUnorderedSet::insert 的"新插入才执行副作用"语义）。
+// characterization：先锁行为再迁移到 ConcurrentUnorderedSet。
+TEST(MasterAgentTest, RecordWorkerInfoAppendsMetaOncePerTuple) {
+    fly::DataService::instance()->reset();
+    ProcessInfo::instance()->set_hostname("test_host_dedup");
+    TempDir tmpdir;
+
+    // 不 start：record_worker_info（worker_id=0 路径）不走网络。
+    MasterAgent master("127.0.0.1", 0);
+    auto db_obj = master.get_or_create_database(tmpdir.path(), "", 0);
+    ASSERT_NE(db_obj, nullptr);
+    CMString db_path = db_obj->get_db_path();
+
+    master.record_worker_info_for_testing("obj", db_path, 0, "w1");
+    master.record_worker_info_for_testing("obj", db_path, 0, "w1");   // 同 tuple 重复
+    EXPECT_EQ(db_obj->worker_info_count(), 1u);
+
+    master.record_worker_info_for_testing("obj", db_path, 0, "w2");   // 不同 writer_id
+    EXPECT_EQ(db_obj->worker_info_count(), 2u);
+}
+
 }  // namespace fly

@@ -15,6 +15,7 @@
 #include <message/cpp/message_sink.h>
 #include <core/cpp/config.h>
 #include <common/cpp/common_types.h>
+#include <common/cpp/concurrent_map.h>
 #include <common/cpp/worker_context.h>
 #include <serialization/cpp/serialization_macros.h>
 #include <cstdint>
@@ -210,6 +211,11 @@ public:
     void inject_delete_data_ack_for_testing(const DeleteDataAckMessage& msg) { on_delete_data_ack(0, msg); }
     // 直接驱动 select_backup_worker（private），验证 host 级分散选择用于测试。
     uint64_t select_backup_worker_for_testing(const CMString& object_name) { return select_backup_worker(object_name); }
+    // 直接驱动 record_worker_info（private），验证同 tuple 只 append meta 一次。
+    void record_worker_info_for_testing(const CMString& object_name, const CMString& db_path,
+                                        uint64_t worker_id, const CMString& writer_id) {
+        record_worker_info(object_name, db_path, worker_id, writer_id);
+    }
 private:
 #endif
 
@@ -276,14 +282,13 @@ private:
     // 同步遗漏（如本次 priority bug 的根源）。
 
     // Pre-fetched dependency locations: task_id → {object_name → (worker_id, host, port)}.
-    // Updated on write_register, consumed on assign_task_to_worker.
+    // Updated on write_register, consumed on assign_task_to_worker（take 消费式读取）.
     struct CachedLocation {
         uint64_t worker_id = 0;
         CMString host;
         int32_t port = 0;
     };
-    CMUnorderedMap<uint64_t, CMUnorderedMap<CMString, CachedLocation>> task_dependency_locations_;
-    mutable std::mutex dep_loc_mutex_;
+    ConcurrentUnorderedMap<uint64_t, CMUnorderedMap<CMString, CachedLocation>> task_dependency_locations_;
 
     // db_instances_ 是 master 进程内 DB 路径的【唯一权威源】（收敛自原 db_registry_ 字符串副本）。
     // Database 对象内嵌 db_path_/data_path_（merge 后用 set_paths 更新），DbPathRequest/
@@ -412,8 +417,9 @@ private:
     // worker 的 hostname/ip 已收编进 WorkerManager::WorkerInfo（受其 mutex_ 保护），
     // 不再单独维护并行 map——消除原 worker_to_hostname_/worker_to_ip_ 的无锁数据竞争。
 
-    CMUnorderedSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
-    mutable std::mutex recorded_workers_mutex_;
+    // 已写入 db meta 的 worker 元组去重：insert 返回是否新插入，
+    // 副作用（append_worker_info_to_meta）据此在锁外恰好执行一次。
+    ConcurrentUnorderedSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
 
     // ── Auto-backup EWMA 聚合（worker suggest → master score → 判定 backup）──
     // master 聚合多 worker 上报的 TIER2 读增量，按 suggest 接收时间做 EWMA 衰减。
@@ -424,8 +430,7 @@ private:
         int64_t size_bytes_ = 0;        // 对象最新压缩后大小（大文件例外判定用）
         int64_t last_suggest_time_ = 0; // 上次 suggest 到达时间（EWMA elapsed 用）
     };
-    CMUnorderedMap<CMString, ObjectBackupScore> backup_scores_;
-    mutable std::mutex backup_scores_mutex_;
+    ConcurrentUnorderedMap<CMString, ObjectBackupScore> backup_scores_;
 
     // 按 db 分组：outer key = db_path，inner key = short_name，value = write_context_hash。
     // 嵌套结构让 freeze 时 cleanup_provenance_for_db 一次 erase 整个 db，无需前缀扫描。

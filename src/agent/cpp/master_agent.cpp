@@ -489,13 +489,23 @@ void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) 
     // Pre-fetch dependency locations at submit time (earliest possible point).
     {
         auto ds = DataService::instance();
-        std::lock_guard<std::mutex> lock(dep_loc_mutex_);
+        // lookup_remote_idx 走 DataService 读锁（重活），先在 dep_loc 锁外预取，
+        // 再一次性持 ConcurrentMap 锁写入（临界区只含内存插入）。
+        CMUnorderedMap<CMString, CachedLocation> locations;
         for (const auto& dep : spec.inputs_) {
             auto loc = ds->lookup_remote_idx(dep);
             if (loc.worker_id_ != 0 && !loc.host_.empty()) {
-                task_dependency_locations_[task_id][dep] = {loc.worker_id_, loc.host_, loc.port_};
+                locations[dep] = {loc.worker_id_, loc.host_, loc.port_};
                 DBG("[DEP-LOC] submit-time: task={} obj={} worker={}", task_id, dep, loc.worker_id_);
             }
+        }
+        if (!locations.empty()) {
+            task_dependency_locations_.update(task_id,
+                [&](CMUnorderedMap<CMString, CachedLocation>& inner) {
+                    for (auto& [dep, loc] : locations) {
+                        inner[dep] = std::move(loc);
+                    }
+                });
         }
     }
 
@@ -686,12 +696,14 @@ void MasterAgent::schedule_tasks() {
 void MasterAgent::update_dependency_location_cache(const CMString& object_name, uint64_t worker_id, const CMString& host, int32_t port) {
     // Find pending tasks that depend on this data and cache the location.
     auto pending = graph_->get_pending_tasks();
-    std::lock_guard<std::mutex> lock(dep_loc_mutex_);
     for (uint64_t task_id : pending) {
         auto deps = graph_->get_task_dependencies(task_id);
         for (const auto& dep : deps) {
             if (dep == object_name) {
-                task_dependency_locations_[task_id][object_name] = {worker_id, host, port};
+                task_dependency_locations_.update(task_id,
+                    [&](CMUnorderedMap<CMString, CachedLocation>& inner) {
+                        inner[object_name] = {worker_id, host, port};
+                    });
                 DBG("[DEP-LOC] cached: task={} obj={} worker={}", task_id, object_name, worker_id);
                 break;
             }
@@ -752,13 +764,12 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
         // Populate dependency locations from cache + direct lookup.
         auto ds = DataService::instance();
         {
-            std::lock_guard<std::mutex> lock(dep_loc_mutex_);
-            auto loc_it = task_dependency_locations_.find(task_id);
-            if (loc_it != task_dependency_locations_.end()) {
-                for (const auto& [dep, loc] : loc_it->second) {
+            // take：消费式读取（原子取走该 task 的缓存位置）。
+            auto cached = task_dependency_locations_.take(task_id);
+            if (cached.has_value()) {
+                for (const auto& [dep, loc] : *cached) {
                     msg.dependency_locations_.push_back({dep, loc.worker_id, loc.host, loc.port});
                 }
-                task_dependency_locations_.erase(loc_it);  // Consume cache.
             }
         }
         // Also look up any dependencies not in cache (e.g. ready tasks that weren't pending).
@@ -1001,21 +1012,19 @@ void MasterAgent::record_worker_info(const CMString& object_name, const CMString
     }
 
     auto key = std::make_tuple(db_path, hostname, writer_id);
-    {
-        std::lock_guard<std::mutex> lk(recorded_workers_mutex_);
-        if (recorded_workers_.find(key) == recorded_workers_.end()) {
-            recorded_workers_.insert(key);
-            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-            auto db_it = db_instances_.find(db_path);
-            if (db_it != db_instances_.end()) {
-                ::WorkerInfo info;
-                info.worker_id_ = worker_id;
-                info.writer_id_ = writer_id;
-                info.hostname_ = hostname;
-                info.ip_address_ = ip;
-                info.launch_command_ = "";
-                db_it->second->append_worker_info_to_meta(info);
-            }
+    // insert 返回是否新插入：append meta 的副作用在 set 锁外恰好执行一次，
+    // 同时消除原 recorded_workers_mutex_ → db_instances_mutex_ 嵌套锁。
+    if (recorded_workers_.insert(key)) {
+        std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+        auto db_it = db_instances_.find(db_path);
+        if (db_it != db_instances_.end()) {
+            ::WorkerInfo info;
+            info.worker_id_ = worker_id;
+            info.writer_id_ = writer_id;
+            info.hostname_ = hostname;
+            info.ip_address_ = ip;
+            info.launch_command_ = "";
+            db_it->second->append_worker_info_to_meta(info);
         }
     }
 }
@@ -2408,9 +2417,7 @@ void MasterAgent::on_worker_backup_suggest(uint64_t conn_id, const WorkerBackupS
         std::chrono::system_clock::now().time_since_epoch()).count();
     // EWMA 衰减：基于 suggest 到达频率（不受单次传输时间影响 → 不惩罚大对象）。
     double dps = Config::instance()->get_int("master_ewma_decay_per_sec") / 100.0;
-    {
-        std::lock_guard<std::mutex> lk(backup_scores_mutex_);
-        auto& s = backup_scores_[msg.object_name_];
+    backup_scores_.update(msg.object_name_, [&](ObjectBackupScore& s) {
         int64_t elapsed = now - s.last_suggest_time_;
         if (elapsed > 0 && s.last_suggest_time_ > 0) {
             double factor = std::pow(1.0 - dps, static_cast<double>(elapsed));
@@ -2421,7 +2428,7 @@ void MasterAgent::on_worker_backup_suggest(uint64_t conn_id, const WorkerBackupS
         s.cumulative_count_ += static_cast<double>(msg.delta_count_);
         if (msg.size_bytes_ > 0) s.size_bytes_ = msg.size_bytes_;
         s.last_suggest_time_ = now;
-    }
+    });
     evaluate_and_maybe_backup(msg.object_name_);
 }
 
@@ -2430,8 +2437,8 @@ void MasterAgent::evaluate_and_maybe_backup(const CMString& object_name) {
     uint32_t replicas = static_cast<uint32_t>(holders.size());
     double divisor = std::max(static_cast<double>(replicas), 1.0);
 
-    ObjectBackupScore s;
-    { std::lock_guard<std::mutex> lk(backup_scores_mutex_); s = backup_scores_[object_name]; }
+    // find + 默认值（不再像 operator[] 那样在 map 残留空条目；数值等价）。
+    ObjectBackupScore s = backup_scores_.find(object_name).value_or(ObjectBackupScore{});
 
     double score_bytes = s.cumulative_bytes_ / divisor;
     double score_count = s.cumulative_count_ / divisor;
@@ -2492,9 +2499,10 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
         auto workers = DataService::instance()->get_remote_workers(full_name);
         if (!workers.empty()) {
             auto addr = DataService::instance()->get_worker_address(workers.front());
-            std::lock_guard<std::mutex> lk(dep_loc_mutex_);
-            task_dependency_locations_[merge_task_id][full_name] =
-                CachedLocation{workers.front(), addr.host_, addr.port_};
+            task_dependency_locations_.update(merge_task_id,
+                [&](CMUnorderedMap<CMString, CachedLocation>& inner) {
+                    inner[full_name] = CachedLocation{workers.front(), addr.host_, addr.port_};
+                });
         }
     }
 

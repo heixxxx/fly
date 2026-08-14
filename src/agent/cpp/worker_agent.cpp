@@ -1396,23 +1396,19 @@ void WorkerAgent::execute_internal_task(const PendingTask& task) {
     }
 }
 
-DataWriter* WorkerAgent::get_or_create_merge_writer(const CMString& db_path,
-                                                     const CMString& target_data_path) {
-    std::lock_guard<std::mutex> lk(merge_writers_mutex_);
-    auto it = merge_writers_.find(target_data_path);
-    if (it != merge_writers_.end()) {
-        return it->second.get();
-    }
+CMSharedPtr<DataWriter> WorkerAgent::get_or_create_merge_writer(const CMString& db_path,
+                                                                 const CMString& target_data_path) {
+    // get_or_insert：find 命中复用；miss 时 factory（writer_id 生成 + 构造）在锁内执行。
     // 每个 target_data_path 独占一个 writer_id（merge 专用，避免与源 writer_id 冲突）。
     // idx 写 db_path（共享盘，master 可直读）；.dat 写 target_data_path（master host 本地）。
-    CMString merge_writer_id = generate_writer_id();
-    int64_t threshold = Config::instance()->get_int("aggregation_threshold");
-    auto writer = CMMakeUnique<DataWriter>(
-        db_path, target_data_path, merge_writer_id, threshold, data_server_host_);
-    DataWriter* raw = writer.get();
-    merge_writers_[target_data_path] = std::move(writer);
-    INFO("Created merge writer: target_data_path={}, writer_id={}", target_data_path, merge_writer_id);
-    return raw;
+    return merge_writers_.get_or_insert(target_data_path, [&] {
+        CMString merge_writer_id = generate_writer_id();
+        int64_t threshold = Config::instance()->get_int("aggregation_threshold");
+        auto writer = CMMakeShared<DataWriter>(
+            db_path, target_data_path, merge_writer_id, threshold, data_server_host_);
+        INFO("Created merge writer: target_data_path={}, writer_id={}", target_data_path, merge_writer_id);
+        return writer;
+    });
 }
 
 void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_name,
@@ -1446,7 +1442,7 @@ void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_n
 
     // 3. 用 target_db_path 落盘（产物命名空间）。register_database 让本 worker 的 DataServer
     //    能服务 merge 后的对象。
-    DataWriter* writer = get_or_create_merge_writer(target_db_path, target_data_path);
+    auto writer = get_or_create_merge_writer(target_db_path, target_data_path);
     ds->register_database(target_db_path, target_data_path, writer->writer_id());
 
     // 4. 落盘（零解压直写 .dat + idx）。LocalIndex 只存 short_name。

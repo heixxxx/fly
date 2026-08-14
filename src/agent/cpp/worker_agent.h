@@ -13,6 +13,7 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/data_writer.h>
 #include <common/cpp/common_types.h>
+#include <common/cpp/concurrent_map.h>
 #include <cstdint>
 #include <thread>
 #include <atomic>
@@ -268,8 +269,8 @@ private:
     // merge_db 把各源 host 的 data 集中到 master host 的 target_data_path，
     // 按 target_data_path 复用同一个 writer（设计 §5.3：每源 host 一个 writer），
     // 避免 per-object 构造造成文件爆炸。worker 退出时由 ~DataWriter 落盘 idx。
-    CMUnorderedMap<CMString, CMUniquePtr<DataWriter>> merge_writers_;
-    std::mutex merge_writers_mutex_;
+    // get_or_insert 语义：factory（含 writer_id 生成 + DataWriter 构造）锁内执行。
+    ConcurrentUnorderedMap<CMString, CMSharedPtr<DataWriter>> merge_writers_;
 
     PendingRpcMap<CMString, PendingDbPath> pending_db_paths_;
 
@@ -331,7 +332,7 @@ private:
                               const CMString& source_db_path, const CMString& target_db_path,
                               const CMString& target_data_path);
     // 获取或创建 merge 专用 DataWriter（按 target_data_path 缓存，跨 task 复用，每源 host 一个 writer）。
-    DataWriter* get_or_create_merge_writer(const CMString& db_path, const CMString& target_data_path);
+    CMSharedPtr<DataWriter> get_or_create_merge_writer(const CMString& db_path, const CMString& target_data_path);
     // 注册 PeerRpcServer 的 response_handler + disconnect_handler。
     // start_peer_rpc_listen 和 peer_rpc_connect 共用，避免重复代码。
     void ensure_peer_rpc_handlers();
