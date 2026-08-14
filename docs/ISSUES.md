@@ -119,6 +119,18 @@
 
 ## P3 — Low / Deferred
 
+### P3-18: 退出期偶发 pure virtual method called（静态析构竞态，未定位）
+- **Status**: OPEN — 已捕获 1 次，45 轮定向复现失败，待专项
+- **Evidence**（2026-08-15 高压稳定性测试第 10/10 轮，`test_solver_ras_n4_sd2_ov1_noconv`）：
+  master drain 正常完成后进程退出阶段 `pure virtual method called → std::terminate`，
+  栈落在静态析构链的 `shared_ptr` release（strip 后符号近似为 Logger，但 Logger 类
+  无虚函数——真实源头不明）。嵌入式 Python 进程退出的静态析构序竞态经典形态。
+- **Probability**: ~1/3120 case（两轮完整 -j16 高压共 20 轮 3120 case 出现 1 次；
+  常压 20 轮 + CPU 饱和 25 轮定向复现均未触发）。
+- **Next**: 专项排查 atexit 静态析构链与 Python finalization 的交错（core dump +
+  符号化完整栈 / 逐静态审计）。与 2026-08-14 批次改动无因果路径（未触碰
+  Logger/静态析构/退出路径），非本批次引入的判定依据已记录于该批次 commit。
+
 ### P3-17: Concurrency stress test infrastructure
 - **Status**: PARTIAL — 基础设施已建立，覆盖面仍需扩展
 - **Risk**: Zero tests verify concurrent access to shared data structures. Data races will only manifest in production under load.
