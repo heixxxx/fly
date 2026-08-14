@@ -142,15 +142,39 @@ class CountingTransport : public Transport {
     CMSharedPtr<Transport> inner_;
     std::atomic<int> connect_count_{0};
     std::atomic<int> close_count_{0};
+    // 并发用例的确定性 gate：create_connection 先报到并等放行，保证 N 个并发
+    // 请求都已进入 connect 阶段（各自已预留 fd 配额）才真正建连。latch 屏障
+    // 不够——barrier 释放后线程仍可能被 OS 抢占到首个请求完整归还 fd 之后，
+    // 高负载下 connect_count 误报为 1（pre-push hook 实测两次）。
+    std::atomic<int> gate_expected_{0};
+    std::atomic<int> gate_arrived_{0};
+    std::atomic<bool> gate_open_{true};
 public:
     explicit CountingTransport(CMSharedPtr<Transport> inner) : inner_(std::move(inner)) {}
     int connect_count() const { return connect_count_.load(std::memory_order_relaxed); }
     int close_count() const { return close_count_.load(std::memory_order_relaxed); }
 
+    void arm_connect_gate(int expected) {
+        gate_expected_.store(expected, std::memory_order_release);
+        gate_arrived_.store(0, std::memory_order_relaxed);
+        gate_open_.store(false, std::memory_order_release);
+    }
+    int gate_arrived_count() const { return gate_arrived_.load(std::memory_order_acquire); }
+    void release_connect_gate() { gate_open_.store(true, std::memory_order_release); }
+
     int create_listen_socket(const CMString& h, int p) override { return inner_->create_listen_socket(h, p); }
     int accept_connection(int lfd) override { return inner_->accept_connection(lfd); }
     int create_connection(const CMString& h, int p) override {
         connect_count_.fetch_add(1, std::memory_order_relaxed);
+        if (gate_expected_.load(std::memory_order_acquire) > 0) {
+            gate_arrived_.fetch_add(1, std::memory_order_acq_rel);
+            // 自旋等放行（5s 兜底防意外死锁；正常路径主线程见全员到达即放行）
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!gate_open_.load(std::memory_order_acquire) &&
+                   std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::yield();
+            }
+        }
         return inner_->create_connection(h, p);
     }
     void set_nodelay(int fd) override { inner_->set_nodelay(fd); }
@@ -187,29 +211,36 @@ TEST_F(DataClientPoolTest, ReusesFdAcrossRequestsToSamePeer) {
 }
 
 // 并发 request 同一 peer：单 fd 同步收发无法并行，必然创建多个 fd 并行传输。
-// latch 屏障强制 4 个线程同时进入 request —— 无屏障时高负载下线程启动被
-// 串行化，首个请求完成归还 fd 后其余全部复用（connect=1），断言误报。
+// 确定性方案：transport connect gate——等到 4 个请求都到达 create_connection
+// （各自已预留 fd 配额，互不可能复用彼此的 fd）才放行建连，connect_count
+// 与线程调度顺序完全无关。
 TEST_F(DataClientPoolTest, ConcurrentRequestsToSamePeerUseMultipleFds) {
     ds_->register_database("/conc", test_dir_, test_dir_ + "/data");
     ds_->start_data_server("127.0.0.1", 0, 2);
     int port = ds_->get_data_port();
 
     auto transport = CMMakeShared<CountingTransport>(create_tcp_transport());
+    transport->arm_connect_gate(4);
     DataClientPool pool(transport, 4);  // 并发上限 4
 
-    std::latch go(4);
     std::vector<std::thread> threads;
     for (int i = 0; i < 4; ++i) {
         threads.emplace_back([&]() {
-            go.count_down();
-            go.wait();  // 4 线程对齐后同时发起（池空 → 各自 connect）
             pool.request("127.0.0.1", port, "/conc:missing", 0, 0, 5000);
         });
     }
+    // 等 4 个请求都到达 connect 点（5s 兜底：若产品 bug 导致少于 4 个到达，
+    // 放行后 connect_count 断言会失败暴露，而非死等）。
+    auto wait_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (transport->gate_arrived_count() < 4 &&
+           std::chrono::steady_clock::now() < wait_deadline) {
+        std::this_thread::yield();
+    }
+    transport->release_connect_gate();
     for (auto& t : threads) t.join();
 
-    EXPECT_GT(transport->connect_count(), 1);
-    EXPECT_LE(transport->connect_count(), 4);
+    // gate 保证 4 次调用 create_connection（计数在 gate 前递增，含失败路径）。
+    EXPECT_EQ(transport->connect_count(), 4);
 }
 
 // 达 fd 上限(2×pool_size)后为新 peer 新建连接，触发反倾斜淘汰：
