@@ -36,6 +36,7 @@ FLY_EXPORT_MODULE(_fly_core) {
     FLY_EXPORT_METHOD("script_path", &ProcessInfo::script_path)
     FLY_EXPORT_METHOD("interactive", &ProcessInfo::interactive)
     FLY_EXPORT_METHOD("worker_attributes", &ProcessInfo::worker_attributes)
+    FLY_EXPORT_METHOD("worker_role", &ProcessInfo::worker_role)
     FLY_EXPORT_METHOD("hostname", &ProcessInfo::hostname)
     FLY_EXPORT_METHOD("set_hostname", &ProcessInfo::set_hostname);
 

@@ -3,6 +3,31 @@
 ---
 ---
 
+## 2026-08-15 (2): F3 worker role 落地（hybrid/storage_only，静态身份，调度不感知）
+
+用户确认语义：role 是独立于 attributes（可变、参与调度匹配）的**静态身份**——
+注册时设定、不可变更（无修改途径，storage_only 因此不可取消）；取值仅
+hybrid（默认）/storage_only；**调度决策不感知 storage_only**（idle 候选层过滤，
+scheduler 零 role 概念）；storage_only 仍参与心跳判死/数据面/internal 数据
+task（merge/backup 搬运）与 backup 目标。
+
+- **H1**（a66716c）：WorkerRole enum + WorkerInfo.role_ + RegisterMessage.role_；
+  get_idle_workers/count 候选层过滤（TaskScheduler 零改动——select_best_worker
+  全分支被 idle 集合门控）；worker/master 注册链透传（宽限重连同值覆盖）；
+  export 构造重载。单测三个新用例。
+- **H2**（本 commit）：launch config role key → CLI --worker-role →
+  ProcessInfo.worker_role → runtime → Worker(role=)；print_usage 补
+  --worker-attributes（此前漏列）与 --worker-role；QA test_worker_role
+  （storage_only 不入候选、无计算 task 痕迹、注册上报验证）；
+  文档全面修正（architecture.md 虚构 CLI/role 语义/"尚未实现"、
+  fly/__init__ docstring、remaining-todo F3 ✅、roadmap F3 落地说明与
+  实现方案差异、wait_for_all_workers 只数可调度 worker）。
+- 调试记录：QA 断言 worker 日志需在 stop 后读（INFO 缓冲退出才 flush——
+  P3-19 同机制，顺手为 P3-19 补充了根因证据）。
+
+---
+---
+
 ## 2026-08-15 (1): worker 断连重连 + master 宽限（G 系列 4 commit）
 
 用户多轮收敛的最终语义：断连仅指网络闪断（master 挂=全群失败）；首次注册默认

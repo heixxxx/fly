@@ -350,6 +350,8 @@ class Master(FlyAgent):
         return self._agent.get_completed_tasks()
 
     def wait_for_all_workers(self, count: int = None, timeout: float = 30.0):
+        """等 worker 注册并 IDLE。注：按可调度（idle）worker 计数——storage_only
+        角色的 worker 不在调度候选（role 语义），不计入本计数。"""
         import time
         if count is None:
             count = self._expected_workers
@@ -857,6 +859,15 @@ class Master(FlyAgent):
             cmd.extend(["--host", config["host"]])
         if attrs_str:
             cmd.extend(["--worker-attributes", attrs_str])
+        # role：静态身份（hybrid 默认 / storage_only，不可变更）。此前被静默忽略
+        #（F3 遗留，文档承诺未实现）；非法值 WARN 回退 hybrid。
+        if config and isinstance(config, dict) and config.get("role"):
+            role = str(config["role"])
+            if role not in ("hybrid", "storage_only"):
+                WARN(f"launch_workers: unknown role '{role}' for worker {worker_id} "
+                     f"(expected hybrid|storage_only), falling back to hybrid")
+                role = "hybrid"
+            cmd.extend(["--worker-role", role])
 
         env = os.environ.copy()
 
@@ -931,9 +942,12 @@ class Worker(FlyAgent):
         return "worker"
 
     def __init__(self, worker_id: int, master_host: str, master_port: int,
-                 attributes: list = None):
+                 attributes: list = None, role: str = "hybrid"):
+        # role：静态身份（hybrid 默认 / storage_only），注册时上报、不可变更；
+        # 独立于 attributes（可变、参与调度匹配）。storage_only 不参与计算调度
+        #（仍可执行 internal 数据 task 与作为数据副本持有者）。
         self._agent = EXAgentWorker(worker_id, master_host, master_port,
-                                    attributes or [])
+                                    attributes or [], role)
         self._db_cache = {}
         self._db_path_pending = {}
         self._cache = {}
@@ -942,6 +956,7 @@ class Worker(FlyAgent):
         self._worker_id = worker_id
         self._executor = None
         self._worker_procs = []
+        self._role = role
 
     def start(self):
         self._executor = EXTaskExecutor()

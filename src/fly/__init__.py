@@ -7,7 +7,7 @@ Example::
     import fly
 
     db = fly.open_db("./my_db")
-    fly.launch_workers([{"role": "worker"}])
+    fly.launch_workers([{}, {"role": "storage_only"}])
 
     @fly.as_task(inputs=lambda db: [])
     def my_task(db):
@@ -132,6 +132,7 @@ def load_db(path: str) -> 'Database':
 
 
 def merge_db(path: str, data_path: str = "", merge_db_path: str = "",
+             task_timeout: float = 3600.0,
              local_workers: int = 4, delete_source: bool = True) -> 'Database':
     """Merge a frozen database's data onto the master host.
 
@@ -140,10 +141,14 @@ def merge_db(path: str, data_path: str = "", merge_db_path: str = "",
 
     Must be called on the Master node. Source db must be frozen (``db.freeze()``).
 
+    Raises:
+        RuntimeError: 任一对象 merge 失败（源数据保留支撑重试，失败产物已清理）。
+
     Args:
         path: 源 db 的 db_path（共享存储，必须已 freeze）。
         data_path: 产物 data_path（master host 本地）。默认 ``path + ".merged_data"``。
         db_path: 产物 db_path。默认空=复用源 ``path``（idx 在共享盘，零搬迁）。
+        task_timeout: 等待全部 merge task 完成的超时（秒）。默认 3600。
         local_workers: 仅当 master host **无**同 host worker 时拉起的 worker 数上限；
             已存在则不补齐，使用现有 worker 数作为并发度。
         delete_source: merge 全部成功后是否自动删源各 host 的原 .dat。
@@ -153,13 +158,20 @@ def merge_db(path: str, data_path: str = "", merge_db_path: str = "",
 
     See ``docs/db-merge-design.md`` for design details.
     """
-    return get_agent().merge_db(path, data_path, merge_db_path, local_workers, delete_source)
+    return get_agent().merge_db(path, data_path, merge_db_path,
+                                task_timeout, local_workers, delete_source)
 
 
 def launch_workers(configs: list):
     """Launch local worker processes.
 
-    Each config dict supports a ``'role'`` key.
+    Each config dict supports:
+
+    - ``'role'``: worker 静态身份——``"hybrid"``（默认，任务执行+数据存储）/
+      ``"storage_only"``（存储 worker：不参与计算 task 调度，仍可执行内部数据
+      搬运 task 与作为数据副本持有者）。注册时设定，不可变更；独立于 attributes。
+    - ``'attributes'``: 可随时增减的能力标签（参与调度匹配）。
+    - ``'host'``: hostname override（单机多 host 测试）。
 
     Args:
         configs: List of config dicts, one per worker.

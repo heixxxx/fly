@@ -45,12 +45,14 @@ def _create_agent() -> "FlyAgent":
     if _mode == "worker":
         attrs_str = proc.worker_attributes()
         attributes = [a.strip() for a in attrs_str.split(",") if a.strip()] if attrs_str else []
+        role = proc.worker_role() or "hybrid"
         w = Worker(proc.worker_id(),
                     proc.master_host(),
                     proc.cli_master_port(),
-                    attributes=attributes)
+                    attributes=attributes,
+                    role=role)
         w.start()
-        DBG(f"Worker mode: id={proc.worker_id()}, master={proc.master_host()}:{proc.cli_master_port()}, attributes={attributes}")
+        DBG(f"Worker mode: id={proc.worker_id()}, master={proc.master_host()}:{proc.cli_master_port()}, attributes={attributes}, role={role}")
         return w
     else:
         m = Master()

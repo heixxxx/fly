@@ -72,9 +72,9 @@
 # Master模式：直接传入用户脚本（无flag）
 fly user_tasks.py
 
-# Worker模式：使用--worker_mode区分
-fly --worker_mode --master master:8000 --role hybrid
-fly --worker_mode --master master:8000 --role storage_only
+# Worker模式：--worker 指定（--master-host/--master-port 指向 master）
+fly --worker --worker-id 1 --master-host master --master-port 8000
+fly --worker --worker-id 2 --master-host master --master-port 8000 --worker-role storage_only
 
 # Master交互模式（可选）
 fly -i user_tasks.py
@@ -318,7 +318,12 @@ worker 生命周期语义（用户确认，两阶段）：
 `load_db`/`merge_db` 内部的补 spawn 等待已改用此机制。
 
 **Worker能力说明**：
-- `role` 字段：hybrid（任务执行+数据存储）/ storage_only（仅数据存储）
+- `role`（静态身份）：hybrid（默认，任务执行+数据存储）/ storage_only（存储
+  worker）——**独立于 attributes**（可随时增减、参与调度匹配）：注册时设定、
+  **不可变更**（无任何修改途径）；**调度决策不感知 storage_only**（idle 候选层
+  过滤，scheduler 无 role 概念），它仍参与心跳判死/数据面/internal 数据 task
+  （merge/backup）与 backup 目标。经 `launch_workers([{"role": "storage_only"}])`
+  或 CLI `--worker-role` 设定
 - **动态能力**: Worker 可在运行时动态设置/移除能力（GPU/CPU等），调度器实时匹配
 - **持久化失败任务**: 不可调度任务会持久化到 `log_dir/failed_tasks.bin`
 
@@ -769,7 +774,7 @@ fly/
 - **Database Freeze 后处理**：idx 合并、_META 生成
 - **Locality 调度**：数据位置感知的任务分配
 - **Worker 失败恢复**：任务重新调度
-- **Worker role 调度**：role-based 任务分配
+- **Worker role**：storage_only 存储角色（静态身份，调度候选层过滤——已实现）
 
 ---
 

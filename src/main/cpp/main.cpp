@@ -252,6 +252,9 @@ static void print_usage(const char* prog) {
     printf("  --master-port PORT   Master port (default: 0)\n");
     printf("  --log-dir DIR        Log directory (default: fly_log)\n");
     printf("  --host HOST          Host override for registration\n");
+    printf("  --worker-attributes A[,B...]\n");
+    printf("                       Comma-separated worker attributes (mutable, capability matching)\n");
+    printf("  --worker-role ROLE   Worker role (static identity): hybrid (default) | storage_only\n");
     printf("  -i                   Interactive mode\n");
     printf("  script               Python script to execute\n");
 }
@@ -272,6 +275,7 @@ int main(int argc, char* argv[]) {
     bool interactive = false;
     std::string script_path;
     std::string worker_attributes;
+    std::string worker_role;
     std::string host_override;
     std::string config_file;
 
@@ -291,6 +295,8 @@ int main(int argc, char* argv[]) {
             worker_attributes = argv[++i];
         } else if (arg == "--host" && i + 1 < argc) {
             host_override = argv[++i];
+        } else if (arg == "--worker-role" && i + 1 < argc) {
+            worker_role = argv[++i];
         } else if (arg == "--config-file" && i + 1 < argc) {
             config_file = argv[++i];
         } else if (arg == "-i") {
@@ -319,6 +325,7 @@ int main(int argc, char* argv[]) {
     proc->set_interactive(interactive);
     proc->set_script_path(script_path);
     proc->set_worker_attributes(worker_attributes);
+    proc->set_worker_role(worker_role);
 
     if (!host_override.empty()) {
         proc->set_hostname(host_override);

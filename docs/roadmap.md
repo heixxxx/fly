@@ -36,7 +36,7 @@
 |---|---|---|---|
 | **F1** | SSH / 多机 Worker 启动 | `launch_ssh_workers` 全仓库零命中；仅 `subprocess.Popen` 本机 | **功能已具备，降级**：见 §4 决策记录 ① |
 | **F2** | Freeze 后处理（idx 合并 / merged.idx / _META 聚合） | master 无 `IdxRequest` handler；`grep merged.idx src/` 零命中 | **降级**：见 §4 决策记录 ②（仍未实现） |
-| **F3** | Worker role 调度（storage_only / hybrid 差异化） | `_spawn_process_worker` 忽略 role 字段；task_scheduler 不读 role | 保持 P1（仍未实现） |
+| **F3** | Worker role（storage_only / hybrid） | 已落地（2026-08-15）：静态身份 + idle 候选层过滤，scheduler 零 role 概念 | 完成 |
 | **F4** | 大对象分片传输 + 背压 | DataResponse 两段式但不分片；仅连接池并发限流，无 credit 流控 | **降级**：见 §4 决策记录 ⑤ |
 | **F5** | ~~任务优先级~~ | ~~`TaskRequirements` 无 priority 字段；纯 FIFO~~ | **✅ 已完成**（commit 500880c：`@as_task(priority=N)` 全链路优先级调度，ready_tasks_ 按 {-priority, task_id} 有序） |
 | **F6** | stage checkpoint 显式表达 | 无框架级 progress query | **不做**：见 §4 决策记录 ④ |
@@ -173,7 +173,7 @@ scheduler_->set_locality_preference(...);
 | ⑤ | P1：大对象分片+背压 | **降级** | 当前架构基本满足要求，非紧迫 |
 | ⑥ | P2：协议版本号等 | **不做** | 早期开发阶段没必要引入版本号 |
 | ⑦ | P1：任务优先级（F5） | **保持** | FIFO 不足场景真实 |
-| ⑧ | P1：Worker role 调度（F3） | **保持** | storage_only role 需落地 |
+| ⑧ | P1：Worker role 调度（F3） | **完成** | 已落地（静态身份 + 调度候选层过滤） |
 
 ---
 
@@ -197,10 +197,14 @@ scheduler_->set_locality_preference(...);
 - 完全向后兼容：所有现有 task 默认 10（同值），排序退化为 task_id 升序 = 现状 FIFO
 - 验证：全量单测 52/52 + 全量 QA 135/135 通过；详见 [`docs/priority-scheduling-design.md`](priority-scheduling-design.md)
 
-**[F3] Worker role 调度**
-- `_spawn_process_worker` 消费 role 字段传给 worker
-- `TaskScheduler` 阶段 A 增加规则：`storage_only` worker 不接收计算任务
-- 配套 `requires` 语义：默认任务隐式要求 `hybrid` role
+**[F3] Worker role（已落地 2026-08-15，实现与原方案不同）**
+- `_spawn_process_worker` 消费 role 字段 → CLI `--worker-role` → 注册上报（静态身份，
+  不可变更；重连同值）
+- 调度决策不感知 storage_only：`WorkerManager::get_idle_workers` 候选层过滤
+ （scheduler/TaskRequirements 零 role 概念——比原方案"scheduler 规则+隐式
+  requires"更彻底，调度器完全不感知）
+- storage_only 仍参与：心跳判死、数据面、internal 数据 task（merge/backup）、
+  backup 目标选择
 
 **[M1] 数据对象元信息的内存上限（观察项）** — 详见 [`memory-growth-analysis.md`](memory-growth-analysis.md)
 - **现状**：`remote_idx_` / `local_idx_` / `write_provenance_` 只在显式 `remove_object` 时清理，无数量上限/TTL/LRU，随对象数线性增长。task 侧已有完善上限（`kMaxCompletedTasks=100` + 完成即清理），数据对象侧没有。

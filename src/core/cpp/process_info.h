@@ -18,6 +18,8 @@ public:
     void set_script_path(const CMString& path) { script_path_ = path; }
     void set_interactive(bool mode) { interactive_ = mode; }
     void set_worker_attributes(const CMString& attrs) { worker_attributes_ = attrs; }
+    // worker role（静态身份，CLI --worker-role）：空=hybrid（默认）。
+    void set_worker_role(const CMString& role) { worker_role_ = role; }
     void set_hostname(const CMString& hostname) { hostname_ = hostname; }
 
     bool worker_mode() const { return worker_mode_; }
@@ -29,6 +31,7 @@ public:
     const CMString& script_path() const { return script_path_; }
     bool interactive() const { return interactive_; }
     const CMString& worker_attributes() const { return worker_attributes_; }
+    const CMString& worker_role() const { return worker_role_; }
 
     CMString hostname() const;
 
@@ -47,5 +50,6 @@ private:
     CMString script_path_;
     bool interactive_ = false;
     CMString worker_attributes_;
+    CMString worker_role_;   // 空=hybrid（默认）；"storage_only"=存储 worker
     mutable CMString hostname_;
 };

@@ -9,7 +9,7 @@
 
 | 编号 | 项 | 状态 | 说明 |
 |---|---|---|---|
-| **F3** | Worker role 调度（storage_only/hybrid） | ❌ | roadmap P1，文档承诺但未实现。WorkerInfo/TaskRequirements 无 role 字段，scheduler 只做 capability 匹配 |
+| **F3** | Worker role（storage_only/hybrid） | ✅ | 已实现（2026-08-15）：role 静态身份（注册时设定不可变更），调度候选层过滤 storage_only（get_idle_workers，scheduler 零 role 概念）；仍参与心跳/数据面/internal 数据 task |
 | F1 | SSH / 多机 Worker 启动 | ⏸ 降级 | 功能层缺，待多机测试环境 |
 | F2 | Freeze 后处理（idx 合并/merged.idx/_META 聚合） | ⏸ 降级 | master 无 IdxRequest handler，database.cpp:440 有 TODO |
 | F4 | 大对象分片传输 + 背压 | ⏸ 降级 | DataResponse 两段式不分片，无 credit 流控 |
@@ -122,6 +122,5 @@
 
 1. **文档同步**（ISSUES/roadmap/architecture 状态更正，纯文档零风险）
 2. **auto_backup 双层重设计完成**（.work/auto_backup_handoff.md，step 2-5）
-3. **F3 worker role 调度**（roadmap P1，文档早承诺）
 4. **死代码清理**（IOThreadPool/_MIGRATED_TO/GMRES，纯收益降维护噪音）
 5. **网络层**（HandlerThreadPool 接线 / send 异步化 / 背压——影响性能上限）
