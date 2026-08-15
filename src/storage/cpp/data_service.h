@@ -51,6 +51,12 @@ struct RemoteObjectInfo {
     uint64_t worker_id_ = 0;
     CMString host_;
     int32_t port_ = 0;
+    // 读侧排序依据（registry 登记/覆盖时刷新）。storage_only 优先：数据面
+    // 副本不跑用户 task，进程可靠且数据服务资源稳定。alive_ 仅 master 进程
+    // 维护（权威视图判死/复活）；worker 侧不判死，恒 true，靠连接失败自然
+    // 处理。
+    bool storage_only_ = false;
+    bool alive_ = true;
 };
 
 enum class CompletionState {
@@ -191,11 +197,14 @@ public:
 
     // 登记/更新远程对象位置。size_bytes > 0 时更新对象的压缩字节数；
     // size_bytes == 0 时保持已记录的 size 不变（防御 rebuild 等无 size 的路径）。
+    // storage_only 透传 registry（worker 侧从 DataLocation 消息回填时携带，
+    // master 填充方权威；缺省 false 与旧调用兼容）。
     void update_remote_idx(const CMString& object_name,
                             uint64_t worker_id,
                             const CMString& host,
                             int32_t port,
-                            int64_t size_bytes = 0);
+                            int64_t size_bytes = 0,
+                            bool storage_only = false);
 
     void add_remote_location(const CMString& object_name, uint64_t worker_id);
     void remove_remote_location(const CMString& object_name);
@@ -227,7 +236,14 @@ public:
 
     void register_worker(uint64_t worker_id,
                             const CMString& host,
-                            int32_t port);
+                            int32_t port,
+                            bool storage_only = false);
+    // master 判死/复活时刷新 registry 的 alive_ 标记（整条覆盖式注册会将其
+    // 重置为 true，重连注册天然恢复）。
+    void set_worker_alive(uint64_t worker_id, bool alive);
+    // registry 查询：worker 是否登记为 storage_only（master 填充 DataLocation
+    // 等发送点用；未登记返回 false）。
+    bool is_storage_worker(uint64_t worker_id) const;
 
     RemoteObjectInfo get_worker_address(uint64_t worker_id) const;
 

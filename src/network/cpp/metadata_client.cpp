@@ -99,6 +99,7 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
             rl.worker_id_ = dl.worker_id;
             rl.host_ = dl.host;
             rl.port_ = dl.port;
+            rl.storage_only_ = dl.storage_only != 0;
             result.all_locations_.push_back(std::move(rl));
         }
         if (!result.all_locations_.empty()) {

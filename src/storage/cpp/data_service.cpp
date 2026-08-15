@@ -463,10 +463,11 @@ void DataService::update_remote_idx(const CMString& object_name,
                                       uint64_t worker_id,
                                       const CMString& host,
                                       int32_t port,
-                                      int64_t size_bytes) {
+                                      int64_t size_bytes,
+                                      bool storage_only) {
     // 三次独立加锁不嵌套（register_worker 用 worker 锁，add_remote_location/size
     // 用 remote 锁），与分片前语义等价，无死锁风险。
-    register_worker(worker_id, host, port);
+    register_worker(worker_id, host, port, storage_only);
     add_remote_location(object_name, worker_id);
     if (size_bytes > 0) {
         auto [db_path, short_name] = split_full(object_name);
@@ -630,6 +631,32 @@ CMVector<RemoteObjectInfo> DataService::lookup_all_remote_idx(const CMString& ob
             out.push_back(wit->second);
         }
     }
+    rlock.unlock();
+    wlock.unlock();
+
+    // 副本遍历顺序（原 TIER2 循环内的 net_probe 排序收敛至此，一处生效、
+    // 全部消费端一致——TIER2 逐副本试读与 TIER3 应答顺序同源）：
+    //   1. 存活 storage_only 优先（数据面副本不跑用户 task，服务稳定）；
+    //   2. 存活 hybrid；
+    //   3. 已死（holder 判死后条目保留的语义下，死副本排尾，避免每次读
+    //      白费一次 connect 超时；alive_ 仅 master 进程维护）。
+    // 同级内按 net_probe 带宽分降序（stable_sort 保注册序——探测未覆盖的
+    // peer 分数为 0，保持原位，行为与未启用时一致）；net_probe_enabled=0
+    // 时不按分数重排。
+    if (out.size() > 1) {
+        const bool probe_enabled = Config::instance()->get_int("net_probe_enabled") != 0;
+        std::stable_sort(out.begin(), out.end(),
+            [probe_enabled](const RemoteObjectInfo& a, const RemoteObjectInfo& b) {
+                auto rank = [](const RemoteObjectInfo& r) {
+                    if (!r.alive_) return 2;
+                    return r.storage_only_ ? 0 : 1;
+                };
+                if (rank(a) != rank(b)) return rank(a) < rank(b);
+                if (!probe_enabled) return false;
+                return NetQualityMonitor::instance().score(a.host_) >
+                       NetQualityMonitor::instance().score(b.host_);
+            });
+    }
     return out;
 }
 
@@ -651,9 +678,24 @@ void DataService::remove_remote_index(const CMString& object_name) {
 
 void DataService::register_worker(uint64_t worker_id,
                                    const CMString& host,
-                                   int32_t port) {
+                                   int32_t port,
+                                   bool storage_only) {
     std::unique_lock<std::shared_mutex> lock(worker_mutex_);
-    worker_registry_[worker_id] = {worker_id, host, port};
+    worker_registry_[worker_id] = {worker_id, host, port, storage_only, true};
+}
+
+void DataService::set_worker_alive(uint64_t worker_id, bool alive) {
+    std::unique_lock<std::shared_mutex> lock(worker_mutex_);
+    auto it = worker_registry_.find(worker_id);
+    if (it != worker_registry_.end()) {
+        it->second.alive_ = alive;
+    }
+}
+
+bool DataService::is_storage_worker(uint64_t worker_id) const {
+    std::shared_lock<std::shared_mutex> lock(worker_mutex_);
+    auto it = worker_registry_.find(worker_id);
+    return it != worker_registry_.end() && it->second.storage_only_;
 }
 
 RemoteObjectInfo DataService::get_worker_address(uint64_t worker_id) const {
@@ -1030,18 +1072,8 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
                 }
 
                 bool saw_not_ready = false;
-                // Prefer better-connected replicas first. stable_sort keeps the
-                // registration order for equal scores, so unknown peers (score
-                // 0) stay in their original position — behavior is unchanged
-                // before any quality data is gathered. Disabled via config →
-                // no-op (registration order preserved exactly as before).
-                if (Config::instance()->get_int("net_probe_enabled")) {
-                    std::stable_sort(replicas.begin(), replicas.end(),
-                        [](const RemoteObjectInfo& a, const RemoteObjectInfo& b) {
-                            return NetQualityMonitor::instance().score(a.host_) >
-                                   NetQualityMonitor::instance().score(b.host_);
-                        });
-                }
+                // 副本遍历顺序（storage 优先 / 死副本排尾 / net_probe 带宽分）
+                // 已收敛到 lookup_all_remote_idx 内统一排序，此处直接消费。
                 for (const auto& loc : replicas) {
                     auto [cb_found, cb_data, cb_py_name, cb_hash, cb_rerr] =
                         cb(loc.host_, loc.port_, object_name);

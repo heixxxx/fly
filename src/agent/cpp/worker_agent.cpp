@@ -514,8 +514,10 @@ void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
     // carries all replicas.
     if (!msg.dependency_locations_.empty()) {
         for (const auto& loc : msg.dependency_locations_) {
-            DataService::instance()->update_remote_idx(loc.object_name, loc.worker_id, loc.host, loc.port);
-            DBG("[PREFETCH] obj={} worker_id={} host={} port={}", loc.object_name, loc.worker_id, loc.host, loc.port);
+            DataService::instance()->update_remote_idx(loc.object_name, loc.worker_id, loc.host,
+                                                        loc.port, 0, loc.storage_only != 0);
+            DBG("[PREFETCH] obj={} worker_id={} host={} port={} storage_only={}",
+                loc.object_name, loc.worker_id, loc.host, loc.port, loc.storage_only);
         }
     }
 
@@ -993,7 +995,8 @@ std::tuple<bool, bool> WorkerAgent::request_remote_data(const CMString& object_n
     // Populate remote_idx with every replica master returned, so TIER2 can
     // iterate all of them.
     for (const auto& rl : location.all_locations_) {
-        DataService::instance()->update_remote_idx(object_name, rl.worker_id_, rl.host_, rl.port_);
+        DataService::instance()->update_remote_idx(object_name, rl.worker_id_, rl.host_,
+                                                    rl.port_, 0, rl.storage_only_);
     }
 
     return {true, location.can_still_produce_};

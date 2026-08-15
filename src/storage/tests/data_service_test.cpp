@@ -242,6 +242,53 @@ TEST_F(DataServiceTest, LookupAllRemoteIdxEmptyForUnknownObject) {
     EXPECT_TRUE(all.empty());
 }
 
+// TIER2/TIER3 副本遍历顺序：storage_only 优先于 hybrid（即便 hybrid 先注册）。
+TEST_F(DataServiceTest, LookupAllPrefersStorageRole) {
+    CMString full = db32("pref_storage") + ":obj";
+    ds_->update_remote_idx(full, 1, "host_a", 8000);                  // hybrid（先注册）
+    ds_->update_remote_idx(full, 2, "host_b", 9000, 0, true);         // storage_only
+
+    auto all = ds_->lookup_all_remote_idx(full);
+    ASSERT_EQ(all.size(), 2u);
+    EXPECT_EQ(all[0].worker_id_, 2u);  // storage 优先
+    EXPECT_TRUE(all[0].storage_only_);
+    EXPECT_EQ(all[1].worker_id_, 1u);
+    EXPECT_FALSE(all[1].storage_only_);
+}
+
+// 已死 holder 排尾（判死后 remote_idx 条目保留的语义下，读侧不浪费时间
+// connect 死副本）。storage 标死后同样让位于存活 hybrid。
+TEST_F(DataServiceTest, LookupAllDeprioritizesDead) {
+    CMString full = db32("pref_alive") + ":obj";
+    ds_->update_remote_idx(full, 1, "host_a", 8000);
+    ds_->update_remote_idx(full, 2, "host_b", 9000, 0, true);         // storage
+    ds_->update_remote_idx(full, 3, "host_c", 7000);
+
+    ds_->set_worker_alive(2, false);  // storage 判死 → 排尾
+
+    auto all = ds_->lookup_all_remote_idx(full);
+    ASSERT_EQ(all.size(), 3u);
+    EXPECT_EQ(all[0].worker_id_, 1u);  // 存活 hybrid
+    EXPECT_EQ(all[1].worker_id_, 3u);  // 存活 hybrid
+    EXPECT_EQ(all[2].worker_id_, 2u);  // 死副本最末
+    EXPECT_FALSE(all[2].alive_);
+}
+
+// set_worker_alive 对未登记 worker 是 no-op；is_storage_worker 缺省 false。
+TEST_F(DataServiceTest, WorkerAliveAndRoleAccessors) {
+    ds_->set_worker_alive(999, false);  // no-op，不崩溃
+    EXPECT_FALSE(ds_->is_storage_worker(999));
+
+    CMString full = db32("accessor") + ":obj";
+    ds_->update_remote_idx(full, 7, "host_x", 6000, 0, true);
+    EXPECT_TRUE(ds_->is_storage_worker(7));
+    EXPECT_TRUE(ds_->get_worker_address(7).alive_);
+
+    ds_->set_worker_alive(7, false);
+    EXPECT_TRUE(ds_->is_storage_worker(7));   // role 不因判死丢失
+    EXPECT_FALSE(ds_->get_worker_address(7).alive_);
+}
+
 TEST_F(DataServiceTest, RegisterDatabaseAndLocalRead) {
     CMString db_path = test_dir_ + "/reg_db";
     std::filesystem::create_directories(db_path);

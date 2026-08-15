@@ -435,6 +435,11 @@ Worker A 读取 object_name:
 4. 查询远程索引缓存（DataService.remote_idx）
    └─ 找到 → DataClientPool.request() 直连目标 Worker B
        └─ Worker B 响应 → 返回数据
+       └─ 副本遍历顺序（lookup_all_remote_idx 统一排序，TIER2/TIER3 同源）：
+          存活 storage_only > 存活 hybrid > 已死 holder（判死后条目保留的
+          语义下排尾，避免每次读白费 connect 超时）；同级内按 net_probe
+          带宽分降序。role 经 DataLocation 字段传播（TaskAssign 预取 +
+          TIER3 应答），worker 回填本地 registry。
 
 5. Tier 3: agent 层兜底回调
    └─ remote_compressed_read_handler(object_name)

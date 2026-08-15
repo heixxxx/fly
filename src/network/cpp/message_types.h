@@ -188,8 +188,11 @@ struct DataLocation {
     uint64_t worker_id = 0;
     CMString host;
     int32_t port = 0;
+    // 1 = 目标 worker 为 storage_only（master registry 权威填充；读方回填本地
+    // registry 供 TIER2 排序 storage 优先）。缺省 0 与旧语义一致。
+    uint8_t storage_only = 0;
 
-    FLY_SERIALIZE(object_name, worker_id, host, port);
+    FLY_SERIALIZE(object_name, worker_id, host, port, storage_only);
 };
 
 // A var name/value pair inlined into TaskAssignMessage, so workers receive declared

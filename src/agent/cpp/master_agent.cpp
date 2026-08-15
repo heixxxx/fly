@@ -783,7 +783,10 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
             auto cached = task_dependency_locations_.take(task_id);
             if (cached.has_value()) {
                 for (const auto& [dep, loc] : *cached) {
-                    msg.dependency_locations_.push_back({dep, loc.worker_id, loc.host, loc.port});
+                    // role 取权威 registry 当前值（缓存不携带，避免陈旧）。
+                    DataLocation dl{dep, loc.worker_id, loc.host, loc.port,
+                                    ds->is_storage_worker(loc.worker_id) ? 1 : 0};
+                    msg.dependency_locations_.push_back(std::move(dl));
                 }
             }
         }
@@ -799,7 +802,8 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
             if (!already_cached) {
                 auto loc = ds->lookup_remote_idx(dep);
                 if (loc.worker_id_ != 0 && !loc.host_.empty()) {
-                    msg.dependency_locations_.push_back({dep, loc.worker_id_, loc.host_, loc.port_});
+                    msg.dependency_locations_.push_back({dep, loc.worker_id_, loc.host_, loc.port_,
+                                                         loc.storage_only_ ? 1 : 0});
                 }
             }
         }
@@ -987,9 +991,12 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
 
     DataService::instance();
     if (msg.data_server_port_ > 0) {
-        DataService::instance()->register_worker(worker_id, msg.data_server_host_, msg.data_server_port_);
-        INFO("Worker registered: worker_id={}, conn_id={}, hostname={}, data_server={}:{}",
-             worker_id, conn_id, msg.hostname_, msg.data_server_host_, msg.data_server_port_);
+        DataService::instance()->register_worker(worker_id, msg.data_server_host_,
+                                                  msg.data_server_port_,
+                                                  role == WorkerRole::STORAGE_ONLY);
+        INFO("Worker registered: worker_id={}, conn_id={}, hostname={}, data_server={}:{}, role={}",
+             worker_id, conn_id, msg.hostname_, msg.data_server_host_, msg.data_server_port_,
+             role == WorkerRole::STORAGE_ONLY ? "storage_only" : "hybrid");
     }
 
     RegisterAckMessage ack;
@@ -1023,6 +1030,7 @@ void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
     auto worker = worker_manager_->get_worker(worker_id);
     if (worker && worker->get().status_ == WorkerStatus::DEAD) {
         worker_manager_->update_worker_status(worker_id, WorkerStatus::IDLE);
+        DataService::instance()->set_worker_alive(worker_id, true);
         INFO("Worker {} revived (heartbeat received after timeout)", worker_id);
     }
 
@@ -1318,6 +1326,10 @@ void MasterAgent::handle_worker_death(uint64_t worker_id) {
         worker_manager_->update_worker_status(worker_id, WorkerStatus::DEAD);
         tasks_to_recover = metadata_->get_task_ids_by_worker(worker_id);
     }
+    // registry 标死（锁外，storage 锁不与 schedule_mutex_ 嵌套）：读侧副本遍历
+    // 将死 holder 排尾，避免 TIER2/TIER3 每次白费一次 connect 超时。remote_idx
+    // 条目保持不变（权威视图不因判死丢位置——revive 语义）。
+    DataService::instance()->set_worker_alive(worker_id, false);
 
     // 崩溃恢复：worker 断连可能意味着进程崩溃（收不到失败消息），必须按 task_id
     // 清掉这些 task 声明的 pending frozen，否则该 db 会被永久标"冻结中" → 后续所有
@@ -1659,6 +1671,7 @@ void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessag
             dl.worker_id = loc.worker_id_;
             dl.host = loc.host_;
             dl.port = loc.port_;
+            dl.storage_only = loc.storage_only_ ? 1 : 0;
             response.locations_.push_back(std::move(dl));
         }
 

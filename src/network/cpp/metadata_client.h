@@ -13,6 +13,8 @@ struct ReplicaLocation {
     uint64_t worker_id_ = 0;
     CMString host_;
     int32_t port_ = 0;
+    // master 权威 registry 的 role（读方回填本地 registry 供 TIER2 排序）。
+    bool storage_only_ = false;
 };
 
 class MetadataClient {
