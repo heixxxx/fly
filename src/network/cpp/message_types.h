@@ -83,10 +83,13 @@ struct RegisterMessage {
     CMVector<CMString> attributes_;
     CMString data_server_host_;
     int32_t data_server_port_ = 0;
+    // worker role（静态身份，注册时设定不可变更）：0=hybrid（默认），1=storage_only。
+    // 独立于 attributes（可变、参与调度匹配）。
+    uint8_t role_ = 0;
 
     static constexpr MessageType msg_type_ = MessageType::REGISTER;
 
-    FLY_SERIALIZE(header_, worker_id_, hostname_, ip_address_, attributes_, data_server_host_, data_server_port_);
+    FLY_SERIALIZE(header_, worker_id_, hostname_, ip_address_, attributes_, data_server_host_, data_server_port_, role_);
 };
 
 struct RegisterAckMessage {

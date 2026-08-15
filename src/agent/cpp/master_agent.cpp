@@ -967,15 +967,22 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     // 断连宽限内的重连：task 在 worker 上存活（RUNNING 保留），重连后将正常
     // 上报 Complete/Failed——保留 BUSY 与 current_task_id_（覆盖为 IDLE 会让调度器
     // 立即派新 task，与迟到上报的状态迁移竞争）。宽限外注册维持全新语义。
+    // role 静态身份透传（storage_only 在 get_idle_workers 层退出调度候选）。
+    WorkerRole role = static_cast<WorkerRole>(msg.role_);
+    if (role != WorkerRole::HYBRID && role != WorkerRole::STORAGE_ONLY) {
+        WARN("Worker {} reported unknown role {} — treating as hybrid", worker_id,
+             static_cast<int>(msg.role_));
+        role = WorkerRole::HYBRID;
+    }
     bool in_grace = (grace_deadlines_.erase(worker_id) > 0);
     if (in_grace) {
         worker_manager_->register_worker_reconnect(worker_id, host_, port_, msg.attributes_,
-                                                    msg.hostname_, msg.ip_address_);
+                                                    msg.hostname_, msg.ip_address_, role);
         INFO("Worker re-connected within grace: worker_id={}, conn_id={} "
              "(task state preserved)", worker_id, conn_id);
     } else {
         worker_manager_->register_worker(worker_id, host_, port_, msg.attributes_,
-                                          msg.hostname_, msg.ip_address_);
+                                          msg.hostname_, msg.ip_address_, role);
     }
 
     DataService::instance();

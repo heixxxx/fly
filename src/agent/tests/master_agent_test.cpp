@@ -1606,7 +1606,49 @@ TEST(MasterAgentTest, GetIdleWorkers) {
     wait_for_running(master, false);
 }
 
-// --- get_connected_workers ---
+// role（F3）：storage_only 注册后连接表含（在线可数据服务）但调度候选不含；
+// hybrid 照常进入候选。
+TEST(MasterAgentTest, StorageOnlyWorkerNotInIdleCandidates) {
+    fly::DataService::instance()->reset();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent hybrid(601, "127.0.0.1", master.get_port(), {}, "hybrid");
+    WorkerAgent storage(602, "127.0.0.1", master.get_port(), {}, "storage_only");
+    hybrid.start();
+    storage.start();
+    ASSERT_TRUE(wait_until_registered(hybrid));
+    ASSERT_TRUE(wait_until_registered(storage));
+
+    // 两者都连接（数据面成员）。
+    wait_for([&]{
+        auto cs = master.get_connected_workers();
+        int n = 0;
+        for (auto w : cs) { if (w == 601 || w == 602) ++n; }
+        return n == 2;
+    }, 50, 20);
+
+    // idle 候选只含 hybrid。
+    wait_for([&]{
+        auto iw = master.get_idle_workers();
+        bool has_hybrid = false, has_storage = false;
+        for (auto id : iw) {
+            if (id == 601) has_hybrid = true;
+            if (id == 602) has_storage = true;
+        }
+        return has_hybrid && !has_storage;
+    }, 50, 20);
+    auto idle = master.get_idle_workers();
+    bool has_storage = false;
+    for (auto id : idle) { if (id == 602) has_storage = true; }
+    EXPECT_FALSE(has_storage) << "storage_only must not appear in idle candidates";
+
+    hybrid.stop();
+    storage.stop();
+    master.stop();
+    wait_for_running(master, false);
+}
 
 TEST(MasterAgentTest, GetConnectedWorkers) {
     fly::DataService::instance()->reset();

@@ -14,6 +14,15 @@ enum class WorkerStatus : uint8_t {
     DEAD = 2,
 };
 
+// worker role——独立于 attributes（可随时增减、参与调度匹配）的**静态身份**：
+// 注册时设定、不可变更（无修改途径）。hybrid=普通 worker（默认）；
+// storage_only=存储 worker——调度决策不感知（get_idle_workers 层过滤，scheduler
+// 零 role 概念），但仍参与心跳判死/数据面/internal 数据 task（merge/backup）。
+enum class WorkerRole : uint8_t {
+    HYBRID = 0,
+    STORAGE_ONLY = 1,
+};
+
 struct WorkerInfo {
     uint64_t worker_id_;
     CMString address_;
@@ -27,6 +36,8 @@ struct WorkerInfo {
     // 收编进 WorkerInfo 后由 WorkerManager::mutex_ 统一保护，消除数据竞争。
     CMString hostname_;
     CMString ip_address_;
+    // 静态身份（注册时设定，不可变更；与 capabilities 相互独立）。
+    WorkerRole role_ = WorkerRole::HYBRID;
 };
 
 class WorkerManager {
@@ -34,13 +45,15 @@ public:
     void register_worker(uint64_t worker_id, const CMString& address, uint16_t port,
                           const CMVector<CMString>& capabilities = {},
                           const CMString& hostname = "",
-                          const CMString& ip_address = "");
+                          const CMString& ip_address = "",
+                          WorkerRole role = WorkerRole::HYBRID);
     // 断连宽限内的重连注册：保留 BUSY 与 current_task_id_（task 在 worker 上存活，
-    // 重连后正常上报收敛），仅刷新地址/心跳/能力。
+    // 重连后正常上报收敛），仅刷新地址/心跳/能力。role 静态不变（重连同值覆盖）。
     void register_worker_reconnect(uint64_t worker_id, const CMString& address, uint16_t port,
                                     const CMVector<CMString>& capabilities = {},
                                     const CMString& hostname = "",
-                                    const CMString& ip_address = "");
+                                    const CMString& ip_address = "",
+                                    WorkerRole role = WorkerRole::HYBRID);
     void unregister_worker(uint64_t worker_id);
     void update_worker_status(uint64_t worker_id, WorkerStatus status);
     void record_heartbeat(uint64_t worker_id);

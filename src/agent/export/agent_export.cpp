@@ -274,6 +274,8 @@ FLY_EXPORT_CLASS(fly::VarPayload, "EXVarPayload")
 FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     FLY_EXPORT_INIT(uint64_t, fly::CMString, uint16_t)
     FLY_EXPORT_INIT(uint64_t, fly::CMString, uint16_t, fly::CMVector<fly::CMString>)
+    // role（静态身份）：独立第 5 参，"hybrid"（默认）/ "storage_only"。
+    FLY_EXPORT_INIT(uint64_t, fly::CMString, uint16_t, fly::CMVector<fly::CMString>, fly::CMString)
     FLY_EXPORT_METHOD("start", &fly::WorkerAgent::start)
     FLY_EXPORT_METHOD("stop", &fly::WorkerAgent::stop)
     FLY_EXPORT_METHOD("is_running", &fly::WorkerAgent::is_running)

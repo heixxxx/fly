@@ -14,6 +14,7 @@
 #include <storage/cpp/data_writer.h>
 #include <common/cpp/common_types.h>
 #include <common/cpp/concurrent_map.h>
+#include <task/cpp/worker_manager.h>   // WorkerRole（worker role 静态身份枚举）
 #include <cstdint>
 #include <thread>
 #include <atomic>
@@ -103,8 +104,10 @@ struct PendingVarOp {
 
 class WorkerAgent {
 public:
+    // role：静态身份（"hybrid" 默认 / "storage_only"），注册时上报、不可变更；
+    // 独立于 attributes（可变、参与调度匹配）。非法值 WARN 回退 hybrid。
     WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port,
-                const CMVector<CMString>& attributes = {});
+                const CMVector<CMString>& attributes = {}, const CMString& role = "hybrid");
     ~WorkerAgent();
     
     void start();
@@ -227,6 +230,9 @@ private:
     uint16_t master_port_;
     CMVector<CMString> attributes_;
     mutable std::mutex attributes_mutex_;
+    // 静态身份（构造时由 role 字符串解析，注册上报，不可变更）：
+    // 0=hybrid，1=storage_only（WorkerRole）。
+    uint8_t role_ = 0;
     std::atomic<bool> running_{false};
     std::atomic<bool> registered_{false};
     std::atomic<bool> shutdown_triggered_{false};

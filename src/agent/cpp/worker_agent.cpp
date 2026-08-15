@@ -24,9 +24,21 @@
 namespace fly {
 
 WorkerAgent::WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port,
-                          const CMVector<CMString>& attributes)
+                          const CMVector<CMString>& attributes, const CMString& role)
     : worker_id_(worker_id), master_host_(master_host), master_port_(master_port),
-      attributes_(attributes), running_(false), registered_(false) {}
+      attributes_(attributes), running_(false), registered_(false) {
+    // role 静态身份（注册时设定，不可变更）：仅 hybrid / storage_only；
+    // 非法值 WARN 回退 hybrid。
+    if (role == "storage_only") {
+        role_ = static_cast<uint8_t>(WorkerRole::STORAGE_ONLY);
+    } else {
+        if (!role.empty() && role != "hybrid") {
+            WARN("Unknown worker role '{}' (expected hybrid|storage_only), "
+                 "falling back to hybrid", role);
+        }
+        role_ = static_cast<uint8_t>(WorkerRole::HYBRID);
+    }
+}
 
 WorkerAgent::~WorkerAgent() {
     stop();
@@ -223,12 +235,15 @@ void WorkerAgent::start() {
     reg.data_server_port_ = data_server_port_;
     reg.hostname_ = ProcessInfo::instance()->hostname();
     reg.ip_address_ = data_server_host_;
+    reg.role_ = role_;
 
     reactor_->send(master_conn_, reg);
 
     auto dsp = data_server_port_;
     auto attr_count = attributes_.size();
-    INFO("RegisterMessage sent with data_server_port={}, attributes={}", dsp, attr_count);
+    INFO("RegisterMessage sent with data_server_port={}, attributes={}, role={}",
+         dsp, attr_count, role_ == static_cast<uint8_t>(WorkerRole::STORAGE_ONLY)
+                               ? "storage_only" : "hybrid");
 
     heartbeat_running_ = true;
     heartbeat_thread_ = std::thread([this] { heartbeat_loop(); });
@@ -696,6 +711,7 @@ void WorkerAgent::reconnect_loop() {
         reg.data_server_port_ = data_server_port_;
         reg.hostname_ = ProcessInfo::instance()->hostname();
         reg.ip_address_ = "";
+        reg.role_ = role_;   // 静态身份：重连同值上报
         reactor_->send(conn, reg);
 
         // 等 RegisterAck（on_register_ack 清除 reconnecting_ 并 flush）。

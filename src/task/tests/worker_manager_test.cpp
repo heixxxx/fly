@@ -6,7 +6,7 @@ namespace fly {
 TEST(WorkerManagerTest, RegisterWorker) {
     WorkerManager manager;
     manager.register_worker(1, "127.0.0.1", 8080, {"python", "gpu"});
-    
+
     EXPECT_EQ(manager.get_worker_count(), 1);
     auto worker_opt = manager.get_worker(1);
     ASSERT_TRUE(worker_opt.has_value());
@@ -15,6 +15,37 @@ TEST(WorkerManagerTest, RegisterWorker) {
     EXPECT_EQ(worker.port_, 8080);
     EXPECT_EQ(worker.status_, WorkerStatus::IDLE);
     EXPECT_EQ(worker.capabilities_.size(), 2);
+    EXPECT_EQ(worker.role_, WorkerRole::HYBRID) << "缺省 role 应为 hybrid";
+}
+
+// role 静态身份：注册时设定存储进 WorkerInfo（默认 hybrid；storage_only 显式）。
+TEST(WorkerManagerTest, RegisterWorkerStoresRole) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, CMVector<CMString>{}, "", "",
+                            WorkerRole::STORAGE_ONLY);
+    manager.register_worker(2, "127.0.0.1", 8081);
+
+    EXPECT_EQ(manager.get_worker(1)->get().role_, WorkerRole::STORAGE_ONLY);
+    EXPECT_EQ(manager.get_worker(2)->get().role_, WorkerRole::HYBRID);
+}
+
+// 调度决策不感知 storage_only（用户确认语义）：idle 候选层过滤——storage_only
+// 注册后 idle 恒空；hybrid 照常。它仍在 get_all_workers（心跳判死/数据面）。
+TEST(WorkerManagerTest, GetIdleWorkersExcludesStorageOnly) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, CMVector<CMString>{}, "", "",
+                            WorkerRole::STORAGE_ONLY);
+    manager.register_worker(2, "127.0.0.1", 8081);
+    manager.register_worker(3, "127.0.0.1", 8082, CMVector<CMString>{}, "", "",
+                            WorkerRole::STORAGE_ONLY);
+
+    auto idle = manager.get_idle_workers();
+    ASSERT_EQ(idle.size(), 1u);
+    EXPECT_EQ(idle[0], 2u) << "storage_only workers must not be schedulable candidates";
+    EXPECT_EQ(manager.get_idle_worker_count(), 1u);
+
+    // storage_only 仍参与心跳判死（get_all_workers 含它）。
+    EXPECT_EQ(manager.get_all_workers().size(), 3u);
 }
 
 TEST(WorkerManagerTest, UnregisterWorker) {

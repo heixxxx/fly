@@ -8,7 +8,8 @@ namespace fly {
 
 void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
                                       uint16_t port, const CMVector<CMString>& capabilities,
-                                      const CMString& hostname, const CMString& ip_address) {
+                                      const CMString& hostname, const CMString& ip_address,
+                                      WorkerRole role) {
     std::lock_guard<std::mutex> lock(mutex_);
     // worker 重连会用相同 worker_id 重新注册（合法）。但若旧 worker 仍处 BUSY（带着
     // 未完成 task），静默覆盖成 IDLE 会丢失 task 关联 → task 永久孤儿。此处 WARN 暴露
@@ -30,6 +31,7 @@ void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
     info.current_task_id_ = 0;
     info.hostname_ = hostname;
     info.ip_address_ = ip_address;
+    info.role_ = role;
     workers_[worker_id] = info;
 }
 
@@ -38,7 +40,8 @@ void WorkerManager::register_worker(uint64_t worker_id, const CMString& address,
 // 调度器立即派新 task，与迟到上报的状态迁移竞争）。地址/心跳刷新，task 关联不动。
 void WorkerManager::register_worker_reconnect(uint64_t worker_id, const CMString& address,
                                                uint16_t port, const CMVector<CMString>& capabilities,
-                                               const CMString& hostname, const CMString& ip_address) {
+                                               const CMString& hostname, const CMString& ip_address,
+                                               WorkerRole role) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = workers_.find(worker_id);
     if (it == workers_.end()) {
@@ -55,6 +58,7 @@ void WorkerManager::register_worker_reconnect(uint64_t worker_id, const CMString
         info.current_task_id_ = 0;
         info.hostname_ = hostname;
         info.ip_address_ = ip_address;
+        info.role_ = role;
         workers_[worker_id] = info;
         return;
     }
@@ -69,6 +73,8 @@ void WorkerManager::register_worker_reconnect(uint64_t worker_id, const CMString
         std::chrono::system_clock::now().time_since_epoch()).count();
     info.hostname_ = hostname;
     info.ip_address_ = ip_address;
+    // role 静态身份：重连同值覆盖（同一 worker 进程，role 不变）。
+    info.role_ = role;
 }
 
 void WorkerManager::unregister_worker(uint64_t worker_id) {
@@ -198,7 +204,11 @@ CMVector<uint64_t> WorkerManager::get_idle_workers() {
     std::lock_guard<std::mutex> lock(mutex_);
     CMVector<uint64_t> result;
     for (const auto& [id, info] : workers_) {
-        if (info.status_ == WorkerStatus::IDLE) {
+        // 调度决策不感知 storage_only（用户确认语义）：计算 task 候选在 idle
+        // 集合层过滤——scheduler 零 role 概念，storage_only 天然不存在于候选。
+        // 它仍参与心跳判死/数据面/internal 数据 task（走 get_all_workers + 直接
+        // assign，不经此处）。
+        if (info.status_ == WorkerStatus::IDLE && info.role_ != WorkerRole::STORAGE_ONLY) {
             result.push_back(id);
         }
     }
@@ -256,7 +266,7 @@ size_t WorkerManager::get_idle_worker_count() {
     std::lock_guard<std::mutex> lock(mutex_);
     size_t count = 0;
     for (const auto& [id, info] : workers_) {
-        if (info.status_ == WorkerStatus::IDLE) {
+        if (info.status_ == WorkerStatus::IDLE && info.role_ != WorkerRole::STORAGE_ONLY) {
             count++;
         }
     }
