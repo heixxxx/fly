@@ -336,6 +336,20 @@ private:
     // host → spawn 连续失败计数（Ack 失败累积，>=3 WARN 放弃该 host；
     // storage 上线或集群状态变化时清零）。
     ConcurrentUnorderedMap<CMString, int64_t> storage_spawn_failures_;
+    // 疑似重复注册的活性确认：worker_id → ProbeAck 时间戳（30s 新鲜度）。
+    // 连接断开时清除；用于区分「旧实例活着（拒绝后到者）」与「旧 conn 是
+    // EOF 未处理的残留（放行重连注册）」。
+    ConcurrentUnorderedMap<uint64_t, int64_t> dup_confirmed_alive_;
+    // 疑似重复注册的挂起（探测期间暂存后到者）：worker_id → 新 conn + 注册
+    // 消息 + 结论 deadline。旧连接断开 → 重放注册（正常接受）；ProbeAck →
+    // 拒绝；deadline → 保守拒绝。首连的 Register 无重发机制，闭环由 master
+    // 完成（重放），不依赖 worker 超时重试。
+    struct DeferredRegister {
+        uint64_t conn_id_ = 0;
+        RegisterMessage msg_;
+        int64_t deadline_ = 0;
+    };
+    ConcurrentUnorderedMap<uint64_t, DeferredRegister> deferred_registers_;
     // 自动补齐分配的 worker_id 高基区自增（避开 Python launch 从 1 起的
     // 低位序列，两序列永不冲突）。
     std::atomic<uint64_t> next_auto_spawn_worker_id_{100000};
@@ -488,6 +502,11 @@ private:
     void check_storage_nodes(int64_t now);
     void on_storage_spawn_ack(uint64_t conn_id, const StorageSpawnAckMessage& msg);
     bool send_storage_spawn_to_worker(uint64_t worker_id, uint64_t spawn_worker_id);
+    // 疑似重复注册的探测结论处理：ProbeAck → 拒绝挂起的后到者；注册重放
+    // （旧连接断开触发）；deadline 兜底（heartbeat 循环周期检查）。
+    void reject_deferred_register(uint64_t worker_id, const char* reason);
+    void replay_deferred_register(uint64_t worker_id);
+    void check_dup_register_deadlines(int64_t now);
     void attr_timeout_check_loop();
     void sched_watchdog_loop();
 

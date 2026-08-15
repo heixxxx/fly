@@ -205,6 +205,16 @@ void MasterAgent::start() {
             on_storage_spawn_ack(conn_id, msg);
         });
 
+    reactor_->register_handler<WorkerProbeAckMessage>(
+        [this](uint64_t conn_id, const WorkerProbeAckMessage& msg) {
+            auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            dup_confirmed_alive_.update(msg.worker_id_, [&](int64_t& t) { t = now; });
+            // 旧实例活着 → 挂起的后到者拒绝。
+            reject_deferred_register(msg.worker_id_, "probe confirmed existing instance alive");
+            DBG("Worker {} confirmed alive via probe (conn {})", msg.worker_id_, conn_id);
+        });
+
     reactor_->register_handler<DeleteDataAckMessage>(
         [this](uint64_t conn_id, const DeleteDataAckMessage& msg) {
             on_delete_data_ack(conn_id, msg);
@@ -886,6 +896,8 @@ void MasterAgent::heartbeat_check_loop() {
             // 自动补齐存储节点（auto_storage_nodes_enabled，默认关；
             // auto_storage_check_interval 节流，默认 30s）。
             check_storage_nodes(timestamp);
+            // 挂起重复注册的 deadline 兜底（探测 15s 无结论 → 保守拒绝）。
+            check_dup_register_deadlines(timestamp);
 
             auto dead = heartbeat_monitor_->get_dead_workers();
             for (uint64_t worker_id : dead) {
@@ -984,22 +996,46 @@ void MasterAgent::sched_watchdog_loop() {
 void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& msg) {
     uint64_t worker_id = msg.worker_id_;
 
-    // 重复注册防护（用户确认语义）：该 worker_id 已有活跃连接——典型为网络
-    // 分区恢复的旧实例与手动重启（AGENT::0006 命令）的新实例竞态。先到先得
-    //（活跃连接的注册状态保留），后到者回 duplicate ack 令其自行干净退出，
-    // 不做任何状态写入（conn 映射/占位符转正都不碰）。
+    // 重复注册防护（先到先得，用户确认语义）：该 worker_id 已有活跃连接——
+    // 典型为网络分区恢复的旧实例与手动重启（AGENT::0006 命令）的新实例竞态。
+    // 判定不依赖时序假设（「旧 conn 的 EOF 必然先于新注册处理」在高负载下
+    // 不成立——EOF 处理被饿过 worker 重连间隔时，正常重连会被误拒，
+    // DisconnectReconnectsAndReports 在 50 轮稳定性测试实测）：
+    //   - 已探测确认活着（30s 内 ProbeAck）→ 直接拒绝后到者；
+    //   - 否则向旧连接发探测并把后到者挂起（deferred）——旧连接死则 EOF
+    //     清表并重放注册（正常接受，首连无重发机制故由 master 重放）；
+    //     活着则 ProbeAck 到达后拒绝；15s deadline 保守拒绝兜底。
     {
         std::lock_guard<std::mutex> lk(workers_mutex_);
         auto it = worker_to_conn_.find(worker_id);
         if (it != worker_to_conn_.end() && it->second != conn_id) {
-            RegisterAckMessage dup_ack;
-            dup_ack.worker_id_ = worker_id;
-            dup_ack.master_address_ = host_;
-            dup_ack.master_port_ = static_cast<int32_t>(port_);
-            dup_ack.duplicate_ = true;
-            reactor_->send(conn_id, dup_ack);
-            WARN("Duplicate register rejected: worker_id={} already active on conn {} "
-                 "(incoming conn {}) — newcomer told to exit", worker_id, it->second, conn_id);
+            auto confirmed = dup_confirmed_alive_.find(worker_id);
+            auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            if (confirmed && now - *confirmed < 30) {
+                // 当前这条直接拒；probe 期间积压的挂起条目一并拒。
+                RegisterAckMessage dup_ack;
+                dup_ack.worker_id_ = worker_id;
+                dup_ack.master_address_ = host_;
+                dup_ack.master_port_ = static_cast<int32_t>(port_);
+                dup_ack.duplicate_ = true;
+                reactor_->send(conn_id, dup_ack);
+                reject_deferred_register(worker_id, "confirmed alive");
+                WARN("Duplicate register rejected: worker_id={} confirmed alive on conn {} "
+                     "(incoming conn {})", worker_id, it->second, conn_id);
+                return;
+            }
+            WorkerProbeMessage probe;
+            probe.worker_id_ = worker_id;
+            reactor_->send(it->second, probe);
+            DeferredRegister dr;
+            dr.conn_id_ = conn_id;
+            dr.msg_ = msg;
+            dr.deadline_ = now + 15;
+            deferred_registers_.update(worker_id, [&](DeferredRegister& d) { d = std::move(dr); });
+            WARN("Suspicious duplicate register: worker_id={} existing conn {} — probing "
+                 "liveness, incoming register (conn {}) deferred",
+                 worker_id, it->second, conn_id);
             return;
         }
     }
@@ -1034,28 +1070,35 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
                                           msg.hostname_, msg.ip_address_, role);
     }
 
+    DataService::instance();
+    if (msg.data_server_port_ > 0) {
+        DataService::instance()->register_worker(worker_id, msg.data_server_host_,
+                                                  msg.data_server_port_,
+                                                  role == WorkerRole::STORAGE_ONLY);
+    }
+
+    // Ack 立即发送（scheduler 在 register_worker 后即可 assign，Assign 抢在
+    // Ack 之前到达 worker 会让执行中的上报走缓冲——worker 侧 flush 已补，
+    // 此处再把窗口压到最小：仅隔 DataService 注册（assign 的依赖位置查询
+    // 需要它））。杂项（日志/占位清理/配额补发）全部后移。
+    RegisterAckMessage ack;
+    ack.worker_id_ = worker_id;
+    ack.master_address_ = host_;
+    ack.master_port_ = static_cast<int32_t>(port_);
+    reactor_->send(conn_id, ack);
+
+    if (msg.data_server_port_ > 0) {
+        INFO("Worker registered: worker_id={}, conn_id={}, hostname={}, data_server={}:{}, role={}",
+             worker_id, conn_id, msg.hostname_, msg.data_server_host_, msg.data_server_port_,
+             role == WorkerRole::STORAGE_ONLY ? "storage_only" : "hybrid");
+    }
+
     // storage_only 上线 = 自动补齐的成功信号：清该 host 的 spawn 占位与
     // 失败计数（下轮检测将该 host 视为已覆盖）。
     if (role == WorkerRole::STORAGE_ONLY && !msg.hostname_.empty()) {
         pending_storage_spawns_.erase(msg.hostname_);
         storage_spawn_failures_.erase(msg.hostname_);
     }
-
-    DataService::instance();
-    if (msg.data_server_port_ > 0) {
-        DataService::instance()->register_worker(worker_id, msg.data_server_host_,
-                                                  msg.data_server_port_,
-                                                  role == WorkerRole::STORAGE_ONLY);
-        INFO("Worker registered: worker_id={}, conn_id={}, hostname={}, data_server={}:{}, role={}",
-             worker_id, conn_id, msg.hostname_, msg.data_server_host_, msg.data_server_port_,
-             role == WorkerRole::STORAGE_ONLY ? "storage_only" : "hybrid");
-    }
-
-    RegisterAckMessage ack;
-    ack.worker_id_ = worker_id;
-    ack.master_address_ = host_;
-    ack.master_port_ = static_cast<int32_t>(port_);
-    reactor_->send(conn_id, ack);
 
     // 流程 message：worker 上线（集群扩容里程碑）。
     MSG("AGENT::0001", 1, "worker {} online (hostname={}, {}:{})",
@@ -1310,10 +1353,21 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
         if (it != conn_to_worker_.end()) {
             worker_id = it->second;
             conn_to_worker_.erase(conn_id);
-            worker_to_conn_.erase(worker_id);
+            // 条件 erase：worker_to_conn_ 当前可能已指向重连后的新 conn（本
+            // 断开是旧 conn 的迟到事件）——无条件 erase 会误删新映射。
+            auto w_it = worker_to_conn_.find(worker_id);
+            if (w_it != worker_to_conn_.end() && w_it->second == conn_id) {
+                worker_to_conn_.erase(w_it);
+            }
         }
     }
     if (worker_id == 0) return;
+    // 连接已断：活性确认失效（后续该 wid 的可疑注册需重新探测）。
+    dup_confirmed_alive_.erase(worker_id);
+    // 旧连接断开 = 挂起注册的「旧 conn 是残留」结论 → 重放（正常接受）。
+    // 只在断开的是「既有连接」时重放：后到者自己的 conn 断开（等结论期间
+    // 放弃离开）则无 deferred 可取，take 返回空自然 no-op。
+    replay_deferred_register(worker_id);
 
     // worker 断开时，如果正在等 message summary，减少 expected_count 并唤醒 CV，
     // 避免 collect_and_print_message_summary 永远等一个已断开的 worker 的上报。
@@ -1650,6 +1704,40 @@ void MasterAgent::check_storage_nodes(int64_t now) {
                 "auto storage spawn: host {} has no storage worker — asked worker {} "
                 "to spawn one (worker_id={})", host, trigger_wid, spawn_worker_id);
         }
+    }
+}
+
+void MasterAgent::reject_deferred_register(uint64_t worker_id, const char* reason) {
+    auto dr = deferred_registers_.take(worker_id);
+    if (!dr) return;
+    RegisterAckMessage dup_ack;
+    dup_ack.worker_id_ = worker_id;
+    dup_ack.master_address_ = host_;
+    dup_ack.master_port_ = static_cast<int32_t>(port_);
+    dup_ack.duplicate_ = true;
+    reactor_->send(dr->conn_id_, dup_ack);
+    WARN("Deferred duplicate register rejected (worker_id={}, conn={}): {}",
+         worker_id, dr->conn_id_, reason);
+}
+
+void MasterAgent::replay_deferred_register(uint64_t worker_id) {
+    auto dr = deferred_registers_.take(worker_id);
+    if (!dr) return;
+    // 旧连接已断（连接表已清）：重放后到者的注册——此刻走正常注册路径
+    //（疑似分支不会命中），ack 直达。首连无重发机制，闭环由 master 完成。
+    INFO("Replaying deferred register: worker_id={}, conn={} (old connection gone)",
+         worker_id, dr->conn_id_);
+    on_worker_register(dr->conn_id_, dr->msg_);
+}
+
+void MasterAgent::check_dup_register_deadlines(int64_t now) {
+    CMVector<uint64_t> expired;
+    deferred_registers_.iterate([&](const uint64_t& wid, const DeferredRegister& dr) {
+        if (now >= dr.deadline_) expired.push_back(wid);
+    });
+    for (uint64_t wid : expired) {
+        // 探测无结论（旧连接半死不活）→ 保守拒绝（先到先得）。
+        reject_deferred_register(wid, "probe inconclusive within deadline");
     }
 }
 
@@ -2064,11 +2152,17 @@ WriteRegisterAckMessage MasterAgent::do_write_register(const WriteRegisterMessag
         bool streaming_mode = master_self_write ||
                              (Config::instance()->get_int("dependency_update_mode") == 0);
         if (streaming_mode) {
-            graph_->mark_data_ready(msg.object_name_);
+            // 顺序约束：位置登记（update_remote_idx/缓存/元数据）全部就绪后
+            // 才能 mark_data_ready 唤醒依赖——依赖 task 被唤醒后可能跨线程
+            // 立即读（TIER3 经独立连接查询），位置晚于唤醒会导致 NOT FOUND
+            //（读方三次快重试全落在 record_worker_info 的磁盘 IO 窗口内，
+            // solver n10 高并发实测撞中）。record_worker_info（可能 append
+            // _DB_META，慢 IO）也前移，mark_data_ready 保持最后一步。
             auto addr = DataService::instance()->get_worker_address(msg.worker_id_);
             DataService::instance()->update_remote_idx(msg.object_name_, msg.worker_id_, addr.host_, addr.port_, msg.size_bytes_);
             update_dependency_location_cache(msg.object_name_, msg.worker_id_, addr.host_, addr.port_);
             record_worker_info(msg.object_name_, msg.db_path_, msg.worker_id_, msg.writer_id_);
+            graph_->mark_data_ready(msg.object_name_);
             // master 自写对象（worker_id==0）的 backup 不再由 master 主动评估触发——
             // 新设计下 master 不自统计读流量（有盲区）。master 写入的对象待 worker 跨机读取后，
             // 由 worker 上报 suggest（WorkerBackupSuggestMessage）→ master EWMA 聚合判定 backup。

@@ -681,7 +681,9 @@ TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::WORKER_BACKUP_SUGGEST)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::STORAGE_SPAWN_REQUEST)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::STORAGE_SPAWN_ACK)));
-    EXPECT_FALSE(is_valid_message_type(55));  // upper bound is 54
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::WORKER_PROBE)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::WORKER_PROBE_ACK)));
+    EXPECT_FALSE(is_valid_message_type(57));  // upper bound is 56
     EXPECT_FALSE(is_valid_message_type(0));
 }
 

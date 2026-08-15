@@ -63,10 +63,12 @@ enum class MessageType : uint8_t {
     WORKER_BACKUP_SUGGEST = 52,  // worker → master: 上报 TIER2 读流量增量，master 聚合后判定 backup
     STORAGE_SPAWN_REQUEST = 53,  // master → worker: 请求在本 host 唤起 storage_only worker（自动补齐 feature）
     STORAGE_SPAWN_ACK = 54,      // worker → master: spawn 动作结果（exec 成败 + 原因；注册到达另计）
+    WORKER_PROBE = 55,           // master → worker: 疑似重复注册时探测既有连接活性（回 PROBE_ACK）
+    WORKER_PROBE_ACK = 56,       // worker → master: 探测应答（到达即证明该实例活着）
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 54;
+    return raw >= 1 && raw <= 56;
 }
 
 struct MessageHeader {
@@ -430,6 +432,27 @@ struct StorageSpawnAckMessage {
     static constexpr MessageType msg_type_ = MessageType::STORAGE_SPAWN_ACK;
 
     FLY_SERIALIZE(header_, worker_id_, hostname_, success_, error_message_);
+};
+
+// 疑似重复注册的活性探测：master 对既有连接发送，后到的注册在探测结论
+// 前不回 ack（worker 注册 10s 超时自然重发）。ACK 到达 = 旧实例活着 →
+// 后到者被拒；旧连接断开（EOF 清连接表）→ 重发注册正常接受。
+struct WorkerProbeMessage {
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+
+    static constexpr MessageType msg_type_ = MessageType::WORKER_PROBE;
+
+    FLY_SERIALIZE(header_, worker_id_);
+};
+
+struct WorkerProbeAckMessage {
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+
+    static constexpr MessageType msg_type_ = MessageType::WORKER_PROBE_ACK;
+
+    FLY_SERIALIZE(header_, worker_id_);
 };
 
 struct DatabaseFreezeNotification {

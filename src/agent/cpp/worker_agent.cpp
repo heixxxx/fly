@@ -178,6 +178,15 @@ void WorkerAgent::start() {
             on_storage_spawn_request(conn_id, msg);
         });
 
+    reactor_->register_handler<WorkerProbeMessage>(
+        [this](uint64_t conn_id, const WorkerProbeMessage& msg) {
+            // master 的重复注册活性探测：应答即证明本实例活着。
+            WorkerProbeAckMessage ack;
+            ack.worker_id_ = msg.worker_id_;
+            reactor_->send(conn_id, ack);
+            DBG("WorkerProbe answered: worker_id={}", msg.worker_id_);
+        });
+
     reactor_->register_handler<DatabaseFreezeNotification>(
         [this](uint64_t conn_id, const DatabaseFreezeNotification& msg) {
             on_database_freeze_notification(conn_id, msg);
@@ -516,15 +525,27 @@ void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
     }
 
     registered_ = true;
+    {
+        // 持锁 notify（规则）：唤醒「未注册窗口内写」的等待者（见
+        // register_write_with_master——断连重连窗口执行的 task，其写登记
+        // 曾被静默丢弃，remote_idx 缺条目让后续读直接 NOT_FOUND）。
+        std::lock_guard<std::mutex> lk(registered_mutex_);
+        registered_cv_.notify_all();
+    }
     touch_master_contact();
 
     INFO("RegisterAck received, registered");
-    if (reconnecting_.exchange(false)) {
-        // 重连注册确认：恢复心跳（heartbeat_loop 按 registered_ 发送）并按序
-        // flush 断连期间缓冲的 task 上报。
+    bool was_reconnecting = reconnecting_.exchange(false);
+    if (was_reconnecting) {
         INFO("Reconnection complete — resuming heartbeats, flushing buffered reports");
-        flush_pending_reports();
     }
+    // flush 不限重连路径：首连窗口（master 侧 assign 抢在 RegisterAck 之前
+    // 到达——on_worker_register 的 ack 发送前 scheduler 已可 assign）执行的
+    // task，其上报在 registered_ 置位前也会走缓冲（send_master_or_buffer 的
+    // 条件不区分首连/重连）。此窗口缓冲的消息此前无人 flush，complete 永久
+    // 滞留（test_message_basic 在 50 轮稳定性实测：graph 标完成、metadata
+    // 永不更新，COMPLETED-MISMATCH）。空缓冲 no-op，无条件调用无害。
+    flush_pending_reports();
 }
 
 void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
@@ -823,6 +844,11 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);
         task_queue_cv_.notify_all();
     }
+    {
+        // 唤醒「未注册窗口内写」的等待者（wait_for 谓词含 !running_）。
+        std::lock_guard<std::mutex> lock(registered_mutex_);
+        registered_cv_.notify_all();
+    }
     if (reactor_) {
         reactor_->stop();
     }
@@ -1079,7 +1105,26 @@ CMSharedPtr<Database> WorkerAgent::get_database(const CMString& db_path) const {
 }
 
 std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const CMString& db_path, const CMString& object_name, int64_t compressed_size) {
-    if (!registered_) return {"", TaskErrorType::UNKNOWN};
+    if (!registered_) {
+        // 断连重连窗口内执行 task 的写（poll_task 不检查注册态，断连前 assign
+        // 的 task 会留在队列被消费）：登记不能静默丢——TaskComplete 有缓冲
+        // 语义而写登记没有，remote_idx 缺条目会让后续读直接 NOT_FOUND（
+        // test_priority_restart_preserve 在 -j16 高并发下实测）。等待注册完成
+        // （重连窗口秒级）；master 真死等不来注册时按可见错误上报（fail task），
+        // 而非静默吞掉。
+        std::unique_lock<std::mutex> lk(registered_mutex_);
+        bool ok = registered_cv_.wait_for(lk, std::chrono::seconds(5), [this] {
+            return registered_.load() || !running_.load();
+        });
+        if (!ok || !registered_.load()) {
+            CMString error_msg = "WriteRegister skipped (worker not registered within 5s): " +
+                                 db_path + ":" + object_name;
+            ERR("{}", error_msg);
+            WorkerAgentContext::set_last_error_type(TaskErrorType::UNKNOWN);
+            return {error_msg, TaskErrorType::UNKNOWN};
+        }
+        INFO("WriteRegister waited for re-registration: object={}:{}", db_path, object_name);
+    }
     CMString full_name = db_path + ":" + object_name;
     CMString ctx_hash = fly::WorkerAgentContext::get_current_write_hash();
     if (ctx_hash.empty()) {

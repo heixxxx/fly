@@ -42,10 +42,12 @@ TEST_F(AgentNetworkTest, WorkerRegister) {
     worker.stop();
 }
 
-// 重复注册防护（用户确认语义）：同 worker_id 的第二个实例（网络分区恢复
-// 与手动重启的竞态）被 master 拒绝——先到先得，后到者不转正、连接保持 1，
-// 且收到 duplicate ack 后自行退出。
-TEST_F(AgentNetworkTest, DuplicateWorkerRegisterRejected) {
+// 重复注册防护（先到先得 + 活性探测）：同 worker_id 的第二个实例注册时，
+// master 先向既有连接发探测——旧实例活着应答 → 后到者的注册超时重发后被
+// duplicate ack 拒绝、自行退出；先到者不受影响。（重连竞态场景——旧连接
+// 是 EOF 未处理的残留——由 DisconnectReconnectsAndReports 覆盖：探测无应答
+// + EOF 清表 → 重发注册被正常接受。）
+TEST_F(AgentNetworkTest, DuplicateWorkerRegisterRejectedAfterProbe) {
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
@@ -55,15 +57,18 @@ TEST_F(AgentNetworkTest, DuplicateWorkerRegisterRejected) {
     first.start();
     EXPECT_TRUE(wait_until_registered(first));
 
-    // 同 id 的后到实例：注册应被拒（is_registered 保持 false），master 连接
-    // 数不变（新连接被拒后由 newcomer 自行关闭）。
+    // 同 id 的后到实例：首次注册被挂起（探测），注册超时重发后经 ProbeAck
+    // 确认先到者存活 → duplicate ack → 退出。等待上限 60s：高负载（bazel
+    // 并行跑全部单测）下 probe 往返 + second 的注册 ack 超时（10s）重试
+    // 可能叠加 2-3 轮，30s 上限曾实测偶发不够（50 轮稳定性第 25 轮）。
     WorkerAgent second(7, "127.0.0.1", port);
     second.start();
-    // is_running 变 false（duplicate ack → initiate_shutdown）需要一点时间。
-    for (int i = 0; i < 200 && second.is_running(); ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    bool exited = false;
+    for (int i = 0; i < 600 && !exited; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        exited = !second.is_running();
     }
-    EXPECT_FALSE(second.is_running()) << "duplicate worker should exit after rejected register";
+    EXPECT_TRUE(exited) << "duplicate worker should exit after probe-confirmed rejection";
     EXPECT_FALSE(second.is_registered());
     EXPECT_TRUE(first.is_registered());  // 先到者不受影响
     EXPECT_EQ(master.get_connected_workers().size(), 1u);

@@ -235,6 +235,10 @@ private:
     uint8_t role_ = 0;
     std::atomic<bool> running_{false};
     std::atomic<bool> registered_{false};
+    // 「未注册窗口内写」的等待（register_write_with_master 等重连注册完成；
+    // RegisterAck 与 initiate_shutdown 持锁 notify）。
+    std::mutex registered_mutex_;
+    std::condition_variable registered_cv_;
     std::atomic<bool> shutdown_triggered_{false};
     
     CMUniquePtr<Reactor> reactor_;
@@ -413,6 +417,11 @@ public:
             reactor_->close_connection(conn);
         }
         on_disconnect(conn);
+    }
+    // 未注册窗口写登记的回归测试用（语义：等待后可见错误，不静默）。
+    std::pair<CMString, TaskErrorType> register_write_with_master_for_testing(
+        const CMString& db_path, const CMString& object_name, int64_t size) {
+        return register_write_with_master(db_path, object_name, size);
     }
 #endif
 };

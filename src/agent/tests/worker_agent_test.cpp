@@ -851,6 +851,18 @@ TEST(WorkerAgentTest, BeginTaskWithWriteContextHash) {
     EXPECT_FALSE(WorkerAgentContext::is_active());
 }
 
+// 未注册窗口内的写登记：不得静默丢弃（-j16 高并发下 test_priority_restart_preserve
+// 实测——断连重连窗口执行的 task，remote_idx 缺条目让后续读直接 NOT_FOUND）。
+// 语义：等待注册完成（重连秒级），master 真死等不到则按可见错误上报。
+TEST(WorkerAgentTest, WriteRegisterWithoutRegistrationWaitsThenErrors) {
+    WorkerAgent worker(1, "127.0.0.1", 0);
+    // 不 start（未注册、也无重连在途）→ 等待耗尽后必须返回错误而非成功。
+    auto [err, type] = worker.register_write_with_master_for_testing(
+        db32("unreg"), "obj", 100);
+    EXPECT_FALSE(err.empty()) << "must return visible error when never registered";
+    INFO("[TEST] unregistered write register error: {}", err);
+}
+
 TEST(WorkerAgentTest, RecordWriteWithoutBeginEnd) {
     WorkerAgent worker(1, "127.0.0.1", 0);
     CMString db_path = db32("no_begin");
