@@ -9,8 +9,16 @@
 namespace fly {
 
 CMSharedPtr<Logger> Logger::instance() {
-    static CMSharedPtr<Logger> inst = CMMakeShared<Logger>();
-    return inst;
+    // leak-on-exit（P3-18 根治）：Logger 对象永不析构——退出期（静态析构与
+    // Python atexit/coverage 收尾并发）后台线程（ResourceMonitor 等）访问日志
+    // 安全。原实现 static shared_ptr 的控制块在静态析构期销毁后，野线程的
+    // log_write 拿局部 shared_ptr 做 last-use release → 在已析构控制块上调
+    // 虚函数 → "pure virtual method called" → std::terminate（高压 QA 偶发
+    // ~1/3000，qa/solver/test_golden_n50_sd4_r30 现场栈定位）。
+    // 文件 flush 由显式 shutdown()（各退出路径已调）保证；对象泄漏由进程
+    // 退出回收，无实际代价。
+    static Logger* inst = new Logger();
+    return CMSharedPtr<Logger>(inst, [](Logger*) {});
 }
 
 Logger::Logger() : level_(LogLevel::DEBUG), dual_output_(false) {}
