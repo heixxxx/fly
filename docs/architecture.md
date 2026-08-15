@@ -308,8 +308,22 @@ worker 生命周期语义（用户确认，两阶段）：
 - master 侧：宽限内 **不判死**——task 保持 RUNNING、worker 状态保留（BUSY
   不被调度）、豁免心跳判死；重连注册保留 task 关联，迟到的上报经 assigned
   worker 校验后正常收敛。宽限超时判死：task 重排队 + pending frozen 清理 +
-  **数据全灭快速失败**（该 worker 持有对象的全部 holder 均失效时，依赖这些
-  对象的等待 task 直接失败，流程 message AGENT::0003 提醒；运行中 task 不打断）。
+  **存储接管 / 数据全灭快速失败**（见下）。
+- **存储接管（storage_takeover_enabled，默认关）**：判死后 master 显式驱动
+  ——同 host 存活 storage_only worker 按 `recorded_workers_`（_DB_META 内存
+  镜像，按 hostname 锚定）**只读加载**死 worker 的全部 writer idx（复用
+  IdxLoad 链路；worker 侧 `restore_entries`，对半截事务按崩溃恢复语义丢弃）。
+  ack → `rebuild_remote_idx_for_worker` → holder 追加 + `mark_data_ready`，
+  等待 task 自动恢复调度。发起成功时全灭 fail 延迟至
+  `storage_takeover_fail_timeout`（默认 60s，超时幂等重判兜底，防永久悬挂）；
+  无 storage / 无 writer / 超 `storage_takeover_max_writers`（默认 64，防同
+  host 连挂涌向单一 storage）→ 保持现状立即全灭 fail（流程 message
+  AGENT::0003）。**安全红线**：只读加载，绝不以死 writer_id 写。
+  **重复数据语义**：storage 已持有旧 backup 副本时，接管的同名 entry 与旧
+  副本共存（`write_context_hash_` 等价的跳过、不同的一律加载），读路径按
+  `entries.back()` 选最新——禁止按「对象已存在」跳过加载（backup 后源重写
+  会数据回退）；restore 时对涉及对象失效 ObjectCache（防缓存旧字节绕过
+  back() 选优）。
 - **权威 remote_idx 保护**：master 的 remote_idx 是全集群唯一位置权威源，
   master 进程读失败**永不踢出**条目（worker 断连≠数据消失，重连后位置必须
   仍在）；worker 本地视图的踢副本保留（自愈，可 TIER3 刷新恢复）。

@@ -60,6 +60,8 @@ public:
 
     CMVector<uint64_t> get_connected_workers() const;
     CMVector<std::pair<uint64_t, CMString>> get_worker_hostnames() const;
+    // storage_only worker 的 worker_id 快照（Python 侧识别存储节点用）。
+    CMVector<uint64_t> get_storage_only_workers() const;
     void add_worker_hostname(uint64_t worker_id, const CMString& hostname,
                              WorkerRole role = WorkerRole::HYBRID);
     size_t get_connection_count() const;
@@ -246,6 +248,25 @@ public:
     void check_grace_deadlines_for_testing(int64_t now) {
         check_grace_deadlines(now);
     }
+    // 存储接管测试用：驱动判死后的接管决策（无网络注册流程下直接构造拓扑）。
+    bool try_storage_takeover_for_testing(uint64_t worker_id) {
+        return try_storage_takeover(worker_id);
+    }
+    // 接管超时兜底测试用：驱动 deadline 检查（补做 fail_orphan_data_objects）。
+    void check_takeover_deadlines_for_testing(int64_t now) {
+        check_takeover_deadlines(now);
+    }
+    // 接管测试用：注入 recorded_workers_ 条目（绕过 _DB_META 落盘链路）。
+    void insert_recorded_worker_for_testing(const CMString& db, const CMString& host,
+                                             const CMString& writer) {
+        recorded_workers_.insert(std::make_tuple(db, host, writer));
+    }
+    int64_t takeover_load_for_testing(uint64_t worker_id) {
+        return takeover_load_.find(worker_id).value_or(0);
+    }
+    size_t takeover_pending_size_for_testing() {
+        return takeover_pending_.size();
+    }
     // 数据全灭测试用：驱动 graph 的 mark_data_ready（让依赖 task 进入可调度状态）。
     void mark_data_ready_for_testing(const CMString& object_name) {
         graph_->mark_data_ready(object_name);
@@ -290,6 +311,12 @@ private:
     // 判死），由 heartbeat 检查线程扫描超时 → handle_worker_death；宽限内重连
     // 注册则 erase。0=断连即死（逃生口）不登记。
     ConcurrentUnorderedMap<uint64_t, int64_t> grace_deadlines_;
+    // 存储接管 pending：死 worker_id → fail 兜底 deadline（接管发起时登记；
+    // ack 的 mark_data_ready 恢复等待 task，deadline 到点幂等重判全灭与否）。
+    ConcurrentUnorderedMap<uint64_t, int64_t> takeover_pending_;
+    // 各 storage worker 累计接管的 writer 数（storage_takeover_max_writers
+    // 上限依据；master 内存态，重启后 load_db 全量重建自然归零）。
+    ConcurrentUnorderedMap<uint64_t, int64_t> takeover_load_;
 
     CMUniquePtr<DependencyGraph> graph_;
     CMUniquePtr<WorkerManager> worker_manager_;
@@ -411,8 +438,21 @@ private:
     // 由 heartbeat_check_loop 周期调用，测试经 hook 直接驱动。
     void check_grace_deadlines(int64_t now);
     // worker 正式判死（宽限超时 / drain 期断连 / 断连即死模式）：标 DEAD +
-    // 恢复其 RUNNING task + rollback pending frozen + 数据全灭快速失败。
+    // 恢复其 RUNNING task + rollback pending frozen + 存储接管/数据全灭快速失败。
     void handle_worker_death(uint64_t worker_id);
+    // 数据全灭快速失败（可重入幂等）：W 持有对象中"全部 holder 均 DEAD"的，
+    // 撤 ready + fail 等待调度的依赖 task。判死即时路径与接管超时兜底共用。
+    void fail_orphan_data_objects(uint64_t worker_id);
+    // 存储接管（storage_takeover_enabled）：找死 worker 同 host 存活
+    // storage_only，按 recorded_workers_（_DB_META 内存镜像）加载该 host 全部
+    // writer 的 idx（复用 IdxLoad 链路，worker 只读 restore_entries）。发起
+    // 成功返回 true（延迟全灭 fail 至 deadline）；无 storage/无 writer/超上限
+    // 返回 false（调用方走即时 fail）。
+    bool try_storage_takeover(uint64_t worker_id);
+    // 接管超时兜底：到期条目重跑 fail_orphan_data_objects（幂等重判——接管
+    // 已完成则对象有活 holder，无 fail）并清除 pending。由
+    // heartbeat_check_loop 周期调用。
+    void check_takeover_deadlines(int64_t now);
     void attr_timeout_check_loop();
     void sched_watchdog_loop();
 

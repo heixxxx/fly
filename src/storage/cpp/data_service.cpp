@@ -425,19 +425,50 @@ void DataService::restore_entries(const CMString& db_path,
         grouped[key].push_back(e);
     }
 
-    std::unique_lock<std::shared_mutex> lock(local_mutex_);
-    auto& db_map = local_idx_[db_path].objects_;
-    for (auto& [short_name, obj_entries] : grouped) {
-        auto& info = db_map[short_name];
-        if (!info) {
-            info = CMMakeShared<LocalObjectInfo>();
+    CMVector<CMString> touched_full_names;
+    {
+        std::unique_lock<std::shared_mutex> lock(local_mutex_);
+        auto& db_map = local_idx_[db_path].objects_;
+        for (auto& [short_name, obj_entries] : grouped) {
+            auto& info = db_map[short_name];
+            if (!info) {
+                info = CMMakeShared<LocalObjectInfo>();
+            }
+            info->db_path_ = db_path;
+            for (auto& e : obj_entries) {
+                // 等价去重：同对象已有任一 entry 的 write_context_hash_ 与来者
+                // 相同 → 字节等价（backup 副本 vs 接管/重载副本），跳过避免
+                // entries_ 膨胀。hash 为空不判等价（无指纹，保守加载）。
+                // 注意禁止按「对象已存在」无条件跳过——backup 之后源若重写，
+                // 新版本 entry 必须加载，读路径按 entries.back() 选最新。
+                if (!e.write_context_hash_.empty()) {
+                    bool duplicate = false;
+                    for (const auto& existing : info->entries_) {
+                        if (existing.write_context_hash_ == e.write_context_hash_) {
+                            duplicate = true;
+                            break;
+                        }
+                    }
+                    if (duplicate) {
+                        DBG("restore_entries: skip equivalent entry obj={}:{} "
+                            "(write_context_hash match)", db_path, short_name);
+                        continue;
+                    }
+                }
+                info->entries_.push_back(std::move(e));
+            }
+            info->completion_state_.store(CompletionState::COMPLETE, std::memory_order_release);
+            info->flushed_ = true;
+            touched_full_names.push_back(db_path + ":" + short_name);
         }
-        info->db_path_ = db_path;
-        for (auto& e : obj_entries) {
-            info->entries_.push_back(std::move(e));
-        }
-        info->completion_state_.store(CompletionState::COMPLETE, std::memory_order_release);
-        info->flushed_ = true;
+    }
+
+    // 热路径 restore（同 host storage 接管）必须失效 ObjectCache：缓存里可能
+    // 有该对象的旧字节（backup 时刻），cache hit 会绕过 entries.back() 的
+    // 最新副本选优。集群重启的 load_db 无此问题（进程重启 cache 为空），
+    // 失效对它是 no-op。先例：remove_remote_index 末尾同款清理。
+    for (const auto& full : touched_full_names) {
+        fly::ObjectCache::instance().remove(full);
     }
 
     if (!grouped.empty()) {

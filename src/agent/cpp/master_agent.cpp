@@ -499,14 +499,17 @@ void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) 
     // Pre-fetch dependency locations at submit time (earliest possible point).
     {
         auto ds = DataService::instance();
-        // lookup_remote_idx 走 DataService 读锁（重活），先在 dep_loc 锁外预取，
-        // 再一次性持 ConcurrentMap 锁写入（临界区只含内存插入）。
+        // dep_loc 锁外预取再一次性写入（临界区只含内存插入）。选取用排序后
+        // 首选（storage 优先/死 holder 排尾）而非 front()——单位置缓存若
+        // 恰好选中死 holder，worker TIER2 会在其上重试满 30s 网络期限。
         CMUnorderedMap<CMString, CachedLocation> locations;
         for (const auto& dep : spec.inputs_) {
-            auto loc = ds->lookup_remote_idx(dep);
-            if (loc.worker_id_ != 0 && !loc.host_.empty()) {
-                locations[dep] = {loc.worker_id_, loc.host_, loc.port_};
-                DBG("[DEP-LOC] submit-time: task={} obj={} worker={}", task_id, dep, loc.worker_id_);
+            auto replicas = ds->lookup_all_remote_idx(dep);
+            if (!replicas.empty() && replicas.front().worker_id_ != 0 &&
+                !replicas.front().host_.empty()) {
+                const auto& best = replicas.front();
+                locations[dep] = {best.worker_id_, best.host_, best.port_};
+                DBG("[DEP-LOC] submit-time: task={} obj={} worker={}", task_id, dep, best.worker_id_);
             }
         }
         if (!locations.empty()) {
@@ -800,8 +803,11 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
                 }
             }
             if (!already_cached) {
-                auto loc = ds->lookup_remote_idx(dep);
-                if (loc.worker_id_ != 0 && !loc.host_.empty()) {
+                // 全副本 + 排序（storage 优先/死 holder 排尾）：预取只带单个
+                // 副本时，若恰好是死 holder，worker TIER2 会在它上面重试满
+                // 30s 网络期限才进 TIER3（接管场景实测卡死根因）。
+                for (const auto& loc : ds->lookup_all_remote_idx(dep)) {
+                    if (loc.worker_id_ == 0 || loc.host_.empty()) continue;
                     msg.dependency_locations_.push_back({dep, loc.worker_id_, loc.host_, loc.port_,
                                                          loc.storage_only_ ? 1 : 0});
                 }
@@ -861,6 +867,10 @@ void MasterAgent::heartbeat_check_loop() {
 
             check_expected_worker_timeouts(timestamp);
             check_grace_deadlines(timestamp);
+            // 存储接管超时兜底（storage_takeover_fail_timeout，默认 60s）：
+            // 到期幂等重判全灭与否（ack 已到则无动作），防止接管失败时
+            // 等待 task 永久悬挂。
+            check_takeover_deadlines(timestamp);
 
             auto dead = heartbeat_monitor_->get_dead_workers();
             for (uint64_t worker_id : dead) {
@@ -1375,10 +1385,24 @@ void MasterAgent::handle_worker_death(uint64_t worker_id) {
         }
     }
 
+    // 存储接管（storage_takeover_enabled，用户确认语义：同 host storage 节点
+    // 只读加载死 worker 的 idx 接管读服务，master 显式驱动，类似重启恢复流程
+    // 的运行时版）。发起成功 → 全灭 fail 延迟至 takeover deadline（ack 的
+    // mark_data_ready 恢复等待 task）；失败 → 保持现状立即 fail。
+    if (try_storage_takeover(worker_id)) {
+        // 接管在途：跳过即时 fail，deadline 兜底见 check_takeover_deadlines。
+        return;
+    }
+
+    fail_orphan_data_objects(worker_id);
+}
+
+void MasterAgent::fail_orphan_data_objects(uint64_t worker_id) {
     // 数据全灭快速失败：本次判死后，W 持有的对象中"全部 holder 均已 DEAD"的
     //（单副本独占或多副本全灭），把依赖它们的等待调度 task 直接标失败——
     // 避免每个 task 执行期逐个走死连接退避后才失败。运行中 task 不打断
     //（自然读失败上报）。宽限中的其它 holder 不算失效（可能重连恢复）。
+    // 幂等可重入：接管超时兜底重跑时，已恢复 holder 的对象不再判 lost。
     CMVector<CMString> held_objects = DataService::instance()->get_objects_of_worker(worker_id);
     CMVector<CMString> lost_objects;
     for (const auto& full : held_objects) {
@@ -1427,6 +1451,94 @@ void MasterAgent::handle_worker_death(uint64_t worker_id) {
     }
 }
 
+bool MasterAgent::try_storage_takeover(uint64_t worker_id) {
+    if (Config::instance()->get_int("storage_takeover_enabled") == 0) return false;
+
+    CMString hostname = worker_manager_->get_hostname(worker_id);
+    if (hostname.empty()) return false;
+
+    // 该 host 的全部 (db_path, writer_id)——recorded_workers_ 是 _DB_META 的
+    // 内存镜像（按 hostname 锚定；worker_id 每次重启变化，不可作键）。
+    CMUnorderedMap<CMString, CMVector<CMString>> writers_by_db;
+    recorded_workers_.for_each([&](const auto& rec) {
+        const auto& [rec_db, rec_host, rec_writer] = rec;
+        if (rec_host == hostname) {
+            writers_by_db[rec_db].push_back(rec_writer);
+        }
+    });
+    if (writers_by_db.empty()) return false;
+
+    // 同 host 存活 storage_only（选已接管数最轻的）。
+    uint64_t storage_wid = 0;
+    int64_t min_load = INT64_MAX;
+    for (const auto& info : worker_manager_->get_all_workers()) {
+        if (info.role_ != WorkerRole::STORAGE_ONLY) continue;
+        if (info.status_ == WorkerStatus::DEAD) continue;
+        if (info.hostname_ != hostname) continue;
+        int64_t load = takeover_load_.find(info.worker_id_).value_or(0);
+        if (load < min_load) {
+            min_load = load;
+            storage_wid = info.worker_id_;
+        }
+    }
+    if (storage_wid == 0) {
+        DBG("storage takeover: no alive storage_only worker on host={} for dead worker {}",
+            hostname, worker_id);
+        return false;
+    }
+
+    // writer 数上限保护（防同 host 多 worker 连挂涌向单一 storage 导致 OOM）。
+    int64_t max_writers = Config::instance()->get_int("storage_takeover_max_writers");
+    int64_t total_writers = 0;
+    for (const auto& [db, ws] : writers_by_db) {
+        total_writers += static_cast<int64_t>(ws.size());
+    }
+    int64_t cur_load = takeover_load_.find(storage_wid).value_or(0);
+    if (max_writers > 0 && cur_load + total_writers > max_writers) {
+        WARN("storage takeover: worker {} would exceed max_writers ({}+{} > {}) — "
+             "skip takeover, falling back to immediate fail",
+             storage_wid, cur_load, total_writers, max_writers);
+        return false;
+    }
+
+    // 安全红线：storage 只读 restore_entries 加载死 writer 的 idx，绝不以其
+    // writer_id 写。链路复用 IdxLoad：ack → rebuild_remote_idx_for_worker →
+    // update_remote_idx + mark_data_ready，等待 task 自动恢复调度。
+    for (const auto& [db_path, writer_ids] : writers_by_db) {
+        send_idx_load_to_worker(db_path, writer_ids, storage_wid);
+    }
+    takeover_load_.update(storage_wid, [&](int64_t& v) { v += total_writers; });
+
+    int64_t fail_timeout = Config::instance()->get_int("storage_takeover_fail_timeout");
+    if (fail_timeout <= 0) fail_timeout = 60;
+    auto now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    takeover_pending_.update(worker_id, [&](int64_t& t) { t = now + fail_timeout; });
+
+    MSG("AGENT::0004", 1,
+        "worker {} dead: storage worker {} on host {} taking over {} writer(s) from {} db(s)",
+        worker_id, storage_wid, hostname, total_writers, writers_by_db.size());
+    INFO("storage takeover initiated: dead worker={}, storage worker={}, host={}, "
+         "dbs={}, writers={} (fail deadline in {}s)",
+         worker_id, storage_wid, hostname, writers_by_db.size(), total_writers, fail_timeout);
+    return true;
+}
+
+void MasterAgent::check_takeover_deadlines(int64_t now) {
+    CMVector<uint64_t> expired;
+    takeover_pending_.iterate([&](const uint64_t& dead_wid, const int64_t& deadline) {
+        if (now >= deadline) expired.push_back(dead_wid);
+    });
+    for (uint64_t dead_wid : expired) {
+        takeover_pending_.erase(dead_wid);
+        // 幂等重判：接管已完成（ack 到达、holder 已更新）则对象有活 holder，
+        // fail_orphan 无动作；未完成（idx 丢失/storage 挂了）补做全灭 fail。
+        INFO("storage takeover deadline reached for dead worker {} — re-evaluating "
+             "orphan data", dead_wid);
+        fail_orphan_data_objects(dead_wid);
+    }
+}
+
 void MasterAgent::on_error(uint64_t conn_id, int error_code) {
     ERR("Connection error: conn_id={}, error={}", conn_id, error_code);
     on_disconnect(conn_id);
@@ -1446,6 +1558,17 @@ CMVector<std::pair<uint64_t, CMString>> MasterAgent::get_worker_hostnames() cons
     // 遍历 WorkerManager（hostname 已收编进 WorkerInfo），取代原并行 map。
     for (const auto& info : worker_manager_->get_all_workers()) {
         result.push_back({info.worker_id_, info.hostname_});
+    }
+    return result;
+}
+
+CMVector<uint64_t> MasterAgent::get_storage_only_workers() const {
+    CMVector<uint64_t> result;
+    // Python 侧（load_db 同 host 加载目标选择等）识别 storage 节点用。
+    for (const auto& info : worker_manager_->get_all_workers()) {
+        if (info.role_ == WorkerRole::STORAGE_ONLY) {
+            result.push_back(info.worker_id_);
+        }
     }
     return result;
 }
@@ -2792,14 +2915,15 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
 
     CMString full_name = source_db_path + ":" + short_name;
     // 把源对象位置注入 task dependency_locations_，让 target worker 的 read_raw_compressed
-    // 直接 TIER2 命中（无需 TIER3 回查 master）。源位置从 remote_idx 取。
+    // 直接 TIER2 命中（无需 TIER3 回查 master）。源位置从 remote_idx 取排序后
+    // 首选（storage 优先/死 holder 排尾，与 assign 预取同一语义）。
     {
-        auto workers = DataService::instance()->get_remote_workers(full_name);
-        if (!workers.empty()) {
-            auto addr = DataService::instance()->get_worker_address(workers.front());
+        auto replicas = DataService::instance()->lookup_all_remote_idx(full_name);
+        if (!replicas.empty()) {
+            const auto& best = replicas.front();
             task_dependency_locations_.update(merge_task_id,
                 [&](CMUnorderedMap<CMString, CachedLocation>& inner) {
-                    inner[full_name] = CachedLocation{workers.front(), addr.host_, addr.port_};
+                    inner[full_name] = CachedLocation{best.worker_id_, best.host_, best.port_};
                 });
         }
     }

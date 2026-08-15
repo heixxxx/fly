@@ -7,6 +7,14 @@ def write_data(db, key, value):
 
 
 @as_task()
+def write_two_versions(db, key, v1, v2):
+    """同 task 上下文内同名重写（provenance 同 hash 允许）：v1 带 backup、
+    v2 无 backup——构造「backup 副本旧于源」的接管选优场景。"""
+    db.write_object(key, v1, backup=True)
+    db.write_object(key, v2)
+
+
+@as_task()
 def write_data_no_cache(db, key, value):
     """保存等级 "none"（仅落盘不进 low 缓存）的写入——数据搬运/失败注入场景用。"""
     db.write_object(key, value, cache="none")

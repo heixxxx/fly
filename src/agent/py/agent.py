@@ -425,15 +425,18 @@ class Master(FlyAgent):
                 existing_by_hostname[hostname].append(worker_id)
 
         # Phase 3: Send targeted idx load commands
-        # Each worker receives ONLY the writer_ids belonging to its hostname
+        # Each worker receives ONLY the writer_ids belonging to its hostname.
+        # 同 host 有 storage_only 时优先选它加载（与运行时接管语义一致：数据
+        # 面归存储节点，计算 worker 专注 task）。
+        storage_ids = set(self._agent.get_storage_only_workers())
         for hostname, writer_ids in hostname_to_writer_ids.items():
             workers = existing_by_hostname.get(hostname, [])
             if not workers:
                 WARN(f"load_db: no workers for hostname={hostname}, "
                      f"skipping {len(writer_ids)} writer_ids")
                 continue
-            # Use first available worker on this hostname
-            worker_id = workers[0]
+            storage_on_host = [w for w in workers if w in storage_ids]
+            worker_id = storage_on_host[0] if storage_on_host else workers[0]
             self._agent.send_idx_load_to_worker(db_path, writer_ids, worker_id)
             INFO(f"load_db: sent {len(writer_ids)} writer_ids to worker {worker_id} on host {hostname}")
 

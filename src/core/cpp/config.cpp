@@ -164,6 +164,13 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     // 无后台线程），避免日志文件更新延迟过长。
     {"log_flush_threshold_bytes", 65536},
     {"log_flush_interval_ms", 1000},
+    // 存储接管（判死后同 host storage_only 只读加载死 worker 的 idx 接管读
+    // 服务，复用 IdxLoad 链路）。默认关（保守）；接管在途时全灭 fail 延迟至
+    // fail_timeout，超时幂等重判兜底。max_writers=每 storage 接管 writer 数
+    // 上限（0=不限），防同 host 多 worker 连挂涌向单一 storage。
+    {"storage_takeover_enabled", 0},
+    {"storage_takeover_fail_timeout", 60},
+    {"storage_takeover_max_writers", 64},
 };
 
 const CMUnorderedMap<CMString, CMString> Config::STR_DEFAULTS = {

@@ -205,6 +205,15 @@ public:
         set_.clear();
     }
 
+    // 锁内遍历快照语义（F 返回 void；低频诊断/接管扫描用，勿在回调内回调本容器）。
+    template <typename F>
+    void for_each(F&& fn) const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& key : set_) {
+            fn(key);
+        }
+    }
+
 private:
     CMUnorderedSet<Key> set_;
     mutable std::mutex mutex_;

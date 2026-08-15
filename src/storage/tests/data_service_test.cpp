@@ -445,7 +445,6 @@ TEST_F(DataServiceTest, RestoreEntriesAppendsToExisting) {
     ds_->on_object_written(db_path, db_path + ":obj", e1);
     ds_->on_flush(db_path);
     EXPECT_TRUE(ds_->has_local_object(db_path + ":obj"));
-
     CMVector<IndexEntry> restore_entries_vec;
     IndexEntry e2;
     e2.object_name_ = db_path + ":new_obj";
@@ -465,6 +464,83 @@ TEST_F(DataServiceTest, RestoreEntriesAppendsToExisting) {
 TEST_F(DataServiceTest, RestoreEntriesEmptyVectorIsNoop) {
     CMVector<IndexEntry> empty;
     ds_->restore_entries(db32("empty_db"), empty);
+}
+
+// 接管/重载的等价去重：同对象已有 entry 的 write_context_hash_ 与来者相同
+// → 字节等价副本跳过，entries_ 不膨胀（backup 副本 vs 接管副本场景）。
+TEST_F(DataServiceTest, RestoreEntriesSkipsEquivalentHash) {
+    CMString db_path = test_dir_ + "/restore_equiv";
+    std::filesystem::create_directories(db_path);
+    ds_->register_database(db_path, "");
+
+    IndexEntry first;
+    first.object_name_ = db_path + ":obj";
+    first.file_name_ = "data_dead_w1.dat";
+    first.offset_ = 0;
+    first.size_ = 5;
+    first.write_context_hash_ = "hash_abc";
+    ds_->restore_entries(db_path, {first});
+
+    // 接管副本：内容等价（hash 相同），来源不同的物理文件。
+    IndexEntry takeover;
+    takeover.object_name_ = db_path + ":obj";
+    takeover.file_name_ = "data_backup_w2.dat";
+    takeover.offset_ = 100;
+    takeover.size_ = 5;
+    takeover.write_context_hash_ = "hash_abc";
+    ds_->restore_entries(db_path, {takeover});
+
+    auto entries = ds_->find_local_entries(db_path + ":obj");
+    ASSERT_TRUE(entries.has_value());
+    EXPECT_EQ(entries->size(), 1u);  // 等价跳过，无膨胀
+}
+
+// hash 不同（backup 之后源重写过）→ 必须保留两个 entry，读路径按
+// entries.back() 选最新——禁止按「对象已存在」跳过加载（数据回退防护）。
+TEST_F(DataServiceTest, RestoreEntriesKeepsDifferentHash) {
+    CMString db_path = test_dir_ + "/restore_newer";
+    std::filesystem::create_directories(db_path);
+    ds_->register_database(db_path, "");
+
+    IndexEntry backup_copy;
+    backup_copy.object_name_ = db_path + ":obj";
+    backup_copy.file_name_ = "data_backup.dat";
+    backup_copy.offset_ = 0;
+    backup_copy.size_ = 5;
+    backup_copy.write_context_hash_ = "hash_old";
+    ds_->restore_entries(db_path, {backup_copy});
+
+    IndexEntry takeover_newer;
+    takeover_newer.object_name_ = db_path + ":obj";
+    takeover_newer.file_name_ = "data_source.dat";
+    takeover_newer.offset_ = 50;
+    takeover_newer.size_ = 9;
+    takeover_newer.write_context_hash_ = "hash_new";
+    ds_->restore_entries(db_path, {takeover_newer});
+
+    auto entries = ds_->find_local_entries(db_path + ":obj");
+    ASSERT_TRUE(entries.has_value());
+    EXPECT_EQ(entries->size(), 2u);
+    EXPECT_EQ(entries->back().write_context_hash_, "hash_new");  // back() = 最新
+}
+
+// hash 为空（无指纹）不判等价：保守加载，两 entry 共存。
+TEST_F(DataServiceTest, RestoreEntriesNoDedupWithoutHash) {
+    CMString db_path = test_dir_ + "/restore_nohash";
+    std::filesystem::create_directories(db_path);
+    ds_->register_database(db_path, "");
+
+    IndexEntry e1;
+    e1.object_name_ = db_path + ":obj";
+    e1.file_name_ = "a.dat";
+    e1.offset_ = 0;
+    e1.size_ = 5;
+    ds_->restore_entries(db_path, {e1});
+    ds_->restore_entries(db_path, {e1});
+
+    auto entries = ds_->find_local_entries(db_path + ":obj");
+    ASSERT_TRUE(entries.has_value());
+    EXPECT_EQ(entries->size(), 2u);
 }
 
 TEST_F(DataServiceTest, RestoreEntriesFromLocalIndexFile) {

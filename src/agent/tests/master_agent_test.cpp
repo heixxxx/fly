@@ -1842,6 +1842,94 @@ TEST(MasterAgentTest, SelectBackupWorkerPrefersLighterStorage) {
     DataService::instance()->remove_remote_index(old_obj);
 }
 
+// --- 存储接管决策（storage_takeover）---
+
+namespace {
+// 接管用例的公共环境：开启 feature + 同 host 拓扑 + recorded_workers_ 注入。
+struct StorageTakeoverFixture {
+    CMSharedPtr<Config> cfg = Config::instance();
+    int saved_enabled;
+    StorageTakeoverFixture() {
+        saved_enabled = cfg->get_int("storage_takeover_enabled");
+        cfg->set_int("storage_takeover_enabled", 1);
+    }
+    ~StorageTakeoverFixture() {
+        cfg->set_int("storage_takeover_enabled", saved_enabled);
+    }
+};
+}  // namespace
+
+// 同 host 存活 storage_only → 接管发起成功（load 计入 storage worker，pending 登记）。
+TEST(MasterAgentTest, StorageTakeoverSelectsSameHostStorage) {
+    StorageTakeoverFixture fx;
+    MasterAgent master("127.0.0.1", 0);
+    master.add_worker_hostname(10, "host_a");                             // 死 worker
+    master.add_worker_hostname(11, "host_a", WorkerRole::STORAGE_ONLY);  // 接管者
+    master.add_worker_hostname(12, "host_b", WorkerRole::STORAGE_ONLY);  // 异 host，不选
+    master.insert_recorded_worker_for_testing("/db1", "host_a", "wr_dead1");
+    master.insert_recorded_worker_for_testing("/db1", "host_a", "wr_dead2");
+
+    EXPECT_TRUE(master.try_storage_takeover_for_testing(10));
+    EXPECT_EQ(master.takeover_load_for_testing(11), 2);   // 两个 writer 计入 w11
+    EXPECT_EQ(master.takeover_load_for_testing(12), 0);   // 异 host 不计
+    EXPECT_EQ(master.takeover_pending_size_for_testing(), 1u);
+}
+
+// 同 host 无 storage_only → 不接管（保持现状立即 fail 路径）。
+TEST(MasterAgentTest, StorageTakeoverNoStorageOnHost) {
+    StorageTakeoverFixture fx;
+    MasterAgent master("127.0.0.1", 0);
+    master.add_worker_hostname(10, "host_a");
+    master.add_worker_hostname(12, "host_b", WorkerRole::STORAGE_ONLY);  // 异 host
+    master.insert_recorded_worker_for_testing("/db1", "host_a", "wr_dead1");
+
+    EXPECT_FALSE(master.try_storage_takeover_for_testing(10));
+    EXPECT_EQ(master.takeover_pending_size_for_testing(), 0u);
+}
+
+// feature 默认关（Config fixture 外）→ 不接管。
+TEST(MasterAgentTest, StorageTakeoverDisabledByConfig) {
+    MasterAgent master("127.0.0.1", 0);
+    Config::instance()->set_int("storage_takeover_enabled", 0);
+    master.add_worker_hostname(10, "host_a");
+    master.add_worker_hostname(11, "host_a", WorkerRole::STORAGE_ONLY);
+    master.insert_recorded_worker_for_testing("/db1", "host_a", "wr_dead1");
+
+    EXPECT_FALSE(master.try_storage_takeover_for_testing(10));
+}
+
+// writer 数超上限 → 放弃接管（防同 host 连挂涌向单一 storage）。
+TEST(MasterAgentTest, StorageTakeoverRespectsMaxWriters) {
+    StorageTakeoverFixture fx;
+    Config::instance()->set_int("storage_takeover_max_writers", 2);
+    MasterAgent master("127.0.0.1", 0);
+    master.add_worker_hostname(10, "host_a");
+    master.add_worker_hostname(11, "host_a", WorkerRole::STORAGE_ONLY);
+    master.insert_recorded_worker_for_testing("/db1", "host_a", "wr1");
+    master.insert_recorded_worker_for_testing("/db1", "host_a", "wr2");
+    master.insert_recorded_worker_for_testing("/db2", "host_a", "wr3");  // 3 > 2
+
+    EXPECT_FALSE(master.try_storage_takeover_for_testing(10));
+    EXPECT_EQ(master.takeover_pending_size_for_testing(), 0u);
+}
+
+// deadline 到点 → pending 清除（接管在途的兜底路径；fail_orphan 幂等重判在
+// 完整 QA 流程覆盖，这里验证状态机收敛不悬挂）。
+TEST(MasterAgentTest, StorageTakeoverDeadlineClearsPending) {
+    StorageTakeoverFixture fx;
+    MasterAgent master("127.0.0.1", 0);
+    master.add_worker_hostname(10, "host_a");
+    master.add_worker_hostname(11, "host_a", WorkerRole::STORAGE_ONLY);
+    master.insert_recorded_worker_for_testing("/db1", "host_a", "wr1");
+
+    ASSERT_TRUE(master.try_storage_takeover_for_testing(10));
+    EXPECT_EQ(master.takeover_pending_size_for_testing(), 1u);
+
+    // far-future deadline：直接驱动到点（now >= deadline）。
+    master.check_takeover_deadlines_for_testing(INT64_MAX);
+    EXPECT_EQ(master.takeover_pending_size_for_testing(), 0u);
+}
+
 // --- Shutdown / Drain tests ---
 
 namespace {

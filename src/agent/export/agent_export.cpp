@@ -84,6 +84,7 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
         }
         return result;
     })
+    FLY_EXPORT_METHOD("get_storage_only_workers", &fly::MasterAgent::get_storage_only_workers)
     FLY_EXPORT_METHOD("get_connection_count", &fly::MasterAgent::get_connection_count)
     FLY_EXPORT_METHOD("expect_worker", &fly::MasterAgent::expect_worker)
     FLY_EXPORT_METHOD("cleanup_failed_merge", &fly::MasterAgent::cleanup_failed_merge)
