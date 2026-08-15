@@ -205,6 +205,10 @@ public:
     // 反查：remote_idx 中 holder 含 worker_id 的全部对象全名（数据全灭快速失败用；
     // 判死低频事件，O(n) 遍历可接受）。
     CMVector<CMString> get_objects_of_worker(uint64_t worker_id) const;
+    // 聚合：一次遍历返回多个 worker 名下全部副本对象的 size_bytes_ 总和（backup
+    // 目标选择的磁盘水位依据；只输出请求集合中出现的 worker）。
+    CMUnorderedMap<uint64_t, int64_t> get_worker_bytes_batch(
+        const CMUnorderedSet<uint64_t>& worker_ids) const;
 
     bool has_remote_location(const CMString& object_name) const;
 

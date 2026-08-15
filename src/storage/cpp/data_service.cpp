@@ -559,6 +559,27 @@ CMVector<CMString> DataService::get_objects_of_worker(uint64_t worker_id) const 
     return objects;
 }
 
+CMUnorderedMap<uint64_t, int64_t> DataService::get_worker_bytes_batch(
+    const CMUnorderedSet<uint64_t>& worker_ids) const {
+    CMUnorderedMap<uint64_t, int64_t> bytes;
+    if (worker_ids.empty()) return bytes;
+    for (uint64_t wid : worker_ids) bytes[wid] = 0;
+    std::shared_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
+    for (const auto& [db_path, objs] : remote_idx_) {
+        for (const auto& [short_name, meta] : objs) {
+            // size_bytes_ 是对象级（非 per-holder）：每个 holder 盘上各有一份
+            // 字节，分别计入各自水位。
+            for (uint64_t holder : meta.workers_) {
+                auto it = bytes.find(holder);
+                if (it != bytes.end()) {
+                    it->second += meta.size_bytes_;
+                }
+            }
+        }
+    }
+    return bytes;
+}
+
 bool DataService::has_remote_location(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
     std::shared_lock<fly::WriterPrefRwLock> lock(remote_mutex_);

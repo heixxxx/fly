@@ -525,7 +525,7 @@ Worker A 写入 object_name (backup=True):
 - 双分数 OR：score_bytes 或 score_count 任一超阈值即视为热点
 - 副本上限 `max_backup_replicas`（含原始）；大文件 + 异常高分可突破上限至 `max + backup_extra_slots`
 - 每次 suggest 至多触发一份 backup（async，BackupComplete 后 replicas 才增长，score/replicas 反馈自然收敛）
-- 备份目标选择：`select_backup_worker` 优先选 host 全新的 worker（host 级分散），全冲突时 best-effort 回退到无副本的 worker
+- 备份目标选择：`select_backup_worker` 三级 key——① host 全新（host 故障域隔离，最高优先）→ ② storage_only 优先（不跑用户 task，进程可靠、数据面资源稳定）→ ③ 名下副本字节最轻（`get_worker_bytes_batch` 磁盘水位，防副本向少数存储节点倾斜）；host 全冲突时 best-effort 回退到无副本的 worker（回退层内同样按 ②③ 排序）
 
 > 旧设计（master 在 DataQuery 路径统计读次数 + 后台定时衰减）已移除——worker 缓存对象位置后不再查 master，
 > master 统计存在盲区；双层设计让真正执行远程读的 worker 负责上报。

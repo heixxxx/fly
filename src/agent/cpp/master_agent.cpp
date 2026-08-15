@@ -1438,11 +1438,13 @@ CMVector<std::pair<uint64_t, CMString>> MasterAgent::get_worker_hostnames() cons
     return result;
 }
 
-void MasterAgent::add_worker_hostname(uint64_t worker_id, const CMString& hostname) {
+void MasterAgent::add_worker_hostname(uint64_t worker_id, const CMString& hostname,
+                                      WorkerRole role) {
     // 转发到 WorkerManager（hostname 收编进 WorkerInfo）。若 worker 未注册则先注册，
-    // 兼容测试在无网络注册流程下直接设置拓扑的场景。
+    // 兼容测试在无网络注册流程下直接设置拓扑的场景（role 一并注入，供
+    // select_backup_worker 的 storage 偏好用例构造混合拓扑）。
     if (!worker_manager_->get_worker(worker_id)) {
-        worker_manager_->register_worker(worker_id, "", 0, {});
+        worker_manager_->register_worker(worker_id, "", 0, {}, "", "", role);
     }
     worker_manager_->set_hostname(worker_id, hostname);
 }
@@ -2617,36 +2619,67 @@ uint64_t MasterAgent::select_backup_worker(const CMString& object_name) {
     auto holders = DataService::instance()->get_remote_workers(object_name);
     CMUnorderedSet<uint64_t> holder_set(holders.begin(), holders.end());
 
-    std::lock_guard<std::mutex> lk(workers_mutex_);
-    auto all = worker_manager_->get_all_workers();  // 一次快照（含 hostname_）
-
-    // 第一遍：建 holder host 集合（现有副本分布在哪些 host）。
+    CMVector<WorkerInfo> all;
     CMUnorderedSet<CMString> holder_hosts;
-    for (const auto& info : all) {
-        if (holder_set.count(info.worker_id_)) holder_hosts.insert(info.hostname_);
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        all = worker_manager_->get_all_workers();  // 一次快照（含 hostname_/role_）
+        for (const auto& info : all) {
+            if (holder_set.count(info.worker_id_)) holder_hosts.insert(info.hostname_);
+        }
     }
 
-    // 第二遍：优先 host 全新的 worker；host 全冲突时 best-effort 回退到「无副本」的 worker
-    // （保证副本数增长，host 分散是尽力而为）。
-    uint64_t fallback_worker = 0;
+    // 候选评估三级 key：
+    //   1. host-disjoint——host 故障域隔离，最高优先，不因 role 让步；
+    //   2. storage_only 优先——不跑用户 task，进程可靠且数据面资源稳定；
+    //   3. 名下副本字节最轻——磁盘水位，防副本向少数存储节点倾斜。
+    // host 全冲突时 best-effort 回退到「无副本」候选（保证副本数增长），
+    // 回退层内同样按 2/3 排序。
+    CMUnorderedSet<uint64_t> candidate_ids;
     for (const auto& info : all) {
         if (holder_set.count(info.worker_id_)) continue;  // 已有副本，跳过
         if (info.worker_id_ == 0) continue;                // master 不做 backup 目标
         if (info.status_ == WorkerStatus::DEAD) continue;
+        candidate_ids.insert(info.worker_id_);
+    }
+    auto worker_bytes = DataService::instance()->get_worker_bytes_batch(candidate_ids);
+
+    uint64_t best = 0, fallback_best = 0;
+    bool best_storage = false, fallback_best_storage = false;
+    int64_t best_bytes = INT64_MAX, fallback_best_bytes = INT64_MAX;
+    for (const auto& info : all) {
+        if (!candidate_ids.count(info.worker_id_)) continue;
+        bool storage = (info.role_ == WorkerRole::STORAGE_ONLY);
+        int64_t bytes = worker_bytes[info.worker_id_];  // 批量结果已含全部候选，缺省 0
 
         if (!holder_hosts.count(info.hostname_)) {
-            return info.worker_id_;  // host 全新 → 最优
-        }
-        if (fallback_worker == 0) {
-            fallback_worker = info.worker_id_;  // host 冲突但该 worker 无副本
+            // host 全新层。
+            if (best == 0 || (storage && !best_storage) ||
+                (storage == best_storage && bytes < best_bytes)) {
+                best = info.worker_id_;
+                best_storage = storage;
+                best_bytes = bytes;
+            }
+        } else if (fallback_best == 0 || (storage && !fallback_best_storage) ||
+                   (storage == fallback_best_storage && bytes < fallback_best_bytes)) {
+            fallback_best = info.worker_id_;
+            fallback_best_storage = storage;
+            fallback_best_bytes = bytes;
         }
     }
 
-    if (fallback_worker != 0) {
-        INFO("select_backup_worker: no host-disjoint worker for obj={}, fallback to {}",
-             object_name, fallback_worker);
+    if (best != 0) {
+        if (best_storage) {
+            INFO("select_backup_worker: obj={} → worker {} (host-disjoint + storage-only, "
+                 "load={}B)", object_name, best, best_bytes);
+        }
+        return best;
     }
-    return fallback_worker;
+    if (fallback_best != 0) {
+        INFO("select_backup_worker: no host-disjoint worker for obj={}, fallback to {}",
+             object_name, fallback_best);
+    }
+    return fallback_best;
 }
 
 void MasterAgent::trigger_auto_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_path) {

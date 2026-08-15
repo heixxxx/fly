@@ -1790,6 +1790,58 @@ TEST(MasterAgentTest, SelectBackupWorkerAvoidsAllHolderHosts) {
     DataService::instance()->remove_remote_index(obj);
 }
 
+// host-disjoint 层内 storage_only 优先：副本 W1@hostA；候选 W2@hostB(hybrid)、
+// W3@hostC(storage_only) 同为 host 全新层 → storage 胜出。
+TEST(MasterAgentTest, SelectBackupWorkerPrefersStorageOnly) {
+    MasterAgent master("127.0.0.1", 0);
+    master.add_worker_hostname(10, "host_a");
+    master.add_worker_hostname(20, "host_b");
+    master.add_worker_hostname(30, "host_c", WorkerRole::STORAGE_ONLY);
+
+    CMString obj = db32("backup_pref_storage") + ":obj";
+    DataService::instance()->update_remote_idx(obj, 10, "10.0.0.1", 8001);
+
+    EXPECT_EQ(master.select_backup_worker_for_testing(obj), 30u);
+
+    DataService::instance()->remove_remote_index(obj);
+}
+
+// host 故障域隔离压过 storage 偏好：副本 W1@hostA；候选 W2@hostB(hybrid, host 全新)
+// vs W3@hostA(storage_only, host 冲突仅 fallback) → 必须选 W2（role 不越级）。
+TEST(MasterAgentTest, SelectBackupWorkerHostDisjointBeatsStorageRole) {
+    MasterAgent master("127.0.0.1", 0);
+    master.add_worker_hostname(10, "host_a");
+    master.add_worker_hostname(20, "host_b");
+    master.add_worker_hostname(30, "host_a", WorkerRole::STORAGE_ONLY);
+
+    CMString obj = db32("backup_disjoint_beats_role") + ":obj";
+    DataService::instance()->update_remote_idx(obj, 10, "10.0.0.1", 8001);
+
+    EXPECT_EQ(master.select_backup_worker_for_testing(obj), 20u);
+
+    DataService::instance()->remove_remote_index(obj);
+}
+
+// 同为 host-disjoint storage_only 候选时按磁盘水位最轻：W2 名下已持有 1000B
+// 副本、W3 为空 → 选 W3。
+TEST(MasterAgentTest, SelectBackupWorkerPrefersLighterStorage) {
+    MasterAgent master("127.0.0.1", 0);
+    master.add_worker_hostname(10, "host_a");
+    master.add_worker_hostname(20, "host_b", WorkerRole::STORAGE_ONLY);
+    master.add_worker_hostname(30, "host_c", WorkerRole::STORAGE_ONLY);
+
+    CMString obj = db32("backup_light_storage") + ":obj";
+    DataService::instance()->update_remote_idx(obj, 10, "10.0.0.1", 8001);
+    // W2 的存量水位（另一个对象，size=1000）。
+    CMString old_obj = db32("backup_light_storage") + ":old";
+    DataService::instance()->update_remote_idx(old_obj, 20, "10.0.0.2", 8002, 1000);
+
+    EXPECT_EQ(master.select_backup_worker_for_testing(obj), 30u);
+
+    DataService::instance()->remove_remote_index(obj);
+    DataService::instance()->remove_remote_index(old_obj);
+}
+
 // --- Shutdown / Drain tests ---
 
 namespace {

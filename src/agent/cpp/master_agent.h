@@ -60,7 +60,8 @@ public:
 
     CMVector<uint64_t> get_connected_workers() const;
     CMVector<std::pair<uint64_t, CMString>> get_worker_hostnames() const;
-    void add_worker_hostname(uint64_t worker_id, const CMString& hostname);
+    void add_worker_hostname(uint64_t worker_id, const CMString& hostname,
+                             WorkerRole role = WorkerRole::HYBRID);
     size_t get_connection_count() const;
 
     // ── expected workers（唤起占位符，bsub 等慢调度场景）──────────────
