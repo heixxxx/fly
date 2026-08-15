@@ -131,8 +131,14 @@
 - **Next**: 专项查 resolve_log_dir 并发轮转竞争（.latest symlink 与 .N 目录的
   多进程互斥）。与 2026-08-15 G 系列（断连重连）无因果路径。
 
-### P3-18: 退出期偶发 pure virtual method called（静态析构竞态，未定位）
-- **Status**: OPEN — 已捕获 1 次，45 轮定向复现失败，待专项
+### P3-18: 退出期偶发 pure virtual method called（静态析构竞态）
+- **Status**: FIXED ✅（2026-08-15，5058f01）— Logger 单例 leak-on-exit 根治
+- **Root Cause**: 高压 QA 第三次捕获（qa/solver/test_golden_n50_sd4_r30）拿到完整
+  现场栈：resource_monitor_loop 后台线程退出期 log_write 的局部 shared_ptr
+  last-use release 与函数局部 static shared_ptr 控制块的静态析构竞争（Python
+  atexit/coverage 收尾可触发与 main join 顺序无关的析构路径）→ 已析构控制块上
+  虚调用 → terminate。修复：instance() 改 new 裸对象 + noop deleter（每次独立
+  控制块，永不触及静态析构），文件 flush 仍由显式 shutdown() 保证。
 - **Evidence**（2026-08-15 高压稳定性测试第 10/10 轮，`test_solver_ras_n4_sd2_ov1_noconv`）：
   master drain 正常完成后进程退出阶段 `pure virtual method called → std::terminate`，
   栈落在静态析构链的 `shared_ptr` release（strip 后符号近似为 Logger，但 Logger 类
