@@ -159,6 +159,11 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"worker_reconnect_timeout", 120},
     // - connect 重试首次间隔(ms)，指数 ×2 递增（单次上限 10s 硬编码），首连与重连共用。
     {"worker_connect_retry_initial_ms", 500},
+    // Logger 自动 flush（DEBUG/INFO；WARN/ERROR 始终立即 flush）：
+    // 累计写入字节数达到阈值，或距上次 flush 超过时间间隔（写时惰性判定，
+    // 无后台线程），避免日志文件更新延迟过长。
+    {"log_flush_threshold_bytes", 65536},
+    {"log_flush_interval_ms", 1000},
 };
 
 const CMUnorderedMap<CMString, CMString> Config::STR_DEFAULTS = {

@@ -3,6 +3,16 @@
 ---
 ---
 
+## 2026-08-15 (3): Logger 自动 flush（累计字节数 / 时间间隔）
+
+用户确认增强：DEBUG/INFO 累计写入达 log_flush_threshold_bytes（默认 64KB）或距
+上次 flush 超 log_flush_interval_ms（默认 1s）时自动 flush——避免日志文件更新延迟
+过长（P3-19 根因：此前仅 WARN/ERROR 立即 flush，DEBUG/INFO 完全依赖退出 flush，
+测试运行中读日志必漏行）。写时惰性判定（无后台线程——规避 P3-18 同族退出期线程
+问题）。参数经 Logger::set_flush_params 由 main.cpp 从 config 注入（fly_log 不依赖
+Config：cc_shared_library 禁止 fly_log_so/fly_core_so 同时静态链 fly_core）。
+P3-19 置 FIXED。
+
 ## 2026-08-15 (2): F3 worker role 落地（hybrid/storage_only，静态身份，调度不感知）
 
 用户确认语义：role 是独立于 attributes（可变、参与调度匹配）的**静态身份**——

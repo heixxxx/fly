@@ -335,6 +335,11 @@ int main(int argc, char* argv[]) {
         log_dir = fly::Logger::resolve_log_dir(log_dir);
         cfg->set_str("log_dir", log_dir);
     }
+    // Logger 自动 flush 参数（log_flush_threshold_bytes / log_flush_interval_ms，
+    // 默认 64KB / 1s）：fly_log 不依赖 Config（so 依赖约束），经 setter 注入。
+    fly::Logger::set_flush_params(
+        static_cast<uint64_t>(cfg->get_int("log_flush_threshold_bytes")),
+        cfg->get_int("log_flush_interval_ms"));
     fly::Logger::init(log_dir, worker_id);
 
     g_monitor_running.store(true);

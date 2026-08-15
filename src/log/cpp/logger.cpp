@@ -44,6 +44,30 @@ void Logger::init(const CMString& base_dir, uint64_t worker_id) {
     inst->dual_output_ = false;
     inst->level_ = LogLevel::DEBUG;
     inst->file_.open(inst->filename_, std::ios::out | std::ios::app);
+    inst->unflushed_bytes_ = 0;
+    inst->last_flush_ = std::chrono::steady_clock::now();
+}
+
+// 自动 flush 参数注入（fly_log 不依赖 Config——cc_shared_library 禁止多个 so
+// 静态链同一库；由 main.cpp 在 Logger::init 前从 config 读取传入。此后 log
+// 调用只读成员，退出期日志不触碰 Config 静态析构，P3-18 同族教训）。
+void Logger::set_flush_params(uint64_t threshold_bytes, int64_t interval_ms) {
+    auto inst = instance();
+    std::lock_guard<std::mutex> lock(inst->mutex_);
+    if (threshold_bytes > 0) inst->flush_threshold_bytes_ = threshold_bytes;
+    if (interval_ms > 0) inst->flush_interval_ms_ = interval_ms;
+}
+
+bool Logger::should_auto_flush() const {
+    if (unflushed_bytes_ >= flush_threshold_bytes_) return true;
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - last_flush_).count();
+    return elapsed >= flush_interval_ms_;
+}
+
+void Logger::note_flush() {
+    unflushed_bytes_ = 0;
+    last_flush_ = std::chrono::steady_clock::now();
 }
 
 CMString Logger::resolve_log_dir(const CMString& base_dir) {
@@ -85,6 +109,7 @@ void Logger::set_level(LogLevel level) { level_ = level; }
 void Logger::flush() {
     if (file_.is_open()) {
         file_.flush();
+        note_flush();
     }
     if (dual_output_ || !file_.is_open()) {
         std::cerr.flush();
@@ -103,6 +128,15 @@ void Logger::log(LogLevel level, const CMString& msg) {
         file_ << line;
         if (level >= LogLevel::WARN) {
             file_.flush();
+            note_flush();
+        } else {
+            // DEBUG/INFO 自动 flush：累计字节达阈值或距上次 flush 超时间间隔
+            //（本条触发，写时惰性判定——避免日志文件更新延迟过长）。
+            unflushed_bytes_ += line.size();
+            if (should_auto_flush()) {
+                file_.flush();
+                note_flush();
+            }
         }
     }
 

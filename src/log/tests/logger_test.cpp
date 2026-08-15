@@ -3,6 +3,8 @@
 #include <task/cpp/task_manager.h>
 #include <fstream>
 #include <filesystem>
+#include <thread>
+#include <chrono>
 
 namespace fly {
 
@@ -92,6 +94,55 @@ TEST_F(LoggerTest, LogLevelFilter) {
         EXPECT_TRUE(line.find("[DEBUG]") == CMString::npos);
     }
     EXPECT_EQ(count, 2);
+}
+
+// ── 自动 flush（积累量 / 时间间隔，用户确认增强）──────────────────────
+// DEBUG/INFO 不再只依赖退出 flush：累计写入达到字节数阈值、或距上次 flush
+// 超过时间间隔（下一条日志触发检查）时自动 flush——避免日志文件更新延迟
+// 过长（P3-19 根因：测试在运行中读日志漏行）。WARN/ERROR 立即 flush 不变。
+
+TEST_F(LoggerTest, InfoAutoFlushedAfterByteThreshold) {
+    Logger::set_flush_params(64, 60000);  // 极小字节阈值 + 超长间隔（隔离变量）
+    Logger::init("test_logs/", 0);
+
+    // 每行 ~40+ 字节，两条累计超过 64B 阈值 → 第二条触发自动 flush。
+    INFO("threshold-probe-line-1-padding-padding-padding-padding");
+    INFO("threshold-probe-line-2-padding-padding-padding-padding");
+
+    std::ifstream file("test_logs/master.log");
+    CMString line;
+    int count = 0;
+    while (std::getline(file, line)) ++count;
+    EXPECT_GE(count, 1) << "accumulated bytes past threshold must auto-flush";
+}
+
+TEST_F(LoggerTest, InfoAutoFlushedAfterInterval) {
+    Logger::set_flush_params(1ULL << 30, 1);  // 超大字节阈值 + 1ms 间隔（隔离变量）
+    Logger::init("test_logs/", 0);
+
+    INFO("interval-probe-first");             // 首条：写入缓冲
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    INFO("interval-probe-second");            // 距上次 flush >1ms → 触发 flush（连带首条落盘）
+
+    std::ifstream file("test_logs/master.log");
+    CMString content((std::istreambuf_iterator<char>(file)),
+                     std::istreambuf_iterator<char>());
+    EXPECT_NE(content.find("interval-probe-first"), CMString::npos)
+        << "entries older than the flush interval must be auto-flushed";
+}
+
+TEST_F(LoggerTest, WarnStillFlushesImmediately) {
+    Logger::init("test_logs/", 0);
+    INFO("before-warn-entry");   // 无阈值触发（间隔默认 1s 内、字节数远低阈值）
+    WARN("immediate-warn-entry");
+
+    std::ifstream file("test_logs/master.log");
+    CMString content((std::istreambuf_iterator<char>(file)),
+                     std::istreambuf_iterator<char>());
+    EXPECT_NE(content.find("immediate-warn-entry"), CMString::npos)
+        << "WARN must keep flushing immediately";
+    EXPECT_NE(content.find("before-warn-entry"), CMString::npos)
+        << "the WARN flush also lands earlier buffered entries";
 }
 
 TEST_F(LoggerTest, AllLogLevels) {

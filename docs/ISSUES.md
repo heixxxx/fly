@@ -119,8 +119,12 @@
 
 ## P3 — Low / Deferred
 
-### P3-19: -j16 高压下偶发 worker 启动信息未写入本地 debug log（未定位）
-- **Status**: OPEN — 已捕获 1 次，30 轮定向复现失败（15 常规 + 15 饱和 -j8），待专项
+### P3-19: DEBUG/INFO 日志 flush 延迟导致运行中读取漏行（原：-j16 下偶发缺失）
+- **Status**: FIXED ✅（2026-08-15）— Logger 自动 flush（累计 64KB 或距上次 flush 1s，
+  config 可调 log_flush_threshold_bytes / log_flush_interval_ms；WARN/ERROR 立即不变）。
+  根因确认（worker role QA 调试中实证）：INFO 缓冲仅退出时 flush，测试运行中读日志
+  必漏最新行——非 resolve_log_dir 竞争（原怀疑方向排除）。QA 断言读日志仍建议在
+  stop 后（终态一致），但延迟上限从"进程生命周期"缩到 ≤1s。
 - **Evidence**（2026-08-15 高压稳定性测试第 5/10 轮，`test_startup_info`）：
   worker1.log 完整缺少 `Fly Startup Info (worker)` 段（connect/DataServer/Register
   等其余日志齐全）。emit_system_message 直写 Logger（message_dispatch.cpp:42），

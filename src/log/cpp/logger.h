@@ -2,6 +2,7 @@
 
 #include <common/cpp/common_types.h>
 #include <cstdint>
+#include <chrono>
 #include <fstream>
 #include <mutex>
 #include <memory>
@@ -25,6 +26,9 @@ public:
 
     static CMSharedPtr<Logger> instance();
     static void init(const CMString& base_dir, uint64_t worker_id = 0);
+    // 自动 flush 参数注入（main.cpp 从 config 读取后调用；fly_log 不依赖
+    // Config——避免 cc_shared_library 多 so 静态链同一库的冲突）。
+    static void set_flush_params(uint64_t threshold_bytes, int64_t interval_ms);
     static CMString resolve_log_dir(const CMString& base_dir);
     static void shutdown();
 
@@ -39,12 +43,23 @@ private:
     CMString timestamp() const;
     static void _update_latest_symlink(const CMString& target_dir, const CMString& base_dir);
     static CMString _ensure_trailing_sep(const CMString& path);
+    // 自动 flush 判定（持 mutex_ 调用）：DEBUG/INFO 累计写入达到字节数阈值、
+    // 或距上次 flush 超过时间间隔（本条日志触发检查，写时惰性判定——无后台
+    // 线程，规避退出期线程生命周期问题，参见 P3-18 教训）。WARN/ERROR 立即 flush。
+    bool should_auto_flush() const;
+    void note_flush();
 
     CMString filename_;
     std::ofstream file_;
     std::mutex mutex_;
     LogLevel level_;
     bool dual_output_;  // true = write to both file and stderr (master mode)
+    // 自动 flush 状态（默认 64KB / 1s；由 set_flush_params 注入覆盖，成员存值
+    // 而非动态读 config——退出期 log 调用不得触碰 Config 单例的静态析构）。
+    uint64_t unflushed_bytes_ = 0;
+    std::chrono::steady_clock::time_point last_flush_ = std::chrono::steady_clock::now();
+    uint64_t flush_threshold_bytes_ = 65536;
+    int64_t flush_interval_ms_ = 1000;
 };
 
 template <typename... T>
