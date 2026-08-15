@@ -342,6 +342,9 @@ private:
     void on_remove_ack(uint64_t conn_id, const RemoveAckMessage& msg);
     void on_remove_command(uint64_t conn_id, const RemoveCommandMessage& msg);
     void on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg);
+    // 自动补齐：在本 host 唤起 storage_only worker（posix_spawn /proc/self/exe
+    // + SETSID 脱离进程树 + detached waitpid 回收；Config 落盘传递）。
+    void on_storage_spawn_request(uint64_t conn_id, const StorageSpawnRequestMessage& msg);
     void on_database_freeze_notification(uint64_t conn_id, const DatabaseFreezeNotification& msg);
     void on_database_freeze_ack(uint64_t conn_id, const DatabaseFreezeAckMessage& msg);
     void on_delete_data(uint64_t conn_id, const DeleteDataMessage& msg);
@@ -400,10 +403,16 @@ public:
     CMUnorderedSet<CMString> merge_write_fail_for_testing_;
     // 仅测试用：断连期间缓冲的 task 上报数量（缓冲/flush 测试用）。
     size_t pending_report_count_for_testing();
-    // 仅测试用：模拟 master 连接闪断（触发 on_disconnect 重连路径，不影响
-    // reactor 上的实际连接——master 保持在线，纯 worker 视角断连）。
+    // 仅测试用：模拟 master 连接闪断——真实关闭 TCP（master 侧 epoll 收
+    // FIN/EOF 后清连接表，与真实闪断一致）再触发本侧 on_disconnect 重连
+    // 路径。只回调不关 fd 的旧模拟会让 master 连接表残留旧 conn，撞上
+    // 先到先得的重复注册判定（DisconnectReconnectsAndReports 实测）。
     void simulate_master_disconnect_for_testing() {
-        on_disconnect(master_conn_.load());
+        uint64_t conn = master_conn_.load();
+        if (conn != 0) {
+            reactor_->close_connection(conn);
+        }
+        on_disconnect(conn);
     }
 #endif
 };

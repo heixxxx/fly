@@ -20,6 +20,14 @@
 #include <chrono>
 #include <functional>
 #include <unistd.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <dirent.h>
+#include <cstdlib>
+#include <vector>
+
+extern char** environ;
 
 namespace fly {
 
@@ -163,6 +171,11 @@ void WorkerAgent::start() {
     reactor_->register_handler<IdxLoadCommandMessage>(
         [this](uint64_t conn_id, const IdxLoadCommandMessage& msg) {
             on_idx_load_command(conn_id, msg);
+        });
+
+    reactor_->register_handler<StorageSpawnRequestMessage>(
+        [this](uint64_t conn_id, const StorageSpawnRequestMessage& msg) {
+            on_storage_spawn_request(conn_id, msg);
         });
 
     reactor_->register_handler<DatabaseFreezeNotification>(
@@ -493,6 +506,15 @@ void WorkerAgent::bandwidth_probe_loop() {
 }
 
 void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
+    // 重复注册被拒（master 侧同 worker_id 已有活跃实例——分区恢复/手动重启
+    // 竞态的先到先得判定）：本实例是后到者，自行干净退出。
+    if (msg.duplicate_) {
+        ERR("RegisterAck: worker_id {} already active on master (duplicate) — exiting",
+            worker_id_);
+        initiate_shutdown("duplicate worker id rejected by master");
+        return;
+    }
+
     registered_ = true;
     touch_master_contact();
 
@@ -1221,6 +1243,7 @@ void WorkerAgent::send_message_to_master(LogLevel level, const CMString& domain_
 
 void WorkerAgent::on_message_count_request(uint64_t conn_id, const MessageCountRequestMessage& /*msg*/) {
     // summary 屏障：把本地 message 触发计数（id 级 + domain 级两套）上报给 master。
+    DBG("[SUMMARY] worker {} received MSG_COUNT_REQUEST on conn {}", worker_id_, conn_id);
     MessageCountReportMessage report;
     report.worker_id_ = worker_id_;
     auto id_counts = MessageRegistry::instance().trigger_id_counts_snapshot();
@@ -1423,6 +1446,130 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
         ack.success_ = false;
         ack.error_message_ = e.what();
         ERR("IdxLoad failed: db_path={}, error={}", msg.db_path_, e.what());
+    }
+
+    reactor_->send(conn_id, ack);
+}
+
+void WorkerAgent::on_storage_spawn_request(uint64_t conn_id, const StorageSpawnRequestMessage& msg) {
+    touch_master_contact();
+    INFO("StorageSpawnRequest received: spawn_worker_id={}", msg.spawn_worker_id_);
+
+    StorageSpawnAckMessage ack;
+    ack.worker_id_ = worker_id_;
+    ack.hostname_ = ProcessInfo::instance()->hostname();
+
+    try {
+        auto proc = ProcessInfo::instance();
+        CMString log_dir = Config::instance()->get_str("log_dir");
+        if (log_dir.empty()) log_dir = "fly_log";
+
+        // Config 无 master→worker 同步消息（纯 CLI --config-file 传递），spawn
+        // 的子进程同样需要：把当前生效 Config 落盘传递。文件名带 pid——
+        // log_dir 全集群共享，不同 host 的并发 spawn 各写各的副本。
+        CMString cfg_path = log_dir + "/.fly_config_autospawn_" +
+                            std::to_string(static_cast<long long>(getpid()));
+        Config::instance()->save_to_file(cfg_path);
+
+        // stdio 兜底（fly 自身 Logger 另有日志文件；这里捕获 crash 输出）。
+        CMString stdout_path = log_dir + "/storage_spawn_" +
+                               std::to_string(static_cast<long long>(msg.spawn_worker_id_)) + ".log";
+        posix_spawn_file_actions_t factions;
+        posix_spawn_file_actions_init(&factions);
+        posix_spawn_file_actions_addopen(&factions, 0, "/dev/null", O_RDONLY, 0);
+        int out_fd = ::open(stdout_path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (out_fd < 0) out_fd = ::open("/dev/null", O_WRONLY);
+        posix_spawn_file_actions_adddup2(&factions, out_fd, 1);
+        posix_spawn_file_actions_adddup2(&factions, out_fd, 2);
+        if (out_fd > 2) posix_spawn_file_actions_addclose(&factions, out_fd);
+
+        // 零继承（storage 是完全独立的进程，exec 后从零初始化，与集群的唯一
+        // 协作通道是新建立的 master 连接）：枚举 /proc/self/fd 把发起 worker 的
+        // 全部 fd 关进 file_actions——尤其 master 连接 fd。不关的后果实测：
+        // 子进程持有连接 fd 副本 → 发起 worker 死后内核不发 FIN → master 永远
+        // 看不到断连（连接 ESTAB 残留）→ summary/drain 等待死条目卡死。
+        // （glibc 的 POSIX_SPAWN_CLOEXEC_DEFAULT 在本环境 spawn.h 未提供，
+        // 逐 fd addclose 是标准接口下的等价实现；spawn 低频，开销可忽略。）
+        {
+            std::vector<int> inherited_fds;
+            DIR* dir = ::opendir("/proc/self/fd");
+            if (dir != nullptr) {
+                while (struct dirent* ent = ::readdir(dir)) {
+                    int fd = ::atoi(ent->d_name);
+                    if (fd > 2 && fd != out_fd && fd != dirfd(dir)) {
+                        inherited_fds.push_back(fd);
+                    }
+                }
+                ::closedir(dir);
+            }
+            for (int fd : inherited_fds) {
+                posix_spawn_file_actions_addclose(&factions, fd);
+            }
+        }
+
+        // /proc/self/exe：与发起 worker 严格同二进制（版本零漂移）。
+        char exe_buf[64] = "/proc/self/exe";
+        int master_port = proc->cli_master_port() != 0 ? proc->cli_master_port()
+                                                       : proc->master_port();
+        std::string wid_str = std::to_string(msg.spawn_worker_id_);
+        std::string port_str = std::to_string(master_port);
+        // master 地址用本 worker 实际连接的 master_host()（真实 IP/主机名）；
+        // --host 才是逻辑 hostname（含 CLI 覆盖值，单机多 host 场景归属一致）。
+        // 两者不能混用：hostname() 是 --host 覆盖后的逻辑名，不可路由。
+        std::string master_str(proc->master_host().begin(), proc->master_host().end());
+        std::string host_str(proc->hostname().begin(), proc->hostname().end());
+        std::string log_dir_str(log_dir.begin(), log_dir.end());
+        std::string cfg_str(cfg_path.begin(), cfg_path.end());
+
+        // argv 按 main.cpp 的参数解析构造。
+        char* const argv[] = {
+            exe_buf,
+            const_cast<char*>("--worker"),
+            const_cast<char*>("--worker-id"), const_cast<char*>(wid_str.c_str()),
+            const_cast<char*>("--worker-role"), const_cast<char*>("storage_only"),
+            const_cast<char*>("--master-host"), const_cast<char*>(master_str.c_str()),
+            const_cast<char*>("--master-port"), const_cast<char*>(port_str.c_str()),
+            const_cast<char*>("--host"), const_cast<char*>(host_str.c_str()),
+            const_cast<char*>("--log-dir"), const_cast<char*>(log_dir_str.c_str()),
+            const_cast<char*>("--config-file"), const_cast<char*>(cfg_str.c_str()),
+            nullptr
+        };
+
+        // SETSID 脱离进程树：发起 worker 挂掉时 storage 必须存活（接管价值
+        // 所在），其生命周期只由 master 心跳判死管理。fd 零继承见上。
+        posix_spawnattr_t attr;
+        posix_spawnattr_init(&attr);
+        posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
+
+        pid_t pid = -1;
+        int rc = posix_spawn(&pid, exe_buf, &factions, &attr, argv, environ);
+        posix_spawnattr_destroy(&attr);
+        posix_spawn_file_actions_destroy(&factions);
+        ::close(out_fd);
+
+        if (rc != 0) {
+            ack.success_ = false;
+            ack.error_message_ = CMString("posix_spawn failed: ") + std::to_string(rc);
+            ERR("storage spawn failed: posix_spawn rc={}", rc);
+            reactor_->send(conn_id, ack);
+            return;
+        }
+
+        // detached 线程回收子进程（storage 是长驻服务，正常不退出；集群
+        // drain 时退出——不回收会留 zombie 挂在本 worker 下）。
+        std::thread([pid, this]() {
+            int status = 0;
+            ::waitpid(pid, &status, 0);
+            DBG("auto-spawned storage worker pid={} exited (status={})", pid, status);
+        }).detach();
+
+        ack.success_ = true;
+        INFO("storage worker spawned: pid={}, worker_id={}, host={}, master={}:{}",
+             pid, msg.spawn_worker_id_, host_str, master_str, master_port);
+    } catch (const std::exception& e) {
+        ack.success_ = false;
+        ack.error_message_ = e.what();
+        ERR("storage spawn failed: {}", e.what());
     }
 
     reactor_->send(conn_id, ack);

@@ -28,18 +28,48 @@ TEST_F(AgentNetworkTest, WorkerRegister) {
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true);
-    
+
     WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
     EXPECT_TRUE(wait_until_registered(worker));
     EXPECT_EQ(master.get_connection_count(), 1);
-    
+
     auto connected = master.get_connected_workers();
     EXPECT_EQ(connected.size(), 1);
     EXPECT_EQ(connected[0], 1);
-    
+
     master.stop();
     worker.stop();
+}
+
+// 重复注册防护（用户确认语义）：同 worker_id 的第二个实例（网络分区恢复
+// 与手动重启的竞态）被 master 拒绝——先到先得，后到者不转正、连接保持 1，
+// 且收到 duplicate ack 后自行退出。
+TEST_F(AgentNetworkTest, DuplicateWorkerRegisterRejected) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+    uint16_t port = master.get_port();
+
+    WorkerAgent first(7, "127.0.0.1", port);
+    first.start();
+    EXPECT_TRUE(wait_until_registered(first));
+
+    // 同 id 的后到实例：注册应被拒（is_registered 保持 false），master 连接
+    // 数不变（新连接被拒后由 newcomer 自行关闭）。
+    WorkerAgent second(7, "127.0.0.1", port);
+    second.start();
+    // is_running 变 false（duplicate ack → initiate_shutdown）需要一点时间。
+    for (int i = 0; i < 200 && second.is_running(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_FALSE(second.is_running()) << "duplicate worker should exit after rejected register";
+    EXPECT_FALSE(second.is_registered());
+    EXPECT_TRUE(first.is_registered());  // 先到者不受影响
+    EXPECT_EQ(master.get_connected_workers().size(), 1u);
+
+    master.stop();
+    first.stop();
 }
 
 TEST_F(AgentNetworkTest, MultipleWorkers) {

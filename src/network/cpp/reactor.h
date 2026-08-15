@@ -96,6 +96,13 @@ public:
         return transport_->connect(host, port);
     }
 
+    // 主动关闭连接（transport 层 close）：对端与本地的 reactor 都将收到断连
+    // 事件。测试模拟真实 TCP 闪断用（只触发回调不关 fd 的模拟会让对端连接
+    // 表残留，撞上先到先得的重复注册判定）。
+    void close_connection(uint64_t conn_id) {
+        transport_->close(conn_id);
+    }
+
 private:
     CMUniquePtr<ConnectionManager> transport_;
     

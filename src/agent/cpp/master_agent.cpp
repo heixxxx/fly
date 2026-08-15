@@ -77,6 +77,13 @@ void MasterAgent::start() {
     fly::MessageRegistry::instance().register_id("AGENT::0002", fly::LogLevel::WARN);
     // AGENT::0003: worker 判死导致数据全灭（依赖 task 已快速失败，ERROR 级提醒用户）。
     fly::MessageRegistry::instance().register_id("AGENT::0003", fly::LogLevel::ERROR);
+    // AGENT::0004: 判死后同 host storage 接管读服务（INFO 级集群自愈里程碑）。
+    fly::MessageRegistry::instance().register_id("AGENT::0004", fly::LogLevel::INFO);
+    // AGENT::0005: master 自动补齐存储节点（INFO 级拓扑变化提醒）。
+    fly::MessageRegistry::instance().register_id("AGENT::0005", fly::LogLevel::INFO);
+    // AGENT::0006: 宽限耗尽 worker 未重连（WARN 级提醒 + 手动重启命令；worker
+    // 侧重连上限与之对等，两侧同宽限收敛）。
+    fly::MessageRegistry::instance().register_id("AGENT::0006", fly::LogLevel::WARN);
     fly::MessageRegistry::instance().register_id("FLY::0001", fly::LogLevel::INFO);
 
     // 绑定配额变更回调：用户 set_*_limit 后触发，把当前配额广播给所有在线 worker
@@ -191,6 +198,11 @@ void MasterAgent::start() {
     reactor_->register_handler<IdxLoadAckMessage>(
         [this](uint64_t conn_id, const IdxLoadAckMessage& msg) {
             on_idx_load_ack(conn_id, msg);
+        });
+
+    reactor_->register_handler<StorageSpawnAckMessage>(
+        [this](uint64_t conn_id, const StorageSpawnAckMessage& msg) {
+            on_storage_spawn_ack(conn_id, msg);
         });
 
     reactor_->register_handler<DeleteDataAckMessage>(
@@ -871,6 +883,9 @@ void MasterAgent::heartbeat_check_loop() {
             // 到期幂等重判全灭与否（ack 已到则无动作），防止接管失败时
             // 等待 task 永久悬挂。
             check_takeover_deadlines(timestamp);
+            // 自动补齐存储节点（auto_storage_nodes_enabled，默认关；
+            // auto_storage_check_interval 节流，默认 30s）。
+            check_storage_nodes(timestamp);
 
             auto dead = heartbeat_monitor_->get_dead_workers();
             for (uint64_t worker_id : dead) {
@@ -969,6 +984,26 @@ void MasterAgent::sched_watchdog_loop() {
 void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& msg) {
     uint64_t worker_id = msg.worker_id_;
 
+    // 重复注册防护（用户确认语义）：该 worker_id 已有活跃连接——典型为网络
+    // 分区恢复的旧实例与手动重启（AGENT::0006 命令）的新实例竞态。先到先得
+    //（活跃连接的注册状态保留），后到者回 duplicate ack 令其自行干净退出，
+    // 不做任何状态写入（conn 映射/占位符转正都不碰）。
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        auto it = worker_to_conn_.find(worker_id);
+        if (it != worker_to_conn_.end() && it->second != conn_id) {
+            RegisterAckMessage dup_ack;
+            dup_ack.worker_id_ = worker_id;
+            dup_ack.master_address_ = host_;
+            dup_ack.master_port_ = static_cast<int32_t>(port_);
+            dup_ack.duplicate_ = true;
+            reactor_->send(conn_id, dup_ack);
+            WARN("Duplicate register rejected: worker_id={} already active on conn {} "
+                 "(incoming conn {}) — newcomer told to exit", worker_id, it->second, conn_id);
+            return;
+        }
+    }
+
     // 唤起占位符转正：该 worker 已注册，不再占用 expected 集合。
     expected_worker_ids_.erase(worker_id);
 
@@ -997,6 +1032,13 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     } else {
         worker_manager_->register_worker(worker_id, host_, port_, msg.attributes_,
                                           msg.hostname_, msg.ip_address_, role);
+    }
+
+    // storage_only 上线 = 自动补齐的成功信号：清该 host 的 spawn 占位与
+    // 失败计数（下轮检测将该 host 视为已覆盖）。
+    if (role == WorkerRole::STORAGE_ONLY && !msg.hostname_.empty()) {
+        pending_storage_spawns_.erase(msg.hostname_);
+        storage_spawn_failures_.erase(msg.hostname_);
     }
 
     DataService::instance();
@@ -1359,6 +1401,18 @@ void MasterAgent::handle_worker_death(uint64_t worker_id) {
         }
         notify_drain_if_active();  // Wake up stop() drain wait.
     } else {
+        // 用户确认语义：宽限耗尽 worker 未重连 → WARN 级 user message 附手动
+        // 重启命令（worker 侧重连上限与本宽限对等、同窗口自行退出，两侧
+        // 收敛；手动重启的 worker 以全新进程从零初始化连接 master）。
+        CMString dead_hostname = worker_manager_->get_hostname(worker_id);
+        MSG("AGENT::0006", 2,
+            "worker {} (host {}) failed to reconnect within grace — declared dead, "
+            "its tasks were re-queued. Restart it manually with:\n"
+            "  fly --worker --worker-id {} --master-host {} --master-port {} --log-dir {}{}",
+            worker_id, dead_hostname, worker_id, host_, port_,
+            Config::instance()->get_str("log_dir"),
+            dead_hostname.empty() ? "" : (" --host " + dead_hostname));
+
         // Normal operation: re-queue tasks for recovery.
         // remove_task + add_task + unassign_task 原子：三者分属 graph/metadata 两个
         // 独立锁结构，若与 submit_task/on_task_complete 交错会导致状态分叉。
@@ -1537,6 +1591,96 @@ void MasterAgent::check_takeover_deadlines(int64_t now) {
              "orphan data", dead_wid);
         fail_orphan_data_objects(dead_wid);
     }
+}
+
+void MasterAgent::check_storage_nodes(int64_t now) {
+    if (Config::instance()->get_int("auto_storage_nodes_enabled") == 0) return;
+
+    int64_t interval = Config::instance()->get_int("auto_storage_check_interval");
+    if (interval <= 0) interval = 30;
+    if (now - last_storage_check_ts_.load() < interval) return;
+    last_storage_check_ts_.store(now);
+
+    // 快照分组：host 有无活 storage、活 hybrid 触发者（host 全灭的机器无
+    // 触达者，天然不在集合——其恢复走外部调度）。
+    CMUnorderedSet<CMString> hosts_with_storage;
+    CMUnorderedMap<CMString, uint64_t> hybrid_by_host;
+    for (const auto& info : worker_manager_->get_all_workers()) {
+        if (info.status_ == WorkerStatus::DEAD) continue;
+        if (info.role_ == WorkerRole::STORAGE_ONLY) {
+            hosts_with_storage.insert(info.hostname_);
+        } else {
+            hybrid_by_host[info.hostname_] = info.worker_id_;
+        }
+    }
+
+    // storage 已上线的 host：清残留占位/失败计数（注册路径通常已清，此处
+    // 兜底外部唤起——用户 launcher 起的 storage 同样视为覆盖）。
+    for (const auto& host : hosts_with_storage) {
+        pending_storage_spawns_.erase(host);
+        storage_spawn_failures_.erase(host);
+    }
+
+    // 占位超时：spawn 是本地秒级动作，占位远超时限仍未注册视为失败，
+    // 清除允许重试（受失败退避约束）。
+    constexpr int64_t kSpawnPlaceholderTimeoutSec = 120;
+    CMVector<CMString> expired_placeholders;
+    pending_storage_spawns_.iterate([&](const CMString& host, const int64_t& deadline) {
+        if (now >= deadline) expired_placeholders.push_back(host);
+    });
+    for (const auto& host : expired_placeholders) {
+        pending_storage_spawns_.erase(host);
+        WARN("auto storage spawn placeholder for host={} expired without "
+             "registration — allowing retry", host);
+    }
+
+    constexpr int64_t kMaxSpawnFailures = 3;
+    for (const auto& [host, trigger_wid] : hybrid_by_host) {
+        if (hosts_with_storage.count(host)) continue;
+        if (pending_storage_spawns_.contains(host)) continue;  // 在途
+        if (storage_spawn_failures_.find(host).value_or(0) >= kMaxSpawnFailures) continue;
+
+        storage_spawn_decisions_.fetch_add(1);
+        uint64_t spawn_worker_id = next_auto_spawn_worker_id_.fetch_add(1);
+        if (send_storage_spawn_to_worker(trigger_wid, spawn_worker_id)) {
+            pending_storage_spawns_.update(host, [&](int64_t& t) {
+                t = now + kSpawnPlaceholderTimeoutSec;
+            });
+            MSG("AGENT::0005", 1,
+                "auto storage spawn: host {} has no storage worker — asked worker {} "
+                "to spawn one (worker_id={})", host, trigger_wid, spawn_worker_id);
+        }
+    }
+}
+
+void MasterAgent::on_storage_spawn_ack(uint64_t conn_id, const StorageSpawnAckMessage& msg) {
+    if (msg.success_) {
+        // exec 成功：保留占位等注册到达（on_worker_register 清除）。
+        INFO("auto storage spawn ack: host={}, spawned by worker {} — awaiting "
+             "registration", msg.hostname_, msg.worker_id_);
+        return;
+    }
+    // exec 失败：清占位允许下轮重试，失败计数累积（3 次放弃该 host）。
+    pending_storage_spawns_.erase(msg.hostname_);
+    int64_t fails = 0;
+    storage_spawn_failures_.update(msg.hostname_, [&](int64_t& v) { fails = ++v; });
+    WARN("auto storage spawn failed on host={} (by worker {}): {} — failure #{}, "
+         "giving up this host after 3",
+         msg.hostname_, msg.worker_id_, msg.error_message_, fails);
+}
+
+bool MasterAgent::send_storage_spawn_to_worker(uint64_t worker_id, uint64_t spawn_worker_id) {
+    StorageSpawnRequestMessage msg;
+    msg.spawn_worker_id_ = spawn_worker_id;
+
+    std::lock_guard<std::mutex> lk(workers_mutex_);
+    auto it = worker_to_conn_.find(worker_id);
+    if (it == worker_to_conn_.end()) {
+        ERR("send_storage_spawn_to_worker: worker_id={} not found", worker_id);
+        return false;
+    }
+    reactor_->send(it->second, msg);
+    return true;
 }
 
 void MasterAgent::on_error(uint64_t conn_id, int error_code) {
@@ -3417,6 +3561,7 @@ void MasterAgent::collect_and_print_message_summary() {
         std::lock_guard<std::mutex> wlk(workers_mutex_);
         MessageCountRequestMessage req;
         for (const auto& [wid, cid] : worker_to_conn_) {
+            DBG("[SUMMARY] sending MSG_COUNT_REQUEST to worker {} conn {}", wid, cid);
             reactor_->send(cid, req);
         }
     }

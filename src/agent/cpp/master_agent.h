@@ -256,6 +256,19 @@ public:
     void check_takeover_deadlines_for_testing(int64_t now) {
         check_takeover_deadlines(now);
     }
+    // 自动补齐测试用：驱动检测循环（绕过节流；注册/spawn 链路走真网络）。
+    void check_storage_nodes_for_testing(int64_t now) {
+        last_storage_check_ts_ = 0;
+        check_storage_nodes(now);
+    }
+    size_t pending_storage_spawns_for_testing() {
+        return pending_storage_spawns_.size();
+    }
+    // 检测决策命中计数（决定对某 host 发起 spawn 的次数，与发送成败解耦
+    //——单测无网络连接也能断言决策）。
+    int64_t storage_spawn_decisions_for_testing() {
+        return storage_spawn_decisions_.load();
+    }
     // 接管测试用：注入 recorded_workers_ 条目（绕过 _DB_META 落盘链路）。
     void insert_recorded_worker_for_testing(const CMString& db, const CMString& host,
                                              const CMString& writer) {
@@ -317,6 +330,20 @@ private:
     // 各 storage worker 累计接管的 writer 数（storage_takeover_max_writers
     // 上限依据；master 内存态，重启后 load_db 全量重建自然归零）。
     ConcurrentUnorderedMap<uint64_t, int64_t> takeover_load_;
+    // 自动补齐（auto_storage_nodes_enabled）：host → spawn 占位 deadline
+    //（防检测周期内重复 spawn；超时清除允许重试，storage 注册到达亦清除）。
+    ConcurrentUnorderedMap<CMString, int64_t> pending_storage_spawns_;
+    // host → spawn 连续失败计数（Ack 失败累积，>=3 WARN 放弃该 host；
+    // storage 上线或集群状态变化时清零）。
+    ConcurrentUnorderedMap<CMString, int64_t> storage_spawn_failures_;
+    // 自动补齐分配的 worker_id 高基区自增（避开 Python launch 从 1 起的
+    // 低位序列，两序列永不冲突）。
+    std::atomic<uint64_t> next_auto_spawn_worker_id_{100000};
+    // 自动补齐检测节流时间戳（heartbeat_check_loop 每次 5s，按
+    // auto_storage_check_interval 节流）。
+    std::atomic<int64_t> last_storage_check_ts_{0};
+    // 检测决策命中计数（含 send 失败的决策；诊断/测试用）。
+    std::atomic<int64_t> storage_spawn_decisions_{0};
 
     CMUniquePtr<DependencyGraph> graph_;
     CMUniquePtr<WorkerManager> worker_manager_;
@@ -453,6 +480,14 @@ private:
     // 已完成则对象有活 holder，无 fail）并清除 pending。由
     // heartbeat_check_loop 周期调用。
     void check_takeover_deadlines(int64_t now);
+    // 自动补齐（auto_storage_nodes_enabled，默认关）：周期检测「有活 worker
+    // 但无活 storage_only」的 host，向该 host 任一活 hybrid worker 发
+    // StorageSpawnRequest 让其本地 spawn storage worker（/proc/self/exe 同
+    // 版本、SETSID 脱离进程树）。占位防重 + 失败退避（3 次放弃该 host）。
+    // 由 heartbeat_check_loop 周期调用（auto_storage_check_interval 节流）。
+    void check_storage_nodes(int64_t now);
+    void on_storage_spawn_ack(uint64_t conn_id, const StorageSpawnAckMessage& msg);
+    bool send_storage_spawn_to_worker(uint64_t worker_id, uint64_t spawn_worker_id);
     void attr_timeout_check_loop();
     void sched_watchdog_loop();
 

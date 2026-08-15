@@ -74,4 +74,14 @@ assert "lost all replicas" in content, \
     "fail_orphan should fire immediately without a storage node (AGENT::0003)"
 INFO("[CTRL] no takeover, immediate orphan-fail in master.log")
 
+# 宽限超时判死 → AGENT::0006 user message 附手动重启命令（用户确认语义）。
+msg_log = os.path.join(get_config().get_str("log_dir"), "message.log")
+with open(msg_log) as f:
+    msg_content = f.read()
+assert "failed to reconnect within grace" in msg_content, \
+    "AGENT::0006 should remind user with manual restart command"
+assert "fly --worker --worker-id 1" in msg_content, \
+    "AGENT::0006 should carry the restart command line"
+INFO("[CTRL] grace-expiry user message with restart command logged")
+
 INFO("[PASS] test_no_storage_no_takeover")

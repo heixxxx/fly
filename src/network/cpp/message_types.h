@@ -61,10 +61,12 @@ enum class MessageType : uint8_t {
     PEER_RPC_REQUEST = 50,    // worker → peer (业务RPC): 请求（rpc_id + src_worker + payload）
     PEER_RPC_RESPONSE = 51,   // peer → worker (业务RPC): 响应（rpc_id + status + payload）
     WORKER_BACKUP_SUGGEST = 52,  // worker → master: 上报 TIER2 读流量增量，master 聚合后判定 backup
+    STORAGE_SPAWN_REQUEST = 53,  // master → worker: 请求在本 host 唤起 storage_only worker（自动补齐 feature）
+    STORAGE_SPAWN_ACK = 54,      // worker → master: spawn 动作结果（exec 成败 + 原因；注册到达另计）
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 52;
+    return raw >= 1 && raw <= 54;
 }
 
 struct MessageHeader {
@@ -97,10 +99,13 @@ struct RegisterAckMessage {
     uint64_t worker_id_ = 0;
     CMString master_address_;
     int32_t master_port_ = 0;
+    // 重复注册拒绝（用户确认语义）：该 worker_id 已有活跃连接（网络分区恢复
+    // 与手动重启的竞态，先到先得），后到者收到 true 后应自行干净退出。
+    bool duplicate_ = false;
 
     static constexpr MessageType msg_type_ = MessageType::REGISTER_ACK;
 
-    FLY_SERIALIZE(header_, worker_id_, master_address_, master_port_);
+    FLY_SERIALIZE(header_, worker_id_, master_address_, master_port_, duplicate_);
 };
 
 struct HeartbeatMessage {
@@ -397,6 +402,34 @@ struct IdxLoadAckMessage {
     static constexpr MessageType msg_type_ = MessageType::IDX_LOAD_ACK;
 
     FLY_SERIALIZE(header_, worker_id_, db_path_, success_, loaded_count_, error_message_, loaded_writer_ids_);
+};
+
+// master → worker：请求在本 host 唤起一个 storage_only worker（自动补齐
+// feature）。spawn 的 worker_id 由 master 分配（高基区自增，避开 Python
+// launch 的低位 id 序列）；其余参数（master 地址/hostname/config 路径）由
+// worker 侧从自身 ProcessInfo/Config 推导，保证同环境同版本。
+struct StorageSpawnRequestMessage {
+    MessageHeader header_;
+    uint64_t spawn_worker_id_ = 0;  // 分配给将 spawn 的 storage worker 的 id
+
+    static constexpr MessageType msg_type_ = MessageType::STORAGE_SPAWN_REQUEST;
+
+    FLY_SERIALIZE(header_, spawn_worker_id_);
+};
+
+// worker → master：spawn 动作本身的结果。exec 成功不等于注册到达（注册走
+// 正常 RegisterMessage 流程，由检测循环按「该 host 出现 storage」确认）；
+// 失败（二进制不可执行/fork 失败等）携带原因供 master 退避。
+struct StorageSpawnAckMessage {
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;      // 执行 spawn 的 worker（master 记退避计数）
+    CMString hostname_;           // 目标 host（master 按 host 记占位/退避）
+    bool success_ = false;
+    CMString error_message_;
+
+    static constexpr MessageType msg_type_ = MessageType::STORAGE_SPAWN_ACK;
+
+    FLY_SERIALIZE(header_, worker_id_, hostname_, success_, error_message_);
 };
 
 struct DatabaseFreezeNotification {

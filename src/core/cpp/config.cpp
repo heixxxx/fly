@@ -171,6 +171,13 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"storage_takeover_enabled", 0},
     {"storage_takeover_fail_timeout", 60},
     {"storage_takeover_max_writers", 64},
+    // 自动补齐存储节点（master 周期检测「有活 worker 但无 storage_only」的
+    // host，经该 host 的活 worker 本地 spawn storage worker）。默认关（opt-in）
+    //——LSF/bsub 等调度器环境下 spawn 侵占作业资源配额，须在允许的环境显式
+    // 开启；外部 launcher（expect_workers 占位）唤起的 storage 同样被检测视
+    // 为已覆盖。检测周期由 heartbeat 循环节流（5s 一轮）。
+    {"auto_storage_nodes_enabled", 0},
+    {"auto_storage_check_interval", 30},
 };
 
 const CMUnorderedMap<CMString, CMString> Config::STR_DEFAULTS = {

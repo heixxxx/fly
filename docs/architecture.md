@@ -328,6 +328,15 @@ worker 生命周期语义（用户确认，两阶段）：
   master 进程读失败**永不踢出**条目（worker 断连≠数据消失，重连后位置必须
   仍在）；worker 本地视图的踢副本保留（自愈，可 TIER3 刷新恢复）。
 - `worker_reconnect_timeout=0` 为"断连即死"逃生口（旧语义）。
+- **宽限超时判死提醒（AGENT::0006）**：宽限耗尽 worker 未重连 → WARN 级
+  user message 附带手动重启命令（`fly --worker --worker-id N --master-host H
+  --master-port P --log-dir D [--host HOSTNAME]`）。worker 侧重连上限与
+  master 宽限同键对等（`worker_reconnect_timeout`），两侧同窗口收敛——
+  worker 放弃重连自行退出、master 判死并提醒，无无限重试残留。
+- **重复注册防护（先到先得）**：同 worker_id 的第二个注册（网络分区恢复
+  的旧实例 vs 手动重启的新实例竞态）到达时，若该 id 已有活跃连接 → master
+  回 `duplicate` RegisterAck，后到者自行干净退出——单实例保证，两份注册
+  信息不会同时生效。
 
 `load_db`/`merge_db` 内部的补 spawn 等待已改用此机制。
 
@@ -337,6 +346,20 @@ worker 生命周期语义（用户确认，两阶段）：
   **不可变更**（无任何修改途径）；**调度决策不感知 storage_only**（idle 候选层
   过滤，scheduler 无 role 概念），它仍参与心跳判死/数据面/internal 数据 task
   （merge/backup）与 backup 目标。经 `launch_workers([{"role": "storage_only"}])`
+- **自动补齐存储节点（auto_storage_nodes_enabled，默认关）**：master 周期
+  检测（`auto_storage_check_interval` 节流，默认 30s，挂 heartbeat 循环）
+  「有活 worker 但无活 storage_only」的 host，经该 host 任一活 hybrid worker
+  发 `StorageSpawnRequest` 在本地 spawn storage worker。spawn 语义：**完全
+  独立的进程**（posix_spawn `/proc/self/exe` 同版本 + SETSID 脱离进程树 +
+  **fd 零继承**——枚举 `/proc/self/fd` 全部关进 file_actions，子进程只带
+  stdio；不关会把 master 连接 fd 带进子进程，发起 worker 死后内核不发 FIN、
+  master 永远看不到断连，实测卡死 summary/drain）+ Config 落盘传递
+  （`.fly_config_autospawn_<pid>`，无共享文件系统假设）+ detached waitpid
+  回收。worker_id 由 master 高基区（100000+）分配避开 Python launch 低位
+  序列；spawn 占位（120s 超时）防周期内重复 + Ack 失败退避（3 次放弃该
+  host）；storage 注册到达即占位/失败计数清零（外部 launcher 唤起的同样
+  视为已覆盖）。LSF/bsub 环境下 spawn 侵占作业资源配额，须在允许的环境
+  显式开启。
   或 CLI `--worker-role` 设定
 - **动态能力**: Worker 可在运行时动态设置/移除能力（GPU/CPU等），调度器实时匹配
 - **持久化失败任务**: 不可调度任务会持久化到 `log_dir/failed_tasks.bin`

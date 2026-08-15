@@ -1930,6 +1930,47 @@ TEST(MasterAgentTest, StorageTakeoverDeadlineClearsPending) {
     EXPECT_EQ(master.takeover_pending_size_for_testing(), 0u);
 }
 
+// --- 自动补齐检测决策（auto_storage_nodes）---
+
+namespace {
+struct AutoStorageFixture {
+    CMSharedPtr<Config> cfg = Config::instance();
+    int saved_enabled;
+    AutoStorageFixture() {
+        saved_enabled = cfg->get_int("auto_storage_nodes_enabled");
+        cfg->set_int("auto_storage_nodes_enabled", 1);
+    }
+    ~AutoStorageFixture() {
+        cfg->set_int("auto_storage_nodes_enabled", saved_enabled);
+    }
+};
+}  // namespace
+
+// 缺 storage 的 host 触发 spawn 决策；已有 storage 的 host 不触发。
+// 决策计数与发送成败解耦（单测无网络连接，send 失败不登记占位、下轮
+// 允许重试——worker 不在线时重试正是期望行为；占位防重、发送与注册
+// 链路由 QA test_auto_storage_spawn 端到端覆盖）。
+TEST(MasterAgentTest, AutoStorageSpawnSelectsMissingHost) {
+    AutoStorageFixture fx;
+    MasterAgent master("127.0.0.1", 0);
+    master.add_worker_hostname(10, "host_a");                              // 缺 storage
+    master.add_worker_hostname(20, "host_b");                              // 缺 storage
+    master.add_worker_hostname(30, "host_b", WorkerRole::STORAGE_ONLY);    // host_b 已覆盖
+
+    master.check_storage_nodes_for_testing(1000);
+    EXPECT_EQ(master.storage_spawn_decisions_for_testing(), 1);  // 仅 host_a（host_b 被覆盖跳过）
+}
+
+// feature 关闭时不触发。
+TEST(MasterAgentTest, AutoStorageSpawnDisabledByConfig) {
+    MasterAgent master("127.0.0.1", 0);
+    Config::instance()->set_int("auto_storage_nodes_enabled", 0);
+    master.add_worker_hostname(10, "host_a");
+
+    master.check_storage_nodes_for_testing(1000);
+    EXPECT_EQ(master.storage_spawn_decisions_for_testing(), 0);
+}
+
 // --- Shutdown / Drain tests ---
 
 namespace {
