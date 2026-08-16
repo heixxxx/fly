@@ -308,8 +308,8 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
     use_coarse = (omega_strategy == "coarse")
 
     # ── 粗校正预构建（内存缓存，不经 DB 读写）──
+    # residual 每步全量精确计算（r = b - A·x），不做增量缓存——避免浮点误差累积。
     Ac_lu = None; P = None; A_fine = None; b_fine = None
-    residual_cached = None  # 增量 residual：上步存储的 r，避免每步全量 SpMV
     if use_coarse:
         from .ras_graph import _compute_coarse_arrays, _ensure_coarse_cached
         _ensure_coarse_cached(db)

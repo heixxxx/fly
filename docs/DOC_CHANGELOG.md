@@ -3,6 +3,34 @@
 ---
 ---
 
+## 2026-08-16 (4): Solver 全家逐项复核（1 清理 + 1 有意保留 + 4 待触发/不做）
+
+按「先核实文档描述与代码一致、是否真需做」流程复核 remaining-todo §四
+全部 6 项（对照 docs/solver/optimization-roadmap.md 2026-08-04 决策）：
+
+- **增量 residual**：删除 `ras_graph_daemon.py` 的 `residual_cached` 空壳
+  （声明后从未赋值/读取）。现行设计为每步全量精确计算 r = b - A·x
+  （代码注释明确「保证数值正确性」），实现增量缓存反而违背设计决策。
+- **v1 task 链**：改判「有意保留」——v1（solve_ras_graph）是 QA golden
+  正确性基准（golden_solver/test_ras_graph/verify_2d_partition/
+  bench_omega_sweep）与 big_qa scaling 对照链；v2（solve_ras_graph_v2
+  常驻 daemon + PeerChannelGroup RPC 直连，iter-refactor 特性 1+2 已实施）
+  是性能主链。双链分工明确非冗余，原「待清理」定性有误。
+- **PCG / master reduce RPC / Worker 进程复用**：⏸ 待触发——optimization-
+  roadmap 已裁定：PCG「可行但有硬瓶颈」（无轻量 Allreduce，通信占 93%）；
+  reduce 原语已被方向 2（迭代重构，已实施）取代；进程复用「风险/收益比
+  不划算」（初始化大头 BFS 633ms + LDLT 1171ms 算法固有）。
+- **树形归约**：改判 ⛔ 明确不做——optimization-roadmap §五裁定 fly 树形
+  是「伪 O(log nsd)」（配对常数项差 MPI 100x）；原「nsd≥16 再做」的清单
+  描述过期。
+- 附带修正：iter-refactor-impl-plan.md 步骤 1.2「（或复用 IOThreadPool）」
+  措辞（该类已于本日死代码批次删除）。
+
+验证：全量单测 + QA（见 commit）。
+
+---
+---
+
 ## 2026-08-16 (3): 死代码清理批次（逐项核实后删除）
 
 按「先核实是否真死、再删」流程执行 remaining-todo §六 全清单。核实结论

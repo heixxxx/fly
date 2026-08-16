@@ -38,7 +38,7 @@
 - 新建 `src/agent/cpp/peer_rpc_server.{h,cpp}`
 - PeerRpcServer 类：
   - listen(port=0) 绑定独立业务端口（OS 分配）
-  - 独立 accept 线程（或复用 IOThreadPool）+ ConnectionManager
+  - 独立 accept 线程 + ConnectionManager（计划期曾考虑复用 IOThreadPool，该类已于 2026-08-16 作为死代码删除）
   - on_request 回调路由（收 PeerRpcRequestMessage → 业务处理）
   - send_response(conn_id, rpc_id, status, payload)
   - connect_peer(host, port, retries=2) → conn_id（客户端，带重连）

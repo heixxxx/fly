@@ -60,16 +60,18 @@
 
 ## 四、Solver（预研/可选）
 
+> 2026-08-16 逐项复核完毕（对照 docs/solver/optimization-roadmap.md 2026-08-04 决策），全部为「记录在案、条件未触发」或「有意保留」，无本阶段待办：
+
 | 项 | 状态 | 说明 |
 |---|---|---|
-| PCG 求解器 | ❌ | 全树零 pcg/conjugate_gradient；文档定位"可选备选"|
-| master 侧轻量 reduce RPC | ❌ | 全树零 allreduce；PCG 前置依赖 |
-| 树形归约（nsd≥16）| ❌ | check 仍单点串行；文档「nsd≥16 再做」|
-| Worker 进程复用（消除~1.9s启动）| ❌ | 每次 solve 仍 launch_local_workers 新建 |
-| 增量 residual | ❌ | ras_graph_daemon.py:312 声明 residual_cached 但从未赋值——脚手架空壳 |
-| v1 task 链清理 | 🟡 | ras_graph.py 仍保留 v1，golden_solver/test 仍用（双路径并存）|
+| PCG 求解器 | ⏸ 待触发 | optimization-roadmap 定位「⚠️ 可行但有硬瓶颈」：无轻量 Allreduce 原语，每归约 ~70ms，通信占 93%；预估依赖 AMG（fly 实现复杂）。触发条件：reduce 原语补齐 + 迭代重构收益见顶 |
+| master 侧轻量 reduce RPC | ⏸ 待触发 | PCG 前置依赖。原「方向 3」已被「方向 2 迭代重构」（PeerChannelGroup RPC，**已实施**）取代——通信开销问题已由直连 RPC 解决；reduce 原语仅在 PCG 立项时一并做 |
+| 树形归约 | ⛔ 明确不做 | optimization-roadmap §五已裁定：fly 树形是「伪 O(log nsd)」，每步配对常数项比 MPI 差 100x，master 中心化更优（原「nsd≥16 再做」的说法已被此决策取代） |
+| Worker 进程复用（~1.9s 启动） | ⏸ 待触发 | optimization-roadmap 方向 1 记录在案：「风险/收益比不划算」，初始化大头是 BFS（633ms）+ LDLT（1171ms）算法固有成本；方向 2（常驻 daemon task）已消除调度间隙，单次 solve 中启动占比进一步下降 |
+| 增量 residual | ✅ 已清 | `residual_cached` 空壳已删（2026-08-16）：现行设计为每步全量精确计算 r = b - A·x（保证数值正确性，避免浮点误差累积），实现增量缓存反而违背设计决策 |
+| v1 task 链 | ⚪ 有意保留 | v1（solve_ras_graph，每轮 task 调度 + DB 通信）是 QA golden 正确性基准（golden_solver/test_ras_graph/verify_2d_partition/bench_omega_sweep）与 big_qa scaling 对照链；v2（solve_ras_graph_v2 daemon 常驻 + RPC 直连）是性能主链。双链分工明确非冗余 |
 
-> ⛔ 已否决（正确不做）：GPU 稀疏直接法 / AmgX/Hypre/PETSc / MPI 树形 Allreduce / 全局 LU / 矩阵分块存储
+> ⛔ 已否决（正确不做）：GPU 稀疏直接法 / AmgX/Hypre/PETSc / MPI 树形 Allreduce / 全局 LU / 矩阵分块存储（详见 optimization-roadmap §五）
 
 ---
 
@@ -141,4 +143,6 @@
 1. ~~文档同步~~ ✅ 已完成（2026-08-16 批次：ISSUES/roadmap/architecture/DOC_CHANGELOG/本清单）
 2. ~~S4 后半：TIER1 FAILED 读快速失败~~ ✅ 已关闭（2026-08-16 复核非缺陷，见 §二）
 3. ~~死代码清理~~ ✅ 已完成（2026-08-16 批次，见 §六；全量单测 56/56 + QA 162/162）
-4. **Solver**：residual_cached 空壳/v1 链清理等（PCG/树形归约为可选项，见 §四）
+4. ~~Solver 全家~~ ✅ 复核完毕（2026-08-16，见 §四：1 清理 + 1 有意保留 + 4 待触发/不做，无遗留代码欠账）
+
+> 以上四项全部完结。剩余真实欠账：throw→error code 残留 9 处（§五）、WRITE_REGISTRATION_FAILED 未启用（§五）、P3-17 并发测试覆盖面（§五）、超长函数重构（§六）、M1/S1-3 内存上限（待触发）、F1/F2/F4（降级待环境）。
