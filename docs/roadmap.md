@@ -220,11 +220,11 @@ scheduler_->set_locality_preference(...);
 | 编号 | 问题 | 位置 | 量级 | 状态 |
 |------|------|------|------|------|
 | **S1-1** | 磁盘 idx 文件每条记录的 `object_name_` 冗余存 db_id 前缀（`db_id:short`）— 同一 .idx 文件天然属于同一 db，前缀 100% 冗余 | `LocalIndex::entries_` key + `IndexEntry.object_name_`（`local_index.h:69`、`index_entry.h:8`） | 每条 11 字节 × N；百万对象 ≈ 10 MB 磁盘 | ✅ **已修复**（db_id 废弃改造：LocalIndex 改存 short_name） |
-| **S1-2** | `LocalObjectInfo` 每对象含独立 `std::mutex` + `std::condition_variable`（用于写完成等待） | `data_service.h:66-67` | libc++ 下 ~88 B/对象固定开销（mutex 40B + cv 48B）；百万对象 ≈ 88 MB | 🟡 待优化（见下，2026-08-02 已确认死代码） |
+| **S1-2** | `LocalObjectInfo` 每对象含独立 `std::mutex` + `std::condition_variable`（用于写完成等待） | `data_service.h:66-67` | libc++ 下 ~88 B/对象固定开销（mutex 40B + cv 48B）；百万对象 ≈ 88 MB | ✅ **已修复**（2026-08-15 前落地）：per-object mutex/cv 死路径删除，`completion_state_` 改 `std::atomic`（根治锁外裸读竞争），等待改 per-db 共享 cv + predicate（见下方说明） |
 | **S1-3** | `remote_idx_` / `write_provenance_` 无上限累积（= M1 的 R1/R2） | `data_service.h:312-314`、`master_agent.h:349` | master 随全局对象数线性增长；百万对象 ≈ 100 MB+ | 🟡 = M1，待对象量真实过百万时启动（见下，2026-08-02 调研补充） |
 | **S1-4** | master `recorded_workers_` 从不清理（= M1 的 R5） | `master_agent.h` | 每个 (db,writer) 一条，量极小 | ⚪ 极低优先级 |
 
-**S1-2 的优化方向**（`LocalObjectInfo` 的 mutex+cv 开销）：
+**S1-2 的优化方向**（`LocalObjectInfo` 的 mutex+cv 开销）—— ✅ **已按推荐方案完成**：删除 `cv_mutex_`/`cv_` 字段 + `_or_wait` 死路径；`completion_state_` 改 `std::atomic<CompletionState>` 根治锁外裸读数据竞争；本地写完成等待改为 per-db 共享 cv + predicate 检查目标对象 completion_state_（`data_service.h:83`）。以下调研记录保留作决策背景。
 
 当前每个未完成/等待中的写对象各持一份 `mutex`+`cv`，用于读路径 `try_read_local_raw_or_wait` 阻塞等待写完成。这是单对象百字节级开销的主项（远大于 S1-1 的 11 字节前缀）。百万对象时仅 mutex+cv 就占 ~88 MB。
 
@@ -255,7 +255,7 @@ scheduler_->set_locality_preference(...);
 
 ---
 
-**[S3] `write_provenance_` 健壮性不足**（2026-08-02 调研发现）
+**[S3] `write_provenance_` 健壮性不足**（2026-08-02 调研发现）— ✅ **已修复**（2026-08-12 push，commit 1bdf244）：嵌套 map 重构 + 时间戳填空 hash（裸写入）+ load 重建（持久化）+ freeze 清理 + merge 不继承/清理孤立条目 + master remove bug 修复 + 8 个 TDD 测试。以下调研记录保留作背景。
 
 `write_provenance_`（`master_agent.h:349`，仅 master 进程，`unordered_map<object_name, write_context_hash>`）守护核心不变量：**同一对象名只能被同一 write context 写出**，防止不同任务逻辑向同一对象名写入不同内容（破坏 fly 的确定性 / 可重现性保证）。校验在 `do_write_register`（`master_agent.cpp:1256-1259`）：对象不存在则登记 hash；存在且 hash 相同则允许（幂等重算）；存在但 hash 不同则拒绝（`WRITE_PROVENANCE_MISMATCH`）。该机制还支撑 backup task（`master_agent.cpp:2060`，备份任务继承源 provenance）和 merge task（`:2150`，merge 产物继承源 provenance）。**该机制当前不够完善健壮，需后续增强与优化**：
 
@@ -273,7 +273,10 @@ scheduler_->set_locality_preference(...);
 - **持久化**：provenance 随 `.idx` / `_DB_META` 落盘，重启重建（与 `remote_idx_` 的 `rebuild_remote_idx_for_worker` 同构）。
 - **配套对象生命周期的受控淘汰**：不裸 LRU（会破坏校验），仅在对象从 `remote_idx_` / `local_idx_` 真正消失时才允许清对应 provenance。
 
-**[S4] TIER1 INCOMPLETE 状态无差别回退 TIER2 不合理**（2026-08-02 调研发现）
+**[S4] TIER1 INCOMPLETE 状态无差别回退 TIER2 不合理**（2026-08-02 调研发现）— ✅ **关闭（2026-08-16 复核：非缺陷）**
+- INCOMPLETE 本地写等待快路径已随 S1-2 落地（per-db 共享 cv + atomic predicate）。
+- **FAILED 部分经复核不成立**：① `on_write_failed` 在同一 unique_lock 内 store FAILED 后立即 erase 条目——FAILED 态对并发读者竞争窗口为零，diag=2 的 FAILED 分支实际不可达；② wait 唤醒的读者重查为 not_found → TIER2 读旧副本是**正确语义**（对象曾 backup 时副本内容与 provenance hash 保证的幂等内容一致；若按原方向"FAILED 直接失败不回退"反而拒绝读有效副本，破坏正确性）；③ 无副本场景已闭环（TIER2 秒空 → TIER3 → `can_still_produce` 驱动 wait_obj 收敛）。既有测试锁定该行为（`data_service_test.cpp:1424` "FAILED object should return false (fallback to TIER2)"）。
+- 遗留小项：`LocalObjectInfo.error_message_` 写入后条目立即 erase、无人读——死字段，归死代码清理。
 
 读路径 `read_raw_compressed`（`data_service.cpp:1064`）TIER1 调 `try_read_local_raw`（`:714`），其对 `completion_state_` 的处理：
 

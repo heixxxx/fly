@@ -3,6 +3,89 @@
 ---
 ---
 
+## 2026-08-16 (2): S4 复核关闭（非缺陷）
+
+对 roadmap [S4]「TIER1 FAILED 无差别回退 TIER2」做修复前核实，结论**不修**
+（用户流程要求：每项修复前先确认文档描述与代码一致、是否真需要修）：
+
+- **FAILED 态对读者不可见**：`on_write_failed`（data_service.cpp）在同一
+  unique_lock 内 store FAILED 后立即 erase 条目，diag=2 的 FAILED 分支竞争
+  窗口为零；wait 唤醒的读者重查为 not_found。
+- **读旧副本是正确语义**：对象曾 backup 时本地写失败从 TIER2 读副本，
+  provenance hash 保证幂等重算内容一致；按原方向「FAILED 直接失败」反而
+  拒绝读有效副本，破坏正确性。
+- **无副本场景闭环**：TIER2 秒空 → TIER3 master 无位置 → `can_still_produce`
+  驱动 wait_obj 收敛。
+- 既有测试锁定该行为（data_service_test.cpp:1424「FAILED object should
+  return false (fallback to TIER2)」）。
+
+roadmap S4 → ✅ 关闭；remaining-todo §二 S4 行同步。遗留
+`LocalObjectInfo.error_message_` 死字段（写入后条目立即 erase、无人读）
+归死代码清理清单。
+
+---
+---
+
+## 2026-08-16 (1): 补记 8/15-8/16 七个 commit + 全量文档状态同步
+
+### 补记：存储面 H 系列（2026-08-15 下午，4 commit）
+
+用户确认语义的存储面四机制，代码与 architecture.md 已同步，此处补记
+DOC_CHANGELOG 条目：
+
+- **H1**（2020124）：`select_backup_worker` 三级 key——host-disjoint 故障域
+  隔离 > storage_only 优先 > 名下副本字节最轻（`get_worker_bytes_batch`
+  一次锁内聚合磁盘水位）；host 全冲突 best-effort 回退层内同序。
+- **H2**（5dfc5e3）：`lookup_all_remote_idx` 返回前统一排序——存活
+  storage_only > 存活 hybrid > 已死 holder 排尾（registry 维护 alive_）；
+  role 协议传播（DataLocation.storage_only 字段 + TIER3 回填）。
+- **H3**（fbb9bc4）：判死后同 host storage_only 只读接管读服务
+  （`try_storage_takeover` 复用 IdxLoad 链路 + `rebuild_remote_idx_for_worker`
+  追加 holder）；全灭 fail 延迟 60s；restore 等价副本跳过 + ObjectCache 失效；
+  修复预取单副本 front() 选中死 holder 卡 30s 的缺陷（改 lookup_all 排序首选）。
+- **H4**（ee190da）：master 自动补齐存储节点（`auto_storage_nodes_enabled`
+  默认关；posix_spawn /proc/self/exe + SETSID + fd 零继承——fd 继承致连接
+  ESTAB 残留卡死是实测根因）+ 宽限超时判死提醒 AGENT::0006 + 重复注册
+  先到先得防护（WORKER_PROBE 活性探测 + deferred 注册重放）。
+
+### 补记：8/16 三个 commit
+
+- **5651b09**：50 轮稳定性测试暴露的四个并发缺陷（未注册窗口 WriteRegister
+  静默丢弃 / 首连窗口缓冲上报无人 flush / do_write_register 可见性顺序 /
+  重复注册时序假设），50/50 全过。
+- **cbbb3fc**：注册时序语义收口——写注册 pending 阻塞（终态驱动，替代 5s
+  超时）+ RegisterAck 先于调度可见（TCP 同连接保序，assign 抢跑窗口根除）。
+- **19d9afb**：断连消息语义统一——`pending_master_sends_` FIFO 重放；A 类
+  同步 RPC（DbPath/Freeze/Var/Remove）挂起重放拿 Ack 才放行；B 类入队重放
+  （Backup/能力增删/ObjectRemoved）；TaskSubmit 升级 Ack 强语义
+  （TASK_SUBMIT_ACK=57，request_id 匹配带回 task_id，断连丢子任务根除）。
+
+### 本轮文档状态同步（过期修正）
+
+全面对比文档 vs 代码/git 历史后的修正：
+
+- **remaining-todo.md**：P1-8 ❌→✅（lambda 已返回 bool）；P3-19
+  MetadataClient ❌→✅（mock e2e 已补）；auto_backup 🔄→✅（worker
+  suggest + master EWMA 已全链落地）；`_MIGRATED_TO` 移出死代码清单（db_id
+  废弃后已成正式迁移重定向机制）；§七不一致表全部处理；throw 残留 12→9
+  （object_header.cpp 已清零）；新增 8/15-16 完成项表；**用户裁定移除两项**
+  （WriteBackQueue 单 worker——设计约束非欠账；MessageHeader message_id_/
+  timestamp_——二次检查确认保留：协议头标准槽位，删除改全量 wire format
+  收益近零）。
+- **roadmap.md**：S1-2 🟡→✅（per-object mutex/cv 已删 + atomic + per-db
+  cv）；S3 补 ✅（2026-08-12 已修，commit 1bdf244）；S4 补 🟡 部分完成
+  （INCOMPLETE 快路径已做，FAILED 仍无差别回退）。
+- **ISSUES.md**：P3 编号去重——旧 P3-18（Dead code cleanup）→ **P3-21**、
+  旧 P3-19（MetadataClient）→ **P3-22**（新 P3-18/P3-19 已被 commit 与
+  CHANGELOG 引用保持不变）；P3-18/P3-19 条目 Next 残留（已修复项仍写
+  "专项排查"）清理；Summary 表 8/12→8/16 更新（P3 6 项 5 fixed）。
+- **architecture.md**：「尚未实现」列表修正——移除 Locality（早已实现默认
+  开启）、Worker 失败恢复（断连宽限 + 重入队已实现）、Worker role（已实现
+  却列在未实现下）；页脚日期 2026-06-17→2026-08-16。
+
+---
+---
+
 ## 2026-08-15 (3): Logger 自动 flush（累计字节数 / 时间间隔）
 
 用户确认增强：DEBUG/INFO 累计写入达 log_flush_threshold_bytes（默认 64KB）或距

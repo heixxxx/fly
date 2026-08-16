@@ -811,13 +811,12 @@ fly/
 
 ### 尚未实现（⏳）
 
-- **SSH Worker 启动**：launch_ssh_workers 接口设计完成，未实现
+- **SSH Worker 启动**：launch_ssh_workers 接口设计完成，未实现（F1 降级，待多机测试环境）
 - **自定义 Worker 启动**：launch_custom_workers 接口设计完成，未实现
-- **Database Freeze 后处理**：idx 合并、_META 生成
-- **Locality 调度**：数据位置感知的任务分配
-- **Worker 失败恢复**：任务重新调度
-- **Worker role**：storage_only 存储角色（静态身份，调度候选层过滤——已实现）
+- **Database Freeze 后处理**：idx 合并、_META 生成（F2 降级，非阻塞需求）
+
+> 2026-08-16 修正过期项：~~Locality 调度~~（早已实现且默认开启，见 roadmap §一/§三）；~~Worker 失败恢复~~（已实现：断连宽限 + task 重新入队 + 数据全灭快速失败，见 §3.4）；~~Worker role~~（已实现 2026-08-15，见 §3.5 role 小节）。
 
 ---
 
-*文档更新日期: 2026-06-17*
+*文档更新日期: 2026-08-16*

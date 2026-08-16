@@ -2,7 +2,7 @@
 
 > Auto-generated from comprehensive code review (2026-05-30).
 > Status: `OPEN` = needs fix, `FIXED` = resolved, `PENDING` = deferred.
-> Last updated: 2026-05-31.
+> Last updated: 2026-08-16.
 
 ---
 
@@ -127,13 +127,11 @@
   stop 后（终态一致），但延迟上限从"进程生命周期"缩到 ≤1s。
 - **Evidence**（2026-08-15 高压稳定性测试第 5/10 轮，`test_startup_info`）：
   worker1.log 完整缺少 `Fly Startup Info (worker)` 段（connect/DataServer/Register
-  等其余日志齐全）。emit_system_message 直写 Logger（message_dispatch.cpp:42），
-  打印路径未被改动。怀疑方向：Logger::resolve_log_dir 轮转目录在多进程高并发下的
-  竞争（写入轮转目录而测试读主目录）。
+  等其余日志齐全）。原怀疑方向 resolve_log_dir 轮转竞争**已排除**——根因为
+  INFO 缓冲仅退出时 flush（运行中读取必漏最新行）。
 - **Probability**: ~1/3000 case（两轮 -j16 完整压力共 20 轮出现 1 次；随后完整
   10/10 轮全过）。
-- **Next**: 专项查 resolve_log_dir 并发轮转竞争（.latest symlink 与 .N 目录的
-  多进程互斥）。与 2026-08-15 G 系列（断连重连）无因果路径。
+- **Next**: 无遗留——已修复（见 Status）。
 
 ### P3-18: 退出期偶发 pure virtual method called（静态析构竞态）
 - **Status**: FIXED ✅（2026-08-15，5058f01）— Logger 单例 leak-on-exit 根治
@@ -149,16 +147,14 @@
   无虚函数——真实源头不明）。嵌入式 Python 进程退出的静态析构序竞态经典形态。
 - **Probability**: ~1/3120 case（两轮完整 -j16 高压共 20 轮 3120 case 出现 1 次；
   常压 20 轮 + CPU 饱和 25 轮定向复现均未触发）。
-- **Next**: 专项排查 atexit 静态析构链与 Python finalization 的交错（core dump +
-  符号化完整栈 / 逐静态审计）。与 2026-08-14 批次改动无因果路径（未触碰
-  Logger/静态析构/退出路径），非本批次引入的判定依据已记录于该批次 commit。
+- **Next**: 无遗留——已修复（见 Status；5058f01）。
 
 ### P3-17: Concurrency stress test infrastructure
 - **Status**: PARTIAL — 基础设施已建立，覆盖面仍需扩展
 - **Risk**: Zero tests verify concurrent access to shared data structures. Data races will only manifest in production under load.
 - **Fix Applied**: 已建立确定性并发测试基础设施 —— `src/storage/tests/data_service_concurrency_bench.cpp`（DataService 并发锁争用 micro-benchmark）、`src/agent/tests/master_agent_test.cpp`（用 `std::latch` 协调线程交错的竞态测试，经 `FLY_ENABLE_TEST_HOOKS` 隔离）、`src/task/tests/scheduling_hotloop_bench.cpp`（调度热循环 bench）。覆盖面仍限于 DataService / master_agent / scheduler，全模块并发覆盖待后续扩展。
 
-### P3-18: Dead code cleanup
+### P3-21: Dead code cleanup（原编号 P3-18，2026-08-16 去重——与新 P3-18 编号冲突）
 - **Status**: FIXED ✅
 - **Files**: Multiple
 - **Details**:
@@ -169,7 +165,7 @@
   - `WorkerManager::record_heartbeat` — dead method
 - **Fix Applied**: Removed unused fields, methods, and enum values. `CANCELLED` retained in Python exports for API compatibility.
 
-### P3-19: MetadataClient success path untested
+### P3-22: MetadataClient success path untested（原编号 P3-19，2026-08-16 去重——与新 P3-19 编号冲突）
 - **Status**: FIXED ✅
 - **File**: `src/network/tests/metadata_client_test.cpp`
 - **Risk**: Only failure cases and message encoding were tested. No end-to-end query against a running server.
@@ -211,13 +207,15 @@
 
 ## Summary
 
-> Last updated: 2026-08-12
+> Last updated: 2026-08-16
 
 | Category | Total | Fixed | Pending | Open |
 |----------|-------|-------|---------|------|
 | P0 — Critical | 4 | 4 | 0 | 0 |
 | P1 — High | 6 | 6 | 0 | 0 |
 | P2 — Medium | 6 | 5 | 0 | 1 (closed: not a bug) |
-| P3 — Low | 4 | 3 | 1 (P3-17 partial) | 0 |
+| P3 — Low | 6 | 5 | 1 (P3-17 partial) | 0 |
 | X — Unprioritized | 18 | 9 | 0 | 9 |
-| **Total** | **38** | **27** | **1** | **10** |
+| **Total** | **40** | **29** | **1** | **10** |
+
+> 2026-08-16 去重说明：原 P3-18（Dead code cleanup）→ **P3-21**、原 P3-19（MetadataClient）→ **P3-22**，为新 P3-18（退出期 pure virtual）/P3-19（日志 flush）腾出编号（后者已被 commit 5058f01/c119b1b 与 DOC_CHANGELOG 引用，保持不变）。
