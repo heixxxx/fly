@@ -52,9 +52,12 @@ measure_python() {
     # -j 1 is NOT required for Python (coverage.py's parallel mode gives each
     # process its own data file, no shared-write risk). We keep runqa's default
     # parallelism for speed.
+    # -j 2：coverage tracer 显著放大每 fly 进程内存，-j6 曾把宿主 Windows commit
+    # 打满（Resource-Exhaustion-Detector Event 2004 → WSL VM 整体重启，2026-08-16
+    # 实测）。-j2 实测 guest 谷值 4.1GB、宿主安全。
     # 单 case 失败不阻断（覆盖率是诊断工具，已有数据仍需 combine 报告；
     # 失败明细在 runqa 输出与 qa/logs/qa.log 中，不掩盖）。
-    FLY_PYCOVERAGE=1 bash "$FLY_ROOT/qa/run_qa_tests.sh" || warn "QA had failures — combining coverage from passed cases anyway"
+    FLY_PYCOVERAGE=1 bash "$FLY_ROOT/qa/run_qa_tests.sh" -j 2 || warn "QA had failures — combining coverage from passed cases anyway"
 
     # Combine all per-process data files from the pinned location.
     # parallel=True in .coveragerc makes each process write

@@ -86,3 +86,13 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "peer_rpc_server_test",
+    srcs = ["peer_rpc_server_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/agent/cpp:fly_agent",
+    ],
+    copts = ["-std=c++20"],
+)

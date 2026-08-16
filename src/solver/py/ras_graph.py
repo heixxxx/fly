@@ -81,17 +81,27 @@ def generate_poisson_matrix(n, path, compute_exact=True):
     vals = A_csc.data.astype(np.float64)
 
     b = np.ones(N, dtype=np.float64)
-    np.savez(path,
-             n=np.int64(n), N=np.int64(N),
-             rows=rows, cols=cols, vals=vals,
-             b=b)
+    # 原子写（tmp + os.replace）：与 compute_exact_solution 的重写同策略——
+    # 首写当前与读方 happens-before 安全（solve 在 generate 返回后），此处
+    # 为统一写协议的零成本防御（P3-24）。
+    import os
+    tmp_path = path + ".tmp_gen"
+    with open(tmp_path, "wb") as f:
+        np.savez(f,
+                 n=np.int64(n), N=np.int64(N),
+                 rows=rows, cols=cols, vals=vals,
+                 b=b)
+    os.replace(tmp_path, path)
     if compute_exact:
         x_exact = splu(A_csc).solve(b)
         # Re-save with x_exact appended. (np.savez has no append; rewrite.)
-        np.savez(path,
-                 n=np.int64(n), N=np.int64(N),
-                 rows=rows, cols=cols, vals=vals,
-                 b=b, x_exact=x_exact)
+        tmp_path = path + ".tmp_exact"
+        with open(tmp_path, "wb") as f:
+            np.savez(f,
+                     n=np.int64(n), N=np.int64(N),
+                     rows=rows, cols=cols, vals=vals,
+                     b=b, x_exact=x_exact)
+        os.replace(tmp_path, path)
     INFO(f"[MATRIX] Generated n={n} N={N} nnz={len(vals)} "
          f"exact={'yes' if compute_exact else 'no'} → {path}")
 
@@ -102,8 +112,15 @@ def compute_exact_solution(n, path):
     Used to compute the golden solution in parallel with the distributed solve
     (it is only needed for post-solve accuracy verification, not by the solver).
     Idempotent: re-saves the file with x_exact added.
+
+    原子写（P3-24 修复）：savez 到临时文件后 os.replace 原子替换。此前原地
+    np.savez(path) 会先 truncate 再写——高负载下（coverage 全量 -j6 实测
+    2/2 复现）并行的 worker task _load_matrix 读到截断视图 → zipfile
+    EOFError（vals 在文件尾段最易被截）。原子替换保证读方要么见旧版完整
+    文件、要么见新版，永无中间态。
     """
     import numpy as np
+    import os
     from scipy import sparse
     from scipy.sparse.linalg import splu
     data = np.load(path, allow_pickle=False)
@@ -111,10 +128,13 @@ def compute_exact_solution(n, path):
     A_csc = sparse.csc_matrix(
         (data["vals"], (data["rows"], data["cols"])), shape=(N, N))
     x_exact = splu(A_csc).solve(data["b"])
-    np.savez(path,
-             n=data["n"], N=data["N"],
-             rows=data["rows"], cols=data["cols"], vals=data["vals"],
-             b=data["b"], x_exact=x_exact)
+    tmp_path = path + ".tmp_exact"
+    with open(tmp_path, "wb") as f:
+        np.savez(f,
+                 n=data["n"], N=data["N"],
+                 rows=data["rows"], cols=data["cols"], vals=data["vals"],
+                 b=data["b"], x_exact=x_exact)
+    os.replace(tmp_path, path)
     return x_exact
 
 

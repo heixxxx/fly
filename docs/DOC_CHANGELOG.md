@@ -3,6 +3,36 @@
 ---
 ---
 
+## 2026-08-16 (8): 测试审计行动落地——5 项补覆盖 + G2 边界缺陷修复 + P3-24 根治
+
+按 coverage-report-2026-08-16 行动建议执行（③④①②⑤⑦ 依依赖排序）：
+
+- **③ 游离测试处置**（commit 见历史）：requires_parsing/read_cache 注册进 BUILD，
+  删 6 个与 C++ 重复的游离文件
+- **④ 冗余清理**（commit 见历史）：backup 三胞胎重建 + 孤儿接回、freeze R2、
+  solver 参数矩阵 14→1、单测 R1-R5；QA 162→147 零覆盖损失
+- **① auto_backup EWMA**（commit 见历史）：master hooks + 5 单测 + 全链路 QA
+  e2e（suggest→EWMA→trigger→backup，容量隔离绕 ObjectCache 的约束已注释）
+- **② 断连宽限 QA + 缺陷修复**（commit 见历史）：qa/fault/grace case；发现并
+  修复 G2 边界遗漏——宽限期 IDLE worker 仍被派新 task（WorkerInfo::in_grace_
+  四处接线 + worker_manager 2 单测）
+- **⑤ PeerRpcServer 单测**（本 commit）：7 用例覆盖 listen/端到端往返/延迟
+  响应/失败通知/BYE 优雅关闭（正常关闭不 fire disconnect 的语义已校准）/
+  connect 重试/stop 清理——v2 daemon 通信底座告别零单测
+- **⑦ P3-24 根治**（本 commit）：根因=compute_exact_solution 后台线程原地
+  np.savez 重写共享 npz 的 truncate 窗口（高负载下 worker 首读撞窗 EOFError）；
+  修复=三处写协议统一原子替换（savez 到文件对象 + os.replace；np.savez 对
+  非 .npz 后缀路径自动加后缀的坑已绕）；ras_graph_io_test 回归防护；
+  coverage 单跑×2 + coverage 全量 -j2 147/147 验证。P3-24 置 FIXED
+
+**会话被杀事件定论**（2026-08-16 23:49）：非 guest OOM——宿主 Windows commit
+耗尽（Event 2004：vmmemWSL 7.5GB + ZCode 1.1GB + Edge 0.9GB，commit 29.8GB
+vs 上限 29.6GB）→ WSL VM 整体重启；连带 fly 二进制写坏（0 字节，已重建）。
+measure_coverage.sh Python QA 阶段降 -j2（实测 guest 谷值 4.1GB）。
+
+---
+---
+
 ## 2026-08-16 (7): 测试审计 + 覆盖率实测（85.8% C++ / 79% Python）
 
 全面审计 56 个单测 target（~1050 gtest + 111 py 用例）与 162 个 QA case，
