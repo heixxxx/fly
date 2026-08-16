@@ -1,7 +1,7 @@
 """Auto-imported at Python interpreter start-up to start coverage measurement.
 
 This module is the fix for the coverage methodology flaw documented in
-docs/coverage-testing.md §12.1 and coverage-report-2026-07-31.md §4.1: the
+docs/coverage-testing.md §12.1 (2026-07-31 snapshot report, since deleted): the
 old code called ``coverage.start()`` from inside ``fly.main._run_master`` /
 ``_run_worker``, but by then the ``fly`` package (and all its transitive
 imports: storage/core/task/userdoc/mapreduce/project) plus the C++ binding

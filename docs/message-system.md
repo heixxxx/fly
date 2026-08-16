@@ -521,7 +521,7 @@ bazel sandbox 里 genrule 无法访问 `.git`。`local = True` 禁用 sandbox，
 
 ## 13. Code Review 修复记录
 
-依据 `docs/message-system-review.md`，修复了以下问题：
+依据 2026-07-30 的设计评审（review 文档已删，git 历史可查），修复了以下问题：
 
 ### 13.1 问题 1（必须修）：master 自身 message 不受配额控制
 - **原状**：`MessageSink::handle_local` 直接 `write_line`，bypass master 打印配额，与文档 §3「master 配额控制 worker 推来的 + master 自身的」承诺矛盾。

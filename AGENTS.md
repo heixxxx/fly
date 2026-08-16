@@ -165,6 +165,7 @@ src/test/       → TestObject, e2e_tasks.py, test_tasks.py (not public API)
 
 | File | Content |
 |------|---------|
+| [`docs/README.md`](docs/README.md) | **文档地图** — 按用途的快速入口与全量索引 |
 | [`CLAUDE.md`](CLAUDE.md) | Primary agent guide — conventions, macros, design constraints |
 | [`docs/DEVELOPMENT_GUIDELINES.md`](docs/DEVELOPMENT_GUIDELINES.md) | Code standards, naming, macro reference |
 | [`docs/NEW_MODULE_GUIDE.md`](docs/NEW_MODULE_GUIDE.md) | Step-by-step new module creation |

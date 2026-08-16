@@ -1,7 +1,7 @@
 # Fly 分布式任务框架 — Agent 工作指南
 
 > 本文档为 Agent 提供项目概览、工作规范和关键设计约束。
-> 实现细节见 `docs/*/module.md`，设计历史见 `docs/superpowers/plans/`。
+> 实现细节见 `docs/*/module.md`，设计决策见 `docs/adr/` 与 `docs/DOC_CHANGELOG.md`。
 
 ---
 

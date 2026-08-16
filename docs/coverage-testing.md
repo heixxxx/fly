@@ -13,7 +13,7 @@
 - 行覆盖率: **83%** (1682/1981 stmts)
 - 分支覆盖率: 47% (含 sitecustomize 等未链接模块)
 
-> 完整的覆盖率分析报告（含未覆盖代码业务场景、改进建议）：[`coverage-report-2026-07-31.md`](coverage-report-2026-07-31.md)
+> 2026-07-31 覆盖率快照报告已删（2026-08-16 文档重组，git 历史可查）；本方法论文档与 tools/measure_coverage.sh 可随时重测。
 
 ## 2. 环境要求
 
@@ -248,7 +248,7 @@ genhtml /tmp/coverage_html_ready.info \
 | master_agent.cpp | 85.3% | 74.2% | 1063 | 良好 |
 | worker_agent.cpp | 84.7% | 80.2% | 693 | 良好 |
 | task_executor.cpp | 82.9% | 100% | 35 | 良好 |
-| ~~data_client.cpp~~ | 79.2% | 100% | 48 | 已删除（死代码，见 coverage-report §4.2） |
+| ~~data_client.cpp~~ | 79.2% | 100% | 48 | 已删除（死代码，2026-07 快照记录） |
 | metadata_client.cpp | 74.6% | 100% | 63 | 良好 |
 | tcp_transport.cpp | 69.6% | 73.9% | 227 | 需改进 |
 | main.cpp | 55.8% | 28.6% | 156 | 需改进 |

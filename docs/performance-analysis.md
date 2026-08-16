@@ -14,9 +14,9 @@
 
 | 优化 | 文档 | 效果 |
 |------|------|------|
-| 读写路径零拷贝 | [`read-write-optimization.md`](read-write-optimization.md) | 读取 137→342 MB/s (+150%)，写入 113→120 MB/s (+6%) |
-| 数据面 wire 传输零拷贝 | [`zero-copy-analysis.md`](zero-copy-analysis.md) | DataResponseProtocol 两段式 + writev + FlyBufferPtr 共享，raw 全程零拷贝 |
-| 热路径 INFO→DBG | （profiling_report.md 反映旧 commit，当前已修复） | 消除读取热路径 ~3000 条/轮 INFO 日志开销 |
+| 读写路径零拷贝 | （历史分析已删，git 历史可查） | 读取 137→342 MB/s (+150%)，写入 113→120 MB/s (+6%) |
+| 数据面 wire 传输零拷贝 | （历史分析已删，git 历史可查） | DataResponseProtocol 两段式 + writev + FlyBufferPtr 共享，raw 全程零拷贝 |
+| 热路径 INFO→DBG | （旧 profiling 快照反映旧 commit，当前已修复） | 消除读取热路径 ~3000 条/轮 INFO 日志开销 |
 
 ### 本次修复的瓶颈（S5，详见 [`roadmap.md`](roadmap.md) §S5）
 
@@ -43,11 +43,11 @@
 
 下列触及并发模型/协议/架构，其中两项经数据验证已优化（S7），其余仍排除：
 
-- **Reactor 单线程同步模型**（`HandlerThreadPool` 死代码未接线）—— ARCHITECTURE_REVIEW §3.1，接线需 handler 线程安全全面审计（仍排除）
+- **Reactor 单线程同步模型**（`HandlerThreadPool` 死代码未接线）—— （旧架构审查记录，2026-08-16 已删；结论：接线需 handler 线程安全全面审计，仍排除）
 - ~~**`schedule_mutex_` 全局串行化**~~ —— 调度吞吐天花板。**S7-2 已部分优化**：locality 预计算移出锁外缩短持锁时间（详见 §0B）。attr-tick 条件触发方案经实测破坏 attr timeout 语义已放弃
 - **WriteBackQueue 单 worker 线程** —— 写入吞吐硬瓶颈，改多线程需处理 idx 文件并发与写序（仍排除）
 - ~~**DataClientPool 短连接 + 默认 4 并发**~~ —— 连接建立开销已消除（keep-alive 连接池，commit a408523）；并发上限 `pool_size` 仍在，roadmap F4 流控已降级（仍排除）
-- ~~**DataService 单 mutex**~~ —— ARCHITECTURE_REVIEW §2.7 待办。**S7-1 已优化**：分片 shared_mutex，并发读从负伸缩转为正伸缩，8线程提升 16x（详见 §0B）
+- ~~**DataService 单 mutex**~~ —— （旧架构审查待办项）。**S7-1 已优化**：分片 shared_mutex，并发读从负伸缩转为正伸缩，8线程提升 16x（详见 §0B）
 - **S1-3/S3**（remote_idx/provenance 无上限累积）—— roadmap 标注待对象量真实过百万时启动（仍排除）
 
 ### 验证
@@ -58,7 +58,7 @@ storage unit test 16/16、全量 cpp unit test、全量 QA 139/139、stability 5
 
 ## 0B. DataService 锁分片 + schedule 锁范围优化（S7，2026-08-03）
 
-> 数据驱动优化：先建并发 benchmark 跑出优化前基线（揭示负伸缩），优化后跑对比数据验证提升量级。详见 [`perf-baseline-dataservice-lock.md`](perf-baseline-dataservice-lock.md)。
+> 数据驱动优化：先建并发 benchmark 跑出优化前基线（揭示负伸缩），优化后跑对比数据验证提升量级。详见 [`perf-baselines.md`](perf-baselines.md)。
 
 ### S7-1：DataService 分片 shared_mutex（消除并发读负伸缩）
 

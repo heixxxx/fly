@@ -17,12 +17,13 @@
 |------|----------|
 | C++ 标准 | C++20 |
 | 编译器 | gcc12 |
-| Python 绑定 | nanobind |
+| Python 绑定 | nanobind（经 FLY_EXPORT_* 宏封装） |
 | 序列化 | bitsery (header-only, 版本化支持) |
-| 构建系统 | Bazel + fly.sh |
+| 构建系统 | Bazel + fly.sh（自动刷新 clangd） |
 | 测试框架 | gtest + pytest |
 | 压缩库 | LZ4 / ZLIB / ZSTD |
 | 格式化库 | fmt (header-only) |
+| 网络 | TCP (epoll)，Transport 抽象，支持扩展 |
 
 ### 架构分层
 
@@ -30,33 +31,36 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Master Node                              │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
-│  │ Task Scheduler│  │ Task        │  │ Storage Metadata       │ │
-│  │ (FIFO+Locality)│  │ Manager    │  │ (Data blocks, replicas)│ │
-│  └─────────────┘  └─────────────┘  └─────────────────────────┘ │
-│         │                │                    │                 │
+│  │ Task Scheduler│  │ Dependency  │  │ DataService             │ │
+│  │ (FIFO+priority│  │ Graph       │  │ (local/remote idx)      │ │
+│  │ +locality)   │  └─────────────┘  └─────────────────────────┘ │
+│  └─────────────┘         │                    │                 │
 │         └────────────────┼────────────────────┘                 │
 │                          │                                      │
-│                   ┌──────┴──────┐                               │
-│                   │ Message Hub │  ← TCP Server (Port 8000)    │
-│                   └─────────────┘                               │
+│  ┌───────────────────────┴────────────────────┐                │
+│  │ Reactor (epoll TCP Server, Port 8000)       │                │
+│  │ + HeartbeatMonitor Thread                   │                │
+│  └─────────────────────────────────────────────┘                │
 └───────────────────────────────┬─────────────────────────────────┘
-                                │
+                                │ TCP
           ┌─────────────────────┼─────────────────────┐
           │                     │                     │
           ▼                     ▼                     ▼
 ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│   Worker 1      │  │   Worker 2      │  │   Worker 3      │
+│   Worker 1      │  │   Worker 2      │  │   Worker N      │
+│   (hybrid)      │  │   (hybrid)      │  │ (storage_only)  │
 │ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐ │
-│ │Task Executor│ │  │ │Task Executor│ │  │ │ (Storage     │ │
-│ └─────────────┘ │  │ └─────────────┘ │  │ │  Only Mode)  │ │
+│ │Task Executor│ │  │ │Task Executor│ │  │ │（无计算任务， │ │
+│ └─────────────┘ │  │ └─────────────┘ │  │ │仅数据面）    │ │
 │ ┌─────────────┐ │  │ ┌─────────────┐ │  │ └─────────────┘ │
-│ │Data Storage │ │  │ │Data Storage │ │  │ ┌─────────────┐ │
-│ │(Aggregator) │ │  │ │(Aggregator) │ │  │ │Data Storage │ │
-│ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘ │
-│ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐ │
-│ │Data Server  │ │  │ │Data Server  │ │  │ │Data Server  │ │
-│ │(epoll+pool) │ │  │ │(epoll+pool) │ │  │ │(epoll+pool) │ │
-│ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘ │
+│ │ObjectCache  │ │  │ │ObjectCache  │ │  │ ┌─────────────┐ │
+│ │(low+high)   │ │  │ │(low+high)   │ │  │ │ObjectCache  │ │
+│ └─────────────┘ │  │ └─────────────┘ │  │ │(low+high)   │ │
+│ ┌─────────────┐ │  │ ┌─────────────┐ │  │ └─────────────┘ │
+│ │Data Server  │ │  │ │Data Server  │ │  │ ┌─────────────┐ │
+│ │(epoll+pool) │ │  │ │(epoll+pool) │ │  │ │Data Server  │ │
+│ └─────────────┘ │  │ └─────────────┘ │  │ │(epoll+pool) │ │
+│                 │  │                 │  │ └─────────────┘ │
 └─────────────────┘  └─────────────────┘  └─────────────────┘
 ```
 
@@ -189,7 +193,7 @@ def next_task(db, name):
 **任务调度策略**：
 - 默认策略：FIFO（同优先级内按 task_id 升序）
 - 任务优先级（`priority`，默认 10）：`@as_task(priority=N)` 设置，数值越大越优先调度。`get_ready_tasks()` 按 `(priority desc, task_id asc)` 排序。head-of-line skip：高优先级 task 若暂无可匹配 worker（如缺 capability），跳过它继续调度低优先级（不阻塞）。默认 10 取中点值，可双向调节：<10 让路，>10 抢先。全链路透传（TaskMetadata 崩溃恢复 + TaskSubmitMessage 递归提交）。详见 [`priority-scheduling-design.md`](priority-scheduling-design.md)。
-- 数据 locality 调度（Config `locality_scheduling_enabled`，默认 1 开启）：启用后 scheduler 按 worker 持有的输入数据总量（score）选亲和性最优的 idle worker。三阶段算法：① capability 完整匹配优先（强约束）；② locality 偏好（score 最大且不降低 capability 质量）；③ 兜底（allow_degrade）。**分层无环**：master 在 `schedule_tasks()` 入口按 task 依赖预计算 `locality_hint_`（POD，worker_id→持有字节数）注入 graph，scheduler 只消费此 hint，不接触 DataService（见 [`locality-decoupling-fix-plan.md`](locality-decoupling-fix-plan.md)）。持久 score 缓冲区复用。
+- 数据 locality 调度（Config `locality_scheduling_enabled`，默认 1 开启）：启用后 scheduler 按 worker 持有的输入数据总量（score）选亲和性最优的 idle worker。三阶段算法：① capability 完整匹配优先（强约束）；② locality 偏好（score 最大且不降低 capability 质量）；③ 兜底（allow_degrade）。**分层无环**：master 在 `schedule_tasks()` 入口按 task 依赖预计算 `locality_hint_`（POD，worker_id→持有字节数）注入 graph，scheduler 只消费此 hint，不接触 DataService（分层修复决策记录见 roadmap.md §三）。持久 score 缓冲区复用。
 - 核心约束：Worker同一时刻最多执行一个任务
 
 ### 3.3 数据存储
@@ -413,21 +417,23 @@ worker 生命周期语义（用户确认，两阶段）：
 
 **Master节点**：
 
-| 线程 | 职责 |
-|------|------|
-| Main Thread (Python) | 用户脚本执行、任务提交 |
-| Reactor Thread | epoll 事件循环，处理所有Worker消息 |
-| Heartbeat Thread | 心跳检测，超时Worker标记 |
+| 线程 | 职责 | 停止方式 |
+|------|------|---------|
+| Main Thread (Python) | 用户脚本执行、任务提交 | — |
+| Reactor Thread | epoll 事件循环，处理所有Worker消息 | `reactor_->stop()` |
+| Heartbeat Thread | 每 5s 检查 Worker 心跳超时 | CV notify + join |
 
 **Worker节点**：
 
-| 线程 | 职责 |
-|------|------|
-| Main Thread (Python) | poll_task() 循环，执行任务 |
-| Reactor Thread | epoll 事件循环 (Master conn + Data Server) |
-| Data Server epoll | 接收数据请求 |
-| Data Server send threads | 发送数据响应（线程池，可配置） |
-| Heartbeat Thread | 心跳发送 |
+| 线程 | 职责 | 停止方式 |
+|------|------|---------|
+| Main Thread (Python) | poll_task() 循环，执行任务 | — |
+| Reactor Thread | epoll 事件循环 (Master conn + Data Server) | `reactor_->stop()` |
+| Data Server epoll | 接收数据请求 | stop() |
+| Data Server send threads | 发送数据响应（线程池，可配置） | stop() |
+| Heartbeat Thread | 每 10s 发送心跳 | CV notify + join |
+
+> 心跳周期为代码硬编码（master 检查 5s / worker 发送 10s，`master_agent.cpp` / `worker_agent.cpp`）；config 键 `heartbeat_interval=5` 当前无消费方。
 
 **关键设计**：
 - 单线程 Reactor（事件循环）+ handler lane 池：帧提取在 reactor 线程，handler 在
@@ -450,10 +456,54 @@ worker 生命周期语义（用户确认，两阶段）：
 | ObjectCache 两层缓存 | low=压缩字节省 IO，high=反序列化对象省 CPU |
 | FlyBufferPtr 共享所有权 | 零拷贝共享压缩字节，避免不必要的内存拷贝 |
 | 进程模式 Worker | 独立 DataService 单例，避免线程模式的复杂性 |
+| headers 而非 C++20 Modules | Python 绑定生态不兼容 |
+
+### 4.4 模块依赖关系
+
+```
+main → agent → task → network → storage → core → common
+              ↓         ↓          ↓
+           serialization        log
+              ↑
+            export → nanobind
+```
+
+依赖方向：上层依赖下层，**禁止反向依赖**（BUILD 级无环，是 fly 对外宣称的核心工程优势）。
+
+| 模块 | 依赖 |
+|------|------|
+| common | 无依赖（纯类型别名 + CMSharedPtr） |
+| core | common |
+| serialization | common, bitsery |
+| export | nanobind |
+| log | fmt |
+| storage | core, serialization, export, common |
+| network | core, serialization, export, common, log |
+| task | network, storage, core, serialization, common |
+| agent | task, network, storage, core, serialization, export, common, log |
+| main | 全部 C++ 模块（链接入口） |
+| fly/ (Python) | 所有 C++ 导出模块 |
 
 ---
 
 ## 五、数据流
+
+### 5.0 任务生命周期（端到端）
+
+```
+定义 → 提交 → 调度 → 执行 → 完成
+
+[用户代码] @as_task 装饰器 → wrapper 函数
+    ↓ 调用
+[提交] wrapper() → TaskSubmitMessage → Master（task 体内提交走 TaskSubmitAck 强语义）
+    ↓
+[调度] DependencyGraph 检查依赖 → TaskScheduler（priority + locality 三阶段匹配）
+    → TaskAssignMessage → Worker
+    ↓
+[执行] Worker TaskExecutor → import module → pickle.loads → 执行原始函数
+    ↓
+[完成] TaskCompleteMessage → Master → mark_data_ready → schedule_tasks（触发下游）
+```
 
 ### 5.1 读取流程（三层降级 + 缓存）
 
@@ -515,6 +565,7 @@ Worker A 写入 object_name:
 ```
 
 **写注册协议**：
+- 写入注册统一走 `WriteRegisterMessage` → `do_write_register` 单一入口（**master 自写也走此路径，同步调用**）；携带压缩后 size 用于 locality 调度亲和度打分
 - Config.track_writes 启用时，记录每个任务写入的对象列表
 - WorkerAgentContext 使用 std::function 回调模式（common/cpp/worker_context.h）
 
@@ -646,7 +697,7 @@ Phase 3: 定向 idx 加载
 ```
 ┌────────────────┬─────────┬─────────────────┐
 │ 4 bytes length │ 1 byte  │   payload       │
-│ (帧长度)        │ 消息类型  │ (序列化数据)     │
+│ (帧长度, big-endian) │ 消息类型(uint8) │ (bitsery 编码) │
 └────────────────┴─────────┴─────────────────┘
 ```
 
@@ -663,28 +714,32 @@ Phase 3: 定向 idx 加载
 
 ### 6.3 消息类型
 
+> 完整枚举见 `src/network/cpp/message_types.h`（值 1-57，其中 8/15/16 已退役空号，现役 54 种）。下表列主干消息。
+
 | 消息类型 | 方向 | 说明 |
 |---------|------|------|
 | RegisterMessage | W→M | Worker 注册 |
-| RegisterAckMessage | M→W | 注册确认 |
+| RegisterAckMessage | M→W | 注册确认（duplicate_=true 时后到者自行退出） |
 | HeartbeatMessage | W→M | 心跳 |
 | TaskSubmitMessage | 任意→M | 任务提交 |
+| TaskSubmitAckMessage | M→W | task 体内提交转发的确认（request_id 匹配，带回 master 分配的 task_id） |
 | TaskAssignMessage | M→W | 任务分配 |
 | TaskCompleteMessage | W→M | 任务完成（含 written_objects 带 size） |
 | TaskFailedMessage | W→M | 任务失败 |
 | WriteRegisterMessage | W→M | 数据写入注册（placement 登记 + provenance + size，统一入口） |
+| WriteRegisterAckMessage | M→W | 写入注册确认（拒绝时带 error_type） |
 | DataQueryMessage | W→M | 数据位置查询 |
 | DataLocationMessage | M→W | 数据位置响应 |
 | DataRequestMessage | W→W | 数据请求 |
 | DataResponseMessage | W→W | 数据响应（两段式） |
 | BackupRequestMessage | W→M | 备份请求（master 收到后向备份目标发 `TaskAssignMessage(__backup_object)`） |
 | WorkerBackupSuggestMessage | W→M | 上报 TIER2 读流量增量（auto_backup 双层设计的 worker 层，master EWMA 聚合后判定 backup） |
+| StorageSpawnRequest/ACK | M→W / W→M | master 请求 worker 本地唤起 storage_only 节点（自动补齐） |
+| WorkerProbe/ProbeAck | M→W / W→M | 疑似重复注册时的既有连接活性探测 |
 | CleanupTaskMessage | M→W | 清理任务 |
 | CleanupCompleteMessage | W→M | 清理完成 |
 | UpdateAttributesMessage | W→M | 属性更新 |
 | DatabaseFreezeNotification | W→M | 数据库冻结通知 |
-| IdxRequestMessage | M→W | 请求 idx 内容 |
-| IdxResponseMessage | W→M | 返回 idx 内容 |
 | ShutdownMessage | M→W | 关机广播 |
 | DBPathRequestMessage | W→M | DB 路径查询 |
 | DBPathResponseMessage | M→W | DB 路径响应 |
@@ -766,6 +821,9 @@ fly/
 │   │   ├── cpp/logger.h/cpp
 │   │   └── export/log_export.cpp
 │   │
+│   ├── main/                # 程序入口
+│   │   └── cpp/main.cpp     # fly binary 入口（setup_sys_path + import 各 _fly_* 模块）
+│   │
 │   └── fly/                 # Python API (Layer 5)
 │       ├── __init__.py      # 顶层导出
 │       ├── runtime.py       # Agent 生命周期管理
@@ -795,7 +853,7 @@ fly/
   - Transport + EpollMultiplexer + ConnectionManager 抽象
   - DataResponseProtocol 两段式传输
   - DataClientPool keep-alive 连接池 + 并发限制
-  - 52 种消息类型
+  - 54 种消息类型（值 1-57，8/15/16 退役空号）
 - **Layer 3**：任务系统层（DependencyGraph, TaskScheduler, WorkerManager）
 - **Layer 4**：Agent 层（MasterAgent, WorkerAgent, TaskExecutor）
   - WorkerAgentContext std::function 回调

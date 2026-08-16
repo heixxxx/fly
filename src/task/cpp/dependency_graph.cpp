@@ -154,7 +154,7 @@ CMVector<uint64_t> DependencyGraph::get_ready_tasks() const {
     std::lock_guard<std::mutex> lock(mutex_);
     // ready_tasks_ 已按 {-priority, task_id} 有序（priority 降序、同优先级 task_id 升序），
     // 直接遍历取 task_id，无需 std::sort。原实现每次 O(R log R) sort 导致 schedule_all_available
-    // 循环呈 O(N²) 退化（见 docs/perf-baseline-scheduling-hotloop.md）。
+    // 循环呈 O(N²) 退化（见 docs/perf-baselines.md）。
     CMVector<uint64_t> result;
     result.reserve(ready_tasks_.size());
     for (const auto& entry : ready_tasks_) {

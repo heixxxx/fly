@@ -150,7 +150,7 @@ scheduler_->set_locality_preference(...);
 2. `grep "storage" src/task/cpp/BUILD` 零命中。
 3. `task_scheduler_test.cpp` 中 `grep "DataService"` 零命中。
 4. 全量 QA 通过（含 `qa/scheduling/test_locality_*.py` 三层测试）。
-5. 同步修订 `locality-scheduling-plan.md` §2.1 原则 6 与 `locality-scheduling-review.md` P0 项状态。
+5. ~~同步修订 locality 三部曲文档~~（2026-08-16 文档重组已删——任务完结，决策记录在本 roadmap §三与 DOC_CHANGELOG）。
 
 ### 3.5 风险与缓解
 
@@ -300,7 +300,7 @@ TIER1 返回 false 时，`read_raw_compressed` 无差别进入 TIER2 远程读�
 
 **[S5] 存储层读写热路径 IO/syscall 放大优化** — ✅ **已完成（2026-08-03）**
 
-> 来源：2026-08-02 分布式任务/文件系统架构性能瓶颈调研。经三层架构（storage/task/network）全面审查 + 8 份历史性能文档交叉核实，确认零拷贝优化（read-write-optimization / zero-copy-analysis）、S1-2、S4 等已完成，识别出 3 个真实存在、未被历史优化覆盖、零架构改动的局部实现瓶颈，全部修复。
+> 来源：2026-08-02 分布式任务/文件系统架构性能瓶颈调研。经三层架构（storage/task/network）全面审查 + 8 份历史性能文档交叉核实，确认零拷贝优化（读写路径与数据面 wire 传输，历史分析文档已删、结论记录于 performance-analysis.md §0）、S1-2、S4 等已完成，识别出 3 个真实存在、未被历史优化覆盖、零架构改动的局部实现瓶颈，全部修复。
 
 | 子项 | 问题 | 位置 | 状态 |
 |------|------|------|------|
@@ -314,7 +314,7 @@ TIER1 返回 false 时，`read_raw_compressed` 无差别进入 TIER2 远程读�
 
 **[S7] DataService 锁分片 + schedule 锁范围优化** — ✅ **已完成（2026-08-03）**
 
-> 数据驱动：先建并发 benchmark 跑出优化前基线（揭示单 mutex 并发负伸缩），优化后跑对比数据验证提升量级。详见 [`docs/perf-baseline-dataservice-lock.md`](perf-baseline-dataservice-lock.md)。
+> 数据驱动：先建并发 benchmark 跑出优化前基线（揭示单 mutex 并发负伸缩），优化后跑对比数据验证提升量级。详见 [`docs/perf-baselines.md`](perf-baselines.md)（DataService 锁章节）。
 
 | 子项 | 问题 | 方案 | 效果 |
 |------|------|------|------|
@@ -332,7 +332,7 @@ TIER1 返回 false 时，`read_raw_compressed` 无差别进入 TIER2 远程读�
 
 **[S8] task 调度热循环优化（H2-a 冗余重取 + H2-b get_ready_tasks sort）** — ✅ **已完成（2026-08-04）**
 
-> 数据驱动：先建并发 benchmark 跑出优化前基线（揭示 O(N²) 退化），优化后跑对比数据验证提升量级。详见 [`docs/perf-baseline-scheduling-hotloop.md`](perf-baseline-scheduling-hotloop.md)。
+> 数据驱动：先建并发 benchmark 跑出优化前基线（揭示 O(N²) 退化），优化后跑对比数据验证提升量级。详见 [`docs/perf-baselines.md`](perf-baselines.md)（调度热循环章节）。
 
 | 子项 | 问题 | 方案 | 效果 |
 |------|------|------|------|
@@ -382,8 +382,7 @@ TIER1 返回 false 时，`read_raw_compressed` 无差别进入 TIER2 远程读�
 
 执行 P0 后需同步：
 
-1. `docs/locality-scheduling-plan.md` — §2.1 原则 6 状态标注"已落地"
-2. `docs/locality-scheduling-review.md` — §1 P0、§5 P0 项标记 RESOLVED
+1. ~~locality-scheduling-plan.md / locality-scheduling-review.md 状态标注~~（2026-08-16 已随任务完结删除，历史见 git）
 3. `docs/competitor-analysis.md` — §1.3 修正 locality 状态（从"未实现"改为"已实现"）
 4. `CLAUDE.md` / `docs/architecture.md` — task 模块依赖描述（移除 storage 依赖）
 

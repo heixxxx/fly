@@ -136,7 +136,7 @@
 
 **前提**：特性 1 的 PeerChannelGroup 已落地（RPC 直连 ~1ms/步，使树形可行——之前 DB 通路 12ms/步 时树形不划算）。
 
-**设计**（基于 allreduce-log-nsd-feasibility.md）：
+**设计**（基于原 allreduce 可行性分析，见 rejected-alternatives.md §4）：
 - compute 间按 log₂(nsd) 步配对，每步 PeerChannelGroup RPC 交换部分和
 - 最终每子域的归约结果上报 check
 - check 的 assemble 从读 nsd 份降到读 1 份（或归约后的少量数据）

@@ -333,7 +333,7 @@ private:
 
     // 分片锁：按数据域拆分，读多写少场景用 shared_mutex（读 shared_lock 并发、写
     // unique_lock 独占）。替代原单一 mutex_ 的全串行化（多线程并发读吞吐反而低于
-    // 单线程的负伸缩，见 docs/perf-baseline-dataservice-lock.md）。
+    // 单线程的负伸缩，见 docs/perf-baselines.md）。
     //   local_mutex_   : local_idx_（含 DbLocalIndex.objects_ + write_cv_）+ temp 相关
     //   remote_mutex_  : remote_idx_
     //   worker_mutex_  : worker_registry_（地址唯一权威）

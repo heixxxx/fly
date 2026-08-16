@@ -22,21 +22,21 @@ n=1000 nsd=4 coarse：**27.1s → 14.4s（-47%）**，精度全程一致（11 it
 ## 二、已否决的方向（不重复投入）
 
 ### ❌ GPU 加速稀疏直接法（实测否决）
-详见 [gpu-acceleration-analysis.md](gpu-acceleration-analysis.md)。
+详见 rejected-alternatives.md §1。
 - GPU 稀疏 LU 分解慢 1.2-2.5x、triangular solve 慢 20-59x（25 万阶子域实测）
 - n=1000 全局 LU 因子 1.08GB，8GB 显存 OOM
 - 根因：稀疏直接法的 fill-in 不规则 + 串行依赖链，GPU 并行度极低
 - **稀疏直接法是 CPU 的主场，GPU 无优势**
 
 ### ❌ 引入 GPU 分布式求解器库（架构冲突）
-详见 [gpu-distributed-solver-survey.md](gpu-distributed-solver-survey.md)。
+详见 rejected-alternatives.md §2。
 - AmgX/Hypre/PETSc 是 MPI SPMD + 细粒度向量分布，与 fly 的"分布式任务 + DB 通信"范式根本冲突
 - 全替换→fly 核心价值丧失；混合→单 GPU 单子域收益存疑
 - GPU 收益需算法变更（LDLT→AMG 迭代法），非库替换
 - 当前单卡 + 无 MPI 环境，分布式 GPU 能力用不上
 
 ### ⚠️ fly 实现标准分布式 PCG（可行但有硬瓶颈）
-详见 [fly-distributed-solver-paradigm-analysis.md](fly-distributed-solver-paradigm-analysis.md)。
+详见 rejected-alternatives.md §3。
 - 编程模型可行（DB 表达分布向量，task 驱动 halo）
 - **致命缺口：fly 无轻量 Allreduce 原语**，每归约 ~70ms（跨 worker assemble）
 - PCG 每迭代 2 次 dot product 归约，通信占 93%
@@ -56,7 +56,7 @@ n=1000 nsd=4 coarse：**27.1s → 14.4s（-47%）**，精度全程一致（11 it
 **洞察**：跨 worker 通信的延迟由 **pickle 头 + TCP 握手 + DataServer 协议帧** 的固定开销主导，与有效载荷（8 字节 vs 500KB）弱相关。8 字节的 dot product 也要付 ~5ms，因为被 pickle 包装成 ~60 字节 + TCP 短连接握手。
 
 ### Allreduce O(log nsd) 的真相
-详见 [allreduce-log-nsd-feasibility.md](allreduce-log-nsd-feasibility.md)。
+详见 rejected-alternatives.md §4。
 - MPI 的 O(log nsd) 来自树形/蝶形配对，每步 nsd/2 对并行
 - fly 能表达树形拓扑，但**每步配对 ~12ms**（DB 通路）vs MPI ~0.1ms（device 直传），常数项差 100x
 - fly 树形是"伪 O(log nsd)"——步数对但绝对延迟仍慢 MPI 100x
@@ -127,7 +127,4 @@ n=1000 nsd=4 coarse：**27.1s → 14.4s（-47%）**，精度全程一致（11 it
 
 - [iter-refactor-design.md](iter-refactor-design.md) — **迭代重构完整设计（当前优先方向）**
 - [perf-n1000-optimization.md](perf-n1000-optimization.md) — S9 优化历程与数据
-- [gpu-acceleration-analysis.md](gpu-acceleration-analysis.md) — GPU 直接法实测否决
-- [gpu-distributed-solver-survey.md](gpu-distributed-solver-survey.md) — GPU 分布式库架构冲突
-- [fly-distributed-solver-paradigm-analysis.md](fly-distributed-solver-paradigm-analysis.md) — fly 实现 PCG 的通信瓶颈
-- [allreduce-log-nsd-feasibility.md](allreduce-log-nsd-feasibility.md) — Allreduce O(log nsd) 分析
+- [rejected-alternatives.md](rejected-alternatives.md) — 备选方向预研决策集（GPU 直接法/GPU 库/分布式 PCG/树形 Allreduce，2026-08-16 合并 5 份预研）

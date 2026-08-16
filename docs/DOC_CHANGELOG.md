@@ -3,6 +3,49 @@
 ---
 ---
 
+## 2026-08-16 (6): 文档全量重组——删 20 项 + 三组整合 + 文档地图
+
+### 删除（任务完结、结论已沉淀到活跃文档，git 历史可查）
+
+- **superpowers/ 整目录**（2026-05/06 过程稿 5 份：db-meta 设计→ADR 0001 已沉淀、
+  dataservice 网络层/reactor 异步→architecture 已沉淀、last_respone.md 草稿）
+- **locality 三部曲**（scheduling-plan/review/decoupling-fix-plan，6/28-30，
+  任务全部完成，决策记录在 roadmap §三）
+- **审计/快照 5 份**：ARCHITECTURE_REVIEW（6/12，结论入 ISSUES/roadmap）、
+  code-audit-2026-08-08、redundancy-audit-report（7/2，已执行）、
+  fifth-class-verification（7/3）、coverage-report-2026-07-31（方法论保留于
+  coverage-testing.md）
+- **旧性能分析 3 份**：read-write-optimization、zero-copy-analysis（结论沉淀于
+  performance-analysis.md §0）、solver/performance.md（被 optimization-roadmap
+  + perf-n1000 取代）、根目录 profiling_report.md
+- **message-system-review.md**（7/30 评审记录，已执行）
+
+### 整合
+
+- **perf-baseline-dataservice-lock + perf-baseline-scheduling-hotloop →
+  perf-baselines.md**（内容不变，src 两处注释 + roadmap/performance-analysis
+  引用同步）
+- **solver 预研 5 份 → solver/rejected-alternatives.md**（allreduce/GPU×2/
+  分布式范式/PCG 路径，每篇保留结论与关键依据；optimization-roadmap 引用同步）
+- **architecture/overview.md 并入 architecture.md 后删除**（agent 逐节对比
+  迁移 12 项独有信息）：新增 §4.4 模块依赖关系、§5.0 任务生命周期、线程
+  模型补停止方式与心跳周期（master 5s/worker 10s 硬编码）、部署图更新组件名
+  （DataService/DependencyGraph/Reactor + ObjectCache + HeartbeatMonitor +
+  storage_only）、§6.1 帧格式补 big-endian、§6.3 补 WRITE_REGISTER_ACK/
+  TaskSubmitAck/PROBE/SPAWN 行并删已退役 IDX_REQUEST/IDX_RESPONSE、消息总数
+  52→54、§七补 src/main/、技术栈补网络行、§4.3 补 headers 决策行
+
+### 新增与修复
+
+- **docs/README.md 文档地图**（按用途快速入口 + 全量索引 + 文档约定）；
+  AGENTS.md 文档表补地图入口
+- 修复全部活跃引用断链（CLAUDE.md/roadmap/performance-analysis/
+  coverage-testing/sitecustomize.py docstring/architecture/message-system/
+  remaining-todo/competitor-analysis 头注）；全仓残留扫描零断链
+
+---
+---
+
 ## 2026-08-16 (5): push 门禁配方用户裁定 + proc mem 改物理内存
 
 - **两套测试严格串行**（用户确认）：unit test 全部通过后才启动 runqa，
