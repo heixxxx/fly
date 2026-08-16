@@ -21,7 +21,8 @@ if os.path.isdir(DB_PATH):
 os.makedirs(DB_PATH, exist_ok=True)
 
 get_config().set_int("fail_unscheduleable_tasks", 0)
-get_config().set_int("backup_threshold", 1)  # backup every object
+# （backup_threshold 键已随旧 auto_backup 判定删除 2026-08-16；本 case 的 backup
+#  经 write_data_backup 的 backup=True 显式路径，不依赖判定阈值。）
 
 master = get_agent()
 

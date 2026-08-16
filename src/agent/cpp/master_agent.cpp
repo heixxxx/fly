@@ -3068,6 +3068,9 @@ uint64_t MasterAgent::select_backup_worker(const CMString& object_name) {
 
 void MasterAgent::trigger_auto_backup(const CMString& object_name, uint64_t source_worker_id, const CMString& db_path) {
     INFO("Auto-backup triggered: object={}, source_worker={}", object_name, source_worker_id);
+#ifdef FLY_ENABLE_TEST_HOOKS
+    ++auto_backup_trigger_count_for_testing_;
+#endif
 
     BackupRequestMessage backup_msg;
     backup_msg.worker_id_ = source_worker_id;
@@ -3738,6 +3741,10 @@ std::pair<uint64_t, uint64_t> MasterAgent::pending_merge_cleanup_counts_for_test
         return {0, 0};
     }
     return {p->expected_count_, p->received_count_};
+}
+
+MasterAgent::ObjectBackupScore MasterAgent::backup_score_for_testing(const CMString& object_name) const {
+    return backup_scores_.find(object_name).value_or(ObjectBackupScore{});
 }
 #endif
 

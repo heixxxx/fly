@@ -199,6 +199,16 @@ public:
     void on_merge_task_complete(uint64_t task_id, uint64_t worker_id, const CMVector<WrittenObject>& written_objects);
     void on_merge_task_failed(uint64_t task_id, const CMString& error_message);
 
+    // ── Auto-backup EWMA 聚合（worker suggest → master score → 判定 backup）──
+    // master 聚合多 worker 上报的 TIER2 读增量，按 suggest 接收时间做 EWMA 衰减。
+    // score = cumulative / replicas；backup → replicas++ → score 降 → 自然平衡（不 reset）。
+    struct ObjectBackupScore {
+        double cumulative_bytes_ = 0;   // EWMA 衰减后的累积字节
+        double cumulative_count_ = 0;   // EWMA 衰减后的累积次数
+        int64_t size_bytes_ = 0;        // 对象最新压缩后大小（大文件例外判定用）
+        int64_t last_suggest_time_ = 0; // 上次 suggest 到达时间（EWMA elapsed 用）
+    };
+
 #ifdef FLY_ENABLE_TEST_HOOKS
 public:
     // ── 测试专用接口：仅当编译期定义 FLY_ENABLE_TEST_HOOKS 时存在 ──
@@ -230,6 +240,16 @@ public:
     void inject_delete_data_ack_for_testing(const DeleteDataAckMessage& msg) { on_delete_data_ack(0, msg); }
     // 直接驱动 select_backup_worker（private），验证 host 级分散选择用于测试。
     uint64_t select_backup_worker_for_testing(const CMString& object_name) { return select_backup_worker(object_name); }
+    // ── auto_backup EWMA 判定测试钩子（2026-08-16 补覆盖：此前 master 侧判定零测试）──
+    // 直接驱动 on_worker_backup_suggest（conn_id=0，消息路径不依赖真实连接）。
+    void worker_backup_suggest_for_testing(const WorkerBackupSuggestMessage& msg) {
+        on_worker_backup_suggest(0, msg);
+    }
+    // score 状态只读观测（EWMA 累积/size/last_suggest_time 断言用）。
+    // ObjectBackupScore 完整定义见下方 private 区（此处前向声明不可行：访问性冲突）。
+    ObjectBackupScore backup_score_for_testing(const CMString& object_name) const;
+    // trigger_auto_backup 进入次数（无论后续选目标是否成功）——判定分支的触发观测。
+    uint64_t auto_backup_trigger_count_for_testing_ = 0;
     // 诊断：指定 db_path 的 merge task 状态条目数（失败清理精确性测试用）。
     size_t merge_task_state_count_for_testing(const CMString& db_path) const;
     // 直接驱动 record_worker_info（private），验证同 tuple 只 append meta 一次。
@@ -568,15 +588,8 @@ private:
     // 副作用（append_worker_info_to_meta）据此在锁外恰好执行一次。
     ConcurrentUnorderedSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
 
-    // ── Auto-backup EWMA 聚合（worker suggest → master score → 判定 backup）──
-    // master 聚合多 worker 上报的 TIER2 读增量，按 suggest 接收时间做 EWMA 衰减。
-    // score = cumulative / replicas；backup → replicas++ → score 降 → 自然平衡（不 reset）。
-    struct ObjectBackupScore {
-        double cumulative_bytes_ = 0;   // EWMA 衰减后的累积字节
-        double cumulative_count_ = 0;   // EWMA 衰减后的累积次数
-        int64_t size_bytes_ = 0;        // 对象最新压缩后大小（大文件例外判定用）
-        int64_t last_suggest_time_ = 0; // 上次 suggest 到达时间（EWMA elapsed 用）
-    };
+    // ObjectBackupScore 定义已前移至 on_merge_task_failed 之后（test hook 需在
+    // FLY_ENABLE_TEST_HOOKS 区引用其完整类型）。
     ConcurrentUnorderedMap<CMString, ObjectBackupScore> backup_scores_;
 
     // 按 db 分组：outer key = db_path，inner key = short_name，value = write_context_hash。

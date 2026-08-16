@@ -1827,6 +1827,139 @@ TEST(MasterAgentTest, SelectBackupWorkerPrefersLighterStorage) {
     DataService::instance()->remove_remote_index(old_obj);
 }
 
+// --- auto_backup EWMA 聚合判定（2026-08-16 补覆盖：此前 master 侧判定零测试）---
+
+namespace {
+// EWMA 用例公共环境：低阈值 + 关闭 bytes 分数 + 恢复默认。
+// decay=0（不衰减）供确定性用例；衰减用例自行覆盖。
+struct AutoBackupEwmaFixture {
+    CMSharedPtr<Config> cfg = Config::instance();
+    std::vector<std::pair<const char*, int64_t>> saved;
+    AutoBackupEwmaFixture() {
+        for (const char* k : {"master_ewma_decay_per_sec", "backup_count_threshold",
+                              "backup_bytes_threshold", "max_backup_replicas",
+                              "backup_large_object_threshold", "backup_high_score_threshold"}) {
+            saved.emplace_back(k, cfg->get_int(k));
+        }
+        cfg->set_int("master_ewma_decay_per_sec", 0);   // 确定性：默认用例不衰减
+        cfg->set_int("backup_count_threshold", 2);
+        cfg->set_int("backup_bytes_threshold", 0);      // 关闭 bytes 分数，单测 count 维度
+        cfg->set_int("max_backup_replicas", 2);
+        cfg->set_int("backup_large_object_threshold", 1 << 30);
+        cfg->set_int("backup_high_score_threshold", 1 << 30);
+    }
+    ~AutoBackupEwmaFixture() {
+        for (auto& [k, v] : saved) cfg->set_int(k, v);
+    }
+    static WorkerBackupSuggestMessage make_suggest(const CMString& obj, uint64_t delta_count,
+                                                   uint64_t delta_bytes = 0, int64_t size_bytes = 100) {
+        WorkerBackupSuggestMessage msg;
+        msg.object_name_ = obj;
+        msg.delta_count_ = delta_count;
+        msg.delta_bytes_ = delta_bytes;
+        msg.size_bytes_ = size_bytes;
+        return msg;
+    }
+};
+}  // namespace
+
+TEST(MasterAgentTest, AutoBackupEwmaAccumulatesAndTriggersAtThreshold) {
+    AutoBackupEwmaFixture fx;
+    MasterAgent master("127.0.0.1", 0);
+
+    CMString obj = db32("ewma_trigger") + ":obj";
+    DataService::instance()->update_remote_idx(obj, 1, "10.0.0.1", 8001);
+
+    // 两次 suggest delta_count=1、3 → 首次 score=1 < 2 不触发；二次 cumulative=4，
+    // score=4/1 replica=4 >= 2 → 恰好触发 1 次。（delta_count_ 为 uint64 整型。）
+    master.worker_backup_suggest_for_testing(AutoBackupEwmaFixture::make_suggest(obj, 1));
+    master.worker_backup_suggest_for_testing(AutoBackupEwmaFixture::make_suggest(obj, 3));
+
+    auto score = master.backup_score_for_testing(obj);
+    EXPECT_DOUBLE_EQ(score.cumulative_count_, 4.0);
+    EXPECT_EQ(score.size_bytes_, 100);
+    EXPECT_EQ(master.auto_backup_trigger_count_for_testing_, 1u);
+
+    DataService::instance()->remove_remote_index(obj);
+}
+
+TEST(MasterAgentTest, AutoBackupEwmaDecaysOverTime) {
+    AutoBackupEwmaFixture fx;
+    Config::instance()->set_int("master_ewma_decay_per_sec", 30);  // 30%/s
+    MasterAgent master("127.0.0.1", 0);
+
+    CMString obj = db32("ewma_decay") + ":obj";
+    DataService::instance()->update_remote_idx(obj, 1, "10.0.0.1", 8001);
+
+    master.worker_backup_suggest_for_testing(AutoBackupEwmaFixture::make_suggest(obj, 10.0));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    master.worker_backup_suggest_for_testing(AutoBackupEwmaFixture::make_suggest(obj, 10.0));
+
+    // 2s × 30%/s → factor = 0.7² = 0.49；cumulative ≈ 10×0.49 + 10 = 14.9。
+    // 衰减区间断言（避开精确时钟，覆盖 (13, 16) 即证实衰减生效且未误伤累积）。
+    auto score = master.backup_score_for_testing(obj);
+    EXPECT_GT(score.cumulative_count_, 13.0);
+    EXPECT_LT(score.cumulative_count_, 16.0);
+
+    DataService::instance()->remove_remote_index(obj);
+}
+
+TEST(MasterAgentTest, AutoBackupEwmaBelowThresholdNoTrigger) {
+    AutoBackupEwmaFixture fx;
+    MasterAgent master("127.0.0.1", 0);
+
+    CMString obj = db32("ewma_below") + ":obj";
+    DataService::instance()->update_remote_idx(obj, 1, "10.0.0.1", 8001);
+
+    master.worker_backup_suggest_for_testing(AutoBackupEwmaFixture::make_suggest(obj, 1.0));
+
+    auto score = master.backup_score_for_testing(obj);
+    EXPECT_DOUBLE_EQ(score.cumulative_count_, 1.0);   // 累积生效
+    EXPECT_EQ(master.auto_backup_trigger_count_for_testing_, 0u);  // 但 1 < 2 未达阈值
+
+    DataService::instance()->remove_remote_index(obj);
+}
+
+TEST(MasterAgentTest, AutoBackupEwmaReplicaCapBlocksTrigger) {
+    AutoBackupEwmaFixture fx;
+    MasterAgent master("127.0.0.1", 0);
+
+    CMString obj = db32("ewma_cap") + ":obj";
+    DataService::instance()->update_remote_idx(obj, 1, "10.0.0.1", 8001);
+    DataService::instance()->update_remote_idx(obj, 2, "10.0.0.2", 8002);
+    // 2 holders == max_backup_replicas(2) → 分数再高也到 cap，不触发。
+
+    master.worker_backup_suggest_for_testing(AutoBackupEwmaFixture::make_suggest(obj, 100.0));
+
+    auto score = master.backup_score_for_testing(obj);
+    EXPECT_DOUBLE_EQ(score.cumulative_count_, 100.0);
+    EXPECT_EQ(master.auto_backup_trigger_count_for_testing_, 0u);
+
+    DataService::instance()->remove_remote_index(obj);
+}
+
+TEST(MasterAgentTest, AutoBackupEwmaLargeObjectExceptionRaisesCap) {
+    AutoBackupEwmaFixture fx;
+    Config::instance()->set_int("backup_large_object_threshold", 1000);
+    Config::instance()->set_int("backup_high_score_threshold", 50);
+    Config::instance()->set_int("backup_extra_slots", 1);
+    MasterAgent master("127.0.0.1", 0);
+
+    CMString obj = db32("ewma_large") + ":obj";
+    DataService::instance()->update_remote_idx(obj, 1, "10.0.0.1", 8001);
+    DataService::instance()->update_remote_idx(obj, 2, "10.0.0.2", 8002);
+
+    // 热点（delta_count=4 / 2 holders → score_count=2 >= 2）+ 大对象（size 2000 >= 1000）
+    // + 高 bytes 分数（delta_bytes=200 → score_bytes=100 >= 50）→ cap = max(2) + extra(1) = 3
+    // > replicas=2 → 触发。注意豁免判定在热点判定之后，且用的是 score_bytes 非 count。
+    master.worker_backup_suggest_for_testing(
+        AutoBackupEwmaFixture::make_suggest(obj, /*delta_count=*/4, /*delta_bytes=*/200, /*size_bytes=*/2000));
+
+    EXPECT_EQ(master.auto_backup_trigger_count_for_testing_, 1u);
+
+    DataService::instance()->remove_remote_index(obj);
+}
+
 // --- 存储接管决策（storage_takeover）---
 
 namespace {
