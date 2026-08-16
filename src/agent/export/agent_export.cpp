@@ -297,8 +297,8 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
                                          float attribute_timeout,
                                          const fly::CMString& write_context_hash,
                                          const fly::CMVector<fly::CMString>& vars,
-                                         int priority) {
-        self.submit_task(name, module, args, inputs, required_capabilities, attribute_timeout, write_context_hash, vars, priority);
+                                         int priority) -> uint64_t {
+        return self.submit_task(name, module, args, inputs, required_capabilities, attribute_timeout, write_context_hash, vars, priority);
     })
     FLY_EXPORT_METHOD("take_pending_task_vars", [](fly::WorkerAgent& self) -> fly::CMVector<fly::VarPayload> {
         return self.take_pending_task_vars();

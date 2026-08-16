@@ -187,6 +187,18 @@ void WorkerAgent::start() {
             DBG("WorkerProbe answered: worker_id={}", msg.worker_id_);
         });
 
+    reactor_->register_handler<TaskSubmitAckMessage>(
+        [this](uint64_t conn_id, const TaskSubmitAckMessage& msg) {
+            // 转发提交的入图确认：唤醒同步等待的提交方（带回 task_id）。
+            pending_task_submits_.complete(msg.request_id_, [&](PendingTaskSubmit& p) {
+                p.accepted_ = msg.accepted_;
+                p.task_id_ = msg.task_id_;
+                p.completed_ = true;
+            });
+            DBG("TaskSubmitAck: request_id={}, task_id={}, accepted={}",
+                msg.request_id_, msg.task_id_, msg.accepted_);
+        });
+
     reactor_->register_handler<DatabaseFreezeNotification>(
         [this](uint64_t conn_id, const DatabaseFreezeNotification& msg) {
             on_database_freeze_notification(conn_id, msg);
@@ -376,7 +388,7 @@ bool WorkerAgent::is_registered() const {
     return registered_;
 }
 
-void WorkerAgent::submit_task(const CMString& name, const CMString& module,
+uint64_t WorkerAgent::submit_task(const CMString& name, const CMString& module,
                                const CMVector<CMString>& args,
                                const CMVector<CMString>& inputs,
                                const CMVector<CMString>& required_capabilities,
@@ -388,10 +400,10 @@ void WorkerAgent::submit_task(const CMString& name, const CMString& module,
     // send to. Fail soft rather than crash; caller observes no progress.
     if (!reactor_) {
         ERR("submit_task '{}' ignored: worker not started (no reactor)", name);
-        return;
+        return 0;
     }
-     TaskSubmitMessage msg;
-     msg.task_name_ = name;
+    TaskSubmitMessage msg;
+    msg.task_name_ = name;
     msg.task_module_ = module;
     msg.args_ = args;
     msg.inputs_ = inputs;
@@ -400,7 +412,35 @@ void WorkerAgent::submit_task(const CMString& name, const CMString& module,
     msg.write_context_hash_ = write_context_hash;
     msg.vars_ = vars;
     msg.priority_ = priority;
+    msg.request_id_ = next_submit_request_id_.fetch_add(1);
+
+    auto pending = CMMakeShared<PendingTaskSubmit>();
+    pending_task_submits_.emplace(msg.request_id_, pending);
+
+    // Ack 强语义（用户确认语义）：同步 RPC——master 入图确认（带回 task_id）
+    // 才放行，杜绝 task 体内提交静默蒸发（fanout 场景断连丢失子任务且调用
+    // 方不知情、下游依赖永不就绪）。断连窗口按 A 类挂起：入统一重放队列、
+    // 阻塞等注册确认后重放拿 Ack；worker 终止批量 fail。
+    if (!registered_.load()) {
+        enqueue_master_send([this, msg](uint64_t conn) { reactor_->send(conn, msg); });
+        WARN("TaskSubmit pending (not registered): task={} — caller blocks until "
+             "registration confirms", name);
+        auto result = pending_task_submits_.wait_for(msg.request_id_, std::chrono::seconds(300),
+            [](const CMSharedPtr<PendingTaskSubmit>& p) { return p->completed_; });
+        pending_task_submits_.erase(msg.request_id_);
+        if (result && result->accepted_) return result->task_id_;
+        ERR("TaskSubmit failed (pending path): task={}", name);
+        return 0;
+    }
+
     reactor_->send(master_conn_, msg);
+
+    auto result = pending_task_submits_.wait_for(msg.request_id_, std::chrono::seconds(5),
+        [](const CMSharedPtr<PendingTaskSubmit>& p) { return p->completed_; });
+    pending_task_submits_.erase(msg.request_id_);
+    if (result && result->accepted_) return result->task_id_;
+    ERR("TaskSubmit not acknowledged: task={} (timeout or rejected)", name);
+    return 0;
 }
 
 void WorkerAgent::heartbeat_loop() {
@@ -534,29 +574,32 @@ void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
     }
     // 注册成功后按序重放缓冲消息（用户确认语义：注册完成前的消息一律
     // pending，注册后重放）：
-    //   1. 先重放未注册窗口缓冲的 WriteRegister（streaming 模式下 master 靠
-    //      它登记位置——必须先于声明同名对象的 TaskComplete 送达）；
-    //   2. 再 flush task 上报（首连 assign-抢在-Ack-前窗口或断连窗口缓冲的
-    //      complete/failed——flush 不限重连路径，空缓冲 no-op）。
-    replay_pending_write_registers();
+    //   1. 统一重放队列（A 类同步 RPC + B 类通知，FIFO = 语义序，含
+    //      WriteRegister——streaming 模式 master 靠它登记位置）；
+    //   2. task 上报 flush（固定最后——首连 assign-抢在-Ack-前窗口或断连
+    //      窗口缓冲的 complete/failed）。
+    replay_pending_master_sends();
     flush_pending_reports();
 }
 
-void WorkerAgent::replay_pending_write_registers() {
-    CMVector<WriteRegisterMessage> to_send;
+void WorkerAgent::enqueue_master_send(std::function<void(uint64_t conn)> replay) {
+    std::lock_guard<std::mutex> lk(pending_master_sends_mutex_);
+    pending_master_sends_.push_back(PendingMasterSend{std::move(replay)});
+}
+
+void WorkerAgent::replay_pending_master_sends() {
+    CMVector<PendingMasterSend> to_replay;
     {
-        std::lock_guard<std::mutex> lk(pending_write_reg_sends_mutex_);
-        to_send = std::move(pending_write_reg_sends_);
-        pending_write_reg_sends_.clear();
+        std::lock_guard<std::mutex> lk(pending_master_sends_mutex_);
+        to_replay = std::move(pending_master_sends_);
+        pending_master_sends_.clear();
     }
-    if (to_send.empty()) return;
-    INFO("Replaying {} buffered WriteRegister(s) after registration", to_send.size());
-    for (const auto& msg : to_send) {
-        // 重放的消息没有同步等待者（原调用早已返回；数据已落盘）。Ack 由
-        // on_write_register_ack 按 object_name complete——无等待者时 no-op；
-        // 若 master 拒绝（如 provenance mismatch），此处仅日志（该窗口内
-        // 产生的 task 已按本地成功上报，拒绝结果后续读 NOT_FOUND 可观测）。
-        reactor_->send(master_conn_.load(), msg);
+    if (to_replay.empty()) return;
+    INFO("Replaying {} buffered master-bound message(s) after registration",
+         to_replay.size());
+    uint64_t conn = master_conn_.load();
+    for (auto& send : to_replay) {
+        if (send.replay_) send.replay_(conn);
     }
 }
 
@@ -856,7 +899,7 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);
         task_queue_cv_.notify_all();
     }
-    // 阻塞在「未注册窗口写注册 pending」的 task：终局唤醒（重连失败/
+    // 阻塞在「未注册窗口 A 类挂起」的全部同步 RPC：终局唤醒（重连失败/
     // worker 退出即失败——用户确认语义的两个终态之一）。
     pending_write_regs_.complete_all_if(
         [](const PendingWriteRegister&) { return true; },
@@ -866,6 +909,45 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
             p.error_type_ = TaskErrorType::UNKNOWN;
             p.error_message_ = "worker shutting down before registration confirmed";
         });
+    pending_db_paths_.complete_all_if(
+        [](const PendingDbPath&) { return true; },
+        [](PendingDbPath& p) {
+            p.completed_ = true;
+            p.success_ = false;
+        });
+    pending_freezes_.complete_all_if(
+        [](const PendingFreezeAck&) { return true; },
+        [](PendingFreezeAck& p) {
+            p.completed_ = true;
+            p.success_ = false;
+            p.error_type_ = TaskErrorType::WRITE_REGISTRATION_TIMEOUT;
+        });
+    pending_var_ops_.complete_all_if(
+        [](const PendingVarOp&) { return true; },
+        [](PendingVarOp& p) {
+            p.completed_ = true;
+            p.success_ = false;
+            p.error_message_ = "worker shutting down before registration confirmed";
+        });
+    pending_removes_.complete_all_if(
+        [](const PendingRemove&) { return true; },
+        [](PendingRemove& p) {
+            p.completed_ = true;
+            p.success_ = false;
+        });
+    pending_task_submits_.complete_all_if(
+        [](const PendingTaskSubmit&) { return true; },
+        [](PendingTaskSubmit& p) {
+            p.completed_ = true;
+            p.accepted_ = false;
+            p.task_id_ = 0;
+        });
+    // B 类重放队列：worker 终止，不再重放（丢弃通知类消息；A 类的等待者
+    // 已由上面的批量 fail 唤醒，重放闭包无需执行）。
+    {
+        std::lock_guard<std::mutex> lk(pending_master_sends_mutex_);
+        pending_master_sends_.clear();
+    }
     if (reactor_) {
         reactor_->stop();
     }
@@ -901,6 +983,14 @@ void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_has
         ObjectRemovedMessage msg;
         msg.object_name_ = full_name;
         msg.db_path_ = db_path;
+        // B 类（遗留通知路径，无生产调用者——db.remove_object 实际走
+        // request_object_remove 同步链路）：防御性入队，断连窗口不丢。
+        if (!registered_.load()) {
+            enqueue_master_send([this, msg](uint64_t conn) { reactor_->send(conn, msg); });
+            WARN("ObjectRemoved pending (not registered): {} — replays after "
+                 "registration", full_name);
+            return;
+        }
         reactor_->send(master_conn_, msg);
         INFO("ObjectRemoved sent to master: {}", full_name);
     });
@@ -1013,8 +1103,6 @@ void WorkerAgent::cleanup_failed_task_writes(const CMVector<WriteRecord>& dirty_
 }
 
 void WorkerAgent::request_database_freeze(const CMString& db_path) {
-    if (!registered_) return;
-
     // 同步等 ack（仿 register_write_with_master 的 pending+cv 模式）：
     // 非 stream 模式 master 登记 pending；冲突时回 DB_ALREADY_FROZEN 联动 task 失败。
     auto pending = CMMakeShared<PendingFreezeAck>();
@@ -1024,6 +1112,29 @@ void WorkerAgent::request_database_freeze(const CMString& db_path) {
     DatabaseFreezeNotification msg;
     msg.db_path_ = db_path;
     msg.task_id_ = current_task_id_;   // 非 stream 模式 master 登记 pending 需要
+    if (!registered_.load()) {
+        // A 类挂起（用户确认语义）：master 裁决 DB_ALREADY_FROZEN 冲突、被拒
+        // 必须联动 task 失败——放行 = 冲突未检出。断连窗口不发送（必丢失），
+        // 入统一重放队列、阻塞等注册确认后重放拿 FreezeAck。
+        enqueue_master_send([this, msg](uint64_t conn) { reactor_->send(conn, msg); });
+        WARN("Freeze pending (not registered): db_path={} — caller blocks until "
+             "registration confirms", db_path);
+        auto result = pending_freezes_.wait_for(db_path, std::chrono::seconds(300),
+            [](const CMSharedPtr<PendingFreezeAck>& p) { return p->completed_; });
+        pending_freezes_.erase(db_path);
+        if (result && result->success_) {
+            INFO("Freeze acked (after replay): db_path={}", db_path);
+        } else if (result) {
+            WorkerAgentContext::set_last_error_type(result->error_type_);
+            ERR("Freeze rejected (after replay): db_path={}, error_type={}", db_path,
+                static_cast<int>(result->error_type_));
+        } else {
+            WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
+            ERR("Freeze pending timeout: db_path={}", db_path);
+        }
+        return;
+    }
+
     reactor_->send(master_conn_, msg);
     INFO("Freeze notification sent: db_path={}, task_id={}", db_path, current_task_id_);
 
@@ -1088,6 +1199,29 @@ bool WorkerAgent::request_db_path(const CMString& db_path) {
 
     DbPathRequestMessage req;
     req.db_path_ = db_path;
+    if (!registered_.load()) {
+        // A 类挂起（用户确认语义）：db_path 是 master 分配的权威路径，后续
+        // 全部写操作依赖——断连窗口不发送（发到死连接必丢失），入统一重放
+        // 队列、阻塞等注册确认后重放拿 Ack。原 5s 超时在断连场景只会把
+        // 宽限内存活的 task 错误判死。
+        enqueue_master_send([this, req](uint64_t conn) { reactor_->send(conn, req); });
+        WARN("DbPathRequest pending (not registered): db_path={} — caller blocks "
+             "until registration confirms", db_path);
+        auto result = pending_db_paths_.wait_for(db_path, std::chrono::seconds(300),
+            [](const CMSharedPtr<PendingDbPath>& p) { return p->completed_; });
+        pending_db_paths_.erase(db_path);
+        if (result && result->success_ && !result->db_path_.empty()) {
+            auto db = CMMakeShared<Database>(result->db_path_, result->data_path_,
+                                             worker_id_, data_server_host_, db_path);
+            {
+                std::unique_lock<std::shared_mutex> db_lk(databases_mutex_);
+                databases_[db_path] = db;
+            }
+            return true;
+        }
+        return false;
+    }
+
     reactor_->send(master_conn_, req);
 
     INFO("Sent DbPathRequest for db_path={}", db_path);
@@ -1177,19 +1311,16 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
 
     // 未注册窗口（断连重连中，或首连 assign 抢在 RegisterAck 之前）：
     // 写注册直接 pending（用户确认语义）——task 阻塞在此同步点，直到
-    // 重连成功且 master 注册确认（Ack → 重放 → WriteRegisterAck 唤醒），
-    // 或重连失败/worker 终止（initiate_shutdown 批量 fail 唤醒）。不允许
-    // 放行（数据虽已本地落盘，但 provenance 裁决未下——放行后重放被拒
+    // 重连成功且 master 注册确认（Ack → 统一队列重放 → WriteRegisterAck
+    // 唤醒），或重连失败/worker 终止（initiate_shutdown 批量 fail 唤醒）。
+    // 不放行（数据虽已本地落盘，但 provenance 裁决未下——放行后重放被拒
     // 时错误无法回注已完成的 task）。等待上限为防御值（实际由重连宽限
     // 约束：宽限耗尽 → initiate_shutdown → 批量 fail）。
     if (!registered_.load()) {
         auto pending = CMMakeShared<PendingWriteRegister>();
         pending->object_name_ = full_name;
         pending_write_regs_.emplace(full_name, pending);
-        {
-            std::lock_guard<std::mutex> lk(pending_write_reg_sends_mutex_);
-            pending_write_reg_sends_.push_back(msg);
-        }
+        enqueue_master_send([this, msg](uint64_t conn) { reactor_->send(conn, msg); });
         WARN("WriteRegister pending (not registered): object={} — task blocks until "
              "registration confirms or worker exits", full_name);
         auto result = pending_write_regs_.wait_for(full_name, std::chrono::seconds(300),
@@ -1247,8 +1378,6 @@ void WorkerAgent::on_write_register_ack(uint64_t conn_id, const WriteRegisterAck
 
 bool WorkerAgent::set_var_sync(const CMString& full_var_name,
                                FlyBufferPtr value, const CMString& type_name) {
-    if (!registered_) return false;
-
     auto pending = CMMakeShared<PendingVarOp>();
     pending->var_name_ = full_var_name;
     pending_var_ops_.emplace(full_var_name, pending);
@@ -1262,6 +1391,21 @@ bool WorkerAgent::set_var_sync(const CMString& full_var_name,
         msg.value_.assign(value->data(), value->size());
     }
     msg.type_name_ = type_name;
+    if (!registered_.load()) {
+        // A 类挂起（用户确认语义）：VAR_ACK 可携带拒绝，「设置成功」是调用
+        // 方语义的一部分。断连窗口不发送，入统一重放队列阻塞等确认。
+        enqueue_master_send([this, msg](uint64_t conn) { reactor_->send(conn, msg); });
+        WARN("VarSet pending (not registered): var={} — caller blocks until "
+             "registration confirms", full_var_name);
+        auto result = pending_var_ops_.wait_for(full_var_name, std::chrono::seconds(300),
+            [](const CMSharedPtr<PendingVarOp>& p) { return p->completed_; });
+        pending_var_ops_.erase(full_var_name);
+        if (!result) {
+            ERR("VarSet pending timeout: var={}", full_var_name);
+            return false;
+        }
+        return result->success_;
+    }
     reactor_->send(master_conn_, msg);
 
     DBG("VarSet sent: var={}", full_var_name);
@@ -1277,14 +1421,27 @@ bool WorkerAgent::set_var_sync(const CMString& full_var_name,
 }
 
 std::tuple<bool, FlyBufferPtr, CMString> WorkerAgent::get_var_sync(const CMString& full_var_name) {
-    if (!registered_) return {false, nullptr, ""};
-
     auto pending = CMMakeShared<PendingVarOp>();
     pending->var_name_ = full_var_name;
     pending_var_ops_.emplace(full_var_name, pending);
 
     VarGetMessage msg;
     msg.var_name_ = full_var_name;  // full name on the wire
+    if (!registered_.load()) {
+        // A 类挂起：返回值就是 master 上的 var 内容（PendingVarOp::value_
+        // 零拷贝回传），天然必须等。断连窗口入队阻塞等确认。
+        enqueue_master_send([this, msg](uint64_t conn) { reactor_->send(conn, msg); });
+        WARN("VarGet pending (not registered): var={} — caller blocks until "
+             "registration confirms", full_var_name);
+        auto result = pending_var_ops_.wait_for(full_var_name, std::chrono::seconds(300),
+            [](const CMSharedPtr<PendingVarOp>& p) { return p->completed_; });
+        pending_var_ops_.erase(full_var_name);
+        if (!result) {
+            ERR("VarGet pending timeout: var={}", full_var_name);
+            return {false, nullptr, ""};
+        }
+        return {result->success_, result->value_, result->type_name_};
+    }
     reactor_->send(master_conn_, msg);
 
     DBG("VarGet sent: var={}", full_var_name);
@@ -1300,9 +1457,16 @@ std::tuple<bool, FlyBufferPtr, CMString> WorkerAgent::get_var_sync(const CMStrin
 }
 
 void WorkerAgent::remove_var_async(const CMString& full_var_name) {
-    if (!registered_) return;
+    // B 类（原语义 async 无确认）：断连窗口入统一重放队列（注册确认后
+    // 重放），不丢删除意图。
     VarRemoveMessage msg;
     msg.var_name_ = full_var_name;  // full name on the wire
+    if (!registered_.load()) {
+        enqueue_master_send([this, msg](uint64_t conn) { reactor_->send(conn, msg); });
+        WARN("VarRemove pending (not registered): var={} — replays after "
+             "registration", full_var_name);
+        return;
+    }
     reactor_->send(master_conn_, msg);
     DBG("VarRemove sent (async): var={}", full_var_name);
 }
@@ -1432,11 +1596,20 @@ void WorkerAgent::set_worker_property(const CMVector<CMString>& props) {
         }
     }
 
-    if (!actually_added.empty() && registered_) {
+    // B 类：能力视图通知（master 调度匹配用，调用方不依赖确认）。断连窗口
+    // 入统一重放队列（add/remove 幂等，重放全部变更不合并）——原静默丢弃
+    // 会让 master 能力视图永久陈旧。
+    if (!actually_added.empty()) {
         WorkerPropertyUpdateMessage msg;
         msg.worker_id_ = worker_id_;
         msg.added_properties_ = actually_added;
-        reactor_->send(master_conn_, msg);
+        if (!registered_.load()) {
+            enqueue_master_send([this, msg](uint64_t conn) { reactor_->send(conn, msg); });
+            WARN("WorkerPropertyUpdate (set) pending (not registered): replays "
+                 "after registration");
+        } else {
+            reactor_->send(master_conn_, msg);
+        }
 
         auto wid = worker_id_;
         auto added_count = actually_added.size();
@@ -1461,11 +1634,18 @@ void WorkerAgent::remove_worker_property(const CMVector<CMString>& props) {
         }
     }
 
-    if (!actually_removed.empty() && registered_) {
+    // B 类：同 set 侧——断连窗口入统一重放队列，不丢能力变更。
+    if (!actually_removed.empty()) {
         WorkerPropertyUpdateMessage msg;
         msg.worker_id_ = worker_id_;
         msg.removed_properties_ = actually_removed;
-        reactor_->send(master_conn_, msg);
+        if (!registered_.load()) {
+            enqueue_master_send([this, msg](uint64_t conn) { reactor_->send(conn, msg); });
+            WARN("WorkerPropertyUpdate (remove) pending (not registered): replays "
+                 "after registration");
+        } else {
+            reactor_->send(master_conn_, msg);
+        }
 
         auto wid = worker_id_;
         auto removed_count = actually_removed.size();
@@ -1694,6 +1874,24 @@ void WorkerAgent::request_object_remove(const CMString& db_path, const CMString&
     RemoveRequestMessage msg;
     msg.db_path_ = db_path;
     msg.object_name_ = full;
+    if (!registered_.load()) {
+        // A 类挂起（用户确认语义）：删除成败影响后续语义（删除后重写同名
+        // 对象的 provenance 链路）。断连窗口不发送，入统一重放队列阻塞等
+        // 注册确认后重放拿 RemoveAck。
+        enqueue_master_send([this, msg](uint64_t conn) { reactor_->send(conn, msg); });
+        WARN("RemoveRequest pending (not registered): object={} — caller blocks "
+             "until registration confirms", full);
+        auto result = pending_removes_.wait_for(full, std::chrono::seconds(300),
+            [](const CMSharedPtr<PendingRemove>& p) { return p->completed_; });
+        pending_removes_.erase(full);
+        if (!result) {
+            ERR("Remove pending timeout: {}", full);
+        } else if (!result->success_) {
+            ERR("Remove request failed (after replay): {}", full);
+        }
+        return;
+    }
+
     reactor_->send(master_conn_, msg);
     INFO("RemoveRequest sent: {}", full);
 
@@ -1747,14 +1945,21 @@ void WorkerAgent::on_remove_command(uint64_t conn_id, const RemoveCommandMessage
 }
 
 void WorkerAgent::request_backup(const CMString& db_path, const CMString& object_name) {
-    if (!registered_) return;
-
     CMString full_name = db_path + ":" + object_name;
 
     BackupRequestMessage msg;
     msg.worker_id_ = worker_id_;
     msg.object_name_ = full_name;
     msg.db_path_ = db_path;
+    // B 类：backup 由 master 另派 internal task 异步执行，调用方不依赖结果
+    //——断连窗口入统一重放队列（原 `!registered_` 静默 return 会把
+    // backup=True 的用户意图永久丢失，对象单副本无兜底）。
+    if (!registered_.load()) {
+        enqueue_master_send([this, msg](uint64_t conn) { reactor_->send(conn, msg); });
+        WARN("BackupRequest pending (not registered): object={} — replays after "
+             "registration", full_name);
+        return;
+    }
     reactor_->send(master_conn_, msg);
 
     INFO("BackupRequest sent: object={}", full_name);

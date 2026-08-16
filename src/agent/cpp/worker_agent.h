@@ -102,6 +102,13 @@ struct PendingVarOp {
     CMString error_message_;
 };
 
+// 转发提交的同步等待（Ack 强语义）：master 入图确认带回 task_id。
+struct PendingTaskSubmit {
+    bool completed_ = false;
+    bool accepted_ = false;
+    uint64_t task_id_ = 0;
+};
+
 class WorkerAgent {
 public:
     // role：静态身份（"hybrid" 默认 / "storage_only"），注册时上报、不可变更；
@@ -128,7 +135,10 @@ public:
     
     bool is_registered() const;
     
-    void submit_task(const CMString& name, const CMString& module,
+    // task 体内提交转发（Ack 强语义，用户确认语义）：同步 RPC——master 入图
+    // 确认（TaskSubmitAck 带回 task_id）才返回；断连窗口按 A 类挂起（入统一
+    // 重放队列阻塞等注册确认后重放拿 Ack）。返回 task_id（0=失败/超时）。
+    uint64_t submit_task(const CMString& name, const CMString& module,
                      const CMVector<CMString>& args,
                      const CMVector<CMString>& inputs,
                      const CMVector<CMString>& required_capabilities = {},
@@ -235,10 +245,22 @@ private:
     uint8_t role_ = 0;
     std::atomic<bool> running_{false};
     std::atomic<bool> registered_{false};
-    // 未注册窗口缓冲的 WriteRegister（用户确认语义：写注册不在注册完成前
-    // 处理，消息 pending、注册成功后按序重放——先于此后的 task 上报 flush）。
-    std::mutex pending_write_reg_sends_mutex_;
-    CMVector<WriteRegisterMessage> pending_write_reg_sends_;
+    // ── 断连/未注册窗口的统一重放队列（用户确认语义）──────────────────
+    // 注册完成前不处理发往 master 的消息：
+    //   A 类（调用方依赖 master 裁决：DbPathRequest/Freeze/VarSet/VarGet/
+    //        RemoveRequest/WriteRegister）——登记各自 PendingRpcMap 等待者
+    //        后入队，调用方阻塞在同步点；注册确认后按 FIFO 重放、各自 Ack
+    //        唤醒；worker 终止时批量 fail。
+    //   B 类（通知/后台性质：BackupRequest/能力更新/ObjectRemoved/TaskSubmit/
+    //        var 异步删除）——入队即返回；注册确认后重放。
+    // FIFO 保序：同一 task 的消息（DbPathRequest → WriteRegister → …）按
+    // 入队顺序重放；Task 上报经 flush_pending_reports 固定最后。
+    struct PendingMasterSend {
+        std::function<void(uint64_t conn)> replay_;  // 注册后执行（conn 参数
+                                                     // 取当时的 master_conn_）
+    };
+    std::mutex pending_master_sends_mutex_;
+    CMVector<PendingMasterSend> pending_master_sends_;
     std::atomic<bool> shutdown_triggered_{false};
     
     CMUniquePtr<Reactor> reactor_;
@@ -308,6 +330,9 @@ private:
     };
 
     PendingRpcMap<CMString, PendingRemove> pending_removes_;
+    // 转发提交的 Ack 等待（key=worker 侧生成的 request_id）。
+    PendingRpcMap<uint64_t, PendingTaskSubmit> pending_task_submits_;
+    std::atomic<uint64_t> next_submit_request_id_{1};
 
     // Pending var set/get operations (keyed by var_name, awaiting master VAR_ACK).
     PendingRpcMap<CMString, PendingVarOp> pending_var_ops_;
@@ -382,9 +407,10 @@ private:
     void send_master_or_buffer(const TaskCompleteMessage& msg);
     void send_master_or_buffer(const TaskFailedMessage& msg);
     void flush_pending_reports();
-    // 注册成功后重放未注册窗口缓冲的 WriteRegister（先于 task 上报 flush，
-    // 保证 streaming 模式下位置登记先于 TaskComplete 送达 master）。
-    void replay_pending_write_registers();
+    // 统一重放队列：入队（未注册窗口调用；replay 闭包在注册确认后以当前
+    // master_conn_ 执行）与重放（on_register_ack，先于 task 上报 flush）。
+    void enqueue_master_send(std::function<void(uint64_t conn)> replay);
+    void replay_pending_master_sends();
     void bandwidth_probe_loop();
     // connect master 指数退避重试（见 worker_agent.cpp 实现处注释：窗口与 master
     // 占位符共用 worker_register_timeout，两侧统一 5min 保活）。
@@ -436,6 +462,16 @@ public:
                 p.success_ = false;
                 p.error_type_ = TaskErrorType::UNKNOWN;
                 p.error_message_ = "worker shutting down before registration confirmed";
+            });
+    }
+    // 模拟 worker 终止对其余 A 类同步 RPC（freeze）的批量失败唤醒。
+    void fail_pending_freezes_for_testing() {
+        pending_freezes_.complete_all_if(
+            [](const PendingFreezeAck&) { return true; },
+            [](PendingFreezeAck& p) {
+                p.completed_ = true;
+                p.success_ = false;
+                p.error_type_ = TaskErrorType::WRITE_REGISTRATION_TIMEOUT;
             });
     }
 #endif

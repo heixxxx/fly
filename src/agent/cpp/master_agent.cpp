@@ -127,6 +127,15 @@ void MasterAgent::start() {
             spec.vars_ = msg.vars_;
             spec.priority_ = msg.priority_;
             submit_task(task_id, spec);
+            // Ack 强语义：request_id 非 0（worker 转发的同步提交）必须回执，
+            // 带回分配的 task_id；master 本地提交不设 request_id，无 Ack。
+            if (msg.request_id_ != 0) {
+                TaskSubmitAckMessage ack;
+                ack.request_id_ = msg.request_id_;
+                ack.task_id_ = task_id;
+                ack.accepted_ = true;
+                reactor_->send(conn_id, ack);
+            }
         });
 
     reactor_->register_handler<DbPathRequestMessage>(

@@ -65,10 +65,11 @@ enum class MessageType : uint8_t {
     STORAGE_SPAWN_ACK = 54,      // worker → master: spawn 动作结果（exec 成败 + 原因；注册到达另计）
     WORKER_PROBE = 55,           // master → worker: 疑似重复注册时探测既有连接活性（回 PROBE_ACK）
     WORKER_PROBE_ACK = 56,       // worker → master: 探测应答（到达即证明该实例活着）
+    TASK_SUBMIT_ACK = 57,        // master → worker: task 体内提交转发的确认（request_id 匹配，带回 master 分配的 task_id）
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 56;
+    return raw >= 1 && raw <= 57;
 }
 
 struct MessageHeader {
@@ -306,8 +307,26 @@ struct TaskSubmitMessage {
     CMString write_context_hash_;
     CMVector<CMString> vars_;          // declared var names for inline delivery
     int priority_ = 10;               // 任务优先级（worker→master 透传，递归提交场景）
+    // Ack 强语义（用户确认语义）：worker 转发提交的同步确认标识——非 0 时
+    // master 入图后必须回 TaskSubmitAck（带回分配的 task_id）；master 本地
+    // 提交不设（0），无 Ack。防 task 体内提交静默蒸发（fanout 场景断连丢失
+    // 子任务且调用方不知情、下游依赖永不就绪）。
+    uint64_t request_id_ = 0;
     static constexpr MessageType msg_type_ = MessageType::TASK_SUBMIT;
-    FLY_SERIALIZE(header_, task_name_, task_module_, args_, inputs_, required_capabilities_, attribute_timeout_, write_context_hash_, vars_, priority_);
+    FLY_SERIALIZE(header_, task_name_, task_module_, args_, inputs_, required_capabilities_, attribute_timeout_, write_context_hash_, vars_, priority_, request_id_);
+};
+
+// master → worker：转发提交的确认。accepted = 提交被接受入图（执行结果仍
+// 经 TaskComplete/Failed 上报，与本 Ack 无关）；task_id_ 供调用方关联。
+struct TaskSubmitAckMessage {
+    MessageHeader header_;
+    uint64_t request_id_ = 0;
+    uint64_t task_id_ = 0;
+    bool accepted_ = false;
+
+    static constexpr MessageType msg_type_ = MessageType::TASK_SUBMIT_ACK;
+
+    FLY_SERIALIZE(header_, request_id_, task_id_, accepted_);
 };
 
 struct DbPathRequestMessage {

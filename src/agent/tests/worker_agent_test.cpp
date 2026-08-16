@@ -260,10 +260,20 @@ TEST(WorkerAgentTest, GetDatabaseUnknownReturnsNull) {
 }
 
 TEST(WorkerAgentTest, RequestDatabaseFreezeNotRegistered) {
-    // Worker not started → registered_ is false → request_database_freeze returns early
+    // 新语义（用户确认）：未注册窗口 freeze 挂起（pending 阻塞等注册确认），
+    // 不再静默跳过——worker 终止时批量 fail 唤醒、联动 task 失败可见。
     WorkerAgent worker(1, "127.0.0.1", 0);
     CMString db_path = db32("no_reg_db");
-    EXPECT_NO_THROW(worker.request_database_freeze(db_path));
+    std::atomic<bool> done{false};
+    std::thread freezer([&] {
+        worker.request_database_freeze(db_path);
+        done = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_FALSE(done.load()) << "freeze must block while unregistered";
+    worker.fail_pending_freezes_for_testing();  // 模拟终止唤醒
+    freezer.join();
+    EXPECT_TRUE(done.load());
 }
 
 // submit_task on a worker whose start() failed (no reactor) must not crash.
