@@ -4,9 +4,9 @@
 # 仅当三步全部通过、零失败时才放行 push。
 #
 # 流程：
-#   1. BUILD      -> ./fly.sh build           (bazel build + clangd 刷新)
-#   2. UNIT TEST  -> ./fly.sh test            (bazel test //src/...)
-#   3. QA TEST    -> ./fly.sh install && ./qa/runqa -j 4   (全量 QA)
+#   1. BUILD      -> ./fly.sh build                (bazel build + clangd 刷新)
+#   2. UNIT TEST  -> ./fly.sh test //src/... --jobs=2  (资源受控并行，防 OOM)
+#   3. QA TEST    -> ./fly.sh install && ./qa/runqa -j 2 -t 20  (全量 QA)
 #
 # 任一阶段失败即 exit 1，阻止 push。
 #
@@ -61,9 +61,17 @@ BLOCK_STAGE="2/3 UNIT TEST"
 TEST_START=$(date +%s)
 echo
 echo "=== [2/3] UNIT TEST ==="
-./fly.sh test
+# --jobs=2：资源受控配方（2026-08-16 OOM 实测修正）。本机 7.8GB/6 核 WSL2，
+# bazel 默认按核并行（6-8 个测试进程树 × 每树数百 MB RSS + agent_network_test
+# 多 agent + concurrency_bench 8 线程）三阶段连续执行时峰值超限触发 OOM。
+# jobs=2 实测 avail 最低 5.1GB，全量 56/56 稳定通过。
+./fly.sh test //src/... --jobs=2
 TEST_END=$(date +%s)
 echo "=== [2/3] UNIT TEST OK ($(fmt_duration "$TEST_START" "$TEST_END")) ==="
+
+# 释放 bazel Java server 内存给 QA 阶段（QA 直接跑 fly binary 不经 bazel；
+# 下次 build 时 server 重启代价 ~10s，净收益 0.5-1GB 峰值余量）。
+bazel shutdown >/dev/null 2>&1 || true
 
 # [3/3] QA TEST (runqa 依赖 build/bin/fly，需先 install)
 BLOCK_STAGE="3/3 QA TEST"
@@ -72,8 +80,9 @@ echo
 echo "=== [3/3] QA TEST ==="
 echo "--- refresh build/bin/fly (runqa 依赖) ---"
 ./fly.sh install
-echo "--- runqa -j 4 -t 20 (全量 QA) ---"
-./qa/runqa -j 4 -t 20
+# -j 2：同上资源受控配方。-j 2 实测 avail 最低 3.9GB，162/162 稳定通过。
+echo "--- runqa -j 2 -t 20 (全量 QA) ---"
+./qa/runqa -j 2 -t 20
 QA_END=$(date +%s)
 echo "=== [3/3] QA TEST OK ($(fmt_duration "$QA_START" "$QA_END")) ==="
 

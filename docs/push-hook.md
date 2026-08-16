@@ -7,10 +7,24 @@ git `pre-push` hook：在每次 `git push` 前自动执行完整校验流水线�
 | 阶段 | 命令 | 作用 |
 |------|------|------|
 | 1/3 BUILD | `./fly.sh build` | bazel build `//src/...` + 刷新 `compile_commands.json` |
-| 2/3 UNIT TEST | `./fly.sh test` | bazel test `//src/...`，任一用例失败即非零退出 |
-| 3/3 QA TEST | `./fly.sh install && ./qa/runqa -j 4 -t 20` | install 生成 `build/bin/fly`，runqa 跑**全量** QA（4 路并发，单测 20s 超时） |
+| 2/3 UNIT TEST | `./fly.sh test //src/... --jobs=2` | bazel test `//src/...` 受控并行（见下方资源约束），任一用例失败即非零退出；阶段末 `bazel shutdown` 释放 Java server 内存 |
+| 3/3 QA TEST | `./fly.sh install && ./qa/runqa -j 2 -t 20` | install 生成 `build/bin/fly`，runqa 跑**全量** QA（2 路并发，单测 20s 超时） |
 
 任一阶段失败立即报错并阻止 push，输出统一的 `PUSH BLOCKED` 横幅并指明失败阶段与退出码。
+
+### 资源约束与受控配方（2026-08-16 OOM 实测修正）
+
+开发机为 7.8GB / 6 核 WSL2。默认配方（bazel 按核并行跑单测 + runqa -j 4）在三阶段连续执行时内存峰值超限，多次触发 OOM（会话被杀）。受控配方及实测数据：
+
+| 配置 | 内存最低点（avail） | 结果 |
+|------|---------------------|------|
+| bazel 默认并行（6-8 测试进程树）+ runqa -j 4 | 触发 OOM | push 反复失败 |
+| `bazel test --jobs=2` | 5.1GB | 56/56 全过 |
+| `runqa -j 2` | 3.9GB | 162/162 全过 |
+
+OOM 的内存构成：多个 gtest 进程树并行（`agent_network_test` 类用例每个起 master + 多 worker 全栈线程；`data_service_concurrency_bench` 8 线程压测）× 每树数百 MB RSS，叠加 bazel Java server（阶段间 `bazel shutdown` 释放 0.5-1GB）。注意 `Fly Startup Info` 打印的 `proc mem` 是 **VmPeak（虚拟地址空间峰值）**，非物理占用，不能作为内存压力证据。
+
+同根因的另一面：CPU 饱和时 `agent_network_test.DuplicateWorkerRegisterRejectedAfterProbe` 的 probe 往返被调度延迟拉长（正常 <100ms，饥饿时超 60s 等待窗）——见 ISSUES P3-23。降低并行度后两者同步消失。
 
 ## 安装
 
@@ -70,9 +84,9 @@ ln -sf ../../scripts/pre-push .git/hooks/pre-push
 
 ### 耗时参考
 
-完整流水线耗时取决于 build 增量和 QA 用例规模。QA 全量 116 个测试，`-j 4` 并发、单测 20s 超时上限。最慢的 `test_golden_n500_sd4_coarse` 经 solver `-O2` 优化后单跑约 6s、全量 `-j 4` 并发约 16s，余量充足（实测门禁 116/116 全过，耗时约 76s）。
+完整流水线耗时取决于 build 增量和 QA 用例规模。QA 全量 162 个测试，`-j 2` 并发、单测 20s 超时上限，实测门禁全过耗时约 171s（QA 阶段）；单测阶段 `--jobs=2` 全量约 4 分钟（重量级用例串行化后总时长约为默认并行的 2 倍，属资源安全的设计取舍）。
 
-> **关于超时配置**：`-t 20` 配合 `-j 4`（限并发）是经过实测的稳定配置。`runqa` 自 v(本次) 起默认并行度为 4、上限钳制在 32（`-j 0` 或负数亦钳制到 32），避免无限并发下重测试（n500 等）CPU 抢占撞超时。pre-push 仍显式带 `-j 4` 以固定门禁行为。
+> **关于超时配置**：`-t 20` 配合 `-j 2`（限并发）是经过实测的稳定配置（2026-08-16 由 `-j 4` 下调——三阶段连续执行的内存峰值在 7.8GB 开发机上超限，见上文资源约束）。`runqa` 默认并行度为 4、上限钳制在 32（`-j 0` 或负数亦钳制到 32）。pre-push 显式带 `-j 2` 以固定门禁行为。
 
 ## 在新环境安装
 
