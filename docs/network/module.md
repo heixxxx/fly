@@ -20,7 +20,6 @@
 | Reactor | `cpp/reactor.h/cpp` | 单线程事件循环（内含 HandlerThreadPool） |
 | HandlerThreadPool | `cpp/reactor.h/cpp` | 通用任务线程池（有界背压）+ 消息 handler 专用串行 lane（同 conn 保序、跨 conn 并行；shutdown 排空不丢） |
 | MessageProtocol | `cpp/message_protocol.h` | 二进制帧协议（header-only） |
-| IOThreadPool | `cpp/io_thread_pool.h/cpp` | 通用线程池 |
 | DataClientPool | `cpp/data_client_pool.h/cpp` | 数据客户端连接池 |
 | NetQualityMonitor | `cpp/net_quality_monitor.h/cpp` | per-host 网络质量评分表（RTT/带宽） |
 | MetadataClient | `cpp/metadata_client.h/cpp` | 阻塞 TCP 元数据查询客户端 |
@@ -123,7 +122,7 @@ reactor_->run()
       }
 ```
 
-> Reactor 本身不持有 IOThreadPool（`IOThreadPool` 目前仅独立/测试使用，不在 Reactor 循环内）。
+> 曾有独立的 IOThreadPool 类，2026-08-16 死代码清理批次删除（C++ 生产零使用，handler 职责由 HandlerThreadPool 承担）。
 
 ### Handler 注册
 

@@ -3,6 +3,38 @@
 ---
 ---
 
+## 2026-08-16 (7): 测试审计 + 覆盖率实测（85.8% C++ / 79% Python）
+
+全面审计 56 个单测 target（~1050 gtest + 111 py 用例）与 162 个 QA case，
+按 docs/coverage-testing.md 方法实测最新覆盖率。产出
+[coverage-report-2026-08-16.md](coverage-report-2026-08-16.md)（覆盖矩阵/
+冗余清单/缺口排序/行动建议）。核心发现：
+
+- **覆盖率**：C++ lines 85.8%（8773/10224，vs 7 月 85.3% 基线，代码基数
+  缩小后持平略升）/ functions 78.4%；Python 79%（2625 stmts）。模块序：
+  common 97.9 > serialization 96.5 > task 96.0 > log/core ~90 >
+  storage 88.6 > agent 83.4 > network 81.3 > main 67.0。
+- **双侧零覆盖缺口**：auto_backup master 侧 EWMA 判定（无测试且无
+  for_testing hook）；QA 层断连宽限重连（reconnect_timeout 全 =0）与
+  probe 拒绝、压缩特性专项断言。
+- **单测缺口**：PeerRpcServer/PeerChannelGroup 零单测（仅 QA 兜底）、
+  bandwidth_probe_loop、on_task_assign 预取回填。
+- **游离测试**：8 个 Python 测试不在任何 BUILD（含 requires 解析唯一
+  测试 test_requires_parsing.py 18 例脱管 = 该特性无 CI 覆盖）。
+- **冗余**：QA backup 三胞胎（3 case 跑同一 md5 脚本且名不副实）+
+  孤儿 run1/run2；freeze 拒绝家族 ×5；solver 参数矩阵 14 文件；
+  单测 compressing_streambuf 双份、write_registration 重叠等。
+- 工具修复：measure_coverage.sh 单测 timeout 60→300（master_agent_test
+  90 用例 118s 曾被截断）+ stale target 过滤（io_thread_pool_test 残留
+  二进制）+ QA 失败不阻断报告生成。
+- ISSUES 新增 P3-24：n500 case 在 coverage 全量 -j6 下 npz EOFError
+  2/2 复现、单跑与串行全过（写读时序窗口待专项）。
+- 顺带修文档死引用：network/module.md 的 IOThreadPool 残留、
+  test/module.md 的 test_object_test 不存在 target。
+
+---
+---
+
 ## 2026-08-16 (6): 文档全量重组——删 20 项 + 三组整合 + 文档地图
 
 ### 删除（任务完结、结论已沉淀到活跃文档，git 历史可查）

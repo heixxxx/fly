@@ -210,6 +210,7 @@ genhtml /tmp/coverage_html_ready.info \
 | 2026-06-15 | 84.5% (4874/5766) C++ + 53% (674/1307) Python | 78.3% / — | **源文件 + 全部 Python** | 44+74QA | 网络层重构(Transport/ConnectionManager) + db_id 重构 + connect 非致命化。C++ 总行数增加（新增网络抽象层、tcp_socket/connection_manager 等），新文件覆盖率待提升致总数下降 |
 | 2026-07-31 | 77.9% (6528/8377) C++ + 60.2% (1247/2091) Python | 70.7% / — | **源文件 + 全部 Python** | 52+131QA | message 系统重构 + lcov 升级 2.0。⚠️ 两项方法论缺陷致虚低：worker gcda 未合并（data_client 等显 0%）、Python import 早于 coverage.start。详见 §12 |
 | 2026-07-31 (修复后) | **85.3%** (6963/8162) C++ + **76%** (1625/2063) Python | 79.2% / — | **源文件 + 全部 Python** | 51单测+131QA | 修复覆盖率收集基础设施：C++ 用 `GCOV_PREFIX_STRIP=3` 重定向 gcda 到 execroot + `find -L` 清理；Python 用 sitecustomize 早期注入 coverage + `data_file` 绝对路径防 cwd 漂移。worker_agent 0%→82%、mapreduce 55%→96%。详见 §12 |
+| 2026-08-16 | **85.8%** (8773/10224) C++ + **79%** (2155/2625) Python | 78.4% / — | **源文件 + 全部 Python** | 56单测+162QA | 死代码清理批次后（代码基数缩小）；master_agent_test 补采（timeout 60→300 修复截断）。审计与缺口分析详见 [coverage-report-2026-08-16.md](coverage-report-2026-08-16.md) |
 
 > 注意：2026-06-03 的 90.2% 包含测试文件和系统头，不可与 06-04 的 88.4%（纯源文件）直接比较。逐文件对比见 §5。
 

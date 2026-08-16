@@ -52,7 +52,9 @@ measure_python() {
     # -j 1 is NOT required for Python (coverage.py's parallel mode gives each
     # process its own data file, no shared-write risk). We keep runqa's default
     # parallelism for speed.
-    FLY_PYCOVERAGE=1 bash "$FLY_ROOT/qa/run_qa_tests.sh"
+    # 单 case 失败不阻断（覆盖率是诊断工具，已有数据仍需 combine 报告；
+    # 失败明细在 runqa 输出与 qa/logs/qa.log 中，不掩盖）。
+    FLY_PYCOVERAGE=1 bash "$FLY_ROOT/qa/run_qa_tests.sh" || warn "QA had failures — combining coverage from passed cases anyway"
 
     # Combine all per-process data files from the pinned location.
     # parallel=True in .coveragerc makes each process write
@@ -107,15 +109,27 @@ measure_cpp() {
     find -L "$BAZEL_BIN" -name "*.gcda" -delete 2>/dev/null || true
 
     # ── Run C++ unit tests ──
+    # timeout 300：master_agent_test（90 用例）等重量级测试单跑 ~90s，
+    # timeout 60 会截断导致 agent 模块覆盖缺失（2026-08-16 实测修正）。
+    # 只跑各 tests/BUILD 中仍注册的 target 名——bazel-bin 符号树里可能残留
+    # 已删 target 的 stale 二进制（如 io_thread_pool_test），其 .so 已删必然失败。
     info "Running C++ unit tests..."
     local test_count=0
     local test_pass=0
+    local live_targets
+    live_targets=$(grep -h -A1 "^cc_test\|^py_test" $(find src -path "*/tests/BUILD") \
+        | grep -oP 'name = "\K[^"]+' | sort -u)
     for test_bin in $(find "$BAZEL_BIN/src" -type f -name "*_test" -executable 2>/dev/null); do
+        local base; base=$(basename "$test_bin")
+        if ! echo "$live_targets" | grep -qx "$base"; then
+            warn "SKIP stale binary: $base (target removed from BUILD)"
+            continue
+        fi
         test_count=$((test_count + 1))
-        if timeout 60 "$test_bin" > /dev/null 2>&1; then
+        if timeout 300 "$test_bin" > /dev/null 2>&1; then
             test_pass=$((test_pass + 1))
         else
-            warn "FAILED: $(basename $test_bin)"
+            warn "FAILED: $base"
         fi
     done
     info "C++ unit tests: $test_pass/$test_count passed"
@@ -150,7 +164,8 @@ measure_cpp() {
     local EXECROOT
     EXECROOT="$(readlink -f "$BAZEL_BIN" | sed 's|/bazel-out/.*||')"
     GCOV_PREFIX="$EXECROOT" GCOV_PREFIX_STRIP=3 \
-        bash "$FLY_ROOT/qa/run_qa_tests.sh" -j 1 2>&1 | tail -5
+        bash "$FLY_ROOT/qa/run_qa_tests.sh" -j 1 2>&1 | tail -5 \
+        || warn "QA had failures — capturing coverage from passed cases anyway"
 
     # ── Collect coverage data ──
     info "Collecting C++ coverage data with lcov..."

@@ -115,7 +115,4 @@ src/test/ 依赖:
 
 # Python 包
 //src/test/py:fly_test_py
-
-# C++ 单元测试
-//src/test/tests:test_object_test
 ```

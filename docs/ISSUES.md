@@ -119,6 +119,12 @@
 
 ## P3 — Low / Deferred
 
+### P3-24: test_golden_n500_sd4_coarse 在 coverage 全量（-j6）下稳定 npz EOFError
+- **Status**: OPEN 🟡（环境敏感，未定位）
+- **Files**: `qa/solver/golden_solver.py`（矩阵 on-the-fly 生成）、`src/solver/py/ras_graph.py:137 _load_matrix`
+- **Risk**: FLY_PYCOVERAGE=1 + runqa -j6 全量并行下，n500 case 的 worker task 读 `/tmp/fly_golden_matrix_n500_{pid}.npz` 时 zipfile EOFError（`data["vals"]`，文件尾段）2/2 稳定复现；单跑（无论是否 coverage）2/2 通过。npz 为 np.savez 惰性读——主进程读 b（中段）成功、worker 读 vals（尾段）截断，提示写读之间存在时序窗口，CPU 饱和 + coverage tracer 开销放大。
+- **Next**: 专项复现（模拟高压下 generate→savez→跨进程 np.load vals 时序）；若确认写读窗口，为 matrix 生成加完整性校验（savez 后 testzip 或写入 .done 标记）。
+
 ### P3-23: agent_network_test DuplicateWorkerRegisterRejectedAfterProbe 高并行负载下偶发超限
 - **Status**: OPEN 🟡（观测记录，未定位）
 - **Files**: `src/agent/tests/agent_network_test.cpp:71`
@@ -220,8 +226,8 @@
 | P0 — Critical | 4 | 4 | 0 | 0 |
 | P1 — High | 6 | 6 | 0 | 0 |
 | P2 — Medium | 6 | 5 | 0 | 1 (closed: not a bug) |
-| P3 — Low | 7 | 5 | 1 (P3-17 partial) | 1 (P3-23 open) |
+| P3 — Low | 8 | 5 | 1 (P3-17 partial) | 2 (P3-23/P3-24 open) |
 | X — Unprioritized | 18 | 9 | 0 | 9 |
-| **Total** | **41** | **29** | **1** | **11** |
+| **Total** | **42** | **29** | **1** | **12** |
 
 > 2026-08-16 去重说明：原 P3-18（Dead code cleanup）→ **P3-21**、原 P3-19（MetadataClient）→ **P3-22**，为新 P3-18（退出期 pure virtual）/P3-19（日志 flush）腾出编号（后者已被 commit 5058f01/c119b1b 与 DOC_CHANGELOG 引用，保持不变）。
