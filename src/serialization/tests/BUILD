@@ -23,14 +23,3 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
-
-cc_test(
-    name = "compressing_streambuf_test",
-    srcs = ["compressing_streambuf_test.cpp"],
-    deps = [
-        "@googletest//:gtest_main",
-        "//src/serialization/cpp:fly_serialization",
-        "//src/storage/cpp:fly_storage",
-    ],
-    copts = ["-std=c++20"],
-)

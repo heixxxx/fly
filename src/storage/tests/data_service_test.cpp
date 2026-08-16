@@ -786,16 +786,8 @@ TEST_F(DataServiceTest, HasRemoteLocationFalseForMissing) {
     EXPECT_FALSE(ds_->has_remote_location("missing/remote"));
 }
 
-TEST_F(DataServiceTest, WriteBackQueueStartStop) {
-    ds_->stop_write_back();
-    EXPECT_FALSE(ds_->is_write_back_running());
-
-    ds_->start_write_back();
-    EXPECT_TRUE(ds_->is_write_back_running());
-
-    ds_->stop_write_back();
-    EXPECT_FALSE(ds_->is_write_back_running());
-}
+// 2026-08-16 冗余清理：WriteBackQueueStartStop / EnqueueWriteBackAutoStarts 与
+// write_back_queue_test（属主测试）的 StartStop/BasicEnqueueAndDrain 重复，已删除。
 
 TEST_F(DataServiceTest, FindLocalEntriesReturnsNoneForMissing) {
     auto entries = ds_->find_local_entries("no/local/entries");
@@ -1049,21 +1041,6 @@ TEST_F(DataServiceTest, DataServerStartStop) {
     ds_->start_data_server("127.0.0.1", 0, 1);
     EXPECT_GT(ds_->get_data_port(), 0);
     ds_->stop_data_server();
-}
-
-TEST_F(DataServiceTest, EnqueueWriteBackAutoStarts) {
-    ds_->stop_write_back();
-    EXPECT_FALSE(ds_->is_write_back_running());
-
-    fly::WriteRequest req;
-    req.execute_ = []() -> bool { return true; };
-    req.on_complete_ = []() {};
-    ds_->enqueue_write_back(std::move(req));
-
-    EXPECT_TRUE(ds_->is_write_back_running());
-
-    ds_->drain_write_back();
-    ds_->stop_write_back();
 }
 
 TEST_F(DataServiceTest, ResetClearsAllState) {

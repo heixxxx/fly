@@ -775,23 +775,8 @@ TEST(MasterAgentTest, StopDuringActiveCommunication) {
     fly::DataService::instance()->stop_data_server();
 }
 
-TEST(MasterAgentTest, DoubleStopNoCrash) {
-    MasterAgent master("127.0.0.1", 0);
-    master.start();
-    wait_for_running(master, true);
-
-    master.stop();
-    wait_for_running(master, false);
-
-    // Double stop — should be safe
-    EXPECT_NO_THROW(master.stop());
-    EXPECT_FALSE(master.is_running());
-}
-
-TEST(MasterAgentTest, StopBeforeStartNoCrash) {
-    MasterAgent master("127.0.0.1", 0);
-    EXPECT_NO_THROW(master.stop());
-}
+// 2026-08-16 冗余清理：DoubleStopNoCrash / StopBeforeStartNoCrash 已被
+// StopIsIdempotent / StopBeforeStart_CallsDoDrainAndStop（更新一代，断言更强）取代。
 
 TEST(MasterAgentTest, OnDisconnectRecoversRunningTasks) {
     Logger::shutdown();

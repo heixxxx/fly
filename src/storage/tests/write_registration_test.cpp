@@ -36,56 +36,9 @@ protected:
     }
 };
 
-TEST_F(WriteRegistrationTest, OnWriteStartedCreatesIncompleteEntry) {
-    CMString db_path = db32("test_db");
-    CMString full = db_path + ":start_obj";
-    ds_->on_write_started(db_path, full);
-
-    EXPECT_FALSE(ds_->has_local_object(full));
-
-    auto [found, result] = ds_->try_read_local(full);
-    EXPECT_FALSE(found);
-    TEST_LOG("on_write_started: entry exists but not readable (correct)");
-}
-
-TEST_F(WriteRegistrationTest, OnWriteCompletedMakesEntryReadable) {
-    CMString db_path = test_dir_ + "/comp_db";
-    std::filesystem::create_directories(db_path);
-    CMString full = db_path + ":comp_obj";
-
-    ds_->on_write_started(db_path, full);
-
-    ds_->register_database(db_path, "");
-
-    IndexEntry entry;
-    entry.object_name_ = full;
-    entry.file_name_ = "test.dat";
-    entry.offset_ = 0;
-    entry.size_ = 5;
-    entry.is_large_ = false;
-    entry.block_count_ = 0;
-
-    CMVector<IndexEntry> entries = {entry};
-    ds_->on_write_completed(db_path, full, entries);
-    ds_->on_flush(db_path);
-
-    EXPECT_TRUE(ds_->has_local_object(full));
-    TEST_LOG("on_write_completed + flush: entry readable (correct)");
-}
-
-TEST_F(WriteRegistrationTest, OnWriteFailedRemovesEntry) {
-    CMString db_path = db32("fail_db");
-    CMString full = db_path + ":fail_obj";
-
-    ds_->on_write_started(db_path, full);
-    ds_->on_write_failed(db_path, full, "registration rejected");
-
-    EXPECT_FALSE(ds_->has_local_object(full));
-
-    auto [found, result] = ds_->try_read_local(full);
-    EXPECT_FALSE(found);
-    TEST_LOG("on_write_failed: entry removed (correct)");
-}
+// 2026-08-16 冗余清理：OnWriteStartedCreatesIncompleteEntry / OnWriteCompletedMakesEntryReadable /
+// OnWriteFailedRemovesEntry 三用例与 data_service_test 的同名/等价用例重复，已删除；
+// 本文件保留独有覆盖：TaskErrorTypeValues（错误码值契约）与 FullTwoPhaseWriteViaDatabase。
 
 TEST_F(WriteRegistrationTest, TaskErrorTypeValues) {
     EXPECT_EQ(static_cast<int>(fly::TaskErrorType::UNKNOWN), 0);

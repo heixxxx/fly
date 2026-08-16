@@ -2,6 +2,8 @@
 
 package(default_visibility = ["//visibility:public"])
 
+load("@rules_python//python:defs.bzl", "py_test")
+
 load("@rules_cc//cc:defs.bzl", "cc_test")
 
 cc_test(
@@ -65,4 +67,13 @@ cc_test(
         "//src/task/cpp:fly_task",
     ],
     copts = ["-std=c++20"],
+)
+
+# @as_task(requires/vars/priority) 解析逻辑（stub C++ 依赖的纯 Python 测试；
+# 2026-08-16 游离测试处置：此前不在 BUILD = requires 解析无 CI 覆盖）
+py_test(
+    name = "requires_parsing_test",
+    srcs = ["test_requires_parsing.py"],
+    main = "test_requires_parsing.py",
+    deps = ["//src/task/py:fly_task_py"],
 )

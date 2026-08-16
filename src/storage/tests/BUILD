@@ -176,3 +176,13 @@ py_test(
     deps = ["//src/storage/py:fly_storage_py"],
     imports = ["../py"],
 )
+
+# Python ReadCache（low/high 两层 LRU）纯 Python 测试
+# （2026-08-16 游离测试处置：此前不在 BUILD）
+py_test(
+    name = "read_cache_test",
+    srcs = ["test_read_cache.py"],
+    main = "test_read_cache.py",
+    deps = ["//src/storage/py:fly_storage_py"],
+    imports = ["../py"],
+)

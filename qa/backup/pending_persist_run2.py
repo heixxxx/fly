@@ -8,7 +8,7 @@ import time
 import os
 import shutil
 
-LOG_DIR = "/tmp/fly_e2e_pending_persist_logs"
+LOG_DIR = os.environ.get("FLY_RUN1_LOG_DIR") or "/tmp/fly_e2e_pending_persist_logs"
 
 
 from fly import get_config
