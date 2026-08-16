@@ -1412,6 +1412,10 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
         auto now = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         grace_deadlines_.update(worker_id, [&](int64_t& t) { t = now + reconnect_grace; });
+        // IDLE worker 断连也退出调度候选（BUSY 天然不被调度）：连接已死，assign
+        // 必失败；且重连注册保留关联后 task 悬挂（宽限被重连解除、无判死兜底）。
+        // 重连注册（register_worker_reconnect）复位 in_grace_ 恢复调度。
+        worker_manager_->set_worker_grace(worker_id, true);
         WARN("worker {} disconnected — grace period {}s (tasks stay RUNNING, awaiting reconnect)",
              worker_id, reconnect_grace);
     }

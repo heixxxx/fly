@@ -38,6 +38,10 @@ struct WorkerInfo {
     CMString ip_address_;
     // 静态身份（注册时设定，不可变更；与 capabilities 相互独立）。
     WorkerRole role_ = WorkerRole::HYBRID;
+    // 断连宽限标记：连接已断但宽限未超时。宽限内 worker 不可作为新 task 的调度
+    // 候选（assign 会发给死连接；重连注册保留关联后 task 将永久悬挂——宽限被
+    // 重连解除、无判死兜底）。重连注册（register_worker_reconnect）复位。
+    bool in_grace_ = false;
 };
 
 class WorkerManager {
@@ -56,6 +60,9 @@ public:
                                     WorkerRole role = WorkerRole::HYBRID);
     void unregister_worker(uint64_t worker_id);
     void update_worker_status(uint64_t worker_id, WorkerStatus status);
+    // 宽限标记开关：on_disconnect 宽限分支置 true（退出调度候选），
+    // register_worker_reconnect 置 false（恢复调度）。
+    void set_worker_grace(uint64_t worker_id, bool in_grace);
     void record_heartbeat(uint64_t worker_id);
     void set_heartbeat(uint64_t worker_id, uint64_t timestamp);
     void assign_task(uint64_t worker_id, uint64_t task_id);

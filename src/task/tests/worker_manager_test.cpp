@@ -422,4 +422,33 @@ TEST(WorkerManagerTest, SetHeartbeatPersistsTimestamp) {
     EXPECT_EQ(manager.get_worker(1)->get().last_heartbeat_, 67890);
 }
 
+// 宽限标记：断连宽限中的 IDLE worker 必须退出调度候选——连接已死，assign 会
+// 发给死连接；且重连注册保留关联后 task 悬挂（宽限被重连解除、无判死兜底）。
+// 2026-08-16 QA 断连宽限 case 发现的 G2 边界遗漏，配套 WorkerInfo::in_grace_。
+TEST(WorkerManagerTest, GraceFlagExcludesFromIdleCandidates) {
+    WorkerManager manager;
+    manager.register_worker(1, "10.0.0.1", 8001);
+    manager.register_worker(2, "10.0.0.2", 8002);
+    EXPECT_EQ(manager.get_idle_workers().size(), 2u);
+
+    manager.set_worker_grace(1, true);
+    auto idle = manager.get_idle_workers();
+    ASSERT_EQ(idle.size(), 1u);
+    EXPECT_EQ(idle[0], 2u) << "grace-period worker must not be a scheduling candidate";
+}
+
+// 宽限解除：重连注册复位 in_grace_，worker 恢复调度候选资格。
+TEST(WorkerManagerTest, GraceClearedOnReconnect) {
+    WorkerManager manager;
+    manager.register_worker(1, "10.0.0.1", 8001);
+    manager.set_worker_grace(1, true);
+    EXPECT_TRUE(manager.get_idle_workers().empty());
+
+    manager.register_worker_reconnect(1, "10.0.0.9", 9009);
+    auto idle = manager.get_idle_workers();
+    ASSERT_EQ(idle.size(), 1u);
+    EXPECT_EQ(idle[0], 1u) << "reconnect registration must clear the grace flag";
+    EXPECT_EQ(manager.get_worker(1)->get().port_, 9009) << "reconnect refreshes address";
+}
+
 }  // namespace fly

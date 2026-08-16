@@ -65,6 +65,7 @@ void WorkerManager::register_worker_reconnect(uint64_t worker_id, const CMString
     WorkerInfo& info = it->second;
     info.address_ = address;
     info.port_ = port;
+    info.in_grace_ = false;   // 宽限解除：恢复调度候选资格
     if (info.status_ != WorkerStatus::BUSY) {
         info.status_ = WorkerStatus::IDLE;   // DEAD/IDLE → 恢复 IDLE
     }  // BUSY：保留（task 关联不变，等其 Complete/Failed 收敛）
@@ -87,6 +88,14 @@ void WorkerManager::update_worker_status(uint64_t worker_id, WorkerStatus status
     auto it = workers_.find(worker_id);
     if (it != workers_.end()) {
         it->second.status_ = status;
+    }
+}
+
+void WorkerManager::set_worker_grace(uint64_t worker_id, bool in_grace) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = workers_.find(worker_id);
+    if (it != workers_.end()) {
+        it->second.in_grace_ = in_grace;
     }
 }
 
@@ -208,7 +217,10 @@ CMVector<uint64_t> WorkerManager::get_idle_workers() {
         // 集合层过滤——scheduler 零 role 概念，storage_only 天然不存在于候选。
         // 它仍参与心跳判死/数据面/internal 数据 task（走 get_all_workers + 直接
         // assign，不经此处）。
-        if (info.status_ == WorkerStatus::IDLE && info.role_ != WorkerRole::STORAGE_ONLY) {
+        // in_grace_：断连宽限中的 worker 连接已死——assign 会发给死连接，且
+        // 重连注册保留关联后将悬挂（无判死兜底），必须排除。
+        if (info.status_ == WorkerStatus::IDLE && !info.in_grace_
+            && info.role_ != WorkerRole::STORAGE_ONLY) {
             result.push_back(id);
         }
     }

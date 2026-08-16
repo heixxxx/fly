@@ -861,6 +861,13 @@ TEST(MasterAgentTest, OnDisconnectRecoversRunningTasks) {
     Config::instance()->set_int("worker_reconnect_timeout", 120);
 }
 
+// 宽限内 IDLE worker 断连的调度排除由 worker_manager_test 的
+// GraceFlagExcludesFromIdleCandidates / GraceClearedOnReconnect 精确验证
+//（WorkerManager 状态机层）；master 侧接线（on_disconnect 置位 → 重连复位）
+// 由 qa/fault/test_disconnect_reconnect_grace.py 行为级验证。
+// 此处曾放真 WorkerAgent 版用例：WorkerAgent.stop() ≠ 进程死（同进程对象
+// 会在 ~300ms 内自动重连），窗口竞态导致断言不稳定，故拆层。
+
 // 宽限内重连：task 存活 + 迟到 Complete 正常收敛（防串扰 + BUSY 保留）。
 TEST(MasterAgentTest, ReconnectWithinGracePreservesTask) {
     Logger::shutdown();
