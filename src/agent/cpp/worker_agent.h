@@ -235,10 +235,10 @@ private:
     uint8_t role_ = 0;
     std::atomic<bool> running_{false};
     std::atomic<bool> registered_{false};
-    // 「未注册窗口内写」的等待（register_write_with_master 等重连注册完成；
-    // RegisterAck 与 initiate_shutdown 持锁 notify）。
-    std::mutex registered_mutex_;
-    std::condition_variable registered_cv_;
+    // 未注册窗口缓冲的 WriteRegister（用户确认语义：写注册不在注册完成前
+    // 处理，消息 pending、注册成功后按序重放——先于此后的 task 上报 flush）。
+    std::mutex pending_write_reg_sends_mutex_;
+    CMVector<WriteRegisterMessage> pending_write_reg_sends_;
     std::atomic<bool> shutdown_triggered_{false};
     
     CMUniquePtr<Reactor> reactor_;
@@ -382,6 +382,9 @@ private:
     void send_master_or_buffer(const TaskCompleteMessage& msg);
     void send_master_or_buffer(const TaskFailedMessage& msg);
     void flush_pending_reports();
+    // 注册成功后重放未注册窗口缓冲的 WriteRegister（先于 task 上报 flush，
+    // 保证 streaming 模式下位置登记先于 TaskComplete 送达 master）。
+    void replay_pending_write_registers();
     void bandwidth_probe_loop();
     // connect master 指数退避重试（见 worker_agent.cpp 实现处注释：窗口与 master
     // 占位符共用 worker_register_timeout，两侧统一 5min 保活）。
@@ -418,10 +421,22 @@ public:
         }
         on_disconnect(conn);
     }
-    // 未注册窗口写登记的回归测试用（语义：等待后可见错误，不静默）。
+    // 未注册窗口写登记的回归测试用（语义：pending 阻塞 + 终止唤醒，不放行）。
     std::pair<CMString, TaskErrorType> register_write_with_master_for_testing(
         const CMString& db_path, const CMString& object_name, int64_t size) {
         return register_write_with_master(db_path, object_name, size);
+    }
+    // 模拟 worker 终止对 pending 写注册的批量失败唤醒（initiate_shutdown
+    // 同款逻辑，供无网络单测驱动）。
+    void fail_pending_write_regs_for_testing() {
+        pending_write_regs_.complete_all_if(
+            [](const PendingWriteRegister&) { return true; },
+            [](PendingWriteRegister& p) {
+                p.completed_ = true;
+                p.success_ = false;
+                p.error_type_ = TaskErrorType::UNKNOWN;
+                p.error_message_ = "worker shutting down before registration confirmed";
+            });
     }
 #endif
 };

@@ -525,13 +525,6 @@ void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
     }
 
     registered_ = true;
-    {
-        // 持锁 notify（规则）：唤醒「未注册窗口内写」的等待者（见
-        // register_write_with_master——断连重连窗口执行的 task，其写登记
-        // 曾被静默丢弃，remote_idx 缺条目让后续读直接 NOT_FOUND）。
-        std::lock_guard<std::mutex> lk(registered_mutex_);
-        registered_cv_.notify_all();
-    }
     touch_master_contact();
 
     INFO("RegisterAck received, registered");
@@ -539,13 +532,32 @@ void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
     if (was_reconnecting) {
         INFO("Reconnection complete — resuming heartbeats, flushing buffered reports");
     }
-    // flush 不限重连路径：首连窗口（master 侧 assign 抢在 RegisterAck 之前
-    // 到达——on_worker_register 的 ack 发送前 scheduler 已可 assign）执行的
-    // task，其上报在 registered_ 置位前也会走缓冲（send_master_or_buffer 的
-    // 条件不区分首连/重连）。此窗口缓冲的消息此前无人 flush，complete 永久
-    // 滞留（test_message_basic 在 50 轮稳定性实测：graph 标完成、metadata
-    // 永不更新，COMPLETED-MISMATCH）。空缓冲 no-op，无条件调用无害。
+    // 注册成功后按序重放缓冲消息（用户确认语义：注册完成前的消息一律
+    // pending，注册后重放）：
+    //   1. 先重放未注册窗口缓冲的 WriteRegister（streaming 模式下 master 靠
+    //      它登记位置——必须先于声明同名对象的 TaskComplete 送达）；
+    //   2. 再 flush task 上报（首连 assign-抢在-Ack-前窗口或断连窗口缓冲的
+    //      complete/failed——flush 不限重连路径，空缓冲 no-op）。
+    replay_pending_write_registers();
     flush_pending_reports();
+}
+
+void WorkerAgent::replay_pending_write_registers() {
+    CMVector<WriteRegisterMessage> to_send;
+    {
+        std::lock_guard<std::mutex> lk(pending_write_reg_sends_mutex_);
+        to_send = std::move(pending_write_reg_sends_);
+        pending_write_reg_sends_.clear();
+    }
+    if (to_send.empty()) return;
+    INFO("Replaying {} buffered WriteRegister(s) after registration", to_send.size());
+    for (const auto& msg : to_send) {
+        // 重放的消息没有同步等待者（原调用早已返回；数据已落盘）。Ack 由
+        // on_write_register_ack 按 object_name complete——无等待者时 no-op；
+        // 若 master 拒绝（如 provenance mismatch），此处仅日志（该窗口内
+        // 产生的 task 已按本地成功上报，拒绝结果后续读 NOT_FOUND 可观测）。
+        reactor_->send(master_conn_.load(), msg);
+    }
 }
 
 void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
@@ -844,11 +856,16 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);
         task_queue_cv_.notify_all();
     }
-    {
-        // 唤醒「未注册窗口内写」的等待者（wait_for 谓词含 !running_）。
-        std::lock_guard<std::mutex> lock(registered_mutex_);
-        registered_cv_.notify_all();
-    }
+    // 阻塞在「未注册窗口写注册 pending」的 task：终局唤醒（重连失败/
+    // worker 退出即失败——用户确认语义的两个终态之一）。
+    pending_write_regs_.complete_all_if(
+        [](const PendingWriteRegister&) { return true; },
+        [](PendingWriteRegister& p) {
+            p.completed_ = true;
+            p.success_ = false;
+            p.error_type_ = TaskErrorType::UNKNOWN;
+            p.error_message_ = "worker shutting down before registration confirmed";
+        });
     if (reactor_) {
         reactor_->stop();
     }
@@ -1105,26 +1122,6 @@ CMSharedPtr<Database> WorkerAgent::get_database(const CMString& db_path) const {
 }
 
 std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const CMString& db_path, const CMString& object_name, int64_t compressed_size) {
-    if (!registered_) {
-        // 断连重连窗口内执行 task 的写（poll_task 不检查注册态，断连前 assign
-        // 的 task 会留在队列被消费）：登记不能静默丢——TaskComplete 有缓冲
-        // 语义而写登记没有，remote_idx 缺条目会让后续读直接 NOT_FOUND（
-        // test_priority_restart_preserve 在 -j16 高并发下实测）。等待注册完成
-        // （重连窗口秒级）；master 真死等不来注册时按可见错误上报（fail task），
-        // 而非静默吞掉。
-        std::unique_lock<std::mutex> lk(registered_mutex_);
-        bool ok = registered_cv_.wait_for(lk, std::chrono::seconds(5), [this] {
-            return registered_.load() || !running_.load();
-        });
-        if (!ok || !registered_.load()) {
-            CMString error_msg = "WriteRegister skipped (worker not registered within 5s): " +
-                                 db_path + ":" + object_name;
-            ERR("{}", error_msg);
-            WorkerAgentContext::set_last_error_type(TaskErrorType::UNKNOWN);
-            return {error_msg, TaskErrorType::UNKNOWN};
-        }
-        INFO("WriteRegister waited for re-registration: object={}:{}", db_path, object_name);
-    }
     CMString full_name = db_path + ":" + object_name;
     CMString ctx_hash = fly::WorkerAgentContext::get_current_write_hash();
     if (ctx_hash.empty()) {
@@ -1161,10 +1158,6 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
         }
     }
 
-    auto pending = CMMakeShared<PendingWriteRegister>();
-    pending->object_name_ = full_name;
-    pending_write_regs_.emplace(full_name, pending);
-
     WriteRegisterMessage msg;
     msg.worker_id_ = worker_id_;
     msg.object_name_ = full_name;
@@ -1181,6 +1174,45 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
             msg.writer_id_ = db_it->second->get_writer_id();
         }
     }
+
+    // 未注册窗口（断连重连中，或首连 assign 抢在 RegisterAck 之前）：
+    // 写注册直接 pending（用户确认语义）——task 阻塞在此同步点，直到
+    // 重连成功且 master 注册确认（Ack → 重放 → WriteRegisterAck 唤醒），
+    // 或重连失败/worker 终止（initiate_shutdown 批量 fail 唤醒）。不允许
+    // 放行（数据虽已本地落盘，但 provenance 裁决未下——放行后重放被拒
+    // 时错误无法回注已完成的 task）。等待上限为防御值（实际由重连宽限
+    // 约束：宽限耗尽 → initiate_shutdown → 批量 fail）。
+    if (!registered_.load()) {
+        auto pending = CMMakeShared<PendingWriteRegister>();
+        pending->object_name_ = full_name;
+        pending_write_regs_.emplace(full_name, pending);
+        {
+            std::lock_guard<std::mutex> lk(pending_write_reg_sends_mutex_);
+            pending_write_reg_sends_.push_back(msg);
+        }
+        WARN("WriteRegister pending (not registered): object={} — task blocks until "
+             "registration confirms or worker exits", full_name);
+        auto result = pending_write_regs_.wait_for(full_name, std::chrono::seconds(300),
+            [](const CMSharedPtr<PendingWriteRegister>& p) { return p->completed_; });
+        pending_write_regs_.erase(full_name);
+        if (result && !result->success_) {
+            WorkerAgentContext::set_last_error_type(result->error_type_);
+            return {result->error_message_, result->error_type_};
+        }
+        if (!result) {
+            // 防御上限耗尽（正常路径不应到达——shutdown/注册确认必先唤醒）。
+            CMString error_msg = "WriteRegister pending timeout: " + full_name;
+            ERR("{}", error_msg);
+            WorkerAgentContext::set_last_error_type(TaskErrorType::UNKNOWN);
+            return {error_msg, TaskErrorType::UNKNOWN};
+        }
+        return {"", TaskErrorType::UNKNOWN};
+    }
+
+    auto pending = CMMakeShared<PendingWriteRegister>();
+    pending->object_name_ = full_name;
+    pending_write_regs_.emplace(full_name, pending);
+
     reactor_->send(master_conn_, msg);
 
     INFO("WriteRegister sent: object={}", full_name);

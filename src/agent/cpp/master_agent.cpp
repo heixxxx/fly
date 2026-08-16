@@ -1059,6 +1059,24 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
              static_cast<int>(msg.role_));
         role = WorkerRole::HYBRID;
     }
+    DataService::instance();
+    if (msg.data_server_port_ > 0) {
+        DataService::instance()->register_worker(worker_id, msg.data_server_host_,
+                                                  msg.data_server_port_,
+                                                  role == WorkerRole::STORAGE_ONLY);
+    }
+
+    // Ack 先于 scheduler 可见性发送（用户确认语义：assign 不应在 worker 收到
+    // 注册确认前发生——原顺序 register_worker 后 scheduler 即可 assign，
+    // TaskAssign 可抢在 RegisterAck 之前到达 worker，执行中的写注册/上报
+    // 只能走缓冲）。TCP 同连接保序：Ack 先发必先到，此处彻底关死抢跑窗口。
+    RegisterAckMessage ack;
+    ack.worker_id_ = worker_id;
+    ack.master_address_ = host_;
+    ack.master_port_ = static_cast<int32_t>(port_);
+    reactor_->send(conn_id, ack);
+
+    // scheduler 可见性（在此之后 assign 才可能发生）。
     bool in_grace = (grace_deadlines_.erase(worker_id) > 0);
     if (in_grace) {
         worker_manager_->register_worker_reconnect(worker_id, host_, port_, msg.attributes_,
@@ -1069,23 +1087,6 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
         worker_manager_->register_worker(worker_id, host_, port_, msg.attributes_,
                                           msg.hostname_, msg.ip_address_, role);
     }
-
-    DataService::instance();
-    if (msg.data_server_port_ > 0) {
-        DataService::instance()->register_worker(worker_id, msg.data_server_host_,
-                                                  msg.data_server_port_,
-                                                  role == WorkerRole::STORAGE_ONLY);
-    }
-
-    // Ack 立即发送（scheduler 在 register_worker 后即可 assign，Assign 抢在
-    // Ack 之前到达 worker 会让执行中的上报走缓冲——worker 侧 flush 已补，
-    // 此处再把窗口压到最小：仅隔 DataService 注册（assign 的依赖位置查询
-    // 需要它））。杂项（日志/占位清理/配额补发）全部后移。
-    RegisterAckMessage ack;
-    ack.worker_id_ = worker_id;
-    ack.master_address_ = host_;
-    ack.master_port_ = static_cast<int32_t>(port_);
-    reactor_->send(conn_id, ack);
 
     if (msg.data_server_port_ > 0) {
         INFO("Worker registered: worker_id={}, conn_id={}, hostname={}, data_server={}:{}, role={}",

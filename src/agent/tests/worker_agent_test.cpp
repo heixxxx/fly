@@ -851,16 +851,72 @@ TEST(WorkerAgentTest, BeginTaskWithWriteContextHash) {
     EXPECT_FALSE(WorkerAgentContext::is_active());
 }
 
-// 未注册窗口内的写登记：不得静默丢弃（-j16 高并发下 test_priority_restart_preserve
-// 实测——断连重连窗口执行的 task，remote_idx 缺条目让后续读直接 NOT_FOUND）。
-// 语义：等待注册完成（重连秒级），master 真死等不到则按可见错误上报。
-TEST(WorkerAgentTest, WriteRegisterWithoutRegistrationWaitsThenErrors) {
-    WorkerAgent worker(1, "127.0.0.1", 0);
-    // 不 start（未注册、也无重连在途）→ 等待耗尽后必须返回错误而非成功。
-    auto [err, type] = worker.register_write_with_master_for_testing(
-        db32("unreg"), "obj", 100);
-    EXPECT_FALSE(err.empty()) << "must return visible error when never registered";
-    INFO("[TEST] unregistered write register error: {}", err);
+// 未注册窗口内的写注册（用户确认语义）：直接 pending、task 阻塞，直到
+// 注册确认（重放 + WriteRegisterAck 唤醒）或 worker 终止（批量 fail 唤醒）。
+// 本地在线 master 的重连首轮毫秒级完成，阻塞时长不可稳定观测——分两段：
+// 段一无网络（永无确认，阻塞窗口确定）验证 pending + 终止唤醒；
+// 段二真网络验证完整正路径（断连 → pending → 重连重放 → 确认成功）。
+TEST(WorkerAgentTest, WriteRegisterPendingBlocksUntilReconnected) {
+    Config::instance()->set_int("worker_reconnect_timeout", 30);
+
+    // ── 段一：无网络，pending 阻塞 + 终止唤醒 ──
+    {
+        WorkerAgent worker(9, "127.0.0.1", 0);  // 不 start：永无注册确认
+        std::atomic<bool> done{false};
+        std::atomic<bool> ok{false};
+        std::thread writer([&] {
+            auto [err, type] = worker.register_write_with_master_for_testing(
+                db32("pend_alone"), "obj", 100);
+            ok = err.empty();
+            done = true;
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        EXPECT_FALSE(done.load()) << "write register must block while unregistered";
+        worker.fail_pending_write_regs_for_testing();  // 模拟 worker 终止
+        writer.join();
+        EXPECT_TRUE(done.load());
+        EXPECT_FALSE(ok.load()) << "terminated worker's pending register must fail";
+    }
+
+    // ── 段二：真网络，断连 → pending → 重连重放 → 确认 ──
+    {
+        Config::instance()->set_int("worker_connect_retry_initial_ms", 50);
+        MasterAgent master("127.0.0.1", 0);
+        master.start();
+        wait_for_running(master, true);
+
+        WorkerAgent worker(1, "127.0.0.1", master.get_port());
+        worker.start();
+        ASSERT_TRUE(wait_until_registered(worker));
+
+        worker.simulate_master_disconnect_for_testing();
+        CMString full = db32("pend_reg") + ":obj";
+        std::atomic<bool> done{false};
+        std::atomic<bool> ok{false};
+        std::thread writer([&] {
+            auto [err, type] = worker.register_write_with_master_for_testing(
+                db32("pend_reg"), "obj", 100);
+            ok = err.empty();
+            done = true;
+        });
+
+        // 重连（首轮毫秒级）→ Ack → 重放缓冲注册 → master 确认 → 唤醒成功。
+        EXPECT_TRUE(wait_until_registered(worker));
+        for (int i = 0; i < 100 && !done.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        ASSERT_TRUE(done.load()) << "blocked writer must wake after replay+ack";
+        EXPECT_TRUE(ok.load()) << "replayed register should confirm successfully";
+        EXPECT_FALSE(DataService::instance()->get_remote_workers(full).empty())
+            << "master must have the object location after replay";
+        writer.join();
+
+        worker.stop();
+        master.stop();
+        wait_for_running(master, false);
+    }
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
 }
 
 TEST(WorkerAgentTest, RecordWriteWithoutBeginEnd) {
