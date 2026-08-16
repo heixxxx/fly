@@ -16,7 +16,7 @@
 //
 // 约束：本锁禁止同一线程递归持读锁（NONRECURSIVE 语义）。当前所有调用点
 // （DataService::lookup_remote_idx/has_remote_location/get_remote_size/
-//  evaluate_auto_backup 等）都是各自独立获取，无嵌套，已确认安全。
+//  maybe_suggest_backup 等）都是各自独立获取，无嵌套，已确认安全。
 //
 // 兼容性：提供 Lockable + SharedLockable，可直接用 std::unique_lock /
 // std::shared_lock。

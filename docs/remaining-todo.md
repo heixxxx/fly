@@ -27,7 +27,7 @@
 | S1-2 | per-object mutex/cv 死代码 | ✅ 已清 | 实施时确认已清理 + atomic |
 | **S1-3/M1** | remote_idx_ / write_provenance_ 内存上限（LRU/TTL） | 🟡 部分 | provenance 现在 freeze 清理 + remove 清理（本轮改善）；但仍无数量上限/LRU；remote_idx_ 仍无淘汰；触发阈值 >100万对象 |
 | **S4** | TIER1 INCOMPLETE/FAILED 区分 | ✅ 关闭 | INCOMPLETE 本地等待快路径已做（per-db cv）；FAILED 部分经 2026-08-16 复核**非缺陷**（FAILED 锁内瞬时不可见 + 读旧副本语义正确 + can_still_produce 兜底闭环，按原方向修反而破坏正确性；既有测试锁定行为）。遗留 error_message_ 死字段归死代码清理 |
-| decay_remote_access 接线 | ✅ 已做 | auto_backup 双层重设计已全部落地（worker TIER2 读流量 suggest 上报 + master EWMA 聚合判定）；decay_after_backup 事件驱动衰减已接线。旧 `decay_remote_access`（全量扫描版）仍 dead（仅测试引用），随死代码清单处理 |
+| decay_remote_access 接线 | ✅ 已清 | auto_backup 双层重设计落地（worker TIER2 读流量 suggest + master EWMA 聚合判定）；旧 decay_remote_access/decay_after_backup/evaluate_auto_backup 全链死代码已删除（2026-08-16） |
 
 ---
 
@@ -87,16 +87,20 @@
 
 ## 六、死代码 / 冗余清理
 
+> 2026-08-16 批次清理完毕（逐项先核实"是否真死"再删，详见 DOC_CHANGELOG）：
+
 | 项 | 状态 |
 |---|---|
-| IOThreadPool 整类死代码 | ❌ network/cpp/io_thread_pool.{h,cpp} 仍在 |
-| GMRES 向量算子（vec_norm/dot…）+ ORAS 变体 | ❌ solver_export.cpp 7 个 ex_slv_vec_* |
-| decay_remote_access 全量扫描版 | ❌ 仅测试引用（data_service_test.cpp），生产零调用；已被 O(1) 的 decay_after_backup 取代 |
-| LocalObjectInfo.error_message_ | ❌ on_write_failed 写入后条目立即 erase，永远无人读（S4 复核发现） |
-| temp_objects_/removed_objects_ 死字段 | ❌ database.h:194-195；database.cpp:440 TODO |
-| IDX_REQUEST/RESPONSE 死枚举无注释 | ❌ message_types.h:26-27 |
-| BE32 解析重复未抽公共函数 | ❌ |
-| 超长函数未重构 | ❌ read_raw_compressed 155行 / merge_db 234行 / schedule_tasks 121行 |
+| IOThreadPool 整类 + export + 单测 | ✅ 已清（C++ 生产零使用；EXNetIOThreadPool 仅绑定自测引用，全链删除） |
+| GMRES 向量算子 ex_slv_vec_*（7 个）+ ORAS 变体（export + C++ 本体） | ✅ 已清（Python/qa/big_qa 零引用） |
+| decay_remote_access + decay_after_backup + evaluate_auto_backup + BackupDecision | ✅ 已清（auto_backup 双层重设计后全链死：worker suggest + master EWMA 已取代；核实新发现 evaluate_auto_backup 也仅测试引用） |
+| 死配置键 backup_threshold / backup_replicas / backup_decay_interval / backup_decay_factor | ✅ 已清（全仓零消费者，docs/core/module.md 同步） |
+| temp_objects_ + Database::mark_temp + export + Python 调用 | ✅ 已清（集合零读取；is_temp 权威源在 local_idx） |
+| LocalObjectInfo.error_message_ | ✅ 已清（写入后条目立即 erase 无人读；on_write_failed 的 reason 参数改为 DBG 日志输出保留诊断价值） |
+| IDX_REQUEST/RESPONSE 死枚举 | ✅ 已清（15/16 空号保留注释，不改既有 wire 值） |
+| BE32 解析重复 | ✅ 已做（2026-07 commit 82acfd 系：read_be32/write_be32 抽公共，此前清单未更新） |
+| removed_objects_ | ⚪ 非死代码（原清单误判）：remove 登记 + freeze 报告 removed_count 活跃，与 compaction TODO 关联，保留 |
+| 超长函数未重构 | ❌ read_raw_compressed / merge_db / schedule_tasks（重构项，非死代码） |
 
 ---
 
@@ -136,5 +140,5 @@
 
 1. ~~文档同步~~ ✅ 已完成（2026-08-16 批次：ISSUES/roadmap/architecture/DOC_CHANGELOG/本清单）
 2. ~~S4 后半：TIER1 FAILED 读快速失败~~ ✅ 已关闭（2026-08-16 复核非缺陷，见 §二）
-3. **死代码清理**（IOThreadPool/GMRES/decay_remote_access/temp_objects_/error_message_/IDX 死枚举，纯收益降维护噪音）
+3. ~~死代码清理~~ ✅ 已完成（2026-08-16 批次，见 §六；全量单测 56/56 + QA 162/162）
 4. **Solver**：residual_cached 空壳/v1 链清理等（PCG/树形归约为可选项，见 §四）

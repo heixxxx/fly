@@ -86,9 +86,7 @@ public:
     // dirty_full_names 是本 task 已写出的对象全名列表（db_path:short_name）。
     void abort_task_writes(const CMVector<CMString>& dirty_full_names);
 
-    void mark_temp(const CMString& object_name);
     void put_temp_data(const CMString& object_name, FlyBufferPtr compressed_data);
-
     DbMeta load_meta() const;
     // 静态读 _DB_META，不构造 Database 实例（不触发 DataService register_database，
     // 避免 merge_db 在已 open_db 的进程内重复注册同 db_path）。
@@ -197,10 +195,9 @@ private:
 
     CMUniquePtr<DataWriter> writer_;
     CMUnorderedSet<CMString> removed_objects_;
-    CMUnorderedSet<CMString> temp_objects_;
 
     // 自保护锁：保护 db_path_/data_path_/writer_id_/writer_ 操作序列/
-    // removed_objects_/temp_objects_/freeze 的 check-and-set。master/worker
+    // removed_objects_/freeze 的 check-and-set。master/worker
     // 的容器锁（db_instances_/databases_）外经 shared_ptr 调用本对象方法的
     // 前提（见 DEVELOPMENT_GUIDELINES §13 与锁内 IO 拆除前置）。
     mutable std::mutex state_mutex_;

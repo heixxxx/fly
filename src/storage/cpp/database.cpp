@@ -777,11 +777,6 @@ void Database::ensure_directory_exists(const CMString& path) {
     fs::create_directories(path);
 }
 
-void Database::mark_temp(const CMString& object_name) {
-    std::lock_guard<std::mutex> lk(state_mutex_);
-    temp_objects_.insert(db_path_ + ":" + object_name);
-}
-
 void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compressed_data) {
     CMString full = full_name(object_name);
     DBG("[TEMP-PUT] put_temp_data: obj={}, full={}, data_size={}", object_name, full, compressed_data ? compressed_data->size() : 0);

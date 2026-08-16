@@ -38,16 +38,6 @@ cc_test(
 )
 
 cc_test(
-    name = "io_thread_pool_test",
-    srcs = ["io_thread_pool_test.cpp"],
-    deps = [
-        "@googletest//:gtest_main",
-        "//src/network/cpp:fly_network",
-    ],
-    copts = ["-std=c++20"],
-)
-
-cc_test(
     name = "reactor_test",
     srcs = ["reactor_test.cpp"],
     deps = [

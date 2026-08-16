@@ -40,13 +40,6 @@ struct RemoteObjectMeta {
     int64_t last_suggest_time_ = 0;  // 上次 suggest 时间（cooldown 用）
 };
 
-struct BackupDecision {
-    uint64_t read_count_ = 0;
-    bool should_backup_ = false;
-    uint32_t current_replicas_ = 0;
-    uint32_t target_replicas_ = 0;
-};
-
 struct RemoteObjectInfo {
     uint64_t worker_id_ = 0;
     CMString host_;
@@ -72,7 +65,6 @@ struct LocalObjectInfo {
     // 写路径在 mutex_ 保护下 release 写。替代旧的"空 cv_lock 块"屏障补丁。
     std::atomic<CompletionState> completion_state_{CompletionState::INCOMPLETE};
     bool flushed_ = false;
-    CMString error_message_;
     bool is_temp_ = false;
     FlyBufferPtr temp_compressed_data_;  // shared_ptr: zero-copy reads, automatic lifetime
 };
@@ -313,15 +305,6 @@ public:
     void record_remote_access(const CMString& object_name, int64_t size_bytes = 0);
     // worker TIER2 读后检查是否该上报 backup suggest（增量阈值 + cooldown + reset）
     void maybe_suggest_backup(const CMString& object_name);
-
-    BackupDecision evaluate_auto_backup(const CMString& object_name,
-                                         uint64_t threshold,
-                                         uint32_t target_replicas) const;
-
-    void decay_remote_access(int64_t protection_seconds, int decay_factor_percent);
-    // backup 触发后衰减单个对象的 read_count（事件驱动，非后台全量扫描）。
-    // decay_factor_percent: read_count *= factor/100；0 或 >=100 不衰减。
-    void decay_after_backup(const CMString& object_name, int decay_factor_percent);
 
     uint64_t get_access_read_count(const CMString& object_name) const;
 

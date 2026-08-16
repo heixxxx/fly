@@ -28,18 +28,6 @@ Eigen::SparseMatrix<double> extract_subdomain_matrix(
     const Eigen::SparseMatrix<double>& A,
     const std::vector<int>& local_indices);
 
-// Extract subdomain local matrix with Robin boundary conditions.
-// Same as extract_subdomain_matrix but adds alpha to diagonal entries
-// of boundary/interface nodes. This creates absorbing (Robin) BC:
-//   B_local = A_local + alpha * D_interface
-// where D_interface has 1 on diagonal for boundary nodes.
-// alpha: Robin impedance parameter (alpha > 0, typically alpha ~ gamma/h)
-Eigen::SparseMatrix<double> extract_subdomain_matrix_oras(
-    const Eigen::SparseMatrix<double>& A,
-    const std::vector<int>& local_indices,
-    const std::vector<int>& own_indices,
-    double alpha);
-
 // Subdomain solver — caches SimplicialLDLT factorization
 class SubdomainSolver {
 public:

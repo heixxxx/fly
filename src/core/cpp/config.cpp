@@ -111,11 +111,7 @@ void Config::load_from_file(const CMString& path) {
 const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"heartbeat_timeout", 120},
     {"heartbeat_interval", 5},
-    {"backup_threshold", 100},
     {"auto_backup_enabled", 0},       // 0=disabled, 1=enabled
-    {"backup_replicas", 2},           // target number of backup copies (including original)
-    {"backup_decay_interval", 300},   // decay check interval in seconds, 0=no decay
-    {"backup_decay_factor", 50},      // decay factor percentage (read_count *= factor/100)
     // ── auto-backup 双层重设计（worker suggest + master EWMA 聚合）──
     // worker 侧：TIER2 读累积达阈值 + cooldown 过 → suggest → reset（worker 不时间衰减）。
     {"worker_suggest_bytes_threshold", 1073741824},   // 1GB：worker 累积传输字节达此值触发 suggest

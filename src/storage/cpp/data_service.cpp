@@ -338,13 +338,13 @@ void DataService::on_write_failed(const CMString& db_path,
                                     const CMString& object_name,
                                     const CMString& error_message) {
     auto [_, short_name] = split_full(object_name);
+    DBG("on_write_failed: db={}, obj={}, reason={}", db_path, object_name, error_message);
     std::unique_lock<std::shared_mutex> lock(local_mutex_);
     auto db_it = local_idx_.find(db_path);
     if (db_it == local_idx_.end()) return;
     auto it = db_it->second.objects_.find(short_name);
     if (it == db_it->second.objects_.end() || !it->second) return;
     it->second->completion_state_.store(CompletionState::FAILED, std::memory_order_release);
-    it->second->error_message_ = error_message;
     db_it->second.objects_.erase(it);
     // FAILED 也 notify：等待 INCOMPLETE→终态的 reader 被唤醒（predicate 返回 true，
     // 重查为 FAILED → 返回 false 走 TIER2 兜底）。
@@ -1403,70 +1403,6 @@ void DataService::maybe_suggest_backup(const CMString& object_name) {
     meta.read_count_ = 0;
     meta.accumulated_bytes_ = 0;
     meta.last_suggest_time_ = now;
-}
-
-BackupDecision DataService::evaluate_auto_backup(const CMString& object_name,
-                                                   uint64_t threshold,
-                                                   uint32_t target_replicas) const {
-    auto [db_path, short_name] = split_full(object_name);
-    std::shared_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
-    BackupDecision decision;
-    decision.target_replicas_ = target_replicas;
-    decision.read_count_ = 0;
-    decision.current_replicas_ = 0;
-
-    auto db_it = remote_idx_.find(db_path);
-    if (db_it == remote_idx_.end()) {
-        DBG("[AUTO-BACKUP] evaluate: obj={}, db_path={} not found in remote_idx", object_name, db_path);
-        return decision;
-    }
-    auto obj_it = db_it->second.find(short_name);
-    if (obj_it == db_it->second.end()) {
-        DBG("[AUTO-BACKUP] evaluate: obj={}, short_name={} not found in remote_idx", object_name, short_name);
-        return decision;
-    }
-
-    const auto& meta = obj_it->second;
-    decision.current_replicas_ = static_cast<uint32_t>(meta.workers_.size());
-    decision.read_count_ = meta.read_count_;
-    decision.should_backup_ = (meta.read_count_ >= threshold) && (meta.workers_.size() < target_replicas);
-
-    DBG("[AUTO-BACKUP] evaluate: obj={}, read_count={}, workers_size={}, threshold={}, target={}, should_backup={}",
-        object_name, meta.read_count_, meta.workers_.size(), threshold, target_replicas, decision.should_backup_);
-
-    return decision;
-}
-
-void DataService::decay_remote_access(int64_t protection_seconds, int decay_factor_percent) {
-    std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
-    int64_t current_time = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    
-    for (auto& [db_path, objects] : remote_idx_) {
-        for (auto it = objects.begin(); it != objects.end();) {
-            auto& meta = it->second;
-            int64_t age = current_time - meta.last_access_time_;
-            if (meta.read_count_ > 0 && age >= protection_seconds) {
-                meta.read_count_ = meta.read_count_ * static_cast<uint64_t>(decay_factor_percent) / 100u;
-            }
-            ++it;
-        }
-    }
-}
-
-void DataService::decay_after_backup(const CMString& object_name, int decay_factor_percent) {
-    // 事件驱动衰减：backup 触发后对该对象 read_count 衰减，避免 read_count 持续高反复触发 backup。
-    // 与 decay_remote_access（全量扫描）不同：只衰减刚 backup 的对象，O(1)。
-    auto [db_path, short_name] = split_full(object_name);
-    std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
-    auto db_it = remote_idx_.find(db_path);
-    if (db_it == remote_idx_.end()) return;
-    auto obj_it = db_it->second.find(short_name);
-    if (obj_it == db_it->second.end()) return;
-    auto& meta = obj_it->second;
-    if (meta.read_count_ > 0 && decay_factor_percent > 0 && decay_factor_percent < 100) {
-        meta.read_count_ = meta.read_count_ * static_cast<uint64_t>(decay_factor_percent) / 100u;
-    }
 }
 
 uint64_t DataService::get_access_read_count(const CMString& object_name) const {

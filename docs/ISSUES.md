@@ -119,6 +119,12 @@
 
 ## P3 — Low / Deferred
 
+### P3-23: agent_network_test DuplicateWorkerRegisterRejectedAfterProbe 高并行负载下偶发超限
+- **Status**: OPEN 🟡（观测记录，未定位）
+- **Files**: `src/agent/tests/agent_network_test.cpp:71`
+- **Risk**: 全量单测并行（8 档，6 核 CPU 饱和）下偶发 60s 等待窗耗尽（`exited=false`）；单独运行 4/4 稳定通过（41.5s）。5651b09 曾将该用例等待窗 30s→60s（bazel 并行负载下 probe 15s deadline + 注册重试叠加实测偶发超限），2026-08-16 死代码清理批次的全量首跑又复现 1 次（全量重跑即过，与本批改动无因果路径——所删符号与 probe 流程零交集）。
+- **Next**: 专项分析 duplicate worker 退出路径在 CPU 饱和下的耗时构成（probe deadline / 注册重试节奏 / schedule 抖动），方向是缩短退出依赖链或消除固定等待窗，而非继续加宽 timeout。
+
 ### P3-19: DEBUG/INFO 日志 flush 延迟导致运行中读取漏行（原：-j16 下偶发缺失）
 - **Status**: FIXED ✅（2026-08-15）— Logger 自动 flush（累计 64KB 或距上次 flush 1s，
   config 可调 log_flush_threshold_bytes / log_flush_interval_ms；WARN/ERROR 立即不变）。
@@ -214,8 +220,8 @@
 | P0 — Critical | 4 | 4 | 0 | 0 |
 | P1 — High | 6 | 6 | 0 | 0 |
 | P2 — Medium | 6 | 5 | 0 | 1 (closed: not a bug) |
-| P3 — Low | 6 | 5 | 1 (P3-17 partial) | 0 |
+| P3 — Low | 7 | 5 | 1 (P3-17 partial) | 1 (P3-23 open) |
 | X — Unprioritized | 18 | 9 | 0 | 9 |
-| **Total** | **40** | **29** | **1** | **10** |
+| **Total** | **41** | **29** | **1** | **11** |
 
 > 2026-08-16 去重说明：原 P3-18（Dead code cleanup）→ **P3-21**、原 P3-19（MetadataClient）→ **P3-22**，为新 P3-18（退出期 pure virtual）/P3-19（日志 flush）腾出编号（后者已被 commit 5058f01/c119b1b 与 DOC_CHANGELOG 引用，保持不变）。

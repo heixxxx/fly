@@ -1,4 +1,4 @@
-"""Layer 2 network test: Transport, MessageProtocol, IOThreadPool Python bindings"""
+"""Layer 2 network test: Transport, MessageProtocol Python bindings"""
 
 import sys
 import os
@@ -105,21 +105,6 @@ class TestDataRequestResponseMessages(unittest.TestCase):
         resp.object_name = "test/object"
         resp.success = True
         self.assertEqual(resp.object_name, "test/object")
-
-
-class TestIOThreadPoolCreation(unittest.TestCase):
-    def test_io_thread_pool_creation(self):
-        """Test IOThreadPool creation and basic operations"""
-        from _fly_network import EXNetIOThreadPool
-        
-        pool = EXNetIOThreadPool(2)
-        pool.start()
-        
-        self.assertTrue(pool.is_idle())
-        self.assertEqual(pool.queue_size(), 0)
-        
-        pool.stop()
-        self.assertTrue(pool.is_idle())
 
 
 class TestExNetEncodeDecodeHeartbeat(unittest.TestCase):

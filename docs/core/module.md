@@ -60,11 +60,7 @@ private:
 |--------|--------|------|
 | `heartbeat_timeout` | 120 | 心跳超时（秒） |
 | `heartbeat_interval` | 5 | 心跳间隔（秒） |
-| `backup_threshold` | 100 | 已废弃（旧 auto_backup 判定，新路径不消费） |
 | `auto_backup_enabled` | 0 | 自动备份开关（0=关闭, 1=开启） |
-| `backup_replicas` | 2 | 已废弃（旧 auto_backup 目标副本数，新路径不消费） |
-| `backup_decay_interval` | 300 | 已废弃（旧后台衰减扫描间隔，新路径不消费） |
-| `backup_decay_factor` | 50 | 已废弃（旧衰减因子，新路径不消费） |
 | `worker_suggest_count_threshold` | 100 | worker TIER2 累积读次数达此值触发 backup suggest |
 | `worker_suggest_bytes_threshold` | 1073741824 | worker TIER2 累积传输字节（1GB）达此值触发 suggest |
 | `worker_suggest_cooldown` | 60 | worker 两次 suggest 最小间隔（秒） |

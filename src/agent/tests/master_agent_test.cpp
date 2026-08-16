@@ -2294,7 +2294,6 @@ TEST(DataServiceLocalityTest, BackupReplicaSizeIdempotent) {
 TEST(MasterAgentTest, MasterSelfWriteWithAutoBackupEnabled) {
     WorkerAgentContext::clear();
     Config::instance()->set_int("auto_backup_enabled", 1);
-    Config::instance()->set_int("backup_replicas", 2);
 
     MasterAgent master("127.0.0.1", 0);
     master.start();

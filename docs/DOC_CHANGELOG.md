@@ -3,6 +3,43 @@
 ---
 ---
 
+## 2026-08-16 (3): 死代码清理批次（逐项核实后删除）
+
+按「先核实是否真死、再删」流程执行 remaining-todo §六 全清单。核实结论
+先行：BE32 早已统一（7 月，清单未更新）；removed_objects_ 非死代码
+（freeze 报告活跃，原清单误判）；其余 8 项确认死，全链删除：
+
+- **IOThreadPool**：io_thread_pool.{h,cpp} + EXNetIOThreadPool export +
+  network/py re-export + io_thread_pool_test + network_test.py 用例类。
+  C++ 生产零使用（Reactor/HandlerThreadPool 已取代其设计角色）。
+- **旧 auto_backup 判定全链**：DataService::decay_remote_access /
+  decay_after_backup / evaluate_auto_backup + BackupDecision struct +
+  4 个测试用例 + 死配置键 backup_threshold/backup_replicas/
+  backup_decay_interval/backup_decay_factor（含 docs/core/module.md 同步
+  与 master_agent_test 死 set 行）。双层重设计（worker suggest + master
+  EWMA）已全链取代；核实发现 evaluate_auto_backup 也仅测试引用。
+- **temp_objects_ + Database::mark_temp**：字段零读取（is_temp 权威源在
+  local_idx_），export + database.py `_write_temp` 调用行一并删除。
+- **LocalObjectInfo.error_message_**：写入后条目立即 erase 无人读；删除
+  字段，on_write_failed 的 reason 参数改 DBG 日志输出（13 处调用方签名
+  不变，诊断价值保留）。
+- **IDX_REQUEST/IDX_RESPONSE 死枚举**：零引用删除，15/16 空号留注释
+  （显式赋值，不改既有 wire 值）。
+- **Solver 死 export**：ex_slv_vec_* 7 个（GMRES 向量算子）+
+  ex_slv_extract_subdomain_matrix_oras + C++ 本体 extract_subdomain_matrix_oras
+  （Python/qa/big_qa 零引用）；std_to_vec/vec_to_std helper 与
+  ex_slv_graph_expand_overlap 活跃保留。
+
+ISSUES 新增 P3-23：agent_network_test DuplicateWorkerRegisterRejectedAfterProbe
+高并行负载偶发超限（本批次全量首跑复现 1 次，单独 4/4 + 全量重跑过，
+与所删符号零因果，记录待专项）。
+
+验证：全量单测 56/56（较此前 -1：io_thread_pool_test 随类删除）、
+QA 162/162、全仓残留引用 grep 零命中。
+
+---
+---
+
 ## 2026-08-16 (2): S4 复核关闭（非缺陷）
 
 对 roadmap [S4]「TIER1 FAILED 无差别回退 TIER2」做修复前核实，结论**不修**

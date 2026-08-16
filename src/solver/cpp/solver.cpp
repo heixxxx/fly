@@ -115,37 +115,6 @@ Eigen::SparseMatrix<double> extract_subdomain_matrix(
     return A_local;
 }
 
-Eigen::SparseMatrix<double> extract_subdomain_matrix_oras(
-    const Eigen::SparseMatrix<double>& A,
-    const std::vector<int>& local_indices,
-    const std::vector<int>& own_indices,
-    double alpha)
-{
-    auto A_local = extract_subdomain_matrix(A, local_indices);
-
-    std::unordered_set<int> local_set(local_indices.begin(), local_indices.end());
-
-    int local_size = static_cast<int>(local_indices.size());
-    for (int i = 0; i < local_size; ++i) {
-        int global_row = local_indices[i];
-        int ext_connections = 0;
-
-        for (Eigen::SparseMatrix<double>::InnerIterator it(A, global_row); it; ++it) {
-            int row = static_cast<int>(it.row());
-            if (row != global_row && local_set.find(row) == local_set.end()) {
-                ext_connections++;
-            }
-        }
-
-        if (ext_connections > 0) {
-            A_local.coeffRef(i, i) += alpha * ext_connections;
-        }
-    }
-
-    A_local.makeCompressed();
-    return A_local;
-}
-
 // 静态成员初始化：0 = 用 Eigen 默认（omp_get_max_threads），> 0 = 指定线程数
 int SubdomainSolver::num_threads_ = 0;
 

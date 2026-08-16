@@ -247,9 +247,9 @@ scheduler_->set_locality_preference(...);
 `write_provenance_` 发现 **merge 漏清**（详见 S3）：`cleanup_after_merge`（`master_agent.cpp:2406-2412`）调 `clear_remote_index_for_db` / `clear_local_index_for_db` 清索引，**完全没碰 `write_provenance_`**。跨 path merge 后源 db_path 写 `_MIGRATED_TO` 重定向，源命名空间旧 provenance 条目成为孤立条目。
 
 已有可复用基础设施：
-- `RemoteObjectMeta`（`data_service.h:31-36`）已含 `read_count_` / `last_access_time_` / `size_bytes_`，与 `ObjectCache::evict()`（`object_cache.h:255-284`）的 score（`read_count/age`）+ 30s 保护窗口 + 1.5x 硬上限模式完全对应，可直接套用。
-- `decay_remote_access`（`data_service.cpp:1459-1474`）已实现访问计数衰减，但**未接线**（无周期线程调用）；配置 `backup_decay_interval` / `backup_decay_factor`（`config.cpp:98-99`）也无消费者，可作为周期淘汰线程的基础设施。
-- 建议新增配置：`{"remote_idx_max_entries", 0}`（0=unlimited 默认兼容，>0 触发淘汰），仿 `read_cache_size` / `temp_store_size`（`config.cpp:111-112`）格式。
+- `RemoteObjectMeta`（`data_service.h`）已含 `read_count_` / `last_access_time_` / `size_bytes_`，与 `ObjectCache::evict()`（`object_cache.h:255-284`）的 score（`read_count/age`）+ 30s 保护窗口 + 1.5x 硬上限模式完全对应，可直接套用。
+- ~~`decay_remote_access`（访问计数衰减，未接线）+ `backup_decay_interval` / `backup_decay_factor` 配置~~——**2026-08-16 已删除**：auto_backup 双层重设计（worker suggest + master EWMA）落地后全链死代码，随死代码清理批次移除。
+- 建议新增配置：`{"remote_idx_max_entries", 0}`（0=unlimited 默认兼容，>0 触发淘汰），仿 `read_cache_size` / `temp_store_size`（`config.cpp`）格式。
 
 **当前结论**：S1-1 已在 db_id 废弃改造中修复；S1-2/S1-3 在十万级对象量级下内存可控（数十 MB），**不阻塞，待真实痛点触发**。与 M1 同属"对象量过百万"的待办集合。
 

@@ -23,8 +23,8 @@ enum class MessageType : uint8_t {
     DATA_RESPONSE = 12,
     SHUTDOWN = 13,
     DATABASE_FREEZE = 14,
-    IDX_REQUEST = 15,
-    IDX_RESPONSE = 16,
+    // 15/16 曾为 IDX_REQUEST/IDX_RESPONSE（Freeze 后处理 F2 降级，从未实现，
+    // 2026-08-16 删除；显式赋值下空号保留，不改变既有 wire 值）。
     CLEANUP_TASK = 17,
     CLEANUP_COMPLETE = 18,
     DB_PATH_REQUEST = 19,

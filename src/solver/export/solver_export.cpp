@@ -98,38 +98,6 @@ m.def("ex_slv_extract_subdomain_matrix", [](
         local_A.rows(), local_A.cols(), out_rows, out_cols, out_values);
 });
 
-m.def("ex_slv_extract_subdomain_matrix_oras", [](
-    int matrix_size,
-    const std::vector<int>& row_indices,
-    const std::vector<int>& col_indices,
-    const std::vector<double>& values,
-    const std::vector<int>& local_indices,
-    const std::vector<int>& own_indices,
-    double alpha) -> fly_export::object {
-    Eigen::SparseMatrix<double> A(matrix_size, matrix_size);
-    std::vector<Eigen::Triplet<double>> triplets;
-    triplets.reserve(values.size());
-    for (size_t i = 0; i < values.size(); ++i) {
-        triplets.emplace_back(row_indices[i], col_indices[i], values[i]);
-    }
-    A.setFromTriplets(triplets.begin(), triplets.end());
-    A.makeCompressed();
-
-    auto local_A = fly::extract_subdomain_matrix_oras(A, local_indices, own_indices, alpha);
-
-    std::vector<int> out_rows, out_cols;
-    std::vector<double> out_values;
-    for (int k = 0; k < local_A.outerSize(); ++k) {
-        for (Eigen::SparseMatrix<double>::InnerIterator it(local_A, k); it; ++it) {
-            out_rows.push_back(static_cast<int>(it.row()));
-            out_cols.push_back(static_cast<int>(it.col()));
-            out_values.push_back(it.value());
-        }
-    }
-    return fly_export::make_tuple(
-        local_A.rows(), local_A.cols(), out_rows, out_cols, out_values);
-});
-
 m.def("ex_slv_residual_norm", [](
     int matrix_size,
     const std::vector<int>& row_indices,
@@ -194,56 +162,6 @@ FLY_EXPORT_CLASS(EXSlvSparseMatrix, "EXSlvSparseMatrix")
     FLY_EXPORT_DEF("size", [](const EXSlvSparseMatrix& self) -> int {
         return static_cast<int>(self.mat.rows());
     });
-
-// -- Vector operations (Eigen-accelerated) --
-
-m.def("ex_slv_vec_norm", [](const std::vector<double>& v) -> double {
-    return std_to_vec(v).norm();
-});
-
-m.def("ex_slv_vec_dot", [](const std::vector<double>& a,
-                            const std::vector<double>& b) -> double {
-    return std_to_vec(a).dot(std_to_vec(b));
-});
-
-m.def("ex_slv_vec_scale", [](const std::vector<double>& v, double alpha) -> std::vector<double> {
-    Eigen::VectorXd result = Eigen::Map<const Eigen::VectorXd>(v.data(), static_cast<Eigen::Index>(v.size())) * alpha;
-    return vec_to_std(result);
-});
-
-m.def("ex_slv_vec_axpy", [](const std::vector<double>& y, double alpha,
-                              const std::vector<double>& x) -> std::vector<double> {
-    Eigen::VectorXd result = Eigen::Map<const Eigen::VectorXd>(y.data(), static_cast<Eigen::Index>(y.size())) + alpha * Eigen::Map<const Eigen::VectorXd>(x.data(), static_cast<Eigen::Index>(x.size()));
-    return vec_to_std(result);
-});
-
-m.def("ex_slv_vec_sub", [](const std::vector<double>& a,
-                            const std::vector<double>& b) -> std::vector<double> {
-    return vec_to_std(std_to_vec(a) - std_to_vec(b));
-});
-
-m.def("ex_slv_vec_back_solve", [](
-    const std::vector<std::vector<double>>& H_rows,
-    const std::vector<double>& S,
-    int m) -> std::vector<double> {
-    Eigen::VectorXd y = Eigen::Map<const Eigen::VectorXd>(S.data(), m);
-    for (int i = m - 1; i >= 0; --i) {
-        if (y(i) == 0.0) continue;
-        double diag = H_rows[i][i];
-        if (std::abs(diag) < 1e-30) { y(i) = 0.0; continue; }
-        y(i) /= diag;
-        for (int k = 0; k < i; ++k) {
-            y(k) -= H_rows[i][k] * y(i);
-        }
-    }
-    return vec_to_std(y);
-});
-
-m.def("ex_slv_vec_xpay", [](const std::vector<double>& x, const std::vector<double>& v_col,
-                             double yk, std::vector<double>& out) {
-    Eigen::Map<Eigen::VectorXd> om(out.data(), static_cast<Eigen::Index>(out.size()));
-    om += yk * std_to_vec(v_col);
-});
 
 m.def("ex_slv_graph_expand_overlap", [](
     int matrix_size,

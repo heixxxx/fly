@@ -4,7 +4,6 @@
 #include <network/cpp/tcp_connection_manager.h>
 #include <network/cpp/message_types.h>
 #include <network/cpp/message_protocol.h>
-#include <network/cpp/io_thread_pool.h>
 #include <storage/cpp/database.h>
 #include <memory>
 
@@ -78,14 +77,6 @@ FLY_EXPORT_CLASS(fly::DataResponseMessage, "EXNetDataResponseMessage")
     FLY_EXPORT_ATTR("error_message", &fly::DataResponseMessage::error_message_)
     FLY_EXPORT_ATTR("py_name", &fly::DataResponseMessage::py_name_)
     FLY_EXPORT_SERIALIZE(fly::DataResponseMessage);
-
-FLY_EXPORT_CLASS(fly::IOThreadPool, "EXNetIOThreadPool")
-    FLY_EXPORT_INIT(int)
-    FLY_EXPORT_METHOD("start", &fly::IOThreadPool::start)
-    FLY_EXPORT_METHOD("stop", &fly::IOThreadPool::stop)
-    FLY_EXPORT_METHOD("queue_size", &fly::IOThreadPool::queue_size)
-    FLY_EXPORT_METHOD("is_idle", &fly::IOThreadPool::is_idle)
-    FLY_EXPORT_METHOD("process_completions", &fly::IOThreadPool::process_completions);
 
 FLY_EXPORT_FUNCTION("ex_net_create_connection_manager", [](const fly::CMString& type) -> CMUniquePtr<fly::ConnectionManager> {
     return fly::create_connection_manager(type);

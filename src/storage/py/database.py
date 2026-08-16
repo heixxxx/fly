@@ -97,7 +97,6 @@ class Database:
     def _write_temp(self, name: str, obj) -> str:
         if hasattr(obj, "_write_to_db"):
             result = obj._write_to_db(self._db, name, type(obj).__name__, False)
-            self._db._mark_temp(name)
             self._invalidate_read_cache(name)
             return result
         data = pickle.dumps(obj)

@@ -323,9 +323,6 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_METHOD("get_writer_id", &Database::get_writer_id)
     FLY_EXPORT_METHOD("reset", &Database::reset)
     FLY_EXPORT_METHOD("remove_object", &Database::remove_object)
-    FLY_EXPORT_DEF("_mark_temp", [](Database& db, const CMString& name) {
-        db.mark_temp(name);
-    })
     FLY_EXPORT_DEF("_put_temp_data", [](Database& db, const CMString& name, fly_export::bytes compressed_data) {
         auto buf = CMMakeShared<FlyBuffer>();
         buf->write(compressed_data.c_str(), compressed_data.size());
