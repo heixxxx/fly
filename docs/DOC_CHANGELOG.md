@@ -3,6 +3,22 @@
 ---
 ---
 
+## 2026-08-16 (5): push 门禁配方用户裁定 + proc mem 改物理内存
+
+- **两套测试严格串行**（用户确认）：unit test 全部通过后才启动 runqa，
+  不做并行叠加（OOM 峰值构成的关键项是两套测试同时跑）。
+- **配方**（用户裁定）：unittest `bazel test --jobs=4`、QA `runqa -j6`
+  （runqa 默认并行从按核自适应 nproc-2 改为固定 6，低核小机可显式 -j 覆盖）。
+  实测：单测 56/56、QA 162/162（70s，avail 谷值 3.4GB）。
+- **hook 增强日志**：各阶段前后打印 `[mem] xxxxMB available` 内存水位，
+  OOM 复发时有现场可查。
+- **`proc mem` 改物理内存**（system_info.cpp）：VmPeak（虚拟地址空间峰值，
+  多线程 C++ 常态上 GB、与物理占用无关，OOM 排查中被误读）→ VmRSS +
+  peak VmHWM（均为物理值）。
+
+---
+---
+
 ## 2026-08-16 (4): Solver 全家逐项复核（1 清理 + 1 有意保留 + 4 待触发/不做）
 
 按「先核实文档描述与代码一致、是否真需做」流程复核 remaining-todo §四

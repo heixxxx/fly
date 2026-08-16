@@ -537,24 +537,14 @@ def _resolve_max_workers(j):
 
 
 def _resolve_default_parallelism():
-    """Compute the default -j based on CPU cores.
+    """Default -j (user-decided 2026-08-16): fixed 6.
 
-    Heavy solver tests each spawn nsd+1 worker processes doing CPU-bound numpy.
-    Running 4 such tests concurrently on a 6-core box saturates all cores
-    (loadavg >> nproc), starving the master reactor thread and causing message
-    processing delays that trigger hangs/timeouts. Cap the default to leave
-    headroom: at most min(nproc, 4), and on low-core boxes (< 8) use nproc-2
-    to reserve cores for master reactor + OS.
+    之前按核数自适应（6 核机 → 4，防 solver 重 case 互相饿死）。现固定 6：
+    单测与 QA 两套测试由 pre-push hook 严格串行（先单测全过再 QA），阶段内
+    并行不再与另一套叠加；重 case 的 CPU 饱和风险由串行化 + -t 超时兜底。
+    低核小机可显式 -j N 覆盖。
     """
-    try:
-        nproc = os.cpu_count() or 4
-    except NotImplementedError:
-        nproc = 4
-    if nproc <= 4:
-        return max(1, nproc - 1)
-    if nproc < 8:
-        return max(2, nproc - 2)
-    return 4
+    return 6
 
 
 def _parallelism_label(j):

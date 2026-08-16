@@ -7,24 +7,29 @@ git `pre-push` hook：在每次 `git push` 前自动执行完整校验流水线�
 | 阶段 | 命令 | 作用 |
 |------|------|------|
 | 1/3 BUILD | `./fly.sh build` | bazel build `//src/...` + 刷新 `compile_commands.json` |
-| 2/3 UNIT TEST | `./fly.sh test //src/... --jobs=2` | bazel test `//src/...` 受控并行（见下方资源约束），任一用例失败即非零退出；阶段末 `bazel shutdown` 释放 Java server 内存 |
-| 3/3 QA TEST | `./fly.sh install && ./qa/runqa -j 2 -t 20` | install 生成 `build/bin/fly`，runqa 跑**全量** QA（2 路并发，单测 20s 超时） |
+| 2/3 UNIT TEST | `./fly.sh test //src/... --jobs=4` | bazel test `//src/...` 阶段内并行 4，任一用例失败即非零退出；阶段末 `bazel shutdown` 释放 Java server 内存 |
+| 3/3 QA TEST | `./fly.sh install && ./qa/runqa -j 6 -t 20` | install 生成 `build/bin/fly`，runqa 跑**全量** QA（阶段内并行 6，单测 20s 超时） |
+
+**两套测试严格串行**：unit test 全部通过后才启动 QA，不做两套并行叠加。各阶段前后打印内存水位（`[mem] xxxxMB available`），OOM 复发时有现场可查。
 
 任一阶段失败立即报错并阻止 push，输出统一的 `PUSH BLOCKED` 横幅并指明失败阶段与退出码。
 
-### 资源约束与受控配方（2026-08-16 OOM 实测修正）
+### 资源约束与配方依据（2026-08-16 OOM 实测 + 用户裁定）
 
-开发机为 7.8GB / 6 核 WSL2。默认配方（bazel 按核并行跑单测 + runqa -j 4）在三阶段连续执行时内存峰值超限，多次触发 OOM（会话被杀）。受控配方及实测数据：
+开发机为 7.8GB / 6 核 WSL2。OOM 根因是旧默认配方（bazel 按核并行 6-8 测试进程树 + runqa -j4 且无阶段内存隔离）峰值超限，多次触发 OOM。当前配方（用户裁定：阶段内并行 unittest -j4 / QA -j6 + 两套严格串行）实测数据：
 
-| 配置 | 内存最低点（avail） | 结果 |
-|------|---------------------|------|
-| bazel 默认并行（6-8 测试进程树）+ runqa -j 4 | 触发 OOM | push 反复失败 |
-| `bazel test --jobs=2` | 5.1GB | 56/56 全过 |
-| `runqa -j 2` | 3.9GB | 162/162 全过 |
+| 配置 | 内存最低点（available） | 结果 |
+|------|-------------------------|------|
+| 旧默认：bazel 按核并行 + runqa -j4 | 触发 OOM | push 反复失败 |
+| `bazel test --jobs=4`（串行配方下） | 谷值未单独采样（两次运行均稳定） | 56/56 全过 |
+| `runqa -j 6 -t 20`（单测结束后） | 3.4GB | 162/162 全过（70s） |
+| 中间验证档：`--jobs=2` / `-j 2` | 5.1GB / 3.9GB | 56/56、162/162（更保守，耗时 2 倍+） |
 
-OOM 的内存构成：多个 gtest 进程树并行（`agent_network_test` 类用例每个起 master + 多 worker 全栈线程；`data_service_concurrency_bench` 8 线程压测）× 每树数百 MB RSS，叠加 bazel Java server（阶段间 `bazel shutdown` 释放 0.5-1GB）。注意 `Fly Startup Info` 打印的 `proc mem` 是 **VmPeak（虚拟地址空间峰值）**，非物理占用，不能作为内存压力证据。
+OOM 的内存构成：多个 gtest 进程树并行（`agent_network_test` 类用例每个起 master + 多 worker 全栈线程；`data_service_concurrency_bench` 8 线程压测）× 每树数百 MB RSS，叠加 bazel Java server（阶段间 `bazel shutdown` 释放 0.5-1GB）。串行化的关键收益是**两套测试的峰值不叠加**。
 
-同根因的另一面：CPU 饱和时 `agent_network_test.DuplicateWorkerRegisterRejectedAfterProbe` 的 probe 往返被调度延迟拉长（正常 <100ms，饥饿时超 60s 等待窗）——见 ISSUES P3-23。降低并行度后两者同步消失。
+同根因的另一面：CPU 饱和时 `agent_network_test.DuplicateWorkerRegisterRejectedAfterProbe` 的 probe 往返被调度延迟拉长（正常 <100ms，饥饿时超 60s 等待窗）——见 ISSUES P3-23。
+
+> `Fly Startup Info` 的 `proc mem` 自 2026-08-16 起显示**物理内存**（VmRSS + peak VmHWM）；此前显示 VmPeak（虚拟地址空间峰值）曾在 OOM 排查中被误读为物理占用。
 
 ## 安装
 

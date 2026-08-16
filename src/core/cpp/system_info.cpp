@@ -74,14 +74,22 @@ static CMString memory_info() {
     return gb_num(free) + "/" + gb_num(avail) + "/" + gb_num(total) + " GB";
 }
 
-// 当前进程峰值内存（VmPeak，GB）。
+// 当前进程物理内存占用（VmRSS，GB），括号内为物理峰值（VmHWM）。
+// 2026-08-16 改动：此前显示 VmPeak（虚拟地址空间峰值）——多线程 C++ 的
+// 线程栈/malloc arena 虚拟预留使其常态上 GB，与实际物理占用无关，诊断
+// 内存压力时误导（push OOM 排查中被误读为 1.2GB 占用）。
 static CMString process_memory() {
-    CMString v = read_proc_first("/proc/self/status", "VmPeak");
-    std::istringstream iss(v);
-    uint64_t kb = 0;
-    iss >> kb;
-    if (kb == 0) return "unknown";
-    return gb_num(kb * 1024ull) + " GB";
+    CMString rss_v = read_proc_first("/proc/self/status", "VmRSS");
+    CMString hwm_v = read_proc_first("/proc/self/status", "VmHWM");
+    std::istringstream rss_iss(rss_v);
+    std::istringstream hwm_iss(hwm_v);
+    uint64_t rss_kb = 0, hwm_kb = 0;
+    rss_iss >> rss_kb;
+    hwm_iss >> hwm_kb;
+    if (rss_kb == 0) return "unknown";
+    CMString s = gb_num(rss_kb * 1024ull) + " GB";
+    if (hwm_kb > 0) s += " (peak " + gb_num(hwm_kb * 1024ull) + " GB)";
+    return s;
 }
 
 // 磁盘：available / total（单位 GB 仅在末尾）。
