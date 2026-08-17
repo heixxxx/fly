@@ -802,7 +802,7 @@ bazel run //:refresh_compile_commands
 
 临界区内禁止网络 send、文件系统重活、可能阻塞的调用——持锁阻塞会拖住所有等锁线程。既有的例外（`get_or_insert` factory 内 `fs::create_directories`）有注释标注，新代码不得效仿。
 
-历史欠账（已知、待专项清理，新改动不要扩大）：`db_instances_`/`databases_` 读锁内有 `reactor_->send`（master_agent.cpp 多处）、do_write_register 全流程（锁内跑完整写登记）。处理这些需要先拆锁再搬移，属独立重构主题。
+workers_mutex_ 下的 send 同样禁止（reactor send 非阻塞，但含 encode + per-conn send mutex + conn_mutex_，锁内做会与 reactor 线程互拖放大临界区）。**统一快照模式**：锁内经 `snapshot_worker_conns()`（广播，返回 (worker_id, conn_id) 对）或 `lookup_worker_conn()`（单发，0=未连接）取连接，锁外循环 send；快照后连接断开的竞态由 transport 对未知 conn_id 的安全 -1 分支兜底（2026-08-17 批次将 19 处锁内 send 全量迁移至该模式；`Database::freeze()` 重 IO 同批移出 db_instances_ 容器锁——锁内只 find+拷 shared_ptr）。
 
 ### 13.4 并发测试写法
 

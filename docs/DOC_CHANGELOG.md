@@ -3,6 +3,32 @@
 ---
 ---
 
+## 2026-08-17 (5): 锁内 IO 欠账收尾——workers_mutex_ 锁内 send 全量快照化（19 处）+ freeze 出容器锁
+
+- **workers_mutex_ 锁内 send → 快照模式（19 处）**：master_agent.cpp 新增
+  `snapshot_worker_conns()`（广播快照，返回 (worker_id, conn_id) 对）与
+  `lookup_worker_conn()`（单发查表，0=未连接）两个私有 helper；stop Shutdown
+  广播、心跳判死 Shutdown、重复注册 dup_ack/probe、StorageSpawn、freeze×3
+  广播、ObjectRemoved×2、MessageLimitSync、VarBroadcast、IdxLoadCommand×2、
+  merge TaskAssign/DeleteData、MergeCleanup×2、MSG_COUNT_REQUEST 全部改为
+  锁内只快照、锁外循环 send。send_merge_task/send_delete_data 的错误处理
+  （cancel/complete）一并出锁，原「PendingRpcMap leaf 在 workers_mutex_ 内
+  调用等价」注释随之删除。快照后断连竞态由 transport 未知 conn_id 安全 -1
+  分支兜底（同 on_master_remove/on_backup_request 既有模式）。
+- **`Database::freeze()` 移出 db_instances_ 容器锁（2 处漏网）**：
+  commit_pending_frozen 与 on_database_freeze_request stream 分支——原代码
+  就地注释宣称「freeze 已移出容器锁（D2 拆除）」但实际 freeze() 仍在
+  shared_lock 作用域内执行（drain/marker/vars 落盘重 IO）。改为锁内只
+  find+拷 shared_ptr，锁外调 freeze()，注释与行为对齐。
+- DEVELOPMENT_GUIDELINES §13.3：历史欠账段（db_instances_ 锁内 send /
+  do_write_register 全流程——已被 a1c210f 清除但文档未更新）改写为
+  workers_mutex_ 快照模式的现行规范。
+- 验证：单测 59/59 + QA 149/149 全过（freeze 族/注册/freeze 广播/merge 全链
+  行为回归；锁时序无直接断言测试，以全量回归收口）。
+
+---
+---
+
 ## 2026-08-17 (4): 注册守望文档同步 + 审计行动状态收口
 
 - core/module.md：worker 生命周期键表补 worker_register_ack_retry_

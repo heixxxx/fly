@@ -533,6 +533,13 @@ private:
     void attr_timeout_check_loop();
     void sched_watchdog_loop();
 
+    // workers_mutex_ 临界区内只做快照/查表，reactor send 一律锁外（send 含 encode +
+    // per-conn send mutex + conn_mutex_，锁内做会与 reactor 线程互拖放大临界区）。
+    // 快照后连接断开的竞态由 transport 对未知 conn_id 的安全 -1 分支兜底
+    //（同 on_master_remove/on_backup_request 既有快照模式）。
+    CMVector<std::pair<uint64_t, uint64_t>> snapshot_worker_conns() const;  // (worker_id, conn_id)
+    uint64_t lookup_worker_conn(uint64_t worker_id) const;                  // 0 = 未连接
+
     std::mutex schedule_mutex_;
 
     void on_worker_register(uint64_t conn_id, const RegisterMessage& msg);

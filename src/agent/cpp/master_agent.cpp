@@ -401,12 +401,9 @@ void MasterAgent::stop() {
     INFO("Message summary done (elapsed={}ms)", _elapsed());
 
     // Phase 2: All tasks done — now send shutdown to workers.
-    {
-        std::lock_guard<std::mutex> lk(workers_mutex_);
-        for (const auto& [worker_id, conn_id] : worker_to_conn_) {
-            INFO("Sending shutdown to worker_id={} (elapsed={}ms)", worker_id, _elapsed());
-            reactor_->send(conn_id, ShutdownMessage{});
-        }
+    for (const auto& [worker_id, conn_id] : snapshot_worker_conns()) {
+        INFO("Sending shutdown to worker_id={} (elapsed={}ms)", worker_id, _elapsed());
+        reactor_->send(conn_id, ShutdownMessage{});
     }
 
     // Phase 3: Wait for workers to disconnect (reactor will call on_disconnect).
@@ -912,11 +909,10 @@ void MasterAgent::heartbeat_check_loop() {
             for (uint64_t worker_id : dead) {
                 WARN("worker timeout: {}", worker_id);
 
-                std::lock_guard<std::mutex> lk(workers_mutex_);
-                auto conn_it = worker_to_conn_.find(worker_id);
-                if (conn_it != worker_to_conn_.end()) {
+                uint64_t conn = lookup_worker_conn(worker_id);
+                if (conn != 0) {
                     ShutdownMessage shutdown;
-                    reactor_->send(conn_it->second, shutdown);
+                    reactor_->send(conn, shutdown);
                 }
             }
         }
@@ -1022,28 +1018,38 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     //     清表并重放注册（正常接受，首连无重发机制故由 master 重放）；
     //     活着则 ProbeAck 到达后拒绝；15s deadline 保守拒绝兜底。
     {
-        std::lock_guard<std::mutex> lk(workers_mutex_);
-        auto it = worker_to_conn_.find(worker_id);
-        if (it != worker_to_conn_.end() && it->second != conn_id) {
-            auto confirmed = dup_confirmed_alive_.find(worker_id);
-            auto now = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count();
-            if (confirmed && now - *confirmed < 30) {
-                // 当前这条直接拒；probe 期间积压的挂起条目一并拒。
-                RegisterAckMessage dup_ack;
-                dup_ack.worker_id_ = worker_id;
-                dup_ack.master_address_ = host_;
-                dup_ack.master_port_ = static_cast<int32_t>(port_);
-                dup_ack.duplicate_ = true;
-                reactor_->send(conn_id, dup_ack);
-                reject_deferred_register(worker_id, "confirmed alive");
-                WARN("Duplicate register rejected: worker_id={} confirmed alive on conn {} "
-                     "(incoming conn {})", worker_id, it->second, conn_id);
-                return;
+        auto now = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        bool confirmed_alive = false;
+        uint64_t existing_conn = 0;
+        {
+            std::lock_guard<std::mutex> lk(workers_mutex_);
+            auto it = worker_to_conn_.find(worker_id);
+            if (it != worker_to_conn_.end() && it->second != conn_id) {
+                existing_conn = it->second;
+                auto confirmed = dup_confirmed_alive_.find(worker_id);
+                if (confirmed && now - *confirmed < 30) {
+                    confirmed_alive = true;
+                }
             }
+        }
+        if (confirmed_alive) {
+            // 当前这条直接拒；probe 期间积压的挂起条目一并拒。
+            RegisterAckMessage dup_ack;
+            dup_ack.worker_id_ = worker_id;
+            dup_ack.master_address_ = host_;
+            dup_ack.master_port_ = static_cast<int32_t>(port_);
+            dup_ack.duplicate_ = true;
+            reactor_->send(conn_id, dup_ack);
+            reject_deferred_register(worker_id, "confirmed alive");
+            WARN("Duplicate register rejected: worker_id={} confirmed alive on conn {} "
+                 "(incoming conn {})", worker_id, existing_conn, conn_id);
+            return;
+        }
+        if (existing_conn != 0) {
             WorkerProbeMessage probe;
             probe.worker_id_ = worker_id;
-            reactor_->send(it->second, probe);
+            reactor_->send(existing_conn, probe);
             DeferredRegister dr;
             dr.conn_id_ = conn_id;
             dr.msg_ = msg;
@@ -1051,7 +1057,7 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
             deferred_registers_.update(worker_id, [&](DeferredRegister& d) { d = std::move(dr); });
             WARN("Suspicious duplicate register: worker_id={} existing conn {} — probing "
                  "liveness, incoming register (conn {}) deferred",
-                 worker_id, it->second, conn_id);
+                 worker_id, existing_conn, conn_id);
             return;
         }
     }
@@ -1782,13 +1788,12 @@ bool MasterAgent::send_storage_spawn_to_worker(uint64_t worker_id, uint64_t spaw
     StorageSpawnRequestMessage msg;
     msg.spawn_worker_id_ = spawn_worker_id;
 
-    std::lock_guard<std::mutex> lk(workers_mutex_);
-    auto it = worker_to_conn_.find(worker_id);
-    if (it == worker_to_conn_.end()) {
+    uint64_t conn = lookup_worker_conn(worker_id);
+    if (conn == 0) {
         ERR("send_storage_spawn_to_worker: worker_id={} not found", worker_id);
         return false;
     }
-    reactor_->send(it->second, msg);
+    reactor_->send(conn, msg);
     return true;
 }
 
@@ -1804,6 +1809,22 @@ CMVector<uint64_t> MasterAgent::get_connected_workers() const {
         workers.push_back(worker);
     }
     return workers;
+}
+
+CMVector<std::pair<uint64_t, uint64_t>> MasterAgent::snapshot_worker_conns() const {
+    std::lock_guard<std::mutex> lk(workers_mutex_);
+    CMVector<std::pair<uint64_t, uint64_t>> conns;
+    conns.reserve(worker_to_conn_.size());
+    for (const auto& [wid, cid] : worker_to_conn_) {
+        conns.emplace_back(wid, cid);
+    }
+    return conns;
+}
+
+uint64_t MasterAgent::lookup_worker_conn(uint64_t worker_id) const {
+    std::lock_guard<std::mutex> lk(workers_mutex_);
+    auto it = worker_to_conn_.find(worker_id);
+    return it == worker_to_conn_.end() ? 0 : it->second;
 }
 
 CMVector<std::pair<uint64_t, CMString>> MasterAgent::get_worker_hostnames() const {
@@ -1970,18 +1991,20 @@ void MasterAgent::commit_pending_frozen(uint64_t task_id) {
         // 锁内只 find + 拷 shared_ptr：freeze（drain/marker/vars 落盘，重 IO）、
         // provenance 清理、workers 广播全部移出容器锁（D2 拆除——原读锁延伸
         // 覆盖 provenance_mutex_ + workers_mutex_ + reactor send 嵌套链）。
+        CMSharedPtr<Database> db;
         {
             std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
             auto it = db_instances_.find(db_path);
-            if (it != db_instances_.end()) it->second->freeze();
+            if (it != db_instances_.end()) db = it->second;
         }
+        if (db) db->freeze();
         // Part C: freeze 确认后 provenance 已失效，立即清理释放内存。
         cleanup_provenance_for_db(db_path);
         INFO("DB frozen (committed by task): db_path={}, task_id={}", db_path, task_id);
         DatabaseFreezeNotification broadcast_msg;
         broadcast_msg.db_path_ = db_path;
-        std::lock_guard<std::mutex> wlk(workers_mutex_);
-        for (const auto& [wid, cid] : worker_to_conn_) {
+        for (const auto& [wid, cid] : snapshot_worker_conns()) {
+            (void)wid;
             reactor_->send(cid, broadcast_msg);
         }
         // 流程 message：freeze 完成（不可逆里程碑）。
@@ -2223,12 +2246,10 @@ void MasterAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage
     }
 
     ObjectRemovedMessage broadcast_msg = msg;
-    {
-        std::lock_guard<std::mutex> lk(workers_mutex_);
-        for (const auto& [worker_id, worker_conn_id] : worker_to_conn_) {
-            if (worker_conn_id != conn_id) {
-                reactor_->send(worker_conn_id, broadcast_msg);
-            }
+    for (const auto& [wid, worker_conn_id] : snapshot_worker_conns()) {
+        (void)wid;
+        if (worker_conn_id != conn_id) {
+            reactor_->send(worker_conn_id, broadcast_msg);
         }
     }
 }
@@ -2243,11 +2264,9 @@ void MasterAgent::broadcast_object_removed(const CMString& db_path, const CMStri
     msg.object_name_ = full;
     msg.db_path_ = db_path;
 
-    {
-        std::lock_guard<std::mutex> lk(workers_mutex_);
-        for (const auto& [worker_id, conn_id] : worker_to_conn_) {
-            reactor_->send(conn_id, msg);
-        }
+    for (const auto& [wid, cid] : snapshot_worker_conns()) {
+        (void)wid;
+        reactor_->send(cid, msg);
     }
 }
 
@@ -2259,12 +2278,9 @@ void MasterAgent::broadcast_message_limits() {
         msg.global_limit_, msg.domain_keys_, msg.domain_values_,
         msg.id_keys_, msg.id_values_);
 
-    {
-        std::lock_guard<std::mutex> lk(workers_mutex_);
-        for (const auto& [worker_id, conn_id] : worker_to_conn_) {
-            (void)worker_id;
-            reactor_->send(conn_id, msg);
-        }
+    for (const auto& [wid, cid] : snapshot_worker_conns()) {
+        (void)wid;
+        reactor_->send(cid, msg);
     }
 }
 
@@ -2365,9 +2381,9 @@ void MasterAgent::broadcast_var(const CMString& full_var_name, bool is_modificat
     msg.var_name_ = full_var_name;
     msg.is_modification_reject_ = is_modification_reject;
 
-    std::lock_guard<std::mutex> lk(workers_mutex_);
-    for (const auto& [worker_id, conn_id] : worker_to_conn_) {
-        reactor_->send(conn_id, msg);
+    for (const auto& [wid, cid] : snapshot_worker_conns()) {
+        (void)wid;
+        reactor_->send(cid, msg);
     }
 }
 
@@ -2691,13 +2707,10 @@ void MasterAgent::send_idx_load_commands(const CMString& db_path,
     msg.db_path_ = db_path;
     msg.writer_ids_ = writer_ids;
 
-    {
-        std::lock_guard<std::mutex> lk(workers_mutex_);
-        for (const auto& [worker_id, conn_id] : worker_to_conn_) {
-            reactor_->send(conn_id, msg);
-            INFO("Sent IdxLoadCommand to worker_id={}: db_path={}, writer_ids_count={}",
-                 worker_id, db_path, writer_ids.size());
-        }
+    for (const auto& [worker_id, conn_id] : snapshot_worker_conns()) {
+        reactor_->send(conn_id, msg);
+        INFO("Sent IdxLoadCommand to worker_id={}: db_path={}, writer_ids_count={}",
+             worker_id, db_path, writer_ids.size());
     }
 }
 
@@ -2767,13 +2780,12 @@ void MasterAgent::send_idx_load_to_worker(const CMString& db_path,
     msg.db_path_ = db_path;
     msg.writer_ids_ = writer_ids;
 
-    std::lock_guard<std::mutex> lk(workers_mutex_);
-    auto it = worker_to_conn_.find(worker_id);
-    if (it == worker_to_conn_.end()) {
+    uint64_t conn = lookup_worker_conn(worker_id);
+    if (conn == 0) {
         ERR("send_idx_load_to_worker: worker_id={} not found", worker_id);
         return;
     }
-    reactor_->send(it->second, msg);
+    reactor_->send(conn, msg);
     INFO("Sent IdxLoadCommand to worker_id={}: db_path={}, writer_ids_count={}",
          worker_id, db_path, writer_ids.size());
 }
@@ -2872,16 +2884,16 @@ void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFre
         // 立即清理释放内存。
         cleanup_provenance_for_db(msg.db_path_);
         // stream 模式的本地 freeze + 广播（D2 拆除：freeze 重 IO 与广播移出容器锁）
+        CMSharedPtr<Database> db;
         {
             std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
             auto it = db_instances_.find(msg.db_path_);
-            if (it != db_instances_.end()) {
-                it->second->freeze();
-            }
+            if (it != db_instances_.end()) db = it->second;
         }
+        if (db) db->freeze();
         DatabaseFreezeNotification broadcast_msg = msg;
-        std::lock_guard<std::mutex> wlk(workers_mutex_);
-        for (const auto& [wid, cid] : worker_to_conn_) {
+        for (const auto& [wid, cid] : snapshot_worker_conns()) {
+            (void)wid;
             reactor_->send(cid, broadcast_msg);
         }
         INFO("DB frozen and broadcasted (stream): db_path={}", msg.db_path_);
@@ -2906,11 +2918,9 @@ void MasterAgent::on_master_freeze(const CMString& db_path) {
 
     DatabaseFreezeNotification msg;
     msg.db_path_ = db_path;
-    {
-        std::lock_guard<std::mutex> lk(workers_mutex_);
-        for (const auto& [wid, cid] : worker_to_conn_) {
-            reactor_->send(cid, msg);
-        }
+    for (const auto& [wid, cid] : snapshot_worker_conns()) {
+        (void)wid;
+        reactor_->send(cid, msg);
     }
 
     // 流程 message：master 直接 freeze 完成（不可逆里程碑）。
@@ -3208,27 +3218,22 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
     // assign.write_context_hash_ 留空，worker 执行 merge task 时 commit_write guard 填时间戳。
     // （源 db freeze 后 provenance 已被 Part C 清理，继承也无源可取。）
 
-    {
-        std::lock_guard<std::mutex> wlk(workers_mutex_);
-        auto it = worker_to_conn_.find(target_worker_id);
-        if (it == worker_to_conn_.end()) {
-            ERR("send_merge_task: target worker_id={} not connected", target_worker_id);
-            // 回滚上面的 assign：消息未送达，worker 永远不会回 TaskComplete/Failed，
-            // 不回滚则 BUSY 槽永久泄漏。cancel_task_if_assigned 精确匹配 task_id，
-            // 不会误恢复 on_disconnect 已标 DEAD 的 worker。
-            worker_manager_->cancel_task_if_assigned(target_worker_id, merge_task_id);
-            // PendingRpcMap 锁是 leaf，在 workers_mutex_ 内调用与原嵌套锁序
-            // （workers_mutex_ → merge_task_mutex_）等价。条目由本函数开头 emplace，
-            // complete 必命中。
-            merge_task_states_.complete(merge_task_id, [](MergeTaskState& s) {
-                s.completed_ = true;
-                s.success_ = false;
-                s.error_message_ = "target worker not connected";
-            });
-            return merge_task_id;
-        }
-        reactor_->send(it->second, assign);
+    uint64_t target_conn = lookup_worker_conn(target_worker_id);
+    if (target_conn == 0) {
+        ERR("send_merge_task: target worker_id={} not connected", target_worker_id);
+        // 回滚上面的 assign：消息未送达，worker 永远不会回 TaskComplete/Failed，
+        // 不回滚则 BUSY 槽永久泄漏。cancel_task_if_assigned 精确匹配 task_id，
+        // 不会误恢复 on_disconnect 已标 DEAD 的 worker。
+        worker_manager_->cancel_task_if_assigned(target_worker_id, merge_task_id);
+        // 条目由本函数开头 emplace，complete 必命中。
+        merge_task_states_.complete(merge_task_id, [](MergeTaskState& s) {
+            s.completed_ = true;
+            s.success_ = false;
+            s.error_message_ = "target worker not connected";
+        });
+        return merge_task_id;
     }
+    reactor_->send(target_conn, assign);
 
     INFO("Merge task assigned: task_id={}, target_worker={}, object={}, target_data_path={}",
          merge_task_id, target_worker_id, full_name, target_data_path);
@@ -3336,24 +3341,20 @@ void MasterAgent::send_delete_data(uint64_t source_worker_id,
     }
     msg.writer_ids_ = writer_ids;
 
-    {
-        std::lock_guard<std::mutex> wlk(workers_mutex_);
-        auto it = worker_to_conn_.find(source_worker_id);
-        if (it == worker_to_conn_.end()) {
-            ERR("send_delete_data: source worker_id={} not connected", source_worker_id);
-            // 保持原有语义：无条件 upsert 标失败（与首轮 insert_if_absent 的保留
-            // 语义不一致是既有行为，迁移不改变）。PendingRpcMap 锁是 leaf，
-            // 在 workers_mutex_ 内调用与原嵌套锁序等价。
-            pending_delete_acks_.emplace(ack_key, CMMakeShared<PendingDeleteData>());
-            pending_delete_acks_.complete(ack_key, [](PendingDeleteData& p) {
-                p.completed_ = true;
-                p.success_ = false;
-                p.error_message_ = "source worker not connected";
-            });
-            return;
-        }
-        reactor_->send(it->second, msg);
+    uint64_t source_conn = lookup_worker_conn(source_worker_id);
+    if (source_conn == 0) {
+        ERR("send_delete_data: source worker_id={} not connected", source_worker_id);
+        // 保持原有语义：无条件 upsert 标失败（与首轮 insert_if_absent 的保留
+        // 语义不一致是既有行为，迁移不改变）。
+        pending_delete_acks_.emplace(ack_key, CMMakeShared<PendingDeleteData>());
+        pending_delete_acks_.complete(ack_key, [](PendingDeleteData& p) {
+            p.completed_ = true;
+            p.success_ = false;
+            p.error_message_ = "source worker not connected";
+        });
+        return;
     }
+    reactor_->send(source_conn, msg);
     INFO("DeleteData sent: worker_id={}, db_path={}, data_path={}, writer_ids_count={}",
          source_worker_id, db_path, data_path, writer_ids.size());
 }
@@ -3444,11 +3445,9 @@ void MasterAgent::cleanup_failed_merge(const CMString& db_path,
     msg.data_path_ = merge_data_path;
     msg.target_db_path_ = merge_db_path;
     msg.purge_target_ = true;
-    {
-        std::lock_guard<std::mutex> wlk(workers_mutex_);
-        for (const auto& [wid, cid] : worker_to_conn_) {
-            reactor_->send(cid, msg);
-        }
+    for (const auto& [wid, cid] : snapshot_worker_conns()) {
+        (void)wid;
+        reactor_->send(cid, msg);
     }
     WARN("cleanup_failed_merge: purge broadcast for db_path={} (source data preserved "
          "for re-merge)", db_path);
@@ -3494,11 +3493,9 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     cleanup_msg.data_path_ = merge_data_path;
     cleanup_msg.target_db_path_ = merge_db_path;  // 产物 db_path（idx 目录）
     cleanup_msg.exempt_worker_ids_ = merge_target_worker_ids;
-    {
-        std::lock_guard<std::mutex> wlk(workers_mutex_);
-        for (const auto& [wid, cid] : worker_to_conn_) {
-            reactor_->send(cid, cleanup_msg);
-        }
+    for (const auto& [wid, cid] : snapshot_worker_conns()) {
+        (void)wid;
+        reactor_->send(cid, cleanup_msg);
     }
     INFO("cleanup_after_merge: broadcast MergeCleanup for db_path={} to {} workers "
          "(exempt merge targets: {})", db_path, expected_acks, merge_target_worker_ids.size());
@@ -3675,13 +3672,10 @@ void MasterAgent::collect_and_print_message_summary() {
         pending_msg_count_ = {expected, 0};
         collected_msg_counts_.clear();
     }
-    {
-        std::lock_guard<std::mutex> wlk(workers_mutex_);
-        MessageCountRequestMessage req;
-        for (const auto& [wid, cid] : worker_to_conn_) {
-            DBG("[SUMMARY] sending MSG_COUNT_REQUEST to worker {} conn {}", wid, cid);
-            reactor_->send(cid, req);
-        }
+    MessageCountRequestMessage req;
+    for (const auto& [wid, cid] : snapshot_worker_conns()) {
+        DBG("[SUMMARY] sending MSG_COUNT_REQUEST to worker {} conn {}", wid, cid);
+        reactor_->send(cid, req);
     }
 
     // 等所有 worker 上报（30s 超时容错）。
