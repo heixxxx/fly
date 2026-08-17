@@ -19,7 +19,9 @@ struct ObjectHeader {
     CMString serialize() const;
     // Zero-copy: accepts std::string_view — CMString, FlyBuffer data, or raw
     // pointer+size all construct a string_view implicitly without copying.
-    static ObjectHeader deserialize(std::string_view data, int64_t& offset);
+    // 解析失败（数据不足/magic 错/版本超期/py_name 截断）返回 false（out 不被
+    // 修改；offset 可能已部分推进，失败时调用方不应再消费 offset——issue 002 批次 C）。
+    static bool deserialize(std::string_view data, int64_t& offset, ObjectHeader& out);
 
     static constexpr int64_t fixed_header_size() {
         return sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint16_t) +

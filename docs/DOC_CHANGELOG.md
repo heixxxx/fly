@@ -3,6 +3,38 @@
 ---
 ---
 
+## 2026-08-17 (6): throw→error code 核心残留清零（10 处消除 + FLY_DECODE 暴露点收口）
+
+- **config.cpp set_int/set_str void→bool**（对标 get_int INVALID_INT 哨兵）：
+  workers launched 后 set 返回 false + ERR 日志（值不变），不再 throw 穿越
+  binding 变 RuntimeError 无人 catch。测试 ThrowsAfterWorkersLaunched 改
+  SetRejectedAfterWorkersLaunched（断言 false + 值不变 + reset 后 true）。
+- **tcp_connection_manager.cpp 4 处 throw 清零**：listen() void→bool（错误
+  通道对称于 connect 的 0 哨兵）；epoll fd 惰性创建（ensure_epoll，构造函数
+  不做可失败系统调用）；工厂未知类型返回 nullptr（原 throw 是生产死分支，
+  唯一活路径 Python export）。调用方补错误分支：worker/master listen 失败
+  干净退出 start()（running_ 保持 false，is_running() 可观察）、
+  peer_rpc_server 删 try/catch 改 bool。新增测试 ListenFailureReturnsFalse
+  （EADDRINUSE）+ InvalidTransportType 改 nullptr 契约。
+- **object_header.cpp deserialize 4 处 throw→bool+输出参数**（issue 002
+  review 批次 C 方案）。11 个调用点：9 处防御性 try/catch 删除；2 处原无
+  catch 的暴露点补错误分支——do_backup_write 坏 header 撤登记+恢复 context
+  （不落盘坏数据）、internal merge 坏 header TaskFailed。文档勘误：
+  remaining-todo 原记"object_header 已清零"有误（实为 4 处仍在）。
+- **FLY_DECODE 三宏 throw 保留为受控设计**（issue 002 review 已裁定分阶段；
+  网络主路径由 MessageProtocol::decode catch + reactor X-3 双层消化），
+  2 个真实暴露点收口：database.cpp _DB_META header 加载补局部 catch（按
+  无 meta 处理，不再向上抛）；export __setstate__/__setstate_from_buffer__
+  4 分支局部 catch 转 fly_export::value_error（损坏 pickle 抛 ValueError
+  的 Python 惯例，消息取原始 e.what()）。新增 py_test setstate_error_test
+  （截断 bytes + 坏 magic → ValueError）。
+- remaining-todo §五 issue 002 行同步（含边缘 throw 保留惯例说明：
+  export type_error / writer_pref_rwlock system_error / solver、
+  worker_agent 启动期少量）。
+
+---
+---
+
 ## 2026-08-17 (5): 锁内 IO 欠账收尾——workers_mutex_ 锁内 send 全量快照化（19 处）+ freeze 出容器锁
 
 - **workers_mutex_ 锁内 send → 快照模式（19 处）**：master_agent.cpp 新增

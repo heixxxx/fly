@@ -300,11 +300,14 @@ CMSharedPtr<T> Database::read_object(const CMString& object_name, const CMString
 
     // Populate high tier so subsequent reads skip deserialization.
     size_t accounted = comp_data->size();
-    try {
+    {
+        ObjectHeader hdr;
         int64_t off = 0;
-        auto hdr = ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, off);
-        if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
-    } catch (...) {}
+        if (ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, off, hdr) &&
+            hdr.total_size_ > 0) {
+            accounted = static_cast<size_t>(hdr.total_size_);
+        }
+    }
     cache_instance.put_high<T>(full, obj, accounted);
 
     return obj;

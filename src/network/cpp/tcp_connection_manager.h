@@ -12,7 +12,7 @@ public:
     TcpConnectionManager();
     ~TcpConnectionManager() override;
 
-    void listen(const CMString& address, int port) override;
+    bool listen(const CMString& address, int port) override;
     void stop_listening() override;
     uint64_t connect(const CMString& address, int port) override;
     ssize_t send(uint64_t conn_id, const CMString& data) override;
@@ -49,6 +49,9 @@ private:
     CMString drain_socket(int fd, size_t max_size);
     void drain_write_buffer(uint64_t conn_id, int fd);
     void mod_epoll_events(int fd, uint32_t events);
+    // epoll fd 惰性创建（listen/connect 首次使用时）：构造函数不做可失败的
+    // 系统调用、不抛异常（issue 002：错误经 listen 的 bool / connect 的 0 哨兵返回）。
+    bool ensure_epoll();
 };
 
 }  // namespace fly

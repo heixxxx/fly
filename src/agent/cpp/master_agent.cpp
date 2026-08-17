@@ -47,7 +47,13 @@ void MasterAgent::start() {
     auto transport = create_connection_manager("tcp");
     // 用构造时的请求端口 bind：固定端口用户意图被尊重；port 0 每次拿全新临时端口，
     // 避免重启复用旧端口在 close→rebind 窗口内被并发进程抢占（EADDRINUSE）。
-    transport->listen(host_, listen_port_);
+    if (!transport || !transport->listen(host_, listen_port_)) {
+        // master 监听失败 = 不可服务：干净退出 start()（running_ 保持 false），
+        // 调用方经 is_running() 观察（与 worker 的 listen/connect 失败路径对称）。
+        ERR("Master transport listen failed on {}:{} — master cannot start",
+            host_, listen_port_);
+        return;
+    }
 
     // handler 并行 lane：同连接消息严格保序（Register→*、WriteRegister→TaskComplete
     // 等协议顺序依赖），跨连接并行。schedule_tasks 等重 handler 不再阻塞 reactor 线程。

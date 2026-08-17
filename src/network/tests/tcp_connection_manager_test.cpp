@@ -107,8 +107,25 @@ TEST(TcpConnectionManagerTest, ConnectionCount) {
 }
 
 TEST(TcpConnectionManagerTest, InvalidTransportType) {
-    EXPECT_THROW(create_connection_manager("udp"), std::runtime_error);
-    EXPECT_THROW(create_connection_manager("rdma"), std::runtime_error);
+    // 未知类型返回 nullptr（错误码通道，不再 throw）；"tcp" 正常返回。
+    EXPECT_EQ(create_connection_manager("udp"), nullptr);
+    EXPECT_EQ(create_connection_manager("rdma"), nullptr);
+    EXPECT_NE(create_connection_manager("tcp"), nullptr);
+}
+
+TEST(TcpConnectionManagerTest, ListenFailureReturnsFalse) {
+    // 同地址端口已被活跃监听占用 → 第二个 listen bind 失败（EADDRINUSE），
+    // 经 bool 错误通道返回 false 而非抛异常。
+    TcpConnectionManager first;
+    ASSERT_TRUE(first.listen("127.0.0.1", 0));
+    int port = first.get_bound_port();
+    ASSERT_GT(port, 0);
+
+    TcpConnectionManager second;
+    EXPECT_FALSE(second.listen("127.0.0.1", port));
+
+    first.close_all();
+    second.close_all();
 }
 
 TEST(TcpConnectionManagerTest, MultipleConnections) {

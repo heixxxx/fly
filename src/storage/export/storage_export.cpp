@@ -180,12 +180,13 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
         // Read expected decompressed size from ObjectHeader
         int64_t offset = 0;
         int64_t expected_size = 0;
-        try {
-            ObjectHeader header = ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, offset);
-            if (header.total_size_ > 0) {
+        {
+            ObjectHeader header;
+            if (ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, offset, header) &&
+                header.total_size_ > 0) {
                 expected_size = static_cast<int64_t>(header.total_size_);
             }
-        } catch (...) {}
+        }
 
         if (expected_size > 0) {
             // Create Python bytes object with exact size
@@ -226,12 +227,13 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
         // Read expected decompressed size from ObjectHeader
         int64_t offset = 0;
         int64_t expected_size = 0;
-        try {
-            ObjectHeader header = ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, offset);
-            if (header.total_size_ > 0) {
+        {
+            ObjectHeader header;
+            if (ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, offset, header) &&
+                header.total_size_ > 0) {
                 expected_size = static_cast<int64_t>(header.total_size_);
             }
-        } catch (...) {}
+        }
 
         if (expected_size > 0) {
             // Create Python bytes object with exact size

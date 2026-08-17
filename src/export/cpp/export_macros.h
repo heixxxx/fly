@@ -55,18 +55,25 @@ namespace fly_export = nanobind;
     }) \
     .def("__setstate_from_buffer__", [](Cls& obj, const CMSharedPtr<FlyBuffer>& buf) { \
         ::new (&obj) Cls(); \
-        if (buf && buf->size() >= sizeof(uint32_t)) { \
-            uint32_t fly_magic_; \
-            std::memcpy(&fly_magic_, buf->data(), sizeof(uint32_t)); \
-            if (fly_magic_ == FLY_OBJECT_MAGIC) { \
-                DecompressingStreamBuf fly_dsbuf_(buf->data(), buf->size()); \
-                std::istream fly_is_(&fly_dsbuf_); \
-                FLY_DECODE_FROM_STREAM(fly_is_, Cls, obj); \
-                return; \
+        /* FLY_DECODE 宏对损坏数据 throw std::runtime_error——此处是 Python pickle */ \
+        /* 协议入口，局部转 value_error（ValueError，损坏 pickle 的 Python 惯例 */ \
+        /* 异常类型 + 明确消息），不裸穿透 binding。 */ \
+        try { \
+            if (buf && buf->size() >= sizeof(uint32_t)) { \
+                uint32_t fly_magic_; \
+                std::memcpy(&fly_magic_, buf->data(), sizeof(uint32_t)); \
+                if (fly_magic_ == FLY_OBJECT_MAGIC) { \
+                    DecompressingStreamBuf fly_dsbuf_(buf->data(), buf->size()); \
+                    std::istream fly_is_(&fly_dsbuf_); \
+                    FLY_DECODE_FROM_STREAM(fly_is_, Cls, obj); \
+                    return; \
+                } \
             } \
+            std::string data(buf ? buf->data() : "", buf ? buf->size() : 0); \
+            FLY_DECODE(data, Cls, obj); \
+        } catch (const std::exception& e) { \
+            throw fly_export::value_error(e.what()); \
         } \
-        std::string data(buf ? buf->data() : "", buf ? buf->size() : 0); \
-        FLY_DECODE(data, Cls, obj); \
     }) \
     .def("_write_to_db", [](const Cls& obj, Database& db, const CMString& name, \
                              const CMString& py_name, bool backup) -> int { \
@@ -85,17 +92,22 @@ namespace fly_export = nanobind;
         ::new (&obj) Cls(); \
         const char* data = state.c_str(); \
         size_t size = state.size(); \
-        if (size >= sizeof(uint32_t)) { \
-            uint32_t fly_magic_; \
-            std::memcpy(&fly_magic_, data, sizeof(uint32_t)); \
-            if (fly_magic_ == FLY_OBJECT_MAGIC) { \
-                DecompressingStreamBuf fly_dsbuf_(data, size); \
-                std::istream fly_is_(&fly_dsbuf_); \
-                FLY_DECODE_FROM_STREAM(fly_is_, Cls, obj); \
-                return; \
+        /* 同 __setstate_from_buffer__：损坏数据局部转 value_error，不裸穿透。 */ \
+        try { \
+            if (size >= sizeof(uint32_t)) { \
+                uint32_t fly_magic_; \
+                std::memcpy(&fly_magic_, data, sizeof(uint32_t)); \
+                if (fly_magic_ == FLY_OBJECT_MAGIC) { \
+                    DecompressingStreamBuf fly_dsbuf_(data, size); \
+                    std::istream fly_is_(&fly_dsbuf_); \
+                    FLY_DECODE_FROM_STREAM(fly_is_, Cls, obj); \
+                    return; \
+                } \
             } \
+            std::string s(data, size); \
+            FLY_DECODE(s, Cls, obj); \
+        } catch (const std::exception& e) { \
+            throw fly_export::value_error(e.what()); \
         } \
-        std::string s(data, size); \
-        FLY_DECODE(s, Cls, obj); \
     }) \
     .def_prop_ro("is_cpp", [](const Cls&) { return true; })

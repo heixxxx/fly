@@ -3,7 +3,6 @@
 #include <common/cpp/common_types.h>
 #include <cstdint>
 #include <shared_mutex>
-#include <stdexcept>
 
 #include <climits>
 
@@ -15,8 +14,10 @@ public:
 
     static CMSharedPtr<Config> instance();
 
-    void set_int(const CMString& key, int64_t value);
-    void set_str(const CMString& key, const CMString& value);
+    // workers launch 后 set 返回 false（值不变，ERR 日志），不抛异常——
+    // Python 侧 set 返回 bool，调用方可检查（对标 get_int 的 INVALID_INT 哨兵模式）。
+    bool set_int(const CMString& key, int64_t value);
+    bool set_str(const CMString& key, const CMString& value);
 
     int64_t get_int(const CMString& key) const;
     // 返回 by value：锁内拷贝后释放，避免调用方持引用期间并发 set_str 触发 rehash 造成悬空引用

@@ -966,11 +966,14 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
     // skip disk IO. Account by uncompressed size from the object header;
     // fall back to compressed size if the header cannot be parsed.
     size_t accounted = raw->size();
-    try {
+    {
+        ObjectHeader hdr;
         int64_t off = 0;
-        auto hdr = ObjectHeader::deserialize({raw->data(), raw->size()}, off);
-        if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
-    } catch (...) {}
+        if (ObjectHeader::deserialize({raw->data(), raw->size()}, off, hdr) &&
+            hdr.total_size_ > 0) {
+            accounted = static_cast<size_t>(hdr.total_size_);
+        }
+    }
     fly::ObjectCache::instance().put_low(object_name, raw, accounted);
 
     return {true, raw};

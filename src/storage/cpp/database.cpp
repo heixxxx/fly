@@ -303,12 +303,14 @@ fly::WriteErrorType Database::commit_stream(const CMString& object_name,
 
     int64_t original_size = 0;
     int32_t chunk_count = 0;
-    try {
+    {
+        ObjectHeader hdr;
         int64_t off = 0;
-        ObjectHeader hdr = ObjectHeader::deserialize({pure_record->data(), pure_record->size()}, off);
-        original_size = static_cast<int64_t>(hdr.total_size_);
-        chunk_count = static_cast<int32_t>(hdr.chunk_count_);
-    } catch (...) {}
+        if (ObjectHeader::deserialize({pure_record->data(), pure_record->size()}, off, hdr)) {
+            original_size = static_cast<int64_t>(hdr.total_size_);
+            chunk_count = static_cast<int32_t>(hdr.chunk_count_);
+        }
+    }
 
     return commit_write(object_name, full, pure_record, original_size, chunk_count,
                         backup, populate_cache);
@@ -330,13 +332,12 @@ std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMStrin
     if (!bypass_cache) {
         if (auto [hit, cached] = cache.get_low(full); hit) {
             CMString py_name;
-            try {
-                int64_t off = 0;
-                auto hdr = ObjectHeader::deserialize({cached->data(), cached->size()}, off);
+            ObjectHeader hdr;
+            int64_t off = 0;
+            if (ObjectHeader::deserialize({cached->data(), cached->size()}, off, hdr)) {
                 py_name = hdr.py_name_;
-            } catch (...) {
-                // Malformed cached entry — fall through to re-read from source.
             }
+            // Malformed cached entry（py_name 空）— fall through to re-read from source.
             if (!py_name.empty()) {
                 // backup=True means the caller wants a persisted local replica.
                 // The low-tier cache is memory-only and does NOT imply a local
@@ -372,12 +373,14 @@ std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMStrin
     // Populate low tier: account by uncompressed size from the object header
     // (fall back to compressed size if the header cannot be parsed).
     size_t accounted = comp_data->size();
-    try {
+    {
+        ObjectHeader hdr;
         int64_t off = 0;
-        auto hdr = ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, off);
-        if (hdr.total_size_ > 0) accounted = static_cast<size_t>(hdr.total_size_);
-    } catch (...) {
-        // Keep compressed-size accounting.
+        if (ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, off, hdr) &&
+            hdr.total_size_ > 0) {
+            accounted = static_cast<size_t>(hdr.total_size_);
+        }
+        // Keep compressed-size accounting when the header cannot be parsed.
     }
     cache.put_low(full, comp_data, accounted);
 
@@ -408,7 +411,15 @@ void Database::do_backup_write(const CMString& full, const CMString& object_name
     }
 
     int64_t h_off = 0;
-    ObjectHeader header = ObjectHeader::deserialize(compressed_data, h_off);
+    ObjectHeader header;
+    if (!ObjectHeader::deserialize(compressed_data, h_off, header)) {
+        // 源数据损坏（header 解析失败）：与 register_write 失败同款处理——
+        // 撤写登记 + 恢复 write context + 放弃 backup，不落盘坏数据。
+        ds->on_write_failed(db_path_, full, "do_backup_write: corrupted source object header");
+        fly::WorkerAgentContext::set_current_write_hash(saved_hash);
+        ERR("do_backup_write: corrupted object header for '{}'", object_name);
+        return;
+    }
 
     DataWriter* w = writer_.get();
     // 同步 record_write（同 commit_write 的修复理由：避免异步 on_complete_ 竞态）。
@@ -598,8 +609,15 @@ DbMeta Database::load_meta_from_path(const CMString& db_path) {
         return {};
     }
 
+    // _DB_META header 损坏（FLY_DECODE 抛）与 size 防御同级：按无 meta 处理，
+    // 不让异常向上穿透（同下方 WorkerInfo record 的局部 catch 模式）。
     DbMetaHeader header;
-    FLY_DECODE(header_data, DbMetaHeader, header);
+    try {
+        FLY_DECODE(header_data, DbMetaHeader, header);
+    } catch (const std::exception& e) {
+        ERR("Corrupted _DB_META header: {}", e.what());
+        return {};
+    }
 
     CMVector<WorkerInfo> workers;
     while (true) {

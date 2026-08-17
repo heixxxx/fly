@@ -1,6 +1,6 @@
 #include <serialization/cpp/object_header.h>
 #include <cstring>
-#include <stdexcept>
+#include <utility>
 
 CMString ObjectHeader::serialize() const {
     CMString result;
@@ -34,25 +34,25 @@ CMString ObjectHeader::serialize() const {
     return result;
 }
 
-ObjectHeader ObjectHeader::deserialize(std::string_view data, int64_t& offset) {
+bool ObjectHeader::deserialize(std::string_view data, int64_t& offset, ObjectHeader& out) {
     ObjectHeader header;
 
     if (static_cast<int64_t>(data.size()) < offset + fixed_header_size()) {
-        throw std::runtime_error("ObjectHeader: insufficient data for fixed header");
+        return false;
     }
 
     std::memcpy(&header.magic_, data.data() + offset, sizeof(header.magic_));
     offset += sizeof(header.magic_);
 
     if (!header.is_valid()) {
-        throw std::runtime_error("ObjectHeader: invalid magic number");
+        return false;
     }
 
     std::memcpy(&header.version_, data.data() + offset, sizeof(header.version_));
     offset += sizeof(header.version_);
 
     if (header.version_ > FLY_OBJECT_VERSION) {
-        throw std::runtime_error("ObjectHeader: unsupported version " + std::to_string(header.version_));
+        return false;
     }
 
     std::memcpy(&header.py_name_len_, data.data() + offset, sizeof(header.py_name_len_));
@@ -69,13 +69,14 @@ ObjectHeader ObjectHeader::deserialize(std::string_view data, int64_t& offset) {
 
     if (header.py_name_len_ > 0) {
         if (static_cast<int64_t>(data.size()) < offset + header.py_name_len_) {
-            throw std::runtime_error("ObjectHeader: insufficient data for py_name");
+            return false;
         }
         header.py_name_.assign(data.data() + offset, header.py_name_len_);
         offset += header.py_name_len_;
     }
 
-    return header;
+    out = std::move(header);
+    return true;
 }
 
 bool ObjectHeader::is_valid() const {

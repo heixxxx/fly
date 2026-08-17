@@ -21,10 +21,8 @@ int PeerRpcServer::listen(const CMString& host, int port, RequestHandler handler
     }
     request_handler_ = std::move(handler);
     response_handler_ = nullptr;  // 服务端模式通常不收 response（但双向也可）
-    try {
-        transport_->listen(host, port);
-    } catch (const std::exception& e) {
-        ERR("PeerRpcServer listen failed: {}", e.what());
+    if (!transport_->listen(host, port)) {
+        ERR("PeerRpcServer listen failed on {}:{}", host, port);
         return 0;
     }
     int bound_port = transport_->get_bound_port();

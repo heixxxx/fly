@@ -18,7 +18,12 @@ DecompressingStreamBuf::DecompressingStreamBuf(const char* data, size_t size)
 
     CMString header_data(data, full_header_sz);
     int64_t offset = 0;
-    ObjectHeader header = ObjectHeader::deserialize(header_data, offset);
+    ObjectHeader header;
+    if (!ObjectHeader::deserialize(header_data, offset, header)) {
+        // 坏 header（magic/版本不符）：与前置 size 防御同款降级——chunk_data_
+        // 保持空，refill 直接 eof（空流），不向上抛。
+        return;
+    }
 
     py_name_ = header.py_name_;
     auto comp_type = static_cast<CompressionType>(header.compression_type_);

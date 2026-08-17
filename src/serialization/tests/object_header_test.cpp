@@ -26,7 +26,8 @@ TEST(ObjectHeaderTest, SerializeDeserializeNoPyName) {
     EXPECT_EQ(serialized.size(), static_cast<size_t>(ObjectHeader::fixed_header_size()));
 
     int64_t offset = 0;
-    ObjectHeader decoded = ObjectHeader::deserialize(serialized, offset);
+    ObjectHeader decoded;
+    ASSERT_TRUE(ObjectHeader::deserialize(serialized, offset, decoded));
     EXPECT_EQ(offset, ObjectHeader::fixed_header_size());
     EXPECT_EQ(decoded.magic_, FLY_OBJECT_MAGIC);
     EXPECT_EQ(decoded.version_, 1);
@@ -48,7 +49,8 @@ TEST(ObjectHeaderTest, SerializeDeserializeWithPyName) {
     EXPECT_EQ(serialized.size(), static_cast<size_t>(ObjectHeader::fixed_header_size() + 9));
 
     int64_t offset = 0;
-    ObjectHeader decoded = ObjectHeader::deserialize(serialized, offset);
+    ObjectHeader decoded;
+    ASSERT_TRUE(ObjectHeader::deserialize(serialized, offset, decoded));
     EXPECT_EQ(offset, ObjectHeader::fixed_header_size() + 9);
     EXPECT_EQ(decoded.py_name_, "SomeClass");
     EXPECT_EQ(decoded.py_name_len_, 9);
@@ -69,7 +71,8 @@ TEST(ObjectHeaderTest, IsValid) {
 TEST(ObjectHeaderTest, DeserializeInsufficientData) {
     CMString short_data(5, '\0');
     int64_t offset = 0;
-    EXPECT_THROW(ObjectHeader::deserialize(short_data, offset), std::runtime_error);
+    ObjectHeader decoded;
+    EXPECT_FALSE(ObjectHeader::deserialize(short_data, offset, decoded));
 }
 
 TEST(ObjectHeaderTest, DeserializeFutureVersion) {
@@ -78,7 +81,8 @@ TEST(ObjectHeaderTest, DeserializeFutureVersion) {
     CMString serialized = header.serialize();
 
     int64_t offset = 0;
-    EXPECT_THROW(ObjectHeader::deserialize(serialized, offset), std::runtime_error);
+    ObjectHeader decoded;
+    EXPECT_FALSE(ObjectHeader::deserialize(serialized, offset, decoded));
 }
 
 TEST(ObjectHeaderTest, RoundTripCppOnly) {
@@ -89,7 +93,8 @@ TEST(ObjectHeaderTest, RoundTripCppOnly) {
 
     CMString serialized = header.serialize();
     int64_t offset = 0;
-    ObjectHeader decoded = ObjectHeader::deserialize(serialized, offset);
+    ObjectHeader decoded;
+    ASSERT_TRUE(ObjectHeader::deserialize(serialized, offset, decoded));
 
     EXPECT_EQ(decoded.total_size_, 65536);
     EXPECT_EQ(decoded.chunk_count_, 16);
@@ -106,9 +111,23 @@ TEST(ObjectHeaderTest, RoundTripPythonClass) {
 
     CMString serialized = header.serialize();
     int64_t offset = 0;
-    ObjectHeader decoded = ObjectHeader::deserialize(serialized, offset);
+    ObjectHeader decoded;
+    ASSERT_TRUE(ObjectHeader::deserialize(serialized, offset, decoded));
 
     EXPECT_EQ(decoded.py_name_, "MyTask");
     EXPECT_EQ(decoded.total_size_, 4096);
     EXPECT_EQ(decoded.chunk_count_, 1);
+}
+
+TEST(ObjectHeaderTest, DeserializeBadMagic) {
+    ObjectHeader header;
+    header.total_size_ = 1;
+    CMString serialized = header.serialize();
+    // 破坏 magic 前 4 字节（version 等保持合法）→ 返回 false 而非抛异常。
+    serialized[0] = '\xff';
+    serialized[1] = '\xff';
+
+    int64_t offset = 0;
+    ObjectHeader decoded;
+    EXPECT_FALSE(ObjectHeader::deserialize(serialized, offset, decoded));
 }

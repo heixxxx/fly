@@ -89,7 +89,12 @@ void WorkerAgent::start() {
 
 
     auto transport = create_connection_manager("tcp");
-    transport->listen("0.0.0.0", 0);
+    if (!transport || !transport->listen("0.0.0.0", 0)) {
+        // transport 创建/监听失败与 master 连接失败同级：worker 无法服务，
+        // 干净退出 start()（running_ 保持 false），调用方经 is_running() 观察。
+        ERR("Worker transport listen failed — worker cannot start");
+        return;
+    }
     // connect 指数退避重试：覆盖瞬时网络抖动与 master 短时过载（listen backlog
     // 满导致的拒绝/超时）。领域约束：master 挂 = 全群失败，不做"等 master 出现"
     // 的长期等待——总保活窗口与 master 占位符共用 worker_register_timeout
@@ -2141,9 +2146,19 @@ void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_n
     }
 
     // 2. 解析 ObjectHeader 拿到 total_size / chunk_count（落盘需要）。
+    //    源数据损坏（header 解析失败）与源缺失同级：TaskFailed，不落盘坏数据。
     int64_t h_off = 0;
-    ObjectHeader header = ObjectHeader::deserialize(
-        CMString(comp_data->data(), comp_data->size()), h_off);
+    ObjectHeader header;
+    if (!ObjectHeader::deserialize(
+            CMString(comp_data->data(), comp_data->size()), h_off, header)) {
+        ERR("Internal merge: corrupted object header for '{}'", source_full);
+        TaskFailedMessage failed;
+        failed.task_id_ = task_id;
+        failed.worker_id_ = worker_id_;
+        failed.error_message_ = "Internal merge: corrupted source object header: " + source_full;
+        reactor_->send(master_conn_, failed);
+        return;
+    }
 
     // 3. 用 target_db_path 落盘（产物命名空间）。register_database 让本 worker 的 DataServer
     //    能服务 merge 后的对象。

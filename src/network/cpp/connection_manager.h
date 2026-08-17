@@ -28,7 +28,9 @@ class ConnectionManager {
 public:
     virtual ~ConnectionManager() = default;
 
-    virtual void listen(const CMString& address, int port) = 0;
+    // 监听 address:port。返回 false = bind/epoll 失败（调用方决定是否致命），
+    // 不抛异常（与 connect 的 0 哨兵错误通道对称）。
+    virtual bool listen(const CMString& address, int port) = 0;
     virtual void stop_listening() = 0;
 
     // Connect to remote. Returns conn_id (>=1) on success, 0 on failure.

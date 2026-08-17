@@ -17,20 +17,26 @@ Config::Config() {
     str_values_ = STR_DEFAULTS;
 }
 
-void Config::set_int(const CMString& key, int64_t value) {
+bool Config::set_int(const CMString& key, int64_t value) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     if (workers_launched_) {
-        throw std::runtime_error("Config must be set before workers are launched");
+        fprintf(stderr, "[ERR] Config::set_int rejected after workers launched: key '%s'\n",
+                key.c_str());
+        return false;
     }
     int_values_[key] = value;
+    return true;
 }
 
-void Config::set_str(const CMString& key, const CMString& value) {
+bool Config::set_str(const CMString& key, const CMString& value) {
     std::unique_lock<std::shared_mutex> lock(mutex_);
     if (workers_launched_) {
-        throw std::runtime_error("Config must be set before workers are launched");
+        fprintf(stderr, "[ERR] Config::set_str rejected after workers launched: key '%s'\n",
+                key.c_str());
+        return false;
     }
     str_values_[key] = value;
+    return true;
 }
 
 int64_t Config::get_int(const CMString& key) const {

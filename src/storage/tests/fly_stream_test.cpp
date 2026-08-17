@@ -42,7 +42,8 @@ TEST(FlyStreamBasicTest, SmallPayloadSkipsCompression) {
 
     // Header.compression_type_ must reflect the actual (skipped) format.
     int64_t off = 0;
-    auto hdr = ObjectHeader::deserialize({buf->data(), buf->size()}, off);
+    ObjectHeader hdr;
+    ASSERT_TRUE(ObjectHeader::deserialize({buf->data(), buf->size()}, off, hdr));
     EXPECT_EQ(static_cast<CompressionType>(hdr.compression_type_), CompressionType::NONE);
     EXPECT_EQ(hdr.py_name_, "SmallObj");
 
@@ -62,7 +63,8 @@ TEST(FlyStreamBasicTest, LargePayloadStillCompresses) {
     auto buf = w.finish_write();
 
     int64_t off = 0;
-    auto hdr = ObjectHeader::deserialize({buf->data(), buf->size()}, off);
+    ObjectHeader hdr;
+    ASSERT_TRUE(ObjectHeader::deserialize({buf->data(), buf->size()}, off, hdr));
     EXPECT_EQ(static_cast<CompressionType>(hdr.compression_type_), CompressionType::LZ4);
 
     FlyStream r(buf);

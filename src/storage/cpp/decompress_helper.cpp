@@ -11,12 +11,11 @@ CMString decompress_raw_data(const CMString& raw_data) {
     // Read expected decompressed size from ObjectHeader
     int64_t offset = 0;
     int64_t expected_size = 0;
-    try {
-        ObjectHeader header = ObjectHeader::deserialize(raw_data, offset);
-        if (header.total_size_ > 0) {
+    {
+        ObjectHeader header;
+        if (ObjectHeader::deserialize(raw_data, offset, header) && header.total_size_ > 0) {
             expected_size = static_cast<int64_t>(header.total_size_);
         }
-    } catch (...) {
         // If header parsing fails, use default size
     }
 

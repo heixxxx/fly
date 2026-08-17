@@ -37,14 +37,20 @@ TEST(ConfigTest, SetAndGetStr) {
     EXPECT_EQ(config->get_str("test_key2"), "hello");
 }
 
-TEST(ConfigTest, ThrowsAfterWorkersLaunched) {
+TEST(ConfigTest, SetRejectedAfterWorkersLaunched) {
     auto config = Config::instance();
     config->reset();
-    
+
+    config->set_int("frozen_key", 1);
     config->mark_workers_launched();
-    
-    EXPECT_THROW(config->set_int("any_key", 1), std::runtime_error);
-    EXPECT_THROW(config->set_str("any_key", "value"), std::runtime_error);
+
+    // launch 后 set 返回 false（错误码通道，不再 throw）：值不变。
+    EXPECT_FALSE(config->set_int("frozen_key", 2));
+    EXPECT_FALSE(config->set_str("frozen_key2", "value"));
+    EXPECT_EQ(config->get_int("frozen_key"), 1);
+    config->reset();
+    EXPECT_TRUE(config->set_int("post_reset_key", 3));
+    EXPECT_EQ(config->get_int("post_reset_key"), 3);
 }
 
 TEST(ConfigTest, WorkersLaunchedState) {

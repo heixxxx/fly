@@ -10,10 +10,6 @@ namespace fly {
 TcpConnectionManager::TcpConnectionManager() {
     transport_ = create_tcp_transport();
     epoll_ = create_epoll_multiplexer();
-    epoll_fd_ = epoll_->create();
-    if (epoll_fd_ < 0) {
-        throw std::runtime_error("Failed to create epoll");
-    }
 }
 
 TcpConnectionManager::~TcpConnectionManager() {
@@ -25,17 +21,31 @@ TcpConnectionManager::~TcpConnectionManager() {
     }
 }
 
-void TcpConnectionManager::listen(const CMString& address, int port) {
+bool TcpConnectionManager::ensure_epoll() {
+    if (epoll_fd_ >= 0) return true;
+    epoll_fd_ = epoll_->create();
+    if (epoll_fd_ < 0) {
+        ERR("Failed to create epoll");
+        return false;
+    }
+    return true;
+}
+
+bool TcpConnectionManager::listen(const CMString& address, int port) {
+    if (!ensure_epoll()) return false;
     listen_fd_ = transport_->create_listen_socket(address, port);
     if (listen_fd_ < 0) {
-        throw std::runtime_error("Failed to create listen socket");
+        ERR("Failed to create listen socket for {}:{}", address, port);
+        return false;
     }
 
     if (!epoll_->add(epoll_fd_, listen_fd_, EV_READ)) {
+        ERR("Failed to add listen socket to epoll for {}:{}", address, port);
         transport_->close(listen_fd_);
         listen_fd_ = -1;
-        throw std::runtime_error("Failed to add listen socket to epoll");
+        return false;
     }
+    return true;
 }
 
 void TcpConnectionManager::stop_listening() {
@@ -47,6 +57,10 @@ void TcpConnectionManager::stop_listening() {
 }
 
 uint64_t TcpConnectionManager::connect(const CMString& address, int port) {
+    if (!ensure_epoll()) {
+        WARN("epoll unavailable, connect to {}:{} failed", address, port);
+        return 0;
+    }
     int fd = transport_->create_connection(address, port);
     if (fd < 0) {
         WARN("connect failed to {}:{}", address, port);
@@ -357,7 +371,8 @@ CMUniquePtr<ConnectionManager> create_connection_manager(const CMString& type) {
     if (type == "tcp") {
         return CMMakeUnique<TcpConnectionManager>();
     }
-    throw std::runtime_error("Unknown connection manager type: " + type);
+    ERR("Unknown connection manager type: {}", type);
+    return nullptr;
 }
 
 }  // namespace fly
