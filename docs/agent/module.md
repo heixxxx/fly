@@ -129,9 +129,23 @@ WorkerAgent.start()
   1. 创建 Transport + Data Server
   2. 连接 Master
   3. 创建 Reactor，注册 message handlers
-  4. 启动 reactor_thread_ 和 heartbeat_thread_
+  4. 启动 reactor_thread_、heartbeat_thread_ 和 register_watchdog_thread_
   5. 发送 RegisterMessage
 ```
+
+### 注册守望（register_watchdog_loop，P3-23 兜底）
+
+- **职责分层**：连接级丢失（RegisterAck 丢失的真实主因）由
+  `on_disconnect → reconnect_loop` 事件驱动恢复（毫秒级，无超时参与）；
+  守望只覆盖「master 活着但 REGISTER/RegisterAck 被应用层吞掉」——
+  EOF 不会到来的窄场景。
+- **事件驱动**：cv 等 RegisterAck（`on_register_ack` 持锁 notify，
+  注册成功即刻退出，零空转；`initiate_shutdown` 同步唤醒）。
+- **退避重发**：超时指数退避（`worker_register_ack_retry_initial_ms`
+  默认 500ms，×2 上限 30s）；master 对同 conn 重发走正常注册路径，
+  幂等安全；`reconnecting_` 期间让位 reconnect_loop。
+- **join 顺序**：do_cleanup 按 reconnect → watchdog → heartbeat →
+  reactor 依赖序回收。
 
 ### 任务执行流程
 

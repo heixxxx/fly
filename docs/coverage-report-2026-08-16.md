@@ -130,11 +130,13 @@
 
 ## 五、结论与建议（优先级）
 
-1. **补 auto_backup EWMA 判定的 for_testing hook + 单测 + QA e2e**（当前唯一"双侧零覆盖"的活跃机制；补 QA 前先修 backup category 结构）。
-2. **断连宽限重连 QA e2e**（复用 simulate_master_disconnect 钩子——目前仅 diag 脚本使用；或加 reconnect_timeout>0 的双阶段 case）。
-3. **处置 8 个游离 Python 测试**：test_requires_parsing.py 注册进 BUILD（恢复 requires 解析 CI 覆盖）、test_read_cache.py 注册或并入、其余 6 个删除。
-4. **清理冗余**：backup 三胞胎归一 + 孤儿 run1/run2 接回 .pyt（恢复两进程场景）；freeze 家族合并；solver 参数矩阵收敛；R2/R3 直接删。
-5. PeerRpcServer 单测（listen/connect/重连/BYE 帧——v2 daemon 的通信底座只有 QA 兜底）。
-6. main.py 覆盖率缺口（48%）部分为测量盲区（spawn 路径未注入 coverage env），可在 measure_coverage.sh 对 spawn 路径补 env 透传。
+> 2026-08-17 状态更新：建议 1-5 已全部落地（见 DOC_CHANGELOG 2026-08-16 (8) / 2026-08-17 系列）；建议 6 的 main.py 缺口确认为合理缺口（交互模式 + 异常路径，spawn 路径的 FLY_PYCOVERAGE 透传已存在于 _spawn_process_worker）。附带产出：G2 边界缺陷修复（宽限期 IDLE worker 仍被调度）、P3-24 npz 原子写、P3-23 注册守望（ack 丢失幂等重发兜底）。
+
+1. ~~**补 auto_backup EWMA 判定的 for_testing hook + 单测 + QA e2e**~~ ✅ 已完成（5 单测 + test_auto_backup_suggest 全链路 e2e）。
+2. ~~**断连宽限重连 QA e2e**~~ ✅ 已完成（test_disconnect_reconnect_grace；顺带发现并修复 G2 边界缺陷：宽限期 IDLE worker 退出调度候选 in_grace_）。
+3. ~~**处置 8 个游离 Python 测试**~~ ✅ 已完成（requires_parsing/read_cache 注册进 BUILD；删 6 个重复文件）。
+4. ~~**清理冗余**~~ ✅ 已完成（backup 三胞胎重建 + 孤儿接回；freeze 家族删字节级重复、保留 4 个独立语义面——修正原"×5 合并"结论；solver 参数矩阵 14→1）。
+5. ~~PeerRpcServer 单测~~ ✅ 已完成（7 用例：listen/往返/延迟响应/失败通知/BYE/重试/stop）。
+6. ~~main.py 覆盖率缺口~~ ⚪ 确认合理缺口（见上），无需动作。
 
 > 覆盖率快照报告按文档约定不长期保留，结论沉淀于本文件与 coverage-testing.md；下次测量直接重跑 tools/measure_coverage.sh。

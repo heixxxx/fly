@@ -94,6 +94,7 @@ private:
 | `worker_register_timeout` | 0 | **首次注册**占位符超时（秒）。默认 0=master 不等待不假设任何超时（worker 任意时刻注册都被接受）；>0 时超时未注册的占位符被 heartbeat 线程清理（WARN），并作为 `fly.wait_workers_registered()` 默认超时。worker 首连重试窗口同此键（两侧一致）。 |
 | `worker_reconnect_timeout` | 120 | **断连重连**宽限窗口（秒），两侧对等：worker 断连后指数退避重连的总窗口（重连期间 task 在 worker 上继续执行、上报缓冲，重连后 flush）；master 对断连 worker 的判死宽限（宽限内 task 存活 RUNNING、不重调度、worker 状态保留、豁免心跳判死；超时判死 → task 重排队 + 数据全灭快速失败）。0=不重连不宽限（旧的"断连即死"逃生口）。master 挂=全群失败：worker 最多多活宽限窗口后干净退出。 |
 | `worker_connect_retry_initial_ms` | 500 | connect 重试首次间隔（毫秒），指数 ×2 递增（单次上限 10s 硬编码）；首连与断连重连共用。 |
+| `worker_register_ack_retry_initial_ms` | 500 | **注册守望**的超时退避初值（毫秒），指数 ×2 递增（单次上限 30s 硬编码）。P3-23 兜底：master 活着但 REGISTER/RegisterAck 被应用层吞掉时，watchdog 线程退避重发（幂等）；连接级丢失不走此路径（由 on_disconnect → reconnect_loop 事件驱动恢复）。 |
 
 #### string 配置项
 

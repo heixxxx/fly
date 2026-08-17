@@ -3,6 +3,21 @@
 ---
 ---
 
+## 2026-08-17 (4): 注册守望文档同步 + 审计行动状态收口
+
+- core/module.md：worker 生命周期键表补 worker_register_ack_retry_
+  initial_ms（职责分层说明：连接级丢失走事件驱动重连，守望仅覆盖
+  应用层吞消息）
+- architecture.md §4.2：Worker 线程表补 Register Watchdog Thread 与
+  Reconnect Thread 两行
+- agent/module.md：WorkerAgent 启动流程更新 + 新增「注册守望」小节
+  （职责分层/事件驱动/退避重发/join 顺序）
+- coverage-report-2026-08-16.md：§五建议 1-6 全部标注完成状态
+  （含 G2/P3-24/P3-23 三个附带修复的产出记录；建议 6 确认为合理缺口）
+
+---
+---
+
 ## 2026-08-17 (3): 注册守望重构——固定间隔轮询改为事件驱动 + 指数退避
 
 用户 review 指出 30s 固定间隔寄生 heartbeat 循环的实现丑陋（职责耦合

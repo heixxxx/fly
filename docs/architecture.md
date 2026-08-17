@@ -431,6 +431,8 @@ worker 生命周期语义（用户确认，两阶段）：
 | Reactor Thread | epoll 事件循环 (Master conn + Data Server) | `reactor_->stop()` |
 | Data Server epoll | 接收数据请求 | stop() |
 | Data Server send threads | 发送数据响应（线程池，可配置） | stop() |
+| Register Watchdog Thread | 等 RegisterAck（事件驱动）；master 活着但注册/ack 被应用层吞掉时指数退避重发（P3-23 兜底；连接级丢失由重连路径恢复） | CV notify + join |
+| Reconnect Thread | 断连宽限内指数退避重连 + 重发注册 + 等确认 | running_ flag + join |
 | Heartbeat Thread | 每 10s 发送心跳 | CV notify + join |
 
 > 心跳周期为代码硬编码（master 检查 5s / worker 发送 10s，`master_agent.cpp` / `worker_agent.cpp`）；config 键 `heartbeat_interval=5` 当前无消费方。
