@@ -185,6 +185,14 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
         ERR("Write registration failed: {} (type={})", reg_error, static_cast<int>(reg_error_type));
         return fly::WriteErrorType::REGISTRATION_FAILED;
     }
+    if (reg_error_type == fly::TaskErrorType::WRITE_REGISTRATION_FAILED) {
+        // 注册被拒的通用兜底（空 hash 到达 master / worker 终止未确认 /
+        // master 未运行）——与 mismatch 同款撤缓存 + on_write_failed 处理。
+        fly::ObjectCache::instance().remove(full);
+        fly::DataService::instance()->on_write_failed(db_path_, full, reg_error);
+        ERR("Write registration rejected: {} (type={})", reg_error, static_cast<int>(reg_error_type));
+        return fly::WriteErrorType::REGISTRATION_FAILED;
+    }
     if (reg_error_type == fly::TaskErrorType::WRITE_REGISTRATION_TIMEOUT) {
         fly::ObjectCache::instance().remove(full);
         fly::DataService::instance()->on_write_failed(db_path_, full, reg_error);

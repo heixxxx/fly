@@ -5,9 +5,13 @@
 namespace fly {
 
 enum class TaskErrorType {
-    UNKNOWN = 0,
+    UNKNOWN = 0,               // "无错误"哨兵（多处 `!= UNKNOWN` 判失败），非字面"未知错误"
     EXECUTION_ERROR = 1,
     WRITE_TO_FROZEN_DB = 2,
+    // 写注册被拒的通用兜底：空 write_context_hash 到达 master（非法请求，非
+    // provenance mismatch）/ worker 终止时注册未确认 / master 未运行窗口。
+    // 原设想「对象已存在拒绝」（issue 003 方案 A）已被 DUPLICATE_SKIPPED +
+    // provenance 体系取代。
     WRITE_REGISTRATION_FAILED = 3,
     WRITE_REGISTRATION_TIMEOUT = 4,
     WRITE_PROVENANCE_MISMATCH = 5,

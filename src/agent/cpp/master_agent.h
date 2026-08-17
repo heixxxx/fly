@@ -125,6 +125,9 @@ public:
     // 消息处理入口（public 供测试直接调用，reactor 通过 lambda 调用）：
     void on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg);
     void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
+    // 同步写注册裁决（on_write_register 的核心，无网络副作用前半段）——
+    // public 供测试直调失败分类（frozen/mismatch/空 hash REGISTRATION_FAILED）。
+    WriteRegisterAckMessage do_write_register(const WriteRegisterMessage& msg);
     CMSharedPtr<Database> get_or_create_database(const CMString& db_path, const CMString& data_path = "", uint64_t writer_id = 0);
     // 取 db_instances_ 里的权威 Database（load_db/merge 复用，避免 Python 端再构造一个
     // 会触发 DataService::unregister 析构副作用的临时 Database）。miss 返回 nullptr。
@@ -548,7 +551,6 @@ private:
     void on_error(uint64_t conn_id, int error_code);
     void on_data_query_dispatch(uint64_t conn_id, const DataQueryMessage& msg);
     void on_write_register(uint64_t conn_id, const WriteRegisterMessage& msg);
-    WriteRegisterAckMessage do_write_register(const WriteRegisterMessage& msg);
     void record_worker_info(const CMString& object_name, const CMString& db_path,
                             uint64_t worker_id, const CMString& writer_id);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);

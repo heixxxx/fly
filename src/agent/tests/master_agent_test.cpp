@@ -2609,6 +2609,35 @@ TEST(MasterAgentTest, MasterSelfWriteRegistersProvenance) {
     DataService::instance()->remove_remote_index(db_path + ":" + obj);
 }
 
+// 空 write_context_hash 到达 master 是非法注册请求（上游 commit_write 时间戳
+// guard / task context 应保证非空）——语义上没有「已有 hash 的对比」，不是
+// provenance mismatch。启用 WRITE_REGISTRATION_FAILED（注册被拒的通用兜底）
+// 后按其字面语义归类（原实现落入 provenance 空分支误标 MISMATCH）。
+TEST(MasterAgentTest, EmptyWriteContextHashRejectedAsRegistrationFailed) {
+    WorkerAgentContext::clear();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    master.setup_write_context();
+    wait_for_running(master, true);
+
+    WriteRegisterMessage msg;
+    msg.worker_id_ = 42;
+    CMString db_path = db32("empty_hash_reg");
+    msg.object_name_ = db_path + ":obj";
+    msg.db_path_ = db_path;
+    msg.size_bytes_ = 1;
+    msg.write_context_hash_ = "";   // 空 hash 直接到达 master（异常路径）
+
+    auto ack = master.do_write_register(msg);
+    EXPECT_FALSE(ack.success_);
+    EXPECT_EQ(ack.error_type_, TaskErrorType::WRITE_REGISTRATION_FAILED);
+
+    master.stop();
+    wait_for_running(master, false);
+    WorkerAgentContext::clear();
+    DataService::instance()->remove_remote_index(db_path + ":obj");
+}
+
 // Part B: restore_master_idx 从 idx entry 的 write_context_hash_ 重建 write_provenance_。
 // load 后用不同 hash 写同对象 → mismatch（provenance 已从 idx 恢复）。
 TEST(MasterAgentTest, RestoreIdxRebuildsProvenance) {

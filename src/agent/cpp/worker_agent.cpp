@@ -964,7 +964,7 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
         [](PendingWriteRegister& p) {
             p.completed_ = true;
             p.success_ = false;
-            p.error_type_ = TaskErrorType::UNKNOWN;
+            p.error_type_ = TaskErrorType::WRITE_REGISTRATION_FAILED;
             p.error_message_ = "worker shutting down before registration confirmed";
         });
     pending_db_paths_.complete_all_if(
@@ -1390,10 +1390,12 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
         }
         if (!result) {
             // 防御上限耗尽（正常路径不应到达——shutdown/注册确认必先唤醒）。
+            // 归类 TIMEOUT：与下方已注册分支的注册超时对称（同一等待语义的
+            // 两个窗口），原 UNKNOWN 丢语义。
             CMString error_msg = "WriteRegister pending timeout: " + full_name;
             ERR("{}", error_msg);
-            WorkerAgentContext::set_last_error_type(TaskErrorType::UNKNOWN);
-            return {error_msg, TaskErrorType::UNKNOWN};
+            WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_REGISTRATION_TIMEOUT);
+            return {error_msg, TaskErrorType::WRITE_REGISTRATION_TIMEOUT};
         }
         return {"", TaskErrorType::UNKNOWN};
     }

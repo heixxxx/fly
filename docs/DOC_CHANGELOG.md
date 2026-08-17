@@ -3,6 +3,35 @@
 ---
 ---
 
+## 2026-08-17 (7): 启用 WRITE_REGISTRATION_FAILED——写注册被拒的通用兜底（4 落点）
+
+定义于 error_types.h 但生产零使用的错误码启用。产生端换值后链路自动透传
+（Ack→PendingWriteRegister→last_error_type→database.cpp→Python raise）：
+
+- **①空 hash 到达 master**（do_write_register 前置判定）：非法注册请求
+  （上游 commit_write 时间戳 guard 应保证非空），原落入 provenance 空分支
+  误标 WRITE_PROVENANCE_MISMATCH——语义上没有「已有 hash 的对比」。
+- **②未注册窗口防御超时**（worker register_write_with_master 300s 上限
+  耗尽）→ WRITE_REGISTRATION_TIMEOUT（与已注册分支 5s 超时对称，原 UNKNOWN）。
+- **③worker 终止批量 fail pending 写注册**（initiate_shutdown + 测试 hook
+  镜像同步）→ WRITE_REGISTRATION_FAILED（「注册未确认」的字面语义，原 UNKNOWN）。
+- **④master 自写 running_=false**（on_master_register_write）→ 
+  WRITE_REGISTRATION_FAILED + 错误消息（原 {"",UNKNOWN} 被调用方当成功放行，
+  写未经 provenance 裁决）。
+- **database.cpp 补 WRITE_REGISTRATION_FAILED 映射分支**：撤缓存 +
+  on_write_failed → WriteErrorType::REGISTRATION_FAILED（原会漏过四个 if
+  静默当成功）。Python database.py 映射已存在无需改。
+- error_types.h 注明新语义；原设想「对象已存在拒绝」（issue 003 方案 A）
+  已被 DUPLICATE_SKIPPED + provenance 体系取代，注释记录。
+- 测试（TDD 先红后绿）：master_agent_test 新增
+  EmptyWriteContextHashRejectedAsRegistrationFailed（do_write_register 移
+  public 供测试直调失败分类）；worker_agent_test
+  WriteRegisterPendingBlocksUntilReconnected 段一补终止唤醒 error_type 断言。
+- 验证：单测 60/60 + QA 149/149。
+
+---
+---
+
 ## 2026-08-17 (6): throw→error code 核心残留清零（10 处消除 + FLY_DECODE 暴露点收口）
 
 - **config.cpp set_int/set_str void→bool**（对标 get_int INVALID_INT 哨兵）：

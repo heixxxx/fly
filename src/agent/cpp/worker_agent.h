@@ -473,7 +473,7 @@ public:
             [](PendingWriteRegister& p) {
                 p.completed_ = true;
                 p.success_ = false;
-                p.error_type_ = TaskErrorType::UNKNOWN;
+                p.error_type_ = TaskErrorType::WRITE_REGISTRATION_FAILED;
                 p.error_message_ = "worker shutting down before registration confirmed";
             });
     }

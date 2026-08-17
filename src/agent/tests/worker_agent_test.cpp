@@ -874,10 +874,12 @@ TEST(WorkerAgentTest, WriteRegisterPendingBlocksUntilReconnected) {
         WorkerAgent worker(9, "127.0.0.1", 0);  // 不 start：永无注册确认
         std::atomic<bool> done{false};
         std::atomic<bool> ok{false};
+        std::atomic<int> err_type{0};
         std::thread writer([&] {
             auto [err, type] = worker.register_write_with_master_for_testing(
                 db32("pend_alone"), "obj", 100);
             ok = err.empty();
+            err_type = static_cast<int>(type);
             done = true;
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -886,6 +888,9 @@ TEST(WorkerAgentTest, WriteRegisterPendingBlocksUntilReconnected) {
         writer.join();
         EXPECT_TRUE(done.load());
         EXPECT_FALSE(ok.load()) << "terminated worker's pending register must fail";
+        // 终止时「注册未确认」按字面语义归类 WRITE_REGISTRATION_FAILED（原 UNKNOWN
+        // 丢语义——task 失败上报与 database.cpp 映射链无从区分拒绝原因）。
+        EXPECT_EQ(err_type.load(), static_cast<int>(TaskErrorType::WRITE_REGISTRATION_FAILED));
     }
 
     // ── 段二：真网络，断连 → pending → 重连重放 → 确认 ──

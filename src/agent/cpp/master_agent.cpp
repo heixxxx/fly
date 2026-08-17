@@ -2175,6 +2175,14 @@ WriteRegisterAckMessage MasterAgent::do_write_register(const WriteRegisterMessag
             ack.error_message_ = "Database frozen: " + msg.db_path_;
             ack.error_type_ = TaskErrorType::WRITE_TO_FROZEN_DB;
             WARN("WriteRegister rejected: db {} is frozen", msg.db_path_);
+        } else if (msg.write_context_hash_.empty()) {
+            // 空 hash 是非法注册请求（上游 commit_write 时间戳 guard / task context
+            // 应保证非空），与 provenance mismatch（已有不同 hash 的对比）语义不同，
+            // 归类 REGISTRATION_FAILED（注册被拒的通用兜底）。
+            ack.success_ = false;
+            ack.error_message_ = "Empty write_context_hash for " + msg.object_name_;
+            ack.error_type_ = TaskErrorType::WRITE_REGISTRATION_FAILED;
+            ERR("WriteRegister rejected: empty write_context_hash for {}", msg.object_name_);
         } else {
             auto [prov_db, prov_short] = fly::split_full_name(msg.object_name_);
             CMString err_msg;
@@ -2625,7 +2633,11 @@ void MasterAgent::setup_write_context() {
 }
 
 std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const CMString& db_path, const CMString& name, int64_t compressed_size) {
-    if (!running_.load()) return {"", TaskErrorType::UNKNOWN};
+    if (!running_.load()) {
+        // master 未运行（停止窗口）无法裁决注册——按注册被拒绝归类（原 {"",UNKNOWN}
+        // 会被调用方当成功放行，写未经 provenance 裁决）。
+        return {"master not running", TaskErrorType::WRITE_REGISTRATION_FAILED};
+    }
     // master 自写走统一的 WriteRegisterMessage 路径（worker_id=0），与 worker 行为对称。
     // 同步调用 do_write_register，丢弃 ack（master 自写无需网络 ACK）。
     WriteRegisterMessage msg;

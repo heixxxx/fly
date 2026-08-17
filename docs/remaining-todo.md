@@ -81,7 +81,7 @@
 |---|---|---|---|
 | **P1-8** | write-back lambda 无错误处理 | ✅ 已做 | execute lambda 返回 bool（`write_record_checked` + `flush_checked`）+ WBQ worker_loop try-catch + 落盘失败按错误类型重试/退出；详见 ISSUES.md P1-8 |
 | issue 002 | throw→error code 残留 | ✅ 已做 | 核心残留清零（2026-08-17）：config set_int/set_str→bool 哨兵、tcp listen→bool/工厂→nullptr/构造不再 throw、object_header deserialize→bool+输出参数（注：此前文档误记"object_header 已清零"，实为 4 处仍在，本批一并处理）；FLY_DECODE 三宏 throw **保留为受控设计**（所有 decode 入口统一 catch + reactor X-3 清 buffer），2 个真实暴露点已补（database.cpp _DB_META header 局部 catch、export __setstate__ 4 分支转 value_error）。边缘 throw 按惯例保留：export 参数校验 type_error（binding 惯例）、writer_pref_rwlock std::system_error（锁原语惯例）、solver/worker_agent 少量启动期错误 |
-| WRITE_REGISTRATION_FAILED | 🟡 | error_types.h 定义+export 但生产零使用（Part A 后裸写入受时间戳保护，该错误码仍未产生）|
+| WRITE_REGISTRATION_FAILED | ✅ 已启用 | 2026-08-17 四落点：①空 hash 到达 master（原误标 PROVENANCE_MISMATCH）②未注册窗口防御超时→TIMEOUT（与已注册分支对称）③worker 终止批量 fail pending 写注册（原 UNKNOWN）④master 自写 running_=false（原 {\"\",UNKNOWN} 被当成功放行）。database.cpp 补映射分支（撤缓存+on_write_failed→REGISTRATION_FAILED），error_types.h 注明新语义（原设想「对象已存在拒绝」已被 DUPLICATE_SKIPPED+provenance 取代） |
 | **P3-17** | 并发压力测试 | 🟡 | 有 DataService bench + latch 竞态测试，非全结构覆盖 |
 | **P3-19** | MetadataClient e2e 测试 | ✅ 已做 | mock master server e2e 已补（metadata_client_test.cpp：多副本成功路径/`can_still_produce_` 透传/server 回 success_=false 路径/往返一致性）；详见 ISSUES.md |
 
