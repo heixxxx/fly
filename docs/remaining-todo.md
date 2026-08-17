@@ -102,7 +102,7 @@
 | IDX_REQUEST/RESPONSE 死枚举 | ✅ 已清（15/16 空号保留注释，不改既有 wire 值） |
 | BE32 解析重复 | ✅ 已做（2026-07 commit 82acfd 系：read_be32/write_be32 抽公共，此前清单未更新） |
 | removed_objects_ | ⚪ 非死代码（原清单误判）：remove 登记 + freeze 报告 removed_count 活跃，与 compaction TODO 关联，保留 |
-| 超长函数未重构 | ❌ read_raw_compressed / merge_db / schedule_tasks（重构项，非死代码） |
+| 超长函数未重构 | ✅ 已做 | 2026-08-17/18 三函数收口：schedule_tasks（144→~75 行编排 + compute_locality_hints/fail_and_persist_tasks 两 helper；**assign 必须留锁内**——出锁会让判死检测在「已决策未登记」窗口误杀 pending 链，solver 3 case 实测，回归测试钉住）；read_raw_compressed（149→~45 行编排 + read_tier1_hit/try_tier2_read 两 helper，补 TIER3 回环 2 单测）；merge_db Python（272→~180 行 + _ensure_merge_workers/_delete_merge_source_with_retry 两 helper）。read_raw_compressed 与 try_read_local_raw 的二次索引查询保留（封装进 helper 带注释：后者是 DataServer 热路径共有函数，扩签名回归风险大于收益） |
 
 ---
 

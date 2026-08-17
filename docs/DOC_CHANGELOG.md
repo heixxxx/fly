@@ -3,6 +3,39 @@
 ---
 ---
 
+## 2026-08-18: 超长函数三连收口 + schedule_tasks assign 出锁事故（发现→根治→回归钉死）
+
+- **schedule_tasks**（master_agent.cpp，144 行）：提 compute_locality_hints()
+  （锁外预计算）与 fail_and_persist_tasks()（依赖不可解/属性死锁同构收尾）。
+  **中途事故**：曾按计划把 assign 循环移出 schedule_mutex_（缩短持锁），
+  全量 QA 3 case 失败（test_golden_n50_sd9 等）——决策即 graph_->remove_task、
+  RUNNING 登记在 assign 尾部，出锁后「依赖不可解检测」在并发轮次看到
+  「ready 空 + 无 RUNNING」的决策瞬态，把 pending 链整批误判 Unresolvable
+  （master.log 实证 Task 101010/100010 被误杀，RAS 链断在 step 101/1）。
+  根治 = 决策/assign/检测必须同临界区（assign 留锁内，缩短持锁靠 locality
+  预计算锁外），锁内注释完整记录不变式；新增回归测试
+  UnresolvableDetectionDoesNotFireDuringAssignFlight（send 钩子 + cv 有界
+  交错，临时复刻 buggy 结构验证过确实转红）。调试中间踩坑：fly.sh install
+  只 symlink 不构建，复测跑过旧二进制一度误导「修复无效」——二分定位揭穿，
+  显式 buildonly //src/main/cpp:fly 后 3 case 全过。
+- **read_raw_compressed**（data_service.cpp，149 行）：提 read_tier1_hit()
+  （TIER1 装配：二次索引查询+temp 分流+py_name/hash 解析）与 try_tier2_read()
+  （TIER2 全循环：退避/期限/副本踢除/backup suggest），主函数收敛为 ~45 行
+  TIER1→TIER2→TIER3 编排。补 TIER3 回环 2 单测（此前无专测）：
+  Tier3RefreshReentersTier2AndHits + Tier3QueriedGuardsAgainstBouncing
+  （OBJECT_NOT_FOUND 快速清副本表避免 30s 期限拖慢测试）。try_read_local_raw
+  签名不扩（DataServer serve 热路径共有，风险大于收益），二次查询封装进
+  helper 并注明理由。
+- **merge_db**（agent.py，272 行）：提 _ensure_merge_workers()（Phase 2
+  worker 池：源 host 补齐 + master host target 池，含 _merge_worker_hostname_map
+  快照 helper）与 _delete_merge_source_with_retry()（Phase 5 删源+重试+流程
+  message），Phase 结构不变；12 个 merge QA 回归。
+- 验证：单测 60/60 + QA 149/149（含事故 3 case 定向复跑）。
+- remaining-todo §六 超长函数行收口。
+
+---
+---
+
 ## 2026-08-17 (7): 启用 WRITE_REGISTRATION_FAILED——写注册被拒的通用兜底（4 落点）
 
 定义于 error_types.h 但生产零使用的错误码启用。产生端换值后链路自动透传

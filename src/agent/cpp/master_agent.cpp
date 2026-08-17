@@ -595,6 +595,48 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
     submit_task(task_id, spec);
 }
 
+// locality 预计算（schedule_mutex_ 锁外）：DataService 查询（get_remote_size/
+// get_remote_workers）自带锁，不依赖 schedule_mutex_。锁外算好 hint 后，持锁注入
+// graph + schedule_all_available，缩短 schedule_mutex_ 持锁时间（reactor 线程与
+// attr-tick 线程的竞争窗口）。
+// hint 略陈旧无害：remote_idx 更新会再次触发 schedule_tasks()，预计算重做；
+// set_task_locality_hint 对已不存在的 task 静默忽略，新就绪 task 下次补算。
+void MasterAgent::compute_locality_hints(bool locality_on) {
+    if (!locality_on) return;
+    auto ready_snapshot = graph_->get_ready_tasks();
+    if (ready_snapshot.empty()) return;
+    auto ds = DataService::instance();
+    for (uint64_t tid : ready_snapshot) {
+        auto deps = graph_->get_task_dependencies(tid);
+        if (deps.empty()) continue;  // 无依赖，hint 留空（scheduler 退 FIFO）
+        CMUnorderedMap<uint64_t, int64_t> acc;  // worker_id → 持有输入累计字节数
+        for (const auto& obj : deps) {
+            int64_t sz = ds->get_remote_size(obj);
+            auto holders = ds->get_remote_workers(obj);
+            for (uint64_t h : holders) {
+                acc[h] += sz;
+            }
+        }
+        graph_->set_task_locality_hint(tid,
+            CMVector<std::pair<uint64_t, int64_t>>(acc.begin(), acc.end()));
+    }
+}
+
+// 统一的「判死 → 持久化」收尾（依赖不可解 / 属性死锁两处同构）：
+// 组 error → make_failed_record → graph 摘除 → metadata 记失败 → 持久化。
+void MasterAgent::fail_and_persist_tasks(
+        const CMVector<uint64_t>& task_ids,
+        const std::function<CMString(uint64_t)>& make_error) {
+    for (uint64_t task_id : task_ids) {
+        CMString error_msg = make_error(task_id);
+        FailedTaskRecord record = make_failed_record(task_id, error_msg);
+        graph_->remove_task(task_id);
+        metadata_->fail_task(task_id, error_msg);
+        persist_failed_task(record);
+        ERR("Task {} failed: {}", task_id, error_msg);
+    }
+}
+
 void MasterAgent::schedule_tasks() {
     if (draining_.load()) return;
 
@@ -602,140 +644,111 @@ void MasterAgent::schedule_tasks() {
     // 即时生效（无需重启进程）。scheduler 启用后消费 master 预计算的 locality_hint_ 算分。
     bool locality_on =
         Config::instance()->get_int("locality_scheduling_enabled") == 1;
+    compute_locality_hints(locality_on);
 
-    // locality 预计算在 schedule_mutex_ 锁外执行：DataService 查询（get_remote_size/
-    // get_remote_workers）自带锁，不依赖 schedule_mutex_。锁外算好 hint 后，持锁注入
-    // graph + schedule_all_available，缩短 schedule_mutex_ 持锁时间（reactor 线程与
-    // attr-tick 线程的竞争窗口）。
-    // hint 略陈旧无害：remote_idx 更新会再次触发 schedule_tasks()，预计算重做；
-    // set_task_locality_hint 对已不存在的 task 静默忽略，新就绪 task 下次补算。
-    if (locality_on) {
-        auto ready_snapshot = graph_->get_ready_tasks();
-        if (!ready_snapshot.empty()) {
-            auto ds = DataService::instance();
-            for (uint64_t tid : ready_snapshot) {
-                auto deps = graph_->get_task_dependencies(tid);
-                if (deps.empty()) continue;  // 无依赖，hint 留空（scheduler 退 FIFO）
-                CMUnorderedMap<uint64_t, int64_t> acc;  // worker_id → 持有输入累计字节数
-                for (const auto& obj : deps) {
-                    int64_t sz = ds->get_remote_size(obj);
-                    auto holders = ds->get_remote_workers(obj);
-                    for (uint64_t h : holders) {
-                        acc[h] += sz;
-                    }
-                }
-                graph_->set_task_locality_hint(tid,
-                    CMVector<std::pair<uint64_t, int64_t>>(acc.begin(), acc.end()));
-            }
-        }
-    }
-
-    std::lock_guard<std::mutex> lock(schedule_mutex_);
-    auto ready = graph_->get_ready_tasks();
-    auto idle = worker_manager_->get_idle_workers();
-
-    if (ready.empty() && !graph_->get_pending_tasks().empty()) {
-        auto pending = graph_->get_pending_tasks();
-        DBG("[SCHED] schedule_tasks: ready={}, idle={}, pending={} (first_pending={}) "
-            "thread={}", ready.size(), idle.size(), pending.size(),
-            pending.empty() ? 0 : pending[0],
-            std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
-    }
-
-    scheduler_->set_locality_preference(locality_on);
-
-    auto results = scheduler_->schedule_all_available();
-
-    for (const auto& result : results) {
-        if (result.scheduled_) {
-            assign_task_to_worker(result.task_id_, result.worker_id_);
-        }
-    }
-
-    // 诊断：ready + idle 都非空但 schedule_all_available 没调出任何 task
-    // —— 指向 scheduler 内部 capability/locality 决策问题或 worker 状态不一致。
-    if (results.empty() && !ready.empty() && !idle.empty()) {
-        // 列出 ready task id（前 10 个）便于定位是哪些 task 卡住。
-        std::string ready_ids;
-        for (size_t i = 0; i < ready.size() && i < 10; ++i) {
-            ready_ids += std::to_string(ready[i]);
-            if (i + 1 < ready.size() && i + 1 < 10) ready_ids += ",";
-        }
-        WARN("[SCHED-DIAG] no task scheduled but ready=[{}] idle={} "
-             "(worker_status: {})", ready_ids, idle.size(),
-             worker_manager_->debug_worker_status());
-        // 检查每个 ready task 的 requirements，定位为何 select_best_worker 返回 0。
-        for (size_t i = 0; i < ready.size() && i < 5; ++i) {
-            uint64_t tid = ready[i];
-            auto reqs = graph_->get_task_requirements(tid);
-            WARN("[SCHED-DIAG]   task={} caps={} locality_hint={} timeout={}",
-                 tid, reqs.capabilities_.size(), reqs.locality_hint_.size(),
-                 reqs.timeout_seconds_);
-        }
-        Logger::instance()->flush();
-    }
-
-    // 依赖不可解检测：上游 task 失败导致数据被清理后，依赖该数据的 pending
-    // task 永远无法就绪。此时若 ready 空（无 task 可调度）且无 running task
-    // （无 task 可能产出该数据），应立即判定这些 pending task 失败，而非空等。
-    // 这与属性死锁（fail_unscheduleable_tasks 开关控制）是不同的失败模式，
-    // 不受该开关影响 —— 数据依赖丢失是确定性的，应即时失败并持久化供 restart。
+    CMVector<uint64_t> ready;
+    CMVector<uint64_t> idle;
     {
-        auto pending = graph_->get_pending_tasks();
-        if (!pending.empty()) {
-            auto ready = graph_->get_ready_tasks();
-            if (ready.empty() && !metadata_->has_tasks_with_status(TaskStatus::RUNNING)) {
-                for (uint64_t task_id : pending) {
-                    auto deps = graph_->get_task_dependencies(task_id);
-                    CMString dep_list;
-                    for (size_t i = 0; i < deps.size(); i++) {
-                        if (i > 0) dep_list += ",";
-                        dep_list += deps[i];
-                    }
-                    CMString error_msg = "Unresolvable data dependencies: [" + dep_list + "]";
+        // 决策、assign（send + metadata 登记）与两处判死检测必须在同一
+        // schedule_mutex_ 临界区：决策即 graph_->remove_task（task 离开 ready），
+        // metadata 的 RUNNING 登记在 assign 尾部——若 assign 或检测出锁，
+        // 「依赖不可解检测」会在「已决策未登记」窗口看到 ready 空 + 无 RUNNING，
+        // 把 pending 链整批误判 Unresolvable 失败（qa solver 3 case 实测复现，
+        // 2026-08-18；回归守护 UnresolvableDetectionDoesNotFireDuringAssignFlight）。
+        std::lock_guard<std::mutex> lock(schedule_mutex_);
+        ready = graph_->get_ready_tasks();
+        idle = worker_manager_->get_idle_workers();
 
-                    FailedTaskRecord record = make_failed_record(task_id, error_msg);
+        if (ready.empty() && !graph_->get_pending_tasks().empty()) {
+            auto pending = graph_->get_pending_tasks();
+            DBG("[SCHED] schedule_tasks: ready={}, idle={}, pending={} (first_pending={}) "
+                "thread={}", ready.size(), idle.size(), pending.size(),
+                pending.empty() ? 0 : pending[0],
+                std::hash<std::thread::id>{}(std::this_thread::get_id()) % 10000);
+        }
 
-                    graph_->remove_task(task_id);
-                    metadata_->fail_task(task_id, error_msg);
+        scheduler_->set_locality_preference(locality_on);
 
-                    persist_failed_task(record);
-                    ERR("Task {} failed: {}", task_id, error_msg);
+        auto results = scheduler_->schedule_all_available();
+        for (const auto& result : results) {
+            if (result.scheduled_) {
+                assign_task_to_worker(result.task_id_, result.worker_id_);
+            }
+        }
+
+        // 诊断：ready + idle 都非空但 schedule_all_available 没调出任何 task
+        // —— 指向 scheduler 内部 capability/locality 决策问题或 worker 状态不一致。
+        if (results.empty() && !ready.empty() && !idle.empty()) {
+            // 列出 ready task id（前 10 个）便于定位是哪些 task 卡住。
+            std::string ready_ids;
+            for (size_t i = 0; i < ready.size() && i < 10; ++i) {
+                ready_ids += std::to_string(ready[i]);
+                if (i + 1 < ready.size() && i + 1 < 10) ready_ids += ",";
+            }
+            WARN("[SCHED-DIAG] no task scheduled but ready=[{}] idle={} "
+                 "(worker_status: {})", ready_ids, idle.size(),
+                 worker_manager_->debug_worker_status());
+            // 检查每个 ready task 的 requirements，定位为何 select_best_worker 返回 0。
+            for (size_t i = 0; i < ready.size() && i < 5; ++i) {
+                uint64_t tid = ready[i];
+                auto reqs = graph_->get_task_requirements(tid);
+                WARN("[SCHED-DIAG]   task={} caps={} locality_hint={} timeout={}",
+                     tid, reqs.capabilities_.size(), reqs.locality_hint_.size(),
+                     reqs.timeout_seconds_);
+            }
+            Logger::instance()->flush();
+        }
+
+        // 依赖不可解检测：上游 task 失败导致数据被清理后，依赖该数据的 pending
+        // task 永远无法就绪。此时若 ready 空（无 task 可调度）且无 running task
+        // （无 task 可能产出该数据），应立即判定这些 pending task 失败，而非空等。
+        // 这与属性死锁（fail_unscheduleable_tasks 开关控制）是不同的失败模式，
+        // 不受该开关影响 —— 数据依赖丢失是确定性的，应即时失败并持久化供 restart。
+        {
+            auto pending = graph_->get_pending_tasks();
+            if (!pending.empty()) {
+                auto ready_now = graph_->get_ready_tasks();
+                if (ready_now.empty() && !metadata_->has_tasks_with_status(TaskStatus::RUNNING)) {
+                    fail_and_persist_tasks(pending, [this](uint64_t task_id) {
+                        auto deps = graph_->get_task_dependencies(task_id);
+                        CMString dep_list;
+                        for (size_t i = 0; i < deps.size(); i++) {
+                            if (i > 0) dep_list += ",";
+                            dep_list += deps[i];
+                        }
+                        return "Unresolvable data dependencies: [" + dep_list + "]";
+                    });
                 }
             }
         }
-    }
 
-    if (Config::instance()->get_int("fail_unscheduleable_tasks") != 1) return;
+        if (Config::instance()->get_int("fail_unscheduleable_tasks") == 1) {
+            // 属性死锁检测：仅当集群中无任何 worker（含 BUSY）具备所需属性，且无
+            // running task（即没有 worker 可能通过 set_worker_property 动态获得属性）
+            // 时，才 fail 掉死等(timeout<0)的 task。限时(>=0)的会被降级调度，不在此处 fail。
+            bool has_running = metadata_->has_tasks_with_status(TaskStatus::RUNNING);
+            CMVector<uint64_t> deadlocked;
+            for (uint64_t task_id : graph_->get_ready_tasks()) {
+                const auto requirements = graph_->get_task_requirements(task_id);
+                if (requirements.capabilities_.empty()) continue;
+                // 仅死等(timeout<0)的 task 才适用属性死锁 fail；timeout>=0 的会被降级调度
+                if (requirements.timeout_seconds_ >= 0.0f) continue;
+                // 有 running task 时，worker 仍可能动态获得属性，不能判定死锁
+                if (has_running) continue;
 
-    auto remaining = graph_->get_ready_tasks();
-    // 属性死锁检测：仅当集群中无任何 worker（含 BUSY）具备所需属性，且无 running
-    // task（即没有 worker 可能通过 set_worker_property 动态获得属性）时，
-    // 才 fail 掉死等(timeout<0)的 task。限时(>=0)的 task 会被降级调度，不在此处 fail。
-    bool has_running = metadata_->has_tasks_with_status(TaskStatus::RUNNING);
-    for (uint64_t task_id : remaining) {
-        const auto requirements = graph_->get_task_requirements(task_id);
-        if (requirements.capabilities_.empty()) continue;
-        // 仅死等(timeout<0)的 task 才适用属性死锁 fail；timeout>=0 的会被降级调度
-        if (requirements.timeout_seconds_ >= 0.0f) continue;
-        // 有 running task 时，worker 仍可能动态获得属性，不能判定死锁
-        if (has_running) continue;
-
-        if (!worker_manager_->has_worker_with_all_capabilities(requirements.capabilities_)) {
-            CMString cap_list;
-            for (size_t i = 0; i < requirements.capabilities_.size(); i++) {
-                if (i > 0) cap_list += ",";
-                cap_list += requirements.capabilities_[i];
+                if (!worker_manager_->has_worker_with_all_capabilities(requirements.capabilities_)) {
+                    deadlocked.push_back(task_id);
+                }
             }
-            CMString error_msg = "No worker with required capabilities: [" + cap_list + "]";
-
-            FailedTaskRecord record = make_failed_record(task_id, error_msg);
-
-            graph_->remove_task(task_id);
-            metadata_->fail_task(task_id, error_msg);
-
-            persist_failed_task(record);
-            ERR("Task {} failed: {}", task_id, error_msg);
+            fail_and_persist_tasks(deadlocked, [this](uint64_t task_id) {
+                auto requirements = graph_->get_task_requirements(task_id);
+                CMString cap_list;
+                for (size_t i = 0; i < requirements.capabilities_.size(); i++) {
+                    if (i > 0) cap_list += ",";
+                    cap_list += requirements.capabilities_[i];
+                }
+                return "No worker with required capabilities: [" + cap_list + "]";
+            });
         }
     }
 }

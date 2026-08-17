@@ -128,6 +128,9 @@ public:
     // 同步写注册裁决（on_write_register 的核心，无网络副作用前半段）——
     // public 供测试直调失败分类（frozen/mismatch/空 hash REGISTRATION_FAILED）。
     WriteRegisterAckMessage do_write_register(const WriteRegisterMessage& msg);
+    // 调度编排入口（submit/complete 等多处触发）——public 供测试直调
+    //（并发调度与判死检测的交错回归，见 UnresolvableDetectionDoesNotFireDuringAssignFlight）。
+    void schedule_tasks();
     CMSharedPtr<Database> get_or_create_database(const CMString& db_path, const CMString& data_path = "", uint64_t writer_id = 0);
     // 取 db_instances_ 里的权威 Database（load_db/merge 复用，避免 Python 端再构造一个
     // 会触发 DataService::unregister 析构副作用的临时 Database）。miss 返回 nullptr。
@@ -494,7 +497,12 @@ private:
     mutable std::mutex msg_count_mutex_;
     std::condition_variable msg_count_cv_;
 
-    void schedule_tasks();
+    // schedule_tasks 的 locality 预计算段（锁外执行，见 cpp 注释）。
+    void compute_locality_hints(bool locality_on);
+    // 统一「判死 → 持久化」收尾：依赖不可解 / 属性死锁两处同构
+    //（组 error 由 make_error 回调产生）。
+    void fail_and_persist_tasks(const CMVector<uint64_t>& task_ids,
+                                const std::function<CMString(uint64_t)>& make_error);
     void assign_task_to_worker(uint64_t task_id, uint64_t worker_id);
     void update_dependency_location_cache(const CMString& object_name, uint64_t worker_id, const CMString& host, int32_t port);
     void heartbeat_check_loop();

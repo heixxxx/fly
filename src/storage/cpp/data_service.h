@@ -330,6 +330,16 @@ private:
                                      const DbPaths& paths);
     FlyBufferPtr do_read_raw_entries(const CMVector<IndexEntry>& entries,
                                  const DbPaths& paths);
+    // read_raw_compressed 的 TIER1 命中装配段：二次查 local_idx_/db_paths_ 取
+    // is_temp/entries/paths（解析 py_name/write_hash 用），temp 与正式条目分流。
+    std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> read_tier1_hit(
+        const CMString& object_name, const FlyBufferPtr& raw);
+    // read_raw_compressed 的 TIER2 循环：本地 remote_idx 已知副本的跨机直读
+    //（指数退避 10ms→500ms + 30s 网络期限；OBJECT_NOT_FOUND 踢副本、
+    // DATA_NOT_READY 不限期、SHUTDOWN 即退）。命中返回 found=true；副本耗尽
+    // 或期限到返回 found=false（调用方决定是否进 TIER3）。
+    std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> try_tier2_read(
+        const CMString& object_name, const DirectCompressedReadCallback& cb);
 
     // 分片锁：按数据域拆分，读多写少场景用 shared_mutex（读 shared_lock 并发、写
     // unique_lock 独占）。替代原单一 mutex_ 的全串行化（多线程并发读吞吐反而低于

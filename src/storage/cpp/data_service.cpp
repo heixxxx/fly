@@ -1017,56 +1017,116 @@ std::pair<bool, ReadResult> DataService::try_read_remote(const CMString& object_
     return {true, std::move(ret)};
 }
 
-std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_compressed(const CMString& object_name) {
-    auto [found, raw] = try_read_local_raw(object_name);
-    if (found) {
-        auto [db_path, short_name] = split_full(object_name);
-        bool is_temp_entry = false;
-        DbPaths paths;
-        CMVector<IndexEntry> entries;
-        // TIER1 命中后查 local_idx_ + db_paths_ 取 entries/is_temp/paths（用于解析
-        // py_name/write_hash）。双 shared_lock 跨域读，与 try_read_local_raw 一致。
-        // 注：此二次查询无法直接复用 try_read_local_raw 的结果（其签名返回
-        // found/compressed_bytes，不含 entries/paths），保持独立查询以保证语义清晰。
-        {
-            std::shared_lock<std::shared_mutex> llock(local_mutex_);
-            auto db_it = local_idx_.find(db_path);
-            if (db_it != local_idx_.end()) {
-                auto it = db_it->second.objects_.find(short_name);
-                if (it != db_it->second.objects_.end() && it->second) {
-                    is_temp_entry = it->second->is_temp_;
-                    if (!is_temp_entry) {
-                        entries = it->second->entries_;
-                    }
+std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_tier1_hit(
+        const CMString& object_name, const FlyBufferPtr& raw) {
+    auto [db_path, short_name] = split_full(object_name);
+    bool is_temp_entry = false;
+    DbPaths paths;
+    CMVector<IndexEntry> entries;
+    // TIER1 命中后查 local_idx_ + db_paths_ 取 entries/is_temp/paths（用于解析
+    // py_name/write_hash）。双 shared_lock 跨域读，与 try_read_local_raw 一致。
+    // 注：此二次查询无法直接复用 try_read_local_raw 的结果（其签名返回
+    // found/compressed_bytes，不含 entries/paths；该函数为 DataServer 远程 serve
+    // 热路径共有，扩签名回归风险大于收益），保持独立查询以保证语义清晰。
+    {
+        std::shared_lock<std::shared_mutex> llock(local_mutex_);
+        auto db_it = local_idx_.find(db_path);
+        if (db_it != local_idx_.end()) {
+            auto it = db_it->second.objects_.find(short_name);
+            if (it != db_it->second.objects_.end() && it->second) {
+                is_temp_entry = it->second->is_temp_;
+                if (!is_temp_entry) {
+                    entries = it->second->entries_;
                 }
             }
         }
-        {
-            std::shared_lock<std::shared_mutex> plock(db_paths_mutex_);
-            auto path_it = db_paths_.find(db_path);
-            if (path_it != db_paths_.end()) {
-                paths = path_it->second;
-            }
+    }
+    {
+        std::shared_lock<std::shared_mutex> plock(db_paths_mutex_);
+        auto path_it = db_paths_.find(db_path);
+        if (path_it != db_paths_.end()) {
+            paths = path_it->second;
         }
+    }
 
-        if (is_temp_entry) {
-            CMString py_name;
-            DecompressingStreamBuf dsbuf(raw->data(), raw->size());
-            py_name = dsbuf.py_name();
-            return {true, raw, std::move(py_name), {}, false};
-        }
-
+    if (is_temp_entry) {
         CMString py_name;
-        CMString write_hash;
-        if (!entries.empty() && !paths.db_path_.empty()) {
-            FlyBufferPtr entry_raw = do_read_raw_entries(entries, paths);
-            if (entry_raw && !entry_raw->empty()) {
-                DecompressingStreamBuf dsbuf(entry_raw->data(), entry_raw->size());
-                py_name = dsbuf.py_name();
-            }
-            write_hash = entries.back().write_context_hash_;
+        DecompressingStreamBuf dsbuf(raw->data(), raw->size());
+        py_name = dsbuf.py_name();
+        return {true, raw, std::move(py_name), {}, false};
+    }
+
+    CMString py_name;
+    CMString write_hash;
+    if (!entries.empty() && !paths.db_path_.empty()) {
+        FlyBufferPtr entry_raw = do_read_raw_entries(entries, paths);
+        if (entry_raw && !entry_raw->empty()) {
+            DecompressingStreamBuf dsbuf(entry_raw->data(), entry_raw->size());
+            py_name = dsbuf.py_name();
         }
-        return {true, raw, std::move(py_name), std::move(write_hash), false};
+        write_hash = entries.back().write_context_hash_;
+    }
+    return {true, raw, std::move(py_name), std::move(write_hash), false};
+}
+
+std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::try_tier2_read(
+        const CMString& object_name, const DirectCompressedReadCallback& cb) {
+    constexpr int64_t kInitialDelayMs = 10;
+    constexpr int64_t kMaxDelayMs = 500;
+    constexpr auto kNetworkDeadline = std::chrono::seconds(30);
+
+    int64_t delay_ms = kInitialDelayMs;
+    auto net_start = std::chrono::steady_clock::now();
+
+    while (true) {
+        auto replicas = lookup_all_remote_idx(object_name);
+        if (replicas.empty()) {
+            return {false, nullptr, {}, {}, false};  // no local replicas → need TIER3
+        }
+
+        bool saw_not_ready = false;
+        // 副本遍历顺序（storage 优先 / 死副本排尾 / net_probe 带宽分）
+        // 已收敛到 lookup_all_remote_idx 内统一排序，此处直接消费。
+        for (const auto& loc : replicas) {
+            auto [cb_found, cb_data, cb_py_name, cb_hash, cb_rerr] =
+                cb(loc.host_, loc.port_, object_name);
+            if (cb_found) {
+                DBG("[TIER2] obj={}, hit worker={}", object_name, loc.worker_id_);
+                // worker TIER2 跨 worker 读命中：累积读流量 + 检查 backup suggest
+                record_remote_access(object_name, cb_data ? static_cast<int64_t>(cb_data->size()) : 0);
+                maybe_suggest_backup(object_name);
+                return {true, cb_data, std::move(cb_py_name), std::move(cb_hash), false};
+            }
+            if (cb_rerr == ReadError::OBJECT_NOT_FOUND) {
+                remove_remote_location(object_name, loc.worker_id_);
+            } else if (cb_rerr == ReadError::DATA_NOT_READY) {
+                saw_not_ready = true;
+            } else if (cb_rerr == ReadError::SHUTDOWN) {
+                return {false, nullptr, {}, {}, false};
+            }
+            // NETWORK: transient, keep replica, retry next round.
+        }
+
+        // Round fully failed. DATA_NOT_READY → unbounded; else bound by
+        // the network deadline.
+        if (!saw_not_ready &&
+            std::chrono::steady_clock::now() - net_start >= kNetworkDeadline) {
+            return {false, nullptr, {}, {}, false};
+        }
+
+        int64_t jitter = std::max<int64_t>(1, delay_ms / 10);
+        std::uniform_int_distribution<int64_t> dist(-jitter, jitter);
+        int64_t actual = delay_ms + dist(g_backoff_rng);
+        std::this_thread::sleep_for(std::chrono::milliseconds(actual));
+        delay_ms = std::min(delay_ms * 2, kMaxDelayMs);
+    }
+}
+
+std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_compressed(const CMString& object_name) {
+    // ── TIER1: local ──
+    auto [found, raw] = try_read_local_raw(object_name);
+    if (found) {
+        return read_tier1_hit(object_name, raw);
     }
 
     // ── TIER2/TIER3 orchestration ──
@@ -1085,62 +1145,15 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_c
         remote_cb = remote_compressed_read_handler_;
     }
 
-    constexpr int64_t kInitialDelayMs = 10;
-    constexpr int64_t kMaxDelayMs = 500;
-    constexpr auto kNetworkDeadline = std::chrono::seconds(30);
-
     bool tier3_queried = false;
     bool last_can_still_produce = false;
 
     while (true) {
-        // ── TIER2 round ──
+        // ── TIER2 round loop ──
         if (cb) {
-            int64_t delay_ms = kInitialDelayMs;
-            auto net_start = std::chrono::steady_clock::now();
-            bool tier2_done = false;
-
-            while (!tier2_done) {
-                auto replicas = lookup_all_remote_idx(object_name);
-                if (replicas.empty()) {
-                    break;  // no local replicas → need TIER3 to populate
-                }
-
-                bool saw_not_ready = false;
-                // 副本遍历顺序（storage 优先 / 死副本排尾 / net_probe 带宽分）
-                // 已收敛到 lookup_all_remote_idx 内统一排序，此处直接消费。
-                for (const auto& loc : replicas) {
-                    auto [cb_found, cb_data, cb_py_name, cb_hash, cb_rerr] =
-                        cb(loc.host_, loc.port_, object_name);
-                    if (cb_found) {
-                        DBG("[TIER2] obj={}, hit worker={}", object_name, loc.worker_id_);
-                        // worker TIER2 跨 worker 读命中：累积读流量 + 检查 backup suggest
-                        record_remote_access(object_name, cb_data ? static_cast<int64_t>(cb_data->size()) : 0);
-                        maybe_suggest_backup(object_name);
-                        return {true, cb_data, std::move(cb_py_name), std::move(cb_hash), false};
-                    }
-                    if (cb_rerr == ReadError::OBJECT_NOT_FOUND) {
-                        remove_remote_location(object_name, loc.worker_id_);
-                    } else if (cb_rerr == ReadError::DATA_NOT_READY) {
-                        saw_not_ready = true;
-                    } else if (cb_rerr == ReadError::SHUTDOWN) {
-                        return {false, nullptr, {}, {}, false};
-                    }
-                    // NETWORK: transient, keep replica, retry next round.
-                }
-
-                // Round fully failed. DATA_NOT_READY → unbounded; else bound by
-                // the network deadline.
-                if (!saw_not_ready &&
-                    std::chrono::steady_clock::now() - net_start >= kNetworkDeadline) {
-                    tier2_done = true;
-                    break;
-                }
-
-                int64_t jitter = std::max<int64_t>(1, delay_ms / 10);
-                std::uniform_int_distribution<int64_t> dist(-jitter, jitter);
-                int64_t actual = delay_ms + dist(g_backoff_rng);
-                std::this_thread::sleep_for(std::chrono::milliseconds(actual));
-                delay_ms = std::min(delay_ms * 2, kMaxDelayMs);
+            auto [hit, data, py_name, hash, _] = try_tier2_read(object_name, cb);
+            if (hit) {
+                return {true, data, std::move(py_name), std::move(hash), false};
             }
         }
 

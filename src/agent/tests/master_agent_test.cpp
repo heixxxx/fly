@@ -2522,6 +2522,93 @@ TEST(MasterAgentTest, Problem1_CompleteTaskClobberedByConcurrentAssign) {
 }
 
 // =============================================================================
+// 2026-08-18 solver 3 QA case 事故（test_golden_n50_sd9 等）的回归守护：
+// 「依赖不可解检测」不得在「决策→assign 完成」窗口内被并发 schedule_tasks
+// 触发误判。
+//
+// 决策即 graph_->remove_task（task 离开 ready/pending），metadata 的 RUNNING
+// 登记在 assign 尾部。若 assign/检测移出 schedule_mutex_ 临界区，并发的
+// schedule_tasks 会在窗口内看到「pending 有 consumer + ready 空 + 无 RUNNING
+//（producer 已决策未登记）」→ consumer 被整批误判 Unresolvable 失败
+//（实测：Task 101010 被误杀，RAS solve 链在 step 101 断裂）。
+// 正确性约束 = 决策、assign、检测同在 schedule_mutex_ 临界区（见
+// schedule_tasks 锁内注释）。
+//
+// 确定性交错：assign send 钩子（持锁、send 后、metadata 登记前）有界等待，
+// 期间第二线程跑完整 schedule_tasks（含检测）：
+//   assign 出锁的错误实现：第二线程不阻塞，检测在窗口内执行 → consumer 被杀；
+//   正确实现：第二线程阻塞在 schedule_mutex_，等 assign+登记完成后才进检测。
+// =============================================================================
+TEST(MasterAgentTest, UnresolvableDetectionDoesNotFireDuringAssignFlight) {
+    fly::DataService::instance()->reset();
+    TempDir tmpdir;
+    Config::instance()->set_str("log_dir", tmpdir.path());
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    const uint64_t W = 7002;
+    const uint64_t PRODUCER = 71002;
+    const uint64_t CONSUMER = 71003;
+    const uint64_t fake_conn = 900002;
+    const CMString out_obj = "db_assign_flight:out";
+
+    // 1) 无 worker 时先提交两 task：producer 停在 ready（无 idle 可派），
+    //    consumer pending（其 submit 的同步调度看到 ready 非空，检测不触发）。
+    master.submit_task(PRODUCER, "af_producer", "test_module", {"arg"},
+                       {}, {out_obj}, {}, -1.0f, "", {});
+    master.submit_task(CONSUMER, "af_consumer", "test_module", {"arg"},
+                       {out_obj}, {}, {}, -1.0f, "", {});
+
+    // 2) 注册 fake worker（ Problem1 同款）+ 装配 send 钩子。
+    master.register_fake_worker_for_testing(W, fake_conn);
+    std::latch b_started(1);
+    std::mutex done_m;
+    std::condition_variable done_cv;
+    bool b_finished = false;
+    master.assign_task_send_hook_for_testing_ = [&](uint64_t, uint64_t) {
+        // 主线程、持 schedule_mutex_、send 之后、metadata 登记之前。
+        b_started.count_down();
+        // 有界等待第二线程跑完一轮 schedule_tasks（正确实现下第二线程阻塞在
+        // schedule_mutex_ 不会完成，300ms 超时让位——两种实现都无死锁）。
+        std::unique_lock<std::mutex> lk(done_m);
+        done_cv.wait_for(lk, std::chrono::milliseconds(300), [&] { return b_finished; });
+    };
+
+    std::thread second([&] {
+        b_started.wait();
+        master.schedule_tasks();  // 正确实现：阻塞在 schedule_mutex_ 直到 assign+登记完成
+        {
+            std::lock_guard<std::mutex> lk(done_m);
+            b_finished = true;
+        }
+        done_cv.notify_all();
+    });
+
+    // 3) 主线程直接触发调度：决策 producer→W → assign → 钩子协调交错。
+    master.schedule_tasks();
+
+    second.join();
+
+    // consumer 不得被误判失败（窗口内「ready 空 + 无 RUNNING」是决策瞬态）。
+    auto failed = master.get_failed_tasks();
+    EXPECT_EQ(std::find(failed.begin(), failed.end(), CONSUMER), failed.end())
+        << "consumer 在 producer 的 assign 窗口内被误判 Unresolvable（2026-08-18 事故）";
+    // producer 完成登记：RUNNING。
+    auto running = master.get_running_tasks();
+    EXPECT_NE(std::find(running.begin(), running.end(), PRODUCER), running.end())
+        << "producer 应已完成 assign 并登记 RUNNING";
+
+    master.assign_task_send_hook_for_testing_ = nullptr;
+    master.unregister_fake_worker_for_testing(W, fake_conn);
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_str("log_dir", "");
+    DataService::instance()->remove_remote_index(out_obj);
+}
+
+// =============================================================================
 // issue 007 — Problem 5（低）：pending_delete_acks_ / pending_merge_cleanups_ 重复触发
 // 静默覆盖。send_delete_data 用 pending_delete_acks_[ack_key] = PendingDeleteData{} 无条件
 // 覆盖；若同 ack_key 首轮已完成（ack 已到，completed=true）但尚未被 wait_delete_data_acks

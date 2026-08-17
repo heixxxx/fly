@@ -462,6 +462,98 @@ class Master(FlyAgent):
         db._heal_next_edges()
         return db
 
+    def _merge_worker_hostname_map(self):
+        """worker_id → hostname 的在线分组快照（merge Phase 2/5 共用）。"""
+        by_hostname = {}
+        for worker_id, hostname in self._agent.get_worker_hostnames():
+            by_hostname.setdefault(hostname, []).append(worker_id)
+        return by_hostname
+
+    def _ensure_merge_workers(self, source_hosts, local_workers):
+        """merge Phase 2：确保 worker 池就位。
+
+        - 每个源 host 至少一个在线 worker（供跨机拉源 + 接收删源命令）；
+        - master host 有 target worker（不传 host 的 local worker，与 master 同机），
+          无则按 local_workers 上限拉起。
+        返回 (existing_by_hostname, master_host_workers)；master host 无 worker
+        则 RuntimeError（merge 无法进行）。
+        """
+        existing_by_hostname = self._merge_worker_hostname_map()
+
+        # 确保每个源 host 有在线 worker（用于被跨机读 + 接收删源命令）。
+        spawned_source = 0
+        for hostname in source_hosts:
+            if not existing_by_hostname.get(hostname):
+                self._spawn_process_worker(self._next_worker_id, {"host": hostname})
+                self._next_worker_id += 1
+                spawned_source += 1
+        if spawned_source > 0:
+            self._expected_workers += spawned_source
+            self._wait_spawned_workers()
+            existing_by_hostname = self._merge_worker_hostname_map()
+
+        # 确保 master host 有 target worker（不传 host 的 local worker，与 master 同机）。
+        master_hostname = socket.gethostname()
+        master_host_workers = existing_by_hostname.get(master_hostname, [])
+        if not master_host_workers:
+            for _ in range(max(1, local_workers)):
+                self._spawn_process_worker(self._next_worker_id, {})
+                self._next_worker_id += 1
+            self._expected_workers += max(1, local_workers)
+            self._wait_spawned_workers()
+            existing_by_hostname = self._merge_worker_hostname_map()
+            master_host_workers = existing_by_hostname.get(master_hostname, [])
+        if not master_host_workers:
+            raise RuntimeError(
+                f"merge_db: no target workers on master host '{master_hostname}'")
+
+        INFO(f"merge_db: target worker pool (master host) = {master_host_workers}")
+        return existing_by_hostname, master_host_workers
+
+    def _delete_merge_source_with_retry(self, hostname_to_writer_ids,
+                                        existing_by_hostname, db_path):
+        """merge Phase 5：逐源 host 发 DeleteData + 同步等 ack；失败自动重试一轮
+        （瞬时故障），仍失败发流程 message 提醒手动删除（残留清单完整暴露）。
+
+        返回发起删源的 worker_ids（cleanup_after_merge 的屏障参数）。
+        """
+        source_worker_ids = []
+        worker_to_writers = {}  # 重试用：失败 worker → 其 writer_ids
+        for hostname, writer_ids in hostname_to_writer_ids.items():
+            host_workers = existing_by_hostname.get(hostname, [])
+            if not host_workers:
+                WARN(f"merge_db: no worker on source host '{hostname}' to delete, "
+                     f"skipping {len(writer_ids)} writer_ids")
+                continue
+            source_worker = host_workers[0]
+            source_worker_ids.append(source_worker)
+            worker_to_writers[source_worker] = writer_ids
+            # data_path 传空 → C++ send_delete_data 从 db_registry 查源 data_path
+            # （此时 cleanup 未执行，db_registry 仍是源的）。
+            self._agent.send_delete_data(source_worker, db_path, "", writer_ids)
+            INFO(f"merge_db: sent DeleteData to worker {source_worker} on host "
+                 f"'{hostname}' for {len(writer_ids)} writers")
+        if not source_worker_ids:
+            return source_worker_ids
+
+        del_ok, del_failed = self._agent.wait_delete_data_acks(source_worker_ids, db_path, 60)
+        if not del_ok:
+            INFO(f"merge_db: retrying source delete for workers={del_failed}")
+            for w in del_failed:
+                writers = worker_to_writers.get(w, [])
+                if writers:
+                    self._agent.send_delete_data(w, db_path, "", writers)
+            del_ok, del_failed = self._agent.wait_delete_data_acks(del_failed, db_path, 60)
+        if del_ok:
+            INFO("merge_db: all source deletes confirmed")
+        else:
+            WARN(f"merge_db: {len(del_failed)} source deletes failed after retry "
+                 f"(workers={del_failed}) — manual cleanup required")
+            message("STOR::0004", 2,
+                    f"merge_db source delete failed (manual cleanup required): "
+                    f"db={db_path}, residual workers={list(del_failed)}")
+        return source_worker_ids
+
     def merge_db(self, path: str, data_path: str = "", merge_db_path: str = "",
                  task_timeout: float = 3600.0,
                  local_workers: int = 4, delete_source: bool = True):
@@ -554,44 +646,8 @@ class Master(FlyAgent):
              f"idx_files={len(idx_files)}, meta_workers={len(meta.workers)}")
 
         # ── Phase 2: 确保目标 worker 池（master host）+ 源 host worker 就位 ──
-        existing_by_hostname = defaultdict(list)
-        for worker_id, hostname in self._agent.get_worker_hostnames():
-            existing_by_hostname[hostname].append(worker_id)
-
-        # 确保每个源 host 有在线 worker（用于被跨机读 + 接收删源命令）。
-        spawned_source = 0
-        for hostname in source_hosts:
-            if not existing_by_hostname.get(hostname):
-                self._spawn_process_worker(self._next_worker_id, {"host": hostname})
-                self._next_worker_id += 1
-                spawned_source += 1
-        if spawned_source > 0:
-            self._expected_workers += spawned_source
-            self._wait_spawned_workers()
-            existing_by_hostname = defaultdict(list)
-            for worker_id, hostname in self._agent.get_worker_hostnames():
-                existing_by_hostname[hostname].append(worker_id)
-
-        # 确保 master host 有 target worker（不传 host 的 local worker，与 master 同机）。
-        master_hostname = socket.gethostname()
-        master_host_workers = existing_by_hostname.get(master_hostname, [])
-        spawned_local = 0
-        if not master_host_workers:
-            for _ in range(max(1, local_workers)):
-                self._spawn_process_worker(self._next_worker_id, {})
-                self._next_worker_id += 1
-                spawned_local += 1
-            self._expected_workers += spawned_local
-            self._wait_spawned_workers()
-            existing_by_hostname = defaultdict(list)
-            for worker_id, hostname in self._agent.get_worker_hostnames():
-                existing_by_hostname[hostname].append(worker_id)
-            master_host_workers = existing_by_hostname.get(master_hostname, [])
-        if not master_host_workers:
-            raise RuntimeError(
-                f"merge_db: no target workers on master host '{master_hostname}'")
-
-        INFO(f"merge_db: target worker pool (master host) = {master_host_workers}")
+        existing_by_hostname, master_host_workers = self._ensure_merge_workers(
+            source_hosts, local_workers)
 
         # ── Phase 3: master 从共享 db_path 读全部 idx（按 writer 分组对象清单）──
         # 用 read_idx_entries（轻量读，不灌 master local_idx / 不 mark_data_ready），
@@ -661,44 +717,9 @@ class Master(FlyAgent):
 
         # ── Phase 5: 全部成功 → 统一删源 + 状态清理 ──────────────────────
         source_worker_ids = []
-        worker_to_writers = {}  # 重试用：失败 worker → 其 writer_ids
         if ok and delete_source:
-            for hostname, writer_ids in hostname_to_writer_ids.items():
-                host_workers = existing_by_hostname.get(hostname, [])
-                if not host_workers:
-                    WARN(f"merge_db: no worker on source host '{hostname}' to delete, "
-                         f"skipping {len(writer_ids)} writer_ids")
-                    continue
-                source_worker = host_workers[0]
-                source_worker_ids.append(source_worker)
-                worker_to_writers[source_worker] = writer_ids
-                # data_path 传空 → C++ send_delete_data 从 db_registry 查源 data_path
-                # （此时 cleanup 未执行，db_registry 仍是源的）。
-                self._agent.send_delete_data(
-                    source_worker, db_path, "", writer_ids)
-                INFO(f"merge_db: sent DeleteData to worker {source_worker} on host "
-                     f"'{hostname}' for {len(writer_ids)} writers")
-            # 同步等待全部 DeleteDataAck；失败自动重试一轮（瞬时故障），仍失败发
-            # 流程 message 提醒用户手动删除（残留清单完整暴露）。
-            if source_worker_ids:
-                del_ok, del_failed = self._agent.wait_delete_data_acks(
-                    source_worker_ids, db_path, 60)
-                if not del_ok:
-                    INFO(f"merge_db: retrying source delete for workers={del_failed}")
-                    for w in del_failed:
-                        writers = worker_to_writers.get(w, [])
-                        if writers:
-                            self._agent.send_delete_data(w, db_path, "", writers)
-                    del_ok, del_failed = self._agent.wait_delete_data_acks(
-                        del_failed, db_path, 60)
-                if del_ok:
-                    INFO("merge_db: all source deletes confirmed")
-                else:
-                    WARN(f"merge_db: {len(del_failed)} source deletes failed after retry "
-                         f"(workers={del_failed}) — manual cleanup required")
-                    message("STOR::0004", 2,
-                            f"merge_db source delete failed (manual cleanup required): "
-                            f"db={db_path}, residual workers={list(del_failed)}")
+            source_worker_ids = self._delete_merge_source_with_retry(
+                hostname_to_writer_ids, existing_by_hostname, db_path)
 
         # 状态清理（无论是否删源，merge 已改变数据分布，旧索引都失效）：
         # 广播 MergeCleanup 让各 worker 清旧 local_idx/remote_idx + 按新路径重建 local_idx；

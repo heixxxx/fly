@@ -1037,6 +1037,67 @@ TEST_F(DataServiceTest, Tier2RemovesReplicaOnObjectNotFound) {
     ProcessInfo::instance()->set_worker_mode(false);
 }
 
+// TIER2↔TIER3 回环（此前无专测）：本地无副本 → TIER3 纯位置查询刷新 remote_idx
+// → 重进 TIER2 命中。回环是 read_raw_compressed 的核心容错路径。
+TEST_F(DataServiceTest, Tier3RefreshReentersTier2AndHits) {
+    CMString full = db32("tier3loop") + ":obj";
+    // 初始无本地副本：TIER2 首轮 replicas 空 → 进 TIER3。
+
+    fly::CMSharedPtr<FlyBuffer> data = fly::CMMakeShared<FlyBuffer>();
+    data->write("tier3_data", 10);
+
+    int tier2_calls = 0;
+    int tier3_calls = 0;
+    ds_->set_direct_compressed_read_handler(
+        [&](const CMString& host, int32_t port, const CMString& name)
+            -> std::tuple<bool, fly::CMSharedPtr<FlyBuffer>, CMString, CMString, fly::ReadError> {
+            tier2_calls++;
+            return {true, data, CMString("bytes"), {}, fly::ReadError::NONE};
+        });
+    ds_->set_remote_compressed_read_handler(
+        [&](const CMString& name) -> std::tuple<bool, bool> {
+            tier3_calls++;
+            // master 位置查询：登记新副本（刷新本地 remote_idx），报告 refreshed。
+            ds_->update_remote_idx(name, 7, "host_t3", 7000);
+            return {true, true};
+        });
+
+    auto [found, raw, py_name, hash, can_still] = ds_->read_raw_compressed(full);
+    EXPECT_TRUE(found);
+    ASSERT_TRUE(raw && !raw->empty());
+    EXPECT_EQ(tier3_calls, 1);
+    EXPECT_EQ(tier2_calls, 1);  // 刷新后重进 TIER2 首副本即命中
+    ds_->remove_remote_index(full);
+}
+
+// 回环防抖（tier3_queried）：TIER3 刷新后 TIER2 仍读不到 → 二次耗尽直接终败，
+// 不得再次回 TIER3（防 TIER2↔TIER3 无限弹跳）。用 OBJECT_NOT_FOUND 快速清空
+// 副本表（避免 NETWORK 期限 30s 拖慢测试）。
+TEST_F(DataServiceTest, Tier3QueriedGuardsAgainstBouncing) {
+    ProcessInfo::instance()->set_worker_mode(true);  // 踢副本为 worker 进程自愈行为
+    CMString full = db32("tier3bounce") + ":obj";
+
+    int tier3_calls = 0;
+    ds_->set_direct_compressed_read_handler(
+        [&](const CMString& host, int32_t port, const CMString& name)
+            -> std::tuple<bool, fly::CMSharedPtr<FlyBuffer>, CMString, CMString, fly::ReadError> {
+            // TIER3 登记的副本一律「已不持有」→ 本轮被踢空。
+            return {false, nullptr, {}, {}, fly::ReadError::OBJECT_NOT_FOUND};
+        });
+    ds_->set_remote_compressed_read_handler(
+        [&](const CMString& name) -> std::tuple<bool, bool> {
+            tier3_calls++;
+            ds_->update_remote_idx(name, 8, "host_t3b", 7000);
+            return {true, true};  // 刷新成功 → 重进 TIER2
+        });
+
+    auto [found, raw, py_name, hash, can_still] = ds_->read_raw_compressed(full);
+    EXPECT_FALSE(found);
+    EXPECT_EQ(tier3_calls, 1);  // 防抖生效：TIER3 只查一次
+    ds_->remove_remote_index(full);
+    ProcessInfo::instance()->set_worker_mode(false);
+}
+
 TEST_F(DataServiceTest, DataServerStartStop) {
     ds_->start_data_server("127.0.0.1", 0, 1);
     EXPECT_GT(ds_->get_data_port(), 0);
