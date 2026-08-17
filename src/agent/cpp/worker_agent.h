@@ -399,6 +399,13 @@ private:
     void on_var_broadcast(uint64_t conn_id, const VarBroadcastMessage& msg);
     
     void heartbeat_loop();
+    // 首注册/重发共用的 REGISTER 构造与发送（幂等：master 对同 conn 重发走
+    // 正常注册路径）。P3-23 修复：注册 ack 丢失的宽松重发兜底。
+    void send_register_message();
+    // 最近一次 REGISTER 发送时间（秒，epoch）——heartbeat_loop 的未注册
+    // 分支据此做 30s 宽松重发（不违反"首注册不假设时限"语义：重发是幂等
+    // 重试而非超时失败判定）。
+    std::atomic<int64_t> last_register_send_{0};
     // 断连重连线程：指数退避 reactor_->connect（initial ×2 上限 10s），总窗口
     // worker_reconnect_timeout；成功 → 重发 Register（原 worker_id/data 端口）
     // → RegisterAck 后 flush 缓冲；超时 → initiate_shutdown（干净退出）。

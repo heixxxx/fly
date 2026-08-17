@@ -262,22 +262,9 @@ void WorkerAgent::start() {
     reactor_thread_ = std::thread([this] { reactor_->run(); });
     reactor_->wait_until_running();
 
-    RegisterMessage reg;
-    reg.worker_id_ = worker_id_;
-    reg.attributes_ = attributes_;
-    reg.data_server_host_ = data_server_host_;
-    reg.data_server_port_ = data_server_port_;
-    reg.hostname_ = ProcessInfo::instance()->hostname();
-    reg.ip_address_ = data_server_host_;
-    reg.role_ = role_;
-
-    reactor_->send(master_conn_, reg);
-
-    auto dsp = data_server_port_;
-    auto attr_count = attributes_.size();
-    INFO("RegisterMessage sent with data_server_port={}, attributes={}, role={}",
-         dsp, attr_count, role_ == static_cast<uint8_t>(WorkerRole::STORAGE_ONLY)
-                               ? "storage_only" : "hybrid");
+    send_register_message();
+    last_register_send_.store(std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
 
     heartbeat_running_ = true;
     heartbeat_thread_ = std::thread([this] { heartbeat_loop(); });
@@ -443,6 +430,24 @@ uint64_t WorkerAgent::submit_task(const CMString& name, const CMString& module,
     return 0;
 }
 
+void WorkerAgent::send_register_message() {
+    RegisterMessage reg;
+    reg.worker_id_ = worker_id_;
+    reg.attributes_ = attributes_;
+    reg.data_server_host_ = data_server_host_;
+    reg.data_server_port_ = data_server_port_;
+    reg.hostname_ = ProcessInfo::instance()->hostname();
+    reg.ip_address_ = data_server_host_;
+    reg.role_ = role_;
+    reactor_->send(master_conn_, reg);
+
+    auto dsp = data_server_port_;
+    auto attr_count = attributes_.size();
+    INFO("RegisterMessage sent with data_server_port={}, attributes={}, role={}",
+         dsp, attr_count, role_ == static_cast<uint8_t>(WorkerRole::STORAGE_ONLY)
+                               ? "storage_only" : "hybrid");
+}
+
 void WorkerAgent::heartbeat_loop() {
     while (heartbeat_running_) {
         {
@@ -452,6 +457,26 @@ void WorkerAgent::heartbeat_loop() {
         }
 
         if (!heartbeat_running_) break;
+
+        // 注册 ack 丢失兜底（P3-23 根因修复）：首注册不假设时限（G1 语义）
+        // ≠ 无限静默等待——master 侧 replay_deferred_register 转正常注册时
+        // 若 RegisterAck 送达失败（连接抖动/send 失败仅 WARN），且 deferred
+        // 条目已清（deadline 兜底无对象），worker 将永久挂死（实测 60s+
+        // 不退）。宽松幂等重发：30s 无 ack 重发 REGISTER——master 对同 conn
+        // 重发走正常注册路径（worker_to_conn_ 同 conn 跳过 probe 分支），
+        // 幂等安全；连接已换则新 conn 上重新走注册/重连逻辑。
+        if (!registered_ && running_ && master_conn_.load() != 0) {
+            auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            int64_t interval = Config::instance()->get_int("worker_register_ack_resend_interval");
+            if (interval <= 0) interval = 30;
+            if (now - last_register_send_.load() >= interval) {
+                WARN("No RegisterAck after {}s — resending REGISTER (idempotent; "
+                     "ack may have been lost)", interval);
+                send_register_message();
+                last_register_send_.store(now);
+            }
+        }
 
         if (registered_ && heartbeat_running_) {
             HeartbeatMessage hb;

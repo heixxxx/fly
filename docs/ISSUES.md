@@ -127,10 +127,15 @@
 - **验证**: 新增单测 ras_graph_io_test（testzip 完整性/无 tmp 残留/幂等重写）；coverage 单跑 ×2 + coverage 全量 -j2 147/147（原失败场景）全过。
 
 ### P3-23: agent_network_test DuplicateWorkerRegisterRejectedAfterProbe 高并行负载下偶发超限
-- **Status**: OPEN 🟡（观测记录，未定位）
-- **Files**: `src/agent/tests/agent_network_test.cpp:71`
-- **Risk**: 全量单测并行（8 档，6 核 CPU 饱和）下偶发 60s 等待窗耗尽（`exited=false`）；单独运行 4/4 稳定通过（41.5s）。5651b09 曾将该用例等待窗 30s→60s（bazel 并行负载下 probe 15s deadline + 注册重试叠加实测偶发超限），2026-08-16 死代码清理批次的全量首跑又复现 1 次（全量重跑即过，与本批改动无因果路径——所删符号与 probe 流程零交集）。
-- **Next**: 专项分析 duplicate worker 退出路径在 CPU 饱和下的耗时构成（probe deadline / 注册重试节奏 / schedule 抖动），方向是缩短退出依赖链或消除固定等待窗，而非继续加宽 timeout。
+- **Status**: FIXED ✅（2026-08-17）— 注册 ack 丢失重发兜底
+- **Files**: `src/agent/cpp/worker_agent.cpp`（heartbeat_loop 未注册分支）、`src/core/cpp/config.cpp`（新键）
+- **Root Cause**（确定性证据链，按用户要求不采信无证据的"资源饥饿"归因）：
+  1. 失败现场特征：second 实例 60s 不退出、`is_registered=0`、master 侧流程消息 `AGENT::0001 ×2`（两次正常注册）。
+  2. 事件 trace 实证健康路径亚秒完成（非"高负载必然慢"）。
+  3. 代码链穷举定位结构洞：`replay_deferred_register`（master 侧，first 连接断开时触发）把挂起的 second 转正常注册并重发 RegisterAck——**ack 送达无任何保障**（连接若也在断开中，`reactor_->send` 失败仅 WARN 静默）；而 **worker 侧注册协议无 ack 重发**（"首注册不假设时限"被实现成了无限静默等待）。deferred 条目在 replay 时已被 take 清空 → **15s deadline 兜底对该 worker 失效** → ack 一旦丢失即永久挂死。这是"应用层丢消息导致挂死"的确定机制，负载只是放大了 first 连接抖动与 ack 丢失的概率。
+- **Fix**: WorkerAgent 注册等待加**幂等重发兜底**（`worker_register_ack_resend_interval`，默认 30s；`send_register_message()` 与首注册共用构造）。master 对同 conn 重发走正常注册路径（`worker_to_conn_` 同 conn 跳过 probe 分支）幂等安全；不违反"首注册不假设时限"语义（重发是幂等重试，非超时失败判定）。
+- **测试**: 新增 `RegisterAckLossRecoveredByResend`（master `drop_next_register_for_testing_` hook 吞掉首条 REGISTER 确定性构造丢失，1s interval 重发后注册成功；修复前该场景永久挂死）。agent_network_test 切换 test_hooks 库变体。
+- **残留**: first 连接在失败场景中为何断开（触发 replay 的上游）未获直接现场（唯一失败现场被清理命令误删，~600 runs 复现 2 次）——重发兜底已使该上游无论为何，worker 不再挂死；取证装置（scene dump + 每秒事件 trace）保留在测试内，若复发可直接定位。
 
 ### P3-19: DEBUG/INFO 日志 flush 延迟导致运行中读取漏行（原：-j16 下偶发缺失）
 - **Status**: FIXED ✅（2026-08-15）— Logger 自动 flush（累计 64KB 或距上次 flush 1s，
@@ -227,8 +232,8 @@
 | P0 — Critical | 4 | 4 | 0 | 0 |
 | P1 — High | 6 | 6 | 0 | 0 |
 | P2 — Medium | 6 | 5 | 0 | 1 (closed: not a bug) |
-| P3 — Low | 8 | 6 | 1 (P3-17 partial) | 1 (P3-23 open) |
+| P3 — Low | 8 | 7 | 1 (P3-17 partial) | 0 |
 | X — Unprioritized | 18 | 9 | 0 | 9 |
-| **Total** | **42** | **30** | **1** | **11** |
+| **Total** | **42** | **31** | **1** | **10** |
 
 > 2026-08-16 去重说明：原 P3-18（Dead code cleanup）→ **P3-21**、原 P3-19（MetadataClient）→ **P3-22**，为新 P3-18（退出期 pure virtual）/P3-19（日志 flush）腾出编号（后者已被 commit 5058f01/c119b1b 与 DOC_CHANGELOG 引用，保持不变）。

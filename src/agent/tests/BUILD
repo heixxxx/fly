@@ -62,7 +62,7 @@ cc_test(
     srcs = ["agent_network_test.cpp"],
     deps = [
         "@googletest//:gtest_main",
-        "//src/agent/cpp:fly_agent",
+        "//src/agent/cpp:fly_agent_test_hooks",
     ],
     copts = ["-std=c++20"],
 )

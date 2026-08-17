@@ -3,6 +3,32 @@
 ---
 ---
 
+## 2026-08-17 (2): P3-23 根治——注册 ack 丢失的幂等重发兜底（确定性证据链）
+
+按用户裁定流程（不接受无证据的"资源饥饿"归因；正常链路 60s 处理不完
+必有逻辑问题）完成调查与修复：
+
+- **取证**：测试内建确定性取证装置（失败时 scene 直出 gtest 输出——
+  bazel sandbox 下 Logger 相对路径文件不可靠；每秒事件序列 trace）；
+  复现循环多形态 ~600 runs 捕获 2 次失败。
+- **证据链**：失败特征（60s 不退 + is_registered=0 + AGENT::0001×2）+
+  健康 trace 亚秒 → 代码穷举定位结构洞：replay_deferred_register 转正常
+  注册时 RegisterAck 送达无保障（send 失败仅 WARN）+ worker 注册协议
+  无 ack 重发（"不假设时限"被实现为无限静默等待）+ deferred 条目
+  replay 时已清（deadline 兜底失效）→ ack 丢失即永久挂死。
+- **修复**：WorkerAgent 未注册状态 30s 幂等重发 REGISTER
+  （worker_register_ack_resend_interval 键；master 对同 conn 重发走正常
+  注册路径，幂等安全；不违反首注册不假设时限的语义）。
+- **回归**：新增 RegisterAckLossRecoveredByResend——master 侧
+  drop_next_register_for_testing_ hook 确定性构造"首条注册被吞"，
+  修复前永久挂死、修复后重发恢复；agent_network_test 切 test_hooks 库。
+- 验证：全量单测 59/59 + QA 147/147；修复后复现循环长跑中。
+- 教训记录：唯一失败现场曾因清理命令（rm r4_round_*）丢失——现场文件
+  在根因确认前不可清理。
+
+---
+---
+
 ## 2026-08-17 (1): 矩阵数据入库（write_object）+ P3-23 复现调查进行中
 
 **矩阵入库改造（用户裁定：数据不落共享文件，走框架的分布式数据与依赖管理）**：

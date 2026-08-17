@@ -250,6 +250,9 @@ public:
     ObjectBackupScore backup_score_for_testing(const CMString& object_name) const;
     // trigger_auto_backup 进入次数（无论后续选目标是否成功）——判定分支的触发观测。
     uint64_t auto_backup_trigger_count_for_testing_ = 0;
+    // 吞掉下一条 REGISTER（不处理、不回 ack）——构造「注册/ack 丢失」的
+    // 确定性场景（P3-23 重发兜底单测用）。
+    std::atomic<bool> drop_next_register_for_testing_{false};
     // 诊断：指定 db_path 的 merge task 状态条目数（失败清理精确性测试用）。
     size_t merge_task_state_count_for_testing(const CMString& db_path) const;
     // 直接驱动 record_worker_info（private），验证同 tuple 只 append meta 一次。

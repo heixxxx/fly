@@ -1004,6 +1004,13 @@ void MasterAgent::sched_watchdog_loop() {
 
 void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& msg) {
     uint64_t worker_id = msg.worker_id_;
+#ifdef FLY_ENABLE_TEST_HOOKS
+    // 测试钩子：吞掉本条注册（模拟消息/ack 丢失，P3-23 重发兜底的确定性构造）。
+    if (drop_next_register_for_testing_.exchange(false)) {
+        WARN("[TEST-HOOK] dropping REGISTER from worker_id={} (conn {})", worker_id, conn_id);
+        return;
+    }
+#endif
 
     // 重复注册防护（先到先得，用户确认语义）：该 worker_id 已有活跃连接——
     // 典型为网络分区恢复的旧实例与手动重启（AGENT::0006 命令）的新实例竞态。
