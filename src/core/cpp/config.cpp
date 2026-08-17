@@ -155,9 +155,10 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"worker_reconnect_timeout", 120},
     // - connect 重试首次间隔(ms)，指数 ×2 递增（单次上限 10s 硬编码），首连与重连共用。
     {"worker_connect_retry_initial_ms", 500},
-    // - 注册 ack 丢失兜底（P3-23）：未确认状态下 REGISTER 的幂等重发间隔(s)。
-    //   不违反"首注册不假设时限"——重发是幂等重试，不是超时失败判定。
-    {"worker_register_ack_resend_interval", 30},
+    // - 注册 ack 丢失兜底（P3-23）：注册守望的超时退避初值(ms)，指数 ×2
+    //   （单次上限 30s 硬编码）。覆盖 master 活着但注册/ack 被应用层吞掉的
+    //   场景；连接级丢失由 on_disconnect 事件驱动恢复（无超时参与）。
+    {"worker_register_ack_retry_initial_ms", 500},
     // Logger 自动 flush（DEBUG/INFO；WARN/ERROR 始终立即 flush）：
     // 累计写入字节数达到阈值，或距上次 flush 超过时间间隔（写时惰性判定，
     // 无后台线程），避免日志文件更新延迟过长。

@@ -133,7 +133,7 @@
   1. 失败现场特征：second 实例 60s 不退出、`is_registered=0`、master 侧流程消息 `AGENT::0001 ×2`（两次正常注册）。
   2. 事件 trace 实证健康路径亚秒完成（非"高负载必然慢"）。
   3. 代码链穷举定位结构洞：`replay_deferred_register`（master 侧，first 连接断开时触发）把挂起的 second 转正常注册并重发 RegisterAck——**ack 送达无任何保障**（连接若也在断开中，`reactor_->send` 失败仅 WARN 静默）；而 **worker 侧注册协议无 ack 重发**（"首注册不假设时限"被实现成了无限静默等待）。deferred 条目在 replay 时已被 take 清空 → **15s deadline 兜底对该 worker 失效** → ack 一旦丢失即永久挂死。这是"应用层丢消息导致挂死"的确定机制，负载只是放大了 first 连接抖动与 ack 丢失的概率。
-- **Fix**: WorkerAgent 注册等待加**幂等重发兜底**（`worker_register_ack_resend_interval`，默认 30s；`send_register_message()` 与首注册共用构造）。master 对同 conn 重发走正常注册路径（`worker_to_conn_` 同 conn 跳过 probe 分支）幂等安全；不违反"首注册不假设时限"语义（重发是幂等重试，非超时失败判定）。
+- **Fix**: 注册守望线程（`register_watchdog_loop`）——事件驱动的 ack 等待 + 超时退避重发。**职责分层**：连接级丢失（ack 丢失的真实主因）由 `on_disconnect → reconnect_loop` 的既有事件驱动路径恢复（毫秒级，无超时参与）；守望只覆盖「master 活着但注册/ack 被应用层吞掉」——cv 等 ack（`on_register_ack` 持锁 notify，注册成功即刻退出零空转），超时则指数退避重发（`worker_register_ack_retry_initial_ms` 默认 500ms，×2 上限 30s；`reconnecting_` 期间让位给 reconnect_loop）。master 对同 conn 重发走正常注册路径（`worker_to_conn_` 同 conn 跳过 probe 分支）幂等安全；不违反"首注册不假设时限"语义（重发是幂等重试，非超时失败判定）。
 - **测试**: 新增 `RegisterAckLossRecoveredByResend`（master `drop_next_register_for_testing_` hook 吞掉首条 REGISTER 确定性构造丢失，1s interval 重发后注册成功；修复前该场景永久挂死）。agent_network_test 切换 test_hooks 库变体。
 - **残留**: first 连接在失败场景中为何断开（触发 replay 的上游）未获直接现场（唯一失败现场被清理命令误删，~600 runs 复现 2 次）——重发兜底已使该上游无论为何，worker 不再挂死；取证装置（scene dump + 每秒事件 trace）保留在测试内，若复发可直接定位。
 

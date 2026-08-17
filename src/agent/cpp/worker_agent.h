@@ -400,12 +400,18 @@ private:
     
     void heartbeat_loop();
     // 首注册/重发共用的 REGISTER 构造与发送（幂等：master 对同 conn 重发走
-    // 正常注册路径）。P3-23 修复：注册 ack 丢失的宽松重发兜底。
+    // 正常注册路径）。
     void send_register_message();
-    // 最近一次 REGISTER 发送时间（秒，epoch）——heartbeat_loop 的未注册
-    // 分支据此做 30s 宽松重发（不违反"首注册不假设时限"语义：重发是幂等
-    // 重试而非超时失败判定）。
-    std::atomic<int64_t> last_register_send_{0};
+    // 注册守望线程：等待 RegisterAck 的事件驱动重发兜底（P3-23）。仅覆盖
+    // 「master 活着但注册/ack 被应用层吞掉」的场景——连接级丢失由
+    // on_disconnect → reconnect_loop 的事件驱动路径恢复（毫秒级，无需超时）。
+    // cv 等 ack（注册成功即刻退出，零空转）；超时则指数退避重发
+    // （initial ×2 上限 30s）；reconnecting_ 期间让位给 reconnect_loop。
+    void register_watchdog_loop();
+    std::thread register_watchdog_thread_;
+    std::atomic<bool> register_watchdog_running_{false};
+    std::mutex register_ack_mutex_;
+    std::condition_variable register_ack_cv_;
     // 断连重连线程：指数退避 reactor_->connect（initial ×2 上限 10s），总窗口
     // worker_reconnect_timeout；成功 → 重发 Register（原 worker_id/data 端口）
     // → RegisterAck 后 flush 缓冲；超时 → initiate_shutdown（干净退出）。

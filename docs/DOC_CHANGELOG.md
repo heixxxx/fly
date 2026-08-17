@@ -3,6 +3,20 @@
 ---
 ---
 
+## 2026-08-17 (3): 注册守望重构——固定间隔轮询改为事件驱动 + 指数退避
+
+用户 review 指出 30s 固定间隔寄生 heartbeat 循环的实现丑陋（职责耦合
++ 时序粗糙：1s 配置实测延迟 10s 才触发）。重构为独立注册守望线程：
+cv 等 RegisterAck（on_register_ack 持锁 notify，成功即刻退出零空转）；
+超时指数退避重发（500ms ×2 上限 30s，与 connect 重试风格统一）；
+reconnecting_ 期间让位 reconnect_loop；initiate_shutdown 持锁 notify
+同步退出。配置键 worker_register_ack_resend_interval(30s) 废除，换
+worker_register_ack_retry_initial_ms(500ms)。回归用例改 100ms 初值
+（20s→10s，重发实际 ~100ms 触发）。
+
+---
+---
+
 ## 2026-08-17 (2): P3-23 根治——注册 ack 丢失的幂等重发兜底（确定性证据链）
 
 按用户裁定流程（不接受无证据的"资源饥饿"归因；正常链路 60s 处理不完
@@ -16,13 +30,16 @@
   注册时 RegisterAck 送达无保障（send 失败仅 WARN）+ worker 注册协议
   无 ack 重发（"不假设时限"被实现为无限静默等待）+ deferred 条目
   replay 时已清（deadline 兜底失效）→ ack 丢失即永久挂死。
-- **修复**：WorkerAgent 未注册状态 30s 幂等重发 REGISTER
-  （worker_register_ack_resend_interval 键；master 对同 conn 重发走正常
-  注册路径，幂等安全；不违反首注册不假设时限的语义）。
+- **修复**：注册守望线程（register_watchdog_loop）——事件驱动 ack 等待
+  + 超时指数退避重发（500ms ×2 上限 30s，worker_register_ack_retry_
+  initial_ms 键）。职责分层：连接级丢失由既有 on_disconnect→
+  reconnect_loop 事件驱动恢复（毫秒级）；守望仅覆盖 master 活着但
+  应用层吞消息场景。cv 持锁 notify（注册成功即刻退出零空转，
+  initiate_shutdown 同步唤醒）。
 - **回归**：新增 RegisterAckLossRecoveredByResend——master 侧
   drop_next_register_for_testing_ hook 确定性构造"首条注册被吞"，
   修复前永久挂死、修复后重发恢复；agent_network_test 切 test_hooks 库。
-- 验证：全量单测 59/59 + QA 147/147；修复后复现循环长跑中。
+- 验证：全量单测 59/59 + QA 147/147；修复后复现循环（12 核超额，2×125 runs）全部通过，原失败形态消失。
 - 教训记录：唯一失败现场曾因清理命令（rm r4_round_*）丢失——现场文件
   在根因确认前不可清理。
 

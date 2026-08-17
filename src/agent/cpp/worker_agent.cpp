@@ -263,11 +263,13 @@ void WorkerAgent::start() {
     reactor_->wait_until_running();
 
     send_register_message();
-    last_register_send_.store(std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count());
 
     heartbeat_running_ = true;
     heartbeat_thread_ = std::thread([this] { heartbeat_loop(); });
+
+    // 注册守望：RegisterAck 的事件驱动等待 + 超时退避重发（P3-23 兜底）。
+    register_watchdog_running_ = true;
+    register_watchdog_thread_ = std::thread([this] { register_watchdog_loop(); });
 
     if (Config::instance()->get_int("net_probe_enabled")) {
         probe_running_ = true;
@@ -326,6 +328,11 @@ void WorkerAgent::do_cleanup() {
     reconnecting_.store(false);
     if (reconnect_thread_.joinable()) {
         reconnect_thread_.join();
+    }
+
+    // 注册守望（initiate_shutdown 已置位+notify，此处仅回收）。
+    if (register_watchdog_thread_.joinable()) {
+        register_watchdog_thread_.join();
     }
 
     if (heartbeat_thread_.joinable()) {
@@ -448,6 +455,37 @@ void WorkerAgent::send_register_message() {
                                ? "storage_only" : "hybrid");
 }
 
+void WorkerAgent::register_watchdog_loop() {
+    // 指数退避：initial（默认 500ms）×2，单次上限 30s。覆盖「master 活着但
+    // 注册/ack 被应用层吞掉」——连接级丢失由 on_disconnect 的事件驱动
+    // reconnect_loop 恢复（毫秒级），本循环在 reconnecting_ 期间让位。
+    int64_t delay_ms = Config::instance()->get_int("worker_register_ack_retry_initial_ms");
+    if (delay_ms <= 0) delay_ms = 500;
+    const int64_t kMaxDelayMs = 30000;
+
+    while (register_watchdog_running_) {
+        std::unique_lock<std::mutex> lk(register_ack_mutex_);
+        register_ack_cv_.wait_for(lk, std::chrono::milliseconds(delay_ms),
+                                  [this] {
+                                      return !register_watchdog_running_.load()
+                                             || registered_.load();
+                                  });
+        if (!register_watchdog_running_ || registered_) break;
+
+        // ack 未到：幂等重发（master 对同 conn 重发走正常注册路径）。
+        // 重连进行中（reconnect_loop 负责连接+注册+ack 等待）则让位。
+        if (!reconnecting_.load() && running_.load() && master_conn_.load() != 0) {
+            WARN("No RegisterAck — resending REGISTER (backoff {}ms; "
+                 "ack may have been lost at application layer)", delay_ms);
+            send_register_message();
+            delay_ms = std::min(delay_ms * 2, kMaxDelayMs);
+        } else {
+            // reconnect 期间不重置退避节奏：按当前 delay 继续守望，注册
+            // 成功由 cv predicate 捕获。
+        }
+    }
+}
+
 void WorkerAgent::heartbeat_loop() {
     while (heartbeat_running_) {
         {
@@ -457,26 +495,6 @@ void WorkerAgent::heartbeat_loop() {
         }
 
         if (!heartbeat_running_) break;
-
-        // 注册 ack 丢失兜底（P3-23 根因修复）：首注册不假设时限（G1 语义）
-        // ≠ 无限静默等待——master 侧 replay_deferred_register 转正常注册时
-        // 若 RegisterAck 送达失败（连接抖动/send 失败仅 WARN），且 deferred
-        // 条目已清（deadline 兜底无对象），worker 将永久挂死（实测 60s+
-        // 不退）。宽松幂等重发：30s 无 ack 重发 REGISTER——master 对同 conn
-        // 重发走正常注册路径（worker_to_conn_ 同 conn 跳过 probe 分支），
-        // 幂等安全；连接已换则新 conn 上重新走注册/重连逻辑。
-        if (!registered_ && running_ && master_conn_.load() != 0) {
-            auto now = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count();
-            int64_t interval = Config::instance()->get_int("worker_register_ack_resend_interval");
-            if (interval <= 0) interval = 30;
-            if (now - last_register_send_.load() >= interval) {
-                WARN("No RegisterAck after {}s — resending REGISTER (idempotent; "
-                     "ack may have been lost)", interval);
-                send_register_message();
-                last_register_send_.store(now);
-            }
-        }
 
         if (registered_ && heartbeat_running_) {
             HeartbeatMessage hb;
@@ -591,6 +609,11 @@ void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
 
     registered_ = true;
     touch_master_contact();
+    // 注册守望退出（事件驱动，无空转等待）。
+    {
+        std::lock_guard<std::mutex> lk(register_ack_mutex_);
+        register_ack_cv_.notify_all();
+    }
 
     INFO("RegisterAck received, registered");
     bool was_reconnecting = reconnecting_.exchange(false);
@@ -910,6 +933,11 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
     running_ = false;
     // 三处 notify 均持对应锁发出（predicate 虽读 atomic flag，但无锁 notify 仍存在
     // lost wakeup 窗口，waiter 只能靠超时兜底退出）。
+    {
+        std::lock_guard<std::mutex> lk(register_ack_mutex_);
+        register_watchdog_running_ = false;
+        register_ack_cv_.notify_all();
+    }
     {
         std::lock_guard<std::mutex> lock(heartbeat_mutex_);
         heartbeat_running_ = false;

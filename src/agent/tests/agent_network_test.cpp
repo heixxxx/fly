@@ -43,10 +43,11 @@ TEST_F(AgentNetworkTest, WorkerRegister) {
 }
 
 // 注册 ack 丢失兜底（P3-23 根因修复的确定性回归）：master 吞掉首条 REGISTER
-// （等效 ack 丢失——worker 无限等），worker 侧 30s（本测压缩为 1s）幂等重发
-// 后注册成功。修复前该场景永久挂死（真实失败形态：60s 测试超时）。
+// （等效应用层丢消息——worker 无限等），注册守望以指数退避（本测 100ms 初值）
+// 重发后注册成功。修复前该场景永久挂死（真实失败形态：60s 测试超时）。
+// 连接级丢失不走此路径（由 on_disconnect → reconnect_loop 事件驱动恢复）。
 TEST_F(AgentNetworkTest, RegisterAckLossRecoveredByResend) {
-    Config::instance()->set_int("worker_register_ack_resend_interval", 1);
+    Config::instance()->set_int("worker_register_ack_retry_initial_ms", 100);
 
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -56,8 +57,8 @@ TEST_F(AgentNetworkTest, RegisterAckLossRecoveredByResend) {
     WorkerAgent worker(11, "127.0.0.1", master.get_port());
     worker.start();
 
-    // 首发被吞 + 1s 重发 → 注册成功（无重发机制时此处 20s 超时失败）。
-    EXPECT_TRUE(wait_until_registered(worker, 200, 100)) << "resend must recover from lost ack";
+    // 首发被吞 + ~100ms 退避重发 → 注册成功（无重发机制时此处超时失败）。
+    EXPECT_TRUE(wait_until_registered(worker, 200, 50)) << "watchdog resend must recover from lost ack";
 
     EXPECT_EQ(master.get_connection_count(), 1);
     auto connected = master.get_connected_workers();
@@ -66,7 +67,7 @@ TEST_F(AgentNetworkTest, RegisterAckLossRecoveredByResend) {
 
     master.stop();
     worker.stop();
-    Config::instance()->set_int("worker_register_ack_resend_interval", 30);
+    Config::instance()->set_int("worker_register_ack_retry_initial_ms", 500);
 }
 
 // 重复注册防护（先到先得 + 活性探测）：同 worker_id 的第二个实例注册时，
