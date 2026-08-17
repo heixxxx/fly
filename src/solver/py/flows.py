@@ -68,12 +68,13 @@ def _solve_kickoff_task(db, matrix_full_name, nsd, overlap_ratio,
         raise RuntimeError("solve kickoff: cannot find matrix db in chain "
                            "(role=matrix not found in DAG predecessors)")
 
+    # 矩阵全程走 DB 对象（2026-08-17 入库改造）：从 matrix_db 读出后写入本 db
+    # 的约定对象，coord/worker 经 read_object 获取——数据由框架管理，无共享
+    # 文件的读写时序问题（此前经 db 目录下的 matrix.npz 文件中转）。
+    from .ras_graph import ras_graph_coord, MATRIX_OBJ_KEY
     m = matrix_db.read_object("matrix")
-    work_npz = os.path.join(db.get_db_path(), "matrix.npz")
-    np.savez(work_npz,
-             n=np.int64(m["n"]), N=np.int64(m["N"]),
-             rows=m["rows"], cols=m["cols"], vals=m["vals"], b=m["b"])
-    ras_graph_coord(db, work_npz, nsd, overlap_ratio, max_iter, tol, omega)
+    db.write_object(MATRIX_OBJ_KEY, m)
+    ras_graph_coord(db, MATRIX_OBJ_KEY, nsd, overlap_ratio, max_iter, tol, omega)
 
 
 # ── build_matrix：读文件 → 矩阵存入 db → 返回 db（异步）──────────────

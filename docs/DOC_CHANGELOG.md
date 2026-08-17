@@ -3,6 +3,34 @@
 ---
 ---
 
+## 2026-08-17 (1): 矩阵数据入库（write_object）+ P3-23 复现调查进行中
+
+**矩阵入库改造（用户裁定：数据不落共享文件，走框架的分布式数据与依赖管理）**：
+
+- `solve_ras_graph` / `solve_ras_graph_v2` 的 `matrix_path` 参数改为
+  `matrix_ref` 双模式：**对象模式**（DB 对象名，推荐——矩阵经
+  `db.write_object(MATRIX_OBJ_KEY="__rasg__matrix", ...)` 入库，worker 经
+  read_object 正常路径获取，写完才可见的框架语义彻底消除共享文件读写
+  时序问题）+ 路径模式（.npz 文件路径，仅限 qa/scripts、big_qa 本地
+  实验工具，不经分布式管理）。
+- golden_solver：矩阵全程内存/对象流转（prebuilt 读入即与文件解耦；
+  fallback 经进程私有 tempfile 生成后即删）；exact 解改内存计算
+  （新增 compute_exact_from_matrix，无文件 IO）——P3-24 的重写竞争
+  场景从数据流层面消灭（原子写修复保留为通用防御）。
+- flows.py（SolverProject）solve kickoff：删除"读出矩阵→落盘 db 目录
+  →传路径"的中转（同款反模式），改直接写本 db 对象。
+- runqa 内全部矩阵消费者已切换对象模式（golden ×9、test_ras_graph、
+  test_ras_graph_v2 ×2、solver_project）；QA 全量 147/147 零回归。
+
+**P3-23（probe 超时）调查**：按"确定性证据才下结论"要求重开——静态
+审计证实 deadline 兜底链完整（15s 登记 + 5s 心跳循环检查 + 保守拒绝，
+ProbeAck 丢失最多 20s 延迟退出，无法解释 60s 挂死）；已建 6 分支预测
+表（A-G 各有必现日志签名），定向复现进行中（bazel 版已复现 1 次
+1/100，直接二进制循环保现场版运行中）。
+
+---
+---
+
 ## 2026-08-16 (8): 测试审计行动落地——5 项补覆盖 + G2 边界缺陷修复 + P3-24 根治
 
 按 coverage-report-2026-08-16 行动建议执行（③④①②⑤⑦ 依依赖排序）：

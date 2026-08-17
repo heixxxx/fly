@@ -15,7 +15,7 @@ from fly import as_task
 from agent import PeerChannelGroup, PeerRpcStatus, serialize_array, deserialize_array
 
 
-def solve_ras_graph_v2(db, matrix_path, nsd,
+def solve_ras_graph_v2(db, matrix_ref, nsd,
                        overlap_ratio=0.50, max_iter=100, tol=1e-8,
                        omega=1.0, max_concurrent_compute=None):
     """nsd+1 worker（1 check + nsd compute），常驻 daemon + RPC 直连。
@@ -42,7 +42,7 @@ def solve_ras_graph_v2(db, matrix_path, nsd,
     INFO(f"[RASG V2] group_id={group.group_id[:8]}")
 
     # coord 预构建（含 coord/cfg/coarse 写 DB + 每完成一个 sub_{sd} 提交 compute daemon）
-    _coord_prebuild_pipeline(db, matrix_path, nsd, overlap_ratio, max_iter, tol, omega,
+    _coord_prebuild_pipeline(db, matrix_ref, nsd, overlap_ratio, max_iter, tol, omega,
                               group.group_id)
 
     # coord 写完后提交 check daemon（check 依赖 coord/cfg/coarse 已就绪）
@@ -51,7 +51,7 @@ def solve_ras_graph_v2(db, matrix_path, nsd,
     return _wait_solution(db)
 
 
-def _coord_prebuild_pipeline(db, matrix_path, nsd, overlap_ratio, max_iter, tol, omega, group_id):
+def _coord_prebuild_pipeline(db, matrix_ref, nsd, overlap_ratio, max_iter, tol, omega, group_id):
     """coord 预构建 + 流水线提交：每完成一个 sub_{sd} 立即提交 compute daemon，
     让 LDLT 分解与剩余 BFS 并行。"""
     from .ras_graph import (_load_matrix, _partition_primary_2d,
@@ -61,7 +61,7 @@ def _coord_prebuild_pipeline(db, matrix_path, nsd, overlap_ratio, max_iter, tol,
     import scipy.sparse as sp
     from scipy.sparse.linalg import splu
 
-    data = _load_matrix(matrix_path)
+    data = _load_matrix(matrix_ref, db)
     n = data["n"]; N = data["N"]
     rows, cols, vals = data["rows"], data["cols"], data["vals"]
     b = data["b"]
@@ -81,13 +81,13 @@ def _coord_prebuild_pipeline(db, matrix_path, nsd, overlap_ratio, max_iter, tol,
         "nsd": nsd, "N": N, "n": n, "nsd_x": nsd_x, "nsd_y": nsd_y,
         "overlap_ratio": overlap_ratio, "depth": depth,
         "primary_sets": primary_sets, "global_owner": global_owner,
-        "matrix_path": matrix_path,
+        "matrix_ref": matrix_ref,
     }
     db.write_object("__rasg__coord", coord, save_to_db=False)
     cfg = {
         "nsd": nsd, "N": N, "n": n, "max_iter": max_iter, "tol": tol,
         "omega": omega, "primary_sets": primary_sets,
-        "neighbor_ids_all": neighbor_ids_all, "matrix_path": matrix_path,
+        "neighbor_ids_all": neighbor_ids_all, "matrix_ref": matrix_ref,
     }
     db.write_object("__rasg__cfg", cfg, save_to_db=False)
 
@@ -173,7 +173,7 @@ def _coord_prebuild_pipeline(db, matrix_path, nsd, overlap_ratio, max_iter, tol,
 
     # coarse 预构建（在所有 compute daemon 已提交后，check daemon 提交前）
     if omega == "coarse":
-        _prebuild_coarse_in_coord(db, n, N, matrix_path)
+        _prebuild_coarse_in_coord(db, n, N, matrix_ref)
         _prebuild_coarse_grid(db, nsd)
 
 
@@ -304,7 +304,7 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
     N = coord["N"]
     n = coord["n"]
     primary_sets = coord["primary_sets"]
-    matrix_path = coord["matrix_path"]
+    matrix_ref = coord["matrix_ref"]
     use_coarse = (omega_strategy == "coarse")
 
     # ── 粗校正预构建（内存缓存，不经 DB 读写）──
@@ -320,7 +320,7 @@ def check_daemon_task(db, group_id, nsd, max_iter, tol, omega_strategy):
         # A_fine 需构建一次（用于 residual r = b - A·x）
         if not has_cache("__rasg__coarse_A"):
             from .ras_graph import _get_matrix_data
-            md = _get_matrix_data(matrix_path)
+            md = _get_matrix_data(matrix_ref, db)
             A_fine = sp.csr_matrix(
                 (np.asarray(md["vals"]), (np.asarray(md["rows"]), np.asarray(md["cols"]))),
                 shape=(N, N))

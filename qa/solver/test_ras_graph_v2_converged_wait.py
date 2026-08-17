@@ -8,7 +8,7 @@ import os, time, shutil
 import numpy as np
 from fly import open_db, get_config
 from solver import generate_poisson_matrix
-from solver import solve_ras_graph_v2
+from solver import solve_ras_graph_v2, MATRIX_OBJ_KEY
 
 N_SIDE = 20
 NSD = 2
@@ -23,13 +23,15 @@ def main():
     generate_poisson_matrix(N_SIDE, MATRIX_PATH, compute_exact=True)
     m = np.load(MATRIX_PATH, allow_pickle=False)
     n = int(m["N"])
+    _md = {k: m[k] for k in m.files}
 
     db = open_db(DB_PATH)
     get_config().set_int("fail_unscheduleable_tasks", 0)
 
     print(f"\n=== solve_ras_graph_v2 n={N_SIDE} nsd={NSD} (converged-wait regression) ===")
     t0 = time.time()
-    result = solve_ras_graph_v2(db, MATRIX_PATH, NSD,
+    db.write_object(MATRIX_OBJ_KEY, _md)
+    result = solve_ras_graph_v2(db, MATRIX_OBJ_KEY, NSD,
                                 overlap_ratio=0.50, max_iter=100, tol=1e-8,
                                 omega="coarse")
     elapsed = time.time() - t0

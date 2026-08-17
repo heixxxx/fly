@@ -26,6 +26,11 @@ register_message_id("SOLVER::0001", "INFO")
 
 # ── Matrix File I/O ──────────────────────────────────────────────
 
+# 矩阵作为分布式对象入库时的约定对象名（solve_ras_graph 的 matrix_ref 对象
+# 模式；golden/测试链使用，2026-08-17 矩阵入库改造）。
+MATRIX_OBJ_KEY = "__rasg__matrix"
+
+
 def generate_poisson_matrix(n, path, compute_exact=True):
     """Generate a Poisson 2D matrix and save to .npz file.
 
@@ -106,6 +111,21 @@ def generate_poisson_matrix(n, path, compute_exact=True):
          f"exact={'yes' if compute_exact else 'no'} → {path}")
 
 
+def compute_exact_from_matrix(data):
+    """内存版精确解：从矩阵 dict 直接 splu 求解，返回 x_exact（无文件 IO）。
+
+    golden 验证链使用（2026-08-17 矩阵入库改造）：矩阵作为 DB 对象/内存 dict
+    流转后，验证侧不再需要经文件的 compute_exact_solution。
+    """
+    import numpy as np
+    from scipy import sparse
+    from scipy.sparse.linalg import splu
+    N = int(data["N"])
+    A_csc = sparse.csc_matrix(
+        (data["vals"], (data["rows"], data["cols"])), shape=(N, N))
+    return splu(A_csc).solve(data["b"])
+
+
 def compute_exact_solution(n, path):
     """Compute x_exact via splu and append it to an existing matrix .npz.
 
@@ -138,8 +158,15 @@ def compute_exact_solution(n, path):
     return x_exact
 
 
-def _load_matrix(path):
-    """Load matrix data from .npz file. Returns dict with n, N, rows, cols, vals, b, x_exact.
+def _load_matrix(ref, db=None):
+    """Load matrix data. Returns dict with n, N, rows, cols, vals, b, x_exact.
+
+    双模式（2026-08-17 矩阵数据入库改造）：
+      - 对象模式：db 非空 → ref 为 DB 对象名，read_object 读取（矩阵作为
+        分布式数据由框架管理，worker 经正常读写路径获取——写完才可见的
+        框架语义天然消除共享文件的读写时序问题）。
+      - 路径模式：db 为空 → ref 为 .npz 文件路径（本地实验脚本用，不经
+        分布式管理）。
 
     Values stay as numpy arrays (no .tolist()) — downstream consumers (the
     ex_slv_* C++ helpers and scipy sparse constructors) accept arrays directly,
@@ -148,7 +175,20 @@ def _load_matrix(path):
     ~140ms per load; the matrix is loaded once per worker process.
     """
     import numpy as np
-    data = np.load(path, allow_pickle=False)
+    if db is not None:
+        data = db.read_object(ref)
+        result = {
+            "n": int(data["n"]),
+            "N": int(data["N"]),
+            "rows": data["rows"],
+            "cols": data["cols"],
+            "vals": data["vals"],
+            "b": data["b"],
+        }
+        if "x_exact" in data:
+            result["x_exact"] = data["x_exact"]
+        return result
+    data = np.load(ref, allow_pickle=False)
     result = {
         "n": int(data["n"]),
         "N": int(data["N"]),
@@ -164,12 +204,12 @@ def _load_matrix(path):
     return result
 
 
-def _get_matrix_data(matrix_path):
-    """Load matrix data with process-local caching."""
+def _get_matrix_data(ref, db=None):
+    """Load matrix data with process-local caching（双模式，见 _load_matrix）."""
     from fly import get_cache, has_cache, put_cache
-    cache_key = f"__rasg__matrix_{matrix_path}"
+    cache_key = f"__rasg__matrix_{ref}"
     if not has_cache(cache_key):
-        data = _load_matrix(matrix_path)
+        data = _load_matrix(ref, db)
         put_cache(cache_key, data)
     return get_cache(cache_key)
 
@@ -289,11 +329,11 @@ def _aitken_omega(delta_curr, delta_prev):
 
 # ── Phase 1: Coordination (master process, fast — geometry only) ─
 
-def ras_graph_coord(db, matrix_path, nsd, overlap_ratio,
+def ras_graph_coord(db, matrix_ref, nsd, overlap_ratio,
                     max_iter, tol, omega=1.0):
     t_coord_start = time.perf_counter()
 
-    data = _load_matrix(matrix_path)
+    data = _load_matrix(matrix_ref, db)
     n = data["n"]
     N = data["N"]
 
@@ -317,7 +357,7 @@ def ras_graph_coord(db, matrix_path, nsd, overlap_ratio,
         "depth": depth,
         "primary_sets": primary_sets,
         "global_owner": global_owner,
-        "matrix_path": matrix_path,
+        "matrix_ref": matrix_ref,
     }
     db.write_object("__rasg__coord", coord, save_to_db=False)
 
@@ -327,7 +367,7 @@ def ras_graph_coord(db, matrix_path, nsd, overlap_ratio,
         "omega": omega,
         "primary_sets": primary_sets,
         "neighbor_ids_all": neighbor_ids_all,
-        "matrix_path": matrix_path,
+        "matrix_ref": matrix_ref,
     }
     db.write_object("__rasg__cfg", cfg, save_to_db=False)
 
@@ -343,7 +383,7 @@ def ras_graph_coord(db, matrix_path, nsd, overlap_ratio,
         # Build P + Galerkin Ac ONCE here (coord) and publish to DB, so workers
         # skip the redundant full A_fine rebuild (220ms x4) + Galerkin and only
         # do the LU step. Helps most under -j4 CPU contention.
-        _prebuild_coarse_in_coord(db, n, N, matrix_path)
+        _prebuild_coarse_in_coord(db, n, N, matrix_ref)
         _prebuild_coarse_grid(db, nsd)
         INFO("[RASG] Coarse grid pre-build dispatched")
 
@@ -411,14 +451,14 @@ def _compute_coarse_arrays(n, N, rows, cols, vals):
     return P, P_rows, P_cols, P_vals, A_fine, Ac, stride, nc, Nc
 
 
-def _build_coarse_operators(n, N, matrix_path):
+def _build_coarse_operators(n, N, matrix_ref, db=None):
     """Build global coarse-grid P (restriction) and Galerkin Ac on the coord
     process. Returns serialisable raw sparse data (COO for P, CSC for Ac) so
     workers can rebuild the sparse objects and do only the LU step, instead of
     each worker redundantly rebuilding the full A_fine (220ms) + Galerkin.
     Returns None if the coarse grid is too small to be useful.
     """
-    data = _get_matrix_data(matrix_path)
+    data = _get_matrix_data(matrix_ref, db)
     rows = np.asarray(data["rows"])
     cols = np.asarray(data["cols"])
     vals = np.asarray(data["vals"])
@@ -440,10 +480,10 @@ def _build_coarse_operators(n, N, matrix_path):
     }
 
 
-def _prebuild_coarse_in_coord(db, n, N, matrix_path):
+def _prebuild_coarse_in_coord(db, n, N, matrix_ref):
     """Coord-side: build coarse operators once, publish raw data to DB."""
     t0 = time.perf_counter()
-    result = _build_coarse_operators(n, N, matrix_path)
+    result = _build_coarse_operators(n, N, matrix_ref, db)
     if result is None:
         INFO("[RASG COARSE] Skipping: coarse grid too small")
         db.write_object("__rasg__coarse_prebuilt", {"skip": True}, save_to_db=False)
@@ -505,9 +545,9 @@ def _ensure_coarse_cached(db):
     coord = db.read_object("__rasg__coord")
     N = coord["N"]
     n = coord["n"]
-    matrix_path = coord["matrix_path"]
+    matrix_ref = coord["matrix_ref"]
 
-    data = _get_matrix_data(matrix_path)
+    data = _get_matrix_data(matrix_ref, db)
     rows = data["rows"]
     cols = data["cols"]
     vals = data["vals"]
@@ -547,7 +587,7 @@ def _apply_coarse_correction(db, step, nsd):
     from fly import has_cache as _has, put_cache as _put
     if not _has("__rasg__coarse_A"):
         coord = db.read_object("__rasg__coord")
-        md = _get_matrix_data(coord["matrix_path"])
+        md = _get_matrix_data(coord["matrix_ref"], db)
         _put("__rasg__coarse_A", sparse.csr_matrix(
             (np.asarray(md["vals"]), (np.asarray(md["rows"]),
              np.asarray(md["cols"]))),
@@ -623,7 +663,7 @@ def ras_graph_setup(db, sd_id, nsd, neighbor_ids):
         return
 
     coord = db.read_object("__rasg__coord")
-    matrix_path = coord["matrix_path"]
+    matrix_ref = coord["matrix_ref"]
     N = coord["N"]
     depth = coord["depth"]
     overlap_ratio = coord["overlap_ratio"]
@@ -631,12 +671,12 @@ def ras_graph_setup(db, sd_id, nsd, neighbor_ids):
     global_owner = coord["global_owner"]
     all_primary_sets = coord["primary_sets"]
 
-    data = _get_matrix_data(matrix_path)
+    data = _get_matrix_data(matrix_ref, db)
     rows, cols, vals, b = data["rows"], data["cols"], data["vals"], data["b"]
     primary_size = len(primary_nodes)
 
     # BFS overlap expansion (cached adjacency index shared across subdomains).
-    adj_key = f"__rasg__adj_{matrix_path}"
+    adj_key = f"__rasg__adj_{matrix_ref}"
     if not has_cache(adj_key):
         _ra = np.asarray(rows); _ca = np.asarray(cols)
         _si = np.argsort(_ca, kind="stable")
@@ -1040,14 +1080,16 @@ def get_ras_graph_solution(db, timeout=3600):
     }
 
 
-def solve_ras_graph(db, matrix_path, nsd,
+def solve_ras_graph(db, matrix_ref, nsd,
                     overlap_ratio=0.50, max_iter=100, tol=1e-8,
                     omega=1.0, max_concurrent_compute=None):
     """Solve a sparse linear system using distributed RAS with graph-based overlap.
 
     Args:
         db: Database instance
-        matrix_path: Path to .npz matrix file (generated by generate_poisson_matrix)
+        matrix_ref: 矩阵来源（双模式）。对象名（推荐，如 "__rasg__matrix"）——矩阵经
+            db.write_object 入库，worker 经框架读写路径获取，数据依赖驱动调度；
+            或 .npz 文件路径（仅限本地实验脚本，不经分布式管理）
         nsd: Number of subdomains
         overlap_ratio: Overlap ratio (default 0.50)
         max_iter: Maximum iterations (default 100)
@@ -1074,6 +1116,6 @@ def solve_ras_graph(db, matrix_path, nsd,
     INFO(f"[RASG WORKERS] nsd={nsd} n_workers={n_workers} "
          f"(max_concurrent_compute={max_concurrent_compute})")
 
-    ras_graph_coord(db, matrix_path, nsd,
+    ras_graph_coord(db, matrix_ref, nsd,
                     overlap_ratio, max_iter, tol, omega)
     return get_ras_graph_solution(db)

@@ -12,7 +12,7 @@ import numpy as np
 
 from fly import open_db, get_config
 from fly.runtime import get_agent
-from solver import solve_ras_graph, generate_poisson_matrix
+from solver import solve_ras_graph, generate_poisson_matrix, MATRIX_OBJ_KEY
 
 N_SIDE = 20
 NSD = 4
@@ -25,16 +25,16 @@ if os.path.isdir(DB_PATH):
 
 get_config().set_int("fail_unscheduleable_tasks", 1)
 
-# ── generate matrix file ──
+# ── generate matrix（进程私有临时文件，读入后即与文件解耦）──
 generate_poisson_matrix(N_SIDE, MATRIX_PATH)
-
-# ── load golden for verification ──
-golden = np.load(MATRIX_PATH, allow_pickle=False)
+_data = np.load(MATRIX_PATH, allow_pickle=False)
+golden = {k: _data[k] for k in _data.files}
 x_exact = golden["x_exact"]
 
-# ── solve via ras_graph ──
+# ── 矩阵入库：分布式对象，worker 经框架路径读取 ──
 db = open_db(DB_PATH)
-sol = solve_ras_graph(db, MATRIX_PATH, NSD,
+db.write_object(MATRIX_OBJ_KEY, golden)
+sol = solve_ras_graph(db, MATRIX_OBJ_KEY, NSD,
                       overlap_ratio=0.30, max_iter=100, tol=1e-8)
 
 x_ras = np.array(sol["x"])

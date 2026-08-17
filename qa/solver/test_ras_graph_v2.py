@@ -7,7 +7,7 @@ import numpy as np
 
 from fly import open_db, get_config
 from solver import generate_poisson_matrix
-from solver import solve_ras_graph_v2
+from solver import solve_ras_graph_v2, MATRIX_OBJ_KEY
 
 N_SIDE = 50
 NSD = 4
@@ -26,6 +26,7 @@ def main():
 
     # scipy 基线
     m = np.load(MATRIX_PATH, allow_pickle=False)
+    _md = {k: m[k] for k in m.files}
     A = sparse.csr_matrix((np.asarray(m['vals']), (np.asarray(m['rows']), np.asarray(m['cols']))),
                           shape=(int(m['N']), int(m['N'])))
     x_exact = np.asarray(m['x_exact'])
@@ -36,7 +37,8 @@ def main():
 
     print(f"\n=== solve_ras_graph_v2 n={N_SIDE} nsd={NSD} omega=coarse ===")
     t0 = time.time()
-    result = solve_ras_graph_v2(db, MATRIX_PATH, NSD,
+    db.write_object(MATRIX_OBJ_KEY, _md)
+    result = solve_ras_graph_v2(db, MATRIX_OBJ_KEY, NSD,
                                 overlap_ratio=0.50, max_iter=100, tol=1e-8,
                                 omega="coarse")
     elapsed = time.time() - t0

@@ -64,9 +64,36 @@ TEST_F(AgentNetworkTest, DuplicateWorkerRegisterRejectedAfterProbe) {
     WorkerAgent second(7, "127.0.0.1", port);
     second.start();
     bool exited = false;
+    // P3-23 事件序列取证：每秒记录关键状态变化（仅变化时打，失败时序列
+    // 完整保留在 gtest 输出——Logger 文件在 bazel sandbox 下不可靠）。
+    int last_conn = -1, last_reg = -1;
     for (int i = 0; i < 600 && !exited; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         exited = !second.is_running();
+        if (i % 10 == 0) {
+            int conn = static_cast<int>(master.get_connection_count());
+            int reg = second.is_registered() ? 1 : 0;
+            if (conn != last_conn || reg != last_reg) {
+                std::cerr << "[p3-23 t=" << (i / 10) << "s] conns=" << conn
+                          << " second_reg=" << reg
+                          << " second_running=" << (second.is_running() ? 1 : 0) << "\n";
+                last_conn = conn;
+                last_reg = reg;
+            }
+        }
+    }
+    if (!exited) {
+        // P3-23 确定性取证：失败现场直出 gtest 输出（bazel sandbox 会丢
+        // test_logs 相对路径的 Logger 文件，经 stderr 才可靠送达 test.log）。
+        std::cerr << "\n===== P3-23 SCENE (second did not exit) =====\n"
+                  << "second.is_registered=" << (second.is_registered() ? 1 : 0) << "\n"
+                  << "master conn count=" << master.get_connection_count() << "\n"
+                  << "----- scene cwd & logs -----\n";
+        // 不吞错误：pwd/ls 可见性 + /proc 双路径兜底（bazel sandbox cwd 探测）。
+        std::system("pwd 1>&2; ls -la 1>&2 | head -15; "
+                    "tail -n 150 test_logs/master.log 1>&2 || "
+                    "tail -n 150 /proc/$PPID/cwd/test_logs/master.log 1>&2");
+        std::cerr << "===== END SCENE =====\n";
     }
     EXPECT_TRUE(exited) << "duplicate worker should exit after probe-confirmed rejection";
     EXPECT_FALSE(second.is_registered());
