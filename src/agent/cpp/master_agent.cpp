@@ -493,12 +493,22 @@ void MasterAgent::stop_impl(bool fast, const CMString& reason) {
 
     // Phase 3: 等 worker 断连。fast 用短宽限（StopNow 自杀 → OS 关 fd，亚秒；
     // 2s 仅兜进程僵死）；正常路径 worker 优雅退含 WBQ drain + coverage flush，
-    // 保留 10s 上界。
+    // 保留 10s 上界。死连接（对端已崩溃/FIN 未处理、fake conn）不等——
+    // 表清理仍由 on_disconnect 负责，此处只是不等它。
     {
         std::unique_lock<std::mutex> lock(workers_mutex_);
         auto deadline = std::chrono::steady_clock::now() +
                         (fast ? std::chrono::seconds(2) : std::chrono::seconds(10));
-        while (!worker_to_conn_.empty()) {
+        while (true) {
+            bool any_alive = false;
+            for (const auto& [wid, cid] : worker_to_conn_) {
+                (void)wid;
+                if (reactor_ && reactor_->is_connected(cid)) {
+                    any_alive = true;
+                    break;
+                }
+            }
+            if (!any_alive) break;
             if (workers_drained_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
                 WARN("{}: {} workers still connected after wait (elapsed={}ms)",
                      fast ? "STOP_NOW" : "Shutdown",
@@ -3802,14 +3812,21 @@ void MasterAgent::on_message_count_report(uint64_t conn_id, const MessageCountRe
 void MasterAgent::collect_and_print_message_summary() {
     // master stop() 在发 ShutdownMessage 之前调用：广播 MSG_COUNT_REQUEST → 等所有 worker
     // 上报（复刻 MergeCleanupAck 屏障，30s 超时容错）→ 合并 master 自身 + 各 worker 计数打印 summary。
-    uint64_t expected = 0;
+    // 死连接（对端已崩溃/FIN 未被处理、或测试注入的 fake conn）不计入 expected、
+    // 不发送——等一个永远不会上报的死连接只会白等满 30s 容错。
+    CMVector<std::pair<uint64_t, uint64_t>> live_conns;
     {
         std::lock_guard<std::mutex> wlk(workers_mutex_);
-        expected = worker_to_conn_.size();
+        for (const auto& [wid, cid] : worker_to_conn_) {
+            if (reactor_ && reactor_->is_connected(cid)) {
+                live_conns.push_back({wid, cid});
+            }
+        }
     }
+    uint64_t expected = live_conns.size();
 
     if (expected == 0) {
-        // 无 worker（单进程模式）：仅用 master 自身计数打印 summary。
+        // 无存活 worker（单进程模式/全为死连接）：仅用 master 自身计数打印 summary。
         MessageCounts master_counts;
         master_counts.id_counts_ = fly::MessageRegistry::instance().trigger_id_counts_snapshot();
         master_counts.domain_counts_ = fly::MessageRegistry::instance().trigger_domain_counts_snapshot();
@@ -3824,7 +3841,7 @@ void MasterAgent::collect_and_print_message_summary() {
         collected_msg_counts_.clear();
     }
     MessageCountRequestMessage req;
-    for (const auto& [wid, cid] : snapshot_worker_conns()) {
+    for (const auto& [wid, cid] : live_conns) {
         DBG("[SUMMARY] sending MSG_COUNT_REQUEST to worker {} conn {}", wid, cid);
         reactor_->send(cid, req);
     }

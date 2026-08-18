@@ -841,6 +841,12 @@ void WorkerAgent::on_shutdown(const ShutdownMessage& msg) {
 void WorkerAgent::on_stop_now(const StopNowMessage& msg) {
     ERR("STOP_NOW received (reason: {}) — killing self, running task aborted",
         msg.reason_.empty() ? CMString("unspecified") : msg.reason_);
+    // 连接关闭对两条路径通用：真杀路径由内核兜底（fd 全收），testonly hook
+    // 拦截路径需显式关闭——master 的断连等待才能立即通过（不等 2s 宽限）。
+    uint64_t conn = master_conn_.exchange(0);
+    if (conn != 0 && reactor_) {
+        reactor_->close_connection(conn);
+    }
 #ifdef FLY_ENABLE_TEST_HOOKS
     // 单测进程内 WorkerAgent 是库对象，真杀会杀掉测试进程本身：安装了 hook 的
     // 测试走 hook 观察语义；未安装 hook 的（生产语义路径的测试）仍真杀。

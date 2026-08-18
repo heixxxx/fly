@@ -3033,6 +3033,9 @@ TEST(MasterAgentTest, ExpectWorkerPlaceholderClearedOnRegister) {
     EXPECT_TRUE(master.all_workers_registered());
     EXPECT_EQ(master.get_expected_worker_count(), 0u);
 
+    // 清掉 fake 注册（conn 100 不存在、永不断连）：不清则 stop() 的 summary
+    // 屏障 30s + 断连等待 10s 全部白等（实测 40.07s）。
+    master.unregister_fake_worker_for_testing(1, 100);
     master.stop();
     wait_for_running(master, false);
 }
