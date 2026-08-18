@@ -212,6 +212,10 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
 
     auto release_slot = [&]() {
         active_count_.fetch_sub(1);
+        // 持锁 notify：slot_cv_ 的 waiter 是无超时谓词 wait（request 入口与
+        // stop），无锁 notify 存在 lost wakeup 窗口（谓词检查后、进入 wait 前
+        // notify 落空 → 请求方/stop 永久挂死）。
+        std::lock_guard<std::mutex> lk(mutex_);
         slot_cv_.notify_one();
     };
 
@@ -361,7 +365,11 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
 
 void DataClientPool::stop() {
     stopped_.store(true);
-    slot_cv_.notify_all();
+    {
+        // 持锁 notify（同 release_slot 的 lost wakeup 论证）。
+        std::lock_guard<std::mutex> lk(mutex_);
+        slot_cv_.notify_all();
+    }
 
     std::unique_lock<std::mutex> lk(mutex_);
     slot_cv_.wait(lk, [&] { return active_count_.load() == 0; });

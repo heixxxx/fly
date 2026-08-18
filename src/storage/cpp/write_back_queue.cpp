@@ -52,8 +52,11 @@ void WriteBackQueue::enqueue(WriteRequest&& task) {
         }
         queue_.push_back(std::move(task));
         pending_++;
+        // 持锁 notify：worker_loop 的 cv_not_empty_ 是无超时谓词 wait，锁外
+        // notify 存在 lost wakeup 窗口（谓词检查后、进入 wait 前 notify 落空
+        // → 落盘线程永睡，后续 write 全部滞留内存）。
+        cv_not_empty_.notify_one();
     }
-    cv_not_empty_.notify_one();
 }
 
 void WriteBackQueue::drain() {
@@ -80,11 +83,15 @@ void WriteBackQueue::clear_pending() {
             pending_ = 0;
         }
     }
-    // 队列已空，唤醒 drain / backpressure 等待者。
+    // 队列已空，唤醒 drain / backpressure 等待者（持锁 notify：drain() 的
+    // cv_drained_ 是无超时谓词 wait，锁外 notify 落空会让关闭期 drain 永挂）。
     // （正在执行的那个的 pending_ 仍 >0，drain 会等它完成；若它也已被某种
     // 方式终止，pending_ 归零后 cv_drained_ 唤醒。）
-    cv_drained_.notify_all();
-    cv_backpressure_.notify_all();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cv_drained_.notify_all();
+        cv_backpressure_.notify_all();
+    }
     (void)dropped;
 }
 

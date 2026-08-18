@@ -277,6 +277,13 @@ private:
     // on_disconnect 的 check-act 必须原子，消除「断连置位后、重连线程 spawn 前
     // 被残留 ack 清除重连标志」的交错窗口（重连线程入口即静默退出）。
     std::mutex register_state_mutex_;
+    // start() 尾段与 initiate_shutdown 的生命周期标志写互斥（秒拒竞争根治）：
+    // dup ack 可能在 start 尾段到达，两处的 {shutdown_triggered_, running_,
+    // 三线程 flag} 写必须串行——否则 start 覆盖 initiate 的关闭标志
+    //（is_running 恒真 + 幂等闸门锁死 join，实测 300s 卡死），或检查点与
+    // 覆盖点之间留 TOCTOU 残窗。锁序：本锁 → register_ack_mutex_/
+    // heartbeat_mutex_/probe_mutex_（无反向获取）。
+    std::mutex shutdown_state_mutex_;
     std::thread reconnect_thread_;
     // 断连期间完成的 task 上报缓冲：重连注册确认后按序 flush（fire-and-forget
     // 的其它消息不缓冲——心跳/注册自然恢复，task 结果不可丢）。

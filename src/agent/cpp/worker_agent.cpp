@@ -273,20 +273,53 @@ void WorkerAgent::start() {
     reactor_thread_ = std::thread([this] { reactor_->run(); });
     reactor_->wait_until_running();
 
-    send_register_message();
-#ifdef FLY_ENABLE_TEST_HOOKS
-    if (post_register_send_hook_for_testing_) {
-        post_register_send_hook_for_testing_();
-    }
-#endif
+    // 注册消息不在此处发——必须等全部初始化完成（三线程 spawn + running_ 提交）
+    // 之后再发：dup ack 在注册后毫秒级可达，若注册早于初始化完成，ack 会作用
+    // 于半初始化的 worker（周期线程未 spawn、running_ 未置位），initiate_shutdown
+    // 的标志写被 start 尾段覆盖（秒拒竞争，agent_network_test 4 实例实测 300s
+    // 卡死）。时序上根治：注册只发给"完整初始化完毕"的 worker。
 
     // P3-28：启动中途的终局事件（duplicate 拒绝 / master shutdown 广播）已触发
     // initiate_shutdown 时不得复活——旧代码无条件 spawn 会把已清的线程标志置回
     // true（此后 initiate_shutdown 幂等早退，无人再清 → 永生线程，stop() join
     // 永久挂死），尾部 running_=true 会造成 zombie worker（is_running 永真）。
-    // running_ 先于线程 spawn 置位：常驻 loop 的 running_ 兜底条件依赖它。
-    if (!shutdown_triggered_.load()) {
+    // 秒拒竞争根治（P3-28 守卫与锁方案整合）：dup ack 可能在本函数尾段到达——
+    // lane 线程的 initiate_shutdown 与本尾段的生命周期标志写以
+    // shutdown_state_mutex_ 互斥（另一侧在 initiate_shutdown 内）。锁内完成
+    // 「检查 → running_ 置位 → spawn」，三重保证：
+    //   1. TOCTOU 消除：检查+提交原子，无"检查通过后又被覆盖"窗口；
+    //   2. running_ 先于 spawn 置位（常驻 loop 的 running_ 兜底条件依赖）；
+    //   3. 秒拒（shutdown_triggered_ 已置）时不复活不 spawn，复位 flag+notify
+    //      让已 spawn 线程退出，running_ 保持 false 中止 start（秒拒=启动失败）。
+    //      闸门保持 true（不复位）：lane 的 initiate_shutdown 可能已完成也可能
+    //      在等本锁（后者会在 return 后获锁完整执行含 pending fail/close 后半
+    //      段）；复位会让 stop() 再进一个 initiate 与其并发（幂等性未证明）。
+    {
+        std::lock_guard<std::mutex> g(shutdown_state_mutex_);
+        if (shutdown_triggered_.load()) {
+            ERR("shutdown signalled during start() (instant duplicate rejection) — aborting start");
+            {
+                std::lock_guard<std::mutex> lk(register_ack_mutex_);
+                register_watchdog_running_ = false;
+                register_ack_cv_.notify_all();
+            }
+            {
+                std::lock_guard<std::mutex> lock(heartbeat_mutex_);
+                heartbeat_running_ = false;
+                heartbeat_cv_.notify_all();
+            }
+            {
+                std::lock_guard<std::mutex> lock(probe_mutex_);
+                probe_running_ = false;
+                probe_cv_.notify_all();
+            }
+            return;   // 已 spawn 线程经上面的 notify 退出，stop()/析构的
+                      // do_cleanup join 可收敛。
+        }
+        last_master_contact_.store(std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
         running_ = true;
+
         heartbeat_running_ = true;
         heartbeat_thread_ = std::thread([this] { heartbeat_loop(); });
 
@@ -301,48 +334,18 @@ void WorkerAgent::start() {
                  Config::instance()->get_int("net_probe_interval_ms"),
                  Config::instance()->get_int("net_probe_payload_kb"));
         }
-    } else {
-        WARN("Worker shutdown triggered during startup — not spawning service "
-             "threads, staying stopped");
     }
 
-    // 秒拒竞争修复：dup ack 可能在本函数尾段（reactor 已 spawn、标志尚未
-    // 置位）到达——lane 线程的 initiate_shutdown 置 shutdown_triggered_/
-    // running_=false/三线程 flag=false + notify（此时线程未 spawn，notify 落空），
-    // 随后本函数继续执行会把上述标志全部覆盖回 true（worker 永不可停：
-    // is_running() 恒真、幂等闸门锁死后续 stop 的 join——agent_network_test
-    // 4 实例并行实测 300s 卡死）。检测到即中止 start：复位闸门让后续 stop()
-    // 的 initiate_shutdown 可完整执行，running_ 保持 false。
-    if (shutdown_triggered_.load()) {
-        ERR("shutdown signalled during start() (instant duplicate rejection) — aborting start");
-        shutdown_triggered_.store(false);
-        {
-            std::lock_guard<std::mutex> lk(register_ack_mutex_);
-            register_watchdog_running_ = false;
-            register_ack_cv_.notify_all();
-        }
-        {
-            std::lock_guard<std::mutex> lock(heartbeat_mutex_);
-            heartbeat_running_ = false;
-            heartbeat_cv_.notify_all();
-        }
-        {
-            std::lock_guard<std::mutex> lock(probe_mutex_);
-            probe_running_ = false;
-            probe_cv_.notify_all();
-        }
-        return;   // running_ 保持 false；已 spawn 的线程由 stop()/析构的
-                  // initiate_shutdown + do_cleanup 正常回收（闸门已复位）。
+    // 初始化完毕（周期线程全部 spawn + running_ 已提交）后首发注册——任何
+    // RegisterAck（含 duplicate 秒拒）到达时 worker 已完整初始化，
+    // initiate_shutdown 的标志写不会再被 start 尾段覆盖。watchdog 的首个
+    // 重发窗口（500ms）远大于此处与 send 的间隔，正常路径无空转重发。
+    send_register_message();
+#ifdef FLY_ENABLE_TEST_HOOKS
+    if (post_register_send_hook_for_testing_) {
+        post_register_send_hook_for_testing_();
     }
-
-    {
-        auto now = std::chrono::system_clock::now().time_since_epoch();
-        last_master_contact_.store(
-            std::chrono::duration_cast<std::chrono::seconds>(now).count());
-    }
-
-    // running_ 已在上方受守卫地置位（P3-28：此处不得无条件置真——会复活
-    // 启动中途已被 shutdown 的 worker）。
+#endif
 
     // FLY::0000：打印启动基础信息（豁免配额，worker 仅本地 debug log，不发送 master）。
     // worker 不绑定 system sink → emit_system_message 只写本地 debug log。
@@ -778,11 +781,22 @@ bool WorkerAgent::poll_task() {
     {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);
         if (task_queue_.empty()) return false;
+        // executor 未注入（set_executor 前窗口内 assign 已到达）且队首是普通
+        // task：不弹出——弹出后无执行器只会静默丢弃，task 从此消失，master
+        // 侧 RUNNING 永不归零（drain 僵死/EndToEnd 压测 complete 丢失根因）。
+        // internal task（merge/backup）不依赖 executor（storage_only worker 也
+        // 执行），放行。
+        if (!executor_ && task_queue_.front().task_module_ != "__fly_internal") {
+            return false;
+        }
         task = std::move(task_queue_.front());
         task_queue_.pop();
     }
 
     INFO("Executing task: task_id={}", task.task_id_);
+    fprintf(stderr, "[SD] executing: this=%p task_id=%llu module=%s have_executor=%d\n",
+            static_cast<const void*>(this), static_cast<unsigned long long>(task.task_id_),
+            task.task_module_.c_str(), executor_ ? 1 : 0);
 
     if (task.task_module_ == "__fly_internal") {
         execute_internal_task(task);
@@ -990,12 +1004,20 @@ void WorkerAgent::reconnect_loop() {
 }
 
 void WorkerAgent::send_master_or_buffer(const TaskCompleteMessage& msg) {
+    fprintf(stderr, "[SD] complete send: this=%p task_id=%llu registered=%d reconnecting=%d conn=%llu send_ok=%d\n",
+            static_cast<const void*>(this), static_cast<unsigned long long>(msg.task_id_),
+            registered_.load() ? 1 : 0, reconnecting_.load() ? 1 : 0,
+            static_cast<unsigned long long>(master_conn_.load()), -1);
     if (!reconnecting_.load() && registered_.load()) {
-        reactor_->send(master_conn_.load(), msg);
+        bool ok = reactor_->send(master_conn_.load(), msg);
+        fprintf(stderr, "[SD] complete send result=%d task_id=%llu\n", ok ? 1 : 0,
+                static_cast<unsigned long long>(msg.task_id_));
         return;
     }
     std::lock_guard<std::mutex> lk(pending_reports_mutex_);
     pending_reports_.push_back({true, msg, TaskFailedMessage{}});
+    fprintf(stderr, "[SD] complete BUFFERED: task_id=%llu\n",
+            static_cast<unsigned long long>(msg.task_id_));
     WARN("TaskComplete buffered (reconnecting): task_id={}", msg.task_id_);
 }
 
@@ -1051,28 +1073,34 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
             static_cast<const void*>(this), static_cast<int>(worker_id_), reason.c_str());
     WARN("Worker shutdown initiated: {}", reason);
 
-    registered_ = false;
-    running_ = false;
-    // 三处 notify 均持对应锁发出（predicate 虽读 atomic flag，但无锁 notify 仍存在
-    // lost wakeup 窗口，waiter 只能靠超时兜底退出）。
+    // 生命周期标志关键段（与 start() 尾段互斥，秒拒竞争根治）：registered_/
+    // running_/三线程 flag 的写与 notify 必须原子——start() 尾段在同一把锁
+    // 内检查 shutdown_triggered_，两侧串行后不再存在覆盖交错。
     {
-        std::lock_guard<std::mutex> lk(register_ack_mutex_);
-        register_watchdog_running_ = false;
-        register_ack_cv_.notify_all();
+        std::lock_guard<std::mutex> g(shutdown_state_mutex_);
+        registered_ = false;
+        running_ = false;
+        // 三处 notify 均持对应锁发出（predicate 虽读 atomic flag，但无锁 notify 仍存在
+        // lost wakeup 窗口，waiter 只能靠超时兜底退出）。
+        {
+            std::lock_guard<std::mutex> lk(register_ack_mutex_);
+            register_watchdog_running_ = false;
+            register_ack_cv_.notify_all();
+        }
+        fprintf(stderr, "[SD] watchdog notified: worker_id=%d\n", static_cast<int>(worker_id_));
+        {
+            std::lock_guard<std::mutex> lock(heartbeat_mutex_);
+            heartbeat_running_ = false;
+            heartbeat_cv_.notify_all();
+        }
+        fprintf(stderr, "[SD] heartbeat notified: worker_id=%d\n", static_cast<int>(worker_id_));
+        {
+            std::lock_guard<std::mutex> lock(probe_mutex_);
+            probe_running_ = false;
+            probe_cv_.notify_all();
+        }
+        fprintf(stderr, "[SD] probe notified: worker_id=%d\n", static_cast<int>(worker_id_));
     }
-    fprintf(stderr, "[SD] watchdog notified: worker_id=%d\n", static_cast<int>(worker_id_));
-    {
-        std::lock_guard<std::mutex> lock(heartbeat_mutex_);
-        heartbeat_running_ = false;
-        heartbeat_cv_.notify_all();
-    }
-    fprintf(stderr, "[SD] heartbeat notified: worker_id=%d\n", static_cast<int>(worker_id_));
-    {
-        std::lock_guard<std::mutex> lock(probe_mutex_);
-        probe_running_ = false;
-        probe_cv_.notify_all();
-    }
-    fprintf(stderr, "[SD] probe notified: worker_id=%d\n", static_cast<int>(worker_id_));
     {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);
         task_queue_cv_.notify_all();

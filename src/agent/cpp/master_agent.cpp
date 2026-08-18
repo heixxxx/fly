@@ -170,7 +170,11 @@ void MasterAgent::start() {
                     response.data_path_ = it->second->get_data_path();
                     response.success_ = true;
                 } else {
-                    response.db_path_ = "";
+                    // 失败也必须原样带回 db_path_：worker 的 on_db_path_response
+                    // 以 msg.db_path_ 为 key 匹配 pending 请求（原实现清空该字段
+                    // → 空 key 永不匹配 → 请求方稳定等满 5s 超时，
+                    // OnDbPathResponseFailure 实测 5159ms）。
+                    response.db_path_ = msg.db_path_;
                     response.data_path_ = "";
                     response.success_ = false;
                 }
@@ -419,12 +423,16 @@ void MasterAgent::stop_impl(bool fast, const CMString& reason) {
         INFO("MasterAgent stop() called, entering drain phase");
     }
 
-    // Phase 1（仅正常收尾）: 等 RUNNING task 全部完成——无硬 deadline。
-    // 兜底：心跳判死链（worker 全灭 → RUNNING fail → 条件达成）、断连宽限
-    // 超时（120s 内判死）、fast_exit 打断（SIGTERM/致命错误转快速路径）。
-    // 30s 硬超时已废除：长 task（求解分钟~小时级）等不到完成只是延迟处死，
-    // 且超时后 RUNNING task 无 fail 善后（无声蒸发，用户裁定废除）。
+    // Phase 1（仅正常收尾）: 等 RUNNING task 全部完成。
+    // 兜底层级：①fast_exit 打断（SIGTERM/致命错误转快速路径）②心跳判死链
+    //（worker 全灭 → RUNNING fail → 条件达成）③断连宽限超时 ④drain_timeout
+    // 长上限（默认 600s，Config 可调，0=无限逃生口）——覆盖"worker 活着但
+    // complete 丢失"的僵死路径（4 实例压测实测：连接正常、心跳正常、
+    // RUNNING 永不归零，无限等待卡死 300s）。超时与 30s 硬超时的本质区别：
+    // 超时后转入 fast 路径做 fail 善后（failed record 留痕）+ StopNow 收尾，
+    // 而非旧版的无善后裸奔。
     if (!fast) {
+        int64_t drain_timeout_s = Config::instance()->get_int("drain_timeout_seconds");
         std::unique_lock<std::mutex> lock(drain_mutex_);
         while (true) {
             if (fast_exit_requested_.load()) {
@@ -435,8 +443,25 @@ void MasterAgent::stop_impl(bool fast, const CMString& reason) {
             }
             int running_count = metadata_->count_tasks_by_status(TaskStatus::RUNNING);
             if (running_count == 0) break;
+            // [SD] stderr 通道：压测取证发现 Logger 实例偶发吞 INFO（EndToEnd
+            // 段 Drain/Executing 全不可见而 stderr 正常）——drain 等待对象走
+            // stderr 保证可见。
+            fprintf(stderr, "[SD] drain waiting: this=%p running=%d elapsed=%lldms\n",
+                    static_cast<const void*>(this), running_count,
+                    static_cast<long long>(_elapsed()));
             INFO("Drain: waiting for {} running tasks to complete (elapsed={}ms)", running_count, _elapsed());
-            drain_cv_.wait(lock);
+            if (drain_timeout_s <= 0) {
+                drain_cv_.wait(lock);
+            } else {
+                if (drain_cv_.wait_for(lock, std::chrono::seconds(drain_timeout_s)) ==
+                        std::cv_status::timeout) {
+                    WARN("Drain timeout ({}s) with {} tasks still running (elapsed={}ms) — "
+                         "switching to fast path (fail + persist)",
+                         drain_timeout_s, running_count, _elapsed());
+                    fast = true;
+                    break;
+                }
+            }
         }
     }
 
@@ -533,19 +558,30 @@ void MasterAgent::do_drain_and_stop() {
 
     if (heartbeat_check_thread_.joinable()) {
         heartbeat_check_running_ = false;
-        heartbeat_check_cv_.notify_all();
+        // 持锁 notify（waiter 无超时谓词 wait 依赖 5s 周期兜底，锁外 notify
+        // 落空会把关闭拖慢最多一个周期——统一持锁化，下同）。
+        {
+            std::lock_guard<std::mutex> lk(heartbeat_check_mutex_);
+            heartbeat_check_cv_.notify_all();
+        }
         heartbeat_check_thread_.join();
     }
 
     if (attr_timeout_check_thread_.joinable()) {
         attr_timeout_check_running_ = false;
-        attr_timeout_check_cv_.notify_all();
+        {
+            std::lock_guard<std::mutex> lk(attr_timeout_check_mutex_);
+            attr_timeout_check_cv_.notify_all();
+        }
         attr_timeout_check_thread_.join();
     }
 
     if (sched_watchdog_thread_.joinable()) {
         sched_watchdog_running_ = false;
-        sched_watchdog_cv_.notify_all();
+        {
+            std::lock_guard<std::mutex> lk(sched_watchdog_mutex_);
+            sched_watchdog_cv_.notify_all();
+        }
         sched_watchdog_thread_.join();
     }
 
@@ -1356,6 +1392,10 @@ void MasterAgent::record_worker_info(const CMString& object_name, const CMString
 
 void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg) {
     size_t written_count = msg.written_objects_.size();
+    fprintf(stderr, "[SD] on_complete: task_id=%llu worker=%llu conn=%llu\n",
+            static_cast<unsigned long long>(msg.task_id_),
+            static_cast<unsigned long long>(msg.worker_id_),
+            static_cast<unsigned long long>(conn_id));
     INFO("Task complete: task_id={}, written_objects={}", msg.task_id_, written_count);
 
     uint64_t worker_id = msg.worker_id_;
@@ -1365,12 +1405,20 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
     // 不符则丢弃（防止把别人正在跑的同 id task 错误标完成/置其 worker IDLE）。
     if (auto t = metadata_->get_task(msg.task_id_)) {
         if (t->assigned_worker_id_ != 0 && t->assigned_worker_id_ != worker_id) {
+            fprintf(stderr, "[SD] on_complete DROPPED-stale: task_id=%llu reporter=%llu assigned=%llu status=%d\n",
+                    static_cast<unsigned long long>(msg.task_id_),
+                    static_cast<unsigned long long>(worker_id),
+                    static_cast<unsigned long long>(t->assigned_worker_id_),
+                    static_cast<int>(t->status_));
             WARN("Stale task report dropped: task_id={} reported by worker {} but "
                  "currently assigned to worker {} (worker likely exceeded grace and "
                  "task was re-queued)",
                  msg.task_id_, worker_id, t->assigned_worker_id_);
             return;
         }
+    } else {
+        fprintf(stderr, "[SD] on_complete task-not-found: task_id=%llu\n",
+                static_cast<unsigned long long>(msg.task_id_));
     }
 
     worker_manager_->complete_task(worker_id);
@@ -1413,6 +1461,9 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
             graph_->remove_task(msg.task_id_);
             metadata_->update_task_status(msg.task_id_, TaskStatus::COMPLETED);
             remove_persisted_task(msg.task_id_);
+            fprintf(stderr, "[SD] on_complete OK: task_id=%llu now_running=%d\n",
+                    static_cast<unsigned long long>(msg.task_id_),
+                    metadata_->count_tasks_by_status(TaskStatus::RUNNING));
 
             // 非 stream 模式：task 成功 → pending frozen 迁移到 confirmed + 广播。
             // stream 模式下 pending 为空（freeze 已在 on_database_freeze_request 即时确认），此处 no-op。
@@ -1578,8 +1629,13 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
              worker_id, reconnect_grace);
     }
 
-    // Notify stop() that a worker has disconnected.
-    workers_drained_cv_.notify_one();
+    // Notify stop() that a worker has disconnected（持锁 notify：stop_impl
+    // Phase 3 的 workers_drained_cv_ 是 wait_until，锁外 notify 落空会把
+    // 断连感知拖到 deadline——worker 主动断连的亚秒收益被偶发打回 2s/10s）。
+    {
+        std::lock_guard<std::mutex> lk(workers_mutex_);
+        workers_drained_cv_.notify_all();
+    }
 }
 
 // worker 正式判死（宽限超时 / drain 期断连 / 断连即死模式）。
@@ -3100,7 +3156,13 @@ void MasterAgent::trigger_graceful_shutdown() {
 
 void MasterAgent::notify_drain_if_active() {
     if (draining_.load()) {
-        drain_cv_.notify_one();
+        // 持锁 notify（规范）：无锁 notify 存在 lost wakeup 窗口——drain 主线程
+        // 「查完条件 RUNNING>0」与「进入 wait」之间收到无锁 notify 会落空，
+        // complete 已把 RUNNING 归零但 drain 睡满整个超时（EndToEnd 4 实例
+        // 压测实测 300s 卡死，[SD] 链铁证：drain waiting 后 on_complete OK
+        // now_running=0 但 drain 未醒）。旧 30s 超时一直掩盖此违规。
+        std::lock_guard<std::mutex> lk(drain_mutex_);
+        drain_cv_.notify_all();
     }
 }
 

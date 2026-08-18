@@ -15,8 +15,9 @@ class AgentNetworkTest : public ::testing::Test {
 protected:
     void SetUp() override {
         Logger::shutdown();
+        // level 0（全级别）：EndToEnd 压测卡死取证时 INFO 全滤（Drain/Executing/
+        // TaskComplete 均不可见）导致误判"链路无执行"——诊断代价为零，全开。
         Logger::init("test_logs/", 0);
-        Logger::init("test_logs/", 1);
     }
     
     void TearDown() override {
@@ -133,8 +134,7 @@ TEST_F(AgentNetworkTest, DuplicateWorkerRegisterRejectedAfterProbe) {
 }
 
 TEST_F(AgentNetworkTest, MultipleWorkers) {
-    Logger::init("test_logs/", 2);
-    Logger::init("test_logs/", 3);
+    // 同 SetUp：全级别（原 2/3 把 INFO 滤掉，链路不可见）。
     
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -217,8 +217,8 @@ TEST_F(AgentNetworkTest, ExecutorInjection) {
 }
 
 TEST_F(AgentNetworkTest, EndToEndTaskExecution) {
-    Logger::init("test_logs/", 1);
-    Logger::init("test_logs/", 2);
+    // 同 SetUp：全级别（原 1/2 把 INFO 滤掉，Drain/Executing/TaskComplete 全部
+    // 不可见——r233/r332 取证时被误导为"task 从未执行"）。
     
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -261,16 +261,19 @@ TEST_F(AgentNetworkTest, EndToEndTaskExecution) {
     master.submit_task(1, "test_task_1", "test_module", {"arg1"}, {}, {});
     master.submit_task(2, "test_task_2", "test_module", {"arg2"}, {}, {});
     master.submit_task(3, "test_task_3", "test_module", {"arg3"}, {}, {});
-    
+
+    // 等全部 3 个完成（原 >=2 提前 break：task 3 留在 worker 队列无人 poll，
+    // master 侧 RUNNING 挂到 stop() drain——旧 30s 超时掩盖，drain 语义修正后
+    // 4 实例压测实测 300s 卡死）。
     for (int i = 0; i < 200; ++i) {
         worker1.poll_task();
         worker2.poll_task();
-        if (master.get_completed_tasks().size() >= 2) break;
+        if (master.get_completed_tasks().size() >= 3) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    
+
     auto completed = master.get_completed_tasks();
-    EXPECT_GE(completed.size(), 2);
+    EXPECT_GE(completed.size(), 3);
     
     master.stop();
     worker1.stop();

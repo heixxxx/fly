@@ -159,6 +159,10 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     //   与之对等（宽限内 task 存活、不重调度；超时判死+快速失败）。0=不重连不宽限
     //   （旧的"断连即死"逃生口）。
     {"worker_reconnect_timeout", 120},
+    // - 正常收尾 stop() 的 drain 等待上限(s)：等 RUNNING task 全部完成，超时
+    //   转 fast 路径（fail 善后留痕 + StopNow 收尾）。兜底"worker 活着但
+    //   complete 丢失"的僵死路径（4 实例压测实测卡死）。0=无限等待（逃生口）。
+    {"drain_timeout_seconds", 600},
     // - connect 重试首次间隔(ms)，指数 ×2 递增（单次上限 10s 硬编码），首连与重连共用。
     {"worker_connect_retry_initial_ms", 500},
     // - 注册 ack 丢失兜底（P3-23）：注册守望的超时退避初值(ms)，指数 ×2
