@@ -57,6 +57,17 @@ cc_test(
     copts = ["-std=c++20"],
 )
 
+cc_test(
+    name = "reactor_serialized_domain_test",
+    srcs = ["reactor_serialized_domain_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/network/cpp:fly_network",
+        "//src/common/cpp:fly_common_types",
+    ],
+    copts = ["-std=c++20"],
+)
+
 py_test(
     name = "network_test",
     srcs = ["network_test.py"],

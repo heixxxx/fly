@@ -86,6 +86,22 @@ public:
     
     int get_bound_port() const { return transport_->get_bound_port(); }
 
+    // 顺序敏感域（serialized domain）：注册进本域的消息类型与（可选）连接
+    // 生命周期事件回调（connect/disconnect/error）不参与 conn 分 lane——统一
+    // 投递到保留串行 lane，跨连接严格按提交序 FIFO 执行。
+    //
+    // 背景（P3-26）：lane 分发只保证同连接保序；身份生命周期等协议
+    // （REGISTER vs 旧 conn DISCONNECT vs WorkerProbeAck）依赖跨连接的处理
+    // 顺序——跨 lane 并行交错会产生 check-act 窗口（deferred 注册孤儿化 →
+    // worker 挂死被误拒）。后续新增「必须全局串行」的消息一律加入本域。
+    //
+    // 代价：域内消息与同连接其他消息不再保序——加入的类型必须与同连接其他
+    // 消息顺序无关（自包含协议消息）。lifecycle_events=true 时全部连接事件
+    // 回调入域（事件低频，可接受）。
+    //
+    // 约束：必须在 run() 之前调用（run 循环启动后集合只读）。
+    void set_serialized_domain(CMVector<MessageType> types, bool lifecycle_events);
+
     // conn 是否仍在 transport 连接表（fd 未被 reap）。供「向旧 conn 发探测
     // 前后判断其存活性」等决策使用。
     bool is_connected(uint64_t conn_id) const { return transport_->is_connected(conn_id); }
@@ -134,11 +150,18 @@ private:
     CMUnorderedMap<uint64_t, CMSharedPtr<std::mutex>> conn_send_mutexes_;
     CMSharedPtr<std::mutex> acquire_send_mutex(uint64_t conn_id);
     void remove_send_mutex(uint64_t conn_id);
-    
+
+    // 顺序敏感域（set_serialized_domain 注册）：命中类型/事件投递到保留串行
+    // lane（下标 = handler_lane_count_），其余按 conn 分 lane。
+    CMUnorderedSet<MessageType> serialized_types_;
+    bool serialize_lifecycle_events_ = false;
+    size_t handler_lane_count_ = 0;  // 常规 lane 数（不含保留串行 lane）
+
     void handle_event(const TransportEvent& event);
     void dispatch_message(uint64_t conn_id, CMString& buffer);
     // 事件回调（connect/disconnect/error）经该 conn 的 lane 执行，保证与该
     // conn 在途消息的先后关系（如 on_disconnect 必须晚于已提交的 handler）。
+    // 顺序敏感域开启 lifecycle_events 时改投保留串行 lane（跨连接 FIFO）。
     void run_event_callback(uint64_t conn_id, std::function<void()> cb);
 };
 

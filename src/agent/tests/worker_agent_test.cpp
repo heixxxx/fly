@@ -967,16 +967,12 @@ TEST(WorkerAgentTest, WriteRegisterPendingBlocksUntilReconnected) {
     Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
 }
 
-// ── lane 并行下的重连注册先于旧 conn 断连处理（P3-26）─────────────────
-// handler lane 跨连接并行分发（同连接保序/跨连接并行）：worker 闪断重连时，
-// REGISTER(新 conn) 可能在旧 conn 的 DISCONNECT 被处理前到达 master。旧逻辑
-// 把该注册挂起（probe 旧 conn），依赖「旧 conn 断连触发 replay_deferred_
-// register」重放——但断连处理的 replay take 可能在挂起条目插入前已执行
-// （lane 并行交错），挂起条目孤儿化，worker 挂死到 15s deadline 被误拒
-// （50 轮稳定性第 16 轮实测，~1/43 复现率）。
-// 确定性构造：on_disconnect 入口钩子阻塞旧 conn 的断连处理（lane 隔离，
-// conn1/conn2 异 lane 并行），重连注册必然先于它被处理——修复前必红
-// （挂起孤儿化），修复后（probe 发送失败当场接受重连）必绿。
+// ── 串行域下的重连注册顺序（P3-26 架构收口）────────────────────────────
+// REGISTER/WorkerProbeAck 与断连事件统一走 Reactor 顺序敏感域（保留串行 lane，
+// 跨连接 FIFO）——worker 闪断重连时，REGISTER(新 conn) 与旧 conn 的 DISCONNECT
+// 不再跨 lane 并行交错（P3-26 的 deferred 注册孤儿化根除）。
+// 确定性验证：旧 conn 断连处理被入口钩子阻塞期间，重连 REGISTER 必须排队
+// 等待、不得越过执行；放行后按序完成，注册成功、无孤儿。
 TEST(WorkerAgentTest, ReconnectRegisterBeforeDisconnectProcessed) {
     Config::instance()->set_int("worker_reconnect_timeout", 30);
     Config::instance()->set_int("worker_connect_retry_initial_ms", 50);
@@ -1004,8 +1000,7 @@ TEST(WorkerAgentTest, ReconnectRegisterBeforeDisconnectProcessed) {
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
-    // 闪断：master transport 已 reap 旧 conn（fd 关闭，probe 发送必失败），
-    // 但旧 conn 的断连 handler 被钩子阻塞在清理之前。
+    // 闪断：master transport 已 reap 旧 conn，断连事件进入串行域被钩子阻塞。
     worker.simulate_master_disconnect_for_testing();
 
     bool entered = false;
@@ -1016,11 +1011,17 @@ TEST(WorkerAgentTest, ReconnectRegisterBeforeDisconnectProcessed) {
     }
     ASSERT_TRUE(entered) << "master must dispatch the old-conn disconnect handler";
 
-    // 重连注册在旧 conn 断连处理被阻塞期间到达——必须被当场接受。
-    EXPECT_TRUE(wait_until_registered(worker, 300, 10))
-        << "reconnect register must be accepted while old-conn disconnect is still pending";
+    // worker 重连（50ms 退避），REGISTER 到达 master——串行域内必须排在被阻塞
+    // 的断连处理之后：有界窗口内不得注册成功（越过即串行域失效）。
+    bool jumped = false;
+    for (int i = 0; i < 80 && !jumped; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        jumped = worker.is_registered();
+    }
+    EXPECT_FALSE(jumped)
+        << "REGISTER must NOT overtake the blocked DISCONNECT (serialized domain)";
 
-    // 放行旧 conn 的断连处理（迟到事件：映射已由接受路径清理，no-op）。
+    // 放行：断连处理完成 → 排队的 REGISTER 按序执行 → 注册成功（无孤儿）。
     {
         std::lock_guard<std::mutex> lk(gate_m);
         allow_disconnect = true;
@@ -1028,6 +1029,8 @@ TEST(WorkerAgentTest, ReconnectRegisterBeforeDisconnectProcessed) {
     gate_cv.notify_all();
     master.on_disconnect_entry_hook_for_testing_ = nullptr;
 
+    EXPECT_TRUE(wait_until_registered(worker, 300, 10))
+        << "queued register must complete after disconnect finishes";
     EXPECT_TRUE(worker.is_registered());
     worker.stop();
     master.stop();

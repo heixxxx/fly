@@ -60,6 +60,15 @@ void MasterAgent::start() {
     size_t handler_lanes = static_cast<size_t>(Config::instance()->get_int("handler_lanes"));
     reactor_ = CMMakeUnique<Reactor>(std::move(transport), handler_lanes);
 
+    // 顺序敏感域（P3-26 家族架构收口）：worker 身份生命周期协议依赖跨连接的
+    // 处理顺序——REGISTER（含重连注册/dup 判定/deferred 重放）、WorkerProbeAck
+    // （活性确认）与断连事件统一走保留串行 lane，跨连接 FIFO，消除跨 lane
+    // check-act 交错窗口。HEARTBEAT 等收敛型消息不入域（高频且顺序无关）。
+    // 后续新增「必须全局串行」的消息一律加入此域（见 Reactor::set_serialized_domain）。
+    reactor_->set_serialized_domain(
+        {MessageType::REGISTER, MessageType::WORKER_PROBE_ACK},
+        /*lifecycle_events=*/true);
+
     port_ = static_cast<uint16_t>(reactor_->get_bound_port());
 
     // master 进程：初始化 MessageSink（打开 message.log）+ 把 MSG 宏的 push 绑定为

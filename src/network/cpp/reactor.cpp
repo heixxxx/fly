@@ -120,7 +120,17 @@ Reactor::Reactor(CMUniquePtr<ConnectionManager> transport, size_t handler_lanes)
     : transport_(std::move(transport)) {
     if (handler_lanes > 0) {
         // 通用 worker 数量 0：所有并行需求都经 lane 表达（同 conn 串行是硬约束）。
-        handler_pool_ = CMMakeUnique<HandlerThreadPool>(0, 100, handler_lanes);
+        // +1 是顺序敏感域的保留串行 lane（下标 = handler_lanes）：常规分发
+        // 用 conn % handler_lanes，永不落在保留 lane 上。
+        handler_lane_count_ = handler_lanes;
+        handler_pool_ = CMMakeUnique<HandlerThreadPool>(0, 100, handler_lanes + 1);
+    }
+}
+
+void Reactor::set_serialized_domain(CMVector<MessageType> types, bool lifecycle_events) {
+    serialize_lifecycle_events_ = lifecycle_events;
+    for (MessageType t : types) {
+        serialized_types_.insert(t);
     }
 }
 
@@ -244,7 +254,9 @@ void Reactor::run_event_callback(uint64_t conn_id, std::function<void()> cb) {
         cb();
         return;
     }
-    handler_pool_->submit_to_lane(conn_id % handler_pool_->lane_count(), std::move(cb));
+    size_t lane = serialize_lifecycle_events_ ? handler_lane_count_
+                                              : conn_id % handler_lane_count_;
+    handler_pool_->submit_to_lane(lane, std::move(cb));
 }
 
 void Reactor::dispatch_message(uint64_t conn_id, CMString& buffer) {
@@ -274,12 +286,15 @@ void Reactor::dispatch_message(uint64_t conn_id, CMString& buffer) {
 
         if (handler_pool_) {
             // 帧提取（含 recv_buffers_ 推进）留在 reactor 线程；decode + handler
-            // 在该 conn 的 lane 上执行，同 conn 严格保序、跨 conn 并行。
+            // 在该 conn 的 lane 上执行，同 conn 严格保序、跨 conn 并行；
+            // 顺序敏感域命中类型改投保留串行 lane（跨连接 FIFO）。
             CMString frame = buffer.substr(0, 4 + total_size);
             buffer.erase(0, 4 + total_size);
             auto handler = it->second;
+            size_t lane = serialized_types_.count(type) ? handler_lane_count_
+                                                        : conn_id % handler_lane_count_;
             handler_pool_->submit_to_lane(
-                conn_id % handler_pool_->lane_count(),
+                lane,
                 [handler, conn_id, frame = std::move(frame)]() mutable {
                     CMString raw = std::move(frame);
                     CMString before = raw;

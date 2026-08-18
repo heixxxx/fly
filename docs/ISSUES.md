@@ -126,6 +126,7 @@
 - **Fix**: ① probe 发送失败 = 旧 conn 确定已死 → 当场清残留映射、走正常注册路径接受重连（不等 DISCONNECT 触发 replay，迟到 DISCONNECT 因映射已清而 no-op）；② 挂起插入后复核旧 conn 存活性（`Reactor::is_connected`），已死则就地自重放——封死「插入晚于 take」的残余交错窗口（重放路径再进 on_worker_register 时 probe 必失败，走①，无递归风险）。`Reactor::send` 改返回 bool（调用方多忽略返回值，兼容）。
 - **测试**: 新增 `ReconnectRegisterBeforeDisconnectProcessed`（确定性）：`on_disconnect_entry_hook_for_testing_` 阻塞旧 conn 断连处理（lane 隔离保证 conn1/conn2 异 lane 并行），重连注册必然先于断连处理——修复前确定性转红（挂起孤儿化），修复后必绿。原间歇用例 `WriteRegisterPendingBlocksUntilReconnected` 同时修复其失败路径的 terminate 放大器（ASSERT 提前返回致 writer 线程未 join → std::terminate 吞掉 logger 缓冲现场）。
 - **验证**: TDD 红→绿；三重连用例并行 ×10 + 串行 ×10 全过；全量单测 60/60；50 轮稳定性重跑中。取证日志（WARN 级 handler 入口状态）已按规范移除。
+- **架构收口（2026-08-18 同日补强）**: 消息顺序敏感分析确认身份域三消息（REGISTER/WorkerProbeAck/断连事件）是唯一真跨连接顺序依赖族，其余 handler 均为收敛型。Reactorn 新增 `set_serialized_domain`（保留串行 lane，跨连接 FIFO；域外消息并行不受影响），master 将身份域三成员入域——该族交错类缺陷从机制上根除。机制单测 `reactor_serialized_domain_test`（FIFO/并行保持/生命周期事件三用例）+ `ReconnectRegisterBeforeDisconnectProcessed` 改造为串行域语义（REGISTER 不得越过被阻塞的断连处理）。后续新增顺序敏感消息一律加入此域（约定见 architecture.md §4.2 与 master_agent.cpp 注册点）。
 
 ### P3-25: PeerRpcServer BYE 优雅关闭在 ACK/DISCONNECT 竞态窗口误触发 disconnect_handler
 - **Status**: FIXED ✅（2026-08-18）— ACK 到达处同线程标记 bye_closed

@@ -440,6 +440,13 @@ worker 生命周期语义（用户确认，两阶段）：
 **关键设计**：
 - 单线程 Reactor（事件循环）+ handler lane 池：帧提取在 reactor 线程，handler 在
   `conn_id % handler_lanes`（默认 4）的专用串行 lane 执行——同连接消息严格保序，跨连接并行
+- **顺序敏感域**（serialized domain，P3-26 后引入）：`Reactor::set_serialized_domain`
+  注册的消息类型与（可选）连接生命周期事件不参与 conn 分 lane——统一投递到保留串行
+  lane（池的 lane 数 +1），跨连接严格按提交序 FIFO。用于身份生命周期等跨连接顺序
+  敏感协议；master 当前入域：`REGISTER`、`WORKER_PROBE_ACK`、断连/连接事件回调。
+  代价：域内消息与同连接其他消息不再保序——**入域类型必须与同连接其他消息顺序无关
+  （自包含协议消息）**；后续新增「必须全局串行」的消息一律加入此域（约定见
+  `master_agent.cpp` start() 的注册点与 reactor.h 注释）
 - DataClientPool 使用独立 TCP socket（独立于主 Reactor，keep-alive 复用）
 - DataServer 采用 epoll + send_thread_pool 模式
 
@@ -451,6 +458,7 @@ worker 生命周期语义（用户确认，两阶段）：
 | bitsery 而非 protobuf | header-only、版本化支持、无代码生成 |
 | CM 前缀容器别名 | 便于替换底层实现（如 absl） |
 | 单线程 Reactor + handler 串行 lane | 事件循环不被重 handler 阻塞；同连接保序、跨连接并行 |
+| 顺序敏感域（保留串行 lane） | 身份生命周期等跨连接顺序敏感协议全局 FIFO；域外消息并行不受影响（P3-26） |
 | DataClientPool 独立连接 | keep-alive fd 复用，不走主 Reactor，多线程安全 |
 | DataService 进程级单例 | Master 和 Worker 共享，仅更新触发源不同 |
 | 三层降级读取 | 本地 → 缓存 → 远程，最大限度减少 Master 查询 |
