@@ -66,10 +66,12 @@ enum class MessageType : uint8_t {
     WORKER_PROBE = 55,           // master → worker: 疑似重复注册时探测既有连接活性（回 PROBE_ACK）
     WORKER_PROBE_ACK = 56,       // worker → master: 探测应答（到达即证明该实例活着）
     TASK_SUBMIT_ACK = 57,        // master → worker: task 体内提交转发的确认（request_id 匹配，带回 master 分配的 task_id）
+    STOP_NOW = 58,               // master → worker: 立即停止命令（SIGTERM/致命错误快速退出通道）——worker 收到即 kill(getpid(), SIGKILL)，
+                                 //   与 SHUTDOWN（优雅退：flush coverage + WBQ drain）语义相反；master 侧已做 fail 善后，task 结果以 master 记录为准
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 57;
+    return raw >= 1 && raw <= 58;
 }
 
 struct MessageHeader {
@@ -351,6 +353,19 @@ struct ShutdownMessage {
     static constexpr MessageType msg_type_ = MessageType::SHUTDOWN;
 
     FLY_SERIALIZE(header_);
+};
+
+// 立即停止命令（与 ShutdownMessage 语义相反：优雅退 vs 进程级自杀）。
+// 触发方：master 的快速退出通道（SIGTERM / graceful_exit 致命错误）。
+// worker 收到后 kill(getpid(), SIGKILL)——master 侧已对 RUNNING task 做 fail
+// 善后，worker 无需也无法再上报（coverage/WBQ flush 是该通道接受的代价）。
+struct StopNowMessage {
+    MessageHeader header_;
+    CMString reason_;   // 诊断用：master 侧快速退出原因（随消息带给 worker 日志）
+
+    static constexpr MessageType msg_type_ = MessageType::STOP_NOW;
+
+    FLY_SERIALIZE(header_, reason_);
 };
 
 struct WriteRegisterMessage {

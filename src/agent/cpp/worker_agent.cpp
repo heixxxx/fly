@@ -18,6 +18,7 @@
 #include <network/cpp/net_quality_monitor.h>
 #include <thread>
 #include <chrono>
+#include <csignal>
 #include <functional>
 #include <unistd.h>
 #include <spawn.h>
@@ -156,6 +157,11 @@ void WorkerAgent::start() {
     reactor_->register_handler<ShutdownMessage>(
         [this](uint64_t conn, const ShutdownMessage& msg) {
             on_shutdown(msg);
+        });
+
+    reactor_->register_handler<StopNowMessage>(
+        [this](uint64_t conn, const StopNowMessage& msg) {
+            on_stop_now(msg);
         });
 
     reactor_->register_handler<DbPathResponseMessage>(
@@ -832,6 +838,23 @@ void WorkerAgent::on_shutdown(const ShutdownMessage& msg) {
     initiate_shutdown("master shutdown message");
 }
 
+void WorkerAgent::on_stop_now(const StopNowMessage& msg) {
+    ERR("STOP_NOW received (reason: {}) — killing self, running task aborted",
+        msg.reason_.empty() ? CMString("unspecified") : msg.reason_);
+#ifdef FLY_ENABLE_TEST_HOOKS
+    // 单测进程内 WorkerAgent 是库对象，真杀会杀掉测试进程本身：安装了 hook 的
+    // 测试走 hook 观察语义；未安装 hook 的（生产语义路径的测试）仍真杀。
+    if (stop_now_hook_for_testing_) {
+        stop_now_hook_for_testing_(msg.reason_);
+        return;
+    }
+#endif
+    // 进程级自杀：SIGKILL 不可捕获不可拦截，内核收尸（fd 全关、地址空间消失，
+    // 无半开锁/半事务中间态）。master 侧 fast_exit 已对 RUNNING task 做 fail 善后，
+    // 本侧无需也无法再上报；coverage/WBQ flush 丢失是该快速通道接受的代价。
+    kill(getpid(), SIGKILL);
+}
+
 void WorkerAgent::on_disconnect(uint64_t conn_id) {
     if (conn_id != master_conn_.load()) return;
 
@@ -1050,6 +1073,15 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
         pending_master_sends_.clear();
     }
     if (reactor_) {
+        // 主动关闭 master 连接：Reactor::stop() 只设循环 flag 不关 fd，连接保持
+        // ESTAB 会让 master 的断连等待拖满 deadline（库级使用下无人退进程关 fd；
+        // 生产进程退出虽由 OS 兜底，主动关闭让对端亚秒感知，不依赖退出时序）。
+        // master_conn_ 先清零：本地 close 触发的 DISCONNECT 事件回来时
+        // conn_id != master_conn_（0），不会误入重连分支。
+        uint64_t conn = master_conn_.exchange(0);
+        if (conn != 0) {
+            reactor_->close_connection(conn);
+        }
         reactor_->stop();
     }
 }

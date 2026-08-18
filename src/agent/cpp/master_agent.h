@@ -52,10 +52,18 @@ public:
     ~MasterAgent();
 
     void start();
+    // 正常收尾停止（脚本执行完毕后自动调用）：drain 等待全部 RUNNING task 完成
+    // （无硬 deadline；兜底=心跳判死链 + 断连宽限超时；可被 fast_exit 打断），
+    // 然后广播 ShutdownMessage（worker 优雅退：flush coverage + WBQ drain）。
     void stop();
+    // 快速退出（SIGTERM / graceful_exit 致命错误通道）：不等待 task——立即对全部
+    // RUNNING task fail 善后（fail_task + failed record 持久化），广播 StopNowMessage
+    // （worker 收到即 kill 自身，不依赖 master 知晓 pid/句柄），短宽限等断连后收尾。
+    // 与 stop() 并发时：若 stop() 已在 drain，置打断标志使其转快速路径。
+    void fast_exit(const CMString& reason = "fast exit");
     bool is_running() const;
     // SIGTERM 优雅退出入口（heartbeat 线程消费信号灯后调用；单测直接调用）。
-    // 独立线程执行完整 stop() drain，幂等。
+    // 独立线程执行 fast_exit（快速退出语义），幂等。
     void trigger_graceful_shutdown();
 
     CMVector<uint64_t> get_connected_workers() const;
@@ -348,8 +356,14 @@ private:
     std::atomic<bool> draining_{false};
     std::atomic<bool> shutdown_requested_{false};
     std::atomic<bool> graceful_stop_started_{false};
+    // fast_exit 请求标志：打断 stop() 的 drain 等待（SIGTERM/致命错误到达时，
+    // 正在优雅等待的 drain 转快速路径——先 fail 善后再走 StopNow 广播）。
+    std::atomic<bool> fast_exit_requested_{false};
     std::mutex drain_mutex_;
     std::condition_variable drain_cv_;
+    // stop()/fast_exit() 的统一实现（fast=true 跳过 drain 等待 + fail 善后 +
+    // StopNow 广播 + 短宽限断连）。防重入：draining_ 首个置位者负责执行。
+    void stop_impl(bool fast, const CMString& reason);
 
     CMUniquePtr<Reactor> reactor_;
     std::thread reactor_thread_;

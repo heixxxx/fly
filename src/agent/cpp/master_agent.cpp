@@ -371,13 +371,34 @@ void MasterAgent::start() {
     }
 
     register_shutdown_callback([this]() {
-        this->stop();
+        // graceful_exit（致命错误，如 write-back 落盘失败）→ 快速退出：
+        // 数据完整性已破坏，等待 task/WBQ 无意义（磁盘满时 persist 也会失败），
+        // 只会拖长死亡。fail 善后由 fast_exit 统一处理。
+        this->fast_exit("graceful_exit (fatal error)");
         fly::Logger::shutdown();
     });
 }
 
 void MasterAgent::stop() {
-    if (draining_.exchange(true)) return;
+    stop_impl(false, "");
+}
+
+void MasterAgent::fast_exit(const CMString& reason) {
+    stop_impl(true, reason);
+}
+
+void MasterAgent::stop_impl(bool fast, const CMString& reason) {
+    if (draining_.exchange(true)) {
+        // 已有 stop 在执行：fast 请求转打断标志，让正在优雅等待的 drain
+        // 提前结束并转入快速路径（fail 善后 + StopNow 广播）。
+        if (fast) {
+            fast_exit_requested_.store(true);
+            // 持锁 notify（规范）：drain waiter 的条件检查在锁内，防 lost wakeup。
+            std::lock_guard<std::mutex> lk(drain_mutex_);
+            drain_cv_.notify_all();
+        }
+        return;
+    }
     if (!running_) {
         do_drain_and_stop();
         return;
@@ -391,44 +412,96 @@ void MasterAgent::stop() {
             .count();
     };
 
-    INFO("MasterAgent stop() called, entering drain phase");
+    if (fast) {
+        WARN("MasterAgent fast_exit: {} — skipping drain, failing tasks, stopping workers",
+             reason.empty() ? CMString("unspecified") : reason);
+    } else {
+        INFO("MasterAgent stop() called, entering drain phase");
+    }
 
-    // Phase 1: Wait for all running tasks to complete (workers are still alive).
-    {
+    // Phase 1（仅正常收尾）: 等 RUNNING task 全部完成——无硬 deadline。
+    // 兜底：心跳判死链（worker 全灭 → RUNNING fail → 条件达成）、断连宽限
+    // 超时（120s 内判死）、fast_exit 打断（SIGTERM/致命错误转快速路径）。
+    // 30s 硬超时已废除：长 task（求解分钟~小时级）等不到完成只是延迟处死，
+    // 且超时后 RUNNING task 无 fail 善后（无声蒸发，用户裁定废除）。
+    if (!fast) {
         std::unique_lock<std::mutex> lock(drain_mutex_);
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         while (true) {
+            if (fast_exit_requested_.load()) {
+                WARN("Drain interrupted by fast_exit request (elapsed={}ms) — switching to fast path",
+                     _elapsed());
+                fast = true;
+                break;
+            }
             int running_count = metadata_->count_tasks_by_status(TaskStatus::RUNNING);
             if (running_count == 0) break;
             INFO("Drain: waiting for {} running tasks to complete (elapsed={}ms)", running_count, _elapsed());
-            if (drain_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
-                WARN("Drain timeout (30s), {} tasks still running (elapsed={}ms)", running_count, _elapsed());
-                break;
-            }
+            drain_cv_.wait(lock);
         }
     }
 
-    INFO("Drain: all tasks completed, shutting down workers (elapsed={}ms)", _elapsed());
-
-    // Message summary：发 Shutdown 前收集各 worker 的 message 触发计数并打印 summary。
-    // 必须在 worker 仍连接时广播请求（worker 断开后无法上报）。
-    collect_and_print_message_summary();
-    INFO("Message summary done (elapsed={}ms)", _elapsed());
-
-    // Phase 2: All tasks done — now send shutdown to workers.
-    for (const auto& [worker_id, conn_id] : snapshot_worker_conns()) {
-        INFO("Sending shutdown to worker_id={} (elapsed={}ms)", worker_id, _elapsed());
-        reactor_->send(conn_id, ShutdownMessage{});
+    if (fast) {
+        // 快速路径 fail 善后：全部 RUNNING task 判失败并持久化 failed record
+        //（轻量版 on_task_failed：状态一致性 + 留痕；dirty_objects 清理/下游级联
+        // 无意义——worker 即将被 StopNow 终止，没有下游会再跑）。
+        // PENDING 的 failed record 化由尾部 persist_pending_tasks 统一处理。
+        auto running_ids = metadata_->get_task_ids_by_status(TaskStatus::RUNNING);
+        for (uint64_t tid : running_ids) {
+            FailedTaskRecord record = make_failed_record(
+                tid, "Master fast exit: task aborted (reason=" +
+                         (reason.empty() ? CMString("unspecified") : reason) + ")");
+            {
+                std::lock_guard<std::mutex> lk(schedule_mutex_);
+                metadata_->fail_task(tid, "Master fast exit: task aborted");
+                graph_->remove_task(tid);
+            }
+            // graceful_exit 通道磁盘可能已坏（落盘失败才触发退出）：persist 失败
+            // 记 WARN 不阻塞——状态一致性（fail_task）优先于持久化留痕。
+            try {
+                persist_failed_task(record);
+            } catch (const std::exception& e) {
+                WARN("Fast exit: persist task {} failed ({}) — continuing", tid, e.what());
+            } catch (...) {
+                WARN("Fast exit: persist task {} failed (unknown) — continuing", tid);
+            }
+            WARN("Fast exit: task_id={} failed and persisted", tid);
+        }
+    } else {
+        INFO("Drain: all tasks completed, shutting down workers (elapsed={}ms)", _elapsed());
     }
 
-    // Phase 3: Wait for workers to disconnect (reactor will call on_disconnect).
-    // Use a simple CV wait — on_disconnect notifies workers_drained_cv_.
+    // Message summary：诊断性输出。正常路径保留（worker 活着，上报快）；
+    // 快速路径跳过——不挡退出。
+    if (!fast) {
+        collect_and_print_message_summary();
+        INFO("Message summary done (elapsed={}ms)", _elapsed());
+    }
+
+    // Phase 2: 停止 worker。fast → StopNow（worker kill 自身，亚秒断连）；
+    // 正常 → Shutdown（worker 优雅退：flush coverage + WBQ drain）。
+    for (const auto& [worker_id, conn_id] : snapshot_worker_conns()) {
+        if (fast) {
+            INFO("Sending STOP_NOW to worker_id={} (elapsed={}ms)", worker_id, _elapsed());
+            StopNowMessage msg;
+            msg.reason_ = reason;
+            reactor_->send(conn_id, msg);
+        } else {
+            INFO("Sending shutdown to worker_id={} (elapsed={}ms)", worker_id, _elapsed());
+            reactor_->send(conn_id, ShutdownMessage{});
+        }
+    }
+
+    // Phase 3: 等 worker 断连。fast 用短宽限（StopNow 自杀 → OS 关 fd，亚秒；
+    // 2s 仅兜进程僵死）；正常路径 worker 优雅退含 WBQ drain + coverage flush，
+    // 保留 10s 上界。
     {
         std::unique_lock<std::mutex> lock(workers_mutex_);
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        auto deadline = std::chrono::steady_clock::now() +
+                        (fast ? std::chrono::seconds(2) : std::chrono::seconds(10));
         while (!worker_to_conn_.empty()) {
             if (workers_drained_cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
-                WARN("Shutdown timeout (10s), {} workers still connected (elapsed={}ms)",
+                WARN("{}: {} workers still connected after wait (elapsed={}ms)",
+                     fast ? "STOP_NOW" : "Shutdown",
                      worker_to_conn_.size(), _elapsed());
                 break;
             }
@@ -3006,12 +3079,12 @@ void MasterAgent::on_master_freeze(const CMString& db_path) {
 }
 
 void MasterAgent::trigger_graceful_shutdown() {
-    // 幂等：只拉起一次 drain 线程。stop() 内部 draining_.exchange(true) 亦防重入。
+    // 幂等：只拉起一次退出线程。stop_impl 内部 draining_.exchange(true) 亦防重入。
     if (graceful_stop_started_.exchange(true)) return;
-    INFO("Graceful shutdown requested (SIGTERM), starting stop() drain");
-    // 独立线程执行 stop()：stop() 会 join 本（heartbeat）线程，不能在自身上调用。
+    INFO("Graceful shutdown requested (SIGTERM), starting fast_exit (skip drain)");
+    // 独立线程执行：fast_exit 会 join 本（heartbeat）线程，不能在自身上调用。
     std::thread([this]() {
-        stop();
+        fast_exit("SIGTERM received");
     }).detach();
 }
 

@@ -225,32 +225,51 @@ Layer 3: request_remote_data("key")
   → 缓存 remote_idx
 ```
 
-### 优雅关机流程
+### 关机流程（双通道语义，2026-08-18 用户裁定重构）
+
+关闭分两条语义相反的通道，统一入口 `stop_impl(fast, reason)`：
 
 ```
-Master.stop() — 三阶段流程
-  Phase 1: 等待所有 running tasks 完成 (workers 仍然活跃)
-    → drain_cv_ 等待 running_count == 0 (最多 30s)
-    → on_task_complete / on_task_failed 通知 drain_cv_
+Master.stop() — 正常收尾（脚本执行完毕自动调用）
+  Phase 1: 等待所有 RUNNING task 完成（workers 仍活跃）
+    → drain_cv_ 无限等待 running_count == 0（30s 硬超时已废除：长 task 等不到
+      只是延迟处死且超时后 RUNNING 无留痕；兜底=心跳判死链+断连宽限超时+
+      fast_exit 打断）
+    → on_task_complete / on_task_failed / on_disconnect 通知 drain_cv_
+  Phase 1.5: message summary 屏障（诊断输出，30s 容错）
+  Phase 2: 广播 ShutdownMessage（worker 优雅退：flush coverage + WBQ drain）
+  Phase 3: 等 worker 断连（10s 上界）
+  → persist_pending_tasks() → 停止所有线程和组件
 
-  Phase 2: 发送 shutdown 给所有 workers
-    → 广播 ShutdownMessage
+Master.fast_exit(reason) — 快速退出（SIGTERM / graceful_exit 致命错误）
+  Phase 0: 全部 RUNNING task 立即 fail 善后
+    → fail_task + graph remove + failed record 持久化（磁盘坏时 persist 失败
+      仅 WARN 不阻塞退出）
+  Phase 2: 广播 StopNowMessage（新消息 STOP_NOW=58）
+    → worker 收到即 kill(getpid(), SIGKILL)——进程级自杀，不依赖 master 知
+      pid/句柄（bsub/ssh 跨机 worker 同样生效）；coverage/WBQ flush 丢失是该
+      通道接受的代价（master 侧已留痕 fail record）
+  Phase 3: 等 worker 断连（2s 短宽限；SIGKILL→OS 关 fd 亚秒，2s 兜僵死）
+  → persist_pending_tasks() → 停止所有线程和组件
 
-  Phase 3: 等待 workers 断开连接
-    → workers_drained_cv_ 等待 worker_to_conn_ 为空 (最多 10s)
-    → on_disconnect 通知 workers_drained_cv_
-
-  → persist_pending_tasks()
-  → 停止所有线程和组件
+并发协调：fast_exit 到达时 stop() 已在 drain → 置 fast_exit_requested_ +
+持锁 notify 打断等待 → drain 转快速路径。幂等由 draining_ 首位置位保证。
+触发链：SIGTERM → 心跳线程（≤5s）→ trigger_graceful_shutdown → 独立线程
+fast_exit；write-back 落盘失败 → graceful_exit callback → fast_exit。
 
 draining 模式下 on_disconnect:
   → 标记 running tasks 为 FAILED
   → 通知 drain_cv_ 和 workers_drained_cv_
 
-Worker.on_shutdown()
-  → initiate_shutdown()
-  → 停止 Data Server 和 Reactor
-  → do_cleanup()
+Worker.on_shutdown()（收到 ShutdownMessage，优雅路径）
+  → initiate_shutdown()：主动 close master 连接（master_conn_.exchange(0) +
+    reactor_->close_connection——Reactor::stop 只停循环不关 fd，不主动关会让
+    master 断连等待拖满 deadline）
+  → 停止 Data Server 和 Reactor → do_cleanup()（~Database drain WBQ）
+
+Worker.on_stop_now()（收到 StopNowMessage，快速路径）
+  → kill(getpid(), SIGKILL)（testonly 编译可被 stop_now_hook_for_testing_
+    拦截——库对象单测观察语义不杀测试进程）
 
 自动 stop():
   → 脚本模式: 用户脚本执行完毕后自动调用 stop()

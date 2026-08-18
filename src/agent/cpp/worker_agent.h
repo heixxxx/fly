@@ -369,6 +369,9 @@ private:
     void on_register_ack(uint64_t conn_id, const RegisterAckMessage& msg);
     void on_task_assign(const TaskAssignMessage& msg);
     void on_shutdown(const ShutdownMessage& msg);
+    // STOP_NOW（master 快速退出通道）：进程级自杀（kill SIGKILL）。testonly
+    // 编译下可被 hook 拦截（库对象在单测进程内不能真杀测试进程）。
+    void on_stop_now(const StopNowMessage& msg);
     void on_db_path_response(const DbPathResponseMessage& msg);
     void on_write_register_ack(uint64_t conn_id, const WriteRegisterAckMessage& msg);
     void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
@@ -456,6 +459,9 @@ public:
     // 仅测试用：reconnect_loop 入口触发（P3-27 回归——park 重连线程，确定性
     // 构造「断连后残留 ack 清除重连标志致重连线程静默退出」的窗口）。
     std::function<void()> reconnect_entry_hook_for_testing_;
+    // 仅测试用：STOP_NOW 拦截（默认空=真自杀路径；安装后记录 reason 不杀进程，
+    // 供库对象单测观察快速退出语义）。
+    std::function<void(const CMString& reason)> stop_now_hook_for_testing_;
     // 仅测试用：直接驱动 on_register_ack（构造「断连后残留 ack 到达」场景，
     // conn_id 由测试指定）。
     void on_register_ack_for_testing(uint64_t conn_id, const RegisterAckMessage& msg) {

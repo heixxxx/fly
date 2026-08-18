@@ -21,6 +21,16 @@ static CMString db32(const CMString& hint) {
 
 namespace fly {
 
+// 构造 TaskComplete 上报：stop() 前终结 RUNNING task 用（正常收尾语义的 drain
+// 无硬 deadline——30s 超时已废除，留下未完成 task 的测试会死等到 bazel 超时）。
+static void complete_task_for_stop(MasterAgent& master, uint64_t task_id,
+                                   uint64_t worker_id) {
+    TaskCompleteMessage complete;
+    complete.task_id_ = task_id;
+    complete.worker_id_ = worker_id;
+    master.on_task_complete(0, complete);
+}
+
 TEST(MasterAgentTest, CreateAndStart) {
     MasterAgent master("127.0.0.1", 0);
     master.start();
@@ -1356,6 +1366,9 @@ TEST(MasterAgentTest, NonStreamWriteRegisterDelaysDataReady) {
     }
 
     worker.end_task(7000);
+    // 7001（consumer）已因 obj_x ready 被 assign 成 RUNNING——stop 前终结
+    //（drain 无 deadline，不终结会死等）。
+    complete_task_for_stop(master, 7001, 1);
     worker.stop();
     master.stop();
     wait_for_running(master, false);
@@ -1471,6 +1484,10 @@ TEST(MasterAgentTest, StreamWriteRegisterImmediateDataReady) {
     }
 
     worker.end_task(7003);
+    // 7003（producer，master 侧 RUNNING——end_task 只是 worker 本地记录）与
+    // 7004（obj_y ready 后被 assign）都要在 stop 前终结（drain 无 deadline）。
+    complete_task_for_stop(master, 7003, 1);
+    complete_task_for_stop(master, 7004, 1);
     worker.stop();
     master.stop();
     wait_for_running(master, false);
@@ -2542,7 +2559,7 @@ TEST(MasterAgentTest, Problem1_CompleteTaskClobberedByConcurrentAssign) {
     EXPECT_TRUE(w_idle) << "Worker W 应在其 task 完成后回到 IDLE；卡在 BUSY 说明 complete_task "
                         << "被 scheduler 线程的并发 assign_task 覆盖（Problem 1 竞态）";
 
-    master.unregister_fake_worker_for_testing(W, fake_conn);  // 让 stop() drain 不等待 fake worker
+    master.unregister_fake_worker_for_testing(W, fake_conn);  // 清理 fake 连接（task T 已 complete，stop 无等待项）
     master.stop();
     wait_for_running(master, false);
     Config::instance()->set_str("log_dir", "");
@@ -2629,6 +2646,9 @@ TEST(MasterAgentTest, UnresolvableDetectionDoesNotFireDuringAssignFlight) {
 
     master.assign_task_send_hook_for_testing_ = nullptr;
     master.unregister_fake_worker_for_testing(W, fake_conn);
+    // PRODUCER assign 给 fake worker 后停留 RUNNING——stop 前终结
+    //（drain 无 deadline；fake worker 不会上报 complete）。
+    complete_task_for_stop(master, PRODUCER, W);
     master.stop();
     wait_for_running(master, false);
     Config::instance()->set_str("log_dir", "");
@@ -2883,23 +2903,90 @@ TEST(GracefulShutdownTest, LampSetResetAndSignalDelivery) {
     fly::reset_graceful_shutdown();
 }
 
-TEST(GracefulShutdownTest, TriggerDrainsMasterViaFullStop) {
+TEST(GracefulShutdownTest, TriggerFastExitsMasterWithoutDrain) {
     fly::reset_graceful_shutdown();
     MasterAgent master("127.0.0.1", 0);
     master.start();
     wait_for_running(master, true, 100, 20);
     ASSERT_TRUE(master.is_running());
 
-    // SIGTERM 语义 = 走完整 stop() 三阶段 drain（等 RUNNING task → shutdown
-    // 广播 → persist），在独立线程执行（stop 会 join heartbeat 线程）。
+    // SIGTERM 语义 = 快速退出（fast_exit：跳过 drain，无 task 时同样亚秒完成），
+    // 在独立线程执行（fast_exit 会 join heartbeat 线程，不能在自身上调用）。
     master.trigger_graceful_shutdown();
 
-    // 幂等：重复触发不再拉起第二个 drain 线程。
+    // 幂等：重复触发不再拉起第二个退出线程。
     master.trigger_graceful_shutdown();
 
     wait_for_running(master, false, 500, 20);
     EXPECT_FALSE(master.is_running());
     fly::reset_graceful_shutdown();
+}
+
+// 快速退出通道核心语义（用户裁定 2026-08-18）：SIGTERM / graceful_exit（致命
+// 错误）不等待 RUNNING task——立即 fail 善后（failed record 持久化）+ 广播
+// STOP_NOW（worker 收到即 kill 自身；单测库对象经 hook 拦截观察，不真杀测试
+// 进程）。对照正常 stop()：drain 等全部 task 完成（无硬 deadline）。
+TEST(MasterAgentTest, FastExitFailsRunningTasksAndStopsWorkers) {
+    fly::DataService::instance()->reset();
+    TempDir tmpdir;
+    Config::instance()->set_str("log_dir", tmpdir.path());
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool stop_now_seen = false;
+    CMString stop_now_reason;
+    worker.stop_now_hook_for_testing_ = [&](const CMString& reason) {
+        std::lock_guard<std::mutex> lk(mtx);
+        stop_now_seen = true;
+        stop_now_reason = reason;
+        cv.notify_all();
+    };
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // RUNNING task：assign 后永不 complete（无 executor）。
+    master.submit_task(6000, "hang_task", "test_module", {"arg"}, {}, {});
+    bool task_running = false;
+    for (int i = 0; i < 50 && !task_running; ++i) {
+        auto running = master.get_running_tasks();
+        task_running = std::find(running.begin(), running.end(), 6000) != running.end();
+        if (!task_running) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_TRUE(task_running) << "task 6000 should be assigned and RUNNING";
+
+    auto t0 = std::chrono::steady_clock::now();
+    master.fast_exit("test fast exit");
+    wait_for_running(master, false);
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+
+    // 快速退出上界：fail 善后 + STOP_NOW 广播 + worker 主动断连应亚秒完成；
+    // 5s 宽松上界防负载 flaky（真实典型 <100ms）。
+    EXPECT_LT(elapsed_ms, 5000) << "fast_exit must not wait for RUNNING task (took "
+                                << elapsed_ms << "ms)";
+
+    // RUNNING task 已 fail 善后（failed record 持久化 + 状态 FAILED）。
+    auto failed = master.get_failed_tasks();
+    EXPECT_NE(std::find(failed.begin(), failed.end(), 6000), failed.end())
+        << "RUNNING task must be failed by fast_exit";
+
+    // worker 收到 STOP_NOW（hook 拦截证据；生产语义为 kill 自身）。
+    {
+        std::unique_lock<std::mutex> lk(mtx);
+        bool seen = cv.wait_for(lk, std::chrono::seconds(3),
+                                [&] { return stop_now_seen; });
+        EXPECT_TRUE(seen) << "worker should receive STOP_NOW";
+        EXPECT_EQ(stop_now_reason, "test fast exit");
+    }
+
+    worker.stop_now_hook_for_testing_ = nullptr;
+    worker.stop();
+    Config::instance()->set_str("log_dir", "");
 }
 
 // record_worker_info 去重：同 (db_path, hostname, writer_id) tuple 只 append
