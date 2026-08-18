@@ -947,16 +947,91 @@ TEST(WorkerAgentTest, WriteRegisterPendingBlocksUntilReconnected) {
         for (int i = 0; i < 100 && !done.load(); ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
+        // 失败路径先唤醒阻塞的 writer 再 join——ASSERT 提前返回会让 joinable
+        // 线程析构触发 std::terminate，吞掉 logger 缓冲里的最后 1s 日志
+        //（50 轮稳定性第 16 轮实测：崩溃毁掉失败现场）。
+        if (!done.load()) {
+            worker.fail_pending_write_regs_for_testing();
+        }
+        writer.join();
         ASSERT_TRUE(done.load()) << "blocked writer must wake after replay+ack";
         EXPECT_TRUE(ok.load()) << "replayed register should confirm successfully";
         EXPECT_FALSE(DataService::instance()->get_remote_workers(full).empty())
             << "master must have the object location after replay";
-        writer.join();
 
         worker.stop();
         master.stop();
         wait_for_running(master, false);
     }
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
+}
+
+// ── lane 并行下的重连注册先于旧 conn 断连处理（P3-26）─────────────────
+// handler lane 跨连接并行分发（同连接保序/跨连接并行）：worker 闪断重连时，
+// REGISTER(新 conn) 可能在旧 conn 的 DISCONNECT 被处理前到达 master。旧逻辑
+// 把该注册挂起（probe 旧 conn），依赖「旧 conn 断连触发 replay_deferred_
+// register」重放——但断连处理的 replay take 可能在挂起条目插入前已执行
+// （lane 并行交错），挂起条目孤儿化，worker 挂死到 15s deadline 被误拒
+// （50 轮稳定性第 16 轮实测，~1/43 复现率）。
+// 确定性构造：on_disconnect 入口钩子阻塞旧 conn 的断连处理（lane 隔离，
+// conn1/conn2 异 lane 并行），重连注册必然先于它被处理——修复前必红
+// （挂起孤儿化），修复后（probe 发送失败当场接受重连）必绿。
+TEST(WorkerAgentTest, ReconnectRegisterBeforeDisconnectProcessed) {
+    Config::instance()->set_int("worker_reconnect_timeout", 30);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 50);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // 断连处理门闩：入口钩子报「已进入」后阻塞，等测试放行。
+    std::mutex gate_m;
+    std::condition_variable gate_cv;
+    bool disconnect_entered = false;
+    bool allow_disconnect = false;
+    master.on_disconnect_entry_hook_for_testing_ = [&](uint64_t) {
+        {
+            std::lock_guard<std::mutex> lk(gate_m);
+            disconnect_entered = true;
+        }
+        gate_cv.notify_all();
+        std::unique_lock<std::mutex> lk(gate_m);
+        gate_cv.wait(lk, [&] { return allow_disconnect; });
+    };
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // 闪断：master transport 已 reap 旧 conn（fd 关闭，probe 发送必失败），
+    // 但旧 conn 的断连 handler 被钩子阻塞在清理之前。
+    worker.simulate_master_disconnect_for_testing();
+
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lk(gate_m);
+        entered = gate_cv.wait_for(lk, std::chrono::seconds(5),
+                                   [&] { return disconnect_entered; });
+    }
+    ASSERT_TRUE(entered) << "master must dispatch the old-conn disconnect handler";
+
+    // 重连注册在旧 conn 断连处理被阻塞期间到达——必须被当场接受。
+    EXPECT_TRUE(wait_until_registered(worker, 300, 10))
+        << "reconnect register must be accepted while old-conn disconnect is still pending";
+
+    // 放行旧 conn 的断连处理（迟到事件：映射已由接受路径清理，no-op）。
+    {
+        std::lock_guard<std::mutex> lk(gate_m);
+        allow_disconnect = true;
+    }
+    gate_cv.notify_all();
+    master.on_disconnect_entry_hook_for_testing_ = nullptr;
+
+    EXPECT_TRUE(worker.is_registered());
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
     Config::instance()->set_int("worker_reconnect_timeout", 120);
     Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
 }

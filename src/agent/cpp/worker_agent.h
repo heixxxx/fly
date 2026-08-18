@@ -362,7 +362,7 @@ private:
     CMVector<VarPayload> pending_task_vars_;
     std::mutex pending_task_vars_mutex_;
 
-    void on_register_ack(const RegisterAckMessage& msg);
+    void on_register_ack(uint64_t conn_id, const RegisterAckMessage& msg);
     void on_task_assign(const TaskAssignMessage& msg);
     void on_shutdown(const ShutdownMessage& msg);
     void on_db_path_response(const DbPathResponseMessage& msg);

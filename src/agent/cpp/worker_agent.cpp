@@ -145,7 +145,7 @@ void WorkerAgent::start() {
 
     reactor_->register_handler<RegisterAckMessage>(
         [this](uint64_t conn, const RegisterAckMessage& msg) {
-            on_register_ack(msg);
+            on_register_ack(conn, msg);
         });
 
     reactor_->register_handler<TaskAssignMessage>(
@@ -602,7 +602,7 @@ void WorkerAgent::bandwidth_probe_loop() {
     }
 }
 
-void WorkerAgent::on_register_ack(const RegisterAckMessage& msg) {
+void WorkerAgent::on_register_ack(uint64_t conn_id, const RegisterAckMessage& msg) {
     // 重复注册被拒（master 侧同 worker_id 已有活跃实例——分区恢复/手动重启
     // 竞态的先到先得判定）：本实例是后到者，自行干净退出。
     if (msg.duplicate_) {

@@ -119,6 +119,14 @@
 
 ## P3 — Low / Deferred
 
+### P3-26: lane 并行下重连注册先于旧 conn 断连处理 → deferred 注册孤儿化，worker 挂死
+- **Status**: FIXED ✅（2026-08-18）— probe 发送失败当场接受重连
+- **Files**: `src/agent/cpp/master_agent.cpp`（on_worker_register 疑似重复注册分支）、`src/network/cpp/reactor.h`（send 返回 bool + is_connected 直通）
+- **Root Cause**: 50 轮稳定性第 16 轮实测（前 15 轮通过，复现率 ~1/43）。handler lane 并行分发（8a7e8b8，同连接保序/跨连接并行）破坏了 deferred 注册协议的单线程时序假设：worker 闪断重连时 REGISTER(新 conn) 与旧 conn 的 DISCONNECT 在**两条 lane 上并行**——若 REGISTER 的 dup 检查读到 `worker_to_conn_` 仍指向旧 conn（断连清理未完成）而 transport 已 reap 旧 conn（EOF 已检测、fd 已关），probe 发送失败仅 WARN，注册被挂起（deferred）；并行交错的另一侧 `on_disconnect` 的 `replay_deferred_register` take 先于挂起插入执行（no-op）→ 挂起条目孤儿化，无人重放，worker 挂死到 15s probe deadline 被保守误拒（duplicate）。
+- **Fix**: ① probe 发送失败 = 旧 conn 确定已死 → 当场清残留映射、走正常注册路径接受重连（不等 DISCONNECT 触发 replay，迟到 DISCONNECT 因映射已清而 no-op）；② 挂起插入后复核旧 conn 存活性（`Reactor::is_connected`），已死则就地自重放——封死「插入晚于 take」的残余交错窗口（重放路径再进 on_worker_register 时 probe 必失败，走①，无递归风险）。`Reactor::send` 改返回 bool（调用方多忽略返回值，兼容）。
+- **测试**: 新增 `ReconnectRegisterBeforeDisconnectProcessed`（确定性）：`on_disconnect_entry_hook_for_testing_` 阻塞旧 conn 断连处理（lane 隔离保证 conn1/conn2 异 lane 并行），重连注册必然先于断连处理——修复前确定性转红（挂起孤儿化），修复后必绿。原间歇用例 `WriteRegisterPendingBlocksUntilReconnected` 同时修复其失败路径的 terminate 放大器（ASSERT 提前返回致 writer 线程未 join → std::terminate 吞掉 logger 缓冲现场）。
+- **验证**: TDD 红→绿；三重连用例并行 ×10 + 串行 ×10 全过；全量单测 60/60；50 轮稳定性重跑中。取证日志（WARN 级 handler 入口状态）已按规范移除。
+
 ### P3-25: PeerRpcServer BYE 优雅关闭在 ACK/DISCONNECT 竞态窗口误触发 disconnect_handler
 - **Status**: FIXED ✅（2026-08-18）— ACK 到达处同线程标记 bye_closed
 - **Files**: `src/agent/cpp/peer_rpc_server.cpp`（handle_bye / send_bye）、`src/agent/tests/peer_rpc_server_test.cpp`
@@ -240,8 +248,8 @@
 | P0 — Critical | 4 | 4 | 0 | 0 |
 | P1 — High | 6 | 6 | 0 | 0 |
 | P2 — Medium | 6 | 5 | 0 | 1 (closed: not a bug) |
-| P3 — Low | 9 | 8 | 1 (P3-17 partial) | 0 |
+| P3 — Low | 10 | 9 | 1 (P3-17 partial) | 0 |
 | X — Unprioritized | 18 | 9 | 0 | 9 |
-| **Total** | **43** | **32** | **1** | **10** |
+| **Total** | **44** | **33** | **1** | **10** |
 
 > 2026-08-16 去重说明：原 P3-18（Dead code cleanup）→ **P3-21**、原 P3-19（MetadataClient）→ **P3-22**，为新 P3-18（退出期 pure virtual）/P3-19（日志 flush）腾出编号（后者已被 commit 5058f01/c119b1b 与 DOC_CHANGELOG 引用，保持不变）。

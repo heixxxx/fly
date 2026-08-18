@@ -85,9 +85,13 @@ public:
     bool is_running() const { return running_.load(); }
     
     int get_bound_port() const { return transport_->get_bound_port(); }
-    
+
+    // conn 是否仍在 transport 连接表（fd 未被 reap）。供「向旧 conn 发探测
+    // 前后判断其存活性」等决策使用。
+    bool is_connected(uint64_t conn_id) const { return transport_->is_connected(conn_id); }
+
     template<typename T>
-    void send(uint64_t conn_id, const T& msg);
+    bool send(uint64_t conn_id, const T& msg);
 
     template<typename T>
     bool try_send(uint64_t conn_id, const T& msg);
@@ -149,15 +153,17 @@ void Reactor::register_handler(MessageHandler<T> handler) {
 }
 
 template<typename T>
-void Reactor::send(uint64_t conn_id, const T& msg) {
+bool Reactor::send(uint64_t conn_id, const T& msg) {
     CMString frame = MessageProtocol::encode(msg);
     auto mtx = acquire_send_mutex(conn_id);
-    if (!mtx) return;  // 已断开（条目被 erase 且无缓存）
+    if (!mtx) return false;  // 已断开（条目被 erase 且无缓存）
     std::lock_guard<std::mutex> lock(*mtx);
     ssize_t result = transport_->send(conn_id, frame);
     if (result < 0) {
         WARN("Reactor::send failed for conn_id={}", conn_id);
+        return false;
     }
+    return true;
 }
 
 template<typename T>

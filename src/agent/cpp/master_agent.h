@@ -231,6 +231,10 @@ public:
     //                                                竞态方向）。
     std::function<void(uint64_t task_id, uint64_t worker_id)> assign_task_send_hook_for_testing_;
     std::function<void(uint64_t task_id, uint64_t worker_id)> on_task_complete_prelock_hook_for_testing_;
+    // on_disconnect 入口触发（handler lane 线程，进入任何清理前）。测试用它
+    // 阻塞旧连接的断连处理，确定性构造「重连 REGISTER 先于旧 conn DISCONNECT
+    // 被 master 处理」的 lane 并行交错（P3-26 回归用）。
+    std::function<void(uint64_t conn_id)> on_disconnect_entry_hook_for_testing_;
     // 注册一个不对应真实网络连接的 worker（fake_conn_id），使 assign_task_to_worker 的
     // reactor_->send 安全 no-op（transport 对未知 conn_id 返回 -1）。用于无需真实 worker
     // 进程即可驱动调度路径的确定性测试（消除真实 worker 异步完成对断言的干扰）。

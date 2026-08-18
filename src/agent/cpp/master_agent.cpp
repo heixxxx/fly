@@ -1066,18 +1066,47 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
             return;
         }
         if (existing_conn != 0) {
+            // 探测旧连接活性。发送失败 = 旧 conn 已死（transport 已 reap、
+            // fd 已关）——当场接受为重连注册，不等 DISCONNECT 事件触发
+            // replay_deferred_register：handler lane 跨连接并行分发下，
+            // on_disconnect(existing_conn) 的 replay take 可能已在本挂起条目
+            // 插入前执行过（no-op），挂起条目将孤儿化到 15s deadline 被误拒，
+            // worker 全程挂死（50 轮稳定性第 16 轮实测，P3-26）。
             WorkerProbeMessage probe;
             probe.worker_id_ = worker_id;
-            reactor_->send(existing_conn, probe);
-            DeferredRegister dr;
-            dr.conn_id_ = conn_id;
-            dr.msg_ = msg;
-            dr.deadline_ = now + 15;
-            deferred_registers_.update(worker_id, [&](DeferredRegister& d) { d = std::move(dr); });
-            WARN("Suspicious duplicate register: worker_id={} existing conn {} — probing "
-                 "liveness, incoming register (conn {}) deferred",
-                 worker_id, existing_conn, conn_id);
-            return;
+            if (!reactor_->send(existing_conn, probe)) {
+                WARN("Probe to existing conn {} failed (dead) — accepting register of "
+                     "worker_id={} on conn {} as reconnect",
+                     existing_conn, worker_id, conn_id);
+                // 清残留映射（等价旧 conn 断连处理完成的清理部分），落入下方
+                // 正常注册路径；迟到的 DISCONNECT 因映射已清而 no-op。
+                std::lock_guard<std::mutex> lk(workers_mutex_);
+                auto w_it = worker_to_conn_.find(worker_id);
+                if (w_it != worker_to_conn_.end() && w_it->second == existing_conn) {
+                    worker_to_conn_.erase(w_it);
+                }
+                auto c_it = conn_to_worker_.find(existing_conn);
+                if (c_it != conn_to_worker_.end() && c_it->second == worker_id) {
+                    conn_to_worker_.erase(c_it);
+                }
+            } else {
+                DeferredRegister dr;
+                dr.conn_id_ = conn_id;
+                dr.msg_ = msg;
+                dr.deadline_ = now + 15;
+                deferred_registers_.update(worker_id, [&](DeferredRegister& d) { d = std::move(dr); });
+                WARN("Suspicious duplicate register: worker_id={} existing conn {} — probing "
+                     "liveness, incoming register (conn {}) deferred",
+                     worker_id, existing_conn, conn_id);
+                // 插入后复核（封死「插入晚于 take」的孤儿窗口）：旧 conn 若已
+                // 死透，on_disconnect 的 replay 可能先于本插入执行过——就地
+                // 自重放（重放路径再进 on_worker_register 时 probe 必失败，
+                // 走上面的当场接受分支，无递归风险）。
+                if (!reactor_->is_connected(existing_conn)) {
+                    replay_deferred_register(worker_id);
+                }
+                return;
+            }
         }
     }
 
@@ -1388,6 +1417,11 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
 }
 
 void MasterAgent::on_disconnect(uint64_t conn_id) {
+#ifdef FLY_ENABLE_TEST_HOOKS
+    if (on_disconnect_entry_hook_for_testing_) {
+        on_disconnect_entry_hook_for_testing_(conn_id);
+    }
+#endif
     uint64_t worker_id = 0;
     {
         std::lock_guard<std::mutex> lk(workers_mutex_);
