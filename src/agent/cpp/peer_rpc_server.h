@@ -104,6 +104,17 @@ public:
 
     bool is_running() const { return running_.load(); }
 
+#ifdef FLY_ENABLE_TEST_HOOKS
+public:
+    // ── 测试专用接口：仅 test_hooks 库变体激活（release 产物不含）──
+    // send_bye 的 cv 唤醒后、本端 bye_closed 标记前触发（参数：conn_id,
+    // got_ack；不持 bye_mutex_——持锁会阻塞 server_loop 的 DISCONNECT 处理，
+    // 反而掩盖竞态）。测试用它 park 调用方，确定性构造「服务端 ACK+close 后
+    // DISCONNECT 事件抢在调用方标记前被 server_loop 处理」的竞态窗口
+    // （P3-25 回归用）。
+    std::function<void(uint64_t conn_id, bool got_ack)> bye_wake_hook_for_testing_;
+#endif
+
 private:
     void server_loop();
     // 服务端收到 BYE 的处理：回 BYE_ACK + close + 标记。

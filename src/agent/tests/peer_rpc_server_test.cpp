@@ -185,6 +185,42 @@ TEST_F(PeerRpcServerTest, SendByeGracefulCloseWithoutDisconnectCallback) {
     EXPECT_FALSE(latch.fired()) << "BYE graceful close must NOT fire disconnect handler";
 }
 
+TEST_F(PeerRpcServerTest, ByeAckDisconnectRaceDoesNotFireDisconnectHandler) {
+    // P3-25 回归：服务端回 BYE_ACK 后立即 close，客户端的 DISCONNECT 事件与
+    // BYE_ACK 几乎同时到达。bye_closed_conns_ 若由 send_bye 调用方线程在
+    // cv 唤醒后标记，server_loop 处理 DISCONNECT 时标记可能尚未落位 →
+    // 优雅关闭误触发 disconnect_handler（50 轮稳定性第 9 轮实测复现）。
+    // 确定性构造：bye_wake_hook 在唤醒后 park 调用方 200ms——transport 保证
+    // DATA(BYE_ACK) 先于 DISCONNECT 事件，park 窗口内 DISCONNECT 必然已被
+    // server_loop 处理：修复前必红，修复后（ACK 到达处同线程标记）必绿。
+    DisconnectLatch latch;
+    client->set_disconnect_handler([&latch](uint64_t conn_id) { latch.notify(conn_id); });
+
+    uint64_t conn = setup_connected_pair(
+        [](uint64_t, uint64_t, uint64_t, const CMString&) {
+            return std::optional<CMString>{"ack"};
+        });
+    ASSERT_NE(conn, 0u);
+    // 先做一次 RPC 往返（连接进入活跃状态）。
+    CallbackLatch rl;
+    client->set_response_handler([&rl](uint64_t, uint64_t rpc_id, uint8_t st,
+                                       const CMString& pl) { rl.notify(rpc_id, st, pl); });
+    ASSERT_TRUE(client->send_request(conn, 1, 1, "warm"));
+    ASSERT_TRUE(rl.wait());
+
+    client->bye_wake_hook_for_testing_ = [](uint64_t, bool got_ack) {
+        if (got_ack) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    };
+    EXPECT_TRUE(client->send_bye(conn));
+    EXPECT_FALSE(client->is_connected(conn));
+    // park 窗口内 DISCONNECT 已被 server_loop 处理：不得误报断连。
+    EXPECT_FALSE(latch.fired()) << "ACK 后的 DISCONNECT 竞态窗口内误报断连";
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_FALSE(latch.fired());
+}
+
 TEST_F(PeerRpcServerTest, ConnectPeerRetriesThenFailsCleanly) {
     // 连接一个确定未监听的端口：retries 内仍失败 → 返回 0（不挂死）。
     uint64_t conn = client->connect_peer("127.0.0.1", /*port=*/1,

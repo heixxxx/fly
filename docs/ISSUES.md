@@ -119,6 +119,14 @@
 
 ## P3 — Low / Deferred
 
+### P3-25: PeerRpcServer BYE 优雅关闭在 ACK/DISCONNECT 竞态窗口误触发 disconnect_handler
+- **Status**: FIXED ✅（2026-08-18）— ACK 到达处同线程标记 bye_closed
+- **Files**: `src/agent/cpp/peer_rpc_server.cpp`（handle_bye / send_bye）、`src/agent/tests/peer_rpc_server_test.cpp`
+- **Root Cause**: 50 轮稳定性测试（unit --no-cache + QA）第 9 轮实测复现（前 8 轮通过）：`SendByeGracefulCloseWithoutDisconnectCallback` 失败。机制：服务端收到 BYE 后回 BYE_ACK 并立即 close；客户端 server_loop 处理 DATA(BYE_ACK) 时 `handle_bye` 只插入 `bye_ack_conns_` 并 notify cv，`bye_closed_conns_` 的标记留给 send_bye **调用方线程**在 cv 唤醒后执行——跨线程 TOCTOU：server_loop 紧接着处理 DISCONNECT 事件（EOF，与 ACK 几乎同时到达）时标记尚未落位 → `is_bye=false` → 优雅关闭误触发 disconnect_handler。日志证据：DISCONNECT（fd=6）先于 "BYE_ACK received" 被处理。CPU 负载下调用方线程唤醒慢一步即输掉竞争，低负载时通常侥幸通过。
+- **Fix**: `handle_bye` 客户端分支在插入 `bye_ack_conns_` 的同一锁内同时插入 `bye_closed_conns_`——标记与后续 DISCONNECT 事件的处理同线程（server_loop）天然有序（transport 保证数据+FIN 同时到达时先 DATA 后 DISCONNECT，`tcp_connection_manager.cpp` drain_socket）。send_bye 唤醒后的标记保留（幂等；覆盖 ACK 丢失的 force-close 路径）。
+- **测试**: 新增 `ByeAckDisconnectRaceDoesNotFireDisconnectHandler`——`bye_wake_hook_for_testing_` 在 cv 唤醒后 park 调用方 200ms（不持锁，持锁会阻塞 DISCONNECT 处理反而掩盖竞态），DISCONNECT 必然先被 server_loop 处理：修复前确定性转红、修复后必绿。peer_rpc_server_test 切 test_hooks 库变体。
+- **验证**: 单测红灯→修复→绿灯（TDD）；peer_rpc_server_test `--runs_per_test=100` 全过；全量单测 60/60；50 轮稳定性重跑。
+
 ### P3-24: test_golden_n500_sd4_coarse 在 coverage 全量（-j6）下稳定 npz EOFError
 - **Status**: FIXED ✅（2026-08-16）— 原子写根治
 - **Files**: `src/solver/py/ras_graph.py`（generate_poisson_matrix / compute_exact_solution）
@@ -232,8 +240,8 @@
 | P0 — Critical | 4 | 4 | 0 | 0 |
 | P1 — High | 6 | 6 | 0 | 0 |
 | P2 — Medium | 6 | 5 | 0 | 1 (closed: not a bug) |
-| P3 — Low | 8 | 7 | 1 (P3-17 partial) | 0 |
+| P3 — Low | 9 | 8 | 1 (P3-17 partial) | 0 |
 | X — Unprioritized | 18 | 9 | 0 | 9 |
-| **Total** | **42** | **31** | **1** | **10** |
+| **Total** | **43** | **32** | **1** | **10** |
 
 > 2026-08-16 去重说明：原 P3-18（Dead code cleanup）→ **P3-21**、原 P3-19（MetadataClient）→ **P3-22**，为新 P3-18（退出期 pure virtual）/P3-19（日志 flush）腾出编号（后者已被 commit 5058f01/c119b1b 与 DOC_CHANGELOG 引用，保持不变）。

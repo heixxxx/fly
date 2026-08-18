@@ -237,9 +237,16 @@ void PeerRpcServer::handle_bye(uint64_t conn_id) {
     }
     if (is_client_bye) {
         // 客户端收到服务端回的 BYE_ACK：唤醒 send_bye 的 wait。
+        // 同时就地标记 bye_closed：服务端 ACK 后立即 close，随后的 DISCONNECT
+        // 事件由本线程（server_loop）处理——若标记留给 send_bye 调用方线程在
+        // 唤醒后补做，存在跨线程 TOCTOU（DISCONNECT 先查 bye_closed_conns_，
+        // 标记尚未落位 → 误触发 disconnect_handler）。在 ACK 到达处标记后，
+        // DATA(ACK) 与 DISCONNECT 的处理同线程天然有序（transport 保证
+        // 数据+FIN 同时到达时先 DATA 后 DISCONNECT）。
         {
             std::lock_guard<std::mutex> lk(bye_mutex_);
             bye_ack_conns_.insert(conn_id);
+            bye_closed_conns_.insert(conn_id);
         }
         bye_cv_.notify_all();
     } else {
@@ -273,8 +280,16 @@ bool PeerRpcServer::send_bye(uint64_t conn_id) {
     });
     bool got_ack = bye_ack_conns_.erase(conn_id) > 0;
     bye_pending_conns_.erase(conn_id);
-    bye_closed_conns_.insert(conn_id);  // 标记正常关闭（DISCONNECT 时静默）
     lk.unlock();
+#ifdef FLY_ENABLE_TEST_HOOKS
+    if (bye_wake_hook_for_testing_) {
+        bye_wake_hook_for_testing_(conn_id, got_ack);
+    }
+#endif
+    {
+        std::lock_guard<std::mutex> relk(bye_mutex_);
+        bye_closed_conns_.insert(conn_id);  // 正常关闭标记（ACK 路径已由 handle_bye 同线程先行标记，此处幂等）
+    }
 
     if (got_ack) {
         DBG("PeerRpcServer BYE_ACK received conn_id={}, closing", conn_id);
