@@ -1421,6 +1421,11 @@ TEST(WorkerAgentTest, DisconnectReconnectsAndReports) {
     // 指数退避重连（initial 50ms）→ RegisterAck → 缓冲送达 master。
     wait_until_registered(worker);
     EXPECT_TRUE(worker.is_registered()) << "worker should reconnect within grace";
+    // flush 在 on_register_ack 内注册可见之后同步执行（设计顺序：注册可见 →
+    // 重放 A/B 类消息 → task 上报 flush 固定最后）——注册瞬间读计数存在窗口
+    // （50 轮稳定性第 23 轮实测），有界等待 flush 完成后再断言（与下方
+    // reached 检查同一 idiom）。
+    wait_for([&]{ return worker.pending_report_count_for_testing() == 0u; }, 100, 10);
     EXPECT_EQ(worker.pending_report_count_for_testing(), 0u) << "buffer flushed on reconnect";
 
     bool reached = false;
