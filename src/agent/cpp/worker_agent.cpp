@@ -306,6 +306,35 @@ void WorkerAgent::start() {
              "threads, staying stopped");
     }
 
+    // 秒拒竞争修复：dup ack 可能在本函数尾段（reactor 已 spawn、标志尚未
+    // 置位）到达——lane 线程的 initiate_shutdown 置 shutdown_triggered_/
+    // running_=false/三线程 flag=false + notify（此时线程未 spawn，notify 落空），
+    // 随后本函数继续执行会把上述标志全部覆盖回 true（worker 永不可停：
+    // is_running() 恒真、幂等闸门锁死后续 stop 的 join——agent_network_test
+    // 4 实例并行实测 300s 卡死）。检测到即中止 start：复位闸门让后续 stop()
+    // 的 initiate_shutdown 可完整执行，running_ 保持 false。
+    if (shutdown_triggered_.load()) {
+        ERR("shutdown signalled during start() (instant duplicate rejection) — aborting start");
+        shutdown_triggered_.store(false);
+        {
+            std::lock_guard<std::mutex> lk(register_ack_mutex_);
+            register_watchdog_running_ = false;
+            register_ack_cv_.notify_all();
+        }
+        {
+            std::lock_guard<std::mutex> lock(heartbeat_mutex_);
+            heartbeat_running_ = false;
+            heartbeat_cv_.notify_all();
+        }
+        {
+            std::lock_guard<std::mutex> lock(probe_mutex_);
+            probe_running_ = false;
+            probe_cv_.notify_all();
+        }
+        return;   // running_ 保持 false；已 spawn 的线程由 stop()/析构的
+                  // initiate_shutdown + do_cleanup 正常回收（闸门已复位）。
+    }
+
     {
         auto now = std::chrono::system_clock::now().time_since_epoch();
         last_master_contact_.store(
@@ -335,6 +364,9 @@ void WorkerAgent::start() {
 }
 
 void WorkerAgent::stop() {
+    fprintf(stderr, "[SD] stop() enter: this=%p worker_id=%d shutdown_triggered=%d running=%d\n", static_cast<const void*>(this),
+            static_cast<int>(worker_id_), shutdown_triggered_.load() ? 1 : 0,
+            running_.load() ? 1 : 0);
     if (!reactor_ && !running_) return;
 
     initiate_shutdown("stop() called");
@@ -360,7 +392,9 @@ void WorkerAgent::do_cleanup() {
 
     // 注册守望（initiate_shutdown 已置位+notify，此处仅回收）。
     if (register_watchdog_thread_.joinable()) {
+        fprintf(stderr, "[SD] do_cleanup joining watchdog: worker_id=%d\n", static_cast<int>(worker_id_));
         register_watchdog_thread_.join();
+        fprintf(stderr, "[SD] do_cleanup watchdog joined: worker_id=%d\n", static_cast<int>(worker_id_));
     }
 
     if (heartbeat_thread_.joinable()) {
@@ -500,7 +534,12 @@ void WorkerAgent::register_watchdog_loop() {
                                       return !register_watchdog_running_.load()
                                              || registered_.load();
                                   });
-        if (!register_watchdog_running_ || registered_) break;
+        if (!register_watchdog_running_ || registered_) {
+            fprintf(stderr, "[SD] watchdog loop exit: worker_id=%d flag=%d registered=%d\n",
+                    static_cast<int>(worker_id_), register_watchdog_running_.load() ? 1 : 0,
+                    registered_.load() ? 1 : 0);
+            break;
+        }
 
         // ack 未到：幂等重发（master 对同 conn 重发走正常注册路径）。
         // 重连进行中（reconnect_loop 负责连接+注册+ack 等待）则让位。
@@ -1002,8 +1041,14 @@ void WorkerAgent::touch_master_contact() {
 }
 
 void WorkerAgent::initiate_shutdown(const CMString& reason) {
-    if (shutdown_triggered_.exchange(true)) return;
+    if (shutdown_triggered_.exchange(true)) {
+        fprintf(stderr, "[SD] initiate_shutdown idempotent-return: worker_id=%d reason=%s\n",
+                static_cast<int>(worker_id_), reason.c_str());
+        return;
+    }
 
+    fprintf(stderr, "[SD] initiate_shutdown enter: this=%p worker_id=%d reason=%s\n",
+            static_cast<const void*>(this), static_cast<int>(worker_id_), reason.c_str());
     WARN("Worker shutdown initiated: {}", reason);
 
     registered_ = false;
@@ -1015,16 +1060,19 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
         register_watchdog_running_ = false;
         register_ack_cv_.notify_all();
     }
+    fprintf(stderr, "[SD] watchdog notified: worker_id=%d\n", static_cast<int>(worker_id_));
     {
         std::lock_guard<std::mutex> lock(heartbeat_mutex_);
         heartbeat_running_ = false;
         heartbeat_cv_.notify_all();
     }
+    fprintf(stderr, "[SD] heartbeat notified: worker_id=%d\n", static_cast<int>(worker_id_));
     {
         std::lock_guard<std::mutex> lock(probe_mutex_);
         probe_running_ = false;
         probe_cv_.notify_all();
     }
+    fprintf(stderr, "[SD] probe notified: worker_id=%d\n", static_cast<int>(worker_id_));
     {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);
         task_queue_cv_.notify_all();
