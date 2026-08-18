@@ -1127,6 +1127,39 @@ TEST(WorkerAgentTest, RegisterAckDisconnectInterleaveKeepsReconnectAlive) {
     Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
 }
 
+// ── 启动中途的 duplicate 拒绝不得造成 zombie worker（P3-28）───────────
+// master 的 duplicate 拒绝 ack 若在 worker start() 执行中途到达（REGISTER
+// 发出后、线程 spawn 前），on_register_ack(duplicate) → initiate_shutdown 清
+// 各线程标志；旧 start() 继续把 register_watchdog_running_ 置回 true 并 spawn
+// （此后所有 initiate_shutdown 幂等早退，无人再清 → 永生线程），最后
+// running_=true 复活已停机的 worker（is_running 永真）→ stop() join 永久挂死
+// （50 轮稳定性第七轮第 29 轮实测 + gdb 栈证实）。确定性构造：post_register_send
+// 钩子在 start() 线程内同步注入 duplicate ack。
+TEST(WorkerAgentTest, DuplicateRejectionDuringStartupDoesNotZombify) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(7, "127.0.0.1", master.get_port());
+    worker.post_register_send_hook_for_testing_ = [&worker] {
+        RegisterAckMessage dup;
+        dup.worker_id_ = 7;
+        dup.duplicate_ = true;
+        worker.on_register_ack_for_testing(/*conn_id=*/1, dup);
+    };
+    worker.start();
+
+    // 停机不可复活：is_running 必须为 false（旧代码 running_=true 复活 → 永真）。
+    EXPECT_FALSE(worker.is_running())
+        << "shutdown during startup must not be resurrected by start() tail";
+    // stop() 必须干净返回（旧代码 join 永生守望线程 → 永久挂死）。
+    worker.stop();
+    EXPECT_FALSE(worker.is_running());
+
+    master.stop();
+    wait_for_running(master, false);
+}
+
 TEST(WorkerAgentTest, RecordWriteWithoutBeginEnd) {
     WorkerAgent worker(1, "127.0.0.1", 0);
     CMString db_path = db32("no_begin");

@@ -119,6 +119,14 @@
 
 ## P3 — Low / Deferred
 
+### P3-28: 启动中途收到 duplicate 拒绝 → zombie worker + stop() 永久挂死
+- **Status**: FIXED ✅（2026-08-18）— 启动路径 shutdown 感知 + loop 兜底
+- **Files**: `src/agent/cpp/worker_agent.cpp`（start / 常驻 loop）
+- **Root Cause**: 50 轮稳定性第七轮第 29 轮实测（agent_network_test 300s 超时；gdb 栈捕获 + 猎捕脚本 1/5 复现）。master 的 duplicate 拒绝 ack 若在 worker `start()` 执行中途到达（REGISTER 发出后、线程 spawn 前）：`on_register_ack(duplicate)` → `initiate_shutdown`（幂等门 `shutdown_triggered_` 置位、清各线程标志）；旧 `start()` 浑然不觉继续执行——把 `register_watchdog_running_` 置回 true 并 spawn（**永生线程**：此后所有 initiate_shutdown 幂等早退，无人再清该标志），尾部 `running_=true` **复活已停机 worker**（is_running 永真）。测试 60s 等不到退出；teardown 的 `stop()` → initiate_shutdown 早退 → `do_cleanup` join 永生守望线程 → **永久挂死**（gdb 栈：main 在 pthread_join，watchdog 在 cv wait）。
+- **Fix**: ① `start()` 的服务线程 spawn 与 `running_=true` 全部加 `!shutdown_triggered_` 守卫（启动中途已终局 → 不复活、不 spawn）；② `running_` 改为**先于线程 spawn 置位**；③ 三个常驻 loop（register_watchdog / heartbeat / bandwidth_probe）的 while 条件加 `running_.load()` 兜底——覆盖 spawn 间隙交错的标志重置，杜绝永生线程。
+- **测试**: `DuplicateRejectionDuringStartupDoesNotZombify`（确定性）：`post_register_send_hook_for_testing_` 在 start() 线程内同步注入 duplicate ack——断言 is_running 为 false（旧代码 zombie 复活必红）+ stop() 干净返回（旧代码永久挂死）。
+- **验证**: TDD 红→绿；agent_network_test 循环 10/10；全量单测 61/61；50 轮稳定性重跑。
+
 ### P3-27: 残留 RegisterAck 清除重连标志——重连线程入口静默退出，worker 永不重连
 - **Status**: FIXED ✅（2026-08-18）— 状态迁移互斥 + 残留 ack 拒绝
 - **Files**: `src/agent/cpp/worker_agent.cpp`（on_register_ack / on_disconnect / reconnect_loop）、`src/agent/cpp/worker_agent.h`
@@ -257,8 +265,8 @@
 | P0 — Critical | 4 | 4 | 0 | 0 |
 | P1 — High | 6 | 6 | 0 | 0 |
 | P2 — Medium | 6 | 5 | 0 | 1 (closed: not a bug) |
-| P3 — Low | 11 | 10 | 1 (P3-17 partial) | 0 |
+| P3 — Low | 12 | 11 | 1 (P3-17 partial) | 0 |
 | X — Unprioritized | 18 | 9 | 0 | 9 |
-| **Total** | **45** | **34** | **1** | **10** |
+| **Total** | **46** | **35** | **1** | **10** |
 
 > 2026-08-16 去重说明：原 P3-18（Dead code cleanup）→ **P3-21**、原 P3-19（MetadataClient）→ **P3-22**，为新 P3-18（退出期 pure virtual）/P3-19（日志 flush）腾出编号（后者已被 commit 5058f01/c119b1b 与 DOC_CHANGELOG 引用，保持不变）。

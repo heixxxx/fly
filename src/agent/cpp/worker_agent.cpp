@@ -268,20 +268,36 @@ void WorkerAgent::start() {
     reactor_->wait_until_running();
 
     send_register_message();
+#ifdef FLY_ENABLE_TEST_HOOKS
+    if (post_register_send_hook_for_testing_) {
+        post_register_send_hook_for_testing_();
+    }
+#endif
 
-    heartbeat_running_ = true;
-    heartbeat_thread_ = std::thread([this] { heartbeat_loop(); });
+    // P3-28：启动中途的终局事件（duplicate 拒绝 / master shutdown 广播）已触发
+    // initiate_shutdown 时不得复活——旧代码无条件 spawn 会把已清的线程标志置回
+    // true（此后 initiate_shutdown 幂等早退，无人再清 → 永生线程，stop() join
+    // 永久挂死），尾部 running_=true 会造成 zombie worker（is_running 永真）。
+    // running_ 先于线程 spawn 置位：常驻 loop 的 running_ 兜底条件依赖它。
+    if (!shutdown_triggered_.load()) {
+        running_ = true;
+        heartbeat_running_ = true;
+        heartbeat_thread_ = std::thread([this] { heartbeat_loop(); });
 
-    // 注册守望：RegisterAck 的事件驱动等待 + 超时退避重发（P3-23 兜底）。
-    register_watchdog_running_ = true;
-    register_watchdog_thread_ = std::thread([this] { register_watchdog_loop(); });
+        // 注册守望：RegisterAck 的事件驱动等待 + 超时退避重发（P3-23 兜底）。
+        register_watchdog_running_ = true;
+        register_watchdog_thread_ = std::thread([this] { register_watchdog_loop(); });
 
-    if (Config::instance()->get_int("net_probe_enabled")) {
-        probe_running_ = true;
-        probe_thread_ = std::thread([this] { bandwidth_probe_loop(); });
-        INFO("Bandwidth probe thread started (interval={}ms payload={}KB)",
-             Config::instance()->get_int("net_probe_interval_ms"),
-             Config::instance()->get_int("net_probe_payload_kb"));
+        if (Config::instance()->get_int("net_probe_enabled")) {
+            probe_running_ = true;
+            probe_thread_ = std::thread([this] { bandwidth_probe_loop(); });
+            INFO("Bandwidth probe thread started (interval={}ms payload={}KB)",
+                 Config::instance()->get_int("net_probe_interval_ms"),
+                 Config::instance()->get_int("net_probe_payload_kb"));
+        }
+    } else {
+        WARN("Worker shutdown triggered during startup — not spawning service "
+             "threads, staying stopped");
     }
 
     {
@@ -290,7 +306,8 @@ void WorkerAgent::start() {
             std::chrono::duration_cast<std::chrono::seconds>(now).count());
     }
 
-    running_ = true;
+    // running_ 已在上方受守卫地置位（P3-28：此处不得无条件置真——会复活
+    // 启动中途已被 shutdown 的 worker）。
 
     // FLY::0000：打印启动基础信息（豁免配额，worker 仅本地 debug log，不发送 master）。
     // worker 不绑定 system sink → emit_system_message 只写本地 debug log。
@@ -468,7 +485,9 @@ void WorkerAgent::register_watchdog_loop() {
     if (delay_ms <= 0) delay_ms = 500;
     const int64_t kMaxDelayMs = 30000;
 
-    while (register_watchdog_running_) {
+    // running_ 兜底（P3-28）：标志若在 spawn 前后被 initiate_shutdown 清除又被
+    // 旧启动路径置回，此处仍随 running_=false 退出，杜绝永生线程。
+    while (register_watchdog_running_ && running_.load()) {
         std::unique_lock<std::mutex> lk(register_ack_mutex_);
         register_ack_cv_.wait_for(lk, std::chrono::milliseconds(delay_ms),
                                   [this] {
@@ -492,7 +511,7 @@ void WorkerAgent::register_watchdog_loop() {
 }
 
 void WorkerAgent::heartbeat_loop() {
-    while (heartbeat_running_) {
+    while (heartbeat_running_ && running_.load()) {  // running_ 兜底（P3-28）
         {
             std::unique_lock<std::mutex> lock(heartbeat_mutex_);
             heartbeat_cv_.wait_for(lock, std::chrono::seconds(10),
@@ -537,7 +556,7 @@ void WorkerAgent::bandwidth_probe_loop() {
         Config::instance()->get_int("net_probe_timeout_ms"));
     const size_t payload_bytes = static_cast<size_t>(payload_kb) * 1024;
 
-    while (probe_running_) {
+    while (probe_running_ && running_.load()) {  // running_ 兜底（P3-28）
         {
             std::unique_lock<std::mutex> lock(probe_mutex_);
             probe_cv_.wait_for(lock, std::chrono::milliseconds(interval_ms),

@@ -461,6 +461,9 @@ public:
     void on_register_ack_for_testing(uint64_t conn_id, const RegisterAckMessage& msg) {
         on_register_ack(conn_id, msg);
     }
+    // 仅测试用：start() 在 send_register_message 之后、线程 spawn 之前触发
+    // （P3-28 回归——注入「启动中途收到 duplicate 拒绝」的确定性场景）。
+    std::function<void()> post_register_send_hook_for_testing_;
     // 仅测试用：模拟 master 连接闪断——真实关闭 TCP（master 侧 epoll 收
     // FIN/EOF 后清连接表，与真实闪断一致）再触发本侧 on_disconnect 重连
     // 路径。只回调不关 fd 的旧模拟会让 master 连接表残留旧 conn，撞上
