@@ -119,6 +119,14 @@
 
 ## P3 — Low / Deferred
 
+### P3-27: 残留 RegisterAck 清除重连标志——重连线程入口静默退出，worker 永不重连
+- **Status**: FIXED ✅（2026-08-18）— 状态迁移互斥 + 残留 ack 拒绝
+- **Files**: `src/agent/cpp/worker_agent.cpp`（on_register_ack / on_disconnect / reconnect_loop）、`src/agent/cpp/worker_agent.h`
+- **Root Cause**: 50 轮稳定性第六轮第 5 轮实测（插桩后 ~1/19 复现）。`on_register_ack` 与 `on_disconnect` 对 `{registered_, reconnecting_}` 的迁移非原子：ack 处理器在 `registered_=true` 之后、`reconnecting_` 清除之前被抢占，期间发生断连（置 `reconnecting_=true` 并 spawn 重连线程），ack 恢复后的 `exchange(false)` 清掉重连标志——重连线程入口 `while(reconnecting_)` 即静默退出，worker 永不重连、阻塞的写注册等不到确认（FORENSIC 实证：loop 入口 `reconnecting=false`，全程零次 connect 尝试）。生产路径目前由「同连接数据先于 FIN 保序 + master_conn_ 守卫」侥幸排除，测试的同步 simulate 直接暴露了状态机不健壮。
+- **Fix**: ① 新增 `register_state_mutex_`，on_register_ack 与 on_disconnect 的状态迁移互斥（消除中途抢占交错）；② 残留 ack 防护——ack 到达时 conn 已被本地关闭（`Reactor::is_connected` 为假）则拒绝，不得伪造注册态或清除重连标志。任意交错收敛：ack 先完成→断连照常重连；断连先完成→残留 ack 被拒。
+- **测试**: `RegisterAckDisconnectInterleaveKeepsReconnectAlive`（确定性）：入口钩子 park 重连线程 → 注入断连后残留 ack（`on_register_ack_for_testing` 直驱）→ 放行。断言为功能级端到端证据（task 派达 + 上报到达 master）——仅查 `registered_` 会被 ghost 注册态欺骗（实测假绿）。
+- **验证**: TDD 红→绿（拒绝逻辑 neuter 时确定性转红）；全量单测；50 轮稳定性重跑。
+
 ### P3-26: lane 并行下重连注册先于旧 conn 断连处理 → deferred 注册孤儿化，worker 挂死
 - **Status**: FIXED ✅（2026-08-18）— probe 发送失败当场接受重连
 - **Files**: `src/agent/cpp/master_agent.cpp`（on_worker_register 疑似重复注册分支）、`src/network/cpp/reactor.h`（send 返回 bool + is_connected 直通）
@@ -249,8 +257,8 @@
 | P0 — Critical | 4 | 4 | 0 | 0 |
 | P1 — High | 6 | 6 | 0 | 0 |
 | P2 — Medium | 6 | 5 | 0 | 1 (closed: not a bug) |
-| P3 — Low | 10 | 9 | 1 (P3-17 partial) | 0 |
+| P3 — Low | 11 | 10 | 1 (P3-17 partial) | 0 |
 | X — Unprioritized | 18 | 9 | 0 | 9 |
-| **Total** | **44** | **33** | **1** | **10** |
+| **Total** | **45** | **34** | **1** | **10** |
 
 > 2026-08-16 去重说明：原 P3-18（Dead code cleanup）→ **P3-21**、原 P3-19（MetadataClient）→ **P3-22**，为新 P3-18（退出期 pure virtual）/P3-19（日志 flush）腾出编号（后者已被 commit 5058f01/c119b1b 与 DOC_CHANGELOG 引用，保持不变）。

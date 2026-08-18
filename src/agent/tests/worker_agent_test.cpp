@@ -1039,6 +1039,94 @@ TEST(WorkerAgentTest, ReconnectRegisterBeforeDisconnectProcessed) {
     Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
 }
 
+// ── 残留 RegisterAck 不得杀死重连（P3-27）────────────────────────────
+// on_register_ack 与 on_disconnect 对 {registered_, reconnecting_} 的迁移必须
+// 原子且残留 ack 必须被拒：旧代码 ack 处理器在 registered_=true 之后、
+// reconnecting_ 清除之前被抢占、期间发生断连时，恢复后的 exchange(false) 清掉
+// 重连标志——重连线程入口即静默退出，worker 永不重连（50 轮稳定性第六轮
+// 第 5 轮实测，~1/19 复现；FORENSIC 实证 loop 入口 reconnecting=false）。
+// 确定性构造：入口钩子 park 重连线程 → 注入「断连后残留 ack」（旧 conn 上的
+// 在途 ack）→ 放行。修复前：ack 清标志，线程退出，永不重连（必红）；
+// 修复后：残留 ack 被 conn 存活检查拒绝（必绿）。
+TEST(WorkerAgentTest, RegisterAckDisconnectInterleaveKeepsReconnectAlive) {
+    Config::instance()->set_int("worker_reconnect_timeout", 30);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 50);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // 入口钩子：park 重连线程（信号 + 闸门）。
+    std::mutex hk_m;
+    std::condition_variable hk_cv;
+    bool reconnect_entered = false;
+    bool release_reconnect = false;
+    worker.reconnect_entry_hook_for_testing_ = [&] {
+        {
+            std::lock_guard<std::mutex> lk(hk_m);
+            reconnect_entered = true;
+        }
+        hk_cv.notify_all();
+        std::unique_lock<std::mutex> lk(hk_m);
+        hk_cv.wait(lk, [&] { return release_reconnect; });
+    };
+
+    // 闪断：on_disconnect 完成（reconnecting_=true）→ 重连线程入口 park。
+    worker.simulate_master_disconnect_for_testing();
+    {
+        std::unique_lock<std::mutex> lk(hk_m);
+        ASSERT_TRUE(hk_cv.wait_for(lk, std::chrono::seconds(5),
+                                   [&] { return reconnect_entered; }))
+            << "reconnect thread must reach its entry hook";
+    }
+
+    // 注入断连后残留 ack（旧 conn=1 上的在途 ack 迟到到达）。
+    RegisterAckMessage stale_ack;
+    stale_ack.worker_id_ = 1;
+    stale_ack.duplicate_ = false;
+    worker.on_register_ack_for_testing(/*conn_id=*/1, stale_ack);
+
+    // 放行重连线程：修复前它读到 reconnecting_=false 静默退出、且残留 ack 已
+    // 伪造 registered_=true（ghost 注册态，仅查 registered_ 无法区分）；修复后
+    // 残留 ack 被拒、标志完好，照常重连注册。
+    {
+        std::lock_guard<std::mutex> lk(hk_m);
+        release_reconnect = true;
+    }
+    hk_cv.notify_all();
+    // hook 不清空（避免与重连线程的 std::function 读写在无同步下竞争）：
+    // release 标志已置位，后续任何触发都直接放行。
+
+    // 功能级判定：重连必须真实发生——master 能把 task 派达 worker 并收到
+    // 上报（端到端证据，ghost 注册态伪造不出）。先等重注册真正完成（修复版
+    // 下残留 ack 被拒，此处只会被真实 ack 满足），再提交 task（单测 worker
+    // 需手动驱动执行）。
+    EXPECT_TRUE(wait_until_registered(worker, 300, 10))
+        << "reconnect must complete after stale-ack rejection";
+    master.submit_task(61, "bogus", "__fly_internal", {"a"}, {}, {});
+    wait_for([&] { return worker.has_pending_task(); }, 50, 20);
+    ASSERT_TRUE(worker.has_pending_task()) << "task must reach the reconnected worker";
+    worker.poll_task();
+    bool reached = false;
+    wait_for([&] {
+        for (uint64_t id : master.get_failed_tasks()) {
+            if (id == 61) { reached = true; return true; }
+        }
+        return false;
+    }, 100, 20);
+    EXPECT_TRUE(reached) << "stale register-ack must not leave worker ghost-registered";
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
+}
+
 TEST(WorkerAgentTest, RecordWriteWithoutBeginEnd) {
     WorkerAgent worker(1, "127.0.0.1", 0);
     CMString db_path = db32("no_begin");

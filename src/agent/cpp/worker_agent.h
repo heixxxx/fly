@@ -273,6 +273,10 @@ private:
 
     // ── 断连重连（网络闪断，宽限窗口内指数退避；master 挂=全群失败，超时退出）──
     std::atomic<bool> reconnecting_{false};
+    // {registered_, reconnecting_} 状态迁移互斥锁（P3-27）：on_register_ack 与
+    // on_disconnect 的 check-act 必须原子，消除「断连置位后、重连线程 spawn 前
+    // 被残留 ack 清除重连标志」的交错窗口（重连线程入口即静默退出）。
+    std::mutex register_state_mutex_;
     std::thread reconnect_thread_;
     // 断连期间完成的 task 上报缓冲：重连注册确认后按序 flush（fire-and-forget
     // 的其它消息不缓冲——心跳/注册自然恢复，task 结果不可丢）。
@@ -449,6 +453,14 @@ public:
     CMUnorderedSet<CMString> merge_write_fail_for_testing_;
     // 仅测试用：断连期间缓冲的 task 上报数量（缓冲/flush 测试用）。
     size_t pending_report_count_for_testing();
+    // 仅测试用：reconnect_loop 入口触发（P3-27 回归——park 重连线程，确定性
+    // 构造「断连后残留 ack 清除重连标志致重连线程静默退出」的窗口）。
+    std::function<void()> reconnect_entry_hook_for_testing_;
+    // 仅测试用：直接驱动 on_register_ack（构造「断连后残留 ack 到达」场景，
+    // conn_id 由测试指定）。
+    void on_register_ack_for_testing(uint64_t conn_id, const RegisterAckMessage& msg) {
+        on_register_ack(conn_id, msg);
+    }
     // 仅测试用：模拟 master 连接闪断——真实关闭 TCP（master 侧 epoll 收
     // FIN/EOF 后清连接表，与真实闪断一致）再触发本侧 on_disconnect 重连
     // 路径。只回调不关 fd 的旧模拟会让 master 连接表残留旧 conn，撞上

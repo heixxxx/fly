@@ -612,8 +612,23 @@ void WorkerAgent::on_register_ack(uint64_t conn_id, const RegisterAckMessage& ms
         return;
     }
 
-    registered_ = true;
-    touch_master_contact();
+    bool was_reconnecting = false;
+    {
+        // 与 on_disconnect 的 {registered_, reconnecting_} 迁移互斥（P3-27）：
+        // 旧代码两处理器非原子，ack 在 registered_=true 与 reconnecting_ 清除
+        // 之间被抢占、期间断连时，恢复后的 exchange(false) 清掉重连标志——
+        // 重连线程入口即静默退出，worker 永不重连。
+        std::lock_guard<std::mutex> lk(register_state_mutex_);
+        // 残留 ack 防护：本地已关 conn 上在途/滞留的 ack 不得伪造注册态或
+        // 清除重连标志。
+        if (!reactor_ || !reactor_->is_connected(conn_id)) {
+            WARN("Ignoring stale RegisterAck from closed conn {}", conn_id);
+            return;
+        }
+        registered_ = true;
+        touch_master_contact();
+        was_reconnecting = reconnecting_.exchange(false);
+    }
     // 注册守望退出（事件驱动，无空转等待）。
     {
         std::lock_guard<std::mutex> lk(register_ack_mutex_);
@@ -621,7 +636,6 @@ void WorkerAgent::on_register_ack(uint64_t conn_id, const RegisterAckMessage& ms
     }
 
     INFO("RegisterAck received, registered");
-    bool was_reconnecting = reconnecting_.exchange(false);
     if (was_reconnecting) {
         INFO("Reconnection complete — resuming heartbeats, flushing buffered reports");
     }
@@ -812,12 +826,17 @@ void WorkerAgent::on_disconnect(uint64_t conn_id) {
         return;
     }
 
-    if (reconnecting_.exchange(true)) {
-        return;  // 重连线程已在跑（connect 自旋或 ack 等待中），连环闪断由它处理
+    {
+        // 与 on_register_ack 的 {registered_, reconnecting_} 迁移互斥（P3-27）：
+        // 消除「断连置位后、线程 spawn 前被残留 ack 清除」的交错窗口。
+        std::lock_guard<std::mutex> lk(register_state_mutex_);
+        if (reconnecting_.exchange(true)) {
+            return;  // 重连线程已在跑（connect 自旋或 ack 等待中），连环闪断由它处理
+        }
+        registered_ = false;   // 心跳暂停；RegisterAck 恢复
     }
     WARN("Master connection lost — reconnecting with exponential backoff "
          "(grace {}s, tasks keep running)", grace);
-    registered_ = false;   // 心跳暂停；RegisterAck 恢复
     if (reconnect_thread_.joinable()) {
         reconnect_thread_.join();  // 上一轮已结束未回收（join 立即返回）
     }
@@ -832,6 +851,11 @@ void WorkerAgent::reconnect_loop() {
 
     int64_t delay_ms = initial_ms;
     int attempt = 0;
+#ifdef FLY_ENABLE_TEST_HOOKS
+    if (reconnect_entry_hook_for_testing_) {
+        reconnect_entry_hook_for_testing_();
+    }
+#endif
     // 外层循环常驻直到 RegisterAck 确认（reconnecting_ 清除）或宽限耗尽——
     // 连接成功但 ack 未到又断连的连环闪断由同一线程自然处理（ack 等待超时
     // 后落回重试），无需 on_disconnect 重启线程。
