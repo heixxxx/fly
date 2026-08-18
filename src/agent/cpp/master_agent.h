@@ -281,6 +281,17 @@ public:
     void check_grace_deadlines_for_testing(int64_t now) {
         check_grace_deadlines(now);
     }
+    // 宽限表快照：测试等待"断连已进宽限登记"的确定性条件。on_disconnect 的
+    // 清表（connected 不可见）与宽限登记之间有中间代码，负载下 lane 线程可
+    // 在该窗口被抢占——等 connected empty 就 check 会空转（判死未发生）。
+    // with_lock 非 const，hook 不加 const 限定。
+    CMVector<uint64_t> grace_workers_for_testing() {
+        CMVector<uint64_t> workers;
+        grace_deadlines_.with_lock([&](const auto& m) {
+            for (const auto& [wid, deadline] : m) workers.push_back(wid);
+        });
+        return workers;
+    }
     // 存储接管测试用：驱动判死后的接管决策（无网络注册流程下直接构造拓扑）。
     bool try_storage_takeover_for_testing(uint64_t worker_id) {
         return try_storage_takeover(worker_id);

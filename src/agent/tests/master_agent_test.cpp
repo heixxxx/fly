@@ -978,15 +978,40 @@ TEST(MasterAgentTest, AllReplicasDeadFailsWaitingTasks) {
         return true;
     }, 10, 5);
 
+    // 诊断辅助：dump 判死链关键状态（R9 稳定性失败取证：fail 执行但读不到）。
+    auto diag = [&](const char* tag) {
+        auto cs = master.get_connected_workers();
+        auto pend = master.get_pending_tasks();
+        auto run = master.get_running_tasks();
+        auto fai = master.get_failed_tasks();
+        CMString cs_s, pend_s, run_s, fai_s;
+        for (auto w : cs) cs_s += std::to_string(w) + ",";
+        for (auto id : pend) pend_s += std::to_string(id) + ",";
+        for (auto id : run) run_s += std::to_string(id) + ",";
+        for (auto id : fai) fai_s += std::to_string(id) + ",";
+        ERR("[DIAG] {} connected=[{}] pending=[{}] running=[{}] failed=[{}]",
+            tag, cs_s, pend_s, run_s, fai_s);
+    };
+
+    // 等待断连进入宽限登记（而非 connected empty）：on_disconnect 的清表与宽限
+    // 登记之间有中间代码，负载下 lane 线程可在窗口被抢占——只等 connected
+    // empty 就 check 会空转（R9 稳定性失败根因）。宽限登记是 check 的真前提。
+    auto wait_in_grace = [&](uint64_t wid) {
+        for (int i = 0; i < 100; ++i) {
+            auto g = master.grace_workers_for_testing();
+            if (std::find(g.begin(), g.end(), wid) != g.end()) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        }
+        return false;
+    };
+
     // ── worker1 断连 → 宽限超时判死：D 仍有 worker2（活）→ dep_D 不失败；
     //    E 全灭 → dep_E（队列中）直接失败（快速失败）。──
     w1.stop();
-    wait_for([&]{
-        auto cs = master.get_connected_workers();
-        for (auto w : cs) { if (w == 1) return false; }
-        return true;
-    }, 100, 30);
+    EXPECT_TRUE(wait_in_grace(1)) << "worker1 disconnect not in grace registry within 3s (on_disconnect delayed)";
+    diag("pre-check1");
     master.check_grace_deadlines_for_testing(9999999999LL);
+    diag("post-check1");
 
     auto failed = master.get_failed_tasks();
     bool dep_D_failed = false, dep_E_failed = false;
@@ -999,8 +1024,10 @@ TEST(MasterAgentTest, AllReplicasDeadFailsWaitingTasks) {
 
     // ── worker2 也判死 → D 全灭 → dep_D 此时失败。──
     w2.stop();
-    wait_for([&]{ return master.get_connected_workers().empty(); }, 100, 30);
+    EXPECT_TRUE(wait_in_grace(2)) << "worker2 disconnect not in grace registry within 3s (on_disconnect delayed)";
+    diag("pre-check2");
     master.check_grace_deadlines_for_testing(9999999999LL);
+    diag("post-check2");
     failed = master.get_failed_tasks();
     dep_D_failed = false;
     for (auto id : failed) { if (id == 50) dep_D_failed = true; }

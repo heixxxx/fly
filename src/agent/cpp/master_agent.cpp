@@ -1969,6 +1969,10 @@ void MasterAgent::check_grace_deadlines(int64_t now) {
             }
         }
     });
+    if (!expired.empty()) {
+        INFO("check_grace_deadlines: {} worker(s) expired at now={} — declaring dead",
+             expired.size(), now);
+    }
     for (uint64_t worker_id : expired) {
         // handle_worker_death 内部先 erase 宽限条目再处理，幂等。
         handle_worker_death(worker_id);
