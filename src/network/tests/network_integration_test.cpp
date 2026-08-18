@@ -14,19 +14,20 @@ using namespace fly::test;
 
 class NetworkIntegrationTest : public ::testing::Test {
 protected:
-    void SetUp() override {
-        server_port_ = 19100 + (rand() % 1000);
+    // 端口一律动态分配（listen(0) + get_bound_port）：固定/伪随机端口
+    // （曾用 19100+rand%1000）在并行运行下会互撞——bind 失败或连上别家。
+    int listen_dynamic(TcpConnectionManager& t) {
+        t.listen("127.0.0.1", 0);
+        return t.get_bound_port();
     }
-    
-    int server_port_;
 };
 
 TEST_F(NetworkIntegrationTest, FullMessageRoundTrip) {
     TcpConnectionManager server_transport;
     TcpConnectionManager client_transport;
-    
-    server_transport.listen("127.0.0.1", server_port_);
-    
+
+    const int port = listen_dynamic(server_transport);
+
     std::atomic<bool> server_ready{false};
     std::atomic<uint64_t> server_conn_id{0};
     std::atomic<int> messages_received{0};
@@ -56,8 +57,8 @@ TEST_F(NetworkIntegrationTest, FullMessageRoundTrip) {
         }
     });
     
-    uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_);
-    
+    uint64_t client_conn = client_transport.connect("127.0.0.1", port);
+
     wait_for([&]{ return server_ready.load(); });
     
     HeartbeatMessage msg;
@@ -84,8 +85,8 @@ TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
     TcpConnectionManager server_transport;
     TcpConnectionManager client_transport;
     
-    server_transport.listen("127.0.0.1", server_port_ + 1);
-    
+    const int port = listen_dynamic(server_transport);
+
     std::atomic<bool> server_ready{false};
     std::atomic<uint64_t> server_conn_id{0};
     std::atomic<bool> response_received{false};
@@ -142,10 +143,10 @@ TEST_F(NetworkIntegrationTest, RequestResponsePattern) {
         }
     });
     
-    uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 1);
-    
+    uint64_t client_conn = client_transport.connect("127.0.0.1", port);
+
     wait_for([&]{ return server_ready.load(); });
-    
+
     DataRequestMessage req;
     req.header_.type_ = MessageType::DATA_REQUEST;
     req.header_.message_id_ = 1;
@@ -169,8 +170,8 @@ TEST_F(NetworkIntegrationTest, MultipleMessagesInSequence) {
     TcpConnectionManager server_transport;
     TcpConnectionManager client_transport;
     
-    server_transport.listen("127.0.0.1", server_port_ + 2);
-    
+    const int port = listen_dynamic(server_transport);
+
     std::atomic<bool> server_ready{false};
     std::atomic<uint64_t> server_conn_id{0};
     std::atomic<int> total_received{0};
@@ -213,10 +214,10 @@ TEST_F(NetworkIntegrationTest, MultipleMessagesInSequence) {
         }
     });
     
-    uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 2);
-    
+    uint64_t client_conn = client_transport.connect("127.0.0.1", port);
+
     wait_for([&]{ return server_ready.load(); });
-    
+
     CMString combined_payload;
     for (int i = 0; i < 5; i++) {
         HeartbeatMessage msg;
@@ -247,8 +248,8 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
     TcpConnectionManager server_transport;
     TcpConnectionManager client_transport;
     
-    server_transport.listen("127.0.0.1", server_port_ + 3);
-    
+    const int port = listen_dynamic(server_transport);
+
     std::atomic<bool> server_ready{false};
     std::atomic<uint64_t> server_conn_id{0};
     std::atomic<bool> large_data_received{false};
@@ -287,8 +288,8 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
         }
     });
     
-    uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 3);
-    
+    uint64_t client_conn = client_transport.connect("127.0.0.1", port);
+
     wait_for([&]{ return server_ready.load(); });
     
     DataResponseMessage large_msg;
@@ -309,16 +310,13 @@ TEST_F(NetworkIntegrationTest, LargeDataTransfer) {
 }
 
 TEST_F(NetworkIntegrationTest, ReactorBasedMessageHandling) {
-    TcpConnectionManager server_raw;
-    server_raw.listen("127.0.0.1", server_port_ + 5);
-    
     std::atomic<bool> heartbeat_received{false};
     std::atomic<uint64_t> received_worker_id{0};
     std::atomic<bool> connection_established{false};
-    
+
     auto server_transport = CMMakeUnique<TcpConnectionManager>();
-    server_transport->listen("127.0.0.1", server_port_ + 6);
-    
+    const int port = listen_dynamic(*server_transport);
+
     Reactor server_reactor(std::move(server_transport));
     
     server_reactor.on_connect([&](uint64_t conn_id) {
@@ -331,7 +329,7 @@ TEST_F(NetworkIntegrationTest, ReactorBasedMessageHandling) {
     });
     
     TcpConnectionManager client_transport;
-    uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 6);
+    uint64_t client_conn = client_transport.connect("127.0.0.1", port);
 
     while (!connection_established.load()) {
         server_reactor.run_once(100);
@@ -356,21 +354,17 @@ TEST_F(NetworkIntegrationTest, ReactorBasedMessageHandling) {
 
     EXPECT_TRUE(heartbeat_received.load()) << "Heartbeat message should be received and decoded";
     EXPECT_EQ(received_worker_id.load(), 88888);
-    
-    server_raw.close_all();
+
     client_transport.close_all();
 }
 
 TEST_F(NetworkIntegrationTest, InvalidMessageHandling) {
-    TcpConnectionManager server_raw;
-    server_raw.listen("127.0.0.1", server_port_ + 7);
-    
     std::atomic<bool> connection_established{false};
     std::atomic<int> messages_processed{0};
-    
+
     auto server_transport = CMMakeUnique<TcpConnectionManager>();
-    server_transport->listen("127.0.0.1", server_port_ + 8);
-    
+    const int port = listen_dynamic(*server_transport);
+
     Reactor server_reactor(std::move(server_transport));
     
     server_reactor.on_connect([&](uint64_t conn_id) {
@@ -382,7 +376,7 @@ TEST_F(NetworkIntegrationTest, InvalidMessageHandling) {
     });
     
     TcpConnectionManager client_transport;
-    uint64_t client_conn = client_transport.connect("127.0.0.1", server_port_ + 8);
+    uint64_t client_conn = client_transport.connect("127.0.0.1", port);
 
     while (!connection_established.load()) {
         server_reactor.run_once(100);
@@ -406,8 +400,7 @@ TEST_F(NetworkIntegrationTest, InvalidMessageHandling) {
     server_reactor.run_once(100);
 
     EXPECT_EQ(messages_processed.load(), 0);
-    
-    server_raw.close_all();
+
     client_transport.close_all();
 }
 

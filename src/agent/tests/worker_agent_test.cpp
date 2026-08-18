@@ -2,6 +2,9 @@
 #include <agent/cpp/worker_agent.h>
 #include <core/cpp/config.h>
 #include <common/cpp/test_helpers.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
 #include <thread>
 #include <chrono>
 
@@ -10,6 +13,30 @@ using namespace fly::test;
 // db_path 废弃：db_path 现在是 db_path 别名（不含 ':'）。db32 生成不含 ':' 的测试 db_path。
 static CMString db32(const CMString& hint) {
     return "/test/" + hint;
+}
+
+// 预占一个当前空闲的回环端口（bind(0) 读回后立即释放）。固定端口在并行
+// 运行（bazel --runs_per_test / 多 target 并行）下必然互撞：后来者 bind
+// 失败、worker 连上前一实例的 master 被判 duplicate（稳定性验证实测）。
+// 用于需要「master 离开后回到同一地址」的测试——预占端口由 MasterAgent
+// 构造函数携带，重启按构造端口 rebind；释放到再 bind 的窗口极短，竞争
+// 概率是单次连接量级而非固定端口的确定性互撞。
+static uint16_t allocate_free_port() {
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    uint16_t port = 0;
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+        socklen_t len = sizeof(addr);
+        if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0) {
+            port = ntohs(addr.sin_port);
+        }
+    }
+    ::close(fd);
+    return port;
 }
 
 namespace fly {
@@ -1321,7 +1348,10 @@ TEST_F(IdxLoadTest, MergeFailedCleanupPurgesProducts) {
 // 场景：master 短暂不可用（过载重启窗口）→ worker 退避重试 → master 回来后连上。
 // 固定冷门端口保证 stop→start 重新 bind 同一端口。
 TEST(WorkerAgentTest, ConnectRetrySucceedsWhenMasterReturns) {
-    constexpr uint16_t kPort = 48765;
+    // 预占动态端口（曾固定 48765——并行运行必撞）：本测试要求 master
+    // stop→start 回到同一地址，端口由构造函数携带、重启按构造端口 rebind。
+    const uint16_t kPort = allocate_free_port();
+    ASSERT_NE(kPort, 0u) << "free port allocation failed";
     Config::instance()->set_int("worker_register_timeout", 10);  // 10s 保活窗口
     Config::instance()->set_int("worker_connect_retry_initial_ms", 50);
 
@@ -1445,15 +1475,14 @@ TEST(WorkerAgentTest, DisconnectReconnectsAndReports) {
 
 // 重连宽限耗尽 → 干净退出（master 挂=全群失败语义，worker 最多多活宽限期）。
 TEST(WorkerAgentTest, ReconnectTimeoutExhaustedCleanExit) {
-    constexpr uint16_t kPort = 48767;
     Config::instance()->set_int("worker_reconnect_timeout", 1);    // 1s 宽限
     Config::instance()->set_int("worker_connect_retry_initial_ms", 10);
 
-    MasterAgent master("127.0.0.1", kPort);
+    MasterAgent master("127.0.0.1", 0);  // 动态分配（曾固定 48767——并行必撞）
     master.start();
     wait_for_running(master, true);
 
-    WorkerAgent worker(1, "127.0.0.1", kPort);
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
     worker.start();
     ASSERT_TRUE(wait_until_registered(worker));
 
