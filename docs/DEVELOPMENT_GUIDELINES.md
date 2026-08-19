@@ -789,14 +789,17 @@ bazel run //:refresh_compile_commands
 
 **condition_variable 的 notify 必须在持有对应 mutex 的临界区内发出。**
 
-两次实际事故（均偶发、难复现、靠 gdb attach 定位）：
+历次实际事故（均偶发、难复现、靠 gdb attach / stderr 执行链取证定位）：
 
 - **8419526** `DataServer::stop`：send_cv notify 不持 send_mutex_ → master_agent_test 偶发 hang（~1/30）
 - **on_var_ack 修复**（见 git log "根除 PendingRpcMap 无锁 notify 接口"）：两阶段完成在锁外写字段 + 无锁 notify → `get_var_sync` 偶发卡满 5s 超时
+- **945e213 批次（2026-08-19，4 实例压测取证）**：`notify_drain_if_active` 无锁 notify_one → EndToEnd 300s 卡死（[SD] 铁证：drain waiting → on_complete OK now_running=0 → drain 未醒——旧 30s drain 超时掩盖多年，drain 语义改为等全部完成后暴露）。同批扫描修复 9 处：write_back_queue 三处（worker_loop 无超时谓词 wait——落空=落盘线程永睡）、data_client_pool 两处（请求方/stop 永挂）、master 三检查线程 join 前置位 + on_disconnect workers_drained（拖延级）
 
 窗口机理：waiter 持锁查 predicate（false）→ notifier 无锁 notify（此时无 waiter，落空）→ waiter 进入 wait → 永久等待（直到超时兜底）。predicate 读 atomic **不能**消除该窗口，只能防 data race。确定性复现/防回归测试模式见 `src/agent/tests/pending_rpc_map_test.cpp` 的 `CompleteDuringPredicateWindowWakesWaiter`（`FLY_ENABLE_TEST_HOOKS` 钩子 + `std::latch` 钉死窗口）。
 
 同理：**锁内修改的共享字段（含经 predicate 读的）写入也必须在锁内**——否则与持锁读者构成 data race。
+
+排查工具（945e213 沉淀）：无锁 notify 扫描脚本（notify 调用向上 8 行无 lock_guard/unique_lock/with_lock 即报告）+ `[SD]` stderr 执行链（fprintf 不受 Logger level/实例死亡影响——Logger 会被 case 的 level 参数吞掉 INFO，stderr 永远可靠）。
 
 ### 13.3 锁内禁止 IO/网络
 

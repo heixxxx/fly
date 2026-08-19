@@ -3,6 +3,48 @@
 ---
 ---
 
+## 2026-08-19: 关闭语义双通道重构 + 压测暴露的三层根因修复（50 轮稳定性 50/50）
+
+**代码变更**（f146043 → 945e213 六提交链）：
+
+- **关闭语义双通道（用户裁定，57a9602）**：正常 `stop()` = drain 等全部
+  RUNNING task 完成（`drain_timeout_seconds=600` Config 兜底，超时转 fast
+  善后，0=无限逃生口）；SIGTERM / graceful_exit = `fast_exit(reason)` 立即
+  fail 善后（failed record 留痕）+ 广播 `STOP_NOW`（新消息 58）——worker 收到
+  即 `kill(getpid(), SIGKILL)`，不依赖 master 知 pid/句柄（bsub/ssh 跨机
+  worker 同样生效）。30s 硬超时废除（长 task 等不到只是延迟处死且超时后
+  RUNNING 无留痕）。worker `initiate_shutdown` 主动 close master 连接。
+- **drain lost wakeup（945e213，4 实例压测 [SD] 取证）**：`notify_drain_if_active`
+  无锁 notify_one——旧 30s 超时掩盖多年。同批扫描修复全仓 9 处无锁 notify
+  （write_back_queue 三处/data_client_pool 两处/master 四处，详见
+  DEVELOPMENT_GUIDELINES §13.2 增补）。
+- **Worker 启动时序（用户裁定的结构性修复）**：`send_register_message` 后移
+  至全部初始化完成后（dup ack 只作用于完整初始化的 worker）+
+  `shutdown_state_mutex_`（start 尾段与 initiate_shutdown 标志写互斥）+
+  poll_task 在 executor 未注入时不弹出普通 task（原实现静默丢弃）。
+- **db_path 失败响应 key 断链**：master 对 unknown db 清空 `response.db_path_`
+  → worker 以该字段匹配 pending 永不命中 → 稳定等满 5s
+  （OnDbPathResponseFailure 5159ms→149ms）。
+- **性能（用户裁定单 case >10s 后收紧 5s 必查）**：master_agent_test
+  150.7s→11.0s（drain 30s×3 + 连接不关 10s + fake conn 白等 40s 三层）；
+  全部单测 case <5s（benchmark 除外）。
+
+**文档同步**：
+
+- `docs/agent/module.md`：关机流程重写为双通道语义（stop/fast_exit 对照）；
+  新增「Worker 启动时序（半初始化竞争防护）」小节（注册消息必须在初始化
+  完成后发出 + poll_task executor 约束）
+- `DEVELOPMENT_GUIDELINES.md 13.2`：无锁 notify 事故清单补 945e213 批次
+  （drain/workers_drained/WBQ/client_pool 九处），新增排查工具段
+  （无锁 notify 扫描 + [SD] stderr 执行链——Logger 会被 case 的 level 参数
+  吞掉 INFO，stderr 永远可靠）
+
+**验证**：61 轮 4 实例压测（--runs_per_test=4，修复前 1/3 轮必挂）+ 50 轮
+稳定性 50/50（单测 61×50 + QA 149×50 零失败）。
+
+---
+---
+
 ## 2026-08-18: 超长函数三连收口 + schedule_tasks assign 出锁事故（发现→根治→回归钉死）
 
 - **schedule_tasks**（master_agent.cpp，144 行）：提 compute_locality_hints()

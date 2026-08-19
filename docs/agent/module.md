@@ -232,10 +232,12 @@ Layer 3: request_remote_data("key")
 ```
 Master.stop() — 正常收尾（脚本执行完毕自动调用）
   Phase 1: 等待所有 RUNNING task 完成（workers 仍活跃）
-    → drain_cv_ 无限等待 running_count == 0（30s 硬超时已废除：长 task 等不到
+    → drain_cv_ 等待 running_count == 0（30s 硬超时已废除：长 task 等不到
       只是延迟处死且超时后 RUNNING 无留痕；兜底=心跳判死链+断连宽限超时+
-      fast_exit 打断）
+      fast_exit 打断+drain_timeout_seconds=600 长上限——覆盖「worker 活着但
+      complete 丢失」的僵死路径，超时转 fast 路径 fail 善后留痕，0=无限）
     → on_task_complete / on_task_failed / on_disconnect 通知 drain_cv_
+      （持 drain_mutex_ notify——无锁 notify 有 lost wakeup 窗口，945e213）
   Phase 1.5: message summary 屏障（诊断输出，30s 容错）
   Phase 2: 广播 ShutdownMessage（worker 优雅退：flush coverage + WBQ drain）
   Phase 3: 等 worker 断连（10s 上界）
@@ -269,11 +271,33 @@ Worker.on_shutdown()（收到 ShutdownMessage，优雅路径）
 
 Worker.on_stop_now()（收到 StopNowMessage，快速路径）
   → kill(getpid(), SIGKILL)（testonly 编译可被 stop_now_hook_for_testing_
-    拦截——库对象单测观察语义不杀测试进程）
+    拦截——库对象单测观察语义不杀测试进程；hook 分支也主动 close 连接让
+    master 断连等待立即通过）
 
 自动 stop():
   → 脚本模式: 用户脚本执行完毕后自动调用 stop()
   → 交互模式: 用户退出时通过 atexit 调用 stop()
+```
+
+#### Worker 启动时序（半初始化竞争防护，2026-08-19 用户裁定）
+
+```
+WorkerAgent::start() 的关键顺序约束：
+  1. transport listen → connect master → reactor 构造 + 全部 handler 注册
+  2. reactor 线程 spawn
+  3. heartbeat / register_watchdog / bandwidth_probe 三线程 spawn（flag 置 true）
+  4. shutdown_state_mutex_ 锁内：秒拒检查 + running_ = true 提交
+  5. send_register_message()   ← 注册消息必须在全部初始化完成后才发
+
+原因：dup ack 在注册后毫秒级可达（master 秒拒 + lane 处理），若注册早于
+初始化完成，ack 作用于半初始化的 worker（线程未 spawn、running_ 未置位），
+initiate_shutdown 的标志写被 start 尾段覆盖 → is_running 恒真 + 幂等闸门
+锁死 join（4 实例压测实测 300s 卡死）。shutdown_state_mutex_ 使 start 尾段
+与 initiate_shutdown 的生命周期标志写互斥（消除 TOCTOU 残窗）。
+
+poll_task 约束：executor 未注入且队首为普通 task 时不弹出（弹出后无执行
+器只会静默丢弃，master 侧 RUNNING 永不归零）；internal task（merge/backup）
+不依赖 executor，storage_only worker 也执行。
 ```
 
 ### Freeze 流程
