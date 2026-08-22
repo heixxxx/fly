@@ -10,6 +10,7 @@
 | 写代码前熟悉规范 | [DEVELOPMENT_GUIDELINES.md](DEVELOPMENT_GUIDELINES.md) + 根目录 [CLAUDE.md](../CLAUDE.md) / [AGENTS.md](../AGENTS.md) |
 | 新建 C++ 模块 | [NEW_MODULE_GUIDE.md](NEW_MODULE_GUIDE.md) |
 | 了解用户侧 API | [userdoc.md](userdoc.md) + [python-api/module.md](python-api/module.md) |
+| 打开集群监控 GUI | [monitor-design.md](monitor-design.md)（`fly --serve-monitor <db>` 实时/事后浏览） |
 | 查当前待办/路线 | [remaining-todo.md](remaining-todo.md)（欠账清单）+ [roadmap.md](roadmap.md)（决策记录） |
 | 查已知问题 | [ISSUES.md](ISSUES.md) |
 | push 被拦/门禁行为 | [push-hook.md](push-hook.md) |
@@ -19,6 +20,7 @@
 
 | 主题 | 文档 |
 |------|------|
+| cluster monitor（采集落盘+Web GUI） | [monitor-design.md](monitor-design.md)（SQL 选型/事件全景/口径/GUI 手册） |
 | 架构决策记录 | [adr/](adr/)（0001 db_meta、0002 db_id 废弃） |
 | 存储链路设计 | [db-chain-design.md](db-chain-design.md)、[db-merge-design.md](db-merge-design.md) |
 | 消息日志系统 | [message-system.md](message-system.md) |

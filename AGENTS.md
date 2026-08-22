@@ -154,6 +154,8 @@ src/agent/      → Layer 4: MasterAgent, WorkerAgent, TaskExecutor
 src/core/       → Config (shared), ProcessInfo (per-process)
 src/fly/        → Layer 5: Python public API (__init__.py, runtime.py, mapreduce.py)
 src/solver/     → Layer 6: Distributed RAS solver (C++ core + Python orchestration)
+src/monitor/    → cluster monitor: 采集落盘 (MetricsDb 单写 monitor.db, 与心跳解耦的
+                  MONITOR_SAMPLE 通道) + Web GUI (serve.py + ECharts, fly --serve-monitor)
 src/common/     → CM* type aliases (CMSharedPtr, CMString, CMVector…), FlyBuffer, FlyBufferPtr, WriterID, ErrorTypes
 src/log/        → DBG/INFO/WARN/ERR macros, CM_FORMAT_CLASS/ENUM
 src/test/       → TestObject, e2e_tasks.py, test_tasks.py (not public API)
