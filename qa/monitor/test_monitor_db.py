@@ -156,9 +156,11 @@ def assert_db_content():
         "SELECT read_time_ms, read_bytes, write_time_ms, write_bytes FROM tasks "
         "WHERE task_id=?", (io_tid,)).fetchone()
     assert w_ms > 0 and w_bytes > 0, f"write 指标未落盘: {w_ms}, {w_bytes}"
+    # cpu_time 是 jiffies 差分（10ms 粒度）：亚秒级快 task 并发下可能整 0——
+    # 用 12s 的 slow_write 断言（CPU 必然跨多个 tick）。
     cpu_ms = c.execute(
-        "SELECT cpu_time_ms FROM tasks WHERE task_id=?", (io_tid,)).fetchone()[0]
-    assert cpu_ms > 0, "cpu_time_ms 未落盘"
+        "SELECT cpu_time_ms FROM tasks WHERE name='slow_write'").fetchone()[0]
+    assert cpu_ms > 0, "cpu_time_ms 未落盘（slow_write 12s 仍为 0）"
 
     # 依赖链 task：read 明细 + read 指标（chain_stage 读输入对象）。
     chain_r = c.execute(
