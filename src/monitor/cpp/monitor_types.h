@@ -1,38 +1,16 @@
 #pragma once
 
 #include <common/cpp/common_types.h>
+#include <network/cpp/message_types.h>  // MonitorSample（消息与落盘共用单一定义）
 
 #include <chrono>
 #include <cstdint>
 
 namespace fly {
 
-// monitor 模块公共数据结构：worker/master 周期采样样本与 task 行快照。
-// 采样样本同时用于网络消息（MonitorSampleMessage）与 MetricsDb 落盘
-// （worker_samples 表），字段口径在此单点定义。
-
-// 一条进程负载采样（worker 侧 monitor_report_loop 每采样周期产一条；
-// master 侧自监控采样线程同构直写 DB）。
-//
-// 数值口径：
-//   · proc_cpu_bps / host_cpu_bps：CPU 百分比 × 100（basis points，整数定点，
-//     规避浮点序列化）。proc 口径 = 进程 jiffies 增量 / 机器总 jiffies 增量，
-//     10000 = 吃满全部核（与 main.cpp MachineInfo 日志同口径）。
-//   · host_load1_x100：1 分钟 loadavg × 100。
-//   · net_read_bytes / net_write_bytes：本进程 TCP 累计字节数（NetStats，
-//     单调递增；GUI 侧对相邻样本差分得到速率，计数器回绕/进程重启由
-//     单调性检查兜底）。
-struct MonitorSample {
-    uint64_t epoch_ms_ = 0;               // unix epoch 毫秒（真实采样时刻）
-    uint64_t proc_rss_bytes_ = 0;         // 本进程物理内存 RSS
-    uint32_t proc_cpu_bps_ = 0;           // 本进程 CPU%（×100）
-    uint32_t host_cpu_bps_ = 0;           // 机器总 CPU%（×100）
-    uint64_t host_mem_total_bytes_ = 0;   // host MemTotal
-    uint64_t host_mem_avail_bytes_ = 0;   // host MemAvailable
-    uint32_t host_load1_x100_ = 0;        // host loadavg 1m（×100）
-    uint64_t net_read_bytes_ = 0;         // 本进程网络累计读字节
-    uint64_t net_write_bytes_ = 0;        // 本进程网络累计写字节
-};
+// monitor 模块公共数据结构：task 行快照与对象级 IO 明细。
+// 采样样本结构 MonitorSample 定义在 network/cpp/message_types.h（消息层），
+// 本头文件经 include 提供给 MetricsDb 落盘层，字段口径单点维护。
 
 // tasks 表一行的全量快照。master 侧组合 TaskMetadata + 消息扩展字段后
 // UPSERT 写入；status 单向迁移（PENDING→RUNNING→终态，REQUEUE 回 PENDING），

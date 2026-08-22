@@ -43,30 +43,6 @@ TEST(MasterAgentTest, CreateAndStart) {
     EXPECT_FALSE(master.is_running());
 }
 
-// RunSummary：on_heartbeat 的成组 RSS 样本（真实 epoch 时刻，含积压补发）
-// 完整进入 collector——组内每条都有价值，不是只取最新一条。
-TEST(MasterAgentTest, HeartbeatGroupedRssSamplesCollected) {
-    MasterAgent master("127.0.0.1", 0);
-    master.start();
-    wait_for_running(master, true);
-    master.register_fake_worker_for_testing(77, 999);
-
-    HeartbeatMessage hb;
-    hb.worker_id_ = 77;
-    uint64_t now = RunMetricsCollector::epoch_ms_now();
-    constexpr uint64_t kMB = 1024ull * 1024ull;
-    hb.rss_epoch_ms_ = {now - 20000, now - 10000, now};
-    hb.rss_bytes_arr_ = {100 * kMB, 110 * kMB, 120 * kMB};
-    master.on_heartbeat(999, hb);
-
-    ASSERT_NE(master.run_metrics_for_testing(), nullptr);
-    EXPECT_EQ(master.run_metrics_for_testing()->worker_sample_count_for_testing(77), 3u);
-
-    master.unregister_fake_worker_for_testing(77, 999);
-    master.stop();
-    wait_for_running(master, false);
-}
-
 TEST(MasterAgentTest, CreateWithDifferentPorts) {
     MasterAgent master1("127.0.0.1", 0);
     MasterAgent master2("127.0.0.1", 0);
@@ -156,6 +132,7 @@ TEST(MasterAgentTest, MultipleStartStop) {
 #include <filesystem>
 #include <fstream>
 #include <fmt/format.h>
+#include <sqlite3.h>
 
 namespace {
 
@@ -282,6 +259,58 @@ TEST(MasterAgentTest, StopWritesSummaryFiles) {
 
     EXPECT_TRUE(std::filesystem::exists(outdir.path() + "/runtime.summary"));
     EXPECT_TRUE(std::filesystem::exists(outdir.path() + "/db.summary"));
+}
+
+// RunSummary + monitor.db：on_monitor_sample 的成组样本（真实 epoch 时刻，
+// 含积压补发）完整进入 collector 与 worker_samples 表——组内每条都有价值，
+// 不是只取最新一条；重复补发 DB 幂等。
+TEST(MasterAgentTest, MonitorSampleGroupedSamplesCollected) {
+    TempDir outdir;
+    Config::instance()->set_str("log_dir", outdir.path());
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+    master.register_fake_worker_for_testing(77, 999);
+
+    MonitorSampleMessage msg;
+    msg.worker_id_ = 77;
+    uint64_t now = RunMetricsCollector::epoch_ms_now();
+    constexpr uint64_t kMB = 1024ull * 1024ull;
+    for (int i = 0; i < 3; ++i) {
+        MonitorSample s;
+        s.epoch_ms_ = now - 20000 + static_cast<uint64_t>(i) * 10000;
+        s.proc_rss_bytes_ = (100 + static_cast<uint64_t>(i) * 10) * kMB;
+        s.proc_cpu_bps_ = 500;
+        s.host_cpu_bps_ = 800;
+        msg.samples_.push_back(s);
+    }
+    master.on_monitor_sample(msg);
+    // 同组重复投递（补发语义）：RunMetrics 累计保留，DB 幂等不重。
+    master.on_monitor_sample(msg);
+
+    ASSERT_NE(master.run_metrics_for_testing(), nullptr);
+    EXPECT_EQ(master.run_metrics_for_testing()->worker_sample_count_for_testing(77), 6u);
+    ASSERT_NE(master.metrics_db_for_testing(), nullptr);
+    EXPECT_TRUE(master.metrics_db_for_testing()->opened());
+
+    master.unregister_fake_worker_for_testing(77, 999);
+    master.stop();
+    wait_for_running(master, false);
+
+    // stop 同步 close 后文件为干净终态，可只读打开断言（重复组 INSERT OR IGNORE）。
+    const std::string db_path = outdir.path() + "/monitor.db";
+    ASSERT_TRUE(std::filesystem::exists(db_path));
+    sqlite3* db = nullptr;
+    ASSERT_EQ(sqlite3_open_v2(db_path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr),
+              SQLITE_OK);
+    sqlite3_stmt* stmt = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM worker_samples", -1,
+                                 &stmt, nullptr), SQLITE_OK);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int64(stmt, 0), 3);
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
 }
 
 TEST(MasterAgentTest, RestoreMasterIdx_ExistingIdxFile) {

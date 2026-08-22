@@ -15,6 +15,7 @@
 #include <message/cpp/message_sink.h>
 #include <agent/cpp/pending_rpc_map.h>
 #include <agent/cpp/run_metrics.h>
+#include <monitor/cpp/metrics_db.h>
 #include <core/cpp/config.h>
 #include <common/cpp/common_types.h>
 #include <common/cpp/concurrent_map.h>
@@ -124,8 +125,10 @@ public:
     void register_database(const CMString& db_path, const CMString& data_path = "");
     // 诊断：返回某 db 的 provenance 条目数（测试验证 freeze 清理 / load 重建用）。
     size_t provenance_count_for_testing(const CMString& db_path) const;
-    // RunMetricsCollector 透传（测试断言心跳样本接收用；生命周期同 MasterAgent）。
+    // RunMetricsCollector 透传（测试断言样本接收用；生命周期同 MasterAgent）。
     RunMetricsCollector* run_metrics_for_testing() const { return run_metrics_.get(); }
+    // MetricsDb 透传（monitor 落盘层；未启用 monitor_db_enabled 时 opened()=false）。
+    MetricsDb* metrics_db_for_testing() const { return metrics_db_.get(); }
     bool is_db_frozen(const CMString& db_path) const;
     // 非 stream 模式 pending frozen 状态机（WP1）。
     // is_db_frozen 覆盖 confirmed ∪ pending（跨 task 写注册拦截）。
@@ -136,8 +139,10 @@ public:
     // 消息处理入口（public 供测试直接调用，reactor 通过 lambda 调用）：
     void on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg);
     void on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg);
-    // 心跳处理（含成组 RSS 样本入 RunMetricsCollector，测试直调验证）。
+    // 心跳处理（保活 + 判死数据更新，测试直调验证）。
     void on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg);
+    // monitor 采样成组上报处理（RunMetrics 喂样 + MetricsDb 落库；测试直调）。
+    void on_monitor_sample(const MonitorSampleMessage& msg);
     // 同步写注册裁决（on_write_register 的核心，无网络副作用前半段）——
     // public 供测试直调失败分类（frozen/mismatch/空 hash REGISTRATION_FAILED）。
     WriteRegisterAckMessage do_write_register(const WriteRegisterMessage& msg);
@@ -429,8 +434,13 @@ private:
     CMUniquePtr<HeartbeatMonitor> heartbeat_monitor_;
     // 运行时指标采集（RunSummary）：集群内存快照 tick / db 窗口 / 磁盘用量，
     // stop 时写 runtime.summary + db.summary 并在用户日志打文件地址与总耗时
-    // （详见 run_metrics.h）。
+    // （详见 run_metrics.h）。worker RSS 样本改经 monitor 通道（on_monitor_sample）
+    // 喂入，心跳不再携带采样数据。
     CMUniquePtr<RunMetricsCollector> run_metrics_;
+    // cluster monitor 落盘层（master 单写 SQLite）：task/worker/db 事件全景 +
+    // 负载采样时序，写 {log_dir}/monitor.db。start 时 open、stop 内同步 close
+    // （flush 全部余量，早于 Logger/静态析构——P3-18 退出期时序）。
+    CMUniquePtr<MetricsDb> metrics_db_;
     std::thread heartbeat_check_thread_;
     std::atomic<bool> heartbeat_check_running_{false};
     std::mutex heartbeat_check_mutex_;

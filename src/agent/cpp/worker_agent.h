@@ -14,6 +14,7 @@
 #include <storage/cpp/data_writer.h>
 #include <common/cpp/common_types.h>
 #include <common/cpp/concurrent_map.h>
+#include <monitor/cpp/monitor_sampler.h>
 #include <task/cpp/worker_manager.h>   // WorkerRole（worker role 静态身份枚举）
 #include <cstdint>
 #include <thread>
@@ -299,11 +300,19 @@ private:
     std::atomic<bool> heartbeat_running_{false};
     std::mutex heartbeat_mutex_;
     std::condition_variable heartbeat_cv_;
-    // 心跳 RSS 采样缓冲（仅 heartbeat_loop 单线程访问，无需锁）：发送失败的
-    // 样本不丢弃，下次成功心跳连同新样本成组补发。样本携带真实采样时刻
-    // （unix epoch 毫秒），master 按最近邻合并到自身 tick 骨架。
-    CMVector<uint64_t> pending_rss_epoch_ms_;
-    CMVector<uint64_t> pending_rss_bytes_;
+
+    // ---- monitor 采样上报线程（与心跳完全解耦；原心跳 RSS 采样迁移至此）----
+    // 每 monitor_sample_interval_ms 采一条全维度样本（MonitorSampler 差分），
+    // 每 monitor_report_interval_ms 成组 MONITOR_SAMPLE 上报；发送失败/断连
+    // 窗口样本缓冲不丢，下次成组补发（沿用原心跳 pending_rss_* 语义）。
+    std::thread monitor_thread_;
+    std::atomic<bool> monitor_running_{false};
+    std::mutex monitor_mutex_;
+    std::condition_variable monitor_cv_;
+    MonitorSampler monitor_sampler_;  // 仅 monitor_thread_ 使用（单线程差分状态）
+    // 采样缓冲（仅 monitor_thread_ 单线程访问，无需锁）。
+    CMVector<MonitorSample> pending_samples_;
+    void monitor_report_loop();
 
     // Bandwidth probe thread (network-aware read priority). Periodically
     // measures RTT/bandwidth to every known data-server peer so TIER2 can

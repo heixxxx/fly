@@ -309,6 +309,11 @@ void WorkerAgent::start() {
                 heartbeat_cv_.notify_all();
             }
             {
+                std::lock_guard<std::mutex> lock(monitor_mutex_);
+                monitor_running_ = false;
+                monitor_cv_.notify_all();
+            }
+            {
                 std::lock_guard<std::mutex> lock(probe_mutex_);
                 probe_running_ = false;
                 probe_cv_.notify_all();
@@ -322,6 +327,9 @@ void WorkerAgent::start() {
 
         heartbeat_running_ = true;
         heartbeat_thread_ = std::thread([this] { heartbeat_loop(); });
+
+        monitor_running_ = true;
+        monitor_thread_ = std::thread([this] { monitor_report_loop(); });
 
         // 注册守望：RegisterAck 的事件驱动等待 + 超时退避重发（P3-23 兜底）。
         register_watchdog_running_ = true;
@@ -402,6 +410,10 @@ void WorkerAgent::do_cleanup() {
 
     if (heartbeat_thread_.joinable()) {
         heartbeat_thread_.join();
+    }
+
+    if (monitor_thread_.joinable()) {
+        monitor_thread_.join();
     }
 
     if (probe_thread_.joinable()) {
@@ -559,6 +571,8 @@ void WorkerAgent::register_watchdog_loop() {
 }
 
 void WorkerAgent::heartbeat_loop() {
+    // 纯 alive 心跳（单一职责）：RSS 采样已迁移至 monitor_report_loop
+    // （MONITOR_SAMPLE 通道），本循环不再携带任何采样数据。
     while (heartbeat_running_ && running_.load()) {  // running_ 兜底（P3-28）
         {
             std::unique_lock<std::mutex> lock(heartbeat_mutex_);
@@ -571,22 +585,9 @@ void WorkerAgent::heartbeat_loop() {
         if (registered_ && heartbeat_running_) {
             HeartbeatMessage hb;
             hb.worker_id_ = worker_id_;
-            // 成组补发：拷入积压样本 + 追加本次新采样（真实 epoch 毫秒时刻）。
-            // 发送失败整组留在缓冲（样本不丢），成功清空等下轮。
-            hb.rss_epoch_ms_ = pending_rss_epoch_ms_;
-            hb.rss_bytes_arr_ = pending_rss_bytes_;
-            hb.rss_epoch_ms_.push_back(static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count()));
-            hb.rss_bytes_arr_.push_back(SystemInfo::process_rss_bytes());
             if (!reactor_->try_send(master_conn_, hb)) {
-                pending_rss_epoch_ms_ = std::move(hb.rss_epoch_ms_);
-                pending_rss_bytes_ = std::move(hb.rss_bytes_arr_);
-                DBG("Heartbeat skipped (send busy) — {} rss samples buffered",
-                    pending_rss_epoch_ms_.size());
+                DBG("Heartbeat skipped (send busy)");
             } else {
-                pending_rss_epoch_ms_.clear();
-                pending_rss_bytes_.clear();
                 DBG("Heartbeat sent");
             }
         }
@@ -601,6 +602,44 @@ void WorkerAgent::heartbeat_loop() {
                 break;
             }
         }
+    }
+}
+
+// monitor 采样上报（独立线程，与心跳解耦）：每采样周期采一条全维度样本
+// 入缓冲，每上报周期成组发送；发送失败/未注册（断连重连窗口）样本留缓冲
+// 不丢，下次成组补发。master 侧 MetricsDb 按 (worker_id, epoch_ms) 幂等落库，
+// RunMetricsCollector 按真实采样时刻最近邻合并（语义与原心跳 RSS 一致）。
+void WorkerAgent::monitor_report_loop() {
+    const int64_t sample_ms = Config::instance()->get_int("monitor_sample_interval_ms");
+    const int64_t report_ms = Config::instance()->get_int("monitor_report_interval_ms");
+    int64_t since_report_ms = 0;
+
+    while (monitor_running_ && running_.load()) {  // running_ 兜底
+        {
+            std::unique_lock<std::mutex> lock(monitor_mutex_);
+            monitor_cv_.wait_for(lock, std::chrono::milliseconds(sample_ms),
+                                 [this]{ return !monitor_running_.load(); });
+        }
+        if (!monitor_running_) break;
+
+        pending_samples_.push_back(monitor_sampler_.sample_once());
+        since_report_ms += sample_ms;
+
+        if (since_report_ms < report_ms) continue;
+        since_report_ms = 0;
+
+        if (registered_ && monitor_running_) {
+            MonitorSampleMessage msg;
+            msg.worker_id_ = worker_id_;
+            msg.samples_ = pending_samples_;
+            if (!reactor_->try_send(master_conn_, msg)) {
+                DBG("MonitorSample skipped (send busy) — {} samples buffered",
+                    pending_samples_.size());
+            } else {
+                pending_samples_.clear();
+            }
+        }
+        // 未注册（断连/重连窗口）：样本继续缓冲，重连成功后下次成组补发。
     }
 }
 
@@ -1107,6 +1146,12 @@ void WorkerAgent::initiate_shutdown(const CMString& reason) {
             heartbeat_cv_.notify_all();
         }
         fprintf(stderr, "[SD] heartbeat notified: worker_id=%d\n", static_cast<int>(worker_id_));
+        {
+            std::lock_guard<std::mutex> lock(monitor_mutex_);
+            monitor_running_ = false;
+            monitor_cv_.notify_all();
+        }
+        fprintf(stderr, "[SD] monitor notified: worker_id=%d\n", static_cast<int>(worker_id_));
         {
             std::lock_guard<std::mutex> lock(probe_mutex_);
             probe_running_ = false;

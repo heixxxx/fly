@@ -171,6 +171,15 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     // total = master RSS + Σ活跃 worker 最新上报 RSS，退出时汇总为
     // Run Summary 的分阶段 total_avg/total_peak 与按 db 窗口统计。
     {"metrics_tick_seconds", 10},
+    // ── cluster monitor（负载采样 + monitor.db 落盘 + Web GUI）──
+    // 采样间隔(ms)：worker/master 每 MonitorSample 一条（RSS/双CPU%/host 内存/
+    // 网络 IO/loadavg）。0=关闭采样上报。
+    {"monitor_sample_interval_ms", 1000},
+    // 成组上报间隔(ms)：worker 攒批经 MONITOR_SAMPLE 发 master（组内样本
+    // 时间升序，失败/断连缓冲不丢，下次成组补发）。
+    {"monitor_report_interval_ms", 10000},
+    // master 单写 {log_dir}/monitor.db（1=开启，0=本 run 无持久化监控）。
+    {"monitor_db_enabled", 1},
     // - connect 重试首次间隔(ms)，指数 ×2 递增（单次上限 10s 硬编码），首连与重连共用。
     {"worker_connect_retry_initial_ms", 500},
     // - 注册 ack 丢失兜底（P3-23）：注册守望的超时退避初值(ms)，指数 ×2

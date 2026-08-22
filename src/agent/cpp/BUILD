@@ -20,6 +20,7 @@ cc_library(
         "//src/serialization/cpp:fly_serialization",
         "//src/storage/cpp:fly_storage",
         "//src/task/cpp:fly_task",
+        "//src/monitor/cpp:fly_monitor",
     ],
 )
 
@@ -34,6 +35,7 @@ cc_shared_library(
         "//src/network/cpp:fly_network_so",
         "//src/storage/cpp:fly_storage_so",
         "//src/task/cpp:fly_task_so",
+        "//src/monitor/cpp:fly_monitor_so",
     ],
     visibility = ["//visibility:public"],
 )
@@ -61,5 +63,6 @@ cc_library(
         "//src/serialization/cpp:fly_serialization",
         "//src/storage/cpp:fly_storage",
         "//src/task/cpp:fly_task",
+        "//src/monitor/cpp:fly_monitor",
     ],
 )

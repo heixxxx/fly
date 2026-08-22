@@ -119,6 +119,11 @@ void MasterAgent::start() {
             on_heartbeat(conn_id, msg);
         });
 
+    reactor_->register_handler<MonitorSampleMessage>(
+        [this](uint64_t conn_id, const MonitorSampleMessage& msg) {
+            on_monitor_sample(msg);
+        });
+
     reactor_->register_handler<TaskCompleteMessage>(
         [this](uint64_t conn_id, const TaskCompleteMessage& msg) {
             on_task_complete(conn_id, msg);
@@ -295,11 +300,21 @@ void MasterAgent::start() {
     heartbeat_monitor_ = CMMakeUnique<HeartbeatMonitor>(
         worker_manager_.get(), Config::instance()->get_int("heartbeat_timeout"));
 
-    // RunMetricsCollector：master 骨架采样（tick 线程）；worker 心跳成组
-    // RSS 样本按真实 epoch 时刻最近邻合并（合成推迟到 build_summary）。
-    // tick 线程在 do_drain_and_stop 停止，summary 在 stop_impl 尾部输出。
+    // RunMetricsCollector：master 骨架采样（tick 线程）；worker monitor 通道
+    // 成组样本（on_monitor_sample）按真实 epoch 时刻最近邻合并（合成推迟到
+    // build_summary）。tick 线程在 do_drain_and_stop 停止，summary 在
+    // stop_impl 尾部输出。
     run_metrics_ = CMMakeUnique<RunMetricsCollector>();
     run_metrics_->start(Config::instance()->get_int("metrics_tick_seconds"));
+
+    // cluster monitor 落盘层：{log_dir}/monitor.db 单写（open 失败仅告警，
+    // 本 run 降级为无持久化监控，不影响主流程）。
+    metrics_db_ = CMMakeUnique<MetricsDb>();
+    if (Config::instance()->get_int("monitor_db_enabled")) {
+        if (!metrics_db_->open(Config::instance()->get_str("log_dir"))) {
+            WARN("monitor.db open failed — monitor persistence disabled for this run");
+        }
+    }
 
     heartbeat_check_running_ = true;
     heartbeat_check_thread_ = std::thread([this] { heartbeat_check_loop(); });
@@ -566,6 +581,12 @@ void MasterAgent::stop_impl(bool fast, const CMString& reason) {
             dur_s, rt_path, db_sum_path);
         INFO("RunSummary files written: runtime={} db={} duration={:.1f}s",
              rt_path, db_sum_path, dur_s);
+    }
+    // monitor.db 收尾：停写线程并同步 flush 全部余量后关闭（早于 Logger 关闭
+    // 与静态析构——退出期时序，P3-18 家族约束）。此后文件为干净终态，
+    // GUI 可随时只读打开。
+    if (metrics_db_) {
+        metrics_db_->close();
     }
     INFO("MasterAgent stop(): fully stopped (elapsed={}ms)", _elapsed());
 }
@@ -1346,12 +1367,6 @@ void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
 
     worker_manager_->set_heartbeat(worker_id, timestamp);
 
-    // RunSummary 采样：worker 心跳成组携带的物理内存 RSS 样本（真实 epoch
-    // 时刻，含发送失败期间积压补发的样本；合成推迟到 build_summary）。
-    if (run_metrics_ && !msg.rss_epoch_ms_.empty()) {
-        run_metrics_->on_worker_samples(msg.worker_id_, msg.rss_epoch_ms_, msg.rss_bytes_arr_);
-    }
-
     auto worker = worker_manager_->get_worker(worker_id);
     if (worker && worker->get().status_ == WorkerStatus::DEAD) {
         worker_manager_->update_worker_status(worker_id, WorkerStatus::IDLE);
@@ -1364,6 +1379,26 @@ void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
     reactor_->send(conn_id, ack);
 
     DBG("Heartbeat from worker_id={}", worker_id);
+}
+
+// monitor 采样成组上报（独立于心跳的负载通道）：RunSummary 喂样（提取
+// epoch/RSS 平行数组，语义与原心跳 RSS 采样一致，仅通道迁移）+ monitor.db
+// 落库（(worker_id, epoch_ms) 主键幂等，重复补发不重不漏）。
+void MasterAgent::on_monitor_sample(const MonitorSampleMessage& msg) {
+    if (run_metrics_ && !msg.samples_.empty()) {
+        CMVector<uint64_t> epochs, rss;
+        epochs.reserve(msg.samples_.size());
+        rss.reserve(msg.samples_.size());
+        for (const auto& s : msg.samples_) {
+            epochs.push_back(s.epoch_ms_);
+            rss.push_back(s.proc_rss_bytes_);
+        }
+        run_metrics_->on_worker_samples(msg.worker_id_, epochs, rss);
+    }
+    if (metrics_db_) {
+        metrics_db_->record_worker_samples(msg.worker_id_, msg.samples_);
+    }
+    DBG("MonitorSample from worker_id={}: {} samples", msg.worker_id_, msg.samples_.size());
 }
 
 // 登记写入该 db 的 worker 元数据（db meta recorded_workers_）。

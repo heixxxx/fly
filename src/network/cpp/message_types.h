@@ -68,10 +68,12 @@ enum class MessageType : uint8_t {
     TASK_SUBMIT_ACK = 57,        // master → worker: task 体内提交转发的确认（request_id 匹配，带回 master 分配的 task_id）
     STOP_NOW = 58,               // master → worker: 立即停止命令（SIGTERM/致命错误快速退出通道）——worker 收到即 kill(getpid(), SIGKILL)，
                                  //   与 SHUTDOWN（优雅退：flush coverage + WBQ drain）语义相反；master 侧已做 fail 善后，task 结果以 master 记录为准
+    MONITOR_SAMPLE = 59,         // worker → master: monitor 负载采样成组上报（async, no ack；失败/断连样本
+                                 //   在 worker 侧缓冲成组补发，不丢）。与心跳完全解耦（心跳仅保活）。
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 58;
+    return raw >= 1 && raw <= 59;
 }
 
 struct MessageHeader {
@@ -118,17 +120,10 @@ struct HeartbeatMessage {
     uint64_t worker_id_ = 0;
     CMVector<uint64_t> running_tasks_;
     CMVector<CMString> attributes_;
-    // 集群内存采样(物理 RSS),平行数组同下标对应,时间升序、末位为最新。
-    // 心跳发送失败时样本累积在 worker 侧(不丢弃),下次成功心跳成组补发;
-    // master 的 RunMetricsCollector 按真实采样时刻吸附合并到自身 tick 骨架。
-    // epoch 为 unix epoch 毫秒(system_clock 采样时刻)——跨进程可比,
-    // 不用相对时间戳(用户裁定:相对时间戳完全不准)。
-    CMVector<uint64_t> rss_epoch_ms_;
-    CMVector<uint64_t> rss_bytes_arr_;
 
     static constexpr MessageType msg_type_ = MessageType::HEARTBEAT;
 
-    FLY_SERIALIZE(header_, worker_id_, running_tasks_, attributes_, rss_epoch_ms_, rss_bytes_arr_);
+    FLY_SERIALIZE(header_, worker_id_, running_tasks_, attributes_);
 };
 
 struct HeartbeatAckMessage {
@@ -138,6 +133,44 @@ struct HeartbeatAckMessage {
     static constexpr MessageType msg_type_ = MessageType::HEARTBEAT_ACK;
 
     FLY_SERIALIZE(header_, worker_id_);
+};
+
+// 一条进程负载采样（monitor 通道）。数值口径：
+//   · proc_cpu_bps_/host_cpu_bps_：CPU 百分比 × 100（basis points，整数定点，
+//     规避浮点序列化）。proc 口径 = 进程 jiffies 增量 / 机器总 jiffies 增量，
+//     10000 = 吃满全部核；host 口径 = 非 idle 占比。
+//   · host_load1_x100_：1 分钟 loadavg × 100。
+//   · net_read_bytes_/net_write_bytes_：本进程 TCP 累计字节数（NetStats，
+//     单调递增；消费侧相邻样本差分得速率）。
+struct MonitorSample {
+    uint64_t epoch_ms_ = 0;               // unix epoch 毫秒（真实采样时刻）
+    uint64_t proc_rss_bytes_ = 0;         // 本进程物理内存 RSS
+    uint32_t proc_cpu_bps_ = 0;           // 本进程 CPU%（×100）
+    uint32_t host_cpu_bps_ = 0;           // 机器总 CPU%（×100）
+    uint64_t host_mem_total_bytes_ = 0;   // host MemTotal
+    uint64_t host_mem_avail_bytes_ = 0;   // host MemAvailable
+    uint32_t host_load1_x100_ = 0;        // host loadavg 1m（×100）
+    uint64_t net_read_bytes_ = 0;         // 本进程网络累计读字节
+    uint64_t net_write_bytes_ = 0;        // 本进程网络累计写字节
+
+    FLY_SERIALIZE(epoch_ms_, proc_rss_bytes_, proc_cpu_bps_, host_cpu_bps_,
+                  host_mem_total_bytes_, host_mem_avail_bytes_, host_load1_x100_,
+                  net_read_bytes_, net_write_bytes_);
+};
+
+// monitor 负载采样成组上报（worker → master，async no ack）。
+// 时间升序、末位为最新；发送失败/断连期间样本在 worker 侧缓冲不丢，下次
+// 成功发送成组补发。master 侧 RunMetricsCollector 按真实采样时刻吸附合并
+// （沿用原心跳 RSS 采样语义，仅通道迁移），MetricsDb 落 worker_samples 表
+// （主键 (worker_id, epoch_ms)，重复补发幂等）。
+struct MonitorSampleMessage {
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMVector<MonitorSample> samples_;
+
+    static constexpr MessageType msg_type_ = MessageType::MONITOR_SAMPLE;
+
+    FLY_SERIALIZE(header_, worker_id_, samples_);
 };
 
 struct DataRequestMessage {

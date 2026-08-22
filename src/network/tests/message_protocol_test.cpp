@@ -685,8 +685,51 @@ TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::WORKER_PROBE_ACK)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::TASK_SUBMIT_ACK)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::STOP_NOW)));
-    EXPECT_FALSE(is_valid_message_type(59));  // upper bound is 58
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MONITOR_SAMPLE)));
+    EXPECT_FALSE(is_valid_message_type(60));  // upper bound is 59
     EXPECT_FALSE(is_valid_message_type(0));
+}
+
+// MonitorSampleMessage: worker → master 成组负载采样（epoch 升序、成组补发）。
+TEST(MessageProtocolTest, MonitorSampleMessageRoundTrip) {
+    MonitorSampleMessage msg;
+    msg.header_.type_ = MessageType::MONITOR_SAMPLE;
+    msg.worker_id_ = 12;
+    for (int i = 0; i < 3; ++i) {
+        MonitorSample s;
+        s.epoch_ms_ = 1700000000000ull + static_cast<uint64_t>(i) * 1000;
+        s.proc_rss_bytes_ = 128ull * 1024 * 1024 + i;
+        s.proc_cpu_bps_ = 2500 + i;
+        s.host_cpu_bps_ = 7300 + i;
+        s.host_mem_total_bytes_ = 64ull << 30;
+        s.host_mem_avail_bytes_ = (32ull << 30) - i;
+        s.host_load1_x100_ = 142;
+        s.net_read_bytes_ = 1000000ull * i;
+        s.net_write_bytes_ = 500000ull * i;
+        msg.samples_.push_back(s);
+    }
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+    MonitorSampleMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_TRUE(buffer.empty());
+
+    EXPECT_EQ(decoded.worker_id_, 12u);
+    ASSERT_EQ(decoded.samples_.size(), 3u);
+    // 时间升序保持，各字段无损（整数定点无浮点舍入）。
+    for (int i = 0; i < 3; ++i) {
+        const auto& s = decoded.samples_[i];
+        EXPECT_EQ(s.epoch_ms_, 1700000000000ull + static_cast<uint64_t>(i) * 1000);
+        EXPECT_EQ(s.proc_rss_bytes_, 128ull * 1024 * 1024 + i);
+        EXPECT_EQ(s.proc_cpu_bps_, 2500u + i);
+        EXPECT_EQ(s.host_cpu_bps_, 7300u + i);
+        EXPECT_EQ(s.host_mem_total_bytes_, 64ull << 30);
+        EXPECT_EQ(s.host_mem_avail_bytes_, (32ull << 30) - i);
+        EXPECT_EQ(s.host_load1_x100_, 142u);
+        EXPECT_EQ(s.net_read_bytes_, 1000000ull * i);
+        EXPECT_EQ(s.net_write_bytes_, 500000ull * i);
+    }
 }
 
 // WorkerBackupSuggestMessage: worker → master 上报 TIER2 读增量（count/bytes/size）。
