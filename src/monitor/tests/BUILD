@@ -24,3 +24,13 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "task_resource_tracker_test",
+    srcs = ["task_resource_tracker_test.cc"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/monitor/cpp:fly_monitor",
+    ],
+    copts = ["-std=c++20"],
+)

@@ -179,9 +179,12 @@ void RunMetricsCollector::tick_once() {
 }
 
 int64_t RunMetricsCollector::now_rel_ms_locked() const {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::steady_clock::now() - start_t_)
-        .count();
+    // 微秒向上取整到毫秒：start/stop 同毫秒的极短窗口也能得到 ≥1ms 的
+    // duration（duration_seconds()==0 的 flaky 根治——测试与 summary 渲染
+    // 都依赖 duration > 0）。
+    return (std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - start_t_)
+                .count() + 999) / 1000;
 }
 
 void RunMetricsCollector::on_worker_samples(uint64_t worker_id,

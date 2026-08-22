@@ -15,6 +15,7 @@
 #include <common/cpp/common_types.h>
 #include <common/cpp/concurrent_map.h>
 #include <monitor/cpp/monitor_sampler.h>
+#include <monitor/cpp/task_resource_tracker.h>
 #include <task/cpp/worker_manager.h>   // WorkerRole（worker role 静态身份枚举）
 #include <cstdint>
 #include <thread>
@@ -313,6 +314,10 @@ private:
     // 采样缓冲（仅 monitor_thread_ 单线程访问，无需锁）。
     CMVector<MonitorSample> pending_samples_;
     void monitor_report_loop();
+
+    // task 执行窗口资源归属：poll_task（begin/end）+ monitor 采样线程
+    // （add_sample）+ send_master_or_buffer（take_agg 填消息字段）三方协作。
+    TaskResourceTracker task_resource_tracker_;
 
     // Bandwidth probe thread (network-aware read priority). Periodically
     // measures RTT/bandwidth to every known data-server peer so TIER2 can

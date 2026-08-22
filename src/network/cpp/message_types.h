@@ -288,10 +288,25 @@ struct TaskCompleteMessage {
     CMVector<WrittenObject> written_objects_;
     CMVector<CMString> frozen_dbs_;
     bool is_internal_ = false;  // backup 等内部任务，不参与依赖图和 metadata
+    // ---- cluster monitor：worker 侧 task 执行窗口指标（send 路径统一填充；
+    // 默认 0 = 未采集/重复发送）----
+    uint64_t exec_start_ms_ = 0;         // 真实执行开始（区别 master 派发时刻）
+    uint64_t exec_end_ms_ = 0;           // 真实执行结束
+    uint64_t cpu_time_ms_ = 0;           // 窗口内进程 CPU 时间（utime+stime 差分）
+    uint64_t mem_baseline_bytes_ = 0;    // 开始时进程 RSS 基线
+    uint64_t mem_avg_bytes_ = 0;         // 窗口内 RSS 平均
+    uint64_t mem_peak_bytes_ = 0;        // 窗口内 RSS 峰值
+    uint64_t read_time_ms_ = 0;          // read_object 累计耗时（Python io_stats）
+    uint64_t write_time_ms_ = 0;         // write_object + drain 落盘累计耗时
+    uint64_t read_bytes_ = 0;            // 解压后读字节
+    uint64_t write_bytes_ = 0;           // 压缩后写字节
 
     static constexpr MessageType msg_type_ = MessageType::TASK_COMPLETE;
 
-    FLY_SERIALIZE(header_, task_id_, worker_id_, written_objects_, frozen_dbs_, is_internal_);
+    FLY_SERIALIZE(header_, task_id_, worker_id_, written_objects_, frozen_dbs_,
+                  is_internal_, exec_start_ms_, exec_end_ms_, cpu_time_ms_,
+                  mem_baseline_bytes_, mem_avg_bytes_, mem_peak_bytes_,
+                  read_time_ms_, write_time_ms_, read_bytes_, write_bytes_);
 };
 
 struct TaskFailedMessage {
@@ -306,10 +321,26 @@ struct TaskFailedMessage {
     // 据此清理 remote_idx / provenance / graph，并广播 OBJECT_REMOVED 通知其他
     // worker 清缓存。
     CMVector<CMString> dirty_objects_;
+    // ---- cluster monitor：同 TaskCompleteMessage（失败 task 的部分执行窗口
+    // 同样有分析价值）----
+    uint64_t exec_start_ms_ = 0;
+    uint64_t exec_end_ms_ = 0;
+    uint64_t cpu_time_ms_ = 0;
+    uint64_t mem_baseline_bytes_ = 0;
+    uint64_t mem_avg_bytes_ = 0;
+    uint64_t mem_peak_bytes_ = 0;
+    uint64_t read_time_ms_ = 0;
+    uint64_t write_time_ms_ = 0;
+    uint64_t read_bytes_ = 0;
+    uint64_t write_bytes_ = 0;
 
     static constexpr MessageType msg_type_ = MessageType::TASK_FAILED;
 
-    FLY_SERIALIZE(header_, task_id_, worker_id_, recoverable_, error_message_, error_type_, dirty_objects_);
+    FLY_SERIALIZE(header_, task_id_, worker_id_, recoverable_, error_message_,
+                  error_type_, dirty_objects_, exec_start_ms_, exec_end_ms_,
+                  cpu_time_ms_, mem_baseline_bytes_, mem_avg_bytes_,
+                  mem_peak_bytes_, read_time_ms_, write_time_ms_, read_bytes_,
+                  write_bytes_);
 };
 
 struct DataQueryMessage {

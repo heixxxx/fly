@@ -58,4 +58,16 @@ inline uint64_t monitor_epoch_ms_now() {
         std::chrono::system_clock::now().time_since_epoch()).count());
 }
 
+// task 执行窗口的资源结算（worker 侧 TaskResourceTracker 产出，随
+// TaskComplete/TaskFailedMessage 上报 master）。
+struct TaskResourceAgg {
+    uint64_t exec_start_ms_ = 0;          // worker 真实执行开始（区别 master 派发时刻）
+    uint64_t exec_end_ms_ = 0;            // worker 真实执行结束
+    uint64_t cpu_time_ms_ = 0;            // 窗口内进程 CPU 时间（utime+stime 差分）
+    uint64_t mem_baseline_bytes_ = 0;     // 开始时进程 RSS 基线
+    uint64_t mem_avg_bytes_ = 0;          // 窗口内 RSS 平均（含基线样本）
+    uint64_t mem_peak_bytes_ = 0;         // 窗口内 RSS 峰值
+    uint32_t sample_count_ = 0;           // 窗口内样本点数（≥2：begin/end 各一）
+};
+
 }  // namespace fly

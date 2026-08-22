@@ -622,7 +622,10 @@ void WorkerAgent::monitor_report_loop() {
         }
         if (!monitor_running_) break;
 
-        pending_samples_.push_back(monitor_sampler_.sample_once());
+        const MonitorSample sp = monitor_sampler_.sample_once();
+        pending_samples_.push_back(sp);
+        // 样本计入当前 task 执行窗口（无窗口在跑则忽略）。
+        task_resource_tracker_.add_sample(sp.proc_rss_bytes_);
         since_report_ms += sample_ms;
 
         if (since_report_ms < report_ms) continue;
@@ -851,9 +854,12 @@ bool WorkerAgent::poll_task() {
             task.task_module_.c_str(), executor_ ? 1 : 0);
 
     if (task.task_module_ == "__fly_internal") {
+        task_resource_tracker_.begin(task.task_id_);
         execute_internal_task(task);
+        task_resource_tracker_.end(task.task_id_);
     } else if (executor_) {
         begin_task(task.task_id_, task.write_context_hash_);
+        task_resource_tracker_.begin(task.task_id_);
         // Stage inlined vars for the Python executor to inject before the task runs.
         if (!task.var_payloads_.empty()) {
             std::lock_guard<std::mutex> lk(pending_task_vars_mutex_);
@@ -861,6 +867,7 @@ bool WorkerAgent::poll_task() {
         }
         auto result = executor_->execute(
             task.task_id_, task.task_name_, task.task_module_, task.args_);
+        task_resource_tracker_.end(task.task_id_);
         auto tracked_writes = end_task(task.task_id_);
 
         if (result.status_ == TaskExecStatus::SUCCESS) {
@@ -1055,7 +1062,19 @@ void WorkerAgent::reconnect_loop() {
     }
 }
 
-void WorkerAgent::send_master_or_buffer(const TaskCompleteMessage& msg) {
+void WorkerAgent::send_master_or_buffer(const TaskCompleteMessage& msg_in) {
+    // monitor 资源结算统一填充点：所有 complete 组装路径（正常/internal/各失败
+    // 分支）的必经咽喉。take 后清除，重复发送不重复填（字段保持默认 0）。
+    TaskCompleteMessage msg = msg_in;
+    TaskResourceAgg agg;
+    if (task_resource_tracker_.take_agg(msg.task_id_, agg)) {
+        msg.exec_start_ms_ = agg.exec_start_ms_;
+        msg.exec_end_ms_ = agg.exec_end_ms_;
+        msg.cpu_time_ms_ = agg.cpu_time_ms_;
+        msg.mem_baseline_bytes_ = agg.mem_baseline_bytes_;
+        msg.mem_avg_bytes_ = agg.mem_avg_bytes_;
+        msg.mem_peak_bytes_ = agg.mem_peak_bytes_;
+    }
     fprintf(stderr, "[SD] complete send: this=%p task_id=%llu registered=%d reconnecting=%d conn=%llu send_ok=%d\n",
             static_cast<const void*>(this), static_cast<unsigned long long>(msg.task_id_),
             registered_.load() ? 1 : 0, reconnecting_.load() ? 1 : 0,
@@ -1073,7 +1092,17 @@ void WorkerAgent::send_master_or_buffer(const TaskCompleteMessage& msg) {
     WARN("TaskComplete buffered (reconnecting): task_id={}", msg.task_id_);
 }
 
-void WorkerAgent::send_master_or_buffer(const TaskFailedMessage& msg) {
+void WorkerAgent::send_master_or_buffer(const TaskFailedMessage& msg_in) {
+    TaskFailedMessage msg = msg_in;
+    TaskResourceAgg agg;
+    if (task_resource_tracker_.take_agg(msg.task_id_, agg)) {
+        msg.exec_start_ms_ = agg.exec_start_ms_;
+        msg.exec_end_ms_ = agg.exec_end_ms_;
+        msg.cpu_time_ms_ = agg.cpu_time_ms_;
+        msg.mem_baseline_bytes_ = agg.mem_baseline_bytes_;
+        msg.mem_avg_bytes_ = agg.mem_avg_bytes_;
+        msg.mem_peak_bytes_ = agg.mem_peak_bytes_;
+    }
     if (!reconnecting_.load() && registered_.load()) {
         reactor_->send(master_conn_.load(), msg);
         return;
