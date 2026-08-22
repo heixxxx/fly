@@ -299,6 +299,11 @@ private:
     std::atomic<bool> heartbeat_running_{false};
     std::mutex heartbeat_mutex_;
     std::condition_variable heartbeat_cv_;
+    // 心跳 RSS 采样缓冲（仅 heartbeat_loop 单线程访问，无需锁）：发送失败的
+    // 样本不丢弃，下次成功心跳连同新样本成组补发。样本携带真实采样时刻
+    // （unix epoch 毫秒），master 按最近邻合并到自身 tick 骨架。
+    CMVector<uint64_t> pending_rss_epoch_ms_;
+    CMVector<uint64_t> pending_rss_bytes_;
 
     // Bandwidth probe thread (network-aware read priority). Periodically
     // measures RTT/bandwidth to every known data-server peer so TIER2 can

@@ -118,10 +118,17 @@ struct HeartbeatMessage {
     uint64_t worker_id_ = 0;
     CMVector<uint64_t> running_tasks_;
     CMVector<CMString> attributes_;
+    // 集群内存采样(物理 RSS),平行数组同下标对应,时间升序、末位为最新。
+    // 心跳发送失败时样本累积在 worker 侧(不丢弃),下次成功心跳成组补发;
+    // master 的 RunMetricsCollector 按真实采样时刻吸附合并到自身 tick 骨架。
+    // epoch 为 unix epoch 毫秒(system_clock 采样时刻)——跨进程可比,
+    // 不用相对时间戳(用户裁定:相对时间戳完全不准)。
+    CMVector<uint64_t> rss_epoch_ms_;
+    CMVector<uint64_t> rss_bytes_arr_;
 
     static constexpr MessageType msg_type_ = MessageType::HEARTBEAT;
 
-    FLY_SERIALIZE(header_, worker_id_, running_tasks_, attributes_);
+    FLY_SERIALIZE(header_, worker_id_, running_tasks_, attributes_, rss_epoch_ms_, rss_bytes_arr_);
 };
 
 struct HeartbeatAckMessage {

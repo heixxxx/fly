@@ -43,6 +43,30 @@ TEST(MasterAgentTest, CreateAndStart) {
     EXPECT_FALSE(master.is_running());
 }
 
+// RunSummary：on_heartbeat 的成组 RSS 样本（真实 epoch 时刻，含积压补发）
+// 完整进入 collector——组内每条都有价值，不是只取最新一条。
+TEST(MasterAgentTest, HeartbeatGroupedRssSamplesCollected) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+    master.register_fake_worker_for_testing(77, 999);
+
+    HeartbeatMessage hb;
+    hb.worker_id_ = 77;
+    uint64_t now = RunMetricsCollector::epoch_ms_now();
+    constexpr uint64_t kMB = 1024ull * 1024ull;
+    hb.rss_epoch_ms_ = {now - 20000, now - 10000, now};
+    hb.rss_bytes_arr_ = {100 * kMB, 110 * kMB, 120 * kMB};
+    master.on_heartbeat(999, hb);
+
+    ASSERT_NE(master.run_metrics_for_testing(), nullptr);
+    EXPECT_EQ(master.run_metrics_for_testing()->worker_sample_count_for_testing(77), 3u);
+
+    master.unregister_fake_worker_for_testing(77, 999);
+    master.stop();
+    wait_for_running(master, false);
+}
+
 TEST(MasterAgentTest, CreateWithDifferentPorts) {
     MasterAgent master1("127.0.0.1", 0);
     MasterAgent master2("127.0.0.1", 0);
@@ -243,6 +267,22 @@ TEST(MasterAgentTest, SetupWriteContext_ClearDeactivatesContext) {
 }
 
 // --- restore_master_idx ---
+
+// RunSummary（用户裁定输出形态）：stop 后写 {log_dir}/runtime.summary 与
+// {log_dir}/db.summary，不直接展示 summary 内容。
+TEST(MasterAgentTest, StopWritesSummaryFiles) {
+    TempDir outdir;
+    Config::instance()->set_str("log_dir", outdir.path());
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+    master.stop();
+    wait_for_running(master, false);
+
+    EXPECT_TRUE(std::filesystem::exists(outdir.path() + "/runtime.summary"));
+    EXPECT_TRUE(std::filesystem::exists(outdir.path() + "/db.summary"));
+}
 
 TEST(MasterAgentTest, RestoreMasterIdx_ExistingIdxFile) {
     TempDir tmpdir;

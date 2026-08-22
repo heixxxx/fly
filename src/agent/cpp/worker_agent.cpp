@@ -571,9 +571,22 @@ void WorkerAgent::heartbeat_loop() {
         if (registered_ && heartbeat_running_) {
             HeartbeatMessage hb;
             hb.worker_id_ = worker_id_;
+            // 成组补发：拷入积压样本 + 追加本次新采样（真实 epoch 毫秒时刻）。
+            // 发送失败整组留在缓冲（样本不丢），成功清空等下轮。
+            hb.rss_epoch_ms_ = pending_rss_epoch_ms_;
+            hb.rss_bytes_arr_ = pending_rss_bytes_;
+            hb.rss_epoch_ms_.push_back(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count()));
+            hb.rss_bytes_arr_.push_back(SystemInfo::process_rss_bytes());
             if (!reactor_->try_send(master_conn_, hb)) {
-                DBG("Heartbeat skipped (send busy)");
+                pending_rss_epoch_ms_ = std::move(hb.rss_epoch_ms_);
+                pending_rss_bytes_ = std::move(hb.rss_bytes_arr_);
+                DBG("Heartbeat skipped (send busy) — {} rss samples buffered",
+                    pending_rss_epoch_ms_.size());
             } else {
+                pending_rss_epoch_ms_.clear();
+                pending_rss_bytes_.clear();
                 DBG("Heartbeat sent");
             }
         }

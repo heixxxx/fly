@@ -163,6 +163,14 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     //   转 fast 路径（fail 善后留痕 + StopNow 收尾）。兜底"worker 活着但
     //   complete 丢失"的僵死路径（4 实例压测实测卡死）。0=无限等待（逃生口）。
     {"drain_timeout_seconds", 600},
+    // ── 运行时统计（机器信息日志 + RunSummary 集群内存）──
+    // 机器信息 INFO 日志间隔(s)：每进程（master+worker）定期打印 proc_rss/
+    // host free/total/cpu%/loadavg。0=关闭。
+    {"machine_info_interval_seconds", 10},
+    // master 集群内存快照间隔(s)：RunMetricsCollector 每 tick 记一次
+    // total = master RSS + Σ活跃 worker 最新上报 RSS，退出时汇总为
+    // Run Summary 的分阶段 total_avg/total_peak 与按 db 窗口统计。
+    {"metrics_tick_seconds", 10},
     // - connect 重试首次间隔(ms)，指数 ×2 递增（单次上限 10s 硬编码），首连与重连共用。
     {"worker_connect_retry_initial_ms", 500},
     // - 注册 ack 丢失兜底（P3-23）：注册守望的超时退避初值(ms)，指数 ×2

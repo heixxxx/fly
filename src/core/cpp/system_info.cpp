@@ -57,6 +57,39 @@ static uint64_t meminfo_bytes(const CMString& key) {
     return kb * 1024ull;
 }
 
+// 从 /proc/self/status 读指定字段的 kB 数值（返回字节）。
+static uint64_t self_status_bytes(const CMString& key) {
+    CMString v = read_proc_first("/proc/self/status", key);
+    std::istringstream iss(v);
+    uint64_t kb = 0;
+    iss >> kb;
+    return kb * 1024ull;
+}
+
+uint64_t SystemInfo::process_rss_bytes() {
+    return self_status_bytes("VmRSS");
+}
+
+uint64_t SystemInfo::process_hwm_bytes() {
+    return self_status_bytes("VmHWM");
+}
+
+HostMem SystemInfo::host_mem_bytes() {
+    HostMem m;
+    m.total_ = meminfo_bytes("MemTotal");
+    m.free_ = meminfo_bytes("MemFree");
+    m.available_ = meminfo_bytes("MemAvailable");
+    return m;
+}
+
+double SystemInfo::host_loadavg_1m() {
+    // /proc/loadavg 首列即 1 分钟负载："0.52 0.58 0.59 1/487 12345"
+    std::ifstream ifs("/proc/loadavg");
+    double v = -1.0;
+    ifs >> v;
+    return v;
+}
+
 // 字节 → GB 数值字符串（保留 1 位小数，不含单位）。
 static CMString gb_num(uint64_t bytes) {
     double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
@@ -67,11 +100,9 @@ static CMString gb_num(uint64_t bytes) {
 
 // 内存信息：free / available / total（数值用 / 分隔，单位 GB 仅在末尾）。
 static CMString memory_info() {
-    uint64_t total = meminfo_bytes("MemTotal");
-    uint64_t free = meminfo_bytes("MemFree");
-    uint64_t avail = meminfo_bytes("MemAvailable");
-    if (total == 0) return "unknown";
-    return gb_num(free) + "/" + gb_num(avail) + "/" + gb_num(total) + " GB";
+    HostMem m = SystemInfo::host_mem_bytes();
+    if (m.total_ == 0) return "unknown";
+    return gb_num(m.free_) + "/" + gb_num(m.available_) + "/" + gb_num(m.total_) + " GB";
 }
 
 // 当前进程物理内存占用（VmRSS，GB），括号内为物理峰值（VmHWM）。
@@ -79,16 +110,11 @@ static CMString memory_info() {
 // 线程栈/malloc arena 虚拟预留使其常态上 GB，与实际物理占用无关，诊断
 // 内存压力时误导（push OOM 排查中被误读为 1.2GB 占用）。
 static CMString process_memory() {
-    CMString rss_v = read_proc_first("/proc/self/status", "VmRSS");
-    CMString hwm_v = read_proc_first("/proc/self/status", "VmHWM");
-    std::istringstream rss_iss(rss_v);
-    std::istringstream hwm_iss(hwm_v);
-    uint64_t rss_kb = 0, hwm_kb = 0;
-    rss_iss >> rss_kb;
-    hwm_iss >> hwm_kb;
-    if (rss_kb == 0) return "unknown";
-    CMString s = gb_num(rss_kb * 1024ull) + " GB";
-    if (hwm_kb > 0) s += " (peak " + gb_num(hwm_kb * 1024ull) + " GB)";
+    uint64_t rss = SystemInfo::process_rss_bytes();
+    uint64_t hwm = SystemInfo::process_hwm_bytes();
+    if (rss == 0) return "unknown";
+    CMString s = gb_num(rss) + " GB";
+    if (hwm > 0) s += " (peak " + gb_num(hwm) + " GB)";
     return s;
 }
 

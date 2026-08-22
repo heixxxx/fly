@@ -105,6 +105,39 @@ assign_task_to_worker(task_id, worker_id)
 
 ---
 
+## RunMetricsCollector（run_metrics.h/cpp，master 专属）
+
+运行时指标采集与 RunSummary 汇总（设计与裁定记录：`docs/run-summary-metrics-design.md`）。
+
+**采集模型（骨架 + 最近邻合成，全部推迟到退出时合成）**：
+- tick 线程每 `metrics_tick_seconds`（默认 10s）采 master 自身 RSS 成骨架
+  {steady rel_ms（渲染时间轴）, epoch_ms（对齐域）, rss}；start 立即首 tick。
+- worker 心跳成组上报 RSS 样本（`HeartbeatMessage.rss_epoch_ms_/rss_bytes_arr_`
+  平行数组；**真实采样时刻** = unix epoch 毫秒）。发送失败的样本在 worker 侧
+  缓冲不丢（`pending_rss_*`，仅 heartbeat_loop 单线程访问），下次成功心跳
+  成组补发。
+- 退出时合成：每骨架 tick 取各 worker ≤ 该 epoch 时刻的最后样本
+  （`std::upper_bound` 最近邻；首样本前=未上线不计；`on_worker_dead` 记
+  判死 epoch，死后无新样本不计，复活样本自然重新生效）。
+
+**db 生命周期钩子**：`record_db_created`（register_database +
+get_or_create_database 双入口，幂等首见）/ `record_db_frozen`
+（frozen_dbs_.insert 成功三处 + 锁外 du -sk 统计磁盘终值）/ 
+`record_db_paths_changed`（merge set_paths 作废统计值，退出补测）。
+
+**输出（用户裁定形态）**：stop_impl 尾部直写 `{log_dir}/runtime.summary`
+（时长 + 10 等份分阶段集群内存 total_avg/total_peak；样本 <10 退化单阶段）
+与 `{log_dir}/db.summary`（disk/创建时长/冻结状态/窗口内 mem avg/peak）——
+**独立 ofstream 直写不经 Logger**（退出期 Logger INFO 有吞行前科）；用户
+日志只打一行 `FLY::0002`（总耗时 + 文件地址）。
+
+**机器信息定时日志**：main.cpp `resource_monitor_loop` 每
+`machine_info_interval_seconds`（默认 10，0=关）打 INFO 级 MachineInfo
+（proc_rss+peak / host free/available/total / cpu% / loadavg），master 与
+worker 进程共用。数值 API 在 `core/cpp/system_info.h`。
+
+---
+
 ## WorkerAgent
 
 ### 核心职责

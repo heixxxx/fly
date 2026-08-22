@@ -237,6 +237,7 @@ worker 是独立子进程，用户在 master 脚本里调 `set_message_*_limit` 
 |----|------|------|------|--------|------|
 | `FLY::0000` | INFO | master/worker 启动信息 | `master_agent.cpp`/`worker_agent.cpp` `start()` 末尾 | 0 | 豁免配额，不进 summary（§5） |
 | `FLY::0001` | INFO | master drain 完成 | `master_agent.cpp` `do_drain_and_stop()` 开头 | 1 | 与 FLY::0000 对称的关闭里程碑 |
+| `FLY::0002` | INFO | run 结束（总耗时 + summary 文件地址） | `master_agent.cpp` `stop_impl` 尾部 | 1 | RunSummary 里程碑：只报 `{log_dir}/runtime.summary`+`db.summary` 路径与耗时，内容不进日志 |
 | `AGENT::0001` | INFO | worker 注册上线 | `master_agent.cpp` `on_worker_register` 回 ack 后 | 1 | 集群扩容里程碑 |
 | `AGENT::0002` | WARN | worker 断开 | `master_agent.cpp` `on_disconnect`（非 drain 期） | 1 | drain 期不打（避免刷屏） |
 | `TASK::0001` | ERROR | task 不可恢复失败 | `master_agent.cpp` `on_task_failed` FATAL 分支 | 1 | 仅 WRITE_REGISTRATION_TIMEOUT / EXECUTION_ERROR |

@@ -13,3 +13,13 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "system_info_test",
+    srcs = ["system_info_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/core/cpp:fly_core",
+    ],
+    copts = ["-std=c++20"],
+)

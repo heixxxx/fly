@@ -19,6 +19,9 @@ TEST(ConfigTest, DefaultValues) {
     EXPECT_EQ(config->get_int("heartbeat_timeout"), 120);
     EXPECT_EQ(config->get_int("heartbeat_interval"), 5);
     EXPECT_EQ(config->get_str("transport_type"), "tcp");
+    // 运行时统计（机器信息日志 + RunSummary 集群内存快照）。
+    EXPECT_EQ(config->get_int("machine_info_interval_seconds"), 10);
+    EXPECT_EQ(config->get_int("metrics_tick_seconds"), 10);
 }
 
 TEST(ConfigTest, SetAndGetInt) {

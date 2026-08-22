@@ -3,6 +3,47 @@
 ---
 ---
 
+## 2026-08-22: 运行时 Summary 统计增强（RunMetrics + 机器信息日志 + 心跳成组补发）
+
+**需求（用户提出 + 四轮 review 裁定）**：退出时无运行信息 summary；需
+1)运行时长 2)总时长 10 等份分阶段的集群物理内存 avg/peak（综合 master+全部
+worker，只报集群总量）3)按 db 的磁盘用量/创建时长/创建期间内存 avg/peak
+4)每 worker 每 10s INFO 机器信息（proc_rss/host free/total/cpu%/loadavg）。
+设计与全部裁定记录：`docs/run-summary-metrics-design.md`。
+
+**代码变更**：
+- `core/cpp/system_info`：数值 API 公共化（process_rss/hwm_bytes、
+  host_mem_bytes、host_loadavg_1m）；现有格式化函数复用。
+- `main.cpp resource_monitor_loop`：5s/DBG/仅 cpu+rss →
+  `machine_info_interval_seconds`(10s)/INFO/补齐 host 内存与 loadavg；
+  master+worker 共用。
+- `HeartbeatMessage`：+`rss_epoch_ms_[]/rss_bytes_arr_[]` 平行数组（真实
+  epoch 毫秒——用户裁定相对时间戳完全不准）；worker 侧发送失败样本缓冲
+  不丢、下次心跳成组补发（单线程独占无锁）。
+- `agent/cpp/run_metrics`（新）：tick 骨架 + 最近邻合成（std::upper_bound，
+  用户裁定按 master tick 间隔合并最近样本即可）；判死 epoch 截断/复活
+  重计；db 三钩子（freeze 时锁外 du -sk 统计终值、merge 作废退出补测、
+  data_dir 独立目录加算）；`metrics_tick_seconds`(10s)。
+- 输出（第四轮裁定）：直写 `{log_dir}/runtime.summary` + `db.summary`
+  （独立 ofstream 不经 Logger），用户日志仅 `FLY::0002` 一行（耗时+路径，
+  MessageRegistry 注册点 master_agent.cpp start）。
+- master 挂钩：on_heartbeat 成组样本、handle_worker_death 判死、
+  db 创建双入口（register_database + **get_or_create_database**——e2e
+  实测 open_db 走后者，漏挂则 db.summary 空）。
+
+**调试记录**：e2e 实测退出期 Logger INFO 吞行（[SD] stderr 取证：summary
+生成正常、全部 INFO 未落 master.log；2026-08-19 压测已知现象再证实）——
+summary 文件直写绕开；**Logger 退出期吞 INFO 待专项**（未修，仅记录）。
+MSG 对未注册 id 静默 no-op（FLY::0002 首版未注册导致用户日志缺失）。
+
+**验证**：新增 system_info_test(4) + run_metrics_test(11：render 纯函数/
+最近邻生命周期/成组计数/db 生命周期/du/文件写) + master_agent_test 2 例
+（StopWritesSummaryFiles/HeartbeatGroupedRssSamplesCollected）；全量单测
+63/63；QA 149/149；e2e 手工验证四项需求 + MachineInfo + FLY::0002 全过。
+
+---
+---
+
 ## 2026-08-19: 关闭语义双通道重构 + 压测暴露的三层根因修复（50 轮稳定性 50/50）
 
 **代码变更**（f146043 → 945e213 六提交链）：

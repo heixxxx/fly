@@ -2,7 +2,16 @@
 
 #include <common/cpp/common_types.h>
 
+#include <cstdint>
+
 namespace fly {
+
+// host 物理内存快照（字节，/proc/meminfo）。
+struct HostMem {
+    uint64_t total_ = 0;
+    uint64_t free_ = 0;
+    uint64_t available_ = 0;
+};
 
 // 收集并格式化 fly 启动时的基础信息（binary / 机器 / 网络 / 运行时），
 // 供 FLY::0000 message 在 master/worker 启动时打印。
@@ -11,6 +20,18 @@ namespace fly {
 // 各信息收集自 /proc、uname、gethostname、Config、ProcessInfo、build_info 等。
 class SystemInfo {
 public:
+    // ---- 数值 API：机器信息定时日志（main.cpp resource_monitor_loop）与
+    // RunMetricsCollector 采样共用。全部读 /proc，无缓存、无锁（各自读独立文件）。
+    //
+    // 当前进程物理内存 RSS（字节，/proc/self/status VmRSS）。读取失败返回 0。
+    static uint64_t process_rss_bytes();
+    // 当前进程物理内存历史峰值（字节，/proc/self/status VmHWM）。
+    static uint64_t process_hwm_bytes();
+    // host 物理内存（字节，/proc/meminfo 的 MemTotal/MemFree/MemAvailable）。
+    static HostMem host_mem_bytes();
+    // host 1 分钟综合负载（/proc/loadavg 首列）。读取失败返回 -1。
+    static double host_loadavg_1m();
+
     // 收集全部信息并返回排版后的多行文本（每行含换行）。
     // role: "master" 或 "worker"，标注当前进程角色。
     // listening_port: 实际监听端口（master 的 reactor 绑定端口 / worker 的 data server 端口），

@@ -15,6 +15,17 @@ cc_test(
 )
 
 cc_test(
+    name = "run_metrics_test",
+    srcs = ["run_metrics_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/agent/cpp:fly_agent",
+        "@fmt//:fmt",
+    ],
+    copts = ["-std=c++20"],
+)
+
+cc_test(
     name = "master_agent_test",
     srcs = ["master_agent_test.cpp"],
     deps = [

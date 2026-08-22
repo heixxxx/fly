@@ -100,6 +100,8 @@ void MasterAgent::start() {
     // 侧重连上限与之对等，两侧同宽限收敛）。
     fly::MessageRegistry::instance().register_id("AGENT::0006", fly::LogLevel::WARN);
     fly::MessageRegistry::instance().register_id("FLY::0001", fly::LogLevel::INFO);
+    // FLY::0002: run 结束里程碑（总耗时 + summary 文件地址，stop_impl 尾部）。
+    fly::MessageRegistry::instance().register_id("FLY::0002", fly::LogLevel::INFO);
 
     // 绑定配额变更回调：用户 set_*_limit 后触发，把当前配额广播给所有在线 worker
     // （支持运行时动态修改）。worker 上线时 on_worker_register 也会补发一次。
@@ -292,6 +294,12 @@ void MasterAgent::start() {
 
     heartbeat_monitor_ = CMMakeUnique<HeartbeatMonitor>(
         worker_manager_.get(), Config::instance()->get_int("heartbeat_timeout"));
+
+    // RunMetricsCollector：master 骨架采样（tick 线程）；worker 心跳成组
+    // RSS 样本按真实 epoch 时刻最近邻合并（合成推迟到 build_summary）。
+    // tick 线程在 do_drain_and_stop 停止，summary 在 stop_impl 尾部输出。
+    run_metrics_ = CMMakeUnique<RunMetricsCollector>();
+    run_metrics_->start(Config::instance()->get_int("metrics_tick_seconds"));
 
     heartbeat_check_running_ = true;
     heartbeat_check_thread_ = std::thread([this] { heartbeat_check_loop(); });
@@ -546,6 +554,19 @@ void MasterAgent::stop_impl(bool fast, const CMString& reason) {
     INFO("MasterAgent stop(): workers disconnected, persisting pending (elapsed={}ms)", _elapsed());
     persist_pending_tasks();
     do_drain_and_stop();
+    // RunSummary（用户裁定输出形态）：内容直写 {log_dir}/runtime.summary 与
+    // {log_dir}/db.summary（独立 ofstream，不经 Logger——退出期 Logger INFO 有
+    // 偶发吞行前科）；用户日志只打文件地址与总耗时，不直接展示 summary。
+    if (run_metrics_) {
+        auto [rt_path, db_sum_path] = run_metrics_->write_summary_files(
+            Config::instance()->get_str("log_dir"),
+            Config::instance()->get_int("metrics_tick_seconds"));
+        const double dur_s = run_metrics_->duration_seconds();
+        MSG("FLY::0002", 1, "run finished in {:.1f}s — runtime summary: {} | db summary: {}",
+            dur_s, rt_path, db_sum_path);
+        INFO("RunSummary files written: runtime={} db={} duration={:.1f}s",
+             rt_path, db_sum_path, dur_s);
+    }
     INFO("MasterAgent stop(): fully stopped (elapsed={}ms)", _elapsed());
 }
 
@@ -610,6 +631,10 @@ void MasterAgent::do_drain_and_stop() {
         conn_to_worker_.clear();
         worker_to_conn_.clear();
     }
+
+    // RunSummary：全部常驻线程已 join，停 tick 线程（封闭统计窗口；summary
+    // 由 stop_impl 尾部输出）。须在 worker_manager_ 仍存活时停（alive_fn 捕 this）。
+    if (run_metrics_) run_metrics_->stop();
 
     running_ = false;
 }
@@ -1321,6 +1346,12 @@ void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
 
     worker_manager_->set_heartbeat(worker_id, timestamp);
 
+    // RunSummary 采样：worker 心跳成组携带的物理内存 RSS 样本（真实 epoch
+    // 时刻，含发送失败期间积压补发的样本；合成推迟到 build_summary）。
+    if (run_metrics_ && !msg.rss_epoch_ms_.empty()) {
+        run_metrics_->on_worker_samples(msg.worker_id_, msg.rss_epoch_ms_, msg.rss_bytes_arr_);
+    }
+
     auto worker = worker_manager_->get_worker(worker_id);
     if (worker && worker->get().status_ == WorkerStatus::DEAD) {
         worker_manager_->update_worker_status(worker_id, WorkerStatus::IDLE);
@@ -1653,6 +1684,9 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
 void MasterAgent::handle_worker_death(uint64_t worker_id) {
     WARN("worker {} declared dead (grace expired or immediate-death mode)", worker_id);
     grace_deadlines_.erase(worker_id);
+    // RunSummary：记判死时刻（合成时该 worker 最后样本不再计入，复活样本
+    // epoch > 此时刻自然重新生效）。
+    if (run_metrics_) run_metrics_->on_worker_dead(worker_id);
 
     CMVector<uint64_t> tasks_to_recover;
     {
@@ -2163,6 +2197,10 @@ void MasterAgent::register_database(const CMString& db_path, const CMString& dat
         WARN("[DB-DUP] register_database: db_path={} already exists — overwriting (possible bug)", db_path);
     }
     db_instances_[db_path] = db;
+    db_lk.unlock();
+    // RunSummary：master 首见 db（幂等，首见语义不覆盖；merge 路径变更走
+    // record_db_paths_changed）。锁外登记（collector 自身锁，快速路径）。
+    if (run_metrics_) run_metrics_->record_db_created(db_path, data_path);
 }
 
 bool MasterAgent::is_db_frozen(const CMString& db_path) const {
@@ -2205,6 +2243,8 @@ void MasterAgent::commit_pending_frozen(uint64_t task_id) {
         if (db) db->freeze();
         // Part C: freeze 确认后 provenance 已失效，立即清理释放内存。
         cleanup_provenance_for_db(db_path);
+        // RunSummary：封闭 db 窗口 + du 统计磁盘终值（锁外，ms 级）。
+        if (run_metrics_) run_metrics_->record_db_frozen(db_path);
         INFO("DB frozen (committed by task): db_path={}, task_id={}", db_path, task_id);
         DatabaseFreezeNotification broadcast_msg;
         broadcast_msg.db_path_ = db_path;
@@ -2244,6 +2284,10 @@ CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& db_pat
         WARN("[DB-DUP] get_or_create_database: db_path={} already exists — recreating (possible bug, should reuse)", db_path);
     }
     db_instances_[db_path] = db;
+    db_lk.unlock();
+    // RunSummary：master 首见 db（幂等；与 register_database 覆盖 load/自写
+    // 两类创建入口）。
+    if (run_metrics_) run_metrics_->record_db_created(db_path, data_path);
     return db;
 }
 
@@ -3100,6 +3144,8 @@ void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFre
         // Part C: freeze 确认后 provenance 已无写入可拦截（is_db_frozen 拦下所有后续写入），
         // 立即清理释放内存。
         cleanup_provenance_for_db(msg.db_path_);
+        // RunSummary：封闭 db 窗口 + du 统计磁盘终值（锁外，ms 级）。
+        if (run_metrics_) run_metrics_->record_db_frozen(msg.db_path_);
         // stream 模式的本地 freeze + 广播（D2 拆除：freeze 重 IO 与广播移出容器锁）
         CMSharedPtr<Database> db;
         {
@@ -3132,6 +3178,8 @@ void MasterAgent::on_master_freeze(const CMString& db_path) {
 
     // Part C: freeze 确认后 provenance 已失效，立即清理释放内存。
     cleanup_provenance_for_db(db_path);
+    // RunSummary：封闭 db 窗口 + du 统计磁盘终值（锁外，ms 级）。
+    if (run_metrics_) run_metrics_->record_db_frozen(db_path);
 
     DatabaseFreezeNotification msg;
     msg.db_path_ = db_path;
@@ -3796,6 +3844,8 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     }
     if (existing_db) {
         existing_db->set_paths(merge_db_path, merge_data_path);
+        // RunSummary：路径已变，作废 freeze 时统计的磁盘值（退出时按新路径补测）。
+        if (run_metrics_) run_metrics_->record_db_paths_changed(db_path, merge_data_path);
     } else {
         // merge 产物句柄由 Python 经 ex_stg_create_database_with_id 构造，未进 master
         // db_instances_。这里用源 db_path 重建并登记，保证 master 路径权威源与新路径一致。

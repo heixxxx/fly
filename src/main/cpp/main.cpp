@@ -1,6 +1,7 @@
 #include <Python.h>
 #include <core/cpp/config.h>
 #include <core/cpp/process_info.h>
+#include <core/cpp/system_info.h>
 #include <log/cpp/logger.h>
 #include <agent/cpp/graceful_shutdown.h>
 #include <cstdio>
@@ -37,11 +38,16 @@ static std::string get_mem_info() {
 
 static std::atomic<bool> g_monitor_running{false};
 
+// 机器信息定时日志（master/worker 共用，每 machine_info_interval_seconds 一次）。
+// 字段：本进程物理内存 RSS(+峰值)、host free/available/total 物理内存、
+// 本进程 CPU 占用、host 1 分钟综合负载。全部为物理内存口径（RSS，非 VmPeak）。
 static void resource_monitor_loop() {
+    const int64_t interval_s = Config::instance()->get_int("machine_info_interval_seconds");
     long hz = sysconf(_SC_CLK_TCK);
     long prev_utime = 0, prev_stime = 0;
     long prev_total_cpu = 0;
     auto prev_wall = std::chrono::steady_clock::now();
+    constexpr double kGB = 1024.0 * 1024.0 * 1024.0;
 
     {
         std::ifstream ifs("/proc/self/stat");
@@ -70,7 +76,7 @@ static void resource_monitor_loop() {
     }
 
     while (g_monitor_running.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(5));
+        std::this_thread::sleep_for(std::chrono::seconds(interval_s));
         if (!g_monitor_running.load()) break;
 
         long utime = 0, stime = 0;
@@ -100,25 +106,21 @@ static void resource_monitor_loop() {
             }
         }
 
-        long rss_kb = 0;
-        std::ifstream ifs3("/proc/self/status");
-        if (ifs3) {
-            std::string line;
-            while (std::getline(ifs3, line)) {
-                if (line.compare(0, 6, "VmRSS:") == 0) {
-                    rss_kb = std::stol(line.substr(6));
-                    break;
-                }
-            }
-        }
-
         auto now = std::chrono::steady_clock::now();
         double dt = std::chrono::duration<double>(now - prev_wall).count();
         double dproc = (utime - prev_utime + stime - prev_stime) / (double)hz;
         double dtot = (total_cpu - prev_total_cpu) / (double)hz;
         double cpu_pct = dtot > 0.001 ? dproc / dtot * 100.0 : 0.0;
 
-        DBG("ResourceMonitor cpu={:.1f}% rss={}MB", cpu_pct, rss_kb / 1024);
+        const uint64_t rss = fly::SystemInfo::process_rss_bytes();
+        const uint64_t hwm = fly::SystemInfo::process_hwm_bytes();
+        const fly::HostMem hm = fly::SystemInfo::host_mem_bytes();
+        const double load1 = fly::SystemInfo::host_loadavg_1m();
+
+        INFO("MachineInfo proc_rss={}MB (peak {}MB) host_mem={:.1f}/{:.1f}/{:.1f}GB cpu={:.1f}% load1={:.2f}",
+             rss / (1024ull * 1024ull), hwm / (1024ull * 1024ull),
+             hm.free_ / kGB, hm.available_ / kGB, hm.total_ / kGB,
+             cpu_pct, load1);
 
         prev_utime = utime;
         prev_stime = stime;
@@ -342,8 +344,12 @@ int main(int argc, char* argv[]) {
         cfg->get_int("log_flush_interval_ms"));
     fly::Logger::init(log_dir, worker_id);
 
-    g_monitor_running.store(true);
-    std::thread monitor_thread(resource_monitor_loop);
+    // 机器信息定时日志：interval<=0（config machine_info_interval_seconds=0）关闭。
+    std::thread monitor_thread;
+    if (cfg->get_int("machine_info_interval_seconds") > 0) {
+        g_monitor_running.store(true);
+        monitor_thread = std::thread(resource_monitor_loop);
+    }
 
     wchar_t** wargv = new wchar_t*[argc];
     for (int i = 0; i < argc; ++i) {
@@ -361,8 +367,10 @@ int main(int argc, char* argv[]) {
         "sys.exit(run())\n"
     );
 
-    g_monitor_running.store(false);
-    monitor_thread.join();
+    if (monitor_thread.joinable()) {
+        g_monitor_running.store(false);
+        monitor_thread.join();
+    }
 
     fly::Logger::shutdown();
 
