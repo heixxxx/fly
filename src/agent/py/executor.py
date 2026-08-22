@@ -17,6 +17,7 @@ master commits pending freezes by task_id on task completion.
 """
 import importlib
 import pickle
+import time
 import traceback
 
 try:
@@ -25,6 +26,9 @@ except ImportError:
     cloudpickle = None
 
 from task import USER_MODULE, USER_FUNC_PREFIX
+
+from monitor import set_current as io_set_current, take_result as io_take_result, \
+    add_drain_ms as io_add_drain_ms
 
 from _fly_agent import EXTaskExecResult, EXTaskExecStatus
 from _fly_log import INFO, ERR
@@ -182,7 +186,10 @@ def create_executor(worker):
         back by the C++ cleanup_failed_task_writes, so draining would be wrong.
         """
         from _fly_storage import ex_stg_get_data_service
+        t0 = time.perf_counter()
         ex_stg_get_data_service().drain_write_back()
+        # drain 是 write 的 flush 落盘段，计入 task 的 write_time。
+        io_add_drain_ms((time.perf_counter() - t0) * 1000.0)
 
     def executor(task_id: int, task_name: str, task_module: str, args: list) -> dict:
         result = {
@@ -196,11 +203,17 @@ def create_executor(worker):
             # 通知 master 登记 pending；task 完成时 master 按 task_id 从 pending 迁移。
             # 旧的"遍历 _db_cache 拍前后快照算差集"已删除（不可靠且冗余）。
             'frozen_dbs': [],
+            # cluster monitor IO 归属聚合（read/write 时间与字节 + 对象级明细），
+            # C++ 胶水（agent_export）解析进 TaskExecResult 随 complete 上报。
+            'io_stats': {'read_ms': 0.0, 'read_bytes': 0, 'write_ms': 0.0, 'items': []},
         }
 
         try:
             # Phase 1: preprocess (db creation, var injection, etc.)
             deserialized_args = preprocess(task_id, task_name, task_module, args)
+
+            # IO 归属窗口开启（execute+postprocess 期间的 read/write 计入本 task）。
+            io_set_current(task_id)
 
             # Phase 2: execute
             output = execute(task_id, task_name, task_module, deserialized_args)
@@ -219,6 +232,10 @@ def create_executor(worker):
 
             msg = f"Task execution failed: id={task_id}, name={task_name}, error={str(e)}"
             ERR(msg)
+
+        finally:
+            # 成功/失败路径都收口归属窗口（失败 task 的部分 IO 同样有分析价值）。
+            result['io_stats'] = io_take_result(task_id)
 
         return result
 

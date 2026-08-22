@@ -646,6 +646,28 @@ void WorkerAgent::monitor_report_loop() {
     }
 }
 
+// 对象级 IO 明细上报（尽力而为）：明细是增强数据，发送失败仅 DBG 丢弃；
+// 聚合四元组（read/write 时间与字节）随 TASK_COMPLETE/TASK_FAILED 有不丢保障。
+void WorkerAgent::report_task_io(const TaskExecResult& result) {
+    if (result.io_items_.empty()) return;
+    MonitorTaskIoMessage msg;
+    msg.task_id_ = result.task_id_;
+    msg.worker_id_ = worker_id_;
+    for (const auto& it : result.io_items_) {
+        MonitorObjectIoItem item;
+        item.object_name_ = it.object_name_;
+        item.is_write_ = it.is_write_ ? 1 : 0;
+        item.bytes_ = it.bytes_;
+        item.duration_ms_ = static_cast<uint32_t>(it.duration_ms_);
+        item.epoch_ms_ = it.epoch_ms_;
+        msg.items_.push_back(item);
+    }
+    if (!reactor_->try_send(master_conn_, msg)) {
+        DBG("MonitorTaskIo dropped (send busy): task={} items={}",
+            result.task_id_, msg.items_.size());
+    }
+}
+
 // Background bandwidth probe. On each interval it walks every known data-server
 // peer, sends a NET_PROBE_REQUEST, and times the full round-trip of the echoed
 // payload. RTT and throughput feed NetQualityMonitor, which TIER2 consults to
@@ -869,6 +891,14 @@ bool WorkerAgent::poll_task() {
             task.task_id_, task.task_name_, task.task_module_, task.args_);
         task_resource_tracker_.end(task.task_id_);
         auto tracked_writes = end_task(task.task_id_);
+        // 对象级 IO 明细（尽力而为通道；聚合四元组随 complete/failed 不丢）。
+        report_task_io(result);
+
+        // write 侧压缩字节数汇总（WriteRecord.size_bytes_ 为准）。
+        uint64_t write_bytes_total = 0;
+        for (const auto& w : tracked_writes) {
+            write_bytes_total += static_cast<uint64_t>(w.size_bytes_);
+        }
 
         if (result.status_ == TaskExecStatus::SUCCESS) {
             auto error_type = WorkerAgentContext::get_last_error_type();
@@ -883,6 +913,10 @@ bool WorkerAgent::poll_task() {
                 failed.error_message_ = "Write registration rejected: error_type=" +
                     std::to_string(static_cast<int>(error_type));
                 failed.error_type_ = error_type;
+                failed.read_time_ms_ = result.read_time_ms_;
+                failed.write_time_ms_ = result.write_time_ms_;
+                failed.read_bytes_ = result.read_bytes_;
+                failed.write_bytes_ = write_bytes_total;
                 // dirty_objects_ 是全名列表（master 据此清理 remote_idx/provenance）。
                 for (const auto& w : tracked_writes) failed.dirty_objects_.push_back(w.full_name_);
                 send_master_or_buffer(failed);
@@ -906,6 +940,10 @@ bool WorkerAgent::poll_task() {
                     complete.written_objects_.push_back({std::move(out), 0});
                 }
                 complete.frozen_dbs_ = std::move(result.frozen_dbs_);
+                complete.read_time_ms_ = result.read_time_ms_;
+                complete.write_time_ms_ = result.write_time_ms_;
+                complete.read_bytes_ = result.read_bytes_;
+                complete.write_bytes_ = write_bytes_total;
                 send_master_or_buffer(complete);
 
                 auto tid = task.task_id_;
@@ -921,6 +959,10 @@ bool WorkerAgent::poll_task() {
             failed.worker_id_ = worker_id_;
             failed.error_message_ = result.error_;
             failed.error_type_ = WorkerAgentContext::get_last_error_type();
+            failed.read_time_ms_ = result.read_time_ms_;
+            failed.write_time_ms_ = result.write_time_ms_;
+            failed.read_bytes_ = result.read_bytes_;
+            failed.write_bytes_ = write_bytes_total;
             for (const auto& w : tracked_writes) failed.dirty_objects_.push_back(w.full_name_);
             send_master_or_buffer(failed);
 

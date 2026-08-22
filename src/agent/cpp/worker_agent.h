@@ -315,6 +315,9 @@ private:
     CMVector<MonitorSample> pending_samples_;
     void monitor_report_loop();
 
+    // 对象级 IO 明细上报（尽力而为通道；poll_task 执行后调用）。
+    void report_task_io(const TaskExecResult& result);
+
     // task 执行窗口资源归属：poll_task（begin/end）+ monitor 采样线程
     // （add_sample）+ send_master_or_buffer（take_agg 填消息字段）三方协作。
     TaskResourceTracker task_resource_tracker_;

@@ -54,6 +54,36 @@ FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
                 cpp_result.error_ = fly_export::cast<fly::CMString>(result[fly_export::str("error")]);
                 cpp_result.outputs_ = fly_export::cast<fly::CMVector<fly::CMString>>(result[fly_export::str("outputs")]);
                 cpp_result.frozen_dbs_ = fly_export::cast<fly::CMVector<fly::CMString>>(result[fly_export::str("frozen_dbs")]);
+                // cluster monitor io_stats（executor 恒带该键；缺失/形态异常降级全 0，
+                // 绝不影响主流程）。
+                try {
+                    fly_export::object io = result[fly_export::str("io_stats")];
+                    cpp_result.read_time_ms_ = static_cast<uint64_t>(
+                        fly_export::cast<double>(io[fly_export::str("read_ms")]));
+                    cpp_result.write_time_ms_ = static_cast<uint64_t>(
+                        fly_export::cast<double>(io[fly_export::str("write_ms")]));
+                    cpp_result.read_bytes_ = fly_export::cast<uint64_t>(
+                        io[fly_export::str("read_bytes")]);
+                    fly_export::list items =
+                        fly_export::cast<fly_export::list>(io[fly_export::str("items")]);
+                    for (fly_export::handle h : items) {
+                        // item 是 dict（不是对象），必须按键取值（attr 是属性访问）。
+                        fly_export::dict d = fly_export::cast<fly_export::dict>(h);
+                        fly::ObjectIoRecord r;
+                        r.object_name_ = fly_export::cast<fly::CMString>(
+                            d[fly_export::str("name")]);
+                        r.is_write_ = fly_export::cast<bool>(d[fly_export::str("w")]);
+                        r.bytes_ = fly_export::cast<uint64_t>(d[fly_export::str("bytes")]);
+                        r.duration_ms_ = static_cast<uint64_t>(
+                            fly_export::cast<double>(d[fly_export::str("ms")]));
+                        r.epoch_ms_ = fly_export::cast<uint64_t>(
+                            d[fly_export::str("epoch_ms")]);
+                        r.task_id_ = task_id;
+                        cpp_result.io_items_.push_back(r);
+                    }
+                } catch (const fly_export::python_error&) {
+                    PyErr_Clear();
+                }
                 return cpp_result;
             } catch (const fly_export::python_error& e) {
                 fly::TaskExecResult cpp_result;

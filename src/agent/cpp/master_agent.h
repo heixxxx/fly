@@ -143,6 +143,8 @@ public:
     void on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg);
     // monitor 采样成组上报处理（RunMetrics 喂样 + MetricsDb 落库；测试直调）。
     void on_monitor_sample(const MonitorSampleMessage& msg);
+    // task 对象级 IO 明细上报（object_io 表落库；测试直调）。
+    void on_task_io_report(const MonitorTaskIoMessage& msg);
     // 同步写注册裁决（on_write_register 的核心，无网络副作用前半段）——
     // public 供测试直调失败分类（frozen/mismatch/空 hash REGISTRATION_FAILED）。
     WriteRegisterAckMessage do_write_register(const WriteRegisterMessage& msg);

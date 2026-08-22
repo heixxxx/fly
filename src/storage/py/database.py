@@ -5,6 +5,8 @@ from _fly_storage import (
     EXStgWriteErrorType,
 )
 
+from monitor import record_read, record_write
+
 # db_chain 模块（同包相对导入）
 from .db_chain import (
     DbChainFile, generate_uid, make_chain, make_edge,
@@ -65,94 +67,115 @@ class Database:
                 （数据搬运/merge 等不希望中间对象挤占缓存的场景，读走索引+磁盘）。
         """
         if not save_to_db:
+            # temp 路径独立计时（_write_temp 内部 record_write），不进本路径。
             return self._write_temp(name, obj)
 
-        # write_object / _write_pickle_bytes return a WriteErrorType int (OK=success).
-        # DUPLICATE_SKIPPED is benign (same object already written) — not raised.
-        py_name = type(obj).__name__
-        if hasattr(obj, "_write_to_db"):
-            err = EXStgWriteErrorType(obj._write_to_db(self._db, name, py_name, backup))
-        else:
-            from _fly_storage import FlyStream, EXStgCompressionType
-            from core import get_config as _gc
-            _cfg = _gc()
-            _cm = {"none": EXStgCompressionType.NONE, "lz4": EXStgCompressionType.LZ4,
-                   "zlib": EXStgCompressionType.ZLIB, "zstd": EXStgCompressionType.ZSTD}
-            stream = FlyStream(_cm.get(_cfg.get_str("compression_type"), EXStgCompressionType.LZ4),
-                               _cfg.get_int("serialize_chunk_size"), py_name)
-            pickle.dump(obj, stream)
-            stream.flush()
-            buf = stream.finish()
-            err = EXStgWriteErrorType(self._db._commit_stream(
-                name, buf, py_name, backup, cache != "none"))
+        t0 = time.perf_counter()
+        try:
+            # write_object / _write_pickle_bytes return a WriteErrorType int (OK=success).
+            # DUPLICATE_SKIPPED is benign (same object already written) — not raised.
+            py_name = type(obj).__name__
+            if hasattr(obj, "_write_to_db"):
+                err = EXStgWriteErrorType(obj._write_to_db(self._db, name, py_name, backup))
+            else:
+                from _fly_storage import FlyStream, EXStgCompressionType
+                from core import get_config as _gc
+                _cfg = _gc()
+                _cm = {"none": EXStgCompressionType.NONE, "lz4": EXStgCompressionType.LZ4,
+                       "zlib": EXStgCompressionType.ZLIB, "zstd": EXStgCompressionType.ZSTD}
+                stream = FlyStream(_cm.get(_cfg.get_str("compression_type"), EXStgCompressionType.LZ4),
+                                   _cfg.get_int("serialize_chunk_size"), py_name)
+                pickle.dump(obj, stream)
+                stream.flush()
+                buf = stream.finish()
+                err = EXStgWriteErrorType(self._db._commit_stream(
+                    name, buf, py_name, backup, cache != "none"))
 
-        if err != EXStgWriteErrorType.OK and err != EXStgWriteErrorType.DUPLICATE_SKIPPED:
-            msg = self._WRITE_ERROR_MESSAGES.get(err, f"Write error (type={err})")
-            raise RuntimeError(f"{msg}: {name}")
-        # New value landed — drop any stale Python high-tier cache entry so a
-        # subsequent read_object(cache="high") reflects the new value.
-        self._invalidate_read_cache(name)
-        return ""
+            if err != EXStgWriteErrorType.OK and err != EXStgWriteErrorType.DUPLICATE_SKIPPED:
+                msg = self._WRITE_ERROR_MESSAGES.get(err, f"Write error (type={err})")
+                raise RuntimeError(f"{msg}: {name}")
+            # New value landed — drop any stale Python high-tier cache entry so a
+            # subsequent read_object(cache="high") reflects the new value.
+            self._invalidate_read_cache(name)
+            return ""
+        finally:
+            # IO 归属计时（master 无 task 在跑时为空操作）；字节数由 C++
+            # WriteRecord 汇总（TaskComplete.written_objects），此处仅计时。
+            record_write(self.get_full_name(name), (time.perf_counter() - t0) * 1000.0)
 
     def _write_temp(self, name: str, obj) -> str:
-        if hasattr(obj, "_write_to_db"):
-            result = obj._write_to_db(self._db, name, type(obj).__name__, False)
+        t0 = time.perf_counter()
+        try:
+            if hasattr(obj, "_write_to_db"):
+                result = obj._write_to_db(self._db, name, type(obj).__name__, False)
+                self._invalidate_read_cache(name)
+                return result
+            data = pickle.dumps(obj)
+            py_name = type(obj).__name__
+            # Compress + register + store in one C++ call — avoids
+            # compress→Python bytes→CMString roundtrip.
+            self._db._write_temp_pickle(name, data, py_name)
             self._invalidate_read_cache(name)
-            return result
-        data = pickle.dumps(obj)
-        py_name = type(obj).__name__
-        # Compress + register + store in one C++ call — avoids
-        # compress→Python bytes→CMString roundtrip.
-        self._db._write_temp_pickle(name, data, py_name)
-        self._invalidate_read_cache(name)
-        return ""
+            return ""
+        finally:
+            record_write(self.get_full_name(name), (time.perf_counter() - t0) * 1000.0)
 
     def read_object(self, name: str, backup: bool = False, cache: str = "low"):
-        # Caching tier dispatch:
-        #   - nanobind (C++ exported) classes: _read_from_db → C++ ObjectCache
-        #     Supports "low" (default), "high", "none" cache tiers.
-        #   - pickle (Python) objects: "high" → Python ReadCache high tier;
-        #     "low"/"none" → C++ ObjectCache low tier (transparent, via
-        #     _read_streaming) + reconstruct every time.
-        py_name = self._db._get_py_name(name)
-        import _fly_storage
-        cls = getattr(_fly_storage, py_name, None)
-        is_cpp_obj = cls is not None and hasattr(cls, "_read_from_db")
+        # IO 归属计时：全分支包裹（cache 命中/C++ 对象/pickle 各路径）；
+        # 字节数仅在 Python 拿到解压 data 的路径可得（C++ 对象路径记 0）。
+        t0 = time.perf_counter()
+        nbytes = 0
+        try:
+            # Caching tier dispatch:
+            #   - nanobind (C++ exported) classes: _read_from_db → C++ ObjectCache
+            #     Supports "low" (default), "high", "none" cache tiers.
+            #   - pickle (Python) objects: "high" → Python ReadCache high tier;
+            #     "low"/"none" → C++ ObjectCache low tier (transparent, via
+            #     _read_streaming) + reconstruct every time.
+            py_name = self._db._get_py_name(name)
+            import _fly_storage
+            cls = getattr(_fly_storage, py_name, None)
+            is_cpp_obj = cls is not None and hasattr(cls, "_read_from_db")
 
-        if is_cpp_obj:
-            # nanobind class → C++ read_object<Cls> with specified cache tier.
-            return cls._read_from_db(self._db, name, cache)
+            if is_cpp_obj:
+                # nanobind class → C++ read_object<Cls> with specified cache tier.
+                return cls._read_from_db(self._db, name, cache)
 
-        if cache == "high":
-            from storage import get_read_cache
-            rc = get_read_cache()
-            db_path = self.get_db_path()
-            key = f"{db_path}:{name}"
-            obj = rc.get(key, "high")
-            if obj is not None:
+            if cache == "high":
+                from storage import get_read_cache
+                rc = get_read_cache()
+                db_path = self.get_db_path()
+                key = f"{db_path}:{name}"
+                obj = rc.get(key, "high")
+                if obj is not None:
+                    return obj
+                # Zero-copy: use _read_decompressed to avoid intermediate copies
+                data, _ = self._db._read_decompressed(name, backup)
+                # read_object_compressed 在所有 tier miss 时返回 nullptr，_read_decompressed
+                # 翻译成空 bytes（storage_export.cpp）。不检查直接 pickle.loads(b'') 会抛
+                # 误导性的 EOFError: Ran out of input，掩盖"对象不存在/尚未可见"的真相。
+                # 这里前置检查，把语义还原成标准的"读不到"异常。
+                if not data:
+                    raise KeyError(
+                        f"Object '{name}' not found (no data — not yet visible to master "
+                        "or never written)")
+                nbytes = len(data)
+                obj = pickle.loads(data)
+                rc.put(key, "high", obj)
                 return obj
+
+            # pickle object, cache="low"/"none": C++ low tier handles byte caching.
             # Zero-copy: use _read_decompressed to avoid intermediate copies
             data, _ = self._db._read_decompressed(name, backup)
-            # read_object_compressed 在所有 tier miss 时返回 nullptr，_read_decompressed
-            # 翻译成空 bytes（storage_export.cpp）。不检查直接 pickle.loads(b'') 会抛
-            # 误导性的 EOFError: Ran out of input，掩盖"对象不存在/尚未可见"的真相。
-            # 这里前置检查，把语义还原成标准的"读不到"异常。
             if not data:
                 raise KeyError(
                     f"Object '{name}' not found (no data — not yet visible to master "
                     "or never written)")
-            obj = pickle.loads(data)
-            rc.put(key, "high", obj)
-            return obj
-
-        # pickle object, cache="low"/"none": C++ low tier handles byte caching.
-        # Zero-copy: use _read_decompressed to avoid intermediate copies
-        data, _ = self._db._read_decompressed(name, backup)
-        if not data:
-            raise KeyError(
-                f"Object '{name}' not found (no data — not yet visible to master "
-                "or never written)")
-        return pickle.loads(data)
+            nbytes = len(data)
+            return pickle.loads(data)
+        finally:
+            record_read(self.get_full_name(name), nbytes,
+                        (time.perf_counter() - t0) * 1000.0)
 
     def _invalidate_read_cache(self, name: str):
         """Drop any cached Python (high-tier) entry for `name`.
@@ -178,12 +201,25 @@ class Database:
         self._db.backup_object(name)
 
     def write_object_raw(self, name: str, data: str, backup: bool = False) -> str:
-        ret = self._db.write_object_raw(name, data, backup)
-        self._invalidate_read_cache(name)
-        return ret
+        t0 = time.perf_counter()
+        try:
+            ret = self._db.write_object_raw(name, data, backup)
+            self._invalidate_read_cache(name)
+            return ret
+        finally:
+            record_write(self.get_full_name(name), (time.perf_counter() - t0) * 1000.0)
 
     def read_object_raw(self, name: str) -> str:
-        return self._db.read_object_raw(name)
+        t0 = time.perf_counter()
+        nbytes = 0
+        try:
+            ret = self._db.read_object_raw(name)
+            if ret is not None:
+                nbytes = len(ret)
+            return ret
+        finally:
+            record_read(self.get_full_name(name), nbytes,
+                        (time.perf_counter() - t0) * 1000.0)
 
     def get_full_name(self, name: str) -> str:
         return self._db.get_full_name(name)

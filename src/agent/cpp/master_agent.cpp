@@ -124,6 +124,11 @@ void MasterAgent::start() {
             on_monitor_sample(msg);
         });
 
+    reactor_->register_handler<MonitorTaskIoMessage>(
+        [this](uint64_t conn_id, const MonitorTaskIoMessage& msg) {
+            on_task_io_report(msg);
+        });
+
     reactor_->register_handler<TaskCompleteMessage>(
         [this](uint64_t conn_id, const TaskCompleteMessage& msg) {
             on_task_complete(conn_id, msg);
@@ -1399,6 +1404,25 @@ void MasterAgent::on_monitor_sample(const MonitorSampleMessage& msg) {
         metrics_db_->record_worker_samples(msg.worker_id_, msg.samples_);
     }
     DBG("MonitorSample from worker_id={}: {} samples", msg.worker_id_, msg.samples_.size());
+}
+
+// 对象级 IO 明细（尽力而为通道）：转 ObjectIoRecord 落 object_io 表。
+void MasterAgent::on_task_io_report(const MonitorTaskIoMessage& msg) {
+    if (!metrics_db_ || msg.items_.empty()) return;
+    CMVector<ObjectIoRecord> records;
+    records.reserve(msg.items_.size());
+    for (const auto& item : msg.items_) {
+        ObjectIoRecord r;
+        r.epoch_ms_ = item.epoch_ms_;
+        r.task_id_ = msg.task_id_;
+        r.worker_id_ = msg.worker_id_;
+        r.is_write_ = item.is_write_ != 0;
+        r.object_name_ = item.object_name_;
+        r.bytes_ = item.bytes_;
+        r.duration_ms_ = item.duration_ms_;
+        records.push_back(r);
+    }
+    metrics_db_->record_object_io(records);
 }
 
 // 登记写入该 db 的 worker 元数据（db meta recorded_workers_）。

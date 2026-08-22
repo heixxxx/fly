@@ -70,10 +70,13 @@ enum class MessageType : uint8_t {
                                  //   与 SHUTDOWN（优雅退：flush coverage + WBQ drain）语义相反；master 侧已做 fail 善后，task 结果以 master 记录为准
     MONITOR_SAMPLE = 59,         // worker → master: monitor 负载采样成组上报（async, no ack；失败/断连样本
                                  //   在 worker 侧缓冲成组补发，不丢）。与心跳完全解耦（心跳仅保活）。
+    MONITOR_TASK_IO = 60,        // worker → master: task 对象级 IO 明细（read/write 单次调用）。
+                                 //   尽力而为通道：发送失败丢弃（聚合四元组由 TASK_COMPLETE/
+                                 //   TASK_FAILED 消息保证不丢，明细仅增强数据）。
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 59;
+    return raw >= 1 && raw <= 60;
 }
 
 struct MessageHeader {
@@ -171,6 +174,30 @@ struct MonitorSampleMessage {
     static constexpr MessageType msg_type_ = MessageType::MONITOR_SAMPLE;
 
     FLY_SERIALIZE(header_, worker_id_, samples_);
+};
+
+// task 对象级 IO 明细一条（read_object/write_object 单次调用）。
+// bytes 口径：read=解压后字节（C++ 对象路径 Python 不可得，记 0）；
+// write=0（压缩后字节数以 TaskComplete.written_objects 为准）。
+struct MonitorObjectIoItem {
+    CMString object_name_;      // 对象全名 "db_path:short_name"
+    uint8_t is_write_ = 0;
+    uint64_t bytes_ = 0;
+    uint32_t duration_ms_ = 0;
+    uint64_t epoch_ms_ = 0;     // worker 侧调用时刻（unix epoch 毫秒）
+
+    FLY_SERIALIZE(object_name_, is_write_, bytes_, duration_ms_, epoch_ms_);
+};
+
+struct MonitorTaskIoMessage {
+    MessageHeader header_;
+    uint64_t task_id_ = 0;
+    uint64_t worker_id_ = 0;
+    CMVector<MonitorObjectIoItem> items_;
+
+    static constexpr MessageType msg_type_ = MessageType::MONITOR_TASK_IO;
+
+    FLY_SERIALIZE(header_, task_id_, worker_id_, items_);
 };
 
 struct DataRequestMessage {

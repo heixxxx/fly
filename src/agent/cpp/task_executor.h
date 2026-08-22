@@ -1,6 +1,7 @@
 #pragma once
 
 #include <common/cpp/common_types.h>
+#include <monitor/cpp/monitor_types.h>
 #include <cstdint>
 #include <functional>
 
@@ -19,6 +20,11 @@ struct TaskExecResult {
     CMString error_;
     CMVector<CMString> outputs_;
     CMVector<CMString> frozen_dbs_;
+    // ---- cluster monitor：Python io_stats 胶水解析填充（缺失/异常路径全 0）----
+    uint64_t read_time_ms_ = 0;    // read_object 累计耗时
+    uint64_t write_time_ms_ = 0;   // write_object + drain 落盘累计耗时
+    uint64_t read_bytes_ = 0;      // 解压后读字节（pickle 路径精确）
+    CMVector<ObjectIoRecord> io_items_;  // 对象级明细（MonitorTaskIoMessage 上报）
 };
 
 class TaskExecutor {

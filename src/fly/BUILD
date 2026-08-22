@@ -14,6 +14,7 @@ py_library(
         "//src/log/export:_fly_log.so",
         "//src/log:log_pkg",
         "//src/message/export:_fly_message.so",
+        "//src/monitor:monitor_pkg",
         "//src/storage/py:fly_storage_py",
         "//src/storage:storage_pkg",
         "//src/task:task_pkg",

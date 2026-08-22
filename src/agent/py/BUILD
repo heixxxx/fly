@@ -11,6 +11,7 @@ py_library(
         "//src/storage/export:_fly_storage.so",
         "//src/log/export:_fly_log.so",
         "//src/core/export:_fly_core.so",
+        "//src/monitor:monitor_pkg",  # executor.py: task_io IO 归属
         requirement("cloudpickle"),  # executor.py: user-task deserialization
     ],
     imports = [

@@ -150,6 +150,7 @@ do_install() {
     mkdir -p "$build_dir/python/test"
     mkdir -p "$build_dir/python/solver"
     mkdir -p "$build_dir/python/message"
+    mkdir -p "$build_dir/python/monitor"
 
     # Binary + wrapper script
     ln -sf "$bazel_bin/src/main/cpp/fly" "$build_dir/bin/fly.bin"
@@ -175,7 +176,7 @@ WRAPPER
     # Python modules: .so 到模块根（sys.path 包含模块目录让 import _fly_X 可用），
     # .py 到 py/ 子目录（与源码树 src/X/py/ 结构一致，让两种布局的 import 路径统一）。
     # 模块根 __init__.py 从 src/X/__init__.py 软链（让模块成为合法 Python 包）。
-    for mod in core log network task test storage agent solver message; do
+    for mod in core log network task test storage agent solver message monitor; do
         local so="$bazel_bin/src/$mod/export/_fly_${mod}.so"
         [ -f "$so" ] && ln -sf "$so" "$build_dir/python/$mod/"
         # 模块根 __init__.py（message 无 Python 源码，跳过）
