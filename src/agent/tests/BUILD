@@ -27,7 +27,7 @@ cc_test(
 
 cc_test(
     name = "master_agent_test",
-    srcs = ["master_agent_test.cpp"],
+    srcs = ["master_agent_test.cpp", "test_log_isolation.h"],
     deps = [
         "@googletest//:gtest_main",
         "//src/agent/cpp:fly_agent_test_hooks",
@@ -50,7 +50,7 @@ cc_test(
 
 cc_test(
     name = "worker_agent_test",
-    srcs = ["worker_agent_test.cpp"],
+    srcs = ["worker_agent_test.cpp", "test_log_isolation.h"],
     deps = [
         "@googletest//:gtest_main",
         "//src/agent/cpp:fly_agent_test_hooks",
@@ -61,7 +61,7 @@ cc_test(
 
 cc_test(
     name = "agent_integration_test",
-    srcs = ["agent_integration_test.cpp"],
+    srcs = ["agent_integration_test.cpp", "test_log_isolation.h"],
     deps = [
         "@googletest//:gtest_main",
         "//src/agent/cpp:fly_agent",
@@ -71,7 +71,7 @@ cc_test(
 
 cc_test(
     name = "agent_network_test",
-    srcs = ["agent_network_test.cpp"],
+    srcs = ["agent_network_test.cpp", "test_log_isolation.h"],
     deps = [
         "@googletest//:gtest_main",
         "//src/agent/cpp:fly_agent_test_hooks",
@@ -91,7 +91,7 @@ cc_test(
 
 cc_test(
     name = "write_register_network_test",
-    srcs = ["write_register_network_test.cpp"],
+    srcs = ["write_register_network_test.cpp", "test_log_isolation.h"],
     deps = [
         "@googletest//:gtest_main",
         "//src/agent/cpp:fly_agent",

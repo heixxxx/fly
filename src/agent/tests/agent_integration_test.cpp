@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <agent/cpp/master_agent.h>
 #include <agent/cpp/worker_agent.h>
+#include "test_log_isolation.h"
 
 namespace fly {
 

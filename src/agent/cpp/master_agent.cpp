@@ -316,7 +316,13 @@ void MasterAgent::start() {
     // 本 run 降级为无持久化监控，不影响主流程）。
     metrics_db_ = CMMakeUnique<MetricsDb>();
     if (Config::instance()->get_int("monitor_db_enabled")) {
-        if (!metrics_db_->open(Config::instance()->get_str("log_dir"))) {
+        if (metrics_db_->open(Config::instance()->get_str("log_dir"))) {
+            metrics_db_->record_run_meta("run_start_ms",
+                std::to_string(monitor_epoch_ms_now()));
+            metrics_db_->record_run_meta("hostname", ProcessInfo::instance()->hostname());
+            monitor_self_running_ = true;
+            monitor_self_thread_ = std::thread([this] { monitor_self_loop(); });
+        } else {
             WARN("monitor.db open failed — monitor persistence disabled for this run");
         }
     }
@@ -447,8 +453,13 @@ void MasterAgent::stop_impl(bool fast, const CMString& reason) {
     if (fast) {
         WARN("MasterAgent fast_exit: {} — skipping drain, failing tasks, stopping workers",
              reason.empty() ? CMString("unspecified") : reason);
+        if (metrics_db_) {
+            metrics_db_->record_event("run", "FAST_EXIT", 0, 0,
+                                      reason.empty() ? CMString("unspecified") : reason);
+        }
     } else {
         INFO("MasterAgent stop() called, entering drain phase");
+        if (metrics_db_) metrics_db_->record_event("run", "DRAIN_START");
     }
 
     // Phase 1（仅正常收尾）: 等 RUNNING task 全部完成。
@@ -521,6 +532,7 @@ void MasterAgent::stop_impl(bool fast, const CMString& reason) {
         }
     } else {
         INFO("Drain: all tasks completed, shutting down workers (elapsed={}ms)", _elapsed());
+        if (metrics_db_) metrics_db_->record_event("run", "DRAIN_DONE");
     }
 
     // Message summary：诊断性输出。正常路径保留（worker 活着，上报快）；
@@ -590,7 +602,15 @@ void MasterAgent::stop_impl(bool fast, const CMString& reason) {
     // monitor.db 收尾：停写线程并同步 flush 全部余量后关闭（早于 Logger 关闭
     // 与静态析构——退出期时序，P3-18 家族约束）。此后文件为干净终态，
     // GUI 可随时只读打开。
+    if (monitor_self_running_.exchange(false)) {
+        {
+            std::lock_guard<std::mutex> lk(monitor_self_mutex_);
+            monitor_self_cv_.notify_all();  // 持锁 notify
+        }
+        if (monitor_self_thread_.joinable()) monitor_self_thread_.join();
+    }
     if (metrics_db_) {
+        metrics_db_->record_run_meta("run_end_ms", std::to_string(monitor_epoch_ms_now()));
         metrics_db_->close();
     }
     INFO("MasterAgent stop(): fully stopped (elapsed={}ms)", _elapsed());
@@ -708,6 +728,9 @@ void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) 
         metadata_->create_task(task_id, spec);
         graph_->add_task(task_id, spec.inputs_, reqs);
     }
+    // monitor 落盘（锁外非阻塞入队）：SUBMIT 事件 + PENDING 行（含 dbs 解析）。
+    record_task_snapshot(task_id);
+    if (metrics_db_) metrics_db_->record_task_event(task_id, 0, "SUBMIT", spec.name_);
 
     // Pre-fetch dependency locations at submit time (earliest possible point).
     {
@@ -1052,6 +1075,11 @@ void MasterAgent::assign_task_to_worker(uint64_t task_id, uint64_t worker_id) {
 #endif
 
     metadata_->assign_task(task_id, worker_id);
+    // monitor 落盘：ASSIGN 事件 + RUNNING 行（ready_ms 此刻可回查 graph）。
+    record_task_snapshot(task_id);
+    if (metrics_db_) {
+        metrics_db_->record_task_event(task_id, worker_id, "ASSIGN");
+    }
     // 注：此处不再调用 worker_manager_->assign_task(worker_id, task_id)。
     // scheduler 在选中的瞬间已通过 TaskScheduler::schedule_next（task_scheduler.cpp:68）
     // 把 worker 设为 BUSY 并记录 current_task_id —— 该调用发生在本函数 reactor_->send
@@ -1178,6 +1206,11 @@ void MasterAgent::sched_watchdog_loop() {
                  ready_ids, ready.size(), sched_watchdog_stall_rounds_ * 3,
                  worker_manager_->get_idle_worker_count(),
                  worker_manager_->debug_worker_status());
+            // monitor 落盘：仅首次触发记一次（rounds==2），防 3s 轮询刷爆事件流。
+            if (metrics_db_ && sched_watchdog_stall_rounds_ == 2) {
+                metrics_db_->record_event("sched", "SCHED_STALLED", 0, min_id,
+                                          CMString("ready=") + ready_ids);
+            }
             // 检查每个 ready task 的 requirements。
             for (size_t i = 0; i < ready.size() && i < 5; ++i) {
                 uint64_t tid = ready[i];
@@ -1342,6 +1375,17 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
              worker_id, conn_id, msg.hostname_, msg.data_server_host_, msg.data_server_port_,
              role == WorkerRole::STORAGE_ONLY ? "storage_only" : "hybrid");
     }
+    // monitor 落盘：workers 表 upsert（含重连注册）+ REGISTER 事件。
+    if (metrics_db_) {
+        CMString attrs;
+        for (size_t i = 0; i < msg.attributes_.size(); ++i) {
+            if (i) attrs += ",";
+            attrs += msg.attributes_[i];
+        }
+        metrics_db_->record_worker_registered(
+            worker_id, msg.hostname_, msg.ip_address_,
+            role == WorkerRole::STORAGE_ONLY ? "storage_only" : "hybrid", attrs);
+    }
 
     // storage_only 上线 = 自动补齐的成功信号：清该 host 的 spawn 占位与
     // 失败计数（下轮检测将该 host 视为已覆盖）。
@@ -1377,6 +1421,7 @@ void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
         worker_manager_->update_worker_status(worker_id, WorkerStatus::IDLE);
         DataService::instance()->set_worker_alive(worker_id, true);
         INFO("Worker {} revived (heartbeat received after timeout)", worker_id);
+        if (metrics_db_) metrics_db_->record_worker_event(worker_id, "REVIVED");
     }
 
     HeartbeatAckMessage ack;
@@ -1423,6 +1468,125 @@ void MasterAgent::on_task_io_report(const MonitorTaskIoMessage& msg) {
         records.push_back(r);
     }
     metrics_db_->record_object_io(records);
+}
+
+// ===== cluster monitor 落盘接线 =====
+
+namespace {
+
+// worker 上报的扩展字段（TaskComplete/TaskFailed 同构）覆盖到行快照。
+template <typename MsgT>
+static void fill_row_from_report(TaskRow& row, const MsgT& m) {
+    row.exec_start_ms_ = m.exec_start_ms_;
+    row.exec_end_ms_ = m.exec_end_ms_;
+    row.cpu_time_ms_ = m.cpu_time_ms_;
+    row.mem_baseline_bytes_ = m.mem_baseline_bytes_;
+    row.mem_avg_bytes_ = m.mem_avg_bytes_;
+    row.mem_peak_bytes_ = m.mem_peak_bytes_;
+    row.read_time_ms_ = m.read_time_ms_;
+    row.write_time_ms_ = m.write_time_ms_;
+    row.read_bytes_ = m.read_bytes_;
+    row.write_bytes_ = m.write_bytes_;
+}
+
+const char* task_status_name(TaskStatus s) {
+    switch (s) {
+        case TaskStatus::PENDING:   return "PENDING";
+        case TaskStatus::RUNNING:   return "RUNNING";
+        case TaskStatus::COMPLETED: return "COMPLETED";
+        case TaskStatus::FAILED:    return "FAILED";
+        case TaskStatus::CANCELLED: return "CANCELLED";
+    }
+    return "UNKNOWN";
+}
+
+// __fly_db__ 编码参数 → db_path（与 executor.py deserialize_args 的
+// maxsplit=3 语义对齐：新格式 {uid}:{db_path}:{data_path} 取 rest 切 3 刀后
+// 的第 3 段；旧格式 {db_path}:{data_path} 取第 2 段；尾段 data_path 可含 ':'）。
+CMString parse_db_arg(const CMString& arg) {
+    constexpr size_t kPrefixLen = 11;  // "__fly_db__:"
+    if (arg.compare(0, kPrefixLen, "__fly_db__:") != 0) return "";
+    const CMString rest = arg.substr(kPrefixLen);
+    CMVector<CMString> parts;
+    size_t start = 0;
+    for (int i = 0; i < 3; ++i) {
+        auto p = rest.find(':', start);
+        if (p == CMString::npos) break;
+        parts.push_back(rest.substr(start, p - start));
+        start = p + 1;
+    }
+    parts.push_back(rest.substr(start));
+    if (parts.size() == 4) return parts[2];  // 新格式：uid : db_path : data
+    if (parts.size() >= 2) return parts[1];  // 旧格式：db_path : data
+    return "";
+}
+
+// task 关联 db 集合（args 的 __fly_db__ 编码 + inputs_/outputs_ 对象全名前缀），
+// 去重排序后逗号连接（GUI 按 LIKE 反查 task↔db）。
+CMString collect_task_dbs(const TaskSubmissionSpec& spec) {
+    CMUnorderedSet<CMString> dbs;
+    for (const auto& a : spec.args_) {
+        CMString db = parse_db_arg(a);
+        if (!db.empty()) dbs.insert(db);
+    }
+    auto add_from_obj = [&](const CMString& full) {
+        auto pos = full.rfind(':');
+        if (pos != CMString::npos && pos > 0) dbs.insert(full.substr(0, pos));
+    };
+    for (const auto& i : spec.inputs_) add_from_obj(i);
+    for (const auto& o : spec.outputs_) add_from_obj(o);
+    CMVector<CMString> sorted(dbs.begin(), dbs.end());
+    std::sort(sorted.begin(), sorted.end());
+    CMString out;
+    for (size_t i = 0; i < sorted.size(); ++i) {
+        if (i) out += ",";
+        out += sorted[i];
+    }
+    return out;
+}
+
+}  // namespace
+
+TaskRow MasterAgent::build_task_row(uint64_t task_id) const {
+    TaskRow row;
+    row.task_id_ = task_id;
+    auto md = metadata_->get_task(task_id);
+    if (!md) return row;  // internal task 等无 metadata：返回骨架行（扩展字段由调用点覆盖）
+    row.name_ = md->submission_.name_;
+    row.module_ = md->submission_.module_;
+    row.is_internal_ = md->submission_.module_ == "__fly_internal";
+    row.status_ = task_status_name(md->status_);
+    row.worker_id_ = md->assigned_worker_id_;
+    row.priority_ = md->submission_.priority_;
+    row.error_ = md->error_message_;
+    row.created_ms_ = md->created_at_;
+    row.ready_ms_ = graph_ ? static_cast<uint64_t>(graph_->get_task_ready_epoch_ms(task_id)) : 0;
+    row.started_ms_ = md->started_at_;
+    row.completed_ms_ = md->completed_at_;
+    row.dbs_ = collect_task_dbs(md->submission_);
+    return row;
+}
+
+void MasterAgent::record_task_snapshot(uint64_t task_id) {
+    if (metrics_db_) metrics_db_->record_task(build_task_row(task_id));
+}
+
+// master 自监控：每 monitor_report_interval_ms 采一条全维度样本直写 DB
+//（worker_id=0，role=master；不经网络消息——master 本地直写）。
+void MasterAgent::monitor_self_loop() {
+    const int64_t interval_ms = Config::instance()->get_int("monitor_report_interval_ms");
+    while (monitor_self_running_.load()) {
+        {
+            std::unique_lock<std::mutex> lk(monitor_self_mutex_);
+            monitor_self_cv_.wait_for(lk, std::chrono::milliseconds(interval_ms),
+                                      [this] { return !monitor_self_running_.load(); });
+        }
+        if (!monitor_self_running_.load()) break;
+        if (metrics_db_) {
+            CMVector<MonitorSample> one{monitor_self_sampler_.sample_once()};
+            metrics_db_->record_worker_samples(0, one);
+        }
+    }
 }
 
 // 登记写入该 db 的 worker 元数据（db meta recorded_workers_）。
@@ -1504,6 +1668,9 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
                  "currently assigned to worker {} (worker likely exceeded grace and "
                  "task was re-queued)",
                  msg.task_id_, worker_id, t->assigned_worker_id_);
+            if (metrics_db_) {
+                metrics_db_->record_task_event(msg.task_id_, worker_id, "STALE_REPORT_DROPPED");
+            }
             return;
         }
     } else {
@@ -1564,6 +1731,14 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
             }
             commit_pending_frozen(msg.task_id_);
         }
+        // monitor 落盘（锁外非阻塞）：COMPLETED 终态行（含执行窗口/CPU/内存/IO
+        // 扩展字段）+ 事件。
+        if (metrics_db_) {
+            TaskRow row = build_task_row(msg.task_id_);
+            fill_row_from_report(row, msg);
+            metrics_db_->record_task(row);
+            metrics_db_->record_task_event(msg.task_id_, worker_id, "COMPLETE");
+        }
         // task 的 module/args/vars 随 TaskMetadata.submission_ 存活，状态迁移到
         // COMPLETED 即完成生命周期管理，无需单独清理并行 map。
     } else {
@@ -1571,6 +1746,19 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
         for (const auto& wo : msg.written_objects_) {
             DataService::instance()->update_remote_idx(wo.object_name_, worker_id, addr.host_, addr.port_, wo.size_bytes_);
             DBG("Internal task: recorded data location: {} -> worker {}", wo.object_name_, worker_id);
+        }
+        // monitor 落盘：internal task（无 metadata）骨架行 + 扩展字段。
+        if (metrics_db_) {
+            TaskRow row;
+            row.task_id_ = msg.task_id_;
+            row.name_ = "__fly_internal";
+            row.module_ = "__fly_internal";
+            row.is_internal_ = true;
+            row.status_ = "COMPLETED";
+            row.worker_id_ = worker_id;
+            fill_row_from_report(row, msg);
+            metrics_db_->record_task(row);
+            metrics_db_->record_task_event(msg.task_id_, worker_id, "COMPLETE", "internal");
         }
         // merge task 完成路由（若是 merge task）。
         on_merge_task_complete(msg.task_id_, worker_id, msg.written_objects_);
@@ -1591,6 +1779,9 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
             WARN("Stale task-failure report dropped: task_id={} reported by worker {} "
                  "but currently assigned to worker {}",
                  msg.task_id_, worker_id, t->assigned_worker_id_);
+            if (metrics_db_) {
+                metrics_db_->record_task_event(msg.task_id_, worker_id, "STALE_REPORT_DROPPED");
+            }
             return;
         }
     }
@@ -1601,6 +1792,14 @@ void MasterAgent::on_task_failed(uint64_t conn_id, const TaskFailedMessage& msg)
         std::lock_guard<std::mutex> lk(schedule_mutex_);
         metadata_->fail_task(msg.task_id_, msg.error_message_);
         graph_->remove_task(msg.task_id_);
+    }
+    // monitor 落盘（锁外非阻塞）：FAILED 终态行（含部分执行窗口字段）+ 事件。
+    if (metrics_db_) {
+        TaskRow row = build_task_row(msg.task_id_);
+        fill_row_from_report(row, msg);
+        metrics_db_->record_task(row);
+        metrics_db_->record_task_event(msg.task_id_, worker_id, "FAIL",
+                                       msg.error_message_.substr(0, 200));
     }
 
     // 运行时失败的 task（异常/读不到数据）也应可 restart，与调度时失败的 task 一致。
@@ -1694,6 +1893,10 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
     }
 
     WARN("Worker disconnected: worker_id={}", worker_id);
+    // monitor 落盘：DISCONNECT 事件（drain 期也记——GUI 需要完整关停时序）。
+    if (metrics_db_ && worker_id != 0) {
+        metrics_db_->record_worker_event(worker_id, "DISCONNECT");
+    }
     // 流程 message：worker 掉线（非 drain 期才打，drain 期属正常关闭会刷屏）。
     if (!draining_.load()) {
         MSG("AGENT::0002", 1, "worker {} offline", worker_id);
@@ -1746,6 +1949,8 @@ void MasterAgent::handle_worker_death(uint64_t worker_id) {
     // RunSummary：记判死时刻（合成时该 worker 最后样本不再计入，复活样本
     // epoch > 此时刻自然重新生效）。
     if (run_metrics_) run_metrics_->on_worker_dead(worker_id);
+    // monitor 落盘：DEAD 事件。
+    if (metrics_db_) metrics_db_->record_worker_event(worker_id, "DEAD");
 
     CMVector<uint64_t> tasks_to_recover;
     {
@@ -1772,6 +1977,7 @@ void MasterAgent::handle_worker_death(uint64_t worker_id) {
             std::lock_guard<std::mutex> lk(schedule_mutex_);
             metadata_->fail_task(task_id, "Worker disconnected during shutdown");
             graph_->remove_task(task_id);
+            record_task_snapshot(task_id);
             WARN("Task failed due to shutdown disconnect: task_id={}", task_id);
         }
         notify_drain_if_active();  // Wake up stop() drain wait.
@@ -1805,6 +2011,11 @@ void MasterAgent::handle_worker_death(uint64_t worker_id) {
                 graph_->remove_task(task_id);
                 graph_->add_task(task_id, s.inputs_, reqs);
                 metadata_->unassign_task(task_id);
+            }
+            // monitor 落盘：REQUEUE 事件 + 重排队后的 PENDING 行。
+            record_task_snapshot(task_id);
+            if (metrics_db_) {
+                metrics_db_->record_task_event(task_id, worker_id, "REQUEUE");
             }
             WARN("Recovered task from dead worker: task_id={}, name={}", task_id, s.name_);
         }
@@ -1877,6 +2088,10 @@ void MasterAgent::fail_orphan_data_objects(uint64_t worker_id) {
         MSG("AGENT::0003", 2,
             "worker {} dead: {} object(s) lost all replicas, dependent waiting tasks failed",
             worker_id, lost_objects.size());
+        if (metrics_db_) {
+            metrics_db_->record_event("storage", "ORPHAN_FAIL", worker_id, 0,
+                                      CMString("lost=") + std::to_string(lost_objects.size()));
+        }
     }
 }
 
@@ -1950,6 +2165,10 @@ bool MasterAgent::try_storage_takeover(uint64_t worker_id) {
     INFO("storage takeover initiated: dead worker={}, storage worker={}, host={}, "
          "dbs={}, writers={} (fail deadline in {}s)",
          worker_id, storage_wid, hostname, writers_by_db.size(), total_writers, fail_timeout);
+    if (metrics_db_) {
+        metrics_db_->record_event("storage", "STORAGE_TAKEOVER", storage_wid, 0,
+                                  CMString("dead_worker=") + std::to_string(worker_id));
+    }
     return true;
 }
 
@@ -2260,6 +2479,7 @@ void MasterAgent::register_database(const CMString& db_path, const CMString& dat
     // RunSummary：master 首见 db（幂等，首见语义不覆盖；merge 路径变更走
     // record_db_paths_changed）。锁外登记（collector 自身锁，快速路径）。
     if (run_metrics_) run_metrics_->record_db_created(db_path, data_path);
+    if (metrics_db_) metrics_db_->record_event("db", "DB_CREATED", 0, 0, db_path);
 }
 
 bool MasterAgent::is_db_frozen(const CMString& db_path) const {
@@ -2304,6 +2524,7 @@ void MasterAgent::commit_pending_frozen(uint64_t task_id) {
         cleanup_provenance_for_db(db_path);
         // RunSummary：封闭 db 窗口 + du 统计磁盘终值（锁外，ms 级）。
         if (run_metrics_) run_metrics_->record_db_frozen(db_path);
+        if (metrics_db_) metrics_db_->record_event("db", "DB_FROZEN", 0, task_id, db_path);
         INFO("DB frozen (committed by task): db_path={}, task_id={}", db_path, task_id);
         DatabaseFreezeNotification broadcast_msg;
         broadcast_msg.db_path_ = db_path;
@@ -2347,6 +2568,7 @@ CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& db_pat
     // RunSummary：master 首见 db（幂等；与 register_database 覆盖 load/自写
     // 两类创建入口）。
     if (run_metrics_) run_metrics_->record_db_created(db_path, data_path);
+    if (metrics_db_) metrics_db_->record_event("db", "DB_CREATED", 0, 0, db_path);
     return db;
 }
 
@@ -2477,6 +2699,7 @@ WriteRegisterAckMessage MasterAgent::do_write_register(const WriteRegisterMessag
             ack.error_message_ = "Database frozen: " + msg.db_path_;
             ack.error_type_ = TaskErrorType::WRITE_TO_FROZEN_DB;
             WARN("WriteRegister rejected: db {} is frozen", msg.db_path_);
+            if (metrics_db_) metrics_db_->record_event("storage", "WRITE_REJECTED", msg.worker_id_, 0, "frozen: " + msg.object_name_);
         } else if (msg.write_context_hash_.empty()) {
             // 空 hash 是非法注册请求（上游 commit_write 时间戳 guard / task context
             // 应保证非空），与 provenance mismatch（已有不同 hash 的对比）语义不同，
@@ -2485,6 +2708,7 @@ WriteRegisterAckMessage MasterAgent::do_write_register(const WriteRegisterMessag
             ack.error_message_ = "Empty write_context_hash for " + msg.object_name_;
             ack.error_type_ = TaskErrorType::WRITE_REGISTRATION_FAILED;
             ERR("WriteRegister rejected: empty write_context_hash for {}", msg.object_name_);
+            if (metrics_db_) metrics_db_->record_event("storage", "WRITE_REJECTED", msg.worker_id_, 0, "empty_hash: " + msg.object_name_);
         } else {
             auto [prov_db, prov_short] = fly::split_full_name(msg.object_name_);
             CMString err_msg;
@@ -2495,6 +2719,7 @@ WriteRegisterAckMessage MasterAgent::do_write_register(const WriteRegisterMessag
                 ack.error_message_ = err_msg;
                 ack.error_type_ = TaskErrorType::WRITE_PROVENANCE_MISMATCH;
                 ERR("WriteRegister rejected: provenance mismatch for {}", msg.object_name_);
+                if (metrics_db_) metrics_db_->record_event("storage", "WRITE_REJECTED", msg.worker_id_, 0, "provenance: " + msg.object_name_);
             }
         }
     }
@@ -2546,6 +2771,11 @@ void MasterAgent::on_worker_property_update(uint64_t conn_id, const WorkerProper
     INFO("WorkerPropertyUpdate: worker_id={}, added={}, removed={}", msg.worker_id_, added_count, removed_count);
 
     worker_manager_->update_capabilities(msg.worker_id_, msg.added_properties_, msg.removed_properties_);
+    if (metrics_db_ && (added_count > 0 || removed_count > 0)) {
+        metrics_db_->record_event("worker", "PROPERTY_UPDATE", msg.worker_id_, 0,
+                                  CMString("+") + std::to_string(added_count) + "/-" +
+                                  std::to_string(removed_count));
+    }
 
     // 属性变化后立即触发调度：worker 通过 set_worker_property 获得新属性后，
     // 等待该属性的 task（waiting 中）应立即被调度，无需等到 timeout。
@@ -2820,6 +3050,9 @@ void MasterAgent::persist_failed_task(const FailedTaskRecord& record) {
     append_failed_record(file_path, record);
 
     ERR("Task {} failed and persisted. To restart after fixing, call restart_failed_tasks(\"{}\")", record.task_id_, file_path);
+    if (metrics_db_) {
+        metrics_db_->record_task_event(record.task_id_, 0, "PERSIST_FAILED");
+    }
 }
 
 void MasterAgent::remove_persisted_task(uint64_t task_id) {
@@ -2877,6 +3110,9 @@ void MasterAgent::restart_failed_tasks(const CMString& file_path) {
         // record.submission_ 携带完整的提交字段（含 priority/attribute_timeout/vars），
         // 整体传入 submit_task，消除原先 11 个位置参数的错位/漏传风险。
         submit_task(record.task_id_, record.submission_);
+        if (metrics_db_) {
+            metrics_db_->record_task_event(record.task_id_, 0, "RESTART");
+        }
     }
 
     INFO("Restarted {} failed tasks", record_count);
@@ -3205,6 +3441,7 @@ void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFre
         cleanup_provenance_for_db(msg.db_path_);
         // RunSummary：封闭 db 窗口 + du 统计磁盘终值（锁外，ms 级）。
         if (run_metrics_) run_metrics_->record_db_frozen(msg.db_path_);
+        if (metrics_db_) metrics_db_->record_event("db", "DB_FROZEN", 0, 0, msg.db_path_);
         // stream 模式的本地 freeze + 广播（D2 拆除：freeze 重 IO 与广播移出容器锁）
         CMSharedPtr<Database> db;
         {
@@ -3491,6 +3728,10 @@ void MasterAgent::evaluate_and_maybe_backup(const CMString& object_name) {
     auto [db_path, short_name] = fly::split_full_name(object_name);
     INFO("[AUTO-BACKUP] obj={}, replicas={}, score_bytes={}, score_count={} → triggering backup",
          object_name, replicas, score_bytes, score_count);
+    if (metrics_db_) {
+        metrics_db_->record_event("storage", "AUTO_BACKUP_TRIGGER", holders.front(), 0,
+                                  object_name);
+    }
     // 每次 suggest 触发一份 backup（async：BackupComplete 后 replicas 才增长）。
     // score/replicas 反馈平衡：backup → replicas++ → score 降 → 自然收敛，避免一次循环多 backup
     // 落到同一 worker（select_backup_worker 对同一 source 会重复选同一目标）。
@@ -3567,11 +3808,17 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
 
     INFO("Merge task assigned: task_id={}, target_worker={}, object={}, target_data_path={}",
          merge_task_id, target_worker_id, full_name, target_data_path);
+    if (metrics_db_) {
+        metrics_db_->record_event("db", "DB_MERGE_START", target_worker_id, merge_task_id, full_name);
+    }
     return merge_task_id;
 }
 
 void MasterAgent::on_merge_task_complete(uint64_t task_id, uint64_t worker_id, const CMVector<WrittenObject>& written_objects) {
     if (merge_task_states_.find(task_id) == nullptr) return;  // 非 merge task，忽略
+    if (metrics_db_) {
+        metrics_db_->record_event("db", "DB_MERGE_DONE", worker_id, task_id, "");
+    }
     merge_task_states_.complete(task_id, [&](MergeTaskState& s) {
         s.completed_ = true;
         s.success_ = true;
@@ -3584,6 +3831,10 @@ void MasterAgent::on_merge_task_complete(uint64_t task_id, uint64_t worker_id, c
 
 void MasterAgent::on_merge_task_failed(uint64_t task_id, const CMString& error_message) {
     if (merge_task_states_.find(task_id) == nullptr) return;
+    if (metrics_db_) {
+        metrics_db_->record_event("db", "DB_MERGE_FAILED", 0, task_id,
+                                  error_message.substr(0, 200));
+    }
     merge_task_states_.complete(task_id, [&](MergeTaskState& s) {
         s.completed_ = true;
         s.success_ = false;
@@ -3905,6 +4156,10 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
         existing_db->set_paths(merge_db_path, merge_data_path);
         // RunSummary：路径已变，作废 freeze 时统计的磁盘值（退出时按新路径补测）。
         if (run_metrics_) run_metrics_->record_db_paths_changed(db_path, merge_data_path);
+        if (metrics_db_) {
+            metrics_db_->record_event("db", "DB_PATHS_CHANGED", 0, 0,
+                                      db_path + " -> " + merge_data_path);
+        }
     } else {
         // merge 产物句柄由 Python 经 ex_stg_create_database_with_id 构造，未进 master
         // db_instances_。这里用源 db_path 重建并登记，保证 master 路径权威源与新路径一致。

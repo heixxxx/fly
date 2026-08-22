@@ -140,6 +140,7 @@ bool MetricsDb::open(const CMString& log_dir) {
         if (sqlite3_exec(db, sql, nullptr, nullptr, &err) != SQLITE_OK) {
             ERR("MetricsDb[{}] pragma {} failed: {}", db_path_, sql, err ? err : "?");
             sqlite3_free(err);
+            err = nullptr;  // free 后置空：失败收尾分支不得二次释放
             return false;
         }
         return true;

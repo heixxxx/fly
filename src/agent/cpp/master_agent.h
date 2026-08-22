@@ -16,6 +16,7 @@
 #include <agent/cpp/pending_rpc_map.h>
 #include <agent/cpp/run_metrics.h>
 #include <monitor/cpp/metrics_db.h>
+#include <monitor/cpp/monitor_sampler.h>
 #include <core/cpp/config.h>
 #include <common/cpp/common_types.h>
 #include <common/cpp/concurrent_map.h>
@@ -145,6 +146,19 @@ public:
     void on_monitor_sample(const MonitorSampleMessage& msg);
     // task 对象级 IO 明细上报（object_io 表落库；测试直调）。
     void on_task_io_report(const MonitorTaskIoMessage& msg);
+
+    // ---- cluster monitor 落盘接线（全部非阻塞入队）----
+    // master 内存态 → TaskRow 基础快照（状态/时间戳/worker/dbs 解析）。
+    TaskRow build_task_row(uint64_t task_id) const;
+    // 快照落库（submit/assign/REQUEUE 等无 worker 扩展字段的事件点）。
+    void record_task_snapshot(uint64_t task_id);
+    // master 自监控采样线程体（MonitorSampler 直写 worker_id=0 行）。
+    void monitor_self_loop();
+    std::thread monitor_self_thread_;
+    std::atomic<bool> monitor_self_running_{false};
+    std::mutex monitor_self_mutex_;
+    std::condition_variable monitor_self_cv_;
+    MonitorSampler monitor_self_sampler_;  // 仅 monitor_self_thread_ 使用
     // 同步写注册裁决（on_write_register 的核心，无网络副作用前半段）——
     // public 供测试直调失败分类（frozen/mismatch/空 hash REGISTRATION_FAILED）。
     WriteRegisterAckMessage do_write_register(const WriteRegisterMessage& msg);

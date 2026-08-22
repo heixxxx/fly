@@ -36,6 +36,8 @@ void DependencyGraph::add_task(uint64_t task_id, const CMVector<CMString>& input
     if (pending == 0) {
         ready_tasks_.insert({-requirements.priority_, task_id});
         task_ready_timestamps_[task_id] = std::chrono::steady_clock::now();
+        task_ready_epoch_ms_[task_id] = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
     } else {
         pending_tasks_.insert(task_id);
     }
@@ -81,6 +83,8 @@ bool DependencyGraph::check_and_move_to_ready(uint64_t task_id) {
     if (req_it != task_requirements_.end()) priority = req_it->second.priority_;
     ready_tasks_.insert({-priority, task_id});
     task_ready_timestamps_[task_id] = std::chrono::steady_clock::now();
+    task_ready_epoch_ms_[task_id] = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
 
     // Clean up reverse index for this task.
     for (const auto& dep : deps) {
@@ -196,6 +200,8 @@ void DependencyGraph::remove_task(uint64_t task_id) {
     pending_tasks_.erase(task_id);
     completed_tasks_.insert(task_id);
     task_ready_timestamps_.erase(task_id);
+    // task_ready_epoch_ms_ 不随 remove 清理：assign/complete 发生在 remove_task
+    // 之后，monitor 的 tasks.ready_ms 列仍需回查（16B/task，全 run 生命周期）。
 
     // Clean up reverse index.
     auto dep_it = task_dependencies_.find(task_id);
@@ -237,6 +243,12 @@ DependencyGraph::get_task_ready_timestamp(uint64_t task_id) const {
         return it->second;
     }
     return std::nullopt;
+}
+
+int64_t DependencyGraph::get_task_ready_epoch_ms(uint64_t task_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = task_ready_epoch_ms_.find(task_id);
+    return it != task_ready_epoch_ms_.end() ? it->second : 0;
 }
 
 CMVector<CMString> DependencyGraph::get_task_dependencies(uint64_t task_id) const {

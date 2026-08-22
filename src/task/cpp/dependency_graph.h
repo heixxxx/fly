@@ -55,6 +55,9 @@ public:
     // 返回 task 进入 ready 的时间点（用于 attribute timeout 判断）
     std::optional<std::chrono::steady_clock::time_point>
     get_task_ready_timestamp(uint64_t task_id) const;
+    // task 进入 ready 的 unix epoch 毫秒（cluster monitor 的 tasks.ready_ms 列；
+    // created→ready→assign 三段时延拆分用）。未 ready 过返回 0。
+    int64_t get_task_ready_epoch_ms(uint64_t task_id) const;
     CMVector<CMString> get_task_dependencies(uint64_t task_id) const;
     void remove_task(uint64_t task_id);
     // 已完成 task 总数（completed_tasks_ 的大小，remove_task 时累加）。
@@ -79,6 +82,8 @@ private:
     // task 进入 ready 的时间点（pending→ready 转换时记录），用于
     // attribute timeout 判断。remove_task 时清理。
     CMUnorderedMap<uint64_t, std::chrono::steady_clock::time_point> task_ready_timestamps_;
+    // 同一时刻的 epoch 毫秒副本（steady 无法跨时钟域换算，落库域用 wall clock）。
+    CMUnorderedMap<uint64_t, int64_t> task_ready_epoch_ms_;
 
     // Reverse index: data_path → set of pending task_ids that depend on it.
     // Avoids iterating all pending tasks in mark_data_ready().

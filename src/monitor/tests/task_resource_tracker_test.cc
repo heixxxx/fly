@@ -87,6 +87,8 @@ TEST(TaskResourceTrackerTest, ConcurrentAddSampleWhileBeginEnd) {
     constexpr int kThreads = 4;
     constexpr int kSamples = 10000;
     constexpr uint64_t V = 1000;  // < 真实 RSS，peak 由 begin/end 的真实采样决定
+    // 窗口必须先于 adder 开启（begin 前的样本按设计被忽略——无归属窗口）。
+    tr.begin(42);
     std::vector<std::thread> adders;
     for (int t = 0; t < kThreads; ++t) {
         adders.emplace_back([&tr] {
@@ -95,7 +97,6 @@ TEST(TaskResourceTrackerTest, ConcurrentAddSampleWhileBeginEnd) {
             }
         });
     }
-    tr.begin(42);
     for (auto& th : adders) th.join();
     tr.end(42);
     fly::TaskResourceAgg agg;
