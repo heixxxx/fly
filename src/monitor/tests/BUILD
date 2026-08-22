@@ -14,3 +14,13 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "monitor_sampler_test",
+    srcs = ["monitor_sampler_test.cc"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/monitor/cpp:fly_monitor",
+    ],
+    copts = ["-std=c++20"],
+)

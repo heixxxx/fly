@@ -32,6 +32,21 @@ public:
     // host 1 分钟综合负载（/proc/loadavg 首列）。读取失败返回 -1。
     static double host_loadavg_1m();
 
+    // ---- CPU jiffies（monitor 采样差分用）----
+    // 本进程 CPU 时间（jiffies，/proc/self/stat 的 utime+stime 之和；多线程
+    // 进程为全部线程总和）。读取失败返回 -1。调用方对两次读数差分，除以
+    // _SC_CLK_TCK 得 CPU 秒数（task cpu_time_ms 的口径）。
+    static int64_t process_cpu_jiffies();
+    // host CPU 时间快照（jiffies，/proc/stat 首行 cpu 汇总）。total = 全部
+    // 时间片字段之和；idle = idle + iowait。读取失败返回 -1。
+    // 差分口径：host CPU% = (dTotal - dIdle) / dTotal；
+    //          进程 CPU%（占总容量）= dProc / dTotal（吃满全部核 = 100%）。
+    struct HostCpu {
+        int64_t total_ = -1;
+        int64_t idle_ = -1;
+    };
+    static HostCpu host_cpu_jiffies();
+
     // 收集全部信息并返回排版后的多行文本（每行含换行）。
     // role: "master" 或 "worker"，标注当前进程角色。
     // listening_port: 实际监听端口（master 的 reactor 绑定端口 / worker 的 data server 端口），

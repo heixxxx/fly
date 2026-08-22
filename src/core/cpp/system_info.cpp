@@ -90,6 +90,50 @@ double SystemInfo::host_loadavg_1m() {
     return v;
 }
 
+int64_t SystemInfo::process_cpu_jiffies() {
+    // /proc/self/stat："pid (comm) state ppid ... utime stime ..."。
+    // comm 可含空格与括号，按最后一个 ')' 定位字段区，其后 token[0] 是
+    // state（第 3 字段），utime = 第 14 字段 = token[11]，stime = token[12]。
+    std::ifstream ifs("/proc/self/stat");
+    CMString line;
+    if (!std::getline(ifs, line)) return -1;
+    auto close_paren = line.rfind(')');
+    if (close_paren == CMString::npos) return -1;
+    std::istringstream iss(line.substr(close_paren + 1));
+    CMString tok;
+    int64_t utime = 0, stime = 0;
+    int idx = 0;
+    while (iss >> tok) {
+        if (idx == 11) utime = std::stoll(tok);
+        if (idx == 12) stime = std::stoll(tok);
+        if (idx > 12) break;
+        ++idx;
+    }
+    if (idx <= 12) return -1;
+    return utime + stime;
+}
+
+SystemInfo::HostCpu SystemInfo::host_cpu_jiffies() {
+    // /proc/stat 首行："cpu  user nice system idle iowait irq softirq steal ..."。
+    // total = 全部数值字段和；idle 口径 = idle + iowait。
+    std::ifstream ifs("/proc/stat");
+    CMString line;
+    HostCpu c;
+    if (!std::getline(ifs, line) || line.compare(0, 4, "cpu ") != 0) return c;
+    std::istringstream iss(line.substr(4));
+    int64_t total = 0, idle = 0, v = 0;
+    int idx = 0;
+    while (iss >> v) {
+        total += v;
+        if (idx == 3 || idx == 4) idle += v;  // idle, iowait
+        ++idx;
+    }
+    if (idx < 5) return c;  // 字段不全视为读取失败
+    c.total_ = total;
+    c.idle_ = idle;
+    return c;
+}
+
 // 字节 → GB 数值字符串（保留 1 位小数，不含单位）。
 static CMString gb_num(uint64_t bytes) {
     double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);

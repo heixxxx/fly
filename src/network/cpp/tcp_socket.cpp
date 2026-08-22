@@ -1,4 +1,5 @@
 #include <network/cpp/tcp_socket.h>
+#include <network/cpp/net_stats.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -90,11 +91,15 @@ void TCPSocketTransport::set_send_timeout(int fd, int timeout_ms) {
 }
 
 ssize_t TCPSocketTransport::send(int fd, const char* data, size_t len) {
-    return ::send(fd, data, len, MSG_NOSIGNAL);
+    ssize_t n = ::send(fd, data, len, MSG_NOSIGNAL);
+    if (n > 0) NetStats::instance().add_write(static_cast<uint64_t>(n));
+    return n;
 }
 
 ssize_t TCPSocketTransport::recv(int fd, char* buf, size_t len) {
-    return ::recv(fd, buf, len, 0);
+    ssize_t n = ::recv(fd, buf, len, 0);
+    if (n > 0) NetStats::instance().add_read(static_cast<uint64_t>(n));
+    return n;
 }
 
 bool TCPSocketTransport::send_all(int fd, const char* data, size_t len) {
@@ -103,6 +108,7 @@ bool TCPSocketTransport::send_all(int fd, const char* data, size_t len) {
         ssize_t n = ::send(fd, data + sent, len - sent, MSG_NOSIGNAL);
         if (n > 0) {
             sent += static_cast<size_t>(n);
+            NetStats::instance().add_write(static_cast<uint64_t>(n));
         } else if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 struct pollfd pfd;
@@ -136,6 +142,7 @@ bool TCPSocketTransport::sendv(int fd, const struct iovec* iov, int iovcnt) {
         ssize_t n = ::writev(fd, iov_copy, remaining_iovcnt);
         if (n > 0) {
             sent += static_cast<size_t>(n);
+            NetStats::instance().add_write(static_cast<uint64_t>(n));
             // Advance iov pointers past sent data.
             while (n > 0 && remaining_iovcnt > 0) {
                 if (static_cast<size_t>(n) >= iov_copy[0].iov_len) {

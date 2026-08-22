@@ -4,6 +4,7 @@
 #include <core/cpp/system_info.h>
 #include <log/cpp/logger.h>
 #include <agent/cpp/graceful_shutdown.h>
+#include <monitor/cpp/monitor_sampler.h>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -41,91 +42,24 @@ static std::atomic<bool> g_monitor_running{false};
 // 机器信息定时日志（master/worker 共用，每 machine_info_interval_seconds 一次）。
 // 字段：本进程物理内存 RSS(+峰值)、host free/available/total 物理内存、
 // 本进程 CPU 占用、host 1 分钟综合负载。全部为物理内存口径（RSS，非 VmPeak）。
+// jiffy 差分复用 MonitorSampler（monitor 模块采样原语，单一实现）。
 static void resource_monitor_loop() {
     const int64_t interval_s = Config::instance()->get_int("machine_info_interval_seconds");
-    long hz = sysconf(_SC_CLK_TCK);
-    long prev_utime = 0, prev_stime = 0;
-    long prev_total_cpu = 0;
-    auto prev_wall = std::chrono::steady_clock::now();
+    fly::MonitorSampler sampler;
     constexpr double kGB = 1024.0 * 1024.0 * 1024.0;
-
-    {
-        std::ifstream ifs("/proc/self/stat");
-        if (ifs) {
-            std::string line;
-            std::getline(ifs, line);
-            std::istringstream iss(line);
-            std::string tok;
-            int idx = 0;
-            while (iss >> tok) {
-                if (idx == 13) prev_utime = std::stol(tok);
-                if (idx == 14) prev_stime = std::stol(tok);
-                ++idx;
-            }
-        }
-        std::ifstream ifs2("/proc/stat");
-        if (ifs2) {
-            std::string line;
-            std::getline(ifs2, line);
-            std::istringstream iss(line.substr(5));
-            std::string tok;
-            while (iss >> tok) {
-                if (!tok.empty()) prev_total_cpu += std::stol(tok);
-            }
-        }
-    }
 
     while (g_monitor_running.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(interval_s));
         if (!g_monitor_running.load()) break;
 
-        long utime = 0, stime = 0;
-        std::ifstream ifs("/proc/self/stat");
-        if (ifs) {
-            std::string line;
-            std::getline(ifs, line);
-            std::istringstream iss(line);
-            std::string tok;
-            int idx = 0;
-            while (iss >> tok) {
-                if (idx == 13) utime = std::stol(tok);
-                if (idx == 14) stime = std::stol(tok);
-                ++idx;
-            }
-        }
-
-        long total_cpu = 0;
-        std::ifstream ifs2("/proc/stat");
-        if (ifs2) {
-            std::string line;
-            std::getline(ifs2, line);
-            std::istringstream iss(line.substr(5));
-            std::string tok;
-            while (iss >> tok) {
-                if (!tok.empty()) total_cpu += std::stol(tok);
-            }
-        }
-
-        auto now = std::chrono::steady_clock::now();
-        double dt = std::chrono::duration<double>(now - prev_wall).count();
-        double dproc = (utime - prev_utime + stime - prev_stime) / (double)hz;
-        double dtot = (total_cpu - prev_total_cpu) / (double)hz;
-        double cpu_pct = dtot > 0.001 ? dproc / dtot * 100.0 : 0.0;
-
-        const uint64_t rss = fly::SystemInfo::process_rss_bytes();
+        const fly::MonitorSample sp = sampler.sample_once();
         const uint64_t hwm = fly::SystemInfo::process_hwm_bytes();
-        const fly::HostMem hm = fly::SystemInfo::host_mem_bytes();
-        const double load1 = fly::SystemInfo::host_loadavg_1m();
 
         INFO("MachineInfo proc_rss={}MB (peak {}MB) host_mem={:.1f}/{:.1f}/{:.1f}GB cpu={:.1f}% load1={:.2f}",
-             rss / (1024ull * 1024ull), hwm / (1024ull * 1024ull),
-             hm.free_ / kGB, hm.available_ / kGB, hm.total_ / kGB,
-             cpu_pct, load1);
-
-        prev_utime = utime;
-        prev_stime = stime;
-        prev_total_cpu = total_cpu;
-        prev_wall = now;
+             sp.proc_rss_bytes_ / (1024ull * 1024ull), hwm / (1024ull * 1024ull),
+             (sp.host_mem_total_bytes_ - sp.host_mem_avail_bytes_) / kGB,
+             sp.host_mem_avail_bytes_ / kGB, sp.host_mem_total_bytes_ / kGB,
+             sp.proc_cpu_bps_ / 100.0, sp.host_load1_x100_ / 100.0);
     }
 }
 

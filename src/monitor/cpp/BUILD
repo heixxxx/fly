@@ -15,7 +15,9 @@ cc_library(
     linkopts = ["-lpthread"],
     deps = [
         "//src/common/cpp:fly_common_types",
+        "//src/core/cpp:fly_core",
         "//src/log/cpp:fly_log",
+        "//src/network/cpp:fly_network",
         "//third_party/sqlite:sqlite3",
     ],
 )
@@ -24,7 +26,9 @@ cc_shared_library(
     name = "fly_monitor_so",
     deps = [":fly_monitor"],
     dynamic_deps = [
+        "//src/core/cpp:fly_core_so",
         "//src/log/cpp:fly_log_so",
+        "//src/network/cpp:fly_network_so",
     ],
     visibility = ["//visibility:public"],
 )
