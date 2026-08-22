@@ -51,7 +51,9 @@ void notify_limit_changed();
 //             用于同一 id 在不同位置触发时快速定位。不参与配额。
 //
 // 逻辑：
-//   1. 查 id 绑定的级别；未注册 → 丢弃（不计次数，视为非法）。
+//   1. 查 id 绑定的级别；未注册 → WARN 提示后丢弃（用户裁定：未注册的信息
+//      不可默认丢弃且无提示——与配额超限的设计性静默不同，未注册是编程
+//      错误，必须可见）。WARN 通道立即 flush，保证提示不丢。
 //   2. try_emit（trigger 计数 +1；配额判定用 emit 计数，详见 MessageRegistry）。
 //      - 任一层超限 → 丢弃（不写 debug log，不推送；次数已计）。
 //      - 两层通过 → 用 id 绑定的级别写本地 debug log（带 [DOMAIN::NNNN] <source> 前缀）+ push_message 推送。
@@ -71,6 +73,10 @@ void notify_limit_changed();
                 ::fly::Logger::instance()->log(_msg_level, _msg_prefix + _msg_text); \
                 ::fly::push_message(_msg_level, _msg_domain, source, _msg_text); \
             } \
+        } else { \
+            ::fly::Logger::instance()->log(::fly::LogLevel::WARN, \
+                "[MSG] unregistered message id '" + _msg_domain + \
+                "' dropped — register it via MessageRegistry::register_id before use"); \
         } \
     } while (0)
 

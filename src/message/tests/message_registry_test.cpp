@@ -1,5 +1,11 @@
 #include <gtest/gtest.h>
 #include <message/cpp/message_registry.h>
+#include <message/cpp/message_macros.h>
+#include <log/cpp/logger.h>
+
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 
 namespace fly {
 
@@ -17,6 +23,31 @@ TEST_F(MessageRegistryTest, UnregisteredIdHasNoLevel) {
     EXPECT_FALSE(reg.is_registered("TEST_UNREG::0001"));
     fly::LogLevel lvl;
     EXPECT_FALSE(reg.get_level("TEST_UNREG::0001", lvl));
+}
+
+// MSG 宏对未注册 id：必须打 WARN 提示后丢弃（用户裁定：不可默认丢弃且无
+// 提示——未注册是编程错误，与配额超限的设计性静默不同）。WARN 通道立即
+// flush，经 Logger 落盘后断言。Logger init 到临时目录（单测进程默认无文件
+// 通道，走 cerr 无法断言）。
+TEST_F(MessageRegistryTest, UnregisteredMsgEmitsWarning) {
+    namespace fs = std::filesystem;
+    auto ts = std::chrono::steady_clock::now().time_since_epoch().count();
+    CMString dir = "/tmp/fly_msg_test_" + std::to_string(ts);
+    fs::create_directories(dir);
+    Logger::init(dir, 0);
+
+    MSG("TEST_UNREG::0099", 1, "this message will be dropped");
+
+    bool found = false;
+    std::ifstream ifs(dir + "/master.log");
+    CMString line;
+    while (std::getline(ifs, line)) {
+        if (line.find("unregistered message id 'TEST_UNREG::0099'") != CMString::npos) {
+            found = true;
+        }
+    }
+    EXPECT_TRUE(found);
+    fs::remove_all(dir);
 }
 
 // 白名单 + 级别绑定：注册后可查询，级别正确。

@@ -344,6 +344,15 @@ int main(int argc, char* argv[]) {
         cfg->get_int("log_flush_interval_ms"));
     fly::Logger::init(log_dir, worker_id);
 
+    // Logger 收尾必须挂 atexit：sys.exit(run()) 的 SystemExit 在嵌入式 CPython
+    // 的 PyRun_SimpleString 内部走 handle_system_exit → Py_Exit → exit()，
+    // main() 中 PyRun 之后的代码（含原位置的 Logger::shutdown）不会执行；
+    // Logger 对象 leak-on-exit（P3-18）永不析构，无 atexit 的话退出前 ≤1s 的
+    // INFO/DEBUG 缓冲全部丢失（WARN 写时立即 flush 幸存——"退出期吞 INFO"
+    // 的完整根因，2026-08-22 [SD] stderr 取证定位）。shutdown 幂等（close 后
+    // no-op），与 main 尾部的显式调用重复无害。
+    std::atexit([] { fly::Logger::shutdown(); });
+
     // 机器信息定时日志：interval<=0（config machine_info_interval_seconds=0）关闭。
     std::thread monitor_thread;
     if (cfg->get_int("machine_info_interval_seconds") > 0) {

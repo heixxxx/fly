@@ -180,9 +180,14 @@ SummaryInput 接口与全部纯函数测试保持原样。
 - **summary 内容不进日志**:分别直写 `{log_dir}/runtime.summary`(时长 +
   分阶段集群内存)与 `{log_dir}/db.summary`(按 db 统计)。
 - **独立 ofstream 直写**(构造即开、析构 flush+close),不经 Logger 通道
-  ——e2e 实测退出期 Logger INFO 有吞行现象([SD] stderr 取证:summary 生成
-  正常、INFO 全部未落 master.log;与 2026-08-19 压测已知现象一致),文件
-  通道绕开该问题。
+  ——e2e 实测退出期 Logger INFO 有吞行现象(后定位根因并修复:见下)。
+- **"退出期 Logger 吞 INFO"根因**(2026-08-22 取证 + 根治):
+  `sys.exit(run())` 的 SystemExit 在嵌入式 CPython 的 PyRun_SimpleString
+  内部走 handle_system_exit → Py_Exit → exit()——main() 中 PyRun 之后的
+  代码(含 Logger::shutdown)**恒定不执行**;Logger 对象 leak-on-exit
+  (P3-18)永不析构 → 退出前 ≤1s 的 INFO/DEBUG 缓冲全丢(WARN 写时立即
+  flush 幸存)。修复:Logger::shutdown 注册 std::atexit(exit() 必经)。
+  summary 文件直写仍是正确设计(不依赖 Logger 的退出行为)。
 - **master 用户日志只打一行**(message 系统,新编号 `FLY::0002`,需在
   MessageRegistry 注册否则 MSG 静默 no-op):总耗时 + 两文件地址。
 - master.log 另留一行 INFO 索引(尽力;被吞不影响文件)。

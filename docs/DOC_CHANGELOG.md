@@ -31,15 +31,27 @@ worker，只报集群总量）3)按 db 的磁盘用量/创建时长/创建期间
   db 创建双入口（register_database + **get_or_create_database**——e2e
   实测 open_db 走后者，漏挂则 db.summary 空）。
 
-**调试记录**：e2e 实测退出期 Logger INFO 吞行（[SD] stderr 取证：summary
-生成正常、全部 INFO 未落 master.log；2026-08-19 压测已知现象再证实）——
-summary 文件直写绕开；**Logger 退出期吞 INFO 待专项**（未修，仅记录）。
-MSG 对未注册 id 静默 no-op（FLY::0002 首版未注册导致用户日志缺失）。
+**同批两个根因修复（用户裁定追加）**：
+- **MSG 未注册 id 不再静默丢弃**（用户裁定：不可默认丢弃且无提示）：
+  message_macros.h 的 get_level 失败分支打 WARN（立即 flush 通道）后丢弃
+  ——未注册是编程错误，与配额超限的设计性静默不同。单测
+  UnregisteredMsgEmitsWarning。
+- **"退出期 Logger 吞 INFO"根因根治**（此前待专项，本次 [SD] stderr 取证
+  收窄 + 修复）：`sys.exit(run())` 的 SystemExit 在嵌入式 CPython 的
+  PyRun_SimpleString 内部走 handle_system_exit → Py_Exit → **exit()**——
+  main() 中 PyRun 之后的代码（含 Logger::shutdown）**恒定不执行**（master/
+  worker 同）；Logger 对象 leak-on-exit（P3-18）永不析构 → 退出前 ≤1s 的
+  INFO/DEBUG 缓冲全丢（WARN 写时立即 flush 幸存）。"偶发"假象 = 多数 INFO
+  撞得上 1s 惰性 flush，只有退出瞬间附近的丢。修复：**Logger::shutdown
+  注册 std::atexit**（exit() 必经，覆盖一切退出路径；幂等）。验证：修复后
+  master/worker 日志尾部 `_cleanup stage` 系列行（历史上从未落盘）全部
+  完整。顺带澄清 2026-08-19 压测"Logger 实例偶发吞 INFO"现象即此根因。
 
 **验证**：新增 system_info_test(4) + run_metrics_test(11：render 纯函数/
 最近邻生命周期/成组计数/db 生命周期/du/文件写) + master_agent_test 2 例
-（StopWritesSummaryFiles/HeartbeatGroupedRssSamplesCollected）；全量单测
-63/63；QA 149/149；e2e 手工验证四项需求 + MachineInfo + FLY::0002 全过。
+（StopWritesSummaryFiles/HeartbeatGroupedRssSamplesCollected）+
+message_registry_test 1 例；全量单测 66/66；QA 149/149；e2e 手工验证四项
+需求 + MachineInfo + FLY::0002 + 日志尾部完整性全过。
 
 ---
 ---

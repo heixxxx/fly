@@ -29,7 +29,7 @@ fly 现有的 debug log 系统（DBG/INFO/WARN/ERR）每个进程仅写自己的
 
 ### 注册白名单 + 级别绑定
 - message id 必须在**发送前注册**进白名单。注册时**绑定级别**（`INFO`/`WARN`/`ERROR`），发送时不再传级别，由 id 查表决定。
-- 注册在 Python 侧模块加载时完成。**未注册的 id 视为非法**：直接丢弃，不计入触发次数。
+- 注册在 Python 侧模块加载时完成。**未注册的 id 视为非法**：打 WARN 提示后丢弃（用户裁定 2026-08-22：不可默认丢弃且无提示——未注册是编程错误），不计入触发次数。
 - 重复注册同一 id，以最后一次的级别为准。
 - 语义约定：触发某 domain 的 message 时，该 domain 代表的模块一定已被正确加载（即已注册）。
 
@@ -128,7 +128,7 @@ worker 是独立子进程，用户在 master 脚本里调 `set_message_*_limit` 
 
 ```
 【worker 进程 — MSG("SOLVER::0047", source, "...") 或 fly.message(id, source, msg)】
-  1. MessageRegistry::get_level(id)  → 未注册则丢弃（不计次数）
+  1. MessageRegistry::get_level(id)  → 未注册则打 WARN 提示后丢弃（不计次数）
   2. MessageRegistry::try_emit(id) → trigger_count +1；按三层配额判定 emit_count
      ├─ emit_count >= 生效配额 → 超限丢弃（trigger 已计，emit 不增；本地不打印、不推送）
      └─ 通过（emit_count++）
@@ -275,7 +275,7 @@ MessageRegistry::instance().set_domain_limit("SOLVER", 100);        // per-domai
 ```cpp
 #define MSG(domain_id, source, fmt_str, ...) \
     do { \
-        // 1. 查级别；未注册丢弃
+        // 1. 查级别；未注册打 WARN 后丢弃
         // 2. try_emit（trigger_count +1；按链式优先级选一层配额，用 emit_count 判定）
         // 3. 通过则写本地 debug log（[DOMAIN::NNNN] <source> 前缀）+ push_message
     } while (0)
