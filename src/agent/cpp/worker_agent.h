@@ -303,23 +303,36 @@ private:
     std::condition_variable heartbeat_cv_;
 
     // ---- monitor 采样上报线程（与心跳完全解耦；原心跳 RSS 采样迁移至此）----
-    // 每 monitor_sample_interval_ms 采一条全维度样本（MonitorSampler 差分），
-    // 每 monitor_report_interval_ms 成组 MONITOR_SAMPLE 上报；发送失败/断连
-    // 窗口样本缓冲不丢，下次成组补发（沿用原心跳 pending_rss_* 语义）。
+    // 采样模型（用户裁定原则）：task start/end、IO 读写、assign/断连等事件
+    // 发生时刻是天然采样点，固定间隔只是兜底节奏——事件密集期样本自然加密、
+    // 空闲期稀疏。每 monitor_sample_interval_ms 周期采样；task 执行窗口内
+    // 加密至 monitor_exec_sample_interval_ms；事件点经 sample_now_event 节流
+    // 后入缓冲。全部样本共用最小间距节流（事件风暴不刷爆 DB）。每
+    // monitor_report_interval_ms 成组 MONITOR_SAMPLE 上报；发送失败/断连窗口
+    // 样本缓冲不丢，下次成组补发（沿用原心跳 pending_rss_* 语义）。
     std::thread monitor_thread_;
     std::atomic<bool> monitor_running_{false};
     std::mutex monitor_mutex_;
     std::condition_variable monitor_cv_;
-    MonitorSampler monitor_sampler_;  // 仅 monitor_thread_ 使用（单线程差分状态）
-    // 采样缓冲（仅 monitor_thread_ 单线程访问，无需锁）。
+    MonitorSampler monitor_sampler_;  // 周期 + 事件采样共用（内部互斥，多线程安全）
+    // 采样缓冲 + 节流（monitor 线程与 reactor lane/执行线程的事件采样并发
+    // 访问，互斥保护）。
+    std::mutex samples_mutex_;
     CMVector<MonitorSample> pending_samples_;
+    uint64_t last_sample_epoch_ms_ = 0;  // 节流基准（受 samples_mutex_ 保护）
+    int64_t sample_gap_ms_ = 200;        // 最小采样间距（start 时读 config）
     void monitor_report_loop();
+    // 事件驱动采样：任意线程可调（assign/执行起止/internal/断连/注册完成等
+    // cluster 事件时刻的 worker 全维度快照，kind=1）。
+    void sample_now_event();
+    // 节流后入缓冲（周期与事件共用；间距不足返回 false）。
+    bool append_sample_throttled(MonitorSample sp);
 
     // 对象级 IO 明细上报（尽力而为通道；poll_task 执行后调用）。
     void report_task_io(const TaskExecResult& result);
 
-    // task 执行窗口资源归属：poll_task（begin/end）+ monitor 采样线程
-    // （add_sample）+ send_master_or_buffer（take_agg 填消息字段）三方协作。
+    // task 执行窗口资源归属：poll_task（begin/end）+ monitor 采样线程与
+    // IO 事件峰值（add_sample）+ send_master_or_buffer（take_agg 填消息字段）三方协作。
     TaskResourceTracker task_resource_tracker_;
 
     // Bandwidth probe thread (network-aware read priority). Periodically

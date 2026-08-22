@@ -155,10 +155,14 @@ struct MonitorSample {
     uint32_t host_load1_x100_ = 0;        // host loadavg 1m（×100）
     uint64_t net_read_bytes_ = 0;         // 本进程网络累计读字节
     uint64_t net_write_bytes_ = 0;        // 本进程网络累计写字节
+    uint8_t kind_ = 0;                    // 0=周期采样；1=事件驱动采样（assign/
+                                         // 执行起止/断连等 cluster 事件时刻的
+                                         // worker 全维度快照，与周期样本共用
+                                         // 节流与补发通道）
 
     FLY_SERIALIZE(epoch_ms_, proc_rss_bytes_, proc_cpu_bps_, host_cpu_bps_,
                   host_mem_total_bytes_, host_mem_avail_bytes_, host_load1_x100_,
-                  net_read_bytes_, net_write_bytes_);
+                  net_read_bytes_, net_write_bytes_, kind_);
 };
 
 // monitor 负载采样成组上报（worker → master，async no ack）。

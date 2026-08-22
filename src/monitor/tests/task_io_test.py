@@ -23,6 +23,7 @@ class TaskIoTest(unittest.TestCase):
         task_io._read_bytes = 0
         task_io._write_ms = 0.0
         task_io._items = []
+        task_io._io_peak_rss = 0
 
     def test_record_without_current_is_noop(self):
         task_io.record_read("db:a", 100, 1.5)
@@ -75,6 +76,39 @@ class TaskIoTest(unittest.TestCase):
         # 正确 task_id 仍可取走。
         result = task_io.take_result(5)
         self.assertAlmostEqual(result["read_ms"], 1.0)
+
+    def test_io_mem_sampling_threshold(self):
+        # 快且小的 read（< 5ms 且 < 256KB，如 cache 命中）豁免采样。
+        task_io.set_current(11)
+        task_io.record_read("db:a", 1024, 0.2)
+        result = task_io.take_result(11)
+        self.assertEqual(result["mem_peak_rss"], 0)
+
+        # write 无条件采样（write 快 ≠ 进程内存小——用户其它大对象与此无关）。
+        task_io.set_current(12)
+        task_io.record_write("db:a", 0.1)  # 快写也采
+        result = task_io.take_result(12)
+        self.assertGreater(result["mem_peak_rss"], 0)
+
+        # 慢 read（>= 5ms）触发采样。
+        task_io.set_current(13)
+        task_io.record_read("db:a", 1024, 6.0)
+        result = task_io.take_result(13)
+        self.assertGreater(result["mem_peak_rss"], 0)
+
+        # 大 read（>= 256KB）即使快也采样（大对象必在内存——峰值来源）。
+        task_io.set_current(14)
+        task_io.record_read("db:a", 512 * 1024, 0.3)
+        result = task_io.take_result(14)
+        self.assertGreater(result["mem_peak_rss"], 0)
+
+        # 峰值取最大：多次采样后 mem_peak_rss 单调不减。
+        task_io.set_current(15)
+        task_io.record_read("db:a", 512 * 1024, 0.3)
+        first = task_io._io_peak_rss
+        task_io.record_write("db:b", 7.0)
+        result = task_io.take_result(15)
+        self.assertGreaterEqual(result["mem_peak_rss"], first)
 
     def test_items_epoch_ms_is_recent(self):
         before = int(time.time() * 1000)

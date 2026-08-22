@@ -89,6 +89,7 @@ TEST(TaskResourceTrackerTest, ConcurrentAddSampleWhileBeginEnd) {
     constexpr uint64_t V = 1000;  // < 真实 RSS，peak 由 begin/end 的真实采样决定
     // 窗口必须先于 adder 开启（begin 前的样本按设计被忽略——无归属窗口）。
     tr.begin(42);
+    EXPECT_TRUE(tr.has_active());
     std::vector<std::thread> adders;
     for (int t = 0; t < kThreads; ++t) {
         adders.emplace_back([&tr] {
@@ -99,6 +100,7 @@ TEST(TaskResourceTrackerTest, ConcurrentAddSampleWhileBeginEnd) {
     }
     for (auto& th : adders) th.join();
     tr.end(42);
+    EXPECT_FALSE(tr.has_active());
     fly::TaskResourceAgg agg;
     ASSERT_TRUE(tr.take_agg(42, agg));
     // 计数守恒（并发 add 无丢失）：begin 1 + 4*10000 + end 1。
@@ -110,6 +112,21 @@ TEST(TaskResourceTrackerTest, ConcurrentAddSampleWhileBeginEnd) {
     // peak 是真实 RSS（begin/end 采样），V 未顶上去。
     EXPECT_GT(agg.mem_peak_bytes_, V);
     EXPECT_LT(agg.mem_peak_bytes_, 1ull << 30);
+}
+
+// CPU 时间为 getrusage 微秒差分：亚毫秒级忙循环窗口也应得到非零 cpu_time
+//（jiffies 10ms 粒度下短 task 恒 0 的根治验收）。
+TEST(TaskResourceTrackerTest, CpuTimeMicrosecondResolution) {
+    fly::TaskResourceTracker tr;
+    tr.begin(50);
+    volatile uint64_t sink = 0;
+    for (int i = 0; i < 2000000; ++i) sink += i;  // ~几 ms 忙循环
+    tr.end(50);
+    (void)sink;
+    fly::TaskResourceAgg agg;
+    ASSERT_TRUE(tr.take_agg(50, agg));
+    EXPECT_GT(agg.cpu_time_ms_, 0u) << "微秒精度下短窗口 CPU 时间应为非零";
+    EXPECT_GE(agg.exec_end_ms_, agg.exec_start_ms_);
 }
 
 }  // namespace

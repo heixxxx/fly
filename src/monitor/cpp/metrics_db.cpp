@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS worker_samples(
     host_load1_x100 INTEGER NOT NULL DEFAULT 0,
     net_read_bytes INTEGER NOT NULL DEFAULT 0,
     net_write_bytes INTEGER NOT NULL DEFAULT 0,
+    kind INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(worker_id, epoch_ms)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS tasks(
     task_id INTEGER PRIMARY KEY,
@@ -318,8 +319,9 @@ void MetricsDb::record_worker_samples(uint64_t worker_id, const CMVector<Monitor
             exec_stmt(db,
                       "INSERT OR IGNORE INTO worker_samples(worker_id,epoch_ms,"
                       "proc_rss_bytes,proc_cpu_bps,host_cpu_bps,host_mem_total_bytes,"
-                      "host_mem_avail_bytes,host_load1_x100,net_read_bytes,net_write_bytes) "
-                      "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                      "host_mem_avail_bytes,host_load1_x100,net_read_bytes,"
+                      "net_write_bytes,kind) "
+                      "VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                       db_path_, [&](sqlite3_stmt* s) {
                           sqlite3_bind_int64(s, 1, static_cast<sqlite3_int64>(worker_id));
                           sqlite3_bind_int64(s, 2, static_cast<sqlite3_int64>(sp.epoch_ms_));
@@ -331,6 +333,7 @@ void MetricsDb::record_worker_samples(uint64_t worker_id, const CMVector<Monitor
                           sqlite3_bind_int64(s, 8, sp.host_load1_x100_);
                           sqlite3_bind_int64(s, 9, static_cast<sqlite3_int64>(sp.net_read_bytes_));
                           sqlite3_bind_int64(s, 10, static_cast<sqlite3_int64>(sp.net_write_bytes_));
+                          sqlite3_bind_int(s, 11, sp.kind_);
                       });
         }
     });

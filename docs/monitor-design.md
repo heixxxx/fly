@@ -44,7 +44,19 @@ GUI:   serve.py（stdlib）只读 JSON API + ECharts 前端（vendor 进库，�
 
 ## 3. 采集口径
 
-### 3.1 worker_samples（1s 采样 / 10s 成组上报）
+### 3.1 worker_samples（事件驱动为主 + 周期兜底）
+
+**采样模型（用户裁定原则）**：task start/end、IO 读写、assign/断连/注册等
+cluster 事件的发生时刻是天然采样点——事件密集期样本自然加密、空闲期稀疏、
+突发负载窗口不依赖固定间隔撞运气；固定间隔只是兜底节奏。
+
+| 机制 | 说明 |
+|---|---|
+| 事件采样（kind=1） | assign 到达 / 执行起止 / internal task 起止 / 断连 / 注册完成（worker 侧 `sample_now_event`）；task 完成 / worker 注册 / 收到样本（master 侧 `monitor_self_event`）。任意线程可调（MonitorSampler 内部互斥） |
+| IO 事件采样 | read 结束点（数据必在内存；耗时 ≥5ms 或 ≥256KB 才采——快 read=cache 命中=无新内存）；write 时刻**无条件采**（write 快 ≠ 进程内存小，用户其它大对象与所写对象无关）。采得的峰值补入 task 窗口（TaskResourceTracker） |
+| 执行期加密 | 有 task 在跑时 monitor 线程周期降至 `monitor_exec_sample_interval_ms`（200ms） |
+| 周期采样（kind=0） | 空闲时 1s 一条兜底 |
+| 统一节流 | 全部样本共用最小间距（200ms）——事件风暴/快 IO 不刷爆 DB |
 
 | 字段 | 口径 |
 |---|---|
@@ -52,8 +64,9 @@ GUI:   serve.py（stdlib）只读 JSON API + ECharts 前端（vendor 进库，�
 | host_cpu_bps | 机器非 idle 占比 |
 | net_read/write_bytes | 本进程 TCP 累计字节（NetStats，插桩 TCPSocketTransport 四方法=全部流量咽喉）；单调，消费侧差分成速率 |
 | proc_rss / host_mem | /proc 物理内存口径 |
+| kind | 0=周期 / 1=事件（GUI 曲线两种样本同轴混排） |
 
-master 自身：独立采样线程（10s）直写 worker_id=0 行（不经网络）。
+master 自身：自监控线程（10s 周期）+ 事件采样直写 worker_id=0 行。
 
 ### 3.2 tasks 行（执行窗口指标，worker 上报）
 
@@ -61,15 +74,16 @@ master 自身：独立采样线程（10s）直写 worker_id=0 行（不经网络
 |---|---|
 | created/ready/started/completed_ms | master 侧调度链（submit/依赖满足/assign/终态） |
 | exec_start/end_ms | worker 真实执行窗口（区别派发时刻） |
-| cpu_time_ms | 窗口内进程 utime+stime 差分（含旁路线程噪声，IO/CPU 判别足够） |
+| cpu_time_ms | getrusage 微秒差分（utime+stime 全线程和）——亚秒 task 亦有效 |
 | read_time/write_time_ms | read_object 耗时 / write_object+drain 落盘耗时 |
 | read_bytes / write_bytes | 解压后 / 压缩后字节（write 以 C++ WriteRecord 为准） |
 | mem_baseline/avg/peak | 窗口内进程 RSS（绝对口径；delta=减 baseline） |
 | dbs | 提交时解析 `__fly_db__:` 编码 args + inputs/outputs 对象名前缀 |
 
-**精度边界**：RSS 峰值靠 1s 采样 + begin/end 端点采样——**亚秒级 task 的窗口内
-可能无采样点**（端点在分配前/释放后），avg/peak 偏保守。需要精确观测的 task
-应在执行中保持持有（或调小 monitor_sample_interval_ms）。
+**内存峰值的观测点**（不依赖固定采样间隔）：begin/end 端点采样 +
+write 时刻（待写对象及用户持有的其它对象必存活）+ read 结束（数据刚入内存）
++ 执行期 200ms 加密周期。IO 的单次带宽由 object_io 的 bytes+duration 直接
+可算（read 开始/写结束点不重复采样——无内存信息量）。
 
 **CPU%/IO 密集判别**：exec 时长、cpu_time、read_time+write_time 四元对比
 （GUI Tasks 页占比条自动计算）。
@@ -132,8 +146,9 @@ import fly; fly.launch_monitor_gui("<log_dir>")
 | key | 默认 | 说明 |
 |---|---|---|
 | monitor_db_enabled | 1 | master 单写 monitor.db（0=本 run 无持久化） |
-| monitor_sample_interval_ms | 1000 | worker/master 采样间隔（0=关闭上报） |
-| monitor_report_interval_ms | 10000 | worker 成组上报/master 自监控直写间隔 |
+| monitor_sample_interval_ms | 1000 | 周期采样间隔（空闲兜底节奏；0=关闭上报） |
+| monitor_report_interval_ms | 10000 | worker 成组上报/master 自监控周期直写间隔 |
+| monitor_exec_sample_interval_ms | 200 | 最小采样间距：执行期加密档 + 事件采样统一节流下限 |
 
 ## 7. 代码地图
 

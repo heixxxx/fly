@@ -64,6 +64,8 @@ FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
                         fly_export::cast<double>(io[fly_export::str("write_ms")]));
                     cpp_result.read_bytes_ = fly_export::cast<uint64_t>(
                         io[fly_export::str("read_bytes")]);
+                    cpp_result.io_mem_peak_rss_ = fly_export::cast<uint64_t>(
+                        io[fly_export::str("mem_peak_rss")]);
                     fly_export::list items =
                         fly_export::cast<fly_export::list>(io[fly_export::str("items")]);
                     for (fly_export::handle h : items) {

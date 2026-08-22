@@ -154,11 +154,17 @@ public:
     void record_task_snapshot(uint64_t task_id);
     // master 自监控采样线程体（MonitorSampler 直写 worker_id=0 行）。
     void monitor_self_loop();
+    // master 侧事件驱动采样（task 完成/worker 注册/收到 worker 样本等 cluster
+    // 事件时刻的全维度快照，kind=1 直写 DB；节流与自监控周期共用）。
+    void monitor_self_event();
     std::thread monitor_self_thread_;
     std::atomic<bool> monitor_self_running_{false};
     std::mutex monitor_self_mutex_;
     std::condition_variable monitor_self_cv_;
-    MonitorSampler monitor_self_sampler_;  // 仅 monitor_self_thread_ 使用
+    MonitorSampler monitor_self_sampler_;  // 周期 + 事件采样共用（内部互斥）
+    std::mutex self_sample_throttle_mutex_;
+    uint64_t self_last_sample_ms_ = 0;     // 事件采样节流基准
+    int64_t self_sample_gap_ms_ = 200;     // 最小间距（start 时读 config）
     // 同步写注册裁决（on_write_register 的核心，无网络副作用前半段）——
     // public 供测试直调失败分类（frozen/mismatch/空 hash REGISTRATION_FAILED）。
     WriteRegisterAckMessage do_write_register(const WriteRegisterMessage& msg);

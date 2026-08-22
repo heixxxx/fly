@@ -306,8 +306,11 @@ TEST(MasterAgentTest, MonitorSampleGroupedSamplesCollected) {
     ASSERT_EQ(sqlite3_open_v2(db_path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr),
               SQLITE_OK);
     sqlite3_stmt* stmt = nullptr;
-    ASSERT_EQ(sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM worker_samples", -1,
-                                 &stmt, nullptr), SQLITE_OK);
+    // 按 worker_id=77 过滤：直调 on_monitor_sample 会触发 master 自身的
+    // 事件采样（monitor_self_event 落 wid=0 行）——预期行为，不计入本断言。
+    ASSERT_EQ(sqlite3_prepare_v2(db,
+              "SELECT COUNT(*) FROM worker_samples WHERE worker_id=77", -1,
+              &stmt, nullptr), SQLITE_OK);
     ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
     EXPECT_EQ(sqlite3_column_int64(stmt, 0), 3);
     sqlite3_finalize(stmt);

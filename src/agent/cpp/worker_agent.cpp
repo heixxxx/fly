@@ -329,6 +329,8 @@ void WorkerAgent::start() {
         heartbeat_thread_ = std::thread([this] { heartbeat_loop(); });
 
         monitor_running_ = true;
+        sample_gap_ms_ = Config::instance()->get_int("monitor_exec_sample_interval_ms");
+        if (sample_gap_ms_ <= 0) sample_gap_ms_ = 200;
         monitor_thread_ = std::thread([this] { monitor_report_loop(); });
 
         // 注册守望：RegisterAck 的事件驱动等待 + 超时退避重发（P3-23 兜底）。
@@ -605,9 +607,11 @@ void WorkerAgent::heartbeat_loop() {
     }
 }
 
-// monitor 采样上报（独立线程，与心跳解耦）：每采样周期采一条全维度样本
-// 入缓冲，每上报周期成组发送；发送失败/未注册（断连重连窗口）样本留缓冲
-// 不丢，下次成组补发。master 侧 MetricsDb 按 (worker_id, epoch_ms) 幂等落库，
+// monitor 采样上报（独立线程，与心跳解耦）：周期样本为兜底节奏，事件样本
+// （sample_now_event）与执行期加密样本填充突发负载窗口；全部经统一节流
+// （最小间距 = monitor_exec_sample_interval_ms，事件风暴不刷爆 DB）。每上报
+// 周期成组发送；发送失败/未注册（断连重连窗口）样本留缓冲不丢，下次成组
+// 补发。master 侧 MetricsDb 按 (worker_id, epoch_ms) 幂等落库，
 // RunMetricsCollector 按真实采样时刻最近邻合并（语义与原心跳 RSS 一致）。
 void WorkerAgent::monitor_report_loop() {
     const int64_t sample_ms = Config::instance()->get_int("monitor_sample_interval_ms");
@@ -615,18 +619,24 @@ void WorkerAgent::monitor_report_loop() {
     int64_t since_report_ms = 0;
 
     while (monitor_running_ && running_.load()) {  // running_ 兜底
+        // 执行窗口内加密：有 task 在跑时间隔降至最小间距档（事件点采样为主、
+        // 固定间隔为辅——亚秒 task 的负载窗口不依赖周期撞运气）。
+        const int64_t wait_ms = task_resource_tracker_.has_active()
+            ? std::min(sample_ms, sample_gap_ms_) : sample_ms;
         {
             std::unique_lock<std::mutex> lock(monitor_mutex_);
-            monitor_cv_.wait_for(lock, std::chrono::milliseconds(sample_ms),
+            monitor_cv_.wait_for(lock, std::chrono::milliseconds(wait_ms),
                                  [this]{ return !monitor_running_.load(); });
         }
         if (!monitor_running_) break;
 
+        // 周期样本计入当前 task 执行窗口（被节流跳过的不计——sample_count
+        // 与落库样本数保持一致）。
         const MonitorSample sp = monitor_sampler_.sample_once();
-        pending_samples_.push_back(sp);
-        // 样本计入当前 task 执行窗口（无窗口在跑则忽略）。
-        task_resource_tracker_.add_sample(sp.proc_rss_bytes_);
-        since_report_ms += sample_ms;
+        if (append_sample_throttled(sp)) {
+            task_resource_tracker_.add_sample(sp.proc_rss_bytes_);
+        }
+        since_report_ms += wait_ms;
 
         if (since_report_ms < report_ms) continue;
         since_report_ms = 0;
@@ -634,16 +644,41 @@ void WorkerAgent::monitor_report_loop() {
         if (registered_ && monitor_running_) {
             MonitorSampleMessage msg;
             msg.worker_id_ = worker_id_;
-            msg.samples_ = pending_samples_;
+            {
+                // 拷贝发送（每批几十条，开销可忽略）：失败时缓冲原样保留，
+                // 期间新事件样本 epoch 更大、自然追加在尾部，保序补发。
+                std::lock_guard<std::mutex> lk(samples_mutex_);
+                msg.samples_ = pending_samples_;
+            }
             if (!reactor_->try_send(master_conn_, msg)) {
                 DBG("MonitorSample skipped (send busy) — {} samples buffered",
-                    pending_samples_.size());
+                    msg.samples_.size());
             } else {
+                std::lock_guard<std::mutex> lk(samples_mutex_);
                 pending_samples_.clear();
             }
         }
         // 未注册（断连/重连窗口）：样本继续缓冲，重连成功后下次成组补发。
     }
+}
+
+// 事件驱动采样：cluster 事件（assign 到达/执行起止/internal task/断连/注册
+// 完成）时刻的 worker 全维度快照。任意线程可调（MonitorSampler 内部互斥），
+// 与周期样本共用节流——快 IO 等密集事件天然被间距挡掉，不放大开销。
+void WorkerAgent::sample_now_event() {
+    MonitorSample sp = monitor_sampler_.sample_once();
+    sp.kind_ = 1;
+    append_sample_throttled(sp);
+}
+
+bool WorkerAgent::append_sample_throttled(MonitorSample sp) {
+    std::lock_guard<std::mutex> lk(samples_mutex_);
+    if (sp.epoch_ms_ < last_sample_epoch_ms_ + static_cast<uint64_t>(sample_gap_ms_)) {
+        return false;
+    }
+    last_sample_epoch_ms_ = sp.epoch_ms_;
+    pending_samples_.push_back(sp);
+    return true;
 }
 
 // 对象级 IO 明细上报（尽力而为）：明细是增强数据，发送失败仅 DBG 丢弃；
@@ -783,6 +818,9 @@ void WorkerAgent::on_register_ack(uint64_t conn_id, const RegisterAckMessage& ms
     if (was_reconnecting) {
         INFO("Reconnection complete — resuming heartbeats, flushing buffered reports");
     }
+    // 事件采样：注册/重连完成时刻（cluster 事件采样点；断连期间的缓冲样本
+    // 随下一次成组上报补发）。
+    sample_now_event();
     // 注册成功后按序重放缓冲消息（用户确认语义：注册完成前的消息一律
     // pending，注册后重放）：
     //   1. 统一重放队列（A 类同步 RPC + B 类通知，FIFO = 语义序，含
@@ -846,6 +884,8 @@ void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
         task_queue_cv_.notify_one();
     }
     outstanding_tasks_++;
+    // 事件采样：task 到达时刻的 worker 全维度快照（调度压力观测点）。
+    sample_now_event();
 }
 
 bool WorkerAgent::has_pending_task() const {
@@ -876,11 +916,14 @@ bool WorkerAgent::poll_task() {
             task.task_module_.c_str(), executor_ ? 1 : 0);
 
     if (task.task_module_ == "__fly_internal") {
+        sample_now_event();  // 事件采样：internal task（backup/merge）执行起点
         task_resource_tracker_.begin(task.task_id_);
         execute_internal_task(task);
         task_resource_tracker_.end(task.task_id_);
+        sample_now_event();  // 事件采样：执行终点
     } else if (executor_) {
         begin_task(task.task_id_, task.write_context_hash_);
+        sample_now_event();  // 事件采样：执行起点（assign 到达点在 on_task_assign）
         task_resource_tracker_.begin(task.task_id_);
         // Stage inlined vars for the Python executor to inject before the task runs.
         if (!task.var_payloads_.empty()) {
@@ -889,7 +932,13 @@ bool WorkerAgent::poll_task() {
         }
         auto result = executor_->execute(
             task.task_id_, task.task_name_, task.task_module_, task.args_);
+        // IO 事件时刻的内存峰值（read 结束/write 前对象必存活的采样点，Python
+        // task_io 采集）补入窗口——事件驱动采样点，不依赖周期采样间隔。
+        if (result.io_mem_peak_rss_ > 0) {
+            task_resource_tracker_.add_sample(result.io_mem_peak_rss_);
+        }
         task_resource_tracker_.end(task.task_id_);
+        sample_now_event();  // 事件采样：执行终点
         auto tracked_writes = end_task(task.task_id_);
         // 对象级 IO 明细（尽力而为通道；聚合四元组随 complete/failed 不丢）。
         report_task_io(result);
@@ -1017,6 +1066,8 @@ void WorkerAgent::on_stop_now(const StopNowMessage& msg) {
 
 void WorkerAgent::on_disconnect(uint64_t conn_id) {
     if (conn_id != master_conn_.load()) return;
+    // 事件采样：断连时刻的 worker 快照（网络事件时刻的天然采样点）。
+    sample_now_event();
 
     // 网络闪断（master 挂=全群失败，但闪断不是挂）：宽限窗口内指数退避重连，
     // task 在本 worker 上继续执行（master 侧 task 存活、宽限内不判死）。

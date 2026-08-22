@@ -24,6 +24,8 @@ struct TaskExecResult {
     uint64_t read_time_ms_ = 0;    // read_object 累计耗时
     uint64_t write_time_ms_ = 0;   // write_object + drain 落盘累计耗时
     uint64_t read_bytes_ = 0;      // 解压后读字节（pickle 路径精确）
+    uint64_t io_mem_peak_rss_ = 0; // IO 时刻最大 RSS（read 结束/write 前采样；补入
+                                   // TaskResourceTracker 窗口的峰值观测点）
     CMVector<ObjectIoRecord> io_items_;  // 对象级明细（MonitorTaskIoMessage 上报）
 };
 

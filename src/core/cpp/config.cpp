@@ -175,6 +175,10 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     // 采样间隔(ms)：worker/master 每 MonitorSample 一条（RSS/双CPU%/host 内存/
     // 网络 IO/loadavg）。0=关闭采样上报。
     {"monitor_sample_interval_ms", 1000},
+    // 最小采样间距(ms)：事件驱动采样（assign/执行起止/IO/断连等 cluster 事件
+    // 时刻的快照）与执行窗口内加密采样的统一节流下限——事件密集期样本密度
+    // 封顶 1000/此值，风暴不刷爆 DB；读写快的 IO 天然被间距挡掉。
+    {"monitor_exec_sample_interval_ms", 200},
     // 成组上报间隔(ms)：worker 攒批经 MONITOR_SAMPLE 发 master（组内样本
     // 时间升序，失败/断连缓冲不丢，下次成组补发）。
     {"monitor_report_interval_ms", 10000},

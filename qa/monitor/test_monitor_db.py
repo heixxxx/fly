@@ -61,20 +61,29 @@ def _open_ro():
 # ── 大内存 task：分配并保持 ~64MB（peak 可观测） ──
 
 def mem_hog_task(db, key):
-    import time
     holder = bytearray(64 * 1024 * 1024)  # noqa: F841 — 持有到 task 结束
     for i in range(0, len(holder), 4096):
         holder[i] = 1  # 逐页触摸确保物理分配
-    # 保持持有 2.5s：内存峰值靠 monitor 采样线程（1s 间隔）捕获，亚秒级
-    # task 的窗口内无采样点（begin/end 端点采样在分配前/释放后）——这是
-    # 采样模型的固有精度边界（docs/monitor-design.md 口径说明）。
-    time.sleep(2.5)
+    # 不 sleep：write 调用前对象必存活——write 事件采样点（task_io）天然
+    # 捕捉到峰值，无需依赖 monitor 线程的固定采样间隔撞运气。
     db.write_object(key, len(holder))
+
+
+def pure_compute_task(db, key):
+    """纯计算 task（无 IO）：验证执行窗口内 200ms 加密周期能捕捉内存峰值。"""
+    holder = bytearray(32 * 1024 * 1024)  # noqa: F841
+    for i in range(0, len(holder), 4096):
+        holder[i] = 2
+    x = 0
+    for i in range(30_000_000):  # ~600ms 忙循环（> 2 个加密采样间隔）
+        x += i % 7
+    db.write_object(key, x)
 
 
 from fly import as_task  # noqa: E402
 
 mem_hog = as_task()(mem_hog_task)
+pure_compute = as_task()(pure_compute_task)
 
 
 def run_cluster():
@@ -92,6 +101,7 @@ def run_cluster():
     t2 = write_data(db, "obj_plain", 1024 * 1024)           # IO task
     t3 = mem_hog(db, "obj_mem")                             # 大内存 task
     t4 = chain_stage(db, 0, 1, "obj_chain")                 # 依赖链（读输入）
+    t5 = pure_compute(db, "obj_pure")                       # 纯计算（执行期加密采样）
 
     from fly import wait_tasks
     wait_tasks(120)  # 等全部提交的 task 完成
@@ -127,7 +137,7 @@ def assert_db_content():
         "SELECT task_id, name, status, created_ms, started_ms, completed_ms, "
         "ready_ms, exec_start_ms, exec_end_ms, dbs FROM tasks").fetchall()
     by_id = {r[0]: r for r in rows}
-    assert len(rows) == 4, f"tasks 行数 {len(rows)} != 4"
+    assert len(rows) == 5, f"tasks 行数 {len(rows)} != 5"
     for tid, name, status, created, started, completed, ready, es, ee, dbs in rows:
         assert status == "COMPLETED", f"task {tid} 状态 {status}"
         assert created > 0 and started >= created and completed >= started, \
@@ -136,18 +146,21 @@ def assert_db_content():
         assert es > 0 and ee > es, f"task {tid} 执行窗口无效"
         assert DB_PATH in (dbs or ""), f"task {tid} dbs 解析失败: {dbs!r}"
 
-    # 大内存 task：avg/peak > 0 且 peak ≥ avg ≥ baseline。
-    # （from_user task 名为 __user_func__:hex —— 本 run 唯一的 user func 即 mem_hog）
-    mem_tid = c.execute(
-        "SELECT task_id FROM tasks WHERE name LIKE '__user_func__:%'").fetchone()[0]
-    mem_avg, mem_peak, mem_base = c.execute(
-        "SELECT mem_avg_bytes, mem_peak_bytes, mem_baseline_bytes FROM tasks "
-        "WHERE task_id=?", (mem_tid,)).fetchone()
-    assert mem_avg > 0 and mem_peak > 0 and mem_base > 0, "内存三字段未落盘"
-    assert mem_peak >= mem_avg >= min(mem_avg, mem_base), "内存口径错序"
-    # 64MB 分配应可见于 peak-baseline（放宽到 32MB 容忍页缓存/共享页）。
-    assert mem_peak - mem_base >= 32 * 1024 * 1024, \
-        f"大内存 task 峰值差不足: {mem_peak - mem_base}"
+    # 大内存 task（无 sleep）：write 事件采样点捕捉峰值——事件驱动采样对
+    # 亚秒 task 盲区的根治验收。
+    # （from_user task 名为 __user_func__:hex —— 两个 user func 按提交顺序区分）
+    mem_rows = c.execute(
+        "SELECT task_id, mem_peak_bytes, mem_baseline_bytes FROM tasks "
+        "WHERE name LIKE '__user_func__:%' ORDER BY task_id").fetchall()
+    assert len(mem_rows) == 2, f"user func task 数 {len(mem_rows)} != 2"
+    hog_peak, hog_base = mem_rows[0][1], mem_rows[0][2]
+    pure_peak, pure_base = mem_rows[1][1], mem_rows[1][2]
+    # mem_hog（64MB，先提交）：write 钩子采样应抓到大部分分配。
+    assert hog_peak - hog_base >= 32 * 1024 * 1024, \
+        f"write 事件采样未捕捉到 64MB 峰值: {hog_peak - hog_base}"
+    # pure_compute（32MB，无 IO，~600ms）：执行窗口 200ms 加密周期采样捕捉。
+    assert pure_peak - pure_base >= 16 * 1024 * 1024, \
+        f"执行期加密采样未捕捉 32MB 计算峰值: {pure_peak - pure_base}"
 
     # IO task：read/write 时间与字节。
     io_tid = c.execute(
@@ -156,11 +169,11 @@ def assert_db_content():
         "SELECT read_time_ms, read_bytes, write_time_ms, write_bytes FROM tasks "
         "WHERE task_id=?", (io_tid,)).fetchone()
     assert w_ms > 0 and w_bytes > 0, f"write 指标未落盘: {w_ms}, {w_bytes}"
-    # cpu_time 是 jiffies 差分（10ms 粒度）：亚秒级快 task 并发下可能整 0——
-    # 用 12s 的 slow_write 断言（CPU 必然跨多个 tick）。
-    cpu_ms = c.execute(
-        "SELECT cpu_time_ms FROM tasks WHERE name='slow_write'").fetchone()[0]
-    assert cpu_ms > 0, "cpu_time_ms 未落盘（slow_write 12s 仍为 0）"
+    # cpu_time 为 getrusage 微秒差分：亚秒快 task（write_data）也应非零——
+    # jiffies 10ms 粒度下短 task 恒 0 的回归验收。
+    fast_cpu = c.execute(
+        "SELECT cpu_time_ms FROM tasks WHERE task_id=?", (io_tid,)).fetchone()[0]
+    assert fast_cpu > 0, f"微秒精度下快 task cpu_time 仍为 0: {fast_cpu}"
 
     # 依赖链 task：read 明细 + read 指标（chain_stage 读输入对象）。
     chain_r = c.execute(
@@ -195,6 +208,14 @@ def assert_db_content():
     net_ok = c.execute(
         "SELECT COUNT(*) FROM worker_samples WHERE net_read_bytes>0").fetchone()[0]
     assert rss_ok > 0 and net_ok > 0, f"RSS/net 计数全零: {rss_ok}, {net_ok}"
+    # 事件驱动采样验收：kind=1 样本（assign/执行起止等 cluster 事件时刻的
+    # worker 快照）应与周期样本（kind=0）并存。
+    n_event = c.execute(
+        "SELECT COUNT(*) FROM worker_samples WHERE kind=1").fetchone()[0]
+    n_periodic = c.execute(
+        "SELECT COUNT(*) FROM worker_samples WHERE kind=0").fetchone()[0]
+    assert n_event > 0, "无事件驱动样本（kind=1）——sample_now_event 未生效"
+    assert n_periodic > 0, "无周期样本（kind=0）"
 
     conn.close()
 

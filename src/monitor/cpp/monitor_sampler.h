@@ -2,12 +2,17 @@
 
 #include <monitor/cpp/monitor_types.h>
 
+#include <mutex>
+
 namespace fly {
 
 // 差分式负载采样器：内部保留上次 jiffy 读数，sample_once() 产出一条完整
-// MonitorSample。每个采样线程一个实例（worker 侧 monitor_report_loop、
-// master 侧自监控线程、main.cpp 的 MachineInfo 日志线程）。单线程使用，
-// 非线程安全。
+// MonitorSample。
+//
+// 线程模型：**线程安全**——任意线程可调 sample_once()（monitor 周期线程、
+// reactor lane 上的事件采样、master 自监控共用一个实例）。差分状态由内部
+// 互斥保护，采样全程 ~几十 µs，事件频率下锁竞争可忽略。事件驱动的调用方
+// 需自行节流（见 WorkerAgent::sample_now_event）。
 //
 // 首次调用无基线（CPU% 记 0）；两次调用间隔过近导致差分分母为 0 时 CPU%
 // 记 0（不外推）。
@@ -29,6 +34,7 @@ public:
 private:
     long hz_ = 100;                 // sysconf(_SC_CLK_TCK)（构造时缓存）
     bool has_baseline_ = false;     // 首次采样无差分基线
+    std::mutex mutex_;              // 差分状态保护（多线程事件采样）
     int64_t prev_proc_jiffies_ = 0;
     int64_t prev_host_total_ = 0;
     int64_t prev_host_idle_ = 0;

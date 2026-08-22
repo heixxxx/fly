@@ -46,22 +46,26 @@ MonitorSample MonitorSampler::sample_once() {
     s.net_write_bytes_ = NetStats::instance().write_bytes();
 
     // CPU 差分：进程口径 dProc/dTotal（占总容量），host 口径非 idle 占比。
+    // 差分状态互斥保护（多线程事件采样与周期采样共用本实例）。
     const int64_t proc_j = SystemInfo::process_cpu_jiffies();
     const SystemInfo::HostCpu hc = SystemInfo::host_cpu_jiffies();
-    if (has_baseline_ && proc_j >= 0 && hc.total_ > 0) {
-        const int64_t d_proc = proc_j - prev_proc_jiffies_;
-        const int64_t d_total = hc.total_ - prev_host_total_;
-        const int64_t d_idle = hc.idle_ - prev_host_idle_;
-        if (d_proc >= 0 && d_total > 0 && d_idle >= 0) {
-            s.proc_cpu_bps_ = proc_cpu_bps(d_proc, d_total);
-            s.host_cpu_bps_ = host_cpu_bps(d_total, d_idle);
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        if (has_baseline_ && proc_j >= 0 && hc.total_ > 0) {
+            const int64_t d_proc = proc_j - prev_proc_jiffies_;
+            const int64_t d_total = hc.total_ - prev_host_total_;
+            const int64_t d_idle = hc.idle_ - prev_host_idle_;
+            if (d_proc >= 0 && d_total > 0 && d_idle >= 0) {
+                s.proc_cpu_bps_ = proc_cpu_bps(d_proc, d_total);
+                s.host_cpu_bps_ = host_cpu_bps(d_total, d_idle);
+            }
         }
-    }
-    if (proc_j >= 0 && hc.total_ > 0) {
-        prev_proc_jiffies_ = proc_j;
-        prev_host_total_ = hc.total_;
-        prev_host_idle_ = hc.idle_;
-        has_baseline_ = true;
+        if (proc_j >= 0 && hc.total_ > 0) {
+            prev_proc_jiffies_ = proc_j;
+            prev_host_total_ = hc.total_;
+            prev_host_idle_ = hc.idle_;
+            has_baseline_ = true;
+        }
     }
     return s;
 }

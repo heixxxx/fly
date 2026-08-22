@@ -320,6 +320,9 @@ void MasterAgent::start() {
             metrics_db_->record_run_meta("run_start_ms",
                 std::to_string(monitor_epoch_ms_now()));
             metrics_db_->record_run_meta("hostname", ProcessInfo::instance()->hostname());
+            self_sample_gap_ms_ =
+                Config::instance()->get_int("monitor_exec_sample_interval_ms");
+            if (self_sample_gap_ms_ <= 0) self_sample_gap_ms_ = 200;
             monitor_self_running_ = true;
             monitor_self_thread_ = std::thread([this] { monitor_self_loop(); });
         } else {
@@ -1377,6 +1380,7 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
     }
     // monitor 落盘：workers 表 upsert（含重连注册）+ REGISTER 事件。
     if (metrics_db_) {
+        monitor_self_event();  // 事件采样：worker 注册时刻
         CMString attrs;
         for (size_t i = 0; i < msg.attributes_.size(); ++i) {
             if (i) attrs += ",";
@@ -1435,6 +1439,8 @@ void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
 // epoch/RSS 平行数组，语义与原心跳 RSS 采样一致，仅通道迁移）+ monitor.db
 // 落库（(worker_id, epoch_ms) 主键幂等，重复补发不重不漏）。
 void MasterAgent::on_monitor_sample(const MonitorSampleMessage& msg) {
+    // 事件采样：收到 worker 样本=集群活跃信号（master 侧快照，节流）。
+    monitor_self_event();
     if (run_metrics_ && !msg.samples_.empty()) {
         CMVector<uint64_t> epochs, rss;
         epochs.reserve(msg.samples_.size());
@@ -1584,9 +1590,29 @@ void MasterAgent::monitor_self_loop() {
         if (!monitor_self_running_.load()) break;
         if (metrics_db_) {
             CMVector<MonitorSample> one{monitor_self_sampler_.sample_once()};
+            {
+                std::lock_guard<std::mutex> t(self_sample_throttle_mutex_);
+                self_last_sample_ms_ = one.back().epoch_ms_;
+            }
             metrics_db_->record_worker_samples(0, one);
         }
     }
+}
+
+// master 侧事件采样：cluster 事件时刻的全维度快照（kind=1 直写；与周期采样
+// 共用节流——高频事件（task 完成风暴）不刷爆 DB）。
+void MasterAgent::monitor_self_event() {
+    if (!metrics_db_) return;
+    MonitorSample sp = monitor_self_sampler_.sample_once();
+    sp.kind_ = 1;
+    {
+        std::lock_guard<std::mutex> t(self_sample_throttle_mutex_);
+        if (sp.epoch_ms_ < self_last_sample_ms_ + static_cast<uint64_t>(self_sample_gap_ms_)) {
+            return;
+        }
+        self_last_sample_ms_ = sp.epoch_ms_;
+    }
+    metrics_db_->record_worker_samples(0, CMVector<MonitorSample>{sp});
 }
 
 // 登记写入该 db 的 worker 元数据（db meta recorded_workers_）。
@@ -1645,6 +1671,8 @@ void MasterAgent::record_worker_info(const CMString& object_name, const CMString
 }
 
 void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& msg) {
+    // 事件采样：task 完成时刻的 master 快照（节流；完成风暴下与周期无异）。
+    monitor_self_event();
     size_t written_count = msg.written_objects_.size();
     fprintf(stderr, "[SD] on_complete: task_id=%llu worker=%llu conn=%llu\n",
             static_cast<unsigned long long>(msg.task_id_),

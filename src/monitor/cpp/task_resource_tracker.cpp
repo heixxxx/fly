@@ -1,17 +1,19 @@
 #include <monitor/cpp/task_resource_tracker.h>
 #include <core/cpp/system_info.h>
 
+#include <sys/resource.h>
 #include <unistd.h>
 
 namespace fly {
 
 namespace {
-int64_t cpu_jiffies_now() {
-    return SystemInfo::process_cpu_jiffies();
-}
-uint64_t jiffy_delta_to_ms(int64_t dj, long hz) {
-    if (dj <= 0 || hz <= 0) return 0;
-    return static_cast<uint64_t>(dj * 1000 / hz);
+// 进程 CPU 时间（微秒，utime+stime 全线程和）。getrusage 微秒精度——亚秒
+// task 的 cpu_time 不受 /proc jiffies 10ms 粒度限制（短 task 恒 0 的根治）。
+int64_t cpu_usec_now() {
+    struct rusage ru;
+    if (getrusage(RUSAGE_SELF, &ru) != 0) return -1;
+    return ru.ru_utime.tv_sec * 1000000LL + ru.ru_utime.tv_usec +
+           ru.ru_stime.tv_sec * 1000000LL + ru.ru_stime.tv_usec;
 }
 }  // namespace
 
@@ -20,7 +22,7 @@ void TaskResourceTracker::begin(uint64_t task_id) {
     current_ = Window{};
     current_.task_id_ = task_id;
     current_.exec_start_ms_ = monitor_epoch_ms_now();
-    current_.begin_jiffies_ = cpu_jiffies_now();
+    current_.begin_cpu_usec_ = cpu_usec_now();
     current_.baseline_ = SystemInfo::process_rss_bytes();
     current_.sum_ = current_.baseline_;
     current_.count_ = 1;
@@ -39,6 +41,11 @@ void TaskResourceTracker::add_sample(uint64_t rss_bytes) {
     add_sample_locked(rss_bytes);
 }
 
+bool TaskResourceTracker::has_active() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return current_.task_id_ != 0;
+}
+
 void TaskResourceTracker::end(uint64_t task_id) {
     std::lock_guard<std::mutex> lk(mutex_);
     if (current_.task_id_ != task_id || current_.task_id_ == 0) {
@@ -50,8 +57,12 @@ void TaskResourceTracker::end(uint64_t task_id) {
     TaskResourceAgg agg;
     agg.exec_start_ms_ = current_.exec_start_ms_;
     agg.exec_end_ms_ = monitor_epoch_ms_now();
-    const long hz = sysconf(_SC_CLK_TCK);
-    agg.cpu_time_ms_ = jiffy_delta_to_ms(cpu_jiffies_now() - current_.begin_jiffies_, hz);
+    const int64_t cpu_now = cpu_usec_now();
+    if (cpu_now > 0 && current_.begin_cpu_usec_ > 0 &&
+        cpu_now >= current_.begin_cpu_usec_) {
+        agg.cpu_time_ms_ = static_cast<uint64_t>(
+            (cpu_now - current_.begin_cpu_usec_) / 1000);
+    }
     agg.mem_baseline_bytes_ = current_.baseline_;
     agg.mem_avg_bytes_ = current_.count_ > 0 ? current_.sum_ / current_.count_ : 0;
     agg.mem_peak_bytes_ = current_.peak_;
