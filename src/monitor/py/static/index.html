@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fly cluster monitor</title>
+<link rel="stylesheet" href="/static/css/app.css">
+<script src="/static/vendor/echarts.min.js"></script>
+</head>
+<body>
+<header>
+  <div class="brand">fly <span>cluster monitor</span></div>
+  <nav id="nav">
+    <button data-page="overview" class="active">总览</button>
+    <button data-page="workers">Workers</button>
+    <button data-page="tasks">Tasks</button>
+    <button data-page="timeline">Timeline</button>
+    <button data-page="dbs">DBs</button>
+  </nav>
+  <div class="header-right">
+    <label class="poll-toggle">
+      <input type="checkbox" id="poll-enabled" checked> 自动刷新(3s)
+    </label>
+    <span id="run-info" class="run-info"></span>
+  </div>
+</header>
+
+<main id="main">
+  <!-- 各页面容器由 app.js 装载 -->
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

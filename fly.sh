@@ -189,6 +189,10 @@ WRAPPER
             for py in "$FLY_ROOT/src/$mod/py/"*.py; do
                 [ -f "$py" ] && ln -sf "$py" "$build_dir/python/$mod/py/"
             done
+            # 前端静态资产目录（monitor GUI 的 ECharts/JS/CSS）整体链接。
+            if [ -d "$FLY_ROOT/src/$mod/py/static" ]; then
+                ln -sfn "$FLY_ROOT/src/$mod/py/static" "$build_dir/python/$mod/py/static"
+            fi
         fi
     done
 

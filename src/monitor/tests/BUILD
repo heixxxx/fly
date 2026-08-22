@@ -41,3 +41,11 @@ py_test(
     deps = ["//src/monitor:monitor_pkg"],
     imports = ["../.."],
 )
+
+py_test(
+    name = "serve_test",
+    srcs = ["serve_test.py"],
+    main = "serve_test.py",
+    deps = ["//src/monitor/py:fly_monitor_py"],
+    imports = ["../.."],
+)

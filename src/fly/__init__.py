@@ -25,6 +25,7 @@ from storage import Database
 from storage import generate_uid, make_edge
 from core import get_config, get_work_directory
 from task import as_task, task_name, wait_obj
+from monitor import launch_monitor_gui
 
 from fly.runtime import get_agent
 from fly.userdoc import UserDoc, Schema, document, help, register_module

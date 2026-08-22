@@ -191,6 +191,8 @@ static void print_usage(const char* prog) {
     printf("  --worker-attributes A[,B...]\n");
     printf("                       Comma-separated worker attributes (mutable, capability matching)\n");
     printf("  --worker-role ROLE   Worker role (static identity): hybrid (default) | storage_only\n");
+    printf("  --serve-monitor DB   Standalone cluster monitor GUI (read-only monitor.db or log_dir)\n");
+    printf("  --port N             GUI listen port for --serve-monitor (default: 8788)\n");
     printf("  -i                   Interactive mode\n");
     printf("  script               Python script to execute\n");
 }
@@ -214,6 +216,8 @@ int main(int argc, char* argv[]) {
     std::string worker_role;
     std::string host_override;
     std::string config_file;
+    std::string serve_monitor_db;   // 非空 = --serve-monitor 独立 GUI 模式
+    std::string serve_monitor_port = "8788";
 
     for (int i = 1; i < argc; i++) {
         std::string arg(argv[i]);
@@ -235,6 +239,10 @@ int main(int argc, char* argv[]) {
             worker_role = argv[++i];
         } else if (arg == "--config-file" && i + 1 < argc) {
             config_file = argv[++i];
+        } else if (arg == "--serve-monitor" && i + 1 < argc) {
+            serve_monitor_db = argv[++i];
+        } else if (arg == "--port" && i + 1 < argc) {
+            serve_monitor_port = argv[++i];
         } else if (arg == "-i") {
             interactive = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -243,6 +251,24 @@ int main(int argc, char* argv[]) {
         } else if (!arg.empty() && arg[0] != '-') {
             script_path = arg;
         }
+    }
+
+    // --serve-monitor 独立 GUI 模式：只读 monitor.db 起 Web 服务。不走
+    // Logger/agent 初始化（不产生 fly_log 目录、不占用端口外的任何资源），
+    // 与正在运行的 fly master 完全独立（db 只读连接）。
+    if (!serve_monitor_db.empty()) {
+        setenv("FLY_MONITOR_DB", serve_monitor_db.c_str(), 1);
+        setenv("FLY_MONITOR_PORT", serve_monitor_port.c_str(), 1);
+        Py_Initialize();
+        setup_sys_path();  // 参数经环境变量传递，无需 PySys_SetArgv
+        const int rc = PyRun_SimpleString(
+            "import os, sys\n"
+            "from monitor import serve_main\n"
+            "sys.exit(serve_main("
+            "[os.environ['FLY_MONITOR_DB'], "
+            "'--port', os.environ['FLY_MONITOR_PORT']]))\n");
+        if (Py_FinalizeEx() < 0) return 1;
+        return rc == 0 ? 0 : 1;
     }
 
     auto cfg = Config::instance();

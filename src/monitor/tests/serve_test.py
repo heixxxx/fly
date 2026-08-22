@@ -1,0 +1,165 @@
+"""serve.py API 单测：临时 monitor.db + 线程内起 HTTP server，断言各端点 JSON
+与静态文件托管。stdlib-only（与 serve.py 同约束）。
+"""
+import json
+import os
+import shutil
+import sqlite3
+import sys
+import tempfile
+import threading
+import time
+import unittest
+import urllib.request
+
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.normpath(os.path.join(_this_dir, '..', '..', '..'))
+sys.path.insert(0, os.path.join(_project_root, 'src', 'monitor', 'py'))
+
+import serve  # noqa: E402
+
+
+def build_test_db(path):
+    db = sqlite3.connect(path)
+    c = db.cursor()
+    c.executescript("""
+    CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE workers(worker_id INTEGER PRIMARY KEY, hostname TEXT, ip TEXT,
+        role TEXT, attributes TEXT, first_seen_ms INTEGER, last_event_ms INTEGER, last_event TEXT);
+    CREATE TABLE worker_samples(worker_id INTEGER, epoch_ms INTEGER,
+        proc_rss_bytes INTEGER, proc_cpu_bps INTEGER, host_cpu_bps INTEGER,
+        host_mem_total_bytes INTEGER, host_mem_avail_bytes INTEGER,
+        host_load1_x100 INTEGER, net_read_bytes INTEGER, net_write_bytes INTEGER,
+        PRIMARY KEY(worker_id, epoch_ms)) WITHOUT ROWID;
+    CREATE TABLE tasks(task_id INTEGER PRIMARY KEY, name TEXT, module TEXT,
+        is_internal INTEGER, status TEXT, worker_id INTEGER, priority INTEGER,
+        error TEXT, created_ms INTEGER, ready_ms INTEGER, started_ms INTEGER,
+        completed_ms INTEGER, exec_start_ms INTEGER, exec_end_ms INTEGER,
+        cpu_time_ms INTEGER, read_time_ms INTEGER, write_time_ms INTEGER,
+        read_bytes INTEGER, write_bytes INTEGER, mem_baseline_bytes INTEGER,
+        mem_avg_bytes INTEGER, mem_peak_bytes INTEGER, dbs TEXT);
+    CREATE TABLE object_io(id INTEGER PRIMARY KEY AUTOINCREMENT, epoch_ms INTEGER,
+        task_id INTEGER, worker_id INTEGER, direction TEXT, object_name TEXT,
+        bytes INTEGER, duration_ms INTEGER);
+    CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, epoch_ms INTEGER,
+        category TEXT, event TEXT, worker_id INTEGER, task_id INTEGER, detail TEXT);
+    """)
+    c.execute("INSERT INTO meta VALUES('run_start_ms','1000')")
+    c.execute("INSERT INTO meta VALUES('hostname','test-host')")
+    c.execute("INSERT INTO workers VALUES(1,'h1','10.0.0.1','hybrid','',100,200,'REGISTER')")
+    c.execute("INSERT INTO worker_samples VALUES(1,1500,1000,2500,5000,64000,32000,100,0,0)")
+    c.execute("INSERT INTO worker_samples VALUES(1,2500,1200,3000,5200,64000,31000,110,500,300)")
+    c.execute("INSERT INTO tasks(task_id,name,status,worker_id,dbs,exec_start_ms,exec_end_ms,cpu_time_ms) "
+              "VALUES(7,'my_task','COMPLETED',1,'/tmp/a.db',1100,1900,400)")
+    c.execute("INSERT INTO tasks(task_id,name,status,worker_id) VALUES(8,'other','FAILED',1)")
+    c.execute("INSERT INTO events(epoch_ms,category,event,worker_id,task_id,detail) "
+              "VALUES(300,'task','SUBMIT',0,7,'my_task')")
+    c.execute("INSERT INTO events(epoch_ms,category,event,worker_id,task_id,detail) "
+              "VALUES(400,'db','DB_CREATED',0,0,'/tmp/a.db')")
+    c.execute("INSERT INTO object_io(epoch_ms,task_id,worker_id,direction,object_name,bytes,duration_ms) "
+              "VALUES(1200,7,1,'r','/tmp/a.db:x',4096,12)")
+    db.commit()
+    db.close()
+
+
+class ServeTest(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = tempfile.mkdtemp(prefix="fly_serve_test_")
+        cls.db_path = os.path.join(cls.dir, "monitor.db")
+        build_test_db(cls.db_path)
+        serve.open_db(cls.db_path)
+        cls.httpd = serve.ThreadingHTTPServer(("127.0.0.1", 0), serve.MonitorHandler)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def get(self, path):
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=5) as r:
+            return json.loads(r.read().decode())
+
+    def test_meta(self):
+        m = self.get("/api/meta")
+        self.assertEqual(m["meta"]["hostname"], "test-host")
+        self.assertEqual(m["task_counts"], {"COMPLETED": 1, "FAILED": 1})
+        self.assertEqual(m["workers"], 1)
+        self.assertEqual(m["sample_lo"], 1500)
+
+    def test_workers_with_latest_sample(self):
+        w = self.get("/api/workers")["workers"]
+        self.assertEqual(len(w), 1)
+        self.assertEqual(w[0]["hostname"], "h1")
+        self.assertEqual(w[0]["latest"]["epoch_ms"], 2500)
+
+    def test_worker_samples_range(self):
+        s = self.get("/api/workers/1/samples?from_ms=2000")
+        self.assertEqual(len(s["samples"]), 1)
+        self.assertEqual(s["samples"][0]["net_read_bytes"], 500)
+
+    def test_tasks_filter_and_search(self):
+        all_t = self.get("/api/tasks")
+        self.assertEqual(all_t["total"], 2)
+        failed = self.get("/api/tasks?status=FAILED")
+        self.assertEqual(failed["total"], 1)
+        self.assertEqual(failed["tasks"][0]["name"], "other")
+        searched = self.get("/api/tasks?q=my_")
+        self.assertEqual(searched["total"], 1)
+        by_worker = self.get("/api/tasks?worker=1")
+        self.assertEqual(by_worker["total"], 2)
+
+    def test_task_detail(self):
+        d = self.get("/api/tasks/7")
+        self.assertEqual(d["task"]["dbs"], "/tmp/a.db")
+        self.assertEqual(len(d["events"]), 1)
+        self.assertEqual(len(d["io"]), 1)
+        self.assertEqual(d["io"][0]["object_name"], "/tmp/a.db:x")
+
+    def test_events_category(self):
+        evs = self.get("/api/events?category=db")["events"]
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]["event"], "DB_CREATED")
+
+    def test_timeline(self):
+        tl = self.get("/api/timeline")["tasks"]
+        self.assertEqual(len(tl), 1)  # task 8 无 exec 窗口不进 timeline
+        self.assertEqual(tl[0]["task_id"], 7)
+
+    def test_dbs_association(self):
+        dbs = self.get("/api/dbs")["dbs"]
+        self.assertEqual(len(dbs), 1)
+        self.assertEqual(dbs[0]["db"], "/tmp/a.db")
+        self.assertEqual(dbs[0]["task_count"], 1)
+
+    def test_static_index_and_vendor(self):
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/", timeout=5) as r:
+            body = r.read().decode()
+            self.assertIn("cluster monitor", body)
+            self.assertIn("text/html", r.headers["Content-Type"])
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{self.port}/static/vendor/echarts.min.js", timeout=5) as r:
+            self.assertGreater(len(r.read()), 100000)
+
+    def test_path_traversal_blocked(self):
+        try:
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{self.port}/static/../serve.py", timeout=5)
+            self.fail("path traversal should be rejected")
+        except urllib.error.HTTPError as e:
+            self.assertIn(e.code, (403, 404))
+
+    def test_unknown_api_404(self):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/nope", timeout=5)
+            self.fail("unknown api should 404")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 404)
+
+
+if __name__ == "__main__":
+    unittest.main()
