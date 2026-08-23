@@ -653,6 +653,12 @@ void WorkerAgent::monitor_report_loop() {
             if (!reactor_->try_send(master_conn_, msg)) {
                 DBG("MonitorSample skipped (send busy) — {} samples buffered",
                     msg.samples_.size());
+                // send busy 是 per-conn 发送锁的瞬时 try_lock 竞争（微秒级窗口），
+                // 但补发被推迟到下个完整 report 周期（10s）——晚注册 worker 在短
+                // 生命周期里可能全程 0 样本落库（缓冲随进程退出蒸发，QA 实测 11
+                // 样本滞留）。失败后 1s 快速重试（经 since_report_ms 折算，后续
+                // 循环累加自然触发；真拥塞时发送本身慢，重试频率自然受限）。
+                since_report_ms = report_ms - std::min<int64_t>(report_ms, 1000);
             } else {
                 std::lock_guard<std::mutex> lk(samples_mutex_);
                 pending_samples_.clear();
