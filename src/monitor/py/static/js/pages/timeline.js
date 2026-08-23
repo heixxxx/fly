@@ -175,6 +175,9 @@ function ganttOption(wids, seriesData) {
     },
     yAxis: {
       type: 'category',
+      // inverse：category 轴默认从下往上渲染——升序数组视觉上呈降序；
+      // 反转后第一个泳道（最小 worker id）显示在顶部。
+      inverse: true,
       data: wids.map(w => w === 0 ? `master(0) · ${hostMap[0]}`
                                   : `worker ${w} · ${hostMap[w] || '?'}`),
       axisLine: { lineStyle: { color: '#37424f' } },
@@ -182,9 +185,26 @@ function ganttOption(wids, seriesData) {
     },
     dataZoom: [
       { type: 'inside', xAxisIndex: 0 },
-      { type: 'slider', xAxisIndex: 0, height: 18, bottom: 12,
-        borderColor: '#2a3542', backgroundColor: '#161d26',
-        fillerColor: 'rgba(74,168,255,.15)', textStyle: { color: '#7a8a9c' } },
+      { type: 'slider', xAxisIndex: 0, height: 20, bottom: 12,
+        borderColor: '#3a4a5c', backgroundColor: '#161d26',
+        // 选取范围的高亮反馈：填充不透明度提高 + 两端手柄着色 + 选中区
+        // 数据背景（虚线暗底为全量数据，蓝色实底为当前选区）。
+        fillerColor: 'rgba(74,168,255,.35)',
+        dataBackground: {
+          lineStyle: { color: '#37424f', width: 1 },
+          areaStyle: { color: 'rgba(55,66,79,.35)' },
+        },
+        selectedDataBackground: {
+          lineStyle: { color: '#4aa8ff', width: 1 },
+          areaStyle: { color: 'rgba(74,168,255,.30)' },
+        },
+        handleIcon: 'circle', handleSize: '120%',
+        handleStyle: { color: '#4aa8ff', borderColor: '#1c2530' },
+        moveHandleSize: 5,
+        moveHandleStyle: { color: '#4aa8ff' },
+        emphasis: { handleStyle: { borderColor: '#4aa8ff' },
+                    moveHandleStyle: { color: '#6fb9ff' } },
+        textStyle: { color: '#7a8a9c' } },
     ],
     series: [{
       type: 'custom',

@@ -1,6 +1,7 @@
 // Tasks：搜索/过滤/分页的任务表 + task 详情。
-// mount 建控件（事件绑一次）与 tbody 容器；update 仅填 tbody——过滤条件与
-// 分页状态存活于 ctx.taskFilter，输入框聚焦/滚动不被轮询打断。
+// mount 建列表/详情双容器（控件事件绑一次，切换仅显隐——详情不得覆盖
+// main.innerHTML，否则返回时列表结构与绑定已销毁、update 写不回）。
+// update 仅填数据——过滤条件与分页状态存活于 ctx.taskFilter。
 import { getJson, fmtGB, fmtBytes, fmtMs, fmtTimeFull, escapeHtml, shortName, expandoHtml } from '../api.js';
 import { navigate } from '../app.js';
 
@@ -13,32 +14,38 @@ export function destroy() {
 export function mount(ctx) {
   const f = ctx.taskFilter;
   ctx.main.innerHTML = `
-    <div class="panel">
-      <div class="controls">
-        <input id="t-q" placeholder="搜索 task 名称…" value="${f.q || ''}" style="width:220px">
-        <select id="t-status">
-          <option value="">全部状态</option>
-          ${['PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED'].map(s =>
-            `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s}</option>`).join('')}
-        </select>
-        <select id="t-worker"><option value="0">全部 worker</option></select>
-        <span class="muted" id="t-total"></span>
+    <div id="t-list-view">
+      <div class="panel">
+        <div class="controls">
+          <input id="t-q" placeholder="搜索 task 名称…" value="${f.q || ''}" style="width:220px">
+          <select id="t-status">
+            <option value="">全部状态</option>
+            ${['PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED'].map(s =>
+              `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+          </select>
+          <select id="t-worker"><option value="0">全部 worker</option></select>
+          <span class="muted" id="t-total"></span>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr>
+            <th>ID</th><th>名称</th><th>状态</th><th>worker</th>
+            <th>创建/派发/完成</th><th>排队→执行</th><th>执行时长</th><th>CPU time</th>
+            <th title="exec 时长中 CPU/IO 占比">CPU / IO 占比</th>
+            <th>读(时间/字节)</th><th>写(时间/字节)</th>
+            <th>内存 avg / peak</th><th>关联 db</th>
+          </tr></thead>
+          <tbody id="t-body"></tbody>
+        </table></div>
+        <div class="pager">
+          <button id="t-prev">上一页</button>
+          <span id="t-range"></span>
+          <button id="t-next">下一页</button>
+        </div>
       </div>
-      <div class="table-wrap"><table>
-        <thead><tr>
-          <th>ID</th><th>名称</th><th>状态</th><th>worker</th>
-          <th>创建/派发/完成</th><th>排队→执行</th><th>执行时长</th><th>CPU time</th>
-          <th title="exec 时长中 CPU/IO 占比">CPU / IO 占比</th>
-          <th>读(时间/字节)</th><th>写(时间/字节)</th>
-          <th>内存 avg / peak</th><th>关联 db</th>
-        </tr></thead>
-        <tbody id="t-body"></tbody>
-      </table></div>
-      <div class="pager">
-        <button id="t-prev">上一页</button>
-        <span id="t-range"></span>
-        <button id="t-next">下一页</button>
-      </div>
+    </div>
+    <div id="t-detail-view" style="display:none">
+      <span class="back-link" id="t-back">← 返回任务列表</span>
+      <div id="t-detail"></div>
     </div>`;
 
   document.getElementById('t-q').onchange = e => { f.q = e.target.value; f.offset = 0; navigate(); };
@@ -50,6 +57,8 @@ export function mount(ctx) {
   document.getElementById('t-next').onclick = () => {
     f.offset = (f.offset || 0) + PAGE_SIZE; navigate();
   };
+  // 返回按钮：清详情状态回列表（双容器切换，绑定不因视图切换丢失）。
+  document.getElementById('t-back').onclick = () => { ctx.taskId = null; navigate(); };
   // 行点击进详情：事件委托（tbody 每轮重建，委托在稳定父节点上）。
   document.getElementById('t-body').parentElement.addEventListener('click', (e) => {
     if (e.target.closest('.expando')) return;  // 展开名称不触发进详情
@@ -71,10 +80,20 @@ export function mount(ctx) {
 }
 
 export async function update(ctx) {
+  const listView = document.getElementById('t-list-view');
+  const detailView = document.getElementById('t-detail-view');
+  if (!listView || !detailView) return;
+
   if (ctx.taskId != null) {
+    listView.style.display = 'none';
+    detailView.style.display = '';
     await renderDetail(ctx);
     return;
   }
+  listView.style.display = '';
+  detailView.style.display = 'none';
+  detailTid = -1;  // 离开详情：下次进入重建
+
   const f = ctx.taskFilter;
   const offset = f.offset || 0;
   const qs = new URLSearchParams({
@@ -131,17 +150,12 @@ function row(t) {
 }
 
 // 详情：ctx.taskId 变化时整块重建（纯文本无图表；task 详情数据多为终态，
-// 指纹机制已挡掉绝大多数刷新）。
+// 指纹机制已挡掉绝大多数刷新）。只写 #t-detail 容器——外壳与返回按钮由
+// mount 一次建成（双容器切换），绑定不因视图切换丢失。
 let detailTid = -1;
 
 export async function renderDetail(ctx) {
-  if (ctx.taskId !== detailTid) {
-    ctx.main.innerHTML = `
-      <span class="back-link" id="t-back">← 返回任务列表</span>
-      <div id="t-detail"></div>`;
-    document.getElementById('t-back').onclick = () => { ctx.taskId = null; navigate(); };
-    detailTid = ctx.taskId;
-  }
+  detailTid = ctx.taskId;
   const d = await getJson(`/api/tasks/${ctx.taskId}`);
   const el = document.getElementById('t-detail');
   if (!d || d.error || !el) { if (el) el.innerHTML = '<div class="panel">task 不存在</div>'; return; }
