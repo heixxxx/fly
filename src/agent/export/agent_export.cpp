@@ -7,6 +7,7 @@
 #include <storage/cpp/data_service.h>
 #include <memory>
 #include <tuple>
+#include <cmath>
 
 FLY_EXPORT_MODULE(_fly_agent) {
 
@@ -56,12 +57,15 @@ FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
                 cpp_result.frozen_dbs_ = fly_export::cast<fly::CMVector<fly::CMString>>(result[fly_export::str("frozen_dbs")]);
                 // cluster monitor io_stats（executor 恒带该键；缺失/形态异常降级全 0，
                 // 绝不影响主流程）。
+                // 计时 float ms → 整数 ms 用 ceil：截断会把亚毫秒 IO（如 48B 压缩写
+                // ~0.x ms）记成虚假的 0 耗时——非零 IO 至少记 1ms（100 轮压测实测
+                // write_ms=0 撞过；cpu_time 已同理由 jiffies 改微秒差分）。
                 try {
                     fly_export::object io = result[fly_export::str("io_stats")];
-                    cpp_result.read_time_ms_ = static_cast<uint64_t>(
-                        fly_export::cast<double>(io[fly_export::str("read_ms")]));
-                    cpp_result.write_time_ms_ = static_cast<uint64_t>(
-                        fly_export::cast<double>(io[fly_export::str("write_ms")]));
+                    cpp_result.read_time_ms_ = static_cast<uint64_t>(std::ceil(
+                        fly_export::cast<double>(io[fly_export::str("read_ms")])));
+                    cpp_result.write_time_ms_ = static_cast<uint64_t>(std::ceil(
+                        fly_export::cast<double>(io[fly_export::str("write_ms")])));
                     cpp_result.read_bytes_ = fly_export::cast<uint64_t>(
                         io[fly_export::str("read_bytes")]);
                     cpp_result.io_mem_peak_rss_ = fly_export::cast<uint64_t>(
@@ -76,8 +80,8 @@ FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
                             d[fly_export::str("name")]);
                         r.is_write_ = fly_export::cast<bool>(d[fly_export::str("w")]);
                         r.bytes_ = fly_export::cast<uint64_t>(d[fly_export::str("bytes")]);
-                        r.duration_ms_ = static_cast<uint64_t>(
-                            fly_export::cast<double>(d[fly_export::str("ms")]));
+                        r.duration_ms_ = static_cast<uint64_t>(std::ceil(
+                            fly_export::cast<double>(d[fly_export::str("ms")])));
                         r.epoch_ms_ = fly_export::cast<uint64_t>(
                             d[fly_export::str("epoch_ms")]);
                         r.task_id_ = task_id;
