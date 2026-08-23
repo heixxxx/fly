@@ -411,6 +411,85 @@ TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
     }
 }
 
+// load_db 可见性屏障状态机（盲 sleep 根除回归）：send 登记 → Ack+rebuild
+// 递减 → 归 0 时对象位置已可见；Ack 失败 / unknown db_path 置 -1（等待侧
+// 报错而非静默返回）；未发送的 db 恒 0；重复 Ack 防下溢。
+// 端到端（QA backup_load_db_multi_worker 高负载 idx 加载 2.2s 越过
+// sleep(1.0) 窗口）由 QA 覆盖。
+TEST(MasterAgentTest, IdxLoadPendingVisibilityBarrier) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    TempDir tmpdir;
+    CMString db_path = tmpdir.path();
+    // 成功 Ack 的 rebuild 前置：db_instances_ 有条目 + idx 文件存在
+    //（rebuild 走 LocalIndex 读文件 + update_remote_idx + mark_data_ready）。
+    master.register_database(db_path, "");
+    IndexEntry entry;
+    entry.object_name_ = "obj_idxload_pending";
+    entry.file_name_ = "data_0.bin";
+    entry.offset_ = 0;
+    entry.size_ = 10;
+    create_idx_file(db_path, "w1", {entry});
+
+    EXPECT_EQ(master.idx_load_pending(db_path), 0) << "未发送过命令的 db 恒 0";
+
+    // 发给不存在的 worker：conn==0 不登记。
+    master.send_idx_load_to_worker(db_path, {"w1"}, 999);
+    EXPECT_EQ(master.idx_load_pending(db_path), 0);
+
+    master.register_fake_worker_for_testing(7, 7001);
+    master.register_fake_worker_for_testing(8, 7002);
+
+    IdxLoadAckMessage ack;
+    ack.db_path_ = db_path;
+    ack.loaded_writer_ids_ = {"w1"};
+    ack.success_ = true;
+
+    // 双 worker 发送 → 计数 2；首个 Ack 递减到 1（等待侧必须继续等）。
+    master.send_idx_load_to_worker(db_path, {"w1"}, 7);
+    master.send_idx_load_to_worker(db_path, {"w1"}, 8);
+    EXPECT_EQ(master.idx_load_pending(db_path), 2);
+
+    ack.worker_id_ = 7;
+    master.inject_idx_load_ack_for_testing(ack);
+    EXPECT_EQ(master.idx_load_pending(db_path), 1);
+
+    // 重复 Ack（重放）不产生下溢。
+    master.inject_idx_load_ack_for_testing(ack);
+    EXPECT_EQ(master.idx_load_pending(db_path), 1);
+
+    // 第二个 Ack 后归 0：rebuild 已落地（remote_idx 有该对象位置）。
+    ack.worker_id_ = 8;
+    master.inject_idx_load_ack_for_testing(ack);
+    EXPECT_EQ(master.idx_load_pending(db_path), 0);
+    EXPECT_FALSE(DataService::instance()->get_remote_workers(db_path + ":obj_idxload_pending").empty())
+        << "计数归 0 时对象位置必须已可见";
+
+    // 失败路径：Ack success=false 置 -1（load_db 报错而非静默返回）。
+    master.send_idx_load_to_worker(db_path, {"w1"}, 7);
+    EXPECT_EQ(master.idx_load_pending(db_path), 1);
+    ack.worker_id_ = 7;
+    ack.success_ = false;
+    master.inject_idx_load_ack_for_testing(ack);
+    EXPECT_EQ(master.idx_load_pending(db_path), -1);
+
+    // unknown db_path 的 Ack 同样消化计数（防等待侧死等超时）。
+    CMString unknown_db = tmpdir.path() + "_unknown";
+    master.send_idx_load_to_worker(unknown_db, {"w1"}, 7);
+    EXPECT_EQ(master.idx_load_pending(unknown_db), 1);
+    ack.db_path_ = unknown_db;
+    ack.success_ = true;
+    master.inject_idx_load_ack_for_testing(ack);
+    EXPECT_EQ(master.idx_load_pending(unknown_db), -1);
+
+    master.unregister_fake_worker_for_testing(7, 7001);
+    master.unregister_fake_worker_for_testing(8, 7002);
+    master.stop();
+    wait_for_running(master, false);
+}
+
 // --- rebuild_remote_idx ---
 
 TEST(MasterAgentTest, RebuildRemoteIdx_MasterEntries) {

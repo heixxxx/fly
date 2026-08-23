@@ -237,6 +237,8 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                                       uint64_t worker_id) {
         self.send_idx_load_to_worker(db_path, writer_ids, worker_id);
     })
+    // load_db 可见性屏障：db_path 的待完成 IdxLoadAck 数（0=完成；-1=失败）。
+    FLY_EXPORT_METHOD("idx_load_pending", &fly::MasterAgent::idx_load_pending)
     FLY_EXPORT_METHOD("rebuild_remote_idx_for_worker", [](fly::MasterAgent& self,
                                                             const fly::CMString& db_path,
                                                                                                                         const fly::CMVector<fly::CMString>& writer_ids,

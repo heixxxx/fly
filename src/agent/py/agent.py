@@ -441,10 +441,24 @@ class Master(FlyAgent):
             INFO(f"load_db: sent {len(writer_ids)} writer_ids to worker {worker_id} on host {hostname}")
 
         # Phase 4: Wait for all acks (on_idx_load_ack handles remote_idx rebuild)
-        # Workers send IdxLoadAck after loading, master processes each ack
-        # to rebuild remote_idx. Wait a reasonable time for async processing.
+        # 等可见性标志而非盲 sleep：master 侧 PendingIdxLoad 计数（send 登记、
+        # Ack+rebuild 完成后递减、失败置 -1）——100 轮压测实测高负载下 worker
+        # idx 加载 2.2s 越过 sleep(1.0) 窗口，返回后立即 read_object KeyError。
+        # 超时 30s 仅作 deadline 兜底（worker 死亡等场景），超时/失败显式报错。
         import time
-        time.sleep(1.0)
+        deadline = time.monotonic() + 30.0
+        while True:
+            remaining = self._agent.idx_load_pending(db_path)
+            if remaining == 0:
+                break
+            if remaining < 0:
+                raise RuntimeError(
+                    f"load_db: idx load failed for {db_path} (see master log)")
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"load_db: idx load not complete in 30s "
+                    f"(remaining={remaining}, see master log)")
+            time.sleep(0.05)
 
         # 流程 message：load_db 恢复完成（系统就绪里程碑）。
         message("STOR::0003", 1, f"load_db done: path={path}")

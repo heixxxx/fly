@@ -3409,9 +3409,30 @@ void MasterAgent::send_idx_load_to_worker(const CMString& db_path,
         ERR("send_idx_load_to_worker: worker_id={} not found", worker_id);
         return;
     }
+    // 可见性屏障登记先于 send：Ack 可能极快返回（本地网络），登记晚了会漏减
+    // 计数导致 load_db 等待侧死等到超时。per-worker 集合（重复 send 同 worker
+    // 幂等，remaining 与集合同步）。
+    pending_idx_loads_.with_lock([&](auto& m) {
+        auto it = m.find(db_path);
+        if (it == m.end()) {
+            auto p = std::make_shared<PendingIdxLoad>();
+            p->pending_workers_.insert(worker_id);
+            p->remaining_ = 1;
+            m[db_path] = p;
+        } else {
+            it->second->pending_workers_.insert(worker_id);
+            it->second->remaining_ =
+                static_cast<int32_t>(it->second->pending_workers_.size());
+        }
+    });
     reactor_->send(conn, msg);
     INFO("Sent IdxLoadCommand to worker_id={}: db_path={}, writer_ids_count={}",
          worker_id, db_path, writer_ids.size());
+}
+
+int32_t MasterAgent::idx_load_pending(const CMString& db_path) {
+    auto p = pending_idx_loads_.find(db_path);
+    return p ? p->remaining_ : 0;
 }
 
 void MasterAgent::rebuild_remote_idx_for_worker(const CMString& db_path,
@@ -3451,6 +3472,10 @@ void MasterAgent::on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg
 
     if (!msg.success_) {
         ERR("IdxLoadAck failed from worker_id={}: {}", msg.worker_id_, msg.error_message_);
+        // 失败也必须消化屏障计数（置 -1 哨兵），否则 load_db 等待侧死等超时。
+        pending_idx_loads_.complete(msg.db_path_, [](PendingIdxLoad& p) {
+            p.remaining_ = -1;
+        });
         return;
     }
 
@@ -3461,11 +3486,22 @@ void MasterAgent::on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg
         std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
         if (db_instances_.find(msg.db_path_) == db_instances_.end()) {
             ERR("IdxLoadAck: unknown db_path={}", msg.db_path_);
+            pending_idx_loads_.complete(msg.db_path_, [](PendingIdxLoad& p) {
+                p.remaining_ = -1;
+            });
             return;
         }
     }
 
     rebuild_remote_idx_for_worker(msg.db_path_, msg.loaded_writer_ids_, msg.worker_id_);
+
+    // rebuild 落地（remote_idx 更新 + mark_data_ready）之后才递减——等待侧看到
+    // 0 时对象位置必须已可见。per-worker erase 幂等：重复/重放 Ack 不会吃掉
+    // 其他 worker 的份额（总数计数会提前归 0 击穿屏障）。
+    pending_idx_loads_.complete(msg.db_path_, [wid = msg.worker_id_](PendingIdxLoad& p) {
+        p.pending_workers_.erase(wid);
+        p.remaining_ = static_cast<int32_t>(p.pending_workers_.size());
+    });
 }
 
 void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg) {

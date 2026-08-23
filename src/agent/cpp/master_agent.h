@@ -192,6 +192,9 @@ public:
                                   const CMVector<CMString>& writer_ids, uint64_t worker_id);
     void rebuild_remote_idx_for_worker(const CMString& db_path,
                                         const CMVector<CMString>& writer_ids, uint64_t worker_id);
+    // load_db 可见性屏障查询：db_path 的待完成 IdxLoadAck 数（0=全部 Ack+rebuild
+    // 完成，对象位置已可见；-1=有 Ack 失败；未发送过命令的 db 恒 0）。Python 轮询。
+    int32_t idx_load_pending(const CMString& db_path);
     void set_master_hostname(const CMString& hostname);
 
     // ── DB Merge support (fly.merge_db 主动 API) ──────────────────────────
@@ -317,6 +320,10 @@ public:
     // 转正与超时清理逻辑（无需真实网络与 heartbeat 线程周期）。
     void inject_worker_register_for_testing(uint64_t conn_id, const RegisterMessage& msg) {
         on_worker_register(conn_id, msg);
+    }
+    // 直接驱动 on_idx_load_ack（private），load_db 可见性屏障状态机测试用。
+    void inject_idx_load_ack_for_testing(const IdxLoadAckMessage& msg) {
+        on_idx_load_ack(0, msg);
     }
     void check_expected_worker_timeouts_for_testing(int64_t now) {
         check_expected_worker_timeouts(now);
@@ -562,6 +569,23 @@ private:
         uint64_t received_count_ = 0;   // 已收到的 ack 数
     };
     PendingRpcMap<CMString, PendingMergeCleanup> pending_merge_cleanups_;
+
+    // ── IdxLoad ack 跟踪（load_db 返回前的对象可见性屏障）────────────
+    // load_db 对每个目标 worker 发 IdxLoadCommand 后必须等全部 Ack + master
+    // rebuild_remote_idx 完成（remote_idx 更新与 mark_data_ready 落地）才可返回
+    // ——此前是 time.sleep(1.0) 盲等，高负载下 worker idx 加载 2.2s 越过窗口，
+    // load_db 返回后立即 read_object KeyError（100 轮压测实测）。remaining 经
+    // idx_load_pending() 由 Python 轮询（等可见性标志，非盲 sleep）。
+    // per-worker 集合精确跟踪（非总数计数）：重复 Ack 幂等 erase——总数计数
+    // 下重放 Ack 会吃掉其他 worker 的份额，计数提前归 0 击穿可见性屏障
+    //（单测 IdxLoadPendingVisibilityBarrier 抓获）。
+    // remaining_：待完成 worker 数；-1 = 有 Ack 失败（worker 加载失败 /
+    // unknown db_path），load_db 必须报错而非静默返回。
+    struct PendingIdxLoad {
+        int32_t remaining_ = 0;
+        CMUnorderedSet<uint64_t> pending_workers_;
+    };
+    PendingRpcMap<CMString, PendingIdxLoad> pending_idx_loads_;
 
     // ── Message summary 屏障（进程结束前收集各 worker 的 message 触发次数）──
     // master stop() 广播 MSG_COUNT_REQUEST 后，等所有 worker 回 MSG_COUNT_REPORT。
