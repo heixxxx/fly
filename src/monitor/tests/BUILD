@@ -45,6 +45,9 @@ py_test(
 py_test(
     name = "serve_test",
     srcs = ["serve_test.py"],
+    data = [
+        "app_smoke_test.mjs",  # 前端冒烟脚本（subprocess 调 node，需进 runfiles）
+    ],
     main = "serve_test.py",
     deps = ["//src/monitor/py:fly_monitor_py"],
     imports = ["../.."],

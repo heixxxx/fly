@@ -272,6 +272,20 @@ class ServeRobustnessTest(unittest.TestCase):
         self.assertTrue(any(not a.startswith("127.") for a in addrs),
                         f"应含非回环地址: {addrs}")
 
+    def test_frontend_app_smoke(self):
+        # 前端模块图 + 页面 mount 冒烟（node + DOM/fetch stub）——抓
+        # 「curl 200 但 JS 崩导致页面空白」类回归（escapeHtml 重复声明事故）。
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("node 不可用")
+        smoke = os.path.join(_project_root, "src", "monitor", "tests",
+                             "app_smoke_test.mjs")
+        r = subprocess.run(["node", smoke], capture_output=True, text=True,
+                           timeout=30)
+        self.assertEqual(r.returncode, 0,
+                         f"前端冒烟失败: {r.stderr.strip()[:300]}")
+
 
 if __name__ == "__main__":
     unittest.main()
