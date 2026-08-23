@@ -157,6 +157,9 @@ public:
     // master 侧事件驱动采样（task 完成/worker 注册/收到 worker 样本等 cluster
     // 事件时刻的全维度快照，kind=1 直写 DB；节流与自监控周期共用）。
     void monitor_self_event();
+    // db 磁盘占用落库（DB_DU 事件，detail="<path>|<bytes>"）：freeze 点与
+    // stop 收尾各落一次（DBs 页磁盘占用数据源）。
+    void record_db_du(const CMString& db_path);
     std::thread monitor_self_thread_;
     std::atomic<bool> monitor_self_running_{false};
     std::mutex monitor_self_mutex_;
@@ -463,6 +466,11 @@ private:
     // 负载采样时序，写 {log_dir}/monitor.db。start 时 open、stop 内同步 close
     // （flush 全部余量，早于 Logger/静态析构——P3-18 退出期时序）。
     CMUniquePtr<MetricsDb> metrics_db_;
+    // 本 run 注册过的 db 集合（register_database / get_or_create 两入口插入）：
+    // stop 收尾时逐个读 RunMetrics 的 du 终值落 DB_DU 事件（DBs 页磁盘占用）。
+    CMUnorderedSet<CMString> registered_dbs_;
+    // monitor.db 是否已开过（同进程多段 run 的 run_start_ms/run_restart_ms 区分）。
+    bool monitor_db_opened_once_ = false;
     std::thread heartbeat_check_thread_;
     std::atomic<bool> heartbeat_check_running_{false};
     std::mutex heartbeat_check_mutex_;

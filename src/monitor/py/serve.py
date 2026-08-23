@@ -30,6 +30,9 @@ from urllib.parse import parse_qs, urlparse
 
 _STATIC_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
+# db 不存在时的等待上限（run 刚启动时首条上报落盘前的窗口）。
+DB_WAIT_TIMEOUT_S = 60
+
 # ---------------------------------------------------------------------------
 # 只读 DB 连接
 # ---------------------------------------------------------------------------
@@ -37,19 +40,47 @@ _STATIC_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"
 _conn_lock = threading.Lock()
 _conn = None
 _db_path = None
+_db_inode = None
 
 
 def open_db(path):
-    """打开只读连接（进程内单连接串行复用；sqlite3 线程检查关闭）。"""
-    global _conn, _db_path
+    """打开只读连接（进程内单连接串行复用；sqlite3 线程检查关闭）。
+
+    记录文件 inode：同路径被新 run 替换（rm + 重建）时自动重开——否则
+    连接握着已删除文件的旧 inode，页面永远显示旧数据（demo 实测踩坑）。
+    """
+    global _conn, _db_path, _db_inode
     path = os.path.abspath(path)
     if not os.path.exists(path):
         raise FileNotFoundError(f"monitor.db not found: {path}")
     _db_path = path
+    _db_inode = os.stat(path).st_ino
     _conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
     _conn.row_factory = sqlite3.Row
     _conn.execute("PRAGMA busy_timeout=5000")
     return _conn
+
+
+def _reopen_if_replaced():
+    """db 文件被同路径替换（新 run）时重开连接。每次 query 前调用（一次
+    stat，µs 级）。文件被删且未重建时保持旧连接（旧数据仍可看，重建后
+    inode 变化触发切换）。"""
+    global _conn, _db_inode
+    try:
+        inode = os.stat(_db_path).st_ino
+    except OSError:
+        return
+    if inode == _db_inode:
+        return
+    try:
+        _conn.close()
+    except Exception:
+        pass
+    _conn = sqlite3.connect(f"file:{_db_path}?mode=ro", uri=True,
+                            check_same_thread=False)
+    _conn.row_factory = sqlite3.Row
+    _conn.execute("PRAGMA busy_timeout=5000")
+    _db_inode = inode
 
 
 def query(sql, args=()):
@@ -58,6 +89,7 @@ def query(sql, args=()):
     for attempt in range(3):
         try:
             with _conn_lock:
+                _reopen_if_replaced()
                 cur = _conn.execute(sql, args)
                 rows = cur.fetchall()
             return rows
@@ -80,13 +112,26 @@ def query(sql, args=()):
     return []
 
 
+def wait_for_db(path, timeout_s=DB_WAIT_TIMEOUT_S):
+    """run 刚启动时 monitor.db 可能尚未生成（首条上报落盘前）——等待而非
+    立即报错，覆盖「起 run 后立刻起 GUI」的典型用法。"""
+    deadline = time.time() + timeout_s
+    while not os.path.exists(path):
+        if time.time() >= deadline:
+            raise FileNotFoundError(
+                f"monitor.db 未在 {timeout_s}s 内出现: {path}（run 是否用了 "
+                "monitor_db_enabled=0？或尚未产出首条上报）")
+        print(f"[fly-monitor] 等待 {path} 生成（run 进行中，每秒检查）…", flush=True)
+        time.sleep(1.0)
+
+
 def resolve_db_path_arg(arg):
     """接受 db 文件路径或 log_dir（目录内找 monitor.db）。"""
     if os.path.isdir(arg):
         cand = os.path.join(arg, "monitor.db")
         if os.path.exists(cand):
             return cand
-        raise FileNotFoundError(f"monitor.db not found in dir: {arg}")
+        return cand  # 不存在也返回——交给 wait_for_db 等待生成
     return arg
 
 
@@ -202,19 +247,25 @@ def api_timeline(from_ms=0, to_ms=0):
 
 
 def api_dbs():
-    """db 生命周期 + 关联 task 统计（GUI 的 DBs 页数据源）。"""
-    db_events = [dict(r) for r in query(
-        "SELECT * FROM events WHERE category='db' ORDER BY id")]
-    dbs = {}
-    for e in db_events:
-        d = dbs.setdefault(e["detail"], {"db": e["detail"], "events": []})
-        d["events"].append(e)
-    # tasks.dbs 反查关联（逗号分隔 LIKE 匹配）。
-    for d in dbs.values():
-        d["task_count"] = query(
-            "SELECT COUNT(*) AS n FROM tasks WHERE dbs=? OR dbs LIKE ? OR dbs LIKE ? OR dbs LIKE ?",
-            (d["db"], f"{d['db']},%", f"%,{d['db']}", f"%,{d['db']},%"))[0]["n"]
-    return {"dbs": sorted(dbs.values(), key=lambda x: x["db"])}
+    """DBs 页数据源（用户裁定简化口径）：db 列表 + 创建时间 + 冻结时间 +
+    磁盘占用。磁盘来自 master 落的 DB_DU 事件（freeze 终值 / stop 收尾补测；
+    detail 编码 "<path>|<bytes>"，-1=未测得）。"""
+    created, frozen, disk = {}, {}, {}
+    for r in query("SELECT epoch_ms, event, detail FROM events "
+                   "WHERE category='db' ORDER BY id"):
+        if r["event"] == "DB_CREATED":
+            created.setdefault(r["detail"], r["epoch_ms"])
+        elif r["event"] == "DB_FROZEN":
+            frozen.setdefault(r["detail"], r["epoch_ms"])
+        elif r["event"] == "DB_DU":
+            path, _, b = r["detail"].rpartition("|")
+            try:
+                disk[path] = int(b)
+            except ValueError:
+                pass
+    dbs = [{"db": d, "created_ms": created[d], "frozen_ms": frozen.get(d),
+            "disk_bytes": disk.get(d)} for d in sorted(created)]
+    return {"dbs": dbs}
 
 
 # ---------------------------------------------------------------------------
@@ -317,24 +368,71 @@ class MonitorHandler(BaseHTTPRequestHandler):
 
 
 def local_addresses():
-    """本机全部 IPv4 地址（打印多入口 URL，分布式环境直接给可用地址）。"""
+    """本机全部 IPv4 地址（打印多入口 URL）。WSL/NAT 环境下 getaddrinfo(
+    hostname) 只返回回环地址——用 UDP connect 的路由决策拿真实出口 IP
+    （不发实际包，不依赖外网连通），Windows 宿主浏览器才能拿到可用地址。"""
     addrs = set()
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             addrs.add(info[4][0])
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))  # 仅路由决策，无发包
+            addrs.add(s.getsockname()[0])
+        finally:
+            s.close()
     except OSError:
         pass
     addrs.add("127.0.0.1")
-    return sorted(addrs)
+    # 回环排前（本机优先），外网/内网出口 IP 其后（跨机访问用）。
+    def sort_key(a):
+        return (0 if a.startswith("127.") else 1, a)
+    return sorted(addrs, key=sort_key)
+
+
+def _latest_hint(db_path):
+    """若传入的是旧 run 的轮转目录（fly_log / fly_log.N）且旁边存在指向
+    更新 run 的 fly_log.latest 软链，返回 latest 路径（供打印引导）。"""
+    d = os.path.dirname(db_path)
+    base = os.path.basename(d)
+    stem, _, suffix = base.rpartition('.')
+    if not stem or not suffix.isdigit():
+        stem = base
+    latest = os.path.join(os.path.dirname(d), stem + '.latest')
+    if os.path.islink(latest):
+        try:
+            if os.path.realpath(d) != os.path.realpath(latest):
+                return latest
+        except OSError:
+            pass
+    return None
 
 
 def serve(db_arg, port=8788):
-    db_path = resolve_db_path_arg(db_arg)
+    db_path = os.path.abspath(resolve_db_path_arg(db_arg))
+    wait_for_db(db_path)
     open_db(db_path)
-    httpd = ThreadingHTTPServer(("0.0.0.0", port), MonitorHandler)
+    try:
+        httpd = ThreadingHTTPServer(("0.0.0.0", port), MonitorHandler)
+    except OSError as e:
+        if "in use" in str(e) or "Address already" in str(e):
+            # 端口被占用：大概率是已有 GUI 实例在跑——友好退出而非裸栈崩溃。
+            print(f"[fly-monitor] 端口 {port} 已被占用——可能已有一个 GUI 实例")
+            print(f"[fly-monitor] 在运行。直接在浏览器打开 http://<本机地址>:{port}/ ，")
+            print(f"[fly-monitor] 或用 --port 换一个端口。查找残留进程：")
+            print(f"[fly-monitor]   ps aux | grep serve-monitor")
+            sys.exit(2)
+        raise
     addrs = local_addresses()
     urls = "  ".join(f"http://{a}:{port}/" for a in addrs)
     print(f"[fly-monitor] db: {db_path}", flush=True)
+    # monitor.db 随 run 轮转目录隔离（fly_log.N）；传入旧目录时引导 latest
+    # 软链（指向最新 run，且经 inode 重连在新 run 落盘后自动跟随）。
+    latest = _latest_hint(db_path)
+    if latest:
+        print(f"[fly-monitor] 提示：当前指向旧 run；最新 run 在 {latest}", flush=True)
+        print(f"[fly-monitor]   用 --serve-monitor {latest} 可查看最新 run（新 run 落盘后自动跟随）",
+              flush=True)
     print(f"[fly-monitor] serving on port {port} — open in browser:", flush=True)
     print(f"[fly-monitor]   {urls}", flush=True)
     httpd.serve_forever()

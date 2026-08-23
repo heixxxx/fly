@@ -131,17 +131,54 @@ fly --serve-monitor <monitor.db|log_dir> [--port 8788]
 import fly; fly.launch_monitor_gui("<log_dir>")
 ```
 
-启动后打印各网卡入口 URL。五个页面：
-- **总览**：run 时长 / task 计数 / 集群聚合 RSS、CPU 曲线 / 最近事件流。
+启动后打印各网卡入口 URL（WSL/NAT 环境含真实出口 IP，Windows 宿主浏览器可用）。
+GUI 数据跟随：monitor.db 随 run 轮转目录隔离（fly_log.N）；`--serve-monitor
+fly_log.latest` 始终指向最新 run 且新 run 落盘后自动跟随（软链 + inode 检测）。
+刷新模型：数据指纹（task 计数/worker 数/最新样本时刻）不变则跳过重渲染
+（图表缩放/hover/滚动零打断）；run 结束且数据稳定后自动停轮询。
+
+五个页面：
+- **总览**：run 时长 / task 计数 / 集群聚合 RSS、CPU、网络速率曲线 / 磁盘 IO
+  占位 / 最近事件流。聚合按 **1s 时间桶**对齐（各 worker 样本 epoch 是独立
+  毫秒时间戳，按精确时刻分组几乎永不重合——旧实现"Σ"曲线每个点只含单个
+  worker，实测 ΣRSS 峰值=单 worker 峰值；桶内每 worker 取最新样本，单机
+  Σ=全部 fly 进程合计可与机器 CPU 直接对比，多机进程 Σ 可 >100% 图例注明）。
 - **Workers**：worker 卡片（最新 CPU/内存/角色/状态）；详情——进程 vs 机器
   CPU%、RSS vs host 可用内存、网络读写速率、load1、该 worker 全部 task。
 - **Tasks**：搜索/状态/worker 过滤分页；执行时长/CPU time/**CPU-IO 占比条**/
   读写时间字节/内存 avg-peak/关联 db；详情——调度链四时间戳、事件流、
-  对象 IO 明细。
-- **Timeline**：按 worker 分泳道的 task 执行窗口 Gantt（缩放/平移）。
-- **DBs**：db 生命周期事件时间线 + tasks.dbs 反查关联。
+  对象 IO 明细。超长名称（task/对象/db 路径）默认首尾缩略 + `....`，点击
+  展开为折行全名（不破坏布局）。
+- **Timeline**：按 worker 分泳道的 task 执行窗口 Gantt（滚轮缩放/滑块拖选，
+  实时显示当前视图范围；「复原缩放」回全程；泳道含 host 标签，支持按
+  worker id / 按 host 排序；点击条形弹出驻留详情面板）。
+- **DBs**：简化视图——db 列表 + 创建时间 + 冻结时间 + 磁盘占用(GB)（freeze
+  终值 / run 结束补测，经 DB_DU 事件落库）。
 
-## 6. 配置
+单位口径（用户裁定）：**内存与磁盘占用统一 GB、三位有效数字**（fmtGB）；
+网络速率与 IO 字节量保持自适应单位。
+
+## 6. 当前未监控项（待后续增强）
+
+- **进程磁盘 IO 速率**：总览页为占位图（"暂未支持"）。候选方案：
+  `/proc/self/io` 的 read_bytes/write_bytes（实际块设备 IO，进程级、读取
+  成本与 RSS 采样同量级）——可作为 MonitorSample 新字段随现有通道上报，
+  事件驱动采样点（write 前后）同样适用。
+- ATTR_DEGRADED 事件（TaskScheduler 需加回调）、ObjectCache 淘汰计数、
+  message count 对账明细。
+
+## 7. 常见问题（用户脚本侧）
+
+- `@as_task(inputs=...)` 的 lambda **必须与 task 函数同签名**（收到全部
+  参数）：`inputs=lambda db, keys, out_key: [...]`，写 `lambda db, keys:`
+  会报 "takes 2 positional arguments but 3 were given"。
+- `wait_tasks()` 在任一 task 失败时**抛 RuntimeError 中断脚本**（失败显式
+  语义）；脚本想容忍失败需 try 包裹。
+- `write_data(db, key, N)` 写入的是对象 `N` 本身（pickle 序列化）——传
+  `3*1024*1024` 只写几十字节的 int；要写大对象需传 `os.urandom(N)` 或
+  实际数据。
+
+## 8. 配置
 
 | key | 默认 | 说明 |
 |---|---|---|
@@ -150,7 +187,7 @@ import fly; fly.launch_monitor_gui("<log_dir>")
 | monitor_report_interval_ms | 10000 | worker 成组上报/master 自监控周期直写间隔 |
 | monitor_exec_sample_interval_ms | 200 | 最小采样间距：执行期加密档 + 事件采样统一节流下限 |
 
-## 7. 代码地图
+## 9. 代码地图
 
 ```
 src/monitor/cpp/

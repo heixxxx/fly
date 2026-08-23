@@ -117,6 +117,9 @@ public:
     CMVector<Sample> synth_for_testing();
     // db 的 disk 统计值（-1 = 未统计/作废/失败）。
     int64_t db_disk_for_testing(const CMString& db_path) const;
+    // 同上，正式读数（monitor 的 DBs 页磁盘占用经 master 在 freeze/收尾时
+    // 读取落库）。freeze 后为终值；active db 在 stop 补测后有效。
+    int64_t db_disk_bytes(const CMString& db_path) const;
     // db 是否已 freeze。
     bool db_frozen_for_testing(const CMString& db_path) const;
     // 时间轴已启动（start 已调用）。

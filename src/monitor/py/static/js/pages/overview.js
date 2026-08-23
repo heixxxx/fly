@@ -1,5 +1,13 @@
-// Overview：run 概况 KPI + 集群聚合曲线 + 统一事件流。
-import { getJson, fmtBytes, fmtTime, fmtTimeFull } from '../api.js';
+// Overview：run 概况 KPI + 集群聚合曲线（RSS/CPU/网络速率）+ 磁盘 IO 占位 + 事件流。
+//
+// 聚合口径（对齐 bug 根治）：各 worker 的样本 epoch 是独立毫秒时间戳，
+// 按精确毫秒分组几乎永不重合——旧实现"Σ"曲线每个点只含单个 worker
+// （实测 ΣRSS 峰值=单 worker 峰值）。现按 1s 时间桶聚合：桶内每 worker
+// 取最新样本（事件+周期混合密度下同 worker 可能多条），跨 host 求和
+// （多机时进程 Σ 可 >100%，机器取各 host 最大值；单机即全部 fly 进程合计，
+// 与机器 CPU 直接可比）。
+// mount 建骨架与图表实例；update 仅 setOption/innerHTML（缩放/hover 保留）。
+import { getJson, fmtGB, fmtBytes, fmtTime, fmtTimeFull, escapeHtml } from '../api.js';
 import { makeChart, line } from '../charts.js';
 
 let charts = [];
@@ -9,65 +17,106 @@ export function destroy() {
   charts = [];
 }
 
-export async function render(ctx) {
-  const main = ctx.main;
+export function mount(ctx) {
+  ctx.main.innerHTML = `
+    <div class="kpi-row" id="ov-kpi"></div>
+    <div class="grid cols-2">
+      <div class="panel"><h3>集群聚合进程 RSS</h3><div id="ov-rss" class="chart"></div></div>
+      <div class="panel"><h3>集群聚合 CPU%（进程 Σ / 机器 max）</h3><div id="ov-cpu" class="chart"></div></div>
+      <div class="panel"><h3>集群聚合网络 IO 速率（读/写 Σ）</h3><div id="ov-net" class="chart"></div></div>
+      <div class="panel"><h3>磁盘 IO 速率</h3>
+        <div class="empty-chart">磁盘 IO 监控暂未支持（待后续增强）</div>
+      </div>
+    </div>
+    <div class="panel"><h3>最近事件</h3><div class="table-wrap"><table>
+      <thead><tr><th>时间</th><th>类别</th><th>事件</th><th>worker</th><th>task</th><th>详情</th></tr></thead>
+      <tbody id="ov-events"></tbody>
+    </table></div></div>`;
+  charts = [
+    makeChart(document.getElementById('ov-rss'), {}),
+    makeChart(document.getElementById('ov-cpu'), {}),
+    makeChart(document.getElementById('ov-net'), {}),
+  ];
+}
+
+export async function update(ctx) {
   const [meta, events, workers] = await Promise.all([
     getJson('/api/meta'),
     getJson('/api/events?limit=30'),
     getJson('/api/workers'),
   ]);
-  if (!meta) { main.innerHTML = '<div class="panel">API 不可达（master 未启动或 db 无数据）</div>'; return; }
+  if (!meta) return;
 
   const m = meta.meta || {};
-  const durS = m.run_start_ms && m.run_end_ms ? ((+m.run_end_ms - +m.run_start_ms) / 1000).toFixed(1) + ' s' : '-';
+  const durS = m.run_start_ms && m.run_end_ms
+    ? ((+m.run_end_ms - +m.run_start_ms) / 1000).toFixed(1) + ' s' : '-';
   const tc = meta.task_counts || {};
   const total = Object.values(tc).reduce((a, b) => a + b, 0);
 
-  main.innerHTML = `
-    <div class="kpi-row">
-      <div class="kpi"><div class="label">运行时长</div><div class="value">${durS}</div><div class="sub">${m.hostname || ''}</div></div>
-      <div class="kpi"><div class="label">Tasks 总数</div><div class="value">${total}</div><div class="sub">完成 ${tc.COMPLETED || 0} · 失败 ${tc.FAILED || 0} · 运行 ${tc.RUNNING || 0}</div></div>
-      <div class="kpi"><div class="label">Workers</div><div class="value">${meta.workers}</div><div class="sub">含 master 自监控(wid=0)</div></div>
-      <div class="kpi"><div class="label">样本区间</div><div class="value" style="font-size:15px">${fmtTime(meta.sample_lo)} → ${fmtTime(meta.sample_hi)}</div><div class="sub">monitor.db</div></div>
-    </div>
-    <div class="grid cols-2">
-      <div class="panel"><h3>集群聚合进程 RSS</h3><div id="ov-rss" class="chart"></div></div>
-      <div class="panel"><h3>集群聚合 CPU%（进程 / 机器）</h3><div id="ov-cpu" class="chart"></div></div>
-    </div>
-    <div class="panel"><h3>最近事件</h3><div class="table-wrap"><table>
-      <thead><tr><th>时间</th><th>类别</th><th>事件</th><th>worker</th><th>task</th><th>详情</th></tr></thead>
-      <tbody>${(events ? events.events : []).map(evRow).join('')}</tbody>
-    </table></div></div>
-  `;
+  document.getElementById('ov-kpi').innerHTML = `
+    <div class="kpi"><div class="label">运行时长</div><div class="value">${durS}</div><div class="sub">${m.hostname || ''}</div></div>
+    <div class="kpi"><div class="label">Tasks 总数</div><div class="value">${total}</div><div class="sub">完成 ${tc.COMPLETED || 0} · 失败 ${tc.FAILED || 0} · 运行 ${tc.RUNNING || 0}</div></div>
+    <div class="kpi"><div class="label">Workers</div><div class="value">${meta.workers}</div><div class="sub">含 master 自监控(wid=0)</div></div>
+    <div class="kpi"><div class="label">样本区间</div><div class="value" style="font-size:15px">${fmtTime(meta.sample_lo)} → ${fmtTime(meta.sample_hi)}</div><div class="sub">monitor.db</div></div>`;
 
-  // 集群聚合：逐 epoch 汇总各 worker 的 RSS/CPU。
-  const byEpoch = new Map();
+  // ---- 1s 桶聚合（含 master wid=0 的样本——同样是 fly 进程负载）----
+  const buckets = new Map();   // bucketSec → { wid → latest sample }
   for (const w of (workers ? workers.workers : [])) {
     const s = await getJson(`/api/workers/${w.worker_id}/samples`);
     if (!s) continue;
     for (const sp of s.samples) {
-      let acc = byEpoch.get(sp.epoch_ms);
-      if (!acc) { acc = { rss: 0, pcpu: 0, hcpu: null }; byEpoch.set(sp.epoch_ms, acc); }
-      acc.rss += sp.proc_rss_bytes;
-      acc.pcpu += sp.proc_cpu_bps / 100;
-      // host 指标各 worker 同机重复（单机多 worker）——取 max 更真实。
-      const h = sp.host_cpu_bps / 100;
-      acc.hcpu = acc.hcpu == null ? h : Math.max(acc.hcpu, h);
+      const k = Math.floor(sp.epoch_ms / 1000);
+      let b = buckets.get(k);
+      if (!b) { b = {}; buckets.set(k, b); }
+      b[w.worker_id] = sp;  // 同桶多条取最新（时间升序遍历天然覆盖）
     }
   }
-  const times = [...byEpoch.keys()].sort((a, b) => a - b);
-  charts.push(makeChart(document.getElementById('ov-rss'), {
-    series: [line('Σ proc RSS', times.map(t => [t, byEpoch.get(t).rss]), '#4aa8ff', 0, true)],
-    yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: v => fmtBytes(v) } }],
-  }));
-  charts.push(makeChart(document.getElementById('ov-cpu'), {
-    series: [
-      line('Σ 进程 CPU%', times.map(t => [t, +byEpoch.get(t).pcpu.toFixed(1)]), '#4aa8ff'),
-      line('机器 CPU% (max)', times.map(t => [t, byEpoch.get(t).hcpu ?? 0]), '#e8b339'),
-    ],
+  const series = [];  // {t, rss, pcpu, hcpu, nr, nw}
+  for (const k of [...buckets.keys()].sort((a, b) => a - b)) {
+    const b = buckets.get(k);
+    let rss = 0, pcpu = 0, hcpu = null, nr = 0, nw = 0;
+    for (const sp of Object.values(b)) {
+      rss += sp.proc_rss_bytes;
+      pcpu += sp.proc_cpu_bps / 100;
+      const h = sp.host_cpu_bps / 100;
+      hcpu = hcpu == null ? h : Math.max(hcpu, h);  // 单机多 worker 同值；多机取最热
+      nr += sp.net_read_bytes;
+      nw += sp.net_write_bytes;
+    }
+    series.push({ t: k * 1000, rss, pcpu, hcpu, nr, nw });
+  }
+  // 网络速率：累计值（桶内已 Σ）在相邻桶间差分（计数器回绕/重启记 0）。
+  const netR = [], netW = [];
+  for (let i = 1; i < series.length; i++) {
+    const dt = (series[i].t - series[i - 1].t) / 1000;
+    if (dt <= 0) continue;
+    const dr = series[i].nr - series[i - 1].nr;
+    const dw = series[i].nw - series[i - 1].nw;
+    netR.push([series[i].t, dr >= 0 ? +(dr / dt).toFixed(1) : 0]);
+    netW.push([series[i].t, dw >= 0 ? +(dw / dt).toFixed(1) : 0]);
+  }
+
+  charts[0].setOption({
+    yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: v => fmtGB(v) } }],
+    series: [line('Σ proc RSS', series.map(s => [s.t, s.rss]), '#4aa8ff', 0, true)],
+  });
+  charts[1].setOption({
     yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: '{value}%' } }],
-  }));
-  charts = charts.filter(c => !c.isDisposed());
+    series: [
+      line('Σ 进程 CPU%（多机可>100%）', series.map(s => [s.t, +s.pcpu.toFixed(1)]), '#4aa8ff'),
+      line('机器 CPU%（各机 max）', series.map(s => [s.t, s.hcpu ?? 0]), '#e8b339'),
+    ],
+  });
+  charts[2].setOption({
+    yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: v => fmtBytes(v) + '/s' } }],
+    series: [
+      line('读 Σ B/s', netR, '#6fd3e8'),
+      line('写 Σ B/s', netW, '#ff9d5c'),
+    ],
+  });
+
+  document.getElementById('ov-events').innerHTML =
+    (events ? events.events : []).map(evRow).join('');
 }
 
 function evRow(e) {
@@ -79,8 +128,4 @@ function evRow(e) {
     <td>${e.task_id || '-'}</td>
     <td class="muted mono">${escapeHtml(String(e.detail || '')).slice(0, 80)}</td>
   </tr>`;
-}
-
-function escapeHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }

@@ -18,6 +18,7 @@
     <button data-page="dbs">DBs</button>
   </nav>
   <div class="header-right">
+    <span id="poll-state" class="run-info"></span>
     <label class="poll-toggle">
       <input type="checkbox" id="poll-enabled" checked> 自动刷新(3s)
     </label>
@@ -25,11 +26,7 @@
   </div>
 </header>
 
-<main id="main">
-  <!-- 各页面容器由 app.js 装载 -->
-</main>
-
-<div id="toast" class="toast"></div>
+<main id="main"></main>
 
 <script type="module" src="/static/js/app.js"></script>
 </body>

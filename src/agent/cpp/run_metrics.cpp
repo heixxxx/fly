@@ -326,6 +326,18 @@ std::pair<CMString, CMString> RunMetricsCollector::write_summary_files(
         }
         o.view_.disk_bytes_ = disk;
     }
+    // 补测结果回写 dbs_：monitor 的 stop 收尾（record_db_du）在 summary 之后
+    // 读 db_disk_bytes，不回写会拿到补测前的 -1。
+    {
+        std::lock_guard<std::mutex> lk(mutex_);
+        for (const auto& o : outs) {
+            if (!o.need_disk_) continue;
+            auto it = dbs_.find(o.view_.db_path_);
+            if (it != dbs_.end() && o.view_.disk_bytes_ >= 0) {
+                it->second.disk_bytes_ = o.view_.disk_bytes_;
+            }
+        }
+    }
     for (const auto& o : outs) {
         in.dbs_.push_back(o.view_);
     }
@@ -418,6 +430,10 @@ int64_t RunMetricsCollector::db_disk_for_testing(const CMString& db_path) const 
     std::lock_guard<std::mutex> lk(mutex_);
     auto it = dbs_.find(db_path);
     return it == dbs_.end() ? -1 : it->second.disk_bytes_;
+}
+
+int64_t RunMetricsCollector::db_disk_bytes(const CMString& db_path) const {
+    return db_disk_for_testing(db_path);
 }
 
 bool RunMetricsCollector::db_frozen_for_testing(const CMString& db_path) const {

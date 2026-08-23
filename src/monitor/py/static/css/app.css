@@ -115,6 +115,24 @@ tr:hover td { background: var(--panel2); }
   border-radius: 6px; padding: 5px 10px; font-size: 12.5px; outline: none;
 }
 .controls input:focus, .controls select:focus { border-color: var(--accent); }
+.controls button {
+  background: var(--panel2); border: 1px solid var(--border); color: var(--muted);
+  border-radius: 6px; padding: 5px 12px; font-size: 12.5px; cursor: pointer;
+}
+.controls button:hover { color: var(--text); border-color: var(--accent); }
+.controls button.active {
+  color: var(--accent); border-color: var(--accent);
+  background: rgba(74, 168, 255, .12);
+}
+.tl-hint { color: var(--muted); font-size: 12px; margin-left: auto; }
+.tl-range { color: var(--accent); font-family: monospace; font-size: 12px; }
+
+/* 未支持监控的占位图（如磁盘 IO）：与 .chart 同尺寸居中提示。 */
+.empty-chart {
+  height: 260px; display: flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 14px;
+  border: 1px dashed var(--border); border-radius: 8px;
+}
 .muted { color: var(--muted); }
 .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 11.5px; }
 
@@ -136,6 +154,32 @@ tr:hover td { background: var(--panel2); }
   opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 99;
 }
 .toast.show { opacity: 1; }
+
+/* ---- 超长名称的缩略/展开（task 名、对象全名、db 路径共用） ----
+   默认单行缩略（首尾各 N 字符 + ....，CSS ellipsis 兜底），点击展开为
+   折行全名（word-break 保证任何长度都在可视宽度内换行）。 */
+.expando {
+  display: inline-block; max-width: 280px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: bottom; cursor: pointer;
+  border-bottom: 1px dotted var(--muted);
+}
+.expando:hover { color: var(--accent); }
+.expando.open {
+  display: block; max-width: none; overflow: visible;
+  white-space: normal; word-break: break-all; text-overflow: clip;
+  border-bottom: none;
+}
+/* 长名标题（db 路径等）默认 ellipsis，原生 title 提示 + 面板内有全名。 */
+.ellip {
+  display: block; max-width: 100%; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.full-name {
+  white-space: normal; word-break: break-all;
+  background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 10px; font-family: monospace;
+}
 
 .pager { display: flex; gap: 8px; align-items: center; margin-top: 8px; color: var(--muted); }
 .pager button {

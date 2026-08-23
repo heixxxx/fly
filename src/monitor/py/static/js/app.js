@@ -1,4 +1,12 @@
-// SPA 页签路由 + 3s 轮询调度 + 页面模块生命周期。
+// SPA 页签路由 + 数据指纹轮询。
+//
+// 刷新模型（解决全量刷新打断交互的问题）：
+//   · 页面模块拆 mount（一次建 DOM/绑事件/建图表）+ update（数据变化时
+//     setOption/innerHTML 增量填充，图表缩放与 hover 状态保留）。
+//   · 轮询先拉 /api/meta 拼数据指纹；指纹不变 → 完全跳过 update（交互
+//     零打断）；变化 → 仅数据层刷新。
+//   · run 结束（run_end_ms 存在）且指纹连续稳定 5 轮（15s）→ 自动停轮询，
+//     header 提示；切页签或勾选自动刷新可恢复。
 import { getJson, fmtTime } from './api.js';
 import * as overview from './pages/overview.js';
 import * as workers from './pages/workers.js';
@@ -8,44 +16,91 @@ import * as dbs from './pages/dbs.js';
 
 const PAGES = { overview, workers, tasks, timeline, dbs };
 const POLL_MS = 3000;
+const STABLE_ROUNDS_TO_STOP = 5;
 
 const main = document.getElementById('main');
 const nav = document.getElementById('nav');
 const runInfo = document.getElementById('run-info');
+const pollState = document.getElementById('poll-state');
 const pollEnabled = document.getElementById('poll-enabled');
 
-let current = null;      // 当前页模块状态 { mod, ctx }
+let current = null;      // 当前页状态 { mod, ctx }
 let pollTimer = null;
+let lastFp = null;
+let stableRounds = 0;
 
-async function refreshHeader() {
-  const meta = await getJson('/api/meta');
-  if (!meta) return;
+function updateHeader(meta) {
   const m = meta.meta || {};
   const start = m.run_start_ms ? fmtTime(+m.run_start_ms) : '?';
   const end = m.run_end_ms ? fmtTime(+m.run_end_ms) : '进行中';
   runInfo.textContent = `${m.hostname || ''} · ${start} → ${end}`;
 }
 
-async function render() {
+async function fetchFingerprint() {
+  const meta = await getJson('/api/meta');
+  if (!meta) return null;
+  const m = meta.meta || {};
+  return {
+    // 任务计数/worker 数/最新样本时刻任一变化即视为数据变化。
+    fp: `${m.run_end_ms || ''}|${JSON.stringify(meta.task_counts)}|` +
+        `${meta.workers}|${meta.sample_hi}`,
+    finished: !!m.run_end_ms,
+    meta,
+  };
+}
+
+async function pollTick(keepScroll = true) {
+  const info = await fetchFingerprint();
+  if (!info) return;
+  updateHeader(info.meta);
+  if (info.fp === lastFp) {
+    stableRounds++;
+    if (info.finished && stableRounds >= STABLE_ROUNDS_TO_STOP) {
+      stopPolling('run 已结束 · 轮询已停止');
+    }
+    return;
+  }
+  lastFp = info.fp;
+  stableRounds = 0;
   if (!current) return;
-  await current.mod.render(current.ctx);
+  // 数据刷新不重置用户滚动位置（页面/表格拖到哪里就停在哪里）。
+  const scroll = keepScroll
+    ? { top: main.scrollTop, left: main.scrollLeft } : { top: 0, left: 0 };
+  await current.mod.update(current.ctx);
+  main.scrollTop = scroll.top;
+  main.scrollLeft = scroll.left;
+}
+
+function stopPolling(reason) {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (reason) pollState.textContent = reason;
+}
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollState.textContent = '';
+  if (pollEnabled.checked) {
+    pollTimer = setInterval(pollTick, POLL_MS);
+  }
 }
 
 function switchPage(name) {
-  // 页面卸载（销毁 chart 实例防泄漏）。
   if (current && current.mod.destroy) current.mod.destroy(current.ctx);
   for (const b of nav.children) b.classList.toggle('active', b.dataset.page === name);
   main.innerHTML = '';
-  current = { mod: PAGES[name], ctx: { main, workerId: null, taskFilter: {} } };
-  render();
+  current = { mod: PAGES[name], ctx: { main, workerId: null, taskId: null,
+                                       taskFilter: {} } };
+  current.mod.mount(current.ctx);   // DOM/事件/图表实例一次建好
+  lastFp = null;                    // 新页强制首刷
+  stableRounds = 0;
+  pollTick();
 }
 
-// 页面模块可注册子路由回调（worker 详情/task 详情返回等）。
-export function rerender() { render(); }
-export function showPage(name, opts) {
-  switchPage(name);
-  if (opts) Object.assign(current.ctx, opts);
-  render();
+// 页内导航（worker/task 详情、返回、过滤/翻页）：改 ctx 状态后立即刷一次；
+// 主动导航不保留滚动（回顶部），轮询刷新才保留。
+export function navigate() {
+  lastFp = null;
+  pollTick(false);
 }
 
 nav.addEventListener('click', (e) => {
@@ -53,13 +108,21 @@ nav.addEventListener('click', (e) => {
   if (btn) switchPage(btn.dataset.page);
 });
 
-pollEnabled.addEventListener('change', () => {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-  if (pollEnabled.checked) {
-    pollTimer = setInterval(() => { refreshHeader(); render(); }, POLL_MS);
+// 超长名称的展开/收起（全局委托一次；缩略/全名切换不触发其它点击逻辑）。
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('.expando');
+  if (!el) return;
+  if (el.classList.contains('open')) {
+    el.classList.remove('open');
+    el.textContent = el.dataset.short || el.textContent;
+  } else {
+    el.dataset.short = el.textContent;
+    el.classList.add('open');
+    el.textContent = el.dataset.full;  // textContent 赋值，天然免疫注入
   }
 });
 
-refreshHeader();
+pollEnabled.addEventListener('change', startPolling);
+
 switchPage('overview');
-pollTimer = setInterval(() => { refreshHeader(); render(); }, POLL_MS);
+startPolling();

@@ -130,11 +130,41 @@ class ServeTest(unittest.TestCase):
         self.assertEqual(len(tl), 1)  # task 8 无 exec 窗口不进 timeline
         self.assertEqual(tl[0]["task_id"], 7)
 
-    def test_dbs_association(self):
+    def test_dbs_simple_view(self):
         dbs = self.get("/api/dbs")["dbs"]
         self.assertEqual(len(dbs), 1)
         self.assertEqual(dbs[0]["db"], "/tmp/a.db")
-        self.assertEqual(dbs[0]["task_count"], 1)
+        self.assertEqual(dbs[0]["created_ms"], 400)
+        # DB_FROZEN + DB_DU 由新 run 数据补充后断言（本库构造里没有
+        # freeze/du 事件——覆盖各字段的缺省形态）。
+        self.assertIsNone(dbs[0]["frozen_ms"])
+        self.assertIsNone(dbs[0]["disk_bytes"])
+        self.assertNotIn("events", dbs[0])       # 简化口径：不带事件明细
+        self.assertNotIn("task_count", dbs[0])   # 简化口径：不带关联统计
+
+    def test_dbs_with_du_event(self):
+        # DB_FROZEN/DB_DU 事件的解析（freeze 终值 + stop 补测覆盖）。
+        # serve 的查询连接是 mode=ro——用独立读写连接注入事件。
+        w = sqlite3.connect(self.db_path)
+        w.execute(
+            "INSERT INTO events(epoch_ms,category,event,worker_id,task_id,detail) "
+            "VALUES(500,'db','DB_FROZEN',0,0,'/tmp/a.db')")
+        w.execute(
+            "INSERT INTO events(epoch_ms,category,event,worker_id,task_id,detail) "
+            "VALUES(600,'db','DB_DU',0,0,'/tmp/a.db|1073741824')")
+        w.execute(
+            "INSERT INTO events(epoch_ms,category,event,worker_id,task_id,detail) "
+            "VALUES(700,'db','DB_DU',0,0,'/tmp/a.db|2147483648')")
+        w.commit()
+        w.close()
+        dbs = self.get("/api/dbs")["dbs"]
+        self.assertEqual(dbs[0]["frozen_ms"], 500)
+        self.assertEqual(dbs[0]["disk_bytes"], 2147483648)  # 取最新 DB_DU
+        # 清理注入（测试库与本类其余用例共享，防串扰）。
+        w = sqlite3.connect(self.db_path)
+        w.execute("DELETE FROM events WHERE epoch_ms>=500 AND category='db'")
+        w.commit()
+        w.close()
 
     def test_static_index_and_vendor(self):
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/", timeout=5) as r:
@@ -159,6 +189,88 @@ class ServeTest(unittest.TestCase):
             self.fail("unknown api should 404")
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 404)
+
+
+class ServeRobustnessTest(unittest.TestCase):
+    """db 替换重连 / 端口占用 / db 等待的独立场景（不起 HTTP，直测函数）。"""
+
+    def test_query_reopens_when_db_replaced(self):
+        # 同路径 rm+重建（新 run 的典型形态）→ query 自动切到新 inode。
+        d = tempfile.mkdtemp(prefix="fly_serve_reopen_")
+        try:
+            p = os.path.join(d, "monitor.db")
+            build_test_db(p)
+            serve.open_db(p)
+            rows = serve.query("SELECT COUNT(*) AS n FROM tasks")
+            self.assertEqual(rows[0]["n"], 2)
+            # 新 run 的库：只含 1 个 task（hostname 可区分）。
+            os.remove(p)
+            db2 = sqlite3.connect(p)
+            db2.executescript(
+                "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);"
+                "CREATE TABLE workers(worker_id INTEGER PRIMARY KEY, hostname TEXT, ip TEXT,"
+                " role TEXT, attributes TEXT, first_seen_ms INTEGER, last_event_ms INTEGER,"
+                " last_event TEXT);"
+                "CREATE TABLE worker_samples(worker_id INTEGER, epoch_ms INTEGER,"
+                " proc_rss_bytes INTEGER, proc_cpu_bps INTEGER, host_cpu_bps INTEGER,"
+                " host_mem_total_bytes INTEGER, host_mem_avail_bytes INTEGER,"
+                " host_load1_x100 INTEGER, net_read_bytes INTEGER, net_write_bytes INTEGER,"
+                " kind INTEGER, PRIMARY KEY(worker_id, epoch_ms)) WITHOUT ROWID;"
+                "CREATE TABLE tasks(task_id INTEGER PRIMARY KEY, name TEXT, module TEXT,"
+                " is_internal INTEGER, status TEXT, worker_id INTEGER, priority INTEGER,"
+                " error TEXT, created_ms INTEGER, ready_ms INTEGER, started_ms INTEGER,"
+                " completed_ms INTEGER, exec_start_ms INTEGER, exec_end_ms INTEGER,"
+                " cpu_time_ms INTEGER, read_time_ms INTEGER, write_time_ms INTEGER,"
+                " read_bytes INTEGER, write_bytes INTEGER, mem_baseline_bytes INTEGER,"
+                " mem_avg_bytes INTEGER, mem_peak_bytes INTEGER, dbs TEXT);"
+                "CREATE TABLE object_io(id INTEGER PRIMARY KEY AUTOINCREMENT, epoch_ms INTEGER,"
+                " task_id INTEGER, worker_id INTEGER, direction TEXT, object_name TEXT,"
+                " bytes INTEGER, duration_ms INTEGER);"
+                "CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT, epoch_ms INTEGER,"
+                " category TEXT, event TEXT, worker_id INTEGER, task_id INTEGER, detail TEXT);"
+                "INSERT INTO tasks(task_id,name,status) VALUES(1,'new_run_task','RUNNING');")
+            db2.commit()
+            db2.close()
+            rows = serve.query("SELECT COUNT(*) AS n FROM tasks")
+            self.assertEqual(rows[0]["n"], 1, "db 替换后 query 应反映新文件")
+            self.assertEqual(serve.query("SELECT name FROM tasks")[0]["name"],
+                             "new_run_task")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_wait_for_db_times_out(self):
+        d = tempfile.mkdtemp(prefix="fly_serve_wait_")
+        try:
+            t0 = time.time()
+            with self.assertRaises(FileNotFoundError):
+                serve.wait_for_db(os.path.join(d, "monitor.db"), timeout_s=0.5)
+            self.assertLess(time.time() - t0, 5)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_port_conflict_exits_friendly(self):
+        # 已有实例占端口：第二个 serve 退出码 2（友好提示路径）。
+        d = tempfile.mkdtemp(prefix="fly_serve_port_")
+        try:
+            p = os.path.join(d, "monitor.db")
+            build_test_db(p)
+            serve.open_db(p)
+            httpd = serve.ThreadingHTTPServer(("127.0.0.1", 0), serve.MonitorHandler)
+            port = httpd.server_address[1]
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+            with self.assertRaises(SystemExit) as cm:
+                serve.serve(os.path.join(d), port=port)
+            self.assertEqual(cm.exception.code, 2)
+            httpd.shutdown()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_local_addresses_contains_lan_ip(self):
+        # UDP connect 技巧：非回环地址应出现在候选列表（本机必有出口路由）。
+        addrs = serve.local_addresses()
+        self.assertIn("127.0.0.1", addrs)
+        self.assertTrue(any(not a.startswith("127.") for a in addrs),
+                        f"应含非回环地址: {addrs}")
 
 
 if __name__ == "__main__":

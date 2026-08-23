@@ -313,13 +313,17 @@ void MasterAgent::start() {
     run_metrics_->start(Config::instance()->get_int("metrics_tick_seconds"));
 
     // cluster monitor 落盘层：{log_dir}/monitor.db 单写（open 失败仅告警，
-    // 本 run 降级为无持久化监控，不影响主流程）。
+    // 本 run 降级为无持久化监控，不影响主流程）。同进程多段 run（stop 后
+    // 再 start）：上一段已 close，此处重开续写（表结构 IF NOT EXISTS 共存，
+    // 首段写 run_start_ms、后续段写 run_restart_ms，事件流连续）。
     metrics_db_ = CMMakeUnique<MetricsDb>();
     if (Config::instance()->get_int("monitor_db_enabled")) {
         if (metrics_db_->open(Config::instance()->get_str("log_dir"))) {
-            metrics_db_->record_run_meta("run_start_ms",
+            metrics_db_->record_run_meta(
+                monitor_db_opened_once_ ? "run_restart_ms" : "run_start_ms",
                 std::to_string(monitor_epoch_ms_now()));
             metrics_db_->record_run_meta("hostname", ProcessInfo::instance()->hostname());
+            monitor_db_opened_once_ = true;
             self_sample_gap_ms_ =
                 Config::instance()->get_int("monitor_exec_sample_interval_ms");
             if (self_sample_gap_ms_ <= 0) self_sample_gap_ms_ = 200;
@@ -349,6 +353,9 @@ void MasterAgent::start() {
     });
     reactor_->wait_until_running();
     running_ = true;
+    // 同进程多段 run（stop 后再 start）：复位 stop 防重入标志，让本段的
+    // stop 走完整收尾（drain + metrics_db close 等）。
+    draining_.store(false);
 
     auto dsInst = DataService::instance();
     int data_server_threads = static_cast<int>(Config::instance()->get_int("data_server_threads"));
@@ -601,6 +608,11 @@ void MasterAgent::stop_impl(bool fast, const CMString& reason) {
             dur_s, rt_path, db_sum_path);
         INFO("RunSummary files written: runtime={} db={} duration={:.1f}s",
              rt_path, db_sum_path, dur_s);
+        // DBs 页磁盘占用收尾：summary 补测完成后（frozen 终值 + active db
+        // 退出 du 均已就绪），对全部注册 db 落一次 DB_DU 终值。
+        if (metrics_db_) {
+            for (const auto& db_path : registered_dbs_) record_db_du(db_path);
+        }
     }
     // monitor.db 收尾：停写线程并同步 flush 全部余量后关闭（早于 Logger 关闭
     // 与静态析构——退出期时序，P3-18 家族约束）。此后文件为干净终态，
@@ -1552,6 +1564,16 @@ CMString collect_task_dbs(const TaskSubmissionSpec& spec) {
 }
 
 }  // namespace
+
+// db 磁盘占用落库：detail 编码 "<db_path>|<bytes>"（-1 = 未测得）。
+// freeze 点的值为终值（frozen db 不再写入）；stop 收尾对 active db 是
+// write_summary_files 的退出补测值。GUI 的 DBs 页据此展示磁盘占用。
+void MasterAgent::record_db_du(const CMString& db_path) {
+    if (!metrics_db_) return;
+    const int64_t bytes = run_metrics_ ? run_metrics_->db_disk_bytes(db_path) : -1;
+    metrics_db_->record_event("db", "DB_DU", 0, 0,
+                              db_path + "|" + std::to_string(bytes));
+}
 
 TaskRow MasterAgent::build_task_row(uint64_t task_id) const {
     TaskRow row;
@@ -2508,6 +2530,7 @@ void MasterAgent::register_database(const CMString& db_path, const CMString& dat
     // record_db_paths_changed）。锁外登记（collector 自身锁，快速路径）。
     if (run_metrics_) run_metrics_->record_db_created(db_path, data_path);
     if (metrics_db_) metrics_db_->record_event("db", "DB_CREATED", 0, 0, db_path);
+    registered_dbs_.insert(db_path);
 }
 
 bool MasterAgent::is_db_frozen(const CMString& db_path) const {
@@ -2552,7 +2575,10 @@ void MasterAgent::commit_pending_frozen(uint64_t task_id) {
         cleanup_provenance_for_db(db_path);
         // RunSummary：封闭 db 窗口 + du 统计磁盘终值（锁外，ms 级）。
         if (run_metrics_) run_metrics_->record_db_frozen(db_path);
-        if (metrics_db_) metrics_db_->record_event("db", "DB_FROZEN", 0, task_id, db_path);
+        if (metrics_db_) {
+            metrics_db_->record_event("db", "DB_FROZEN", 0, task_id, db_path);
+            record_db_du(db_path);  // freeze 后 du 即终值（RunMetrics 已同步测得）
+        }
         INFO("DB frozen (committed by task): db_path={}, task_id={}", db_path, task_id);
         DatabaseFreezeNotification broadcast_msg;
         broadcast_msg.db_path_ = db_path;
@@ -2597,6 +2623,7 @@ CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& db_pat
     // 两类创建入口）。
     if (run_metrics_) run_metrics_->record_db_created(db_path, data_path);
     if (metrics_db_) metrics_db_->record_event("db", "DB_CREATED", 0, 0, db_path);
+    registered_dbs_.insert(db_path);
     return db;
 }
 
@@ -3469,7 +3496,10 @@ void MasterAgent::on_database_freeze_request(uint64_t conn_id, const DatabaseFre
         cleanup_provenance_for_db(msg.db_path_);
         // RunSummary：封闭 db 窗口 + du 统计磁盘终值（锁外，ms 级）。
         if (run_metrics_) run_metrics_->record_db_frozen(msg.db_path_);
-        if (metrics_db_) metrics_db_->record_event("db", "DB_FROZEN", 0, 0, msg.db_path_);
+        if (metrics_db_) {
+            metrics_db_->record_event("db", "DB_FROZEN", 0, 0, msg.db_path_);
+            record_db_du(msg.db_path_);
+        }
         // stream 模式的本地 freeze + 广播（D2 拆除：freeze 重 IO 与广播移出容器锁）
         CMSharedPtr<Database> db;
         {
@@ -3504,6 +3534,10 @@ void MasterAgent::on_master_freeze(const CMString& db_path) {
     cleanup_provenance_for_db(db_path);
     // RunSummary：封闭 db 窗口 + du 统计磁盘终值（锁外，ms 级）。
     if (run_metrics_) run_metrics_->record_db_frozen(db_path);
+    if (metrics_db_) {
+        metrics_db_->record_event("db", "DB_FROZEN", 0, 0, db_path);
+        record_db_du(db_path);
+    }
 
     DatabaseFreezeNotification msg;
     msg.db_path_ = db_path;
