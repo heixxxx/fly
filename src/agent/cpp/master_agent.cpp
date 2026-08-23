@@ -327,6 +327,11 @@ void MasterAgent::start() {
             self_sample_gap_ms_ =
                 Config::instance()->get_int("monitor_exec_sample_interval_ms");
             if (self_sample_gap_ms_ <= 0) self_sample_gap_ms_ = 200;
+            // master 自身也登记进 workers 表（wid=0，role=master）：monitor_
+            // self 循环写的 wid=0 样本在 GUI Workers 页有归属（显示为
+            // master，非 worker 0——用户裁定；无注册/退出生命周期）。
+            metrics_db_->record_worker_registered(
+                0, ProcessInfo::instance()->hostname(), "", "master", "");
             monitor_self_running_ = true;
             monitor_self_thread_ = std::thread([this] { monitor_self_loop(); });
         } else {

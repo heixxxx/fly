@@ -32,14 +32,15 @@ function neutralColor() { return cssVar('--gantt-neutral', '#61707f'); }
 // grid 几何（泳道点击的坐标判定与 ganttOption 配置一致）。
 // top 预留给时间标签条（悬停/框选起止点时间显示区，不覆盖 task 条）。
 const GRID = { left: 170, top: 48, bottom: 34, barH: 16 };
-const LANE_H = 34;   // 每泳道高度（紧凑：间距较常规减半）
+const ROW_H = 26;   // 子行高度：worker 泳道内并发重叠的 task 自动分子行
 const HEAVY = 0.30;  // 复合负载阈值（其它维度 ≥30% 叠加条纹）
 const STRIPE_GAP = 6;
 
 let chart = null;
 let lastTasks = [];
 let hostMap = {};
-let lanes = [];
+let lanes = [];          // worker 泳道（排序后）
+let rowWorker = [];      // 子行 → worker（泳道点击判定用）
 let extent = { lo: 0, hi: 1 };
 let savedState = null;   // { sort, colorDim, stripe, zoom, scrollTop }
 
@@ -98,6 +99,7 @@ export function destroy(ctx) {
   lastTasks = [];
   hostMap = {};
   lanes = [];
+  rowWorker = [];
 }
 
 export function mount(ctx) {
@@ -161,20 +163,20 @@ export function mount(ctx) {
   chart.getZr().on('click', (e) => {
     if (suppressClick) return;
     if (!e.target) hideInfo();
-    const laneIdx = laneAt(e.offsetX, e.offsetY);
-    if (laneIdx >= 0 && lanes[laneIdx] != null) {
-      gotoPage('workers', { workerId: lanes[laneIdx] }, 'Timeline');
+    const w = laneAt(e.offsetX, e.offsetY);
+    if (w >= 0) {
+      gotoPage('workers', { workerId: w }, 'Timeline');
     }
   });
   // 泳道标签区 hover：pointer 光标 + 跟随小提示（可点击跳转的可见暗示）。
   chart.getZr().on('mousemove', (e) => {
     const chartEl = document.getElementById('tl-chart');
     if (!chartEl) return;
-    const idx = laneAt(e.offsetX, e.offsetY);
-    if (idx >= 0 && lanes[idx] != null) {
+    const w = laneAt(e.offsetX, e.offsetY);
+    if (w >= 0) {
       chartEl.style.cursor = 'pointer';
       showLaneTip(chartEl, e.offsetX, e.offsetY,
-                  t('tl.laneTip', lanes[idx]));
+                  t('tl.laneTip', w));
     } else {
       chartEl.style.cursor = 'default';
       hideLaneTip();
@@ -504,15 +506,18 @@ function renderLegend(ctx) {
     <span class="lg"><i style="background:${neutral};border:2px solid ${failStroke()}"></i>${t('tl.legendFailed')}</span>`;
 }
 
-// y 轴标签区命中：x 在 [0, GRID.left)，y 落在 plot 区按泳道等分判定。
+// y 轴标签区命中：x 在 [0, GRID.left)，y 落在 plot 区按子行等分判定，
+// 返回该行所属 worker（子行分层后泳道标签只占 worker 首行，但整组行
+// 都响应点击跳转）。
 function laneAt(x, y) {
   const el = document.getElementById('tl-chart');
-  if (!el || !lanes.length) return -1;
+  if (!el || !rowWorker.length) return -1;
   const chartH = el.clientHeight;
   const plotTop = GRID.top, plotBottom = chartH - GRID.bottom;
   if (x < 0 || x >= GRID.left || y < plotTop || y >= plotBottom) return -1;
-  const idx = Math.floor((y - plotTop) / ((plotBottom - plotTop) / lanes.length));
-  return Math.min(Math.max(idx, 0), lanes.length - 1);
+  const idx = Math.floor((y - plotTop) / ROW_H);
+  if (idx < 0 || idx >= rowWorker.length) return -1;
+  return rowWorker[idx];
 }
 
 // Timeline task 增量缓存（增强刷新）：首轮全量建缓存，之后每轮只拉
@@ -567,9 +572,34 @@ export async function update(ctx) {
     lanes.sort((a, b) => a - b);
   }
 
-  // 紧凑泳道：每泳道 LANE_H + 顶部图例/底部滑块。
-  const chartH = Math.max(GRID.top + GRID.bottom + LANE_H,
-                          lanes.length * LANE_H + GRID.top + GRID.bottom);
+  // 同泳道并发重叠的 task 自动分子行（否则同层互相覆盖看不清负载构成；
+  // master 泳道的 internal task 与用户 task 并发是真实场景）。贪心分配：
+  // 按 exec_start 排序，新条起点 ≥ 某行最后终点才复用该行。
+  const subOf = new Map();    // task_id → 子行号
+  const rowLabels = [];       // y 轴类目（每子行一个，仅 worker 首行带标签）
+  rowWorker = [];
+  const baseOf = new Map();   // worker → 首子行索引
+  for (const w of lanes) {
+    const wtasks = tasks.filter(tk => tk.worker_id === w)
+      .sort((a, b) => a.exec_start_ms - b.exec_start_ms);
+    const rowEnds = [];
+    for (const tk of wtasks) {
+      const end = tk.exec_end_ms || tk.exec_start_ms + 50;
+      let row = rowEnds.findIndex(e => tk.exec_start_ms >= e);
+      if (row === -1) { row = rowEnds.length; rowEnds.push(end); }
+      else rowEnds[row] = end;
+      subOf.set(tk.task_id, row);
+    }
+    baseOf.set(w, rowLabels.length);
+    rowLabels.push(w === 0 ? `master(0) · ${hostMap[0]}`
+                           : `worker ${w} · ${hostMap[w] || '?'}`);
+    rowWorker.push(w);
+    for (let r = 1; r < rowEnds.length; r++) { rowLabels.push(''); rowWorker.push(w); }
+  }
+
+  // 图高 = 子行数 × ROW_H + 顶部时间标签条 + 底部滑块区。
+  const chartH = Math.max(GRID.top + GRID.bottom + ROW_H,
+                          rowLabels.length * ROW_H + GRID.top + GRID.bottom);
   document.getElementById('tl-chart').style.height = chartH + 'px';
   chart.resize();
 
@@ -579,7 +609,8 @@ export async function update(ctx) {
     const failed = tk.status === 'FAILED';
     const fast = isFast(tk) && !failed;
     return {
-      value: [lanes.indexOf(tk.worker_id), tk.exec_start_ms,
+      value: [baseOf.get(tk.worker_id) + (subOf.get(tk.task_id) || 0),
+              tk.exec_start_ms,
               tk.exec_end_ms || tk.exec_start_ms + 50, tk.task_id],
       name: tk.name,
       _r: r, _failed: failed, _fast: fast,
@@ -604,7 +635,7 @@ export async function update(ctx) {
   const spanOld = oldExtent.hi - oldExtent.lo || 1;
   const t0 = oldExtent.lo + spanOld * zPct.start / 100;
   const t1 = oldExtent.lo + spanOld * zPct.end / 100;
-  chart.setOption(ganttOption(lanes, seriesData, ctx), true);
+  chart.setOption(ganttOption(rowLabels, seriesData, ctx), true);
   if (wasFull) {
     chart.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
   } else {
@@ -671,7 +702,7 @@ function hideInfo() {
   if (el) el.style.display = 'none';
 }
 
-function ganttOption(wids, seriesData, ctx) {
+function ganttOption(rowLabels, seriesData, ctx) {
   let lo = Infinity, hi = -Infinity;
   for (const d of seriesData) {
     lo = Math.min(lo, d.value[1]);
@@ -715,10 +746,10 @@ function ganttOption(wids, seriesData, ctx) {
     yAxis: {
       type: 'category',
       // inverse：category 轴默认从下往上渲染——升序数组视觉上呈降序；
-      // 反转后第一个泳道（最小 worker id）显示在顶部。
+      // 反转后第一个泳道（最小 worker id）显示在顶部。data 为子行展开
+      // 数组（并发重叠 task 各占一行，仅 worker 首行带标签）。
       inverse: true,
-      data: wids.map(w => w === 0 ? `master(0) · ${hostMap[0]}`
-                                  : `worker ${w} · ${hostMap[w] || '?'}`),
+      data: rowLabels,
       axisLine: { lineStyle: { color: chartColors().axis } },
       axisLabel: { color: chartColors().accent },
     },

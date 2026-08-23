@@ -51,16 +51,21 @@ function card(w) {
   const rss = l ? fmtGB(l.proc_rss_bytes) : '-';
   const cpu = l ? (l.proc_cpu_bps / 100).toFixed(1) + '%' : '-';
   const hcpu = l ? (l.host_cpu_bps / 100).toFixed(1) + '%' : '-';
+  const isMaster = w.worker_id === 0;
   // 终态语义：EXITED（正常退出，绿）/ DEAD（异常死亡，红）；其余状态原样。
+  // master（wid=0）无注册/退出生命周期，恒显示 MASTER（用户裁定：master
+  // 可出现在 Workers 列表，但不可描述为 worker 0）。
   let stateBadge;
-  if (w.exit_kind) {
+  if (isMaster) {
+    stateBadge = `<span class="badge MASTER" style="float:right">MASTER</span>`;
+  } else if (w.exit_kind) {
     const exited = w.exit_kind === 'EXITED';
     stateBadge = `<span class="badge ${w.exit_kind}" style="float:right" title="${escapeHtml(t(exited ? 'ev.exitedTitle' : 'ev.diedTitle'))}">${t(exited ? 'ev.exited' : 'ev.died')}</span>`;
   } else {
     stateBadge = `<span class="badge ${w.last_event}" style="float:right">${w.last_event || '-'}</span>`;
   }
   return `<div class="worker-card" data-wid="${w.worker_id}">
-    <div class="title">worker ${w.worker_id}
+    <div class="title">${isMaster ? 'master' : `worker ${w.worker_id}`}
       <span class="muted">${w.hostname}${w.ip ? ':' + w.ip : ''}</span>
       ${stateBadge}
     </div>
@@ -145,8 +150,9 @@ async function fillDetail(body, ctx) {
     series: [line('Load1', times.map((tm, i) => [tm, sp[i].host_load1_x100 / 100]), c.purple, 0, true)],
   });
 
-  document.getElementById('w-task-title').textContent =
-    t('w.tasksOf', wid, tasks ? tasks.total : 0);
+  document.getElementById('w-task-title').textContent = wid === 0
+    ? t('w.masterTasksOf', tasks ? tasks.total : 0)
+    : t('w.tasksOf', wid, tasks ? tasks.total : 0);
   document.getElementById('w-tasks').innerHTML =
     (tasks ? tasks.tasks : []).map(taskRow).join('');
 }

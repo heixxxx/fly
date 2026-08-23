@@ -73,7 +73,8 @@ export function mount(ctx) {
     if (!sel) return;
     for (const w of ws.workers) {
       const o = document.createElement('option');
-      o.value = w.worker_id; o.textContent = `worker ${w.worker_id}`;
+      o.value = w.worker_id;
+      o.textContent = w.worker_id === 0 ? 'master' : `worker ${w.worker_id}`;
       if (+ (ctx.taskFilter.worker || 0) === w.worker_id) o.selected = true;
       sel.appendChild(o);
     }

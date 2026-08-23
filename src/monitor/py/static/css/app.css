@@ -183,6 +183,8 @@ tr:hover td { background: var(--panel2); }
   background: rgba(224,86,79,.15); color: var(--err);
 }
 .badge.REVIVED, .badge.RESTART { background: rgba(74,168,255,.15); color: var(--accent); }
+/* master（wid=0）恒显示：无注册/退出生命周期，中性样式。 */
+.badge.MASTER { background: var(--accent-fill-12); color: var(--accent); }
 
 .cat-task { color: var(--cat-task); }
 .cat-worker { color: var(--cat-worker); }

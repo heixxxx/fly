@@ -246,5 +246,9 @@ onThemeChange(rerender);
 }
 
 fillHeaderControls();
-switchPage('overview');
+// ?page= 直链初始页（分享/自动化截图；非法值回落总览）。
+{
+  const p = new URLSearchParams(location.search).get('page');
+  switchPage(p && PAGES[p] ? p : 'overview');
+}
 startPolling();
