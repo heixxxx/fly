@@ -235,6 +235,16 @@ themeSel.addEventListener('change', () => setTheme(themeSel.value));
 onLangChange(rerender);
 onThemeChange(rerender);
 
+// URL 参数覆盖（?theme=light|dark|system&lang=zh|en）：分享/书签直接固定
+// 外观，也让无头截图等自动化可以精确指定主题与语言。
+{
+  const q = new URLSearchParams(location.search);
+  const th = q.get('theme');
+  if (th === 'light' || th === 'dark' || th === 'system') setTheme(th);
+  const lg = q.get('lang');
+  if (lg === 'zh' || lg === 'en') setLang(lg);
+}
+
 fillHeaderControls();
 switchPage('overview');
 startPolling();

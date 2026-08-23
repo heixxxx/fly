@@ -40,6 +40,7 @@ globalThis.window = {
   addEventListener() {},
   matchMedia: () => ({ matches: false, addEventListener() {} }),
 };
+globalThis.location = { search: '' };
 // localStorage/getComputedStyle stub（i18n/theme 持久化与 CSS 变量读取）。
 globalThis.localStorage = {
   store: new Map(),
@@ -102,6 +103,30 @@ const staticRoot = join(import.meta.dirname, '..', 'py', 'static');
 // ---- 静态完整性：CSS 双主题变量集合一致（漏定义浅色值会回退深色）----
 {
   const css = readFileSync(join(staticRoot, 'css', 'app.css'), 'utf8');
+
+  // 注释剥离（状态机）：注释文本中出现「星号+斜杠」会提前闭合注释，
+  // 残余文本成为规则外垃圾触发 CSS 错误恢复——曾把整个 :root 变量块
+  // 吞掉（深色主题全部变量丢失、页面黑底黑字）。剥离后的代码区若仍
+  // 残留 */ 即存在此类写坏的注释。
+  const stripped = (() => {
+    let out = '', inComment = false;
+    for (let i = 0; i < css.length; i++) {
+      const two = css.slice(i, i + 2);
+      if (!inComment && two === '/*') { inComment = true; i++; continue; }
+      if (inComment && two === '*/') { inComment = false; i++; continue; }
+      if (!inComment) out += css[i];
+    }
+    return out;
+  })();
+  if (stripped.includes('*/')) {
+    const idx = stripped.indexOf('*/');
+    failures.push(`CSS 注释写坏（代码区残留 */ 于 +${idx}）: ...${stripped.slice(Math.max(0, idx - 40), idx + 10)}...`);
+  }
+  // 变量块完好性：:root 规则未被错误恢复吞掉（其后首个声明必须是 --bg）。
+  if (!/:root,\s*\[data-theme="dark"\]\s*\{\s*--bg:/.test(stripped)) {
+    failures.push('CSS :root 变量块丢失（被注释错误恢复吞掉？）');
+  }
+
   const varsOf = (block) =>
     [...block.matchAll(/--([a-z0-9-]+)\s*:/gi)].map(m => m[1]).sort();
   const dark = varsOf(css.slice(0, css.indexOf('[data-theme="light"]')));

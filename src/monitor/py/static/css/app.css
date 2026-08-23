@@ -1,7 +1,9 @@
 /* 主题变量：dark 为默认（:root 兜底 + data-theme 显式块），light 覆盖。
-   --chart-*/--ser-* 供 ECharts 侧经 theme.cssVar() 读取（canvas 不消费
-   CSS 变量）；--accent-fill-*/--accent-line-* 为 accent 的透明变体
-   （rgba 无法由变量拼 alpha，两主题各写死）。 */
+   --chart 系与 --ser 系供 ECharts 侧经 theme.cssVar() 读取（canvas 不消费
+   CSS 变量）；--accent-fill 系与 --accent-line 系为 accent 的透明变体
+   （rgba 无法由变量拼 alpha，两主题各写死）。
+   注意：注释文本中严禁出现斜杠星号序列（会提前闭合注释、触发错误
+   恢复吞掉整个变量块——曾致深色主题全部变量丢失）。 */
 :root, [data-theme="dark"] {
   --bg: #0f1419;
   --panel: #161d26;
