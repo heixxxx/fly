@@ -47,9 +47,11 @@ def main():
     run_and_stop()
 
     fly_bin = get_fly_binary()
+    # FLY_MONITOR_NO_BROWSER：QA 环境抑制 serve 尝试弹浏览器（副作用）。
+    env = dict(os.environ, FLY_MONITOR_NO_BROWSER="1")
     proc = subprocess.Popen(
         [fly_bin, "--serve-monitor", MONITOR_DB, "--port", str(PORT)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     try:
         base = f"http://127.0.0.1:{PORT}"
         ok = False

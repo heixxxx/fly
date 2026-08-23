@@ -284,6 +284,102 @@ class ServeRobustnessTest(unittest.TestCase):
         self.assertTrue(any(not a.startswith("127.") for a in addrs),
                         f"应含非回环地址: {addrs}")
 
+
+class ServeLifecycleTest(unittest.TestCase):
+    """GUI 启动生命周期（用户裁定）：未指定端口=随机口、地址写入 log 目录
+    记录文件、同 log 目录二次启动先探测已有实例（活=复用，死=重启）。
+    测试环境抑制浏览器尝试（无副作用）。"""
+
+    def setUp(self):
+        os.environ["FLY_MONITOR_NO_BROWSER"] = "1"
+        self._d = tempfile.mkdtemp(prefix="fly_serve_life_")
+        self._db = os.path.join(self._d, "monitor.db")
+        build_test_db(self._db)
+
+    def tearDown(self):
+        os.environ.pop("FLY_MONITOR_NO_BROWSER", None)
+        shutil.rmtree(self._d, ignore_errors=True)
+
+    def _record(self):
+        return serve._read_gui_record(serve._gui_record_path(self._db))
+
+    def _wait_record(self, timeout_s=10):
+        for _ in range(int(timeout_s / 0.1)):
+            rec = self._record()
+            if rec and serve._gui_alive(rec["host"], rec["port"], timeout=0.5):
+                return rec
+            time.sleep(0.1)
+        return None
+
+    def test_random_port_and_record_file(self):
+        # port=None（用户未指定）→ OS 随机口 + 记录含跨机器可达的 host
+        # （非回环出口 IP）+ 服务在该地址可达。
+        t = threading.Thread(target=serve.serve, args=(self._d,), daemon=True)
+        t.start()
+        rec = self._wait_record()
+        self.assertIsNotNone(rec, "记录文件未在时限内出现/服务不可达")
+        self.assertGreater(rec["port"], 0)
+        self.assertNotEqual(rec["host"], "", "记录应含 host（跨机器访问）")
+        self.assertFalse(rec["host"].startswith("127."),
+                         f"host 应为对外地址（实际 {rec['host']}）")
+        with urllib.request.urlopen(
+                f"http://{rec['host']}:{rec['port']}/api/meta", timeout=2) as r:
+            self.assertEqual(r.status, 200)
+        # daemon 线程随测试进程结束（serve_forever 无外部句柄可关）。
+
+    def test_reuse_running_gui(self):
+        # 记录文件指向活实例 → serve() 走复用分支立即返回（不起新服务、
+        # 不改记录）。
+        serve.open_db(self._db)
+        httpd = serve.ThreadingHTTPServer(("0.0.0.0", 0), serve.MonitorHandler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        serve._write_gui_record(serve._gui_record_path(self._db),
+                                serve._primary_host(), httpd.server_address[1])
+        before = self._record()
+        t0 = time.time()
+        serve.serve(self._d)   # 复用分支：不阻塞
+        self.assertLess(time.time() - t0, 5, "复用分支应立即返回")
+        self.assertEqual(self._record(), before, "复用路径不应改写记录文件")
+        httpd.shutdown()
+
+    def test_dead_record_restarts(self):
+        # 记录指向已死端口 → serve() 重启服务端并更新记录为新口。
+        dead = serve.ThreadingHTTPServer(("127.0.0.1", 0), serve.MonitorHandler)
+        dead_port = dead.server_address[1]
+        dead.server_close()   # 拿到口后立即关闭 = 死端口
+        serve._write_gui_record(serve._gui_record_path(self._db),
+                                "127.0.0.1", dead_port)
+        t = threading.Thread(target=serve.serve, args=(self._d,), daemon=True)
+        t.start()
+        rec = self._wait_record()
+        self.assertIsNotNone(rec, "死记录未触发重启")
+        self.assertNotEqual(rec["port"], dead_port, "应换新端口重启")
+
+    def test_record_cleaned_on_exit(self):
+        # SIGTERM 退出 → finally 清理记录文件（SIGKILL 场景由下次启动的
+        # 可达性探测兜底，另有用例覆盖）。真子进程端到端验证。
+        import signal
+        import subprocess
+        import sys
+        env = dict(os.environ, FLY_MONITOR_NO_BROWSER="1")
+        proc = subprocess.Popen(
+            [sys.executable, os.path.abspath(serve.__file__), self._d],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+        try:
+            rec = self._wait_record(15)
+            self.assertIsNotNone(rec, "serve 子进程未就绪")
+            proc.send_signal(signal.SIGTERM)
+            gone = False
+            for _ in range(50):  # 等 finally 清理（最长 5s）
+                if not os.path.exists(serve._gui_record_path(self._db)):
+                    gone = True
+                    break
+                time.sleep(0.1)
+            self.assertTrue(gone, "SIGTERM 退出后记录文件未清理")
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+
     def test_frontend_app_smoke(self):
         # 前端模块图 + 页面 mount 冒烟（node + DOM/fetch stub）——抓
         # 「curl 200 但 JS 崩导致页面空白」类回归（escapeHtml 重复声明事故）。

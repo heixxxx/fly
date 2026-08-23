@@ -8,7 +8,7 @@
 run 结束后独立浏览历史。
 
 启动方式：
-  · python3 src/monitor/py/serve.py <db路径|log_dir> [--port 8788]
+  · python3 src/monitor/py/serve.py <db路径|log_dir> [--port N]（省略=随机口）
     （仅标准库依赖，任何 python3 >= 3.8 可直接运行）
   · fly --serve-monitor <db> [--port N]（复用 fly 二进制的嵌入式解释器）
   · fly.launch_monitor_gui()（detached spawn 上述 fly 入口）
@@ -20,11 +20,16 @@ import argparse
 import json
 import os
 import posixpath
+import signal
 import socket
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -32,6 +37,11 @@ _STATIC_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"
 
 # db 不存在时的等待上限（run 刚启动时首条上报落盘前的窗口）。
 DB_WAIT_TIMEOUT_S = 60
+
+# GUI 地址记录文件（log 目录下）：内容单行 JSON {"port":N,"pid":P}。
+# 后续启动同 log 目录的 GUI 时先读它探测实例是否存活——活着直接复用
+# （打印消息+开浏览器），死了重启服务端并更新记录（用户裁定）。
+GUI_URL_FILE = "monitor_gui.url"
 
 # ---------------------------------------------------------------------------
 # 只读 DB 连接
@@ -455,12 +465,113 @@ def _latest_hint(db_path):
     return None
 
 
-def serve(db_arg, port=8788):
+def _gui_record_path(db_path):
+    """GUI 地址记录文件：db 所在 log 目录（run 轮转目录天然隔离）。"""
+    return os.path.join(os.path.dirname(db_path) or ".", GUI_URL_FILE)
+
+
+def _read_gui_record(record_path):
+    try:
+        with open(record_path, "r", encoding="utf-8") as f:
+            rec = json.load(f)
+        if isinstance(rec.get("port"), int) and rec["port"] > 0:
+            rec.setdefault("host", "127.0.0.1")  # 旧格式无 host 的回退
+            return rec
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _primary_host():
+    """本机对外可达地址（出口 IP）：跨机器访问用（127.0.0.1 仅本地）。"""
+    for a in local_addresses():
+        if not a.startswith("127."):
+            return a
+    return "127.0.0.1"
+
+
+def _write_gui_record(record_path, host, port):
+    rec = {"host": host, "port": port, "pid": os.getpid()}
+    tmp = record_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(rec, f)
+    os.replace(tmp, record_path)
+
+
+def _remove_gui_record(record_path):
+    try:
+        os.remove(record_path)
+    except OSError:
+        pass
+
+
+def _gui_alive(host, port, timeout=2.0):
+    """记录的 GUI 实例是否可达（任意 HTTP 响应含 4xx/5xx 都算活）。
+    host 用记录的对外地址——本机与 NFS 对端（共享 log 目录）都能探测，
+    对端可达即可复用同一 GUI 实例。"""
+    try:
+        urllib.request.urlopen(f"http://{host}:{port}/", timeout=timeout)
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
+
+def try_open_browser(url):
+    """尽力打开本地浏览器（成败均返回 bool，调用方始终打印地址消息——
+    用户裁定：浏览器启动失败不掩盖地址）。WSL 下 webbrowser 通常无注册
+    浏览器，退回 cmd.exe 调 Windows 默认浏览器。测试环境可用
+    FLY_MONITOR_NO_BROWSER=1 抑制（避免 CI/QA 弹窗副作用）。"""
+    if os.environ.get("FLY_MONITOR_NO_BROWSER"):
+        return False
+    try:
+        if webbrowser.open(url, new=2):
+            return True
+    except Exception:
+        pass
+    cmd_exe = "/mnt/c/Windows/System32/cmd.exe"
+    if os.path.exists(cmd_exe):
+        try:
+            subprocess.Popen([cmd_exe, "/c", "start", "", url],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+            return True
+        except Exception:
+            pass
+    return False
+
+
+def _announce_urls(port, browser_opened):
+    addrs = local_addresses()
+    urls = "  ".join(f"http://{a}:{port}/" for a in addrs)
+    print(f"[fly-monitor] serving on port {port} — open in browser:", flush=True)
+    print(f"[fly-monitor]   {urls}", flush=True)
+    print(f"[fly-monitor] browser: {'opened' if browser_opened else 'not opened (copy the URL above)'}",
+          flush=True)
+
+
+def serve(db_arg, port=None):
     db_path = os.path.abspath(resolve_db_path_arg(db_arg))
     wait_for_db(db_path)
     open_db(db_path)
+    record = _gui_record_path(db_path)
+
+    # 复用检查（用户裁定）：同 log 目录已有 GUI 实例且可达 → 不再起新
+    # 服务端，直接打印地址并开浏览器；不可达（进程已死/记录损坏）则
+    # 落到下方重启服务端并更新记录。探测用记录的对外地址（host）——
+    # 本机与 NFS 对端共享 log 目录时，对端也能探测并复用同一实例。
+    old = _read_gui_record(record)
+    if old and _gui_alive(old["host"], old["port"]):
+        url = f"http://{old['host']}:{old['port']}/"
+        _announce_urls(old["port"], try_open_browser(url))
+        print(f"[fly-monitor] 已有 GUI 实例在运行（pid={old.get('pid')}），直接复用", flush=True)
+        return
+
+    # 未指定端口 → 随机（bind 0 由 OS 分配，避免多个 run 的 GUI 端口冲突）；
+    # 显式端口被占用仍是用户意图明确的冲突，快速失败（exit 2）。
     try:
-        httpd = ThreadingHTTPServer(("0.0.0.0", port), MonitorHandler)
+        httpd = ThreadingHTTPServer(("0.0.0.0", port or 0), MonitorHandler)
     except OSError as e:
         if "in use" in str(e) or "Address already" in str(e):
             # 端口被占用：大概率是已有 GUI 实例在跑——友好退出而非裸栈崩溃。
@@ -470,8 +581,13 @@ def serve(db_arg, port=8788):
             print(f"[fly-monitor]   ps aux | grep serve-monitor")
             sys.exit(2)
         raise
-    addrs = local_addresses()
-    urls = "  ".join(f"http://{a}:{port}/" for a in addrs)
+    port = httpd.server_address[1]
+    host = _primary_host()
+    try:
+        _write_gui_record(record, host, port)
+    except OSError as e:  # 记录失败不阻断服务（只影响后续复用探测）
+        print(f"[fly-monitor] WARN: 无法写入 {record}: {e}", flush=True)
+
     print(f"[fly-monitor] db: {db_path}", flush=True)
     # monitor.db 随 run 轮转目录隔离（fly_log.N）；传入旧目录时引导 latest
     # 软链（指向最新 run，且经 inode 重连在新 run 落盘后自动跟随）。
@@ -480,40 +596,60 @@ def serve(db_arg, port=8788):
         print(f"[fly-monitor] 提示：当前指向旧 run；最新 run 在 {latest}", flush=True)
         print(f"[fly-monitor]   用 --serve-monitor {latest} 可查看最新 run（新 run 落盘后自动跟随）",
               flush=True)
-    print(f"[fly-monitor] serving on port {port} — open in browser:", flush=True)
-    print(f"[fly-monitor]   {urls}", flush=True)
-    httpd.serve_forever()
+    print(f"[fly-monitor] address recorded in {record}", flush=True)
+    _announce_urls(port, try_open_browser(f"http://{host}:{port}/"))
+    # SIGTERM → SystemExit 走 serve_forever 的 finally 清理记录文件
+    # （非主线程调用 signal.signal 抛 ValueError——测试线程场景跳过）。
+    try:
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    except ValueError:
+        pass
+    try:
+        httpd.serve_forever()
+    finally:
+        # 进程退出清理记录（用户裁定）。SIGKILL 级强杀无法执行到这里——
+        # 由下次启动的可达性探测兜底（死记录 → 重启并覆盖）。
+        _remove_gui_record(record)
 
 
-def launch_monitor_gui(db_path, port=8788):
+def launch_monitor_gui(db_path, port=None):
     """在 fly 进程内便捷启动独立 GUI（detached 子进程，不阻塞调用方）。
 
     优先复用当前 fly 二进制（sys._fly_binary，嵌入式解释器内由 C++ 注入）
     走 --serve-monitor 分支；无 fly 上下文时退回当前 Python 解释器直接
     运行 serve.py（stdlib-only 同样可跑）。返回 Popen 句柄（调用方可不管）。
+    port 省略时子进程用随机端口（多 run 不冲突）；实际地址由子进程写入
+    log 目录的记录文件，此处轮询读取后打印（浏览器由子进程负责打开）。
     """
-    import subprocess
     import sys
     db_path = resolve_db_path_arg(db_path)
+    port_args = ["--port", str(port)] if port else []
     fly_bin = getattr(sys, "_fly_binary", None)
     if fly_bin and os.path.exists(fly_bin):
-        cmd = [fly_bin, "--serve-monitor", db_path, "--port", str(port)]
+        cmd = [fly_bin, "--serve-monitor", db_path] + port_args
     else:
-        cmd = [sys.executable, os.path.abspath(__file__), db_path, "--port", str(port)]
+        cmd = [sys.executable, os.path.abspath(__file__), db_path] + port_args
     proc = subprocess.Popen(
         cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True)  # detached：fly 主进程退出不带走 GUI
-    addrs = local_addresses()
-    print(f"[fly-monitor] GUI launched (pid={proc.pid}) — open in browser:")
-    for a in addrs:
-        print(f"[fly-monitor]   http://{a}:{port}/")
+    print(f"[fly-monitor] GUI launched (pid={proc.pid})", flush=True)
+    # 随机口由子进程落定后写记录文件；短暂轮询拿到实际地址一并打印。
+    record = _gui_record_path(os.path.abspath(db_path))
+    for _ in range(15):  # 最长 ~3s
+        time.sleep(0.2)
+        rec = _read_gui_record(record)
+        if rec and _gui_alive(rec["host"], rec["port"], timeout=0.5):
+            _announce_urls(rec["port"], False)
+            return proc
+    print(f"[fly-monitor] address not confirmed yet — see {record}", flush=True)
     return proc
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="fly cluster monitor GUI (read-only)")
     ap.add_argument("db", help="monitor.db path or log_dir containing it")
-    ap.add_argument("--port", type=int, default=8788)
+    ap.add_argument("--port", type=int, default=None,
+                    help="listen port (default: random, to avoid clashes between GUIs)")
     ns = ap.parse_args(argv)
     serve(ns.db, ns.port)
 

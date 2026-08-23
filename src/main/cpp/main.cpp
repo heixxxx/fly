@@ -192,7 +192,7 @@ static void print_usage(const char* prog) {
     printf("                       Comma-separated worker attributes (mutable, capability matching)\n");
     printf("  --worker-role ROLE   Worker role (static identity): hybrid (default) | storage_only\n");
     printf("  --serve-monitor DB   Standalone cluster monitor GUI (read-only monitor.db or log_dir)\n");
-    printf("  --port N             GUI listen port for --serve-monitor (default: 8788)\n");
+    printf("  --port N             GUI listen port for --serve-monitor (default: random)\n");
     printf("  -i                   Interactive mode\n");
     printf("  script               Python script to execute\n");
 }
@@ -217,7 +217,7 @@ int main(int argc, char* argv[]) {
     std::string host_override;
     std::string config_file;
     std::string serve_monitor_db;   // 非空 = --serve-monitor 独立 GUI 模式
-    std::string serve_monitor_port = "8788";
+    std::string serve_monitor_port; // 空 = 未指定（Python 侧随机口，避免多 GUI 冲突）
 
     for (int i = 1; i < argc; i++) {
         std::string arg(argv[i]);
@@ -258,15 +258,16 @@ int main(int argc, char* argv[]) {
     // 与正在运行的 fly master 完全独立（db 只读连接）。
     if (!serve_monitor_db.empty()) {
         setenv("FLY_MONITOR_DB", serve_monitor_db.c_str(), 1);
+        // 端口未指定时不传 --port（Python 侧随机口）；显式指定才传递。
         setenv("FLY_MONITOR_PORT", serve_monitor_port.c_str(), 1);
         Py_Initialize();
         setup_sys_path();  // 参数经环境变量传递，无需 PySys_SetArgv
         const int rc = PyRun_SimpleString(
             "import os, sys\n"
             "from monitor import serve_main\n"
-            "sys.exit(serve_main("
-            "[os.environ['FLY_MONITOR_DB'], "
-            "'--port', os.environ['FLY_MONITOR_PORT']]))\n");
+            "_p = os.environ.get('FLY_MONITOR_PORT', '')\n"
+            "sys.exit(serve_main([os.environ['FLY_MONITOR_DB']] +\n"
+            "    (['--port', _p] if _p else [])))\n");
         if (Py_FinalizeEx() < 0) return 1;
         return rc == 0 ? 0 : 1;
     }
