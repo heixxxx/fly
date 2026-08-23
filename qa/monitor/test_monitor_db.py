@@ -188,8 +188,14 @@ def assert_db_content():
     assert w_row and w_row[0].endswith("obj_plain"), f"write 明细异常: {w_row}"
 
     # ── workers / events ──
+    # master（wid=0，role=master）run 启动时自登记进 workers 表——GUI
+    # Workers 页 master 样本有归属行（显示 master 而非 worker 0）。
     n_workers = c.execute("SELECT COUNT(*) FROM workers").fetchone()[0]
-    assert n_workers == 3, f"workers 行数 {n_workers} != 3"
+    assert n_workers == 4, f"workers 行数 {n_workers} != 4（3 worker + master）"
+    master_row = c.execute(
+        "SELECT role, hostname FROM workers WHERE worker_id=0").fetchone()
+    assert master_row and master_row[0] == "master", \
+        f"master 自登记行异常: {master_row}"
 
     events = [r[0] for r in c.execute("SELECT event FROM events")]
     for expected in ["SUBMIT", "ASSIGN", "COMPLETE", "DB_CREATED",
