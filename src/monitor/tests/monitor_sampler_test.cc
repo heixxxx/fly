@@ -43,14 +43,39 @@ TEST(SystemInfoJiffiesTest, ProcessAndHostReadable) {
     EXPECT_LE(hc.idle_, hc.total_);
 }
 
-TEST(SystemInfoJiffiesTest, ProcessJiffiesMonotonicUnderBusyLoop) {
-    const int64_t j1 = fly::SystemInfo::process_cpu_jiffies();
+// 烧 CPU 直到进程 jiffies 与 host total jiffies 都确定前进 ≥1。
+// 两口径机制不同：进程 utime/stime 精确记账（<1 tick 窗口即可前进），host
+// /proc/stat 按 tick 粒度更新且 WSL2 所有 vCPU tick 同相（total 最小步长=核数）
+// ——短采样窗口 d_total 可整 0（100 轮压测实测撞过），断言 proc_cpu_bps_>0
+// 的前提必须双差分非零。guard 防 /proc 读取异常时死循环。
+namespace {
+struct CpuJiffies { int64_t proc = -1, host_total = -1; };
+
+CpuJiffies read_cpu_jiffies() {
+    CpuJiffies j;
+    j.proc = fly::SystemInfo::process_cpu_jiffies();
+    j.host_total = fly::SystemInfo::host_cpu_jiffies().total_;
+    return j;
+}
+
+CpuJiffies burn_until_both_advance(CpuJiffies from) {
     volatile uint64_t sink = 0;
-    for (int i = 0; i < 50000000; ++i) sink += i;  // 忙循环烧 CPU（>1 jiffy=10ms）
-    const int64_t j2 = fly::SystemInfo::process_cpu_jiffies();
-    EXPECT_GE(j2, j1) << "进程 jiffies 单调不减";
-    EXPECT_GT(j2, j1) << "5000 万次累加应至少消耗 1 jiffy CPU 时间";
-    (void)sink;
+    CpuJiffies now = from;
+    for (int guard = 0; guard < 200; ++guard) {
+        if (now.proc > from.proc && now.host_total > from.host_total) break;
+        for (int i = 0; i < 10000000; ++i) sink += i;
+        now = read_cpu_jiffies();
+    }
+    return now;
+}
+}  // namespace
+
+TEST(SystemInfoJiffiesTest, ProcessJiffiesMonotonicUnderBusyLoop) {
+    const CpuJiffies j1 = read_cpu_jiffies();
+    ASSERT_GE(j1.proc, 0) << "/proc/self/stat 应可读";
+    ASSERT_GE(j1.host_total, 0) << "/proc/stat 应可读";
+    const CpuJiffies j2 = burn_until_both_advance(j1);
+    EXPECT_GT(j2.proc, j1.proc) << "忙循环应至少消耗 1 jiffy CPU 时间";
 }
 
 TEST(MonitorSamplerTest, SampleOnceSmoke) {
@@ -64,16 +89,19 @@ TEST(MonitorSamplerTest, SampleOnceSmoke) {
     EXPECT_EQ(first.proc_cpu_bps_, 0u);
     EXPECT_EQ(first.host_cpu_bps_, 0u);
 
-    // 烧一点 CPU 再采：差分生效，各字段在合理域内。
-    volatile uint64_t sink = 0;
-    for (int i = 0; i < 20000000; ++i) sink += i;
+    // 烧 CPU 到进程与 host 的 jiffies 记账都确定前进 ≥1 tick 再采：保证差分
+    // 非零（短窗口 d_total 可整 0——WSL2 tick 同相 + 精确/采样两种记账口径）。
+    const CpuJiffies j1 = read_cpu_jiffies();
+    ASSERT_GE(j1.proc, 0) << "/proc/self/stat 应可读";
+    const CpuJiffies j2 = burn_until_both_advance(j1);
+    ASSERT_GT(j2.proc, j1.proc) << "忙循环应至少消耗 1 jiffy CPU 时间";
+    ASSERT_GT(j2.host_total, j1.host_total) << "host total jiffies 应至少前进 1 tick";
     fly::MonitorSample second = sampler.sample_once();
     EXPECT_GT(second.epoch_ms_, first.epoch_ms_);
     EXPECT_LE(second.proc_cpu_bps_, 10000u);
     EXPECT_LE(second.host_cpu_bps_, 10000u);
     EXPECT_GT(second.proc_cpu_bps_, 0u) << "忙循环后进程 CPU% 应非零";
     EXPECT_GT(second.host_mem_total_bytes_, 0u);
-    (void)sink;
 }
 
 TEST(NetStatsTest, CountersAccumulate) {
