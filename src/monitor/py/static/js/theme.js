@@ -51,11 +51,15 @@ export function onThemeChange(fn) {
 }
 
 // 读取根元素 CSS 变量（trim 去掉换行空白；canvas 侧颜色用）。
-export function cssVar(name) {
-  if (typeof getComputedStyle === 'undefined' || !document.documentElement) {
-    return '';
+// fallback：变量缺失/样式表未就绪等异常场景下回落深色默认值——绝不把
+// 空色交给 ECharts（空串会被当作无效色，轴标签/线条渲染成默认深灰，
+// 深色主题下与背景几乎不可见）。
+export function cssVar(name, fallback = '') {
+  let v = '';
+  if (typeof getComputedStyle !== 'undefined' && document.documentElement) {
+    v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   }
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
 }
 
 // 跟随系统：系统主题切换时实时应用（仅 system 模式下有视觉变化）。

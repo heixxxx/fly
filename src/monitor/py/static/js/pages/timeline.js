@@ -19,14 +19,15 @@ import { navigate, gotoPage } from '../app.js';
 
 const DIM_LABEL = { cpu: 'CPU', io: 'IO', wait: 'Wait', queue: 'Queue' };
 
-// 负载维度色经 CSS 变量实时读取（主题切换后页面重建取新值）。
+// 负载维度色经 CSS 变量实时读取（主题切换后页面重建取新值）；fallback
+// 为深色默认（cssVar 读不到时保证可读，见 theme.js）。
 function dimColors() {
-  return { cpu: cssVar('--ser-blue'), io: cssVar('--ser-yellow'),
-           wait: cssVar('--pending'), queue: cssVar('--ser-cyan') };
+  return { cpu: cssVar('--ser-blue', '#4aa8ff'), io: cssVar('--ser-yellow', '#e8b339'),
+           wait: cssVar('--pending', '#8a7ca8'), queue: cssVar('--ser-cyan', '#6fd3e8') };
 }
-function fastColor() { return cssVar('--ser-green'); }
-function failStroke() { return cssVar('--err'); }
-function neutralColor() { return cssVar('--gantt-neutral'); }
+function fastColor() { return cssVar('--ser-green', '#3fb972'); }
+function failStroke() { return cssVar('--err', '#e0564f'); }
+function neutralColor() { return cssVar('--gantt-neutral', '#61707f'); }
 
 // grid 几何（泳道点击的坐标判定与 ganttOption 配置一致）。
 // top 预留给时间标签条（悬停/框选起止点时间显示区，不覆盖 task 条）。

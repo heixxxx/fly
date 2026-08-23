@@ -59,8 +59,7 @@ export async function update(ctx) {
   document.getElementById('ov-kpi').innerHTML = `
     <div class="kpi"><div class="label">${t(m.run_end_ms ? 'ov.duration' : 'ov.durationRunning')}</div><div class="value">${durS}</div><div class="sub">${m.hostname || ''} · ${fmtTime(+m.run_start_ms)} → ${m.run_end_ms ? fmtTime(+m.run_end_ms) : t('app.now')}</div></div>
     <div class="kpi"><div class="label">${t('ov.tasksTotal')}</div><div class="value">${total}</div><div class="sub">${t('ov.tasksSub', tc.COMPLETED || 0, tc.FAILED || 0, tc.RUNNING || 0)}</div></div>
-    <div class="kpi"><div class="label">Workers</div><div class="value">${meta.workers}</div></div>
-    <div class="kpi"><div class="label">${t('ov.samples')}</div><div class="value" style="font-size:16px">${meta.sample_lo ? t('ov.sampling') : '-'}</div><div class="sub">${fmtTime(meta.sample_lo)} → ${fmtTime(meta.sample_hi)}</div></div>`;
+    <div class="kpi"><div class="label">Workers</div><div class="value">${meta.workers}</div></div>`;
 
   // ---- 1s 桶聚合（含 master wid=0 的样本——同样是 fly 进程负载）----
   // 样本经增量缓存拉取（每轮只传新增，见 fetchSamplesIncremental）。

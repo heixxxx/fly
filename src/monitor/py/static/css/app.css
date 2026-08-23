@@ -7,9 +7,9 @@
   --panel: #161d26;
   --panel2: #1c2530;
   --border: #2a3542;
-  --border-strong: #3a4a5c;
+  --border-strong: #46586b;
   --text: #d7e0ea;
-  --muted: #7a8a9c;
+  --muted: #99aabb;
   --accent: #4aa8ff;
   --ok: #3fb972;
   --warn: #e8b339;
@@ -18,9 +18,9 @@
   --pending: #8a7ca8;
   --failed: #e0564f;
   --completed: #3fb972;
-  --chart-axis: #37424f;
-  --chart-label: #7a8a9c;
-  --chart-split: #212b37;
+  --chart-axis: #4a5d72;
+  --chart-label: #99aabb;
+  --chart-split: #28323f;
   --hover-line: rgba(215, 224, 234, .55);
   --ser-blue: #4aa8ff;
   --ser-yellow: #e8b339;
@@ -28,8 +28,8 @@
   --ser-orange: #ff9d5c;
   --ser-green: #3fb972;
   --ser-purple: #c79bf2;
-  --ser-muted: #5f7385;
-  --gantt-neutral: #4a5563;
+  --ser-muted: #93a7bc;
+  --gantt-neutral: #61707f;
   --cat-task: #c79bf2;
   --cat-worker: #6fd3e8;
   --cat-db: #e8b339;

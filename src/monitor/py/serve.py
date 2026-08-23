@@ -333,6 +333,9 @@ class MonitorHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # 静态资源禁缓存：迭代频繁且体量小（≤百 KB），启发式缓存的旧
+        # JS/CSS 混搭新版会导致页面行为错乱（如 CSS 变量缺失→图表空色）。
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
