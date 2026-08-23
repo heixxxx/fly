@@ -1638,6 +1638,19 @@ TEST(WorkerAgentTest, DisconnectReconnectsAndReports) {
     wait_for([&]{ return worker.has_pending_task(); }, 50, 20);
     ASSERT_TRUE(worker.has_pending_task()) << "internal task must reach worker";
 
+    // park 重连线程：reconnect_loop 首次 connect 立即执行（master 在线毫秒级
+    // 完成重连，initial_ms 只管失败重试间隔）——poll_task 与重连完成是毫秒级
+    // 竞争，高负载下重连先完成 → TaskFailed 直发，缓冲断言失败（100 轮压测
+    // 实测）。入口钩子闸门保证断连窗口确定性覆盖 poll_task；wait_for 10s 超时
+    // 防测试失败路径 park 泄漏挂死进程。
+    std::mutex hk_m;
+    std::condition_variable hk_cv;
+    bool release_reconnect = false;
+    worker.reconnect_entry_hook_for_testing_ = [&] {
+        std::unique_lock<std::mutex> lk(hk_m);
+        hk_cv.wait_for(lk, std::chrono::seconds(10), [&] { return release_reconnect; });
+    };
+
     // 模拟闪断：worker 进入重连（master 在线，重连会成功）。
     worker.simulate_master_disconnect_for_testing();
     EXPECT_FALSE(worker.is_registered());
@@ -1648,7 +1661,12 @@ TEST(WorkerAgentTest, DisconnectReconnectsAndReports) {
     EXPECT_EQ(worker.pending_report_count_for_testing(), 1u)
         << "TaskFailed must be buffered while disconnected";
 
-    // 指数退避重连（initial 50ms）→ RegisterAck → 缓冲送达 master。
+    // 放行重连：指数退避（initial 50ms）→ RegisterAck → 缓冲送达 master。
+    {
+        std::lock_guard<std::mutex> lk(hk_m);
+        release_reconnect = true;
+    }
+    hk_cv.notify_all();
     wait_until_registered(worker);
     EXPECT_TRUE(worker.is_registered()) << "worker should reconnect within grace";
     // flush 在 on_register_ack 内注册可见之后同步执行（设计顺序：注册可见 →
