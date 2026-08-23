@@ -2,7 +2,7 @@
 // mount 建列表/详情双容器（控件事件绑一次，切换仅显隐——详情不得覆盖
 // main.innerHTML，否则返回时列表结构与绑定已销毁、update 写不回）。
 // update 仅填数据——过滤条件与分页状态存活于 ctx.taskFilter。
-import { getJson, fmtGB, fmtBytes, fmtMs, fmtTimeFull, escapeHtml, shortName, expandoHtml, errorBriefHtml } from '../api.js';
+import { getJson, fmtGB, fmtBytes, fmtMs, fmtPct, displayModule, fmtTimeFull, escapeHtml, shortName, expandoHtml, errorBriefHtml } from '../api.js';
 import { navigate } from '../app.js';
 
 const PAGE_SIZE = 50;
@@ -29,8 +29,8 @@ export function mount(ctx) {
         <div class="table-wrap"><table>
           <thead><tr>
             <th>ID</th><th>名称</th><th>状态</th><th>worker</th>
-            <th>创建时间</th><th>开始时间</th><th>结束时间</th><th>排队→执行</th><th>运行时长</th><th>CPU time</th>
-            <th title="exec 时长中 CPU/IO 占比">CPU / IO 占比</th>
+            <th>创建时间</th><th>开始时间</th><th>结束时间</th><th>排队等待</th><th>运行时长</th><th>CPU 耗时</th>
+            <th title="运行时长中 CPU/IO 占比">CPU / IO 占比</th>
             <th>读(字节/时间)</th><th>写(字节/时间)</th>
             <th>内存 avg / peak</th><th>关联 db</th>
           </tr></thead>
@@ -170,7 +170,7 @@ export async function renderDetail(ctx) {
           <div class="full-name" style="margin-bottom:8px">${escapeHtml(t.name)}</div>
           <div class="kv">
             <span class="k">状态</span><span class="v"><span class="badge ${t.status}">${t.status}</span></span>
-            <span class="k">模块</span><span class="v mono">${escapeHtml(t.module)}</span>
+            <span class="k">模块</span><span class="v mono" title="${escapeHtml(t.module)}">${escapeHtml(displayModule(t.module))}</span>
             <span class="k">worker</span><span class="v">${t.worker_id || '-'}</span>
             <span class="k">优先级</span><span class="v">${t.priority}</span>
             <span class="k">创建时间</span><span class="v mono">${fmtTimeFull(t.created_ms)}</span>
@@ -183,12 +183,17 @@ export async function renderDetail(ctx) {
         </div>
         <div class="panel"><h3>资源 / IO</h3>
           <div class="kv">
-            <span class="k">CPU time</span><span class="v">${fmtMs(t.cpu_time_ms)}${execMs ? `（${(t.cpu_time_ms / execMs * 100).toFixed(0)}% of exec）` : ''}</span>
-            <span class="k">读字节/时间</span><span class="v">${fmtBytes(t.read_bytes)} / ${fmtMs(t.read_time_ms)}</span>
-            <span class="k">写字节/时间</span><span class="v">${fmtBytes(t.write_bytes)} / ${fmtMs(t.write_time_ms)}</span>
-            <span class="k">内存 baseline</span><span class="v">${fmtGB(t.mem_baseline_bytes)}</span>
-            <span class="k">内存 avg</span><span class="v">${fmtGB(t.mem_avg_bytes)}（delta ${fmtGB(Math.max(0, t.mem_avg_bytes - t.mem_baseline_bytes))}）</span>
-            <span class="k">内存 peak</span><span class="v">${fmtGB(t.mem_peak_bytes)}（delta ${fmtGB(Math.max(0, t.mem_peak_bytes - t.mem_baseline_bytes))}）</span>
+            <span class="k">CPU 耗时</span><span class="v">${fmtMs(t.cpu_time_ms)}</span>
+            <span class="k">CPU 占比</span><span class="v">${execMs ? fmtPct(t.cpu_time_ms / execMs) : '-'}</span>
+            <span class="k">IO 读耗时</span><span class="v">${fmtMs(t.read_time_ms)}</span>
+            <span class="k">IO 读字节</span><span class="v">${fmtBytes(t.read_bytes)}</span>
+            <span class="k">IO 写耗时</span><span class="v">${fmtMs(t.write_time_ms)}</span>
+            <span class="k">IO 写字节</span><span class="v">${fmtBytes(t.write_bytes)}</span>
+            <span class="k">内存基线</span><span class="v">${fmtGB(t.mem_baseline_bytes)}</span>
+            <span class="k">内存平均</span><span class="v">${fmtGB(t.mem_avg_bytes)}</span>
+            <span class="k">内存平均增量</span><span class="v">${fmtGB(Math.max(0, t.mem_avg_bytes - t.mem_baseline_bytes))}</span>
+            <span class="k">内存峰值</span><span class="v">${fmtGB(t.mem_peak_bytes)}</span>
+            <span class="k">内存峰值增量</span><span class="v">${fmtGB(Math.max(0, t.mem_peak_bytes - t.mem_baseline_bytes))}</span>
             <span class="k">关联 db</span><span class="v mono">${dbs.map(escapeHtml).join('<br>') || '-'}</span>
           </div>
         </div>

@@ -1,7 +1,7 @@
 // Workers：卡片列表 + 详情（四图 + 该 worker 的 task 表）。
 // mount 建外层容器；update 按 ctx.workerId 填列表或详情——详情骨架/图表
 // 实例只在进入时建一次，后续 update 仅 setOption（缩放/hover 保留）。
-import { getJson, fmtGB, fmtBytes, fmtMs, escapeHtml, expandoHtml } from '../api.js';
+import { getJson, fetchSamplesIncremental, fmtGB, fmtBytes, fmtMs, escapeHtml, expandoHtml } from '../api.js';
 import { makeChart, line, rateSeries } from '../charts.js';
 import { navigate } from '../app.js';
 
@@ -67,12 +67,12 @@ function card(w) {
 }
 
 async function fillDetail(body, wid) {
-  const [s, tasks] = await Promise.all([
-    getJson(`/api/workers/${wid}/samples`),
+  // 样本经增量缓存拉取（每轮只传新增）。
+  const [samples, tasks] = await Promise.all([
+    fetchSamplesIncremental(wid),
     getJson(`/api/tasks?worker=${wid}&limit=300`),
   ]);
-  if (!s) return;
-  const sp = s.samples || [];
+  const sp = samples;
   const times = sp.map(x => x.epoch_ms);
 
   if (!detailBuilt) {
@@ -110,8 +110,8 @@ async function fillDetail(body, wid) {
 
   charts[0].setOption({
     series: [
-      line('Proc CPU (%)', times.map((t, i) => [t, sp[i].proc_cpu_bps / 100]), '#4aa8ff'),
-      line('Host CPU (%)', times.map((t, i) => [t, sp[i].host_cpu_bps / 100]), '#e8b339'),
+      line('Proc CPU', times.map((t, i) => [t, sp[i].proc_cpu_bps / 100]), '#4aa8ff'),
+      line('Host CPU', times.map((t, i) => [t, sp[i].host_cpu_bps / 100]), '#e8b339'),
     ],
     yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: '{value}%' } }],
   });
@@ -129,8 +129,8 @@ async function fillDetail(body, wid) {
   });
   charts[2].setOption({
     series: [
-      line('Read B/s', rateSeries(times, sp.map(x => x.net_read_bytes)), '#6fd3e8'),
-      line('Write B/s', rateSeries(times, sp.map(x => x.net_write_bytes)), '#ff9d5c'),
+      line('Read', rateSeries(times, sp.map(x => x.net_read_bytes)), '#6fd3e8'),
+      line('Write', rateSeries(times, sp.map(x => x.net_write_bytes)), '#ff9d5c'),
     ],
     yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: v => fmtBytes(v) } }],
   });

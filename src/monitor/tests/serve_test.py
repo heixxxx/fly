@@ -102,6 +102,18 @@ class ServeTest(unittest.TestCase):
         self.assertEqual(len(s["samples"]), 1)
         self.assertEqual(s["samples"][0]["net_read_bytes"], 500)
 
+    def test_worker_samples_incremental_cursor(self):
+        # after_ms 增量游标：只返回严格大于游标的样本（前端增量刷新通道）。
+        first = self.get("/api/workers/1/samples")
+        self.assertEqual(len(first["samples"]), 2)
+        cursor = first["samples"][0]["epoch_ms"]
+        inc = self.get(f"/api/workers/1/samples?after_ms={cursor}")
+        self.assertEqual(len(inc["samples"]), 1)
+        self.assertEqual(inc["samples"][0]["epoch_ms"], 2500)
+        # 游标超过最大值 → 空结果。
+        done = self.get("/api/workers/1/samples?after_ms=2500")
+        self.assertEqual(done["samples"], [])
+
     def test_tasks_filter_and_search(self):
         all_t = self.get("/api/tasks")
         self.assertEqual(all_t["total"], 2)

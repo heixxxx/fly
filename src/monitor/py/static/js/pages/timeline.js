@@ -22,7 +22,8 @@ const FAIL_STROKE = '#e0564f';
 const NEUTRAL = '#4a5563';
 
 // grid 几何（泳道点击的坐标判定与 ganttOption 配置一致）。
-const GRID = { left: 170, top: 34, bottom: 60, barH: 16 };
+// top 预留给时间标签条（悬停/框选起止点时间显示区，不覆盖 task 条）。
+const GRID = { left: 170, top: 48, bottom: 34, barH: 16 };
 const LANE_H = 34;   // 每泳道高度（紧凑：间距较常规减半）
 const HEAVY = 0.30;  // 复合负载阈值（其它维度 ≥30% 叠加条纹）
 const STRIPE_GAP = 6;
@@ -80,6 +81,11 @@ export function destroy(ctx) {
     chart.dispose();
     chart = null;
   }
+  brushOverlay = null;  // overlay 随 tl-chart DOM 重建而消失，仅清引用
+  hoverLineEl = null; hoverTimeEl = null;
+  brushTimeL = null; brushTimeR = null; brushActive = false;
+  axisTimeL = null; axisTimeR = null;
+  laneTipEl = null;
   lastTasks = [];
   hostMap = {};
   lanes = [];
@@ -116,7 +122,10 @@ export function mount(ctx) {
       </div>
       <div class="tl-legend" id="tl-legend"></div>
       <div id="tl-chart" style="width:100%;height:240px"></div>
-      <div class="tl-hint" style="margin-top:4px">滚轮缩放 · 滑块任意位置拖动框选 · 点击条形看负载详情 · 点击泳道标签跳转 Worker</div>
+      <div class="tl-slider" id="tl-slider" title="时间范围选取：选区内拖动平移 · 边缘拖动调宽 · 选区外拖动框选">
+        <div class="tl-slider-sel" id="tl-slider-sel"></div>
+      </div>
+      <div class="tl-hint" style="margin-top:4px">滚轮缩放 · 图内拖动框选时间段 · 点击条形看负载详情 · 点击泳道标签跳转 Worker</div>
     </div>
     <div class="panel" id="tl-info" style="display:none"></div>`;
   chart = makeChart(document.getElementById('tl-chart'), ganttOption([], []));
@@ -135,19 +144,327 @@ export function mount(ctx) {
   };
 
   chart.on('click', (params) => {
+    if (suppressClick) return;  // 刚完成刷选，不当作点击
     if (params.seriesType !== 'custom') return;
     const t = lastTasks.find(x => x.task_id === params.value[3]);
     if (t) showInfo(t);
   });
   chart.getZr().on('click', (e) => {
+    if (suppressClick) return;
     if (!e.target) hideInfo();
     const laneIdx = laneAt(e.offsetX, e.offsetY);
     if (laneIdx >= 0 && lanes[laneIdx] != null) {
       gotoPage('workers', { workerId: lanes[laneIdx] }, 'Timeline');
     }
   });
-  chart.on('dataZoom', updateRangeHint);
+  // 泳道标签区 hover：pointer 光标 + 跟随小提示（可点击跳转的可见暗示）。
+  chart.getZr().on('mousemove', (e) => {
+    const chartEl = document.getElementById('tl-chart');
+    if (!chartEl) return;
+    const idx = laneAt(e.offsetX, e.offsetY);
+    if (idx >= 0 && lanes[idx] != null) {
+      chartEl.style.cursor = 'pointer';
+      showLaneTip(chartEl, e.offsetX, e.offsetY,
+                  `点击查看 Worker ${lanes[idx]} 详情`);
+    } else {
+      chartEl.style.cursor = 'default';
+      hideLaneTip();
+    }
+  });
+  chart.getZr().on('mouseout', hideLaneTip);
+  chart.on('dataZoom', () => { updateRangeHint(); syncSliderVisual(); updateAxisTimes(); });
+  attachBrushSelect(ctx);
+  attachSlider(ctx);
+  attachHoverGuide(ctx);
+  attachAxisTimes(ctx);
   syncControls(ctx);
+}
+
+// ---- 悬停竖线时间定位（用户裁定：常显，不悬停延时）----
+// plot 区内移动竖线跟随、时间标签实时显示于 grid 上方的专用条（不覆盖
+// task 条）；框选拖动时由 attachBrushSelect 更新起止点时间（brushL/R）。
+let hoverLineEl = null, hoverTimeEl = null;
+let brushTimeL = null, brushTimeR = null;   // 框选起止点时间标签
+
+function attachHoverGuide(ctx) {
+  const chartEl = document.getElementById('tl-chart');
+  if (!chartEl) return;
+  hoverLineEl = document.createElement('div');
+  hoverLineEl.className = 'tl-hover-line';
+  hoverTimeEl = document.createElement('div');
+  hoverTimeEl.className = 'tl-hover-time';
+  brushTimeL = document.createElement('div');
+  brushTimeL.className = 'tl-hover-time tl-brush-time';
+  brushTimeR = document.createElement('div');
+  brushTimeR.className = 'tl-hover-time tl-brush-time';
+  for (const el of [hoverLineEl, hoverTimeEl, brushTimeL, brushTimeR]) {
+    chartEl.appendChild(el);
+  }
+
+  const zr = chart.getZr();
+  zr.on('mousemove', (e) => {
+    const r = plotRect();
+    if (e.offsetX < r.left || e.offsetX > r.right ||
+        e.offsetY < r.top || e.offsetY > r.bottom) {
+      hideHoverGuide();
+      return;
+    }
+    if (brushActive) { hideHoverGuide(); return; }  // 框选中不显示悬停线
+    const x = e.offsetX;
+    hoverLineEl.style.display = 'block';
+    hoverLineEl.style.left = x + 'px';
+    hoverLineEl.style.top = r.top + 'px';
+    hoverLineEl.style.height = (r.bottom - r.top) + 'px';
+    // 时间标签常显：位于 grid 上方专用条（不覆盖第一行 task 条）。
+    const t = chart.convertFromPixel({ xAxisIndex: 0 }, x);
+    hoverTimeEl.textContent = fmtTimeFull(t);
+    hoverTimeEl.style.display = 'block';
+    hoverTimeEl.style.left =
+      Math.min(Math.max(x - 60, r.left), r.right - 120) + 'px';
+    hoverTimeEl.style.top = '2px';   // grid 上方的时间条区（GRID.top 预留）
+  });
+  zr.on('mouseout', hideHoverGuide);
+}
+
+function hideHoverGuide() {
+  if (hoverLineEl) hoverLineEl.style.display = 'none';
+  if (hoverTimeEl) hoverTimeEl.style.display = 'none';
+}
+
+// ---- 图内框选：起止点时间实时显示（拖动过程中两端各一个标签）----
+let brushActive = false;
+
+function showBrushTimes(x0, x1) {
+  if (!brushTimeL || !brushTimeR || !chart) return;
+  const r = plotRect();
+  const t0 = chart.convertFromPixel({ xAxisIndex: 0 }, Math.min(x0, x1));
+  const t1 = chart.convertFromPixel({ xAxisIndex: 0 }, Math.max(x0, x1));
+  brushTimeL.textContent = fmtTimeFull(t0);
+  brushTimeR.textContent = fmtTimeFull(t1);
+  brushTimeL.style.display = 'block';
+  brushTimeR.style.display = 'block';
+  // 左标签锚定起点左侧、右标签锚定终点右侧（都限制在 plot 区内）。
+  const w = 130;
+  brushTimeL.style.left = Math.max(Math.min(x0, x1) - w / 2, r.left) + 'px';
+  brushTimeR.style.left = Math.min(Math.max(x0, x1) - w / 2, r.right - w) + 'px';
+  brushTimeL.style.top = brushTimeR.style.top = '2px';
+}
+
+function hideBrushTimes() {
+  if (brushTimeL) brushTimeL.style.display = 'none';
+  if (brushTimeR) brushTimeR.style.display = 'none';
+}
+
+// ---- x 轴起止时间（自绘，左右角）：中间刻度隐藏后，视图范围的左右
+// 边界时间显示在图表底部两角（静态无动画）。----
+let axisTimeL = null, axisTimeR = null;
+
+function attachAxisTimes(ctx) {
+  const chartEl = document.getElementById('tl-chart');
+  if (!chartEl) return;
+  axisTimeL = document.createElement('div');
+  axisTimeL.className = 'tl-axis-time tl-axis-time-l';
+  axisTimeR = document.createElement('div');
+  axisTimeR.className = 'tl-axis-time tl-axis-time-r';
+  chartEl.appendChild(axisTimeL);
+  chartEl.appendChild(axisTimeR);
+  updateAxisTimes();
+}
+
+function updateAxisTimes() {
+  if (!axisTimeL || !axisTimeR || !chart) return;
+  const z = currentZoom();
+  const span = extent.hi - extent.lo || 1;
+  axisTimeL.textContent = fmtTime(extent.lo + span * z.start / 100);
+  axisTimeR.textContent = fmtTime(extent.lo + span * z.end / 100);
+}
+
+// 泳道标签 hover 浮动提示（绝对定位于图表容器内）。
+let laneTipEl = null;
+function showLaneTip(chartEl, x, y, text) {
+  if (!laneTipEl) {
+    laneTipEl = document.createElement('div');
+    laneTipEl.className = 'tl-lane-tip';
+    chartEl.appendChild(laneTipEl);
+  }
+  laneTipEl.textContent = text;
+  laneTipEl.style.display = 'block';
+  laneTipEl.style.left = Math.min(x + 10, chartEl.clientWidth - 150) + 'px';
+  laneTipEl.style.top = (y - 26) + 'px';
+}
+function hideLaneTip() {
+  if (laneTipEl) laneTipEl.style.display = 'none';
+}
+
+// ---- 任意起止时间段刷选（slider 已取消，用户裁定保留选取高亮）----
+// plot 区域内按下并拖动：实时显示半透明蓝色选区；松开后缩放到该时间
+// 范围，高亮矩形持续标示当前视图范围（滚轮缩放联动更新；全程时隐藏）。
+// 拖动距离 >5px 视为刷选，抑制随后的 click（不误触条形/泳道跳转）。
+let suppressClick = false;
+let brushOverlay = null;   // 高亮矩形元素（pointer-events:none）
+
+function plotRect() {
+  const el = document.getElementById('tl-chart');
+  return { left: GRID.left, right: el.clientWidth - 40,
+           top: GRID.top, bottom: el.clientHeight - GRID.bottom };
+}
+
+function attachBrushSelect(ctx) {
+  const chartEl = document.getElementById('tl-chart');
+  if (!chartEl) return;
+  brushOverlay = document.createElement('div');
+  brushOverlay.className = 'tl-brush-sel';
+  brushOverlay.style.display = 'none';
+  chartEl.appendChild(brushOverlay);
+
+  let dragging = false, x0 = 0;
+
+  const zr = chart.getZr();
+  zr.on('mousedown', (e) => {
+    const r = plotRect();
+    if (e.offsetX < r.left || e.offsetX > r.right ||
+        e.offsetY < r.top || e.offsetY > r.bottom) return;
+    dragging = true; brushActive = true; x0 = e.offsetX;
+    hideHoverGuide();
+    brushOverlay.style.left = x0 + 'px';
+    brushOverlay.style.top = r.top + 'px';
+    brushOverlay.style.height = (r.bottom - r.top) + 'px';
+    brushOverlay.style.width = '0px';
+    brushOverlay.style.display = 'block';
+    showBrushTimes(x0, x0);
+  });
+  zr.on('mousemove', (e) => {
+    if (!dragging) return;
+    const r = plotRect();
+    const x = Math.max(r.left, Math.min(e.offsetX, r.right));
+    brushOverlay.style.left = Math.min(x0, x) + 'px';
+    brushOverlay.style.width = Math.abs(x - x0) + 'px';
+    showBrushTimes(x0, x);
+  });
+  const finish = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    // 图内选区仅作拖动过程的实时反馈（用户裁定：缩放后 task 背景不高亮）。
+    brushOverlay.style.display = 'none';
+    hideBrushTimes();
+    brushActive = false;
+    const r = plotRect();
+    const x1 = Math.max(r.left, Math.min(e.offsetX ?? x0, r.right));
+    if (Math.abs(x1 - x0) > 5) {
+      suppressClick = true;
+      setTimeout(() => { suppressClick = false; }, 0);
+      const t0 = chart.convertFromPixel({ xAxisIndex: 0 }, Math.min(x0, x1));
+      const t1 = chart.convertFromPixel({ xAxisIndex: 0 }, Math.max(x0, x1));
+      const span = extent.hi - extent.lo || 1;
+      chart.dispatchAction({ type: 'dataZoom',
+        start: (t0 - extent.lo) / span * 100,
+        end: (t1 - extent.lo) / span * 100 });
+    }
+  };
+  zr.on('mouseup', finish);
+  zr.on('mouseleave', finish);
+}
+
+// ---- 自绘底部时间范围选取条（用户裁定：三个交互分区明确分离）----
+//   · 选区内（中间 70%）按下拖动 = 平移当前视图（保持宽度）
+//   · 选区左右边缘（各 15%）按下拖动 = 调整该侧边界
+//   · 选区外/全程时任意位置按下拖动 = 框选新范围
+// 全程（未选范围）时不显示选区高亮（仅暗色底条）。光标随分区变化。
+function attachSlider(ctx) {
+  const bar = document.getElementById('tl-slider');
+  const sel = document.getElementById('tl-slider-sel');
+  if (!bar || !sel) return;
+
+  const EDGE = 0.15;   // 选区两侧 15% 宽度为边缘调整热区
+  let mode = null;     // 'pan' | 'left' | 'right' | 'new'
+  let startX = 0, origStart = 0, origEnd = 0;
+
+  const apply = (start, end) => {
+    const s = Math.max(0, Math.min(100, start));
+    const e = Math.max(s + 0.5, Math.min(100, end));
+    chart.dispatchAction({ type: 'dataZoom', start: s, end: e });
+  };
+
+  bar.addEventListener('mousedown', (e) => {
+    if (!chart) return;
+    const rect = bar.getBoundingClientRect();
+    startX = e.clientX - rect.left;
+    const w = rect.width || 1;
+    const z = currentZoom();
+    origStart = z.start; origEnd = z.end;
+    const isFull = z.start <= 0.5 && z.end >= 99.5;
+    if (!isFull) {
+      const sPx = z.start / 100 * w, ePx = z.end / 100 * w;
+      const width = ePx - sPx;
+      if (startX >= sPx && startX <= ePx) {
+        if (startX <= sPx + width * EDGE) mode = 'left';
+        else if (startX >= ePx - width * EDGE) mode = 'right';
+        else mode = 'pan';
+        e.preventDefault();
+        return;
+      }
+    }
+    mode = 'new';
+    // 框选起点即当前按下点，拖动过程实时预览。
+    origStart = startX / w * 100; origEnd = origStart;
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!mode || !chart) return;
+    const rect = bar.getBoundingClientRect();
+    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+    const w = rect.width || 1;
+    const dxPct = (x - startX) / w * 100;
+    const curPct = x / w * 100;
+    if (mode === 'pan') {
+      const width = origEnd - origStart;
+      let s = origStart + dxPct;
+      s = Math.max(0, Math.min(100 - width, s));
+      apply(s, s + width);
+    } else if (mode === 'left') {
+      apply(Math.min(origStart + dxPct, origEnd - 0.5), origEnd);
+    } else if (mode === 'right') {
+      apply(origStart, Math.max(origEnd + dxPct, origStart + 0.5));
+    } else {  // new
+      apply(Math.min(origStart, curPct), Math.max(origStart, curPct));
+    }
+  });
+  document.addEventListener('mouseup', () => { mode = null; });
+
+  // 分区光标提示（非拖动状态）。
+  bar.addEventListener('mousemove', (e) => {
+    if (mode) return;
+    const rect = bar.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const w = rect.width || 1;
+    const z = currentZoom();
+    if (z.start <= 0.5 && z.end >= 99.5) {
+      bar.style.cursor = 'crosshair';
+      return;
+    }
+    const sPx = z.start / 100 * w, ePx = z.end / 100 * w;
+    const width = ePx - sPx;
+    if (x < sPx || x > ePx) bar.style.cursor = 'crosshair';
+    else if (x <= sPx + width * EDGE || x >= ePx - width * EDGE) {
+      bar.style.cursor = 'ew-resize';
+    } else bar.style.cursor = 'grab';
+  });
+  bar.addEventListener('mouseleave', () => { if (!mode) bar.style.cursor = 'default'; });
+}
+
+// 选取条视觉同步当前视图范围（全程时隐藏选区高亮——用户裁定）。
+function syncSliderVisual() {
+  const sel = document.getElementById('tl-slider-sel');
+  if (!sel) return;
+  const z = currentZoom();
+  if (z.start <= 0.5 && z.end >= 99.5) {
+    sel.style.display = 'none';
+    return;
+  }
+  sel.style.left = z.start + '%';
+  sel.style.width = (z.end - z.start) + '%';
+  sel.style.display = 'block';
 }
 
 function syncControls(ctx) {
@@ -187,15 +504,44 @@ function laneAt(x, y) {
   return Math.min(Math.max(idx, 0), lanes.length - 1);
 }
 
+// Timeline task 增量缓存（增强刷新）：首轮全量建缓存，之后每轮只拉
+// 「新增 + 刚完成（窗口更新）」并按 task_id merge；游标取本轮见过的
+// 最大 completed_ms（RUNNING 的无 completed 不推进游标）。run 切换由
+// app.js 清（resetSamplesCache 同时机）。
+let tlCache = { tasks: new Map(), cursor: 0, runKey: null };
+export function resetTimelineCache() {
+  tlCache = { tasks: new Map(), cursor: 0, runKey: null };
+}
+
+async function fetchTimelineIncremental(runKey) {
+  if (tlCache.runKey !== runKey) {
+    tlCache = { tasks: new Map(), cursor: 0, runKey };
+  }
+  const url = tlCache.tasks.size === 0
+    ? '/api/timeline'
+    : `/api/timeline?changed_since_ms=${tlCache.cursor}`;
+  const data = await getJson(url);
+  if (!data) return [...tlCache.tasks.values()];
+  for (const t of (data.tasks || [])) {
+    tlCache.tasks.set(t.task_id, t);  // 新增或替换（窗口更新）
+    // 游标只由 completed 推进：新 RUNNING task（exec_start>游标）每轮重传
+    // 一次直至完成——数量 = 当前并发运行数，可接受；若用 exec_start 推进
+    // 会漏掉"较早派发、稍后才完成"的旧 RUNNING task 的窗口更新。
+    if (t.completed_ms && t.completed_ms > tlCache.cursor) {
+      tlCache.cursor = t.completed_ms;
+    }
+  }
+  return [...tlCache.tasks.values()];
+}
+
 export async function update(ctx) {
   if (!chart) return;
-  const [data, workers, meta] = await Promise.all([
-    getJson('/api/timeline'),
+  const [runKey, workers, meta] = await Promise.all([
+    getJson('/api/meta').then(m => m ? m.meta.run_start_ms : null),
     getJson('/api/workers'),
     getJson('/api/meta'),
   ]);
-  if (!data) return;
-  const tasks = data.tasks || [];
+  const tasks = await fetchTimelineIncremental(runKey);
   lastTasks = tasks;
   hostMap = {};
   if (workers) {
@@ -233,13 +579,33 @@ export async function update(ctx) {
     };
   });
 
-  // notMerge 全量替换会重置 dataZoom 用户状态——刷新前保存、替换后恢复
-  //（跳转返回的 restoreZoom 优先）。
-  const zoomToApply = ctx._tlRestoreZoom || currentZoom();
+  // notMerge 全量替换会重置 dataZoom 状态——刷新前保存、替换后恢复。
+  // · 全程状态（含「复原缩放」后）：保持 0-100 不做时间锚定——否则旧
+  //   extent 末端被换算成 <100 的百分比，视图锚死在旧数据末端、无法随
+  //   新数据推进（复原后应回归初始跟随状态）。
+  // · 子范围（用户已选取）：按绝对时间锚定（非百分比）——运行中新数据
+  //   持续扩大 extent，同样百分比对应的时间段会漂移；先换算成绝对时刻，
+  //   setOption（新 extent）后再换算回百分比，选取的时间段锚定不变。
+  const zPct = ctx._tlRestoreZoom || currentZoom();
   ctx._tlRestoreZoom = null;
+  const wasFull = zPct.start <= 0.5 && zPct.end >= 99.5;
+  const oldExtent = { ...extent };   // ganttOption 调用前保存（其中会更新 extent）
+  const spanOld = oldExtent.hi - oldExtent.lo || 1;
+  const t0 = oldExtent.lo + spanOld * zPct.start / 100;
+  const t1 = oldExtent.lo + spanOld * zPct.end / 100;
   chart.setOption(ganttOption(lanes, seriesData, ctx), true);
-  chart.dispatchAction({ type: 'dataZoom', start: zoomToApply.start, end: zoomToApply.end });
+  if (wasFull) {
+    chart.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
+  } else {
+    const spanNew = extent.hi - extent.lo || 1;
+    const newStart = Math.max(0, (t0 - extent.lo) / spanNew * 100);
+    const newEnd = Math.min(100, (t1 - extent.lo) / spanNew * 100);
+    chart.dispatchAction({ type: 'dataZoom',
+      start: newStart, end: Math.max(newStart + 0.5, newEnd) });
+  }
   updateRangeHint();
+  syncSliderVisual();
+  updateAxisTimes();
   if (ctx._tlRestoreScroll != null && ctx.main) {
     ctx.main.scrollTop = ctx._tlRestoreScroll;
     ctx._tlRestoreScroll = null;
@@ -257,25 +623,33 @@ function updateRangeHint() {
                    (z.end - z.start < 99.5 ? `（${(z.end - z.start).toFixed(0)}%）` : '（全程）');
 }
 
-// 驻留详情：各类负载分项（CPU/IO/等待/排队 的时长与占比）。
+// 驻留详情：时间与负载指标逐项独立展示（不聚合，用户裁定）。
 function showInfo(t) {
   const el = document.getElementById('tl-info');
   if (!el) return;
   const dur = t.exec_end_ms ? t.exec_end_ms - t.exec_start_ms : null;
   const r = ratios(t);
-  const ioMs = (t.read_time_ms || 0) + (t.write_time_ms || 0);
   el.style.display = 'block';
   el.innerHTML = `
     <h3>task ${t.task_id} · <span class="badge ${t.status}">${t.status}</span>${isFast(t) ? ' · Fast' : ''}</h3>
     <div class="full-name" style="margin-bottom:8px">${escapeHtml(t.name)}</div>
     <div class="kv">
       <span class="k">worker</span><span class="v">${t.worker_id} · ${escapeHtml(hostMap[t.worker_id] || '?')}</span>
-      <span class="k">运行时长</span><span class="v mono">${fmtMs(dur)}（${fmtTimeFull(t.exec_start_ms)} → ${fmtTimeFull(t.exec_end_ms)}）</span>
-      <span class="k">排队等待</span><span class="v">${fmtMs(r.queueMs)}（占生命周期 ${fmtPct(r.queue)}；就绪 ${fmtTimeFull(t.ready_ms)} → 开始调度 ${fmtTimeFull(t.started_ms)}）</span>
-      <span class="k">CPU 负载</span><span class="v">${fmtMs(t.cpu_time_ms)}（${fmtPct(r.cpu)}）</span>
-      <span class="k">IO 负载</span><span class="v">${fmtMs(ioMs)}（${fmtPct(r.io)}）—— 读 ${fmtMs(t.read_time_ms)} / 写 ${fmtMs(t.write_time_ms)}</span>
-      <span class="k">执行等待占比</span><span class="v">${fmtPct(r.wait)}</span>
-      <span class="k">调度</span><span class="v mono">开始时间 ${fmtTimeFull(t.started_ms)} · 结束时间 ${fmtTimeFull(t.completed_ms)}</span>
+      <span class="k">创建时间</span><span class="v mono">${fmtTimeFull(t.created_ms)}</span>
+      <span class="k">依赖就绪时间</span><span class="v mono">${fmtTimeFull(t.ready_ms)}</span>
+      <span class="k">开始调度时间</span><span class="v mono">${fmtTimeFull(t.started_ms)}</span>
+      <span class="k">执行开始时间</span><span class="v mono">${fmtTimeFull(t.exec_start_ms)}</span>
+      <span class="k">执行结束时间</span><span class="v mono">${fmtTimeFull(t.exec_end_ms)}</span>
+      <span class="k">完成确认时间</span><span class="v mono">${fmtTimeFull(t.completed_ms)}</span>
+      <span class="k">运行时长</span><span class="v mono">${fmtMs(dur)}</span>
+      <span class="k">排队等待时长</span><span class="v">${fmtMs(r.queueMs)}</span>
+      <span class="k">排队占生命周期比</span><span class="v">${fmtPct(r.queue)}</span>
+      <span class="k">CPU 耗时</span><span class="v">${fmtMs(t.cpu_time_ms)}</span>
+      <span class="k">CPU 占比</span><span class="v">${fmtPct(r.cpu)}</span>
+      <span class="k">IO 读耗时</span><span class="v">${fmtMs(t.read_time_ms)}</span>
+      <span class="k">IO 写耗时</span><span class="v">${fmtMs(t.write_time_ms)}</span>
+      <span class="k">IO 占比</span><span class="v">${fmtPct(r.io)}</span>
+      <span class="k">空闲占比</span><span class="v">${fmtPct(r.wait)}（执行窗口内非 CPU 非 IO）</span>
     </div>`;
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -306,17 +680,23 @@ function ganttOption(wids, seriesData, ctx) {
         const r = d._r || {};
         let load = '';
         if (d._fast) load = 'Fast Task';
-        else load = `Queue ${Math.round((r.queue || 0) * 100)}% · CPU ${Math.round((r.cpu || 0) * 100)}% · IO ${Math.round((r.io || 0) * 100)}% · Wait ${Math.round((r.wait || 0) * 100)}%`;
+        else load = `排队 ${fmtPct(r.queue)} · CPU ${fmtPct(r.cpu)} · IO ${fmtPct(r.io)} · 空闲 ${fmtPct(r.wait)}`;
         return `<b>#${tid}</b> ${shortName(p.name, 12, 8)}<br>${load}` +
                `<br>${new Date(s).toLocaleTimeString()} → ` +
                `${new Date(e).toLocaleTimeString()}（${dur}s）` +
                `<br><span style="color:#7a8a9c">点击条形查看负载详情</span>`;
       },
     },
+    // animation false：去除缩放/平移时坐标轴标签的动态过渡（拖快时时间
+    // 重影、停止时归位动画——用户裁定只要静态）。
+    animation: false,
     xAxis: {
       type: 'time',
       axisLine: { lineStyle: { color: '#37424f' } },
-      axisLabel: { color: '#7a8a9c' },
+      // 中间刻度标签隐藏（动态重排的来源）；视图起止时间由自绘 DOM 在
+      // 底部左右角显示（见 attachAxisTimes），中间时间经悬停竖线查看。
+      axisLabel: { show: false },
+      axisTick: { show: false },
     },
     yAxis: {
       type: 'category',
@@ -328,34 +708,23 @@ function ganttOption(wids, seriesData, ctx) {
       axisLine: { lineStyle: { color: '#37424f' } },
       axisLabel: { color: '#4aa8ff' },
     },
+    // 缩放：仅滚轮缩放（inside 的 moveOnMouseMove/moveOnMouseWheel 默认
+    // 开启会导致图内移动/拖动鼠标时平移坐标轴——用户裁定只保留拖动框选
+    // 缩放，平移经底部选取条选区拖动完成）。
+    // filterMode 'none'：不做数据过滤只缩放坐标轴——默认 'filter' 会把
+    // 起点在窗口外的 task 条整条移除（横跨窗口边界的条消失，显示上像
+    // 该时段无 task 运行）；'none' + series clip 让与窗口有交集的条都
+    // 显示并裁剪越界部分。
     dataZoom: [
-      { type: 'inside', xAxisIndex: 0 },
-      { type: 'slider', xAxisIndex: 0, height: 20, bottom: 12,
-        borderColor: '#3a4a5c', backgroundColor: '#161d26',
-        // 任意位置按下拖动即新建选区（刷选），选区高亮所见即所得；
-        // 两端把手弱化为小尺寸（刷选为主交互）。
-        brushSelect: true,
-        brushStyle: { color: 'rgba(74,168,255,.45)',
-                      borderColor: '#4aa8ff', borderWidth: 1 },
-        fillerColor: 'rgba(74,168,255,.35)',
-        dataBackground: {
-          lineStyle: { color: '#37424f', width: 1 },
-          areaStyle: { color: 'rgba(55,66,79,.35)' },
-        },
-        selectedDataBackground: {
-          lineStyle: { color: '#4aa8ff', width: 1 },
-          areaStyle: { color: 'rgba(74,168,255,.30)' },
-        },
-        handleIcon: 'circle', handleSize: '60%',
-        handleStyle: { color: '#4aa8ff', borderColor: '#1c2530' },
-        moveHandleSize: 4,
-        moveHandleStyle: { color: '#4aa8ff' },
-        emphasis: { handleStyle: { borderColor: '#4aa8ff' },
-                    moveHandleStyle: { color: '#6fb9ff' } },
-        textStyle: { color: '#7a8a9c' } },
+      { type: 'inside', xAxisIndex: 0, filterMode: 'none',
+        moveOnMouseMove: false, moveOnMouseWheel: false,
+        zoomOnMouseWheel: true },
     ],
     series: [{
       type: 'custom',
+      // clip：缩放/平移时条形不得越出 grid（否则左侧盖住 worker 名、右侧
+      // 超出边界——custom series 默认不裁剪）。
+      clip: true,
       renderItem: (params, api) => {
         const lane = api.value(0);
         const start = api.coord([api.value(1), lane]);

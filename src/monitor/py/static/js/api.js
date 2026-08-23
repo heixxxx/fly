@@ -9,6 +9,32 @@ export async function getJson(url) {
   }
 }
 
+// ---- worker 样本增量缓存（增强刷新的核心）----
+// 每 worker 维护已拉样本数组 + epoch_ms 游标；fetchSamplesIncremental 每
+// 轮只请求 after_ms=游标 的新增样本（首轮全量）。数据传输从 O(总样本)
+// 降为 O(新增)；渲染端仍全量 setOption（ECharts 合并路径，万级点无压力）。
+// run 切换时由 app.js 调 resetSamplesCache() 清空。
+const samplesCache = new Map();   // wid -> { cursor, samples }
+
+export async function fetchSamplesIncremental(wid) {
+  let c = samplesCache.get(wid);
+  if (!c) {
+    c = { cursor: 0, samples: [] };
+    samplesCache.set(wid, c);
+  }
+  const s = await getJson(`/api/workers/${wid}/samples?after_ms=${c.cursor}`);
+  if (s && s.samples.length > 0) {
+    // 服务端按 epoch 升序；主键保证无重复（游标严格大于）。
+    for (const sp of s.samples) c.samples.push(sp);
+    c.cursor = s.samples[s.samples.length - 1].epoch_ms;
+  }
+  return c.samples;
+}
+
+export function resetSamplesCache() {
+  samplesCache.clear();
+}
+
 // ---- 格式化工具（全局共享） ----
 export function fmtBytes(n) {
   if (n == null) return '-';
@@ -31,7 +57,14 @@ export function fmtGB(bytes) {
 // 占比格式化：0.123 → "12%"（整数百分比，负载维度展示用）。
 export function fmtPct(ratio) {
   if (ratio == null || isNaN(ratio)) return '-';
-  return Math.round(ratio * 100) + '%';
+  // 一位小数：Math.round 会把 0.5% 显示成 0%，误导性大。
+  return (ratio * 100).toFixed(1).replace(/\.0$/, '') + '%';
+}
+
+// 模块名展示规范化：存储的是真实包路径（executor 反序列化依赖，如
+// test.py.e2e_tasks），展示时去掉历史遗留的 py 中间层（→ test.e2e_tasks）。
+export function displayModule(m) {
+  return String(m ?? '').replace(/\.py\./, '.');
 }
 
 export function fmtMs(ms) {

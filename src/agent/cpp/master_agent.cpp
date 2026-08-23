@@ -2143,7 +2143,10 @@ void MasterAgent::fail_orphan_data_objects(uint64_t worker_id) {
         MSG("AGENT::0003", 2,
             "worker {} dead: {} object(s) lost all replicas, dependent waiting tasks failed",
             worker_id, lost_objects.size());
-        if (metrics_db_) {
+        // 正常收尾（drain 期 master 主动停 worker）触发的对象"全灭"是预期
+        // 流程而非故障——不记 ORPHAN_FAIL 事件（避免事件流在每次 run 结束
+        // 都出现一串误导读数的红色告警）。运行期判死才落事件。
+        if (metrics_db_ && !draining_.load()) {
             metrics_db_->record_event("storage", "ORPHAN_FAIL", worker_id, 0,
                                       CMString("lost=") + std::to_string(lost_objects.size()));
         }

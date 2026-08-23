@@ -1,13 +1,16 @@
 // SPA 页签路由 + 数据指纹轮询。
 //
-// 刷新模型（解决全量刷新打断交互的问题）：
+// 刷新模型（增强式，用户裁定全量刷新在数据量增大时有明显延迟）：
 //   · 页面模块拆 mount（一次建 DOM/绑事件/建图表）+ update（数据变化时
 //     setOption/innerHTML 增量填充，图表缩放与 hover 状态保留）。
 //   · 轮询先拉 /api/meta 拼数据指纹；指纹不变 → 完全跳过 update（交互
 //     零打断）；变化 → 仅数据层刷新。
+//   · worker 样本走增量缓存（after_ms 游标，每轮只传新增样本）——
+//     传输量从 O(总样本) 降为 O(新增)；run 切换（run_start_ms 变化）
+//     自动清缓存。
 //   · run 结束（run_end_ms 存在）且指纹连续稳定 5 轮（15s）→ 自动停轮询，
 //     header 提示；切页签或勾选自动刷新可恢复。
-import { getJson, fmtTime } from './api.js';
+import { getJson, resetSamplesCache, fmtTime } from './api.js';
 import * as overview from './pages/overview.js';
 import * as workers from './pages/workers.js';
 import * as tasks from './pages/tasks.js';
@@ -28,6 +31,7 @@ let current = null;      // 当前页状态 { mod, ctx }
 let pollTimer = null;
 let lastFp = null;
 let stableRounds = 0;
+let lastRunStart = null;  // run 切换检测（清样本增量缓存）
 
 function updateHeader(meta) {
   const m = meta.meta || {};
@@ -59,6 +63,16 @@ async function pollTick(keepScroll = true) {
       stopPolling('run 已结束 · 轮询已停止');
     }
     return;
+  }
+  // run 切换（新 run 的 run_start_ms 不同，或旧 run 数据被替换）：
+  // 样本与 timeline 的增量游标对新数据无意义，清空重建。
+  const runStart = info.meta.run_start_ms;
+  if (runStart && runStart !== lastRunStart) {
+    if (lastRunStart !== null) {
+      resetSamplesCache();
+      timeline.resetTimelineCache();
+    }
+    lastRunStart = runStart;
   }
   lastFp = info.fp;
   stableRounds = 0;

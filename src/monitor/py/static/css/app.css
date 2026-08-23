@@ -226,3 +226,53 @@ tr:hover td { background: var(--panel2); }
   border-radius: 6px; padding: 4px 12px; cursor: pointer;
 }
 .pager button:disabled { opacity: .4; cursor: default; }
+
+/* Timeline 图内拖动刷选的选区高亮（pointer-events 穿透，仅视觉）。 */
+.tl-brush-sel {
+  position: absolute; display: none; pointer-events: none; z-index: 5;
+  background: rgba(74,168,255,.22);
+  border-left: 1px solid rgba(74,168,255,.8);
+  border-right: 1px solid rgba(74,168,255,.8);
+  cursor: crosshair;
+}
+
+/* Timeline 自绘时间范围选取条（替代 ECharts slider）：三个交互分区
+   （选区内平移 / 边缘调宽 / 选区外框选），全程时无选区高亮。 */
+.tl-slider {
+  position: relative; height: 20px; margin: 6px 40px 0 170px;  /* 与 grid 对齐 */
+  background: #161d26; border: 1px solid #3a4a5c; border-radius: 4px;
+}
+.tl-slider-sel {
+  position: absolute; top: 0; bottom: 0; display: none;
+  background: rgba(74,168,255,.30);
+  border-left: 2px solid #4aa8ff; border-right: 2px solid #4aa8ff;
+  border-radius: 3px;
+}
+
+/* 悬停竖线与时间标签（plot 区内位置稳定 0.5s 后显示时间）。 */
+.tl-hover-line {
+  position: absolute; display: none; pointer-events: none; z-index: 4;
+  width: 1px; background: rgba(215,224,234,.55);
+}
+.tl-hover-time {
+  position: absolute; display: none; pointer-events: none; z-index: 6;
+  padding: 2px 8px; font-size: 11.5px; font-family: monospace; color: var(--text);
+  background: var(--panel2); border: 1px solid var(--accent);
+  border-radius: 5px; white-space: nowrap;
+}
+
+/* x 轴起止时间（左右角，静态无动画）。 */
+.tl-axis-time {
+  position: absolute; pointer-events: none; z-index: 4;
+  font-size: 11.5px; font-family: monospace; color: #7a8a9c;
+}
+.tl-axis-time-l { left: 170px; bottom: 6px; }
+.tl-axis-time-r { right: 40px; bottom: 6px; text-align: right; }
+
+/* 泳道标签 hover 的可点击提示浮层。 */
+.tl-lane-tip {
+  position: absolute; display: none; pointer-events: none; z-index: 6;
+  padding: 3px 8px; font-size: 12px; color: var(--text);
+  background: var(--panel2); border: 1px solid var(--accent);
+  border-radius: 5px; white-space: nowrap;
+}

@@ -188,7 +188,10 @@ def api_workers():
     return {"workers": workers}
 
 
-def api_worker_samples(worker_id, from_ms=0, to_ms=0):
+def api_worker_samples(worker_id, from_ms=0, to_ms=0, after_ms=0):
+    """after_ms 为增量游标（只返回 epoch_ms 严格大于它的样本）——前端
+    增量刷新：首轮拉全量，之后每轮只传新增，传输量从 O(总样本) 降为
+    O(新增)。(worker_id, epoch_ms) 主键保证不重不漏。"""
     sql = "SELECT * FROM worker_samples WHERE worker_id=?"
     args = [worker_id]
     if from_ms:
@@ -197,6 +200,9 @@ def api_worker_samples(worker_id, from_ms=0, to_ms=0):
     if to_ms:
         sql += " AND epoch_ms<=?"
         args.append(to_ms)
+    if after_ms:
+        sql += " AND epoch_ms>?"
+        args.append(after_ms)
     sql += " ORDER BY epoch_ms"
     rows = [dict(r) for r in query(sql, args)]
     return {"worker_id": worker_id, "samples": rows}
@@ -232,30 +238,52 @@ def api_task_detail(task_id):
 
 
 def api_events(category="", limit=100):
-    sql = "SELECT * FROM events"
+    """用户事件流：过滤实现细节事件（DB_DU 是 DBs 页磁盘数据的来源通道，
+    非用户语义）；worker DEAD 附带 exit_kind 推导（关停指令先行 = 正常
+    退出，否则异常死亡），前端据此显示绿色/红色。"""
+    sql = "SELECT * FROM events WHERE event!='DB_DU'"
     args = []
     if category:
-        sql += " WHERE category=?"
+        sql += " AND category=?"
         args.append(category)
     sql += " ORDER BY id DESC LIMIT ?"
     args.append(int(limit))
-    return {"events": [dict(r) for r in query(sql, args)]}
+    events = []
+    for r in query(sql, args):
+        e = dict(r)
+        if e["category"] == "worker" and e["event"] == "DEAD":
+            cmd = query(
+                "SELECT 1 FROM events WHERE worker_id=? AND event IN "
+                "('SHUTDOWN_SENT','STOP_NOW_SENT') AND epoch_ms<=? LIMIT 1",
+                (e["worker_id"], e["epoch_ms"]))
+            e["exit_kind"] = "EXITED" if cmd else "DEAD"
+        events.append(e)
+    return {"events": events}
 
 
-def api_timeline(from_ms=0, to_ms=0):
+def api_timeline(from_ms=0, to_ms=0, changed_since_ms=0):
     """按 worker 分组的 task 执行窗口（Gantt 数据源）。含负载分类字段
-    （cpu/io 时间、排队等待 ready→started），前端按 CPU/IO/Wait/Queue 分色。"""
-    sql = ("SELECT task_id, name, status, worker_id, "
+    （cpu/io 时间、排队等待 ready→started），前端按 CPU/IO/Wait/Queue 分色。
+
+    changed_since_ms 为增量游标（增强刷新）：只返回「执行开始晚于游标」的
+    新 task 或「完成时刻晚于游标」的窗口更新（RUNNING task 结束时
+    exec_end/status 更新），前端按 task_id merge——传输量从 O(全部 task)
+    降为 O(新增+刚完成)。"""
+    sql = ("SELECT task_id, name, status, worker_id, created_ms, "
            "exec_start_ms, exec_end_ms, started_ms, completed_ms, "
            "cpu_time_ms, read_time_ms, write_time_ms, ready_ms FROM tasks "
            "WHERE exec_start_ms>0")
     args = []
-    if from_ms:
-        sql += " AND exec_start_ms>=?"
-        args.append(from_ms)
-    if to_ms:
-        sql += " AND exec_start_ms<=?"
-        args.append(to_ms)
+    if changed_since_ms:
+        sql += " AND (exec_start_ms>? OR completed_ms>?)"
+        args.extend([changed_since_ms, changed_since_ms])
+    else:
+        if from_ms:
+            sql += " AND exec_start_ms>=?"
+            args.append(from_ms)
+        if to_ms:
+            sql += " AND exec_start_ms<=?"
+            args.append(to_ms)
     rows = [dict(r) for r in query(sql, args)]
     return {"tasks": rows}
 
@@ -353,7 +381,8 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 self._send_json(api_worker_samples(
                     int(parts[2]),
                     int(qs.get("from_ms", ["0"])[0]),
-                    int(qs.get("to_ms", ["0"])[0])))
+                    int(qs.get("to_ms", ["0"])[0]),
+                    int(qs.get("after_ms", ["0"])[0])))
             elif api == "meta":
                 self._send_json(api_meta())
             elif api == "tasks" and len(parts) == 3:
@@ -372,7 +401,8 @@ class MonitorHandler(BaseHTTPRequestHandler):
             elif api == "timeline":
                 self._send_json(api_timeline(
                     int(qs.get("from_ms", ["0"])[0]),
-                    int(qs.get("to_ms", ["0"])[0])))
+                    int(qs.get("to_ms", ["0"])[0]),
+                    int(qs.get("changed_since_ms", ["0"])[0])))
             elif api == "dbs":
                 self._send_json(api_dbs())
             else:

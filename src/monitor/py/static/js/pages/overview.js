@@ -7,7 +7,7 @@
 // （多机时进程 Σ 可 >100%，机器取各 host 最大值；单机即全部 fly 进程合计，
 // 与机器 CPU 直接可比）。
 // mount 建骨架与图表实例；update 仅 setOption/innerHTML（缩放/hover 保留）。
-import { getJson, fmtGB, fmtBytes, fmtTime, fmtTimeFull, escapeHtml } from '../api.js';
+import { getJson, fetchSamplesIncremental, fmtGB, fmtBytes, fmtTime, fmtTimeFull, escapeHtml } from '../api.js';
 import { makeChart, line } from '../charts.js';
 
 let charts = [];
@@ -48,23 +48,31 @@ export async function update(ctx) {
   if (!meta) return;
 
   const m = meta.meta || {};
-  const durS = m.run_start_ms && m.run_end_ms
-    ? ((+m.run_end_ms - +m.run_start_ms) / 1000).toFixed(1) + ' s' : '-';
+  // 运行中实时计时（run_end 未落盘时用当前时刻），结束后为终值。
+  const endTime = m.run_end_ms ? +m.run_end_ms : Date.now();
+  const durS = m.run_start_ms
+    ? ((endTime - +m.run_start_ms) / 1000).toFixed(1) + ' s' : '-';
   const tc = meta.task_counts || {};
   const total = Object.values(tc).reduce((a, b) => a + b, 0);
 
   document.getElementById('ov-kpi').innerHTML = `
-    <div class="kpi"><div class="label">运行时长</div><div class="value">${durS}</div><div class="sub">${m.hostname || ''}</div></div>
+    <div class="kpi"><div class="label">运行时长${m.run_end_ms ? '' : '（进行中）'}</div><div class="value">${durS}</div><div class="sub">${m.hostname || ''} · ${fmtTime(+m.run_start_ms)} → ${m.run_end_ms ? fmtTime(+m.run_end_ms) : '现在'}</div></div>
     <div class="kpi"><div class="label">Tasks 总数</div><div class="value">${total}</div><div class="sub">完成 ${tc.COMPLETED || 0} · 失败 ${tc.FAILED || 0} · 运行 ${tc.RUNNING || 0}</div></div>
     <div class="kpi"><div class="label">Workers</div><div class="value">${meta.workers}</div></div>
-    <div class="kpi"><div class="label">总运行时长</div><div class="value">${durS}</div><div class="sub">${fmtTime(meta.sample_lo)} → ${fmtTime(meta.sample_hi)}</div></div>`;
+    <div class="kpi"><div class="label">样本数</div><div class="value" style="font-size:16px">${meta.sample_lo ? '采样中' : '-'}</div><div class="sub">${fmtTime(meta.sample_lo)} → ${fmtTime(meta.sample_hi)}</div></div>`;
 
   // ---- 1s 桶聚合（含 master wid=0 的样本——同样是 fly 进程负载）----
+  // 样本经增量缓存拉取（每轮只传新增，见 fetchSamplesIncremental）。
+  // 前值填充（forward-fill）：桶内无样本的 worker 用其 ≤ 该桶的最后已知
+  // 样本参与聚合——否则末尾桶只含已上报的部分 worker（10s 成组上报有
+  // 延迟），Σ 曲线尾部塌陷（与 RunMetrics 最近邻合成同理）。
+  const seenWorkers = new Set();
+  for (const w of (workers ? workers.workers : [])) seenWorkers.add(w.worker_id);
   const buckets = new Map();   // bucketSec → { wid → latest sample }
+  const latest = new Map();    // wid → 该桶时刻的最后已知样本（跨桶携带）
   for (const w of (workers ? workers.workers : [])) {
-    const s = await getJson(`/api/workers/${w.worker_id}/samples`);
-    if (!s) continue;
-    for (const sp of s.samples) {
+    const samples = await fetchSamplesIncremental(w.worker_id);
+    for (const sp of samples) {
       const k = Math.floor(sp.epoch_ms / 1000);
       let b = buckets.get(k);
       if (!b) { b = {}; buckets.set(k, b); }
@@ -74,8 +82,11 @@ export async function update(ctx) {
   const series = [];  // {t, rss, pcpu, hcpu, nr, nw}
   for (const k of [...buckets.keys()].sort((a, b) => a - b)) {
     const b = buckets.get(k);
+    for (const [wid, sp] of Object.entries(b)) latest.set(+wid, sp);
     let rss = 0, pcpu = 0, hcpu = null, nr = 0, nw = 0;
-    for (const sp of Object.values(b)) {
+    for (const wid of seenWorkers) {
+      const sp = b[wid] || latest.get(wid);   // 桶内或前值
+      if (!sp) continue;                      // 该 worker 尚无任何样本
       rss += sp.proc_rss_bytes;
       pcpu += sp.proc_cpu_bps / 100;
       const h = sp.host_cpu_bps / 100;
@@ -103,15 +114,15 @@ export async function update(ctx) {
   charts[1].setOption({
     yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: '{value}%' } }],
     series: [
-      line('Total Proc CPU (%)', series.map(s => [s.t, +s.pcpu.toFixed(1)]), '#4aa8ff'),
-      line('Host CPU (%)', series.map(s => [s.t, s.hcpu ?? 0]), '#e8b339'),
+      line('Total Proc CPU', series.map(s => [s.t, +s.pcpu.toFixed(1)]), '#4aa8ff'),
+      line('Host CPU', series.map(s => [s.t, s.hcpu ?? 0]), '#e8b339'),
     ],
   });
   charts[2].setOption({
     yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: v => fmtBytes(v) + '/s' } }],
     series: [
-      line('Read B/s', netR, '#6fd3e8'),
-      line('Write B/s', netW, '#ff9d5c'),
+      line('Read', netR, '#6fd3e8'),
+      line('Write', netW, '#ff9d5c'),
     ],
   });
 
@@ -120,10 +131,20 @@ export async function update(ctx) {
 }
 
 function evRow(e) {
+  // worker DEAD：按关停指令推导显示「正常退出」（绿）或「异常死亡」（红）。
+  let badgeEvent = e.event;
+  let badgeText = e.event;
+  let badgeTitle = '';
+  if (e.category === 'worker' && e.event === 'DEAD' && e.exit_kind) {
+    badgeEvent = e.exit_kind;
+    badgeText = e.exit_kind === 'EXITED' ? '正常退出' : '异常死亡';
+    badgeTitle = e.exit_kind === 'EXITED'
+      ? '收到关停指令后正常退出' : '无关停指令先行：心跳超时/宽限耗尽判死';
+  }
   return `<tr>
     <td class="mono">${fmtTimeFull(e.epoch_ms)}</td>
     <td class="cat-${e.category}">${e.category}</td>
-    <td><span class="badge ${e.event}">${e.event}</span></td>
+    <td><span class="badge ${badgeEvent}" ${badgeTitle ? `title="${badgeTitle}"` : ''}>${badgeText}</span></td>
     <td>${e.worker_id || '-'}</td>
     <td>${e.task_id || '-'}</td>
     <td class="muted mono">${escapeHtml(String(e.detail || '')).slice(0, 80)}</td>
