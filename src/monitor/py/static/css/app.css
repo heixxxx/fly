@@ -1,8 +1,13 @@
-:root {
+/* 主题变量：dark 为默认（:root 兜底 + data-theme 显式块），light 覆盖。
+   --chart-*/--ser-* 供 ECharts 侧经 theme.cssVar() 读取（canvas 不消费
+   CSS 变量）；--accent-fill-*/--accent-line-* 为 accent 的透明变体
+   （rgba 无法由变量拼 alpha，两主题各写死）。 */
+:root, [data-theme="dark"] {
   --bg: #0f1419;
   --panel: #161d26;
   --panel2: #1c2530;
   --border: #2a3542;
+  --border-strong: #3a4a5c;
   --text: #d7e0ea;
   --muted: #7a8a9c;
   --accent: #4aa8ff;
@@ -13,6 +18,67 @@
   --pending: #8a7ca8;
   --failed: #e0564f;
   --completed: #3fb972;
+  --chart-axis: #37424f;
+  --chart-label: #7a8a9c;
+  --chart-split: #212b37;
+  --hover-line: rgba(215, 224, 234, .55);
+  --ser-blue: #4aa8ff;
+  --ser-yellow: #e8b339;
+  --ser-cyan: #6fd3e8;
+  --ser-orange: #ff9d5c;
+  --ser-green: #3fb972;
+  --ser-purple: #c79bf2;
+  --ser-muted: #5f7385;
+  --gantt-neutral: #4a5563;
+  --cat-task: #c79bf2;
+  --cat-worker: #6fd3e8;
+  --cat-db: #e8b339;
+  --cat-run: #3fb972;
+  --cat-sched: #e0564f;
+  --cat-storage: #ff9d5c;
+  --accent-fill-12: rgba(74, 168, 255, .12);
+  --accent-fill-22: rgba(74, 168, 255, .22);
+  --accent-fill-30: rgba(74, 168, 255, .30);
+  --accent-line-80: rgba(74, 168, 255, .8);
+}
+[data-theme="light"] {
+  --bg: #f4f6f9;
+  --panel: #ffffff;
+  --panel2: #eceff4;
+  --border: #d9dfe8;
+  --border-strong: #b9c4d2;
+  --text: #1c2733;
+  --muted: #5c6b7c;
+  --accent: #1a78d8;
+  --ok: #1d9457;
+  --warn: #c08a17;
+  --err: #d0453e;
+  --running: #1a78d8;
+  --pending: #7c6ba3;
+  --failed: #d0453e;
+  --completed: #1d9457;
+  --chart-axis: #c3cddb;
+  --chart-label: #5c6b7c;
+  --chart-split: #e6ebf1;
+  --hover-line: rgba(28, 39, 51, .45);
+  --ser-blue: #1a78d8;
+  --ser-yellow: #c9930f;
+  --ser-cyan: #0f8fb8;
+  --ser-orange: #e06f1f;
+  --ser-green: #1d9457;
+  --ser-purple: #8a5bd0;
+  --ser-muted: #8494a6;
+  --gantt-neutral: #c2cbd7;
+  --cat-task: #8a5bd0;
+  --cat-worker: #0f8fb8;
+  --cat-db: #c9930f;
+  --cat-run: #1d9457;
+  --cat-sched: #d0453e;
+  --cat-storage: #e06f1f;
+  --accent-fill-12: rgba(26, 120, 216, .12);
+  --accent-fill-22: rgba(26, 120, 216, .22);
+  --accent-fill-30: rgba(26, 120, 216, .30);
+  --accent-line-80: rgba(26, 120, 216, .8);
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -38,6 +104,13 @@ nav button.active { color: var(--accent); background: var(--panel2); }
 .header-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
 .poll-toggle { color: var(--muted); font-size: 12px; user-select: none; cursor: pointer; }
 .run-info { color: var(--muted); font-size: 12px; }
+/* header 的语言/主题下拉（与 .controls select 同风格，尺寸更紧凑）。 */
+.hdr-select {
+  background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 3px 6px; font-size: 12px; outline: none;
+  cursor: pointer;
+}
+.hdr-select:focus { border-color: var(--accent); }
 
 main { flex: 1; overflow: auto; padding: 16px; }
 
@@ -70,7 +143,7 @@ th {
   position: sticky; top: 0; background: var(--panel);
   cursor: pointer; user-select: none; white-space: nowrap;
 }
-td { padding: 5px 8px; border-bottom: 1px solid #212b37; white-space: nowrap; }
+td { padding: 5px 8px; border-bottom: 1px solid var(--chart-split); white-space: nowrap; }
 tr:hover td { background: var(--panel2); }
 .table-wrap { overflow: auto; max-height: 480px; }
 
@@ -94,12 +167,12 @@ tr:hover td { background: var(--panel2); }
 }
 .badge.REVIVED, .badge.RESTART { background: rgba(74,168,255,.15); color: var(--accent); }
 
-.cat-task { color: #c79bf2; }
-.cat-worker { color: #6fd3e8; }
-.cat-db { color: #e8b339; }
-.cat-run { color: #3fb972; }
-.cat-sched { color: #e0564f; }
-.cat-storage { color: #ff9d5c; }
+.cat-task { color: var(--cat-task); }
+.cat-worker { color: var(--cat-worker); }
+.cat-db { color: var(--cat-db); }
+.cat-run { color: var(--cat-run); }
+.cat-sched { color: var(--cat-sched); }
+.cat-storage { color: var(--cat-storage); }
 
 .worker-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
 .worker-card {
@@ -124,7 +197,7 @@ tr:hover td { background: var(--panel2); }
 .controls button:hover { color: var(--text); border-color: var(--accent); }
 .controls button.active {
   color: var(--accent); border-color: var(--accent);
-  background: rgba(74, 168, 255, .12);
+  background: var(--accent-fill-12);
 }
 .tl-hint { color: var(--muted); font-size: 12px; margin-left: auto; }
 .tl-range { color: var(--accent); font-family: monospace; font-size: 12px; }
@@ -166,7 +239,7 @@ tr:hover td { background: var(--panel2); }
 .io-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; margin-top: 3px; }
 .io-bar .cpu { background: var(--accent); }
 .io-bar .io { background: var(--warn); }
-.io-bar .other { background: #37424f; }
+.io-bar .other { background: var(--chart-axis); }
 
 .toast {
   position: fixed; bottom: 20px; right: 20px; padding: 10px 16px;
@@ -230,9 +303,9 @@ tr:hover td { background: var(--panel2); }
 /* Timeline 图内拖动刷选的选区高亮（pointer-events 穿透，仅视觉）。 */
 .tl-brush-sel {
   position: absolute; display: none; pointer-events: none; z-index: 5;
-  background: rgba(74,168,255,.22);
-  border-left: 1px solid rgba(74,168,255,.8);
-  border-right: 1px solid rgba(74,168,255,.8);
+  background: var(--accent-fill-22);
+  border-left: 1px solid var(--accent-line-80);
+  border-right: 1px solid var(--accent-line-80);
   cursor: crosshair;
 }
 
@@ -240,19 +313,19 @@ tr:hover td { background: var(--panel2); }
    （选区内平移 / 边缘调宽 / 选区外框选），全程时无选区高亮。 */
 .tl-slider {
   position: relative; height: 20px; margin: 6px 40px 0 170px;  /* 与 grid 对齐 */
-  background: #161d26; border: 1px solid #3a4a5c; border-radius: 4px;
+  background: var(--panel2); border: 1px solid var(--border-strong); border-radius: 4px;
 }
 .tl-slider-sel {
   position: absolute; top: 0; bottom: 0; display: none;
-  background: rgba(74,168,255,.30);
-  border-left: 2px solid #4aa8ff; border-right: 2px solid #4aa8ff;
+  background: var(--accent-fill-30);
+  border-left: 2px solid var(--accent); border-right: 2px solid var(--accent);
   border-radius: 3px;
 }
 
 /* 悬停竖线与时间标签（plot 区内位置稳定 0.5s 后显示时间）。 */
 .tl-hover-line {
   position: absolute; display: none; pointer-events: none; z-index: 4;
-  width: 1px; background: rgba(215,224,234,.55);
+  width: 1px; background: var(--hover-line);
 }
 .tl-hover-time {
   position: absolute; display: none; pointer-events: none; z-index: 6;
@@ -264,7 +337,7 @@ tr:hover td { background: var(--panel2); }
 /* x 轴起止时间（左右角，静态无动画）。 */
 .tl-axis-time {
   position: absolute; pointer-events: none; z-index: 4;
-  font-size: 11.5px; font-family: monospace; color: #7a8a9c;
+  font-size: 11.5px; font-family: monospace; color: var(--muted);
 }
 .tl-axis-time-l { left: 170px; bottom: 6px; }
 .tl-axis-time-r { right: 40px; bottom: 6px; text-align: right; }

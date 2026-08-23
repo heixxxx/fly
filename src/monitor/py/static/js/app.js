@@ -11,6 +11,8 @@
 //   · run 结束（run_end_ms 存在）且指纹连续稳定 5 轮（15s）→ 自动停轮询，
 //     header 提示；切页签或勾选自动刷新可恢复。
 import { getJson, resetSamplesCache, fmtTime } from './api.js';
+import { t, getLang, setLang, onLangChange } from './i18n.js';
+import { getTheme, setTheme, onThemeChange } from './theme.js';
 import * as overview from './pages/overview.js';
 import * as workers from './pages/workers.js';
 import * as tasks from './pages/tasks.js';
@@ -26,6 +28,8 @@ const nav = document.getElementById('nav');
 const runInfo = document.getElementById('run-info');
 const pollState = document.getElementById('poll-state');
 const pollEnabled = document.getElementById('poll-enabled');
+const langSel = document.getElementById('lang-sel');
+const themeSel = document.getElementById('theme-sel');
 
 let current = null;      // 当前页状态 { mod, ctx }
 let pollTimer = null;
@@ -36,7 +40,7 @@ let lastRunStart = null;  // run 切换检测（清样本增量缓存）
 function updateHeader(meta) {
   const m = meta.meta || {};
   const start = m.run_start_ms ? fmtTime(+m.run_start_ms) : '?';
-  const end = m.run_end_ms ? fmtTime(+m.run_end_ms) : '进行中';
+  const end = m.run_end_ms ? fmtTime(+m.run_end_ms) : t('app.running');
   runInfo.textContent = `${m.hostname || ''} · ${start} → ${end}`;
 }
 
@@ -60,7 +64,7 @@ async function pollTick(keepScroll = true) {
   if (info.fp === lastFp) {
     stableRounds++;
     if (info.finished && stableRounds >= STABLE_ROUNDS_TO_STOP) {
-      stopPolling('run 已结束 · 轮询已停止');
+      stopPolling(t('app.pollStopped'));
     }
     return;
   }
@@ -98,12 +102,12 @@ function startPolling() {
   }
 }
 
-function switchPage(name) {
+function switchPage(name, keepCtx) {
   if (current && current.mod.destroy) current.mod.destroy(current.ctx);
   for (const b of nav.children) b.classList.toggle('active', b.dataset.page === name);
   main.innerHTML = '';
   current = { mod: PAGES[name], ctx: { main, workerId: null, taskId: null,
-                                       taskFilter: {} } };
+                                       taskFilter: {}, ...keepCtx } };
   current.mod.mount(current.ctx);   // DOM/事件/图表实例一次建好
   lastFp = null;                    // 新页强制首刷
   stableRounds = 0;
@@ -141,7 +145,7 @@ function renderBackBar() {
   const bar = document.createElement('div');
   bar.id = 'back-bar';
   bar.className = 'back-bar';
-  bar.innerHTML = `<span class="back-link">← ${backTarget.label ? `返回${backTarget.label}` : '返回上一页'}</span>`;
+  bar.innerHTML = `<span class="back-link">← ${backTarget.label ? t('app.backTo', backTarget.label) : t('app.back')}</span>`;
   bar.querySelector('.back-link').onclick = () => {
     const target = backTarget;
     backTarget = null;
@@ -191,5 +195,46 @@ document.addEventListener('click', (e) => {
 
 pollEnabled.addEventListener('change', startPolling);
 
+// ---- 语言 / 主题（用户裁定：双语可切换默认中文；浅色/深色/跟随系统）----
+// header 静态文案（nav 总览按钮、自动刷新 label）与两个下拉由这里统一
+// 填充——语言切换后随 rerender 重新填充。语言选项显示语言自身名（中文/
+// English，不随 UI 语言变化），主题选项随 UI 语言。
+function fillHeaderControls() {
+  const ovBtn = nav.querySelector('button[data-page="overview"]');
+  if (ovBtn) ovBtn.textContent = t('nav.overview');
+  document.getElementById('poll-label').textContent = t('hdr.autoRefresh');
+  langSel.innerHTML = `<option value="zh">${t('lang.zh')}</option>` +
+                      `<option value="en">${t('lang.en')}</option>`;
+  langSel.value = getLang();
+  themeSel.innerHTML = ['light', 'dark', 'system']
+    .map(m => `<option value="${m}">${t('theme.' + m)}</option>`).join('');
+  themeSel.value = getTheme();
+}
+
+// 语言/主题切换 → 整页重建：mount 模板文案取新语言、图表实例随 mount
+// 新建读取新主题的 CSS 变量。当前页上下文（worker/task 详情、过滤条件）
+// 拷贝注入新 ctx——用户停在详情页切换语言后不弹回列表；各页面模块自身
+// 的 savedState（timeline 缩放/排序等）由 destroy/mount 机制恢复。
+function rerender() {
+  fillHeaderControls();
+  if (!current) return;
+  let name = 'overview';
+  for (const [n, m] of Object.entries(PAGES)) {
+    if (m === current.mod) { name = n; break; }
+  }
+  const keep = {
+    workerId: current.ctx.workerId,
+    taskId: current.ctx.taskId,
+    taskFilter: { ...current.ctx.taskFilter },
+  };
+  switchPage(name, keep);
+}
+
+langSel.addEventListener('change', () => setLang(langSel.value));
+themeSel.addEventListener('change', () => setTheme(themeSel.value));
+onLangChange(rerender);
+onThemeChange(rerender);
+
+fillHeaderControls();
 switchPage('overview');
 startPolling();

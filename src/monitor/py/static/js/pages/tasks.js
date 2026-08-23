@@ -3,6 +3,7 @@
 // main.innerHTML，否则返回时列表结构与绑定已销毁、update 写不回）。
 // update 仅填数据——过滤条件与分页状态存活于 ctx.taskFilter。
 import { getJson, fmtGB, fmtBytes, fmtMs, fmtPct, displayModule, fmtTimeFull, escapeHtml, shortName, expandoHtml, errorBriefHtml } from '../api.js';
+import { t } from '../i18n.js';
 import { navigate } from '../app.js';
 
 const PAGE_SIZE = 50;
@@ -17,34 +18,34 @@ export function mount(ctx) {
     <div id="t-list-view">
       <div class="panel">
         <div class="controls">
-          <input id="t-q" placeholder="搜索 task 名称…" value="${f.q || ''}" style="width:220px">
+          <input id="t-q" placeholder="${t('t.searchPh')}" value="${f.q || ''}" style="width:220px">
           <select id="t-status">
-            <option value="">全部状态</option>
+            <option value="">${t('t.allStatus')}</option>
             ${['PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED'].map(s =>
               `<option value="${s}" ${f.status === s ? 'selected' : ''}>${s}</option>`).join('')}
           </select>
-          <select id="t-worker"><option value="0">全部 worker</option></select>
+          <select id="t-worker"><option value="0">${t('t.allWorkers')}</option></select>
           <span class="muted" id="t-total"></span>
         </div>
         <div class="table-wrap"><table>
           <thead><tr>
-            <th>ID</th><th>名称</th><th>状态</th><th>worker</th>
-            <th>创建时间</th><th>开始时间</th><th>结束时间</th><th>排队等待</th><th>运行时长</th><th>CPU 耗时</th>
-            <th title="运行时长中 CPU/IO 占比">CPU / IO 占比</th>
-            <th>读(字节/时间)</th><th>写(字节/时间)</th>
-            <th>内存 avg / peak</th><th>关联 db</th>
+            <th>${t('tb.id')}</th><th>${t('tb.name')}</th><th>${t('tb.status')}</th><th>worker</th>
+            <th>${t('tb.created')}</th><th>${t('tb.started')}</th><th>${t('tb.finished')}</th><th>${t('tb.queueWait')}</th><th>${t('tb.duration')}</th><th>${t('tb.cpuTime')}</th>
+            <th title="${t('t.cpuIoShareTitle')}">${t('t.cpuIoShare')}</th>
+            <th>${t('t.readBT')}</th><th>${t('t.writeBT')}</th>
+            <th>${t('t.memAvgPeakCol')}</th><th>${t('t.dbsCol')}</th>
           </tr></thead>
           <tbody id="t-body"></tbody>
         </table></div>
         <div class="pager">
-          <button id="t-prev">上一页</button>
+          <button id="t-prev">${t('t.prev')}</button>
           <span id="t-range"></span>
-          <button id="t-next">下一页</button>
+          <button id="t-next">${t('t.next')}</button>
         </div>
       </div>
     </div>
     <div id="t-detail-view" style="display:none">
-      <span class="back-link" id="t-back">← 返回任务列表</span>
+      <span class="back-link" id="t-back">${t('t.back')}</span>
       <div id="t-detail"></div>
     </div>`;
 
@@ -108,7 +109,7 @@ export async function update(ctx) {
   const scrollTop = wrap ? wrap.scrollTop : 0;
 
   document.getElementById('t-body').innerHTML = data.tasks.map(row).join('');
-  document.getElementById('t-total').textContent = `共 ${data.total} 条`;
+  document.getElementById('t-total').textContent = t('t.totalN', data.total);
   document.getElementById('t-range').textContent =
     `${offset + 1} - ${Math.min(offset + PAGE_SIZE, data.total)}`;
   document.getElementById('t-prev').disabled = offset === 0;
@@ -116,12 +117,12 @@ export async function update(ctx) {
   if (wrap) wrap.scrollTop = scrollTop;
 }
 
-function row(t) {
-  const execMs = t.exec_end_ms ? t.exec_end_ms - t.exec_start_ms : null;
+function row(tk) {
+  const execMs = tk.exec_end_ms ? tk.exec_end_ms - tk.exec_start_ms : null;
   let bar = '<span class="muted">-</span>';
   if (execMs && execMs > 0) {
-    const cpu = Math.min(100, Math.round(t.cpu_time_ms / execMs * 100));
-    const io = Math.min(100 - cpu, Math.round((t.read_time_ms + t.write_time_ms) / execMs * 100));
+    const cpu = Math.min(100, Math.round(tk.cpu_time_ms / execMs * 100));
+    const io = Math.min(100 - cpu, Math.round((tk.read_time_ms + tk.write_time_ms) / execMs * 100));
     bar = `<div title="CPU ${cpu}% / IO ${io}%">
       <span class="mono">${cpu}% / ${io}%</span>
       <div class="io-bar" style="width:80px">
@@ -130,23 +131,23 @@ function row(t) {
         <div class="other" style="width:${100 - cpu - io}%"></div>
       </div></div>`;
   }
-  const queue = t.started_ms ? fmtMs(t.started_ms - (t.ready_ms || t.created_ms)) : '-';
-  return `<tr data-tid="${t.task_id}">
-    <td>${t.task_id}</td>
-    <td>${expandoHtml(t.name)}</td>
-    <td><span class="badge ${t.status}">${t.status}</span></td>
-    <td>${t.worker_id || '-'}</td>
-    <td class="mono">${fmtTimeFull(t.created_ms)}</td>
-    <td class="mono">${fmtTimeFull(t.started_ms)}</td>
-    <td class="mono">${fmtTimeFull(t.completed_ms)}</td>
+  const queue = tk.started_ms ? fmtMs(tk.started_ms - (tk.ready_ms || tk.created_ms)) : '-';
+  return `<tr data-tid="${tk.task_id}">
+    <td>${tk.task_id}</td>
+    <td>${expandoHtml(tk.name)}</td>
+    <td><span class="badge ${tk.status}">${tk.status}</span></td>
+    <td>${tk.worker_id || '-'}</td>
+    <td class="mono">${fmtTimeFull(tk.created_ms)}</td>
+    <td class="mono">${fmtTimeFull(tk.started_ms)}</td>
+    <td class="mono">${fmtTimeFull(tk.completed_ms)}</td>
     <td>${queue}</td>
     <td>${fmtMs(execMs)}</td>
-    <td>${fmtMs(t.cpu_time_ms)}</td>
+    <td>${fmtMs(tk.cpu_time_ms)}</td>
     <td>${bar}</td>
-    <td>${fmtBytes(t.read_bytes)} / ${fmtMs(t.read_time_ms)}</td>
-    <td>${fmtBytes(t.write_bytes)} / ${fmtMs(t.write_time_ms)}</td>
-    <td>${fmtGB(t.mem_avg_bytes)} / ${fmtGB(t.mem_peak_bytes)}</td>
-    <td class="mono">${t.dbs ? expandoHtml(t.dbs, 14, 8) : '-'}</td>
+    <td>${fmtBytes(tk.read_bytes)} / ${fmtMs(tk.read_time_ms)}</td>
+    <td>${fmtBytes(tk.write_bytes)} / ${fmtMs(tk.write_time_ms)}</td>
+    <td>${fmtGB(tk.mem_avg_bytes)} / ${fmtGB(tk.mem_peak_bytes)}</td>
+    <td class="mono">${tk.dbs ? expandoHtml(tk.dbs, 14, 8) : '-'}</td>
   </tr>`;
 }
 
@@ -159,48 +160,48 @@ export async function renderDetail(ctx) {
   detailTid = ctx.taskId;
   const d = await getJson(`/api/tasks/${ctx.taskId}`);
   const el = document.getElementById('t-detail');
-  if (!d || d.error || !el) { if (el) el.innerHTML = '<div class="panel">task 不存在</div>'; return; }
-  const t = d.task;
-  const execMs = t.exec_end_ms ? t.exec_end_ms - t.exec_start_ms : null;
-  const dbs = (t.dbs || '').split(',').filter(Boolean);
+  if (!d || d.error || !el) { if (el) el.innerHTML = `<div class="panel">${t('t.notFound')}</div>`; return; }
+  const tk = d.task;
+  const execMs = tk.exec_end_ms ? tk.exec_end_ms - tk.exec_start_ms : null;
+  const dbs = (tk.dbs || '').split(',').filter(Boolean);
   el.innerHTML = `
     <div class="detail-grid">
       <div>
-        <div class="panel"><h3>task ${t.task_id} · ${shortName(t.name, 14, 10)}</h3>
-          <div class="full-name" style="margin-bottom:8px">${escapeHtml(t.name)}</div>
+        <div class="panel"><h3>task ${tk.task_id} · ${shortName(tk.name, 14, 10)}</h3>
+          <div class="full-name" style="margin-bottom:8px">${escapeHtml(tk.name)}</div>
           <div class="kv">
-            <span class="k">状态</span><span class="v"><span class="badge ${t.status}">${t.status}</span></span>
-            <span class="k">模块</span><span class="v mono" title="${escapeHtml(t.module)}">${escapeHtml(displayModule(t.module))}</span>
-            <span class="k">worker</span><span class="v">${t.worker_id || '-'}</span>
-            <span class="k">优先级</span><span class="v">${t.priority}</span>
-            <span class="k">创建时间</span><span class="v mono">${fmtTimeFull(t.created_ms)}</span>
-            <span class="k">依赖就绪</span><span class="v mono">${fmtTimeFull(t.ready_ms)}</span>
-            <span class="k">开始时间</span><span class="v mono">${fmtTimeFull(t.started_ms)}</span>
-            <span class="k">结束时间</span><span class="v mono">${fmtTimeFull(t.completed_ms)}</span>
-            <span class="k">运行时长</span><span class="v mono">${fmtMs(execMs)}</span>
-            ${t.error ? `<span class="k">错误</span><span class="v">${errorBriefHtml(t.error)}<button class="pin-btn" data-pin-err title="驻留显示完整错误">📌</button><pre class="err-full" style="display:none"></pre></span>` : ''}
+            <span class="k">${t('tb.status')}</span><span class="v"><span class="badge ${tk.status}">${tk.status}</span></span>
+            <span class="k">${t('kv.module')}</span><span class="v mono" title="${escapeHtml(tk.module)}">${escapeHtml(displayModule(tk.module))}</span>
+            <span class="k">worker</span><span class="v">${tk.worker_id || '-'}</span>
+            <span class="k">${t('kv.priority')}</span><span class="v">${tk.priority}</span>
+            <span class="k">${t('tb.created')}</span><span class="v mono">${fmtTimeFull(tk.created_ms)}</span>
+            <span class="k">${t('kv.depsReady')}</span><span class="v mono">${fmtTimeFull(tk.ready_ms)}</span>
+            <span class="k">${t('tb.started')}</span><span class="v mono">${fmtTimeFull(tk.started_ms)}</span>
+            <span class="k">${t('tb.finished')}</span><span class="v mono">${fmtTimeFull(tk.completed_ms)}</span>
+            <span class="k">${t('tb.duration')}</span><span class="v mono">${fmtMs(execMs)}</span>
+            ${tk.error ? `<span class="k">${t('kv.error')}</span><span class="v">${errorBriefHtml(tk.error)}<button class="pin-btn" data-pin-err title="${escapeHtml(t('err.pin'))}">📌</button><pre class="err-full" style="display:none"></pre></span>` : ''}
           </div>
         </div>
-        <div class="panel"><h3>资源 / IO</h3>
+        <div class="panel"><h3>${t('t.resIo')}</h3>
           <div class="kv">
-            <span class="k">CPU 耗时</span><span class="v">${fmtMs(t.cpu_time_ms)}</span>
-            <span class="k">CPU 占比</span><span class="v">${execMs ? fmtPct(t.cpu_time_ms / execMs) : '-'}</span>
-            <span class="k">IO 读耗时</span><span class="v">${fmtMs(t.read_time_ms)}</span>
-            <span class="k">IO 读字节</span><span class="v">${fmtBytes(t.read_bytes)}</span>
-            <span class="k">IO 写耗时</span><span class="v">${fmtMs(t.write_time_ms)}</span>
-            <span class="k">IO 写字节</span><span class="v">${fmtBytes(t.write_bytes)}</span>
-            <span class="k">内存基线</span><span class="v">${fmtGB(t.mem_baseline_bytes)}</span>
-            <span class="k">内存平均</span><span class="v">${fmtGB(t.mem_avg_bytes)}</span>
-            <span class="k">内存平均增量</span><span class="v">${fmtGB(Math.max(0, t.mem_avg_bytes - t.mem_baseline_bytes))}</span>
-            <span class="k">内存峰值</span><span class="v">${fmtGB(t.mem_peak_bytes)}</span>
-            <span class="k">内存峰值增量</span><span class="v">${fmtGB(Math.max(0, t.mem_peak_bytes - t.mem_baseline_bytes))}</span>
-            <span class="k">关联 db</span><span class="v mono">${dbs.map(escapeHtml).join('<br>') || '-'}</span>
+            <span class="k">${t('tb.cpuTime')}</span><span class="v">${fmtMs(tk.cpu_time_ms)}</span>
+            <span class="k">${t('kv.cpuShare')}</span><span class="v">${execMs ? fmtPct(tk.cpu_time_ms / execMs) : '-'}</span>
+            <span class="k">${t('kv.readTime')}</span><span class="v">${fmtMs(tk.read_time_ms)}</span>
+            <span class="k">${t('kv.readBytes')}</span><span class="v">${fmtBytes(tk.read_bytes)}</span>
+            <span class="k">${t('kv.writeTime')}</span><span class="v">${fmtMs(tk.write_time_ms)}</span>
+            <span class="k">${t('kv.writeBytes')}</span><span class="v">${fmtBytes(tk.write_bytes)}</span>
+            <span class="k">${t('kv.memBase')}</span><span class="v">${fmtGB(tk.mem_baseline_bytes)}</span>
+            <span class="k">${t('kv.memAvg')}</span><span class="v">${fmtGB(tk.mem_avg_bytes)}</span>
+            <span class="k">${t('kv.memAvgDelta')}</span><span class="v">${fmtGB(Math.max(0, tk.mem_avg_bytes - tk.mem_baseline_bytes))}</span>
+            <span class="k">${t('kv.memPeak')}</span><span class="v">${fmtGB(tk.mem_peak_bytes)}</span>
+            <span class="k">${t('kv.memPeakDelta')}</span><span class="v">${fmtGB(Math.max(0, tk.mem_peak_bytes - tk.mem_baseline_bytes))}</span>
+            <span class="k">${t('kv.dbs')}</span><span class="v mono">${dbs.map(escapeHtml).join('<br>') || '-'}</span>
           </div>
         </div>
       </div>
       <div>
-        <div class="panel"><h3>事件流</h3><div class="table-wrap"><table>
-          <thead><tr><th>时间</th><th>事件</th><th>worker</th><th>详情</th></tr></thead>
+        <div class="panel"><h3>${t('t.eventStream')}</h3><div class="table-wrap"><table>
+          <thead><tr><th>${t('tb.time')}</th><th>${t('tb.event')}</th><th>worker</th><th>${t('tb.detail')}</th></tr></thead>
           <tbody>${(d.events || []).map(e => `<tr>
             <td class="mono">${fmtTimeFull(e.epoch_ms)}</td>
             <td><span class="badge ${e.event}">${e.event}</span></td>
@@ -208,10 +209,10 @@ export async function renderDetail(ctx) {
             <td class="muted mono">${escapeHtml(String(e.detail || '').slice(0, 60))}</td>
           </tr>`).join('')}</tbody>
         </table></div></div>
-        <div class="panel"><h3>对象 IO 明细（${(d.io || []).length}）</h3><div class="table-wrap"><table>
-          <thead><tr><th>方向</th><th>对象</th><th>字节</th><th>耗时</th></tr></thead>
+        <div class="panel"><h3>${t('t.objIo', (d.io || []).length)}</h3><div class="table-wrap"><table>
+          <thead><tr><th>${t('tb.direction')}</th><th>${t('tb.object')}</th><th>${t('tb.bytes')}</th><th>${t('tb.elapsed')}</th></tr></thead>
           <tbody>${(d.io || []).map(r => `<tr>
-            <td>${r.direction === 'w' ? '写' : '读'}</td>
+            <td>${t(r.direction === 'w' ? 'd.write' : 'd.read')}</td>
             <td class="mono">${expandoHtml(r.object_name, 16, 10)}</td>
             <td>${fmtBytes(r.bytes)}</td>
             <td>${fmtMs(r.duration_ms)}</td>

@@ -12,14 +12,21 @@
 // 滚轮 + 滑块拖选（高亮填充+手柄+选区数据背景）；「复原缩放」回全程；
 // 实时显示当前视图时间范围。
 import { getJson, escapeHtml, shortName, fmtTimeFull, fmtMs, fmtTime, fmtPct } from '../api.js';
-import { makeChart } from '../charts.js';
+import { makeChart, chartColors } from '../charts.js';
+import { cssVar } from '../theme.js';
+import { t } from '../i18n.js';
 import { navigate, gotoPage } from '../app.js';
 
-const DIM_COLOR = { cpu: '#4aa8ff', io: '#e8b339', wait: '#8a7ca8', queue: '#6fd3e8' };
 const DIM_LABEL = { cpu: 'CPU', io: 'IO', wait: 'Wait', queue: 'Queue' };
-const FAST_COLOR = '#3fb972';
-const FAIL_STROKE = '#e0564f';
-const NEUTRAL = '#4a5563';
+
+// 负载维度色经 CSS 变量实时读取（主题切换后页面重建取新值）。
+function dimColors() {
+  return { cpu: cssVar('--ser-blue'), io: cssVar('--ser-yellow'),
+           wait: cssVar('--pending'), queue: cssVar('--ser-cyan') };
+}
+function fastColor() { return cssVar('--ser-green'); }
+function failStroke() { return cssVar('--err'); }
+function neutralColor() { return cssVar('--gantt-neutral'); }
 
 // grid 几何（泳道点击的坐标判定与 ganttOption 配置一致）。
 // top 预留给时间标签条（悬停/框选起止点时间显示区，不覆盖 task 条）。
@@ -37,29 +44,30 @@ let savedState = null;   // { sort, colorDim, stripe, zoom, scrollTop }
 
 // 负载占比：cpu/io/wait 相对执行窗口；queue（排队等待 ready→started）
 // 相对 task 生命周期（queue+exec）——提交后大部分时间在等调度即为高。
-function ratios(t) {
-  const exec = Math.max(1, (t.exec_end_ms || t.exec_start_ms + 1) - t.exec_start_ms);
-  const cpu = (t.cpu_time_ms || 0) / exec;
-  const io = ((t.read_time_ms || 0) + (t.write_time_ms || 0)) / exec;
-  const queueMs = Math.max(0, (t.started_ms || 0) - (t.ready_ms || t.created_ms || 0));
+function ratios(tk) {
+  const exec = Math.max(1, (tk.exec_end_ms || tk.exec_start_ms + 1) - tk.exec_start_ms);
+  const cpu = (tk.cpu_time_ms || 0) / exec;
+  const io = ((tk.read_time_ms || 0) + (tk.write_time_ms || 0)) / exec;
+  const queueMs = Math.max(0, (tk.started_ms || 0) - (tk.ready_ms || tk.created_ms || 0));
   const queue = queueMs / (queueMs + exec);
   return { cpu, io, wait: Math.max(0, 1 - cpu - io), queue, queueMs, execMs: exec };
 }
 
 // 主色维度档位色：≥50% 实色，10~50% 半透明，<10% 中性灰。
 function dimTierColor(dim, ratio) {
-  if (ratio >= 0.5) return DIM_COLOR[dim];
-  if (ratio >= 0.1) return DIM_COLOR[dim] + '80';  // 50% 透明度
-  return NEUTRAL;
+  const c = dimColors();
+  if (ratio >= 0.5) return c[dim];
+  if (ratio >= 0.1) return c[dim] + '80';  // 50% 透明度
+  return neutralColor();
 }
 
-function isFast(t) {
-  return ((t.exec_end_ms || t.exec_start_ms + 1) - t.exec_start_ms) < 500;
+function isFast(tk) {
+  return ((tk.exec_end_ms || tk.exec_start_ms + 1) - tk.exec_start_ms) < 500;
 }
 
 // 复合判定：除主色维度外任一维度 ≥ HEAVY。
-function isCompound(t, dim) {
-  const r = ratios(t);
+function isCompound(tk, dim) {
+  const r = ratios(tk);
   return Object.entries(r).some(([k, v]) => k !== dim && v >= HEAVY);
 }
 
@@ -104,28 +112,28 @@ export function mount(ctx) {
   ctx.main.innerHTML = `
     <div class="panel">
       <div class="controls">
-        <select id="tl-sort" title="泳道排序">
-          <option value="id">按 worker id 排序</option>
-          <option value="host">按 host 排序</option>
+        <select id="tl-sort" title="${t('tl.sortTitle')}">
+          <option value="id">${t('tl.sortId')}</option>
+          <option value="host">${t('tl.sortHost')}</option>
         </select>
         <span class="tl-sep"></span>
-        <select id="tl-dim" title="主色维度">
-          <option value="cpu">主色维度：CPU</option>
-          <option value="io">主色维度：IO</option>
-          <option value="wait">主色维度：Wait</option>
-          <option value="queue">主色维度：Queue</option>
+        <select id="tl-dim" title="${t('tl.dimTitle')}">
+          <option value="cpu">${t('tl.dim', 'CPU')}</option>
+          <option value="io">${t('tl.dim', 'IO')}</option>
+          <option value="wait">${t('tl.dim', 'Wait')}</option>
+          <option value="queue">${t('tl.dim', 'Queue')}</option>
         </select>
         <span class="tl-sep"></span>
-        <button id="tl-stripe">条纹：关</button>
-        <button id="tl-reset-zoom">↺ 复原缩放</button>
+        <button id="tl-stripe"></button>
+        <button id="tl-reset-zoom">${t('tl.resetZoom')}</button>
         <span class="tl-range" id="tl-range"></span>
       </div>
       <div class="tl-legend" id="tl-legend"></div>
       <div id="tl-chart" style="width:100%;height:240px"></div>
-      <div class="tl-slider" id="tl-slider" title="时间范围选取：选区内拖动平移 · 边缘拖动调宽 · 选区外拖动框选">
+      <div class="tl-slider" id="tl-slider" title="${t('tl.sliderTitle')}">
         <div class="tl-slider-sel" id="tl-slider-sel"></div>
       </div>
-      <div class="tl-hint" style="margin-top:4px">滚轮缩放 · 图内拖动框选时间段 · 点击条形看负载详情 · 点击泳道标签跳转 Worker</div>
+      <div class="tl-hint" style="margin-top:4px">${t('tl.hint')}</div>
     </div>
     <div class="panel" id="tl-info" style="display:none"></div>`;
   chart = makeChart(document.getElementById('tl-chart'), ganttOption([], []));
@@ -146,8 +154,8 @@ export function mount(ctx) {
   chart.on('click', (params) => {
     if (suppressClick) return;  // 刚完成刷选，不当作点击
     if (params.seriesType !== 'custom') return;
-    const t = lastTasks.find(x => x.task_id === params.value[3]);
-    if (t) showInfo(t);
+    const tk = lastTasks.find(x => x.task_id === params.value[3]);
+    if (tk) showInfo(tk);
   });
   chart.getZr().on('click', (e) => {
     if (suppressClick) return;
@@ -165,7 +173,7 @@ export function mount(ctx) {
     if (idx >= 0 && lanes[idx] != null) {
       chartEl.style.cursor = 'pointer';
       showLaneTip(chartEl, e.offsetX, e.offsetY,
-                  `点击查看 Worker ${lanes[idx]} 详情`);
+                  t('tl.laneTip', lanes[idx]));
     } else {
       chartEl.style.cursor = 'default';
       hideLaneTip();
@@ -216,8 +224,8 @@ function attachHoverGuide(ctx) {
     hoverLineEl.style.top = r.top + 'px';
     hoverLineEl.style.height = (r.bottom - r.top) + 'px';
     // 时间标签常显：位于 grid 上方专用条（不覆盖第一行 task 条）。
-    const t = chart.convertFromPixel({ xAxisIndex: 0 }, x);
-    hoverTimeEl.textContent = fmtTimeFull(t);
+    const tm = chart.convertFromPixel({ xAxisIndex: 0 }, x);
+    hoverTimeEl.textContent = fmtTimeFull(tm);
     hoverTimeEl.style.display = 'block';
     hoverTimeEl.style.left =
       Math.min(Math.max(x - 60, r.left), r.right - 120) + 'px';
@@ -474,7 +482,7 @@ function syncControls(ctx) {
   if (dimSel) dimSel.value = ctx.tlColorDim;
   const stripeBtn = document.getElementById('tl-stripe');
   if (stripeBtn) {
-    stripeBtn.textContent = ctx.tlStripe ? '条纹：开' : '条纹：关';
+    stripeBtn.textContent = t(ctx.tlStripe ? 'tl.stripeOn' : 'tl.stripeOff');
     stripeBtn.classList.toggle('active', ctx.tlStripe);
   }
   renderLegend(ctx);
@@ -483,14 +491,16 @@ function syncControls(ctx) {
 function renderLegend(ctx) {
   const el = document.getElementById('tl-legend');
   if (!el) return;
-  const c = DIM_COLOR[ctx.tlColorDim];
+  const dim = ctx.tlColorDim;
+  const c = dimColors();
+  const neutral = neutralColor();
   el.innerHTML = `
-    <span class="lg"><i style="background:${c}"></i>${DIM_LABEL[ctx.tlColorDim]} ≥50%</span>
-    <span class="lg"><i style="background:${c}80"></i>10–50%</span>
-    <span class="lg"><i style="background:${NEUTRAL}"></i>&lt;10%</span>
-    <span class="lg"><i class="striped" style="background-color:${c}"></i>复合（其它维度 ≥30%，条纹开启时）</span>
-    <span class="lg"><i style="background:${FAST_COLOR}"></i>Fast &lt;500ms</span>
-    <span class="lg"><i style="background:${NEUTRAL};border:2px solid ${FAIL_STROKE}"></i>Failed（红描边）</span>`;
+    <span class="lg"><i style="background:${c[dim]}"></i>${t('tl.legendHigh', DIM_LABEL[dim])}</span>
+    <span class="lg"><i style="background:${c[dim]}80"></i>${t('tl.legendMid')}</span>
+    <span class="lg"><i style="background:${neutral}"></i>${t('tl.legendLow')}</span>
+    <span class="lg"><i class="striped" style="background-color:${c[dim]}"></i>${t('tl.legendCompound')}</span>
+    <span class="lg"><i style="background:${fastColor()}"></i>${t('tl.legendFast')}</span>
+    <span class="lg"><i style="background:${neutral};border:2px solid ${failStroke()}"></i>${t('tl.legendFailed')}</span>`;
 }
 
 // y 轴标签区命中：x 在 [0, GRID.left)，y 落在 plot 区按泳道等分判定。
@@ -549,7 +559,7 @@ export async function update(ctx) {
   }
   hostMap[0] = (meta && meta.meta && meta.meta.hostname) || 'master';
 
-  lanes = [...new Set(tasks.map(t => t.worker_id))];
+  lanes = [...new Set(tasks.map(tk => tk.worker_id))];
   if (ctx.tlSort === 'host') {
     lanes.sort((a, b) => (hostMap[a] || '').localeCompare(hostMap[b] || '') || (a - b));
   } else {
@@ -563,18 +573,18 @@ export async function update(ctx) {
   chart.resize();
 
   // 单 series + 逐 datum 着色（主色档位 + Failed 描边 + 条纹 group）。
-  const seriesData = tasks.map(t => {
-    const r = ratios(t);
-    const failed = t.status === 'FAILED';
-    const fast = isFast(t) && !failed;
+  const seriesData = tasks.map(tk => {
+    const r = ratios(tk);
+    const failed = tk.status === 'FAILED';
+    const fast = isFast(tk) && !failed;
     return {
-      value: [lanes.indexOf(t.worker_id), t.exec_start_ms,
-              t.exec_end_ms || t.exec_start_ms + 50, t.task_id],
-      name: t.name,
+      value: [lanes.indexOf(tk.worker_id), tk.exec_start_ms,
+              tk.exec_end_ms || tk.exec_start_ms + 50, tk.task_id],
+      name: tk.name,
       _r: r, _failed: failed, _fast: fast,
-      itemStyle: fast ? { color: FAST_COLOR }
+      itemStyle: fast ? { color: fastColor() }
         : { color: dimTierColor(ctx.tlColorDim, r[ctx.tlColorDim]),
-            borderColor: failed ? FAIL_STROKE : 'transparent',
+            borderColor: failed ? failStroke() : 'transparent',
             borderWidth: failed ? 2 : 0 },
     };
   });
@@ -619,37 +629,38 @@ function updateRangeHint() {
   const span = extent.hi - extent.lo || 1;
   const t1 = extent.lo + span * z.start / 100;
   const t2 = extent.lo + span * z.end / 100;
-  el.textContent = `视图：${fmtTime(t1)} → ${fmtTime(t2)}` +
-                   (z.end - z.start < 99.5 ? `（${(z.end - z.start).toFixed(0)}%）` : '（全程）');
+  el.textContent = z.end - z.start < 99.5
+    ? t('tl.view', fmtTime(t1), fmtTime(t2), (z.end - z.start).toFixed(0))
+    : t('tl.viewFull', fmtTime(t1), fmtTime(t2));
 }
 
 // 驻留详情：时间与负载指标逐项独立展示（不聚合，用户裁定）。
-function showInfo(t) {
+function showInfo(tk) {
   const el = document.getElementById('tl-info');
   if (!el) return;
-  const dur = t.exec_end_ms ? t.exec_end_ms - t.exec_start_ms : null;
-  const r = ratios(t);
+  const dur = tk.exec_end_ms ? tk.exec_end_ms - tk.exec_start_ms : null;
+  const r = ratios(tk);
   el.style.display = 'block';
   el.innerHTML = `
-    <h3>task ${t.task_id} · <span class="badge ${t.status}">${t.status}</span>${isFast(t) ? ' · Fast' : ''}</h3>
-    <div class="full-name" style="margin-bottom:8px">${escapeHtml(t.name)}</div>
+    <h3>task ${tk.task_id} · <span class="badge ${tk.status}">${tk.status}</span>${isFast(tk) ? ' · Fast' : ''}</h3>
+    <div class="full-name" style="margin-bottom:8px">${escapeHtml(tk.name)}</div>
     <div class="kv">
-      <span class="k">worker</span><span class="v">${t.worker_id} · ${escapeHtml(hostMap[t.worker_id] || '?')}</span>
-      <span class="k">创建时间</span><span class="v mono">${fmtTimeFull(t.created_ms)}</span>
-      <span class="k">依赖就绪时间</span><span class="v mono">${fmtTimeFull(t.ready_ms)}</span>
-      <span class="k">开始调度时间</span><span class="v mono">${fmtTimeFull(t.started_ms)}</span>
-      <span class="k">执行开始时间</span><span class="v mono">${fmtTimeFull(t.exec_start_ms)}</span>
-      <span class="k">执行结束时间</span><span class="v mono">${fmtTimeFull(t.exec_end_ms)}</span>
-      <span class="k">完成确认时间</span><span class="v mono">${fmtTimeFull(t.completed_ms)}</span>
-      <span class="k">运行时长</span><span class="v mono">${fmtMs(dur)}</span>
-      <span class="k">排队等待时长</span><span class="v">${fmtMs(r.queueMs)}</span>
-      <span class="k">排队占生命周期比</span><span class="v">${fmtPct(r.queue)}</span>
-      <span class="k">CPU 耗时</span><span class="v">${fmtMs(t.cpu_time_ms)}</span>
-      <span class="k">CPU 占比</span><span class="v">${fmtPct(r.cpu)}</span>
-      <span class="k">IO 读耗时</span><span class="v">${fmtMs(t.read_time_ms)}</span>
-      <span class="k">IO 写耗时</span><span class="v">${fmtMs(t.write_time_ms)}</span>
-      <span class="k">IO 占比</span><span class="v">${fmtPct(r.io)}</span>
-      <span class="k">空闲占比</span><span class="v">${fmtPct(r.wait)}（执行窗口内非 CPU 非 IO）</span>
+      <span class="k">worker</span><span class="v">${tk.worker_id} · ${escapeHtml(hostMap[tk.worker_id] || '?')}</span>
+      <span class="k">${t('tb.created')}</span><span class="v mono">${fmtTimeFull(tk.created_ms)}</span>
+      <span class="k">${t('tl.depsReadyAt')}</span><span class="v mono">${fmtTimeFull(tk.ready_ms)}</span>
+      <span class="k">${t('tl.dispatchAt')}</span><span class="v mono">${fmtTimeFull(tk.started_ms)}</span>
+      <span class="k">${t('tl.execStartAt')}</span><span class="v mono">${fmtTimeFull(tk.exec_start_ms)}</span>
+      <span class="k">${t('tl.execEndAt')}</span><span class="v mono">${fmtTimeFull(tk.exec_end_ms)}</span>
+      <span class="k">${t('tl.completedAt')}</span><span class="v mono">${fmtTimeFull(tk.completed_ms)}</span>
+      <span class="k">${t('tb.duration')}</span><span class="v mono">${fmtMs(dur)}</span>
+      <span class="k">${t('tl.queueWaitMs')}</span><span class="v">${fmtMs(r.queueMs)}</span>
+      <span class="k">${t('tl.queueLifeShare')}</span><span class="v">${fmtPct(r.queue)}</span>
+      <span class="k">${t('tb.cpuTime')}</span><span class="v">${fmtMs(tk.cpu_time_ms)}</span>
+      <span class="k">${t('kv.cpuShare')}</span><span class="v">${fmtPct(r.cpu)}</span>
+      <span class="k">${t('kv.readTime')}</span><span class="v">${fmtMs(tk.read_time_ms)}</span>
+      <span class="k">${t('kv.writeTime')}</span><span class="v">${fmtMs(tk.write_time_ms)}</span>
+      <span class="k">${t('tl.ioShare')}</span><span class="v">${fmtPct(r.io)}</span>
+      <span class="k">${t('tl.idleShare')}</span><span class="v">${fmtPct(r.wait)}${t('tl.idleShareNote')}</span>
     </div>`;
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -673,18 +684,20 @@ function ganttOption(wids, seriesData, ctx) {
     tooltip: {
       trigger: 'item',
       extraCssText: 'max-width:380px; white-space:normal; word-break:break-all;',
+      backgroundColor: chartColors().panel2,
+      borderColor: chartColors().axis,
+      textStyle: { color: chartColors().text, fontSize: 12 },
       formatter: p => {
         const d = seriesData.find(x => x.value[3] === p.value[3]) || {};
         const [, s, e, tid] = p.value;
         const dur = ((e - s) / 1000).toFixed(2);
         const r = d._r || {};
-        let load = '';
-        if (d._fast) load = 'Fast Task';
-        else load = `排队 ${fmtPct(r.queue)} · CPU ${fmtPct(r.cpu)} · IO ${fmtPct(r.io)} · 空闲 ${fmtPct(r.wait)}`;
+        const load = d._fast ? t('tl.fastTask')
+          : t('tl.ttLoad', fmtPct(r.queue), fmtPct(r.cpu), fmtPct(r.io), fmtPct(r.wait));
         return `<b>#${tid}</b> ${shortName(p.name, 12, 8)}<br>${load}` +
                `<br>${new Date(s).toLocaleTimeString()} → ` +
                `${new Date(e).toLocaleTimeString()}（${dur}s）` +
-               `<br><span style="color:#7a8a9c">点击条形查看负载详情</span>`;
+               `<br><span style="color:${chartColors().label}">${escapeHtml(t('tl.ttClickDetail'))}</span>`;
       },
     },
     // animation false：去除缩放/平移时坐标轴标签的动态过渡（拖快时时间
@@ -692,7 +705,7 @@ function ganttOption(wids, seriesData, ctx) {
     animation: false,
     xAxis: {
       type: 'time',
-      axisLine: { lineStyle: { color: '#37424f' } },
+      axisLine: { lineStyle: { color: chartColors().axis } },
       // 中间刻度标签隐藏（动态重排的来源）；视图起止时间由自绘 DOM 在
       // 底部左右角显示（见 attachAxisTimes），中间时间经悬停竖线查看。
       axisLabel: { show: false },
@@ -705,8 +718,8 @@ function ganttOption(wids, seriesData, ctx) {
       inverse: true,
       data: wids.map(w => w === 0 ? `master(0) · ${hostMap[0]}`
                                   : `worker ${w} · ${hostMap[w] || '?'}`),
-      axisLine: { lineStyle: { color: '#37424f' } },
-      axisLabel: { color: '#4aa8ff' },
+      axisLine: { lineStyle: { color: chartColors().axis } },
+      axisLabel: { color: chartColors().accent },
     },
     // 缩放：仅滚轮缩放（inside 的 moveOnMouseMove/moveOnMouseWheel 默认
     // 开启会导致图内移动/拖动鼠标时平移坐标轴——用户裁定只保留拖动框选

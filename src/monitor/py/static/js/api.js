@@ -1,4 +1,6 @@
 // 轻量 fetch 封装（GET JSON，失败静默返回 null 由调用方降级）。
+import { t } from './i18n.js';
+
 export async function getJson(url) {
   try {
     const r = await fetch(url, { cache: 'no-store' });
@@ -116,7 +118,7 @@ export function expandoHtml(full, head = 10, tail = 10) {
     ? escapeHtml(f)
     : escapeHtml(f.slice(0, head)) + '....' + escapeHtml(f.slice(-tail));
   return `<span class="expando" data-full="${escapeHtml(f)}" ` +
-         `title="点击展开/收起全名">${short}</span>`;
+         `title="${escapeHtml(t('name.expandToggle'))}">${short}</span>`;
 }
 
 // 错误信息（如 traceback）：首尾缩略单行省略，悬停（原生 title）显示完整。

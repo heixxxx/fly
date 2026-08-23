@@ -1,9 +1,22 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>fly cluster monitor</title>
+<script>
+// FOUC 防护：CSS 渲染前先按持久化偏好落 data-theme 与 lang（主题默认
+// 跟随系统，语言默认中文；localStorage 在隐私模式下可能抛异常，吞掉
+// 保持默认深色/中文即可——theme.js/i18n.js 加载后幂等重设）。
+try {
+  var _tm = localStorage.getItem('fly-monitor-theme') || 'system';
+  var _dark = _tm === 'dark' ||
+    (_tm === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = _dark ? 'dark' : 'light';
+  document.documentElement.lang =
+    (localStorage.getItem('fly-monitor-lang') || 'zh') === 'en' ? 'en' : 'zh-CN';
+} catch (e) {}
+</script>
 <link rel="stylesheet" href="/static/css/app.css">
 <script src="/static/vendor/echarts.min.js"></script>
 </head>
@@ -18,9 +31,12 @@
     <button data-page="dbs">DBs</button>
   </nav>
   <div class="header-right">
+    <select id="lang-sel" class="hdr-select"></select>
+    <select id="theme-sel" class="hdr-select"></select>
     <span id="poll-state" class="run-info"></span>
     <label class="poll-toggle">
-      <input type="checkbox" id="poll-enabled" checked> 自动刷新(3s)
+      <input type="checkbox" id="poll-enabled" checked>
+      <span id="poll-label">自动刷新(3s)</span>
     </label>
     <span id="run-info" class="run-info"></span>
   </div>

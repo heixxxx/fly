@@ -158,6 +158,27 @@ fly_log.latest` 始终指向最新 run 且新 run 落盘后自动跟随（软链
 单位口径（用户裁定）：**内存与磁盘占用统一 GB、三位有效数字**（fmtGB）；
 网络速率与 IO 字节量保持自适应单位。
 
+### 5.1 多语言与主题
+
+- **语言**：header 右侧下拉切换 **中文（默认）/ English**，持久化
+  localStorage（`fly-monitor-lang`），刷新后保持。字典集中在
+  `js/i18n.js`（ZH/EN 两份 key 完整一致，冒烟测试断言防漏译；`t(key,
+  ...args)` 缺 key 回退中文、再缺显示 key 本身——开发期肉眼可见）。
+  语言切换 = 整页重建（复用 mount/update 模型）：mount 模板文案取新语言，
+  当前页上下文（worker/task 详情、过滤条件、timeline 缩放/排序）全部保留。
+- **主题**：header 右侧下拉切换 **浅色 / 深色 / 跟随系统（默认）**，持久化
+  localStorage（`fly-monitor-theme`）。实际主题落在 `<html
+  data-theme="light|dark">`，CSS 变量双套值（app.css `--bg/--panel/--text/
+  --ser-*` 等，两套集合一致性由冒烟测试断言）；`index.html` 头部内联脚本
+  在 CSS 渲染前先落 data-theme（防首帧闪错色）。跟随系统经
+  `matchMedia(prefers-color-scheme)` 解析，系统切换实时生效。
+- **ECharts 主题联动**：canvas 不消费 CSS 变量——图表色（轴线/标签/
+  tooltip/数据系列色/timeline 负载维度色）经 `theme.cssVar()` 实时读取；
+  主题切换随整页重建新建图表实例，自然取到新值。
+- 曲线名（Total Proc RSS / Host CPU 等）与状态枚举（COMPLETED/EXITED）
+  保持英文原文——专有指标名不翻译（用户裁定口径：图表曲线名不用数学
+  符号、用英文全称）。
+
 ## 6. 当前未监控项（待后续增强）
 
 - **进程磁盘 IO 速率**：总览页为占位图（"暂未支持"）。候选方案：
@@ -199,6 +220,8 @@ src/monitor/py/
   task_io.py             Python IO 计时归属（database.py/executor.py 插桩）
   serve.py               Web GUI（stdlib）+ launch_monitor_gui
   static/                前端工程（ECharts vendor + ES modules 五页面）
+    js/i18n.js           中英双语文典 + t()（localStorage 持久化，默认中文）
+    js/theme.js          浅色/深色/跟随系统（data-theme + cssVar 供 ECharts）
 third_party/sqlite/      SQLite 3.46.1 amalgamation（公有领域 vendor）
 qa/monitor/              test_monitor_db / test_monitor_gui
 ```

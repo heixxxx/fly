@@ -2,7 +2,8 @@
 // mount 建外层容器；update 按 ctx.workerId 填列表或详情——详情骨架/图表
 // 实例只在进入时建一次，后续 update 仅 setOption（缩放/hover 保留）。
 import { getJson, fetchSamplesIncremental, fmtGB, fmtBytes, fmtMs, escapeHtml, expandoHtml } from '../api.js';
-import { makeChart, line, rateSeries } from '../charts.js';
+import { makeChart, line, rateSeries, chartColors } from '../charts.js';
+import { t } from '../i18n.js';
 import { navigate } from '../app.js';
 
 let charts = [];
@@ -42,7 +43,7 @@ export async function update(ctx) {
     };
     return;
   }
-  await fillDetail(body, ctx.workerId);
+  await fillDetail(body, ctx);
 }
 
 function card(w) {
@@ -51,22 +52,27 @@ function card(w) {
   const cpu = l ? (l.proc_cpu_bps / 100).toFixed(1) + '%' : '-';
   const hcpu = l ? (l.host_cpu_bps / 100).toFixed(1) + '%' : '-';
   // 终态语义：EXITED（正常退出，绿）/ DEAD（异常死亡，红）；其余状态原样。
-  const stateBadge = w.exit_kind
-    ? `<span class="badge ${w.exit_kind}" style="float:right" title="${w.exit_kind === 'EXITED' ? '收到关停指令后正常退出' : '无关停指令先行：心跳超时/宽限耗尽判死'}">${w.exit_kind === 'EXITED' ? '正常退出' : '异常死亡'}</span>`
-    : `<span class="badge ${w.last_event}" style="float:right">${w.last_event || '-'}</span>`;
+  let stateBadge;
+  if (w.exit_kind) {
+    const exited = w.exit_kind === 'EXITED';
+    stateBadge = `<span class="badge ${w.exit_kind}" style="float:right" title="${escapeHtml(t(exited ? 'ev.exitedTitle' : 'ev.diedTitle'))}">${t(exited ? 'ev.exited' : 'ev.died')}</span>`;
+  } else {
+    stateBadge = `<span class="badge ${w.last_event}" style="float:right">${w.last_event || '-'}</span>`;
+  }
   return `<div class="worker-card" data-wid="${w.worker_id}">
     <div class="title">worker ${w.worker_id}
       <span class="muted">${w.hostname}${w.ip ? ':' + w.ip : ''}</span>
       ${stateBadge}
     </div>
-    <div class="row"><span>角色</span><b>${w.role || '-'}</b></div>
-    <div class="row"><span>进程 RSS / CPU</span><b>${rss} · ${cpu}</b></div>
-    <div class="row"><span>机器 CPU</span><b>${hcpu}</b></div>
-    <div class="row"><span>属性</span><b>${w.attributes || '-'}</b></div>
+    <div class="row"><span>${t('w.role')}</span><b>${w.role || '-'}</b></div>
+    <div class="row"><span>${t('w.procRssCpu')}</span><b>${rss} · ${cpu}</b></div>
+    <div class="row"><span>${t('w.hostCpu')}</span><b>${hcpu}</b></div>
+    <div class="row"><span>${t('w.attrs')}</span><b>${w.attributes || '-'}</b></div>
   </div>`;
 }
 
-async function fillDetail(body, wid) {
+async function fillDetail(body, ctx) {
+  const wid = ctx.workerId;
   // 样本经增量缓存拉取（每轮只传新增）。
   const [samples, tasks] = await Promise.all([
     fetchSamplesIncremental(wid),
@@ -77,18 +83,18 @@ async function fillDetail(body, wid) {
 
   if (!detailBuilt) {
     body.innerHTML = `
-      <span class="back-link" id="w-back">← 返回 worker 列表</span>
+      <span class="back-link" id="w-back">${t('w.back')}</span>
       <div class="kpi-row" id="w-kpi"></div>
       <div class="grid cols-2">
-        <div class="panel"><h3>CPU（进程 vs 机器）</h3><div id="w-cpu" class="chart"></div></div>
-        <div class="panel"><h3>内存（进程 vs 机器）</h3><div id="w-mem" class="chart"></div></div>
-        <div class="panel"><h3>网络 IO 速率（读/写）</h3><div id="w-net" class="chart"></div></div>
-        <div class="panel"><h3>机器平均负载（Load1）</h3>
-        <div class="muted" style="font-size:12px;margin:-6px 0 6px">Load1：1 分钟平均可运行任务数（含等 IO），健康参考值 ≈ CPU 核数</div><div id="w-load" class="chart"></div></div>
+        <div class="panel"><h3>${t('w.cpu')}</h3><div id="w-cpu" class="chart"></div></div>
+        <div class="panel"><h3>${t('w.mem')}</h3><div id="w-mem" class="chart"></div></div>
+        <div class="panel"><h3>${t('w.net')}</h3><div id="w-net" class="chart"></div></div>
+        <div class="panel"><h3>${t('w.load')}</h3>
+        <div class="muted" style="font-size:12px;margin:-6px 0 6px">${t('w.loadHint')}</div><div id="w-load" class="chart"></div></div>
       </div>
       <div class="panel"><h3 id="w-task-title"></h3>
         <div class="table-wrap"><table>
-          <thead><tr><th>ID</th><th>名称</th><th>状态</th><th>运行时长</th><th>CPU</th><th>读/写时间</th><th>avg/peak 内存</th></tr></thead>
+          <thead><tr><th>${t('tb.id')}</th><th>${t('tb.name')}</th><th>${t('tb.status')}</th><th>${t('tb.duration')}</th><th>${t('tb.cpuCol')}</th><th>${t('tb.rwTime')}</th><th>${t('tb.memAvgPeak')}</th></tr></thead>
           <tbody id="w-tasks"></tbody>
         </table></div>
       </div>`;
@@ -103,56 +109,57 @@ async function fillDetail(body, wid) {
   }
 
   document.getElementById('w-kpi').innerHTML = `
-    <div class="kpi"><div class="label">样本数</div><div class="value">${sp.length}</div></div>
-    <div class="kpi"><div class="label">最新进程 RSS</div><div class="value">${sp.length ? fmtGB(sp[sp.length - 1].proc_rss_bytes) : '-'}</div></div>
-    <div class="kpi"><div class="label">最新进程 CPU</div><div class="value">${sp.length ? (sp[sp.length - 1].proc_cpu_bps / 100).toFixed(1) + '%' : '-'}</div></div>
-    <div class="kpi"><div class="label">网络累计 读/写</div><div class="value" style="font-size:15px">${sp.length ? fmtBytes(sp[sp.length - 1].net_read_bytes) + ' / ' + fmtBytes(sp[sp.length - 1].net_write_bytes) : '-'}</div></div>`;
+    <div class="kpi"><div class="label">${t('ov.samples')}</div><div class="value">${sp.length}</div></div>
+    <div class="kpi"><div class="label">${t('w.latestRss')}</div><div class="value">${sp.length ? fmtGB(sp[sp.length - 1].proc_rss_bytes) : '-'}</div></div>
+    <div class="kpi"><div class="label">${t('w.latestCpu')}</div><div class="value">${sp.length ? (sp[sp.length - 1].proc_cpu_bps / 100).toFixed(1) + '%' : '-'}</div></div>
+    <div class="kpi"><div class="label">${t('w.netTotal')}</div><div class="value" style="font-size:15px">${sp.length ? fmtBytes(sp[sp.length - 1].net_read_bytes) + ' / ' + fmtBytes(sp[sp.length - 1].net_write_bytes) : '-'}</div></div>`;
 
+  const c = chartColors();
   charts[0].setOption({
     series: [
-      line('Proc CPU', times.map((t, i) => [t, sp[i].proc_cpu_bps / 100]), '#4aa8ff'),
-      line('Host CPU', times.map((t, i) => [t, sp[i].host_cpu_bps / 100]), '#e8b339'),
+      line('Proc CPU', times.map((tm, i) => [tm, sp[i].proc_cpu_bps / 100]), c.blue),
+      line('Host CPU', times.map((tm, i) => [tm, sp[i].host_cpu_bps / 100]), c.yellow),
     ],
-    yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: '{value}%' } }],
+    yAxis: [{ type: 'value', axisLabel: { color: c.label, formatter: '{value}%' } }],
   });
   charts[1].setOption({
     series: [
-      line('Proc RSS', times.map((t, i) => [t, sp[i].proc_rss_bytes]), '#4aa8ff', 0, true),
-      line('Host Available', times.map((t, i) => [t, sp[i].host_mem_avail_bytes]), '#3fb972'),
-      // 总量是参考线：亮色虚线（原 #37424f 与深色背景几乎不可见）。
+      line('Proc RSS', times.map((tm, i) => [tm, sp[i].proc_rss_bytes]), c.blue, 0, true),
+      line('Host Available', times.map((tm, i) => [tm, sp[i].host_mem_avail_bytes]), c.green),
+      // 总量是参考线：亮/中灰虚线（深浅主题下均与背景拉开对比度）。
       { name: 'Host Total', type: 'line',
-        data: times.map((t, i) => [t, sp[i].host_mem_total_bytes]),
-        showSymbol: false, lineStyle: { width: 1.5, color: '#5f7385', type: 'dashed' },
-        itemStyle: { color: '#5f7385' } },
+        data: times.map((tm, i) => [tm, sp[i].host_mem_total_bytes]),
+        showSymbol: false, lineStyle: { width: 1.5, color: c.hostTotal, type: 'dashed' },
+        itemStyle: { color: c.hostTotal } },
     ],
-    yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: v => fmtGB(v) } }],
+    yAxis: [{ type: 'value', axisLabel: { color: c.label, formatter: v => fmtGB(v) } }],
   });
   charts[2].setOption({
     series: [
-      line('Read', rateSeries(times, sp.map(x => x.net_read_bytes)), '#6fd3e8'),
-      line('Write', rateSeries(times, sp.map(x => x.net_write_bytes)), '#ff9d5c'),
+      line('Read', rateSeries(times, sp.map(x => x.net_read_bytes)), c.cyan),
+      line('Write', rateSeries(times, sp.map(x => x.net_write_bytes)), c.orange),
     ],
-    yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: v => fmtBytes(v) } }],
+    yAxis: [{ type: 'value', axisLabel: { color: c.label, formatter: v => fmtBytes(v) } }],
   });
   charts[3].setOption({
-    series: [line('Load1', times.map((t, i) => [t, sp[i].host_load1_x100 / 100]), '#c79bf2', 0, true)],
+    series: [line('Load1', times.map((tm, i) => [tm, sp[i].host_load1_x100 / 100]), c.purple, 0, true)],
   });
 
   document.getElementById('w-task-title').textContent =
-    `worker ${wid} 的 tasks（${tasks ? tasks.total : 0}）`;
+    t('w.tasksOf', wid, tasks ? tasks.total : 0);
   document.getElementById('w-tasks').innerHTML =
     (tasks ? tasks.tasks : []).map(taskRow).join('');
 }
 
-function taskRow(t) {
-  const dur = t.exec_end_ms ? t.exec_end_ms - t.exec_start_ms : null;
+function taskRow(tk) {
+  const dur = tk.exec_end_ms ? tk.exec_end_ms - tk.exec_start_ms : null;
   return `<tr>
-    <td>${t.task_id}</td><td>${expandoHtml(t.name)}</td>
-    <td><span class="badge ${t.status}">${t.status}</span></td>
+    <td>${tk.task_id}</td><td>${expandoHtml(tk.name)}</td>
+    <td><span class="badge ${tk.status}">${tk.status}</span></td>
     <td>${fmtMs(dur)}</td>
-    <td>${fmtMs(t.cpu_time_ms)}</td>
-    <td>${fmtMs(t.read_time_ms)} / ${fmtMs(t.write_time_ms)}</td>
-    <td>${fmtGB(t.mem_avg_bytes)} / ${fmtGB(t.mem_peak_bytes)}</td>
+    <td>${fmtMs(tk.cpu_time_ms)}</td>
+    <td>${fmtMs(tk.read_time_ms)} / ${fmtMs(tk.write_time_ms)}</td>
+    <td>${fmtGB(tk.mem_avg_bytes)} / ${fmtGB(tk.mem_peak_bytes)}</td>
   </tr>`;
 }
 
