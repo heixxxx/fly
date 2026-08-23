@@ -76,10 +76,11 @@ async function fillDetail(body, wid) {
       <span class="back-link" id="w-back">← 返回 worker 列表</span>
       <div class="kpi-row" id="w-kpi"></div>
       <div class="grid cols-2">
-        <div class="panel"><h3>CPU%（本进程 vs 机器）</h3><div id="w-cpu" class="chart"></div></div>
-        <div class="panel"><h3>内存（进程 RSS vs 机器可用）</h3><div id="w-mem" class="chart"></div></div>
-        <div class="panel"><h3>网络 IO 速率（读/写 B/s）</h3><div id="w-net" class="chart"></div></div>
-        <div class="panel"><h3>机器 load1</h3><div id="w-load" class="chart"></div></div>
+        <div class="panel"><h3>CPU（进程 vs 机器）</h3><div id="w-cpu" class="chart"></div></div>
+        <div class="panel"><h3>内存（进程 vs 机器）</h3><div id="w-mem" class="chart"></div></div>
+        <div class="panel"><h3>网络 IO 速率（读/写）</h3><div id="w-net" class="chart"></div></div>
+        <div class="panel"><h3>机器平均负载（Load1）</h3>
+        <div class="muted" style="font-size:12px;margin:-6px 0 6px">Load1：1 分钟平均可运行任务数（含等 IO），健康参考值 ≈ CPU 核数</div><div id="w-load" class="chart"></div></div>
       </div>
       <div class="panel"><h3 id="w-task-title"></h3>
         <div class="table-wrap"><table>

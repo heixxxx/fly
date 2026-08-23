@@ -29,9 +29,9 @@ export function mount(ctx) {
         <div class="table-wrap"><table>
           <thead><tr>
             <th>ID</th><th>名称</th><th>状态</th><th>worker</th>
-            <th>创建时间/开始时间/结束时间</th><th>排队→执行</th><th>运行时长</th><th>CPU time</th>
+            <th>创建时间</th><th>开始时间</th><th>结束时间</th><th>排队→执行</th><th>运行时长</th><th>CPU time</th>
             <th title="exec 时长中 CPU/IO 占比">CPU / IO 占比</th>
-            <th>读(时间/字节)</th><th>写(时间/字节)</th>
+            <th>读(字节/时间)</th><th>写(字节/时间)</th>
             <th>内存 avg / peak</th><th>关联 db</th>
           </tr></thead>
           <tbody id="t-body"></tbody>
@@ -136,14 +136,15 @@ function row(t) {
     <td>${expandoHtml(t.name)}</td>
     <td><span class="badge ${t.status}">${t.status}</span></td>
     <td>${t.worker_id || '-'}</td>
-    <td class="mono" style="white-space:normal">
-      ${fmtTimeFull(t.created_ms)}<br>${fmtTimeFull(t.started_ms)} → ${fmtTimeFull(t.completed_ms)}</td>
+    <td class="mono">${fmtTimeFull(t.created_ms)}</td>
+    <td class="mono">${fmtTimeFull(t.started_ms)}</td>
+    <td class="mono">${fmtTimeFull(t.completed_ms)}</td>
     <td>${queue}</td>
     <td>${fmtMs(execMs)}</td>
     <td>${fmtMs(t.cpu_time_ms)}</td>
     <td>${bar}</td>
-    <td>${fmtMs(t.read_time_ms)} / ${fmtBytes(t.read_bytes)}</td>
-    <td>${fmtMs(t.write_time_ms)} / ${fmtBytes(t.write_bytes)}</td>
+    <td>${fmtBytes(t.read_bytes)} / ${fmtMs(t.read_time_ms)}</td>
+    <td>${fmtBytes(t.write_bytes)} / ${fmtMs(t.write_time_ms)}</td>
     <td>${fmtGB(t.mem_avg_bytes)} / ${fmtGB(t.mem_peak_bytes)}</td>
     <td class="mono">${t.dbs ? expandoHtml(t.dbs, 14, 8) : '-'}</td>
   </tr>`;
@@ -175,16 +176,16 @@ export async function renderDetail(ctx) {
             <span class="k">创建时间</span><span class="v mono">${fmtTimeFull(t.created_ms)}</span>
             <span class="k">依赖就绪</span><span class="v mono">${fmtTimeFull(t.ready_ms)}</span>
             <span class="k">开始时间</span><span class="v mono">${fmtTimeFull(t.started_ms)}</span>
-            <span class="k">运行时长</span><span class="v mono">${fmtMs(execMs)}（${fmtTimeFull(t.exec_start_ms)} → ${fmtTimeFull(t.exec_end_ms)}）</span>
             <span class="k">结束时间</span><span class="v mono">${fmtTimeFull(t.completed_ms)}</span>
-            ${t.error ? `<span class="k">错误</span><span class="v">${errorBriefHtml(t.error)}</span>` : ''}
+            <span class="k">运行时长</span><span class="v mono">${fmtMs(execMs)}</span>
+            ${t.error ? `<span class="k">错误</span><span class="v">${errorBriefHtml(t.error)}<button class="pin-btn" data-pin-err title="驻留显示完整错误">📌</button><pre class="err-full" style="display:none"></pre></span>` : ''}
           </div>
         </div>
         <div class="panel"><h3>资源 / IO</h3>
           <div class="kv">
             <span class="k">CPU time</span><span class="v">${fmtMs(t.cpu_time_ms)}${execMs ? `（${(t.cpu_time_ms / execMs * 100).toFixed(0)}% of exec）` : ''}</span>
-            <span class="k">读时间/字节</span><span class="v">${fmtMs(t.read_time_ms)} / ${fmtBytes(t.read_bytes)}</span>
-            <span class="k">写时间/字节</span><span class="v">${fmtMs(t.write_time_ms)} / ${fmtBytes(t.write_bytes)}</span>
+            <span class="k">读字节/时间</span><span class="v">${fmtBytes(t.read_bytes)} / ${fmtMs(t.read_time_ms)}</span>
+            <span class="k">写字节/时间</span><span class="v">${fmtBytes(t.write_bytes)} / ${fmtMs(t.write_time_ms)}</span>
             <span class="k">内存 baseline</span><span class="v">${fmtGB(t.mem_baseline_bytes)}</span>
             <span class="k">内存 avg</span><span class="v">${fmtGB(t.mem_avg_bytes)}（delta ${fmtGB(Math.max(0, t.mem_avg_bytes - t.mem_baseline_bytes))}）</span>
             <span class="k">内存 peak</span><span class="v">${fmtGB(t.mem_peak_bytes)}（delta ${fmtGB(Math.max(0, t.mem_peak_bytes - t.mem_baseline_bytes))}）</span>

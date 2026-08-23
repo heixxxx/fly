@@ -146,6 +146,21 @@ nav.addEventListener('click', (e) => {
   }
 });
 
+// 错误信息 pin：驻留浮窗显示完整内容（再次点击收起）。
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.pin-btn');
+  if (!btn) return;
+  e.stopPropagation();
+  const box = btn.parentElement?.querySelector('.err-full');
+  if (!box) return;
+  if (box.style.display === 'none') {
+    box.textContent = btn.parentElement?.querySelector('.err-brief')?.title || '';
+    box.style.display = '';
+  } else {
+    box.style.display = 'none';
+  }
+});
+
 // 超长名称的展开/收起（全局委托一次；缩略/全名切换不触发其它点击逻辑）。
 document.addEventListener('click', (e) => {
   const el = e.target.closest('.expando');

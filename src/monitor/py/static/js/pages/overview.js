@@ -21,9 +21,9 @@ export function mount(ctx) {
   ctx.main.innerHTML = `
     <div class="kpi-row" id="ov-kpi"></div>
     <div class="grid cols-2">
-      <div class="panel"><h3>集群聚合进程 RSS</h3><div id="ov-rss" class="chart"></div></div>
-      <div class="panel"><h3>集群聚合 CPU%（进程 Σ / 机器 max）</h3><div id="ov-cpu" class="chart"></div></div>
-      <div class="panel"><h3>集群聚合网络 IO 速率（读/写 Σ）</h3><div id="ov-net" class="chart"></div></div>
+      <div class="panel"><h3>集群聚合 RSS</h3><div id="ov-rss" class="chart"></div></div>
+      <div class="panel"><h3>集群聚合 CPU（进程 vs 机器）</h3><div id="ov-cpu" class="chart"></div></div>
+      <div class="panel"><h3>集群聚合网络 IO 速率（读/写）</h3><div id="ov-net" class="chart"></div></div>
       <div class="panel"><h3>磁盘 IO 速率</h3>
         <div class="empty-chart">磁盘 IO 监控暂未支持（待后续增强）</div>
       </div>
@@ -57,7 +57,7 @@ export async function update(ctx) {
     <div class="kpi"><div class="label">运行时长</div><div class="value">${durS}</div><div class="sub">${m.hostname || ''}</div></div>
     <div class="kpi"><div class="label">Tasks 总数</div><div class="value">${total}</div><div class="sub">完成 ${tc.COMPLETED || 0} · 失败 ${tc.FAILED || 0} · 运行 ${tc.RUNNING || 0}</div></div>
     <div class="kpi"><div class="label">Workers</div><div class="value">${meta.workers}</div></div>
-    <div class="kpi"><div class="label">总运行时长</div><div class="value" style="font-size:15px">${fmtTime(meta.sample_lo)} → ${fmtTime(meta.sample_hi)}</div></div>`;
+    <div class="kpi"><div class="label">总运行时长</div><div class="value">${durS}</div><div class="sub">${fmtTime(meta.sample_lo)} → ${fmtTime(meta.sample_hi)}</div></div>`;
 
   // ---- 1s 桶聚合（含 master wid=0 的样本——同样是 fly 进程负载）----
   const buckets = new Map();   // bucketSec → { wid → latest sample }

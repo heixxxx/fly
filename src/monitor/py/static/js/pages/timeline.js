@@ -103,11 +103,12 @@ export function mount(ctx) {
           <option value="host">按 host 排序</option>
         </select>
         <span class="tl-sep"></span>
-        <span class="muted">主色维度</span>
-        <button id="tl-dim-cpu" class="active">CPU</button>
-        <button id="tl-dim-io">IO</button>
-        <button id="tl-dim-wait">Wait</button>
-        <button id="tl-dim-queue">Queue</button>
+        <select id="tl-dim" title="主色维度">
+          <option value="cpu">主色维度：CPU</option>
+          <option value="io">主色维度：IO</option>
+          <option value="wait">主色维度：Wait</option>
+          <option value="queue">主色维度：Queue</option>
+        </select>
         <span class="tl-sep"></span>
         <button id="tl-stripe">条纹：关</button>
         <button id="tl-reset-zoom">↺ 复原缩放</button>
@@ -115,7 +116,7 @@ export function mount(ctx) {
       </div>
       <div class="tl-legend" id="tl-legend"></div>
       <div id="tl-chart" style="width:100%;height:240px"></div>
-      <div class="tl-hint" style="margin-top:4px">滚轮缩放 · 滑块拖选 · 点击条形看负载详情 · 点击泳道标签跳转 Worker</div>
+      <div class="tl-hint" style="margin-top:4px">滚轮缩放 · 滑块任意位置拖动框选 · 点击条形看负载详情 · 点击泳道标签跳转 Worker</div>
     </div>
     <div class="panel" id="tl-info" style="display:none"></div>`;
   chart = makeChart(document.getElementById('tl-chart'), ganttOption([], []));
@@ -123,11 +124,9 @@ export function mount(ctx) {
   document.getElementById('tl-sort').onchange = (e) => {
     ctx.tlSort = e.target.value; syncControls(ctx); navigate();
   };
-  for (const dim of ['cpu', 'io', 'wait', 'queue']) {
-    document.getElementById(`tl-dim-${dim}`).onclick = () => {
-      ctx.tlColorDim = dim; syncControls(ctx); navigate();
-    };
-  }
+  document.getElementById('tl-dim').onchange = (e) => {
+    ctx.tlColorDim = e.target.value; syncControls(ctx); navigate();
+  };
   document.getElementById('tl-stripe').onclick = () => {
     ctx.tlStripe = !ctx.tlStripe; syncControls(ctx); navigate();
   };
@@ -154,10 +153,8 @@ export function mount(ctx) {
 function syncControls(ctx) {
   const sortSel = document.getElementById('tl-sort');
   if (sortSel) sortSel.value = ctx.tlSort;
-  for (const dim of ['cpu', 'io', 'wait', 'queue']) {
-    document.getElementById(`tl-dim-${dim}`)?.classList.toggle(
-      'active', ctx.tlColorDim === dim);
-  }
+  const dimSel = document.getElementById('tl-dim');
+  if (dimSel) dimSel.value = ctx.tlColorDim;
   const stripeBtn = document.getElementById('tl-stripe');
   if (stripeBtn) {
     stripeBtn.textContent = ctx.tlStripe ? '条纹：开' : '条纹：关';
@@ -174,7 +171,7 @@ function renderLegend(ctx) {
     <span class="lg"><i style="background:${c}"></i>${DIM_LABEL[ctx.tlColorDim]} ≥50%</span>
     <span class="lg"><i style="background:${c}80"></i>10–50%</span>
     <span class="lg"><i style="background:${NEUTRAL}"></i>&lt;10%</span>
-    <span class="lg"><i class="striped" style="background:${c}"></i>复合（其它维度 ≥30%，条纹开启时）</span>
+    <span class="lg"><i class="striped" style="background-color:${c}"></i>复合（其它维度 ≥30%，条纹开启时）</span>
     <span class="lg"><i style="background:${FAST_COLOR}"></i>Fast &lt;500ms</span>
     <span class="lg"><i style="background:${NEUTRAL};border:2px solid ${FAIL_STROKE}"></i>Failed（红描边）</span>`;
 }
@@ -335,8 +332,11 @@ function ganttOption(wids, seriesData, ctx) {
       { type: 'inside', xAxisIndex: 0 },
       { type: 'slider', xAxisIndex: 0, height: 20, bottom: 12,
         borderColor: '#3a4a5c', backgroundColor: '#161d26',
-        // 选取范围的高亮反馈：填充提亮 + 圆形手柄着色 + 全量数据暗底/
-        // 选区蓝色数据背景对比。
+        // 任意位置按下拖动即新建选区（刷选），选区高亮所见即所得；
+        // 两端把手弱化为小尺寸（刷选为主交互）。
+        brushSelect: true,
+        brushStyle: { color: 'rgba(74,168,255,.45)',
+                      borderColor: '#4aa8ff', borderWidth: 1 },
         fillerColor: 'rgba(74,168,255,.35)',
         dataBackground: {
           lineStyle: { color: '#37424f', width: 1 },
@@ -346,9 +346,9 @@ function ganttOption(wids, seriesData, ctx) {
           lineStyle: { color: '#4aa8ff', width: 1 },
           areaStyle: { color: 'rgba(74,168,255,.30)' },
         },
-        handleIcon: 'circle', handleSize: '120%',
+        handleIcon: 'circle', handleSize: '60%',
         handleStyle: { color: '#4aa8ff', borderColor: '#1c2530' },
-        moveHandleSize: 5,
+        moveHandleSize: 4,
         moveHandleStyle: { color: '#4aa8ff' },
         emphasis: { handleStyle: { borderColor: '#4aa8ff' },
                     moveHandleStyle: { color: '#6fb9ff' } },
