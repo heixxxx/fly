@@ -56,8 +56,8 @@ export async function update(ctx) {
   document.getElementById('ov-kpi').innerHTML = `
     <div class="kpi"><div class="label">运行时长</div><div class="value">${durS}</div><div class="sub">${m.hostname || ''}</div></div>
     <div class="kpi"><div class="label">Tasks 总数</div><div class="value">${total}</div><div class="sub">完成 ${tc.COMPLETED || 0} · 失败 ${tc.FAILED || 0} · 运行 ${tc.RUNNING || 0}</div></div>
-    <div class="kpi"><div class="label">Workers</div><div class="value">${meta.workers}</div><div class="sub">含 master 自监控(wid=0)</div></div>
-    <div class="kpi"><div class="label">样本区间</div><div class="value" style="font-size:15px">${fmtTime(meta.sample_lo)} → ${fmtTime(meta.sample_hi)}</div><div class="sub">monitor.db</div></div>`;
+    <div class="kpi"><div class="label">Workers</div><div class="value">${meta.workers}</div></div>
+    <div class="kpi"><div class="label">总运行时长</div><div class="value" style="font-size:15px">${fmtTime(meta.sample_lo)} → ${fmtTime(meta.sample_hi)}</div></div>`;
 
   // ---- 1s 桶聚合（含 master wid=0 的样本——同样是 fly 进程负载）----
   const buckets = new Map();   // bucketSec → { wid → latest sample }
@@ -98,20 +98,20 @@ export async function update(ctx) {
 
   charts[0].setOption({
     yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: v => fmtGB(v) } }],
-    series: [line('Σ proc RSS', series.map(s => [s.t, s.rss]), '#4aa8ff', 0, true)],
+    series: [line('Total Proc RSS', series.map(s => [s.t, s.rss]), '#4aa8ff', 0, true)],
   });
   charts[1].setOption({
     yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: '{value}%' } }],
     series: [
-      line('Σ 进程 CPU%（多机可>100%）', series.map(s => [s.t, +s.pcpu.toFixed(1)]), '#4aa8ff'),
-      line('机器 CPU%（各机 max）', series.map(s => [s.t, s.hcpu ?? 0]), '#e8b339'),
+      line('Total Proc CPU (%)', series.map(s => [s.t, +s.pcpu.toFixed(1)]), '#4aa8ff'),
+      line('Host CPU (%)', series.map(s => [s.t, s.hcpu ?? 0]), '#e8b339'),
     ],
   });
   charts[2].setOption({
     yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: v => fmtBytes(v) + '/s' } }],
     series: [
-      line('读 Σ B/s', netR, '#6fd3e8'),
-      line('写 Σ B/s', netW, '#ff9d5c'),
+      line('Read B/s', netR, '#6fd3e8'),
+      line('Write B/s', netW, '#ff9d5c'),
     ],
   });
 

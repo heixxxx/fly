@@ -83,7 +83,7 @@ async function fillDetail(body, wid) {
       </div>
       <div class="panel"><h3 id="w-task-title"></h3>
         <div class="table-wrap"><table>
-          <thead><tr><th>ID</th><th>名称</th><th>状态</th><th>执行时长</th><th>CPU</th><th>读/写时间</th><th>avg/peak 内存</th></tr></thead>
+          <thead><tr><th>ID</th><th>名称</th><th>状态</th><th>运行时长</th><th>CPU</th><th>读/写时间</th><th>avg/peak 内存</th></tr></thead>
           <tbody id="w-tasks"></tbody>
         </table></div>
       </div>`;
@@ -105,28 +105,32 @@ async function fillDetail(body, wid) {
 
   charts[0].setOption({
     series: [
-      line('本进程', times.map((t, i) => [t, sp[i].proc_cpu_bps / 100]), '#4aa8ff'),
-      line('机器', times.map((t, i) => [t, sp[i].host_cpu_bps / 100]), '#e8b339'),
+      line('Proc CPU (%)', times.map((t, i) => [t, sp[i].proc_cpu_bps / 100]), '#4aa8ff'),
+      line('Host CPU (%)', times.map((t, i) => [t, sp[i].host_cpu_bps / 100]), '#e8b339'),
     ],
     yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: '{value}%' } }],
   });
   charts[1].setOption({
     series: [
-      line('proc RSS', times.map((t, i) => [t, sp[i].proc_rss_bytes]), '#4aa8ff', 0, true),
-      line('host 可用', times.map((t, i) => [t, sp[i].host_mem_avail_bytes]), '#3fb972'),
-      line('host 总量', times.map((t, i) => [t, sp[i].host_mem_total_bytes]), '#37424f'),
+      line('Proc RSS', times.map((t, i) => [t, sp[i].proc_rss_bytes]), '#4aa8ff', 0, true),
+      line('Host Available', times.map((t, i) => [t, sp[i].host_mem_avail_bytes]), '#3fb972'),
+      // 总量是参考线：亮色虚线（原 #37424f 与深色背景几乎不可见）。
+      { name: 'Host Total', type: 'line',
+        data: times.map((t, i) => [t, sp[i].host_mem_total_bytes]),
+        showSymbol: false, lineStyle: { width: 1.5, color: '#5f7385', type: 'dashed' },
+        itemStyle: { color: '#5f7385' } },
     ],
     yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: v => fmtGB(v) } }],
   });
   charts[2].setOption({
     series: [
-      line('读 B/s', rateSeries(times, sp.map(x => x.net_read_bytes)), '#6fd3e8'),
-      line('写 B/s', rateSeries(times, sp.map(x => x.net_write_bytes)), '#ff9d5c'),
+      line('Read B/s', rateSeries(times, sp.map(x => x.net_read_bytes)), '#6fd3e8'),
+      line('Write B/s', rateSeries(times, sp.map(x => x.net_write_bytes)), '#ff9d5c'),
     ],
     yAxis: [{ type: 'value', axisLabel: { color: '#7a8a9c', formatter: v => fmtBytes(v) } }],
   });
   charts[3].setOption({
-    series: [line('load1', times.map((t, i) => [t, sp[i].host_load1_x100 / 100]), '#c79bf2', 0, true)],
+    series: [line('Load1', times.map((t, i) => [t, sp[i].host_load1_x100 / 100]), '#c79bf2', 0, true)],
   });
 
   document.getElementById('w-task-title').textContent =

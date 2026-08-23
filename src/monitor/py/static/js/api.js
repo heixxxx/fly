@@ -28,6 +28,12 @@ export function fmtGB(bytes) {
   return Number(gb.toPrecision(3)) + ' GB';
 }
 
+// 占比格式化：0.123 → "12%"（整数百分比，负载维度展示用）。
+export function fmtPct(ratio) {
+  if (ratio == null || isNaN(ratio)) return '-';
+  return Math.round(ratio * 100) + '%';
+}
+
 export function fmtMs(ms) {
   if (ms == null) return '-';
   if (ms < 1000) return ms + ' ms';
@@ -78,4 +84,14 @@ export function expandoHtml(full, head = 10, tail = 10) {
     : escapeHtml(f.slice(0, head)) + '....' + escapeHtml(f.slice(-tail));
   return `<span class="expando" data-full="${escapeHtml(f)}" ` +
          `title="点击展开/收起全名">${short}</span>`;
+}
+
+// 错误信息（如 traceback）：首尾缩略单行省略，悬停（原生 title）显示完整。
+export function errorBriefHtml(err, head = 120, tail = 60) {
+  const f = String(err ?? '');
+  const brief = f.length <= head + tail + 8
+    ? escapeHtml(f)
+    : escapeHtml(f.slice(0, head).replace(/\s+/g, ' ')) + ' ...... ' +
+      escapeHtml(f.slice(-tail).replace(/\s+/g, ' '));
+  return `<span class="err-brief mono" title="${escapeHtml(f)}">${brief}</span>`;
 }

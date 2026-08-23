@@ -103,9 +103,47 @@ export function navigate() {
   pollTick(false);
 }
 
+// 跨页跳转（带返回）：gotoPage('workers', {workerId: 2}) 从 Timeline 泳道
+// 跳入 worker 详情；源页模块在 destroy 时自存状态（缩放/排序/滚动），返回
+// 时 mount 恢复。backTarget 驱动页面顶部的「返回上一页」条。
+let backTarget = null;   // { page, label }（源页状态由源页模块自存）
+
+export function gotoPage(name, opts, backLabel) {
+  if (current && backLabel) {
+    backTarget = { page: current.mod === PAGES.timeline ? 'timeline'
+                    : current.mod === PAGES.workers ? 'workers'
+                    : current.mod === PAGES.tasks ? 'tasks'
+                    : current.mod === PAGES.dbs ? 'dbs' : 'overview',
+                   label: backLabel };
+  }
+  switchPage(name);
+  if (opts && current) Object.assign(current.ctx, opts);
+  renderBackBar();
+}
+
+function renderBackBar() {
+  document.getElementById('back-bar')?.remove();
+  if (!backTarget) return;
+  const bar = document.createElement('div');
+  bar.id = 'back-bar';
+  bar.className = 'back-bar';
+  bar.innerHTML = `<span class="back-link">← ${backTarget.label ? `返回${backTarget.label}` : '返回上一页'}</span>`;
+  bar.querySelector('.back-link').onclick = () => {
+    const target = backTarget;
+    backTarget = null;
+    document.getElementById('back-bar')?.remove();
+    if (target) switchPage(target.page);
+  };
+  main.prepend(bar);
+}
+
 nav.addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-page]');
-  if (btn) switchPage(btn.dataset.page);
+  if (btn) {
+    backTarget = null;   // 页签切换清返回栈
+    document.getElementById('back-bar')?.remove();
+    switchPage(btn.dataset.page);
+  }
 });
 
 // 超长名称的展开/收起（全局委托一次；缩略/全名切换不触发其它点击逻辑）。

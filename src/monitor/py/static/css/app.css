@@ -133,6 +133,24 @@ tr:hover td { background: var(--panel2); }
   color: var(--muted); font-size: 14px;
   border: 1px dashed var(--border); border-radius: 8px;
 }
+
+/* 跨页跳转的返回条（如 Timeline 泳道 → Worker 详情）。 */
+.back-bar {
+  padding: 6px 12px; margin-bottom: 10px;
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+}
+
+/* Timeline 控件分隔与图例说明条。 */
+.tl-sep { display: inline-block; width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+.tl-legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 8px 0 6px; font-size: 12px; color: var(--muted); }
+.tl-legend .lg { display: inline-flex; align-items: center; gap: 5px; }
+.tl-legend .lg i {
+  display: inline-block; width: 16px; height: 9px; border-radius: 2px;
+}
+.tl-legend .lg i.striped {
+  background-image: repeating-linear-gradient(45deg,
+    transparent 0 3px, rgba(13,17,22,.55) 3px 5px);
+}
 .muted { color: var(--muted); }
 .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 11.5px; }
 
@@ -179,6 +197,13 @@ tr:hover td { background: var(--panel2); }
   white-space: normal; word-break: break-all;
   background: var(--panel2); border: 1px solid var(--border);
   border-radius: 6px; padding: 6px 10px; font-family: monospace;
+}
+
+/* 错误信息缩略：单行省略，原生 title 悬停显示完整内容。 */
+.err-brief {
+  display: block; max-width: 100%; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+  color: var(--err); cursor: help;
 }
 
 .pager { display: flex; gap: 8px; align-items: center; margin-top: 8px; color: var(--muted); }

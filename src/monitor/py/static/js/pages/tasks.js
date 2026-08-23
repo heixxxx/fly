@@ -2,7 +2,7 @@
 // mount 建列表/详情双容器（控件事件绑一次，切换仅显隐——详情不得覆盖
 // main.innerHTML，否则返回时列表结构与绑定已销毁、update 写不回）。
 // update 仅填数据——过滤条件与分页状态存活于 ctx.taskFilter。
-import { getJson, fmtGB, fmtBytes, fmtMs, fmtTimeFull, escapeHtml, shortName, expandoHtml } from '../api.js';
+import { getJson, fmtGB, fmtBytes, fmtMs, fmtTimeFull, escapeHtml, shortName, expandoHtml, errorBriefHtml } from '../api.js';
 import { navigate } from '../app.js';
 
 const PAGE_SIZE = 50;
@@ -29,7 +29,7 @@ export function mount(ctx) {
         <div class="table-wrap"><table>
           <thead><tr>
             <th>ID</th><th>名称</th><th>状态</th><th>worker</th>
-            <th>创建/派发/完成</th><th>排队→执行</th><th>执行时长</th><th>CPU time</th>
+            <th>创建时间/开始时间/结束时间</th><th>排队→执行</th><th>运行时长</th><th>CPU time</th>
             <th title="exec 时长中 CPU/IO 占比">CPU / IO 占比</th>
             <th>读(时间/字节)</th><th>写(时间/字节)</th>
             <th>内存 avg / peak</th><th>关联 db</th>
@@ -172,12 +172,12 @@ export async function renderDetail(ctx) {
             <span class="k">模块</span><span class="v mono">${escapeHtml(t.module)}</span>
             <span class="k">worker</span><span class="v">${t.worker_id || '-'}</span>
             <span class="k">优先级</span><span class="v">${t.priority}</span>
-            <span class="k">创建</span><span class="v mono">${fmtTimeFull(t.created_ms)}</span>
+            <span class="k">创建时间</span><span class="v mono">${fmtTimeFull(t.created_ms)}</span>
             <span class="k">依赖就绪</span><span class="v mono">${fmtTimeFull(t.ready_ms)}</span>
-            <span class="k">派发</span><span class="v mono">${fmtTimeFull(t.started_ms)}</span>
-            <span class="k">执行窗口</span><span class="v mono">${fmtTimeFull(t.exec_start_ms)} → ${fmtTimeFull(t.exec_end_ms)}（${fmtMs(execMs)}）</span>
-            <span class="k">完成</span><span class="v mono">${fmtTimeFull(t.completed_ms)}</span>
-            ${t.error ? `<span class="k">错误</span><span class="v mono" style="color:var(--err);white-space:pre-wrap">${escapeHtml(t.error.slice(0, 600))}</span>` : ''}
+            <span class="k">开始时间</span><span class="v mono">${fmtTimeFull(t.started_ms)}</span>
+            <span class="k">运行时长</span><span class="v mono">${fmtMs(execMs)}（${fmtTimeFull(t.exec_start_ms)} → ${fmtTimeFull(t.exec_end_ms)}）</span>
+            <span class="k">结束时间</span><span class="v mono">${fmtTimeFull(t.completed_ms)}</span>
+            ${t.error ? `<span class="k">错误</span><span class="v">${errorBriefHtml(t.error)}</span>` : ''}
           </div>
         </div>
         <div class="panel"><h3>资源 / IO</h3>

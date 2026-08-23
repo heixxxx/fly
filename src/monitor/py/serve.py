@@ -231,9 +231,11 @@ def api_events(category="", limit=100):
 
 
 def api_timeline(from_ms=0, to_ms=0):
-    """按 worker 分组的 task 执行窗口（Gantt 数据源）。"""
+    """按 worker 分组的 task 执行窗口（Gantt 数据源）。含负载分类字段
+    （cpu/io 时间、排队等待 ready→started），前端按 CPU/IO/Wait/Queue 分色。"""
     sql = ("SELECT task_id, name, status, worker_id, "
-           "exec_start_ms, exec_end_ms, started_ms, completed_ms FROM tasks "
+           "exec_start_ms, exec_end_ms, started_ms, completed_ms, "
+           "cpu_time_ms, read_time_ms, write_time_ms, ready_ms FROM tasks "
            "WHERE exec_start_ms>0")
     args = []
     if from_ms:
