@@ -57,16 +57,18 @@ function card(w) {
   // 可出现在 Workers 列表，但不可描述为 worker 0）。
   let stateBadge;
   if (isMaster) {
-    stateBadge = `<span class="badge MASTER" style="float:right">MASTER</span>`;
+    stateBadge = `<span class="badge MASTER">MASTER</span>`;
   } else if (w.exit_kind) {
     const exited = w.exit_kind === 'EXITED';
-    stateBadge = `<span class="badge ${w.exit_kind}" style="float:right" title="${escapeHtml(t(exited ? 'ev.exitedTitle' : 'ev.diedTitle'))}">${t(exited ? 'ev.exited' : 'ev.died')}</span>`;
+    stateBadge = `<span class="badge ${w.exit_kind}" title="${escapeHtml(t(exited ? 'ev.exitedTitle' : 'ev.diedTitle'))}">${t(exited ? 'ev.exited' : 'ev.died')}</span>`;
   } else {
-    stateBadge = `<span class="badge ${w.last_event}" style="float:right">${w.last_event || '-'}</span>`;
+    stateBadge = `<span class="badge ${w.last_event}">${w.last_event || '-'}</span>`;
   }
+  const hostText = `${w.hostname}${w.ip ? ':' + w.ip : ''}`;
   return `<div class="worker-card" data-wid="${w.worker_id}">
-    <div class="title">${isMaster ? 'master' : `worker ${w.worker_id}`}
-      <span class="muted">${w.hostname}${w.ip ? ':' + w.ip : ''}</span>
+    <div class="title">
+      <span class="w-name">${isMaster ? 'master' : `worker ${w.worker_id}`}</span>
+      <span class="w-host muted" title="${escapeHtml(hostText)}">${escapeHtml(hostText)}</span>
       ${stateBadge}
     </div>
     <div class="row"><span>${t('w.role')}</span><b>${w.role || '-'}</b></div>

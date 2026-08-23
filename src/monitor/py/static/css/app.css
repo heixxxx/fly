@@ -199,9 +199,24 @@ tr:hover td { background: var(--panel2); }
   border-radius: 8px; padding: 12px; cursor: pointer;
 }
 .worker-card:hover { border-color: var(--accent); }
-.worker-card .title { font-weight: 600; margin-bottom: 6px; }
+/* 标题三段 flex：名称固定宽、host 弹性缩略（title 悬停看全名）、状态
+   徽章固定——窄卡片下不错行错叠（原 float 徽章+长 host 换行交叠）。 */
+.worker-card .title {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 600; margin-bottom: 6px;
+}
+.worker-card .title .w-name { white-space: nowrap; }
+.worker-card .title .w-host {
+  flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 400; font-size: 12px;
+}
+.worker-card .title .badge { flex: none; }
 .worker-card .row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
-.worker-card .row b { color: var(--text); font-weight: 500; }
+.worker-card .row b {
+  color: var(--text); font-weight: 500;
+  max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .controls { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
 .controls input, .controls select {
