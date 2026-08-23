@@ -554,7 +554,12 @@ void MasterAgent::stop_impl(bool fast, const CMString& reason) {
 
     // Phase 2: 停止 worker。fast → StopNow（worker kill 自身，亚秒断连）；
     // 正常 → Shutdown（worker 优雅退：flush coverage + WBQ drain）。
+    // monitor 落盘：关停指令事件先于后续 DEAD——GUI 据此区分「正常退出」
+    // （EXITED）与「异常死亡」（心跳超时/宽限耗尽判死，无指令先行）。
     for (const auto& [worker_id, conn_id] : snapshot_worker_conns()) {
+        if (metrics_db_) {
+            metrics_db_->record_worker_event(worker_id, fast ? "STOP_NOW_SENT" : "SHUTDOWN_SENT");
+        }
         if (fast) {
             INFO("Sending STOP_NOW to worker_id={} (elapsed={}ms)", worker_id, _elapsed());
             StopNowMessage msg;

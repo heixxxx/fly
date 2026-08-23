@@ -50,10 +50,14 @@ function card(w) {
   const rss = l ? fmtGB(l.proc_rss_bytes) : '-';
   const cpu = l ? (l.proc_cpu_bps / 100).toFixed(1) + '%' : '-';
   const hcpu = l ? (l.host_cpu_bps / 100).toFixed(1) + '%' : '-';
+  // 终态语义：EXITED（正常退出，绿）/ DEAD（异常死亡，红）；其余状态原样。
+  const stateBadge = w.exit_kind
+    ? `<span class="badge ${w.exit_kind}" style="float:right" title="${w.exit_kind === 'EXITED' ? '收到关停指令后正常退出' : '无关停指令先行：心跳超时/宽限耗尽判死'}">${w.exit_kind === 'EXITED' ? '正常退出' : '异常死亡'}</span>`
+    : `<span class="badge ${w.last_event}" style="float:right">${w.last_event || '-'}</span>`;
   return `<div class="worker-card" data-wid="${w.worker_id}">
     <div class="title">worker ${w.worker_id}
       <span class="muted">${w.hostname}${w.ip ? ':' + w.ip : ''}</span>
-      <span class="badge ${w.last_event}" style="float:right">${w.last_event || '-'}</span>
+      ${stateBadge}
     </div>
     <div class="row"><span>角色</span><b>${w.role || '-'}</b></div>
     <div class="row"><span>进程 RSS / CPU</span><b>${rss} · ${cpu}</b></div>

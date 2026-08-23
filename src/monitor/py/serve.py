@@ -159,11 +159,22 @@ def api_meta():
 def api_workers():
     workers = []
     for r in query("SELECT * FROM workers ORDER BY worker_id"):
+        wid = r["worker_id"]
         latest = query(
             "SELECT * FROM worker_samples WHERE worker_id=? ORDER BY epoch_ms DESC LIMIT 1",
-            (r["worker_id"],))
+            (wid,))
+        # 推导终态语义：DEAD 前若有关停指令（SHUTDOWN_SENT/STOP_NOW_SENT）
+        # 则为正常退出（EXITED，绿），否则为异常死亡（DEAD，红——心跳超时/
+        # 宽限耗尽判死）。旧数据无指令事件时保守显示 DEAD。
+        exit_kind = None
+        if r["last_event"] == "DEAD":
+            cmd = query(
+                "SELECT 1 FROM events WHERE worker_id=? AND event IN "
+                "('SHUTDOWN_SENT','STOP_NOW_SENT') AND epoch_ms<=? LIMIT 1",
+                (wid, r["last_event_ms"]))
+            exit_kind = "EXITED" if cmd else "DEAD"
         workers.append({
-            "worker_id": r["worker_id"],
+            "worker_id": wid,
             "hostname": r["hostname"],
             "ip": r["ip"],
             "role": r["role"],
@@ -171,6 +182,7 @@ def api_workers():
             "first_seen_ms": r["first_seen_ms"],
             "last_event_ms": r["last_event_ms"],
             "last_event": r["last_event"],
+            "exit_kind": exit_kind,
             "latest": dict(latest[0]) if latest else None,
         })
     return {"workers": workers}

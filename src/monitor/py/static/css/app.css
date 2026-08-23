@@ -85,6 +85,8 @@ tr:hover td { background: var(--panel2); }
 .badge.CANCELLED { background: rgba(122,138,156,.15); color: var(--muted); }
 
 .badge.REGISTER { background: rgba(63,185,114,.15); color: var(--completed); }
+.badge.EXITED, .badge.SHUTDOWN_SENT { background: rgba(63,185,114,.15); color: var(--completed); }
+.badge.STOP_NOW_SENT { background: rgba(232,179,57,.15); color: var(--warn); }
 .badge.DISCONNECT, .badge.DEAD, .badge.FAST_EXIT, .badge.FAIL,
 .badge.DB_MERGE_FAILED, .badge.WRITE_REJECTED, .badge.SCHED_STALLED,
 .badge.ORPHAN_FAIL, .badge.STALE_REPORT_DROPPED {
