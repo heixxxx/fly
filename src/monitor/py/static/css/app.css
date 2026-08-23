@@ -90,22 +90,37 @@ body {
   display: flex; flex-direction: column;
 }
 header {
-  display: flex; align-items: center; gap: 24px;
-  padding: 0 16px; height: 46px; flex: none;
+  display: flex; align-items: center; gap: 8px 24px;
+  padding: 6px 16px; min-height: 46px; flex: none;
+  flex-wrap: wrap;   /* 窄窗口换行而不是溢出（控件被挤出顶边无法点击） */
   background: var(--panel); border-bottom: 1px solid var(--border);
 }
 .brand { font-size: 16px; font-weight: 600; color: var(--accent); white-space: nowrap; }
 .brand span { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
-nav { display: flex; gap: 4px; }
+nav { display: flex; gap: 4px; flex-wrap: wrap; }
 nav button {
   background: none; border: none; color: var(--muted); padding: 6px 14px;
   font-size: 13px; cursor: pointer; border-radius: 6px;
 }
 nav button:hover { color: var(--text); background: var(--panel2); }
 nav button.active { color: var(--accent); background: var(--panel2); }
-.header-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
-.poll-toggle { color: var(--muted); font-size: 12px; user-select: none; cursor: pointer; }
-.run-info { color: var(--muted); font-size: 12px; }
+.header-right {
+  margin-left: auto; display: flex; align-items: center; gap: 6px 14px;
+  flex-wrap: wrap;   /* 内部控件也换行，整组推到下一行时可点 */
+}
+.poll-toggle {
+  color: var(--muted); font-size: 12px; user-select: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
+  white-space: nowrap;   /* 防窄窗文字竖排换行 */
+}
+.run-info {
+  color: var(--muted); font-size: 12px;
+  max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+@media (max-width: 760px) {
+  /* 极窄时隐藏次要信息（起止时间总览页 KPI 有全量），保住控件可点 */
+  .run-info { display: none; }
+}
 /* header 的语言/主题下拉（与 .controls select 同风格，尺寸更紧凑）。 */
 .hdr-select {
   background: var(--panel2); border: 1px solid var(--border); color: var(--text);
