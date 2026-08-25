@@ -876,6 +876,14 @@ class Master(FlyAgent):
     def restart_failed_tasks(self, file_path: str):
         self._agent.restart_failed_tasks(file_path)
 
+    def set_failed_tasks_file(self, path: str):
+        """project 模式覆盖 failed_tasks 持久化路径（默认 {log_dir}/failed_tasks.bin）。
+
+        project 自包含：断点 bin 随 project 目录走（迁移/跨进程恢复不依赖旧
+        log_dir）。单 master 单 project 主流；多 project 后设覆盖。
+        """
+        self._agent.set_failed_tasks_file(path)
+
     def _spawn_process_worker(self, worker_id: int, config: dict = None):
         import time
         from _fly_core import ex_core_get_config

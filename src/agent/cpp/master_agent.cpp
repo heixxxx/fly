@@ -3141,12 +3141,25 @@ void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage
 }
 
 CMString MasterAgent::get_failed_tasks_file_path() const {
+    // project 模式覆盖（project 自包含：断点 bin 随 project 目录迁移/持久）；
+    // 未设置时维持 {log_dir}/failed_tasks.bin 惯例。
+    if (!failed_tasks_file_override_.empty()) {
+        return failed_tasks_file_override_;
+    }
     CMString log_dir = Config::instance()->get_str("log_dir");
     namespace fs = std::filesystem;
     if (!fs::exists(log_dir)) {
         fs::create_directories(log_dir);
     }
     return log_dir + "/failed_tasks.bin";
+}
+
+void MasterAgent::set_failed_tasks_file(const CMString& path) {
+    // 持久化/重投链路（persist_failed_task / remove_persisted_task /
+    // restart_failed_tasks）全部经 get_failed_tasks_file_path 取路径，一处
+    // 覆盖全链生效。单 master 单 project 主流；多 project 后设覆盖（文档注明）。
+    failed_tasks_file_override_ = path;
+    INFO("failed_tasks file override set: {}", path);
 }
 
 namespace {

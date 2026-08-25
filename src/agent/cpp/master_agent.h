@@ -110,6 +110,9 @@ public:
     CMVector<uint64_t> get_idle_workers() const;
 
     void restart_failed_tasks(const CMString& file_path);
+    // project 模式覆盖 failed_tasks 持久化路径（默认 {log_dir}/failed_tasks.bin）。
+    // project 自包含：断点 bin 随 project 目录走（迁移/恢复不依赖旧 log_dir）。
+    void set_failed_tasks_file(const CMString& path);
 
     void broadcast_object_removed(const CMString& db_path, const CMString& object_name);
 
@@ -331,6 +334,13 @@ public:
     void check_grace_deadlines_for_testing(int64_t now) {
         check_grace_deadlines(now);
     }
+    // failed_tasks 路径覆盖（project 模式）确定性测试：路径解析 + persist 落点。
+    CMString failed_tasks_file_path_for_testing() const {
+        return get_failed_tasks_file_path();
+    }
+    void persist_failed_task_for_testing(const FailedTaskRecord& record) {
+        persist_failed_task(record);
+    }
     // 直接驱动 handle_worker_death（private）：判死联动收敛（pending RPC 期待
     // 终结）的确定性测试入口，无需构造宽限超时路径。
     void handle_worker_death_for_testing(uint64_t worker_id) {
@@ -530,6 +540,8 @@ private:
     mutable std::shared_mutex db_instances_mutex_;
     // failed_tasks.bin append/读改写互斥（跨线程调用方见 persist_failed_task 注释）。
     std::mutex failed_tasks_file_mutex_;
+    // project 模式的 failed_tasks 路径覆盖（空 = 未设置，用 {log_dir} 默认）。
+    CMString failed_tasks_file_override_;
     CMUnorderedSet<CMString> frozen_dbs_;
     // 非 stream 模式 pending frozen：db_path → task_id（待 task 完成确认）。
     // task 内 freeze 时登记 pending（拒其他 task 写，但不广播）；task 成功迁移到

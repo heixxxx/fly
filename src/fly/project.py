@@ -101,6 +101,23 @@ class Project:
             }
             self.save()
 
+        self._bind_failed_tasks_file()
+
+    def _bind_failed_tasks_file(self):
+        """project 模式把 failed_tasks.bin 持久化路径绑定到 project 目录（master-only）。
+
+        project 自包含：断点 bin 随 project 目录走（迁移/跨进程恢复不依赖旧
+        log_dir）。worker 进程无 set_failed_tasks_file（master-only API），
+        静默跳过。
+        """
+        try:
+            from fly.runtime import get_agent
+            get_agent()._agent.set_failed_tasks_file(
+                os.path.join(self.db_path, "failed_tasks.bin"))
+        except (AttributeError, ImportError):
+            # worker 进程：Project 句柄可传递/序列化，绑定仅 master 有效。
+            pass
+
     # ── protected：供注册的 flow 内部建库 ──────────────────────────────
 
     def _create_db(self, name: str, data_path: str = "", db_cls=None, prev=None):
@@ -138,6 +155,7 @@ class Project:
         self._meta["dbs"][actual_name] = {
             "logical_name": name,
             "db_path": db.get_db_path(),
+            "data_path": data_path,  # 迁移自包含校验依据（旧 meta 无此字段视为 ""）
             "uid": db.get_uid(),     # db chain uid（用于跨 run 迁移追踪）
             # 浮点秒：同名多次运行可能密集发生，int 秒无法区分先后。
             "created_at": time.time(),
@@ -289,6 +307,52 @@ class Project:
         """返回所有 db 的 actual_name（磁盘子目录名，即 get_db 的精确匹配键）。"""
         return list(self._meta["dbs"].keys())
 
+    def resume(self):
+        """断点重跑：重投 project 目录下 failed_tasks.bin 里的未完成 task。
+
+        task 级断点（用户裁定粒度）：不记录/不检测已完成 task——已完成 task 的
+        输出对象（正式+temp）经 ``load_project`` 恢复即 ready，调度是对象驱动的
+        （mark_data_ready）；FAILED/PENDING/Running task 由 failed_tasks.bin 持久化
+        （FAILED 实时落盘；PENDING/RUNNING 在优雅退出路径 stop/fast_exit 落盘），
+        重投后依赖图自然收敛。
+
+        前提：worker 已唤起（重投 task 需要执行者）。
+        语义边界：SIGKILL/OOM 场景 RUNNING/PENDING 的 spec 丢失（无 persist
+        时机），resume 只恢复此前 FAILED 记录，其余靠 flow 重放兜底（同
+        write_context_hash 幂等重写 + ready 对象下游直通）。
+
+        master-only。bin 不存在（旧 project 或从未失败）为 no-op。
+        """
+        from fly.runtime import get_agent
+        bin_path = os.path.join(self.db_path, "failed_tasks.bin")
+        if not os.path.isfile(bin_path):
+            INFO("Project.resume: no failed_tasks.bin at "
+                 f"{self.db_path} (nothing to resume)")
+            return
+        get_agent().restart_failed_tasks(bin_path)
+        INFO(f"Project.resume: restarted failed tasks from {bin_path}")
+
+    def status(self) -> list:
+        """返回每个 db 的状态快照（断点导航）：[{actual, logical, db_path, frozen}]。
+
+        frozen 实时查询 master（懒查询，不依赖 meta 缓存）。master-only。
+        """
+        from fly.runtime import get_agent
+        out = []
+        for actual, info in self._meta["dbs"].items():
+            frozen = False
+            try:
+                frozen = get_agent()._agent.is_db_frozen(info["db_path"])
+            except Exception:
+                pass
+            out.append({
+                "actual": actual,
+                "logical": info.get("logical_name"),
+                "db_path": info["db_path"],
+                "frozen": frozen,
+            })
+        return out
+
     def list_flows(self) -> list:
         """返回已注册到本类（及基类）的 flow 名（内省用）。"""
         # 收集本类及所有基类的 _flows（MRO 顺序，去重，子类覆盖基类）。
@@ -351,6 +415,8 @@ class Project:
         # 全量 load_db 恢复每个 db（master-only）。
         if _mode != "master":
             raise RuntimeError("load_project is master-only (uses fly.load_db)")
+
+        proj._bind_failed_tasks_file()
 
         from fly import load_db
         for actual, info in meta["dbs"].items():

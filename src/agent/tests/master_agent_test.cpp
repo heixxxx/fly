@@ -457,6 +457,25 @@ TEST(MasterAgentTest, WorkerDeathSettlesPendingRpc) {
     wait_for_running(master, false);
 }
 
+// failed_tasks 路径覆盖（project 模式）：set 后 get 返回 override；persist
+// 链路全部经 get_failed_tasks_file_path，一处覆盖全链生效。
+TEST(MasterAgentTest, FailedTasksFileOverride) {
+    MasterAgent master("127.0.0.1", 0);
+    TempDir tmpdir;
+    CMString override_path = tmpdir.path() + "/failed_tasks.bin";
+
+    master.set_failed_tasks_file(override_path);
+    EXPECT_EQ(master.failed_tasks_file_path_for_testing(), override_path);
+
+    // persist 实际落点跟随 override。
+    FailedTaskRecord record;
+    record.task_id_ = 7;
+    record.submission_.name_ = "override_test";
+    master.persist_failed_task_for_testing(record);
+    EXPECT_TRUE(std::filesystem::exists(override_path))
+        << "persist must land on the overridden path";
+}
+
 TEST(MasterAgentTest, IdxLoadPendingVisibilityBarrier) {
     MasterAgent master("127.0.0.1", 0);
     master.start();

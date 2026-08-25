@@ -49,19 +49,26 @@ def open_project(path: str) -> 'Project':
     return Project(path)
 
 
-def load_project(path: str) -> 'Project':
+def load_project(path: str, resume: bool = False) -> 'Project':
     """Restore a Project from a previous run (master-only).
 
     Reads ``_PROJECT_META.json``, dynamically restores the real subclass
-    (so registered flows are available), and fully ``load_db``-s every db.
+    (so registered flows are available), and fully ``load_db``-s every db
+    (含 temp 落盘恢复——已完成 task 的 temp 输出跨进程 ready).
 
     Args:
         path: Directory path of the existing project.
+        resume: 若 True，恢复完成后自动断点重跑（重投 ``{project}/failed_tasks.bin``
+            里的 FAILED/PENDING/RUNNING task；bin 不存在为 no-op）。前提：worker
+            已唤起。
 
     Returns:
         A ``Project`` (or subclass) instance with all dbs restored.
     """
-    return Project.load(path)
+    proj = Project.load(path)
+    if resume:
+        proj.resume()
+    return proj
 
 
 def open_db(path: str, data_path: str = "", db_cls=None, prev=None,
