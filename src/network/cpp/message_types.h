@@ -308,8 +308,14 @@ struct TaskAssignMessage {
 struct WrittenObject {
     CMString object_name_;   // full name: "db_path:short_name"（db_path 变长，split 用 rfind(':')）
     int64_t size_bytes_ = 0;
+    // 实际写出该对象的 writer id（DataWriter 文件归属）。空 = 未提供（普通
+    // task 写入，master 侧 record_worker_info fallback 用 master Database 的
+    // writer id）。merge task 必填：merge worker 的实际 writer 与 master
+    // Database 的不同，_DB_META 的 WorkerInfo 必须记真实 writer，跨进程
+    // load_db 才能按 idx 文件名恢复（否则记录悬空 writer id）。
+    CMString writer_id_ = "";
 
-    FLY_SERIALIZE(object_name_, size_bytes_);
+    FLY_SERIALIZE(object_name_, size_bytes_, writer_id_);
 };
 
 struct TaskCompleteMessage {

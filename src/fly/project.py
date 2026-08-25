@@ -353,6 +353,90 @@ class Project:
             })
         return out
 
+    def migrate(self, new_path: str):
+        """project 目录整体搬迁到 new_path（离线操作，不要求 frozen）。
+
+        含全部 db 目录、_PROJECT_META.json、failed_tasks.bin（断点能力随迁）。
+        半成品 db（未 frozen）同样可迁——idx 事务段 + ABORT truncate 保证搬后
+        可恢复（load_db 丢弃未闭合段）。
+
+        前提：相关 master/worker 进程已退出（不在运行中搬迁）。
+        原子性：目录 rename（同 FS）原子；meta/chain 改写在搬迁后进行——
+        中断重入时 load_project 的 stale db_path fallback 兜底恢复。
+
+        Raises:
+            RuntimeError: new_path 已存在 / meta 缺失 / db 目录缺失 /
+                data 不自包含（data_path 在 project 外——先 consolidate）。
+        """
+        import shutil as _shutil
+        new_path = os.path.abspath(new_path)
+        if new_path == self.db_path:
+            raise RuntimeError(f"migrate: new_path identical to current: {new_path}")
+        if os.path.exists(new_path):
+            raise RuntimeError(f"migrate: new_path already exists: {new_path}")
+
+        old_root = self.db_path
+        # 校验 + 构建路径映射（旧 → 新）。
+        path_map = {}   # db_path / data_path 通用：旧绝对路径 → 新绝对路径
+        for actual, info in self._meta["dbs"].items():
+            old_bp = info["db_path"]
+            if not os.path.isdir(old_bp):
+                raise RuntimeError(f"migrate: db dir missing: {old_bp}")
+            rel = os.path.relpath(old_bp, old_root)
+            if rel.startswith(".."):
+                raise RuntimeError(
+                    f"migrate: db '{actual}' lives outside project dir "
+                    f"({old_bp}) — unsupported")
+            path_map[old_bp] = os.path.join(new_path, rel)
+            old_dp = info.get("data_path", "")
+            if old_dp:
+                if not os.path.isdir(old_dp):
+                    raise RuntimeError(f"migrate: data_path missing: {old_dp}")
+                drel = os.path.relpath(old_dp, old_root)
+                if drel.startswith(".."):
+                    raise RuntimeError(
+                        f"migrate: data_path of db '{actual}' outside project "
+                        f"({old_dp}) — data not self-contained; run "
+                        f"migrate_project(consolidate=True) first")
+                path_map[old_dp] = os.path.join(new_path, drel)
+
+        # 物理搬迁（同 FS rename 原子；跨 FS move = copy + rm）。
+        os.makedirs(os.path.dirname(new_path) or ".", exist_ok=True)
+        _shutil.move(old_root, new_path)
+
+        # meta 改写（tmp + os.replace 原子）。
+        self.db_path = new_path
+        self._meta_path = os.path.join(new_path, _PROJECT_META)
+        for info in self._meta["dbs"].values():
+            if info["db_path"] in path_map:
+                info["db_path"] = path_map[info["db_path"]]
+            old_dp = info.get("data_path", "")
+            if old_dp and old_dp in path_map:
+                info["data_path"] = path_map[old_dp]
+        self.save()
+
+        # chain 邻居边改写：project 内 db 间的 prev/next 边 db_path 更新
+        #（uid 不变；project 外的边不动）。DbChainFile.update 持 LOCK_EX +
+        # 原子替换。
+        from storage import DbChainFile
+        for info in self._meta["dbs"].values():
+            chain = DbChainFile(info["db_path"])
+            if not chain.exists():
+                continue
+
+            def _rewrite(d, mapping=path_map):
+                for field in ("prev", "next"):
+                    for edge in d.get(field, []):
+                        old = edge.get("db_path")
+                        if old in mapping:
+                            edge["db_path"] = mapping[old]
+                return d
+
+            chain.update(_rewrite)
+
+        INFO(f"Project.migrate: {old_root} -> {new_path} "
+             f"({len(self._meta['dbs'])} dbs, chain edges rewritten)")
+
     def list_flows(self) -> list:
         """返回已注册到本类（及基类）的 flow 名（内省用）。"""
         # 收集本类及所有基类的 _flows（MRO 顺序，去重，子类覆盖基类）。
@@ -421,9 +505,20 @@ class Project:
         from fly import load_db
         for actual, info in meta["dbs"].items():
             bp = info["db_path"]
+            # db_path 失效 fallback：meta 的 db_path 是绝对路径快照，project 目录
+            # 搬迁后过期（migrate_project 会改写 meta，此分支兜底"搬了目录但 meta
+            # 未改/旧 project"）。actual_name 本是 project 目录的 relpath，天然
+            # 相对定位。
             if not os.path.isdir(bp):
-                WARN(f"load_project: db db_path missing, skipping: {bp}")
-                continue
+                fallback = os.path.join(proj.db_path, actual)
+                if os.path.isdir(fallback):
+                    WARN(f"load_project: db_path stale ({bp}), fallback to "
+                         f"current project layout: {fallback}")
+                    bp = fallback
+                    info["db_path"] = fallback
+                else:
+                    WARN(f"load_project: db db_path missing, skipping: {bp}")
+                    continue
             try:
                 proj._db_cache[actual] = load_db(bp)
                 INFO(f"load_project: restored db '{actual}' ({info.get('db_path')})")

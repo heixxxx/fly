@@ -48,6 +48,14 @@ CMString DataReader::find_file_path(const CMString& file_name,
         return db_path_file;
     }
 
+    // merge 产物目录（merge_db 默认 data_path = "{db_path}.merged_data"）。
+    // 跨进程 load_db 的 worker 以 data_path="" 注册（IdxLoad 命令无 data_path
+    // 字段），merged db 的 .dat 只能在此命中——前两候选 miss 后的最后探测。
+    CMString merged_file = db_path + ".merged_data/" + file_name;
+    if (fs::exists(merged_file)) {
+        return merged_file;
+    }
+
     ERR("Data file not found: {}", file_name);
     return {};
 }

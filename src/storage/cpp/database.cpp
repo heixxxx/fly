@@ -85,13 +85,16 @@ Database::Database(const CMString& db_path, const CMString& data_path, uint64_t 
     // temp writer：与正式 writer 同 writer_id（temp idx/数据文件按后缀区分：
     // {wid}.temp.idx / temp_data_{wid}_{NNN}.dat）。同生命周期创建——事务段
     // 必须在首写之前打标（mark_write_begin 双打），惰性创建会漏段导致
-    // task 失败回滚不覆盖 temp 写。
-    temp_writer_ = CMMakeUnique<DataWriter>(
-        db_path_, data_path_, writer_id_,
-        config->get_int("aggregation_threshold"),
-        host_,
-        /*temp_mode=*/true
-    );
+    // task 失败回滚不覆盖 temp 写。frozen db 跳过：写入已被 check_frozen
+    // 拦截（事务段永不开），建了只会留下空 temp 文件残留（load_db 场景）。
+    if (!is_frozen_) {
+        temp_writer_ = CMMakeUnique<DataWriter>(
+            db_path_, data_path_, writer_id_,
+            config->get_int("aggregation_threshold"),
+            host_,
+            /*temp_mode=*/true
+        );
+    }
 }
 
 Database::~Database() {
@@ -575,13 +578,14 @@ void Database::mark_write_begin() {
     // temp writer 同步开段：task 内混合写正式/temp 对象时，两族写入共享同一
     // task 事务边界（END/ABORT 同步收尾）。空段 abort 是 no-op（回滚点=当前
     // 位置，truncate 等长 no-op），未写过 temp 的 task 无额外代价。
-    temp_writer_->mark_begin();
+    // null = frozen db 不建 temp writer（写入被拦截，段永不开）。
+    if (temp_writer_) temp_writer_->mark_begin();
 }
 
 void Database::mark_write_end() {
     std::lock_guard<std::mutex> lk(state_mutex_);
     writer_->mark_end();
-    temp_writer_->mark_end();
+    if (temp_writer_) temp_writer_->mark_end();
 }
 
 void Database::abort_task_writes(const CMVector<CMString>& dirty_full_names) {
@@ -597,7 +601,7 @@ void Database::abort_task_writes(const CMVector<CMString>& dirty_full_names) {
     {
         std::lock_guard<std::mutex> lk(state_mutex_);
         writer_->abort_segment();
-        temp_writer_->abort_segment();
+        if (temp_writer_) temp_writer_->abort_segment();
     }
 
     // 4. 清运行时内存中被本 task 污染的对象。
@@ -846,6 +850,14 @@ void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compresse
     bool disk_ok = false;
     {
         std::lock_guard<std::mutex> lk(state_mutex_);
+        if (!temp_writer_) {
+            // frozen db 无 temp writer（构造跳过）——frozen 后的 temp 写本就
+            // 是异常路径，显式失败而非静默内存降级。
+            ERR("[TEMP-PUT] put_temp_data on frozen db (no temp writer): {}", object_name);
+            fly::DataService::instance()->on_temp_write_started(db_path_, full);
+            fly::DataService::instance()->on_write_failed(db_path_, full, "temp write on frozen db");
+            return;
+        }
         // write_context_hash 留空：temp 对象按对象名携带迭代步（如
         // __rasg__x_{i}_{step}），restore 保守加载（hash 空不判等价）语义安全。
         disk_ok = temp_writer_->write_record_checked(
@@ -878,7 +890,8 @@ void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compresse
     // 的最新 entry 提供。
     {
         std::lock_guard<std::mutex> lk(state_mutex_);
-        auto entry_opt = temp_writer_->get_last_entry(object_name);
+        auto entry_opt = temp_writer_
+            ? temp_writer_->get_last_entry(object_name) : std::nullopt;
         fly::DataService::instance()->on_temp_write(db_path_, full, compressed_data, entry_opt);
     }
 

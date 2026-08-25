@@ -1756,7 +1756,9 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
                 update_dependency_location_cache(wo.object_name_, worker_id, addr.host_, addr.port_);
                 auto [db_path, short_name] = fly::split_full_name(wo.object_name_);
                 if (!db_path.empty()) {
-                    record_worker_info(wo.object_name_, db_path, worker_id, "");
+                    // wo.writer_id_ 非空（merge task 上报真实 writer）优先；
+                    // 空（普通 task）fallback master Database 的 writer id。
+                    record_worker_info(wo.object_name_, db_path, worker_id, wo.writer_id_);
                 }
                 DBG("Recorded data location (non-stream, task complete): {} -> worker {}", wo.object_name_, worker_id);
             }
@@ -1805,6 +1807,12 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
         // Internal tasks (backup, etc.) always update remote_idx
         for (const auto& wo : msg.written_objects_) {
             DataService::instance()->update_remote_idx(wo.object_name_, worker_id, addr.host_, addr.port_, wo.size_bytes_);
+            // merge worker 的真实 writer 记入 _DB_META（跨进程 load_db 按 idx
+            // 文件名恢复的依据；wo.writer_id_ 空时 fallback master Database 的）。
+            auto [db_path, short_name] = fly::split_full_name(wo.object_name_);
+            if (!db_path.empty()) {
+                record_worker_info(wo.object_name_, db_path, worker_id, wo.writer_id_);
+            }
             DBG("Internal task: recorded data location: {} -> worker {}", wo.object_name_, worker_id);
         }
         // monitor 落盘：internal task（无 metadata）骨架行 + 扩展字段。
@@ -2643,8 +2651,16 @@ void MasterAgent::register_database(const CMString& db_path, const CMString& dat
 }
 
 bool MasterAgent::is_db_frozen(const CMString& db_path) const {
-    std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
-    return frozen_dbs_.count(db_path) > 0 || pending_frozen_dbs_.count(db_path) > 0;
+    {
+        std::lock_guard<std::mutex> lk(frozen_dbs_mutex_);
+        if (frozen_dbs_.count(db_path) > 0 || pending_frozen_dbs_.count(db_path) > 0) {
+            return true;
+        }
+    }
+    // 本进程内存未登记（如迁移场景的新 master 进程）：以磁盘 _FROZEN marker
+    // 为权威证据（freeze 时 create_frozen_marker 落盘）。跨进程语义完整——
+    // migrate_project(consolidate=True) 的前置校验依赖它。
+    return std::filesystem::exists(std::string(db_path) + "/_FROZEN");
 }
 
 bool MasterAgent::is_db_pending_frozen(const CMString& db_path) const {

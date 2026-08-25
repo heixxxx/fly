@@ -2583,11 +2583,14 @@ void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_n
     ds->on_object_flushed(target_full);
 
     // 6. TaskComplete（上报用 target_full，master 用 target 命名空间重建索引）。
+    // writer_id_ 必填：merge worker 的实际 writer 与 master Database 的不同，
+    // master 侧 record_worker_info 据此把真实 writer 记入 _DB_META（跨进程
+    // load_db 按 idx 文件名恢复的依据）。
     int64_t comp_size = static_cast<int64_t>(comp_data->size());
     TaskCompleteMessage complete;
     complete.task_id_ = task_id;
     complete.worker_id_ = worker_id_;
-    complete.written_objects_.push_back({target_full, comp_size});
+    complete.written_objects_.push_back({target_full, comp_size, writer->writer_id()});
     complete.is_internal_ = true;
     reactor_->send(master_conn_, complete);
 

@@ -750,6 +750,18 @@ class Master(FlyAgent):
         if ok and delete_source:
             source_worker_ids = self._delete_merge_source_with_retry(
                 hostname_to_writer_ids, existing_by_hostname, db_path)
+        if ok:
+            # 删除源 writer 的悬空 idx：源 .dat 已删（delete_source）或数据已
+            # 迁移，旧 idx 的 entry 指向不存在的文件——同进程内 remote_idx 被
+            # cleanup 重建无碍，跨进程 load_db 会把悬空 idx 恢复给源 host
+            # worker（读请求打到悬空副本死循环）。merge target 的新 idx 保留。
+            for source_writer in writer_to_entries:
+                stale_idx = os.path.join(source_idx_path, f"{source_writer}.idx")
+                try:
+                    os.remove(stale_idx)
+                    INFO(f"merge_db: removed absorbed source idx {stale_idx}")
+                except FileNotFoundError:
+                    pass
 
         # 状态清理（无论是否删源，merge 已改变数据分布，旧索引都失效）：
         # 广播 MergeCleanup 让各 worker 清旧 local_idx/remote_idx + 按新路径重建 local_idx；

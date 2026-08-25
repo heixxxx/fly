@@ -18,7 +18,7 @@ Example::
 
 import os
 
-from _fly_log import WARN
+from _fly_log import WARN, INFO
 import _fly_message as _msg
 
 from storage import Database
@@ -68,6 +68,57 @@ def load_project(path: str, resume: bool = False) -> 'Project':
     proj = Project.load(path)
     if resume:
         proj.resume()
+    return proj
+
+
+def migrate_project(path: str, new_path: str = "", *, consolidate: bool = False,
+                    local_workers: int = 4) -> 'Project':
+    """Project 整体迁移（master-only，全程无超时——数据量与集群 IO 不可预估）。
+
+    两种模式（可组合）：
+
+    - **数据集中**（``consolidate=True``，在线）：把分散在各源 host 本地盘的
+      .dat 数据经网络集中到 master host（逐 db ``merge_db``，产物 data 在
+      ``{db_path}.merged_data``，位于 project 目录内，自包含）。要求全部 db
+      已 frozen（merge 前提）——未 frozen 报错列出；半成品 project 跨主机
+      不支持（先跑完或单机搬迁）。
+    - **目录搬迁**（``new_path`` 非空，离线）：project 目录整体挪到 new_path
+      （含全部 db + failed_tasks.bin，断点能力随迁），meta db_path/data_path
+      改写 + _DB_CHAIN 邻居边更新（uid 不变）。不要求 frozen——半成品 db 靠
+      idx 事务段保证搬后可恢复。前提：相关进程已退出。
+
+    Args:
+        path: 现有 project 目录。
+        new_path: 迁移目标目录（空 = 只 consolidate 不搬迁）。
+        consolidate: 先跨主机集中数据再搬迁。
+        local_workers: consolidate 时 master host 无同 host worker 的拉起上限。
+
+    Returns:
+        迁移后的 ``Project`` 实例（绑定新路径）。
+    """
+    from fly.project import Project
+    proj = Project(path)
+
+    if consolidate:
+        agent = get_agent()
+        unfrozen = [info["db_path"] for info in proj._meta["dbs"].values()
+                    if not agent._agent.is_db_frozen(info["db_path"])]
+        if unfrozen:
+            raise RuntimeError(
+                f"migrate_project(consolidate=True): {len(unfrozen)} db(s) not "
+                f"frozen (merge precondition): {unfrozen} — finish or freeze "
+                f"them first, or migrate without consolidate on a single host")
+        for actual, info in proj._meta["dbs"].items():
+            INFO(f"migrate_project: consolidating db '{actual}' "
+                 f"({info['db_path']})")
+            # 跨进程场景先恢复源对象索引（master remote_idx + 源 host worker
+            # local_idx）——merge task 的跨机拉源依赖对象位置已知。
+            load_db(info["db_path"])
+            merge_db(info["db_path"], local_workers=local_workers)
+
+    if new_path:
+        proj.migrate(new_path)
+
     return proj
 
 
