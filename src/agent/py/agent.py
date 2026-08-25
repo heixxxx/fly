@@ -657,8 +657,11 @@ class Master(FlyAgent):
         hostname_to_writer_ids = defaultdict(list)
         # idx 文件在源 db_path（共享盘）。跨 path merge 时 merge_db_path 是产物新路径，
         # 但 idx 还在源 path（db_path == 源 path）。从源 path 读 idx。
+        # 排除 {wid}.temp.idx（temp 专用 idx；frozen db 正常已无 temp 残留，
+        # 防御 freeze 广播丢失窗口的残留误入正式清单）。
         source_idx_path = db_path  # db_path == 源 db_path
-        idx_files = glob.glob(os.path.join(source_idx_path, "*.idx"))
+        idx_files = [f for f in glob.glob(os.path.join(source_idx_path, "*.idx"))
+                     if not f.endswith(".temp.idx")]
         for idx_file in idx_files:
             writer_id = os.path.basename(idx_file)[:-4]  # 去掉 .idx
             hostname = writer_to_hostname.get(writer_id)
@@ -693,7 +696,7 @@ class Master(FlyAgent):
         #   = 数据丢失（plan 评审确认纳入的数据丢失级风险）。
         if not writer_to_entries:
             idx_files = ([f for f in os.listdir(source_idx_path)
-                          if f.endswith(".idx")]
+                          if f.endswith(".idx") and not f.endswith(".temp.idx")]
                          if os.path.isdir(source_idx_path) else [])
             if idx_files:
                 raise RuntimeError(

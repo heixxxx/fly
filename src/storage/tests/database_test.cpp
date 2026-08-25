@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/decompressing_streambuf.h>
+#include <storage/cpp/local_index.h>
+#include <storage/cpp/data_service.h>
 #include <common/cpp/worker_context.h>
 #include <common/cpp/fly_buffer.h>
 #include <filesystem>
@@ -980,6 +982,145 @@ TEST_F(DatabaseTest, ConcurrentFreezeIsSafe) {
     for (auto& t : threads) t.join();
     EXPECT_TRUE(db.is_frozen());
     EXPECT_TRUE(std::filesystem::exists(test_dir_ + "/_FROZEN"));
+}
+
+// ── temp 落盘（task 级断点的前置基建）──────────────────────────────
+// temp 对象从纯内存（TempStore LRU）改为"内存 LRU + db 目录专用文件落盘"：
+// temp_data_{wid}_{NNN}.dat + {wid}.temp.idx（op-log 事务段）。断点语义：
+// 已完成 task 的 temp 输出跨进程可恢复（load temp idx → restore → ready），
+// db freeze 后 temp 文件全部删除。
+
+static FlyBufferPtr make_temp_payload(const CMString& tag) {
+    // put_temp_data 收已压缩 buf（含 ObjectHeader），用公共压缩接口构造。
+    static Database dummy("/tmp/fly_temp_compress_dummy");
+    CMString comp = dummy.compress_pickle_bytes(tag.data(), tag.size(), "bytes");
+    auto buf = CMMakeShared<FlyBuffer>();
+    buf->write(comp.data(), comp.size());
+    return buf;
+}
+
+// put_temp_data → 进程代切换（清内存索引）→ load temp idx + restore →
+// 盘 fallback 读回。验证 temp 落盘的跨进程可见性（断点恢复核心路径）。
+TEST_F(DatabaseTest, TempPersistRoundtripAcrossRestart) {
+    CMString db_path = test_dir_ + "/temp_roundtrip";
+    {
+        Database db(db_path);
+        FlyBufferPtr buf = make_temp_payload("temp_payload_roundtrip");
+        db.put_temp_data("iters/x_0", buf);
+    }
+    // 进程代切换：内存 local_idx 全清（模拟重启）。DataService 是进程单例，
+    // 用 cleanup_temp_entries + unregister 后 re-register 等价模拟。
+    auto ds = fly::DataService::instance();
+    ds->cleanup_temp_entries(db_path);
+    ds->unregister_database(db_path);
+    ds->register_database(db_path, "");
+    // 清空后无内存条目，也确认无 LRU 命中。
+    auto [found0, _] = ds->try_read_local_raw(db_path + ":iters/x_0");
+    EXPECT_FALSE(found0) << "内存条目清空后不应再命中（前提构造）";
+
+    // load temp idx → restore_temp_entries（on_idx_load_command 的核心两步）。
+    // temp idx 文件名 = {writer_id}.temp.idx，扫描 db 目录取第一个。
+    CMVector<CMString> temp_idx;
+    for (const auto& f : std::filesystem::directory_iterator(db_path)) {
+        CMString name = f.path().filename().string();
+        if (name.size() > 9 && name.substr(name.size() - 9) == ".temp.idx") {
+            temp_idx.push_back(f.path().string());
+        }
+    }
+    ASSERT_EQ(temp_idx.size(), 1u) << "put_temp_data 应产生一个 temp idx";
+
+    LocalIndex temp_index(temp_idx[0]);
+    temp_index.load();
+    auto entries = temp_index.get_all_entries();
+    ASSERT_EQ(entries.size(), 1u);
+    ds->restore_temp_entries(db_path, entries);
+
+    // 盘 fallback 读回：内存 temp_compressed_data_ 为空，走 entries_ 文件读。
+    auto [found, data] = ds->try_read_local_raw(db_path + ":iters/x_0");
+    ASSERT_TRUE(found);
+    ASSERT_NE(data, nullptr);
+    DecompressingStreamBuf dsbuf(data->data(), data->size());
+    std::istream is(&dsbuf);
+    CMString result;
+    CMVector<char> tmp(4096);
+    while (is) {
+        is.read(tmp.data(), static_cast<std::streamsize>(tmp.size()));
+        if (is.gcount() > 0) result.append(tmp.data(), static_cast<size_t>(is.gcount()));
+    }
+    EXPECT_EQ(result, "temp_payload_roundtrip");
+}
+
+// task 失败回滚：mark_write_begin → put_temp → abort_task_writes →
+// temp 数据文件 truncate 回滚点 + temp idx 段 ABORT（load 后无 entry）。
+TEST_F(DatabaseTest, TempAbortRollsBackFiles) {
+    CMString db_path = test_dir_ + "/temp_abort";
+    Database db(db_path);
+    db.mark_write_begin();
+    FlyBufferPtr buf = make_temp_payload("temp_will_be_aborted");
+    db.put_temp_data("dirty/obj", buf);
+    CMVector<CMString> dirty = {db_path + ":dirty/obj"};
+    db.abort_task_writes(dirty);
+
+    // temp idx：load 后 ABORT 段丢弃 → 0 entry。
+    for (const auto& f : std::filesystem::directory_iterator(db_path)) {
+        CMString name = f.path().filename().string();
+        if (name.size() > 9 && name.substr(name.size() - 9) == ".temp.idx") {
+            LocalIndex temp_index(f.path().string());
+            temp_index.load();
+            EXPECT_EQ(temp_index.get_all_entries().size(), 0u)
+                << "ABORT 段的 temp 写入必须被 idx 丢弃";
+        }
+    }
+    // 内存条目同步清理。
+    auto [found, _d] = fly::DataService::instance()->try_read_local_raw(db_path + ":dirty/obj");
+    EXPECT_FALSE(found);
+}
+
+// freeze 完成后 temp 文件全部删除（数据文件 + temp idx）。
+TEST_F(DatabaseTest, TempFreezeDeletesFiles) {
+    CMString db_path = test_dir_ + "/temp_freeze";
+    {
+        Database db(db_path);
+        write_raw(db, "final/obj", "persistent", false);
+        fly::DataService::instance()->drain_write_back();
+        FlyBufferPtr buf = make_temp_payload("temp_then_freeze");
+        db.put_temp_data("iters/y_1", buf);
+        db.freeze();
+    }
+    for (const auto& f : std::filesystem::directory_iterator(db_path)) {
+        CMString name = f.path().filename().string();
+        EXPECT_EQ(name.find("temp_data_"), CMString::npos)
+            << "freeze 后不得残留 temp 数据文件: " << name;
+        EXPECT_EQ(name.find(".temp.idx"), CMString::npos)
+            << "freeze 后不得残留 temp idx: " << name;
+    }
+    // 正式对象不受影响。
+    Database db2(db_path);
+    EXPECT_EQ(read_raw_string(db2, "final/obj"), "persistent");
+}
+
+// temp idx 未闭合段（BEGIN 后无 END，进程被杀）load 时丢弃——崩溃一致性。
+TEST_F(DatabaseTest, TempIdxUnclosedSegmentDropped) {
+    CMString db_path = test_dir_ + "/temp_unclosed";
+    {
+        Database db(db_path);
+        db.mark_write_begin();
+        FlyBufferPtr buf = make_temp_payload("unclosed_temp");
+        db.put_temp_data("half/obj", buf);
+        // 不打 END/ABORT——直接丢弃 Database（模拟进程被杀，无 task 收尾）。
+    }
+    CMVector<CMString> temp_idx;
+    for (const auto& f : std::filesystem::directory_iterator(db_path)) {
+        CMString name = f.path().filename().string();
+        if (name.size() > 9 && name.substr(name.size() - 9) == ".temp.idx") {
+            temp_idx.push_back(f.path().string());
+        }
+    }
+    ASSERT_EQ(temp_idx.size(), 1u);
+    LocalIndex temp_index(temp_idx[0]);
+    temp_index.load();
+    EXPECT_EQ(temp_index.get_all_entries().size(), 0u)
+        << "未闭合段的 temp 写入必须在 load 时丢弃";
 }
 
 }

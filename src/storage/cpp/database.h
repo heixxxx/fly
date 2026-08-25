@@ -87,6 +87,11 @@ public:
     void abort_task_writes(const CMVector<CMString>& dirty_full_names);
 
     void put_temp_data(const CMString& object_name, FlyBufferPtr compressed_data);
+
+    // 删除 db 目录下全部 temp 落盘产物（temp_data_*.dat + *.temp.idx）。
+    // freeze 确认后调用（temp=中间态，阶段完成即作废）。幂等（文件不存在 no-op）。
+    void cleanup_temp_files();
+
     DbMeta load_meta() const;
     // 静态读 _DB_META，不构造 Database 实例（不触发 DataService register_database，
     // 避免 merge_db 在已 open_db 的进程内重复注册同 db_path）。
@@ -194,6 +199,10 @@ private:
     int64_t compression_threshold_ = 4096;
 
     CMUniquePtr<DataWriter> writer_;
+    // temp 专用 writer（temp_data_{wid}_{NNN}.dat + {wid}.temp.idx，恒落
+    // db_path）。与 writer_ 同生命周期创建：事务段（mark_write_begin/end/abort）
+    // 必须在首写之前打标，惰性创建会漏段。空段 abort 是 no-op 安全。
+    CMUniquePtr<DataWriter> temp_writer_;
     CMUnorderedSet<CMString> removed_objects_;
 
     // 自保护锁：保护 db_path_/data_path_/writer_id_/writer_ 操作序列/

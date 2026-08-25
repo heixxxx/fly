@@ -3559,6 +3559,25 @@ void MasterAgent::rebuild_remote_idx_for_worker(const CMString& db_path,
         }
         INFO("rebuild_remote_idx_for_worker: mapped {} entries from writer_id={} to worker_id={}",
              entries.size(), writer_id, worker_id);
+
+        // temp 落盘同批恢复（task 级断点）：temp 对象与正式对象同 worker 持有，
+        // 一并 update_remote_idx + mark_data_ready——重投的下游 task 输入就绪。
+        // frozen db 的 temp 已随 freeze 清理，无 temp idx 属正常。
+        CMString temp_idx_path = db_path + "/" + writer_id + ".temp.idx";
+        if (std::filesystem::exists(temp_idx_path)) {
+            LocalIndex temp_idx(temp_idx_path);
+            temp_idx.load();
+            auto temp_entries = temp_idx.get_all_entries();
+            for (const auto& entry : temp_entries) {
+                CMString full = db_path + ":" + entry.object_name_;
+                DataService::instance()->update_remote_idx(full, worker_id, addr.host_, addr.port_);
+                graph_->mark_data_ready(full);
+            }
+            if (!temp_entries.empty()) {
+                INFO("rebuild_remote_idx_for_worker: mapped {} temp entries from "
+                     "writer_id={} to worker_id={}", temp_entries.size(), writer_id, worker_id);
+            }
+        }
     }
 }
 

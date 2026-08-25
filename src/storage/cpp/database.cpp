@@ -82,6 +82,16 @@ Database::Database(const CMString& db_path, const CMString& data_path, uint64_t 
         config->get_int("aggregation_threshold"),
         host_
     );
+    // temp writer：与正式 writer 同 writer_id（temp idx/数据文件按后缀区分：
+    // {wid}.temp.idx / temp_data_{wid}_{NNN}.dat）。同生命周期创建——事务段
+    // 必须在首写之前打标（mark_write_begin 双打），惰性创建会漏段导致
+    // task 失败回滚不覆盖 temp 写。
+    temp_writer_ = CMMakeUnique<DataWriter>(
+        db_path_, data_path_, writer_id_,
+        config->get_int("aggregation_threshold"),
+        host_,
+        /*temp_mode=*/true
+    );
 }
 
 Database::~Database() {
@@ -504,6 +514,10 @@ void Database::freeze() {
     }
     fly::DataService::instance()->on_flush(db_path_copy);
     fly::DataService::instance()->cleanup_temp_entries(db_path_copy);
+    // temp 落盘产物删除：freeze = 阶段完成，中间态作废（用户裁定语义）。
+    // 幂等（master/worker 侧 freeze 均调，文件不存在 no-op）；共享盘 db_path
+    // 单点删除，跨主机 worker 的读已无需求（下游只依赖正式对象）。
+    cleanup_temp_files();
     fly::WorkerAgentContext::notify_freeze(db_path_copy);
 
     // Persist non-deleted vars alongside the frozen db.
@@ -558,11 +572,16 @@ void Database::remove_index_entry(const CMString& object_name) {
 void Database::mark_write_begin() {
     std::lock_guard<std::mutex> lk(state_mutex_);
     writer_->mark_begin();
+    // temp writer 同步开段：task 内混合写正式/temp 对象时，两族写入共享同一
+    // task 事务边界（END/ABORT 同步收尾）。空段 abort 是 no-op（回滚点=当前
+    // 位置，truncate 等长 no-op），未写过 temp 的 task 无额外代价。
+    temp_writer_->mark_begin();
 }
 
 void Database::mark_write_end() {
     std::lock_guard<std::mutex> lk(state_mutex_);
     writer_->mark_end();
+    temp_writer_->mark_end();
 }
 
 void Database::abort_task_writes(const CMVector<CMString>& dirty_full_names) {
@@ -573,10 +592,12 @@ void Database::abort_task_writes(const CMVector<CMString>& dirty_full_names) {
     //    下一步 truncate 回收，on_complete_ 更新的 local_idx_ 会在第 4 步清理。
     fly::DataService::instance()->drain_write_back();
 
-    // 3. idx 打 ABORT + data 文件 truncate 回滚点。
+    // 3. idx 打 ABORT + data 文件 truncate 回滚点（正式 + temp 双 writer，
+    //    temp 写入已纳入 task 写追踪，脏 temp 同段撤销）。
     {
         std::lock_guard<std::mutex> lk(state_mutex_);
         writer_->abort_segment();
+        temp_writer_->abort_segment();
     }
 
     // 4. 清运行时内存中被本 task 污染的对象。
@@ -807,14 +828,64 @@ void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compresse
     CMString full = full_name(object_name);
     DBG("[TEMP-PUT] put_temp_data: obj={}, full={}, data_size={}", object_name, full, compressed_data ? compressed_data->size() : 0);
 
+    // ── temp 落盘（task 级断点基建）──────────────────────────────────
+    // temp 从纯内存（TempStore LRU）改为"内存 LRU（TIER1 读缓存）+ db 目录专用
+    // 文件落盘"。COMPLETED task 的 temp 输出跨进程可恢复（load temp idx →
+    // restore_temp_entries → 下游 task 输入 ready）；db freeze 后
+    // cleanup_temp_files 删除全部 temp 文件。
+    int64_t original_size = 0;
+    int32_t chunk_count = 0;
+    {
+        ObjectHeader hdr;
+        int64_t off = 0;
+        if (ObjectHeader::deserialize({compressed_data->data(), compressed_data->size()}, off, hdr)) {
+            original_size = static_cast<int64_t>(hdr.total_size_);
+            chunk_count = static_cast<int32_t>(hdr.chunk_count_);
+        }
+    }
+    bool disk_ok = false;
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        // write_context_hash 留空：temp 对象按对象名携带迭代步（如
+        // __rasg__x_{i}_{step}），restore 保守加载（hash 空不判等价）语义安全。
+        disk_ok = temp_writer_->write_record_checked(
+            object_name, original_size, chunk_count, *compressed_data, "");
+        // write-through：数据流 flush + idx ADD 落盘（LocalIndex::save）。
+        // 必须 NOW——idx 的 ADD 是内存 pending、save 才写文件；不 flush 则
+        // task END 标记（mark_write_end 即时 append）先于 ADD 落盘，恢复时
+        // 段内无记录 → 已完成 task 的 temp 输出丢失（断点语义破坏）。
+        if (disk_ok) {
+            disk_ok = temp_writer_->flush_checked();
+        }
+    }
+    if (!disk_ok) {
+        // 落盘失败即写失败（断点语义要求 COMPLETE 的 temp 输出必在盘上，
+        // 不做"仅内存"降级——那会让恢复方静默重算/悬空）。
+        ERR("[TEMP-PUT] temp disk write failed for '{}' (db={}) — marking write failed",
+            object_name, db_path_);
+        fly::DataService::instance()->on_temp_write_started(db_path_, full);
+        fly::DataService::instance()->on_write_failed(db_path_, full, "temp disk write failed");
+        return;
+    }
+
     // Step 1: Add local idx entry (INCOMPLETE, is_temp=true)
     fly::DataService::instance()->on_temp_write_started(db_path_, full);
 
     // Step 2: Store temp data and mark COMPLETE — must happen BEFORE register_write.
     // register_write is synchronous (blocks for ACK). Master dispatches dependent
     // tasks immediately on receiving WriteRegister. If data isn't stored yet,
-    // other workers' reads will fail.
-    fly::DataService::instance()->on_temp_write(db_path_, full, compressed_data);
+    // other workers' reads will fail. entries（盘读 fallback 用）由 temp_writer
+    // 的最新 entry 提供。
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        auto entry_opt = temp_writer_->get_last_entry(object_name);
+        fly::DataService::instance()->on_temp_write(db_path_, full, compressed_data, entry_opt);
+    }
+
+    // Step 2.5: temp 写入纳入 task 写追踪（current_writes_）：task 失败的
+    // ABORT 回滚覆盖 temp；TaskComplete.written_objects 上报完整。
+    fly::WorkerAgentContext::record_write(db_path_, object_name,
+                                          static_cast<int64_t>(compressed_data->size()));
 
     // Step 3: Register with master so other workers can discover this data.
     // By now the data is readable on this worker's DataServer.
@@ -827,6 +898,41 @@ void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compresse
     }
 
     DBG("[TEMP-PUT] put_temp_data complete: obj={}", object_name);
+}
+
+void Database::cleanup_temp_files() {
+    // 删除 db 目录下全部 temp 落盘产物。文件名按前缀/后缀精确匹配：
+    //   temp_data_{wid}_{NNN}.dat（数据）+ {wid}.temp.idx（索引）。
+    // 幂等：不存在 no-op。freeze 确认后调用（master/worker 侧均可）。
+    // 先收集再删：directory_iterator 边迭代边删会跳条目。
+    CMVector<CMString> to_remove;
+    try {
+        for (const auto& f : fs::directory_iterator(db_path_)) {
+            CMString name = f.path().filename().string();
+            bool is_temp_data = name.rfind("temp_data_", 0) == 0 &&
+                                name.size() > 4 &&
+                                name.compare(name.size() - 4, 4, ".dat") == 0;
+            bool is_temp_idx = name.size() > 9 &&
+                               name.compare(name.size() - 9, 9, ".temp.idx") == 0;
+            if (is_temp_data || is_temp_idx) {
+                to_remove.push_back(f.path().string());
+            }
+        }
+    } catch (const fs::filesystem_error& e) {
+        WARN("cleanup_temp_files: directory iterate failed for {}: {}",
+             db_path_, e.what());
+        return;
+    }
+    std::error_code ec;
+    int removed = 0;
+    for (const auto& path : to_remove) {
+        fs::remove(path, ec);
+        if (!ec) ++removed;
+    }
+    if (removed > 0) {
+        INFO("cleanup_temp_files: removed {} temp file(s) for db_path={}",
+             removed, db_path_);
+    }
 }
 
 // =============================================================================

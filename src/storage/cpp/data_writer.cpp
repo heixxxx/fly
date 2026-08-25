@@ -11,19 +11,24 @@ DataWriter::DataWriter(
     const CMString& data_path,
     const CMString& writer_id,
     int64_t aggregation_threshold,
-    const CMString& host
+    const CMString& host,
+    bool temp_mode
 )
     : db_path_(db_path)
     , data_path_(data_path)
     , writer_id_(writer_id.empty() ? generate_writer_id() : writer_id)
     , host_(host)
-    , aggregation_threshold_(aggregation_threshold) {
+    , aggregation_threshold_(aggregation_threshold)
+    , temp_mode_(temp_mode) {
 
     fs::create_directories(db_path_);
-    CMString write_dir = data_path_.empty() ? db_path_ : data_path_;
+    // temp 数据文件恒落 db_path（db 目录内自包含，支撑断点恢复与 project
+    // 整体迁移）；正式数据文件落 data_path（默认 = db_path）。
+    CMString write_dir = (temp_mode_ || data_path_.empty()) ? db_path_ : data_path_;
     fs::create_directories(write_dir);
 
-    CMString idx_path = db_path_ + "/" + writer_id_ + ".idx";
+    CMString idx_path = db_path_ + "/" + writer_id_ +
+                        (temp_mode_ ? ".temp.idx" : ".idx");
     index_ = CMMakeUnique<LocalIndex>(idx_path);
 
     if (fs::exists(idx_path)) {
@@ -183,7 +188,7 @@ void DataWriter::rollback_data_file() {
         file_stream_.close();
     }
 
-    CMString write_dir = data_path_.empty() ? db_path_ : data_path_;
+    CMString write_dir = (temp_mode_ || data_path_.empty()) ? db_path_ : data_path_;
 
     // 情况1：BEGIN 后发生过 rollover（本 task 写出的 .dat 超过 1 个）。
     //   删除回滚点之后新创建的所有 .dat（file_index_ 递减回回滚点序号）。
@@ -242,7 +247,7 @@ void DataWriter::create_new_file() {
     }
 
     current_file_ = get_current_file_name();
-    CMString write_dir = data_path_.empty() ? db_path_ : data_path_;
+    CMString write_dir = (temp_mode_ || data_path_.empty()) ? db_path_ : data_path_;
     CMString file_path = write_dir + "/" + current_file_;
 
     fs::create_directories(write_dir);
@@ -262,7 +267,7 @@ CMString DataWriter::get_current_file_name() {
 
 CMString DataWriter::get_file_name(int32_t index) const {
     std::ostringstream oss;
-    oss << "data_" << writer_id_ << "_" << std::setfill('0')
-        << std::setw(3) << index << ".dat";
+    oss << (temp_mode_ ? "temp_data_" : "data_") << writer_id_ << "_"
+        << std::setfill('0') << std::setw(3) << index << ".dat";
     return oss.str();
 }

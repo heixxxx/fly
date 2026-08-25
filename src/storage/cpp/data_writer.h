@@ -18,12 +18,17 @@ struct SegmentRollbackPoint {
 
 class DataWriter {
 public:
+    // temp_mode：temp 专用 writer——数据文件 temp_data_{wid}_{NNN}.dat、
+    // idx 文件 {wid}.temp.idx（op-log 事务段格式同正式 idx），写目录恒
+    // db_path（temp 落盘必须 db 目录内自包含，支撑 task 级断点跨进程恢复
+    // 与 project 整体迁移）。db freeze 后 temp 文件全部删除。
     DataWriter(
         const CMString& db_path,
         const CMString& data_path,
         const CMString& writer_id,
         int64_t aggregation_threshold,
-        const CMString& host = ""
+        const CMString& host = "",
+        bool temp_mode = false
     );
 
     ~DataWriter();
@@ -82,6 +87,7 @@ private:
     CMString writer_id_;
     CMString host_;
     int64_t aggregation_threshold_;
+    bool temp_mode_ = false;
 
     CMString current_file_;
     int32_t file_index_ = 1;

@@ -268,7 +268,17 @@ public:
     std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> read_raw_compressed(const CMString& object_name);
 
     void on_temp_write_started(const CMString& db_path, const CMString& object_name);
-    void on_temp_write(const CMString& db_path, const CMString& object_name, FlyBufferPtr compressed_data);
+    // disk_entry：temp 落盘产物（temp_data_*.dat）的 IndexEntry。提供时填入
+    // entries_（内存 LRU miss 后的盘读 fallback 路径）；缺失（std::nullopt，
+    // 落盘失败或旧路径）则纯内存语义。
+    void on_temp_write(const CMString& db_path, const CMString& object_name,
+                       FlyBufferPtr compressed_data,
+                       const std::optional<IndexEntry>& disk_entry = std::nullopt);
+    // 恢复 temp 落盘条目（on_idx_load_command 加载 {wid}.temp.idx 后调用）：
+    // 灌 local_idx_（is_temp=true + entries_，无内存 data）——跨进程 temp 可见
+    // （task 级断点：已完成 task 的 temp 输出 ready）。
+    void restore_temp_entries(const CMString& db_path,
+                              const CMVector<IndexEntry>& entries);
     void cleanup_temp_entries(const CMString& db_path);
 
     // ============================================================

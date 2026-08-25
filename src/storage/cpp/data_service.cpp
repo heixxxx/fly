@@ -476,6 +476,50 @@ void DataService::restore_entries(const CMString& db_path,
     }
 }
 
+void DataService::restore_temp_entries(const CMString& db_path,
+                                       const CMVector<IndexEntry>& entries) {
+    // temp 落盘恢复（task 级断点）：{wid}.temp.idx load 后灌 local_idx_——
+    // is_temp=true + entries_（盘读 fallback），无 temp_compressed_data_。
+    // 对象名是 short_name（LocalIndex 不含 db_path 前缀）。
+    CMVector<CMString> touched_full_names;
+    {
+        std::unique_lock<std::shared_mutex> lock(local_mutex_);
+        auto& db_map = local_idx_[db_path].objects_;
+        for (const auto& e : entries) {
+            const CMString& short_name = e.object_name_;
+            auto& info = db_map[short_name];
+            if (!info) {
+                info = CMMakeShared<LocalObjectInfo>();
+            }
+            info->db_path_ = db_path;
+            info->is_temp_ = true;
+            // 重放恢复等价去重（同 restore_entries 惯例）：同 write_context_hash
+            // 跳过。temp 写入 hash 留空 → 保守全量加载（重写新版本必须可见）。
+            if (!e.write_context_hash_.empty()) {
+                bool duplicate = false;
+                for (const auto& existing : info->entries_) {
+                    if (existing.write_context_hash_ == e.write_context_hash_) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (duplicate) continue;
+            }
+            info->entries_.push_back(e);
+            info->completion_state_.store(CompletionState::COMPLETE, std::memory_order_release);
+            info->flushed_ = true;
+            touched_full_names.push_back(db_path + ":" + short_name);
+        }
+    }
+    for (const auto& full : touched_full_names) {
+        fly::ObjectCache::instance().remove(full);
+    }
+    if (!entries.empty()) {
+        DBG("restore_temp_entries: restored {} temp objects for db_path={}",
+            entries.size(), db_path);
+    }
+}
+
 std::optional<CMVector<IndexEntry>> DataService::find_local_entries(const CMString& object_name) const {
     auto [db_path, short_name] = split_full(object_name);
     std::shared_lock<std::shared_mutex> lock(local_mutex_);
@@ -829,6 +873,7 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
         if (info.is_temp_) {
             is_temp = true;
             temp_data = info.temp_compressed_data_;
+            entries = info.entries_;  // temp 落盘副本：内存 miss 后盘读 fallback
         } else {
             entries = info.entries_;
         }
@@ -838,13 +883,20 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
         if (!temp_data) {
             if (temp_eviction_store_) {
                 auto [found, data] = temp_eviction_store_->get(object_name);
-                if (!found) return {false, ReadResult{}};
-                temp_data = CMMakeShared<FlyBuffer>();
-                temp_data->take(std::move(data));
-            } else {
-                return {false, ReadResult{}};
+                if (found) {
+                    temp_data = CMMakeShared<FlyBuffer>();
+                    temp_data->take(std::move(data));
+                }
             }
         }
+        if (!temp_data && !entries.empty() && !paths.db_path_.empty()) {
+            // 盘 fallback（temp 落盘）：跨进程恢复 / LRU 逐出后的读路径。
+            FlyBufferPtr raw = do_read_raw_entries(entries, paths);
+            if (raw && !raw->empty()) {
+                return {true, decompress_raw(CMString(raw->data(), raw->size()))};
+            }
+        }
+        if (!temp_data) return {false, ReadResult{}};
         return {true, decompress_raw(CMString(temp_data->data(), temp_data->size()))};
     }
 
@@ -893,6 +945,8 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
         if (info.is_temp_) {
             is_temp = true;
             temp_data = info.temp_compressed_data_;
+            // entries（temp 落盘副本）：内存 miss 后的盘读 fallback。
+            entries = info.entries_;
             return 3;
         }
         entries = info.entries_;
@@ -951,10 +1005,18 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
         }
         if (temp_eviction_store_) {
             auto [found, data] = temp_eviction_store_->get(object_name);
-            if (!found) return {false, nullptr};
-            auto buf = CMMakeShared<FlyBuffer>();
-            buf->take(std::move(data));
-            return {true, buf};
+            if (found) {
+                auto buf = CMMakeShared<FlyBuffer>();
+                buf->take(std::move(data));
+                return {true, buf};
+            }
+        }
+        // 盘 fallback（temp 落盘）：内存 LRU miss/被逐出/跨进程恢复后，按
+        // entries_（temp_data_*.dat 的 IndexEntry）读盘。find_file_path 按
+        // 文件名存在性探测，temp 文件天然落 db_path 命中。
+        if (!entries.empty() && !paths.db_path_.empty()) {
+            FlyBufferPtr raw = do_read_raw_entries(entries, paths);
+            if (raw && !raw->empty()) return {true, raw};
         }
         return {false, nullptr};
     }
@@ -1277,7 +1339,9 @@ void DataService::on_temp_write_started(const CMString& db_path, const CMString&
     DBG("[TEMP-WRITE-STARTED] obj={}, db_path={}", object_name, db_path);
 }
 
-void DataService::on_temp_write(const CMString& db_path, const CMString& object_name, FlyBufferPtr compressed_data) {
+void DataService::on_temp_write(const CMString& db_path, const CMString& object_name,
+                                FlyBufferPtr compressed_data,
+                                const std::optional<IndexEntry>& disk_entry) {
     if (!temp_eviction_store_) {
         temp_max_bytes_ = Config::instance()->get_int("temp_store_size");
         if (temp_max_bytes_ <= 0) temp_max_bytes_ = 2147483648LL;
@@ -1307,6 +1371,10 @@ void DataService::on_temp_write(const CMString& db_path, const CMString& object_
         }
 
         info->temp_compressed_data_ = std::move(compressed_data);
+        if (disk_entry) {
+            info->entries_.clear();
+            info->entries_.push_back(*disk_entry);
+        }
         info->completion_state_.store(CompletionState::COMPLETE, std::memory_order_release);
 
         temp_lru_order_.push_back(object_name);

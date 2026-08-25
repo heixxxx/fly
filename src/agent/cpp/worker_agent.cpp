@@ -2096,6 +2096,30 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
                 loaded_writer_ids.push_back(writer_id);
                 loaded++;
             }
+
+            // temp 落盘恢复（task 级断点）：{wid}.temp.idx 与正式 idx 同批加载，
+            // 已完成 task 的 temp 输出跨进程 ready（下游 task 输入就绪）。
+            // 已 frozen 的 db 跳过——temp 已随 freeze 清理，残留文件属异常
+            //（freeze 广播丢失窗口），WARN 提示路径不加载。
+            CMString temp_idx_path = msg.db_path_ + "/" + writer_id + ".temp.idx";
+            if (std::filesystem::exists(msg.db_path_ + "/_FROZEN")) {
+                if (std::filesystem::exists(temp_idx_path)) {
+                    WARN("temp idx residue on frozen db (freeze broadcast may "
+                         "have been missed): {}", temp_idx_path);
+                }
+            } else if (std::filesystem::exists(temp_idx_path)) {
+                LocalIndex temp_idx(temp_idx_path);
+                temp_idx.load();
+                if (temp_idx.had_unclosed_segment()) {
+                    WARN("Detected unclosed temp segment in {} (crashed task), "
+                         "discarded on load", temp_idx_path);
+                }
+                auto temp_entries = temp_idx.get_all_entries();
+                if (!temp_entries.empty()) {
+                    dsRef->restore_temp_entries(msg.db_path_, temp_entries);
+                    loaded++;
+                }
+            }
         }
 
         ack.success_ = true;
@@ -2256,6 +2280,11 @@ void WorkerAgent::on_database_freeze_notification(uint64_t conn_id, const Databa
         }
         db->freeze();
         INFO("Worker local database frozen: db_path={}", msg.db_path_);
+    } else {
+        // 本 worker 未持有该 db 的 Database 句柄（如 storage_only 接管场景），
+        // 仍需清掉 local_idx 的 temp 条目（temp 落盘的内存读缓存随 freeze 失效；
+        // 盘上文件由持有句柄侧的 Database::freeze → cleanup_temp_files 删除）。
+        DataService::instance()->cleanup_temp_entries(msg.db_path_);
     }
 }
 
