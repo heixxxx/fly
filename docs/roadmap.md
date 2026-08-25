@@ -39,7 +39,7 @@
 | **F3** | Worker role（storage_only / hybrid） | 已落地（2026-08-15）：静态身份 + idle 候选层过滤，scheduler 零 role 概念 | 完成 |
 | **F4** | 大对象分片传输 + 背压 | DataResponse 两段式但不分片；仅连接池并发限流，无 credit 流控 | **降级**：见 §4 决策记录 ⑤ |
 | **F5** | ~~任务优先级~~ | ~~`TaskRequirements` 无 priority 字段；纯 FIFO~~ | **✅ 已完成**（commit 500880c：`@as_task(priority=N)` 全链路优先级调度，ready_tasks_ 按 {-priority, task_id} 有序） |
-| **F6** | stage checkpoint 显式表达 | 无框架级 progress query | **不做**：见 §4 决策记录 ④ |
+| **F6** | stage checkpoint 显式表达 | 无框架级 progress query | **task 级断点已实现**（2026-08-25，temp 落盘 + failed_tasks.bin project 化，见 project-design.md §10；stage 级粗粒度仍不做） |
 | **F7** | 协议版本号 | `MessageHeader` 无 version 字段 | **不做**：见 §4 决策记录 ⑥ |
 
 ---

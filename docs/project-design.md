@@ -348,3 +348,100 @@ master 侧 flow 只做检查输入/建库/提交入口 task/提交 freeze task �
 - **"独立目录，子 db 自动子目录"**：base_path = project_dir/name。✅
 - **"像 db 一样 load，只存必要元信息"**：_PROJECT_META.json 仅存路径+状态+class；load 全量恢复。✅
 - **"包装现有 solver 为模板"**：SolverProject + flows，复用 solve_ras_graph。✅
+
+---
+
+## 10. task 级断点重跑（resume）
+
+> 2026-08-25 增补。推翻 roadmap 决策④「F6 stage checkpoint 不做」中的粒度
+> 选择：断点粒度 = **task 级**（db 级 checkpoint 的粗粒度语义由 frozen db
+> 继续承担，task 级补齐中断恢复）。
+
+### 10.1 核心设计：不记录、不检测已完成 task
+
+已完成 task 的**输出对象**就是完成证据——调度本身是对象驱动的
+（`DependencyGraph::mark_data_ready`），恢复时只需让全部已完成输出（正式
++ temp）重新 ready，未完成 task 重投后依赖图自然收敛。**无需 task 日志、
+无需 COMPLETE 记录、无需跳过判定**。
+
+### 10.2 temp 落盘（前置基建）
+
+`save_to_db=False` 的 temp 对象从纯内存（TempStore LRU）改为「内存 LRU
+（TIER1 读缓存）+ db 目录专用文件落盘」：
+
+```
+db_path/
+├── temp_data_{writer_id}_{NNN}.dat   # temp 数据专用（与正式 data_*.dat 隔离）
+├── {writer_id}.temp.idx              # temp 专用 idx（op-log 事务段，格式同正式 idx）
+```
+
+- **write-through**：`put_temp_data` 同步落盘 + idx ADD 立即 save（idx 的
+  ADD 是内存 pending、save 才写文件，不 flush 则 task END 先于 ADD 落盘，
+  恢复时段内无记录）；
+- **事务段**：temp 写入纳入 task 写追踪（`tracked_writes`），失败
+  ABORT 同段回滚（idx 段丢弃 + 数据 truncate）；
+- **恢复**：`load_db` 的 IdxLoad 同批加载 `.temp.idx` → worker
+  `restore_temp_entries` + master `rebuild_remote_idx_for_worker`
+  `mark_data_ready`——下游 task 输入就绪；
+- **freeze 清理**：db freeze 确认后删除全部 temp 文件（用户裁定语义：
+  temp=中间态，阶段完成即作废）。frozen db 的 Database 不再建 temp writer。
+
+### 10.3 failed_tasks.bin project 化
+
+project 模式（`Project.__init__/load`）把 bin 路径绑定到
+`{project_dir}/failed_tasks.bin`（`MasterAgent::set_failed_tasks_file`，
+persist/rewrite/restart 全链一处覆盖）；非 project 场景维持 `{log_dir}` 惯例。
+project 自包含：断点 bin 随 project 目录迁移。
+
+### 10.4 恢复入口与语义边界
+
+```python
+proj = fly.load_project(path, resume=True)   # 恢复全部 db + 重投未完成 task
+```
+
+- **优雅中断**（stop / SIGTERM / drain 超时）：FAILED 实时 persist +
+  PENDING/RUNNING 由 stop 路径 persist → bin 完整 → resume 完整恢复；
+- **SIGKILL/OOM**：RUNNING/PENDING 的 spec 丢失（无 persist 时机）→
+  resume 只恢复此前 FAILED 记录，其余靠 **flow 重放兜底**（同
+  `write_context_hash` 幂等重写 + ready 对象下游直通，收敛不重算持久
+  边界内的工作）；
+- 正确性根基 = write 幂等（provenance 同 hash 允许重写）+ idx 事务段
+  （崩溃段 load 时丢弃）。
+
+---
+
+## 11. project 整体迁移（migrate_project）
+
+```python
+fly.migrate_project(path, new_path="", *, consolidate=False, local_workers=4)
+```
+
+**全程无超时**（数据量与集群 IO 速度不可预估——EDA 数 T 级 db 常见，
+等待只被显式失败信号终结）。
+
+### 11.1 目录搬迁（new_path 非空，离线）
+
+不要求 frozen（半成品 db 靠 idx 事务段 + ABORT truncate 保证搬后可恢复）：
+
+1. 校验：db 目录存在；data 自包含（meta 的 `data_path` 在 project 外 →
+   拒绝并提示先 consolidate）；
+2. `shutil.move`（含 failed_tasks.bin，断点能力随迁）；
+3. meta db_path/data_path 改写（tmp + `os.replace` 原子）；
+4. `_DB_CHAIN` 邻居边改写：prev/next 中指向 project 内 db 的 db_path 按
+   旧→新映射更新（uid 不变，project 外的边不动）。
+
+中断重入安全：目录已搬而 meta 未改时，`load_project` 的 stale db_path
+fallback（`{project_dir}/{actual_name}` 相对定位，actual 本为 relpath）
+兜底恢复。
+
+### 11.2 数据集中（consolidate=True，在线，跨主机）
+
+逐 db frozen 校验（merge 前提，未 frozen 报错列出）→ 逐 db `load_db`
+（跨进程先恢复源对象索引）→ `merge_db`（产物 data 落 `{db_path}.merged_data`，
+在 project 目录内，自包含）→ 可接搬迁。半成品 project 跨主机不支持
+（merge 前提 frozen）。
+
+### 11.3 辅助 API
+
+- `Project.status()`：每 db `{actual, logical, db_path, frozen}`（断点导航）；
+- `_create_db` meta 补记 `data_path`（自包含校验依据，旧 meta 视为 ""）。

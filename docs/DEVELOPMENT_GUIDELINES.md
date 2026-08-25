@@ -823,3 +823,18 @@ workers_mutex_ 下的 send 同样禁止（reactor send 非阻塞，但含 encode
 - 2026-05-15: 重构导出宏文档（Section 4.3）：移除 module_var 参数，用户写大括号，新增命名规范 Section 2.4
 - 2026-08-14: 新增 Section 13 并发与锁规范（封装优先级 / notify 持锁铁律 / 锁内禁 IO / 并发测试写法），源于 on_var_ack lost wakeup 修复与 PendingRpcMap/ConcurrentMap 收敛改造
 - 2026-05-15: 修正序列化宏签名：`FLY_FIELD(field)` 替代 `FLY_FIELD(s, o, field)`，移除重复 Section 4.2.2
+## 14. 数据规模相关等待禁设超时
+
+> 2026-08-25 用户裁定。EDA 领域数 T 级 db 常见——不可无理由猜测任务规模。
+
+**规则**：数据搬运/加载/删除/合并类等待一律无 deadline，等待语义 = 完成或
+显式失败信号（ack `success_=false` / worker 判死联动 / 屏障 `remaining<0`），
+绝不靠超时兜底：
+
+- `PendingRpcMap::wait_for` 的 `timeout<=0` = 无限等待（负 duration 的
+  `wait_until` 是"过去时间"语义，已显式分流到无期限 wait）；
+- 无限等待的安全性由判死联动保证（`settle_pending_for_dead_worker`：
+  worker 死亡即终结其全部 pending 期待）；
+- 已修正的规模假设点：load_db 可见性屏障 30s、merge_db `task_timeout=3600`、
+  前置 `wait_for_all_tasks(3600)`、delete ack 60s、MergeCleanup 屏障 30s；
+- 用户侧主动查询 API（`fly.wait_tasks(timeout)` 用户传参）不在此列。
