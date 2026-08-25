@@ -2012,6 +2012,10 @@ void MasterAgent::handle_worker_death(uint64_t worker_id) {
     // monitor 落盘：DEAD 事件。
     if (metrics_db_) metrics_db_->record_worker_event(worker_id, "DEAD");
 
+    // 判死联动收敛 pending RPC 期待（先于 task 恢复：无限等待方尽早收到
+    // 显式失败信号，不依赖后续任何路径）。
+    settle_pending_for_dead_worker(worker_id);
+
     CMVector<uint64_t> tasks_to_recover;
     {
         std::lock_guard<std::mutex> lk(schedule_mutex_);
@@ -2095,6 +2099,98 @@ void MasterAgent::handle_worker_death(uint64_t worker_id) {
     }
 
     fail_orphan_data_objects(worker_id);
+}
+
+// 判死联动收敛 pending RPC 期待。数据规模相关等待已无限化（load_db 屏障 /
+// merge task / delete ack / merge cleanup 均无超时），无限等待只能被显式
+// 失败信号终结——worker 判死即终结其全部期待。幂等：已终结条目（completed
+// 已置位 / pending_workers 已 erase / 计数已 clamp）二次判死不改变状态。
+void MasterAgent::settle_pending_for_dead_worker(uint64_t worker_id) {
+    // 1. IdxLoad 期待：死亡 worker 的加载不会发生，置 -1 让 load_db Python
+    //    轮询显式报错（用户侧重试 load_db 会重新 spawn + 重发，天然恢复路径）。
+    {
+        CMVector<CMString> dbs_to_fail;
+        pending_idx_loads_.with_lock([&](auto& m) {
+            for (auto& [db_path, p] : m) {
+                if (p->pending_workers_.erase(worker_id) > 0) {
+                    p->remaining_ = -1;
+                    dbs_to_fail.push_back(db_path);
+                }
+            }
+        });
+        for (const auto& db : dbs_to_fail) {
+            WARN("worker {} died with pending IdxLoad: db_path={} marked failed "
+                 "(retry load_db to recover)", worker_id, db);
+        }
+    }
+
+    // 2. DeleteData 期待：complete(success_=false)——该 host 的源 .dat 删除
+    //    未确认，残留数据由 WARN + 等待侧的既有降级路径（STOR::0004 手动
+    //    清理提示）暴露。key = "db_path:worker_id"，按尾段精确匹配。
+    {
+        CMString wid_suffix = ":" + std::to_string(worker_id);
+        CMVector<CMString> keys;
+        pending_delete_acks_.with_lock([&](auto& m) {
+            for (const auto& [key, p] : m) {
+                if (!p->completed_ &&
+                    key.size() > wid_suffix.size() &&
+                    key.compare(key.size() - wid_suffix.size(),
+                                wid_suffix.size(), wid_suffix) == 0) {
+                    keys.push_back(key);
+                }
+            }
+        });
+        for (const auto& key : keys) {
+            pending_delete_acks_.complete(key, [worker_id](PendingDeleteData& p) {
+                if (!p.completed_) {
+                    p.completed_ = true;
+                    p.success_ = false;
+                    p.error_message_ = "source worker declared dead";
+                }
+            });
+            WARN("worker {} died with pending DeleteData: {} marked failed "
+                 "(source .dat may remain on its host)", worker_id, key);
+        }
+    }
+
+    // 3. MergeTask 期待：complete 失败（等价 on_merge_task_failed 语义——
+    //    wait_merge_tasks_complete 收到 success_=false，merge_db 走失败清理
+    //    路径，源数据保留支撑重 merge）。
+    {
+        CMVector<uint64_t> tids;
+        merge_task_states_.with_lock([&](auto& m) {
+            for (const auto& [tid, s] : m) {
+                if (!s->completed_ && s->worker_id_ == worker_id) {
+                    tids.push_back(tid);
+                }
+            }
+        });
+        for (uint64_t tid : tids) {
+            merge_task_states_.complete(tid, [worker_id](MergeTaskState& s) {
+                if (!s.completed_) {
+                    s.completed_ = true;
+                    s.success_ = false;
+                    s.error_message_ = "merge worker died: " + std::to_string(worker_id);
+                }
+            });
+            WARN("worker {} died with pending merge task {}: marked failed "
+                 "(source preserved for re-merge)", worker_id, tid);
+        }
+    }
+
+    // 4. MergeCleanup 屏障：死亡 worker 的进程内存索引随进程消失，天然视为
+    //    "已清理"——received++（clamp at expected）推进屏障，不阻塞其它
+    //    worker 的正常 ack 收敛。
+    pending_merge_cleanups_.complete_all_if(
+        [](const PendingMergeCleanup&) { return true; },
+        [worker_id](PendingMergeCleanup& p) {
+            if (p.received_count_ < p.expected_count_) {
+                ++p.received_count_;
+                WARN("worker {} died during merge cleanup barrier: counted as "
+                     "cleaned (progress {}/{})", worker_id,
+                     p.received_count_, p.expected_count_);
+            }
+        });
 }
 
 void MasterAgent::fail_orphan_data_objects(uint64_t worker_id) {
@@ -3957,21 +4053,21 @@ bool MasterAgent::wait_merge_tasks_complete(const CMVector<uint64_t>& task_ids,
                                               int64_t timeout_seconds,
                                               CMVector<CMString>* completed_objects,
                                               CMVector<CMString>* failed_objects) {
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+    // timeout_seconds<=0 = 无限等待（数据规模相关等待禁设超时：merge 的数据量
+    // 与集群 IO 速度不可预估，任何正数超时都是规模假设）。等待只被显式失败
+    // 信号终结：task 失败上报 / worker 判死联动（settle_pending_for_dead_worker
+    // complete 失败）。timeout_seconds>0 仅测试注入用（QA 注错入口）。
     bool all_ok = true;
 
     for (uint64_t tid : task_ids) {
-        // 原实现共享同一绝对 deadline（逐 task 剩余时间递减）→ 转换为相对 timeout。
         // erase_on_timeout=false：超时保留条目，cleanup_after_merge 还要消费
         //（object→worker 映射重建 remote_idx）。
-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-            deadline - std::chrono::steady_clock::now());
         auto state = merge_task_states_.wait_for(
-            tid, remaining,
+            tid, std::chrono::seconds(timeout_seconds),
             [](const CMSharedPtr<MergeTaskState>& s) { return s->completed_; },
             /*erase_on_timeout=*/false);
         if (!state) {
-            // 超时：本 task 未完成。
+            // 超时：本 task 未完成（仅显式传正超时的测试路径）。
             all_ok = false;
             if (failed_objects) {
                 failed_objects->push_back("TIMEOUT:merge_task_" + std::to_string(tid));
@@ -4055,21 +4151,20 @@ bool MasterAgent::wait_delete_data_acks(const CMVector<uint64_t>& source_worker_
                                           const CMString& db_path,
                                           int64_t timeout_seconds,
                                           CMVector<uint64_t>* failed_workers) {
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+    // timeout_seconds<=0 = 无限等待（删源数据量不可预估，任何正数超时都是
+    // 规模假设）。等待只被显式失败信号终结：ack success_=false / worker 判死
+    // 联动（settle_pending_for_dead_worker complete 失败）。
     bool all_ok = true;
 
     for (uint64_t src_wid : source_worker_ids) {
         CMString ack_key = db_path + ":" + std::to_string(src_wid);
-        // 原实现共享同一绝对 deadline（逐 key 剩余时间递减）→ 转换为相对 timeout。
         // erase_on_timeout=false：超时保留条目，由本函数末尾统一清理（merge 语义）。
-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-            deadline - std::chrono::steady_clock::now());
         auto result = pending_delete_acks_.wait_for(
-            ack_key, remaining,
+            ack_key, std::chrono::seconds(timeout_seconds),
             [](const CMSharedPtr<PendingDeleteData>& p) { return p->completed_; },
             /*erase_on_timeout=*/false);
         if (!result) {
-            // 超时：本 worker 的 ack 未返回。
+            // 超时：本 worker 的 ack 未返回（仅显式传正超时的测试路径）。
             all_ok = false;
             if (failed_workers) failed_workers->push_back(src_wid);
             WARN("wait_delete_data_acks: timeout for worker_id={}, db_path={}", src_wid, db_path);
@@ -4193,10 +4288,13 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
          "(exempt merge targets: {})", db_path, expected_acks, merge_target_worker_ids.size());
 
     // 3. 等待所有 worker 回 MergeCleanupAck（全局一致性屏障）。
-    //    超时则告警但继续（尽力而为，不阻塞用户太久）。
+    //    无限等待（timeout=0）：worker 清理+重载 idx 的耗时随 db 规模增长
+    //（数 T 级 db 常见），任何正数超时都是规模假设。等待只被显式信号终结：
+    //    全员 ack / worker 判死联动（settle_pending_for_dead_worker 视死亡
+    //    worker 为已清理，推进计数）。
     {
         bool all_acked = pending_merge_cleanups_.wait_for(
-            db_path, std::chrono::seconds(30),
+            db_path, std::chrono::seconds(0),
             [](const CMSharedPtr<PendingMergeCleanup>& p) {
                 return p->received_count_ >= p->expected_count_;
             },
@@ -4204,8 +4302,9 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
         if (!all_acked) {
             auto p = pending_merge_cleanups_.find(db_path);
             uint64_t got = p ? p->received_count_ : 0;
-            WARN("cleanup_after_merge: timeout waiting for MergeCleanupAck: "
-                 "db_path={}, expected={}, received={}", db_path, expected_acks, got);
+            WARN("cleanup_after_merge: MergeCleanupAck barrier not satisfied "
+                 "(entry absent): db_path={}, expected={}, received={}",
+                 db_path, expected_acks, got);
         }
         pending_merge_cleanups_.erase(db_path);
     }

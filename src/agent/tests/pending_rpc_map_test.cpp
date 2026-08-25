@@ -217,3 +217,46 @@ TEST(PendingRpcMapTest, CompleteDuringPredicateWindowWakesWaiter) {
     EXPECT_TRUE(result->completed_);
     EXPECT_TRUE(result->success_);
 }
+
+// timeout<=0 = 无限等待（数据规模相关等待禁设超时：EDA 数 T 级 db 下任何
+// 正数超时都是规模假设）。waiter 不因非正超时立即返回 nullptr，而是等
+// complete 唤醒——负 duration 的 wait_until 是"过去时间"语义，若不做分支
+// 会瞬间超时，本用例钉住该回归。
+TEST(PendingRpcMapTest, WaitForNonPositiveTimeoutWaitsForever) {
+    TestRpcMap map;
+    map.emplace("k", CMMakeShared<TestPending>());
+
+    std::latch waiter_ready(1);
+    map.pre_sleep_hook_ = [&] { waiter_ready.count_down(); };
+
+    CMSharedPtr<TestPending> result;
+    auto waiter = std::thread([&] {
+        result = map.wait_for("k", std::chrono::milliseconds(0),
+                              [](const CMSharedPtr<TestPending>& p) { return p->completed_; });
+    });
+    waiter_ready.wait();  // waiter 持锁、即将进入无限 wait（确定性交错点）
+    map.complete("k", [](TestPending& p) {
+        p.completed_ = true;
+        p.success_ = true;
+    });
+    waiter.join();
+
+    // 无限等待 + complete 唤醒：返回真实结果（立即超时路径会返回 nullptr）。
+    ASSERT_NE(result, nullptr);
+    EXPECT_TRUE(result->completed_);
+
+    // 负 timeout 同语义（调用方以 -1 表达无限的习惯写法）。
+    map.emplace("neg", CMMakeShared<TestPending>());
+    std::latch waiter2_ready(1);
+    map.pre_sleep_hook_ = [&] { waiter2_ready.count_down(); };
+    CMSharedPtr<TestPending> result2;
+    auto waiter2 = std::thread([&] {
+        result2 = map.wait_for("neg", std::chrono::milliseconds(-1),
+                               [](const CMSharedPtr<TestPending>& p) { return p->completed_; });
+    });
+    waiter2_ready.wait();
+    map.complete("neg", [](TestPending& p) { p.completed_ = true; });
+    waiter2.join();
+    ASSERT_NE(result2, nullptr);
+    EXPECT_TRUE(result2->completed_);
+}

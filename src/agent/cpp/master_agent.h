@@ -331,6 +331,11 @@ public:
     void check_grace_deadlines_for_testing(int64_t now) {
         check_grace_deadlines(now);
     }
+    // 直接驱动 handle_worker_death（private）：判死联动收敛（pending RPC 期待
+    // 终结）的确定性测试入口，无需构造宽限超时路径。
+    void handle_worker_death_for_testing(uint64_t worker_id) {
+        handle_worker_death(worker_id);
+    }
     // 宽限表快照：测试等待"断连已进宽限登记"的确定性条件。on_disconnect 的
     // 清表（connected 不可见）与宽限登记之间有中间代码，负载下 lane 线程可
     // 在该窗口被抢占——等 connected empty 就 check 会空转（判死未发生）。
@@ -617,6 +622,12 @@ private:
     // worker 正式判死（宽限超时 / drain 期断连 / 断连即死模式）：标 DEAD +
     // 恢复其 RUNNING task + rollback pending frozen + 存储接管/数据全灭快速失败。
     void handle_worker_death(uint64_t worker_id);
+    // 判死联动收敛 pending RPC 期待（无限等待的安全性前提：等待只被显式失败
+    // 信号终结，不被超时终结）：死亡 worker 的 IdxLoad 期待置 -1（load_db 侧
+    // 显式报错）、DeleteData 期待 complete 失败（残留数据 WARN）、MergeTask
+    // 期待 complete 失败（等价 on_merge_task_failed）、MergeCleanup 屏障视为
+    // 该 worker 已清理（进程死亡 = 其内存索引天然不存在）。
+    void settle_pending_for_dead_worker(uint64_t worker_id);
     // 数据全灭快速失败（可重入幂等）：W 持有对象中"全部 holder 均 DEAD"的，
     // 撤 ready + fail 等待调度的依赖 task。判死即时路径与接管超时兜底共用。
     void fail_orphan_data_objects(uint64_t worker_id);

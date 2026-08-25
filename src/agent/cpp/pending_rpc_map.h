@@ -64,6 +64,10 @@ public:
     // erase_on_timeout=true（默认，worker 侧 RPC 语义）：超时即 erase 防泄漏；
     // =false（merge 侧语义）：条目生命周期跨越 wait（后续 cleanup 消费），
     // 超时保留由调用方负责清理。
+    // timeout<=0 = 无限等待（数据规模相关等待禁设超时：EDA 数 T 级 db 下任何
+    // 正数超时都是规模假设；负 duration 的 wait_until 是"过去时间"语义会瞬间
+    // 超时，此处显式分流到无期限 wait）。无限等待的安全性由调用方保证存在
+    // 显式失败信号路径（ack success_=false / worker 判死联动终结期待）。
     // is_done is invoked under the lock; it must only read the pending entry.
     template <typename Pred>
     CMSharedPtr<Pending> wait_for(const Key& key,
@@ -74,6 +78,7 @@ public:
         auto it = map_.find(key);
         if (it == map_.end()) return nullptr;
         auto& pending = it->second;
+        const bool infinite = timeout.count() <= 0;
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (!is_done(pending)) {
 #ifdef FLY_ENABLE_TEST_HOOKS
@@ -81,7 +86,9 @@ public:
             // 用于 latch 强制线程交错，确定性复现/防回归 cv lost wakeup。
             if (pre_sleep_hook_) pre_sleep_hook_();
 #endif
-            if (cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
+            if (infinite) {
+                cv_.wait(lock);
+            } else if (cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
                 if (!is_done(pending)) {
                     if (erase_on_timeout) {
                         map_.erase(it);

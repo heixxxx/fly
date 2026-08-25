@@ -327,9 +327,15 @@ class Master(FlyAgent):
 
     def wait_for_all_tasks(self, expected: int = None, timeout: float = 30.0):
         import time
-        t0 = time.time()
+        # timeout<=0 或 None = 无限等待（数据规模相关等待禁设超时：task 的
+        # 计算量不可预估）。等待只被显式失败信号终结（failed task 即 raise），
+        # 与 master stop() drain 语义一致（drain_timeout_seconds=0 = 无限）。
+        if timeout is None or timeout <= 0:
+            deadline = None
+        else:
+            deadline = time.time() + timeout
         if expected is not None:
-            while time.time() - t0 < timeout:
+            while deadline is None or time.time() < deadline:
                 completed = self._agent.get_completed_tasks()
                 if len(completed) >= expected:
                     return completed
@@ -338,7 +344,7 @@ class Master(FlyAgent):
                     raise RuntimeError(f"Tasks failed: {failed}")
                 time.sleep(0.5)
         else:
-            while time.time() - t0 < timeout:
+            while deadline is None or time.time() < deadline:
                 pending = self._agent.get_pending_tasks()
                 running = self._agent.get_running_tasks()
                 if not pending and not running:
@@ -442,22 +448,20 @@ class Master(FlyAgent):
 
         # Phase 4: Wait for all acks (on_idx_load_ack handles remote_idx rebuild)
         # 等可见性标志而非盲 sleep：master 侧 PendingIdxLoad 计数（send 登记、
-        # Ack+rebuild 完成后递减、失败置 -1）——100 轮压测实测高负载下 worker
-        # idx 加载 2.2s 越过 sleep(1.0) 窗口，返回后立即 read_object KeyError。
-        # 超时 30s 仅作 deadline 兜底（worker 死亡等场景），超时/失败显式报错。
+        # Ack+rebuild 完成后递减、失败置 -1）——100 轮压测实测高负载下 worker idx
+        # 加载 2.2s 越过 sleep(1.0) 窗口，load_db 返回后立即 read_object KeyError。
+        # 无超时 deadline（数据规模相关等待禁设超时：数 T 级 db 的 idx 加载耗时
+        # 不可预估）。等待只被显式信号终结：remaining==0（完成）或 <0（加载失败
+        # / worker 判死联动置 -1）。
         import time
-        deadline = time.monotonic() + 30.0
         while True:
             remaining = self._agent.idx_load_pending(db_path)
             if remaining == 0:
                 break
             if remaining < 0:
                 raise RuntimeError(
-                    f"load_db: idx load failed for {db_path} (see master log)")
-            if time.monotonic() > deadline:
-                raise TimeoutError(
-                    f"load_db: idx load not complete in 30s "
-                    f"(remaining={remaining}, see master log)")
+                    f"load_db: idx load failed for {db_path} "
+                    f"(worker failed or died — see master log; retry load_db)")
             time.sleep(0.05)
 
         # 流程 message：load_db 恢复完成（系统就绪里程碑）。
@@ -526,8 +530,9 @@ class Master(FlyAgent):
 
     def _delete_merge_source_with_retry(self, hostname_to_writer_ids,
                                         existing_by_hostname, db_path):
-        """merge Phase 5：逐源 host 发 DeleteData + 同步等 ack；失败自动重试一轮
-        （瞬时故障），仍失败发流程 message 提醒手动删除（残留清单完整暴露）。
+        """merge Phase 5：逐源 host 发 DeleteData + 同步等 ack（无限等待：删源
+        数据量不可预估）；失败自动重试一轮（瞬时故障），仍失败发流程 message
+        提醒手动删除（残留清单完整暴露）。
 
         返回发起删源的 worker_ids（cleanup_after_merge 的屏障参数）。
         """
@@ -550,14 +555,18 @@ class Master(FlyAgent):
         if not source_worker_ids:
             return source_worker_ids
 
-        del_ok, del_failed = self._agent.wait_delete_data_acks(source_worker_ids, db_path, 60)
+        # timeout=0 → C++ 侧无限等待；失败只来自 ack success_=false 或 worker
+        # 判死联动（settle_pending_for_dead_worker 显式 complete 失败）。
+        del_ok, del_failed = self._agent.wait_delete_data_acks(
+            source_worker_ids, db_path, 0)
         if not del_ok:
             INFO(f"merge_db: retrying source delete for workers={del_failed}")
             for w in del_failed:
                 writers = worker_to_writers.get(w, [])
                 if writers:
                     self._agent.send_delete_data(w, db_path, "", writers)
-            del_ok, del_failed = self._agent.wait_delete_data_acks(del_failed, db_path, 60)
+            del_ok, del_failed = self._agent.wait_delete_data_acks(
+                del_failed, db_path, 0)
         if del_ok:
             INFO("merge_db: all source deletes confirmed")
         else:
@@ -569,7 +578,6 @@ class Master(FlyAgent):
         return source_worker_ids
 
     def merge_db(self, path: str, data_path: str = "", merge_db_path: str = "",
-                 task_timeout: float = 3600.0,
                  local_workers: int = 4, delete_source: bool = True):
         """Merge a frozen database's data onto the master host.
 
@@ -578,6 +586,10 @@ class Master(FlyAgent):
 
         **阻塞调用**：本方法在返回前会完成全部 merge 工作（等待已有 task → 派发 merge task
         → 等待完成 → 删源 → 状态清理）。调用方（用户脚本）在 merge 完成前不会继续执行后续代码。
+
+        **全程无超时**：merge 的数据量与集群 IO 速度不可预估（EDA 数 T 级 db 常见），
+        所有等待（前置 task 完成 / merge task / 删源 ack / cleanup 屏障）均为无限
+        等待，只被显式失败信号终结（task 失败上报 / worker 判死联动）。
 
         **前置等待**：若调用时仍有 pending/running task，会先等待它们全部完成，保证 merge
         期间数据分布稳定。
@@ -620,7 +632,7 @@ class Master(FlyAgent):
         # task 在此之后才提交，不会被本等待误拦。
         if self._agent.get_pending_tasks() or self._agent.get_running_tasks():
             INFO("merge_db: waiting for pending/running tasks to complete before merge")
-            self.wait_for_all_tasks(timeout=3600)
+            self.wait_for_all_tasks(timeout=0)  # 无限：task 量不可预估，失败即 raise
 
         # 静态读 _DB_META（不构造 Database，避免在已 open_db 的进程内重复 register db_path）。
         meta = Database.load_meta_from_path(path)
@@ -713,9 +725,10 @@ class Master(FlyAgent):
         INFO(f"merge_db: dispatched {task_count} merge tasks across "
              f"{len(master_host_workers)} target workers")
 
-        # 等待全部完成（"全部成功才删源"语义）。task_timeout 可调（QA 注错入口）。
+        # 等待全部完成（"全部成功才删源"语义）。无限等待（timeout=0）：数据量
+        # 与集群 IO 不可预估；失败只来自 task 失败上报或 worker 判死联动。
         ok, completed, failed = self._agent.wait_merge_tasks_complete(
-            all_task_ids, int(task_timeout))
+            all_task_ids, 0)
         if ok:
             INFO(f"merge_db: all {len(completed)} objects merged successfully")
         else:

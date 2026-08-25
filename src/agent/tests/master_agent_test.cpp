@@ -416,6 +416,47 @@ TEST(MasterAgentTest, RestoreMasterIdx_MultipleEntries) {
 // 报错而非静默返回）；未发送的 db 恒 0；重复 Ack 防下溢。
 // 端到端（QA backup_load_db_multi_worker 高负载 idx 加载 2.2s 越过
 // sleep(1.0) 窗口）由 QA 覆盖。
+// 判死联动收敛：数据规模相关等待已无限化（timeout<=0），无限等待的安全性由
+// worker 判死事件驱动 pending 期待显式终结保证——死亡 worker 的 IdxLoad 期待
+// 置 -1（load_db 侧显式报错）、DeleteData 期待 complete 失败（wait 侧收到
+// success_=false 而非死等）。无 timeout 兜底的回归会被本用例以 hang 形式暴露。
+TEST(MasterAgentTest, WorkerDeathSettlesPendingRpc) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    TempDir tmpdir;
+    CMString db_path = tmpdir.path();
+    master.register_database(db_path, "");
+    master.register_fake_worker_for_testing(7, 7001);
+
+    // IdxLoad 期待：判死 → remaining 置 -1（显式失败，Python load_db 轮询 raise）。
+    master.send_idx_load_to_worker(db_path, {"w1"}, 7);
+    EXPECT_EQ(master.idx_load_pending(db_path), 1);
+    master.handle_worker_death_for_testing(7);
+    EXPECT_EQ(master.idx_load_pending(db_path), -1)
+        << "判死后 IdxLoad 期待必须显式失败（-1），不能停留 1 死等";
+
+    // DeleteData 期待：登记后再判死（settle 对新登记条目同样生效）→
+    // complete(success_=false)；无限 wait（timeout=0）立即收到显式失败返回，
+    // 不 hang。
+    master.send_delete_data(7, db_path, tmpdir.path(), {"w1"});
+    master.handle_worker_death_for_testing(7);
+    CMVector<uint64_t> failed;
+    bool ok = master.wait_delete_data_acks({7}, db_path, 0, &failed);
+    EXPECT_FALSE(ok) << "判死 worker 的 delete ack 必须显式失败";
+    ASSERT_EQ(failed.size(), 1u);
+    EXPECT_EQ(failed[0], 7u);
+
+    // 幂等：三次判死不破坏已终结状态（不抛错、不复活期待）。
+    master.handle_worker_death_for_testing(7);
+    EXPECT_EQ(master.idx_load_pending(db_path), -1);
+
+    master.unregister_fake_worker_for_testing(7, 7001);
+    master.stop();
+    wait_for_running(master, false);
+}
+
 TEST(MasterAgentTest, IdxLoadPendingVisibilityBarrier) {
     MasterAgent master("127.0.0.1", 0);
     master.start();
