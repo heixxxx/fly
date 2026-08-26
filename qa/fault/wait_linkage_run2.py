@@ -52,8 +52,23 @@ else:
 
 # park：冻结 worker 进程。连接保持（master 不判死）、IdxLoad 命令堆积——
 # pending 屏障到达 1 后无限期稳定，杀的时机完全由测试控制。
+# SIGSTOP 投递是异步的（kill 返回 ≠ 进程已停，毫秒窗口内 worker 仍可处理
+# 完 IdxLoad 回 ack——100 轮压测 round 4 实锤：park 后 2ms ack 返回，
+# load_db 秒完成，断言 pending==1 超时失败）。必须等 /proc 状态确定为 T
+# （job-stopped）再继续，park 才是确定性闸门。
 os.kill(proc.pid, signal.SIGSTOP)
-INFO(f"[linkage] parked worker pid={proc.pid} (SIGSTOP) before load_db")
+t0 = time.time()
+while True:
+    with open(f"/proc/{proc.pid}/stat", "r") as f:
+        stat = f.read()
+    state = stat.rsplit(") ", 1)[1].split()[0]
+    if state == "T":
+        break
+    if time.time() - t0 > 10:
+        proc.kill()
+        raise AssertionError(f"worker never reached stopped state (state={state})")
+    time.sleep(0.01)
+INFO(f"[linkage] parked worker pid={proc.pid} (SIGSTOP confirmed state=T) before load_db")
 
 result = {}
 
