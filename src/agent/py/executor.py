@@ -52,36 +52,50 @@ def _split_full_name(full_name):
 def deserialize_args(args: list, worker) -> list:
     result = []
     for arg in args:
-        if isinstance(arg, str) and arg.startswith("__fly_db__:"):
-            # 支持两种格式：
-            #   新格式（db chain）：__fly_db__:{uid}:{db_path}:{data_path}
-            #   旧格式：__fly_db__:{db_path}:{data_path}
-            parts = arg.split(":", 3)  # maxsplit=3 防止 data_path 含 ':' 被过度拆分
+        is_db2 = isinstance(arg, str) and arg.startswith("__fly_db2__:")
+        if is_db2 or (isinstance(arg, str) and arg.startswith("__fly_db__:")):
+            # 支持三种格式：
+            #   v2（现行）：__fly_db2__:{uid}:{db_path}——data_path 是 db 级
+            #     属性存 _DB_META，从 meta 获取（同一次读盘取 role，零新增 IO）
+            #   旧 4 段：__fly_db__:{uid}:{db_path}:{data_path}
+            #   旧 3 段：__fly_db__:{db_path}:{data_path}
+            # 旧格式 db 无 _DB_META（无 chain），data_path 须用参数自带值。
             uid = None
             db_path = ""
             data_path = ""
-            if len(parts) == 4:
-                uid = parts[1]
-                db_path = parts[2]
-                data_path = parts[3]
-            elif len(parts) == 3:
-                db_path = parts[1]
-                data_path = parts[2]
+            if is_db2:
+                parts = arg.split(":", 2)
+                uid = parts[1] if len(parts) > 1 else None
+                db_path = parts[2] if len(parts) > 2 else ""
             else:
-                db_path = parts[1] if len(parts) > 1 else ""
-                data_path = parts[2] if len(parts) > 2 else ""
+                parts = arg.split(":", 3)  # maxsplit=3 防止 data_path 含 ':' 被过度拆分
+                if len(parts) == 4:
+                    uid = parts[1]
+                    db_path = parts[2]
+                    data_path = parts[3]
+                elif len(parts) == 3:
+                    db_path = parts[1]
+                    data_path = parts[2]
+                else:
+                    db_path = parts[1] if len(parts) > 1 else ""
+                    data_path = parts[2] if len(parts) > 2 else ""
 
             cache_key = uid or db_path
             if cache_key not in worker._db_cache:
                 from _fly_storage import ex_stg_get_data_service
                 ds = ex_stg_get_data_service()
 
-                # 读 _DB_META 一次（role + chain info），失败时安全 fallback 到基类。
+                # 读 _DB_META 一次（role + chain info + data_path），失败时
+                # 安全 fallback 到基类。
                 chain_data = None
                 try:
                     chain_data = DbMetaFile(db_path).read()
                 except Exception:
                     pass
+
+                if is_db2 and chain_data:
+                    # v2：data_path 权威在 _DB_META（参数不携带）。
+                    data_path = chain_data.get("data_path", "") or ""
 
                 # 按 role 选子类
                 role = chain_data.get("role") if chain_data else None

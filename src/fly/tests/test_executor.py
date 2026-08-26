@@ -107,7 +107,56 @@ def test_deserialize_fly_db_with_data_path():
     assert isinstance(result[0], Database)
     # cache key == db_path（temp_dir）
     assert temp_dir in worker._db_cache
-    
+
+    for db_path_key, db_obj in worker._db_cache.items():
+        db_obj._db.reset()
+    worker._db_cache.clear()
+
+
+def test_deserialize_fly_db2_reads_data_path_from_meta():
+    """v2 编码 __fly_db2__:{uid}:{db_path}：data_path 从 _DB_META 读取。
+
+    db 级属性（data_path）不再随参数携带——worker 端从 meta 获取（同一次
+    读盘取 role，零新增 IO）。
+    """
+    worker = MockWorker()
+
+    temp_dir = tempfile.mkdtemp(prefix="test_executor_v2_")
+    data_dir = tempfile.mkdtemp(prefix="test_executor_v2data_")
+
+    from storage import DbMetaFile, make_meta
+    DbMetaFile(temp_dir).write_new(
+        make_meta("uid_v2test", "test", "test", data_path=data_dir))
+
+    db_marker = f"__fly_db2__:uid_v2test:{temp_dir}"
+    result = deserialize_args([db_marker], worker)
+
+    assert isinstance(result[0], Database)
+    # uid 与 db_path 双 key 注册
+    assert "uid_v2test" in worker._db_cache
+    assert temp_dir in worker._db_cache
+    # data_path 取自 _DB_META（参数未携带）
+    assert result[0].get_data_path() == data_dir
+
+    for db_path_key, db_obj in worker._db_cache.items():
+        db_obj._db.reset()
+    worker._db_cache.clear()
+
+
+def test_deserialize_fly_db2_meta_missing_falls_back_empty():
+    """v2 编码但 _DB_META 缺失（异常场景）：data_path 退化空（自包含）。"""
+    worker = MockWorker()
+
+    temp_dir = tempfile.mkdtemp(prefix="test_executor_v2nometa_")
+
+    db_marker = f"__fly_db2__:uid_nometa:{temp_dir}"
+    result = deserialize_args([db_marker], worker)
+
+    assert isinstance(result[0], Database)
+    # 空 data_path = 自包含（正式数据落 db_path，由 DataWriter 写层解释；
+    # getter 返回空串而非 db_path）。
+    assert result[0].get_data_path() == ""
+
     for db_path_key, db_obj in worker._db_cache.items():
         db_obj._db.reset()
     worker._db_cache.clear()
@@ -302,6 +351,8 @@ if __name__ == "__main__":
     test_deserialize_pickle_args()
     test_deserialize_fly_db_marker()
     test_deserialize_fly_db_with_data_path()
+    test_deserialize_fly_db2_reads_data_path_from_meta()
+    test_deserialize_fly_db2_meta_missing_falls_back_empty()
     test_deserialize_cached_db()
     test_deserialize_mixed_args()
     

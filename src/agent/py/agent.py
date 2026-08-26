@@ -413,11 +413,16 @@ class Master(FlyAgent):
 
         # 静态读 _DB_META（不构造 Database，避免与 register_database 建的权威 Database
         # 共享 DataService::db_paths_ 导致析构竞争 erase）。
-        meta = Database.load_meta_from_path(path)
+        from storage import DbMetaFile
+        meta_d = DbMetaFile(path).read()
         # db_path 废弃：_DB_META 的 db_path 字段可能过期（搬目录），不再用它作 db_path。
-        # 用 created_at > 0 判断 _DB_META 是否有效（corrupt/空文件时 created_at == 0）。
-        if not meta or meta.created_at <= 0:
+        # 用 created_at > 0 判断 _DB_META 是否有效（corrupt/空文件时 created_at 缺失/为 0）。
+        if not meta_d or not (meta_d.get("created_at") or 0) > 0:
             raise RuntimeError(f"No valid _DB_META found at {path}")
+
+        # data_path 是 db 级属性（存 _DB_META，参数编码不再携带）：恢复时从
+        # meta 读出注册，worker 端 deserialize_args 同源获取。
+        data_path = meta_d.get("data_path", "") or ""
 
         # db_path 废弃：db_path == db_path（即 path）。不用 meta.db_path（旧 _DB_META 存的可能是
         # 搬目录前的旧 path）。用当前 path 作 db_path，确保与 Database 构造一致。
@@ -425,13 +430,13 @@ class Master(FlyAgent):
 
         # Phase 1: Master self-recovery — register db paths, no idx loading.
         # register_database 内部构造权威 Database 插入 db_instances_（路径唯一权威源）。
-        self._agent.register_database(path, "")
+        self._agent.register_database(path, data_path)
 
         # Phase 2: Assign workers by hostname
         # Group WorkerInfo by hostname -> writer_ids
         hostname_to_writer_ids = defaultdict(list)
-        for w in meta.workers:
-            hostname_to_writer_ids[w.hostname].append(w.writer_id)
+        for w in meta_d.get("workers", []):
+            hostname_to_writer_ids[w["hostname"]].append(w["writer_id"])
 
         # Check existing workers by hostname (worker_id, hostname)
         existing_by_hostname = defaultdict(list)

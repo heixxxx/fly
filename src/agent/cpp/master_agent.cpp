@@ -717,12 +717,20 @@ bool MasterAgent::is_running() const {
 
 namespace {
 
-// __fly_db__ 编码参数 → db_path（与 executor.py deserialize_args 的
-// maxsplit=3 语义对齐：新格式 {uid}:{db_path}:{data_path} 取 rest 切 3 刀后
-// 的第 3 段；旧格式 {db_path}:{data_path} 取第 2 段；尾段 data_path 可含 ':'）。
+// __fly_db__ 编码参数 → db_path。三种格式：
+//   v2（现行）__fly_db2__:{uid}:{db_path}（data_path 是 db 级属性存 _DB_META）
+//   旧 4 段 __fly_db__:{uid}:{db_path}:{data_path}（与 executor.py 对齐）
+//   旧 3 段 __fly_db__:{db_path}:{data_path}
 CMString parse_db_arg(const CMString& arg) {
     constexpr size_t kPrefixLen = 11;  // "__fly_db__:"
-    if (arg.compare(0, kPrefixLen, "__fly_db__:") != 0) return "";
+    if (arg.compare(0, kPrefixLen, "__fly_db__:") != 0) {
+        // v2 tag：rest = {uid}:{db_path}，取第二段。
+        constexpr size_t kV2PrefixLen = 12;  // "__fly_db2__:"
+        if (arg.compare(0, kV2PrefixLen, "__fly_db2__:") != 0) return "";
+        const CMString rest = arg.substr(kV2PrefixLen);
+        auto p = rest.find(':');
+        return p == CMString::npos ? rest : rest.substr(p + 1);
+    }
     const CMString rest = arg.substr(kPrefixLen);
     CMVector<CMString> parts;
     size_t start = 0;

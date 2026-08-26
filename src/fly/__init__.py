@@ -165,7 +165,7 @@ def open_db(path: str, data_path: str = "", db_cls=None, prev=None,
             prev_lname = prev_db._chain_logical_name or os.path.basename(prev_db.get_db_path())
             prev_edges.append(make_edge(prev_uid, prev_role, prev_lname, prev_db.get_db_path()))
 
-    db._init_chain(uid, role, lname, prev_edges)
+    db._init_chain(uid, role, lname, prev_edges, data_path=data_path)
 
     # 回填前驱的 next（双向链）
     if prev:

@@ -372,7 +372,7 @@ class Database:
         instance._load_chain_info()
         return instance
 
-    def _init_chain(self, uid, role, logical_name, prev_edges=None):
+    def _init_chain(self, uid, role, logical_name, prev_edges=None, data_path=""):
         """新建 db 时写入 _DB_META（首次写入，持锁 RMW 保留已有 workers）。
 
         Args:
@@ -380,8 +380,11 @@ class Database:
             role: 角色。
             logical_name: 逻辑名。
             prev_edges: 前驱边列表 [{uid, role, logical_name, db_path}]。
+            data_path: 正式数据目录（空 = 数据在 db 目录内自包含）。db 级
+                属性存 meta，task 参数编码不再携带。
         """
-        meta = make_meta(uid, role, logical_name, prev=prev_edges or [])
+        meta = make_meta(uid, role, logical_name, prev=prev_edges or [],
+                         data_path=data_path)
         self._meta_file.write_new(meta)
         self._chain_uid = uid
         self._chain_role = role

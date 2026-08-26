@@ -282,13 +282,15 @@ def _serialize_args(args):
     for arg in args:
         if hasattr(arg, 'get_db_path') and hasattr(arg, 'get_full_name'):
             db_path = arg._db.get_db_path()
-            data_path = arg._db.get_data_path()
             uid = getattr(arg, 'get_uid', lambda: None)()
-            # 新格式含 uid（db chain 支持）：__fly_db__:{uid}:{db_path}:{data_path}
-            # 旧 db 无 uid 时仍用旧格式：__fly_db__:{db_path}:{data_path}
+            # 新格式 v2（__fly_db2__ tag 代际区分——与旧 3 段 __fly_db__:
+            # {db_path}:{data_path} 段数相同语义相反）：data_path 是 db 级
+            # 属性存 _DB_META，参数不再携带，worker 端从 meta 获取。
+            # 旧 db 无 uid 时仍用旧格式（meta 也不存在，data_path 须自带）。
             if uid:
-                result.append(f"__fly_db__:{uid}:{db_path}:{data_path}")
+                result.append(f"__fly_db2__:{uid}:{db_path}")
             else:
+                data_path = arg._db.get_data_path()
                 result.append(f"__fly_db__:{db_path}:{data_path}")
         else:
             result.append(pickle.dumps(arg).hex())
