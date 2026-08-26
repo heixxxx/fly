@@ -339,6 +339,11 @@ public:
     CMString failed_tasks_file_path_for_testing(const CMString& owner_db_path) const {
         return get_failed_tasks_file_path(owner_db_path);
     }
+    // 重投后 task 的归属查询（位置即归属归一化的确定性测试）。
+    CMString task_owner_db_path_for_testing(uint64_t task_id) const {
+        auto md = metadata_->get_task(task_id);
+        return md ? md->submission_.owner_db_path_ : CMString();
+    }
     void persist_failed_task_for_testing(const FailedTaskRecord& record) {
         persist_failed_task(record);
     }

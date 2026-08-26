@@ -896,6 +896,11 @@ def solve_like_task(db_up, db, key):
   存在；project 场景 db 目录在 project 下，断点 bin 天然随 db 迁移/自包含，
   且天然支持多 project）。无归属 task（参数无 db）fallback `{log_dir}/
   failed_tasks.bin`；
+- **位置即归属（location-carried ownership）**：bin 所在目录是归属的运行时
+  权威——`restart_failed_tasks` 读取记录时把 owner 归一化为 bin 父目录；
+  记录内的 `owner_db_path` 只是提交时快照（仅供排查），db/project 目录迁移
+  后读取天然自愈（重投的 task 再失败落当前 bin 位置，不在旧路径重建幽灵
+  目录）；
 - **断点恢复**：`fly.restart_failed_tasks(dbs)` 传 db 对象 / db_path /
   list（混合亦可），自动在各 db 目录搜索 bin 重投（无 bin 的 db 静默跳过，
   返回重投总数）；无归属 fallback bin 传 log_dir 目录字符串即可找回；
@@ -908,4 +913,9 @@ def solve_like_task(db_up, db, key):
   project 自包含用途且支持多 project）；
 - `restart_failed_tasks` 旧的单 bin 文件路径直传形态已废弃，统一传 db；
 - failed_tasks.bin 为 bitsery 非版本化格式——旧格式 bin 新版本不读
-  （解码失败静默丢弃该条记录；早期无存量数据，不做迁移）。
+  （解码失败静默丢弃该条记录；早期无存量数据，不做迁移）；
+- **已知遗留缺口**（owner 机制之前即存在）：bin 记录的 `args_`（db 引用
+  编码）与 `inputs_`（对象全名前缀）同样是提交时路径快照，**目录迁移后**
+  resume 重投的 task 会因旧路径依赖错位而挂起或失败（owner 已按位置归一化
+  自愈，args/inputs 的 uid remap 校正待后续专项）；迁移后恢复的正确姿势是
+  flow 重放（同 `write_context_hash` 幂等重写）。

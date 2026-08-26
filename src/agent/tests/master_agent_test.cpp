@@ -486,6 +486,48 @@ TEST(MasterAgentTest, FailedTasksFilePerOwnerPath) {
         << "owned task must not pollute the log_dir fallback file";
 }
 
+// 位置即归属（location-carried ownership）：restart 读取时 owner 归一化为
+// bin 所在目录（当前路径），记录内旧路径快照不外溢——db/project 目录迁移后
+// 重投的 task 再失败落当前 bin 位置，不会在旧路径重建幽灵目录。
+TEST(MasterAgentTest, RestartNormalizesOwnerToBinLocation) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+    TempDir tmpdir;
+    CMString old_path = tmpdir.path() + "/old_location";   // 迁移前路径（已不存在）
+    CMString new_path = tmpdir.path() + "/new_location";   // bin 实际所在（迁移后）
+
+    // bin 落在 new_path（模拟目录已被搬到新位置），记录内 owner 仍是旧快照。
+    FailedTaskRecord record;
+    record.task_id_ = 42;
+    record.submission_.name_ = "migrated_task";
+    record.submission_.args_ = {"arg1"};
+    record.submission_.owner_db_path_ = old_path;
+
+    CMString bin_path = new_path + "/failed_tasks.bin";
+    std::filesystem::create_directories(new_path);
+    {
+        CMString body;
+        FLY_ENCODE(record, body);
+        int64_t body_size = static_cast<int64_t>(body.size());
+        std::ofstream ofs(bin_path, std::ios::binary | std::ios::app);
+        ofs.write(reinterpret_cast<const char*>(&body_size), sizeof(body_size));
+        ofs.write(body.data(), body.size());
+    }
+
+    size_t restarted = master.restart_failed_tasks(bin_path);
+    EXPECT_EQ(restarted, 1u);
+    EXPECT_EQ(master.task_owner_db_path_for_testing(42), new_path)
+        << "owner must be normalized to the bin's parent directory";
+    EXPECT_FALSE(std::filesystem::exists(old_path))
+        << "must not recreate the stale pre-migration directory";
+    EXPECT_FALSE(std::filesystem::exists(bin_path))
+        << "bin is consumed (read-then-delete) on restart";
+
+    master.stop();
+    wait_for_running(master, false);
+}
+
 TEST(MasterAgentTest, IdxLoadPendingVisibilityBarrier) {
     MasterAgent master("127.0.0.1", 0);
     master.start();

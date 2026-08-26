@@ -3326,6 +3326,17 @@ size_t MasterAgent::restart_failed_tasks(const CMString& file_path) {
             return 0;
         }
 
+        // 位置即归属（location-carried ownership）：bin 所在目录就是归属 db 的
+        // 当前路径，读取时以此归一化记录内的 owner——记录里的值是提交时快照，
+        // db/project 目录迁移后必然失真（重投后再失败会落旧路径幽灵目录）。
+        // 原 owner 为空（无归属 fallback 记录）保持空，维持 fallback 语义。
+        CMString bin_dir = std::filesystem::path(file_path).parent_path().string();
+        for (auto& record : records) {
+            if (!record.submission_.owner_db_path_.empty()) {
+                record.submission_.owner_db_path_ = bin_dir;
+            }
+        }
+
         std::filesystem::remove(file_path);
     }
 

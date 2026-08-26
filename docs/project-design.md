@@ -401,6 +401,12 @@ project（无归属 task fallback `{log_dir}/failed_tasks.bin`）。
   db 目录搜索 bin 重投（无 bin 的 db 静默跳过，返回重投总数）；
 - `Project.resume()`：内部遍历 project 全部 db 目录，同一机制。
 
+**位置即归属**：bin 所在目录是归属的运行时权威，`restart_failed_tasks`
+读取时把记录内 owner（提交时路径快照）归一化为 bin 父目录——db/project
+目录迁移后读取天然自愈。已知遗留缺口：记录的 `args_`/`inputs_` 路径快照
+在迁移后重投会依赖错位（owner 机制之前即存在，uid remap 校正待专项），
+迁移后恢复的正确姿势是 flow 重放（幂等重写）。
+
 旧的 `set_failed_tasks_file` 路径覆盖机制已废弃。bitsery 非版本化——旧
 格式 bin 新版本不读（解码失败静默丢弃；早期无存量不做迁移）。
 
