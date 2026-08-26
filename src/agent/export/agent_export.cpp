@@ -222,6 +222,11 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     FLY_EXPORT_METHOD("flush_worker_infos", [](fly::MasterAgent& self) {
         self.flush_worker_infos();
     })
+    FLY_EXPORT_METHOD("register_db_uid", [](fly::MasterAgent& self,
+                                             const fly::CMString& uid,
+                                             const fly::CMString& db_path) {
+        self.register_db_uid(uid, db_path);
+    })
     FLY_EXPORT_METHOD("restore_master_idx", [](fly::MasterAgent& self,
                                                   const fly::CMString& db_path,
                                                                                                     const fly::CMString& writer_id) -> fly::CMVector<IndexEntry> {

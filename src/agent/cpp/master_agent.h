@@ -124,7 +124,12 @@ public:
     // 断点重投：读单个 failed_tasks.bin（读取+删除原子，重投走 submit_task，
     // 归属随 submission_ 还原）。返回重启的 task 条数。db list 形态的自动搜索
     // 由 Python 层归一化后逐个调用（fly.restart_failed_tasks / Project.resume）。
+    // 文件级原子：bin 内任一 task 的 db 引用无法按 uid 解析（未 load / 旧格式
+    // 无 uid）→ 整个 bin 不重投（ERR 提示，文件保留）。
     size_t restart_failed_tasks(const CMString& file_path);
+    // 运行时 uid→db_path 权威索引（open_db/load_db 上报；uid 迁移/merge 不变，
+    // 跨路径稳定键）。restart 解析 bin 记录的 db 引用时按 uid 命中当前路径。
+    void register_db_uid(const CMString& uid, const CMString& db_path);
 
     void broadcast_object_removed(const CMString& db_path, const CMString& object_name);
 
@@ -360,6 +365,11 @@ public:
         auto md = metadata_->get_task(task_id);
         return md ? md->submission_.owner_db_path_ : CMString();
     }
+    // 重投后 task 的完整提交字段（uid 解析/前缀替换的确定性测试）。
+    TaskSubmissionSpec task_submission_for_testing(uint64_t task_id) const {
+        auto md = metadata_->get_task(task_id);
+        return md ? md->submission_ : TaskSubmissionSpec();
+    }
     void persist_failed_task_for_testing(const FailedTaskRecord& record) {
         persist_failed_task(record);
     }
@@ -562,6 +572,10 @@ private:
     mutable std::shared_mutex db_instances_mutex_;
     // failed_tasks.bin append/读改写互斥（跨线程调用方见 persist_failed_task 注释）。
     std::mutex failed_tasks_file_mutex_;
+    // 运行时 uid→db_path 权威索引（open_db/load_db 上报）。uid 迁移/merge
+    // 不变（跨路径稳定键），restart 解析 bin 记录的 db 引用时按 uid 命中
+    // 当前路径（路径快照失真自愈）。
+    ConcurrentUnorderedMap<CMString, CMString> db_uid_index_;
     CMUnorderedSet<CMString> frozen_dbs_;
     // 非 stream 模式 pending frozen：db_path → task_id（待 task 完成确认）。
     // task 内 freeze 时登记 pending（拒其他 task 写，但不广播）；task 成功迁移到

@@ -746,6 +746,27 @@ CMString parse_db_arg(const CMString& arg) {
     return "";
 }
 
+// __fly_db__ 编码参数 → (uid, db_path)。v2 与旧 4 段有 uid；旧 3 段无 uid
+// （返回空 uid——restart 视作不可解析，文件级拒绝）。
+std::pair<CMString, CMString> parse_db_arg_uid(const CMString& arg) {
+    constexpr size_t kV2PrefixLen = 12;  // "__fly_db2__:"
+    if (arg.compare(0, kV2PrefixLen, "__fly_db2__:") == 0) {
+        const CMString rest = arg.substr(kV2PrefixLen);
+        auto p = rest.find(':');
+        if (p == CMString::npos) return {"", ""};
+        return {rest.substr(0, p), rest.substr(p + 1)};
+    }
+    CMString db_path = parse_db_arg(arg);
+    if (db_path.empty()) return {"", ""};
+    constexpr size_t kPrefixLen = 11;  // "__fly_db__:"
+    const CMString rest = arg.substr(kPrefixLen);
+    size_t first = rest.find(':');
+    if (first == CMString::npos) return {"", db_path};
+    size_t second = rest.find(':', first + 1);
+    if (second == CMString::npos) return {"", db_path};       // 旧 3 段：无 uid
+    return {rest.substr(0, first), db_path};                   // 旧 4 段
+}
+
 }  // namespace
 
 void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) {
@@ -3322,8 +3343,15 @@ void MasterAgent::remove_persisted_task(uint64_t task_id) {
     }
 }
 
+void MasterAgent::register_db_uid(const CMString& uid, const CMString& db_path) {
+    // uid 迁移/merge 不变（跨路径稳定键）；索引值覆盖式更新（load_db 复 load
+    // 幂等）。merge 改路径后由新路径上报覆盖，旧条目残留无害（uid 仍指向
+    // 最新一次注册）。
+    db_uid_index_.update(uid, [&](CMString& v) { v = db_path; });
+}
+
 size_t MasterAgent::restart_failed_tasks(const CMString& file_path) {
-    // 文件互斥只覆盖 读取+删除：下面的 submit_task → schedule_tasks →
+    // 文件互斥只覆盖 读取+校验+删除：下面的 submit_task → schedule_tasks →
     // persist_failed_task 会再取同一把锁，持锁重提交 = 自死锁（graceful_shutdown
     // QA 实测：主线程同时持有 schedule_mutex_ + failed_tasks_file_mutex_ 后挂死）。
     CMVector<FailedTaskRecord> records;
@@ -3340,16 +3368,68 @@ size_t MasterAgent::restart_failed_tasks(const CMString& file_path) {
             return 0;
         }
 
-        // 位置即归属（location-carried ownership）：bin 所在目录就是归属 db 的
-        // 当前路径，读取时以此归一化记录内的 owner——记录里的值是提交时快照，
-        // db/project 目录迁移后必然失真（重投后再失败会落旧路径幽灵目录）。
-        // 原 owner 为空（无归属 fallback 记录）保持空，维持 fallback 语义。
-        CMString bin_dir = std::filesystem::path(file_path).parent_path().string();
-        for (auto& record : records) {
-            if (!record.submission_.owner_db_path_.empty()) {
-                record.submission_.owner_db_path_ = bin_dir;
+        // ── uid 解析（文件级原子）：bin 内任一 db 引用无法解析 → 整 bin 拒绝。
+        // 记录内的路径是提交时快照，db 目录迁移后失真；uid 是跨路径稳定键，
+        // 命中运行时索引即得当前路径（args/inputs/vars/owner 一并自愈）。
+        // 逐记录先收集全局 old→new 映射（跨 db task 的 inputs 可能引用其他
+        // 记录 args 携带的 db），再统一替换。
+        CMUnorderedMap<CMString, CMString> old_to_new;   // 旧 db_path → 当前
+        for (const auto& record : records) {
+            for (const auto& arg : record.submission_.args_) {
+                auto [uid, db_path] = parse_db_arg_uid(arg);
+                if (db_path.empty()) continue;   // 非 db 参数
+                if (uid.empty()) {
+                    ERR("Cannot restart failed tasks from '{}': task {} arg has no "
+                        "db uid (legacy format, unresolvable after migration): {}",
+                        file_path, record.task_id_, arg);
+                    return 0;
+                }
+                auto current = db_uid_index_.find(uid);
+                if (!current.has_value() || current->empty()) {
+                    ERR("Cannot restart failed tasks from '{}': db uid={} (expected "
+                        "at {}) is not loaded in this run — load it (load_db/"
+                        "load_project) then restart again",
+                        file_path, uid, db_path);
+                    return 0;
+                }
+                if (*current != db_path) {
+                    old_to_new[db_path] = *current;
+                }
             }
         }
+
+        // 统一替换：args 重编码为 v2（当前路径）；inputs/vars/outputs 按
+        // old→new 做 "{old}:" 前缀精确替换。
+        auto replace_prefix = [&old_to_new](CMString& full) {
+            if (full.empty()) return;
+            auto pos = full.rfind(':');
+            if (pos == CMString::npos || pos == 0) return;
+            auto it = old_to_new.find(full.substr(0, pos));
+            if (it != old_to_new.end()) {
+                full = it->second + full.substr(pos);
+            }
+        };
+        for (auto& record : records) {
+            for (auto& arg : record.submission_.args_) {
+                auto [uid, db_path] = parse_db_arg_uid(arg);
+                if (db_path.empty()) continue;
+                auto current = db_uid_index_.find(uid);
+                // v2 统一格式（旧 4 段升级；data_path 权威在 _DB_META）。
+                arg = "__fly_db2__:" + uid + ":" + (*current);
+            }
+            for (auto& in : record.submission_.inputs_) replace_prefix(in);
+            for (auto& v : record.submission_.vars_) replace_prefix(v);
+            for (auto& o : record.submission_.outputs_) replace_prefix(o);
+
+            // 位置即归属：bin 所在目录就是归属 db 的当前路径，记录内 owner
+            // 是提交时快照（迁移后失真）；空 owner（fallback 记录）保持空。
+            if (!record.submission_.owner_db_path_.empty()) {
+                record.submission_.owner_db_path_ =
+                    std::filesystem::path(file_path).parent_path().string();
+            }
+        }
+        // write_context_hash 保持记录原值：provenance 仅做相等比较（同 hash
+        // 幂等 / 新对象首写放行），重算反而触发 WRITE_PROVENANCE_MISMATCH。
 
         std::filesystem::remove(file_path);
     }

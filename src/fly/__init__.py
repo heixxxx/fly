@@ -167,6 +167,16 @@ def open_db(path: str, data_path: str = "", db_cls=None, prev=None,
 
     db._init_chain(uid, role, lname, prev_edges, data_path=data_path)
 
+    # 运行时 uid 索引上报（master-only）：restart 解析 bin 记录 db 引用的
+    # 跨路径稳定键（worker 进程无 master agent，静默跳过）。
+    try:
+        from fly.runtime import _mode
+        if _mode == "master":
+            from fly.runtime import get_agent
+            get_agent()._agent.register_db_uid(uid, actual_path)
+    except Exception:
+        pass
+
     # 回填前驱的 next（双向链）
     if prev:
         self_edge = make_edge(uid, role, lname, actual_path)

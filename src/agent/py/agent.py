@@ -509,6 +509,9 @@ class Master(FlyAgent):
         db._load_chain_info()
         # next 自愈：检查并补齐缺失的 next 边（建链 crash 自愈）
         db._heal_next_edges()
+        # 运行时 uid 索引上报（restart 解析 bin 记录 db 引用的跨路径稳定键）。
+        if db._chain_uid:
+            self._agent.register_db_uid(db._chain_uid, db_path)
         return db
 
     def _merge_worker_hostname_map(self):
@@ -825,6 +828,10 @@ class Master(FlyAgent):
         merged_db._chain_role = None
         merged_db._chain_logical_name = None
         merged_db._load_chain_info()
+        # merge 后路径变化：运行时 uid 索引同步指向新路径（restart 解析用）。
+        # 用 C++ 句柄的当前路径（merge set_paths 后的权威值）。
+        if merged_db._chain_uid:
+            self._agent.register_db_uid(merged_db._chain_uid, merged_db.get_db_path())
         # merge 产生的 WorkerInfo（merge worker 真实 writer）立即落盘：后续
         # migrate 等目录搬迁后 stop 兜底 flush 会写到旧路径幽灵目录，跨进程
         # load_db 将无法按 hostname 派发该 writer 的 idx。
@@ -951,6 +958,22 @@ class Master(FlyAgent):
                 db_path = str(db)
             if not db_path:
                 continue
+            # 入参 load 兜底：路径形态且 master 未注册但目录存在 → 自动
+            # load_db（uid 索引随之登记）；失败仅 WARN（对应 task 走文件级
+            # 拒绝分支，用户 load 后重试闭环）。
+            if not hasattr(db, 'get_db_path'):
+                try:
+                    from _fly_storage import ex_stg_get_data_service
+                    already = ex_stg_get_data_service().has_database(db_path)
+                except Exception:
+                    already = False
+                if not already and _os.path.isdir(db_path) and _os.path.isfile(
+                        _os.path.join(db_path, "_DB_META")):
+                    try:
+                        self.load_db(db_path)
+                    except Exception as e:
+                        WARN(f"restart_failed_tasks: auto load_db({db_path}) "
+                             f"failed: {e}")
             bin_path = _os.path.join(db_path, "failed_tasks.bin")
             if not _os.path.isfile(bin_path):
                 DBG(f"restart_failed_tasks: no failed_tasks.bin at {bin_path}")

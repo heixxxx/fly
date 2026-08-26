@@ -528,6 +528,105 @@ TEST(MasterAgentTest, RestartNormalizesOwnerToBinLocation) {
     wait_for_running(master, false);
 }
 
+// restart 按 uid 解析：记录内 db 引用是提交时路径快照，迁移后按运行时
+// uid 索引命中当前路径——args 重编码 v2、inputs/vars 前缀替换、hash 保持
+// 原值（provenance 相等比较语义，重算即被拒）。
+TEST(MasterAgentTest, RestartResolvesDbByUid) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+    TempDir tmpdir;
+    CMString old_path = tmpdir.path() + "/old_loc";
+    CMString new_path = tmpdir.path() + "/new_loc";
+
+    master.register_db_uid("uid_deadbeef", new_path);
+
+    FailedTaskRecord record;
+    record.task_id_ = 7;
+    record.submission_.name_ = "migrated_task";
+    record.submission_.args_ = {"__fly_db2__:uid_deadbeef:" + old_path, "plain_arg"};
+    record.submission_.inputs_ = {old_path + ":dep_obj"};
+    record.submission_.vars_ = {old_path + ":some_var"};
+    record.submission_.owner_db_path_ = old_path;
+
+    CMString bin_path = new_path + "/failed_tasks.bin";
+    std::filesystem::create_directories(new_path);
+    {
+        CMString body;
+        FLY_ENCODE(record, body);
+        int64_t body_size = static_cast<int64_t>(body.size());
+        std::ofstream ofs(bin_path, std::ios::binary | std::ios::app);
+        ofs.write(reinterpret_cast<const char*>(&body_size), sizeof(body_size));
+        ofs.write(body.data(), body.size());
+    }
+
+    EXPECT_EQ(master.restart_failed_tasks(bin_path), 1u);
+
+    auto spec = master.task_submission_for_testing(7);
+    EXPECT_EQ(spec.args_[0], "__fly_db2__:uid_deadbeef:" + new_path)
+        << "args must be re-encoded with the current db_path";
+    EXPECT_EQ(spec.args_[1], "plain_arg");
+    EXPECT_EQ(spec.inputs_[0], new_path + ":dep_obj")
+        << "input prefixes must follow old→new";
+    EXPECT_EQ(spec.vars_[0], new_path + ":some_var");
+    EXPECT_EQ(spec.owner_db_path_, new_path)
+        << "owner follows the bin location (current path)";
+
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// 文件级原子：bin 内任一 db 引用无法按 uid 解析（未 load）→ 整个 bin 不重投，
+// 文件完整保留（用户 load 该 db 后重试闭环）。
+TEST(MasterAgentTest, RestartAtomicOnUnresolvedUid) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+    TempDir tmpdir;
+    CMString db_path = tmpdir.path() + "/loaded_db";
+    CMString other_db = tmpdir.path() + "/unloaded_db";
+
+    master.register_db_uid("uid_ok", db_path);   // 已 load
+    // "uid_missing" 故意不注册。
+
+    FailedTaskRecord r1;
+    r1.task_id_ = 1;
+    r1.submission_.name_ = "ok_task";
+    r1.submission_.args_ = {"__fly_db2__:uid_ok:" + db_path};
+
+    FailedTaskRecord r2;
+    r2.task_id_ = 2;
+    r2.submission_.name_ = "bad_task";
+    r2.submission_.args_ = {"__fly_db2__:uid_missing:" + other_db};
+
+    CMString bin_path = db_path + "/failed_tasks.bin";
+    std::filesystem::create_directories(db_path);
+    for (const auto& r : {r1, r2}) {
+        CMString body;
+        FLY_ENCODE(r, body);
+        int64_t body_size = static_cast<int64_t>(body.size());
+        std::ofstream ofs(bin_path, std::ios::binary | std::ios::app);
+        ofs.write(reinterpret_cast<const char*>(&body_size), sizeof(body_size));
+        ofs.write(body.data(), body.size());
+    }
+
+    EXPECT_EQ(master.restart_failed_tasks(bin_path), 0u)
+        << "whole bin must be rejected when any db uid is unresolved";
+    EXPECT_TRUE(std::filesystem::exists(bin_path))
+        << "bin must be preserved for retry after loading the missing db";
+    EXPECT_FALSE(master.task_submission_for_testing(1).name_ == "ok_task")
+        << "no record from this bin may be resubmitted";
+
+    // 补 load 缺失 db 后重试 → 整 bin 重投成功。
+    master.register_db_uid("uid_missing", other_db);
+    EXPECT_EQ(master.restart_failed_tasks(bin_path), 2u);
+    EXPECT_FALSE(std::filesystem::exists(bin_path))
+        << "bin is consumed once all uids resolve";
+
+    master.stop();
+    wait_for_running(master, false);
+}
+
 TEST(MasterAgentTest, IdxLoadPendingVisibilityBarrier) {
     MasterAgent master("127.0.0.1", 0);
     master.start();
