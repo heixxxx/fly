@@ -217,4 +217,25 @@ TEST_F(FailedTasksTest, DefaultPriorityAndTimeoutWhenUnset) {
     EXPECT_FLOAT_EQ(records[0].submission_.attribute_timeout_, -1.0f);  // 默认死等
 }
 
+TEST_F(FailedTasksTest, OwnerDbPathSurviveRoundTrip) {
+    // 归属 db 路径必须在序列化往返后保留：restart 重投按它落回同一归属
+    // db 目录的 bin（persist_failed_task 读 submission_.owner_db_path_）。
+    FailedTaskRecord r1;
+    r1.task_id_ = 1;
+    r1.submission_.name_ = "owned";
+    r1.submission_.owner_db_path_ = "/proj/matrix";
+
+    FailedTaskRecord r2;  // 无归属 task：owner 保持空（fallback log_dir 语义）
+    r2.task_id_ = 2;
+    r2.submission_.name_ = "unowned";
+
+    write_test_record(file_path_, r1);
+    write_test_record(file_path_, r2);
+
+    auto records = read_all_records(file_path_);
+    ASSERT_EQ(records.size(), 2u);
+    EXPECT_EQ(records[0].submission_.owner_db_path_, "/proj/matrix");
+    EXPECT_EQ(records[1].submission_.owner_db_path_, "");
+}
+
 }  // namespace

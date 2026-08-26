@@ -152,6 +152,7 @@ void MasterAgent::start() {
             spec.attribute_timeout_ = msg.attribute_timeout_;
             spec.write_context_hash_ = msg.write_context_hash_;
             spec.vars_ = msg.vars_;
+            spec.owner_db_path_ = msg.owner_db_path_;
             spec.priority_ = msg.priority_;
             submit_task(task_id, spec);
             // Ack 强语义：request_id 非 0（worker 转发的同步提交）必须回执，
@@ -714,14 +715,61 @@ bool MasterAgent::is_running() const {
     return running_;
 }
 
+namespace {
+
+// __fly_db__ 编码参数 → db_path（与 executor.py deserialize_args 的
+// maxsplit=3 语义对齐：新格式 {uid}:{db_path}:{data_path} 取 rest 切 3 刀后
+// 的第 3 段；旧格式 {db_path}:{data_path} 取第 2 段；尾段 data_path 可含 ':'）。
+CMString parse_db_arg(const CMString& arg) {
+    constexpr size_t kPrefixLen = 11;  // "__fly_db__:"
+    if (arg.compare(0, kPrefixLen, "__fly_db__:") != 0) return "";
+    const CMString rest = arg.substr(kPrefixLen);
+    CMVector<CMString> parts;
+    size_t start = 0;
+    for (int i = 0; i < 3; ++i) {
+        auto p = rest.find(':', start);
+        if (p == CMString::npos) break;
+        parts.push_back(rest.substr(start, p - start));
+        start = p + 1;
+    }
+    parts.push_back(rest.substr(start));
+    if (parts.size() == 4) return parts[2];  // 新格式：uid : db_path : data
+    if (parts.size() >= 2) return parts[1];  // 旧格式：db_path : data
+    return "";
+}
+
+}  // namespace
+
 void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) {
-    INFO("submit_task: id={}, name={}, attr_timeout={}, vars={}",
-         task_id, spec.name_, spec.attribute_timeout_, spec.vars_.size());
+    // Task db 归属兜底推导（单一真相点：master 本地 / worker 转发 / restart 重投
+    // 全部经此）：显式 owner 为空时取 args_ 中第一个 __fly_db__ 编码参数。
+    TaskSubmissionSpec effective = spec;
+    if (effective.owner_db_path_.empty()) {
+        bool first_arg_is_db = false;
+        for (size_t i = 0; i < effective.args_.size(); ++i) {
+            CMString db = parse_db_arg(effective.args_[i]);
+            if (db.empty()) continue;
+            effective.owner_db_path_ = db;
+            first_arg_is_db = (i == 0);
+            break;
+        }
+        if (!first_arg_is_db) {
+            // 开发规范：task 第一个参数必须是归属 db 对象（DEVELOPMENT_GUIDELINES
+            // "Task db 归属规则"节）。偏离仅 WARN 不阻断——归属仍正确推导。
+            WARN("task {} ('{}') does not take its owner db as the first argument "
+                 "(resolved owner={}); convention: def task(db, ...) — see "
+                 "DEVELOPMENT_GUIDELINES 'Task db ownership rule'",
+                 task_id, effective.name_, effective.owner_db_path_);
+        }
+    }
+    INFO("submit_task: id={}, name={}, owner_db={}, attr_timeout={}, vars={}",
+         task_id, effective.name_, effective.owner_db_path_,
+         effective.attribute_timeout_, effective.vars_.size());
 
     // Var existence check (advisory only — does not affect scheduling).
     // vars are FULL names (db_path:short_name); split each to locate the Database.
-    if (!spec.vars_.empty()) {
-        for (const auto& full_var : spec.vars_) {
+    if (!effective.vars_.empty()) {
+        for (const auto& full_var : effective.vars_) {
             auto [db_path, short_name] = split_full_name(full_var);
             if (db_path.empty()) continue;
             // 锁内只 find + 拷 shared_ptr（var 查询自保护，D2 拆除）。
@@ -739,9 +787,9 @@ void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) 
     }
 
     TaskRequirements reqs;
-    reqs.capabilities_ = spec.required_capabilities_;
-    reqs.timeout_seconds_ = spec.attribute_timeout_;
-    reqs.priority_ = spec.priority_;
+    reqs.capabilities_ = effective.required_capabilities_;
+    reqs.timeout_seconds_ = effective.attribute_timeout_;
+    reqs.priority_ = effective.priority_;
     // create_task + add_task 必须原子：两者分属 TaskManager / DependencyGraph 两个
     // 独立锁结构，若与 on_task_complete 的 remove_task + update_task_status 交错，
     // 会导致 graph 与 metadata 的完成计数永久分叉（COMPLETED-MISMATCH 卡死）。
@@ -750,12 +798,12 @@ void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) 
     // 获取此锁，锁内调用会重入死锁）。
     {
         std::lock_guard<std::mutex> lk(schedule_mutex_);
-        metadata_->create_task(task_id, spec);
-        graph_->add_task(task_id, spec.inputs_, reqs);
+        metadata_->create_task(task_id, effective);
+        graph_->add_task(task_id, effective.inputs_, reqs);
     }
     // monitor 落盘（锁外非阻塞入队）：SUBMIT 事件 + PENDING 行（含 dbs 解析）。
     record_task_snapshot(task_id);
-    if (metrics_db_) metrics_db_->record_task_event(task_id, 0, "SUBMIT", spec.name_);
+    if (metrics_db_) metrics_db_->record_task_event(task_id, 0, "SUBMIT", effective.name_);
 
     // Pre-fetch dependency locations at submit time (earliest possible point).
     {
@@ -764,7 +812,7 @@ void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) 
         // 首选（storage 优先/死 holder 排尾）而非 front()——单位置缓存若
         // 恰好选中死 holder，worker TIER2 会在其上重试满 30s 网络期限。
         CMUnorderedMap<CMString, CachedLocation> locations;
-        for (const auto& dep : spec.inputs_) {
+        for (const auto& dep : effective.inputs_) {
             auto replicas = ds->lookup_all_remote_idx(dep);
             if (!replicas.empty() && replicas.front().worker_id_ != 0 &&
                 !replicas.front().host_.empty()) {
@@ -789,7 +837,7 @@ void MasterAgent::submit_task(uint64_t task_id, const TaskSubmissionSpec& spec) 
         auto ready = graph_->get_ready_tasks();
         auto deps = graph_->get_task_dependencies(task_id);
         DBG("[DEP] submit: id={} name={} deps={} ready={} pending={} is_ready={}",
-             task_id, spec.name_, deps.size(), ready.size(), pending.size(), is_ready);
+             task_id, effective.name_, deps.size(), ready.size(), pending.size(), is_ready);
         for (const auto& dep : deps) {
             DBG("[DEP]   dep={} data_ready={}", dep, graph_->is_data_ready(dep));
         }
@@ -806,7 +854,8 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
                                float attribute_timeout,
                                const CMString& write_context_hash,
                                const CMVector<CMString>& vars,
-                               int priority) {
+                               int priority,
+                               const CMString& owner_db_path) {
     // 位置参数便利重载：组装 spec 转发到主签名，避免每处调用点手写组装。
     TaskSubmissionSpec spec;
     spec.name_ = name;
@@ -819,6 +868,7 @@ void MasterAgent::submit_task(uint64_t task_id, const CMString& name,
     spec.write_context_hash_ = write_context_hash;
     spec.vars_ = vars;
     spec.priority_ = priority;
+    spec.owner_db_path_ = owner_db_path;
     submit_task(task_id, spec);
 }
 
@@ -1526,27 +1576,6 @@ const char* task_status_name(TaskStatus s) {
         case TaskStatus::CANCELLED: return "CANCELLED";
     }
     return "UNKNOWN";
-}
-
-// __fly_db__ 编码参数 → db_path（与 executor.py deserialize_args 的
-// maxsplit=3 语义对齐：新格式 {uid}:{db_path}:{data_path} 取 rest 切 3 刀后
-// 的第 3 段；旧格式 {db_path}:{data_path} 取第 2 段；尾段 data_path 可含 ':'）。
-CMString parse_db_arg(const CMString& arg) {
-    constexpr size_t kPrefixLen = 11;  // "__fly_db__:"
-    if (arg.compare(0, kPrefixLen, "__fly_db__:") != 0) return "";
-    const CMString rest = arg.substr(kPrefixLen);
-    CMVector<CMString> parts;
-    size_t start = 0;
-    for (int i = 0; i < 3; ++i) {
-        auto p = rest.find(':', start);
-        if (p == CMString::npos) break;
-        parts.push_back(rest.substr(start, p - start));
-        start = p + 1;
-    }
-    parts.push_back(rest.substr(start));
-    if (parts.size() == 4) return parts[2];  // 新格式：uid : db_path : data
-    if (parts.size() >= 2) return parts[1];  // 旧格式：db_path : data
-    return "";
 }
 
 // task 关联 db 集合（args 的 __fly_db__ 编码 + inputs_/outputs_ 对象全名前缀），
@@ -3156,11 +3185,16 @@ void MasterAgent::on_remove_request(uint64_t conn_id, const RemoveRequestMessage
     INFO("RemoveRequest completed: object={}", msg.object_name_);
 }
 
-CMString MasterAgent::get_failed_tasks_file_path() const {
-    // project 模式覆盖（project 自包含：断点 bin 随 project 目录迁移/持久）；
-    // 未设置时维持 {log_dir}/failed_tasks.bin 惯例。
-    if (!failed_tasks_file_override_.empty()) {
-        return failed_tasks_file_override_;
+CMString MasterAgent::get_failed_tasks_file_path(const CMString& owner_db_path) const {
+    // Task db 归属规则：失败记录按归属 db 落盘 {owner_db_path}/failed_tasks.bin
+    // （project 场景 db 目录在 project 下，bin 天然随 db 迁移/持久，支持多 project）；
+    // 无归属 task（参数无 db）fallback {log_dir}/failed_tasks.bin。
+    if (!owner_db_path.empty()) {
+        namespace fs = std::filesystem;
+        if (!fs::exists(owner_db_path)) {
+            fs::create_directories(owner_db_path);
+        }
+        return owner_db_path + "/failed_tasks.bin";
     }
     CMString log_dir = Config::instance()->get_str("log_dir");
     namespace fs = std::filesystem;
@@ -3168,14 +3202,6 @@ CMString MasterAgent::get_failed_tasks_file_path() const {
         fs::create_directories(log_dir);
     }
     return log_dir + "/failed_tasks.bin";
-}
-
-void MasterAgent::set_failed_tasks_file(const CMString& path) {
-    // 持久化/重投链路（persist_failed_task / remove_persisted_task /
-    // restart_failed_tasks）全部经 get_failed_tasks_file_path 取路径，一处
-    // 覆盖全链生效。单 master 单 project 主流；多 project 后设覆盖（文档注明）。
-    failed_tasks_file_override_ = path;
-    INFO("failed_tasks file override set: {}", path);
 }
 
 namespace {
@@ -3238,19 +3264,28 @@ void rewrite_failed_records(const CMString& file_path, const CMVector<FailedTask
 void MasterAgent::persist_failed_task(const FailedTaskRecord& record) {
     // failed_tasks.bin 读改写互斥：调用方横跨 lane handler（on_task_complete/
     // on_task_failed）与后台线程（attr-tick/watchdog 经 schedule_tasks）。
+    // 落点按 record 归属 db 解析（Task db 归属规则）。
     std::lock_guard<std::mutex> lk(failed_tasks_file_mutex_);
-    CMString file_path = get_failed_tasks_file_path();
+    CMString file_path = get_failed_tasks_file_path(record.submission_.owner_db_path_);
     append_failed_record(file_path, record);
 
-    ERR("Task {} failed and persisted. To restart after fixing, call restart_failed_tasks(\"{}\")", record.task_id_, file_path);
+    ERR("Task {} (owner_db={}) failed and persisted. To restart after fixing, "
+        "call restart_failed_tasks([\"{}\"])",
+        record.task_id_, record.submission_.owner_db_path_,
+        record.submission_.owner_db_path_);
     if (metrics_db_) {
         metrics_db_->record_task_event(record.task_id_, 0, "PERSIST_FAILED");
     }
 }
 
 void MasterAgent::remove_persisted_task(uint64_t task_id) {
+    // 成功摘除按归属文件定位：owner 从 metadata 的 submission_ 读（记录与
+    // 摘除同源，不依赖文件扫描）。internal task 无 metadata（也未 persist 过）。
+    auto md = metadata_->get_task(task_id);
+    if (!md) return;
+
     std::lock_guard<std::mutex> lk(failed_tasks_file_mutex_);
-    CMString file_path = get_failed_tasks_file_path();
+    CMString file_path = get_failed_tasks_file_path(md->submission_.owner_db_path_);
     if (!std::filesystem::exists(file_path)) return;
 
     auto records = read_failed_records(file_path);
@@ -3273,7 +3308,7 @@ void MasterAgent::remove_persisted_task(uint64_t task_id) {
     }
 }
 
-void MasterAgent::restart_failed_tasks(const CMString& file_path) {
+size_t MasterAgent::restart_failed_tasks(const CMString& file_path) {
     // 文件互斥只覆盖 读取+删除：下面的 submit_task → schedule_tasks →
     // persist_failed_task 会再取同一把锁，持锁重提交 = 自死锁（graceful_shutdown
     // QA 实测：主线程同时持有 schedule_mutex_ + failed_tasks_file_mutex_ 后挂死）。
@@ -3282,13 +3317,13 @@ void MasterAgent::restart_failed_tasks(const CMString& file_path) {
         std::lock_guard<std::mutex> lk(failed_tasks_file_mutex_);
         if (!std::filesystem::exists(file_path)) {
             WARN("No failed tasks file found at {}", file_path);
-            return;
+            return 0;
         }
 
         records = read_failed_records(file_path);
         if (records.empty()) {
             WARN("No failed tasks to restart");
-            return;
+            return 0;
         }
 
         std::filesystem::remove(file_path);
@@ -3300,8 +3335,8 @@ void MasterAgent::restart_failed_tasks(const CMString& file_path) {
 
     for (auto& record : records) {
         metadata_->remove_task(record.task_id_);
-        // record.submission_ 携带完整的提交字段（含 priority/attribute_timeout/vars），
-        // 整体传入 submit_task，消除原先 11 个位置参数的错位/漏传风险。
+        // record.submission_ 携带完整的提交字段（含 priority/attribute_timeout/vars/
+        // owner_db_path），整体传入 submit_task，消除逐字段复制的错位/漏传风险。
         submit_task(record.task_id_, record.submission_);
         if (metrics_db_) {
             metrics_db_->record_task_event(record.task_id_, 0, "RESTART");
@@ -3309,6 +3344,7 @@ void MasterAgent::restart_failed_tasks(const CMString& file_path) {
     }
 
     INFO("Restarted {} failed tasks", record_count);
+    return record_count;
 }
 
 void MasterAgent::setup_write_context() {

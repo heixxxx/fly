@@ -468,7 +468,8 @@ uint64_t WorkerAgent::submit_task(const CMString& name, const CMString& module,
                                float attribute_timeout,
                                const CMString& write_context_hash,
                                const CMVector<CMString>& vars,
-                               int priority) {
+                               int priority,
+                               const CMString& owner_db_path) {
     // No reactor means start() failed (e.g. master unreachable) — nothing to
     // send to. Fail soft rather than crash; caller observes no progress.
     if (!reactor_) {
@@ -484,6 +485,7 @@ uint64_t WorkerAgent::submit_task(const CMString& name, const CMString& module,
     msg.attribute_timeout_ = attribute_timeout;
     msg.write_context_hash_ = write_context_hash;
     msg.vars_ = vars;
+    msg.owner_db_path_ = owner_db_path;
     msg.priority_ = priority;
     msg.request_id_ = next_submit_request_id_.fetch_add(1);
 

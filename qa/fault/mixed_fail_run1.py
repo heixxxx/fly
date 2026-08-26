@@ -61,8 +61,8 @@ for key in dirty_keys:
         pass
 INFO("[RUN1] all dirty objects cleaned by abort")
 
-# 验证 failed_tasks.bin 持久化
-failed_file = os.path.join(get_config().get_str("log_dir"), "failed_tasks.bin")
+# 验证 failed_tasks.bin 持久化（Task db 归属规则：task 带 db 参数 → {db_path}/failed_tasks.bin）
+failed_file = os.path.join(DB_PATH, "failed_tasks.bin")
 assert os.path.isfile(failed_file), f"failed_tasks.bin should exist: {failed_file}"
 INFO("[RUN1] failed_tasks.bin persisted")
 

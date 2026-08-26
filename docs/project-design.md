@@ -386,12 +386,23 @@ db_path/
 - **freeze 清理**：db freeze 确认后删除全部 temp 文件（用户裁定语义：
   temp=中间态，阶段完成即作废）。frozen db 的 Database 不再建 temp writer。
 
-### 10.3 failed_tasks.bin project 化
+### 10.3 failed_tasks.bin 按归属 db 落盘
 
-project 模式（`Project.__init__/load`）把 bin 路径绑定到
-`{project_dir}/failed_tasks.bin`（`MasterAgent::set_failed_tasks_file`，
-persist/rewrite/restart 全链一处覆盖）；非 project 场景维持 `{log_dir}` 惯例。
-project 自包含：断点 bin 随 project 目录迁移。
+失败记录按 task 归属 db 落盘：`{owner_db_path}/failed_tasks.bin`（Task db
+归属规则，见 DEVELOPMENT_GUIDELINES §15）。归属由 `TaskSubmissionSpec.
+owner_db_path_` 携带（显式 `@as_task(owner=)` 或 master 从第一个 db 参数
+推导，随 FailedTaskRecord 持久化、随 restart 重投还原）。project 场景
+db 目录在 project 下，断点 bin 天然随 db 目录迁移/自包含，且天然支持多
+project（无归属 task fallback `{log_dir}/failed_tasks.bin`）。
+
+恢复入口两形态：
+
+- `fly.restart_failed_tasks(dbs)`：传 db 对象 / db_path / list，自动在各
+  db 目录搜索 bin 重投（无 bin 的 db 静默跳过，返回重投总数）；
+- `Project.resume()`：内部遍历 project 全部 db 目录，同一机制。
+
+旧的 `set_failed_tasks_file` 路径覆盖机制已废弃。bitsery 非版本化——旧
+格式 bin 新版本不读（解码失败静默丢弃；早期无存量不做迁移）。
 
 ### 10.4 恢复入口与语义边界
 

@@ -41,10 +41,14 @@ struct TaskSubmissionSpec {
     int priority_ = 10;                // 任务优先级（数值越大越先调度）
     CMString write_context_hash_;      // 对象写入来源 provenance（运行时可被覆盖）
     CMVector<CMString> vars_;          // 声明的 var 全名列表（@as_task(vars=...)）
+    // task 归属 db（开发规范：task 第一个参数必须是归属 db 对象）。空时由
+    // MasterAgent::submit_task 从 args_ 的第一个 __fly_db__ 编码参数兜底推导；
+    // 失败记录按此落盘 {owner_db_path}/failed_tasks.bin（见 DEVELOPMENT_GUIDELINES）。
+    CMString owner_db_path_;
 
     FLY_SERIALIZE(name_, module_, args_, inputs_, outputs_,
                   required_capabilities_, attribute_timeout_, priority_,
-                  write_context_hash_, vars_);
+                  write_context_hash_, vars_, owner_db_path_);
 };
 
 struct TaskMetadata {

@@ -84,14 +84,12 @@ assert wait_for(lambda: len(master.completed_tasks) >= 5), \
     f"Phase 6: expected 5 completed, got {len(master.completed_tasks)}"
 INFO("  Phase 6 OK: triple-DB compute done")
 
-log_dir = get_config().get_str("log_dir")
-failed_file = os.path.join(log_dir, "failed_tasks.bin")
-
 master.launch_local_workers([{"attributes": ["gpu"]}])
 assert master.wait_for_workers(), \
     "Phase 7: gpu worker should connect"
 
-master.restart_failed_tasks(failed_file)
+# gpu task 归属 db_model（Task db 归属规则）；db list 形态 restart，无 bin 的 db 静默跳过。
+master.restart_failed_tasks([db_raw, db_feat, db_model])
 
 assert wait_for(lambda: len(master.completed_tasks) >= 6), \
     f"Phase 7: expected 6 completed, got {len(master.completed_tasks)}"

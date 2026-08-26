@@ -63,8 +63,8 @@ master.launch_local_workers([{"attributes": []}])
 assert master.wait_for_workers(1, timeout=30), "Worker failed to connect"
 
 db = open_db(DB_PATH)
-log_dir = get_config().get_str("log_dir")
-failed_file = os.path.join(log_dir, "failed_tasks.bin")
+# 失败记录按归属 db 落盘（Task db 归属规则）：task 带 db 参数 → {db_path}/failed_tasks.bin
+failed_file = os.path.join(DB_PATH, "failed_tasks.bin")
 
 # ── Phase 1: 高优先级 task 因缺 phantom 依赖失败 ──
 # requires=(["gpu"],0) 限时降级 → 在无 gpu worker 上降级执行 → 读 phantom 失败 → persist
@@ -86,7 +86,7 @@ default_prio_write(db, "default", "v0")
 # 记录 restart 前的 completed，便于观测 restart 后的新增完成顺序
 pre_restart_completed = len(master.completed_tasks)
 
-master.restart_failed_tasks(failed_file)
+master.restart_failed_tasks(db)
 
 # 等待两个 task 都完成（restart 的高优先级 + 新提交的默认优先级）
 def both_done():

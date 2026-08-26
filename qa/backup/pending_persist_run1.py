@@ -35,8 +35,8 @@ def run1():
         "Worker should connect"
 
     db = open_db(DB_PATH)
-    log_dir = get_config().get_str("log_dir")
-    failed_file = os.path.join(log_dir, "failed_tasks.bin")
+    # 失败记录按归属 db 落盘（Task db 归属规则）：task 带 db 参数 → {db_path}/failed_tasks.bin
+    failed_file = os.path.join(DB_PATH, "failed_tasks.bin")
 
     # Submit tasks that will complete
     write_data(db, "real_key_1", 10)

@@ -40,16 +40,12 @@ for key in ["mixed/small_0", "mixed/large", "mixed/dirty"]:
         pass
 INFO("[RUN2] dirty data not restored by load_db")
 
-# restart failed tasks：读 run1 的 failed_tasks.bin（.pyt 经 env 传；旧 wrapper fallback）。
-run1_log = os.environ.get("FLY_RUN1_LOG_DIR")
-if run1_log:
-    failed_file = os.path.join(run1_log, "failed_tasks.bin")
-else:
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    failed_file = os.path.join(SCRIPT_DIR, "test_mixed_write_fail.1", "failed_tasks.bin")
+# restart failed tasks：读 run1 落在归属 db 目录的 failed_tasks.bin
+# （Task db 归属规则：task 带 db 参数 → {db_path}/failed_tasks.bin，run1/run2 共享 DB_PATH）。
+failed_file = os.path.join(DB_PATH, "failed_tasks.bin")
 assert os.path.isfile(failed_file), f"failed_tasks.bin should exist: {failed_file}"
 
-master.restart_failed_tasks(failed_file)
+master.restart_failed_tasks(db)
 INFO("[RUN2] restart_failed_tasks called")
 
 def wait_all_done(timeout=20.0):

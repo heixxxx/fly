@@ -160,7 +160,8 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
                                                              float attribute_timeout,
                                                              const fly::CMString& write_context_hash,
                                                              const fly::CMVector<fly::CMString>& vars,
-                                                             int priority) {
+                                                             int priority,
+                                                             const fly::CMString& owner_db_path) {
         fly::TaskSubmissionSpec spec;
         spec.name_ = name;
         spec.module_ = module;
@@ -172,6 +173,7 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
         spec.write_context_hash_ = write_context_hash;
         spec.vars_ = vars;
         spec.priority_ = priority;
+        spec.owner_db_path_ = owner_db_path;
         self.submit_task(task_id, spec);
     })
     FLY_EXPORT_METHOD("register_database", [](fly::MasterAgent& self,
@@ -198,11 +200,8 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     FLY_EXPORT_METHOD("get_idle_workers", &fly::MasterAgent::get_idle_workers)
     FLY_EXPORT_METHOD("get_port", &fly::MasterAgent::get_port)
     FLY_EXPORT_METHOD("get_data_server_port", &fly::MasterAgent::get_data_server_port)
-    FLY_EXPORT_METHOD("restart_failed_tasks", [](fly::MasterAgent& self, const fly::CMString& file_path) {
-        self.restart_failed_tasks(file_path);
-    })
-    FLY_EXPORT_METHOD("set_failed_tasks_file", [](fly::MasterAgent& self, const fly::CMString& path) {
-        self.set_failed_tasks_file(path);
+    FLY_EXPORT_METHOD("restart_failed_tasks", [](fly::MasterAgent& self, const fly::CMString& file_path) -> size_t {
+        return self.restart_failed_tasks(file_path);
     })
     FLY_EXPORT_METHOD("broadcast_object_removed", [](fly::MasterAgent& self,
                                                         const fly::CMString& db_path,
@@ -338,8 +337,9 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
                                          float attribute_timeout,
                                          const fly::CMString& write_context_hash,
                                          const fly::CMVector<fly::CMString>& vars,
-                                         int priority) -> uint64_t {
-        return self.submit_task(name, module, args, inputs, required_capabilities, attribute_timeout, write_context_hash, vars, priority);
+                                         int priority,
+                                         const fly::CMString& owner_db_path) -> uint64_t {
+        return self.submit_task(name, module, args, inputs, required_capabilities, attribute_timeout, write_context_hash, vars, priority, owner_db_path);
     })
     FLY_EXPORT_METHOD("take_pending_task_vars", [](fly::WorkerAgent& self) -> fly::CMVector<fly::VarPayload> {
         return self.take_pending_task_vars();

@@ -457,23 +457,33 @@ TEST(MasterAgentTest, WorkerDeathSettlesPendingRpc) {
     wait_for_running(master, false);
 }
 
-// failed_tasks 路径覆盖（project 模式）：set 后 get 返回 override；persist
-// 链路全部经 get_failed_tasks_file_path，一处覆盖全链生效。
-TEST(MasterAgentTest, FailedTasksFileOverride) {
+// failed_tasks 落点按归属 db（Task db 归属规则）：owner 非空 →
+// {owner_db_path}/failed_tasks.bin；owner 空 → {log_dir} fallback。persist/remove
+// 链路全部经 get_failed_tasks_file_path(owner)，一处规则全链生效。
+TEST(MasterAgentTest, FailedTasksFilePerOwnerPath) {
     MasterAgent master("127.0.0.1", 0);
     TempDir tmpdir;
-    CMString override_path = tmpdir.path() + "/failed_tasks.bin";
+    CMString db_path = tmpdir.path() + "/owner_db";
+    CMString log_dir = tmpdir.path() + "/log";
+    Config::instance()->set_str("log_dir", log_dir);
 
-    master.set_failed_tasks_file(override_path);
-    EXPECT_EQ(master.failed_tasks_file_path_for_testing(), override_path);
+    // owner 非空：落归属 db 目录。
+    EXPECT_EQ(master.failed_tasks_file_path_for_testing(db_path),
+              db_path + "/failed_tasks.bin");
+    // owner 空：fallback log_dir。
+    EXPECT_EQ(master.failed_tasks_file_path_for_testing(""),
+              log_dir + "/failed_tasks.bin");
 
-    // persist 实际落点跟随 override。
+    // persist 实际落点按 record 归属（db 目录无需预先存在，防御性创建）。
     FailedTaskRecord record;
     record.task_id_ = 7;
-    record.submission_.name_ = "override_test";
+    record.submission_.name_ = "owner_test";
+    record.submission_.owner_db_path_ = db_path;
     master.persist_failed_task_for_testing(record);
-    EXPECT_TRUE(std::filesystem::exists(override_path))
-        << "persist must land on the overridden path";
+    EXPECT_TRUE(std::filesystem::exists(db_path + "/failed_tasks.bin"))
+        << "persist must land on the owner db path";
+    EXPECT_FALSE(std::filesystem::exists(log_dir + "/failed_tasks.bin"))
+        << "owned task must not pollute the log_dir fallback file";
 }
 
 TEST(MasterAgentTest, IdxLoadPendingVisibilityBarrier) {

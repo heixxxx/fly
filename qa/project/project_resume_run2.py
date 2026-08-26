@@ -13,9 +13,9 @@ master = get_agent()
 master.launch_local_workers([{}, {}])
 assert master.wait_for_workers(2)
 
-# 断点现场铁证：bin 在 project 目录（project 化路径，非 {log_dir}）。
-bin_path = os.path.join(PROJ_PATH, "failed_tasks.bin")
-assert os.path.isfile(bin_path), f"failed_tasks.bin should live in project dir: {bin_path}"
+# 断点现场铁证：bin 落归属 db 目录（Task db 归属规则，非 {log_dir} 也非 project 根）。
+bin_path = os.path.join(PROJ_PATH, "workdb", "failed_tasks.bin")
+assert os.path.isfile(bin_path), f"failed_tasks.bin should live in the owner db dir: {bin_path}"
 
 proj = open_project(PROJ_PATH)
 db = proj.get_db("workdb")

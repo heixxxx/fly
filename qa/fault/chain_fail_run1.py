@@ -101,8 +101,8 @@ for key in ["node7/result", "node7/dirty1", "node7/dirty2"]:
         pass
 INFO("[RUN1] node7 dirty objects cleaned")
 
-# 持久化验证
-failed_file = os.path.join(get_config().get_str("log_dir"), "failed_tasks.bin")
+# 持久化验证（Task db 归属规则：task 带 db 参数 → {db_path}/failed_tasks.bin）
+failed_file = os.path.join(DB_PATH, "failed_tasks.bin")
 assert os.path.isfile(failed_file), f"failed_tasks.bin should exist at {failed_file}"
 INFO(f"[RUN1] failed_tasks.bin persisted at {failed_file}")
 

@@ -45,7 +45,8 @@ class _FakeAgent:
 
     def submit(self, name, module, args, inputs=None,
                required_capabilities=None, attribute_timeout=-1.0,
-               write_context_hash="", vars=None, priority=10):
+               write_context_hash="", vars=None, priority=10,
+               owner_db_path=""):
         self.last_submit = {
             'name': name,
             'module': module,
@@ -56,6 +57,7 @@ class _FakeAgent:
             'write_context_hash': write_context_hash,
             'vars': vars,
             'priority': priority,
+            'owner_db_path': owner_db_path,
         }
 
 

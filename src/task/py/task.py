@@ -28,7 +28,7 @@ def task_name(name: str):
     return decorator
 
 
-def as_task(inputs=None, requires=None, vars=None, priority=10):
+def as_task(inputs=None, requires=None, vars=None, priority=10, owner=None):
     """将函数注册为可分发任务。
 
     装饰器会拦截函数调用，将任务提交给 Agent（Master 或 Worker）执行。
@@ -54,6 +54,10 @@ def as_task(inputs=None, requires=None, vars=None, priority=10):
             默认 10 取中点值，可双向调节：<10 让路（如后台清理），>10 抢先（如关键路径）。
             高优先级 task 若暂无可匹配 worker（如缺 capability），跳过它继续调度低优先级
             （head-of-line skip，不阻塞后续任务）。
+        owner: 任务归属 db（显式覆盖，仅例外场景使用）。callable(*args, **kwargs)
+            -> db 对象。默认 None = 自动推导——取参数列表中第一个 db 对象（开发
+            规范要求 task 第一个参数必须是归属 db 对象，见 DEVELOPMENT_GUIDELINES
+            "Task db 归属规则"节）。失败记录按归属落盘 {owner_db_path}/failed_tasks.bin。
 
     Usage::
 
@@ -79,6 +83,10 @@ def as_task(inputs=None, requires=None, vars=None, priority=10):
 
         @as_task(requires=["gpu"], priority=5)  # 低优先级，让路给 priority>5 的任务
         def background_task(db):
+            ...
+
+        @as_task(owner=lambda db, other_db: other_db)  # 例外的显式归属覆盖
+        def cross_db_task(db, other_db):
             ...
     """
     def decorator(func):
@@ -124,6 +132,19 @@ def as_task(inputs=None, requires=None, vars=None, priority=10):
 
             resolved_vars = vars(*args, **kwargs) if callable(vars) else (vars or [])
 
+            # 归属显式覆盖：owner callable 返回归属 db 对象 → 提取 db_path。
+            # 默认（None）不在此解析——master 侧从序列化 args 兜底推导第一个
+            # db 参数（单一真相点，覆盖 master 本地/worker 转发/restart 重投）。
+            owner_db_path = ""
+            if owner is not None:
+                owner_db = owner(*args, **kwargs)
+                if not (hasattr(owner_db, 'get_db_path')
+                        and hasattr(owner_db, 'get_full_name')):
+                    raise ValueError(
+                        f"Task {name!r} owner callable must return a db object, "
+                        f"got {type(owner_db).__name__}")
+                owner_db_path = owner_db._db.get_db_path()
+
             serialized = _serialize_args(args)
 
             task_name = func_payload if func_payload is not None else name
@@ -136,7 +157,8 @@ def as_task(inputs=None, requires=None, vars=None, priority=10):
                          attribute_timeout=attr_timeout,
                          write_context_hash=write_context_hash,
                          vars=resolved_vars,
-                         priority=priority)
+                         priority=priority,
+                         owner_db_path=owner_db_path)
             DBG(
                 f"Task submitted via {agent.mode}: "
                 f"name={name}, module={module}, inputs={task_inputs}, "

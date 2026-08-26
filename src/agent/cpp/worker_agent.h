@@ -147,7 +147,8 @@ public:
                      float attribute_timeout = -1.0f,
                      const CMString& write_context_hash = "",
                      const CMVector<CMString>& vars = {},
-                     int priority = 10);
+                     int priority = 10,
+                     const CMString& owner_db_path = "");
     
     bool has_pending_task() const;
     bool poll_task();

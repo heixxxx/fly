@@ -60,7 +60,7 @@ class FlyAgent(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def restart_failed_tasks(self, file_path: str):
+    def restart_failed_tasks(self, dbs) -> int:
         raise NotImplementedError
 
     @staticmethod
@@ -157,7 +157,8 @@ class Master(FlyAgent):
                attribute_timeout: float = -1.0,
                write_context_hash: str = "",
                vars: list = None,
-               priority: int = 10) -> int:
+               priority: int = 10,
+               owner_db_path: str = "") -> int:
         with self._lock:
             self._task_counter += 1
             task_id = self._task_counter
@@ -168,7 +169,7 @@ class Master(FlyAgent):
         self._agent.submit_task_with_requirements(
             task_id, name, module, args, inputs or [], [],
             required_capabilities or [], attribute_timeout, write_context_hash,
-            vars or [], priority)
+            vars or [], priority, owner_db_path)
         DBG(f"Task submitted: id={task_id}, name={name}, "
             f"requires={required_capabilities}, attr_timeout={attribute_timeout}, "
             f"vars={vars}")
@@ -885,16 +886,40 @@ class Master(FlyAgent):
         WARN("get_worker_properties called on Master, returning empty")
         return []
 
-    def restart_failed_tasks(self, file_path: str):
-        self._agent.restart_failed_tasks(file_path)
+    def restart_failed_tasks(self, dbs) -> int:
+        """按 db 归属重投失败 task（断点恢复入口）。
 
-    def set_failed_tasks_file(self, path: str):
-        """project 模式覆盖 failed_tasks 持久化路径（默认 {log_dir}/failed_tasks.bin）。
+        对每个 db 在其目录下搜索 failed_tasks.bin（{db_path}/failed_tasks.bin，
+        见 Task db 归属规则），存在则读取+重投（原子：读即删，重投失败再落盘）。
+        无 bin 的 db 静默跳过。
 
-        project 自包含：断点 bin 随 project 目录走（迁移/跨进程恢复不依赖旧
-        log_dir）。单 master 单 project 主流；多 project 后设覆盖。
+        Args:
+            dbs: db 对象 / db_path 字符串 / 二者混合的 list（单元素亦可）。
+                无归属 task 的 fallback bin 在 {log_dir} 下——传 log_dir 目录
+                路径字符串即可找回。
+
+        Returns:
+            重投的 task 总数。
         """
-        self._agent.set_failed_tasks_file(path)
+        import os as _os
+
+        if not isinstance(dbs, (list, tuple)):
+            dbs = [dbs]
+
+        total = 0
+        for db in dbs:
+            if hasattr(db, 'get_db_path') and hasattr(db, 'get_full_name'):
+                db_path = db.get_db_path()
+            else:
+                db_path = str(db)
+            if not db_path:
+                continue
+            bin_path = _os.path.join(db_path, "failed_tasks.bin")
+            if not _os.path.isfile(bin_path):
+                DBG(f"restart_failed_tasks: no failed_tasks.bin at {bin_path}")
+                continue
+            total += self._agent.restart_failed_tasks(bin_path)
+        return total
 
     def _spawn_process_worker(self, worker_id: int, config: dict = None):
         import time
@@ -1044,12 +1069,13 @@ class Worker(FlyAgent):
                attribute_timeout: float = -1.0,
                write_context_hash: str = "",
                vars: list = None,
-               priority: int = 10) -> int:
+               priority: int = 10,
+               owner_db_path: str = "") -> int:
         return self._agent.submit_task(name, module, args, inputs or [],
                                        required_capabilities or [],
                                        attribute_timeout,
                                        write_context_hash,
-                                       vars or [], priority)
+                                       vars or [], priority, owner_db_path)
 
     def get_database(self, db_path: str):
         if db_path not in self._db_cache:
@@ -1096,8 +1122,9 @@ class Worker(FlyAgent):
     def get_worker_properties(self) -> list:
         return list(self._agent.get_worker_properties())
 
-    def restart_failed_tasks(self, file_path: str):
+    def restart_failed_tasks(self, dbs) -> int:
         WARN("restart_failed_tasks called on Worker, ignoring")
+        return 0
 
     # ── 业务 RPC（PeerChannelGroup 底层透传）──────────────────────
     # payload 全程用 bytes（nanobind 零拷贝），无 latin-1 编解码。

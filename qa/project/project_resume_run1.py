@@ -1,5 +1,5 @@
 """run1：project 场景提交 task 批，部分完成后 SIGTERM 优雅中断——
-FAILED/PENDING/RUNNING task 持久化进 {project_dir}/failed_tasks.bin（project 化路径）。
+FAILED/PENDING/RUNNING task 持久化进归属 db 目录（{db_path}/failed_tasks.bin）。
 """
 import os
 import signal

@@ -416,6 +416,8 @@ struct TaskSubmitMessage {
     float attribute_timeout_ = -1.0f;  // <0=死等, 0=立即降级, >0=限时降级
     CMString write_context_hash_;
     CMVector<CMString> vars_;          // declared var names for inline delivery
+    // task 归属 db 路径（@as_task(owner=...) 显式指定；空则 master 从 args 兜底推导）。
+    CMString owner_db_path_;
     int priority_ = 10;               // 任务优先级（worker→master 透传，递归提交场景）
     // Ack 强语义（用户确认语义）：worker 转发提交的同步确认标识——非 0 时
     // master 入图后必须回 TaskSubmitAck（带回分配的 task_id）；master 本地
@@ -423,7 +425,7 @@ struct TaskSubmitMessage {
     // 子任务且调用方不知情、下游依赖永不就绪）。
     uint64_t request_id_ = 0;
     static constexpr MessageType msg_type_ = MessageType::TASK_SUBMIT;
-    FLY_SERIALIZE(header_, task_name_, task_module_, args_, inputs_, required_capabilities_, attribute_timeout_, write_context_hash_, vars_, priority_, request_id_);
+    FLY_SERIALIZE(header_, task_name_, task_module_, args_, inputs_, required_capabilities_, attribute_timeout_, write_context_hash_, vars_, owner_db_path_, priority_, request_id_);
 };
 
 // master → worker：转发提交的确认。accepted = 提交被接受入图（执行结果仍

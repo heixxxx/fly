@@ -823,6 +823,8 @@ workers_mutex_ 下的 send 同样禁止（reactor send 非阻塞，但含 encode
 - 2026-05-15: 重构导出宏文档（Section 4.3）：移除 module_var 参数，用户写大括号，新增命名规范 Section 2.4
 - 2026-08-14: 新增 Section 13 并发与锁规范（封装优先级 / notify 持锁铁律 / 锁内禁 IO / 并发测试写法），源于 on_var_ack lost wakeup 修复与 PendingRpcMap/ConcurrentMap 收敛改造
 - 2026-05-15: 修正序列化宏签名：`FLY_FIELD(field)` 替代 `FLY_FIELD(s, o, field)`，移除重复 Section 4.2.2
+- 2026-08-26: 新增 Section 15 Task db 归属规则（task 第一参数=归属 db 强制规范 + owner 显式覆盖 + failed_tasks.bin 按归属落盘 + restart_failed_tasks db list 语义），源于 task 归属追踪机制落地
+
 ## 14. 数据规模相关等待禁设超时
 
 > 2026-08-25 用户裁定。EDA 领域数 T 级 db 常见——不可无理由猜测任务规模。
@@ -838,3 +840,72 @@ workers_mutex_ 下的 send 同样禁止（reactor send 非阻塞，但含 encode
 - 已修正的规模假设点：load_db 可见性屏障 30s、merge_db `task_timeout=3600`、
   前置 `wait_for_all_tasks(3600)`、delete ack 60s、MergeCleanup 屏障 30s；
 - 用户侧主动查询 API（`fly.wait_tasks(timeout)` 用户传参）不在此列。
+
+## 15. Task db 归属规则
+
+> 2026-08-26 用户裁定，显式开发规则。task 是最小执行与调度单位，归属机制
+> 是失败定位与断点恢复的元信息基础。
+
+### 15.1 业务背景
+
+task 通常由固定的启动函数（flow）创建 db 后提交，处理数据并把结果写回
+该 db。**业务上不允许不同启动流程向同一个 db 写入数据**——例如求解
+solver 时，求解阶段的 task 不得向准备矩阵阶段的 db 写入。task 处理数据
+并向一个 db 写入结果，则该 task 属于这个 db 的创建流程。
+
+### 15.2 规则（强制）
+
+**每个 task 函数的第一个参数必须是该 task 所属的 db 对象。**
+
+```python
+@as_task()
+def my_task(db, key, value):        # 规范：第一个参数 = 归属 db
+    db.write_object(key, value)
+```
+
+- 归属自动推导：`MasterAgent::submit_task` 从序列化参数中取第一个 db 对象
+  记为 `owner_db_path`（`TaskSubmissionSpec` 字段，随 FailedTaskRecord/
+  restart 持久化）。所有提交路径（master 本地 / worker 转发 / restart 重投）
+  统一经此推导；
+- 第一个参数不是 db 而后续参数有 db 时，master 打 WARN 规范偏移（不阻断，
+  归属仍正确推导为第一个 db 参数）：
+
+```python
+@as_task()
+def bad_task(key, db):              # 反例：归属 db 不在首位 → WARN
+    db.write_object(key, 1)
+```
+
+### 15.3 例外：显式 owner 覆盖
+
+极少数 task 需要归属到非第一个 db 参数的 db（如读上游 db、写本 db，而
+上游 db 恰在首位）时，用 `owner` 显式指定（callable，返回归属 db 对象；
+返回非 db 对象直接 raise）：
+
+```python
+# 跨阶段 task：第一参数是上游 db，归属显式指向本流程 db
+@as_task(inputs=lambda db_up, db, key: [db_up.get_full_name("dep")],
+         owner=lambda db_up, db, key: db)
+def solve_like_task(db_up, db, key):
+    db.write_object(key, db_up.read_object("dep"))
+```
+
+### 15.4 工程语义
+
+- **失败记录按归属落盘**：`{owner_db_path}/failed_tasks.bin`（db 目录必然
+  存在；project 场景 db 目录在 project 下，断点 bin 天然随 db 迁移/自包含，
+  且天然支持多 project）。无归属 task（参数无 db）fallback `{log_dir}/
+  failed_tasks.bin`；
+- **断点恢复**：`fly.restart_failed_tasks(dbs)` 传 db 对象 / db_path /
+  list（混合亦可），自动在各 db 目录搜索 bin 重投（无 bin 的 db 静默跳过，
+  返回重投总数）；无归属 fallback bin 传 log_dir 目录字符串即可找回；
+- **归属查询**：task metadata 的 `owner_db_path` 属性（Python 侧
+  `EXTaskTaskMetadata.owner_db_path`）。
+
+### 15.5 迁移与兼容
+
+- 旧的 `set_failed_tasks_file` 路径覆盖机制已废弃（owner 机制天然覆盖其
+  project 自包含用途且支持多 project）；
+- `restart_failed_tasks` 旧的单 bin 文件路径直传形态已废弃，统一传 db；
+- failed_tasks.bin 为 bitsery 非版本化格式——旧格式 bin 新版本不读
+  （解码失败静默丢弃该条记录；早期无存量数据，不做迁移）。

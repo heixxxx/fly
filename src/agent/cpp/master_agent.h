@@ -99,7 +99,8 @@ public:
                     float attribute_timeout = -1.0f,
                     const CMString& write_context_hash = "",
                     const CMVector<CMString>& vars = {},
-                    int priority = 10);
+                    int priority = 10,
+                    const CMString& owner_db_path = "");
 
     CMVector<uint64_t> get_pending_tasks() const;
     CMVector<uint64_t> get_running_tasks() const;
@@ -109,10 +110,10 @@ public:
 
     CMVector<uint64_t> get_idle_workers() const;
 
-    void restart_failed_tasks(const CMString& file_path);
-    // project 模式覆盖 failed_tasks 持久化路径（默认 {log_dir}/failed_tasks.bin）。
-    // project 自包含：断点 bin 随 project 目录走（迁移/恢复不依赖旧 log_dir）。
-    void set_failed_tasks_file(const CMString& path);
+    // 断点重投：读单个 failed_tasks.bin（读取+删除原子，重投走 submit_task，
+    // 归属随 submission_ 还原）。返回重启的 task 条数。db list 形态的自动搜索
+    // 由 Python 层归一化后逐个调用（fly.restart_failed_tasks / Project.resume）。
+    size_t restart_failed_tasks(const CMString& file_path);
 
     void broadcast_object_removed(const CMString& db_path, const CMString& object_name);
 
@@ -334,9 +335,9 @@ public:
     void check_grace_deadlines_for_testing(int64_t now) {
         check_grace_deadlines(now);
     }
-    // failed_tasks 路径覆盖（project 模式）确定性测试：路径解析 + persist 落点。
-    CMString failed_tasks_file_path_for_testing() const {
-        return get_failed_tasks_file_path();
+    // failed_tasks 路径解析确定性测试：按 owner 解析路径 + persist 落点。
+    CMString failed_tasks_file_path_for_testing(const CMString& owner_db_path) const {
+        return get_failed_tasks_file_path(owner_db_path);
     }
     void persist_failed_task_for_testing(const FailedTaskRecord& record) {
         persist_failed_task(record);
@@ -540,8 +541,6 @@ private:
     mutable std::shared_mutex db_instances_mutex_;
     // failed_tasks.bin append/读改写互斥（跨线程调用方见 persist_failed_task 注释）。
     std::mutex failed_tasks_file_mutex_;
-    // project 模式的 failed_tasks 路径覆盖（空 = 未设置，用 {log_dir} 默认）。
-    CMString failed_tasks_file_override_;
     CMUnorderedSet<CMString> frozen_dbs_;
     // 非 stream 模式 pending frozen：db_path → task_id（待 task 完成确认）。
     // task 内 freeze 时登记 pending（拒其他 task 写，但不广播）；task 成功迁移到
@@ -718,7 +717,9 @@ private:
 
     void persist_failed_task(const FailedTaskRecord& record);
     void remove_persisted_task(uint64_t task_id);
-    CMString get_failed_tasks_file_path() const;
+    // 失败记录落点：归属 db 非空 → {owner_db_path}/failed_tasks.bin（task 归属
+    // 规则，元信息随 db 目录自包含）；无归属 task → {log_dir}/failed_tasks.bin。
+    CMString get_failed_tasks_file_path(const CMString& owner_db_path) const;
 
     void on_master_freeze(const CMString& db_path);
     void on_master_remove(const CMString& db_path, const CMString& object_name);  // master 进程内 remove（清 provenance + 通知 worker）

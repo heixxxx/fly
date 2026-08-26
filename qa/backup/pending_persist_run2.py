@@ -8,7 +8,8 @@ import time
 import os
 import shutil
 
-LOG_DIR = os.environ.get("FLY_RUN1_LOG_DIR") or "/tmp/fly_e2e_pending_persist_logs"
+# run1 的失败记录按归属 db 落盘（Task db 归属规则）：{DB_PATH}/failed_tasks.bin。
+DB_PATH = os.environ.get("FLY_DB_PATH") or os.environ.get("FLY_RUN1_LOG_DIR", "")
 
 
 from fly import get_config
@@ -26,8 +27,6 @@ def wait_for(condition, timeout=20.0, interval=0.5):
 def run2():
     get_config().set_int("fail_unscheduleable_tasks", 1)
 
-    failed_file = os.path.join(LOG_DIR, "failed_tasks.bin")
-
     from fly.runtime import get_agent
     master = get_agent()
 
@@ -36,11 +35,10 @@ def run2():
     assert master.wait_for_workers(1), \
         "Worker should connect"
 
-    # Restart failed tasks from the persisted file
-    assert os.path.isfile(failed_file), \
-        f"failed_tasks.bin should exist at {failed_file}"
-
-    master.restart_failed_tasks(failed_file)
+    # Restart failed tasks: 自动搜索归属 db 目录下的 bin
+    restarted = master.restart_failed_tasks(DB_PATH)
+    assert restarted >= 2, \
+        f"expected >= 2 restarted tasks, got {restarted}"
     INFO("  Run2: restart_failed_tasks called")
 
     # Wait for gpu task to complete (gpu worker now available)

@@ -280,13 +280,22 @@ def expect_workers(worker_ids):
     get_agent().expect_workers(worker_ids)
 
 
-def restart_failed_tasks(path: str):
-    """Re-submit previously failed tasks from a persisted file.
+def restart_failed_tasks(dbs) -> int:
+    """Re-submit previously failed tasks, discovered by db ownership.
+
+    每个 task 的失败记录按其归属 db 落盘（{owner_db_path}/failed_tasks.bin，
+    见 DEVELOPMENT_GUIDELINES "Task db 归属规则"节）。本函数在给定 db 的目录
+    下自动搜索 failed_tasks.bin 并重投（读即删；重投后再失败会重新落盘）。
 
     Args:
-        path: Path to the persisted task failure file.
+        dbs: db 对象 / db_path 字符串 / 二者混合的 list（单元素亦可）。
+            无归属 task 的 fallback bin 在 {log_dir} 下——传 log_dir 目录
+            路径字符串即可找回。
+
+    Returns:
+        重投的 task 总数。
     """
-    get_agent().restart_failed_tasks(path)
+    return get_agent().restart_failed_tasks(dbs)
 
 
 def get_task_error(task_id: int) -> str:

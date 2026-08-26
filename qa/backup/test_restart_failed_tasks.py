@@ -57,8 +57,8 @@ def test_restart_failed_tasks_lifecycle():
         "Worker 1 should connect"
 
     db = open_db(DB_PATH)
-    log_dir = get_config().get_str("log_dir")
-    failed_file = os.path.join(log_dir, "failed_tasks.bin")
+    # 失败记录按归属 db 落盘（Task db 归属规则）：task 带 db 参数 → {db_path}/failed_tasks.bin
+    failed_file = os.path.join(DB_PATH, "failed_tasks.bin")
 
     # ── Phase 1: Submit tasks, expect partial failure ──
 
@@ -82,7 +82,7 @@ def test_restart_failed_tasks_lifecycle():
     # ── Phase 2: Fix data dependency, restart ──
 
     db.write_object("phantom", "data")
-    master.restart_failed_tasks(failed_file)
+    master.restart_failed_tasks(db)
 
     assert wait_for(lambda: len(master.completed_tasks) >= 2), \
         f"Phase 2: dep task should complete, got {len(master.completed_tasks)} completed"
@@ -99,7 +99,7 @@ def test_restart_failed_tasks_lifecycle():
     assert "capabilities" in gpu_error, \
         f"Phase 2: expected capability error, got: {gpu_error}"
 
-    failed_file_2 = os.path.join(log_dir, "failed_tasks.bin")
+    failed_file_2 = os.path.join(DB_PATH, "failed_tasks.bin")
     assert os.path.isfile(failed_file_2), \
         "Phase 2: failed_tasks.bin should still exist (gpu re-persisted)"
     INFO(f"  Phase 2 OK: {p2_completed} completed, gpu re-failed: {gpu_error}")
@@ -110,7 +110,7 @@ def test_restart_failed_tasks_lifecycle():
     assert master.wait_for_workers(2), \
         "Phase 3: gpu worker should connect"
 
-    master.restart_failed_tasks(failed_file_2)
+    master.restart_failed_tasks(db)
 
     assert wait_for(lambda: len(master.completed_tasks) >= 3), \
         f"Phase 3: all tasks should complete, got {len(master.completed_tasks)}"

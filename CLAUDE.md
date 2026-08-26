@@ -323,6 +323,13 @@ from fly import get_agent  # 进阶：直接访问 Agent 单例
 - **`fly.runtime.reset()`**: 进程内 Agent 重置仅用于测试。用户场景下 Agent 生命周期由 fly 二进制管理，不允许手动 reset
 - **`Master` / `Worker` 直接构造**: 用户通过 `launch_workers()` 和 `get_agent()` 间接使用，不应直接 `Master()` 构造
 
+### Task db 归属（强制规范）
+
+- **每个 task 函数的第一个参数必须是该 task 所属的 db 对象**——业务上不允许不同启动流程向同一 db 写入（如求解阶段 task 不得向准备矩阵阶段的 db 写入）
+- 归属自动推导（`TaskSubmissionSpec.owner_db_path_`，master 从第一个 db 参数解析）；第一个 db 不在首位 → master WARN 规范偏移；例外用 `@as_task(owner=callable)` 显式覆盖
+- 失败记录按归属落盘 `{owner_db_path}/failed_tasks.bin`；`fly.restart_failed_tasks(dbs)` 传 db/db_path/list 自动搜索重投（无归属 task fallback `{log_dir}`）
+- 详见 `docs/DEVELOPMENT_GUIDELINES.md` §15「Task db 归属规则」
+
 ### 数据命名与依赖
 
 - Task inputs 必须使用 `db.get_obj_name("name")` 获取全名（`db_id:object_name`），短名无法匹配 DataService 索引
