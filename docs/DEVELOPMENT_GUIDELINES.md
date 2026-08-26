@@ -824,6 +824,7 @@ workers_mutex_ 下的 send 同样禁止（reactor send 非阻塞，但含 encode
 - 2026-08-14: 新增 Section 13 并发与锁规范（封装优先级 / notify 持锁铁律 / 锁内禁 IO / 并发测试写法），源于 on_var_ack lost wakeup 修复与 PendingRpcMap/ConcurrentMap 收敛改造
 - 2026-05-15: 修正序列化宏签名：`FLY_FIELD(field)` 替代 `FLY_FIELD(s, o, field)`，移除重复 Section 4.2.2
 - 2026-08-26: 新增 Section 15 Task db 归属规则（task 第一参数=归属 db 强制规范 + owner 显式覆盖 + failed_tasks.bin 按归属落盘 + restart_failed_tasks db list 语义），源于 task 归属追踪机制落地
+- 2026-08-26: Section 15 增补——_DB_META/_DB_CHAIN 合并为 JSON version 2（data_path 元信息 + __fly_db2__ 编码 + WorkerInfo 队列 flush）；restart 按 uid 解析路径快照（文件级原子，遗留缺口关闭）
 
 ## 14. 数据规模相关等待禁设超时
 
@@ -899,13 +900,24 @@ def solve_like_task(db_up, db, key):
 - **位置即归属（location-carried ownership）**：bin 所在目录是归属的运行时
   权威——`restart_failed_tasks` 读取记录时把 owner 归一化为 bin 父目录；
   记录内的 `owner_db_path` 只是提交时快照（仅供排查），db/project 目录迁移
-  后读取天然自愈（重投的 task 再失败落当前 bin 位置，不在旧路径重建幽灵
-  目录）；
+  后读取天然自愈；
 - **断点恢复**：`fly.restart_failed_tasks(dbs)` 传 db 对象 / db_path /
   list（混合亦可），自动在各 db 目录搜索 bin 重投（无 bin 的 db 静默跳过，
   返回重投总数）；无归属 fallback bin 传 log_dir 目录字符串即可找回；
+- **restart 前置条件与 uid 解析（2026-08-26）**：重启 failed task 前相关
+  db 须已 load（`Project.resume` 的 load_project 前置天然满足；入参 db
+  路径形态未注册但目录存在时自动 load_db 兜底）。bin 记录内的 db 引用是
+  提交时路径快照，restart 按运行时 uid 索引（uid 迁移/merge 不变，跨路径
+  稳定键）命中当前路径，args/inputs/vars/owner 一并自愈；**文件级原子**：
+  bin 内任一 db 引用无法解析（uid 未 load / 旧格式无 uid）→ 整个 bin 不
+  重投（ERR 提示缺失 uid 与期望路径，bin 完整保留，load 后重试闭环）。
+  `write_context_hash` 保持记录原值（provenance 仅相等比较，重算即被拒）；
 - **归属查询**：task metadata 的 `owner_db_path` 属性（Python 侧
-  `EXTaskTaskMetadata.owner_db_path`）。
+  `EXTaskTaskMetadata.owner_db_path`）；
+- **data_path 元信息（2026-08-26）**：data_path 是 db 级属性（对所有
+  worker 相同），权威存 `_DB_META`（JSON version 2），task 参数编码为
+  `__fly_db2__:{uid}:{db_path}` 不再携带 data 段——worker 端加载 db 时从
+  meta 获取（取 role 的同一次读盘，零新增 IO）。
 
 ### 15.5 迁移与兼容
 
@@ -914,8 +926,7 @@ def solve_like_task(db_up, db, key):
 - `restart_failed_tasks` 旧的单 bin 文件路径直传形态已废弃，统一传 db；
 - failed_tasks.bin 为 bitsery 非版本化格式——旧格式 bin 新版本不读
   （解码失败静默丢弃该条记录；早期无存量数据，不做迁移）；
-- **已知遗留缺口**（owner 机制之前即存在）：bin 记录的 `args_`（db 引用
-  编码）与 `inputs_`（对象全名前缀）同样是提交时路径快照，**目录迁移后**
-  resume 重投的 task 会因旧路径依赖错位而挂起或失败（owner 已按位置归一化
-  自愈，args/inputs 的 uid remap 校正待后续专项）；迁移后恢复的正确姿势是
-  flow 重放（同 `write_context_hash` 幂等重写）。
+- **路径快照失真已修复（2026-08-26，uid 解析）**：bin 记录的 `args_`/
+  `inputs_`/`vars_` 路径快照在目录迁移后由 restart 按运行时 uid 索引统一
+  解析替换（见 §15.4）；无 uid 的旧格式（旧 `__fly_db__` 3 段）记录不可
+  迁移恢复——restart 文件级拒绝，用 flow 重放兜底。

@@ -5,6 +5,18 @@
 > 关联：`docs/project-design.md`（Project 容器）、`docs/db-merge-design.md`（merge 机制）、`docs/adr/0002-deprecate-db-id.md`（uid 历史背景）
 > 前置依赖：本方案**取代** ADR 0002 的 `_MIGRATED_TO` 源路径遗留机制
 
+> **⚠️ 2026-08-26 重大变更：文件合并。** `_DB_CHAIN`（JSON）与 `_DB_META`
+> （bitsery header + WorkerInfo append）合并为单一 `_DB_META`（JSON
+> version 2，见 §3）：uid/role/logical_name/prev/next/absorbed_from 全部
+> 顶层字段原样保留（本文其余章节的机制描述不变），新增 `data_path`（db 级
+> 属性，task 参数编码不再携带——`__fly_db2__:{uid}:{db_path}`）与
+> `workers[]`（写者登记）。读写权威统一 Python 编排层
+> （`storage/py/db_meta.py` 的 `DbMetaFile`，flock + tmp/replace）；C++ 写
+> 路径退役（WorkerInfo 登记经队列 + 消费点 flush 上移 Python——reactor
+> 线程直接回调 Python 会与主线程持 GIL 的 wait 类 API 互等死锁）。锁文件
+> `_DB_CHAIN.lock` → `_DB_META.lock`。旧 bitsery `_DB_META` / `_DB_CHAIN`
+> 不迁移不兼容（早期无存量）。
+
 ---
 
 ## 0. 背景与动机
@@ -95,19 +107,21 @@ uid **仅用于 db chain 与迁移追踪**，不扩展到对象全名：
 
 ---
 
-## 3. `_DB_CHAIN` 文件格式
+## 3. `_DB_META` 文件格式（2026-08-26 合并版）
 
-位置：`{db_path}/_DB_CHAIN`，与 `_DB_META`/`_FROZEN`/`_VARS` 同级。
+位置：`{db_path}/_DB_META`（由原 `_DB_CHAIN` + bitsery `_DB_META` 合并而来），
+与 `_FROZEN`/`_VARS` 同级。
 
-格式：**纯 JSON**（人类可读、Python 原生）。
+格式：**纯 JSON**（人类可读、Python 原生；读写权威在 `DbMetaFile`）。
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "created_at": 1723084800.123456789,
+  "data_path": "",
   "uid": "a3f8c2e109d4",
   "role": "solve",
   "logical_name": "solve",
-  "created_at": 1723084800.123456789,
   "prev": [
     {
       "uid": "7e1b09c4aa30",
@@ -124,7 +138,16 @@ uid **仅用于 db chain 与迁移追踪**，不扩展到对象全名：
       "db_path": "/abs/path/to/project/analysis"
     }
   ],
-  "absorbed_from": []
+  "absorbed_from": [],
+  "workers": [
+    {
+      "worker_id": 1,
+      "writer_id": "d5681a56",
+      "hostname": "node-a",
+      "ip_address": "10.0.0.1",
+      "launch_command": ""
+    }
+  ]
 }
 ```
 

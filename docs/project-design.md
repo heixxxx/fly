@@ -41,13 +41,17 @@ Project 自身只存**必要元信息**（下属 db 的路径列表 + 状态）�
 my_project/                              ← Project 主目录（project base_path）
 ├── _PROJECT_META.json                   ← Project 元信息（纯 JSON，见 §1.2）
 ├── matrix/                              ← build_matrix(name="matrix") 产出
-│   ├── _DB_META  _FROZEN  _VARS  *.idx       ← 标准 db（复用 open_db）
-│   └── data_*.dat                             ← 矩阵数据（write_object pickle）
+│   ├── _DB_META  _DB_META.lock  _FROZEN  _VARS  *.idx
+│   │       ← _DB_META 为 JSON version 2 统一元信息（2026-08-26 合并
+│   │         _DB_CHAIN + bitsery _DB_META：uid/role/prev/next/data_path/
+│   │         workers，见 docs/db-chain-design.md §3）
+│   ├── failed_tasks.bin                 ← 归属本 db 的失败 task 断点记录
+│   └── data_*.dat                       ← 矩阵数据（write_object pickle）
 ├── matrix.1/                            ← 第二次 build_matrix("matrix")（WARN + 自动递增）
 ├── solve/                               ← solve(name="solve") 产出
-│   ├── _DB_META  ... *.idx
-│   ├── data_*.dat                             ← 求解过程 + 结果
-│   └── matrix.npz                             ← API2 从 matrix_db 还原的工作 npz
+│   ├── _DB_META  ... *.idx  failed_tasks.bin
+│   ├── data_*.dat                       ← 求解过程 + 结果
+│   └── matrix.npz                       ← API2 从 matrix_db 还原的工作 npz
 └── ...
 ```
 
@@ -403,9 +407,10 @@ project（无归属 task fallback `{log_dir}/failed_tasks.bin`）。
 
 **位置即归属**：bin 所在目录是归属的运行时权威，`restart_failed_tasks`
 读取时把记录内 owner（提交时路径快照）归一化为 bin 父目录——db/project
-目录迁移后读取天然自愈。已知遗留缺口：记录的 `args_`/`inputs_` 路径快照
-在迁移后重投会依赖错位（owner 机制之前即存在，uid remap 校正待专项），
-迁移后恢复的正确姿势是 flow 重放（幂等重写）。
+目录迁移后读取天然自愈。**uid 解析（2026-08-26）**：记录的 `args_`/
+`inputs_`/`vars_` 路径快照由 restart 按运行时 uid 索引统一解析替换
+（uid 迁移/merge 不变；args 重编码 `__fly_db2__`、inputs/vars 前缀替换），
+文件级原子——任一 db 引用无法解析则整 bin 保留待重试。
 
 旧的 `set_failed_tasks_file` 路径覆盖机制已废弃。bitsery 非版本化——旧
 格式 bin 新版本不读（解码失败静默丢弃；早期无存量不做迁移）。
