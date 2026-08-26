@@ -56,10 +56,8 @@ Database::Database(const CMString& db_path, const CMString& data_path, uint64_t 
         ensure_directory_exists(data_path_);
     }
 
-    // 仅当 _DB_META 不存在时才写（新建 db）；load/merge 场景 _DB_META 已存在则跳过。
-    if (!fs::exists(db_path_ + "/_DB_META")) {
-        write_db_meta_header();
-    }
+    // _DB_META（JSON）的初写由 Python 编排层负责（open_db → Database.
+    // _init_chain → DbMetaFile.write_new）；C++ 不写元信息文件。
 
     CMString frozen_marker = db_path_ + "/_FROZEN";
     if (fs::exists(frozen_marker)) {
@@ -617,66 +615,6 @@ void Database::abort_task_writes(const CMVector<CMString>& dirty_full_names) {
          get_db_path());
 }
 
-DbMeta Database::load_meta() const {
-    return load_meta_from_path(db_path_);
-}
-
-DbMeta Database::load_meta_from_path(const CMString& db_path) {
-    CMString meta_path = db_path + "/_DB_META";
-    std::ifstream ifs(meta_path, std::ios::binary);
-    if (!ifs.is_open()) {
-        ERR("Cannot open meta file: {}", meta_path);
-        return {};
-    }
-
-    int64_t header_size = 0;
-    ifs.read(reinterpret_cast<char*>(&header_size), sizeof(header_size));
-    if (!ifs || header_size <= 0) {
-        ERR("Invalid _DB_META header size");
-        return {};
-    }
-    CMString header_data(header_size, '\0');
-    ifs.read(header_data.data(), header_size);
-    if (!ifs) {
-        ERR("Failed to read _DB_META header");
-        return {};
-    }
-
-    // _DB_META header 损坏（FLY_DECODE 抛）与 size 防御同级：按无 meta 处理，
-    // 不让异常向上穿透（同下方 WorkerInfo record 的局部 catch 模式）。
-    DbMetaHeader header;
-    try {
-        FLY_DECODE(header_data, DbMetaHeader, header);
-    } catch (const std::exception& e) {
-        ERR("Corrupted _DB_META header: {}", e.what());
-        return {};
-    }
-
-    CMVector<WorkerInfo> workers;
-    while (true) {
-        int64_t record_size = 0;
-        ifs.read(reinterpret_cast<char*>(&record_size), sizeof(record_size));
-        if (!ifs || record_size <= 0) break;
-
-        CMString record_data(record_size, '\0');
-        ifs.read(record_data.data(), record_size);
-        if (!ifs) break;
-
-        WorkerInfo info;
-        try {
-            FLY_DECODE(record_data, WorkerInfo, info);
-            workers.push_back(std::move(info));
-        } catch (...) {
-            break;
-        }
-    }
-
-    DbMeta meta;
-    meta.created_at_ = header.created_at_;
-    meta.workers_ = std::move(workers);
-    return meta;
-}
-
 CMString Database::get_db_path() const {
     std::lock_guard<std::mutex> lk(state_mutex_);
     return db_path_;
@@ -741,87 +679,6 @@ void Database::create_frozen_marker() {
     CMString frozen_path = db_path_ + "/_FROZEN";
     std::ofstream ofs(frozen_path);
     ofs.close();
-}
-
-void Database::write_db_meta_header() {
-    CMString meta_path = db_path_ + "/_DB_META";
-    if (fs::exists(meta_path)) return;  // don't overwrite
-
-    auto now = std::chrono::system_clock::now();
-    int64_t created_at = std::chrono::duration_cast<std::chrono::seconds>(
-        now.time_since_epoch()).count();
-
-    DbMetaHeader header{created_at};
-    CMString encoded;
-    FLY_ENCODE(header, encoded);
-
-    std::ofstream ofs(meta_path, std::ios::binary);
-    if (!ofs.is_open()) {
-        ERR("Failed to open _DB_META for writing: {}", meta_path);
-        return;
-    }
-    int64_t size = static_cast<int64_t>(encoded.size());
-    ofs.write(reinterpret_cast<const char*>(&size), sizeof(size));
-    ofs.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
-    ofs.close();
-
-    DBG("Wrote _DB_META header: db_path={}", db_path_);
-}
-
-void Database::append_worker_info_to_meta(const WorkerInfo& info) {
-    CMString meta_path;
-    {
-        std::lock_guard<std::mutex> lk(state_mutex_);
-        meta_path = db_path_ + "/_DB_META";
-    }
-    // 文件 IO 在 state_mutex_ 外（append 副作用由 recorded_workers_ 去重保证恰好一次）。
-    if (!fs::exists(meta_path)) {
-        ERR("_DB_META file not found, cannot append worker info: {}", meta_path);
-        return;
-    }
-
-    CMString encoded;
-    FLY_ENCODE(info, encoded);
-
-    std::ofstream ofs(meta_path, std::ios::binary | std::ios::app);
-    if (!ofs.is_open()) {
-        ERR("Failed to open _DB_META for appending: {}", meta_path);
-        return;
-    }
-    int64_t size = static_cast<int64_t>(encoded.size());
-    ofs.write(reinterpret_cast<const char*>(&size), sizeof(size));
-    ofs.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
-    ofs.close();
-
-    DBG("Appended WorkerInfo to _DB_META: worker_id={}, hostname={}",
-        info.worker_id_, info.hostname_);
-}
-
-size_t Database::worker_info_count() const {
-    // 读 _DB_META 文件，统计已登记的 WorkerInfo 记录数（跳过 header）。
-    CMString meta_path = db_path_ + "/_DB_META";
-    if (!fs::exists(meta_path)) return 0;
-
-    std::ifstream ifs(meta_path, std::ios::binary);
-    if (!ifs.is_open()) return 0;
-
-    int64_t header_size = 0;
-    ifs.read(reinterpret_cast<char*>(&header_size), sizeof(header_size));
-    if (!ifs || header_size <= 0) return 0;
-    ifs.ignore(header_size);   // 跳过 header
-    if (!ifs) return 0;
-
-    size_t count = 0;
-    while (true) {
-        int64_t record_size = 0;
-        ifs.read(reinterpret_cast<char*>(&record_size), sizeof(record_size));
-        if (!ifs || record_size <= 0) break;
-        CMString record_data(record_size, '\0');
-        ifs.read(record_data.data(), record_size);
-        if (!ifs) break;
-        count++;
-    }
-    return count;
 }
 
 void Database::ensure_directory_exists(const CMString& path) {

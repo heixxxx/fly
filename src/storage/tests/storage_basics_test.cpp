@@ -149,26 +149,6 @@ TEST(DbMetaTest, SerializeDeserialize) {
     EXPECT_EQ(decoded.workers_[1].worker_id_, 2);
 }
 
-// --- DbMetaHeader tests ---
-
-TEST(DbMetaHeaderTest, DefaultValues) {
-    DbMetaHeader header;
-    EXPECT_EQ(header.created_at_, 0);
-}
-
-TEST(DbMetaHeaderTest, SerializeDeserialize) {
-    DbMetaHeader header{1715500000};
-
-    CMString bytes;
-    FLY_ENCODE(header, bytes);
-    EXPECT_GT(bytes.size(), 0);
-
-    DbMetaHeader decoded;
-    FLY_DECODE(bytes, DbMetaHeader, decoded);
-
-    EXPECT_EQ(decoded.created_at_, 1715500000);
-}
-
 // --- Object interface tests ---
 
 struct TestData {

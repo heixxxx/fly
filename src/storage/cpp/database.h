@@ -92,10 +92,9 @@ public:
     // freeze 确认后调用（temp=中间态，阶段完成即作废）。幂等（文件不存在 no-op）。
     void cleanup_temp_files();
 
-    DbMeta load_meta() const;
-    // 静态读 _DB_META，不构造 Database 实例（不触发 DataService register_database，
-    // 避免 merge_db 在已 open_db 的进程内重复注册同 db_path）。
-    static DbMeta load_meta_from_path(const CMString& db_path);
+    // _DB_META（JSON）读写已上移 Python 编排层（storage/py/db_meta.py 的
+    // DbMetaFile）：初写在 open_db → _init_chain，读在 load_db/merge_db/
+    // worker deserialize_args，WorkerInfo 追加经 master 回调。C++ 不再读写。
 
     CMString get_db_path() const;
     CMString get_data_path() const;
@@ -106,12 +105,6 @@ public:
     CMString get_writer_id() const;
 
     void reset();
-
-    void write_db_meta_header();
-    void append_worker_info_to_meta(const WorkerInfo& info);
-
-    // 读取已登记的 worker 数量（用于验证 record_worker_info 是否生效）。
-    size_t worker_info_count() const;
 
     // ---- Var service: lightweight small-object KV managed by this Database ----
     // value is an already-serialized FlyBufferPtr (pickle for Python objects,

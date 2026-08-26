@@ -22,7 +22,7 @@ MERGE_TARGET = os.path.join(DB_BASE, "matrix_merged")
 
 from storage import Database
 
-from storage import DbChainFile
+from storage import DbMetaFile
 
 
 class MatrixDb(Database):
@@ -89,17 +89,17 @@ assert found_after.get_db_path() == MERGE_TARGET, \
 print(f"  post-merge find_db(matrix): uid={found_after.get_uid()}, "
       f"path={found_after.get_db_path()} ✓")
 
-# ── Step 6: 验证 solve._DB_CHAIN.prev[].db_path 已更新 ──
-solve_chain = DbChainFile(SOLVE_PATH).read()
+# ── Step 6: 验证 solve._DB_META.prev[].db_path 已更新 ──
+solve_chain = DbMetaFile(SOLVE_PATH).read()
 assert solve_chain is not None
 prev_edge = solve_chain["prev"][0]
 assert prev_edge["uid"] == matrix_uid, "prev uid should match"
 assert prev_edge["db_path"] == MERGE_TARGET, \
     f"prev db_path should be updated to target, got {prev_edge['db_path']}"
-print(f"  solve._DB_CHAIN.prev updated to {prev_edge['db_path']} ✓")
+print(f"  solve._DB_META.prev updated to {prev_edge['db_path']} ✓")
 
-# ── Step 7: 验证 merged target._DB_CHAIN 有 absorbed_from ──
-target_chain = DbChainFile(MERGE_TARGET).read()
+# ── Step 7: 验证 merged target._DB_META 有 absorbed_from ──
+target_chain = DbMetaFile(MERGE_TARGET).read()
 assert target_chain is not None
 assert target_chain["uid"] == matrix_uid, "target should inherit source uid"
 assert MATRIX_PATH in target_chain.get("absorbed_from", []), \

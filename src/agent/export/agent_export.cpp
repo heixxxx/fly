@@ -1,5 +1,6 @@
 #include <export/cpp/export_macros.h>
 #include <Python.h>
+#include <nanobind/stl/function.h>
 #include <agent/cpp/task_executor.h>
 #include <agent/cpp/master_agent.h>
 #include <agent/cpp/graceful_shutdown.h>
@@ -210,6 +211,16 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     })
     FLY_EXPORT_METHOD("setup_write_context", [](fly::MasterAgent& self) {
         self.setup_write_context();
+    })
+    FLY_EXPORT_METHOD("set_record_worker_info_func",
+        [](fly::MasterAgent& self,
+           const std::function<void(const fly::CMString&, uint64_t, const fly::CMString&,
+                                    const fly::CMString&, const fly::CMString&,
+                                    const fly::CMString&)>& func) {
+            self.set_record_worker_info_func(func);
+        })
+    FLY_EXPORT_METHOD("flush_worker_infos", [](fly::MasterAgent& self) {
+        self.flush_worker_infos();
     })
     FLY_EXPORT_METHOD("restore_master_idx", [](fly::MasterAgent& self,
                                                   const fly::CMString& db_path,

@@ -6,5 +6,5 @@ from _fly_storage import (
 )
 from .database import *
 from .read_cache import *
-from .db_chain import *
+from .db_meta import *
 from .chain_registry import *

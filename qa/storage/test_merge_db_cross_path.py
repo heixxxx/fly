@@ -4,7 +4,7 @@
   1. 在源 path 建 db，写数据，freeze
   2. 跨 path merge（db_path=新路径）—— **源 path 彻底删除**，不写 _MIGRATED_TO
   3. merge 产物句柄能读全部数据
-  4. _DB_CHAIN 在 target 继承 source 身份（uid 不变）
+  4. _DB_META 在 target 继承 source 身份（uid 不变）
   5. 源 path 不再存在（无遗留）
 """
 from _fly_log import INFO
@@ -63,7 +63,7 @@ assert not os.path.isdir(DB_PATH), \
     f"source path should be deleted after merge (db chain mechanism), but {DB_PATH} still exists"
 INFO("[CROSS-PATH] source path deleted (no _MIGRATED_TO residue)")
 
-# ── Phase 3: 验证产物数据可读 + _DB_CHAIN 继承 ──
+# ── Phase 3: 验证产物数据可读 + _DB_META 继承 ──
 # 3a. 产物句柄（merge_db 返回值）能读 merge 数据
 assert merged_db.read_object("data/alpha") == 100, \
     "merged db should read cross-path merged data"
@@ -71,23 +71,20 @@ assert merged_db.read_object("data/beta") == 200, \
     "merged db should read cross-path merged data"
 INFO("[CROSS-PATH] merged db reads cross-path data correctly")
 
-# 3b. 验证 _DB_CHAIN 在 target 继承 source 身份（uid 存在、有 absorbed_from）
-target_chain_path = os.path.join(MERGE_BASE, "_DB_CHAIN")
+# 3b. 验证 _DB_META 在 target 继承 source 身份（uid 存在、有 absorbed_from）
+target_chain_path = os.path.join(MERGE_BASE, "_DB_META")
 assert os.path.isfile(target_chain_path), \
-    f"_DB_CHAIN should exist at target {target_chain_path}"
+    f"_DB_META should exist at target {target_chain_path}"
 
-try:
-    from storage.py.db_chain import DbChainFile
-except ImportError:
-    from db_chain import DbChainFile
+from storage import DbMetaFile
 
-target_cf = DbChainFile(MERGE_BASE)
+target_cf = DbMetaFile(MERGE_BASE)
 target_chain = target_cf.read()
-assert target_chain is not None, "target _DB_CHAIN should be readable"
+assert target_chain is not None, "target _DB_META should be readable"
 assert target_chain.get("uid") is not None, "target should inherit source uid"
 assert DB_PATH in target_chain.get("absorbed_from", []), \
     f"target absorbed_from should contain source path {DB_PATH}"
-INFO(f"[CROSS-PATH] target _DB_CHAIN: uid={target_chain['uid']}, "
+INFO(f"[CROSS-PATH] target _DB_META: uid={target_chain['uid']}, "
      f"absorbed_from={target_chain.get('absorbed_from')}")
 
 INFO("[PASS] test_merge_db_cross_path")

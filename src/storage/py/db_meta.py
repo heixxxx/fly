@@ -1,16 +1,28 @@
-"""DB Chain — db 之间的双向 DAG 机制。
+"""DB Meta — db 目录的统一元信息文件（JSON）。
 
-每个 db 目录下有一个 ``_DB_CHAIN`` JSON 文件，记录：
-- ``uid``：db 的逻辑身份（创建时生成，merge 后不变）。
-- ``role``：db 角色（由 _Database 子类的类属性决定）。
-- ``prev[]``：前驱 db 列表（DAG 前向边，权威边）。
-- ``next[]``：后继 db 列表（DAG 反向边，加速索引，可自愈重建）。
+每个 db 目录下有一个 ``_DB_META`` JSON 文件（version 2，由原 bitsery
+``_DB_META`` header + JSON ``_DB_CHAIN`` 合并而来），记录：
+- ``created_at``：建库时间（>0 是 load_db 的"db 有效"哨兵）。
+- ``data_path``：正式数据目录（空 = 数据在 db 目录内自包含）。db 级属性，
+  task 参数编码不再携带，加载 db 时从此处获取。
+- ``uid``：db 的逻辑身份（创建时生成，merge/迁移后不变——跨路径的稳定键）。
+- ``role`` / ``logical_name``：角色与逻辑名。
+- ``prev[]`` / ``next[]``：DAG 前向/反向边（edge = {uid, role, logical_name, db_path}）。
 - ``absorbed_from[]``：merge 吸收的源 path 列表（迁移历史）。
+- ``workers[]``：写者登记（worker_id/writer_id/hostname/ip_address/
+  launch_command），跨进程 load_db 按 host 派发 idx load 的依据。
 
-并发安全：readers-writer 文件锁（fcntl.flock）。
-- 读用 ``LOCK_SH``：多 run 并发读同一 db 不阻塞。
-- 写用 ``LOCK_EX``：建链/merge 更新邻居时独占，阻塞读者直到写完。
-- 写时整文件替换（``tmp`` + ``os.replace``），无读改写交叉。
+写者纪律（全部经本模块，不绕过）：
+- 生产写路径全部在 master 进程（open_db 初写 / merge / migrate / WorkerInfo
+  追加回调）；唯一例外是 worker 进程 task 内 open_db 建新库的一次性初写
+  （新库创建时无其他写者）。worker 端 deserialize_args 只读。
+- master 进程内存在真并发（C++ lane 线程的 WorkerInfo 追加 ↔ 主线程
+  merge/migrate 边改写），GIL 不保护跨文件 IO 的 read-modify-write——
+  由 ``_DB_META.lock`` 的 flock 串行化（flock 作用于 inode，同进程不同
+  fd 间同样互斥；阻塞时释放 GIL）。
+- 读用 ``LOCK_SH``（多读者并发），写用 ``LOCK_EX`` + tmp + os.replace
+  原子替换；flock 绑定 fd，进程 crash 自动释放。
+- 写路径之间不得嵌套（mutator 为纯函数，update 内不得再触发文件写）。
 
 详见 ``docs/db-chain-design.md``。
 """
@@ -21,12 +33,12 @@ import json
 import os
 import time
 
-from _fly_log import WARN, INFO, DBG
+from _fly_log import WARN
 
 
-_CHAIN_FILE = "_DB_CHAIN"
-_LOCK_FILE = "_DB_CHAIN.lock"
-_CHAIN_VERSION = 1
+_META_FILE = "_DB_META"
+_LOCK_FILE = "_DB_META.lock"
+_META_VERSION = 2
 
 
 # ── uid 生成 ──────────────────────────────────────────────────────
@@ -48,24 +60,24 @@ def generate_uid(db_path, role):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
 
 
-# ── _DB_CHAIN 文件读写（readers-writer 锁）────────────────────────
+# ── _DB_META 文件读写（readers-writer 锁）────────────────────────
 
-class DbChainFile:
-    """``_DB_CHAIN`` 文件的并发安全读写。
+class DbMetaFile:
+    """``_DB_META`` 文件的并发安全读写。
 
     读用 ``LOCK_SH``（共享，多 run 并发读不阻塞）；
-    写用 ``LOCK_EX``（排他，串行化所有写者）。
+    写用 ``LOCK_EX``（排他，串行化所有写者——含同进程不同线程）。
     写时整文件替换（tmp + os.replace），保证原子性。
     flock 绑定 fd，进程 crash 自动释放锁。
     """
 
     def __init__(self, db_path):
         self.db_path = db_path
-        self.path = os.path.join(db_path, _CHAIN_FILE)
+        self.path = os.path.join(db_path, _META_FILE)
         self.lock_path = os.path.join(db_path, _LOCK_FILE)
 
     def exists(self):
-        """_DB_CHAIN 文件是否存在。"""
+        """_DB_META 文件是否存在。"""
         return os.path.isfile(self.path)
 
     def read(self):
@@ -81,22 +93,22 @@ class DbChainFile:
                 fcntl.flock(f.fileno(), fcntl.LOCK_SH)
                 return json.load(f)
         except (json.JSONDecodeError, IOError, OSError) as e:
-            WARN(f"DbChainFile.read: corrupted chain at {self.path}: {e}")
+            WARN(f"DbMetaFile.read: corrupted meta at {self.path}: {e}")
             return None
 
     def update(self, mutator):
         """排写（LOCK_EX），read-modify-write 全程持锁。
 
         Args:
-            mutator: callable(dict) -> dict，接收当前 chain dict（或空 dict），
-                     返回修改后的新 dict。
+            mutator: callable(dict) -> dict，接收当前 meta dict（或空 dict），
+                     返回修改后的新 dict。必须是纯函数（不得再触发文件写，
+                     防嵌套 flock 自死锁）。
 
         Returns:
-            修改后的 chain dict。
+            修改后的 meta dict。
         """
-        # 确保目录存在
+        # 确保目录存在；确保 lock 文件存在（flock 需要一个可打开的 fd）
         os.makedirs(self.db_path, exist_ok=True)
-        # 确保 lock 文件存在（flock 需要一个可打开的 fd）
         if not os.path.isfile(self.lock_path):
             with open(self.lock_path, "w") as f:
                 f.write("")
@@ -111,7 +123,7 @@ class DbChainFile:
                     with open(self.path, "r", encoding="utf-8") as cf:
                         current = json.load(cf)
                 except (json.JSONDecodeError, IOError, OSError) as e:
-                    WARN(f"DbChainFile.update: corrupted chain at {self.path}, "
+                    WARN(f"DbMetaFile.update: corrupted meta at {self.path}, "
                          f"treating as empty: {e}")
             if current is None:
                 current = {}
@@ -127,32 +139,40 @@ class DbChainFile:
 
         return new_data
 
-    def write_new(self, chain_data):
-        """首次写入（新建 db 时），直接写不需 read-modify-write。
+    def write_new(self, meta_data):
+        """初写（新建 db / merge target 继承身份时）。
 
-        仍走 LOCK_EX 保证与并发写者互斥。
+        持 LOCK_EX 的读-改-写：文件已存在时保留 ``workers`` 键——merge
+        重写与并发 WorkerInfo 追加存在窄窗口，整文件覆盖会丢已追加的
+        登记条目。
         """
-        os.makedirs(self.db_path, exist_ok=True)
-        if not os.path.isfile(self.lock_path):
-            with open(self.lock_path, "w") as f:
-                f.write("")
-        with open(self.lock_path, "w") as lf:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-            tmp = self.path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(chain_data, f, indent=2, ensure_ascii=False)
-            os.replace(tmp, self.path)
+        def merge_existing(d):
+            merged = dict(meta_data)
+            if d.get("workers"):
+                merged["workers"] = d["workers"]
+            return merged
+
+        return self.update(merge_existing)
 
     def remove(self):
-        """删除 _DB_CHAIN 及 lock 文件（merge 彻底删源时调用）。"""
+        """删除 _DB_META 及 lock 文件。"""
         for p in (self.path, self.lock_path):
             try:
                 os.remove(p)
             except FileNotFoundError:
                 pass
 
+    def append_worker(self, worker_entry):
+        """workers[] 追加一条写者登记（WorkerInfo 回调的落点）。"""
+        def updater(d):
+            workers = d.setdefault("workers", [])
+            if worker_entry not in workers:
+                workers.append(worker_entry)
+            return d
+        return self.update(updater)
+
     def update_neighbor_path(self, uid, new_db_path, is_next):
-        """merge 时更新 _DB_CHAIN 中指向 uid 的 db_path（邻居更新用）。
+        """merge 时更新 _DB_META 中指向 uid 的 db_path（邻居更新用）。
 
         Args:
             uid: 被迁移 db 的 uid。
@@ -171,20 +191,22 @@ class DbChainFile:
         self.update(updater)
 
 
-# ── chain 数据构造 helpers ────────────────────────────────────────
+# ── meta 数据构造 helpers ─────────────────────────────────────────
 
-def make_chain(uid, role, logical_name, created_at=None, prev=None, next_=None,
-               absorbed_from=None):
-    """构造一个完整的 chain dict。"""
+def make_meta(uid, role, logical_name, created_at=None, prev=None, next_=None,
+              absorbed_from=None, data_path=""):
+    """构造一个完整的 _DB_META dict。"""
     return {
-        "version": _CHAIN_VERSION,
+        "version": _META_VERSION,
+        "created_at": created_at if created_at is not None else time.time(),
+        "data_path": data_path or "",
         "uid": uid,
         "role": role,
         "logical_name": logical_name,
-        "created_at": created_at if created_at is not None else time.time(),
         "prev": prev or [],
         "next": next_ or [],
         "absorbed_from": absorbed_from or [],
+        "workers": [],
     }
 
 

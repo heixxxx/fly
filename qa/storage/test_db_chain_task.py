@@ -58,14 +58,14 @@ def verify_chain_task(db):
 
     注意：worker 进程不知道 QA 测试里定义的 MatrixDb/SolveDb 子类
     （它们没被 import 到 worker），所以 type 可能是基类 Database。
-    但 uid/role 来自磁盘 _DB_CHAIN，find_db 也读磁盘，所以这些是正确的。
+    但 uid/role 来自磁盘 _DB_META，find_db 也读磁盘，所以这些是正确的。
     子类机制在 SolverProject 场景下有效（solver.dbs 模块被 worker import）。
     """
     results = {}
     results["uid"] = db.get_uid()
     results["role"] = db.get_role()
 
-    # find_db 在 worker 上也可用（读磁盘 _DB_CHAIN）
+    # find_db 在 worker 上也可用（读磁盘 _DB_META）
     found = db.find_db(role="matrix")
     results["found_matrix_uid"] = found.get_uid() if found else None
     results["found_matrix_role"] = found.get_role() if found else None

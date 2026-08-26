@@ -99,16 +99,16 @@ TEST_F(DatabaseTest, DoublePathReadPriority) {
     EXPECT_EQ(result, "local_data");
 }
 
-TEST_F(DatabaseTest, LoadMetaFromFrozenDatabase) {
+TEST_F(DatabaseTest, FreezeLeavesMetaUntouched) {
     CMString db_path = test_dir_ + "/meta_db";
     Database db(db_path);
 
     write_raw(db, "test/obj", "data", false);
     db.freeze();
 
-    DbMeta meta = db.load_meta();
-    EXPECT_GT(meta.created_at_, 0);  // _DB_META valid (db_path field removed)
-    EXPECT_GT(meta.created_at_, 0);
+    // _DB_META（JSON）读写已上移 Python 编排层（DbMetaFile）：C++ 构造与
+    // freeze 均不产生该文件。
+    EXPECT_FALSE(std::filesystem::exists(db_path + "/_DB_META"));
 }
 
 TEST_F(DatabaseTest, GetDbIdEqualsBasePath) {
@@ -377,57 +377,16 @@ TEST_F(DatabaseTest, RemoveObjectTrampolineRequestsRemove) {
     EXPECT_EQ(remove_requests[0], db.get_db_path() + ":notify/obj");
 }
 
-// ─── _DB_META incremental format tests ───
+// ─── _DB_META ownership: C++ write path retired ───
 
-TEST_F(DatabaseTest, DbMetaHeaderWrittenOnConstruction) {
+TEST_F(DatabaseTest, DbMetaNotWrittenByCpp) {
     CMString db_path = test_dir_ + "/meta_header";
     Database db(db_path);
 
-    // _DB_META file should exist after construction
+    // _DB_META（JSON）的初写在 Python 编排层（open_db → _init_chain →
+    // DbMetaFile.write_new）；C++ 构造不产生该文件（行为锁定）。
     std::filesystem::path meta_path(db_path + "/_DB_META");
-    EXPECT_TRUE(std::filesystem::exists(meta_path));
-
-    // File should be non-empty
-    auto file_size = std::filesystem::file_size(meta_path);
-    EXPECT_GT(file_size, 0u);
-
-    // Load meta and verify header fields
-    DbMeta meta = db.load_meta();
-    EXPECT_GT(meta.created_at_, 0);  // _DB_META valid (db_path field removed)
-}
-
-TEST_F(DatabaseTest, AppendWorkerInfoToMeta) {
-    CMString db_path = test_dir_ + "/meta_append";
-    Database db(db_path);
-
-    // Append first WorkerInfo
-    WorkerInfo info1;
-    info1.worker_id_ = 1;
-    info1.hostname_ = "host1";
-    info1.ip_address_ = "10.0.0.1";
-    info1.launch_command_ = "python worker.py";
-    db.append_worker_info_to_meta(info1);
-
-    DbMeta meta = db.load_meta();
-    ASSERT_EQ(meta.workers_.size(), 1u);
-    EXPECT_EQ(meta.workers_[0].worker_id_, 1u);
-    EXPECT_EQ(meta.workers_[0].hostname_, "host1");
-    EXPECT_EQ(meta.workers_[0].ip_address_, "10.0.0.1");
-    EXPECT_EQ(meta.workers_[0].launch_command_, "python worker.py");
-
-    // Append second WorkerInfo
-    WorkerInfo info2;
-    info2.worker_id_ = 2;
-    info2.hostname_ = "host2";
-    info2.ip_address_ = "10.0.0.2";
-    info2.launch_command_ = "python worker2.py";
-    db.append_worker_info_to_meta(info2);
-
-    meta = db.load_meta();
-    ASSERT_EQ(meta.workers_.size(), 2u);
-    EXPECT_EQ(meta.workers_[0].worker_id_, 1u);
-    EXPECT_EQ(meta.workers_[1].worker_id_, 2u);
-    EXPECT_EQ(meta.workers_[1].hostname_, "host2");
+    EXPECT_FALSE(std::filesystem::exists(meta_path));
 }
 
 TEST_F(DatabaseTest, FreezeOnlyWritesFrozenMarker) {
@@ -437,75 +396,14 @@ TEST_F(DatabaseTest, FreezeOnlyWritesFrozenMarker) {
     write_raw(db, "test/obj", "data", false);
     fly::DataService::instance()->drain_write_back();
 
-    std::filesystem::path meta_path(db_path + "/_DB_META");
-    auto meta_size_before = std::filesystem::file_size(meta_path);
-
     db.freeze();
 
     // _FROZEN should exist
     std::filesystem::path frozen_path(db_path + "/_FROZEN");
     EXPECT_TRUE(std::filesystem::exists(frozen_path));
 
-    // _DB_META size should not change (no rewrite)
-    auto meta_size_after = std::filesystem::file_size(meta_path);
-    EXPECT_EQ(meta_size_before, meta_size_after);
-}
-
-TEST_F(DatabaseTest, LoadMetaReadsIncrementalFormat) {
-    CMString db_path = test_dir_ + "/meta_incremental";
-    Database db(db_path);
-
-    write_raw(db, "data/obj1", "payload1", false);
-    fly::DataService::instance()->drain_write_back();
-
-    // Append multiple WorkerInfo records
-    WorkerInfo w1{1, "host_a", "192.168.1.1", "launch_a"};
-    WorkerInfo w2{2, "host_b", "192.168.1.2", "launch_b"};
-    WorkerInfo w3{3, "host_c", "192.168.1.3", "launch_c"};
-    db.append_worker_info_to_meta(w1);
-    db.append_worker_info_to_meta(w2);
-    db.append_worker_info_to_meta(w3);
-
-    DbMeta meta = db.load_meta();
-    EXPECT_GT(meta.created_at_, 0);  // _DB_META valid (db_path field removed)
-    EXPECT_GT(meta.created_at_, 0);
-    ASSERT_EQ(meta.workers_.size(), 3u);
-    EXPECT_EQ(meta.workers_[0].worker_id_, 1u);
-    EXPECT_EQ(meta.workers_[1].worker_id_, 2u);
-    EXPECT_EQ(meta.workers_[2].worker_id_, 3u);
-}
-
-TEST_F(DatabaseTest, LoadMetaNoWorkers) {
-    CMString db_path = test_dir_ + "/meta_no_workers";
-    Database db(db_path);
-
-    // No WorkerInfo appended
-    DbMeta meta = db.load_meta();
-    EXPECT_GT(meta.created_at_, 0);  // _DB_META valid (db_path field removed)
-    EXPECT_GT(meta.created_at_, 0);
-    EXPECT_TRUE(meta.workers_.empty());
-}
-
-TEST_F(DatabaseTest, AppendWorkerInfoIdempotent) {
-    CMString db_path = test_dir_ + "/meta_idempotent";
-    Database db(db_path);
-
-    // Append same WorkerInfo twice — append is additive, no dedup
-    WorkerInfo info;
-    info.worker_id_ = 42;
-    info.hostname_ = "dup_host";
-    info.ip_address_ = "10.0.0.42";
-    info.launch_command_ = "python dup.py";
-    db.append_worker_info_to_meta(info);
-    db.append_worker_info_to_meta(info);
-
-    DbMeta meta = db.load_meta();
-    ASSERT_EQ(meta.workers_.size(), 2u);
-    // Both entries have same data
-    EXPECT_EQ(meta.workers_[0].worker_id_, 42u);
-    EXPECT_EQ(meta.workers_[1].worker_id_, 42u);
-    EXPECT_EQ(meta.workers_[0].hostname_, "dup_host");
-    EXPECT_EQ(meta.workers_[1].hostname_, "dup_host");
+    // C++ 无 _DB_META 写者：freeze 不产生也不改写元信息文件。
+    EXPECT_FALSE(std::filesystem::exists(db_path + "/_DB_META"));
 }
 
 TEST_F(DatabaseTest, FreezeDuringInFlightWrite) {
@@ -610,21 +508,6 @@ TEST_F(DatabaseTest, RemoveObjectOnFrozenIsNoop) {
     db.remove_object("freeze_rm/obj");
 }
 
-TEST_F(DatabaseTest, LoadMetaEmptyAfterCorruption) {
-    CMString db_path = test_dir_ + "/meta_corrupt";
-    Database db(db_path);
-
-    CMString meta_path = db_path + "/_DB_META";
-    {
-        std::ofstream ofs(meta_path, std::ios::binary | std::ios::trunc);
-        int64_t bad_size = -1;
-        ofs.write(reinterpret_cast<const char*>(&bad_size), sizeof(bad_size));
-    }
-
-    DbMeta meta = db.load_meta();
-    EXPECT_EQ(meta.created_at_, 0);  // corrupt _DB_META
-}
-
 TEST_F(DatabaseTest, RemoveIndexEntry) {
     CMString db_path = test_dir_ + "/remove_idx";
     Database db(db_path);
@@ -654,18 +537,6 @@ TEST_F(DatabaseTest, WriteLargeData) {
     CMString result = read_raw_string(db, "large/obj");
     EXPECT_EQ(result.size(), large_data.size());
     EXPECT_EQ(result, large_data);
-}
-
-TEST_F(DatabaseTest, MultipleObjectsSameDbMeta) {
-    CMString db_path = test_dir_ + "/multi_meta";
-    Database db(db_path);
-
-    write_raw(db, "meta/a", "data_a", false);
-    write_raw(db, "meta/b", "data_b", false);
-    fly::DataService::instance()->drain_write_back();
-
-    DbMeta meta = db.load_meta();
-    EXPECT_GT(meta.created_at_, 0);  // _DB_META valid (db_path field removed)
 }
 
 // =============================================================================
@@ -842,8 +713,9 @@ TEST_F(DatabaseVarTest, LoadVarsFromDiskRestoresStore) {
     fly::WorkerAgentContext::clear();
 
     // Re-open: existing db (db_path regenerated from path, but _VARS is read
-    // because the path existed). Use a non-empty existing_db_path to skip the
-    // new-db branch so _DB_META isn't rewritten; _VARS loads regardless.
+    // because the path existed). Use a non-empty existing_db_path to keep the
+    // same writer identity; _VARS loads regardless. (_DB_META 的写读在
+    // Python 编排层，C++ 构造不再涉及。)
     db_ = CMMakeShared<Database>(test_dir_, "", 0, "", "reused_id");
 
     // Vars restored into the in-memory store.

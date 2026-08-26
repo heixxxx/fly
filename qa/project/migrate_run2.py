@@ -18,8 +18,9 @@ for actual, info in meta["dbs"].items():
         f"meta db_path not rewritten: {actual} -> {info['db_path']}"
 
 # chain 邻居边断言：matrix.next / solve.prev 的 db_path 均为新路径。
+# （chain 字段合并进 _DB_META JSON 后从这里读取。）
 def read_chain(db_path):
-    return json.load(open(os.path.join(db_path, "_DB_CHAIN"), encoding="utf-8"))
+    return json.load(open(os.path.join(db_path, "_DB_META"), encoding="utf-8"))
 
 matrix_chain = read_chain(os.path.join(NEW, "matrix"))
 solve_chain = read_chain(os.path.join(NEW, "solve"))

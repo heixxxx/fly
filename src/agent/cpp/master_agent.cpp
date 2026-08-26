@@ -1707,26 +1707,32 @@ void MasterAgent::record_worker_info(const CMString& object_name, const CMString
     }
 
     auto key = std::make_tuple(db_path, hostname, writer_id);
-    // insert 返回是否新插入：append meta 的副作用在 set 锁外恰好执行一次，
-    // 同时消除原 recorded_workers_mutex_ → db_instances_mutex_ 嵌套锁。
-    // append（_DB_META 文件 IO）在容器锁外执行（D2 拆除；Database 自 D1 起自保护）。
+    // insert 返回是否新插入：入队副作用在容器锁外恰好执行一次，同时消除原
+    // recorded_workers_mutex_ → db_instances_mutex_ 嵌套锁。落盘走队列 + 消费点
+    // flush（见 pending_worker_infos_ 注释——reactor 线程直接回调 Python 会与
+    // 主线程持 GIL 的 wait 类 API 互等死锁）。
     if (recorded_workers_.insert(key)) {
-        CMSharedPtr<Database> db;
-        {
-            std::shared_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-            auto db_it = db_instances_.find(db_path);
-            if (db_it != db_instances_.end()) {
-                db = db_it->second;
-            }
-        }
-        if (db) {
-            ::WorkerInfo info;
-            info.worker_id_ = worker_id;
-            info.writer_id_ = writer_id;
-            info.hostname_ = hostname;
-            info.ip_address_ = ip;
-            info.launch_command_ = "";
-            db->append_worker_info_to_meta(info);
+        ::WorkerInfo info;
+        info.worker_id_ = worker_id;
+        info.writer_id_ = writer_id;
+        info.hostname_ = hostname;
+        info.ip_address_ = ip;
+        info.launch_command_ = "";
+        pending_worker_infos_.update(db_path, [&info](CMVector<::WorkerInfo>& v) {
+            v.push_back(info);
+        });
+    }
+}
+
+void MasterAgent::flush_worker_infos() {
+    if (!record_worker_info_func_) return;
+    // take_any 消费式弹出：锁内只做条目移动，回调（Python 落盘）在锁外。
+    while (auto entry = pending_worker_infos_.take_any()) {
+        auto& [db_path, infos] = *entry;
+        for (auto& info : infos) {
+            record_worker_info_func_(db_path, info.worker_id_, info.writer_id_,
+                                     info.hostname_, info.ip_address_,
+                                     info.launch_command_);
         }
     }
 }

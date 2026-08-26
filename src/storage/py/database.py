@@ -7,10 +7,10 @@ from _fly_storage import (
 
 from monitor import record_read, record_write
 
-# db_chain 模块（同包相对导入）
-from .db_chain import (
-    DbChainFile, generate_uid, make_chain, make_edge,
-    find_edge, update_edge_path, remove_edge, append_edge, match_edge,
+# db_meta 模块（同包相对导入）——_DB_META JSON 元信息读写
+from .db_meta import (
+    DbMetaFile, generate_uid, make_meta, make_edge,
+    find_edge, append_edge, match_edge,
 )
 from .chain_registry import get_registry
 
@@ -43,10 +43,10 @@ class Database:
             from _fly_storage import ex_stg_create_database
             self._db = ex_stg_create_database(db_path, data_path, writer_id)
 
-        # chain 管理器（用于 _DB_CHAIN 文件读写）
-        self._chain_file = DbChainFile(db_path)
+        # meta 管理器（用于 _DB_META 文件读写）
+        self._meta_file = DbMetaFile(db_path)
 
-        # 从 _DB_CHAIN 恢复 uid/role（已存在的 db），否则后续由 _init_chain 初始化
+        # 从 _DB_META 恢复 uid/role（已存在的 db），否则后续由 _init_chain 初始化
         self._chain_uid = None
         self._chain_role = None
         self._chain_logical_name = None
@@ -237,16 +237,34 @@ class Database:
         return self._db.is_frozen()
 
     def load_meta(self):
-        return self._db.load_meta()
+        return self._meta_to_ex(self._meta_file.read())
 
     @staticmethod
     def load_meta_from_path(db_path: str):
-        """静态读 _DB_META，不构造 Database 实例（不触发 DataService register）。
+        """静态读 _DB_META（JSON），不构造 Database 实例（不触发 DataService register）。
 
-        用于 merge_db 等场景：在已 open_db 的进程内读 meta 而不重复注册 db_path。
+        用于 merge_db / load_db 等场景：在已 open_db 的进程内读 meta 而不
+        重复注册 db_path。返回 EXStgDbMeta 兼容对象（created_at + workers），
+        消费方与原 C++ 版本零改动；文件缺失/损坏 → created_at=0（有效性哨兵）。
         """
-        from _fly_storage import ex_stg_load_meta_from_path
-        return ex_stg_load_meta_from_path(db_path)
+        return Database._meta_to_ex(DbMetaFile(db_path).read())
+
+    @staticmethod
+    def _meta_to_ex(meta_dict):
+        """_DB_META JSON dict → EXStgDbMeta（QA/agent 消费兼容层）。"""
+        from _fly_storage import EXStgDbMeta, EXStgWorkerInfo
+        d = meta_dict or {}
+        m = EXStgDbMeta(int(d.get("created_at") or 0))
+        m.workers = [
+            EXStgWorkerInfo(
+                int(w.get("worker_id") or 0),
+                w.get("writer_id", ""),
+                w.get("hostname", ""),
+                w.get("ip_address", ""),
+                w.get("launch_command", ""))
+            for w in d.get("workers", [])
+        ]
+        return m
 
     def reset(self):
         self._db.reset()
@@ -347,7 +365,7 @@ class Database:
             from _fly_storage import ex_stg_create_database
             instance._db = ex_stg_create_database(db_path, data_path, 0)
 
-        instance._chain_file = DbChainFile(db_path)
+        instance._meta_file = DbMetaFile(db_path)
         instance._chain_uid = None
         instance._chain_role = None
         instance._chain_logical_name = None
@@ -355,7 +373,7 @@ class Database:
         return instance
 
     def _init_chain(self, uid, role, logical_name, prev_edges=None):
-        """新建 db 时写入 _DB_CHAIN（首次写入，非 read-modify-write）。
+        """新建 db 时写入 _DB_META（首次写入，持锁 RMW 保留已有 workers）。
 
         Args:
             uid: 逻辑身份。
@@ -363,8 +381,8 @@ class Database:
             logical_name: 逻辑名。
             prev_edges: 前驱边列表 [{uid, role, logical_name, db_path}]。
         """
-        chain = make_chain(uid, role, logical_name, prev=prev_edges or [])
-        self._chain_file.write_new(chain)
+        meta = make_meta(uid, role, logical_name, prev=prev_edges or [])
+        self._meta_file.write_new(meta)
         self._chain_uid = uid
         self._chain_role = role
         self._chain_logical_name = logical_name
@@ -373,16 +391,16 @@ class Database:
         get_registry().register(uid, self.get_db_path())
 
     def _load_chain_info(self):
-        """从磁盘 _DB_CHAIN 恢复 uid/role/logical_name（load_db / _wrap 时调用）。"""
-        chain = self._chain_file.read()
-        if chain is not None:
-            self._chain_uid = chain.get("uid")
-            self._chain_role = chain.get("role")
-            self._chain_logical_name = chain.get("logical_name")
+        """从磁盘 _DB_META 恢复 uid/role/logical_name（load_db / _wrap 时调用）。"""
+        meta = self._meta_file.read()
+        if meta is not None:
+            self._chain_uid = meta.get("uid")
+            self._chain_role = meta.get("role")
+            self._chain_logical_name = meta.get("logical_name")
             # 注册到进程级映射
             if self._chain_uid:
                 get_registry().register(self._chain_uid, self.get_db_path())
-        # 旧 db 无 _DB_CHAIN → uid/role 均为 None，视为叶子
+        # 旧 db 无 _DB_META（JSON）→ uid/role 均为 None，视为叶子
 
     def get_uid(self):
         """db 的逻辑身份 uid（旧 db 无 _DB_CHAIN 时为 None）。"""
@@ -396,8 +414,8 @@ class Database:
         return type(self).role
 
     def _get_chain_data(self):
-        """读完整 _DB_CHAIN dict（并发安全 LOCK_SH）。无则返回 None。"""
-        return self._chain_file.read()
+        """读完整 _DB_META dict（并发安全 LOCK_SH）。无则返回 None。"""
+        return self._meta_file.read()
 
     # ── DB Chain：查询 API ─────────────────────────────────────
 
@@ -466,8 +484,8 @@ class Database:
             if not cur_path:
                 continue
 
-            # 读前驱的 _DB_CHAIN 继续展开（DbChainFile 顶层已 import）
-            prev_cf = DbChainFile(cur_path)
+            # 读前驱的 _DB_META 继续展开（DbMetaFile 顶层已 import）
+            prev_cf = DbMetaFile(cur_path)
             prev_chain = prev_cf.read()
             if prev_chain is None:
                 continue
@@ -516,21 +534,7 @@ class Database:
         def add_next(d):
             d["next"], _ = append_edge(d.get("next", []), edge)
             return d
-        self._chain_file.update(add_next)
-
-    def _update_neighbor_path(self, uid, new_path, is_next):
-        """merge 时更新邻居 _DB_CHAIN 中指向自己的 db_path。
-
-        Args:
-            uid: 被迁移 db 的 uid。
-            new_path: 迁移后的新 path。
-            is_next: True → 更新邻居的 next[]；False → 更新邻居的 prev[]。
-        """
-        field = "next" if is_next else "prev"
-        def update_field(d):
-            update_edge_path(d.get(field, []), uid, new_path)
-            return d
-        self._chain_file.update(update_field)
+        self._meta_file.update(add_next)
 
     # ── DB Chain：next 自愈（load 时校验补齐）─────────────────
 
@@ -559,8 +563,8 @@ class Database:
             if not prev_path or not prev_uid:
                 continue
 
-            # 读前驱的 _DB_CHAIN，检查 next 是否含自己（符号顶层已 import）
-            prev_cf = DbChainFile(prev_path)
+            # 读前驱的 _DB_META，检查 next 是否含自己（符号顶层已 import）
+            prev_cf = DbMetaFile(prev_path)
             prev_chain = prev_cf.read()
             if prev_chain is None:
                 continue

@@ -1802,10 +1802,10 @@ TEST(MasterAgentTest, NonStreamCompleteRecordsWorkerInfo) {
     complete.written_objects_.push_back(wo);
     master.on_task_complete(0, complete);
 
-    // master 的 record_worker_info 调用了 db->append_worker_info_to_meta，
-    // 写入 _DB_META。通过读同一 db_path 的 _DB_META 文件验证。
-    Database verify_db(tmpdir.path(), "", 0);
-    EXPECT_GT(verify_db.worker_info_count(), 0u);   // record_worker_info 生效
+    // master 的 record_worker_info 经注入回调落盘 _DB_META（Python 层
+    // DbMetaFile.append_worker；单测未注入回调时仅内存去重）。C++ 侧以
+    // recorded_workers 计数验证登记语义。
+    EXPECT_GT(master.recorded_workers_count_for_testing(), 0u);   // record_worker_info 生效
 
     worker.end_task(8000);
     worker.stop();
@@ -3269,10 +3269,10 @@ TEST(MasterAgentTest, RecordWorkerInfoAppendsMetaOncePerTuple) {
 
     master.record_worker_info_for_testing("obj", db_path, 0, "w1");
     master.record_worker_info_for_testing("obj", db_path, 0, "w1");   // 同 tuple 重复
-    EXPECT_EQ(db_obj->worker_info_count(), 1u);
+    EXPECT_EQ(master.recorded_workers_count_for_testing(), 1u);
 
     master.record_worker_info_for_testing("obj", db_path, 0, "w2");   // 不同 writer_id
-    EXPECT_EQ(db_obj->worker_info_count(), 2u);
+    EXPECT_EQ(master.recorded_workers_count_for_testing(), 2u);
 }
 
 // ── expected workers（唤起占位符）────────────────────────────────────

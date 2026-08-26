@@ -403,12 +403,12 @@ class Project:
         self.save()
 
         # chain 邻居边改写：project 内 db 间的 prev/next 边 db_path 更新
-        #（uid 不变；project 外的边不动）。DbChainFile.update 持 LOCK_EX +
-        # 原子替换。
-        from storage import DbChainFile
+        #（uid 不变；project 外的边不动）。DbMetaFile.update 持 LOCK_EX +
+        # 原子替换（顶层 data_path 同批改写）。
+        from storage import DbMetaFile
         for info in self._meta["dbs"].values():
-            chain = DbChainFile(info["db_path"])
-            if not chain.exists():
+            meta_f = DbMetaFile(info["db_path"])
+            if not meta_f.exists():
                 continue
 
             def _rewrite(d, mapping=path_map):
@@ -417,9 +417,11 @@ class Project:
                         old = edge.get("db_path")
                         if old in mapping:
                             edge["db_path"] = mapping[old]
+                if d.get("data_path") in mapping:
+                    d["data_path"] = mapping[d["data_path"]]
                 return d
 
-            chain.update(_rewrite)
+            meta_f.update(_rewrite)
 
         INFO(f"Project.migrate: {old_root} -> {new_path} "
              f"({len(self._meta['dbs'])} dbs, chain edges rewritten)")

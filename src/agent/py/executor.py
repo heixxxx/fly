@@ -33,7 +33,7 @@ from monitor import set_current as io_set_current, take_result as io_take_result
 from _fly_agent import EXTaskExecResult, EXTaskExecStatus
 from _fly_log import INFO, ERR
 
-from storage import Database, DbChainFile
+from storage import Database, DbMetaFile
 from storage import get_registry as get_chain_registry
 
 # db_path（db_path）是 full_name "db_path:short_name" 的前缀（变长，含 '/'）。
@@ -76,10 +76,10 @@ def deserialize_args(args: list, worker) -> list:
                 from _fly_storage import ex_stg_get_data_service
                 ds = ex_stg_get_data_service()
 
-                # 读 _DB_CHAIN 一次（role + chain info），失败时安全 fallback 到基类。
+                # 读 _DB_META 一次（role + chain info），失败时安全 fallback 到基类。
                 chain_data = None
                 try:
-                    chain_data = DbChainFile(db_path).read()
+                    chain_data = DbMetaFile(db_path).read()
                 except Exception:
                     pass
 
@@ -95,7 +95,7 @@ def deserialize_args(args: list, worker) -> list:
                     db = cls(db_path, data_path, worker._worker_id)
 
                 # 从已读的 chain_data 恢复链信息（不重复读文件）
-                db._chain_file = DbChainFile(db_path)
+                db._meta_file = DbMetaFile(db_path)
                 db._chain_uid = chain_data.get("uid") if chain_data else None
                 db._chain_role = role
                 db._chain_logical_name = chain_data.get("logical_name") if chain_data else None

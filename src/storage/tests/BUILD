@@ -168,11 +168,11 @@ cc_test(
     copts = ["-std=c++20"],
 )
 
-# db_chain 纯 Python 测试（不依赖 C++ runtime，stub _fly_log）
+# db_meta 纯 Python 测试（不依赖 C++ runtime，stub _fly_log）
 py_test(
-    name = "db_chain_test",
-    srcs = ["test_db_chain.py"],
-    main = "test_db_chain.py",
+    name = "db_meta_test",
+    srcs = ["test_db_meta.py"],
+    main = "test_db_meta.py",
     deps = ["//src/storage/py:fly_storage_py"],
     imports = ["../py"],
 )

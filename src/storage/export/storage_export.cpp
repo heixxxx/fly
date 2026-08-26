@@ -318,7 +318,6 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_METHOD("backup_object", &Database::backup_object)
     FLY_EXPORT_METHOD("freeze", &Database::freeze)
     FLY_EXPORT_METHOD("is_frozen", &Database::is_frozen)
-    FLY_EXPORT_METHOD("load_meta", &Database::load_meta)
     FLY_EXPORT_METHOD("get_db_path", &Database::get_db_path)
     FLY_EXPORT_METHOD("get_data_path", &Database::get_data_path)
     FLY_EXPORT_METHOD("get_full_name", &Database::get_full_name)
@@ -463,11 +462,8 @@ FLY_EXPORT_FUNCTION("ex_stg_create_database_with_path", [](const CMString& db_pa
     return CMMakeShared<Database>(db_path, data_path, writer_id);
 });
 
-// 静态读 _DB_META，不构造 Database（避免 merge_db 重复 register db_path）。
-FLY_EXPORT_FUNCTION("ex_stg_load_meta_from_path",
-    [](const CMString& db_path) -> DbMeta {
-        return Database::load_meta_from_path(db_path);
-    });
+// _DB_META（JSON）读取在 Python 编排层（storage/py/db_meta.py 的
+// DbMetaFile + Database.load_meta_from_path），C++ 不再提供静态读。
 
 FLY_EXPORT_FUNCTION("ex_stg_compute_write_context_hash",
     [](const CMString& task_name, const CMString& task_module,

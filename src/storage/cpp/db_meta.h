@@ -4,6 +4,9 @@
 #include <serialization/cpp/serialization_macros.h>
 #include <cstdint>
 
+// WorkerInfo：db 写者登记条目（_DB_META JSON 的 workers[] 元素）。落盘由
+// Python 编排层（storage/py/db_meta.py）负责；此结构仅供进程内组装与
+// EXStgWorkerInfo 导出（Python load_meta 兼容层）。
 struct WorkerInfo {
     uint64_t worker_id_ = 0;
     CMString writer_id_;
@@ -14,12 +17,8 @@ struct WorkerInfo {
     FLY_SERIALIZE(worker_id_, writer_id_, hostname_, ip_address_, launch_command_)
 };
 
-struct DbMetaHeader {
-    int64_t created_at_ = 0;
-
-    FLY_SERIALIZE(created_at_)
-};
-
+// DbMeta：load_meta 兼容返回结构（Python Database._meta_to_ex 组装
+// EXStgDbMeta 用的内存形态）。磁盘 JSON 解析在 Python。
 struct DbMeta {
     int64_t created_at_ = 0;
     CMVector<WorkerInfo> workers_;

@@ -110,6 +110,17 @@ public:
 
     CMVector<uint64_t> get_idle_workers() const;
 
+    // WorkerInfo 落盘回调注入（master Python start() 调用）：参数为纯标量，
+    // Python 侧组装 workers[] 条目经 DbMetaFile.append_worker 写 _DB_META。
+    void set_record_worker_info_func(
+        std::function<void(const CMString&, uint64_t, const CMString&,
+                           const CMString&, const CMString&, const CMString&)> func) {
+        record_worker_info_func_ = std::move(func);
+    }
+    // 消费 pending_worker_infos_ 队列（Python 主线程调用，GIL 天然持有）：
+    // workers 的读点（merge_db/load_db/stop）入口先 flush 再读文件。
+    void flush_worker_infos();
+
     // 断点重投：读单个 failed_tasks.bin（读取+删除原子，重投走 submit_task，
     // 归属随 submission_ 还原）。返回重启的 task 条数。db list 形态的自动搜索
     // 由 Python 层归一化后逐个调用（fly.restart_failed_tasks / Project.resume）。
@@ -315,10 +326,15 @@ public:
     std::atomic<bool> drop_next_register_for_testing_{false};
     // 诊断：指定 db_path 的 merge task 状态条目数（失败清理精确性测试用）。
     size_t merge_task_state_count_for_testing(const CMString& db_path) const;
-    // 直接驱动 record_worker_info（private），验证同 tuple 只 append meta 一次。
+    // 直接驱动 record_worker_info（private），验证同 tuple 只回调一次。
     void record_worker_info_for_testing(const CMString& object_name, const CMString& db_path,
                                         uint64_t worker_id, const CMString& writer_id) {
         record_worker_info(object_name, db_path, worker_id, writer_id);
+    }
+    // 已登记（去重后）的 worker 元组数：_DB_META workers[] 落盘走 Python 回调，
+    // C++ 侧以此断言去重语义（原 worker_info_count 的语义承接）。
+    size_t recorded_workers_count_for_testing() const {
+        return recorded_workers_.size();
     }
     // 直接驱动 on_worker_register / 占位符超时清理（private），确定性测试注册
     // 转正与超时清理逻辑（无需真实网络与 heartbeat 线程周期）。
@@ -734,9 +750,19 @@ private:
     // worker 的 hostname/ip 已收编进 WorkerManager::WorkerInfo（受其 mutex_ 保护），
     // 不再单独维护并行 map——消除原 worker_to_hostname_/worker_to_ip_ 的无锁数据竞争。
 
-    // 已写入 db meta 的 worker 元组去重：insert 返回是否新插入，
-    // 副作用（append_worker_info_to_meta）据此在锁外恰好执行一次。
+    // 已登记的 worker 元组去重：insert 返回是否新插入，落盘回调据此在锁外
+    // 恰好执行一次。回调参数为纯标量（db_path, worker_id, writer_id, hostname,
+    // ip, launch_command），避免跨模块 nanobind 类型耦合；master Python start()
+    // 注入 → DbMetaFile.append_worker（_DB_META JSON 写路径在 Python 层）。
     ConcurrentUnorderedSet<std::tuple<CMString, CMString, CMString>> recorded_workers_;
+    std::function<void(const CMString&, uint64_t, const CMString&,
+                       const CMString&, const CMString&, const CMString&)>
+        record_worker_info_func_;
+    // WorkerInfo 落盘队列：reactor/lane 线程只入队（无 GIL），Python 消费点
+    // （merge_db/load_db/stop 入口）主动 flush——若在 reactor 线程直接回调
+    // Python，主线程常持 GIL 阻塞在 wait 类 API（如 wait_merge_tasks_complete），
+    // 而 merge 完成事件的处理又需要该回调拿到 GIL，形成互等死锁。
+    ConcurrentUnorderedMap<CMString, CMVector<::WorkerInfo>> pending_worker_infos_;
 
     // ObjectBackupScore 定义已前移至 on_merge_task_failed 之后（test hook 需在
     // FLY_ENABLE_TEST_HOOKS 区引用其完整类型）。
