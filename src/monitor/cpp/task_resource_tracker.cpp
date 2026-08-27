@@ -60,8 +60,10 @@ void TaskResourceTracker::end(uint64_t task_id) {
     const int64_t cpu_now = cpu_usec_now();
     if (cpu_now > 0 && current_.begin_cpu_usec_ > 0 &&
         cpu_now >= current_.begin_cpu_usec_) {
+        // ceil 取整：亚毫秒窗口记 1ms 而非 0（同 io_stats 亚毫秒 IO 计时
+        // 的裁定口径——快机/高负载下短 task 的微秒差分向下取整会恒 0）。
         agg.cpu_time_ms_ = static_cast<uint64_t>(
-            (cpu_now - current_.begin_cpu_usec_) / 1000);
+            (cpu_now - current_.begin_cpu_usec_ + 999) / 1000);
     }
     agg.mem_baseline_bytes_ = current_.baseline_;
     agg.mem_avg_bytes_ = current_.count_ > 0 ? current_.sum_ / current_.count_ : 0;
