@@ -67,6 +67,52 @@ coord (master, 普通函数)
 
 ---
 
+## Dynamic 多右端项求解器（`ras_graph_dynamic.py`）
+
+EmIR dynamic IR drop 场景：同一矩阵 G 连续求解 T 个时间步的 G·x_t = b_t
+（b_t = f(x_{t-1})，严格串行）。API：`solve_ras_graph_dynamic(db, matrix_ref,
+nsd, b0, update_rhs, num_steps, ...)`——**非阻塞 kickoff**（写 b_0 + 提交
+kickoff task 后立即返回），`get_dynamic_result(db)` 按需等待整体完成。
+
+### 架构（task 链自驱动，master 零阻塞）
+
+```
+kickoff_task (inputs=[matrix, b_0], 任意 worker)
+  └─ coord 预分块写 sub_{sd} → 提交 step0 组
+step t 组 = compute_dyn × nsd (requires=sd_i, prio=90) + check_dyn (requires=ras_check)
+  └─ RPC 迭代到收敛 → 写 sol_t(持久)/iters_t/converged_t → 提交 controller(t)
+controller_task(t) (inputs=[converged_t], 任意 worker)
+  └─ 读 x_t → update_rhs 生成 b_{t+1} → 提交 step t+1 组 → 链闭合
+  └─ 终止（步数用尽/回调返 None）→ 写 __rasg__dynamic_done
+```
+
+master 只做 kickoff（含 worker 池启动：nsd 个 sd_i 绑定 + 1 个 ras_check
+绑定），编排全在 worker task 链上——master 上永远不做阻塞式流程。
+
+### 关键语义
+
+| 语义 | 实现 |
+|------|------|
+| task 粒度隔离 | 每时间步一组新 task（新 PeerChannelGroup）；单步迭代在长 task 内 RPC 直连（v2 思路） |
+| 失败重跑 | 组失败原子传染（check 全部可观察副作用先于 respond done；compute RPC 中断一律 raise）；已完成步骤结果持久不丢，restart 只重投失败组，check 重跑后链自动恢复 |
+| 冷启动安全 | db 是权威（temp 落盘恢复 + 持久对象），worker 进程缓存（LDLT 因子、粗校正 LU）纯加速——全新 run 从 db 重建 |
+| worker 复用 | requires=sd_i 属性钉住 + priority=90；setup 缓存短路（gen 会话前缀，跨步命中、跨 solve 不串） |
+| warm start | step t 初值取 sol_{t-1}（持久对象，restart 后仍可用）——相邻时间步解接近时迭代次数下降（QA 实测 n20 iters [9,8,8]） |
+
+### 对象命名空间
+
+跨步对象带 t 维度（provenance：同名不同参数重写会被拒）：
+`__rasg__b_{t}`（temp，controller 逐步清理）、`__rasg__sub_{sd}`/coord/cfg/
+coarse_prebuilt（temp，全程）、`__fly_chan_{group_id}`（持久，下一步
+controller 删除；重投由 remove-before-write + connect 重试容错）、
+`__rasg__sol_{t}`（**持久**，用户数据）、`__rasg__iters_{t}`/`converged_{t}`
+（temp，controller 依赖锚点）、`__rasg__dynamic_done`（temp，用户等待点）。
+
+限制：omega 仅支持 1.0 / "coarse"（v2 daemon 同款）；update_rhs 在 worker
+上执行（cloudpickle 随 task 参数传递）；同 db 重复调用需换 sol_prefix。
+
+---
+
 ## 粗网格校正 (Coarse Correction)
 
 ### 原理

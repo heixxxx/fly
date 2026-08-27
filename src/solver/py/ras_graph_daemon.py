@@ -43,7 +43,9 @@ def solve_ras_graph_v2(db, matrix_ref, nsd,
 
     # coord 预构建（含 coord/cfg/coarse 写 DB + 每完成一个 sub_{sd} 提交 compute daemon）
     _coord_prebuild_pipeline(db, matrix_ref, nsd, overlap_ratio, max_iter, tol, omega,
-                              group.group_id)
+                              group.group_id,
+                              on_sub_ready=lambda sd: compute_daemon_task(
+                                  db, group.group_id, sd, nsd, omega))
 
     # coord 写完后提交 check daemon（check 依赖 coord/cfg/coarse 已就绪）
     check_daemon_task(db, group.group_id, nsd, max_iter, tol, omega)
@@ -51,9 +53,14 @@ def solve_ras_graph_v2(db, matrix_ref, nsd,
     return _wait_solution(db)
 
 
-def _coord_prebuild_pipeline(db, matrix_ref, nsd, overlap_ratio, max_iter, tol, omega, group_id):
+def _coord_prebuild_pipeline(db, matrix_ref, nsd, overlap_ratio, max_iter, tol, omega, group_id,
+                             on_sub_ready=None):
     """coord 预构建 + 流水线提交：每完成一个 sub_{sd} 立即提交 compute daemon，
-    让 LDLT 分解与剩余 BFS 并行。"""
+    让 LDLT 分解与剩余 BFS 并行。
+
+    on_sub_ready：可选回调（sd -> None）。v2 单次调用传 compute daemon 提交
+    闭包实现流水线；None 时仅写 sub_{sd} 不提交 task（dynamic 多右端项模式：
+    kickoff 只做分块，task 组由 controller 按时间步提交）。"""
     from .ras_graph import (_load_matrix, _partition_primary_2d,
                                    _estimate_depth, _compute_grid_neighbors,
                                    _prebuild_coarse_in_coord, _prebuild_coarse_grid,
@@ -152,6 +159,9 @@ def _coord_prebuild_pipeline(db, matrix_ref, nsd, overlap_ratio, max_iter, tol, 
 
         subdomain_data = {
             "sd_id": sd,
+            # local_indices：dynamic 多右端项模式按 b_t[local_indices] 切片
+            # 右端项（b_orig 是固定 b 的预切片，仅单次调用路径使用）
+            "local_indices": np.array(local_idx, dtype=np.int64),
             "primary_local_pos": primary_local_pos,
             "b_orig": np.array(b_local, dtype=np.float64),
             "outside_local_pos": np.array(out_pos, dtype=np.int64),
@@ -169,7 +179,8 @@ def _coord_prebuild_pipeline(db, matrix_ref, nsd, overlap_ratio, max_iter, tol, 
         INFO(f"[RASG V2 COORD] subdomain {sd}: primary={len(primary_nodes)} extended={len(local_idx)} ratio={ratio:.2f}x neighbors={actual_neighbor_ids}")
 
         # ★ 流水线：sub_{sd} 写完后立即提交 compute daemon，LDLT 与剩余 BFS 并行
-        compute_daemon_task(db, group_id, sd, nsd, omega)
+        if on_sub_ready is not None:
+            on_sub_ready(sd)
 
     # coarse 预构建（在所有 compute daemon 已提交后，check daemon 提交前）
     if omega == "coarse":

@@ -278,6 +278,10 @@ def _wait_for_objects(deps, poll_interval, timeout=None):
 
 
 def _serialize_args(args):
+    try:
+        import cloudpickle
+    except ImportError:
+        cloudpickle = None
     result = []
     for arg in args:
         if hasattr(arg, 'get_db_path') and hasattr(arg, 'get_full_name'):
@@ -292,6 +296,13 @@ def _serialize_args(args):
             else:
                 data_path = arg._db.get_data_path()
                 result.append(f"__fly_db__:{db_path}:{data_path}")
+        elif callable(arg):
+            # callable 参数（如编排 task 持有的用户回调）——标准 pickle 无法
+            # 序列化脚本内闭包/lambda，走 cloudpickle（from_user task 同源）。
+            # cloudpickle 缺失时退回标准 pickle：模块级函数仍可传，闭包在此
+            # 处抛出明确异常。
+            dumps = cloudpickle.dumps if cloudpickle is not None else pickle.dumps
+            result.append("__fly_cfunc__:" + dumps(arg).hex())
         else:
             result.append(pickle.dumps(arg).hex())
     return result

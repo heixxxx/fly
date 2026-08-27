@@ -121,6 +121,11 @@ def deserialize_args(args: list, worker) -> list:
                 if uid:
                     worker._db_cache[db_path] = db
             result.append(worker._db_cache[cache_key])
+        elif isinstance(arg, str) and arg.startswith("__fly_cfunc__:"):
+            # callable 参数（cloudpickle，见 task.py::_serialize_args）。
+            # cloudpickle 缺失时退回标准 pickle（模块级函数场景仍可用）。
+            _dumps_mod = cloudpickle if cloudpickle is not None else pickle
+            result.append(_dumps_mod.loads(bytes.fromhex(arg[len("__fly_cfunc__:"):])))
         else:
             result.append(pickle.loads(bytes.fromhex(arg)))
     return result

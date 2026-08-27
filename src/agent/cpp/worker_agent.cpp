@@ -2093,10 +2093,17 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
             }
             auto all_entries = idx.get_all_entries();
 
+            // loaded_writer_ids 驱动 master 侧 rebuild（remote_idx +
+            // mark_data_ready）。只写过 temp 对象的 writer（正式 idx 空头，
+            // 如编排链的 kickoff/controller task 输出全是 temp）也必须上报
+            // ——否则其 temp 对象在 master 调度视图中不存在，重投的下游
+            // task 依赖被判 Unresolvable。
+            bool reported_to_master = false;
             if (!all_entries.empty()) {
                 dsRef->restore_entries(msg.db_path_, all_entries);
                 loaded_writer_ids.push_back(writer_id);
                 loaded++;
+                reported_to_master = true;
             }
 
             // temp 落盘恢复（task 级断点）：{wid}.temp.idx 与正式 idx 同批加载，
@@ -2120,6 +2127,9 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
                 if (!temp_entries.empty()) {
                     dsRef->restore_temp_entries(msg.db_path_, temp_entries);
                     loaded++;
+                    if (!reported_to_master) {
+                        loaded_writer_ids.push_back(writer_id);
+                    }
                 }
             }
         }

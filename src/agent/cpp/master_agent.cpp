@@ -9,6 +9,7 @@
 #include <core/cpp/process_info.h>
 #include <core/cpp/graceful_exit.h>
 #include <storage/cpp/local_index.h>
+#include <storage/cpp/object_cache.h>
 #include <common/cpp/write_context_hash.h>
 #include <algorithm>
 #include <cmath>
@@ -3182,6 +3183,13 @@ void MasterAgent::on_master_remove(const CMString& db_path, const CMString& obje
     // 清 graph/remote_idx/provenance + 通知持有对象的 worker 清 local data。
     CMString full = db_path + ":" + object_name;
     graph_->mark_data_removed(full);
+
+    // master 自身也可能是持有者（master 自写对象，如编排层写入的中间量）：
+    // 清本进程的 local index 与 ObjectCache——调用方进程（发起 remove 的
+    // worker）只清它自己的缓存，master 侧残留会让 master 的 read_object
+    // 仍从 low cache 命中已删对象（temp 对象同理）。对不存在的条目是 no-op。
+    DataService::instance()->remove_local_index(full);
+    ObjectCache::instance().remove(full);
 
     auto worker_ids = DataService::instance()->get_remote_workers(full);
     for (auto wid : worker_ids) {

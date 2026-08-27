@@ -3,6 +3,50 @@
 ---
 ---
 
+## 2026-08-27: Dynamic 多右端项连续求解（EmIR dynamic IR drop）+ 三项框架根因修复
+
+**需求（用户多轮裁定）**：同一矩阵连续求解一组右端项（G·x_t = b_t，T 个
+时间步，b_t = f(x_{t-1})），每步结果入库。裁定要点：单步迭代在长 task 内
+RPC 直连（v2 思路）；不同 RHS 间 task 隔离——**核心目的是失败重跑原生
+支持**（单步失败不丢已有结果，restart 只重投失败部分）；restart 可能是
+全新 run（worker 无缓存），task 设计冷启动安全；**master 永不阻塞**
+（编排由 task 链自驱动）；warm start 默认启用；worker 用 attributes +
+高优先级（90）钉住复用矩阵缓存。
+
+**新代码**：`src/solver/py/ras_graph_dynamic.py`——kickoff/compute/check/
+controller 4 个 task + `solve_ras_graph_dynamic`（非阻塞 kickoff，立即返
+回 handle）/`get_dynamic_result`（wait_obj 等终止标记）。链：kickoff（coord
+预分块）→ step 组（compute×nsd 钉 sd_i + check 钉 ras_check，RPC 迭代到
+收敛）→ check 收敛时提交 controller（读 x_t → update_rhs 生成 b_{t+1} →
+提交下一组）→ 链闭合。设计细节：gen 会话前缀防跨 solve 进程缓存污染；
+warm start 从 sol_{t-1}（持久，restart 权威）提取 ghost/初值；b_t temp
+由 controller 逐步清理；收敛段 respond done 先行（reactor 异步 send 需
+写库往返作缓冲，否则紧随的 listener.close 掐死未发出的 respond——实测
+n20 下 8 轮 RPC 9ms 内完成即触发）；check 收齐循环按 sd 去重收满 + 断连
+事件吞掉（agent 级事件队列会残留上组 stop 的断连，误读为致命错误炸死
+下一组）。
+
+**三项框架根因修复（QA 压测暴露）**：
+- **master_agent.cpp on_master_remove**：master 自写对象被 worker remove
+  时 master 进程的 ObjectCache/local index 未清——master read_object 仍从
+  low cache 命中已删对象。补 remove_local_index + ObjectCache.remove。
+- **worker_agent.cpp on_idx_load_command**：只写过 temp 对象的 writer
+  （正式 idx 空，如编排链 kickoff/controller 的输出全是 temp）不进
+  loaded_writer_ids → master rebuild 跳过 → 其 temp 对象在调度视图中不
+  存在 → 重投 task 依赖判 Unresolvable。temp 恢复非空也上报。
+- **callable task 参数 cloudpickle 序列化**（task.py/executor.py，~15 行）：
+  `__fly_cfunc__:` 标签——controller 持有用户 update_rhs 回调（脚本内
+  闭包/lambda）随参数传 worker。py_test callable_args_test（7 例）。
+
+**验证**：QA 新增 test_ras_graph_dynamic（4 subcase：basic 数值/warm
+start/LDLT 缓存复用恰 nsd 次/controller 数据流；early stop；restart 失败
+注入 run1 + 全新 run 断点续跑 run2——重投恰 5 个失败组、已有结果 md5
+一致、链恢复至完成）；全量单测 69/69；QA 159/159。实测 n20/nsd4/T3：
+kickoff 0.59s 非阻塞返回，全程 2.9s，iters=[9,8,8]（warm start 生效）。
+
+---
+---
+
 ## 2026-08-22: 运行时 Summary 统计增强（RunMetrics + 机器信息日志 + 心跳成组补发）
 
 **需求（用户提出 + 四轮 review 裁定）**：退出时无运行信息 summary；需

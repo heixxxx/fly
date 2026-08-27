@@ -13,4 +13,5 @@ from _fly_solver import (
 from .ras import *
 from .ras_graph import *
 from .ras_graph_daemon import solve_ras_graph_v2
+from .ras_graph_dynamic import solve_ras_graph_dynamic, get_dynamic_result
 from .project import *

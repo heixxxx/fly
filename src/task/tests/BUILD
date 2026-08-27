@@ -77,3 +77,19 @@ py_test(
     main = "test_requires_parsing.py",
     deps = ["//src/task/py:fly_task_py"],
 )
+
+# callable task 参数的 cloudpickle 编解码往返（__fly_cfunc__ 标签；
+# 编排 task 持有用户回调的场景，如 dynamic solver 的 update_rhs）
+load("@pip//:requirements.bzl", "requirement")
+
+py_test(
+    name = "callable_args_test",
+    srcs = ["test_callable_args.py"],
+    main = "test_callable_args.py",
+    deps = [
+        "//src/task/py:fly_task_py",
+        # 仅为 executor.py 源进 runfiles（其 C++ 依赖在测试内全部被 stub 接管）
+        "//src/agent/py:fly_agent_py",
+        requirement("cloudpickle"),
+    ],
+)
