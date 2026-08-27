@@ -45,6 +45,7 @@ const ZH = {
   't.pageOf': '第 {0} / {1} 页',
   't.jump': '跳转',
   't.pageTitle': '输入页码，回车跳转',
+  't.perPage': '每页',
 
   // ---- 状态徽章（枚举值映射；未知状态回退原值，见 statusLabel）----
   'st.PENDING': '等待中',
@@ -201,7 +202,7 @@ const ZH = {
   'tl.stripeOff': '条纹：关',
   'tl.resetZoom': '↺ 复原缩放',
   'tl.sliderTitle': '时间范围选取：选区内拖动平移 · 边缘拖动调宽 · 选区外拖动框选',
-  'tl.hint': '滚轮缩放 · 图内拖动框选时间段 · 点击条形看负载详情 · 点击泳道标签跳转工作节点',
+  'tl.hint': '滚轮滚动页面 · 图内拖动框选时间段缩放 · 点击条形看负载详情 · 点击泳道标签跳转工作节点',
   'tl.view': '视图：{0} → {1}（{2}%）',
   'tl.viewFull': '视图：{0} → {1}（全程）',
   'tl.laneTip': '点击查看工作节点 {0} 详情',
@@ -277,6 +278,7 @@ const EN = {
   't.pageOf': 'Page {0} / {1}',
   't.jump': 'Go',
   't.pageTitle': 'Enter page number, press Enter to jump',
+  't.perPage': 'Per page',
 
   // ---- status badges (enum mapping; unknown falls back to raw value) ----
   'st.PENDING': 'Pending',
@@ -428,7 +430,7 @@ const EN = {
   'tl.stripeOff': 'Stripes: Off',
   'tl.resetZoom': '↺ Reset Zoom',
   'tl.sliderTitle': 'Time range: drag inside selection to pan · drag edges to resize · drag outside to select new range',
-  'tl.hint': 'Wheel to zoom · drag in chart to select range · click bar for load details · click lane label to open worker',
+  'tl.hint': 'Wheel scrolls the page · drag inside the chart to zoom to a time range · click a bar for load details · click a lane label to open the worker',
   'tl.view': 'View: {0} → {1} ({2}%)',
   'tl.viewFull': 'View: {0} → {1} (full)',
   'tl.laneTip': 'Click to view worker {0} details',

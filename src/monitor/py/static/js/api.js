@@ -88,6 +88,23 @@ export function bindPageJump(input, btn, getPages, onPage) {
   input.addEventListener('keydown', e => { if (e.key === 'Enter') jump(); });
 }
 
+// ---- 分页大小（全局设置，所有分页列表共享，localStorage 持久化）----
+const PSIZE_KEY = 'fly-monitor-page-size';
+const PSIZE_DEFAULT = 20;
+
+export function getPageSize() {
+  const v = parseInt(localStorage.getItem(PSIZE_KEY), 10);
+  return v > 0 ? v : PSIZE_DEFAULT;
+}
+
+export function setPageSize(n) {
+  const v = parseInt(n, 10);
+  if (v > 0) localStorage.setItem(PSIZE_KEY, String(Math.min(v, 500)));
+}
+
+// 每页条数 select 的选项档位。
+export const PAGE_SIZE_OPTIONS = [20, 50, 100, 200];
+
 // 模块名展示规范化：存储的是真实包路径（executor 反序列化依赖，如
 // test.py.e2e_tasks），展示时去掉历史遗留的 py 中间层（→ test.e2e_tasks）。
 export function displayModule(m) {

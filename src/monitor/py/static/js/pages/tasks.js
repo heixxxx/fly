@@ -2,23 +2,42 @@
 // mount 建列表/详情双容器（控件事件绑一次，切换仅显隐——详情不得覆盖
 // main.innerHTML，否则返回时列表结构与绑定已销毁、update 写不回）。
 // update 仅填数据——过滤条件与分页状态存活于 ctx.taskFilter。
-import { getJson, fmtGB, fmtBytes, fmtMs, fmtPct, displayModule, fmtTime, fmtTimeFull, escapeHtml, shortName, expandoHtml, errorBriefHtml, statusLabel, evLabel, bindPageJump } from '../api.js';
+import { getJson, fmtGB, fmtBytes, fmtMs, fmtPct, displayModule, fmtTime, fmtTimeFull, escapeHtml, shortName, expandoHtml, errorBriefHtml, statusLabel, evLabel, bindPageJump, getPageSize, setPageSize, PAGE_SIZE_OPTIONS } from '../api.js';
 import { t } from '../i18n.js';
 import { navigate } from '../app.js';
 
-const PAGE_SIZE = 20;   // 每页行数（用户裁定：限制单页数量，翻页查看，不用表内滚动）
+// 每页行数：用户可调（全局设置，localStorage 持久化），限制单页数量、
+// 翻页查看，不用表内滚动。
+let tControlsFloatObserver = null;   // 筛选栏滚出视口 → 顶部浮窗
+let syncTControlsFloat = null;       // 列表显隐切换后手动重估浮窗状态
+// 控件原位的文档坐标与占位高：浮起后 wrap 变空壳（height=0），可见性
+// 判定必须改用滚动位置，不能用自身 rect（曾致每轮刷新都把浮窗收回）。
+let tWrapAbsTop = 0;
+let tWrapH = 0;
+let tScrollTarget = null;
+let tScrollHandler = null;
+let tControlsHome = null;    // 归位锚点 { parent, next }
+let mountCount = 0;
+
+function pageSize() { return getPageSize(); }
 
 export function destroy() {
   detailTid = -1;
+  tControlsFloatObserver?.disconnect();
+  tControlsFloatObserver = null;
+  if (tScrollTarget) tScrollTarget.removeEventListener('scroll', tScrollHandler);
+  document.getElementById('t-controls-float')?.remove();
 }
 
 export function mount(ctx) {
+  console.log('[tasks] mount #' + (++mountCount));
   const f = ctx.taskFilter;
   if (!f.sort) f.sort = { key: 'id', desc: true };   // 默认：ID 降序（现状序）
+  const pageSize = () => getPageSize();
   ctx.main.innerHTML = `
     <div id="t-list-view">
       <div class="panel">
-        <div class="controls">
+        <div class="controls" id="t-controls-wrap">
           <input id="t-q" placeholder="${t('t.searchPh')}" value="${f.q || ''}" style="width:230px">
           <select id="t-status">
             <option value="">${t('t.allStatus')}</option>
@@ -40,6 +59,11 @@ export function mount(ctx) {
             <input id="t-page" type="number" min="1" title="${t('t.pageTitle')}">
             <button id="t-go">${t('t.jump')}</button>
           </span>
+          <span class="pg-size">
+            ${t('t.perPage')}
+            <select id="t-psize">${PAGE_SIZE_OPTIONS.map(n =>
+              `<option value="${n}">${n}</option>`).join('')}</select>
+          </span>
         </div>
       </div>
     </div>
@@ -47,15 +71,21 @@ export function mount(ctx) {
       <span class="back-link" id="t-back">${t('t.back')}</span>
       <div id="t-detail"></div>
     </div>`;
+  document.getElementById('t-psize').value = getPageSize();
 
   document.getElementById('t-q').onchange = e => { f.q = e.target.value; f.offset = 0; navigate(); };
   document.getElementById('t-status').onchange = e => { f.status = e.target.value; f.offset = 0; navigate(); };
   document.getElementById('t-worker').onchange = e => { f.worker = e.target.value; f.offset = 0; navigate(); };
+  document.getElementById('t-psize').onchange = e => {
+    setPageSize(e.target.value);   // 全局共享：worker 详情列表同步生效
+    f.offset = 0;
+    navigate({ keepScroll: true });
+  };
   document.getElementById('t-prev').onclick = () => {
-    f.offset = Math.max(0, (f.offset || 0) - PAGE_SIZE); navigate();
+    f.offset = Math.max(0, (f.offset || 0) - pageSize()); navigate();
   };
   document.getElementById('t-next').onclick = () => {
-    f.offset = (f.offset || 0) + PAGE_SIZE; navigate();
+    f.offset = (f.offset || 0) + pageSize(); navigate();
   };
   // 列排序：点击循环 该列降序 → 升序；换列重置为降序（数值列惯例）。
   // 点击激活列头上的 ✕ 清除排序（恢复默认 ID 降序）。
@@ -77,8 +107,57 @@ export function mount(ctx) {
   // 跳页：输入页码（回车/按钮）→ clamp → 翻页。total 由 update 保存。
   bindPageJump(
     document.getElementById('t-page'), document.getElementById('t-go'),
-    () => Math.max(1, Math.ceil((f.total || 0) / PAGE_SIZE)),
-    p => { f.offset = (p - 1) * PAGE_SIZE; navigate(); });
+    () => Math.max(1, Math.ceil((f.total || 0) / pageSize())),
+    p => { f.offset = (p - 1) * pageSize(); navigate(); });
+  // ---- 筛选栏智能浮窗：滚出视口顶部后整体搬入固定浮窗，回滚归位
+  //（与 Timeline 工具栏同机制；详情视图下筛选栏隐藏，不触发浮窗）。
+  tControlsFloatObserver?.disconnect();
+  document.getElementById('t-controls-float')?.remove();
+  const wrap = document.getElementById('t-controls-wrap');
+  const cf = document.createElement('div');
+  cf.id = 't-controls-float';
+  cf.style.display = 'none';
+  document.body.appendChild(cf);
+  let controlsFloated = false;
+  // 控件原位文档坐标（mount 时刻布局已定）；浮起后原位以 minHeight 占位。
+  // stub 等无布局环境回落固定偏移（scrollTop=0 时不会触发浮起，无碍）。
+  const mainEl = document.getElementById('main');
+  {
+    const r = wrap.getBoundingClientRect ? wrap.getBoundingClientRect() : null;
+    tWrapAbsTop = ((r && r.top) || 110) + mainEl.scrollTop;
+    tWrapH = (r && r.height) || 0;
+    if (wrap.style) wrap.style.minHeight = tWrapH + 'px';
+  }
+  // 搬移整体 wrap（保住 .controls 祖先类——控件样式全靠它；逐个搬子
+  // 元素会丢包装层、控件褪回原生白底）。
+  tControlsHome = { parent: wrap.parentElement, next: wrap.nextElementSibling };
+  const syncControlsFloat = () => {
+    const hidden = document.getElementById('t-list-view').style.display === 'none';
+    // 判定用滚动位置：控件顶滚过顶栏下沿（62px）即浮起，回滚即归位。
+    const wantFloat = !hidden && mainEl.scrollTop > tWrapAbsTop - 70;
+    if (controlsFloated === wantFloat) return;
+    controlsFloated = wantFloat;
+    if (wantFloat) {
+      cf.appendChild(wrap);
+      cf.style.display = 'block';
+    } else {
+      const { parent, next } = tControlsHome;
+      if (next && next.parentElement === parent) parent.insertBefore(wrap, next);
+      else parent.appendChild(wrap);
+      cf.style.display = 'none';
+    }
+  };
+  // IntersectionObserver 缺失（测试 stub/极老内核）→ 降级不启用浮窗。
+  if (typeof IntersectionObserver === 'function') {
+    tControlsFloatObserver = new IntersectionObserver(syncControlsFloat, { threshold: 0 });
+    tControlsFloatObserver.observe(wrap);
+  }
+  // 判定基于滚动位置：main 滚动时实时驱动（重复 mount 先解绑旧闭包）。
+  if (tScrollTarget) tScrollTarget.removeEventListener('scroll', tScrollHandler);
+  tScrollHandler = () => syncControlsFloat();
+  tScrollTarget = mainEl;
+  mainEl.addEventListener('scroll', tScrollHandler, { passive: true });
+  syncTControlsFloat = syncControlsFloat;
   // 返回按钮：清详情状态回列表（双容器切换，绑定不因视图切换丢失）。
   document.getElementById('t-back').onclick = () => { ctx.taskId = null; navigate(); };
   // 行点击进详情：事件委托（tbody 每轮重建，委托在稳定父节点上）。
@@ -123,13 +202,16 @@ export async function update(ctx) {
 
   const f = ctx.taskFilter;
   const offset = f.offset || 0;
+  const ps = pageSize();
   const qs = new URLSearchParams({
     worker: f.worker || 0, status: f.status || '', q: f.q || '',
-    limit: PAGE_SIZE, offset,
+    limit: ps, offset,
     order: f.sort.key, desc: f.sort.desc ? 1 : 0,
   });
   const data = await getJson('/api/tasks?' + qs);
   if (!data) return;
+  // 列表↔详情显隐切换后重估筛选栏浮窗（详情视图下不悬浮）。
+  if (syncTControlsFloat) syncTControlsFloat();
 
   // thead 每轮重建：排序指示箭头随状态刷新（点击委托绑在 thead 骨架上，
   // 重建 innerHTML 不丢绑定；语言切换走整页重建，文案随新语言）。
@@ -165,17 +247,17 @@ export async function update(ctx) {
 
   document.getElementById('t-body').innerHTML = data.tasks.map(row).join('');
   f.total = data.total;
-  const pages = Math.max(1, Math.ceil(data.total / PAGE_SIZE));
-  const page = Math.floor(offset / PAGE_SIZE) + 1;
+  const pages = Math.max(1, Math.ceil(data.total / ps));
+  const page = Math.floor(offset / ps) + 1;
   document.getElementById('t-pageinfo').textContent = t('t.pageOf', page, pages);
   const pageInput = document.getElementById('t-page');
   pageInput.max = pages;
   if (document.activeElement !== pageInput) pageInput.value = page;
-  const end = Math.min(offset + PAGE_SIZE, data.total);
+  const end = Math.min(offset + ps, data.total);
   document.getElementById('t-range').innerHTML =
     `${data.total ? offset + 1 : 0}–${end} <span class="pg-total">${t('t.totalN', data.total)}</span>`;
   document.getElementById('t-prev').disabled = offset === 0;
-  document.getElementById('t-next').disabled = offset + PAGE_SIZE >= data.total;
+  document.getElementById('t-next').disabled = offset + ps >= data.total;
 }
 
 function row(tk) {

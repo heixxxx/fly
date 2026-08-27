@@ -17,6 +17,8 @@ function makeElement(id) {
     style: {}, dataset: {}, disabled: false, checked: true, children: [],
     classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
     addEventListener() {}, dispatchEvent() {},
+    removeEventListener() {},
+    getBoundingClientRect() { return { top: 110, height: 46, bottom: 156 }; },
     appendChild() {}, remove() {}, closest: () => null,
     querySelector: () => null, querySelectorAll: () => [],
     scrollIntoView() {}, onclick: null, onchange: null,

@@ -554,6 +554,15 @@ tr:hover td { background: var(--panel2); }
 .pager .pg-jump {
   margin-left: auto; display: inline-flex; gap: 6px; align-items: center;
 }
+.pager .pg-size { display: inline-flex; gap: 6px; align-items: center; }
+.pager .pg-size select {
+  background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 7px; padding: 4px 6px; font-size: 12.5px; outline: none;
+  height: 28px; cursor: pointer;
+}
+.pager .pg-size select:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-fill-12);
+}
 .pager .pg-jump input {
   width: 56px; height: 28px; padding: 2px 8px;
   background: var(--panel2); border: 1px solid var(--border); color: var(--text);
@@ -581,10 +590,9 @@ tr:hover td { background: var(--panel2); }
 
 /* Timeline 自绘时间范围选取条（替代 ECharts slider）：三个交互分区
    （选区内平移、边缘调宽、选区外框选），全程时无选区高亮。 */
+/* 时间范围滑块本体（宿主为 #tl-slider-float 固定浮窗，见下）。 */
 .tl-slider {
   position: relative; height: 18px;
-  /* 左侧与泳道标签区对齐（--tl-left 由 timeline 按最长标签动态写入） */
-  margin: 8px 40px 0 var(--tl-left, 170px);
   background: var(--panel2); border: 1px solid var(--border-strong); border-radius: 5px;
 }
 .tl-slider-sel {
@@ -608,13 +616,12 @@ tr:hover td { background: var(--panel2); }
   white-space: nowrap;
 }
 
-/* x 轴起止时间（左右角，静态无动画）。 */
+/* x 轴起止时间（宿主为滑块固定浮窗，浮窗内静态排布分列两端）。 */
 .tl-axis-time {
-  position: absolute; pointer-events: none; z-index: 4;
-  font-size: 11.5px; font-family: "Cascadia Code", Consolas, monospace; color: var(--muted);
+  pointer-events: none;
+  font-size: 11.5px;
+  font-family: "Cascadia Code", Consolas, monospace; color: var(--muted);
 }
-.tl-axis-time-l { left: var(--tl-left, 170px); bottom: 6px; }
-.tl-axis-time-r { right: 40px; bottom: 6px; text-align: right; }
 
 /* 泳道标签 hover 的可点击提示浮层。 */
 .tl-lane-tip {
@@ -625,12 +632,46 @@ tr:hover td { background: var(--panel2); }
   white-space: nowrap;
 }
 
-/* ---- Timeline task 详情固定浮窗（视口底部）----
-   点击条形在此展示详情，替代页内面板（原实现会 scrollIntoView 大幅
-   跳页）；可收起为单行摘要、可清除。信息多时限高内滚，不遮整屏。 */
-.tl-info-float {
+/* ---- Timeline 时间范围滑块固定浮窗（视口底部，timeline 页常驻）----
+   数百泳道的图表远超一屏，滑块随页底滚动后无法不滚动调时间窗——
+   常驻悬浮，缩放/框选后随时可拖。task 详情浮窗出现时让其上移让位。 */
+#tl-slider-float {
   position: fixed; left: 50%; transform: translateX(-50%);
   bottom: 14px; width: min(1020px, calc(100vw - 32px));
+  display: flex; align-items: center; gap: 12px;
+  background: var(--panel); border: 1px solid var(--border-strong);
+  border-radius: 999px; box-shadow: var(--shadow-pop);
+  padding: 7px 18px; z-index: 60;
+}
+#tl-slider-float .tl-slider { flex: 1; margin: 0; }
+/* 轴起止时间随滑块住在浮窗内（静态排布，覆盖画布内的 absolute 定位） */
+#tl-slider-float .tl-axis-time {
+  position: static; flex: none; font-size: 11.5px;
+  font-family: "Cascadia Code", Consolas, monospace; color: var(--muted);
+}
+
+/* ---- 智能顶部浮窗（Timeline 工具栏 / Tasks 筛选栏共用）----
+   原位置滚出视口后整体搬入，回到可见即归位。 */
+#tl-toolbar-float,
+#t-controls-float {
+  position: fixed; top: 62px; left: 50%; transform: translateX(-50%);
+  width: min(1020px, calc(100vw - 32px));
+  background: var(--panel); border: 1px solid var(--border-strong);
+  border-radius: 12px; box-shadow: var(--shadow-pop); z-index: 60;
+  padding: 8px 14px;
+}
+#tl-toolbar-float .controls { margin-bottom: 6px; }
+#tl-toolbar-float .tl-hint { margin-top: 6px; }
+#tl-toolbar-float .controls { margin-bottom: 6px; }
+#tl-toolbar-float .tl-hint { margin-top: 6px; }
+
+/* ---- Timeline task 详情固定浮窗（视口底部）----
+   点击条形在此展示详情，替代页内面板（原实现会 scrollIntoView 大幅
+   跳页）；可收起为单行摘要、可清除。信息多时限高内滚，不遮整屏。
+   bottom 62px：常驻的滑块浮窗（约 34px 高）在其下方，两者不重叠。 */
+.tl-info-float {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: 62px; width: min(1020px, calc(100vw - 32px));
   background: var(--panel); border: 1px solid var(--border-strong);
   border-radius: 12px; box-shadow: var(--shadow-pop);
   z-index: 60; overflow: hidden;

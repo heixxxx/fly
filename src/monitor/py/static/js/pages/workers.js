@@ -1,12 +1,12 @@
 // Workers：卡片列表 + 详情（四图 + 该 worker 的 task 表）。
 // mount 建外层容器；update 按 ctx.workerId 填列表或详情——详情骨架/图表
 // 实例只在进入时建一次，后续 update 仅 setOption（缩放/hover 保留）。
-import { getJson, fetchSamplesIncremental, fmtGB, fmtBytes, fmtMs, escapeHtml, expandoHtml, statusLabel, evLabel, bindPageJump } from '../api.js';
+import { getJson, fetchSamplesIncremental, fmtGB, fmtBytes, fmtMs, escapeHtml, expandoHtml, statusLabel, evLabel, bindPageJump, getPageSize, setPageSize, PAGE_SIZE_OPTIONS } from '../api.js';
 import { makeChart, line, rateSeries, chartColors, fmtMb, fmtMbPerS, fmtPctVal } from '../charts.js';
 import { t } from '../i18n.js';
 import { navigate } from '../app.js';
 
-const PAGE_SIZE = 20;   // 详情 task 表每页行数（翻页替代表内滚动）
+// 详情 task 表每页行数：全局分页大小（翻页替代表内滚动）。
 
 let charts = [];
 let detailBuilt = false;   // 详情骨架与图表实例是否已建
@@ -90,7 +90,7 @@ async function fillDetail(body, ctx) {
   // 样本经增量缓存拉取（每轮只传新增）；task 表分页（20/页）。
   const [samples, tasks] = await Promise.all([
     fetchSamplesIncremental(wid),
-    getJson(`/api/tasks?worker=${wid}&limit=${PAGE_SIZE}&offset=${off}`),
+    getJson(`/api/tasks?worker=${wid}&limit=${getPageSize()}&offset=${off}`),
   ]);
   const sp = samples;
   const times = sp.map(x => x.epoch_ms);
@@ -123,22 +123,35 @@ async function fillDetail(body, ctx) {
             <input id="w-page" type="number" min="1" title="${t('t.pageTitle')}">
             <button id="w-go">${t('t.jump')}</button>
           </span>
+          <span class="pg-size">
+            ${t('t.perPage')}
+            <select id="w-psize">${PAGE_SIZE_OPTIONS.map(n =>
+              `<option value="${n}">${n}</option>`).join('')}</select>
+          </span>
         </div>
       </div>`;
     document.getElementById('w-back').onclick = () => { ctx.workerId = null; navigate(); };
     document.getElementById('w-prev').onclick = () => {
-      ctx.wTaskOffset = Math.max(0, (ctx.wTaskOffset || 0) - PAGE_SIZE);
+      ctx.wTaskOffset = Math.max(0, (ctx.wTaskOffset || 0) - getPageSize());
       navigate({ keepScroll: true });   // 详情页翻页：留在 task 表位置
     };
     document.getElementById('w-next').onclick = () => {
-      ctx.wTaskOffset = (ctx.wTaskOffset || 0) + PAGE_SIZE;
+      ctx.wTaskOffset = (ctx.wTaskOffset || 0) + getPageSize();
       navigate({ keepScroll: true });
     };
     // 跳页：与翻页一致保留滚动位置（表格在图表区下方）。
     bindPageJump(
       document.getElementById('w-page'), document.getElementById('w-go'),
-      () => Math.max(1, Math.ceil((ctx.wTotal || 0) / PAGE_SIZE)),
-      p => { ctx.wTaskOffset = (p - 1) * PAGE_SIZE; navigate({ keepScroll: true }); });
+      () => Math.max(1, Math.ceil((ctx.wTotal || 0) / getPageSize())),
+      p => { ctx.wTaskOffset = (p - 1) * getPageSize(); navigate({ keepScroll: true }); });
+    // 每页条数（全局设置）：变更后回第一页。
+    const wpsize = document.getElementById('w-psize');
+    wpsize.value = getPageSize();
+    wpsize.onchange = e => {
+      setPageSize(e.target.value);
+      ctx.wTaskOffset = 0;
+      navigate({ keepScroll: true });
+    };
       charts = [
         makeChart(document.getElementById('w-cpu'), {}),
         makeChart(document.getElementById('w-mem'), {}),
@@ -207,17 +220,18 @@ async function fillDetail(body, ctx) {
     (tasks ? tasks.tasks : []).map(taskRow).join('');
   const total = tasks ? tasks.total : 0;
   ctx.wTotal = total;
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const page = Math.floor(off / PAGE_SIZE) + 1;
+  const ps = getPageSize();
+  const pages = Math.max(1, Math.ceil(total / ps));
+  const page = Math.floor(off / ps) + 1;
   document.getElementById('w-pageinfo').textContent = t('t.pageOf', page, pages);
   const pageInput = document.getElementById('w-page');
   pageInput.max = pages;
   if (document.activeElement !== pageInput) pageInput.value = page;
-  const end = Math.min(off + PAGE_SIZE, total);
+  const end = Math.min(off + ps, total);
   document.getElementById('w-range').innerHTML =
     `${total ? off + 1 : 0}–${end} <span class="pg-total">${t('t.totalN', total)}</span>`;
   document.getElementById('w-prev').disabled = off === 0;
-  document.getElementById('w-next').disabled = off + PAGE_SIZE >= total;
+  document.getElementById('w-next').disabled = off + ps >= total;
 }
 
 function taskRow(tk) {

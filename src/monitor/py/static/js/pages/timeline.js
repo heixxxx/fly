@@ -60,8 +60,7 @@ function neutralColor() { return cssVar('--gantt-neutral', '#61707f'); }
 // grid 几何（泳道点击的坐标判定与 ganttOption 配置一致）。
 // top 预留给时间标签条（悬停/框选起止点时间显示区，不覆盖 task 条）。
 // left 并非定值：update 按最长泳道标签估宽后写回（中文"工作节点"+长
-// host 远超 170px，固定值会把标签裁出画布），并经 CSS 变量 --tl-left
-// 联动底部滑块与左下角轴时间标签的对齐。
+// host 远超 170px，固定值会把标签裁出画布）。
 const GRID = { left: 170, top: 48, bottom: 34, barH: 16, laneH: 34 };
 const HEAVY = 0.30;  // 复合负载阈值（其它维度 ≥30% 叠加条纹）
 
@@ -69,14 +68,20 @@ let chart = null;
 let lastTasks = [];
 let lastRenderKey = null; // 渲染跳过指纹（changed|lanes|条数）
 let hostMap = {};
+let runEndMs = null;   // run 结束时刻（RUNNING 任务的隐式窗口右端）
+let tToolbarScrollTarget = null;   // 工具栏浮窗的滚动驱动绑定
+let tToolbarScrollHandler = null;
 let lanes = [];          // worker 泳道（排序后）
 let extent = { lo: 0, hi: 1 };
 let savedState = null;   // { sort, colorDim, stripe, zoom, scrollTop }
 
 // 负载占比：cpu/io/wait 相对执行窗口；queue（排队等待 ready→started）
 // 相对 task 生命周期（queue+exec）——提交后大部分时间在等调度即为高。
+// RUNNING（exec_end 缺失）：窗口取到 run 结束（或当前时刻）——用 1ms
+// 窗口会算出天文百分比（曾显示 723400%）。
 function ratios(tk) {
-  const exec = Math.max(1, (tk.exec_end_ms || tk.exec_start_ms + 1) - tk.exec_start_ms);
+  const end = tk.exec_end_ms ?? tk.completed_ms ?? runEndMs ?? Date.now();
+  const exec = Math.max(1, end - tk.exec_start_ms);
   const cpu = (tk.cpu_time_ms || 0) / exec;
   const io = ((tk.read_time_ms || 0) + (tk.write_time_ms || 0)) / exec;
   const queueMs = Math.max(0, (tk.started_ms || 0) - (tk.ready_ms || tk.created_ms || 0));
@@ -84,32 +89,86 @@ function ratios(tk) {
   return { cpu, io, wait: Math.max(0, 1 - cpu - io), queue, queueMs, execMs: exec };
 }
 
-// 主色维度档位色：≥50% 实色，10~50% 半透明，<10% 中性灰。
+// 主色维度档位色：≥50% 实色；10~50% 同色相暗化版（透明度方案与实色
+// 同为蓝色系，用户裁定区分度不足——改亮度阶梯后三档一眼可分）；<10%
+// 中性灰。
 function dimTierColor(dim, ratio) {
   const c = dimColors();
   if (ratio >= 0.5) return c[dim];
-  if (ratio >= 0.1) return c[dim] + '80';  // 50% 透明度
+  if (ratio >= 0.1) return shadeHex(c[dim], 0.45);
   return neutralColor();
+}
+// hex 颜色按系数压暗（rgb() 返回；非 hex 输入原样返回）。
+function shadeHex(hex, f) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex).trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return `rgb(${Math.round(((n >> 16) & 255) * f)},` +
+         `${Math.round(((n >> 8) & 255) * f)},${Math.round((n & 255) * f)})`;
 }
 
 function isFast(tk) {
-  return ((tk.exec_end_ms || tk.exec_start_ms + 1) - tk.exec_start_ms) < 500;
+  // RUNNING（exec_end 缺失）不是 Fast——用 1ms 假窗口会误判成绿条。
+  if (tk.exec_end_ms == null) return false;
+  return (tk.exec_end_ms - tk.exec_start_ms) < 500;
 }
 
 // 复合判定维度（比率键固定四维：_r 里的 queueMs/execMs 是毫秒值，
 // 参与比较会恒真）。判定结果在 seriesData 构建期预计算进 _compound。
 const STRIPE_DIMS = ['cpu', 'io', 'wait', 'queue'];
 
+// 泳道标签文案与估宽（CJK 12px、其余 6.6px @ 11px 字号留余量）。
+function laneLabelOf(w) {
+  return w === 0 ? t('tl.laneMaster', hostMap[0] || '?')
+                 : t('tl.laneLabel', w, hostMap[w] || '?');
+}
+// 测宽优先 canvas measureText 精确量取——字符估宽偏小十几像素，会让
+// 「文字上才提示」的判定区间外扩到行空白；canvas 不可用（测试 stub 等）
+// 回落字符估宽。
+let labelMeasureCtx = null;   // false = 已探测不可用
+function estLabelW(s) {
+  if (labelMeasureCtx === null && typeof document !== 'undefined') {
+    const c = document.createElement('canvas');
+    labelMeasureCtx = c.getContext ? c.getContext('2d') : false;
+    if (labelMeasureCtx) {
+      labelMeasureCtx.font =
+        '11px "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+    }
+  }
+  if (!labelMeasureCtx) {
+    let px = 0;
+    for (const ch of String(s)) px += ch.charCodeAt(0) > 0x2e7f ? 12 : 6.6;
+    return px;
+  }
+  return labelMeasureCtx.measureText(String(s)).width;
+}
+// 标签文字左端 x（轴标签右对齐贴轴线，右端 ≈ GRID.left-8）。
+function laneLabelTextStartX(w) {
+  return GRID.left - 8 - estLabelW(laneLabelOf(w));
+}
+
 function currentZoom() {
   if (!chart) return { start: 0, end: 100 };
   const dz = (chart.getOption().dataZoom || [{}])[0];
-  return { start: dz.start ?? 0, end: dz.end ?? 100 };
+  const s = +dz.start, e = +dz.end;
+  // 多次极端缩放后 percent 可能异常（NaN/越界/倒挂）——视图锚定与轴时间
+  // 显示都以此为准，非有限值一律回落全程，防止状态漂移到数据范围外。
+  if (!Number.isFinite(s) || !Number.isFinite(e) || s < 0 || e > 100 || s > e) {
+    return { start: 0, end: 100 };
+  }
+  return { start: s, end: e };
 }
 
 export function destroy(ctx) {
   GRID.left = 170;   // 恢复默认（left 随上页数据动态调整过）
   lastRenderKey = null;
-  document.getElementById('tl-info-float')?.remove();   // 浮窗随页销毁
+  if (tToolbarScrollTarget) {
+    tToolbarScrollTarget.removeEventListener('scroll', tToolbarScrollHandler);
+  }
+  tToolbarScrollTarget = null; tToolbarScrollHandler = null;
+  document.getElementById('tl-info-float')?.remove();     // 浮窗随页销毁
+  document.getElementById('tl-slider-float')?.remove();
+  document.getElementById('tl-toolbar-float')?.remove();
   if (chart) {
     savedState = {
       sort: (ctx && ctx.tlSort) || 'id',
@@ -143,30 +202,73 @@ export function mount(ctx) {
 
   ctx.main.innerHTML = `
     <div class="panel">
-      <div class="controls">
-        <select id="tl-sort" title="${t('tl.sortTitle')}">
-          <option value="id">${t('tl.sortId')}</option>
-          <option value="host">${t('tl.sortHost')}</option>
-        </select>
-        <span class="tl-sep"></span>
-        <select id="tl-dim" title="${t('tl.dimTitle')}">
-          <option value="cpu">${t('tl.dim', 'CPU')}</option>
-          <option value="io">${t('tl.dim', 'IO')}</option>
-          <option value="wait">${t('tl.dim', 'Wait')}</option>
-          <option value="queue">${t('tl.dim', 'Queue')}</option>
-        </select>
-        <span class="tl-sep"></span>
-        <button id="tl-stripe"></button>
-        <button id="tl-reset-zoom">${t('tl.resetZoom')}</button>
-        <span class="tl-range" id="tl-range"></span>
+      <div id="tl-toolbar">
+        <div class="controls" id="tl-controls">
+          <select id="tl-sort" title="${t('tl.sortTitle')}">
+            <option value="id">${t('tl.sortId')}</option>
+            <option value="host">${t('tl.sortHost')}</option>
+          </select>
+          <span class="tl-sep"></span>
+          <select id="tl-dim" title="${t('tl.dimTitle')}">
+            <option value="cpu">${t('tl.dim', 'CPU')}</option>
+            <option value="io">${t('tl.dim', 'IO')}</option>
+            <option value="wait">${t('tl.dim', 'Wait')}</option>
+            <option value="queue">${t('tl.dim', 'Queue')}</option>
+          </select>
+          <span class="tl-sep"></span>
+          <button id="tl-stripe"></button>
+          <button id="tl-reset-zoom">${t('tl.resetZoom')}</button>
+          <span class="tl-range" id="tl-range"></span>
+        </div>
+        <div class="tl-legend" id="tl-legend"></div>
+        <div class="tl-hint">${t('tl.hint')}</div>
       </div>
-      <div class="tl-legend" id="tl-legend"></div>
       <div id="tl-chart" style="width:100%;height:240px"></div>
-      <div class="tl-slider" id="tl-slider" title="${t('tl.sliderTitle')}">
-        <div class="tl-slider-sel" id="tl-slider-sel"></div>
-      </div>
-      <div class="tl-hint" style="margin-top:4px">${t('tl.hint')}</div>
     </div>`;
+  // 工具栏智能浮窗：数百泳道的图表远超一屏，工具栏/图例/操作提示滚出
+  // 视口后不可达（缩放后想切主色必须拉回顶部）——滚出视口顶部即整体悬
+  // 浮于视口顶部，回滚可见即归位。DOM 整体搬移保留事件绑定；判定用滚
+  // 动位置驱动（IntersectionObserver 回调时序在部分环境不可靠）。
+  if (tToolbarScrollTarget) {
+    tToolbarScrollTarget.removeEventListener('scroll', tToolbarScrollHandler);
+  }
+  document.getElementById('tl-toolbar-float')?.remove();
+  const toolbarEl = document.getElementById('tl-toolbar');
+  const tbf = document.createElement('div');
+  tbf.id = 'tl-toolbar-float';
+  tbf.style.display = 'none';
+  document.body.appendChild(tbf);
+  let toolbarFloated = false;
+  const mainEl = document.getElementById('main');
+  const tr = toolbarEl.getBoundingClientRect ? toolbarEl.getBoundingClientRect() : null;
+  const tlAbsTop = ((tr && tr.top) || 110) + mainEl.scrollTop;
+  const syncToolbarFloat = () => {
+    const wantFloat = mainEl.scrollTop > tlAbsTop - 62;
+    if (toolbarFloated === wantFloat) return;
+    toolbarFloated = wantFloat;
+    if (toolbarFloated) {
+      while (toolbarEl.firstChild) tbf.appendChild(toolbarEl.firstChild);
+      tbf.style.display = 'block';
+    } else {
+      while (tbf.firstChild) toolbarEl.appendChild(tbf.firstChild);
+      tbf.style.display = 'none';
+    }
+  };
+  tToolbarScrollHandler = syncToolbarFloat;
+  tToolbarScrollTarget = mainEl;
+  mainEl.addEventListener('scroll', tToolbarScrollHandler, { passive: true });
+  // 时间范围滑块固定浮窗：数百泳道的图表远超一屏，滑块随页底滚动后
+  // 必须拉到最底才能调时间窗——独立悬浮于视口底部，缩放后随时可拖。
+  document.getElementById('tl-slider-float')?.remove();
+  const sfl = document.createElement('div');
+  sfl.id = 'tl-slider-float';
+  sfl.innerHTML = `
+    <span class="tl-axis-time tl-axis-time-l"></span>
+    <div class="tl-slider" id="tl-slider" title="${t('tl.sliderTitle')}">
+      <div class="tl-slider-sel" id="tl-slider-sel"></div>
+    </div>
+    <span class="tl-axis-time tl-axis-time-r"></span>`;
+  document.body.appendChild(sfl);
   // task 详情固定浮窗（视口底部）：点击条形在此展示，避免页面内大幅
   // 跳转；可收起/清除。切页随 destroy 移除。
   document.getElementById('tl-info-float')?.remove();
@@ -184,6 +286,12 @@ export function mount(ctx) {
   stripeLineColor = cssVar('--stripe-line', 'rgba(255,255,255,.65)');
   stripePatterns.clear();   // 主题/语言重建后按新线色重建 pattern
   chart = makeChart(document.getElementById('tl-chart'), ganttOption([], []));
+  // 泳道内滚轮 = 滚动页面（用户裁定）：zrender 对 wheel 无条件
+  // preventDefault（即使已关 zoomOnMouseWheel），在 capture 阶段拦下
+  // 事件不再传入画布，浏览器默认滚动照常；缩放走框选/滑块。
+  const chartHost = document.getElementById('tl-chart');
+  chartHost.addEventListener('wheel', (e) => e.stopPropagation(),
+                             { capture: true, passive: true });
 
   document.getElementById('tl-sort').onchange = (e) => {
     ctx.tlSort = e.target.value; syncControls(ctx); navigate();
@@ -213,11 +321,16 @@ export function mount(ctx) {
     }
   });
   // 泳道标签区 hover：pointer 光标 + 跟随小提示（可点击跳转的可见暗示）。
+  // 提示/手型只在标签文字宽度内出现——行内空白离文字很远，弹「可点击」
+  // 暗示反而误导；整行点击跳转保留（点击目标不缩小）。
   chart.getZr().on('mousemove', (e) => {
     const chartEl = document.getElementById('tl-chart');
     if (!chartEl) return;
     const w = laneAt(e.offsetX, e.offsetY);
-    if (w >= 0) {
+    const onText = w >= 0 &&
+                   e.offsetX >= laneLabelTextStartX(w) - 4 &&
+                   e.offsetX <= GRID.left - 4;
+    if (onText) {
       chartEl.style.cursor = 'pointer';
       showLaneTip(chartEl, e.offsetX, e.offsetY,
                   t('tl.laneTip', w));
@@ -227,7 +340,19 @@ export function mount(ctx) {
     }
   });
   chart.getZr().on('mouseout', hideLaneTip);
-  chart.on('dataZoom', () => { updateRangeHint(); syncSliderVisual(); updateAxisTimes(); });
+  chart.on('dataZoom', () => {
+    // 迷失自愈：无论何种路径（极端缩放状态损坏/异常数据）导致视图窗口
+    // 完全漂出数据时间范围，一律弹回全程——用户永远不会"迷失"在空区域。
+    const z = currentZoom();
+    const span = extent.hi - extent.lo || 1;
+    const winLo = extent.lo + span * z.start / 100;
+    const winHi = extent.lo + span * z.end / 100;
+    if (winHi < extent.lo || winLo > extent.hi) {
+      chart.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
+      return;
+    }
+    updateRangeHint(); syncSliderVisual(); updateAxisTimes();
+  });
   attachBrushSelect(ctx);
   attachSlider(ctx);
   attachHoverGuide(ctx);
@@ -315,14 +440,11 @@ function hideBrushTimes() {
 let axisTimeL = null, axisTimeR = null;
 
 function attachAxisTimes(ctx) {
-  const chartEl = document.getElementById('tl-chart');
-  if (!chartEl) return;
-  axisTimeL = document.createElement('div');
-  axisTimeL.className = 'tl-axis-time tl-axis-time-l';
-  axisTimeR = document.createElement('div');
-  axisTimeR.className = 'tl-axis-time tl-axis-time-r';
-  chartEl.appendChild(axisTimeL);
-  chartEl.appendChild(axisTimeR);
+  // 轴起止时间随滑块一起住在固定浮窗里（左/右端各一个）。
+  const sfl = document.getElementById('tl-slider-float');
+  if (!sfl) return;
+  axisTimeL = sfl.querySelector('.tl-axis-time-l');
+  axisTimeR = sfl.querySelector('.tl-axis-time-r');
   updateAxisTimes();
 }
 
@@ -543,7 +665,7 @@ function renderLegend(ctx) {
   const neutral = neutralColor();
   el.innerHTML = `
     <span class="lg"><i style="background:${c[dim]}"></i>${t('tl.legendHigh', DIM_LABEL[dim])}</span>
-    <span class="lg"><i style="background:${c[dim]}80"></i>${t('tl.legendMid')}</span>
+    <span class="lg"><i style="background:${shadeHex(c[dim], 0.45)}"></i>${t('tl.legendMid')}</span>
     <span class="lg"><i style="background:${neutral}"></i>${t('tl.legendLow')}</span>
     <span class="lg"><i class="striped" style="background-color:${c[dim]}"></i>${t('tl.legendCompound')}</span>
     <span class="lg"><i style="background:${fastColor()}"></i>${t('tl.legendFast')}</span>
@@ -622,6 +744,7 @@ export async function update(ctx) {
     for (const w of workers.workers) hostMap[w.worker_id] = w.hostname || '?';
   }
   hostMap[0] = (meta && meta.meta && meta.meta.hostname) || 'master';
+  runEndMs = (meta && meta.meta && meta.meta.run_end_ms) ? +meta.meta.run_end_ms : null;
 
   lanes = [...new Set(liveTasks.map(tk => tk.worker_id))];
   if (ctx.tlSort === 'host') {
@@ -640,16 +763,12 @@ export async function update(ctx) {
 
   // 左边距自适应：按最长泳道标签估宽（CJK 12px、其余 6.6px @ 11px 字号
   // 留余量），上限 320、不超绘图区 45%；超出截断（axisLabel truncate）。
-  // 同步 CSS 变量 --tl-left，滑块与左下角轴时间标签跟随对齐。
-  const labelOf = w => w === 0 ? t('tl.laneMaster', hostMap[0] || '?')
-                              : t('tl.laneLabel', w, hostMap[w] || '?');
-  const estW = s => { let px = 0; for (const ch of String(s)) px += ch.charCodeAt(0) > 0x2e7f ? 12 : 6.6; return px; };
+  const labelOf = laneLabelOf;
+  const estW = estLabelW;
   const chartEl0 = document.getElementById('tl-chart');
   const maxW = Math.max(0, ...lanes.map(w => estW(labelOf(w))));
   const maxLeft = Math.max(170, Math.floor((chartEl0 ? chartEl0.clientWidth : 800) * 0.45));
   GRID.left = Math.min(320, maxLeft, Math.max(170, Math.ceil(maxW) + 26));
-  const panelEl = chartEl0 ? chartEl0.closest('.panel') : null;
-  if (panelEl) panelEl.style.setProperty('--tl-left', GRID.left + 'px');
 
   // 紧凑泳道：每泳道 laneH + 顶部图例/底部滑块。worker 执行 task 串行，
   // 同泳道 exec 窗口不重叠（若出现即为上报异常，应暴露而非掩盖）。
@@ -679,11 +798,16 @@ export async function update(ctx) {
     const failed = tk.status === 'FAILED';
     const fast = isFast(tk) && !failed;
     const dim = ctx.tlColorDim;
+    // RUNNING：条形延伸到当前数据右端（Gantt 惯例——进行中的条一直延
+    // 伸），而非 50ms 占位窄条。
+    const running = failed ? false : tk.exec_end_ms == null;
+    const winEnd = running
+      ? Math.max(extent.hi, runEndMs || 0)   // 首轮 extent 未初始化时用 run 结束
+      : (tk.exec_end_ms || tk.exec_start_ms + 50);
     return {
-      value: [lanes.indexOf(tk.worker_id), tk.exec_start_ms,
-              tk.exec_end_ms || tk.exec_start_ms + 50, tk.task_id],
+      value: [lanes.indexOf(tk.worker_id), tk.exec_start_ms, winEnd, tk.task_id],
       name: tk.name,
-      _r: r, _failed: failed, _fast: fast,
+      _r: r, _failed: failed, _fast: fast, _running: running,
       // 复合负载预计算：renderItem 是热路径（每 datum 每帧一次），
       // 维度遍历/主题读取都移到 seriesData 构建期一次完成。
       _compound: STRIPE_DIMS.some(k => k !== dim && (r[k] || 0) >= HEAVY),
@@ -710,7 +834,10 @@ export async function update(ctx) {
   const t0 = oldExtent.lo + spanOld * zPct.start / 100;
   const t1 = oldExtent.lo + spanOld * zPct.end / 100;
   chart.setOption(ganttOption(lanes, seriesData, ctx), true);
-  if (wasFull) {
+  // 恢复的窗口须与新 extent 有交集——旧状态损坏（漂到数据外）时弹回
+  // 全程，而不是把损坏窗口映射回来。
+  const intersects = t1 >= extent.lo && t0 <= extent.hi;
+  if (wasFull || !intersects) {
     chart.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
   } else {
     const spanNew = extent.hi - extent.lo || 1;
@@ -745,8 +872,10 @@ function updateRangeHint() {
 function showInfo(tk) {
   const el = document.getElementById('tl-info-float');
   if (!el) return;
-  const dur = tk.exec_end_ms ? tk.exec_end_ms - tk.exec_start_ms : null;
   const r = ratios(tk);
+  // RUNNING：结束/完成时间未定，显示「进行中」；运行时长为已运行时长。
+  const running = tk.exec_end_ms == null;
+  const runningHtml = `<span class="muted">${t('app.running')}</span>`;
   el.classList.remove('collapsed');
   el.style.display = 'block';
   el.innerHTML = `
@@ -769,9 +898,9 @@ function showInfo(tk) {
             <span class="k">${t('tl.depsReadyAt')}</span><span class="v mono">${fmtTimeFull(tk.ready_ms)}</span>
             <span class="k">${t('tl.dispatchAt')}</span><span class="v mono">${fmtTimeFull(tk.started_ms)}</span>
             <span class="k">${t('tl.execStartAt')}</span><span class="v mono">${fmtTimeFull(tk.exec_start_ms)}</span>
-            <span class="k">${t('tl.execEndAt')}</span><span class="v mono">${fmtTimeFull(tk.exec_end_ms)}</span>
-            <span class="k">${t('tl.completedAt')}</span><span class="v mono">${fmtTimeFull(tk.completed_ms)}</span>
-            <span class="k">${t('tb.duration')}</span><span class="v mono">${fmtMs(dur)}</span>
+            <span class="k">${t('tl.execEndAt')}</span><span class="v mono">${tk.exec_end_ms ? fmtTimeFull(tk.exec_end_ms) : runningHtml}</span>
+            <span class="k">${t('tl.completedAt')}</span><span class="v mono">${tk.completed_ms ? fmtTimeFull(tk.completed_ms) : runningHtml}</span>
+            <span class="k">${t('tb.duration')}</span><span class="v mono">${tk.exec_start_ms ? fmtMs(r.execMs) : '-'}</span>
           </div>
         </div>
         <div class="kv">
@@ -813,13 +942,14 @@ function ganttOption(wids, seriesData, ctx) {
       formatter: p => {
         const d = seriesData.find(x => x.value[3] === p.value[3]) || {};
         const [, s, e, tid] = p.value;
-        const dur = ((e - s) / 1000).toFixed(2);
+        // RUNNING 条延伸到数据右端——窗口时长无意义，显示「进行中」。
+        const dur = d._running ? t('app.running') : `${((e - s) / 1000).toFixed(2)}s`;
         const r = d._r || {};
         const load = d._fast ? t('tl.fastTask')
           : t('tl.ttLoad', fmtPct(r.queue), fmtPct(r.cpu), fmtPct(r.io), fmtPct(r.wait));
         return `<b>#${tid}</b> ${shortName(p.name, 12, 8)}<br>${load}` +
                `<br>${new Date(s).toLocaleTimeString()} → ` +
-               `${new Date(e).toLocaleTimeString()}（${dur}s）` +
+               `${new Date(e).toLocaleTimeString()}（${dur}）` +
                `<br><span style="color:${chartColors().label}">${escapeHtml(t('tl.ttClickDetail'))}</span>`;
       },
     },
@@ -858,15 +988,16 @@ function ganttOption(wids, seriesData, ctx) {
     // 显示并裁剪越界部分。
     dataZoom: [
       { type: 'inside', xAxisIndex: 0, filterMode: 'none',
+        minSpan: 0.05,   // 最小窗口 ≈360ms：防止极端缩放下 percent 精度损坏
+        // 滚轮不缩放（用户裁定：泳道内滚轮 = 正常滚动页面）；缩放走
+        // 图内框选拖选 / 底部滑块 / 复原按钮。拖动平移同样保持禁用。
         moveOnMouseMove: false, moveOnMouseWheel: false,
-        zoomOnMouseWheel: true },
+        zoomOnMouseWheel: false },
     ],
     series: [{
       type: 'custom',
-      // progressive：数千条分帧渲染——首屏先出前片，避免一次性布局数万
-      // 图形元素的长阻塞（滚动/缩放重绘走增量帧）。
-      progressive: 2000,
-      progressiveThreshold: 4000,
+      // 不用 progressive：分帧渲染与 inside dataZoom 组合下，轴变化时已
+      // 渲染分片不参与重绘，会残留旧帧条形（浮伪影）。首渲改同步。
       // clip：缩放/平移时条形不得越出 grid（否则左侧盖住 worker 名、右侧
       // 超出边界——custom series 默认不裁剪）。
       clip: true,
@@ -874,11 +1005,23 @@ function ganttOption(wids, seriesData, ctx) {
         const lane = api.value(0);
         const start = api.coord([api.value(1), lane]);
         const end = api.coord([api.value(2), lane]);
-        let x = start[0], w = Math.max(end[0] - start[0], 2);
+        // 手动视口裁剪：连续小幅缩放后 series 的 clip:true 偶发失效
+        // （progressive 分帧渲染路径），条形越出 grid 覆盖左侧泳道标签——
+        // renderItem 内自行 clamp，无论框架裁剪是否生效都保证不越界。
+        const viewL = GRID.left;
+        const viewR = chart.getWidth() - 40;
+        let x0 = start[0];
+        let x1 = Math.max(end[0], x0 + 2);
+        if (x1 < viewL || x0 > viewR) {
+          return { type: 'group', children: [] };   // 视口外不产生图形
+        }
+        if (x0 < viewL) x0 = viewL;
+        if (x1 > viewR) x1 = viewR;
+        let w = Math.max(x1 - x0, 2);
         // 密集边界：条形两侧各缩 1px，相邻 task 间形成固定 2px 通缝，
         // 圆角完整可辨——比描边方案清晰，且缝宽恒定不会在大量短 task 上
         // 相互重叠（极窄条 w≤8 不缩，缝隙占比过大反而糊）。
-        if (w > 8) { x += 1; w -= 2; }
+        if (w > 8) { x0 += 1; w -= 2; }
         const y = start[1] - GRID.barH / 2;
         const d = seriesData[params.dataIndex];
         const st = api.style();
@@ -896,7 +1039,7 @@ function ganttOption(wids, seriesData, ctx) {
         const base = {
           type: 'rect',
           z2: d ? d._z2 : undefined,
-          shape: { x, y, width: w, height: GRID.barH, r: 2 },
+          shape: { x: x0, y, width: w, height: GRID.barH, r: 2 },
           style: st,
         };
         return base;

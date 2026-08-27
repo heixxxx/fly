@@ -254,4 +254,25 @@ fillHeaderControls();
   const p = new URLSearchParams(location.search).get('page');
   switchPage(p && PAGES[p] ? p : 'overview');
 }
+// ---- 键盘滚动导航 + 固定浮窗滚轮透传 ----
+// 滚动容器是 main（body 不滚动），浏览器键盘滚动（Home/End/PageUp…）
+// 天生作用于 document 而触不到 main；固定浮窗挂在 body 直下，鼠标悬停
+// 其上时 wheel 的冒泡链也不含 main——两处统一把滚动意图透传给 main。
+const mainScroller = document.getElementById('main');
+document.addEventListener('keydown', (e) => {
+  if (e.target.closest('input, select, textarea')) return;
+  const step = { Home: -1e9, End: 1e9, PageUp: -800, PageDown: 800,
+                 ArrowUp: -90, ArrowDown: 90 }[e.key];
+  if (step == null) return;
+  const max = mainScroller.scrollHeight - mainScroller.clientHeight;
+  mainScroller.scrollTop = Math.max(0, Math.min(max, mainScroller.scrollTop + step));
+  e.preventDefault();
+});
+document.addEventListener('wheel', (e) => {
+  // 目标不在 main 滚动链内的浮层（body 直下固定浮窗）→ 手动透传滚动。
+  if (!e.target.closest || !mainScroller.contains(e.target)) {
+    mainScroller.scrollTop += e.deltaY;
+    e.preventDefault();
+  }
+}, { passive: false });
 startPolling();
