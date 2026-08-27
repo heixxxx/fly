@@ -462,20 +462,25 @@ def check_dyn_task(db, group_id, nsd, t, max_iter, tol, omega_strategy,
                 "conn_id": conn_id, "rpc_id": rpc_id,
                 "x": deserialize_array(data["x"]), "conv": data["conv"],
             }
-        all_converged = all(c["conv"] for c in contributions.values())
-
-        # check 侧残差兜底（compute 的 conv 可能因粗校正干扰不触发）；
-        # step < min_steps 强制不收敛（防早期残差假小，v2 硬编码 5 的参数化）。
-        x_global = np.zeros(N, dtype=np.float64)
-        for sd_idx in range(nsd):
-            x_global[ps_arrays[sd_idx]] = contributions[sd_idx]["x"]
+        all_converged = False
         if use_coarse and Ac_lu is not None:
+            # 残差主导判定（coarse）：r_rel < tol 即收敛。
+            # r = b_t - A·x 在校正路径本来就要算，norm 是零头成本；
+            # 数学上是相对扰动右端项的解误差直接界（Δx 增量判定只是
+            # 迭代停滞信号）——warm start 后续步初值接近真解时 flags 会
+            # 掩盖未完成的界面平衡（早停损精度）或让已达标的多跑空转轮，
+            # 两类偏差统一由残差口径消除。min_steps 保留为最低轮数防呆。
+            x_global = np.zeros(N, dtype=np.float64)
+            for sd_idx in range(nsd):
+                x_global[ps_arrays[sd_idx]] = contributions[sd_idx]["x"]
             r_norm = float(np.linalg.norm(b_t - A_fine.dot(x_global)))
             r_rel = r_norm / max(float(np.linalg.norm(b_t)), 1e-30)
-            if step >= min_steps and r_rel < tol:
-                all_converged = True
-        if step < min_steps:
-            all_converged = False
+            all_converged = step >= min_steps and r_rel < tol
+        else:
+            # 非 coarse 无 A_fine（内存代价不引入），沿用子域增量标志聚合。
+            all_converged = all(c["conv"] for c in contributions.values())
+            if step < min_steps:
+                all_converged = False
 
         if all_converged or step == max_iter - 1:
             # ── 收敛：respond done 先行（reactor 异步 send 需缓冲期刷出，

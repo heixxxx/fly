@@ -98,6 +98,7 @@ master 只做 kickoff（含 worker 池启动：nsd 个 sd_i 绑定 + 1 个 ras_c
 | 冷启动安全 | db 是权威（temp 落盘恢复 + 持久对象），worker 进程缓存（LDLT 因子、粗校正 LU）纯加速——全新 run 从 db 重建 |
 | worker 复用 | requires=sd_i 属性钉住 + priority=90；setup 缓存短路（gen 会话前缀，跨步命中、跨 solve 不串） |
 | warm start | step t 初值取 sol_{t-1}（持久对象，restart 后仍可用）——相邻时间步解接近时迭代次数下降（QA 实测 n20 iters [9,8,8]） |
+| 收敛判定 | coarse 模式**残差主导**：r_rel = ‖b_t−A·x‖/‖b_t‖ < tol 即收敛（step≥min_steps 防呆），Δx 增量标志不再参与——数学准则直接界定解误差；非 coarse 无 A_fine，沿用子域增量标志。tol=1e-8 实测 rel_res≤7.5e-9 全达标、rel_err ~1e-11，与增量判定同轮触发（迭代瓶颈是 RAS 边界传播轮数而非判定口径） |
 
 ### 对象命名空间
 
