@@ -3,6 +3,75 @@
 ---
 ---
 
+## 2026-08-27 (4): dynamic 求解器三阶段重构（setup/solver/收尾清理）+ RPC 常驻 service 线程 + PeerRpc GIL 释放
+
+**结构演进（用户逐轮裁定收敛）**：v4 每步短命 task 组 → 事故链暴露 agent
+级请求队列"多消费者互抢"结构性缺陷 → 裁定"拒绝全时间步单 task 形态（牺牲
+task 检查点特性）"后定稿为**三阶段架构**：
+- 阶段 1 setup：LDLT/子域、粗校正 LU、listen 端口与 channel 池一次性建立
+  入 worker 进程缓存；缓存 key 分层——数据按 matrix_ref（重投不重做分解）、
+  连接按 gen（换代重建隔离重投窗口）；
+- 阶段 2 solver per t：**连接方向反转**（compute listen / check 主动连接，
+  "该连未连"时序洞消除）；compute = 参数注入短命 task + 常驻 service 线程
+  是唯一消费者（实测多消费者互抢队列事故）；check 驱动迭代，存活不变式
+  alive<nsd 即组死；
+- 阶段 3 controller（ras_check 绑定与 check 同 worker）：推进/收尾清理
+  （cleanup × nsd 销毁成员缓存/server/属性）。
+
+**框架修复（agent_export.cpp）**：`peer_rpc_recv_request` / `peer_rpc_call`
+绑定时长阻塞却持有 GIL——service 子线程进入 wait(0) 后带 GIL 冻结全场，
+主线程 Thread.start() 永不返回（faulthandler 栈取证）。补
+`gil_scoped_release`（RAII 块级，返回打包前自动重获）。同款隐患其余绑定
+按需后续排查。
+
+**timeout 裁定落实补遗**：QA run1 的期望失败检测改 master.failed_tasks
+权威轮询（wait_tasks "队列空即返回"与失败落账存在竞速窗口）；get_dynamic_result
+删除 timeout 形参。
+
+**已知限制立项（docs/issues/009）**：三阶段引入跨 task 进程级缓存 ⇒ 重投
+场景属性编队成为正确性前提（旧版无进程态因此无需）；当前以 QA 手动建池 +
+launch 先于 load_db 规避；框架增强方向（角色 worker 就绪原语）用户裁定后续
+实施。
+
+**验证**：dynamic QA 全套绿（含 restart 全新 run 断点续跑——组死传染/re投
+重启/no-op 收敛/结果 md5 一致）；qa/solver 家族绿；单测 69/69。
+
+---
+---
+
+## 2026-08-27 (3): timeout 裁定落实——dynamic 求解器数据规模相关等待全面无限化 + T=1≡单次求解等价验证
+
+**用户裁定**：所有 API 慎用 timeout；数据规模相关的等待（读大对象、
+链推进、资源就绪）设固定值会在大规模数据网络 IO / 集群调度排队时触发
+非期望失败——历史明确提示过的误用模式。此前 2e6686a（等待无限化）/
+load_db PendingIdxLoad 无 deadline 均同源先例。
+
+**dynamic 求解器四处整改（我此前引入的误用，全数清除）**：
+- get_dynamic_result：删除 timeout 形参（API 表面不再提供诱导误用的
+  参数）；失败语义由 wait_obj can_still_produce 兜底
+- _connect_with_retry：删 60s 总窗口 → 无限重试（check task 就绪时刻
+  取决于调度排队）+ agent.is_running() 关机逃生口；group.connect 内部
+  wait_obj 显式 timeout=None（PeerChannelGroup 默认 60s 同属误用）
+- chan.rpc：删 per-request 60s 固定超时 → 无限阻塞——对端 task 死亡由
+  **断连事件**驱动唤醒（listener 关闭 → rpc FAILED），事件而非计时器；
+  单轮时长由最慢子域决定，大矩阵 LDLT 分钟级下任何固定窗口都误杀
+- check 收齐循环：accept_one 5s 轮询窗 → 纯阻塞（保留陈旧断连事件
+  容错吞掉——agent 级队列共享，上组 close 残留事件不得当致命错误）
+- QA 脚本自设的 wait_tasks(timeout)/get_dynamic_result(timeout) 全部
+  移除；卡死防线归 harness subcase 窗口（测试基建职责）
+
+顺带修复（reuse 对照实验暴露的真实 API bug）：get_dynamic_result 的
+wait_obj inputs lambda 曾声明必选 timeout 形参 → 无参调用 TypeError。
+现有 QA 全部显式传参掩盖了此路径；early_stop 场景改为无参调用作回归锚点。
+
+**T=1 ≡ 单次求解等价验证**（用户指出的复用正确性）：同一 n500 矩阵，
+v2 直跑 vs solve_ras_graph_dynamic(num_steps=1)：iters 同为 7、rel_res/
+rel_err 全同、**解向量逐位一致（max|Δ|=0.0）**——理论推断成立，实验
+确认无隐藏行为分叉。
+
+---
+---
+
 ## 2026-08-27 (2): dynamic 求解器收敛判定改残差主导（coarse）+ warm start 效果标定
 
 **warm start 标定（.work 实验，n500 coarse tol=1e-5 min_steps=2）**：收益

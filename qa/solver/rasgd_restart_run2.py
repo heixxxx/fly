@@ -29,9 +29,11 @@ DB_PATH = os.environ["FLY_DB_PATH"]
 
 get_config().set_int("fail_unscheduleable_tasks", 1)
 
-db = load_db(DB_PATH)
-
-# 全新 run 的 worker 池（attributes 必须与原 run 一致——task requires 匹配）
+# 全新 run 的 worker 池（attributes 必须与原 run 一致——task requires 匹配：
+# nsd 个 sd_i 绑定 + 1 个 ras_check）。
+# 顺序关键：launch 必须先于 load_db。load_db 发现在 meta 的 hostname 上无
+# worker 时会自动 spawn 空属性 worker 补位（framework 行为），空属性编队
+# 挤占 slots 会让带 ras_check requires 的重投任务找不到匹配 worker。
 master = get_agent()
 worker_configs = []
 for w in range(NSD):
@@ -40,11 +42,13 @@ worker_configs.append({"attributes": ["ras_check"]})
 master.launch_local_workers(worker_configs)
 assert master.wait_for_workers(NSD + 1)
 
+db = load_db(DB_PATH)
+
 restarted = master.restart_failed_tasks([db])
 INFO(f"restart_failed_tasks resubmitted: {restarted}")
 assert restarted > 0, "no failed tasks were resubmitted"
 
-result = get_dynamic_result(db, timeout=240)
+result = get_dynamic_result(db)
 INFO(f"dynamic result after restart: {result}")
 assert result["num_steps_done"] == NUM_STEPS
 assert all(result["converged"])
@@ -73,14 +77,14 @@ for t in range(NUM_STEPS):
 
 
 get_agent().stop()
-# 冷启动：新 worker 上 LDLT 重建恰 nsd 次（重投的 compute 组）
+# 冷启动：新 worker 上 LDLT 重建恰 nsd 次（重投链的 setup_compute）
 setup_count = 0
 sub_dir = os.environ["FLY_CASE_SUB_DIR"]
 for fn in sorted(os.listdir(sub_dir)):
     if fn.startswith("worker") and fn.endswith(".log"):
         with open(os.path.join(sub_dir, fn), errors="replace") as f:
-            setup_count += f.read().count("LDLT setup done (cold)")
+            setup_count += f.read().count("LDLT done (cold)")
 INFO(f"LDLT cold setups in fresh run: {setup_count} (expect {NSD})")
-assert setup_count == NSD, f"cold setups={setup_count} (expect {NSD}); files=" + str([(fn, open(os.path.join(sub_dir, fn), errors="replace").read().count("LDLT setup done (cold)")) for fn in sorted(os.listdir(sub_dir)) if fn.startswith("worker") and fn.endswith(".log")])
+assert setup_count == NSD, f"cold setups={setup_count} (expect {NSD}); files=" + str([(fn, open(os.path.join(sub_dir, fn), errors="replace").read().count("LDLT done (cold)")) for fn in sorted(os.listdir(sub_dir)) if fn.startswith("worker") and fn.endswith(".log")])
 
 INFO("[PASS] rasgd_restart_run2 (chain resumed from bin, results correct)")

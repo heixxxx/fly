@@ -10,6 +10,22 @@
 #include <tuple>
 #include <cmath>
 
+namespace {
+// peer_rpc_call 的 GIL 释放包装（timeout_ms=0 无限等待时长阻塞，若持 GIL
+// 会冻结同进程全部 Python 线程）。独立函数：避免 lambda 体在
+// FLY_EXPORT_METHOD 两参宏内出现顶层裸逗号（如 std::pair<T,U> 声明）。
+std::pair<uint8_t, fly::CMString> peer_call_gil_released(
+        fly::WorkerAgent& self, uint64_t conn_id,
+        const fly::CMString& payload_str, int timeout_ms) {
+    std::pair<uint8_t, fly::CMString> result;
+    {
+        fly_export::gil_scoped_release release;
+        result = self.peer_rpc_call(conn_id, payload_str, timeout_ms);
+    }
+    return result;
+}
+}  // namespace
+
 FLY_EXPORT_MODULE(_fly_agent) {
 
 // SIGTERM 信号灯（main.py 的 Python handler 首行调用）：置位后 worker 的
@@ -408,7 +424,8 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
                                              fly_export::bytes payload,
                                              int timeout_ms) {
         fly::CMString payload_str(payload.c_str(), payload.size());
-        auto result = self.peer_rpc_call(conn_id, payload_str, timeout_ms);
+        auto result = peer_call_gil_released(self, conn_id, payload_str,
+                                             timeout_ms);
         return fly_export::make_tuple(
             result.first,
             fly_export::bytes(result.second.data(), result.second.size()));
@@ -429,15 +446,17 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     })
     FLY_EXPORT_METHOD("peer_rpc_recv_request", [](fly::WorkerAgent& self,
                                                      int timeout_ms) {
-        try {
-            auto req = self.peer_rpc_recv_request(timeout_ms);
-            return fly_export::make_tuple(
-                req.conn_id_, req.rpc_id_, req.src_worker_id_,
-                fly_export::bytes(req.payload_.data(), req.payload_.size()));
-        } catch (const std::runtime_error&) {
-            // 错误断连：re-throw，nanobind 自动翻译为 Python RuntimeError
-            throw;
+        // timeout_ms=0（无限等待）时本调用会长时间阻塞在 cv 上：必须释放
+        // GIL，否则同进程其它 Python 线程（如 task 主线程）全部冻结——
+        // service 常驻线程架构下实测把 Thread.start() 的调用者冻死。
+        fly::WorkerAgent::PeerRpcRequest req;
+        {
+            fly_export::gil_scoped_release release;
+            req = self.peer_rpc_recv_request(timeout_ms);
         }
+        return fly_export::make_tuple(
+            req.conn_id_, req.rpc_id_, req.src_worker_id_,
+            fly_export::bytes(req.payload_.data(), req.payload_.size()));
     })
     FLY_EXPORT_METHOD("peer_rpc_notify_failure", [](fly::WorkerAgent& self,
                                                         uint64_t conn_id,

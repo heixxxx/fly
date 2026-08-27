@@ -63,7 +63,8 @@ handle = solve_ras_graph_dynamic(db, MATRIX_OBJ_KEY, NSD, b0, update_rhs,
 kickoff_elapsed = time.perf_counter() - t0
 INFO(f"kickoff returned in {kickoff_elapsed:.2f}s (non-blocking), handle={handle}")
 
-result = get_dynamic_result(db, timeout=180)
+# 无 timeout（裁定：数据规模相关等待不设超时；can_still_produce 兜底失败语义）
+result = get_dynamic_result(db)
 INFO(f"dynamic result: {result}")
 
 assert result["num_steps_done"] == NUM_STEPS
@@ -102,7 +103,7 @@ sub_dir = os.environ["FLY_CASE_SUB_DIR"]
 for fn in sorted(os.listdir(sub_dir)):
     if fn.startswith("worker") and fn.endswith(".log"):
         with open(os.path.join(sub_dir, fn), errors="replace") as f:
-            setup_count += f.read().count("LDLT setup done (cold)")
+            setup_count += f.read().count("LDLT done (cold)")
 INFO(f"LDLT cold setups: {setup_count} (expect {NSD})")
 assert setup_count == NSD, f"setup cache reuse broken: {setup_count} != {NSD}"
 

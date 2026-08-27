@@ -11,11 +11,12 @@ FLY_CASE_LOG_DIR = os.environ["FLY_CASE_LOG_DIR"]
 import shutil
 import hashlib
 import json
+import time
 
 import numpy as np
 
 from _fly_log import INFO, WARN
-from fly import open_db, get_config, wait_tasks
+from fly import open_db, get_config
 from fly.runtime import get_agent
 from solver import (solve_ras_graph_dynamic, generate_poisson_matrix,
                     MATRIX_OBJ_KEY)
@@ -26,6 +27,11 @@ NUM_STEPS = 3
 DB_PATH = os.environ["FLY_DB_PATH"]
 
 get_config().set_int("fail_unscheduleable_tasks", 1)
+
+# 注入场景的活性防呆窗口收紧到 90s：组死后的迟到成员（并行调度下晚于
+# check 开始执行的 compute）在窗口内退出，测试有界收敛；生产默认
+# 1800s 由 config 键 solver_peer_liveness_timeout 全局控制。
+get_config().set_int("solver_peer_liveness_timeout", 90)
 
 # DB 由 .pyt setup 清理，这里不删（run2 要接着用）
 
@@ -47,13 +53,16 @@ solve_ras_graph_dynamic(db, MATRIX_OBJ_KEY, NSD, b0, update_rhs, NUM_STEPS,
                         overlap_ratio=0.30, max_iter=100, tol=1e-8,
                         omega="coarse", min_steps=2)
 
-# 链在 t=2 组失败（FLY_RASG_FAIL_AT=2:1 → 组传染）——wait_tasks 捕获。
-# compute rpc 60s 超时传染 + check 收齐超时，给足窗口。
-try:
-    wait_tasks(timeout=240)
-    raise AssertionError("expected task failure was not observed")
-except RuntimeError as e:
-    WARN(f"expected failure observed: {e}")
+# 链在 t=2 组失败（FLY_RASG_FAIL_AT=2:1 → 组传染）。以 master 权威
+# failed 列表轮询（0.5s 采样瞬时快照，无窗口语义；卡死由 harness 兜底）。
+# 不用 wait_tasks：其"队列空即返回"与组失败的落账存在竞速窗口。
+master = get_agent()
+deadline_cycles = 0
+while not master.failed_tasks:
+    time.sleep(0.5)
+    deadline_cycles += 1
+    assert deadline_cycles < 240, "chain did not fail within harness budget"
+WARN(f"expected failure observed: {master.failed_tasks}")
 
 # 已完成结果不丢
 for t in range(2):

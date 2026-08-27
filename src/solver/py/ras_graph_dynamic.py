@@ -1,32 +1,64 @@
-"""Dynamic 多右端项连续求解（EmIR dynamic IR drop 场景）。
+"""Dynamic 多右端项连续求解（EmIR dynamic IR drop 场景）——三阶段架构。
 
-同一矩阵 G 连续求解 T 个时间步的 G·x_t = b_t（b_t = f(x_{t-1})，严格串行）：
-- master 只做非阻塞 kickoff（写 b_0 + 提交 kickoff task 后立即返回），
-  编排链由 task 自驱动：check_dyn(t) 收敛时提交 controller(t)，controller(t)
-  决定并提交 step t+1 的 task 组。master 上永远不做阻塞式流程。
-- 单时间步求解 = nsd 个 compute 长 task + 1 个 check 长 task（v2 daemon 思路：
-  PeerChannelGroup RPC 直连迭代），时间步之间 task 粒度隔离。
-- 失败重跑原生支持（task 划分边界的核心目的）：每步结果 sol_t 持久化；
-  组内失败原子传染（check 的全部副作用先于 respond done），restart 重投
-  完整组后链自动恢复（check 重新提交 controller）。
-- 冷启动安全：db 是权威数据源（temp 落盘恢复 + 持久对象），worker 进程
-  缓存（LDLT 因子、粗校正 LU、cfg/coord 反序列化结果）纯加速——restart
-  全新 run 下从 db 重建。
-- warm start 默认启用：step t 的迭代初值取 sol_{t-1}（持久对象，restart
-  后仍可用），相邻时间步解接近时迭代次数大幅下降。
+同一矩阵 G 连续求解 T 个时间步的 G·x_t = b_t（b_t = f(x_{t-1})，严格串行）。
 
-会话标识 gen：每次 solve_ras_graph_dynamic 调用生成，随 task 参数链式
-传递并作为全部进程缓存键前缀——同一 worker 池先后服务两次 solve（不同
-矩阵）时缓存不串（restart 重投用 bin 里的原参数，gen 不变，缓存语义连续）。
+  阶段 1 setup（每链一次，跨全部时间步复用；RPC 连接方向：compute listen /
+           check 主动连接——成员缺失场景全部有确定性出口，见"失败语义"）
+    setup_compute × nsd (requires=sd_i)
+      LDLT/子域数据 → 进程缓存（key 按 matrix_ref：重投/换代不重做分解）
+      stop 旧 server → listen 新端口 → 端口入缓存（key 按 gen）
+      写地址对象 addr_{gen}_{sd}（temp；同时是下游依赖锚）
+      set_worker_property(rasg_{gen}_{sd})
+    setup_check (requires=ras_check, inputs=全部 addr + b_{start_t})
+      粗校正 LU/A_fine/子域索引 → 缓存（key 按 matrix_ref）
+      connect × nsd → 池 {sd: conn_id} 入缓存
+      set_worker_property(rasg_{gen}_check) → 提交 solver(start_t)
 
-对象命名空间（write_context_hash = f(name, module, args, inputs)，跨步同名
-不同参数重写会被 provenance 拒绝，故跨步对象带时间步维度）：
-    __rasg__b_{t}            temp   controller(t-1) 写，controller(t) 删除
-    __rasg__sub_{sd} / coord / cfg / coarse_prebuilt   temp   kickoff 写，全程存活
-    __fly_chan_{group_id}    持久   check listen 写，下一步 controller 删除
-    __rasg__sol_{t}          持久   check 写（用户数据）
-    __rasg__iters_{t} / converged_{t}   temp   check 写（controller 依赖锚点）
-    __rasg__dynamic_done     temp   终止 controller 写（用户等待点）
+  阶段 2 solver per t（task 隔离保持）
+    compute(t,sd)  被动循环：recv_request → 本地 solve → respond 贡献；
+                   done 请求 → ack 退出
+    check(t)       驱动循环：逐存活成员 call（请求带 ghosts）→ 收贡献 →
+                   残差主导收敛判定 / 粗校正 → 下轮；收敛发 done → 写
+                   sol_t/iters_t/converged_t → 提交 controller(t)
+
+  阶段 3 controller(t) (requires=ras_check，与 check 同 worker)
+    有下一步：update_rhs(x_t, t+1) → 写 b_{t+1} → 提交 solver(t+1)（全量复用）
+    无下一步：本 worker 收尾（关池/清粗校正缓存/移除属性）→ 发 cleanup × nsd
+              （各 compute worker 销毁矩阵/listener、关 server、移除属性、
+              删地址对象）→ 写 dynamic_done
+
+失败语义（全部事件/依赖驱动，无任何等待窗口——timeout 裁定）：
+    - 成员 setup 失败（含 listen 失败）：addr 缺失 → setup_check inputs
+      依赖不可解 → fail_unscheduleable_tasks 连锁 → 整组进 bin；
+    - 成员在 setup_check connect 前死亡：connect 被拒即时返回 → raise 同上；
+    - solver 中成员死/task 异常退出（except 强关 server）：check 的 call
+      立即 FAILED（断连事件唤醒），alive 不变式 <nsd → 组死；
+    - check 死/task 异常退出：stop_peer_rpc 强关连接，全体成员挂起的
+      recv_request 被错误断连唤醒 → 全员失败；
+    - 集群关机：agent.is_running() 全路径检查。
+
+重投语义（用户裁定）：
+    compute 重投 → listener 缓存 miss（组散时已清）→ 直接 return（no-op，
+    真组由新链发出）；check 重投 → 池缓存 miss → 判定组散 → 以新 gen 重新
+    驱动 setup 链（LDLT 数据跨代命中秒过、仅连接重建）→ 新 setup_check 提交
+    solver(start_t=失败步)。旧 gen 的 compute task 被 setup 的 stop 旧 server
+    唤醒退出，最坏一轮涟漪后二次重投全部 no-op 收敛。
+    注意 update_rhs 须为确定性回调（重投会重调）；kickoff 起点固定为 t=0。
+
+对象命名（provenance：跨步对象带 t；写前 remove 清旧代残留，防换 gen 后
+参数 hash 不同被 DUPLICATE/PROVENANCE 拒绝）：
+    __rasg__b_{t}                        temp   controller(t-1) 写，controller(t) 删
+    __rasg__d_addr_{gen}_{sd}            temp   setup_compute 写（依赖锚 + 地址）
+    __rasg__sub_{sd}/coord/cfg/coarse_prebuilt  temp   kickoff 写，全程
+    __rasg__sol_{t}                      持久   check 写（用户数据）
+    __rasg__iters_{t} / converged_{t}    temp   check 写（controller 锚点）
+    __rasg__dynamic_done                 temp   终止 controller 写（等待点）
+
+进程级缓存 key：
+    连接对象按 gen（__rasg__d_listener_{gen}_{sd} = port、
+    __rasg__d_pool_{gen} = {sd: conn_id}）——换代即重建、隔离重投窗口；
+    数据按 matrix_ref（__rasg__d_setup/solver_{matrix_ref}_{sd}、
+    __rasg__d_coarse_*、__rasg__d_sub_cache_{matrix_ref}）——LDLT 只做一次。
 """
 import os
 import time
@@ -36,18 +68,24 @@ import numpy as np
 
 from _fly_log import DBG, INFO, WARN, ERR
 from fly import as_task, wait_obj
-from agent import PeerChannelGroup, PeerRpcStatus, serialize_array, deserialize_array
+from agent import serialize_array, deserialize_array
 
-# task 组优先级：高于默认 10——与集群其他任务共存时优先获得 idle worker
-# （非抢占，仅影响就绪队列排序）。
+# PeerRpcStatus 数值常量（peer_rpc_call 返回值）：0 PENDING / 1 OK /
+# 2 ERROR / 3 FAILED。直接用数值避免 agent 包内包装类耦合。
+_RPC_OK = 1
+
+# task 组优先级：高于默认 10——与集群其他任务共存时优先获得 idle worker。
 _DYNAMIC_TASK_PRIORITY = 90
 
-# compute→check 单次 RPC 超时（秒）。check task 失败后其业务端口残留
-# （PeerRpcServer 是 agent 级），无限等待会让 compute 永久 RUNNING、
-# master stop() drain 死等——有限超时后 raise 使组失败对 bin 可见。
-# 收敛路径 check 侧有持久写 + controller 提交（秒级），60s 留足余量。
-_RPC_TIMEOUT_SECONDS = 60.0
 
+def _remove_quiet(db, name):
+    try:
+        db.remove_object(name)
+    except Exception:
+        pass
+
+
+# ───────────────────────── Public API ─────────────────────────
 
 def solve_ras_graph_dynamic(db, matrix_ref, nsd, b0, update_rhs, num_steps,
                             overlap_ratio=0.50, max_iter=100, tol=1e-8,
@@ -56,21 +94,20 @@ def solve_ras_graph_dynamic(db, matrix_ref, nsd, b0, update_rhs, num_steps,
     """Dynamic 多右端项 kickoff（非阻塞，立即返回）。
 
     Args:
-        db: Database（矩阵对象应已写入；同 db 重复调用本 API 需换 sol_prefix
-            或清理旧对象——sol_t 同名同参数重写会被 provenance 跳过）。
-        matrix_ref: 矩阵对象名（推荐）或 .npz 路径（本地实验）。
+        db: Database（矩阵对象应已写入；同 db 重复调用需换 sol_prefix 或
+            先清历史对象——sol_t 同名同参数重写会被 provenance 跳过）。
+        matrix_ref: 矩阵对象名（推荐）或 .npz 文件路径（本地实验）。
         nsd: 子域数。
         b0: 初始右端项（np.ndarray）。
         update_rhs: Callable[[np.ndarray, int], np.ndarray | None]——在
-            controller task 内（worker 上）执行：输入上一步全局解 x_{t-1}
-            与下一步号 t，返回 b_t；返回 None 提前终止。
+            controller task 内执行：输入上一步全局解 x_{t-1} 与下一步号 t，
+            返回 b_t；返回 None 提前终止。**须确定性**（重投会重调）。
         num_steps: 时间步总数（含 t=0）。
-        min_steps: 每步最少迭代数（防冷启动早期残差假小误判；warm start
-            相邻解接近，默认 2 比 v2 的 5 更激进）。
-        sol_prefix: 结果对象名前缀，sol_t 写为 f"{sol_prefix}_{t}"。
+        min_steps: 每步最少迭代数（防冷启动早期残差假小）。
+        sol_prefix: 结果对象名前缀。
 
     Returns:
-        dict(sol_prefix, num_steps, db_path, gen)。用 get_dynamic_result(db)
+        dict(sol_prefix, num_steps, db_path, gen)。get_dynamic_result(db)
         等待整体完成并取汇总；单步结果随时 db.read_object(f"{sol_prefix}_{t}")。
     """
     from fly.runtime import get_agent
@@ -81,7 +118,7 @@ def solve_ras_graph_dynamic(db, matrix_ref, nsd, b0, update_rhs, num_steps,
     n_workers = min(nsd, max_concurrent_compute) if max_concurrent_compute else nsd
     master = get_agent()
     # nsd 个 compute worker（attributes 轮转绑定 sd_i，钉住进程缓存）+
-    # 1 个 check worker（A_fine/coarse LU 进程缓存跨步复用）。
+    # 1 个 check/controller worker（池与粗校正缓存的宿主）。
     if not master.is_running() or master.worker_count < n_workers + 1:
         worker_configs = []
         for w in range(n_workers):
@@ -96,12 +133,7 @@ def solve_ras_graph_dynamic(db, matrix_ref, nsd, b0, update_rhs, num_steps,
     INFO(f"[RASG DYN] kickoff: gen={gen} nsd={nsd} n_workers={n_workers + 1} "
          f"steps={num_steps} omega={omega} min_steps={min_steps}")
 
-    # 清掉旧 run 的终止标记（防 get_dynamic_result 误读；其余旧对象语义见
-    # 模块 docstring——同 db 重复调用建议换 sol_prefix）。
-    try:
-        db.remove_object("__rasg__dynamic_done")
-    except Exception:
-        pass
+    _remove_quiet(db, "__rasg__dynamic_done")
 
     db.write_object("__rasg__b_0", b0, save_to_db=False)
 
@@ -110,6 +142,30 @@ def solve_ras_graph_dynamic(db, matrix_ref, nsd, b0, update_rhs, num_steps,
     return {"sol_prefix": sol_prefix, "num_steps": num_steps,
             "db_path": db.get_db_path(), "gen": gen}
 
+
+@wait_obj(inputs=lambda db: [db.get_full_name("__rasg__dynamic_done")])
+def get_dynamic_result(db):
+    """等待整体完成并返回汇总（timeout 裁定：数据规模相关等待不设窗口，
+    失败语义由 wait_obj 的 can_still_produce 兜底）：
+    {"num_steps_done", "iters", "converged", "sol_names"}。"""
+    return db.read_object("__rasg__dynamic_done")
+
+
+# ───────────────────── 缓存 key（分层：数据按矩阵、连接按代） ─────────────────────
+
+def _data_cache_keys(matrix_ref, sd):
+    return (f"__rasg__d_setup_{matrix_ref}_{sd}",
+            f"__rasg__d_solver_{matrix_ref}_{sd}")
+
+
+def _check_data_cache_keys(matrix_ref):
+    return (f"__rasg__d_coarse_lu_{matrix_ref}",
+            f"__rasg__d_coarse_P_{matrix_ref}",
+            f"__rasg__d_coarse_A_{matrix_ref}",
+            f"__rasg__d_sub_cache_{matrix_ref}")
+
+
+# ───────────────────── 阶段 0：kickoff（coord 预分块） ─────────────────────
 
 def _kickoff_deps(db, matrix_ref, nsd, overlap_ratio, max_iter, tol, omega,
                   min_steps, sol_prefix, num_steps, update_rhs, gen):
@@ -122,89 +178,58 @@ def _kickoff_deps(db, matrix_ref, nsd, overlap_ratio, max_iter, tol, omega,
 @as_task(inputs=_kickoff_deps, priority=_DYNAMIC_TASK_PRIORITY)
 def kickoff_dyn_task(db, matrix_ref, nsd, overlap_ratio, max_iter, tol, omega,
                      min_steps, sol_prefix, num_steps, update_rhs, gen):
-    """coord 预分块（worker 上执行，master 零重活）+ 提交 step0 task 组。
-
+    """coord 预分块（worker 上执行，master 零重活）→ 提交 setup 链。
     重投幂等：sub_{sd} 同参数同 hash 重写 → DUPLICATE_SKIPPED（值相同）。"""
     from .ras_graph_daemon import _coord_prebuild_pipeline
 
     _coord_prebuild_pipeline(db, matrix_ref, nsd, overlap_ratio, max_iter, tol,
                              omega, group_id=None, on_sub_ready=None)
-    INFO(f"[RASG DYN KICKOFF] gen={gen} coord done, submitting step 0 group "
-         f"(nsd={nsd} steps={num_steps})")
-    _submit_step_group(db, 0, nsd, max_iter, tol, omega, min_steps,
-                       sol_prefix, num_steps, update_rhs, gen)
+    INFO(f"[RASG DYN KICKOFF] gen={gen} coord done, submitting setup chain")
+    _submit_setup_chain(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
+                        max_iter, tol, omega, min_steps, gen, start_t=0)
 
 
-def _submit_step_group(db, t, nsd, max_iter, tol, omega_strategy, min_steps,
-                       sol_prefix, num_steps, update_rhs, gen):
-    """提交时间步 t 的 task 组：compute×nsd（钉 sd_i worker）+ check（钉
-    ras_check worker）。可在 master（kickoff API）或 worker（controller 链）
-    上调用——后者经 Worker.submit 转发 master。"""
-    group = PeerChannelGroup()
+def _submit_setup_chain(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
+                        max_iter, tol, omega, min_steps, gen, start_t):
+    """setup_compute × nsd → setup_check(start_t)。首轮由 kickoff 调用
+    （start_t=0）；重投由判定组散的 check 调用（新 gen，start_t=失败步）。"""
     for sd in range(nsd):
-        compute_dyn_task(db, group.group_id, sd, nsd, t, sol_prefix, gen)
-    check_dyn_task(db, group.group_id, nsd, t, max_iter, tol, omega_strategy,
-                   min_steps, sol_prefix, num_steps, update_rhs, gen)
+        setup_compute_task(db, matrix_ref, nsd, sd, gen)
+    setup_check_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
+                     max_iter, tol, omega, min_steps, gen, start_t)
 
 
-def _cached_read(db, name, cache_key):
-    """读 db 对象并缓存反序列化结果到进程级 cache（大对象二次反序列化
-    是 n=1000 的实测瓶颈：coord ~130ms）。gen 前缀的 cache_key 防跨 solve
-    污染。"""
-    from fly import get_cache, put_cache, has_cache
-    if not has_cache(cache_key):
-        put_cache(cache_key, db.read_object(name))
-    return get_cache(cache_key)
+def _submit_solver_group(db, matrix_ref, nsd, sol_prefix, num_steps,
+                         update_rhs, max_iter, tol, omega, min_steps, gen, t):
+    for sd in range(nsd):
+        compute_dyn_task(db, matrix_ref, nsd, sd, sol_prefix, gen, t)
+    check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
+                   max_iter, tol, omega, min_steps, gen, t)
 
 
-def _compute_deps(db, group_id, sd, nsd, t, sol_prefix, gen):
-    deps = [db.get_full_name(f"__rasg__b_{t}"),
-            db.get_full_name(f"__rasg__sub_{sd}")]
-    if t > 0:
-        # warm start 权威源是持久对象 sol_{t-1}——显式依赖保证 restart 重投
-        # 时 t 步必在上一步结果就绪后才调度。
-        deps.append(db.get_full_name(f"{sol_prefix}_{t - 1}"))
-    return deps
+# ───────────────────── 阶段 1：setup（RPC + 矩阵，一次建立全程复用） ─────────────────────
 
-
-@as_task(inputs=_compute_deps,
-         requires=lambda db, group_id, sd, nsd, t, sol_prefix, gen: [f"sd_{sd}"],
+@as_task(inputs=lambda db, matrix_ref, nsd, sd, gen: [
+             db.get_full_name(f"__rasg__sub_{sd}")],
+         requires=lambda db, matrix_ref, nsd, sd, gen: [f"sd_{sd}"],
          priority=_DYNAMIC_TASK_PRIORITY)
-def compute_dyn_task(db, group_id, sd, nsd, t, sol_prefix, gen):
-    """时间步 t 的子域 compute 长 task：setup 缓存短路 → 读 b_t 切片 →
-    warm start → RPC 迭代到 check 发 done。
+def setup_compute_task(db, matrix_ref, nsd, sd, gen):
+    """compute worker 的 setup：矩阵初始化（幂等）+ RPC service 初始化
+    （每代干净重建）+ 写代际地址 + 设调度可见属性。
 
-    冷启动（进程缓存纯加速，db 是权威）：
-    1. LDLT/setup：gen 前缀缓存短路 → miss 读 sub_{sd}（temp 落盘，restart
-       后恢复可见）重建。
-    2. warm start：sol_{t-1}（持久，restart 权威源）提取 ghost + 初值。
-    3. b_t：temp 恢复。
-
-    RPC 中断一律 raise（非 v2 的 break 干净退出）：task 失败语义使断链对
-    failed_tasks.bin / wait_tasks 可见，避免"task 成功但链停滞"的静默挂死。
-    """
-    import numpy as np
-    from _fly_solver import ex_slv_ras_bupdated_solve, EXSlvSubdomainSolver
-    from fly import get_cache, put_cache, has_cache
+    失败的任何一步都导致 addr 缺失 → setup_check inputs 依赖不可解 →
+    fail_unscheduleable_tasks 连锁失败（整组进 bin，可 restart）。"""
+    from _fly_solver import EXSlvSubdomainSolver
+    from fly import put_cache, has_cache
+    from fly.runtime import get_agent
     from core import get_config as _get_config
 
-    # QA 失败注入钩子：FLY_RASG_FAIL_AT="t:sd" 使 compute(t, sd) 确定性失败
-    # （验证组失败传染 + restart 断点续跑）。
-    fail_at = os.environ.get("FLY_RASG_FAIL_AT")
-    if fail_at is not None and fail_at == f"{t}:{sd}":
-        raise RuntimeError(f"FLY_RASG_FAIL_AT injected at t={t} sd={sd}")
+    agent = get_agent()
+    cfg = db.read_object("__rasg__cfg")
 
-    cfg = _cached_read(db, "__rasg__cfg", f"__rasg__d_{gen}_cfg")
-    tol = cfg["tol"]
-    omega_strategy = cfg.get("omega", 1.0)
-
-    # ── setup 缓存短路（worker 矩阵缓存复用的核心）──
-    setup_key = f"__rasg__d_{gen}_setup_{sd}"
-    solver_key = f"__rasg__d_{gen}_solver_{sd}"
-    if has_cache(setup_key):
-        setup = get_cache(setup_key)
-        solver = get_cache(solver_key)
-    else:
+    # ── 矩阵初始化（数据 key 按 matrix_ref：命中则跳过 LDLT）──
+    setup_key, solver_key = _data_cache_keys(matrix_ref, sd)
+    if not has_cache(setup_key):
         sub = db.read_object(f"__rasg__sub_{sd}")
         openmp_threads = _get_config().get_int("solver_openmp_threads")
         if openmp_threads > 0:
@@ -212,378 +237,435 @@ def compute_dyn_task(db, group_id, sd, nsd, t, sol_prefix, gen):
         solver = EXSlvSubdomainSolver.from_coo(
             sub["size"], sub["a_rows"].tolist(), sub["a_cols"].tolist(),
             sub["a_vals"].tolist())
-        setup = sub
-        put_cache(setup_key, setup)
-        put_cache(solver_key, solver)
-        INFO(f"[RASG DYN COMPUTE] sd={sd} LDLT setup done (cold), "
-             f"size={sub['size']}")
+        from fly import put_cache as _pc
+        _pc(setup_key, sub)
+        _pc(solver_key, solver)
+        INFO(f"[RASG DYN SETUP] sd={sd} LDLT done (cold), size={sub['size']}")
 
-    # ── 当前时间步右端项（db 权威；b 每步不同，不进 setup 缓存）──
+    # ── RPC service（每代干净重建：stop 旧 server 使挂起的旧 gen compute
+    # 的 recv_request 被错误断连唤醒退出，防止新旧 task 抢同一请求队列）──
+    agent.stop_peer_rpc()
+    port = agent.start_peer_rpc_listen("127.0.0.1", 0)
+    if port <= 0:
+        raise RuntimeError(f"[RASG DYN SETUP] sd={sd} listen failed")
+
+    # 该子域的服务端唯一消费者 = 常驻线程（agent 级请求队列全生命周期只能
+    # 有一个 reader——短命 task 各自 recv 会互抢错账，实测事故）。solver(t)
+    # task 通过 shared dict 注入当前步参数（b_local 等），线程按请求取出
+    # 使用；done 只标记本步结束（线程不退，供下一时间步复用）；teardown 置
+    # stop 后关 server 兜底唤醒。
+    from fly import put_cache as _pc
+    shared = {"stop": False, "poison": None,
+              "step_ctx": None,      # {"b_local", "tol"} 由 compute(t) 注入
+              "prev_x": None}
+    _pc(f"__rasg__d_svc_{gen}_{sd}", shared)
+
+    import threading
+    threading.Thread(
+        target=_serve_loop, args=(agent, f"__rasg__d_solver_{matrix_ref}_{sd}",
+                                  f"__rasg__d_svc_{gen}_{sd}", sd),
+        name=f"rasg-dyn-{gen}-{sd}", daemon=True).start()
+
+    # 代际地址对象：依赖锚（本 task 失败则它缺失，下游连锁）+ 地址载体
+    db.write_object(f"__rasg__d_addr_{gen}_{sd}",
+                    {"host": "127.0.0.1", "port": port}, save_to_db=False)
+
+    # worker 属性：本 worker 已完成该代该子域 setup（调度可见事实，收尾移除）
+    agent.set_worker_property(f"rasg_{gen}_{sd}")
+    INFO(f"[RASG DYN SETUP] sd={sd} gen={gen} listening port={port}")
+
+
+def _serve_loop(agent, solver_key, shared_key, sd):
+    """成员子域的唯一常驻消费者：收请求(check 驱动) → 以 shared['step_ctx']
+    中的当前步参数本地 solve → 回贡献。done=本步结束信号（ack 后继续候下
+    一步）。存活期 = 整个动态链；异常退出仅发生在关机/server 强关时。"""
+    import numpy as np
+    from _fly_solver import ex_slv_ras_bupdated_solve
+    from fly import get_cache, has_cache
+
+    while has_cache(shared_key) and not get_cache(shared_key)["stop"]:
+        try:
+            conn_id, rpc_id, src, payload = agent.peer_rpc_recv_request(0)
+        except Exception as e:
+            if has_cache(shared_key) and not get_cache(shared_key)["stop"]:
+                ERR(f"[RASG DYN SVC] sd={sd} recv failed: {e}")
+            break   # server 被关（正常收尾或强杀）
+        try:
+            data = pickle.loads(payload)
+            shared = get_cache(shared_key)
+            if data["action"] == "done":
+                agent.peer_rpc_respond(conn_id, rpc_id,
+                                       pickle.dumps({"ack": True}))
+                shared["prev_x"] = None
+                INFO(f"[RASG DYN SVC] sd={sd} step-group finished at "
+                     f"step={data.get('step')}")
+                continue
+            ctx = shared["step_ctx"]
+            if ctx is None or data.get("fail_hint"):
+                agent.peer_rpc_respond_failure(conn_id, rpc_id, b"no ctx")
+                continue
+
+            if shared.get("poison"):
+                raise RuntimeError(str(shared["poison"]))
+
+            ghosts = deserialize_array(data["ghosts"])
+            x_local = ex_slv_ras_bupdated_solve(
+                get_cache(solver_key), ctx["b_local"],
+                ctx["outside_local_pos"], ctx["outside_coeffs"],
+                ghosts, 1.0)
+            x_primary = np.asarray(x_local, dtype=np.float64)[
+                ctx["primary_local_pos"]]
+            conv = False
+            if shared.get("prev_x") is not None:
+                conv = float(np.max(np.abs(x_primary - shared["prev_x"]))) < \
+                    ctx["tol"]
+            shared["prev_x"] = x_primary
+            agent.peer_rpc_respond(conn_id, rpc_id, pickle.dumps({
+                "x": serialize_array(x_primary), "conv": conv}))
+        except Exception as e:
+            WARN(f"[RASG DYN SVC] sd={sd} request failed: {e}")
+            try:
+                agent.peer_rpc_respond_failure(conn_id, rpc_id,
+                                               str(e)[:200].encode())
+            except Exception:
+                pass
+
+
+def _setup_check_deps(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
+                      max_iter, tol, omega, min_steps, gen, start_t):
+    return [db.get_full_name(f"__rasg__d_addr_{gen}_{s}") for s in range(nsd)] + \
+           [db.get_full_name(f"__rasg__b_{start_t}")]
+
+
+@as_task(inputs=_setup_check_deps,
+         requires=lambda db, matrix_ref, nsd, sol_prefix, num_steps,
+                     update_rhs, max_iter, tol, omega, min_steps, gen,
+                     start_t: ["ras_check"],
+         priority=_DYNAMIC_TASK_PRIORITY)
+def setup_check_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
+                     max_iter, tol, omega, min_steps, gen, start_t):
+    """check worker 的 setup：粗校正初始化（幂等）+ connect 全部成员 +
+    提交 solver(start_t) 组。
+
+    connect 被拒（成员 setup 后已死）在此即 raise——check_ready 缺失，
+    下游连锁失败进 bin。"""
+    import scipy.sparse as sp
+    from fly import get_cache, put_cache, has_cache
+    from fly.runtime import get_agent
+
+    pool_key = f"__rasg__d_pool_{gen}"
+    if has_cache(pool_key):
+        # 防御分支：正常流程中新 gen 必 miss。
+        INFO(f"[RASG DYN SETUP CHECK] gen={gen} pool cached, "
+             f"submitting solver({start_t})")
+        _submit_solver_group(db, matrix_ref, nsd, sol_prefix, num_steps,
+                             update_rhs, max_iter, tol, omega, min_steps,
+                             gen, start_t)
+        return
+
+    agent = get_agent()
+    coord = db.read_object("__rasg__coord")
+    N = coord["N"]
+    use_coarse = (omega == "coarse")
+
+    # ── 粗校正数据（key 按 matrix_ref：跨代共享）──
+    lu_key, P_key, A_key, sub_key = _check_data_cache_keys(matrix_ref)
+    if use_coarse and not has_cache(lu_key):
+        from scipy import sparse
+        from scipy.sparse.linalg import splu
+        prebuilt = db.read_object("__rasg__coarse_prebuilt")
+        if prebuilt is None or prebuilt.get("skip") or "Ac_indptr" not in prebuilt:
+            raise RuntimeError(
+                "[RASG DYN SETUP CHECK] coarse prebuilt missing — dynamic "
+                "coarse mode requires the coord prebuild fast path")
+        t0 = time.perf_counter()
+        put_cache(P_key, sparse.csr_matrix(
+            (prebuilt["P_vals"], (prebuilt["P_rows"], prebuilt["P_cols"])),
+            shape=(prebuilt["N"], prebuilt["Nc"])))
+        put_cache(lu_key, splu(sparse.csc_matrix(
+            (prebuilt["Ac_data"], prebuilt["Ac_indices"],
+             prebuilt["Ac_indptr"]), shape=prebuilt["Ac_shape"])))
+        INFO(f"[RASG DYN SETUP CHECK] coarse LU built: Nc={prebuilt['Nc']} "
+             f"t={(time.perf_counter()-t0)*1000:.0f}ms")
+    if not has_cache(A_key):
+        from .ras_graph import _get_matrix_data
+        md = _get_matrix_data(matrix_ref, db)
+        put_cache(A_key, sp.csr_matrix(
+            (np.asarray(md["vals"]), (np.asarray(md["rows"]), np.asarray(md["cols"]))),
+            shape=(N, N)))
+    if not has_cache(sub_key):
+        put_cache(sub_key, {s: db.read_object(f"__rasg__sub_{s}")
+                            for s in range(nsd)})
+
+    # ── RPC client：connect 全部成员（被拒 = 该成员 setup 后已死）──
+    pool = {}
+    for sd in range(nsd):
+        addr = db.read_object(f"__rasg__d_addr_{gen}_{sd}")
+        conn_id = agent.peer_rpc_connect(addr["host"], addr["port"])
+        if conn_id == 0:
+            raise RuntimeError(
+                f"[RASG DYN SETUP CHECK] connect sd={sd} refused "
+                f"({addr['host']}:{addr['port']}) — member dead after setup")
+        pool[sd] = conn_id
+    put_cache(pool_key, pool)
+    agent.set_worker_property(f"rasg_{gen}_check")
+    INFO(f"[RASG DYN SETUP CHECK] gen={gen} pool of {nsd} connected, "
+         f"submitting solver({start_t})")
+
+    _submit_solver_group(db, matrix_ref, nsd, sol_prefix, num_steps,
+                         update_rhs, max_iter, tol, omega, min_steps,
+                         gen, start_t)
+
+
+# ───────────────────── 阶段 2：solver（per t，被动/驱动对偶） ─────────────────────
+
+def _compute_deps(db, matrix_ref, nsd, sd, sol_prefix, gen, t):
+    return [db.get_full_name(f"__rasg__b_{t}"),
+            db.get_full_name(f"__rasg__d_addr_{gen}_{sd}")]
+
+
+@as_task(inputs=_compute_deps,
+         requires=lambda db, matrix_ref, nsd, sd, sol_prefix, gen, t: [f"sd_{sd}"],
+         priority=_DYNAMIC_TASK_PRIORITY)
+def compute_dyn_task(db, matrix_ref, nsd, sd, sol_prefix, gen, t):
+    """本时间步的参数注入：把当前步的 b_local / warm-start 基准写入成员
+    service 线程的 shared 结构后立即返回（真正的迭代消费在 setup 启动的
+    常驻线程中，跨时间步复用；task 短小，避免多消费者抢队列——实测事故
+    教训）。
+
+    重投语义（裁定）：svc 缓存 miss（组散/换代时已清）→ 直接 return。
+
+    QA 注入钩子：FLY_RASG_FAIL_AT="t:sd" 时置 poison——service 线程对该
+    成员的下一请求返回 failure → check 断言组死。"""
+    import numpy as np
+    from fly import get_cache, has_cache
+
+    shared_key = f"__rasg__d_svc_{gen}_{sd}"
+    if not has_cache(shared_key):
+        INFO(f"[RASG DYN COMPUTE] sd={sd} t={t} gen={gen} stale task, no-op "
+             f"(fresh group will be issued)")
+        return
+
+    cfg = db.read_object("__rasg__cfg")
+    setup_key, _solver_key = _data_cache_keys(matrix_ref, sd)
+    setup = get_cache(setup_key)
+
     b_t = np.asarray(db.read_object(f"__rasg__b_{t}"), dtype=np.float64)
     b_local = b_t[setup["local_indices"]]
 
-    # ── warm start：sol_{t-1}（持久对象）提取 ghost 值 + 本子域初值 ──
-    sol_prev = None
-    warm_prev = None
-    if t > 0:
-        sol_prev = np.asarray(db.read_object(f"{sol_prefix}_{t - 1}"),
-                              dtype=np.float64)
-        # ghost：外部连接点的全局索引直接索引全局解（向量化）。
-        # 本子域 primary 初值：local_indices[primary_local_pos] 是 primary
-        # 点的全局索引，顺序与 x_primary 一致。
-        warm_prev = sol_prev[setup["local_indices"][setup["primary_local_pos"]]]
-
-    # ── Connect check（重投容错：旧 run 的 chan 地址可能残留，连死端口后
-    # 重试等 check 重写新地址）──
-    group = PeerChannelGroup(group_id)
-    chan = _connect_with_retry(group, db)
-
-    # ── RPC 迭代循环（v2 骨架；固定 b → b_local；warm start 参与 step=0 判定）──
-    step = 0
-    xc_cache = {}  # {sd: xc_array} 上轮粗校正后各子域的解（从 RPC 回复缓存）
-    prev_x_key = f"__rasg__d_{gen}_prev_x_{sd}"
-    while True:
-        outside_coeffs = setup["outside_coeffs"]
-        neighbor_values = np.zeros(len(outside_coeffs))
-        if step == 0 and sol_prev is not None:
-            neighbor_values = sol_prev[setup["outside_global_idx"]]
-        elif step > 0:
-            for nb_id in setup["neighbor_ids"]:
-                if nb_id in xc_cache:
-                    nb_x = xc_cache[nb_id]
-                else:
-                    nb_x = np.zeros(len(cfg["primary_sets"][nb_id]))
-                recv_positions = setup["neighbor_recv_idx"][nb_id]
-                conn_indices = setup["neighbor_needed"][nb_id]
-                for i, conn_i in enumerate(conn_indices):
-                    pos = recv_positions[i]
-                    if 0 <= pos < len(nb_x):
-                        neighbor_values[conn_i] = nb_x[pos]
-
-        x_local = ex_slv_ras_bupdated_solve(
-            solver, b_local,
-            setup["outside_local_pos"], outside_coeffs,
-            neighbor_values, 1.0)
-        x_primary = np.asarray(x_local, dtype=np.float64)[setup["primary_local_pos"]]
-
-        # 收敛判定：step>0 用上轮解；warm start 的 step=0 用上时间步收敛解。
-        converged_local = False
-        prev = None
-        if step > 0 and has_cache(prev_x_key):
-            prev = np.asarray(get_cache(prev_x_key), dtype=np.float64)
-        elif step == 0 and warm_prev is not None:
-            prev = warm_prev
-        if prev is not None:
-            converged_local = float(np.max(np.abs(x_primary - prev))) < tol
-        put_cache(prev_x_key, x_primary)
-
-        payload = pickle.dumps({
-            "sd": sd, "step": step, "conv": converged_local,
-            "x": serialize_array(x_primary),
-        })
-        try:
-            status, resp = chan.rpc(payload, timeout=_RPC_TIMEOUT_SECONDS)
-        except Exception as e:
-            raise RuntimeError(
-                f"[RASG DYN COMPUTE] sd={sd} t={t} RPC failed at step={step}: {e}")
-        if status != PeerRpcStatus.OK:
-            raise RuntimeError(
-                f"[RASG DYN COMPUTE] sd={sd} t={t} check failure at "
-                f"step={step} status={status}")
-
-        result = pickle.loads(resp)
-        if result["action"] == "done":
-            INFO(f"[RASG DYN COMPUTE] sd={sd} t={t} done at step={step} "
-                 f"conv={converged_local}")
-            break
-
-        if "xc_self" in result:
-            xc_self = deserialize_array(result["xc_self"])
-            put_cache(prev_x_key, xc_self)
-            if "ghosts" in result:
-                ghosts = pickle.loads(result["ghosts"])
-                for nb_id_str, ghost_vals in ghosts.items():
-                    nb_id = int(nb_id_str)
-                    recv_positions = setup["neighbor_recv_idx"][nb_id]
-                    if nb_id not in xc_cache:
-                        xc_cache[nb_id] = np.zeros(len(cfg["primary_sets"][nb_id]))
-                    nb_arr = xc_cache[nb_id]
-                    for i, pos in enumerate(recv_positions):
-                        if pos >= 0 and i < len(ghost_vals):
-                            nb_arr[pos] = ghost_vals[i]
-        step += 1
-
-    chan.close()
+    shared = get_cache(shared_key)
+    shared["step_ctx"] = {
+        "b_local": b_local,
+        "outside_local_pos": setup["outside_local_pos"],
+        "outside_coeffs": setup["outside_coeffs"],
+        "primary_local_pos": setup["primary_local_pos"],
+        "tol": cfg["tol"],
+    }
+    # QA 注入：置毒后 service 线程对本成员请求回 failure → check 组死连锁
+    fail_at = os.environ.get("FLY_RASG_FAIL_AT")
+    if fail_at is not None and fail_at == f"{t}:{sd}":
+        shared["poison"] = f"FLY_RASG_FAIL_AT injected at t={t} sd={sd}"
+        INFO(f"[RASG DYN COMPUTE] sd={sd} t={t} poison armed")
 
 
-def _connect_with_retry(group, db, total_timeout=60.0, attempt_timeout=5.0):
-    """connect 容错重试：restart 重投场景下，db 里可能残留旧 run 的 chan
-    地址对象（旧端口已死）——首次 connect 会失败，check 重投 listen 前
-    会 remove 旧地址并写新值，这里重读重连直到窗口耗尽。"""
-    deadline = time.monotonic() + total_timeout
-    last_err = None
-    while time.monotonic() < deadline:
-        try:
-            chan = group.connect(db, timeout=attempt_timeout)
-            if chan is not None:
-                return chan
-        except Exception as e:
-            last_err = e
-        time.sleep(1.0)
-    raise RuntimeError(
-        f"connect to check failed within {total_timeout}s "
-        f"(stale chan address from a previous run?): {last_err}")
-
-
-def _check_deps(db, group_id, nsd, t, max_iter, tol, omega_strategy, min_steps,
-                sol_prefix, num_steps, update_rhs, gen):
-    deps = [db.get_full_name(f"__rasg__b_{t}")] + \
-           [db.get_full_name(f"__rasg__sub_{s}") for s in range(nsd)]
-    if omega_strategy == "coarse":
-        deps.append(db.get_full_name("__rasg__coarse_prebuilt"))
-    return deps
-
-
-@as_task(inputs=_check_deps,
-         requires=lambda db, group_id, nsd, t, max_iter, tol, omega_strategy,
-                     min_steps, sol_prefix, num_steps, update_rhs, gen:
-         ["ras_check"],
+@as_task(inputs=lambda db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
+                     max_iter, tol, omega, min_steps, gen, t: [
+         db.get_full_name(f"__rasg__b_{t}")] +
+         ([db.get_full_name(f"{sol_prefix}_{t - 1}")] if t > 0 else []),
+         requires=lambda db, matrix_ref, nsd, sol_prefix, num_steps,
+                     update_rhs, max_iter, tol, omega, min_steps, gen,
+                     t: ["ras_check"],
          priority=_DYNAMIC_TASK_PRIORITY)
-def check_dyn_task(db, group_id, nsd, t, max_iter, tol, omega_strategy,
-                   min_steps, sol_prefix, num_steps, update_rhs, gen):
-    """时间步 t 的 check 长 task：listen → 收齐 nsd 份 → 内联粗校正 → 回复，
-    循环到收敛。
+def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
+                   max_iter, tol, omega, min_steps, gen, t):
+    """驱动迭代：逐存活成员 call（请求带 ghosts）→ 收贡献 → 残差主导收敛
+    判定（coarse）/ 子域 delta 聚合（非 coarse，conv 由成员 service 线程
+    基于自身上一贡献计算）→ 粗校正 → 下轮；收敛全员 done → 写 sol_t（持久
+    ）/iters_t/converged_t → 提交 controller(t)。
 
-    收敛路径顺序（组失败原子性的关键，与 v2 不同）：
-        写 sol_t/iters_t/converged_t → 提交 controller(t) → respond done → 返回。
-    check 的全部可观察副作用先于 respond done：check 在任何阶段失败时
-    compute 侧 RPC 仍挂起 → task 结束（listener 关闭）后断连/超时 → compute
-    raise → 整组进 failed_tasks.bin（重投单元完整）。
-    """
+    存活不变式（裁定）：任一 call FAILED/断连异常 → alive < nsd → 立即判组
+    死 raise。重投语义（裁定）：池缓存 miss → 组散 → 以新 gen 从 setup 重
+    新驱动本时间步。"""
+    import numpy as np
     import scipy.sparse as sp
-    from fly import get_cache, put_cache, has_cache
+    from fly import get_cache, has_cache
+    from fly.runtime import get_agent
 
-    group = PeerChannelGroup(group_id)
-    # 重投场景：旧 run 残留的 chan 地址对象是旧端口（持久对象 + 同参数
-    # DUPLICATE_SKIPPED 会保旧值）——先 remove（含 provenance erase）再
-    # listen 写新地址，compute 侧 _connect_with_retry 配合重读。
-    try:
-        db.remove_object(group._temp_name())
-    except Exception:
-        pass
-    listener = group.listen(db)
-    INFO(f"[RASG DYN CHECK] t={t} listening port={listener.port}")
+    agent = get_agent()
+    pool_key = f"__rasg__d_pool_{gen}"
+    if not has_cache(pool_key):
+        new_gen = uuid.uuid4().hex[:8]
+        INFO(f"[RASG DYN CHECK] t={t} gen={gen} pool missing — group is "
+             f"scattered, restarting the step from setup with gen={new_gen}")
+        _submit_setup_chain(db, matrix_ref, nsd, sol_prefix, num_steps,
+                            update_rhs, max_iter, tol, omega, min_steps,
+                            new_gen, start_t=t)
+        return
 
-    coord = _cached_read(db, "__rasg__coord", f"__rasg__d_{gen}_coord")
+    pool = get_cache(pool_key)
+    lu_key, P_key, A_key, sub_key = _check_data_cache_keys(matrix_ref)
+    Ac_lu = get_cache(lu_key)
+    P = get_cache(P_key)
+    A_fine = get_cache(A_key)
+    sub_cache = get_cache(sub_key)
+    use_coarse = (omega == "coarse")
+
+    coord = db.read_object("__rasg__coord")
     N = coord["N"]
     primary_sets = coord["primary_sets"]
-    matrix_ref = coord["matrix_ref"]
-    use_coarse = (omega_strategy == "coarse")
-
-    # 当前时间步右端项（残差 r = b_t - A·x；v2 的固定 b 缓存不适用）
-    b_t = np.asarray(db.read_object(f"__rasg__b_{t}"), dtype=np.float64)
-
-    # ── 粗校正预构建（gen 前缀进程缓存，不走 ras_graph 的全局键——防跨
-    # solve 污染；check worker 绑定保证跨时间步命中）。仅 prebuilt 快路径
-    # （kickoff 的 pipeline 恒预构建），legacy 全量构建不支持。──
-    Ac_lu = None
-    P = None
-    A_fine = None
-    if use_coarse:
-        lu_key = f"__rasg__d_{gen}_coarse_lu"
-        if not has_cache(lu_key):
-            from scipy import sparse
-            from scipy.sparse.linalg import splu
-            prebuilt = db.read_object("__rasg__coarse_prebuilt")
-            if prebuilt is None or prebuilt.get("skip") or "Ac_indptr" not in prebuilt:
-                raise RuntimeError(
-                    "[RASG DYN CHECK] coarse prebuilt missing — dynamic mode "
-                    "requires the coord prebuild fast path")
-            t0 = time.perf_counter()
-            put_cache(f"__rasg__d_{gen}_coarse_P", sparse.csr_matrix(
-                (prebuilt["P_vals"], (prebuilt["P_rows"], prebuilt["P_cols"])),
-                shape=(prebuilt["N"], prebuilt["Nc"])))
-            put_cache(lu_key, splu(sparse.csc_matrix(
-                (prebuilt["Ac_data"], prebuilt["Ac_indices"],
-                 prebuilt["Ac_indptr"]), shape=prebuilt["Ac_shape"])))
-            INFO(f"[RASG DYN CHECK] coarse LU built from prebuilt: "
-                 f"Nc={prebuilt['Nc']} t={(time.perf_counter()-t0)*1000:.0f}ms")
-        Ac_lu = get_cache(lu_key)
-        P = get_cache(f"__rasg__d_{gen}_coarse_P")
-
-        a_key = f"__rasg__d_{gen}_coarse_A"
-        if not has_cache(a_key):
-            from .ras_graph import _get_matrix_data
-            md = _get_matrix_data(matrix_ref, db)
-            A_fine = sp.csr_matrix(
-                (np.asarray(md["vals"]), (np.asarray(md["rows"]), np.asarray(md["cols"]))),
-                shape=(N, N))
-            put_cache(a_key, A_fine)
-        else:
-            A_fine = get_cache(a_key)
-
     ps_arrays = [np.asarray(ps) for ps in primary_sets]
 
-    # check 侧 sub 缓存（neighbor_recv_idx 用于 ghosts 提取；gen 前缀防跨
-    # solve 污染）
-    sub_cache_key = f"__rasg__d_{gen}_sub_cache"
-    if not has_cache(sub_cache_key):
-        sub_cache = {}
-        for sd_idx in range(nsd):
-            sub_cache[sd_idx] = db.read_object(f"__rasg__sub_{sd_idx}")
-        put_cache(sub_cache_key, sub_cache)
-    sub_cache = get_cache(sub_cache_key)
+    b_t = np.asarray(db.read_object(f"__rasg__b_{t}"), dtype=np.float64)
+    b_norm = max(float(np.linalg.norm(b_t)), 1e-30)
 
-    step = 0
-    while step < max_iter:
-        # ── 收齐 nsd 份（按 sd 去重收满；超时 raise）──
-        # 断连事件一律吞掉继续收：PeerRpc 事件队列是 agent 级的，同 worker
-        # 上前一个 check task 的 listener.close()（stop server 关闭残留连接）
-        # 会向队列投放断连事件，被本组 accept_one 误读为致命错误（实测：
-        # t=0 收敛后 10ms 内 t=1 check 即被陈旧事件炸死）。组内真实断连的
-        # 失败语义由"收不齐 + 超时"兜底，不影响原子传染。
-        contributions = {}
-        collect_deadline = time.monotonic() + _RPC_TIMEOUT_SECONDS
-        while len(contributions) < nsd:
-            if time.monotonic() > collect_deadline:
+    alive = set(pool.keys())
+    try:
+        x_global = None
+        converged = False
+        r_rel = float("inf")
+        step = 0
+        iters = 0
+        while step < max_iter:
+            # 存活不变式（裁定）：任一成员失联即组死，当轮入口立即判。
+            if len(alive) < nsd:
                 raise RuntimeError(
-                    f"[RASG DYN CHECK] t={t} timed out waiting for "
-                    f"contributions {len(contributions)}/{nsd} at step={step}")
-            try:
-                conn_id, rpc_id, src, payload = listener.accept_one(timeout=5.0)
-            except RuntimeError as e:
-                DBG(f"[RASG DYN CHECK] t={t} skipping disconnect event "
-                    f"at step={step}: {e}")
-                continue
-            if conn_id == 0 and rpc_id == 0:
-                continue  # 单次 5s 无事件，外层 deadline 控制总窗口
-            data = pickle.loads(payload)
-            contributions[data["sd"]] = {
-                "conn_id": conn_id, "rpc_id": rpc_id,
-                "x": deserialize_array(data["x"]), "conv": data["conv"],
-            }
-        all_converged = False
-        if use_coarse and Ac_lu is not None:
-            # 残差主导判定（coarse）：r_rel < tol 即收敛。
-            # r = b_t - A·x 在校正路径本来就要算，norm 是零头成本；
-            # 数学上是相对扰动右端项的解误差直接界（Δx 增量判定只是
-            # 迭代停滞信号）——warm start 后续步初值接近真解时 flags 会
-            # 掩盖未完成的界面平衡（早停损精度）或让已达标的多跑空转轮，
-            # 两类偏差统一由残差口径消除。min_steps 保留为最低轮数防呆。
+                    f"[RASG DYN CHECK] t={t} group dead: alive="
+                    f"{sorted(alive)} of {nsd}")
+
+            contributions = {}
+            conv_flags = []
+            for sd in sorted(alive):
+                sub = sub_cache[sd]
+                ghosts = np.zeros(len(sub["outside_coeffs"]))
+                if step == 0:
+                    if t > 0:
+                        ghosts = np.asarray(
+                            db.read_object(f"{sol_prefix}_{t - 1}"),
+                            dtype=np.float64)[sub["outside_global_idx"]]
+                else:
+                    ghosts = x_corrected[sub["outside_global_idx"]]
+                status, resp = agent.peer_rpc_call(
+                    pool[sd], pickle.dumps({
+                        "action": "iterate", "step": step,
+                        "ghosts": serialize_array(ghosts)}),
+                    0)  # timeout_ms=0：无限，断连事件唤醒（timeout 裁定）
+                if status != _RPC_OK:
+                    alive.discard(sd)
+                    raise RuntimeError(
+                        f"[RASG DYN CHECK] t={t} rpc sd={sd} status={status}"
+                        f" at step={step}")
+                data = pickle.loads(resp)
+                contributions[sd] = deserialize_array(data["x"])
+                conv_flags.append(bool(data.get("conv")))
+
             x_global = np.zeros(N, dtype=np.float64)
-            for sd_idx in range(nsd):
-                x_global[ps_arrays[sd_idx]] = contributions[sd_idx]["x"]
-            r_norm = float(np.linalg.norm(b_t - A_fine.dot(x_global)))
-            r_rel = r_norm / max(float(np.linalg.norm(b_t)), 1e-30)
-            all_converged = step >= min_steps and r_rel < tol
-        else:
-            # 非 coarse 无 A_fine（内存代价不引入），沿用子域增量标志聚合。
-            all_converged = all(c["conv"] for c in contributions.values())
-            if step < min_steps:
-                all_converged = False
+            for sd in contributions:
+                x_global[ps_arrays[sd]] = contributions[sd]
 
-        if all_converged or step == max_iter - 1:
-            # ── 收敛：respond done 先行（reactor 异步 send 需缓冲期刷出，
-            # 紧随的 listener.close() 会掐死未发出的 respond——v2 同款顺序，
-            # 写库/提交 controller 的同步往返就是天然缓冲），再落库与链推进。
-            # 原子性权衡：respond 后写库失败 → compute 已成功退出、bin 只剩
-            # check，重投会因收不齐超时失败可见（不静默），与 v2 风险面一致。──
-            for sd in range(nsd):
-                c = contributions[sd]
-                try:
-                    listener.respond(c["conn_id"], c["rpc_id"],
-                                     pickle.dumps({"action": "done"}))
-                except Exception:
-                    pass
-            db.write_object(f"{sol_prefix}_{t}", x_global)
-            db.write_object(f"__rasg__iters_{t}", step + 1, save_to_db=False)
-            db.write_object(f"__rasg__converged_{t}", all_converged,
-                            save_to_db=False)
-            controller_dyn_task(db, t, nsd, max_iter, tol, omega_strategy,
-                                min_steps, num_steps, update_rhs, sol_prefix,
-                                group_id, gen)
-            INFO(f"[RASG DYN CHECK] t={t} converged={all_converged} "
-                 f"at step={step}")
-            break
+            # 收敛判定：coarse 残差主导（数学准则直接界定解误差）；非
+            # coarse 无 A_fine，退回子域 delta 标志聚合。
+            r_rel = float(np.linalg.norm(b_t - A_fine.dot(x_global))) / b_norm
+            if use_coarse:
+                converged = step >= min_steps and r_rel < tol
+            else:
+                converged = step >= min_steps and all(conv_flags)
 
-        # ── 内联粗校正（完全在内存，不经 DB；残差用当前步 b_t）──
-        if use_coarse and Ac_lu is not None:
-            r = b_t - A_fine.dot(x_global)
-            e_c = Ac_lu.solve(P.T.dot(r))
-            x_corrected = x_global + P.dot(e_c)
-        else:
-            x_corrected = x_global
+            if converged or step == max_iter - 1:
+                iters = step + 1
+                break
 
-        xc_primary = {}
-        for sd in range(nsd):
-            xc_primary[sd] = x_corrected[ps_arrays[sd]]
+            if use_coarse and Ac_lu is not None:
+                e_c = Ac_lu.solve(P.T.dot(b_t - A_fine.dot(x_global)))
+                x_corrected = x_global + P.dot(e_c)
+            else:
+                x_corrected = x_global
+            step += 1
 
-        for sd in range(nsd):
-            c = contributions[sd]
-            sub = sub_cache[sd]
-            payload = {"action": "continue",
-                       "xc_self": serialize_array(xc_primary[sd])}
-            ghosts = {}
-            for nb_id in sub["neighbor_ids"]:
-                recv_positions = sub["neighbor_recv_idx"][nb_id]
-                nb_xc = xc_primary[nb_id]
-                ghosts[nb_id] = [float(nb_xc[pos])
-                                 if 0 <= pos < len(nb_xc) else 0.0
-                                 for pos in recv_positions]
-            payload["ghosts"] = pickle.dumps(ghosts)
-            listener.respond(c["conn_id"], c["rpc_id"], pickle.dumps(payload))
-        step += 1
+        INFO(f"[RASG DYN CHECK] t={t} done: converged={converged} "
+             f"step={step} r_rel={r_rel:.2e} iters={iters}")
 
-    listener.close()
+        # 结果落库（写前 remove：重投链换 gen 后 hash 不同，不清会被
+        # provenance/DUPLICATE 拦截）。
+        for name in [f"{sol_prefix}_{t}", f"__rasg__iters_{t}",
+                     f"__rasg__converged_{t}"]:
+            _remove_quiet(db, name)
+        db.write_object(f"{sol_prefix}_{t}", x_global)
+        db.write_object(f"__rasg__iters_{t}", iters, save_to_db=False)
+        db.write_object(f"__rasg__converged_{t}", converged, save_to_db=False)
+
+        controller_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps,
+                            update_rhs, max_iter, tol, omega, min_steps,
+                            gen, t)
+    except Exception:
+        # check 侧死亡纪律：强关 server —— 全体成员挂起的 recv_request 被
+        # 错误断连唤醒转 raise；清池缓存（重投的 check 据此触发组散重启）。
+        try:
+            agent.stop_peer_rpc()
+        except Exception:
+            pass
+        try:
+            from fly import remove_cache
+            remove_cache(pool_key)
+        except Exception:
+            pass
+        raise
 
 
-@as_task(inputs=lambda db, t, nsd, max_iter, tol, omega_strategy, min_steps,
-                     num_steps, update_rhs, sol_prefix, prev_group_id, gen:
-         [db.get_full_name(f"__rasg__converged_{t}")],
+# ───────────────────── 阶段 3：controller（链推进 / 收尾清理） ─────────────────────
+
+@as_task(inputs=lambda db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
+                     max_iter, tol, omega, min_steps, gen, t: [
+         db.get_full_name(f"__rasg__converged_{t}")],
+         requires=lambda db, matrix_ref, nsd, sol_prefix, num_steps,
+                     update_rhs, max_iter, tol, omega, min_steps, gen,
+                     t: ["ras_check"],
          priority=_DYNAMIC_TASK_PRIORITY)
-def controller_dyn_task(db, t, nsd, max_iter, tol, omega_strategy, min_steps,
-                        num_steps, update_rhs, sol_prefix, prev_group_id, gen):
-    """时间步控制器：依赖 converged_t（调度器保证 t 步完成后才运行），
-    决定是否启动下一个时间步——master 上永远不做阻塞式流程的链式替代。
+def controller_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
+                        max_iter, tol, omega, min_steps, gen, t):
+    """时间步控制器（ras_check 绑定：与 check 同 worker，复用其池缓存）。
 
-    终止条件：t+1 >= num_steps 或 update_rhs 返回 None → 写 dynamic_done。
-    否则：update_rhs 生成 b_{t+1} → 提交 step t+1 组（check(t+1) 将提交
-    controller(t+1)，链闭合）→ 清理本步中间量（b_t / chan 地址）。
-    """
+    有下一步：update_rhs → 写 b_{t+1} → 提交 solver(t+1) → 删 b_t。
+    无下一步（步数尽 / update_rhs 返 None）：本 worker 收尾 → cleanup × nsd
+    → 写 dynamic_done（异步善后，不阻塞于 cleanup 完成）。"""
+    from fly import remove_cache
+    from fly.runtime import get_agent
+
     x_t = db.read_object(f"{sol_prefix}_{t}")
 
-    # 清理本步 chan 地址对象（check(t) 的 RPC 已结束；组失败时本 task 不
-    # 会运行——converged_t 未就绪，chan 保留供重投的 check remove 重写）。
-    try:
-        db.remove_object(f"__fly_chan_{prev_group_id}")
-    except Exception:
-        pass
-
-    if t + 1 >= num_steps:
-        _write_dynamic_done(db, t, sol_prefix)
+    if t + 1 < num_steps:
+        b_next = update_rhs(x_t, t + 1)
+        if b_next is None:
+            INFO(f"[RASG DYN CTRL] t={t} update_rhs returned None, stopping early")
+            _teardown(db, matrix_ref, nsd, sol_prefix, num_steps, gen, last_t=t)
+            return
+        _remove_quiet(db, f"__rasg__b_{t + 1}")
+        db.write_object(f"__rasg__b_{t + 1}", b_next, save_to_db=False)
+        INFO(f"[RASG DYN CTRL] t={t} → t={t + 1} rhs updated")
+        _submit_solver_group(db, matrix_ref, nsd, sol_prefix, num_steps,
+                             update_rhs, max_iter, tol, omega, min_steps,
+                             gen, t + 1)
+        _remove_quiet(db, f"__rasg__b_{t}")
         return
 
-    b_next = update_rhs(x_t, t + 1)
-    if b_next is None:
-        INFO(f"[RASG DYN CTRL] t={t} update_rhs returned None, stopping early")
-        _write_dynamic_done(db, t, sol_prefix)
-        return
-
-    db.write_object(f"__rasg__b_{t + 1}", b_next, save_to_db=False)
-    INFO(f"[RASG DYN CTRL] t={t} → t={t + 1} rhs updated, submitting next group")
-
-    _submit_step_group(db, t + 1, nsd, max_iter, tol, omega_strategy,
-                       min_steps, sol_prefix, num_steps, update_rhs, gen)
-
-    # 清理 b_t：t 步组已收敛消费完毕；组失败时 controller 不会运行（依赖
-    # converged_t），b_t 保留供重投的 compute 使用——时序上重投窗口安全。
-    try:
-        db.remove_object(f"__rasg__b_{t}")
-    except Exception:
-        pass
+    INFO(f"[RASG DYN CTRL] t={t} final step, tearing down")
+    _teardown(db, matrix_ref, nsd, sol_prefix, num_steps, gen, last_t=t)
 
 
-def _write_dynamic_done(db, last_t, sol_prefix):
+def _teardown(db, matrix_ref, nsd, sol_prefix, num_steps, gen, last_t):
+    """收尾：本 worker（check 侧）清理 → cleanup × nsd → dynamic_done。"""
+    from fly import remove_cache
+    from fly.runtime import get_agent
+
+    agent = get_agent()
+    agent.stop_peer_rpc()          # 关池连接（成员均已收到 done 正常退出）
+    remove_cache(f"__rasg__d_pool_{gen}")
+    agent.remove_worker_property(f"rasg_{gen}_check")
+    for key in _check_data_cache_keys(matrix_ref):
+        remove_cache(key)
+
+    for sd in range(nsd):
+        cleanup_task(db, matrix_ref, sd, gen, last_t)
+
     iters = [db.read_object(f"__rasg__iters_{i}") for i in range(last_t + 1)]
     conv = [db.read_object(f"__rasg__converged_{i}") for i in range(last_t + 1)]
     db.write_object("__rasg__dynamic_done", {
@@ -595,8 +677,27 @@ def _write_dynamic_done(db, last_t, sol_prefix):
     INFO(f"[RASG DYN CTRL] dynamic done: steps={last_t + 1} iters={iters}")
 
 
-@wait_obj(inputs=lambda db, timeout: [db.get_full_name("__rasg__dynamic_done")])
-def get_dynamic_result(db, timeout=None):
-    """等待整体完成（用户自主决定何时阻塞）。返回 dynamic_done 汇总：
-    {"num_steps_done", "iters", "converged", "sol_names"}。"""
-    return db.read_object("__rasg__dynamic_done")
+@as_task(inputs=lambda db, matrix_ref, sd, gen, final_t: [
+             db.get_full_name(f"__rasg__converged_{final_t}")],
+         requires=lambda db, matrix_ref, sd, gen, final_t: [f"sd_{sd}"],
+         priority=_DYNAMIC_TASK_PRIORITY)
+def cleanup_task(db, matrix_ref, sd, gen, final_t):
+    """compute worker 收尾：销毁矩阵/listener 缓存、关 server、移除属性、
+    删地址对象。requires=[sd_{sd}] 单线程队列天然排在最后一步 compute 之后；
+    inputs=[converged_final_t] 双保险锚定全局完成。"""
+    from fly import remove_cache
+    from fly.runtime import get_agent
+
+    from fly import get_cache as _gc, has_cache as _hc
+    if _hc(f"__rasg__d_svc_{gen}_{sd}"):
+        _gc(f"__rasg__d_svc_{gen}_{sd}")["stop"] = True   # 服务线程退出开关
+
+    agent = get_agent()
+    agent.stop_peer_rpc()   # 兜底：阻塞在 recv 的服务线程被断连唤醒退出
+    setup_key, solver_key = _data_cache_keys(matrix_ref, sd)
+    remove_cache(setup_key)
+    remove_cache(solver_key)
+    remove_cache(f"__rasg__d_svc_{gen}_{sd}")
+    agent.remove_worker_property(f"rasg_{gen}_{sd}")
+    _remove_quiet(db, f"__rasg__d_addr_{gen}_{sd}")
+    INFO(f"[RASG DYN CLEANUP] sd={sd} gen={gen} done")

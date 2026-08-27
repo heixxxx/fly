@@ -51,7 +51,10 @@ solve_ras_graph_dynamic(db, MATRIX_OBJ_KEY, NSD, b0, update_rhs,
                         num_steps=5, overlap_ratio=0.30, max_iter=100,
                         tol=1e-8, omega="coarse", min_steps=2)
 
-result = get_dynamic_result(db, timeout=180)
+# 无 timeout 参数调用：覆盖 wait_obj 默认路径（曾因 inputs lambda 声明
+# 必选 timeout 导致无参调用 TypeError 的回归锚点；timeout 裁定后此调用
+# 形态即标准用法——数据规模相关等待不设超时，can_still_produce 兜底）。
+result = get_dynamic_result(db)
 INFO(f"dynamic result: {result}")
 
 assert result["num_steps_done"] == 2, \

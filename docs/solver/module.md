@@ -72,19 +72,43 @@ coord (master, 普通函数)
 EmIR dynamic IR drop 场景：同一矩阵 G 连续求解 T 个时间步的 G·x_t = b_t
 （b_t = f(x_{t-1})，严格串行）。API：`solve_ras_graph_dynamic(db, matrix_ref,
 nsd, b0, update_rhs, num_steps, ...)`——**非阻塞 kickoff**（写 b_0 + 提交
-kickoff task 后立即返回），`get_dynamic_result(db)` 按需等待整体完成。
+kickoff task 后立即返回），`get_dynamic_result(db)` 按需等待整体完成
+（无 timeout 形参）。
 
-### 架构（task 链自驱动，master 零阻塞）
+### 三阶段架构（task 链自驱动，master 零阻塞）
 
 ```
 kickoff_task (inputs=[matrix, b_0], 任意 worker)
-  └─ coord 预分块写 sub_{sd} → 提交 step0 组
-step t 组 = compute_dyn × nsd (requires=sd_i, prio=90) + check_dyn (requires=ras_check)
-  └─ RPC 迭代到收敛 → 写 sol_t(持久)/iters_t/converged_t → 提交 controller(t)
-controller_task(t) (inputs=[converged_t], 任意 worker)
-  └─ 读 x_t → update_rhs 生成 b_{t+1} → 提交 step t+1 组 → 链闭合
-  └─ 终止（步数用尽/回调返 None）→ 写 __rasg__dynamic_done
+  └─ coord 预分块写 sub_{sd} → 提交 setup 链
+
+阶段 1 setup（每链一次，跨全部时间步复用）
+  setup_compute × nsd (requires=sd_i, inputs=[sub_{sd}])
+    LDLT/子域 → 进程缓存(key 按 matrix_ref)；
+    stop 旧 server → listen 新端口 → 端口入缓存(key 按 gen)；
+    写地址对象 addr_{gen}_{sd}(temp，依赖锚)；set_worker_property
+  setup_check (requires=ras_check, inputs=全部 addr + b_{start_t})
+    粗校正 LU/A_fine/子域索引 → 缓存；connect × nsd → 池 {sd: conn_id}
+    入缓存；被拒 = 成员 setup 后已死 → raise 下游连锁；
+    完成后提交 solver(start_t) 组
+
+阶段 2 solver per t（时间步粒度 = task 检查点边界）
+  compute(t,sd) (requires=sd_i, inputs=[b_t, addr])
+    常驻 service 线程消费请求(agent 级队列单读者)：accept iterate(带 ghosts)
+    → 本地 solve → respond 贡献；done → ack 退出。
+    compute task 自身 = 参数注入者(b_local 等)，短命即回。
+  check(t) (requires=ras_check, inputs=[b_t]+[sol_{t-1}])
+    驱动循环：逐存活成员 call(带 ghosts) → 收贡献 → 残差主导收敛判定/
+    非 coarse delta 聚合 → 粗校正；收敛广播 done → 写 sol_t(持久)/
+    iters_t/converged_t → 提交 controller(t)
+
+阶段 3 controller(t) (requires=ras_check，与 check 同 worker)
+  有下一步：update_rhs(x_t, t+1) → 写 b_{t+1} → 提交 solver(t+1) → 删 b_t
+  无下一步：收尾清缓存/server/属性 → 发 cleanup × nsd（各成员销毁
+    listener/LDLT 缓存、关 server、移除属性、删地址对象）→ 写 dynamic_done
 ```
+
+连接方向为 check→compute 主动连接：成员"该连未连"的时序洞不存在——
+setup 失败走依赖连锁，运行期死亡由断连事件毫秒级传播。
 
 master 只做 kickoff（含 worker 池启动：nsd 个 sd_i 绑定 + 1 个 ras_check
 绑定），编排全在 worker task 链上——master 上永远不做阻塞式流程。
@@ -93,24 +117,36 @@ master 只做 kickoff（含 worker 池启动：nsd 个 sd_i 绑定 + 1 个 ras_c
 
 | 语义 | 实现 |
 |------|------|
-| task 粒度隔离 | 每时间步一组新 task（新 PeerChannelGroup）；单步迭代在长 task 内 RPC 直连（v2 思路） |
-| 失败重跑 | 组失败原子传染（check 全部可观察副作用先于 respond done；compute RPC 中断一律 raise）；已完成步骤结果持久不丢，restart 只重投失败组，check 重跑后链自动恢复 |
-| 冷启动安全 | db 是权威（temp 落盘恢复 + 持久对象），worker 进程缓存（LDLT 因子、粗校正 LU）纯加速——全新 run 从 db 重建 |
-| worker 复用 | requires=sd_i 属性钉住 + priority=90；setup 缓存短路（gen 会话前缀，跨步命中、跨 solve 不串） |
-| warm start | step t 初值取 sol_{t-1}（持久对象，restart 后仍可用）——相邻时间步解接近时迭代次数下降（QA 实测 n20 iters [9,8,8]） |
-| 收敛判定 | coarse 模式**残差主导**：r_rel = ‖b_t−A·x‖/‖b_t‖ < tol 即收敛（step≥min_steps 防呆），Δx 增量标志不再参与——数学准则直接界定解误差；非 coarse 无 A_fine，沿用子域增量标志。tol=1e-8 实测 rel_res≤7.5e-9 全达标、rel_err ~1e-11，与增量判定同轮触发（迭代瓶颈是 RAS 边界传播轮数而非判定口径） |
+| task 粒度隔离 | 时间步 = task 组边界 = 天然检查点：组失败原子传染，已完成步骤结果持久不丢 |
+| 常驻 service 线程 | agent 级 PeerRpc 请求队列全生命周期只能有一个 reader——短命 task 各自 recv 会互抢错账（实测事故）；唯一消费者是 setup 启动的 daemon 线程，solver task 只注入本步参数 |
+| 双向死亡感知 | 成员死/task 异常退出：except 强关 server → FIN → check 的 call 立即 FAILED → alive<nsd → 组死 raise → stop_peer_rpc → 全体成员挂起 recv 被断连唤醒——无任何等待窗口 |
+| 冷启动安全 | db 是权威（temp 落盘恢复 + 持久对象），进程缓存纯加速；缓存 key 分层：数据按 matrix_ref（重投不重做 LDLT）、连接按 gen（换代重建，隔离重投窗口） |
+| remove-before-write | check 写 sol_t 系、controller 写 b_{t+1} 前 try remove——重投链换 gen 后参数 hash 不同，不清会被 provenance/DUPLICATE 拒绝 |
+| 重投重启 | compute 缓存 miss → no-op return（真组由新链发出）；check 池 miss → 以新 gen 从 setup 重新驱动该时间步（LDLT 命中秒过）；旧 gen task 被换代 stop 唤醒退出，最坏一轮涟漪后二次重投全 no-op 收敛 |
+| warm start | step t 迭代基准取 sol_{t-1}（持久对象，restart 后仍可用）——n500 coarse 实测稀疏右端项 iters [5,4,4]（-20%）、均匀小变化 [7,5,5]（-29%@tol=1e-8） |
+| 收敛判定 | coarse 模式**残差主导**：r_rel = ‖b_t−A·x‖/‖b_t‖ < tol 即收敛（step≥min_steps 防呆）——数学准则直接界定解误差；非 coarse 用成员 delta 标志聚合。tol=1e-8 实测 rel_res≤7.5e-9 全达标、rel_err ~1e-11 |
+| timeout 策略 | **数据规模相关等待一律无超时**（用户裁定）：rpc/call/recv 显式 timeout_ms=0（C++ 绑定层 gil_scoped_release 释放 GIL 后阻塞，断连事件唤醒）、controller 链推进、get_dynamic_result 全部无限等待。失败语义全部事件化：PeerRpc 断连 → rpc FAILED / recv RuntimeError；wait_obj can_still_produce 兜底生产者死绝。关机逃生口 = agent.is_running() |
 
-### 对象命名空间
+### 对象命名空间与缓存 key
 
-跨步对象带 t 维度（provenance：同名不同参数重写会被拒）：
-`__rasg__b_{t}`（temp，controller 逐步清理）、`__rasg__sub_{sd}`/coord/cfg/
-coarse_prebuilt（temp，全程）、`__fly_chan_{group_id}`（持久，下一步
-controller 删除；重投由 remove-before-write + connect 重试容错）、
-`__rasg__sol_{t}`（**持久**，用户数据）、`__rasg__iters_{t}`/`converged_{t}`
-（temp，controller 依赖锚点）、`__rasg__dynamic_done`（temp，用户等待点）。
+跨步对象带 t 维度（provenance：同名不同参数重写会被拒；全部写前 remove）：
+`__rasg__b_{t}`（temp，controller 逐步清理）、`__rasg__d_addr_{gen}_{sd}`
+（temp，setup 写 = 依赖锚 + 地址载体，cleanup 删）、sub_{sd}/coord/cfg/
+coarse_prebuilt（temp，kickoff 写全程存活）、`__rasg__sol_{t}`（**持久**，
+用户数据）、`iters_{t}`/`converged_{t}`（temp，controller 锚点）、
+`__rasg__dynamic_done`（temp，用户等待点）。
 
-限制：omega 仅支持 1.0 / "coarse"（v2 daemon 同款）；update_rhs 在 worker
-上执行（cloudpickle 随 task 参数传递）；同 db 重复调用需换 sol_prefix。
+进程缓存 key 两层：数据按 `matrix_ref`（LDLT/粗校正，同矩阵跨代跨 solve
+共享）；连接按 `gen`（listener 端口、channel 池，换代即重建隔离重投窗口）。
+
+限制：omega 仅支持 1.0 / "coarse"；update_rhs 在 worker 上执行（cloudpickle
+传递）且须**确定性**（重投会重调）；同 db 重复调用需换 sol_prefix。
+
+已知限制（待框架增强，详见 `docs/issues/009-dynamic-restart-worker-pool-contract.md`）：
+restart 场景要求使用者先重建与原 run 一致的属性编队（nsd × sd_i + ras_check）
+再 load_db/restart，且 launch 必须先于 load_db（否则 auto-spawn 的空属性
+worker 占位）。旧版无需此契约——新版引入跨 task 进程级缓存的必然代价，
+框架增强（角色 worker 就绪原语）后将消除。
 
 ---
 
