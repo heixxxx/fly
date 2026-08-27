@@ -8,10 +8,10 @@ export function destroy() {}
 export function mount(ctx) {
   ctx.main.innerHTML = `
     <div class="panel">
-      <h3>Databases</h3>
-      <div class="table-wrap"><table>
+      <h3>${t('db.title')}</h3>
+      <div class="table-x" style="max-width:1080px"><table class="tbl-fin">
         <thead><tr>
-          <th>${t('db.path')}</th><th>${t('tb.created')}</th><th>${t('tb.frozen')}</th><th>${t('tb.diskUsage')}</th>
+          <th style="width:38%">${t('db.path')}</th><th>${t('tb.created')}</th><th>${t('tb.frozen')}</th><th>${t('tb.diskUsage')}</th>
         </tr></thead>
         <tbody id="dbs-body"></tbody>
       </table></div>

@@ -218,7 +218,23 @@ def api_worker_samples(worker_id, from_ms=0, to_ms=0, after_ms=0):
     return {"worker_id": worker_id, "samples": rows}
 
 
-def api_tasks(worker=0, status="", q="", limit=200, offset=0):
+# 可排序列白名单：键 → SQL 表达式（全部为库内列或列的确定性运算，
+# 无用户字符串拼接，防注入）。排序方向由 dir 参数限定 ASC/DESC。
+_TASK_ORDER = {
+    "": "task_id",
+    "id": "task_id",
+    "worker": "worker_id",
+    "started": "COALESCE(started_ms, created_ms)",
+    "queue": "(started_ms - COALESCE(ready_ms, created_ms))",
+    "duration": "(COALESCE(exec_end_ms, exec_start_ms) - exec_start_ms)",
+    "cpu": "cpu_time_ms",
+    "read": "read_bytes",
+    "write": "write_bytes",
+    "mem": "mem_peak_bytes",
+}
+
+
+def api_tasks(worker=0, status="", q="", limit=200, offset=0, order="", desc=1):
     where, args = "1=1", []
     if worker:
         where += " AND worker_id=?"
@@ -230,8 +246,12 @@ def api_tasks(worker=0, status="", q="", limit=200, offset=0):
         where += " AND name LIKE ?"
         args.append(f"%{q}%")
     total = query(f"SELECT COUNT(*) AS n FROM tasks WHERE {where}", args)[0]["n"]
+    col = _TASK_ORDER.get(str(order), "task_id")
+    direction = "DESC" if desc else "ASC"
+    # 次级键 task_id：相同排序值时分页顺序稳定（不因页间抖动漏/重行）。
     rows = [dict(r) for r in query(
-        f"SELECT * FROM tasks WHERE {where} ORDER BY task_id DESC LIMIT ? OFFSET ?",
+        f"SELECT * FROM tasks WHERE {where} "
+        f"ORDER BY {col} {direction}, task_id DESC LIMIT ? OFFSET ?",
         args + [int(limit), int(offset)])]
     return {"total": total, "tasks": rows}
 
@@ -295,7 +315,9 @@ def api_timeline(from_ms=0, to_ms=0, changed_since_ms=0):
             sql += " AND exec_start_ms<=?"
             args.append(to_ms)
     rows = [dict(r) for r in query(sql, args)]
-    return {"tasks": rows}
+    # db_gen（库 inode）：前端增量缓存据此识别库被整体替换（测试重建 /
+    # run 数据重置）——runKey（run_start_ms）相同也强制作废缓存全量重拉。
+    return {"tasks": rows, "db_gen": _db_inode}
 
 
 def api_dbs():
@@ -406,7 +428,9 @@ class MonitorHandler(BaseHTTPRequestHandler):
                     status=qs.get("status", [""])[0],
                     q=qs.get("q", [""])[0],
                     limit=qs.get("limit", ["200"])[0],
-                    offset=qs.get("offset", ["0"])[0]))
+                    offset=qs.get("offset", ["0"])[0],
+                    order=qs.get("order", [""])[0],
+                    desc=int(qs.get("desc", ["1"])[0])))
             elif api == "events":
                 self._send_json(api_events(
                     category=qs.get("category", [""])[0],

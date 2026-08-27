@@ -132,6 +132,28 @@ class ServeTest(unittest.TestCase):
         self.assertEqual(len(d["io"]), 1)
         self.assertEqual(d["io"][0]["object_name"], "/tmp/a.db:x")
 
+    def test_tasks_sort_whitelist(self):
+        """排序参数：白名单键生效、非法键回落 task_id DESC、desc 参数控制
+        升降序。插入行 exec_start_ms=0——不进 timeline（字母序在后的
+        test_timeline 断言不受本用例污染）。"""
+        db = sqlite3.connect(self.db_path)
+        db.execute("INSERT OR REPLACE INTO tasks(task_id, name, status, worker_id, "
+                   "cpu_time_ms) VALUES "
+                   "(90, 's_lo', 'COMPLETED', 1, 100), "
+                   "(91, 's_hi', 'COMPLETED', 1, 900), "
+                   "(92, 's_mid', 'COMPLETED', 1, 500)")
+        db.commit()
+        db.close()
+        asc = [t["task_id"] for t in self.get("/api/tasks?order=cpu&desc=0")["tasks"]]
+        self.assertLess(asc.index(90), asc.index(92))
+        self.assertLess(asc.index(92), asc.index(91))
+        desc = [t["task_id"] for t in self.get("/api/tasks?order=cpu&desc=1")["tasks"]]
+        self.assertLess(desc.index(91), desc.index(92))
+        self.assertLess(desc.index(92), desc.index(90))
+        # 非法键回落 task_id DESC（默认序）。
+        fallback = [t["task_id"] for t in self.get("/api/tasks?order=--drop")["tasks"]]
+        self.assertEqual(fallback, sorted(fallback, reverse=True))
+
     def test_events_category(self):
         evs = self.get("/api/events?category=db")["events"]
         self.assertEqual(len(evs), 1)

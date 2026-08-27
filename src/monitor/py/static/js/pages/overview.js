@@ -7,8 +7,8 @@
 // （多机时进程 Σ 可 >100%，机器取各 host 最大值；单机即全部 fly 进程合计，
 // 与机器 CPU 直接可比）。
 // mount 建骨架与图表实例；update 仅 setOption/innerHTML（缩放/hover 保留）。
-import { getJson, fetchSamplesIncremental, fmtGB, fmtBytes, fmtTime, fmtTimeFull, escapeHtml } from '../api.js';
-import { makeChart, line, chartColors } from '../charts.js';
+import { getJson, fetchSamplesIncremental, fmtGB, fmtBytes, fmtTime, fmtTimeFull, escapeHtml, catLabel, evLabel } from '../api.js';
+import { makeChart, line, chartColors, fmtMb, fmtMbPerS, fmtPctVal } from '../charts.js';
 import { t } from '../i18n.js';
 
 let charts = [];
@@ -29,8 +29,8 @@ export function mount(ctx) {
         <div class="empty-chart">${t('ov.diskPending')}</div>
       </div>
     </div>
-    <div class="panel"><h3>${t('ov.recentEvents')}</h3><div class="table-wrap"><table>
-      <thead><tr><th>${t('tb.time')}</th><th>${t('tb.category')}</th><th>${t('tb.event')}</th><th>worker</th><th>task</th><th>${t('tb.detail')}</th></tr></thead>
+    <div class="panel"><h3>${t('ov.recentEvents')}</h3><div style="max-height:360px; overflow:auto"><table>
+      <thead><tr><th>${t('tb.time')}</th><th>${t('tb.category')}</th><th>${t('tb.event')}</th><th>${t('tb.worker')}</th><th>${t('tb.taskCol')}</th><th>${t('tb.detail')}</th></tr></thead>
       <tbody id="ov-events"></tbody>
     </table></div></div>`;
   charts = [
@@ -56,29 +56,34 @@ export async function update(ctx) {
   const tc = meta.task_counts || {};
   const total = Object.values(tc).reduce((a, b) => a + b, 0);
 
+  const hosts = new Set((workers ? workers.workers : [])
+    .map(w => w.hostname).filter(Boolean)).size;
   document.getElementById('ov-kpi').innerHTML = `
     <div class="kpi"><div class="label">${t(m.run_end_ms ? 'ov.duration' : 'ov.durationRunning')}</div><div class="value">${durS}</div><div class="sub">${m.hostname || ''} · ${fmtTime(+m.run_start_ms)} → ${m.run_end_ms ? fmtTime(+m.run_end_ms) : t('app.now')}</div></div>
-    <div class="kpi"><div class="label">${t('ov.tasksTotal')}</div><div class="value">${total}</div><div class="sub">${t('ov.tasksSub', tc.COMPLETED || 0, tc.FAILED || 0, tc.RUNNING || 0)}</div></div>
-    <div class="kpi"><div class="label">Workers</div><div class="value">${meta.workers}</div></div>`;
+    <div class="kpi"><div class="label">${t('ov.tasksTotal')}</div><div class="value">${total}</div><div class="sub">${t('ov.subDone')} <span class="c-ok">${tc.COMPLETED || 0}</span> · ${t('ov.subFail')} <span class="c-fail">${tc.FAILED || 0}</span> · ${t('ov.subRun')} <span class="c-run">${tc.RUNNING || 0}</span></div></div>
+    <div class="kpi"><div class="label">${t('ov.workersLabel')}</div><div class="value">${meta.workers}</div></div>
+    <div class="kpi"><div class="label">${t('ov.hostsLabel')}</div><div class="value">${hosts}</div></div>`;
 
   // ---- 1s 桶聚合（含 master wid=0 的样本——同样是 fly 进程负载）----
   // 样本经增量缓存拉取（每轮只传新增，见 fetchSamplesIncremental）。
-  // 前值填充（forward-fill）：桶内无样本的 worker 用其 ≤ 该桶的最后已知
-  // 样本参与聚合——否则末尾桶只含已上报的部分 worker（10s 成组上报有
-  // 延迟），Σ 曲线尾部塌陷（与 RunMetrics 最近邻合成同理）。
+  // 并行拉取：200+ worker 时串行 await 每个连接一拍 RTT，首轮显著变慢。
   const seenWorkers = new Set();
   for (const w of (workers ? workers.workers : [])) seenWorkers.add(w.worker_id);
+  const widList = [...seenWorkers];
+  const samplesArr = await Promise.all(widList.map(w => fetchSamplesIncremental(w)));
   const buckets = new Map();   // bucketSec → { wid → latest sample }
   const latest = new Map();    // wid → 该桶时刻的最后已知样本（跨桶携带）
-  for (const w of (workers ? workers.workers : [])) {
-    const samples = await fetchSamplesIncremental(w.worker_id);
-    for (const sp of samples) {
+  widList.forEach((wid, i) => {
+    for (const sp of samplesArr[i]) {
       const k = Math.floor(sp.epoch_ms / 1000);
       let b = buckets.get(k);
       if (!b) { b = {}; buckets.set(k, b); }
-      b[w.worker_id] = sp;  // 同桶多条取最新（时间升序遍历天然覆盖）
+      b[wid] = sp;  // 同桶多条取最新（时间升序遍历天然覆盖）
     }
-  }
+  });
+  // 前值填充（forward-fill）：桶内无样本的 worker 用其 ≤ 该桶的最后已知
+  // 样本参与聚合——否则末尾桶只含已上报的部分 worker（10s 成组上报有
+  // 延迟），Σ 曲线尾部塌陷（与 RunMetrics 最近邻合成同理）。
   const series = [];  // {t, rss, pcpu, hcpu, nr, nw}
   for (const k of [...buckets.keys()].sort((a, b) => a - b)) {
     const b = buckets.get(k);
@@ -108,22 +113,26 @@ export async function update(ctx) {
   }
 
   const c = chartColors();
+  const withFmt = (f) => ({ valueFormatter: f });
   charts[0].setOption({
+    tooltip: withFmt(fmtMb),
     yAxis: [{ type: 'value', axisLabel: { color: c.label, formatter: v => fmtGB(v) } }],
-    series: [line('Total Proc RSS', series.map(s => [s.t, s.rss]), c.blue, 0, true)],
+    series: [line(t('ser.totalRss'), series.map(s => [s.t, s.rss]), c.blue, 0, true)],
   });
   charts[1].setOption({
+    tooltip: withFmt(fmtPctVal),
     yAxis: [{ type: 'value', axisLabel: { color: c.label, formatter: '{value}%' } }],
     series: [
-      line('Total Proc CPU', series.map(s => [s.t, +s.pcpu.toFixed(1)]), c.blue),
-      line('Host CPU', series.map(s => [s.t, s.hcpu ?? 0]), c.yellow),
+      line(t('ser.totalCpu'), series.map(s => [s.t, +s.pcpu.toFixed(1)]), c.blue),
+      line(t('ser.hostCpu'), series.map(s => [s.t, s.hcpu ?? 0]), c.yellow),
     ],
   });
   charts[2].setOption({
+    tooltip: withFmt(fmtMbPerS),
     yAxis: [{ type: 'value', axisLabel: { color: c.label, formatter: v => fmtBytes(v) + '/s' } }],
     series: [
-      line('Read', netR, c.cyan),
-      line('Write', netW, c.orange),
+      line(t('ser.read'), netR, c.cyan),
+      line(t('ser.write'), netW, c.orange),
     ],
   });
 
@@ -134,7 +143,7 @@ export async function update(ctx) {
 function evRow(e) {
   // worker DEAD：按关停指令推导显示「正常退出」（绿）或「异常死亡」（红）。
   let badgeEvent = e.event;
-  let badgeText = e.event;
+  let badgeText = evLabel(e.event);
   let badgeTitle = '';
   if (e.category === 'worker' && e.event === 'DEAD' && e.exit_kind) {
     badgeEvent = e.exit_kind;
@@ -144,7 +153,7 @@ function evRow(e) {
   }
   return `<tr>
     <td class="mono">${fmtTimeFull(e.epoch_ms)}</td>
-    <td class="cat-${e.category}">${e.category}</td>
+    <td class="cat-${e.category}">${catLabel(e.category)}</td>
     <td><span class="badge ${badgeEvent}" ${badgeTitle ? `title="${badgeTitle}"` : ''}>${badgeText}</span></td>
     <td>${e.worker_id || '-'}</td>
     <td>${e.task_id || '-'}</td>

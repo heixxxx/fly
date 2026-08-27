@@ -29,7 +29,7 @@ export function makeChart(el, option) {
   chart.setOption({
     backgroundColor: 'transparent',
     textStyle: { color: c.label, fontFamily: 'inherit' },
-    grid: { left: 60, right: 60, top: 30, bottom: 44 },
+    grid: { left: 56, right: 22, top: 34, bottom: 38 },
     tooltip: {
       trigger: 'axis',
       backgroundColor: c.panel2,
@@ -37,7 +37,7 @@ export function makeChart(el, option) {
       textStyle: { color: c.text, fontSize: 12 },
       axisPointer: { lineStyle: { color: c.axis } },
     },
-    legend: { textStyle: { color: c.label }, top: 0 },
+    legend: { textStyle: { color: c.label }, top: 2, left: 4, itemGap: 16 },
     xAxis: {
       type: 'time',
       axisLine: { lineStyle: { color: c.axis } },
@@ -72,4 +72,17 @@ export function line(name, data, color, yAxisIndex = 0, area = false) {
     lineStyle: { width: 1.5, color }, itemStyle: { color },
     areaStyle: area ? { color, opacity: 0.08 } : undefined,
   };
+}
+
+// ---- tooltip 数值单位格式（详细数值不可裸显原始字节）----
+// MB 口径与 fmtGB 一致（1024²）——轴标签仍用 fmtGB 自适应，tooltip 按
+// 用户裁定统一 MB，避免大数 GB 折算损失精度。
+export function fmtMb(v) {
+  return (v == null || isNaN(v)) ? '-' : (v / 1048576).toFixed(1) + ' MB';
+}
+export function fmtMbPerS(v) {
+  return (v == null || isNaN(v)) ? '-' : (v / 1048576).toFixed(1) + ' MB/s';
+}
+export function fmtPctVal(v) {
+  return (v == null || isNaN(v)) ? '-' : (+v).toFixed(1) + '%';
 }

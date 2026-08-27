@@ -11,7 +11,7 @@
 // 「返回 Timeline」条，返回时恢复缩放/排序/滚动/着色选项）。
 // 滚轮 + 滑块拖选（高亮填充+手柄+选区数据背景）；「复原缩放」回全程；
 // 实时显示当前视图时间范围。
-import { getJson, escapeHtml, shortName, fmtTimeFull, fmtMs, fmtTime, fmtPct } from '../api.js';
+import { getJson, escapeHtml, shortName, fmtTimeFull, fmtMs, fmtTime, fmtPct, statusLabel } from '../api.js';
 import { makeChart, chartColors } from '../charts.js';
 import { cssVar } from '../theme.js';
 import { t } from '../i18n.js';
@@ -21,6 +21,34 @@ const DIM_LABEL = { cpu: 'CPU', io: 'IO', wait: 'Wait', queue: 'Queue' };
 
 // 负载维度色经 CSS 变量实时读取（主题切换后页面重建取新值）；fallback
 // 为深色默认（cssVar 读不到时保证可读，见 theme.js）。
+// 条纹线色：与 CSS 图例同源（--stripe-line，深色主题白纹、浅色黑纹）。
+// mount 时取一次（主题切换走整页重建）；renderItem 热路径不重复读样式。
+let stripeLineColor = null;
+
+// 斜纹 pattern（按底色缓存）：连续平铺 tile 替代逐条 line 元素——大数据
+// 量下条纹线曾贡献数万个图形元素，是滚动/轮询重绘卡顿的主因；pattern 化
+// 后每个条纹条仍是单 rect，且连续密纹比离散线段明显得多。
+const stripePatterns = new Map();
+function stripePatternFor(baseColor) {
+  let p = stripePatterns.get(baseColor);
+  if (p) return p;
+  const tile = document.createElement('canvas');
+  tile.width = tile.height = 8;
+  const g = tile.getContext('2d');
+  g.fillStyle = baseColor;         // 底色保留原档位色（含半透明档）
+  g.fillRect(0, 0, 8, 8);
+  g.strokeStyle = stripeLineColor;
+  g.lineWidth = 2;
+  g.beginPath();                   // 两条 45° 斜线，相邻 tile 拼接连续（4px 周期）
+  g.moveTo(-2, 6); g.lineTo(6, -2);
+  g.moveTo(2, 10); g.lineTo(10, 2);
+  g.stroke();
+  p = { image: tile, repeat: 'repeat' };   // zrender pattern 约定（原生
+  // CanvasPattern 会被当作无效色渲染成黑块）
+  stripePatterns.set(baseColor, p);
+  return p;
+}
+
 function dimColors() {
   return { cpu: cssVar('--ser-blue', '#4aa8ff'), io: cssVar('--ser-yellow', '#e8b339'),
            wait: cssVar('--pending', '#8a7ca8'), queue: cssVar('--ser-cyan', '#6fd3e8') };
@@ -31,13 +59,15 @@ function neutralColor() { return cssVar('--gantt-neutral', '#61707f'); }
 
 // grid 几何（泳道点击的坐标判定与 ganttOption 配置一致）。
 // top 预留给时间标签条（悬停/框选起止点时间显示区，不覆盖 task 条）。
-const GRID = { left: 170, top: 48, bottom: 34, barH: 16 };
-const LANE_H = 34;   // 每泳道高度（紧凑：间距较常规减半）
+// left 并非定值：update 按最长泳道标签估宽后写回（中文"工作节点"+长
+// host 远超 170px，固定值会把标签裁出画布），并经 CSS 变量 --tl-left
+// 联动底部滑块与左下角轴时间标签的对齐。
+const GRID = { left: 170, top: 48, bottom: 34, barH: 16, laneH: 34 };
 const HEAVY = 0.30;  // 复合负载阈值（其它维度 ≥30% 叠加条纹）
-const STRIPE_GAP = 6;
 
 let chart = null;
 let lastTasks = [];
+let lastRenderKey = null; // 渲染跳过指纹（changed|lanes|条数）
 let hostMap = {};
 let lanes = [];          // worker 泳道（排序后）
 let extent = { lo: 0, hi: 1 };
@@ -66,11 +96,9 @@ function isFast(tk) {
   return ((tk.exec_end_ms || tk.exec_start_ms + 1) - tk.exec_start_ms) < 500;
 }
 
-// 复合判定：除主色维度外任一维度 ≥ HEAVY。
-function isCompound(tk, dim) {
-  const r = ratios(tk);
-  return Object.entries(r).some(([k, v]) => k !== dim && v >= HEAVY);
-}
+// 复合判定维度（比率键固定四维：_r 里的 queueMs/execMs 是毫秒值，
+// 参与比较会恒真）。判定结果在 seriesData 构建期预计算进 _compound。
+const STRIPE_DIMS = ['cpu', 'io', 'wait', 'queue'];
 
 function currentZoom() {
   if (!chart) return { start: 0, end: 100 };
@@ -79,6 +107,9 @@ function currentZoom() {
 }
 
 export function destroy(ctx) {
+  GRID.left = 170;   // 恢复默认（left 随上页数据动态调整过）
+  lastRenderKey = null;
+  document.getElementById('tl-info-float')?.remove();   // 浮窗随页销毁
   if (chart) {
     savedState = {
       sort: (ctx && ctx.tlSort) || 'id',
@@ -135,8 +166,23 @@ export function mount(ctx) {
         <div class="tl-slider-sel" id="tl-slider-sel"></div>
       </div>
       <div class="tl-hint" style="margin-top:4px">${t('tl.hint')}</div>
-    </div>
-    <div class="panel" id="tl-info" style="display:none"></div>`;
+    </div>`;
+  // task 详情固定浮窗（视口底部）：点击条形在此展示，避免页面内大幅
+  // 跳转；可收起/清除。切页随 destroy 移除。
+  document.getElementById('tl-info-float')?.remove();
+  const float = document.createElement('div');
+  float.id = 'tl-info-float';
+  float.className = 'tl-info-float';
+  float.style.display = 'none';
+  document.body.appendChild(float);
+  float.addEventListener('click', (e) => {
+    const btn = e.target.closest('.if-btn');
+    if (!btn) return;
+    if (btn.dataset.act === 'clear') hideInfo();
+    else float.classList.toggle('collapsed');
+  });
+  stripeLineColor = cssVar('--stripe-line', 'rgba(255,255,255,.65)');
+  stripePatterns.clear();   // 主题/语言重建后按新线色重建 pattern
   chart = makeChart(document.getElementById('tl-chart'), ganttOption([], []));
 
   document.getElementById('tl-sort').onchange = (e) => {
@@ -519,21 +565,33 @@ function laneAt(x, y) {
 // Timeline task 增量缓存（增强刷新）：首轮全量建缓存，之后每轮只拉
 // 「新增 + 刚完成（窗口更新）」并按 task_id merge；游标取本轮见过的
 // 最大 completed_ms（RUNNING 的无 completed 不推进游标）。run 切换由
-// app.js 清（resetSamplesCache 同时机）。
-let tlCache = { tasks: new Map(), cursor: 0, runKey: null };
+// app.js 清（resetSamplesCache 同时机）。dbGen 识别库被整体替换（同
+// run_start 重建的测试场景）——世代不符即作废缓存全量重拉。
+let tlCache = { tasks: new Map(), cursor: 0, runKey: null, dbGen: null };
 export function resetTimelineCache() {
-  tlCache = { tasks: new Map(), cursor: 0, runKey: null };
+  tlCache = { tasks: new Map(), cursor: 0, runKey: null, dbGen: null };
 }
 
 async function fetchTimelineIncremental(runKey) {
   if (tlCache.runKey !== runKey) {
-    tlCache = { tasks: new Map(), cursor: 0, runKey };
+    tlCache = { tasks: new Map(), cursor: 0, runKey, dbGen: null };
   }
-  const url = tlCache.tasks.size === 0
-    ? '/api/timeline'
-    : `/api/timeline?changed_since_ms=${tlCache.cursor}`;
-  const data = await getJson(url);
-  if (!data) return [...tlCache.tasks.values()];
+  const fetchOnce = async () => {
+    const url = tlCache.tasks.size === 0
+      ? '/api/timeline'
+      : `/api/timeline?changed_since_ms=${tlCache.cursor}`;
+    return getJson(url);
+  };
+  let data = await fetchOnce();
+  if (!data) return { tasks: [...tlCache.tasks.values()], changed: false };
+  // 库被替换（inode 变化）：缓存里的旧行永远不会被增量删除——作废重拉。
+  if (data.db_gen && tlCache.dbGen && data.db_gen !== tlCache.dbGen) {
+    tlCache = { tasks: new Map(), cursor: 0, runKey, dbGen: data.db_gen };
+    data = await fetchOnce();
+    if (!data) return { tasks: [], changed: true };
+  }
+  tlCache.dbGen = data.db_gen || tlCache.dbGen;
+  const changed = (data.tasks || []).length > 0;
   for (const t of (data.tasks || [])) {
     tlCache.tasks.set(t.task_id, t);  // 新增或替换（窗口更新）
     // 游标只由 completed 推进：新 RUNNING task（exec_start>游标）每轮重传
@@ -543,7 +601,7 @@ async function fetchTimelineIncremental(runKey) {
       tlCache.cursor = t.completed_ms;
     }
   }
-  return [...tlCache.tasks.values()];
+  return { tasks: [...tlCache.tasks.values()], changed };
 }
 
 export async function update(ctx) {
@@ -553,40 +611,85 @@ export async function update(ctx) {
     getJson('/api/workers'),
     getJson('/api/meta'),
   ]);
-  const tasks = await fetchTimelineIncremental(runKey);
-  lastTasks = tasks;
+  const { tasks: allTasks, changed } = await fetchTimelineIncremental(runKey);
+  // PENDING 防御：真实数据 PENDING 的 exec_start_ms=0 不会出现在 API 结果
+  // 里（SQL 过滤）；脏数据（非零 start + NULL end）会画成 50ms 幽灵条叠在
+  // 真实条上——按状态剔除，与 API 过滤语义对齐。
+  const liveTasks = allTasks.filter(tk => tk.status !== 'PENDING');
+  lastTasks = liveTasks;
   hostMap = {};
   if (workers) {
     for (const w of workers.workers) hostMap[w.worker_id] = w.hostname || '?';
   }
   hostMap[0] = (meta && meta.meta && meta.meta.hostname) || 'master';
 
-  lanes = [...new Set(tasks.map(tk => tk.worker_id))];
+  lanes = [...new Set(liveTasks.map(tk => tk.worker_id))];
   if (ctx.tlSort === 'host') {
     lanes.sort((a, b) => (hostMap[a] || '').localeCompare(hostMap[b] || '') || (a - b));
   } else {
     lanes.sort((a, b) => a - b);
   }
 
-  // 紧凑泳道：每泳道 LANE_H + 顶部图例/底部滑块。worker 执行 task 串行，
-  // 同泳道 exec 窗口不重叠（若出现即为上报异常，应暴露而非掩盖）。
-  const chartH = Math.max(GRID.top + GRID.bottom + LANE_H,
-                          lanes.length * LANE_H + GRID.top + GRID.bottom);
-  document.getElementById('tl-chart').style.height = chartH + 'px';
-  chart.resize();
+  // ---- 渲染跳过（大数据量关键路径）：数据/着色/排序/条纹状态全部未变
+  // 时，全量 notMerge setOption 会重建全部 datum 并重绘整块高画布——
+  // 直接保留现有图表状态。任一影响渲染的状态变化都反映在指纹里。
+  const renderKey = `${changed}|${ctx.tlSort}|${ctx.tlColorDim}|${ctx.tlStripe ? 1 : 0}|` +
+                    `${lanes.join(',')}|${liveTasks.length}`;
+  if (renderKey === lastRenderKey) return;
+  lastRenderKey = renderKey;
 
-  // 单 series + 逐 datum 着色（主色档位 + Failed 描边 + 条纹 group）。
-  const seriesData = tasks.map(tk => {
+  // 左边距自适应：按最长泳道标签估宽（CJK 12px、其余 6.6px @ 11px 字号
+  // 留余量），上限 320、不超绘图区 45%；超出截断（axisLabel truncate）。
+  // 同步 CSS 变量 --tl-left，滑块与左下角轴时间标签跟随对齐。
+  const labelOf = w => w === 0 ? t('tl.laneMaster', hostMap[0] || '?')
+                              : t('tl.laneLabel', w, hostMap[w] || '?');
+  const estW = s => { let px = 0; for (const ch of String(s)) px += ch.charCodeAt(0) > 0x2e7f ? 12 : 6.6; return px; };
+  const chartEl0 = document.getElementById('tl-chart');
+  const maxW = Math.max(0, ...lanes.map(w => estW(labelOf(w))));
+  const maxLeft = Math.max(170, Math.floor((chartEl0 ? chartEl0.clientWidth : 800) * 0.45));
+  GRID.left = Math.min(320, maxLeft, Math.max(170, Math.ceil(maxW) + 26));
+  const panelEl = chartEl0 ? chartEl0.closest('.panel') : null;
+  if (panelEl) panelEl.style.setProperty('--tl-left', GRID.left + 'px');
+
+  // 紧凑泳道：每泳道 laneH + 顶部图例/底部滑块。worker 执行 task 串行，
+  // 同泳道 exec 窗口不重叠（若出现即为上报异常，应暴露而非掩盖）。
+  // resize 仅在高度实际变化时调用——每次 resize 都触发全量重排重绘。
+  // 泳道高按规模分档：重绘耗时与画布面积成正比，200+ 泳道全尺寸行高
+  // 会让画布高逾 7k px、交互重绘数秒——压缩行高是最大的单点杠杆
+  // （>60 泳道 22px、>150 泳道 16px，条形 9px 仍可辨档位色与边界缝）。
+  GRID.laneH = lanes.length > 150 ? 16 : lanes.length > 60 ? 22 : 34;
+  GRID.barH = lanes.length > 150 ? 9 : lanes.length > 60 ? 12 : 16;
+  const chartH = Math.max(GRID.top + GRID.bottom + GRID.laneH,
+                          lanes.length * GRID.laneH + GRID.top + GRID.bottom);
+  const chartEl = document.getElementById('tl-chart');
+  if (parseInt(chartEl.style.height || '0', 10) !== chartH) {
+    chartEl.style.height = chartH + 'px';
+    chart.resize();
+  }
+
+  // 单 series + 逐 datum 着色（主色档位 + Failed 描边 + 条纹 pattern）。
+  // 绘制顺序保障：正常调度下同泳道窗口不重叠（worker 串行）；若数据
+  // 异常出现重叠，后开始的条必须画在上层（z2 按开始时间排名递增），
+  // 否则先执行条的状态标记（如 Failed 红描边）会被后绘条拦腰盖住。
+  const zRank = new Map(
+    [...liveTasks].sort((a, b) => a.exec_start_ms - b.exec_start_ms)
+      .map((tk, i) => [tk.task_id, i]));
+  const seriesData = liveTasks.map(tk => {
     const r = ratios(tk);
     const failed = tk.status === 'FAILED';
     const fast = isFast(tk) && !failed;
+    const dim = ctx.tlColorDim;
     return {
       value: [lanes.indexOf(tk.worker_id), tk.exec_start_ms,
               tk.exec_end_ms || tk.exec_start_ms + 50, tk.task_id],
       name: tk.name,
       _r: r, _failed: failed, _fast: fast,
+      // 复合负载预计算：renderItem 是热路径（每 datum 每帧一次），
+      // 维度遍历/主题读取都移到 seriesData 构建期一次完成。
+      _compound: STRIPE_DIMS.some(k => k !== dim && (r[k] || 0) >= HEAVY),
+      _z2: (zRank.get(tk.task_id) || 0) + 1,
       itemStyle: fast ? { color: fastColor() }
-        : { color: dimTierColor(ctx.tlColorDim, r[ctx.tlColorDim]),
+        : { color: dimTierColor(dim, r[dim]),
             borderColor: failed ? failStroke() : 'transparent',
             borderWidth: failed ? 2 : 0 },
     };
@@ -637,39 +740,56 @@ function updateRangeHint() {
     : t('tl.viewFull', fmtTime(t1), fmtTime(t2));
 }
 
-// 驻留详情：时间与负载指标逐项独立展示（不聚合，用户裁定）。
+// 驻留详情：点击条形加载到视口底部固定浮窗（不发生页面滚动跳转）；
+// 时间与负载指标逐项独立展示（不聚合，用户裁定），两栏并排限高内滚。
 function showInfo(tk) {
-  const el = document.getElementById('tl-info');
+  const el = document.getElementById('tl-info-float');
   if (!el) return;
   const dur = tk.exec_end_ms ? tk.exec_end_ms - tk.exec_start_ms : null;
   const r = ratios(tk);
+  el.classList.remove('collapsed');
   el.style.display = 'block';
   el.innerHTML = `
-    <h3>task ${tk.task_id} · <span class="badge ${tk.status}">${tk.status}</span>${isFast(tk) ? ' · Fast' : ''}</h3>
-    <div class="full-name" style="margin-bottom:8px">${escapeHtml(tk.name)}</div>
-    <div class="kv">
-      <span class="k">worker</span><span class="v">${tk.worker_id} · ${escapeHtml(hostMap[tk.worker_id] || '?')}</span>
-      <span class="k">${t('tb.created')}</span><span class="v mono">${fmtTimeFull(tk.created_ms)}</span>
-      <span class="k">${t('tl.depsReadyAt')}</span><span class="v mono">${fmtTimeFull(tk.ready_ms)}</span>
-      <span class="k">${t('tl.dispatchAt')}</span><span class="v mono">${fmtTimeFull(tk.started_ms)}</span>
-      <span class="k">${t('tl.execStartAt')}</span><span class="v mono">${fmtTimeFull(tk.exec_start_ms)}</span>
-      <span class="k">${t('tl.execEndAt')}</span><span class="v mono">${fmtTimeFull(tk.exec_end_ms)}</span>
-      <span class="k">${t('tl.completedAt')}</span><span class="v mono">${fmtTimeFull(tk.completed_ms)}</span>
-      <span class="k">${t('tb.duration')}</span><span class="v mono">${fmtMs(dur)}</span>
-      <span class="k">${t('tl.queueWaitMs')}</span><span class="v">${fmtMs(r.queueMs)}</span>
-      <span class="k">${t('tl.queueLifeShare')}</span><span class="v">${fmtPct(r.queue)}</span>
-      <span class="k">${t('tb.cpuTime')}</span><span class="v">${fmtMs(tk.cpu_time_ms)}</span>
-      <span class="k">${t('kv.cpuShare')}</span><span class="v">${fmtPct(r.cpu)}</span>
-      <span class="k">${t('kv.readTime')}</span><span class="v">${fmtMs(tk.read_time_ms)}</span>
-      <span class="k">${t('kv.writeTime')}</span><span class="v">${fmtMs(tk.write_time_ms)}</span>
-      <span class="k">${t('tl.ioShare')}</span><span class="v">${fmtPct(r.io)}</span>
-      <span class="k">${t('tl.idleShare')}</span><span class="v">${fmtPct(r.wait)}${t('tl.idleShareNote')}</span>
+    <div class="if-head">
+      <span class="if-title">${t('t.taskTitle', tk.task_id)}</span>
+      <span class="badge ${tk.status}">${statusLabel(tk.status)}</span>
+      ${isFast(tk) ? '<span class="badge REVIVED">Fast</span>' : ''}
+      <span class="if-name mono" title="${escapeHtml(tk.name)}">${shortName(tk.name, 26, 14)}</span>
+      <span class="if-spacer"></span>
+      <button class="if-btn" data-act="collapse" title="${t('tl.infoCollapse')}">▾</button>
+      <button class="if-btn" data-act="clear" title="${t('tl.infoClear')}">×</button>
+    </div>
+    <div class="if-body">
+      <div class="if-cols">
+        <div>
+          <div class="full-name" style="margin-bottom:8px">${escapeHtml(tk.name)}</div>
+          <div class="kv">
+            <span class="k">worker</span><span class="v">${tk.worker_id} · ${escapeHtml(hostMap[tk.worker_id] || '?')}</span>
+            <span class="k">${t('tb.created')}</span><span class="v mono">${fmtTimeFull(tk.created_ms)}</span>
+            <span class="k">${t('tl.depsReadyAt')}</span><span class="v mono">${fmtTimeFull(tk.ready_ms)}</span>
+            <span class="k">${t('tl.dispatchAt')}</span><span class="v mono">${fmtTimeFull(tk.started_ms)}</span>
+            <span class="k">${t('tl.execStartAt')}</span><span class="v mono">${fmtTimeFull(tk.exec_start_ms)}</span>
+            <span class="k">${t('tl.execEndAt')}</span><span class="v mono">${fmtTimeFull(tk.exec_end_ms)}</span>
+            <span class="k">${t('tl.completedAt')}</span><span class="v mono">${fmtTimeFull(tk.completed_ms)}</span>
+            <span class="k">${t('tb.duration')}</span><span class="v mono">${fmtMs(dur)}</span>
+          </div>
+        </div>
+        <div class="kv">
+          <span class="k">${t('tl.queueWaitMs')}</span><span class="v">${fmtMs(r.queueMs)}</span>
+          <span class="k">${t('tl.queueLifeShare')}</span><span class="v">${fmtPct(r.queue)}</span>
+          <span class="k">${t('tb.cpuTime')}</span><span class="v">${fmtMs(tk.cpu_time_ms)}</span>
+          <span class="k">${t('kv.cpuShare')}</span><span class="v">${fmtPct(r.cpu)}</span>
+          <span class="k">${t('kv.readTime')}</span><span class="v">${fmtMs(tk.read_time_ms)}</span>
+          <span class="k">${t('kv.writeTime')}</span><span class="v">${fmtMs(tk.write_time_ms)}</span>
+          <span class="k">${t('tl.ioShare')}</span><span class="v">${fmtPct(r.io)}</span>
+          <span class="k">${t('tl.idleShare')}</span><span class="v">${fmtPct(r.wait)}${t('tl.idleShareNote')}</span>
+        </div>
+      </div>
     </div>`;
-  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function hideInfo() {
-  const el = document.getElementById('tl-info');
+  const el = document.getElementById('tl-info-float');
   if (el) el.style.display = 'none';
 }
 
@@ -719,10 +839,15 @@ function ganttOption(wids, seriesData, ctx) {
       // inverse：category 轴默认从下往上渲染——升序数组视觉上呈降序；
       // 反转后第一个泳道（最小 worker id）显示在顶部。
       inverse: true,
-      data: wids.map(w => w === 0 ? `master(0) · ${hostMap[0]}`
-                                  : `worker ${w} · ${hostMap[w] || '?'}`),
+      data: wids.map(w => w === 0 ? t('tl.laneMaster', hostMap[0])
+                                  : t('tl.laneLabel', w, hostMap[w] || '?')),
       axisLine: { lineStyle: { color: chartColors().axis } },
-      axisLabel: { color: chartColors().accent },
+      // 宽度截断兜底：极端长 host 名不溢出画布（正常时 left 自适应够宽）。
+      axisLabel: {
+        color: chartColors().accent,
+        width: GRID.left - 14,
+        overflow: 'truncate',
+      },
     },
     // 缩放：仅滚轮缩放（inside 的 moveOnMouseMove/moveOnMouseWheel 默认
     // 开启会导致图内移动/拖动鼠标时平移坐标轴——用户裁定只保留拖动框选
@@ -738,6 +863,10 @@ function ganttOption(wids, seriesData, ctx) {
     ],
     series: [{
       type: 'custom',
+      // progressive：数千条分帧渲染——首屏先出前片，避免一次性布局数万
+      // 图形元素的长阻塞（滚动/缩放重绘走增量帧）。
+      progressive: 2000,
+      progressiveThreshold: 4000,
       // clip：缩放/平移时条形不得越出 grid（否则左侧盖住 worker 名、右侧
       // 超出边界——custom series 默认不裁剪）。
       clip: true,
@@ -745,29 +874,31 @@ function ganttOption(wids, seriesData, ctx) {
         const lane = api.value(0);
         const start = api.coord([api.value(1), lane]);
         const end = api.coord([api.value(2), lane]);
-        const x = start[0], y = start[1] - GRID.barH / 2;
-        const w = Math.max(end[0] - start[0], 2);
+        let x = start[0], w = Math.max(end[0] - start[0], 2);
+        // 密集边界：条形两侧各缩 1px，相邻 task 间形成固定 2px 通缝，
+        // 圆角完整可辨——比描边方案清晰，且缝宽恒定不会在大量短 task 上
+        // 相互重叠（极窄条 w≤8 不缩，缝隙占比过大反而糊）。
+        if (w > 8) { x += 1; w -= 2; }
+        const y = start[1] - GRID.barH / 2;
         const d = seriesData[params.dataIndex];
+        const st = api.style();
+        // Failed 条保留红色描边作为边界标记；普通条不再叠加描边。
+        if (d && !d._failed) {
+          st.stroke = 'transparent';
+          st.lineWidth = 0;
+        }
+        // 条纹（复合负载）：底档位色上叠连续斜纹 pattern（单 rect，替代
+        // 逐条 line 的图形组）。
+        if (ctx && ctx.tlStripe && d && !d._fast && !d._failed &&
+            d._compound && w > 12) {
+          st.fill = stripePatternFor(typeof st.fill === 'string' ? st.fill : '#4aa8ff');
+        }
         const base = {
           type: 'rect',
-          shape: { x, y, width: w, height: GRID.barH, r: 3 },
-          style: api.style(),
+          z2: d ? d._z2 : undefined,
+          shape: { x, y, width: w, height: GRID.barH, r: 2 },
+          style: st,
         };
-        // 条纹（复合负载）：底条之上叠加斜线（裁剪在条形范围内）。
-        if (ctx && ctx.tlStripe && d && !d._fast && !d._failed &&
-            isCompound(d, ctx.tlColorDim) && w > 12) {
-          const lines = [];
-          for (let sx = x - GRID.barH; sx < x + w; sx += STRIPE_GAP) {
-            lines.push({
-              type: 'line',
-              shape: { x1: Math.max(sx, x), y1: y + GRID.barH,
-                      x2: Math.min(sx + GRID.barH, x + w), y2: y },
-              style: { stroke: 'rgba(13,17,22,.55)', lineWidth: 2 },
-              silent: true,
-            });
-          }
-          return { type: 'group', children: [base, ...lines] };
-        }
         return base;
       },
       encode: { x: [1, 2], y: 0 },

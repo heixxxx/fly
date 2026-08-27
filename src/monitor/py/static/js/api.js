@@ -63,6 +63,31 @@ export function fmtPct(ratio) {
   return (ratio * 100).toFixed(1).replace(/\.0$/, '') + '%';
 }
 
+// ---- 枚举文本映射（状态/事件/类目）----
+// t('st.'+v) 未注册时回退原始值——新增枚举漏译时显示原文而非 key 本身。
+export function mappedLabel(prefix, v) {
+  const k = prefix + v;
+  return t(k) === k ? v : t(k);
+}
+export const statusLabel = v => mappedLabel('st.', v);
+export const evLabel = v => mappedLabel('evN.', v);
+export const catLabel = v => mappedLabel('catN.', v);
+
+// 分页跳页：输入页码（回车或点按钮）→ clamp 到 1..总页数 → onPage。
+// getPages 惰性取总页数（数据每次刷新后变化）。
+export function bindPageJump(input, btn, getPages, onPage) {
+  const jump = () => {
+    const pages = getPages();
+    const p = parseInt(input.value, 10);
+    if (isNaN(p)) { input.value = ''; return; }
+    const clamped = Math.min(pages, Math.max(1, p));
+    input.value = clamped;
+    onPage(clamped);
+  };
+  btn.addEventListener('click', jump);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') jump(); });
+}
+
 // 模块名展示规范化：存储的是真实包路径（executor 反序列化依赖，如
 // test.py.e2e_tasks），展示时去掉历史遗留的 py 中间层（→ test.e2e_tasks）。
 export function displayModule(m) {

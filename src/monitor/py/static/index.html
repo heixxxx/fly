@@ -22,7 +22,7 @@ try {
 </head>
 <body>
 <header>
-  <div class="brand">fly <span>cluster monitor</span></div>
+  <div class="brand"><span class="brand-logo"></span>fly <span>cluster monitor</span></div>
   <nav id="nav">
     <button data-page="overview" class="active">总览</button>
     <button data-page="workers">Workers</button>
@@ -31,14 +31,15 @@ try {
     <button data-page="dbs">DBs</button>
   </nav>
   <div class="header-right">
-    <select id="lang-sel" class="hdr-select"></select>
-    <select id="theme-sel" class="hdr-select"></select>
-    <span id="poll-state" class="run-info"></span>
+    <span id="run-info" class="run-info"></span>
+    <span id="poll-state" class="poll-state"></span>
     <label class="poll-toggle">
       <input type="checkbox" id="poll-enabled" checked>
+      <span class="switch"></span>
       <span id="poll-label">自动刷新(3s)</span>
     </label>
-    <span id="run-info" class="run-info"></span>
+    <select id="lang-sel" class="hdr-select"></select>
+    <select id="theme-sel" class="hdr-select"></select>
   </div>
 </header>
 

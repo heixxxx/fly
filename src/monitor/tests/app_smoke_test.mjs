@@ -17,7 +17,8 @@ function makeElement(id) {
     style: {}, dataset: {}, disabled: false, checked: true, children: [],
     classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
     addEventListener() {}, dispatchEvent() {},
-    appendChild() {}, closest: () => null, querySelector: () => null,
+    appendChild() {}, remove() {}, closest: () => null,
+    querySelector: () => null, querySelectorAll: () => [],
     scrollIntoView() {}, onclick: null, onchange: null,
     parentElement: null,
   };
@@ -28,6 +29,7 @@ function makeElement(id) {
 const elements = new Map();
 globalThis.document = {
   documentElement: { dataset: {}, lang: '' },
+  body: makeElement('body'),   // 浮窗等挂 body 的 DOM（appendChild 可用）
   getElementById: (id) => {
     if (!elements.has(id)) elements.set(id, makeElement(id));
     return elements.get(id);

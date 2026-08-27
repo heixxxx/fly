@@ -115,10 +115,11 @@ function switchPage(name, keepCtx) {
 }
 
 // 页内导航（worker/task 详情、返回、过滤/翻页）：改 ctx 状态后立即刷一次；
-// 主动导航不保留滚动（回顶部），轮询刷新才保留。
-export function navigate() {
+// 主动导航默认回顶部（新页从头看）；opts.keepScroll 保留滚动位置——
+// 页面结构不变的原地刷新（如详情页内翻页，表格在图表区下方，跳顶很难用）。
+export function navigate(opts) {
   lastFp = null;
-  pollTick(false);
+  pollTick(opts && opts.keepScroll);
 }
 
 // 跨页跳转（带返回）：gotoPage('workers', {workerId: 2}) 从 Timeline 泳道
@@ -200,8 +201,10 @@ pollEnabled.addEventListener('change', startPolling);
 // 填充——语言切换后随 rerender 重新填充。语言选项显示语言自身名（中文/
 // English，不随 UI 语言变化），主题选项随 UI 语言。
 function fillHeaderControls() {
-  const ovBtn = nav.querySelector('button[data-page="overview"]');
-  if (ovBtn) ovBtn.textContent = t('nav.overview');
+  // nav 全部按钮随语言更新（页名双语：总览/任务/时间轴/数据库）。
+  for (const b of nav.children) {
+    if (b.dataset && b.dataset.page) b.textContent = t('nav.' + b.dataset.page);
+  }
   document.getElementById('poll-label').textContent = t('hdr.autoRefresh');
   langSel.innerHTML = `<option value="zh">${t('lang.zh')}</option>` +
                       `<option value="en">${t('lang.en')}</option>`;
