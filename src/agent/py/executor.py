@@ -31,7 +31,7 @@ from monitor import set_current as io_set_current, take_result as io_take_result
     add_drain_ms as io_add_drain_ms
 
 from _fly_agent import EXTaskExecResult, EXTaskExecStatus
-from _fly_log import INFO, ERR
+from _fly_log import INFO, WARN, ERR
 
 from storage import Database, DbMetaFile
 from storage import get_registry as get_chain_registry
@@ -99,7 +99,14 @@ def deserialize_args(args: list, worker) -> list:
 
                 # 按 role 选子类
                 role = chain_data.get("role") if chain_data else None
-                cls = Database._ROLE_REGISTRY.get(role, Database) if role else Database
+                cls = Database._ROLE_REGISTRY.get(role) if role else None
+                if cls is None:
+                    if role:
+                        # 正常路径不可达（preprocess 已先导入 task 模块完成注册）；
+                        # 触达说明 meta 带了 role 但承载包在 worker 上无人导入。
+                        WARN(f"deserialize_args: role={role!r} subclass not "
+                             f"registered — db falls back to base Database")
+                    cls = Database
 
                 if ds.has_database(db_path):
                     from _fly_storage import ex_stg_create_database_with_path
@@ -160,11 +167,18 @@ def create_executor(worker):
     def preprocess(task_id, task_name, task_module, args):
         """Phase 1: prepare all task arguments.
 
+        - Resolve the task function (imports its module).
         - Deserialize args (creates/registers Database objects).
         - Inject master-inlined vars (from TaskAssignMessage) into the relevant
           Database local caches so get_var hits locally during execute.
         Returns the deserialized argument list.
         """
+        # 解析 task 函数必须先于参数反序列化：模块导入的包副作用会把子类注册
+        # 进 Database._ROLE_REGISTRY（如 solver 的 SolveDb），db 参数按 _DB_META
+        # 的 role 重建时依赖它——导入晚于反序列化则首个该类 task 退化为基类
+        # 实例（importlib 缓存使后续 task 零开销）。
+        _resolve_func(task_name, task_module)
+
         deserialized_args = deserialize_args(args, worker)
 
         # Inject inlined vars. Each VarPayload.var_name is a FULL name

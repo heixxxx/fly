@@ -4,15 +4,15 @@
 
   阶段 1 setup（每链一次，跨全部时间步复用；RPC 连接方向：compute listen /
            check 主动连接——成员缺失场景全部有确定性出口，见"失败语义"）
-    setup_compute × nsd (requires=sd_i)
+    setup_compute × nsd (requires=worker_attr("sd_i"))
       LDLT/子域数据 → 进程缓存（key 按 matrix_ref：重投/换代不重做分解）
       stop 旧 server → listen 新端口 → 端口入缓存（key 按 gen）
       写地址对象 addr_{gen}_{sd}（temp；同时是下游依赖锚）
-      set_worker_property(rasg_{gen}_{sd})
-    setup_check (requires=ras_check, inputs=全部 addr + b_{start_t})
+      set_worker_property(worker_attr("{gen}_{sd}"))
+    setup_check (requires=worker_attr("check"), inputs=全部 addr + b_{start_t})
       粗校正 LU/A_fine/子域索引 → 缓存（key 按 matrix_ref）
       connect × nsd → 池 {sd: conn_id} 入缓存
-      set_worker_property(rasg_{gen}_check) → 提交 solver(start_t)
+      set_worker_property(worker_attr("{gen}_check")) → 提交 solver(start_t)
 
   阶段 2 solver per t（task 隔离保持）
     compute(t,sd)  被动循环：recv_request → 本地 solve → respond 贡献；
@@ -21,11 +21,17 @@
                    残差主导收敛判定 / 粗校正 → 下轮；收敛发 done → 写
                    sol_t/iters_t/converged_t → 提交 controller(t)
 
-  阶段 3 controller(t) (requires=ras_check，与 check 同 worker)
+  阶段 3 controller(t) (requires=worker_attr("check")，与 check 同 worker)
     有下一步：update_rhs(x_t, t+1) → 写 b_{t+1} → 提交 solver(t+1)（全量复用）
     无下一步：本 worker 收尾（关池/清粗校正缓存/移除属性）→ 发 cleanup × nsd
               （各 compute worker 销毁矩阵/listener、关 server、移除属性、
               删地址对象）→ 写 dynamic_done
+
+编队属性命名（SolveDb.worker_attr 单点生成，并发 flow 隔离）：
+    worker 属性与 task requires 统一经 db.worker_attr(tag) =
+    "rasg:{db_uid}:{tag}"（uid 跨进程持久于 _DB_META）。并发求解 flow 各持
+    不同 uid → 属性零交集，调度精确匹配不串池；kickoff 用 ensure_workers
+    申请编队时 exclude=r"^rasg:" 排除已被其他 flow 占用的 worker。
 
 失败语义（全部事件/依赖驱动，无任何等待窗口——timeout 裁定）：
     - 成员 setup 失败（含 listen 失败）：addr 缺失 → setup_check inputs
@@ -73,7 +79,6 @@ from agent import serialize_array, deserialize_array
 # PeerRpcStatus 数值常量（peer_rpc_call 返回值）：0 PENDING / 1 OK /
 # 2 ERROR / 3 FAILED。直接用数值避免 agent 包内包装类耦合。
 _RPC_OK = 1
-
 # task 组优先级：高于默认 10——与集群其他任务共存时优先获得 idle worker。
 _DYNAMIC_TASK_PRIORITY = 90
 
@@ -117,17 +122,25 @@ def solve_ras_graph_dynamic(db, matrix_ref, nsd, b0, update_rhs, num_steps,
 
     n_workers = min(nsd, max_concurrent_compute) if max_concurrent_compute else nsd
     master = get_agent()
-    # nsd 个 compute worker（attributes 轮转绑定 sd_i，钉住进程缓存）+
-    # 1 个 check/controller worker（池与粗校正缓存的宿主）。
-    if not master.is_running() or master.worker_count < n_workers + 1:
-        worker_configs = []
-        for w in range(n_workers):
-            assigned = [f"sd_{s}" for s in range(nsd) if s % n_workers == w]
-            worker_configs.append({"attributes": assigned})
-        worker_configs.append({"attributes": ["ras_check"]})
-        master.launch_local_workers(worker_configs)
-        assert master.wait_for_workers(n_workers + 1), \
-            f"{n_workers + 1} workers should connect"
+    # 编队申请：nsd 个 compute 绑定（sd 属性轮转分组，钉住进程缓存）+ 1 个
+    # check/controller 宿主。属性统一经 db.worker_attr（rasg:{uid}: 命名空间，
+    # 并发 flow 不串池）；ensure_workers 幂等盘点已满足的绑定、缺失的从现有
+    # 空闲 worker 追加属性补齐（exclude 排除已被其他 flow 编队的 worker）。
+    attrs = [db.worker_attr(f"sd_{s}") for s in range(nsd)]
+    request = [[attrs[s] for s in range(nsd) if s % n_workers == w]
+               for w in range(n_workers)]
+    request.append(db.worker_attr("check"))
+
+    # 进程数量先行（ensure_workers 只分配现有 worker 不启动新进程）：总数不够
+    # 时按缺口补空属性 worker。注册就绪不在此等待——ensure 把已唤起未注册的
+    # 占位符计入预检容量，注册等待受声明的 timeout 约束（存活池已满足时零
+    # 等待立即返回）。
+    have = master.worker_count if master.is_running() else 0
+    if not master.is_running() or have < len(request):
+        deficit = len(request) - max(0, have)
+        master.launch_local_workers([{} for _ in range(deficit)])
+
+    master.ensure_workers(request, timeout=10.0, exclude=r"^rasg:")
 
     gen = uuid.uuid4().hex[:8]
     INFO(f"[RASG DYN] kickoff: gen={gen} nsd={nsd} n_workers={n_workers + 1} "
@@ -211,7 +224,7 @@ def _submit_solver_group(db, matrix_ref, nsd, sol_prefix, num_steps,
 
 @as_task(inputs=lambda db, matrix_ref, nsd, sd, gen: [
              db.get_full_name(f"__rasg__sub_{sd}")],
-         requires=lambda db, matrix_ref, nsd, sd, gen: [f"sd_{sd}"],
+         requires=lambda db, matrix_ref, nsd, sd, gen: [db.worker_attr(f"sd_{sd}")],
          priority=_DYNAMIC_TASK_PRIORITY)
 def setup_compute_task(db, matrix_ref, nsd, sd, gen):
     """compute worker 的 setup：矩阵初始化（幂等）+ RPC service 初始化
@@ -271,7 +284,7 @@ def setup_compute_task(db, matrix_ref, nsd, sd, gen):
                     {"host": "127.0.0.1", "port": port}, save_to_db=False)
 
     # worker 属性：本 worker 已完成该代该子域 setup（调度可见事实，收尾移除）
-    agent.set_worker_property(f"rasg_{gen}_{sd}")
+    agent.set_worker_property(db.worker_attr(f"{gen}_{sd}"))
     INFO(f"[RASG DYN SETUP] sd={sd} gen={gen} listening port={port}")
 
 
@@ -340,7 +353,7 @@ def _setup_check_deps(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
 @as_task(inputs=_setup_check_deps,
          requires=lambda db, matrix_ref, nsd, sol_prefix, num_steps,
                      update_rhs, max_iter, tol, omega, min_steps, gen,
-                     start_t: ["ras_check"],
+                     start_t: [db.worker_attr("check")],
          priority=_DYNAMIC_TASK_PRIORITY)
 def setup_check_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
                      max_iter, tol, omega, min_steps, gen, start_t):
@@ -408,7 +421,7 @@ def setup_check_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
                 f"({addr['host']}:{addr['port']}) — member dead after setup")
         pool[sd] = conn_id
     put_cache(pool_key, pool)
-    agent.set_worker_property(f"rasg_{gen}_check")
+    agent.set_worker_property(db.worker_attr(f"{gen}_check"))
     INFO(f"[RASG DYN SETUP CHECK] gen={gen} pool of {nsd} connected, "
          f"submitting solver({start_t})")
 
@@ -425,7 +438,7 @@ def _compute_deps(db, matrix_ref, nsd, sd, sol_prefix, gen, t):
 
 
 @as_task(inputs=_compute_deps,
-         requires=lambda db, matrix_ref, nsd, sd, sol_prefix, gen, t: [f"sd_{sd}"],
+         requires=lambda db, matrix_ref, nsd, sd, sol_prefix, gen, t: [db.worker_attr(f"sd_{sd}")],
          priority=_DYNAMIC_TASK_PRIORITY)
 def compute_dyn_task(db, matrix_ref, nsd, sd, sol_prefix, gen, t):
     """本时间步的参数注入：把当前步的 b_local / warm-start 基准写入成员
@@ -474,7 +487,7 @@ def compute_dyn_task(db, matrix_ref, nsd, sd, sol_prefix, gen, t):
          ([db.get_full_name(f"{sol_prefix}_{t - 1}")] if t > 0 else []),
          requires=lambda db, matrix_ref, nsd, sol_prefix, num_steps,
                      update_rhs, max_iter, tol, omega, min_steps, gen,
-                     t: ["ras_check"],
+                     t: [db.worker_attr("check")],
          priority=_DYNAMIC_TASK_PRIORITY)
 def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
                    max_iter, tol, omega, min_steps, gen, t):
@@ -618,11 +631,11 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
          db.get_full_name(f"__rasg__converged_{t}")],
          requires=lambda db, matrix_ref, nsd, sol_prefix, num_steps,
                      update_rhs, max_iter, tol, omega, min_steps, gen,
-                     t: ["ras_check"],
+                     t: [db.worker_attr("check")],
          priority=_DYNAMIC_TASK_PRIORITY)
 def controller_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
                         max_iter, tol, omega, min_steps, gen, t):
-    """时间步控制器（ras_check 绑定：与 check 同 worker，复用其池缓存）。
+    """时间步控制器（worker_attr("check") 绑定：与 check 同 worker，复用其池缓存）。
 
     有下一步：update_rhs → 写 b_{t+1} → 提交 solver(t+1) → 删 b_t。
     无下一步（步数尽 / update_rhs 返 None）：本 worker 收尾 → cleanup × nsd
@@ -659,7 +672,7 @@ def _teardown(db, matrix_ref, nsd, sol_prefix, num_steps, gen, last_t):
     agent = get_agent()
     agent.stop_peer_rpc()          # 关池连接（成员均已收到 done 正常退出）
     remove_cache(f"__rasg__d_pool_{gen}")
-    agent.remove_worker_property(f"rasg_{gen}_check")
+    agent.remove_worker_property(db.worker_attr(f"{gen}_check"))
     for key in _check_data_cache_keys(matrix_ref):
         remove_cache(key)
 
@@ -679,12 +692,12 @@ def _teardown(db, matrix_ref, nsd, sol_prefix, num_steps, gen, last_t):
 
 @as_task(inputs=lambda db, matrix_ref, sd, gen, final_t: [
              db.get_full_name(f"__rasg__converged_{final_t}")],
-         requires=lambda db, matrix_ref, sd, gen, final_t: [f"sd_{sd}"],
+         requires=lambda db, matrix_ref, sd, gen, final_t: [db.worker_attr(f"sd_{sd}")],
          priority=_DYNAMIC_TASK_PRIORITY)
 def cleanup_task(db, matrix_ref, sd, gen, final_t):
     """compute worker 收尾：销毁矩阵/listener 缓存、关 server、移除属性、
-    删地址对象。requires=[sd_{sd}] 单线程队列天然排在最后一步 compute 之后；
-    inputs=[converged_final_t] 双保险锚定全局完成。"""
+    删地址对象。requires=[worker_attr("sd_{sd}")] 单线程队列天然排在最后一步
+    compute 之后；inputs=[converged_final_t] 双保险锚定全局完成。"""
     from fly import remove_cache
     from fly.runtime import get_agent
 
@@ -698,6 +711,6 @@ def cleanup_task(db, matrix_ref, sd, gen, final_t):
     remove_cache(setup_key)
     remove_cache(solver_key)
     remove_cache(f"__rasg__d_svc_{gen}_{sd}")
-    agent.remove_worker_property(f"rasg_{gen}_{sd}")
+    agent.remove_worker_property(db.worker_attr(f"{gen}_{sd}"))
     _remove_quiet(db, f"__rasg__d_addr_{gen}_{sd}")
     INFO(f"[RASG DYN CLEANUP] sd={sd} gen={gen} done")

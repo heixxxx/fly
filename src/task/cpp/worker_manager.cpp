@@ -269,6 +269,50 @@ bool WorkerManager::has_worker_with_all_capabilities(const CMVector<CMString>& c
     return false;
 }
 
+size_t WorkerManager::count_workers_with_all_capabilities(const CMVector<CMString>& capabilities) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t count = 0;
+    for (const auto& [id, info] : workers_) {
+        // 与调度候选同口径：storage_only 不是计算 task 的候选；宽限中的
+        // worker 连接已死，不构成就绪。
+        if (info.role_ == WorkerRole::STORAGE_ONLY || info.in_grace_) continue;
+
+        bool has_all = true;
+        for (const auto& req : capabilities) {
+            bool found = false;
+            for (const auto& cap : info.capabilities_) {
+                if (cap == req) { found = true; break; }
+            }
+            if (!found) { has_all = false; break; }
+        }
+        if (has_all) ++count;  // 空 caps 与 has_ 同款 vacuous 语义
+    }
+    return count;
+}
+
+CMVector<uint64_t> WorkerManager::get_busy_workers() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    CMVector<uint64_t> result;
+    for (const auto& [id, info] : workers_) {
+        // 对偶 get_idle_workers：BUSY 且仍在位（非 storage_only、非宽限）。
+        if (info.status_ == WorkerStatus::BUSY && !info.in_grace_
+            && info.role_ != WorkerRole::STORAGE_ONLY) {
+            result.push_back(id);
+        }
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+CMVector<CMString> WorkerManager::get_worker_capabilities(uint64_t worker_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = workers_.find(worker_id);
+    if (it != workers_.end()) {
+        return it->second.capabilities_;
+    }
+    return {};
+}
+
 size_t WorkerManager::get_worker_count() {
     std::lock_guard<std::mutex> lock(mutex_);
     return workers_.size();

@@ -451,4 +451,77 @@ TEST(WorkerManagerTest, GraceClearedOnReconnect) {
     EXPECT_EQ(manager.get_worker(1)->get().port_, 9009) << "reconnect refreshes address";
 }
 
+// —— ensure_workers 盘点/候选池原语 ——
+
+// ⊇ 计数：has_worker_with_all_capabilities 的计数版，语义对齐（含 BUSY——
+// "已具备能力"与忙闲无关；空 caps 与 has_ 同款 vacuous 约定）。
+TEST(WorkerManagerTest, CountWorkersWithAllCapabilities) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"python", "gpu"});
+    manager.register_worker(2, "127.0.0.1", 8081, {"python"});
+    manager.register_worker(3, "127.0.0.1", 8082, {"python", "gpu", "cuda"});
+
+    EXPECT_EQ(manager.count_workers_with_all_capabilities({"python"}), 3u);
+    EXPECT_EQ(manager.count_workers_with_all_capabilities({"python", "gpu"}), 2u);
+    EXPECT_EQ(manager.count_workers_with_all_capabilities({"cuda"}), 1u);
+    EXPECT_EQ(manager.count_workers_with_all_capabilities({"missing"}), 0u);
+    EXPECT_EQ(manager.count_workers_with_all_capabilities({}), 3u)
+        << "空 caps 沿用 has_ 的 vacuous 约定";
+
+    // BUSY 也计入（盘点口径与忙闲无关）。
+    manager.assign_task(3, 42);
+    EXPECT_EQ(manager.count_workers_with_all_capabilities({"cuda"}), 1u);
+}
+
+// storage_only 与断连宽限中的 worker 不计入（与调度候选口径一致）。
+TEST(WorkerManagerTest, CountWorkersExcludesStorageOnlyAndGrace) {
+    WorkerManager manager;
+    manager.register_worker(1, "127.0.0.1", 8080, {"rasg:u:sd_0"}, "", "",
+                            WorkerRole::STORAGE_ONLY);
+    manager.register_worker(2, "127.0.0.1", 8081, {"rasg:u:sd_0"});
+    manager.register_worker(3, "127.0.0.1", 8082, {"rasg:u:sd_0"});
+
+    EXPECT_EQ(manager.count_workers_with_all_capabilities({"rasg:u:sd_0"}), 2u);
+
+    manager.set_worker_grace(2, true);
+    EXPECT_EQ(manager.count_workers_with_all_capabilities({"rasg:u:sd_0"}), 1u)
+        << "grace worker 已断连，不满足就绪口径";
+}
+
+// BUSY 候选池：两阶段收集阶段二的放宽候选，过滤口径与 get_idle_workers 对偶。
+TEST(WorkerManagerTest, GetBusyWorkers) {
+    WorkerManager manager;
+    manager.register_worker(1, "10.0.0.1", 8001);
+    manager.register_worker(2, "10.0.0.2", 8002);
+    manager.register_worker(3, "10.0.0.3", 8003, CMVector<CMString>{}, "", "",
+                            WorkerRole::STORAGE_ONLY);
+
+    EXPECT_TRUE(manager.get_busy_workers().empty());
+    manager.assign_task(1, 42);
+    manager.assign_task(2, 43);
+    manager.assign_task(3, 44);
+
+    auto busy = manager.get_busy_workers();
+    ASSERT_EQ(busy.size(), 2u);
+    EXPECT_EQ(busy[0], 1u);
+    EXPECT_EQ(busy[1], 2u) << "storage_only 不入 busy 候选池";
+
+    // 宽限中的 BUSY 不算可用候选（连接已死）。
+    manager.set_worker_grace(2, true);
+    busy = manager.get_busy_workers();
+    ASSERT_EQ(busy.size(), 1u);
+    EXPECT_EQ(busy[0], 1u);
+}
+
+// 单 worker 能力快照：存在返回副本，不存在返回空。
+TEST(WorkerManagerTest, GetWorkerCapabilities) {
+    WorkerManager manager;
+    manager.register_worker(1, "10.0.0.1", 8001, {"rasg:u:check"});
+
+    auto caps = manager.get_worker_capabilities(1);
+    ASSERT_EQ(caps.size(), 1u);
+    EXPECT_EQ(caps[0], "rasg:u:check");
+    EXPECT_TRUE(manager.get_worker_capabilities(99).empty());
+}
+
 }  // namespace fly

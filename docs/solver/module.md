@@ -82,26 +82,26 @@ kickoff_task (inputs=[matrix, b_0], 任意 worker)
   └─ coord 预分块写 sub_{sd} → 提交 setup 链
 
 阶段 1 setup（每链一次，跨全部时间步复用）
-  setup_compute × nsd (requires=sd_i, inputs=[sub_{sd}])
+  setup_compute × nsd (requires=worker_attr("sd_i"), inputs=[sub_{sd}])
     LDLT/子域 → 进程缓存(key 按 matrix_ref)；
     stop 旧 server → listen 新端口 → 端口入缓存(key 按 gen)；
-    写地址对象 addr_{gen}_{sd}(temp，依赖锚)；set_worker_property
-  setup_check (requires=ras_check, inputs=全部 addr + b_{start_t})
+    写地址对象 addr_{gen}_{sd}(temp，依赖锚)；set_worker_property(worker_attr("{gen}_{sd}"))
+  setup_check (requires=worker_attr("check"), inputs=全部 addr + b_{start_t})
     粗校正 LU/A_fine/子域索引 → 缓存；connect × nsd → 池 {sd: conn_id}
     入缓存；被拒 = 成员 setup 后已死 → raise 下游连锁；
     完成后提交 solver(start_t) 组
 
 阶段 2 solver per t（时间步粒度 = task 检查点边界）
-  compute(t,sd) (requires=sd_i, inputs=[b_t, addr])
+  compute(t,sd) (requires=worker_attr("sd_i"), inputs=[b_t, addr])
     常驻 service 线程消费请求(agent 级队列单读者)：accept iterate(带 ghosts)
     → 本地 solve → respond 贡献；done → ack 退出。
     compute task 自身 = 参数注入者(b_local 等)，短命即回。
-  check(t) (requires=ras_check, inputs=[b_t]+[sol_{t-1}])
+  check(t) (requires=worker_attr("check"), inputs=[b_t]+[sol_{t-1}])
     驱动循环：逐存活成员 call(带 ghosts) → 收贡献 → 残差主导收敛判定/
     非 coarse delta 聚合 → 粗校正；收敛广播 done → 写 sol_t(持久)/
     iters_t/converged_t → 提交 controller(t)
 
-阶段 3 controller(t) (requires=ras_check，与 check 同 worker)
+阶段 3 controller(t) (requires=worker_attr("check")，与 check 同 worker)
   有下一步：update_rhs(x_t, t+1) → 写 b_{t+1} → 提交 solver(t+1) → 删 b_t
   无下一步：收尾清缓存/server/属性 → 发 cleanup × nsd（各成员销毁
     listener/LDLT 缓存、关 server、移除属性、删地址对象）→ 写 dynamic_done
@@ -110,8 +110,17 @@ kickoff_task (inputs=[matrix, b_0], 任意 worker)
 连接方向为 check→compute 主动连接：成员"该连未连"的时序洞不存在——
 setup 失败走依赖连锁，运行期死亡由断连事件毫秒级传播。
 
-master 只做 kickoff（含 worker 池启动：nsd 个 sd_i 绑定 + 1 个 ras_check
-绑定），编排全在 worker task 链上——master 上永远不做阻塞式流程。
+master 只做 kickoff（含 worker 池：总数不足先补空属性进程，再 ensure_workers
+按 `db.worker_attr`（rasg:{uid}: 命名空间，见下）申请属性编队），编排全在
+worker task 链上——master 上永远不做阻塞式流程。
+
+### 编队属性命名（issue 009 收紧）
+
+worker 属性与 task requires 统一经 `db.worker_attr(tag)` = `rasg:{uid}:{tag}`
+（单点定义在 SolveDb；uid 跨进程持久于 _DB_META）。并发求解 flow 各持不同
+uid → 属性零交集，调度精确匹配不串池；申请编队时 `exclude=r"^rasg:"` 排除
+已被其他 flow 占用的 worker。restart 闭环：load_db 回来的同 db uid 相同，
+bin 还原的 requires 与重新 ensure 分配的属性自动一致。
 
 ### 关键语义
 
@@ -142,11 +151,11 @@ coarse_prebuilt（temp，kickoff 写全程存活）、`__rasg__sol_{t}`（**持�
 限制：omega 仅支持 1.0 / "coarse"；update_rhs 在 worker 上执行（cloudpickle
 传递）且须**确定性**（重投会重调）；同 db 重复调用需换 sol_prefix。
 
-已知限制（待框架增强，详见 `docs/issues/009-dynamic-restart-worker-pool-contract.md`）：
-restart 场景要求使用者先重建与原 run 一致的属性编队（nsd × sd_i + ras_check）
-再 load_db/restart，且 launch 必须先于 load_db（否则 auto-spawn 的空属性
-worker 占位）。旧版无需此契约——新版引入跨 task 进程级缓存的必然代价，
-框架增强（角色 worker 就绪原语）后将消除。
+restart 属性编队已由 ensure_workers 根治（2026-08-27，原已知限制见
+`docs/issues/009-dynamic-restart-worker-pool-contract.md`）：run2 流程为
+load_db → 按编队规模缺口补空属性进程 → `ensure_workers(attrs,
+exclude=r"^rasg:")`——bin 还原的 requires 与本次申请同源于 worker_attr
+自动闭环，与 launch/load_db 顺序无关。
 
 ---
 

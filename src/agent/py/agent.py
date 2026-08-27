@@ -122,6 +122,9 @@ class Master(FlyAgent):
         self._task_counter = 0
         self._lock = threading.Lock()
         self._worker_procs = []
+        # worker_id → Popen 句柄（本地 spawn 登记）：_wait_spawned_workers 的
+        # 注册前早夭检测用（外部唤起无句柄，不在此表）。
+        self._spawned_procs = {}
         self._host = host
         self._port = port
         self._running = False
@@ -335,16 +338,245 @@ class Master(FlyAgent):
         for wid in worker_ids:
             self._agent.expect_worker(int(wid))
 
-    def _wait_spawned_workers(self):
+    def ensure_workers(self, workers, timeout: float = 10.0, exclude: str = None) -> bool:
+        """向 master 申请现有 worker 并为选中 worker 追加指定属性（不启动新进程）。
+
+        Args:
+            workers: list，长度即申请的 worker 数；每个元素是该 worker 要追加的
+                属性集合——元素为 str（单属性简写）或 str 的 list。属性语义是
+                追加去重，worker 已有属性保留。
+                示例（求解 flow 场景，nsd=2）::
+
+                    db.worker_attr(...)  # 见 SolveDb.worker_attr：rasg:{uid}:{tag}
+                    ensure_workers([
+                        db.worker_attr("sd_0"),
+                        db.worker_attr("sd_1"),
+                        [db.worker_attr("check")],
+                    ], timeout=10.0, exclude=r"^rasg:")
+
+            timeout: 两阶段收集的阶段一时限（秒）。时限内缺口只从空闲（IDLE）
+                候选补齐，候选动态重算（BUSY 转空闲/新注册即时入池）；到点仍
+                未齐则放宽到忙碌候选——给 BUSY worker 也追加属性，不等其空闲，
+                后续 task 由调度系统按 requires 自动派发。<=0 表示不做阶段一
+                等待。
+            exclude: 正则字符串（re.search）；worker 任一既有属性命中即排除出
+                候选池。用于并发求解 flow 排除已被其他 flow 编队占用的 worker
+                （配合 SolveDb.worker_attr 的 rasg:{uid}: 命名空间，solver 默认
+                r"^rasg:"）。只影响本调用选谁，不影响盘点口径——已被此前调用
+                满足的元素无论其 worker 属性来源都照常计入。
+
+        流程：
+          1. 盘点：已被此前调用满足的元素直接占用对应 worker（幂等——重复
+             调用同规格不重复分配、不下发消息）；
+          2. 静态预检：放宽池（IDLE+BUSY 且经 exclude 过滤）不够覆盖缺口 →
+             立即抛 RuntimeError（不等超时，池子本身不够时等待无意义）；
+          3. 阶段一/二收集（见 timeout）；
+          4. 生效等待：收集齐后统一下发追加指令，worker 应用并沿既有上报链
+             更新 master 视图；固定 30s 上限（正常毫秒级，超时=worker 断连）。
+
+        属性生命周期 = worker 进程生命周期（进程重启回 CLI 启动参数），需重新
+        调用（幂等）。失败不回滚本次已生效的部分分配——再次调用同规格自愈。
+
+        等待边界：timeout 是本调用全部等待的总上限——含等待已唤起（launch/
+        expect 登记的占位符）但尚未完成注册的 worker 进入池内；在册池已满足
+        全部申请时零等待立即返回。占位符容量在静态预检中假定其属性不被
+        exclude 命中（本地补拉的空属性 worker 天然满足；外部唤起自带属性且
+        与 exclude 冲突属调用方错误）。预检容量与在册池来自同一原子采样
+        （C++ snapshot_worker_pool：expected 锁内单点完成），注册过渡态不会
+        被漏计。
+
+        Returns:
+            True（编队就绪）。资源不足或生效超时抛 RuntimeError。
+        """
+        import re
+        import time
+
+        # 规范化：str → [str]，逐元素去重保序，校验非空字符串。
+        specs = []
+        for elem in workers:
+            attrs = [elem] if isinstance(elem, str) else list(elem)
+            if not attrs or not all(isinstance(a, str) and a for a in attrs):
+                raise ValueError(
+                    f"ensure_workers: each element must be a non-empty attr str "
+                    f"or list of non-empty attr strs, got: {elem!r}")
+            deduped = list(dict.fromkeys(attrs))
+            specs.append(deduped)
+        if not specs:
+            raise ValueError("ensure_workers: workers must be a non-empty list")
+
+        pattern = re.compile(exclude) if exclude else None
+
+        def pool_snapshot():
+            # 原子采样（C++ 侧持 expected 锁单点完成）：在册 hybrid worker
+            # 能力 + 未注册占位符数。采样不跨「占位符转正 → 进池」过渡态，
+            # 容量口径无瞬时漏计。entries 形如 (worker_id, [cap, ...])——
+            # capabilities 允许为空（空属性 worker 是补拉候选主力）。
+            entries, pending = self._agent.snapshot_worker_pool()
+            caps = {wid: set(cap_list) for wid, cap_list in entries}
+            return caps, pending
+
+        def excluded(caps):
+            return pattern is not None and any(pattern.search(a) for a in caps)
+
+        # 盘点顺序：属性多的元素先占（降低 greed 错配；solver 各元素互异时无影响）。
+        order = sorted(range(len(specs)), key=lambda i: -len(specs[i]))
+
+        def inventory(caps_all, claims):
+            """claims 内的元素视为已处理；其余元素在 caps_all 中贪心找 ⊇ 匹配。
+
+            返回 (remaining, used)：remaining=未满足元素 idx 列表；
+            used=被盘点占用/声明的 worker 集合（新分配时的排除项）。
+            """
+            remaining = []
+            used = {wid for wid in claims.values()}
+            for idx in order:
+                if idx in claims:
+                    continue
+                aset = set(specs[idx])
+                match = next(
+                    (wid for wid in sorted(caps_all) if wid not in used and aset <= caps_all[wid]),
+                    None)
+                if match is None:
+                    remaining.append(idx)
+                else:
+                    used.add(match)
+            return remaining, used
+
+        def eligible(candidates, used, idle_only):
+            idle_set = set(self._agent.get_idle_workers())
+            return [wid for wid in sorted(candidates)
+                    if wid not in used and (not idle_only or wid in idle_set)]
+
+        # 静态预检（原子采样后立即判定）：容量 = 排除后的在册池（IDLE+BUSY）
+        # + 已唤起未注册的占位符（launch/expect 登记、正在注册途中的 worker，
+        # 假定其属性不被 exclude 命中）。采样原子（snapshot_worker_pool），
+        # 无过渡态漏计——池子真实不足时立即失败，不消耗业务 timeout。
+        caps_all, pending = pool_snapshot()
+        candidates = {wid: c for wid, c in caps_all.items() if not excluded(c)}
+        remaining, used = inventory(caps_all, {})
+        avail = len([w for w in candidates if w not in used]) + pending
+        if len(remaining) > avail:
+            need_detail = "; ".join(f"[{','.join(specs[i])}]" for i in remaining)
+            raise RuntimeError(
+                f"ensure_workers failed: requested {len(specs)} worker(s), "
+                f"{len(remaining)} unsatisfied ({need_detail}), but only {avail} "
+                f"eligible worker(s) in cluster (registered idle+busy plus "
+                f"{pending} registering, exclude={exclude!r})")
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        allow_busy = float(timeout) <= 0
+        claims = {}  # elem_idx -> worker_id（本调用已决定追加属性的目标）
+
+        while True:
+            caps_all, _ = pool_snapshot()
+            candidates = {wid: c for wid, c in caps_all.items() if not excluded(c)}
+
+            # 失效声明回收（目标断连进宽限、退出快照）：元素回到未满足集合。
+            for idx in [i for i, wid in claims.items() if wid not in caps_all]:
+                del claims[idx]
+
+            remaining, used = inventory(caps_all, claims)
+            fresh = eligible(candidates, used, idle_only=not allow_busy)
+
+            if len(remaining) <= len(fresh):
+                for i, wid in zip(remaining, fresh):
+                    claims[i] = wid
+                break  # 缺口全部有归属，进入下发+生效等待
+
+            if not allow_busy:
+                if time.monotonic() >= deadline:
+                    allow_busy = True  # 阶段二：到点仍未齐 → 放宽忙碌候选
+                else:
+                    # 候选动态重算：等 BUSY 转空闲 / 已唤起占位符完成注册
+                    # 进入池——全部等待都在声明的 timeout 之内。
+                    time.sleep(0.1)
+                continue
+
+            # 已放宽仍不够（预检后集群变化：他人抢占/掉线/占位符未如期注册）
+            # → 立即失败。
+            need_detail = "; ".join(f"[{','.join(specs[i])}]" for i in remaining)
+            raise RuntimeError(
+                f"ensure_workers failed: requested {len(specs)} worker(s), "
+                f"{len(remaining)} unsatisfied ({need_detail}), but only "
+                f"{len(fresh)} eligible worker(s) available "
+                f"(pool={len(candidates)} idle+busy, exclude={exclude!r})")
+
+        # 下发 + 生效等待：missing 为增量子集（可能因并发时序为空则免发送）。
+        apply_deadline = time.monotonic() + 30.0
+        pending_sends = []
+        for idx in sorted(claims):
+            wid = claims[idx]
+            missing = [a for a in specs[idx]
+                       if a not in self._agent.get_worker_capabilities(wid)]
+            if not missing:
+                continue
+            if not self._agent.assign_worker_attributes(wid, missing):
+                raise RuntimeError(
+                    f"ensure_workers failed: worker {wid} disconnected while "
+                    f"assigning [{','.join(missing)}]")
+            INFO(f"ensure_workers: assigned {missing} to worker {wid}")
+            pending_sends.append((idx, wid))
+
+        while pending_sends:
+            still = []
+            for idx, wid in pending_sends:
+                if not set(specs[idx]) <= set(self._agent.get_worker_capabilities(wid)):
+                    still.append((idx, wid))
+            if not still:
+                break
+            if time.monotonic() >= apply_deadline:
+                detail = "; ".join(
+                    f"worker {wid} missing [{','.join(specs[idx])}]"
+                    for idx, wid in still)
+                raise RuntimeError(
+                    f"ensure_workers failed: attribute assignment did not take "
+                    f"effect within 30s ({detail}) — worker likely disconnected")
+            time.sleep(0.05)
+            pending_sends = still
+
+        return True
+
+    def _wait_spawned_workers(self, batch_ids=None):
         """补 spawn worker 后的统一等待：先等注册（不假设时限，config 控制），
         再等 IDLE（原有语义，timeout 放宽到 max(30, config)）。
-        注册等待超时（仅 config>0 时可能）抛 TimeoutError，与原行为一致。"""
+        注册等待超时（仅 config>0 时可能）抛 TimeoutError，与原行为一致。
+
+        batch_ids：本批本地 spawn 的 worker_id——等待期间轮询其进程句柄，
+        「已退出且未注册」= 注册前早夭（资源不足/启动即崩）→ 立即
+        RuntimeError，不等 worker_register_timeout（其默认 0=无限：无限
+        等待语义仅保留给无本地句柄的外部唤起——bsub/expect_workers）。
+        None=无早夭检测（保持既有调用语义）。"""
         from _fly_core import ex_core_get_config
         cfg_timeout = ex_core_get_config().get_int("worker_register_timeout") or 0
-        if not self.wait_workers_registered():
-            pending = self._agent.get_expected_worker_count()
-            raise TimeoutError(
-                f"{pending} worker(s) failed to register within {cfg_timeout}s")
+        procs = {wid: self._spawned_procs[wid] for wid in (batch_ids or [])
+                 if wid in self._spawned_procs}
+        import time
+        t0 = time.time()
+        last_report = t0
+        while True:
+            if procs:
+                registered = {wid for wid, _ in self._agent.get_worker_hostnames()}
+                dead = [wid for wid, proc in procs.items()
+                        if wid not in registered and proc.poll() is not None]
+                if dead:
+                    raise RuntimeError(
+                        f"{len(dead)} spawned worker(s) exited before "
+                        f"registering (worker_id={dead}) — startup crash or "
+                        f"resource exhaustion; see worker logs")
+            if self._agent.all_workers_registered():
+                break
+            now = time.time()
+            if cfg_timeout > 0 and now - t0 >= cfg_timeout:
+                pending = self._agent.get_expected_worker_count()
+                raise TimeoutError(
+                    f"{pending} worker(s) failed to register within "
+                    f"{cfg_timeout}s")
+            if now - last_report >= 30.0:
+                INFO(f"_wait_spawned_workers: still waiting for "
+                     f"{self._agent.get_expected_worker_count()} worker(s) "
+                     f"to register ({now - t0:.0f}s elapsed)")
+                last_report = now
+            time.sleep(0.1)
         idle_timeout = max(30.0, float(cfg_timeout)) if cfg_timeout > 0 else 30.0
         self.wait_for_all_workers(timeout=idle_timeout)
 
@@ -454,7 +686,8 @@ class Master(FlyAgent):
 
         if spawned > 0:
             self._expected_workers += spawned
-            self._wait_spawned_workers()
+            self._wait_spawned_workers(list(range(
+                self._next_worker_id - spawned, self._next_worker_id)))
 
             # Refresh mapping after new workers connect
             existing_by_hostname = defaultdict(list)
@@ -499,7 +732,16 @@ class Master(FlyAgent):
         message("STOR::0003", 1, f"load_db done: path={path}")
         # 返回权威 Database 句柄：直接复用 db_instances_ 里的对象（register_database 已建），
         # 不再单独构造临时 Database（避免析构 unregister DataService::db_paths_ 的竞争）。
-        db = Database.__new__(Database)
+        # 按 meta role 重建子类（与 executor 反序列化同口径）：restart 场景的
+        # load_db 句柄需要子类成员（如 SolveDb.worker_attr / load_solution）。
+        role = meta_d.get("role")
+        cls = Database._ROLE_REGISTRY.get(role) if role else None
+        if cls is None:
+            if role:
+                WARN(f"load_db: role={role!r} subclass not registered "
+                     f"(its package not imported here) — returning base Database")
+            cls = Database
+        db = cls.__new__(cls)
         db._db = self._agent.get_database(db_path)
         # 恢复 _DB_META 链信息（uid/role/logical_name）+ 注册 uid→path 映射
         db._meta_file = DbMetaFile(db_path)
@@ -541,18 +783,20 @@ class Master(FlyAgent):
                 spawned_source += 1
         if spawned_source > 0:
             self._expected_workers += spawned_source
-            self._wait_spawned_workers()
+            self._wait_spawned_workers(list(range(
+                self._next_worker_id - spawned_source, self._next_worker_id)))
             existing_by_hostname = self._merge_worker_hostname_map()
 
         # 确保 master host 有 target worker（不传 host 的 local worker，与 master 同机）。
         master_hostname = socket.gethostname()
         master_host_workers = existing_by_hostname.get(master_hostname, [])
         if not master_host_workers:
+            first_target_id = self._next_worker_id
             for _ in range(max(1, local_workers)):
                 self._spawn_process_worker(self._next_worker_id, {})
                 self._next_worker_id += 1
             self._expected_workers += max(1, local_workers)
-            self._wait_spawned_workers()
+            self._wait_spawned_workers(list(range(first_target_id, self._next_worker_id)))
             existing_by_hostname = self._merge_worker_hostname_map()
             master_host_workers = existing_by_hostname.get(master_hostname, [])
         if not master_host_workers:
@@ -820,7 +1064,17 @@ class Master(FlyAgent):
         # （用源 db_path，保持 object_name = db_path:short 一致）。不再单独构造临时 Database，
         # 避免其析构 unregister DataService::db_paths_ 的竞争。
         # read_object 走 master remote_idx（merge task 已登记对象位置到 merge worker）。
-        merged_db = Database.__new__(Database)
+        # 按 meta role 重建子类（与 load_db/executor 同口径——merge 产物继承源
+        # 身份，solve 库 merge 后句柄仍需子类成员）。
+        _merge_meta = DbMetaFile(merge_db_path).read()
+        _role = _merge_meta.get("role") if _merge_meta else None
+        _cls = Database._ROLE_REGISTRY.get(_role) if _role else None
+        if _cls is None:
+            if _role:
+                WARN(f"merge_db: role={_role!r} subclass not registered "
+                     f"(its package not imported here) — returning base Database")
+            _cls = Database
+        merged_db = _cls.__new__(_cls)
         merged_db._db = self._agent.get_database(db_path)
         # 恢复 _DB_META 链信息
         merged_db._meta_file = DbMetaFile(merge_db_path)
@@ -1063,6 +1317,8 @@ class Master(FlyAgent):
                                 stdout=log_file, stderr=log_file,
                                 env=env)
         self._worker_procs.append(proc)
+        # worker_id → 句柄登记：_wait_spawned_workers 注册前早夭检测用。
+        self._spawned_procs[worker_id] = proc
         time.sleep(0.1)
 
         DBG(

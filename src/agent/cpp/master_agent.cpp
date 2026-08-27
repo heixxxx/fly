@@ -1427,18 +1427,13 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
         }
     }
 
-    // 唤起占位符转正：该 worker 已注册，不再占用 expected 集合。
-    expected_worker_ids_.erase(worker_id);
-
-    {
-        std::lock_guard<std::mutex> lk(workers_mutex_);
-        conn_to_worker_[conn_id] = worker_id;
-        worker_to_conn_[worker_id] = conn_id;
-    }
-
-    // 断连宽限内的重连：task 在 worker 上存活（RUNNING 保留），重连后将正常
-    // 上报 Complete/Failed——保留 BUSY 与 current_task_id_（覆盖为 IDLE 会让调度器
-    // 立即派新 task，与迟到上报的状态迁移竞争）。宽限外注册维持全新语义。
+    // 唤起占位符转正：expected 锁持锁跨越「转正 → 进 WorkerManager」全程，
+    // 与 snapshot_worker_pool 的采样构成同一临界区口径——采样绝不跨
+    // 「已离开占位表、尚未进池」的过渡态（否则两次独立采样会把过渡态
+    // worker 两边都漏计，容量瞬时少计导致预检误判池不足）。
+    // 锁内各段保持既有顺序（Ack 先于池可见性：TCP 同连接保序杜绝 assign
+    // 抢跑）；锁序恒为 expected → workers_mutex_/manager，无反向获取路径，
+    // 无死锁环。锁外仅保留纯日志/monitor 落盘。
     // role 静态身份透传（storage_only 在 get_idle_workers 层退出调度候选）。
     WorkerRole role = static_cast<WorkerRole>(msg.role_);
     if (role != WorkerRole::HYBRID && role != WorkerRole::STORAGE_ONLY) {
@@ -1446,34 +1441,47 @@ void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& ms
              static_cast<int>(msg.role_));
         role = WorkerRole::HYBRID;
     }
-    DataService::instance();
-    if (msg.data_server_port_ > 0) {
-        DataService::instance()->register_worker(worker_id, msg.data_server_host_,
-                                                  msg.data_server_port_,
-                                                  role == WorkerRole::STORAGE_ONLY);
-    }
+    expected_worker_ids_.with_lock([&](auto& m) {
+        m.erase(worker_id);  // 占位符转正（该 worker 已注册）
 
-    // Ack 先于 scheduler 可见性发送（用户确认语义：assign 不应在 worker 收到
-    // 注册确认前发生——原顺序 register_worker 后 scheduler 即可 assign，
-    // TaskAssign 可抢在 RegisterAck 之前到达 worker，执行中的写注册/上报
-    // 只能走缓冲）。TCP 同连接保序：Ack 先发必先到，此处彻底关死抢跑窗口。
-    RegisterAckMessage ack;
-    ack.worker_id_ = worker_id;
-    ack.master_address_ = host_;
-    ack.master_port_ = static_cast<int32_t>(port_);
-    reactor_->send(conn_id, ack);
+        {
+            std::lock_guard<std::mutex> lk(workers_mutex_);
+            conn_to_worker_[conn_id] = worker_id;
+            worker_to_conn_[worker_id] = conn_id;
+        }
 
-    // scheduler 可见性（在此之后 assign 才可能发生）。
-    bool in_grace = (grace_deadlines_.erase(worker_id) > 0);
-    if (in_grace) {
-        worker_manager_->register_worker_reconnect(worker_id, host_, port_, msg.attributes_,
-                                                    msg.hostname_, msg.ip_address_, role);
-        INFO("Worker re-connected within grace: worker_id={}, conn_id={} "
-             "(task state preserved)", worker_id, conn_id);
-    } else {
-        worker_manager_->register_worker(worker_id, host_, port_, msg.attributes_,
-                                          msg.hostname_, msg.ip_address_, role);
-    }
+        // 断连宽限内的重连：task 在 worker 上存活（RUNNING 保留），重连后将正常
+        // 上报 Complete/Failed——保留 BUSY 与 current_task_id_（覆盖为 IDLE 会让调度器
+        // 立即派新 task，与迟到上报的状态迁移竞争）。宽限外注册维持全新语义。
+        DataService::instance();
+        if (msg.data_server_port_ > 0) {
+            DataService::instance()->register_worker(worker_id, msg.data_server_host_,
+                                                      msg.data_server_port_,
+                                                      role == WorkerRole::STORAGE_ONLY);
+        }
+
+        // Ack 先于 scheduler 可见性发送（用户确认语义：assign 不应在 worker 收到
+        // 注册确认前发生——原顺序 register_worker 后 scheduler 即可 assign，
+        // TaskAssign 可抢在 RegisterAck 之前到达 worker，执行中的写注册/上报
+        // 只能走缓冲）。TCP 同连接保序：Ack 先发必先到，此处彻底关死抢跑窗口。
+        RegisterAckMessage ack;
+        ack.worker_id_ = worker_id;
+        ack.master_address_ = host_;
+        ack.master_port_ = static_cast<int32_t>(port_);
+        reactor_->send(conn_id, ack);
+
+        // scheduler 可见性（在此之后 assign 才可能发生）。
+        bool in_grace = (grace_deadlines_.erase(worker_id) > 0);
+        if (in_grace) {
+            worker_manager_->register_worker_reconnect(worker_id, host_, port_, msg.attributes_,
+                                                        msg.hostname_, msg.ip_address_, role);
+            INFO("Worker re-connected within grace: worker_id={}, conn_id={} "
+                 "(task state preserved)", worker_id, conn_id);
+        } else {
+            worker_manager_->register_worker(worker_id, host_, port_, msg.attributes_,
+                                              msg.hostname_, msg.ip_address_, role);
+        }
+    });
 
     if (msg.data_server_port_ > 0) {
         INFO("Worker registered: worker_id={}, conn_id={}, hostname={}, data_server={}:{}, role={}",
@@ -2620,6 +2628,28 @@ size_t MasterAgent::get_expected_worker_count() const {
     return expected_worker_ids_.size();
 }
 
+std::pair<CMVector<std::pair<uint64_t, CMVector<CMString>>>, size_t>
+MasterAgent::snapshot_worker_pool() {
+    // 原子采样「在册 hybrid 池 + 未注册占位符数」：持 expected 锁单点完成，
+    // 与 on_worker_register 的持锁转正段互斥——过渡态（已离开占位表、尚未
+    // 进 WorkerManager）对采样不可见，容量口径无瞬时漏计。锁序
+    // expected → manager 与注册路径同向，无死锁环。
+    // 每个 worker 一条目（capabilities 允许为空）——空属性 worker 不丢。
+    CMVector<std::pair<uint64_t, CMVector<CMString>>> pool;
+    size_t pending = 0;
+    expected_worker_ids_.with_lock([&](auto& m) {
+        pending = m.size();
+        auto fill = [&](const CMVector<uint64_t>& ids) {
+            for (auto wid : ids) {
+                pool.emplace_back(wid, worker_manager_->get_worker_capabilities(wid));
+            }
+        };
+        fill(worker_manager_->get_idle_workers());
+        fill(worker_manager_->get_busy_workers());
+    });
+    return {pool, pending};
+}
+
 bool MasterAgent::all_workers_registered() const {
     return expected_worker_ids_.size() == 0;
 }
@@ -2825,6 +2855,35 @@ CMSharedPtr<Database> MasterAgent::get_database(const CMString& db_path) const {
 
 CMVector<uint64_t> MasterAgent::get_idle_workers() const {
     return worker_manager_->get_idle_workers();
+}
+
+bool MasterAgent::assign_worker_attributes(uint64_t worker_id, const CMVector<CMString>& added_properties) {
+    if (added_properties.empty()) return true;
+
+    WorkerPropertyAssignMessage msg;
+    msg.worker_id_ = worker_id;
+    msg.added_properties_ = added_properties;
+
+    uint64_t conn = lookup_worker_conn(worker_id);
+    if (conn == 0) {
+        ERR("assign_worker_attributes: worker_id={} not connected", worker_id);
+        return false;
+    }
+    reactor_->send(conn, msg);
+    INFO("WorkerPropertyAssign sent: worker_id={}, count={}", worker_id, added_properties.size());
+    return true;
+}
+
+size_t MasterAgent::count_workers_with_all_capabilities(const CMVector<CMString>& capabilities) const {
+    return worker_manager_->count_workers_with_all_capabilities(capabilities);
+}
+
+CMVector<uint64_t> MasterAgent::get_busy_workers() {
+    return worker_manager_->get_busy_workers();
+}
+
+CMVector<CMString> MasterAgent::get_worker_capabilities(uint64_t worker_id) {
+    return worker_manager_->get_worker_capabilities(worker_id);
 }
 
 void MasterAgent::on_data_query_dispatch(uint64_t conn_id, const DataQueryMessage& msg) {

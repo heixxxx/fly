@@ -20,6 +20,7 @@ sys.modules['_fly_storage'] = _fly_storage_stub
 _fly_log_stub = types.ModuleType('_fly_log')
 _fly_log_stub.DBG = lambda *a, **kw: None
 _fly_log_stub.INFO = lambda *a, **kw: None
+_fly_log_stub.WARN = lambda *a, **kw: None
 _fly_log_stub.ERR = lambda *a, **kw: None
 sys.modules['_fly_log'] = _fly_log_stub
 

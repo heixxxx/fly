@@ -416,6 +416,7 @@ class Database:
         # 子类的 role 类属性优先
         return type(self).role
 
+
     def _get_chain_data(self):
         """读完整 _DB_META dict（并发安全 LOCK_SH）。无则返回 None。"""
         return self._meta_file.read()

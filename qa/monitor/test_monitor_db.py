@@ -106,9 +106,25 @@ def run_cluster():
     from fly import wait_tasks
     wait_tasks(120)  # 等全部提交的 task 完成
 
-    # 运行中实时读（只读连接不断言锁死）。
-    live_rows = live_conn.execute(
-        "SELECT COUNT(*) FROM worker_samples").fetchone()[0]
+    # 运行中实时读（只读连接不断言锁死）。PERSIST journal 下写者 commit
+    # 持 EXCLUSIVE，高负载轮 5s busy_timeout 可能不够（stability R76 实锤
+    # database is locked）——失败重开连接有界重试（只读连接的错误态粘滞，
+    # 须重开；与 _meta_has 同款处理）。
+    live_rows = None
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        try:
+            live_rows = live_conn.execute(
+                "SELECT COUNT(*) FROM worker_samples").fetchone()[0]
+            break
+        except sqlite3.OperationalError:
+            try:
+                live_conn.close()
+            except sqlite3.Error:
+                pass
+            time.sleep(0.3)
+            live_conn = _open_ro()
+    assert live_rows is not None, "运行中实时只读 15s 内持续被锁"
     live_conn.close()
     INFO(f"[monitor] 运行中实时只读读到 {live_rows} 条样本")
 
@@ -183,9 +199,15 @@ def assert_db_content():
     # ── object_io 明细 ──
     n_io = c.execute("SELECT COUNT(*) FROM object_io").fetchone()[0]
     assert n_io >= 3, f"object_io 行数 {n_io} < 3"
-    w_row = c.execute(
-        "SELECT object_name, bytes FROM object_io WHERE direction='w' LIMIT 1").fetchone()
-    assert w_row and w_row[0].endswith("obj_plain"), f"write 明细异常: {w_row}"
+    # MONITOR_TASK_IO 为异步成组上报，落库次序随批次到达顺序翻转——
+    # 无 ORDER BY 的位置性 LIMIT 1 是顺序竞态（stability 100 轮 R23 实锤
+    # obj_mem 抢在 obj_plain 前）。改按对象名定点断言存在性；明细行
+    # bytes=0 属正常（字节口径聚合在 tasks 表，上方断言已覆盖）。
+    for obj in ("obj_plain", "obj_mem", "obj_slow"):
+        row = c.execute(
+            "SELECT bytes FROM object_io WHERE direction='w' "
+            "AND object_name LIKE ? LIMIT 1", (f"%{obj}",)).fetchone()
+        assert row is not None, f"obj {obj} 的 write 明细缺失: {row}"
 
     # ── workers / events ──
     # master（wid=0，role=master）run 启动时自登记进 workers 表——GUI

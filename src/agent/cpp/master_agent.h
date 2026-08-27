@@ -85,6 +85,13 @@ public:
     void expect_worker(uint64_t worker_id);
     size_t get_expected_worker_count() const;
     bool all_workers_registered() const;
+    // ensure_workers 预检的原子采样：返回（在册 hybrid worker 的
+    // (worker_id, capabilities) 列表——capabilities 可为空（空属性 worker
+    // 是补拉候选主力，必须保留条目）, 未注册占位符数）。持 expected 锁
+    // 单点完成——on_worker_register 的「占位符转正 → 进 WorkerManager」
+    // 持同一把锁跨全程，采样绝不跨「两边都不在」的过渡态（两次独立采样
+    // 会把过渡态 worker 漏计，容量瞬时少计导致预检误判池不足）。
+    std::pair<CMVector<std::pair<uint64_t, CMVector<CMString>>>, size_t> snapshot_worker_pool();
 
     // submit_task 接收完整的 TaskSubmissionSpec，避免 11 个位置参数导致的
     // 错位/漏传（位置参数同类，编译器无法捕获）。调用方先组装 spec 再传入。
@@ -109,6 +116,14 @@ public:
     CMString get_task_error(uint64_t task_id) const;
 
     CMVector<uint64_t> get_idle_workers() const;
+
+    // ensure_workers 支撑面（Python 导出）：
+    // 下行追加属性指令（ensure_workers 收集语义）；worker 未连接返回 false。
+    bool assign_worker_attributes(uint64_t worker_id, const CMVector<CMString>& added_properties);
+    // 三个 WorkerManager 查询转发：盘点计数 / BUSY 候选池 / 能力快照。
+    size_t count_workers_with_all_capabilities(const CMVector<CMString>& capabilities) const;
+    CMVector<uint64_t> get_busy_workers();
+    CMVector<CMString> get_worker_capabilities(uint64_t worker_id);
 
     // WorkerInfo 落盘回调注入（master Python start() 调用）：参数为纯标量，
     // Python 侧组装 workers[] 条目经 DbMetaFile.append_worker 写 _DB_META。

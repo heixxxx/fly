@@ -248,6 +248,41 @@ def launch_workers(configs: list):
     get_agent().launch_local_workers(configs)
 
 
+def ensure_workers(workers, timeout: float = 10.0, exclude: str = None) -> bool:
+    """向 master 申请现有 worker 并为选中 worker 追加指定属性（不启动新进程）。
+
+    workers: list，长度即申请的 worker 数；每个元素是该 worker 要追加的属性
+    集合——str（单属性简写）或 str 的 list。属性是追加去重，已有属性保留。
+
+    收集语义（两阶段）：时限内只收空闲候选；到点仍未齐则放宽到忙碌候选
+    （打上属性后不等其空闲，后续 task 由调度系统按 requires 自动派发）。
+    排除后的全量池（IDLE+BUSY）本身盖不住申请数时立即抛 RuntimeError，
+    不等待。幂等：重复调用同规格不重复分配。
+
+    典型工作流：求解正式启动前确认编队，再启动::
+
+        ensure_workers([
+            db.worker_attr("sd_0"),
+            db.worker_attr("check"),
+        ], timeout=10.0, exclude=r"^rasg:")
+
+    Args:
+        workers: 属性集合 list（见上）。
+        timeout: 空闲收集时限秒数；<=0 跳过阶段一直接按放宽口径收集。
+        exclude: 正则字符串（re.search）；worker 任一既有属性命中即排除出
+            候选池。并发 flow 场景用它排除已被其他 flow 编队的 worker（配合
+            db.worker_attr 的 rasg:{uid}: 命名空间——单点定义在
+            storage.Database 基类）。
+
+    Returns:
+        True（编队就绪）。资源不足或生效超时抛 RuntimeError。
+
+    See Also:
+        Master.ensure_workers — 完整契约（追加语义、静态预检、生命周期）。
+    """
+    return get_agent().ensure_workers(workers, timeout=timeout, exclude=exclude)
+
+
 def wait_tasks(timeout: float = 30.0):
     """Block until all submitted tasks complete or timeout expires.
 

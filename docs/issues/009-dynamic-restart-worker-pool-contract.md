@@ -1,8 +1,9 @@
 # 009 — Dynamic 求解器重投场景的 worker 属性池契约待增强（2026-08-27）
 
-> 状态：**已知限制（临时按手动方案规避），用户裁定后续框架增强根治**。
-> 关联：`src/solver/py/ras_graph_dynamic.py` 三阶段架构、
-> `qa/solver/test_ras_graph_dynamic.pyt` restart 断点 subcase。
+> 状态：**已根治（2026-08-27，ensure_workers 框架增强落地）**。
+> 原始问题与演进记录保留如下。关联：`src/solver/py/ras_graph_dynamic.py`
+> 三阶段架构、`qa/solver/test_ras_graph_dynamic.pyt` restart 断点 subcase、
+> `fly.ensure_workers` / `SolveDb.worker_attr`（新 API）。
 
 ---
 
@@ -55,15 +56,26 @@ cleanup 等 driver 类 task 都带 `requires=["ras_check"]` 或 `["sd_{sd}"]`
 代价即本 issue：driver task 的亲和性从"最好落在持有者上"变成"必须落在
 持有者上"，worker 编队成了正确性前提。
 
-## 现行规避（已实施）
+## 现行规避（已被框架增强取代）
 
-- `qa/solver/rasgd_restart_run2.py`：launch 先于 load_db（杜绝 auto-spawn
-  占位）；launch 完整属性编队（nsd × sd_i + ras_check）后再 restart。
+- ~~`qa/solver/rasgd_restart_run2.py`：launch 先于 load_db（杜绝 auto-spawn
+  占位）；launch 完整属性编队（nsd × sd_i + ras_check）后再 restart。~~
+  已移除：run2 现为 load_db 先行 → 数量补齐 → `ensure_workers`。
 
-## 待增强方向（用户裁定后续实施）
+## 根治落地（2026-08-27）
 
-候选方向（未定稿）：框架提供"角色 worker 就绪原语"，例如
-`ensure_workers(roles, timeout=None)`——按属性需求清单补齐/等待 worker，
-或允许 `restart_failed_tasks` 在重投前自动补拉满足 requires 的 worker。
-任何增强需消除"solver 属性名 ↔ 使用者记忆"这一隐式契约（由 solver API
-自带建池/断言即可，ensure_workers 是其中一个落地形态）。
+`fly.ensure_workers(workers, timeout=10.0, exclude=None)` + 两项配套：
+
+1. **属性下行通道**（原缺失）：新消息 `WORKER_PROPERTY_ASSIGN=61`——worker
+   去重应用后沿既有 WORKER_PROPERTY_UPDATE 上报，视图/调度零新增链路；
+2. **就绪原语**：两阶段收集（时限内 IDLE、到点放宽 BUSY 靠调度接管）+
+   静态预检立即失败 + 幂等盘点；以 WorkerManager 注册记录为就绪口径
+   （脆弱点 1 的"只数连接数"误判消除）；
+3. **命名单点规范**：`SolveDb.worker_attr(tag)` = `"rasg:{uid}:{tag}"`
+   （脆弱点 2 的隐式契约消除——solver 与使用者共用同一生成入口，uid 跨进程
+   持久使 restart 场景 requires 与申请自动闭环；worker 侧可用性由 executor
+   "先导入 task 模块完成子类注册、再反序列化 db 参数"的时序保证）。
+
+双 flow 防碰撞三层：属性 uid 命名空间（requires 精确匹配不串池）、exclude
+正则物理隔离（solver 默认 `^rasg:`）、资源不足静态预检显式失败。QA 见
+qa/scheduling/test_ensure_workers*.py 三 case 与改造后的 rasgd_restart_run2。

@@ -18,7 +18,7 @@ from scipy import sparse
 from scipy.sparse.linalg import splu
 
 from _fly_log import INFO
-from fly import load_db, get_config
+from fly import ensure_workers, get_config, load_db
 from fly.runtime import get_agent
 from solver import get_dynamic_result
 
@@ -29,20 +29,22 @@ DB_PATH = os.environ["FLY_DB_PATH"]
 
 get_config().set_int("fail_unscheduleable_tasks", 1)
 
-# 全新 run 的 worker 池（attributes 必须与原 run 一致——task requires 匹配：
-# nsd 个 sd_i 绑定 + 1 个 ras_check）。
-# 顺序关键：launch 必须先于 load_db。load_db 发现在 meta 的 hostname 上无
-# worker 时会自动 spawn 空属性 worker 补位（framework 行为），空属性编队
-# 挤占 slots 会让带 ras_check requires 的重投任务找不到匹配 worker。
+# issue 009 框架增强后的标准恢复流程：先 load_db 再编队（与旧规避相反的
+# 顺序，直接回归 009 的脆弱点）。进程数量先行——load_db 本机无 worker 时
+# 自动 spawn 空属性补位（恰好成为候选池的一部分），按编队规模缺口再补空
+# 属性进程；ensure_workers 按 db uid 命名空间追加属性——bin 里还原的
+# requires 与本次申请同源于 SolveDb.worker_attr，自动闭环。已唤起未注册的
+# 占位符计入 ensure 预检容量，注册等待受其 timeout 约束。
 master = get_agent()
-worker_configs = []
-for w in range(NSD):
-    worker_configs.append({"attributes": [f"sd_{w}"]})
-worker_configs.append({"attributes": ["ras_check"]})
-master.launch_local_workers(worker_configs)
-assert master.wait_for_workers(NSD + 1)
-
 db = load_db(DB_PATH)
+
+fleet = NSD + 1
+if not master.is_running() or master.worker_count < fleet:
+    deficit = fleet - max(0, master.worker_count)
+    master.launch_local_workers([{} for _ in range(deficit)])
+
+attrs = [db.worker_attr(f"sd_{s}") for s in range(NSD)] + [db.worker_attr("check")]
+ensure_workers(attrs, timeout=30.0, exclude=r"^rasg:")
 
 restarted = master.restart_failed_tasks([db])
 INFO(f"restart_failed_tasks resubmitted: {restarted}")

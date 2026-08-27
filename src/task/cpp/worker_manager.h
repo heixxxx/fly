@@ -84,6 +84,14 @@ public:
     CMVector<uint64_t> get_workers_with_capability(const CMString& capability);
     CMVector<WorkerInfo> get_all_workers();
     bool has_worker_with_all_capabilities(const CMVector<CMString>& capabilities) const;
+    // ensure_workers 盘点原语：has_ 的计数版（含 BUSY——"已具备能力"与忙闲
+    // 无关），storage_only 与断连宽限中的 worker 不计。
+    size_t count_workers_with_all_capabilities(const CMVector<CMString>& capabilities) const;
+    // ensure_workers 两阶段收集的阶段二放宽候选：BUSY && 非 storage_only &&
+    // 非 in_grace（过滤口径与 get_idle_workers 对偶）。
+    CMVector<uint64_t> get_busy_workers();
+    // 单 worker 能力快照（不存在返回空），exclude 过滤/greedy 匹配用。
+    CMVector<CMString> get_worker_capabilities(uint64_t worker_id);
     size_t get_worker_count();
     size_t get_idle_worker_count();
     // 诊断用：返回所有 worker 的 status/cap/task 简表（调度异常时定位状态不一致）。

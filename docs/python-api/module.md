@@ -18,7 +18,7 @@ Python API 层将 C++ 底层 API 包装为用户友好的高层接口，提供�
 
 | 文件 | 说明 |
 |------|------|
-| `__init__.py` | 顶层包，导出 open_db, as_task, launch_workers, wait_tasks 等 |
+| `__init__.py` | 顶层包，导出 open_db, as_task, launch_workers, ensure_workers, wait_tasks 等 |
 | `agent.py` | Master/Worker 内部实现（位于 `src/agent/py/`） |
 | `database.py` | _Database 类（位于 `src/storage/py/`） |
 | `task.py` | @as_task 和 @task_name 装饰器（位于 `src/task/py/`） |
@@ -65,6 +65,47 @@ def launch_workers(configs: list[dict]) -> None:
 - thread 模式已移除
 - Worker 进程通过 TCP 连接 Master，实现真正的进程隔离
 - 内部调用 `_spawn_process_worker()` 启动子进程
+
+### ensure_workers(workers, timeout=10.0, exclude=None) — 按属性申请编队
+
+```python
+def ensure_workers(workers, timeout: float = 10.0, exclude: str = None) -> bool:
+    """
+    向 master 申请现有 worker 并为选中 worker 追加指定属性（不启动新进程）。
+
+    Args:
+        workers: list，长度即申请的 worker 数；每个元素是该 worker 要追加的
+                 属性集合——str（单属性简写）或 str 的 list。属性是追加去重。
+        timeout: 空闲收集时限秒数（也是本调用全部等待的总上限）；到点放宽
+                 忙碌候选。<=0 跳过阶段一直接按放宽口径收集。
+        exclude: 正则字符串（re.search）；worker 任一既有属性命中即排除出
+                 候选池（并发 flow 防碰撞）。
+
+    Returns:
+        True（编队就绪）。资源不足或生效超时抛 RuntimeError。
+
+    Example:
+        # 求解正式启动前确认编队（属性经 SolveDb.worker_attr 单点生成）
+        ensure_workers([
+            db.worker_attr("sd_0"),
+            db.worker_attr("sd_1"),
+            db.worker_attr("check"),
+        ], timeout=10.0, exclude=r"^rasg:")
+    """
+    return get_agent().ensure_workers(workers, timeout=timeout, exclude=exclude)
+```
+
+**语义要点**:
+- **两阶段收集**：时限内缺口只从空闲候选补齐；到点仍未齐放宽忙碌候选
+  （打上属性后不等其空闲，后续 task 由调度按 requires 自动派发）
+- **静态预检**：排除后的全量池（IDLE+BUSY + 已唤起未注册的占位符）盖不住
+  申请数时立即抛 RuntimeError 带明细，不消耗 timeout
+- **原子快照**：容量口径来自 C++ `snapshot_worker_pool`（expected 锁内
+  单点采样），注册过渡态不会被漏计
+- **幂等**：重复调用同规格不重复分配、不下发消息；在册池已满足时零等待
+- 属性生命周期 = worker 进程生命周期（重启回 CLI 起点），需重新 ensure
+- 属性命名规范：编队属性经 `SolveDb.worker_attr(tag)` = `rasg:{uid}:{tag}`
+  单点生成（uid 跨进程持久），禁止手拼字符串
 
 ### wait_tasks(timeout) — 等待任务完成
 

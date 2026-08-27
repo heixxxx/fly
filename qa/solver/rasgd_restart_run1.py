@@ -19,7 +19,7 @@ from _fly_log import INFO, WARN
 from fly import open_db, get_config
 from fly.runtime import get_agent
 from solver import (solve_ras_graph_dynamic, generate_poisson_matrix,
-                    MATRIX_OBJ_KEY)
+                    MATRIX_OBJ_KEY, SolveDb)
 
 N_SIDE = 20
 NSD = 4
@@ -46,7 +46,7 @@ def update_rhs(x_prev, t):
     return b0 * (1.0 + 0.1 * t)
 
 
-db = open_db(DB_PATH)
+db = open_db(DB_PATH, db_cls=SolveDb)
 db.write_object(MATRIX_OBJ_KEY, golden)
 
 solve_ras_graph_dynamic(db, MATRIX_OBJ_KEY, NSD, b0, update_rhs, NUM_STEPS,

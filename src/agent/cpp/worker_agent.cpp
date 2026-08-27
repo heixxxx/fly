@@ -240,6 +240,11 @@ void WorkerAgent::start() {
             on_message_limit_sync(conn_id, msg);
         });
 
+    reactor_->register_handler<WorkerPropertyAssignMessage>(
+        [this](uint64_t conn_id, const WorkerPropertyAssignMessage& msg) {
+            on_worker_property_assign(conn_id, msg);
+        });
+
     reactor_->register_handler<RemoveAckMessage>(
         [this](uint64_t conn_id, const RemoveAckMessage& msg) {
             on_remove_ack(conn_id, msg);
@@ -2061,6 +2066,15 @@ void WorkerAgent::remove_worker_property(const CMVector<CMString>& props) {
 CMVector<CMString> WorkerAgent::get_worker_properties() const {
     std::lock_guard<std::mutex> lock(attributes_mutex_);
     return attributes_;
+}
+
+// master 下行属性追加（ensure_workers）：复用 set_worker_property 的去重应用
+// 与上报路径（含未注册时的统一重放队列），master 侧视图更新零新增链路。
+void WorkerAgent::on_worker_property_assign(uint64_t /*conn_id*/, const WorkerPropertyAssignMessage& msg) {
+    touch_master_contact();
+    INFO("WorkerPropertyAssign received: worker_id={}, count={}",
+         msg.worker_id_, msg.added_properties_.size());
+    set_worker_property(msg.added_properties_);
 }
 
 void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg) {

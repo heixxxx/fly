@@ -179,15 +179,18 @@ def solve(self, name: str, matrix_db, nsd,
 
     ``matrix_db`` 由用户**显式传入**（build_matrix 产物或任意含 "matrix" 对象的外部 db）。
 
-    **用户须预先唤起足够 worker**（带 ``sd_{i}`` attributes，数量 >= nsd）——flow 不负责
-    worker 池管理（master 侧 flow 只做检查输入/建库/提交入口 task/提交 freeze task 四件
-    轻量事）。参考原 solver 测试的 worker 唤起方式。
+    **编队申请（flow 内置，issue 009）**：提交前自动 ``ensure_workers`` 按
+    ``db.worker_attr``（rasg:{uid}: 命名空间）追加属性——用户的既有 fleet
+    （无论是否带旧 sd_i 标签）只要空闲即可作候选；``exclude=r"^rasg:"`` 排除
+    已被其他求解 flow 编队的 worker。已唤起未注册的占位符计入容量，注册
+    等待受 ensure 的 timeout 约束；flow 不负责唤起进程（worker 数不足时
+    显式失败）。
 
     Args:
         self: 自动绑定的 SolverProject 实例。
         name: 求解结果 db 的子目录名 + 内部 key。
         matrix_db: **显式传入**的数据源 db（含 read_object("matrix")）。
-        nsd: 子域数（须有 >= nsd 个带 sd_i attributes 的 worker 在线）。
+        nsd: 子域数（须有 >= nsd 个在线 worker）。
         overlap_ratio: 重叠比例（默认 0.50）。
         max_iter: 最大迭代数（默认 100）。
         tol: 收敛阈值（默认 1e-8）。
@@ -201,13 +204,22 @@ def solve(self, name: str, matrix_db, nsd,
     # （nsd>=1 / matrix_db 非 None 已由 @document 的 schema 校验覆盖）
     db = self._create_db(name, db_cls=SolveDb, prev=[matrix_db])
 
-    # ── Step 2: 提交入口 task（kickoff：沿 chain 找 matrix db）──
+    # ── Step 2: 编队申请（worker 数不足/未注册时显式失败，不做静默补拉）──
+    # 属性经 db.worker_attr（uid 在 _create_db/_init_chain 时已生成）。已唤起
+    # 未注册的占位符计入 ensure 预检容量，注册等待受其 timeout 约束。
+    from fly.runtime import get_agent
+    from fly import ensure_workers as _ensure_workers
+    master = get_agent()
+    _ensure_workers([db.worker_attr(f"sd_{s}") for s in range(nsd)],
+                    timeout=10.0, exclude=r"^rasg:")
+
+    # ── Step 3: 提交入口 task（kickoff：沿 chain 找 matrix db）──
     # master 在 matrix ready 后调度 kickoff；kickoff 在 worker 上沿 db chain
     # find_db(role="matrix") 找到 matrix db、读 matrix、还原 npz、调 ras_graph_coord。
     matrix_full_name = matrix_db.get_full_name("matrix")
     _solve_kickoff_task(db, matrix_full_name, nsd, overlap_ratio, max_iter, tol, omega)
 
-    # ── Step 3: 提交 freeze task（依赖求解完成标记 __rasg__sol）──
+    # ── Step 4: 提交 freeze task（依赖求解完成标记 __rasg__sol）──
     _freeze_db_task(db, self._freeze_task_deps(db, ["__rasg__sol"]))
 
     INFO(f"[SolverProject] solve submitted: name={name}, nsd={nsd}, omega={omega}")

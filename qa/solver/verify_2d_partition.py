@@ -11,7 +11,7 @@ from scipy import sparse
 
 from fly import open_db, get_config
 from fly.runtime import get_agent
-from solver import solve_ras_graph
+from solver import solve_ras_graph, SolveDb
 
 get_config().set_int("fail_unscheduleable_tasks", 1)
 
@@ -49,9 +49,10 @@ if os.path.isdir(db_path):
 
 master = get_agent()
 master.launch_local_workers([{"attributes": [f"sd_{i}"]} for i in range(NSD)])
-assert master.wait_for_workers(NSD), "workers should connect"
+# ensure 的静态预检按「当前在册池」判定——连接数够不等于注册完成，等 IDLE 口径。
+master.wait_for_all_workers(NSD, timeout=60)
 
-db = open_db(db_path)
+db = open_db(db_path, db_cls=SolveDb)
 
 t0 = time.perf_counter()
 sol = solve_ras_graph(db, N, rows, cols, vals, b, NSD,

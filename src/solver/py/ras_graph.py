@@ -648,11 +648,11 @@ def _apply_coarse_correction(db, step, nsd):
 @as_task(inputs=lambda db, sd_id, nsd, neighbor_ids:
          [db.get_full_name("__rasg__coord")],
          requires=lambda db, sd_id, nsd, neighbor_ids:
-         [f"sd_{sd_id}"])
+         [db.worker_attr(f"sd_{sd_id}")])
 def ras_graph_setup(db, sd_id, nsd, neighbor_ids):
     """Per-subdomain setup: BFS expand, rank-filter extract, build solver.
     Decoupled from iteration so compute is purely iterative. Pinned to worker
-    sd_{sd_id} (same as compute) to share process-local caches."""
+    worker_attr(sd_{sd_id}) (same as compute) to share process-local caches."""
     import numpy as np
     from _fly_solver import EXSlvSubdomainSolver
     from fly import get_cache, put_cache, has_cache
@@ -774,7 +774,7 @@ def ras_graph_setup(db, sd_id, nsd, neighbor_ids):
 @as_task(inputs=lambda db, sd_id, step, nsd, neighbor_ids:
          _compute_deps(db, sd_id, step, neighbor_ids),
          requires=lambda db, sd_id, step, nsd, neighbor_ids:
-         [f"sd_{sd_id}"])
+         [db.worker_attr(f"sd_{sd_id}")])
 def ras_graph_compute(db, sd_id, step, nsd, neighbor_ids):
     import numpy as np
     from _fly_solver import ex_slv_ras_bupdated_solve
@@ -1105,13 +1105,22 @@ def solve_ras_graph(db, matrix_ref, nsd,
     n_workers = min(nsd, max_concurrent_compute) if max_concurrent_compute else nsd
 
     master = get_agent()
-    if not master.is_running() or master.worker_count < n_workers:
-        worker_configs = []
-        for w in range(n_workers):
-            assigned = [f"sd_{s}" for s in range(nsd) if s % n_workers == w]
-            worker_configs.append({"attributes": assigned})
-        master.launch_local_workers(worker_configs)
-        assert master.wait_for_workers(n_workers), f"{n_workers} workers should connect"
+    # 编队申请：属性统一经 db.worker_attr（rasg:{uid}: 命名空间，并发 flow
+    # 不串池）；ensure_workers 幂等盘点 + 从现有空闲 worker 追加补齐缺失绑定
+    # （exclude 排除已被其他 flow 编队的 worker）。
+    request = [[db.worker_attr(f"sd_{s}") for s in range(nsd) if s % n_workers == w]
+               for w in range(n_workers)]
+
+    # 进程数量先行（ensure_workers 只分配现有 worker 不启动新进程）：总数不够
+    # 时按缺口补空属性 worker。注册就绪不在此等待——ensure 把已唤起未注册的
+    # 占位符计入预检容量，注册等待受声明的 timeout 约束（存活池已满足时零
+    # 等待立即返回）。
+    have = master.worker_count if master.is_running() else 0
+    if not master.is_running() or have < len(request):
+        deficit = len(request) - max(0, have)
+        master.launch_local_workers([{} for _ in range(deficit)])
+
+    master.ensure_workers(request, timeout=10.0, exclude=r"^rasg:")
 
     INFO(f"[RASG WORKERS] nsd={nsd} n_workers={n_workers} "
          f"(max_concurrent_compute={max_concurrent_compute})")

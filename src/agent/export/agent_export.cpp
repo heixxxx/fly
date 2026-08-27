@@ -215,6 +215,20 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
     FLY_EXPORT_METHOD("get_failed_tasks", &fly::MasterAgent::get_failed_tasks)
     FLY_EXPORT_METHOD("get_task_error", &fly::MasterAgent::get_task_error)
     FLY_EXPORT_METHOD("get_idle_workers", &fly::MasterAgent::get_idle_workers)
+    FLY_EXPORT_METHOD("snapshot_worker_pool", [](fly::MasterAgent& self) -> fly_export::tuple {
+        // 原子快照（ensure_workers 预检口径）：([ (worker_id, cap), ... ], pending)
+        // 注意：lambda 体内禁用结构化绑定（[] 内逗号会被导出宏按参数切开）。
+        const auto pool = self.snapshot_worker_pool();
+        fly_export::list items;
+        for (const auto& entry : pool.first) {
+            items.append(fly_export::make_tuple(entry.first, entry.second));
+        }
+        return fly_export::make_tuple(items, pool.second);
+    })
+    FLY_EXPORT_METHOD("get_busy_workers", &fly::MasterAgent::get_busy_workers)
+    FLY_EXPORT_METHOD("get_worker_capabilities", &fly::MasterAgent::get_worker_capabilities)
+    FLY_EXPORT_METHOD("count_workers_with_all_capabilities", &fly::MasterAgent::count_workers_with_all_capabilities)
+    FLY_EXPORT_METHOD("assign_worker_attributes", &fly::MasterAgent::assign_worker_attributes)
     FLY_EXPORT_METHOD("get_port", &fly::MasterAgent::get_port)
     FLY_EXPORT_METHOD("get_data_server_port", &fly::MasterAgent::get_data_server_port)
     FLY_EXPORT_METHOD("restart_failed_tasks", [](fly::MasterAgent& self, const fly::CMString& file_path) -> size_t {

@@ -73,10 +73,13 @@ enum class MessageType : uint8_t {
     MONITOR_TASK_IO = 60,        // worker → master: task 对象级 IO 明细（read/write 单次调用）。
                                  //   尽力而为通道：发送失败丢弃（聚合四元组由 TASK_COMPLETE/
                                  //   TASK_FAILED 消息保证不丢，明细仅增强数据）。
+    WORKER_PROPERTY_ASSIGN = 61, // master → worker: 追加属性指令（ensure_workers 收集语义的
+                                 //   下行通道）。worker 去重并入自身 attributes_ 后经既有
+                                 //   WORKER_PROPERTY_UPDATE 上行回报，视图更新复用现有链路。
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 60;
+    return raw >= 1 && raw <= 61;
 }
 
 struct MessageHeader {
@@ -514,6 +517,19 @@ struct WorkerPropertyUpdateMessage {
     static constexpr MessageType msg_type_ = MessageType::WORKER_PROPERTY_UPDATE;
 
     FLY_SERIALIZE(header_, worker_id_, added_properties_, removed_properties_);
+};
+
+// master → worker：属性追加指令（ensure_workers 收集语义的下行通道，此前属性
+// 只能经 CLI 启动参数设置）。worker 应用（去重并入 attributes_）后沿既有
+// WORKER_PROPERTY_UPDATE 上行回报——master 能力视图与调度唤醒零新增链路。
+struct WorkerPropertyAssignMessage {
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMVector<CMString> added_properties_;
+
+    static constexpr MessageType msg_type_ = MessageType::WORKER_PROPERTY_ASSIGN;
+
+    FLY_SERIALIZE(header_, worker_id_, added_properties_);
 };
 
 struct ObjectRemovedMessage {

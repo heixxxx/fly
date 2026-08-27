@@ -3,6 +3,74 @@
 ---
 ---
 
+## 2026-08-27 (5): ensure_workers —— 向 master 申请现有 worker 并追加指定属性（issue 009 根治）
+
+**框架 API（fly.ensure_workers / Master.ensure_workers）**：向 master 申请
+N 个现有 worker 并分别为其**追加**指定属性（不启动新进程；workers 为属性
+集合 list，长度即申请数，元素允许 str 单属性简写）。
+
+- **两阶段收集**（timeout 默认 10s）：时限内缺口只从空闲候选补齐；到点仍
+  未齐放宽到忙碌候选——给 BUSY worker 也打上属性，不等其空闲，后续 task
+  由调度系统按 requires 自动派发；
+- **静态预检立即失败**：排除后的全量池（IDLE+BUSY）盖不住申请数时直接抛
+  RuntimeError 带明细，不消耗时限（用户裁定：池子本身不够时不做无意义等待）；
+- **exclude 正则保护**（re.search 任一属性命中即排除出候选池）：并发求解
+  flow 排除已被其他 flow 编队的 worker，防止碰撞；
+- 幂等：重复调用同规格经盘点直接命中，不重复分配、不下发消息。
+
+**新增下行消息 WORKER_PROPERTY_ASSIGN=61**（此前 master→worker 无任何属
+性设置通道，属性只能 CLI 启动参数）：worker 侧去重并入自身 attributes_ 后
+沿既有 WORKER_PROPERTY_UPDATE 上行回报——master 能力视图与调度唤醒零新增
+链路。WorkerManager 新增盘点/候选原语并导出：count_workers_with_all_
+capabilities / get_busy_workers / get_worker_capabilities。
+
+**编队属性命名单点规范（双 flow 防碰撞）**：SolveDb 新增 `worker_attr(tag)`
+→ `"rasg:{uid}:{tag}"`（uid 跨进程持久于 _DB_META）。并发 flow 各持不同
+uid → 属性零交集；task requires 完整字符串精确匹配不串池。solver 的 sd_i/
+check 属性全部改经此生成（前缀改动只改一处）；kickoff 改为「进程数量先行
+补空属性 + 注册就绪等待 → ensure_workers 打编队」，替代旧"带属性 launch +
+只数连接数的 wait_for_workers"，issue 009 两处脆弱点（空属性 auto-spawn
+抢位 / 手工复刻编队隐式契约）根治。
+
+**executor 时序根治**：preprocess 先 `_resolve_func`（导入 task 模块、完成
+包副作用的 `_ROLE_REGISTRY` 注册）再 `deserialize_args`（db 参数按 meta
+role 重建子类）——此前导入晚于反序列化，worker 首个 solver task 收到的 db
+退化为基类实例，子类成员（load_solution/worker_attr）不可用。role 已知但
+未注册时降级 WARN（承载包无人导入的残留场景）。
+
+**QA**：qa/scheduling 新增 test_ensure_workers.py（分配/幂等/追加/exclude/
+预检 fail-fast）、test_ensure_workers_busy_relax.py（BUSY 放宽 + 调度接管
+端到端）、test_ensure_workers_dual_flow.py（双 db 双 flow 物理隔离 + 精确
+调度）。rasgd_restart_run2 移除手工编队规避，改 load_db 先行 + 数量补齐 +
+ensure_workers（顺序敏感性回归）。
+
+**等待边界统一（裁定：所有等待受 ensure 声明的 timeout 约束）**：
+- 已唤起未注册的占位 worker 计入静态预检容量（假定其属性不被 exclude 命中），
+  注册等待在 timeout 之内；在册池已满足申请时零等待立即返回——kickoff/
+  flow 侧不再有独立的 settle 等待；
+- **原子快照根治采样竞态（stability R3 实锤）**：新增 C++
+  `MasterAgent::snapshot_worker_pool`——注册路径持 expected 锁跨越
+  「占位符转正 → 进 WorkerManager」全程，采样同锁单点完成，过渡态
+  （两边都不在）对容量口径不可见；此前"在册池 + 占位符数"两次独立采样
+  会把过渡态漏计，容量瞬时少计导致预检误判池不足。快照按 worker 全量
+  返回 capabilities（空属性 worker 是补拉候选主力，不可丢条目）；
+- **本地 spawn 的注册前早夭快速失败**：`_wait_spawned_workers(batch_ids)`
+  轮询本批 Popen 句柄，「已退出且未注册」立即 RuntimeError（资源饥饿/
+  启动即崩不再挂死）——`worker_register_timeout=0` 的无限等待语义仅保留
+  给无本地句柄的外部唤起（bsub/expect_workers）。qa/api 新增
+  test_spawn_early_death.py。
+
+**稳定性 100 轮（163 case × 100，连续通过口径）两处 QA 修复**：
+- qa/monitor/test_monitor_db：object_io 明细断言去掉无 ORDER BY 的位置性
+  `LIMIT 1`（MONITOR_TASK_IO 异步成组上报，落库次序随批次翻转，R23 实锤
+  obj_mem 抢在 obj_plain 前）→ 按对象名定点断言存在性（明细行 bytes=0 属
+  正常，字节口径聚合在 tasks 表）；运行中实时只读连接加失败重开 + 15s
+  有界重试（PERSIST journal 写者 commit 持 EXCLUSIVE，高负载轮 5s
+  busy_timeout 不够，R76 实锤 database is locked）。
+
+---
+---
+
 ## 2026-08-27 (4): dynamic 求解器三阶段重构（setup/solver/收尾清理）+ RPC 常驻 service 线程 + PeerRpc GIL 释放
 
 **结构演进（用户逐轮裁定收敛）**：v4 每步短命 task 组 → 事故链暴露 agent

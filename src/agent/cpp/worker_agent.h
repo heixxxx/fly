@@ -421,6 +421,9 @@ private:
     void on_remove_ack(uint64_t conn_id, const RemoveAckMessage& msg);
     void on_remove_command(uint64_t conn_id, const RemoveCommandMessage& msg);
     void on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMessage& msg);
+    // master 下行属性追加（ensure_workers）：去重并入自身 attributes_，经既有
+    // WORKER_PROPERTY_UPDATE 上行回报（视图更新复用现有链路）。
+    void on_worker_property_assign(uint64_t conn_id, const WorkerPropertyAssignMessage& msg);
     // 自动补齐：在本 host 唤起 storage_only worker（posix_spawn /proc/self/exe
     // + SETSID 脱离进程树 + detached waitpid 回收；Config 落盘传递）。
     void on_storage_spawn_request(uint64_t conn_id, const StorageSpawnRequestMessage& msg);
