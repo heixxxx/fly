@@ -117,7 +117,10 @@ class Master(FlyAgent):
     def mode(self) -> str:
         return "master"
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 0):
+    def __init__(self, host: str = "0.0.0.0", port: int = 0):
+        # host 默认 0.0.0.0（bind 全接口）：advertise 地址（写入 .fly_config 供
+        # worker 引导）与本机可达 IP 才能对得上——bind 环回时 advertise 出真实
+        # IP 会导致远端 worker 连不上。内网集群前提；显式 bind 环回仅限本机调试。
         self._agent = EXAgentMaster(host, port)
         self._task_counter = 0
         self._lock = threading.Lock()
@@ -166,7 +169,95 @@ class Master(FlyAgent):
         self._agent.start()
         self._port = self._agent.get_port()
         self._running = True
+        # P1：.fly_config 首次落盘即完备（master 一起来文件就存在且含寻址
+        # 信息）——local/ssh/bsub 任何类型的 worker 任何时候读取都能拿到
+        # master addr。launch/expect 入口还有 P2 幂等重写兜底（start 后用户
+        # 又 set config 的场景）。
+        self._ensure_shared_config()
         DBG(f"Master started on {self._host}:{self._port}")
+
+    def _advertise_host(self) -> str:
+        """计算写入 .fly_config 的 master 可达地址（worker 引导用）。
+
+        优先级：master_advertise_host 覆盖（多网卡集群指定计算网 IP）>
+        显式 bind 的具体地址 > 通配 bind 时 UDP connect 探测出口 IP（不实际
+        发包）> hostname 解析 > 127.0.0.1 兜底。环回地址一律不可作为跨机
+        advertise——Ubuntu 惯例 hostname 解析到 127.0.1.1，必须校验剔除。
+        """
+        import ipaddress
+        import socket
+        from _fly_core import ex_core_get_config
+
+        cfg = ex_core_get_config()
+        override = cfg.get_str("master_advertise_host")
+        if override:
+            return override
+
+        bind = self._host
+        if bind and bind not in ("0.0.0.0", "::", ""):
+            return bind
+
+        def _is_usable(ip: str) -> bool:
+            if not ip:
+                return False
+            try:
+                return not ipaddress.ip_address(ip).is_loopback
+            except ValueError:
+                return False
+
+        # UDP connect：只选路由不发包，内核直接给出到外网的出口 IP。
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("10.255.255.255", 1))
+                ip = s.getsockname()[0]
+            finally:
+                s.close()
+            if _is_usable(ip):
+                return ip
+        except OSError:
+            pass
+
+        try:
+            ip = socket.gethostbyname(socket.gethostname())
+            if _is_usable(ip):
+                return ip
+        except OSError:
+            pass
+
+        WARN(f"master advertise host: no non-loopback address found "
+             f"(bind={bind!r}) — falling back to 127.0.0.1, only reachable "
+             f"on this machine; set config 'master_advertise_host' for "
+             f"multi-host deployment")
+        return "127.0.0.1"
+
+    def _ensure_shared_config(self):
+        """落盘 .fly_config（worker 引导文件），首次写入 master 寻址信息。
+
+        幂等可重入（P1 start 尾部 + P2 launch/expect 入口调用）：内容为当前
+        Config 全量快照 + master_host（advertise）/master_port（定稿端口）。
+        C++ save_to_file 原子写（tmp+rename），重写窗口对读者不可见。
+        Config 在 workers launched 前仍可 set，故每次调用都重写快照——
+        「首写完备 + 后续覆盖」都由本方法统一保证。
+        """
+        from _fly_core import ex_core_get_config
+
+        # 端口定稿前提：master 已监听。start 幂等（running 即 no-op），
+        # expect_workers 在 get_agent() 后直接调用的场景由这里兜底启动。
+        self.start()
+
+        cfg = ex_core_get_config()
+        cfg.set_str("master_host", self._advertise_host())
+        cfg.set_int("master_port", int(self._port))
+
+        if not self._shared_config_path:
+            log_dir = cfg.get_str("log_dir")
+            os.makedirs(log_dir, exist_ok=True)
+            self._shared_config_path = os.path.join(log_dir, ".fly_config")
+        cfg.save_to_file(self._shared_config_path)
+        DBG(f".fly_config written: {self._shared_config_path} "
+            f"(master_host={cfg.get_str('master_host')}, "
+            f"master_port={self._port})")
 
     def submit(self, name: str, module: str, args: list,
                inputs: list = None,
@@ -198,6 +289,9 @@ class Master(FlyAgent):
 
         self.start()
         self._port = self._agent.get_port()
+        # P2：幂等重写 .fly_config——start 后、launch 前用户可能又 set config，
+        # 以此入口为定稿点（含 master 寻址，worker cmd 不再带地址参数）。
+        self._ensure_shared_config()
 
         num_workers = len(worker_configs)
         self._expected_workers += num_workers
@@ -212,8 +306,7 @@ class Master(FlyAgent):
             f"{num_workers} workers launched")
 
     def launch_ssh_workers(self, targets, *, ssh_port=22, ssh_user=None,
-                           fly_binary=None, master_host=None, port=None,
-                           ssh_timeout=30.0):
+                           fly_binary=None, port=None, ssh_timeout=30.0):
         """通过 ssh 在远程主机上启动 fly worker（多机部署）。
 
         每个 target 一个 worker，dict 字段：
@@ -228,17 +321,17 @@ class Master(FlyAgent):
         消息管理——master stop() 广播 ShutdownMessage 后 worker 自杀，master
         失联时 worker 按心跳超时自退，故不持本地进程句柄。
 
-        路径约定：fly_binary / log_dir / config 文件路径要求 master 侧与远端
-        一致（localhost 自连或共享存储下成立）；异路径部署显式传 ``fly_binary``
-        并保证 ``log_dir`` 在远端可写。``master_host`` 默认取 master 绑定地址
-        （``127.0.0.1`` 仅自连有效），跨机部署必须传远端可达地址。
+        寻址：worker 从 ``--config-file`` 指向的 ``.fly_config`` 读取
+        master_host/master_port（master advertise 地址 + 定稿端口，master 侧
+        自动写入），无需任何地址参数。远端须能读到同一 config 文件路径
+        （localhost 自连 / 共享存储成立；跨机异路径需共享挂载或同步该文件），
+        ``fly_binary`` 同理（None 自动探测本地路径，要求远端同路径）。
 
         Args:
             targets: list of dict，每项一个 worker。
             ssh_port: ssh 服务端口。
             ssh_user: 统一 ssh 用户名（None 用当前用户/ssh config）。
             fly_binary: 远端 fly 路径（None 自动探测本地路径，要求远端同路径）。
-            master_host: worker 回连的 master 地址（覆盖 master 绑定地址）。
             port: master 监听端口（None 自动分配）。
             ssh_timeout: 单条 ssh 命令的超时秒数（仅约束 ssh 本身，不含 worker
                 启动到注册的时间——注册等待用 wait_workers_registered）。
@@ -260,20 +353,16 @@ class Master(FlyAgent):
 
         self.start()
         self._port = self._agent.get_port()
+        # P2：幂等重写 .fly_config（含 master advertise 地址 + 定稿端口）——
+        # ssh worker 仅靠 --config-file 引导，落盘必须先于 ssh 下发。
+        self._ensure_shared_config()
 
         cfg = ex_core_get_config()
         log_dir = cfg.get_str("log_dir")
         os.makedirs(log_dir, exist_ok=True)
 
-        # Config is shared and immutable after worker startup — only write once.
-        if not hasattr(self, '_shared_config_path') or not self._shared_config_path:
-            self._shared_config_path = os.path.join(log_dir, ".fly_config")
-            cfg.save_to_file(self._shared_config_path)
         config_path = self._shared_config_path
-
         fly_bin = fly_binary or self._find_fly_binary()
-        # 回连地址：默认 master 绑定地址（自连成立），跨机显式覆盖。
-        mh = master_host or self._host
 
         worker_ids = []
         for target in targets:
@@ -300,12 +389,11 @@ class Master(FlyAgent):
                 role = "hybrid"
 
             log_path = os.path.join(log_dir, f"worker{wid}.log")
+            # 寻址：worker 从 .fly_config 读取（P2 已在入口落盘），cmd 不携带地址。
             cmd = [
                 fly_bin,
                 "--worker",
                 "--worker-id", str(wid),
-                "--master-host", mh,
-                "--master-port", str(self._port),
                 "--log-dir", log_dir,
                 "--config-file", config_path,
             ]
@@ -350,7 +438,7 @@ class Master(FlyAgent):
 
         INFO(f"launch_ssh_workers: {len(worker_ids)} worker(s) dispatched "
              f"via ssh ({', '.join(t.get('host', '?') for t in targets)}), "
-             f"master at {mh}:{self._port}")
+             f"master bootstrap via {config_path}")
         return worker_ids
 
     def stop(self):
@@ -474,11 +562,17 @@ class Master(FlyAgent):
     def expect_workers(self, worker_ids):
         """手动登记唤起占位符（外部唤起场景，如 bsub/LSF 调度脚本）。
 
-        launch_local_workers 会自动登记；此 API 供用户用自己的 launcher 起
-        `fly --worker` 时登记，使 wait_workers_registered 能等待它们注册。
+        launch_local_workers/launch_ssh_workers 会自动登记；此 API 供用户用
+        外部 launcher（bsub 起 ``fly --worker --config-file <共享>/.fly_config``）
+        唤起时登记，使 wait_workers_registered 能等待它们注册。
+
+        首次调用会落盘 .fly_config（幂等重写）——bsub 纯外部启动路径没有
+        launch 入口，master 寻址信息必须在此之前写入文件。
         """
         for wid in worker_ids:
             self._agent.expect_worker(int(wid))
+        # P2：bsub 路径的 .fly_config 落盘点（幂等；start 后即首次调用时写全）。
+        self._ensure_shared_config()
 
     def ensure_workers(self, workers, timeout: float = 10.0, exclude: str = None) -> bool:
         """向 master 申请现有 worker 并为选中 worker 追加指定属性（不启动新进程）。
@@ -1385,17 +1479,14 @@ class Master(FlyAgent):
         # 转正 erase 落空 → 占位符永久泄漏，wait_workers_registered 永不返回。
         self._agent.expect_worker(worker_id)
 
-        cfg = ex_core_get_config()
-        log_dir = cfg.get_str("log_dir")
         fly_bin = self._find_fly_binary()
 
+        log_dir = ex_core_get_config().get_str("log_dir")
         os.makedirs(log_dir, exist_ok=True)
         log_path = os.path.join(log_dir, f"worker{worker_id}.log")
 
-        # Config is shared and immutable after worker startup — only write once.
-        if not hasattr(self, '_shared_config_path') or not self._shared_config_path:
-            self._shared_config_path = os.path.join(log_dir, ".fly_config")
-            cfg.save_to_file(self._shared_config_path)
+        # 寻址：worker 从 .fly_config 读取 master_host/master_port（P2 已在
+        # launch_local_workers 入口落盘），cmd 不再携带地址参数。
         config_path = self._shared_config_path
 
         attrs = config.get("attributes", []) if config and isinstance(config, dict) else []
@@ -1405,8 +1496,6 @@ class Master(FlyAgent):
             fly_bin,
             "--worker",
             "--worker-id", str(worker_id),
-            "--master-host", self._host,
-            "--master-port", str(self._port),
             "--log-dir", log_dir,
             "--config-file", config_path,
         ]

@@ -184,8 +184,8 @@ static void print_usage(const char* prog) {
     printf("Options:\n");
     printf("  --worker             Run in worker mode\n");
     printf("  --worker-id N        Worker ID (default: 0)\n");
-    printf("  --master-host HOST   Master host (default: 127.0.0.1)\n");
-    printf("  --master-port PORT   Master port (default: 0)\n");
+    printf("  --master-host HOST   Master host override (default: from .fly_config written by master; 127.0.0.1 if absent)\n");
+    printf("  --master-port PORT   Master port override (default: from .fly_config)\n");
     printf("  --log-dir DIR        Log directory (default: fly_log)\n");
     printf("  --host HOST          Host override for registration\n");
     printf("  --worker-attributes A[,B...]\n");
@@ -207,8 +207,11 @@ int main(int argc, char* argv[]) {
 
     bool worker_mode = false;
     int worker_id = 0;
-    std::string master_host = "127.0.0.1";
-    int master_port = 0;
+    // 哨兵默认值：""/−1 = CLI 未显式传 → 优先 .fly_config（master 落盘的寻址
+    // 信息），再兜底 127.0.0.1/0。worker 引导统一从 config 取址（local/ssh/
+    // bsub 三类启动同路径），CLI 仅调试覆盖口。
+    std::string master_host;
+    int master_port = -1;
     std::string log_dir = "fly_log";
     bool interactive = false;
     std::string script_path;
@@ -277,6 +280,17 @@ int main(int argc, char* argv[]) {
 
     if (!config_file.empty()) {
         cfg->load_from_file(config_file);
+    }
+
+    // master 寻址兑现：CLI 显式 > .fly_config（master 侧落盘的 advertise
+    // 地址 + 定稿端口）> 127.0.0.1/0 兜底（无 config 的裸 worker，行为同旧版）。
+    if (master_host.empty()) {
+        master_host = cfg->get_str("master_host");
+        if (master_host.empty()) master_host = "127.0.0.1";
+    }
+    if (master_port < 0) {
+        master_port = static_cast<int>(cfg->get_int("master_port"));
+        if (master_port <= 0) master_port = 0;
     }
 
     proc->set_worker_mode(worker_mode);

@@ -1,5 +1,6 @@
 #include "config.h"
 #include <cstdio>
+#include <unistd.h>
 #include <mutex>
 #include <shared_mutex>
 #include <fstream>
@@ -81,12 +82,27 @@ void Config::save_to_file(const CMString& path) const {
     {
         std::shared_lock<std::shared_mutex> lock(mutex_);
         for (const auto& [k, v] : int_values_) ints.emplace_back(k, v);
-        for (const auto& [k, v] : str_values_) strs.emplace_back(k, v);
+        for (const auto& [k, v] : strs) strs.emplace_back(k, v);
     }
-    // 文件 IO 在锁外执行，避免阻塞并发 get_*（低频操作，快照语义可接受）
-    std::ofstream ofs(path.c_str(), std::ios::trunc);
-    for (const auto& [k, v] : ints) ofs << "i " << k << " " << v << "\n";
-    for (const auto& [k, v] : strs) ofs << "s " << k << " " << v << "\n";
+    // 文件 IO 在锁外执行，避免阻塞并发 get_*（低频操作，快照语义可接受）。
+    // 原子写（tmp + rename）：.fly_config 是 worker 引导的唯一寻址来源，
+    // 重写窗口内（P2 幂等重写 / 并发读）不得让读者见到半文件。
+    std::string tmp = path.c_str() + std::string(".tmp.");
+    tmp += std::to_string(::getpid());
+    {
+        std::ofstream ofs(tmp, std::ios::trunc);
+        for (const auto& [k, v] : ints) ofs << "i " << k << " " << v << "\n";
+        for (const auto& [k, v] : strs) ofs << "s " << k << " " << v << "\n";
+        ofs.flush();
+        if (!ofs.good()) {
+            ofs.close();
+            ::unlink(tmp.c_str());
+            return;
+        }
+    }
+    if (::rename(tmp.c_str(), path.c_str()) != 0) {
+        ::unlink(tmp.c_str());
+    }
 }
 
 void Config::load_from_file(const CMString& path) {
@@ -209,10 +225,18 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     // 为已覆盖。检测周期由 heartbeat 循环节流（5s 一轮）。
     {"auto_storage_nodes_enabled", 0},
     {"auto_storage_check_interval", 30},
+    // master 监听端口（master 侧落盘前的占位 0；.fly_config 内为定稿值）。
+    {"master_port", 0},
 };
 
 const CMUnorderedMap<CMString, CMString> Config::STR_DEFAULTS = {
     {"transport_type", "tcp"},
     {"compression_type", "lz4"},
     {"log_dir", "fly_log"},
+    // master 寻址（worker 引导）：master 侧在 .fly_config 首次落盘前写入
+    // advertise 地址与定稿端口，worker 进程 main 加载 config 后经 ProcessInfo
+    // 兑现——local/ssh/bsub 三类启动统一从文件取址，CLI --master-host/port
+    // 仅作调试覆盖口。空值 = 未经 master 落盘（worker 直连 127.0.0.1 兜底）。
+    {"master_host", ""},
+    {"master_advertise_host", ""},
 };
