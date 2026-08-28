@@ -2,21 +2,27 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <serialization/cpp/object_header.h>
 #include <istream>
+#include <stdexcept>
 
 namespace fly {
 
+// 解压压缩 record（trailer 格式，§4.4）。任一校验失败（trailer/块 CRC/结构
+// 越界/解压错误）抛 std::runtime_error("[FATAL-DATA-CORRUPTION] ...")——
+// 调用方（Python 导出面/worker 内部任务）按零容忍语义处理，不得消费截断数据。
 CMString decompress_raw_data(const CMString& raw_data) {
     if (raw_data.empty()) return {};
 
-    // Read expected decompressed size from ObjectHeader
-    int64_t offset = 0;
+    // Read expected decompressed size from the tail trailer
     int64_t expected_size = 0;
     {
         ObjectHeader header;
-        if (ObjectHeader::deserialize(raw_data, offset, header) && header.total_size_ > 0) {
+        size_t trailer_len = 0;
+        if (ObjectHeader::deserialize_trailer(raw_data, header, trailer_len) &&
+            header.total_size_ > 0) {
             expected_size = static_cast<int64_t>(header.total_size_);
         }
-        // If header parsing fails, use default size
+        // If trailer parsing fails, use default size（fallback 路径读到底，
+        // 校验状态由 dsbuf.checksum_failed() 统一裁决）
     }
 
     DecompressingStreamBuf dsbuf(raw_data.data(), raw_data.size());
@@ -50,6 +56,10 @@ CMString decompress_raw_data(const CMString& raw_data) {
         }
 
         result.resize(pos);
+    }
+
+    if (dsbuf.checksum_failed()) {
+        throw std::runtime_error("[FATAL-DATA-CORRUPTION] decompress_raw_data: chunk CRC/trailer verify failed");
     }
 
     return result;

@@ -1025,13 +1025,13 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
     if (!raw || raw->empty()) return {false, nullptr};
 
     // Populate the low-tier cache so subsequent reads (local or remote serve)
-    // skip disk IO. Account by uncompressed size from the object header;
-    // fall back to compressed size if the header cannot be parsed.
+    // skip disk IO. Account by uncompressed size from the object trailer;
+    // fall back to compressed size if the trailer cannot be parsed.
     size_t accounted = raw->size();
     {
         ObjectHeader hdr;
-        int64_t off = 0;
-        if (ObjectHeader::deserialize({raw->data(), raw->size()}, off, hdr) &&
+        size_t trailer_len = 0;
+        if (ObjectHeader::deserialize_trailer({raw->data(), raw->size()}, hdr, trailer_len) &&
             hdr.total_size_ > 0) {
             accounted = static_cast<size_t>(hdr.total_size_);
         }
@@ -1140,9 +1140,21 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::try_tier2_
     int64_t delay_ms = kInitialDelayMs;
     auto net_start = std::chrono::steady_clock::now();
 
+    // ── 零容忍校验预算（chunked-transfer-design §5）──
+    // 校验类失败（wire 根 CRC / 帧头 check）只允许【一次】对象级重取：
+    // 预算内换副本立即重试（无退避——校验失败不是拥塞）；预算耗尽、或重取
+    // 期间以任何方式失败（断连/超时/NOT_FOUND/NOT_READY）→ DataCorruptionError
+    // 上抛（重取唯一可接受结果 = 干净通过全部校验）。
+    bool corruption_refetch_mode = false;
+
     while (true) {
         auto replicas = lookup_all_remote_idx(object_name);
         if (replicas.empty()) {
+            if (corruption_refetch_mode) {
+                throw DataCorruptionError(
+                    "[FATAL-DATA-CORRUPTION] object '" + object_name +
+                    "': checksum failure persisted, no healthy replica left after one re-fetch");
+            }
             return {false, nullptr, {}, {}, false};  // no local replicas → need TIER3
         }
 
@@ -1159,6 +1171,19 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::try_tier2_
                 maybe_suggest_backup(object_name);
                 return {true, cb_data, std::move(cb_py_name), std::move(cb_hash), false};
             }
+            if (cb_rerr == ReadError::CHECKSUM) {
+                // 校验类失败：副本坏——踢出（不再参与本轮/后续轮），扣预算。
+                ERR("[FATAL-DATA-CORRUPTION] tier2 wire checksum failure: obj={} worker={} host={}",
+                    object_name, loc.worker_id_, loc.host_);
+                remove_remote_location(object_name, loc.worker_id_);
+                if (!corruption_refetch_mode) {
+                    corruption_refetch_mode = true;  // 消耗唯一一次重取预算
+                    continue;  // 立即换下一副本（无退避）
+                }
+                throw DataCorruptionError(
+                    "[FATAL-DATA-CORRUPTION] object '" + object_name +
+                    "': checksum failure persisted after one re-fetch");
+            }
             if (cb_rerr == ReadError::OBJECT_NOT_FOUND) {
                 remove_remote_location(object_name, loc.worker_id_);
             } else if (cb_rerr == ReadError::DATA_NOT_READY) {
@@ -1167,10 +1192,24 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::try_tier2_
                 return {false, nullptr, {}, {}, false};
             }
             // NETWORK: transient, keep replica, retry next round.
+
+            // 重取模式中任何非校验失败同样不可接受（§5：CHECKSUM→断连=fatal）。
+            if (corruption_refetch_mode) {
+                throw DataCorruptionError(
+                    "[FATAL-DATA-CORRUPTION] object '" + object_name +
+                    "': re-fetch after checksum failure failed (replica error)");
+            }
         }
 
         // Round fully failed. DATA_NOT_READY → unbounded; else bound by
         // the network deadline.
+        if (corruption_refetch_mode) {
+            // 走到这里 = 重取轮全失败（如全 NETWORK 被上面跳过？NETWORK 会
+            // 即时 throw，NOT_FOUND 已 remove——此分支兜底：重取模式不进退避循环）。
+            throw DataCorruptionError(
+                "[FATAL-DATA-CORRUPTION] object '" + object_name +
+                "': re-fetch round exhausted after checksum failure");
+        }
         if (!saw_not_ready &&
             std::chrono::steady_clock::now() - net_start >= kNetworkDeadline) {
             return {false, nullptr, {}, {}, false};
@@ -1184,11 +1223,16 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::try_tier2_
     }
 }
 
-std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_compressed(const CMString& object_name) {
+std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::read_raw_compressed(
+        const CMString& object_name, bool bypass_local) {
     // ── TIER1: local ──
-    auto [found, raw] = try_read_local_raw(object_name);
-    if (found) {
-        return read_tier1_hit(object_name, raw);
+    // bypass_local=true：零容忍重取路径（§5）——本地 record 已判定损坏，
+    // 跳过 TIER1 直接走 TIER2 远程副本（无副本即失败，不回读坏源）。
+    if (!bypass_local) {
+        auto [found, raw] = try_read_local_raw(object_name);
+        if (found) {
+            return read_tier1_hit(object_name, raw);
+        }
     }
 
     // ── TIER2/TIER3 orchestration ──

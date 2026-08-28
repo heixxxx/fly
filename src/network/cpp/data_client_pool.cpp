@@ -4,11 +4,13 @@
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
 #include <network/cpp/net_quality_monitor.h>
+#include <common/cpp/data_checksum.h>
 #include <log/cpp/logger.h>
 #include <cstring>
 #include <chrono>
 #include <thread>
 #include <algorithm>
+#include <new>
 #include <sys/socket.h>
 
 namespace fly {
@@ -261,9 +263,11 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
 
         // ── Two-segment response read (DATA_RESPONSE protocol) ──
 
-        // 1. Read 5B frame header [4B total_len][1B type]
-        char frame_header[5];
-        if (!recv_exact(transport_.get(), fd, frame_header, 5)) {
+        // 1. Read 9B frame header [8B header: (check<<48)|len][1B type]
+        //    check 位失配 = 流失步/垃圾/损坏 → 连接作废（不重用 fd）。
+        //    归 CHECKSUM 类（§5：校验类错误，驱动一次重取而非网络退避）。
+        char frame_header[9];
+        if (!recv_exact(transport_.get(), fd, frame_header, 9)) {
             ERR("[DCP] recv header failed: obj={} fd={} errno={}", object_name, fd, errno);
             release_fd(fd, false);
             release_slot();
@@ -271,8 +275,18 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
                     "Connection lost for " + object_name,
                     ReadError::NETWORK};
         }
-        uint32_t total_len = read_be32(frame_header);
-        if (total_len < 6 || total_len > 256 * 1024 * 1024) {
+        uint64_t total_len = 0;
+        if (!parse_frame_header(frame_header, total_len)) {
+            ERR("[DCP] frame header check failed: obj={} fd={}", object_name, fd);
+            release_fd(fd, false);
+            release_slot();
+            return {false, nullptr, "", "",
+                    "Invalid response for " + object_name,
+                    ReadError::CHECKSUM};
+        }
+        // 下界 6 = 1(type) + 4(small_fields_len) + 1(has_raw)。上限交给
+        // check 位 + resize 的 bad_alloc 捕获（巨型对象合法，256MB 假上限已删）。
+        if (total_len < 6) {
             ERR("[DCP] invalid total_len={}: obj={} fd={}", total_len, object_name, fd);
             release_fd(fd, false);
             release_slot();
@@ -318,9 +332,20 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
         // 4. If has_raw: read raw payload directly into FlyBuffer
         FlyBufferPtr data_buf;
         if (has_raw) {
-            uint32_t raw_len = DataResponseProtocol::raw_len_from_total(total_len, small_fields_len);
+            uint64_t raw_len = DataResponseProtocol::raw_len_from_total(total_len, small_fields_len);
             data_buf = CMMakeShared<FlyBuffer>();
-            data_buf->resize(raw_len);
+            try {
+                data_buf->resize(raw_len);
+            } catch (const std::bad_alloc&) {
+                // check 位已拒绝垃圾头；能走到这里的是真巨型对象 vs 内存不足，
+                // 或罕见漏网垃圾——统一按 NETWORK 上抛（不崩溃进程）。
+                ERR("[DCP] payload alloc failed: obj={} raw_len={}", object_name, raw_len);
+                release_fd(fd, false);
+                release_slot();
+                return {false, nullptr, "", "",
+                        "Payload too large to buffer: " + object_name,
+                        ReadError::NETWORK};
+            }
             if (!recv_exact(transport_.get(), fd, data_buf->data(), raw_len)) {
                 ERR("[DCP] recv raw failed: obj={} fd={} errno={}", object_name, fd, errno);
                 release_fd(fd, false);
@@ -328,6 +353,20 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClie
                 return {false, nullptr, "", "",
                         "Connection lost receiving payload for " + object_name,
                         ReadError::NETWORK};
+            }
+            // wire 根摘要（§4.5）：server 锚点 vs 本地重算。失配 = 传输跳
+            //（内存/网络/代码缺陷）→ CHECKSUM（连接作废 + 一次重取语义）。
+            if (response.payload_crc_ != 0 &&
+                data_checksum(data_buf->data(), data_buf->size()) != response.payload_crc_) {
+                ERR("[DCP-FATAL-DATA-CORRUPTION] wire root CRC mismatch: obj={} fd={} "
+                    "expected={:016x} actual={:016x}",
+                    object_name, fd, response.payload_crc_,
+                    data_checksum(data_buf->data(), data_buf->size()));
+                release_fd(fd, false);
+                release_slot();
+                return {false, nullptr, "", "",
+                        "Wire CRC mismatch for " + object_name,
+                        ReadError::CHECKSUM};
             }
         }
 

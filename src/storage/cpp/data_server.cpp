@@ -1,6 +1,7 @@
 #include <storage/cpp/data_server.h>
 #include <storage/cpp/data_service.h>
 #include <storage/cpp/decompressing_streambuf.h>
+#include <common/cpp/data_checksum.h>
 #include <network/cpp/transport_interface.h>
 #include <network/cpp/tcp_socket.h>
 #include <network/cpp/epoll_multiplexer.h>
@@ -224,15 +225,17 @@ void DataServer::on_readable(int fd) {
 
     bool pushed_response = false;
 
-    while (buf.size() >= 5) {
-        uint32_t total_len = read_be32(buf);
-
-        if (total_len < 1) {
-            ERR("[DS-FRAME] fd={} invalid total_len=0", fd);
-            break;
+    while (buf.size() >= 9) {
+        uint64_t total_len = 0;
+        if (!parse_frame_header(buf.data(), total_len)) {
+            // check 位失配 = 流失步/垃圾头：连接已不可信，断开（数据面请求
+            // 都是 client 主动发起的小帧，残留缓冲不值得抢救）。
+            ERR("[DS-FRAME] fd={} frame header check failed, dropping connection", fd);
+            cleanup_fd(fd);
+            return;
         }
 
-        uint32_t frame_size = 4 + total_len;
+        uint64_t frame_size = 8 + total_len;
         if (buf.size() < frame_size) break;
 
         CMString frame(buf.data(), frame_size);
@@ -277,16 +280,31 @@ void DataServer::on_readable(int fd) {
         // 否则并发请求易耗尽 serve 能力。INCOMPLETE 时返回 false，上层据此返回
         // DATA_NOT_READY 让远程 reader 轮询重试。
         auto [found, raw_data] = data_service_.try_read_local_raw(req.object_name_, /*wait_local_write=*/false);
+        bool serve_raw = found;  // 校验失败时降为 false（不服务坏数据）
 
         if (found) {
-            response.success_ = true;
-            // Parse py_name directly from the FlyBuffer (zero-copy via string_view).
+            // 尾部 trailer 解析（§4.4）拿 py_name。本地 record 校验失败
+            //（trailer 坏/CRC 域坏——构造即解析）：不服务坏数据，按副本
+            // 不可用回 ERROR（client TIER2 换副本；本地对象坏不等于连接坏）。
             DecompressingStreamBuf dsbuf(raw_data->data(), raw_data->size());
-            response.py_name_ = dsbuf.py_name();
+            if (dsbuf.checksum_failed()) {
+                ERR("[DS-FATAL-DATA-CORRUPTION] local record corrupt, refusing to serve: obj={}",
+                    req.object_name_);
+                response.success_ = false;
+                response.status_ = ResponseStatus::ERROR;
+                response.error_message_ = "local record corrupt: " + req.object_name_;
+                serve_raw = false;
+            } else {
+                response.success_ = true;
+                response.py_name_ = dsbuf.py_name();
 
-            auto write_hash = data_service_.get_write_context_hash(req.object_name_);
-            if (!write_hash.empty()) {
-                response.write_context_hash_ = write_hash;
+                auto write_hash = data_service_.get_write_context_hash(req.object_name_);
+                if (!write_hash.empty()) {
+                    response.write_context_hash_ = write_hash;
+                }
+                // wire 根摘要（§4.5）：server 侧锚点，client 收满 raw 后校验。
+                response.payload_crc_ =
+                    data_checksum(raw_data->data(), raw_data->size());
             }
         } else {
             response.success_ = false;
@@ -297,14 +315,14 @@ void DataServer::on_readable(int fd) {
 
         // Two-segment encode: small fields via bitsery, raw payload referenced
         // by pointer (zero-copy — raw_data FlyBufferPtr shared ownership).
-        auto seg = DataResponseProtocol::encode(response, found ? raw_data : nullptr);
+        auto seg = DataResponseProtocol::encode(response, serve_raw ? raw_data : nullptr);
 
         {
             std::lock_guard<std::mutex> slk(send_mutex_);
             SendTask task;
             task.fd = fd;
             task.data = std::move(seg.header_segment);
-            task.raw_data = found ? raw_data : nullptr;  // keep alive for send thread
+            task.raw_data = serve_raw ? raw_data : nullptr;  // keep alive for send thread
             send_queue_.push(std::move(task));
             DBG("[DS-Q] fd={} pushed queue_size={}", fd, send_queue_.size());
         }

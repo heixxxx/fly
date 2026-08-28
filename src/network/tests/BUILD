@@ -87,6 +87,7 @@ cc_test(
         "@googletest//:gtest_main",
         "//src/network/cpp:fly_network",
         "//src/storage/cpp:fly_storage",
+        "//src/common/cpp:data_checksum",
     ],
     copts = ["-std=c++20"],
 )
@@ -98,6 +99,7 @@ cc_test(
         "@googletest//:gtest_main",
         "//src/network/cpp:fly_network",
         "//src/storage/cpp:fly_storage",
+        "//src/common/cpp:data_checksum",
     ],
     copts = ["-std=c++20"],
 )

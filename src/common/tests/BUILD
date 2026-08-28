@@ -23,3 +23,13 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "data_checksum_test",
+    srcs = ["data_checksum_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/common/cpp:data_checksum",
+    ],
+    copts = ["-std=c++20"],
+)

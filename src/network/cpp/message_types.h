@@ -242,10 +242,13 @@ struct DataResponseMessage {
     CMString error_message_;                           // 自由文本诊断（仅给人看，不承载状态码）
     CMString py_name_;
     CMString write_context_hash_;
+    // wire 根摘要（§4.2/§4.5）：raw payload 的 data_checksum。0 = 无 raw
+    //（或发送端未计算——仅元数据响应）。client 收满 raw 后必须校验。
+    uint64_t payload_crc_ = 0;
 
     static constexpr MessageType msg_type_ = MessageType::DATA_RESPONSE;
 
-    FLY_SERIALIZE(header_, object_name_, success_, status_, error_message_, py_name_, write_context_hash_);
+    FLY_SERIALIZE(header_, object_name_, success_, status_, error_message_, py_name_, write_context_hash_, payload_crc_);
 };
 
 // Bandwidth probe (data plane). Request asks the peer to echo a payload of

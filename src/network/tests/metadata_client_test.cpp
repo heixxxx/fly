@@ -61,25 +61,25 @@ private:
         transport_->set_recv_timeout(fd, 5000);
         transport_->set_send_timeout(fd, 5000);
 
-        // Read 5B frame header.
-        char header[5];
-        if (!recv_exact(transport_.get(), fd, header, 5)) {
+        // Read 9B frame prefix (8B header + 1B type).
+        char header[9];
+        if (!recv_exact(transport_.get(), fd, header, 9)) {
             transport_->close(fd);
             return;
         }
-        uint32_t total_len = read_be32(header);
-        if (total_len < 1) {
+        uint64_t total_len = 0;
+        if (!parse_frame_header(header, total_len) || total_len < 1) {
             transport_->close(fd);
             return;
         }
 
         // Read payload, reassemble frame, decode DataQueryMessage.
-        uint32_t payload_len = total_len - 1;
+        uint64_t payload_len = total_len - 1;
         CMString frame;
-        frame.resize(4 + total_len);
-        std::memcpy(&frame[0], header, 5);
+        frame.resize(8 + total_len);
+        std::memcpy(&frame[0], header, 9);
         if (payload_len > 0) {
-            if (!recv_exact(transport_.get(), fd, frame.data() + 5, payload_len)) {
+            if (!recv_exact(transport_.get(), fd, frame.data() + 9, static_cast<size_t>(payload_len))) {
                 transport_->close(fd);
                 return;
             }

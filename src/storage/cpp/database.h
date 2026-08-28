@@ -221,19 +221,16 @@ fly::WriteErrorType Database::write_object(const CMString& object_name, const T&
     }
 
     // Serialize + compress via streaming pipeline.
+    // trailer 格式（§4.4）：块流纯追加，完成后追加 trailer（无占位/回填）。
     auto record = CMMakeShared<FlyBuffer>();
     FlyBufferStreamBuf fly_buf(*record);
     CountingStreamBuf counting_buf(fly_buf);
     std::ostream counting_stream(&counting_buf);
 
     ObjectHeader header;
-    header.total_size_ = 0;
-    header.chunk_count_ = 0;
     header.compression_type_ = static_cast<uint8_t>(compression_type_);
     header.py_name_ = py_name;
     header.py_name_len_ = static_cast<uint16_t>(py_name.size());
-    CMString header_bytes = header.serialize();
-    counting_stream.write(header_bytes.data(), static_cast<std::streamsize>(header_bytes.size()));
 
     int64_t total_uncompressed = 0;
     int32_t chunk_count = 0;
@@ -255,8 +252,8 @@ fly::WriteErrorType Database::write_object(const CMString& object_name, const T&
 
     header.total_size_ = static_cast<uint64_t>(total_uncompressed);
     header.chunk_count_ = static_cast<uint32_t>(chunk_count);
-    CMString real_header = header.serialize();
-    std::memcpy(record->data(), real_header.data(), real_header.size());
+    CMString trailer = header.serialize_trailer();
+    record->write(trailer.data(), trailer.size());
 
     // Commit: cache → register → enqueue disk write (shared logic).
     return commit_write(object_name, full, record, total_uncompressed, chunk_count,
@@ -270,7 +267,14 @@ CMSharedPtr<T> Database::read_object(const CMString& object_name, const CMString
 
     // cache="none": bypass all cache tiers, read directly from source.
     if (cache == "none") {
-        auto [comp_data, py_name] = read_object_compressed(object_name, false, true);
+        FlyBufferPtr comp_data;
+        try {
+            auto [cd, pn] = read_object_compressed(object_name, false, true);
+            comp_data = cd;
+        } catch (const fly::DataCorruptionError& e) {
+            ERR("read_object<T>: {}", e.what());
+            return nullptr;
+        }
         if (!comp_data || comp_data->empty()) {
             ERR("read_object<T>: no data for '{}'", full);
             return nullptr;
@@ -279,6 +283,10 @@ CMSharedPtr<T> Database::read_object(const CMString& object_name, const CMString
         DecompressingStreamBuf dsbuf(comp_data->data(), comp_data->size());
         std::istream is(&dsbuf);
         obj->fly_deserialize(is);
+        if (dsbuf.checksum_failed()) {
+            ERR("[FATAL-DATA-CORRUPTION] read_object<T>: '{}': chunk CRC/trailer verify failed", full);
+            return nullptr;
+        }
         return obj;
     }
 
@@ -289,7 +297,16 @@ CMSharedPtr<T> Database::read_object(const CMString& object_name, const CMString
     }
 
     // Miss → read compressed data (low-tier cache transparent in read_object_compressed).
-    auto [comp_data, py_name] = read_object_compressed(object_name, false, false);
+    // 零容忍（§5）：DataCorruptionError（校验预算耗尽）→ C++ 路径不抛
+    //（消费方是测试/内部对象），转 nullptr + ERR。
+    FlyBufferPtr comp_data;
+    try {
+        auto [cd, pn] = read_object_compressed(object_name, false, false);
+        comp_data = cd;
+    } catch (const fly::DataCorruptionError& e) {
+        ERR("read_object<T>: {}", e.what());
+        return nullptr;
+    }
     if (!comp_data || comp_data->empty()) {
         ERR("read_object<T>: no data for '{}'", full);
         return nullptr;
@@ -299,13 +316,19 @@ CMSharedPtr<T> Database::read_object(const CMString& object_name, const CMString
     DecompressingStreamBuf dsbuf(comp_data->data(), comp_data->size());
     std::istream is(&dsbuf);
     obj->fly_deserialize(is);
+    if (dsbuf.checksum_failed()) {
+        // 零容忍（§5）：校验失败不产出（部分）反序列化对象。
+        ERR("[FATAL-DATA-CORRUPTION] read_object<T>: '{}': chunk CRC/trailer verify failed", full);
+        return nullptr;
+    }
 
     // Populate high tier so subsequent reads skip deserialization.
     size_t accounted = comp_data->size();
     {
         ObjectHeader hdr;
-        int64_t off = 0;
-        if (ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, off, hdr) &&
+        size_t trailer_len = 0;
+        if (ObjectHeader::deserialize_trailer({comp_data->data(), comp_data->size()},
+                                              hdr, trailer_len) &&
             hdr.total_size_ > 0) {
             accounted = static_cast<size_t>(hdr.total_size_);
         }

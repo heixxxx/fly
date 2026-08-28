@@ -28,73 +28,131 @@ inline void write_be32(char* p, uint32_t v) {
     p[3] = static_cast<char>( v        & 0xFF);
 }
 
+inline uint64_t read_be64(const char* p) {
+    return (static_cast<uint64_t>(static_cast<unsigned char>(p[0])) << 56) |
+           (static_cast<uint64_t>(static_cast<unsigned char>(p[1])) << 48) |
+           (static_cast<uint64_t>(static_cast<unsigned char>(p[2])) << 40) |
+           (static_cast<uint64_t>(static_cast<unsigned char>(p[3])) << 32) |
+           (static_cast<uint64_t>(static_cast<unsigned char>(p[4])) << 24) |
+           (static_cast<uint64_t>(static_cast<unsigned char>(p[5])) << 16) |
+           (static_cast<uint64_t>(static_cast<unsigned char>(p[6])) <<  8) |
+            static_cast<uint64_t>(static_cast<unsigned char>(p[7]));
+}
+inline void write_be64(char* p, uint64_t v) {
+    p[0] = static_cast<char>((v >> 56) & 0xFF);
+    p[1] = static_cast<char>((v >> 48) & 0xFF);
+    p[2] = static_cast<char>((v >> 40) & 0xFF);
+    p[3] = static_cast<char>((v >> 32) & 0xFF);
+    p[4] = static_cast<char>((v >> 24) & 0xFF);
+    p[5] = static_cast<char>((v >> 16) & 0xFF);
+    p[6] = static_cast<char>((v >>  8) & 0xFF);
+    p[7] = static_cast<char>( v        & 0xFF);
+}
+
+// ── 64 位帧头（chunked-transfer-design.md §4.1）──────────────────────────
+//
+// 帧前缀 9B：[8B header BE][1B type]
+//   header = (check << 48) | len
+//   len    = 1 + payload_size     —— 48 位，上限 256TB，消除 uint32 截断
+//                                     静默回绕（4GiB）与 client 假上限
+//   check  = 0xF17E ^ fold16(len) —— 高 16 位校验域
+//   fold16(len) = (len ^ (len >> 16) ^ (len >> 32)) & 0xFFFF
+//
+// 性质：长度域任一单比特翻转 → fold 确定性变化（每位唯一映射到一个保留
+// fold 位，无抵消）→ check 失配被拒；失步/垃圾 8 字节误过概率 2^-16；
+// len = 0 非法。测试锚定：message_protocol_test.cpp FrameHeaderTest。
+inline constexpr uint64_t FRAME_LEN_MASK = 0x0000FFFFFFFFFFFFULL;  // 48 位长度域
+inline constexpr uint64_t FRAME_CHECK_MAGIC = 0xF17EULL;           // 校验域魔数
+
+inline uint64_t fold16(uint64_t len) {
+    return (len ^ (len >> 16) ^ (len >> 32)) & 0xFFFF;
+}
+
+// total_len（1 + payload）→ 8B header 值。要求 len >= 1 且 <= 48 位。
+inline uint64_t make_frame_header(uint64_t total_len) {
+    return (FRAME_CHECK_MAGIC ^ fold16(total_len)) << 48 | (total_len & FRAME_LEN_MASK);
+}
+
+// 校验并解析 8B header：check 位失配 / len == 0 / len 溢出 48 位 → false。
+inline bool parse_frame_header(const char* p8, uint64_t& total_len) {
+    uint64_t hdr = read_be64(p8);
+    uint64_t len = hdr & FRAME_LEN_MASK;
+    uint64_t check = hdr >> 48;
+    if (len == 0) return false;
+    if (check != ((FRAME_CHECK_MAGIC ^ fold16(len)) & 0xFFFF)) return false;
+    total_len = len;
+    return true;
+}
+
 class MessageProtocol {
 public:
     template<typename T>
     static CMString encode(const T& msg) {
         CMString payload;
         FLY_ENCODE(msg, payload);
-        
-        uint32_t total_len = static_cast<uint32_t>(1 + payload.size());
+
+        uint64_t total_len = 1 + payload.size();
         CMString frame;
-        frame.resize(4 + 1 + payload.size());
-        write_be32(&frame[0], total_len);
-        frame[4] = static_cast<char>(static_cast<uint8_t>(T::msg_type_));
-        
-        std::copy(payload.begin(), payload.end(), frame.begin() + 5);
+        frame.resize(8 + 1 + payload.size());
+        write_be64(&frame[0], make_frame_header(total_len));
+        frame[8] = static_cast<char>(static_cast<uint8_t>(T::msg_type_));
+
+        std::copy(payload.begin(), payload.end(), frame.begin() + 9);
         return frame;
     }
-    
+
     template<typename T>
     static bool decode(CMString& buffer, T& msg) {
-        if (buffer.size() < 5) return false;
+        if (buffer.size() < 9) return false;
 
-        uint32_t total_len = read_be32(buffer);
+        uint64_t total_len = 0;
+        if (!parse_frame_header(buffer.data(), total_len)) return false;
+        if (buffer.size() < 8 + total_len) return false;
 
-        if (total_len < 1) return false;
-        if (buffer.size() < 4 + total_len) return false;
-        
-        uint8_t raw_type = static_cast<uint8_t>(buffer[4]);
+        uint8_t raw_type = static_cast<uint8_t>(buffer[8]);
         if (!is_valid_message_type(raw_type)) return false;
-        
+
         MessageType msg_type = static_cast<MessageType>(raw_type);
         if (msg_type != T::msg_type_) return false;
-        
-        uint32_t payload_len = total_len - 1;
-        CMString payload(buffer.substr(5, payload_len));
-        
+
+        uint64_t payload_len = total_len - 1;
+        CMString payload(buffer.substr(9, payload_len));
+
         try {
             FLY_DECODE(payload, T, msg);
         } catch (const std::runtime_error&) {
             return false;
         }
-        
-        buffer.erase(0, 4 + total_len);
+
+        buffer.erase(0, 8 + total_len);
         return true;
     }
-    
+
     static MessageType get_type(const CMString& buffer) {
-        if (buffer.size() < 5) return MessageType::INVALID;
+        if (buffer.size() < 9) return MessageType::INVALID;
 
-        uint32_t total_len = read_be32(buffer);
+        uint64_t total_len = 0;
+        if (!parse_frame_header(buffer.data(), total_len)) return MessageType::INVALID;
+        if (buffer.size() < 8 + total_len) return MessageType::INVALID;
 
-        if (total_len < 1) return MessageType::INVALID;
-        if (buffer.size() < 4 + total_len) return MessageType::INVALID;
-
-        uint8_t raw_type = static_cast<uint8_t>(buffer[4]);
+        uint8_t raw_type = static_cast<uint8_t>(buffer[8]);
         if (!is_valid_message_type(raw_type)) return MessageType::INVALID;
 
         return static_cast<MessageType>(raw_type);
     }
-    
-    static uint32_t get_total_size(const CMString& buffer) {
-        if (buffer.size() < 4) return 0;
 
-        return read_be32(buffer);
+    // 帧的 total_len（1 + payload，不含 8B header 前缀）。check 位失配等
+    // 非法头返回 0。帧在缓冲中的总字节数 = 8 + total_len。
+    static uint64_t get_total_size(const CMString& buffer) {
+        if (buffer.size() < 8) return 0;
+
+        uint64_t total_len = 0;
+        if (!parse_frame_header(buffer.data(), total_len)) return 0;
+        return total_len;
     }
-    
-    static uint32_t get_payload_size(const CMString& buffer) {
-        uint32_t total_len = get_total_size(buffer);
+
+    static uint64_t get_payload_size(const CMString& buffer) {
+        uint64_t total_len = get_total_size(buffer);
         return total_len > 0 ? total_len - 1 : 0;
     }
 };
@@ -103,12 +161,13 @@ public:
 // compressed payload as raw bytes. Eliminates user-space copies of the payload.
 //
 // Wire layout (DATA_RESPONSE only):
-//   [4B total_len BE][1B type=DATA_RESPONSE]
+//   [8B frame header BE (64-bit, §4.1)][1B type=DATA_RESPONSE]
 //   [4B small_fields_len BE][1B has_raw]
 //   [small_fields_len bytes: bitsery-encoded DataResponseMessage (no compressed_data_)]
 //   [if has_raw: raw_len bytes of compressed payload]
 //
 // total_len = 1(type) + 4(small_fields_len) + 1(has_raw) + small_fields_len + raw_len
+// （全 uint64 运算——raw_len 可达 256TB 帧域内任意值）
 // raw_len is inferred: total_len - 6 - small_fields_len
 class DataResponseProtocol {
 public:
@@ -116,9 +175,9 @@ public:
     // bitsery-encoded message). The raw payload is referenced by pointer (no copy).
     // Returns {header_segment, raw_ptr, raw_len}. raw_ptr is nullptr if !has_raw.
     struct TwoSegment {
-        CMString header_segment;   // [5B frame][5B sub-header][bitsery small fields]
+        CMString header_segment;   // [9B frame][5B sub-header][bitsery small fields]
         const char* raw_ptr = nullptr;
-        size_t raw_len = 0;
+        uint64_t raw_len = 0;
     };
 
     static TwoSegment encode(const DataResponseMessage& msg, const FlyBufferPtr& raw_data) {
@@ -127,16 +186,16 @@ public:
         FLY_ENCODE(msg, small_payload);
 
         bool has_raw = raw_data && !raw_data->empty();
-        uint32_t raw_len = has_raw ? static_cast<uint32_t>(raw_data->size()) : 0;
-        uint32_t small_fields_len = static_cast<uint32_t>(small_payload.size());
+        uint64_t raw_len = has_raw ? raw_data->size() : 0;
+        uint64_t small_fields_len = small_payload.size();
         // total_len = 1(type) + 4(small_fields_len) + 1(has_raw) + small_fields_len + raw_len
-        uint32_t total_len = 1 + 4 + 1 + small_fields_len + raw_len;
+        uint64_t total_len = 1 + 4 + 1 + small_fields_len + raw_len;
 
-        result.header_segment.resize(4 + 1 + 4 + 1 + small_fields_len);
+        result.header_segment.resize(8 + 1 + 4 + 1 + small_fields_len);
         char* p = &result.header_segment[0];
-        write_be32(p, total_len); p += 4;
+        write_be64(p, make_frame_header(total_len)); p += 8;
         *p++ = static_cast<char>(static_cast<uint8_t>(MessageType::DATA_RESPONSE));
-        write_be32(p, small_fields_len); p += 4;
+        write_be32(p, static_cast<uint32_t>(small_fields_len)); p += 4;
         *p++ = has_raw ? 1 : 0;
         std::memcpy(p, small_payload.data(), small_fields_len);
 
@@ -148,7 +207,7 @@ public:
     }
 
     // Parse the sub-header (small_fields_len + has_raw) from a 5-byte buffer.
-    // Call after reading the first 10 bytes (5 frame header + 5 sub-header).
+    // Call after reading the first 14 bytes (9B frame header + 5B sub-header).
     static void parse_sub_header(const char* sub_header,
                                   uint32_t& small_fields_len, bool& has_raw) {
         small_fields_len = read_be32(sub_header);
@@ -156,9 +215,10 @@ public:
     }
 
     // Compute raw payload length from frame total_len and small_fields_len.
-    static uint32_t raw_len_from_total(uint32_t total_len, uint32_t small_fields_len) {
+    // 全 uint64：大对象（>4GiB）raw_len 不截断。
+    static uint64_t raw_len_from_total(uint64_t total_len, uint64_t small_fields_len) {
         // total_len = 1 + 4 + 1 + small_fields_len + raw_len
-        uint32_t overhead = 1 + 4 + 1 + small_fields_len;
+        uint64_t overhead = 1 + 4 + 1 + small_fields_len;
         return total_len > overhead ? total_len - overhead : 0;
     }
 

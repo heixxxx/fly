@@ -172,6 +172,11 @@ WRAPPER
     for so in "$bazel_bin"/src/*/cpp/libfly_*_so.so; do
         [ -f "$so" ] && ln -sf "$so" "$build_dir/lib/"
     done
+    # common 模块的独立 .so（data_checksum —— 多 so 共享的单一定义点）位于
+    # bazel _solib 树而非 src/<mod>/cpp，单独收录。
+    for so in "$bazel_bin"/_solib_k8/_Usrc_Scommon_Scpp/libdata_checksum_so.so; do
+        [ -f "$so" ] && ln -sf "$so" "$build_dir/lib/"
+    done
 
     # Python modules: .so 到模块根（sys.path 包含模块目录让 import _fly_X 可用），
     # .py 到 py/ 子目录（与源码树 src/X/py/ 结构一致，让两种布局的 import 路径统一）。

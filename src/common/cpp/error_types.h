@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 
 namespace fly {
 
@@ -45,12 +47,28 @@ enum class WriteErrorType {
 //                     unreachable peer must not be retried forever)
 //   SHUTDOWN        — permanent: the pool is being stopped; abort immediately,
 //                     do not retry
+//   CHECKSUM        — data corruption (wire root CRC mismatch / frame header
+//                     check bits). 工业零容忍语义（§5）：调用方对校验类错误
+//                     只允许【一次】对象级重取，仍败即 FATAL——不做静默重试
+//                     轮询（持续校验失败 = 内存/硬件/代码缺陷，必须大声暴露）。
 enum class ReadError {
     NONE = 0,
     DATA_NOT_READY = 1,
     OBJECT_NOT_FOUND = 2,
     NETWORK = 3,
     SHUTDOWN = 4,
+    CHECKSUM = 5,
+};
+
+// 数据校验失败且一次重取预算耗尽（零容忍语义，chunked-transfer-design §5）。
+// 抛出点：DataService 读路径（tier2 校验预算耗尽）/ Database::read_object_compressed
+// （trailer 校验重取后仍败）/ Python 解压出口（块 CRC 重取后仍败）。
+// 捕获方必须终止当前 task（TaskFailed / RuntimeError("[FATAL-DATA-CORRUPTION] ...")），
+// 不存在降级消费路径。what() 以 [FATAL-DATA-CORRUPTION] 开头。
+class DataCorruptionError : public std::runtime_error {
+public:
+    explicit DataCorruptionError(const std::string& what)
+        : std::runtime_error(what) {}
 };
 
 }  // namespace fly

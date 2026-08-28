@@ -49,37 +49,46 @@ MetadataClient::DataLocation MetadataClient::query_data_location(
         send_remaining -= static_cast<size_t>(n);
     }
 
-    // recv header (5 bytes)
-    char header[5] = {};
-    if (!recv_exact(transport_.get(), fd, header, 5)) {
+    // recv frame prefix (9 bytes: 8B header + 1B type)
+    char header[9] = {};
+    if (!recv_exact(transport_.get(), fd, header, 9)) {
         result.error_ = "Timeout receiving DataLocation header for " + object_name;
         transport_->close(fd);
         return result;
     }
 
-    uint32_t total_len = read_be32(header);
+    uint64_t total_len = 0;
+    if (!parse_frame_header(header, total_len)) {
+        result.error_ = "Invalid DataLocation frame header for " + object_name;
+        transport_->close(fd);
+        return result;
+    }
 
+    // 16MB 是【元数据域内界】（DataLocation 副本列表的实际量级），与数据面
+    // 帧域（256TB）无关——元数据帧不该携带大对象。
     if (total_len < 1 || total_len > 16 * 1024 * 1024) {
         result.error_ = "Invalid DataLocation frame size for " + object_name;
         transport_->close(fd);
         return result;
     }
 
-    uint32_t payload_len = total_len - 1;
-    CMString payload(payload_len, '\0');
-    if (!recv_exact(transport_.get(), fd, payload.data(), payload_len)) {
-        result.error_ = "Timeout receiving DataLocation payload for " + object_name;
-        transport_->close(fd);
-        return result;
+    uint64_t payload_len = total_len - 1;
+    CMString payload(static_cast<size_t>(payload_len), '\0');
+    if (payload_len > 0) {
+        if (!recv_exact(transport_.get(), fd, payload.data(), static_cast<size_t>(payload_len))) {
+            result.error_ = "Timeout receiving DataLocation payload for " + object_name;
+            transport_->close(fd);
+            return result;
+        }
     }
 
     transport_->close(fd);
 
     CMString full_buf;
-    full_buf.resize(4 + total_len);
-    std::memcpy(&full_buf[0], header, 5);
+    full_buf.resize(8 + total_len);
+    std::memcpy(&full_buf[0], header, 9);
     if (payload_len > 0) {
-        std::memcpy(&full_buf[5], payload.data(), payload_len);
+        std::memcpy(&full_buf[9], payload.data(), static_cast<size_t>(payload_len));
     }
 
     DataLocationMessage response;

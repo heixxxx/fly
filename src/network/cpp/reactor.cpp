@@ -265,17 +265,17 @@ void Reactor::dispatch_message(uint64_t conn_id, CMString& buffer) {
         
         auto it = handlers_.find(type);
         if (it == handlers_.end()) {
-            uint32_t total_size = MessageProtocol::get_total_size(buffer);
-            if (total_size > 0 && buffer.size() >= 4 + total_size) {
-                buffer.erase(0, 4 + total_size);
+            uint64_t total_size = MessageProtocol::get_total_size(buffer);
+            if (total_size > 0 && buffer.size() >= 8 + total_size) {
+                buffer.erase(0, 8 + total_size);
             } else {
                 break;
             }
             continue;
         }
-        
-        uint32_t total_size = MessageProtocol::get_total_size(buffer);
-        if (total_size < 1 || buffer.size() < 4 + total_size) {
+
+        uint64_t total_size = MessageProtocol::get_total_size(buffer);
+        if (total_size < 1 || buffer.size() < 8 + total_size) {
             // 帧不完整/畸形：与 legacy 行为一致（decode 失败 → handler 未消费
             // → 清空缓冲区），无法解码出有效消息，丢弃残留。
             ERR("dispatch_message: malformed frame type={} len={} buf={}",
@@ -288,8 +288,8 @@ void Reactor::dispatch_message(uint64_t conn_id, CMString& buffer) {
             // 帧提取（含 recv_buffers_ 推进）留在 reactor 线程；decode + handler
             // 在该 conn 的 lane 上执行，同 conn 严格保序、跨 conn 并行；
             // 顺序敏感域命中类型改投保留串行 lane（跨连接 FIFO）。
-            CMString frame = buffer.substr(0, 4 + total_size);
-            buffer.erase(0, 4 + total_size);
+            CMString frame = buffer.substr(0, 8 + total_size);
+            buffer.erase(0, 8 + total_size);
             auto handler = it->second;
             size_t lane = serialized_types_.count(type) ? handler_lane_count_
                                                         : conn_id % handler_lane_count_;

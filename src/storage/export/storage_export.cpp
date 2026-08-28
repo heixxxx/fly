@@ -9,16 +9,104 @@
 #include <storage/cpp/index_entry.h>
 #include <storage/cpp/db_meta.h>
 #include <storage/cpp/compressor.h>
+#include <storage/cpp/object_cache.h>
 #include <storage/cpp/decompress_helper.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/fly_stream.h>
 #include <common/cpp/write_context_hash.h>
 #include <common/cpp/error_types.h>
+#include <log/cpp/logger.h>
 #include <nanobind/operators.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/pair.h>
 #include <istream>
 #include <Python.h>
+
+namespace {
+
+// 抛 FATAL RuntimeError（[FATAL-DATA-CORRUPTION] 前缀，零容忍 §5）。
+[[noreturn]] void throw_fatal_corruption(const CMString& name, const std::string& detail) {
+    PyErr_SetString(PyExc_RuntimeError,
+                    ("[FATAL-DATA-CORRUPTION] object '" + name + "': " + detail).c_str());
+    throw fly_export::python_error();
+}
+
+// 单轮解压：零拷贝直进 Python bytes。
+// 返回 false = 块 CRC/trailer 校验失败（调用方编排一次重取，§5）；
+// 返回 true = out 填充结果（fallback 路径的校验失败由 decompress_raw_data
+// 直接 throw DataCorruptionError，同样进入顶层 FATAL 转换）。
+bool decompress_into_bytes(const FlyBufferPtr& comp_data, int64_t expected_size,
+                           fly_export::bytes& out) {
+    if (expected_size <= 0) {
+        // Fallback: decompress to std::string then convert
+        std::string result = fly::decompress_raw_data({comp_data->data(), comp_data->size()});
+        out = fly_export::bytes(result.data(), result.size());
+        return true;
+    }
+    PyObject* py_bytes = PyBytes_FromStringAndSize(nullptr, expected_size);
+    if (!py_bytes) {
+        out = fly_export::bytes("", 0);
+        return true;
+    }
+    DecompressingStreamBuf dsbuf(comp_data->data(), comp_data->size());
+    std::istream is(&dsbuf);
+    is.read(PyBytes_AS_STRING(py_bytes), expected_size);
+    auto gcount = is.gcount();
+    if (dsbuf.checksum_failed()) {
+        Py_DECREF(py_bytes);
+        return false;
+    }
+    if (gcount > 0 && gcount < expected_size) {
+        _PyBytes_Resize(&py_bytes, gcount);
+    }
+    out = fly_export::bytes(py_bytes);
+    return true;
+}
+
+int64_t trailer_expected_size(const FlyBufferPtr& comp_data) {
+    ObjectHeader header;
+    size_t trailer_len = 0;
+    if (ObjectHeader::deserialize_trailer({comp_data->data(), comp_data->size()},
+                                          header, trailer_len) &&
+        header.total_size_ > 0) {
+        return static_cast<int64_t>(header.total_size_);
+    }
+    return 0;
+}
+
+// 共享读+解压（两个 _read_decompressed 重载的公共实现）。
+// 零容忍编排（§5）：块 CRC/trailer 校验失败 → 失效缓存 + 一次 bypass 重取
+// → 仍败 → FATAL RuntimeError（TaskFailed 通道，不返回截断数据）。
+fly_export::tuple read_decompressed_impl(Database& db, const CMString& name, bool backup) {
+    try {
+        auto [comp_data, py_name] = db.read_object_compressed(name, backup);
+        if (!comp_data || comp_data->empty()) {
+            return fly_export::make_tuple(fly_export::bytes("", 0), py_name);
+        }
+
+        fly_export::bytes out;
+        if (decompress_into_bytes(comp_data, trailer_expected_size(comp_data), out)) {
+            return fly_export::make_tuple(std::move(out), py_name);
+        }
+
+        // ── 校验失败：一次重取（失效缓存 + bypass 数据源）──
+        ERR("[FATAL-DATA-CORRUPTION] chunk CRC/trailer verify failed, one re-fetch: obj={}", name);
+        fly::ObjectCache::instance().remove(db.get_full_name(name));
+        auto [comp2, py2] = db.read_object_compressed(name, backup, /*bypass_cache=*/true);
+        if (comp2 && !comp2->empty()) {
+            fly_export::bytes out2;
+            if (decompress_into_bytes(comp2, trailer_expected_size(comp2), out2)) {
+                return fly_export::make_tuple(std::move(out2), std::move(py2));
+            }
+        }
+    } catch (const fly::DataCorruptionError& e) {
+        // read_object_compressed / TIER2 零容忍预算耗尽（§5）→ FATAL。
+        throw_fatal_corruption(name, e.what());
+    }
+    throw_fatal_corruption(name, "chunk CRC/trailer verify failed after one re-fetch");
+}
+
+}  // namespace
 
 FLY_EXPORT_MODULE(_fly_storage) {
 
@@ -171,99 +259,14 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     })
     // Zero-copy read: decompress directly from FlyBuffer to Python bytes
     // Avoids intermediate CMString by decompressing directly into Python bytes object
+    // 两个重载（带/不带 backup）共享实现。块 CRC/trailer 校验失败 → 抛
+    // [FATAL-DATA-CORRUPTION] RuntimeError（零容忍语义 §5；一次重取编排在
+    // read_object_compressed 数据源层，此处是解压侧出口）。
     FLY_EXPORT_DEF("_read_decompressed", [](Database& db, const CMString& name, bool backup) -> fly_export::tuple {
-        auto [comp_data, py_name] = db.read_object_compressed(name, backup);
-        if (!comp_data || comp_data->empty()) {
-            return fly_export::make_tuple(fly_export::bytes("", 0), py_name);
-        }
-
-        // Read expected decompressed size from ObjectHeader
-        int64_t offset = 0;
-        int64_t expected_size = 0;
-        {
-            ObjectHeader header;
-            if (ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, offset, header) &&
-                header.total_size_ > 0) {
-                expected_size = static_cast<int64_t>(header.total_size_);
-            }
-        }
-
-        if (expected_size > 0) {
-            // Create Python bytes object with exact size
-            PyObject* py_bytes = PyBytes_FromStringAndSize(nullptr, expected_size);
-            if (!py_bytes) {
-                return fly_export::make_tuple(fly_export::bytes("", 0), py_name);
-            }
-
-            // Decompress directly into Python bytes buffer
-            DecompressingStreamBuf dsbuf(comp_data->data(), comp_data->size());
-            std::istream is(&dsbuf);
-            is.read(PyBytes_AS_STRING(py_bytes), expected_size);
-            auto gcount = is.gcount();
-
-            if (gcount > 0 && gcount < expected_size) {
-                _PyBytes_Resize(&py_bytes, gcount);
-            }
-
-            return fly_export::make_tuple(
-                fly_export::bytes(py_bytes),
-                py_name
-            );
-        } else {
-            // Fallback: decompress to std::string then convert
-            std::string result = fly::decompress_raw_data({comp_data->data(), comp_data->size()});
-            return fly_export::make_tuple(
-                fly_export::bytes(result.data(), result.size()),
-                py_name
-            );
-        }
+        return read_decompressed_impl(db, name, backup);
     })
     FLY_EXPORT_DEF("_read_decompressed", [](Database& db, const CMString& name) -> fly_export::tuple {
-        auto [comp_data, py_name] = db.read_object_compressed(name, false);
-        if (!comp_data || comp_data->empty()) {
-            return fly_export::make_tuple(fly_export::bytes("", 0), py_name);
-        }
-
-        // Read expected decompressed size from ObjectHeader
-        int64_t offset = 0;
-        int64_t expected_size = 0;
-        {
-            ObjectHeader header;
-            if (ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, offset, header) &&
-                header.total_size_ > 0) {
-                expected_size = static_cast<int64_t>(header.total_size_);
-            }
-        }
-
-        if (expected_size > 0) {
-            // Create Python bytes object with exact size
-            PyObject* py_bytes = PyBytes_FromStringAndSize(nullptr, expected_size);
-            if (!py_bytes) {
-                return fly_export::make_tuple(fly_export::bytes("", 0), py_name);
-            }
-
-            // Decompress directly into Python bytes buffer
-            DecompressingStreamBuf dsbuf(comp_data->data(), comp_data->size());
-            std::istream is(&dsbuf);
-            is.read(PyBytes_AS_STRING(py_bytes), expected_size);
-            auto gcount = is.gcount();
-
-            if (gcount > 0 && gcount < expected_size) {
-                _PyBytes_Resize(&py_bytes, gcount);
-            }
-
-            return fly_export::make_tuple(
-                fly_export::bytes(py_bytes),
-                py_name
-            );
-        } else {
-            // Fallback: decompress to std::string then convert
-            std::string result = fly::decompress_raw_data({comp_data->data(), comp_data->size()});
-            return fly_export::make_tuple(
-                fly_export::bytes(result.data(), result.size()),
-                py_name
-            );
-        }
+        return read_decompressed_impl(db, name, false);
     })
     FLY_EXPORT_DEF("_get_py_name", [](Database& db, const CMString& name) -> CMString {
         return db.read_object_py_name(name);
@@ -402,12 +405,16 @@ FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
         return ds.get_remote_workers(name);
     })
     FLY_EXPORT_DEF("try_read_remote", [](fly::DataService& ds, const CMString& name) -> fly_export::tuple {
-        auto [found, result] = ds.try_read_remote(name);
-        return fly_export::make_tuple(
-            found,
-            fly_export::bytes(result.data_buffer_.data(), result.data_buffer_.size()),
-            result.py_name_,
-            result.can_still_produce_);
+        try {
+            auto [found, result] = ds.try_read_remote(name);
+            return fly_export::make_tuple(
+                found,
+                fly_export::bytes(result.data_buffer_.data(), result.data_buffer_.size()),
+                result.py_name_,
+                result.can_still_produce_);
+        } catch (const fly::DataCorruptionError& e) {
+            throw_fatal_corruption(name, e.what());
+        }
     })
     FLY_EXPORT_METHOD("drain_write_back", &fly::DataService::drain_write_back)
     FLY_EXPORT_METHOD("stop_write_back", &fly::DataService::stop_write_back)

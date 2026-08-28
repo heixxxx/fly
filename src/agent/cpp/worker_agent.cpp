@@ -758,18 +758,18 @@ void WorkerAgent::bandwidth_probe_loop() {
 
             auto t0 = std::chrono::steady_clock::now();
             bool ok = transport->send_all(fd, encoded.data(), encoded.size());
-            // Read the response frame: 5B header, then payload_len bytes.
-            char hdr[5];
-            for (size_t got = 0; ok && got < 5;) {
-                ssize_t n = transport->recv(fd, hdr + got, 5 - got);
+            // Read the response frame: 9B prefix (8B header + 1B type), then payload.
+            char hdr[9];
+            for (size_t got = 0; ok && got < 9;) {
+                ssize_t n = transport->recv(fd, hdr + got, 9 - got);
                 if (n <= 0) { ok = false; break; }
                 got += static_cast<size_t>(n);
             }
-            uint32_t total_len = 0;
+            uint64_t total_len = 0;
             if (ok) {
-                total_len = read_be32(hdr);
+                ok = parse_frame_header(hdr, total_len);
             }
-            uint32_t remain = (ok && total_len >= 1) ? total_len - 1 : 0;
+            uint64_t remain = ok ? total_len - 1 : 0;
             CMString rest(remain, '\0');
             for (size_t got = 0; ok && got < remain;) {
                 ssize_t n = transport->recv(fd, rest.data() + got, remain - got);
@@ -2555,8 +2555,27 @@ void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_n
     auto ds = DataService::instance();
 
     // 1. 跨机拉源对象压缩字节（用 source_full 查源命名空间的 remote_idx/local_idx）。
-    auto [found, comp_data, py_name, source_hash, can_still_produce] =
-        ds->read_raw_compressed(source_full);
+    //    零容忍（§5）：DataCorruptionError（校验重取预算耗尽）→ TaskFailed 结束
+    //    本 task，不落盘坏数据、不崩溃 worker。
+    CMSharedPtr<FlyBuffer> comp_data;
+    CMString py_name;
+    CMString source_hash;
+    bool found = false;
+    try {
+        auto [f, d, p, h, c] = ds->read_raw_compressed(source_full);
+        found = f;
+        comp_data = d;
+        py_name = p;
+        source_hash = h;
+    } catch (const fly::DataCorruptionError& e) {
+        ERR("{}", e.what());
+        TaskFailedMessage failed;
+        failed.task_id_ = task_id;
+        failed.worker_id_ = worker_id_;
+        failed.error_message_ = CMString(e.what());
+        reactor_->send(master_conn_, failed);
+        return;
+    }
     if (!found || !comp_data || comp_data->empty()) {
         ERR("Internal merge: no data for '{}'", source_full);
         TaskFailedMessage failed;
@@ -2567,17 +2586,17 @@ void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_n
         return;
     }
 
-    // 2. 解析 ObjectHeader 拿到 total_size / chunk_count（落盘需要）。
-    //    源数据损坏（header 解析失败）与源缺失同级：TaskFailed，不落盘坏数据。
-    int64_t h_off = 0;
+    // 2. 解析 ObjectHeader（尾部 trailer）拿到 total_size / chunk_count（落盘需要）。
+    //    源数据损坏（trailer 解析失败）与源缺失同级：TaskFailed，不落盘坏数据。
+    size_t merge_trailer_len = 0;
     ObjectHeader header;
-    if (!ObjectHeader::deserialize(
-            CMString(comp_data->data(), comp_data->size()), h_off, header)) {
-        ERR("Internal merge: corrupted object header for '{}'", source_full);
+    if (!ObjectHeader::deserialize_trailer(
+            {comp_data->data(), comp_data->size()}, header, merge_trailer_len)) {
+        ERR("Internal merge: corrupted object trailer for '{}'", source_full);
         TaskFailedMessage failed;
         failed.task_id_ = task_id;
         failed.worker_id_ = worker_id_;
-        failed.error_message_ = "Internal merge: corrupted source object header: " + source_full;
+        failed.error_message_ = "Internal merge: corrupted source object trailer: " + source_full;
         reactor_->send(master_conn_, failed);
         return;
     }

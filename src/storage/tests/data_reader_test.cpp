@@ -18,17 +18,13 @@ struct TestRecord {
 TestRecord make_record(const CMString& data, const CMString& py_name = "") {
     TestRecord rec;
     ObjectHeader header;
-    header.total_size_ = 0;
-    header.chunk_count_ = 0;
     header.compression_type_ = 0;
     header.py_name_ = py_name;
     header.py_name_len_ = static_cast<uint16_t>(py_name.size());
-    CMString header_bytes = header.serialize();
-
+    // 新格式（§4.4）：块流纯追加，完成后追加 trailer。
     FlyBufferStreamBuf fly_buf(rec.buffer);
     CountingStreamBuf counting_buf(fly_buf);
     std::ostream counting_stream(&counting_buf);
-    counting_stream.write(header_bytes.data(), static_cast<std::streamsize>(header_bytes.size()));
 
     {
         CompressingStreamBuf csbuf(counting_stream, nullptr, 4096);
@@ -37,13 +33,14 @@ TestRecord make_record(const CMString& data, const CMString& py_name = "") {
         os.flush();
         rec.original_size_ = csbuf.total_uncompressed();
         rec.chunk_count_ = csbuf.chunk_count();
+        header.compression_type_ = static_cast<uint8_t>(csbuf.effective_compression_type());
     }
     counting_stream.flush();
 
     header.total_size_ = static_cast<uint64_t>(rec.original_size_);
     header.chunk_count_ = static_cast<uint32_t>(rec.chunk_count_);
-    CMString real_header = header.serialize();
-    std::memcpy(rec.buffer.data(), real_header.data(), real_header.size());
+    CMString trailer = header.serialize_trailer();
+    rec.buffer.write(trailer.data(), trailer.size());
 
     return rec;
 }

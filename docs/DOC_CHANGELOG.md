@@ -3,6 +3,40 @@
 ---
 ---
 
+## 2026-08-28 (4): P0-3 分块/流控/背压必要性调研 + 分块设计文档
+
+**① emir-capability-gap.md P0-3 调研结论（代码实证）**：按 fly 内网批处理负载画像分层裁定——**credit 窗口流控不做**（每连接同步 request-response 单 in-flight + 接收即消费，速率耦合在 TCP 窗口，无持续失衡土壤）；**背压结构性已含大半**（epoll oneshot + slot=4 + send 队列深度 ≤ 活跃连接数，残余仅慢客户端 HOL，`data_server_threads` 可调）；**分块唯一长期真实价值 = 内存有界化**（整取链 2C+R，GB 级对象 ×4 并发 ≈16GB 先撞内存墙），绑定亿级触发缓议。
+
+**② 新增 chunked-transfer-design.md**（设计调研未立项）：磁盘格式已分块（4MB 独立压缩块 + 按需解压 streambuf + FlyStream 双模式），整块边界仅三处（写累积+commit 整拷贝 / 网络整帧 / 读整解压整 loads）；分层方案 L1 写直写落盘（idx 事务段容错半成品）→ L2 网络分片（DATA_RESPONSE_META + N×DATA_CHUNK，server pread 直发）→ L3 读流式消费（Unpickler 增量构建）→ L4 块级寻址（远期）；量化后 client 峰值 3GB→≈R。同步更新文档地图（README.md）。
+
+**③ 帧长 uint32 裁定为正确性缺陷独立先行修复**：64 位帧头 = 48 位长度（256TB 上限，无尺寸政策猜测）+ 16 位校验位（魔数⊕长度折叠，垃圾帧头 65535/65536 概率拒绝，单比特翻转确定性检出）；消除 4GiB 静默回绕与 client 256MB 假上限。后追加：**ISA-L CRC-64 端到端载荷校验 + 工业零容忍语义**（校验错误一次重传→FATAL→task 失败，用户裁定）；CRC 实测 14.6 GB/s（ISA-L PCLMUL，比软件快 7×、比 CRC32C 快 1.5×，seed 链式增量已验证）；**校验调用经 `data_checksum()` 包装层收口**（用户裁定：接口稳定、实现可整体替换，契约测试锚定接口语义）。
+**④ 分 chunk 校验直接落地（2026-08-29 用户裁定）**：chunk 头写时嵌每块 CRC（`[i32][i32][u64 crc][data]`，8B→16B），所有解压消费点按块验证——校验锚定写入时刻、覆盖数据全生命周期（含磁盘与缓存驻留）；逐块与整块吞吐实测等价（±2%）；不做块级定位（裁定无意义）；磁盘格式不考虑版本兼容（旧 db 读出即显式 CHECKSUM 失败）。重取语义统一为对象级：CHECKSUM → 失效缓存 → 一次重取（远程换副本优先/本地重读盘）→ 仍败 → FATAL + task 失败。实施计划定稿于 [frame-integrity-impl-plan.md](frame-integrity-impl-plan.md)（待批准）。
+
+**⑤ 读侧并行架构 v2 + L2 协议细化（2026-08-29 用户质询驱动）**：原拉取式流式读**不是真并行**（单线程分时复用，反序列化慢于网络时 TCP 流控卡停发送方——不符合用户「网络 io 流不停止」要求），修正为**专用接收线程（纯 C++ 无 GIL）+ 有界已验块队列（~64MB 压缩态）+ 消费线程**——真线程级并行；消费不及时由队列吸收、持续慢消费才 TCP 平滑降速（代价为零：消费是瓶颈时关键路径不变）。L2 协议细化：CHUNK 帧带 seq + 帧 CRC，`CHUNK_RESEND(seq)` **在线块重传**（同连接流不断，每块上限一次，再败升格 FATAL——用户裁定）；分片发送封装为**单个自含 SendTask**（n_send≥2 全局队列下按块入队会乱序写同 fd）；三层校验分工（帧头 check / 传输跳帧 CRC / 磁盘内嵌块 CRC 写入锚点）。L1/L3 可行性经代码实证确认（WBQ 闭包单元 + high_watermark 背压现成、段事务 API 现成、wait_local_write 语义现成、`_read_streaming` 为接入缝），用户初版方案成立。
+
+**⑥ ObjectHeader trailer 化（2026-08-29 用户裁定）**：record 格式从 `[ObjectHeader][Chunks]` 改为 `[Chunks][ObjectHeader]`——header 尾置使流式写**全程纯追加**（消除占位+seek 回写；`ios::app` 句柄下 seekp 本就无法重定向），total_size/chunk_count 写完末块自然已知；**trailer 兼作 commit marker**（崩溃残块无 trailer，结构上不可误读为完整对象）；idx 的 offset+size 即起止区间，**idx 格式零变更**；读取侧改为尾部解析（约 5 处消费点），chunk 走读恰耗 `size−trailer_size` 增强结构校验。与块 CRC 同批格式变更。
+
+**⑦ 两文档合并 + 全量实施计划定稿（2026-08-29）**：`chunked-transfer-design.md` 与 `frame-integrity-impl-plan.md` 合并为单一文档（后者删除），并补齐 L2/L3/L1 实施计划至与 L0 同粒度（改动点 43 处编号连续、测试 48 个、每层四步验证门）。全程序：**L0 前置层**（帧头/校验层/trailer+块 CRC/零容忍，六步）→ **L2 分片发送**（META+CHUNK+DIGEST 尾帧根摘要单遍计算 + CHUNK_RESEND 在线重传 + 自含 SendTask）→ **L3 读流式 v2**（ChunkSource 拉取源抽象 + 接收线程/有界队列 + Unpickler）→ **L1 写流式**（DataWriter 增量 API + 压缩流逐块入 WBQ + 完成点注册）。README 地图同步合并条目。
+
+**⑧ L1-L3 可行性与影响面代码验证（2026-08-29）**：三层实施计划补「现有功能影响与兼容」小节（chunked-transfer-design §7.4/§8.5/§9.4）。关键结论：**L1 适用边界修正**——backup/merge 写侧输入为整块压缩数据（do_backup_write:440），无序列化流可切，走现有整块 API（增量 API 是新增非替代）；**task 事务段兼容**（段由 mark_write_begin/end 在 task 首尾控制，abort 三步清理对块级队列兼容）；**池持有期安全**（fd in_use 标记防 TTL 误清，release 可跨线程）；**FlyStream Python file-like 面已就绪**（read/readinto/readline 零拷贝导出，Unpickler 直接可用）；**merge_db 收益修正**（用户质询驱动：merge 是压缩字节级中转——read_raw_compressed→零解压直写，L3 无收益；L2 收益在 server 传输段；新增 merge 流式中转扩展点=L2 块流直喂 L1 append_chunk，中转端峰值 C→块级）；**QA 覆盖缺口**（现有对象 ≤10MB < 64MB 阈值，流式路径需新增大对象 case）。
+
+**⑨ L1 尝试性增强入计划（2026-08-29 用户裁定）**：pickle 协议 5 消除 numpy 数组逐数组瞬时拷贝列入 L1 §9.5——**尝试实现但不强制要求完成**：① 主写路径显式 pin HIGHEST_PROTOCOL；② 实测大 ndarray dump 峰值内存验证协议 5 in-band 免拷贝；③ buffer_callback 旁路为可选深水区（复杂度超预期即放弃）。完成 ①+② 即算尝试完成（结论无论正负记录），不阻塞 L1 合入与后续层排期。
+
+---
+
+
+---
+
+
+---
+
+
+---
+
+
+---
+---
+
 ## 2026-08-28 (3): master 寻址 .fly_config 化 + worker 正常/异常退出显式分派
 
 **① master 寻址写入 .fly_config（首写完备，用户裁定）**：`Master.start()` 尾部

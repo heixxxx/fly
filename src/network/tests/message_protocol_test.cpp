@@ -2,6 +2,10 @@
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
 
+#include <array>
+#include <cstring>
+#include <vector>
+
 namespace fly {
 
 TEST(MessageProtocolTest, EncodeDecodeHeartbeat) {
@@ -109,11 +113,11 @@ TEST(MessageProtocolTest, DataRequestResponse) {
 TEST(MessageProtocolTest, GetPayloadSize) {
     HeartbeatMessage msg;
     msg.worker_id_ = 999;
-    
+
     CMString encoded = MessageProtocol::encode(msg);
-    uint32_t payload_size = MessageProtocol::get_payload_size(encoded);
-    
-    EXPECT_EQ(payload_size, encoded.size() - 5);
+    uint64_t payload_size = MessageProtocol::get_payload_size(encoded);
+
+    EXPECT_EQ(payload_size, encoded.size() - 9);  // 8B header + 1B type
 }
 
 TEST(MessageProtocolTest, GetTypeFromHeader) {
@@ -1047,25 +1051,25 @@ TEST(MessageProtocolTest, GetTypeEmptyBufferReturnsInvalid) {
 }
 
 TEST(MessageProtocolTest, GetTypeTooShortBufferReturnsInvalid) {
-    CMString short_buf(4, '\0');  // 只有 4 字节，不够 5 字节帧头
+    CMString short_buf(8, '\0');  // 只有 8 字节，不够 9 字节帧前缀
     EXPECT_EQ(MessageProtocol::get_type(short_buf), MessageType::INVALID);
 }
 
 TEST(MessageProtocolTest, GetTypeInvalidTotalLenReturnsInvalid) {
-    // total_len=0 是非法的（合法帧至少 1 字节 type）
+    // total_len=0 是非法的（合法帧至少 1 字节 type）；check 位全零同样非法
     CMString bad;
-    bad.resize(5, '\0');  // [4B total_len=0][1B type]
-    // total_len field 全 0
+    bad.resize(9, '\0');  // [8B header 全零][1B type]
     EXPECT_EQ(MessageProtocol::get_type(bad), MessageType::INVALID);
+    EXPECT_EQ(MessageProtocol::get_total_size(bad), 0u);
 }
 
 TEST(MessageProtocolTest, GetTypeInvalidTypeByteReturnsInvalid) {
     // 构造一个 total_len 合法但 type 字节为 0 的帧（0 = INVALID，不在合法范围）
     CMString bad;
-    bad.resize(6, '\0');
+    bad.resize(9, '\0');
     char* p = &bad[0];
-    write_be32(p, 1);     // total_len=1（合法：至少 1 字节 type）
-    p[4] = 0;             // type=0 (INVALID)
+    write_be64(p, make_frame_header(1));  // total_len=1（合法：至少 1 字节 type）
+    p[8] = 0;                             // type=0 (INVALID)
     EXPECT_EQ(MessageProtocol::get_type(bad), MessageType::INVALID);
 }
 
@@ -1077,5 +1081,123 @@ TEST(MessageProtocolTest, GetTypeValidRegisterStillWorks) {
     EXPECT_EQ(MessageProtocol::get_type(encoded), MessageType::REGISTER);
 }
 
+
+// =============================================================================
+// 64 位帧头（chunked-transfer-design.md §4.1 / 测试 1-4）
+//
+// 帧前缀 5B → 9B：[8B header BE][1B type]，header = (check << 48) | len，
+// len 48 位（1 + payload），check = 0xF17E ^ fold16(len)。消除 uint32 截断
+// 静默回绕（4GiB）与 client 256MB 假上限；check 位让失步/垃圾 8 字节
+// 误过概率降到 2^-16。
+// =============================================================================
+
+namespace {
+
+// 测试内【独立重算】期望 header —— 刻意不复用生产函数，双方各自实现
+// 同一线格式定义，互相校验（防 make_frame_header 自身写错被测试放行）。
+uint64_t expected_header(uint64_t total_len) {
+    uint64_t fold = (total_len ^ (total_len >> 16) ^ (total_len >> 32)) & 0xFFFF;
+    return (0xF17EULL ^ fold) << 48 | (total_len & 0x0000FFFFFFFFFFFFULL);
+}
+
+}  // namespace
+
+// 测试 1：帧布局 —— encode ≥9B；前 8B 与独立重算的期望 header 一致；type 在 offset 8。
+TEST(FrameHeaderTest, Layout) {
+    HeartbeatMessage msg;
+    msg.worker_id_ = 7;
+    CMString encoded = MessageProtocol::encode(msg);
+
+    ASSERT_GE(encoded.size(), 9u);
+    uint64_t hdr = read_be64(encoded.data());
+    uint64_t want = expected_header(encoded.size() - 8);  // total_len = 1 + payload
+    EXPECT_EQ(hdr, want);
+    EXPECT_EQ(static_cast<uint8_t>(encoded[8]),
+              static_cast<uint8_t>(MessageType::HEARTBEAT));
+
+    // parse_frame_header 逆运算还原 total_len。
+    uint64_t parsed_len = 0;
+    EXPECT_TRUE(parse_frame_header(encoded.data(), parsed_len));
+    EXPECT_EQ(parsed_len, encoded.size() - 8);
+}
+
+// 测试 2：声明长度超 4GiB 不再回绕（uint32 时代的死穴）。
+TEST(FrameHeaderTest, DeclaredLengthBeyond4GNoWrap) {
+    const uint64_t five_gib = 5ull << 30;
+    CMString hdr_buf;
+    hdr_buf.resize(9, '\0');
+    write_be64(&hdr_buf[0], expected_header(five_gib));
+    hdr_buf[8] = static_cast<char>(static_cast<uint8_t>(MessageType::HEARTBEAT));
+
+    // get_total_size 全 64 位返回声明值（无截断回绕）。
+    EXPECT_EQ(MessageProtocol::get_total_size(hdr_buf), five_gib);
+
+    // 9B buffer 对该声明是不完整帧：decode 拒绝且不消费。
+    HeartbeatMessage msg;
+    EXPECT_FALSE(MessageProtocol::decode(hdr_buf, msg));
+    EXPECT_EQ(hdr_buf.size(), 9u);
+
+    // raw_len_from_total uint64 运算正确（5GiB - 6 - 16）。
+    EXPECT_EQ(DataResponseProtocol::raw_len_from_total(five_gib, 16),
+              five_gib - 6 - 16);
+}
+
+// 测试 3：长度域/校验域任一单比特翻转都被拒绝。
+TEST(FrameHeaderTest, SingleBitFlipRejected) {
+    for (uint64_t len : {1ull, 2ull, 100ull, (1ull << 32) + 7, (1ull << 47)}) {
+        uint64_t hdr = expected_header(len);
+        for (int bit = 0; bit < 64; ++bit) {
+            uint64_t flipped = hdr ^ (1ull << bit);
+            char buf[8];
+            write_be64(buf, flipped);
+            uint64_t parsed = 0;
+            EXPECT_FALSE(parse_frame_header(buf, parsed))
+                << "len=" << len << " bit=" << bit << " accepted corrupted header";
+            // get_type 走同一解析路径，同样拒绝。
+            CMString frame_buf;
+            frame_buf.resize(9, '\0');
+            std::memcpy(&frame_buf[0], buf, 8);
+            frame_buf[8] = static_cast<char>(static_cast<uint8_t>(MessageType::HEARTBEAT));
+            EXPECT_EQ(MessageProtocol::get_type(frame_buf), MessageType::INVALID)
+                << "len=" << len << " bit=" << bit;
+        }
+    }
+}
+
+// 测试 4：垃圾 8 字节（全零/全 FF/伪随机）不被误认为帧头。
+TEST(FrameHeaderTest, GarbageRejected) {
+    std::vector<std::array<char, 8>> cases = {
+        std::array<char, 8>{},  // 全零
+        {{char(0xFF), char(0xFF), char(0xFF), char(0xFF),
+          char(0xFF), char(0xFF), char(0xFF), char(0xFF)}},  // 全 FF
+        {{'H', 'E', 'L', 'L', 'O', '!', '!', '!'}},           // ASCII 垃圾
+        {{char(0x12), char(0x34), char(0x56), char(0x78),
+          char(0x9A), char(0xBC), char(0xDE), char(0xF0)}},   // 随机字节
+    };
+    for (const auto& raw : cases) {
+        uint64_t parsed = 0;
+        EXPECT_FALSE(parse_frame_header(raw.data(), parsed));
+        CMString frame_buf;
+        frame_buf.resize(9, '\0');
+        std::memcpy(&frame_buf[0], raw.data(), 8);
+        frame_buf[8] = static_cast<char>(static_cast<uint8_t>(MessageType::HEARTBEAT));
+        EXPECT_EQ(MessageProtocol::get_type(frame_buf), MessageType::INVALID);
+        EXPECT_EQ(MessageProtocol::get_total_size(frame_buf), 0u);
+    }
+}
+
+// 跨界值：len 接近 48 位上限（256TB）仍可编码解析；len=0 非法。
+TEST(FrameHeaderTest, LengthBoundaries) {
+    const uint64_t max_len = 0x0000FFFFFFFFFFFFull;
+    char buf[8];
+    write_be64(buf, make_frame_header(max_len));
+    uint64_t parsed = 0;
+    EXPECT_TRUE(parse_frame_header(buf, parsed));
+    EXPECT_EQ(parsed, max_len);
+
+    write_be64(buf, make_frame_header(1));
+    EXPECT_TRUE(parse_frame_header(buf, parsed));
+    EXPECT_EQ(parsed, 1u);
+}
 
 }  // namespace fly

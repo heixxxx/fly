@@ -1,4 +1,5 @@
 #include <storage/cpp/compressing_streambuf.h>
+#include <common/cpp/data_checksum.h>
 #include <string_view>
 
 CompressingStreamBuf::CompressingStreamBuf(std::ostream& dest,
@@ -83,20 +84,29 @@ void CompressingStreamBuf::flush_chunk() {
     // Zero-copy: use string_view to avoid constructing CMString
     std::string_view input(buffer_.data(), buffer_.size());
 
+    // 块格式（chunked-transfer-design.md §4.4）：
+    //   [i32 unc][i32 comp][u64 crc][data]，crc = data_checksum(压缩后字节)
+    // crc 是写入时刻锚点，覆盖 record 全生命周期（磁盘 → server → 网络 →
+    // client → 解压）。compressed 与 raw passthrough 分支同格式。
     if (compressor_ && !skip) {
         CompressedChunk chunk = compressor_->compress(input);
 
         int32_t uncomp_size = chunk.uncompressed_size_;
         int32_t comp_size = chunk.compressed_size_;
+        uint64_t crc = fly::data_checksum(chunk.data_.data(),
+                                          static_cast<size_t>(chunk.compressed_size_));
 
         dest_.write(reinterpret_cast<const char*>(&uncomp_size), sizeof(int32_t));
         dest_.write(reinterpret_cast<const char*>(&comp_size), sizeof(int32_t));
+        dest_.write(reinterpret_cast<const char*>(&crc), sizeof(uint64_t));
         dest_.write(chunk.data_.data(), static_cast<std::streamsize>(chunk.compressed_size_));
     } else {
         int32_t size = static_cast<int32_t>(buffer_.size());
+        uint64_t crc = fly::data_checksum(buffer_.data(), buffer_.size());
 
         dest_.write(reinterpret_cast<const char*>(&size), sizeof(int32_t));
         dest_.write(reinterpret_cast<const char*>(&size), sizeof(int32_t));
+        dest_.write(reinterpret_cast<const char*>(&crc), sizeof(uint64_t));
         dest_.write(buffer_.data(), static_cast<std::streamsize>(buffer_.size()));
     }
 

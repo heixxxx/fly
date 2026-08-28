@@ -265,7 +265,11 @@ public:
 
     std::pair<bool, ReadResult> try_read_remote(const CMString& object_name);
 
-    std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> read_raw_compressed(const CMString& object_name);
+    // bypass_local=true：零容忍重取路径（§5）——本地 record 已判定损坏，
+    // 跳过 TIER1 走 TIER2 远程副本（无副本即失败，不回读坏源）。
+    // 校验预算耗尽（TIER2 内 CHECKSUM 重取仍败）抛 DataCorruptionError。
+    std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> read_raw_compressed(
+        const CMString& object_name, bool bypass_local = false);
 
     void on_temp_write_started(const CMString& db_path, const CMString& object_name);
     // disk_entry：temp 落盘产物（temp_data_*.dat）的 IndexEntry。提供时填入

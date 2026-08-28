@@ -105,22 +105,15 @@ Database::CompressResult Database::compress_buffered_data(
     const char* data, int64_t data_size,
     const CMString& py_name, FlyBuffer& target) {
 
-    ObjectHeader header;
-    header.total_size_ = 0;
-    header.chunk_count_ = 0;
-    header.compression_type_ = static_cast<uint8_t>(compression_type_);
-    header.py_name_ = py_name;
-    header.py_name_len_ = static_cast<uint16_t>(py_name.size());
-    CMString header_bytes = header.serialize();
-
+    // trailer 格式（§4.4）：块流纯追加，完成后追加 trailer——占位+memcpy
+    // 回填消失（total_size/chunk_count 写完末块自然已知）。
     FlyBufferStreamBuf fly_buf(target);
     CountingStreamBuf counting_buf(fly_buf);
     std::ostream counting_stream(&counting_buf);
 
-    counting_stream.write(header_bytes.data(), static_cast<std::streamsize>(header_bytes.size()));
-
     int64_t total_uncompressed = 0;
     int32_t chunk_count = 0;
+    uint8_t effective_comp = static_cast<uint8_t>(compression_type_);
     {
         auto compressor = compression_type_ != CompressionType::NONE
             ? CompressorFactory::create(compression_type_, compression_level_) : nullptr;
@@ -133,14 +126,18 @@ Database::CompressResult Database::compress_buffered_data(
         chunk_count = csbuf.chunk_count();
         // Small payloads skip compression internally; record the actual format
         // so the read-side picks the matching (de)compressor path.
-        header.compression_type_ = static_cast<uint8_t>(csbuf.effective_compression_type());
+        effective_comp = static_cast<uint8_t>(csbuf.effective_compression_type());
     }
     counting_stream.flush();
 
+    ObjectHeader header;
+    header.compression_type_ = effective_comp;
     header.total_size_ = static_cast<uint64_t>(total_uncompressed);
     header.chunk_count_ = static_cast<uint32_t>(chunk_count);
-    CMString real_header = header.serialize();
-    std::memcpy(target.data(), real_header.data(), real_header.size());
+    header.py_name_ = py_name;
+    header.py_name_len_ = static_cast<uint16_t>(py_name.size());
+    CMString trailer = header.serialize_trailer();
+    target.write(trailer.data(), trailer.size());
 
     return {total_uncompressed, chunk_count};
 }
@@ -324,8 +321,9 @@ fly::WriteErrorType Database::commit_stream(const CMString& object_name,
     int32_t chunk_count = 0;
     {
         ObjectHeader hdr;
-        int64_t off = 0;
-        if (ObjectHeader::deserialize({pure_record->data(), pure_record->size()}, off, hdr)) {
+        size_t trailer_len = 0;
+        if (ObjectHeader::deserialize_trailer({pure_record->data(), pure_record->size()},
+                                              hdr, trailer_len)) {
             original_size = static_cast<int64_t>(hdr.total_size_);
             chunk_count = static_cast<int32_t>(hdr.chunk_count_);
         }
@@ -346,14 +344,15 @@ std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMStrin
     CMString full = full_name(object_name);
     auto& cache = fly::ObjectCache::instance();
 
-    // Low-tier hit: skip disk/remote IO. Re-parse py_name from the cached header.
+    // Low-tier hit: skip disk/remote IO. Re-parse py_name from the cached trailer.
     // Skipped when bypass_cache=true (cache="none" mode).
     if (!bypass_cache) {
         if (auto [hit, cached] = cache.get_low(full); hit) {
             CMString py_name;
             ObjectHeader hdr;
-            int64_t off = 0;
-            if (ObjectHeader::deserialize({cached->data(), cached->size()}, off, hdr)) {
+            size_t trailer_len = 0;
+            if (ObjectHeader::deserialize_trailer({cached->data(), cached->size()},
+                                                  hdr, trailer_len)) {
                 py_name = hdr.py_name_;
             }
             // Malformed cached entry（py_name 空）— fall through to re-read from source.
@@ -385,21 +384,48 @@ std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMStrin
         return {nullptr, {}};
     }
 
+    // ── 零容忍 trailer 校验（chunked-transfer-design §5）──
+    // 取回的 record 必须解析出合法 trailer（块 CRC 的验证发生在解压出口）。
+    // 失败 = 缓存/本地盘/传输损坏 → 失效缓存 + 一次 bypass 重取（远程副本
+    // 优先；无副本即败）→ 仍败 → DataCorruptionError（FATAL，上层转 task 失败）。
+    {
+        ObjectHeader hdr;
+        size_t trailer_len = 0;
+        if (!ObjectHeader::deserialize_trailer({comp_data->data(), comp_data->size()},
+                                                hdr, trailer_len)) {
+            ERR("[FATAL-DATA-CORRUPTION] trailer verify failed, invalidating cache + one bypass re-fetch: obj={}",
+                full);
+            fly::ObjectCache::instance().remove(full);
+            auto [f2, d2, py2, h2, c2] = ds->read_raw_compressed(full, /*bypass_local=*/true);
+            if (f2 && d2 && !d2->empty() &&
+                ObjectHeader::deserialize_trailer({d2->data(), d2->size()}, hdr, trailer_len)) {
+                comp_data = d2;
+                comp_py_name = py2;
+                comp_hash = h2;
+            } else {
+                throw fly::DataCorruptionError(
+                    "[FATAL-DATA-CORRUPTION] object '" + full +
+                    "': trailer verify failed after one re-fetch");
+            }
+        }
+    }
+
     if (backup && !ds->has_local_object(full)) {
         do_backup_write(full, object_name, CMString(comp_data->data(), comp_data->size()), comp_hash);
     }
 
-    // Populate low tier: account by uncompressed size from the object header
-    // (fall back to compressed size if the header cannot be parsed).
+    // Populate low tier: account by uncompressed size from the object trailer
+    // (fall back to compressed size if the trailer cannot be parsed).
     size_t accounted = comp_data->size();
     {
         ObjectHeader hdr;
-        int64_t off = 0;
-        if (ObjectHeader::deserialize({comp_data->data(), comp_data->size()}, off, hdr) &&
+        size_t trailer_len = 0;
+        if (ObjectHeader::deserialize_trailer({comp_data->data(), comp_data->size()},
+                                              hdr, trailer_len) &&
             hdr.total_size_ > 0) {
             accounted = static_cast<size_t>(hdr.total_size_);
         }
-        // Keep compressed-size accounting when the header cannot be parsed.
+        // Keep compressed-size accounting when the trailer cannot be parsed.
     }
     cache.put_low(full, comp_data, accounted);
 
@@ -431,12 +457,13 @@ void Database::do_backup_write(const CMString& full, const CMString& object_name
 
     int64_t h_off = 0;
     ObjectHeader header;
-    if (!ObjectHeader::deserialize(compressed_data, h_off, header)) {
-        // 源数据损坏（header 解析失败）：与 register_write 失败同款处理——
+    size_t backup_trailer_len = 0;
+    if (!ObjectHeader::deserialize_trailer(compressed_data, header, backup_trailer_len)) {
+        // 源数据损坏（trailer 解析失败）：与 register_write 失败同款处理——
         // 撤写登记 + 恢复 write context + 放弃 backup，不落盘坏数据。
-        ds->on_write_failed(db_path_, full, "do_backup_write: corrupted source object header");
+        ds->on_write_failed(db_path_, full, "do_backup_write: corrupted source object trailer");
         fly::WorkerAgentContext::set_current_write_hash(saved_hash);
-        ERR("do_backup_write: corrupted object header for '{}'", object_name);
+        ERR("do_backup_write: corrupted object trailer for '{}'", object_name);
         return;
     }
 
@@ -484,14 +511,20 @@ void Database::backup_object(const CMString& object_name) {
     CMString full = full_name(object_name);
     auto ds = fly::DataService::instance();
 
-    auto [found, compressed_data, py_name, source_hash, can_still_produce] = ds->read_raw_compressed(full);
-    if (!found || !compressed_data || compressed_data->empty()) {
-        ERR("backup_object: no data for '{}'", full);
-        return;
-    }
+    // 零容忍（§5）：源数据校验预算耗尽 → 放弃 backup（不落坏数据），
+    // ERR 大声暴露；backup 是尽力语义（无错误通道），不抛。
+    try {
+        auto [found, compressed_data, py_name, source_hash, can_still_produce] = ds->read_raw_compressed(full);
+        if (!found || !compressed_data || compressed_data->empty()) {
+            ERR("backup_object: no data for '{}'", full);
+            return;
+        }
 
-    CMString hash_to_use = source_hash.empty() ? fly::WorkerAgentContext::get_current_write_hash() : source_hash;
-    do_backup_write(full, object_name, CMString(compressed_data->data(), compressed_data->size()), hash_to_use);
+        CMString hash_to_use = source_hash.empty() ? fly::WorkerAgentContext::get_current_write_hash() : source_hash;
+        do_backup_write(full, object_name, CMString(compressed_data->data(), compressed_data->size()), hash_to_use);
+    } catch (const fly::DataCorruptionError& e) {
+        ERR("backup_object: {} — abandoning backup of '{}'", e.what(), full);
+    }
 }
 
 void Database::freeze() {
@@ -698,8 +731,9 @@ void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compresse
     int32_t chunk_count = 0;
     {
         ObjectHeader hdr;
-        int64_t off = 0;
-        if (ObjectHeader::deserialize({compressed_data->data(), compressed_data->size()}, off, hdr)) {
+        size_t trailer_len = 0;
+        if (ObjectHeader::deserialize_trailer({compressed_data->data(), compressed_data->size()},
+                                              hdr, trailer_len)) {
             original_size = static_cast<int64_t>(hdr.total_size_);
             chunk_count = static_cast<int32_t>(hdr.chunk_count_);
         }

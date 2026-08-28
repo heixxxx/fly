@@ -101,11 +101,11 @@ void PeerRpcServer::server_loop() {
                         // 循环切帧（一次可能收多个帧）
                         auto& buf = it->second;
                         while (true) {
-                            // 帧完整性检查：4B total_len + 1B type + payload
-                            if (buf.size() < 5) break;  // 不足 header，等更多数据
-                            uint32_t total_len = MessageProtocol::get_total_size(buf);
-                            if (total_len < 1 || buf.size() < 4 + total_len) break;  // 帧不完整
-                            uint8_t raw_type = static_cast<uint8_t>(buf[4]);
+                            // 帧完整性检查：8B header + 1B type + payload
+                            if (buf.size() < 9) break;  // 不足 header，等更多数据
+                            uint64_t total_len = MessageProtocol::get_total_size(buf);
+                            if (total_len < 1 || buf.size() < 8 + total_len) break;  // 帧不完整
+                            uint8_t raw_type = static_cast<uint8_t>(buf[8]);
                             if (raw_type == static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST)) {
                                 PeerRpcRequestMessage msg;
                                 // decode 失败时 buf 不会被消费（erase 只在成功时执行），
@@ -113,8 +113,8 @@ void PeerRpcServer::server_loop() {
                                 // 改为：丢弃坏帧并 WARN，继续处理后续帧。
                                 if (!MessageProtocol::decode(buf, msg)) {
                                     WARN("PeerRpcServer: corrupt REQUEST frame ({}B), discarding",
-                                         4 + total_len);
-                                    buf.erase(0, 4 + total_len);
+                                         8 + total_len);
+                                    buf.erase(0, 8 + total_len);
                                     continue;
                                 }
                                 decoded_msgs.push_back({true, msg.rpc_id_, msg.src_worker_id_,
@@ -123,8 +123,8 @@ void PeerRpcServer::server_loop() {
                                 PeerRpcResponseMessage msg;
                                 if (!MessageProtocol::decode(buf, msg)) {
                                     WARN("PeerRpcServer: corrupt RESPONSE frame ({}B), discarding",
-                                         4 + total_len);
-                                    buf.erase(0, 4 + total_len);
+                                         8 + total_len);
+                                    buf.erase(0, 8 + total_len);
                                     continue;
                                 }
                                 decoded_msgs.push_back({false, msg.rpc_id_, 0,

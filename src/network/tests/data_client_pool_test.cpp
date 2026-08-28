@@ -7,11 +7,15 @@
 // DATA_NOT_READY); after the change they pass (pool returns ReadError::DATA_NOT_READY).
 #include <gtest/gtest.h>
 #include <storage/cpp/data_service.h>
+#include <storage/cpp/data_writer.h>
 #include <serialization/cpp/object_header.h>
 #include <common/cpp/fly_buffer.h>
+#include <common/cpp/data_checksum.h>
 #include <network/cpp/data_client_pool.h>
 #include <network/cpp/transport_interface.h>
 #include <network/cpp/tcp_socket.h>
+#include <network/cpp/message_protocol.h>
+#include <network/cpp/message_types.h>
 #include <network/cpp/net_quality_monitor.h>
 #include <common/cpp/error_types.h>
 #include <log/cpp/logger.h>
@@ -22,6 +26,7 @@
 #include <atomic>
 #include <latch>
 #include <vector>
+#include <poll.h>
 
 namespace fly {
 
@@ -260,6 +265,145 @@ TEST_F(DataClientPoolTest, EvictsByAntiSkewWhenFdLimitReached) {
     // 3 个不同 peer 各 connect 一次；max_fd=2 → 第三次必然淘汰过 ≥1 个 idle
     EXPECT_EQ(transport->connect_count(), 3);
     EXPECT_GE(transport->close_count(), 1);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// wire 根摘要（chunked-transfer-design.md §4.2/§4.5 / 测试 6-7）
+// ════════════════════════════════════════════════════════════════════
+
+// 测试 7：真 DataServer 响应携带非零 payload_crc_ 且 == data_checksum(raw)。
+// 观测口径：手工 client 读整帧 → 解析 small fields → 对照本地重算。
+TEST_F(DataClientPoolTest, ServerComputesCrc) {
+    std::string db_path = "/crctest";
+    std::string full = db_path + ":obj";
+    std::string payload = "wire root checksum anchor payload";
+
+    // 写一个新格式 record 并登记（复用 data_server 服务路径）。
+    {
+        auto record = CMMakeShared<FlyBuffer>();
+        int32_t sz = static_cast<int32_t>(payload.size());
+        uint64_t crc = data_checksum(payload.data(), payload.size());
+        record->write(reinterpret_cast<const char*>(&sz), 4);
+        record->write(reinterpret_cast<const char*>(&sz), 4);
+        record->write(reinterpret_cast<const char*>(&crc), 8);
+        record->write(payload.data(), payload.size());
+        ObjectHeader header;
+        header.total_size_ = payload.size();
+        header.chunk_count_ = 1;
+        header.py_name_ = "bytes";
+        header.py_name_len_ = 5;
+        header.compression_type_ = 0;
+        CMString trailer = header.serialize_trailer();
+        record->write(trailer.data(), trailer.size());
+
+        ds_->register_database(db_path, test_dir_ + "/data");
+        ds_->on_write_started(db_path, full);
+        DataWriter writer(test_dir_, test_dir_ + "/data", "crcw", 0);
+        writer.write_record(full, payload.size(), 1, *record, "");
+        writer.flush();
+        auto entries = writer.get_all_entries(full);
+        ASSERT_TRUE(entries.has_value());
+        ds_->on_write_completed(db_path, full, entries.value());
+        ds_->on_object_flushed(full);
+    }
+
+    ds_->start_data_server("127.0.0.1", 0, 2);
+    int port = ds_->get_data_port();
+
+    auto transport = create_tcp_transport();
+    int fd = transport->create_connection("127.0.0.1", port);
+    ASSERT_GE(fd, 0);
+    transport->set_recv_timeout(fd, 5000);
+    transport->set_send_timeout(fd, 5000);
+
+    DataRequestMessage req;
+    req.object_name_ = full;
+    CMString encoded = MessageProtocol::encode(req);
+    ASSERT_TRUE(transport->send_all(fd, encoded.data(), encoded.size()));
+
+    // 读整帧：9B 帧头 → 5B 子头 → small fields → raw。
+    char fhdr[9];
+    ASSERT_TRUE(recv_exact(transport.get(), fd, fhdr, 9));
+    uint64_t total_len = 0;
+    ASSERT_TRUE(parse_frame_header(fhdr, total_len));
+    char shdr[5];
+    ASSERT_TRUE(recv_exact(transport.get(), fd, shdr, 5));
+    uint32_t small_len = 0;
+    bool has_raw = false;
+    DataResponseProtocol::parse_sub_header(shdr, small_len, has_raw);
+    ASSERT_TRUE(has_raw);
+    CMString small(small_len, '\0');
+    ASSERT_TRUE(recv_exact(transport.get(), fd, small.data(), small_len));
+    DataResponseMessage resp;
+    ASSERT_TRUE(DataResponseProtocol::decode_small_fields(small, resp));
+    uint64_t raw_len = DataResponseProtocol::raw_len_from_total(total_len, small_len);
+    CMString raw(raw_len, '\0');
+    ASSERT_TRUE(recv_exact(transport.get(), fd, raw.data(), raw_len));
+    transport->close(fd);
+
+    EXPECT_TRUE(resp.success_);
+    EXPECT_NE(resp.payload_crc_, 0u);
+    EXPECT_EQ(resp.payload_crc_, data_checksum(raw.data(), raw.size()));
+}
+
+// 测试 6：fake server 故意发错 payload_crc_ → client 必须拒绝（CHECKSUM，
+// 决定性注入，零生产测试钩子）。
+TEST_F(DataClientPoolTest, ClientDetectsBadCrc) {
+    auto transport_listener = create_tcp_transport();
+    int listen_fd = transport_listener->create_listen_socket("127.0.0.1", 0);
+    ASSERT_GE(listen_fd, 0);
+    int port = transport_listener->get_port(listen_fd);
+
+    // fake server 线程：accept → 读 DATA_REQUEST → 发"成功"响应但 crc 注错。
+    std::thread server_thread([&] {
+        struct pollfd pfd;
+        pfd.fd = listen_fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        if (::poll(&pfd, 1, 10000) <= 0) return;
+        int cfd = transport_listener->accept_connection(listen_fd);
+        if (cfd < 0) return;
+        transport_listener->set_recv_timeout(cfd, 5000);
+        transport_listener->set_send_timeout(cfd, 5000);
+
+        // 读 client 的 DATA_REQUEST 帧（9B 头 + total_len-1）。
+        char h[9];
+        if (!recv_exact(transport_listener.get(), cfd, h, 9)) return;
+        uint64_t tl = 0;
+        if (!parse_frame_header(h, tl)) return;
+        CMString reqbuf(static_cast<size_t>(tl - 1), '\0');
+        if (!recv_exact(transport_listener.get(), cfd, reqbuf.data(),
+                        static_cast<size_t>(tl - 1))) {
+            return;
+        }
+
+        // 组"成功"响应：payload_crc_ 故意错误（≠ raw 的真实摘要）。
+        std::string raw = "corrupt-me wire payload";
+        DataResponseMessage resp;
+        resp.success_ = true;
+        resp.py_name_ = "bytes";
+        resp.payload_crc_ = 0xDEADBEEFDEADBEEFull;  // 注错
+        auto buf = CMMakeShared<FlyBuffer>();
+        buf->write(raw.data(), raw.size());
+        auto seg = DataResponseProtocol::encode(resp, buf);
+        ASSERT_TRUE(transport_listener->send_all(cfd, seg.header_segment.data(),
+                                                 seg.header_segment.size()));
+        ASSERT_TRUE(transport_listener->send_all(cfd, seg.raw_ptr,
+                                                 static_cast<size_t>(seg.raw_len)));
+        // 等 client 读完再关（避免 RST 截断）。
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        transport_listener->close(cfd);
+    });
+
+    DataClientPool pool(1);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", port, "/fake:obj", 0, 0, 5000);
+
+    server_thread.join();
+    transport_listener->close(listen_fd);
+
+    EXPECT_FALSE(success);
+    EXPECT_EQ(rerr, ReadError::CHECKSUM) << "error: " << error;
 }
 
 }  // namespace fly

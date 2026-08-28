@@ -1,38 +1,33 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <serialization/cpp/object_header.h>
+#include <common/cpp/data_checksum.h>
 #include <cstring>
 #include <string_view>
 
 DecompressingStreamBuf::DecompressingStreamBuf(const char* data, size_t size)
     : chunk_data_(nullptr), chunk_data_size_(0) {
-    if (!data || size == 0) return;
+    if (!data || size == 0) return;  // 空输入 = 合法空流
 
-    size_t fixed_sz = static_cast<size_t>(ObjectHeader::fixed_header_size());
-    if (size < fixed_sz) return;
-
-    uint16_t py_name_len;
-    std::memcpy(&py_name_len, data + sizeof(uint32_t) + sizeof(uint8_t), sizeof(uint16_t));
-
-    size_t full_header_sz = fixed_sz + py_name_len;
-    if (size < full_header_sz) return;
-
-    CMString header_data(data, full_header_sz);
-    int64_t offset = 0;
+    // 尾部解析 trailer（§4.4）：失败 = 结构损坏（含旧格式前置 header 的 record）
+    // → checksum_failed_，调用方按零容忍语义处理。不做静默空流降级。
     ObjectHeader header;
-    if (!ObjectHeader::deserialize(header_data, offset, header)) {
-        // 坏 header（magic/版本不符）：与前置 size 防御同款降级——chunk_data_
-        // 保持空，refill 直接 eof（空流），不向上抛。
+    size_t trailer_len = 0;
+    if (!ObjectHeader::deserialize_trailer({data, size}, header, trailer_len)) {
+        checksum_failed_ = true;
         return;
     }
 
     py_name_ = header.py_name_;
+    total_uncompressed_ = header.total_size_;
+    chunk_count_ = header.chunk_count_;
     auto comp_type = static_cast<CompressionType>(header.compression_type_);
     if (comp_type != CompressionType::NONE) {
         compressor_ = CompressorFactory::create(comp_type);
     }
 
-    chunk_data_ = data + full_header_sz;
-    chunk_data_size_ = size - full_header_sz;
+    // 块流必须恰好消耗 chunk_data_size_（refill 越界即结构损坏）。
+    chunk_data_ = data;
+    chunk_data_size_ = size - trailer_len;
     chunk_data_pos_ = 0;
     buffer_.reserve(4096);
 }
@@ -66,18 +61,37 @@ std::streamsize DecompressingStreamBuf::xsgetn(char* s, std::streamsize n) {
 }
 
 bool DecompressingStreamBuf::refill() {
+    if (checksum_failed_) return false;
     if (chunk_data_pos_ >= chunk_data_size_) return false;
 
-    constexpr size_t chunk_header_sz = sizeof(int32_t) * 2;
-    if (chunk_data_pos_ + chunk_header_sz > chunk_data_size_) return false;
+    // 块头 16B：[i32 unc][i32 comp][u64 crc]（§4.4）。任何越界 = 结构损坏。
+    constexpr size_t chunk_header_sz = sizeof(int32_t) * 2 + sizeof(uint64_t);
+    if (chunk_data_pos_ + chunk_header_sz > chunk_data_size_) {
+        checksum_failed_ = true;
+        return false;
+    }
 
     int32_t uncomp_size, comp_size;
+    uint64_t stored_crc;
     std::memcpy(&uncomp_size, chunk_data_ + chunk_data_pos_, sizeof(int32_t));
     chunk_data_pos_ += sizeof(int32_t);
     std::memcpy(&comp_size, chunk_data_ + chunk_data_pos_, sizeof(int32_t));
     chunk_data_pos_ += sizeof(int32_t);
+    std::memcpy(&stored_crc, chunk_data_ + chunk_data_pos_, sizeof(uint64_t));
+    chunk_data_pos_ += sizeof(uint64_t);
 
-    if (chunk_data_pos_ + static_cast<size_t>(comp_size) > chunk_data_size_) return false;
+    if (comp_size < 0 || uncomp_size < 0 ||
+        chunk_data_pos_ + static_cast<size_t>(comp_size) > chunk_data_size_) {
+        checksum_failed_ = true;
+        return false;
+    }
+
+    // 写入时刻锚点 CRC：磁盘 → server → 网络 → client → 解压 全生命周期覆盖。
+    if (fly::data_checksum(chunk_data_ + chunk_data_pos_, static_cast<size_t>(comp_size)) !=
+        stored_crc) {
+        checksum_failed_ = true;
+        return false;
+    }
 
     std::string_view comp_view(chunk_data_ + chunk_data_pos_, static_cast<size_t>(comp_size));
     chunk_data_pos_ += static_cast<size_t>(comp_size);
@@ -86,8 +100,11 @@ bool DecompressingStreamBuf::refill() {
         // Zero-copy: decompress directly into buffer_
         buffer_.resize(static_cast<size_t>(uncomp_size));
         int32_t written = compressor_->decompress_to(comp_view, buffer_.data(), buffer_.size());
-        if (written < 0) {
+        if (written < 0 || written != uncomp_size) {
+            // CRC 已过验但解压失败 = 实现层缺陷或 CRC 漏过的损坏——按数据
+            // 损坏上报（零容忍），不静默截断。
             buffer_.clear();
+            checksum_failed_ = true;
             return false;
         }
         buffer_.resize(static_cast<size_t>(written));

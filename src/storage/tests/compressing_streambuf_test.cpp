@@ -110,14 +110,14 @@ TEST(CompressingStreamBufTest, SmallDataSkipsCompression) {
     delete small_buf;
 
     std::string small_result = small_oss.str();
-    ASSERT_GE(small_result.size(), sizeof(int32_t) * 2 + 100u);
+    ASSERT_GE(small_result.size(), sizeof(int32_t) * 2 + sizeof(uint64_t) + 100u);
     int32_t uncomp = 0, comp = 0;
     std::memcpy(&uncomp, small_result.data(), sizeof(int32_t));
     std::memcpy(&comp, small_result.data() + sizeof(int32_t), sizeof(int32_t));
     EXPECT_EQ(uncomp, 100);   // raw passthrough: sizes equal payload size
     EXPECT_EQ(comp, 100);
-    // Payload bytes preserved verbatim.
-    EXPECT_EQ(std::string(small_result.data() + sizeof(int32_t) * 2, 100),
+    // Payload bytes preserved verbatim.（块头 16B：unc/comp/crc，§4.4）
+    EXPECT_EQ(std::string(small_result.data() + sizeof(int32_t) * 2 + sizeof(uint64_t), 100),
               std::string(100, 'A'));
 
     // 2) Large payload → actually compressed (comp_size < uncomp_size for

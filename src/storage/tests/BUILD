@@ -155,6 +155,30 @@ cc_test(
     copts = ["-std=c++20"],
 )
 
+# 磁盘 record 新格式（trailer 化 + 块 CRC）——chunked-transfer-design §4.4
+cc_test(
+    name = "record_format_test",
+    srcs = ["record_format_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/storage/cpp:fly_storage",
+        "//src/common/cpp:data_checksum",
+    ],
+    copts = ["-std=c++20"],
+)
+
+# 零容忍数据校验语义（一次重取 → FATAL）——chunked-transfer-design §5
+cc_test(
+    name = "data_corruption_test",
+    srcs = ["data_corruption_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/storage/cpp:fly_storage",
+        "//src/common/cpp:data_checksum",
+    ],
+    copts = ["-std=c++20"],
+)
+
 # 并发 micro-benchmark：测量 DataService 索引访问的锁并发性。独立 target，
 # 不进常规 test 套件（按需运行测吞吐，输出 ops/sec 对比数据）。运行：
 #   ./fly.sh test //src/storage/tests:data_service_concurrency_bench

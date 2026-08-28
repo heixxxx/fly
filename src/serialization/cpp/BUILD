@@ -13,6 +13,7 @@ cc_library(
     deps = [
         "@bitsery//:bitsery",
         "//src/common/cpp:fly_common_types",
+        "//src/common/cpp:data_checksum",
         "//third_party:boost_preprocessor",
     ],
 )
@@ -21,5 +22,6 @@ cc_library(
 cc_shared_library(
     name = "fly_serialization_so",
     deps = [":fly_serialization"],
+    dynamic_deps = ["//src/common/cpp:data_checksum_so"],
     visibility = ["//visibility:public"],
 )

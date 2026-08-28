@@ -13,6 +13,7 @@ cc_library(
     linkopts = ["-llz4", "-lz", "-lzstd"],
     deps = [
         "//src/common/cpp:fly_common_types",
+        "//src/common/cpp:data_checksum",
         "//src/serialization/cpp:fly_serialization",
         "//src/core/cpp:fly_core",
         "//src/log/cpp:fly_log",
@@ -33,6 +34,7 @@ cc_shared_library(
         "//third_party:zstd",
     ],
     dynamic_deps = [
+        "//src/common/cpp:data_checksum_so",
         "//src/serialization/cpp:fly_serialization_so",
         "//src/core/cpp:fly_core_so",
         "//src/log/cpp:fly_log_so",

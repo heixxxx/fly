@@ -31,6 +31,9 @@ public:
     int64_t total_uncompressed() const;
     int32_t chunk_count() const;
     bool is_write_mode() const { return is_write_mode_; }
+    // 读模式：任一校验失败（trailer/块 CRC/结构越界）为 true——Python 面
+    // 读完后必须检查（零容忍语义，§4.4/§5）。
+    bool checksum_failed() const;
 
 private:
     bool is_write_mode_;

@@ -4,6 +4,7 @@
 #include <storage/cpp/data_writer.h>
 #include <serialization/cpp/object_header.h>
 #include <common/cpp/fly_buffer.h>
+#include <common/cpp/data_checksum.h>
 #include <network/cpp/data_client_pool.h>
 #include <network/cpp/tcp_socket.h>
 #include <network/cpp/message_protocol.h>
@@ -14,6 +15,30 @@
 #include <atomic>
 
 namespace fly {
+
+// 新格式 record（§4.4）：单 raw 块 [i32 unc][i32 comp][u64 crc][data] + trailer。
+namespace {
+FlyBufferPtr make_simple_record(const std::string& data, const CMString& py_name) {
+    auto record = CMMakeShared<FlyBuffer>();
+    int32_t sz = static_cast<int32_t>(data.size());
+    uint64_t crc = data_checksum(data.data(), data.size());
+    record->write(reinterpret_cast<const char*>(&sz), 4);
+    record->write(reinterpret_cast<const char*>(&sz), 4);
+    record->write(reinterpret_cast<const char*>(&crc), 8);
+    record->write(data.data(), data.size());
+
+    ObjectHeader header;
+    header.total_size_ = data.size();
+    header.chunk_count_ = 1;
+    header.py_name_ = py_name;
+    header.py_name_len_ = static_cast<uint16_t>(py_name.size());
+    header.compression_type_ = 0;  // raw passthrough
+    CMString trailer = header.serialize_trailer();
+    record->write(trailer.data(), trailer.size());
+    return record;
+}
+}  // namespace
+
 
 class DataTransferTest : public ::testing::Test {
 protected:
@@ -64,16 +89,7 @@ TEST_F(DataTransferTest, DataServerReturnsDataForCompletedWrite) {
 
     ds_->on_write_started(db_path, full);
 
-    auto record = CMMakeShared<FlyBuffer>();
-    ObjectHeader header;
-    header.total_size_ = test_data.size();
-    header.chunk_count_ = 1;
-    header.py_name_ = "bytes";
-    header.py_name_len_ = 5;
-    header.compression_type_ = 0;
-    CMString header_bytes = header.serialize();
-    record->write(header_bytes.data(), header_bytes.size());
-    record->write(test_data.data(), test_data.size());
+    auto record = make_simple_record(test_data, "bytes");
 
     DataWriter writer(test_dir_, test_dir_ + "/data", "test", 0);
     writer.write_record(full, test_data.size(), 1, *record, "");
@@ -135,16 +151,7 @@ TEST_F(DataTransferTest, DataServerHandlesConcurrentRequestsBeyondThreadCount) {
 
         ds_->on_write_started(db_path, full);
 
-        auto record = CMMakeShared<FlyBuffer>();
-        ObjectHeader header;
-        header.total_size_ = test_data.size();
-        header.chunk_count_ = 1;
-        header.py_name_ = "bytes";
-        header.py_name_len_ = 5;
-        header.compression_type_ = 0;
-        CMString header_bytes = header.serialize();
-        record->write(header_bytes.data(), header_bytes.size());
-        record->write(test_data.data(), test_data.size());
+        auto record = make_simple_record(test_data, "bytes");
 
         DataWriter writer(test_dir_, test_dir_ + "/data", "w" + std::to_string(i), 0);
         writer.write_record(full, test_data.size(), 1, *record, "");
@@ -194,30 +201,31 @@ TEST_F(DataTransferTest, DataServerEchoesNetProbeRequest) {
     CMString encoded = MessageProtocol::encode(req);
     ASSERT_TRUE(transport->send_all(fd, encoded.data(), encoded.size()));
 
-    // Read 5B frame header [4B total_len][1B type].
-    char hdr[5];
+    // Read 9B frame prefix [8B header][1B type].
+    char hdr[9];
     size_t got = 0;
-    while (got < 5) {
-        ssize_t n = transport->recv(fd, hdr + got, 5 - got);
+    while (got < 9) {
+        ssize_t n = transport->recv(fd, hdr + got, 9 - got);
         ASSERT_GT(n, 0);
         got += static_cast<size_t>(n);
     }
-    uint32_t total_len = read_be32(hdr);
-    ASSERT_EQ(static_cast<uint8_t>(hdr[4]),
+    uint64_t total_len = 0;
+    ASSERT_TRUE(parse_frame_header(hdr, total_len));
+    ASSERT_EQ(static_cast<uint8_t>(hdr[8]),
               static_cast<uint8_t>(MessageType::NET_PROBE_RESPONSE));
 
     // total_len = 1(type, already read) + payload_len. Read the remaining
     // payload bytes, then reassemble the full frame for decode.
-    uint32_t payload_len = total_len - 1;
-    CMString rest(payload_len, '\0');
+    uint64_t payload_len = total_len - 1;
+    CMString rest(static_cast<size_t>(payload_len), '\0');
     size_t rgot = 0;
     while (rgot < payload_len) {
-        ssize_t n = transport->recv(fd, rest.data() + rgot, payload_len - rgot);
+        ssize_t n = transport->recv(fd, rest.data() + rgot, static_cast<size_t>(payload_len) - rgot);
         ASSERT_GT(n, 0) << "recv rest failed at offset " << rgot << "/" << payload_len;
         rgot += static_cast<size_t>(n);
     }
     CMString frame;
-    frame.assign(hdr, 5);
+    frame.assign(hdr, 9);
     frame += rest;
 
     NetProbeResponseMessage resp;
