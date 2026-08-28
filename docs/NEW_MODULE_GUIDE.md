@@ -157,7 +157,7 @@ cc_shared_library(
 #include <export/cpp/export_macros.h>
 
 FLY_EXPORT_MODULE(_fly_pipeline) {
-    FLY_EXPORT_CLASS(fly::Pipeline, "EXPPlPipeline")
+    FLY_EXPORT_CLASS(fly::Pipeline, "EXPlPipeline")
         FLY_EXPORT_INIT()
         FLY_EXPORT_METHOD("add_stage", &fly::Pipeline::add_stage)
         FLY_EXPORT_METHOD("execute", &fly::Pipeline::execute)
@@ -168,7 +168,7 @@ FLY_EXPORT_MODULE(_fly_pipeline) {
 
 **规范：**
 - 模块名固定为 `_fly_` + 模块名（Python 加载约定）
-- 导出类名前缀 `EXP` + 模块缩写（如 Pipeline → `EXPPl`）
+- 导出类名前缀 `EX` + 模块缩写 + 类型名（如 Pipeline → `EXPlPipeline`，与现行 `EXStgDatabase`/`EXSlvSubdomainSolver` 一致）
 - 使用 `FLY_EXPORT_*` 宏（定义于 `export_macros.h`）
 
 ### 编译配置 `BUILD`
@@ -213,13 +213,14 @@ cc_binary(
 ### `__init__.py`
 
 ```python
-from _fly_pipeline import EXPPlPipeline
+from _fly_pipeline import EXPlPipeline
 
+# 工厂函数等 Python-friendly 封装（不加 _ 前缀，允许 import * 导出）
 def create_pipeline():
     """Python-friendly factory for Pipeline."""
-    return EXPPlPipeline()
+    return EXPlPipeline()
 
-__all__ = ['EXPPlPipeline', 'create_pipeline']
+# 禁止 __all__：跨模块导出靠包根 `from .xxx import *` 级联 + 默认行为
 ```
 
 ### `BUILD`
@@ -329,13 +330,10 @@ ps += "sys.path.insert(0, '" + (bazel_bin / "src" / "pipeline" / "export").strin
 ps += "import _fly_pipeline\n";
 ```
 
-编辑 `src/fly/__init__.py`，在模块导入区添加：
+编辑 `src/fly/__init__.py`，在模块导入区添加（**裸包根导入**，两种布局物理结构已统一；禁止 try/except 双布局）：
 
 ```python
-try:
-    from pipeline.pipeline import SomeClass
-except ImportError:
-    from pipeline.py.pipeline import SomeClass
+from pipeline import EXPlPipeline  # 包根导出符号
 ```
 
 ### 6.3 添加到 compile_commands.json (可选)
@@ -353,34 +351,24 @@ except ImportError:
 
 ### 6.4 添加到 fly.sh install（部署模式）
 
-`fly.sh install` 创建 `build/` 目录，将 bazel-bin 产物 symlink 到可移植的目录结构中。新模块需要在 `fly.sh` 的 `do_install()` 函数中注册。
-
-**步骤 1**：在 `mkdir` 块中添加 Python 模块目录：
+`fly.sh install` 创建 `build/` 目录，将 bazel-bin 产物 symlink 到可移植的目录结构中。新模块只需把模块名加入 `fly.sh` 的 `do_install()` 中 Python 模块的统一 `for mod in ...` 循环：
 
 ```bash
-mkdir -p "$build_dir/python/pipeline"
-```
-
-**步骤 2**：在 Python 模块 symlink 块中添加（按模块名规律加入 `for mod in ...` 循环，或单独添加）：
-
-```bash
-# Pipeline
-ln -sf "$bazel_bin/src/pipeline/export/_fly_pipeline.so" "$build_dir/python/pipeline/"
-for py in "$FLY_ROOT/src/pipeline/py/"*.py; do
-    [ -f "$py" ] && ln -sf "$py" "$build_dir/python/pipeline/"
+for mod in core log network task test storage agent solver message monitor pipeline; do
+    ...mkdir + ln -sf ...
 done
 ```
 
-**步骤 3**：C++ shared libs 会自动被通配符规则拾取（`src/*/export/_fly_*.so` 和 `src/*/cpp/libfly_*_so.so`），无需额外操作。
+C++ shared libs 由通配符规则自动拾取（`src/*/export/_fly_*.so` 和 `src/*/cpp/libfly_*_so.so`），无需额外操作。
 
-**步骤 4**：验证安装：
+**验证安装**：
 
 ```bash
 ./fly.sh build //src/pipeline/...
 ./fly.sh install
 ls -la build/python/pipeline/   # 应有 _fly_pipeline.so + *.py
 ls -la build/lib/                # 应有 libfly_pipeline_so.so + _fly_pipeline.so
-./build/bin/fly -c "from pipeline import EXPPlPipeline; print('OK')"
+./build/bin/fly -c "from pipeline import EXPlPipeline; print('OK')"
 ```
 
 **build/ 目录结构说明**：
@@ -416,7 +404,7 @@ build/
 
 # 安装并验证 deploy 模式
 ./fly.sh install
-./build/bin/fly -c "from pipeline import EXPPlPipeline; print('Pipeline OK')"
+./build/bin/fly -c "from pipeline import EXPlPipeline; print('Pipeline OK')"
 ```
 
 ---
@@ -432,8 +420,8 @@ build/
 - [ ] 模块名 `_fly_pipeline.so` 遵循 `_fly_` 前缀约定
 - [ ] `main.cpp` 的 `setup_sys_path()` 包含新模块路径（build/ 和 bazel-bin/ 两种布局）
 - [ ] `main.cpp` 的 C++ 模块加载区包含 `import _fly_pipeline\n`
-- [ ] `src/fly/__init__.py` 包含新模块的 Python 导入（带 try/except 兼容两种路径）
+- [ ] `src/fly/__init__.py` 包含新模块的 Python 导入（裸包根导入 `from pipeline import EXPlPipeline`，禁止 try/except 双布局）
 - [ ] `main/cpp/BUILD` 的 `deps` 和 `dynamic_deps` 包含新模块
-- [ ] `fly.sh` 的 `do_install()` 包含新模块的 mkdir + symlink 规则
+- [ ] `fly.sh` 的 `do_install()` 统一 `for mod in ...` 循环包含新模块名
 - [ ] `nm -CD` 验证无符号重复（新模块的符号只出现在 `libfly_pipeline_so.so` 中）
 - [ ] `./fly.sh install` 后 `build/` 目录结构正确

@@ -22,7 +22,7 @@
 ```bash
 ./fly.sh build //src/main/cpp:fly
 ./fly.sh install               # Creates build/ with symlinks
-./qa/runqa                     # Preferred runner (default 4 parallel, capped at 32; -j N override)
+./qa/runqa                     # Preferred runner (fixed default parallelism, capped; -j N override — 并行度口径见 qa/README.md)
 ./qa/runqa qa/storage          # Run a single category dir
 ./qa/runqa qa/storage/test_x.py  # Run a single case
 bash qa/run_qa_tests.sh        # Legacy wrapper, same thing
@@ -71,7 +71,7 @@ from task import as_task, task_name, wait_obj
 2. `src/<module>/export/BUILD`: `cc_binary(linkshared=True)` with `dynamic_deps`
 3. `src/main/cpp/BUILD`: add to `deps` + `dynamic_deps` of `fly` target
 4. `src/main/cpp/main.cpp`: add to `setup_sys_path()` + `import _fly_<module>`
-5. `fly.sh` `do_install()`: add `mkdir` + `symlink` for `build/python/<module>/`
+5. `fly.sh` `do_install()`: add `<module>` to the unified `for mod in ...` install loop
 6. Run `./fly.sh install` and verify with `./build/bin/fly`
 
 Full guide: [`docs/NEW_MODULE_GUIDE.md`](docs/NEW_MODULE_GUIDE.md)
@@ -131,7 +131,7 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 ### QA Debug 日志保护规则（必须遵守）
 
 - **一次只跑一轮 runqa**，失败后**立即停下来看日志**。绝不在失败后继续跑下一轮——runqa 的 `run_one` 在每次运行前会清理该 case 的历史日志（`{test_dir}/{test_name}/fly.log`），下一轮会覆盖失败轮的日志，导致**永久丢失失败现场**。
-- **多轮稳定性测试用 `-j4` 跑一次**（147 个 case 一次跑完），而非 for 循环跑多轮。要验证多轮稳定性，每轮之间必须**检查是否有失败**，有失败则立即停止分析，不得继续。
+- **多轮稳定性测试用 `-j4` 跑一次**（全量 case 一次跑完，数量以 runqa 运行输出为准），而非 for 循环跑多轮。要验证多轮稳定性，每轮之间必须**检查是否有失败**，有失败则立即停止分析，不得继续。
 - **失败日志位置**：`qa/{category}/{test_name}/fly.log`（stdout+stderr 合并）、`master.log`、`worker1.log` 等。这些是分析 timeout/fail 的唯一现场。
 - **runqa 的 `qa/logs/qa.log`** 每轮重建（覆盖），但 per-case 的 `fly.log` 只被同 case 下一轮覆盖。
 
@@ -147,15 +147,17 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 ## Module Map
 
 ```
-src/storage/    → Layer 1: Database, DataService, DataWriter, DataReader, CompressingStreamBuf, ObjectCache (两层 LRU), DataServer (epoll+线程池)
-src/network/    → Layer 2: Transport + EpollMultiplexer + ConnectionManager 抽象, Reactor, MessageProtocol + DataResponseProtocol (两段式), DataClientPool, 33 msg types
+src/storage/    → Layer 1: Database, DataService, DataWriter, DataReader, CompressingStreamBuf, ObjectCache (两层读缓存), DataServer (epoll+线程池)
+src/network/    → Layer 2: Transport + EpollMultiplexer + ConnectionManager 抽象, Reactor, MessageProtocol + DataResponseProtocol (两段式), DataClientPool
+                  (消息类型语义全表: docs/network/module.md「消息类型总表」)
 src/task/       → Layer 3: DependencyGraph, TaskScheduler, WorkerManager
-src/agent/      → Layer 4: MasterAgent, WorkerAgent, TaskExecutor
+src/agent/      → Layer 4: MasterAgent, WorkerAgent, TaskExecutor, PeerRpcServer
 src/core/       → Config (shared), ProcessInfo (per-process)
-src/fly/        → Layer 5: Python public API (__init__.py, runtime.py, mapreduce.py)
+src/fly/        → Layer 5: Python public API (公开符号权威总表: docs/python-api/module.md)
 src/solver/     → Layer 6: Distributed RAS solver (C++ core + Python orchestration)
 src/monitor/    → cluster monitor: 采集落盘 (MetricsDb 单写 monitor.db, 与心跳解耦的
                   MONITOR_SAMPLE 通道) + Web GUI (serve.py + ECharts, fly --serve-monitor)
+src/message/    → 消息日志系统: 高价值日志推送/配额/终端唯一透出 (docs/message-system.md)
 src/common/     → CM* type aliases (CMSharedPtr, CMString, CMVector…), FlyBuffer, FlyBufferPtr, WriterID, ErrorTypes
 src/log/        → DBG/INFO/WARN/ERR macros, CM_FORMAT_CLASS/ENUM
 src/test/       → TestObject, e2e_tasks.py, test_tasks.py (not public API)
@@ -173,5 +175,6 @@ src/test/       → TestObject, e2e_tasks.py, test_tasks.py (not public API)
 | [`docs/NEW_MODULE_GUIDE.md`](docs/NEW_MODULE_GUIDE.md) | Step-by-step new module creation |
 | [`docs/architecture.md`](docs/architecture.md) | System architecture, data flow, thread model |
 | [`docs/matrix-solver-analysis.md`](docs/matrix-solver-analysis.md) | RAS algorithm analysis, convergence theory |
+| [`docs/emir-capability-gap.md`](docs/emir-capability-gap.md) | Capability status + gap analysis for distributed EMIR tooling (evolution reference) |
 | [`qa/README.md`](qa/README.md) | QA test framework and conventions |
 | `big_qa/` | Large matrix solver tests (n≥1000), not run in regular QA |

@@ -1,6 +1,7 @@
 # DB Merge 设计与实现方案
 
 > 状态：**已实现**（v4 设计 + TDD 实现，2026-07-28）
+> ⚠️ **部分被取代**：本文写作时的 db_id/_MIGRATED_TO 迁移追踪机制已被 [db-chain-design.md](db-chain-design.md)（2026-08-08，uid 链）取代——merge 语义改为「彻底删源 + target 继承 uid + 邻居边更新」。**merge 编排流程与消息仍以本文为准；迁移追踪与 db 身份以 db-chain-design.md 为准。**
 > 制定日期：2026-07-22（v4 设计定稿）；实现完成：2026-07-28
 > 关联：`docs/architecture.md` §3.3（双路径契约）、§5.3（freeze 后处理）、§5.4（backup）；`docs/adr/0001-db-meta-and-load-db.md`
 >

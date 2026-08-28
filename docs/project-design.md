@@ -221,8 +221,8 @@ def solve(self, name, matrix_db, nsd, overlap_ratio=0.50, ...):
 
 **关键设计点**：
 - kickoff task 的 inputs 是 `[matrix_db.get_full_name("matrix")]`（跨 db 间接依赖，master 依赖
-  图按 `db_id:short` 全名索引，跨 db 成立）。matrix_db 作为 task 参数经 `__fly_db__:`
-  协议序列化传给 worker，worker 按 db_id 重建句柄。
+  图按 `db_path:short` 全名索引，跨 db 成立）。matrix_db 作为 task 参数经 `__fly_db2__:{uid}:{db_path}`
+  协议序列化传给 worker，worker 按 db_path 重建句柄（uid 校验，编码详见 db-chain-design.md）。
 - `ras_graph_coord` 在 kickoff task（worker）内执行：非阻塞提交第一轮 compute/check，
   check 在 worker 内提交下一轮，整个迭代链由 master 调度自驱动；收敛时 assemble 写 `__rasg__sol`。
 - freeze task 依赖 `__rasg__sol`，求解完成才 freeze。

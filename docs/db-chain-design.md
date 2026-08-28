@@ -93,7 +93,7 @@ uid **仅用于 db chain 与迁移追踪**，不扩展到对象全名：
 - `_DB_CHAIN` 内部的链身份匹配（防 path 复用错配）。
 - merge 迁移追踪（target 继承 source uid，`absorbed_from` 记旧 path）。
 - master 内存 `uid_to_path_` 映射（find_db/迁移解析前驱物理位置）。
-- task 参数序列化 `__fly_db__:{uid}:{db_path}:{data_path}`（restart 靠 uid 找 db）。
+- task 参数序列化 `__fly_db2__:{uid}:{db_path}`（restart 靠 uid 找 db；data_path 存 _DB_META，协议串不携带）。
 
 对象全名仍是 `db_path:short_name`（保留 ADR 0002 的 db_path 全名体系，最小侵入）。
 
@@ -444,7 +444,7 @@ task 失败时，`FailedTaskRecord`（内嵌 `TaskSubmissionSpec`，`master_agen
 
 | 字段 | 内容 | db 引用形态 |
 |------|------|------------|
-| `args_` | task 参数序列化 | `__fly_db__:{...}` 协议串（db 句柄）|
+| `args_` | task 参数序列化 | `__fly_db2__:{uid}:{db_path}` 协议串（db 句柄）|
 | `inputs_` | task 依赖的对象全名列表 | `db_path:short_name` |
 | `outputs_` | task 产出的对象全名列表 | `db_path:short_name` |
 | `vars_` | 声明的 var 全名列表 | `db_path:short_name` |
@@ -453,12 +453,16 @@ restart 时（`restart_failed_tasks`，`master_agent.cpp:1603`）整体读回 re
 
 #### 7.4.2 序列化格式升级（uid 化）
 
-**db 句柄参数（`args_`）**——升级 `__fly_db__` 协议串，加入 uid：
+**db 句柄参数（`args_`）**——升级 `__fly_db__` 协议串，加入 uid。设计演进过程：
 
 ```
-旧：__fly_db__:{db_path}:{data_path}
-新：__fly_db__:{uid}:{db_path}:{data_path}
+原始：__fly_db__:{db_path}:{data_path}
+设计稿：__fly_db__:{uid}:{db_path}:{data_path}
+最终实现：__fly_db2__:{uid}:{db_path}   ← 2026-08-26 data_path 移入 _DB_META（见文头变更注）
 ```
+
+> **现行格式以 `__fly_db2__:{uid}:{db_path}` 为准**；下文设计稿中的三段中间形态仅作演进记录，
+> 对应代码（`_serialize_args`/`_deserialize_args` 的 split/重映射逻辑）已按两段格式实现。
 
 序列化端 `_serialize_args`（`task.py:258`）：db 句柄有 uid 属性时写入新格式。
 

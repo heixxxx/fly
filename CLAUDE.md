@@ -93,7 +93,7 @@ bazel-bin/src/agent/tests/master_agent_test --gtest_filter='*NonStreamWriteRegis
 
 ### QA 测试与 test 模块
 
-QA 测试按模块分类在 `qa/<category>/` 子目录下（api/backup/dependency/fault/mapreduce/performance/scheduling/solver/storage/stress/write_provenance），使用 `src/test/py/e2e_tasks.py` 中定义的 @as_task 任务。
+QA 测试按模块分类在 `qa/<category>/` 子目录下（分类全表与运行口径见 [`qa/README.md`](qa/README.md)），使用 `src/test/py/e2e_tasks.py` 中定义的 @as_task 任务。
 
 **QA case 脚本不需要 `sys.path.insert`** — fly 启动时已自动配好所有模块路径。获取 fly binary 路径用 `get_fly_binary()`，不要硬编码 `bazel-bin/...`。
 
@@ -208,7 +208,7 @@ src/storage/
 | `tcp_connection_manager.h/cpp` | TcpConnectionManager — 基于 Transport+EpollMultiplexer |
 | `reactor.h/cpp` | 单线程事件循环（持有 ConnectionManager） |
 | `message_protocol.h/cpp` | MessageProtocol（通用帧协议）+ DataResponseProtocol（两段式，避免大 payload 用户态拷贝）+ 共享 `read_be32`/`write_be32`（大端 32 位整数读写，全网络层帧解析共用） |
-| `message_types.h` | 40 种消息枚举 / 消息结构定义（含 MessageHeader，含 IdxLoadCommand/Ack；NET_PROBE_REQUEST/RESPONSE 走数据面短连接供带宽探测） |
+| `message_types.h` | 消息枚举 / 消息结构定义（含 MessageHeader）。消息类型语义全表见 [docs/network/module.md](docs/network/module.md)「消息类型总表」（唯一权威口径，不在此复制） |
 | `data_client_pool.h/cpp` | 并发限制的数据请求池（pool_size 限制 in-flight 请求数） |
 | `net_quality_monitor.h/cpp` | per-host 网络质量评分表（RTT/带宽 EMA），供 DataService TIER2 按连接性排序远程读副本；被动 RTT 采集 + 主动带宽探测双数据源 |
 
@@ -249,6 +249,10 @@ src/storage/
 | `src/serialization/cpp/serialization_macros.h` | FLY_SERIALIZE, FLY_ENCODE/DECODE |
 | `src/export/cpp/export_macros.h` | FLY_EXPORT_* 宏 |
 | `src/log/cpp/logger.h/cpp` | DBG/INFO/WARN/ERR 日志宏，CM_FORMAT_CLASS/ENUM |
+| `src/message/` | 消息日志系统（`_fly_message` 扩展 + fly.message API 簇），详见 `docs/message-system.md` |
+| `src/monitor/` | cluster monitor 采集落盘 + Web GUI，详见 `docs/monitor-design.md` |
+| `src/solver/` | 分布式 RAS 求解器，详见 `docs/solver/module.md` |
+| `src/fly/` | Python 公共 API 顶层包（`__init__.py`/`runtime.py`/`main.py`/`project.py`/`mapreduce.py`/`userdoc.py`/`bootstrap.py`），公开符号总表见 `docs/python-api/module.md` |
 | `src/test/` | 测试基础设施：TestObject（可序列化 C++ 测试对象）、e2e_tasks（QA 任务集合）、test_tasks（单元测试任务集合）。详见 `docs/test/module.md` |
 
 ---
@@ -313,7 +317,7 @@ from fly import open_db, as_task, task_name, launch_workers, wait_tasks
 from fly import get_agent  # 进阶：直接访问 Agent 单例
 ```
 
-**导出列表**: `open_db`, `load_db`, `get_config`, `as_task`, `task_name`, `launch_workers`, `wait_tasks`, `restart_failed_tasks`, `get_task_error`, `completed_tasks`, `pending_tasks`, `running_tasks`, `failed_tasks`, `get_agent`
+**导出列表**：以 [docs/python-api/module.md](docs/python-api/module.md)「公开符号总表」为唯一权威口径（数据库/任务/Worker 编队 `ensure_workers`/Project/缓存/消息/MapReduce/UserDoc/Monitor 等），此处不复制清单。
 
 **不导出**: `Master`, `Worker`, `FlyAgent`（内部类，通过 `agent.agent` 模块可访问但不推荐用户使用）
 
@@ -334,7 +338,7 @@ from fly import get_agent  # 进阶：直接访问 Agent 单例
 
 ### 数据命名与依赖
 
-- Task inputs 必须使用 `db.get_obj_name("name")` 获取全名（`db_id:object_name`），短名无法匹配 DataService 索引
+- Task inputs 必须使用 `db.get_obj_name("name")` 获取全名（`db_path:short_name`），短名无法匹配 DataService 索引
 - `on_data_ready()` 是唯一数据就绪入口：更新 remote_idx + _DB_META + dependency graph + schedule_tasks()
 - `write_object` 开始时即触发依赖满足（无需等异步落盘完成）
 - **写入架构**：调用线程完成序列化+压缩（`compress_to_buffer` 流式管线），WBQ 后台线程仅执行 `write_record` 磁盘写入
@@ -350,6 +354,8 @@ from fly import get_agent  # 进阶：直接访问 Agent 单例
 ### 动态 Worker 属性
 
 Worker 在 Task 执行中可动态增/删/查属性，Master 实时重调度。Task 通过 `@as_task(requires=["gpu"])` 声明需求。`fail_unscheduleable_tasks=1`（默认）时，永远无法调度的 Task 立即 FAILED 并持久化。
+
+按属性申请**现有** worker 用 `fly.ensure_workers(workers, timeout, exclude)`（幂等、两阶段收集 IDLE→BUSY、静态预检不足立即报错），与 `@as_task(requires=...)` 配对使用；契约详见 `docs/python-api/module.md` 与 `docs/issues/`009。
 
 ### 对象删除
 
@@ -426,4 +432,4 @@ src/new_module/
 
 ---
 
-*文档更新日期: 2026-05-25*
+*文档更新日期: 2026-08-28*

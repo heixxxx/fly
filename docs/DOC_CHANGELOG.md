@@ -3,6 +3,38 @@
 ---
 ---
 
+## 2026-08-28 (1): 文档一致性治理 —— 事实修正 + 「一处权威，他处链接」收归 + EMIR 能力差距文档
+
+**背景**：全库文档-实现一致性审计发现三类问题——数字快照失真、历史文档被取代未标注、
+同一数据在多文档复制漂移（消息类型数量曾同时存在 33/40/54 三个版本且全部过时）。
+
+**事实修正**：
+- 消息类型：AGENTS「33」/CLAUDE「40」/architecture「54」三个过时数字全部移除，统一链接权威表；
+- runqa 默认并行「4」→ 实为固定值（2026-08-16 已裁定，AGENTS 同步）；
+- CLAUDE.md §6 导出列表补齐滞后（缺 ensure_workers/merge_db/Project 族等）；
+- `__fly_db__:{db_id}:...` 旧编码残留（python-api/project-design/monitor-design）→ `__fly_db2__:{uid}:{db_path}`；
+- restart_failed_tasks 单 bin 直传旧签名 → 传 db/db_path/list（§15.4 口径）；
+- NEW_MODULE_GUIDE：删除 `__all__` 与 try/except 双布局示例（均为禁用写法）、`EXP` 前缀 → `EX`、
+  §6.4 改为 fly.sh do_install 统一循环；
+- network/module.md 删除已废弃 IOThreadPool 章节；qa/README dual_output/glob 描述修正；
+- push-hook.md `-j 2` 残留与脚本实参 `-j 6` 的矛盾统一；
+- db-merge-design.md 加「迁移追踪部分被 db-chain 取代」头注；message-system.md 加枚举快照注；
+- CLAUDE.md/AGENTS.md 模块表补 message（及 CLAUDE 补 solver/fly/monitor 行）；
+- docs/README.md 地图补 issues/008、009、coverage-report、run-summary 四份缺失文档。
+
+**「一处权威，他处链接」收归（权威落点 + 链接化）**：
+- 消息类型语义全表 → network/module.md「消息类型总表」（唯一权威，不写数量，只维护语义分组）；
+- `from fly import ...` 公开符号总表 → python-api/module.md「公开符号总表」；
+- runqa 并行度/发现机制/case 总数口径 → qa/README.md「并行度权威口径」；
+- 文档约定固化入 docs/README.md「文档约定」：统计性数字（随开发漂移）一律不写死、指向权威源码或权威表；
+  被取代的历史设计文档不删、文头加取代注。
+
+**新增 [emir-capability-gap.md](emir-capability-gap.md)**：面向分布式 EMIR 工具的框架能力
+现状 + 差距分析（P0 规模/部署、P1 数值内核、P2 工程化），作为后续演进参考；
+docs/README.md 与 AGENTS.md 文档表收录。
+
+---
+
 ## 2026-08-27 (5): ensure_workers —— 向 master 申请现有 worker 并追加指定属性（issue 009 根治）
 
 **框架 API（fly.ensure_workers / Master.ensure_workers）**：向 master 申请

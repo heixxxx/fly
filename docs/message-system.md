@@ -2,6 +2,7 @@
 
 > 本文档供 code review 使用，描述需求、架构、数据流、API、文件清单与实现决策。
 > 实现已完成并通过全量测试（C++ 单测 + 端到端 QA + 全量 QA）。
+> 注：文中出现的消息枚举编号上界（45/48/49 等）是各阶段设计快照；**消息类型语义全表的唯一权威口径见 [network/module.md](network/module.md)「消息类型总表」，枚举编号以 `src/network/cpp/message_types.h` 为准**。
 
 ---
 

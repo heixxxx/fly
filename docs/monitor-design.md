@@ -78,7 +78,7 @@ master 自身：自监控线程（10s 周期）+ 事件采样直写 worker_id=0 
 | read_time/write_time_ms | read_object 耗时 / write_object+drain 落盘耗时 |
 | read_bytes / write_bytes | 解压后 / 压缩后字节（write 以 C++ WriteRecord 为准） |
 | mem_baseline/avg/peak | 窗口内进程 RSS（绝对口径；delta=减 baseline） |
-| dbs | 提交时解析 `__fly_db__:` 编码 args + inputs/outputs 对象名前缀 |
+| dbs | 提交时解析 `__fly_db2__:` 编码 args + inputs/outputs 对象名前缀 |
 
 **内存峰值的观测点**（不依赖固定采样间隔）：begin/end 端点采样 +
 write 时刻（待写对象及用户持有的其它对象必存活）+ read 结束（数据刚入内存）

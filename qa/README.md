@@ -7,7 +7,7 @@
 ./fly.sh build //src/main/cpp:fly
 
 # 运行全部QA测试（-j 并发，-t 超时秒数）
-./qa/runqa -j 4 -t 40
+./qa/runqa -j 6 -t 40
 
 # 运行指定测试
 ./qa/runqa qa/storage/test_read_cache_basic.py
@@ -15,6 +15,12 @@
 # 兼容旧入口
 ./qa/run_qa_tests.sh
 ```
+
+> **并行度权威口径**（其他文档只链接此处，不复制数字）：
+> 默认并行度为**固定值**（2026-08-16 用户裁定：不随核数自适应；当前值见 `qa/runqa` 的
+> `_resolve_default_parallelism()`，以源码为准），上限钳制、`-j 0`/负数行为同见源码。显式 `-j N` 可覆盖。
+> runqa 以 `os.walk` 递归发现 `test_*.py` 与 `*.pyt`（跳过 `.latest`/`.N` 日志残留与符号链接目录）。
+> **case 总数随开发持续增长，任何文档不写死具体数字**，以 `./qa/runqa` 运行输出为准。
 
 ### 测试运行机制
 
@@ -394,16 +400,17 @@ DBG(f"调试信息: value={v}")
 
 #### 日志架构
 
+所有进程 debug 日志只落盘；终端输出唯一来源是 message 系统（`dual_output=false`，详见 [docs/message-system.md](../docs/message-system.md)）：
+
 ```
-C++ Logger (src/log/cpp/logger.h)
-├── Master (dual_output=true):  file + stderr
-└── Worker (dual_output=false): file only
+C++ Logger (src/log/cpp/logger.h)  →  {log_dir}/*.log（仅文件）
+message 系统                        →  高价值日志经 LOG_MESSAGE 推送 master 终端
 ```
 
-| 进程 | 文件输出 | stderr 输出 |
+| 进程 | 文件输出 | 终端输出 |
 |------|---------|-------------|
-| Master | `{log_dir}/master.log` | ✅ 终端可见 |
-| Worker | `{log_dir}/worker{N}.log` | ❌ 仅文件 |
+| Master | `{log_dir}/master.log` | ✅ 经 message 系统透出 |
+| Worker | `{log_dir}/worker{N}.log` | ❌ 仅文件（message 配额内推送 master） |
 
 #### QA 日志查看
 
@@ -552,7 +559,7 @@ cat qa/<category>/<test_name>/fly.log
 
 **Q: 新建的 QA case 被 runqa 忽略？**
 
-确认文件名以 `test_` 开头、以 `.py` 结尾，且位于 `qa/` 的某个子目录下。runqa 使用 `glob("**/test_*.py", recursive=True)` 发现测试。
+确认文件名以 `test_` 开头、以 `.py` 结尾（或 `.pyt` 编排），且位于 `qa/` 的某个子目录下。runqa 使用 `os.walk` 递归发现测试（跳过 `.latest`/`.N` 日志残留与符号链接目录），详见上文「并行度权威口径」。
 
 ---
 

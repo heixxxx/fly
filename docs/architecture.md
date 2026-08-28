@@ -724,7 +724,7 @@ Phase 3: 定向 idx 加载
 
 ### 6.3 消息类型
 
-> 完整枚举见 `src/network/cpp/message_types.h`（值 1-57，其中 8/15/16 已退役空号，现役 54 种）。下表列主干消息。
+> 消息类型语义全表（唯一权威口径）见 [network/module.md](network/module.md)「消息类型总表」；枚举定义见 `src/network/cpp/message_types.h`。下表列主干消息（协议视角速查，不复制全表）。
 
 | 消息类型 | 方向 | 说明 |
 |---------|------|------|
@@ -863,7 +863,7 @@ fly/
   - Transport + EpollMultiplexer + ConnectionManager 抽象
   - DataResponseProtocol 两段式传输
   - DataClientPool keep-alive 连接池 + 并发限制
-  - 54 种消息类型（值 1-57，8/15/16 退役空号）
+  - 消息类型语义全表见 network/module.md「消息类型总表」
 - **Layer 3**：任务系统层（DependencyGraph, TaskScheduler, WorkerManager）
 - **Layer 4**：Agent 层（MasterAgent, WorkerAgent, TaskExecutor）
   - WorkerAgentContext std::function 回调

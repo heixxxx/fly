@@ -95,6 +95,28 @@ DataResponseMessage 的大 payload 不经 bitsery 序列化，作为帧尾 raw �
 
 dispatch_message 内 while 循环解析。数据不足则等待更多数据。
 
+### 消息类型总表（权威）
+
+> **本节是消息类型语义的唯一权威口径**；其他文档提及消息类型一律链接此处，不复制清单、**不写具体数量**（数量随开发持续变化，以源码为准）。
+> 权威源码：`src/network/cpp/message_types.h`（消息名与枚举编号以源码为准）。本表只维护语义分组，新增消息归入对应分组即可。
+
+| 分组 | 消息 | 语义 |
+|------|------|------|
+| 生命周期 | REGISTER/ACK、HEARTBEAT/ACK、SHUTDOWN、STOP_NOW、WORKER_PROBE/ACK | 注册（role/数据端口/属性）、心跳、优雅退出、快速自杀、重复注册活性探测 |
+| 任务 | TASK_SUBMIT/ACK、TASK_ASSIGN、TASK_COMPLETE、TASK_FAILED | 提交（inputs/requires/priority/vars）、派发（内联依赖位置+var payload）、完成（written_objects+资源指标）、失败（dirty_objects+错误分类） |
+| 数据面控制 | DATA_QUERY/LOCATION、DATA_REQUEST/RESPONSE | master 查副本位置；两段式数据响应（见上） |
+| 元数据 | DB_PATH_REQUEST/ACK、WRITE_REGISTER/ACK、OBJECT_REMOVED、REMOVE_*、IDX_LOAD_COMMAND/ACK | db 路径、写注册（provenance）、对象删除三级、idx 加载（load_db） |
+| 备份 | BACKUP_REQUEST/ASSIGN/COMPLETE、WORKER_BACKUP_SUGGEST | 手动/自动副本、TIER2 读流量上报 |
+| 冻结 | DATABASE_FREEZE/ACK | db 冻结（pending 两阶段 commit/rollback） |
+| Var | VAR_SET/GET/ACK/REMOVE/BROADCAST | 小对象 KV |
+| Merge | DELETE_DATA/ACK、MERGE_CLEANUP/ACK | 删源数据、全局一致性屏障 |
+| 属性 | WORKER_PROPERTY_UPDATE、WORKER_PROPERTY_ASSIGN | 属性上行回报 / ensure_workers 下行追加 |
+| 探测 | NET_PROBE_REQUEST/RESPONSE | 数据面 RTT/带宽探测 |
+| PeerRpc | PEER_RPC_REQUEST/RESPONSE | worker↔worker 业务 RPC |
+| 监控 | MONITOR_SAMPLE、MONITOR_TASK_IO | 负载采样成组上报、对象级 IO 明细 |
+| 日志 | LOG_MESSAGE、MSG_COUNT_REQUEST/REPORT、MSG_LIMIT_SYNC | 高价值日志推送 + 配额（详见 [message-system.md](../message-system.md)） |
+| 自动补齐 | STORAGE_SPAWN_REQUEST/ACK | auto storage node spawn |
+
 ---
 
 ## Reactor
@@ -134,23 +156,6 @@ reactor_->run()
 
 ---
 
-## IOThreadPool
-
-### 核心职责
-
-通用线程池，支持 task 在工作线程执行、completion 在 Reactor 线程执行。
-
-### 使用模式
-
-- submit(task, completion): task 在工作线程执行，completion 存入完成队列
-- process_completions(): 在调用线程（通常是 Reactor 线程）执行已完成的 completion
-
-### 设计
-
-文件 I/O 不阻塞 Reactor，completion 回调线程安全。
-
----
-
 ## DataClientPool
 
 ### 核心职责
@@ -160,7 +165,7 @@ reactor_->run()
 ### 设计特点
 
 - **keep-alive 连接复用**：同 peer 维持多条连接（单 fd 同步 request-response 无法并行），跨 request 复用 idle fd，避免高频远程读时反复 socket()+connect()+close()
-- **并发限制**：pool_size（默认 2）限制同时 in-flight 的请求数（slot 信号量：active_count_ + slot_cv_），保护对端不被压垮
+- **并发限制**：pool_size 限制同时 in-flight 的请求数（slot 信号量：active_count_ + slot_cv_），保护对端不被压垮。生产进程按 Config `data_client_pool_size`（默认 4）初始化；C++ 构造签名的默认值 2 仅是兜底
 - **容量模型**：fd 总量上限 `2×pool_size`（in-use ≤ pool_size，余量给 idle 缓冲）。达上限需新建时 idle ≥ pool_size ≥ 1，总能淘汰，不阻塞
 - **反倾斜 + LRU 淘汰**：需淘汰时优先选 idle 数最多的 peer 里最老（last_used 最早）的 fd，防热点 peer 独占全部 idle 连接
 - **三重健康保护**：
@@ -255,7 +260,6 @@ Worker.master_liveness_check:
 | epoll 水平触发 + ONESHOT | ONESHOT 防多线程惊群，处理完手动 rearm |
 | 单 Reactor 线程 | handler 无锁，避免 IO 多线程锁竞争 |
 | per-conn 拼接缓冲 | TCP 粘包/拆包安全处理 |
-| IOThreadPool completion pattern | 文件 I/O 不阻塞 Reactor |
 | DataClientPool 独立 socket + keep-alive | 多线程读无冲突，fd 跨请求复用 |
 | 工厂函数 | 支持测试 Transport 注入 |
 | CV-based 心跳 | stop() 时可立即唤醒 |

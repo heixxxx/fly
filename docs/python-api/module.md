@@ -12,6 +12,31 @@
 
 Python API 层将 C++ 底层 API 包装为用户友好的高层接口，提供任务定义、Database 操作、Agent 管理和运行时配置。
 
+### 公开符号总表（权威）
+
+> **本表是 `from fly import ...` 全量符号的唯一权威口径**；其他文档（CLAUDE.md/AGENTS.md 等）只链接此处，不复制清单。
+> 权威源码：`src/fly/__init__.py`。**新增导出必须同步本表。**
+
+| 分组 | 符号 |
+|------|------|
+| Database | `open_db`, `load_db`, `merge_db`, `Database`（透传 storage） |
+| db 链/uid | `generate_uid`, `make_edge`（透传 storage，详见 [db-chain-design.md](db-chain-design.md)） |
+| 任务 | `as_task`, `task_name`, `wait_obj`, `wait_tasks`, `get_task_error` |
+| Worker 编队 | `launch_workers`, `ensure_workers`, `wait_workers_registered`, `expect_workers` |
+| 失败恢复 | `restart_failed_tasks` |
+| Project | `open_project`, `load_project`, `migrate_project`, `Project`, `register_flow` |
+| Agent 缓存 | `put_cache`, `get_cache`, `has_cache`, `remove_cache`, `clear_cache` |
+| 消息日志 | `message`, `register_message_id`, `set_message_global_limit`, `set_message_id_limit`, `set_message_domain_limit`（详见 [message-system.md](message-system.md)） |
+| MapReduce | `MapReduceJob` |
+| UserDoc | `UserDoc`, `Schema`, `document`, `help`, `register_module`（详见 [userdoc.md](userdoc.md)） |
+| Monitor | `launch_monitor_gui` |
+| 配置/工作目录 | `get_config`, `get_work_directory` |
+| 测试辅助 | `get_fly_binary` |
+| 进阶 | `get_agent`（直接访问 Agent 单例） |
+| 模块属性（`__getattr__` 惰性） | `completed_tasks`, `pending_tasks`, `running_tasks`, `failed_tasks`, `port` |
+
+**不导出**：`Master`、`Worker`、`FlyAgent`（内部类）。solver 不经 `fly` re-export，用户直接 `from solver import ...`。
+
 ---
 
 ## 核心文件
@@ -154,22 +179,32 @@ def load_db(path: str) -> _Database:
     return get_agent().load_db(path)
 ```
 
-### restart_failed_tasks(path) — 重启失败任务
+### restart_failed_tasks(dbs) — 重启失败任务
 
 ```python
-def restart_failed_tasks(path: str) -> None:
+def restart_failed_tasks(dbs) -> int:
     """
     重新提交之前失败的任务。
 
     Args:
-        path: 失败任务记录文件路径（log_dir/failed_tasks.bin）
+        dbs: db / db_path 字符串 / 二者组成的 list；每个 db 目录下自动搜索
+             failed_tasks.bin 并重投（读即删；重投后再失败会重新落盘）
+
+    Returns:
+        重投的 task 数
 
     Example:
         # 用户修复问题后（写入缺失数据、启动新 Worker）
-        restart_failed_tasks("/path/to/failed_tasks.bin")
+        restart_failed_tasks(db)                    # Database 对象
+        restart_failed_tasks("/data/project")       # db_path
+        restart_failed_tasks([db1, "/data/proj2"])  # 混合 list
     """
-    get_agent().restart_failed_tasks(path)
+    return get_agent().restart_failed_tasks(dbs)
 ```
+
+> **注意**：旧的单 bin 文件路径直传形态（`restart_failed_tasks("/path/failed_tasks.bin")`）已废弃。
+> 失败记录按 task 归属 db 落盘（`{owner_db_path}/failed_tasks.bin`），统一传 db 检索。
+> 规范详见 [DEVELOPMENT_GUIDELINES.md §15.4](../DEVELOPMENT_GUIDELINES.md)。
 
 ### 进程级跨 Task 缓存
 
@@ -253,7 +288,7 @@ class _Database:
         # 删除对象索引（本地上移除，通知Master广播删除）
 
     def get_full_name(self, name: str) -> str:
-        # 返回 "{db_id}:{name}" 唯一标识符
+        # 返回 "{db_path}:{name}" 唯一标识符
 
     def set_var(self, name: str, value):
         # 存储小对象（同步等待 master 确认）。var 不可变：同名再次 set 会被拒绝。
@@ -374,14 +409,16 @@ def read_counter(db):
 def _serialize_args(args):
     result = []
     for arg in args:
-        if hasattr(arg, 'get_db_id'):   # Database 对象
-            result.append(f"__fly_db__:{db_id}:{base_path}:{data_path}")
+        if isinstance(arg, Database):   # Database 对象
+            result.append(f"__fly_db2__:{uid}:{db_path}")
         else:
             result.append(pickle.dumps(arg).hex())
     return result
 ```
 
-> **注意**: inputs 使用 `db.get_full_name()` 生成 full name（`db_id:object_name`），确保与 DataService / DependencyGraph 命名空间一致。
+> **注意**: db 句柄协议串为 `__fly_db2__:{uid}:{db_path}` 两段（2026-08-26 起 uid 合入 _DB_META，
+> data_path 为 db 级属性存 _DB_META，协议串不再携带）。对象全名是 `db_path:short_name`（无 db_id），
+> 确保与 DataService / DependencyGraph 命名空间一致。详见 [db-chain-design.md](db-chain-design.md)。
 
 ```python
 # 正确
@@ -429,10 +466,10 @@ class Master(FlyAgent):
     def stop(self):
         # 停止所有 Worker → 停止 Agent
 
-    def restart_failed_tasks(self, file_path: str):
-        # 读取失败任务记录，检查数据可用性，重新提交
+    def restart_failed_tasks(self, dbs) -> int:
+        # 读取失败任务记录（按归属 db 搜索 failed_tasks.bin），检查数据可用性，重新提交
 
-    def broadcast_object_removed(self, db_id: str, object_name: str):
+    def broadcast_object_removed(self, db_path: str, object_name: str):
         # 广播对象删除给所有 Worker
 
     @property
@@ -445,7 +482,7 @@ class Master(FlyAgent):
 class Worker(FlyAgent):
     def __init__(self, worker_id, master_host, master_port):
         self._agent = EXAgentWorker(worker_id, master_host, master_port)
-        self._db_cache = {}            # db_id → _Database
+        self._db_cache = {}            # db_path → _Database
 
     def start(self):
         self._executor = EXTaskExecutor()
@@ -456,8 +493,8 @@ class Worker(FlyAgent):
     def submit(self, name, module, args, inputs=None) -> int:
         # 递归任务提交: agent.submit_task(...)
 
-    def get_database(self, db_id):
-        return self._db_cache[db_id]
+    def get_database(self, db_path: str):
+        return self._db_cache[db_path]
 
     def set_worker_property(self, prop):
         # 设置 Worker 属性（GPU/CPU等）
@@ -640,11 +677,12 @@ schedule_tasks() 检测到无法调度任务
 # 用户修复问题后（写入缺失数据、启动新 Worker）
 from fly import restart_failed_tasks
 
-restart_failed_tasks("/path/to/failed_tasks.bin")
+restart_failed_tasks(db)              # Database 对象
+restart_failed_tasks("/data/proj")    # db_path
 ```
 
 **依赖命名规范**:
-- Task 的 inputs 必须使用 `db.get_full_name()` 生成 full name (db_id:object_name)，与 DataService / mark_data_ready 命名空间一致
+- Task 的 inputs 必须使用 `db.get_full_name()` 生成 full name (`db_path:short_name`)，与 DataService / mark_data_ready 命名空间一致
 
 ---
 
@@ -652,7 +690,7 @@ restart_failed_tasks("/path/to/failed_tasks.bin")
 
 `open_db(path)` 检测目标路径是否已包含数据库（通过 `_DB_META` 文件判断）：
 
-- **路径无 DB**: 直接在 `path` 创建新数据库，db_id 为 10-char base62（4 char path-hash 前缀 + 6 char 随机后缀）
+- **路径无 DB**: 直接在 `path` 创建新数据库（db 身份 = db_path + uid，见 [db-chain-design.md](db-chain-design.md)）
 - **路径已有 DB**: 自动递增路径 `path.1`, `path.2`... 并打印 WARN 日志
 
 ```python
@@ -663,12 +701,7 @@ db2 = open_db("/data/project")       # WARN: 自动创建在 /data/project.1
 db3 = open_db("/data/project")       # WARN: 自动创建在 /data/project.2
 ```
 
-**db_id 生成**: `<4-char path-hash><6-char random>` = 10-char base62。
-- **前缀**：base_path 的 FNV-1a 32-bit hash 映射到 4 个 base62 字符（同路径 → 同前缀）。
-- **后缀**：6 个随机 base62 字符（~35.7 bit 熵）。
-- **碰撞检测**：生成时若 id 已被 `DataService` 注册（如路径迁移后 load 了旧 db，又在原路径新建），重抽随机后缀重试。
-
-`load_db` 从 `_DB_META` 读回原 db_id（不重新生成），故 DB 迁移后 id 不变。
+> 历史：db_id（10-char base62）机制已废弃（ADR 0002），现行 db 身份为 db_path + uid（`_DB_META` JSON version 2）。
 
 ---
 
@@ -714,7 +747,7 @@ master.load_db("/new/location/project")  # db_id 从 _DB_META 读取，不受路
 
 2. 用户调用 process_data(db, "file1")
    → wrapper(*args) 拦截
-   → _serialize_args: db → "__fly_db__:db_id:base:data"
+   → _serialize_args: db → "__fly_db2__:{uid}:{db_path}"
    → agent.submit(task_name, module, args, inputs)
    → MasterAgent.submit_task_with_deps(task_id, ...)
    → 立即返回 (异步)
@@ -724,7 +757,7 @@ master.load_db("/new/location/project")  # db_id 从 _DB_META 读取，不受路
 4. Worker executor:
    → from_user 模块: pickle.loads(payload) 重建函数
    → 仓库模块: importlib.import_module(task_module) + getattr
-   → _deserialize_args: "__fly_db__:" → 检查 DataService.has_database(db_id)
+   → _deserialize_args: "__fly_db2__:" → 按 db_path 打开 db + uid 校验（目录不存在时查 master）
    → executor 执行完成后 drain_write_back() 确保数据落盘
    → original_func(db, "file1")
    → 记录 writes + frozen_dbs
@@ -742,8 +775,8 @@ master.load_db("/new/location/project")  # db_id 从 _DB_META 读取，不受路
 | 函数级 API（launch_workers, wait_tasks 等） | 隐藏 Master/Worker 内部实现，用户无需直接构造 Agent |
 | `_Database` 内部类 + `open_db()` 工厂 | 隐藏 C++ 实现细节，统一创建入口 |
 | is_cpp 双路径序列化 | C++ 导出类型走 bitsery（高效），Python 类型走 pickle（兼容） |
-| `__fly_db__:` 协议传递 Database | 轻量级 db_id 传递，Worker 端按需创建 |
-| get_full_name 自动拼 db_id | 多 DB 场景下同名对象去重 |
+| `__fly_db2__:` 协议传递 Database | uid + db_path 轻量句柄，Worker 端按需打开（见 [db-chain-design.md](db-chain-design.md)） |
+| get_full_name 拼 `db_path:short_name` | 多 DB 场景下同名对象去重 |
 | _fly_original_func 保存原始函数 | Worker 端执行原始函数而非 wrapper |
 | thread-local last_error_type | C++ exception 跨 nanobind 丢失类型信息 |
 
