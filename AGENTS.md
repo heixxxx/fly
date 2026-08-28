@@ -137,9 +137,10 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 
 ## Config vs ProcessInfo
 
-- **Config**: shared across all processes, synced by master before starting workers. heartbeat/backup/compression/log_dir
-- **ProcessInfo**: per-process, never synced. worker_mode, worker_id, master_host/port, hostname
+- **Config**: shared across all processes, synced by master before starting workers. heartbeat/backup/compression/log_dir + **master 寻址键**（`master_host`/`master_advertise_host`/`master_port`——master 写入 `.fly_config`，local/ssh/bsub worker 统一凭 `--config-file` 引导，首写完备 + 原子写；权威说明见 `docs/core/module.md`）
+- **ProcessInfo**: per-process, never synced. worker_mode, worker_id, master_host/port（worker 进程运行视角，由 main.cpp 从 CLI/config 兑现）, hostname
 - **`--host` CLI flag**: overrides ProcessInfo hostname, for single-machine multi-host testing
+- **`--master-host/--master-port` CLI flags**: 调试覆盖口（优先级最高）——正常场景 worker 寻址只走 `.fly_config`
 - **log_dir** lives in Config (all processes share the same log directory)
 
 ---

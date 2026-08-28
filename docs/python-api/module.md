@@ -655,10 +655,9 @@ class FlyAgent(ABC):
 ### main.init() — 初始化入口
 
 ```python
-def init(log_dir="fly_log", worker_mode=False, worker_id=0,
-         master_host="127.0.0.1", master_port=0):
-    # Master: setup_log_dir → init_master → configure_master → get_agent
-    # Worker: init_worker → configure_worker → get_agent
+def init():
+    # 按 ProcessInfo.worker_mode 分派：configure_worker/configure_master
+    # → get_agent() → agent.start()
 ```
 
 ---
