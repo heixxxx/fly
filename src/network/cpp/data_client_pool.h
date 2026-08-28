@@ -3,6 +3,7 @@
 #include <common/cpp/common_types.h>
 #include <common/cpp/error_types.h>
 #include <common/cpp/fly_buffer.h>
+#include <network/cpp/message_types.h>
 #include <cstdint>
 #include <chrono>
 #include <mutex>
@@ -57,6 +58,13 @@ public:
     void stop();
 
 private:
+    // L2 分片接收（§4.5）：META 已解析（chunked_=true），本方法消费后续
+    // DATA_CHUNK 帧流 + DIGEST 尾帧，重组整 FlyBuffer 返回（L2 阶段 client
+    // 仍整缓冲；流式消费是 L3）。坏片（帧 CRC 失配）流后统一 CHUNK_RESEND
+    // 补洞（每 seq 上限一次）；根摘要端到端校验。校验类失败 → CHECKSUM。
+    std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> receive_chunked(
+        int fd, const CMString& object_name, const DataResponseMessage& meta);
+
     CMSharedPtr<Transport> transport_;
     int64_t pool_size_;
     std::atomic<int> active_count_{0};

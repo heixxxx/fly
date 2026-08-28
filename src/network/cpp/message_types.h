@@ -80,10 +80,18 @@ enum class MessageType : uint8_t {
                                  //   在关连接前发出，异步无 ack）。master 依据「WORKER_EXIT 到达 ∪
                                  //   shutdown_pending（主动关停指令先行）」把断连归类为正常退出
                                  //   （handle_worker_exit），区别于异常判死（handle_worker_death）。
+    DATA_CHUNK = 63,             // server → client（数据面 L2）：分片数据帧
+                                 //   [4B small_len=12][u32 seq][u64 片CRC][raw 4MB 字节切片]，
+                                 //   纯字节切片（不解析磁盘块结构）——client 顺序重组后与磁盘
+                                 //   record 字节一致，DecompressingStreamBuf 直接消费。
+    CHUNK_RESEND = 64,           // client → server（数据面 L2）：请求重传某分片（每 seq 上限
+                                 //   一次；再坏升格对象级 CHECKSUM → 零容忍 §5）。
+    DATA_DIGEST = 65,            // server → client（数据面 L2）：分片流尾帧根摘要
+                                 //   （server 边发边算单遍；client 重组后整体校验）。
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 62;
+    return raw >= 1 && raw <= 65;
 }
 
 struct MessageHeader {
@@ -245,13 +253,45 @@ struct DataResponseMessage {
     // wire 根摘要（§4.2/§4.5）：raw payload 的 data_checksum。0 = 无 raw
     //（或发送端未计算——仅元数据响应）。client 收满 raw 后必须校验。
     uint64_t payload_crc_ = 0;
+    // L2 分片 META（§4.5）：chunked_=true 时本消息作 META 帧先行（无 raw），
+    // total_compressed_len_ 是对象 record 总字节数（client 预分配 + 收满判定），
+    // chunk_frame_bytes_ 是发送端切片尺寸（client 按 seq*frame 定位填充——
+    // 切片尺寸是发送端实现细节，必须随 META 告知）。
+    bool chunked_ = false;
+    uint64_t total_compressed_len_ = 0;
+    uint64_t chunk_frame_bytes_ = 0;
 
     static constexpr MessageType msg_type_ = MessageType::DATA_RESPONSE;
 
-    FLY_SERIALIZE(header_, object_name_, success_, status_, error_message_, py_name_, write_context_hash_, payload_crc_);
+    FLY_SERIALIZE(header_, object_name_, success_, status_, error_message_, py_name_, write_context_hash_, payload_crc_, chunked_, total_compressed_len_, chunk_frame_bytes_);
 };
 
-// Bandwidth probe (data plane). Request asks the peer to echo a payload of
+// ── L2 分片传输协议消息（chunked-transfer-design.md §4.5）──
+
+// client → server：请求重传某分片（在线块重传，连接活着；断线仍整对象走
+// TIER2 重试——「不做断线续传」裁定不变）。每 seq 上限一次。
+struct ChunkResendMessage {
+    MessageHeader header_;
+    uint32_t seq_ = 0;
+
+    static constexpr MessageType msg_type_ = MessageType::CHUNK_RESEND;
+
+    FLY_SERIALIZE(header_, seq_);
+};
+
+// server → client：分片流尾帧根摘要（server 边发边算单遍）。client 重组完
+// 整 record 后整体校验——乱序/调包/丢片的端到端兜底。
+struct DataDigestMessage {
+    MessageHeader header_;
+    uint64_t root_crc_ = 0;
+    uint32_t chunk_count_ = 0;
+
+    static constexpr MessageType msg_type_ = MessageType::DATA_DIGEST;
+
+    FLY_SERIALIZE(header_, root_crc_, chunk_count_);
+};
+
+// Bandwidth probe (data plane). Request asks the peer to echo back a payload of
 // payload_size_ bytes; response carries payload_ so the caller measures the
 // round-trip throughput of a real data-plane exchange.
 struct NetProbeRequestMessage {

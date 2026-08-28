@@ -905,6 +905,45 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
     return {true, std::move(result)};
 }
 
+std::pair<bool, DataService::ChunkedLocation> DataService::find_chunked_location(
+        const CMString& object_name) {
+    auto [db_path, short_name] = split_full(object_name);
+
+    DbPaths paths;
+    CMVector<IndexEntry> entries;
+    {
+        std::shared_lock<std::shared_mutex> plock(db_paths_mutex_);
+        auto path_it = db_paths_.find(db_path);
+        if (path_it == db_paths_.end()) return {false, {}};
+        paths = path_it->second;
+    }
+    {
+        std::shared_lock<std::shared_mutex> llock(local_mutex_);
+        auto db_it = local_idx_.find(db_path);
+        if (db_it == local_idx_.end()) return {false, {}};
+        auto it = db_it->second.objects_.find(short_name);
+        if (it == db_it->second.objects_.end() || !it->second) return {false, {}};
+        auto& info = *it->second;
+        // temp 对象：主副本在内存（temp_compressed_data_），分片 pred 无意义。
+        if (info.is_temp_) return {false, {}};
+        if (info.completion_state_.load(std::memory_order_acquire) != CompletionState::COMPLETE) {
+            return {false, {}};
+        }
+        if (info.entries_.empty()) return {false, {}};
+        entries = info.entries_;
+    }
+
+    const IndexEntry& entry = entries.back();
+    CMString file_path = DataReader::find_file_path(entry.file_name_, paths.db_path_,
+                                                    paths.data_path_);
+    if (file_path.empty()) return {false, {}};
+    ChunkedLocation loc;
+    loc.file_path = file_path;
+    loc.offset = static_cast<uint64_t>(entry.offset_);
+    loc.size = static_cast<uint64_t>(entry.size_);
+    return {true, std::move(loc)};
+}
+
 std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& object_name,
                                                                bool wait_local_write) {
     // Short-circuit: serve compressed bytes from the ObjectCache low tier when

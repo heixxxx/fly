@@ -122,6 +122,12 @@ client                          server
 - **小对象快路径**：total_compressed_len ≤ 单片阈值或缓存命中 → 现整帧两段式（含 `payload_crc_`），一次往返。
 - **CHUNK_RESEND 处理模型**：client 验坏块后发 resend 请求（同连接），server 读循环路由该消息类型单块重发；每块重传上限一次，再失败升格对象级 FATAL。与「不做断线续传」不冲突：**在线块重传**（连接活着）做；**断线**仍整对象走 TIER2 重试。
 
+**L2 落地修订（2026-08-29 实现）**：
+- CHUNK 片 = **纯字节切片**（4MB 固定，与磁盘块结构无关）——client 顺序重组后与磁盘 record 字节一致，DecompressingStreamBuf 直接消费（磁盘块 CRC 语义完整保留）；重传单位 = 字节片。
+- META（DATA_RESPONSE 复用）增 `chunk_frame_bytes_`（切片尺寸随 META 告知——client 按 seq×frame 定位填充，切片尺寸是发送端实现细节）。
+- `chunked_transfer_threshold` config（默认 4MB）：record 超过阈值走分片，否则整帧快路径（缓存命中/temp 对象天然走快路径——find_chunked_location 只定位落盘 entry）。
+- L3 前置约束（流式尾部解析冲突的解）：**META 将携带 trailer 元数据**（server 发送前 pread 尾部一次解析 py_name/trailer_len 填入 META）——消费端流式启动时即知块流边界；L2 阶段 client 重组后自行尾部解析的行为在 L3 由 META 取代。
+
 ## 5. 失败与重试语义（工业零容忍，对象级统一）
 
 | 失败类别 | 语义 |

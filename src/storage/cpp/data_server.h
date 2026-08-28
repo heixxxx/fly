@@ -4,6 +4,7 @@
 #include <network/cpp/epoll_multiplexer.h>
 #include <common/cpp/fly_buffer.h>
 #include <cstdint>
+#include <functional>
 #include <atomic>
 #include <thread>
 #include <mutex>
@@ -44,6 +45,12 @@ private:
     struct ConnState {
         int fd = -1;
         CMString recv_buf;
+        // L2 分片服务上下文（CHUNK_RESEND 路由用）：最近一次分片服务的对象
+        // 区间 + 每 seq 重传计数（上限一次，§4.5）。
+        CMString chunk_file;
+        uint64_t chunk_off = 0;
+        uint64_t chunk_size = 0;
+        CMUnorderedSet<uint32_t> resent_seqs;
     };
     std::mutex conn_mutex_;
     CMVector<ConnState> conns_;
@@ -54,6 +61,9 @@ private:
         int fd = -1;
         CMString data;
         FlyBufferPtr raw_data;  // optional: raw payload sent after `data` (zero-copy)
+        // L2 自含分片任务（§7.1 #20）：单个闭包在 send 线程执行 META → CHUNK
+        // 流 → DIGEST 的完整发送（避免多任务乱序写同 fd）；raw_data/data 留空。
+        std::function<void()> chunked_execute;
     };
     std::queue<SendTask> send_queue_;
     std::mutex send_mutex_;
@@ -66,6 +76,12 @@ private:
     void do_send(int fd, const CMString& data);
     void cleanup_fd(int fd);
     int find_conn_index(int fd);
+
+    // L2 分片路径（§4.5）。loc 参数退化为基本类型（避免与 data_service.h
+    // 循环 include）。
+    void serve_chunked(int fd, const CMString& object_name,
+                       const CMString& file_path, uint64_t offset, uint64_t size);
+    void handle_chunk_resend(int fd, uint32_t seq);
 };
 
 }  // namespace fly

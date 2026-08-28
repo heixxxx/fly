@@ -693,7 +693,10 @@ TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::MONITOR_TASK_IO)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::WORKER_PROPERTY_ASSIGN)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::WORKER_EXIT)));
-    EXPECT_FALSE(is_valid_message_type(63));  // upper bound is 62
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DATA_CHUNK)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::CHUNK_RESEND)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DATA_DIGEST)));
+    EXPECT_FALSE(is_valid_message_type(66));  // upper bound is 65
     EXPECT_FALSE(is_valid_message_type(0));
 }
 

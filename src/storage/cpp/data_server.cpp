@@ -2,6 +2,7 @@
 #include <storage/cpp/data_service.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <common/cpp/data_checksum.h>
+#include <core/cpp/config.h>
 #include <network/cpp/transport_interface.h>
 #include <network/cpp/tcp_socket.h>
 #include <network/cpp/epoll_multiplexer.h>
@@ -10,6 +11,8 @@
 #include <log/cpp/logger.h>
 #include <cstring>
 #include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
 
 #ifdef DBG
 #undef DBG
@@ -267,10 +270,36 @@ void DataServer::on_readable(int fd) {
             continue;
         }
 
+        // L2 在线块重传路由（§4.5）：client 验坏某分片后请求单块重发。
+        // 每连接每 seq 上限一次（conn 状态计数）；再坏由 client 升格对象级
+        // CHECKSUM（零容忍 §5）。
+        if (mtype == MessageType::CHUNK_RESEND) {
+            ChunkResendMessage rs;
+            if (!MessageProtocol::decode(frame, rs)) {
+                ERR("[DS-DECODE] fd={} chunk-resend decode failed", fd);
+                break;
+            }
+            handle_chunk_resend(fd, rs.seq_);
+            continue;
+        }
+
         DataRequestMessage req;
         if (!MessageProtocol::decode(frame, req)) {
             ERR("[DS-DECODE] fd={} decode failed", fd);
             break;
+        }
+
+        // ── L2 分片分流（§4.5/§7.1 #20）──
+        // 本地完整落盘对象且超过阈值 → 分片路径（pread 循环，server 不整读）。
+        // 缓存命中/temp/找不到定位 → 快路径（现有整帧两段式）。
+        {
+            int64_t threshold = Config::instance()->get_int("chunked_transfer_threshold");
+            auto [loc_ok, loc] = data_service_.find_chunked_location(req.object_name_);
+            if (loc_ok && loc.size > static_cast<uint64_t>(threshold)) {
+                serve_chunked(fd, req.object_name_, loc.file_path, loc.offset, loc.size);
+                pushed_response = true;
+                continue;
+            }
         }
 
         DataResponseMessage response;
@@ -360,6 +389,12 @@ void DataServer::send_loop() {
             }
         }
 
+        // L2 自含分片任务：闭包内完成 META → CHUNK 流 → DIGEST/rearm。
+        if (task.chunked_execute) {
+            task.chunked_execute();
+            continue;
+        }
+
         if (task.fd >= 0 && !task.data.empty()) {
             bool has_raw = task.raw_data && !task.raw_data->empty();
             if (has_raw) {
@@ -382,6 +417,183 @@ void DataServer::send_loop() {
             }
         }
     }
+}
+
+// ── L2 分片路径（chunked-transfer-design.md §4.5）──
+
+// 单片字节数（纯字节切片，与磁盘块结构无关——client 顺序重组后与磁盘
+// record 字节一致，DecompressingStreamBuf 直接消费）。
+static constexpr uint64_t kChunkFrameBytes = 4ULL << 20;
+
+void DataServer::serve_chunked(int fd, const CMString& object_name,
+                               const CMString& file_path, uint64_t offset, uint64_t size) {
+    // conn 状态登记（CHUNK_RESEND 路由需要对象区间 + 重传计数）。
+    {
+        std::lock_guard<std::mutex> lk(conn_mutex_);
+        int idx = find_conn_index(fd);
+        if (idx < 0) return;
+        conns_[idx].chunk_file = file_path;
+        conns_[idx].chunk_off = offset;
+        conns_[idx].chunk_size = size;
+        conns_[idx].resent_seqs.clear();
+    }
+
+    // 自含分片 SendTask（单个闭包在单个 send 线程执行完整流：META →
+    // CHUNK 循环（pread 边发边算根）→ DIGEST 尾帧 → rearm。多任务乱序写
+    // 同 fd 的风险由单任务消除，§7.1 #20）。
+    SendTask task;
+    task.fd = fd;
+    task.chunked_execute = [this, fd, object_name, file_path, offset, size]() {
+        bool ok = true;
+
+        // META 先行（复用 DATA_RESPONSE 两段式，无 raw）。
+        DataResponseMessage meta;
+        meta.object_name_ = object_name;
+        meta.success_ = true;
+        meta.chunked_ = true;
+        meta.total_compressed_len_ = size;
+        meta.chunk_frame_bytes_ = kChunkFrameBytes;
+        CMString meta_frame = DataResponseProtocol::encode(meta, nullptr).header_segment;
+        ok = transport_->send_all(fd, meta_frame.data(), meta_frame.size());
+        if (!ok) {
+            ERR("[DS-CHUNK] fd={} META send failed", fd);
+            cleanup_fd(fd);
+            return;
+        }
+
+        // CHUNK 循环：pread 切片 → 组帧 → writev（帧头+数据一次系统调用）。
+        // server 内存恒为单片缓冲（4MB）——大对象不整读（§10 内存量化）。
+        int file = ::open(file_path.c_str(), O_RDONLY);
+        if (file < 0) {
+            ERR("[DS-CHUNK] fd={} open failed: {}", fd, file_path);
+            cleanup_fd(fd);
+            return;
+        }
+        fly::DataChecksum root;
+        CMVector<char> buf(static_cast<size_t>(kChunkFrameBytes));
+        uint64_t off = offset;
+        uint32_t seq = 0;
+        while (ok && off < offset + size) {
+            uint64_t n = std::min<uint64_t>(kChunkFrameBytes, offset + size - off);
+            ssize_t got = ::pread(file, buf.data(), static_cast<size_t>(n),
+                                  static_cast<off_t>(off));
+            if (got < 0 || static_cast<uint64_t>(got) != n) {
+                ERR("[DS-CHUNK] fd={} pread failed at off={} n={}", fd, off, n);
+                ok = false;
+                break;
+            }
+            uint64_t crc = fly::data_checksum(buf.data(), static_cast<size_t>(n));
+            CMString hdr = ChunkFrameProtocol::encode_header(seq, crc, n);
+            struct iovec iov[2];
+            iov[0].iov_base = const_cast<char*>(hdr.data());
+            iov[0].iov_len = hdr.size();
+            iov[1].iov_base = buf.data();
+            iov[1].iov_len = static_cast<size_t>(n);
+            ok = transport_->sendv(fd, iov, 2);
+            if (!ok) break;
+            root.update(buf.data(), static_cast<size_t>(n));
+            off += n;
+            seq++;
+        }
+        ::close(file);
+        if (!ok) {
+            ERR("[DS-CHUNK] fd={} chunk stream send failed at seq={}", fd, seq);
+            cleanup_fd(fd);
+            return;
+        }
+
+        // DIGEST 尾帧（根摘要，单遍边发边算——§4.5）。
+        DataDigestMessage digest;
+        digest.root_crc_ = root.final();
+        digest.chunk_count_ = seq;
+        CMString digest_frame = MessageProtocol::encode(digest);
+        if (!transport_->send_all(fd, digest_frame.data(), digest_frame.size())) {
+            ERR("[DS-CHUNK] fd={} DIGEST send failed", fd);
+            cleanup_fd(fd);
+            return;
+        }
+        DBG("[DS-CHUNK] fd={} obj={} sent {} chunks, {} bytes", fd, object_name, seq, size);
+        // rearm 读端：resend 请求在发送期间到达则暂存内核缓冲，保序安全（§7.4）。
+        epoll_->mod(epoll_fd_, fd, EV_READ | EV_ONESHOT);
+    };
+
+    {
+        std::lock_guard<std::mutex> slk(send_mutex_);
+        send_queue_.push(std::move(task));
+    }
+    send_cv_.notify_one();
+}
+
+void DataServer::handle_chunk_resend(int fd, uint32_t seq) {
+    CMString file;
+    uint64_t base_off = 0, total = 0;
+    {
+        std::lock_guard<std::mutex> lk(conn_mutex_);
+        int idx = find_conn_index(fd);
+        if (idx < 0) return;
+        auto& c = conns_[idx];
+        if (c.chunk_file.empty()) {
+            ERR("[DS-CHUNK] fd={} resend on non-chunked conn", fd);
+            return;
+        }
+        if (c.resent_seqs.count(seq)) {
+            // 每 seq 上限一次（§4.5）：再请求 = client 侧升格 CHECKSUM 前的
+            // 异常重发，拒绝并断开（协议失步防御）。
+            ERR("[DS-CHUNK] fd={} seq={} resend limit reached, dropping connection", fd, seq);
+            cleanup_fd(fd);
+            return;
+        }
+        c.resent_seqs.insert(seq);
+        file = c.chunk_file;
+        base_off = c.chunk_off;
+        total = c.chunk_size;
+    }
+
+    uint64_t start = base_off + static_cast<uint64_t>(seq) * kChunkFrameBytes;
+    if (start >= base_off + total) {
+        ERR("[DS-CHUNK] fd={} resend seq={} out of range", fd, seq);
+        return;
+    }
+    uint64_t n = std::min<uint64_t>(kChunkFrameBytes, base_off + total - start);
+
+    SendTask task;
+    task.fd = fd;
+    task.chunked_execute = [this, fd, file, start, n, seq]() {
+        int f = ::open(file.c_str(), O_RDONLY);
+        if (f < 0) {
+            ERR("[DS-CHUNK] fd={} resend open failed: {}", fd, file);
+            cleanup_fd(fd);
+            return;
+        }
+        CMVector<char> buf(static_cast<size_t>(n));
+        ssize_t got = ::pread(f, buf.data(), static_cast<size_t>(n),
+                              static_cast<off_t>(start));
+        ::close(f);
+        if (got < 0 || static_cast<uint64_t>(got) != n) {
+            ERR("[DS-CHUNK] fd={} resend pread failed", fd);
+            cleanup_fd(fd);
+            return;
+        }
+        uint64_t crc = fly::data_checksum(buf.data(), static_cast<size_t>(n));
+        CMString hdr = ChunkFrameProtocol::encode_header(seq, crc, n);
+        struct iovec iov[2];
+        iov[0].iov_base = const_cast<char*>(hdr.data());
+        iov[0].iov_len = hdr.size();
+        iov[1].iov_base = buf.data();
+        iov[1].iov_len = static_cast<size_t>(n);
+        if (!transport_->sendv(fd, iov, 2)) {
+            ERR("[DS-CHUNK] fd={} resend send failed seq={}", fd, seq);
+            cleanup_fd(fd);
+            return;
+        }
+        DBG("[DS-CHUNK] fd={} resent seq={} ({} bytes)", fd, seq, n);
+        epoll_->mod(epoll_fd_, fd, EV_READ | EV_ONESHOT);
+    };
+    {
+        std::lock_guard<std::mutex> slk(send_mutex_);
+        send_queue_.push(std::move(task));
+    }
+    send_cv_.notify_one();
 }
 
 void DataServer::do_send(int fd, const CMString& data) {

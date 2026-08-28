@@ -44,17 +44,16 @@ public:
     bool exists(const CMString& object_name);
 
     CMString find_file_path(const CMString& file_name);
+    // 静态文件定位（L2 分片服务位置查询用，DataService::find_chunked_location）。
+    static CMString find_file_path(const CMString& file_name,
+                                   const CMString& db_path,
+                                   const CMString& data_path);
     std::optional<IndexEntry> find_entry(const CMString& object_name);
     std::optional<CMVector<IndexEntry>> find_all_entries(const CMString& object_name);
 
 private:
     // 纯文件区间读取，不依赖实例状态。read_raw_bytes 与 read_raw_from_entry 共用。
     static FlyBufferPtr read_from_file(const CMString& file_path, int64_t offset, int64_t size);
-
-    // 静态文件定位核心，实例方法与 read_raw_from_entry 共用。
-    static CMString find_file_path(const CMString& file_name,
-                                   const CMString& db_path,
-                                   const CMString& data_path);
 
     CMString db_path_;
     CMString data_path_;

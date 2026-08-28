@@ -271,6 +271,17 @@ public:
     std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> read_raw_compressed(
         const CMString& object_name, bool bypass_local = false);
 
+    // L2 分片服务位置查询（chunked-transfer-design §4.5/§7.1 #20）：
+    // 返回对象最近 entry 的落盘定位（绝对文件路径 + 区间），DataServer 据此
+    // pread 分片发送（不整读进内存）。found=false：对象不在本地 / temp 内存
+    // 对象 / 索引不完整——调用方回退整帧快路径。
+    struct ChunkedLocation {
+        CMString file_path;
+        uint64_t offset = 0;
+        uint64_t size = 0;
+    };
+    std::pair<bool, ChunkedLocation> find_chunked_location(const CMString& object_name);
+
     void on_temp_write_started(const CMString& db_path, const CMString& object_name);
     // disk_entry：temp 落盘产物（temp_data_*.dat）的 IndexEntry。提供时填入
     // entries_（内存 LRU miss 后的盘读 fallback 路径）；缺失（std::nullopt，

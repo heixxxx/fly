@@ -154,6 +154,9 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"data_server_threads", 4},
     {"compression_level", 0},
     {"serialize_chunk_size", 4194304},
+    // L2 分片传输阈值（chunked-transfer-design §4.5）：对象 record 超过此字节数
+    // 时 DataServer 走分片路径（META + 4MB CHUNK 流 + DIGEST），否则整帧快路径。
+    {"chunked_transfer_threshold", 4194304},
     {"compression_threshold", 4096},  // skip compression for payloads <= this size
     {"dependency_update_mode", 0},
     {"locality_scheduling_enabled", 1},  // data locality 调度开关：1=开启(默认), 0=关闭
