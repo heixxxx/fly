@@ -298,6 +298,20 @@ wait_workers_registered(timeout=600)
 
 worker 生命周期语义（用户确认，两阶段）：
 
+**正常退出 vs 异常退出（显式分派，2026-08-28 用户裁定）**：worker 退出统一入口
+`initiate_shutdown(ExitReason)`——`MASTER_SHUTDOWN`/`LOCAL_STOP` 为 graceful
+分支（INFO 日志 + 关连接前发 `WORKER_EXIT` 声明 + 进程退出码 0）；
+`MASTER_LOST`/`REGISTRATION_REJECTED` 为 abnormal 分支（ERR 日志 + 退出码 3，
+bsub/ssh 等外部观测方据进程退出码判定）。master `on_disconnect` 三分派：
+① `shutdown_pending`（stop 广播指令先行）∪ `exit_confirmed`（WORKER_EXIT 到达）
+→ `handle_worker_exit`：终态 **EXITED**、无判死告警、无数据全灭 fail（正常
+关停时 WBQ 已 drain，数据落盘可 load_db 恢复）；② drain 期未标记断连 /
+断连即死模式 → `handle_worker_death`（终态 DEAD，含接管/全灭 fail）；
+③ 其余 → 断连宽限。`WORKER_EXIT` 与断连事件同处 serialized domain（同 lane
+FIFO），消除「声明晚于断连被读丢」的竞态。活体判定统一用正向谓词
+`worker_status_alive`（IDLE/BUSY），调度/接管/backup/orphan holder 判定均
+不再依赖 `!= DEAD` 负向枚举。
+
 **首次注册**（`worker_register_timeout`，默认 0=master 不等待不假设任何超时）：
 - master 侧：唤起占位符无限期有效（worker 任意时刻注册都被接受）；显式设值
   才启用超时清理并作为 `wait_workers_registered()` 默认超时。

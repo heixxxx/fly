@@ -11,7 +11,8 @@ FLY_EXPORT_MODULE(_fly_task) {
 FLY_EXPORT_ENUM(fly::WorkerStatus, "EXTaskWorkerStatus")
     FLY_EXPORT_ENUM_VALUE("IDLE", fly::WorkerStatus::IDLE)
     FLY_EXPORT_ENUM_VALUE("BUSY", fly::WorkerStatus::BUSY)
-    FLY_EXPORT_ENUM_VALUE("DEAD", fly::WorkerStatus::DEAD);
+    FLY_EXPORT_ENUM_VALUE("DEAD", fly::WorkerStatus::DEAD)
+    FLY_EXPORT_ENUM_VALUE("EXITED", fly::WorkerStatus::EXITED);
 
 FLY_EXPORT_ENUM(fly::TaskStatus, "EXTaskTaskStatus")
     FLY_EXPORT_ENUM_VALUE("PENDING", fly::TaskStatus::PENDING)

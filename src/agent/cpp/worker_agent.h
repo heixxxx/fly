@@ -29,6 +29,16 @@
 
 namespace fly {
 
+// worker 退出性质（用户裁定：master/worker 双侧显式区分正常退出与异常退出，
+// 不靠 reason 字符串猜测）。枚举值仅内部与 WorkerExitMessage 诊断字段使用，
+// 外部观测方看进程退出码（exit_code：graceful=0 / abnormal=3）。
+enum class ExitReason : uint8_t {
+    MASTER_SHUTDOWN = 0,       // master ShutdownMessage 优雅关停 → graceful
+    LOCAL_STOP = 1,            // stop() API 本地显式停止 → graceful
+    MASTER_LOST = 2,           // 心跳超时/连接丢失/重连宽限耗尽 → abnormal
+    REGISTRATION_REJECTED = 3, // 重复 worker id 被 master 拒绝 → abnormal
+};
+
 struct PendingTask {
     uint64_t task_id_;
     CMString task_name_;
@@ -265,6 +275,8 @@ private:
     std::mutex pending_master_sends_mutex_;
     CMVector<PendingMasterSend> pending_master_sends_;
     std::atomic<bool> shutdown_triggered_{false};
+    // 退出性质（initiate_shutdown 首次进入时写入；详见 exit_reason_graceful）。
+    std::atomic<ExitReason> exit_reason_{ExitReason::LOCAL_STOP};
     
     CMUniquePtr<Reactor> reactor_;
     std::thread reactor_thread_;
@@ -482,7 +494,11 @@ private:
     // 占位符共用 worker_register_timeout，两侧统一 5min 保活）。
     uint64_t connect_master_with_retry(class ConnectionManager& transport);
     void touch_master_contact();
-    void initiate_shutdown(const CMString& reason);
+    // 退出统一入口（幂等）。reason 显式区分退出性质（用户裁定语义）：
+    // graceful 分支 INFO + 通知 master（WORKER_EXIT，关连接前）+ 进程退出码 0；
+    // abnormal 分支 ERR + 进程退出码 3。detail 为诊断细节（随日志与
+    // WorkerExitMessage 带出）。
+    void initiate_shutdown(ExitReason reason, const CMString& detail);
     void do_cleanup();
 
     DataClientPool data_client_pool_{Config::instance()->get_int("data_client_pool_size")};
@@ -492,8 +508,25 @@ private:
     std::atomic<int64_t> last_master_contact_{0};
     static constexpr int MASTER_TIMEOUT_SECONDS = 120;
 
+public:
+    // 退出性质访问（用户裁定：正常/异常显式分支，不靠字符串猜测）。首个触发
+    // 原因最准确——shutdown_triggered_ exchange 防重入，仅首次进入时写入。
+    static bool exit_reason_graceful(ExitReason r) {
+        return r == ExitReason::MASTER_SHUTDOWN || r == ExitReason::LOCAL_STOP;
+    }
+    ExitReason exit_reason() const { return exit_reason_.load(); }
+    // 进程退出码（OS 层，bsub/ssh/运维脚本的外部观测口）：graceful=0、
+    // abnormal=3（避开既有占用 0/1/42/77/78——正常/脚本错误/Python abort/崩溃取证）。
+    int exit_code() const {
+        return exit_reason_graceful(exit_reason_.load()) ? 0 : 3;
+    }
+
 #ifdef FLY_ENABLE_TEST_HOOKS
 public:
+    // 仅测试用：直接驱动退出入口（ExitReason 语义/退出码断言，无需网络路径）。
+    void initiate_shutdown_for_testing(ExitReason reason, const CMString& detail) {
+        initiate_shutdown(reason, detail);
+    }
     // 仅测试用（release 编译零开销）：connect_master_with_retry 每次 connect 尝试的
     // 时间戳（验证指数退避递增）。
     CMVector<std::chrono::steady_clock::time_point> connect_attempts_for_testing_;

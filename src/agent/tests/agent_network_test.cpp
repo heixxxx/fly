@@ -44,6 +44,55 @@ TEST_F(AgentNetworkTest, WorkerRegister) {
     worker.stop();
 }
 
+// 正常退出归类（用户裁定：正常/异常退出显式分派）：worker 本地 stop() 走
+// graceful 分支——关连接前发 WORKER_EXIT 声明；master on_disconnect 依据
+// 声明（exit_confirmed，非 shutdown_pending 指令场景）归类为正常退出：
+// 终态 EXITED（非 DEAD）、不登记断连宽限、无判死副作用。
+TEST_F(AgentNetworkTest, WorkerGracefulExitClassifiedAsExited) {
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    EXPECT_FALSE(master.shutdown_pending_for_testing(1))
+        << "no master-initiated shutdown yet — classification must come from WORKER_EXIT";
+    EXPECT_EQ(worker.exit_code(), 0) << "graceful stop before shutdown must map to exit code 0";
+
+    worker.stop();
+
+    // 等 on_disconnect 完成（清表 + 三分派归类）。
+    wait_for([&]{ return master.get_connection_count() == 0; }, 100, 30);
+
+    // 归类正确性的断言落在终态：WORKER_EXIT 先于 DISCONNECT（同串行 lane
+    // FIFO）被消费，on_disconnect 走 handle_worker_exit → EXITED。瞬态标记
+    //（exit_confirmed/shutdown_pending）在归类消费时即 erase，此处不可断言。
+    EXPECT_EQ(master.worker_status_for_testing(1), WorkerStatus::EXITED)
+        << "graceful exit must land in EXITED, not DEAD";
+    EXPECT_EQ(master.get_idle_workers().size(), 0u)
+        << "exited worker must not be schedulable";
+
+    master.stop();
+}
+
+// worker 心跳超时失联（MASTER_LOST，abnormal）：exit_code=3、不声明正常退出；
+// master 侧的死亡归类由 DisconnectReconnectsAndReports/宽限家族覆盖，此处
+// 断言 worker 侧显式分支的退出码语义。
+TEST_F(AgentNetworkTest, WorkerExitCodeReflectsExitReason) {
+    WorkerAgent worker(1, "127.0.0.1", 1);  // 端口 1：不可连，无需 master
+    EXPECT_EQ(worker.exit_code(), 0) << "default (no shutdown initiated) is graceful";
+
+    worker.initiate_shutdown_for_testing(fly::ExitReason::MASTER_LOST, "unit test");
+    EXPECT_EQ(worker.exit_code(), 3) << "MASTER_LOST must map to abnormal exit code 3";
+    EXPECT_FALSE(worker.exit_reason_graceful(worker.exit_reason()));
+
+    worker.initiate_shutdown_for_testing(fly::ExitReason::LOCAL_STOP, "unit test");
+    EXPECT_EQ(worker.exit_code(), 3) << "idempotent: first-trigger reason (MASTER_LOST) wins";
+    worker.stop();
+}
+
 // 注册 ack 丢失兜底（P3-23 根因修复的确定性回归）：master 吞掉首条 REGISTER
 // （等效应用层丢消息——worker 无限等），注册守望以指数退避（本测 100ms 初值）
 // 重发后注册成功。修复前该场景永久挂死（真实失败形态：60s 测试超时）。

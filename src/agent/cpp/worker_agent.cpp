@@ -387,7 +387,7 @@ void WorkerAgent::stop() {
             running_.load() ? 1 : 0);
     if (!reactor_ && !running_) return;
 
-    initiate_shutdown("stop() called");
+    initiate_shutdown(ExitReason::LOCAL_STOP, "stop() called");
     do_cleanup();
 }
 
@@ -607,7 +607,7 @@ void WorkerAgent::heartbeat_loop() {
             auto elapsed = now_sec - last_master_contact_.load();
             if (elapsed > MASTER_TIMEOUT_SECONDS) {
                 WARN("Master timeout ({}s since last contact), shutting down", elapsed);
-                initiate_shutdown("master timeout");
+                initiate_shutdown(ExitReason::MASTER_LOST, "master timeout");
                 break;
             }
         }
@@ -800,7 +800,7 @@ void WorkerAgent::on_register_ack(uint64_t conn_id, const RegisterAckMessage& ms
     if (msg.duplicate_) {
         ERR("RegisterAck: worker_id {} already active on master (duplicate) — exiting",
             worker_id_);
-        initiate_shutdown("duplicate worker id rejected by master");
+        initiate_shutdown(ExitReason::REGISTRATION_REJECTED, "duplicate worker id rejected by master");
         return;
     }
 
@@ -1051,7 +1051,7 @@ bool WorkerAgent::poll_task_blocking(int timeout_ms) {
 
 void WorkerAgent::on_shutdown(const ShutdownMessage& msg) {
 
-    initiate_shutdown("master shutdown message");
+    initiate_shutdown(ExitReason::MASTER_SHUTDOWN, "master shutdown message");
 }
 
 void WorkerAgent::on_stop_now(const StopNowMessage& msg) {
@@ -1088,7 +1088,7 @@ void WorkerAgent::on_disconnect(uint64_t conn_id) {
     int64_t grace = Config::instance()->get_int("worker_reconnect_timeout");
     if (grace <= 0) {
         WARN("Master connection lost, shutting down (reconnect disabled)");
-        initiate_shutdown("master connection lost");
+        initiate_shutdown(ExitReason::MASTER_LOST, "master connection lost");
         return;
     }
 
@@ -1130,7 +1130,7 @@ void WorkerAgent::reconnect_loop() {
             reconnecting_.store(false);
             ERR("Reconnect to master {}:{} failed within {}s grace — giving up",
                 master_host_, master_port_, grace_s);
-            initiate_shutdown("master reconnect grace expired");
+            initiate_shutdown(ExitReason::MASTER_LOST, "master reconnect grace expired");
             return;
         }
 
@@ -1249,16 +1249,38 @@ void WorkerAgent::touch_master_contact() {
         std::chrono::duration_cast<std::chrono::seconds>(now).count());
 }
 
-void WorkerAgent::initiate_shutdown(const CMString& reason) {
+void WorkerAgent::initiate_shutdown(ExitReason reason, const CMString& detail) {
     if (shutdown_triggered_.exchange(true)) {
         fprintf(stderr, "[SD] initiate_shutdown idempotent-return: worker_id=%d reason=%s\n",
-                static_cast<int>(worker_id_), reason.c_str());
+                static_cast<int>(worker_id_), detail.c_str());
         return;
     }
+    exit_reason_.store(reason);
+    const bool graceful = exit_reason_graceful(reason);
 
     fprintf(stderr, "[SD] initiate_shutdown enter: this=%p worker_id=%d reason=%s\n",
-            static_cast<const void*>(this), static_cast<int>(worker_id_), reason.c_str());
-    WARN("Worker shutdown initiated: {}", reason);
+            static_cast<const void*>(this), static_cast<int>(worker_id_), detail.c_str());
+    // 显式退出分支（用户裁定：正常/异常不混流）——日志级别即性质声明。
+    if (graceful) {
+        INFO("Worker exiting gracefully: {} (worker_id={})", detail, worker_id_);
+    } else {
+        ERR("Worker exiting abnormally: {} (worker_id={}, process exit_code=3)",
+            detail, worker_id_);
+    }
+
+    // 正常退出显式声明：清理开始前、关连接之前通知 master（异步无 ack）。
+    // master 依据「本消息到达 ∪ shutdown_pending 指令先行」把断连归类为正常
+    // 退出，不进判死链（不发则崩溃/网络断——由 shutdown_pending 兜底或走
+    // 异常判死，两侧语义各自正确）。
+    if (graceful) {
+        uint64_t conn = master_conn_.load();
+        if (conn != 0 && reactor_) {
+            WorkerExitMessage msg;
+            msg.worker_id_ = worker_id_;
+            msg.exit_reason_ = static_cast<uint8_t>(reason);
+            reactor_->send(conn, msg);
+        }
+    }
 
     // 生命周期标志关键段（与 start() 尾段互斥，秒拒竞争根治）：registered_/
     // running_/三线程 flag 的写与 notify 必须原子——start() 尾段在同一把锁

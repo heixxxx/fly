@@ -76,10 +76,14 @@ enum class MessageType : uint8_t {
     WORKER_PROPERTY_ASSIGN = 61, // master → worker: 追加属性指令（ensure_workers 收集语义的
                                  //   下行通道）。worker 去重并入自身 attributes_ 后经既有
                                  //   WORKER_PROPERTY_UPDATE 上行回报，视图更新复用现有链路。
+    WORKER_EXIT = 62,            // worker → master: 正常退出显式声明（worker graceful 退出分支
+                                 //   在关连接前发出，异步无 ack）。master 依据「WORKER_EXIT 到达 ∪
+                                 //   shutdown_pending（主动关停指令先行）」把断连归类为正常退出
+                                 //   （handle_worker_exit），区别于异常判死（handle_worker_death）。
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 61;
+    return raw >= 1 && raw <= 62;
 }
 
 struct MessageHeader {
@@ -479,6 +483,19 @@ struct StopNowMessage {
     static constexpr MessageType msg_type_ = MessageType::STOP_NOW;
 
     FLY_SERIALIZE(header_, reason_);
+};
+
+// worker 正常退出声明（graceful 分支在清理开始前、关连接之前发出）。master
+// 收到仅登记归类（exit_confirmed_workers_），清理仍等断连——不依赖本消息的
+// 清理时序；收不到（崩溃/网络断）时 master 靠 shutdown_pending 标记兜底归类。
+struct WorkerExitMessage {
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    uint8_t exit_reason_ = 0;  // worker ExitReason 值（诊断用，master 归类不依赖）
+
+    static constexpr MessageType msg_type_ = MessageType::WORKER_EXIT;
+
+    FLY_SERIALIZE(header_, worker_id_, exit_reason_);
 };
 
 struct WriteRegisterMessage {

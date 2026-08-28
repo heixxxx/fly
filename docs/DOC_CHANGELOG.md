@@ -3,6 +3,42 @@
 ---
 ---
 
+## 2026-08-28 (3): master 寻址 .fly_config 化 + worker 正常/异常退出显式分派
+
+**① master 寻址写入 .fly_config（首写完备，用户裁定）**：`Master.start()` 尾部
+即落盘（P1），launch_local/launch_ssh/expect_workers 入口幂等重写（P2 定稿点）
+——内容 = Config 全量快照 + `master_host`（advertise 可达地址）+ `master_port`
+（定稿端口）。local/ssh/bsub 任何类型 worker 任何时候读取都拿到完整寻址；
+launch_* 的 worker cmd 不再携带 `--master-host/--master-port`；
+**`launch_ssh_workers` 彻底删除 `master_host` 参数**。advertise 规则：
+`master_advertise_host` 覆盖 > 显式 bind > UDP connect 出口 IP 探测（环回
+校验拒绝——hostname 解析 127.0.1.1 不可访问）> 127.0.0.1+WARN。
+`Master` 默认 bind `0.0.0.0`（全接口，「IP 可访问」前提）。CLI
+`--master-host/port` 保留为调试覆盖口（优先级最高）。`Config::save_to_file`
+改原子写（tmp+rename）。新 config 键：`master_host`/`master_advertise_host`
+（str）、`master_port`（int）。
+
+**② worker 正常/异常退出显式分派（双侧，用户裁定）**：
+- worker：`ExitReason` 枚举（MASTER_SHUTDOWN/LOCAL_STOP=graceful；
+  MASTER_LOST/REGISTRATION_REJECTED=abnormal），`initiate_shutdown` 显式分支
+  （graceful=INFO+发 `WORKER_EXIT`（新增消息 62，入 serialized domain 保证
+  先于同连接 DISCONNECT）+退出码 0；abnormal=ERR+退出码 3）。
+- master：`on_disconnect` 三分派——shutdown_pending ∪ exit_confirmed →
+  `handle_worker_exit`（终态 **EXITED**：无判死告警、无数据全灭 fail）；
+  drain 期未标记/断连即死 → `handle_worker_death`（DEAD）；其余 → 宽限。
+- `WorkerStatus` 新增 **EXITED** 终态；活体判定统一正向谓词
+  `worker_status_alive`（5 处 `!= DEAD` 负向枚举消除）；心跳扫描跳过 EXITED；
+  monitor GUI 的 exit_kind 由启发式推导改为事件直读（EXITED/DEAD 原生落库）。
+- 单测：新增 GracefulExitClassifiedAsExited / ExitCodeReflectsExitReason；
+  两个宽限家族用例的断连模拟从 `worker.stop()` 改为
+  `simulate_master_disconnect_for_testing`（stop 现在声明退出，与宽限语义相斥），
+  并补「宽限表非空」确定性等待。
+
+**验证**：单测 51/51、QA 回归 19/19（fault/network/api/dependency）、
+ssh config 引导全链路通过。
+
+---
+
 ## 2026-08-28 (2): launch_ssh_workers —— SSH 多机 Worker 启动落地（roadmap F1 完成）
 
 **框架 API（fly.launch_ssh_workers / Master.launch_ssh_workers）**：通过 ssh 在

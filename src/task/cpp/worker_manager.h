@@ -11,8 +11,17 @@ namespace fly {
 enum class WorkerStatus : uint8_t {
     IDLE = 0,
     BUSY = 1,
-    DEAD = 2,
+    DEAD = 2,     // 异常死亡：心跳超时判死 / 断连宽限耗尽 / 断连即死 / 存储接管判定
+    EXITED = 3,   // 正常退出：master 主动关停确认（shutdown_pending ∪ WORKER_EXIT 声明），
+                  //   worker 优雅退出前已 drain WBQ，数据已落盘可 load_db 恢复
 };
+
+// 正向判活（活体语义的统一口径）：调度候选、存储接管者、backup 目标、
+// orphan 数据的存活 holder 判定均只用本谓词——终态（DEAD/EXITED 及未来新增）
+// 自动排除，不再依赖 `!= DEAD` 式负向枚举（新增终态时漏改的脆弱模式）。
+inline bool worker_status_alive(WorkerStatus s) {
+    return s == WorkerStatus::IDLE || s == WorkerStatus::BUSY;
+}
 
 // worker role——独立于 attributes（可随时增减、参与调度匹配）的**静态身份**：
 // 注册时设定、不可变更（无修改途径）。hybrid=普通 worker（默认）；

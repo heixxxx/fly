@@ -11,6 +11,11 @@ void HeartbeatMonitor::check_all_workers(uint64_t current_time,
 
     auto all_workers = manager_->get_all_workers();
     for (const auto& worker : all_workers) {
+        // 正常退出（EXITED，master 主动关停确认）不是心跳判死的产物：
+        // 跳过且不进 dead 列表。
+        if (worker.status_ == WorkerStatus::EXITED) {
+            continue;
+        }
         if (worker.status_ == WorkerStatus::DEAD) {
             dead_workers_.push_back(worker.worker_id_);
             continue;

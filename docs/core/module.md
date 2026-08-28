@@ -103,8 +103,14 @@ private:
 | `transport_type` | "tcp" | 传输层类型 |
 | `compression_type` | "lz4" | 压缩算法（"lz4", "zstd", "none"） |
 | `log_dir` | "fly_log" | 日志目录 |
+| `master_host` | "" | master advertise 地址（master 侧落盘 `.fly_config` 前写入；worker 引导的唯一寻址来源，CLI `--master-host` 仅调试覆盖） |
+| `master_advertise_host` | "" | 多网卡集群显式指定计算网 IP（覆盖探测） |
+| `master_port`（int） | 0 | master 定稿端口（master 侧落盘前写入；`--master-port` 仅调试覆盖） |
 
-> `data_server_host` / `master_host` / `script_path` 属 ProcessInfo（每进程），非 Config string 键。
+> `master_host` 双落点说明：**advertise 值**存 Config（随 `.fly_config` 下发给
+> worker 引导），**master 自身运行视角**仍在 ProcessInfo（不同步）。
+> `.fly_config` 首写完备（`Master.start()` 即落盘 + launch/expect 入口幂等
+> 重写，原子写），local/ssh/bsub worker 统一 `--config-file` 引导。
 
 ---
 

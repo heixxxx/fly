@@ -1638,8 +1638,16 @@ class Worker(FlyAgent):
         self._cache.clear()
 
         if self._agent is not None:
+            # 退出码先于 agent 拆除取值（initiate_shutdown 已写入终值）。
+            self._exit_code = self._agent.exit_code()
             self._agent.stop()
             self._agent = None
+
+    def exit_code(self) -> int:
+        """进程退出码（graceful=0 / abnormal=3），fly/main.py sys.exit 透传。"""
+        if self._agent is not None:
+            return self._agent.exit_code()
+        return getattr(self, "_exit_code", 0)
 
     def is_running(self) -> bool:
         if self._agent is None:

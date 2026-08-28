@@ -95,7 +95,7 @@ def launch_workers(configs: list[dict]) -> None:
 
 ```python
 def launch_ssh_workers(targets, *, ssh_port=22, ssh_user=None,
-                       fly_binary=None, master_host=None, port=None,
+                       fly_binary=None, port=None,
                        ssh_timeout=30.0) -> list[int]:
     """
     通过 ssh 在远程主机上启动 fly worker（多机部署）。
@@ -107,8 +107,6 @@ def launch_ssh_workers(targets, *, ssh_port=22, ssh_user=None,
             - 'host_alias': 注册 hostname override（同 launch_workers 的 'host'）
         ssh_port: ssh 服务端口；ssh_user: 统一 ssh 用户名（None 用当前用户）
         fly_binary: 远端 fly 路径（None 自动探测本地路径，要求远端同路径）
-        master_host: worker 回连的 master 地址（跨机必须传远端可达地址；
-            默认 master 绑定地址，127.0.0.1 仅 ssh 自连/本机有效）
         ssh_timeout: 单条 ssh 命令超时秒数（不含注册等待）
 
     Returns:
@@ -118,7 +116,7 @@ def launch_ssh_workers(targets, *, ssh_port=22, ssh_user=None,
         ids = launch_ssh_workers([
             {"host": "node1"},
             {"host": "node2", "attributes": ["highmem"], "role": "storage_only"},
-        ], master_host="10.0.0.7")
+        ])
         wait_workers_registered()
     """
     return get_agent().launch_ssh_workers(...)
@@ -130,6 +128,9 @@ def launch_ssh_workers(targets, *, ssh_port=22, ssh_user=None,
   **不持本地进程句柄**
 - 注册占位符先于 ssh 下发登记（防注册竞态泄漏，同 launch_local_workers）；
   ssh 失败抛 RuntimeError，失败占位符无法回收，需终止本次 run
+- **寻址**：worker 仅凭 `--config-file` 引导——master 地址/端口由 master 侧
+  自动写入 `.fly_config`（首写完备 + 原子写，见 [core/module.md](core/module.md)），
+  接口无任何地址参数
 - **路径约定**：fly_binary / log_dir / config 文件要求 master 侧与远端一致
   （localhost 自连、共享存储下成立）；异路径部署显式传 `fly_binary` 并保证
   `log_dir` 远端可写

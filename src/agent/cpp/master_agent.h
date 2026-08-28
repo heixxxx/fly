@@ -393,6 +393,18 @@ public:
     void handle_worker_death_for_testing(uint64_t worker_id) {
         handle_worker_death(worker_id);
     }
+    // worker 状态读取（正常退出 EXITED vs 异常判死 DEAD 的归类断言）。
+    WorkerStatus worker_status_for_testing(uint64_t worker_id) {
+        auto info = worker_manager_->get_worker(worker_id);
+        return info ? info->get().status_ : WorkerStatus::DEAD;
+    }
+    // 正常退出归类标记的消费状态（on_disconnect 分派断言用）。
+    bool shutdown_pending_for_testing(uint64_t worker_id) {
+        return shutdown_pending_workers_.contains(worker_id);
+    }
+    bool exit_confirmed_for_testing(uint64_t worker_id) {
+        return exit_confirmed_workers_.contains(worker_id);
+    }
     // 宽限表快照：测试等待"断连已进宽限登记"的确定性条件。on_disconnect 的
     // 清表（connected 不可见）与宽限登记之间有中间代码，负载下 lane 线程可
     // 在该窗口被抢占——等 connected empty 就 check 会空转（判死未发生）。
@@ -480,6 +492,16 @@ private:
     // 唤起占位符：worker_id → spawn 时间戳（epoch 秒）。注册到达转正（erase），
     // 超时清理见 check_expected_worker_timeouts。重复 expect 刷新时间戳。
     ConcurrentUnorderedMap<uint64_t, int64_t> expected_worker_ids_;
+
+    // 正常关停标记：master 主动广播 Shutdown/StopNow 的 worker 集合（stop_impl
+    // Phase 2 发送前 insert；on_disconnect 归类消费即 erase；on_worker_register
+    // 对同 id 新化身清除）。其断连走 handle_worker_exit（正常退出路径），
+    // 不进判死链（不发 WARN 判死、不做数据全灭 fail——正常关停时 WBQ 已 drain）。
+    ConcurrentUnorderedSet<uint64_t> shutdown_pending_workers_;
+    // worker 正常退出显式声明（WORKER_EXIT 消息到达即登记；本地 stop 等
+    // master 未发指令的 graceful 场景由此覆盖）。与 shutdown_pending 取并集
+    // 作为正常退出的归类依据；消费即 erase，新化身注册时清除。
+    ConcurrentUnorderedSet<uint64_t> exit_confirmed_workers_;
 
     // 断连宽限表：worker_id → 判死截止时间（epoch 秒）。断连（网络闪断）时登记
     //（worker_reconnect_timeout>0 才启用；宽限内 task 存活、不重调度、豁免心跳
@@ -680,9 +702,13 @@ private:
     // 扫描断连宽限表：超时项 erase + handle_worker_death（判死路径统一入口）。
     // 由 heartbeat_check_loop 周期调用，测试经 hook 直接驱动。
     void check_grace_deadlines(int64_t now);
-    // worker 正式判死（宽限超时 / drain 期断连 / 断连即死模式）：标 DEAD +
+    // worker 正式判死（宽限超时 / drain 期未标记断连 / 断连即死模式）：标 DEAD +
     // 恢复其 RUNNING task + rollback pending frozen + 存储接管/数据全灭快速失败。
     void handle_worker_death(uint64_t worker_id);
+    // worker 正常退出（shutdown_pending 指令先行 / WORKER_EXIT 声明确认）：
+    // 与判死显式分流的收尾路径——标 EXITED + settle pending + 防御性 fail
+    // 残留 RUNNING（保 stop 不悬挂）；无判死告警、无数据全灭 fail。
+    void handle_worker_exit(uint64_t worker_id);
     // 判死联动收敛 pending RPC 期待（无限等待的安全性前提：等待只被显式失败
     // 信号终结，不被超时终结）：死亡 worker 的 IdxLoad 期待置 -1（load_db 侧
     // 显式报错）、DeleteData 期待 complete 失败（残留数据 WARN）、MergeTask

@@ -111,6 +111,7 @@ dispatch_message 内 while 循环解析。数据不足则等待更多数据。
 | Var | VAR_SET/GET/ACK/REMOVE/BROADCAST | 小对象 KV |
 | Merge | DELETE_DATA/ACK、MERGE_CLEANUP/ACK | 删源数据、全局一致性屏障 |
 | 属性 | WORKER_PROPERTY_UPDATE、WORKER_PROPERTY_ASSIGN | 属性上行回报 / ensure_workers 下行追加 |
+| 退出 | WORKER_EXIT | worker 正常退出显式声明（graceful 分支关连接前发出）：master 据此把断连归类为正常退出（handle_worker_exit），区别于异常判死；已入 serialized domain 保证先于同连接 DISCONNECT 处理 |
 | 探测 | NET_PROBE_REQUEST/RESPONSE | 数据面 RTT/带宽探测 |
 | PeerRpc | PEER_RPC_REQUEST/RESPONSE | worker↔worker 业务 RPC |
 | 监控 | MONITOR_SAMPLE、MONITOR_TASK_IO | 负载采样成组上报、对象级 IO 明细 |

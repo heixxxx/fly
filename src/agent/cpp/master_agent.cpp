@@ -65,9 +65,12 @@ void MasterAgent::start() {
     // 处理顺序——REGISTER（含重连注册/dup 判定/deferred 重放）、WorkerProbeAck
     // （活性确认）与断连事件统一走保留串行 lane，跨连接 FIFO，消除跨 lane
     // check-act 交错窗口。HEARTBEAT 等收敛型消息不入域（高频且顺序无关）。
+    // WORKER_EXIT 也入域：它是连接的最后一条消息，必须先于同连接的 DISCONNECT
+    // 事件处理（否则 on_disconnect 归类时读不到 exit_confirmed 标记——与断连
+    // 事件分属消息 lane/串行 lane 会并行竞争）。
     // 后续新增「必须全局串行」的消息一律加入此域（见 Reactor::set_serialized_domain）。
     reactor_->set_serialized_domain(
-        {MessageType::REGISTER, MessageType::WORKER_PROBE_ACK},
+        {MessageType::REGISTER, MessageType::WORKER_PROBE_ACK, MessageType::WORKER_EXIT},
         /*lifecycle_events=*/true);
 
     port_ = static_cast<uint16_t>(reactor_->get_bound_port());
@@ -118,6 +121,17 @@ void MasterAgent::start() {
     reactor_->register_handler<HeartbeatMessage>(
         [this](uint64_t conn_id, const HeartbeatMessage& msg) {
             on_heartbeat(conn_id, msg);
+        });
+
+    // worker 正常退出声明（graceful 分支关连接前发出）：仅登记归类，清理
+    // 仍等断连事件——不依赖本消息的到达时序；收不到（崩溃/网络断）时
+    // on_disconnect 靠 shutdown_pending 指令标记兜底或走异常判死。
+    reactor_->register_handler<WorkerExitMessage>(
+        [this](uint64_t conn_id, const WorkerExitMessage& msg) {
+            (void)conn_id;
+            exit_confirmed_workers_.insert(msg.worker_id_);
+            DBG("worker {} declared graceful exit (reason={})",
+                msg.worker_id_, static_cast<int>(msg.exit_reason_));
         });
 
     reactor_->register_handler<MonitorSampleMessage>(
@@ -567,6 +581,11 @@ void MasterAgent::stop_impl(bool fast, const CMString& reason) {
         if (metrics_db_) {
             metrics_db_->record_worker_event(worker_id, fast ? "STOP_NOW_SENT" : "SHUTDOWN_SENT");
         }
+        // 发送前登记「主动关停」标记：worker 的断连据此归类为正常退出
+        //（handle_worker_exit），不进判死链。insert 先于 send——send 后
+        // worker 立即断连的竞态窗口由先登记封闭；send 前恰好崩溃的极小
+        // 窗口也归 exit（master 正要停它，语义可接受）。
+        shutdown_pending_workers_.insert(worker_id);
         if (fast) {
             INFO("Sending STOP_NOW to worker_id={} (elapsed={}ms)", worker_id, _elapsed());
             StopNowMessage msg;
@@ -1336,6 +1355,10 @@ void MasterAgent::sched_watchdog_loop() {
 
 void MasterAgent::on_worker_register(uint64_t conn_id, const RegisterMessage& msg) {
     uint64_t worker_id = msg.worker_id_;
+    // 同 id 新化身（手动重启/外部唤起重投）不继承上一任的关停归类标记：
+    // 旧标记残留会把新化身的意外断连误判为正常退出。
+    shutdown_pending_workers_.erase(worker_id);
+    exit_confirmed_workers_.erase(worker_id);
 #ifdef FLY_ENABLE_TEST_HOOKS
     // 测试钩子：吞掉本条注册（模拟消息/ack 丢失，P3-23 重发兜底的确定性构造）。
     if (drop_next_register_for_testing_.exchange(false)) {
@@ -1531,7 +1554,9 @@ void MasterAgent::on_heartbeat(uint64_t conn_id, const HeartbeatMessage& msg) {
     worker_manager_->set_heartbeat(worker_id, timestamp);
 
     auto worker = worker_manager_->get_worker(worker_id);
-    if (worker && worker->get().status_ == WorkerStatus::DEAD) {
+    // 终态通用复活：任一终态（异常判死/正常退出）的 worker 心跳到达均说明
+    // 活体回归（同 id 新进程注册）。恢复 IDLE + registry 活标记。
+    if (worker && !worker_status_alive(worker->get().status_)) {
         worker_manager_->update_worker_status(worker_id, WorkerStatus::IDLE);
         DataService::instance()->set_worker_alive(worker_id, true);
         INFO("Worker {} revived (heartbeat received after timeout)", worker_id);
@@ -2043,13 +2068,24 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
         MSG("AGENT::0002", 1, "worker {} offline", worker_id);
     }
 
-    // 断连处理（用户确认语义）：
-    //   drain 期 / worker_reconnect_timeout=0（断连即死逃生口）→ 立即判死。
-    //   正常运行期 → 登记宽限（grace_deadlines_）：task 存活（RUNNING 不动、
-    //   worker 状态不动——BUSY 保持使其不被调度）、豁免心跳判死，等 worker
-    //   指数退避重连；宽限超时由 check_grace_deadlines 走 handle_worker_death。
+    // 断连归类（用户裁定：正常退出与异常退出显式分派，不混流）：
+    //   ① 正常退出——master 主动关停指令先行（shutdown_pending）或 worker
+    //      graceful 声明已到达（WORKER_EXIT，本地 stop 等场景）：走
+    //      handle_worker_exit，不进判死链（数据已随 WBQ drain 落盘，
+    //      "副本全灭"不适用）。消费即清除标记。
+    //   ② 异常——drain 期未标记的断连 / worker_reconnect_timeout=0（断连即死
+    //      逃生口）→ handle_worker_death（含 fail_orphan_data_objects）。
+    //   ③ 其余——正常运行期意外断连：登记宽限等重连。
+    const bool shutdown_pending = shutdown_pending_workers_.erase(worker_id) > 0;
+    const bool exit_confirmed = exit_confirmed_workers_.erase(worker_id) > 0;
     int64_t reconnect_grace = Config::instance()->get_int("worker_reconnect_timeout");
-    if (draining_.load() || reconnect_grace <= 0) {
+    if (shutdown_pending || exit_confirmed) {
+        INFO("worker {} exited ({}); running normal-exit handling",
+             worker_id,
+             shutdown_pending ? "master-initiated shutdown"
+                              : "graceful exit confirmed by worker");
+        handle_worker_exit(worker_id);
+    } else if (draining_.load() || reconnect_grace <= 0) {
         handle_worker_death(worker_id);
     } else {
         auto now = std::chrono::duration_cast<std::chrono::seconds>(
@@ -2070,6 +2106,51 @@ void MasterAgent::on_disconnect(uint64_t conn_id) {
         std::lock_guard<std::mutex> lk(workers_mutex_);
         workers_drained_cv_.notify_all();
     }
+}
+
+// worker 正常退出（master 主动关停确认 / worker graceful 声明）：与异常判死
+// 显式分流的收尾路径（用户裁定语义）。保留清理与等待收敛必需的动作；去除
+// 异常路径专属的判死告警与数据全灭 fail——正常关停时 worker 已 drain WBQ，
+// 持久对象在盘、可 load_db 恢复，"唯一 holder 退出 = 数据丢失"不成立。
+void MasterAgent::handle_worker_exit(uint64_t worker_id) {
+    INFO("worker {} exited (master-initiated shutdown confirmed)", worker_id);
+    grace_deadlines_.erase(worker_id);
+    // RunSummary：退出时刻（该 worker 后续样本不再计入）。
+    if (run_metrics_) run_metrics_->on_worker_dead(worker_id);
+    // monitor 落盘：EXITED 事件（区别于异常 DEAD——GUI 无需再启发式推导）。
+    if (metrics_db_) metrics_db_->record_worker_event(worker_id, "EXITED");
+
+    // 判死联动收敛 pending RPC 期待（同 death 路径：无限等待只被显式失败
+    // 信号终结；worker 进程退出即其 RPC/加载的终局信号）。
+    settle_pending_for_dead_worker(worker_id);
+
+    CMVector<uint64_t> tasks_to_recover;
+    {
+        std::lock_guard<std::mutex> lk(schedule_mutex_);
+        worker_manager_->update_worker_status(worker_id, WorkerStatus::EXITED);
+        tasks_to_recover = metadata_->get_task_ids_by_worker(worker_id);
+    }
+    DataService::instance()->set_worker_alive(worker_id, false);
+
+    // pending frozen 清理（同 death 路径：防 db 永久"冻结中"死锁）。
+    for (uint64_t task_id : tasks_to_recover) {
+        rollback_pending_frozen(task_id);
+    }
+
+    // 防御分支：正常时序下 drain（或 fast 路径的 fail 善后）已把 RUNNING
+    // 清零，此处应为空集、零输出；仅在时序交错（exit 确认早于 drain 完成
+    // 观测）时兜底——保证 stop() 永不因残留 RUNNING 悬挂。
+    for (uint64_t task_id : tasks_to_recover) {
+        std::lock_guard<std::mutex> lk(schedule_mutex_);
+        if (metadata_->get_task(task_id) &&
+            metadata_->get_task(task_id)->status_ == TaskStatus::RUNNING) {
+            metadata_->fail_task(task_id, "worker exited during shutdown");
+            graph_->remove_task(task_id);
+            record_task_snapshot(task_id);
+            WARN("Task failed (worker exited during shutdown): task_id={}", task_id);
+        }
+    }
+    notify_drain_if_active();
 }
 
 // worker 正式判死（宽限超时 / drain 期断连 / 断连即死模式）。
@@ -2287,7 +2368,7 @@ void MasterAgent::fail_orphan_data_objects(uint64_t worker_id) {
         for (uint64_t holder : DataService::instance()->get_remote_workers(full)) {
             if (holder == worker_id) continue;
             auto info = worker_manager_->get_worker(holder);
-            if (info.has_value() && info->get().status_ != WorkerStatus::DEAD) {
+            if (info.has_value() && worker_status_alive(info->get().status_)) {
                 any_alive = true;
                 break;
             }
@@ -2357,7 +2438,7 @@ bool MasterAgent::try_storage_takeover(uint64_t worker_id) {
     int64_t min_load = INT64_MAX;
     for (const auto& info : worker_manager_->get_all_workers()) {
         if (info.role_ != WorkerRole::STORAGE_ONLY) continue;
-        if (info.status_ == WorkerStatus::DEAD) continue;
+        if (!worker_status_alive(info.status_)) continue;
         if (info.hostname_ != hostname) continue;
         int64_t load = takeover_load_.find(info.worker_id_).value_or(0);
         if (load < min_load) {
@@ -2440,7 +2521,7 @@ void MasterAgent::check_storage_nodes(int64_t now) {
     CMUnorderedSet<CMString> hosts_with_storage;
     CMUnorderedMap<CMString, uint64_t> hybrid_by_host;
     for (const auto& info : worker_manager_->get_all_workers()) {
-        if (info.status_ == WorkerStatus::DEAD) continue;
+        if (!worker_status_alive(info.status_)) continue;
         if (info.role_ == WorkerRole::STORAGE_ONLY) {
             hosts_with_storage.insert(info.hostname_);
         } else {
@@ -4074,7 +4155,7 @@ uint64_t MasterAgent::select_backup_worker(const CMString& object_name) {
     for (const auto& info : all) {
         if (holder_set.count(info.worker_id_)) continue;  // 已有副本，跳过
         if (info.worker_id_ == 0) continue;                // master 不做 backup 目标
-        if (info.status_ == WorkerStatus::DEAD) continue;
+        if (!worker_status_alive(info.status_)) continue;
         candidate_ids.insert(info.worker_id_);
     }
     auto worker_bytes = DataService::instance()->get_worker_bytes_batch(candidate_ids);

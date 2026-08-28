@@ -367,6 +367,9 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     FLY_EXPORT_METHOD("stop", &fly::WorkerAgent::stop)
     FLY_EXPORT_METHOD("is_running", &fly::WorkerAgent::is_running)
     FLY_EXPORT_METHOD("get_worker_id", &fly::WorkerAgent::get_worker_id)
+    // 退出码透传链末端（graceful=0/abnormal=3）：fly/main.py 经此取值
+    // sys.exit——bsub/ssh 等外部观测方据进程退出码区分 worker 退出性质。
+    FLY_EXPORT_METHOD("exit_code", &fly::WorkerAgent::exit_code)
     FLY_EXPORT_METHOD("set_executor", [](fly::WorkerAgent& self, CMSharedPtr<fly::TaskExecutor> executor) {
         self.set_executor(std::move(executor));
     })

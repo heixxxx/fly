@@ -2,6 +2,8 @@
 #include <agent/cpp/master_agent.h>
 #include <agent/cpp/graceful_shutdown.h>
 #include <csignal>
+#include <mutex>
+#include <condition_variable>
 #include <agent/cpp/worker_agent.h>
 #include <common/cpp/test_helpers.h>
 #include "test_log_isolation.h"
@@ -1187,9 +1189,17 @@ TEST(MasterAgentTest, OnDisconnectRecoversRunningTasks) {
 
     ASSERT_TRUE(task_is_running) << "Task 42 must reach RUNNING for disconnect recovery test";
 
-    worker.stop();
-
-    // ── 宽限期内（用户确认语义）：task 保持 RUNNING、不判死、不重调度 ──
+    // 模拟网络闪断（master 视角）：只断 TCP、不退出 worker——WorkerAgent.stop()
+    // 会声明 graceful 退出（WORKER_EXIT → exit 分派 fail RUNNING，用户裁定
+    // 语义），与宽限恢复语义相斥；闪断用 simulate 钩子 + park 重连线程。
+    std::mutex hk_m;
+    std::condition_variable hk_cv;
+    bool release_reconnect = false;
+    worker.reconnect_entry_hook_for_testing_ = [&] {
+        std::unique_lock<std::mutex> lk(hk_m);
+        hk_cv.wait_for(lk, std::chrono::seconds(10), [&] { return release_reconnect; });
+    };
+    worker.simulate_master_disconnect_for_testing();
     wait_for([&]{
         // 等 on_disconnect 完成（连接表移除）。
         auto workers = master.get_connected_workers();
@@ -1205,6 +1215,9 @@ TEST(MasterAgentTest, OnDisconnectRecoversRunningTasks) {
     }
 
     // ── 宽限超时 → 判死 → task 重排队（原断连恢复语义）──
+    // 确定性等待：on_disconnect 的清表与宽限登记之间有中间代码（见
+    // grace_workers_for_testing 注释）——等宽限表非空再驱动超时判死。
+    wait_for([&]{ return !master.grace_workers_for_testing().empty(); }, 100, 30);
     master.check_grace_deadlines_for_testing(9999999999LL);
 
     wait_for([&]{
@@ -1263,8 +1276,15 @@ TEST(MasterAgentTest, ReconnectWithinGracePreservesTask) {
         return false;
     }, 50, 20);
 
-    // 断连（worker 退出；模拟网络闪断的 master 视角）→ 宽限登记。
-    worker.stop();
+    // 模拟网络闪断（同上：simulate 钩子 + park 重连线程，不声明退出）。
+    std::mutex hk_m;
+    std::condition_variable hk_cv;
+    bool release_reconnect = false;
+    worker.reconnect_entry_hook_for_testing_ = [&] {
+        std::unique_lock<std::mutex> lk(hk_m);
+        hk_cv.wait_for(lk, std::chrono::seconds(10), [&] { return release_reconnect; });
+    };
+    worker.simulate_master_disconnect_for_testing();
     wait_for([&]{ return master.get_connected_workers().empty(); }, 100, 30);
 
     // worker 重连（新进程/新连接，同 worker_id）→ 宽限内重注册。
@@ -1378,9 +1398,17 @@ TEST(MasterAgentTest, AllReplicasDeadFailsWaitingTasks) {
         return false;
     };
 
-    // ── worker1 断连 → 宽限超时判死：D 仍有 worker2（活）→ dep_D 不失败；
-    //    E 全灭 → dep_E（队列中）直接失败（快速失败）。──
-    w1.stop();
+    // ── worker1 异常死亡（闪断→宽限超时判死）→ D 仍有 worker2（活）→
+    //    dep_D 不失败；E 全灭 → dep_E（队列中）直接失败（快速失败）。
+    //    用 simulate 断连（不声明退出）：WorkerAgent.stop() 会发 WORKER_EXIT
+    //    走正常退出路径（无 orphan fail，用户裁定语义），与被测判死链相斥。
+    //    park 重连线程防 ~300ms 重连复位宽限。
+    std::mutex hk1_m; std::condition_variable hk1_cv; bool rel1 = false;
+    w1.reconnect_entry_hook_for_testing_ = [&] {
+        std::unique_lock<std::mutex> lk(hk1_m);
+        hk1_cv.wait_for(lk, std::chrono::seconds(10), [&] { return rel1; });
+    };
+    w1.simulate_master_disconnect_for_testing();
     EXPECT_TRUE(wait_in_grace(1)) << "worker1 disconnect not in grace registry within 3s (on_disconnect delayed)";
     diag("pre-check1");
     master.check_grace_deadlines_for_testing(9999999999LL);
@@ -1396,7 +1424,12 @@ TEST(MasterAgentTest, AllReplicasDeadFailsWaitingTasks) {
     EXPECT_TRUE(dep_E_failed) << "E lost its only holder — dependent waiting task must fast-fail";
 
     // ── worker2 也判死 → D 全灭 → dep_D 此时失败。──
-    w2.stop();
+    std::mutex hk2_m; std::condition_variable hk2_cv; bool rel2 = false;
+    w2.reconnect_entry_hook_for_testing_ = [&] {
+        std::unique_lock<std::mutex> lk(hk2_m);
+        hk2_cv.wait_for(lk, std::chrono::seconds(10), [&] { return rel2; });
+    };
+    w2.simulate_master_disconnect_for_testing();
     EXPECT_TRUE(wait_in_grace(2)) << "worker2 disconnect not in grace registry within 3s (on_disconnect delayed)";
     diag("pre-check2");
     master.check_grace_deadlines_for_testing(9999999999LL);

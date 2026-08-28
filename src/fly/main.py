@@ -122,9 +122,13 @@ def _run_worker():
     _wt0 = _wt.monotonic()
     INFO("Worker poll loop exited, running cleanup")
 
+    # 退出码（graceful=0/abnormal=3）：stop 拆除 agent 前已在 Worker 内缓存，
+    # 经 run() → sys.exit 透传到进程退出码（bsub/ssh 外部观测方判定用）。
+    code = agent.exit_code()
     agent.stop()
     INFO("Worker agent stopped (agent.stop took {:.3f}s)".format(_wt.monotonic() - _wt0))
     # Coverage stop/save is handled centrally by _cleanup() -> _stop_coverage().
+    return code
 
 
 def _run_master():
@@ -259,7 +263,12 @@ def run():
     try:
         from fly.runtime import _config_is_worker_mode
         if _config_is_worker_mode():
-            _run_worker()
+            rc = _run_worker()
+            if rc:
+                # 异常退出（MASTER_LOST/REGISTRATION_REJECTED → 3）：退出码
+                # 透传给 sys.exit，进程级可观测（用户裁定语义）。
+                _safe_cleanup()
+                return rc
         else:
             _run_master()
     except SystemExit:
