@@ -3,6 +3,12 @@
 ---
 ---
 
+## 2026-08-29 (1): L0-L3+L1 全层实施落地——实现记录与落地修订
+
+**chunked-transfer-design.md §13 实现记录**（全层 TDD 实施完成）：L0（64 位帧头 + ISA-L CRC-64 校验层 + trailer 磁盘格式 + 零容忍语义）/ L2（META + 4MB CHUNK 字节切片流 + DIGEST 根 + 在线块重传）/ L3（ChunkSource 拉取源 + 接收线程 + 有界队列 + Unpickler 增量消费）/ L1（DataWriter 增量 API + FlyStream sink 写 + finish_and_commit）全部落地；§4.5/§8/§9 补落地修订三节（实现与计划的偏差及理由）；§9.5 PEP574 尝试结论为负（pin 5 因 PickleBuffer 兼容回退；实测协议 4/5 in-band 内存特征一致，L1 流式化后 in-band 无瓶颈，OOB 关闭）；§13.1 十项实现问题与修复、§13.2 风险项、§13.3 设计决策记录（不确定项如实说明）。验证：单测 73/73 + 全量 QA 165/165 ×3 轮。
+
+---
+
 ## 2026-08-28 (4): P0-3 分块/流控/背压必要性调研 + 分块设计文档
 
 **① emir-capability-gap.md P0-3 调研结论（代码实证）**：按 fly 内网批处理负载画像分层裁定——**credit 窗口流控不做**（每连接同步 request-response 单 in-flight + 接收即消费，速率耦合在 TCP 窗口，无持续失衡土壤）；**背压结构性已含大半**（epoll oneshot + slot=4 + send 队列深度 ≤ 活跃连接数，残余仅慢客户端 HOL，`data_server_threads` 可调）；**分块唯一长期真实价值 = 内存有界化**（整取链 2C+R，GB 级对象 ×4 并发 ≈16GB 先撞内存墙），绑定亿级触发缓议。

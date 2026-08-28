@@ -396,3 +396,45 @@ client                          server
 **不做**：credit 窗口流控（负载画像无此问题）；**断线续传**（整对象 TIER2 重试覆盖；在线块重传已纳入 L2）；写入时块索引落盘（懒构建够用，除非 L4 需要随机访问）；块级定位/诊断簿记（用户裁定无意义）。
 
 **L4 触发条件**：需要部分读（solver 子域切片）或块粒度缓存逐出时立项（≈亿级落地）。
+
+## 13. 实现记录（2026-08-29 L0-L3+L1 全层落地）
+
+### 13.1 实现中遇到的问题与修复
+
+| # | 问题 | 根因与修复 |
+|---|------|-----------|
+| 1 | trailer 尾部解析最初按 [fixed][py_name][crc] 布局实现失败 | ObjectHeader::serialize 的 py_name 在 fixed **之后**——尾部无法定长锚定。修正为 trailer 专用布局 **[py_name][fixed][crc]**（serialize_trailer），尾部解析 O(1) |
+| 2 | cc_shared_library 符号冲突（data_checksum 被多 so 静态链） | exports_filter 方向错误（会排除静态链导致 undefined symbol）；正解 = data_checksum 独立 so + 各 so dynamic_deps；-lisal 必须在 cc_library 自身 linkopts（so 不透传 deps 的 third_party linkopts） |
+| 3 | MessageProtocol::decode 需要含 9B 前缀的完整帧 | client 流式读帧时只传 payload 会解析失败——DIGEST/resend 解析必须重组 9B+payload |
+| 4 | client 分片重组偏移错位 | 切片尺寸未随协议携带——META 增 chunk_frame_bytes_（发送端实现细节必须显式告知） |
+| 5 | Python 面 `from core import config` 不存在（QA 110 例失败） | core 导出的是 Config 类/get_config 函数。教训：Python 面改动至少做 import 烟测（QA 一轮代价） |
+| 6 | nanobind 类方法/模块函数返回 unique_ptr 均转换失败 | nanobind 无 pybind11 的 holder 概念——裸指针 + `rv_policy::take_ownership` 是唯一可靠路径（WriteStreamHandle 嵌套类方案因此整体废弃，改为 FlyStream 直持 commit 回调） |
+| 7 | 协议 5 pin 导致 QA 5 例失败 | numpy 在协议 5 下走 PickleBuffer/bytearray，与 FlyStream.write 的 bytes 参数不兼容；且实测协议 4/5 in-band 内存特征一致——按 §9.5"验证不通过即放弃"回退 |
+| 8 | 流式写破坏 abort 段回滚（load_db_abort 失败） | mark_begin 时序在 begin_incremental **之后**（回滚点=写后位置）——前移到 begin 前（对齐 commit_write 的 execute 时序） |
+| 9 | QA 运行中执行 build+install 导致整轮无效 | build/ 软链指向 bazel-bin，中途构建替换二进制——**QA/稳定性运行期间禁止构建**（操作纪律） |
+| 10 | QA 期间反复触发 pread trailer 的 META 预解析失败窗口 | 无此问题（防御性记录）：server 尾部 pread 失败时 py_name 空 + trailer_len 0——L2 重组路径不受影响，L3 消费端回退整缓冲（保守正确） |
+
+### 13.2 风险项（如实记录）
+
+| 风险 | 现状与对策 |
+|------|-----------|
+| TIER2 流式仅首副本 best-effort | 失败即回退 read_object_compressed 完整编排（副本轮换/退避/零容忍语义无损失）；流式中断续传的 TIER2 编排留待 L4+ |
+| L1 盘写在任务线程（同步） | write 进 page cache 即返回（与 WBQ 后台 execute 延迟特征一致）；真后台逐块 WBQ 留作后续（需处理块顺序与完成单元时序） |
+| WorkerGracefulExitClassifiedAsExited 偶发（全仓并行 2 次/数十次；单测 26 次 + 全仓 3 次不复现） | WORKER_EXIT 发送路径未被本次改动触碰、无因果链；100 轮稳定性期间若复现即抓现场（gdb attach / 日志取证） |
+| 增量写 entry 的 write_context_hash 留空 | master 侧 register 的 hash 是权威（读侧 provenance 校验用 register 值）；与 write_record 路径的 entry-hash 双轨现状一致 |
+| CHUNK 帧的 seq 越界检查依赖 chunk_count 推导 | META 的 frame/total 驱动——已含协议失步防御（越界即断） |
+
+### 13.3 设计决策记录（不确定是否符合 fly 哲学的如实说明）
+
+1. **CHUNK 片 = 纯字节切片**（非磁盘块边界）：换取"client 重组后与磁盘 record 字节一致、DecompressingStreamBuf 零适配"。代价：重传单位与磁盘块解耦（重传 4MB 而非单个坏块）——坏片极罕见（内存/网络缺陷），代价可接受。
+2. **TIER2 流式 = 首副本 + 回退**（而非完整流式副本轮换编排）：避免把 try_tier2_read 的轮换/退避/预算逻辑重写成流式版（重写=新缺陷面）。判断依据：fly 哲学"根因优先、不引入额外复杂度"——回退路径是已验证的完整语义。
+3. **streaming_read/write_threshold 语义 = 功能开关**（非尺寸阈值）：读/写前不知对象大小，探 size 需额外 IO 得不偿失。若按字面实现尺寸分档反而引入"先 dumps 估算"的内存反噬。
+4. **DUPLICATE 预检未前移**（偏离计划 #41 原文）：register 时序安全在 §9.4 已验证（commit 8419526 家族修复锁定）；前移需改注册协议时序（高风险区），大对象 DUPLICATE 场景罕见。
+5. **backup/merge 写侧不走流式**（对齐 §9.4 适用边界）：其输入是整块压缩数据，无序列化流可切——L1 只优化本地序列化写主路径。
+
+### 13.4 验证状态
+
+- 单元测试：73/73（新增 data_checksum 契约 5 例 / 帧头 4 例 / record 格式 4 例 / wire 根 2 例 / 零容忍 3 例 / 分片 5 例 / 流式源 4 例）
+- 全量 QA：165/165（L0 后、L2 后、L1+L3 后各一轮全绿）
+- 100 轮稳定性：进行中（结果见 stability_test 产物目录）
+
