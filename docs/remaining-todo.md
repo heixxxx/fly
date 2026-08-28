@@ -10,7 +10,7 @@
 | 编号 | 项 | 状态 | 说明 |
 |---|---|---|---|
 | **F3** | Worker role（storage_only/hybrid） | ✅ | 已实现（2026-08-15）：role 静态身份（注册时设定不可变更），调度候选层过滤 storage_only（get_idle_workers，scheduler 零 role 概念）；仍参与心跳/数据面/internal 数据 task |
-| F1 | SSH / 多机 Worker 启动 | ⏸ 降级 | 功能层缺，待多机测试环境 |
+| F1 | SSH / 多机 Worker 启动 | ✅ 已实现（2026-08-28） | `launch_ssh_workers`（nohup 后台化 + 消息管理生命周期）；localhost 自连 QA 验证；跨机实测待环境 |
 | F2 | Freeze 后处理（idx 合并/merged.idx/_META 聚合） | ⏸ 降级 | master 无 IdxRequest handler，database.cpp:440 有 TODO |
 | F4 | 大对象分片传输 + 背压 | ⏸ 降级 | DataResponse 两段式不分片，无 credit 流控 |
 | — | 弹性 worker（运行时动态加入/退出） | ❌ | 仅常规 register_worker |

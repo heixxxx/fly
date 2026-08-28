@@ -34,7 +34,7 @@
 
 | 编号 | 短板 | 证据 | 处置 |
 |---|---|---|---|
-| **F1** | SSH / 多机 Worker 启动 | `launch_ssh_workers` 全仓库零命中；仅 `subprocess.Popen` 本机 | **功能已具备，降级**：见 §4 决策记录 ① |
+| **F1** | SSH / 多机 Worker 启动 | ✅ **已实现**（2026-08-28）：`launch_ssh_workers`（agent.py + fly 导出）；localhost 自连 QA 验证 | 跨机部署待实测（API/生命周期/容错语义已闭环，见 python-api/module.md） |
 | **F2** | Freeze 后处理（idx 合并 / merged.idx / _META 聚合） | master 无 `IdxRequest` handler；`grep merged.idx src/` 零命中 | **降级**：见 §4 决策记录 ②（仍未实现） |
 | **F3** | Worker role（storage_only / hybrid） | 已落地（2026-08-15）：静态身份 + idle 候选层过滤，scheduler 零 role 概念 | 完成 |
 | **F4** | 大对象分片传输 + 背压 | DataResponse 两段式但不分片；仅连接池并发限流，无 credit 流控 | **降级**：见 §4 决策记录 ⑤ |
@@ -166,7 +166,7 @@ scheduler_->set_locality_preference(...);
 
 | # | 原提案 | 用户裁定 | 理由 |
 |---|---|---|---|
-| ① | P0：SSH 多机部署 | **功能已具备，仅缺测试环境** | SSH 功能层面已有；开发环境单一 WSL 难以验证多机。降为"待测试环境就绪"，非代码工作 |
+| ① | P0：SSH 多机部署 | ✅ **已实现**（2026-08-28，原裁定「功能已具备，仅缺测试环境」） | `launch_ssh_workers` 落地 + localhost 自连 QA；跨机实测待环境 |
 | ② | P0：Freeze 后处理 | **降级** | 当前 `load_db` 在 worker 齐备时能正确加载全部索引，freeze 聚合非阻塞需求。移出 P0 |
 | ③ | P0：修复 locality 分层违反 | **保持，且为首要交付** | 用户确认实现时确实遇困难，要求给出可行方案（见 §3） |
 | ④ | P1：stage checkpoint | **不做** | db 级 checkpoint 足够，无需额外的阶段进度表达 |
@@ -366,7 +366,7 @@ TIER1 返回 false 时，`read_raw_compressed` 无差别进入 TIER2 远程读�
 
 | 项 | 状态 | 解锁条件 |
 |---|---|---|
-| F1 SSH 多机 | 功能已具备，待验证 | 多机/容器化测试环境就绪 |
+| F1 SSH 多机 | ✅ 已实现（localhost 自连已验证） | 跨机集群实测 |
 | F2 Freeze 聚合 | 降级 | 出现 load_db worker 不齐备的真实痛点时（设计方案见 [`db-merge-design.md`](db-merge-design.md)） |
 | F4 大对象分片 | 降级 | 出现单对象传输成为瓶颈的实测证据时 |
 

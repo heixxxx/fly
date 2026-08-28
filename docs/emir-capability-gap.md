@@ -47,9 +47,9 @@
 
 ### P0-1 跨机部署运维
 
-- **现状**：`launch_ssh_workers`/`launch_custom_workers` 仅有接口设计未实现（roadmap F1，缺多机测试环境）；全部验证在单机多 worker。
-- **差距**：EMIR 必然跨机。逃生通道已通——`fly --worker` + `expect_workers` 占位 + 外部 launcher（bsub/ssh）+ `wait_workers_registered`，需要产品化并**实测跨机路径**（TIER2 多副本、net_probe 带宽探测、跨机读延迟均无生产数据）。
-- **关联**：[remaining-todo.md](remaining-todo.md) F1。
+- **现状**（2026-08-28 更新）：`launch_ssh_workers` ✅ 已实现（roadmap F1）——ssh 下发 `fly --worker` 后台化、注册占位符、框架消息管理生命周期；**localhost 自连已经 QA 验证**（`qa/network/test_launch_ssh_workers.py`）。
+- **剩余差距**：**跨机路径无实测**——TIER2 多副本读、net_probe 带宽探测、跨机读延迟、共享存储/异路径部署（`fly_binary`/`log_dir` 路径约定）都需要真实集群验证；`launch_custom_workers`（bsub 等自定义 launcher 集成）仍未实现，但 `expect_workers` 逃生通道已可覆盖。
+- **关联**：[remaining-todo.md](remaining-todo.md) F1、[python-api/module.md](python-api/module.md)。
 
 ### P0-2 master 元数据索引无上限
 

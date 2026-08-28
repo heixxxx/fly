@@ -22,7 +22,7 @@ Python API 层将 C++ 底层 API 包装为用户友好的高层接口，提供�
 | Database | `open_db`, `load_db`, `merge_db`, `Database`（透传 storage） |
 | db 链/uid | `generate_uid`, `make_edge`（透传 storage，详见 [db-chain-design.md](db-chain-design.md)） |
 | 任务 | `as_task`, `task_name`, `wait_obj`, `wait_tasks`, `get_task_error` |
-| Worker 编队 | `launch_workers`, `ensure_workers`, `wait_workers_registered`, `expect_workers` |
+| Worker 编队 | `launch_workers`, `launch_ssh_workers`, `ensure_workers`, `wait_workers_registered`, `expect_workers` |
 | 失败恢复 | `restart_failed_tasks` |
 | Project | `open_project`, `load_project`, `migrate_project`, `Project`, `register_flow` |
 | Agent 缓存 | `put_cache`, `get_cache`, `has_cache`, `remove_cache`, `clear_cache` |
@@ -90,6 +90,52 @@ def launch_workers(configs: list[dict]) -> None:
 - thread 模式已移除
 - Worker 进程通过 TCP 连接 Master，实现真正的进程隔离
 - 内部调用 `_spawn_process_worker()` 启动子进程
+
+### launch_ssh_workers(targets, ...) — SSH 启动远程 Worker
+
+```python
+def launch_ssh_workers(targets, *, ssh_port=22, ssh_user=None,
+                       fly_binary=None, master_host=None, port=None,
+                       ssh_timeout=30.0) -> list[int]:
+    """
+    通过 ssh 在远程主机上启动 fly worker（多机部署）。
+
+    Args:
+        targets: list of dict，每项一个 worker：
+            - 'host'（必填）: ssh 目标主机（ssh 直连可达名）
+            - 'attributes': 能力标签；'role': "hybrid"/"storage_only"
+            - 'host_alias': 注册 hostname override（同 launch_workers 的 'host'）
+        ssh_port: ssh 服务端口；ssh_user: 统一 ssh 用户名（None 用当前用户）
+        fly_binary: 远端 fly 路径（None 自动探测本地路径，要求远端同路径）
+        master_host: worker 回连的 master 地址（跨机必须传远端可达地址；
+            默认 master 绑定地址，127.0.0.1 仅 ssh 自连/本机有效）
+        ssh_timeout: 单条 ssh 命令超时秒数（不含注册等待）
+
+    Returns:
+        分配的 worker_id list（已登记注册占位符，配合 wait_workers_registered）。
+
+    Example:
+        ids = launch_ssh_workers([
+            {"host": "node1"},
+            {"host": "node2", "attributes": ["highmem"], "role": "storage_only"},
+        ], master_host="10.0.0.7")
+        wait_workers_registered()
+    """
+    return get_agent().launch_ssh_workers(...)
+```
+
+**语义与边界**:
+- worker 以 **nohup 后台化**在远端运行，ssh 会话立即返回；生命周期由框架消息管理
+  （master stop() 广播 ShutdownMessage → worker 自杀；master 失联按心跳超时自退），
+  **不持本地进程句柄**
+- 注册占位符先于 ssh 下发登记（防注册竞态泄漏，同 launch_local_workers）；
+  ssh 失败抛 RuntimeError，失败占位符无法回收，需终止本次 run
+- **路径约定**：fly_binary / log_dir / config 文件要求 master 侧与远端一致
+  （localhost 自连、共享存储下成立）；异路径部署显式传 `fly_binary` 并保证
+  `log_dir` 远端可写
+- 配置传递：`--config-file` 指向共享 `.fly_config`（Config 跨进程同步机制不变）
+- QA：`qa/network/test_launch_ssh_workers.py`（localhost 自连环回：启动→注册→
+  数据面→stop 生命周期闭环）；环境要求 sshd + 免密（配置方法见该测试文件头注）
 
 ### ensure_workers(workers, timeout=10.0, exclude=None) — 按属性申请编队
 

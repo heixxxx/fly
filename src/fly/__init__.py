@@ -248,6 +248,42 @@ def launch_workers(configs: list):
     get_agent().launch_local_workers(configs)
 
 
+def launch_ssh_workers(targets, *, ssh_port=22, ssh_user=None,
+                       fly_binary=None, master_host=None, port=None,
+                       ssh_timeout=30.0):
+    """通过 ssh 在远程主机上启动 fly worker（多机部署）。
+
+    targets: list of dict，每项一个 worker：
+
+    - ``'host'``（必填）: ssh 目标主机（ssh 直连可达名）
+    - ``'attributes'``: 能力标签；``'role'``: ``"hybrid"``/``"storage_only"``
+    - ``'host_alias'``: 注册 hostname override（同 launch_workers 的 'host'）
+
+    worker 经 ssh 以 nohup 后台化，生命周期由框架消息管理（master stop 广播
+    ShutdownMessage 自杀；master 失联按心跳超时自退）。路径约定：fly_binary /
+    log_dir / config 要求 master 与远端一致（localhost 自连、共享存储成立）；
+    跨机异路径显式传 ``fly_binary``，``master_host`` 必须传远端可达地址
+    （默认 127.0.0.1 仅自连有效）。
+
+    Returns:
+        分配的 worker_id list（已登记注册占位符，配合
+        ``wait_workers_registered`` 等待注册）。ssh 失败抛 RuntimeError。
+
+    Example::
+
+        ids = launch_ssh_workers([
+            {"host": "node1"},
+            {"host": "node2", "attributes": ["highmem"],
+             "role": "storage_only"},
+        ], master_host="10.0.0.7")
+        wait_workers_registered()
+    """
+    return get_agent().launch_ssh_workers(
+        targets, ssh_port=ssh_port, ssh_user=ssh_user,
+        fly_binary=fly_binary, master_host=master_host, port=port,
+        ssh_timeout=ssh_timeout)
+
+
 def ensure_workers(workers, timeout: float = 10.0, exclude: str = None) -> bool:
     """向 master 申请现有 worker 并为选中 worker 追加指定属性（不启动新进程）。
 

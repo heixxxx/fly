@@ -879,7 +879,7 @@ fly/
 
 ### 尚未实现（⏳）
 
-- **SSH Worker 启动**：launch_ssh_workers 接口设计完成，未实现（F1 降级，待多机测试环境）
+- ~~**SSH Worker 启动**~~ ✅ **已实现**（2026-08-28）：`launch_ssh_workers(targets)`——ssh 下发 `fly --worker` 以 nohup 后台化，生命周期靠框架消息（ShutdownMessage/心跳超时）；localhost 自连已 QA 验证（`qa/network/test_launch_ssh_workers.py`），跨机部署待实测；API 详见 [python-api/module.md](python-api/module.md)
 - **自定义 Worker 启动**：launch_custom_workers 接口设计完成，未实现
 - **Database Freeze 后处理**：idx 合并、_META 生成（F2 降级，非阻塞需求）
 

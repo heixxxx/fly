@@ -211,6 +211,148 @@ class Master(FlyAgent):
             f"Master running on {self._host}:{self._port}, "
             f"{num_workers} workers launched")
 
+    def launch_ssh_workers(self, targets, *, ssh_port=22, ssh_user=None,
+                           fly_binary=None, master_host=None, port=None,
+                           ssh_timeout=30.0):
+        """通过 ssh 在远程主机上启动 fly worker（多机部署）。
+
+        每个 target 一个 worker，dict 字段：
+
+        - ``'host'``（必填）: ssh 目标主机（ssh 直连可达名，如 ``node1``）。
+        - ``'attributes'``: worker 能力标签（同 launch_workers）。
+        - ``'role'``: ``"hybrid"``（默认）/ ``"storage_only"``（同 launch_workers）。
+        - ``'host_alias'``: 注册 hostname override（--host，单机多 host 测试用，
+          同 launch_workers 的 'host' 字段）。
+
+        worker 进程以 nohup 后台化在远端，ssh 会话立即返回；生命周期由框架
+        消息管理——master stop() 广播 ShutdownMessage 后 worker 自杀，master
+        失联时 worker 按心跳超时自退，故不持本地进程句柄。
+
+        路径约定：fly_binary / log_dir / config 文件路径要求 master 侧与远端
+        一致（localhost 自连或共享存储下成立）；异路径部署显式传 ``fly_binary``
+        并保证 ``log_dir`` 在远端可写。``master_host`` 默认取 master 绑定地址
+        （``127.0.0.1`` 仅自连有效），跨机部署必须传远端可达地址。
+
+        Args:
+            targets: list of dict，每项一个 worker。
+            ssh_port: ssh 服务端口。
+            ssh_user: 统一 ssh 用户名（None 用当前用户/ssh config）。
+            fly_binary: 远端 fly 路径（None 自动探测本地路径，要求远端同路径）。
+            master_host: worker 回连的 master 地址（覆盖 master 绑定地址）。
+            port: master 监听端口（None 自动分配）。
+            ssh_timeout: 单条 ssh 命令的超时秒数（仅约束 ssh 本身，不含 worker
+                启动到注册的时间——注册等待用 wait_workers_registered）。
+
+        Returns:
+            分配的 worker_id list（已登记注册占位符）。
+
+        Raises:
+            RuntimeError: ssh 连接/执行失败。失败的占位符无法回收，需终止本次
+                run（与 bsub 占位泄漏同一处置口径）。
+        """
+        import shlex
+        import subprocess as _sp
+        import time
+        from _fly_core import ex_core_get_config
+
+        if port is not None:
+            self._port = port
+
+        self.start()
+        self._port = self._agent.get_port()
+
+        cfg = ex_core_get_config()
+        log_dir = cfg.get_str("log_dir")
+        os.makedirs(log_dir, exist_ok=True)
+
+        # Config is shared and immutable after worker startup — only write once.
+        if not hasattr(self, '_shared_config_path') or not self._shared_config_path:
+            self._shared_config_path = os.path.join(log_dir, ".fly_config")
+            cfg.save_to_file(self._shared_config_path)
+        config_path = self._shared_config_path
+
+        fly_bin = fly_binary or self._find_fly_binary()
+        # 回连地址：默认 master 绑定地址（自连成立），跨机显式覆盖。
+        mh = master_host or self._host
+
+        worker_ids = []
+        for target in targets:
+            host = target.get("host")
+            if not host:
+                raise RuntimeError(
+                    f"launch_ssh_workers: target missing 'host': {target}")
+
+            # 先登记占位符再 ssh：若 ssh 后才 expect，worker 注册可能先到达，
+            # 转正 erase 落空 → 占位符永久泄漏（与 _spawn_process_worker 一致）。
+            wid = self._next_worker_id
+            self._next_worker_id += 1
+            self._expected_workers += 1
+            self._agent.expect_worker(wid)
+            worker_ids.append(wid)
+
+            attrs = target.get("attributes", [])
+            attrs_str = ",".join(attrs) if attrs else ""
+            role = target.get("role")
+            if role and role not in ("hybrid", "storage_only"):
+                WARN(f"launch_ssh_workers: unknown role '{role}' for worker "
+                     f"{wid} on {host} (expected hybrid|storage_only), "
+                     f"falling back to hybrid")
+                role = "hybrid"
+
+            log_path = os.path.join(log_dir, f"worker{wid}.log")
+            cmd = [
+                fly_bin,
+                "--worker",
+                "--worker-id", str(wid),
+                "--master-host", mh,
+                "--master-port", str(self._port),
+                "--log-dir", log_dir,
+                "--config-file", config_path,
+            ]
+            if target.get("host_alias"):
+                cmd.extend(["--host", target["host_alias"]])
+            if attrs_str:
+                cmd.extend(["--worker-attributes", attrs_str])
+            if role:
+                cmd.extend(["--worker-role", role])
+
+            # nohup 后台化 + 三重重定向：stdout/stderr 落远端 worker 日志，
+            # stdin 断开——ssh 会话立即返回，不持有远端进程生命周期。
+            remote_cmd = ("nohup " + shlex.join(cmd)
+                          + " >> " + shlex.quote(log_path)
+                          + " 2>&1 < /dev/null &")
+            ssh_argv = ["ssh",
+                        "-o", "BatchMode=yes",
+                        "-o", "StrictHostKeyChecking=accept-new",
+                        "-p", str(ssh_port)]
+            if ssh_user:
+                ssh_argv.append(f"{ssh_user}@{host}")
+            else:
+                ssh_argv.append(host)
+            ssh_argv.append(remote_cmd)
+
+            try:
+                r = _sp.run(ssh_argv, capture_output=True, text=True,
+                            timeout=ssh_timeout)
+            except _sp.TimeoutExpired:
+                raise RuntimeError(
+                    f"launch_ssh_workers: ssh to {host} timed out after "
+                    f"{ssh_timeout}s (worker {wid} state unknown)")
+            if r.returncode != 0:
+                raise RuntimeError(
+                    f"launch_ssh_workers: ssh to {host} failed "
+                    f"(rc={r.returncode}) for worker {wid}: "
+                    f"{r.stderr.strip()}")
+
+            DBG(f"launch_ssh_workers: worker {wid} dispatched to {host} "
+                f"via ssh")
+            time.sleep(0.05)
+
+        INFO(f"launch_ssh_workers: {len(worker_ids)} worker(s) dispatched "
+             f"via ssh ({', '.join(t.get('host', '?') for t in targets)}), "
+             f"master at {mh}:{self._port}")
+        return worker_ids
+
     def stop(self):
         import time as _t
         import sys as _sys

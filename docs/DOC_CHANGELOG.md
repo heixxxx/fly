@@ -3,6 +3,36 @@
 ---
 ---
 
+## 2026-08-28 (2): launch_ssh_workers —— SSH 多机 Worker 启动落地（roadmap F1 完成）
+
+**框架 API（fly.launch_ssh_workers / Master.launch_ssh_workers）**：通过 ssh 在
+远程主机启动 `fly --worker`（每 target 一个 worker，字段 host/attributes/role/
+host_alias）。与 launch_local_workers 同构：先登记注册占位符再下发（防注册
+竞态泄漏占位符）、共享 `.fly_config`、复用 `_find_fly_binary` 探测。
+
+- **生命周期不持本地句柄**：远端 nohup 后台化 + 三重重定向（stdout/stderr→
+  远端 worker{N}.log、stdin 断开），ssh 会话立即返回；worker 退出靠框架消息
+  （master stop() 广播 ShutdownMessage 自杀 / master 失联心跳超时自退）；
+- **路径约定**：fly_binary/log_dir/config 要求 master 与远端一致（localhost
+  自连、共享存储成立），异路径显式传 fly_binary；跨机必须显式 master_host
+  （默认绑定地址 127.0.0.1 仅自连有效）；
+- ssh 失败抛 RuntimeError（占位符无法回收，终止本次 run 的处置口径同 bsub）。
+
+**测试**：`qa/network/test_launch_ssh_workers.py`——localhost 自连环回全链路
+（前置免密检测→启动 2 worker 注册→write/read 数据面→stop 后远端进程退干净）。
+环境要求 sshd + 密钥免密（配置指引在测试头注）。
+
+**验证结论**：QA 3/3 过（新 case + wait_workers_registered + process_workers
+回归）；手动端到端验证 requires 属性调度匹配。发现既有现象（非本次引入）：
+显式 stop() 时 drain 阶段把 worker 主动断连报为 `worker dead + 副本全灭`
+ERROR——launch_local_workers 同脚本复现相同输出，属 stop 时序噪声，待立 issue。
+
+**文档**：python-api/module.md（符号总表 + API 权威小节）、architecture.md/
+roadmap.md/remaining-todo.md F1 状态 ✅、emir-capability-gap.md P0-1 更新
+（剩余差距收敛为「跨机实测」）。
+
+---
+
 ## 2026-08-28 (1): 文档一致性治理 —— 事实修正 + 「一处权威，他处链接」收归 + EMIR 能力差距文档
 
 **背景**：全库文档-实现一致性审计发现三类问题——数字快照失真、历史文档被取代未标注、
