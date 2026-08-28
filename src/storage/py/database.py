@@ -78,18 +78,34 @@ class Database:
             if hasattr(obj, "_write_to_db"):
                 err = EXStgWriteErrorType(obj._write_to_db(self._db, name, py_name, backup))
             else:
-                from _fly_storage import FlyStream, EXStgCompressionType
                 from core import get_config as _gc
                 _cfg = _gc()
-                _cm = {"none": EXStgCompressionType.NONE, "lz4": EXStgCompressionType.LZ4,
-                       "zlib": EXStgCompressionType.ZLIB, "zstd": EXStgCompressionType.ZSTD}
-                stream = FlyStream(_cm.get(_cfg.get_str("compression_type"), EXStgCompressionType.LZ4),
-                                   _cfg.get_int("serialize_chunk_size"), py_name)
-                pickle.dump(obj, stream)
-                stream.flush()
-                buf = stream.finish()
-                err = EXStgWriteErrorType(self._db._commit_stream(
-                    name, buf, py_name, backup, cache != "none"))
+                if _cfg.get_int("streaming_write_threshold") > 0:
+                    # L1 流式写（§9.1）：pickle.dump 流入 → 压缩块直写增量
+                    # record（内存 R+常数而非 R+2C）。写前不知对象大小——
+                    # 开关启用即统一走流式（小对象增量 API 等价，行为一致）。
+                    stream = self._db.open_write_stream(name, py_name)
+                    if stream is not None:
+                        # 协议保持 DEFAULT（§9.5 尝试结论：pin 5 时 numpy 走
+                        # PickleBuffer 与 FlyStream.write 的 bytes 参数不兼容；
+                        # 且实测协议 4/5 in-band 内存特征一致——pin 无收益，
+                        # 按"验证不通过即放弃"回退）。
+                        pickle.dump(obj, stream)
+                        err = EXStgWriteErrorType(
+                            stream.finish_and_commit(backup, cache != "none"))
+                    else:
+                        raise RuntimeError(f"Database is frozen: {name}")
+                else:
+                    from _fly_storage import FlyStream, EXStgCompressionType
+                    _cm = {"none": EXStgCompressionType.NONE, "lz4": EXStgCompressionType.LZ4,
+                           "zlib": EXStgCompressionType.ZLIB, "zstd": EXStgCompressionType.ZSTD}
+                    stream = FlyStream(_cm.get(_cfg.get_str("compression_type"), EXStgCompressionType.LZ4),
+                                       _cfg.get_int("serialize_chunk_size"), py_name)
+                    pickle.dump(obj, stream)
+                    stream.flush()
+                    buf = stream.finish()
+                    err = EXStgWriteErrorType(self._db._commit_stream(
+                        name, buf, py_name, backup, cache != "none"))
 
             if err != EXStgWriteErrorType.OK and err != EXStgWriteErrorType.DUPLICATE_SKIPPED:
                 msg = self._WRITE_ERROR_MESSAGES.get(err, f"Write error (type={err})")
@@ -165,6 +181,36 @@ class Database:
                 return obj
 
             # pickle object, cache="low"/"none": C++ low tier handles byte caching.
+            # L3 流式（§8.1）：Unpickler(FlyStream) 增量消费——内存 R+常数而非
+            # C+2R。streaming_read_threshold=0 可关闭（逃生口）；对象不可见
+            #（NOT_FOUND/NOT_READY）由 export 层直接 KeyError（不回退——回退
+            # 只会得到同样结果）。流中途异常/校验失败 → 回退整缓冲完整编排
+            #（内含一次重取 + FATAL 语义，零容忍 §5）。
+            from core import get_config as _gc
+            if _gc().get_int("streaming_read_threshold") > 0:
+                try:
+                    import _fly_storage
+                    stream = _fly_storage.ex_stg_open_read_stream(self._db, name, backup)
+                except KeyError:
+                    raise  # 对象不可见：语义与整缓冲路径一致
+                try:
+                    obj = pickle.Unpickler(stream).load()
+                    corrupt = stream.checksum_failed()
+                except (pickle.UnpicklingError, EOFError, AttributeError,
+                        ImportError, IndexError):
+                    corrupt = True  # 流截断/源坏——按损坏回退
+                if not corrupt:
+                    nbytes = stream.total_uncompressed  # property
+                    return obj
+                # 回退：完整 TIER2 编排 + 一次重取 + FATAL（_read_decompressed）。
+                data, _ = self._db._read_decompressed(name, backup)
+                if not data:
+                    raise KeyError(
+                        f"Object '{name}' not found (no data — not yet visible "
+                        "to master or never written)")
+                nbytes = len(data)
+                return pickle.loads(data)
+
             # Zero-copy: use _read_decompressed to avoid intermediate copies
             data, _ = self._db._read_decompressed(name, backup)
             if not data:

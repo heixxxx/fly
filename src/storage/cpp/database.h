@@ -9,6 +9,7 @@
 #include <storage/cpp/compressing_streambuf.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/fly_buffer_stream.h>
+#include <storage/cpp/fly_stream.h>
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/object_cache.h>
 #include <serialization/cpp/object_header.h>
@@ -40,6 +41,18 @@ public:
                                       FlyBufferPtr record,
                                       const CMString& py_name, bool backup = false,
                                       bool populate_cache = true);
+
+    // ── L1 大对象流式写（chunked-transfer-design §9.1）──
+    // open_write_stream 返回 sink FlyStream（pickle.dump 流入 → 压缩块直写
+    // DataWriter 增量 record，无内存整累积）→ stream.finish_and_commit()
+    // 完成编排（trailer + entry + register——时序对齐 commit_write）。
+    // 未 commit 析构 = 放弃（残块无 trailer 不可读 + 段事务兜底）。
+    // 盘写在任务线程同步进行（write 进 page cache 即返回——与 WBQ 后台
+    // execute 的延迟特征一致；WBQ 逐块后台化留作后续优化，决策记录于
+    // chunked-transfer-design.md §9 落地修订）。
+    // 返回裸指针（export 层 take_ownership 接管）。
+    FlyStream* open_write_stream(const CMString& object_name,
+                                 const CMString& py_name);
 
     CMString compress_pickle_bytes(const char* data, int64_t data_size,
                                    const CMString& py_name);

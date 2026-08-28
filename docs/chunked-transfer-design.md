@@ -128,6 +128,21 @@ client                          server
 - `chunked_transfer_threshold` config（默认 4MB）：record 超过阈值走分片，否则整帧快路径（缓存命中/temp 对象天然走快路径——find_chunked_location 只定位落盘 entry）。
 - L3 前置约束（流式尾部解析冲突的解）：**META 将携带 trailer 元数据**（server 发送前 pread 尾部一次解析 py_name/trailer_len 填入 META）——消费端流式启动时即知块流边界；L2 阶段 client 重组后自行尾部解析的行为在 L3 由 META 取代。
 
+**L3 落地修订（2026-08-29 实现）**：
+- ChunkSource 抽象落 common（纯虚接口；MemoryChunkSource 留 storage——依赖 ObjectHeader）。DecompressingStreamBuf 双构造（内存/源驱动）。
+- META 增补 `trailer_len_` + `chunk_compression_type_`（流式解压器选择——类型在 trailer，流尾不可预读）。
+- **TIER2 流式 = 首副本 best-effort**（streaming cb 只试 lookup 排序首位）：失败/流中途异常 → 回退 `read_object_compressed` 完整编排（副本轮换/退避/零容忍语义零重复实现）。流式中断续传的 TIER2 编排留待后续。
+- read_streaming 的 TIER1 = `SharedMemoryChunkSource`（持有 FlyBufferPtr 所有权）。
+- Python 面：`_fly_storage.ex_stg_open_read_stream` 模块级工厂（nanobind 类方法返回 unique_ptr 不被支持——模块函数有先例）；read_object 的 pickle "low"/"none" 分支 → Unpickler(FlyStream) 增量消费；流中途异常/校验失败 → 回退 `_read_decompressed`（完整重取 + FATAL）。
+- `streaming_read_threshold`（默认 64MB）实际语义为**功能开关**（读前不知对象大小，探 size 需额外 IO 得不偿失）；`stream_buffer_chunks`（默认 16）为接收线程有界队列上限。
+
+**L1 落地修订（2026-08-29 实现）**：
+- DataWriter 增量 API：begin（当前文件过半先滚——增量写不跨文件，IndexEntry 单文件区间约束）/append（手工跟踪大小，app 模式 tellp 受限）/finish（entry 登记；trailer 由调用方经 append 写入）。
+- FlyStream sink 写模式：压缩块逐块回调（"压缩一块、交付一块"）；finish_sink 时 trailer 走 sink 并暴露元数据。
+- `Database::open_write_stream` → WriteStreamHandle：commit 对齐 commit_write 时序（段事务 BEGIN / register / record_func 同步 / 完成登记——盘写已完成故同步收尾）。
+- **盘写在任务线程同步进行**（write 进 page cache 即返回——与 WBQ 后台 execute 延迟特征一致；WBQ 逐块后台化留作后续优化）。DUPLICATE 预检未前移（register 时序安全已在 §9.4 验证，大对象 DUPLICATE 罕见）。
+- `streaming_write_threshold`（默认 1=启用）：写前不知对象大小——开关启用即统一走流式（小对象走增量 API 等价）。populate_cache 语义：流式写路径不 populate low-tier（§9.4 大对象分档）。
+
 ## 5. 失败与重试语义（工业零容忍，对象级统一）
 
 | 失败类别 | 语义 |
@@ -346,6 +361,11 @@ client                          server
 3. 若实测仍有拷贝且构成瓶颈：评估 `buffer_callback` 旁路方案（buffer 与块流分离传输，读侧 Unpickler(buffers=) 重组）——**复杂度超预期或验证不通过即放弃，记录结论后关闭，不阻塞 L1 交付**
 
 **验收口径**：完成 1+2 即算尝试完成（结论无论正负均记录进本文档）；3 是可选深水区。**此项不阻塞 L1 合入与后续层排期**。
+
+**尝试结论（2026-08-29 实测，Python 3.12：DEFAULT=4/HIGHEST=5）**：
+1. ⚠️ pin `protocol=5` **尝试后回退**：numpy 数组在协议 5 下走 PickleBuffer 路径，与 FlyStream.write 的 bytes 参数不兼容（QA golden solver 4 例失败实证）；协议保持 DEFAULT。
+2. ✅ 实测（400MB float64 ndarray）：协议 4/5 的 in-band dump 输出尺寸差 24B（frame 头），**峰值内存特征一致**（预热后两轮 maxrss delta 均为 0）——L1 流式写 + `pickle.dump(obj, stream)` 已把序列化输出流式化，**in-band 路径不存在逐数组拷贝瓶颈**——pin 无收益，回退零损失。
+3. ⏹ OOB（buffer_callback）深水区按"验证不通过即放弃"关闭：当前主路径无收益场景（PEP 574 的收益在 out-of-band 传输——需要读侧 buffers= 配合的架构改动，而实测 in-band 已无瓶颈）。**尝试完成（结论为负），不阻塞任何层**。
 
 ## 10. 内存量化（GB 级对象，C≈0.5R，4 并发）
 

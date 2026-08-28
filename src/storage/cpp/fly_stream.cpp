@@ -23,6 +23,27 @@ FlyStream::FlyStream(FlyBufferPtr data)
     decompress_is_ = CMMakeUnique<std::istream>(decompress_sb_.get());
 }
 
+FlyStream::FlyStream(CMSharedPtr<fly::ChunkSource> source, uint64_t block_area_len)
+    : is_write_mode_(false), chunk_source_(std::move(source)) {
+    // 流式读模式（L3）：源 + META 块流边界。源生命周期随 FlyStream
+    //（NetworkChunkSource 析构归还 fd/slot）。
+    decompress_sb_ = CMMakeUnique<DecompressingStreamBuf>(chunk_source_, block_area_len);
+    decompress_is_ = CMMakeUnique<std::istream>(decompress_sb_.get());
+}
+
+FlyStream::FlyStream(CompressionType comp_type, int64_t chunk_size,
+                     std::function<void(const char*, size_t)> chunk_sink,
+                     const CMString& py_name, int64_t compression_threshold,
+                     std::function<int64_t(int64_t, int32_t, bool, bool)> commit_fn)
+    : is_write_mode_(true), py_name_(py_name), chunk_sink_(std::move(chunk_sink)),
+      commit_fn_(std::move(commit_fn)) {
+    // L1 sink 写模式（§9.1）：压缩流逐块回调——无内存整累积（write_buf_ 留空）。
+    auto comp = comp_type != CompressionType::NONE ? CompressorFactory::create(comp_type) : nullptr;
+    compress_sb_ = CMMakeUnique<CompressingStreamBuf>(std::move(comp), chunk_size,
+                                                      chunk_sink_, compression_threshold);
+    compress_os_ = CMMakeUnique<std::ostream>(compress_sb_.get());
+}
+
 FlyStream::~FlyStream() = default;
 
 void FlyStream::write(const char* data, size_t size) {
@@ -50,6 +71,31 @@ FlyBufferPtr FlyStream::finish_write() {
     // held streambufs referencing write_buf_, their destructors could race
     // with the disk write, corrupting data or causing undefined behavior.
     return write_buf_;
+}
+
+void FlyStream::finish_sink() {
+    compress_os_->flush();
+    // trailer 构造（total/chunks 此时自然已知）并走 sink。
+    ObjectHeader header;
+    header.compression_type_ = static_cast<uint8_t>(compress_sb_->effective_compression_type());
+    header.total_size_ = static_cast<uint64_t>(compress_sb_->total_uncompressed());
+    header.chunk_count_ = static_cast<uint32_t>(compress_sb_->chunk_count());
+    header.py_name_ = py_name_;
+    header.py_name_len_ = static_cast<uint16_t>(py_name_.size());
+    CMString trailer = header.serialize_trailer();
+    chunk_sink_(trailer.data(), trailer.size());
+
+    sink_total_ = compress_sb_->total_uncompressed();
+    sink_chunks_ = compress_sb_->chunk_count();
+    sink_comp_ = static_cast<uint8_t>(compress_sb_->effective_compression_type());
+}
+
+int64_t FlyStream::finish_and_commit(bool backup, bool populate_cache) {
+    finish_sink();
+    if (commit_fn_) {
+        return commit_fn_(sink_total_, sink_chunks_, backup, populate_cache);
+    }
+    return 0;
 }
 
 CMString FlyStream::read(size_t n) {

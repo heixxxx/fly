@@ -4,6 +4,7 @@
 #include <common/cpp/common_types.h>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <streambuf>
 #include <vector>
@@ -18,6 +19,12 @@ public:
     // for existing callers (tests pass it explicitly).
     CompressingStreamBuf(std::ostream& dest, CMUniquePtr<Compressor> compressor,
                          int64_t chunk_size = 4194304,
+                         int64_t compression_threshold = 4096);
+    // L1 流式 sink（§9.1 #40）：flush_chunk 完成即回调 sink(chunk_view)——
+    // "压缩一块、交付一块"（sink = 逐块构造 WriteRequest 入 WBQ / 增量写盘）。
+    CompressingStreamBuf(CMUniquePtr<Compressor> compressor,
+                         int64_t chunk_size,
+                         std::function<void(const char*, size_t)> sink,
                          int64_t compression_threshold = 4096);
     ~CompressingStreamBuf() override;
 
@@ -38,8 +45,10 @@ protected:
 
 private:
     void flush_chunk();
+    void emit(const char* data, size_t n);  // dest_ 或 sink_（二选一）
 
-    std::ostream& dest_;
+    std::ostream* dest_ = nullptr;                    // ostream 模式
+    std::function<void(const char*, size_t)> sink_;   // L1 sink 模式
     CMUniquePtr<Compressor> compressor_;
     int64_t chunk_size_;
     int64_t compression_threshold_;

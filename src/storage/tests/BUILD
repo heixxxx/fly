@@ -179,6 +179,19 @@ cc_test(
     copts = ["-std=c++20"],
 )
 
+# L3 流式源（接收线程 + 有界队列）——chunked-transfer-design §8
+cc_test(
+    name = "streaming_source_test",
+    srcs = ["streaming_source_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/storage/cpp:fly_storage",
+        "//src/network/cpp:fly_network",
+        "//src/common/cpp:data_checksum",
+    ],
+    copts = ["-std=c++20"],
+)
+
 # 并发 micro-benchmark：测量 DataService 索引访问的锁并发性。独立 target，
 # 不进常规 test 套件（按需运行测吞吐，输出 ops/sec 对比数据）。运行：
 #   ./fly.sh test //src/storage/tests:data_service_concurrency_bench

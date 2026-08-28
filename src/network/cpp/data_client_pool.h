@@ -57,6 +57,27 @@ public:
 
     void stop();
 
+    // ── L3 流式读的裸交换（§8.1）──
+    // 发 DATA_REQUEST → 读 META → 把【借出的】fd 交还调用方（连接上后续
+    // CHUNK/DIGEST 帧由调用方的接收线程消费）。fd 必须经 release_borrowed_fd
+    // 归还（池的 slot/keep-alive 状态一致性）。
+    struct RawExchange {
+        bool success = false;
+        DataResponseMessage meta;   // chunked_=true 时为分片 META
+        int fd = -1;                // 借出（success 时有效）
+        FlyBufferPtr whole_data;    // chunked_=false 时：整帧数据（fd 已归还）
+        ReadError rerr = ReadError::NONE;
+        CMString error;
+    };
+    RawExchange request_raw_exchange(const CMString& host, int port,
+                                     const CMString& object_name,
+                                     int timeout_ms = 300000);
+    // 归还借出的 fd（healthy=false 关闭移除；true 回 keep-alive 池）。
+    void release_borrowed_fd(int fd, bool healthy);
+
+    // 流式源需要共享 transport 做后续帧 IO（L3 §8.1）。
+    CMSharedPtr<Transport> transport() const { return transport_; }
+
 private:
     // L2 分片接收（§4.5）：META 已解析（chunked_=true），本方法消费后续
     // DATA_CHUNK 帧流 + DIGEST 尾帧，重组整 FlyBuffer 返回（L2 阶段 client

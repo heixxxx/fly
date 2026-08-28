@@ -1,6 +1,7 @@
 #pragma once
 
 #include <storage/cpp/compressor.h>
+#include <common/cpp/chunk_source.h>
 #include <common/cpp/common_types.h>
 #include <cstdint>
 #include <memory>
@@ -14,35 +15,37 @@
 // Each chunk:   [int32_t uncompressed_size][int32_t compressed_size][uint64_t crc][data...]
 // trailer:      ObjectHeader bytes + crc(trailer bytes)（尾置，兼作 commit marker）
 //
-// 构造从输入【尾部】解析 trailer，块流区域 = size - trailer_len。
-// 校验失败（trailer 解析失败 / 块 CRC 失配 / 块流越界或未恰好耗尽 / 解压失败）
-// 置 checksum_failed_ —— 读完后调用方必须检查 checksum_failed() 并按零容忍
-// 语义处理（一次重取 → 仍败 FATAL），不得当作正常 EOF 消费。
+// 两种输入模式（L3，§8.1）：
+//   1. 内存模式（现行为）：DecompressingStreamBuf(data, size)——内部包
+//      MemoryChunkSource，构造时尾部解析 trailer。
+//   2. 流式模式：DecompressingStreamBuf(ChunkSource, block_area_len)——
+//      网络分片流（接收线程 + 有界队列）驱动，块流边界由 META 提供
+//      （server 发送前 pread 尾部解析——消费端无法预先读流尾）。
+//
+// 校验失败（trailer 解析失败 / 块 CRC 失配 / 块流越界或未恰好耗尽 / 解压失败 /
+// 源侧 failed）置 checksum_failed_ —— 读完后调用方必须检查 checksum_failed()
+// 并按零容忍语义处理（一次重取 → 仍败 FATAL），不得当作正常 EOF 消费。
 //
 // Decompresses chunks on demand, serving decompressed bytes via the
-// std::streambuf interface. Designed to be paired with bitsery::InputStreamAdapter
-// for zero-copy streaming deserialization:
-//
-//   DecompressingStreamBuf dsbuf(data, size);
-//   std::istream is(&dsbuf);
-//   FlyInputStreamAdapter adapter(is);
-//   bitsery::quickDeserialization(std::move(adapter), obj);
-//
-// The input data pointer must outlive this object.
+// std::streambuf interface. Designed to be paired with bitsery/pickle
+// streaming deserialization. The source (and for memory mode, its data
+// pointer) must outlive this object.
 // 空输入（data == nullptr 或 size == 0）合法：空流，不标记校验失败。
 class DecompressingStreamBuf : public std::streambuf {
 public:
+    // 内存模式：record 全量（块流 + trailer）。
     DecompressingStreamBuf(const char* data, size_t size);
+    // 流式模式：源 + 块流区域长度（META 提供）。源必须已就绪元数据。
+    // shared 持有（NetworkChunkSource 由多处以 shared 传播）。
+    DecompressingStreamBuf(CMSharedPtr<fly::ChunkSource> source, uint64_t block_area_len);
     ~DecompressingStreamBuf() override;
 
-    const CMString& py_name() const { return py_name_; }
+    const CMString& py_name() const { return source_->py_name(); }
+    uint64_t total_uncompressed() const { return source_->total_uncompressed(); }
+    uint32_t chunk_count() const { return source_->chunk_count(); }
 
-    // trailer 元数据（尾部解析所得；空输入/解析失败时为 0）。
-    uint64_t total_uncompressed() const { return total_uncompressed_; }
-    uint32_t chunk_count() const { return chunk_count_; }
-
-    // 任一校验失败（trailer/块 CRC/结构越界/解压错误）为 true。读过程与读完后
-    // 均可查询；失败后流进入 EOF（不再产数据）。
+    // 任一校验失败（trailer/块 CRC/结构越界/解压错误/源侧失败）为 true。
+    // 读过程与读完后均可查询；失败后流进入 EOF（不再产数据）。
     bool checksum_failed() const { return checksum_failed_; }
 
 protected:
@@ -51,15 +54,14 @@ protected:
 
 private:
     bool refill();
+    // 从源精确拉取 n 字节（凑齐语义）。false = EOF/失败。
+    bool pull_exact(char* dst, size_t n);
 
-    const char* chunk_data_;
-    size_t chunk_data_size_;
-    size_t chunk_data_pos_ = 0;
+    CMSharedPtr<fly::ChunkSource> source_;
+    uint64_t block_area_len_ = 0;   // 块流区域边界（恰耗校验锚点）
+    uint64_t consumed_ = 0;         // 块流区域已消费字节
 
     CMUniquePtr<Compressor> compressor_;
-    CMString py_name_;
-    uint64_t total_uncompressed_ = 0;
-    uint32_t chunk_count_ = 0;
     bool checksum_failed_ = false;
 
     CMVector<char> buffer_;

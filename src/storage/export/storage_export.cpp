@@ -10,6 +10,7 @@
 #include <storage/cpp/db_meta.h>
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/object_cache.h>
+#include <storage/cpp/memory_chunk_source.h>
 #include <storage/cpp/decompress_helper.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/fly_stream.h>
@@ -110,6 +111,45 @@ fly_export::tuple read_decompressed_impl(Database& db, const CMString& name, boo
 
 FLY_EXPORT_MODULE(_fly_storage) {
 
+// L3 流式读（§8.1）：返回 FlyStream（读模式，file-protocol——pickle.Unpickler
+// 增量消费）。先走 read_streaming（TIER1 Memory / TIER2 网络接收线程）；
+// 失败回退 read_object_compressed（完整 TIER2 编排 + 零容忍）→ Memory 源。
+// 消费端读完后必须查 stream.checksum_failed()（源校验状态，零容忍 §5）。
+// 原生 m.def + take_ownership（nanobind 的 unique_ptr 返回 caster 对本类
+// 不生效——裸指针 + 显式策略是完整支持路径）。
+m.def("ex_stg_open_read_stream",
+      ([](Database& db, const CMString& name, bool backup) -> FlyStream* {
+    auto full = db.get_full_name(name);
+    auto ds = fly::DataService::instance();
+    auto r = ds->read_streaming(full);
+    if (r.success && r.source && r.block_area_len > 0) {
+        return new FlyStream(r.source, r.block_area_len);
+    }
+    if (r.rerr == fly::ReadError::CHECKSUM) {
+        throw_fatal_corruption(name, "streaming source verify failed (local)");
+    }
+    if (r.rerr == fly::ReadError::OBJECT_NOT_FOUND ||
+        r.rerr == fly::ReadError::DATA_NOT_READY) {
+        // 对象不可见：与整缓冲路径同语义（空数据 → KeyError）——不回退
+        //（回退只会得到同样结果，双倍开销）。
+        PyErr_SetString(PyExc_KeyError, ("Object '" + name + "' not found").c_str());
+        throw fly_export::python_error();
+    }
+    // 回退：完整编排整缓冲 → Memory 源（解压/反序列化仍流式化）。
+    auto [comp_data, py_name] = db.read_object_compressed(name, backup);
+    if (!comp_data || comp_data->empty()) {
+        PyErr_SetString(PyExc_KeyError, ("Object '" + name + "' not found").c_str());
+        throw fly_export::python_error();
+    }
+    auto mem = CMMakeShared<fly::SharedMemoryChunkSource>(
+        comp_data->data(), comp_data->size(), comp_data);
+    if (mem->failed()) {
+        throw_fatal_corruption(name, "record corrupt after full re-fetch");
+    }
+    return new FlyStream(mem, mem->block_area_len());
+      }),
+      fly_export::rv_policy::take_ownership);
+
 FLY_EXPORT_ENUM(CompressionType, "EXStgCompressionType")
     FLY_EXPORT_ENUM_VALUE("NONE", CompressionType::NONE)
     FLY_EXPORT_ENUM_VALUE("LZ4", CompressionType::LZ4)
@@ -194,10 +234,23 @@ FLY_EXPORT_CLASS(FlyStream, "FlyStream")
     })
     FLY_EXPORT_DEF("writable", [](const FlyStream& s) { return s.is_write_mode(); })
     FLY_EXPORT_DEF("readable", [](const FlyStream& s) { return !s.is_write_mode(); })
+    FLY_EXPORT_DEF("checksum_failed", [](const FlyStream& s) { return s.checksum_failed(); })
+    FLY_EXPORT_DEF("finish_and_commit", [](FlyStream& s, bool backup,
+                                           bool populate_cache) -> int64_t {
+        return s.finish_and_commit(backup, populate_cache);
+    })
     FLY_EXPORT_READONLY_PROPERTY("total_uncompressed", &FlyStream::total_uncompressed)
     FLY_EXPORT_READONLY_PROPERTY("chunk_count", &FlyStream::chunk_count);
 
 FLY_EXPORT_CLASS(Database, "EXStgDatabase")
+    // L1 大对象流式写（§9.1）：open → pickle.dump(stream) →
+    // stream.finish_and_commit()。frozen 时返回 None（裸指针 +
+    // take_ownership——nanobind 无 holder 概念，与读侧工厂同路径）。
+    .def("open_write_stream",
+         [](Database& db, const CMString& name, const CMString& py_name) -> FlyStream* {
+             return db.open_write_stream(name, py_name);
+         },
+         fly_export::rv_policy::take_ownership)
     // Zero-copy write: access Python bytes directly without copying
     FLY_EXPORT_DEF("_write_pickle_bytes", [](Database& db, const CMString& name,
                                               nanobind::handle data,

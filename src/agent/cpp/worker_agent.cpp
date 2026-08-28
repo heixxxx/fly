@@ -12,6 +12,8 @@
 #include <storage/cpp/data_service.h>
 #include <common/cpp/write_context_hash.h>
 #include <network/cpp/data_client_pool.h>
+#include <storage/cpp/network_chunk_source.h>
+#include <storage/cpp/memory_chunk_source.h>
 #include <network/cpp/metadata_client.h>
 #include <network/cpp/tcp_socket.h>
 #include <network/cpp/message_protocol.h>
@@ -142,6 +144,45 @@ void WorkerAgent::start() {
                 return {false, nullptr, {}, {}, rerr};
             }
             return {true, data, std::move(py_name), std::move(hash), ReadError::NONE};
+        });
+
+    // L3 流式 TIER2 cb（§8.1）：raw exchange → 快路径包 SharedMemoryChunkSource /
+    // 分片包 NetworkChunkSource（接收线程 + 有界队列，config 控制上限）。
+    dsInst->set_streaming_read_handler(
+        [this](const CMString& host, int32_t port,
+               const CMString& name) -> std::tuple<bool, CMSharedPtr<fly::ChunkSource>, uint64_t, ReadError> {
+            auto ex = data_client_pool_.request_raw_exchange(host, port, name);
+            if (!ex.success) {
+                return {false, nullptr, 0, ex.rerr};
+            }
+            if (!ex.meta.chunked_) {
+                // 快路径：整帧数据 → 持有所有权的内存源。
+                if (!ex.whole_data || ex.whole_data->empty()) {
+                    data_client_pool_.release_borrowed_fd(ex.fd, true);
+                    return {false, nullptr, 0, ReadError::NETWORK};
+                }
+                auto mem = CMMakeShared<fly::SharedMemoryChunkSource>(
+                    ex.whole_data->data(), ex.whole_data->size(), ex.whole_data);
+                if (mem->failed()) {
+                    return {false, nullptr, 0, ReadError::CHECKSUM};
+                }
+                return {true, mem, mem->block_area_len(), ReadError::NONE};
+            }
+            // 分片流：NetworkChunkSource（fd 借出，析构归还）。
+            int64_t chunks = Config::instance()->get_int("stream_buffer_chunks");
+            uint64_t queue_limit = static_cast<uint64_t>(chunks > 0 ? chunks : 16) *
+                                   ex.meta.chunk_frame_bytes_;
+            auto src = CMMakeShared<fly::NetworkChunkSource>(
+                data_client_pool_.transport(), ex.fd, ex.meta,
+                [pool = &data_client_pool_, fd = ex.fd](bool healthy) {
+                    pool->release_borrowed_fd(fd, healthy);
+                },
+                queue_limit);
+            src->start();
+            return {true, src,
+                    ex.meta.total_compressed_len_ > ex.meta.trailer_len_
+                        ? ex.meta.total_compressed_len_ - ex.meta.trailer_len_ : 0,
+                    ReadError::NONE};
         });
 
     reactor_->register_handler<RegisterAckMessage>(

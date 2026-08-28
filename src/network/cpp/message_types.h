@@ -257,13 +257,19 @@ struct DataResponseMessage {
     // total_compressed_len_ 是对象 record 总字节数（client 预分配 + 收满判定），
     // chunk_frame_bytes_ 是发送端切片尺寸（client 按 seq*frame 定位填充——
     // 切片尺寸是发送端实现细节，必须随 META 告知）。
+    // L3 增强（§8.1）：py_name_ 携带 trailer 元数据（server 发送前 pread 尾部
+    // 解析——流式消费端无法预先读流尾）；trailer_len_ 告知块流边界
+    //（block_area = total - trailer_len）；chunk_compression_type_ 供流式
+    // 消费端选择解压器（块头只有尺寸，类型在 trailer——流尾不可预读）。
     bool chunked_ = false;
     uint64_t total_compressed_len_ = 0;
     uint64_t chunk_frame_bytes_ = 0;
+    uint64_t trailer_len_ = 0;
+    uint8_t chunk_compression_type_ = 0;
 
     static constexpr MessageType msg_type_ = MessageType::DATA_RESPONSE;
 
-    FLY_SERIALIZE(header_, object_name_, success_, status_, error_message_, py_name_, write_context_hash_, payload_crc_, chunked_, total_compressed_len_, chunk_frame_bytes_);
+    FLY_SERIALIZE(header_, object_name_, success_, status_, error_message_, py_name_, write_context_hash_, payload_crc_, chunked_, total_compressed_len_, chunk_frame_bytes_, trailer_len_, chunk_compression_type_);
 };
 
 // ── L2 分片传输协议消息（chunked-transfer-design.md §4.5）──

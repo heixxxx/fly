@@ -142,6 +142,100 @@ Database::CompressResult Database::compress_buffered_data(
     return {total_uncompressed, chunk_count};
 }
 
+// ── L1 大对象流式写（chunked-transfer-design §9.1）──
+
+FlyStream* Database::open_write_stream(const CMString& object_name,
+                                        const CMString& py_name) {
+    if (check_frozen()) {
+        fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB);
+        return nullptr;
+    }
+    if (!writer_) {
+        return nullptr;
+    }
+    // 段事务标记必须在 begin_incremental 之前（对齐 commit_write 的 execute
+    // 时序）——回滚点 = 对象写入前的文件位置，abort 才能 truncate 掉残块。
+    if (fly::WorkerAgentContext::is_transaction_mode() && !writer_->segment_active()) {
+        writer_->mark_begin();
+    }
+    if (writer_->begin_incremental() < 0) {
+        return nullptr;
+    }
+    // sink：压缩块直写增量 record（任务线程同步——page cache 写，延迟特征
+    // 与 WBQ 后台 execute 一致；保序天然成立）。
+    DataWriter* w = writer_.get();
+    return new FlyStream(
+        compression_type_, serialize_chunk_size_,
+        [w](const char* data, size_t n) { w->append_incremental(data, n); },
+        py_name, compression_threshold_,
+        // commit 回调（finish_and_commit 时执行——时序对齐 commit_write）。
+        [this, w, object_name](int64_t total, int32_t chunks, bool backup,
+                               bool populate_cache) -> int64_t {
+            (void)populate_cache;  // 大对象不 populate low-tier（§9.4 分档）
+            CMString full = full_name(object_name);
+
+            w->finish_incremental(object_name, total, chunks);
+            if (!w->flush_checked()) {
+                ERR("[L1-STREAM-WRITE] flush failed: obj={}", object_name);
+                fly::DataService::instance()->on_write_failed(db_path_, full,
+                                                              "stream write flush failure");
+                return static_cast<int64_t>(fly::WriteErrorType::REGISTRATION_FAILED);
+            }
+
+            // commit 语义（对齐 commit_write 时序：register → record_func →
+            // 完成登记同步——盘写已完成）。
+            fly::DataService::instance()->on_write_started(db_path_, full);
+
+            CMString write_hash = fly::WorkerAgentContext::get_current_write_hash();
+            bool self_set_hash = write_hash.empty();
+            if (self_set_hash) {
+                write_hash = make_timestamp_hash();
+                fly::WorkerAgentContext::set_current_write_hash(write_hash);
+            }
+            struct HashGuard {
+                bool self;
+                ~HashGuard() { if (self) fly::WorkerAgentContext::clear_current_write_hash(); }
+            } hash_guard{self_set_hash};
+            (void)write_hash;  // entry hash 留空（master 侧 register 的 hash 是权威）
+
+            auto entry_opt = w->get_last_entry(object_name);
+            int64_t compressed_size = entry_opt.has_value() ? entry_opt->size_ : 0;
+
+            auto [reg_error, reg_error_type] =
+                fly::WorkerAgentContext::register_write(db_path_, object_name, compressed_size);
+            if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+                ERR("[L1-STREAM-WRITE] register failed: obj={} err={}", object_name, reg_error);
+                fly::DataService::instance()->on_write_failed(db_path_, full, reg_error);
+                fly::WorkerAgentContext::set_last_error_type(reg_error_type);
+                if (reg_error_type == fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED) {
+                    return static_cast<int64_t>(fly::WriteErrorType::DUPLICATE_SKIPPED);
+                }
+                return static_cast<int64_t>(fly::WriteErrorType::REGISTRATION_FAILED);
+            }
+
+            auto caller_record_func = fly::WorkerAgentContext::current_record_func();
+            if (caller_record_func) {
+                caller_record_func(db_path_, object_name, compressed_size);
+            }
+
+            {
+                auto ds = fly::DataService::instance();
+                auto entries = w->get_all_entries(object_name);
+                if (entries.has_value()) {
+                    ds->on_write_completed(db_path_, full, entries.value());
+                }
+                ds->on_object_flushed(full);
+            }
+            if (backup) {
+                auto caller_backup_func = fly::WorkerAgentContext::current_backup_func();
+                if (caller_backup_func) {
+                    caller_backup_func(db_path_, object_name);
+                }
+            }
+            return static_cast<int64_t>(fly::WriteErrorType::OK);
+        });
+}
+
 // Shared commit logic: cache → register → enqueue disk write.
 fly::WriteErrorType Database::commit_write(const CMString& object_name,
                                            const CMString& full,

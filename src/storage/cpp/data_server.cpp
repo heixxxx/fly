@@ -438,12 +438,41 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
         conns_[idx].resent_seqs.clear();
     }
 
-    // 自含分片 SendTask（单个闭包在单个 send 线程执行完整流：META →
-    // CHUNK 循环（pread 边发边算根）→ DIGEST 尾帧 → rearm。多任务乱序写
-    // 同 fd 的风险由单任务消除，§7.1 #20）。
+    // META 元数据（尾部 trailer 预解析结果，L3 §8.1）。
+    CMString meta_py_name;
+    uint64_t meta_trailer_len = 0;
+    int meta_comp_type = -1;
+
+    // L3（§8.1）：发送前 pread 尾部解析 trailer → META 携带 py_name/trailer_len
+    //（流式消费端无法预先读流尾）。尾部预读 min(size, 4KB)；解析失败（极端长
+    // py_name 或损坏）→ py_name 空 + trailer_len 0——L2 重组路径不受影响
+    //（client 重组后自行尾部解析），L3 流式消费端会因 block_area 边界缺失
+    // 而回退整缓冲路径（保守正确）。
+    {
+        uint64_t tail_n = std::min<uint64_t>(size, 4096);
+        int file = ::open(file_path.c_str(), O_RDONLY);
+        if (file >= 0) {
+            CMVector<char> tail(static_cast<size_t>(tail_n));
+            ssize_t got = ::pread(file, tail.data(), static_cast<size_t>(tail_n),
+                                  static_cast<off_t>(offset + size - tail_n));
+            ::close(file);
+            if (got > 0 && static_cast<uint64_t>(got) == tail_n) {
+                ObjectHeader hdr;
+                size_t tl = 0;
+                if (ObjectHeader::deserialize_trailer({tail.data(), tail.size()}, hdr, tl)) {
+                    // 记住元数据供 META 使用（下面闭包外读取）。
+                    meta_py_name = hdr.py_name_;
+                    meta_trailer_len = tl;
+                    meta_comp_type = static_cast<int>(hdr.compression_type_);
+                }
+            }
+        }
+    }
+
     SendTask task;
     task.fd = fd;
-    task.chunked_execute = [this, fd, object_name, file_path, offset, size]() {
+    task.chunked_execute = [this, fd, object_name, file_path, offset, size,
+                            meta_py_name, meta_trailer_len, meta_comp_type]() {
         bool ok = true;
 
         // META 先行（复用 DATA_RESPONSE 两段式，无 raw）。
@@ -453,6 +482,11 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
         meta.chunked_ = true;
         meta.total_compressed_len_ = size;
         meta.chunk_frame_bytes_ = kChunkFrameBytes;
+        meta.py_name_ = meta_py_name;
+        meta.trailer_len_ = meta_trailer_len;
+        if (meta_comp_type >= 0) {
+            meta.chunk_compression_type_ = static_cast<uint8_t>(meta_comp_type);
+        }
         CMString meta_frame = DataResponseProtocol::encode(meta, nullptr).header_segment;
         ok = transport_->send_all(fd, meta_frame.data(), meta_frame.size());
         if (!ok) {

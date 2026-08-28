@@ -1,6 +1,7 @@
 #include <storage/cpp/data_service.h>
 #include <storage/cpp/data_server.h>
 #include <storage/cpp/data_reader.h>
+#include <storage/cpp/memory_chunk_source.h>
 #include <storage/cpp/temp_store.h>
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/decompressing_streambuf.h>
@@ -942,6 +943,65 @@ std::pair<bool, DataService::ChunkedLocation> DataService::find_chunked_location
     loc.offset = static_cast<uint64_t>(entry.offset_);
     loc.size = static_cast<uint64_t>(entry.size_);
     return {true, std::move(loc)};
+}
+
+void DataService::set_streaming_read_handler(StreamingReadCallback cb) {
+    std::unique_lock<std::shared_mutex> lock(cb_mutex_);
+    streaming_read_handler_ = std::move(cb);
+}
+
+DataService::StreamingReadResult DataService::read_streaming(const CMString& object_name) {
+    StreamingReadResult out;
+
+    // ── TIER1：本地（含 low-tier 缓存）→ Memory 源（解压/反序列化流式化）──
+    auto [found, raw] = try_read_local_raw(object_name, /*wait_local_write=*/false);
+    if (found && raw && !raw->empty()) {
+        // FlyBuffer 整 record 的内存源（zero-copy 引用）。
+        auto mem = CMMakeShared<fly::SharedMemoryChunkSource>(
+            raw->data(), raw->size(), std::move(raw));
+        if (mem->failed()) {
+            ERR("[STREAM-FATAL-DATA-CORRUPTION] local record corrupt: obj={}", object_name);
+            out.error = "local record corrupt";
+            out.rerr = ReadError::CHECKSUM;
+            return out;
+        }
+        out.success = true;
+        out.py_name = mem->py_name();
+        out.block_area_len = mem->block_area_len();
+        out.source = mem;
+        return out;
+    }
+
+    // ── TIER2：streaming cb（首副本 best-effort，§8.1 决策：失败由调用方
+    //     回退 read_raw_compressed 完整编排——副本轮换/退避/零容忍在那里）。──
+    StreamingReadCallback cb;
+    {
+        std::shared_lock<std::shared_mutex> lock(cb_mutex_);
+        cb = streaming_read_handler_;
+    }
+    if (!cb) {
+        out.error = "no streaming handler";
+        out.rerr = ReadError::NETWORK;
+        return out;
+    }
+    auto replicas = lookup_all_remote_idx(object_name);
+    if (replicas.empty()) {
+        out.error = "no replica";
+        out.rerr = ReadError::OBJECT_NOT_FOUND;
+        return out;
+    }
+    const auto& best = replicas.front();
+    auto [ok, source, block_area, rerr] = cb(best.host_, best.port_, object_name);
+    if (!ok || !source) {
+        out.error = "streaming first-replica attempt failed";
+        out.rerr = rerr;
+        return out;
+    }
+    out.success = true;
+    out.source = source;
+    out.block_area_len = block_area;
+    out.write_context_hash = {};  // 流式源不携带（回退路径/上层需要时重查）
+    return out;
 }
 
 std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& object_name,

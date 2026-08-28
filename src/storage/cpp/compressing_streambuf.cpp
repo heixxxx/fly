@@ -6,11 +6,29 @@ CompressingStreamBuf::CompressingStreamBuf(std::ostream& dest,
                                            CMUniquePtr<Compressor> compressor,
                                            int64_t chunk_size,
                                            int64_t compression_threshold)
-    : dest_(dest)
+    : dest_(&dest)
     , compressor_(std::move(compressor))
     , chunk_size_(chunk_size)
     , compression_threshold_(compression_threshold) {
     buffer_.reserve(static_cast<size_t>(chunk_size));
+}
+
+CompressingStreamBuf::CompressingStreamBuf(
+        CMUniquePtr<Compressor> compressor, int64_t chunk_size,
+        std::function<void(const char*, size_t)> sink, int64_t compression_threshold)
+    : sink_(std::move(sink))
+    , compressor_(std::move(compressor))
+    , chunk_size_(chunk_size)
+    , compression_threshold_(compression_threshold) {
+    buffer_.reserve(static_cast<size_t>(chunk_size));
+}
+
+void CompressingStreamBuf::emit(const char* data, size_t n) {
+    if (sink_) {
+        sink_(data, n);
+    } else if (dest_) {
+        dest_->write(data, static_cast<std::streamsize>(n));
+    }
 }
 
 CompressingStreamBuf::~CompressingStreamBuf() {
@@ -50,7 +68,7 @@ int CompressingStreamBuf::sync() {
     if (!buffer_.empty()) {
         flush_chunk();
     }
-    dest_.flush();
+    if (dest_) dest_->flush();
     return 0;
 }
 
@@ -96,18 +114,18 @@ void CompressingStreamBuf::flush_chunk() {
         uint64_t crc = fly::data_checksum(chunk.data_.data(),
                                           static_cast<size_t>(chunk.compressed_size_));
 
-        dest_.write(reinterpret_cast<const char*>(&uncomp_size), sizeof(int32_t));
-        dest_.write(reinterpret_cast<const char*>(&comp_size), sizeof(int32_t));
-        dest_.write(reinterpret_cast<const char*>(&crc), sizeof(uint64_t));
-        dest_.write(chunk.data_.data(), static_cast<std::streamsize>(chunk.compressed_size_));
+        emit(reinterpret_cast<const char*>(&uncomp_size), sizeof(int32_t));
+        emit(reinterpret_cast<const char*>(&comp_size), sizeof(int32_t));
+        emit(reinterpret_cast<const char*>(&crc), sizeof(uint64_t));
+        emit(chunk.data_.data(), static_cast<size_t>(chunk.compressed_size_));
     } else {
         int32_t size = static_cast<int32_t>(buffer_.size());
         uint64_t crc = fly::data_checksum(buffer_.data(), buffer_.size());
 
-        dest_.write(reinterpret_cast<const char*>(&size), sizeof(int32_t));
-        dest_.write(reinterpret_cast<const char*>(&size), sizeof(int32_t));
-        dest_.write(reinterpret_cast<const char*>(&crc), sizeof(uint64_t));
-        dest_.write(buffer_.data(), static_cast<std::streamsize>(buffer_.size()));
+        emit(reinterpret_cast<const char*>(&size), sizeof(int32_t));
+        emit(reinterpret_cast<const char*>(&size), sizeof(int32_t));
+        emit(reinterpret_cast<const char*>(&crc), sizeof(uint64_t));
+        emit(buffer_.data(), buffer_.size());
     }
 
     chunk_count_++;

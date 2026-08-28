@@ -5,10 +5,12 @@
 #include <storage/cpp/write_back_queue.h>
 #include <storage/cpp/temp_store.h>
 #include <common/cpp/common_types.h>
+#include <common/cpp/chunk_source.h>
 #include <common/cpp/concurrent_map.h>
 #include <common/cpp/error_types.h>
 #include <common/cpp/writer_pref_rwlock.h>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <shared_mutex>
 #include <utility>
@@ -282,6 +284,31 @@ public:
     };
     std::pair<bool, ChunkedLocation> find_chunked_location(const CMString& object_name);
 
+    // ── L3 流式读（§8.1）──
+    // streaming cb：包装 DataClientPool::request_raw_exchange + NetworkChunkSource
+    //（WorkerAgent 注册）。返回 (success, source, block_area_len, rerr)。
+    using StreamingReadCallback = std::function<std::tuple<bool,
+                                                           CMSharedPtr<fly::ChunkSource>,
+                                                           uint64_t,
+                                                           ReadError>(
+        const CMString& host, int32_t port, const CMString& object_name)>;
+    void set_streaming_read_handler(StreamingReadCallback cb);
+
+    struct StreamingReadResult {
+        bool success = false;
+        CMSharedPtr<fly::ChunkSource> source;   // Memory（TIER1）或 Network（TIER2）
+        uint64_t block_area_len = 0;
+        CMString py_name;
+        CMString write_context_hash;
+        ReadError rerr = ReadError::NONE;
+        CMString error;
+    };
+    // 流式读编排：TIER1（本地 → Memory 源）/ TIER2（streaming cb，首副本
+    // best-effort——失败由调用方回退 read_raw_compressed 完整编排）。
+    // 零容忍语义：源校验状态由消费端查 source->failed()；完整重取编排在
+    // 回退路径（read_object_compressed）。
+    StreamingReadResult read_streaming(const CMString& object_name);
+
     void on_temp_write_started(const CMString& db_path, const CMString& object_name);
     // disk_entry：temp 落盘产物（temp_data_*.dat）的 IndexEntry。提供时填入
     // entries_（内存 LRU miss 后的盘读 fallback 路径）；缺失（std::nullopt，
@@ -412,6 +439,7 @@ private:
 
     RemoteCompressedReadCallback remote_compressed_read_handler_;
     DirectCompressedReadCallback direct_compressed_read_handler_;
+    StreamingReadCallback streaming_read_handler_;  // L3 流式 TIER2 cb
 };
 
 }  // namespace fly

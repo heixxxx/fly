@@ -42,6 +42,20 @@ public:
                         const FlyBuffer& record,
                         const CMString& write_context_hash = "");
 
+    // ── L1 增量写（chunked-transfer-design §9.1 #39）──
+    // 大对象块流纯追加：begin（可能先滚文件——当前过半即滚，增量写不跨
+    // 文件，IndexEntry 单文件区间约束）→ append×N（含末尾 trailer——由
+    // 调用方通过 append 写入）→ finish 登记 entry。
+    // 段事务兼容：begin 在活跃段内（mark_write_begin 后），abort 段 truncate
+    // 残块——无 trailer 结构上不可读（commit marker 语义，§4.4）。
+    // begin 返回 record 起点偏移（-1 = writer 已关闭）。调用序列必须在同一线程
+    //（WBQ 单消费线程保序，块顺序 = record 字节序）。
+    int64_t begin_incremental();
+    void append_incremental(const char* data, size_t n);
+    void finish_incremental(const CMString& object_name, int64_t original_size,
+                            int32_t chunk_count,
+                            const CMString& write_context_hash = "");
+
     // 落盘 + 检查流状态。返回 false 表示 write/flush 失败（磁盘满/IO 错误），
     // 调用方应据此标记对象写入失败而非错误地标记 COMPLETE。
     bool write_record_checked(const CMString& object_name,
@@ -99,4 +113,8 @@ private:
     bool closed_ = false;
 
     SegmentRollbackPoint segment_point_;
+
+    // L1 增量写状态（-1 = 无活跃增量 record）
+    int64_t incremental_offset_ = -1;
+    CMString incremental_file_;
 };

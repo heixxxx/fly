@@ -138,6 +138,51 @@ bool DataWriter::flush_checked() {
     return data_ok;
 }
 
+// ── L1 增量写（chunked-transfer-design §9.1）──
+
+int64_t DataWriter::begin_incremental() {
+    if (closed_) {
+        ERR("DataWriter is closed (begin_incremental)");
+        return -1;
+    }
+    // 大对象独占文件段：当前文件过半即滚新文件（threshold 语义对增量写退化
+    // 为开始前滚一次——append 不再跨文件，IndexEntry 单文件区间约束）。
+    if (current_file_size_ > aggregation_threshold_ / 2 && current_file_size_ > 0) {
+        file_index_++;
+        create_new_file();
+    }
+    incremental_offset_ = current_file_size_;
+    incremental_file_ = current_file_;
+    return incremental_offset_;
+}
+
+void DataWriter::append_incremental(const char* data, size_t n) {
+    if (incremental_offset_ < 0) {
+        ERR("append_incremental without begin_incremental");
+        return;
+    }
+    // 手工跟踪大小（app 模式下 tellp 语义受限——rollback_data_file 的同款教训）。
+    file_stream_.write(data, static_cast<std::streamsize>(n));
+    current_file_size_ += static_cast<int64_t>(n);
+}
+
+void DataWriter::finish_incremental(const CMString& object_name,
+                                    int64_t original_size, int32_t chunk_count,
+                                    const CMString& write_context_hash) {
+    if (incremental_offset_ < 0) {
+        ERR("finish_incremental without begin_incremental");
+        return;
+    }
+    int64_t entry_size = current_file_size_ - incremental_offset_;
+    IndexEntry entry{object_name, incremental_file_, incremental_offset_, entry_size,
+                     false, chunk_count, host_, write_context_hash};
+    index_->add_entry(entry);
+    total_bytes_ += original_size;
+
+    incremental_offset_ = -1;
+    incremental_file_.clear();
+}
+
 void DataWriter::close() {
     if (closed_) {
         return;

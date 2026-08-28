@@ -190,14 +190,216 @@ void DataClientPool::release_fd(int fd, bool healthy) {
     }
 }
 
+DataClientPool::RawExchange DataClientPool::request_raw_exchange(
+    const CMString& host, int port, const CMString& object_name, int timeout_ms) {
+    RawExchange out;
+    if (stopped_.load()) {
+        out.error = "Pool stopped";
+        out.rerr = ReadError::SHUTDOWN;
+        return out;
+    }
+
+    {
+        std::unique_lock<std::mutex> lk(mutex_);
+        slot_cv_.wait(lk, [&] {
+            return stopped_.load() || active_count_.load() < static_cast<int>(pool_size_);
+        });
+        if (stopped_.load()) {
+            out.error = "Pool stopped";
+            out.rerr = ReadError::SHUTDOWN;
+            return out;
+        }
+        active_count_.fetch_add(1);
+    }
+
+    int fd = borrow_fd(host, port);
+    if (fd < 0) {
+        active_count_.fetch_sub(1);
+        {
+            std::lock_guard<std::mutex> lk(mutex_);
+            slot_cv_.notify_one();
+        }
+        out.error = "Failed to connect to " + host + ":" + std::to_string(port);
+        out.rerr = ReadError::NETWORK;
+        return out;
+    }
+
+    DataRequestMessage req;
+    req.object_name_ = object_name;
+    CMString encoded_req = MessageProtocol::encode(req);
+    const char* send_ptr = encoded_req.data();
+    size_t send_remaining = encoded_req.size();
+    while (send_remaining > 0) {
+        ssize_t n = transport_->send(fd, send_ptr, send_remaining);
+        if (n < 0) {
+            release_fd(fd, false);
+            active_count_.fetch_sub(1);
+            {
+                std::lock_guard<std::mutex> lk(mutex_);
+                slot_cv_.notify_one();
+            }
+            out.error = "Connection lost sending request for " + object_name;
+            out.rerr = ReadError::NETWORK;
+            return out;
+        }
+        send_ptr += n;
+        send_remaining -= static_cast<size_t>(n);
+    }
+
+    // 读 META / 快路径整帧响应的头部。
+    char frame_header[9];
+    if (!recv_exact(transport_.get(), fd, frame_header, 9)) {
+        release_fd(fd, false);
+        active_count_.fetch_sub(1);
+        { std::lock_guard<std::mutex> lk(mutex_); slot_cv_.notify_one(); }
+        out.error = "Connection lost for " + object_name;
+        out.rerr = ReadError::NETWORK;
+        return out;
+    }
+    uint64_t total_len = 0;
+    if (!parse_frame_header(frame_header, total_len)) {
+        release_fd(fd, false);
+        active_count_.fetch_sub(1);
+        { std::lock_guard<std::mutex> lk(mutex_); slot_cv_.notify_one(); }
+        out.error = "Invalid response for " + object_name;
+        out.rerr = ReadError::CHECKSUM;
+        return out;
+    }
+    if (total_len < 6) {
+        release_fd(fd, false);
+        active_count_.fetch_sub(1);
+        { std::lock_guard<std::mutex> lk(mutex_); slot_cv_.notify_one(); }
+        out.error = "Invalid response for " + object_name;
+        out.rerr = ReadError::NETWORK;
+        return out;
+    }
+
+    char sub_header[5];
+    if (!recv_exact(transport_.get(), fd, sub_header, 5)) {
+        release_fd(fd, false);
+        active_count_.fetch_sub(1);
+        { std::lock_guard<std::mutex> lk(mutex_); slot_cv_.notify_one(); }
+        out.error = "Connection lost for " + object_name;
+        out.rerr = ReadError::NETWORK;
+        return out;
+    }
+    uint32_t small_fields_len = 0;
+    bool has_raw = false;
+    DataResponseProtocol::parse_sub_header(sub_header, small_fields_len, has_raw);
+
+    CMString small_payload(small_fields_len, '\0');
+    if (small_fields_len > 0 &&
+        !recv_exact(transport_.get(), fd, small_payload.data(), small_fields_len)) {
+        release_fd(fd, false);
+        active_count_.fetch_sub(1);
+        { std::lock_guard<std::mutex> lk(mutex_); slot_cv_.notify_one(); }
+        out.error = "Connection lost for " + object_name;
+        out.rerr = ReadError::NETWORK;
+        return out;
+    }
+    DataResponseMessage response;
+    if (!DataResponseProtocol::decode_small_fields(small_payload, response)) {
+        release_fd(fd, false);
+        active_count_.fetch_sub(1);
+        { std::lock_guard<std::mutex> lk(mutex_); slot_cv_.notify_one(); }
+        out.error = "Failed to decode response for " + object_name;
+        out.rerr = ReadError::NETWORK;
+        return out;
+    }
+
+    // 协议级失败（NOT_READY/NOT_FOUND）：fd 已完成交换可归还复用。
+    if (!response.success_) {
+        release_fd(fd, true);
+        active_count_.fetch_sub(1);
+        { std::lock_guard<std::mutex> lk(mutex_); slot_cv_.notify_one(); }
+        out.meta = response;
+        out.rerr = (response.status_ == ResponseStatus::NOT_READY)
+                       ? ReadError::DATA_NOT_READY
+                   : (response.status_ == ResponseStatus::NOT_FOUND)
+                       ? ReadError::OBJECT_NOT_FOUND
+                       : ReadError::NETWORK;
+        out.error = response.error_message_;
+        return out;
+    }
+
+    if (response.chunked_) {
+        // 分片流：fd 借出（后续帧由调用方的接收线程消费；release_borrowed_fd
+        // 归还 fd + slot——slot 归也在那时，保持并发预算"每流占一 slot"）。
+        out.success = true;
+        out.meta = response;
+        out.fd = fd;
+        return out;
+    }
+
+    // 快路径：读完 raw + 验 wire 根 → 整缓冲返回（fd/slot 即刻归还）。
+    if (has_raw) {
+        uint64_t raw_len = DataResponseProtocol::raw_len_from_total(total_len, small_fields_len);
+        auto buf = CMMakeShared<FlyBuffer>();
+        try {
+            buf->resize(raw_len);
+        } catch (const std::bad_alloc&) {
+            release_fd(fd, false);
+            active_count_.fetch_sub(1);
+            { std::lock_guard<std::mutex> lk(mutex_); slot_cv_.notify_one(); }
+            out.error = "Payload too large to buffer: " + object_name;
+            out.rerr = ReadError::NETWORK;
+            return out;
+        }
+        if (!recv_exact(transport_.get(), fd, buf->data(), raw_len)) {
+            release_fd(fd, false);
+            active_count_.fetch_sub(1);
+            { std::lock_guard<std::mutex> lk(mutex_); slot_cv_.notify_one(); }
+            out.error = "Connection lost receiving payload for " + object_name;
+            out.rerr = ReadError::NETWORK;
+            return out;
+        }
+        if (response.payload_crc_ != 0 &&
+            data_checksum(buf->data(), buf->size()) != response.payload_crc_) {
+            ERR("[DCP-FATAL-DATA-CORRUPTION] wire root CRC mismatch: obj={} fd={}",
+                object_name, fd);
+            release_fd(fd, false);
+            active_count_.fetch_sub(1);
+            { std::lock_guard<std::mutex> lk(mutex_); slot_cv_.notify_one(); }
+            out.error = "Wire CRC mismatch for " + object_name;
+            out.rerr = ReadError::CHECKSUM;
+            return out;
+        }
+        release_fd(fd, true);
+        active_count_.fetch_sub(1);
+        { std::lock_guard<std::mutex> lk(mutex_); slot_cv_.notify_one(); }
+        out.success = true;
+        out.meta = response;
+        out.whole_data = buf;
+        return out;
+    }
+
+    // 成功但无 raw（异常状态）：按失败处理。
+    release_fd(fd, true);
+    active_count_.fetch_sub(1);
+    { std::lock_guard<std::mutex> lk(mutex_); slot_cv_.notify_one(); }
+    out.error = "Empty response for " + object_name;
+    out.rerr = ReadError::NETWORK;
+    return out;
+}
+
+void DataClientPool::release_borrowed_fd(int fd, bool healthy) {
+    if (fd < 0) return;
+    release_fd(fd, healthy);
+    active_count_.fetch_sub(1);
+    {
+        // 持锁 notify（lost wakeup 防御，同 release_slot）。
+        std::lock_guard<std::mutex> lk(mutex_);
+        slot_cv_.notify_one();
+    }
+}
+
 std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError> DataClientPool::request(
     const CMString& host,
     int port,
     const CMString& object_name,
     uint64_t requesting_worker_id,
     uint64_t request_id,
-    int timeout_ms)
-{
+    int timeout_ms){
     if (stopped_.load()) {
         return {false, nullptr, "", "", "Pool stopped", ReadError::SHUTDOWN};
     }
