@@ -2,6 +2,9 @@
 #include <storage/cpp/data_server.h>
 #include <storage/cpp/data_reader.h>
 #include <storage/cpp/memory_chunk_source.h>
+#include <storage/cpp/disk_chunk_source.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <storage/cpp/temp_store.h>
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/decompressing_streambuf.h>
@@ -967,27 +970,52 @@ void DataService::set_streaming_read_handler(StreamingReadCallback cb) {
 DataService::StreamingReadResult DataService::read_streaming(const CMString& object_name) {
     StreamingReadResult out;
 
-    // ── TIER1：本地（含 low-tier 缓存）→ Memory 源（解压/反序列化流式化）──
-    auto [found, raw] = try_read_local_raw(object_name, /*wait_local_write=*/false);
-    if (found && raw && !raw->empty()) {
-        // FlyBuffer 整 record 的内存源（zero-copy 引用）。
-        auto mem = CMMakeShared<fly::SharedMemoryChunkSource>(
-            raw->data(), raw->size(), std::move(raw));
-        if (mem->failed()) {
-            ERR("[STREAM-FATAL-DATA-CORRUPTION] local record corrupt: obj={}", object_name);
-            out.error = "local record corrupt";
-            out.rerr = ReadError::CHECKSUM;
-            return out;
+    // ── TIER1：本地 → DiskChunkSource（pread 拉取式，D3）──
+    // 缓存取消后不整读进内存——按 find_chunked_location 定位 + trailer 预读
+    //（一次小 pread 尾部）拿元数据，字节按需拉取（本地读内存有界）。
+    {
+        auto [loc_ok, loc] = find_chunked_location(object_name);
+        if (loc_ok) {
+            // trailer 预读：尾部 min(size, 4KB) 解析元数据（失败 = 损坏）。
+            int tf = ::open(loc.file_path.c_str(), O_RDONLY);
+            if (tf >= 0) {
+                uint64_t tail_n = loc.size < 4096 ? loc.size : 4096;
+                CMVector<char> tail(static_cast<size_t>(tail_n));
+                ssize_t got = ::pread(tf, tail.data(), static_cast<size_t>(tail_n),
+                                      static_cast<off_t>(loc.offset + loc.size - tail_n));
+                ::close(tf);
+                ObjectHeader hdr;
+                size_t tl = 0;
+                if (got > 0 && static_cast<uint64_t>(got) == tail_n &&
+                    ObjectHeader::deserialize_trailer({tail.data(), tail.size()}, hdr, tl)) {
+                    auto disk = CMMakeShared<fly::DiskChunkSource>(
+                        loc.file_path, loc.offset, loc.size - tl, hdr.py_name_,
+                        hdr.total_size_, hdr.chunk_count_,
+                        static_cast<int>(hdr.compression_type_));
+                    out.success = true;
+                    out.py_name = hdr.py_name_;
+                    out.block_area_len = loc.size - tl;
+                    out.source = disk;
+                    return out;
+                }
+            }
+            // trailer 预读失败（极端长 py_name 或损坏）→ 走 TIER2/回退路径
+            //（保守正确——MemoryChunkSource 的严格对账在回退路径执行）。
         }
-        out.success = true;
-        out.py_name = mem->py_name();
-        out.block_area_len = mem->block_area_len();
-        out.source = mem;
-        return out;
+        // temp 对象（find_chunked_location 不命中）→ TIER2。
     }
 
     // ── TIER2：streaming cb（首副本 best-effort，§8.1 决策：失败由调用方
     //     回退 read_raw_compressed 完整编排——副本轮换/退避/零容忍在那里）。──
+
+    // ── TIER2：streaming cb 副本轮换（D4，§14.3 用户裁定："始终不使用整体
+    //     接收的方式"）。轮换语义与 try_tier2_read 同构：
+    //     - 网络类（断连/超时）→ remove 副本 → 下一副本重新流式；
+    //     - 校验类（块 CRC/DIGEST）→ 零容忍预算一次（§5）→ 仍败上抛 CHECKSUM
+    //       （调用方 FATAL）；
+    //     - 全副本失败一轮 → 指数退避 → TIER3 刷新 → 重进 TIER2（30s deadline）。
+    //     消费中途失败的重开（对象级重来）在 export 层（ex_stg_open_read_stream
+    //     捕获消费异常重新调 read_streaming——dead 副本已被 remove 出序）。
     StreamingReadCallback cb;
     {
         std::shared_lock<std::shared_mutex> lock(cb_mutex_);
@@ -998,24 +1026,96 @@ DataService::StreamingReadResult DataService::read_streaming(const CMString& obj
         out.rerr = ReadError::NETWORK;
         return out;
     }
-    auto replicas = lookup_all_remote_idx(object_name);
-    if (replicas.empty()) {
-        out.error = "no replica";
-        out.rerr = ReadError::OBJECT_NOT_FOUND;
-        return out;
+
+    constexpr int64_t kInitialDelayMs = 10;
+    constexpr int64_t kMaxDelayMs = 500;
+    constexpr auto kDeadline = std::chrono::seconds(30);
+    int64_t delay_ms = kInitialDelayMs;
+    auto net_start = std::chrono::steady_clock::now();
+    bool corruption_refetch_mode = false;
+    int64_t corruption_budget = 1;  // §5：校验类一次重取
+
+    while (true) {
+        auto replicas = lookup_all_remote_idx(object_name);
+        if (replicas.empty()) {
+            if (corruption_refetch_mode) {
+                out.error = "checksum failure persisted, no replica left";
+                out.rerr = ReadError::CHECKSUM;
+                return out;
+            }
+            out.error = "no replica";
+            out.rerr = ReadError::OBJECT_NOT_FOUND;
+            return out;
+        }
+
+        bool saw_not_ready = false;
+        bool round_failed = false;
+        for (const auto& loc : replicas) {
+            auto [ok, source, block_area, rerr] = cb(loc.host_, loc.port_, object_name);
+            if (ok && source) {
+                out.success = true;
+                out.source = source;
+                out.block_area_len = block_area;
+                out.write_context_hash = {};
+                return out;
+            }
+            if (rerr == ReadError::CHECKSUM) {
+                ERR("[STREAM-FATAL-DATA-CORRUPTION] tier2 streaming checksum failure: "
+                    "obj={} worker={} host={}", object_name, loc.worker_id_, loc.host_);
+                remove_remote_location(object_name, loc.worker_id_);
+                if (corruption_budget > 0) {
+                    corruption_budget--;
+                    corruption_refetch_mode = true;
+                    continue;  // 换副本重新流式（唯一一次）
+                }
+                out.error = "checksum failure persisted after one re-fetch";
+                out.rerr = ReadError::CHECKSUM;
+                return out;
+            }
+            if (rerr == ReadError::OBJECT_NOT_FOUND) {
+                remove_remote_location(object_name, loc.worker_id_);
+            } else if (rerr == ReadError::DATA_NOT_READY) {
+                saw_not_ready = true;
+            } else if (rerr == ReadError::SHUTDOWN) {
+                out.error = "pool shutdown";
+                out.rerr = ReadError::SHUTDOWN;
+                return out;
+            }
+            // NETWORK：keep replica（TIER2 语义——瞬态，轮换后仍可退避重试）。
+            round_failed = true;
+            if (corruption_refetch_mode) {
+                // 重取模式中任何非校验失败同样不可接受（§5）。
+                out.error = "re-fetch after checksum failure failed";
+                out.rerr = ReadError::CHECKSUM;
+                return out;
+            }
+        }
+
+        if (!saw_not_ready &&
+            std::chrono::steady_clock::now() - net_start >= kDeadline) {
+            out.error = "streaming tier2 deadline exceeded";
+            out.rerr = ReadError::NETWORK;
+            return out;
+        }
+        (void)round_failed;
+
+        // 退避后 TIER3 刷新（remote_cb）→ 重进 TIER2。
+        RemoteCompressedReadCallback remote_cb;
+        {
+            std::shared_lock<std::shared_mutex> lock(cb_mutex_);
+            remote_cb = remote_compressed_read_handler_;
+        }
+        if (remote_cb) {
+            auto [refreshed, csp] = remote_cb(object_name);
+            DBG("[STREAM-TIER3] obj={}, refreshed={}, can_produce={}",
+                object_name, refreshed, csp);
+        }
+        int64_t jitter = std::max<int64_t>(1, delay_ms / 10);
+        std::uniform_int_distribution<int64_t> dist(-jitter, jitter);
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(delay_ms + dist(g_backoff_rng)));
+        delay_ms = std::min(delay_ms * 2, kMaxDelayMs);
     }
-    const auto& best = replicas.front();
-    auto [ok, source, block_area, rerr] = cb(best.host_, best.port_, object_name);
-    if (!ok || !source) {
-        out.error = "streaming first-replica attempt failed";
-        out.rerr = rerr;
-        return out;
-    }
-    out.success = true;
-    out.source = source;
-    out.block_area_len = block_area;
-    out.write_context_hash = {};  // 流式源不携带（回退路径/上层需要时重查）
-    return out;
 }
 
 std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& object_name,

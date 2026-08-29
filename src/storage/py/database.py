@@ -195,21 +195,28 @@ class Database:
             #（内含一次重取 + FATAL 语义，零容忍 §5）。
             from core import get_config as _gc
             if _gc().get_int("streaming_read_threshold") > 0:
-                try:
-                    import _fly_storage
-                    stream = _fly_storage.ex_stg_open_read_stream(self._db, name, backup)
-                except KeyError:
-                    raise  # 对象不可见：语义与整缓冲路径一致
-                try:
-                    obj = pickle.Unpickler(stream).load()
-                    corrupt = stream.checksum_failed()
-                except (pickle.UnpicklingError, EOFError, AttributeError,
-                        ImportError, IndexError):
-                    corrupt = True  # 流截断/源坏——按损坏回退
-                if not corrupt:
-                    nbytes = stream.total_uncompressed  # property
-                    return obj
-                # 回退：完整 TIER2 编排 + 一次重取 + FATAL（_read_decompressed）。
+                import _fly_storage
+                # D4（§14.3）：消费中途失败 → 重新调 open（对象级重来——无断点
+                # 续传、消费端不可回卷）。read_streaming 内部已做副本轮换 +
+                # 零容忍预算（校验类一次重取 → FATAL）；此处重开覆盖"传输
+                # 中途断连"的消费端恢复（dead 副本已被 remove，重开自然换源）。
+                for _attempt in range(2):
+                    try:
+                        stream = _fly_storage.ex_stg_open_read_stream(
+                            self._db, name, backup)
+                    except KeyError:
+                        raise  # 对象不可见：语义与整缓冲路径一致
+                    try:
+                        obj = pickle.Unpickler(stream).load()
+                        corrupt = stream.checksum_failed()
+                    except (pickle.UnpicklingError, EOFError, AttributeError,
+                            ImportError, IndexError):
+                        corrupt = True  # 流截断/源坏——按损坏处理
+                    if not corrupt:
+                        nbytes = stream.total_uncompressed  # property
+                        return obj
+                    stream = None  # 弃流重开（对象级重来）
+                # 两次消费均败：零容忍 FATAL（完整编排重取 + FATAL 语义）。
                 data, _ = self._db._read_decompressed(name, backup)
                 if not data:
                     raise KeyError(
