@@ -217,6 +217,14 @@ client                          server
 - 范围界定：该裁定针对**流式读路径**；L2 整缓冲重组（receive_chunked）
   保留给非流式读（小对象快路径 / streaming_read_threshold=0 逃生口）。
 
+**threshold 语义裁定（2026-08-29 用户裁定，差异讨论 #6 定案）**：
+- `streaming_read/write_threshold` 定性为**开关**（>0 启用，值无意义，
+  保留原名不改）；**读/写统一流式，不按对象尺寸分档**（用户裁定：统一
+  流式易于维护）。
+- 维度澄清：分档只存在于**传输层**（chunked_transfer_threshold：小对象
+  ≤4MB 整帧快路径 / 大对象分片流——这是 server 侧内存有界化所需）；
+  **消费层统一流式**（快路径整帧收到后同样以内存源流式消费）。
+
 **META 字段裁定（2026-08-29 用户同意，差异讨论 #3 定案）**：
 - `trailer_len_` + `chunk_compression_type_` **保留**（流式消费"流首启动、
   流尾未知"的刚需——凡 trailer 来的信息必须经 META 预告知；B' 后 trailer_len
