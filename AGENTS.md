@@ -40,6 +40,16 @@ bash qa/run_qa_tests.sh        # Legacy wrapper, same thing
 
 `.git/hooks/pre-push` 在每次 `git push` 前自动跑 **build → unit test → 全量 QA**，任一阶段失败即阻止 push。**禁止以 `git push --no-verify` 绕过** —— 失败时必须修复根因让流水线自然通过。详见 [`docs/push-hook.md`](docs/push-hook.md)。
 
+### 手动跑 fly 烟测/脚本的日志落点（禁止污染仓库根）
+
+`fly script.py` 不传 `--log-dir` 时默认在 **cwd** 建 `fly_log/`（已存在则 `.N` 递增——每跑一次进程多一个目录）。手动烟测必须在 `.work/` 下跑并显式指定：
+
+```bash
+./build/bin/fly --log-dir .work/<name>_log .work/<script>.py   # 不要裸跑
+```
+
+历史上根目录曾累积 16 个 `fly_log.N`（手动烟测裸跑所致）；同理测试数据目录一律走 `from test import qa_tmp`（不硬编码 `/tmp/fly_*`——曾累积 44334 目录 36G 触发 WSL 磁盘事件，2026-08-29 治理）。
+
 ---
 
 ## Public API Export Chain
