@@ -81,7 +81,14 @@ def deserialize_args(args: list, worker) -> list:
                     data_path = parts[2] if len(parts) > 2 else ""
 
             cache_key = uid or db_path
-            if cache_key not in worker._db_cache:
+            # uid 命中但 path 不一致 = merge/迁移场景（同 uid 换物理路径）：
+            # 旧实例的 db_path 是源路径，读旧命名空间必败——按参数 path 重建。
+            # （历史缺陷由 write-through 缓存掩盖——旧名读也命中缓存；§4.7
+            # 缓存取消后暴露。db 身份以 path 为准，uid 是查找提示。）
+            cached_db = worker._db_cache.get(cache_key)
+            if cached_db is not None and db_path and cached_db.get_db_path() != db_path:
+                cached_db = None
+            if cached_db is None:
                 from _fly_storage import ex_stg_get_data_service
                 ds = ex_stg_get_data_service()
 
@@ -125,9 +132,9 @@ def deserialize_args(args: list, worker) -> list:
 
                 worker._agent.register_database(db_path, db._db)
                 worker._db_cache[cache_key] = db
-                if uid:
-                    worker._db_cache[db_path] = db
-            result.append(worker._db_cache[cache_key])
+                worker._db_cache[db_path] = db
+                cached_db = db
+            result.append(cached_db)
         elif isinstance(arg, str) and arg.startswith("__fly_cfunc__:"):
             # callable 参数（cloudpickle，见 task.py::_serialize_args）。
             # cloudpickle 缺失时退回标准 pickle（模块级函数场景仍可用）。

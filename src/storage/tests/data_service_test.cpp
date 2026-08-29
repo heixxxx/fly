@@ -1262,10 +1262,11 @@ TEST_F(DataServiceTest, TryReadLocalRawReturnsFalseForUnknown) {
 
 // try_read_local_raw short-circuits via ObjectCache low tier: after a prior
 // read_object_compressed populates the low tier, a subsequent try_read_local_raw
-// must serve from cache (no disk IO). We prove this by deleting the on-disk
-// .dat files after populating the cache — if it still returns data, it came
-// from the low-tier cache, not disk.
-TEST_F(DataServiceTest, TryReadLocalRawServesFromLowCache) {
+// §4.7 low-tier cache 取消（2026-08-29）：原两例（缓存服务 + 读填充）改写为
+// 取消语义锚定——读恒走盘（删盘文件即失败），读后不 populate。
+
+// 删除盘文件后读必须失败（无缓存兜底——取消语义的正确性证明）。
+TEST_F(DataServiceTest, TryReadLocalRawFailsAfterDiskRemoval) {
     CMString db_path = test_dir_ + "/serve_cache";
     Database db(db_path);
     write_raw(db, "serve/obj", "payload", false);
@@ -1274,29 +1275,26 @@ TEST_F(DataServiceTest, TryReadLocalRawServesFromLowCache) {
     CMString full = db.get_full_name("serve/obj");
     fly::ObjectCache::instance().clear();
 
-    // Populate low tier via read_object_compressed.
+    // 盘在时读成功（走盘）。
     auto [comp, py_name] = db.read_object_compressed("serve/obj", false);
     ASSERT_FALSE(!comp || comp->empty());
-    ASSERT_EQ(fly::ObjectCache::instance().low_size(), 1u);
+    EXPECT_EQ(fly::ObjectCache::instance().low_size(), 0u)
+        << "read must not populate low tier (cancelled)";
 
-    // Delete on-disk data files so a disk read would fail.
+    // 删盘 → 读失败（无缓存短路）。
     for (auto& p : std::filesystem::directory_iterator(db_path)) {
         if (p.path().extension() == ".dat") {
             std::filesystem::remove(p.path());
         }
     }
-
-    // try_read_local_raw must still succeed via the low-tier short-circuit.
     auto [found, raw] = ds_->try_read_local_raw(full);
-    EXPECT_TRUE(found) << "should serve from cache even with disk files removed";
-    EXPECT_EQ(raw, comp);
+    EXPECT_FALSE(found) << "disk removed + no cache = read must fail (§4.7)";
 
     fly::ObjectCache::instance().clear();
 }
 
-// try_read_local_raw populates the low tier after a disk read, so subsequent
-// calls hit the cache.
-TEST_F(DataServiceTest, TryReadLocalRawPopulatesLowCache) {
+// try_read_local_raw 读后不 populate（取消语义）。
+TEST_F(DataServiceTest, TryReadLocalRawDoesNotPopulateLowCache) {
     CMString db_path = test_dir_ + "/populate_cache";
     Database db(db_path);
     write_raw(db, "pop/obj", "data", false);
@@ -1306,12 +1304,11 @@ TEST_F(DataServiceTest, TryReadLocalRawPopulatesLowCache) {
     fly::ObjectCache::instance().clear();
     EXPECT_EQ(fly::ObjectCache::instance().low_size(), 0u);
 
-    // First try_read_local_raw reads from disk and populates the low tier.
     auto [found, raw] = ds_->try_read_local_raw(full);
     ASSERT_TRUE(found);
     ASSERT_FALSE(!raw || raw->empty());
-    EXPECT_EQ(fly::ObjectCache::instance().low_size(), 1u)
-        << "try_read_local_raw should populate low tier after disk read";
+    EXPECT_EQ(fly::ObjectCache::instance().low_size(), 0u)
+        << "try_read_local_raw must not populate low tier (cancelled)";
 
     fly::ObjectCache::instance().clear();
 }

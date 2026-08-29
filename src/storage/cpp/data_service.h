@@ -422,6 +422,9 @@ private:
     CMUnorderedMap<uint64_t, RemoteObjectInfo> worker_registry_;
 
     CMUnorderedMap<CMString, DbPaths> db_paths_;
+    // db_paths_ 引用计数（register +1 / unregister -1，归零移除——见
+    // register_database 注释：临时 Database 实例析构不得拆掉仍被持有的 db）。
+    CMUnorderedMap<CMString, int64_t> db_refs_;
 
     // 迁移重定向缓存：source_db_path → resolved target_db_path（链式展平）。
     // resolve_migrated_path miss 时 stat _MIGRATED_TO 一次并缓存。merge 后 master

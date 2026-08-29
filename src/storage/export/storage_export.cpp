@@ -130,10 +130,21 @@ m.def("ex_stg_open_read_stream",
     }
     if (r.rerr == fly::ReadError::OBJECT_NOT_FOUND ||
         r.rerr == fly::ReadError::DATA_NOT_READY) {
-        // 对象不可见：与整缓冲路径同语义（空数据 → KeyError）——不回退
-        //（回退只会得到同样结果，双倍开销）。
-        PyErr_SetString(PyExc_KeyError, ("Object '" + name + "' not found").c_str());
-        throw fly_export::python_error();
+        // 流式首副本不可见≠对象不存在（TIER3/master 权威索引可能在其他
+        // 副本）——回退整缓冲完整编排（read_object_compressed 的 TIER2/TIER3
+        // 轮换是权威判定；全源 miss 才是真正 KeyError）。
+        // 注：D4 完整流式轮换落地后此回退收敛为流式重试（§14.3）。
+        auto [comp_data, py_name] = db.read_object_compressed(name, backup);
+        if (!comp_data || comp_data->empty()) {
+            PyErr_SetString(PyExc_KeyError, ("Object '" + name + "' not found").c_str());
+            throw fly_export::python_error();
+        }
+        auto mem2 = CMMakeShared<fly::SharedMemoryChunkSource>(
+            comp_data->data(), comp_data->size(), comp_data);
+        if (mem2->failed()) {
+            throw_fatal_corruption(name, "record corrupt after full re-fetch");
+        }
+        return new FlyStream(mem2, mem2->block_area_len());
     }
     // 回退：完整编排整缓冲 → Memory 源（解压/反序列化仍流式化）。
     auto [comp_data, py_name] = db.read_object_compressed(name, backup);

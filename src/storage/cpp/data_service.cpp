@@ -103,6 +103,7 @@ void DataService::reset() {
     {
         std::unique_lock<std::shared_mutex> lock(db_paths_mutex_);
         db_paths_.clear();
+        db_refs_.clear();
         migrated_db_paths_.clear();
     }
     {
@@ -120,12 +121,25 @@ void DataService::register_database(const CMString& db_path,
                                      const CMString& data_path,
                                      const CMString& writer_id) {
     std::unique_lock<std::shared_mutex> lock(db_paths_mutex_);
+    // 引用计数（§4.7 缓存取消后的必要配套）：db chain find_db 等路径会临时
+    // 构造 Database 实例（读一次即 GC）——实例析构不得移除仍有持有者的
+    // db_paths_（否则 serve 侧 TIER1 查询 diag=0 NOT_FOUND——旧代码由
+    // low-cache 进程级兜底掩盖，缓存取消后暴露）。
+    db_refs_[db_path] += 1;
     db_paths_[db_path] = {db_path, data_path, writer_id};
 }
 
 void DataService::unregister_database(const CMString& db_path) {
+    if (db_path.empty()) return;  // 被拒构造的 Database（db_path_ 已清空）
     std::unique_lock<std::shared_mutex> lock(db_paths_mutex_);
-    db_paths_.erase(db_path);
+    auto it = db_refs_.find(db_path);
+    if (it == db_refs_.end() || it->second <= 1) {
+        // 最后一实例（或异常状态）：真正移除。
+        db_refs_.erase(db_path);
+        db_paths_.erase(db_path);
+        return;
+    }
+    it->second -= 1;  // 仍有其他 Database 实例持有该 db
 }
 
 bool DataService::has_database(const CMString& db_path) const {
@@ -1006,14 +1020,8 @@ DataService::StreamingReadResult DataService::read_streaming(const CMString& obj
 
 std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& object_name,
                                                                bool wait_local_write) {
-    // Short-circuit: serve compressed bytes from the ObjectCache low tier when
-    // available. This benefits both the remote DataServer serve path (which
-    // calls this directly) and the local read_raw_compressed Tier-1 path —
-    // avoiding index lookup + disk IO entirely on a cache hit.
-    if (auto [hit, cached] = fly::ObjectCache::instance().get_low(object_name); hit) {
-        return {true, cached};
-    }
-
+    // §4.7 low-tier cache 取消：无缓存短路——恒走 index + 磁盘（写后立即读
+    // 由 entry 登记时序/NOT_READY 轮询兜底）。
     auto [db_path, short_name] = split_full(object_name);
     CMVector<IndexEntry> entries;
     DbPaths paths;
@@ -1123,20 +1131,7 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
     FlyBufferPtr raw = do_read_raw_entries(entries, paths);
     if (!raw || raw->empty()) return {false, nullptr};
 
-    // Populate the low-tier cache so subsequent reads (local or remote serve)
-    // skip disk IO. Account by uncompressed size from the object trailer;
-    // fall back to compressed size if the trailer cannot be parsed.
-    size_t accounted = raw->size();
-    {
-        ObjectHeader hdr;
-        size_t trailer_len = 0;
-        if (ObjectHeader::deserialize_trailer({raw->data(), raw->size()}, hdr, trailer_len) &&
-            hdr.total_size_ > 0) {
-            accounted = static_cast<size_t>(hdr.total_size_);
-        }
-    }
-    fly::ObjectCache::instance().put_low(object_name, raw, accounted);
-
+    // §4.7 low-tier put 移除（缓存取消）。
     return {true, raw};
 }
 

@@ -319,18 +319,14 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
         ~WriteHashGuard() { if (self) fly::WorkerAgentContext::clear_current_write_hash(); }
     } hash_guard{self_set_hash};
 
-    // 1. Populate low-tier cache immediately — remote reads can serve from
-    //    cache without waiting for the background disk write.
-    //    populate_cache=false（保存等级"none"，仅落盘）：跳过缓存填充——
-    //    数据搬运/merge 等场景不希望中间对象挤占缓存，读直接走索引+磁盘。
-    if (populate_cache) {
-        size_t sz = original_size > 0 ? static_cast<size_t>(original_size) : record->size();
-        fly::ObjectCache::instance().put_low(full, record, sz);
-    }
+    // §4.7 low-tier cache 取消：不再 populate（压缩字节缓存全量移除——读走
+    // 磁盘，写后立即可读由 entry 登记 + WBQ 完成时序保证；写后立即远程读
+    // 由 NOT_READY 轮询兜底）。populate_cache 参数保留 API 兼容（no-op）。
+    (void)populate_cache;
 
     // 2. Register write with master. Only NOW does the master mark data ready
-    //    and schedule dependent tasks — by which point the cache is populated
-    //    and remote reads can be served immediately.
+    //    and schedule dependent tasks — remote reads are served from disk
+    //    (entry登记后) or NOT_READY polling until WBQ completes.
     fly::DataService::instance()->on_write_started(db_path_, full);
     int64_t compressed_size = static_cast<int64_t>(record->size());
     auto [reg_error, reg_error_type] = fly::WorkerAgentContext::register_write(db_path_, object_name, compressed_size);
@@ -496,40 +492,9 @@ CMString Database::compress_pickle_bytes(const char* data, int64_t data_size,
 
 std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMString& object_name, bool backup, bool bypass_cache) {
     CMString full = full_name(object_name);
-    auto& cache = fly::ObjectCache::instance();
-
-    // Low-tier hit: skip disk/remote IO. Re-parse py_name from the cached trailer.
-    // Skipped when bypass_cache=true (cache="none" mode).
-    if (!bypass_cache) {
-        if (auto [hit, cached] = cache.get_low(full); hit) {
-            CMString py_name;
-            ObjectHeader hdr;
-            size_t trailer_len = 0;
-            if (ObjectHeader::deserialize_trailer({cached->data(), cached->size()},
-                                                  hdr, trailer_len)) {
-                py_name = hdr.py_name_;
-            }
-            // Malformed cached entry（py_name 空）— fall through to re-read from source.
-            if (!py_name.empty()) {
-                // backup=True means the caller wants a persisted local replica.
-                // The low-tier cache is memory-only and does NOT imply a local
-                // on-disk copy, so a cache hit must still honour the backup
-                // request when the object is not yet persisted locally.
-                // (Without this, a prior _get_py_name() pre-read would populate
-                // the cache and silently skip the backup the caller asked for.)
-                if (backup) {
-                    auto ds = fly::DataService::instance();
-                    if (!ds->has_local_object(full)) {
-                        do_backup_write(full, object_name,
-                                        CMString(cached->data(), cached->size()), {});
-                    }
-                }
-                return {cached, std::move(py_name)};
-            }
-            // If header parse failed, evict the stale entry and re-read.
-            cache.remove(full);
-        }
-    }
+    // §4.7 low-tier cache 取消：读恒走数据源（盘/远程）。bypass_cache 参数
+    // 保留 API 兼容（无行为差异）。
+    (void)bypass_cache;
 
     auto ds = fly::DataService::instance();
     auto [comp_found, comp_data, comp_py_name, comp_hash, comp_can_still_produce] = ds->read_raw_compressed(full);
@@ -581,14 +546,12 @@ std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMStrin
         }
         // Keep compressed-size accounting when the trailer cannot be parsed.
     }
-    cache.put_low(full, comp_data, accounted);
+    // §4.7：low-tier put 移除（缓存取消）——accounted 仅用于统计口径，保留计算。
 
     return {comp_data, std::move(comp_py_name)};
 }
 
 CMString Database::read_object_py_name(const CMString& object_name) {
-    // read_object_compressed already goes through the low-tier cache, so this
-    // is a cheap header parse on cache hit (no payload read).
     auto [comp_data, py_name] = read_object_compressed(object_name, false);
     return py_name;
 }

@@ -58,13 +58,13 @@ class Database:
     }
 
     def write_object(self, name: str, obj, backup: bool = False, save_to_db: bool = True,
-                     cache: str = "low") -> str:
+                     cache: str = "none") -> str:
         """Write an object.
 
         Args:
-            cache: 保存等级。``"low"``（默认）写入即填充 low-tier 压缩缓存
-                （读请求不等后台落盘即可命中）；``"none"`` 仅落盘不进缓存
-                （数据搬运/merge 等不希望中间对象挤占缓存的场景，读走索引+磁盘）。
+            cache: 保存等级。``"none"``（默认）仅落盘；``"high"`` 保留（解压
+                对象缓存——读路径语义）。``"low"`` 已废弃（§4.7 low-tier 压缩
+                缓存全量取消——远程读统一走磁盘）——作为 "none" 别名兼容。
         """
         if not save_to_db:
             # temp 路径独立计时（_write_temp 内部 record_write），不进本路径。
@@ -136,26 +136,33 @@ class Database:
         finally:
             record_write(self.get_full_name(name), (time.perf_counter() - t0) * 1000.0)
 
-    def read_object(self, name: str, backup: bool = False, cache: str = "low"):
+    def read_object(self, name: str, backup: bool = False, cache: str = "none"):
         # IO 归属计时：全分支包裹（cache 命中/C++ 对象/pickle 各路径）；
         # 字节数仅在 Python 拿到解压 data 的路径可得（C++ 对象路径记 0）。
+        # §4.7 缓存二值化：none（默认，无缓存走盘）/ high（解压对象缓存）。
+        # "low" 为 "none" 别名（low-tier 压缩缓存已取消）。
+        if cache == "low":
+            cache = "none"
         t0 = time.perf_counter()
         nbytes = 0
         try:
             # Caching tier dispatch:
             #   - nanobind (C++ exported) classes: _read_from_db → C++ ObjectCache
-            #     Supports "low" (default), "high", "none" cache tiers.
+            #     high tier ("high") / no-cache ("none"——每次解压重建)。
             #   - pickle (Python) objects: "high" → Python ReadCache high tier;
-            #     "low"/"none" → C++ ObjectCache low tier (transparent, via
-            #     _read_streaming) + reconstruct every time.
+            #     "none" → 每次流式读重建（Unpickler 增量消费）。
             py_name = self._db._get_py_name(name)
             import _fly_storage
             cls = getattr(_fly_storage, py_name, None)
             is_cpp_obj = cls is not None and hasattr(cls, "_read_from_db")
 
             if is_cpp_obj:
-                # nanobind class → C++ read_object<Cls> with specified cache tier.
-                return cls._read_from_db(self._db, name, cache)
+                # nanobind class → C++ read_object<Cls>。C++ 侧 "low" 语义 =
+                # high tier 查询 + miss 重建 + populate high（low-tier 取消后
+                # 该链路不变）——"none" 映射 "low" 保持默认 populate 行为，
+                # 显式 "high" 不变。
+                cpp_cache = "low" if cache == "none" else cache
+                return cls._read_from_db(self._db, name, cpp_cache)
 
             if cache == "high":
                 from storage import get_read_cache

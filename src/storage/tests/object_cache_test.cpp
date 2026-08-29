@@ -298,9 +298,11 @@ protected:
 // After read_object_compressed, the compressed bytes must be in the cache's
 // low tier. A second read of the same object hits the cache (no disk IO).
 
-// ── write-through: write_object populates low tier on flush ──
+// ── §4.7 low-tier cache 取消：write/read 路径不再 populate（2026-08-29）──
+// 原写入填充（write-through）三例改写为取消语义锚定：写后读恒走盘
+//（drain 后 entry 可见），low_size 恒 0。
 
-TEST_F(ObjectCacheDbTest, WriteObjectPopulatesLowTierOnFlush) {
+TEST_F(ObjectCacheDbTest, WriteObjectDoesNotPopulateLowTier) {
     Database db(test_dir_ + "/wt");
     ObjectCache::instance().clear();
 
@@ -309,19 +311,21 @@ TEST_F(ObjectCacheDbTest, WriteObjectPopulatesLowTierOnFlush) {
     src.s = "wt_data";
     db.write_object("wt/obj", src, "CacheItem", false);
 
-    // commit_write populates the low-tier cache IMMEDIATELY (before master
-    // registration), so remote reads triggered by the subsequent
-    // schedule_tasks can be served without waiting for the disk write.
-    EXPECT_EQ(ObjectCache::instance().low_size(), 1u)
-        << "write_object should populate low tier immediately (before flush)";
+    // §4.7：low-tier 取消——写路径不再 populate。
+    EXPECT_EQ(ObjectCache::instance().low_size(), 0u)
+        << "write_object must NOT populate low tier (cache cancelled, §4.7)";
     fly::DataService::instance()->drain_write_back();
-    EXPECT_EQ(ObjectCache::instance().low_size(), 1u)
-        << "low tier entry persists across drain";
+    EXPECT_EQ(ObjectCache::instance().low_size(), 0u);
+
+    // 写后读走盘（drain 后 entry 可见），数据正确。
+    auto obj = db.read_object<CacheItem>("wt/obj", "none");
+    ASSERT_NE(obj, nullptr);
+    EXPECT_EQ(obj->n, 555);
 
     ObjectCache::instance().clear();
 }
 
-TEST_F(ObjectCacheDbTest, WritePickleBytesPopulatesLowTierOnFlush) {
+TEST_F(ObjectCacheDbTest, WritePickleBytesReadableFromDiskAfterDrain) {
     Database db(test_dir_ + "/wtpickle");
     ObjectCache::instance().clear();
 
@@ -329,28 +333,27 @@ TEST_F(ObjectCacheDbTest, WritePickleBytesPopulatesLowTierOnFlush) {
     db.write_pickle_bytes("wp/obj", payload.data(), payload.size(), "bytes", false);
     fly::DataService::instance()->drain_write_back();
 
-    EXPECT_EQ(ObjectCache::instance().low_size(), 1u)
-        << "write_pickle_bytes should populate low tier after flush";
+    EXPECT_EQ(ObjectCache::instance().low_size(), 0u);
+    // 盘读正确（缓存取消后读恒走盘）。
+    auto [comp, py] = db.read_object_compressed("wp/obj", false);
+    ASSERT_FALSE(!comp || comp->empty());
+    EXPECT_EQ(py, "bytes");
     ObjectCache::instance().clear();
 }
 
-TEST_F(ObjectCacheDbTest, ReadObjectCompressedPopulatesLowTier) {
+TEST_F(ObjectCacheDbTest, ReadObjectCompressedDoesNotPopulateLowTier) {
     Database db(test_dir_ + "/low");
     db.write_pickle_bytes("obj", "payload", 7, "bytes", false);
     fly::DataService::instance()->drain_write_back();
 
     CMString full = db.get_full_name("obj");
-    // write_pickle_bytes already populated low tier via write-through (complete_).
-    EXPECT_EQ(ObjectCache::instance().low_size(), 1u);
+    EXPECT_EQ(ObjectCache::instance().low_size(), 0u);
 
-    // First read — hits low tier (populated by write-through).
+    // 读走盘（不再 populate）。
     auto [comp1, py1] = db.read_object_compressed("obj", false);
     ASSERT_FALSE(!comp1 || comp1->empty());
-
-    // Low-tier content equals what was returned.
-    auto [hit, cached] = ObjectCache::instance().get_low(full);
-    EXPECT_TRUE(hit);
-    EXPECT_EQ(buf_str(cached), buf_str(comp1));
+    EXPECT_EQ(ObjectCache::instance().low_size(), 0u)
+        << "read must not populate low tier (cache cancelled)";
 }
 
 TEST_F(ObjectCacheDbTest, ReadObjectCompressedMissDoesNotPopulate) {
