@@ -114,6 +114,7 @@ Database::CompressResult Database::compress_buffered_data(
     int64_t total_uncompressed = 0;
     int32_t chunk_count = 0;
     uint8_t effective_comp = static_cast<uint8_t>(compression_type_);
+    CMVector<uint32_t> block_lens;  // B' 块表（csbuf 作用域内带出）
     {
         auto compressor = compression_type_ != CompressionType::NONE
             ? CompressorFactory::create(compression_type_, compression_level_) : nullptr;
@@ -127,6 +128,7 @@ Database::CompressResult Database::compress_buffered_data(
         // Small payloads skip compression internally; record the actual format
         // so the read-side picks the matching (de)compressor path.
         effective_comp = static_cast<uint8_t>(csbuf.effective_compression_type());
+        block_lens = csbuf.block_comp_lens();
     }
     counting_stream.flush();
 
@@ -136,6 +138,7 @@ Database::CompressResult Database::compress_buffered_data(
     header.chunk_count_ = static_cast<uint32_t>(chunk_count);
     header.py_name_ = py_name;
     header.py_name_len_ = static_cast<uint16_t>(py_name.size());
+    header.block_comp_lens_ = std::move(block_lens);  // B' 块表
     CMString trailer = header.serialize_trailer();
     target.write(trailer.data(), trailer.size());
 

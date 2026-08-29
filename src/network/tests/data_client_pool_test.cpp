@@ -293,6 +293,7 @@ TEST_F(DataClientPoolTest, ServerComputesCrc) {
         header.py_name_ = "bytes";
         header.py_name_len_ = 5;
         header.compression_type_ = 0;
+        header.block_comp_lens_ = {static_cast<uint32_t>(payload.size())};  // B'
         CMString trailer = header.serialize_trailer();
         record->write(trailer.data(), trailer.size());
 

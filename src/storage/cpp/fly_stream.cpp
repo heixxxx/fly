@@ -61,6 +61,7 @@ FlyBufferPtr FlyStream::finish_write() {
     header.chunk_count_ = static_cast<uint32_t>(compress_sb_->chunk_count());
     header.py_name_ = py_name_;
     header.py_name_len_ = static_cast<uint16_t>(py_name_.size());
+    header.block_comp_lens_ = compress_sb_->block_comp_lens();  // B' 块表
     // trailer 尾置追加（§4.4）：无 seek 回写，纯追加；trailer 兼作 commit marker。
     CMString trailer = header.serialize_trailer();
     write_buf_->write(trailer.data(), trailer.size());
@@ -82,6 +83,7 @@ void FlyStream::finish_sink() {
     header.chunk_count_ = static_cast<uint32_t>(compress_sb_->chunk_count());
     header.py_name_ = py_name_;
     header.py_name_len_ = static_cast<uint16_t>(py_name_.size());
+    header.block_comp_lens_ = compress_sb_->block_comp_lens();  // B' 块表
     CMString trailer = header.serialize_trailer();
     chunk_sink_(trailer.data(), trailer.size());
 

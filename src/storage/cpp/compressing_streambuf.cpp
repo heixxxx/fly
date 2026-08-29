@@ -114,6 +114,7 @@ void CompressingStreamBuf::flush_chunk() {
         uint64_t crc = fly::data_checksum(chunk.data_.data(),
                                           static_cast<size_t>(chunk.compressed_size_));
 
+        block_comp_lens_.push_back(static_cast<uint32_t>(comp_size));
         emit(reinterpret_cast<const char*>(&uncomp_size), sizeof(int32_t));
         emit(reinterpret_cast<const char*>(&comp_size), sizeof(int32_t));
         emit(reinterpret_cast<const char*>(&crc), sizeof(uint64_t));
@@ -122,6 +123,7 @@ void CompressingStreamBuf::flush_chunk() {
         int32_t size = static_cast<int32_t>(buffer_.size());
         uint64_t crc = fly::data_checksum(buffer_.data(), buffer_.size());
 
+        block_comp_lens_.push_back(static_cast<uint32_t>(size));
         emit(reinterpret_cast<const char*>(&size), sizeof(int32_t));
         emit(reinterpret_cast<const char*>(&size), sizeof(int32_t));
         emit(reinterpret_cast<const char*>(&crc), sizeof(uint64_t));

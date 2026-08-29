@@ -13,7 +13,7 @@ TEST(ObjectHeaderTest, DefaultValues) {
 }
 
 TEST(ObjectHeaderTest, FixedHeaderSize) {
-    EXPECT_EQ(ObjectHeader::fixed_header_size(), 20);
+    EXPECT_EQ(ObjectHeader::fixed_header_size(), 24);  // v2: +block_table_len(u32)
 }
 
 TEST(ObjectHeaderTest, SerializeDeserializeNoPyName) {

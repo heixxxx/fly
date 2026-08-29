@@ -30,6 +30,9 @@ public:
 
     int64_t total_uncompressed() const { return total_uncompressed_; }
     int32_t chunk_count() const { return chunk_count_; }
+    // 块位置表素材（§14.1 B'）：每块压缩后字节长（flush_chunk 收集）——
+    // trailer 块表的登记来源。
+    const CMVector<uint32_t>& block_comp_lens() const { return block_comp_lens_; }
     CompressionType compression_type() const { return compressor_ ? compressor_->type() : CompressionType::NONE; }
     // Effective compression type actually applied to the flushed data. Differs
     // from compression_type() only when a small payload skipped compression:
@@ -55,6 +58,7 @@ private:
     CMVector<char> buffer_;
     int64_t total_uncompressed_ = 0;
     int32_t chunk_count_ = 0;
+    CMVector<uint32_t> block_comp_lens_;  // 每块压缩后字节长（B' 块表素材）
     // True once flush_chunk() decided to skip compression for this payload.
     // Set when the first chunk is flushed and the buffered payload is small
     // enough; remains false for larger payloads that actually compressed.

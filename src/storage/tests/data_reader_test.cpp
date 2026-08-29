@@ -34,6 +34,7 @@ TestRecord make_record(const CMString& data, const CMString& py_name = "") {
         rec.original_size_ = csbuf.total_uncompressed();
         rec.chunk_count_ = csbuf.chunk_count();
         header.compression_type_ = static_cast<uint8_t>(csbuf.effective_compression_type());
+        header.block_comp_lens_ = csbuf.block_comp_lens();  // B' 块表
     }
     counting_stream.flush();
 

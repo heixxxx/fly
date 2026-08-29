@@ -260,6 +260,7 @@ fly::WriteErrorType Database::write_object(const CMString& object_name, const T&
         // Small payloads skip compression internally; record the actual format
         // so the read-side picks the matching (de)compressor path.
         header.compression_type_ = static_cast<uint8_t>(csbuf.effective_compression_type());
+        header.block_comp_lens_ = csbuf.block_comp_lens();  // B' 块表
     }
     counting_stream.flush();
 

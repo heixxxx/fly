@@ -19,6 +19,12 @@ CMString ObjectHeader::serialize() const {
     std::memcpy(result.data() + offset, &name_len, sizeof(name_len));
     offset += sizeof(name_len);
 
+    // v2：内存路径块表恒空（block_comp_lens_ 是磁盘语义，不进内存序列化），
+    // block_table_len 占位 0，保持 fixed 段字段与 trailer 布局对齐。
+    const uint32_t mem_table_len = 0;
+    std::memcpy(result.data() + offset, &mem_table_len, sizeof(mem_table_len));
+    offset += sizeof(mem_table_len);
+
     std::memcpy(result.data() + offset, &total_size_, sizeof(total_size_));
     offset += sizeof(total_size_);
 
@@ -59,6 +65,14 @@ bool ObjectHeader::deserialize(std::string_view data, int64_t& offset, ObjectHea
     std::memcpy(&header.py_name_len_, data.data() + offset, sizeof(header.py_name_len_));
     offset += sizeof(header.py_name_len_);
 
+    // v2：跳过 block_table_len 占位（内存路径恒 0；磁盘语义字段）。
+    uint32_t mem_table_len = 0;
+    std::memcpy(&mem_table_len, data.data() + offset, sizeof(mem_table_len));
+    offset += sizeof(mem_table_len);
+    if (mem_table_len != 0) {
+        return false;  // 内存格式块表必须为空
+    }
+
     std::memcpy(&header.total_size_, data.data() + offset, sizeof(header.total_size_));
     offset += sizeof(header.total_size_);
 
@@ -86,11 +100,17 @@ bool ObjectHeader::is_valid() const {
 
 CMString ObjectHeader::serialize_trailer() const {
     const size_t fixed = static_cast<size_t>(fixed_header_size());
-    const size_t body = py_name_.size() + fixed;
+    const uint32_t table_len =
+        static_cast<uint32_t>(block_comp_lens_.size() * sizeof(uint32_t));
+    const size_t body = table_len + py_name_.size() + fixed;
     CMString result;
     result.resize(body + sizeof(uint64_t));
     char* p = result.data();
 
+    if (table_len > 0) {
+        std::memcpy(p, block_comp_lens_.data(), table_len);
+        p += table_len;
+    }
     std::memcpy(p, py_name_.data(), py_name_.size());
     p += py_name_.size();
 
@@ -101,6 +121,8 @@ CMString ObjectHeader::serialize_trailer() const {
     uint16_t name_len = static_cast<uint16_t>(py_name_.size());
     std::memcpy(p, &name_len, sizeof(name_len));
     p += sizeof(name_len);
+    std::memcpy(p, &table_len, sizeof(table_len));
+    p += sizeof(table_len);
     std::memcpy(p, &total_size_, sizeof(total_size_));
     p += sizeof(total_size_);
     std::memcpy(p, &chunk_count_, sizeof(chunk_count_));
@@ -121,12 +143,12 @@ bool ObjectHeader::deserialize_trailer(std::string_view record, ObjectHeader& ou
     const size_t crc_sz = sizeof(uint64_t);
     if (record.size() < fixed + crc_sz) return false;
 
-    // 末 8B：trailer CRC（覆盖 py_name + fixed 全部 header 字节）。
+    // 末 8B：trailer CRC（覆盖 块表+py_name+fixed 全部 header 字节）。
     const char* crc_p = record.data() + record.size() - crc_sz;
     uint64_t stored_crc;
     std::memcpy(&stored_crc, crc_p, crc_sz);
 
-    // 其前 fixed 20B：定长锚定（py_name 前置布局，§4.4）。
+    // 其前 fixed 24B：定长锚定（v2 布局，§14.1）。
     const char* hp = crc_p - fixed;
     std::memcpy(&header.magic_, hp, sizeof(header.magic_));
     if (!header.is_valid()) return false;
@@ -139,6 +161,10 @@ bool ObjectHeader::deserialize_trailer(std::string_view record, ObjectHeader& ou
     std::memcpy(&header.py_name_len_, hp, sizeof(header.py_name_len_));
     hp += sizeof(header.py_name_len_);
 
+    uint32_t table_len = 0;
+    std::memcpy(&table_len, hp, sizeof(table_len));
+    hp += sizeof(table_len);
+
     std::memcpy(&header.total_size_, hp, sizeof(header.total_size_));
     hp += sizeof(header.total_size_);
 
@@ -147,15 +173,23 @@ bool ObjectHeader::deserialize_trailer(std::string_view record, ObjectHeader& ou
 
     std::memcpy(&header.compression_type_, hp, sizeof(header.compression_type_));
 
-    size_t body_len = fixed + header.py_name_len_;
+    // 双口径互验：表长 == 块数 × 4（防 chunk_count/table_len 域损坏——
+    // 任一域翻转使两口径失配，确定性拒绝）。
+    if (table_len != header.chunk_count_ * sizeof(uint32_t)) return false;
+
+    size_t body_len = table_len + header.py_name_len_ + fixed;
     if (record.size() < body_len + crc_sz) return false;
 
-    // CRC 覆盖 [py_name 起点, fixed 结束) 的连续 header 段。
+    // CRC 覆盖 [块表起点, fixed 结束) 的连续 header 段。
     const char* body_start = crc_p - body_len;
     if (fly::data_checksum(body_start, body_len) != stored_crc) return false;
 
+    if (table_len > 0) {
+        header.block_comp_lens_.resize(table_len / sizeof(uint32_t));
+        std::memcpy(header.block_comp_lens_.data(), body_start, table_len);
+    }
     if (header.py_name_len_ > 0) {
-        header.py_name_.assign(body_start, header.py_name_len_);
+        header.py_name_.assign(body_start + table_len, header.py_name_len_);
     }
 
     out = std::move(header);

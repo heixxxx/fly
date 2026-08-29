@@ -40,6 +40,7 @@ FlyBufferPtr make_valid_record(const std::string& data) {
     header.py_name_ = "bytes";
     header.py_name_len_ = 5;
     header.compression_type_ = 0;
+    header.block_comp_lens_ = {static_cast<uint32_t>(data.size())};  // B' 块表
     CMString trailer = header.serialize_trailer();
     record->write(trailer.data(), trailer.size());
     return record;
