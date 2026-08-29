@@ -225,6 +225,26 @@ client                          server
   ≤4MB 整帧快路径 / 大对象分片流——这是 server 侧内存有界化所需）；
   **消费层统一流式**（快路径整帧收到后同样以内存源流式消费）。
 
+**注册时序定案（2026-08-29 用户澄清，差异讨论 #7 定案）**：
+- 两种注册模式（`dependency_update_mode`）**维持现有代码语义**：
+  - 流式模式（=0 默认）：写前（落盘前）register——许可+provenance+**即时
+    可见性激活**（带 size）。
+  - 事务模式（=1）：写前 register 同样发送——许可+provenance（**不激活
+    可见性**）；可见性延迟到 TaskComplete.written_objects_ 统一激活
+    （task 级原子性）。
+- **实际缺陷（本差异的实质）**：L1 流式写实现（open_write_stream）把
+  register 挪到了全部落盘之后——破坏两种模式共有的"落盘前注册"语义
+  （被拒时数据已白写盘上）。
+- **修正方案（归入 C 项实施）**：
+  - 流式模式两阶段：流开始前 WRITE_REGISTER 预许可（许可+provenance，
+    size 未知不带，无可见性）→ 拒绝即失败（零序列化零落盘）→ 流式写 →
+    对象完成登记（真实 size + 可见性激活）。
+  - 事务模式一阶段：流开始前预许可（与现有事务 register 行为同构）→
+    流式写 → TaskComplete 统一激活（现有机制零新增）。
+  - master 侧 do_write_register 已天然分段（许可段/可见性段）——预许可
+    调用只走许可段（消息加预许可标志）；DUPLICATE 在预许可即拒，
+    两种模式零白写。
+
 **META 字段裁定（2026-08-29 用户同意，差异讨论 #3 定案）**：
 - `trailer_len_` + `chunk_compression_type_` **保留**（流式消费"流首启动、
   流尾未知"的刚需——凡 trailer 来的信息必须经 META 预告知；B' 后 trailer_len
