@@ -274,15 +274,18 @@ struct DataResponseMessage {
 
 // ── L2 分片传输协议消息（chunked-transfer-design.md §4.5）──
 
-// client → server：请求重传某分片（在线块重传，连接活着；断线仍整对象走
-// TIER2 重试——「不做断线续传」裁定不变）。每 seq 上限一次。
+// client → server：请求重传某字节区间（在线重传，连接活着；断线仍整对象走
+// TIER2 重试——「不做断线续传」裁定不变）。offset 相对 record 起点。
+// byte-offset 寻址（§14.1 A'3 定案）：server 零块知识（pread 区间重发），
+// 根治 seq 依赖两端 frame_bytes 一致的混布脆弱点。每区间上限一次。
 struct ChunkResendMessage {
     MessageHeader header_;
-    uint32_t seq_ = 0;
+    uint64_t offset_ = 0;  // 相对 record 起点的字节偏移（含块头）
+    uint64_t length_ = 0;  // 区间长度（16B 块头 + comp 数据）
 
     static constexpr MessageType msg_type_ = MessageType::CHUNK_RESEND;
 
-    FLY_SERIALIZE(header_, seq_);
+    FLY_SERIALIZE(header_, offset_, length_);
 };
 
 // server → client：分片流尾帧根摘要（server 边发边算单遍）。client 重组完

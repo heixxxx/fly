@@ -46,11 +46,11 @@ private:
         int fd = -1;
         CMString recv_buf;
         // L2 分片服务上下文（CHUNK_RESEND 路由用）：最近一次分片服务的对象
-        // 区间 + 每 seq 重传计数（上限一次，§4.5）。
+        // 区间 + 每字节区间重传记录（上限一次，§14.1 A'3）。
         CMString chunk_file;
         uint64_t chunk_off = 0;
         uint64_t chunk_size = 0;
-        CMUnorderedSet<uint32_t> resent_seqs;
+        CMUnorderedSet<uint64_t> resent_offsets;
     };
     std::mutex conn_mutex_;
     CMVector<ConnState> conns_;
@@ -81,7 +81,7 @@ private:
     // 循环 include）。
     void serve_chunked(int fd, const CMString& object_name,
                        const CMString& file_path, uint64_t offset, uint64_t size);
-    void handle_chunk_resend(int fd, uint32_t seq);
+    void handle_chunk_resend(int fd, uint64_t offset, uint64_t length);
 };
 
 }  // namespace fly

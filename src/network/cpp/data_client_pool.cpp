@@ -626,16 +626,11 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, CMString, ReadError>
 DataClientPool::receive_chunked(int fd, const CMString& object_name,
                                 const DataResponseMessage& meta) {
     uint64_t total = meta.total_compressed_len_;
-    // 切片尺寸来自 META（发送端实现细节）：client 按 seq*frame 定位填充。
-    // frame > total 合法（单片场景：对象介于阈值与切片尺寸之间，chunk_count=1）。
-    if (total == 0 || meta.chunk_frame_bytes_ == 0) {
-        ERR("[DCP-CHUNK] invalid META: obj={} total={} frame={}",
-            object_name, total, meta.chunk_frame_bytes_);
+    if (total == 0) {
+        ERR("[DCP-CHUNK] invalid META: obj={} total=0", object_name);
         return {false, nullptr, "", "", "Invalid chunked META for " + object_name,
                 ReadError::NETWORK};
     }
-    const uint64_t frame = meta.chunk_frame_bytes_;
-    uint64_t chunk_count = (total + frame - 1) / frame;
 
     FlyBufferPtr buf = CMMakeShared<FlyBuffer>();
     try {
@@ -645,13 +640,31 @@ DataClientPool::receive_chunked(int fd, const CMString& object_name,
         return {false, nullptr, "", "", "Payload too large to buffer: " + object_name,
                 ReadError::NETWORK};
     }
-    CMVector<bool> filled(static_cast<size_t>(chunk_count), false);
+    // 字节区间填充表（A'：帧 offset 定位，chunk_frame_bytes_ 退役）。
+    // 区间按 offset 对齐维护——用简单 set 记录已填区间（对象 < 阈值走快路径，
+    // 分片对象帧数少，线性合并开销可忽略）。
+    struct Span {
+        uint64_t off, len;
+    };
+    CMVector<Span> filled;
+    auto mark_filled = [&](uint64_t off, uint64_t len) {
+        for (auto& s : filled) {
+            if (off >= s.off && off + len <= s.off + s.len) return;  // 幂等
+        }
+        filled.push_back({off, len});
+    };
+    auto is_filled = [&](uint64_t off, uint64_t len) {
+        for (auto& s : filled) {
+            if (off >= s.off && off + len <= s.off + s.len) return true;
+        }
+        return false;
+    };
     DataDigestMessage digest;
 
-    // 读一个分片帧（帧头 + 子头 + small + raw 验 CRC）。
-    // 返回：1=好片（seq/raw 填充）；2=DIGEST（digest 填充）；3=坏片（seq 填充）；
-    // 0=连接断/协议失步；-1=帧头校验失败。
-    auto read_frame = [&](uint32_t& seq, FlyBufferPtr& raw) -> int {
+    // 读一个数据/DIGEST 帧（A'：帧 [u64 offset][u64 crc]）。
+    // 返回：1=好帧（off/raw 填充）；2=DIGEST；3=坏帧（off 填充）；
+    // 0=断连/失步；-1=帧头校验失败。
+    auto read_frame = [&](uint64_t& off, FlyBufferPtr& raw) -> int {
         char fh[9];
         if (!recv_exact(transport_.get(), fd, fh, 9)) return 0;
         uint64_t tl = 0;
@@ -664,21 +677,20 @@ DataClientPool::receive_chunked(int fd, const CMString& object_name,
             if (small_len != ChunkFrameProtocol::kSmallFieldsLen) {
                 return 0;  // 子头长度不符 = 协议失步
             }
-            char sf[12];
-            if (!recv_exact(transport_.get(), fd, sf, 12)) return 0;
-            uint32_t fseq = 0;
+            char sf[16];
+            if (!recv_exact(transport_.get(), fd, sf, 16)) return 0;
+            uint64_t foff = 0;
             uint64_t fcrc = 0;
-            ChunkFrameProtocol::parse_small_fields(sf, small_len, fseq, fcrc);
+            ChunkFrameProtocol::parse_small_fields(sf, small_len, foff, fcrc);
             uint64_t raw_len = ChunkFrameProtocol::raw_len_from_total(tl);
-            if (fseq >= chunk_count || raw_len == 0 || raw_len > frame ||
-                static_cast<uint64_t>(fseq) * frame + raw_len > total) {
-                return 0;  // seq/raw_len 越界 = 协议失步
+            if (raw_len == 0 || foff + raw_len > total) {
+                return 0;  // offset/raw_len 越界 = 协议失步
             }
             raw = CMMakeShared<FlyBuffer>();
             raw->resize(raw_len);
             if (!recv_exact(transport_.get(), fd, raw->data(), raw_len)) return 0;
-            seq = fseq;
-            if (data_checksum(raw->data(), raw->size()) != fcrc) return 3;  // 坏片
+            off = foff;
+            if (data_checksum(raw->data(), raw->size()) != fcrc) return 3;  // 坏帧
             return 1;
         }
         if (type == static_cast<uint8_t>(MessageType::DATA_DIGEST)) {
@@ -698,28 +710,27 @@ DataClientPool::receive_chunked(int fd, const CMString& object_name,
         return 0;  // 未知帧类型
     };
 
-    auto fill = [&](uint32_t seq, const FlyBufferPtr& raw) {
-        if (filled[seq]) return;  // 重传帧与原始帧重复：幂等
-        std::memcpy(buf->data() + static_cast<size_t>(seq) * frame,
-                    raw->data(), raw->size());
-        filled[seq] = true;
+    auto fill = [&](uint64_t off, const FlyBufferPtr& raw) {
+        if (is_filled(off, raw->size())) return;  // 重传帧与原始帧重复：幂等
+        std::memcpy(buf->data() + static_cast<size_t>(off), raw->data(), raw->size());
+        mark_filled(off, raw->size());
     };
 
-    // 阶段 1：流接收直到 DIGEST（坏片记录，不中断——发送方不停流，§8.1）。
+    // 阶段 1：流接收直到 DIGEST（坏帧记录，不中断——发送方不停流，§8.1）。
     bool digest_got = false;
-    CMUnorderedSet<uint32_t> holes;
+    CMVector<Span> holes;
     while (!digest_got) {
-        uint32_t seq = 0;
+        uint64_t off = 0;
         FlyBufferPtr raw;
-        int r = read_frame(seq, raw);
+        int r = read_frame(off, raw);
         if (r == 1) {
-            fill(seq, raw);
+            fill(off, raw);
         } else if (r == 2) {
             digest_got = true;
         } else if (r == 3) {
-            ERR("[DCP-CHUNK] bad chunk frame CRC: obj={} seq={} — will request resend",
-                object_name, seq);
-            holes.insert(seq);
+            ERR("[DCP-CHUNK] bad frame CRC: obj={} off={} len={} — will request resend",
+                object_name, off, raw->size());
+            holes.push_back({off, raw->size()});
         } else if (r == -1) {
             ERR("[DCP-CHUNK] frame header check failed: obj={}", object_name);
             return {false, nullptr, "", "",
@@ -732,49 +743,64 @@ DataClientPool::receive_chunked(int fd, const CMString& object_name,
         }
     }
 
-    // 阶段 2：补洞（每 seq 一次 CHUNK_RESEND；重传后仍坏/断连 → CHECKSUM。
-    // §5：校验失败后的任何失败不可接受）。
-    for (uint32_t seq : holes) {
-        if (filled[seq]) continue;
+    // 阶段 2：补洞（每区间一次 CHUNK_RESEND offset 寻址；重传后仍坏/断连 →
+    // CHECKSUM。§5：校验失败后的任何失败不可接受）。
+    for (auto& hole : holes) {
+        if (is_filled(hole.off, hole.len)) continue;
         ChunkResendMessage rs;
-        rs.seq_ = seq;
+        rs.offset_ = hole.off;
+        rs.length_ = hole.len;
         CMString encoded = MessageProtocol::encode(rs);
         if (!transport_->send_all(fd, encoded.data(), encoded.size())) {
             return {false, nullptr, "", "",
                     "Connection lost requesting resend for " + object_name,
                     ReadError::CHECKSUM};
         }
-        // 等该 seq 的重传帧（server 单帧重发；忽略无关帧）。
+        // 等该区间的重传帧（server 单帧重发；忽略无关帧）。
         bool got_it = false;
         while (!got_it) {
-            uint32_t rseq = 0;
+            uint64_t roff = 0;
             FlyBufferPtr raw;
-            int r = read_frame(rseq, raw);
-            if (r == 1 && rseq == seq) {
-                fill(seq, raw);
+            int r = read_frame(roff, raw);
+            if (r == 1 && roff == hole.off) {
+                fill(roff, raw);
                 got_it = true;
-            } else if (r == 3 && rseq == seq) {
-                ERR("[DCP-FATAL-DATA-CORRUPTION] resent chunk still bad: obj={} seq={}",
-                    object_name, seq);
+            } else if (r == 3 && roff == hole.off) {
+                ERR("[DCP-FATAL-DATA-CORRUPTION] resent frame still bad: obj={} off={}",
+                    object_name, roff);
                 return {false, nullptr, "", "",
-                        "Resent chunk still corrupt for " + object_name,
+                        "Resent frame still corrupt for " + object_name,
                         ReadError::CHECKSUM};
             } else if (r <= 0) {
                 return {false, nullptr, "", "",
                         "Resend exchange failed for " + object_name,
                         ReadError::CHECKSUM};
             }
-            // r==1 但 seq 不符（迟到的重复帧）→ 丢弃继续等。
+            // r==1 但 off 不符（迟到的重复帧）→ 丢弃继续等。
         }
     }
 
-    // 阶段 3：洞校验 + 根摘要端到端校验。
-    for (uint64_t i = 0; i < chunk_count; ++i) {
-        if (!filled[static_cast<size_t>(i)]) {
-            ERR("[DCP-FATAL-DATA-CORRUPTION] missing chunk after resend: obj={} seq={}",
-                object_name, i);
+    // 阶段 3：区间完整性（合并后 [0, total) 全覆盖）+ 根摘要端到端校验。
+    {
+        // 排序合并检查覆盖。
+        std::sort(filled.begin(), filled.end(),
+                  [](const Span& a, const Span& b) { return a.off < b.off; });
+        uint64_t expect = 0;
+        for (auto& s : filled) {
+            if (s.off > expect) {
+                ERR("[DCP-FATAL-DATA-CORRUPTION] coverage gap: obj={} [{}, {})",
+                    object_name, expect, s.off);
+                return {false, nullptr, "", "",
+                        "Missing byte range for " + object_name,
+                        ReadError::CHECKSUM};
+            }
+            expect = std::max(expect, s.off + s.len);
+        }
+        if (expect < total) {
+            ERR("[DCP-FATAL-DATA-CORRUPTION] coverage gap at tail: obj={} [{}, {})",
+                object_name, expect, total);
             return {false, nullptr, "", "",
-                    "Missing chunk (no resend path) for " + object_name,
+                    "Missing byte range for " + object_name,
                     ReadError::CHECKSUM};
         }
     }
@@ -782,13 +808,6 @@ DataClientPool::receive_chunked(int fd, const CMString& object_name,
         ERR("[DCP-FATAL-DATA-CORRUPTION] chunk stream digest mismatch: obj={}", object_name);
         return {false, nullptr, "", "",
                 "Chunk stream digest mismatch for " + object_name,
-                ReadError::CHECKSUM};
-    }
-    if (digest.chunk_count_ != chunk_count) {
-        ERR("[DCP-CHUNK] digest chunk_count mismatch: obj={} meta={} digest={}",
-            object_name, chunk_count, digest.chunk_count_);
-        return {false, nullptr, "", "",
-                "Chunk count mismatch for " + object_name,
                 ReadError::CHECKSUM};
     }
 
@@ -801,7 +820,7 @@ DataClientPool::receive_chunked(int fd, const CMString& object_name,
             py_name = hdr.py_name_;
         }
     }
-    DBG("[DCP-CHUNK] success: obj={} total={} chunks={}", object_name, total, chunk_count);
+    DBG("[DCP-CHUNK] success: obj={} total={}", object_name, total);
     return {true, buf, py_name, meta.write_context_hash_, "", ReadError::NONE};
 }
 

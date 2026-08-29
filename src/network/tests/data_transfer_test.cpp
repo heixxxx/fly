@@ -261,9 +261,9 @@ TEST_F(DataTransferTest, DataServerEchoesNetProbeRequest) {
 // ════════════════════════════════════════════════════════════════════
 
 namespace {
-// 测试侧独立组一个 DATA_CHUNK 帧（帧头 + type + 子头 + seq/crc + raw）。
-CMString make_chunk_frame(uint32_t seq, uint64_t crc, const char* data, size_t n) {
-    CMString hdr = ChunkFrameProtocol::encode_header(seq, crc, n);
+// 测试侧独立组一个 DATA_CHUNK 帧（v2：帧头 + type + 子头 + offset/crc + raw）。
+CMString make_chunk_frame(uint64_t offset, uint64_t crc, const char* data, size_t n) {
+    CMString hdr = ChunkFrameProtocol::encode_header(offset, crc, n);
     CMString frame = hdr;
     frame.append(data, n);
     return frame;
@@ -384,7 +384,7 @@ private:
         CMString meta_frame = DataResponseProtocol::encode(meta, nullptr).header_segment;
         transport_->send_all(fd, meta_frame.data(), meta_frame.size());
 
-        // CHUNK 流（seq=1 注坏）。
+        // CHUNK 流（帧 offset = seq*frame 定位；帧 1 注坏）。
         fly::DataChecksum root;
         for (uint32_t seq = 0; seq < 3; ++seq) {
             const auto& c = chunks[seq];
@@ -392,7 +392,7 @@ private:
             if (seq == 1 && mode != FakeChunkServer::FailMode::NONE) {
                 crc ^= 0x01;  // 注坏
             }
-            CMString frame_bytes = make_chunk_frame(seq, crc, c.data(), c.size());
+            CMString frame_bytes = make_chunk_frame(seq * frame, crc, c.data(), c.size());
             transport_->send_all(fd, frame_bytes.data(), frame_bytes.size());
             root.update(c.data(), c.size());
         }
@@ -420,11 +420,12 @@ private:
             rframe.assign(rh, 9);
             rframe += rbuf;
             ChunkResendMessage rs;
-            if (MessageProtocol::decode(rframe, rs) && rs.seq_ == 1) {
+            if (MessageProtocol::decode(rframe, rs) && rs.offset_ == frame &&
+                rs.length_ == frame) {
                 const auto& c = chunks[1];
                 uint64_t crc = data_checksum(c.data(), c.size());
                 if (mode == FakeChunkServer::FailMode::BAD_CHUNK_STILL_BAD) crc ^= 0x01;
-                CMString rf = make_chunk_frame(1, crc, c.data(), c.size());
+                CMString rf = make_chunk_frame(frame, crc, c.data(), c.size());
                 transport_->send_all(fd, rf.data(), rf.size());
             }
         }

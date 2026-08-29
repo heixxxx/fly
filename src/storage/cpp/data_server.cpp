@@ -279,7 +279,7 @@ void DataServer::on_readable(int fd) {
                 ERR("[DS-DECODE] fd={} chunk-resend decode failed", fd);
                 break;
             }
-            handle_chunk_resend(fd, rs.seq_);
+            handle_chunk_resend(fd, rs.offset_, rs.length_);
             continue;
         }
 
@@ -435,7 +435,7 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
         conns_[idx].chunk_file = file_path;
         conns_[idx].chunk_off = offset;
         conns_[idx].chunk_size = size;
-        conns_[idx].resent_seqs.clear();
+        conns_[idx].resent_offsets.clear();
     }
 
     // META 元数据（尾部 trailer 预解析结果，L3 §8.1）。
@@ -506,7 +506,7 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
         fly::DataChecksum root;
         CMVector<char> buf(static_cast<size_t>(kChunkFrameBytes));
         uint64_t off = offset;
-        uint32_t seq = 0;
+        uint32_t frames = 0;
         while (ok && off < offset + size) {
             uint64_t n = std::min<uint64_t>(kChunkFrameBytes, offset + size - off);
             ssize_t got = ::pread(file, buf.data(), static_cast<size_t>(n),
@@ -517,7 +517,8 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
                 break;
             }
             uint64_t crc = fly::data_checksum(buf.data(), static_cast<size_t>(n));
-            CMString hdr = ChunkFrameProtocol::encode_header(seq, crc, n);
+            // offset = 帧首字节在 record 内偏移（A'：正常流/重传统一定位语义）。
+            CMString hdr = ChunkFrameProtocol::encode_header(off - offset, crc, n);
             struct iovec iov[2];
             iov[0].iov_base = const_cast<char*>(hdr.data());
             iov[0].iov_len = hdr.size();
@@ -527,11 +528,11 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
             if (!ok) break;
             root.update(buf.data(), static_cast<size_t>(n));
             off += n;
-            seq++;
+            frames++;
         }
         ::close(file);
         if (!ok) {
-            ERR("[DS-CHUNK] fd={} chunk stream send failed at seq={}", fd, seq);
+            ERR("[DS-CHUNK] fd={} chunk stream send failed at frame={}", fd, frames);
             cleanup_fd(fd);
             return;
         }
@@ -539,14 +540,14 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
         // DIGEST 尾帧（根摘要，单遍边发边算——§4.5）。
         DataDigestMessage digest;
         digest.root_crc_ = root.final();
-        digest.chunk_count_ = seq;
+        digest.chunk_count_ = frames;
         CMString digest_frame = MessageProtocol::encode(digest);
         if (!transport_->send_all(fd, digest_frame.data(), digest_frame.size())) {
             ERR("[DS-CHUNK] fd={} DIGEST send failed", fd);
             cleanup_fd(fd);
             return;
         }
-        DBG("[DS-CHUNK] fd={} obj={} sent {} chunks, {} bytes", fd, object_name, seq, size);
+        DBG("[DS-CHUNK] fd={} obj={} sent {} frames, {} bytes", fd, object_name, frames, size);
         // rearm 读端：resend 请求在发送期间到达则暂存内核缓冲，保序安全（§7.4）。
         epoll_->mod(epoll_fd_, fd, EV_READ | EV_ONESHOT);
     };
@@ -558,7 +559,7 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
     send_cv_.notify_one();
 }
 
-void DataServer::handle_chunk_resend(int fd, uint32_t seq) {
+void DataServer::handle_chunk_resend(int fd, uint64_t offset, uint64_t length) {
     CMString file;
     uint64_t base_off = 0, total = 0;
     {
@@ -570,29 +571,32 @@ void DataServer::handle_chunk_resend(int fd, uint32_t seq) {
             ERR("[DS-CHUNK] fd={} resend on non-chunked conn", fd);
             return;
         }
-        if (c.resent_seqs.count(seq)) {
-            // 每 seq 上限一次（§4.5）：再请求 = client 侧升格 CHECKSUM 前的
-            // 异常重发，拒绝并断开（协议失步防御）。
-            ERR("[DS-CHUNK] fd={} seq={} resend limit reached, dropping connection", fd, seq);
+        // 每区间上限一次（§14.1 A'3）：client 侧块级解析驱动，同一区间
+        // 重复请求 = 协议异常，断开防御。
+        uint64_t key = offset;
+        if (c.resent_offsets.count(key)) {
+            ERR("[DS-CHUNK] fd={} resend offset={} limit reached, dropping connection",
+                fd, offset);
             cleanup_fd(fd);
             return;
         }
-        c.resent_seqs.insert(seq);
+        c.resent_offsets.insert(key);
         file = c.chunk_file;
         base_off = c.chunk_off;
         total = c.chunk_size;
     }
 
-    uint64_t start = base_off + static_cast<uint64_t>(seq) * kChunkFrameBytes;
-    if (start >= base_off + total) {
-        ERR("[DS-CHUNK] fd={} resend seq={} out of range", fd, seq);
+    // byte-offset 寻址（A'3）：offset 相对 record 起点，server 零块知识。
+    uint64_t start = base_off + offset;
+    if (offset + length > total || length == 0) {
+        ERR("[DS-CHUNK] fd={} resend range [{}, {}) out of record (size={})",
+            fd, offset, offset + length, total);
         return;
     }
-    uint64_t n = std::min<uint64_t>(kChunkFrameBytes, base_off + total - start);
 
     SendTask task;
     task.fd = fd;
-    task.chunked_execute = [this, fd, file, start, n, seq]() {
+    task.chunked_execute = [this, fd, file, start, n = length, offset]() {
         int f = ::open(file.c_str(), O_RDONLY);
         if (f < 0) {
             ERR("[DS-CHUNK] fd={} resend open failed: {}", fd, file);
@@ -608,19 +612,20 @@ void DataServer::handle_chunk_resend(int fd, uint32_t seq) {
             cleanup_fd(fd);
             return;
         }
+        // 重传帧 = 纯字节区间（不带块语义——client 按字节替换 hole）。
         uint64_t crc = fly::data_checksum(buf.data(), static_cast<size_t>(n));
-        CMString hdr = ChunkFrameProtocol::encode_header(seq, crc, n);
+        CMString hdr = ChunkFrameProtocol::encode_header(offset, crc, n);
         struct iovec iov[2];
         iov[0].iov_base = const_cast<char*>(hdr.data());
         iov[0].iov_len = hdr.size();
         iov[1].iov_base = buf.data();
         iov[1].iov_len = static_cast<size_t>(n);
         if (!transport_->sendv(fd, iov, 2)) {
-            ERR("[DS-CHUNK] fd={} resend send failed seq={}", fd, seq);
+            ERR("[DS-CHUNK] fd={} resend send failed offset={}", fd, offset);
             cleanup_fd(fd);
             return;
         }
-        DBG("[DS-CHUNK] fd={} resent seq={} ({} bytes)", fd, seq, n);
+        DBG("[DS-CHUNK] fd={} resent offset={} ({} bytes)", fd, offset, n);
         epoll_->mod(epoll_fd_, fd, EV_READ | EV_ONESHOT);
     };
     {

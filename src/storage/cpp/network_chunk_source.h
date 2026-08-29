@@ -71,8 +71,10 @@ public:
 
 private:
     void recv_loop();          // 接收线程主体
-    int read_one_frame();      // 读一帧（填充 frame_seq_/frame_raw_），语义同
-                               // DataClientPool::receive_chunked 的 read_frame
+    int read_one_frame();      // 读一帧（frame_off_/frame_raw_ 填充；CRC 过验）
+    void feed_frame(const char* data, size_t n, uint64_t offset);  // 块解析器
+    void deliver_bytes(const char* data, size_t n, uint64_t offset);  // 好字节交付
+    void drain_pending();     // 按序前沿 drain
     void push_block(const char* data, size_t n);   // 有界入队（满则阻塞）
     void finish_stream(bool healthy, const char* reason);  // 终止 + 唤醒消费
 
@@ -80,7 +82,6 @@ private:
     CMSharedPtr<Transport> transport_;
     int fd_;
     uint64_t total_len_;
-    uint64_t frame_bytes_;
     uint64_t queue_byte_limit_;
     uint64_t meta_trailer_len_;
     CMString meta_py_name_;
@@ -95,7 +96,7 @@ private:
     std::thread recv_thread_;
     std::atomic<bool> stopping_{false};
 
-    // 有界队列（片字节流）+ 终止状态
+    // 有界队列（字节流）+ 终止状态（mutable：failed() const 持锁查询）
     mutable std::mutex q_mutex_;
     std::condition_variable q_space_cv_;   // 队列不满（接收线程等）
     std::condition_variable q_data_cv_;    // 队列非空/终止（消费线程等）
@@ -107,15 +108,22 @@ private:
     CMString fail_reason_;
 
     // 帧读取工作区（仅接收线程访问）
-    uint32_t frame_seq_ = 0;
+    uint64_t frame_off_ = 0;               // 帧首字节在 record 内偏移
     FlyBufferPtr frame_raw_;
-    uint64_t received_ = 0;                // 已按序过验字节
-    uint32_t next_seq_ = 0;                // 下一个期望 seq（按序推进锚点）
-    CMUnorderedMap<uint32_t, FlyBufferPtr> pending_;  // 坏片后乱序好片暂存
+
+    // A'2 块解析器状态（仅接收线程）
+    CMString parse_buf_;                   // 当前块累积字节（跨帧）
+    size_t parse_need_ = 16;               // 当前阶段需要的字节数（16 或 16+comp）
+    uint64_t parse_off_ = 0;               // 当前块起点（record 内偏移）
+
+    // 交付状态（仅接收线程）
+    uint64_t received_ = 0;                // 已按序交付字节
+    uint64_t next_off_ = 0;                // 按序推进锚点（下一期望字节 offset）
+    CMUnorderedMap<uint64_t, CMString> pending_;      // 乱序/重传字节暂存
+    CMUnorderedMap<uint64_t, uint64_t> hole_len_;     // 待补洞（resend 中）
     size_t pending_bytes_ = 0;
-    CMUnorderedSet<uint32_t> resent_seqs_;  // 每 seq 重传上限一次
-    CMUnorderedSet<uint32_t> bad_seqs_;     // 待补洞
-    DataChecksum root_;                     // 增量根摘要（按序 update）
+    CMUnorderedSet<uint64_t> resent_offsets_;  // 每区间重传上限一次
+    DataChecksum root_;                        // 增量根摘要（按序 update）
     uint64_t root_expected_ = 0;
     uint32_t digest_chunks_ = 0;
 };

@@ -233,20 +233,19 @@ public:
     }
 };
 
-// ── DATA_CHUNK 帧协议（L2 分片传输，chunked-transfer-design.md §4.5）──
+// ── DATA_CHUNK 帧协议（L2 分片传输 v2，chunked-transfer-design.md §14.1 A'）──
 //
 // 纯字节切片的两段式帧（raw 引用零拷贝，同 DATA_RESPONSE 模式）：
-//   [8B frame header][1B type=DATA_CHUNK][4B small_fields_len=12]
-//   [u32 seq BE][u64 片CRC BE][raw: 分片字节（默认 4MB 切片）]
-// 片内容 = 对象 record 区间 [seq*frame_bytes, (seq+1)*frame_bytes) 的原样
-// 字节——client 顺序重组后与磁盘 record 字节一致（DecompressingStreamBuf
-// 直接消费，磁盘块 CRC 语义完整保留）。片 CRC = data_checksum(片字节)。
+//   [8B frame header][1B type=DATA_CHUNK][4B small_fields_len=16]
+//   [u64 offset BE][u64 片CRC BE][raw: 分片字节（默认 4MB 切片）]
+// offset = 帧首字节在 record 内的偏移（正常流/重传统一语义——client 按
+// offset 直接定位，帧乱序容错；server 零块知识）。片 CRC = data_checksum。
 class ChunkFrameProtocol {
 public:
-    static constexpr uint32_t kSmallFieldsLen = sizeof(uint32_t) + sizeof(uint64_t);  // 12
+    static constexpr uint32_t kSmallFieldsLen = sizeof(uint64_t) + sizeof(uint64_t);  // 16
 
-    // 组帧头段（帧头 + type + 子头 + seq/crc）。与 raw 一起发送（writev/两段 send）。
-    static CMString encode_header(uint32_t seq, uint64_t chunk_crc, uint64_t raw_len) {
+    // 组帧头段（帧头 + type + 子头 + offset/crc）。与 raw 一起发送。
+    static CMString encode_header(uint64_t offset, uint64_t chunk_crc, uint64_t raw_len) {
         uint64_t total_len = 1 + 4 + kSmallFieldsLen + raw_len;
         CMString header;
         header.resize(8 + 1 + 4 + kSmallFieldsLen);
@@ -254,22 +253,22 @@ public:
         write_be64(p, make_frame_header(total_len)); p += 8;
         *p++ = static_cast<char>(static_cast<uint8_t>(MessageType::DATA_CHUNK));
         write_be32(p, kSmallFieldsLen); p += 4;
-        write_be32(p, seq); p += 4;
+        write_be64(p, offset); p += 8;
         write_be64(p, chunk_crc);
         return header;
     }
 
-    // 解析子头（12B：seq + crc）。调用方已读过 9B 帧头与 4B small_fields_len。
-    // small_fields_len != 12 → false（协议失步）。
-    static bool parse_small_fields(const char* p12, uint32_t small_fields_len,
-                                   uint32_t& seq, uint64_t& chunk_crc) {
+    // 解析子头（16B：offset + crc）。调用方已读过 9B 帧头与 4B small_fields_len。
+    // small_fields_len != 16 → false（协议失步）。
+    static bool parse_small_fields(const char* p16, uint32_t small_fields_len,
+                                   uint64_t& offset, uint64_t& chunk_crc) {
         if (small_fields_len != kSmallFieldsLen) return false;
-        seq = read_be32(p12);
-        chunk_crc = read_be64(p12 + 4);
+        offset = read_be64(p16);
+        chunk_crc = read_be64(p16 + 8);
         return true;
     }
 
-    // raw 段长度：total_len - 1(type) - 4(small_len) - 12(small fields)。
+    // raw 段长度：total_len - 1(type) - 4(small_len) - 16(small fields)。
     static uint64_t raw_len_from_total(uint64_t total_len) {
         uint64_t overhead = 1 + 4 + kSmallFieldsLen;
         return total_len > overhead ? total_len - overhead : 0;

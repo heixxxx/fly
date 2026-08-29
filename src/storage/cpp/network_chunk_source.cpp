@@ -13,16 +13,15 @@ NetworkChunkSource::NetworkChunkSource(CMSharedPtr<Transport> transport, int fd,
     : transport_(std::move(transport))
     , fd_(fd)
     , total_len_(meta.total_compressed_len_)
-    , frame_bytes_(meta.chunk_frame_bytes_)
     , queue_byte_limit_(queue_byte_limit)
     , meta_trailer_len_(meta.trailer_len_)
     , meta_py_name_(meta.py_name_)
     , meta_write_hash_(meta.write_context_hash_)
     , release_fn_(std::move(release)) {
-    // META 不直接携带 total_uncompressed/chunk_count（磁盘块数）——trailer
-    // 元数据里的这两个字段 server 侧没有解析回填（py_name/trailer_len/comp_type
-    // 已填）。total_uncompressed 留 0（消费端 Unpickler 不依赖预告值）；
-    // chunk_count 同理。block_area 边界由 trailer_len 提供。
+    // 块流边界 = total - trailer_len（B' 后 trailer_len 覆盖块表）。块表自身
+    // 经 META 预解析不可得（表在 trailer 里、trailer 在流尾）——接收线程块级
+    // 校验按块头自寻址（§14.1 A'：解析 16B 头取 comp 长度），表对账由消费端
+    //（DecompressingStreamBuf/MemoryChunkSource 拿到全量后）执行。
     meta_comp_type_ = meta.chunk_compression_type_ != 0
                           ? static_cast<int>(meta.chunk_compression_type_) : -1;
 }
@@ -86,6 +85,9 @@ int64_t NetworkChunkSource::pull(char* dst, size_t n) {
             stream_failed_ = true;
             return -1;
         }
+        // 队列空：接收线程的 space 谓词含 queue_.empty()——notify 唤醒
+        //（否则极端 limit < 单块大小时双方互等死锁：push 等 space / pull 等 data）。
+        q_space_cv_.notify_one();
         q_data_cv_.wait(lk);
     }
 }
@@ -113,29 +115,135 @@ void NetworkChunkSource::finish_stream(bool healthy, const char* reason) {
     q_data_cv_.notify_all();
 }
 
+// ── A'2 块级校验状态机（§14.1）──
+//
+// 帧是传输单位（server 4MB 切片，帧自带 record 内 offset）；块是校验单位
+//（磁盘压缩块，16B 头自寻址）。帧边界与块边界互不重合——解析器跨帧持续：
+//   WAIT_HEADER：累积 16B → 解析 [i32 unc][i32 comp][u64 crc]
+//   WAIT_DATA：累积 comp 字节 → 验块 CRC → 好块交付 / 坏块 hole+resend
+// trailer 尾部字节（block_area 之后）：直接透传交付（消费端解析 trailer）。
+
+void NetworkChunkSource::feed_frame(const char* data, size_t n, uint64_t offset) {
+    // block_area 边界：其后是 trailer（非块格式）——直接透传交付（消费端
+    // 解析 trailer；META 已带元信息，此处字节为完整 record 重组所需）。
+    const uint64_t block_area =
+        meta_trailer_len_ > 0 && meta_trailer_len_ <= total_len_
+            ? total_len_ - meta_trailer_len_ : total_len_;
+
+    while (n > 0) {
+        // trailer 区透传。
+        if (offset >= block_area) {
+            deliver_bytes(data, n, offset);
+            return;
+        }
+        // 跨边界的帧：块区部分走解析器，trailer 部分透传。
+        if (offset + n > block_area) {
+            uint64_t head_n = block_area - offset;
+            feed_frame(data, static_cast<size_t>(head_n), offset);
+            deliver_bytes(data + head_n, n - static_cast<size_t>(head_n), block_area);
+            return;
+        }
+
+        if (parse_buf_.empty()) {
+            parse_off_ = offset;  // 新块起点
+        }
+        size_t have = parse_buf_.size();
+        size_t need = parse_need_;
+
+        size_t take = std::min(n, need - have);
+        parse_buf_.append(data, take);
+        data += take;
+        n -= take;
+        offset += take;
+
+        if (parse_buf_.size() < parse_need_) return;  // 帧耗尽，等下一帧
+
+        if (parse_need_ == 16) {
+            // 块头完成 → 解析 comp 长度，进入数据阶段。
+            int32_t comp;
+            int32_t unc;
+            std::memcpy(&unc, parse_buf_.data(), 4);
+            std::memcpy(&comp, parse_buf_.data() + 4, 4);
+            if (comp < 0 || unc < 0) {
+                finish_stream(false, "corrupt block header (negative sizes)");
+                return;
+            }
+            parse_need_ = 16 + static_cast<size_t>(comp);
+            if (parse_buf_.size() < parse_need_) continue;
+        }
+
+        // 块完成：验 CRC。
+        int32_t comp;
+        std::memcpy(&comp, parse_buf_.data() + 4, 4);
+        uint64_t stored;
+        std::memcpy(&stored, parse_buf_.data() + 8, 8);
+        size_t block_len = 16 + static_cast<size_t>(comp);
+        uint64_t actual = data_checksum(parse_buf_.data() + 16,
+                                        static_cast<size_t>(comp));
+        if (actual == stored) {
+            deliver_bytes(parse_buf_.data(), block_len, parse_off_);
+        } else {
+            ERR("[NCS-FATAL-DATA-CORRUPTION] bad block CRC: off={} len={} — resending once",
+                parse_off_, block_len);
+            if (resent_offsets_.count(parse_off_)) {
+                finish_stream(false, "resent block still corrupt");
+                return;
+            }
+            resent_offsets_.insert(parse_off_);
+            ChunkResendMessage rs;
+            rs.offset_ = parse_off_;
+            rs.length_ = block_len;
+            CMString encoded = MessageProtocol::encode(rs);
+            if (!transport_->send_all(fd_, encoded.data(), encoded.size())) {
+                finish_stream(false, "resend request failed");
+                return;
+            }
+            hole_len_[parse_off_] = block_len;  // 等 resend 帧填补
+        }
+
+        // 重置解析器。
+        parse_buf_.clear();
+        parse_need_ = 16;
+    }
+}
+
+// 好字节交付（含 resend 帧补的字节）：无洞直接按序；有洞 pending 暂存，
+// 前沿连续时 drain。同 offset 重复（resend 迟到 + 原块重排）幂等跳过。
+void NetworkChunkSource::deliver_bytes(const char* data, size_t n, uint64_t offset) {
+    if (offset < next_off_) return;  // 重复字节：丢弃
+    if (offset == next_off_ && hole_len_.empty()) {
+        // 快路径：按序无洞。
+        root_.update(data, n);
+        received_ += n;
+        push_block(data, n);
+        next_off_ = offset + n;
+        return;
+    }
+    pending_[offset].assign(data, n);
+    pending_bytes_ += n;
+    drain_pending();
+}
+
+void NetworkChunkSource::drain_pending() {
+    auto it = pending_.find(next_off_);
+    while (it != pending_.end()) {
+        hole_len_.erase(next_off_);  // 洞被填（resend 到达）
+        root_.update(it->second.data(), it->second.size());
+        received_ += it->second.size();
+        push_block(it->second.data(), it->second.size());
+        pending_bytes_ -= it->second.size();
+        next_off_ += it->second.size();
+        pending_.erase(it);
+        it = pending_.find(next_off_);
+    }
+}
+
 void NetworkChunkSource::recv_loop() {
-    // 坏片语义（§8.1 + TCP 保序）：
-    //   - server 顺序发送 → 正常路径 seq 严格递增无洞；
-    //   - 坏片发生 → resend（每 seq 一次）+ 后续好片 pending_ 暂存（按 seq
-    //     重排——字节流顺序不能乱）；TCP 流控自动压住发送方（接收线程照常
-    //     读帧，pending 内存受 TCP 窗口 + 保险上限约束）；
-    //   - 重传帧到达 → 填洞 → drain pending 按序 push + 增量根推进。
     bool digest_seen = false;
 
-    auto drain_pending = [&]() {
-        auto it = pending_.find(next_seq_);
-        while (it != pending_.end()) {
-            root_.update(it->second->data(), it->second->size());
-            received_ += it->second->size();
-            push_block(it->second->data(), it->second->size());
-            pending_bytes_ -= it->second->size();
-            pending_.erase(it);
-            next_seq_++;
-            it = pending_.find(next_seq_);
-        }
-    };
-
     while (true) {
+        if (stream_done_) return;  // feed_frame 内部已判失败
+
         int r = read_one_frame();
         if (r < 0) {
             finish_stream(false, "frame header check failed");
@@ -152,48 +260,13 @@ void NetworkChunkSource::recv_loop() {
                 return;
             }
             digest_seen = true;
-            if (bad_seqs_.empty()) break;   // 干净完成
-            continue;                        // 有洞：等重传帧
+            if (hole_len_.empty() && parse_buf_.size() < parse_need_) break;  // 干净完成
+            continue;  // 有洞/块未齐：等重传帧
         }
 
-        if (r == 3) {  // 坏片
-            ERR("[NCS-FATAL-DATA-CORRUPTION] bad chunk frame CRC: seq={} — resending once",
-                frame_seq_);
-            if (resent_seqs_.count(frame_seq_)) {
-                // 重传过一次仍坏 → 零容忍：流失败（§5）
-                finish_stream(false, "resent chunk still corrupt");
-                return;
-            }
-            bad_seqs_.insert(frame_seq_);
-            resent_seqs_.insert(frame_seq_);
-            ChunkResendMessage rs;
-            rs.seq_ = frame_seq_;
-            CMString encoded = MessageProtocol::encode(rs);
-            if (!transport_->send_all(fd_, encoded.data(), encoded.size())) {
-                finish_stream(false, "resend request failed");
-                return;
-            }
-            continue;
-        }
-
-        // r == 1：好片。重传补洞帧必须是待补 seq；正常帧按序。
-        if (digest_seen) {
-            if (!bad_seqs_.count(frame_seq_)) {
-                finish_stream(false, "unexpected frame after digest");
-                return;
-            }
-            bad_seqs_.erase(frame_seq_);
-        }
-        if (frame_seq_ < next_seq_) {
-            continue;  // 迟到的重复帧：丢弃（幂等）
-        }
-        // 暂存 + 按序 drain。堆积上界天然有保障：接收线程与 drain 同线程
-        // 顺序执行——push_block 在队列满时阻塞（TCP 流控压住发送方），
-        // pending 最多"当前片 + 队列上限"。
-        pending_[frame_seq_] = frame_raw_;
-        pending_bytes_ += frame_raw_->size();
-        drain_pending();
-        if (digest_seen && bad_seqs_.empty()) break;  // 补清
+        // r == 1：数据帧（帧 CRC 已过验）→ 块解析器。
+        feed_frame(frame_raw_->data(), frame_raw_->size(), frame_off_);
+        if (digest_seen && hole_len_.empty() && parse_buf_.size() < parse_need_) break;
     }
 
     // 流尾复核（计数 / 根失配）。
@@ -211,7 +284,8 @@ void NetworkChunkSource::recv_loop() {
 }
 
 int NetworkChunkSource::read_one_frame() {
-    // 返回：1=好片；2=DIGEST；3=坏片；0=断连/失步；-1=帧头 check 失败。
+    // 返回：1=数据帧（CRC 过验，frame_raw_/frame_off_ 填充）；2=DIGEST；
+    // 0=断连/失步；-1=帧头 check 失败。
     char fh[9];
     if (!recv_exact(transport_.get(), fd_, fh, 9)) return 0;
     uint64_t tl = 0;
@@ -223,22 +297,38 @@ int NetworkChunkSource::read_one_frame() {
         if (!recv_exact(transport_.get(), fd_, sh, 4)) return 0;
         uint32_t small_len = read_be32(sh);
         if (small_len != ChunkFrameProtocol::kSmallFieldsLen) return 0;
-        char sf[12];
-        if (!recv_exact(transport_.get(), fd_, sf, 12)) return 0;
-        uint32_t fseq = 0;
+        char sf[16];
+        if (!recv_exact(transport_.get(), fd_, sf, 16)) return 0;
+        uint64_t foff = 0;
         uint64_t fcrc = 0;
-        ChunkFrameProtocol::parse_small_fields(sf, small_len, fseq, fcrc);
+        ChunkFrameProtocol::parse_small_fields(sf, small_len, foff, fcrc);
         uint64_t raw_len = ChunkFrameProtocol::raw_len_from_total(tl);
-        uint64_t chunk_count = (total_len_ + frame_bytes_ - 1) / frame_bytes_;
-        if (fseq >= chunk_count || raw_len == 0 || raw_len > frame_bytes_ ||
-            static_cast<uint64_t>(fseq) * frame_bytes_ + raw_len > total_len_) {
-            return 0;
+        if (raw_len == 0 || foff + raw_len > total_len_) {
+            return 0;  // offset/长度越界 = 协议失步
         }
         frame_raw_ = CMMakeShared<FlyBuffer>();
         frame_raw_->resize(raw_len);
         if (!recv_exact(transport_.get(), fd_, frame_raw_->data(), raw_len)) return 0;
-        frame_seq_ = fseq;
-        if (data_checksum(frame_raw_->data(), frame_raw_->size()) != fcrc) return 3;
+        frame_off_ = foff;
+        // 帧级 CRC（传输跳快速检测——块级 CRC 是数据校验层，两层互补）。
+        if (data_checksum(frame_raw_->data(), frame_raw_->size()) != fcrc) {
+            // 帧坏：整帧 resend（offset 寻址）。帧内多块统一按区间重传。
+            ERR("[NCS] bad frame CRC: off={} len={} — resending once", foff, raw_len);
+            if (resent_offsets_.count(foff)) {
+                finish_stream(false, "resent frame still corrupt");
+                return 0;
+            }
+            resent_offsets_.insert(foff);
+            ChunkResendMessage rs;
+            rs.offset_ = foff;
+            rs.length_ = raw_len;
+            CMString encoded = MessageProtocol::encode(rs);
+            if (!transport_->send_all(fd_, encoded.data(), encoded.size())) {
+                finish_stream(false, "resend request failed");
+                return 0;
+            }
+            return 1;  // 帧字节不喂解析器（丢弃）——resend 帧会补
+        }
         return 1;
     }
 
