@@ -555,10 +555,13 @@ struct WriteRegisterMessage {
     CMString write_context_hash_;
     CMString writer_id_;        // writer 进程标识（db meta recorded_workers_ 登记用）
     int64_t size_bytes_ = 0;    // 压缩后字节数（数据 locality 调度亲和度打分用）
+    // 预许可标志（§14.1 注册时序）：true = 流开始前的许可探测（不带 size、
+    // master 只做许可+provenance，不激活可见性）；false = 完成登记。
+    bool preliminary_ = false;
 
     static constexpr MessageType msg_type_ = MessageType::WRITE_REGISTER;
 
-    FLY_SERIALIZE(header_, worker_id_, object_name_, db_path_, write_context_hash_, writer_id_, size_bytes_);
+    FLY_SERIALIZE(header_, worker_id_, object_name_, db_path_, write_context_hash_, writer_id_, size_bytes_, preliminary_);
 };
 
 struct WriteRegisterAckMessage {

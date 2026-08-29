@@ -216,6 +216,46 @@ TEST(MasterAgentTest, SetupWriteContext_MasterRunning_RegisterWriteUpdatesRemote
     DataService::instance()->remove_remote_index(full_name);
 }
 
+// 预许可（§14.1 注册时序，测试 48）：preliminary register 成功但【不激活
+// 可见性】——remote_idx 无登记、size 无记录；数据可见性等完成登记。
+// 两次调用间保持同一 hash（真实流由 open_write_stream 保证——预许可设定、
+// 完成登记复用）。
+TEST(MasterAgentTest, PreliminaryRegister_NoVisibilityActivation) {
+    WorkerAgentContext::clear();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    master.setup_write_context();
+    wait_for_running(master, true);
+    WorkerAgentContext::set_current_write_hash("prereg_test_hash");
+
+    CMString db_path = db32("test_db_prereg");
+    CMString obj_name = "test_obj_prereg";
+    CMString full_name = db_path + ":" + obj_name;
+
+    // 预许可：许可通过（UNKNOWN = 无错误）。
+    auto [msg, err_type] = WorkerAgentContext::register_write(db_path, obj_name, 0,
+                                                               /*preliminary=*/true);
+    EXPECT_EQ(err_type, TaskErrorType::UNKNOWN);
+
+    // 可见性未激活：remote_idx 无该对象。
+    EXPECT_FALSE(DataService::instance()->has_remote_location(full_name))
+        << "preliminary register must NOT activate visibility";
+
+    // 完成登记（非 preliminary，带真实 size）：可见性激活。
+    auto [msg2, err_type2] = WorkerAgentContext::register_write(db_path, obj_name, 256,
+                                                                 /*preliminary=*/false);
+    EXPECT_EQ(err_type2, TaskErrorType::UNKNOWN);
+    EXPECT_TRUE(DataService::instance()->has_remote_location(full_name));
+    EXPECT_EQ(DataService::instance()->get_remote_size(full_name), 256);
+
+    master.stop();
+    wait_for_running(master, false);
+    WorkerAgentContext::clear();
+
+    // Cleanup singleton state
+    DataService::instance()->remove_remote_index(full_name);
+}
+
 TEST(MasterAgentTest, SetupWriteContext_MasterNotRunning_RecordWriteNoOp) {
     WorkerAgentContext::clear();
     MasterAgent master("127.0.0.1", 0);

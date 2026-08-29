@@ -171,7 +171,7 @@ public:
 
     bool request_db_path(const CMString& db_path);
 
-    std::pair<CMString, TaskErrorType> register_write_with_master(const CMString& db_path, const CMString& object_name, int64_t compressed_size);
+    std::pair<CMString, TaskErrorType> register_write_with_master(const CMString& db_path, const CMString& object_name, int64_t compressed_size, bool preliminary = false);
     void request_database_freeze(const CMString& db_path);
     void request_object_remove(const CMString& db_path, const CMString& object_name);
     void request_backup(const CMString& db_path, const CMString& object_name);
@@ -563,7 +563,7 @@ public:
     // 未注册窗口写登记的回归测试用（语义：pending 阻塞 + 终止唤醒，不放行）。
     std::pair<CMString, TaskErrorType> register_write_with_master_for_testing(
         const CMString& db_path, const CMString& object_name, int64_t size) {
-        return register_write_with_master(db_path, object_name, size);
+        return register_write_with_master(db_path, object_name, size, false);
     }
     // 模拟 worker 终止对 pending 写注册的批量失败唤醒（initiate_shutdown
     // 同款逻辑，供无网络单测驱动）。

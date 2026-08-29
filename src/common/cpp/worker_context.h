@@ -49,13 +49,15 @@ public:
         }
     }
 
-    static void set_register_func(std::function<std::pair<CMString, TaskErrorType>(const CMString&, const CMString&, int64_t)> func) {
+    static void set_register_func(std::function<std::pair<CMString, TaskErrorType>(const CMString&, const CMString&, int64_t, bool)> func) {
         register_func_ = std::move(func);
     }
 
-    static std::pair<CMString, TaskErrorType> register_write(const CMString& db_path, const CMString& object_name, int64_t compressed_size) {
+    // preliminary=true：预许可调用（流开始前，不带 size、master 侧不激活
+    // 可见性——§14.1 注册时序定案）；false：完成登记（带真实 size）。
+    static std::pair<CMString, TaskErrorType> register_write(const CMString& db_path, const CMString& object_name, int64_t compressed_size, bool preliminary = false) {
         if (register_func_) {
-            return register_func_(db_path, object_name, compressed_size);
+            return register_func_(db_path, object_name, compressed_size, preliminary);
         }
         return {"", TaskErrorType::UNKNOWN};
     }
@@ -206,7 +208,7 @@ public:
 
 private:
     static inline thread_local std::function<void(const CMString&, const CMString&, int64_t)> record_write_func_;
-    static inline thread_local std::function<std::pair<CMString, TaskErrorType>(const CMString&, const CMString&, int64_t)> register_func_;
+    static inline thread_local std::function<std::pair<CMString, TaskErrorType>(const CMString&, const CMString&, int64_t, bool)> register_func_;
     static inline thread_local std::function<void(const CMString&, const CMString&)> notify_removed_func_;
     static inline thread_local std::function<void(const CMString&)> freeze_func_;
     static inline thread_local std::function<void(const CMString&, const CMString&)> remove_request_func_;

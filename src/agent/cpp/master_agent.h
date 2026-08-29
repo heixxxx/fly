@@ -799,7 +799,7 @@ private:
 
     void on_master_freeze(const CMString& db_path);
     void on_master_remove(const CMString& db_path, const CMString& object_name);  // master 进程内 remove（清 provenance + 通知 worker）
-    std::pair<CMString, TaskErrorType> on_master_register_write(const CMString& db_path, const CMString& name, int64_t compressed_size);
+    std::pair<CMString, TaskErrorType> on_master_register_write(const CMString& db_path, const CMString& name, int64_t compressed_size, bool preliminary = false);
 
 
     // worker 的 hostname/ip 已收编进 WorkerManager::WorkerInfo（受其 mutex_ 保护），

@@ -8,6 +8,7 @@
 #include <log/cpp/logger.h>
 #include <common/cpp/writer_id.h>
 #include <common/cpp/worker_context.h>
+#include <future>
 #include <common/cpp/write_context_hash.h>
 #include <filesystem>
 #include <fstream>
@@ -145,7 +146,7 @@ Database::CompressResult Database::compress_buffered_data(
     return {total_uncompressed, chunk_count};
 }
 
-// ── L1 大对象流式写（chunked-transfer-design §9.1）──
+// ── L1 大对象流式写（chunked-transfer-design §9.1 + §14.1 C 项）──
 
 FlyStream* Database::open_write_stream(const CMString& object_name,
                                         const CMString& py_name) {
@@ -156,6 +157,33 @@ FlyStream* Database::open_write_stream(const CMString& object_name,
     if (!writer_) {
         return nullptr;
     }
+    // 注册预许可（§14.1 注册时序定案，差异 #7）：流开始前的许可探测
+    //（frozen/provenance/DUPLICATE——不带 size、master 不激活可见性）。
+    // 拒绝即失败：零序列化零落盘零段事务副作用（对齐老路径"落盘前注册"）。
+    // 完成登记（带真实 size + 可见性激活）在 finish_and_commit 的 commit 回调。
+    //
+    // hash 所有权（同对象两次注册必须同 hash——否则完成登记 provenance
+    // mismatch）：此处若 current hash 空则生成并 set（self_set 记录），
+    // 所有权经闭包传给完成登记——其 HashGuard 负责最终 clear。
+    bool hash_self_set = false;
+    if (fly::WorkerAgentContext::get_current_write_hash().empty()) {
+        fly::WorkerAgentContext::set_current_write_hash(make_timestamp_hash());
+        hash_self_set = true;
+    }
+    {
+        auto [reg_error, reg_error_type] =
+            fly::WorkerAgentContext::register_write(db_path_, object_name, 0,
+                                                     /*preliminary=*/true);
+        if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+            ERR("[L1-STREAM-WRITE] preliminary register rejected: obj={} err={}",
+                object_name, reg_error);
+            fly::WorkerAgentContext::set_last_error_type(reg_error_type);
+            if (hash_self_set) {
+                fly::WorkerAgentContext::clear_current_write_hash();
+            }
+            return nullptr;
+        }
+    }
     // 段事务标记必须在 begin_incremental 之前（对齐 commit_write 的 execute
     // 时序）——回滚点 = 对象写入前的文件位置，abort 才能 truncate 掉残块。
     if (fly::WorkerAgentContext::is_transaction_mode() && !writer_->segment_active()) {
@@ -164,36 +192,65 @@ FlyStream* Database::open_write_stream(const CMString& object_name,
     if (writer_->begin_incremental() < 0) {
         return nullptr;
     }
-    // sink：压缩块直写增量 record（任务线程同步——page cache 写，延迟特征
-    // 与 WBQ 后台 execute 一致；保序天然成立）。
+    // sink（§14.1 C）：压缩块逐块入 WBQ 后台落盘——序列化生产与盘写流水
+    // 重叠（真并行）；块顺序由 WBQ 单消费线程 FIFO 保证；high_watermark
+    // 背压天然节流生产端（队列 ≤10 块 ≈ 40MB）。abort 的 clear_pending 丢弃
+    // 未执行块单元（无副作用），已在跑的块自然完成。
     DataWriter* w = writer_.get();
     return new FlyStream(
         compression_type_, serialize_chunk_size_,
-        [w](const char* data, size_t n) { w->append_incremental(data, n); },
+        [w](const char* data, size_t n) {
+            fly::WriteRequest req;
+            req.execute_ = [w, bytes = CMString(data, n)]() -> bool {
+                w->append_incremental(bytes.data(), bytes.size());
+                return true;
+            };
+            fly::DataService::instance()->enqueue_write_back(std::move(req));
+        },
         py_name, compression_threshold_,
-        // commit 回调（finish_and_commit 时执行——时序对齐 commit_write）。
-        [this, w, object_name](int64_t total, int32_t chunks, bool backup,
-                               bool populate_cache) -> int64_t {
+        // commit 回调（finish_and_commit 时执行——finish_sink 已把 trailer
+        // 经 sink 入队，FIFO 保证 trailer 在所有块之后）。hash_self_set：
+        // 预许可处设定的 hash 所有权（完成登记复用同 hash + 最终 clear）。
+        [this, w, object_name, hash_self_set](int64_t total, int32_t chunks, bool backup,
+                                              bool populate_cache) -> int64_t {
             (void)populate_cache;  // 大对象不 populate low-tier（§9.4 分档）
             CMString full = full_name(object_name);
 
-            w->finish_incremental(object_name, total, chunks);
-            if (!w->flush_checked()) {
+            // finish 单元（WBQ）：entry 登记 + flush 检查；promise 通知任务
+            // 线程——register 是同步 RPC，必须留在任务线程（不占 WBQ 队列）。
+            auto disk_done = std::make_shared<std::promise<bool>>();
+            auto disk_fut = disk_done->get_future();
+            {
+                fly::WriteRequest req;
+                req.execute_ = [w, object_name, total, chunks]() -> bool {
+                    w->finish_incremental(object_name, total, chunks);
+                    return w->flush_checked();
+                };
+                req.on_complete_ = [disk_done]() { disk_done->set_value(true); };
+                req.on_error_ = [disk_done]() { disk_done->set_value(false); };
+                fly::DataService::instance()->enqueue_write_back(std::move(req));
+            }
+            if (!disk_fut.get()) {
                 ERR("[L1-STREAM-WRITE] flush failed: obj={}", object_name);
                 fly::DataService::instance()->on_write_failed(db_path_, full,
                                                               "stream write flush failure");
                 return static_cast<int64_t>(fly::WriteErrorType::REGISTRATION_FAILED);
             }
 
-            // commit 语义（对齐 commit_write 时序：register → record_func →
-            // 完成登记同步——盘写已完成）。
+            // commit 语义（盘写已完成——future 保证；register/record_func/
+            // 完成登记在任务线程，时序对齐 commit_write）。
             fly::DataService::instance()->on_write_started(db_path_, full);
 
+            // hash 复用：预许可已设定（task hash 或时间戳），完成登记取同值；
+            // 所有权（hash_self_set）决定退出时 clear——与预许可处成对。
             CMString write_hash = fly::WorkerAgentContext::get_current_write_hash();
-            bool self_set_hash = write_hash.empty();
-            if (self_set_hash) {
+            bool self_set_hash = hash_self_set;
+            if (write_hash.empty()) {
+                // 防御：预许可 set 后不应为空（除非被外部 clear——补设保证
+                // 完成登记的 provenance 与预许可一致性语义不崩溃）。
                 write_hash = make_timestamp_hash();
                 fly::WorkerAgentContext::set_current_write_hash(write_hash);
+                self_set_hash = true;
             }
             struct HashGuard {
                 bool self;

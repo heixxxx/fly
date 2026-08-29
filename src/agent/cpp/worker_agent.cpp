@@ -1446,8 +1446,8 @@ void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_has
     WorkerAgentContext::set_record_write_func([this](const CMString& db_path, const CMString& name, int64_t size) {
         record_write(db_path, name, size);
     });
-    WorkerAgentContext::set_register_func([this](const CMString& db_path, const CMString& name, int64_t size) -> std::pair<CMString, TaskErrorType> {
-        return register_write_with_master(db_path, name, size);
+    WorkerAgentContext::set_register_func([this](const CMString& db_path, const CMString& name, int64_t size, bool preliminary) -> std::pair<CMString, TaskErrorType> {
+        return register_write_with_master(db_path, name, size, preliminary);
     });
     WorkerAgentContext::set_notify_removed_func([this](const CMString& db_path, const CMString& name) {
         CMString full_name = db_path + ":" + name;
@@ -1726,7 +1726,7 @@ CMSharedPtr<Database> WorkerAgent::get_database(const CMString& db_path) const {
     return nullptr;
 }
 
-std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const CMString& db_path, const CMString& object_name, int64_t compressed_size) {
+std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const CMString& db_path, const CMString& object_name, int64_t compressed_size, bool preliminary) {
     CMString full_name = db_path + ":" + object_name;
     CMString ctx_hash = fly::WorkerAgentContext::get_current_write_hash();
     if (ctx_hash.empty()) {
@@ -1735,7 +1735,8 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
         ctx_hash = make_timestamp_hash();
     }
 
-    if (!ctx_hash.empty()) {
+    if (!ctx_hash.empty() && !preliminary) {
+        // 本地 entry 预检仅对完成登记有意义（预许可时 entry 尚未写——流还没开始）。
         auto existing_entries = DataService::instance()->find_local_entries(full_name);
         if (existing_entries.has_value() && !existing_entries.value().empty()) {
             for (const auto& entry : existing_entries.value()) {
@@ -1769,6 +1770,7 @@ std::pair<CMString, TaskErrorType> WorkerAgent::register_write_with_master(const
     msg.db_path_ = db_path;
     msg.write_context_hash_ = ctx_hash;
     msg.size_bytes_ = compressed_size;
+    msg.preliminary_ = preliminary;
     {
         // 锁内只 find + 拷 writer_id（同 request_db_path 的正面范式）——原实现的
         // shared_lock 存活到函数尾，覆盖了 send 和 wait_for 的 5 秒同步等待，

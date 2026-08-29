@@ -192,6 +192,17 @@ cc_test(
     copts = ["-std=c++20"],
 )
 
+# 注册预许可（流开始前许可式注册）——chunked-transfer-design §14.1
+cc_test(
+    name = "preliminary_register_test",
+    srcs = ["preliminary_register_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/storage/cpp:fly_storage",
+    ],
+    copts = ["-std=c++20"],
+)
+
 # 并发 micro-benchmark：测量 DataService 索引访问的锁并发性。独立 target，
 # 不进常规 test 套件（按需运行测吞吐，输出 ops/sec 对比数据）。运行：
 #   ./fly.sh test //src/storage/tests:data_service_concurrency_bench

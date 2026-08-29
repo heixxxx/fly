@@ -3112,6 +3112,14 @@ WriteRegisterAckMessage MasterAgent::do_write_register(const WriteRegisterMessag
     if (registered_ok) {
         ack.success_ = true;
 
+        // 预许可（§14.1 注册时序）：只做许可+provenance，跳过可见性登记——
+        // 流式写的许可探测（不带 size；数据尚未写）。完成登记（非 preliminary）
+        // 到达时才激活可见性。
+        if (msg.preliminary_) {
+            DBG("WriteRegister preliminary accepted: object={}", msg.object_name_);
+            return ack;
+        }
+
         // Q2 决策：可见性登记段按模式分流。
         // master 自写（worker_id_==0）强制即时登记 —— master 进程无 task 三阶段
         // （不设 transaction_mode、无 TaskCompleteMessage），没有延迟登记的触发时机。
@@ -3604,8 +3612,8 @@ void MasterAgent::setup_write_context() {
     // master 自写对象的 record 阶段无需处理（register 已含全部 placement/schedule 逻辑）。
     // 留一个空 record_write_func 仅满足 is_active() 探测，不触发任何动作。
     WorkerAgentContext::set_record_write_func([](const CMString&, const CMString&, int64_t) {});
-    WorkerAgentContext::set_register_func([this](const CMString& db_path, const CMString& name, int64_t compressed_size) -> std::pair<CMString, TaskErrorType> {
-        return on_master_register_write(db_path, name, compressed_size);
+    WorkerAgentContext::set_register_func([this](const CMString& db_path, const CMString& name, int64_t compressed_size, bool preliminary) -> std::pair<CMString, TaskErrorType> {
+        return on_master_register_write(db_path, name, compressed_size, preliminary);
     });
     WorkerAgentContext::set_freeze_func([this](const CMString& db_path) {
         on_master_freeze(db_path);
@@ -3652,7 +3660,7 @@ void MasterAgent::setup_write_context() {
     });
 }
 
-std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const CMString& db_path, const CMString& name, int64_t compressed_size) {
+std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const CMString& db_path, const CMString& name, int64_t compressed_size, bool preliminary) {
     if (!running_.load()) {
         // master 未运行（停止窗口）无法裁决注册——按注册被拒绝归类（原 {"",UNKNOWN}
         // 会被调用方当成功放行，写未经 provenance 裁决）。
@@ -3665,6 +3673,7 @@ std::pair<CMString, TaskErrorType> MasterAgent::on_master_register_write(const C
     msg.object_name_ = db_path + ":" + name;
     msg.db_path_ = db_path;
     msg.size_bytes_ = compressed_size;
+    msg.preliminary_ = preliminary;
     // master 自写经 commit_write 已填时间戳（若 current_write_hash 空），此处取到非空，
     // 使 do_write_register 的 provenance 校验对 master 自写也生效（原漏设导致无保护）。
     msg.write_context_hash_ = WorkerAgentContext::get_current_write_hash();
