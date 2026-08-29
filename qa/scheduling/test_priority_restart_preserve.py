@@ -37,7 +37,15 @@ def high_prio_dep_write(db, key, value):
     db.write_object(key, value)
 
 
-# 默认优先级 task（priority=10），无依赖，用于与 restart 出的高优先级 task 竞争
+# phantom producer：Phase 2 先提交，其完成使两个竞争 task 同时 ready。
+# （不能由 master 直写 phantom + 消费者声明 inputs——"从未存在的依赖"在
+# 提交时即判 unresolvable fail；producer task 在图中则等待语义正确。）
+@as_task()
+def write_phantom(db):
+    db.write_object("phantom", "ready")
+
+
+# 默认优先级 task（priority=10），无依赖，与 restart 出的高优先级 task 竞争。
 @as_task()
 def default_prio_write(db, key, value):
     db.write_object(key, value)
@@ -78,42 +86,51 @@ p1_failed = list(master.failed_tasks)
 INFO(f"  Phase 1 OK: high-prio task failed as expected, failed_ids={p1_failed}")
 
 # ── Phase 2: 补依赖 + restart，验证 priority 还原 ──
+# 观测口径（2026-08-29 重构，根治 56 轮稳定性的伪失败）：
+#   ① 字段级（核心目的）：restart 后 task 的 priority 必须仍是 20——经
+#      monitor.db tasks 表断言（这正是原始回归 bug 的层面：FailedTaskRecord
+#      曾丢 priority/attr_timeout 字段）。
+#   ② 行为级（端到端）：两 task 都成功完成（attr_timeout 语义由"restart 后
+#      不再因缺 gpu/依赖失败"覆盖——Phase1 的失败本身证明降级路径生效）。
+#   ③ 完成顺序仅 INFO 记录不作断言：确定性同场竞争受限时降级语义约束
+#      （requires=(caps,0) 的 task 不等依赖 producer，立即降级执行），
+#      无法既保 default 无依赖抢先又保竞争窗口——历史版本靠调度节奏侥幸
+#      （8ms 抢先完成 + completed 计数采样 race → 谓词永久差 1 → 伪失败）。
 db.write_object("phantom", "ready")
-
-# 关键时序：先提交默认优先级 task（task_id 较小），再 restart（restart 的 task_id 更大但 priority=20）
 default_prio_write(db, "default", "v0")
-
-# 记录 restart 前的 completed，便于观测 restart 后的新增完成顺序
-pre_restart_completed = len(master.completed_tasks)
 
 master.restart_failed_tasks(db)
 
-# 等待两个 task 都完成（restart 的高优先级 + 新提交的默认优先级）
+restart_task_id = p1_failed[0]         # restart 复用原 id（Phase2 前只此一个 task）
+default_task_id = restart_task_id + 1  # default 是 Phase2 首个新提交
+
 def both_done():
-    return len(master.completed_tasks) >= pre_restart_completed + 2
+    c = master.completed_tasks
+    return restart_task_id in c and default_task_id in c
 
 assert wait_for(both_done, timeout=20), \
     f"Phase 2: both tasks should complete, completed={master.completed_tasks}"
 
-# 取 restart 后新增的完成顺序（单 worker 串行 = 调度执行顺序）
-new_completed = master.completed_tasks[pre_restart_completed:]
-INFO(f"  Phase 2: completion order after restart = {new_completed}")
+new_completed = master.completed_tasks[:]
+INFO(f"  Phase 2: completion order = {new_completed} "
+     f"(restart id={restart_task_id}, default id={default_task_id})")
 
-# 单 worker 串行下，priority=20 的 restart task 应先于 priority=10 的默认 task 完成。
-# restart task 的 id 复用 Phase1 失败的原 id（restart_failed_tasks 传 record.task_id_）；
-# default task 是 Phase2 新提交，id 一定大于 restart task 的 id。
-# 若 priority 正确还原：restart task(priority=20) 先完成（即便 id 更大）
-# 若 priority 丢失（退化为 10）：同优先级按 task_id 升序 → default(id 小) 先完成 → 回归失败
-restart_task_id = p1_failed[0]
-
-assert new_completed[0] == restart_task_id, (
-    f"Phase 2: restarted high-priority task (id={restart_task_id}, priority=20) "
-    "should complete FIRST after restart (priority preserved). "
-    f"Got order={new_completed} — if a smaller-id default-priority task came first, "
-    "priority was LOST during restart (regression).")
-assert new_completed[1] != restart_task_id, (
-    "Phase 2: second completion should be the default-priority task. "
-    f"Got order={new_completed}")
+# ① 字段级断言：restart 路由保留 priority（monitor 落盘于 on_task_complete，
+#    build_task_row 从 TaskMetadata 读取——字段丢失即此处回归）。
+import sqlite3
+monitor_db = os.path.join(get_config().get_str("log_dir"), "monitor.db")
+con = sqlite3.connect(f"file:{monitor_db}?mode=ro", uri=True)
+rows = list(con.execute(
+    "SELECT task_id, priority FROM tasks WHERE task_id IN (?, ?)",
+    (restart_task_id, default_task_id)))
+con.close()
+prio_map = dict(rows)
+assert prio_map.get(restart_task_id) == 20, (
+    f"Phase 2: restarted task {restart_task_id} must keep priority=20, "
+    f"got {prio_map.get(restart_task_id)} (priority LOST during restart — regression)")
+assert prio_map.get(default_task_id) == 10, (
+    f"Phase 2: default task {default_task_id} should be priority=10, "
+    f"got {prio_map.get(default_task_id)}")
 
 # 端到端正确性：两个对象都写入成功
 assert db.read_object("high") == "v1", "high-prio task should have written 'high'"
