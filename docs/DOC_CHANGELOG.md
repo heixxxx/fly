@@ -3,6 +3,12 @@
 ---
 ---
 
+## 2026-08-29 (2): §4.6 统一块模型定稿——用户构想对齐（正常路径零块感知 + client 块级校验 + trailer 块表）
+
+**chunked-transfer-design.md §4.6 新增**：实现与用户原始构想逐条对照后收敛的统一模型——核心原则"正常传输路径双方零块感知；块结构知识只在 client 校验侧与 trailer 元信息"。存档用户构想六条原意；三项待实施差距（B' trailer 块位置表 u32 comp_len 紧凑式 / A' 接收线程块级 CRC 前移 + resend byte-offset 寻址 + 去帧级 CRC 保 check 位 / C 写路径 WBQ 后台落盘）；三细节裁定记录；实施顺序 B'→A'→C。§12 不做清单的"写入时块索引落盘"条废止（块表以 trailer 内嵌纳入）。
+
+---
+
 ## 2026-08-29 (1): L0-L3+L1 全层实施落地——实现记录与落地修订
 
 **chunked-transfer-design.md §13 实现记录**（全层 TDD 实施完成）：L0（64 位帧头 + ISA-L CRC-64 校验层 + trailer 磁盘格式 + 零容忍语义）/ L2（META + 4MB CHUNK 字节切片流 + DIGEST 根 + 在线块重传）/ L3（ChunkSource 拉取源 + 接收线程 + 有界队列 + Unpickler 增量消费）/ L1（DataWriter 增量 API + FlyStream sink 写 + finish_and_commit）全部落地；§4.5/§8/§9 补落地修订三节（实现与计划的偏差及理由）；§9.5 PEP574 尝试结论为负（pin 5 因 PickleBuffer 兼容回退；实测协议 4/5 in-band 内存特征一致，L1 流式化后 in-band 无瓶颈，OOB 关闭）；§13.1 十项实现问题与修复、§13.2 风险项、§13.3 设计决策记录（不确定项如实说明）。验证：单测 73/73 + 全量 QA 165/165 ×3 轮。

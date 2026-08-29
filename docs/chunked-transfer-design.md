@@ -137,11 +137,69 @@ client                          server
 - `streaming_read_threshold`（默认 64MB）实际语义为**功能开关**（读前不知对象大小，探 size 需额外 IO 得不偿失）；`stream_buffer_chunks`（默认 16）为接收线程有界队列上限。
 
 **L1 落地修订（2026-08-29 实现）**：
-- DataWriter 增量 API：begin（当前文件过半先滚——增量写不跨文件，IndexEntry 单文件区间约束）/append（手工跟踪大小，app 模式 tellp 受限）/finish（entry 登记；trailer 由调用方经 append 写入）。
+- DataWriter 增量 API：begin（文件过半先滚——增量写不跨文件，IndexEntry 单文件区间约束）/append（手工跟踪大小，app 模式 tellp 受限）/finish（entry 登记；trailer 由调用方经 append 写入）。
 - FlyStream sink 写模式：压缩块逐块回调（"压缩一块、交付一块"）；finish_sink 时 trailer 走 sink 并暴露元数据。
 - `Database::open_write_stream` → WriteStreamHandle：commit 对齐 commit_write 时序（段事务 BEGIN / register / record_func 同步 / 完成登记——盘写已完成故同步收尾）。
 - **盘写在任务线程同步进行**（write 进 page cache 即返回——与 WBQ 后台 execute 延迟特征一致；WBQ 逐块后台化留作后续优化）。DUPLICATE 预检未前移（register 时序安全已在 §9.4 验证，大对象 DUPLICATE 罕见）。
 - `streaming_write_threshold`（默认 1=启用）：写前不知对象大小——开关启用即统一走流式（小对象走增量 API 等价）。populate_cache 语义：流式写路径不 populate low-tier（§9.4 大对象分档）。
+
+### 4.6 统一块模型（2026-08-29 用户构想对齐，v2 设计定稿）
+
+> 背景：实现与用户原始构想逐条对照（§4.5 落地修订的"纯字节切片"方案）后收敛的统一模型。
+> 核心原则（用户裁定）：**正常传输路径双方零块感知；块结构知识只存在于 client
+> 校验侧与 trailer 元信息中**。校验单位 = 传输数据自然单位（磁盘压缩块），
+> 重传单位 = 最小损坏单位（单块字节区间）。
+
+**用户构想六条（原意存档）**：
+1. 流式序列化+压缩：缓冲填满→压缩+块 CRC→**入后台线程落盘**（WBQ）；块追加 data 文件；块元信息入 trailer
+2. 磁盘结构：块位置信息记录在 data 文件尾部 trailer（**不进 idx**——随 record 跨机自包含）
+3. 远程读：service 经 idx 拿对象区间，数据直接发送——**不关心块结构**（纯字节管道）
+4. client：网络 io 接收侧**每收到一个块先 CRC 校验**，无误推入反序列化流；失败则发请求告知需要的字节区间，server 重传该块
+5. 重传期间：网络 io 不向反序列化流供数（hole 前按序、hole 处暂停），后续数据入缓存；缓存满则暂停接收（TCP 流控自动压 server —— 自动流控）
+6. 重传块校验通过后，继续供给反序列化流
+
+**统一数据流**：
+```
+写：序列化流 → 4MB 缓冲满 → 压缩+块CRC → 入 WBQ 后台落盘（追加 data）
+    完成时 trailer 追加：[块位置表][py_name][fixed(含块数/表长)][trailer CRC]
+
+正常远程读：
+  server：idx 拿区间 → 预读尾部 trailer（填 META）→ 区间字节流连续发送
+  client 接收线程（纯 C++ 无 GIL）：收字节 → 自行按块边界切分
+          （解析 16B 块头取 comp 长度）→ 逐块验块 CRC → 好块入有界队列
+  消费线程：解压（块头已验，CRC 复验为双保险）→ Unpickler 反序列化
+
+坏块重传：
+  接收线程发现块 K CRC 错 → 不入队（hole），后续字节继续收进 pending
+  → CHUNK_RESEND(byte offset, length) → server pread 该区间重发
+  （server 全程零块知识——offset/len 即区间寻址，无须块表）
+  → client 验证通过 → 填洞 → 按序继续供给
+  （pending 满 → 接收停 → TCP 流控压 server）
+```
+
+**与 §4.4/§4.5 落地现状的差距（三项待实施）**：
+
+| 项 | 内容 | 磁盘/协议变更 |
+|---|---|---|
+| B' | trailer 增**块位置表**（变长，位于 py_name 之前；fixed 增 `block_table_len`）；写侧 finish 时登记（每块 `u32 comp_len` 紧凑式，前缀和即得偏移） | 磁盘格式 |
+| A' | client 接收线程**块级 CRC 校验前移**（从解压器移到网络 io 层）；坏块 → resend(byte offset, len)；CHUNK 帧头**去帧级 CRC、保留帧头 check 位**（失步检测一层 + 数据校验一层，职责干净） | 传输协议 |
+| C | 写路径 sink 逐块入 **WBQ 后台落盘** + 完成单元（trailer+entry 在完成单元；register 时序不变） | 写路径 |
+
+**三细节裁定（2026-08-29 用户同意）**：
+1. resend 寻址 = **byte offset + length**（server 零块知识；天然适配任何块大小/config 变化——client 解析过块头即知坏块区间）
+2. **帧级 CRC 去除**，保留帧头 check 位（帧头自身损坏的兜底）
+3. 块表条目 = **u32 comp_len 紧凑式**（表受 trailer CRC 保护；L4 需要偏移时前缀和一遍即得）
+
+**块表的消费者**（resend 不需要它——offset/len 寻址）：client 结构对账强化
+（逐块累计 == 块区总长，防块头域损坏导致的边界漂移）；L4 部分读地基；
+跨机自包含（随 record 复制走，无需 idx 同步）。
+
+**实施顺序（TDD）**：B'（磁盘格式 + 写侧登记 + 读侧对账）→ A'（接收线程
+块校验 + resend offset 化 + 帧简化）→ C（WBQ 后台落盘）→ 全量 QA +
+100 轮稳定性。
+
+**§12 不做清单同步修订**：原"写入时块索引落盘（懒构建够用，除非 L4）"
+一条废止——块位置表以 trailer 内嵌形式纳入本设计（B'）。
 
 ## 5. 失败与重试语义（工业零容忍，对象级统一）
 
@@ -393,7 +451,8 @@ client                          server
 
 ## 12. 不做清单与触发条件
 
-**不做**：credit 窗口流控（负载画像无此问题）；**断线续传**（整对象 TIER2 重试覆盖；在线块重传已纳入 L2）；写入时块索引落盘（懒构建够用，除非 L4 需要随机访问）；块级定位/诊断簿记（用户裁定无意义）。
+**不做**：credit 窗口流控（负载画像无此问题）；**断线续传**（整对象 TIER2 重试覆盖；在线块重传已纳入 L2）；块级定位/诊断簿记（用户裁定无意义）。
+~~写入时块索引落盘~~（**2026-08-29 废止**：块位置表以 trailer 内嵌形式纳入 §4.6 统一块模型 B' 项）。
 
 **L4 触发条件**：需要部分读（solver 子域切片）或块粒度缓存逐出时立项（≈亿级落地）。
 
