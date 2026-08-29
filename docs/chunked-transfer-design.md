@@ -217,6 +217,17 @@ client                          server
 - 范围界定：该裁定针对**流式读路径**；L2 整缓冲重组（receive_chunked）
   保留给非流式读（小对象快路径 / streaming_read_threshold=0 逃生口）。
 
+**差异 #8/#9/#10 定案（2026-08-29）**：
+- #8（DUPLICATE 预检）：被 #7 注册时序定案吸收（预许可即拒，两种模式
+  零白写）——关闭，不独立存在。
+- #9（句柄形态）：按现状关闭——WriteStreamHandle 嵌套类因 nanobind 约束
+  废弃（§13.1 问题 6），FlyStream 直持 commit 回调（finish_and_commit）
+  与原写路径形态对称，语义无偏差。
+- #10（测试覆盖缺口）：38/44/45/46/48 五项在 v2 实施计划（§14）中补齐
+  （MemoryCeiling 类以 QA 独立进程形态实现——每 case fresh fly 进程，
+  RSS 基线干净，硬断言可行）；34 维持结构等价断言（时序断言 flaky 风险
+  不值当）。
+
 **threshold 语义裁定（2026-08-29 用户裁定，差异讨论 #6 定案）**：
 - `streaming_read/write_threshold` 定性为**开关**（>0 启用，值无意义，
   保留原名不改）；**读/写统一流式，不按对象尺寸分档**（用户裁定：统一
@@ -582,4 +593,101 @@ client                          server
 - 单元测试：73/73（新增 data_checksum 契约 5 例 / 帧头 4 例 / record 格式 4 例 / wire 根 2 例 / 零容忍 3 例 / 分片 5 例 / 流式源 4 例）
 - 全量 QA：165/165（L0 后、L2 后、L1+L3 后各一轮全绿）
 - 100 轮稳定性：进行中（结果见 stability_test 产物目录）
+
+## 14. v2 实施计划（2026-08-29 差异讨论定案整合，待用户批准）
+
+> 十项差异讨论（§4.6/§4.7 及各裁定小节）全部定案后的整合实施清单。
+> 依据：统一块模型（§4.6）+ low-tier 取消（§4.7）+ TIER2 完整流式编排 +
+> 注册时序预许可 + 统一流式不分档 + 测试补齐（#10）。
+
+### 14.1 阶段一：磁盘格式与写路径（B' + C + 注册预许可）
+
+**B'——trailer 块位置表**（磁盘格式）：
+- 布局：`[块表: N×u32 comp_len][py_name][fixed 20B + block_table_len][u64 crc]`
+  （CRC 覆盖块表+py_name+fixed 连续段；尾部锚定不变）
+- 写侧：CompressingStreamBuf 块回调收集 comp_len 列表 → finish_sink 构造
+  完整 trailer（含块表）
+- 读侧：解压前块表对账（逐块累计 == 块区总长，防块头域损坏导致边界漂移）
+- 测试先行：块表 roundtrip / 对账拒绝（篡改块表+篡改块头两种注入）
+
+**C——写路径 WBQ 后台落盘**：
+- sink 改逐块 `WriteRequest` 入队（WBQ 单消费线程保序）；finish 单元 =
+  trailer 追加 + entry 登记 + 完成回调
+- 内存：任务线程峰值 = 序列化对象 R + WBQ 队列（high_watermark×4MB）
+- register 时序不变部分：完成登记仍在对象完成时（见下预许可）
+
+**注册预许可（两模式对齐"落盘前注册"）**：
+- 消息：WRITE_REGISTER 增预许可标志（不带 size）
+- 流式模式（=0）两阶段：流开始前预许可（许可+provenance，无可见性）
+  → 拒绝即失败（零序列化零落盘）→ 流式写 → 完成登记（size+可见性激活）
+- 事务模式（=1）一阶段：流开始前预许可（与现有事务 register 同构）→
+  流式写 → TaskComplete 统一激活（现有机制零新增）
+- master：do_write_register 预许可分支只走许可段
+
+**阶段一测试**：44（WriteMemoryCeiling，QA 独立进程 RSS 断言）、
+45（CrashOrphanChunks：写中断残块无 trailer 不可读+段回滚）、
+47（WBQBackpressure：队列封顶+生产端阻塞观测）、48（RegisterAtCompletion：
+NOT_READY 窗口验证——预许可后完成登记前下游不可读）
+**验证门**：存储单测绿 + 全量 QA 绿
+
+### 14.2 阶段二：传输与接收（A'）
+
+- **A'1 帧简化**：CHUNK 帧去帧级 CRC（帧头 check 位保留——失步检测一层
+  + 块 CRC 数据校验一层）
+- **A'2 接收线程块级校验**：解析块边界（16B 块头取 comp 长度）→ 逐块验
+  块 CRC → 坏块记 hole（resend 请求 offset+len）→ 后续好块 pending 暂存
+  → 重传到达填洞 → 按序推进（§4.6 数据流）
+- **A'3 resend offset 化**：ChunkResendMessage 带 byte offset+length
+  （server 零块知识，pread 区间重发；根治 seq 依赖两端 frame_bytes 一致的
+  混布脆弱点）
+- **A'4 L2 整缓冲重组块级化**：receive_chunked 同样按块校验重组；
+  META `chunk_frame_bytes_` 退役（无消费者）
+- DIGEST 根语义不变（区间摘要，端到端兜底）
+- **阶段二测试**：块级坏块 resend 恢复 / resend 仍坏 CHECKSUM / offset
+  寻址正确性 / 重组-流式双路径一致
+**验证门**：网络单测绿 + 全量 QA 绿
+
+### 14.3 阶段三：缓存取消 + 磁盘源 + TIER2 流式编排（D）
+
+- **D1 缓存分支移除**：commit_write / read_object_compressed /
+  try_read_local_raw 三处 low-tier 分支删除
+- **D2 cache 参数二值化**：`"low"` → `"none"` 别名；read_object 默认值
+  改 "none"；文档注明
+- **D3 DiskChunkSource**：pread 拉取式磁盘源（与 NetworkChunkSource 同构，
+  复用块级校验）——本地流式读内存有界（low-tier 取消后的必要配套）
+- **D4 TIER2 完整流式编排**：export 层轮换+指数退避+30s deadline+TIER3
+  刷新；消费失败分类（网络类→轮换重开流；校验类→零容忍预算→FATAL）；
+  **移除整缓冲回退**（read_streaming 现有"首副本+回退"逻辑删除）
+- **D5 清理**：read_cache_size 闲置标注；QA read_cache 系列三例 +
+  cpp_object_cache low 断言改写为盘路径验证；ObjectCache low-tier 结构
+  物理删除（独立后续 commit）
+- **阶段三测试**：38（MemoryCeiling QA 独立进程）、46（流式写读
+  roundtrip 单测化）、本地流式读与整读一致、TIER2 流式副本轮换
+  （fake server 注入首副本断连）
+**验证门**：存储+网络单测绿 + 全量 QA 绿
+
+### 14.4 阶段四：全量验证
+
+- 全量 QA ×2 轮（含新 QA case）
+- 100 轮稳定性（失败即停保现场）
+- 文档同步（§4-§9 正文按定案改写、DOC_CHANGELOG、实现记录 §13 补 v2）
+- 分阶段 commit + push（每阶段独立提交，pre-push hook 全量校验）
+
+### 14.5 依赖与顺序说明
+
+- 阶段一 B' 先于 C（finish 单元写含块表的 trailer）
+- 阶段二 A' 独立于阶段一（可并行评审，串行实施）
+- 阶段三 D4 依赖 A'（接收线程块级校验后源失败分类才清晰）；D1-D3 独立
+- 阶段间全量 QA 门禁；每阶段 TDD（测试先红→实现→绿）
+
+### 14.6 风险与对策（v2 新增）
+
+| 风险 | 对策 |
+|---|---|
+| 块表格式错误（写读两侧不一致） | 契约测试双独立实现对照（同 trailer CRC 的测试模式） |
+| WBQ 逐块与段事务交互（abort 清理块单元） | 块单元无 on_complete 副作用（设计已有），45 专项测试 |
+| 预许可与完成登记间的窗口（许可后 master 重启） | 完成登记仍全量检查（许可非持久授权，仅提前拒绝） |
+| TIER2 流式重开的资源累积（旧源释放时序） | 重开前旧源析构（fd/slot 归还）先行；36 测试扩展 |
+| low-tier 移除后写后立即读的 NOT_READY 轮询放大 | 轮询已有退避；QA 观测窗口期负载无异常即收 |
+| 块级校验前移的接收线程性能（每块一次 CRC） | 14.6GB/s 实测，4MB 块 ~0.3ms——网络远慢于此 |
 
