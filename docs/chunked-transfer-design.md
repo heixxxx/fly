@@ -201,6 +201,22 @@ client                          server
 **§12 不做清单同步修订**：原"写入时块索引落盘（懒构建够用，除非 L4）"
 一条废止——块位置表以 trailer 内嵌形式纳入本设计（B'）。
 
+**L3 TIER2 完整流式编排（2026-08-29 用户裁定，差异讨论 #5 定案）**：
+- 流式路径**自备 TIER2 重试**：传到一半流断（对端连接断开数据未传完）→
+  本次流式失败 → 按 TIER2 规则选下一副本**重新流式**（重新开流 + 重新消费，
+  对象级重来——无断点续传、消费端数据不可回卷）；副本轮换 + 指数退避 +
+  30s deadline + TIER3 刷新，与整缓冲 TIER2 同构。
+- **禁止整缓冲回退（用户明确："始终不使用整体接收的方式"）**——现有
+  read_streaming 的"首副本 best-effort + 失败回退 read_object_compressed"
+  逻辑移除。
+- 消费失败分类：网络类（断连/超时）→ 轮换下一副本重新流式；校验类
+  （块 CRC/trailer/DIGEST）→ 零容忍预算（§5：一次重取）→ 仍败 FATAL。
+- 实施位置：export 层流式编排（消费入口可重入——每次重试重新
+  Unpickler(新流)）；与 A' 同批次。流式重试中 remove_remote_location
+  使死副本出序。
+- 范围界定：该裁定针对**流式读路径**；L2 整缓冲重组（receive_chunked）
+  保留给非流式读（小对象快路径 / streaming_read_threshold=0 逃生口）。
+
 **META 字段裁定（2026-08-29 用户同意，差异讨论 #3 定案）**：
 - `trailer_len_` + `chunk_compression_type_` **保留**（流式消费"流首启动、
   流尾未知"的刚需——凡 trailer 来的信息必须经 META 预告知；B' 后 trailer_len
