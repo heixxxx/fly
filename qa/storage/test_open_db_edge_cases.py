@@ -7,13 +7,14 @@ Scenarios:
   4. get_db_path() and get_data_path() return correct values
 """
 from _fly_log import INFO
+from test import qa_tmp
 import time
 import os
 import shutil
 
-DB_PATH_AUTO = "/tmp/fly_e2e_open_db_auto_db"
-DB_PATH_DATAPATH = "/tmp/fly_e2e_open_db_datapath_db"
-CUSTOM_DATA_PATH = "/tmp/fly_e2e_custom_data_path"
+DB_PATH_AUTO = qa_tmp("fly_e2e_open_db_auto_db")
+DB_PATH_DATAPATH = qa_tmp("fly_e2e_open_db_datapath_db")
+CUSTOM_DATA_PATH = qa_tmp("fly_e2e_custom_data_path")
 
 
 from fly import open_db, get_config

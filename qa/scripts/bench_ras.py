@@ -1,5 +1,6 @@
 """RAS solver benchmark: n=500,700 with varying workers."""
 from _fly_log import INFO
+from test import qa_tmp
 import os
 import shutil
 import time
@@ -12,7 +13,7 @@ from solver import solve_ras
 
 
 def run_one(n, nsd, overlap=None):
-    db_path = f"/tmp/fly_bench_ras_n{n}_nsd{nsd}"
+    db_path = qa_tmp(f"fly_bench_ras_n{n}_nsd{nsd}")
     if os.path.isdir(db_path):
         shutil.rmtree(db_path, ignore_errors=True)
 

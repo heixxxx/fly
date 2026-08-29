@@ -14,6 +14,8 @@ import sys
 import shutil
 import time
 
+from test import qa_tmp
+
 
 def cleanup(path):
     if os.path.isdir(path):
@@ -24,8 +26,8 @@ def cleanup(path):
 
 def test_db_meta_json_format():
     """Verify _DB_META JSON via the Python orchestration layer."""
-    db_path = "/tmp/fly_e2e_load_db_p1"
-    log_dir = "/tmp/fly_e2e_load_db_p1_logs"
+    db_path = qa_tmp("fly_e2e_load_db_p1")
+    log_dir = qa_tmp("fly_e2e_load_db_p1_logs")
 
     for p in [db_path, log_dir]:
         cleanup(p)

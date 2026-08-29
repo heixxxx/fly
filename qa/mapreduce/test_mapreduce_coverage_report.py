@@ -5,6 +5,7 @@ Python coverage for Master and Worker processes. No manual coverage
 management needed in this script.
 """
 from _fly_log import INFO, ERR
+from test import qa_tmp
 import time
 import os
 import shutil
@@ -30,7 +31,7 @@ def run_test(name, fn):
         failed += 1
 
 def fresh_db(name):
-    path = f"/tmp/fly_cov_{name}_db"
+    path = qa_tmp(f"fly_cov_{name}_db")
     if os.path.isdir(path):
         shutil.rmtree(path, ignore_errors=True)
     return open_db(path)

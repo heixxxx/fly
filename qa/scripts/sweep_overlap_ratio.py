@@ -17,8 +17,9 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import splu
 from _fly_log import INFO
+from test import qa_tmp
 
-DB_PATH = f"/tmp/fly_sweep_n{N_SIDE}_sd{NSD}_r{int(OVERLAP*100)}"
+DB_PATH = qa_tmp(f"fly_sweep_n{N_SIDE}_sd{NSD}_r{int(OVERLAP*100)}")
 
 from fly import open_db, get_config
 from fly.runtime import get_agent

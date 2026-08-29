@@ -77,7 +77,8 @@ def test_deserialize_pickle_args():
 def test_deserialize_fly_db_marker():
     worker = MockWorker()
 
-    db_marker = "__fly_db__:/tmp/fly_test_marker_db:"
+    marker_dir = tempfile.mkdtemp(prefix="test_executor_marker_")
+    db_marker = f"__fly_db__:{marker_dir}:"
     args = [db_marker]
 
     result = deserialize_args(args, worker)
@@ -85,12 +86,13 @@ def test_deserialize_fly_db_marker():
     assert len(result) == 1
     assert isinstance(result[0], Database)
     # cache key == db_path（db_path == db_path，不再单独传）
-    assert "/tmp/fly_test_marker_db" in worker._db_cache
-    assert "/tmp/fly_test_marker_db" in worker._agent.registered_dbs
+    assert marker_dir in worker._db_cache
+    assert marker_dir in worker._agent.registered_dbs
 
     result[0]._db.reset()
     del result[0]
-    del worker._db_cache["/tmp/fly_test_marker_db"]
+    del worker._db_cache[marker_dir]
+    shutil.rmtree(marker_dir, ignore_errors=True)
 
 
 def test_deserialize_fly_db_with_data_path():

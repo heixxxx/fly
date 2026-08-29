@@ -3,12 +3,14 @@ import sys
 import os
 import shutil
 
-DB_PATH = "/tmp/fly_e2e_db"
+from test import qa_tmp
+
+DB_PATH = qa_tmp("fly_e2e_db")
 
 
 def cleanup():
     for p in [DB_PATH, DB_PATH + "_frozen", DB_PATH + "_blocked",
-              DB_PATH + "_fanout", "/tmp/fly_e2e_concurrent"]:
+              DB_PATH + "_fanout", qa_tmp("fly_e2e_concurrent")]:
         if os.path.isdir(p):
             shutil.rmtree(p, ignore_errors=True)
 

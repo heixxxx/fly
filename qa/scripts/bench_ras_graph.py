@@ -5,6 +5,7 @@ Usage:
   ./build/bin/fly qa/bench_ras_graph.py
 """
 from _fly_log import INFO
+from test import qa_tmp
 import os
 import shutil
 import time
@@ -88,7 +89,7 @@ master.launch_local_workers([{"attributes": [f"sd_{i}"]} for i in range(NSD)])
 assert master.wait_for_workers(NSD), "workers should connect"
 
 # ── Run RAS (baseline, geometric overlap) ──
-db_path = f"/tmp/fly_bench_ras_{MATRIX}_n{N_SIDE}"
+db_path = qa_tmp(f"fly_bench_ras_{MATRIX}_n{N_SIDE}")
 if os.path.isdir(db_path):
     shutil.rmtree(db_path, ignore_errors=True)
 db = open_db(db_path)
@@ -106,7 +107,7 @@ if os.path.isdir(db_path):
     shutil.rmtree(db_path, ignore_errors=True)
 
 # ── Run RAS Graph (graph-based overlap, distributed) ──
-db_path = f"/tmp/fly_bench_rasg_{MATRIX}_n{N_SIDE}"
+db_path = qa_tmp(f"fly_bench_rasg_{MATRIX}_n{N_SIDE}")
 if os.path.isdir(db_path):
     shutil.rmtree(db_path, ignore_errors=True)
 db = open_db(db_path)

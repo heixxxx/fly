@@ -4,11 +4,12 @@ Verifies 4 databases, each receiving 10 write tasks simultaneously
 across 2 workers. All 40 tasks should complete without interference.
 """
 from _fly_log import INFO
+from test import qa_tmp
 import time
 import os
 import shutil
 
-DB_PATHS = [f"/tmp/fly_e2e_stress_multidb_{i}" for i in range(4)]
+DB_PATHS = [qa_tmp(f"fly_e2e_stress_multidb_{i}") for i in range(4)]
 
 
 from test import write_data

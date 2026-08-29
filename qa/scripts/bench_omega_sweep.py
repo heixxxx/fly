@@ -3,6 +3,7 @@
 Usage: ./fly.sh build && ./fly.sh install && ./build/bin/fly qa/bench_omega_sweep.py
 """
 from _fly_log import INFO, ERR
+from test import qa_tmp
 import os
 import shutil
 import subprocess
@@ -15,7 +16,7 @@ FLY_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 N_SIDE = 50
 NSD = 4
-DB_PATH = "/tmp/fly_bench_omega_db"
+DB_PATH = qa_tmp("fly_bench_omega_db")
 OVERLAP_RATIO = 0.60
 MAX_ITER = 100
 TOL = 1e-8
@@ -113,13 +114,13 @@ omegas = [0.5, 0.7, 1.0, 1.2, 1.5, 1.8, "aitken", "adaptive"]
 INFO(f"Omega sweep: n={N_SIDE} N={N} nsd={NSD} overlap={OVERLAP_RATIO} tol={TOL}")
 
 results = []
-tmpdir = "/tmp/fly_bench_omega"
+tmpdir = qa_tmp("fly_bench_omega")
 os.makedirs(tmpdir, exist_ok=True)
 
 for omega_val in omegas:
     label = str(omega_val)
     script_path = os.path.join(tmpdir, f"run_omega_{label}.py")
-    db_path = f"/tmp/fly_bench_omega_db_{label}"
+    db_path = qa_tmp(f"fly_bench_omega_db_{label}")
 
     script_content = RUNNER_SCRIPT.format(
         db_path=db_path, omega=repr(omega_val),

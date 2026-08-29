@@ -8,14 +8,15 @@ Run as a standalone fly process (fresh singletons, no cross-test pollution).
 """
 import os
 import sys
-import tempfile
 
 
 def main():
     from fly import open_db
     from _fly_storage import EXStgIndexEntry
+    from test import qa_tmp
 
-    tmpdir = tempfile.mkdtemp(prefix="fly_test_cpp_cache_")
+    tmpdir = qa_tmp(f"fly_test_cpp_cache_{os.getpid()}")
+    os.makedirs(tmpdir, exist_ok=True)
     db = open_db(tmpdir)
 
     # ── 1. C++ exported class write + read round-trip ──

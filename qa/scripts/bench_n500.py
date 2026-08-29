@@ -11,6 +11,7 @@ Usage:
   ./build/bin/fly qa/scripts/bench_n500.py
 """
 from _fly_log import INFO
+from test import qa_tmp
 import os
 import shutil
 import time
@@ -32,7 +33,7 @@ TOL = 1e-8
 
 # ── Generate matrix ──
 INFO(f"Generating matrix: n={N_SIDE} N={N_SIDE*N_SIDE}")
-matrix_path = f"/tmp/fly_bench_matrix_n{N_SIDE}.npz"
+matrix_path = qa_tmp(f"fly_bench_matrix_n{N_SIDE}.npz")
 generate_poisson_matrix(N_SIDE, matrix_path)
 golden = np.load(matrix_path, allow_pickle=False)
 x_exact = golden["x_exact"]
@@ -131,7 +132,7 @@ master = get_agent()
 master.launch_local_workers([{"attributes": [f"sd_{i}"]} for i in range(NSD)])
 assert master.wait_for_workers(NSD), f"{NSD} workers should connect"
 
-db_path = f"/tmp/fly_bench_n{N_SIDE}_sd{NSD}_default"
+db_path = qa_tmp(f"fly_bench_n{N_SIDE}_sd{NSD}_default")
 if os.path.isdir(db_path):
     shutil.rmtree(db_path, ignore_errors=True)
 
@@ -159,7 +160,7 @@ INFO("=" * 60)
 INFO("Phase 4: RAS Graph (coarse)")
 INFO("=" * 60)
 
-db_path = f"/tmp/fly_bench_n{N_SIDE}_sd{NSD}_coarse"
+db_path = qa_tmp(f"fly_bench_n{N_SIDE}_sd{NSD}_coarse")
 if os.path.isdir(db_path):
     shutil.rmtree(db_path, ignore_errors=True)
 

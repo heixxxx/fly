@@ -18,6 +18,7 @@ import threading
 import numpy as np
 from scipy import sparse
 from _fly_log import INFO
+from test import qa_tmp
 
 
 from fly import open_db, get_config
@@ -52,7 +53,7 @@ def _get_matrix(n_side):
 
 def run_golden(n_side, nsd, overlap_ratio=0.30, max_iter=200, tol=1e-8, omega=1.0):
     label = f"n={n_side} nsd={nsd} ratio={overlap_ratio:.0%} omega={omega}"
-    db_path = f"/tmp/fly_golden_n{n_side}_sd{nsd}_r{int(overlap_ratio*100)}_o{str(omega).replace('.','_')}"
+    db_path = qa_tmp(f"fly_golden_n{n_side}_sd{nsd}_r{int(overlap_ratio*100)}_o{str(omega).replace('.','_')}")
 
     if os.path.isdir(db_path):
         shutil.rmtree(db_path, ignore_errors=True)

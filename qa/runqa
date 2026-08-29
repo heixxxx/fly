@@ -25,6 +25,7 @@ import time
 import argparse
 import signal
 import shutil
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -611,6 +612,24 @@ def main():
     if os.path.isdir(qa_log_dir):
         shutil.rmtree(qa_log_dir)
     os.makedirs(qa_log_dir)
+
+    # 兜底清扫（用后即清治理防线，2026-08-29）：清 /tmp 下 fly 测试族前缀的
+    # 历史/异常残留（超时杀进程/崩溃漏清——曾累积 44334 目录 36G 触发 WSL
+    # 磁盘事件）。精确匹配 fly_ 前缀，不触碰其他程序的临时文件。
+    import glob as _glob
+    _swept = 0
+    for _p in _glob.glob(os.path.join(tempfile.gettempdir(), "fly_*")):
+        try:
+            if os.path.islink(_p) or os.path.isfile(_p):
+                os.remove(_p)
+            elif os.path.isdir(_p):
+                shutil.rmtree(_p, ignore_errors=True)
+            _swept += 1
+        except OSError:
+            pass
+    if _swept:
+        log(f"[tmp-sweep] cleaned {_swept} fly_* residue entries from "
+            f"{tempfile.gettempdir()}")
 
     _log_file = open(os.path.join(qa_log_dir, "qa.log"), "w")
 

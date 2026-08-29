@@ -12,13 +12,14 @@ import time
 # Add build directory to path
 
 from fly import open_db, get_config, wait_tasks, launch_workers
-import tempfile
+from test import qa_tmp
 import shutil
 
 
 def main():
     """Main test."""
-    tmpdir = tempfile.mkdtemp(prefix="fly_copy_elim_")
+    tmpdir = qa_tmp(f"fly_copy_elim_{os.getpid()}")
+    os.makedirs(tmpdir, exist_ok=True)
 
     try:
         # Create database

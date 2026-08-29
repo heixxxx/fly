@@ -1,5 +1,6 @@
 """Benchmark: 2-Level RAS solver."""
 from _fly_log import INFO
+from test import qa_tmp
 import os
 import shutil
 import time
@@ -11,7 +12,7 @@ from solver import solve_ras2
 
 
 def run_one(n, nsd):
-    db_path = f"/tmp/fly_bench_ras2_n{n}_nsd{nsd}"
+    db_path = qa_tmp(f"fly_bench_ras2_n{n}_nsd{nsd}")
     if os.path.isdir(db_path):
         shutil.rmtree(db_path, ignore_errors=True)
 

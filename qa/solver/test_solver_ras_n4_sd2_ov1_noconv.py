@@ -4,6 +4,7 @@ Tests that GMRES-RAS with restart=3 and max_restarts=1 does not converge
 within such limited iterations.
 """
 from _fly_log import INFO
+from test import qa_tmp
 import os
 import shutil
 
@@ -14,7 +15,7 @@ from fly.runtime import get_agent
 N = 4
 NSD = 2
 OVERLAP = 1
-DB_PATH = f"/tmp/fly_e2e_solver_ras_n4_sd2_ov1_noconv_db_{os.getpid()}"
+DB_PATH = qa_tmp(f"fly_e2e_solver_ras_n4_sd2_ov1_noconv_db_{os.getpid()}")
 
 if os.path.isdir(DB_PATH):
     shutil.rmtree(DB_PATH, ignore_errors=True)

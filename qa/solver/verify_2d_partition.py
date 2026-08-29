@@ -1,5 +1,6 @@
 """Verify 2D partition + adaptive depth convergence."""
 from _fly_log import INFO
+from test import qa_tmp
 import sys
 import os
 import shutil
@@ -43,7 +44,7 @@ MAX_ITER = 100
 N, rows, cols, vals = build_poisson_2d(N_SIDE)
 b = [1.0] * N
 
-db_path = f"/tmp/fly_verify_2d_n{N_SIDE}_nsd{NSD}"
+db_path = qa_tmp(f"fly_verify_2d_n{N_SIDE}_nsd{NSD}")
 if os.path.isdir(db_path):
     shutil.rmtree(db_path, ignore_errors=True)
 

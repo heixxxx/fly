@@ -1,11 +1,12 @@
 """E2E test: MapReduce comprehensive coverage — full merge, pre-partitioned,
 keep_intermediate, multi-stage tree, downstream dependency, error paths."""
 from _fly_log import INFO
+from test import qa_tmp
 import time
 import os
 import shutil
 
-BASE_PATH = f"/tmp/fly_e2e_mr_coverage_{os.getpid()}"
+BASE_PATH = qa_tmp(f"fly_e2e_mr_coverage_{os.getpid()}")
 
 
 from fly import open_db, get_config, MapReduceJob, wait_tasks

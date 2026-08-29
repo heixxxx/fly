@@ -5,6 +5,7 @@
 非收敛语义（maxiter 截断）独立于本矩阵，见 test_solver_ras_n4_sd2_ov1_noconv。
 """
 from _fly_log import INFO
+from test import qa_tmp
 import os
 import shutil
 import time
@@ -18,7 +19,7 @@ from solver import solve_ras
 N = int(os.environ.get("SOLVER_N", "4"))
 NSD = int(os.environ.get("SOLVER_NSD", "2"))
 OVERLAP = int(os.environ.get("SOLVER_OVERLAP", "1"))
-DB_PATH = f"/tmp/fly_e2e_solver_ras_n{N}_sd{NSD}_ov{OVERLAP}_db_{os.getpid()}"
+DB_PATH = qa_tmp(f"fly_e2e_solver_ras_n{N}_sd{NSD}_ov{OVERLAP}_db_{os.getpid()}")
 
 
 def scipy_reference(n):

@@ -5,6 +5,7 @@ Usage:
   bash qa/run_qa_tests.sh qa/test_ras_graph.py
 """
 from _fly_log import INFO
+from test import qa_tmp
 import os
 import shutil
 import numpy as np
@@ -16,8 +17,8 @@ from solver import solve_ras_graph, generate_poisson_matrix, MATRIX_OBJ_KEY, Sol
 
 N_SIDE = 20
 NSD = 4
-DB_PATH = f"/tmp/fly_e2e_ras_graph_db_{os.getpid()}"
-MATRIX_PATH = f"/tmp/fly_e2e_ras_graph_matrix_{os.getpid()}.npz"
+DB_PATH = qa_tmp(f"fly_e2e_ras_graph_db_{os.getpid()}")
+MATRIX_PATH = qa_tmp(f"fly_e2e_ras_graph_matrix_{os.getpid()}.npz")
 
 # ── cleanup ──
 if os.path.isdir(DB_PATH):

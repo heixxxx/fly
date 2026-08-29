@@ -4,13 +4,14 @@ Verifies 3 databases with cross-DB dependency chains:
   DB_A writes raw data -> DB_B reads from DB_A and writes features -> DB_C reads from both and writes result
 """
 from _fly_log import INFO
+from test import qa_tmp
 import time
 import os
 import shutil
 
-DB_A = "/tmp/fly_e2e_stress_crossdb_a"
-DB_B = "/tmp/fly_e2e_stress_crossdb_b"
-DB_C = "/tmp/fly_e2e_stress_crossdb_c"
+DB_A = qa_tmp("fly_e2e_stress_crossdb_a")
+DB_B = qa_tmp("fly_e2e_stress_crossdb_b")
+DB_C = qa_tmp("fly_e2e_stress_crossdb_c")
 
 
 from test import write_data, cross_db_copy, triple_db_sum

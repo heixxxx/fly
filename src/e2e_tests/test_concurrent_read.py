@@ -13,16 +13,17 @@ from helpers import setup_master_n_workers
 from fly import open_db
 from test import entry_task
 from test import write_after_freeze
+from test import qa_tmp
 
 
 def test_concurrent_read():
-    for p in ["/tmp/fly_e2e_concurrent"]:
+    for p in [qa_tmp("fly_e2e_concurrent")]:
         if os.path.isdir(p):
             shutil.rmtree(p, ignore_errors=True)
 
     master = setup_master_n_workers(3)
 
-    db5 = open_db("/tmp/fly_e2e_concurrent")
+    db5 = open_db(qa_tmp("fly_e2e_concurrent"))
     entry_task(db5)
 
     completed = master.wait_for_all_tasks(timeout=60)

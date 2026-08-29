@@ -313,7 +313,12 @@ case "${1:-build}" in
         detect_python_paths
         echo ">>> Testing: $targets"
         bazel test $targets --test_output=errors
+        test_rc=$?
+        # 用后即清防线（2026-08-29）：C++ 单测被杀/崩溃时 /tmp/fly_* 漏清
+        # （曾累积 44334 目录 36G 触发 WSL 磁盘事件）——测试收尾兜底清扫。
+        rm -rf /tmp/fly_* 2>/dev/null
         echo ">>> Tests complete."
+        exit $test_rc
         ;;
     buildonly)
         shift || true

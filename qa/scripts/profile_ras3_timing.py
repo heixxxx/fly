@@ -1,5 +1,6 @@
 """Profile ras3 task scheduling overhead: measure wall time between tasks."""
 from _fly_log import INFO, ERR
+from test import qa_tmp
 import os
 import shutil
 import time
@@ -23,7 +24,7 @@ assert master.wait_for_workers(NSD), f"Failed to connect {NSD} workers"
 INFO(f"Workers connected: {master.worker_count}")
 
 # Run RAS (baseline, 2-phase)
-db_path = f"/tmp/fly_profile_ras_n{N}_nsd{NSD}"
+db_path = qa_tmp(f"fly_profile_ras_n{N}_nsd{NSD}")
 if os.path.isdir(db_path):
     shutil.rmtree(db_path, ignore_errors=True)
 db = open_db(db_path)
@@ -37,7 +38,7 @@ if os.path.isdir(db_path):
     shutil.rmtree(db_path, ignore_errors=True)
 
 # Run RAS3 (4-phase)
-db_path = f"/tmp/fly_profile_ras3_n{N}_nsd{NSD}"
+db_path = qa_tmp(f"fly_profile_ras3_n{N}_nsd{NSD}")
 if os.path.isdir(db_path):
     shutil.rmtree(db_path, ignore_errors=True)
 db = open_db(db_path)

@@ -19,7 +19,7 @@ import tracemalloc
 # Add build directory to path
 
 from fly import open_db, get_config
-import tempfile
+from test import qa_tmp
 import shutil
 
 
@@ -72,7 +72,8 @@ def profile_read_python_type(db, name="test_obj"):
 
 def main():
     """Main profiling test."""
-    tmpdir = tempfile.mkdtemp(prefix="fly_copy_prof_")
+    tmpdir = qa_tmp(f"fly_copy_prof_{os.getpid()}")
+    os.makedirs(tmpdir, exist_ok=True)
 
     try:
         # Create database

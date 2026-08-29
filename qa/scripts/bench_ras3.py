@@ -1,5 +1,6 @@
 """RAS3 (distributed matvec) benchmark: compare with ras.py (centralized matvec)."""
 from _fly_log import INFO, ERR
+from test import qa_tmp
 import os
 import shutil
 import time
@@ -12,7 +13,7 @@ from solver import solve_ras, solve_ras3
 
 
 def run_ras(n, nsd, overlap=None):
-    db_path = f"/tmp/fly_bench_ras3_ras_n{n}_nsd{nsd}"
+    db_path = qa_tmp(f"fly_bench_ras3_ras_n{n}_nsd{nsd}")
     if os.path.isdir(db_path):
         shutil.rmtree(db_path, ignore_errors=True)
     db = open_db(db_path)
@@ -26,7 +27,7 @@ def run_ras(n, nsd, overlap=None):
 
 
 def run_ras3(n, nsd, overlap=None):
-    db_path = f"/tmp/fly_bench_ras3_n{n}_nsd{nsd}"
+    db_path = qa_tmp(f"fly_bench_ras3_n{n}_nsd{nsd}")
     if os.path.isdir(db_path):
         shutil.rmtree(db_path, ignore_errors=True)
     db = open_db(db_path)

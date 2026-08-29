@@ -8,6 +8,7 @@ Measures:
 Configs: grid sizes n=4,6,8,10, subdomain counts 2-5, overlap 1-2.
 """
 from _fly_log import INFO
+from test import qa_tmp
 import os
 import shutil
 import time
@@ -172,7 +173,7 @@ assert master.wait_for_workers(max_workers), f"{max_workers} workers should conn
 INFO(f"  {max_workers} workers connected")
 
 for n, nsd, ov in CONFIGS:
-    db_path = f"/tmp/fly_bench_ras_n{n}_sd{nsd}_ov{ov}"
+    db_path = qa_tmp(f"fly_bench_ras_n{n}_sd{nsd}_ov{ov}")
     if os.path.isdir(db_path):
         shutil.rmtree(db_path, ignore_errors=True)
 

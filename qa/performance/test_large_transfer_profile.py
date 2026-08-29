@@ -19,7 +19,9 @@ import time
 import shutil
 import subprocess
 
-PERF_DIR = f"/tmp/fly_profile_perf_{os.getpid()}"
+from test import qa_tmp
+
+PERF_DIR = qa_tmp(f"fly_profile_perf_{os.getpid()}")
 
 
 from test import gpu_write_large_temp, cpu_read_large_remote

@@ -5,6 +5,7 @@ Usage:
   BN=50 BNSD=4 ./build/bin/fly qa/bench_ras_graph_depth.py
 """
 from _fly_log import INFO
+from test import qa_tmp
 import os
 import shutil
 import time
@@ -102,7 +103,7 @@ for depth in DEPTHS:
     avg_extended = sum(extended_sizes) // NSD
 
     # Run distributed solve
-    db_path = f"/tmp/fly_bench_rasg_depth_n{N_SIDE}_d{depth}"
+    db_path = qa_tmp(f"fly_bench_rasg_depth_n{N_SIDE}_d{depth}")
     if os.path.isdir(db_path):
         shutil.rmtree(db_path, ignore_errors=True)
 

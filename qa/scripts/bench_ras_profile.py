@@ -1,5 +1,6 @@
 """RAS benchmark with per-process resource monitoring."""
 from _fly_log import INFO
+from test import qa_tmp
 import os
 import shutil
 import time
@@ -140,7 +141,7 @@ master.launch_local_workers([{"attributes": [f"sd_{i}"]} for i in range(NSD)])
 assert master.wait_for_workers(NSD), f"Failed to connect {NSD} workers"
 INFO(f"Workers connected: {master.worker_count}")
 
-db_path = f"/tmp/fly_bench_ras_profile_n{N}_nsd{NSD}"
+db_path = qa_tmp(f"fly_bench_ras_profile_n{N}_nsd{NSD}")
 if os.path.isdir(db_path):
     shutil.rmtree(db_path, ignore_errors=True)
 
