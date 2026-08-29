@@ -215,19 +215,28 @@ client                          server
 > 裁定原文（用户）：考虑到 low level cache 较难处理，且对内存影响较大，
 > 直接全量取消 low level cache 行为，远程读统一走磁盘——实测磁盘 IO 基本
 > 隐藏在网络 IO 后，low cache 基本没有太大意义。
+> 澄清（同日）：取消的含义是**缓存模式二值化——之后只有"无缓存"和
+> "high level 缓存"两种**。
 
 - **范围**：仅 low-tier（压缩字节缓存，ObjectCache put_low/get_low）。
   high-tier 不动（C++ 解压对象缓存 / Python ReadCache 是反序列化层，另一层抽象）。
 - **取消后语义**：
+  - 缓存模式二值化：`"none"`（无缓存，恒走盘）/ `"high"`（解压对象缓存）。
+    `"low"` 从语义上消失——API 兼容期作为 `"none"` 别名（read_object 的
+    默认值改为 "none"）。
   - 远程 serve / 本地读：恒走盘（本地写后立即读由 `wait_local_write` cv
     等待兜底；远程写后立即读由 NOT_READY 轮询兜底——均为现成语义）。
   - **顺带根治 §4.6 讨论的"未落盘大对象整帧 pin C"残余路径**：不再
     populate 后，该场景自动变 NOT_READY → 落盘 → 分片，server 内存恒常数
     （无须 serve_chunked 内存源版本）。
+  - **连锁配套（必须）**：L3 TIER1 本地路径原依赖缓存共享（SharedMemoryChunkSource
+    零拷贝）——取消后本地流式读退化为整读盘进内存，需补 **DiskChunkSource**
+    （pread 拉取式磁盘源，与 NetworkChunkSource 同构，复用块级校验），
+    归入 B'/A' 实施批次。
   - 内存：释放 read_cache_size 预算（默认 1GB）。
 - **联动清理**（实施清单）：commit_write/read_object_compressed/
-  try_read_local_raw 三处缓存分支移除；write/read 的 `cache="low"` 参数
-  语义降级 no-op（API 兼容保留）；read_cache_size 闲置；QA read_cache
+  try_read_local_raw 三处缓存分支移除；write 的 populate_cache 参数与
+  read 的 cache 参数按二值化语义处理；read_cache_size 闲置；QA read_cache
   系列三例 + cpp_object_cache 的 low 断言改写为盘路径验证；ObjectCache
   low-tier 结构物理删除作独立后续清理（先行为取消后结构删除，风险分步）。
 - **同步修订 §4.5**："缓存命中→整帧快路径"条款废止——快路径分流只看
