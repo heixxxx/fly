@@ -119,7 +119,7 @@ client                          server
 
 - **根摘要放流尾 DIGEST 帧**（server 单遍：边 pread 边发边算根，无需预扫）——与磁盘 trailer 尾置同构。
 - **三层校验分工**：帧头 check 位（失步/垃圾）→ **CHUNK 帧 CRC**（传输跳，接收侧验证，驱动在线块重传）→ **磁盘内嵌块 CRC**（写入时刻锚点，解压时验证，覆盖全生命周期：磁盘 → server 内存 → 网络 → client 内存 → 解压）；DIGEST 根摘要做端到端绑定（乱序/调包兜底）。
-- **小对象快路径**：total_compressed_len ≤ 单片阈值或缓存命中 → 现整帧两段式（含 `payload_crc_`），一次往返。
+- **小对象快路径**：total_compressed_len ≤ 单片阈值 → 现整帧两段式（含 `payload_crc_`），一次往返。（~~或缓存命中~~ 2026-08-29 废止：low-tier cache 全量取消，见 §4.7——分流只看尺寸。）
 - **CHUNK_RESEND 处理模型**：client 验坏块后发 resend 请求（同连接），server 读循环路由该消息类型单块重发；每块重传上限一次，再失败升格对象级 FATAL。与「不做断线续传」不冲突：**在线块重传**（连接活着）做；**断线**仍整对象走 TIER2 重试。
 
 **L2 落地修订（2026-08-29 实现）**：
@@ -209,6 +209,30 @@ client                          server
   重组路径一并块级化）。
 - **保持 DATA_RESPONSE 复用**，不拆独立 META 消息类型（快路径零值字段
   ~4 字节实测可忽略；一个对象一次交互的消息类型数量最小化；用户同意）。
+
+### 4.7 low-tier cache 全量取消（2026-08-29 用户裁定，差异讨论 #4 定案）
+
+> 裁定原文（用户）：考虑到 low level cache 较难处理，且对内存影响较大，
+> 直接全量取消 low level cache 行为，远程读统一走磁盘——实测磁盘 IO 基本
+> 隐藏在网络 IO 后，low cache 基本没有太大意义。
+
+- **范围**：仅 low-tier（压缩字节缓存，ObjectCache put_low/get_low）。
+  high-tier 不动（C++ 解压对象缓存 / Python ReadCache 是反序列化层，另一层抽象）。
+- **取消后语义**：
+  - 远程 serve / 本地读：恒走盘（本地写后立即读由 `wait_local_write` cv
+    等待兜底；远程写后立即读由 NOT_READY 轮询兜底——均为现成语义）。
+  - **顺带根治 §4.6 讨论的"未落盘大对象整帧 pin C"残余路径**：不再
+    populate 后，该场景自动变 NOT_READY → 落盘 → 分片，server 内存恒常数
+    （无须 serve_chunked 内存源版本）。
+  - 内存：释放 read_cache_size 预算（默认 1GB）。
+- **联动清理**（实施清单）：commit_write/read_object_compressed/
+  try_read_local_raw 三处缓存分支移除；write/read 的 `cache="low"` 参数
+  语义降级 no-op（API 兼容保留）；read_cache_size 闲置；QA read_cache
+  系列三例 + cpp_object_cache 的 low 断言改写为盘路径验证；ObjectCache
+  low-tier 结构物理删除作独立后续清理（先行为取消后结构删除，风险分步）。
+- **同步修订 §4.5**："缓存命中→整帧快路径"条款废止——快路径分流只看
+  尺寸阈值：小对象（≤阈值）整帧；大对象恒分片（落盘 pread；未落盘场景
+  由 NOT_READY 收敛到落盘后分片）。
 
 ## 5. 失败与重试语义（工业零容忍，对象级统一）
 

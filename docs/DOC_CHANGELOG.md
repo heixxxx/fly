@@ -3,9 +3,11 @@
 ---
 ---
 
-## 2026-08-29 (2): §4.6 统一块模型定稿——用户构想对齐（正常路径零块感知 + client 块级校验 + trailer 块表）
+## 2026-08-29 (2): §4.6 统一块模型 + §4.7 low-tier cache 取消——差异讨论 #2/#3/#4 定案
 
-**chunked-transfer-design.md §4.6 新增**：实现与用户原始构想逐条对照后收敛的统一模型——核心原则"正常传输路径双方零块感知；块结构知识只在 client 校验侧与 trailer 元信息"。存档用户构想六条原意；三项待实施差距（B' trailer 块位置表 u32 comp_len 紧凑式 / A' 接收线程块级 CRC 前移 + resend byte-offset 寻址 + 去帧级 CRC 保 check 位 / C 写路径 WBQ 后台落盘）；三细节裁定记录；实施顺序 B'→A'→C。§12 不做清单的"写入时块索引落盘"条废止（块表以 trailer 内嵌纳入）。
+**§4.6 统一块模型**：实现与用户构想逐条对照后收敛——正常传输路径双方零块感知、块结构知识只在 client 校验侧与 trailer 元信息；三项待实施（B' trailer 块位置表 / A' 接收线程块级 CRC + resend byte-offset + 去帧级 CRC / C 写路径 WBQ 后台落盘）；META 字段裁定（trailer_len/comp_type 保留、frame_bytes 退役、保持 DATA_RESPONSE 复用）。§12 块索引条款废止。
+
+**§4.7 low-tier cache 全量取消（用户裁定）**：远程读统一走磁盘（实测盘 IO 藏在网络 IO 后）；high-tier 不动；写读一致性由 NOT_READY 轮询 + wait_local_write 现成语语兜底；顺带根治未落盘大对象 pin C 残余路径（无须内存源分片）；释放 1GB 预算；联动清理清单（缓存分支移除/cache="low" 降级 no-op/QA read_cache 系列改写/结构物理删除分步）。
 
 ---
 
