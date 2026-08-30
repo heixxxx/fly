@@ -133,6 +133,11 @@ int32_t FlyStream::chunk_count() const {
     return compress_sb_ ? compress_sb_->chunk_count()
                         : (decompress_sb_ ? static_cast<int32_t>(decompress_sb_->chunk_count()) : 0);
 }
+CMString FlyStream::py_name() const {
+    // 写模式（compress_sb_ 持有写入 py_name 经 trailer；直接用成员最直接）。
+    if (is_write_mode_) return py_name_;
+    return decompress_sb_ ? decompress_sb_->py_name() : CMString{};
+}
 
 bool FlyStream::checksum_failed() const {
     return decompress_sb_ && decompress_sb_->checksum_failed();

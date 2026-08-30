@@ -130,34 +130,36 @@ m.def("ex_stg_open_read_stream",
     }
     if (r.rerr == fly::ReadError::OBJECT_NOT_FOUND ||
         r.rerr == fly::ReadError::DATA_NOT_READY) {
-        // 流式首副本不可见≠对象不存在（TIER3/master 权威索引可能在其他
-        // 副本）——回退整缓冲完整编排（read_object_compressed 的 TIER2/TIER3
-        // 轮换是权威判定；全源 miss 才是真正 KeyError）。
-        // 注：D4 完整流式轮换落地后此回退收敛为流式重试（§14.3）。
+        // read_streaming 内部已完成副本轮换 + TIER3 刷新 + deadline（D4）——
+        // 到这里 = 全源 miss，即真正"对象不可见"。#5 裁定禁止整缓冲回退
+        //（原 NOT_FOUND 回退 read_object_compressed 已删，回退只会得到同样
+        // 结果）。
+        PyErr_SetString(PyExc_KeyError, ("Object '" + name + "' not found").c_str());
+        throw fly_export::python_error();
+    }
+    if (r.error == "no streaming handler") {
+        // master 进程无 streaming handler（worker 侧注册）——master 直读的
+        // 主路径 = DataClientPool 整缓冲拉取 + SharedMemoryChunkSource 内存
+        // 流式消费（#5 裁定界定范围是流式读路径的失败回退；此处非回退，
+        // 是 master 的常规读通道）。
         auto [comp_data, py_name] = db.read_object_compressed(name, backup);
         if (!comp_data || comp_data->empty()) {
             PyErr_SetString(PyExc_KeyError, ("Object '" + name + "' not found").c_str());
             throw fly_export::python_error();
         }
-        auto mem2 = CMMakeShared<fly::SharedMemoryChunkSource>(
+        auto mem = CMMakeShared<fly::SharedMemoryChunkSource>(
             comp_data->data(), comp_data->size(), comp_data);
-        if (mem2->failed()) {
-            throw_fatal_corruption(name, "record corrupt after full re-fetch");
+        if (mem->failed()) {
+            throw_fatal_corruption(name, "record corrupt after fetch (master path)");
         }
-        return new FlyStream(mem2, mem2->block_area_len());
+        return new FlyStream(mem, mem->block_area_len());
     }
-    // 回退：完整编排整缓冲 → Memory 源（解压/反序列化仍流式化）。
-    auto [comp_data, py_name] = db.read_object_compressed(name, backup);
-    if (!comp_data || comp_data->empty()) {
-        PyErr_SetString(PyExc_KeyError, ("Object '" + name + "' not found").c_str());
-        throw fly_export::python_error();
-    }
-    auto mem = CMMakeShared<fly::SharedMemoryChunkSource>(
-        comp_data->data(), comp_data->size(), comp_data);
-    if (mem->failed()) {
-        throw_fatal_corruption(name, "record corrupt after full re-fetch");
-    }
-    return new FlyStream(mem, mem->block_area_len());
+    // worker 侧：网络类轮换全败 / deadline 到期（read_streaming 已尽力：
+    // 轮换+退避+TIER3 刷新）——#5 裁定禁止整缓冲回退，如实上抛；消费端
+    // 对象级重开（Python read_object 两轮）是上层兜底。
+    PyErr_SetString(PyExc_RuntimeError,
+                    ("streaming read failed for '" + name + "': " + r.error).c_str());
+    throw fly_export::python_error();
       }),
       fly_export::rv_policy::take_ownership);
 
@@ -251,7 +253,9 @@ FLY_EXPORT_CLASS(FlyStream, "FlyStream")
         return s.finish_and_commit(backup, populate_cache);
     })
     FLY_EXPORT_READONLY_PROPERTY("total_uncompressed", &FlyStream::total_uncompressed)
-    FLY_EXPORT_READONLY_PROPERTY("chunk_count", &FlyStream::chunk_count);
+    FLY_EXPORT_READONLY_PROPERTY("chunk_count", &FlyStream::chunk_count)
+    // 读模式源元数据（open 返回即有效）——read_object 单拉分流。
+    FLY_EXPORT_READONLY_PROPERTY("py_name", &FlyStream::py_name);
 
 FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     // L1 大对象流式写（§9.1）：open → pickle.dump(stream) →

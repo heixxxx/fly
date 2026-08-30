@@ -47,6 +47,9 @@ public:
     size_t readinto(char* dst, size_t dst_size);
     int64_t total_uncompressed() const;
     int32_t chunk_count() const;
+    // 读模式：源元数据 py_name（META/trailer 解析——open 返回即有效）。
+    // read_object 单拉分流用（双拉修复 2026-08-30）。写模式返回写入 py_name。
+    CMString py_name() const;
     bool is_write_mode() const { return is_write_mode_; }
     // 读模式：任一校验失败（trailer/块 CRC/结构越界）为 true——Python 面
     // 读完后必须检查（零容忍语义，§4.4/§5）。

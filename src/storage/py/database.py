@@ -146,66 +146,48 @@ class Database:
         t0 = time.perf_counter()
         nbytes = 0
         try:
-            # Caching tier dispatch:
-            #   - nanobind (C++ exported) classes: _read_from_db → C++ ObjectCache
-            #     high tier ("high") / no-cache ("none"——每次解压重建)。
-            #   - pickle (Python) objects: "high" → Python ReadCache high tier;
-            #     "none" → 每次流式读重建（Unpickler 增量消费）。
-            py_name = self._db._get_py_name(name)
             import _fly_storage
-            cls = getattr(_fly_storage, py_name, None)
-            is_cpp_obj = cls is not None and hasattr(cls, "_read_from_db")
 
-            if is_cpp_obj:
-                # nanobind class → C++ read_object<Cls>。C++ 侧 "low" 语义 =
-                # high tier 查询 + miss 重建 + populate high（low-tier 取消后
-                # 该链路不变）——"none" 映射 "low" 保持默认 populate 行为，
-                # 显式 "high" 不变。
-                cpp_cache = "low" if cache == "none" else cache
-                return cls._read_from_db(self._db, name, cpp_cache)
+            def _cpp_cls(py_name):
+                cls = getattr(_fly_storage, py_name, None)
+                return cls if cls is not None and hasattr(cls, "_read_from_db") else None
 
+            # 双拉修复（2026-08-30）：py_name 不再单独探测——原 _get_py_name
+            # 探测会触发 read_object_compressed 全量拉取（数据丢弃只取几字节
+            # py_name，大对象远程读传输量翻倍）。分流所需的 py_name 改由读取
+            # 原语天然携带（流式 stream.py_name / 整缓冲 _read_decompressed
+            # 返回值）：pickle 路径单次拉取；C++ 对象路径交 _read_from_db
+            #（ObjectCache 命中零拉取；miss 重建一次——总量与旧探测路径持平）。
+            rc = None
+            key = None
             if cache == "high":
                 from storage import get_read_cache
                 rc = get_read_cache()
-                db_path = self.get_db_path()
-                key = f"{db_path}:{name}"
+                key = f"{self.get_db_path()}:{name}"
                 obj = rc.get(key, "high")
                 if obj is not None:
                     return obj
-                # Zero-copy: use _read_decompressed to avoid intermediate copies
-                data, _ = self._db._read_decompressed(name, backup)
-                # read_object_compressed 在所有 tier miss 时返回 nullptr，_read_decompressed
-                # 翻译成空 bytes（storage_export.cpp）。不检查直接 pickle.loads(b'') 会抛
-                # 误导性的 EOFError: Ran out of input，掩盖"对象不存在/尚未可见"的真相。
-                # 这里前置检查，把语义还原成标准的"读不到"异常。
-                if not data:
-                    raise KeyError(
-                        f"Object '{name}' not found (no data — not yet visible to master "
-                        "or never written)")
-                nbytes = len(data)
-                obj = pickle.loads(data)
-                rc.put(key, "high", obj)
-                return obj
 
-            # pickle object, cache="low"/"none": C++ low tier handles byte caching.
-            # L3 流式（§8.1）：Unpickler(FlyStream) 增量消费——内存 R+常数而非
-            # C+2R。streaming_read_threshold=0 可关闭（逃生口）；对象不可见
-            #（NOT_FOUND/NOT_READY）由 export 层直接 KeyError（不回退——回退
-            # 只会得到同样结果）。流中途异常/校验失败 → 回退整缓冲完整编排
-            #（内含一次重取 + FATAL 语义，零容忍 §5）。
+            cpp_cache = "low" if cache == "none" else cache
+
             from core import get_config as _gc
             if _gc().get_int("streaming_read_threshold") > 0:
-                import _fly_storage
-                # D4（§14.3）：消费中途失败 → 重新调 open（对象级重来——无断点
-                # 续传、消费端不可回卷）。read_streaming 内部已做副本轮换 +
-                # 零容忍预算（校验类一次重取 → FATAL）；此处重开覆盖"传输
-                # 中途断连"的消费端恢复（dead 副本已被 remove，重开自然换源）。
+                # L3 流式（§8.1）：Unpickler(FlyStream) 增量消费——内存 R+常数
+                # 而非 C+2R。streaming_read_threshold=0 可关闭（逃生口）；对象
+                # 不可见（NOT_FOUND/NOT_READY）由 export 层直接 KeyError。
+                # D4（§14.3）：消费中途失败 → 重新调 open（对象级重来）。
                 for _attempt in range(2):
                     try:
                         stream = _fly_storage.ex_stg_open_read_stream(
                             self._db, name, backup)
                     except KeyError:
                         raise  # 对象不可见：语义与整缓冲路径一致
+                    cls = _cpp_cls(stream.py_name)
+                    if cls is not None:
+                        # C++ 对象走权威重建路径（含 ObjectCache 命中快路径）；
+                        # 弃置已打开的流（析构释放 source/连接资源）。
+                        stream = None
+                        return cls._read_from_db(self._db, name, cpp_cache)
                     try:
                         obj = pickle.Unpickler(stream).load()
                         corrupt = stream.checksum_failed()
@@ -214,25 +196,36 @@ class Database:
                         corrupt = True  # 流截断/源坏——按损坏处理
                     if not corrupt:
                         nbytes = stream.total_uncompressed  # property
+                        if rc is not None:
+                            rc.put(key, "high", obj)
                         return obj
                     stream = None  # 弃流重开（对象级重来）
-                # 两次消费均败：零容忍 FATAL（完整编排重取 + FATAL 语义）。
-                data, _ = self._db._read_decompressed(name, backup)
-                if not data:
-                    raise KeyError(
-                        f"Object '{name}' not found (no data — not yet visible "
-                        "to master or never written)")
-                nbytes = len(data)
-                return pickle.loads(data)
+                # 两轮流式消费均败（read_streaming 内已副本轮换+零容忍预算，
+                # 消费端再重开一轮仍败）——#5 裁定禁止整缓冲回退，直接 FATAL
+                #（task 失败通道，§5 零容忍语义）。
+                raise RuntimeError(
+                    f"[FATAL-DATA-CORRUPTION] streaming consume failed twice: "
+                    f"{name}")
 
-            # Zero-copy: use _read_decompressed to avoid intermediate copies
-            data, _ = self._db._read_decompressed(name, backup)
+            # 整缓冲（流式关闭）：单拉 + 返回值携带的 py_name 分流。
+            data, py_name = self._db._read_decompressed(name, backup)
+            # read_object_compressed 在所有 tier miss 时返回 nullptr，
+            # _read_decompressed 翻译成空 bytes——还原"读不到"异常语义。
             if not data:
                 raise KeyError(
                     f"Object '{name}' not found (no data — not yet visible to master "
                     "or never written)")
+            cls = _cpp_cls(py_name)
+            if cls is not None:
+                # C++ 对象：data 仅为分流媒介（解压一次，小对象成本可忽略），
+                # 权威重建走 _read_from_db（bitsery 反序列化 + ObjectCache）。
+                nbytes = 0
+                return cls._read_from_db(self._db, name, cpp_cache)
             nbytes = len(data)
-            return pickle.loads(data)
+            obj = pickle.loads(data)
+            if rc is not None:
+                rc.put(key, "high", obj)
+            return obj
         finally:
             record_read(self.get_full_name(name), nbytes,
                         (time.perf_counter() - t0) * 1000.0)

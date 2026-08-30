@@ -744,3 +744,30 @@ WBQ-段事务交互（45 测试 + QA ✓）；预许可窗口（完成登记全�
 **测试**：24/25 改 legacy_crc=true（旧协议端兼容锚定）；新增 28
 （ZeroCrcBadDataCaughtByDigest：新语义坏数据由根摘要抓住）与 29
 （ZeroCrcGoodDataSucceeds：新语义正常路径）。
+
+### 14.9 双拉修复 + 流式编排三处联动修补（2026-08-30 pread 实验触发）
+
+pread 隐藏性实验（64MB 落盘对象，热 1052/冷 522 MB/s 单拉参照）发现
+read_object **双拉缺陷**及三处被其掩盖的流式编排缺口，同批修复：
+
+1. **read_object 单拉化**（双拉修复）：原 `_get_py_name` 探测触发全量
+   read_object_compressed（数据丢弃只取 py_name）。改为读取原语天然携带
+   py_name（FlyStream 新增 py_name property——META/trailer 解析，open 返回
+   即有效；整缓冲 _read_decompressed 返回值）——Python 层反转分流。实测
+   64MB 热读 638→1072 MB/s（传输量减半）。
+2. **流式路径 suggest 计数补齐**：record_remote_access/maybe_suggest_backup
+   原只在整缓冲 try_tier2_read 累积——流式 read_streaming 的 TIER2 命中
+   漏接（旧 probe 的整缓冲拉取曾代偿）。read_streaming 命中点对称补两行。
+3. **整缓冲回退清退（#5 裁定执行完毕）**：export 层 ex_stg_open_read_stream
+   的 NOT_FOUND→read_object_compressed 回退删除（read_streaming 内已完整
+   轮换+TIER3，全源 miss 才到 export，回退冗余）；Python 层两轮消费失败
+   的 _read_decompressed 回退改直接 FATAL（零容忍语义）。**保留 master
+   进程的整缓冲主路径**（"no streaming handler"——master 无流式传输 cb，
+   DataClientPool 整缓冲拉取 + SharedMemoryChunkSource 内存消费是 master
+   的常规读通道，非回退；#5 裁定 L217 范围界定：非流式读保留整缓冲）。
+4. **read_streaming 首查空 TIER3 前置**：replicas 首查空原直接 NOT_FOUND
+   （TIER3 刷新在轮换轮次尾，永不触发）——master 持有对象场景（worker
+   remote_idx 空）曾被 #3 删除的回退掩盖。首查空先 TIER3 刷新
+   （request_remote_data 问 master 全量副本含 master serve 地址）再判。
+
+验证：C++ 单测 43/43 + 全量 QA 167/167；pread 实验双拉消除。

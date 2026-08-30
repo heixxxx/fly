@@ -1043,9 +1043,27 @@ DataService::StreamingReadResult DataService::read_streaming(const CMString& obj
                 out.rerr = ReadError::CHECKSUM;
                 return out;
             }
-            out.error = "no replica";
-            out.rerr = ReadError::OBJECT_NOT_FOUND;
-            return out;
+            // 首查空：先 TIER3 刷新（master 权威索引可能知道本 worker 未知的
+            // 位置——典型：对象仅 master 持有）。刷新后仍空才是真正无源。
+            // （2026-08-30 修复：此前首查空直接 NOT_FOUND，TIER3 只在"有副本
+            // 但轮换失败"的轮次尾触发——master 持有对象场景被 export 层的
+            // 整缓冲回退掩盖，清退回退后暴露。）
+            RemoteCompressedReadCallback refresh_cb;
+            {
+                std::shared_lock<std::shared_mutex> lock(cb_mutex_);
+                refresh_cb = remote_compressed_read_handler_;
+            }
+            if (refresh_cb) {
+                auto [refreshed, csp] = refresh_cb(object_name);
+                DBG("[STREAM-TIER3-firstempty] obj={}, refreshed={}, can_produce={}",
+                    object_name, refreshed, csp);
+                replicas = lookup_all_remote_idx(object_name);
+            }
+            if (replicas.empty()) {
+                out.error = "no replica";
+                out.rerr = ReadError::OBJECT_NOT_FOUND;
+                return out;
+            }
         }
 
         bool saw_not_ready = false;
@@ -1053,6 +1071,11 @@ DataService::StreamingReadResult DataService::read_streaming(const CMString& obj
         for (const auto& loc : replicas) {
             auto [ok, source, block_area, rerr] = cb(loc.host_, loc.port_, object_name);
             if (ok && source) {
+                // 流式 TIER2 命中同样累积读流量 + suggest 检查（与整缓冲
+                // try_tier2_read 对称——2026-08-30 双拉修复暴露的漏接：旧
+                // read_object 的 py_name probe 走整缓冲曾提供此计数）。
+                record_remote_access(object_name, block_area);
+                maybe_suggest_backup(object_name);
                 out.success = true;
                 out.source = source;
                 out.block_area_len = block_area;
