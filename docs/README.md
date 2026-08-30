@@ -37,6 +37,7 @@
 | 主题 | 文档 |
 |------|------|
 | 性能分析参考 | [performance-analysis.md](performance-analysis.md) |
+| V2 chunked-transfer 性能分析（2026-08-30） | [performance-analysis-2026-08-30.md](performance-analysis-2026-08-30.md)（每轮 QA +10s 回归归因：§4.7 缓存裁定代价 + CRC 校验层数；帧 CRC 冗余待裁定项） |
 | micro-benchmark 基线数据 | [perf-baselines.md](perf-baselines.md)（DataService 锁分片 S7 + 调度热循环 S8） |
 | 覆盖率测量方法 | [coverage-testing.md](coverage-testing.md)（工具：tools/measure_coverage.sh）；最近一次实测报告 [coverage-report-2026-08-16.md](coverage-report-2026-08-16.md) |
 

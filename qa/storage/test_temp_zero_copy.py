@@ -1,12 +1,13 @@
-"""Verify temp data read/write paths are zero-copy via valgrind massif profiling.
+"""Verify temp data read/write paths via valgrind massif profiling.
 
 Temp write path (zero-copy):
   compress_buffered_data → FlyBufferPtr → put_temp_data → on_temp_write (shared_ptr stored)
 
-Temp read path (zero-copy):
-  read_object_compressed → read_raw_compressed → try_read_local_raw
-    → is_temp → return temp_compressed_data_ (shared_ptr, no copy)
-    → ObjectCache.put_low (same shared_ptr, no copy)
+Temp read path (§4.7 low-tier cache 取消后，2026-08-30):
+  worker 本地: read_raw_compressed → try_read_local_raw → is_temp
+    → return temp_compressed_data_ (shared_ptr, no copy)
+  master/他进程: 每次读完整远程流式（帧+块校验+解压），无 low-tier 缓存
+    ——重复读的加速由 high-level cache（Python 对象缓存，显式配置）承担。
 
 Run with valgrind massif:
   valgrind --tool=massif --trace-children=yes --stacks=yes \
@@ -76,9 +77,10 @@ INFO(f"Write complete: {n} objects")
 
 # ============================================================
 # Read: each object 3 times
-# Expected allocation on 1st read: decompress only (py_name parse)
-# Expected allocation on 2nd/3rd read: near zero (ObjectCache.low hit, shared_ptr)
-# No FlyBuffer→CMString copy in try_read_local_raw path
+# Expected allocation on every read (master 跨进程视角, §4.7 缓存取消后):
+#   full remote streaming (frame+block verify) + decompress + unpickle
+# —— low-tier cache 已取消，重复读加速仅由 high-level cache（显式配置）提供
+# No FlyBuffer→CMString copy in try_read_local_raw path (worker 本地命中时)
 # ============================================================
 for round in range(3):
     INFO(f"Read round {round + 1}/3...")
@@ -100,8 +102,8 @@ INFO("  - Peak alloc should be in compress_buffered_data (lz4 chunks)")
 INFO("  - Should NOT see: CMString(ptr, size) in put_temp_data or on_temp_write")
 INFO("")
 INFO("Check massif output for temp read path:")
-INFO("  - 1st read: alloc in decompress (py_name parse only, data is zero-copy)")
-INFO("  - 2nd/3rd read: near-zero alloc (ObjectCache.low hit, shared_ptr return)")
+INFO("  - remote reads (master): frame/block verify + decompress + unpickle per round (§4.7 no low-tier cache)")
+INFO("  - local temp hit (worker): shared_ptr return, no copy")
 INFO("  - Should NOT see: FlyBuffer→CMString copy in try_read_local_raw")
 INFO("")
 INFO("[PASS] test_temp_zero_copy")

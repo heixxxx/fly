@@ -533,20 +533,8 @@ std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMStrin
         do_backup_write(full, object_name, CMString(comp_data->data(), comp_data->size()), comp_hash);
     }
 
-    // Populate low tier: account by uncompressed size from the object trailer
-    // (fall back to compressed size if the trailer cannot be parsed).
-    size_t accounted = comp_data->size();
-    {
-        ObjectHeader hdr;
-        size_t trailer_len = 0;
-        if (ObjectHeader::deserialize_trailer({comp_data->data(), comp_data->size()},
-                                              hdr, trailer_len) &&
-            hdr.total_size_ > 0) {
-            accounted = static_cast<size_t>(hdr.total_size_);
-        }
-        // Keep compressed-size accounting when the trailer cannot be parsed.
-    }
-    // §4.7：low-tier put 移除（缓存取消）——accounted 仅用于统计口径，保留计算。
+    // §4.7：low-tier cache 取消后 accounted（按 trailer total_size 折算的
+    // 记账尺寸）无任何消费者，重复的 trailer 解析一并移除。
 
     return {comp_data, std::move(comp_py_name)};
 }
