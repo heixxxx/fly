@@ -403,6 +403,7 @@ void MasterAgent::start() {
                 }
                 auto mem = CMMakeShared<fly::SharedMemoryChunkSource>(
                     ex.whole_data->data(), ex.whole_data->size(), ex.whole_data);
+                mem->is_temp = ex.meta.is_temp_;
                 if (mem->failed()) {
                     return {false, nullptr, 0, ReadError::CHECKSUM};
                 }
@@ -417,6 +418,7 @@ void MasterAgent::start() {
                     pool->release_borrowed_fd(fd, healthy);
                 },
                 queue_limit);
+            src->is_temp = ex.meta.is_temp_;
             src->start();
             return {true, src,
                     ex.meta.total_compressed_len_ > ex.meta.trailer_len_

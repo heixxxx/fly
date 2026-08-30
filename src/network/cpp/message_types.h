@@ -266,10 +266,14 @@ struct DataResponseMessage {
     uint64_t chunk_frame_bytes_ = 0;
     uint64_t trailer_len_ = 0;
     uint8_t chunk_compression_type_ = 0;
+    // temp 标记（缓存双池路由 2026-08-30）：server 本地索引判定随 META 告知
+    //——master/跨进程读取方据此路由 temp 缓存池（本进程 local_idx 查不到
+    // 远端 temp 属性）。
+    bool is_temp_ = false;
 
     static constexpr MessageType msg_type_ = MessageType::DATA_RESPONSE;
 
-    FLY_SERIALIZE(header_, object_name_, success_, status_, error_message_, py_name_, write_context_hash_, payload_crc_, chunked_, total_compressed_len_, chunk_frame_bytes_, trailer_len_, chunk_compression_type_);
+    FLY_SERIALIZE(header_, object_name_, success_, status_, error_message_, py_name_, write_context_hash_, payload_crc_, chunked_, total_compressed_len_, chunk_frame_bytes_, trailer_len_, chunk_compression_type_, is_temp_);
 };
 
 // ── L2 分片传输协议消息（chunked-transfer-design.md §4.5）──

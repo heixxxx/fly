@@ -296,9 +296,9 @@ def task_b(db, name):
     db.write_object(f"output/{name}", cached)
 ```
 
-**注意**: 此缓存与 C++ ObjectCache（read_object 的两层 LRU 缓存）是独立的系统：
-- **Agent Cache** (`put_cache/get_cache`): 通用 Python 对象缓存，用于 task 间数据传递
-- **ObjectCache** (`read_object` 的 `cache` 参数): 专门用于加速数据读取的两层 LRU 缓存
+**注意**: 此缓存与 Python ReadCache（read_object 的对象缓存）是独立的系统：
+- **Agent Cache** (`put_cache/get_cache`): worker 进程级通用 Python 对象缓存——task 间传递、修改后需复用的数据（如求解器 LU 结果）
+- **ReadCache** (`read_object` 的 `cache` 参数): 解压后完整对象的缓存，双池（主池 low/high 等级 + temp 池半容独立），等级只影响淘汰优先级
 
 ---
 
@@ -310,26 +310,27 @@ class _Database:
         # Master 模式: agent._agent.get_or_create_database(...)
         # Worker 模式: ex_stg_create_database(...)
 
-    def write_object(self, name: str, obj, *, backup: bool = False, save_to_db: bool = True) -> str:
-        # 自动检测 is_cpp → __getstate__() 或 pickle.dumps
+    def write_object(self, name: str, obj, *, backup: bool = False,
+                     save_to_db: bool = True, cache: str = "none") -> str:
+        # 自动检测 C++ 导出类（_write_to_db）或 pickle 流式写
         # backup=True: 异步将数据副本写入另一个 Worker（跨 host），零解压压缩传输
-        # save_to_db=False: 写入 TempStore（独立后台线程），不落盘到 DB 目录
-        #   read_object 透明读取，remove_object 清理，run 结束自动清理
+        # save_to_db=False: temp 写（.temp.* 落盘、不注册 master 可见性，
+        #   write-through 持久；freeze 时全删）
+        # cache: 写后预热——"low"/"high" 将刚写的对象入缓存（正式对象→主池，
+        #   temp 对象→temp 池）；"none"（默认）不缓存
 
     def read_object(self, name: str, *, backup: bool = False, cache: str = "low"):
-        # 三层降级读取
-        # Layer 1: DataService.try_read_local → 本地
-        # Layer 2: lookup_remote_idx → DataClient 直连
-        # Layer 3: request_remote_data → 全程远程 (最多 3 次重试)
-        # backup=True: 从远程 Worker 读取压缩数据，直接落盘本地（零解压），返回解压后数据
-        # cache: "low" (默认) | "high" | "none"
-        # 缓存分层:
-        #   - low 层（压缩字节）+ nanobind 类 high 层（反序列化对象）在 C++ ObjectCache
-        #   - pickle 对象 high 层在 Python ReadCache（src/storage/py/read_cache.py）
-        #   - nanobind 类（FLY_EXPORT_SERIALIZE）经 _read_from_db 走 C++ high 层（省反序列化）
-        #   "low"  — 缓存压缩数据，避免重复网络/磁盘 IO
-        #   "high" — 缓存反序列化后的 Python 对象，避免重复反序列化
-        #   "none" — 不缓存，不从缓存读取
+        # 恒流式读取（R+常数内存）：本地 DiskChunkSource / 远程 NetworkChunkSource
+        # 统一 pread 分片流；对象不可见（全源 miss）抛 KeyError
+        # cache: "low"（默认，读到即入缓存）| "high"（高淘汰优先级）| "none"（零缓存）
+        # 缓存语义（2026-08-30 双池裁定）：
+        #   - 命中查询不分级（任一等级命中即返回同一对象引用——零拷贝）
+        #   - **只读约定**：缓存对象调用方不得修改；读后需修改请显式 cache="none"
+        #     （每次全新反序列化）。原地修改会污染缓存（scipy splu 案例，
+        #     chunked-transfer-design §14.12），FLY_CACHE_GUARD=1 可诊断
+        #   - temp 对象自动路由 temp 池（is_temp 由读取原语携带）
+        #   - 等级只影响淘汰优先级：low 计分 ×low_score_factor（默认 25%），
+        #     同热度下先于 high 淘汰；命中不自动升级
 
     def remove_object(self, name: str):
         # 删除对象索引（本地上移除，通知Master广播删除）

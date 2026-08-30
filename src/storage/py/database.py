@@ -62,19 +62,20 @@ class Database:
         """Write an object.
 
         Args:
-            cache: 保存等级。``"none"``（默认）仅落盘；``"high"`` 保留（解压
-                对象缓存——读路径语义）。``"low"`` 已废弃（§4.7 low-tier 压缩
-                缓存全量取消——远程读统一走磁盘）——作为 "none" 别名兼容。
+            cache: 缓存预热等级（2026-08-30 双池裁定）。``"none"``（默认）仅
+                落盘；``"low"``/``"high"`` 写后把对象预热入缓存（正式对象主池，
+                temp 对象恒 temp 池）。读路径的等级语义见 read_object。
         """
         if not save_to_db:
             # temp 路径独立计时（_write_temp 内部 record_write），不进本路径。
-            return self._write_temp(name, obj)
+            return self._write_temp(name, obj, cache=cache)
 
         t0 = time.perf_counter()
         try:
             # write_object / _write_pickle_bytes return a WriteErrorType int (OK=success).
             # DUPLICATE_SKIPPED is benign (same object already written) — not raised.
             py_name = type(obj).__name__
+            obj_size = 0
             if hasattr(obj, "_write_to_db"):
                 err = EXStgWriteErrorType(obj._write_to_db(self._db, name, py_name, backup))
             else:
@@ -93,6 +94,7 @@ class Database:
                         pickle.dump(obj, stream)
                         err = EXStgWriteErrorType(
                             stream.finish_and_commit(backup, cache != "none"))
+                        obj_size = stream.total_uncompressed
                     else:
                         raise RuntimeError(f"Database is frozen: {name}")
                 else:
@@ -104,22 +106,28 @@ class Database:
                     pickle.dump(obj, stream)
                     stream.flush()
                     buf = stream.finish()
+                    obj_size = stream.total_uncompressed
                     err = EXStgWriteErrorType(self._db._commit_stream(
                         name, buf, py_name, backup, cache != "none"))
 
             if err != EXStgWriteErrorType.OK and err != EXStgWriteErrorType.DUPLICATE_SKIPPED:
                 msg = self._WRITE_ERROR_MESSAGES.get(err, f"Write error (type={err})")
                 raise RuntimeError(f"{msg}: {name}")
-            # New value landed — drop any stale Python high-tier cache entry so a
-            # subsequent read_object(cache="high") reflects the new value.
+            # New value landed — drop any stale cache entry so a subsequent
+            # read reflects the new value; then optional write-through 预热
+            #（cache 双池裁定 2026-08-30：正式对象 → 主池 low/high）。
             self._invalidate_read_cache(name)
+            if cache != "none":
+                from storage import get_read_cache
+                get_read_cache().put(f"{self.get_db_path()}:{name}", cache, obj,
+                                     size=obj_size if obj_size > 0 else 0)
             return ""
         finally:
             # IO 归属计时（master 无 task 在跑时为空操作）；字节数由 C++
             # WriteRecord 汇总（TaskComplete.written_objects），此处仅计时。
             record_write(self.get_full_name(name), (time.perf_counter() - t0) * 1000.0)
 
-    def _write_temp(self, name: str, obj) -> str:
+    def _write_temp(self, name: str, obj, cache: str = "none") -> str:
         t0 = time.perf_counter()
         try:
             if hasattr(obj, "_write_to_db"):
@@ -132,17 +140,21 @@ class Database:
             # compress→Python bytes→CMString roundtrip.
             self._db._write_temp_pickle(name, data, py_name)
             self._invalidate_read_cache(name)
+            # 预热（temp 对象恒 temp 池——双池裁定；C++ 对象无 size 语义记 0）。
+            if cache != "none":
+                from storage import get_read_cache
+                get_read_cache().put(f"{self.get_db_path()}:{name}", "temp", obj,
+                                     size=len(data))
             return ""
         finally:
             record_write(self.get_full_name(name), (time.perf_counter() - t0) * 1000.0)
 
-    def read_object(self, name: str, backup: bool = False, cache: str = "none"):
+    def read_object(self, name: str, backup: bool = False, cache: str = "low"):
         # IO 归属计时：全分支包裹（cache 命中/C++ 对象/pickle 各路径）；
         # 字节数仅在 Python 拿到解压 data 的路径可得（C++ 对象路径记 0）。
-        # §4.7 缓存二值化：none（默认，无缓存走盘）/ high（解压对象缓存）。
-        # "low" 为 "none" 别名（low-tier 压缩缓存已取消）。
-        if cache == "low":
-            cache = "none"
+        # 缓存语义（2026-08-30 双池裁定）：默认 "low"——读到即按 low 等级
+        # 入缓存（temp 对象路由 temp 池）；"high" 高优先级；"none" 显式零
+        # 缓存。命中查询不分级（等级只影响淘汰优先级）。
         t0 = time.perf_counter()
         nbytes = 0
         try:
@@ -152,23 +164,20 @@ class Database:
                 cls = getattr(_fly_storage, py_name, None)
                 return cls if cls is not None and hasattr(cls, "_read_from_db") else None
 
-            # 双拉修复（2026-08-30）：py_name 不再单独探测——原 _get_py_name
-            # 探测会触发 read_object_compressed 全量拉取（数据丢弃只取几字节
-            # py_name，大对象远程读传输量翻倍）。分流所需的 py_name 改由读取
-            # 原语天然携带（流式 stream.py_name / 整缓冲 _read_decompressed
-            # 返回值）：pickle 路径单次拉取；C++ 对象路径交 _read_from_db
-            #（ObjectCache 命中零拉取；miss 重建一次——总量与旧探测路径持平）。
             rc = None
             key = None
-            if cache == "high":
+            if cache != "none":
                 from storage import get_read_cache
                 rc = get_read_cache()
                 key = f"{self.get_db_path()}:{name}"
-                obj = rc.get(key, "high")
+                obj = rc.get(key)
                 if obj is not None:
                     return obj
 
             cpp_cache = "low" if cache == "none" else cache
+            # populate 等级路由：读原语携带 temp 标记（本地 local_idx 判定 /
+            # serve META 告知——跨进程读取方本进程查不到 temp 属性）。
+            # populate 发生在流式消费成功点，按 stream.is_temp 路由。
 
             # 恒流式（2026-08-30 用户裁定：常规读统一流式，streaming_read_threshold
             # 逃生口不保留；仅非反序列化场景（backup 副本拉取等 C++ 侧）保留
@@ -196,7 +205,8 @@ class Database:
                 if not corrupt:
                     nbytes = stream.total_uncompressed  # property
                     if rc is not None:
-                        rc.put(key, "high", obj)
+                        rc.put(key, "temp" if stream.is_temp else cache, obj,
+                               size=nbytes)
                     return obj
                 stream = None  # 弃流重开（对象级重来）
             # 两轮流式消费均败（read_streaming 内已副本轮换+零容忍预算，

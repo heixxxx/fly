@@ -1,3 +1,4 @@
+import os
 import time
 import threading
 from collections import OrderedDict
@@ -5,6 +6,9 @@ from collections import OrderedDict
 _DEFAULT_MAX_BYTES = 1 << 30
 _HARD_LIMIT_RATIO = 1.5
 _PROTECTION_SEC = 30.0
+
+# 污染哨兵开关（诊断工具）：FLY_CACHE_GUARD=1 时对全部条目做快照对比。
+_GUARD_ENABLED = os.environ.get("FLY_CACHE_GUARD", "") == "1"
 
 
 def _load_low_score_factor():
@@ -21,7 +25,8 @@ def _load_low_score_factor():
 
 
 class _CacheEntry:
-    __slots__ = ('data', 'size', 'last_access', 'read_count', 'created_at', 'level')
+    __slots__ = ('data', 'size', 'last_access', 'read_count', 'created_at', 'level',
+                 'guard_hash', 'guard_stack')
 
     def __init__(self, data, size, level="high"):
         self.data = data
@@ -30,6 +35,19 @@ class _CacheEntry:
         self.last_access = time.monotonic()
         self.read_count = 1
         self.created_at = self.last_access
+        # 污染哨兵（诊断工具，FLY_CACHE_GUARD=1 启用）：populate 时快照
+        # hash + 调用栈，get 命中时对比——检测"读后原地修改污染缓存"。
+        self.guard_hash = None
+        self.guard_stack = None
+        if _GUARD_ENABLED:
+            import pickle as _p
+            import traceback as _tb
+            try:
+                self.guard_hash = hash(_p.dumps(data, protocol=5))
+            except Exception:
+                self.guard_hash = None
+            if self.guard_hash is not None:
+                self.guard_stack = "".join(_tb.format_stack()[-8:-1])
 
     def touch(self):
         self.last_access = time.monotonic()
@@ -93,11 +111,29 @@ class ReadCache:
             if entry is None:
                 entry = self._temp.get(key)
             if entry is not None:
+                self._guard_check(key, entry)
                 entry.touch()
                 pool = self._main if key in self._main else self._temp
                 pool.move_to_end(key)
                 return entry.data
         return None
+
+    @staticmethod
+    def _guard_check(key, entry):
+        # 哨兵：命中时对象 hash ≠ populate 时 → 读后原地修改污染缓存。
+        if not _GUARD_ENABLED or entry.guard_hash is None:
+            return
+        import pickle as _p
+        try:
+            cur = hash(_p.dumps(entry.data, protocol=5))
+        except Exception:
+            return
+        if cur != entry.guard_hash:
+            import sys
+            print(f"\n[CACHE-GUARD] MUTATED key={key}\n"
+                  f"--- populate 栈 ---\n{entry.guard_stack}\n"
+                  f"--- 命中时 hash {entry.guard_hash} → {cur} ---\n",
+                  file=sys.stderr, flush=True)
 
     def put(self, key: str, level: str, data, size: int = 0):
         # level: "low"/"high" → 主池；"temp" → temp 池。

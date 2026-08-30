@@ -246,7 +246,9 @@ FLY_EXPORT_CLASS(FlyStream, "FlyStream")
     FLY_EXPORT_READONLY_PROPERTY("total_uncompressed", &FlyStream::total_uncompressed)
     FLY_EXPORT_READONLY_PROPERTY("chunk_count", &FlyStream::chunk_count)
     // 读模式源元数据（open 返回即有效）——read_object 单拉分流。
-    FLY_EXPORT_READONLY_PROPERTY("py_name", &FlyStream::py_name);
+    FLY_EXPORT_READONLY_PROPERTY("py_name", &FlyStream::py_name)
+    // temp 标记（缓存双池路由）：源携带（本地判定/META 告知）。
+    FLY_EXPORT_READONLY_PROPERTY("is_temp", &FlyStream::stream_is_temp);
 
 FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     // L1 大对象流式写（§9.1）：open → pickle.dump(stream) →
@@ -329,6 +331,10 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     })
     // _get_py_name 已删除（双拉修复 2026-08-30：py_name 由读取原语天然携带，
     // 独立探测接口触发全量拉取违背设计初衷；恒流式改造后整链无消费者）。
+    // temp 判定（缓存双池路由，2026-08-30）：local_idx map find，零 IO。
+    FLY_EXPORT_DEF("_is_temp", [](Database& db, const CMString& name) -> bool {
+        return fly::DataService::instance()->is_temp_object(db.get_full_name(name));
+    })
     FLY_EXPORT_DEF("_decompress_bytes", [](Database&, fly_export::bytes b) -> fly_export::bytes {
         CMString raw(b.c_str(), b.size());
         CMString result = fly::decompress_raw_data(raw);

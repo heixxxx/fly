@@ -941,9 +941,11 @@ DataService::StreamingReadResult DataService::read_streaming(const CMString& obj
                         loc.file_path, loc.offset, loc.size - tl, hdr.py_name_,
                         hdr.total_size_, hdr.chunk_count_,
                         static_cast<int>(hdr.compression_type_));
+                    disk->is_temp = is_temp_object(object_name);  // 本地判定
                     out.success = true;
                     out.py_name = hdr.py_name_;
                     out.block_area_len = loc.size - tl;
+                    out.is_temp = disk->is_temp;
                     out.source = disk;
                     return out;
                 }
@@ -1030,6 +1032,7 @@ DataService::StreamingReadResult DataService::read_streaming(const CMString& obj
                 out.source = source;
                 out.block_area_len = block_area;
                 out.write_context_hash = {};
+                out.is_temp = source->is_temp;  // META 携带（cb 构造点已设置）
                 return out;
             }
             if (rerr == ReadError::CHECKSUM) {
@@ -1187,6 +1190,18 @@ bool DataService::is_write_in_progress(const CMString& object_name) const {
     auto it = db_it->second.objects_.find(short_name);
     if (it == db_it->second.objects_.end() || !it->second) return false;
     return it->second->completion_state_.load(std::memory_order_acquire) == CompletionState::INCOMPLETE;
+}
+
+bool DataService::is_temp_object(const CMString& object_name) const {
+    // 缓存路由查询（2026-08-30 双池裁定）：map find，μs 级、零 IO。
+    // 查询失败按非 temp 处理（保守——调用方路由主池）。
+    auto [db_path, short_name] = split_full(object_name);
+    std::shared_lock<std::shared_mutex> lock(local_mutex_);
+    auto db_it = local_idx_.find(db_path);
+    if (db_it == local_idx_.end()) return false;
+    auto it = db_it->second.objects_.find(short_name);
+    if (it == db_it->second.objects_.end() || !it->second) return false;
+    return it->second->is_temp_;
 }
 
 std::pair<bool, ReadResult> DataService::try_read_remote(const CMString& object_name) {

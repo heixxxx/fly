@@ -29,6 +29,9 @@ FlyStream::FlyStream(CMSharedPtr<fly::ChunkSource> source, uint64_t block_area_l
     //（NetworkChunkSource 析构归还 fd/slot）。
     decompress_sb_ = CMMakeUnique<DecompressingStreamBuf>(chunk_source_, block_area_len);
     decompress_is_ = CMMakeUnique<std::istream>(decompress_sb_.get());
+    if (chunk_source_) {
+        stream_is_temp_ = chunk_source_->is_temp;
+    }
 }
 
 FlyStream::FlyStream(CompressionType comp_type, int64_t chunk_size,

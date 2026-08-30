@@ -521,12 +521,17 @@ def _ensure_coarse_cached(db):
             from scipy import sparse
             from scipy.sparse.linalg import splu
             t0 = time.perf_counter()
+            # 只读约定履约（2026-08-31 根因修复）：scipy 三数组零拷贝构造 +
+            # splu 会原地重排传入数组——直接引用缓存对象会污染 ReadCache 条目
+            #（动态多轮二次消费时 data/indices 配对不自洽 → 数值不收敛）。
+            # 过渡修复：T3 coarse 拆分（static/ac 分离）落地后随 v1 退役。
             P = sparse.csr_matrix(
-                (prebuilt["P_vals"], (prebuilt["P_rows"], prebuilt["P_cols"])),
+                (np.array(prebuilt["P_vals"]),
+                 (np.array(prebuilt["P_rows"]), np.array(prebuilt["P_cols"]))),
                 shape=(prebuilt["N"], prebuilt["Nc"]))
             Ac = sparse.csc_matrix(
-                (prebuilt["Ac_data"], prebuilt["Ac_indices"],
-                 prebuilt["Ac_indptr"]),
+                (np.array(prebuilt["Ac_data"]), np.array(prebuilt["Ac_indices"]),
+                 np.array(prebuilt["Ac_indptr"])),
                 shape=prebuilt["Ac_shape"])
             Ac_lu = splu(Ac)
             put_cache("__rasg__coarse_lu", Ac_lu)

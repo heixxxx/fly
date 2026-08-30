@@ -31,6 +31,11 @@ public:
     // 源侧校验状态（帧 CRC/DIGEST 根）：流结束后查询；true = 源已坏，
     // 消费结果不可信（零容忍 §5）。
     virtual bool failed() const = 0;
+
+    // temp 标记（缓存双池路由 2026-08-30）：网络源由 META 提供（远端
+    // local_idx 判定——跨进程读取方本进程查不到 temp 属性）；本地源由
+    // 构造点设置。默认非 temp。
+    bool is_temp = false;
 };
 
 }  // namespace fly

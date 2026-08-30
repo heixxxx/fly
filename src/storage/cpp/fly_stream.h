@@ -50,6 +50,9 @@ public:
     // 读模式：源元数据 py_name（META/trailer 解析——open 返回即有效）。
     // read_object 单拉分流用（双拉修复 2026-08-30）。写模式返回写入 py_name。
     CMString py_name() const;
+    // temp 标记（缓存双池路由 2026-08-30）：读模式由源携带（本地 local_idx
+    // 判定 / META 告知）；写模式 false。
+    bool stream_is_temp() const { return stream_is_temp_; }
     bool is_write_mode() const { return is_write_mode_; }
     // 读模式：任一校验失败（trailer/块 CRC/结构越界）为 true——Python 面
     // 读完后必须检查（零容忍语义，§4.4/§5）。
@@ -75,6 +78,7 @@ private:
     CMString py_name_;
     FlyBufferPtr read_buf_;
     CMSharedPtr<fly::ChunkSource> chunk_source_;  // 流式读模式（L3）
+    bool stream_is_temp_ = false;                 // 源携带的 temp 标记（读模式）
     CMUniquePtr<DecompressingStreamBuf> decompress_sb_;
     CMUniquePtr<std::istream> decompress_is_;
 };

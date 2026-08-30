@@ -326,6 +326,8 @@ void DataServer::on_readable(int fd) {
             } else {
                 response.success_ = true;
                 response.py_name_ = dsbuf.py_name();
+                // temp 标记随响应（缓存双池路由——远端读取方查不到本地属性）。
+                response.is_temp_ = data_service_.is_temp_object(req.object_name_);
 
                 auto write_hash = data_service_.get_write_context_hash(req.object_name_);
                 if (!write_hash.empty()) {
@@ -442,6 +444,8 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
     CMString meta_py_name;
     uint64_t meta_trailer_len = 0;
     int meta_comp_type = -1;
+    // temp 标记（缓存双池路由）：本地索引判定随 META 告知远端读取方。
+    bool meta_is_temp = data_service_.is_temp_object(object_name);
 
     // L3（§8.1）：发送前 pread 尾部解析 trailer → META 携带 py_name/trailer_len
     //（流式消费端无法预先读流尾）。尾部预读 min(size, 4KB)；解析失败（极端长
@@ -472,7 +476,8 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
     SendTask task;
     task.fd = fd;
     task.chunked_execute = [this, fd, object_name, file_path, offset, size,
-                            meta_py_name, meta_trailer_len, meta_comp_type]() {
+                            meta_py_name, meta_trailer_len, meta_comp_type,
+                            meta_is_temp]() {
         bool ok = true;
 
         // META 先行（复用 DATA_RESPONSE 两段式，无 raw）。
@@ -484,6 +489,7 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
         meta.chunk_frame_bytes_ = kChunkFrameBytes;
         meta.py_name_ = meta_py_name;
         meta.trailer_len_ = meta_trailer_len;
+        meta.is_temp_ = meta_is_temp;
         if (meta_comp_type >= 0) {
             meta.chunk_compression_type_ = static_cast<uint8_t>(meta_comp_type);
         }

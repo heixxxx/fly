@@ -266,6 +266,9 @@ public:
 
     bool is_write_in_progress(const CMString& object_name) const;
 
+    // temp 判定（缓存双池路由，2026-08-30）：local_idx map find，零 IO。
+    bool is_temp_object(const CMString& object_name) const;
+
     std::pair<bool, ReadResult> try_read_remote(const CMString& object_name);
 
     // bypass_local=true：零容忍重取路径（§5）——本地 record 已判定损坏，
@@ -301,6 +304,10 @@ public:
         uint64_t block_area_len = 0;
         CMString py_name;
         CMString write_context_hash;
+        // temp 标记（缓存双池路由 2026-08-30）：本地命中由 local_idx 判定，
+        // TIER2 由 source->is_temp（META 携带）回填——消费方（Python populate）
+        // 据此路由 temp 池。
+        bool is_temp = false;
         ReadError rerr = ReadError::NONE;
         CMString error;
     };

@@ -799,3 +799,53 @@ read_object **双拉缺陷**及三处被其掩盖的流式编排缺口，同批�
 单拉参照（~1050），且 master 内存从"完整 record 缓冲+解压增量"降为 R+常数。
 
 验证：C++ 单测 43/43 + 全量 QA 167/167。
+
+### 14.11 temp 去"①形态" + 生命周期补全（2026-08-30 用户裁定，方案 v3）
+
+temp 存储统一落盘（内存压缩 record 退役）：
+- put_temp_data/on_temp_write 不再接收内存 data——`temp_compressed_data_`
+  恒空，LocalObjectInfo 删除该字段；temp 压缩 record 恒在盘上
+- try_read_local/try_read_local_raw 统一 entries 盘读（内存命中/eviction
+  回填删除）；find_chunked_location 放行 temp（盘 entry 同构，serve/TIER1
+  统一 pread 分片）
+- TempStore/temp eviction LRU/temp_store_size 全链退役（文件+BUILD+export）
+
+生命周期（remove/freeze/load 兜底）：
+- remove(temp)：路由 temp idx（内存条目删+磁盘 REMOVE 条目；修走错 writer
+  既有缺陷）；data 共享滚动文件不删（freeze 批量回收）
+- freeze：现状已删 idx+data（cleanup_temp_files）+ local_idx temp 条目清理
+- load frozen 兜底：构造检测 frozen → cleanup_temp_files() 幂等删残留
+
+命名统一：`.temp.data_{wid}_{NNN}.dat` + `.temp.{wid}.idx`（与正常数据命名
+一致 + ".temp." 前缀；cleanup/恢复链/merge 过滤同步）。
+
+### 14.12 缓存双池 + level 化 + 默认 low（2026-08-30 用户裁定）
+
+ReadCache（Python）双池：
+- 主池：low/high 真实等级——命中查询不分级（等级只影响淘汰优先级）；
+  low 计分乘 low_score_factor 折扣（config 百分比整数，默认 25）
+- temp 池：temp 对象独立，容量 = 主池半，机制同构，池内不分级
+- 单对象不设预算上限；命中不自动升级；write 预热（write_object 显式
+  cache 参数，正式→主池/temp→temp 池）
+
+接口语义：
+- read_object 默认 cache="low"（读到即入池；"none" 显式零缓存）
+- is_temp 路由经读原语携带（ChunkSource::is_temp：本地 local_idx 判定 /
+  DataResponseMessage META 新增 is_temp_ 字段跨进程告知；FlyStream 导出
+  is_temp property）
+- populate size 修正：读侧 total_uncompressed / 写侧序列化字节数（原
+  size=0 不计预算的既有缺陷）
+- 污染哨兵：FLY_CACHE_GUARD=1 时 populate 快照 hash + 命中对比，
+  "读后原地修改污染缓存"类问题可现场抓取（scipy splu 案例实证）
+
+缓存三分层使用规范（用户裁定，2026-08-31）：
+| 层 | 语义 | 用例 |
+|----|------|------|
+| db 对象 + 默认 low | 只读数据，跨 task 复用 | coord/cfg/sub/coarse_static |
+| db 对象 + cache="none" | 会被修改的数据，每次全新、改完即弃 | coarse_ac（scipy splu 会原地重排） |
+| agent put_cache（worker 级） | 修改后的结果/可变数据跨 task 复用 | coarse_lu/LDLT |
+
+反例存档：scipy splu 对三数组零拷贝构造的数组原地重排（列内排序）——
+solver 直接引用 ReadCache 对象导致动态多轮二次消费 data/indices 配对
+不自洽 → 数值不收敛（哨兵工具定位，最小复现实证）。业务侧履约：消费
+缓存对象前拷贝（np.array）或按上述分层显式 none。
