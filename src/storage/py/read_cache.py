@@ -7,12 +7,26 @@ _HARD_LIMIT_RATIO = 1.5
 _PROTECTION_SEC = 30.0
 
 
-class _CacheEntry:
-    __slots__ = ('data', 'size', 'last_access', 'read_count', 'created_at')
+def _load_low_score_factor():
+    # low 等级计分折扣（用户裁定：low 用较低基础分——同等热度下优先级
+    # 低于 high，淘汰时沉底）。config 存百分比整数（25 = 0.25），默认 25。
+    try:
+        from _fly_core import ex_core_get_config
+        pct = ex_core_get_config().get_int("low_score_factor")
+        if pct > 0:
+            return pct / 100.0
+    except Exception:
+        pass
+    return 0.25
 
-    def __init__(self, data, size: int):
+
+class _CacheEntry:
+    __slots__ = ('data', 'size', 'last_access', 'read_count', 'created_at', 'level')
+
+    def __init__(self, data, size, level="high"):
         self.data = data
         self.size = size
+        self.level = level  # "low" / "high"（temp 池内恒 "temp"，不参与折扣）
         self.last_access = time.monotonic()
         self.read_count = 1
         self.created_at = self.last_access
@@ -21,18 +35,28 @@ class _CacheEntry:
         self.last_access = time.monotonic()
         self.read_count += 1
 
-    def score(self, now: float) -> float:
+    def score(self, now: float, low_factor: float = 1.0) -> float:
         age = max(now - self.last_access, 0.001)
-        return self.read_count / age
+        s = self.read_count / age
+        if self.level == "low":
+            s *= low_factor
+        return s
 
 
 class ReadCache:
-    """High-tier LRU/LFU cache for deserialized Python objects.
+    """解压 Python 对象缓存（2026-08-30 双池 + level 改造，用户裁定）。
 
-    Low-tier (compressed bytes) caching is handled by the C++ ObjectCache
-    (src/storage/cpp/object_cache.h) via FlyBufferPtr zero-copy sharing.
-    This Python cache only stores live Python object references that C++
-    std::any cannot hold.
+    双池结构：
+      - 主池（_main）：常规对象，low/high 等级标记——命中查询不分级，
+        等级只影响淘汰优先级（low 计分乘 low_score_factor 折扣，同热度
+        沉底先淘汰；命中不自动升级）。
+      - temp 池（_temp）：temp 对象独立存放，容量 = 主池一半，机制同构
+        （LRU+计分+保护期+硬限），池内不分级。
+    单对象不设预算上限（用户裁定）——超预算对象照常入池，由淘汰兜底。
+
+    历史：本缓存曾是纯 high tier（low-tier 压缩缓存归 C++ ObjectCache，
+    §4.7 取消）；2026-08-30 起 low 重新定义为"完整对象 + 低淘汰优先级"
+    等级（与 high 同池），Python 侧不再有压缩字节缓存。
     """
 
     def __init__(self, max_bytes: int = 0):
@@ -43,66 +67,120 @@ class ReadCache:
                 max_bytes = _DEFAULT_MAX_BYTES
         self._max_bytes = max_bytes
         self._hard_limit = int(max_bytes * _HARD_LIMIT_RATIO)
-        self._high: OrderedDict[str, _CacheEntry] = OrderedDict()
-        self._high_bytes = 0
+        # temp 池：容量减半（用户裁定），硬限同比例。
+        self._temp_max_bytes = max_bytes // 2
+        self._temp_hard_limit = int(self._temp_max_bytes * _HARD_LIMIT_RATIO)
+        self._low_factor = _load_low_score_factor()
+        self._main: OrderedDict[str, _CacheEntry] = OrderedDict()
+        self._main_bytes = 0
+        self._temp: OrderedDict[str, _CacheEntry] = OrderedDict()
+        self._temp_bytes = 0
         self._lock = threading.Lock()
 
-    def get(self, key: str, level: str = "high"):
-        if level != "high":
-            return None
+    # 兼容别名（旧属性名 _high/_high_bytes——内部/测试引用迁移期）。
+    @property
+    def _high(self):
+        return self._main
+
+    @property
+    def _high_bytes(self):
+        return self._main_bytes
+
+    def get(self, key: str, level=None):
+        # 命中查询不分级（等级只影响淘汰）。level 参数兼容旧调用（忽略）。
         with self._lock:
-            entry = self._high.get(key)
+            entry = self._main.get(key)
+            if entry is None:
+                entry = self._temp.get(key)
             if entry is not None:
                 entry.touch()
-                self._high.move_to_end(key)
+                pool = self._main if key in self._main else self._temp
+                pool.move_to_end(key)
                 return entry.data
         return None
 
     def put(self, key: str, level: str, data, size: int = 0):
-        if level != "high":
-            return
+        # level: "low"/"high" → 主池；"temp" → temp 池。
         if size <= 0:
-            size = len(data) if isinstance(data, bytes) else 0
+            size = len(data) if isinstance(data, (bytes, bytearray)) else 0
+
+        if level == "temp":
+            with self._lock:
+                if key in self._temp:
+                    old = self._temp.pop(key)
+                    self._temp_bytes -= old.size
+                self._temp[key] = _CacheEntry(data, size, "temp")
+                self._temp_bytes += size
+                self._temp.move_to_end(key)
+                self._evict_pool(self._temp, is_temp=True)
+            return
 
         with self._lock:
-            if key in self._high:
-                old = self._high.pop(key)
-                self._high_bytes -= old.size
-            self._high[key] = _CacheEntry(data, size)
-            self._high_bytes += size
-            self._high.move_to_end(key)
-            self._evict()
+            if key in self._main:
+                old = self._main.pop(key)
+                self._main_bytes -= old.size
+            # temp 池同名条目一并清（对象等级切换时防陈旧）。
+            if key in self._temp:
+                old = self._temp.pop(key)
+                self._temp_bytes -= old.size
+            self._main[key] = _CacheEntry(data, size, level)
+            self._main_bytes += size
+            self._main.move_to_end(key)
+            self._evict_pool(self._main, is_temp=False)
 
     def remove(self, key: str, level=None):
         with self._lock:
-            if level is None or level == "high":
-                entry = self._high.pop(key, None)
-                if entry:
-                    self._high_bytes -= entry.size
+            entry = self._main.pop(key, None)
+            if entry:
+                self._main_bytes -= entry.size
+            entry = self._temp.pop(key, None)
+            if entry:
+                self._temp_bytes -= entry.size
 
     def clear(self):
         with self._lock:
-            self._high.clear()
-            self._high_bytes = 0
+            self._main.clear()
+            self._main_bytes = 0
+            self._temp.clear()
+            self._temp_bytes = 0
 
-    def _evict(self):
-        if self._high_bytes <= self._max_bytes:
+    def _evict_pool(self, pool: OrderedDict, is_temp: bool):
+        # 同构淘汰：保护期候选 → 硬限全候选 → score 升序淘汰至预算内。
+        # temp 池无 level 折扣（池内不分级）。
+        if is_temp:
+            max_bytes, hard_limit = self._temp_max_bytes, self._temp_hard_limit
+
+            def _bytes():
+                return self._temp_bytes
+
+            def _set_bytes(v):
+                self._temp_bytes = v
+        else:
+            max_bytes, hard_limit = self._max_bytes, self._hard_limit
+
+            def _bytes():
+                return self._main_bytes
+
+            def _set_bytes(v):
+                self._main_bytes = v
+
+        if _bytes() <= max_bytes:
             return
 
         now = time.monotonic()
-        entries = [(k, v) for k, v in self._high.items()
+        entries = [(k, v) for k, v in pool.items()
                    if now - v.created_at >= _PROTECTION_SEC]
 
-        if not entries and self._high_bytes > self._hard_limit:
-            entries = list(self._high.items())
+        if not entries and _bytes() > hard_limit:
+            entries = list(pool.items())
 
-        entries.sort(key=lambda kv: kv[1].score(now))
+        entries.sort(key=lambda kv: kv[1].score(now, self._low_factor))
 
         for key, entry in entries:
-            if self._high_bytes <= self._max_bytes:
+            if _bytes() <= max_bytes:
                 break
-            del self._high[key]
-            self._high_bytes -= entry.size
+            del pool[key]
+            _set_bytes(_bytes() - entry.size)
 
 
 _cache = None

@@ -33,15 +33,18 @@ def _entry_age(rc, key, seconds):
     e.last_access -= seconds
 
 
-# ── put/get basics, size inference, level filtering ───────────────────
+# ── put/get basics, size inference, level semantics（双池+level 改造后）──
+# 2026-08-30 裁定：get 命中查询不分级（等级只影响淘汰优先级）；low 为
+# 真实等级（完整对象入主池，计分折扣 low_score_factor）。
 rc = ReadCache(max_bytes=1 << 20)
 rc.put("b", "high", b"abcd")          # bytes -> size inferred via len()
 assert rc._high["b"].size == 4, "size should be inferred from len(bytes)"
 assert rc.get("b", "high") == b"abcd"
-assert rc.get("b", "low") is None, "get(level!=high) must return None"
-rc.put("s", "low", "ignored")          # level!=high -> not stored
-assert "s" not in rc._high, "put(level!=high) must not store"
-INFO("[PASS] put/get basics: size inference + level filtering")
+assert rc.get("b") == b"abcd", "get 命中查询不分级"
+rc.put("s", "low", "stored")          # low = 真实等级（入主池可命中）
+assert rc._high["s"].level == "low", "low 条目应入主池并标记等级"
+assert rc.get("s") == "stored", "low 条目命中可返回"
+INFO("[PASS] put/get basics: size inference + level semantics")
 
 # ── put overwrite branch (pop old, debit bytes) ───────────────────────
 rc.put("b", "high", b"abcdefgh")       # overwrite same key

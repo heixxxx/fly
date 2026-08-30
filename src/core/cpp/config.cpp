@@ -169,6 +169,9 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"locality_scheduling_enabled", 1},  // data locality 调度开关：1=开启(默认), 0=关闭
     {"fail_unscheduleable_tasks", 1},
     {"read_cache_size", 1073741824},
+    // low 等级计分折扣（百分比：25 = low 分数为 high 的 25%——同热度下
+    // 淘汰优先级更低，2026-08-30 缓存双池裁定）。
+    {"low_score_factor", 25},
     //（temp_store_size 已删除——2026-08-30 去"①形态"裁定：temp 内存 LRU/
     // eviction 机制整体退役，temp 压缩 record 恒在盘上。）
     {"data_client_pool_size", 4},
