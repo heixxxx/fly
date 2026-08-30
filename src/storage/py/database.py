@@ -170,62 +170,41 @@ class Database:
 
             cpp_cache = "low" if cache == "none" else cache
 
-            from core import get_config as _gc
-            if _gc().get_int("streaming_read_threshold") > 0:
-                # L3 流式（§8.1）：Unpickler(FlyStream) 增量消费——内存 R+常数
-                # 而非 C+2R。streaming_read_threshold=0 可关闭（逃生口）；对象
-                # 不可见（NOT_FOUND/NOT_READY）由 export 层直接 KeyError。
-                # D4（§14.3）：消费中途失败 → 重新调 open（对象级重来）。
-                for _attempt in range(2):
-                    try:
-                        stream = _fly_storage.ex_stg_open_read_stream(
-                            self._db, name, backup)
-                    except KeyError:
-                        raise  # 对象不可见：语义与整缓冲路径一致
-                    cls = _cpp_cls(stream.py_name)
-                    if cls is not None:
-                        # C++ 对象走权威重建路径（含 ObjectCache 命中快路径）；
-                        # 弃置已打开的流（析构释放 source/连接资源）。
-                        stream = None
-                        return cls._read_from_db(self._db, name, cpp_cache)
-                    try:
-                        obj = pickle.Unpickler(stream).load()
-                        corrupt = stream.checksum_failed()
-                    except (pickle.UnpicklingError, EOFError, AttributeError,
-                            ImportError, IndexError):
-                        corrupt = True  # 流截断/源坏——按损坏处理
-                    if not corrupt:
-                        nbytes = stream.total_uncompressed  # property
-                        if rc is not None:
-                            rc.put(key, "high", obj)
-                        return obj
-                    stream = None  # 弃流重开（对象级重来）
-                # 两轮流式消费均败（read_streaming 内已副本轮换+零容忍预算，
-                # 消费端再重开一轮仍败）——#5 裁定禁止整缓冲回退，直接 FATAL
-                #（task 失败通道，§5 零容忍语义）。
-                raise RuntimeError(
-                    f"[FATAL-DATA-CORRUPTION] streaming consume failed twice: "
-                    f"{name}")
-
-            # 整缓冲（流式关闭）：单拉 + 返回值携带的 py_name 分流。
-            data, py_name = self._db._read_decompressed(name, backup)
-            # read_object_compressed 在所有 tier miss 时返回 nullptr，
-            # _read_decompressed 翻译成空 bytes——还原"读不到"异常语义。
-            if not data:
-                raise KeyError(
-                    f"Object '{name}' not found (no data — not yet visible to master "
-                    "or never written)")
-            cls = _cpp_cls(py_name)
-            if cls is not None:
-                # C++ 对象：data 仅为分流媒介（解压一次，小对象成本可忽略），
-                # 权威重建走 _read_from_db（bitsery 反序列化 + ObjectCache）。
-                nbytes = 0
-                return cls._read_from_db(self._db, name, cpp_cache)
-            nbytes = len(data)
-            obj = pickle.loads(data)
-            if rc is not None:
-                rc.put(key, "high", obj)
-            return obj
+            # 恒流式（2026-08-30 用户裁定：常规读统一流式，streaming_read_threshold
+            # 逃生口不保留；仅非反序列化场景（backup 副本拉取等 C++ 侧）保留
+            # 全量拉取）。Unpickler(FlyStream) 增量消费——内存 R+常数而非
+            # C+2R。对象不可见（NOT_FOUND/NOT_READY）由 export 层直接 KeyError。
+            # D4（§14.3）：消费中途失败 → 重新调 open（对象级重来）。
+            for _attempt in range(2):
+                try:
+                    stream = _fly_storage.ex_stg_open_read_stream(
+                        self._db, name, backup)
+                except KeyError:
+                    raise  # 对象不可见：全源 miss（TIER3 已在前置轮换覆盖）
+                cls = _cpp_cls(stream.py_name)
+                if cls is not None:
+                    # C++ 对象走权威重建路径（含 ObjectCache 命中快路径）；
+                    # 弃置已打开的流（析构释放 source/连接资源）。
+                    stream = None
+                    return cls._read_from_db(self._db, name, cpp_cache)
+                try:
+                    obj = pickle.Unpickler(stream).load()
+                    corrupt = stream.checksum_failed()
+                except (pickle.UnpicklingError, EOFError, AttributeError,
+                        ImportError, IndexError):
+                    corrupt = True  # 流截断/源坏——按损坏处理
+                if not corrupt:
+                    nbytes = stream.total_uncompressed  # property
+                    if rc is not None:
+                        rc.put(key, "high", obj)
+                    return obj
+                stream = None  # 弃流重开（对象级重来）
+            # 两轮流式消费均败（read_streaming 内已副本轮换+零容忍预算，
+            # 消费端再重开一轮仍败）——#5 裁定禁止整缓冲回退，直接 FATAL
+            #（task 失败通道，§5 零容忍语义）。
+            raise RuntimeError(
+                f"[FATAL-DATA-CORRUPTION] streaming consume failed twice: "
+                f"{name}")
         finally:
             record_read(self.get_full_name(name), nbytes,
                         (time.perf_counter() - t0) * 1000.0)

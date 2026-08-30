@@ -154,10 +154,10 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"data_server_threads", 4},
     {"compression_level", 0},
     {"serialize_chunk_size", 4194304},
-    // L3 流式读（§8.1）：接收线程有界队列上限（片数，默认 16 片 ≈ 64MB 压缩态）
-    // 与大对象流式阈值（原始字节；低于此仍走整缓冲路径——对象小时流式无收益）。
+    // L3 流式读（§8.1）：接收线程有界队列上限（片数，默认 16 片 ≈ 64MB 压缩态）。
+    //（streaming_read_threshold 已删除——2026-08-30 恒流式裁定：常规读统一
+    // 流式传输，无阈值分流与关闭逃生口。）
     {"stream_buffer_chunks", 16},
-    {"streaming_read_threshold", 67108864},
     // L1 流式写（§9.1）：>0 启用——pickle.dump 流入 → 压缩块直写增量 record
     //（内存 R+常数；写前不知对象大小，开关启用即统一走流式）。0 = 关闭逃生口。
     {"streaming_write_threshold", 1},

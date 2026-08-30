@@ -134,7 +134,8 @@ client                          server
 - **TIER2 流式 = 首副本 best-effort**（streaming cb 只试 lookup 排序首位）：失败/流中途异常 → 回退 `read_object_compressed` 完整编排（副本轮换/退避/零容忍语义零重复实现）。流式中断续传的 TIER2 编排留待后续。
 - read_streaming 的 TIER1 = `SharedMemoryChunkSource`（持有 FlyBufferPtr 所有权）。
 - Python 面：`_fly_storage.ex_stg_open_read_stream` 模块级工厂（nanobind 类方法返回 unique_ptr 不被支持——模块函数有先例）；read_object 的 pickle "low"/"none" 分支 → Unpickler(FlyStream) 增量消费；流中途异常/校验失败 → 回退 `_read_decompressed`（完整重取 + FATAL）。
-- `streaming_read_threshold`（默认 64MB）实际语义为**功能开关**（读前不知对象大小，探 size 需额外 IO 得不偿失）；`stream_buffer_chunks`（默认 16）为接收线程有界队列上限。
+- `stream_buffer_chunks`（默认 16）为接收线程有界队列上限。
+  （`streaming_read_threshold` 已删除——2026-08-30 恒流式裁定，见 §14.10。）
 
 **L1 落地修订（2026-08-29 实现）**：
 - DataWriter 增量 API：begin（文件过半先滚——增量写不跨文件，IndexEntry 单文件区间约束）/append（手工跟踪大小，app 模式 tellp 受限）/finish（entry 登记；trailer 由调用方经 append 写入）。
@@ -214,8 +215,10 @@ client                          server
 - 实施位置：export 层流式编排（消费入口可重入——每次重试重新
   Unpickler(新流)）；与 A' 同批次。流式重试中 remove_remote_location
   使死副本出序。
-- 范围界定：该裁定针对**流式读路径**；L2 整缓冲重组（receive_chunked）
-  保留给非流式读（小对象快路径 / streaming_read_threshold=0 逃生口）。
+- 范围界定（2026-08-30 恒流式裁定修订）：常规读统一流式（master 已接线
+  streaming handler，threshold 逃生口删除）；全量拉取仅保留给**不需要
+  反序列化**的场景（backup 副本拉取、hash/probe 类 C++ 整缓冲 API 消费者）
+  与小对象快路径（≤4MB 整帧，设计内分流）。
 
 **差异 #8/#9/#10 定案（2026-08-29）**：
 - #8（DUPLICATE 预检）：被 #7 注册时序定案吸收（预许可即拒，两种模式
@@ -771,3 +774,28 @@ read_object **双拉缺陷**及三处被其掩盖的流式编排缺口，同批�
    （request_remote_data 问 master 全量副本含 master serve 地址）再判。
 
 验证：C++ 单测 43/43 + 全量 QA 167/167；pread 实验双拉消除。
+
+### 14.10 恒流式改造——常规读统一流式（2026-08-30 用户裁定）
+
+裁定内容：清理全部常规读取的非流式场景；仅不需要反序列化的场景保留全量
+拉取；`streaming_read_threshold=0` 逃生口不保留；master 切换至流式模式。
+
+1. **master 流式接线**：MasterAgent::start 注册与 worker 同款 streaming
+   handler（request_raw_exchange → chunked=NetworkChunkSource / 快路径=
+   SharedMemoryChunkSource）——master 原整缓冲主路径退役，export 层
+   "no streaming handler" 分支改防御性上抛（不可达）。
+2. **TIER1 temp 内存命中**：read_streaming 补 `try_read_local_temp_record`
+   （temp_compressed_data_ → SharedMemoryChunkSource）——worker 读自己写的
+   temp 零网络（原实现 temp miss 走 TIER2 环回；恒流式后暴露）。
+3. **逃生口删除**：`streaming_read_threshold` config 键 + read_object 的
+   整缓冲分支一并移除——常规读恒走流式（Unpickler 增量消费）。
+4. **全量拉取保留域**（不反序列化/设计内）：backup 副本拉取
+   （do_backup_write）、hash/probe 类 C++ 整缓冲 API、小对象快路径
+   （serve 端 chunked_transfer_threshold 分流）。
+5. **_get_py_name 整链删除**（export + Database::read_object_py_name）：
+   双拉修复后零消费者；test_cpp_object_cache 段 3 改验证 stream.py_name。
+
+实测（64MB 落盘对象，master 远程读）：流式热读 1117-1266 MB/s——高于整缓冲
+单拉参照（~1050），且 master 内存从"完整 record 缓冲+解压增量"降为 R+常数。
+
+验证：C++ 单测 43/43 + 全量 QA 167/167。

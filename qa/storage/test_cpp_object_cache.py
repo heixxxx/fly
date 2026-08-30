@@ -59,10 +59,13 @@ def main():
     assert s2[6] == 1, f"second read should NOT add a new put (still 1), got {s2[6]}"
     print("[PASS] cpp class second read (high-tier cache hit: 1 hit, no new put)")
 
-    # ── 3. _get_py_name returns the stored type name ──
-    py_name = db._db._get_py_name("test/entry")
+    # ── 3. 读流携带 py_name（恒流式分流媒介——_get_py_name 已删除，
+    #      py_name 由读取原语携带，2026-08-30 双拉修复）──
+    stream = _fly_storage.ex_stg_open_read_stream(db._db, "test/entry", False)
+    py_name = stream.py_name
+    stream = None  # 弃置流（C++ 对象由 _read_from_db 权威重建——同 read_object 分流）
     assert py_name == "EXStgIndexEntry", f"expected EXStgIndexEntry, got {py_name}"
-    print("[PASS] _get_py_name returns stored type name")
+    print("[PASS] read stream carries stored type name (py_name)")
 
     # ── 4. Pickle object still works (does NOT go through _read_from_db) ──
     # Pickle objects must NOT populate the C++ high tier (they use Python cache).

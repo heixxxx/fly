@@ -923,9 +923,28 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
     return {true, std::move(result)};
 }
 
-std::pair<bool, DataService::ChunkedLocation> DataService::find_chunked_location(
-        const CMString& object_name) {
+// temp 对象内存命中（恒流式改造）：锁段语义与 try_read_local 的 temp 分支
+// 一致（COMPLETE + flushed + temp_compressed_data_ 持有）。淘汰盘 fallback
+// 不在此处理——那是完整读语义（try_read_local），流式 TIER1 miss 走 TIER2
+//（serve 端会覆盖盘 fallback 场景）。
+FlyBufferPtr DataService::try_read_local_temp_record(const CMString& object_name) {
     auto [db_path, short_name] = split_full(object_name);
+    std::shared_lock<std::shared_mutex> lock(local_mutex_);
+    auto db_it = local_idx_.find(db_path);
+    if (db_it == local_idx_.end()) return nullptr;
+    auto it = db_it->second.objects_.find(short_name);
+    if (it == db_it->second.objects_.end() || !it->second) return nullptr;
+    auto& info = *it->second;
+    if (!info.is_temp_) return nullptr;
+    if (info.completion_state_.load(std::memory_order_acquire) != CompletionState::COMPLETE
+        || !info.flushed_) {
+        return nullptr;
+    }
+    return info.temp_compressed_data_;
+}
+
+std::pair<bool, DataService::ChunkedLocation> DataService::find_chunked_location(
+        const CMString& object_name) {    auto [db_path, short_name] = split_full(object_name);
 
     DbPaths paths;
     CMVector<IndexEntry> entries;
@@ -1002,7 +1021,23 @@ DataService::StreamingReadResult DataService::read_streaming(const CMString& obj
             // trailer 预读失败（极端长 py_name 或损坏）→ 走 TIER2/回退路径
             //（保守正确——MemoryChunkSource 的严格对账在回退路径执行）。
         }
-        // temp 对象（find_chunked_location 不命中）→ TIER2。
+        // temp 对象：内存压缩 record → SharedMemoryChunkSource（恒流式改造
+        // 2026-08-30：worker 读自己写的 temp 零网络——原注释"temp → TIER2"
+        // 会让本地 temp 读走环回网络）。对账失败 = 损坏 → CHECKSUM FATAL。
+        if (auto temp_rec = try_read_local_temp_record(object_name)) {
+            auto mem = CMMakeShared<fly::SharedMemoryChunkSource>(
+                temp_rec->data(), temp_rec->size(), temp_rec);
+            if (!mem->failed()) {
+                out.success = true;
+                out.py_name = mem->py_name();
+                out.block_area_len = mem->block_area_len();
+                out.source = mem;
+                return out;
+            }
+            out.error = "temp record structure verify failed";
+            out.rerr = ReadError::CHECKSUM;
+            return out;
+        }
     }
 
     // ── TIER2：streaming cb（首副本 best-effort，§8.1 决策：失败由调用方

@@ -77,10 +77,6 @@ public:
     CMSharedPtr<T> read_object(const CMString& object_name, const CMString& cache = "low");
 
     // Returns the py_name (type name) stored in the object header, without
-    // reading/deserializing the payload. Goes through the low-tier cache, so a
-    // hit is cheap. Used by Python to dispatch read_object to the right tier.
-    CMString read_object_py_name(const CMString& object_name);
-
     void backup_object(const CMString& object_name);
 
     void freeze();

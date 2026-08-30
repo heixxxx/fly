@@ -284,6 +284,11 @@ public:
     };
     std::pair<bool, ChunkedLocation> find_chunked_location(const CMString& object_name);
 
+    // temp 对象内存命中（恒流式改造 2026-08-30）：返回 temp 的压缩 record
+    //（temp_compressed_data_，含块流+trailer——SharedMemoryChunkSource 直接
+    // 消费）。非 temp / 未完成 / 无内存数据 → nullptr（调用方继续 TIER2）。
+    FlyBufferPtr try_read_local_temp_record(const CMString& object_name);
+
     // ── L3 流式读（§8.1）──
     // streaming cb：包装 DataClientPool::request_raw_exchange + NetworkChunkSource
     //（WorkerAgent 注册）。返回 (success, source, block_area_len, rerr)。

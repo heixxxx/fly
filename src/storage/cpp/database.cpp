@@ -539,11 +539,6 @@ std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMStrin
     return {comp_data, std::move(comp_py_name)};
 }
 
-CMString Database::read_object_py_name(const CMString& object_name) {
-    auto [comp_data, py_name] = read_object_compressed(object_name, false);
-    return py_name;
-}
-
 void Database::do_backup_write(const CMString& full, const CMString& object_name, CMString compressed_data, const CMString& source_hash) {
     auto ds = fly::DataService::instance();
     ds->on_write_started(db_path_, full);

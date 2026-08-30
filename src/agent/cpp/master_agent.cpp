@@ -10,6 +10,8 @@
 #include <core/cpp/graceful_exit.h>
 #include <storage/cpp/local_index.h>
 #include <storage/cpp/object_cache.h>
+#include <storage/cpp/network_chunk_source.h>
+#include <storage/cpp/memory_chunk_source.h>
 #include <common/cpp/write_context_hash.h>
 #include <algorithm>
 #include <cmath>
@@ -383,6 +385,44 @@ void MasterAgent::start() {
     dsInst->start_data_server(host_, 0, data_server_threads);
     data_server_port_ = static_cast<int32_t>(dsInst->get_data_port());
     DataService::instance()->register_worker(0, host_, data_server_port_);
+
+    // 流式读接线（恒流式改造 2026-08-30）：master 与 worker 同款 streaming
+    // handler——常规读统一流式传输（#5 裁定"始终不使用整体接收"彻底落地，
+    // master 原整缓冲主路径退役；快路径整帧由 chunked_=false 分支包内存源）。
+    dsInst->set_streaming_read_handler(
+        [this](const CMString& host, int32_t port,
+               const CMString& name) -> std::tuple<bool, CMSharedPtr<fly::ChunkSource>, uint64_t, ReadError> {
+            auto ex = data_client_pool_.request_raw_exchange(host, port, name);
+            if (!ex.success) {
+                return {false, nullptr, 0, ex.rerr};
+            }
+            if (!ex.meta.chunked_) {
+                if (!ex.whole_data || ex.whole_data->empty()) {
+                    data_client_pool_.release_borrowed_fd(ex.fd, true);
+                    return {false, nullptr, 0, ReadError::NETWORK};
+                }
+                auto mem = CMMakeShared<fly::SharedMemoryChunkSource>(
+                    ex.whole_data->data(), ex.whole_data->size(), ex.whole_data);
+                if (mem->failed()) {
+                    return {false, nullptr, 0, ReadError::CHECKSUM};
+                }
+                return {true, mem, mem->block_area_len(), ReadError::NONE};
+            }
+            int64_t chunks = Config::instance()->get_int("stream_buffer_chunks");
+            uint64_t queue_limit = static_cast<uint64_t>(chunks > 0 ? chunks : 16) *
+                                   ex.meta.chunk_frame_bytes_;
+            auto src = CMMakeShared<fly::NetworkChunkSource>(
+                data_client_pool_.transport(), ex.fd, ex.meta,
+                [pool = &data_client_pool_, fd = ex.fd](bool healthy) {
+                    pool->release_borrowed_fd(fd, healthy);
+                },
+                queue_limit);
+            src->start();
+            return {true, src,
+                    ex.meta.total_compressed_len_ > ex.meta.trailer_len_
+                        ? ex.meta.total_compressed_len_ - ex.meta.trailer_len_ : 0,
+                    ReadError::NONE};
+        });
 
     // Master is the location authority: its remote_idx already holds every
     // replica, so read_object goes TIER1 → TIER2 only (no TIER3 — querying

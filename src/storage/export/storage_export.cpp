@@ -138,25 +138,16 @@ m.def("ex_stg_open_read_stream",
         throw fly_export::python_error();
     }
     if (r.error == "no streaming handler") {
-        // master 进程无 streaming handler（worker 侧注册）——master 直读的
-        // 主路径 = DataClientPool 整缓冲拉取 + SharedMemoryChunkSource 内存
-        // 流式消费（#5 裁定界定范围是流式读路径的失败回退；此处非回退，
-        // 是 master 的常规读通道）。
-        auto [comp_data, py_name] = db.read_object_compressed(name, backup);
-        if (!comp_data || comp_data->empty()) {
-            PyErr_SetString(PyExc_KeyError, ("Object '" + name + "' not found").c_str());
-            throw fly_export::python_error();
-        }
-        auto mem = CMMakeShared<fly::SharedMemoryChunkSource>(
-            comp_data->data(), comp_data->size(), comp_data);
-        if (mem->failed()) {
-            throw_fatal_corruption(name, "record corrupt after fetch (master path)");
-        }
-        return new FlyStream(mem, mem->block_area_len());
+        // 恒流式改造后 master/worker 均已注册 streaming handler——此分支
+        // 不可达（防御性上抛，原 master 整缓冲主路径已随接线退役）。
+        PyErr_SetString(PyExc_RuntimeError,
+                        ("no streaming handler registered (process misconfig): '"
+                         + name + "'").c_str());
+        throw fly_export::python_error();
     }
-    // worker 侧：网络类轮换全败 / deadline 到期（read_streaming 已尽力：
-    // 轮换+退避+TIER3 刷新）——#5 裁定禁止整缓冲回退，如实上抛；消费端
-    // 对象级重开（Python read_object 两轮）是上层兜底。
+    // 网络类轮换全败 / deadline 到期（read_streaming 已尽力：轮换+退避+
+    // TIER3 刷新）——#5 裁定禁止整缓冲回退，如实上抛；消费端对象级
+    // 重开（Python read_object 两轮）是上层兜底。
     PyErr_SetString(PyExc_RuntimeError,
                     ("streaming read failed for '" + name + "': " + r.error).c_str());
     throw fly_export::python_error();
@@ -336,9 +327,8 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     FLY_EXPORT_DEF("_read_decompressed", [](Database& db, const CMString& name) -> fly_export::tuple {
         return read_decompressed_impl(db, name, false);
     })
-    FLY_EXPORT_DEF("_get_py_name", [](Database& db, const CMString& name) -> CMString {
-        return db.read_object_py_name(name);
-    })
+    // _get_py_name 已删除（双拉修复 2026-08-30：py_name 由读取原语天然携带，
+    // 独立探测接口触发全量拉取违背设计初衷；恒流式改造后整链无消费者）。
     FLY_EXPORT_DEF("_decompress_bytes", [](Database&, fly_export::bytes b) -> fly_export::bytes {
         CMString raw(b.c_str(), b.size());
         CMString result = fly::decompress_raw_data(raw);
