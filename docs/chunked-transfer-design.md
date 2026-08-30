@@ -691,3 +691,34 @@ NOT_READY 窗口验证——预许可后完成登记前下游不可读）
 | low-tier 移除后写后立即读的 NOT_READY 轮询放大 | 轮询已有退避；QA 观测窗口期负载无异常即收 |
 | 块级校验前移的接收线程性能（每块一次 CRC） | 14.6GB/s 实测，4MB 块 ~0.3ms——网络远慢于此 |
 
+
+### 14.7 v2 实施完成记录（2026-08-30）
+
+四阶段全部落地（每阶段独立 commit + 全量 QA 门禁）：
+
+| 阶段 | 内容 | commit | 验证 |
+|---|---|---|---|
+| 一 B' | trailer 块位置表（磁盘格式 v2：[块表 u32×N][py_name][fixed 24B+crc]；写侧四构造点登记；读侧逐块头↔表项对账） | 5ef6743 | 单测 73/73 + QA 165/165 |
+| 一 C+预许可 | 写路径 WBQ 逐块后台落盘（生产/盘写流水）+ finish 单元 promise；注册预许可（两模式对齐落盘前注册，hash 所有权经闭包传递）；测试 44/45/47/48 | 22668ef | 单测 74/74 + QA 167/167 |
+| 二 A' | ChunkFrameProtocol v2（帧子头 [u64 offset][u64 crc]）；接收线程块级校验状态机（feed_frame 跨帧切块/块 CRC/hole+resend）；resend byte-offset 化（server 零块知识）；L2 重组 offset 化 + 覆盖合并校验；pull/push 死锁修复（极端 limit） | 17305e6 | 单测 74/74 + QA 167/167 |
+| 三 D1/D2 | low-tier cache 全量取消（三处分支移除）；cache 二值化（none/high，low 别名）；修复两个被缓存掩盖的既有缺陷（executor db 复用 path 校验 + unregister_database 引用计数） | ef7b8e4 | 单测 74/74 + QA 167/167 |
+| 三 D3/D4 | DiskChunkSource（pread 拉取式本地流式源）；TIER2 完整流式编排（副本轮换+退避+deadline+TIER3+零容忍预算；export 层消费失败对象级重开） | cf7e860 | 单测 74/74 + QA 167/167 |
+| 四 | 全量 QA ×2 | — | 167/167 ×2 |
+
+**v2 实施中的额外发现与修复**（§13.1 补充）：
+11. pull/push 死锁（极端 queue limit < 单块大小）：pull 的 q_data wait 前
+    notify space（接收线程 space 谓词含 queue_.empty()——双方互等）
+12. **被 low-cache 掩盖的两个既有缺陷**（取消后暴露，均根因修复）：
+    a) executor db 复用按 uid 命中不校验 path——merge/迁移同 uid 换路径
+       场景复用旧实例读旧命名空间必败
+    b) DataService::unregister_database 无引用计数——db chain find_db 临时
+       Database 实例 GC 析构拆掉 db_paths_ → serve TIER1 diag=0
+13. Empty db_path 防御：被拒构造的 Database（db_path_ 清空）析构时
+    unregister 的空 key 不得触碰 map（erase(end()) UB 段错误）
+14. solver project TIMEOUT 根因链：master 直读依赖 worker serve → TIER1
+    db_paths 被临时实例拆掉（12b）→ 修复后 62s TIMEOUT 消失
+
+**§14.6 风险表的实际处置对照**：块表双侧一致性（契约测试落地 ✓）；
+WBQ-段事务交互（45 测试 + QA ✓）；预许可窗口（完成登记全量检查 ✓）；
+流式重开资源时序（export 重开前旧流析构 ✓）；NOT_READY 轮询放大
+（QA 无异常 ✓）；块级 CRC 性能（实测写 128MB RSS 零增长 ✓）。
