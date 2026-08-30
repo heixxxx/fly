@@ -8,11 +8,23 @@ Verifies freeze semantics:
   - Multiple Database instances: freeze one doesn't affect others
 """
 import os
+import pickle
 import time
 import shutil
 
 import _fly_log as log
 import _fly_storage as storage
+
+
+def _raw_write(db, key, value: str):
+    # write_object_raw 已删除（2026-08-30，生产零使用）——直写路径以
+    # _write_pickle_bytes 替代（同 WriteErrorType int 返回语义）。
+    return db._write_pickle_bytes(key, pickle.dumps(value), "str", False)
+
+
+def _raw_read(db, key) -> str:
+    data, _ = db._read_decompressed(key)
+    return pickle.loads(data)
 
 
 
@@ -30,19 +42,19 @@ def test_freeze_prevents_write_allows_read():
         ds = storage.ex_stg_get_data_service()
         db = sm.get_or_create_database(test_dir)
 
-        db.write_object_raw("before_freeze_1", "data_1")
-        db.write_object_raw("before_freeze_2", "data_2")
+        _raw_write(db, "before_freeze_1", "data_1")
+        _raw_write(db, "before_freeze_2", "data_2")
         ds.drain_write_back()
         time.sleep(0.3)
 
         db.freeze()
         assert db.is_frozen()
 
-        assert db.read_object_raw("before_freeze_1") == "data_1"
-        assert db.read_object_raw("before_freeze_2") == "data_2"
+        assert _raw_read(db, "before_freeze_1") == "data_1"
+        assert _raw_read(db, "before_freeze_2") == "data_2"
 
-        result = db.write_object_raw("after_freeze", "should_fail")
-        # write_object_raw returns WriteErrorType int: 0=OK, 1=FROZEN_DB, etc.
+        result = _raw_write(db, "after_freeze", "should_fail")
+        # _write_pickle_bytes returns WriteErrorType int: 0=OK, 1=FROZEN_DB, etc.
         assert result != 0, f"Write after freeze should fail (non-zero error code), got: {result!r}"
 
         sm.close_all()
@@ -68,7 +80,7 @@ def test_freeze_preserves_local_index():
         ds = storage.ex_stg_get_data_service()
         db = sm.get_or_create_database(test_dir)
 
-        db.write_object_raw("idx_obj", "idx_data")
+        _raw_write(db, "idx_obj", "idx_data")
         ds.drain_write_back()
         time.sleep(0.3)
 
@@ -79,8 +91,8 @@ def test_freeze_preserves_local_index():
 
         success, data_bytes, py_name = ds.try_read_local(full_name)
         assert success
-        data = data_bytes.decode('utf-8') if isinstance(data_bytes, bytes) else data_bytes
-        assert "idx_data" in data
+        data = data_bytes if isinstance(data_bytes, bytes) else str(data_bytes).encode()
+        assert pickle.loads(data) == "idx_data"
 
         sm.close_all()
         print("PASS: test_freeze_preserves_local_index")
@@ -108,21 +120,21 @@ def test_freeze_isolation_between_databases():
         db1 = sm.get_or_create_database(test_dir_1)
         db2 = sm.get_or_create_database(test_dir_2)
 
-        db1.write_object_raw("shared_key", "from_db1")
-        db2.write_object_raw("shared_key", "from_db2")
+        _raw_write(db1, "shared_key", "from_db1")
+        _raw_write(db2, "shared_key", "from_db2")
         ds = storage.ex_stg_get_data_service()
         ds.drain_write_back()
         time.sleep(0.3)
 
         db1.freeze()
 
-        result = db1.write_object_raw("after_freeze", "should_fail")
+        result = _raw_write(db1, "after_freeze", "should_fail")
         assert result != 0, f"db1 should reject writes after freeze, got: {result!r}"
 
-        db2.write_object_raw("still_writable", "from_db2_after_freeze")
+        _raw_write(db2, "still_writable", "from_db2_after_freeze")
         ds.drain_write_back()
 
-        assert db2.read_object_raw("still_writable") == "from_db2_after_freeze"
+        assert _raw_read(db2, "still_writable") == "from_db2_after_freeze"
 
         sm.close_all()
         print("PASS: test_freeze_isolation_between_databases")

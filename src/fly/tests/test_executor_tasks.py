@@ -17,6 +17,6 @@ def raising_task():
 
 
 def freeze_task(db):
-    db.write_object_raw("freeze_test", "data")
+    db.write_object("freeze_test", "data")
     db.freeze()
     return "frozen"

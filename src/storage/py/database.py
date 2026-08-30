@@ -260,26 +260,9 @@ class Database:
     def backup_object(self, name: str):
         self._db.backup_object(name)
 
-    def write_object_raw(self, name: str, data: str, backup: bool = False) -> str:
-        t0 = time.perf_counter()
-        try:
-            ret = self._db.write_object_raw(name, data, backup)
-            self._invalidate_read_cache(name)
-            return ret
-        finally:
-            record_write(self.get_full_name(name), (time.perf_counter() - t0) * 1000.0)
-
-    def read_object_raw(self, name: str) -> str:
-        t0 = time.perf_counter()
-        nbytes = 0
-        try:
-            ret = self._db.read_object_raw(name)
-            if ret is not None:
-                nbytes = len(ret)
-            return ret
-        finally:
-            record_read(self.get_full_name(name), nbytes,
-                        (time.perf_counter() - t0) * 1000.0)
+    # write_object_raw / read_object_raw 已删除（2026-08-30 用户裁定，生产
+    # 零使用）。直写路径需求由 C++ `_write_pickle_bytes`（WriteErrorType int
+    # 返回语义）覆盖；裸读经 `_read_decompressed` + pickle.loads。
 
     def get_full_name(self, name: str) -> str:
         return self._db.get_full_name(name)

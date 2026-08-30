@@ -85,13 +85,17 @@ val = db.read_object("k", cache="high")
 assert val == 2, f"write invalidation failed: expected 2, got {val} (stale cache)"
 INFO("[PASS] write_object invalidation: remove+rewrite refreshes cached value")
 
-# ── Scenario 2: write_object_raw invalidation ──────────────────────────
-# 同样需先 remove（清 provenance + cache）再 write_object_raw 重写。
+# ── Scenario 2: 直写路径（_write_pickle_bytes）invalidation ────────────
+# write_object_raw 已删除（2026-08-30，生产零使用）——直写路径以
+# _write_pickle_bytes 覆盖（同经 C++ commit 链，缓存失效语义相同）。
+# 同样需先 remove（清 provenance + cache）再直写重写。
+import pickle as _pickle
 db.remove_object("k")
-db.write_object_raw("k", "raw_value")
-val = db.read_object_raw("k")
-assert val == "raw_value", f"raw read failed: expected 'raw_value', got {val!r}"
-INFO("[PASS] write_object_raw invalidation: remove+raw_write refreshes cache")
+db._db._write_pickle_bytes("k", _pickle.dumps("raw_value"), "str", False)
+data, _ = db._db._read_decompressed("k")
+val = _pickle.loads(data)
+assert val == "raw_value", f"direct-write read failed: expected 'raw_value', got {val!r}"
+INFO("[PASS] direct-write invalidation: remove+rewrite refreshes cached value")
 
 # ── Scenario 3: remove_object invalidation ─────────────────────────────
 # Re-populate the high-tier cache with a fresh pickle object, then remove it.

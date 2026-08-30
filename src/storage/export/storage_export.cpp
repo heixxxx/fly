@@ -366,22 +366,8 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
                                          bool backup, bool populate_cache) -> int {
         return static_cast<int>(db.commit_stream(name, buf, py_name, backup, populate_cache));
     })
-    FLY_EXPORT_DEF("write_object_raw", [](Database& db, const CMString& name, const CMString& data, bool backup) -> int {
-        return static_cast<int>(db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup));
-    })
-    FLY_EXPORT_DEF("write_object_raw", [](Database& db, const CMString& name, const CMString& data) -> int {
-        return static_cast<int>(db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", false));
-    })
-    FLY_EXPORT_DEF("read_object_raw", [](Database& db, const CMString& name, bool backup) -> CMString {
-        auto [comp_data, py_name] = db.read_object_compressed(name, backup);
-        if (!comp_data || comp_data->empty()) return {};
-        return fly::decompress_raw_data(CMString(comp_data->data(), comp_data->size()));
-    })
-    FLY_EXPORT_DEF("read_object_raw", [](Database& db, const CMString& name) -> CMString {
-        auto [comp_data, py_name] = db.read_object_compressed(name, false);
-        if (!comp_data || comp_data->empty()) return {};
-        return fly::decompress_raw_data(CMString(comp_data->data(), comp_data->size()));
-    })
+    // write_object_raw / read_object_raw 已删除（2026-08-30 用户裁定，生产零使用；
+    // 直写路径需求由 _write_pickle_bytes 覆盖——同 WriteErrorType int 语义）。
     FLY_EXPORT_METHOD("backup_object", &Database::backup_object)
     FLY_EXPORT_METHOD("freeze", &Database::freeze)
     FLY_EXPORT_METHOD("is_frozen", &Database::is_frozen)

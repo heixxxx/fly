@@ -348,8 +348,6 @@ class _Database:
     def get_db_id(self) -> str
     def freeze(self)
     def is_frozen(self) -> bool
-    def write_object_raw(self, name, data, *, backup: bool = False) -> str
-    def read_object_raw(self, name, *, backup: bool = False) -> str
     def load_meta(self)
     def get_base_path(self) -> str
     def get_data_path(self) -> str

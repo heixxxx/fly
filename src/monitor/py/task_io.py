@@ -1,9 +1,8 @@
 """task_io —— worker 侧 task 执行窗口的 read/write IO 计时归属。
 
 被归属的调用点（Python 层咽喉）：
-  - storage/py/database.py 的 read_object / read_object_raw：
-    record_read(full_name, nbytes, ms)
-  - storage/py/database.py 的 write_object / _write_temp / write_object_raw：
+  - storage/py/database.py 的 read_object：record_read(full_name, nbytes, ms)
+  - storage/py/database.py 的 write_object / _write_temp：
     record_write(full_name, ms)（序列化+压缩+入队段）
   - agent/py/executor.py postprocess 的 drain_write_back：
     add_drain_ms(ms)（write-back 队列 flush 落盘段，计入 write_time）

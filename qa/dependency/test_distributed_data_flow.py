@@ -1,5 +1,6 @@
 """E2E distributed data flow test."""
 import os
+import pickle
 import time
 import shutil
 
@@ -27,7 +28,7 @@ def test_database_write_updates_local_index():
     obj_name = "test/local_obj"
     full_name = db.get_full_name(obj_name)
     
-    db.write_object_raw(obj_name, test_data)
+    db._write_pickle_bytes(obj_name, pickle.dumps(test_data), "str", False)
     ds.drain_write_back()
     time.sleep(0.3)
     
@@ -35,9 +36,9 @@ def test_database_write_updates_local_index():
     
     success, data_bytes, py_name = ds.try_read_local(full_name)
     assert success, f"try_read_local failed for {full_name}"
-    
-    data = data_bytes.decode('utf-8') if isinstance(data_bytes, bytes) else data_bytes
-    assert data == test_data, f"Data mismatch: {data} != {test_data}"
+
+    data = data_bytes if isinstance(data_bytes, bytes) else str(data_bytes).encode()
+    assert pickle.loads(data) == test_data, f"Data mismatch vs {test_data}"
     
     sm.close_all()
     log.shutdown_log()
@@ -65,17 +66,18 @@ def test_database_multiple_objects():
     for i in range(10):
         key = f"multi/obj_{i}"
         data = f"data_{i}"
-        db.write_object_raw(key, data)
-    
+        db._write_pickle_bytes(key, pickle.dumps(data), "str", False)
+
     ds.drain_write_back()
     time.sleep(0.5)
-    
+
     for i in range(10):
         key = f"multi/obj_{i}"
         full_name = db.get_full_name(key)
         assert ds.has_local_object(full_name), f"Object {full_name} not found"
-        
-        result = db.read_object_raw(key)
+
+        data, _ = db._read_decompressed(key)
+        result = pickle.loads(data)
         assert result == f"data_{i}", f"Mismatch at {i}: {result}"
     
     sm.close_all()
@@ -118,7 +120,7 @@ def test_data_service_remote_index():
     
     db = sm.get_or_create_database(test_dir)
     
-    db.write_object_raw("obj/a", "data_a")
+    db._write_pickle_bytes("obj/a", pickle.dumps("data_a"), "str", False)
     ds.drain_write_back()
     time.sleep(0.3)
     

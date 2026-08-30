@@ -77,3 +77,4 @@ _test_db_id
 *.gcno
 qa/var/persistence_db/
 .work/
+qa/unit/storage_test/

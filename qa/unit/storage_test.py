@@ -10,14 +10,16 @@ import shutil
 import pickle
 
 # Add bazel-bin output to path for extension module discovery
-_bazel_bin = os.path.join(os.path.dirname(__file__), '..', 'bazel-bin', 'src')
-for _subpath in ['storage/export', 'core/export', 'log/export', 'agent/export', 'network/export', 'task/export']:
+# 仓库根的 bazel-bin（qa/unit → qa → 仓库根；修复历史少一级导致的注入失效）
+_bazel_bin = os.path.join(os.path.dirname(__file__), '..', '..', 'bazel-bin', 'src')
+for _subpath in ['storage/export', 'core/export', 'log/export', 'agent/export',
+                 'network/export', 'task/export', 'message/export']:
     _full = os.path.join(_bazel_bin, _subpath)
     if os.path.exists(_full):
         sys.path.insert(0, _full)
 
 # Add src directory to path for fly package discovery
-_fly_src = os.path.join(os.path.dirname(__file__), '..', 'src')
+_fly_src = os.path.join(os.path.dirname(__file__), '..', '..', 'src')
 if os.path.exists(_fly_src):
     sys.path.insert(0, _fly_src)
 
@@ -84,22 +86,23 @@ def test_db_meta_creation():
 def test_database_write_read(temp_dir):
     from _fly_storage import ex_stg_create_database
     db = ex_stg_create_database(temp_dir, "", 0)
-    db.write_object_raw("test/key", "hello world")
-    data = db.read_object_raw("test/key")
-    assert data == "hello world"
+    db._write_pickle_bytes("test/key", pickle.dumps("hello world"), "str", False)
+    data, _ = db._read_decompressed("test/key")
+    assert pickle.loads(data) == "hello world"
     db.reset()
 
 
 def test_database_freeze(temp_dir):
     from _fly_storage import ex_stg_create_database, EXStgWriteErrorType
     db = ex_stg_create_database(temp_dir, "", 0)
-    db.write_object_raw("test/key", "data")
+    db._write_pickle_bytes("test/key", pickle.dumps("data"), "str", False)
     db.freeze()
 
     assert db.is_frozen() == True
 
     # After freeze, writes return WriteErrorType.FROZEN_DB (error code, not raise).
-    err = EXStgWriteErrorType(db.write_object_raw("test/key2", "more data"))
+    err = EXStgWriteErrorType(db._write_pickle_bytes(
+        "test/key2", pickle.dumps("more data"), "str", False))
     assert err == EXStgWriteErrorType.FROZEN_DB, f"expected FROZEN_DB, got {err}"
 
     db.reset()
