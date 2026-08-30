@@ -136,16 +136,6 @@ cc_test(
 )
 
 cc_test(
-    name = "temp_store_test",
-    srcs = ["temp_store_test.cpp"],
-    deps = [
-        "@googletest//:gtest_main",
-        "//src/storage/cpp:fly_storage",
-    ],
-    copts = ["-std=c++20"],
-)
-
-cc_test(
     name = "fly_stream_test",
     srcs = ["fly_stream_test.cpp"],
     deps = [

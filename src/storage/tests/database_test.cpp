@@ -858,7 +858,8 @@ TEST_F(DatabaseTest, ConcurrentFreezeIsSafe) {
 
 // ── temp 落盘（task 级断点的前置基建）──────────────────────────────
 // temp 对象从纯内存（TempStore LRU）改为"内存 LRU + db 目录专用文件落盘"：
-// temp_data_{wid}_{NNN}.dat + {wid}.temp.idx（op-log 事务段）。断点语义：
+// .temp.data_{wid}_{NNN}.dat + .temp.{wid}.idx（op-log 事务段；2026-08-30
+// 起 temp 无内存态——压缩 record 恒在盘上）。断点语义：
 // 已完成 task 的 temp 输出跨进程可恢复（load temp idx → restore → ready），
 // db freeze 后 temp 文件全部删除。
 
@@ -891,11 +892,12 @@ TEST_F(DatabaseTest, TempPersistRoundtripAcrossRestart) {
     EXPECT_FALSE(found0) << "内存条目清空后不应再命中（前提构造）";
 
     // load temp idx → restore_temp_entries（on_idx_load_command 的核心两步）。
-    // temp idx 文件名 = {writer_id}.temp.idx，扫描 db 目录取第一个。
+    // temp idx 文件名 = .temp.{writer_id}.idx，扫描 db 目录取第一个。
     CMVector<CMString> temp_idx;
     for (const auto& f : std::filesystem::directory_iterator(db_path)) {
         CMString name = f.path().filename().string();
-        if (name.size() > 9 && name.substr(name.size() - 9) == ".temp.idx") {
+        if (name.rfind(".temp.", 0) == 0 && name.size() > 4 &&
+            name.compare(name.size() - 4, 4, ".idx") == 0) {
             temp_idx.push_back(f.path().string());
         }
     }
@@ -907,7 +909,7 @@ TEST_F(DatabaseTest, TempPersistRoundtripAcrossRestart) {
     ASSERT_EQ(entries.size(), 1u);
     ds->restore_temp_entries(db_path, entries);
 
-    // 盘 fallback 读回：内存 temp_compressed_data_ 为空，走 entries_ 文件读。
+    // 盘读回（temp 无内存态，恒走 entries_ 文件读）。
     auto [found, data] = ds->try_read_local_raw(db_path + ":iters/x_0");
     ASSERT_TRUE(found);
     ASSERT_NE(data, nullptr);
@@ -936,7 +938,8 @@ TEST_F(DatabaseTest, TempAbortRollsBackFiles) {
     // temp idx：load 后 ABORT 段丢弃 → 0 entry。
     for (const auto& f : std::filesystem::directory_iterator(db_path)) {
         CMString name = f.path().filename().string();
-        if (name.size() > 9 && name.substr(name.size() - 9) == ".temp.idx") {
+        if (name.rfind(".temp.", 0) == 0 && name.size() > 4 &&
+            name.compare(name.size() - 4, 4, ".idx") == 0) {
             LocalIndex temp_index(f.path().string());
             temp_index.load();
             EXPECT_EQ(temp_index.get_all_entries().size(), 0u)
@@ -961,10 +964,8 @@ TEST_F(DatabaseTest, TempFreezeDeletesFiles) {
     }
     for (const auto& f : std::filesystem::directory_iterator(db_path)) {
         CMString name = f.path().filename().string();
-        EXPECT_EQ(name.find("temp_data_"), CMString::npos)
-            << "freeze 后不得残留 temp 数据文件: " << name;
-        EXPECT_EQ(name.find(".temp.idx"), CMString::npos)
-            << "freeze 后不得残留 temp idx: " << name;
+        EXPECT_EQ(name.find(".temp."), CMString::npos)
+            << "freeze 后不得残留 temp 文件（data/idx 统一 .temp. 前缀）: " << name;
     }
     // 正式对象不受影响。
     Database db2(db_path);
@@ -984,7 +985,8 @@ TEST_F(DatabaseTest, TempIdxUnclosedSegmentDropped) {
     CMVector<CMString> temp_idx;
     for (const auto& f : std::filesystem::directory_iterator(db_path)) {
         CMString name = f.path().filename().string();
-        if (name.size() > 9 && name.substr(name.size() - 9) == ".temp.idx") {
+        if (name.rfind(".temp.", 0) == 0 && name.size() > 4 &&
+            name.compare(name.size() - 4, 4, ".idx") == 0) {
             temp_idx.push_back(f.path().string());
         }
     }

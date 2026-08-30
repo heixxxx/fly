@@ -3,7 +3,6 @@
 #include <storage/cpp/data_writer.h>
 #include <storage/cpp/data_reader.h>
 #include <storage/cpp/data_service.h>
-#include <storage/cpp/temp_store.h>
 #include <storage/cpp/write_back_queue.h>
 #include <storage/cpp/db_meta.h>
 #include <storage/cpp/compressing_streambuf.h>

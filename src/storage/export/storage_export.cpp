@@ -542,22 +542,8 @@ FLY_EXPORT_FUNCTION("ex_stg_get_last_error_type", []() -> int {
     return static_cast<int>(fly::WorkerAgentContext::get_last_error_type());
 });
 
-FLY_EXPORT_CLASS(fly::TempStore, "EXStgTempStore")
-    FLY_EXPORT_DEF("put", [](fly::TempStore& self, const CMString& object_name,
-                              fly_export::bytes data) {
-        CMString compressed(data.c_str(), data.size());
-        self.put(object_name, compressed);
-    })
-    FLY_EXPORT_DEF("get", [](fly::TempStore& self, const CMString& object_name) -> fly_export::tuple {
-        auto [found, data] = self.get(object_name);
-        if (!found) return fly_export::make_tuple(false, fly_export::bytes());
-        return fly_export::make_tuple(true, fly_export::bytes(data.data(), data.size()));
-    })
-    FLY_EXPORT_METHOD("has", &fly::TempStore::has)
-    FLY_EXPORT_METHOD("remove", &fly::TempStore::remove)
-    FLY_EXPORT_METHOD("cleanup_all", &fly::TempStore::cleanup_all)
-    FLY_EXPORT_METHOD("mem_bytes", &fly::TempStore::mem_bytes)
-    FLY_EXPORT_METHOD("max_bytes", &fly::TempStore::max_bytes);
+// EXStgTempStore export 已删除（2026-08-30 去"①形态"裁定：temp 内存 LRU/
+// eviction 机制整体退役——temp 压缩 record 恒在盘上）。
 
 // ObjectCache diagnostics (test/observability).
 FLY_EXPORT_FUNCTION("ex_stg_cache_high_size", []() -> size_t {

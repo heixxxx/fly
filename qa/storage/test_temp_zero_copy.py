@@ -1,28 +1,13 @@
-"""Verify temp data read/write paths via valgrind massif profiling.
+"""Verify temp data read/write paths（2026-08-30 去"①形态"改造后的语义）。
 
-Temp write path (zero-copy):
-  compress_buffered_data → FlyBufferPtr → put_temp_data → on_temp_write (shared_ptr stored)
-
-Temp read path (§4.7 low-tier cache 取消后，2026-08-30):
-  worker 本地: read_raw_compressed → try_read_local_raw → is_temp
-    → return temp_compressed_data_ (shared_ptr, no copy)
-  master/他进程: 每次读完整远程流式（帧+块校验+解压），无 low-tier 缓存
-    ——重复读的加速由 high-level cache（Python 对象缓存，显式配置）承担。
-
-Run with valgrind massif:
-  valgrind --tool=massif --trace-children=yes --stacks=yes \
-    ./build/bin/fly qa/storage/test_temp_zero_copy.py
-
-Verify:
-  grep "mem_heap_B=" massif.out.* | sed 's/.*mem_heap_B=//' | sort -rn | head -5
-  ms_print massif.out.<PID>
-
-Expected: allocation tree should NOT contain:
-  - CMString(ptr, size) copy in put_temp_data / on_temp_write
-  - FlyBuffer→CMString temporary copy
-  - substr / take / full_buf memcpy in temp read path
+temp 存储语义（用户裁定链：写穿落盘 → 内存压缩 record 退役）：
+  write path: compress_buffered_data → put_temp_data → write-through 落盘
+    （.temp.data_{wid}_{NNN}.dat + .temp.{wid}.idx）——内存不驻压缩 record。
+  read path:  恒流式统一盘路径（DiskChunkSource pread / serve_chunked）；
+    对象级加速由 Python temp 缓存池承担（缓存双池改造阶段接入）。
+  lifecycle:  remove → temp idx REMOVE 条目 + 内存清理；freeze → temp
+    data/idx 文件全删 + local_idx 条目清理。
 """
-
 from _fly_log import INFO
 import time
 import os
@@ -47,6 +32,10 @@ def wait_for(condition, timeout=60.0, interval=0.5):
     return False
 
 
+def temp_files(db_dir):
+    return [f for f in os.listdir(db_dir) if f.startswith(".temp.")]
+
+
 cleanup()
 get_config().set_int("fail_unscheduleable_tasks", 0)
 
@@ -59,9 +48,7 @@ assert master.wait_for_workers(1)
 db = open_db(DB_PATH)
 
 # ============================================================
-# Write: 5 x 10MB temp objects
-# Expected allocation: compress_buffered_data (lz4 chunks) only
-# No CMString copy in put_temp_data → on_temp_write path
+# Write: 5 x 10MB temp objects（write-through 落盘）
 # ============================================================
 n = 5
 obj_size = 10 * 1024 * 1024  # 10MB
@@ -74,13 +61,11 @@ assert wait_for(lambda: len(master.completed_tasks) >= n, timeout=60.0), \
     f"Expected {n} tasks, got {len(master.completed_tasks)}"
 
 INFO(f"Write complete: {n} objects")
+assert len(temp_files(DB_PATH)) > 0, \
+    "temp 落盘文件应存在（.temp. 前缀：write-through 语义）"
 
 # ============================================================
-# Read: each object 3 times
-# Expected allocation on every read (master 跨进程视角, §4.7 缓存取消后):
-#   full remote streaming (frame+block verify) + decompress + unpickle
-# —— low-tier cache 已取消，重复读加速仅由 high-level cache（显式配置）提供
-# No FlyBuffer→CMString copy in try_read_local_raw path (worker 本地命中时)
+# Read: each object 3 times（恒流式统一盘路径）
 # ============================================================
 for round in range(3):
     INFO(f"Read round {round + 1}/3...")
@@ -91,20 +76,25 @@ for round in range(3):
 INFO("All reads complete, data integrity verified")
 
 # ============================================================
+# Lifecycle: remove → temp idx REMOVE + 内存清理（文件保留——共享滚动文件）
+# ============================================================
+db.remove_object("temp_0")
+try:
+    db.read_object("temp_0")
+    raise AssertionError("removed temp object should not be readable")
+except KeyError:
+    pass
+INFO("remove(temp): read raises KeyError as expected")
+
+# ============================================================
 # Summary
 # ============================================================
 INFO("")
-INFO("=== Verification Guide ===")
-INFO("Run: valgrind --tool=massif --trace-children=yes --stacks=yes ./build/bin/fly qa/storage/test_temp_zero_copy.py")
-INFO("")
-INFO("Check massif output for temp write path:")
-INFO("  - Peak alloc should be in compress_buffered_data (lz4 chunks)")
-INFO("  - Should NOT see: CMString(ptr, size) in put_temp_data or on_temp_write")
-INFO("")
-INFO("Check massif output for temp read path:")
-INFO("  - remote reads (master): frame/block verify + decompress + unpickle per round (§4.7 no low-tier cache)")
-INFO("  - local temp hit (worker): shared_ptr return, no copy")
-INFO("  - Should NOT see: FlyBuffer→CMString copy in try_read_local_raw")
+INFO("=== temp storage semantics（去①形态后）===")
+INFO("  - write-through: .temp.data_* 落盘（write 完成即持久）")
+INFO("  - read: 恒流式盘路径（无内存压缩 record）")
+INFO("  - remove: idx REMOVE 条目 + 内存清理（文件随 freeze 批量回收）")
+INFO("  - freeze: temp data/idx 全删（cleanup_temp_files）")
 INFO("")
 INFO("[PASS] test_temp_zero_copy")
 

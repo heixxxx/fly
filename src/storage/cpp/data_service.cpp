@@ -5,7 +5,6 @@
 #include <storage/cpp/disk_chunk_source.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <storage/cpp/temp_store.h>
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/db_meta.h>
@@ -89,11 +88,6 @@ void DataService::reset() {
     {
         std::unique_lock<std::shared_mutex> lock(local_mutex_);
         local_idx_.clear();
-        temp_lru_order_.clear();
-        temp_total_bytes_ = 0;
-        if (temp_eviction_store_) {
-            temp_eviction_store_->cleanup_all();
-        }
     }
     {
         std::unique_lock<fly::WriterPrefRwLock> lock(remote_mutex_);
@@ -371,34 +365,16 @@ void DataService::on_write_failed(const CMString& db_path,
 
 void DataService::remove_local_index(const CMString& object_name) {
     auto [db_path, short_name] = split_full(object_name);
-    int64_t freed_bytes = 0;
     {
         std::unique_lock<std::shared_mutex> lock(local_mutex_);
         auto db_it = local_idx_.find(db_path);
         if (db_it != local_idx_.end()) {
-            auto it = db_it->second.objects_.find(short_name);
-            if (it != db_it->second.objects_.end() && it->second && it->second->is_temp_) {
-                freed_bytes = it->second->temp_compressed_data_ ? static_cast<int64_t>(it->second->temp_compressed_data_->size()) : 0;
-            }
             db_it->second.objects_.erase(short_name);
         }
     }
     // Invalidate cached bytes (low/high tier) for this object so subsequent
     // reads don't return stale data after removal.
     fly::ObjectCache::instance().remove(object_name);
-
-    if (freed_bytes > 0) {
-        std::unique_lock<std::shared_mutex> lock(local_mutex_);
-        auto lru_it = std::find(temp_lru_order_.begin(), temp_lru_order_.end(), object_name);
-        if (lru_it != temp_lru_order_.end()) {
-            temp_lru_order_.erase(lru_it);
-        }
-        if (temp_eviction_store_) {
-            temp_eviction_store_->remove(object_name);
-        }
-        temp_total_bytes_ -= freed_bytes;
-        if (temp_total_bytes_ < 0) temp_total_bytes_ = 0;
-    }
 }
 
 void DataService::clear_local_index_for_db(const CMString& db_path) {
@@ -496,8 +472,8 @@ void DataService::restore_entries(const CMString& db_path,
 
 void DataService::restore_temp_entries(const CMString& db_path,
                                        const CMVector<IndexEntry>& entries) {
-    // temp 落盘恢复（task 级断点）：{wid}.temp.idx load 后灌 local_idx_——
-    // is_temp=true + entries_（盘读 fallback），无 temp_compressed_data_。
+    // temp 落盘恢复（task 级断点）：.temp.{wid}.idx load 后灌 local_idx_——
+    // is_temp=true + entries_（盘读路径，2026-08-30 起 temp 无内存态）。
     // 对象名是 short_name（LocalIndex 不含 db_path 前缀）。
     CMVector<CMString> touched_full_names;
     {
@@ -864,8 +840,6 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
     auto [db_path, short_name] = split_full(object_name);
     CMVector<IndexEntry> entries;
     DbPaths paths;
-    bool is_temp = false;
-    FlyBufferPtr temp_data;
 
     // db_paths_ 运行期几乎不变（register 在启动期），先取快照再查 local_idx_。
     // 两段独立 shared_lock，无跨域死锁。
@@ -887,64 +861,20 @@ std::pair<bool, ReadResult> DataService::try_read_local(const CMString& object_n
         if (info.completion_state_.load(std::memory_order_acquire) != CompletionState::COMPLETE || !info.flushed_) {
             return {false, ReadResult{}};
         }
-
-        if (info.is_temp_) {
-            is_temp = true;
-            temp_data = info.temp_compressed_data_;
-            entries = info.entries_;  // temp 落盘副本：内存 miss 后盘读 fallback
-        } else {
-            entries = info.entries_;
-        }
+        entries = info.entries_;
     }
 
-    if (is_temp) {
-        if (!temp_data) {
-            if (temp_eviction_store_) {
-                auto [found, data] = temp_eviction_store_->get(object_name);
-                if (found) {
-                    temp_data = CMMakeShared<FlyBuffer>();
-                    temp_data->take(std::move(data));
-                }
-            }
-        }
-        if (!temp_data && !entries.empty() && !paths.db_path_.empty()) {
-            // 盘 fallback（temp 落盘）：跨进程恢复 / LRU 逐出后的读路径。
-            FlyBufferPtr raw = do_read_raw_entries(entries, paths);
-            if (raw && !raw->empty()) {
-                return {true, decompress_raw(CMString(raw->data(), raw->size()))};
-            }
-        }
-        if (!temp_data) return {false, ReadResult{}};
-        return {true, decompress_raw(CMString(temp_data->data(), temp_data->size()))};
-    }
-
+    // 2026-08-30 去"①形态"裁定：temp 压缩 record 不驻内存——temp 与正式
+    // 对象统一走 entries 盘读（.temp.data_*，write-through 落盘保证 COMPLETE
+    // 时数据恒在盘上）。
     ReadResult result = do_read_local_entries(entries, paths);
     if (result.data_buffer_.empty()) return {false, ReadResult{}};
     return {true, std::move(result)};
 }
 
-// temp 对象内存命中（恒流式改造）：锁段语义与 try_read_local 的 temp 分支
-// 一致（COMPLETE + flushed + temp_compressed_data_ 持有）。淘汰盘 fallback
-// 不在此处理——那是完整读语义（try_read_local），流式 TIER1 miss 走 TIER2
-//（serve 端会覆盖盘 fallback 场景）。
-FlyBufferPtr DataService::try_read_local_temp_record(const CMString& object_name) {
-    auto [db_path, short_name] = split_full(object_name);
-    std::shared_lock<std::shared_mutex> lock(local_mutex_);
-    auto db_it = local_idx_.find(db_path);
-    if (db_it == local_idx_.end()) return nullptr;
-    auto it = db_it->second.objects_.find(short_name);
-    if (it == db_it->second.objects_.end() || !it->second) return nullptr;
-    auto& info = *it->second;
-    if (!info.is_temp_) return nullptr;
-    if (info.completion_state_.load(std::memory_order_acquire) != CompletionState::COMPLETE
-        || !info.flushed_) {
-        return nullptr;
-    }
-    return info.temp_compressed_data_;
-}
-
 std::pair<bool, DataService::ChunkedLocation> DataService::find_chunked_location(
-        const CMString& object_name) {    auto [db_path, short_name] = split_full(object_name);
+        const CMString& object_name) {
+    auto [db_path, short_name] = split_full(object_name);
 
     DbPaths paths;
     CMVector<IndexEntry> entries;
@@ -961,8 +891,8 @@ std::pair<bool, DataService::ChunkedLocation> DataService::find_chunked_location
         auto it = db_it->second.objects_.find(short_name);
         if (it == db_it->second.objects_.end() || !it->second) return {false, {}};
         auto& info = *it->second;
-        // temp 对象：主副本在内存（temp_compressed_data_），分片 pred 无意义。
-        if (info.is_temp_) return {false, {}};
+        // 2026-08-30 去"①形态"：temp 同样走盘 entry（.temp.data_*，write-through
+        // 落盘）——不再排除，serve/TIER1 统一 pread 分片路径。
         if (info.completion_state_.load(std::memory_order_acquire) != CompletionState::COMPLETE) {
             return {false, {}};
         }
@@ -1021,23 +951,8 @@ DataService::StreamingReadResult DataService::read_streaming(const CMString& obj
             // trailer 预读失败（极端长 py_name 或损坏）→ 走 TIER2/回退路径
             //（保守正确——MemoryChunkSource 的严格对账在回退路径执行）。
         }
-        // temp 对象：内存压缩 record → SharedMemoryChunkSource（恒流式改造
-        // 2026-08-30：worker 读自己写的 temp 零网络——原注释"temp → TIER2"
-        // 会让本地 temp 读走环回网络）。对账失败 = 损坏 → CHECKSUM FATAL。
-        if (auto temp_rec = try_read_local_temp_record(object_name)) {
-            auto mem = CMMakeShared<fly::SharedMemoryChunkSource>(
-                temp_rec->data(), temp_rec->size(), temp_rec);
-            if (!mem->failed()) {
-                out.success = true;
-                out.py_name = mem->py_name();
-                out.block_area_len = mem->block_area_len();
-                out.source = mem;
-                return out;
-            }
-            out.error = "temp record structure verify failed";
-            out.rerr = ReadError::CHECKSUM;
-            return out;
-        }
+        // temp 对象由上面的盘命中覆盖（.temp.data_* 的 entry 与正式 entry
+        // 同构——2026-08-30 去"①形态"后 temp 无内存态）。
     }
 
     // ── TIER2：streaming cb（首副本 best-effort，§8.1 决策：失败由调用方
@@ -1183,8 +1098,6 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
     auto [db_path, short_name] = split_full(object_name);
     CMVector<IndexEntry> entries;
     DbPaths paths;
-    bool is_temp = false;
-    FlyBufferPtr temp_data;
 
     // db_paths_ 运行期几乎不变（register 在启动期），先取快照再查 local_idx_，
     // 避免 lookup lambda 跨 local+db_paths 两锁。db_paths 锁独立于 local 锁。
@@ -1198,6 +1111,8 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
 
     // 锁内查找并填充读取所需字段。返回 diag：
     //   0=not_found_db/no_path, 1=not_found_obj, 2=not_ready(INCOMPLETE/FAILED), 3=found
+    // 2026-08-30 去"①形态"：temp 与正式对象统一 entries 盘读（temp 压缩
+    // record 不驻内存——write-through 落盘保证 COMPLETE 时恒在盘上）。
     auto lookup_under_lock = [&]() -> int {
         auto db_it = local_idx_.find(db_path);
         if (db_it == local_idx_.end()) return 0;
@@ -1206,13 +1121,6 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
         auto& info = *it->second;
         if (info.completion_state_.load(std::memory_order_acquire) != CompletionState::COMPLETE) {
             return 2;  // INCOMPLETE 或 FAILED
-        }
-        if (info.is_temp_) {
-            is_temp = true;
-            temp_data = info.temp_compressed_data_;
-            // entries（temp 落盘副本）：内存 miss 后的盘读 fallback。
-            entries = info.entries_;
-            return 3;
         }
         entries = info.entries_;
         if (paths.db_path_.empty()) return 0;  // db_paths_ 无此 db（上面未取到）
@@ -1241,8 +1149,6 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
                                != CompletionState::INCOMPLETE;
                     });
                     // 唤醒后重查：重新填充读取字段。lk 仍持有（wait 返回时已重新获锁）。
-                    is_temp = false;
-                    temp_data.reset();
                     entries.clear();
                     diag = lookup_under_lock();
                 }
@@ -1259,33 +1165,13 @@ std::pair<bool, FlyBufferPtr> DataService::try_read_local_raw(const CMString& ob
         case 0: DBG("[TIER1] NOT FOUND: obj={}", object_name); break;
         case 1: DBG("[TIER1] NOT FOUND: obj={}, short_name={}", object_name, short_name); break;
         case 2: DBG("[TEMP-READ-LOCAL] NOT READY: obj={}", object_name); break;
-        case 3: DBG("[TEMP-READ-LOCAL] FOUND: obj={}, data_size={}", object_name, temp_data ? temp_data->size() : 0); break;
+        case 3: DBG("[TEMP-READ-LOCAL] FOUND: obj={}, entries={}", object_name, entries.size()); break;
     }
 
     if (diag != 3) return {false, nullptr};
 
-    if (is_temp) {
-        if (temp_data) {
-            return {true, temp_data};  // zero-copy shared_ptr return
-        }
-        if (temp_eviction_store_) {
-            auto [found, data] = temp_eviction_store_->get(object_name);
-            if (found) {
-                auto buf = CMMakeShared<FlyBuffer>();
-                buf->take(std::move(data));
-                return {true, buf};
-            }
-        }
-        // 盘 fallback（temp 落盘）：内存 LRU miss/被逐出/跨进程恢复后，按
-        // entries_（temp_data_*.dat 的 IndexEntry）读盘。find_file_path 按
-        // 文件名存在性探测，temp 文件天然落 db_path 命中。
-        if (!entries.empty() && !paths.db_path_.empty()) {
-            FlyBufferPtr raw = do_read_raw_entries(entries, paths);
-            if (raw && !raw->empty()) return {true, raw};
-        }
-        return {false, nullptr};
-    }
-
+    // 2026-08-30 去"①形态"：temp/正式统一 entries 盘读（temp 压缩 record
+    // 不驻内存；.temp.data_* 落盘文件的 IndexEntry 与正式 entry 同构）。
     FlyBufferPtr raw = do_read_raw_entries(entries, paths);
     if (!raw || raw->empty()) return {false, nullptr};
 
@@ -1615,12 +1501,6 @@ bool DataService::is_write_back_running() const {
 }
 
 void DataService::on_temp_write_started(const CMString& db_path, const CMString& object_name) {
-    if (!temp_eviction_store_) {
-        temp_max_bytes_ = Config::instance()->get_int("temp_store_size");
-        if (temp_max_bytes_ <= 0) temp_max_bytes_ = 2147483648LL;
-        temp_eviction_store_ = CMMakeUnique<fly::TempStore>(temp_max_bytes_);
-    }
-
     auto [_, short_name] = split_full(object_name);
     CMSharedPtr<LocalObjectInfo> info = CMMakeShared<LocalObjectInfo>();
     info->db_path_ = db_path;
@@ -1636,68 +1516,28 @@ void DataService::on_temp_write_started(const CMString& db_path, const CMString&
 }
 
 void DataService::on_temp_write(const CMString& db_path, const CMString& object_name,
-                                FlyBufferPtr compressed_data,
                                 const std::optional<IndexEntry>& disk_entry) {
-    if (!temp_eviction_store_) {
-        temp_max_bytes_ = Config::instance()->get_int("temp_store_size");
-        if (temp_max_bytes_ <= 0) temp_max_bytes_ = 2147483648LL;
-        temp_eviction_store_ = CMMakeUnique<fly::TempStore>(temp_max_bytes_);
-    }
-
-    int64_t data_size = compressed_data ? static_cast<int64_t>(compressed_data->size()) : 0;
+    // 2026-08-30 去"①形态"（用户裁定）：不再接收内存 data——只登记盘 entry
+    // + COMPLETE（write-through 落盘保证数据恒在盘上，读恒走 entries 盘路径）。
     auto [_, short_name] = split_full(object_name);
 
-    CMSharedPtr<LocalObjectInfo> info;
     {
         std::unique_lock<std::shared_mutex> lock(local_mutex_);
-
         auto& db_entry = local_idx_[db_path];
         auto it = db_entry.objects_.find(short_name);
         if (it == db_entry.objects_.end() || !it->second) {
             ERR("[TEMP-WRITE] on_temp_write: no entry found for obj={}, db_path={}", object_name, db_path);
             return;
         }
-        info = it->second;
-
-        if (info->is_temp_ && info->temp_compressed_data_) {
-            int64_t old_size = static_cast<int64_t>(info->temp_compressed_data_->size());
-            temp_total_bytes_ -= old_size;
-            auto lru_it = std::find(temp_lru_order_.begin(), temp_lru_order_.end(), object_name);
-            if (lru_it != temp_lru_order_.end()) temp_lru_order_.erase(lru_it);
-        }
-
-        info->temp_compressed_data_ = std::move(compressed_data);
+        auto& info = *it->second;
         if (disk_entry) {
-            info->entries_.clear();
-            info->entries_.push_back(*disk_entry);
+            info.entries_.clear();
+            info.entries_.push_back(*disk_entry);
         }
-        info->completion_state_.store(CompletionState::COMPLETE, std::memory_order_release);
+        info.completion_state_.store(CompletionState::COMPLETE, std::memory_order_release);
 
-        temp_lru_order_.push_back(object_name);
-        temp_total_bytes_ += data_size;
-
-        DBG("[TEMP-WRITE] on_temp_write complete: obj={}, db_path={}, data_size={}, lru_count={}",
-            object_name, db_path, data_size, temp_lru_order_.size());
-
-        while (temp_total_bytes_ > temp_max_bytes_ && temp_lru_order_.size() > 1) {
-            CMString oldest = temp_lru_order_.front();
-            temp_lru_order_.erase(temp_lru_order_.begin());
-
-            auto [old_db_path, old_short_name] = split_full(oldest);
-            auto old_db_it = local_idx_.find(old_db_path);
-            if (old_db_it != local_idx_.end()) {
-                auto old_ent = old_db_it->second.objects_.find(old_short_name);
-                if (old_ent != old_db_it->second.objects_.end() && old_ent->second && old_ent->second->is_temp_
-                    && old_ent->second->temp_compressed_data_) {
-                    int64_t freed = static_cast<int64_t>(old_ent->second->temp_compressed_data_->size());
-                    temp_eviction_store_->put(oldest,
-                        CMString(old_ent->second->temp_compressed_data_->data(),
-                                 old_ent->second->temp_compressed_data_->size()));
-                    old_ent->second->temp_compressed_data_.reset();
-                    temp_total_bytes_ -= freed;
-                }
-            }
-        }
+        DBG("[TEMP-WRITE] on_temp_write complete: obj={}, db_path={}, entry_size={}",
+            object_name, db_path, disk_entry ? disk_entry->size_ : 0);
 
         // temp 写完成也 notify：等待 temp 对象的 reader 唤醒。
         db_entry.write_cv_.notify_all();
@@ -1705,36 +1545,15 @@ void DataService::on_temp_write(const CMString& db_path, const CMString& object_
 }
 
 void DataService::cleanup_temp_entries(const CMString& db_path) {
-    CMVector<CMString> names_to_clean;
-    int64_t freed_bytes = 0;
-    {
-        std::unique_lock<std::shared_mutex> lock(local_mutex_);
-        auto db_it = local_idx_.find(db_path);
-        if (db_it == local_idx_.end()) return;
-        for (auto it = db_it->second.objects_.begin(); it != db_it->second.objects_.end();) {
-            if (it->second && it->second->is_temp_) {
-                freed_bytes += it->second->temp_compressed_data_ ? static_cast<int64_t>(it->second->temp_compressed_data_->size()) : 0;
-                names_to_clean.push_back(db_path + ":" + it->first);
-                it = db_it->second.objects_.erase(it);
-            } else {
-                ++it;
-            }
+    std::unique_lock<std::shared_mutex> lock(local_mutex_);
+    auto db_it = local_idx_.find(db_path);
+    if (db_it == local_idx_.end()) return;
+    for (auto it = db_it->second.objects_.begin(); it != db_it->second.objects_.end();) {
+        if (it->second && it->second->is_temp_) {
+            it = db_it->second.objects_.erase(it);
+        } else {
+            ++it;
         }
-    }
-
-    if (!names_to_clean.empty()) {
-        std::unique_lock<std::shared_mutex> lock(local_mutex_);
-        for (const auto& name : names_to_clean) {
-            auto lru_it = std::find(temp_lru_order_.begin(), temp_lru_order_.end(), name);
-            if (lru_it != temp_lru_order_.end()) {
-                temp_lru_order_.erase(lru_it);
-            }
-            if (temp_eviction_store_) {
-                temp_eviction_store_->remove(name);
-            }
-        }
-        temp_total_bytes_ -= freed_bytes;
-        if (temp_total_bytes_ < 0) temp_total_bytes_ = 0;
     }
 }
 

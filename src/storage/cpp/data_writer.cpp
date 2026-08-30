@@ -27,8 +27,8 @@ DataWriter::DataWriter(
     CMString write_dir = (temp_mode_ || data_path_.empty()) ? db_path_ : data_path_;
     fs::create_directories(write_dir);
 
-    CMString idx_path = db_path_ + "/" + writer_id_ +
-                        (temp_mode_ ? ".temp.idx" : ".idx");
+    CMString idx_path = (temp_mode_ ? db_path_ + "/.temp." + writer_id_ + ".idx"
+                                    : db_path_ + "/" + writer_id_ + ".idx");
     index_ = CMMakeUnique<LocalIndex>(idx_path);
 
     if (fs::exists(idx_path)) {
@@ -311,8 +311,10 @@ CMString DataWriter::get_current_file_name() {
 }
 
 CMString DataWriter::get_file_name(int32_t index) const {
+    // temp 命名与正常数据一致 + ".temp." 前缀（2026-08-30 用户裁定）：
+    // .temp.data_{wid}_{NNN}.dat——cleanup 与 load 兜底统一按 ".temp." 前缀匹配。
     std::ostringstream oss;
-    oss << (temp_mode_ ? "temp_data_" : "data_") << writer_id_ << "_"
+    oss << (temp_mode_ ? ".temp.data_" : "data_") << writer_id_ << "_"
         << std::setfill('0') << std::setw(3) << index << ".dat";
     return oss.str();
 }

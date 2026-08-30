@@ -3,7 +3,6 @@
 #include <storage/cpp/index_entry.h>
 #include <storage/cpp/data_reader.h>
 #include <storage/cpp/write_back_queue.h>
-#include <storage/cpp/temp_store.h>
 #include <common/cpp/common_types.h>
 #include <common/cpp/chunk_source.h>
 #include <common/cpp/concurrent_map.h>
@@ -67,8 +66,10 @@ struct LocalObjectInfo {
     // 写路径在 mutex_ 保护下 release 写。替代旧的"空 cv_lock 块"屏障补丁。
     std::atomic<CompletionState> completion_state_{CompletionState::INCOMPLETE};
     bool flushed_ = false;
+    // temp 标记（不注册 master 可见性之外的本地临时对象）。2026-08-30 起
+    // temp 压缩 record 不再驻内存（去"①形态"裁定）——数据恒在盘上
+    //（.temp.data_*），读走 entries 盘路径 + Python 层 temp 缓存池加速。
     bool is_temp_ = false;
-    FlyBufferPtr temp_compressed_data_;  // shared_ptr: zero-copy reads, automatic lifetime
 };
 
 // per-db 本地索引：一个 db_path 下所有对象的索引 + 一个共享 cv。
@@ -284,11 +285,6 @@ public:
     };
     std::pair<bool, ChunkedLocation> find_chunked_location(const CMString& object_name);
 
-    // temp 对象内存命中（恒流式改造 2026-08-30）：返回 temp 的压缩 record
-    //（temp_compressed_data_，含块流+trailer——SharedMemoryChunkSource 直接
-    // 消费）。非 temp / 未完成 / 无内存数据 → nullptr（调用方继续 TIER2）。
-    FlyBufferPtr try_read_local_temp_record(const CMString& object_name);
-
     // ── L3 流式读（§8.1）──
     // streaming cb：包装 DataClientPool::request_raw_exchange + NetworkChunkSource
     //（WorkerAgent 注册）。返回 (success, source, block_area_len, rerr)。
@@ -315,11 +311,10 @@ public:
     StreamingReadResult read_streaming(const CMString& object_name);
 
     void on_temp_write_started(const CMString& db_path, const CMString& object_name);
-    // disk_entry：temp 落盘产物（temp_data_*.dat）的 IndexEntry。提供时填入
-    // entries_（内存 LRU miss 后的盘读 fallback 路径）；缺失（std::nullopt，
-    // 落盘失败或旧路径）则纯内存语义。
+    // disk_entry：temp 落盘产物（.temp.data_*.dat）的 IndexEntry——填入
+    // entries_（盘读路径的唯一数据定位）。2026-08-30 去"①形态"裁定后
+    // 不再接收内存 data（temp 压缩 record 恒在盘上）。
     void on_temp_write(const CMString& db_path, const CMString& object_name,
-                       FlyBufferPtr compressed_data,
                        const std::optional<IndexEntry>& disk_entry = std::nullopt);
     // 恢复 temp 落盘条目（on_idx_load_command 加载 {wid}.temp.idx 后调用）：
     // 灌 local_idx_（is_temp=true + entries_，无内存 data）——跨进程 temp 可见
@@ -435,11 +430,6 @@ private:
     // resolve_migrated_path miss 时 stat _MIGRATED_TO 一次并缓存。merge 后 master
     // 主动 set_migrated_path 更新。
     CMUnorderedMap<CMString, CMString> migrated_db_paths_;
-
-    CMVector<CMString> temp_lru_order_;
-    int64_t temp_total_bytes_ = 0;
-    int64_t temp_max_bytes_ = 0;
-    CMUniquePtr<fly::TempStore> temp_eviction_store_;
 
     CMUniquePtr<DataServer> data_server_;
 

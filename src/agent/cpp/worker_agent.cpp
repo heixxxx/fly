@@ -2185,11 +2185,11 @@ void WorkerAgent::on_idx_load_command(uint64_t conn_id, const IdxLoadCommandMess
                 reported_to_master = true;
             }
 
-            // temp 落盘恢复（task 级断点）：{wid}.temp.idx 与正式 idx 同批加载，
-            // 已完成 task 的 temp 输出跨进程 ready（下游 task 输入就绪）。
+            // temp 落盘恢复（task 级断点）：.temp.{wid}.idx 与正式 idx 同批
+            // 加载，已完成 task 的 temp 输出跨进程 ready（下游 task 输入就绪）。
             // 已 frozen 的 db 跳过——temp 已随 freeze 清理，残留文件属异常
             //（freeze 广播丢失窗口），WARN 提示路径不加载。
-            CMString temp_idx_path = msg.db_path_ + "/" + writer_id + ".temp.idx";
+            CMString temp_idx_path = msg.db_path_ + "/.temp." + writer_id + ".idx";
             if (std::filesystem::exists(msg.db_path_ + "/_FROZEN")) {
                 if (std::filesystem::exists(temp_idx_path)) {
                     WARN("temp idx residue on frozen db (freeze broadcast may "

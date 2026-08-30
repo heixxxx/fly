@@ -3930,7 +3930,7 @@ void MasterAgent::rebuild_remote_idx_for_worker(const CMString& db_path,
         // temp 落盘同批恢复（task 级断点）：temp 对象与正式对象同 worker 持有，
         // 一并 update_remote_idx + mark_data_ready——重投的下游 task 输入就绪。
         // frozen db 的 temp 已随 freeze 清理，无 temp idx 属正常。
-        CMString temp_idx_path = db_path + "/" + writer_id + ".temp.idx";
+        CMString temp_idx_path = db_path + "/.temp." + writer_id + ".idx";
         if (std::filesystem::exists(temp_idx_path)) {
             LocalIndex temp_idx(temp_idx_path);
             temp_idx.load();

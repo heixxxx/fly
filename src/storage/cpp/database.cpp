@@ -81,11 +81,13 @@ Database::Database(const CMString& db_path, const CMString& data_path, uint64_t 
         config->get_int("aggregation_threshold"),
         host_
     );
-    // temp writer：与正式 writer 同 writer_id（temp idx/数据文件按后缀区分：
-    // {wid}.temp.idx / temp_data_{wid}_{NNN}.dat）。同生命周期创建——事务段
-    // 必须在首写之前打标（mark_write_begin 双打），惰性创建会漏段导致
-    // task 失败回滚不覆盖 temp 写。frozen db 跳过：写入已被 check_frozen
-    // 拦截（事务段永不开），建了只会留下空 temp 文件残留（load_db 场景）。
+    // temp writer：与正式 writer 同 writer_id（temp idx/数据文件按 ".temp."
+    // 前缀区分：.temp.{wid}.idx / .temp.data_{wid}_{NNN}.dat）。同生命周期
+    // 创建——事务段必须在首写之前打标（mark_write_begin 双打），惰性创建
+    // 会漏段导致 task 失败回滚不覆盖 temp 写。
+    // frozen db 跳过创建 + 兜底清理残留（2026-08-30 用户裁定：load db 检测
+    // frozen 时不加载 temp idx/data 并删除——覆盖 freeze 删除中断/广播丢失
+    // 窗口残留的过期 temp，防止 restore 链读到已作废数据）。幂等。
     if (!is_frozen_) {
         temp_writer_ = CMMakeUnique<DataWriter>(
             db_path_, data_path_, writer_id_,
@@ -93,6 +95,8 @@ Database::Database(const CMString& db_path, const CMString& data_path, uint64_t 
             host_,
             /*temp_mode=*/true
         );
+    } else {
+        cleanup_temp_files();
     }
 }
 
@@ -680,8 +684,13 @@ void Database::remove_object(const CMString& object_name) {
         full = db_path_ + ":" + object_name;
         db_path_copy = db_path_;
         removed_objects_.insert(full);
-        // LocalIndex 只存 short_name（idx 文件天然属于本 db）。
-        writer_->remove_entry(object_name);
+        // temp 对象路由 temp idx（2026-08-30 用户裁定：remove 时内存 idx 清理
+        // + 磁盘 idx 写 REMOVE 条目）。temp idx 命中即完成（data 文件为共享
+        // 滚动文件，不删文件——空间由 freeze 批量清理回收）；miss 走正式 idx。
+        if (!temp_writer_ || !temp_writer_->remove_entry(object_name)) {
+            // LocalIndex 只存 short_name（idx 文件天然属于本 db）。
+            writer_->remove_entry(object_name);
+        }
     }
 
     fly::WorkerAgentContext::request_remove(db_path_copy, object_name);
@@ -874,16 +883,17 @@ void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compresse
     // Step 1: Add local idx entry (INCOMPLETE, is_temp=true)
     fly::DataService::instance()->on_temp_write_started(db_path_, full);
 
-    // Step 2: Store temp data and mark COMPLETE — must happen BEFORE register_write.
+    // Step 2: Mark COMPLETE with disk entry — must happen BEFORE register_write.
     // register_write is synchronous (blocks for ACK). Master dispatches dependent
     // tasks immediately on receiving WriteRegister. If data isn't stored yet,
-    // other workers' reads will fail. entries（盘读 fallback 用）由 temp_writer
-    // 的最新 entry 提供。
+    // other workers' reads will fail. entries（盘读路径）由 temp_writer 的最新
+    // entry 提供；2026-08-30 去"①形态"：不再传内存 data（temp 压缩 record
+    // 恒在盘上）。
     {
         std::lock_guard<std::mutex> lk(state_mutex_);
         auto entry_opt = temp_writer_
             ? temp_writer_->get_last_entry(object_name) : std::nullopt;
-        fly::DataService::instance()->on_temp_write(db_path_, full, compressed_data, entry_opt);
+        fly::DataService::instance()->on_temp_write(db_path_, full, entry_opt);
     }
 
     // Step 2.5: temp 写入纳入 task 写追踪（current_writes_）：task 失败的
@@ -905,20 +915,16 @@ void Database::put_temp_data(const CMString& object_name, FlyBufferPtr compresse
 }
 
 void Database::cleanup_temp_files() {
-    // 删除 db 目录下全部 temp 落盘产物。文件名按前缀/后缀精确匹配：
-    //   temp_data_{wid}_{NNN}.dat（数据）+ {wid}.temp.idx（索引）。
-    // 幂等：不存在 no-op。freeze 确认后调用（master/worker 侧均可）。
+    // 删除 db 目录下全部 temp 落盘产物（命名与正常数据一致 + ".temp." 前缀，
+    // 2026-08-30 用户裁定）：.temp.data_{wid}_{NNN}.dat（数据）+
+    // .temp.{wid}.idx（索引）。幂等：不存在 no-op。freeze 确认后调用
+    //（master/worker 侧均可）；load 兜底（frozen db 构造）亦调用。
     // 先收集再删：directory_iterator 边迭代边删会跳条目。
     CMVector<CMString> to_remove;
     try {
         for (const auto& f : fs::directory_iterator(db_path_)) {
             CMString name = f.path().filename().string();
-            bool is_temp_data = name.rfind("temp_data_", 0) == 0 &&
-                                name.size() > 4 &&
-                                name.compare(name.size() - 4, 4, ".dat") == 0;
-            bool is_temp_idx = name.size() > 9 &&
-                               name.compare(name.size() - 9, 9, ".temp.idx") == 0;
-            if (is_temp_data || is_temp_idx) {
+            if (name.rfind(".temp.", 0) == 0) {
                 to_remove.push_back(f.path().string());
             }
         }

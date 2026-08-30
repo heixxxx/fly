@@ -169,7 +169,8 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     {"locality_scheduling_enabled", 1},  // data locality 调度开关：1=开启(默认), 0=关闭
     {"fail_unscheduleable_tasks", 1},
     {"read_cache_size", 1073741824},
-    {"temp_store_size", 2147483648},
+    //（temp_store_size 已删除——2026-08-30 去"①形态"裁定：temp 内存 LRU/
+    // eviction 机制整体退役，temp 压缩 record 恒在盘上。）
     {"data_client_pool_size", 4},
     {"net_probe_enabled", 1},
     {"handler_lanes", 4},              // 消息 handler 并行 lane 数（同连接串行/跨连接并行）；0=全部内联（legacy 单线程）          // 网络感知远程读优先级：1=开启(默认), 0=关闭(排序降级 no-op)
