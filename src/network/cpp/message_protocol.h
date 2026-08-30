@@ -239,7 +239,10 @@ public:
 //   [8B frame header][1B type=DATA_CHUNK][4B small_fields_len=16]
 //   [u64 offset BE][u64 片CRC BE][raw: 分片字节（默认 4MB 切片）]
 // offset = 帧首字节在 record 内的偏移（正常流/重传统一语义——client 按
-// offset 直接定位，帧乱序容错；server 零块知识）。片 CRC = data_checksum。
+// offset 直接定位，帧乱序容错；server 零块知识）。
+// 片 CRC = data_checksum；**0 = 发送端未计算**（2026-08-30 裁定：发送端不再
+// 计算，接收端跳过帧级验证，传输路径 CRC 3 遍→1 遍——完整性由块级 CRC +
+// DIGEST 根摘要承担）；非 0（旧协议端）时接收端仍逐帧验证。
 class ChunkFrameProtocol {
 public:
     static constexpr uint32_t kSmallFieldsLen = sizeof(uint64_t) + sizeof(uint64_t);  // 16

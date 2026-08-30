@@ -690,7 +690,11 @@ DataClientPool::receive_chunked(int fd, const CMString& object_name,
             raw->resize(raw_len);
             if (!recv_exact(transport_.get(), fd, raw->data(), raw_len)) return 0;
             off = foff;
-            if (data_checksum(raw->data(), raw->size()) != fcrc) return 3;  // 坏帧
+            // §4.4 帧片 CRC 可选验证：0=发送端未计算（V2.1 起默认，传输路径
+            // CRC 3 遍→1 遍），跳过帧级验证，完整性由块级 CRC + DIGEST 根
+            // 摘要承担；非 0（旧协议端）仍逐帧验证 + resend 定位。
+            if (fcrc != 0 &&
+                data_checksum(raw->data(), raw->size()) != fcrc) return 3;  // 坏帧
             return 1;
         }
         if (type == static_cast<uint8_t>(MessageType::DATA_DIGEST)) {

@@ -310,8 +310,12 @@ int NetworkChunkSource::read_one_frame() {
         frame_raw_->resize(raw_len);
         if (!recv_exact(transport_.get(), fd_, frame_raw_->data(), raw_len)) return 0;
         frame_off_ = foff;
-        // 帧级 CRC（传输跳快速检测——块级 CRC 是数据校验层，两层互补）。
-        if (data_checksum(frame_raw_->data(), frame_raw_->size()) != fcrc) {
+        // §4.4 帧片 CRC 可选验证（2026-08-30 裁定）：0=发送端未计算，跳过
+        // 帧级验证——本流式路径的完整性由 feed_frame 块级 CRC 权威校验承担
+        // （坏块 → hole → 块区间 resend）；非 0（旧协议端）保留帧级快速检测
+        // + 整帧 resend（offset 寻址；帧内多块统一按区间重传）。
+        if (fcrc != 0 &&
+            data_checksum(frame_raw_->data(), frame_raw_->size()) != fcrc) {
             // 帧坏：整帧 resend（offset 寻址）。帧内多块统一按区间重传。
             ERR("[NCS] bad frame CRC: off={} len={} — resending once", foff, raw_len);
             if (resent_offsets_.count(foff)) {

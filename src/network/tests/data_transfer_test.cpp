@@ -330,12 +330,17 @@ TEST_F(DataTransferTest, SmallObjectFastPathWithChunkingEnabled) {
     EXPECT_EQ(py_name, "bytes");
 }
 
-// fake 分片 server：可控注错（坏片 CRC / 坏 resend / 错 digest）。
+// fake 分片 server：可控注错（坏片 CRC / 坏 resend / 错 digest / 坏数据）。
 // 每请求三片（"AA.."、"BB.."、"CC.."），按注入策略组流。
+// legacy_crc=true 模拟旧 server（帧片 CRC 真算）；默认按新语义（§4.4 帧片
+// CRC 取消计算）发 CRC=0——完整性由 DIGEST 根摘要 + 块级 CRC 承担。
 class FakeChunkServer {
 public:
-    enum class FailMode { NONE, BAD_CHUNK_THEN_GOOD_RESEND, BAD_CHUNK_STILL_BAD, BAD_DIGEST };
+    enum class FailMode { NONE, BAD_CHUNK_THEN_GOOD_RESEND, BAD_CHUNK_STILL_BAD,
+                          BAD_DIGEST, BAD_DATA };
     FailMode mode = FailMode::NONE;
+    // 旧协议端点（帧片 CRC 真算真验 + resend 定位）。默认 false = 新语义。
+    bool legacy_crc = false;
 
     explicit FakeChunkServer() {
         listen_fd_ = transport_->create_listen_socket("127.0.0.1", 0);
@@ -388,9 +393,21 @@ private:
         fly::DataChecksum root;
         for (uint32_t seq = 0; seq < 3; ++seq) {
             const auto& c = chunks[seq];
-            uint64_t crc = data_checksum(c.data(), c.size());
-            if (seq == 1 && mode != FakeChunkServer::FailMode::NONE) {
-                crc ^= 0x01;  // 注坏
+            uint64_t crc = legacy_crc ? data_checksum(c.data(), c.size()) : 0;
+            if (legacy_crc && seq == 1 &&
+                (mode == FakeChunkServer::FailMode::BAD_CHUNK_THEN_GOOD_RESEND ||
+                 mode == FakeChunkServer::FailMode::BAD_CHUNK_STILL_BAD)) {
+                crc ^= 0x01;  // 旧语义注坏：真 CRC 值破坏
+            }
+            if (seq == 1 && mode == FakeChunkServer::FailMode::BAD_DATA) {
+                // 新语义注坏：CRC=0（client 跳过帧级验证），破坏数据字节——
+                // 完整性必须由 DIGEST 根摘要抓住（收满后对象级 CHECKSUM）。
+                CMString bad = c;
+                bad[0] = 'X';
+                CMString frame_bytes = make_chunk_frame(seq * frame, crc, bad.data(), bad.size());
+                transport_->send_all(fd, frame_bytes.data(), frame_bytes.size());
+                root.update(c.data(), c.size());  // digest 仍按好数据
+                continue;
             }
             CMString frame_bytes = make_chunk_frame(seq * frame, crc, c.data(), c.size());
             transport_->send_all(fd, frame_bytes.data(), frame_bytes.size());
@@ -423,8 +440,10 @@ private:
             if (MessageProtocol::decode(rframe, rs) && rs.offset_ == frame &&
                 rs.length_ == frame) {
                 const auto& c = chunks[1];
-                uint64_t crc = data_checksum(c.data(), c.size());
-                if (mode == FakeChunkServer::FailMode::BAD_CHUNK_STILL_BAD) crc ^= 0x01;
+                uint64_t crc = legacy_crc ? data_checksum(c.data(), c.size()) : 0;
+                if (legacy_crc && mode == FakeChunkServer::FailMode::BAD_CHUNK_STILL_BAD) {
+                    crc ^= 0x01;
+                }
                 CMString rf = make_chunk_frame(frame, crc, c.data(), c.size());
                 transport_->send_all(fd, rf.data(), rf.size());
             }
@@ -439,10 +458,12 @@ private:
     std::thread thread_;
 };
 
-// 测试 24：某片帧 CRC 坏 → client resend → 恢复成功。
+// 测试 24（旧协议端兼容）：某片帧 CRC 坏 → client 逐帧验证 + resend → 恢复成功。
+// legacy_crc=true：server 真算帧片 CRC，client 端 crc≠0 仍验证（§4.4 兼容条款）。
 TEST(DataTransferFakeServerTest, BadChunkResendRecovers) {
     FakeChunkServer server;
     server.mode = FakeChunkServer::FailMode::BAD_CHUNK_THEN_GOOD_RESEND;
+    server.legacy_crc = true;
 
     DataClientPool pool(1);
     auto [success, data, py_name, hash, error, rerr] =
@@ -454,10 +475,11 @@ TEST(DataTransferFakeServerTest, BadChunkResendRecovers) {
     EXPECT_EQ(std::string(data->data() + 32, 16), std::string(16, 'C'));
 }
 
-// 测试 25：resend 后仍坏 → CHECKSUM。
+// 测试 25（旧协议端兼容）：resend 后仍坏 → CHECKSUM。
 TEST(DataTransferFakeServerTest, ResendStillBadIsChecksum) {
     FakeChunkServer server;
     server.mode = FakeChunkServer::FailMode::BAD_CHUNK_STILL_BAD;
+    server.legacy_crc = true;
 
     DataClientPool pool(1);
     auto [success, data, py_name, hash, error, rerr] =
@@ -466,7 +488,8 @@ TEST(DataTransferFakeServerTest, ResendStillBadIsChecksum) {
     EXPECT_EQ(rerr, ReadError::CHECKSUM) << "error: " << error;
 }
 
-// 测试 26：DIGEST 根不匹配 → CHECKSUM。
+// 测试 26：DIGEST 根不匹配 → CHECKSUM（新语义下帧片 CRC=0 跳过，根摘要是
+// Span 路径的收满权威校验——此测试同时覆盖新语义的兜底路径）。
 TEST(DataTransferFakeServerTest, DigestMismatchIsChecksum) {
     FakeChunkServer server;
     server.mode = FakeChunkServer::FailMode::BAD_DIGEST;
@@ -476,6 +499,32 @@ TEST(DataTransferFakeServerTest, DigestMismatchIsChecksum) {
         pool.request("127.0.0.1", server.port(), "/fake:obj", 0, 0, 5000);
     EXPECT_FALSE(success);
     EXPECT_EQ(rerr, ReadError::CHECKSUM) << "error: " << error;
+}
+
+// 测试 28（新语义）：帧片 CRC=0 + 坏数据 → client 跳过帧级验证，完整性由
+// DIGEST 根摘要收满后抓住 → CHECKSUM（对象级，上层 TIER2 按零容忍重取）。
+TEST(DataTransferFakeServerTest, ZeroCrcBadDataCaughtByDigest) {
+    FakeChunkServer server;
+    server.mode = FakeChunkServer::FailMode::BAD_DATA;
+
+    DataClientPool pool(1);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", server.port(), "/fake:obj", 0, 0, 5000);
+    EXPECT_FALSE(success);
+    EXPECT_EQ(rerr, ReadError::CHECKSUM) << "error: " << error;
+}
+
+// 测试 29（新语义正常路径）：帧片 CRC=0 + 好数据 → 成功（兼容旧端验证与
+// 新端跳过的分界由 crc 字段是否为 0 决定，正常流不触发任何帧级验证开销）。
+TEST(DataTransferFakeServerTest, ZeroCrcGoodDataSucceeds) {
+    FakeChunkServer server;
+
+    DataClientPool pool(1);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", server.port(), "/fake:obj", 0, 0, 5000);
+    ASSERT_TRUE(success) << "error: " << error;
+    ASSERT_TRUE(data && data->size() == 48);
+    EXPECT_EQ(std::string(data->data() + 16, 16), std::string(16, 'B'));
 }
 
 }  // namespace fly

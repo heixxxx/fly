@@ -110,15 +110,15 @@ client                          server
   │                              pread 尾部 trailer → py_name/total/chunk_count
   │ ◀── DATA_RESPONSE_META ────── status / py_name / write_context_hash /
   │                              total_compressed_len (uint64) / chunk_count / chunked=1
-  │ ◀── DATA_CHUNK #0 ─────────── [seq][u64 帧CRC][bytes]（每帧一片，4MB）
+  │ ◀── DATA_CHUNK #0 ─────────── [u64 offset][u64 片CRC=0][bytes]（每帧一片，4MB）
   │ ◀── DATA_CHUNK #1 ...
   │ ◀── DATA_DIGEST ───────────── 根摘要（server 边发边算，单遍）+ chunk_count 复核
-  │ ── CHUNK_RESEND(seq) ──────── （仅当帧 CRC 验坏；流内或流后，同连接，每块上限一次）
+  │ ── CHUNK_RESEND(offset,len) ── （流式路径块 CRC 验坏；同连接，每区间上限一次）
   │   （收满 total_compressed_len 且根摘要过验即完成）
 ```
 
 - **根摘要放流尾 DIGEST 帧**（server 单遍：边 pread 边发边算根，无需预扫）——与磁盘 trailer 尾置同构。
-- **三层校验分工**：帧头 check 位（失步/垃圾）→ **CHUNK 帧 CRC**（传输跳，接收侧验证，驱动在线块重传）→ **磁盘内嵌块 CRC**（写入时刻锚点，解压时验证，覆盖全生命周期：磁盘 → server 内存 → 网络 → client 内存 → 解压）；DIGEST 根摘要做端到端绑定（乱序/调包兜底）。
+- **校验分工（2026-08-30 裁定修订：帧片 CRC 取消计算）**：帧头 check 位（失步/垃圾）→ **磁盘内嵌块 CRC**（写入时刻锚点，块级/解压时验证，覆盖全生命周期：磁盘 → server 内存 → 网络 → client 内存 → 解压）；DIGEST 根摘要做端到端绑定（乱序/调包兜底，Span 路径收满权威校验）。帧片 CRC 字段保留、恒填 0 = 未计算——接收端遇 0 跳过帧级验证，遇非 0（旧协议端）仍逐帧验证 + resend 定位（兼容条款）；传输路径 CRC 由 3 遍降 1 遍（块级）。实测 QA 全量每轮 -10s（107s→96.8s），见 `performance-analysis-2026-08-30.md` §4。
 - **小对象快路径**：total_compressed_len ≤ 单片阈值 → 现整帧两段式（含 `payload_crc_`），一次往返。（~~或缓存命中~~ 2026-08-29 废止：low-tier cache 全量取消，见 §4.7——分流只看尺寸。）
 - **CHUNK_RESEND 处理模型**：client 验坏块后发 resend 请求（同连接），server 读循环路由该消息类型单块重发；每块重传上限一次，再失败升格对象级 FATAL。与「不做断线续传」不冲突：**在线块重传**（连接活着）做；**断线**仍整对象走 TIER2 重试。
 
@@ -185,9 +185,9 @@ client                          server
 | A' | client 接收线程**块级 CRC 校验前移**（从解压器移到网络 io 层）；坏块 → resend(byte offset, len)；CHUNK 帧头**去帧级 CRC、保留帧头 check 位**（失步检测一层 + 数据校验一层，职责干净） | 传输协议 |
 | C | 写路径 sink 逐块入 **WBQ 后台落盘** + 完成单元（trailer+entry 在完成单元；register 时序不变） | 写路径 |
 
-**三细节裁定（2026-08-29 用户同意）**：
+**三细节裁定（2026-08-29 用户同意；#2 于 2026-08-30 实施完成）**：
 1. resend 寻址 = **byte offset + length**（server 零块知识；天然适配任何块大小/config 变化——client 解析过块头即知坏块区间）
-2. **帧级 CRC 去除**，保留帧头 check 位（帧头自身损坏的兜底）
+2. **帧级 CRC 去除**，保留帧头 check 位（帧头自身损坏的兜底）——**已实施（2026-08-30 用户裁定"消除 CRC 冗余"）**：发送端发 0、接收端 0 跳过/非 0 仍验（兼容旧端），传输路径 CRC 3 遍→1 遍，实测 QA 全量每轮 -10s；Span 路径损坏定位退化为对象级重取（digest 收满校验 → TIER2 零容忍重取），流式路径 resend 由块 CRC 驱动不变
 3. 块表条目 = **u32 comp_len 紧凑式**（表受 trailer CRC 保护；L4 需要偏移时前缀和一遍即得）
 
 **块表的消费者**（resend 不需要它——offset/len 寻址）：client 结构对账强化
@@ -722,3 +722,25 @@ NOT_READY 窗口验证——预许可后完成登记前下游不可读）
 WBQ-段事务交互（45 测试 + QA ✓）；预许可窗口（完成登记全量检查 ✓）；
 流式重开资源时序（export 重开前旧流析构 ✓）；NOT_READY 轮询放大
 （QA 无异常 ✓）；块级 CRC 性能（实测写 128MB RSS 零增长 ✓）。
+
+### 14.8 帧片 CRC 取消计算（2026-08-30 用户裁定实施）
+
+性能分析（`performance-analysis-2026-08-30.md`）实测 V2 每轮 QA +10s 回归，次因
+为传输路径 CRC 3 遍（serve 帧片 + 接收帧片 + 块级）。用户裁定消除冗余：
+
+- **发送端两处**（serve_chunked 主循环 + handle_chunk_resend）：帧片 CRC 不再
+  计算，字段恒填 0（= 未计算）
+- **接收端两处**（DataClientPool::receive_chunked + NetworkChunkSource::
+  read_one_frame）：`crc != 0` 才验证——0 跳过帧级验证；非 0（旧协议端）保留
+  逐帧验证 + resend 定位（**兼容条款**，测试 24/25 legacy_crc 模式锚定）
+- **完整性收敛到**：块级 CRC（数据权威校验，流式路径 resend 驱动不变）+
+  DIGEST 根摘要（Span 路径收满权威校验）+ trailer CRC（元数据）
+- **Span 路径损坏定位语义变化**：帧级精准 resend → 对象级重取（digest 收满
+  CHECKSUM → TIER2 零容忍预算重取）；低概率损坏场景的权衡（性能报告 §4）
+
+实测：QA 全量每轮 107s → **96.1/96.8s**（回归 ~10s 全部回收）；crc64 采样
+98→82，剩余构成 = DIGEST 双侧 66% + 解压出口块 CRC 33%。
+
+**测试**：24/25 改 legacy_crc=true（旧协议端兼容锚定）；新增 28
+（ZeroCrcBadDataCaughtByDigest：新语义坏数据由根摘要抓住）与 29
+（ZeroCrcGoodDataSucceeds：新语义正常路径）。

@@ -516,9 +516,11 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
                 ok = false;
                 break;
             }
-            uint64_t crc = fly::data_checksum(buf.data(), static_cast<size_t>(n));
+            // §4.4 帧片 CRC 取消计算（2026-08-30 用户裁定，性能报告 §4）：
+            // 发 0 = 未计算，接收端跳过帧级验证——完整性由块级 CRC（解压/
+            // 块解析器）+ DIGEST 根摘要承担。传输路径 CRC 由 3 遍降 1 遍。
             // offset = 帧首字节在 record 内偏移（A'：正常流/重传统一定位语义）。
-            CMString hdr = ChunkFrameProtocol::encode_header(off - offset, crc, n);
+            CMString hdr = ChunkFrameProtocol::encode_header(off - offset, 0, n);
             struct iovec iov[2];
             iov[0].iov_base = const_cast<char*>(hdr.data());
             iov[0].iov_len = hdr.size();
@@ -613,8 +615,8 @@ void DataServer::handle_chunk_resend(int fd, uint64_t offset, uint64_t length) {
             return;
         }
         // 重传帧 = 纯字节区间（不带块语义——client 按字节替换 hole）。
-        uint64_t crc = fly::data_checksum(buf.data(), static_cast<size_t>(n));
-        CMString hdr = ChunkFrameProtocol::encode_header(offset, crc, n);
+        // 帧片 CRC 同主发送循环：发 0（未计算），§4.4 取消计算裁定。
+        CMString hdr = ChunkFrameProtocol::encode_header(offset, 0, n);
         struct iovec iov[2];
         iov[0].iov_base = const_cast<char*>(hdr.data());
         iov[0].iov_len = hdr.size();
