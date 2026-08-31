@@ -28,6 +28,14 @@
 
 ## 〇-A、【唯一遗留】ras_matrix 偶发 "no ctx" race（待专门会话）
 
+> **T7 稳定性测试结论（2026-08-31 13:33）**：100 轮跑到第 19 轮即命中本 race
+>（`test_ras_graph_dynamic.pyt`/rasgd_early_stop：`[RASG DYN CHECK] t=0 rpc
+> sd=0 status=2 at step=0`）——与 ras_matrix 同根因（check 首请求早于
+> compute 注入，无依赖边），在稳定性负载下发生率 ~1/19 轮。**该 race 修复前
+> 100 轮稳定性无法通过，T7 阻塞于此。** 第二现场（含全链日志）保留于：
+> `.work/stability/20260831_125154/failure_round_19/`（前 18 轮全绿产物在同
+> 目录 round_001-018.log）。
+
 **现象**：全量 QA 第三轮中 `test_solver_ras_matrix.pyt`（solver_ras_param，n6/sd3/ov1）失败 1 次；同二进制复跑 6/6 绿。两轮全量 + 一轮失败 = 偶发。
 
 **已抓证据**（失败轮 master.log + w4 日志；**原日志已被复跑覆盖**，以下为摘录）：
