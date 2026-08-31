@@ -736,8 +736,7 @@ void DataService::remove_remote_index(const CMString& object_name) {
     if (db_it != remote_idx_.end()) {
         db_it->second.erase(short_name);
     }
-    // Invalidate cached bytes (a prior remote read may have populated the low
-    // tier via read_raw_compressed → put_low; remove it to avoid stale data).
+    // Invalidate cached typed object (stale-data guard on removal).
     fly::ObjectCache::instance().remove(object_name);
 }
 

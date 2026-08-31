@@ -42,10 +42,10 @@ def main():
     assert result.is_large == False
     assert result.block_count == 0
     # First read populates the C++ high tier: 1 put, 0 hits (it was a miss).
-    # stats tuple = (lo_h, lo_m, lo_p, lo_e, hi_h, hi_m, hi_p, hi_e)
+    # stats tuple = (hi_h, hi_m, hi_p, hi_e)（T4：low 四元组已删）
     s1 = _fly_storage.ex_stg_cache_stats()
-    assert s1[6] == 1, f"high tier should have 1 put after cpp read, got {s1[6]}"
-    assert s1[4] == 0, f"first read should be a miss (0 hits), got {s1[4]}"
+    assert s1[2] == 1, f"high tier should have 1 put after cpp read, got {s1[2]}"
+    assert s1[0] == 0, f"first read should be a miss (0 hits), got {s1[0]}"
     print("[PASS] cpp class write→read populates C++ high tier (1 put, 0 hit)")
 
     # ── 2. Second read hits C++ high tier (cached, no re-deserialize) ──
@@ -55,8 +55,8 @@ def main():
     assert result2.offset == 100
     # Hit stats prove the second read served from cache (not a fresh deserialize).
     s2 = _fly_storage.ex_stg_cache_stats()
-    assert s2[4] == 1, f"second read should register 1 high-tier hit, got {s2[4]}"
-    assert s2[6] == 1, f"second read should NOT add a new put (still 1), got {s2[6]}"
+    assert s2[0] == 1, f"second read should register 1 high-tier hit, got {s2[0]}"
+    assert s2[2] == 1, f"second read should NOT add a new put (still 1), got {s2[2]}"
     print("[PASS] cpp class second read (high-tier cache hit: 1 hit, no new put)")
 
     # ── 3. 读流携带 py_name（恒流式分流媒介——_get_py_name 已删除，

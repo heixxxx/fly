@@ -10,18 +10,6 @@
 
 namespace {
 
-// Convenience: build a FlyBufferPtr from a CMString (for put_low test calls).
-FlyBufferPtr make_flybuf(const CMString& s) {
-    auto buf = CMMakeShared<FlyBuffer>();
-    buf->take(CMString(s));
-    return buf;
-}
-// Convenience: extract CMString from a FlyBufferPtr (for get_low comparisons).
-CMString buf_str(const FlyBufferPtr& buf) {
-    if (!buf) return {};
-    return CMString(buf->data(), buf->size());
-}
-
 // Minimal serializable type for high-tier round-trip tests.
 struct CacheItem {
     int32_t n = 0;
@@ -84,41 +72,18 @@ TEST(ObjectCacheTest, HighTierHoldsSharedPtrLifetime) {
     EXPECT_TRUE(wp.expired());
 }
 
-// ---- low-tier: compressed bytes ----
-
-TEST(ObjectCacheTest, LowTierPutGetReturnsBytes) {
-    ObjectCache& c = ObjectCache::instance();
-    c.reset_for_test(1 << 20);
-    c.put_low("k", make_flybuf("compressed_payload"), 18);
-    auto [hit, data] = c.get_low("k");
-    EXPECT_TRUE(hit);
-    EXPECT_EQ(buf_str(data), "compressed_payload");
-    c.clear();
-}
-
-TEST(ObjectCacheTest, LowTierMissReturnsFalse) {
-    ObjectCache& c = ObjectCache::instance();
-    c.reset_for_test(1 << 20);
-    auto [hit, data] = c.get_low("nope");
-    EXPECT_FALSE(hit);
-    EXPECT_TRUE(buf_str(data).empty());
-    c.clear();
-}
-
 // ---- remove / clear ----
+//（low-tier 测试族已随 T4 2026-08-31 low_ 池删除；eviction/保护窗/计分
+//  语义测试迁至 high 层保留覆盖。）
 
-TEST(ObjectCacheTest, RemoveClearsBothTiers) {
+TEST(ObjectCacheTest, RemoveClearsEntry) {
     ObjectCache& c = ObjectCache::instance();
     c.reset_for_test(1 << 20);
-    c.put_low("k", make_flybuf("low_data"), 8);
     c.put_high<int>("k", CMMakeShared<int>(1), 4);
-    EXPECT_EQ(c.low_size(), 1u);
     EXPECT_EQ(c.high_size(), 1u);
 
     c.remove("k");
-    EXPECT_EQ(c.low_size(), 0u);
     EXPECT_EQ(c.high_size(), 0u);
-    EXPECT_EQ(c.low_bytes(), 0u);
     EXPECT_EQ(c.high_bytes(), 0u);
 }
 
@@ -133,30 +98,27 @@ TEST(ObjectCacheTest, RemoveUnknownKeyIsNoop) {
 TEST(ObjectCacheTest, EvictionTriggersOverMaxBytes) {
     ObjectCache& c = ObjectCache::instance();
     c.reset_for_test(100);  // tiny limit
-    // Each entry 40 bytes; 3 entries = 120 > 100 → must evict.
-    c.put_low("a", make_flybuf(CMString(40, 'a')), 40);
-    // Force entries past the 30s protection window by sleeping is slow; instead
-    // test the hard-limit path: keep adding until > 1.5x (=150) forces eviction
-    // even within the protection window.
-    c.put_low("b", make_flybuf(CMString(40, 'b')), 40);
-    c.put_low("c", make_flybuf(CMString(40, 'c')), 40);
-    c.put_low("d", make_flybuf(CMString(40, 'd')), 40);  // total 160 > 150 hard limit
+    // Each entry 40 bytes; 4 entries = 160 > 150 hard limit → must evict even
+    // within the protection window.
+    c.put_high<int>("a", CMMakeShared<int>(1), 40);
+    c.put_high<int>("b", CMMakeShared<int>(2), 40);
+    c.put_high<int>("c", CMMakeShared<int>(3), 40);
+    c.put_high<int>("d", CMMakeShared<int>(4), 40);
     // After eviction, total must be <= 100.
-    EXPECT_LE(c.low_bytes(), 100u);
+    EXPECT_LE(c.high_bytes(), 100u);
     c.clear();
 }
 
 TEST(ObjectCacheTest, ProtectionWindowPreventsEvictionUnderHardLimit) {
     ObjectCache& c = ObjectCache::instance();
     c.reset_for_test(100);
-    // 2 entries = 80 bytes. Over max (100? no, 80<100). Add one more = 120.
-    // 120 < hard_limit (150) and within protection → no eviction.
-    c.put_low("a", make_flybuf(CMString(40, 'a')), 40);
-    c.put_low("b", make_flybuf(CMString(40, 'b')), 40);
-    c.put_low("c", make_flybuf(CMString(40, 'c')), 40);  // 120 > max but < hard_limit
-    // All entries newly created (< 30s) and under hard limit → retained.
-    EXPECT_EQ(c.low_size(), 3u);
-    EXPECT_EQ(c.low_bytes(), 120u);
+    // 3 entries = 120 bytes. Over max (100) but under hard_limit (150) and
+    // within the 30s protection window → no eviction.
+    c.put_high<int>("a", CMMakeShared<int>(1), 40);
+    c.put_high<int>("b", CMMakeShared<int>(2), 40);
+    c.put_high<int>("c", CMMakeShared<int>(3), 40);
+    EXPECT_EQ(c.high_size(), 3u);
+    EXPECT_EQ(c.high_bytes(), 120u);
     c.clear();
 }
 
@@ -166,46 +128,23 @@ TEST(ObjectCacheTest, EvictionRespectsScoreOrder) {
     // This test relies on hard-limit eviction. Insert several, access one
     // repeatedly to boost its score, exceed hard limit, verify the low-score
     // entries are evicted preferentially.
-    c.put_low("hot", make_flybuf(CMString(40, 'h')), 40);
-    c.put_low("cold1", make_flybuf(CMString(40, 'c')), 40);
+    c.put_high<int>("hot", CMMakeShared<int>(1), 40);
+    c.put_high<int>("cold1", CMMakeShared<int>(2), 40);
     // Boost "hot" score.
     for (int i = 0; i < 10; ++i) {
-        c.get_low("hot");
+        (void)c.get_high<int>("hot");
     }
     // Now exceed hard limit (150): add more.
-    c.put_low("cold2", make_flybuf(CMString(40, 'c')), 40);  // 120
-    c.put_low("cold3", make_flybuf(CMString(40, 'c')), 40);  // 160 > 150
+    c.put_high<int>("cold2", CMMakeShared<int>(3), 40);  // 120
+    c.put_high<int>("cold3", CMMakeShared<int>(4), 40);  // 160 > 150
     // "hot" should survive (highest score); at least one cold evicted.
-    auto [hot_hit, _] = c.get_low("hot");
-    EXPECT_TRUE(hot_hit) << "high-score entry should survive eviction";
-    EXPECT_LE(c.low_bytes(), 100u);
+    EXPECT_NE(c.get_high<int>("hot"), nullptr)
+        << "high-score entry should survive eviction";
+    EXPECT_LE(c.high_bytes(), 100u);
     c.clear();
 }
 
 // ---- hit statistics ----
-
-TEST(ObjectCacheTest, LowTierHitMissPutCounters) {
-    ObjectCache& c = ObjectCache::instance();
-    c.reset_for_test(1 << 20);
-    const auto& s = c.stats();
-    EXPECT_EQ(s.low_hits.load(), 0u);
-    EXPECT_EQ(s.low_misses.load(), 0u);
-    EXPECT_EQ(s.low_puts.load(), 0u);
-
-    // Miss on empty cache.
-    (void)c.get_low("absent");
-    EXPECT_EQ(s.low_misses.load(), 1u);
-
-    // Put then hit.
-    c.put_low("k", make_flybuf("data"), 4);
-    EXPECT_EQ(s.low_puts.load(), 1u);
-    auto [hit, _] = c.get_low("k");
-    EXPECT_TRUE(hit);
-    EXPECT_EQ(s.low_hits.load(), 1u);
-    EXPECT_EQ(s.low_misses.load(), 1u);  // unchanged
-
-    c.clear();
-}
 
 TEST(ObjectCacheTest, HighTierHitMissPutCounters) {
     ObjectCache& c = ObjectCache::instance();
@@ -235,24 +174,24 @@ TEST(ObjectCacheTest, EvictionCounter) {
     const auto& s = c.stats();
 
     // Each entry 40 bytes; exceed hard limit (150) to force eviction.
-    c.put_low("a", make_flybuf(CMString(40, 'a')), 40);
-    c.put_low("b", make_flybuf(CMString(40, 'b')), 40);
-    c.put_low("c", make_flybuf(CMString(40, 'c')), 40);
-    c.put_low("d", make_flybuf(CMString(40, 'd')), 40);  // 160 > 150 → evict
-    EXPECT_GE(s.low_evictions.load(), 1u);
+    c.put_high<int>("a", CMMakeShared<int>(1), 40);
+    c.put_high<int>("b", CMMakeShared<int>(2), 40);
+    c.put_high<int>("c", CMMakeShared<int>(3), 40);
+    c.put_high<int>("d", CMMakeShared<int>(4), 40);  // 160 > 150 → evict
+    EXPECT_GE(s.high_evictions.load(), 1u);
     c.clear();
 }
 
 TEST(ObjectCacheTest, ResetStatsZeroesCounters) {
     ObjectCache& c = ObjectCache::instance();
     c.reset_for_test(1 << 20);
-    c.put_low("k", make_flybuf("data"), 4);
-    (void)c.get_low("k");
-    EXPECT_GT(c.stats().low_hits.load(), 0u);
+    c.put_high<int>("k", CMMakeShared<int>(5), 4);
+    (void)c.get_high<int>("k");
+    EXPECT_GT(c.stats().high_hits.load(), 0u);
 
     c.reset_stats();
-    EXPECT_EQ(c.stats().low_hits.load(), 0u);
-    EXPECT_EQ(c.stats().low_puts.load(), 0u);
+    EXPECT_EQ(c.stats().high_hits.load(), 0u);
+    EXPECT_EQ(c.stats().high_puts.load(), 0u);
     c.clear();
 }
 
@@ -266,8 +205,6 @@ TEST(ObjectCacheTest, ConcurrentAccessIsSafe) {
         threads.emplace_back([&c, t]() {
             for (int i = 0; i < 100; ++i) {
                 CMString key = "k" + std::to_string(t);
-                c.put_low(key, make_flybuf("data"), 4);
-                c.get_low(key);
                 c.put_high<int>(key, CMMakeShared<int>(t), 4);
                 c.get_high<int>(key);
                 if (i % 10 == 0) c.remove(key);
@@ -298,9 +235,9 @@ protected:
 // After read_object_compressed, the compressed bytes must be in the cache's
 // low tier. A second read of the same object hits the cache (no disk IO).
 
-// ── §4.7 low-tier cache 取消：write/read 路径不再 populate（2026-08-29）──
-// 原写入填充（write-through）三例改写为取消语义锚定：写后读恒走盘
-//（drain 后 entry 可见），low_size 恒 0。
+// ── §4.7 low-tier cache 取消（2026-08-29）+ T4 low_ 池删除（2026-08-31）──
+// 幸存不变量：write / 压缩读路径不 populate 任何缓存（typed high 层仅
+// read_object<T> cache="high" 填充）。
 
 TEST_F(ObjectCacheDbTest, WriteObjectDoesNotPopulateLowTier) {
     Database db(test_dir_ + "/wt");
@@ -311,11 +248,11 @@ TEST_F(ObjectCacheDbTest, WriteObjectDoesNotPopulateLowTier) {
     src.s = "wt_data";
     db.write_object("wt/obj", src, "CacheItem", false);
 
-    // §4.7：low-tier 取消——写路径不再 populate。
-    EXPECT_EQ(ObjectCache::instance().low_size(), 0u)
-        << "write_object must NOT populate low tier (cache cancelled, §4.7)";
+    // 写路径不 populate typed 缓存。
+    EXPECT_EQ(ObjectCache::instance().high_size(), 0u)
+        << "write_object must NOT populate the cache (§4.7)";
     fly::DataService::instance()->drain_write_back();
-    EXPECT_EQ(ObjectCache::instance().low_size(), 0u);
+    EXPECT_EQ(ObjectCache::instance().high_size(), 0u);
 
     // 写后读走盘（drain 后 entry 可见），数据正确。
     auto obj = db.read_object<CacheItem>("wt/obj", "none");
@@ -340,8 +277,8 @@ TEST_F(ObjectCacheDbTest, WritePickleBytesReadableFromDiskAfterDrain) {
     }
     fly::DataService::instance()->drain_write_back();
 
-    EXPECT_EQ(ObjectCache::instance().low_size(), 0u);
-    // 盘读正确（缓存取消后读恒走盘）。
+    EXPECT_EQ(ObjectCache::instance().high_size(), 0u);
+    // 盘读正确（读恒走数据源）。
     auto [comp, py] = db.read_object_compressed("wp/obj", false);
     ASSERT_FALSE(!comp || comp->empty());
     EXPECT_EQ(py, "bytes");
@@ -359,14 +296,13 @@ TEST_F(ObjectCacheDbTest, ReadObjectCompressedDoesNotPopulateLowTier) {
     }
     fly::DataService::instance()->drain_write_back();
 
-    CMString full = db.get_full_name("obj");
-    EXPECT_EQ(ObjectCache::instance().low_size(), 0u);
+    EXPECT_EQ(ObjectCache::instance().high_size(), 0u);
 
-    // 读走盘（不再 populate）。
+    // 压缩读不 populate 任何缓存。
     auto [comp1, py1] = db.read_object_compressed("obj", false);
     ASSERT_FALSE(!comp1 || comp1->empty());
-    EXPECT_EQ(ObjectCache::instance().low_size(), 0u)
-        << "read must not populate low tier (cache cancelled)";
+    EXPECT_EQ(ObjectCache::instance().high_size(), 0u)
+        << "compressed read must not populate the cache (§4.7)";
 }
 
 TEST_F(ObjectCacheDbTest, ReadObjectCompressedMissDoesNotPopulate) {
@@ -374,7 +310,7 @@ TEST_F(ObjectCacheDbTest, ReadObjectCompressedMissDoesNotPopulate) {
     // Reading a non-existent object must not insert anything into the cache.
     auto [comp, py] = db.read_object_compressed("absent", false);
     EXPECT_TRUE(!comp || comp->empty());
-    EXPECT_EQ(ObjectCache::instance().low_size(), 0u);
+    EXPECT_EQ(ObjectCache::instance().high_size(), 0u);
 }
 
 // ---- Database integration: high-tier populated by read_object<T> with cache="high" ----

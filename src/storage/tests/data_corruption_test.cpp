@@ -81,43 +81,9 @@ protected:
     }
 };
 
-// 测试 10：缓存条目损坏（旧格式/坏 trailer）→ 失效缓存重读盘一次 → 干净数据。
-TEST_F(DataCorruptionTest, LocalRetryRecoversFromBadCache) {
-    CMString db_path = "/dcok";
-    CMString full = db_path + ":obj";
-    std::string good = "good object payload";
-    write_valid_object(db_path, full, good);
-
-    // 污染 low-tier 缓存：塞一个旧格式（前置 header）坏条目。
-    ObjectHeader legacy;
-    legacy.total_size_ = 5;
-    legacy.chunk_count_ = 1;
-    legacy.py_name_ = "bytes";
-    legacy.py_name_len_ = 5;
-    CMString bad = legacy.serialize();
-    bad += "xxxxx";
-    auto bad_buf = CMMakeShared<FlyBuffer>();
-    bad_buf->write(bad.data(), bad.size());
-    ObjectCache::instance().put_low(full, bad_buf, bad.size());
-
-    // Database 层读：缓存 trailer 解析失败 → 失效 → 重读源 → 干净 record。
-    Database db(db_path, test_dir_ + "/data");
-    auto [comp, py_name] = db.read_object_compressed("obj", false);
-    ASSERT_TRUE(comp && !comp->empty());
-
-    ObjectHeader hdr;
-    size_t tl = 0;
-    EXPECT_TRUE(ObjectHeader::deserialize_trailer({comp->data(), comp->size()}, hdr, tl));
-    EXPECT_EQ(hdr.py_name_, "bytes");
-
-    // 解压出口干净。
-    DecompressingStreamBuf dsbuf(comp->data(), comp->size());
-    std::istream is(&dsbuf);
-    CMString got(good.size(), '\0');
-    is.read(got.data(), good.size());
-    EXPECT_EQ(got, good);
-    EXPECT_FALSE(dsbuf.checksum_failed());
-}
+// 测试 10（LocalRetryRecoversFromBadCache）已删除（T4 2026-08-31）：其前提
+// "读可命中 low-tier 缓存条目"随 §4.7 读恒走数据源 + low_ 池删除不复存在；
+// 盘上/远程损坏路径由下方 LocalDiskCorruptFatal / RemoteChunkCorruptRetryThenFatal 覆盖。
 
 // 测试 11：盘上损坏且无远程副本 → 重读仍败 → DataCorruptionError（FATAL）。
 TEST_F(DataCorruptionTest, LocalDiskCorruptFatal) {

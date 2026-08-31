@@ -85,9 +85,8 @@ def main():
     # Output ObjectCache stats to show cache behavior
     import _fly_storage
     stats = _fly_storage.ex_stg_cache_stats()
-    # stats = (lo_h, lo_m, lo_p, lo_e, hi_h, hi_m, hi_p, hi_e)
-    print(f"[STATS] low:  hits={stats[0]} misses={stats[1]} puts={stats[2]} evictions={stats[3]}")
-    print(f"[STATS] high: hits={stats[4]} misses={stats[5]} puts={stats[6]} evictions={stats[7]}")
+    # stats = (hi_h, hi_m, hi_p, hi_e)（T4：low 四元组已删）
+    print(f"[STATS] high: hits={stats[0]} misses={stats[1]} puts={stats[2]} evictions={stats[3]}")
 
     db.reset()
     print("\nLarge transfer profiling test passed!")

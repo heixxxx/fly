@@ -3,6 +3,18 @@
 ---
 ---
 
+## 2026-08-31 (7): T4 C++ ObjectCache 对齐——删死 low_ 池，单层化
+
+- **object_cache.h**：删除 low_ 池全集（get_low/put_low/low 统计/low 访问器）
+  ——§4.7 读恒走数据源后 low 池零生产消费（仅测试调用的过期 API，用户裁
+  定）。单层化保留 high：typed C++ 对象（read_object<T> 命中快路径）。
+- **导出**：`ex_stg_cache_stats` 改 4 元组（high_*）；QA 消费脚本同步。
+- **测试**：object_cache_test low 族删除，eviction/保护窗/计分语义测试迁
+  high 层保留覆盖；DbTest 的 low_size 断言改 high_size（幸存不变量：write/
+  压缩读不 populate 任何缓存）；data_corruption_test 的 low 投毒用例删除
+  （前提已死，盘/远程损坏路径仍有覆盖）。
+- 验证：C++ 单测 73/73 + 全量 QA 全绿。
+
 ## 2026-08-31 (6): T3 dynamic coarse 双对象拆分——static 默认 low / ac 显式 none
 
 - **ras_graph_dynamic.py**：`__rasg__coarse_prebuilt` 单对象拆为

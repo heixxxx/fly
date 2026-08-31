@@ -1,16 +1,16 @@
 #pragma once
 
-// Two-level LRU read cache with type-erased object storage.
+// Single-tier LRU read cache with type-erased object storage.
 //
-// Mirrors the Python ReadCache semantics (src/storage/py/read_cache.py):
-//   - low:  compressed bytes (CMString) — hit saves disk/remote IO, still needs deserialize
-//   - high: deserialized object (std::any holding CMSharedPtr<T>) — hit saves deserialize
+// T4（2026-08-31）对齐 Python ReadCache 双池裁定：压缩字节 low_ 池删除
+//（读恒走数据源 §4.7，low 池零生产消费——仅测试调用的过期 API）。保留
+// high 层：反序列化后的 typed C++ 对象（read_object<T> 的命中快路径）。
 //
 // Type restoration: caller knows T at compile time (read_object<T>); get_high<T>
 // does std::any_cast on the stored CMSharedPtr<T>. Type mismatch → returns nullptr.
 //
 // Eviction: LFU-ish score = read_count / age, 30s protection window, 1.5x hard
-// limit (aligned with Python _evict).
+// limit.
 //
 // Thread-safety: all ops guarded by mutex_ (write-back thread puts, reactor/
 // worker threads get/put concurrently).
@@ -33,8 +33,8 @@ public:
         return inst;
     }
 
-    // high-tier get: returns the cached CMSharedPtr<T> on hit, nullptr on miss
-    // or type mismatch. Touches the entry (read_count++, last_access update).
+    // get: returns the cached CMSharedPtr<T> on hit, nullptr on miss or type
+    // mismatch. Touches the entry (read_count++, last_access update).
     template<typename T>
     CMSharedPtr<T> get_high(const CMString& key) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -48,18 +48,8 @@ public:
         return *held;
     }
 
-    // low-tier get: returns {true, FlyBufferPtr} on hit, {false, nullptr} on miss.
-    std::pair<bool, FlyBufferPtr> get_low(const CMString& key) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto it = low_.find(key);
-        if (it == low_.end()) { stats_.low_misses.fetch_add(1, std::memory_order_relaxed); return {false, nullptr}; }
-        touch_entry(it->second);
-        stats_.low_hits.fetch_add(1, std::memory_order_relaxed);
-        return {true, std::any_cast<FlyBufferPtr>(it->second.value_)};
-    }
-
-    // high-tier put: stores CMSharedPtr<T> erased as std::any. size = bytes
-    // used for accounting (caller passes uncompressed size from ObjectHeader).
+    // put: stores CMSharedPtr<T> erased as std::any. size = bytes used for
+    // accounting (caller passes uncompressed size from ObjectHeader).
     template<typename T>
     void put_high(const CMString& key, CMSharedPtr<T> obj, size_t size) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -84,39 +74,9 @@ public:
         stats_.high_evictions.fetch_add(evict(high_, high_bytes_), std::memory_order_relaxed);
     }
 
-    // low-tier put: stores compressed bytes as a shared FlyBuffer (zero-copy:
-    // the caller's FlyBufferPtr is shared, not copied).
-    void put_low(const CMString& key, FlyBufferPtr data, size_t size) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto it = low_.find(key);
-        if (it != low_.end()) {
-            low_bytes_ -= it->second.size_;
-            it->second.value_ = std::any(data);
-            it->second.size_ = size;
-            it->second.last_access_ = now_sec();
-            it->second.created_at_ = it->second.last_access_;
-            it->second.read_count_ = 1;
-        } else {
-            Entry e;
-            e.value_ = std::any(data);
-            e.size_ = size;
-            e.last_access_ = now_sec();
-            e.created_at_ = e.last_access_;
-            low_[key] = std::move(e);
-        }
-        low_bytes_ += size;
-        stats_.low_puts.fetch_add(1, std::memory_order_relaxed);
-        stats_.low_evictions.fetch_add(evict(low_, low_bytes_), std::memory_order_relaxed);
-    }
-
-    // remove from both tiers (used on object invalidation: remove_object/freeze).
+    // remove (used on object invalidation: remove_object/freeze).
     void remove(const CMString& key) {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = low_.find(key);
-        if (it != low_.end()) {
-            low_bytes_ -= it->second.size_;
-            low_.erase(it);
-        }
         auto hit = high_.find(key);
         if (hit != high_.end()) {
             high_bytes_ -= hit->second.size_;
@@ -126,9 +86,7 @@ public:
 
     void clear() {
         std::lock_guard<std::mutex> lock(mutex_);
-        low_.clear();
         high_.clear();
-        low_bytes_ = 0;
         high_bytes_ = 0;
         reset_stats();
     }
@@ -137,9 +95,7 @@ public:
     // read_cache_size config). Allows deterministic eviction tests.
     void reset_for_test(size_t max_bytes) {
         std::lock_guard<std::mutex> lock(mutex_);
-        low_.clear();
         high_.clear();
-        low_bytes_ = 0;
         high_bytes_ = 0;
         max_bytes_ = max_bytes;
         hard_limit_ = max_bytes + max_bytes / 2;
@@ -148,10 +104,6 @@ public:
 
     // Reset all hit/miss/put/eviction counters to zero.
     void reset_stats() {
-        stats_.low_hits.store(0, std::memory_order_relaxed);
-        stats_.low_misses.store(0, std::memory_order_relaxed);
-        stats_.low_puts.store(0, std::memory_order_relaxed);
-        stats_.low_evictions.store(0, std::memory_order_relaxed);
         stats_.high_hits.store(0, std::memory_order_relaxed);
         stats_.high_misses.store(0, std::memory_order_relaxed);
         stats_.high_puts.store(0, std::memory_order_relaxed);
@@ -159,31 +111,19 @@ public:
     }
 
     // test/diagnostic accessors (not for hot paths)
-    size_t low_bytes() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return low_bytes_;
-    }
     size_t high_bytes() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return high_bytes_;
-    }
-    size_t low_size() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return low_.size();
     }
     size_t high_size() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return high_.size();
     }
 
-    // ── Hit statistics (per-tier: hits / misses / puts / evictions) ──
+    // ── Hit statistics (hits / misses / puts / evictions) ──
     // Counters are std::atomic for lock-free reads; writes happen under mutex_
     // (or via atomic fetch_add in the hot path).
     struct Stats {
-        std::atomic<uint64_t> low_hits{0};
-        std::atomic<uint64_t> low_misses{0};
-        std::atomic<uint64_t> low_puts{0};
-        std::atomic<uint64_t> low_evictions{0};
         std::atomic<uint64_t> high_hits{0};
         std::atomic<uint64_t> high_misses{0};
         std::atomic<uint64_t> high_puts{0};
@@ -192,12 +132,7 @@ public:
 
     const Stats& stats() const { return stats_; }
 
-    // Convenience: hit rate per tier (0.0 if no accesses yet).
-    double low_hit_rate() const {
-        uint64_t h = stats_.low_hits.load(), m = stats_.low_misses.load();
-        uint64_t total = h + m;
-        return total == 0 ? 0.0 : static_cast<double>(h) / total;
-    }
+    // Convenience: hit rate (0.0 if no accesses yet).
     double high_hit_rate() const {
         uint64_t h = stats_.high_hits.load(), m = stats_.high_misses.load();
         uint64_t total = h + m;
@@ -206,7 +141,7 @@ public:
 
 private:
     struct Entry {
-        std::any value_;        // high: CMSharedPtr<T>; low: FlyBufferPtr
+        std::any value_;        // CMSharedPtr<T>
         size_t size_ = 0;
         double last_access_ = 0;    // seconds since epoch (monotonic-ish via steady_clock)
         double created_at_ = 0;
@@ -220,13 +155,11 @@ private:
     };
 
     mutable std::mutex mutex_;
-    CMUnorderedMap<CMString, Entry> low_;
     CMUnorderedMap<CMString, Entry> high_;
-    size_t low_bytes_ = 0;
     size_t high_bytes_ = 0;
     Stats stats_;
 
-    // Limits read once from config; constants mirror Python read_cache.py.
+    // Limits read once from config.
     size_t max_bytes_ = load_max_bytes();
     size_t hard_limit_ = max_bytes_ + max_bytes_ / 2;  // 1.5x
     static constexpr double PROTECTION_SEC = 30.0;

@@ -1285,8 +1285,8 @@ TEST_F(DataServiceTest, TryReadLocalRawFailsAfterDiskRemoval) {
     // 盘在时读成功（走盘）。
     auto [comp, py_name] = db.read_object_compressed("serve/obj", false);
     ASSERT_FALSE(!comp || comp->empty());
-    EXPECT_EQ(fly::ObjectCache::instance().low_size(), 0u)
-        << "read must not populate low tier (cancelled)";
+    EXPECT_EQ(fly::ObjectCache::instance().high_size(), 0u)
+        << "read must not populate the cache (cancelled)";
 
     // 删盘 → 读失败（无缓存短路）。
     for (auto& p : std::filesystem::directory_iterator(db_path)) {
@@ -1309,13 +1309,13 @@ TEST_F(DataServiceTest, TryReadLocalRawDoesNotPopulateLowCache) {
 
     CMString full = db.get_full_name("pop/obj");
     fly::ObjectCache::instance().clear();
-    EXPECT_EQ(fly::ObjectCache::instance().low_size(), 0u);
+    EXPECT_EQ(fly::ObjectCache::instance().high_size(), 0u);
 
     auto [found, raw] = ds_->try_read_local_raw(full);
     ASSERT_TRUE(found);
     ASSERT_FALSE(!raw || raw->empty());
-    EXPECT_EQ(fly::ObjectCache::instance().low_size(), 0u)
-        << "try_read_local_raw must not populate low tier (cancelled)";
+    EXPECT_EQ(fly::ObjectCache::instance().high_size(), 0u)
+        << "try_read_local_raw must not populate the cache (cancelled)";
 
     fly::ObjectCache::instance().clear();
 }
