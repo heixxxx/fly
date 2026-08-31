@@ -59,14 +59,29 @@ T5 消除了 serve 端根计算与 client 端最终验证，但 `deliver_bytes`/
 root_`/`root_expected_`/`digest_chunks_` 成员及根失配检查移除，DIGEST 帧
 仅保留作流终止信号。接收线程每字节减一次 CRC64 遍历。
 
+### 2.6 serve 端 chunk 发送零拷贝（f38488f）
+
+CHUNK 循环从 pread 4MB + writev(头+payload) 改为帧头 29B 单独 send +
+payload `::sendfile`（file→socket 内核直通）：
+- 消除 serve 端 pread 的 file→用户 buffer 拷贝（`copy_page_to_iter`/
+  `filemap_read` ~9%）；
+- serve 端不再持有 4MB 单片缓冲（每连接省 4MB 内存与构造清零/缺页）；
+- server 本就不碰数据字节（帧片 CRC 发 0），零拷贝不改变完整性语义。
+
+实现：`Transport` 接口新增 `send_file`；`TCPSocketTransport` 非阻塞
+sendfile 循环（EAGAIN→poll POLLOUT）；resend 重传路径保持 pread+sendv
+（低频，改动面最小化）。
+
+**效果：7936MB 压测 goodput 1322 → 1586 MB/s（+20%，3 次稳定）**。
+
 ## 3. 确认为语义成本、不再追的项
 
 | 项 | 量级 | 定性 |
 |----|------|------|
+| ~~serve 端 pread 文件读拷贝~~ | ~~6-9%~~ | **已消除（f38488f，§2.6）：sendfile 零拷贝，goodput +20%** |
 | 内核 socket 拷贝（copy_user） | ~27-30% | loopback TCP 收发必然；消除需共享内存 transport，属大改另议 |
 | 块 CRC（写 1 + 验 1） | ~18% | 零容忍语义最低成本（T5 消 DIGEST 后帧级已零），ISA-L 已最优 |
 | unpickle bytes 拷贝 | — | pickle 语义必然 |
-| serve 端 pread 文件读拷贝 | ~6-9% | temp 落盘（断点恢复设计）；候选优化 = splice/sendfile 零拷贝发送，涉及帧协议拼包，暂不动 |
 | WriterPrefRwLock 写优先下读写混合读吞吐降 | bench 口径 7-8x | 防写饿死裁定语义（perf-baselines.md 已补注新口径）；真实负载写频率低 |
 
 ## 4. micro-bench 现状（对照 perf-baselines.md）
