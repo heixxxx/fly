@@ -18,7 +18,8 @@ existing read_cache QA tests.
 
 Scenarios:
   1. write invalidation: cached value reflects the latest write, not a stale one.
-  2. overwrite via write_object_raw also invalidates.
+  2. overwrite invalidation: covered by scenario 1's remove+rewrite path via the
+     production write_object API (write_object_raw was removed 2026-08-30).
   3. remove invalidation: a removed object is not served from the cache.
 """
 from _fly_log import INFO
