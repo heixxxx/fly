@@ -12,7 +12,7 @@ from scipy import sparse
 
 from fly import open_db, get_config
 from fly.runtime import get_agent
-from solver import solve_ras_graph, SolveDb
+from solver import solve_once, MATRIX_OBJ_KEY, SolveDb
 
 get_config().set_int("fail_unscheduleable_tasks", 1)
 
@@ -49,15 +49,24 @@ if os.path.isdir(db_path):
     shutil.rmtree(db_path, ignore_errors=True)
 
 master = get_agent()
-master.launch_local_workers([{"attributes": [f"sd_{i}"]} for i in range(NSD)])
+master.launch_local_workers([{} for _ in range(NSD)])
 # ensure 的静态预检按「当前在册池」判定——连接数够不等于注册完成，等 IDLE 口径。
 master.wait_for_all_workers(NSD, timeout=60)
 
 db = open_db(db_path, db_cls=SolveDb)
 
+# 矩阵入库 + dynamic 单步（求解器收敛迁移，2026-08-31）
+db.write_object(MATRIX_OBJ_KEY, {
+    "n": N_SIDE, "N": N,
+    "rows": np.array(rows, dtype=np.int64),
+    "cols": np.array(cols, dtype=np.int64),
+    "vals": np.array(vals, dtype=np.float64),
+    "b": np.ones(N, dtype=np.float64),
+})
+
 t0 = time.perf_counter()
-sol = solve_ras_graph(db, N, rows, cols, vals, b, NSD,
-                      overlap_ratio=0.30, max_iter=MAX_ITER, tol=1e-8)
+sol = solve_once(db, MATRIX_OBJ_KEY, NSD,
+                 overlap_ratio=0.30, max_iter=MAX_ITER, tol=1e-8)
 elapsed = time.perf_counter() - t0
 
 INFO(f"n={N_SIDE} nsd={NSD} iters={sol['iters']} conv={sol['converged']} "

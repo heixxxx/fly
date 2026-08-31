@@ -23,7 +23,7 @@ from test import qa_tmp
 
 from fly import open_db, get_config
 from fly.runtime import get_agent
-from solver import solve_ras_graph, generate_poisson_matrix
+from solver import solve_once, generate_poisson_matrix
 from solver import compute_exact_from_matrix, MATRIX_OBJ_KEY, SolveDb
 
 
@@ -88,7 +88,7 @@ def run_golden(n_side, nsd, overlap_ratio=0.30, max_iter=200, tol=1e-8, omega=1.
     # 矩阵入库：作为分布式对象由框架管理（数据依赖驱动调度，worker 经
     # read_object 正常路径获取——写完才可见，无共享文件时序问题）。
     db.write_object(MATRIX_OBJ_KEY, golden)
-    sol = solve_ras_graph(db, MATRIX_OBJ_KEY, nsd,
+    sol = solve_once(db, MATRIX_OBJ_KEY, nsd,
                           overlap_ratio=overlap_ratio, max_iter=max_iter, tol=tol,
                           omega=omega)
 

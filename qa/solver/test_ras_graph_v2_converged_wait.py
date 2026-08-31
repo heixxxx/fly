@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Test: solve_ras_graph_v2 结果读取回归 —— 验证 _wait_solution 等 converged。
+"""Test: 求解结果完整读取回归（solve_once 收敛等待语义）。
 
-回归 docs/issues/check-daemon-shutdown-race.md 描述的竞态：_wait_solution 等
-最后一个写的对象（converged），确保 sol/iters/converged 都可读，不再 EOFError。
+历史：v2 daemon _wait_solution 竞态回归（check-daemon-shutdown-race.md）。
+求解器收敛（2026-08-31）后该语义由 dynamic 的 get_dynamic_result
+（wait_obj __rasg__dynamic_done）承接——本 case 验证结果 dict 完整可读
+（x/iters/converged），不再 EOFError。
 """
 import os, time, shutil
 import numpy as np
 from fly import open_db, get_config
-from solver import generate_poisson_matrix
-from solver import solve_ras_graph_v2, MATRIX_OBJ_KEY
+from solver import generate_poisson_matrix, solve_once, MATRIX_OBJ_KEY, SolveDb
 
 N_SIDE = 20
 NSD = 2
@@ -25,15 +26,15 @@ def main():
     n = int(m["N"])
     _md = {k: m[k] for k in m.files}
 
-    db = open_db(DB_PATH)
+    db = open_db(DB_PATH, db_cls=SolveDb)
     get_config().set_int("fail_unscheduleable_tasks", 0)
 
-    print(f"\n=== solve_ras_graph_v2 n={N_SIDE} nsd={NSD} (converged-wait regression) ===")
+    print(f"\n=== solve_once n={N_SIDE} nsd={NSD} (converged-wait regression) ===")
     t0 = time.time()
     db.write_object(MATRIX_OBJ_KEY, _md)
-    result = solve_ras_graph_v2(db, MATRIX_OBJ_KEY, NSD,
-                                overlap_ratio=0.50, max_iter=100, tol=1e-8,
-                                omega="coarse")
+    result = solve_once(db, MATRIX_OBJ_KEY, NSD,
+                        overlap_ratio=0.50, max_iter=100, tol=1e-8,
+                        omega="coarse")
     elapsed = time.time() - t0
 
     assert isinstance(result, dict), f"result should be dict, got {type(result)}"
@@ -47,7 +48,7 @@ def main():
     print(f"  iters={int(result['iters'])} converged={bool(result['converged'])}")
     print(f"  time={elapsed:.2f}s")
     assert bool(result["converged"]), "Did not converge"
-    print("[PASS] solve_ras_graph_v2 returned complete solution dict")
+    print("[PASS] solve_once returned complete solution dict")
 
 
 if __name__ == "__main__":

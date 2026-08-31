@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test: ras_graph_daemon v2（常驻 task + RPC）端到端 n=50 小规模验证。"""
+"""Test: dynamic 单步端到端 n=50 小规模验证（原 v2 daemon case，求解器收敛迁移）。"""
 import os, sys, time
 from scipy import sparse
 from scipy.sparse.linalg import splu
@@ -7,7 +7,7 @@ import numpy as np
 
 from fly import open_db, get_config
 from solver import generate_poisson_matrix
-from solver import solve_ras_graph_v2, MATRIX_OBJ_KEY
+from solver import solve_once, MATRIX_OBJ_KEY, SolveDb
 
 N_SIDE = 50
 NSD = 4
@@ -32,15 +32,15 @@ def main():
     x_exact = np.asarray(m['x_exact'])
     b = np.asarray(m['b'])
 
-    db = open_db(DB_PATH)
+    db = open_db(DB_PATH, db_cls=SolveDb)
     get_config().set_int("fail_unscheduleable_tasks", 0)
 
-    print(f"\n=== solve_ras_graph_v2 n={N_SIDE} nsd={NSD} omega=coarse ===")
+    print(f"\n=== solve_once n={N_SIDE} nsd={NSD} omega=coarse ===")
     t0 = time.time()
     db.write_object(MATRIX_OBJ_KEY, _md)
-    result = solve_ras_graph_v2(db, MATRIX_OBJ_KEY, NSD,
-                                overlap_ratio=0.50, max_iter=100, tol=1e-8,
-                                omega="coarse")
+    result = solve_once(db, MATRIX_OBJ_KEY, NSD,
+                        overlap_ratio=0.50, max_iter=100, tol=1e-8,
+                        omega="coarse")
     elapsed = time.time() - t0
 
     x_ras = np.asarray(result["x"])
@@ -52,7 +52,7 @@ def main():
 
     assert result["converged"], "Did not converge"
     assert rel_err < 1e-4, f"rel_err too large: {rel_err}"
-    print("[PASS] ras_graph_v2 n=50 converged with acceptable accuracy")
+    print("[PASS] solve_once n=50 converged with acceptable accuracy")
 
 
 if __name__ == "__main__":

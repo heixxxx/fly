@@ -10,9 +10,14 @@ from _fly_solver import (
     ex_slv_find_outside_connections,
     ex_slv_ras_bupdated_solve,
 )
-from .ras import *
+# 求解器收敛（2026-08-31 用户裁定）：单次=多时间步单步，ras.py /
+# ras_graph.py(v1) / ras_graph_daemon.py(v2) 三代入口退役，仅保留
+# dynamic（attributes 编队 + gen 代际 + 矩阵 key 缓存 + RPC 迭代，
+# 架构最完整）。单次求解经 solve_once（dynamic 单步封装）。
 from .dbs import *
-from .ras_graph import *
-from .ras_graph_daemon import solve_ras_graph_v2
-from .ras_graph_dynamic import solve_ras_graph_dynamic, get_dynamic_result
+from .ras_graph_dynamic import (
+    solve_ras_graph_dynamic, get_dynamic_result, solve_once,
+    generate_poisson_matrix, MATRIX_OBJ_KEY,
+    compute_exact_from_matrix, compute_exact_solution,
+)
 from .project import *

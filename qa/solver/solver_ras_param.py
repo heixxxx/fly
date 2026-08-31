@@ -14,7 +14,7 @@ import numpy as np
 
 from fly import open_db, get_config
 from fly.runtime import get_agent
-from solver import solve_ras
+from solver import solve_once, generate_poisson_matrix, MATRIX_OBJ_KEY, SolveDb
 
 N = int(os.environ.get("SOLVER_N", "4"))
 NSD = int(os.environ.get("SOLVER_NSD", "2"))
@@ -44,24 +44,44 @@ if os.path.isdir(DB_PATH):
 
 get_config().set_int("fail_unscheduleable_tasks", 1)
 master = get_agent()
-master.launch_local_workers([{"attributes": [f"sd_{i}"]} for i in range(NSD)])
+master.launch_local_workers([{} for _ in range(NSD)])
 assert master.wait_for_workers(NSD), "workers should connect"
 
-db = open_db(DB_PATH)
+db = open_db(DB_PATH, db_cls=SolveDb)
 x_ref = scipy_reference(N)
 
+# 求解器收敛（2026-08-31）：ras.py 朴素入口退役——矩阵入库 + dynamic 单步。
+_rows, _cols, _vals = [], [], []
+for i in range(N):
+    for j in range(N):
+        k = i * N + j
+        _rows.append(k); _cols.append(k); _vals.append(4.0)
+        if i > 0: _rows.append(k); _cols.append((i - 1) * N + j); _vals.append(-1.0)
+        if i < N - 1: _rows.append(k); _cols.append((i + 1) * N + j); _vals.append(-1.0)
+        if j > 0: _rows.append(k); _cols.append(i * N + (j - 1)); _vals.append(-1.0)
+        if j < N - 1: _rows.append(k); _cols.append(i * N + (j + 1)); _vals.append(-1.0)
+db.write_object(MATRIX_OBJ_KEY, {
+    "n": N, "N": N * N,
+    "rows": np.array(_rows, dtype=np.int64),
+    "cols": np.array(_cols, dtype=np.int64),
+    "vals": np.array(_vals, dtype=np.float64),
+    "b": np.ones(N * N, dtype=np.float64),
+})
+
 t0 = time.time()
-result = solve_ras(db, N, NSD, OVERLAP)
+result = solve_once(db, MATRIX_OBJ_KEY, NSD,
+                    overlap_ratio=OVERLAP / N if N else 0.5, max_iter=100,
+                    tol=1e-8)
 elapsed = time.time() - t0
 
 x_ras = np.array(result["x"])
 error = np.linalg.norm(x_ras - x_ref) / np.linalg.norm(x_ref)
 
 assert result["converged"], \
-    f"Did not converge: iters={result['iters']}, res={result['residual']:.2e}"
+    f"Did not converge: iters={result['iters']}"
 assert error < 1e-2, f"Error too large: {error:.2e}"
 
-INFO(f"OK n={N} sd={NSD} ov={OVERLAP} iters={result['iters']:3d} res={result['residual']:.2e} "
+INFO(f"OK n={N} sd={NSD} ov={OVERLAP} iters={result['iters']:3d} "
       f"err={error:.2e} time={elapsed:.2f}s workers={NSD}")
 
 master.stop()

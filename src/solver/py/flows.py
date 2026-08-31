@@ -10,9 +10,9 @@
 
 **异步范式**（核心）：flow 内部用 @as_task 提交任务后**立即返回 db**，不做同步等待；
 freeze 本身作为 task，通过 inputs 依赖数据写完，由 master 调度在就绪后执行并通知 master
-更新 db frozen 状态。求解进度由 master 调度推进（ras_graph_coord 非阻塞 + check 自驱动
-迭代链）。用户读结果时用 db.read_object（依赖图的 mark_data_ready 保证数据可见）或
-wait_tasks 等待完成。
+更新 db frozen 状态。求解进度由 master 调度推进（kickoff task 内 dynamic 单步
+solve_once，master 在 matrix ready 后调度）。用户读结果时用 db.read_object
+（依赖图的 mark_data_ready 保证数据可见）或 wait_tasks 等待完成。
 """
 
 import os
@@ -24,8 +24,7 @@ from fly import register_flow, as_task
 from fly import UserDoc, Schema, document
 from .project import SolverProject
 from .dbs import MatrixDb, SolveDb
-from .ras_graph import solve_ras_graph as _solve_ras_graph  # noqa: F401 (legacy compat)
-from .ras_graph import ras_graph_coord, _load_matrix
+from .ras_graph_dynamic import _load_matrix
 
 
 # ── 内部 task：写矩阵（worker 执行，非阻塞）──────────────────────────
@@ -58,10 +57,6 @@ def _freeze_db_task(db, dep_keys):
          [matrix_full_name])
 def _solve_kickoff_task(db, matrix_full_name, nsd, overlap_ratio,
                         max_iter, tol, omega):
-    import os
-    import numpy as np
-    from .ras_graph import ras_graph_coord
-
     # 沿 db chain 向前找 matrix db（role=matrix）
     matrix_db = db.find_db(role="matrix")
     if matrix_db is None:
@@ -71,10 +66,14 @@ def _solve_kickoff_task(db, matrix_full_name, nsd, overlap_ratio,
     # 矩阵全程走 DB 对象（2026-08-17 入库改造）：从 matrix_db 读出后写入本 db
     # 的约定对象，coord/worker 经 read_object 获取——数据由框架管理，无共享
     # 文件的读写时序问题（此前经 db 目录下的 matrix.npz 文件中转）。
-    from .ras_graph import ras_graph_coord, MATRIX_OBJ_KEY
+    # 求解器收敛（2026-08-31）：统一 dynamic 单步（solve_once）；结果写
+    # __rasg__sol 保持 flow 的 freeze/下游依赖契约不变。
+    from .ras_graph_dynamic import solve_once, MATRIX_OBJ_KEY
     m = matrix_db.read_object("matrix")
     db.write_object(MATRIX_OBJ_KEY, m)
-    ras_graph_coord(db, MATRIX_OBJ_KEY, nsd, overlap_ratio, max_iter, tol, omega)
+    sol = solve_once(db, MATRIX_OBJ_KEY, nsd, overlap_ratio=overlap_ratio,
+                     max_iter=max_iter, tol=tol, omega=omega)
+    db.write_object("__rasg__sol", sol["x"])
 
 
 # ── build_matrix：读文件 → 矩阵存入 db → 返回 db（异步）──────────────
