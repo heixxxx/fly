@@ -3,6 +3,26 @@
 ---
 ---
 
+## 2026-08-31 (10): runqa 超时善后误杀修复 + stability 孤儿清理——-j6 并发安全化
+
+- **背景**：`-j6` 稳定性测试首轮 14 连败。排查实锤为**工具链双缺陷**而非
+  产品问题：① runqa 超时善后用全局 `pgrep` 向全机 fly 进程发 SIGUSR1
+  （handler = dump 后退出）+ 全局 `pkill -9`——同机其他 runqa 的进程被
+  连环误杀（无幸 case 目录残留 `.fly.{pid}.stack` 为物证）；② 外层
+  stability 脚本被中断时 runqa 孤儿化存活，与后续轮并发互踩（三份
+  stability 产物目录的孤儿轮日志与被污染轮逐条时长一致，实锤互写）。
+- **修复 A（runqa）**：超时善后全部改为**进程组精确打击**——新增
+  `_group_pids(pgid)`（读 /proc/*/stat 的 pgrp 过滤），SIGUSR1、/proc
+  诊断、存活核验全部只看本 case 进程组（worker 未 setsid 与 master 同
+  组，killpg 完备）；删全局 pkill。
+- **修复 B（stability_test.sh）**：INT/TERM trap 与轮超时善后补全
+  runqa 进程树清理（此前只清 fly，runqa python 进程会孤儿化）。
+- **性能数据**：干净 `-j6` 全量 83-92s/轮（`-j4` 约 112s），10/10 绿；
+  `-j4` 回归一轮绿。
+- 撤前注：本轮早前"7 个时序敏感缺陷"的立项结论作废——那是孤儿互踩
+  污染数据，非产品缺陷（含对 mapreduce "10x 劣化"的误读：62s 是孤儿
+  扫射后的卡死形态，干净 `-j6` 下 1.9s）。
+
 ## 2026-08-31 (9): §〇-A 竞态修复——NOT_READY 协议错误码 + check 圈级收集
 
 - **协议**：`PeerRpcWireStatus::NOT_READY = 4` 新成员（与 RESPOND_FAILURE

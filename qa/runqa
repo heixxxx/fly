@@ -222,31 +222,44 @@ def _run_fly(script_path, log_dir, timeout, cwd, extra_env=None):
             _pgid = os.getpgid(proc.pid)
         except ProcessLookupError:
             _pgid = None
-        # SIGUSR1 触发 fly 内置 stack dump（写 {log_dir}/.fly.{pid}.stack 后 os._exit）
-        try:
-            import subprocess as _sp
-            _usr1_pids = _sp.check_output(
-                ["pgrep", "-f", r"[/]build/bin/fly"], stderr=_sp.DEVNULL
-            ).split()
-            for _cpid in _usr1_pids:
-                _cpid = _cpid.decode().strip()
+
+        def _group_pids(pgid):
+            """本 case 进程组内的 pid 列表（读 /proc/<pid>/stat 第 5 字段 pgrp）。
+
+            并发安全（2026-08-31 修复）：超时善后严禁全局 pgrep——同机其他
+            runqa 的 fly 进程会被误杀（SIGUSR1 handler = dump 后退出，
+            曾把并发轮的 14 个无辜 case 连环打死）。
+            """
+            pids = []
+            for _entry in os.listdir("/proc"):
+                if not _entry.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{_entry}/stat") as _f:
+                        _fields = _f.read().rsplit(") ", 1)[-1].split()
+                    if int(_fields[2]) == pgid:
+                        pids.append(_entry)
+                except (OSError, ValueError, IndexError):
+                    continue
+            return pids
+
+        if _pgid is not None:
+            # SIGUSR1 → 本组全部进程（master+worker 同组，worker 未 setsid）
+            # 各自 dump 栈到自己的 log_dir 后退出。只打组内，零连坐。
+            for _cpid in _group_pids(_pgid):
                 try:
                     os.kill(int(_cpid), signal.SIGUSR1)
                 except Exception:
                     pass
             import time as _stime
             _stime.sleep(2.0)
-        except Exception:
-            pass
-        # /proc 内核栈 + py-spy Python 栈 → hang_stacks.txt
+        # /proc 内核栈 + py-spy Python 栈 → hang_stacks.txt（只收本组残留——
+        # SIGUSR1 dump 后未退出的进程，如卡在不可中断睡眠）。
         try:
             import subprocess as _sp
             _diag = []
-            _pids = _sp.check_output(
-                ["pgrep", "-f", r"[/]build/bin/fly"], stderr=_sp.DEVNULL
-            ).split()
+            _pids = _group_pids(_pgid) if _pgid is not None else []
             for _cpid in _pids:
-                _cpid = _cpid.decode().strip()
                 _cmdline = ""
                 try:
                     _cmdline = open(f"/proc/{_cpid}/cmdline").read().replace("\0", " ")[:120]
@@ -291,12 +304,15 @@ def _run_fly(script_path, log_dir, timeout, cwd, extra_env=None):
                 os.killpg(_pgid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        try:
-            import subprocess as _sp
-            _sp.call(["pkill", "-9", "-f", r"[/]build/bin/fly"],
-                     stderr=_sp.DEVNULL, timeout=5)
-        except Exception:
-            pass
+            # 组内清零核验（并发安全修复 2026-08-31：原全局 pkill 会击杀
+            # 其他并发 runqa 的 fly——已删，killpg 对整组（含 worker，
+            # worker 未 setsid）即完备）。
+            try:
+                _alive = _group_pids(_pgid)
+                if _alive:
+                    log(f"[TIMEOUT-CLEANUP] group {_pgid} still alive: {_alive}")
+            except Exception:
+                pass
         stdout, _ = proc.communicate()
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)

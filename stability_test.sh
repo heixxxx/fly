@@ -54,7 +54,7 @@ mem_gate_wait() {
   done
 }
 
-trap 'echo; log "收到中断，已通过 ${passed_rounds}/${rounds} 轮后停止；产物: ${run_dir}/"; exit 130' INT TERM
+trap 'echo; log "收到中断，已通过 ${passed_rounds}/${rounds} 轮后停止；产物: ${run_dir}/"; pkill -9 -f "[/]qa/runqa" 2>/dev/null; pkill -9 -f "[/]build/bin/fly" 2>/dev/null; exit 130' INT TERM
 
 log "=== Fly 全量 QA 稳定性测试: ${rounds} 轮 × runqa -j${j} -t${t} ==="
 log "主机: $(nproc) 核 / 总内存 $(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)MB / 内存闸门 ${mem_gate_mb}MB / 单轮超时 ${round_timeout}s"
@@ -89,8 +89,9 @@ for round in $(seq 1 "$rounds"); do
   [ -f qa/logs/qa.log ] && cp qa/logs/qa.log "${run_dir}/round_${rtag}.qa.log"
 
   if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-    log "!!! Round ${round} 外层超时（>${round_timeout}s）—— runqa 疑似挂死，清理 fly 残留进程"
-    pkill -9 -f '[/]build/bin/fly' 2>/dev/null
+    log "!!! Round ${round} 外层超时（>${round_timeout}s）—— runqa 疑似挂死，清理本脚本进程树（runqa + fly）"
+    pkill -9 -f "[/]qa/runqa" 2>/dev/null
+    pkill -9 -f "[/]build/bin/fly" 2>/dev/null
   fi
 
   if [ "$rc" -ne 0 ]; then
