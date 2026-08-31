@@ -439,6 +439,7 @@ def run_pyt(pyt_path, timeout=20):
     }
 
     t0 = time.monotonic()
+    _t_start = time.strftime("%H:%M:%S")
     status = "PASSED"
     err_lines = []
     try:
@@ -465,8 +466,11 @@ def run_pyt(pyt_path, timeout=20):
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     ok = (status == "PASSED")
+    _t_end = time.strftime("%H:%M:%S")
 
-    log(f"  {'✓ PASSED' if ok else '✗ ' + status}  {elapsed_ms:>6}ms  {name}")
+    log(f"  ▶ START  {name}  (at {_t_start})")
+    log(f"  {'✓ PASSED' if ok else '✗ ' + status}  {elapsed_ms:>6}ms  {name}"
+        f"  [{_t_start} → {_t_end}]")
     for line in err_lines:
         log(f"    {line}")
 
@@ -498,6 +502,8 @@ def run_one(test_path, timeout=20):
     _clean_case_logs(test_dir, stem)
 
     t0 = time.monotonic()
+    _t_start = time.strftime("%H:%M:%S")
+    log(f"  ▶ START  {name}  (at {_t_start})")
 
     # ── pyt setup (pre-test actions: create data, clean, set env) ──
     if pyt_cfg and pyt_cfg["setup"] is not None:
@@ -517,7 +523,8 @@ def run_one(test_path, timeout=20):
         except Exception as e:
             log(f"  WARNING  teardown-fail  {name} ({e})")
 
-    log(f"  {'✓ PASSED' if result.ok else '✗ ' + result.status}  {result.elapsed_ms:>6}ms  {name}")
+    log(f"  {'✓ PASSED' if result.ok else '✗ ' + result.status}  {result.elapsed_ms:>6}ms  {name}"
+        f"  [{_t_start} → {time.strftime('%H:%M:%S')}]")
 
     if not result.ok:
         if result.status == "TIMEOUT":
@@ -650,7 +657,7 @@ def main():
     _log_file = open(os.path.join(qa_log_dir, "qa.log"), "w")
 
     log("=" * 50)
-    log("Fly QA Test Suite")
+    log(f"Fly QA Test Suite  (开始时间 {time.strftime('%Y-%m-%d %H:%M:%S')})")
     log("=" * 50)
     log(f"Fly binary:   {FLY_BIN}")
     log(f"Tests to run: {len(tests)}")
@@ -698,6 +705,7 @@ def main():
     log(f"Passed:  {passed}")
     log(f"Failed:  {failed}")
     log(f"Total:   {total_ms}ms")
+    log(f"结束时间 {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     _log_file.close()
     _log_file = None
