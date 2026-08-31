@@ -73,6 +73,9 @@ private:
     void recv_loop();          // 接收线程主体
     int read_one_frame();      // 读一帧（frame_off_/frame_raw_ 填充；CRC 过验）
     void feed_frame(const char* data, size_t n, uint64_t offset);  // 块解析器
+    // 块完成：验 CRC → 交付 / 请求 resend。false = 流终止（二次损坏或
+    // resend 请求发送失败）。blk 指向完整块（16B 头 + comp 数据）。
+    bool consume_block(const char* blk, size_t block_len, uint64_t offset);
     void deliver_bytes(const char* data, size_t n, uint64_t offset);  // 好字节交付
     void drain_pending();     // 按序前沿 drain
     void push_block(const char* data, size_t n);   // 有界入队（满则阻塞）

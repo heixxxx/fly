@@ -144,13 +144,33 @@ void NetworkChunkSource::feed_frame(const char* data, size_t n, uint64_t offset)
             return;
         }
 
+        if (parse_need_ == 16 && parse_buf_.empty() && n >= 16) {
+            // 快路径：块起点且帧内剩余 ≥16B——先探块头。帧 4MB / 块 256KB
+            // 网格对齐时整块几乎总在帧内，原地解析免 parse_buf_ 全量 append
+            // （每字节一次多余 memcpy，perf 采样传输路径 memcpy ~25% 的主
+            // 成分之一）。块尾在后续帧才落慢路径状态机。
+            int32_t comp;
+            int32_t unc;
+            std::memcpy(&unc, data, 4);
+            std::memcpy(&comp, data + 4, 4);
+            if (comp < 0 || unc < 0) {
+                finish_stream(false, "corrupt block header (negative sizes)");
+                return;
+            }
+            size_t full = 16 + static_cast<size_t>(comp);
+            if (n >= full) {
+                if (!consume_block(data, full, offset)) return;
+                data += full;
+                n -= full;
+                offset += full;
+                continue;
+            }
+        }
+
         if (parse_buf_.empty()) {
             parse_off_ = offset;  // 新块起点
         }
-        size_t have = parse_buf_.size();
-        size_t need = parse_need_;
-
-        size_t take = std::min(n, need - have);
+        size_t take = std::min(n, parse_need_ - parse_buf_.size());
         parse_buf_.append(data, take);
         data += take;
         n -= take;
@@ -169,42 +189,44 @@ void NetworkChunkSource::feed_frame(const char* data, size_t n, uint64_t offset)
                 return;
             }
             parse_need_ = 16 + static_cast<size_t>(comp);
-            if (parse_buf_.size() < parse_need_) continue;
+            if (parse_buf_.size() < parse_need_) continue;  // comp==0 落块完成
         }
 
-        // 块完成：验 CRC。
-        int32_t comp;
-        std::memcpy(&comp, parse_buf_.data() + 4, 4);
-        uint64_t stored;
-        std::memcpy(&stored, parse_buf_.data() + 8, 8);
-        size_t block_len = 16 + static_cast<size_t>(comp);
-        uint64_t actual = data_checksum(parse_buf_.data() + 16,
-                                        static_cast<size_t>(comp));
-        if (actual == stored) {
-            deliver_bytes(parse_buf_.data(), block_len, parse_off_);
-        } else {
-            ERR("[NCS-FATAL-DATA-CORRUPTION] bad block CRC: off={} len={} — resending once",
-                parse_off_, block_len);
-            if (resent_offsets_.count(parse_off_)) {
-                finish_stream(false, "resent block still corrupt");
-                return;
-            }
-            resent_offsets_.insert(parse_off_);
-            ChunkResendMessage rs;
-            rs.offset_ = parse_off_;
-            rs.length_ = block_len;
-            CMString encoded = MessageProtocol::encode(rs);
-            if (!transport_->send_all(fd_, encoded.data(), encoded.size())) {
-                finish_stream(false, "resend request failed");
-                return;
-            }
-            hole_len_[parse_off_] = block_len;  // 等 resend 帧填补
-        }
-
-        // 重置解析器。
+        // 块完成（跨帧累积）：验 CRC → 交付 / 请求 resend。
+        if (!consume_block(parse_buf_.data(), parse_buf_.size(), parse_off_)) return;
         parse_buf_.clear();
         parse_need_ = 16;
     }
+}
+
+// 块完成处理：验 CRC → 好块交付 / 坏块 hole + resend 请求（每区间上限一次）。
+bool NetworkChunkSource::consume_block(const char* blk, size_t block_len, uint64_t offset) {
+    int32_t comp;
+    std::memcpy(&comp, blk + 4, 4);
+    uint64_t stored;
+    std::memcpy(&stored, blk + 8, 8);
+    uint64_t actual = data_checksum(blk + 16, block_len - 16);
+    if (actual == stored) {
+        deliver_bytes(blk, block_len, offset);
+        return true;
+    }
+    ERR("[NCS-FATAL-DATA-CORRUPTION] bad block CRC: off={} len={} — resending once",
+        offset, block_len);
+    if (resent_offsets_.count(offset)) {
+        finish_stream(false, "resent block still corrupt");
+        return false;
+    }
+    resent_offsets_.insert(offset);
+    ChunkResendMessage rs;
+    rs.offset_ = offset;
+    rs.length_ = block_len;
+    CMString encoded = MessageProtocol::encode(rs);
+    if (!transport_->send_all(fd_, encoded.data(), encoded.size())) {
+        finish_stream(false, "resend request failed");
+        return false;
+    }
+    hole_len_[offset] = block_len;  // 等 resend 帧填补
+    return true;
 }
 
 // 好字节交付（含 resend 帧补的字节）：无洞直接按序；有洞 pending 暂存，
@@ -308,7 +330,11 @@ int NetworkChunkSource::read_one_frame() {
         if (raw_len == 0 || foff + raw_len > total_len_) {
             return 0;  // offset/长度越界 = 协议失步
         }
-        frame_raw_ = CMMakeShared<FlyBuffer>();
+        // 帧缓冲跨帧复用：流内帧长恒定（尾帧除外），第二帧起 resize 为
+        // no-op。原每帧新建 vector——4MB 构造清零后立即被 recv 覆盖，纯浪费。
+        // feed_frame/deliver_bytes 均同步拷出（parse_buf_ append / 队列
+        // emplace 构造），复用无异步持有风险。
+        if (!frame_raw_) frame_raw_ = CMMakeShared<FlyBuffer>();
         frame_raw_->resize(raw_len);
         if (!recv_exact(transport_.get(), fd_, frame_raw_->data(), raw_len)) return 0;
         frame_off_ = foff;
