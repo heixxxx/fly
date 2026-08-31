@@ -126,9 +126,6 @@ private:
     CMUnorderedMap<uint64_t, uint64_t> hole_len_;     // 待补洞（resend 中）
     size_t pending_bytes_ = 0;
     CMUnorderedSet<uint64_t> resent_offsets_;  // 每区间重传上限一次
-    DataChecksum root_;                        // 增量根摘要（按序 update）
-    uint64_t root_expected_ = 0;
-    uint32_t digest_chunks_ = 0;
 };
 
 }  // namespace fly

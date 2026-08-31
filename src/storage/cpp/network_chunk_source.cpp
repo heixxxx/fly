@@ -235,7 +235,6 @@ void NetworkChunkSource::deliver_bytes(const char* data, size_t n, uint64_t offs
     if (offset < next_off_) return;  // 重复字节：丢弃
     if (offset == next_off_ && hole_len_.empty()) {
         // 快路径：按序无洞。
-        root_.update(data, n);
         received_ += n;
         push_block(data, n);
         next_off_ = offset + n;
@@ -250,7 +249,6 @@ void NetworkChunkSource::drain_pending() {
     auto it = pending_.find(next_off_);
     while (it != pending_.end()) {
         hole_len_.erase(next_off_);  // 洞被填（resend 到达）
-        root_.update(it->second.data(), it->second.size());
         received_ += it->second.size();
         push_block(it->second.data(), it->second.size());
         pending_bytes_ -= it->second.size();
@@ -291,17 +289,11 @@ void NetworkChunkSource::recv_loop() {
         if (digest_seen && hole_len_.empty() && parse_buf_.size() < parse_need_) break;
     }
 
-    // 流尾复核（计数 / 根失配）。T5（2026-08-31）：serve root_crc_ 发 0 =
-    // 未计算（L0 块 CRC + trailer 已承担完整性）——expected 为 0 跳过根复核，
-    // 兼容旧 serve（非 0 照验）。
+    // 流尾复核（字节计数对账）。T5（2026-08-31）后 wire 根摘要双侧消除，
+    // DIGEST 帧仅作流终止信号；完整性由 L0 块 CRC（写入时刻锚点，覆盖
+    // 磁盘→server→网络→client→解压全生命周期）+ trailer CRC 权威承担。
     if (received_ != total_len_) {
         finish_stream(false, "byte count mismatch");
-        return;
-    }
-    if (root_expected_ != 0 && root_.final() != root_expected_) {
-        ERR("[NCS-FATAL-DATA-CORRUPTION] digest mismatch: expected={:016x} actual={:016x}",
-            root_expected_, root_.final());
-        finish_stream(false, "digest mismatch");
         return;
     }
     finish_stream(true, nullptr);
@@ -376,9 +368,7 @@ int NetworkChunkSource::read_one_frame() {
         frame_buf += payload;
         DataDigestMessage digest;
         if (!MessageProtocol::decode(frame_buf, digest)) return 0;
-        root_expected_ = digest.root_crc_;
-        digest_chunks_ = digest.chunk_count_;
-        return 2;
+        return 2;  // 仅作流终止信号；root_crc/chunk_count 不再消费（T5 后根摘要双侧消除）
     }
 
     return 0;
