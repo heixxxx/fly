@@ -119,7 +119,13 @@ def check_run(db, gen):
                 return None
         bench(tag, fn, payload, get_write=True)
 
+    # 大载荷档（64MB/512MB）内存 footprint 大，仅在 PEER_RPC_PERF_FULL=1 时
+    # 跑——稳定性套件每轮全量执行时若并发跑 1GB 载荷会把机器内存打爆
+    # （Round 10 现场：available 掉到 1.2GB，同轮 case 的 worker 拉不起来）。
+    full = os.environ.get("PEER_RPC_PERF_FULL") == "1"
     for size in PAYLOAD_SIZES:
+        if size > 16 * 1024 * 1024 and not full:
+            continue
         payload = os.urandom(size)
         tag_mb = f"{size/1024/1024:.0f}MB"
         if size <= 16 * 1024 * 1024:
@@ -128,11 +134,12 @@ def check_run(db, gen):
         stream_bench(payload, "zstd", 9, f"stream-zstd9  {tag_mb}")
         stream_bench(payload, "none", -1, f"stream-none   {tag_mb}")
 
-    # 1GB 主档：仅流式（单帧 1GB 触发旧路径内存缺陷，不做对照）。
-    big = os.urandom(BIG)
-    stream_bench(big, "lz4", -1, f"stream-lz4  {BIG/1024/1024:.0f}MB")
-    stream_bench(big, "none", -1, f"stream-none {BIG/1024/1024:.0f}MB")
-    del big
+    if full:
+        # 1GB 主档：仅流式（单帧 1GB 触发旧路径内存缺陷，不做对照）。
+        big = os.urandom(BIG)
+        stream_bench(big, "lz4", -1, f"stream-lz4  {BIG/1024/1024:.0f}MB")
+        stream_bench(big, "none", -1, f"stream-none {BIG/1024/1024:.0f}MB")
+        del big
 
     for tag, r in sorted(results.items()):
         print(f"[PERF-SUMMARY] {tag}: {r['med_s']}s {r['mbps']}MB/s", flush=True)
