@@ -30,6 +30,12 @@ public:
     // Returns true if all data was sent successfully.
     virtual bool sendv(int fd, const struct iovec* iov, int iovcnt) = 0;
 
+    // Zero-copy file→socket send (sendfile(2)): streams len bytes from file_fd
+    // starting at offset to fd. Returns true iff all len bytes were queued;
+    // offset is not modified. Only meaningful for transports whose fds are
+    // TCP sockets (sendfile target); other transports return false.
+    virtual bool send_file(int fd, int file_fd, uint64_t offset, size_t len) = 0;
+
     virtual int get_port(int fd) = 0;
 
     virtual void close(int fd) = 0;

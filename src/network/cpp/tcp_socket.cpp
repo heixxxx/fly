@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/sendfile.h>
 #include <cstring>
 #include <cerrno>
 
@@ -167,6 +168,38 @@ bool TCPSocketTransport::sendv(int fd, const struct iovec* iov, int iovcnt) {
                 continue;
             }
             if (errno == EINTR) continue;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool TCPSocketTransport::send_file(int fd, int file_fd, uint64_t offset, size_t len) {
+    // sendfile(2)：file→socket 内核直通（page 引用进 socket 缓冲），免
+    // pread 用户态拷贝。非阻塞 socket 上 EAGAIN → poll POLLOUT（与
+    // send_all/sendv 同模式）；部分发送循环推进。sendfile 返回 0 = 文件
+    // 提前到尾（调用方长度参数错误），按失败处理。
+    size_t sent = 0;
+    off_t off = static_cast<off_t>(offset);
+    while (sent < len) {
+        ssize_t n = ::sendfile(fd, file_fd, &off, len - sent);
+        if (n > 0) {
+            sent += static_cast<size_t>(n);
+            NetStats::instance().add_write(static_cast<uint64_t>(n));
+        } else if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                struct pollfd pfd;
+                pfd.fd = fd;
+                pfd.events = POLLOUT;
+                pfd.revents = 0;
+                int ret = ::poll(&pfd, 1, 5000);
+                if (ret <= 0) return false;
+                if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) return false;
+                continue;
+            }
+            if (errno == EINTR) continue;
+            return false;
+        } else {
             return false;
         }
     }

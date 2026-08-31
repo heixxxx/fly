@@ -501,37 +501,25 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
             return;
         }
 
-        // CHUNK 循环：pread 切片 → 组帧 → writev（帧头+数据一次系统调用）。
-        // server 内存恒为单片缓冲（4MB）——大对象不整读（§10 内存量化）。
+        // CHUNK 循环：帧头 send + payload sendfile——file→socket 内核直通，
+        // 免 pread 用户态拷贝（serve 端不再持有 4MB 单片缓冲）。server 不碰
+        // 数据字节：帧片 CRC 发 0（§4.4 2026-08-30 裁定），块级 CRC 由解压
+        // 出口权威校验，sendfile 路径完整性语义不变。帧头 29B 单独 send，
+        // TCP 字节流对接收端 recv_exact 解析无影响。
         int file = ::open(file_path.c_str(), O_RDONLY);
         if (file < 0) {
             ERR("[DS-CHUNK] fd={} open failed: {}", fd, file_path);
             cleanup_fd(fd);
             return;
         }
-        CMVector<char> buf(static_cast<size_t>(kChunkFrameBytes));
         uint64_t off = offset;
         uint32_t frames = 0;
         while (ok && off < offset + size) {
             uint64_t n = std::min<uint64_t>(kChunkFrameBytes, offset + size - off);
-            ssize_t got = ::pread(file, buf.data(), static_cast<size_t>(n),
-                                  static_cast<off_t>(off));
-            if (got < 0 || static_cast<uint64_t>(got) != n) {
-                ERR("[DS-CHUNK] fd={} pread failed at off={} n={}", fd, off, n);
-                ok = false;
-                break;
-            }
-            // §4.4 帧片 CRC 取消计算（2026-08-30 用户裁定，性能报告 §4）：
-            // 发 0 = 未计算，接收端跳过帧级验证——完整性由块级 CRC（解压/
-            // 块解析器）+ DIGEST 根摘要承担。传输路径 CRC 由 3 遍降 1 遍。
             // offset = 帧首字节在 record 内偏移（A'：正常流/重传统一定位语义）。
             CMString hdr = ChunkFrameProtocol::encode_header(off - offset, 0, n);
-            struct iovec iov[2];
-            iov[0].iov_base = const_cast<char*>(hdr.data());
-            iov[0].iov_len = hdr.size();
-            iov[1].iov_base = buf.data();
-            iov[1].iov_len = static_cast<size_t>(n);
-            ok = transport_->sendv(fd, iov, 2);
+            ok = transport_->send_all(fd, hdr.data(), hdr.size()) &&
+                 transport_->send_file(fd, file, off, n);
             if (!ok) break;
             off += n;
             frames++;

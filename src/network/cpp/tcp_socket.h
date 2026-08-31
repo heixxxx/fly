@@ -23,6 +23,7 @@ public:
 
     bool send_all(int fd, const char* data, size_t len) override;
     bool sendv(int fd, const struct iovec* iov, int iovcnt) override;
+    bool send_file(int fd, int file_fd, uint64_t offset, size_t len) override;
     int get_port(int fd) override;
 
     void close(int fd) override;

@@ -190,6 +190,7 @@ public:
     ssize_t recv(int fd, char* b, size_t n) override { return inner_->recv(fd, b, n); }
     bool send_all(int fd, const char* d, size_t n) override { return inner_->send_all(fd, d, n); }
     bool sendv(int fd, const struct iovec* iov, int c) override { return inner_->sendv(fd, iov, c); }
+    bool send_file(int fd, int file_fd, uint64_t o, size_t n) override { return inner_->send_file(fd, file_fd, o, n); }
     int get_port(int fd) override { return inner_->get_port(fd); }
     void close(int fd) override {
         close_count_.fetch_add(1, std::memory_order_relaxed);
