@@ -31,15 +31,9 @@ public:
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;
 
-    fly::WriteErrorType write_pickle_bytes(const CMString& object_name,
-                                const char* data, int64_t data_size,
-                                const CMString& py_name, bool backup = false,
-                                bool populate_cache = true);
-
-    fly::WriteErrorType commit_stream(const CMString& object_name,
-                                      FlyBufferPtr record,
-                                      const CMString& py_name, bool backup = false,
-                                      bool populate_cache = true);
+    // write_pickle_bytes / compress_pickle_bytes / commit_stream 已删除
+    // （T2b/T2c 2026-08-31 用户裁定：调用仅存在于测试的 API 已过期——
+    // 造数/压缩验证统一走 open_write_stream → finish_and_commit 恒流式）。
 
     // ── L1 大对象流式写（chunked-transfer-design §9.1）──
     // open_write_stream 返回 sink FlyStream（pickle.dump 流入 → 压缩块直写
@@ -53,11 +47,9 @@ public:
     FlyStream* open_write_stream(const CMString& object_name,
                                  const CMString& py_name);
 
-    CMString compress_pickle_bytes(const char* data, int64_t data_size,
-                                   const CMString& py_name);
+    // compress_pickle_bytes 已删除（T2c 2026-08-31，仅测试调用的过期 API）。
 
     // Compress + register + store as temp (no disk write, no cache).
-    // Avoids C++→Python→C++ roundtrip of compress_pickle_bytes + put_temp_data.
     void write_temp_pickle(const CMString& object_name,
                            const char* data, int64_t data_size,
                            const CMString& py_name);
@@ -164,7 +156,7 @@ private:
     void do_backup_write(const CMString& full, const CMString& object_name, CMString compressed_data, const CMString& source_hash = {});
 
     // Commit a compressed record: cache → register with master → enqueue disk write.
-    // Shared by write_pickle_bytes and write_object<T>. On registration failure,
+    // Shared by the恒流式 write path and write_object<T>. On registration failure,
     // rolls back cache and local_idx, does not enqueue disk write.
     // populate_cache=false（保存等级"none"）跳过 low-tier 缓存填充，仅落盘。
     fly::WriteErrorType commit_write(const CMString& object_name,

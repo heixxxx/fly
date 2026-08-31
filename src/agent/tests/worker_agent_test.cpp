@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <thread>
 #include <chrono>
+#include <memory>
 
 using namespace fly::test;
 
@@ -342,6 +343,18 @@ static void create_test_idx_file(const CMString& db_path, const CMString& writer
     idx.save();
 }
 
+// 写侧恒流式（T2c 2026-08-31）：write_pickle_bytes 已删（仅测试调用的过期
+// API）——造数原语统一 open_write_stream → write → finish_and_commit。
+static void write_object_bytes(Database& db, const CMString& name,
+                               const char* data, int64_t size,
+                               bool backup = false) {
+    std::unique_ptr<FlyStream> s(db.open_write_stream(name, "bytes"));
+    ASSERT_NE(s, nullptr);
+    s->write(data, static_cast<size_t>(size));
+    ASSERT_EQ(static_cast<int>(s->finish_and_commit(backup, false)),
+              static_cast<int>(fly::WriteErrorType::OK));
+}
+
 static CMString make_temp_dir(const CMString& suffix) {
     CMString dir = "/tmp/fly_idx_test_" + std::to_string(::getpid()) + "_" + suffix;
     std::filesystem::create_directories(dir);
@@ -589,7 +602,7 @@ TEST_F(IdxLoadTest, OnRemoveCommandExtractsShortName) {
     CMString full = db_path + ":target_obj";
 
     auto db = CMMakeShared<Database>(db_path, db_path + "/data", 0, "", db_path);
-    db->write_pickle_bytes("target_obj", "remove_test_data", 16, "bytes", false);
+    write_object_bytes(*db, "target_obj", "remove_test_data", 16);
     fly::DataService::instance()->drain_write_back();
 
     MasterAgent master("127.0.0.1", 0);
@@ -1236,8 +1249,7 @@ TEST_F(IdxLoadTest, MergeObjectEndToEnd) {
 
     // 在 worker1 上写一个对象（落到 source_data_path）。
     const char* payload = "merge_payload_data_12345";
-    ASSERT_EQ(source_db->write_pickle_bytes("merge_obj", payload, 22, "bytes", false),
-              fly::WriteErrorType::OK);
+    write_object_bytes(*source_db, "merge_obj", payload, 22);
     fly::DataService::instance()->drain_write_back();
 
     CMString full = db_path + ":merge_obj";
@@ -1377,8 +1389,7 @@ TEST_F(IdxLoadTest, MergeObjectWriteFailReportsTaskFailed) {
     ASSERT_TRUE(wait_until_registered(worker1));
 
     const char* payload = "fail_payload_98765";
-    ASSERT_EQ(source_db->write_pickle_bytes("fail_obj", payload, 18, "bytes", false),
-              fly::WriteErrorType::OK);
+    write_object_bytes(*source_db, "fail_obj", payload, 18);
     fly::DataService::instance()->drain_write_back();
     CMString full = db_path + ":fail_obj";
     fly::DataService::instance()->update_remote_idx(
@@ -1466,8 +1477,7 @@ TEST_F(IdxLoadTest, MergeFailedCleanupPurgesProducts) {
     worker1.start();
     ASSERT_TRUE(wait_until_registered(worker1));
 
-    ASSERT_EQ(source_db->write_pickle_bytes("purge_obj", "purge_payload_1", 15, "bytes", false),
-              fly::WriteErrorType::OK);
+    write_object_bytes(*source_db, "purge_obj", "purge_payload_1", 15);
     fly::DataService::instance()->drain_write_back();
     CMString full = db_path + ":purge_obj";
     fly::DataService::instance()->update_remote_idx(

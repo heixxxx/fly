@@ -6,11 +6,18 @@
 #include <thread>
 #include <chrono>
 #include <filesystem>
+#include <memory>
 
 namespace {
 
+// 写侧恒流式（T2c 2026-08-31）：write_pickle_bytes 已删（仅测试调用的过期
+// API）——造数原语统一 open_write_stream → write → finish_and_commit。
 static void write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
-    db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
+    std::unique_ptr<FlyStream> s(db.open_write_stream(name, "bytes"));
+    ASSERT_NE(s, nullptr);
+    s->write(data.data(), static_cast<size_t>(data.size()));
+    ASSERT_EQ(static_cast<int>(s->finish_and_commit(backup, /*populate_cache=*/true)),
+              static_cast<int>(fly::WriteErrorType::OK));
 }
 
 #define TEST_LOG(fmt, ...) fprintf(stderr, "[TEST_DEBUG] %s:%d " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__)

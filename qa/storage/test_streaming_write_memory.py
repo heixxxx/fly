@@ -23,7 +23,8 @@ import shutil
 if os.path.isdir(DB_PATH):
     shutil.rmtree(DB_PATH, ignore_errors=True)
 
-get_config().set_int("streaming_write_threshold", 1)  # 流式写启用
+# 写侧恒流式（T2c 2026-08-31）：streaming_write_threshold 开关已删，
+# open_write_stream → finish_and_commit 是唯一写路径。
 
 db = open_db(DB_PATH)
 

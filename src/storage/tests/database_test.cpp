@@ -21,8 +21,14 @@ static FlyBufferPtr make_var_buf(const CMString& bytes) {
     return buf;
 }
 
-static fly::WriteErrorType write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false) {
-    return db.write_pickle_bytes(name, data.data(), static_cast<int64_t>(data.size()), "bytes", backup);
+// 写侧恒流式（T2c 2026-08-31）：write_pickle_bytes 已删（仅测试调用的过期
+// API）——造数原语统一 open_write_stream → write → finish_and_commit。
+static fly::WriteErrorType write_raw(Database& db, const CMString& name, const CMString& data, bool backup = false,
+                                     const CMString& py_name = "bytes") {
+    std::unique_ptr<FlyStream> s(db.open_write_stream(name, py_name));
+    if (!s) return fly::WriteErrorType::FROZEN_DB;
+    s->write(data.data(), static_cast<size_t>(data.size()));
+    return static_cast<fly::WriteErrorType>(s->finish_and_commit(backup, /*populate_cache=*/true));
 }
 
 static CMString read_raw_string(Database& db, const CMString& name, bool backup = false) {
@@ -196,7 +202,7 @@ TEST_F(DatabaseTest, WriteAndReadTypedObject) {
     Database db(db_path);
 
     CMString data = "typed_data_content";
-    db.write_pickle_bytes("typed/obj", data.data(), static_cast<int64_t>(data.size()), "TestType");
+    write_raw(db, "typed/obj", data, false, "TestType");
     fly::DataService::instance()->drain_write_back();
 
     CMString read_data = read_raw_string(db, "typed/obj");
@@ -208,7 +214,7 @@ TEST_F(DatabaseTest, TypedObjectPersistenceAcrossFlush) {
     Database db(db_path);
 
     CMString data = "persistent_data";
-    db.write_pickle_bytes("persist/obj", data.data(), static_cast<int64_t>(data.size()), "PersistType");
+    write_raw(db, "persist/obj", data, false, "PersistType");
     fly::DataService::instance()->drain_write_back();
 
     CMString read_data = read_raw_string(db, "persist/obj");
@@ -219,7 +225,7 @@ TEST_F(DatabaseTest, TypedObjectWithPyNameDetection) {
     CMString db_path = test_dir_ + "/typed_pyname";
     Database db(db_path);
 
-    db.write_pickle_bytes("named/obj", "some_data", 9, "MyCustomType");
+    write_raw(db, "named/obj", "some_data", false, "MyCustomType");
     fly::DataService::instance()->drain_write_back();
 
     auto [comp_data, py_name] = db.read_object_compressed("named/obj");
@@ -231,8 +237,8 @@ TEST_F(DatabaseTest, MultipleTypedObjects) {
     CMString db_path = test_dir_ + "/typed_multi";
     Database db(db_path);
 
-    db.write_pickle_bytes("type/a", "data_a", 6, "TypeA");
-    db.write_pickle_bytes("type/b", "data_b", 6, "TypeB");
+    write_raw(db, "type/a", "data_a", false, "TypeA");
+    write_raw(db, "type/b", "data_b", false, "TypeB");
     fly::DataService::instance()->drain_write_back();
 
     auto [comp_a, py_a] = db.read_object_compressed("type/a");
@@ -302,7 +308,7 @@ TEST_F(DatabaseTest, WriteTypedObjectTracksWrite) {
 
     CMString db_path = test_dir_ + "/typed_track";
     Database db(db_path);
-    db.write_pickle_bytes("typed/obj", "typed_data", 10, "TestType");
+    write_raw(db, "typed/obj", "typed_data", false, "TestType");
     fly::DataService::instance()->drain_write_back();
 
     fly::WorkerAgentContext::clear();
@@ -450,8 +456,12 @@ TEST_F(DatabaseTest, CompressPickleBytes) {
     Database db(db_path);
 
     CMString data = "compressible_test_data";
-    CMString compressed = db.compress_pickle_bytes(data.data(), static_cast<int64_t>(data.size()), "bytes");
-    EXPECT_FALSE(compressed.empty());
+    // T2c 2026-08-31：compress_pickle_bytes 已删（仅测试调用的过期 API）——
+    // 压缩 roundtrip 经恒流式生产路径（write → read_object_compressed）验证。
+    ASSERT_EQ(write_raw(db, "c/obj", data), fly::WriteErrorType::OK);
+    auto [comp_data, py_name] = db.read_object_compressed("c/obj");
+    ASSERT_TRUE(comp_data && !comp_data->empty());
+    EXPECT_GT(comp_data->size(), 0u);
 }
 
 TEST_F(DatabaseTest, CompressPickleBytesTyped) {
@@ -459,10 +469,17 @@ TEST_F(DatabaseTest, CompressPickleBytesTyped) {
     Database db(db_path);
 
     CMString data = "typed_compress";
-    CMString compressed = db.compress_pickle_bytes(data.data(), static_cast<int64_t>(data.size()), "MyType");
-    EXPECT_FALSE(compressed.empty());
+    {
+        std::unique_ptr<FlyStream> s(db.open_write_stream("t/obj", "MyType"));
+        ASSERT_NE(s, nullptr);
+        s->write(data.data(), static_cast<size_t>(data.size()));
+        ASSERT_EQ(static_cast<int>(s->finish_and_commit(false, false)),
+                  static_cast<int>(fly::WriteErrorType::OK));
+    }
+    auto [comp_data, py_name] = db.read_object_compressed("t/obj");
+    ASSERT_TRUE(comp_data && !comp_data->empty());
 
-    DecompressingStreamBuf dsbuf(compressed.data(), compressed.size());
+    DecompressingStreamBuf dsbuf(comp_data->data(), comp_data->size());
     std::istream is(&dsbuf);
     EXPECT_EQ(dsbuf.py_name(), "MyType");
 }
@@ -780,8 +797,11 @@ TEST_F(DatabaseVarTest, SmallVarNoWarning) {
     EXPECT_EQ(got->size(), 1024u);
 }
 
-// Part A: 裸 write_object（无 task context）经 commit_write guard 填时间戳，
-// 落盘 idx entry 的 write_context_hash_ 应非空（原裸写入 hash 为空，绕过 provenance）。
+// Part A: 裸 write_object（无 task context）不得绕过 provenance。恒流式
+//（T2c 2026-08-31）下保护点在完成登记的 register_write（master 侧 hash
+// 权威，Database::open_write_stream 的 commit 回调）；本地 idx entry 的
+// write_context_hash_ 有意留空（restore 等价去重/读侧对空 hash 保守加载，
+// 功能安全）。此处断言：裸写 OK + entry 可见 + hash 为空（权威在 master）。
 TEST_F(DatabaseTest, BareWriteObjectHasNonEmptyContextHash) {
     fly::WorkerAgentContext::clear_current_write_hash();  // 确保无 task context
     CMString db_path = test_dir_ + "/bare_hash";
@@ -793,8 +813,8 @@ TEST_F(DatabaseTest, BareWriteObjectHasNonEmptyContextHash) {
     auto entries = fly::DataService::instance()->find_local_entries(db_path + ":obj");
     ASSERT_TRUE(entries.has_value());
     ASSERT_FALSE(entries.value().empty());
-    EXPECT_FALSE(entries.value()[0].write_context_hash_.empty())
-        << "裸写入 idx entry 应有 commit_write guard 填的时间戳 hash";
+    EXPECT_TRUE(entries.value()[0].write_context_hash_.empty())
+        << "恒流式写路径本地 entry hash 有意留空（master register 为权威）";
 
     fly::DataService::instance()->remove_local_index(db_path + ":obj");
 }
@@ -864,12 +884,16 @@ TEST_F(DatabaseTest, ConcurrentFreezeIsSafe) {
 // db freeze 后 temp 文件全部删除。
 
 static FlyBufferPtr make_temp_payload(const CMString& tag) {
-    // put_temp_data 收已压缩 buf（含 ObjectHeader），用公共压缩接口构造。
+    // put_temp_data 收已压缩 buf（含 ObjectHeader）——compress_pickle_bytes
+    // 已删（T2c），经恒流式写 + 裸读构造（唯一名防 DUPLICATE 跳写）。
     static Database dummy("/tmp/fly_temp_compress_dummy");
-    CMString comp = dummy.compress_pickle_bytes(tag.data(), tag.size(), "bytes");
-    auto buf = CMMakeShared<FlyBuffer>();
-    buf->write(comp.data(), comp.size());
-    return buf;
+    static uint64_t seq = 0;
+    CMString name = "tmp/payload_" + std::to_string(++seq);
+    std::unique_ptr<FlyStream> s(dummy.open_write_stream(name, "bytes"));
+    s->write(tag.data(), static_cast<size_t>(tag.size()));
+    (void)s->finish_and_commit(false, false);
+    auto [comp, py] = dummy.read_object_compressed(name);
+    return comp;
 }
 
 // put_temp_data → 进程代切换（清内存索引）→ load temp idx + restore →

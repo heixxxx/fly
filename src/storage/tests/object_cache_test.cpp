@@ -330,7 +330,14 @@ TEST_F(ObjectCacheDbTest, WritePickleBytesReadableFromDiskAfterDrain) {
     ObjectCache::instance().clear();
 
     CMString payload = "pickle_payload_data";
-    db.write_pickle_bytes("wp/obj", payload.data(), payload.size(), "bytes", false);
+    // 写侧恒流式（T2c 2026-08-31）：write_pickle_bytes 已删。
+    {
+        std::unique_ptr<FlyStream> s(db.open_write_stream("wp/obj", "bytes"));
+        ASSERT_NE(s, nullptr);
+        s->write(payload.data(), static_cast<size_t>(payload.size()));
+        ASSERT_EQ(static_cast<int>(s->finish_and_commit(false, false)),
+                  static_cast<int>(fly::WriteErrorType::OK));
+    }
     fly::DataService::instance()->drain_write_back();
 
     EXPECT_EQ(ObjectCache::instance().low_size(), 0u);
@@ -343,7 +350,13 @@ TEST_F(ObjectCacheDbTest, WritePickleBytesReadableFromDiskAfterDrain) {
 
 TEST_F(ObjectCacheDbTest, ReadObjectCompressedDoesNotPopulateLowTier) {
     Database db(test_dir_ + "/low");
-    db.write_pickle_bytes("obj", "payload", 7, "bytes", false);
+    {
+        std::unique_ptr<FlyStream> s(db.open_write_stream("obj", "bytes"));
+        ASSERT_NE(s, nullptr);
+        s->write("payload", 7);
+        ASSERT_EQ(static_cast<int>(s->finish_and_commit(false, false)),
+                  static_cast<int>(fly::WriteErrorType::OK));
+    }
     fly::DataService::instance()->drain_write_back();
 
     CMString full = db.get_full_name("obj");

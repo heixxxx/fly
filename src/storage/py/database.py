@@ -79,36 +79,20 @@ class Database:
             if hasattr(obj, "_write_to_db"):
                 err = EXStgWriteErrorType(obj._write_to_db(self._db, name, py_name, backup))
             else:
-                from core import get_config as _gc
-                _cfg = _gc()
-                if _cfg.get_int("streaming_write_threshold") > 0:
-                    # L1 流式写（§9.1）：pickle.dump 流入 → 压缩块直写增量
-                    # record（内存 R+常数而非 R+2C）。写前不知对象大小——
-                    # 开关启用即统一走流式（小对象增量 API 等价，行为一致）。
-                    stream = self._db.open_write_stream(name, py_name)
-                    if stream is not None:
-                        # 协议保持 DEFAULT（§9.5 尝试结论：pin 5 时 numpy 走
-                        # PickleBuffer 与 FlyStream.write 的 bytes 参数不兼容；
-                        # 且实测协议 4/5 in-band 内存特征一致——pin 无收益，
-                        # 按"验证不通过即放弃"回退）。
-                        pickle.dump(obj, stream)
-                        err = EXStgWriteErrorType(
-                            stream.finish_and_commit(backup, cache != "none"))
-                        obj_size = stream.total_uncompressed
-                    else:
-                        raise RuntimeError(f"Database is frozen: {name}")
-                else:
-                    from _fly_storage import FlyStream, EXStgCompressionType
-                    _cm = {"none": EXStgCompressionType.NONE, "lz4": EXStgCompressionType.LZ4,
-                           "zlib": EXStgCompressionType.ZLIB, "zstd": EXStgCompressionType.ZSTD}
-                    stream = FlyStream(_cm.get(_cfg.get_str("compression_type"), EXStgCompressionType.LZ4),
-                                       _cfg.get_int("serialize_chunk_size"), py_name)
-                    pickle.dump(obj, stream)
-                    stream.flush()
-                    buf = stream.finish()
-                    obj_size = stream.total_uncompressed
-                    err = EXStgWriteErrorType(self._db._commit_stream(
-                        name, buf, py_name, backup, cache != "none"))
+                # 写侧恒流式（T2c 2026-08-31：streaming_write_threshold 开关与
+                # 非流式分支已删——open_write_stream → finish_and_commit 是唯一
+                # 路径，内存 R+常数而非 R+2C；frozen 时 open 返回 None）。
+                stream = self._db.open_write_stream(name, py_name)
+                if stream is None:
+                    raise RuntimeError(f"Database is frozen: {name}")
+                # 协议保持 DEFAULT（§9.5 尝试结论：pin 5 时 numpy 走
+                # PickleBuffer 与 FlyStream.write 的 bytes 参数不兼容；
+                # 且实测协议 4/5 in-band 内存特征一致——pin 无收益，
+                # 按"验证不通过即放弃"回退）。
+                pickle.dump(obj, stream)
+                err = EXStgWriteErrorType(
+                    stream.finish_and_commit(backup, cache != "none"))
+                obj_size = stream.total_uncompressed
 
             if err != EXStgWriteErrorType.OK and err != EXStgWriteErrorType.DUPLICATE_SKIPPED:
                 msg = self._WRITE_ERROR_MESSAGES.get(err, f"Write error (type={err})")

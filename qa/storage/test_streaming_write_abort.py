@@ -44,7 +44,7 @@ def write_recovery(db):
 
 
 cleanup()
-get_config().set_int("streaming_write_threshold", 1)
+# 写侧恒流式（T2c 2026-08-31）：streaming_write_threshold 开关已删。
 
 from fly.runtime import get_agent
 

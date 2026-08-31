@@ -158,9 +158,9 @@ const CMUnorderedMap<CMString, int64_t> Config::INT_DEFAULTS = {
     //（streaming_read_threshold 已删除——2026-08-30 恒流式裁定：常规读统一
     // 流式传输，无阈值分流与关闭逃生口。）
     {"stream_buffer_chunks", 16},
-    // L1 流式写（§9.1）：>0 启用——pickle.dump 流入 → 压缩块直写增量 record
-    //（内存 R+常数；写前不知对象大小，开关启用即统一走流式）。0 = 关闭逃生口。
-    {"streaming_write_threshold", 1},
+    //（streaming_write_threshold 已删除——T2c 2026-08-31 写侧恒流式裁定：
+    //  open_write_stream → finish_and_commit 是唯一写路径，无阈值分流与
+    //  关闭逃生口，与读侧 2026-08-30 裁定对齐。）
     // L2 分片传输阈值（chunked-transfer-design §4.5）：对象 record 超过此字节数
     // 时 DataServer 走分片路径（META + 4MB CHUNK 流 + DIGEST），否则整帧快路径。
     {"chunked_transfer_threshold", 4194304},

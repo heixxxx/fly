@@ -194,21 +194,10 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
                                              fly_export::bytes data, const CMString& py_name) {
         db.write_temp_pickle(name, data.c_str(), static_cast<int64_t>(data.size()), py_name);
     })
-    FLY_EXPORT_DEF("_commit_stream", [](Database& db, const CMString& name,
-                                         FlyBufferPtr buf, const CMString& py_name,
-                                         bool backup) -> int {
-        return static_cast<int>(db.commit_stream(name, buf, py_name, backup));
-    })
-    FLY_EXPORT_DEF("_commit_stream", [](Database& db, const CMString& name,
-                                         FlyBufferPtr buf, const CMString& py_name) -> int {
-        return static_cast<int>(db.commit_stream(name, buf, py_name, false));
-    })
-    // 保存等级"none"（仅落盘不进 low 缓存）：数据搬运/merge 等场景用。
-    FLY_EXPORT_DEF("_commit_stream", [](Database& db, const CMString& name,
-                                         FlyBufferPtr buf, const CMString& py_name,
-                                         bool backup, bool populate_cache) -> int {
-        return static_cast<int>(db.commit_stream(name, buf, py_name, backup, populate_cache));
-    })
+    // _commit_stream 已删除（T2c 2026-08-31 写侧恒流式：非流式分支随
+    // streaming_write_threshold 开关一并退役——open_write_stream →
+    // finish_and_commit 是唯一写路径，C++ Database::commit_stream 无调用者
+    // 同步删除）。
     // write_object_raw / read_object_raw / _write_pickle_bytes 已删除
     // （2026-08-30 / T2b 2026-08-31 用户裁定，生产零使用；写侧统一
     // open_write_stream → finish_and_commit 恒流式路径）。

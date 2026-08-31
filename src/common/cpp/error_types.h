@@ -23,7 +23,7 @@ enum class TaskErrorType {
 
 // Write operation result code. Independent from TaskErrorType (which is the
 // task-execution-level cumulative state). WriteErrorType is the per-call return
-// value of write_object / write_pickle_bytes — callers check it directly.
+// value of write_object — callers check it directly.
 enum class WriteErrorType {
     OK = 0,                    // success
     FROZEN_DB = 1,             // database is frozen (read-only)

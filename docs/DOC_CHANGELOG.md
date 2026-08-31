@@ -3,6 +3,25 @@
 ---
 ---
 
+## 2026-08-31 (4): T2c 写侧恒流式——threshold 开关与非流式分支退役 + 测试-only C++ 方法清理
+
+- **database.py**：`write_object` 删 `streaming_write_threshold` 分流与非流式
+  分支——`open_write_stream → finish_and_commit` 是唯一写路径（与读侧
+  2026-08-30 恒流式裁定对齐，无逃生口）。
+- **config.cpp**：删 `streaming_write_threshold` 默认键；qa 两个 streaming
+  case 的 set_int 行删除。
+- **导出/C++**：`_commit_stream` 导出×3 删；C++ `Database::commit_stream`、
+  `write_pickle_bytes`、`compress_pickle_bytes` 删（用户裁定：调用仅存在于
+  测试的 API 已过期；`read_object_compressed` 有 ObjectCache populate /
+  low-tier 内部消费，保留）。
+- **语义对齐**：本地 idx entry 的 `write_context_hash_` 在恒流式下有意留空
+  （provenance 权威 = master 侧 register；restore 去重/读侧对空 hash 保守
+  加载）——`BareWriteObjectHasNonEmptyContextHash` 断言按新语义更新。
+- **测试迁移**：database_test / data_service_test / write_registration_test /
+  object_cache_test / worker_agent_test 的造数 helper 统一改
+  `open_write_stream → write → finish_and_commit`。
+- 验证：C++ 单测 73/73 + 全量 QA 全绿。
+
 ## 2026-08-31 (3): T2b 死 API 清理——恒流式后无消费者的直写直读导出退役
 
 - **storage_export.cpp**：删 `_write_pickle_bytes`×3 / `_read_streaming`×2 /
