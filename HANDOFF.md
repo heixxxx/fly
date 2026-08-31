@@ -1,8 +1,30 @@
-# Fly 项目交接文档（2026-08-31 · 第二次更新）
+# Fly 项目交接文档（2026-08-31 · 第三次更新：全部收口）
 
-> 首轮交接见文末历史节。本轮已解决 sd9/project 死锁谜题（实为 GIL 压制 + flows 迁移缺陷），
-> 完成执行上提重构（消灭 C++→Python 反调）+ T2b~T5 全部落地。
-> **当前唯一遗留：ras_matrix 偶发 "no ctx" race（专门会话排查，见 §〇-A）。**
+> 首轮交接见文末历史节。本轮已完成：sd9/project 破案 + 执行上提重构 + T2b~T7 全部落地。
+> **T7 已收口：-j6 ×100 轮稳定性全绿（2026-08-31，100/100）。无未决阻塞项。**
+
+## 〇-EXIT、T7 收口 + 竞态修复 + 工具链并发安全（当日后半程）
+
+1. **§〇-A race 修复（280fc10）**：按用户裁定实施——`PeerRpcWireStatus::NOT_READY=4`
+   协议一等错误码（弃字符串约定，payload 只带诊断消息）+ check 圈级收集
+   （NOT_READY 跳过请求下一成员、全员集齐才开始计算、圈间固定退避 10ms、
+   累计 30s 兜底判死；断连/真失败/poison 判死语义不变）。两命中场景 ×10
+   绿 + 全量 QA 绿。
+2. **runqa 并发安全（4742e5f）**：超时善后弃全局 pgrep/pkill（曾把并发轮
+   14 个无辜 case 连环误杀——`-j6` 首轮 14 连败的真相，孤儿 runqa 与新轮
+   互踩所致），改 `_group_pids(pgrp)` 进程组精确打击；stability trap/轮超时
+   补 runqa 进程树清理。**期间教训存档**：一次错误立项（"-j6 暴露 7 个时序
+   敏感缺陷"）与一次错误归因（"CPU 超订假失败"）均被用户否定——最终结论：
+   误杀连坐是工具缺陷，2 物理核跑 -j6 并不拥挤；排查中另一关键转折是发现
+   两份日志失败集错开 = 双 runqa 互写（孤儿实锤的突破口）。
+3. **runqa 时间可观测性（405ea8e）**：套件横幅/Summary 带时间戳，每 case
+   打印 ▶ START 行与 [start → end] 区间（并发排布与长尾定位）。
+4. **stability 轮间缓冲 20s→5s（用户裁定）**。
+5. **T7 验收**：`-j6` ×100 轮（分段 32+68，中段隔 runqa 时间戳日志与 5s
+   缓冲两处惰性变更），**100/100 全绿**（167 case × 100，每轮 84-113s）。
+   产物：`.work/stability/20260831_161953`（1-32）+ `20260831_172209`（1-68）。
+6. 仓库根 36 个 `fly_log.N` 历史遗留（裸跑烟测，AGENTS.md 禁令入册前累积）
+   清扫完毕；机制加固经用户裁定不做。
 
 ## 〇、本轮完成摘要（每步均验证：C++ 单测 73/73 + 全量 QA 167/167）
 
@@ -26,7 +48,7 @@
 10. **数值结论（已证，单进程模拟）**：sd9(n50/r30/o1) 纯 RAS 固有 ~110 轮收敛（v1/dynamic 数学逐位等价）；n20/sd4 需 48 轮。"≤20 轮"量级属 coarse 模式。修 100ms 后时长不再是约束。
 11. T2a 遗漏单测迁移：test_ras_graph_io.py `from ras_graph import` → `ras_graph_dynamic`。
 
-## 〇-A、【唯一遗留】ras_matrix 偶发 "no ctx" race（待专门会话）
+## 〇-A、【已修复关闭】ras_matrix 偶发 "no ctx" race（修复 280fc10，T7 100/100 验收）
 
 > **T7 稳定性测试结论（2026-08-31 13:33）**：100 轮跑到第 19 轮即命中本 race
 >（`test_ras_graph_dynamic.pyt`/rasgd_early_stop：`[RASG DYN CHECK] t=0 rpc
@@ -54,7 +76,7 @@
 - **调度窗口**：compute_dyn（注入 step_ctx，w1-w3）与 check_dyn（w4）跨 worker 并行；check 的 inputs 只依赖 `b_0`，**没有等 compute 注入完成的依赖边**。check 首请求可比 w3 的注入早到（失败轮早 12ms）
 - v1 不炸：其 check(step N) → compute(step N+1) 链式 inputs 依赖天然消除此窗口。dynamic 拆分"注入/驱动"时引入
 
-**修复方案（已设计，按计划流程先审后做）**：
+**修复方案（已实施 280fc10：NOT_READY 错误码 + 圈级收集重试，见 §〇-EXIT.1；原静态依赖边方案经 review 被否，改就绪语义 + 调用方韧性）**：
 1. compute_dyn 尾部写就绪对象 `db.write_object(f"__rasg__d_ctx_{gen}_{sd}_{t}", True)`（持久化，勿用 temp——master 调度依赖查询对 temp 的可见性未验证）
 2. check_dyn 的 inputs lambda 加 `[db.get_full_name(f"__rasg__d_ctx_{gen}_{s}_{t}") for s in range(nsd)]`
 3. teardown/cleanup 补删该对象族（防重投残留撞 provenance）

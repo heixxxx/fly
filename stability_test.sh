@@ -124,7 +124,7 @@ for round in $(seq 1 "$rounds"); do
   remain=$(( (total_elapsed / passed_rounds) * (rounds - passed_rounds) ))
   log "=== Round ${round}/${rounds} PASSED (${pass_n:-?}/${case_n:-?} cases, failed=${fail_n:-0}, 耗时 $(fmt_dur "$dur")) | 累计 ${passed_rounds}/${rounds}，总耗时 $(fmt_dur "$total_elapsed")，预计剩余 ~$(fmt_dur "$remain") ==="
 
-  [ "$round" -lt "$rounds" ] && sleep 20   # 轮间缓冲（压测资源受控配方）
+  [ "$round" -lt "$rounds" ] && sleep 5    # 轮间缓冲（2026-08-31 用户裁定 20s→5s：进程组精确清零后无资源尾巴）
 done
 
 log "=== ALL ${rounds} ROUNDS PASSED（每轮全量 QA 零失败）==="
