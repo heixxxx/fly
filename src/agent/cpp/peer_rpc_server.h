@@ -24,6 +24,7 @@ enum class PeerRpcWireStatus : uint8_t {
     NOTIFY_FAILURE  = 1,  // 主动失败通知（rpc_id=0，payload=reason）
     RESPOND_FAILURE = 2,  // 对单个请求回失败（精确匹配 rpc_id）
     BYE             = 3,  // 主动断连信号（优雅关闭握手）
+    NOT_READY       = 4,  // 参数未就绪（可恢复——调用方跳过重试；payload=诊断消息）
 };
 
 // PeerRpcServer — 独立业务端口，提供 worker 间的轻量 RPC（请求-响应）通信。
@@ -89,6 +90,11 @@ public:
 
     // 主动告知对端失败（status=1，payload=reason）。任一方可调。
     bool notify_failure(uint64_t conn_id, const CMString& reason);
+
+    // 对单个请求回"未就绪"（status=NOT_READY，可恢复——调用方跳过重试，
+    // 不判死）。与 RESPOND_FAILURE（真失败）在协议层区分。
+    bool send_not_ready(uint64_t conn_id, uint64_t rpc_id,
+                        const CMString& reason);
 
     // 关闭指定连接（直接 TCP close，不发 BYE）。
     void close_connection(uint64_t conn_id);

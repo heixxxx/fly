@@ -80,8 +80,9 @@ from fly import as_task, wait_obj
 from agent import serialize_array, deserialize_array
 
 # PeerRpcStatus 数值常量（peer_rpc_call 返回值）：0 PENDING / 1 OK /
-# 2 ERROR / 3 FAILED。直接用数值避免 agent 包内包装类耦合。
+# 2 ERROR / 3 FAILED / 4 NOT_READY。直接用数值避免 agent 包内包装类耦合。
 _RPC_OK = 1
+_RPC_NOT_READY = 4  # 成员参数未就绪（可恢复——圈级收集跳过重试，不判死）
 # task 组优先级：高于默认 10——与集群其他任务共存时优先获得 idle worker。
 _DYNAMIC_TASK_PRIORITY = 90
 
@@ -319,7 +320,15 @@ def _serve_loop(agent, solver_key, shared_key, sd):
                      f"step={data.get('step')}")
                 continue
             ctx = shared["step_ctx"]
-            if ctx is None or data.get("fail_hint"):
+            if ctx is None:
+                # 参数未就绪（compute 注入与 check 驱动的竞态窗口，用户
+                # 裁定）：回 NOT_READY 错误码（协议一等公民，可恢复）——
+                # check 侧跳过本成员、下一收集圈重试，不判死。与
+                # fail_hint（显式要求回失败）及真实计算异常严格区分。
+                agent.peer_rpc_respond_not_ready(
+                    conn_id, rpc_id, b"step context not ready")
+                continue
+            if data.get("fail_hint"):
                 agent.peer_rpc_respond_failure(conn_id, rpc_id, b"no ctx")
                 continue
 
@@ -554,7 +563,10 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
                     f"{sorted(alive)} of {nsd}")
 
             contributions = {}
-            conv_flags = []
+            conv_flags = {}
+            # 本计算轮请求预构造（ghosts 同轮不变——取上一轮全局解/初始
+            # 猜测；收集圈间复用，同轮内每成员只成功请求一次）。
+            requests = {}
             for sd in sorted(alive):
                 sub = sub_cache[sd]
                 ghosts = np.zeros(len(sub["outside_coeffs"]))
@@ -565,19 +577,39 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
                             dtype=np.float64)[sub["outside_global_idx"]]
                 else:
                     ghosts = x_corrected[sub["outside_global_idx"]]
-                status, resp = agent.peer_rpc_call(
-                    pool[sd], pickle.dumps({
-                        "action": "iterate", "step": step,
-                        "ghosts": serialize_array(ghosts)}),
-                    0)  # timeout_ms=0：无限，断连事件唤醒（timeout 裁定）
-                if status != _RPC_OK:
-                    alive.discard(sd)
+                requests[sd] = pickle.dumps({
+                    "action": "iterate", "step": step,
+                    "ghosts": serialize_array(ghosts)})
+            # 圈级收集（用户裁定）：NOT_READY 跳过立刻请求下一成员（不单点
+            # 阻塞），全员贡献集齐才开始计算；有缺则对缺失成员再一圈，圈间
+            # 固定退避；累计超时判组死（compute 任务失败等长尾兜底）。
+            collect_deadline = time.monotonic() + 30.0
+            while len(contributions) < len(alive):
+                for sd in sorted(alive):
+                    if sd in contributions:
+                        continue
+                    status, resp = agent.peer_rpc_call(
+                        pool[sd], requests[sd],
+                        0)  # timeout_ms=0：无限，断连事件唤醒（timeout 裁定）
+                    if status == _RPC_OK:
+                        data = pickle.loads(resp)
+                        contributions[sd] = deserialize_array(data["x"])
+                        conv_flags[sd] = bool(data.get("conv"))
+                    elif status == _RPC_NOT_READY:
+                        continue
+                    else:
+                        alive.discard(sd)
+                        raise RuntimeError(
+                            f"[RASG DYN CHECK] t={t} rpc sd={sd} status={status}"
+                            f" at step={step}")
+                if len(contributions) == len(alive):
+                    break
+                if time.monotonic() > collect_deadline:
+                    missing = sorted(set(alive) - set(contributions))
                     raise RuntimeError(
-                        f"[RASG DYN CHECK] t={t} rpc sd={sd} status={status}"
-                        f" at step={step}")
-                data = pickle.loads(resp)
-                contributions[sd] = deserialize_array(data["x"])
-                conv_flags.append(bool(data.get("conv")))
+                        f"[RASG DYN CHECK] t={t} collect not-ready timeout "
+                        f"(30s): missing={missing} at step={step}")
+                time.sleep(0.01)  # 圈间固定退避
 
             x_global = np.zeros(N, dtype=np.float64)
             for sd in contributions:
@@ -589,7 +621,7 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
             if use_coarse:
                 converged = step >= min_steps and r_rel < tol
             else:
-                converged = step >= min_steps and all(conv_flags)
+                converged = step >= min_steps and all(conv_flags.values())
 
             if converged or step == max_iter - 1:
                 iters = step + 1

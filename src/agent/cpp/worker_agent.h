@@ -94,6 +94,7 @@ enum class PeerRpcStatus : uint8_t {
     OK        = 1,   // 正常响应
     ERROR     = 2,   // 对端主动 notify_failure / respond_failure（payload 为 reason）
     FAILED    = 3,   // 超时 / 连接断开 / send 失败（payload 为原因描述）
+    NOT_READY = 4,   // 对端参数未就绪（可恢复——调用方跳过重试，不判死）
 };
 // 线上协议 status 见 PeerRpcWireStatus（peer_rpc_server.h）。
 
@@ -245,6 +246,12 @@ public:
     // 让这一个请求的调用方收到失败，不影响同连接上其他 pending 请求。
     bool peer_rpc_respond_failure(uint64_t conn_id, uint64_t rpc_id,
                                    const CMString& reason);
+
+    // 服务端：对单个请求回"未就绪"（status=NOT_READY，可恢复——调用方
+    // 跳过重试不判死；payload=诊断消息）。与 respond_failure（真失败）
+    // 协议层区分。
+    bool peer_rpc_respond_not_ready(uint64_t conn_id, uint64_t rpc_id,
+                                    const CMString& reason);
 
     // 服务端：阻塞等待下一个请求（Python while 循环用）。
     // 返回 {conn_id, rpc_id, src_worker_id, payload}；超时返回 rpc_id=0。

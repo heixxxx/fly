@@ -2875,14 +2875,26 @@ void WorkerAgent::on_merge_cleanup(uint64_t conn_id, const MergeCleanupMessage& 
 
 void WorkerAgent::ensure_peer_rpc_handlers() {
     // response_handler（客户端角色：收响应路由到 PendingRpcMap）
-    // 线上 status: OK / NOTIFY_FAILURE(全局) / RESPOND_FAILURE(单请求)；
-    // 统一映射为内部 PeerRpcStatus：OK → OK, 其他 → ERROR。
+    // 线上 status: OK / NOTIFY_FAILURE(全局) / RESPOND_FAILURE(单请求) /
+    // NOT_READY(可恢复未就绪)；映射为内部 PeerRpcStatus（NOT_READY 一等
+    // 传递，调用方据此跳过重试）。
     peer_rpc_server_->set_response_handler(
         [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, const CMString& payload) {
             pending_peer_rpcs_.complete(rpc_id, [&](PendingPeerRpc& p) {
-                p.status_.store(static_cast<uint8_t>(
-                    status == static_cast<uint8_t>(PeerRpcWireStatus::OK)
-                        ? PeerRpcStatus::OK : PeerRpcStatus::ERROR),
+                PeerRpcStatus mapped;
+                switch (static_cast<PeerRpcWireStatus>(status)) {
+                    case PeerRpcWireStatus::OK:
+                        mapped = PeerRpcStatus::OK;
+                        break;
+                    case PeerRpcWireStatus::NOT_READY:
+                        mapped = PeerRpcStatus::NOT_READY;
+                        break;
+                    default:
+                        // NOTIFY_FAILURE / RESPOND_FAILURE / 未知值：真失败。
+                        mapped = PeerRpcStatus::ERROR;
+                        break;
+                }
+                p.status_.store(static_cast<uint8_t>(mapped),
                     std::memory_order_release);
                 p.payload_ = payload;
             });
@@ -2989,6 +3001,13 @@ bool WorkerAgent::peer_rpc_respond_failure(uint64_t conn_id, uint64_t rpc_id,
     // 区别于 notify_failure（NOTIFY_FAILURE, rpc_id=0 全局通知）。
     return peer_rpc_server_->send_response(conn_id, rpc_id,
         static_cast<uint8_t>(PeerRpcWireStatus::RESPOND_FAILURE), reason);
+}
+
+bool WorkerAgent::peer_rpc_respond_not_ready(uint64_t conn_id, uint64_t rpc_id,
+                                             const CMString& reason) {
+    if (!peer_rpc_server_) return false;
+    // NOT_READY（可恢复）：调用方跳过重试，不判死。
+    return peer_rpc_server_->send_not_ready(conn_id, rpc_id, reason);
 }
 
 WorkerAgent::PeerRpcRequest WorkerAgent::peer_rpc_recv_request(int timeout_ms) {

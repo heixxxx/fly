@@ -220,6 +220,15 @@ bool PeerRpcServer::notify_failure(uint64_t conn_id, const CMString& reason) {
                           static_cast<uint8_t>(PeerRpcWireStatus::NOTIFY_FAILURE), reason);
 }
 
+bool PeerRpcServer::send_not_ready(uint64_t conn_id, uint64_t rpc_id,
+                                   const CMString& reason) {
+    // 未就绪（可恢复）：与 RESPOND_FAILURE（真失败）在协议层区分；
+    // 精确匹配 rpc_id，payload 带诊断消息。
+    return send_response(conn_id, rpc_id,
+                         static_cast<uint8_t>(PeerRpcWireStatus::NOT_READY),
+                         reason);
+}
+
 void PeerRpcServer::close_connection(uint64_t conn_id) {
     if (!transport_) return;
     transport_->close(conn_id);

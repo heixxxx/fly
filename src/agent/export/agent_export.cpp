@@ -488,6 +488,13 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
         fly::CMString reason_str(reason.c_str(), reason.size());
         return self.peer_rpc_respond_failure(conn_id, rpc_id, reason_str);
     })
+    FLY_EXPORT_METHOD("peer_rpc_respond_not_ready", [](fly::WorkerAgent& self,
+                                                         uint64_t conn_id,
+                                                         uint64_t rpc_id,
+                                                         fly_export::bytes reason) {
+        fly::CMString reason_str(reason.c_str(), reason.size());
+        return self.peer_rpc_respond_not_ready(conn_id, rpc_id, reason_str);
+    })
     FLY_EXPORT_METHOD("peer_rpc_recv_request", [](fly::WorkerAgent& self,
                                                      int timeout_ms) {
         // timeout_ms=0（无限等待）时本调用会长时间阻塞在 cv 上：必须释放

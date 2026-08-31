@@ -1714,6 +1714,9 @@ class Worker(FlyAgent):
         return self._agent.peer_rpc_respond(conn_id, rpc_id, payload)
     def peer_rpc_respond_failure(self, conn_id, rpc_id, reason):
         return self._agent.peer_rpc_respond_failure(conn_id, rpc_id, reason)
+
+    def peer_rpc_respond_not_ready(self, conn_id, rpc_id, reason):
+        return self._agent.peer_rpc_respond_not_ready(conn_id, rpc_id, reason)
     def peer_rpc_recv_request(self, timeout_ms=30000):
         return self._agent.peer_rpc_recv_request(timeout_ms)
     def peer_rpc_notify_failure(self, conn_id, reason):

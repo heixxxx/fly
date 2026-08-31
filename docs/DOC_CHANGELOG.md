@@ -3,6 +3,27 @@
 ---
 ---
 
+## 2026-08-31 (9): §〇-A 竞态修复——NOT_READY 协议错误码 + check 圈级收集
+
+- **协议**：`PeerRpcWireStatus::NOT_READY = 4` 新成员（与 RESPOND_FAILURE
+  协议层区分；payload 只带诊断消息，判定走错误码——用户裁定弃用字符串
+  约定）。全链：wire 枚举 → `PeerRpcStatus::NOT_READY=4` → response_handler
+  映射 switch → `PeerRpcServer::send_not_ready` /
+  `WorkerAgent::peer_rpc_respond_not_ready` + 导出 + Python 包装。
+- **serve 侧**（ras_graph_dynamic `_serve_loop`）：参数未就绪（compute
+  注入竞态窗口）回 NOT_READY（可恢复）；fail_hint 与真实计算异常照旧回
+  RESPOND_FAILURE。
+- **check 侧**（`check_dyn_task`）：收集循环改圈级——NOT_READY 跳过立刻
+  请求下一成员（不单点阻塞），全员贡献集齐才开始计算（拼解/收敛判定/
+  粗校正边界不变）；有缺则对缺失成员再一圈（请求预构造同轮复用），
+  圈间固定退避 10ms；累计 30s 超时判组死。断连/真失败/poison 照旧立即
+  判死（语义不变）。
+- **根因背景**：compute 注入与 check 驱动无依赖边（08-27 dynamic 创建起
+  即缺），此前被旧主循环持 GIL 阻塞的副作用掩盖（请求处理被推迟到注入
+  完成后），执行上提消除压制后显形（稳定性 round 19，窗口 3ms）。
+- 验证：两命中场景 ×10（20/20）→ solver 全量 → agent/network 单测 21/21
+  → 全量 QA 全绿。
+
 ## 2026-08-31 (8): T5 DIGEST wire 根摘要双侧消除
 
 - **serve（data_server.cpp）**：分片流取消 `root.update()` 单遍根摘要累积，
