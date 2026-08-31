@@ -43,15 +43,18 @@ fly::PeerStreamWriter* peer_stream_respond_writer_export(fly::WorkerAgent& self,
                                            fly::CMString(compression), level);
 }
 
-std::pair<uint8_t, fly::CMString> peer_stream_call_wait_export(fly::WorkerAgent& self,
-                                                               uint64_t rpc_id,
-                                                               int timeout_ms) {
+fly_export::object peer_stream_call_wait_export(fly::WorkerAgent& self,
+                                                uint64_t rpc_id,
+                                                int timeout_ms) {
     std::pair<uint8_t, fly::CMString> result;
     {
         fly_export::gil_scoped_release release;  // 无限等待语义：必须释放 GIL
         result = self.peer_stream_call_wait(rpc_id, timeout_ms);
     }
-    return result;
+    // 裸 pair 直接返回 nanobind 转换失败——同 peer_rpc_call 用 make_tuple。
+    return fly_export::make_tuple(
+        result.first,
+        fly_export::bytes(result.second.data(), result.second.size()));
 }
 
 // ── 执行上提（消灭 C++→Python 反调）：take/finish 原语的导出辅助 ──
