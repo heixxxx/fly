@@ -153,7 +153,10 @@ Database::CompressResult Database::compress_buffered_data(
 // ── L1 大对象流式写（chunked-transfer-design §9.1 + §14.1 C 项）──
 
 FlyStream* Database::open_write_stream(const CMString& object_name,
-                                        const CMString& py_name) {
+                                        const CMString& py_name, bool temp) {
+    if (temp) {
+        return open_temp_write_stream(object_name, py_name);
+    }
     if (check_frozen()) {
         fly::WorkerAgentContext::set_last_error_type(fly::TaskErrorType::WRITE_TO_FROZEN_DB);
         return nullptr;
@@ -430,15 +433,95 @@ fly::WriteErrorType Database::commit_write(const CMString& object_name,
     return fly::WriteErrorType::OK;
 }
 
-void Database::write_temp_pickle(const CMString& object_name,
-                                 const char* data, int64_t data_size,
-                                 const CMString& py_name) {
-    // Compress directly into FlyBufferPtr — zero-copy path, no Python roundtrip.
-    auto buf = CMMakeShared<FlyBuffer>();
-    compress_buffered_data(data, data_size, py_name, *buf);
+// T2d（2026-08-31）temp 写流式化：pickle.dump 直入 temp_writer_ 增量直写
+//（内存 R+常数而非旧 write_temp_pickle 的整对象 dumps + 整 record 压缩
+// 两份全量缓冲）。语义对齐 put_temp_data：盘写完成 → INCOMPLETE →
+// COMPLETE（带 entry）→ record_write 纳入 task 追踪 → register_write；
+// entry hash 留空（temp restore 保守加载，见 put_temp_data 注释）。
+// write_temp_pickle 已删除（本函数取代）。
+FlyStream* Database::open_temp_write_stream(const CMString& object_name,
+                                            const CMString& py_name) {
+    if (!temp_writer_) {
+        // frozen db 无 temp writer（构造跳过）——对齐 put_temp_data 的
+        // 显式失败语义（open 返回 nullptr，调用方 raise）。
+        return nullptr;
+    }
+    DataWriter* w = temp_writer_.get();
+    // 段事务标记（对齐正式路径）：ABORT 回滚点 = 写入前文件位置。
+    if (fly::WorkerAgentContext::is_transaction_mode() && !w->segment_active()) {
+        w->mark_begin();
+    }
+    if (w->begin_incremental() < 0) {
+        return nullptr;
+    }
+    // sink：压缩块逐块入 WBQ 后台落盘（与正式路径同款流水；temp_writer_
+    // 的 .temp.data_* 文件由 rollover/entry 机制自治）。
+    return new FlyStream(
+        compression_type_, serialize_chunk_size_,
+        [w](const char* data, size_t n) {
+            fly::WriteRequest req;
+            req.execute_ = [w, bytes = CMString(data, n)]() -> bool {
+                w->append_incremental(bytes.data(), bytes.size());
+                return true;
+            };
+            fly::DataService::instance()->enqueue_write_back(std::move(req));
+        },
+        py_name, compression_threshold_,
+        // commit 回调（finish_and_commit 时执行——trailer 已入队，FIFO
+        // 保证在所有块之后）。
+        [this, w, object_name](int64_t total, int32_t chunks, bool backup,
+                               bool populate_cache) -> int64_t {
+            (void)backup;
+            (void)populate_cache;
+            CMString full = full_name(object_name);
 
-    // Register + store as temp (same logic as put_temp_data).
-    put_temp_data(object_name, buf);
+            auto disk_done = std::make_shared<std::promise<bool>>();
+            auto disk_fut = disk_done->get_future();
+            {
+                fly::WriteRequest req;
+                req.execute_ = [w, object_name, total, chunks]() -> bool {
+                    w->finish_incremental(object_name, total, chunks);
+                    return w->flush_checked();
+                };
+                req.on_complete_ = [disk_done]() { disk_done->set_value(true); };
+                req.on_error_ = [disk_done]() { disk_done->set_value(false); };
+                fly::DataService::instance()->enqueue_write_back(std::move(req));
+            }
+            if (!disk_fut.get()) {
+                ERR("[TEMP-STREAM] flush failed: obj={}", object_name);
+                fly::DataService::instance()->on_temp_write_started(db_path_, full);
+                fly::DataService::instance()->on_write_failed(db_path_, full,
+                                                              "temp stream flush failure");
+                return static_cast<int64_t>(fly::WriteErrorType::REGISTRATION_FAILED);
+            }
+
+            fly::DataService::instance()->on_temp_write_started(db_path_, full);
+            {
+                std::lock_guard<std::mutex> lk(state_mutex_);
+                auto entry_opt = temp_writer_
+                    ? temp_writer_->get_last_entry(object_name) : std::nullopt;
+                fly::DataService::instance()->on_temp_write(db_path_, full, entry_opt);
+            }
+
+            auto entry_opt = w->get_last_entry(object_name);
+            int64_t compressed_size = entry_opt.has_value() ? entry_opt->size_ : 0;
+            // Step 2.5: temp 写入纳入 task 写追踪（task 失败 ABORT 回滚覆盖
+            // temp；TaskComplete.written_objects 上报完整）。
+            fly::WorkerAgentContext::record_write(db_path_, object_name, compressed_size);
+
+            auto [reg_error, reg_error_type] =
+                fly::WorkerAgentContext::register_write(db_path_, object_name, compressed_size);
+            if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+                ERR("[TEMP-STREAM] register failed for '{}': {}", object_name, reg_error);
+                fly::DataService::instance()->on_write_failed(db_path_, full, reg_error);
+                fly::WorkerAgentContext::set_last_error_type(reg_error_type);
+                if (reg_error_type == fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED) {
+                    return static_cast<int64_t>(fly::WriteErrorType::DUPLICATE_SKIPPED);
+                }
+                return static_cast<int64_t>(fly::WriteErrorType::REGISTRATION_FAILED);
+            }
+            return static_cast<int64_t>(fly::WriteErrorType::OK);
+        });
 }
 
 // write_pickle_bytes / compress_pickle_bytes 已删除（T2b/T2c 2026-08-31

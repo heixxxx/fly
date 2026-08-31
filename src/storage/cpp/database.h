@@ -44,15 +44,20 @@ public:
     // execute 的延迟特征一致；WBQ 逐块后台化留作后续优化，决策记录于
     // chunked-transfer-design.md §9 落地修订）。
     // 返回裸指针（export 层 take_ownership 接管）。
+    // temp=true（T2d 2026-08-31 temp 写流式化）：pickle.dump 直入
+    // temp_writer_ 增量直写（内存 R+常数而非旧 write_temp_pickle 的
+    // R+2C 整对象缓冲）；frozen（无 temp writer）返回 nullptr。
     FlyStream* open_write_stream(const CMString& object_name,
-                                 const CMString& py_name);
+                                 const CMString& py_name, bool temp = false);
+
+    // temp 流式写实现（T2d）：temp_writer_ 上的正式路径镜像，commit 回调走
+    // on_temp_write_started/on_temp_write 语义（见 database.cpp）。
+    FlyStream* open_temp_write_stream(const CMString& object_name,
+                                      const CMString& py_name);
 
     // compress_pickle_bytes 已删除（T2c 2026-08-31，仅测试调用的过期 API）。
-
-    // Compress + register + store as temp (no disk write, no cache).
-    void write_temp_pickle(const CMString& object_name,
-                           const char* data, int64_t data_size,
-                           const CMString& py_name);
+    // write_temp_pickle 已删除（T2d 2026-08-31 temp 写流式化，被
+    // open_write_stream(temp=true) 取代）。
 
     // bypass_cache=true skips the low-tier cache lookup (cache="none" mode).
     std::pair<FlyBufferPtr, CMString> read_object_compressed(const CMString& object_name, bool backup = false, bool bypass_cache = false);

@@ -179,10 +179,13 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     // L1 大对象流式写（§9.1）：open → pickle.dump(stream) →
     // stream.finish_and_commit()。frozen 时返回 None（裸指针 +
     // take_ownership——nanobind 无 holder 概念，与读侧工厂同路径）。
+    // temp=true（T2d 2026-08-31）：temp 写流式化 sink（temp_writer_ 增量
+    // 直写，取代 _write_temp_pickle 整对象缓冲路径）。
     .def("open_write_stream",
-         [](Database& db, const CMString& name, const CMString& py_name) -> FlyStream* {
-             return db.open_write_stream(name, py_name);
+         [](Database& db, const CMString& name, const CMString& py_name, bool temp) -> FlyStream* {
+             return db.open_write_stream(name, py_name, temp);
          },
+         nanobind::arg("name"), nanobind::arg("py_name"), nanobind::arg("temp") = false,
          fly_export::rv_policy::take_ownership)
     // _write_pickle_bytes / _read_streaming / _read_decompressed / _is_temp /
     // _decompress_bytes / _compress_pickle_bytes 已删除（T2b 2026-08-31，
@@ -190,10 +193,8 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
     // 读侧统一 ex_stg_open_read_stream；C++ 侧 write_pickle_bytes /
     // compress_pickle_bytes / read_object_compressed 方法保留——单测与
     // ObjectCache populate/low-tier 内部路径仍用）。
-    FLY_EXPORT_DEF("_write_temp_pickle", [](Database& db, const CMString& name,
-                                             fly_export::bytes data, const CMString& py_name) {
-        db.write_temp_pickle(name, data.c_str(), static_cast<int64_t>(data.size()), py_name);
-    })
+    // _write_temp_pickle 已删除（T2d 2026-08-31 temp 写流式化：temp 路径统一
+    // open_write_stream(temp=true) → finish_and_commit 增量直写）。
     // _commit_stream 已删除（T2c 2026-08-31 写侧恒流式：非流式分支随
     // streaming_write_threshold 开关一并退役——open_write_stream →
     // finish_and_commit 是唯一写路径，C++ Database::commit_stream 无调用者

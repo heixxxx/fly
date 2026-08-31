@@ -3,6 +3,19 @@
 ---
 ---
 
+## 2026-08-31 (5): T2d temp 写流式化——open_write_stream 参数化 temp sink
+
+- **C++**：`Database::open_write_stream(name, py_name, temp=false)` 参数化——
+  temp=true 走 `open_temp_write_stream`（temp_writer_ 增量直写，正式路径
+  镜像；commit 回调语义对齐 put_temp_data：盘写 → INCOMPLETE → COMPLETE
+  （带 entry）→ record_write → register_write；entry hash 留空）。内存
+  R+常数，取代旧 write_temp_pickle 的整对象 dumps + 整 record 压缩两份
+  全量缓冲（R+2C）。
+- **删除**：`write_temp_pickle`（C++ 方法 + `_write_temp_pickle` 导出）。
+- **database.py**：`_write_temp` pickle 分支改流式（frozen 显式 raise；
+  错误经 WriteErrorType 判定；temp 池预热 size 取 stream.total_uncompressed）。
+- 验证：C++ 单测 73/73 + 全量 QA 全绿。
+
 ## 2026-08-31 (4): T2c 写侧恒流式——threshold 开关与非流式分支退役 + 测试-only C++ 方法清理
 
 - **database.py**：`write_object` 删 `streaming_write_threshold` 分流与非流式

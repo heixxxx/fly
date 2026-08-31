@@ -118,17 +118,25 @@ class Database:
                 result = obj._write_to_db(self._db, name, type(obj).__name__, False)
                 self._invalidate_read_cache(name)
                 return result
-            data = pickle.dumps(obj)
+            # temp 写流式化（T2d 2026-08-31）：pickle.dump 直入 temp_writer_
+            # 增量直写（R+常数，取代旧 _write_temp_pickle 的 R+2C 整对象
+            # 缓冲）。盘写完成后 C++ commit 回调完成 INCOMPLETE→COMPLETE→
+            # register 语义；frozen 时 open 返回 None。
             py_name = type(obj).__name__
-            # Compress + register + store in one C++ call — avoids
-            # compress→Python bytes→CMString roundtrip.
-            self._db._write_temp_pickle(name, data, py_name)
+            stream = self._db.open_write_stream(name, py_name, True)
+            if stream is None:
+                raise RuntimeError(f"Database is frozen: {name}")
+            pickle.dump(obj, stream)
+            err = EXStgWriteErrorType(stream.finish_and_commit(False, False))
+            if err != EXStgWriteErrorType.OK and err != EXStgWriteErrorType.DUPLICATE_SKIPPED:
+                msg = self._WRITE_ERROR_MESSAGES.get(err, f"Write error (type={err})")
+                raise RuntimeError(f"{msg}: {name}")
             self._invalidate_read_cache(name)
-            # 预热（temp 对象恒 temp 池——双池裁定；C++ 对象无 size 语义记 0）。
+            # 预热（temp 对象恒 temp 池——双池裁定）。
             if cache != "none":
                 from storage import get_read_cache
                 get_read_cache().put(f"{self.get_db_path()}:{name}", "temp", obj,
-                                     size=len(data))
+                                     size=stream.total_uncompressed)
             return ""
         finally:
             record_write(self.get_full_name(name), (time.perf_counter() - t0) * 1000.0)
