@@ -509,7 +509,6 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
             cleanup_fd(fd);
             return;
         }
-        fly::DataChecksum root;
         CMVector<char> buf(static_cast<size_t>(kChunkFrameBytes));
         uint64_t off = offset;
         uint32_t frames = 0;
@@ -534,7 +533,6 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
             iov[1].iov_len = static_cast<size_t>(n);
             ok = transport_->sendv(fd, iov, 2);
             if (!ok) break;
-            root.update(buf.data(), static_cast<size_t>(n));
             off += n;
             frames++;
         }
@@ -545,9 +543,12 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
             return;
         }
 
-        // DIGEST 尾帧（根摘要，单遍边发边算——§4.5）。
+        // DIGEST 尾帧（T5 2026-08-31 根摘要双侧消除：root_crc_ 发 0 = 未
+        // 计算——L0 块级 CRC + trailer 已承担完整性，整 record 单遍根摘要是
+        // 冗余遍历；client root_crc≠0 才验，兼容旧 serve。帧本身保留：client
+        // 以 DIGEST 帧为流结束标记 + chunk_count 对账）。
         DataDigestMessage digest;
-        digest.root_crc_ = root.final();
+        digest.root_crc_ = 0;
         digest.chunk_count_ = frames;
         CMString digest_frame = MessageProtocol::encode(digest);
         if (!transport_->send_all(fd, digest_frame.data(), digest_frame.size())) {

@@ -269,12 +269,14 @@ void NetworkChunkSource::recv_loop() {
         if (digest_seen && hole_len_.empty() && parse_buf_.size() < parse_need_) break;
     }
 
-    // 流尾复核（计数 / 根失配）。
+    // 流尾复核（计数 / 根失配）。T5（2026-08-31）：serve root_crc_ 发 0 =
+    // 未计算（L0 块 CRC + trailer 已承担完整性）——expected 为 0 跳过根复核，
+    // 兼容旧 serve（非 0 照验）。
     if (received_ != total_len_) {
         finish_stream(false, "byte count mismatch");
         return;
     }
-    if (root_.final() != root_expected_) {
+    if (root_expected_ != 0 && root_.final() != root_expected_) {
         ERR("[NCS-FATAL-DATA-CORRUPTION] digest mismatch: expected={:016x} actual={:016x}",
             root_expected_, root_.final());
         finish_stream(false, "digest mismatch");

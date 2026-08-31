@@ -808,7 +808,10 @@ DataClientPool::receive_chunked(int fd, const CMString& object_name,
                     ReadError::CHECKSUM};
         }
     }
-    if (data_checksum(buf->data(), buf->size()) != digest.root_crc_) {
+    // T5（2026-08-31）：serve root_crc_ 发 0 = 未计算——跳过根摘要复核
+    //（L0 块 CRC + trailer 已承担完整性）；非 0（旧 serve）照验。
+    if (digest.root_crc_ != 0 &&
+        data_checksum(buf->data(), buf->size()) != digest.root_crc_) {
         ERR("[DCP-FATAL-DATA-CORRUPTION] chunk stream digest mismatch: obj={}", object_name);
         return {false, nullptr, "", "",
                 "Chunk stream digest mismatch for " + object_name,

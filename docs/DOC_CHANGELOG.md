@@ -3,6 +3,16 @@
 ---
 ---
 
+## 2026-08-31 (8): T5 DIGEST wire 根摘要双侧消除
+
+- **serve（data_server.cpp）**：分片流取消 `root.update()` 单遍根摘要累积，
+  DIGEST 尾帧 `root_crc_` 发 0（帧保留——client 以 DIGEST 为流结束标记 +
+  chunk_count 对账）。
+- **client 双侧**：`network_chunk_source`（TIER2 块解析器）与
+  `data_client_pool`（整帧快路径）均改 `root_crc != 0` 才验——0 = serve 未
+  计算（L0 块 CRC + trailer 已承担完整性），非 0（旧 serve）照验，向后兼容。
+- 验证：C++ 单测 73/73 + 全量 QA 全绿。
+
 ## 2026-08-31 (7): T4 C++ ObjectCache 对齐——删死 low_ 池，单层化
 
 - **object_cache.h**：删除 low_ 池全集（get_low/put_low/low 统计/low 访问器）
