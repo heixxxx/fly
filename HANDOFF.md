@@ -1,9 +1,10 @@
 # Fly 项目交接文档（2026-08-31 · 第二次更新）
 
 > 首轮交接见文末历史节。本轮已解决 sd9/project 死锁谜题（实为 GIL 压制 + flows 迁移缺陷），
-> 完成执行上提重构（消灭 C++→Python 反调）。**当前唯一遗留：ras_matrix 偶发 "no ctx" race（专门会话排查）**。
+> 完成执行上提重构（消灭 C++→Python 反调）+ T2b~T5 全部落地。
+> **当前唯一遗留：ras_matrix 偶发 "no ctx" race（专门会话排查，见 §〇-A）。**
 
-## 〇、本轮完成摘要（全部已验证：C++ 单测 73/73 + 全量 QA 167/167 + solver 16/16）
+## 〇、本轮完成摘要（每步均验证：C++ 单测 73/73 + 全量 QA 167/167）
 
 1. **sd9/project "死锁" 破案**：非 PeerRpc 缺陷。根因链：
    - `poll_task_blocking` 经 nanobind 裸绑定（无 GIL release），worker Python 主循环持 GIL 阻塞在 cv wait 100ms
@@ -11,18 +12,19 @@
    - → 每 PeerRpc 往返 +100ms；sd9 需 110 轮 × 9 成员 × 100ms ≈ 99s，60s case timeout 必挂
    - master "死亡" 实为 test 框架超时 teardown 顺杀，非崩溃
 2. **执行上提重构**（用户架构裁定：除初始化与 main 入口外禁止 C++→Python 反调）：
-   - C++ 新原语 `take_task`（GIL 释放等待+出队+begin 钩子；internal task 就地消化）/ `finish_task`（end/report/上报链）
-   - 导出层 `take_task`/`finish_task` 绑定（GIL 释放）；删 `poll_task*`/`set_executor`/`set_exec_func` 绑定
-   - Python：`Worker.poll_loop`（main.py 主循环）；executor.py 三段语义不变；`set_exec_func` 反调点消灭
-   - C++ `poll_task` 重写为 take+finish 组合（单测 stub 路径零适配，守卫参数化 `executor_guard`）
+   - C++ 原语 `take_task`（GIL 释放等待+出队+begin 钩子；internal task 就地消化）/ `finish_task`（end/report/上报链）
+   - 导出层 take/finish（GIL 释放）；删 `poll_task*`/`set_executor`/`set_exec_func` 绑定
+   - Python：`Worker.poll_loop`（main.py 主循环）；`set_exec_func` 反调点消灭
    - **性能：RPC 单跳 100ms → 0.3ms（333×）；project case 62s 超时 → 2.7s；sd9 62s → 3.6s**
-3. **flows（SolverProject）迁移缺陷修复**：
-   - kickoff task 在 worker 上调阻塞 `solve_once` → AttributeError（worker 无 worker_count）+ 自等死锁 → 改非阻塞提交 `solve_ras_graph_dynamic`
-   - `_teardown` 链尾写 `__rasg__sol`（**必须持久化**：temp 读写与持久化一致，但 freeze 会清理 temp——契约对象 freeze 后仍需可读）
-   - flow ensure_workers 补 check 属性申请（check 与 sd 必须分进程：setup_compute 的 stop_peer_rpc 会关本 worker 全部 peer 连接）
-   - test_solver_project.py worker 池 4→5（nsd+1，dynamic 架构资源要求）
-4. **数值结论（已证，单进程模拟）**：sd9(n50/r30/o1) 纯 RAS 固有 ~110 轮收敛（v1/dynamic 数学逐位等价：同 109 轮同 2.02e-10）；n20/sd4 需 48 轮。"≤20 轮"量级属 coarse 模式；omega=1.0 纯 RAS 的谱半径即如此。修 100ms 后时长不再是问题。
-5. T2a 遗漏单测迁移：test_ras_graph_io.py `from ras_graph import` → `ras_graph_dynamic`。
+3. **flows（SolverProject）迁移缺陷修复**：kickoff 非阻塞化（修 AttributeError/自等死锁）、`__rasg__sol` 链尾持久化产出、check 宿主编队、case worker 池 nsd+1
+4. **T2b（d423258）死 API 清理**：`_write_pickle_bytes`×3/`_read_streaming`×2/`_read_decompressed`×2/`_is_temp`/`_decompress_bytes`/`_compress_pickle_bytes` 导出删 + 4 个 QA 测试迁移恒流式；storage_test 补 `_drain()`（裸 pytest 进程无 task 收尾排空）
+5. **T2c（fd7a97a）写侧恒流式**：删 `streaming_write_threshold` + 非流式分支 + `_commit_stream`；用户裁定落地：调用仅存在于测试的 API 即过期——C++ `commit_stream`/`write_pickle_bytes`/`compress_pickle_bytes` 删，测试造数 helper 全量迁 `open_write_stream → write → finish_and_commit`；本地 entry hash 有意留空（master register 权威），BareWriteObject 测试按新语义更新
+6. **T2d（90d2540）temp 写流式化**：`open_write_stream(name, py_name, temp=true)` 参数化 sink——pickle.dump 直入 temp_writer_ 增量直写（R+常数），删 `write_temp_pickle` + `_write_temp_pickle` 导出
+7. **T3（77ee15b）coarse 双对象拆分**：`__rasg__coarse_prebuilt` → `coarse_static`（只读，默认 low）+ `coarse_ac`（splu 原地重排可变，消费 cache="none"）——污染防护由消费拷贝简化为分层隔离
+8. **T4（59f94fa）ObjectCache 单层化**：low_ 池全集删除（零生产消费）；保留 high（typed 对象快路径）；`ex_stg_cache_stats` 改 4 元组；eviction/保护窗/计分测试迁 high 层保留覆盖
+9. **T5（cc17523）DIGEST 根摘要双侧消除**：serve 分片流取消 root.update 单遍累积（发 0）；client 双侧（network_chunk_source/data_client_pool）`root_crc≠0` 才验（兼容旧 serve）；DIGEST 帧保留作流结束标记
+10. **数值结论（已证，单进程模拟）**：sd9(n50/r30/o1) 纯 RAS 固有 ~110 轮收敛（v1/dynamic 数学逐位等价）；n20/sd4 需 48 轮。"≤20 轮"量级属 coarse 模式。修 100ms 后时长不再是约束。
+11. T2a 遗漏单测迁移：test_ras_graph_io.py `from ras_graph import` → `ras_graph_dynamic`。
 
 ## 〇-A、【唯一遗留】ras_matrix 偶发 "no ctx" race（待专门会话）
 
@@ -58,7 +60,7 @@
 
 ---
 
-# 以下为首轮交接原文（历史参考）
+# 以下为首轮交接原文（历史参考；任务状态以上方 §〇 为准——T2a~T5 均已完成）
 
 
 > 上一个会话完成了 V2 chunked-transfer 性能优化、恒流式改造、缓存双池落地、求解器收敛（进行中）。
