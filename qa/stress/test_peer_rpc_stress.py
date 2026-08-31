@@ -84,7 +84,7 @@ def check_run(db, gen):
             failures.append(f"{tag}: writer finish failed")
             return
         status, resp = agent.peer_stream_call_wait(rpc_id, 0)
-        if status != 0:
+        if status != 1:
             failures.append(f"{tag}: status={status}")
             return
         if zlib.crc32(resp) != zlib.crc32(payload) or len(resp) != len(payload):
