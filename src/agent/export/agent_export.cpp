@@ -25,6 +25,35 @@ std::pair<uint8_t, fly::CMString> peer_call_gil_released(
     return result;
 }
 
+// ── 流式大 payload 导出辅助（参数含逗号，不能内联进两参宏）──
+
+fly::PeerStreamWriter* peer_stream_writer_export(fly::WorkerAgent& self,
+                                                 uint64_t conn_id,
+                                                 std::string compression,
+                                                 int level) {
+    return self.peer_stream_writer(conn_id, fly::CMString(compression), level);
+}
+
+fly::PeerStreamWriter* peer_stream_respond_writer_export(fly::WorkerAgent& self,
+                                                         uint64_t conn_id,
+                                                         uint64_t rpc_id,
+                                                         std::string compression,
+                                                         int level) {
+    return self.peer_stream_respond_writer(conn_id, rpc_id,
+                                           fly::CMString(compression), level);
+}
+
+std::pair<uint8_t, fly::CMString> peer_stream_call_wait_export(fly::WorkerAgent& self,
+                                                               uint64_t rpc_id,
+                                                               int timeout_ms) {
+    std::pair<uint8_t, fly::CMString> result;
+    {
+        fly_export::gil_scoped_release release;  // 无限等待语义：必须释放 GIL
+        result = self.peer_stream_call_wait(rpc_id, timeout_ms);
+    }
+    return result;
+}
+
 // ── 执行上提（消灭 C++→Python 反调）：take/finish 原语的导出辅助 ──
 
 // PendingTask → Python dict（task 描述：主循环据此路由执行）。
@@ -137,6 +166,21 @@ FLY_EXPORT_CLASS(fly::TaskExecResult, "EXTaskExecResult")
     FLY_EXPORT_ATTR("output", &fly::TaskExecResult::output_)
     FLY_EXPORT_ATTR("error", &fly::TaskExecResult::error_)
     FLY_EXPORT_ATTR("outputs", &fly::TaskExecResult::outputs_);
+
+// 流式大 payload 写端（file-like：pickle.dump(obj, w) 需要 write(bytes)）。
+FLY_EXPORT_CLASS(fly::PeerStreamWriter, "EXPeerStreamWriter")
+    FLY_EXPORT_DEF("write", [](fly::PeerStreamWriter& w, fly_export::bytes data) {
+        // pickle.dump 调用线程持有 GIL；write 内部 send 阻塞（TCP 反压）期间
+        // 释放 GIL——同进程其它 Python 线程（task 主循环等）不被冻结。
+        fly_export::gil_scoped_release release;
+        w.write(data.c_str(), data.size());
+    })
+    FLY_EXPORT_DEF("finish", [](fly::PeerStreamWriter& w) -> bool {
+        fly_export::gil_scoped_release release;
+        return w.finish();
+    })
+    FLY_EXPORT_DEF("rpc_id", [](fly::PeerStreamWriter& w) { return w.rpc_id(); })
+    FLY_EXPORT_DEF("ok", [](fly::PeerStreamWriter& w) { return w.ok(); });
 
 FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
     FLY_EXPORT_INIT()
@@ -480,6 +524,27 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
                                                 fly_export::bytes payload) {
         fly::CMString payload_str(payload.c_str(), payload.size());
         return self.peer_rpc_respond(conn_id, rpc_id, payload_str);
+    })
+    // ── 流式大 payload（流插件化 2026-08-31）── writer 构造的 lambda 参数
+    // 含逗号，按仓库惯例抽独立函数（见 peer_call_gil_released 注释）。
+    FLY_EXPORT_METHOD("peer_stream_writer", [](fly::WorkerAgent& self,
+                                               uint64_t conn_id,
+                                               std::string compression,
+                                               int level) {
+        return peer_stream_writer_export(self, conn_id, compression, level);
+    })
+    FLY_EXPORT_METHOD("peer_stream_respond_writer", [](fly::WorkerAgent& self,
+                                                       uint64_t conn_id,
+                                                       uint64_t rpc_id,
+                                                       std::string compression,
+                                                       int level) {
+        return peer_stream_respond_writer_export(self, conn_id, rpc_id,
+                                                 compression, level);
+    })
+    FLY_EXPORT_METHOD("peer_stream_call_wait", [](fly::WorkerAgent& self,
+                                                  uint64_t rpc_id,
+                                                  int timeout_ms) {
+        return peer_stream_call_wait_export(self, rpc_id, timeout_ms);
     })
     FLY_EXPORT_METHOD("peer_rpc_respond_failure", [](fly::WorkerAgent& self,
                                                         uint64_t conn_id,

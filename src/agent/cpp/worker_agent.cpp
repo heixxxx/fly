@@ -3010,6 +3010,52 @@ bool WorkerAgent::peer_rpc_respond_not_ready(uint64_t conn_id, uint64_t rpc_id,
     return peer_rpc_server_->send_not_ready(conn_id, rpc_id, reason);
 }
 
+fly::PeerStreamWriter* WorkerAgent::peer_stream_writer(uint64_t conn_id,
+                                                       const CMString& compression,
+                                                       int level) {
+    if (!peer_rpc_server_) return nullptr;
+    // 请求流：rpc_id 分配即注册 pending（END 发出前就绪，响应先到不丢）。
+    const uint64_t rpc_id = next_rpc_id_.fetch_add(1, std::memory_order_relaxed);
+    auto pending = CMMakeShared<PendingPeerRpc>();
+    pending->conn_id_ = conn_id;
+    pending_peer_rpcs_.emplace(rpc_id, pending);
+    return new fly::PeerStreamWriter(peer_rpc_server_.get(), conn_id, rpc_id,
+                                     /*direction=*/0,
+                                     CompressorFactory::type_from_name(compression),
+                                     level);
+}
+
+fly::PeerStreamWriter* WorkerAgent::peer_stream_respond_writer(uint64_t conn_id,
+                                                               uint64_t rpc_id,
+                                                               const CMString& compression,
+                                                               int level) {
+    if (!peer_rpc_server_) return nullptr;
+    // 响应流：rpc_id = 收到的请求 id（不注册 pending——响应无后续等待）。
+    return new fly::PeerStreamWriter(peer_rpc_server_.get(), conn_id, rpc_id,
+                                     /*direction=*/1,
+                                     CompressorFactory::type_from_name(compression),
+                                     level);
+}
+
+std::pair<uint8_t, CMString> WorkerAgent::peer_stream_call_wait(uint64_t rpc_id,
+                                                                 int timeout_ms) {
+    // 等待流式请求的响应（pending 由 peer_stream_writer 注册）。
+    auto wait_duration = (timeout_ms > 0)
+        ? std::chrono::milliseconds(timeout_ms)
+        : std::chrono::hours(24);
+    auto result = pending_peer_rpcs_.wait_for(rpc_id, wait_duration,
+        [](const CMSharedPtr<PendingPeerRpc>& p) {
+            return p->status_.load(std::memory_order_acquire)
+                   != static_cast<uint8_t>(PeerRpcStatus::PENDING);
+        });
+    pending_peer_rpcs_.erase(rpc_id);
+    if (!result) {
+        return {static_cast<uint8_t>(PeerRpcStatus::FAILED), "timeout"};
+    }
+    const uint8_t status = result->status_.load(std::memory_order_acquire);
+    return {status, std::move(result->payload_)};
+}
+
 WorkerAgent::PeerRpcRequest WorkerAgent::peer_rpc_recv_request(int timeout_ms) {
     std::unique_lock<std::mutex> lk(peer_rpc_incoming_mutex_);
     // 优先检查错误断连（任何 compute 崩溃都意味着收不齐 nsd 个请求）。

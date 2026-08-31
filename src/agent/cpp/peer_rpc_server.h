@@ -207,6 +207,7 @@ public:
     uint64_t total_uncompressed() const { return pipeline_ ? pipeline_->total_uncompressed() : 0; }
     uint32_t chunk_count() const { return pipeline_ ? pipeline_->chunk_count() : 0; }
     bool ok() const { return ok_; }
+    uint64_t rpc_id() const { return rpc_id_; }
 
 private:
     void on_pipeline_bytes(const char* d, size_t n);

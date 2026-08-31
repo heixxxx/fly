@@ -258,6 +258,22 @@ public:
     struct PeerRpcRequest { uint64_t conn_id_; uint64_t rpc_id_; uint64_t src_worker_id_; CMString payload_; };
     PeerRpcRequest peer_rpc_recv_request(int timeout_ms = 30000);
 
+    // ── 流式大 payload（流插件化 2026-08-31）──
+    // file-like 写端：pickle.dump(obj, writer) 直入压缩管线逐块组帧发送。
+    // write() 后必须 finish()（发尾块 + END 对账帧）。
+    // compression: "lz4"（默认）/ "zstd" / "zlib" / "none"；level < 0 用算法默认。
+    // 请求流：rpc_id 由内部分配（响应匹配）；响应流：rpc_id = 收到的请求 id。
+    PeerStreamWriter* peer_stream_writer(uint64_t conn_id,
+                                         const CMString& compression = "lz4",
+                                         int level = -1);
+    PeerStreamWriter* peer_stream_respond_writer(uint64_t conn_id, uint64_t rpc_id,
+                                                 const CMString& compression = "lz4",
+                                                 int level = -1);
+    // 等待流式请求的响应（peer_stream_writer 已注册 pending，rpc_id 由
+    // writer.rpc_id() 取得）。GIL 释放语义由 export 层保证。
+    std::pair<uint8_t, CMString> peer_stream_call_wait(uint64_t rpc_id,
+                                                       int timeout_ms = 30000);
+
     // 任一方：主动告知对端失败（status=1）。
     bool peer_rpc_notify_failure(uint64_t conn_id, const CMString& reason);
 
