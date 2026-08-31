@@ -96,25 +96,28 @@ bool DecompressingStreamBuf::refill() {
         return false;
     }
 
-    // 块数据拉取（流式下可能跨多次 pull）。
-    CMVector<char> comp_buf(static_cast<size_t>(comp_size));
-    if (!pull_exact(comp_buf.data(), static_cast<size_t>(comp_size))) {
-        checksum_failed_ = true;
-        return false;
-    }
-    consumed_ += static_cast<uint64_t>(comp_size);
-
-    // 写入时刻锚点 CRC：磁盘 → server → 网络 → client → 解压 全生命周期覆盖。
-    if (fly::data_checksum(comp_buf.data(), static_cast<size_t>(comp_size)) != stored_crc) {
-        checksum_failed_ = true;
-        return false;
-    }
-
+    // 块数据拉取与 CRC 验证（写入时刻锚点：磁盘 → server → 网络 → client →
+    // 解压 全生命周期覆盖）。压缩块拉入 overwrite 临时缓冲——vector 构造清零
+    // 后立即被整块覆盖，256KB/块的 memset 是纯浪费（perf 采样传输路径 ~9%）；
+    // 无压缩直接拉入输出 buffer_，免中转拷贝。
     if (compressor_) {
-        // Zero-copy: decompress directly into buffer_
-        buffer_.resize(static_cast<size_t>(uncomp_size));
+        CMUniquePtr<char[]> comp_buf(new char[comp_size]);
+        if (!pull_exact(comp_buf.get(), static_cast<size_t>(comp_size))) {
+            checksum_failed_ = true;
+            return false;
+        }
+        consumed_ += static_cast<uint64_t>(comp_size);
+        if (fly::data_checksum(comp_buf.get(), static_cast<size_t>(comp_size)) != stored_crc) {
+            checksum_failed_ = true;
+            return false;
+        }
+        // Zero-copy: decompress directly into buffer_（仅首块扩容触发一次
+        // 清零，后续同尺寸块 resize 为 no-op；解压立即整块覆盖写入区）。
+        if (static_cast<size_t>(uncomp_size) > buffer_.size()) {
+            buffer_.resize(static_cast<size_t>(uncomp_size));
+        }
         int32_t written = compressor_->decompress_to(
-            {comp_buf.data(), static_cast<size_t>(comp_size)},
+            {comp_buf.get(), static_cast<size_t>(comp_size)},
             buffer_.data(), buffer_.size());
         if (written < 0 || written != uncomp_size) {
             // CRC 已过验但解压失败 = 实现层缺陷或 CRC 漏过的损坏——按数据
@@ -123,14 +126,24 @@ bool DecompressingStreamBuf::refill() {
             checksum_failed_ = true;
             return false;
         }
-        buffer_.resize(static_cast<size_t>(written));
+        buffer_pos_ = 0;
+        buffer_avail_ = static_cast<size_t>(written);
     } else {
-        // No compression: direct copy
-        buffer_.swap(comp_buf);
-        buffer_.resize(static_cast<size_t>(comp_size));
+        if (static_cast<size_t>(comp_size) > buffer_.size()) {
+            buffer_.resize(static_cast<size_t>(comp_size));
+        }
+        if (!pull_exact(buffer_.data(), static_cast<size_t>(comp_size))) {
+            checksum_failed_ = true;
+            return false;
+        }
+        consumed_ += static_cast<uint64_t>(comp_size);
+        if (fly::data_checksum(buffer_.data(), static_cast<size_t>(comp_size)) != stored_crc) {
+            checksum_failed_ = true;
+            buffer_.clear();
+            return false;
+        }
+        buffer_pos_ = 0;
+        buffer_avail_ = static_cast<size_t>(comp_size);
     }
-
-    buffer_pos_ = 0;
-    buffer_avail_ = buffer_.size();
-    return !buffer_.empty();
+    return buffer_avail_ > 0;
 }

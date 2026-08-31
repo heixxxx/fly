@@ -164,8 +164,14 @@ CMString Logger::timestamp() const {
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         now.time_since_epoch()) % 1000;
 
+    // localtime_r 而非 localtime：TZ 未设置的环境里 glibc localtime 每次调用
+    // 触发 tzset_internal(always=1) → stat(/etc/localtime) + 重读解析（每条
+    // 日志一次系统调用，strace 实证）；localtime_r 走 always=0 快路径零系统
+    // 调用，且线程安全。
+    std::tm tm_buf{};
+    localtime_r(&time, &tm_buf);
     std::stringstream ss;
-    ss << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S");
+    ss << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
     ss << "." << std::setfill('0') << std::setw(3) << ms.count();
     return ss.str();
 }
