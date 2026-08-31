@@ -17,14 +17,20 @@ import _fly_storage as storage
 
 
 def _raw_write(db, key, value: str):
-    # write_object_raw 已删除（2026-08-30，生产零使用）——直写路径以
-    # _write_pickle_bytes 替代（同 WriteErrorType int 返回语义）。
-    return db._write_pickle_bytes(key, pickle.dumps(value), "str", False)
+    # 直写路径 _write_pickle_bytes 已删除（T2b 2026-08-31，生产零使用）——
+    # 迁移到恒流式写（open_write_stream → finish_and_commit，同
+    # WriteErrorType int 返回语义；frozen 时 open 返回 None → FROZEN_DB）。
+    stream = db.open_write_stream(key, "str")
+    if stream is None:
+        return 1  # WriteErrorType.FROZEN_DB（common/cpp/error_types.h 枚举序）
+    pickle.dump(value, stream)
+    return int(stream.finish_and_commit(False, False))
 
 
 def _raw_read(db, key) -> str:
-    data, _ = db._read_decompressed(key)
-    return pickle.loads(data)
+    # 恒流式读（生产 read_object 同款原语；_read_decompressed 已删）。
+    stream = storage.ex_stg_open_read_stream(db, key, False)
+    return pickle.Unpickler(stream).load()
 
 
 
@@ -167,8 +173,11 @@ def test_freeze_with_typed_objects():
 
         db.freeze()
 
-        data_bytes, py_name = db._read_streaming("typed/entry")
-        assert py_name == "EXStgIndexEntry", f"Expected EXStgIndexEntry, got {py_name}"
+        # 恒流式 typed 读（_read_streaming 已删，T2b 2026-08-31）：freeze 后
+        # C++ 对象仍可经权威重建路径读取。
+        result = storage.EXStgIndexEntry._read_from_db(db, "typed/entry", "none")
+        assert result.object_name == "test/entry"
+        assert result.offset == 100 and result.size == 512
 
         sm.close_all()
         print("PASS: test_freeze_with_typed_objects")

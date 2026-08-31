@@ -27,6 +27,14 @@ import fly.runtime as _rt
 _rt._mode = "worker"
 
 
+def _drain():
+    """排空异步写回队列（裸 pytest 进程无 fly task 收尾的统一 drain——真实
+    环境由 executor postprocess 排空）。不排空则写后立读 TIER1 盘 miss，
+    TIER2 又无 streaming handler（无 agent），误报 corruption/not-found。"""
+    from _fly_storage import ex_stg_get_data_service
+    ex_stg_get_data_service().drain_write_back()
+
+
 class PythonTaskData:
     def __init__(self, value=0, name="", tags=None):
         self.value = value
@@ -84,26 +92,33 @@ def test_db_meta_creation():
 
 
 def test_database_write_read(temp_dir):
-    from _fly_storage import ex_stg_create_database
+    from _fly_storage import ex_stg_create_database, ex_stg_open_read_stream
     db = ex_stg_create_database(temp_dir, "", 0)
-    db._write_pickle_bytes("test/key", pickle.dumps("hello world"), "str", False)
-    data, _ = db._read_decompressed("test/key")
-    assert pickle.loads(data) == "hello world"
+    # 恒流式写读（T2b 2026-08-31：_write_pickle_bytes/_read_decompressed 已删，
+    # 与生产 write_object/read_object 同路径）
+    stream = db.open_write_stream("test/key", "str")
+    pickle.dump("hello world", stream)
+    assert int(stream.finish_and_commit(False, False)) == 0
+    rstream = ex_stg_open_read_stream(db, "test/key", False)
+    assert pickle.Unpickler(rstream).load() == "hello world"
     db.reset()
 
 
 def test_database_freeze(temp_dir):
     from _fly_storage import ex_stg_create_database, EXStgWriteErrorType
     db = ex_stg_create_database(temp_dir, "", 0)
-    db._write_pickle_bytes("test/key", pickle.dumps("data"), "str", False)
+    # 恒流式写（T2b 2026-08-31：_write_pickle_bytes 已删）
+    stream = db.open_write_stream("test/key", "str")
+    pickle.dump("data", stream)
+    assert int(stream.finish_and_commit(False, False)) == 0
     db.freeze()
 
     assert db.is_frozen() == True
 
-    # After freeze, writes return WriteErrorType.FROZEN_DB (error code, not raise).
-    err = EXStgWriteErrorType(db._write_pickle_bytes(
-        "test/key2", pickle.dumps("more data"), "str", False))
-    assert err == EXStgWriteErrorType.FROZEN_DB, f"expected FROZEN_DB, got {err}"
+    # After freeze, open_write_stream returns None (production path raises
+    # "Database is frozen"); finish path therefore unreachable — assert None.
+    assert db.open_write_stream("test/key2", "str") is None, \
+        "open_write_stream on frozen db should return None"
 
     db.reset()
 
@@ -139,12 +154,13 @@ def test_storage_manager_database(storage_mgr, temp_dir):
 
 def test_fly_database_cpp_class_write_read(temp_dir):
     from fly import open_db
-    from _fly_storage import EXStgIndexEntry
+    from _fly_storage import EXStgIndexEntry, ex_stg_get_data_service
 
     db = open_db(temp_dir)
 
     entry = EXStgIndexEntry("test/entry", "data.dat", 100, 512, False, 0)
     db.write_object("test/entry", entry)
+    _drain()
 
     result = db.read_object("test/entry")
     assert isinstance(result, EXStgIndexEntry)
@@ -187,6 +203,7 @@ def test_fly_database_mixed_cpp_python(temp_dir):
 
     py_obj = PythonTaskData(7, "py_data")
     db.write_object("py/data", py_obj)
+    _drain()
 
     cpp_result = db.read_object("cpp/data")
     assert isinstance(cpp_result, EXStgIndexEntry)
@@ -241,6 +258,7 @@ def test_fly_database_multiple_cpp_types(temp_dir):
 
     wi = EXStgWorkerInfo(10, "writer-10", "worker-10", "", "")
     db.write_object("worker/10", wi)
+    _drain()
 
     r1 = db.read_object("idx/1")
     assert isinstance(r1, EXStgIndexEntry)
@@ -279,15 +297,9 @@ def test_cpp_writes_python_reads_typed_object(temp_dir):
     entry = EXStgIndexEntry("cross/cpp_entry", "cpp_generated.dat", 12345, 67890, False, 0)
     entry._write_to_db(db, "cross/cpp_entry", "EXStgIndexEntry", False)
 
-    # Python reads via streaming path (same as read_object)
-    data, py_name = db._read_streaming("cross/cpp_entry")
-    assert py_name == "EXStgIndexEntry"
-    assert isinstance(data, bytes)
-    assert len(data) > 0
-
-    # Python deserializes using C++ class's __setstate__
-    result = EXStgIndexEntry.__new__(EXStgIndexEntry)
-    result.__setstate__(data)
+    # Python reads via the authoritative typed path（_read_streaming 已删，
+    # T2b 2026-08-31——read_object 对 C++ 对象走 _read_from_db 重建）
+    result = EXStgIndexEntry._read_from_db(db, "cross/cpp_entry", "none")
     assert result.object_name == "cross/cpp_entry"
     assert result.file_name == "cpp_generated.dat"
     assert result.offset == 12345
@@ -307,6 +319,7 @@ def test_cpp_writes_python_reads_via_flydatabase(temp_dir):
 
     entry = EXStgIndexEntry("cross/fly_entry", "cpp_generated.dat", 12345, 67890, False, 0)
     entry._write_to_db(db._db, "cross/fly_entry", "EXStgIndexEntry", False)
+    _drain()
 
     # Python reads via FlyDatabase.read_object (typed dispatch)
     result = db.read_object("cross/fly_entry")

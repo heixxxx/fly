@@ -32,81 +32,6 @@ namespace {
     throw fly_export::python_error();
 }
 
-// 单轮解压：零拷贝直进 Python bytes。
-// 返回 false = 块 CRC/trailer 校验失败（调用方编排一次重取，§5）；
-// 返回 true = out 填充结果（fallback 路径的校验失败由 decompress_raw_data
-// 直接 throw DataCorruptionError，同样进入顶层 FATAL 转换）。
-bool decompress_into_bytes(const FlyBufferPtr& comp_data, int64_t expected_size,
-                           fly_export::bytes& out) {
-    if (expected_size <= 0) {
-        // Fallback: decompress to std::string then convert
-        std::string result = fly::decompress_raw_data({comp_data->data(), comp_data->size()});
-        out = fly_export::bytes(result.data(), result.size());
-        return true;
-    }
-    PyObject* py_bytes = PyBytes_FromStringAndSize(nullptr, expected_size);
-    if (!py_bytes) {
-        out = fly_export::bytes("", 0);
-        return true;
-    }
-    DecompressingStreamBuf dsbuf(comp_data->data(), comp_data->size());
-    std::istream is(&dsbuf);
-    is.read(PyBytes_AS_STRING(py_bytes), expected_size);
-    auto gcount = is.gcount();
-    if (dsbuf.checksum_failed()) {
-        Py_DECREF(py_bytes);
-        return false;
-    }
-    if (gcount > 0 && gcount < expected_size) {
-        _PyBytes_Resize(&py_bytes, gcount);
-    }
-    out = fly_export::bytes(py_bytes);
-    return true;
-}
-
-int64_t trailer_expected_size(const FlyBufferPtr& comp_data) {
-    ObjectHeader header;
-    size_t trailer_len = 0;
-    if (ObjectHeader::deserialize_trailer({comp_data->data(), comp_data->size()},
-                                          header, trailer_len) &&
-        header.total_size_ > 0) {
-        return static_cast<int64_t>(header.total_size_);
-    }
-    return 0;
-}
-
-// 共享读+解压（两个 _read_decompressed 重载的公共实现）。
-// 零容忍编排（§5）：块 CRC/trailer 校验失败 → 失效缓存 + 一次 bypass 重取
-// → 仍败 → FATAL RuntimeError（TaskFailed 通道，不返回截断数据）。
-fly_export::tuple read_decompressed_impl(Database& db, const CMString& name, bool backup) {
-    try {
-        auto [comp_data, py_name] = db.read_object_compressed(name, backup);
-        if (!comp_data || comp_data->empty()) {
-            return fly_export::make_tuple(fly_export::bytes("", 0), py_name);
-        }
-
-        fly_export::bytes out;
-        if (decompress_into_bytes(comp_data, trailer_expected_size(comp_data), out)) {
-            return fly_export::make_tuple(std::move(out), py_name);
-        }
-
-        // ── 校验失败：一次重取（失效缓存 + bypass 数据源）──
-        ERR("[FATAL-DATA-CORRUPTION] chunk CRC/trailer verify failed, one re-fetch: obj={}", name);
-        fly::ObjectCache::instance().remove(db.get_full_name(name));
-        auto [comp2, py2] = db.read_object_compressed(name, backup, /*bypass_cache=*/true);
-        if (comp2 && !comp2->empty()) {
-            fly_export::bytes out2;
-            if (decompress_into_bytes(comp2, trailer_expected_size(comp2), out2)) {
-                return fly_export::make_tuple(std::move(out2), std::move(py2));
-            }
-        }
-    } catch (const fly::DataCorruptionError& e) {
-        // read_object_compressed / TIER2 零容忍预算耗尽（§5）→ FATAL。
-        throw_fatal_corruption(name, e.what());
-    }
-    throw_fatal_corruption(name, "chunk CRC/trailer verify failed after one re-fetch");
-}
-
 }  // namespace
 
 FLY_EXPORT_MODULE(_fly_storage) {
@@ -259,97 +184,15 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
              return db.open_write_stream(name, py_name);
          },
          fly_export::rv_policy::take_ownership)
-    // Zero-copy write: access Python bytes directly without copying
-    FLY_EXPORT_DEF("_write_pickle_bytes", [](Database& db, const CMString& name,
-                                              nanobind::handle data,
-                                              const CMString& py_name,
-                                              bool backup) -> int {
-        Py_buffer view;
-        if (PyObject_GetBuffer(data.ptr(), &view, PyBUF_SIMPLE) < 0) {
-            return -1;  // Error
-        }
-        auto result = static_cast<int>(db.write_pickle_bytes(name,
-                                       static_cast<const char*>(view.buf),
-                                       static_cast<int64_t>(view.len), py_name, backup));
-        PyBuffer_Release(&view);
-        return result;
-    })
-    FLY_EXPORT_DEF("_write_pickle_bytes", [](Database& db, const CMString& name,
-                                              nanobind::handle data,
-                                              const CMString& py_name) -> int {
-        Py_buffer view;
-        if (PyObject_GetBuffer(data.ptr(), &view, PyBUF_SIMPLE) < 0) {
-            return -1;  // Error
-        }
-        auto result = static_cast<int>(db.write_pickle_bytes(name,
-                                       static_cast<const char*>(view.buf),
-                                       static_cast<int64_t>(view.len), py_name, false));
-        PyBuffer_Release(&view);
-        return result;
-    })
-    // 保存等级"none"（仅落盘不进 low 缓存）：数据搬运/merge 等场景用。
-    FLY_EXPORT_DEF("_write_pickle_bytes", [](Database& db, const CMString& name,
-                                              nanobind::handle data,
-                                              const CMString& py_name,
-                                              bool backup,
-                                              bool populate_cache) -> int {
-        Py_buffer view;
-        if (PyObject_GetBuffer(data.ptr(), &view, PyBUF_SIMPLE) < 0) {
-            return -1;  // Error
-        }
-        auto result = static_cast<int>(db.write_pickle_bytes(name,
-                                       static_cast<const char*>(view.buf),
-                                       static_cast<int64_t>(view.len), py_name,
-                                       backup, populate_cache));
-        PyBuffer_Release(&view);
-        return result;
-    })
-    FLY_EXPORT_DEF("_read_streaming", [](Database& db, const CMString& name, bool backup) -> fly_export::tuple {
-        auto [comp_data, py_name] = db.read_object_compressed(name, backup);
-        return fly_export::make_tuple(
-            fly_export::bytes(comp_data ? comp_data->data() : "", comp_data ? comp_data->size() : 0),
-            py_name
-        );
-    })
-    FLY_EXPORT_DEF("_read_streaming", [](Database& db, const CMString& name) -> fly_export::tuple {
-        auto [comp_data, py_name] = db.read_object_compressed(name, false);
-        return fly_export::make_tuple(
-            fly_export::bytes(comp_data ? comp_data->data() : "", comp_data ? comp_data->size() : 0),
-            py_name
-        );
-    })
-    // Zero-copy read: decompress directly from FlyBuffer to Python bytes
-    // Avoids intermediate CMString by decompressing directly into Python bytes object
-    // 两个重载（带/不带 backup）共享实现。块 CRC/trailer 校验失败 → 抛
-    // [FATAL-DATA-CORRUPTION] RuntimeError（零容忍语义 §5；一次重取编排在
-    // read_object_compressed 数据源层，此处是解压侧出口）。
-    FLY_EXPORT_DEF("_read_decompressed", [](Database& db, const CMString& name, bool backup) -> fly_export::tuple {
-        return read_decompressed_impl(db, name, backup);
-    })
-    FLY_EXPORT_DEF("_read_decompressed", [](Database& db, const CMString& name) -> fly_export::tuple {
-        return read_decompressed_impl(db, name, false);
-    })
-    // _get_py_name 已删除（双拉修复 2026-08-30：py_name 由读取原语天然携带，
-    // 独立探测接口触发全量拉取违背设计初衷；恒流式改造后整链无消费者）。
-    // temp 判定（缓存双池路由，2026-08-30）：local_idx map find，零 IO。
-    FLY_EXPORT_DEF("_is_temp", [](Database& db, const CMString& name) -> bool {
-        return fly::DataService::instance()->is_temp_object(db.get_full_name(name));
-    })
-    FLY_EXPORT_DEF("_decompress_bytes", [](Database&, fly_export::bytes b) -> fly_export::bytes {
-        CMString raw(b.c_str(), b.size());
-        CMString result = fly::decompress_raw_data(raw);
-        return fly_export::bytes(result.data(), result.size());
-    })
+    // _write_pickle_bytes / _read_streaming / _read_decompressed / _is_temp /
+    // _decompress_bytes / _compress_pickle_bytes 已删除（T2b 2026-08-31，
+    // 生产零使用——恒流式改造后写侧统一 open_write_stream→finish_and_commit，
+    // 读侧统一 ex_stg_open_read_stream；C++ 侧 write_pickle_bytes /
+    // compress_pickle_bytes / read_object_compressed 方法保留——单测与
+    // ObjectCache populate/low-tier 内部路径仍用）。
     FLY_EXPORT_DEF("_write_temp_pickle", [](Database& db, const CMString& name,
                                              fly_export::bytes data, const CMString& py_name) {
         db.write_temp_pickle(name, data.c_str(), static_cast<int64_t>(data.size()), py_name);
-    })
-    FLY_EXPORT_DEF("_compress_pickle_bytes", [](Database& db, fly_export::bytes data,
-                                                 const CMString& py_name) -> fly_export::bytes {
-        CMString compressed = db.compress_pickle_bytes(data.c_str(),
-                                                        static_cast<int64_t>(data.size()),
-                                                        py_name);
-        return fly_export::bytes(compressed.data(), compressed.size());
     })
     FLY_EXPORT_DEF("_commit_stream", [](Database& db, const CMString& name,
                                          FlyBufferPtr buf, const CMString& py_name,
@@ -366,8 +209,9 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
                                          bool backup, bool populate_cache) -> int {
         return static_cast<int>(db.commit_stream(name, buf, py_name, backup, populate_cache));
     })
-    // write_object_raw / read_object_raw 已删除（2026-08-30 用户裁定，生产零使用；
-    // 直写路径需求由 _write_pickle_bytes 覆盖——同 WriteErrorType int 语义）。
+    // write_object_raw / read_object_raw / _write_pickle_bytes 已删除
+    // （2026-08-30 / T2b 2026-08-31 用户裁定，生产零使用；写侧统一
+    // open_write_stream → finish_and_commit 恒流式路径）。
     FLY_EXPORT_METHOD("backup_object", &Database::backup_object)
     FLY_EXPORT_METHOD("freeze", &Database::freeze)
     FLY_EXPORT_METHOD("is_frozen", &Database::is_frozen)

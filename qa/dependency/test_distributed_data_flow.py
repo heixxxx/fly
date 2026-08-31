@@ -8,6 +8,20 @@ import _fly_log as log
 import _fly_storage as storage
 
 
+def _stream_write(db, key, value):
+    # 恒流式写（T2b 2026-08-31：_write_pickle_bytes 已删，与生产
+    # write_object 同路径）。返回 WriteErrorType int（0=OK）。
+    stream = db.open_write_stream(key, "str")
+    pickle.dump(value, stream)
+    return int(stream.finish_and_commit(False, False))
+
+
+def _stream_read(db, key):
+    # 恒流式读（_read_decompressed 已删，与生产 read_object 同路径）。
+    stream = storage.ex_stg_open_read_stream(db, key, False)
+    return pickle.Unpickler(stream).load()
+
+
 def test_database_write_updates_local_index():
     test_dir = "test_local_idx"
     log_dir = "test_local_idx_logs"
@@ -28,10 +42,10 @@ def test_database_write_updates_local_index():
     obj_name = "test/local_obj"
     full_name = db.get_full_name(obj_name)
     
-    db._write_pickle_bytes(obj_name, pickle.dumps(test_data), "str", False)
+    _stream_write(db, obj_name, test_data)
     ds.drain_write_back()
     time.sleep(0.3)
-    
+
     assert ds.has_local_object(full_name), f"Object {full_name} not in local_idx"
     
     success, data_bytes, py_name = ds.try_read_local(full_name)
@@ -65,8 +79,7 @@ def test_database_multiple_objects():
     
     for i in range(10):
         key = f"multi/obj_{i}"
-        data = f"data_{i}"
-        db._write_pickle_bytes(key, pickle.dumps(data), "str", False)
+        _stream_write(db, key, f"data_{i}")
 
     ds.drain_write_back()
     time.sleep(0.5)
@@ -76,8 +89,7 @@ def test_database_multiple_objects():
         full_name = db.get_full_name(key)
         assert ds.has_local_object(full_name), f"Object {full_name} not found"
 
-        data, _ = db._read_decompressed(key)
-        result = pickle.loads(data)
+        result = _stream_read(db, key)
         assert result == f"data_{i}", f"Mismatch at {i}: {result}"
     
     sm.close_all()
@@ -120,7 +132,7 @@ def test_data_service_remote_index():
     
     db = sm.get_or_create_database(test_dir)
     
-    db._write_pickle_bytes("obj/a", pickle.dumps("data_a"), "str", False)
+    _stream_write(db, "obj/a", "data_a")
     ds.drain_write_back()
     time.sleep(0.3)
     

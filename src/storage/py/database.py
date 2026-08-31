@@ -72,7 +72,7 @@ class Database:
 
         t0 = time.perf_counter()
         try:
-            # write_object / _write_pickle_bytes return a WriteErrorType int (OK=success).
+            # write_object returns a WriteErrorType int (OK=success).
             # DUPLICATE_SKIPPED is benign (same object already written) — not raised.
             py_name = type(obj).__name__
             obj_size = 0
@@ -242,9 +242,10 @@ class Database:
     def backup_object(self, name: str):
         self._db.backup_object(name)
 
-    # write_object_raw / read_object_raw 已删除（2026-08-30 用户裁定，生产
-    # 零使用）。直写路径需求由 C++ `_write_pickle_bytes`（WriteErrorType int
-    # 返回语义）覆盖；裸读经 `_read_decompressed` + pickle.loads。
+    # write_object_raw / read_object_raw / 直写直读导出（_write_pickle_bytes /
+    # _read_decompressed 等）已删除（2026-08-30 / T2b 2026-08-31 用户裁定，
+    # 生产零使用）。写侧统一 open_write_stream → finish_and_commit 恒流式，
+    # 读侧统一 ex_stg_open_read_stream 流式消费（read_object）。
 
     def get_full_name(self, name: str) -> str:
         return self._db.get_full_name(name)

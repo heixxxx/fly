@@ -3,6 +3,26 @@
 ---
 ---
 
+## 2026-08-31 (3): T2b 死 API 清理——恒流式后无消费者的直写直读导出退役
+
+- **storage_export.cpp**：删 `_write_pickle_bytes`×3 / `_read_streaming`×2 /
+  `_read_decompressed`×2 / `_is_temp` / `_decompress_bytes` /
+  `_compress_pickle_bytes` 导出及其共享实现
+  （read_decompressed_impl / decompress_into_bytes / trailer_expected_size）。
+  C++ 侧 `write_pickle_bytes` / `compress_pickle_bytes` /
+  `read_object_compressed` 方法保留（单测与 ObjectCache populate/low-tier
+  内部路径仍用）；`_write_temp_pickle` 暂留（T2d temp 流式化时处理）。
+- **测试迁移**：storage_test.py / test_database_freeze_protection.py /
+  test_distributed_data_flow.py 改走恒流式路径
+  （open_write_stream→finish_and_commit 写、ex_stg_open_read_stream 读、
+  typed 对象走 `_read_from_db`）；test_read_cache_invalidation.py 直写场景
+  删除（生产路径覆盖）。storage_test.py 补 `_drain()`（裸 pytest 进程无
+  task 收尾排空，写后立读会 TIER1 盘 miss）。
+- **database.py**：write_object / raw 注释区更新（直写直读导出已删）。
+- **遗留**：storage_test.py 全文件跑时 test_fly_database_mixed_cpp_python
+  因裸进程 DataService 单例跨 open_db 状态累积报 corruption（单测/双测组
+  合均过）——非 gate 文件预存在问题，与本轮删除无关，待专门排查。
+
 ## 2026-08-31 (2): 执行上提重构（消灭 C++→Python 反调）+ flows 迁移缺陷修复
 
 - **chunked-transfer-design.md §14.13（新增）**：sd9/project 超时破案
