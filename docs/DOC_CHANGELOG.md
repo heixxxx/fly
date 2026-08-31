@@ -3,6 +3,15 @@
 ---
 ---
 
+## 2026-08-31 (6): T3 dynamic coarse 双对象拆分——static 默认 low / ac 显式 none
+
+- **ras_graph_dynamic.py**：`__rasg__coarse_prebuilt` 单对象拆为
+  `__rasg__coarse_static`（P 数组/N/Nc/b/stride，只读，消费默认 low）+
+  `__rasg__coarse_ac`（Ac 三数组，splu 消费会原地重排，消费方显式
+  `cache="none"` 每次全新反序列化）——按缓存三分层规范（§14.12）落地，
+  splu 污染防护由"消费拷贝"简化为"分层隔离"。
+- 验证：solver 目录 QA 全绿（含 coarse case）。
+
 ## 2026-08-31 (5): T2d temp 写流式化——open_write_stream 参数化 temp sink
 
 - **C++**：`Database::open_write_stream(name, py_name, temp=false)` 参数化——

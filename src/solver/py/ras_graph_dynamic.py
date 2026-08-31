@@ -55,7 +55,10 @@
 参数 hash 不同被 DUPLICATE/PROVENANCE 拒绝）：
     __rasg__b_{t}                        temp   controller(t-1) 写，controller(t) 删
     __rasg__d_addr_{gen}_{sd}            temp   setup_compute 写（依赖锚 + 地址）
-    __rasg__sub_{sd}/coord/cfg/coarse_prebuilt  temp   kickoff 写，全程
+    __rasg__sub_{sd}/coord/cfg            temp   kickoff 写，全程
+    __rasg__coarse_static/_ac             temp   kickoff 写（T3 拆分：static
+                                          只读默认 low；ac splu 可变，消费
+                                          cache="none"），全程
     __rasg__sol_{t}                      持久   check 写（用户数据）
     __rasg__iters_{t} / converged_{t}    temp   check 写（controller 锚点）
     __rasg__dynamic_done                 temp   终止 controller 写（等待点）
@@ -388,19 +391,23 @@ def setup_check_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
     if use_coarse and not has_cache(lu_key):
         from scipy import sparse
         from scipy.sparse.linalg import splu
-        prebuilt = db.read_object("__rasg__coarse_prebuilt")
-        if prebuilt is None or prebuilt.get("skip") or "Ac_indptr" not in prebuilt:
+        # T3（2026-08-31）双对象拆分：static 只读默认 low；ac 被 splu 原地
+        # 重排（列内排序），显式 cache="none" 每次全新反序列化——无需消费
+        # 拷贝防护（原 np.array 防护随拆分简化）。
+        static_part = db.read_object("__rasg__coarse_static")
+        if static_part is None or static_part.get("skip"):
             raise RuntimeError(
                 "[RASG DYN SETUP CHECK] coarse prebuilt missing — dynamic "
                 "coarse mode requires the coord prebuild fast path")
+        ac_part = db.read_object("__rasg__coarse_ac", cache="none")
         t0 = time.perf_counter()
         put_cache(P_key, sparse.csr_matrix(
-            (prebuilt["P_vals"], (prebuilt["P_rows"], prebuilt["P_cols"])),
-            shape=(prebuilt["N"], prebuilt["Nc"])))
+            (static_part["P_vals"], (static_part["P_rows"], static_part["P_cols"])),
+            shape=(static_part["N"], static_part["Nc"])))
         put_cache(lu_key, splu(sparse.csc_matrix(
-            (prebuilt["Ac_data"], prebuilt["Ac_indices"],
-             prebuilt["Ac_indptr"]), shape=prebuilt["Ac_shape"])))
-        INFO(f"[RASG DYN SETUP CHECK] coarse LU built: Nc={prebuilt['Nc']} "
+            (ac_part["Ac_data"], ac_part["Ac_indices"],
+             ac_part["Ac_indptr"]), shape=ac_part["Ac_shape"])))
+        INFO(f"[RASG DYN SETUP CHECK] coarse LU built: Nc={static_part['Nc']} "
              f"t={(time.perf_counter()-t0)*1000:.0f}ms")
     if not has_cache(A_key):
         md = _get_matrix_data(matrix_ref, db)
@@ -1002,14 +1009,25 @@ def _build_coarse_operators(n, N, matrix_ref, db=None):
 
 
 def _prebuild_coarse_in_coord(db, n, N, matrix_ref):
-    """Coord-side: build coarse operators once, publish raw data to DB."""
+    """Coord-side: build coarse operators once, publish raw data to DB.
+
+    T3（2026-08-31）双对象拆分（缓存三分层规范 §14.12）：
+      __rasg__coarse_static  只读数据（P 数组/N/Nc/b/stride）→ 默认 low
+      __rasg__coarse_ac      splu 消费会原地重排的 Ac 数组 → 消费方显式
+                             cache="none"（每次全新反序列化，无污染面）
+    """
     t0 = time.perf_counter()
     result = _build_coarse_operators(n, N, matrix_ref, db)
     if result is None:
         INFO("[RASG COARSE] Skipping: coarse grid too small")
-        db.write_object("__rasg__coarse_prebuilt", {"skip": True}, save_to_db=False)
+        db.write_object("__rasg__coarse_static", {"skip": True}, save_to_db=False)
         return
-    db.write_object("__rasg__coarse_prebuilt", result, save_to_db=False)
+    static_part = {k: result[k] for k in
+                   ("P_rows", "P_cols", "P_vals", "N", "Nc", "b", "stride")}
+    ac_part = {k: result[k] for k in
+               ("Ac_indptr", "Ac_indices", "Ac_data", "Ac_shape")}
+    db.write_object("__rasg__coarse_static", static_part, save_to_db=False)
+    db.write_object("__rasg__coarse_ac", ac_part, save_to_db=False)
     INFO(f"[RASG COARSE] coord prebuild: {(time.perf_counter()-t0)*1000:.0f}ms "
          f"Nc={result['Nc']}")
 
