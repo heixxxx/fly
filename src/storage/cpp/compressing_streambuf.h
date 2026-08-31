@@ -1,7 +1,7 @@
 #pragma once
 
 #include <storage/cpp/compressor.h>
-#include <common/cpp/common_types.h>
+#include <storage/cpp/pipeline.h>
 #include <cstdint>
 #include <fstream>
 #include <functional>
@@ -9,6 +9,10 @@
 #include <streambuf>
 #include <vector>
 
+// CompressingStreamBuf —— ostream/sink 适配层（流插件化后为薄壳）：
+// 明文字节按 chunk_size 切块，逐块经管线 Stage（压缩 → CRC → 块格式化）
+// 交给端点（dest 流式写 / sink 逐块回调）。变换逻辑在
+// storage/cpp/pipeline.h 的 Stage 中，本类只做流接口适配与统计转发。
 class CompressingStreamBuf : public std::streambuf {
 public:
     // compression_threshold: payloads at or below this size (in bytes) skip
@@ -20,25 +24,26 @@ public:
     CompressingStreamBuf(std::ostream& dest, CMUniquePtr<Compressor> compressor,
                          int64_t chunk_size = 4194304,
                          int64_t compression_threshold = 4096);
-    // L1 流式 sink（§9.1 #40）：flush_chunk 完成即回调 sink(chunk_view)——
-    // "压缩一块、交付一块"（sink = 逐块构造 WriteRequest 入 WBQ / 增量写盘）。
+    // L1 流式 sink（§9.1 #40）：压缩一块、交付一块（sink = 逐块构造
+    // WriteRequest 入 WBQ / 增量写盘 / 网络帧）。
     CompressingStreamBuf(CMUniquePtr<Compressor> compressor,
                          int64_t chunk_size,
                          std::function<void(const char*, size_t)> sink,
                          int64_t compression_threshold = 4096);
     ~CompressingStreamBuf() override;
 
-    int64_t total_uncompressed() const { return total_uncompressed_; }
-    int32_t chunk_count() const { return chunk_count_; }
-    // 块位置表素材（§14.1 B'）：每块压缩后字节长（flush_chunk 收集）——
-    // trailer 块表的登记来源。
-    const CMVector<uint32_t>& block_comp_lens() const { return block_comp_lens_; }
-    CompressionType compression_type() const { return compressor_ ? compressor_->type() : CompressionType::NONE; }
-    // Effective compression type actually applied to the flushed data. Differs
-    // from compression_type() only when a small payload skipped compression:
-    // then it returns NONE even though a real compressor was configured.
+    int64_t total_uncompressed() const { return pipeline_.total_uncompressed(); }
+    int32_t chunk_count() const { return pipeline_.chunk_count(); }
+    // 块位置表素材（§14.1 B'）：每块压缩后字节长——trailer 块表的登记来源。
+    const CMVector<uint32_t>& block_comp_lens() const { return pipeline_.block_comp_lens(); }
+    CompressionType compression_type() const { return comp_type_; }
+    // Effective compression type actually applied to the flushed data.
+    // All-raw 单块流（旧 skip 语义）→ NONE，否则为配置的压缩类型。
     CompressionType effective_compression_type() const {
-        return skipped_ ? CompressionType::NONE : compression_type();
+        if (pipeline_.chunk_count() > 0 && pipeline_.all_raw()) {
+            return CompressionType::NONE;
+        }
+        return comp_type_;
     }
 
 protected:
@@ -47,20 +52,11 @@ protected:
     int sync() override;
 
 private:
-    void flush_chunk();
-    void emit(const char* data, size_t n);  // dest_ 或 sink_（二选一）
-
+    void emit(const char* data, size_t n);            // 端点交付（sink 或 dest）
     std::ostream* dest_ = nullptr;                    // ostream 模式
     std::function<void(const char*, size_t)> sink_;   // L1 sink 模式
-    CMUniquePtr<Compressor> compressor_;
+    CompressionType comp_type_ = CompressionType::NONE;
     int64_t chunk_size_;
     int64_t compression_threshold_;
-    CMVector<char> buffer_;
-    int64_t total_uncompressed_ = 0;
-    int32_t chunk_count_ = 0;
-    CMVector<uint32_t> block_comp_lens_;  // 每块压缩后字节长（B' 块表素材）
-    // True once flush_chunk() decided to skip compression for this payload.
-    // Set when the first chunk is flushed and the buffered payload is small
-    // enough; remains false for larger payloads that actually compressed.
-    bool skipped_ = false;
+    fly::WritePipeline pipeline_;
 };

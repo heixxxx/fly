@@ -45,7 +45,7 @@ TEST(PipelineTest, RoundtripMultiChunk) {
     const int64_t chunk = 4 * 1024 * 1024;
 
     ByteSink sink;
-    auto wp = make_file_write_pipeline(CompressionType::LZ4, -1, chunk,
+    auto wp = make_file_write_pipeline(CompressorFactory::create(CompressionType::LZ4, -1), chunk,
                                        sink.emit());
     wp.write(payload.data(), payload.size());
     wp.finish();
@@ -77,7 +77,7 @@ TEST(PipelineTest, RawPassthroughOnIncompressibleHighEntropy) {
     // 高熵数据在 85% 规则下应全部 raw 直通（comp == unc）。
     const std::string payload = MakePseudoRandom(1024);
     ByteSink sink;
-    auto wp = make_file_write_pipeline(CompressionType::LZ4, -1, 4096,
+    auto wp = make_file_write_pipeline(CompressorFactory::create(CompressionType::LZ4, -1), 4096,
                                        sink.emit());
     wp.write(payload.data(), payload.size());
     wp.finish();
@@ -101,7 +101,7 @@ TEST(PipelineTest, CompressionAppliedOnCompressible) {
     // 高度可压缩数据：压缩有效（comp < unc），往返还原。
     const std::string payload(1 << 20, 'A');  // 1MB 同字符
     ByteSink sink;
-    auto wp = make_file_write_pipeline(CompressionType::LZ4, -1,
+    auto wp = make_file_write_pipeline(CompressorFactory::create(CompressionType::LZ4, -1),
                                        256 * 1024, sink.emit());
     wp.write(payload.data(), payload.size());
     wp.finish();
@@ -128,7 +128,7 @@ TEST(PipelineTest, CompressionAppliedOnCompressible) {
 TEST(PipelineTest, CorruptionDetected) {
     const std::string payload = MakePseudoRandom(64 * 1024);
     ByteSink sink;
-    auto wp = make_file_write_pipeline(CompressionType::LZ4, -1,
+    auto wp = make_file_write_pipeline(CompressorFactory::create(CompressionType::LZ4, -1),
                                        32 * 1024, sink.emit());
     wp.write(payload.data(), payload.size());
     wp.finish();
@@ -173,53 +173,52 @@ void ExpectBytesEq(const std::string& a, const std::string& b) {
 }
 }  // namespace
 
-TEST(PipelineTest, ByteCompatibleWithCompressingStreamBuf) {
-    const std::string payload = MakePseudoRandom(5 * 1024 * 1024 + 12345);
-    const int64_t chunk = 1024 * 1024;
+// NONE 模式契约：全 raw 直通（comp == unc），块数按 chunk 切分，往返还原。
+TEST(PipelineTest, NoneCompressionRoundtripAllRaw) {
+    const std::string payload = MakePseudoRandom(64 * 1024 + 123);  // 3 块 @32KB
+    const int64_t chunk = 32 * 1024;
 
-    auto compress = [&](CompressionType type) {
-        ByteSink sink;
-        // ratio_floor = INT_MAX：无条件采用压缩输出（含膨胀尾块），逐字节
-        // 复刻旧 flush_chunk 行为（floor=100 时"膨胀即 raw"是有意的差异）。
-        auto wp = make_file_write_pipeline(type, -1, chunk, sink.emit(), 1 << 30);
-        wp.write(payload.data(), payload.size());
-        wp.finish();
-        return sink.out;
-    };
-    auto legacy = [&](CompressionType type) {
-        std::string out;
-        fly::EmitFn emit = [&](const char* d, size_t n) { out.append(d, n); };
-        auto compressor = type == CompressionType::NONE
-                              ? nullptr
-                              : CompressorFactory::create(type, -1);
-        // L1 sink 模式构造（threshold 默认 4096，与 Database 一致）。
-        CompressingStreamBuf csbuf(std::move(compressor), chunk, emit);
-        std::ostream os(&csbuf);
-        os.write(payload.data(), static_cast<std::streamsize>(payload.size()));
-        os.flush();
-        return out;
-    };
+    ByteSink sink;
+    auto wp = make_file_write_pipeline(nullptr, chunk, sink.emit(), 85, -1);
+    wp.write(payload.data(), payload.size());
+    wp.finish();
+    // 3 块 × 16B 头 + 明文（全 raw，无膨胀）。
+    ASSERT_EQ(sink.out.size(), 3u * 16u + payload.size());
 
-    for (auto type : {CompressionType::LZ4, CompressionType::NONE}) {
-        SCOPED_TRACE(CompressorFactory::name_from_type(type));
-        ExpectBytesEq(compress(type), legacy(type));
+    auto view = std::string_view(sink.out);
+    auto pull = [&view](char* dst, size_t n) -> int64_t {
+        if (view.empty()) return 0;
+        const size_t take = std::min(n, view.size());
+        std::memcpy(dst, view.data(), take);
+        view.remove_prefix(take);
+        return static_cast<int64_t>(take);
+    };
+    auto rp = make_block_read_pipeline(CompressionType::NONE, pull);
+    std::string restored;
+    fly::BlockData b;
+    size_t blocks = 0;
+    while (rp.next_block(b)) {
+        EXPECT_TRUE(b.raw);
+        restored.append(b.plain);
+        blocks++;
     }
+    ASSERT_FALSE(rp.failed());
+    EXPECT_EQ(blocks, 3u);
+    EXPECT_EQ(restored, payload);
 }
 
-// 85% 规则（默认 ratio_floor）下：高熵块直通使 record 变小 + 往返仍一致，
-// 且读管线能解旧实现输出（结构互操作）。
 TEST(PipelineTest, RatioFloorShrinksRecordAndStaysReadable) {
     const std::string payload = MakePseudoRandom(3 * 1024 * 1024 + 7);
     const int64_t chunk = 1024 * 1024;
 
     ByteSink sink_floor;
-    auto wp = make_file_write_pipeline(CompressionType::LZ4, -1, chunk,
+    auto wp = make_file_write_pipeline(CompressorFactory::create(CompressionType::LZ4, -1), chunk,
                                        sink_floor.emit(), 85);
     wp.write(payload.data(), payload.size());
     wp.finish();
 
     ByteSink sink_keep;
-    auto wp2 = make_file_write_pipeline(CompressionType::LZ4, -1, chunk,
+    auto wp2 = make_file_write_pipeline(CompressorFactory::create(CompressionType::LZ4, -1), chunk,
                                         sink_keep.emit(), 100);
     wp2.write(payload.data(), payload.size());
     wp2.finish();
@@ -248,7 +247,7 @@ TEST(PipelineTest, RatioFloorShrinksRecordAndStaysReadable) {
 
 TEST(PipelineTest, EmptyStreamProducesNoBlocks) {
     ByteSink sink;
-    auto wp = make_file_write_pipeline(CompressionType::LZ4, -1, 4096,
+    auto wp = make_file_write_pipeline(CompressorFactory::create(CompressionType::LZ4, -1), 4096,
                                        sink.emit());
     wp.write("", 0);
     wp.finish();

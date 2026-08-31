@@ -1,6 +1,7 @@
 #pragma once
 
 #include <storage/cpp/compressor.h>
+#include <storage/cpp/pipeline.h>
 #include <common/cpp/chunk_source.h>
 #include <common/cpp/common_types.h>
 #include <cstdint>
@@ -16,20 +17,21 @@
 // trailer:      ObjectHeader bytes + crc(trailer bytes)（尾置，兼作 commit marker）
 //
 // 两种输入模式（L3，§8.1）：
-//   1. 内存模式（现行为）：DecompressingStreamBuf(data, size)——内部包
+//   1. 内存模式：DecompressingStreamBuf(data, size)——内部包
 //      MemoryChunkSource，构造时尾部解析 trailer。
 //   2. 流式模式：DecompressingStreamBuf(ChunkSource, block_area_len)——
-//      网络分片流（接收线程 + 有界队列）驱动，块流边界由 META 提供
-//      （server 发送前 pread 尾部解析——消费端无法预先读流尾）。
+//      网络分片流（接收线程 + 有界队列）驱动，块流边界由 META 提供。
+//
+// 流插件化（2026-08-31）：块拉取/验证/解压委托 fly::ReadPipeline
+// （CrcVerifyStage + DecompressStage），本类只做 streambuf 适配。
+// 拉取以 block_area_len 为上界（trailer 字节不进管线）；块中截断 =
+// failed（零容忍）；块级 raw 直通（comp == unc）由 DecompressStage 处理。
 //
 // 校验失败（trailer 解析失败 / 块 CRC 失配 / 块流越界或未恰好耗尽 / 解压失败 /
 // 源侧 failed）置 checksum_failed_ —— 读完后调用方必须检查 checksum_failed()
 // 并按零容忍语义处理（一次重取 → 仍败 FATAL），不得当作正常 EOF 消费。
 //
-// Decompresses chunks on demand, serving decompressed bytes via the
-// std::streambuf interface. Designed to be paired with bitsery/pickle
-// streaming deserialization. The source (and for memory mode, its data
-// pointer) must outlive this object.
+// The source (and for memory mode, its data pointer) must outlive this object.
 // 空输入（data == nullptr 或 size == 0）合法：空流，不标记校验失败。
 class DecompressingStreamBuf : public std::streambuf {
 public:
@@ -54,17 +56,17 @@ protected:
 
 private:
     bool refill();
+    void build_pipeline(CompressionType comp);
     // 从源精确拉取 n 字节（凑齐语义）。false = EOF/失败。
     bool pull_exact(char* dst, size_t n);
 
     CMSharedPtr<fly::ChunkSource> source_;
     uint64_t block_area_len_ = 0;   // 块流区域边界（恰耗校验锚点）
-    uint64_t consumed_ = 0;         // 块流区域已消费字节
-
-    CMUniquePtr<Compressor> compressor_;
+    uint64_t pull_consumed_ = 0;    // 块流区域已消费字节（拉取闭包计数）
     bool checksum_failed_ = false;
 
-    CMVector<char> buffer_;
-    size_t buffer_pos_ = 0;
-    size_t buffer_avail_ = 0;
+    fly::CMUniquePtr<fly::ReadPipeline> pipeline_;
+    std::string_view plain_;        // 当前明文块（pipeline scratch，下次 refill 前有效）
+    size_t plain_pos_ = 0;
+    size_t plain_avail_ = 0;
 };

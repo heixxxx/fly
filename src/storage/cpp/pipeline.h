@@ -41,7 +41,8 @@ struct BlockData {
     uint32_t unc_size = 0;
     uint32_t comp_size = 0;
     bool raw = false;           // true: 未压缩块（comp == unc）
-    bool failed = false;        // 读方向：CRC 失配等（零容忍信号）
+    bool tail = false;          // 写方向：流尾块（finish 刷出的块）
+    bool failed = false;        // 读方向：CRC 失配/截断等（零容忍信号）
 };
 
 using EmitFn = std::function<void(const char* data, size_t n)>;
@@ -61,16 +62,23 @@ public:
 
 // ── 写方向 Stage ──
 
-// 压缩插件：明文 → 压缩输出；压缩率不足（输出 ≥ ratio_floor_pct% × 明文）
-// 时放弃压缩——encoded 切回 plain 视图（零拷贝），comp == unc 隐式标记 raw，
-// 省对端解压（float64 等高熵数据画像）。压缩消耗的仅是本端 CPU。
+// 压缩插件：明文 → 压缩输出；块级压缩率不足（输出 ≥ ratio_floor_pct% ×
+// 明文）时放弃压缩——encoded 切回 plain 视图（零拷贝），comp == unc 隐式
+// 标记 raw，省对端解压（float64 等高熵数据画像）。
+// 流级阈值（raw_threshold）：尾块且 ≤ 阈值时整块 raw 直通——复刻旧
+// "首块小对象跳过压缩"语义（skip ⟺ 单块流且 ≤ 阈值）。
 class CompressStage : public WriteStage {
 public:
-    CompressStage(CMUniquePtr<Compressor> compressor, int ratio_floor_pct = 85)
-        : compressor_(std::move(compressor)), ratio_floor_pct_(ratio_floor_pct) {}
+    CompressStage(CMUniquePtr<Compressor> compressor, int ratio_floor_pct = 85,
+                  int64_t raw_threshold = -1)
+        : compressor_(std::move(compressor)),
+          ratio_floor_pct_(ratio_floor_pct),
+          raw_threshold_(raw_threshold) {}
 
     void process(BlockData& b) override {
-        if (!compressor_ || ratio_floor_pct_ <= 0) {
+        if (!compressor_ || ratio_floor_pct_ <= 0 ||
+            (b.tail && raw_threshold_ >= 0 &&
+             static_cast<int64_t>(b.unc_size) <= raw_threshold_)) {
             b.raw = true;
             b.comp_size = b.unc_size;
             b.encoded = b.plain;
@@ -95,6 +103,7 @@ public:
 private:
     CMUniquePtr<Compressor> compressor_;
     int ratio_floor_pct_;
+    int64_t raw_threshold_;
     CMString chunk_data_;
 };
 
@@ -145,9 +154,11 @@ public:
 
     void process(BlockData& b) override {
         if (!compressor_ || b.comp_size == b.unc_size) {
-            b.plain = b.encoded;  // raw 直通
+            b.raw = true;        // 读方向：直通块标记（comp == unc）
+            b.plain = b.encoded;
             return;
         }
+        b.raw = false;
         plain_.resize(static_cast<size_t>(b.unc_size));
         const int32_t written = compressor_->decompress_to(
             {b.encoded.data(), b.comp_size}, plain_.data(), b.unc_size);
@@ -188,15 +199,19 @@ public:
         }
     }
 
-    // 刷出尾块（不足 chunk_size 的剩余）。空流无块。
+    // 刷出尾块（不足 chunk_size 的剩余）。空流无块。尾块带 tail 标记
+    // （CompressStage 的流级 raw 阈值语义依赖它）。
     void finish() {
         if (!buf_.empty()) {
+            ctx_.tail = true;
             flush_block();
         }
     }
 
     uint64_t total_uncompressed() const { return total_uncompressed_; }
     uint32_t chunk_count() const { return chunk_count_; }
+    uint32_t raw_blocks() const { return raw_blocks_; }
+    bool all_raw() const { return chunk_count_ > 0 && raw_blocks_ == chunk_count_; }
     const std::vector<uint32_t>& block_comp_lens() const { return block_comp_lens_; }
 
 private:
@@ -210,8 +225,10 @@ private:
         for (auto& stage : stages_) {
             stage->process(ctx_);
         }
+        ctx_.tail = false;
         total_uncompressed_ += buf_.size();
         chunk_count_++;
+        if (ctx_.raw) raw_blocks_++;
         block_comp_lens_.push_back(ctx_.comp_size);
         buf_.clear();
     }
@@ -223,11 +240,13 @@ private:
     BlockData ctx_;
     uint64_t total_uncompressed_ = 0;
     uint32_t chunk_count_ = 0;
+    uint32_t raw_blocks_ = 0;
     std::vector<uint32_t> block_comp_lens_;
 };
 
 // 拉取式读管线：从 source 逐块还原明文。next_block 返回 false = EOF 或
 // 损坏（failed() 区分——损坏按零容忍处理，不得当作正常 EOF）。
+// 块中截断（块头/数据不完整）= failed；仅拉块头起点处的干净耗尽 = EOF。
 // out.plain 有效期至下次 next_block。
 class ReadPipeline {
 public:
@@ -238,9 +257,16 @@ public:
         if (failed_ || eof_) return false;
         char hdr[16];
         if (!pull_exact(hdr, sizeof(hdr))) {
-            eof_ = true;
+            // 恰好耗尽（一次未取到任何字节）= 干净 EOF；部分字节后截断 =
+            // 结构损坏（零容忍），不静默当作 EOF。
+            if (hdr_partial_) {
+                failed_ = true;
+            } else {
+                eof_ = true;
+            }
             return false;
         }
+        hdr_partial_ = false;
         BlockData b;
         std::memcpy(&b.unc_size, hdr, sizeof(b.unc_size));
         std::memcpy(&b.comp_size, hdr + sizeof(b.unc_size), sizeof(b.comp_size));
@@ -248,7 +274,7 @@ public:
                     sizeof(b.crc));
         scratch_.resize(b.comp_size);
         if (!pull_exact(scratch_.data(), b.comp_size)) {
-            eof_ = true;  // 截断：按 EOF 语义交由上层对账（字节计数不符暴露）
+            failed_ = true;  // 块数据截断 = 结构损坏
             return false;
         }
         b.encoded = std::string_view(scratch_.data(), scratch_.size());
@@ -272,6 +298,7 @@ private:
             const int64_t r = pull_(dst + got, n - got);
             if (r <= 0) return false;
             got += static_cast<size_t>(r);
+            if (got > 0 && got < n) hdr_partial_ = true;
         }
         return true;
     }
@@ -279,18 +306,26 @@ private:
     std::vector<std::unique_ptr<ReadStage>> stages_;
     PullFn pull_;
     std::vector<char> scratch_;
+    bool hdr_partial_ = false;
     bool failed_ = false;
     bool eof_ = false;
 };
 
 // ── 装配工厂 ──
 
-// 文件模式写管线：压缩（含块级压缩率直通）→ CRC → 块格式化 → sink。
+// 文件模式写管线：压缩（含块级压缩率直通 + 流级 raw 阈值）→ CRC →
+// 块格式化 → sink。compressor 为空 = NONE（全 raw 直通）。
 // ratio_floor_pct：块级压缩率下限（输出 ≥ 该百分比 × 明文则 raw 直通）；
-// ≥100 禁用直通（输出与旧实现逐字节一致，golden 对照用）。
-WritePipeline make_file_write_pipeline(CompressionType comp, int level,
+// INT_MAX 复刻旧"无条件采用压缩输出"行为。
+// raw_threshold：流级阈值——尾块 ≤ 阈值时整块 raw（复刻旧"小对象跳过
+// 压缩"语义）；<0 禁用。
+WritePipeline make_file_write_pipeline(CMUniquePtr<Compressor> compressor,
                                        int64_t chunk_size, EmitFn sink,
-                                       int ratio_floor_pct = 85);
+                                       int ratio_floor_pct = 85,
+                                       int64_t raw_threshold = -1);
+
+// 压缩块流读管线：CRC 验证 → 解压（comp == unc 块自动直通）。
+ReadPipeline make_block_read_pipeline(CompressionType comp, PullFn pull);
 
 // 压缩块流读管线：CRC 验证 → 解压（comp == unc 块自动直通）。
 ReadPipeline make_block_read_pipeline(CompressionType comp, PullFn pull);
