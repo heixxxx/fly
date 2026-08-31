@@ -696,7 +696,9 @@ TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DATA_CHUNK)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::CHUNK_RESEND)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DATA_DIGEST)));
-    EXPECT_FALSE(is_valid_message_type(66));  // upper bound is 65
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::PEER_STREAM_START)));
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::PEER_STREAM_END)));
+    EXPECT_FALSE(is_valid_message_type(68));  // upper bound is 67
     EXPECT_FALSE(is_valid_message_type(0));
 }
 

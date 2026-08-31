@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 #include <agent/cpp/peer_rpc_server.h>
+#include <common/cpp/data_checksum.h>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -62,6 +63,19 @@ protected:
         if (client) client->stop();
     }
 
+    // 确定性伪随机字节（LFSR，高熵可复现）。
+    static std::string MakePseudoRandomBytes(size_t n, uint32_t seed = 0x12345678) {
+        std::string out(n, '\0');
+        uint32_t x = seed;
+        for (size_t i = 0; i < n; i++) {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            out[i] = static_cast<char>(x & 0xFF);
+        }
+        return out;
+    }
+
     // 起 server + client 并建连。返回连接 id。
     uint64_t setup_connected_pair(PeerRpcServer::RequestHandler handler) {
         int port = server->listen("127.0.0.1", 0, handler);
@@ -86,6 +100,103 @@ TEST_F(PeerRpcServerTest, ListenAllocatesPortAndStopCleansUp) {
     EXPECT_TRUE(server->is_running());
     server->stop();
     EXPECT_FALSE(server->is_running());
+}
+
+TEST_F(PeerRpcServerTest, StreamRequestLargePayloadDeliveredIntact) {
+    // 流式请求（10MB 伪随机，> 4MB 帧 → 多帧）：块级 CRC + END 对账后
+    // handler 收到完整明文。
+    const std::string payload = MakePseudoRandomBytes(10 * 1024 * 1024);
+    const uint64_t expect_crc = data_checksum(payload.data(), payload.size());
+    std::atomic<bool> got{false};
+    std::atomic<uint64_t> got_crc{0};
+    std::atomic<size_t> got_size{0};
+    uint64_t conn = setup_connected_pair(
+        [&](uint64_t, uint64_t, uint64_t, const CMString& p) {
+            got_size = p.size();
+            got_crc = data_checksum(p.data(), p.size());
+            got = true;
+            return std::nullopt;
+        });
+    ASSERT_NE(conn, 0u);
+
+    PeerStreamWriter w(client.get(), conn, /*rpc_id=*/9, /*direction=*/0,
+                       CompressionType::LZ4, -1);
+    ASSERT_TRUE(w.ok());
+    w.write(payload.data(), payload.size());
+    ASSERT_TRUE(w.finish());
+    EXPECT_EQ(w.total_uncompressed(), payload.size());
+
+    for (int i = 0; i < 100 && !got; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    EXPECT_TRUE(got.load());
+    EXPECT_EQ(got_size.load(), payload.size());
+    EXPECT_EQ(got_crc.load(), expect_crc);
+}
+
+TEST_F(PeerRpcServerTest, StreamResponseRoundtripSmallPayload) {
+    // 统一流式协议：小 payload（16B，单块流）请求 → 流式响应 echo。
+    // START/DATA/END 三帧合并语义下小消息同样走管线（无阈值裁定）。
+    const std::string payload = MakePseudoRandomBytes(16);
+    CallbackLatch latch;
+    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, uint8_t status,
+                                          const CMString& payload_in) {
+        latch.notify(rpc_id, status, payload_in);
+    });
+
+    uint64_t conn = setup_connected_pair(
+        [&](uint64_t c, uint64_t rid, uint64_t, const CMString& p) {
+            EXPECT_EQ(p, payload);
+            uint64_t total = 0;
+            uint32_t chunks = 0;
+            EXPECT_TRUE(server->send_stream_payload(c, rid, /*direction=*/1, p,
+                                                    CompressionType::LZ4, -1,
+                                                    total, chunks));
+            return std::nullopt;
+        });
+    ASSERT_NE(conn, 0u);
+
+    PeerStreamWriter w(client.get(), conn, /*rpc_id=*/77, /*direction=*/0,
+                       CompressionType::LZ4, -1);
+    ASSERT_TRUE(w.ok());
+    w.write(payload.data(), payload.size());
+    ASSERT_TRUE(w.finish());
+
+    ASSERT_TRUE(latch.wait()) << "streamed response should arrive";
+    EXPECT_EQ(latch.rpc_id_, 77u);
+    EXPECT_EQ(latch.status_, static_cast<uint8_t>(PeerRpcWireStatus::OK));
+    EXPECT_EQ(latch.payload_, payload);
+}
+
+TEST_F(PeerRpcServerTest, StreamTruncatedVerifyClosesConnection) {
+    // END 对账失配：零容忍——坏流不交付（handler 不触发），server 主动
+    // close 使 client 侧收到 DISCONNECT（调用方等待语义由 DISCONNECT 兜底）。
+    DisconnectLatch dlatch;
+    client->set_disconnect_handler([&dlatch](uint64_t c) { dlatch.notify(c); });
+    std::atomic<bool> handler_fired{false};
+    uint64_t conn = setup_connected_pair([&](uint64_t, uint64_t, uint64_t,
+                                             const CMString&) {
+        handler_fired = true;
+        return std::nullopt;
+    });
+    ASSERT_NE(conn, 0u);
+
+    // 发 START + 一帧 DATA，但 END 谎报 total —— 对账失配路径。
+    EXPECT_TRUE(client->send_stream_start(conn, 5, 0,
+                                          static_cast<uint8_t>(CompressionType::LZ4)));
+    const std::string chunk_data(1024, 'x');
+    EXPECT_TRUE(client->send_stream_data(conn, chunk_data.data(), chunk_data.size()));
+    EXPECT_TRUE(client->send_stream_end(conn, 5, /*total_uncompressed=*/999999,
+                                        /*chunk_count=*/1,
+                                        /*consumed=*/chunk_data.size()));
+    for (int i = 0; i < 100 && !handler_fired; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_FALSE(handler_fired.load()) << "对账失配不得把坏流当 payload 交付";
+    for (int i = 0; i < 100 && !dlatch.fired(); i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_TRUE(dlatch.fired()) << "零容忍：对账失配必须断连暴露";
 }
 
 TEST_F(PeerRpcServerTest, EndToEndRoundTrip) {

@@ -1,4 +1,5 @@
 #include <agent/cpp/peer_rpc_server.h>
+#include <storage/cpp/pipeline.h>
 #include <chrono>
 
 namespace fly {
@@ -89,7 +90,19 @@ void PeerRpcServer::server_loop() {
                         uint8_t status;          // RESPONSE only
                         CMString payload;
                     };
+                    // 流式完成（END 到达）：压缩块流移出后锁外解压对账。
+                    struct StreamDone {
+                        bool is_request;
+                        uint64_t rpc_id;
+                        uint64_t src_worker_id;
+                        uint8_t compression_type;
+                        CMString compressed;
+                        uint64_t total_uncompressed;
+                        uint32_t chunk_count;
+                        uint64_t consumed;
+                    };
                     CMVector<DecodedMsg> decoded_msgs;
+                    CMVector<StreamDone> done_streams;
                     {
                         std::lock_guard<std::mutex> lk(buf_mutex_);
                         auto it = recv_bufs_.find(event.conn_id_);
@@ -107,13 +120,85 @@ void PeerRpcServer::server_loop() {
                             // 帧完整性检查：8B header + 1B type + 字段 + payload
                             if (buf.size() < 9) break;  // 不足 header，等更多数据
                             uint64_t total_len = MessageProtocol::get_total_size(buf);
-                            if (total_len < 1 || buf.size() < 8 + total_len) break;  // 帧不完整
+                            if (total_len < 1) {
+                                buf.clear();  // 坏头：清缓冲防积压
+                                break;
+                            }
+                            if (buf.size() < 8 + total_len) break;  // 帧不完整
                             uint8_t raw_type = static_cast<uint8_t>(buf[8]);
                             const bool is_req =
                                 raw_type == static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST);
                             const bool is_resp =
                                 raw_type == static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE);
                             if (!is_req && !is_resp) {
+                                // ── 流式帧（连接独占：START→DATA×N→END）──
+                                if (raw_type == static_cast<uint8_t>(MessageType::PEER_STREAM_START)) {
+                                    PeerStreamStartMessage m;
+                                    if (!MessageProtocol::decode(buf, m)) {
+                                        ERR("[PEER-STREAM] corrupt START, closing conn");
+                                        buf.clear();
+                                        streams_.erase(event.conn_id_);
+                                        close_connection(event.conn_id_);
+                                        break;
+                                    }
+                                    auto& s = streams_[event.conn_id_];
+                                    s.rpc_id = m.rpc_id_;
+                                    s.direction = m.direction_;
+                                    s.compression_type = m.compression_type_;
+                                    s.consumed = 0;
+                                    s.active = true;
+                                    continue;
+                                }
+                                if (raw_type == static_cast<uint8_t>(MessageType::PEER_STREAM_END)) {
+                                    PeerStreamEndMessage m;
+                                    if (!MessageProtocol::decode(buf, m)) {
+                                        ERR("[PEER-STREAM] corrupt END, closing conn");
+                                        buf.clear();
+                                        streams_.erase(event.conn_id_);
+                                        close_connection(event.conn_id_);
+                                        break;
+                                    }
+                                    auto sit = streams_.find(event.conn_id_);
+                                    if (sit == streams_.end() || !sit->second.active) {
+                                        ERR("[PEER-STREAM] END without active stream, closing conn");
+                                        buf.clear();
+                                        close_connection(event.conn_id_);
+                                        break;
+                                    }
+                                    done_streams.push_back({sit->second.direction == 0,
+                                                            m.rpc_id_, 0,
+                                                            sit->second.compression_type,
+                                                            std::move(sit->second.compressed),
+                                                            m.total_uncompressed_,
+                                                            m.chunk_count_, m.consumed_});
+                                    streams_.erase(sit);
+                                    continue;
+                                }
+                                if (raw_type == static_cast<uint8_t>(MessageType::DATA_CHUNK)) {
+                                    auto sit = streams_.find(event.conn_id_);
+                                    if (sit == streams_.end() || !sit->second.active) {
+                                        // 无流上下文：协议错位——丢弃整帧防积压。
+                                        WARN("[PEER-STREAM] DATA without active stream ({}B), discarding",
+                                             8 + total_len);
+                                        buf.erase(0, 8 + total_len);
+                                        continue;
+                                    }
+                                    // 帧头 29B（8B frame + 1B type + 4B small_len + 16B
+                                    // small fields）；payload = 块流字节，单次 append。
+                                    // raw = total_len - (1 + 4 + 16)——total_len 不含
+                                    // 外层 8B frame header。
+                                    const uint64_t raw_len =
+                                        ChunkFrameProtocol::raw_len_from_total(total_len);
+                                    if (buf.size() < 8 + total_len || raw_len == 0) {
+                                        ERR("[PEER-STREAM] short DATA_CHUNK frame");
+                                        buf.clear();
+                                        break;
+                                    }
+                                    sit->second.compressed.append(buf.data() + 29, raw_len);
+                                    sit->second.consumed += raw_len;
+                                    buf.erase(0, 8 + total_len);
+                                    continue;
+                                }
                                 buf.clear();  // 未知类型，清缓冲防积压
                                 break;
                             }
@@ -130,7 +215,54 @@ void PeerRpcServer::server_loop() {
                                                     std::move(payload)});
                         }
                     }
-                    // 锁外调 handler（回调可能耗时，不应持锁）
+                    // 锁外调 handler（回调可能耗时，不应持锁）。
+                    // 先处理流式完成：解压 + 对账（失配 = 零容忍，close 连接）。
+                    for (auto& sd : done_streams) {
+                        auto view = std::string_view(sd.compressed);
+                        auto pull = [&view](char* dst, size_t n) -> int64_t {
+                            if (view.empty()) return 0;
+                            const size_t take = std::min(n, view.size());
+                            std::memcpy(dst, view.data(), take);
+                            view.remove_prefix(take);
+                            return static_cast<int64_t>(take);
+                        };
+                        auto rp = fly::make_block_read_pipeline(
+                            static_cast<CompressionType>(sd.compression_type), pull);
+                        CMString plain;
+                        fly::BlockData b;
+                        uint64_t total = 0;
+                        uint32_t chunks = 0;
+                        while (rp.next_block(b)) {
+                            plain.append(b.plain);
+                            total += b.unc_size;
+                            chunks++;
+                        }
+                        if (rp.failed() || total != sd.total_uncompressed ||
+                            chunks != sd.chunk_count ||
+                            sd.consumed != sd.compressed.size()) {
+                            ERR("[PEER-STREAM] stream verify failed: total={} expect={} "
+                                "chunks={} expect={} consumed={} expect={}",
+                                total, sd.total_uncompressed, chunks, sd.chunk_count,
+                                sd.compressed.size(), sd.consumed);
+                            close_connection(event.conn_id_);  // 零容忍：断连唤醒调用方
+                            break;
+                        }
+                        if (sd.is_request) {
+                            if (request_handler_) {
+                                auto resp = request_handler_(event.conn_id_, sd.rpc_id,
+                                                              sd.src_worker_id, plain);
+                                if (resp.has_value()) {
+                                    send_response(event.conn_id_, sd.rpc_id,
+                                                   static_cast<uint8_t>(PeerRpcWireStatus::OK),
+                                                   resp.value());
+                                }
+                            }
+                        } else if (response_handler_) {
+                            response_handler_(event.conn_id_, sd.rpc_id,
+                                              static_cast<uint8_t>(PeerRpcWireStatus::OK),
+                                              plain);
+                        }
+                    }
                     for (auto& dm : decoded_msgs) {
                         if (dm.is_request) {
                             if (request_handler_) {
@@ -179,6 +311,131 @@ void PeerRpcServer::server_loop() {
                     break;
             }
         }
+    }
+}
+
+bool PeerRpcServer::send_stream_start(uint64_t conn_id, uint64_t rpc_id,
+                                      uint8_t direction, uint8_t compression_type) {
+    if (!transport_) return false;
+    PeerStreamStartMessage m;
+    m.rpc_id_ = rpc_id;
+    m.direction_ = direction;
+    m.compression_type_ = compression_type;
+    CMString frame = MessageProtocol::encode(m);
+    return transport_->send(conn_id, frame) > 0;
+}
+
+bool PeerRpcServer::send_stream_data(uint64_t conn_id, const char* data, size_t n) {
+    if (!transport_) return false;
+    CMString hdr = ChunkFrameProtocol::encode_header(0, 0, n);
+    if (transport_->send(conn_id, hdr) <= 0) return false;
+    if (n == 0) return true;
+    return transport_->send(conn_id, CMString(data, n)) > 0;
+}
+
+bool PeerRpcServer::send_stream_end(uint64_t conn_id, uint64_t rpc_id,
+                                    uint64_t total_uncompressed, uint32_t chunk_count,
+                                    uint64_t consumed) {
+    if (!transport_) return false;
+    PeerStreamEndMessage m;
+    m.rpc_id_ = rpc_id;
+    m.total_uncompressed_ = total_uncompressed;
+    m.chunk_count_ = chunk_count;
+    m.consumed_ = consumed;
+    CMString frame = MessageProtocol::encode(m);
+    return transport_->send(conn_id, frame) > 0;
+}
+
+bool PeerRpcServer::send_stream_payload(uint64_t conn_id, uint64_t rpc_id,
+                                        uint8_t direction, const CMString& payload,
+                                        CompressionType comp, int level,
+                                        uint64_t& total_out, uint32_t& chunks_out) {
+    if (!transport_) return false;
+    // 整 payload 装配为流（无 writer 分步 API 时的便捷封装）：一次 write +
+    // finish，压缩管线逐块产出，4MB 切帧发送。
+    PeerStreamWriter w(this, conn_id, rpc_id, direction, comp, level);
+    if (!w.ok()) return false;
+    w.write(payload.data(), payload.size());
+    if (!w.finish()) return false;
+    total_out = w.total_uncompressed();
+    chunks_out = w.chunk_count();
+    return true;
+}
+
+// ── PeerStreamWriter：明文 → 压缩管线 → 4MB DATA_CHUNK 切帧 ──
+
+PeerStreamWriter::PeerStreamWriter(PeerRpcServer* srv, uint64_t conn_id,
+                                   uint64_t rpc_id, uint8_t direction,
+                                   CompressionType comp, int level)
+    : srv_(srv), conn_id_(conn_id), rpc_id_(rpc_id) {
+    if (!srv_ || conn_id_ == 0) {
+        ERR("[PEER-STREAM-W] invalid construction");
+        return;
+    }
+    started_ = srv_->send_stream_start(conn_id_, rpc_id_, direction,
+                                       static_cast<uint8_t>(comp));
+    if (!started_) {
+        ERR("[PEER-STREAM-W] send START failed conn={}", conn_id_);
+        return;
+    }
+    auto self = this;
+    fly::EmitFn emit = [self](const char* d, size_t n) {
+        self->on_pipeline_bytes(d, n);
+    };
+    std::vector<std::unique_ptr<fly::WriteStage>> stages;
+    if (comp != CompressionType::NONE) {
+        stages.push_back(std::make_unique<fly::CompressStage>(
+            CompressorFactory::create(comp, level)));
+    }
+    stages.push_back(std::make_unique<fly::CrcStage>());
+    // 末端：块记录（[unc][comp][crc][payload]）写入帧累积器——漏掉此 Stage
+    // 则块头不产出、payload 不进帧。
+    stages.push_back(std::make_unique<fly::BlockHeaderStage>(emit));
+    pipeline_ = std::make_unique<fly::WritePipeline>(std::move(stages),
+                                                     kFrameBytes, emit);
+    ok_ = true;
+}
+
+void PeerStreamWriter::write(const char* data, size_t n) {
+    if (ok_ && !finished_) pipeline_->write(data, n);
+}
+
+bool PeerStreamWriter::finish() {
+    if (finished_ || !started_ || !ok_) return false;
+    finished_ = true;
+    pipeline_->finish();
+    if (!frame_.empty()) flush_frame();
+    if (!ok_) return false;
+    if (!srv_->send_stream_end(conn_id_, rpc_id_, pipeline_->total_uncompressed(),
+                               pipeline_->chunk_count(), frame_off_)) {
+        ERR("[PEER-STREAM-W] send END failed conn={}", conn_id_);
+        return false;
+    }
+    return true;
+}
+
+void PeerStreamWriter::on_pipeline_bytes(const char* d, size_t n) {
+    while (n > 0) {
+        const size_t take = std::min(n, kFrameBytes - frame_.size());
+        frame_.append(d, take);
+        d += take;
+        n -= take;
+        if (frame_.size() >= kFrameBytes) {
+            flush_frame();
+        }
+    }
+}
+
+void PeerStreamWriter::flush_frame() {
+    if (frame_.empty()) return;
+    CMString hdr = ChunkFrameProtocol::encode_header(frame_off_, 0, frame_.size());
+    const bool sent = srv_->transport_send_raw(conn_id_, hdr) &&
+                      srv_->transport_send_raw(conn_id_, frame_);
+    frame_off_ += frame_.size();
+    frame_.clear();
+    if (!sent) {
+        ok_ = false;
+        ERR("[PEER-STREAM-W] send frame failed conn={}", conn_id_);
     }
 }
 

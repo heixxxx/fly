@@ -88,10 +88,15 @@ enum class MessageType : uint8_t {
                                  //   一次；再坏升格对象级 CHECKSUM → 零容忍 §5）。
     DATA_DIGEST = 65,            // server → client（数据面 L2）：分片流尾帧根摘要
                                  //   （server 边发边算单遍；client 重组后整体校验）。
+    PEER_STREAM_START = 66,      // worker → peer (业务RPC流式)：流开始声明（rpc_id + 方向 +
+                                 //   压缩类型）；其后同连接为 DATA_CHUNK 帧流（块流字节），
+                                 //   连接独占至 END。
+    PEER_STREAM_END = 67,        // worker → peer (业务RPC流式)：流结束对账（rpc_id +
+                                 //   total_uncompressed + 块数 + 消费字节数）——payload 就绪。
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 65;
+    return raw >= 1 && raw <= 67;
 }
 
 struct MessageHeader {
@@ -1025,6 +1030,36 @@ struct PeerRpcResponseMessage {
 
     static constexpr MessageType msg_type_ = MessageType::PEER_RPC_RESPONSE;
     FLY_SERIALIZE(header_, rpc_id_, status_, payload_);
+};
+
+// ── 业务 RPC 流式大 payload（流插件化 2026-08-31）──
+// payload 以压缩块流（CompressingStreamBuf 管线输出的块记录序列）承载：
+//   [START 帧声明 rpc_id/方向/压缩类型]
+//   [DATA_CHUNK 帧流：4MB 切帧，帧 payload = 块流字节（块头自描述）]
+//   [END 帧：total_uncompressed + 块数 + 消费字节数 对账 → payload 就绪]
+// 连接独占：START 至 END 之间同连接不得插入其他帧；完整性由块级 CRC
+// （写入时刻锚点）+ END 对账承担。
+
+struct PeerStreamStartMessage {
+    MessageHeader header_;
+    uint64_t rpc_id_ = 0;
+    uint8_t direction_ = 0;         // 0=请求流, 1=响应流
+    uint8_t compression_type_ = 1;  // CompressionType::LZ4（数值——message_types
+                                    //   不依赖 storage/compressor 定义）
+
+    static constexpr MessageType msg_type_ = MessageType::PEER_STREAM_START;
+    FLY_SERIALIZE(header_, rpc_id_, direction_, compression_type_);
+};
+
+struct PeerStreamEndMessage {
+    MessageHeader header_;
+    uint64_t rpc_id_ = 0;
+    uint64_t total_uncompressed_ = 0;  // 对账：解压后明文总长
+    uint32_t chunk_count_ = 0;         // 对账：块数
+    uint64_t consumed_ = 0;            // 对账：块流消费字节数（压缩态）
+
+    static constexpr MessageType msg_type_ = MessageType::PEER_STREAM_END;
+    FLY_SERIALIZE(header_, rpc_id_, total_uncompressed_, chunk_count_, consumed_);
 };
 
 }  // namespace fly

@@ -3,6 +3,8 @@
 #include <network/cpp/connection_manager.h>
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
+#include <storage/cpp/compressor.h>
+#include <storage/cpp/pipeline.h>
 #include <common/cpp/common_types.h>
 #include <log/cpp/logger.h>
 #include <atomic>
@@ -88,6 +90,28 @@ public:
     bool send_response(uint64_t conn_id, uint64_t rpc_id,
                        uint8_t status, const CMString& payload);
 
+    // ── 流式大 payload（流插件化 2026-08-31）──
+    // 发送：send_stream_start → send_stream_data × N（4MB 切帧由
+    // PeerStreamWriter 封装）→ send_stream_end。块级 CRC/END 对账承担
+    // 完整性；连接独占（START 至 END 之间无其他帧）。
+    bool send_stream_start(uint64_t conn_id, uint64_t rpc_id, uint8_t direction,
+                           uint8_t compression_type);
+    bool send_stream_data(uint64_t conn_id, const char* data, size_t n);
+    bool send_stream_end(uint64_t conn_id, uint64_t rpc_id,
+                         uint64_t total_uncompressed, uint32_t chunk_count,
+                         uint64_t consumed);
+    // 便捷封装：压缩块流经管线（压缩+块格式化）→ 4MB 切帧 → END。
+    // 返回统计（total_uncompressed/chunk_count），失败返回 false。
+    bool send_stream_payload(uint64_t conn_id, uint64_t rpc_id, uint8_t direction,
+                             const CMString& payload, CompressionType comp,
+                             int level, uint64_t& total_out, uint32_t& chunks_out);
+
+    // 流式帧发送（PeerStreamWriter 用）：转 ConnectionManager::send
+    // （内部完整发送语义：部分发送/EAGAIN 由写缓冲 + epoll 驱动排空）。
+    bool transport_send_raw(uint64_t conn_id, const CMString& data) {
+        return transport_ && transport_->send(conn_id, data) > 0;
+    }
+
     // 主动告知对端失败（status=1，payload=reason）。任一方可调。
     bool notify_failure(uint64_t conn_id, const CMString& reason);
 
@@ -137,6 +161,21 @@ private:
     std::mutex buf_mutex_;
     std::unordered_map<uint64_t, CMString> recv_bufs_;
 
+    // 流式接收状态（连接独占：START 至 END 之间该连接只有流数据帧）。
+    // compressed 累积压缩块流字节（对端 TCP 反压 + 本端组装口径——内存
+    // 峰值 = payload 压缩态，见性能分析文档 §3.2 裁定）。
+    struct StreamRx {
+        uint64_t rpc_id = 0;
+        uint8_t direction = 0;   // 0=请求流, 1=响应流
+        uint8_t compression_type = 0;
+        CMString compressed;     // 压缩块流字节
+        uint64_t consumed = 0;
+        bool active = false;
+    };
+    std::unordered_map<uint64_t, StreamRx> streams_;   // conn_id → 状态（buf_mutex_ 保护）
+    // 流完成：对账 + 解压 → 明文 payload。失败（对账失配/解压错误）返回 false。
+    bool finish_stream(uint64_t conn_id, StreamRx& s, CMString& payload_out);
+
     // BYE 握手状态：
     //   bye_closed_conns_：已通过 BYE 正常关闭的 conn（DISCONNECT 时静默，不触发 disconnect_handler）
     //   bye_ack_conns_：   客户端侧收到的 BYE_ACK（send_bye 的 wait 条件）
@@ -146,6 +185,42 @@ private:
     std::unordered_set<uint64_t> bye_closed_conns_;
     std::unordered_set<uint64_t> bye_ack_conns_;
     std::unordered_set<uint64_t> bye_pending_conns_;
+};
+
+// PeerStreamWriter —— worker 间流式大 payload 的写端（file-like）。
+//
+// pickle.dump(obj, writer) 直入：明文经压缩管线（WritePipeline：压缩 →
+// CRC → 块记录）逐块产出，4MB 切 DATA_CHUNK 帧独占连接发送。构造即发
+// START，finish 发尾块 + END 对账帧。压缩算法/级别由调用方指定（config
+// 仅作默认值——接口级压缩指定裁定）。
+class PeerStreamWriter {
+public:
+    static constexpr size_t kFrameBytes = 4 * 1024 * 1024;
+
+    PeerStreamWriter(PeerRpcServer* srv, uint64_t conn_id, uint64_t rpc_id,
+                     uint8_t direction, CompressionType comp, int level);
+
+    void write(const char* data, size_t n);
+    // 尾块 + END 对账帧。返回 false = 发送失败（START 后首次失败亦然）。
+    bool finish();
+
+    uint64_t total_uncompressed() const { return pipeline_ ? pipeline_->total_uncompressed() : 0; }
+    uint32_t chunk_count() const { return pipeline_ ? pipeline_->chunk_count() : 0; }
+    bool ok() const { return ok_; }
+
+private:
+    void on_pipeline_bytes(const char* d, size_t n);
+    void flush_frame();
+
+    PeerRpcServer* srv_;
+    uint64_t conn_id_;
+    uint64_t rpc_id_;
+    bool started_ = false;
+    bool finished_ = false;
+    bool ok_ = false;
+    CMString frame_;
+    uint64_t frame_off_ = 0;
+    std::unique_ptr<fly::WritePipeline> pipeline_;
 };
 
 }  // namespace fly
