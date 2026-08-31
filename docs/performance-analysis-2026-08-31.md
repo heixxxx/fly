@@ -133,7 +133,47 @@ transport）使 net/io 不再主导，或换重压缩算法（zstd 高级别）�
 届时拆点现成（写：`CompressingStreamBuf::flush_chunk` 边界；读：
 `NetworkChunkSource` 队列尾与 `DecompressingStreamBuf` 之间）。
 
-## 7. 结论
+## 7. RPC 数据交换路径优化（2026-08-31 增量）
+
+针对 solver 动态链（ras_graph_dynamic）的 worker 间 PeerRpc 数据交换：
+
+### 7.1 PeerRpc 专用直拼帧（拷贝消除）
+
+大 payload 一次往返原链路每字节 **6 次**用户态拷贝：发送端
+`msg.payload_` 赋值 + bitsery 临时缓冲 + frame 复制；接收端 substr +
+`FLY_DECODE` 内部 `take(CMString(input))` 再拷 + bitsery 输出。改为
+PeerRpc 专用直拼帧（两端同仓库同步，内部闭合；帧外格式 9B 头不变）：
+
+```
+REQUEST:  [8B frame header][1B type][8B rpc_id BE][8B src BE][payload]
+RESPONSE: [8B frame header][1B type][8B rpc_id BE][1B status][payload]
+```
+
+发送端单 buffer 组装、payload 仅 memcpy 一次；接收端字段直读、payload
+单次构造——payload 中间拷贝 6 → 1（剩余为 Python 边界与内核，必然）。
+MessageHeader（message_id/timestamp）在 PeerRpc 链路无消费者，随裁定
+（无版本差异、不考虑兼容）移除。
+
+### 7.2 圈级收集并发化（sum → max）
+
+动态链 check 侧收集圈原为逐成员串行阻塞（迭代延迟 = Σ成员往返）。改为
+线程池并发发起（`peer_rpc_call` export 层已释放 GIL，等待真并行；各成员
+独立连接，C++ PendingRpcMap 按 rpc_id 天然支持并发 pending）——迭代延迟
+Σ成员 → max(成员)。
+
+**本机实测无差异**（703 vs 704ms/25 迭代）：迭代 11ms 中收集等待仅
+1-3ms，大头是任务链调度（~190ms/步）与 check 单线程编排。收益在跨机
+部署（RTT × 成员数）时显性，语义等价（NOT_READY 重试/超时判死/断连
+唤醒全保留），保留。
+
+### 7.3 RPC 数据面语义要点（实测口径）
+
+- 编解码 CPU 占比 <0.5%（solver case perf 采样）——拷贝消除的价值在
+  大 payload（MB+）场景的线性放大，本机 QA 口径微秒级；
+- 收集等待 <3ms/迭代；任务链调度与 Python 编排才是迭代延迟大头
+  （§6.2 同口径）。
+
+## 8. 结论
 
 传输接收路径的"纯浪费"（无效 memset + 中转拷贝）已消除，goodput +8.5%；
 剩余 CPU 构成 = 内核拷贝（TCP 必然）+ 块 CRC（语义必需）+ 队列/解压/

@@ -98,41 +98,36 @@ void PeerRpcServer::server_loop() {
                             it = recv_bufs_.find(event.conn_id_);
                         }
                         it->second.append(event.data_);
-                        // 循环切帧（一次可能收多个帧）
+                        // 循环切帧（一次可能收多个帧）。PeerRpc 专用直拼帧
+                        // 解析（与 send_request/send_response 布局配对）：
+                        // 字段直读 + payload 单次构造（原 bitsery 链路
+                        // substr + FLY_DECODE take + bitsery 输出 3 次拷贝）。
                         auto& buf = it->second;
                         while (true) {
-                            // 帧完整性检查：8B header + 1B type + payload
+                            // 帧完整性检查：8B header + 1B type + 字段 + payload
                             if (buf.size() < 9) break;  // 不足 header，等更多数据
                             uint64_t total_len = MessageProtocol::get_total_size(buf);
                             if (total_len < 1 || buf.size() < 8 + total_len) break;  // 帧不完整
                             uint8_t raw_type = static_cast<uint8_t>(buf[8]);
-                            if (raw_type == static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST)) {
-                                PeerRpcRequestMessage msg;
-                                // decode 失败时 buf 不会被消费（erase 只在成功时执行），
-                                // 会导致下次循环读到同一坏帧 → 无限循环。
-                                // 改为：丢弃坏帧并 WARN，继续处理后续帧。
-                                if (!MessageProtocol::decode(buf, msg)) {
-                                    WARN("PeerRpcServer: corrupt REQUEST frame ({}B), discarding",
-                                         8 + total_len);
-                                    buf.erase(0, 8 + total_len);
-                                    continue;
-                                }
-                                decoded_msgs.push_back({true, msg.rpc_id_, msg.src_worker_id_,
-                                                        0, std::move(msg.payload_)});
-                            } else if (raw_type == static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE)) {
-                                PeerRpcResponseMessage msg;
-                                if (!MessageProtocol::decode(buf, msg)) {
-                                    WARN("PeerRpcServer: corrupt RESPONSE frame ({}B), discarding",
-                                         8 + total_len);
-                                    buf.erase(0, 8 + total_len);
-                                    continue;
-                                }
-                                decoded_msgs.push_back({false, msg.rpc_id_, 0,
-                                                        msg.status_, std::move(msg.payload_)});
-                            } else {
+                            const bool is_req =
+                                raw_type == static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST);
+                            const bool is_resp =
+                                raw_type == static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE);
+                            if (!is_req && !is_resp) {
                                 buf.clear();  // 未知类型，清缓冲防积压
                                 break;
                             }
+                            // 固定域长度：REQUEST 9+8(rpc_id)+8(src)，RESPONSE 9+8+1(status)
+                            const size_t fixed = is_req ? 25 : 18;
+                            if (buf.size() < fixed) break;  // 固定域未到齐，等更多数据
+                            const size_t payload_len = 8 + total_len - fixed;
+                            uint64_t rpc_id = read_be64(buf.data() + 9);
+                            uint64_t src = is_req ? read_be64(buf.data() + 17) : 0;
+                            uint8_t status = is_req ? 0 : static_cast<uint8_t>(buf[17]);
+                            CMString payload(buf.data() + fixed, payload_len);
+                            buf.erase(0, fixed + payload_len);
+                            decoded_msgs.push_back({is_req, rpc_id, src, status,
+                                                    std::move(payload)});
                         }
                     }
                     // 锁外调 handler（回调可能耗时，不应持锁）
@@ -193,11 +188,20 @@ bool PeerRpcServer::send_request(uint64_t conn_id, uint64_t rpc_id,
         ERR("PeerRpcServer send_request: no transport");
         return false;
     }
-    PeerRpcRequestMessage msg;
-    msg.rpc_id_ = rpc_id;
-    msg.src_worker_id_ = src_worker_id;
-    msg.payload_ = payload;
-    CMString frame = MessageProtocol::encode(msg);
+    // PeerRpc 专用直拼帧（两端同仓库同步，内部闭合）。payload 是裸 bytes，
+    // 不再经 bitsery（原链路 msg.payload_ 赋值 + FLY_ENCODE 临时缓冲 +
+    // frame 复制 = payload 3 次中间拷贝，大 payload 线性放大）——单 buffer
+    // 组装，payload 仅 memcpy 一次。布局：
+    //   [8B frame header][1B type=REQUEST][8B rpc_id BE][8B src BE][payload]
+    CMString frame;
+    frame.resize(9 + 16 + payload.size());
+    write_be64(frame.data(), make_frame_header(1 + 16 + payload.size()));
+    frame[8] = static_cast<char>(static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST));
+    write_be64(frame.data() + 9, rpc_id);
+    write_be64(frame.data() + 17, src_worker_id);
+    if (!payload.empty()) {
+        std::memcpy(frame.data() + 25, payload.data(), payload.size());
+    }
     ssize_t result = transport_->send(conn_id, frame);
     return result > 0;
 }
@@ -205,11 +209,17 @@ bool PeerRpcServer::send_request(uint64_t conn_id, uint64_t rpc_id,
 bool PeerRpcServer::send_response(uint64_t conn_id, uint64_t rpc_id,
                                    uint8_t status, const CMString& payload) {
     if (!transport_) return false;
-    PeerRpcResponseMessage msg;
-    msg.rpc_id_ = rpc_id;
-    msg.status_ = status;
-    msg.payload_ = payload;
-    CMString frame = MessageProtocol::encode(msg);
+    // 专用直拼帧，同 send_request：
+    //   [8B frame header][1B type=RESPONSE][8B rpc_id BE][1B status][payload]
+    CMString frame;
+    frame.resize(9 + 9 + payload.size());
+    write_be64(frame.data(), make_frame_header(1 + 9 + payload.size()));
+    frame[8] = static_cast<char>(static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE));
+    write_be64(frame.data() + 9, rpc_id);
+    frame[17] = static_cast<char>(status);
+    if (!payload.empty()) {
+        std::memcpy(frame.data() + 18, payload.data(), payload.size());
+    }
     ssize_t result = transport_->send(conn_id, frame);
     return result > 0;
 }

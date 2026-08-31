@@ -549,6 +549,12 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
     b_norm = max(float(np.linalg.norm(b_t)), 1e-30)
 
     alive = set(pool.keys())
+    # 收集圈并发执行器：peer_rpc_call 已释放 GIL（export 层包装），各成员
+    # 独立连接，C++ PendingRpcMap 按 rpc_id 支持并发 pending——每圈对全部
+    # 待收成员同时发起，迭代延迟从 sum(成员往返) 降为 max(成员往返)。
+    from concurrent.futures import ThreadPoolExecutor
+    _ex = ThreadPoolExecutor(max_workers=max(len(alive), 1),
+                             thread_name_prefix="rasg-collect")
     try:
         x_global = None
         converged = False
@@ -585,18 +591,20 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
             # 固定退避；累计超时判组死（compute 任务失败等长尾兜底）。
             collect_deadline = time.monotonic() + 30.0
             while len(contributions) < len(alive):
-                for sd in sorted(alive):
-                    if sd in contributions:
-                        continue
-                    status, resp = agent.peer_rpc_call(
-                        pool[sd], requests[sd],
-                        0)  # timeout_ms=0：无限，断连事件唤醒（timeout 裁定）
+                # 一圈并发发起全部待收成员（各成员独立连接 + rpc_id 隔离）；
+                # 等待最慢成员即本圈完成——迭代延迟 sum(成员) → max(成员)。
+                todo = sorted(sd for sd in alive if sd not in contributions)
+                futures = [_ex.submit(agent.peer_rpc_call, pool[sd],
+                                      requests[sd], 0)  # timeout_ms=0：无限，断连事件唤醒
+                           for sd in todo]
+                for sd, fut in zip(todo, futures):
+                    status, resp = fut.result()
                     if status == _RPC_OK:
                         data = pickle.loads(resp)
                         contributions[sd] = deserialize_array(data["x"])
                         conv_flags[sd] = bool(data.get("conv"))
                     elif status == _RPC_NOT_READY:
-                        continue
+                        continue  # 下一圈重试（圈间退避）
                     else:
                         alive.discard(sd)
                         raise RuntimeError(
@@ -662,6 +670,8 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
         except Exception:
             pass
         raise
+    finally:
+        _ex.shutdown(wait=False)  # 挂起圈（断连唤醒失败路径）随解释器退出回收
 
 
 # ───────────────────── 阶段 3：controller（链推进 / 收尾清理） ─────────────────────
