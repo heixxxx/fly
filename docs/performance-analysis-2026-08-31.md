@@ -88,10 +88,12 @@ root_`/`root_expected_`/`digest_chunks_` 成员及根失配检查移除，DIGEST
 
 ### 6.2 两段实测比例（1GB urandom，perf 线程分解）
 
-**写**：主线程（ser+comp+crc）≈ 0.6s（pickle 150ms + LZ4 store ~350ms + CRC 70ms，
-实测线程样本数自洽）；WBQ+脏页节流 ≈ 2.4s。**比例 ≈ 1:4，IO 主导**。
-端到端 ≈ 3.0s ≈ max(0.6, 2.4) ✓（串行和口径 3.0s 与实测相同是巧合：两段流水线下
-ser+comp 完全重叠在 io 窗口内）。
+**写**：ser（pickle 150ms）+ comp（LZ4 store ~350ms）+ crc（70ms）≈ **0.6s**
+（主线程，perf 线程样本数自洽）；io 段独立口径（同盘纯写 1GB 文件）实测
+3552-3671ms（fsync 口径 7.5s，盘抖动时）。**db 全链路写 2157-3552ms ≈ 纯 io
+口径**——ser+comp 完全重叠在盘写窗口内，端到端 ≈ max(0.6, io) ✓。两轮测量
+均未出现「端到端 ≈ ser+comp+io」的串行特征；首轮分析曾把 io 段误写为
+2.4s（端到端倒推值，循环论证），以本节独立口径为准。
 
 **读**：net ≈ 750ms（接收 1.4GB/s）；dec+unp ≈ 570ms（解压+块CRC ~340ms +
 unpickle 156ms——本地基准实测）。**比例 ≈ 1.3:1**。端到端 828-900ms ≈
