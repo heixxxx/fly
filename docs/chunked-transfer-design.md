@@ -849,3 +849,50 @@ ReadCache（Python）双池：
 solver 直接引用 ReadCache 对象导致动态多轮二次消费 data/indices 配对
 不自洽 → 数值不收敛（哨兵工具定位，最小复现实证）。业务侧履约：消费
 缓存对象前拷贝（np.array）或按上述分层显式 none。
+
+### 14.13 执行上提——消灭 C++→Python 反调（2026-08-31 用户架构裁定）
+
+**背景**：sd9/project 两个 QA case 超时（60s），交接文档曾以"PeerRpc 死锁"交接。
+指纹日志（get_peer_info）+ 双端计时实测排除连接层后，根因为 **GIL 压制**：
+
+- `poll_task_blocking` 经 nanobind 裸绑定（无 GIL release）导出，worker 的
+  Python 主循环**持 GIL 阻塞**在 `task_queue_cv_.wait_for(100ms)`
+- 同进程 Python 线程（solver `_serve_loop`）被 cv 唤醒后须重新获取 GIL，
+  只能等主循环 100ms 边界的短暂让出窗口 → 每次请求 **ENQUEUE→SVC 恰好
+  100.0ms**（跨 case/成员数恒定；个别成员因相位差仅 ~6ms）
+- 叠加 sd9 固有 ~110 轮收敛（见下"数值结论"）→ 99s 迭代时长，case 必超时。
+  "master 死亡"实为 test 框架超时 teardown 顺杀，非崩溃
+
+**用户架构裁定**：除初始化与 main 进入 Python 两处入口外，不允许 C++
+反向调用 Python 的模式（GIL 隐患）。现存唯一大类反调点 =
+`TaskExecutor::set_exec_func`（task 执行体）。
+
+**实施**（take/finish 两原语，执行体上提 Python 主循环）：
+
+| 层 | 改动 |
+|----|------|
+| C++ | `WorkerAgent::take_task(timeout, executor_guard)`：GIL 释放等待+出队+begin 钩子（begin_task/vars 暂存/tracker 起点）；internal task（backup/merge，纯 C++）就地消化后继续等待。`finish_task(task, result)`：io_peak 采样→tracker.end→end_task→IO 上报→写段提交/回滚→Complete/Failed 上报。`poll_task` 重写为 take+finish 组合（C++ 单测 stub 路径零适配，守卫参数化保持旧语义） |
+| 导出 | `take_task`（gil_scoped_release 包等待/出队段，返回 task dict 或 None）/ `finish_task`（dict→TaskExecResult 转换自 set_exec_func 搬迁，字段逐一对齐：io_stats 的 read/write_ms ceil、items 的 name/w/bytes/ms/epoch_ms）。删 `poll_task`/`poll_task_blocking`/`set_executor`/`set_exec_func` 绑定 |
+| Python | `Worker.poll_loop(timeout)`：take → executor（三段 preprocess/execute/postprocess 语义不变）→ finish，异常兜底构造 status=1 result 保证 finish 必达（outstanding 不悬挂）。main.py 主循环切换 |
+
+**验证**：C++ 单测 73/73（stub executor 与 internal 路径零适配）；RPC 单跳
+100ms→0.3ms（333×）；project case 62s 超时→2.7s、sd9 62s→3.6s；全量 QA
+167/167。
+
+**随同修复**（flows 迁移缺陷，T2a 收尾）：
+- `_solve_kickoff_task` 在 worker 上调阻塞 `solve_once` → AttributeError +
+  自等死锁。改为非阻塞 `solve_ras_graph_dynamic` 提交；`__rasg__sol` 由
+  `_teardown` 链尾产出（**必须持久化**——temp 读写与持久化一致，但 freeze
+  清理 temp，契约对象 freeze 后仍需可读）
+- flow `ensure_workers` 补 check 属性申请；check 与 sd 必须分进程
+  （setup_compute 的 stop_peer_rpc 关本 worker 全部 peer 连接，共存互杀）
+- test_solver_project worker 池 nsd+1
+
+**数值结论**（单进程模拟，v1/dynamic 语义逐位等价性验证）：n50/sd9/r30/o1
+纯 RAS 固有 ~110 轮收敛（同 109 轮同 2.02e-10），n20/sd4 需 48 轮——
+omega=1.0 无 coarse 的收敛谱半径即如此，"≤20 轮"量级属 coarse 模式。
+修复 100ms 后迭代时长不再是约束（110 轮 × 9 × 0.3ms ≈ 3s 实测吻合）。
+
+**遗留**：ras_matrix 偶发 "no ctx" race（compute 注入与 check 驱动无依赖边，
+check 首请求早到 → serve 回 ERROR(status=2)）——诊断证据与修复方案见
+HANDOFF.md §〇-A，专门会话排查。

@@ -1846,10 +1846,6 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
     // 事件采样：task 完成时刻的 master 快照（节流；完成风暴下与周期无异）。
     monitor_self_event();
     size_t written_count = msg.written_objects_.size();
-    fprintf(stderr, "[SD] on_complete: task_id=%llu worker=%llu conn=%llu\n",
-            static_cast<unsigned long long>(msg.task_id_),
-            static_cast<unsigned long long>(msg.worker_id_),
-            static_cast<unsigned long long>(conn_id));
     INFO("Task complete: task_id={}, written_objects={}", msg.task_id_, written_count);
 
     uint64_t worker_id = msg.worker_id_;
@@ -1859,11 +1855,6 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
     // 不符则丢弃（防止把别人正在跑的同 id task 错误标完成/置其 worker IDLE）。
     if (auto t = metadata_->get_task(msg.task_id_)) {
         if (t->assigned_worker_id_ != 0 && t->assigned_worker_id_ != worker_id) {
-            fprintf(stderr, "[SD] on_complete DROPPED-stale: task_id=%llu reporter=%llu assigned=%llu status=%d\n",
-                    static_cast<unsigned long long>(msg.task_id_),
-                    static_cast<unsigned long long>(worker_id),
-                    static_cast<unsigned long long>(t->assigned_worker_id_),
-                    static_cast<int>(t->status_));
             WARN("Stale task report dropped: task_id={} reported by worker {} but "
                  "currently assigned to worker {} (worker likely exceeded grace and "
                  "task was re-queued)",
@@ -1874,8 +1865,8 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
             return;
         }
     } else {
-        fprintf(stderr, "[SD] on_complete task-not-found: task_id=%llu\n",
-                static_cast<unsigned long long>(msg.task_id_));
+        WARN("Task complete report for unknown task_id={} (already cleaned?)",
+             msg.task_id_);
     }
 
     worker_manager_->complete_task(worker_id);
@@ -1920,9 +1911,6 @@ void MasterAgent::on_task_complete(uint64_t conn_id, const TaskCompleteMessage& 
             graph_->remove_task(msg.task_id_);
             metadata_->update_task_status(msg.task_id_, TaskStatus::COMPLETED);
             remove_persisted_task(msg.task_id_);
-            fprintf(stderr, "[SD] on_complete OK: task_id=%llu now_running=%d\n",
-                    static_cast<unsigned long long>(msg.task_id_),
-                    metadata_->count_tasks_by_status(TaskStatus::RUNNING));
 
             // 非 stream 模式：task 成功 → pending frozen 迁移到 confirmed + 广播。
             // stream 模式下 pending 为空（freeze 已在 on_database_freeze_request 即时确认），此处 no-op。

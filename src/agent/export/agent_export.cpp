@@ -24,6 +24,97 @@ std::pair<uint8_t, fly::CMString> peer_call_gil_released(
     }
     return result;
 }
+
+// ── 执行上提（消灭 C++→Python 反调）：take/finish 原语的导出辅助 ──
+
+// PendingTask → Python dict（task 描述：主循环据此路由执行）。
+fly_export::dict task_desc_to_dict(const fly::PendingTask& t) {
+    fly_export::dict d;
+    d[fly_export::str("task_id")] = t.task_id_;
+    d[fly_export::str("task_name")] = t.task_name_;
+    d[fly_export::str("task_module")] = t.task_module_;
+    d[fly_export::str("args")] = t.args_;
+    d[fly_export::str("write_context_hash")] = t.write_context_hash_;
+    return d;
+}
+
+// take_task：GIL 释放等待 + 出队（internal task 由 C++ 就地消化）。空等期间
+// 不占 GIL——同进程 Python 线程（solver serve 等）可自由运行。返回 None 或
+// task 描述 dict。
+fly_export::object take_task_gil_released(fly::WorkerAgent& self, int timeout_ms) {
+    fly::CMUniquePtr<fly::PendingTask> task;
+    {
+        fly_export::gil_scoped_release release;
+        task = self.take_task(timeout_ms);
+    }
+    if (!task) return fly_export::none();
+    return task_desc_to_dict(*task);
+}
+
+// finish_task：dict → TaskExecResult 转换（原 set_exec_func 回调内的转换段
+// 搬迁，语义逐字段保持）+ GIL 释放收尾（纯 C++：资源跟踪/写段提交/上报）。
+void finish_task_gil_released(fly::WorkerAgent& self,
+                              fly_export::dict task_d,
+                              fly_export::dict result_d) {
+    // 重构 PendingTask：finish 只消费 task_id 与上下文钩子已注入的态。
+    fly::PendingTask task;
+    task.task_id_ = fly_export::cast<uint64_t>(task_d[fly_export::str("task_id")]);
+
+    fly::TaskExecResult r;
+    r.task_id_ = task.task_id_;
+    long status_val = PyLong_AsLong(result_d[fly_export::str("status")].ptr());
+    if (status_val == -1 && PyErr_Occurred()) {
+        PyErr_Clear();
+        status_val = 1;
+    }
+    r.status_ = static_cast<fly::TaskExecStatus>(status_val);
+    r.output_ = fly_export::cast<fly::CMString>(result_d[fly_export::str("output")]);
+    r.error_ = fly_export::cast<fly::CMString>(result_d[fly_export::str("error")]);
+    r.outputs_ = fly_export::cast<fly::CMVector<fly::CMString>>(
+        result_d[fly_export::str("outputs")]);
+    r.frozen_dbs_ = fly_export::cast<fly::CMVector<fly::CMString>>(
+        result_d[fly_export::str("frozen_dbs")]);
+    // cluster monitor io_stats（executor 恒带该键；缺失/形态异常降级全 0，
+    // 绝不影响主流程）。
+    // 计时 float ms → 整数 ms 用 ceil：截断会把亚毫秒 IO（如 48B 压缩写
+    // ~0.x ms）记成虚假的 0 耗时——非零 IO 至少记 1ms（100 轮压测实测
+    // write_ms=0 撞过；cpu_time 已同理由 jiffies 改微秒差分）。
+    try {
+        fly_export::object io = result_d[fly_export::str("io_stats")];
+        r.read_time_ms_ = static_cast<uint64_t>(std::ceil(
+            fly_export::cast<double>(io[fly_export::str("read_ms")])));
+        r.write_time_ms_ = static_cast<uint64_t>(std::ceil(
+            fly_export::cast<double>(io[fly_export::str("write_ms")])));
+        r.read_bytes_ = fly_export::cast<uint64_t>(
+            io[fly_export::str("read_bytes")]);
+        r.io_mem_peak_rss_ = fly_export::cast<uint64_t>(
+            io[fly_export::str("mem_peak_rss")]);
+        fly_export::list items =
+            fly_export::cast<fly_export::list>(io[fly_export::str("items")]);
+        for (fly_export::handle h : items) {
+            // item 是 dict（不是对象），必须按键取值（attr 是属性访问）。
+            fly_export::dict d = fly_export::cast<fly_export::dict>(h);
+            fly::ObjectIoRecord rec;
+            rec.object_name_ = fly_export::cast<fly::CMString>(
+                d[fly_export::str("name")]);
+            rec.is_write_ = fly_export::cast<bool>(d[fly_export::str("w")]);
+            rec.bytes_ = fly_export::cast<uint64_t>(d[fly_export::str("bytes")]);
+            rec.duration_ms_ = static_cast<uint64_t>(std::ceil(
+                fly_export::cast<double>(d[fly_export::str("ms")])));
+            rec.epoch_ms_ = fly_export::cast<uint64_t>(
+                d[fly_export::str("epoch_ms")]);
+            rec.task_id_ = task.task_id_;
+            r.io_items_.push_back(rec);
+        }
+    } catch (const fly_export::python_error&) {
+        PyErr_Clear();
+    }
+
+    {
+        fly_export::gil_scoped_release release;
+        self.finish_task(task, r);
+    }
+}
 }  // namespace
 
 FLY_EXPORT_MODULE(_fly_agent) {
@@ -53,74 +144,9 @@ FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
         return self.execute(task_id, task_name, task_module, args);
     })
     FLY_EXPORT_METHOD("is_running", &fly::TaskExecutor::is_running)
-    FLY_EXPORT_METHOD("set_exec_func", [](fly::TaskExecutor& self, fly_export::object py_func) {
-        auto cpp_func = [py_func](uint64_t task_id, const fly::CMString& task_name,
-                                    const fly::CMString& task_module,
-                                    const fly::CMVector<fly::CMString>& args) -> fly::TaskExecResult {
-            fly_export::gil_scoped_acquire acquire;
-            try {
-                fly_export::object result = py_func(task_id, task_name, task_module, args);
-                fly::TaskExecResult cpp_result;
-                cpp_result.task_id_ = fly_export::cast<uint64_t>(result[fly_export::str("task_id")]);
-                long status_val = PyLong_AsLong(result[fly_export::str("status")].ptr());
-                if (status_val == -1 && PyErr_Occurred()) {
-                    PyErr_Clear();
-                    status_val = 1;
-                }
-                cpp_result.status_ = static_cast<fly::TaskExecStatus>(status_val);
-                cpp_result.output_ = fly_export::cast<fly::CMString>(result[fly_export::str("output")]);
-                cpp_result.error_ = fly_export::cast<fly::CMString>(result[fly_export::str("error")]);
-                cpp_result.outputs_ = fly_export::cast<fly::CMVector<fly::CMString>>(result[fly_export::str("outputs")]);
-                cpp_result.frozen_dbs_ = fly_export::cast<fly::CMVector<fly::CMString>>(result[fly_export::str("frozen_dbs")]);
-                // cluster monitor io_stats（executor 恒带该键；缺失/形态异常降级全 0，
-                // 绝不影响主流程）。
-                // 计时 float ms → 整数 ms 用 ceil：截断会把亚毫秒 IO（如 48B 压缩写
-                // ~0.x ms）记成虚假的 0 耗时——非零 IO 至少记 1ms（100 轮压测实测
-                // write_ms=0 撞过；cpu_time 已同理由 jiffies 改微秒差分）。
-                try {
-                    fly_export::object io = result[fly_export::str("io_stats")];
-                    cpp_result.read_time_ms_ = static_cast<uint64_t>(std::ceil(
-                        fly_export::cast<double>(io[fly_export::str("read_ms")])));
-                    cpp_result.write_time_ms_ = static_cast<uint64_t>(std::ceil(
-                        fly_export::cast<double>(io[fly_export::str("write_ms")])));
-                    cpp_result.read_bytes_ = fly_export::cast<uint64_t>(
-                        io[fly_export::str("read_bytes")]);
-                    cpp_result.io_mem_peak_rss_ = fly_export::cast<uint64_t>(
-                        io[fly_export::str("mem_peak_rss")]);
-                    fly_export::list items =
-                        fly_export::cast<fly_export::list>(io[fly_export::str("items")]);
-                    for (fly_export::handle h : items) {
-                        // item 是 dict（不是对象），必须按键取值（attr 是属性访问）。
-                        fly_export::dict d = fly_export::cast<fly_export::dict>(h);
-                        fly::ObjectIoRecord r;
-                        r.object_name_ = fly_export::cast<fly::CMString>(
-                            d[fly_export::str("name")]);
-                        r.is_write_ = fly_export::cast<bool>(d[fly_export::str("w")]);
-                        r.bytes_ = fly_export::cast<uint64_t>(d[fly_export::str("bytes")]);
-                        r.duration_ms_ = static_cast<uint64_t>(std::ceil(
-                            fly_export::cast<double>(d[fly_export::str("ms")])));
-                        r.epoch_ms_ = fly_export::cast<uint64_t>(
-                            d[fly_export::str("epoch_ms")]);
-                        r.task_id_ = task_id;
-                        cpp_result.io_items_.push_back(r);
-                    }
-                } catch (const fly_export::python_error&) {
-                    PyErr_Clear();
-                }
-                return cpp_result;
-            } catch (const fly_export::python_error& e) {
-                fly::TaskExecResult cpp_result;
-                cpp_result.task_id_ = task_id;
-                cpp_result.status_ = fly::TaskExecStatus::FAILED;
-                cpp_result.output_ = "";
-                cpp_result.error_ = e.what();
-                cpp_result.outputs_ = {};
-                cpp_result.frozen_dbs_ = {};
-                return cpp_result;
-            }
-        };
-        self.set_exec_func(cpp_func);
-    })
+    // 执行上提（消灭 C++→Python 反调）：set_exec_func 的 Python 绑定已删——
+    // 生产路径执行体在 Python 主循环（WorkerAgent.take_task/finish_task），
+    // C++ 测试路径直接注入 C++ stub（类方法保留）。
     FLY_EXPORT_METHOD("clear_exec_func", &fly::TaskExecutor::clear_exec_func);
 
 FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
@@ -370,12 +396,13 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     // 退出码透传链末端（graceful=0/abnormal=3）：fly/main.py 经此取值
     // sys.exit——bsub/ssh 等外部观测方据进程退出码区分 worker 退出性质。
     FLY_EXPORT_METHOD("exit_code", &fly::WorkerAgent::exit_code)
-    FLY_EXPORT_METHOD("set_executor", [](fly::WorkerAgent& self, CMSharedPtr<fly::TaskExecutor> executor) {
-        self.set_executor(std::move(executor));
-    })
     FLY_EXPORT_METHOD("is_registered", &fly::WorkerAgent::is_registered)
-    FLY_EXPORT_METHOD("poll_task", &fly::WorkerAgent::poll_task)
-    FLY_EXPORT_METHOD("poll_task_blocking", &fly::WorkerAgent::poll_task_blocking)
+    // ── 执行上提原语（Python 主循环驱动）：take_task 空等不占 GIL（同进程
+    // Python 线程不被压制）；finish_task 纯 C++ 收尾（GIL 释放执行）。旧的
+    // poll_task/poll_task_blocking/set_executor 绑定已删——它们经 C++
+    // executor 反调 Python，是 GIL 100ms 压制问题的根源。
+    FLY_EXPORT_METHOD("take_task", &take_task_gil_released)
+    FLY_EXPORT_METHOD("finish_task", &finish_task_gil_released)
     FLY_EXPORT_METHOD("has_pending_task", &fly::WorkerAgent::has_pending_task)
     FLY_EXPORT_METHOD("submit_task", [](fly::WorkerAgent& self,
                                          const fly::CMString& name,

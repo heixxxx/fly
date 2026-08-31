@@ -2,6 +2,7 @@
 #include <network/cpp/tcp_socket.h>
 #include <log/cpp/logger.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
 #include <cstring>
 #include <cerrno>
 
@@ -308,6 +309,30 @@ size_t TcpConnectionManager::connection_count() const {
 int TcpConnectionManager::get_bound_port() const {
     if (listen_fd_ < 0) return -1;
     return transport_->get_port(listen_fd_);
+}
+
+CMString TcpConnectionManager::get_peer_info(uint64_t conn_id) const {
+    int fd;
+    {
+        std::lock_guard<std::mutex> lock(conn_mutex_);
+        auto it = conn_to_fd_.find(conn_id);
+        if (it == conn_to_fd_.end() || it->second < 0) {
+            return "no-such-conn";
+        }
+        fd = it->second;
+    }
+    return peer_info_by_fd(fd);
+}
+
+CMString TcpConnectionManager::peer_info_by_fd(int fd) const {
+    struct sockaddr_in peer;
+    socklen_t len = sizeof(peer);
+    if (::getpeername(fd, reinterpret_cast<struct sockaddr*>(&peer), &len) != 0) {
+        return fmt::format("fd={} getpeername-errno={}", fd, errno);
+    }
+    char ip[INET_ADDRSTRLEN] = {0};
+    ::inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof(ip));
+    return fmt::format("fd={} {}:{}", fd, ip, ntohs(peer.sin_port));
 }
 
 uint64_t TcpConnectionManager::register_connection(int fd) {

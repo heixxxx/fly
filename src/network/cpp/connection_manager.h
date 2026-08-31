@@ -49,6 +49,12 @@ public:
     virtual size_t connection_count() const = 0;
 
     virtual int get_bound_port() const = 0;
+
+    // 调试：conn_id 的对端指纹（fd + remote addr:port）。fd 已失效/未知时
+    // 返回错误描述。用于连接漂移排查（send 目标与预期对端比对）。
+    virtual CMString get_peer_info(uint64_t conn_id) const {
+        return "unsupported";
+    }
 };
 
 CMUniquePtr<ConnectionManager> create_connection_manager(const CMString& type);

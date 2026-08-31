@@ -1,4 +1,65 @@
-# Fly 项目交接文档（2026-08-31）
+# Fly 项目交接文档（2026-08-31 · 第二次更新）
+
+> 首轮交接见文末历史节。本轮已解决 sd9/project 死锁谜题（实为 GIL 压制 + flows 迁移缺陷），
+> 完成执行上提重构（消灭 C++→Python 反调）。**当前唯一遗留：ras_matrix 偶发 "no ctx" race（专门会话排查）**。
+
+## 〇、本轮完成摘要（全部已验证：C++ 单测 73/73 + 全量 QA 167/167 + solver 16/16）
+
+1. **sd9/project "死锁" 破案**：非 PeerRpc 缺陷。根因链：
+   - `poll_task_blocking` 经 nanobind 裸绑定（无 GIL release），worker Python 主循环持 GIL 阻塞在 cv wait 100ms
+   - → 同进程 Python 线程（solver serve）唤醒被压制**精确 100ms**（实测 ENQUEUE→SVC 恰好 100.0ms）
+   - → 每 PeerRpc 往返 +100ms；sd9 需 110 轮 × 9 成员 × 100ms ≈ 99s，60s case timeout 必挂
+   - master "死亡" 实为 test 框架超时 teardown 顺杀，非崩溃
+2. **执行上提重构**（用户架构裁定：除初始化与 main 入口外禁止 C++→Python 反调）：
+   - C++ 新原语 `take_task`（GIL 释放等待+出队+begin 钩子；internal task 就地消化）/ `finish_task`（end/report/上报链）
+   - 导出层 `take_task`/`finish_task` 绑定（GIL 释放）；删 `poll_task*`/`set_executor`/`set_exec_func` 绑定
+   - Python：`Worker.poll_loop`（main.py 主循环）；executor.py 三段语义不变；`set_exec_func` 反调点消灭
+   - C++ `poll_task` 重写为 take+finish 组合（单测 stub 路径零适配，守卫参数化 `executor_guard`）
+   - **性能：RPC 单跳 100ms → 0.3ms（333×）；project case 62s 超时 → 2.7s；sd9 62s → 3.6s**
+3. **flows（SolverProject）迁移缺陷修复**：
+   - kickoff task 在 worker 上调阻塞 `solve_once` → AttributeError（worker 无 worker_count）+ 自等死锁 → 改非阻塞提交 `solve_ras_graph_dynamic`
+   - `_teardown` 链尾写 `__rasg__sol`（**必须持久化**：temp 读写与持久化一致，但 freeze 会清理 temp——契约对象 freeze 后仍需可读）
+   - flow ensure_workers 补 check 属性申请（check 与 sd 必须分进程：setup_compute 的 stop_peer_rpc 会关本 worker 全部 peer 连接）
+   - test_solver_project.py worker 池 4→5（nsd+1，dynamic 架构资源要求）
+4. **数值结论（已证，单进程模拟）**：sd9(n50/r30/o1) 纯 RAS 固有 ~110 轮收敛（v1/dynamic 数学逐位等价：同 109 轮同 2.02e-10）；n20/sd4 需 48 轮。"≤20 轮"量级属 coarse 模式；omega=1.0 纯 RAS 的谱半径即如此。修 100ms 后时长不再是问题。
+5. T2a 遗漏单测迁移：test_ras_graph_io.py `from ras_graph import` → `ras_graph_dynamic`。
+
+## 〇-A、【唯一遗留】ras_matrix 偶发 "no ctx" race（待专门会话）
+
+**现象**：全量 QA 第三轮中 `test_solver_ras_matrix.pyt`（solver_ras_param，n6/sd3/ov1）失败 1 次；同二进制复跑 6/6 绿。两轮全量 + 一轮失败 = 偶发。
+
+**已抓证据**（失败轮 master.log + w4 日志；**原日志已被复跑覆盖**，以下为摘录）：
+```
+11:05:24.657 [RASG DYN SETUP CHECK] gen=b4f65c05 pool of 3 connected
+11:05:24.661-663 compute_dyn×3(100005-7) + check_dyn(100008) 提交
+11:05:24.665 Executing task: 100008 (check_dyn, w4)
+11:05:24.677 Task complete: 100007 (w3 的 compute_dyn —— 注入完成于 check 开跑后 12ms！)
+11:05:24.686 PeerRpcServer stopped ×2（stop_peer_rpc 的正常一对：显式 stop + unique_ptr 析构）
+11:05:24.687 Task execution failed: [RASG DYN CHECK] t=0 rpc sd=2 status=2 at step=0
+```
+
+**根因已定位（机制清楚，修复方案已设计未实施）**：
+- `status=2` = `PeerRpcStatus.ERROR`（对端 `respond_failure`），**不是连接失败**
+- `_serve_loop` 收到请求时 `shared["step_ctx"] is None` → 回 "no ctx" failure → check 判组死 raise
+- **调度窗口**：compute_dyn（注入 step_ctx，w1-w3）与 check_dyn（w4）跨 worker 并行；check 的 inputs 只依赖 `b_0`，**没有等 compute 注入完成的依赖边**。check 首请求可比 w3 的注入早到（失败轮早 12ms）
+- v1 不炸：其 check(step N) → compute(step N+1) 链式 inputs 依赖天然消除此窗口。dynamic 拆分"注入/驱动"时引入
+
+**修复方案（已设计，按计划流程先审后做）**：
+1. compute_dyn 尾部写就绪对象 `db.write_object(f"__rasg__d_ctx_{gen}_{sd}_{t}", True)`（持久化，勿用 temp——master 调度依赖查询对 temp 的可见性未验证）
+2. check_dyn 的 inputs lambda 加 `[db.get_full_name(f"__rasg__d_ctx_{gen}_{s}_{t}") for s in range(nsd)]`
+3. teardown/cleanup 补删该对象族（防重投残留撞 provenance）
+4. 验证：ras_matrix ×10 轮 + 全量 QA
+
+**附带观察**：复现概率低（~1/7），压测可提密度：`for i in $(seq 20); do ./qa/runqa qa/solver/test_solver_ras_matrix.pyt || break; done`。
+
+## 〇-B、调试基建（本轮新增，保留）
+
+- `ConnectionManager::get_peer_info(conn_id)` / `TcpConnectionManager::peer_info_by_fd(fd)`：连接对端指纹（fd+addr:port），连接漂移诊断用（connection_manager.h / tcp_connection_manager.cpp）
+
+---
+
+# 以下为首轮交接原文（历史参考）
+
 
 > 上一个会话完成了 V2 chunked-transfer 性能优化、恒流式改造、缓存双池落地、求解器收敛（进行中）。
 > 当前阻塞在 T2a 的 sd9/project PeerRpc 死锁（已有详细 debug 结论与验证计划）。

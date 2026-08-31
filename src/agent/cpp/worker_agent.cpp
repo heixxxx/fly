@@ -425,9 +425,6 @@ void WorkerAgent::start() {
 }
 
 void WorkerAgent::stop() {
-    fprintf(stderr, "[SD] stop() enter: this=%p worker_id=%d shutdown_triggered=%d running=%d\n", static_cast<const void*>(this),
-            static_cast<int>(worker_id_), shutdown_triggered_.load() ? 1 : 0,
-            running_.load() ? 1 : 0);
     if (!reactor_ && !running_) return;
 
     initiate_shutdown(ExitReason::LOCAL_STOP, "stop() called");
@@ -453,9 +450,7 @@ void WorkerAgent::do_cleanup() {
 
     // 注册守望（initiate_shutdown 已置位+notify，此处仅回收）。
     if (register_watchdog_thread_.joinable()) {
-        fprintf(stderr, "[SD] do_cleanup joining watchdog: worker_id=%d\n", static_cast<int>(worker_id_));
         register_watchdog_thread_.join();
-        fprintf(stderr, "[SD] do_cleanup watchdog joined: worker_id=%d\n", static_cast<int>(worker_id_));
     }
 
     if (heartbeat_thread_.joinable()) {
@@ -602,9 +597,6 @@ void WorkerAgent::register_watchdog_loop() {
                                              || registered_.load();
                                   });
         if (!register_watchdog_running_ || registered_) {
-            fprintf(stderr, "[SD] watchdog loop exit: worker_id=%d flag=%d registered=%d\n",
-                    static_cast<int>(worker_id_), register_watchdog_running_.load() ? 1 : 0,
-                    registered_.load() ? 1 : 0);
             break;
         }
 
@@ -949,45 +941,58 @@ bool WorkerAgent::has_pending_task() const {
     return !task_queue_.empty();
 }
 
-bool WorkerAgent::poll_task() {
-    PendingTask task;
-    {
-        std::lock_guard<std::mutex> lock(task_queue_mutex_);
-        if (task_queue_.empty()) return false;
-        // executor 未注入（set_executor 前窗口内 assign 已到达）且队首是普通
-        // task：不弹出——弹出后无执行器只会静默丢弃，task 从此消失，master
-        // 侧 RUNNING 永不归零（drain 僵死/EndToEnd 压测 complete 丢失根因）。
-        // internal task（merge/backup）不依赖 executor（storage_only worker 也
-        // 执行），放行。
-        if (!executor_ && task_queue_.front().task_module_ != "__fly_internal") {
-            return false;
+CMUniquePtr<PendingTask> WorkerAgent::take_task(int timeout_ms, bool executor_guard) {
+    while (true) {
+        PendingTask task;
+        {
+            std::unique_lock<std::mutex> lock(task_queue_mutex_);
+            if (task_queue_.empty()) {
+                task_queue_cv_.wait_for(lock,
+                    std::chrono::milliseconds(timeout_ms),
+                    [this] { return !task_queue_.empty() || shutdown_triggered_.load(); });
+            }
+            if (task_queue_.empty()) return nullptr;
+            // 旧守卫（仅 C++ 测试路径 executor_guard=true）：executor 未注入
+            // 且队首是普通 task 不取——取出后无执行器只会静默丢弃，task 从此
+            // 消失，master 侧 RUNNING 永不归零（drain 僵死/EndToEnd 压测
+            // complete 丢失根因）。internal task（merge/backup）不依赖
+            // executor（storage_only worker 也执行），放行。
+            if (executor_guard && !executor_ &&
+                task_queue_.front().task_module_ != "__fly_internal") {
+                return nullptr;
+            }
+            task = std::move(task_queue_.front());
+            task_queue_.pop();
         }
-        task = std::move(task_queue_.front());
-        task_queue_.pop();
-    }
 
-    INFO("Executing task: task_id={}", task.task_id_);
-    fprintf(stderr, "[SD] executing: this=%p task_id=%llu module=%s have_executor=%d\n",
-            static_cast<const void*>(this), static_cast<unsigned long long>(task.task_id_),
-            task.task_module_.c_str(), executor_ ? 1 : 0);
+        if (task.task_module_ == "__fly_internal") {
+            // internal task 纯 C++（backup/merge 存储操作），就地消化后继续
+            // 等下一个——本函数可能在导出层 GIL 释放状态下被调用，此段不
+            // 碰 Python，安全。
+            sample_now_event();  // 事件采样：internal task（backup/merge）执行起点
+            task_resource_tracker_.begin(task.task_id_);
+            execute_internal_task(task);
+            task_resource_tracker_.end(task.task_id_);
+            sample_now_event();  // 事件采样：执行终点
+            outstanding_tasks_--;
+            continue;
+        }
 
-    if (task.task_module_ == "__fly_internal") {
-        sample_now_event();  // 事件采样：internal task（backup/merge）执行起点
-        task_resource_tracker_.begin(task.task_id_);
-        execute_internal_task(task);
-        task_resource_tracker_.end(task.task_id_);
-        sample_now_event();  // 事件采样：执行终点
-    } else if (executor_) {
+        // 普通 task：执行前置钩子（执行体在调用方——Python 主循环或 C++
+        // executor）。vars 暂存供 executor preprocess 注入。
         begin_task(task.task_id_, task.write_context_hash_);
         sample_now_event();  // 事件采样：执行起点（assign 到达点在 on_task_assign）
         task_resource_tracker_.begin(task.task_id_);
-        // Stage inlined vars for the Python executor to inject before the task runs.
         if (!task.var_payloads_.empty()) {
             std::lock_guard<std::mutex> lk(pending_task_vars_mutex_);
             pending_task_vars_ = std::move(task.var_payloads_);
         }
-        auto result = executor_->execute(
-            task.task_id_, task.task_name_, task.task_module_, task.args_);
+        INFO("Executing task: task_id={}", task.task_id_);
+        return CMUniquePtr<PendingTask>(new PendingTask(std::move(task)));
+    }
+}
+
+void WorkerAgent::finish_task(const PendingTask& task, const TaskExecResult& result) {
         // IO 事件时刻的内存峰值（read 结束/write 前对象必存活的采样点，Python
         // task_io 采集）补入窗口——事件驱动采样点，不依赖周期采样间隔。
         if (result.io_mem_peak_rss_ > 0) {
@@ -1073,22 +1078,36 @@ bool WorkerAgent::poll_task() {
 
             ERR("TaskFailed sent: task_id={}, error={}", task.task_id_, result.error_);
         }
-    }
 
     outstanding_tasks_--;
+}
+
+bool WorkerAgent::poll_task() {
+    // C++ 组合路径（单测/stub executor 驱动）：与 Python 主循环共用
+    // take_task/finish_task，逻辑单一来源。guard=true 保持"executor 未注入
+    // 不取普通 task"的旧守卫（生产 Python 路径不经此函数——绑定已删）。
+    auto task = take_task(0, /*executor_guard=*/true);
+    if (!task) return false;
+    // internal task 已被 take_task 就地消化（消化完返回 nullptr 或下一个
+    // 普通 task）；executor_ 非空由 guard 保证。
+    auto result = executor_->execute(
+        task->task_id_, task->task_name_, task->task_module_, task->args_);
+    finish_task(*task, result);
     return true;
 }
 
-bool WorkerAgent::poll_task_blocking(int timeout_ms) {
-    {
-        std::unique_lock<std::mutex> lock(task_queue_mutex_);
-        if (task_queue_.empty()) {
-            task_queue_cv_.wait_for(lock,
-                std::chrono::milliseconds(timeout_ms),
-                [this] { return !task_queue_.empty() || shutdown_triggered_.load(); });
-        }
-        if (task_queue_.empty()) return false;
+bool WorkerAgent::wait_for_task(int timeout_ms) {
+    std::unique_lock<std::mutex> lock(task_queue_mutex_);
+    if (task_queue_.empty()) {
+        task_queue_cv_.wait_for(lock,
+            std::chrono::milliseconds(timeout_ms),
+            [this] { return !task_queue_.empty() || shutdown_triggered_.load(); });
     }
+    return !task_queue_.empty();
+}
+
+bool WorkerAgent::poll_task_blocking(int timeout_ms) {
+    if (!wait_for_task(timeout_ms)) return false;
     return poll_task();
 }
 
@@ -1224,20 +1243,12 @@ void WorkerAgent::send_master_or_buffer(const TaskCompleteMessage& msg_in) {
         msg.mem_avg_bytes_ = agg.mem_avg_bytes_;
         msg.mem_peak_bytes_ = agg.mem_peak_bytes_;
     }
-    fprintf(stderr, "[SD] complete send: this=%p task_id=%llu registered=%d reconnecting=%d conn=%llu send_ok=%d\n",
-            static_cast<const void*>(this), static_cast<unsigned long long>(msg.task_id_),
-            registered_.load() ? 1 : 0, reconnecting_.load() ? 1 : 0,
-            static_cast<unsigned long long>(master_conn_.load()), -1);
     if (!reconnecting_.load() && registered_.load()) {
         bool ok = reactor_->send(master_conn_.load(), msg);
-        fprintf(stderr, "[SD] complete send result=%d task_id=%llu\n", ok ? 1 : 0,
-                static_cast<unsigned long long>(msg.task_id_));
         return;
     }
     std::lock_guard<std::mutex> lk(pending_reports_mutex_);
     pending_reports_.push_back({true, msg, TaskFailedMessage{}});
-    fprintf(stderr, "[SD] complete BUFFERED: task_id=%llu\n",
-            static_cast<unsigned long long>(msg.task_id_));
     WARN("TaskComplete buffered (reconnecting): task_id={}", msg.task_id_);
 }
 
@@ -1294,15 +1305,11 @@ void WorkerAgent::touch_master_contact() {
 
 void WorkerAgent::initiate_shutdown(ExitReason reason, const CMString& detail) {
     if (shutdown_triggered_.exchange(true)) {
-        fprintf(stderr, "[SD] initiate_shutdown idempotent-return: worker_id=%d reason=%s\n",
-                static_cast<int>(worker_id_), detail.c_str());
         return;
     }
     exit_reason_.store(reason);
     const bool graceful = exit_reason_graceful(reason);
 
-    fprintf(stderr, "[SD] initiate_shutdown enter: this=%p worker_id=%d reason=%s\n",
-            static_cast<const void*>(this), static_cast<int>(worker_id_), detail.c_str());
     // 显式退出分支（用户裁定：正常/异常不混流）——日志级别即性质声明。
     if (graceful) {
         INFO("Worker exiting gracefully: {} (worker_id={})", detail, worker_id_);
@@ -1339,25 +1346,21 @@ void WorkerAgent::initiate_shutdown(ExitReason reason, const CMString& detail) {
             register_watchdog_running_ = false;
             register_ack_cv_.notify_all();
         }
-        fprintf(stderr, "[SD] watchdog notified: worker_id=%d\n", static_cast<int>(worker_id_));
         {
             std::lock_guard<std::mutex> lock(heartbeat_mutex_);
             heartbeat_running_ = false;
             heartbeat_cv_.notify_all();
         }
-        fprintf(stderr, "[SD] heartbeat notified: worker_id=%d\n", static_cast<int>(worker_id_));
         {
             std::lock_guard<std::mutex> lock(monitor_mutex_);
             monitor_running_ = false;
             monitor_cv_.notify_all();
         }
-        fprintf(stderr, "[SD] monitor notified: worker_id=%d\n", static_cast<int>(worker_id_));
         {
             std::lock_guard<std::mutex> lock(probe_mutex_);
             probe_running_ = false;
             probe_cv_.notify_all();
         }
-        fprintf(stderr, "[SD] probe notified: worker_id=%d\n", static_cast<int>(worker_id_));
     }
     {
         std::lock_guard<std::mutex> lock(task_queue_mutex_);

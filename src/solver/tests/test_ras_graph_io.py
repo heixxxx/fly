@@ -12,7 +12,8 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "py"))
-from ras_graph import generate_poisson_matrix, compute_exact_solution
+# 求解器收敛（T2a）：v1 ras_graph 退役，函数族已搬入 ras_graph_dynamic。
+from ras_graph_dynamic import generate_poisson_matrix, compute_exact_solution
 
 
 def _assert_npz_complete(path, expect_exact):

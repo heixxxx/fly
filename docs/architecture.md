@@ -441,7 +441,7 @@ FIFO），消除「声明晚于断连被读丢」的竞态。活体判定统一�
 
 | 线程 | 职责 | 停止方式 |
 |------|------|---------|
-| Main Thread (Python) | poll_task() 循环，执行任务 | — |
+| Main Thread (Python) | poll_loop() 循环：take_task（GIL 释放等待/出队）→ Python 执行 → finish_task 收尾（执行上提，2026-08-31；C++ 不反调 Python） | — |
 | Reactor Thread | epoll 事件循环 (Master conn + Data Server) | `reactor_->stop()` |
 | Data Server epoll | 接收数据请求 | stop() |
 | Data Server send threads | 发送数据响应（线程池，可配置） | stop() |

@@ -198,23 +198,26 @@ solve 需读 `matrix_db` 的矩阵启动求解，但 matrix 是 build_matrix 异
 task**（inputs 依赖 `matrix_db` 的 matrix）让 master 在 matrix ready 后调度，完全异步：
 
 ```python
-@as_task(inputs=lambda db, matrix_db, nsd, ...:
-         [matrix_db.get_full_name("matrix")])
-def _solve_kickoff_task(db, matrix_db, nsd, ...):
-    m = matrix_db.read_object("matrix")      # matrix ready 后才执行
-    work_npz = os.path.join(db.get_base_path(), "matrix.npz")
-    np.savez(work_npz, ...)                   # 适配层：还原工作 npz
-    ras_graph_coord(db, work_npz, nsd, ...)   # coord 非阻塞，自驱动迭代链
+@as_task(inputs=lambda db, matrix_full_name, nsd, ...:
+         [matrix_full_name])
+def _solve_kickoff_task(db, matrix_full_name, nsd, ...):
+    m = db.find_db(role="matrix").read_object("matrix")  # matrix ready 后才执行
+    db.write_object(MATRIX_OBJ_KEY, m)                    # 矩阵入库（DB 对象）
+    # 非阻塞提交 dynamic 求解链（求解器收敛 2026-08-31：kickoff 在 worker 上
+    # 执行，不得调阻塞封装 solve_once——会钉死本 worker；若其持有 check 属性
+    # 即自等死锁。__rasg__sol 由链尾 _teardown 产出，freeze 契约不变）
+    solve_ras_graph_dynamic(db, MATRIX_OBJ_KEY, nsd, b, ...)
 
 @register_flow(SolverProject)
 def solve(self, name, matrix_db, nsd, overlap_ratio=0.50, ...):
-    # Step 1: 检查输入
-    if nsd < 1: raise ValueError(...)
+    # Step 1: 编队（nsd 个 sd 宿主 + 1 个独立 check 宿主；check 与 sd 分进程）
+    _ensure_workers([db.worker_attr(f"sd_{s}") for s in range(nsd)]
+                    + [db.worker_attr("check")], ...)
     # Step 2: 建库
     db = self._create_db(name)
     # Step 3: 提交入口 task（kickoff：依赖 matrix_db 的 matrix）
-    _solve_kickoff_task(db, matrix_db, nsd, overlap_ratio, ...)
-    # Step 4: 提交 freeze task（依赖 __rasg__sol 求解完成）
+    _solve_kickoff_task(db, matrix_full_name, nsd, overlap_ratio, ...)
+    # Step 4: 提交 freeze task（依赖 __rasg__sol 求解完成——链尾 _teardown 写）
     _freeze_db_task(db, self._freeze_task_deps(db, ["__rasg__sol"]))
     return db          # 立即返回，求解进度由 master 调度推进
 ```

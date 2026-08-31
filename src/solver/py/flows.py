@@ -66,14 +66,18 @@ def _solve_kickoff_task(db, matrix_full_name, nsd, overlap_ratio,
     # 矩阵全程走 DB 对象（2026-08-17 入库改造）：从 matrix_db 读出后写入本 db
     # 的约定对象，coord/worker 经 read_object 获取——数据由框架管理，无共享
     # 文件的读写时序问题（此前经 db 目录下的 matrix.npz 文件中转）。
-    # 求解器收敛（2026-08-31）：统一 dynamic 单步（solve_once）；结果写
-    # __rasg__sol 保持 flow 的 freeze/下游依赖契约不变。
-    from .ras_graph_dynamic import solve_once, MATRIX_OBJ_KEY
+    # 求解器收敛（2026-08-31）：统一 dynamic 单步。kickoff 在 worker 上执行，
+    # 只做非阻塞提交（solve_once 是阻塞封装，会钉死本 worker——check 属性
+    # 宿主若与本 task 同 worker 即自等死锁）；__rasg__sol 由链尾 _teardown
+    # 产出，保持 flow 的 freeze/下游依赖契约不变。
+    import numpy as np
+    from .ras_graph_dynamic import solve_ras_graph_dynamic, MATRIX_OBJ_KEY
     m = matrix_db.read_object("matrix")
     db.write_object(MATRIX_OBJ_KEY, m)
-    sol = solve_once(db, MATRIX_OBJ_KEY, nsd, overlap_ratio=overlap_ratio,
-                     max_iter=max_iter, tol=tol, omega=omega)
-    db.write_object("__rasg__sol", sol["x"])
+    solve_ras_graph_dynamic(
+        db, MATRIX_OBJ_KEY, nsd, np.asarray(m["b"], dtype=np.float64),
+        lambda x, t: None, num_steps=1,
+        overlap_ratio=overlap_ratio, max_iter=max_iter, tol=tol, omega=omega)
 
 
 # ── build_matrix：读文件 → 矩阵存入 db → 返回 db（异步）──────────────
@@ -206,10 +210,13 @@ def solve(self, name: str, matrix_db, nsd,
     # ── Step 2: 编队申请（worker 数不足/未注册时显式失败，不做静默补拉）──
     # 属性经 db.worker_attr（uid 在 _create_db/_init_chain 时已生成）。已唤起
     # 未注册的占位符计入 ensure 预检容量，注册等待受其 timeout 约束。
+    # dynamic 架构要求 nsd 个 sd 宿主 + 1 个独立 check 宿主（check 与 sd 必须
+    # 分进程：setup_compute 的 stop_peer_rpc 会关本 worker 的全部 peer 连接，
+    # 共存即互杀）——共 nsd+1 个空闲 worker。
     from fly.runtime import get_agent
     from fly import ensure_workers as _ensure_workers
-    master = get_agent()
-    _ensure_workers([db.worker_attr(f"sd_{s}") for s in range(nsd)],
+    _ensure_workers([db.worker_attr(f"sd_{s}") for s in range(nsd)]
+                    + [db.worker_attr("check")],
                     timeout=10.0, exclude=r"^rasg:")
 
     # ── Step 3: 提交入口 task（kickoff：沿 chain 找 matrix db）──

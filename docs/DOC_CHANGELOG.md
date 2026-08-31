@@ -3,6 +3,22 @@
 ---
 ---
 
+## 2026-08-31 (2): 执行上提重构（消灭 C++→Python 反调）+ flows 迁移缺陷修复
+
+- **chunked-transfer-design.md §14.13（新增）**：sd9/project 超时破案
+  （poll_task_blocking 持 GIL 阻塞 100ms → 每 PeerRpc 固定 +100ms）、
+  take_task/finish_task 原语设计、Worker.poll_loop 主循环、导出层变更、
+  数值结论（纯 RAS 固有轮数：n50/sd9 110 轮、n20/sd4 48 轮，v1/dynamic
+  数学等价性单进程模拟验证）、ras_matrix "no ctx" race 遗留指引。
+- **architecture.md（线程表）**：Worker Main Thread 职责更新为
+  poll_loop()（take→执行→finish），标注执行上提与"不反调"原则。
+- **project-design.md §4.3（solve）**：kickoff 代码示例更新——DB 对象
+  入库（替代 npz 中转）、非阻塞 solve_ras_graph_dynamic 提交（替代阻塞
+  solve_once + ras_graph_coord）、ensure_workers 补 check 宿主申请、
+  `__rasg__sol` 产出点改链尾 _teardown。
+- **HANDOFF.md（重写头部）**：本轮完成摘要 + §〇-A ras_matrix 偶发 race
+  诊断证据与修复方案（专门会话交接）+ §〇-B 调试基建（get_peer_info）。
+
 ## 2026-08-31 (1): monitor GUI 性能与健壮性轮——批量增量端点 + N+1 消除 + 前端公共模块收归
 
 **① serve.py 后端**：

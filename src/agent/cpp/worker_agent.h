@@ -162,7 +162,22 @@ public:
     
     bool has_pending_task() const;
     bool poll_task();
+    // 等待 task 到达（纯 C++ 阻塞，无 Python 回调——导出层在 GIL 释放状态
+    // 下调用，空等不压制同进程 Python 线程）。返回 true = 有 task 可 poll。
+    bool wait_for_task(int timeout_ms);
     bool poll_task_blocking(int timeout_ms = 100);
+
+    // ── 执行上提原语（Python 主循环驱动，消灭 C++→Python 反调）──
+    // take_task：等待+出队。internal task（backup/merge，纯 C++）就地消化后
+    // 继续等下一个；普通 task 做 begin 钩子（begin_task/vars 暂存/资源跟踪
+    // 起点）后返回。executor_guard=true 时保持旧守卫语义（executor 未注入
+    // 且队首是普通 task 则不取——C++ 测试路径用；Python 路径恒 false）。
+    // 超时/shutdown 返回 nullptr。
+    CMUniquePtr<PendingTask> take_task(int timeout_ms, bool executor_guard = false);
+    // finish_task：普通 task 的收尾（资源跟踪终点/end_task/IO 上报/写段提交
+    // 或回滚/Complete-Failed 上报/outstanding 减计）。与 take_task 同线程
+    // 调用（WorkerAgentContext 是 TLS，依赖 error_type 等线程局部态）。
+    void finish_task(const PendingTask& task, const TaskExecResult& result);
     
     void register_database(const CMString& db_path, CMSharedPtr<Database> db);
     CMSharedPtr<Database> get_database(const CMString& db_path) const;

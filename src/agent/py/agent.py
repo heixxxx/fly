@@ -5,7 +5,7 @@ import threading
 import subprocess
 from abc import ABC, abstractmethod
 
-from _fly_agent import EXAgentMaster, EXAgentWorker, EXTaskExecutor, EXTaskExecStatus
+from _fly_agent import EXAgentMaster, EXAgentWorker
 from _fly_log import DBG, INFO, WARN, ERR
 
 from storage import Database, DbMetaFile, make_meta
@@ -1600,14 +1600,14 @@ class Worker(FlyAgent):
         self._master_host = master_host
         self._master_port = master_port
         self._worker_id = worker_id
-        self._executor = None
+        self._exec_func = None
         self._worker_procs = []
         self._role = role
 
     def start(self):
-        self._executor = EXTaskExecutor()
-        self._executor.set_exec_func(create_executor(self))
-        self._agent.set_executor(self._executor)
+        # 执行上提（消灭 C++→Python 反调）：不再向 C++ 注入 executor 回调。
+        # task 执行体（create_executor 产物）由本进程 Python 主循环的
+        # poll_loop 直接调用——C++ 只提供 take_task/finish_task 正向原语。
         self._agent.start()
 
     def submit(self, name: str, module: str, args: list,
@@ -1631,9 +1631,7 @@ class Worker(FlyAgent):
         return self._db_cache[db_path]
 
     def stop(self):
-        if self._executor is not None:
-            self._executor.clear_exec_func()
-            self._executor = None
+        self._exec_func = None
         self._db_cache.clear()
         self._cache.clear()
 
@@ -1654,15 +1652,38 @@ class Worker(FlyAgent):
             return False
         return self._agent.is_running()
 
-    def poll_task(self) -> bool:
-        if self._agent is None:
-            return False
-        return self._agent.poll_task()
+    def poll_loop(self, timeout_ms: int = 100) -> bool:
+        """Worker 主循环步进（执行上提后唯一的 task 驱动入口）。
 
-    def poll_task_blocking(self, timeout_ms: int = 100) -> bool:
+        take_task 在 C++ 侧 GIL 释放状态下等待/出队（internal task 由 C++
+        就地消化），普通 task 的执行体（create_executor 产物）在本线程直接
+        调用，finish_task 纯 C++ 收尾。全程 GIL 由本线程掌控，空等期间不
+        压制同进程 Python 线程（solver serve 等）。返回 True = 执行了一个
+        普通 task。
+        """
         if self._agent is None:
             return False
-        return self._agent.poll_task_blocking(timeout_ms)
+        task = self._agent.take_task(timeout_ms)
+        if task is None:
+            return False
+        if self._exec_func is None:
+            self._exec_func = create_executor(self)
+        try:
+            result = self._exec_func(task["task_id"], task["task_name"],
+                                     task["task_module"], task["args"])
+        except Exception:
+            # executor 自身异常兜底（正常失败路径 executor 内部已捕获构造
+            # status=1 result；此层防御保证 finish 必被调用——outstanding
+            # 计数不悬挂，master 侧 RUNNING 必归零）。
+            import traceback
+            result = {"task_id": task["task_id"], "status": 1, "output": "",
+                      "error": traceback.format_exc(), "outputs": [],
+                      "frozen_dbs": [],
+                      "io_stats": {"read_ms": 0.0, "read_bytes": 0,
+                                   "write_ms": 0.0, "items": [],
+                                   "mem_peak_rss": 0}}
+        self._agent.finish_task(task, result)
+        return True
 
     def set_worker_property(self, prop):
         props = self._ensure_list(prop)

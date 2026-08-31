@@ -116,8 +116,11 @@ def _run_worker():
     agent = get_agent()
     INFO("Worker agent created, starting poll loop")
 
+    # 执行上提主循环：GIL 由本线程全程掌控（take_task 空等段在 C++ 侧
+    # GIL 释放，不压制同进程 Python 线程；旧 poll_task_blocking 持 GIL
+    # 阻塞曾是每 RPC 固定 100ms 延迟的根源）。
     while agent.is_running():
-        agent.poll_task_blocking(100)
+        agent.poll_loop(100)
     import time as _wt
     _wt0 = _wt.monotonic()
     INFO("Worker poll loop exited, running cleanup")

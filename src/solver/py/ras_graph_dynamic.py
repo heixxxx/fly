@@ -121,7 +121,7 @@ def solve_ras_graph_dynamic(db, matrix_ref, nsd, b0, update_rhs, num_steps,
         raise ValueError(f"num_steps must be >= 1, got {num_steps}")
 
     n_workers = min(nsd, max_concurrent_compute) if max_concurrent_compute else nsd
-    master = get_agent()
+    agent = get_agent()
     # 编队申请：nsd 个 compute 绑定（sd 属性轮转分组，钉住进程缓存）+ 1 个
     # check/controller 宿主。属性统一经 db.worker_attr（rasg:{uid}: 命名空间，
     # 并发 flow 不串池）；ensure_workers 幂等盘点已满足的绑定、缺失的从现有
@@ -131,16 +131,20 @@ def solve_ras_graph_dynamic(db, matrix_ref, nsd, b0, update_rhs, num_steps,
                for w in range(n_workers)]
     request.append(db.worker_attr("check"))
 
-    # 进程数量先行（ensure_workers 只分配现有 worker 不启动新进程）：总数不够
-    # 时按缺口补空属性 worker。注册就绪不在此等待——ensure 把已唤起未注册的
-    # 占位符计入预检容量，注册等待受声明的 timeout 约束（存活池已满足时零
-    # 等待立即返回）。
-    have = master.worker_count if master.is_running() else 0
-    if not master.is_running() or have < len(request):
-        deficit = len(request) - max(0, have)
-        master.launch_local_workers([{} for _ in range(deficit)])
-
-    master.ensure_workers(request, timeout=10.0, exclude=r"^rasg:")
+    if hasattr(agent, "worker_count"):
+        # master 上下文（QA 脚本直接调 solve_once/solve_ras_graph_dynamic）：
+        # 进程数量先行（ensure_workers 只分配现有 worker 不启动新进程）：总数
+        # 不够时按缺口补空属性 worker。注册就绪不在此等待——ensure 把已唤起
+        # 未注册的占位符计入预检容量，注册等待受声明的 timeout 约束（存活池
+        # 已满足时零等待立即返回）。
+        have = agent.worker_count if agent.is_running() else 0
+        if not agent.is_running() or have < len(request):
+            deficit = len(request) - max(0, have)
+            agent.launch_local_workers([{} for _ in range(deficit)])
+        agent.ensure_workers(request, timeout=10.0, exclude=r"^rasg:")
+    # worker 上下文（flows._solve_kickoff_task 在 worker 进程执行，非阻塞提
+    # 交）：编队由 flow 侧（master）的 ensure_workers 负责，此处不自举属性
+    # ——kickoff 执行 worker 若自举 check 会与阻塞链自等死锁。
 
     gen = uuid.uuid4().hex[:8]
     INFO(f"[RASG DYN] kickoff: gen={gen} nsd={nsd} n_workers={n_workers + 1} "
@@ -691,6 +695,14 @@ def _teardown(db, matrix_ref, nsd, sol_prefix, num_steps, gen, last_t):
         "converged": conv,
         "sol_names": [f"{sol_prefix}_{i}" for i in range(last_t + 1)],
     }, save_to_db=False)
+    # 链尾产出 __rasg__sol（最后一步全局解，持久化对象）：它是 flow（Solver
+    # Project）的对外契约对象——case 在 wait_frozen 之后仍要 read_object。
+    # temp（save_to_db=False）读写行为与持久化一致，差异仅在生命周期：
+    # db freeze 时自动删除（iters/converged 等内部中间量用 temp 属预期清
+    # 理）。故 freeze 后仍需可读的契约对象必须持久化。kickoff 在 worker 上
+    # 非阻塞提交后无人等待，结果统一由链尾落地；golden（master 阻塞调
+    # solve_once）同路径幂等（同名同值）。
+    db.write_object("__rasg__sol", db.read_object(f"{sol_prefix}_{last_t}"))
     INFO(f"[RASG DYN CTRL] dynamic done: steps={last_t + 1} iters={iters}")
 
 

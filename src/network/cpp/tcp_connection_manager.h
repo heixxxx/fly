@@ -22,6 +22,7 @@ public:
     bool is_connected(uint64_t conn_id) const override;
     size_t connection_count() const override;
     int get_bound_port() const override;
+    CMString get_peer_info(uint64_t conn_id) const override;
 
 private:
     CMSharedPtr<Transport> transport_;
@@ -49,6 +50,8 @@ private:
     CMString drain_socket(int fd, size_t max_size);
     void drain_write_buffer(uint64_t conn_id, int fd);
     void mod_epoll_events(int fd, uint32_t events);
+    // 调试：按 fd 取对端指纹（不拿 conn_mutex_，供已持锁路径使用）。
+    CMString peer_info_by_fd(int fd) const;
     // epoll fd 惰性创建（listen/connect 首次使用时）：构造函数不做可失败的
     // 系统调用、不抛异常（issue 002：错误经 listen 的 bool / connect 的 0 哨兵返回）。
     bool ensure_epoll();

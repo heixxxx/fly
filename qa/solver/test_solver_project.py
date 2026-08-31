@@ -48,9 +48,11 @@ def wait_for(cond, timeout=60.0, interval=0.5):
 cleanup()
 get_config().set_int("fail_unscheduleable_tasks", 1)
 
-# ── 用户预先唤起 solver worker（带 sd_i attributes，>= nsd 个）──
+# ── 用户预先唤起 solver worker（>= nsd+1 个：nsd 个 sd 宿主 + 1 个独立
+# check 宿主——dynamic 架构要求 check 与 sd 分进程，setup_compute 的
+# stop_peer_rpc 会关本 worker 全部 peer 连接，共存即互杀）──
 # flow 不碰 worker；用户脚本负责 worker 池。
-launch_workers([{"attributes": [f"sd_{i}"]} for i in range(NSD)])
+launch_workers([{"attributes": [f"sd_{i}"]} for i in range(NSD)] + [{}])
 assert get_agent().wait_workers_registered(timeout=60), \
     f"{NSD} workers should connect"
 INFO(f"  {NSD} workers connected (user-managed)")
