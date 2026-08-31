@@ -7,7 +7,7 @@
 // （多机时进程 Σ 可 >100%，机器取各 host 最大值；单机即全部 fly 进程合计，
 // 与机器 CPU 直接可比）。
 // mount 建骨架与图表实例；update 仅 setOption/innerHTML（缩放/hover 保留）。
-import { getJson, fetchSamplesIncremental, fmtGB, fmtBytes, fmtTime, fmtTimeFull, escapeHtml, catLabel, evLabel } from '../api.js';
+import { getJson, fetchAllSamplesIncremental, fmtGB, fmtBytes, fmtTime, fmtTimeFull, escapeHtml, catLabel, evLabel } from '../api.js';
 import { makeChart, line, chartColors, fmtMb, fmtMbPerS, fmtPctVal } from '../charts.js';
 import { t } from '../i18n.js';
 
@@ -46,7 +46,7 @@ export async function update(ctx) {
     getJson('/api/events?limit=30'),
     getJson('/api/workers'),
   ]);
-  if (!meta) return;
+  if (!meta || !document.getElementById('ov-kpi')) return;   // 后者：页面已切走
 
   const m = meta.meta || {};
   // 运行中实时计时（run_end 未落盘时用当前时刻），结束后为终值。
@@ -65,22 +65,22 @@ export async function update(ctx) {
     <div class="kpi"><div class="label">${t('ov.hostsLabel')}</div><div class="value">${hosts}</div></div>`;
 
   // ---- 1s 桶聚合（含 master wid=0 的样本——同样是 fly 进程负载）----
-  // 样本经增量缓存拉取（每轮只传新增，见 fetchSamplesIncremental）。
-  // 并行拉取：200+ worker 时串行 await 每个连接一拍 RTT，首轮显著变慢。
+  // 样本经批量增量缓存拉取（全部 worker 一次请求，每轮只传新增；
+  // fetchAllSamplesIncremental 返回 Map wid → 累计样本数组）。
   const seenWorkers = new Set();
   for (const w of (workers ? workers.workers : [])) seenWorkers.add(w.worker_id);
   const widList = [...seenWorkers];
-  const samplesArr = await Promise.all(widList.map(w => fetchSamplesIncremental(w)));
+  const samplesByWid = await fetchAllSamplesIncremental(widList);
   const buckets = new Map();   // bucketSec → { wid → latest sample }
   const latest = new Map();    // wid → 该桶时刻的最后已知样本（跨桶携带）
-  widList.forEach((wid, i) => {
-    for (const sp of samplesArr[i]) {
+  for (const wid of widList) {
+    for (const sp of (samplesByWid.get(wid) || [])) {
       const k = Math.floor(sp.epoch_ms / 1000);
       let b = buckets.get(k);
       if (!b) { b = {}; buckets.set(k, b); }
       b[wid] = sp;  // 同桶多条取最新（时间升序遍历天然覆盖）
     }
-  });
+  }
   // 前值填充（forward-fill）：桶内无样本的 worker 用其 ≤ 该桶的最后已知
   // 样本参与聚合——否则末尾桶只含已上报的部分 worker（10s 成组上报有
   // 延迟），Σ 曲线尾部塌陷（与 RunMetrics 最近邻合成同理）。
@@ -157,6 +157,6 @@ function evRow(e) {
     <td><span class="badge ${badgeEvent}" ${badgeTitle ? `title="${badgeTitle}"` : ''}>${badgeText}</span></td>
     <td>${e.worker_id || '-'}</td>
     <td>${e.task_id || '-'}</td>
-    <td class="muted mono">${escapeHtml(String(e.detail || '')).slice(0, 80)}</td>
+    <td class="muted mono">${escapeHtml(String(e.detail || '').slice(0, 80))}</td>
   </tr>`;
 }

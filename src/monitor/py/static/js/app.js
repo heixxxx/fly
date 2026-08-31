@@ -9,7 +9,7 @@
 //     传输量从 O(总样本) 降为 O(新增)；run 切换（run_start_ms 变化）
 //     自动清缓存。
 //   · run 结束（run_end_ms 存在）且指纹连续稳定 5 轮（15s）→ 自动停轮询，
-//     header 提示；切页签或勾选自动刷新可恢复。
+//     header 提示；重新勾选自动刷新可恢复（切页签只手动刷一次）。
 import { getJson, resetSamplesCache, fmtTime } from './api.js';
 import { t, getLang, setLang, onLangChange } from './i18n.js';
 import { getTheme, setTheme, onThemeChange } from './theme.js';
@@ -33,9 +33,11 @@ const themeSel = document.getElementById('theme-sel');
 
 let current = null;      // 当前页状态 { mod, ctx }
 let pollTimer = null;
+let pollBusy = false;    // 上一轮 pollTick 未完成（慢存储/大增量）——跳过本轮
 let lastFp = null;
 let stableRounds = 0;
 let lastRunStart = null;  // run 切换检测（清样本增量缓存）
+let lastDbGen = null;     // 库替换检测（inode 变化，同清增量缓存）
 
 function updateHeader(meta) {
   const m = meta.meta || {};
@@ -49,44 +51,53 @@ async function fetchFingerprint() {
   if (!meta) return null;
   const m = meta.meta || {};
   return {
-    // 任务计数/worker 数/最新样本时刻任一变化即视为数据变化。
-    fp: `${m.run_end_ms || ''}|${JSON.stringify(meta.task_counts)}|` +
-        `${meta.workers}|${meta.sample_hi}`,
+    // 库世代/任务计数/worker 数/最新样本时刻任一变化即视为数据变化
+    //（db_gen=库 inode：库整体替换且各计数恰好相同时仍强制刷新）。
+    fp: `${meta.db_gen ?? ''}|${m.run_end_ms || ''}|` +
+        `${JSON.stringify(meta.task_counts)}|${meta.workers}|${meta.sample_hi}`,
     finished: !!m.run_end_ms,
     meta,
   };
 }
 
 async function pollTick(keepScroll = true) {
-  const info = await fetchFingerprint();
-  if (!info) return;
-  updateHeader(info.meta);
-  if (info.fp === lastFp) {
-    stableRounds++;
-    if (info.finished && stableRounds >= STABLE_ROUNDS_TO_STOP) {
-      stopPolling(t('app.pollStopped'));
+  if (pollBusy) return;   // 防重入：手动导航与 interval tick 并发交错渲染
+  pollBusy = true;
+  try {
+    const info = await fetchFingerprint();
+    if (!info) return;
+    updateHeader(info.meta);
+    if (info.fp === lastFp) {
+      stableRounds++;
+      if (info.finished && stableRounds >= STABLE_ROUNDS_TO_STOP) {
+        stopPolling(t('app.pollStopped'));
+      }
+      return;
     }
-    return;
-  }
-  // run 切换（新 run 的 run_start_ms 不同，或旧 run 数据被替换）：
-  // 样本与 timeline 的增量游标对新数据无意义，清空重建。
-  const runStart = info.meta.run_start_ms;
-  if (runStart && runStart !== lastRunStart) {
-    if (lastRunStart !== null) {
+    // run 切换（新 run 的 run_start_ms 不同）或库被整体替换（db_gen=inode
+    // 变化、run_start 不变——测试重建场景）：样本与 timeline 的增量游标对
+    // 新数据无意义，清空重建。
+    const runStart = info.meta.run_start_ms;
+    const dbGen = info.meta.db_gen;
+    if ((runStart && lastRunStart !== null && runStart !== lastRunStart) ||
+        (dbGen != null && lastDbGen !== null && dbGen !== lastDbGen)) {
       resetSamplesCache();
       timeline.resetTimelineCache();
     }
-    lastRunStart = runStart;
+    if (runStart) lastRunStart = runStart;
+    if (dbGen != null) lastDbGen = dbGen;
+    lastFp = info.fp;
+    stableRounds = 0;
+    if (!current) return;
+    // 数据刷新不重置用户滚动位置（页面/表格拖到哪里就停在哪里）。
+    const scroll = keepScroll
+      ? { top: main.scrollTop, left: main.scrollLeft } : { top: 0, left: 0 };
+    await current.mod.update(current.ctx);
+    main.scrollTop = scroll.top;
+    main.scrollLeft = scroll.left;
+  } finally {
+    pollBusy = false;
   }
-  lastFp = info.fp;
-  stableRounds = 0;
-  if (!current) return;
-  // 数据刷新不重置用户滚动位置（页面/表格拖到哪里就停在哪里）。
-  const scroll = keepScroll
-    ? { top: main.scrollTop, left: main.scrollLeft } : { top: 0, left: 0 };
-  await current.mod.update(current.ctx);
-  main.scrollTop = scroll.top;
-  main.scrollLeft = scroll.left;
 }
 
 function stopPolling(reason) {
@@ -122,6 +133,14 @@ export function navigate(opts) {
   pollTick(opts && opts.keepScroll);
 }
 
+// 当前页签名（模块 → 页名反向查找；gotoPage 记返回目标与 rerender 共用）。
+function currentPageName() {
+  for (const [n, m] of Object.entries(PAGES)) {
+    if (current && m === current.mod) return n;
+  }
+  return 'overview';
+}
+
 // 跨页跳转（带返回）：gotoPage('workers', {workerId: 2}) 从 Timeline 泳道
 // 跳入 worker 详情；源页模块在 destroy 时自存状态（缩放/排序/滚动），返回
 // 时 mount 恢复。backTarget 驱动页面顶部的「返回上一页」条。
@@ -129,11 +148,7 @@ let backTarget = null;   // { page, label }（源页状态由源页模块自存�
 
 export function gotoPage(name, opts, backLabel) {
   if (current && backLabel) {
-    backTarget = { page: current.mod === PAGES.timeline ? 'timeline'
-                    : current.mod === PAGES.workers ? 'workers'
-                    : current.mod === PAGES.tasks ? 'tasks'
-                    : current.mod === PAGES.dbs ? 'dbs' : 'overview',
-                   label: backLabel };
+    backTarget = { page: currentPageName(), label: backLabel };
   }
   switchPage(name);
   if (opts && current) Object.assign(current.ctx, opts);
@@ -205,7 +220,8 @@ function fillHeaderControls() {
   for (const b of nav.children) {
     if (b.dataset && b.dataset.page) b.textContent = t('nav.' + b.dataset.page);
   }
-  document.getElementById('poll-label').textContent = t('hdr.autoRefresh');
+  document.getElementById('poll-label').textContent =
+    t('hdr.autoRefresh', POLL_MS / 1000);
   langSel.innerHTML = `<option value="zh">${t('lang.zh')}</option>` +
                       `<option value="en">${t('lang.en')}</option>`;
   langSel.value = getLang();
@@ -221,16 +237,12 @@ function fillHeaderControls() {
 function rerender() {
   fillHeaderControls();
   if (!current) return;
-  let name = 'overview';
-  for (const [n, m] of Object.entries(PAGES)) {
-    if (m === current.mod) { name = n; break; }
-  }
   const keep = {
     workerId: current.ctx.workerId,
     taskId: current.ctx.taskId,
     taskFilter: { ...current.ctx.taskFilter },
   };
-  switchPage(name, keep);
+  switchPage(currentPageName(), keep);
 }
 
 langSel.addEventListener('change', () => setLang(langSel.value));
@@ -257,7 +269,19 @@ fillHeaderControls();
 // ---- 键盘滚动导航 + 固定浮窗滚轮透传 ----
 // 滚动容器是 main（body 不滚动），浏览器键盘滚动（Home/End/PageUp…）
 // 天生作用于 document 而触不到 main；固定浮窗挂在 body 直下，鼠标悬停
-// 其上时 wheel 的冒泡链也不含 main——两处统一把滚动意图透传给 main。
+// 其上时 wheel 的冒泡链也不含 main——默认把滚动意图透传给 main。
+// 例外：浮窗内部有自己的可滚容器（如 Timeline 任务详情浮窗的 .if-body
+// 限高内滚）时优先原生消费——透传会让人永远滚不到浮窗底部内容。
+function insideFloatScroller(e) {
+  for (let el = e.target; el && el !== document.body; el = el.parentElement) {
+    if (el.nodeType === 1) {
+      const oy = getComputedStyle(el).overflowY;
+      if ((oy === 'auto' || oy === 'scroll') &&
+          el.scrollHeight > el.clientHeight) return true;
+    }
+  }
+  return false;
+}
 const mainScroller = document.getElementById('main');
 document.addEventListener('keydown', (e) => {
   if (e.target.closest('input, select, textarea')) return;
@@ -269,10 +293,11 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
 });
 document.addEventListener('wheel', (e) => {
-  // 目标不在 main 滚动链内的浮层（body 直下固定浮窗）→ 手动透传滚动。
-  if (!e.target.closest || !mainScroller.contains(e.target)) {
-    mainScroller.scrollTop += e.deltaY;
-    e.preventDefault();
-  }
+  // 目标在 main 滚动链内 → 原生滚动；body 直下浮窗：内部可滚容器优先，
+  // 否则透传给 main。
+  if (!e.target.closest || mainScroller.contains(e.target)) return;
+  if (insideFloatScroller(e)) return;
+  mainScroller.scrollTop += e.deltaY;
+  e.preventDefault();
 }, { passive: false });
 startPolling();

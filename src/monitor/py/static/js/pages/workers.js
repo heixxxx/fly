@@ -1,7 +1,7 @@
 // Workers：卡片列表 + 详情（四图 + 该 worker 的 task 表）。
 // mount 建外层容器；update 按 ctx.workerId 填列表或详情——详情骨架/图表
 // 实例只在进入时建一次，后续 update 仅 setOption（缩放/hover 保留）。
-import { getJson, fetchSamplesIncremental, fmtGB, fmtBytes, fmtMs, escapeHtml, expandoHtml, statusLabel, evLabel, bindPageJump, getPageSize, setPageSize, PAGE_SIZE_OPTIONS } from '../api.js';
+import { getJson, fetchSamplesIncremental, fmtGB, fmtBytes, fmtMs, escapeHtml, expandoHtml, statusLabel, evLabel, bindPageJump, getPageSize, setPageSize, PAGE_SIZE_OPTIONS, mappedLabel } from '../api.js';
 import { makeChart, line, rateSeries, chartColors, fmtMb, fmtMbPerS, fmtPctVal } from '../charts.js';
 import { t } from '../i18n.js';
 import { navigate } from '../app.js';
@@ -39,9 +39,10 @@ export async function update(ctx) {
 
   if (ctx.workerId == null) {
     const data = await getJson('/api/workers');
-    if (!data) return;
-    body.innerHTML = `<div class="worker-cards">${data.workers.map(card).join('')}</div>`;
-    body.onclick = (e) => {
+    if (!data || !document.getElementById('w-body')) return;   // 后者：页面已切走
+    document.getElementById('w-body').innerHTML =
+      `<div class="worker-cards">${data.workers.map(card).join('')}</div>`;
+    document.getElementById('w-body').onclick = (e) => {
       const el = e.target.closest('.worker-card');
       if (el) { ctx.workerId = +el.dataset.wid; navigate(); }
     };
@@ -68,8 +69,9 @@ function card(w) {
   } else {
     stateBadge = `<span class="badge ${w.last_event}">${w.last_event ? evLabel(w.last_event) : '-'}</span>`;
   }
-  // 角色值映射（compute→计算）；未知角色回退原值。
-  const role = w.role ? (t('role.' + w.role) === 'role.' + w.role ? w.role : t('role.' + w.role)) : '-';
+  // 角色值映射（compute→计算）；未知角色回退原值。注册侧半可信字符串
+  // （attributes/role）一律 escapeHtml 后入 HTML。
+  const role = w.role ? escapeHtml(mappedLabel('role.', w.role)) : '-';
   const hostText = `${w.hostname}${w.ip ? ':' + w.ip : ''}`;
   return `<div class="worker-card" data-wid="${w.worker_id}">
     <div class="title">
@@ -80,7 +82,7 @@ function card(w) {
     <div class="row"><span>${t('w.role')}</span><b>${role}</b></div>
     <div class="row"><span>${t('w.procRssCpu')}</span><b>${rss} · ${cpu}</b></div>
     <div class="row"><span>${t('w.hostCpu')}</span><b>${hcpu}</b></div>
-    <div class="row"><span>${t('w.attrs')}</span><b>${w.attributes || '-'}</b></div>
+    <div class="row"><span>${t('w.attrs')}</span><b>${escapeHtml(w.attributes || '-')}</b></div>
   </div>`;
 }
 
@@ -92,8 +94,8 @@ async function fillDetail(body, ctx) {
     fetchSamplesIncremental(wid),
     getJson(`/api/tasks?worker=${wid}&limit=${getPageSize()}&offset=${off}`),
   ]);
-  const sp = samples;
-  const times = sp.map(x => x.epoch_ms);
+  if (!document.getElementById('w-title')) return;   // 请求期间页面已切走
+  const times = samples.map(x => x.epoch_ms);
 
   if (!detailBuilt) {
     body.innerHTML = `
@@ -152,28 +154,28 @@ async function fillDetail(body, ctx) {
       ctx.wTaskOffset = 0;
       navigate({ keepScroll: true });
     };
-      charts = [
-        makeChart(document.getElementById('w-cpu'), {}),
-        makeChart(document.getElementById('w-mem'), {}),
-        makeChart(document.getElementById('w-net'), {}),
-        makeChart(document.getElementById('w-load'), {}),
-      ];
-      detailBuilt = true;
-    }
+    charts = [
+      makeChart(document.getElementById('w-cpu'), {}),
+      makeChart(document.getElementById('w-mem'), {}),
+      makeChart(document.getElementById('w-net'), {}),
+      makeChart(document.getElementById('w-load'), {}),
+    ];
+    detailBuilt = true;
+  }
 
   document.getElementById('w-title').textContent =
     wid === 0 ? 'master' : `worker ${wid}`;
   document.getElementById('w-kpi').innerHTML = `
-    <div class="kpi"><div class="label">${t('w.latestRss')}</div><div class="value">${sp.length ? fmtGB(sp[sp.length - 1].proc_rss_bytes) : '-'}</div></div>
-    <div class="kpi"><div class="label">${t('w.latestCpu')}</div><div class="value">${sp.length ? (sp[sp.length - 1].proc_cpu_bps / 100).toFixed(1) + '%' : '-'}</div></div>
-    <div class="kpi"><div class="label">${t('w.netTotal')}</div><div class="value" style="font-size:15px; line-height:34px">${sp.length ? fmtBytes(sp[sp.length - 1].net_read_bytes) + ' / ' + fmtBytes(sp[sp.length - 1].net_write_bytes) : '-'}</div></div>`;
+    <div class="kpi"><div class="label">${t('w.latestRss')}</div><div class="value">${samples.length ? fmtGB(samples[samples.length - 1].proc_rss_bytes) : '-'}</div></div>
+    <div class="kpi"><div class="label">${t('w.latestCpu')}</div><div class="value">${samples.length ? (samples[samples.length - 1].proc_cpu_bps / 100).toFixed(1) + '%' : '-'}</div></div>
+    <div class="kpi"><div class="label">${t('w.netTotal')}</div><div class="value" style="font-size:15px; line-height:34px">${samples.length ? fmtBytes(samples[samples.length - 1].net_read_bytes) + ' / ' + fmtBytes(samples[samples.length - 1].net_write_bytes) : '-'}</div></div>`;
 
   const c = chartColors();
   charts[0].setOption({
     tooltip: { valueFormatter: fmtPctVal },
     series: [
-      line(t('ser.procCpu'), times.map((tm, i) => [tm, sp[i].proc_cpu_bps / 100]), c.blue),
-      line(t('ser.hostCpu'), times.map((tm, i) => [tm, sp[i].host_cpu_bps / 100]), c.yellow),
+      line(t('ser.procCpu'), times.map((tm, i) => [tm, samples[i].proc_cpu_bps / 100]), c.blue),
+      line(t('ser.hostCpu'), times.map((tm, i) => [tm, samples[i].host_cpu_bps / 100]), c.yellow),
     ],
     yAxis: [{ type: 'value', axisLabel: { color: c.label, formatter: '{value}%' } }],
   });
@@ -183,11 +185,11 @@ async function fillDetail(body, ctx) {
     grid: { right: 66 },
     tooltip: { valueFormatter: fmtMb },
     series: [
-      line(t('ser.procRss'), times.map((tm, i) => [tm, sp[i].proc_rss_bytes]), c.blue, 0, true),
-      line(t('ser.hostAvail'), times.map((tm, i) => [tm, sp[i].host_mem_avail_bytes]), c.green, 1),
+      line(t('ser.procRss'), times.map((tm, i) => [tm, samples[i].proc_rss_bytes]), c.blue, 0, true),
+      line(t('ser.hostAvail'), times.map((tm, i) => [tm, samples[i].host_mem_avail_bytes]), c.green, 1),
       // 总量是参考线：亮/中灰虚线（深浅主题下均与背景拉开对比度）。
       { name: t('ser.hostTotal'), type: 'line', yAxisIndex: 1,
-        data: times.map((tm, i) => [tm, sp[i].host_mem_total_bytes]),
+        data: times.map((tm, i) => [tm, samples[i].host_mem_total_bytes]),
         showSymbol: false, lineStyle: { width: 1.5, color: c.hostTotal, type: 'dashed' },
         itemStyle: { color: c.hostTotal } },
     ],
@@ -203,14 +205,14 @@ async function fillDetail(body, ctx) {
   charts[2].setOption({
     tooltip: { valueFormatter: fmtMbPerS },
     series: [
-      line(t('ser.read'), rateSeries(times, sp.map(x => x.net_read_bytes)), c.cyan),
-      line(t('ser.write'), rateSeries(times, sp.map(x => x.net_write_bytes)), c.orange),
+      line(t('ser.read'), rateSeries(times, samples.map(x => x.net_read_bytes)), c.cyan),
+      line(t('ser.write'), rateSeries(times, samples.map(x => x.net_write_bytes)), c.orange),
     ],
     yAxis: [{ type: 'value', axisLabel: { color: c.label, formatter: v => fmtBytes(v) } }],
   });
   charts[3].setOption({
     tooltip: { valueFormatter: v => (+v).toFixed(2) },
-    series: [line(t('ser.load1'), times.map((tm, i) => [tm, sp[i].host_load1_x100 / 100]), c.purple, 0, true)],
+    series: [line(t('ser.load1'), times.map((tm, i) => [tm, samples[i].host_load1_x100 / 100]), c.purple, 0, true)],
   });
 
   document.getElementById('w-task-title').textContent = wid === 0

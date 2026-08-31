@@ -1,5 +1,6 @@
 // 轻量 fetch 封装（GET JSON，失败静默返回 null 由调用方降级）。
 import { t } from './i18n.js';
+import { lsGet, lsSet } from './storage.js';
 
 export async function getJson(url) {
   try {
@@ -13,17 +14,23 @@ export async function getJson(url) {
 
 // ---- worker 样本增量缓存（增强刷新的核心）----
 // 每 worker 维护已拉样本数组 + epoch_ms 游标；fetchSamplesIncremental 每
-// 轮只请求 after_ms=游标 的新增样本（首轮全量）。数据传输从 O(总样本)
-// 降为 O(新增)；渲染端仍全量 setOption（ECharts 合并路径，万级点无压力）。
-// run 切换时由 app.js 调 resetSamplesCache() 清空。
+// 轮只请求 after_ms=游标 的新增样本（首轮全量）；fetchAllSamplesIncremental
+// 一次请求拉全部 worker 的新增（overview 用，避免数百 worker × 每轮一请求）。
+// 数据传输从 O(总样本) 降为 O(新增)；渲染端仍全量 setOption（ECharts 合并
+// 路径，万级点无压力）。run/库切换时由 app.js 调 resetSamplesCache() 清空。
 const samplesCache = new Map();   // wid -> { cursor, samples }
 
-export async function fetchSamplesIncremental(wid) {
+function cacheFor(wid) {
   let c = samplesCache.get(wid);
   if (!c) {
     c = { cursor: 0, samples: [] };
     samplesCache.set(wid, c);
   }
+  return c;
+}
+
+export async function fetchSamplesIncremental(wid) {
+  const c = cacheFor(wid);
   const s = await getJson(`/api/workers/${wid}/samples?after_ms=${c.cursor}`);
   if (s && s.samples.length > 0) {
     // 服务端按 epoch 升序；主键保证无重复（游标严格大于）。
@@ -31,6 +38,26 @@ export async function fetchSamplesIncremental(wid) {
     c.cursor = s.samples[s.samples.length - 1].epoch_ms;
   }
   return c.samples;
+}
+
+// 批量增量：after 为「wid:游标」逗号串（游标必须逐 worker 独立——样本
+// epoch 取自各 worker 时钟，存在偏斜，全局游标会永久跳过时钟落后者）。
+// 返回 Map wid → 累计样本数组（含未新增的 worker，直接供渲染）。
+export async function fetchAllSamplesIncremental(widList) {
+  for (const wid of widList) cacheFor(wid);
+  const after = widList.map(w => `${w}:${cacheFor(w).cursor}`).join(',');
+  const s = await getJson(`/api/samples?after=${encodeURIComponent(after)}`);
+  if (s && Array.isArray(s.samples)) {
+    for (const sp of s.samples) {
+      const c = samplesCache.get(sp.worker_id);
+      if (!c) continue;   // 缓存外（切 run 竞态等）——下轮全量重建
+      c.samples.push(sp);
+      if (sp.epoch_ms > c.cursor) c.cursor = sp.epoch_ms;
+    }
+  }
+  const out = new Map();
+  for (const wid of widList) out.set(wid, cacheFor(wid).samples);
+  return out;
 }
 
 export function resetSamplesCache() {
@@ -56,7 +83,7 @@ export function fmtGB(bytes) {
   return Number(gb.toPrecision(3)) + ' GB';
 }
 
-// 占比格式化：0.123 → "12%"（整数百分比，负载维度展示用）。
+// 占比格式化：0.123 → "12.3%"（一位小数，整数位变化时省略 ".0"）。
 export function fmtPct(ratio) {
   if (ratio == null || isNaN(ratio)) return '-';
   // 一位小数：Math.round 会把 0.5% 显示成 0%，误导性大。
@@ -93,13 +120,13 @@ const PSIZE_KEY = 'fly-monitor-page-size';
 const PSIZE_DEFAULT = 20;
 
 export function getPageSize() {
-  const v = parseInt(localStorage.getItem(PSIZE_KEY), 10);
+  const v = parseInt(lsGet(PSIZE_KEY), 10);
   return v > 0 ? v : PSIZE_DEFAULT;
 }
 
 export function setPageSize(n) {
   const v = parseInt(n, 10);
-  if (v > 0) localStorage.setItem(PSIZE_KEY, String(Math.min(v, 500)));
+  if (v > 0) lsSet(PSIZE_KEY, String(Math.min(v, 500)));
 }
 
 // 每页条数 select 的选项档位。
@@ -133,11 +160,6 @@ export function fmtTimeFull(epochMs) {
   return `${d.getMonth() + 1}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, '0')}`;
 }
 
-export function fmtDuration(ms) {
-  if (ms == null || ms <= 0) return '-';
-  return fmtMs(ms);
-}
-
 // ---- 超长名称的缩略/展开（task 名、对象全名、db 路径共用） ----
 
 export function escapeHtml(s) {
@@ -156,11 +178,8 @@ export function shortName(s, head = 10, tail = 10) {
 // （word-break 保证任何长度都在可视宽度内换行，不破坏布局）。
 export function expandoHtml(full, head = 10, tail = 10) {
   const f = String(full ?? '');
-  const short = f.length <= head + tail + 4
-    ? escapeHtml(f)
-    : escapeHtml(f.slice(0, head)) + '....' + escapeHtml(f.slice(-tail));
   return `<span class="expando" data-full="${escapeHtml(f)}" ` +
-         `title="${escapeHtml(t('name.expandToggle'))}">${short}</span>`;
+         `title="${escapeHtml(t('name.expandToggle'))}">${shortName(f, head, tail)}</span>`;
 }
 
 // 错误信息（如 traceback）：首尾缩略单行省略，悬停（原生 title）显示完整。

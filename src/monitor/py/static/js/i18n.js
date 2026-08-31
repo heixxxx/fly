@@ -1,10 +1,11 @@
 // i18n：中文（默认）/ 英文双语文典。
 //   · t(key, ...args)：查当前语言字典；缺 key 回退中文，中文也缺则显示
 //     key 本身（开发期肉眼可见漏配）；{0} {1} 位置占位替换。
-//   · 语言持久化 localStorage（fly-monitor-lang）；切换经 onLangChange
-//     订阅——app.js 联动整页重建（mount 模板文案在重建时取新语言，
-//     update 内的动态文案每次渲染都经 t() 实时取）。
+//   · 语言持久化 localStorage（fly-monitor-lang，经 storage.js 安全封装）；
+//     切换经 onLangChange 订阅——app.js 联动整页重建（mount 模板文案在
+//     重建时取新语言，update 内的动态文案每次渲染都经 t() 实时取）。
 //   · <html lang> 同步（zh-CN / en）。
+import { lsGet, lsSet } from './storage.js';
 const ZH = {
   // ---- header / 主题语言控件 ----
   'nav.overview': '总览',
@@ -12,7 +13,7 @@ const ZH = {
   'nav.tasks': '任务',
   'nav.timeline': '时间轴',
   'nav.dbs': '数据库',
-  'hdr.autoRefresh': '自动刷新(3s)',
+  'hdr.autoRefresh': '自动刷新({0}s)',
   'lang.zh': '中文',
   'lang.en': 'English',
   'theme.light': '浅色',
@@ -95,14 +96,11 @@ const ZH = {
   'ov.durationRunning': '运行时长（进行中）',
   'ov.duration': '运行时长',
   'ov.tasksTotal': '任务总数',
-  'ov.tasksSub': '完成 {0} · 失败 {1} · 运行 {2}',
   'ov.subDone': '完成',
   'ov.subFail': '失败',
   'ov.subRun': '运行',
   'ov.hostsLabel': '主机数',
   'ov.workersLabel': '工作节点',
-  'ov.samples': '样本数',
-  'ov.sampling': '采样中',
   'ov.rss': '集群聚合 RSS',
   'ov.cpu': '集群聚合 CPU（进程 vs 机器）',
   'ov.net': '集群聚合网络 IO 速率（读/写）',
@@ -157,8 +155,6 @@ const ZH = {
   'tb.taskCol': '任务',
   't.cpuIoShare': 'CPU / IO 占比',
   't.cpuIoShareTitle': '运行时长中 CPU/IO 占比',
-  't.readBT': '读(字节/时间)',
-  't.writeBT': '写(字节/时间)',
   't.memAvgPeakCol': '内存 均值/峰值',
   't.dbsCol': '归属数据库',
   't.prev': '上一页',
@@ -215,7 +211,6 @@ const ZH = {
   'tl.laneLabel': '工作节点 {0} · {1}',
   'tl.laneMaster': 'master(0) · {0}',
   'tl.infoCollapse': '收起浮窗',
-  'tl.infoExpand': '展开浮窗',
   'tl.infoClear': '清除详情',
   'tl.ttLoad': '排队 {0} · CPU {1} · IO {2} · 空闲 {3}',
   'tl.fastTask': 'Fast Task',
@@ -247,7 +242,7 @@ const EN = {
   'nav.tasks': 'Tasks',
   'nav.timeline': 'Timeline',
   'nav.dbs': 'DBs',
-  'hdr.autoRefresh': 'Auto refresh (3s)',
+  'hdr.autoRefresh': 'Auto refresh ({0}s)',
   'lang.zh': '中文',
   'lang.en': 'English',
   'theme.light': 'Light',
@@ -326,14 +321,11 @@ const EN = {
   'ov.durationRunning': 'Duration (running)',
   'ov.duration': 'Duration',
   'ov.tasksTotal': 'Total Tasks',
-  'ov.tasksSub': 'Completed {0} · Failed {1} · Running {2}',
   'ov.subDone': 'done',
   'ov.subFail': 'failed',
   'ov.subRun': 'running',
   'ov.hostsLabel': 'Hosts',
   'ov.workersLabel': 'Workers',
-  'ov.samples': 'Samples',
-  'ov.sampling': 'Sampling',
   'ov.rss': 'Cluster Aggregate RSS',
   'ov.cpu': 'Cluster CPU (Process vs Host)',
   'ov.net': 'Cluster Network IO Rate (Read/Write)',
@@ -386,8 +378,6 @@ const EN = {
   'tb.taskCol': 'Task',
   't.cpuIoShare': 'CPU / IO Share',
   't.cpuIoShareTitle': 'CPU/IO share of duration',
-  't.readBT': 'Read (Bytes/Time)',
-  't.writeBT': 'Write (Bytes/Time)',
   't.memAvgPeakCol': 'Memory Avg / Peak',
   't.dbsCol': 'Owner DB',
   't.prev': 'Prev',
@@ -443,7 +433,6 @@ const EN = {
   'tl.laneLabel': 'worker {0} · {1}',
   'tl.laneMaster': 'master(0) · {0}',
   'tl.infoCollapse': 'Collapse panel',
-  'tl.infoExpand': 'Expand panel',
   'tl.infoClear': 'Clear details',
   'tl.ttLoad': 'Queue {0} · CPU {1} · IO {2} · Idle {3}',
   'tl.fastTask': 'Fast Task',
@@ -468,10 +457,7 @@ const EN = {
   'db.empty': 'No DBs (Database unused in this run)',
 };
 
-let lang = 'zh';
-if (typeof localStorage !== 'undefined') {
-  lang = localStorage.getItem('fly-monitor-lang') === 'en' ? 'en' : 'zh';
-}
+let lang = lsGet('fly-monitor-lang') === 'en' ? 'en' : 'zh';
 
 const listeners = new Set();
 
@@ -492,9 +478,7 @@ export function setLang(l) {
   if (l !== 'zh' && l !== 'en') return;
   if (l === lang) return;
   lang = l;
-  if (typeof localStorage !== 'undefined') {
-    localStorage.setItem('fly-monitor-lang', l);
-  }
+  lsSet('fly-monitor-lang', l);
   if (typeof document !== 'undefined' && document.documentElement) {
     document.documentElement.lang = l === 'en' ? 'en' : 'zh-CN';
   }

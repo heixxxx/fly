@@ -39,8 +39,9 @@ GUI:   serve.py（stdlib）只读 JSON API + ECharts 前端（vendor 进库，�
   `journal_mode=PERSIST`（兼避免每事务建删 journal 文件的 NFS 元数据抖动）。
 - `synchronous=NORMAL` + 写线程批量事务（千级提交风暴合并单事务）+ close 时
   清干净 journal（终态文件事后只读 100% 安全）。
-- 单写者（master）架构下 NFS 锁丢失的最坏后果是 GUI 读到 BUSY（重试），
-  无第二写者不会损坏。
+- 单写者（master）架构下 NFS 锁丢失的最坏后果是 GUI 读到 BUSY（短重试，
+  用尽转 HTTP 503——前端静默跳过本轮，下一轮轮询补上），无第二写者不会
+  损坏。
 
 ## 3. 采集口径
 
@@ -134,8 +135,11 @@ import fly; fly.launch_monitor_gui("<log_dir>")
 启动后打印各网卡入口 URL（WSL/NAT 环境含真实出口 IP，Windows 宿主浏览器可用）。
 GUI 数据跟随：monitor.db 随 run 轮转目录隔离（fly_log.N）；`--serve-monitor
 fly_log.latest` 始终指向最新 run 且新 run 落盘后自动跟随（软链 + inode 检测）。
-刷新模型：数据指纹（task 计数/worker 数/最新样本时刻）不变则跳过重渲染
-（图表缩放/hover/滚动零打断）；run 结束且数据稳定后自动停轮询。
+刷新模型：数据指纹（库 inode / task 计数 / worker 数 / 最新样本时刻）不变
+则跳过重渲染（图表缩放/hover/滚动零打断）；库被整体替换（inode 变化）或
+run 切换时自动清前端增量缓存重建；样本经批量增量通道拉取（`/api/samples`，
+逐 worker 游标——总览页全部 worker 每轮一次请求）；run 结束且数据稳定后
+自动停轮询。
 
 五个页面：
 - **总览**：run 时长 / task 计数 / 集群聚合 RSS、CPU、网络速率曲线 / 磁盘 IO
@@ -222,6 +226,8 @@ src/monitor/py/
   static/                前端工程（ECharts vendor + ES modules 五页面）
     js/i18n.js           中英双语文典 + t()（localStorage 持久化，默认中文）
     js/theme.js          浅色/深色/跟随系统（data-theme + cssVar 供 ECharts）
+    js/storage.js        localStorage 安全封装（隐私模式/禁用站点数据回退内存）
+    js/floatbar.js       智能顶部浮窗公共实现（Tasks 筛选栏 / Timeline 工具栏）
 third_party/sqlite/      SQLite 3.46.1 amalgamation（公有领域 vendor）
 qa/monitor/              test_monitor_db / test_monitor_gui
 ```

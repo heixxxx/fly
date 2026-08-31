@@ -14,6 +14,7 @@
 import { getJson, escapeHtml, shortName, fmtTimeFull, fmtMs, fmtTime, fmtPct, statusLabel } from '../api.js';
 import { makeChart, chartColors } from '../charts.js';
 import { cssVar } from '../theme.js';
+import { createTopFloat } from '../floatbar.js';
 import { t } from '../i18n.js';
 import { navigate, gotoPage } from '../app.js';
 
@@ -69,9 +70,8 @@ let lastTasks = [];
 let lastRenderKey = null; // 渲染跳过指纹（changed|lanes|条数）
 let hostMap = {};
 let runEndMs = null;   // run 结束时刻（RUNNING 任务的隐式窗口右端）
-let tToolbarScrollTarget = null;   // 工具栏浮窗的滚动驱动绑定
-let tToolbarScrollHandler = null;
-let lanes = [];          // worker 泳道（排序后）
+let tlFloat = null;    // 工具栏智能浮窗（createTopFloat 句柄）
+let lanes = [];        // worker 泳道（排序后）
 let extent = { lo: 0, hi: 1 };
 let savedState = null;   // { sort, colorDim, stripe, zoom, scrollTop }
 
@@ -162,13 +162,17 @@ function currentZoom() {
 export function destroy(ctx) {
   GRID.left = 170;   // 恢复默认（left 随上页数据动态调整过）
   lastRenderKey = null;
-  if (tToolbarScrollTarget) {
-    tToolbarScrollTarget.removeEventListener('scroll', tToolbarScrollHandler);
-  }
-  tToolbarScrollTarget = null; tToolbarScrollHandler = null;
+  if (tlFloat) { tlFloat.destroy(); tlFloat = null; }
   document.getElementById('tl-info-float')?.remove();     // 浮窗随页销毁
   document.getElementById('tl-slider-float')?.remove();
-  document.getElementById('tl-toolbar-float')?.remove();
+  if (sliderDocHandlers) {
+    // document 级拖动监听随页解绑——否则每次 mount 累积一对持旧闭包的
+    // 监听器（功能上因 mode=null 无害，但持续泄漏）。
+    for (const [type, fn] of sliderDocHandlers) {
+      document.removeEventListener(type, fn);
+    }
+    sliderDocHandlers = null;
+  }
   if (chart) {
     savedState = {
       sort: (ctx && ctx.tlSort) || 'id',
@@ -227,36 +231,13 @@ export function mount(ctx) {
     </div>`;
   // 工具栏智能浮窗：数百泳道的图表远超一屏，工具栏/图例/操作提示滚出
   // 视口后不可达（缩放后想切主色必须拉回顶部）——滚出视口顶部即整体悬
-  // 浮于视口顶部，回滚可见即归位。DOM 整体搬移保留事件绑定；判定用滚
-  // 动位置驱动（IntersectionObserver 回调时序在部分环境不可靠）。
-  if (tToolbarScrollTarget) {
-    tToolbarScrollTarget.removeEventListener('scroll', tToolbarScrollHandler);
-  }
+  // 浮于视口顶部，回滚可见即归位（公共实现见 floatbar.js）。
+  if (tlFloat) { tlFloat.destroy(); tlFloat = null; }
   document.getElementById('tl-toolbar-float')?.remove();
-  const toolbarEl = document.getElementById('tl-toolbar');
-  const tbf = document.createElement('div');
-  tbf.id = 'tl-toolbar-float';
-  tbf.style.display = 'none';
-  document.body.appendChild(tbf);
-  let toolbarFloated = false;
-  const mainEl = document.getElementById('main');
-  const tr = toolbarEl.getBoundingClientRect ? toolbarEl.getBoundingClientRect() : null;
-  const tlAbsTop = ((tr && tr.top) || 110) + mainEl.scrollTop;
-  const syncToolbarFloat = () => {
-    const wantFloat = mainEl.scrollTop > tlAbsTop - 62;
-    if (toolbarFloated === wantFloat) return;
-    toolbarFloated = wantFloat;
-    if (toolbarFloated) {
-      while (toolbarEl.firstChild) tbf.appendChild(toolbarEl.firstChild);
-      tbf.style.display = 'block';
-    } else {
-      while (tbf.firstChild) toolbarEl.appendChild(tbf.firstChild);
-      tbf.style.display = 'none';
-    }
-  };
-  tToolbarScrollHandler = syncToolbarFloat;
-  tToolbarScrollTarget = mainEl;
-  mainEl.addEventListener('scroll', tToolbarScrollHandler, { passive: true });
+  tlFloat = createTopFloat({
+    bar: document.getElementById('tl-toolbar'),
+    floatId: 'tl-toolbar-float',
+  });
   // 时间范围滑块固定浮窗：数百泳道的图表远超一屏，滑块随页底滚动后
   // 必须拉到最底才能调时间窗——独立悬浮于视口底部，缩放后随时可拖。
   document.getElementById('tl-slider-float')?.remove();
@@ -479,6 +460,7 @@ function hideLaneTip() {
 // 拖动距离 >5px 视为刷选，抑制随后的 click（不误触条形/泳道跳转）。
 let suppressClick = false;
 let brushOverlay = null;   // 高亮矩形元素（pointer-events:none）
+let sliderDocHandlers = null;   // document 级拖动监听（destroy 时解绑）
 
 function plotRect() {
   const el = document.getElementById('tl-chart');
@@ -587,7 +569,7 @@ function attachSlider(ctx) {
     e.preventDefault();
   });
 
-  document.addEventListener('mousemove', (e) => {
+  const onDocMove = (e) => {
     if (!mode || !chart) return;
     const rect = bar.getBoundingClientRect();
     const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
@@ -606,8 +588,11 @@ function attachSlider(ctx) {
     } else {  // new
       apply(Math.min(origStart, curPct), Math.max(origStart, curPct));
     }
-  });
-  document.addEventListener('mouseup', () => { mode = null; });
+  };
+  const onDocUp = () => { mode = null; };
+  document.addEventListener('mousemove', onDocMove);
+  document.addEventListener('mouseup', onDocUp);
+  sliderDocHandlers = [['mousemove', onDocMove], ['mouseup', onDocUp]];
 
   // 分区光标提示（非拖动状态）。
   bar.addEventListener('mousemove', (e) => {
@@ -728,12 +713,14 @@ async function fetchTimelineIncremental(runKey) {
 
 export async function update(ctx) {
   if (!chart) return;
-  const [runKey, workers, meta] = await Promise.all([
-    getJson('/api/meta').then(m => m ? m.meta.run_start_ms : null),
+  const [workers, meta] = await Promise.all([
     getJson('/api/workers'),
     getJson('/api/meta'),
   ]);
+  if (!chart) return;   // 请求期间页面已切走（destroy 置空）——静默放弃
+  const runKey = meta ? meta.meta.run_start_ms : null;
   const { tasks: allTasks, changed } = await fetchTimelineIncremental(runKey);
+  if (!chart) return;
   // PENDING 防御：真实数据 PENDING 的 exec_start_ms=0 不会出现在 API 结果
   // 里（SQL 过滤）；脏数据（非零 start + NULL end）会画成 50ms 幽灵条叠在
   // 真实条上——按状态剔除，与 API 过滤语义对齐。
@@ -752,6 +739,7 @@ export async function update(ctx) {
   } else {
     lanes.sort((a, b) => a - b);
   }
+  const laneIdx = new Map(lanes.map((w, i) => [w, i]));
 
   // ---- 渲染跳过（大数据量关键路径）：数据/着色/排序/条纹状态全部未变
   // 时，全量 notMerge setOption 会重建全部 datum 并重绘整块高画布——
@@ -805,7 +793,7 @@ export async function update(ctx) {
       ? Math.max(extent.hi, runEndMs || 0)   // 首轮 extent 未初始化时用 run 结束
       : (tk.exec_end_ms || tk.exec_start_ms + 50);
     return {
-      value: [lanes.indexOf(tk.worker_id), tk.exec_start_ms, winEnd, tk.task_id],
+      value: [laneIdx.get(tk.worker_id) ?? -1, tk.exec_start_ms, winEnd, tk.task_id],
       name: tk.name,
       _r: r, _failed: failed, _fast: fast, _running: running,
       // 复合负载预计算：renderItem 是热路径（每 datum 每帧一次），

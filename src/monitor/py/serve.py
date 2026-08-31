@@ -27,7 +27,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,6 +52,19 @@ _db_path = None
 _db_inode = None
 
 
+class DbBusy(Exception):
+    """monitor.db 持续 BUSY（NFS 写锁竞争重试用尽）。调用方不必捕获——
+    do_GET 统一转 503，前端对非 2xx 静默跳过本轮（下一轮轮询补上）。"""
+
+
+def _connect_ro(path):
+    """新建只读连接（mode=ro URI + busy_timeout；全部连接的唯一构造点）。"""
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
 def open_db(path):
     """打开只读连接（进程内单连接串行复用；sqlite3 线程检查关闭）。
 
@@ -65,16 +77,14 @@ def open_db(path):
         raise FileNotFoundError(f"monitor.db not found: {path}")
     _db_path = path
     _db_inode = os.stat(path).st_ino
-    _conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
-    _conn.row_factory = sqlite3.Row
-    _conn.execute("PRAGMA busy_timeout=5000")
+    _conn = _connect_ro(path)
     return _conn
 
 
 def _reopen_if_replaced():
     """db 文件被同路径替换（新 run）时重开连接。每次 query 前调用（一次
-    stat，µs 级）。文件被删且未重建时保持旧连接（旧数据仍可看，重建后
-    inode 变化触发切换）。"""
+    stat，µs 级；持锁内执行）。文件被删且未重建时保持旧连接（旧数据仍可
+    看，重建后 inode 变化触发切换）。"""
     global _conn, _db_inode
     try:
         inode = os.stat(_db_path).st_ino
@@ -86,40 +96,34 @@ def _reopen_if_replaced():
         _conn.close()
     except Exception:
         pass
-    _conn = sqlite3.connect(f"file:{_db_path}?mode=ro", uri=True,
-                            check_same_thread=False)
-    _conn.row_factory = sqlite3.Row
-    _conn.execute("PRAGMA busy_timeout=5000")
+    _conn = _connect_ro(_db_path)
     _db_inode = inode
 
 
 def query(sql, args=()):
-    """执行只读查询。NFS/写锁冲突（BUSY）时短重试；其余异常向上抛。"""
+    """执行只读查询。NFS/写锁冲突（BUSY）时短重试；重试期间的连接重开
+    与常规路径同在锁内（并发线程绝不能看到被 close 的旧连接）；重试用尽
+    抛 DbBusy。其余异常向上抛。"""
     global _conn
     for attempt in range(3):
-        try:
-            with _conn_lock:
+        with _conn_lock:
+            try:
                 _reopen_if_replaced()
                 cur = _conn.execute(sql, args)
-                rows = cur.fetchall()
-            return rows
-        except sqlite3.OperationalError as e:
-            if "locked" in str(e) or "busy" in str(e):
-                if attempt == 2:
-                    return []  # 读监控数据最终让路（下一轮轮询补上）
-                time.sleep(0.3)
-                # 连接可能失效（journal 回收窗口），重开一次。
+                return cur.fetchall()
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e) and "busy" not in str(e):
+                    raise
+                # 连接可能失效（journal 回收窗口），锁内重开一次。
                 try:
                     _conn.close()
                 except Exception:
                     pass
-                _conn = sqlite3.connect(f"file:{_db_path}?mode=ro", uri=True,
-                                        check_same_thread=False)
-                _conn.row_factory = sqlite3.Row
-                _conn.execute("PRAGMA busy_timeout=5000")
-                continue
-            raise
-    return []
+                _conn = _connect_ro(_db_path)
+        if attempt == 2:
+            raise DbBusy(f"monitor.db busy: {sql[:60]}")
+        time.sleep(0.3)
+    raise DbBusy("unreachable")
 
 
 def wait_for_db(path, timeout_s=DB_WAIT_TIMEOUT_S):
@@ -136,12 +140,10 @@ def wait_for_db(path, timeout_s=DB_WAIT_TIMEOUT_S):
 
 
 def resolve_db_path_arg(arg):
-    """接受 db 文件路径或 log_dir（目录内找 monitor.db）。"""
+    """接受 db 文件路径或 log_dir（目录内找 monitor.db，不存在也返回——
+    交给 wait_for_db 等待生成）。"""
     if os.path.isdir(arg):
-        cand = os.path.join(arg, "monitor.db")
-        if os.path.exists(cand):
-            return cand
-        return cand  # 不存在也返回——交给 wait_for_db 等待生成
+        return os.path.join(arg, "monitor.db")
     return arg
 
 
@@ -163,26 +165,43 @@ def api_meta():
         "workers": worker_cnt,
         "sample_lo": sample_range["lo"] or 0,
         "sample_hi": sample_range["hi"] or 0,
+        # 库 inode：前端指纹含它——库被整体替换（测试重建/run 重置）时即使
+        # 各计数恰好相同也强制刷新并清增量缓存（timeline 内部同样校验）。
+        "db_gen": _db_inode,
     }
 
 
+def _shutdown_cmd_epochs():
+    """每个 worker 最早一条关停指令（SHUTDOWN_SENT/STOP_NOW_SENT）的时刻。
+    api_workers / api_events 共用——一条小查询替代逐 worker/逐事件探测。"""
+    return {r["worker_id"]: r["mn"] for r in query(
+        "SELECT worker_id, MIN(epoch_ms) AS mn FROM events "
+        "WHERE event IN ('SHUTDOWN_SENT','STOP_NOW_SENT') GROUP BY worker_id")}
+
+
+def _exit_kind(wid, dead_ms, cmd_epoch):
+    """推导 worker DEAD 的终态语义：DEAD 前若有关停指令（指令时刻 <= 判死
+    时刻）则为正常退出（EXITED，绿），否则为异常死亡（DEAD，红——心跳超时/
+    宽限耗尽判死）。旧数据无指令事件时保守显示 DEAD。"""
+    first_cmd = cmd_epoch.get(wid)
+    return "EXITED" if first_cmd is not None and first_cmd <= dead_ms else "DEAD"
+
+
 def api_workers():
+    """worker 列表 + 各自最新样本 + 终态推导。最新样本与关停指令均一条
+    查询批量取回（逐 worker 查询的 N+1 已消除——本端点是前端每轮轮询的
+    热点，worker 数多时 N+1 会放大单轮时延与 BUSY 概率）。"""
+    cmd_epoch = _shutdown_cmd_epochs()
+    latest = {r["worker_id"]: dict(r) for r in query(
+        "SELECT s.* FROM worker_samples s "
+        "JOIN (SELECT worker_id, MAX(epoch_ms) AS mx FROM worker_samples "
+        "      GROUP BY worker_id) m "
+        "ON s.worker_id = m.worker_id AND s.epoch_ms = m.mx")}
     workers = []
     for r in query("SELECT * FROM workers ORDER BY worker_id"):
         wid = r["worker_id"]
-        latest = query(
-            "SELECT * FROM worker_samples WHERE worker_id=? ORDER BY epoch_ms DESC LIMIT 1",
-            (wid,))
-        # 推导终态语义：DEAD 前若有关停指令（SHUTDOWN_SENT/STOP_NOW_SENT）
-        # 则为正常退出（EXITED，绿），否则为异常死亡（DEAD，红——心跳超时/
-        # 宽限耗尽判死）。旧数据无指令事件时保守显示 DEAD。
-        exit_kind = None
-        if r["last_event"] == "DEAD":
-            cmd = query(
-                "SELECT 1 FROM events WHERE worker_id=? AND event IN "
-                "('SHUTDOWN_SENT','STOP_NOW_SENT') AND epoch_ms<=? LIMIT 1",
-                (wid, r["last_event_ms"]))
-            exit_kind = "EXITED" if cmd else "DEAD"
+        exit_kind = (_exit_kind(wid, r["last_event_ms"], cmd_epoch)
+                     if r["last_event"] == "DEAD" else None)
         workers.append({
             "worker_id": wid,
             "hostname": r["hostname"],
@@ -193,7 +212,7 @@ def api_workers():
             "last_event_ms": r["last_event_ms"],
             "last_event": r["last_event"],
             "exit_kind": exit_kind,
-            "latest": dict(latest[0]) if latest else None,
+            "latest": latest.get(wid),
         })
     return {"workers": workers}
 
@@ -216,6 +235,32 @@ def api_worker_samples(worker_id, from_ms=0, to_ms=0, after_ms=0):
     sql += " ORDER BY epoch_ms"
     rows = [dict(r) for r in query(sql, args)]
     return {"worker_id": worker_id, "samples": rows}
+
+
+def api_samples(after=""):
+    """全部 worker 样本的批量增量通道：after 为逗号分隔的「worker_id:游标」
+    列表，各 worker 只返回严格大于其游标的样本。总览页每轮一次请求替代
+    逐 worker 一次（数百 worker 时每轮 200+ HTTP 请求不可接受）。
+    游标必须逐 worker 独立——样本 epoch 取自各 worker 时钟，存在偏斜，
+    全局游标会永久跳过时钟落后 worker 的新样本。(worker_id, epoch_ms)
+    主键保证不重不漏。"""
+    pairs = []
+    for tok in after.split(","):
+        wid, _, ms = tok.partition(":")
+        try:
+            pairs.append((int(wid), int(ms) if ms else 0))
+        except ValueError:
+            continue
+    rows = []
+    # 分块 OR 查询（SQL 变量数上限保护；常规规模一两块即完）。
+    for i in range(0, len(pairs), 200):
+        chunk = pairs[i:i + 200]
+        cond = " OR ".join(["(worker_id=? AND epoch_ms>?)"] * len(chunk))
+        args = [v for pair in chunk for v in pair]
+        rows.extend(query(
+            f"SELECT * FROM worker_samples WHERE {cond} "
+            "ORDER BY worker_id, epoch_ms", args))
+    return {"samples": [dict(r) for r in rows]}
 
 
 # 可排序列白名单：键 → SQL 表达式（全部为库内列或列的确定性运算，
@@ -246,13 +291,17 @@ def api_tasks(worker=0, status="", q="", limit=200, offset=0, order="", desc=1):
         where += " AND name LIKE ?"
         args.append(f"%{q}%")
     total = query(f"SELECT COUNT(*) AS n FROM tasks WHERE {where}", args)[0]["n"]
+    # limit/offset 钳制在合法区间：limit 是客户端可控参数，无界大会让单次
+    # 查询拖垮轮询；负 offset 在 SQLite 里语义怪异（直接禁掉）。
+    limit = min(max(int(limit), 1), 1000)
+    offset = max(int(offset), 0)
     col = _TASK_ORDER.get(str(order), "task_id")
     direction = "DESC" if desc else "ASC"
     # 次级键 task_id：相同排序值时分页顺序稳定（不因页间抖动漏/重行）。
     rows = [dict(r) for r in query(
         f"SELECT * FROM tasks WHERE {where} "
         f"ORDER BY {col} {direction}, task_id DESC LIMIT ? OFFSET ?",
-        args + [int(limit), int(offset)])]
+        args + [limit, offset])]
     return {"total": total, "tasks": rows}
 
 
@@ -270,23 +319,20 @@ def api_task_detail(task_id):
 def api_events(category="", limit=100):
     """用户事件流：过滤实现细节事件（DB_DU 是 DBs 页磁盘数据的来源通道，
     非用户语义）；worker DEAD 附带 exit_kind 推导（关停指令先行 = 正常
-    退出，否则异常死亡），前端据此显示绿色/红色。"""
+    退出，否则异常死亡），推导复用 api_workers 的批量指令表（不逐行查询）。"""
     sql = "SELECT * FROM events WHERE event!='DB_DU'"
     args = []
     if category:
         sql += " AND category=?"
         args.append(category)
     sql += " ORDER BY id DESC LIMIT ?"
-    args.append(int(limit))
+    args.append(min(max(int(limit), 1), 1000))
+    cmd_epoch = _shutdown_cmd_epochs()
     events = []
     for r in query(sql, args):
         e = dict(r)
         if e["category"] == "worker" and e["event"] == "DEAD":
-            cmd = query(
-                "SELECT 1 FROM events WHERE worker_id=? AND event IN "
-                "('SHUTDOWN_SENT','STOP_NOW_SENT') AND epoch_ms<=? LIMIT 1",
-                (e["worker_id"], e["epoch_ms"]))
-            e["exit_kind"] = "EXITED" if cmd else "DEAD"
+            e["exit_kind"] = _exit_kind(e["worker_id"], e["epoch_ms"], cmd_epoch)
         events.append(e)
     return {"events": events}
 
@@ -418,6 +464,8 @@ class MonitorHandler(BaseHTTPRequestHandler):
                     int(qs.get("from_ms", ["0"])[0]),
                     int(qs.get("to_ms", ["0"])[0]),
                     int(qs.get("after_ms", ["0"])[0])))
+            elif api == "samples" and len(parts) == 2:
+                self._send_json(api_samples(qs.get("after", [""])[0]))
             elif api == "meta":
                 self._send_json(api_meta())
             elif api == "tasks" and len(parts) == 3:
@@ -444,6 +492,8 @@ class MonitorHandler(BaseHTTPRequestHandler):
                 self._send_json(api_dbs())
             else:
                 self._send_json({"error": "unknown api"}, 404)
+        except DbBusy:  # 持续 BUSY：503 让前端跳过本轮（下一轮轮询补上）
+            self._send_json({"error": "db busy"}, 503)
         except Exception as e:  # API 异常不杀服务（轮询端下一轮恢复）
             self._send_json({"error": str(e)}, 500)
 
@@ -530,14 +580,16 @@ def _remove_gui_record(record_path):
 
 
 def _gui_alive(host, port, timeout=2.0):
-    """记录的 GUI 实例是否可达（任意 HTTP 响应含 4xx/5xx 都算活）。
-    host 用记录的对外地址——本机与 NFS 对端（共享 log 目录）都能探测，
-    对端可达即可复用同一 GUI 实例。"""
+    """记录的 GUI 实例是否可达且确为本工具：探测 /api/meta 并校验响应形状
+    （fly-monitor 恒含 meta/error 键之一）。只探端口可达不够——记录端口被
+    其它服务复用时会误判「已有实例」而拒绝启动真正的 GUI。host 用记录的
+    对外地址——本机与 NFS 对端（共享 log 目录）都能探测，对端可达即可复用
+    同一 GUI 实例。"""
     try:
-        urllib.request.urlopen(f"http://{host}:{port}/", timeout=timeout)
-        return True
-    except urllib.error.HTTPError:
-        return True
+        with urllib.request.urlopen(f"http://{host}:{port}/api/meta",
+                                    timeout=timeout) as r:
+            body = json.load(r)
+        return isinstance(body, dict) and ("meta" in body or "error" in body)
     except Exception:
         return False
 
@@ -645,7 +697,6 @@ def launch_monitor_gui(db_path, port=None):
     port 省略时子进程用随机端口（多 run 不冲突）；实际地址由子进程写入
     log 目录的记录文件，此处轮询读取后打印（浏览器由子进程负责打开）。
     """
-    import sys
     db_path = resolve_db_path_arg(db_path)
     port_args = ["--port", str(port)] if port else []
     fly_bin = getattr(sys, "_fly_binary", None)

@@ -2,17 +2,19 @@
 //   · 实际渲染主题落在 <html data-theme="light|dark">，CSS 变量双套值
 //     （app.css），DOM 侧自动生效。
 //   · 跟随系统经 matchMedia(prefers-color-scheme) 解析，系统切换实时生效。
-//   · 选择值持久化 localStorage（fly-monitor-theme）。
+//   · 选择值持久化 localStorage（fly-monitor-theme，经 storage.js 安全封装）。
 //   · FOUC 防护：index.html 头部内联脚本在 CSS 渲染前先落 data-theme
 //     与 lang（此处 init 幂等重设一次）。
 //   · cssVar()：ECharts canvas 不消费 CSS 变量，图表颜色经此实时读取
 //     （主题切换后页面重建、图表实例随 mount 新建，自然取到新值）。
+import { lsGet, lsSet } from './storage.js';
+
 const mq = (typeof window !== 'undefined' && window.matchMedia)
   ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 
 let mode = 'system';
-if (typeof localStorage !== 'undefined') {
-  const saved = localStorage.getItem('fly-monitor-theme');
+{
+  const saved = lsGet('fly-monitor-theme');
   if (saved === 'light' || saved === 'dark') mode = saved;
 }
 
@@ -39,9 +41,7 @@ export function setTheme(m) {
   if (m !== 'light' && m !== 'dark' && m !== 'system') return;
   if (m === mode) return;
   mode = m;
-  if (typeof localStorage !== 'undefined') {
-    localStorage.setItem('fly-monitor-theme', m);
-  }
+  lsSet('fly-monitor-theme', m);
   applyTheme();
   listeners.forEach(fn => fn());
 }

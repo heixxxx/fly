@@ -56,7 +56,8 @@ globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' });
 // fetch stub：按 URL 返回各 API 的最小合法 JSON。
 const apiData = {
   '/api/meta': { meta: { run_start_ms: 1, run_end_ms: 2, hostname: 'h' },
-                 task_counts: { COMPLETED: 1 }, workers: 1, sample_lo: 1, sample_hi: 2 },
+                 task_counts: { COMPLETED: 1 }, workers: 1, sample_lo: 1,
+                 sample_hi: 2, db_gen: 7 },
   '/api/events': { events: [{ epoch_ms: 1, category: 'run', event: 'DRAIN_DONE',
                               worker_id: 0, task_id: 0, detail: '' }] },
   '/api/workers': { workers: [{ worker_id: 1, hostname: 'h1', ip: '1.2.3.4',
@@ -72,6 +73,14 @@ const apiData = {
     { epoch_ms: 2000, proc_rss_bytes: 1, proc_cpu_bps: 0, host_cpu_bps: 0,
       host_mem_total_bytes: 1, host_mem_avail_bytes: 1, host_load1_x100: 0,
       net_read_bytes: 5, net_write_bytes: 5 }] },
+  // 批量增量通道（overview）：形状与逐 worker 端点一致但带 worker_id。
+  '/api/samples': { samples: [
+    { worker_id: 1, epoch_ms: 1000, proc_rss_bytes: 1, proc_cpu_bps: 0,
+      host_cpu_bps: 0, host_mem_total_bytes: 1, host_mem_avail_bytes: 1,
+      host_load1_x100: 0, net_read_bytes: 0, net_write_bytes: 0 },
+    { worker_id: 1, epoch_ms: 2000, proc_rss_bytes: 1, proc_cpu_bps: 0,
+      host_cpu_bps: 0, host_mem_total_bytes: 1, host_mem_avail_bytes: 1,
+      host_load1_x100: 0, net_read_bytes: 5, net_write_bytes: 5 }] },
   '/api/tasks': { total: 1, tasks: [{ task_id: 1, name: 'n', status: 'COMPLETED',
       module: 'm', worker_id: 1, priority: 10, error: '', created_ms: 1,
       ready_ms: 1, started_ms: 1, completed_ms: 2, exec_start_ms: 1,

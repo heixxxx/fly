@@ -232,8 +232,7 @@ main { flex: 1; overflow: auto; padding: 18px 20px 26px; }
 
 .grid { display: grid; gap: 14px; }
 .grid.cols-2 { grid-template-columns: 1fr 1fr; }
-.grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
-@media (max-width: 1100px) { .grid.cols-2, .grid.cols-3 { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .grid.cols-2 { grid-template-columns: 1fr; } }
 
 /* ---- KPI 卡 ----
    kpi-row 为自适应网格（替代旧 flex），每卡左侧 accent 竖条 +
@@ -268,7 +267,6 @@ main { flex: 1; overflow: auto; padding: 18px 20px 26px; }
 .kpi .sub .c-run { color: var(--running); font-weight: 600; }
 
 .chart { width: 100%; height: 260px; }
-.chart.tall { height: 320px; }
 
 /* ============================ 表格 ============================ */
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
@@ -484,14 +482,6 @@ tr:hover td { background: var(--panel2); }
 .io-bar .io { background: var(--ser-yellow); }
 .io-bar .other { background: var(--chart-axis); }
 
-.toast {
-  position: fixed; bottom: 20px; right: 20px; padding: 10px 16px;
-  background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
-  box-shadow: var(--shadow-pop);
-  opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 99;
-}
-.toast.show { opacity: 1; }
-
 /* ---- 超长名称的缩略/展开（task 名、对象全名、db 路径共用）----
    默认单行缩略（首尾各 N 字符 + 四点省略号，CSS ellipsis 兜底），点击展
    开为折行全名（word-break 保证任何长度都在可视宽度内换行）。 */
@@ -508,10 +498,6 @@ tr:hover td { background: var(--panel2); }
   border-bottom: none;
 }
 /* 长名标题（db 路径等）默认 ellipsis，原生 title 提示 + 面板内有全名。 */
-.ellip {
-  display: block; max-width: 100%; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap;
-}
 .full-name {
   white-space: normal; word-break: break-all;
   background: var(--panel2); border: 1px solid var(--border);
@@ -602,7 +588,7 @@ tr:hover td { background: var(--panel2); }
   border-radius: 3px;
 }
 
-/* 悬停竖线与时间标签（plot 区内位置稳定 0.5s 后显示时间）。 */
+/* 悬停竖线与时间标签（常显：竖线跟随悬停位置，时间标签实时更新）。 */
 .tl-hover-line {
   position: absolute; display: none; pointer-events: none; z-index: 4;
   width: 1px; background: var(--hover-line);
@@ -660,8 +646,6 @@ tr:hover td { background: var(--panel2); }
   border-radius: 12px; box-shadow: var(--shadow-pop); z-index: 60;
   padding: 8px 14px;
 }
-#tl-toolbar-float .controls { margin-bottom: 6px; }
-#tl-toolbar-float .tl-hint { margin-top: 6px; }
 #tl-toolbar-float .controls { margin-bottom: 6px; }
 #tl-toolbar-float .tl-hint { margin-top: 6px; }
 

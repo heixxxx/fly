@@ -3,6 +3,44 @@
 ---
 ---
 
+## 2026-08-31 (1): monitor GUI 性能与健壮性轮——批量增量端点 + N+1 消除 + 前端公共模块收归
+
+**① serve.py 后端**：
+- 新增 `/api/samples` 批量增量端点：`after` 为「worker_id:游标」逗号串，各
+  worker 独立游标（样本 epoch 取自各 worker 时钟，全局游标会永久跳过时钟
+  落后者），分块 OR 查询防 SQL 变量数上限——总览页全部 worker 每轮一次
+  请求，替代逐 worker 一请求（数百 worker 时 200+ HTTP 请求不可接受）。
+- `api_workers` / `api_events` 的 N+1 消除：关停指令时刻一条
+  `GROUP BY worker_id` 批量取（`_shutdown_cmd_epochs`），worker 最新样本
+  `MAX(epoch_ms) JOIN` 批量取——`/api/workers` 是前端每轮轮询热点。
+- BUSY 语义显式化：重试用尽由「静默返回空结果」改为抛 `DbBusy` →
+  HTTP 503（前端对非 2xx 静默跳过本轮，下一轮轮询补上）；重试期间的连接
+  重开移入 `_conn_lock` 内（并发线程绝不能再看到被 close 的旧连接），
+  连接构造收归 `_connect_ro` 单点。
+- `/api/meta` 新增 `db_gen`（库 inode）进指纹——库被整体替换（测试重建/
+  run 重置）且各计数恰好相同时仍强制刷新并清前端增量缓存。
+- `api_tasks` / `api_events` 的 limit/offset 钳制（1..1000 / ≥0，客户端
+  可控参数无界大不再拖垮轮询）；`_gui_alive` 改探测 `/api/meta` 并校验
+  响应形状——记录端口被其它服务复用时不再误判「已有实例」拒绝启动。
+
+**② 前端**：
+- 新模块 `js/storage.js`：localStorage 安全封装（隐私模式/禁用站点数据下
+  裸访问直接抛 SecurityError 曾致整页白屏），i18n/theme/api 统一经此存取。
+- 新模块 `js/floatbar.js`：智能顶部浮窗公共实现（判定单一来源改 main
+  scroll 驱动），替代 Tasks 筛选栏 / Timeline 工具栏两处重复实现。
+- overview 样本改批量增量通道（`fetchAllSamplesIncremental`）；tasks 终态
+  详情跳过重拉重渲（保住展开名称/错误信息等交互状态）；timeline 滑块
+  document 级拖动监听随页解绑（泄漏修复）、`lanes.indexOf` 改 Map 查找
+  （renderItem 热路径 O(n²)→O(n)）；workers 卡片 attributes/role 一律
+  escapeHtml（XSS 加固）；各页 update 在 await 返回后校验页面仍挂载
+  （切页竞态防御）；app.js 轮询防重入（`pollBusy`）；浮窗内部可滚容器
+  滚轮优先原生消费（透传 main 的例外）。
+- 冒烟测试同步：`/api/samples` stub + `db_gen` 字段。
+
+**验证**：前端冒烟测试通过、qa/monitor 2/2（test_monitor_db / test_monitor_gui）。
+
+---
+
 ## 2026-08-29 (2): §4.6 统一块模型 + §4.7 low-tier cache 取消——差异讨论 #2/#3/#4 定案
 
 **§4.6 统一块模型**：实现与用户构想逐条对照后收敛——正常传输路径双方零块感知、块结构知识只在 client 校验侧与 trailer 元信息；三项待实施（B' trailer 块位置表 / A' 接收线程块级 CRC + resend byte-offset + 去帧级 CRC / C 写路径 WBQ 后台落盘）；META 字段裁定（trailer_len/comp_type 保留、frame_bytes 退役、保持 DATA_RESPONSE 复用）。§12 块索引条款废止。

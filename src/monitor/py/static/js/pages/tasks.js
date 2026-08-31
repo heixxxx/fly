@@ -3,42 +3,37 @@
 // main.innerHTML，否则返回时列表结构与绑定已销毁、update 写不回）。
 // update 仅填数据——过滤条件与分页状态存活于 ctx.taskFilter。
 import { getJson, fmtGB, fmtBytes, fmtMs, fmtPct, displayModule, fmtTime, fmtTimeFull, escapeHtml, shortName, expandoHtml, errorBriefHtml, statusLabel, evLabel, bindPageJump, getPageSize, setPageSize, PAGE_SIZE_OPTIONS } from '../api.js';
+import { createTopFloat } from '../floatbar.js';
 import { t } from '../i18n.js';
 import { navigate } from '../app.js';
 
 // 每页行数：用户可调（全局设置，localStorage 持久化），限制单页数量、
 // 翻页查看，不用表内滚动。
-let tControlsFloatObserver = null;   // 筛选栏滚出视口 → 顶部浮窗
-let syncTControlsFloat = null;       // 列表显隐切换后手动重估浮窗状态
-// 控件原位的文档坐标与占位高：浮起后 wrap 变空壳（height=0），可见性
-// 判定必须改用滚动位置，不能用自身 rect（曾致每轮刷新都把浮窗收回）。
-let tWrapAbsTop = 0;
-let tWrapH = 0;
-let tScrollTarget = null;
-let tScrollHandler = null;
-let tControlsHome = null;    // 归位锚点 { parent, next }
-let mountCount = 0;
+const pageSize = () => getPageSize();
 
-function pageSize() { return getPageSize(); }
+// 详情按需重建：同一 task 且已终态 → 跳过重拉重渲（保住展开的名称/驻留
+// 的错误信息等交互状态）；RUNNING task 每轮刷新直至终态。语言/主题切换
+// 走整页重建（mount 重置），详情模板文案随新语言。
+const TERMINAL_STATUS = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
+let renderedDetail = null;   // { tid, terminal } | null
+let tFloat = null;           // 筛选栏智能浮窗（createTopFloat 句柄）
+let syncTControlsFloat = null;   // 列表显隐切换后手动重估浮窗状态
 
 export function destroy() {
-  detailTid = -1;
-  tControlsFloatObserver?.disconnect();
-  tControlsFloatObserver = null;
-  if (tScrollTarget) tScrollTarget.removeEventListener('scroll', tScrollHandler);
-  document.getElementById('t-controls-float')?.remove();
+  renderedDetail = null;
+  if (tFloat) { tFloat.destroy(); tFloat = null; }
+  syncTControlsFloat = null;
 }
 
 export function mount(ctx) {
-  console.log('[tasks] mount #' + (++mountCount));
+  renderedDetail = null;
   const f = ctx.taskFilter;
   if (!f.sort) f.sort = { key: 'id', desc: true };   // 默认：ID 降序（现状序）
-  const pageSize = () => getPageSize();
   ctx.main.innerHTML = `
     <div id="t-list-view">
       <div class="panel">
         <div class="controls" id="t-controls-wrap">
-          <input id="t-q" placeholder="${t('t.searchPh')}" value="${f.q || ''}" style="width:230px">
+          <input id="t-q" placeholder="${t('t.searchPh')}" value="${escapeHtml(f.q || '')}" style="width:230px">
           <select id="t-status">
             <option value="">${t('t.allStatus')}</option>
             ${['PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED'].map(s =>
@@ -110,54 +105,18 @@ export function mount(ctx) {
     () => Math.max(1, Math.ceil((f.total || 0) / pageSize())),
     p => { f.offset = (p - 1) * pageSize(); navigate(); });
   // ---- 筛选栏智能浮窗：滚出视口顶部后整体搬入固定浮窗，回滚归位
-  //（与 Timeline 工具栏同机制；详情视图下筛选栏隐藏，不触发浮窗）。
-  tControlsFloatObserver?.disconnect();
+  //（与 Timeline 工具栏同机制，公共实现见 floatbar.js；详情视图下筛选
+  // 栏隐藏，不触发浮窗——canFloat 门条件）。
+  if (tFloat) { tFloat.destroy(); tFloat = null; }
   document.getElementById('t-controls-float')?.remove();
-  const wrap = document.getElementById('t-controls-wrap');
-  const cf = document.createElement('div');
-  cf.id = 't-controls-float';
-  cf.style.display = 'none';
-  document.body.appendChild(cf);
-  let controlsFloated = false;
-  // 控件原位文档坐标（mount 时刻布局已定）；浮起后原位以 minHeight 占位。
-  // stub 等无布局环境回落固定偏移（scrollTop=0 时不会触发浮起，无碍）。
-  const mainEl = document.getElementById('main');
-  {
-    const r = wrap.getBoundingClientRect ? wrap.getBoundingClientRect() : null;
-    tWrapAbsTop = ((r && r.top) || 110) + mainEl.scrollTop;
-    tWrapH = (r && r.height) || 0;
-    if (wrap.style) wrap.style.minHeight = tWrapH + 'px';
-  }
-  // 搬移整体 wrap（保住 .controls 祖先类——控件样式全靠它；逐个搬子
-  // 元素会丢包装层、控件褪回原生白底）。
-  tControlsHome = { parent: wrap.parentElement, next: wrap.nextElementSibling };
-  const syncControlsFloat = () => {
-    const hidden = document.getElementById('t-list-view').style.display === 'none';
-    // 判定用滚动位置：控件顶滚过顶栏下沿（62px）即浮起，回滚即归位。
-    const wantFloat = !hidden && mainEl.scrollTop > tWrapAbsTop - 70;
-    if (controlsFloated === wantFloat) return;
-    controlsFloated = wantFloat;
-    if (wantFloat) {
-      cf.appendChild(wrap);
-      cf.style.display = 'block';
-    } else {
-      const { parent, next } = tControlsHome;
-      if (next && next.parentElement === parent) parent.insertBefore(wrap, next);
-      else parent.appendChild(wrap);
-      cf.style.display = 'none';
-    }
-  };
-  // IntersectionObserver 缺失（测试 stub/极老内核）→ 降级不启用浮窗。
-  if (typeof IntersectionObserver === 'function') {
-    tControlsFloatObserver = new IntersectionObserver(syncControlsFloat, { threshold: 0 });
-    tControlsFloatObserver.observe(wrap);
-  }
-  // 判定基于滚动位置：main 滚动时实时驱动（重复 mount 先解绑旧闭包）。
-  if (tScrollTarget) tScrollTarget.removeEventListener('scroll', tScrollHandler);
-  tScrollHandler = () => syncControlsFloat();
-  tScrollTarget = mainEl;
-  mainEl.addEventListener('scroll', tScrollHandler, { passive: true });
-  syncTControlsFloat = syncControlsFloat;
+  tFloat = createTopFloat({
+    bar: document.getElementById('t-controls-wrap'),
+    floatId: 't-controls-float',
+    threshold: 70,
+    moveSelf: true,
+    canFloat: () => document.getElementById('t-list-view')?.style.display !== 'none',
+  });
+  syncTControlsFloat = () => { if (tFloat) tFloat.sync(); };
   // 返回按钮：清详情状态回列表（双容器切换，绑定不因视图切换丢失）。
   document.getElementById('t-back').onclick = () => { ctx.taskId = null; navigate(); };
   // 行点击进详情：事件委托（tbody 每轮重建，委托在稳定父节点上）。
@@ -198,7 +157,7 @@ export async function update(ctx) {
   }
   listView.style.display = '';
   detailView.style.display = 'none';
-  detailTid = -1;  // 离开详情：下次进入重建
+  renderedDetail = null;  // 离开详情：下次进入重建
 
   const f = ctx.taskFilter;
   const offset = f.offset || 0;
@@ -210,6 +169,7 @@ export async function update(ctx) {
   });
   const data = await getJson('/api/tasks?' + qs);
   if (!data) return;
+  if (!document.getElementById('t-head')) return;   // 页面已切走/重建
   // 列表↔详情显隐切换后重估筛选栏浮窗（详情视图下不悬浮）。
   if (syncTControlsFloat) syncTControlsFloat();
 
@@ -299,17 +259,23 @@ function row(tk) {
   </tr>`;
 }
 
-// 详情：ctx.taskId 变化时整块重建（纯文本无图表；task 详情数据多为终态，
-// 指纹机制已挡掉绝大多数刷新）。只写 #t-detail 容器——外壳与返回按钮由
-// mount 一次建成（双容器切换），绑定不因视图切换丢失。
-let detailTid = -1;
+// 详情：ctx.taskId 变化时整块重建；同 task 已终态则跳过（见
+// renderedDetail 注）。只写 #t-detail 容器——外壳与返回按钮由 mount 一次
+// 建成（双容器切换），绑定不因视图切换丢失。
 
 export async function renderDetail(ctx) {
-  detailTid = ctx.taskId;
+  // 终态 task 的详情不可再变——已渲染过就直接跳过（不重拉不重渲）。
+  if (renderedDetail && renderedDetail.tid === ctx.taskId &&
+      renderedDetail.terminal) return;
   const d = await getJson(`/api/tasks/${ctx.taskId}`);
   const el = document.getElementById('t-detail');
-  if (!d || d.error || !el) { if (el) el.innerHTML = `<div class="panel">${t('t.notFound')}</div>`; return; }
+  if (!d || d.error || !el) {
+    if (el) el.innerHTML = `<div class="panel">${t('t.notFound')}</div>`;
+    renderedDetail = null;
+    return;
+  }
   const tk = d.task;
+  renderedDetail = { tid: tk.task_id, terminal: TERMINAL_STATUS.has(tk.status) };
   const execMs = tk.exec_end_ms ? tk.exec_end_ms - tk.exec_start_ms : null;
   const dbs = (tk.dbs || '').split(',').filter(Boolean);
   el.innerHTML = `
@@ -369,5 +335,3 @@ export async function renderDetail(ctx) {
       </div>
     </div>`;
 }
-
-export function resetDetail() { detailTid = -1; }
