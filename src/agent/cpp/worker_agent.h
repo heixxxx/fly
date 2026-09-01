@@ -6,6 +6,7 @@
 #include <network/cpp/data_client_pool.h>
 #include <network/cpp/metadata_client.h>
 #include <core/cpp/config.h>
+#include <common/cpp/concurrent_queue.h>
 #include <agent/cpp/task_executor.h>
 #include <agent/cpp/pending_rpc_map.h>
 #include <agent/cpp/peer_rpc_server.h>
@@ -320,8 +321,7 @@ private:
         std::function<void(uint64_t conn)> replay_;  // 注册后执行（conn 参数
                                                      // 取当时的 master_conn_）
     };
-    std::mutex pending_master_sends_mutex_;
-    CMVector<PendingMasterSend> pending_master_sends_;
+    ConcurrentQueue<PendingMasterSend> pending_master_sends_;
     std::atomic<bool> shutdown_triggered_{false};
     // 退出性质（initiate_shutdown 首次进入时写入；详见 exit_reason_graceful）。
     std::atomic<ExitReason> exit_reason_{ExitReason::LOCAL_STOP};
@@ -355,8 +355,7 @@ private:
         TaskCompleteMessage complete_;
         TaskFailedMessage failed_;
     };
-    std::mutex pending_reports_mutex_;
-    CMVector<PendingReport> pending_reports_;
+    ConcurrentQueue<PendingReport> pending_reports_;
     
     std::thread heartbeat_thread_;
     std::atomic<bool> heartbeat_running_{false};
@@ -376,11 +375,13 @@ private:
     std::mutex monitor_mutex_;
     std::condition_variable monitor_cv_;
     MonitorSampler monitor_sampler_;  // 周期 + 事件采样共用（内部互斥，多线程安全）
-    // 采样缓冲 + 节流（monitor 线程与 reactor lane/执行线程的事件采样并发
-    // 访问，互斥保护）。
-    std::mutex samples_mutex_;
-    CMVector<MonitorSample> pending_samples_;
-    uint64_t last_sample_epoch_ms_ = 0;  // 节流基准（受 samples_mutex_ 保护）
+    // 采样缓冲（monitor 线程与 reactor lane/执行线程的事件采样并发访问）：
+    // ConcurrentQueue 内聚互斥（§13.1）；成组上报用 snapshot/drain_all。
+    ConcurrentQueue<MonitorSample> pending_samples_;
+    // 节流基准（append_sample_throttled 的互斥保护——与容器锁分离，
+    // 判定+更新原子）。
+    std::mutex throttle_mutex_;
+    uint64_t last_sample_epoch_ms_ = 0;
     int64_t sample_gap_ms_ = 200;        // 最小采样间距（start 时读 config）
     void monitor_report_loop();
     // 事件驱动采样：任意线程可调（assign/执行起止/internal/断连/注册完成等

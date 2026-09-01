@@ -407,37 +407,25 @@ PeerStreamWriter::PeerStreamWriter(CMSharedPtr<PeerRpcServer> srv,
 
 PeerStreamWriter::~PeerStreamWriter() {
     if (thread_.joinable()) {
-        {
-            std::lock_guard<std::mutex> lk(qm_);
-            producer_closed_ = true;
-        }
-        q_data_cv_.notify_all();
+        plain_q_.close();   // 唤醒压缩线程（排空后 EOF）
         thread_.join();
     }
 }
 
 void PeerStreamWriter::enqueue(const char* data, size_t n) {
-    // 有界入队：满则等空间（背压传播到序列化调用方）；发送线程停止时
-    // 丢弃剩余（流已死）。
+    // 有界入队（ConcurrentQueue BytesCapacity 背压）：push 阻塞等空间；
+    // fail（发送失败/断连）时返回 false——生产者立即放弃（原 consumer_
+    // stopped_ 死字段未接线，发送失败曾令 write 永久卡死生产者）。
     while (n > 0) {
-        std::unique_lock<std::mutex> lk(qm_);
-        if (consumer_stopped_) return;
-        q_space_cv_.wait(lk, [&] {
-            return consumer_stopped_ || producer_closed_ ||
-                   q_bytes_ < kQueueBytes;
-        });
-        if (consumer_stopped_) return;
-        const size_t take = std::min(n, kQueueBytes - q_bytes_);
-        plain_q_.emplace_back(data, data + take);
+        const size_t take = std::min(n, kQueueBytes);
+        if (!plain_q_.push(CMVector<char>(data, data + take))) return;
         data += take;
         n -= take;
-        q_bytes_ += take;
-        q_data_cv_.notify_one();
     }
 }
 
 void PeerStreamWriter::write(const char* data, size_t n) {
-    if (!started_ || producer_closed_) return;
+    if (!started_ || plain_q_.closed() || plain_q_.failed()) return;
     const auto t0 = std::chrono::steady_clock::now();
     enqueue(data, n);
     write_wait_ns_ += static_cast<uint64_t>(
@@ -449,11 +437,7 @@ bool PeerStreamWriter::finish() {
     if (finished_) return ok_;
     finished_ = true;
     if (!started_) return false;
-    {
-        std::lock_guard<std::mutex> lk(qm_);
-        producer_closed_ = true;
-    }
-    q_data_cv_.notify_all();
+    plain_q_.close();   // 生产结束：唤醒压缩线程排空并收尾
     if (!joined_) {
         thread_.join();
         joined_ = true;
@@ -490,20 +474,10 @@ void PeerStreamWriter::compress_loop(CompressionType comp, int level) {
     fly::WritePipeline pipeline(std::move(stages), kFrameBytes, emit);
 
     while (true) {
-        std::vector<char> chunk;
-        {
-            std::unique_lock<std::mutex> lk(qm_);
-            q_data_cv_.wait(lk, [&] {
-                return !plain_q_.empty() || producer_closed_;
-            });
-            if (plain_q_.empty()) break;  // closed + 排空
-            chunk = std::move(plain_q_.front());
-            plain_q_.pop_front();
-            q_bytes_ -= chunk.size();
-        }
-        q_space_cv_.notify_one();
+        auto chunk = plain_q_.pop();   // 阻塞等数据；close 且排空 → EOF
+        if (!chunk.has_value()) break;
         const auto t0 = std::chrono::steady_clock::now();
-        pipeline.write(chunk.data(), chunk.size());
+        pipeline.write(chunk->data(), chunk->size());
         compress_ns_ += static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - t0).count());
@@ -536,6 +510,9 @@ void PeerStreamWriter::send_block_frame(const char* payload, size_t n) {
     frame_off_ += 16 + n;
     if (!sent) {
         send_ok_ = false;
+        // 发送失败即流死：fail 明文队列，唤醒阻塞在 push 的生产者立即
+        // 放弃（对端断连场景 write 不再永久卡死）。
+        plain_q_.fail();
         ERR("[PEER-STREAM-W] send frame failed conn={}", conn_id_);
     }
 }

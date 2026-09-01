@@ -6,6 +6,7 @@
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/pipeline.h>
 #include <common/cpp/common_types.h>
+#include <common/cpp/concurrent_queue.h>
 #include <log/cpp/logger.h>
 #include <atomic>
 #include <condition_variable>
@@ -339,14 +340,13 @@ private:
     CMSharedPtr<PeerRpcServer> srv_;
     uint64_t conn_id_;
     uint64_t rpc_id_;
-    // 明文队列（调用线程生产 / 压缩线程消费）
-    std::mutex qm_;
-    std::condition_variable q_space_cv_;   // 队列不满（生产等）
-    std::condition_variable q_data_cv_;    // 队列非空 / 关闭（压缩线程等）
-    std::deque<std::vector<char>> plain_q_;
-    size_t q_bytes_ = 0;
-    bool producer_closed_ = false;
-    bool consumer_stopped_ = false;        // 发送失败：唤醒并丢弃生产
+    // 明文队列（调用线程生产 / 压缩线程消费）：ConcurrentQueue 内聚
+    // mutex+双 cv（§13.1）；BytesCapacity 背压。fail() = 发送失败终态
+    // （生产端 push 立即放弃——对端断连时 write 不再卡死生产者，曾是
+    // 未接线的 consumer_stopped_ 死字段留下的挂死面）；close() = 生产
+    // 结束（finish/析构）。
+    ConcurrentQueue<CMVector<char>, BytesCapacity> plain_q_{
+        BytesCapacity{kQueueBytes}};
     // 压缩线程与结果
     std::thread thread_;
     bool joined_ = false;

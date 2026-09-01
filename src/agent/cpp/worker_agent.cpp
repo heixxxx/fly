@@ -679,22 +679,19 @@ void WorkerAgent::monitor_report_loop() {
         if (registered_ && monitor_running_) {
             MonitorSampleMessage msg;
             msg.worker_id_ = worker_id_;
-            {
-                // 拷贝发送（每批几十条，开销可忽略）：失败时缓冲原样保留，
-                // 期间新事件样本 epoch 更大、自然追加在尾部，保序补发。
-                std::lock_guard<std::mutex> lk(samples_mutex_);
-                msg.samples_ = pending_samples_;
-            }
+            // 原子取走全部（含取走期间并发追加的新样本——原 snapshot 拷贝
+            // → 成功后 clear 两段式存在 clear 误删拷贝后新增样本的窗口）。
+            // 发送失败整批回推队尾（保序补发，语义同原失败路径）。
+            auto batch = pending_samples_.drain_all();
+            msg.samples_ = CMVector<MonitorSample>(batch.begin(), batch.end());
             if (!reactor_->try_send(master_conn_, msg)) {
                 // send busy 是 per-conn 发送锁的瞬时 try_lock 竞争（微秒级窗口），
                 // 但补发被推迟到下个完整 report 周期（10s）——晚注册 worker 在短
                 // 生命周期里可能全程 0 样本落库（缓冲随进程退出蒸发，QA 实测 11
                 // 样本滞留）。失败后 1s 快速重试（经 since_report_ms 折算，后续
                 // 循环累加自然触发；真拥塞时发送本身慢，重试频率自然受限）。
+                for (auto& sp : batch) pending_samples_.try_push(std::move(sp));
                 since_report_ms = report_ms - std::min<int64_t>(report_ms, 1000);
-            } else {
-                std::lock_guard<std::mutex> lk(samples_mutex_);
-                pending_samples_.clear();
             }
         }
         // 未注册（断连/重连窗口）：样本继续缓冲，重连成功后下次成组补发。
@@ -711,12 +708,15 @@ void WorkerAgent::sample_now_event() {
 }
 
 bool WorkerAgent::append_sample_throttled(MonitorSample sp) {
-    std::lock_guard<std::mutex> lk(samples_mutex_);
-    if (sp.epoch_ms_ < last_sample_epoch_ms_ + static_cast<uint64_t>(sample_gap_ms_)) {
-        return false;
+    {
+        // 节流判定+基准更新原子（容器锁分离——ConcurrentQueue 内聚互斥）。
+        std::lock_guard<std::mutex> lk(throttle_mutex_);
+        if (sp.epoch_ms_ < last_sample_epoch_ms_ + static_cast<uint64_t>(sample_gap_ms_)) {
+            return false;
+        }
+        last_sample_epoch_ms_ = sp.epoch_ms_;
     }
-    last_sample_epoch_ms_ = sp.epoch_ms_;
-    pending_samples_.push_back(sp);
+    pending_samples_.push(std::move(sp));
     return true;
 }
 
@@ -866,17 +866,11 @@ void WorkerAgent::on_register_ack(uint64_t conn_id, const RegisterAckMessage& ms
 }
 
 void WorkerAgent::enqueue_master_send(std::function<void(uint64_t conn)> replay) {
-    std::lock_guard<std::mutex> lk(pending_master_sends_mutex_);
-    pending_master_sends_.push_back(PendingMasterSend{std::move(replay)});
+    pending_master_sends_.push(PendingMasterSend{std::move(replay)});
 }
 
 void WorkerAgent::replay_pending_master_sends() {
-    CMVector<PendingMasterSend> to_replay;
-    {
-        std::lock_guard<std::mutex> lk(pending_master_sends_mutex_);
-        to_replay = std::move(pending_master_sends_);
-        pending_master_sends_.clear();
-    }
+    auto to_replay = pending_master_sends_.drain_all();
     if (to_replay.empty()) return;
     INFO("Replaying {} buffered master-bound message(s) after registration",
          to_replay.size());
@@ -1231,8 +1225,7 @@ void WorkerAgent::send_master_or_buffer(const TaskCompleteMessage& msg_in) {
         bool ok = reactor_->send(master_conn_.load(), msg);
         return;
     }
-    std::lock_guard<std::mutex> lk(pending_reports_mutex_);
-    pending_reports_.push_back({true, msg, TaskFailedMessage{}});
+    pending_reports_.push({true, msg, TaskFailedMessage{}});
     WARN("TaskComplete buffered (reconnecting): task_id={}", msg.task_id_);
 }
 
@@ -1251,18 +1244,12 @@ void WorkerAgent::send_master_or_buffer(const TaskFailedMessage& msg_in) {
         reactor_->send(master_conn_.load(), msg);
         return;
     }
-    std::lock_guard<std::mutex> lk(pending_reports_mutex_);
-    pending_reports_.push_back({false, TaskCompleteMessage{}, msg});
+    pending_reports_.push({false, TaskCompleteMessage{}, msg});
     WARN("TaskFailed buffered (reconnecting): task_id={}", msg.task_id_);
 }
 
 void WorkerAgent::flush_pending_reports() {
-    CMVector<PendingReport> to_send;
-    {
-        std::lock_guard<std::mutex> lk(pending_reports_mutex_);
-        to_send = std::move(pending_reports_);
-        pending_reports_.clear();
-    }
+    auto to_send = pending_reports_.drain_all();
     if (to_send.empty()) return;
     INFO("Flushing {} buffered task report(s) after reconnect", to_send.size());
     for (const auto& r : to_send) {
@@ -1276,7 +1263,6 @@ void WorkerAgent::flush_pending_reports() {
 
 #ifdef FLY_ENABLE_TEST_HOOKS
 size_t WorkerAgent::pending_report_count_for_testing() {
-    std::lock_guard<std::mutex> lk(pending_reports_mutex_);
     return pending_reports_.size();
 }
 #endif
@@ -1395,10 +1381,7 @@ void WorkerAgent::initiate_shutdown(ExitReason reason, const CMString& detail) {
         });
     // B 类重放队列：worker 终止，不再重放（丢弃通知类消息；A 类的等待者
     // 已由上面的批量 fail 唤醒，重放闭包无需执行）。
-    {
-        std::lock_guard<std::mutex> lk(pending_master_sends_mutex_);
-        pending_master_sends_.clear();
-    }
+    pending_master_sends_.clear();
     if (reactor_) {
         // 主动关闭 master 连接：Reactor::stop() 只设循环 flag 不关 fd，连接保持
         // ESTAB 会让 master 的断连等待拖满 deadline（库级使用下无人退进程关 fd；

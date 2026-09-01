@@ -765,11 +765,24 @@ bazel run //:refresh_compile_commands
 | 优先级 | 方案 | 适用场景 | 位置 |
 |--------|------|----------|------|
 | 1 | `ConcurrentMap` / `ConcurrentUnorderedMap` / `ConcurrentUnorderedSet` | 单容器 + 单锁、无跨结构不变式 | `src/common/cpp/concurrent_map.h` |
+| 1b | `ConcurrentQueue` | 队列语义：生产者-消费者 / 有界背压（`CountCapacity`/`BytesCapacity`）/ FIFO 重放缓冲 / 终态 close-fail 唤醒 | `src/common/cpp/concurrent_queue.h` |
 | 2 | `PendingRpcMap` | "登记 → 等完成 → 消费" 的 pending 状态机（map+mutex+cv 三合一） | `src/agent/cpp/pending_rpc_map.h` |
 | 3 | 类级封装（私有数据 + 封装访问方法） | 跨多个结构的复合不变式（如 `write_provenance_` 的 check-and-register） | 参照 `MasterAgent::provenance_*` |
 | 4 | 裸 mutex（最后手段） | 仅当锁保护的是跨容器调度不变式（如 `schedule_mutex_`），且数据全部 private、锁只出现在方法内 | `task_manager` / `dependency_graph` |
 
 **禁止**：新代码声明"裸 `std::mutex` + 并行容器"成员对——每处使用点都要手动加锁，后续开发极易漏加（历史上 on_var_ack 的两阶段完成路径因此引入 data race + lost wakeup）。
+
+`ConcurrentQueue` 语义选择（2026-09-02 落地，收编 4 处裸队列）：
+
+- 背压生产（满则阻塞 `push`）vs 丢弃语义（`try_push`）按下游契约选择
+- 终态两档：`close()`（优雅关停——pop 排空残量后 EOF，push 拒绝）与
+  `fail()`（错误流——pop 立即放弃残量，push 拒绝）
+- 重放/批量上报用 `drain_all`（原子取走）；观察/成组拷贝用 `snapshot`
+- 存量豁免登记（既有用法，语义特型不硬套队列；修改时优先迁移到封装）：
+  `PeerRpcServer::streams_`（与 `buf_mutex_` 锁耦合——拆锁将改变
+  server_loop 切帧循环的 check-then-act 原子性假设）；`WorkerAgent::
+  pending_task_vars_`（覆盖式单槽，非 FIFO 队列）；`TaskResourceTracker::
+  finished_`（与 running_ 表跨容器不变式，优先级 3 场景）
 
 `ConcurrentMap` 复合操作接口（避免多次加锁拼出非原子序列）：
 
