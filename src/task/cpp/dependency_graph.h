@@ -75,7 +75,7 @@ private:
     // 插入即有序，get_ready_tasks() 无需每次 std::sort（消除 H2-b 的 O(N²) 退化）。
     // priority 在 task 生命周期内不可变（add_task 时确定，无运行时 set_priority），
     // 故 key 稳定，插入后无需更新。
-    std::set<std::pair<int, uint64_t>> ready_tasks_;
+    CMSet<std::pair<int, uint64_t>> ready_tasks_;
     CMUnorderedSet<uint64_t> pending_tasks_;
     CMUnorderedSet<uint64_t> completed_tasks_;
 

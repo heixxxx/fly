@@ -97,7 +97,7 @@ private:
     size_t drain_batch();
 
     sqlite3* db_ = nullptr;
-    std::string db_path_;
+    CMString db_path_;
 
     std::mutex queue_mutex_;
     std::condition_variable queue_cv_;

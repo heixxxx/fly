@@ -171,14 +171,14 @@ public:
 
 private:
     CMUniquePtr<Compressor> compressor_;
-    std::vector<char> plain_;
+    CMVector<char> plain_;
 };
 
 // ── 管线（切块/拉块 + Stage 序列 + 统计）──
 
 class WritePipeline {
 public:
-    WritePipeline(std::vector<std::unique_ptr<WriteStage>> stages,
+    WritePipeline(CMVector<CMUniquePtr<WriteStage>> stages,
                   int64_t chunk_size, EmitFn emit)
         : stages_(std::move(stages)), chunk_size_(chunk_size), emit_(std::move(emit)) {}
 
@@ -212,7 +212,7 @@ public:
     uint32_t chunk_count() const { return chunk_count_; }
     uint32_t raw_blocks() const { return raw_blocks_; }
     bool all_raw() const { return chunk_count_ > 0 && raw_blocks_ == chunk_count_; }
-    const std::vector<uint32_t>& block_comp_lens() const { return block_comp_lens_; }
+    const CMVector<uint32_t>& block_comp_lens() const { return block_comp_lens_; }
 
 private:
     void flush_block() {
@@ -233,15 +233,15 @@ private:
         buf_.clear();
     }
 
-    std::vector<std::unique_ptr<WriteStage>> stages_;
+    CMVector<CMUniquePtr<WriteStage>> stages_;
     int64_t chunk_size_;
     EmitFn emit_;
-    std::vector<char> buf_;
+    CMVector<char> buf_;
     BlockData ctx_;
     uint64_t total_uncompressed_ = 0;
     uint32_t chunk_count_ = 0;
     uint32_t raw_blocks_ = 0;
-    std::vector<uint32_t> block_comp_lens_;
+    CMVector<uint32_t> block_comp_lens_;
 };
 
 // 拉取式读管线：从 source 逐块还原明文。next_block 返回 false = EOF 或
@@ -254,7 +254,7 @@ public:
     // 合法块（4MB 切块），远小于 2^32。pipeline.cpp 同步用。
     static constexpr uint32_t kMaxWireBlockBytes = 64u * 1024 * 1024;
 
-    ReadPipeline(std::vector<std::unique_ptr<ReadStage>> stages, PullFn pull)
+    ReadPipeline(CMVector<CMUniquePtr<ReadStage>> stages, PullFn pull)
         : stages_(std::move(stages)), pull_(std::move(pull)) {}
 
     bool next_block(BlockData& out) {
@@ -315,9 +315,9 @@ private:
         return true;
     }
 
-    std::vector<std::unique_ptr<ReadStage>> stages_;
+    CMVector<CMUniquePtr<ReadStage>> stages_;
     PullFn pull_;
-    std::vector<char> scratch_;
+    CMVector<char> scratch_;
     bool hdr_partial_ = false;
     bool failed_ = false;
     bool eof_ = false;

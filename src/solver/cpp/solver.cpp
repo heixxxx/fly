@@ -41,7 +41,7 @@ Eigen::SparseMatrix<double> build_poisson_2d(int n) {
     return A;
 }
 
-std::vector<SubdomainInfo> partition_1d(int n, int num_parts, int overlap) {
+CMVector<SubdomainInfo> partition_1d(int n, int num_parts, int overlap) {
     const int total = n * n;
 
     // Split grid rows [0, n) into num_parts contiguous row-blocks.
@@ -98,7 +98,7 @@ std::vector<SubdomainInfo> partition_1d(int n, int num_parts, int overlap) {
 
 Eigen::SparseMatrix<double> extract_subdomain_matrix(
     const Eigen::SparseMatrix<double>& A,
-    const std::vector<int>& local_indices) {
+    const CMVector<int>& local_indices) {
     const int local_size = static_cast<int>(local_indices.size());
 
     Eigen::SparseMatrix<double> R(local_size, A.rows());
@@ -201,9 +201,9 @@ Eigen::VectorXd ras_subdomain_update(
     return x_new;
 }
 
-std::vector<int> graph_expand_overlap(
+CMVector<int> graph_expand_overlap(
     const Eigen::SparseMatrix<double>& A,
-    const std::vector<int>& primary_indices,
+    const CMVector<int>& primary_indices,
     int depth)
 {
     std::unordered_set<int> expanded(primary_indices.begin(), primary_indices.end());
@@ -231,10 +231,10 @@ std::vector<int> graph_expand_overlap(
 
 void find_outside_connections(
     const Eigen::SparseMatrix<double>& A,
-    const std::vector<int>& local_indices,
-    std::vector<int>& out_local_positions,
-    std::vector<int>& out_outside_indices,
-    std::vector<double>& out_coefficients)
+    const CMVector<int>& local_indices,
+    CMVector<int>& out_local_positions,
+    CMVector<int>& out_outside_indices,
+    CMVector<double>& out_coefficients)
 {
     std::unordered_set<int> local_set(local_indices.begin(), local_indices.end());
     out_local_positions.clear();
@@ -259,9 +259,9 @@ void find_outside_connections(
 Eigen::VectorXd ras_bupdated_solve(
     const SubdomainSolver& solver,
     const Eigen::VectorXd& b_orig_local,
-    const std::vector<int>& outside_local_positions,
-    const std::vector<double>& outside_coefficients,
-    const std::vector<double>& outside_neighbor_values,
+    const CMVector<int>& outside_local_positions,
+    const CMVector<double>& outside_coefficients,
+    const CMVector<double>& outside_neighbor_values,
     double omega)
 {
     Eigen::VectorXd b_updated = b_orig_local;

@@ -266,10 +266,10 @@ private:
 
     // 每连接的接收缓冲（累积半截帧，MessageProtocol::decode 原地切帧）
     std::mutex buf_mutex_;
-    std::unordered_map<uint64_t, CMString> recv_bufs_;
+    CMUnorderedMap<uint64_t, CMString> recv_bufs_;
 
     // 流式接收状态（conn_id → 共享状态；buf_mutex_ 保护 map 本身）。
-    std::unordered_map<uint64_t, CMSharedPtr<PeerStreamRxState>> streams_;
+    CMUnorderedMap<uint64_t, CMSharedPtr<PeerStreamRxState>> streams_;
     // 流式块流字节喂入：跨帧块重组 → 完整记录入有界队列（有界，满则
     // 阻塞——背压经 TCP 反压发送方）。CRC 验证在消费端 ReadPipeline 的
     // CrcVerifyStage（与 read_object 同款 Stage 分工）。
@@ -281,9 +281,9 @@ private:
     //   bye_pending_conns_：客户端已发 BYE 待 ACK 的 conn（区分服务端收到的 BYE vs 客户端收到的 BYE_ACK）
     std::mutex bye_mutex_;
     std::condition_variable bye_cv_;
-    std::unordered_set<uint64_t> bye_closed_conns_;
-    std::unordered_set<uint64_t> bye_ack_conns_;
-    std::unordered_set<uint64_t> bye_pending_conns_;
+    CMUnorderedSet<uint64_t> bye_closed_conns_;
+    CMUnorderedSet<uint64_t> bye_ack_conns_;
+    CMUnorderedSet<uint64_t> bye_pending_conns_;
 };
 
 // PeerStreamWriter —— worker 间流式大 payload 的写端（file-like，异步压缩）。

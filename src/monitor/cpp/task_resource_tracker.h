@@ -57,7 +57,7 @@ private:
 
     mutable std::mutex mutex_;
     Window current_;                                    // begin/end 驱动
-    std::unordered_map<uint64_t, TaskResourceAgg> finished_;  // end → send 暂存
+    CMUnorderedMap<uint64_t, TaskResourceAgg> finished_;  // end → send 暂存
 };
 
 }  // namespace fly

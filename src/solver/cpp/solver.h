@@ -2,15 +2,16 @@
 
 #include <Eigen/Sparse>
 #include <Eigen/SparseCholesky>
+#include <common/cpp/common_types.h>
 #include <vector>
 
 namespace fly {
 
 struct SubdomainInfo {
     int subdomain_id_;
-    std::vector<int> local_indices_;
-    std::vector<int> own_indices_;
-    std::vector<int> boundary_indices_;
+    CMVector<int> local_indices_;
+    CMVector<int> own_indices_;
+    CMVector<int> boundary_indices_;
 };
 
 // Build 2D Poisson matrix (5-point stencil) of size n*n x n*n.
@@ -21,12 +22,12 @@ Eigen::SparseMatrix<double> build_poisson_2d(int n);
 // 1D block partitioning with overlap.
 // Partitions n*n unknowns into num_parts contiguous blocks,
 // each extended by `overlap` rows on each side.
-std::vector<SubdomainInfo> partition_1d(int n, int num_parts, int overlap);
+CMVector<SubdomainInfo> partition_1d(int n, int num_parts, int overlap);
 
 // Extract subdomain local matrix: A_local = R_i * A * R_i^T
 Eigen::SparseMatrix<double> extract_subdomain_matrix(
     const Eigen::SparseMatrix<double>& A,
-    const std::vector<int>& local_indices);
+    const CMVector<int>& local_indices);
 
 // Subdomain solver — caches SimplicialLDLT factorization
 class SubdomainSolver {
@@ -67,9 +68,9 @@ Eigen::VectorXd ras_subdomain_update(
 // Given primary node indices and the sparse matrix adjacency,
 // expand by following edges for `depth` layers (BFS).
 // Returns all reachable nodes (primary + extended overlap).
-std::vector<int> graph_expand_overlap(
+CMVector<int> graph_expand_overlap(
     const Eigen::SparseMatrix<double>& A,
-    const std::vector<int>& primary_indices,
+    const CMVector<int>& primary_indices,
     int depth);
 
 // Find all connections from local nodes to nodes outside the local region.
@@ -79,10 +80,10 @@ std::vector<int> graph_expand_overlap(
 // and outside_global_indices[i] is NOT in local_indices.
 void find_outside_connections(
     const Eigen::SparseMatrix<double>& A,
-    const std::vector<int>& local_indices,
-    std::vector<int>& out_local_positions,
-    std::vector<int>& out_outside_indices,
-    std::vector<double>& out_coefficients);
+    const CMVector<int>& local_indices,
+    CMVector<int>& out_local_positions,
+    CMVector<int>& out_outside_indices,
+    CMVector<double>& out_coefficients);
 
 // RAS b-update + solve.
 // Updates b_local for all nodes with outside connections:
@@ -94,9 +95,9 @@ void find_outside_connections(
 Eigen::VectorXd ras_bupdated_solve(
     const SubdomainSolver& solver,
     const Eigen::VectorXd& b_orig_local,
-    const std::vector<int>& outside_local_positions,
-    const std::vector<double>& outside_coefficients,
-    const std::vector<double>& outside_neighbor_values,
+    const CMVector<int>& outside_local_positions,
+    const CMVector<double>& outside_coefficients,
+    const CMVector<double>& outside_neighbor_values,
     double omega = 1.0);
 
 } // namespace fly
