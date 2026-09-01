@@ -55,4 +55,11 @@ payload 的绝对吞吐受同机自环 CPU 竞争限制，跨机部署为设计�
 
 `qa/stress/test_peer_rpc_stress.pyt`：混合 payload（空/1B/64KB/1MB/
 4MB±1/16MB）× 6 轮流式 echo 校验 + 两连接并发收集圈 + respond_failure
-错误路径；`qa/performance/test_peer_rpc_perf.pyt` 为性能矩阵 case。
+错误路径；`qa/performance/test_peer_rpc_perf.pyt` 为性能矩阵 case
+（大载荷档 64MB/512MB 需 PEER_RPC_PERF_FULL=1——-j6 稳定性套件下
+大载荷并发会耗尽机器内存，连累同轮 case）。
+
+**100 轮稳定性（2026-09-01，异步化最终代码 b93228c）**：ALL 100 ROUNDS
+PASSED，每轮 169/169 case 零失败（16900 次执行），总耗时 2h31m。产物
+.work/stability/20260901_095122/。首轮曾失败（perf 大载荷内存耗尽连带
+同轮 case），加环境开关后全程稳定——非流式逻辑回归。
