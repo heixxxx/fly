@@ -61,6 +61,9 @@ private:
     std::condition_variable cv_;
 };
 
+// PeerStreamBuffer 测试数据（普通字符串，长度 11）。
+inline CMString MakePeerTestData() { return CMString("payload-abc"); }
+
 class PeerRpcServerTest : public ::testing::Test {
 protected:
     void TearDown() override {
@@ -94,6 +97,40 @@ protected:
     std::unique_ptr<PeerRpcServer> server = std::make_unique<PeerRpcServer>();
     std::unique_ptr<PeerRpcServer> client = std::make_unique<PeerRpcServer>();
 };
+
+TEST(PeerStreamBufferTest, FileProtocolReadsAcrossCursor) {
+    // read/readline/readinto/seek 全协议：读端游标推进、readinto 直填外部
+    // 缓冲（pickle.load 路径）、readline 按行截断、seek 重定位。
+    // 长度构造：嵌 NUL 的二进制数据不能走 strlen ctor（会在 \x00 截断）。
+    const char* kRaw = "hello world\nsecond line\n\xff\x00" "binary";
+    PeerStreamBuffer b(CMString(kRaw, 32));
+    EXPECT_EQ(b.size(), 32u);
+
+    CMString r = b.read(5);
+    EXPECT_EQ(r, "hello");
+    EXPECT_EQ(b.pos(), 5u);
+
+    CMString line = b.readline();   // 从 pos=5 读到行尾
+    EXPECT_EQ(line, " world\n");
+    EXPECT_EQ(b.pos(), 12u);
+
+    char dst[8] = {};
+    EXPECT_EQ(b.readinto(dst, 8), 8u);   // "second l"
+    EXPECT_EQ(CMString(dst, 8), "second l");
+
+    b.seek(0);
+    EXPECT_EQ(b.read(100), CMString(kRaw, 32));
+    // 末尾读穿：take 收敛到剩余量。
+    EXPECT_EQ(b.read(10), CMString());
+}
+
+TEST(PeerStreamBufferTest, MovePreservesData) {
+    // move 构造：交付链 move 语义（零拷贝包装）下数据完整。
+    CMString src = MakePeerTestData();
+    PeerStreamBuffer b(std::move(src));
+    EXPECT_EQ(b.size(), 11u);
+    EXPECT_EQ(b.read(11), CMString("payload-abc"));
+}
 
 TEST_F(PeerRpcServerTest, ListenAllocatesPortAndStopCleansUp) {
     EXPECT_FALSE(server->is_running());

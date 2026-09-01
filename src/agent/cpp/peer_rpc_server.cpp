@@ -251,7 +251,8 @@ void PeerRpcServer::server_loop() {
                         if (dm.is_request) {
                             if (request_handler_) {
                                 auto resp = request_handler_(event.conn_id_, dm.rpc_id,
-                                                              dm.src_worker_id, dm.payload);
+                                                              dm.src_worker_id,
+                                                              std::move(dm.payload));
                                 if (resp.has_value()) {
                                     send_response(event.conn_id_, dm.rpc_id,
                                                    static_cast<uint8_t>(PeerRpcWireStatus::OK),
@@ -264,7 +265,8 @@ void PeerRpcServer::server_loop() {
                             if (dm.status == static_cast<uint8_t>(PeerRpcWireStatus::BYE)) {
                                 handle_bye(event.conn_id_);
                             } else if (response_handler_) {
-                                response_handler_(event.conn_id_, dm.rpc_id, dm.status, dm.payload);
+                                response_handler_(event.conn_id_, dm.rpc_id, dm.status,
+                                                  std::move(dm.payload));
                             }
                         }
                     }

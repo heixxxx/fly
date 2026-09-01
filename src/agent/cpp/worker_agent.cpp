@@ -2879,7 +2879,7 @@ void WorkerAgent::ensure_peer_rpc_handlers() {
     // NOT_READY(可恢复未就绪)；映射为内部 PeerRpcStatus（NOT_READY 一等
     // 传递，调用方据此跳过重试）。
     peer_rpc_server_->set_response_handler(
-        [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, const CMString& payload) {
+        [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, CMString payload) {
             pending_peer_rpcs_.complete(rpc_id, [&](PendingPeerRpc& p) {
                 PeerRpcStatus mapped;
                 switch (static_cast<PeerRpcWireStatus>(status)) {
@@ -2896,7 +2896,7 @@ void WorkerAgent::ensure_peer_rpc_handlers() {
                 }
                 p.status_.store(static_cast<uint8_t>(mapped),
                     std::memory_order_release);
-                p.payload_ = payload;
+                p.payload_ = std::move(payload);
             });
         });
     // disconnect_handler：P2P 错误断连时（无 BYE）触发。
@@ -2928,11 +2928,12 @@ int WorkerAgent::start_peer_rpc_listen(const CMString& host, int port) {
     // 服务端角色：request_handler 收到请求 → 入队（Python while 循环的 recv_request 取出处理）
     int bound_port = peer_rpc_server_->listen(host, port,
         [this](uint64_t conn_id, uint64_t rpc_id, uint64_t src_worker_id,
-               const CMString& payload) -> std::optional<CMString> {
+               CMString payload) -> std::optional<CMString> {
             {
                 // notify 持锁防 lost wakeup（同 8419526）。
                 std::lock_guard<std::mutex> lk(peer_rpc_incoming_mutex_);
-                peer_rpc_incoming_.push_back({conn_id, rpc_id, src_worker_id, payload});
+                peer_rpc_incoming_.push_back(
+                    {conn_id, rpc_id, src_worker_id, std::move(payload)});
                 peer_rpc_incoming_cv_.notify_one();
             }
             return std::nullopt;  // 异步处理（Python 层 peer_rpc_respond 回响应）
@@ -3054,6 +3055,19 @@ std::pair<uint8_t, CMString> WorkerAgent::peer_stream_call_wait(uint64_t rpc_id,
     }
     const uint8_t status = result->status_.load(std::memory_order_acquire);
     return {status, std::move(result->payload_)};
+}
+
+std::pair<uint8_t, PeerStreamBufferPtr> WorkerAgent::peer_stream_call_wait_buf(
+    uint64_t rpc_id, int timeout_ms) {
+    // 复用 call_wait 的等待/超时语义；payload move 进读端（免 bytes 拷贝）。
+    auto [status, payload] = peer_stream_call_wait(rpc_id, timeout_ms);
+    return {status, std::make_shared<PeerStreamBuffer>(std::move(payload))};
+}
+
+PeerStreamBufferPtr WorkerAgent::peer_rpc_recv_request_stream(int timeout_ms) {
+    auto req = peer_rpc_recv_request(timeout_ms);
+    if (req.conn_id_ == 0) return nullptr;   // 超时（语义同 recv_request）
+    return std::make_shared<PeerStreamBuffer>(std::move(req.payload_));
 }
 
 WorkerAgent::PeerRpcRequest WorkerAgent::peer_rpc_recv_request(int timeout_ms) {

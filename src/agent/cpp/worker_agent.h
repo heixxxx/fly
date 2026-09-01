@@ -257,6 +257,10 @@ public:
     // 返回 {conn_id, rpc_id, src_worker_id, payload}；超时返回 rpc_id=0。
     struct PeerRpcRequest { uint64_t conn_id_; uint64_t rpc_id_; uint64_t src_worker_id_; CMString payload_; };
     PeerRpcRequest peer_rpc_recv_request(int timeout_ms = 30000);
+    // 读端变体：payload 包成 PeerStreamBuffer 交付（pickle.load 直用，
+    // readinto 免中间 bytes 全量拷贝）。超时/断连语义同 recv_request
+    // （超时返回 null；断连抛异常）。
+    PeerStreamBufferPtr peer_rpc_recv_request_stream(int timeout_ms = 30000);
 
     // ── 流式大 payload（流插件化 2026-08-31）──
     // file-like 写端：pickle.dump(obj, writer) 直入压缩管线逐块组帧发送。
@@ -271,6 +275,10 @@ public:
                                                  int level = -1);
     // 等待流式请求的响应（peer_stream_writer 已注册 pending，rpc_id 由
     // writer.rpc_id() 取得）。GIL 释放语义由 export 层保证。
+    // 读端变体：响应 payload 包成 PeerStreamBuffer（status 非 OK 时 buffer
+    // 承载 reason 文本——to_bytes 可读，不丢诊断信息）。
+    std::pair<uint8_t, PeerStreamBufferPtr> peer_stream_call_wait_buf(
+        uint64_t rpc_id, int timeout_ms);
     std::pair<uint8_t, CMString> peer_stream_call_wait(uint64_t rpc_id,
                                                        int timeout_ms = 30000);
 

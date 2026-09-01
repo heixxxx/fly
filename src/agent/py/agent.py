@@ -1719,6 +1719,16 @@ class Worker(FlyAgent):
         return self._agent.peer_rpc_respond_not_ready(conn_id, rpc_id, reason)
     def peer_rpc_recv_request(self, timeout_ms=30000):
         return self._agent.peer_rpc_recv_request(timeout_ms)
+    def peer_rpc_recv_request_stream(self, timeout_ms=30000):
+        """读端变体：返回 (conn_id, rpc_id, src, PeerStreamBuffer)。
+        PeerStreamBuffer 支持 pickle.load(buf)（readinto 直填 pickle 工作
+        缓冲，免中间 bytes 全量拷贝）；超时返回 None；断连抛异常
+        （语义同 peer_rpc_recv_request）。"""
+        return self._agent.peer_rpc_recv_request_stream(timeout_ms)
+    def peer_stream_call_wait_buf(self, rpc_id, timeout_ms=30000):
+        """读端变体：返回 (status, PeerStreamBuffer)。status 非 OK 时
+        buffer 承载 reason 文本（buf.to_bytes() 可读，不丢诊断信息）。"""
+        return self._agent.peer_stream_call_wait_buf(rpc_id, timeout_ms)
     def peer_stream_writer(self, conn_id, compression="lz4", level=-1):
         return self._agent.peer_stream_writer(conn_id, compression, level)
     def peer_stream_respond_writer(self, conn_id, rpc_id, compression="lz4", level=-1):

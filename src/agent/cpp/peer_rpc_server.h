@@ -47,16 +47,16 @@ enum class PeerRpcWireStatus : uint8_t {
 class PeerRpcServer {
 public:
     // 请求到达回调（服务端角色）：收到 PeerRpcRequestMessage 时调用。
+    // payload 按值交付（server_loop 持有唯一引用——调用方 move 入队，零拷贝）。
     // 返回 optional<payload>：有值则立即回响应（status=0），空则不立即响应。
     using RequestHandler = std::function<std::optional<CMString>(
         uint64_t conn_id, uint64_t rpc_id, uint64_t src_worker_id,
-        const CMString& payload)>;
+        CMString payload)>;
 
     // 响应到达回调（客户端角色）：收到 PeerRpcResponseMessage 时调用。
     // status=0 正常响应，status=1 主动失败通知（payload=reason）。
     using ResponseHandler = std::function<void(
-        uint64_t conn_id, uint64_t rpc_id, uint8_t status,
-        const CMString& payload)>;
+        uint64_t conn_id, uint64_t rpc_id, uint8_t status, CMString payload)>;
 
     // 连接断开回调（客户端角色）：P2P 连接断开时调用（对端关闭/网络断）。
     // WorkerAgent 用它 fail 该 conn_id 上所有 pending RPC，避免 rpc_call 死等。
@@ -228,6 +228,47 @@ private:
     std::unordered_set<uint64_t> bye_ack_conns_;
     std::unordered_set<uint64_t> bye_pending_conns_;
 };
+
+// PeerStreamBuffer —— 接收 payload 的 file-protocol 读端（与 FlyBuffer 同
+// 语义：read/readline/readinto 供 pickle.load 直用，readinto 直填 pickle
+// 工作缓冲——免中间 Python bytes 的全量拷贝）。数据共享持有（零拷贝包装）。
+class PeerStreamBuffer {
+public:
+    PeerStreamBuffer() = default;
+    explicit PeerStreamBuffer(CMString data) : data_(std::move(data)) {}
+
+    CMString read(size_t n) {
+        const size_t avail = data_.size() - pos_;
+        const size_t take = std::min(n, avail);
+        CMString out(data_.data() + pos_, take);
+        pos_ += take;
+        return out;
+    }
+    CMString readline() {
+        const size_t start = pos_;
+        const size_t nl = data_.find('\n', start);
+        const size_t end = (nl == CMString::npos) ? data_.size() : nl + 1;
+        CMString out(data_.data() + start, end - start);
+        pos_ = end;
+        return out;
+    }
+    size_t readinto(char* dst, size_t n) {
+        const size_t avail = data_.size() - pos_;
+        const size_t take = std::min(n, avail);
+        std::memcpy(dst, data_.data() + pos_, take);
+        pos_ += take;
+        return take;
+    }
+    void seek(size_t p) { pos_ = p; }
+    size_t size() const { return data_.size(); }
+    size_t pos() const { return pos_; }
+    const CMString& data() const { return data_; }
+
+private:
+    CMString data_;
+    size_t pos_ = 0;
+};
+using PeerStreamBufferPtr = CMSharedPtr<PeerStreamBuffer>;
 
 // PeerStreamWriter —— worker 间流式大 payload 的写端（file-like，异步压缩）。
 //
