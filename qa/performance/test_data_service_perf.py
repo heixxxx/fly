@@ -23,12 +23,15 @@ def write_large(db, key, size):
     t0 = time.perf_counter()
     payload = os.urandom(size)   # 近随机：f64 矩阵/解向量同压缩性质
     t_gen = time.perf_counter() - t0
+    crc = zlib.crc32(payload)
     t0 = time.perf_counter()
     db.write_object(key, payload, save_to_db=False)
     t_write = time.perf_counter() - t0
     print(f"[PERF] write {key} {size/1024/1024:.0f}MB: {t_write*1000:.0f}ms "
           f"-> {size/1024/1024/t_write:.0f} MB/s (gen {t_gen*1000:.0f}ms) "
-          f"crc={zlib.crc32(payload):08x}", flush=True)
+          f"crc={crc:08x}", flush=True)
+    # CRC 落库供读侧比对（仅长度断言对同长度损坏漏检）。
+    db.write_object(f"{key}_wcrc", crc, save_to_db=False)
 
 
 @as_task(requires=["cpu"],
@@ -43,6 +46,11 @@ def read_large_remote(db, key, size):
         raise RuntimeError(f"read_large_remote length mismatch: {key}")
     crc = zlib.crc32(data)
     del data
+    expect = db.read_object(f"{key}_wcrc")
+    if crc != expect:
+        raise RuntimeError(
+            f"read_large_remote crc mismatch: {key} got={crc:08x} "
+            f"expect={expect:08x}")
     print(f"[PERF] read  {key} {mb:.0f}MB: {t_read*1000:.0f}ms "
           f"-> {mb/t_read:.0f} MB/s crc={crc:08x}", flush=True)
     # 结果落库（持久对象）：任务失败时 wait_tasks 不报错，main 凭该对象
