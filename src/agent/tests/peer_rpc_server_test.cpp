@@ -12,6 +12,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <future>
 #include <mutex>
 #include <thread>
 
@@ -539,6 +540,174 @@ TEST_F(PeerRpcServerTest, StopClosesAllConnections) {
     client->stop();
     EXPECT_TRUE(latch.wait()) << "stop() must close connections and fire disconnect handlers";
     EXPECT_FALSE(client->is_connected(conn));
+}
+
+// 原始连接工厂：绕过 PeerRpcServer 客户端封装，直发任意字节（畸形帧注入）。
+static std::pair<CMUniquePtr<ConnectionManager>, uint64_t> connect_raw(int port) {
+    auto raw = create_connection_manager("tcp");
+    if (!raw) return {nullptr, 0};
+    uint64_t conn = raw->connect("127.0.0.1", port);
+    if (conn == 0) return {nullptr, 0};
+    return {std::move(raw), conn};
+}
+
+// 轮询连接关闭（deadline 模式，零容忍断流的可观察信号）。poll 驱动
+// DISCONNECT 事件处理（is_connected 状态由事件循环更新）。
+static bool wait_closed(ConnectionManager& raw, uint64_t conn, int timeout_ms = 5000) {
+    for (int i = 0; i < timeout_ms / 20; i++) {
+        raw.poll(0);
+        if (!raw.is_connected(conn)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    raw.poll(0);
+    return !raw.is_connected(conn);
+}
+
+TEST_F(PeerRpcServerTest, MalformedShortTotalLenClosesInsteadOfCrash) {
+    // RESPONSE total_len=1（< fixed-8=10）+ 24B 粘包填充：修复前
+    // payload_len = 8+1-18 在 size_t 下溢为巨值 → CMString 巨值构造 →
+    // length_error → server_loop 无 catch → std::terminate 全进程崩溃。
+    // 修复后：下限校验 → 零容忍断流（连接关闭，进程存活）。
+    int port = server->listen("127.0.0.1", 0,
+                              [](uint64_t, uint64_t, uint64_t, const CMString&,
+                                 const PeerStreamReaderPtr&) { return std::nullopt; });
+    ASSERT_GT(port, 0);
+    auto [raw, rc] = connect_raw(port);
+    ASSERT_TRUE(raw != nullptr);
+    CMString frame;
+    frame.resize(9 + 24);   // 9B 头 + 1B type + 24B 粘包（凑足 fixed=18 判定）
+    write_be64(frame.data(), make_frame_header(1));   // total_len=1：非法短帧
+    frame[8] = static_cast<char>(static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE));
+    ASSERT_TRUE(raw->send(rc, frame) > 0);
+    EXPECT_TRUE(wait_closed(*raw, rc))
+        << "undersized total_len must trigger zero-tolerance close (not crash)";
+    raw->close_all();
+}
+
+TEST_F(PeerRpcServerTest, UnknownFrameTypeClosesConnection) {
+    // 封闭协议下未知帧类型 = 帧错位：clear 会丢同批粘包好帧且不判死
+    // （读端只能等 CRC 失败兜底或永久等 END）——必须零容忍断流。
+    int port = server->listen("127.0.0.1", 0,
+                              [](uint64_t, uint64_t, uint64_t, const CMString&,
+                                 const PeerStreamReaderPtr&) { return std::nullopt; });
+    ASSERT_GT(port, 0);
+    auto [raw, rc] = connect_raw(port);
+    ASSERT_TRUE(raw != nullptr);
+    CMString frame;
+    frame.resize(9 + 4);
+    write_be64(frame.data(), make_frame_header(4));
+    frame[8] = 0x7F;   // 未定义帧类型
+    ASSERT_TRUE(raw->send(rc, frame) > 0);
+    EXPECT_TRUE(wait_closed(*raw, rc))
+        << "unknown frame type must close the connection (no silent stall)";
+    raw->close_all();
+}
+
+TEST_F(PeerRpcServerTest, StopUnblocksBackpressuredFeed) {
+    // 满队列背压（块记录 > 剩余上界，feed 永久 wait）+ 读端不消费：
+    // stop 必须先置 failed 唤醒 feed 再 join——顺序颠倒则 join 永不返回
+    // （stop 挂死回归测试）。
+    PeerStreamRxState::kQueueBytes = 5 * 1024 * 1024;   // 注入小上界（确定性满队列）
+    struct QueueBytesGuard {
+        ~QueueBytesGuard() { PeerStreamRxState::kQueueBytes = 64 * 1024 * 1024; }
+    } guard;
+    ReaderLatch rlatch;
+    uint64_t conn = setup_connected_pair(
+        [&](uint64_t, uint64_t, uint64_t, const CMString&,
+            const PeerStreamReaderPtr& reader) {
+            rlatch.store(reader);
+            return std::nullopt;
+        });
+    ASSERT_NE(conn, 0u);
+
+    // 7MB 伪随机（lz4 近随机 → raw 直通，压缩态≈7MB）：块1 4MB 入队
+    // （4≤5）；块2 3MB：4+3>5 → feed 永久 wait（读端不消费不释放）。
+    const std::string payload = MakePseudoRandomBytes(7 * 1024 * 1024);
+    PeerStreamWriter w(client, conn, /*rpc_id=*/21, /*direction=*/0,
+                       CompressionType::LZ4, -1);
+    ASSERT_TRUE(w.ok());
+    std::thread wt([&] {
+        w.write(payload.data(), payload.size());
+        w.finish();
+    });
+    auto reader = rlatch.wait();   // START 即派发
+    ASSERT_TRUE(reader != nullptr);
+
+    // 确定性前置：网络线程已阻塞在满队列 feed wait。
+    bool blocked = false;
+    for (int i = 0; i < 250 && !blocked; i++) {
+        blocked = server->feed_blocked_for_testing_.load() > 0;
+        if (!blocked) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_TRUE(blocked) << "precondition: feed must be blocked on full queue";
+
+    auto fut = std::async(std::launch::async, [&] { server->stop(); });
+    EXPECT_EQ(fut.wait_for(std::chrono::seconds(10)), std::future_status::ready)
+        << "stop() must not hang when server_loop is blocked on backpressured feed";
+    wt.join();
+}
+
+TEST_F(PeerRpcServerTest, ReaderVerifyFailureWakesBlockedFeed) {
+    // 读端 CRC 失配置 failed 时网络线程可能正阻塞在满队列 feed wait——
+    // 漏 notify 则 server_loop 整线程冻结（所有连接事件停摆）。
+    PeerStreamRxState::kQueueBytes = 1500 * 1024;   // 1.5MB：块0(1MB) 可入队，块1 阻塞
+    struct QueueBytesGuard {
+        ~QueueBytesGuard() { PeerStreamRxState::kQueueBytes = 64 * 1024 * 1024; }
+    } guard;
+    ReaderLatch rlatch;
+    uint64_t conn = setup_connected_pair(
+        [&](uint64_t, uint64_t, uint64_t, const CMString&,
+            const PeerStreamReaderPtr& reader) {
+            rlatch.store(reader);
+            return std::nullopt;
+        });
+    ASSERT_NE(conn, 0u);
+
+    // 手工构造 4 块 NONE 块流（每块 1MB），翻转块0 的 CRC —— 读端消费块0
+    // 即 CrcVerify 失败 → advance_block 置 failed（此时 feed 阻塞在块1）。
+    EXPECT_TRUE(client->send_stream_start(conn, 33, 0,
+                                          static_cast<uint8_t>(CompressionType::NONE)));
+    constexpr size_t kBlock = 1024 * 1024;
+    CMString block_stream;
+    {
+        fly::EmitFn emit = [&](const char* d, size_t n) { block_stream.append(d, n); };
+        fly::WritePipeline wp(
+            fly::make_file_write_pipeline(nullptr, kBlock, emit, 85, -1));
+        const std::string data = MakePseudoRandomBytes(4 * kBlock);
+        wp.write(data.data(), data.size());
+        wp.finish();
+    }
+    const size_t b0 = 8;   // 块0 头布局 [4B unc][4B comp][8B crc]
+    for (size_t i = 0; i < 8; i++) block_stream[b0 + i] = static_cast<char>(~block_stream[b0 + i]);
+    EXPECT_TRUE(client->send_stream_data(conn, block_stream.data(),
+                                         block_stream.size()));
+    // 不发 END：让 feed 阻塞在块1（1MB+16B 后 1+1 > 1.5MB 上界）成为稳定态。
+
+    auto reader = rlatch.wait();
+    ASSERT_TRUE(reader != nullptr);
+    // 等前置：feed 已阻塞在满队列（块1 无法入队）。
+    bool blocked = false;
+    for (int i = 0; i < 250 && !blocked; i++) {
+        blocked = server->feed_blocked_for_testing_.load() > 0;
+        if (!blocked) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_TRUE(blocked) << "precondition: feed blocked on block 1";
+    // 读端消费块0 → CRC 失败 → 置 failed 并必须唤醒 feed（漏 notify =
+    // server_loop 冻结，feed_blocked 计数永不回落）。
+    bool threw = false;
+    try {
+        reader->read(1);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    EXPECT_TRUE(threw) << "corrupted block must surface as exception";
+    bool woke = false;
+    for (int i = 0; i < 250 && !woke; i++) {
+        woke = server->feed_blocked_for_testing_.load() == 0;
+        if (!woke) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_TRUE(woke) << "reader verify failure must notify the blocked feed "
+                         "(server_loop freeze otherwise)";
 }
 
 }  // namespace

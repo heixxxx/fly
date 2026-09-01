@@ -59,15 +59,19 @@ struct PeerStreamRxState {
     std::condition_variable q_cv;
     std::deque<CMString> blocks;   // 完整块记录（CRC 由读端 Stage 验证）
     size_t q_bytes = 0;
-    static constexpr size_t kQueueBytes = 64 * 1024 * 1024;   // 背压上界
-    bool end_seen = false;     // END 帧已到（数据全量入队）
-    bool failed = false;       // 对账失败/断连/废弃——零容忍
-    bool abandoned = false;    // 读端已析构（无消费者）——弃投递
+    // 背压上界。atomic：默认 64MB，测试可注入小值（确定性构造满队列）。
+    static std::atomic<size_t> kQueueBytes;
+    // 跨线程标志/对账要素：写侧持 qx，读侧（advance_block/check_failed/
+    // feed 谓词）无锁读——atomic 防 data race（写侧持锁保证多字段联动
+    // 原子性；读侧单字段快照语义）。
+    std::atomic<bool> end_seen{false};     // END 帧已到（数据全量入队）
+    std::atomic<bool> failed{false};       // 对账失败/断连/废弃——零容忍
+    std::atomic<bool> abandoned{false};    // 读端已析构（无消费者）——弃投递
     // END 对账三要素（发送方流尾事实；读端 EOF 处自校验）
-    uint64_t consumed = 0;          // 读端累计消费的压缩字节
-    uint64_t end_total = 0;
-    uint32_t end_chunks = 0;
-    uint64_t end_consumed = 0;
+    std::atomic<uint64_t> consumed{0};     // 读端累计消费的压缩字节
+    std::atomic<uint64_t> end_total{0};
+    std::atomic<uint32_t> end_chunks{0};
+    std::atomic<uint64_t> end_consumed{0};
 };
 
 // PeerStreamReader —— 接收 payload 的流式读端（read_object L3 消费端同构）：
@@ -187,11 +191,15 @@ public:
 
     // 流式帧发送（PeerStreamWriter 用）：转 ConnectionManager::send
     // （内部完整发送语义：部分发送/EAGAIN 由写缓冲 + epoll 驱动排空）。
+    // 判空-调用与 stop() 的 transport_.reset() 以 send_mutex_ 互斥——
+    // 否则 reset 与解引用的竞态窗口是 use-after-free（§16）。
     bool transport_send_raw(uint64_t conn_id, const CMString& data) {
+        std::lock_guard<std::mutex> lk(send_mutex_);
         return transport_ && transport_->send(conn_id, data) > 0;
     }
     // (ptr,len) 直发：流式块 payload 免 CMString 中间拷贝。
     bool transport_send_raw(uint64_t conn_id, const char* data, size_t len) {
+        std::lock_guard<std::mutex> lk(send_mutex_);
         return transport_ && transport_->send(conn_id, data, len) > 0;
     }
 
@@ -226,6 +234,8 @@ public:
     // DISCONNECT 事件抢在调用方标记前被 server_loop 处理」的竞态窗口
     // （P3-25 回归用）。
     std::function<void(uint64_t conn_id, bool got_ack)> bye_wake_hook_for_testing_;
+    // feed 满队列阻塞中的网络线程数（确定性构造背压场景的可观察信号）。
+    std::atomic<int> feed_blocked_for_testing_{0};
 #endif
 
 private:
@@ -234,6 +244,16 @@ private:
     void handle_bye(uint64_t conn_id);
 
     CMUniquePtr<ConnectionManager> transport_;
+    // transport_ 生命周期锁：全部「判空 + 解引用」读路径与 stop() 的
+    // reset/close_all 互斥（裸 CMUniquePtr 的判空-解引用竞态 = UAF 窗口）。
+    // send 为非阻塞入队，锁开销可忽略；与 buf_mutex_/qx/bye_mutex_ 无嵌套。
+    mutable std::mutex send_mutex_;   // const 读路径（is_connected）也需
+                                      // 加锁 → mutable；语义是 transport_
+                                      // 生命周期栅栏，非数据互斥
+    // server 关停标志：feed 的背压等待发生在 server_loop 线程、且此刻
+    // 持有 buf_mutex_——stop 的「锁内置 failed」因此拿不到锁（死锁面）。
+    // stopping_ 无锁翻转 + feed 有限等待轮询，是背压等待的唯一无锁逃生口。
+    std::atomic<bool> stopping_{false};
     std::thread thread_;
     std::atomic<bool> running_{false};
     RequestHandler request_handler_;
