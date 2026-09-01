@@ -250,6 +250,10 @@ private:
 // out.plain 有效期至下次 next_block。
 class ReadPipeline {
 public:
+    // wire 块 size 上界（磁盘位翻转/坏流 garbage 防御）：远大于写侧任何
+    // 合法块（4MB 切块），远小于 2^32。pipeline.cpp 同步用。
+    static constexpr uint32_t kMaxWireBlockBytes = 64u * 1024 * 1024;
+
     ReadPipeline(std::vector<std::unique_ptr<ReadStage>> stages, PullFn pull)
         : stages_(std::move(stages)), pull_(std::move(pull)) {}
 
@@ -272,6 +276,14 @@ public:
         std::memcpy(&b.comp_size, hdr + sizeof(b.unc_size), sizeof(b.comp_size));
         std::memcpy(&b.crc, hdr + sizeof(b.unc_size) + sizeof(b.comp_size),
                     sizeof(b.crc));
+        // wire 块头上界校验（磁盘位翻转/坏流可把 size 解成 0xFFFFFFFF 级
+        // garbage——resize 巨值 = 未捕获 bad_alloc。CRC 验证在 resize 之后，
+        // 挡不住这一步）。上界 64MB：远大于写侧任何合法块（4MB 切块），
+        // 远小于 2^32 garbage。comp_size==0 合法（空块防御的 header-only 记录）。
+        if (b.unc_size > kMaxWireBlockBytes || b.comp_size > kMaxWireBlockBytes) {
+            failed_ = true;
+            return false;
+        }
         scratch_.resize(b.comp_size);
         if (!pull_exact(scratch_.data(), b.comp_size)) {
             failed_ = true;  // 块数据截断 = 结构损坏

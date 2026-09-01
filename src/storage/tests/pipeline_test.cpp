@@ -255,4 +255,31 @@ TEST(PipelineTest, EmptyStreamProducesNoBlocks) {
     EXPECT_EQ(wp.chunk_count(), 0u);
 }
 
+TEST(PipelineTest, OversizedWireBlockHeaderRejectedNotBadAlloc) {
+    // wire 块头 size 字段落 garbage（磁盘位翻转/坏流）：修复前直接
+    // scratch_.resize(0xFFFFFFFF) → 未捕获 bad_alloc；修复后 failed 零容忍。
+    ByteSink sink;
+    auto wp = make_file_write_pipeline(nullptr, 4096, sink.emit());
+    const std::string payload = MakePseudoRandom(8192);
+    wp.write(payload.data(), payload.size());
+    wp.finish();
+    ASSERT_FALSE(sink.out.empty());
+    // 篡改首块 unc_size（offset 0..4）与 comp_size（4..8）为 0xFFFFFFFF。
+    for (int i = 0; i < 4; i++) {
+        sink.out[i] = static_cast<char>(0xFF);
+        sink.out[4 + i] = static_cast<char>(0xFF);
+    }
+    size_t pos = 0;
+    fly::PullFn pull = [&](char* dst, size_t n) -> int64_t {
+        const size_t take = std::min(n, sink.out.size() - pos);
+        std::memcpy(dst, sink.out.data() + pos, take);
+        pos += take;
+        return static_cast<int64_t>(take);
+    };
+    auto rp = make_block_read_pipeline(CompressionType::NONE, pull);
+    fly::BlockData b;
+    EXPECT_FALSE(rp.next_block(b));
+    EXPECT_TRUE(rp.failed()) << "garbage block header must fail cleanly, not bad_alloc";
+}
+
 }  // namespace
