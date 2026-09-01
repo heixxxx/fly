@@ -5,16 +5,24 @@ subcase：
   2. rasgd_early_stop.py    提前终止：update_rhs 返回 None
   3. rasgd_restart_run1.py  失败注入中途挂（组原子传染 + 结果保留 + bin 落盘）
   4. rasgd_restart_run2.py  全新 run 断点续跑（temp 恢复 + 重投 + 链自恢复）
+  5. rasgd_collect_deadline.py  serve 挂起注入（收集圈 bounded 等待判组死，
+                                非无限挂死——批次 3 竞态收口回归）
 """
 import os
 import shutil
 
 RESTART_DB = os.path.join(FLY_CASE_LOG_DIR, "db_restart")
+DEADLINE_DB = os.path.join(FLY_CASE_LOG_DIR, "db_deadline")
 
 
 def _clean_restart_db():
     if os.path.isdir(RESTART_DB):
         shutil.rmtree(RESTART_DB, ignore_errors=True)
+
+
+def _clean_deadline_db():
+    if os.path.isdir(DEADLINE_DB):
+        shutil.rmtree(DEADLINE_DB, ignore_errors=True)
 
 
 run_subcase("rasgd_basic.py", timeout=240)
@@ -24,5 +32,9 @@ run_subcase("rasgd_restart_run1.py", timeout=300, setup=_clean_restart_db,
             env={"FLY_RASG_FAIL_AT": "2:1", "FLY_DB_PATH": RESTART_DB})
 run_subcase("rasgd_restart_run2.py", timeout=300,
             env={"FLY_DB_PATH": RESTART_DB})
+
+run_subcase("rasgd_collect_deadline.py", timeout=240,
+            setup=_clean_deadline_db,
+            env={"FLY_RASG_HANG_AT": "0:1", "FLY_DB_PATH": DEADLINE_DB})
 
 INFO("[PASS] test_ras_graph_dynamic")

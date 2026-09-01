@@ -312,6 +312,14 @@ def _serve_loop(agent, solver_key, shared_key, sd):
         try:
             data = pickle.load(reader)   # 拉动解压：消费与网络接收重叠
             shared = get_cache(shared_key)
+            # QA 注入钩子：FLY_RASG_HANG_AT="t:sd" 时 serve 挂起（> 收集
+            # deadline）——验证 check 的 bounded 等待判组死（审查批次 3）
+            # 而非无限挂死。
+            hang_at = os.environ.get("FLY_RASG_HANG_AT")
+            if hang_at is not None and hang_at == \
+                    f"{data.get('t')}:{sd}" and data["action"] == "iterate":
+                INFO(f"[RASG DYN SVC] sd={sd} hang injected at t={data.get('t')}")
+                time.sleep(45)
             if data["action"] == "done":
                 agent.peer_rpc_respond(conn_id, rpc_id,
                                        pickle.dumps({"ack": True}))
@@ -320,11 +328,13 @@ def _serve_loop(agent, solver_key, shared_key, sd):
                      f"step={data.get('step')}")
                 continue
             ctx = shared["step_ctx"]
-            if ctx is None:
-                # 参数未就绪（compute 注入与 check 驱动的竞态窗口，用户
-                # 裁定）：回 NOT_READY 错误码（协议一等公民，可恢复）——
-                # check 侧跳过本成员、下一收集圈重试，不判死。与
-                # fail_hint（显式要求回失败）及真实计算异常严格区分。
+            if ctx is None or ctx.get("t") != data.get("t"):
+                # 参数未就绪 / 跨步旧参数（compute(t) 注入与 check(t) 驱动
+                # 的竞态窗口，用户裁定 + 审查 P1：ctx is None 只覆盖 t=0——
+                # t≥1 时 check(t) 若早于 compute(t) 到达，会用 t-1 的
+                # b_local 应答 t 步请求且无告警。请求与 ctx 各带 t 严格
+                # 比对，不匹配同回 NOT_READY——可恢复，check 下一圈重试；
+                # 与 fail_hint（显式失败）及真实计算异常严格区分）。
                 agent.peer_rpc_respond_not_ready(
                     conn_id, rpc_id, b"step context not ready")
                 continue
@@ -489,6 +499,7 @@ def compute_dyn_task(db, matrix_ref, nsd, sd, sol_prefix, gen, t):
 
     shared = get_cache(shared_key)
     shared["step_ctx"] = {
+        "t": t,   # 步标识：serve 侧与请求 t 比对，拦截跨步旧参数应答
         "b_local": b_local,
         "outside_local_pos": setup["outside_local_pos"],
         "outside_coeffs": setup["outside_coeffs"],
@@ -588,7 +599,7 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
                 else:
                     ghosts = x_corrected[sub["outside_global_idx"]]
                 requests[sd] = {
-                    "action": "iterate", "step": step,
+                    "action": "iterate", "step": step, "t": t,
                     "ghosts": serialize_array(ghosts)}
             # 圈级收集（用户裁定）：NOT_READY 跳过立刻请求下一成员（不单点
             # 阻塞），全员贡献集齐才开始计算；有缺则对缺失成员再一圈，圈间
@@ -598,13 +609,18 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
             def _stream_call(conn_id, req):
                 # 流式请求：pickle.dump 直入压缩/发送管线（序列化与压缩/
                 # 发送流水重叠）；NOT_READY 重试圈对同 req 字典重新发起
-                # （每次一条新流，rpc_id 独立）。timeout_ms=0：无限，断连唤醒。
+                # （每次一条新流，rpc_id 独立）。等待 bounded 于收集圈剩余
+                # deadline（审查 P1：原 timeout_ms=0 无限等，30s 判死被
+                # 单成员挂起打穿——serve 活着但应答丢失时 check 挂死只剩
+                # QA 外层兜底）；超时返回 FAILED → 下方按组死判。
                 # f64 解向量近随机：显式 none——压缩尝试是纯负优化。
                 w = agent.peer_stream_writer(conn_id, "none", -1)
                 rid = w.rpc_id()
                 pickle.dump(req, w)
                 w.finish()
-                return agent.peer_stream_response_reader(rid, 0)
+                remain_ms = int(max(0.0, (collect_deadline - time.monotonic())
+                                    * 1000))
+                return agent.peer_stream_response_reader(rid, remain_ms)
 
             while len(contributions) < len(alive):
                 # 一圈并发发起全部待收成员（各成员独立连接 + rpc_id 隔离）；
