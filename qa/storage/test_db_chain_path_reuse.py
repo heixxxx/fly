@@ -10,7 +10,6 @@ uid 阻断了 path 复用的别名冲突。
 """
 import os
 import shutil
-import time
 
 from fly import open_db, merge_db, launch_workers, get_config
 from fly.runtime import get_agent
@@ -42,12 +41,9 @@ cleanup()
 # launch worker（merge 需要）
 master = get_agent()
 launch_workers([{"host": "host_A"}])
-t0 = time.time()
-while time.time() - t0 < 10:
-    if master.worker_count >= 1:
-        break
-    time.sleep(0.5)
-assert master.worker_count >= 1
+from test import wait_until
+assert wait_until(lambda: master.worker_count >= 1, timeout=10), \
+    "worker should connect"
 
 # ── t0: 建 matrix_db_A（uid=A）+ 写数据 D_A ──
 from test import write_data
@@ -55,7 +51,9 @@ matrix_db_A = open_db(MATRIX_PATH, db_cls=MatrixDb, logical_name="matrix")
 uid_A = matrix_db_A.get_uid()
 write_data(matrix_db_A, "data/original", 100)
 assert master.wait_for_all_tasks(timeout=10) or len(master.completed_tasks) >= 1
-time.sleep(0.5)
+# freeze 前置同步点：写 task 完成落账（替代裸 sleep 缓冲）
+assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=10), \
+    "write task must complete before freeze"
 matrix_db_A.freeze()
 assert matrix_db_A.is_frozen()
 print(f"  t0: matrix_db_A uid={uid_A}, path={MATRIX_PATH}")

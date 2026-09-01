@@ -11,7 +11,6 @@ FLY_CASE_LOG_DIR = os.environ["FLY_CASE_LOG_DIR"]
 import shutil
 import hashlib
 import json
-import time
 
 import numpy as np
 
@@ -54,14 +53,13 @@ solve_ras_graph_dynamic(db, MATRIX_OBJ_KEY, NSD, b0, update_rhs, NUM_STEPS,
                         omega="coarse", min_steps=2)
 
 # 链在 t=2 组失败（FLY_RASG_FAIL_AT=2:1 → 组传染）。以 master 权威
-# failed 列表轮询（0.5s 采样瞬时快照，无窗口语义；卡死由 harness 兜底）。
-# 不用 wait_tasks：其"队列空即返回"与组失败的落账存在竞速窗口。
+# failed 列表轮询（瞬时快照，无窗口语义；上界 120s 与原手写 deadline
+# 一致，卡死由 harness 240s 兜底）。不用 wait_tasks：其"队列空即返回"
+# 与组失败的落账存在竞速窗口。
+from test import wait_until
 master = get_agent()
-deadline_cycles = 0
-while not master.failed_tasks:
-    time.sleep(0.5)
-    deadline_cycles += 1
-    assert deadline_cycles < 240, "chain did not fail within harness budget"
+assert wait_until(lambda: master.failed_tasks, timeout=120), \
+    "chain did not fail within harness budget"
 WARN(f"expected failure observed: {master.failed_tasks}")
 
 # 已完成结果不丢

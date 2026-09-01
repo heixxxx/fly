@@ -7,7 +7,6 @@ task 写入若干对象后抛异常 → worker 执行 abort_task_writes：
 """
 from _fly_log import INFO
 import os
-import time
 import glob
 
 
@@ -31,13 +30,11 @@ db = open_db(DB_PATH)
 
 # 1. 先写一个正常 task（产生段外 ADD 的基准数据 + 已提交段）
 write_data(db, "baseline", "base_value")
-for _ in range(40):
-    if master.completed_tasks and len(master.completed_tasks) >= 1:
-        break
-    time.sleep(0.5)
+from test import wait_until
+assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=20), \
+    "baseline write should complete"
 
 # 记录 baseline 完成后 data 文件大小
-time.sleep(0.5)
 dat_files = glob.glob(os.path.join(DB_PATH, "data_*.dat"))
 baseline_size = sum(os.path.getsize(f) for f in dat_files)
 INFO(f"[RUN1] baseline data size after normal task: {baseline_size} bytes, files={len(dat_files)}")
@@ -45,13 +42,18 @@ INFO(f"[RUN1] baseline data size after normal task: {baseline_size} bytes, files
 # 2. 失败 task：写入 dirty 对象后抛异常（应被 abort 清理）
 partial_write_then_fail(db, ["dirty1", "dirty2", "dirty3"], "dirty_clean", "crash_recovery_test")
 
-for _ in range(40):
-    if master.failed_tasks and len(master.failed_tasks) >= 1:
-        break
-    time.sleep(0.5)
-assert master.failed_tasks, "partial_write_then_fail should fail"
+assert wait_until(lambda: len(master.failed_tasks) >= 1, timeout=20), \
+    "partial_write_then_fail should fail"
 
-time.sleep(1.0)  # 等 abort 完成
+
+# 等 abort 完成：data 文件大小回落到 baseline（事件驱动，替代固定 sleep）
+def _abort_cleanup_done():
+    dat = glob.glob(os.path.join(DB_PATH, "data_*.dat"))
+    return sum(os.path.getsize(f) for f in dat) <= baseline_size + 1
+
+
+assert wait_until(_abort_cleanup_done, timeout=10), \
+    "abort cleanup did not shrink data file within 10s"
 
 # 3. 验证 data 文件被 truncate：abort 后大小应 <= baseline
 dat_files_after = glob.glob(os.path.join(DB_PATH, "data_*.dat"))

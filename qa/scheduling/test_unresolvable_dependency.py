@@ -10,7 +10,6 @@ Tasks:
   - read_data(db, "result", ["phantom"]) -> depends on "phantom" which nobody produces -> FAILED
 """
 from _fly_log import INFO
-import time
 import os
 import shutil
 
@@ -44,25 +43,20 @@ def test_unresolvable_dependency():
 
     read_data(db, "result", [db.get_full_name("phantom")])
 
-    for i in range(20):
-        failed = master.failed_tasks
-        if failed:
-            break
-        time.sleep(0.5)
+    from test import wait_until
+    assert wait_until(lambda: master.failed_tasks, timeout=10), \
+        "Task with unresolvable dependency should be FAILED, " \
+        f"got failed={master.failed_tasks}"
 
-    assert len(failed) >= 1, \
-        f"Task with unresolvable dependency should be FAILED, got failed={failed}"
-
+    failed = master.failed_tasks
     error_msg = master.get_task_error(failed[0])
     assert "Unresolvable data dependencies" in error_msg, \
         f"Error message should mention unresolvable dependencies, got: {error_msg}"
     assert "phantom" in error_msg, \
         f"Error message should list the missing dependency, got: {error_msg}"
 
-    for i in range(20):
-        if len(master.completed_tasks) >= 1:
-            break
-        time.sleep(0.5)
+    assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=10), \
+        "write_data task should complete within 10s"
     assert db.read_object("real_key") == 1, \
         "write_data task should still complete normally"
 

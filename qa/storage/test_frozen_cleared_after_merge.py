@@ -34,20 +34,18 @@ def main():
 
     master = get_agent()
     launch_workers([{"host": "host_A"}])
-    import time
-    t0 = time.time()
-    while time.time() - t0 < 10:
-        if master.worker_count >= 1:
-            break
-        time.sleep(0.5)
-    assert master.worker_count >= 1
+    from test import wait_until
+    assert wait_until(lambda: master.worker_count >= 1, timeout=10), \
+        "worker should connect"
 
     # t0: 建 matrix_db + 写数据 + freeze
     from test import write_data
     matrix_db = open_db(MATRIX_PATH, db_cls=MatrixDb, logical_name="matrix")
     write_data(matrix_db, "data/original", 100)
     assert master.wait_for_all_tasks(timeout=10) or len(master.completed_tasks) >= 1
-    time.sleep(0.5)
+    # freeze 前置同步点：写 task 完成落账（替代裸 sleep 缓冲）
+    assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=10), \
+        "write task must complete before freeze"
     matrix_db.freeze()
     assert matrix_db.is_frozen()
 

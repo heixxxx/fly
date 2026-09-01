@@ -9,7 +9,6 @@ Tasks:
   - requires=["alpha"]: completes normally
 """
 from _fly_log import INFO
-import time
 import os
 import shutil
 
@@ -43,24 +42,19 @@ def test_fail_unscheduleable_tasks_enabled():
 
     shared_write(db, "no_cap_result")
 
-    for i in range(20):
-        failed = master.failed_tasks
-        if failed:
-            break
-        time.sleep(0.5)
+    from test import wait_until
+    assert wait_until(lambda: master.failed_tasks, timeout=10), \
+        "Task with nonexistent capability should be FAILED when config enabled, " \
+        f"got failed={master.failed_tasks}"
 
-    assert len(failed) >= 1, \
-        f"Task with nonexistent capability should be FAILED when config enabled, got failed={failed}"
-
+    failed = master.failed_tasks
     error_msg = master.get_task_error(failed[0])
     assert "No worker with required capabilities" in error_msg, \
         f"Error message should mention missing capabilities, got: {error_msg}"
 
     alpha_write(db, "alpha_result")
-    for i in range(20):
-        if len(master.completed_tasks) >= 1:
-            break
-        time.sleep(0.5)
+    assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=10), \
+        "alpha task should complete within 10s"
     assert db.read_object("alpha_result") == 1, \
         "alpha task should still complete normally"
 

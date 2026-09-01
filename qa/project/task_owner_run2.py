@@ -5,7 +5,6 @@ db list 传 db_path 字符串（验证归一化），返回值必须等于失败
 task 体经 cloudpickle 自包含（from_user），重投不依赖 run1 脚本。
 """
 import os
-import time
 
 from _fly_log import INFO
 from fly import load_project, restart_failed_tasks, wait_tasks
@@ -43,11 +42,10 @@ assert db_b.read_object("ok_b") == 22
 assert db_b.read_object("cross") == "pb"
 
 # 成功摘除：两个归属 bin 均应被清空删除。
-t0 = time.time()
+from test import wait_until
 bins = [os.path.join(PROJ_PATH, s, "failed_tasks.bin") for s in ("stage_a", "stage_b")]
-while any(os.path.isfile(b) for b in bins) and time.time() - t0 < 30:
-    time.sleep(0.5)
-assert not any(os.path.isfile(b) for b in bins), "owner bins should be deleted after success"
+assert wait_until(lambda: not any(os.path.isfile(b) for b in bins), timeout=30), \
+    "owner bins should be deleted after success"
 
 INFO("[PASS] task_owner_run2: db-list restart + per-owner bins consumed")
 master.stop()

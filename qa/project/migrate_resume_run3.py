@@ -5,7 +5,6 @@ bin 记录内是旧路径快照（args/inputs/owner）；restart 按运行时 ui
 数据落新 data_path、旧路径无幽灵目录。
 """
 import os
-import time
 
 from _fly_log import INFO
 from fly import load_project, wait_tasks
@@ -35,10 +34,9 @@ assert db.read_object("dep_obj") == "pd"
 
 # bin 消费后删除。
 bin_path = os.path.join(NEW_PATH, "workdb", "failed_tasks.bin")
-t0 = time.time()
-while os.path.isfile(bin_path) and time.time() - t0 < 30:
-    time.sleep(0.5)
-assert not os.path.isfile(bin_path), "bin should be consumed after successful resume"
+from test import wait_until
+assert wait_until(lambda: not os.path.isfile(bin_path), timeout=30), \
+    "bin should be consumed after successful resume"
 
 # 旧路径无幽灵目录（uid 解析不依赖旧路径，worker 不在旧位置重建 db）。
 assert not os.path.exists(OLD_PATH), \

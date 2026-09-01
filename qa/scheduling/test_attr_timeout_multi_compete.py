@@ -55,8 +55,14 @@ completed_base = len(master.completed_tasks)
 for i in range(NUM_TASKS):
     waiting_gpu_write(db, f"compete_{i}", i)
 
-# 确认全部 waiting
-time.sleep(1)
+# 竞态观察窗（B 类，非 flaky 源）：断言的不变量是「集群无 gpu worker 时
+# waiting task 永不应执行完成」——等的事件不应发生，无前置可 wait_until
+# （master 无 waiting 队列查询接口），窗口越长断言越强。sleep(1.0) 即该
+# 暴露窗口：窗口内 completed 计数必须不变。
+time.sleep(1.0)
+
+
+# ── 观察窗结束，断言不变量 ──
 assert len(master.completed_tasks) == completed_base, \
     "all gpu tasks should be waiting (no gpu worker)"
 

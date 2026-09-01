@@ -5,12 +5,11 @@ HTTP 断言各 API 端点与静态前端资源；验证 monitor GUI 与 fly 主�
 import json
 import os
 import subprocess
-import time
 import urllib.request
 
 from _fly_log import INFO
 
-from test import write_data
+from test import write_data, wait_until
 from fly import open_db, get_config, wait_tasks
 from fly.runtime import get_agent
 
@@ -54,17 +53,15 @@ def main():
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     try:
         base = f"http://127.0.0.1:{PORT}"
-        ok = False
-        for _ in range(40):  # 等 serve 就绪（最长 10s）
+
+        def serve_ready():
             try:
                 status, _ = http_get(base + "/api/meta", timeout=1)
-                if status == 200:
-                    ok = True
-                    break
+                return status == 200
             except OSError:
-                pass
-            time.sleep(0.25)
-        assert ok, "serve-monitor 未在 10s 内就绪"
+                return False
+
+        assert wait_until(serve_ready, timeout=10), "serve-monitor 未在 10s 内就绪"
 
         # 各 API 端点。
         _, body = http_get(base + "/api/meta")

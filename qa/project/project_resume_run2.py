@@ -1,7 +1,6 @@
 """run2：load_project(resume=True) 断点重跑——已完成对象直接 ready（不重算），
 bin 里的未完成 task 重投执行，最终全部对象就绪且值正确。"""
 import os
-import time
 
 from _fly_log import INFO
 from fly import open_project, wait_tasks
@@ -32,10 +31,9 @@ for i in range(6):
     assert v == i * 10, f"obj_{i} expected {i * 10}, got {v}"
 
 # resume 消费后 bin 应被清（全部 task 成功 → remove_persisted_task 清空删文件）。
-t0 = time.time()
-while os.path.isfile(bin_path) and time.time() - t0 < 30:
-    time.sleep(0.5)
-assert not os.path.isfile(bin_path), "bin should be emptied after successful resume"
+from test import wait_until
+assert wait_until(lambda: not os.path.isfile(bin_path), timeout=30), \
+    "bin should be emptied after successful resume"
 
 INFO("[PASS] project_resume_run2: task-level resume from project-local failed_tasks.bin")
 master.stop()

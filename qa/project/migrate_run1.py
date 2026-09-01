@@ -1,7 +1,6 @@
 """run1：建 project（matrix → solve 两个 db，chain 边 matrix.next=[solve]），写数据 freeze。"""
 import os
 import shutil
-import time
 
 from storage import Database
 from fly import as_task, open_project
@@ -41,10 +40,9 @@ assert master.wait_for_all_tasks(timeout=60)
 
 matrix_db.freeze()
 solve_db.freeze()
+from test import wait_until
 for name in ("matrix", "solve"):
-    t0 = time.time()
-    while not proj.is_db_frozen(name) and time.time() - t0 < 30:
-        time.sleep(0.2)
-    assert proj.is_db_frozen(name), f"{name} should be frozen"
+    assert wait_until(lambda: proj.is_db_frozen(name), timeout=30), \
+        f"{name} should be frozen"
 
 master.stop()

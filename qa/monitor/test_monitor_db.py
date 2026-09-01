@@ -20,7 +20,7 @@ import urllib.request
 
 from _fly_log import INFO
 
-from test import write_data, slow_write, chain_stage
+from test import write_data, slow_write, chain_stage, wait_until
 from fly import open_db, get_config
 from fly.runtime import get_agent
 
@@ -110,21 +110,24 @@ def run_cluster():
     # 持 EXCLUSIVE，高负载轮 5s busy_timeout 可能不够（stability R76 实锤
     # database is locked）——失败重开连接有界重试（只读连接的错误态粘滞，
     # 须重开；与 _meta_has 同款处理）。
-    live_rows = None
-    deadline = time.time() + 15
-    while time.time() < deadline:
+    live = {"conn": live_conn, "rows": None}
+
+    def _live_rows_ready():
         try:
-            live_rows = live_conn.execute(
+            live["rows"] = live["conn"].execute(
                 "SELECT COUNT(*) FROM worker_samples").fetchone()[0]
-            break
+            return True
         except sqlite3.OperationalError:
             try:
-                live_conn.close()
+                live["conn"].close()
             except sqlite3.Error:
                 pass
-            time.sleep(0.3)
-            live_conn = _open_ro()
-    assert live_rows is not None, "运行中实时只读 15s 内持续被锁"
+            live["conn"] = _open_ro()
+            return False
+
+    assert wait_until(_live_rows_ready, timeout=15), "运行中实时只读 15s 内持续被锁"
+    live_conn = live["conn"]
+    live_rows = live["rows"]
     live_conn.close()
     INFO(f"[monitor] 运行中实时只读读到 {live_rows} 条样本")
 

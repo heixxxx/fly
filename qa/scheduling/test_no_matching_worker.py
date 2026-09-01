@@ -41,6 +41,9 @@ def test_no_matching_worker_never_completes():
     db = open_db(DB_PATH)
 
     shared_write(db, "no_cap_result")
+    # 竞态观察窗（B 类）：task 无匹配 capability 应停留调度器——既不完成也
+    # 不失败。sleep(3) 给「误调度/误失败」留暴露窗口，窗口后快照计数断言
+    # 不变量（completed==0 且 failed==0）。
     time.sleep(3)
 
     completed = master.completed_tasks
@@ -52,10 +55,9 @@ def test_no_matching_worker_never_completes():
         f"Task with nonexistent capability should NOT fail, got {len(failed)} failed"
 
     alpha_write(db, "alpha_result")
-    for i in range(20):
-        if len(master.completed_tasks) >= 1:
-            break
-        time.sleep(0.5)
+    from test import wait_until
+    assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=10), \
+        "alpha task should complete within 10s"
     assert db.read_object("alpha_result") == 1, \
         "alpha task should complete normally"
 

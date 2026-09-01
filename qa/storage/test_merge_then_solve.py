@@ -61,7 +61,10 @@ def _write_matrix_task(db, n):
 
 _write_matrix_task(db, 8)
 assert wait_for(lambda: len(master.completed_tasks) >= 1)
-time.sleep(0.5)
+# freeze 前置同步点：写 task 完成落账（替代裸 sleep 缓冲）
+from test import wait_until
+assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=10), \
+    "write task must complete before freeze"
 db.freeze()
 assert db.is_frozen()
 

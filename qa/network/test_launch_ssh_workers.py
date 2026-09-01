@@ -16,10 +16,9 @@
 import os
 import socket
 import subprocess
-import time
 
 from _fly_log import INFO
-from test import read_data, write_data
+from test import read_data, write_data, wait_until
 from fly import (open_db, wait_tasks, launch_ssh_workers,
                  wait_workers_registered, get_agent, get_config)
 
@@ -87,17 +86,16 @@ INFO("[4] write/read data plane over ssh workers OK")
 
 # 5. 生命周期：stop 广播 Shutdown → 远端 nohup worker 自杀，进程退干净
 master.stop()
-deadline = time.time() + 20
-gone = False
-while time.time() < deadline:
-    r = subprocess.run(["pgrep", "-f",
-                        f"--worker-id {worker_ids[0]}"],
+
+
+def _worker_gone():
+    r = subprocess.run(["pgrep", "-f", f"--worker-id {worker_ids[0]}"],
                        capture_output=True)
-    if r.returncode != 0:
-        gone = True
-        break
-    time.sleep(0.5)
-assert gone, "ssh worker process should exit after master stop (ShutdownMessage)"
+    return r.returncode != 0
+
+
+assert wait_until(_worker_gone, timeout=20), \
+    "ssh worker process should exit after master stop (ShutdownMessage)"
 INFO("[5] ssh workers exited cleanly after stop")
 
 INFO("[PASS] test_launch_ssh_workers")

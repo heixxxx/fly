@@ -10,10 +10,9 @@ master/worker 双侧显式区分退出性质：
 import os
 import signal
 import sqlite3
-import time
 
 from _fly_log import INFO
-from test import read_data, write_data
+from test import read_data, write_data, wait_until
 from fly import (open_db, wait_tasks, launch_workers,
                  wait_workers_registered, get_agent, get_config)
 
@@ -74,14 +73,13 @@ assert pids, "worker pid must be observable for the kill scenario"
 os.kill(pids[0], signal.SIGKILL)
 
 # 断连即死模式：on_disconnect 立即判死，等 master.log 落盘。
-deadline = time.time() + 15
-found = False
-while time.time() < deadline and not found:
+def _declared_dead():
     body = open(MASTER_LOG).read() if os.path.isfile(MASTER_LOG) else ""
-    found = "declared dead" in body
-    if not found:
-        time.sleep(0.2)
-assert found, "kill -9 must classify the worker as dead (abnormal path intact)"
+    return "declared dead" in body
+
+
+assert wait_until(_declared_dead, timeout=15), \
+    "kill -9 must classify the worker as dead (abnormal path intact)"
 INFO("[B] kill -9 correctly classified as death (negative control)")
 
 master.stop()

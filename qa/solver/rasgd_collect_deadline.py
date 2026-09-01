@@ -54,15 +54,10 @@ elapsed = time.monotonic() - t_start
 INFO(f"[DEADLINE-CASE] chain failed as expected, elapsed={elapsed:.0f}s")
 
 # 断言 2：master 权威 failed 列表非空（组死语义传播到任务账本）。
+from test import wait_until
 master = get_agent()
-failed = False
-deadline = time.monotonic() + 90
-while time.monotonic() < deadline:
-    if master.failed_tasks:
-        failed = True
-        break
-    time.sleep(0.5)
-assert failed, "group death must surface as failed tasks"
+assert wait_until(lambda: master.failed_tasks, timeout=90), \
+    "group death must surface as failed tasks"
 INFO("[PASS] rasgd_collect_deadline")
 
 get_agent().stop()

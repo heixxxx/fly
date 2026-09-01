@@ -1,7 +1,6 @@
 """run1：建库 → worker 写数据 → freeze（供 run2 做 load_db 判死联动测试）。"""
 import os
 import shutil
-import time
 
 from fly import as_task, open_db, get_config
 from fly.runtime import get_agent
@@ -30,9 +29,8 @@ completed = master.wait_for_all_tasks(timeout=60)
 assert len(completed) >= 1, f"write task should complete, completed={completed}"
 
 db.freeze()
-t0 = time.time()
-while not db.is_frozen() and time.time() - t0 < 30:
-    time.sleep(0.2)
-assert db.is_frozen(), "db should be frozen before run1 exits"
+from test import wait_until
+assert wait_until(lambda: db.is_frozen(), timeout=30), \
+    "db should be frozen before run1 exits"
 
 master.stop()

@@ -46,7 +46,10 @@ db = open_db(DB_PATH)
 write_data(db, "data/alpha", 100)
 write_data(db, "data/beta", 200)
 assert wait_for(lambda: len(master.completed_tasks) >= 2)
-time.sleep(0.5)
+# freeze 前置同步点：写 task 完成落账（替代裸 sleep 缓冲）
+from test import wait_until
+assert wait_until(lambda: len(master.completed_tasks) >= 2, timeout=10), \
+    "write tasks must complete before freeze"
 db.freeze()
 assert db.is_frozen()
 

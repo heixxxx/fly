@@ -60,7 +60,14 @@ assert wait_for(lambda: len(master.completed_tasks) >= 1)
 set_message_global_limit(2)
 # 等待同步到达 worker（worker 收到 MSG_LIMIT_SYNC 后替换本地配额）。
 # 用一个空 task 强制 worker 轮询一次（task 执行时配额已同步）。
+
+# 跨进程配额传播窗口（B 类，非事件驱动）：MSG_LIMIT_SYNC 是 master→worker
+# 的异步广播（reactor send，无 ack 回执），worker 侧 MessageRegistry 无
+# 配额查询导出——「已同步」不可 wait_until 观察。窗口取 1.0s（本机回环
+# 广播 ms 量级，留 >10x 余量）。下方断言以「窗口内传播完成」为前提：
+# 若未同步，phase1_small 的 2 条会被旧配额 emit，末尾 count==3 断言失败。
 import time
+time.sleep(1.0)
 
 
 @as_task()
@@ -72,7 +79,6 @@ def phase1_small(db):
     return "ok"
 
 
-time.sleep(0.3)  # 给 MSG_LIMIT_SYNC 一点传播时间
 phase1_small(db)
 assert wait_for(lambda: len(master.completed_tasks) >= 2)
 
@@ -95,7 +101,8 @@ assert wait_for(lambda: len(master.completed_tasks) >= 3)
 
 # master 改大配额 = 5（广播给 worker）。
 set_message_global_limit(5)
-time.sleep(0.3)
+# 同上：跨进程配额传播窗口（1.0s），「已同步」不可观察，见场景 1 注释。
+time.sleep(1.0)
 
 
 @as_task()

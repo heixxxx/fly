@@ -7,7 +7,6 @@
 """
 from _fly_log import INFO
 import os
-import time
 
 from fly import as_task, open_db, get_config, get_work_directory
 from test import qa_tmp
@@ -57,10 +56,9 @@ db = open_db(DB_PATH)
 # ── Phase 1: 中断写 → task 失败 ──
 write_and_crash(db, "big", 8)
 
-deadline = time.time() + 30
-while time.time() < deadline and len(master.failed_tasks) < 1:
-    time.sleep(0.2)
-assert len(master.failed_tasks) >= 1, f"crash task should fail, failed={master.failed_tasks}"
+from test import wait_until
+assert wait_until(lambda: len(master.failed_tasks) >= 1, timeout=30), \
+    f"crash task should fail, failed={master.failed_tasks}"
 INFO(f"  Phase 1 OK: mid-write crash failed as expected, ids={list(master.failed_tasks)}")
 
 # ── Phase 2: 残块不可见（对象不存在）──
@@ -74,17 +72,9 @@ INFO("  Phase 2 OK: partial object invisible (no trailer/entry)")
 # ── Phase 3: 段回滚后同 db 恢复正常写 ──
 write_recovery(db)
 
-deadline = time.time() + 30
-while time.time() < deadline and "recovery_probe" not in [o for o in []] and len(master.completed_tasks) < 1:
-    time.sleep(0.2)
-
-# 等待完成（completed 包含 recovery task）
-def _done():
-    return any("recovery" in str(t) or True for t in master.completed_tasks) and len(master.completed_tasks) >= 1
-
-deadline = time.time() + 30
-while time.time() < deadline and not _done():
-    time.time() and time.sleep(0.2)
+# 等待 recovery task 完成（completed 包含 recovery task）
+assert wait_until(lambda: len(master.completed_tasks) >= 1, timeout=30), \
+    "recovery write should complete after segment abort"
 
 val = db.read_object("recovery_probe")
 assert val == "ok", f"recovery write must succeed after abort, got {val!r}"

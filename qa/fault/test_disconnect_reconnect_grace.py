@@ -71,8 +71,13 @@ else:
 db = open_db(DB_PATH)
 slow_task(db, "grace/obj")
 
-# 宽限期内（10s）master 不判死：断连后前 7 秒无 declared dead。
+# 宽限观察窗（B 类）：断言不变量是「宽限窗口（10s）内不判死」——等的
+# 事件不应发生，无前置可 wait_until。sleep(7) 即暴露窗口（7s < 10s 宽限），
+# 窗口结束后读 master.log 断言「未判死」仍成立。
 time.sleep(7)
+
+
+# ── 观察窗结束，断言不变量 ──
 content = open(master_log, errors="replace").read()
 assert "worker 1 declared dead" not in content, \
     "w1 must NOT be declared dead within grace window (7s < 10s)"
