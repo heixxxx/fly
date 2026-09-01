@@ -132,24 +132,26 @@ void PeerRpcServer::server_loop() {
                                         stream_fatal = true;
                                         break;
                                     }
-                                    auto& s = streams_[event.conn_id_];
-                                    s.rpc_id = m.rpc_id_;
-                                    s.direction = m.direction_;
-                                    s.compression_type = m.compression_type_;
-                                    s.consumed = 0;
-                                    s.plain_total = 0;
-                                    s.chunks = 0;
-                                    s.verify_failed = false;
-                                    s.have_hdr = false;
-                                    s.block_acc.clear();
-                                    s.plain.clear();
+                                    // 防御：同连接旧流未收尾（协议错位）——收尾后丢弃。
+                                    auto ex = streams_.find(event.conn_id_);
+                                    if (ex != streams_.end()) {
+                                        finish_stream_consumer(*ex->second, false);
+                                        streams_.erase(ex);
+                                    }
+                                    auto s = std::make_shared<StreamRx>();
+                                    s->rpc_id = m.rpc_id_;
+                                    s->direction = m.direction_;
+                                    s->compression_type = m.compression_type_;
                                     // 解压器按流声明构造（NONE 为空 = raw 直通）。
-                                    s.decompressor =
+                                    s->decompressor =
                                         m.compression_type_ == static_cast<uint8_t>(CompressionType::NONE)
                                             ? nullptr
                                             : CompressorFactory::create(
                                                   static_cast<CompressionType>(m.compression_type_));
-                                    s.active = true;
+                                    s->active = true;
+                                    // 消费线程（两段并行）：解压与网络接收重叠。
+                                    s->consumer = std::thread([this, s] { stream_consume(s); });
+                                    streams_[event.conn_id_] = std::move(s);
                                     continue;
                                 }
                                 if (raw_type == static_cast<uint8_t>(MessageType::PEER_STREAM_END)) {
@@ -161,31 +163,33 @@ void PeerRpcServer::server_loop() {
                                         break;
                                     }
                                     auto sit = streams_.find(event.conn_id_);
-                                    if (sit == streams_.end() || !sit->second.active) {
+                                    if (sit == streams_.end() || !sit->second->active) {
                                         ERR("[PEER-STREAM] END without active stream, closing conn");
                                         buf.clear();
                                         stream_fatal = true;
                                         break;
                                     }
-                                    // 明文已随接收流水解压完毕——此处仅对账。
-                                    // 失配 = 零容忍 close（不交付坏 payload）。
-                                    if (!sit->second.verify_failed &&
-                                        verify_stream_end(sit->second, m.total_uncompressed_,
+                                    auto sptr = sit->second;
+                                    // 等消费线程排空退出（eof 后余量有界，等待
+                                    // 有界），join 后对账交付。
+                                    finish_stream_consumer(*sptr, true);
+                                    if (verify_stream_end(*sptr, m.total_uncompressed_,
                                                           m.chunk_count_, m.consumed_)) {
                                         decoded_msgs.push_back(
-                                            {sit->second.direction == 0, m.rpc_id_, 0,
+                                            {sptr->direction == 0, m.rpc_id_, 0,
                                              static_cast<uint8_t>(PeerRpcWireStatus::OK),
-                                             std::move(sit->second.plain)});
+                                             assemble_plain(*sptr)});
                                     } else {
                                         ERR("[PEER-STREAM] stream verify failed, closing conn");
                                         // 零容忍：坏流不交付，断连唤醒调用方。
                                         stream_fatal = true;
                                         break;
                                     }
+                                    streams_.erase(sit);
                                 }
                                 if (raw_type == static_cast<uint8_t>(MessageType::DATA_CHUNK)) {
                                     auto sit = streams_.find(event.conn_id_);
-                                    if (sit == streams_.end() || !sit->second.active) {
+                                    if (sit == streams_.end() || !sit->second->active) {
                                         // 无流上下文：协议错位——丢弃整帧防积压。
                                         WARN("[PEER-STREAM] DATA without active stream ({}B), discarding",
                                              8 + total_len);
@@ -204,16 +208,16 @@ void PeerRpcServer::server_loop() {
                                         buf.clear();
                                         break;
                                     }
-                                    // 边收边解：块流字节即到即喂跨帧块解析器
-                                    // （逐块 CRC 验证 + 解压与接收流水重叠）。
-                                    if (!feed_stream_bytes(sit->second, buf.data() + 29,
+                                    // 边收边喂：跨帧块重组 + CRC 验证 + 压缩
+                                    // 态记录入有界队列（解压在消费线程并行）。
+                                    if (!feed_stream_bytes(*sit->second, buf.data() + 29,
                                                            raw_len)) {
                                         ERR("[PEER-STREAM] stream data error, closing conn");
                                         buf.clear();
                                         stream_fatal = true;
                                         break;
                                     }
-                                    sit->second.consumed += raw_len;
+                                    sit->second->consumed += raw_len;
                                     buf.erase(0, 8 + total_len);
                                     continue;
                                 }
@@ -234,7 +238,11 @@ void PeerRpcServer::server_loop() {
                         }
                     }
                     if (stream_fatal) {
-                        streams_.erase(event.conn_id_);
+                        auto fit = streams_.find(event.conn_id_);
+                        if (fit != streams_.end()) {
+                            finish_stream_consumer(*fit->second, false);
+                            streams_.erase(fit);
+                        }
                         close_connection(event.conn_id_);  // 锁外：DISCONNECT 兜底唤醒调用方
                         break;
                     }
@@ -267,7 +275,11 @@ void PeerRpcServer::server_loop() {
                     {
                         std::lock_guard<std::mutex> lk(buf_mutex_);
                         recv_bufs_.erase(event.conn_id_);
-                        streams_.erase(event.conn_id_);
+                        auto sit = streams_.find(event.conn_id_);
+                        if (sit != streams_.end()) {
+                            finish_stream_consumer(*sit->second, false);
+                            streams_.erase(sit);
+                        }
                     }
                     // BYE 握手区分：已标记 bye_closed 的 conn 是正常关闭，静默；
                     // 否则是错误断连（崩溃/网络断），触发 disconnect_handler 通知调用方。
@@ -569,6 +581,9 @@ void PeerRpcServer::close_connection(uint64_t conn_id) {
 }
 
 bool PeerRpcServer::feed_stream_bytes(StreamRx& s, const char* data, size_t n) {
+    // 网络线程职责：跨帧块重组 → CRC 验证（压缩态，写入时刻锚点）→
+    // 完整记录入有界队列；解压在消费线程（两段并行）。队列满则阻塞——
+    // 背压经 TCP 反压发送方（消费速率决定接收速率，语义同 L3）。
     while (n > 0) {
         if (!s.have_hdr) {
             const size_t need = 16 - s.block_acc.size();
@@ -591,38 +606,110 @@ bool PeerRpcServer::feed_stream_bytes(StreamRx& s, const char* data, size_t n) {
         n -= take;
         if (s.block_acc.size() - 16 < s.p_comp) return true;  // 数据未齐
 
-        // 完整块：CRC 验证（压缩态，写入时刻锚点）+ 解压 → 明文累积。
+        // 完整记录：CRC 验证（压缩态）后整记录入队。
         const char* payload = s.block_acc.data() + 16;
         if (fly::data_checksum(payload, s.p_comp) != s.p_crc) {
             ERR("[PEER-STREAM] block CRC mismatch");
-            s.verify_failed = true;
+            std::lock_guard<std::mutex> lk(s.qx);
+            s.failed = true;
+            s.q_cv.notify_all();
             return false;
         }
-        if (s.decompressor && s.p_comp != s.p_unc) {
-            s.dec_buf.resize(s.p_unc);
-            const int32_t written = s.decompressor->decompress_to(
-                {payload, s.p_comp}, s.dec_buf.data(), s.p_unc);
-            if (written < 0 || static_cast<uint32_t>(written) != s.p_unc) {
-                ERR("[PEER-STREAM] decompress failed");
-                s.verify_failed = true;
-                return false;
-            }
-            s.plain.append(s.dec_buf.data(), s.p_unc);
-        } else {
-            s.plain.append(payload, s.p_comp);  // raw 直通（comp == unc）
-        }
-        s.plain_total += s.p_unc;
-        s.chunks++;
-        s.block_acc.clear();
+        std::unique_lock<std::mutex> lk(s.qx);
+        s.q_cv.wait(lk, [&] {
+            return s.failed || s.eof ||
+                   s.q_bytes + s.block_acc.size() <= kRxQueueBytes;
+        });
+        if (s.failed || s.eof) return false;   // 流已死/END 后余包（协议错位）
+        s.q_bytes += s.block_acc.size();
+        s.blocks.push_back(std::move(s.block_acc));
+        s.q_cv.notify_one();
+        s.block_acc.clear();   // move 后置空
         s.have_hdr = false;
     }
     return true;
 }
 
+void PeerRpcServer::stream_consume(CMSharedPtr<StreamRx> s) {
+    for (;;) {
+        CMString rec;
+        {
+            std::unique_lock<std::mutex> lk(s->qx);
+            s->q_cv.wait(lk, [&] {
+                return !s->blocks.empty() || s->eof || s->failed;
+            });
+            if (s->blocks.empty()) break;   // eof/failed 且排空
+            rec = std::move(s->blocks.front());
+            s->blocks.pop_front();
+            s->q_bytes -= rec.size();
+        }
+        s->q_cv.notify_one();   // 唤醒等空间的网络线程
+        if (s->failed) break;   // 已判死：丢弃剩余
+        uint32_t unc = 0, comp = 0;
+        std::memcpy(&unc, rec.data(), 4);
+        std::memcpy(&comp, rec.data() + 4, 4);
+        bool ok = true;
+        if (unc > 0) {
+            // 分段保证：unc ≤ 4MB ≤ 段容量，新段必装得下。resize 一次性
+            // 落位（memset 与网络接收并行，无逐块 realloc/追加拷贝）。
+            if (s->segs.empty() || kRxSegBytes - s->segs.back().fill < unc) {
+                StreamRx::Seg seg;
+                seg.buf.resize(kRxSegBytes);
+                s->segs.push_back(std::move(seg));
+            }
+            StreamRx::Seg& seg = s->segs.back();
+            char* dst = &seg.buf[0] + seg.fill;
+            if (comp != unc) {
+                const int32_t written = s->decompressor
+                    ? s->decompressor->decompress_to({rec.data() + 16, comp},
+                                                     dst, unc)
+                    : -1;
+                ok = written >= 0 && static_cast<uint32_t>(written) == unc;
+                if (!ok) ERR("[PEER-STREAM] decompress failed");
+            } else {
+                std::memcpy(dst, rec.data() + 16, comp);   // raw 直通
+            }
+            if (ok) {
+                seg.fill += unc;
+                s->plain_total += unc;
+            }
+        }
+        s->chunks++;
+        if (!ok) {
+            std::lock_guard<std::mutex> lk(s->qx);
+            s->failed = true;
+            break;
+        }
+    }
+    std::lock_guard<std::mutex> lk(s->qx);
+    s->done = true;
+    s->q_cv.notify_all();
+}
+
+void PeerRpcServer::finish_stream_consumer(StreamRx& s, bool graceful) {
+    {
+        std::unique_lock<std::mutex> lk(s.qx);
+        if (graceful) s.eof = true; else s.failed = true;
+        s.q_cv.notify_all();
+        s.q_cv.wait(lk, [&] { return s.done; });
+    }
+    if (s.consumer.joinable()) s.consumer.join();
+}
+
+CMString PeerRpcServer::assemble_plain(const StreamRx& s) {
+    // 交付拷贝：恰好一次全量（reserve 单次分配 + 段序 append）。
+    CMString out;
+    out.reserve(s.plain_total);
+    for (const auto& seg : s.segs) {
+        out.append(seg.buf.data(), seg.fill);
+    }
+    return out;
+}
+
 bool PeerRpcServer::verify_stream_end(const StreamRx& s, uint64_t total,
                                       uint32_t chunks, uint64_t consumed) {
     // 三重对账：明文总量 / 块数 / 消费压缩字节数。
-    return !s.verify_failed && s.plain_total == total &&
+    return !s.failed && s.plain_total == total &&
            s.chunks == chunks && s.consumed == consumed;
 }
 
@@ -737,6 +824,10 @@ void PeerRpcServer::stop() {
     }
     {
         std::lock_guard<std::mutex> lk(buf_mutex_);
+        for (auto& [conn_id, s] : streams_) {
+            finish_stream_consumer(*s, false);
+        }
+        streams_.clear();
         recv_bufs_.clear();
     }
     {

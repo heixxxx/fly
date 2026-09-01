@@ -9,12 +9,14 @@
 #include <log/cpp/logger.h>
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace fly {
 
@@ -166,32 +168,52 @@ private:
     std::unordered_map<uint64_t, CMString> recv_bufs_;
 
     // 流式接收状态（连接独占：START 至 END 之间该连接只有流数据帧）。
-    // DATA 帧的块流字节即到即喂跨帧块解析器：逐块 CRC 验证 + 解压——
-    // 解压与接收流水重叠（不在 END 后集中串行解压）。
+    // 与 read_object 的 L3 模型同构的两段并行：网络线程只做 收包 → 跨帧
+    // 块重组 → CRC 验证 → 压缩态记录入有界队列；消费线程 出队 → 解压
+    // 直写分段明文缓冲（零 realloc）——网络 IO 与解压真并行（原实现同
+    // 线程串行，解压时 wire 只能靠内核缓冲吸收）。
     struct StreamRx {
         uint64_t rpc_id = 0;
         uint8_t direction = 0;   // 0=请求流, 1=响应流
         uint8_t compression_type = 0;
         bool active = false;
-        // 跨帧块解析状态
+        // 跨帧块解析状态（网络线程私有）
         CMString block_acc;      // 当前块记录累积（[16B 头][压缩数据]）
         uint32_t p_unc = 0, p_comp = 0;
         uint64_t p_crc = 0;
         bool have_hdr = false;
-        // 解压
+        uint64_t consumed = 0;   // 网络线程累计（已喂块流字节）
+        // 压缩态记录队列（网络线程产 / 消费线程耗；qx 保护）
+        std::mutex qx;
+        std::condition_variable q_cv;
+        std::deque<CMString> blocks;   // 完整块记录（CRC 已过验）
+        size_t q_bytes = 0;
+        bool eof = false;        // server_loop：END 已见
+        bool failed = false;     // CRC 失配/解压失败/断连——零容忍
+        bool done = false;       // 消费线程已退出
+        // 消费线程产出（done 后 server_loop 读取，deque 不再变动）
         std::unique_ptr<Compressor> decompressor;  // NONE 时为空（raw 直通）
-        CMVector<char> dec_buf;  // 解压输出复用缓冲
-        // 明文累积（交付 payload）与对账
-        CMString plain;
+        struct Seg { CMString buf; size_t fill = 0; };
+        std::vector<Seg> segs;   // 分段明文（每段 kRxSegBytes，解压直写）
         uint64_t plain_total = 0;
         uint32_t chunks = 0;
-        uint64_t consumed = 0;
-        bool verify_failed = false;
+        std::thread consumer;    // join 由 server_loop（END/失败/断连/stop）
     };
-    std::unordered_map<uint64_t, StreamRx> streams_;   // conn_id → 状态（buf_mutex_ 保护）
-    // 流式块流字节喂入：跨帧重组 → CRC 验证 → 解压 → 明文累积。
-    // 失败（CRC 失配/解压错误）返回 false——零容忍，调用方 close 连接。
+    std::unordered_map<uint64_t, CMSharedPtr<StreamRx>> streams_;   // conn_id → 状态（buf_mutex_ 保护）
+    // 有界队列上界（压缩态字节）与明文分段大小——对齐 L3 stream_buffer_chunks 量级。
+    static constexpr size_t kRxQueueBytes = 64 * 1024 * 1024;
+    static constexpr size_t kRxSegBytes = 32 * 1024 * 1024;
+    // 流式块流字节喂入：跨帧重组 → CRC 验证 → 压缩态记录入队（有界，
+    // 满则阻塞——背压经 TCP 反压发送方）。CRC 失配返回 false——零容忍。
     bool feed_stream_bytes(StreamRx& s, const char* data, size_t n);
+    // 消费线程：出队 → 解压/raw 直写 → 分段明文缓冲。eof/failed 且排空
+    // 后退出，置 done。不交付、不碰 transport。
+    void stream_consume(CMSharedPtr<StreamRx> s);
+    // 等消费线程排空退出并 join（END/失败/断连/stop 共用的收尾）。
+    // graceful=true 置 eof（排空后正常退出）；false 置 failed（立即判死）。
+    void finish_stream_consumer(StreamRx& s, bool graceful);
+    // 分段明文拼接为连续 payload（交付拷贝：恰好一次全量）。
+    CMString assemble_plain(const StreamRx& s);
     // END 对账：明文总量/块数/消费字节 三重校验。失配返回 false。
     bool verify_stream_end(const StreamRx& s, uint64_t total,
                            uint32_t chunks, uint64_t consumed);
