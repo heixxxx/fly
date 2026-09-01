@@ -349,7 +349,8 @@ def _serve_loop(agent, solver_key, shared_key, sd):
             shared["prev_x"] = x_primary
             # 流式响应：pickle.dump 直入压缩/发送管线（序列化与压缩/
             # 发送流水重叠，无整体 dumps 缓冲）。
-            w = agent.peer_stream_respond_writer(conn_id, rpc_id, "lz4", -1)
+            # 同上：x 贡献 float64 近随机，显式 none。
+            w = agent.peer_stream_respond_writer(conn_id, rpc_id, "none", -1)
             pickle.dump({"x": serialize_array(x_primary), "conv": conv}, w)
             w.finish()
         except Exception as e:
@@ -598,7 +599,8 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
                 # 流式请求：pickle.dump 直入压缩/发送管线（序列化与压缩/
                 # 发送流水重叠）；NOT_READY 重试圈对同 req 字典重新发起
                 # （每次一条新流，rpc_id 独立）。timeout_ms=0：无限，断连唤醒。
-                w = agent.peer_stream_writer(conn_id, "lz4", -1)
+                # f64 解向量近随机：显式 none——压缩尝试是纯负优化。
+                w = agent.peer_stream_writer(conn_id, "none", -1)
                 rid = w.rpc_id()
                 pickle.dump(req, w)
                 w.finish()
