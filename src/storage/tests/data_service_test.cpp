@@ -6,6 +6,7 @@
 #include <network/cpp/net_quality_monitor.h>
 #include <common/cpp/fly_buffer.h>
 #include <common/cpp/worker_context.h>   // WorkerAgentContext::set_suggest_backup_func
+#include <common/cpp/test_helpers.h>
 #include <core/cpp/process_info.h>       // master/worker 进程语义切换（权威 remote_idx 保护测试）
 #include <core/cpp/config.h>
 #include <filesystem>
@@ -42,7 +43,7 @@ protected:
     fly::CMSharedPtr<fly::DataService> ds_ = fly::DataService::instance();
 
     void SetUp() override {
-        test_dir_ = "/tmp/fly_test_ds_" + std::to_string(::getpid());
+        test_dir_ = fly::test::qa_tmp_dir("fly_test_ds");
         std::filesystem::create_directories(test_dir_);
         // DataService is a process-wide singleton shared across tests. Prior
         // tests may have left handler lambdas (capturing local references) and

@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/data_service.h>
 #include <common/cpp/common_types.h>
+#include <common/cpp/test_helpers.h>
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -67,7 +68,7 @@ protected:
     fly::CMSharedPtr<fly::DataService> ds_ = fly::DataService::instance();
     std::vector<CMString> remote_objects_;   // "db:obj_0" .. "db:obj_199"
     std::vector<CMString> local_objects_;    // "db:local_0" ..
-    CMString db_path_ = "/tmp/fly_bench_ds_" + std::to_string(::getpid());
+    CMString db_path_ = fly::test::qa_tmp_dir("fly_bench_ds");
 
     void SetUp() override {
         std::filesystem::create_directories(db_path_);

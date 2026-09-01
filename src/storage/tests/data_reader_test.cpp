@@ -5,6 +5,7 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/fly_buffer_stream.h>
 #include <serialization/cpp/object_header.h>
+#include <common/cpp/test_helpers.h>
 #include <filesystem>
 
 namespace {
@@ -71,7 +72,7 @@ protected:
     CMString test_dir_;
 
     void SetUp() override {
-        test_dir_ = "/tmp/fly_test_data_reader_" + std::to_string(::getpid());
+        test_dir_ = fly::test::qa_tmp_dir("fly_test_data_reader");
         std::filesystem::create_directories(test_dir_);
     }
 

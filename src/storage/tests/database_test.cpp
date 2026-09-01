@@ -5,6 +5,7 @@
 #include <storage/cpp/data_service.h>
 #include <common/cpp/worker_context.h>
 #include <common/cpp/fly_buffer.h>
+#include <common/cpp/test_helpers.h>
 #include <filesystem>
 #include <fstream>
 #include <istream>
@@ -52,7 +53,7 @@ protected:
     CMString test_dir_;
 
     void SetUp() override {
-        test_dir_ = "/tmp/fly_test_db_" + std::to_string(::getpid());
+        test_dir_ = fly::test::qa_tmp_dir("fly_test_db");
         std::filesystem::create_directories(test_dir_);
     }
 
@@ -570,7 +571,7 @@ protected:
     CMSharedPtr<Database> db_;
 
     void SetUp() override {
-        test_dir_ = "/tmp/fly_test_var_" + std::to_string(::getpid());
+        test_dir_ = fly::test::qa_tmp_dir("fly_test_var");
         std::filesystem::create_directories(test_dir_);
         db_ = CMMakeShared<Database>(test_dir_);
 
@@ -886,7 +887,7 @@ TEST_F(DatabaseTest, ConcurrentFreezeIsSafe) {
 static FlyBufferPtr make_temp_payload(const CMString& tag) {
     // put_temp_data 收已压缩 buf（含 ObjectHeader）——compress_pickle_bytes
     // 已删（T2c），经恒流式写 + 裸读构造（唯一名防 DUPLICATE 跳写）。
-    static Database dummy("/tmp/fly_temp_compress_dummy");
+    static Database dummy(fly::test::qa_tmp_dir("fly_temp_compress_dummy"));
     static uint64_t seq = 0;
     CMString name = "tmp/payload_" + std::to_string(++seq);
     std::unique_ptr<FlyStream> s(dummy.open_write_stream(name, "bytes"));

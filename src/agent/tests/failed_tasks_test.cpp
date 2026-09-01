@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <agent/cpp/master_agent.h>
+#include <common/cpp/test_helpers.h>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -9,7 +10,11 @@ using fly::FailedTaskRecord;
 namespace {
 
 CMString make_test_path(const CMString& name) {
-    return "/tmp/fly_failed_tasks_test_" + name + ".bin";
+    // qa_tmp_dir 只生成路径不建目录；此处产物是文件，先建父目录
+    //（手动直跑时 fallback 基目录 .work/gtest_tmp 可能不存在）。
+    CMString path = fly::test::qa_tmp_dir("fly_failed_tasks_test_" + name);
+    std::filesystem::create_directories(path);
+    return path + ".bin";
 }
 
 void write_test_record(const CMString& file_path, const FailedTaskRecord& record) {

@@ -356,7 +356,7 @@ static void write_object_bytes(Database& db, const CMString& name,
 }
 
 static CMString make_temp_dir(const CMString& suffix) {
-    CMString dir = "/tmp/fly_idx_test_" + std::to_string(::getpid()) + "_" + suffix;
+    CMString dir = fly::test::qa_tmp_dir("fly_idx_test_" + suffix);
     std::filesystem::create_directories(dir);
     return dir;
 }

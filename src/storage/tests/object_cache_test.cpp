@@ -3,6 +3,7 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <common/cpp/fly_buffer.h>
+#include <common/cpp/test_helpers.h>
 #include <serialization/cpp/serialization_macros.h>
 #include <thread>
 #include <chrono>
@@ -222,7 +223,7 @@ class ObjectCacheDbTest : public ::testing::Test {
 protected:
     CMString test_dir_;
     void SetUp() override {
-        test_dir_ = "/tmp/fly_test_ocdb_" + std::to_string(::getpid());
+        test_dir_ = fly::test::qa_tmp_dir("fly_test_ocdb");
         std::filesystem::create_directories(test_dir_);
         ObjectCache::instance().clear();
     }

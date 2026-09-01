@@ -3,6 +3,7 @@
 #include <storage/cpp/local_index.h>
 #include <common/cpp/error_types.h>
 #include <common/cpp/write_context_hash.h>
+#include <common/cpp/test_helpers.h>
 #include <filesystem>
 #include <set>
 #include <string>
@@ -123,7 +124,7 @@ TEST(IndexEntryV2Test, EmptyWriteContextHashRoundtrip) {
 }
 
 TEST(IndexEntryV2Test, LocalIndexSaveLoadWithHash) {
-    CMString test_dir = "/tmp/fly_test_v2_idx_" + std::to_string(::getpid());
+    CMString test_dir = fly::test::qa_tmp_dir("fly_test_v2_idx");
     std::filesystem::create_directories(test_dir);
     CMString idx_path = test_dir + "/v2.idx";
 
@@ -150,7 +151,7 @@ TEST(IndexEntryV2Test, LocalIndexSaveLoadWithHash) {
 }
 
 TEST(IndexEntryV2Test, MultipleEntriesWithDifferentHashes) {
-    CMString test_dir = "/tmp/fly_test_multi_hash_" + std::to_string(::getpid());
+    CMString test_dir = fly::test::qa_tmp_dir("fly_test_multi_hash");
     std::filesystem::create_directories(test_dir);
     CMString idx_path = test_dir + "/multi.idx";
 

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/storage_manager.h>
 #include <storage/cpp/data_service.h>
+#include <common/cpp/test_helpers.h>
 #include <filesystem>
 
 namespace {
@@ -32,7 +33,7 @@ TEST_F(StorageManagerTest, SingletonReturnsSameInstance) {
 }
 
 TEST_F(StorageManagerTest, GetOrCreateDatabase) {
-    CMString db_path = "/tmp/fly_test_sm_db1_" + std::to_string(::getpid());
+    CMString db_path = fly::test::qa_tmp_dir("fly_test_sm_db1");
     track_cleanup(db_path);
     auto db1 = StorageManager::instance()->get_or_create_database(db_path, "");
     auto db2 = StorageManager::instance()->get_or_create_database(db_path, "");
@@ -41,8 +42,8 @@ TEST_F(StorageManagerTest, GetOrCreateDatabase) {
 }
 
 TEST_F(StorageManagerTest, DifferentPathsCreateDifferentDatabases) {
-    CMString base1 = "/tmp/fly_test_sm_db2_" + std::to_string(::getpid());
-    CMString base2 = "/tmp/fly_test_sm_db3_" + std::to_string(::getpid());
+    CMString base1 = fly::test::qa_tmp_dir("fly_test_sm_db2");
+    CMString base2 = fly::test::qa_tmp_dir("fly_test_sm_db3");
     track_cleanup(base1);
     track_cleanup(base2);
     auto db1 = StorageManager::instance()->get_or_create_database(base1, "");
@@ -52,7 +53,7 @@ TEST_F(StorageManagerTest, DifferentPathsCreateDifferentDatabases) {
 }
 
 TEST_F(StorageManagerTest, CloseAll) {
-    CMString db_path = "/tmp/fly_test_sm_close_" + std::to_string(::getpid());
+    CMString db_path = fly::test::qa_tmp_dir("fly_test_sm_close");
     track_cleanup(db_path);
     StorageManager::instance()->get_or_create_database(db_path, "");
 
@@ -60,8 +61,8 @@ TEST_F(StorageManagerTest, CloseAll) {
 }
 
 TEST_F(StorageManagerTest, ResetClearsCaches) {
-    CMString db_path1 = "/tmp/fly_test_sm_reset1_" + std::to_string(::getpid());
-    CMString db_path2 = "/tmp/fly_test_sm_reset2_" + std::to_string(::getpid());
+    CMString db_path1 = fly::test::qa_tmp_dir("fly_test_sm_reset1");
+    CMString db_path2 = fly::test::qa_tmp_dir("fly_test_sm_reset2");
     track_cleanup(db_path1);
     track_cleanup(db_path2);
     auto db1 = StorageManager::instance()->get_or_create_database(db_path1, "");
@@ -73,7 +74,7 @@ TEST_F(StorageManagerTest, ResetClearsCaches) {
 }
 
 TEST_F(StorageManagerTest, GetOrCreateDatabaseCreatesDataPathDirectory) {
-    CMString db_path = "/tmp/fly_test_sm_datapath_" + std::to_string(::getpid());
+    CMString db_path = fly::test::qa_tmp_dir("fly_test_sm_datapath");
     CMString data_path = db_path + "/data";
     track_cleanup(db_path);
     auto db = StorageManager::instance()->get_or_create_database(db_path, data_path);
@@ -83,7 +84,7 @@ TEST_F(StorageManagerTest, GetOrCreateDatabaseCreatesDataPathDirectory) {
 }
 
 TEST_F(StorageManagerTest, GetOrCreateDatabaseCacheHitWithAndWithoutDataPath) {
-    CMString db_path = "/tmp/fly_test_sm_cache_" + std::to_string(::getpid());
+    CMString db_path = fly::test::qa_tmp_dir("fly_test_sm_cache");
     track_cleanup(db_path);
     auto db1 = StorageManager::instance()->get_or_create_database(db_path, "");
     auto db2 = StorageManager::instance()->get_or_create_database(db_path, "data");
@@ -94,7 +95,7 @@ TEST_F(StorageManagerTest, GetOrCreateDatabaseCacheHitWithAndWithoutDataPath) {
 }
 
 TEST_F(StorageManagerTest, CloseAllFreezesDatabase) {
-    CMString db_path = "/tmp/fly_test_sm_close_" + std::to_string(::getpid());
+    CMString db_path = fly::test::qa_tmp_dir("fly_test_sm_close");
     track_cleanup(db_path);
 
     auto db = StorageManager::instance()->get_or_create_database(db_path, "");
@@ -105,7 +106,7 @@ TEST_F(StorageManagerTest, CloseAllFreezesDatabase) {
 }
 
 TEST_F(StorageManagerTest, ResetUnregistersDatabaseFromDataService) {
-    CMString db_path = "/tmp/fly_test_sm_resetds_" + std::to_string(::getpid());
+    CMString db_path = fly::test::qa_tmp_dir("fly_test_sm_resetds");
     track_cleanup(db_path);
 
     auto db = StorageManager::instance()->get_or_create_database(db_path, "");

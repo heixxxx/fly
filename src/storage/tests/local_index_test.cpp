@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/local_index.h>
 #include <common/cpp/common_types.h>
+#include <common/cpp/test_helpers.h>
 #include <filesystem>
 #include <fstream>
 
@@ -11,7 +12,7 @@ protected:
     CMString test_dir_;
 
     void SetUp() override {
-        test_dir_ = "/tmp/fly_test_local_index_" + std::to_string(::getpid());
+        test_dir_ = fly::test::qa_tmp_dir("fly_test_local_index");
         std::filesystem::create_directories(test_dir_);
     }
 

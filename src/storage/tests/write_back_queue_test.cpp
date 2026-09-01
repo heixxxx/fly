@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/write_back_queue.h>
 #include <common/cpp/common_types.h>
+#include <common/cpp/test_helpers.h>
 #include <fstream>
 #include <filesystem>
 #include <atomic>
@@ -14,7 +15,7 @@ protected:
     CMString test_dir_;
 
     void SetUp() override {
-        test_dir_ = "/tmp/fly_test_wbq_" + std::to_string(::getpid());
+        test_dir_ = fly::test::qa_tmp_dir("fly_test_wbq");
         std::filesystem::create_directories(test_dir_);
     }
 

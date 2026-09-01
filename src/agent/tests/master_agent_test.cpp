@@ -142,9 +142,7 @@ namespace {
 class TempDir {
 public:
     TempDir() {
-        auto ts = std::chrono::steady_clock::now().time_since_epoch().count();
-        path_ = "/tmp/fly_test_" + ::std::to_string(ts) + "_" +
-                ::std::to_string(reinterpret_cast<uintptr_t>(this));
+        path_ = fly::test::qa_tmp_dir("fly_test_master");
         std::filesystem::create_directories(path_);
     }
     ~TempDir() {

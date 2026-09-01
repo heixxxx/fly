@@ -3,6 +3,7 @@
 #include <message/cpp/message_macros.h>
 #include <log/cpp/logger.h>
 
+#include <common/cpp/test_helpers.h>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -31,8 +32,7 @@ TEST_F(MessageRegistryTest, UnregisteredIdHasNoLevel) {
 // 通道，走 cerr 无法断言）。
 TEST_F(MessageRegistryTest, UnregisteredMsgEmitsWarning) {
     namespace fs = std::filesystem;
-    auto ts = std::chrono::steady_clock::now().time_since_epoch().count();
-    CMString dir = "/tmp/fly_msg_test_" + std::to_string(ts);
+    CMString dir = fly::test::qa_tmp_dir("fly_msg_test");
     fs::create_directories(dir);
     Logger::init(dir, 0);
 

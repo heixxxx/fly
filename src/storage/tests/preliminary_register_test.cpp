@@ -8,6 +8,7 @@
 #include <storage/cpp/data_service.h>
 #include <common/cpp/worker_context.h>
 #include <common/cpp/error_types.h>
+#include <common/cpp/test_helpers.h>
 #include <log/cpp/logger.h>
 #include <filesystem>
 #include <fstream>
@@ -22,8 +23,7 @@ protected:
     CMVector<std::pair<bool, int64_t>> calls_;  // (preliminary, size)
 
     void SetUp() override {
-        test_dir_ = "/tmp/fly_test_prereg_" + std::to_string(::getpid()) + "_" +
-                    std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+        test_dir_ = fly::test::qa_tmp_dir("fly_test_prereg");
         std::filesystem::remove_all(test_dir_);
         std::filesystem::create_directories(test_dir_);
         ds_->reset();

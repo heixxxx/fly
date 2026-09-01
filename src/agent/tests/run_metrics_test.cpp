@@ -11,15 +11,15 @@
 
 #include <fmt/format.h>
 
+#include <common/cpp/test_helpers.h>
+
 namespace {
 
 // 与 master_agent_test 同款临时目录（自清理）。
 class TempDir {
 public:
     explicit TempDir(const std::string& tag) {
-        auto ts = std::chrono::steady_clock::now().time_since_epoch().count();
-        path_ = "/tmp/fly_metrics_test_" + tag + "_" + std::to_string(ts) + "_" +
-                std::to_string(reinterpret_cast<uintptr_t>(this));
+        path_ = fly::test::qa_tmp_dir("fly_metrics_test_" + tag);
         std::filesystem::create_directories(path_);
     }
     ~TempDir() { std::filesystem::remove_all(path_); }

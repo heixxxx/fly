@@ -3,6 +3,7 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/index_entry.h>
 #include <common/cpp/error_types.h>
+#include <common/cpp/test_helpers.h>
 #include <thread>
 #include <chrono>
 #include <filesystem>
@@ -33,8 +34,7 @@ protected:
     fly::CMSharedPtr<fly::DataService> ds_ = fly::DataService::instance();
 
     void SetUp() override {
-        test_dir_ = "/tmp/fly_test_writereg_" + std::to_string(::getpid()) + "_" +
-                    std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+        test_dir_ = fly::test::qa_tmp_dir("fly_test_writereg");
         std::filesystem::create_directories(test_dir_);
     }
 
