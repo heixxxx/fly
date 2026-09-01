@@ -26,6 +26,7 @@
 | 存储链路设计 | [db-chain-design.md](db-chain-design.md)（db 身份/uid/task 参数编码权威）、[db-merge-design.md](db-merge-design.md)（⚠️ 迁移追踪部分已被 db-chain 取代，见其头注） |
 | 大对象分块传输与数据完整性 | [chunked-transfer-design.md](chunked-transfer-design.md)（设计+实施计划合一：L0 帧头/校验/零容忍 → L2 分片 → L3 读流式 → L1 写流式；L0 待批准即开工） |
 | 消息日志系统 | [message-system.md](message-system.md)（消息类型语义全表权威在 [network/module.md](network/module.md)「消息类型总表」） |
+| PeerRpc 流式大 payload | [rpc-stream-pipeline.md](rpc-stream-pipeline.md)（协议/接口/端到端架构；换机续作交接见 [HANDOFF-peer-stream.md](HANDOFF-peer-stream.md)） |
 | Project 机制 | [project-design.md](project-design.md) |
 | 优先级调度 | [priority-scheduling-design.md](priority-scheduling-design.md) |
 | 内存增长分析（M1 依据） | [memory-growth-analysis.md](memory-growth-analysis.md) |
