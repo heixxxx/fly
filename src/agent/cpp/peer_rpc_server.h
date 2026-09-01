@@ -44,19 +44,96 @@ enum class PeerRpcWireStatus : uint8_t {
 // 两种角色：
 //   - 服务端（check worker）：listen + accept + on_request 回调处理请求
 //   - 客户端（compute worker）：connect_peer + send_rpc（配合 PendingRpcMap 等响应）
-class PeerRpcServer {
+// PeerStreamRxState —— 流式接收共享状态（server_loop 网络线程生产 /
+// PeerStreamReader 业务线程消费；qx 保护全部共享字段）。
+struct PeerStreamRxState {
+    uint64_t rpc_id = 0;
+    uint8_t direction = 0;   // 0=请求流, 1=响应流
+    bool active = false;
+    // 跨帧块重组（网络线程私有）
+    CMString block_acc;      // 当前块记录累积（[16B 头][压缩数据]）
+    uint32_t p_comp = 0;
+    bool have_hdr = false;
+    // 压缩态记录队列（网络线程产 / 业务读端耗——消费拉动 = 流式反序列化）
+    std::mutex qx;
+    std::condition_variable q_cv;
+    std::deque<CMString> blocks;   // 完整块记录（CRC 由读端 Stage 验证）
+    size_t q_bytes = 0;
+    static constexpr size_t kQueueBytes = 64 * 1024 * 1024;   // 背压上界
+    bool end_seen = false;     // END 帧已到（数据全量入队）
+    bool failed = false;       // 对账失败/断连/废弃——零容忍
+    bool abandoned = false;    // 读端已析构（无消费者）——弃投递
+    // END 对账三要素（发送方流尾事实；读端 EOF 处自校验）
+    uint64_t consumed = 0;          // 读端累计消费的压缩字节
+    uint64_t end_total = 0;
+    uint32_t end_chunks = 0;
+    uint64_t end_consumed = 0;
+};
+
+// PeerStreamReader —— 接收 payload 的流式读端（read_object L3 消费端同构）：
+// file-protocol read/readline/readinto 供业务 pickle.load 直用——消费拉动
+// ReadPipeline（CrcVerifyStage → DecompressStage）边收边解压边反序列化，
+// 内存驻留 ≈ 有界队列 + 已建对象（与 payload 总量无关，copy 链与 read
+// 完全一致：1 次入队 + 1 次 readinto 直填）。
+//
+// 两种形态：
+//   - 流式：绑定接收流状态（queue + 对账标志），EOF 仅在 END 对账通过后
+//     给出；对账失败/断连/废弃 → 读操作抛错（零容忍，不交付坏流）。
+//   - 单块：包装单帧消息 payload（零拷贝持有，读协议同款）。
+// 读端析构若流未完：置 abandoned——网络线程弃投递（不再因无消费者阻塞）。
+class PeerStreamReader {
 public:
-    // 请求到达回调（服务端角色）：收到 PeerRpcRequestMessage 时调用。
-    // payload 按值交付（server_loop 持有唯一引用——调用方 move 入队，零拷贝）。
-    // 返回 optional<payload>：有值则立即回响应（status=0），空则不立即响应。
+    // 流式（内部绑定共享接收状态；由 PeerRpcServer 在 START 处构造）。
+    PeerStreamReader(CMSharedPtr<struct PeerStreamRxState> rx,
+                     CompressionType comp);
+    // 单块（单帧消息 / 兼容包装）。
+    explicit PeerStreamReader(CMString data);
+
+    ~PeerStreamReader();   // 流未读完即析构：置 abandoned（网络线程弃投递）
+
+    CMString read(size_t n);
+    CMString readline();
+    size_t readinto(char* dst, size_t n);
+    // 读尽（读至 EOF 并累积）——compat bytes 路径专用（收齐语义保留在
+    // 该方法内，新路径勿用）。
+    CMString read_all();
+    // 读操作抛错（对账失败/断连/截断——零容忍）后的终态查询。
+    bool failed() const;
+
+private:
+    // 从管线取下一明文块（跨块游标）；返回 false = EOF（已对账）或失败。
+    bool advance_block();
+    size_t read_span(char* dst, size_t n);
+    // 终态失败检查：读操作直接抛错（零容忍，不静默半交付）。
+    void check_failed() const;
+
+    CMSharedPtr<PeerStreamRxState> rx_;   // 流式状态（队列+标志；单块为空）
+    CMUniquePtr<fly::ReadPipeline> pipeline_;    // 共享 Stage：CRC 验证→解压
+    CMString cur_block_;      // 当前明文块（next_block 产出/单块数据）
+    size_t cur_pos_ = 0;
+    bool eof_ = false;        // END 对账通过后放行的干净 EOF
+    size_t total_hint_ = 0;   // 单块=准确；流式=0
+    // 读端侧对账累计（ReadPipeline 不带统计——EOF 处与 END 三要素比对）
+    uint64_t plain_total_ = 0;
+    uint32_t chunks_ = 0;
+};
+using PeerStreamReaderPtr = CMSharedPtr<PeerStreamReader>;
+
+class PeerRpcServer : public std::enable_shared_from_this<PeerRpcServer> {
+public:
+    // 请求到达回调（服务端角色）：单帧请求 → payload 就绪、reader 为空；
+    // 流式请求 → START 即派发（payload 空），业务经 reader 拉动边收边反
+    // 序列化。payload 按值交付（零拷贝 move）。返回 optional<payload>：
+    // 有值则立即回响应（status=0），空则不立即响应。
     using RequestHandler = std::function<std::optional<CMString>(
         uint64_t conn_id, uint64_t rpc_id, uint64_t src_worker_id,
-        CMString payload)>;
+        CMString payload, const PeerStreamReaderPtr& reader)>;
 
-    // 响应到达回调（客户端角色）：收到 PeerRpcResponseMessage 时调用。
-    // status=0 正常响应，status=1 主动失败通知（payload=reason）。
+    // 响应到达回调（客户端角色）：单帧响应 → payload 就绪；流式响应 →
+    // START 即回调（payload 空，reader 承载）。status 同线上语义。
     using ResponseHandler = std::function<void(
-        uint64_t conn_id, uint64_t rpc_id, uint8_t status, CMString payload)>;
+        uint64_t conn_id, uint64_t rpc_id, uint8_t status, CMString payload,
+        const PeerStreamReaderPtr& reader)>;
 
     // 连接断开回调（客户端角色）：P2P 连接断开时调用（对端关闭/网络断）。
     // WorkerAgent 用它 fail 该 conn_id 上所有 pending RPC，避免 rpc_call 死等。
@@ -167,56 +244,12 @@ private:
     std::mutex buf_mutex_;
     std::unordered_map<uint64_t, CMString> recv_bufs_;
 
-    // 流式接收状态（连接独占：START 至 END 之间该连接只有流数据帧）。
-    // 与 read_object 的 L3 模型同构的两段并行：网络线程只做 收包 → 跨帧
-    // 块重组 → CRC 验证 → 压缩态记录入有界队列；消费线程 出队 → 解压
-    // 直写分段明文缓冲（零 realloc）——网络 IO 与解压真并行（原实现同
-    // 线程串行，解压时 wire 只能靠内核缓冲吸收）。
-    struct StreamRx {
-        uint64_t rpc_id = 0;
-        uint8_t direction = 0;   // 0=请求流, 1=响应流
-        uint8_t compression_type = 0;
-        bool active = false;
-        // 跨帧块解析状态（网络线程私有）
-        CMString block_acc;      // 当前块记录累积（[16B 头][压缩数据]）
-        uint32_t p_unc = 0, p_comp = 0;
-        uint64_t p_crc = 0;
-        bool have_hdr = false;
-        uint64_t consumed = 0;   // 网络线程累计（已喂块流字节）
-        // 压缩态记录队列（网络线程产 / 消费线程耗；qx 保护）
-        std::mutex qx;
-        std::condition_variable q_cv;
-        std::deque<CMString> blocks;   // 完整块记录（CRC 已过验）
-        size_t q_bytes = 0;
-        bool eof = false;        // server_loop：END 已见
-        bool failed = false;     // CRC 失配/解压失败/断连——零容忍
-        bool done = false;       // 消费线程已退出
-        // 消费线程产出（done 后 server_loop 读取，deque 不再变动）
-        std::unique_ptr<Compressor> decompressor;  // NONE 时为空（raw 直通）
-        struct Seg { CMString buf; size_t fill = 0; };
-        std::vector<Seg> segs;   // 分段明文（每段 kRxSegBytes，解压直写）
-        uint64_t plain_total = 0;
-        uint32_t chunks = 0;
-        std::thread consumer;    // join 由 server_loop（END/失败/断连/stop）
-    };
-    std::unordered_map<uint64_t, CMSharedPtr<StreamRx>> streams_;   // conn_id → 状态（buf_mutex_ 保护）
-    // 有界队列上界（压缩态字节）与明文分段大小——对齐 L3 stream_buffer_chunks 量级。
-    static constexpr size_t kRxQueueBytes = 64 * 1024 * 1024;
-    static constexpr size_t kRxSegBytes = 32 * 1024 * 1024;
-    // 流式块流字节喂入：跨帧重组 → CRC 验证 → 压缩态记录入队（有界，
-    // 满则阻塞——背压经 TCP 反压发送方）。CRC 失配返回 false——零容忍。
-    bool feed_stream_bytes(StreamRx& s, const char* data, size_t n);
-    // 消费线程：出队 → 解压/raw 直写 → 分段明文缓冲。eof/failed 且排空
-    // 后退出，置 done。不交付、不碰 transport。
-    void stream_consume(CMSharedPtr<StreamRx> s);
-    // 等消费线程排空退出并 join（END/失败/断连/stop 共用的收尾）。
-    // graceful=true 置 eof（排空后正常退出）；false 置 failed（立即判死）。
-    void finish_stream_consumer(StreamRx& s, bool graceful);
-    // 分段明文拼接为连续 payload（交付拷贝：恰好一次全量）。
-    CMString assemble_plain(const StreamRx& s);
-    // END 对账：明文总量/块数/消费字节 三重校验。失配返回 false。
-    bool verify_stream_end(const StreamRx& s, uint64_t total,
-                           uint32_t chunks, uint64_t consumed);
+    // 流式接收状态（conn_id → 共享状态；buf_mutex_ 保护 map 本身）。
+    std::unordered_map<uint64_t, CMSharedPtr<PeerStreamRxState>> streams_;
+    // 流式块流字节喂入：跨帧块重组 → 完整记录入有界队列（有界，满则
+    // 阻塞——背压经 TCP 反压发送方）。CRC 验证在消费端 ReadPipeline 的
+    // CrcVerifyStage（与 read_object 同款 Stage 分工）。
+    bool feed_stream_bytes(PeerStreamRxState& s, const char* data, size_t n);
 
     // BYE 握手状态：
     //   bye_closed_conns_：已通过 BYE 正常关闭的 conn（DISCONNECT 时静默，不触发 disconnect_handler）
@@ -228,47 +261,6 @@ private:
     std::unordered_set<uint64_t> bye_ack_conns_;
     std::unordered_set<uint64_t> bye_pending_conns_;
 };
-
-// PeerStreamBuffer —— 接收 payload 的 file-protocol 读端（与 FlyBuffer 同
-// 语义：read/readline/readinto 供 pickle.load 直用，readinto 直填 pickle
-// 工作缓冲——免中间 Python bytes 的全量拷贝）。数据共享持有（零拷贝包装）。
-class PeerStreamBuffer {
-public:
-    PeerStreamBuffer() = default;
-    explicit PeerStreamBuffer(CMString data) : data_(std::move(data)) {}
-
-    CMString read(size_t n) {
-        const size_t avail = data_.size() - pos_;
-        const size_t take = std::min(n, avail);
-        CMString out(data_.data() + pos_, take);
-        pos_ += take;
-        return out;
-    }
-    CMString readline() {
-        const size_t start = pos_;
-        const size_t nl = data_.find('\n', start);
-        const size_t end = (nl == CMString::npos) ? data_.size() : nl + 1;
-        CMString out(data_.data() + start, end - start);
-        pos_ = end;
-        return out;
-    }
-    size_t readinto(char* dst, size_t n) {
-        const size_t avail = data_.size() - pos_;
-        const size_t take = std::min(n, avail);
-        std::memcpy(dst, data_.data() + pos_, take);
-        pos_ += take;
-        return take;
-    }
-    void seek(size_t p) { pos_ = p; }
-    size_t size() const { return data_.size(); }
-    size_t pos() const { return pos_; }
-    const CMString& data() const { return data_; }
-
-private:
-    CMString data_;
-    size_t pos_ = 0;
-};
-using PeerStreamBufferPtr = CMSharedPtr<PeerStreamBuffer>;
 
 // PeerStreamWriter —— worker 间流式大 payload 的写端（file-like，异步压缩）。
 //
@@ -284,8 +276,10 @@ public:
     static constexpr size_t kFrameBytes = 4 * 1024 * 1024;
     static constexpr size_t kQueueBytes = 4 * 1024 * 1024;   // 明文队列上界（背压）
 
-    PeerStreamWriter(PeerRpcServer* srv, uint64_t conn_id, uint64_t rpc_id,
-                     uint8_t direction, CompressionType comp, int level);
+    PeerStreamWriter(CMSharedPtr<PeerRpcServer> srv, uint64_t conn_id,
+                     uint64_t rpc_id, uint8_t direction, CompressionType comp,
+                     int level);   // 共享持有 server——stop_peer_rpc 销毁 server
+                                  // 时在途 writer 保活，发送优雅失败不悬垂
     ~PeerStreamWriter();
 
     void write(const char* data, size_t n);   // 明文入队（满则阻塞；GIL 已在导出层释放）
@@ -318,7 +312,7 @@ private:
     // 流尾补发 header-only 帧；半个块头 = Stage 契约破坏，零容忍断流。
     void flush_pending_block();
 
-    PeerRpcServer* srv_;
+    CMSharedPtr<PeerRpcServer> srv_;
     uint64_t conn_id_;
     uint64_t rpc_id_;
     // 明文队列（调用线程生产 / 压缩线程消费）

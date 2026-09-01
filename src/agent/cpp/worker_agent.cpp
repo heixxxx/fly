@@ -90,7 +90,6 @@ void WorkerAgent::start() {
 
     shutdown_triggered_ = false;
 
-
     auto transport = create_connection_manager("tcp");
     if (!transport || !transport->listen("0.0.0.0", 0)) {
         // transport 创建/监听失败与 master 连接失败同级：worker 无法服务，
@@ -238,7 +237,6 @@ void WorkerAgent::start() {
             WorkerProbeAckMessage ack;
             ack.worker_id_ = msg.worker_id_;
             reactor_->send(conn_id, ack);
-            DBG("WorkerProbe answered: worker_id={}", msg.worker_id_);
         });
 
     reactor_->register_handler<TaskSubmitAckMessage>(
@@ -249,8 +247,6 @@ void WorkerAgent::start() {
                 p.task_id_ = msg.task_id_;
                 p.completed_ = true;
             });
-            DBG("TaskSubmitAck: request_id={}, task_id={}, accepted={}",
-                msg.request_id_, msg.task_id_, msg.accepted_);
         });
 
     reactor_->register_handler<DatabaseFreezeNotification>(
@@ -301,7 +297,6 @@ void WorkerAgent::start() {
     reactor_->register_handler<HeartbeatAckMessage>(
         [this](uint64_t conn_id, const HeartbeatAckMessage& msg) {
             touch_master_contact();
-            DBG("HeartbeatAck received from master");
         });
 
     reactor_->register_handler<VarAckMessage>(
@@ -630,9 +625,7 @@ void WorkerAgent::heartbeat_loop() {
             HeartbeatMessage hb;
             hb.worker_id_ = worker_id_;
             if (!reactor_->try_send(master_conn_, hb)) {
-                DBG("Heartbeat skipped (send busy)");
             } else {
-                DBG("Heartbeat sent");
             }
         }
 
@@ -693,8 +686,6 @@ void WorkerAgent::monitor_report_loop() {
                 msg.samples_ = pending_samples_;
             }
             if (!reactor_->try_send(master_conn_, msg)) {
-                DBG("MonitorSample skipped (send busy) — {} samples buffered",
-                    msg.samples_.size());
                 // send busy 是 per-conn 发送锁的瞬时 try_lock 竞争（微秒级窗口），
                 // 但补发被推迟到下个完整 report 周期（10s）——晚注册 worker 在短
                 // 生命周期里可能全程 0 样本落库（缓冲随进程退出蒸发，QA 实测 11
@@ -746,8 +737,6 @@ void WorkerAgent::report_task_io(const TaskExecResult& result) {
         msg.items_.push_back(item);
     }
     if (!reactor_->try_send(master_conn_, msg)) {
-        DBG("MonitorTaskIo dropped (send busy): task={} items={}",
-            result.task_id_, msg.items_.size());
     }
 }
 
@@ -780,7 +769,6 @@ void WorkerAgent::bandwidth_probe_loop() {
             auto transport = create_tcp_transport();
             int fd = transport->create_connection(peer.host_, peer.port_);
             if (fd < 0) {
-                DBG("[PROBE] connect failed: {}:{} errno={}", peer.host_, peer.port_, errno);
                 continue;
             }
             transport->set_recv_timeout(fd, timeout_ms);
@@ -814,7 +802,6 @@ void WorkerAgent::bandwidth_probe_loop() {
             transport->close(fd);
 
             if (!ok) {
-                DBG("[PROBE] exchange failed: {}:{}", peer.host_, peer.port_);
                 continue;
             }
             double rtt_ms = std::chrono::duration<double, std::milli>(
@@ -824,7 +811,6 @@ void WorkerAgent::bandwidth_probe_loop() {
                 : 0.0;
             NetQualityMonitor::instance().update_rtt(peer.host_, rtt_ms);
             NetQualityMonitor::instance().update_bandwidth(peer.host_, mbps);
-            DBG("[PROBE] {}:{} rtt={:.2f}ms bw={:.1f}Mbps", peer.host_, peer.port_, rtt_ms, mbps);
         }
     }
 }
@@ -911,8 +897,6 @@ void WorkerAgent::on_task_assign(const TaskAssignMessage& msg) {
         for (const auto& loc : msg.dependency_locations_) {
             DataService::instance()->update_remote_idx(loc.object_name, loc.worker_id, loc.host,
                                                         loc.port, 0, loc.storage_only != 0);
-            DBG("[PREFETCH] obj={} worker_id={} host={} port={} storage_only={}",
-                loc.object_name, loc.worker_id, loc.host, loc.port, loc.storage_only);
         }
     }
 
@@ -1888,8 +1872,6 @@ bool WorkerAgent::set_var_sync(const CMString& full_var_name,
     }
     reactor_->send(master_conn_, msg);
 
-    DBG("VarSet sent: var={}", full_var_name);
-
     auto result = pending_var_ops_.wait_for(full_var_name, std::chrono::seconds(5),
         [](const CMSharedPtr<PendingVarOp>& p) { return p->completed_; });
     pending_var_ops_.erase(full_var_name);
@@ -1924,8 +1906,6 @@ std::tuple<bool, FlyBufferPtr, CMString> WorkerAgent::get_var_sync(const CMStrin
     }
     reactor_->send(master_conn_, msg);
 
-    DBG("VarGet sent: var={}", full_var_name);
-
     auto result = pending_var_ops_.wait_for(full_var_name, std::chrono::seconds(5),
         [](const CMSharedPtr<PendingVarOp>& p) { return p->completed_; });
     pending_var_ops_.erase(full_var_name);
@@ -1948,7 +1928,6 @@ void WorkerAgent::remove_var_async(const CMString& full_var_name) {
         return;
     }
     reactor_->send(master_conn_, msg);
-    DBG("VarRemove sent (async): var={}", full_var_name);
 }
 
 void WorkerAgent::send_message_to_master(LogLevel level, const CMString& domain_id, int32_t source, const CMString& msg) {
@@ -1964,7 +1943,6 @@ void WorkerAgent::send_message_to_master(LogLevel level, const CMString& domain_
 
 void WorkerAgent::on_message_count_request(uint64_t conn_id, const MessageCountRequestMessage& /*msg*/) {
     // summary 屏障：把本地 message 触发计数（id 级 + domain 级两套）上报给 master。
-    DBG("[SUMMARY] worker {} received MSG_COUNT_REQUEST on conn {}", worker_id_, conn_id);
     MessageCountReportMessage report;
     report.worker_id_ = worker_id_;
     auto id_counts = MessageRegistry::instance().trigger_id_counts_snapshot();
@@ -2340,7 +2318,6 @@ void WorkerAgent::on_storage_spawn_request(uint64_t conn_id, const StorageSpawnR
         std::thread([pid, this]() {
             int status = 0;
             ::waitpid(pid, &status, 0);
-            DBG("auto-spawned storage worker pid={} exited (status={})", pid, status);
         }).detach();
 
         ack.success_ = true;
@@ -2879,7 +2856,9 @@ void WorkerAgent::ensure_peer_rpc_handlers() {
     // NOT_READY(可恢复未就绪)；映射为内部 PeerRpcStatus（NOT_READY 一等
     // 传递，调用方据此跳过重试）。
     peer_rpc_server_->set_response_handler(
-        [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, CMString payload) {
+        [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, CMString payload,
+               const PeerStreamReaderPtr& reader) {
+                "payload_len={}", conn_id, rpc_id, status, reader != nullptr,
             pending_peer_rpcs_.complete(rpc_id, [&](PendingPeerRpc& p) {
                 PeerRpcStatus mapped;
                 switch (static_cast<PeerRpcWireStatus>(status)) {
@@ -2897,6 +2876,7 @@ void WorkerAgent::ensure_peer_rpc_handlers() {
                 p.status_.store(static_cast<uint8_t>(mapped),
                     std::memory_order_release);
                 p.payload_ = std::move(payload);
+                p.reader_ = reader;
             });
         });
     // disconnect_handler：P2P 错误断连时（无 BYE）触发。
@@ -2924,16 +2904,17 @@ int WorkerAgent::start_peer_rpc_listen(const CMString& host, int port) {
     if (peer_rpc_server_) {
         return peer_rpc_port_;  // 已启动
     }
-    peer_rpc_server_ = CMMakeUnique<PeerRpcServer>();
+    peer_rpc_server_ = std::make_shared<PeerRpcServer>();
     // 服务端角色：request_handler 收到请求 → 入队（Python while 循环的 recv_request 取出处理）
     int bound_port = peer_rpc_server_->listen(host, port,
         [this](uint64_t conn_id, uint64_t rpc_id, uint64_t src_worker_id,
-               CMString payload) -> std::optional<CMString> {
+               CMString payload,
+               const PeerStreamReaderPtr& reader) -> std::optional<CMString> {
             {
                 // notify 持锁防 lost wakeup（同 8419526）。
                 std::lock_guard<std::mutex> lk(peer_rpc_incoming_mutex_);
                 peer_rpc_incoming_.push_back(
-                    {conn_id, rpc_id, src_worker_id, std::move(payload)});
+                    {conn_id, rpc_id, src_worker_id, std::move(payload), reader});
                 peer_rpc_incoming_cv_.notify_one();
             }
             return std::nullopt;  // 异步处理（Python 层 peer_rpc_respond 回响应）
@@ -2947,7 +2928,7 @@ uint64_t WorkerAgent::peer_rpc_connect(const CMString& host, int port,
                                         int retries, int retry_interval_ms) {
     if (!peer_rpc_server_) {
         // 仅客户端模式：创建 PeerRpcServer 但不 listen
-        peer_rpc_server_ = CMMakeUnique<PeerRpcServer>();
+        peer_rpc_server_ = std::make_shared<PeerRpcServer>();
         ensure_peer_rpc_handlers();
     }
     return peer_rpc_server_->connect_peer(host, port, retries, retry_interval_ms);
@@ -3020,7 +3001,7 @@ fly::PeerStreamWriter* WorkerAgent::peer_stream_writer(uint64_t conn_id,
     auto pending = CMMakeShared<PendingPeerRpc>();
     pending->conn_id_ = conn_id;
     pending_peer_rpcs_.emplace(rpc_id, pending);
-    return new fly::PeerStreamWriter(peer_rpc_server_.get(), conn_id, rpc_id,
+    return new fly::PeerStreamWriter(peer_rpc_server_, conn_id, rpc_id,
                                      /*direction=*/0,
                                      CompressorFactory::type_from_name(compression),
                                      level);
@@ -3032,7 +3013,7 @@ fly::PeerStreamWriter* WorkerAgent::peer_stream_respond_writer(uint64_t conn_id,
                                                                int level) {
     if (!peer_rpc_server_) return nullptr;
     // 响应流：rpc_id = 收到的请求 id（不注册 pending——响应无后续等待）。
-    return new fly::PeerStreamWriter(peer_rpc_server_.get(), conn_id, rpc_id,
+    return new fly::PeerStreamWriter(peer_rpc_server_, conn_id, rpc_id,
                                      /*direction=*/1,
                                      CompressorFactory::type_from_name(compression),
                                      level);
@@ -3054,20 +3035,72 @@ std::pair<uint8_t, CMString> WorkerAgent::peer_stream_call_wait(uint64_t rpc_id,
         return {static_cast<uint8_t>(PeerRpcStatus::FAILED), "timeout"};
     }
     const uint8_t status = result->status_.load(std::memory_order_acquire);
+    if (result->reader_) {
+        // compat：流式响应收齐为 payload（零容忍失败以异常传播）。
+        return {status, result->reader_->read_all()};
+    }
     return {status, std::move(result->payload_)};
 }
 
-std::pair<uint8_t, PeerStreamBufferPtr> WorkerAgent::peer_stream_call_wait_buf(
+std::pair<uint8_t, PeerStreamReaderPtr> WorkerAgent::peer_stream_response_reader(
     uint64_t rpc_id, int timeout_ms) {
-    // 复用 call_wait 的等待/超时语义；payload move 进读端（免 bytes 拷贝）。
-    auto [status, payload] = peer_stream_call_wait(rpc_id, timeout_ms);
-    return {status, std::make_shared<PeerStreamBuffer>(std::move(payload))};
+    // 等待语义同 call_wait；流式响应 START 即完成 pending（reader 承载）
+    // ——调用方 pickle.load(reader) 拉动边收边反序列化。失败/超时 reader
+    // 为 null（原因在 payload/status）。
+    auto wait_duration = (timeout_ms > 0)
+        ? std::chrono::milliseconds(timeout_ms)
+        : std::chrono::hours(24);
+    auto result = pending_peer_rpcs_.wait_for(rpc_id, wait_duration,
+        [](const CMSharedPtr<PendingPeerRpc>& p) {
+            return p->status_.load(std::memory_order_acquire)
+                   != static_cast<uint8_t>(PeerRpcStatus::PENDING);
+        });
+    pending_peer_rpcs_.erase(rpc_id);
+    if (!result) {
+        return {static_cast<uint8_t>(PeerRpcStatus::FAILED), nullptr};
+    }
+    const uint8_t status = result->status_.load(std::memory_order_acquire);
+    if (result->reader_) {
+        return {status, std::move(result->reader_)};
+    }
+    // 单帧/失败响应：payload 包成单块 reader（统一读协议；to_bytes 可读 reason）。
+    return {status, std::make_shared<PeerStreamReader>(std::move(result->payload_))};
 }
 
-PeerStreamBufferPtr WorkerAgent::peer_rpc_recv_request_stream(int timeout_ms) {
-    auto req = peer_rpc_recv_request(timeout_ms);
-    if (req.conn_id_ == 0) return nullptr;   // 超时（语义同 recv_request）
-    return std::make_shared<PeerStreamBuffer>(std::move(req.payload_));
+WorkerAgent::PeerRpcRequest WorkerAgent::peer_rpc_recv_request_stream(
+    int timeout_ms) {
+    // 与 recv_request 同队列同等待；差异仅在不做 compat read_all 收齐——
+    // reader 原样交付（业务 pickle.load 拉动 = 流式反序列化）。
+    std::unique_lock<std::mutex> lk(peer_rpc_incoming_mutex_);
+    auto check_error = [this]() -> bool {
+        if (!peer_rpc_error_conns_.empty()) {
+            peer_rpc_error_conns_.clear();
+            return true;
+        }
+        return false;
+    };
+    if (check_error()) {
+        throw std::runtime_error("peer connection error: remote disconnected");
+    }
+    if (peer_rpc_incoming_.empty()) {
+        auto pred = [this] {
+            return !peer_rpc_incoming_.empty() || !peer_rpc_error_conns_.empty();
+        };
+        if (timeout_ms <= 0) {
+            peer_rpc_incoming_cv_.wait(lk, pred);
+        } else {
+            peer_rpc_incoming_cv_.wait_for(lk, std::chrono::milliseconds(timeout_ms), pred);
+        }
+    }
+    if (check_error()) {
+        throw std::runtime_error("peer connection error: remote disconnected");
+    }
+    if (peer_rpc_incoming_.empty()) {
+        return {0, 0, 0, "", nullptr};   // 超时
+    }
+    auto req = std::move(peer_rpc_incoming_.front());
+    peer_rpc_incoming_.erase(peer_rpc_incoming_.begin());
+    return req;
 }
 
 WorkerAgent::PeerRpcRequest WorkerAgent::peer_rpc_recv_request(int timeout_ms) {
@@ -3098,10 +3131,16 @@ WorkerAgent::PeerRpcRequest WorkerAgent::peer_rpc_recv_request(int timeout_ms) {
         throw std::runtime_error("peer connection error: remote disconnected");
     }
     if (peer_rpc_incoming_.empty()) {
-        return {0, 0, 0, ""};  // 超时（仅在 timeout_ms > 0 时可能）
+        return {0, 0, 0, "", nullptr};  // 超时（仅在 timeout_ms > 0 时可能）
     }
     auto req = std::move(peer_rpc_incoming_.front());
     peer_rpc_incoming_.erase(peer_rpc_incoming_.begin());
+    if (req.reader_) {
+        // compat：流式请求收齐为 payload（旧 bytes 消费路径；read_all 至
+        // END 对账通过的 EOF——零容忍失败以异常传播）。
+        req.payload_ = req.reader_->read_all();
+        req.reader_.reset();
+    }
     return req;
 }
 

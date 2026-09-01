@@ -61,11 +61,13 @@ payload 的绝对吞吐受同机自环 CPU 竞争限制，跨机部署为设计�
 → 块记录直发（每块一帧，帧头+块头 41B 合并小发送，payload (ptr,len) 直入
 连接发送队列，epoll 排空——无累积缓冲拷贝）。
 
-接收端（read_object L3 同构，两段并行）：网络线程（server_loop 收窄）跨帧
-块重组 → CRC 验证 → 压缩态记录入有界队列（64MB，满则阻塞——背压经 TCP 反压
-发送方）∥ 消费线程（每流一根）出队 → 解压直写分段明文（32MB 段，resize 一次
-落位零 realloc）→ END 对账 → 段序拼接（恰好一次全量）→ handler 按值 move 交付。
-原实现单线程串行（解压时 wire 只靠内核缓冲吸收）+ plain 增长 realloc。
+接收端（read_object L3 同构，消费拉动）：网络线程（server_loop 收窄）跨帧
+块重组 → 压缩态记录入有界队列（64MB，满则阻塞——背压经 TCP 反压发送方）；
+消费 = 业务读端 `pickle.load(reader)` 拉动 ReadPipeline（CrcVerifyStage →
+DecompressStage，与 read_object 共享 Stage）——解压与网络接收重叠、明文块
+即拉即用，无消费线程、无分段缓冲、无拼接（首版消费线程+分段+拼接已演进
+删除：拼接即「收齐才反序列化」的性能硬伤）。EOF 仅在 END 对账通过后放行。
+原实现单线程串行（解压时 wire 只能靠内核缓冲吸收）+ plain 增长 realloc。
 
 性能（自环全管线口径，3 轮中位，增强前→后；f64=solver 解向量画像）：
 

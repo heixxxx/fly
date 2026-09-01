@@ -102,6 +102,7 @@ enum class PeerRpcStatus : uint8_t {
 struct PendingPeerRpc {
     std::atomic<uint8_t> status_{static_cast<uint8_t>(PeerRpcStatus::PENDING)};
     CMString payload_;                    // 响应 payload（ok）或失败 reason（error）
+    PeerStreamReaderPtr reader_;          // 流式响应：START 即承载（payload 空）
     uint64_t conn_id_ = 0;               // 发请求的 P2P 连接（disconnect 时按此匹配 fail）
 };
 
@@ -255,12 +256,13 @@ public:
 
     // 服务端：阻塞等待下一个请求（Python while 循环用）。
     // 返回 {conn_id, rpc_id, src_worker_id, payload}；超时返回 rpc_id=0。
-    struct PeerRpcRequest { uint64_t conn_id_; uint64_t rpc_id_; uint64_t src_worker_id_; CMString payload_; };
+    // reader_ 非空 = 流式请求（START 即派发——payload 空，业务经 reader
+    // 拉动边收边反序列化）；单帧请求 payload 就绪、reader 空。
+    struct PeerRpcRequest { uint64_t conn_id_; uint64_t rpc_id_; uint64_t src_worker_id_; CMString payload_; PeerStreamReaderPtr reader_; };
     PeerRpcRequest peer_rpc_recv_request(int timeout_ms = 30000);
-    // 读端变体：payload 包成 PeerStreamBuffer 交付（pickle.load 直用，
-    // readinto 免中间 bytes 全量拷贝）。超时/断连语义同 recv_request
-    // （超时返回 null；断连抛异常）。
-    PeerStreamBufferPtr peer_rpc_recv_request_stream(int timeout_ms = 30000);
+    // 流式变体：不做 compat read_all 收齐，原样交出 reader（超时返回
+    // reader 为空的条目语义由导出层转 None；断连抛异常）。
+    PeerRpcRequest peer_rpc_recv_request_stream(int timeout_ms = 30000);
 
     // ── 流式大 payload（流插件化 2026-08-31）──
     // file-like 写端：pickle.dump(obj, writer) 直入压缩管线逐块组帧发送。
@@ -275,9 +277,9 @@ public:
                                                  int level = -1);
     // 等待流式请求的响应（peer_stream_writer 已注册 pending，rpc_id 由
     // writer.rpc_id() 取得）。GIL 释放语义由 export 层保证。
-    // 读端变体：响应 payload 包成 PeerStreamBuffer（status 非 OK 时 buffer
-    // 承载 reason 文本——to_bytes 可读，不丢诊断信息）。
-    std::pair<uint8_t, PeerStreamBufferPtr> peer_stream_call_wait_buf(
+    // 流式响应读端：OK → reader 承载（pickle.load 拉动）；失败/超时 →
+    // reader 为 null、配 payload/状态（与 call_wait 同语义）。
+    std::pair<uint8_t, PeerStreamReaderPtr> peer_stream_response_reader(
         uint64_t rpc_id, int timeout_ms);
     std::pair<uint8_t, CMString> peer_stream_call_wait(uint64_t rpc_id,
                                                        int timeout_ms = 30000);
@@ -452,7 +454,7 @@ private:
 
     // 独立业务端口（PeerRpcServer）。worker 间轻量 RPC，与 reactor/DataServer 隔离。
     // start() 时由业务代码（Python PeerChannelGroup）按需启动，stop() 时关闭。
-    CMUniquePtr<PeerRpcServer> peer_rpc_server_;
+    CMSharedPtr<PeerRpcServer> peer_rpc_server_;   // 共享：在途 writer/读端保活
     int32_t peer_rpc_port_ = 0;
 
     // 服务端收到的请求队列（PeerRpcServer 回调入队，peer_rpc_recv_request 出队）。

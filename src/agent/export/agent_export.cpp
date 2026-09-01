@@ -28,22 +28,22 @@ std::pair<uint8_t, fly::CMString> peer_call_gil_released(
 // ── 流式大 payload 导出辅助（参数含逗号，不能内联进两参宏）──
 
 // 读端变体的 GIL 释放包装（timeout_ms=0 无限等待同 peer_call）。
-fly::PeerStreamBufferPtr peer_recv_request_stream_gil_released(
+fly::WorkerAgent::PeerRpcRequest peer_recv_request_stream_gil_released(
         fly::WorkerAgent& self, int timeout_ms) {
-    fly::PeerStreamBufferPtr buf;
+    fly::WorkerAgent::PeerRpcRequest req;
     {
         fly_export::gil_scoped_release release;
-        buf = self.peer_rpc_recv_request_stream(timeout_ms);
+        req = self.peer_rpc_recv_request_stream(timeout_ms);
     }
-    return buf;
+    return req;
 }
 
-std::pair<uint8_t, fly::PeerStreamBufferPtr> peer_call_wait_buf_gil_released(
+std::pair<uint8_t, fly::PeerStreamReaderPtr> peer_response_reader_gil_released(
         fly::WorkerAgent& self, uint64_t rpc_id, int timeout_ms) {
-    std::pair<uint8_t, fly::PeerStreamBufferPtr> result;
+    std::pair<uint8_t, fly::PeerStreamReaderPtr> result;
     {
         fly_export::gil_scoped_release release;
-        result = self.peer_stream_call_wait_buf(rpc_id, timeout_ms);
+        result = self.peer_stream_response_reader(rpc_id, timeout_ms);
     }
     return result;
 }
@@ -211,32 +211,60 @@ FLY_EXPORT_CLASS(fly::PeerStreamWriter, "EXPeerStreamWriter")
         return fly_export::make_tuple(wait, comp, snd);
     });
 
-// 接收 payload 读端：pickle.load(buf) 直用（readinto 直填 pickle 工作缓冲
-// ——免中间 Python bytes 的全量拷贝；to_bytes 兜底读错误 reason 文本）。
-FLY_EXPORT_CLASS(fly::PeerStreamBuffer, "EXPeerStreamBuffer")
-    FLY_EXPORT_DEF("read", [](fly::PeerStreamBuffer& b, int64_t n) -> fly_export::bytes {
-        const CMString out =
-            (n < 0) ? b.read(b.size() - b.pos()) : b.read(static_cast<size_t>(n));
-        return fly_export::bytes(out.data(), out.size());
-    })
-    FLY_EXPORT_DEF("readline", [](fly::PeerStreamBuffer& b) -> fly_export::bytes {
-        const CMString out = b.readline();
-        return fly_export::bytes(out.data(), out.size());
-    })
-    FLY_EXPORT_DEF("readinto", [](fly::PeerStreamBuffer& b, fly_export::object obj) -> int64_t {
-        PyObject* ba = obj.ptr();
-        if (!PyByteArray_Check(ba)) {
-            throw fly_export::type_error("readinto() expects a bytearray");
+// 接收 payload 流式读端：pickle.load(reader) 直用（消费拉动解压，边收边
+// 反序列化——readinto 直填 pickle 工作缓冲，免中间 Python bytes 全量拷贝；
+// to_bytes=read_all 兜底 compat 收齐语义；读操作阻塞拉取——释放 GIL）。
+// 读端失败（对账失配/断连/截断）直接抛 Python 异常——零容忍不静默半交付。
+FLY_EXPORT_CLASS(fly::PeerStreamReader, "EXPeerStreamReader")
+    // 读操作阻塞拉取（等对端数据）——阻塞段释放 GIL；**返回值（Python
+    // 对象构造）必须在 GIL 持有下完成**——release 作用域只包住 C++ 调用。
+    FLY_EXPORT_DEF("read", [](fly::PeerStreamReader& r, int64_t n) -> fly_export::bytes {
+        CMString out;
+        {
+            fly_export::gil_scoped_release release;
+            out = (n < 0) ? r.read_all() : r.read(static_cast<size_t>(n));
         }
-        const Py_ssize_t cap = PyByteArray_Size(ba);
-        char* dst = PyByteArray_AsString(ba);
-        return static_cast<int64_t>(b.readinto(dst, static_cast<size_t>(cap)));
+        return fly_export::bytes(out.data(), out.size());
     })
-    FLY_EXPORT_DEF("seek", [](fly::PeerStreamBuffer& b, int64_t p) { b.seek(static_cast<size_t>(p)); })
-    FLY_EXPORT_READONLY_PROPERTY("size", &fly::PeerStreamBuffer::size)
-    FLY_EXPORT_READONLY_PROPERTY("pos", &fly::PeerStreamBuffer::pos)
-    FLY_EXPORT_DEF("to_bytes", [](const fly::PeerStreamBuffer& b) -> fly_export::bytes {
-        return fly_export::bytes(b.data().data(), b.data().size());
+    FLY_EXPORT_DEF("readline", [](fly::PeerStreamReader& r) -> fly_export::bytes {
+        CMString out;
+        {
+            fly_export::gil_scoped_release release;
+            out = r.readline();
+        }
+        return fly_export::bytes(out.data(), out.size());
+    })
+    FLY_EXPORT_DEF("readinto", [](fly::PeerStreamReader& r, fly_export::object obj) -> int64_t {
+        // CPython Unpickler（readinto 快路径）传 memoryview 切片、业务可传
+        // bytearray——一律走缓冲协议取可写视图，不限定具体类型。
+        Py_buffer view;
+        if (PyObject_GetBuffer(obj.ptr(), &view, PyBUF_WRITABLE) != 0) {
+            throw fly_export::python_error();
+        }
+        size_t got;
+        {
+            fly_export::gil_scoped_release release;
+            got = r.readinto(static_cast<char*>(view.buf),
+                             static_cast<size_t>(view.len));
+        }
+        PyBuffer_Release(&view);
+        return static_cast<int64_t>(got);
+    })
+    FLY_EXPORT_DEF("read_all", [](fly::PeerStreamReader& r) -> fly_export::bytes {
+        CMString out;
+        {
+            fly_export::gil_scoped_release release;
+            out = r.read_all();
+        }
+        return fly_export::bytes(out.data(), out.size());
+    })
+    FLY_EXPORT_DEF("to_bytes", [](fly::PeerStreamReader& r) -> fly_export::bytes {
+        CMString out;
+        {
+            fly_export::gil_scoped_release release;
+            out = r.read_all();
+        }
+        return fly_export::bytes(out.data(), out.size());
     });
 
 FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
@@ -603,12 +631,13 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
                                                   int timeout_ms) {
         return peer_stream_call_wait_export(self, rpc_id, timeout_ms);
     })
-    FLY_EXPORT_METHOD("peer_stream_call_wait_buf", [](fly::WorkerAgent& self,
-                                                        uint64_t rpc_id,
-                                                        int timeout_ms) {
-        // 读端变体：响应 payload 包成 PeerStreamBuffer（status 非 OK 时
-        // buffer 承载 reason 文本——to_bytes 可读，不丢诊断信息）。
-        auto result = peer_call_wait_buf_gil_released(self, rpc_id, timeout_ms);
+    FLY_EXPORT_METHOD("peer_stream_response_reader", [](fly::WorkerAgent& self,
+                                                          uint64_t rpc_id,
+                                                          int timeout_ms) {
+        // 流式响应读端：OK → reader（pickle.load 拉动）；失败/超时 →
+        // reader None + status（原因经 call_wait 不再可得——失败以单块
+        // reader 承载，to_bytes 可读不丢诊断信息）。
+        auto result = peer_response_reader_gil_released(self, rpc_id, timeout_ms);
         return fly_export::make_tuple(result.first, result.second);
     })
     FLY_EXPORT_METHOD("peer_rpc_respond_failure", [](fly::WorkerAgent& self,
@@ -642,10 +671,12 @@ FLY_EXPORT_CLASS(fly::WorkerAgent, "EXAgentWorker")
     FLY_EXPORT_METHOD("peer_rpc_recv_request_stream", [](fly::WorkerAgent& self,
                                                             int timeout_ms)
                                                             -> fly_export::object {
-        // 读端变体：payload 包成 PeerStreamBuffer（pickle.load 直用）。
-        auto buf = peer_recv_request_stream_gil_released(self, timeout_ms);
-        if (!buf) return fly_export::none();   // 超时（语义同 recv_request）
-        return fly_export::cast(buf);
+        // 流式变体：START 即返回（payload 空，reader 承载）——业务
+        // pickle.load(reader) 拉动边收边反序列化。超时 → None。
+        auto req = peer_recv_request_stream_gil_released(self, timeout_ms);
+        if (req.conn_id_ == 0) return fly_export::none();
+        return fly_export::make_tuple(req.conn_id_, req.rpc_id_, req.src_worker_id_,
+                                      req.reader_);
     })
     FLY_EXPORT_METHOD("peer_rpc_notify_failure", [](fly::WorkerAgent& self,
                                                         uint64_t conn_id,

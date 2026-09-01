@@ -49,11 +49,9 @@ uint64_t PeerRpcServer::connect_peer(const CMString& host, int port,
     for (int attempt = 0; attempt <= retries; attempt++) {
         uint64_t conn_id = transport_->connect(host, port);
         if (conn_id > 0) {
-            DBG("PeerRpcServer connected to {}:{} conn_id={} (attempt {})", host, port, conn_id, attempt);
             return conn_id;
         }
         if (attempt < retries) {
-            DBG("PeerRpcServer connect attempt {} failed, retrying in {}ms", attempt, retry_interval_ms);
             std::this_thread::sleep_for(std::chrono::milliseconds(retry_interval_ms));
         }
     }
@@ -75,7 +73,6 @@ void PeerRpcServer::server_loop() {
         for (auto& event : events) {
             switch (event.type_) {
                 case TransportEventType::CONNECT: {
-                    DBG("PeerRpcServer CONNECT conn_id={}", event.conn_id_);
                     std::lock_guard<std::mutex> lk(buf_mutex_);
                     recv_bufs_[event.conn_id_];
                     break;
@@ -89,6 +86,7 @@ void PeerRpcServer::server_loop() {
                         uint64_t src_worker_id;  // REQUEST only
                         uint8_t status;          // RESPONSE only
                         CMString payload;
+                        PeerStreamReaderPtr reader;   // 流式请求/响应 START 承载
                     };
                     CMVector<DecodedMsg> decoded_msgs;
                     // 流式零容忍（坏帧/对账失配）：锁内只置位，锁外统一
@@ -132,26 +130,31 @@ void PeerRpcServer::server_loop() {
                                         stream_fatal = true;
                                         break;
                                     }
-                                    // 防御：同连接旧流未收尾（协议错位）——收尾后丢弃。
+                                    // 防御：同连接旧流未收尾（协议错位）——判死丢弃。
                                     auto ex = streams_.find(event.conn_id_);
                                     if (ex != streams_.end()) {
-                                        finish_stream_consumer(*ex->second, false);
+                                        {
+                                            std::lock_guard<std::mutex> lk(ex->second->qx);
+                                            ex->second->failed = true;
+                                            ex->second->q_cv.notify_all();
+                                        }
                                         streams_.erase(ex);
                                     }
-                                    auto s = std::make_shared<StreamRx>();
-                                    s->rpc_id = m.rpc_id_;
-                                    s->direction = m.direction_;
-                                    s->compression_type = m.compression_type_;
-                                    // 解压器按流声明构造（NONE 为空 = raw 直通）。
-                                    s->decompressor =
-                                        m.compression_type_ == static_cast<uint8_t>(CompressionType::NONE)
-                                            ? nullptr
-                                            : CompressorFactory::create(
-                                                  static_cast<CompressionType>(m.compression_type_));
-                                    s->active = true;
-                                    // 消费线程（两段并行）：解压与网络接收重叠。
-                                    s->consumer = std::thread([this, s] { stream_consume(s); });
-                                    streams_[event.conn_id_] = std::move(s);
+                                    auto st = std::make_shared<PeerStreamRxState>();
+                                    st->rpc_id = m.rpc_id_;
+                                    st->direction = m.direction_;
+                                    st->active = true;
+                                    auto reader = std::make_shared<PeerStreamReader>(
+                                        st, static_cast<CompressionType>(m.compression_type_));
+                                    streams_[event.conn_id_] = st;
+                                    DBG("[R-START] conn={} rpc={} dir={}",
+                                        event.conn_id_, m.rpc_id_, m.direction_);
+                                    // START 即派发（payload 空，reader 承载）——
+                                    // 业务 pickle.load 拉动边收边反序列化。
+                                    decoded_msgs.push_back(
+                                        {m.direction_ == 0, m.rpc_id_, 0,
+                                         static_cast<uint8_t>(PeerRpcWireStatus::OK),
+                                         CMString(), reader});
                                     continue;
                                 }
                                 if (raw_type == static_cast<uint8_t>(MessageType::PEER_STREAM_END)) {
@@ -170,22 +173,21 @@ void PeerRpcServer::server_loop() {
                                         break;
                                     }
                                     auto sptr = sit->second;
-                                    // 等消费线程排空退出（eof 后余量有界，等待
-                                    // 有界），join 后对账交付。
-                                    finish_stream_consumer(*sptr, true);
-                                    if (verify_stream_end(*sptr, m.total_uncompressed_,
-                                                          m.chunk_count_, m.consumed_)) {
-                                        decoded_msgs.push_back(
-                                            {sptr->direction == 0, m.rpc_id_, 0,
-                                             static_cast<uint8_t>(PeerRpcWireStatus::OK),
-                                             assemble_plain(*sptr)});
-                                    } else {
-                                        ERR("[PEER-STREAM] stream verify failed, closing conn");
-                                        // 零容忍：坏流不交付，断连唤醒调用方。
-                                        stream_fatal = true;
-                                        break;
+                                    // 落对账三要素并唤醒读端——EOF 放行由读端
+                                    // 自校验（零容忍：失配时读操作抛错，不交付）。
+                                    {
+                                        std::lock_guard<std::mutex> lk(sptr->qx);
+                                        sptr->end_total = m.total_uncompressed_;
+                                        sptr->end_chunks = m.chunk_count_;
+                                        sptr->end_consumed = m.consumed_;
+                                        sptr->end_seen = true;
+                                        DBG("[R-END] conn={} rpc={} end_consumed={}",
+                                            event.conn_id_, m.rpc_id_, m.consumed_);
+                                        sptr->q_cv.notify_all();
                                     }
-                                    streams_.erase(sit);
+                                    streams_.erase(sit);   // 读端持共享状态，生命周期独立
+                                    continue;   // END 帧已消费——不跌落单帧解析（否则
+                                                // 吞掉紧随的下一响应 START，帧失步）
                                 }
                                 if (raw_type == static_cast<uint8_t>(MessageType::DATA_CHUNK)) {
                                     auto sit = streams_.find(event.conn_id_);
@@ -217,7 +219,6 @@ void PeerRpcServer::server_loop() {
                                         stream_fatal = true;
                                         break;
                                     }
-                                    sit->second->consumed += raw_len;
                                     buf.erase(0, 8 + total_len);
                                     continue;
                                 }
@@ -234,13 +235,17 @@ void PeerRpcServer::server_loop() {
                             CMString payload(buf.data() + fixed, payload_len);
                             buf.erase(0, fixed + payload_len);
                             decoded_msgs.push_back({is_req, rpc_id, src, status,
-                                                    std::move(payload)});
+                                                    std::move(payload), nullptr});
                         }
                     }
                     if (stream_fatal) {
                         auto fit = streams_.find(event.conn_id_);
                         if (fit != streams_.end()) {
-                            finish_stream_consumer(*fit->second, false);
+                            {
+                                std::lock_guard<std::mutex> lk(fit->second->qx);
+                                fit->second->failed = true;
+                                fit->second->q_cv.notify_all();
+                            }
                             streams_.erase(fit);
                         }
                         close_connection(event.conn_id_);  // 锁外：DISCONNECT 兜底唤醒调用方
@@ -252,7 +257,8 @@ void PeerRpcServer::server_loop() {
                             if (request_handler_) {
                                 auto resp = request_handler_(event.conn_id_, dm.rpc_id,
                                                               dm.src_worker_id,
-                                                              std::move(dm.payload));
+                                                              std::move(dm.payload),
+                                                              dm.reader);
                                 if (resp.has_value()) {
                                     send_response(event.conn_id_, dm.rpc_id,
                                                    static_cast<uint8_t>(PeerRpcWireStatus::OK),
@@ -266,20 +272,23 @@ void PeerRpcServer::server_loop() {
                                 handle_bye(event.conn_id_);
                             } else if (response_handler_) {
                                 response_handler_(event.conn_id_, dm.rpc_id, dm.status,
-                                                  std::move(dm.payload));
+                                                  std::move(dm.payload), dm.reader);
                             }
                         }
                     }
                     break;
                 }
                 case TransportEventType::DISCONNECT: {
-                    DBG("PeerRpcServer connection closed conn_id={}", event.conn_id_);
                     {
                         std::lock_guard<std::mutex> lk(buf_mutex_);
                         recv_bufs_.erase(event.conn_id_);
                         auto sit = streams_.find(event.conn_id_);
                         if (sit != streams_.end()) {
-                            finish_stream_consumer(*sit->second, false);
+                            {
+                                std::lock_guard<std::mutex> lk(sit->second->qx);
+                                sit->second->failed = true;
+                                sit->second->q_cv.notify_all();
+                            }
                             streams_.erase(sit);
                         }
                     }
@@ -344,7 +353,8 @@ bool PeerRpcServer::send_stream_payload(uint64_t conn_id, uint64_t rpc_id,
     if (!transport_) return false;
     // 整 payload 装配为流（无 writer 分步 API 时的便捷封装）：一次 write +
     // finish，压缩管线逐块产出，4MB 切帧发送。
-    PeerStreamWriter w(this, conn_id, rpc_id, direction, comp, level);
+    PeerStreamWriter w(shared_from_this(), conn_id, rpc_id, direction, comp,
+                       level);
     if (!w.ok()) return false;
     w.write(payload.data(), payload.size());
     if (!w.finish()) return false;
@@ -355,9 +365,10 @@ bool PeerRpcServer::send_stream_payload(uint64_t conn_id, uint64_t rpc_id,
 
 // ── PeerStreamWriter：明文 → 压缩管线 → 4MB DATA_CHUNK 切帧 ──
 
-PeerStreamWriter::PeerStreamWriter(PeerRpcServer* srv, uint64_t conn_id,
-                                   uint64_t rpc_id, uint8_t direction,
-                                   CompressionType comp, int level)
+PeerStreamWriter::PeerStreamWriter(CMSharedPtr<PeerRpcServer> srv,
+                                   uint64_t conn_id, uint64_t rpc_id,
+                                   uint8_t direction, CompressionType comp,
+                                   int level)
     : srv_(srv), conn_id_(conn_id), rpc_id_(rpc_id) {
     if (!srv_ || conn_id_ == 0) {
         ERR("[PEER-STREAM-W] invalid construction");
@@ -365,6 +376,7 @@ PeerStreamWriter::PeerStreamWriter(PeerRpcServer* srv, uint64_t conn_id,
     }
     started_ = srv_->send_stream_start(conn_id_, rpc_id_, direction,
                                        static_cast<uint8_t>(comp));
+    DBG("[W-START] conn={} rpc={} dir={}", conn_id_, rpc_id_, direction);
     if (!started_) {
         ERR("[PEER-STREAM-W] send START failed conn={}", conn_id_);
         return;
@@ -484,6 +496,7 @@ void PeerStreamWriter::compress_loop(CompressionType comp, int level) {
     if (send_ok_) {
         ok_ = srv_->send_stream_end(conn_id_, rpc_id_, total_uncompressed_,
                                     chunk_count_, frame_off_);
+        DBG("[W-END] conn={} rpc={} ok={}", conn_id_, rpc_id_, ok_);
         if (!ok_) ERR("[PEER-STREAM-W] send END failed conn={}", conn_id_);
     }
 }
@@ -582,10 +595,12 @@ void PeerRpcServer::close_connection(uint64_t conn_id) {
     recv_bufs_.erase(conn_id);
 }
 
-bool PeerRpcServer::feed_stream_bytes(StreamRx& s, const char* data, size_t n) {
-    // 网络线程职责：跨帧块重组 → CRC 验证（压缩态，写入时刻锚点）→
-    // 完整记录入有界队列；解压在消费线程（两段并行）。队列满则阻塞——
-    // 背压经 TCP 反压发送方（消费速率决定接收速率，语义同 L3）。
+bool PeerRpcServer::feed_stream_bytes(PeerStreamRxState& s, const char* data,
+                                      size_t n) {
+    // 网络线程职责：跨帧块重组 → 完整记录入有界队列（CRC 验证在业务读端
+    // ReadPipeline 的 CrcVerifyStage——与 read_object 同款 Stage 分工）。
+    // 队列满则阻塞——背压经 TCP 反压发送方（业务消费节奏即接收节奏）。
+    // 读端废弃（abandoned）后弃记录但保持帧同步至 END。
     while (n > 0) {
         if (!s.have_hdr) {
             const size_t need = 16 - s.block_acc.size();
@@ -594,9 +609,7 @@ bool PeerRpcServer::feed_stream_bytes(StreamRx& s, const char* data, size_t n) {
             data += take;
             n -= take;
             if (s.block_acc.size() < 16) return true;  // 头未齐，等更多
-            std::memcpy(&s.p_unc, s.block_acc.data(), 4);
             std::memcpy(&s.p_comp, s.block_acc.data() + 4, 4);
-            std::memcpy(&s.p_crc, s.block_acc.data() + 8, 8);
             s.have_hdr = true;
         }
         // 数据阶段：凑齐 p_comp 字节压缩数据。
@@ -608,21 +621,18 @@ bool PeerRpcServer::feed_stream_bytes(StreamRx& s, const char* data, size_t n) {
         n -= take;
         if (s.block_acc.size() - 16 < s.p_comp) return true;  // 数据未齐
 
-        // 完整记录：CRC 验证（压缩态）后整记录入队。
-        const char* payload = s.block_acc.data() + 16;
-        if (fly::data_checksum(payload, s.p_comp) != s.p_crc) {
-            ERR("[PEER-STREAM] block CRC mismatch");
-            std::lock_guard<std::mutex> lk(s.qx);
-            s.failed = true;
-            s.q_cv.notify_all();
-            return false;
-        }
         std::unique_lock<std::mutex> lk(s.qx);
         s.q_cv.wait(lk, [&] {
-            return s.failed || s.eof ||
-                   s.q_bytes + s.block_acc.size() <= kRxQueueBytes;
+            return s.failed || s.abandoned ||
+                   s.q_bytes + s.block_acc.size() <= PeerStreamRxState::kQueueBytes;
         });
-        if (s.failed || s.eof) return false;   // 流已死/END 后余包（协议错位）
+        if (s.failed) return false;   // 零容忍：终态失败，断连收尾
+        if (s.abandoned) {            // 无消费者：弃记录，帧同步继续至 END
+            lk.unlock();
+            s.block_acc.clear();
+            s.have_hdr = false;
+            continue;
+        }
         s.q_bytes += s.block_acc.size();
         s.blocks.push_back(std::move(s.block_acc));
         s.q_cv.notify_one();
@@ -630,89 +640,6 @@ bool PeerRpcServer::feed_stream_bytes(StreamRx& s, const char* data, size_t n) {
         s.have_hdr = false;
     }
     return true;
-}
-
-void PeerRpcServer::stream_consume(CMSharedPtr<StreamRx> s) {
-    for (;;) {
-        CMString rec;
-        {
-            std::unique_lock<std::mutex> lk(s->qx);
-            s->q_cv.wait(lk, [&] {
-                return !s->blocks.empty() || s->eof || s->failed;
-            });
-            if (s->blocks.empty()) break;   // eof/failed 且排空
-            rec = std::move(s->blocks.front());
-            s->blocks.pop_front();
-            s->q_bytes -= rec.size();
-        }
-        s->q_cv.notify_one();   // 唤醒等空间的网络线程
-        if (s->failed) break;   // 已判死：丢弃剩余
-        uint32_t unc = 0, comp = 0;
-        std::memcpy(&unc, rec.data(), 4);
-        std::memcpy(&comp, rec.data() + 4, 4);
-        bool ok = true;
-        if (unc > 0) {
-            // 分段保证：unc ≤ 4MB ≤ 段容量，新段必装得下。resize 一次性
-            // 落位（memset 与网络接收并行，无逐块 realloc/追加拷贝）。
-            if (s->segs.empty() || kRxSegBytes - s->segs.back().fill < unc) {
-                StreamRx::Seg seg;
-                seg.buf.resize(kRxSegBytes);
-                s->segs.push_back(std::move(seg));
-            }
-            StreamRx::Seg& seg = s->segs.back();
-            char* dst = &seg.buf[0] + seg.fill;
-            if (comp != unc) {
-                const int32_t written = s->decompressor
-                    ? s->decompressor->decompress_to({rec.data() + 16, comp},
-                                                     dst, unc)
-                    : -1;
-                ok = written >= 0 && static_cast<uint32_t>(written) == unc;
-                if (!ok) ERR("[PEER-STREAM] decompress failed");
-            } else {
-                std::memcpy(dst, rec.data() + 16, comp);   // raw 直通
-            }
-            if (ok) {
-                seg.fill += unc;
-                s->plain_total += unc;
-            }
-        }
-        s->chunks++;
-        if (!ok) {
-            std::lock_guard<std::mutex> lk(s->qx);
-            s->failed = true;
-            break;
-        }
-    }
-    std::lock_guard<std::mutex> lk(s->qx);
-    s->done = true;
-    s->q_cv.notify_all();
-}
-
-void PeerRpcServer::finish_stream_consumer(StreamRx& s, bool graceful) {
-    {
-        std::unique_lock<std::mutex> lk(s.qx);
-        if (graceful) s.eof = true; else s.failed = true;
-        s.q_cv.notify_all();
-        s.q_cv.wait(lk, [&] { return s.done; });
-    }
-    if (s.consumer.joinable()) s.consumer.join();
-}
-
-CMString PeerRpcServer::assemble_plain(const StreamRx& s) {
-    // 交付拷贝：恰好一次全量（reserve 单次分配 + 段序 append）。
-    CMString out;
-    out.reserve(s.plain_total);
-    for (const auto& seg : s.segs) {
-        out.append(seg.buf.data(), seg.fill);
-    }
-    return out;
-}
-
-bool PeerRpcServer::verify_stream_end(const StreamRx& s, uint64_t total,
-                                      uint32_t chunks, uint64_t consumed) {
-    // 三重对账：明文总量 / 块数 / 消费压缩字节数。
-    return !s.failed && s.plain_total == total &&
-           s.chunks == chunks && s.consumed == consumed;
 }
 
 void PeerRpcServer::handle_bye(uint64_t conn_id) {
@@ -739,7 +666,6 @@ void PeerRpcServer::handle_bye(uint64_t conn_id) {
         bye_cv_.notify_all();
     } else {
         // 服务端收到客户端 BYE：回 BYE_ACK + close + 标记正常关闭。
-        DBG("PeerRpcServer BYE received conn_id={}, sending BYE_ACK + close", conn_id);
         send_response(conn_id, 0,
                        static_cast<uint8_t>(PeerRpcWireStatus::BYE), "");  // BYE_ACK
         {
@@ -757,7 +683,6 @@ bool PeerRpcServer::send_bye(uint64_t conn_id) {
         std::lock_guard<std::mutex> lk(bye_mutex_);
         bye_pending_conns_.insert(conn_id);
     }
-    DBG("PeerRpcServer sending BYE conn_id={}", conn_id);
     send_response(conn_id, 0,
                    static_cast<uint8_t>(PeerRpcWireStatus::BYE), "");
 
@@ -780,7 +705,6 @@ bool PeerRpcServer::send_bye(uint64_t conn_id) {
     }
 
     if (got_ack) {
-        DBG("PeerRpcServer BYE_ACK received conn_id={}, closing", conn_id);
     } else {
         WARN("PeerRpcServer BYE timeout (no ACK), force close conn_id={}", conn_id);
     }
@@ -826,8 +750,12 @@ void PeerRpcServer::stop() {
     }
     {
         std::lock_guard<std::mutex> lk(buf_mutex_);
-        for (auto& [conn_id, s] : streams_) {
-            finish_stream_consumer(*s, false);
+        for (auto& [conn_id, st] : streams_) {
+            {
+                std::lock_guard<std::mutex> lk(st->qx);
+                st->failed = true;
+                st->q_cv.notify_all();
+            }
         }
         streams_.clear();
         recv_bufs_.clear();
@@ -843,7 +771,150 @@ void PeerRpcServer::stop() {
     request_handler_ = nullptr;
     response_handler_ = nullptr;
     disconnect_handler_ = nullptr;
-    DBG("PeerRpcServer stopped");
+}
+
+// ── PeerStreamReader ──
+
+PeerStreamReader::PeerStreamReader(CMSharedPtr<PeerStreamRxState> rx,
+                                   CompressionType comp)
+    : rx_(std::move(rx)) {
+    // 拉取源 = 压缩态记录队列（业务线程阻塞拉取——消费节奏即反序列化
+    // 节奏；EOF(-1) 仅在 end_seen 后给出，对账在读端 EOF 处自校验）。
+    auto pull = [this, rx = rx_](char* dst, size_t n) -> int64_t {
+        size_t done = 0;
+        while (done < n) {
+            if (cur_pos_ >= cur_block_.size()) {
+                std::unique_lock<std::mutex> lk(rx->qx);
+                rx->q_cv.wait(lk, [&] {
+                    return !rx->blocks.empty() || rx->end_seen ||
+                           rx->failed || rx->abandoned;
+                });
+                if (rx->blocks.empty()) {
+                    if (done > 0) return static_cast<int64_t>(done);
+                    return -1;   // 终结（EOF/失败）——读端 EOF 处区分
+                }
+                cur_block_ = std::move(rx->blocks.front());
+                rx->blocks.pop_front();
+                rx->q_bytes -= cur_block_.size();
+                rx->consumed += cur_block_.size();
+                cur_pos_ = 0;
+                rx->q_cv.notify_one();
+            }
+            const size_t take = std::min(n - done, cur_block_.size() - cur_pos_);
+            std::memcpy(dst + done, cur_block_.data() + cur_pos_, take);
+            cur_pos_ += take;
+            done += take;
+        }
+        return static_cast<int64_t>(done);
+    };
+    pipeline_ = CMUniquePtr<fly::ReadPipeline>(
+        new fly::ReadPipeline(fly::make_block_read_pipeline(comp, pull)));
+}
+
+PeerStreamReader::PeerStreamReader(CMString data)
+    : cur_block_(std::move(data)), total_hint_(cur_block_.size()) {}
+
+PeerStreamReader::~PeerStreamReader() {
+    // 流未读完即析构：置 abandoned——网络线程弃投递（不再因无消费者阻塞）。
+    if (rx_) {
+        std::lock_guard<std::mutex> lk(rx_->qx);
+        rx_->abandoned = true;
+        rx_->q_cv.notify_all();
+    }
+}
+
+bool PeerStreamReader::advance_block() {
+    if (eof_ || !pipeline_ || pipeline_->failed()) return false;
+    fly::BlockData b;
+    if (!pipeline_->next_block(b)) {
+        // 终结：EOF 仅在 END 对账通过后放行（总量/块数/消费字节三重校验）；
+        // 失败传播至网络线程（feed 停止）与后续读（持续抛错）。
+        if (!pipeline_->failed() && rx_->end_seen &&
+            plain_total_ == rx_->end_total && chunks_ == rx_->end_chunks &&
+            rx_->consumed == rx_->end_consumed) {
+            eof_ = true;
+            return false;
+        }
+        ERR("[PEER-STREAM] reader verify failed: this={} state={} end_seen={} "
+            "abandoned={} pl_failed={} total={}/{} chunks={}/{} consumed={}/{}",
+            (void*)this, (void*)rx_.get(), rx_->end_seen, rx_->abandoned,
+            pipeline_->failed(), plain_total_, rx_->end_total, chunks_,
+            rx_->end_chunks, rx_->consumed, rx_->end_consumed);
+        std::lock_guard<std::mutex> lk(rx_->qx);
+        rx_->failed = true;
+        return false;
+    }
+    cur_block_.assign(b.plain.data(), b.plain.size());
+    cur_pos_ = 0;
+    plain_total_ += b.plain.size();
+    chunks_++;
+    return true;
+}
+
+size_t PeerStreamReader::read_span(char* dst, size_t n) {
+    size_t done = 0;
+    while (done < n) {
+        if (cur_pos_ >= cur_block_.size() && !advance_block()) break;
+        const size_t take = std::min(n - done, cur_block_.size() - cur_pos_);
+        std::memcpy(dst + done, cur_block_.data() + cur_pos_, take);
+        cur_pos_ += take;
+        done += take;
+    }
+    return done;
+}
+
+void PeerStreamReader::check_failed() const {
+    if (rx_ && rx_->failed && !eof_) {
+        throw std::runtime_error("peer stream verify failed");
+    }
+}
+
+CMString PeerStreamReader::read(size_t n) {
+    // 单块：总长已知（读穿即止）；流式：总长未知，读到 EOF 为止。
+    const size_t take = rx_ ? n : std::min(n, total_hint_ - cur_pos_);
+    if (take == 0) {
+        check_failed();
+        return CMString();
+    }
+    CMString out;
+    out.resize(take);
+    const size_t got = read_span(&out[0], take);
+    if (got != take) out.resize(got);
+    check_failed();
+    return out;
+}
+
+CMString PeerStreamReader::readline() {
+    CMString out;
+    char ch;
+    while (read_span(&ch, 1) == 1) {
+        out.append(&ch, 1);
+        if (ch == '\n') break;
+    }
+    check_failed();
+    return out;
+}
+
+size_t PeerStreamReader::readinto(char* dst, size_t n) {
+    const size_t done = read_span(dst, n);
+    check_failed();
+    return done;
+}
+
+CMString PeerStreamReader::read_all() {
+    CMString out;
+    if (total_hint_) out.reserve(total_hint_);
+    char buf[65536];
+    while (true) {
+        const size_t got = readinto(buf, sizeof(buf));
+        if (got == 0) break;
+        out.append(buf, got);
+    }
+    return out;
+}
+
+bool PeerStreamReader::failed() const {
+    return rx_ && rx_->failed && !eof_;
 }
 
 }  // namespace fly

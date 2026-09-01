@@ -3,6 +3,40 @@
 ---
 ---
 
+## 2026-09-01 (3): PeerRpc 真流式读端——业务拉动解压，消除「收齐才反序列化」
+
+交付端演进（用户裁定：RPC 接收端必须与 read_object 管线同构，IO 端点
+Stage 之外全共享组件）：`PeerStreamReader` 流式读端（单块/流式双形态），
+START 即派发请求、响应 START 即完成 pending——业务 `pickle.load(reader)`
+拉动 `make_block_read_pipeline`（CrcVerifyStage → DecompressStage 与
+read_object 共享）边收边解压边反序列化；EOF 仅在 END 三重对账通过后放行，
+失败/断连读时抛错零容忍。网络线程瘦身为重组入队（CRC 移入读端 Stage）；
+删除首版消费线程/分段缓冲/END 拼接（「收齐才反序列化」硬伤）。
+**修复三处实现 bug**：① `peer_rpc_recv_request_stream` 误装 compat
+read_all 收齐（reader 永为 None）；② 读端 Python 绑定在 GIL 释放态构造
+bytes 返回值（SIGSEGV）；③ readinto 只认 bytearray——CPython Unpickler
+readinto 快路径传 memoryview 被拒（大响应必失败），改缓冲协议可写视图。
+rpc-stream-pipeline.md §2/§4 同步。
+
+**修复第五 bug（check 挂死，全量 QA 发现）**：响应 END 处理后缺
+`continue`——跌落单帧解析，把紧随的下一响应 START 帧当垃圾 RESPONSE 吞掉
+并破坏帧同步 → pending 永不完成 → check 的 `fut.result()`（timeout=0
+无限等，绕过 30s 收集死线）永久挂起 → 整组超时级联。一行修复（END 帧已
+消费，与 START/DATA 分支对齐补 continue）。
+
+**修复第四 bug（solver restart 场景 SIGSEGV）**：`PeerStreamWriter::srv_`
+裸指针 + `stop_peer_rpc()` 内 `peer_rpc_server_.reset()`——check 任务失败
+清理销毁 server 时，线程池在途 writer 的 `srv_` 悬垂，`transport_send_raw`
+读已释放对象（违反「非必须场景禁止裸指针」准则）。修复：PeerRpcServer 改
+共享所有权（`enable_shared_from_this` + WorkerAgent/writer 均持
+shared_ptr），stop 后在途 writer 发送优雅失败（ok=false）不悬垂。
+
+**验证**：peer_rpc_server 单测 14/14（流式消费/对账失败抛错/多块混合）、
+最小复现（NOT_READY 重试 + 同 conn 双流）3 轮全对、qa/solver 16/16（含
+restart SIGSEGV 场景）、sd9/r30 交替 soak 46+ 轮零失败。
+
+---
+
 ## 2026-09-01 (2): PeerRpc 端到端同构增强——发送端块直发 + 接收端两段并行 + 读端 API
 
 四步落地（用户裁定方案 v2：两套管线除 IO 端点 Stage 外共享组件）：

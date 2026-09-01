@@ -930,3 +930,21 @@ def solve_like_task(db_up, db, key):
   `inputs_`/`vars_` 路径快照在目录迁移后由 restart 按运行时 uid 索引统一
   解析替换（见 §15.4）；无 uid 的旧格式（旧 `__fly_db__` 3 段）记录不可
   迁移恢复——restart 文件级拒绝，用 flow 重放兜底。
+
+## 16. 所有权与指针规范
+
+- **非必须场景禁止使用裸指针**（2026-09-01，solver restart 场景 SIGSEGV
+  裁定）：跨对象/跨线程生命周期的对象引用一律用智能指针
+  （`CMSharedPtr` 共享 / `CMUniquePtr` 独占）表达所有权；裸指针仅限两类
+  场景——① 非拥有观察（调用栈内短生命周期借用，被引对象由调用方保证
+  存活）；② Python 绑定边界的所有权转移（nanobind 接管 `new` 产物，
+  析构路径须自证安全，如 dtor-join 线程）。
+- **判据**：一个 `reset()`/析构能让另一处持有的指针悬垂，即属"必须
+  场景"，必须改共享/独占所有权（案例：`PeerStreamWriter::srv_` 裸指针 +
+  `stop_peer_rpc()` 内 `peer_rpc_server_.reset()`——任务失败清理销毁
+  server 时，线程池在途 writer 悬垂，`transport_send_raw` 读已释放对象
+  SIGSEGV；修复为 `PeerRpcServer` 共享所有权 + `enable_shared_from_this`，
+  stop 后在途 writer 发送优雅失败）。
+- **绑定层返回值同理**：Python 对象构造必须在 GIL 持有下完成——阻塞
+  调用（等对端数据）的 GIL 释放作用域只包住 C++ 调用段，返回值构造放在
+  作用域外（案例：流式读端在 GIL 释放态构造 bytes 返回值 SIGSEGV）。

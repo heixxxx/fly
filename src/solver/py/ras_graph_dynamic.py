@@ -304,13 +304,13 @@ def _serve_loop(agent, solver_key, shared_key, sd):
 
     while has_cache(shared_key) and not get_cache(shared_key)["stop"]:
         try:
-            conn_id, rpc_id, src, payload = agent.peer_rpc_recv_request(0)
+            conn_id, rpc_id, src, reader = agent.peer_rpc_recv_request_stream(0)
         except Exception as e:
             if has_cache(shared_key) and not get_cache(shared_key)["stop"]:
                 ERR(f"[RASG DYN SVC] sd={sd} recv failed: {e}")
             break   # server 被关（正常收尾或强杀）
         try:
-            data = pickle.loads(payload)
+            data = pickle.load(reader)   # 拉动解压：消费与网络接收重叠
             shared = get_cache(shared_key)
             if data["action"] == "done":
                 agent.peer_rpc_respond(conn_id, rpc_id,
@@ -604,7 +604,7 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
                 rid = w.rpc_id()
                 pickle.dump(req, w)
                 w.finish()
-                return agent.peer_stream_call_wait(rid, 0)
+                return agent.peer_stream_response_reader(rid, 0)
 
             while len(contributions) < len(alive):
                 # 一圈并发发起全部待收成员（各成员独立连接 + rpc_id 隔离）；
@@ -615,7 +615,7 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
                 for sd, fut in zip(todo, futures):
                     status, resp = fut.result()
                     if status == _RPC_OK:
-                        data = pickle.loads(resp)
+                        data = pickle.load(resp)   # 拉动解压（同上）
                         contributions[sd] = deserialize_array(data["x"])
                         conv_flags[sd] = bool(data.get("conv"))
                     elif status == _RPC_NOT_READY:

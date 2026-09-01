@@ -42,6 +42,44 @@ private:
     std::condition_variable cv_;
 };
 
+// 泛型值交接 latch（handler 存 / 测试线程取——server_loop 不得内联阻塞）。
+template <typename T>
+struct Latch {
+    void store(T v) {
+        std::lock_guard<std::mutex> lk(m_);
+        v_ = std::move(v);
+        cv_.notify_all();
+    }
+    T wait(int timeout_s = 5) {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait_for(lk, std::chrono::seconds(timeout_s),
+                     [this] { return v_.has_value(); });
+        return v_.value_or(T{});
+    }
+    std::optional<T> v_;
+    std::mutex m_;
+    std::condition_variable cv_;
+};
+
+// 流式读端交接：handler（server_loop 线程）只存 reader 立即返回；
+// 消费在测试线程——handler 内联消费会阻塞 server_loop 喂数据（死锁）。
+struct ReaderLatch {
+    void store(PeerStreamReaderPtr r) {
+        std::lock_guard<std::mutex> lk(m_);
+        reader_ = std::move(r);
+        cv_.notify_all();
+    }
+    PeerStreamReaderPtr wait(int timeout_s = 5) {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait_for(lk, std::chrono::seconds(timeout_s),
+                     [this] { return reader_ != nullptr; });
+        return reader_;
+    }
+    PeerStreamReaderPtr reader_;
+    std::mutex m_;
+    std::condition_variable cv_;
+};
+
 struct DisconnectLatch {
     void notify(uint64_t conn_id) {
         std::lock_guard<std::mutex> lk(m_);
@@ -94,48 +132,40 @@ protected:
         return conn;
     }
 
-    std::unique_ptr<PeerRpcServer> server = std::make_unique<PeerRpcServer>();
-    std::unique_ptr<PeerRpcServer> client = std::make_unique<PeerRpcServer>();
+    std::shared_ptr<PeerRpcServer> server = std::make_shared<PeerRpcServer>();
+    std::shared_ptr<PeerRpcServer> client = std::make_shared<PeerRpcServer>();
 };
 
-TEST(PeerStreamBufferTest, FileProtocolReadsAcrossCursor) {
-    // read/readline/readinto/seek 全协议：读端游标推进、readinto 直填外部
-    // 缓冲（pickle.load 路径）、readline 按行截断、seek 重定位。
+TEST(PeerStreamReaderTest, SingleBlockFileProtocolReadsAcrossCursor) {
+    // 单块读端全协议：游标推进 / readinto 直填 / readline 按行 / EOF 收敛。
     // 长度构造：嵌 NUL 的二进制数据不能走 strlen ctor（会在 \x00 截断）。
     const char* kRaw = "hello world\nsecond line\n\xff\x00" "binary";
-    PeerStreamBuffer b(CMString(kRaw, 32));
-    EXPECT_EQ(b.size(), 32u);
+    PeerStreamReader r(CMString(kRaw, 32));
 
-    CMString r = b.read(5);
-    EXPECT_EQ(r, "hello");
-    EXPECT_EQ(b.pos(), 5u);
-
-    CMString line = b.readline();   // 从 pos=5 读到行尾
-    EXPECT_EQ(line, " world\n");
-    EXPECT_EQ(b.pos(), 12u);
+    EXPECT_EQ(r.read(5), CMString("hello"));
+    EXPECT_EQ(r.readline(), CMString(" world\n"));
 
     char dst[8] = {};
-    EXPECT_EQ(b.readinto(dst, 8), 8u);   // "second l"
+    EXPECT_EQ(r.readinto(dst, 8), 8u);   // "second l"
     EXPECT_EQ(CMString(dst, 8), "second l");
 
-    b.seek(0);
-    EXPECT_EQ(b.read(100), CMString(kRaw, 32));
-    // 末尾读穿：take 收敛到剩余量。
-    EXPECT_EQ(b.read(10), CMString());
+    // 新读端重读（单块无游标回退 API——顺序消费语义）。
+    PeerStreamReader r2(CMString(kRaw, 32));
+    EXPECT_EQ(r2.read(100), CMString(kRaw, 32));
+    EXPECT_EQ(r2.read(10), CMString());   // EOF 收敛
+    EXPECT_FALSE(r.failed());
 }
 
-TEST(PeerStreamBufferTest, MovePreservesData) {
-    // move 构造：交付链 move 语义（零拷贝包装）下数据完整。
-    CMString src = MakePeerTestData();
-    PeerStreamBuffer b(std::move(src));
-    EXPECT_EQ(b.size(), 11u);
-    EXPECT_EQ(b.read(11), CMString("payload-abc"));
+TEST(PeerStreamReaderTest, SingleBlockMovePreservesData) {
+    PeerStreamReader r(CMString("payload-abc"));
+    EXPECT_EQ(r.read_all(), CMString("payload-abc"));
+    EXPECT_FALSE(r.failed());
 }
 
 TEST_F(PeerRpcServerTest, ListenAllocatesPortAndStopCleansUp) {
     EXPECT_FALSE(server->is_running());
     int port = server->listen("127.0.0.1", 0,
-                              [](uint64_t, uint64_t, uint64_t, const CMString&) {
+                              [](uint64_t, uint64_t, uint64_t, const CMString&, const PeerStreamReaderPtr&) {
                                   return std::optional<CMString>{};
                               });
     EXPECT_GT(port, 0);
@@ -149,14 +179,11 @@ TEST_F(PeerRpcServerTest, StreamRequestLargePayloadDeliveredIntact) {
     // handler 收到完整明文。
     const std::string payload = MakePseudoRandomBytes(10 * 1024 * 1024);
     const uint64_t expect_crc = data_checksum(payload.data(), payload.size());
-    std::atomic<bool> got{false};
-    std::atomic<uint64_t> got_crc{0};
-    std::atomic<size_t> got_size{0};
+    ReaderLatch rlatch;
     uint64_t conn = setup_connected_pair(
-        [&](uint64_t, uint64_t, uint64_t, const CMString& p) {
-            got_size = p.size();
-            got_crc = data_checksum(p.data(), p.size());
-            got = true;
+        [&](uint64_t, uint64_t, uint64_t, const CMString&,
+            const PeerStreamReaderPtr& reader) {
+            rlatch.store(reader);   // START 即派发：handler 只交接读端
             return std::nullopt;
         });
     ASSERT_NE(conn, 0u);
@@ -168,12 +195,13 @@ TEST_F(PeerRpcServerTest, StreamRequestLargePayloadDeliveredIntact) {
     ASSERT_TRUE(w.finish());
     EXPECT_EQ(w.total_uncompressed(), payload.size());
 
-    for (int i = 0; i < 100 && !got; i++) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    EXPECT_TRUE(got.load());
-    EXPECT_EQ(got_size.load(), payload.size());
-    EXPECT_EQ(got_crc.load(), expect_crc);
+    // 测试线程消费读端（pickle.load 同款拉动语义；EOF = END 对账通过）
+    auto reader = rlatch.wait();
+    ASSERT_TRUE(reader != nullptr);
+    const CMString data = reader->read_all();
+    EXPECT_EQ(data.size(), payload.size());
+    EXPECT_EQ(data_checksum(data.data(), data.size()), expect_crc);
+    EXPECT_FALSE(reader->failed());
 }
 
 TEST_F(PeerRpcServerTest, StreamMultiBlockMixedCompressibilityIntact) {
@@ -199,14 +227,11 @@ TEST_F(PeerRpcServerTest, StreamMultiBlockMixedCompressibilityIntact) {
         }
     }
     const uint64_t expect_crc = data_checksum(payload.data(), payload.size());
-    std::atomic<bool> got{false};
-    std::atomic<uint64_t> got_crc{0};
-    std::atomic<size_t> got_size{0};
+    ReaderLatch rlatch;
     uint64_t conn = setup_connected_pair(
-        [&](uint64_t, uint64_t, uint64_t, const CMString& p) {
-            got_size = p.size();
-            got_crc = data_checksum(p.data(), p.size());
-            got = true;
+        [&](uint64_t, uint64_t, uint64_t, const CMString&,
+            const PeerStreamReaderPtr& reader) {
+            rlatch.store(reader);
             return std::nullopt;
         });
     ASSERT_NE(conn, 0u);
@@ -221,12 +246,19 @@ TEST_F(PeerRpcServerTest, StreamMultiBlockMixedCompressibilityIntact) {
     ASSERT_TRUE(w.finish());
     EXPECT_EQ(w.total_uncompressed(), payload.size());
 
-    for (int i = 0; i < 100 && !got; i++) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto reader = rlatch.wait();
+    ASSERT_TRUE(reader != nullptr);
+    // 小增量逐段读（跨 chunk/跨块游标路径）。
+    CMString data;
+    char buf[4096];
+    while (true) {
+        const size_t got = reader->readinto(buf, sizeof(buf));
+        if (got == 0) break;
+        data.append(buf, got);
     }
-    EXPECT_TRUE(got.load());
-    EXPECT_EQ(got_size.load(), payload.size());
-    EXPECT_EQ(got_crc.load(), expect_crc);
+    EXPECT_EQ(data.size(), payload.size());
+    EXPECT_EQ(data_checksum(data.data(), data.size()), expect_crc);
+    EXPECT_FALSE(reader->failed());
 }
 
 TEST_F(PeerRpcServerTest, StreamResponseRoundtripSmallPayload) {
@@ -234,19 +266,26 @@ TEST_F(PeerRpcServerTest, StreamResponseRoundtripSmallPayload) {
     // START/DATA/END 三帧合并语义下小消息同样走管线（无阈值裁定）。
     const std::string payload = MakePseudoRandomBytes(16);
     CallbackLatch latch;
-    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, uint8_t status,
-                                          const CMString& payload_in) {
+    ReaderLatch rlatch;
+    client->set_response_handler([&latch, &rlatch](uint64_t, uint64_t rpc_id, uint8_t status,
+                                          const CMString& payload_in,
+                                          const PeerStreamReaderPtr& reader) {
+        if (reader) rlatch.store(reader);   // 流式响应：reader 承载
         latch.notify(rpc_id, status, payload_in);
     });
 
+    // echo 作业交接：请求 reader 由 handler 存下（server_loop 线程不得
+    // 内联消费——会阻塞喂数据），测试线程消费后回响应。
+    struct EchoJob {
+        uint64_t c = 0;
+        uint64_t rid = 0;
+        PeerStreamReaderPtr reader;
+    };
+    auto job_latch = std::make_shared<Latch<EchoJob>>();
     uint64_t conn = setup_connected_pair(
-        [&](uint64_t c, uint64_t rid, uint64_t, const CMString& p) {
-            EXPECT_EQ(p, payload);
-            uint64_t total = 0;
-            uint32_t chunks = 0;
-            EXPECT_TRUE(server->send_stream_payload(c, rid, /*direction=*/1, p,
-                                                    CompressionType::LZ4, -1,
-                                                    total, chunks));
+        [&](uint64_t c, uint64_t rid, uint64_t, const CMString&,
+            const PeerStreamReaderPtr& reader) {
+            job_latch->store({c, rid, reader});
             return std::nullopt;
         });
     ASSERT_NE(conn, 0u);
@@ -257,10 +296,22 @@ TEST_F(PeerRpcServerTest, StreamResponseRoundtripSmallPayload) {
     w.write(payload.data(), payload.size());
     ASSERT_TRUE(w.finish());
 
+    // 测试线程：消费请求读端（拉满 = END 对账通过）→ 回流式响应。
+    const EchoJob job = job_latch->wait();
+    ASSERT_TRUE(job.reader != nullptr);
+    EXPECT_EQ(job.reader->read_all(), payload);   // 流式请求经读端到达
+    uint64_t total = 0;
+    uint32_t chunks = 0;
+    EXPECT_TRUE(server->send_stream_payload(job.c, job.rid, /*direction=*/1,
+                                            payload, CompressionType::LZ4, -1,
+                                            total, chunks));
+
     ASSERT_TRUE(latch.wait()) << "streamed response should arrive";
     EXPECT_EQ(latch.rpc_id_, 77u);
     EXPECT_EQ(latch.status_, static_cast<uint8_t>(PeerRpcWireStatus::OK));
-    EXPECT_EQ(latch.payload_, payload);
+    auto reader = rlatch.wait();
+    ASSERT_TRUE(reader != nullptr);
+    EXPECT_EQ(reader->read_all(), payload);
 }
 
 TEST_F(PeerRpcServerTest, StreamTruncatedVerifyClosesConnection) {
@@ -270,10 +321,13 @@ TEST_F(PeerRpcServerTest, StreamTruncatedVerifyClosesConnection) {
     // 返回（TearDown stop）之后到达，handler 不得引用栈上对象。
     auto dlatch = std::make_shared<DisconnectLatch>();
     client->set_disconnect_handler([dlatch](uint64_t c) { dlatch->notify(c); });
+    ReaderLatch rlatch;
     std::atomic<bool> handler_fired{false};
     uint64_t conn = setup_connected_pair([&](uint64_t, uint64_t, uint64_t,
-                                             const CMString&) {
+                                             const CMString&,
+                                             const PeerStreamReaderPtr& reader) {
         handler_fired = true;
+        rlatch.store(reader);
         return std::nullopt;
     });
     ASSERT_NE(conn, 0u);
@@ -302,22 +356,31 @@ TEST_F(PeerRpcServerTest, StreamTruncatedVerifyClosesConnection) {
     for (int i = 0; i < 100 && !handler_fired; i++) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    EXPECT_FALSE(handler_fired.load()) << "对账失配不得把坏流当 payload 交付";
-    for (int i = 0; i < 100 && !dlatch->fired(); i++) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_TRUE(handler_fired.load()) << "START 即派发读端（零容忍移到读端）";
+    // 读端消费触发对账：谎报 total → 读操作抛错（零容忍不静默半交付）。
+    auto reader = rlatch.wait();
+    ASSERT_TRUE(reader != nullptr);
+    bool threw = false;
+    try {
+        reader->read_all();
+    } catch (const std::exception&) {
+        threw = true;
     }
-    EXPECT_TRUE(dlatch->fired()) << "零容忍：对账失配必须断连暴露";
+    EXPECT_TRUE(threw) << "对账失配必须以异常暴露";
+    EXPECT_TRUE(reader->failed());
+    // 终态语义：END 已处理后流已终结——读端抛错即零容忍暴露点
+    // （流中途判死时 feed 停止 → 断连路径同样成立）。
 }
 
 TEST_F(PeerRpcServerTest, EndToEndRoundTrip) {
     CallbackLatch latch;
     client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, uint8_t status,
-                                          const CMString& payload) {
+                                          const CMString& payload, const PeerStreamReaderPtr&) {
         latch.notify(rpc_id, status, payload);
     });
 
     uint64_t conn = setup_connected_pair(
-        [](uint64_t, uint64_t, uint64_t src, const CMString& payload) {
+        [](uint64_t, uint64_t, uint64_t src, const CMString& payload, const PeerStreamReaderPtr&) {
             EXPECT_EQ(src, 7u) << "src_worker_id must round-trip";
             return std::optional<CMString>{"echo:" + payload};
         });
@@ -335,13 +398,13 @@ TEST_F(PeerRpcServerTest, DeferredResponseViaSendResponse) {
     // handler 返回 nullopt（不立即回）→ 测试侧稍后 send_response → 客户端仍收到。
     CallbackLatch latch;
     client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, uint8_t status,
-                                          const CMString& payload) {
+                                          const CMString& payload, const PeerStreamReaderPtr&) {
         latch.notify(rpc_id, status, payload);
     });
 
     uint64_t server_conn = 0;
     uint64_t conn = setup_connected_pair(
-        [&server_conn](uint64_t conn_id, uint64_t rpc_id, uint64_t, const CMString&) {
+        [&server_conn](uint64_t conn_id, uint64_t rpc_id, uint64_t, const CMString&, const PeerStreamReaderPtr&) {
             server_conn = conn_id;   // 服务端视角的连接 id
             return std::optional<CMString>{};   // 不立即响应
         });
@@ -361,14 +424,14 @@ TEST_F(PeerRpcServerTest, DeferredResponseViaSendResponse) {
 TEST_F(PeerRpcServerTest, NotifyFailurePropagatesStatus) {
     CallbackLatch latch;
     client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, uint8_t status,
-                                          const CMString& payload) {
+                                          const CMString& payload, const PeerStreamReaderPtr&) {
         latch.notify(rpc_id, status, payload);
     });
 
     // 服务端 handler 直接 notify 失败。
     uint64_t server_conn = 0;
     uint64_t conn = setup_connected_pair(
-        [&server_conn, this](uint64_t conn_id, uint64_t, uint64_t, const CMString&) {
+        [&server_conn, this](uint64_t conn_id, uint64_t, uint64_t, const CMString&, const PeerStreamReaderPtr&) {
             server_conn = conn_id;
             server->notify_failure(conn_id, "check failed: solver diverged");
             return std::optional<CMString>{};
@@ -388,14 +451,16 @@ TEST_F(PeerRpcServerTest, SendByeGracefulCloseWithoutDisconnectCallback) {
     client->set_disconnect_handler([&latch](uint64_t conn_id) { latch.notify(conn_id); });
 
     uint64_t conn = setup_connected_pair(
-        [](uint64_t, uint64_t, uint64_t, const CMString&) {
+        [](uint64_t, uint64_t, uint64_t, const CMString&, const PeerStreamReaderPtr&) {
             return std::optional<CMString>{"ack"};
         });
     ASSERT_NE(conn, 0u);
     // 先做一次 RPC 往返（连接进入活跃状态，排除 recv_bufs_ 未建条目的干扰）。
     CallbackLatch rl;
     client->set_response_handler([&rl](uint64_t, uint64_t rpc_id, uint8_t st,
-                                       const CMString& pl) { rl.notify(rpc_id, st, pl); });
+                                       const CMString& pl, const PeerStreamReaderPtr& reader) {
+            rl.notify(rpc_id, st, pl);
+        });
     ASSERT_TRUE(client->send_request(conn, 1, 1, "warm"));
     ASSERT_TRUE(rl.wait());
 
@@ -418,14 +483,16 @@ TEST_F(PeerRpcServerTest, ByeAckDisconnectRaceDoesNotFireDisconnectHandler) {
     client->set_disconnect_handler([&latch](uint64_t conn_id) { latch.notify(conn_id); });
 
     uint64_t conn = setup_connected_pair(
-        [](uint64_t, uint64_t, uint64_t, const CMString&) {
+        [](uint64_t, uint64_t, uint64_t, const CMString&, const PeerStreamReaderPtr&) {
             return std::optional<CMString>{"ack"};
         });
     ASSERT_NE(conn, 0u);
     // 先做一次 RPC 往返（连接进入活跃状态）。
     CallbackLatch rl;
     client->set_response_handler([&rl](uint64_t, uint64_t rpc_id, uint8_t st,
-                                       const CMString& pl) { rl.notify(rpc_id, st, pl); });
+                                       const CMString& pl, const PeerStreamReaderPtr& reader) {
+            rl.notify(rpc_id, st, pl);
+        });
     ASSERT_TRUE(client->send_request(conn, 1, 1, "warm"));
     ASSERT_TRUE(rl.wait());
 
@@ -454,7 +521,7 @@ TEST_F(PeerRpcServerTest, StopClosesAllConnections) {
     client->set_disconnect_handler([&latch](uint64_t conn_id) { latch.notify(conn_id); });
 
     uint64_t conn = setup_connected_pair(
-        [](uint64_t, uint64_t, uint64_t, const CMString&) {
+        [](uint64_t, uint64_t, uint64_t, const CMString&, const PeerStreamReaderPtr&) {
             return std::optional<CMString>{"ack"};
         });
     ASSERT_NE(conn, 0u);
@@ -463,7 +530,9 @@ TEST_F(PeerRpcServerTest, StopClosesAllConnections) {
     //（recv_bufs_ 有条目者）——无数据往来的连接不在通知范围。
     CallbackLatch rl;
     client->set_response_handler([&rl](uint64_t, uint64_t rpc_id, uint8_t st,
-                                       const CMString& pl) { rl.notify(rpc_id, st, pl); });
+                                       const CMString& pl, const PeerStreamReaderPtr& reader) {
+            rl.notify(rpc_id, st, pl);
+        });
     ASSERT_TRUE(client->send_request(conn, 1, 1, "warm"));
     ASSERT_TRUE(rl.wait());
 

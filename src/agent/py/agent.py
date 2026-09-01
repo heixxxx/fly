@@ -1720,15 +1720,15 @@ class Worker(FlyAgent):
     def peer_rpc_recv_request(self, timeout_ms=30000):
         return self._agent.peer_rpc_recv_request(timeout_ms)
     def peer_rpc_recv_request_stream(self, timeout_ms=30000):
-        """读端变体：返回 (conn_id, rpc_id, src, PeerStreamBuffer)。
-        PeerStreamBuffer 支持 pickle.load(buf)（readinto 直填 pickle 工作
-        缓冲，免中间 bytes 全量拷贝）；超时返回 None；断连抛异常
-        （语义同 peer_rpc_recv_request）。"""
+        """流式变体：START 即返回 (conn_id, rpc_id, src, reader)——业务
+        pickle.load(reader) 拉动边收边反序列化（内存驻留 ≈ 有界队列+已建
+        对象）。超时返回 None；断连/对账失败在读时抛异常。"""
         return self._agent.peer_rpc_recv_request_stream(timeout_ms)
-    def peer_stream_call_wait_buf(self, rpc_id, timeout_ms=30000):
-        """读端变体：返回 (status, PeerStreamBuffer)。status 非 OK 时
-        buffer 承载 reason 文本（buf.to_bytes() 可读，不丢诊断信息）。"""
-        return self._agent.peer_stream_call_wait_buf(rpc_id, timeout_ms)
+    def peer_stream_response_reader(self, rpc_id, timeout_ms=30000):
+        """流式响应读端：返回 (status, reader)。OK → pickle.load(reader)
+        拉动；失败/超时 → reader None（失败时 reason 以单块 reader 承载，
+        to_bytes 可读不丢诊断信息）。"""
+        return self._agent.peer_stream_response_reader(rpc_id, timeout_ms)
     def peer_stream_writer(self, conn_id, compression="lz4", level=-1):
         return self._agent.peer_stream_writer(conn_id, compression, level)
     def peer_stream_respond_writer(self, conn_id, rpc_id, compression="lz4", level=-1):

@@ -123,6 +123,7 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 - **Python 跨模块 import**：一律 `from module import symbol`（包根 re-export），禁止 `from module.py.xxx import`。`_` 前缀仅限完全确定模块内部使用的符号；其余一律不加前缀允许 `import *` 导出。禁止 `__all__`。详见 CLAUDE.md §3「Python 包布局与 import 规范」。
 - **定位 runqa 失败**：读 `qa/logs/qa.log`（含失败详情 + fly.log 路径），不要反复重跑覆盖 fly.log 丢失现场。
 - **并发封装优先**：多线程共享容器用 `ConcurrentMap`/`ConcurrentUnorderedSet`，pending 状态机（登记→等完成→消费）用 `PendingRpcMap`，禁止新增裸 mutex+容器成员对；cv notify 必须持锁。详见 `docs/DEVELOPMENT_GUIDELINES.md` §13。
+- **非必须场景禁止裸指针**：跨对象/跨线程生命周期的引用一律用智能指针（`CMSharedPtr`/`CMUniquePtr`）；裸指针仅限非拥有观察与 Python 绑定所有权转移。案例：writer 持 server 裸指针 + `stop_peer_rpc()` reset → 在途发送 SIGSEGV。详见 `docs/DEVELOPMENT_GUIDELINES.md` §16。
 - **禁止使用 `/tmp` 存放中间任务数据** —— 中间文件放在项目 `.work/` 目录下，任务结束前 `rm -rf .work/` 清理。`/tmp` 无限累积会填满磁盘导致 WSL2 崩溃。
 
 ## Stability: Zero Tolerance
