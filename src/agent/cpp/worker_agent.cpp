@@ -2966,6 +2966,12 @@ std::pair<uint8_t, CMString> WorkerAgent::peer_rpc_call(uint64_t conn_id,
         return {static_cast<uint8_t>(PeerRpcStatus::FAILED), "timeout"};
     }
     uint8_t status = result->status_.load(std::memory_order_acquire);
+    if (result->reader_) {
+        // compat：流式响应收齐为 payload（与 peer_stream_call_wait 对齐）——
+        // 响应 START 即完成 pending 时 payload 为空、reader 承载，漏此分支
+        // 会把流式响应读成空 bytes。
+        return {status, result->reader_->read_all()};
+    }
     return {status, std::move(result->payload_)};
 }
 

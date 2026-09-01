@@ -82,11 +82,17 @@ def check_run(db, gen):
             if status != 1 or zlib.crc32(resp) != zlib.crc32(payload):
                 print(f"[PERF-DBG] single fail status={status} resp_len={len(resp)} "
                       f"payload_len={len(payload)}", flush=True)
+                if len(payload) <= 16 * 1024 * 1024:
+                    # 小档数据失配 = 协议/compat 回归，不是内存峰值旧缺陷——
+                    # 静默跳过曾把 peer_rpc_call 流式响应 compat 回归放行。
+                    raise RuntimeError(
+                        f"single-frame baseline corrupted at {len(payload)}B")
                 return None
             return t_total
+        except RuntimeError:
+            raise
         except Exception:
             return None
-
     def bench(tag, fn, payload, rounds=ROUNDS, warmup=WARMUP, get_write=False):
         times, wtimes = [], []
         for _ in range(warmup):
