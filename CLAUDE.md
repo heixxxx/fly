@@ -191,7 +191,7 @@ src/storage/
 | `fly_buffer_stream.h` | FlyBufferStreamBuf（streambuf→FlyBuffer）+ CountingStreamBuf |
 | `data_service.h/cpp` | 统一内存索引：local_idx + remote_idx + db_paths_ + worker_registry |
 | `data_server.h/cpp` | epoll + send_thread_pool 数据服务（响应远程 Worker 数据请求） |
-| `object_cache.h` | 两层 LRU 读缓存：low=压缩字节(FlyBufferPtr shared_ptr，零拷贝共享)，high=反序列化对象(std::any 持 CMSharedPtr<T>)。write_object complete_ 填 low，read_object_compressed 查/填 low，read_object<T> 查/填 high（cache="none" 时完全 bypass）；LFU 淘汰 + 30s 保护期 + 1.5× 硬限制 |
+| `object_cache.h` | 单层 LRU 读缓存（T4 2026-08-31 单层化）：仅 high 层——反序列化后的 typed C++ 对象（std::any 持 CMSharedPtr<T>，read_object<T> 的命中快路径）；压缩字节 low 池已删除，读恒走数据源。Python 侧 ReadCache 双池（主池 low/high 等级 + temp 池）负责解压 Python 对象缓存，两缓存按对象类型分工；LFU 淘汰 + 30s 保护期 + 1.5× 硬限制 |
 | `local_index.h/cpp` | 增量持久化索引，IdxOpType(ADD/REMOVE) 追加写入 |
 | `storage_manager.h/cpp` | Database 生命周期管理，单例 |
 | `py/database.py` | Python Database 类（write_object/read_object） |

@@ -159,7 +159,7 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 ## Module Map
 
 ```
-src/storage/    → Layer 1: Database, DataService, DataWriter, DataReader, CompressingStreamBuf, ObjectCache (两层读缓存), DataServer (epoll+线程池)
+src/storage/    → Layer 1: Database, DataService, DataWriter, DataReader, CompressingStreamBuf, ObjectCache (单层 LRU 读缓存), DataServer (epoll+线程池)
 src/network/    → Layer 2: Transport + EpollMultiplexer + ConnectionManager 抽象, Reactor, MessageProtocol + DataResponseProtocol (两段式), DataClientPool
                   (消息类型语义全表: docs/network/module.md「消息类型总表」)
 src/task/       → Layer 3: DependencyGraph, TaskScheduler, WorkerManager

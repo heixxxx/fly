@@ -81,13 +81,18 @@ enum class MessageType : uint8_t {
                                  //   shutdown_pending（主动关停指令先行）」把断连归类为正常退出
                                  //   （handle_worker_exit），区别于异常判死（handle_worker_death）。
     DATA_CHUNK = 63,             // server → client（数据面 L2）：分片数据帧
-                                 //   [4B small_len=12][u32 seq][u64 片CRC][raw 4MB 字节切片]，
-                                 //   纯字节切片（不解析磁盘块结构）——client 顺序重组后与磁盘
-                                 //   record 字节一致，DecompressingStreamBuf 直接消费。
-    CHUNK_RESEND = 64,           // client → server（数据面 L2）：请求重传某分片（每 seq 上限
-                                 //   一次；再坏升格对象级 CHECKSUM → 零容忍 §5）。
-    DATA_DIGEST = 65,            // server → client（数据面 L2）：分片流尾帧根摘要
-                                 //   （server 边发边算单遍；client 重组后整体校验）。
+                                 //   [4B small_len=12][u64 offset][u64 片CRC][raw 4MB 字节切片]，
+                                 //   byte-offset 寻址（A'3，ChunkFrameProtocol v2）；片 CRC
+                                 //   §14.8 起恒填 0（发送端未计算，完整性由块级 CRC 权威
+                                 //   校验）——纯字节切片（不解析磁盘块结构），client 按
+                                 //   offset 定位重组，与磁盘 record 字节一致。
+    CHUNK_RESEND = 64,           // client → server（数据面 L2）：请求重传某字节区间
+                                 //   （offset+length 寻址；每区间上限一次；再坏升格对象级
+                                 //   CHECKSUM → 零容忍 §5）。
+    DATA_DIGEST = 65,            // server → client（数据面 L2）：分片流尾帧。T5 裁定
+                                 //   root_crc_ 恒发 0 = 未计算（完整性由块级 CRC +
+                                 //   trailer 承担）；帧保留作流结束标记（NCS 侧），
+                                 //   DCP 侧非 0 照验（防御深度，见 data_client_pool）。
     PEER_STREAM_START = 66,      // worker → peer (业务RPC流式)：流开始声明（rpc_id + 方向 +
                                  //   压缩类型）；其后同连接为 DATA_CHUNK 帧流（块流字节），
                                  //   连接独占至 END。
@@ -297,8 +302,10 @@ struct ChunkResendMessage {
     FLY_SERIALIZE(header_, offset_, length_);
 };
 
-// server → client：分片流尾帧根摘要（server 边发边算单遍）。client 重组完
-// 整 record 后整体校验——乱序/调包/丢片的端到端兜底。
+// server → client：分片流尾帧。T5（2026-08-31）根摘要双侧消除：serve 恒发
+// root_crc_ = 0（未计算——L0 块级 CRC + trailer 已承担完整性，整 record 单遍
+// 根摘要是冗余遍历）；帧保留作流结束标记。NCS 侧对 0 跳过复核；DCP 侧非 0
+// 照验（防御深度，data_client_pool.cpp 注释）。
 struct DataDigestMessage {
     MessageHeader header_;
     uint64_t root_crc_ = 0;

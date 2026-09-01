@@ -1,5 +1,7 @@
 # 框架运行时性能热点分析（2026-08-31）
 
+> 本文章节号保留历史跳号（§4 之后直接 §6，原 §5 并入 §4），非缺漏。
+
 > 触发：用户要求确认框架自身（传输/存储/调度运行时，非 QA 框架开销）还剩
 > 哪些可提升点。方法：micro-bench 复测对照历史基线 + 自定义放大压测
 > （排除 Python 数据画像干扰）+ perf dwarf 调用链归因。
@@ -106,9 +108,12 @@ sendfile 循环（EAGAIN→poll POLLOUT）；resend 重传路径保持 pread+sen
 **写**：ser（pickle 150ms）+ comp（LZ4 store ~350ms）+ crc（70ms）≈ **0.6s**
 （主线程，perf 线程样本数自洽）；io 段独立口径（同盘纯写 1GB 文件）实测
 3552-3671ms（fsync 口径 7.5s，盘抖动时）。**db 全链路写 2157-3552ms ≈ 纯 io
-口径**——ser+comp 完全重叠在盘写窗口内，端到端 ≈ max(0.6, io) ✓。两轮测量
+口径**——ser+comp 完全重叠在盘写窗口内，端到端 ≈ max(0.6, io) ✓。如实说明：
+下界 2157ms 比对照项（io 3552-3671ms）小约 40%——纯写对照含 fsync + WBQ
+后台 flush，高估 db 写 io 段，故本对照属「io 下界证据」，非严格 max 验证
+（「ser+comp 完全重叠于盘写窗口」的判断不受影响）。两轮测量
 均未出现「端到端 ≈ ser+comp+io」的串行特征；首轮分析曾把 io 段误写为
-2.4s（端到端倒推值，循环论证），以本节独立口径为准。
+2.4s（端到端倒推值，循环论证，84c7806 已废弃），以本节独立口径为准。
 
 **读**：net ≈ 750ms（接收 1.4GB/s）；dec+unp ≈ 570ms（解压+块CRC ~340ms +
 unpickle 156ms——本地基准实测）。**比例 ≈ 1.3:1**。端到端 828-900ms ≈
@@ -120,7 +125,8 @@ max(750, 570) + 首尾块延迟 ✓；TX 时间线证明传输摊满全程（消
 三段全拆的理论收益 = max(两段分组) − max(三段独立)，仅当「压缩段成为最大段」
 时非零。实测段耗时排序：
 
-- 写：io(2.4s) > comp(0.35s) > ser(0.15s)——comp 恒小于 io 与 ser 之和，
+- 写：io(3.6s±盘抖动，§6.2 独立口径；原 2.4s 为废弃倒推值) > comp(0.35s) >
+  ser(0.15s)——comp 恒小于 io 与 ser 之和，
   拆出后 max 不变；
 - 读：net(750ms) > dec(340ms) > unp(156ms)——拆出 dec 后 max 仍 = net；
 - 压缩段是 C++（LZ4 ~2-4GB/s），结构性快于 Python 序列化（GIL）与盘/网 IO，
@@ -161,7 +167,7 @@ MessageHeader（message_id/timestamp）在 PeerRpc 链路无消费者，随裁�
 独立连接，C++ PendingRpcMap 按 rpc_id 天然支持并发 pending）——迭代延迟
 Σ成员 → max(成员)。
 
-**本机实测无差异**（703 vs 704ms/25 迭代）：迭代 11ms 中收集等待仅
+**本机实测无差异**（703 vs 704ms/25 迭代）：每迭代收集等待仅
 1-3ms，大头是任务链调度（~190ms/步）与 check 单线程编排。收益在跨机
 部署（RTT × 成员数）时显性，语义等价（NOT_READY 重试/超时判死/断连
 唤醒全保留），保留。
@@ -179,3 +185,12 @@ MessageHeader（message_id/timestamp）在 PeerRpc 链路无消费者，随裁�
 剩余 CPU 构成 = 内核拷贝（TCP 必然）+ 块 CRC（语义必需）+ 队列/解压/
 unpickle（设计固有）。框架 C++ 自身已无实现级缺陷型热点；下一个数量级
 提升需换传输机制（共享内存 / splice），属架构级选项另行裁定。
+
+---
+
+> **2026-09-02 注**：§2.1/§6.3 引用的 `DecompressingStreamBuf::refill`/
+> `flush_chunk`/`buffer_` 等符号已随 Stage 管线迁移（fd2bdcb
+> ——CompressingStreamBuf/DecompressingStreamBuf 换 fly::WritePipeline/
+> fly::ReadPipeline 实现：现 ReadPipeline::scratch_ 跨块复用、
+> WritePipeline::flush_block 出块），类名仍作薄壳保留；本文历史分析
+> 口径与结论不变。

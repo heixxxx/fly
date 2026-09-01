@@ -110,6 +110,16 @@ kickoff_task (inputs=[matrix, b_0], 任意 worker)
 连接方向为 check→compute 主动连接：成员"该连未连"的时序洞不存在——
 setup 失败走依赖连锁，运行期死亡由断连事件毫秒级传播。
 
+动态链 RPC 传输契约（2026-09-01 起）：双方向已切 PeerRpc 流式管线
+（89b37b5——check 请求经 peer_stream_writer、member 响应经
+peer_stream_respond_writer，压缩块流承载，大 ghost/解向量无整体缓冲）；
+f64 载荷（ghost 贡献/解向量近随机）显式 compression="none"（5c2f127——
+lz4 对近随机数据压缩必失败，85% 规则虽转 raw 直通，但尝试 CPU 在压缩
+线程=关键路径上，纯负优化）。NOT_READY 跨步旧参数校验（4d27164）：serve
+侧请求与 step_ctx 各带 t 严格比对，t 不匹配（check(t) 早于 compute(t)
+注入到达的竞态）同回 NOT_READY——check 下一收集圈重试，不再有用 t-1
+旧参数应答的窗口。
+
 master 只做 kickoff（含 worker 池：总数不足先补空属性进程，再 ensure_workers
 按 `db.worker_attr`（rasg:{uid}: 命名空间，见下）申请属性编队），编排全在
 worker task 链上——master 上永远不做阻塞式流程。
@@ -141,9 +151,12 @@ bin 还原的 requires 与重新 ensure 分配的属性自动一致。
 跨步对象带 t 维度（provenance：同名不同参数重写会被拒；全部写前 remove）：
 `__rasg__b_{t}`（temp，controller 逐步清理）、`__rasg__d_addr_{gen}_{sd}`
 （temp，setup 写 = 依赖锚 + 地址载体，cleanup 删）、sub_{sd}/coord/cfg/
-coarse_prebuilt（temp，kickoff 写全程存活）、`__rasg__sol_{t}`（**持久**，
-用户数据）、`iters_{t}`/`converged_{t}`（temp，controller 锚点）、
-`__rasg__dynamic_done`（temp，用户等待点）。
+（temp，kickoff 写全程存活）、`__rasg__coarse_static`/`__rasg__coarse_ac`
+（temp，coord 预构建 T3 双对象拆分，77ee15b：static 存只读数据 P 数组/
+N/Nc/b/stride，读走默认 low 等级；ac 存 splu 消费会原地重排的 Ac 数组，
+消费方显式 cache="none"——每次全新反序列化，无污染面）、
+`__rasg__sol_{t}`（**持久**，用户数据）、`iters_{t}`/`converged_{t}`
+（temp，controller 锚点）、`__rasg__dynamic_done`（temp，用户等待点）。
 
 进程缓存 key 两层：数据按 `matrix_ref`（LDLT/粗校正，同矩阵跨代跨 solve
 共享）；连接按 `gen`（listener 端口、channel 池，换代即重建隔离重投窗口）。

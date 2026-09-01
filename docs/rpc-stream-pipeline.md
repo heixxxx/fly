@@ -15,8 +15,11 @@
   事实）——trailer 的块表/固定域在顺序流场景无消费者，不进 RPC 管线。
 - 完整性：块级 CRC（写入时刻锚点，逐块自校验）+ END 三重对账。对账失配 /
   坏帧 = 零容忍 close 连接（调用方由 DISCONNECT 唤醒 fail）。
-- MessageHeader（message_id/timestamp）在 PeerRpc 链路无消费者，随"无版本
-  差异、不考虑兼容"裁定移除。
+- MessageHeader（message_id/timestamp）在 PeerRpc 链路无消费者：仅单帧
+  REQUEST/RESPONSE 侧改为 PeerRpcServer 专用直拼帧、不带 bitsery header
+  （c48011e，bitsery 结构体已删——wire status 语义见 PeerRpcWireStatus）；
+  PEER_STREAM_START/END 仍经 MessageProtocol::encode 完整 bitsery 序列化
+  （header_ 字段在列）。MessageHeader 结构体本身保留（其余消息在用）。
 
 ## 2. 接口
 
@@ -32,11 +35,14 @@ pickle.dump(resp_obj, w); w.finish()
 - 压缩算法/级别接口级指定（config 仅默认值）——业务可预估数据规模选择
   激进压缩；块级 85% 规则自动止损（压缩率不达标的块 raw 直通，
   comp==unc 隐式标记，零额外拷贝）。
-- 读端变体（payload 包成 PeerStreamBuffer，pickle.load 直用——readinto
-  直填 pickle 工作缓冲，免中间 Python bytes 全量拷贝；status 非 OK 时
-  buffer 承载 reason 文本，to_bytes 可读不丢诊断）：
+- 读端变体（PeerStreamReader，Python 导出名 EXPeerStreamReader——file 协议
+  read/readline/readinto 供 pickle.load 直用，readinto 直填 pickle 工作
+  缓冲，免中间 Python bytes 全量拷贝；status 非 OK 时失败 reason 以单块
+  reader 承载，to_bytes 可读不丢诊断）：
   `req = agent.peer_rpc_recv_request_stream(0)`（超时返回 None）→
-  `(conn_id, rpc_id, src, buf)`；`status, buf = agent.peer_stream_call_wait_buf(rid, 0)`。
+  `(conn_id, rpc_id, src, reader)`；流式响应等端
+  `status, reader = agent.peer_stream_response_reader(rid, 0)`
+  （OK → pickle.load(reader) 拉动边收边反序列化；失败/超时 → reader None）。
 - 状态码：PeerRpcStatus::OK = 1（内部枚举，PENDING=0）——调用方判 OK 用 1。
 
 ## 3. 基准（自环 1 worker，256KB-512MB，3 轮中位，随机数据）
@@ -81,8 +87,9 @@ DecompressStage，与 read_object 共享 Stage）——解压与网络接收重�
 总耗时 < 两端之和（重叠 20~40%，发送端三段流水成立）；512MB solver 画像
 8.7×。512MB 绝对值受 5.8GB 测试机内存压力影响，足内存复测预期更好。
 solver 动态链双方向已切流式（check 请求 _stream_call / member 响应
-respond_writer）。残余杠杆（未做）：交付 assemble 拷贝（1×payload）可经
-StreamRx 分段直供 PeerStreamBuffer 消除——待足内存数据支撑再立项。
+respond_writer）。原收齐交付路径的 assemble 整体拷贝（1×payload）已随
+e26f5d6 消除——读端改为业务 pickle.load 拉动 PeerStreamReader（边收边
+解压边反序列化，内存驻留 ≈ 有界队列 + 已建对象），不再有整体缓冲交付。
 
 ## 5. 稳定性
 

@@ -66,14 +66,21 @@
 
 ### 帧格式
 
-**通用消息**:
+**通用消息**（9B 帧前缀，`make_frame_header`/`parse_frame_header`，message_protocol.h）:
 ```
-┌──────────────┬──────────┬────────────────┐
-│ 4 bytes      │ 1 byte   │ N bytes        │
-│ total_len    │ msg_type │ payload        │
-│ (big-endian) │ (uint8)  │ (bitsery 编码) │
-└──────────────┴──────────┴────────────────┘
+┌─────────────────────┬──────────┬────────────────┐
+│ 8 bytes             │ 1 byte   │ N bytes        │
+│ header (big-endian) │ msg_type │ payload        │
+│ 64-bit              │ (uint8)  │ (bitsery 编码) │
+└─────────────────────┴──────────┴────────────────┘
 ```
+
+8B header = `(check << 48) | len`（大端）：
+
+- `len = 1 + payload_size`，48 位长度域（上限 256TB，消除旧 uint32 截断的 4GiB 静默回绕）；`len = 0` 非法
+- `check = 0xF17E ^ fold16(len)`，高 16 位校验域；`fold16(len) = (len ^ (len >> 16) ^ (len >> 32)) & 0xFFFF`
+- 长度域任一单比特翻转 → fold 确定性变化 → check 失配被拒；失步/垃圾 8 字节误过概率 2^-16
+- 帧在缓冲中的总字节数 = `8 + total_len`；type 字节计入 `total_len`（`len = 1 + payload`）
 
 **DataResponse（两段帧，仅 DATA_RESPONSE）**:
 
@@ -81,11 +88,13 @@ DataResponseMessage 的大 payload 不经 bitsery 序列化，作为帧尾 raw �
 
 ```
 ┌──────────────┬──────────┬─────────────────┬──────────┬──────────────────┬────────────────┐
-│ 4 bytes      │ 1 byte   │ 4 bytes         │ 1 byte   │ small_fields_len │ raw_len        │
-│ total_len    │ type=    │ small_fields_len│ has_raw  │ (bitsery 小字段)  │ (raw payload)  │
-│ (big-endian) │ DATA_RESP│ (big-endian)    │ (uint8)  │                  │                │
+│ 8 bytes      │ 1 byte   │ 4 bytes         │ 1 byte   │ small_fields_len │ raw_len        │
+│ frame header │ type=    │ small_fields_len│ has_raw  │ (bitsery 小字段)  │ (raw payload)  │
+│ (BE, 64-bit) │ DATA_RESP│ (big-endian)    │ (uint8)  │                  │                │
 └──────────────┴──────────┴─────────────────┴──────────┴──────────────────┴────────────────┘
 ```
+
+帧 total_len = `1(type) + 4(small_fields_len) + 1(has_raw) + small_fields_len + raw_len`；raw_len 不落盘，由 `total_len - 6 - small_fields_len` 推得（全 uint64，大对象 >4GiB 不截断）。
 
 发送侧：DataServer 用 encode 编码小字段段 + 直接引用 FlyBufferPtr 发送 raw 段（零用户态 copy）。
 
@@ -105,6 +114,7 @@ dispatch_message 内 while 循环解析。数据不足则等待更多数据。
 | 生命周期 | REGISTER/ACK、HEARTBEAT/ACK、SHUTDOWN、STOP_NOW、WORKER_PROBE/ACK | 注册（role/数据端口/属性）、心跳、优雅退出、快速自杀、重复注册活性探测 |
 | 任务 | TASK_SUBMIT/ACK、TASK_ASSIGN、TASK_COMPLETE、TASK_FAILED | 提交（inputs/requires/priority/vars）、派发（内联依赖位置+var payload）、完成（written_objects+资源指标）、失败（dirty_objects+错误分类） |
 | 数据面控制 | DATA_QUERY/LOCATION、DATA_REQUEST/RESPONSE | master 查副本位置；两段式数据响应（见上） |
+| 数据面分片（L2） | DATA_CHUNK、CHUNK_RESEND、DATA_DIGEST | 大对象分片传输（ChunkFrameProtocol 纯字节切片两段式帧）：DATA_CHUNK 分片数据帧——byte-offset 寻址（帧内 u64 offset = 帧首字节相对 record 起点的偏移，正常流/重传同语义；client 按 offset 直接定位、帧乱序容错，server 零块知识；默认 4MB 切片，片 CRC 0 = 发送端未计算）；CHUNK_RESEND 按 offset+length 请求重传某字节区间（server pread 区间重发，每区间上限一次，再坏升格对象级 CHECKSUM）；DATA_DIGEST 分片流尾帧（T5 裁定 root_crc 恒发 0 = 未计算，完整性由 L0 块 CRC + trailer + 字节计数对账承担；帧保留作流结束标记，DCP 路径对非 0 照验属防御深度） |
 | 元数据 | DB_PATH_REQUEST/ACK、WRITE_REGISTER/ACK、OBJECT_REMOVED、REMOVE_*、IDX_LOAD_COMMAND/ACK | db 路径、写注册（provenance）、对象删除三级、idx 加载（load_db） |
 | 备份 | BACKUP_REQUEST/ASSIGN/COMPLETE、WORKER_BACKUP_SUGGEST | 手动/自动副本、TIER2 读流量上报 |
 | 冻结 | DATABASE_FREEZE/ACK | db 冻结（pending 两阶段 commit/rollback） |
@@ -113,7 +123,7 @@ dispatch_message 内 while 循环解析。数据不足则等待更多数据。
 | 属性 | WORKER_PROPERTY_UPDATE、WORKER_PROPERTY_ASSIGN | 属性上行回报 / ensure_workers 下行追加 |
 | 退出 | WORKER_EXIT | worker 正常退出显式声明（graceful 分支关连接前发出）：master 据此把断连归类为正常退出（handle_worker_exit），区别于异常判死；已入 serialized domain 保证先于同连接 DISCONNECT 处理 |
 | 探测 | NET_PROBE_REQUEST/RESPONSE | 数据面 RTT/带宽探测 |
-| PeerRpc | PEER_RPC_REQUEST/RESPONSE | worker↔worker 业务 RPC |
+| PeerRpc | PEER_RPC_REQUEST/RESPONSE、PEER_STREAM_START/END | worker↔worker 业务 RPC；流式大 payload 管线（START 声明 rpc_id/方向/压缩类型，其后同连接为 DATA_CHUNK 块流，连接独占至 END；END 带 total_uncompressed + 块数 + 消费字节数对账 → payload 就绪） |
 | 监控 | MONITOR_SAMPLE、MONITOR_TASK_IO | 负载采样成组上报、对象级 IO 明细 |
 | 日志 | LOG_MESSAGE、MSG_COUNT_REQUEST/REPORT、MSG_LIMIT_SYNC | 高价值日志推送 + 配额（详见 [message-system.md](../message-system.md)） |
 | 自动补齐 | STORAGE_SPAWN_REQUEST/ACK | auto storage node spawn |

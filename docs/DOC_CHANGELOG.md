@@ -3,6 +3,55 @@
 ---
 ---
 
+## 2026-09-02: 全面审查修复——PeerRpc 并发/协议缺陷 + 测试假绿根治 + solver 竞态 + 文档大收口
+
+五路审查（PeerRpc 流式线 / 性能线 / HANDOFF 线 / 文档一致性 / 约束合规）
+后的系统修复，7 个 commit：
+
+**批次 1 — PeerRpc 并发/协议八项（a82a24f/fd28a70/f4a919b）**，各配确定性
+单测：① feed 背压等待死锁新根因（feed 持 buf_mutex_ 阻塞于满队列 wait，
+stop 锁内置 failed 拿不到锁——stopping_ atomic 无锁逃生口 + 100ms 有限
+等待）；② advance_block 置 failed 缺 notify（server_loop 冻结面）；
+③ transport_ 判空-解引用 UAF 窗口（send_mutex_ 生命周期栅栏）；④
+PeerStreamRxState 跨线程字段 atomic 化；⑤ 直拼帧 total_len 下限校验
+（undersized 帧 + 粘包 → size_t 下溢 → std::terminate 全进程崩溃）；
+⑥ 未知帧类型零容忍断流（原 clear 丢粘包好帧不判死）；⑦
+peer_rpc_recv_request compat read_all 移出 peer_rpc_incoming_mutex_
+（环形死锁：read_all 等喂流、喂流 handler 等同锁）；⑧ ReadPipeline wire
+块头 64MB 上界校验（位翻转 garbage 不再转化为 bad_alloc）。
+
+**批次 2 — 测试假绿根治（5ecadf3）**：stress case 的模块级 `_serve_loop`
+经 cloudpickle 在 worker 端 NameError，压测主体自落地以来从未执行却一直
+绿灯（闭包化修复，worker1.log 实证首次 listen）；status 断言口径两处修正
+（OK=1 恒真断言 / RESPOND_FAILURE 精确匹配）；结果落库 + main 档位断言
+（防 wait_tasks 静默吞失败）；perf case bench 失败 raise 化 + single-frame
+基线限定小档。防假绿闭环：注入坏断言验证 case 必红。
+
+**批次 3 — solver 动态链竞态收口（4d27164）**：跨步旧 ctx 窗口（t≥1 时
+check(t) 早于 compute(t) 到达会用 t-1 参数应答——请求与 ctx 各带 t 严格
+比对，不匹配回 NOT_READY）；收集圈等待 bounded 于 30s deadline（原
+timeout_ms=0 无限等打穿判死，HANDOFF 自认 known issue）。新增
+rasgd_collect_deadline subcase（FLY_RASG_HANG_AT 注入）实证 30s 精确判组死。
+
+**批次 4 — P2 质量六项（1f96743）**：worker_agent 残缺日志语句恢复、
+cache="none" 直传 C++（旧 low 池映射语义漂移，§14.12 对齐）、finish_task
+双层兜底（outstanding 悬挂最后一环）、死代码清理（pull_exact/重复声明/
+PeerRpc bitsery 消息结构体）、CRC 注释对称化（DCP「非 0 照验」评估保留）、
+P3 顺手项（死分支/过时注释/空 then/hash 修正）。
+
+**文档大收口（本条目 + 九文件）**：storage/module.md 按当前源码全面重写
+（temp 恒落盘/恒流式/ReadCache 双池/ObjectCache 单层/Stage 管线/sendfile
+分片——旧文档停留 08-14）；network/module.md 帧格式 9B 前缀勘误 + 消息
+总表补 5 型（63-67）；CLAUDE/AGENTS ObjectCache 单层化改写；
+rpc-stream-pipeline §2 API 勘误（PeerStreamReader/peer_stream_response_
+reader）；agent/module.md 执行上提 + MONITOR_SAMPLE + PeerRpcServer 补
+录；core/module.md 配置表对齐（删 temp_store_size 补 8 键）；solver/
+module.md coarse 双对象 + 流式 RPC 契约；performance-analysis 废弃数字
+标注 + Stage 迁移符号注。
+
+---
+---
+
 ## 2026-09-01 (3): PeerRpc 真流式读端——业务拉动解压，消除「收齐才反序列化」
 
 交付端演进（用户裁定：RPC 接收端必须与 read_object 管线同构，IO 端点

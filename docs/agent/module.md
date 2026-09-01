@@ -15,6 +15,7 @@ Agent 层是框架的最高 C++ 层，封装 Master 和 Worker 的完整业务�
 | MasterAgent | `cpp/master_agent.h/cpp` | Master 节点管理 |
 | WorkerAgent | `cpp/worker_agent.h/cpp` | Worker 节点执行 |
 | TaskExecutor | `cpp/task_executor.h/cpp` | 任务执行器 |
+| PeerRpcServer | `cpp/peer_rpc_server.h/cpp` | worker 间业务 RPC（独立业务端口 + 独立线程，与 reactor/DataServer 隔离）：单帧请求-响应 + 流式大 payload 管线（PeerStreamWriter/PeerStreamReader，压缩块流经 DATA_CHUNK 帧承载，见 [rpc-stream-pipeline.md](../rpc-stream-pipeline.md)） |
 | WorkerAgentContext | `common/cpp/worker_context.h`（位于 common 模块，agent 与 storage 共用以避免循环依赖） | 写入跟踪上下文 |
 
 ---
@@ -112,10 +113,16 @@ assign_task_to_worker(task_id, worker_id)
 **采集模型（骨架 + 最近邻合成，全部推迟到退出时合成）**：
 - tick 线程每 `metrics_tick_seconds`（默认 10s）采 master 自身 RSS 成骨架
   {steady rel_ms（渲染时间轴）, epoch_ms（对齐域）, rss}；start 立即首 tick。
-- worker 心跳成组上报 RSS 样本（`HeartbeatMessage.rss_epoch_ms_/rss_bytes_arr_`
-  平行数组；**真实采样时刻** = unix epoch 毫秒）。发送失败的样本在 worker 侧
-  缓冲不丢（`pending_rss_*`，仅 heartbeat_loop 单线程访问），下次成功心跳
-  成组补发。
+- worker 侧 RSS/负载采样已迁出心跳：worker 的 monitor 线程（`monitor_thread_`/
+  `monitor_report_loop`，与心跳完全解耦）按 `monitor_sample_interval_ms` 周期
+  采样（task 执行窗口内加密至 `monitor_exec_sample_interval_ms`；assign/执行
+  起止/断连等事件点经节流后入缓冲），每 `monitor_report_interval_ms` 成组
+  `MONITOR_SAMPLE` 消息上报（样本含 **真实采样时刻** = unix epoch 毫秒、RSS、
+  proc/host CPU、host 内存/loadavg、网络累计字节）。发送失败/断连窗口的样本
+  在 worker 侧缓冲不丢（`pending_samples_`），下次成组补发；master 侧
+  `on_monitor_sample`（master_agent.h）喂 RunMetricsCollector 并经 MetricsDb
+  落 worker_samples 表（主键 (worker_id, epoch_ms)，补发幂等）。心跳仅保活
+  （HeartbeatMessage 无 RSS 字段）。
 - 退出时合成：每骨架 tick 取各 worker ≤ 该 epoch 时刻的最后样本
   （`std::upper_bound` 最近邻；首样本前=未上线不计；`on_worker_dead` 记
   判死 epoch，死后无新样本不计，复活样本自然重新生效）。
@@ -149,7 +156,7 @@ Worker 节点执行，负责任务接收、执行、写入跟踪和远程数据�
 ```
 master_conn_:        到 Master 的连接 ID
 task_queue_:         queue<PendingTask> (Reactor→Main 传递)
-databases_:          db_id → shared_ptr<Database>
+databases_:          db_path → shared_ptr<Database>   # 以 db_path 为键（无 db_id）
 current_task_id_:    当前任务 ID
 current_writes_:     当前写入记录 CMVector<WriteRecord>（full_name + 压缩字节数，单一容器保证同生命周期）
 prefetched_locations_: 预取的依赖数据位置
@@ -162,7 +169,9 @@ WorkerAgent.start()
   1. 创建 Transport + Data Server
   2. 连接 Master
   3. 创建 Reactor，注册 message handlers
-  4. 启动 reactor_thread_、heartbeat_thread_ 和 register_watchdog_thread_
+  4. 启动 reactor_thread_、heartbeat_thread_、monitor_thread_（负载采样
+     上报，与心跳解耦）、register_watchdog_thread_ 和 probe_thread_
+     （带宽探测，flag 控制）
   5. 发送 RegisterMessage
 ```
 
@@ -180,20 +189,25 @@ WorkerAgent.start()
 - **join 顺序**：do_cleanup 按 reconnect → watchdog → heartbeat →
   reactor 依赖序回收。
 
-### 任务执行流程
+### 任务执行流程（执行上提，5016527）
 
 ```
-ReactorThread:
+ReactorThread (lane):
   → on_task_assign(TaskAssignMessage)
     → 存储预取的依赖位置
     → task_queue_.push(task)
 
-MainThread (poll_task 循环):
-  → poll_task()
-    → begin_task(task_id)  // 设置回调
-    → executor_->execute(task_id, name, module, args)
-    → end_task(task_id)
-    → 发送 TaskCompleteMessage 或 TaskFailedMessage
+Python 主线程 (Worker.poll_loop, agent.py):
+  → task = agent.take_task(timeout_ms)
+      // C++ 侧 GIL 释放状态下等待/出队——空等不压制同进程 Python 线程；
+      // internal task（merge/backup，纯 C++）就地消化后继续等下一个；
+      // 普通 task 出队时做 begin 钩子（begin_task/vars 暂存/资源跟踪开始）
+  → executor(task_id, name, module, args)
+      // create_executor 产物，在本线程直接调用（executor 异常兜底为
+      // status=1 result，保证 finish 必被调用）
+  → agent.finish_task(task, result)
+      // 纯 C++ 收尾：资源跟踪终点 / end_task / IO 明细上报 / 写段提交或
+      // 回滚 / TaskComplete·TaskFailed 上报 / outstanding 减计
 ```
 
 ### 远程数据读取
@@ -369,10 +383,11 @@ Master.on_disconnect(conn_id):
 ### load_db 恢复流程
 
 ```
-Phase 1: 读取 _DB_META (db_id, workers)
+Phase 1: 读取 _DB_META（JSON，storage/py/db_meta.py：db_path + workers[]
+         写者登记 worker_id/writer_id/hostname/ip_address）
 Phase 2: Master 自身恢复 (创建 Database 实例)
 Phase 3: 按 hostname 分配 Worker (复用或新建)
-Phase 4: 下发 idx 加载命令给所有 Worker
+Phase 4: 下发 idx 加载命令给所有 Worker (db_path + writer_ids)
 Phase 5: 重建 remote_idx
 ```
 

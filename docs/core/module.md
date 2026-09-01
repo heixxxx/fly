@@ -59,7 +59,7 @@ private:
 | 配置键 | 默认值 | 说明 |
 |--------|--------|------|
 | `heartbeat_timeout` | 120 | 心跳超时（秒） |
-| `heartbeat_interval` | 5 | 心跳间隔（秒） |
+| `heartbeat_interval` | 5 | 心跳间隔（秒）。**当前无消费方**——心跳周期为代码硬编码（worker 发送 10s / master 检查 5s，见 architecture.md 线程模型一节） |
 | `auto_backup_enabled` | 0 | 自动备份开关（0=关闭, 1=开启） |
 | `worker_suggest_count_threshold` | 100 | worker TIER2 累积读次数达此值触发 backup suggest |
 | `worker_suggest_bytes_threshold` | 1073741824 | worker TIER2 累积传输字节（1GB）达此值触发 suggest |
@@ -79,6 +79,8 @@ private:
 | `compression_level` | 0 | 压缩级别 |
 | `compression_threshold` | 4096 | 跳过压缩阈值（字节）。payload ≤ 此值时直接 passthrough 存储，避免小对象的压缩/解压开销。仅在阈值 < `serialize_chunk_size` 时生效 |
 | `serialize_chunk_size` | 4194304 | 压缩流块大小（4MB） |
+| `stream_buffer_chunks` | 16 | L3 流式读接收线程有界队列上限（片数，默认 16 片 ≈ 64MB 压缩态） |
+| `chunked_transfer_threshold` | 4194304 | L2 分片传输阈值（字节）：对象 record 超过此值时 DataServer 走分片路径（META + 4MB CHUNK 流 + DIGEST），否则整帧快路径 |
 | `dependency_update_mode` | 0 | 依赖更新模式 |
 | `fail_unscheduleable_tasks` | 1 | 不可调度任务立即失败（1=立即fail并持久化, 0=保持等待） |
 | `net_probe_enabled` | 1 | 网络感知远程读优先级总开关（1=开启, 0=关闭，TIER2 排序降级为 no-op） |
@@ -86,15 +88,29 @@ private:
 | `net_probe_payload_kb` | 256 | 带宽探测 payload 大小（KB） |
 | `net_probe_timeout_ms` | 3000 | 单次带宽探测超时（毫秒） |
 | `locality_scheduling_enabled` | 1 | 数据亲和调度开关（1=开启, 0=关闭） |
-| `read_cache_size` | 1073741824 | ObjectCache 读缓存容量（1GB） |
-| `temp_store_size` | 2147483648 | temp 淘汰磁盘溢出层容量（2GB） |
+| `read_cache_size` | 1073741824 | 读缓存容量（1GB）——同时驱动 C++ ObjectCache 单层（high 层）与 Python ReadCache 双池（主池容量；temp 池 = 主池一半，read_cache.py） |
+| `low_score_factor` | 25 | Python ReadCache low 等级计分折扣（百分比：25 = low 得分为 high 的 25%——同热度下淘汰优先级更低） |
 | `data_client_pool_size` | 4 | DataClientPool 并发上限 |
 | `handler_lanes` | 4 | 消息 handler 并行 lane 数（同连接串行、跨连接并行）；0=全部内联（legacy 单线程 reactor） |
 | `solver_openmp_threads` | 0 | solver C++ 核心 OpenMP 线程数（0=默认） |
 | `worker_register_timeout` | 0 | **首次注册**占位符超时（秒）。默认 0=master 不等待不假设任何超时（worker 任意时刻注册都被接受）；>0 时超时未注册的占位符被 heartbeat 线程清理（WARN），并作为 `fly.wait_workers_registered()` 默认超时。worker 首连重试窗口同此键（两侧一致）。 |
 | `worker_reconnect_timeout` | 120 | **断连重连**宽限窗口（秒），两侧对等：worker 断连后指数退避重连的总窗口（重连期间 task 在 worker 上继续执行、上报缓冲，重连后 flush）；master 对断连 worker 的判死宽限（宽限内 task 存活 RUNNING、不重调度、worker 状态保留、豁免心跳判死；超时判死 → task 重排队 + 数据全灭快速失败）。0=不重连不宽限（旧的"断连即死"逃生口）。master 挂=全群失败：worker 最多多活宽限窗口后干净退出。 |
+| `drain_timeout_seconds` | 600 | 正常收尾 stop() 的 drain 等待上限（秒）：等 RUNNING task 全部完成，超时转 fast 路径（fail 善后留痕 + StopNow 收尾）——兜底「worker 活着但 complete 丢失」的僵死路径。0=无限等待（逃生口）。 |
 | `worker_connect_retry_initial_ms` | 500 | connect 重试首次间隔（毫秒），指数 ×2 递增（单次上限 10s 硬编码）；首连与断连重连共用。 |
 | `worker_register_ack_retry_initial_ms` | 500 | **注册守望**的超时退避初值（毫秒），指数 ×2 递增（单次上限 30s 硬编码）。P3-23 兜底：master 活着但 REGISTER/RegisterAck 被应用层吞掉时，watchdog 线程退避重发（幂等）；连接级丢失不走此路径（由 on_disconnect → reconnect_loop 事件驱动恢复）。 |
+| `machine_info_interval_seconds` | 10 | 机器信息 INFO 日志间隔（秒，每进程定期打印 proc RSS+peak / host 内存 / CPU% / loadavg）；0=关闭 |
+| `metrics_tick_seconds` | 10 | master 集群内存快照间隔（秒）：RunMetricsCollector 每 tick 记 master RSS + Σ 活跃 worker 最新上报 RSS，退出时合成 Run Summary 分阶段 total_avg/total_peak |
+| `monitor_sample_interval_ms` | 1000 | cluster monitor 周期采样间隔（毫秒，每 MonitorSample 一条：RSS/双 CPU%/host 内存/网络 IO/loadavg）；0=关闭采样上报 |
+| `monitor_exec_sample_interval_ms` | 200 | 最小采样间距（毫秒）：事件驱动采样（assign/执行起止/IO/断连等 cluster 事件时刻快照）与执行窗口内加密采样的统一节流下限——事件风暴不刷爆 DB |
+| `monitor_report_interval_ms` | 10000 | 成组上报间隔（毫秒）：worker 攒批经 MONITOR_SAMPLE 发 master（组内时间升序；失败/断连缓冲不丢，下次成组补发） |
+| `monitor_db_enabled` | 1 | master 单写 `{log_dir}/monitor.db`（1=开启，0=本 run 无持久化监控） |
+| `log_flush_threshold_bytes` | 65536 | Logger 自动 flush 累计字节数阈值（DEBUG/INFO；WARN/ERROR 始终立即 flush） |
+| `log_flush_interval_ms` | 1000 | Logger 自动 flush 时间间隔（毫秒，写时惰性判定，无后台线程） |
+| `storage_takeover_enabled` | 0 | 存储接管开关（判死后同 host storage_only 只读加载死 worker 的 idx 接管读服务，复用 IdxLoad 链路）。默认关（保守） |
+| `storage_takeover_fail_timeout` | 60 | 接管在途时全灭 fail 的延迟上限（秒），超时幂等重判兜底 |
+| `storage_takeover_max_writers` | 64 | 每 storage 接管 writer 数上限（0=不限），防同 host 多 worker 连挂涌向单一 storage |
+| `auto_storage_nodes_enabled` | 0 | 自动补齐存储节点开关（master 周期检测「有活 worker 但无 storage_only」的 host 并经该 host 活 worker spawn；默认关 opt-in——bsub 等调度器环境下 spawn 侵占作业资源配额） |
+| `auto_storage_check_interval` | 30 | 自动补齐检测周期（秒；实际由 heartbeat 循环节流 5s 一轮） |
 
 #### string 配置项
 

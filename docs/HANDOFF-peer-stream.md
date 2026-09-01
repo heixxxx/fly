@@ -1,9 +1,9 @@
 # HANDOFF — PeerRpc 真流式读端（换机续作交接）
 
-> 2026-09-01。主线状态：全部合入 main（`e75162d`），qa/solver 16/16、
+> 2026-09-01。主线状态：全部合入 main（`b48b626`），qa/solver 16/16、
 > 全量 QA 169/169。本文档供换机继续开发/debug 使用，事项完结后可删。
 
-## 1. 已落地（e75162d 及此前 7 个提交）
+## 1. 已落地（b48b626 及此前提交）
 
 - **真流式读端**：`PeerStreamReader`（单块/流式双形态）——请求 START 即
   派发 handler，业务 `pickle.load(reader)` 拉动 `make_block_read_pipeline`
