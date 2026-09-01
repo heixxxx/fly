@@ -188,7 +188,7 @@ TEST_F(PeerRpcServerTest, StreamRequestLargePayloadDeliveredIntact) {
         });
     ASSERT_NE(conn, 0u);
 
-    PeerStreamWriter w(client.get(), conn, /*rpc_id=*/9, /*direction=*/0,
+    PeerStreamWriter w(client, conn, /*rpc_id=*/9, /*direction=*/0,
                        CompressionType::LZ4, -1);
     ASSERT_TRUE(w.ok());
     w.write(payload.data(), payload.size());
@@ -236,7 +236,7 @@ TEST_F(PeerRpcServerTest, StreamMultiBlockMixedCompressibilityIntact) {
         });
     ASSERT_NE(conn, 0u);
 
-    PeerStreamWriter w(client.get(), conn, /*rpc_id=*/11, /*direction=*/0,
+    PeerStreamWriter w(client, conn, /*rpc_id=*/11, /*direction=*/0,
                        CompressionType::LZ4, -1);
     ASSERT_TRUE(w.ok());
     for (size_t off = 0; off < payload.size(); off += 7 * 1024) {
@@ -290,7 +290,7 @@ TEST_F(PeerRpcServerTest, StreamResponseRoundtripSmallPayload) {
         });
     ASSERT_NE(conn, 0u);
 
-    PeerStreamWriter w(client.get(), conn, /*rpc_id=*/77, /*direction=*/0,
+    PeerStreamWriter w(client, conn, /*rpc_id=*/77, /*direction=*/0,
                        CompressionType::LZ4, -1);
     ASSERT_TRUE(w.ok());
     w.write(payload.data(), payload.size());
