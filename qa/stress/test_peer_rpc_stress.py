@@ -42,28 +42,29 @@ def member_serve(db, gen):
                     save_to_db=False)
     from _fly_log import INFO
     INFO(f"[STREAM-STRESS] member listening port={port}")
-    # 常驻 echo 循环（模块级 _serve_loop；task 函数体内不得引用 nanobind
-    # 对象，否则 cloudpickle 序列化失败）。
-    threading.Thread(target=_serve_loop, daemon=True).start()
 
+    # 常驻 echo 循环（task 体内闭包——审查 P0：模块级函数引用经 cloudpickle
+    # 在 worker 端解析失败（NameError: _serve_loop），case 假绿、压测主体
+    # 从未执行。对齐 test_peer_rpc_perf 的 loop() 模式）。
+    def serve_loop():
+        ag = get_agent()
+        while True:
+            try:
+                conn_id, rpc_id, src, payload = ag.peer_rpc_recv_request(0)
+            except Exception:
+                return  # server 关闭（case 收尾）
+            if payload == b"__fail__":
+                ag.peer_rpc_respond_failure(conn_id, rpc_id, b"no ctx")
+                continue
+            # 响应流式 echo：payload → 压缩管线 → DATA/END。
+            w = ag.peer_stream_respond_writer(conn_id, rpc_id, "lz4", -1)
+            w.write(payload)
+            from _fly_log import ERR
+            if not w.finish():
+                ERR(f"[STREAM-STRESS] respond finish failed rpc={rpc_id}")
+                return
 
-def _serve_loop():
-    agent = get_agent()
-    while True:
-        try:
-            conn_id, rpc_id, src, payload = agent.peer_rpc_recv_request(0)
-        except Exception:
-            return  # server 关闭（case 收尾）
-        if payload == b"__fail__":
-            agent.peer_rpc_respond_failure(conn_id, rpc_id, b"no ctx")
-            continue
-        # 响应流式 echo：payload → 压缩管线 → DATA/END。
-        w = agent.peer_stream_respond_writer(conn_id, rpc_id, "lz4", -1)
-        w.write(payload)
-        from _fly_log import ERR
-        if not w.finish():
-            ERR(f"[STREAM-STRESS] respond finish failed rpc={rpc_id}")
-            return
+    threading.Thread(target=serve_loop, daemon=True).start()
 
 
 @as_task(inputs=lambda db, gen: [db.get_full_name(f"{gen}_addr")],
@@ -118,17 +119,19 @@ def check_run(db, gen):
         for f in (f1, f2):
             f.result()
     for tag, (status, ok) in results.items():
-        if status != 0 or not ok:
+        if status != 1 or not ok:   # PeerRpcStatus::OK=1（审查 P0：原 != 0
             failures.append(f"concurrent conn={tag} status={status} ok={ok}")
+                                    # 恒真，断言形同虚设）
 
-    # 错误路径：respond_failure 状态传播。
+    # 错误路径：respond_failure 状态传播（wire RESPOND_FAILURE=2 → 内部
+    # ERROR=2——必须恰好收到失败码，而非任意非零）。
     w = agent.peer_stream_writer(conn, "lz4", -1)
     rid = w.rpc_id()
     w.write(b"__fail__")
     w.finish()
     status, resp = agent.peer_stream_call_wait(rid, 0)
-    if status == 0:
-        failures.append("fail path: expected non-zero status")
+    if status != 2:
+        failures.append(f"fail path: expected ERROR(2), got {status}")
 
     agent.peer_rpc_close(conn)
     agent.peer_rpc_close(conn2)
@@ -136,6 +139,10 @@ def check_run(db, gen):
         raise RuntimeError(f"[STREAM-STRESS] {len(failures)} failures: " +
                            "; ".join(failures[:5]))
     INFO("[STREAM-STRESS] all rounds passed")
+    # 结果落库（持久对象）：任务失败时 wait_tasks 不报错，main 凭该对象
+    # 判 case 成败，防静默假绿（审查 P0 连锁——wait_tasks 静默吞失败）。
+    db.write_object(f"{gen}_result", {"rounds": ROUNDS,
+                                      "payloads": len(PAYLOADS)})
 
 
 def main():
@@ -150,6 +157,10 @@ def main():
     member_serve(db, gen)
     check_run(db, gen)
     wait_tasks(600)
+    # 显式校验：check_run 失败（含断言/异常）时结果对象缺失 → case 失败。
+    res = db.read_object(f"{gen}_result")
+    assert res and res["rounds"] == ROUNDS, \
+        f"stress incomplete: {res}"
 
 
 if __name__ == "__main__":

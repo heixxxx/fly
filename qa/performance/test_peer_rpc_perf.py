@@ -94,17 +94,17 @@ def check_run(db, gen):
         except Exception:
             return None
     def bench(tag, fn, payload, rounds=ROUNDS, warmup=WARMUP, get_write=False):
+        # 审查 P2：WARMUP/测量失败曾仅打印跳过 → 档位静默缺失（假绿）。
+        # 现：所有档位失败一律 raise，main 凭结果落库复核档位齐全性。
         times, wtimes = [], []
         for _ in range(warmup):
             r = fn(payload)
             if r is None:
-                print(f"[PERF] {tag}: WARMUP FAILED (skipped)", flush=True)
-                return
+                raise RuntimeError(f"{tag}: WARMUP FAILED")
         for _ in range(rounds):
             r = fn(payload)
             if r is None:
-                print(f"[PERF] {tag}: FAILED", flush=True)
-                return
+                raise RuntimeError(f"{tag}: FAILED")
             if get_write:
                 wtimes.append(r[0])
             times.append(r[1] if get_write else r)
@@ -137,7 +137,11 @@ def check_run(db, gen):
             continue
         payload = os.urandom(size)
         tag_mb = f"{size/1024/1024:.0f}MB"
-        bench(f"single-frame {tag_mb}", single_roundtrip, payload)
+        if size <= 16 * 1024 * 1024:
+            # 单帧基线仅小档（回归口径）；大 payload 单帧 = 旧路径内存峰值
+            # 缺陷现场（写缓冲 drain-leftover），作为流式存在理由记录在案
+            # （512MB single 基线已单独测得），不进 bench 失败语义。
+            bench(f"single-frame {tag_mb}", single_roundtrip, payload)
         stream_bench(payload, "lz4", -1, f"stream-lz4    {tag_mb}")
         stream_bench(payload, "zstd", 9, f"stream-zstd9  {tag_mb}")
         stream_bench(payload, "none", -1, f"stream-none   {tag_mb}")
@@ -152,6 +156,9 @@ def check_run(db, gen):
 
     for tag, r in sorted(results.items()):
         print(f"[PERF-SUMMARY] {tag}: {r['med_s']}s {r['mbps']}MB/s", flush=True)
+    # 结果落库（持久对象）：bench 失败 raise 后任务失败，main 凭该对象存在
+    # + 档位齐全性判 case 成败，防静默假绿（对齐 read_perf 模式）。
+    db.write_object(f"{gen}_result", {"tags": sorted(results.keys())})
 
 
 
@@ -164,6 +171,16 @@ def main():
     member_serve(db, gen)
     check_run(db, gen)
     wait_tasks(1200)
+    # 显式校验：bench 失败在 check_run 内 raise → 结果对象缺失/档位不齐
+    # → case 失败（防 wait_tasks 静默吞失败的假绿）。
+    small = [s for s in PAYLOAD_SIZES if s <= 16 * 1024 * 1024]
+    big_sizes = len(PAYLOAD_SIZES) - len(small)
+    expected = (4 * len(small) + 3 * big_sizes + 2) \
+        if os.environ.get("PEER_RPC_PERF_FULL") == "1" \
+        else 4 * len(small)
+    res = db.read_object(f"{gen}_result")
+    assert res and len(res["tags"]) == expected, \
+        f"bench incomplete: {len(res['tags']) if res else 0}/{expected}"
 
 
 if __name__ == "__main__":
