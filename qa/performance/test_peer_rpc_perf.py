@@ -68,6 +68,9 @@ def check_run(db, gen):
             print(f"[PERF-DBG] stream fail status={status} resp_len={len(resp)} "
                   f"payload_len={len(payload)}", flush=True)
             return None
+        st = w.stage_stats()
+        print(f"[STAGE] write_wait={st[0]//10**6}ms compress={st[1]//10**6}ms "
+              f"send={st[2]//10**6}ms (producer vs compressor thread)", flush=True)
         return t_write, t_total
 
     def single_roundtrip(payload):

@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 #include <agent/cpp/peer_rpc_server.h>
+#include <storage/cpp/pipeline.h>
 #include <common/cpp/data_checksum.h>
 #include <chrono>
 #include <condition_variable>
@@ -171,8 +172,10 @@ TEST_F(PeerRpcServerTest, StreamResponseRoundtripSmallPayload) {
 TEST_F(PeerRpcServerTest, StreamTruncatedVerifyClosesConnection) {
     // END 对账失配：零容忍——坏流不交付（handler 不触发），server 主动
     // close 使 client 侧收到 DISCONNECT（调用方等待语义由 DISCONNECT 兜底）。
-    DisconnectLatch dlatch;
-    client->set_disconnect_handler([&dlatch](uint64_t c) { dlatch.notify(c); });
+    // shared 持有：server close 引发的 client DISCONNECT 可能在测试函数
+    // 返回（TearDown stop）之后到达，handler 不得引用栈上对象。
+    auto dlatch = std::make_shared<DisconnectLatch>();
+    client->set_disconnect_handler([dlatch](uint64_t c) { dlatch->notify(c); });
     std::atomic<bool> handler_fired{false};
     uint64_t conn = setup_connected_pair([&](uint64_t, uint64_t, uint64_t,
                                              const CMString&) {
@@ -181,22 +184,35 @@ TEST_F(PeerRpcServerTest, StreamTruncatedVerifyClosesConnection) {
     });
     ASSERT_NE(conn, 0u);
 
-    // 发 START + 一帧 DATA，但 END 谎报 total —— 对账失配路径。
+    // 发 START + 合法块流（真实管线产出）+ END 谎报 total —— 对账失配路径
+    // （块流必须合法：块头自描述，非法头会让解析器等待而非失配）。
     EXPECT_TRUE(client->send_stream_start(conn, 5, 0,
-                                          static_cast<uint8_t>(CompressionType::LZ4)));
-    const std::string chunk_data(1024, 'x');
-    EXPECT_TRUE(client->send_stream_data(conn, chunk_data.data(), chunk_data.size()));
+                                          static_cast<uint8_t>(CompressionType::NONE)));
+    std::string block_stream;
+    {
+        fly::EmitFn emit = [&](const char* d, size_t n) { block_stream.append(d, n); };
+        // NONE 管线：无压缩 Stage，但末端 BlockHeaderStage 必须在——
+        // 块记录（[unc][comp][crc][payload]）由它产出（空 Stage 序列的管线
+        // 不 emit 任何字节——曾致 DATA 帧只有 29B 头）。
+        fly::WritePipeline wp(
+            fly::make_file_write_pipeline(nullptr, 32 * 1024, emit, 85, -1));
+        const std::string data = MakePseudoRandomBytes(4096);
+        wp.write(data.data(), data.size());
+        wp.finish();
+    }
+    EXPECT_TRUE(client->send_stream_data(conn, block_stream.data(),
+                                         block_stream.size()));
     EXPECT_TRUE(client->send_stream_end(conn, 5, /*total_uncompressed=*/999999,
                                         /*chunk_count=*/1,
-                                        /*consumed=*/chunk_data.size()));
+                                        /*consumed=*/block_stream.size()));
     for (int i = 0; i < 100 && !handler_fired; i++) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     EXPECT_FALSE(handler_fired.load()) << "对账失配不得把坏流当 payload 交付";
-    for (int i = 0; i < 100 && !dlatch.fired(); i++) {
+    for (int i = 0; i < 100 && !dlatch->fired(); i++) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    EXPECT_TRUE(dlatch.fired()) << "零容忍：对账失配必须断连暴露";
+    EXPECT_TRUE(dlatch->fired()) << "零容忍：对账失配必须断连暴露";
 }
 
 TEST_F(PeerRpcServerTest, EndToEndRoundTrip) {

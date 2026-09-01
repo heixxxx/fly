@@ -183,7 +183,12 @@ FLY_EXPORT_CLASS(fly::PeerStreamWriter, "EXPeerStreamWriter")
         return w.finish();
     })
     FLY_EXPORT_DEF("rpc_id", [](fly::PeerStreamWriter& w) { return w.rpc_id(); })
-    FLY_EXPORT_DEF("ok", [](fly::PeerStreamWriter& w) { return w.ok(); });
+    FLY_EXPORT_DEF("ok", [](fly::PeerStreamWriter& w) { return w.ok(); })
+    FLY_EXPORT_DEF("stage_stats", [](fly::PeerStreamWriter& w) {
+        uint64_t wait = 0, comp = 0, snd = 0;
+        w.take_stage_stats(wait, comp, snd);
+        return fly_export::make_tuple(wait, comp, snd);
+    });
 
 FLY_EXPORT_CLASS(fly::TaskExecutor, "EXTaskExecutor")
     FLY_EXPORT_INIT()

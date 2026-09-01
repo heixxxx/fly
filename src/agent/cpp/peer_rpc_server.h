@@ -162,19 +162,35 @@ private:
     std::unordered_map<uint64_t, CMString> recv_bufs_;
 
     // 流式接收状态（连接独占：START 至 END 之间该连接只有流数据帧）。
-    // compressed 累积压缩块流字节（对端 TCP 反压 + 本端组装口径——内存
-    // 峰值 = payload 压缩态，见性能分析文档 §3.2 裁定）。
+    // DATA 帧的块流字节即到即喂跨帧块解析器：逐块 CRC 验证 + 解压——
+    // 解压与接收流水重叠（不在 END 后集中串行解压）。
     struct StreamRx {
         uint64_t rpc_id = 0;
         uint8_t direction = 0;   // 0=请求流, 1=响应流
         uint8_t compression_type = 0;
-        CMString compressed;     // 压缩块流字节
-        uint64_t consumed = 0;
         bool active = false;
+        // 跨帧块解析状态
+        CMString block_acc;      // 当前块记录累积（[16B 头][压缩数据]）
+        uint32_t p_unc = 0, p_comp = 0;
+        uint64_t p_crc = 0;
+        bool have_hdr = false;
+        // 解压
+        std::unique_ptr<Compressor> decompressor;  // NONE 时为空（raw 直通）
+        CMVector<char> dec_buf;  // 解压输出复用缓冲
+        // 明文累积（交付 payload）与对账
+        CMString plain;
+        uint64_t plain_total = 0;
+        uint32_t chunks = 0;
+        uint64_t consumed = 0;
+        bool verify_failed = false;
     };
     std::unordered_map<uint64_t, StreamRx> streams_;   // conn_id → 状态（buf_mutex_ 保护）
-    // 流完成：对账 + 解压 → 明文 payload。失败（对账失配/解压错误）返回 false。
-    bool finish_stream(uint64_t conn_id, StreamRx& s, CMString& payload_out);
+    // 流式块流字节喂入：跨帧重组 → CRC 验证 → 解压 → 明文累积。
+    // 失败（CRC 失配/解压错误）返回 false——零容忍，调用方 close 连接。
+    bool feed_stream_bytes(StreamRx& s, const char* data, size_t n);
+    // END 对账：明文总量/块数/消费字节 三重校验。失配返回 false。
+    bool verify_stream_end(const StreamRx& s, uint64_t total,
+                           uint32_t chunks, uint64_t consumed);
 
     // BYE 握手状态：
     //   bye_closed_conns_：已通过 BYE 正常关闭的 conn（DISCONNECT 时静默，不触发 disconnect_handler）
@@ -187,41 +203,75 @@ private:
     std::unordered_set<uint64_t> bye_pending_conns_;
 };
 
-// PeerStreamWriter —— worker 间流式大 payload 的写端（file-like）。
+// PeerStreamWriter —— worker 间流式大 payload 的写端（file-like，异步压缩）。
 //
-// pickle.dump(obj, writer) 直入：明文经压缩管线（WritePipeline：压缩 →
-// CRC → 块记录）逐块产出，4MB 切 DATA_CHUNK 帧独占连接发送。构造即发
-// START，finish 发尾块 + END 对账帧。压缩算法/级别由调用方指定（config
-// 仅作默认值——接口级压缩指定裁定）。
+// 明文经有界队列（kQueueBytes 上界 = 背压）交给独立压缩线程：压缩 → CRC →
+// 块记录 → 4MB DATA_CHUNK 切帧独占连接发送。三个阶段（调用线程序列化 /
+// 压缩 / 网络发送）流水重叠——流式的意义即各阶段并行，性能与 payload
+// 大小解耦。构造即发 START；finish 关队列、join 压缩线程（排空 + 发尾块 +
+// END 对账帧）。压缩算法/级别由调用方指定（config 仅作默认值——接口级
+// 压缩指定裁定）。
 class PeerStreamWriter {
 public:
     static constexpr size_t kFrameBytes = 4 * 1024 * 1024;
+    static constexpr size_t kQueueBytes = 4 * 1024 * 1024;   // 明文队列上界（背压）
 
     PeerStreamWriter(PeerRpcServer* srv, uint64_t conn_id, uint64_t rpc_id,
                      uint8_t direction, CompressionType comp, int level);
+    ~PeerStreamWriter();
 
-    void write(const char* data, size_t n);
-    // 尾块 + END 对账帧。返回 false = 发送失败（START 后首次失败亦然）。
+    void write(const char* data, size_t n);   // 明文入队（满则阻塞；GIL 已在导出层释放）
+    // 关闭队列、等待压缩线程排空并发出尾块 + END。返回 false = 流失败。
     bool finish();
 
-    uint64_t total_uncompressed() const { return pipeline_ ? pipeline_->total_uncompressed() : 0; }
-    uint32_t chunk_count() const { return pipeline_ ? pipeline_->chunk_count() : 0; }
-    bool ok() const { return ok_; }
+    // 统计：finish() 返回后读取（压缩线程结束后才稳定）。
+    uint64_t total_uncompressed() const { return total_uncompressed_; }
+    uint32_t chunk_count() const { return chunk_count_; }
+    bool ok() const { return started_; }       // START 成功（构造即定）
     uint64_t rpc_id() const { return rpc_id_; }
+    // 阶段耗时（纳秒，finish 后读）——并行结构验证打点。
+    uint64_t write_wait_ns() const { return write_wait_ns_; }  // 生产端等队列空间（下游慢）
+    uint64_t compress_ns() const { return compress_ns_; }      // 压缩线程：出队+压缩+组帧
+    uint64_t send_ns() const { return send_ns_; }
+    // 一次性读取并清零（perf case 分阶段打点用）。
+    void take_stage_stats(uint64_t& wait_ns, uint64_t& comp_ns, uint64_t& send_ns) {
+        wait_ns = write_wait_ns_.exchange(0);
+        comp_ns = compress_ns_.exchange(0);
+        send_ns = send_ns_.exchange(0);
+    }              // 压缩线程：socket 发送
 
 private:
+    void compress_loop(CompressionType comp, int level);
+    void enqueue(const char* data, size_t n);
     void on_pipeline_bytes(const char* d, size_t n);
     void flush_frame();
 
     PeerRpcServer* srv_;
     uint64_t conn_id_;
     uint64_t rpc_id_;
+    // 明文队列（调用线程生产 / 压缩线程消费）
+    std::mutex qm_;
+    std::condition_variable q_space_cv_;   // 队列不满（生产等）
+    std::condition_variable q_data_cv_;    // 队列非空 / 关闭（压缩线程等）
+    std::deque<std::vector<char>> plain_q_;
+    size_t q_bytes_ = 0;
+    bool producer_closed_ = false;
+    bool consumer_stopped_ = false;        // 发送失败：唤醒并丢弃生产
+    // 压缩线程与结果
+    std::thread thread_;
+    bool joined_ = false;
     bool started_ = false;
     bool finished_ = false;
     bool ok_ = false;
-    CMString frame_;
-    uint64_t frame_off_ = 0;
-    std::unique_ptr<fly::WritePipeline> pipeline_;
+    uint64_t total_uncompressed_ = 0;
+    uint32_t chunk_count_ = 0;
+    CMString frame_;                 // 4MB 帧累积（压缩线程私有）
+    uint64_t frame_off_ = 0;         // 流内偏移
+    bool send_ok_ = true;            // socket 发送状态（压缩线程私有）
+    // 阶段计时（压缩线程累计）
+    std::atomic<uint64_t> write_wait_ns_{0};
+    std::atomic<uint64_t> compress_ns_{0};
+    std::atomic<uint64_t> send_ns_{0};
 };
 
 }  // namespace fly
