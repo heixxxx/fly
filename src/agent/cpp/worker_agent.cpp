@@ -3141,7 +3141,12 @@ WorkerAgent::PeerRpcRequest WorkerAgent::peer_rpc_recv_request(int timeout_ms) {
     }
     auto req = std::move(peer_rpc_incoming_.front());
     peer_rpc_incoming_.erase(peer_rpc_incoming_.begin());
-    if (req.reader_) {
+    const bool has_reader = req.reader_ != nullptr;
+    // read_all 前必须放锁：它阻塞等网络线程喂流，而喂流的触发方
+    // （request/disconnect handler）需要同一把 peer_rpc_incoming_mutex_
+    // ——持锁等待 = 环形死锁（另一连接的请求/断连事件永久进不了队）。
+    lk.unlock();
+    if (has_reader) {
         // compat：流式请求收齐为 payload（旧 bytes 消费路径；read_all 至
         // END 对账通过的 EOF——零容忍失败以异常传播）。
         req.payload_ = req.reader_->read_all();

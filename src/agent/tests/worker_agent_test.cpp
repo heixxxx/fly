@@ -1727,4 +1727,71 @@ TEST(WorkerAgentTest, ReconnectTimeoutExhaustedCleanExit) {
     Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
 }
 
+// recv_request 的 compat read_all 必须在 peer_rpc_incoming_mutex_ 之外：
+// read_all 阻塞等网络线程喂流，而喂流的触发方（request/disconnect handler）
+// 需要同一把锁——持锁等待 = 环形死锁（另一连接的事件永久进不了队，
+// server_loop 整线程冻结）。回归：流式请求读齐期间，第二连接的单帧请求
+// 与断连事件必须照常处理。
+TEST(WorkerAgentPeerRpcTest, RecvRequestUnlockBeforeReadAll) {
+    WorkerAgent server_w(1, "127.0.0.1", 0);
+    WorkerAgent client_w(2, "127.0.0.1", 0);
+    const int port = server_w.start_peer_rpc_listen("127.0.0.1", 0);
+    ASSERT_GT(port, 0);
+    const uint64_t c1 = client_w.peer_rpc_connect("127.0.0.1", port);
+    const uint64_t c2 = client_w.peer_rpc_connect("127.0.0.1", port);
+    ASSERT_NE(c1, 0u);
+    ASSERT_NE(c2, 0u);
+
+    // 连接1：START-only 流（writer 构造即发 START，无数据无 END）——
+    // server 侧 compat recv_request 取走后 read_all 阻塞等流。
+    fly::PeerStreamWriter* w = client_w.peer_stream_writer(c1, "none", -1);
+    ASSERT_TRUE(w != nullptr);
+
+    std::atomic<bool> ta_done{false};
+    std::thread ta([&] {
+        // 无限等：取到 START 请求后卡在 read_all（流无 END）。修复前持锁
+        // 卡死；修复后不持锁，断连时以异常返回。
+        try {
+            auto req = server_w.peer_rpc_recv_request(0);
+            (void)req;
+        } catch (const std::exception&) {
+            // 断连零容忍：c1 关闭 → rx failed → read_all 抛错 → 到此收尾。
+        }
+        ta_done = true;
+    });
+
+    // 前置时序：ta 已取走 START 请求并进入 read_all（持有锁——修复前）。
+    // 100ms 远大于取锁+取队列窗口；这是 precondition 等待而非结果断言。
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // 触发：客户端整体断连（c1 → read_all 的 rx failed 唤醒；c2 →
+    // disconnect handler 需要 peer_rpc_incoming_mutex_ 入 error_conns）。
+    client_w.stop_peer_rpc();
+
+    // 修复判据 1：ta 必须在有限时间完成（c1 断连唤醒 read_all，锁未被
+    // ta 持有 → 断连事件能入队 → recv 抛错收尾）。
+    bool done = false;
+    for (int i = 0; i < 250 && !done; i++) {
+        done = ta_done.load();
+        if (!done) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_TRUE(done) << "recv_request must not hold the incoming mutex while "
+                         "read_all blocks (server_loop freeze otherwise)";
+    // 修复判据 2：断连错误必须在有限时间可达 recv（error_conns 入队未被阻）。
+    bool got_error = false;
+    if (done) {
+        try {
+            auto req = server_w.peer_rpc_recv_request(2000);
+            got_error = req.conn_id_ == 0 && req.payload_.empty() && !req.reader_;
+        } catch (const std::exception&) {
+            got_error = true;   // "peer connection error" 即断连语义传播
+        }
+    }
+    EXPECT_TRUE(got_error) << "disconnect events must remain processable while "
+                              "a compat read is pending";
+    ta.join();
+    client_w.stop_peer_rpc();
+    server_w.stop_peer_rpc();
+}
+
 }  // namespace fly
