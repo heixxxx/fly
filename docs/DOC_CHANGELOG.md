@@ -3,6 +3,30 @@
 ---
 ---
 
+## 2026-09-01 (2): PeerRpc 端到端同构增强——发送端块直发 + 接收端两段并行 + 读端 API
+
+四步落地（用户裁定方案 v2：两套管线除 IO 端点 Stage 外共享组件）：
+- 发送端消 frame_ 4MB 累积层：块记录直发（每块一帧，41B 合并小发送 +
+  payload (ptr,len) 直入连接发送队列——ConnectionManager 新增 send(ptr,len)
+  重载），与 write_object 管线对齐（尾部 WBQ → 网络发送队列）。
+- 接收端两段并行（read_object L3 同构）：server_loop 收窄为 跨帧块重组 →
+  CRC → 压缩态记录入 64MB 有界队列（满则阻塞，TCP 反压）∥ 消费线程（每流
+  一根）解压直写 32MB 分段明文（零 realloc）——原单线程串行 + plain 增长
+  拷贝消除。END 对账/零容忍语义不变，wire 协议零变更。
+- 交付读端 PeerStreamBuffer（EXPeerStreamBuffer）：file-protocol（与
+  FlyBuffer 同语义），pickle.load 直用免中间 bytes 全量拷贝；新 API
+  peer_rpc_recv_request_stream / peer_stream_call_wait_buf；handler 按值
+  move 交付（请求/响应入队各省一次拷贝）。
+- solver 动态链双方向切流式（check 请求 _stream_call / member 响应
+  respond_writer）。rpc-stream-pipeline.md §2/§4 更新（接口 + 架构 + 增强前
+  后基准表：512MB solver 画像 43→373 MB/s，总耗时<两端之和全格成立）。
+
+**验证**：peer_rpc_server 单测 14/14（新增多块混合可压缩性/读端协议）、
+agent/network/storage 43 单测全绿、qa/solver 16/16（动态链流式切换）。
+
+---
+---
+
 ## 2026-08-31 (10): runqa 超时善后误杀修复 + stability 孤儿清理——-j6 并发安全化
 
 - **背景**：`-j6` 稳定性测试首轮 14 连败。排查实锤为**工具链双缺陷**而非
