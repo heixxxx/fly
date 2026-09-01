@@ -347,8 +347,11 @@ def _serve_loop(agent, solver_key, shared_key, sd):
                 conv = float(np.max(np.abs(x_primary - shared["prev_x"]))) < \
                     ctx["tol"]
             shared["prev_x"] = x_primary
-            agent.peer_rpc_respond(conn_id, rpc_id, pickle.dumps({
-                "x": serialize_array(x_primary), "conv": conv}))
+            # 流式响应：pickle.dump 直入压缩/发送管线（序列化与压缩/
+            # 发送流水重叠，无整体 dumps 缓冲）。
+            w = agent.peer_stream_respond_writer(conn_id, rpc_id, "lz4", -1)
+            pickle.dump({"x": serialize_array(x_primary), "conv": conv}, w)
+            w.finish()
         except Exception as e:
             WARN(f"[RASG DYN SVC] sd={sd} request failed: {e}")
             try:
@@ -583,19 +586,29 @@ def check_dyn_task(db, matrix_ref, nsd, sol_prefix, num_steps, update_rhs,
                             dtype=np.float64)[sub["outside_global_idx"]]
                 else:
                     ghosts = x_corrected[sub["outside_global_idx"]]
-                requests[sd] = pickle.dumps({
+                requests[sd] = {
                     "action": "iterate", "step": step,
-                    "ghosts": serialize_array(ghosts)})
+                    "ghosts": serialize_array(ghosts)}
             # 圈级收集（用户裁定）：NOT_READY 跳过立刻请求下一成员（不单点
             # 阻塞），全员贡献集齐才开始计算；有缺则对缺失成员再一圈，圈间
             # 固定退避；累计超时判组死（compute 任务失败等长尾兜底）。
             collect_deadline = time.monotonic() + 30.0
+
+            def _stream_call(conn_id, req):
+                # 流式请求：pickle.dump 直入压缩/发送管线（序列化与压缩/
+                # 发送流水重叠）；NOT_READY 重试圈对同 req 字典重新发起
+                # （每次一条新流，rpc_id 独立）。timeout_ms=0：无限，断连唤醒。
+                w = agent.peer_stream_writer(conn_id, "lz4", -1)
+                rid = w.rpc_id()
+                pickle.dump(req, w)
+                w.finish()
+                return agent.peer_stream_call_wait(rid, 0)
+
             while len(contributions) < len(alive):
                 # 一圈并发发起全部待收成员（各成员独立连接 + rpc_id 隔离）；
                 # 等待最慢成员即本圈完成——迭代延迟 sum(成员) → max(成员)。
                 todo = sorted(sd for sd in alive if sd not in contributions)
-                futures = [_ex.submit(agent.peer_rpc_call, pool[sd],
-                                      requests[sd], 0)  # timeout_ms=0：无限，断连事件唤醒
+                futures = [_ex.submit(_stream_call, pool[sd], requests[sd])
                            for sd in todo]
                 for sd, fut in zip(todo, futures):
                     status, resp = fut.result()
