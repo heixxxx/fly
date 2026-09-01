@@ -84,6 +84,10 @@ void TcpConnectionManager::mod_epoll_events(int fd, uint32_t events) {
 }
 
 ssize_t TcpConnectionManager::send(uint64_t conn_id, const CMString& data) {
+    return send(conn_id, data.data(), data.size());
+}
+
+ssize_t TcpConnectionManager::send(uint64_t conn_id, const char* data, size_t len) {
     int fd;
     {
         std::lock_guard<std::mutex> lock(conn_mutex_);
@@ -96,38 +100,38 @@ ssize_t TcpConnectionManager::send(uint64_t conn_id, const CMString& data) {
 
         auto wbuf_it = write_buffers_.find(conn_id);
         if (wbuf_it != write_buffers_.end() && !wbuf_it->second.empty()) {
-            wbuf_it->second.append(data);
+            wbuf_it->second.append(data, len);
             // 防御：确保 EV_WRITE 已注册（drain 清空 buffer 后会移除 EV_WRITE；
             // 若此刻新数据 append 进来而 EV_WRITE 未注册，buffer 永远不会 drain，
             // 导致消息丢失 → master/worker 永远等不到该消息 → 调度/退出卡死）。
             mod_epoll_events(fd, EV_READ | EV_WRITE);
-            return static_cast<ssize_t>(data.size());
+            return static_cast<ssize_t>(len);
         }
     }
 
-    ssize_t sent = transport_->send(fd, data.data(), data.size());
+    ssize_t sent = transport_->send(fd, data, len);
 
     if (sent < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             std::lock_guard<std::mutex> lock(conn_mutex_);
             // append 而非覆盖：drain_write_buffer 可能在 send 释放 conn_mutex_ 的窗口里
             // 部分消费了 write_buffers_，直接赋值会丢掉剩余数据。
-            write_buffers_[conn_id].append(data);
+            write_buffers_[conn_id].append(data, len);
             mod_epoll_events(fd, EV_READ | EV_WRITE);
-            return static_cast<ssize_t>(data.size());
+            return static_cast<ssize_t>(len);
         }
         ERR("[TCP-SEND] error conn_id={} fd={} errno={}", conn_id, fd, errno);
         return -1;
     }
 
-    if (static_cast<size_t>(sent) < data.size()) {
+    if (static_cast<size_t>(sent) < len) {
         std::lock_guard<std::mutex> lock(conn_mutex_);
         // append 剩余数据，不覆盖 drain_write_buffer 可能残留的数据
-        write_buffers_[conn_id].append(data.data() + sent, data.size() - sent);
+        write_buffers_[conn_id].append(data + sent, len - sent);
         mod_epoll_events(fd, EV_READ | EV_WRITE);
     }
 
-    return static_cast<ssize_t>(data.size());
+    return static_cast<ssize_t>(len);
 }
 
 void TcpConnectionManager::drain_write_buffer(uint64_t conn_id, int fd) {

@@ -40,6 +40,13 @@ public:
 
     virtual ssize_t send(uint64_t conn_id, const CMString& data) = 0;
 
+    // (ptr,len) 直发重载：语义同上，但调用方无须为发送拼接 CMString——
+    // send 直发路径本就无用户态拷贝，为发而拼反而多一次全量拷贝（流式
+    // 块 payload 直发依赖此形态）。默认经 CMString 桥接（等价、多一拷贝）。
+    virtual ssize_t send(uint64_t conn_id, const char* data, size_t len) {
+        return send(conn_id, CMString(data, len));
+    }
+
     virtual CMVector<TransportEvent> poll(int timeout_ms) = 0;
 
     virtual void close(uint64_t conn_id) = 0;

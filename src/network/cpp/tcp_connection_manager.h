@@ -16,6 +16,7 @@ public:
     void stop_listening() override;
     uint64_t connect(const CMString& address, int port) override;
     ssize_t send(uint64_t conn_id, const CMString& data) override;
+    ssize_t send(uint64_t conn_id, const char* data, size_t len) override;
     CMVector<TransportEvent> poll(int timeout_ms) override;
     void close(uint64_t conn_id) override;
     void close_all() override;

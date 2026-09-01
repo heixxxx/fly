@@ -7,9 +7,13 @@
 #include <agent/cpp/peer_rpc_server.h>
 #include <storage/cpp/pipeline.h>
 #include <common/cpp/data_checksum.h>
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstring>
 #include <mutex>
+#include <thread>
 
 namespace fly {
 namespace {
@@ -124,6 +128,59 @@ TEST_F(PeerRpcServerTest, StreamRequestLargePayloadDeliveredIntact) {
                        CompressionType::LZ4, -1);
     ASSERT_TRUE(w.ok());
     w.write(payload.data(), payload.size());
+    ASSERT_TRUE(w.finish());
+    EXPECT_EQ(w.total_uncompressed(), payload.size());
+
+    for (int i = 0; i < 100 && !got; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    EXPECT_TRUE(got.load());
+    EXPECT_EQ(got_size.load(), payload.size());
+    EXPECT_EQ(got_crc.load(), expect_crc);
+}
+
+TEST_F(PeerRpcServerTest, StreamMultiBlockMixedCompressibilityIntact) {
+    // 多块流三路径覆盖：可压缩段（压缩路径）+ 高熵段（85% 规则 raw 直通）
+    // 交替，且按 7KB 小增量写入（块边界跨 write 调用累积）——逐块直发帧
+    // 下两种块形态的记录序列化与完整性都不破。位置标记（每 MB 首部写入
+    // 段序号）使错位可定位。
+    const size_t kSeg = 1024 * 1024;
+    const int kSegs = 12;
+    std::string payload(static_cast<size_t>(kSegs) * kSeg, '\0');
+    for (int s = 0; s < kSegs; s++) {
+        char* seg = &payload[static_cast<size_t>(s) * kSeg];
+        std::memcpy(seg, &s, sizeof(s));   // 位置标记
+        if (s % 2 == 0) {
+            const std::string rand_mb = MakePseudoRandomBytes(kSeg, 0xABCD0000 + s);
+            std::memcpy(seg, rand_mb.data(), kSeg);
+        } else {
+            // 可压缩段：1KB 模式重复（位置标记在首 4B，模式内恒定）。
+            const std::string pat = MakePseudoRandomBytes(1024, 0x11110000 + s);
+            for (size_t off = 0; off < kSeg; off += 1024) {
+                std::memcpy(seg + off, pat.data(), 1024);
+            }
+        }
+    }
+    const uint64_t expect_crc = data_checksum(payload.data(), payload.size());
+    std::atomic<bool> got{false};
+    std::atomic<uint64_t> got_crc{0};
+    std::atomic<size_t> got_size{0};
+    uint64_t conn = setup_connected_pair(
+        [&](uint64_t, uint64_t, uint64_t, const CMString& p) {
+            got_size = p.size();
+            got_crc = data_checksum(p.data(), p.size());
+            got = true;
+            return std::nullopt;
+        });
+    ASSERT_NE(conn, 0u);
+
+    PeerStreamWriter w(client.get(), conn, /*rpc_id=*/11, /*direction=*/0,
+                       CompressionType::LZ4, -1);
+    ASSERT_TRUE(w.ok());
+    for (size_t off = 0; off < payload.size(); off += 7 * 1024) {
+        const size_t n = std::min<size_t>(7 * 1024, payload.size() - off);
+        w.write(payload.data() + off, n);
+    }
     ASSERT_TRUE(w.finish());
     EXPECT_EQ(w.total_uncompressed(), payload.size());
 

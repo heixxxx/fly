@@ -414,15 +414,23 @@ bool PeerStreamWriter::finish() {
     return ok_;
 }
 
-// 压缩线程：明文队列 → 管线（压缩 → CRC → 块记录）→ 4MB 切帧 → 发送。
+// 压缩线程：明文队列 → 管线（压缩 → CRC → 块记录）→ 块记录直发。
 // 阶段计时：compress_ns = 出队+压缩+组帧；send_ns = socket 发送——
 // 两者之和 vs 总墙钟的比值即并行度证据（write_wait_ns = 生产端背压）。
 void PeerStreamWriter::compress_loop(CompressionType comp, int level) {
+    // 直发端点：块记录 = [16B 块头][payload]。头部凑齐后 payload 原地
+    // 组 DATA_CHUNK 帧直发连接发送队列——不经累积缓冲（frame_off_ 仍按
+    // 已发压缩字节累计，与接收端 consumed 对账语义不变）。
     auto emit = [this](const char* d, size_t n) {
-        frame_.append(d, n);
-        if (frame_.size() >= kFrameBytes) {
-            flush_frame();
+        if (blk_hdr_len_ < 16) {
+            const size_t take = std::min(n, static_cast<size_t>(16 - blk_hdr_len_));
+            std::memcpy(blk_hdr_ + blk_hdr_len_, d, take);
+            blk_hdr_len_ += static_cast<uint32_t>(take);
+            d += take;
+            n -= take;
+            if (n == 0) return;   // 头未齐或恰齐（payload 由后续 emit 送出）
         }
+        send_block_frame(d, n);
     };
     std::vector<std::unique_ptr<fly::WriteStage>> stages;
     if (comp != CompressionType::NONE) {
@@ -430,7 +438,7 @@ void PeerStreamWriter::compress_loop(CompressionType comp, int level) {
             CompressorFactory::create(comp, level)));
     }
     stages.push_back(std::make_unique<fly::CrcStage>());
-    // 末端：块记录写入帧累积器（漏掉此 Stage 则块头不产出、payload 不进帧）。
+    // 末端：块记录直发（漏掉此 Stage 则块头不产出、payload 不出管线）。
     stages.push_back(std::make_unique<fly::BlockHeaderStage>(emit));
     fly::WritePipeline pipeline(std::move(stages), kFrameBytes, emit);
 
@@ -454,11 +462,11 @@ void PeerStreamWriter::compress_loop(CompressionType comp, int level) {
                 std::chrono::steady_clock::now() - t0).count());
     }
     pipeline.finish();
-    if (!frame_.empty()) flush_frame();
+    flush_pending_block();
     total_uncompressed_ = pipeline.total_uncompressed();
     chunk_count_ = pipeline.chunk_count();
 
-    // END 对账帧（消费线程尾部发出——所有数据帧先于它到达）。
+    // END 对账帧（压缩线程尾部发出——所有数据帧先于它到达）。
     if (send_ok_) {
         ok_ = srv_->send_stream_end(conn_id_, rpc_id_, total_uncompressed_,
                                     chunk_count_, frame_off_);
@@ -466,21 +474,34 @@ void PeerStreamWriter::compress_loop(CompressionType comp, int level) {
     }
 }
 
-void PeerStreamWriter::flush_frame() {
-    if (frame_.empty() || !send_ok_) return;
-    CMString hdr = ChunkFrameProtocol::encode_header(frame_off_, 0, frame_.size());
+void PeerStreamWriter::send_block_frame(const char* payload, size_t n) {
+    CMString hdr = ChunkFrameProtocol::encode_header(frame_off_, 0, 16 + n);
+    hdr.append(blk_hdr_, 16);
+    blk_hdr_len_ = 0;
+    if (!send_ok_) return;
     const auto t0 = std::chrono::steady_clock::now();
     const bool sent = srv_->transport_send_raw(conn_id_, hdr) &&
-                      srv_->transport_send_raw(conn_id_, frame_);
+                      (n == 0 || srv_->transport_send_raw(conn_id_, payload, n));
     send_ns_ += static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - t0).count());
-    frame_off_ += frame_.size();
-    frame_.clear();
+    frame_off_ += 16 + n;
     if (!sent) {
         send_ok_ = false;
         ERR("[PEER-STREAM-W] send frame failed conn={}", conn_id_);
     }
+}
+
+void PeerStreamWriter::flush_pending_block() {
+    if (blk_hdr_len_ == 0) return;
+    if (blk_hdr_len_ == 16) {
+        send_block_frame(nullptr, 0);   // header-only 记录（空块防御）
+        return;
+    }
+    ERR("[PEER-STREAM-W] partial block header, aborting stream conn={}",
+        conn_id_);
+    send_ok_ = false;
+    blk_hdr_len_ = 0;
 }
 
 bool PeerRpcServer::send_request(uint64_t conn_id, uint64_t rpc_id,

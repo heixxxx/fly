@@ -111,6 +111,10 @@ public:
     bool transport_send_raw(uint64_t conn_id, const CMString& data) {
         return transport_ && transport_->send(conn_id, data) > 0;
     }
+    // (ptr,len) 直发：流式块 payload 免 CMString 中间拷贝。
+    bool transport_send_raw(uint64_t conn_id, const char* data, size_t len) {
+        return transport_ && transport_->send(conn_id, data, len) > 0;
+    }
 
     // 主动告知对端失败（status=1，payload=reason）。任一方可调。
     bool notify_failure(uint64_t conn_id, const CMString& reason);
@@ -206,7 +210,8 @@ private:
 // PeerStreamWriter —— worker 间流式大 payload 的写端（file-like，异步压缩）。
 //
 // 明文经有界队列（kQueueBytes 上界 = 背压）交给独立压缩线程：压缩 → CRC →
-// 块记录 → 4MB DATA_CHUNK 切帧独占连接发送。三个阶段（调用线程序列化 /
+// 块记录 → DATA_CHUNK 帧直发（每块一帧，帧头+块头合并小发送，payload
+// (ptr,len) 直入连接发送队列，无累积缓冲拷贝）。三个阶段（调用线程序列化 /
 // 压缩 / 网络发送）流水重叠——流式的意义即各阶段并行，性能与 payload
 // 大小解耦。构造即发 START；finish 关队列、join 压缩线程（排空 + 发尾块 +
 // END 对账帧）。压缩算法/级别由调用方指定（config 仅作默认值——接口级
@@ -243,8 +248,12 @@ public:
 private:
     void compress_loop(CompressionType comp, int level);
     void enqueue(const char* data, size_t n);
-    void on_pipeline_bytes(const char* d, size_t n);
-    void flush_frame();
+    // 单块记录直发：[25B DATA_CHUNK 帧头][16B 块头] 合并一次小发送，
+    // payload (ptr,len) 直发连接发送队列。
+    void send_block_frame(const char* payload, size_t n);
+    // 空块防御：头齐但无 payload 的记录（当前 Stage 组合不产生）在
+    // 流尾补发 header-only 帧；半个块头 = Stage 契约破坏，零容忍断流。
+    void flush_pending_block();
 
     PeerRpcServer* srv_;
     uint64_t conn_id_;
@@ -265,8 +274,13 @@ private:
     bool ok_ = false;
     uint64_t total_uncompressed_ = 0;
     uint32_t chunk_count_ = 0;
-    CMString frame_;                 // 4MB 帧累积（压缩线程私有）
-    uint64_t frame_off_ = 0;         // 流内偏移
+    // 块头暂存（压缩线程私有）：BlockHeaderStage 分 4 次 emit（4B unc +
+    // 4B comp + 8B crc + payload），前 3 次凑齐 16B 块头，第 4 次即 payload
+    // ——直发 DATA_CHUNK 帧，不经累积缓冲（原 frame_ 层每流多一次压缩态
+    // 全量拷贝；4MB 块下一帧≈一块，分组无收益）。
+    char blk_hdr_[16];
+    uint32_t blk_hdr_len_ = 0;
+    uint64_t frame_off_ = 0;         // 流内偏移（已发压缩字节计数）
     bool send_ok_ = true;            // socket 发送状态（压缩线程私有）
     // 阶段计时（压缩线程累计）
     std::atomic<uint64_t> write_wait_ns_{0};
