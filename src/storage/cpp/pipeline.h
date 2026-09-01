@@ -339,7 +339,4 @@ WritePipeline make_file_write_pipeline(CMUniquePtr<Compressor> compressor,
 // 压缩块流读管线：CRC 验证 → 解压（comp == unc 块自动直通）。
 ReadPipeline make_block_read_pipeline(CompressionType comp, PullFn pull);
 
-// 压缩块流读管线：CRC 验证 → 解压（comp == unc 块自动直通）。
-ReadPipeline make_block_read_pipeline(CompressionType comp, PullFn pull);
-
 }  // namespace fly

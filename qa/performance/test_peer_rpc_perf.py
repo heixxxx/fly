@@ -1,8 +1,9 @@
 """PeerRpc 性能基准 case：流式大 payload vs 单帧基线。
 
-矩阵：payload（256KB/4MB/16MB/64MB/1GB）× 模式（stream-lz4 / stream-zstd9 /
-stream-none / single-frame 基线全档）。member echo 服务按请求回传
-（响应恒流式）。断言仅数据完整性；性能数字打印供对比（不设紧阈值防 flaky）。
+矩阵：payload（256KB/4MB/16MB/64MB，full 加 512MB 主档）× 模式
+（stream-lz4 / stream-zstd9 / stream-none / single-frame 小档基线）。
+member echo 服务按请求回传（响应恒流式）。断言仅数据完整性；性能数字
+打印供对比（不设紧阈值防 flaky）。
 单帧基线在大 payload 档的内存峰值/失败是旧路径缺陷的现场，原样记录。
 """
 import os

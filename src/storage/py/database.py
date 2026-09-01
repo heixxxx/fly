@@ -166,7 +166,11 @@ class Database:
                 if obj is not None:
                     return obj
 
-            cpp_cache = "low" if cache == "none" else cache
+            # 三分层规范（§14.12）：none=会被修改的数据，每次全新反序列化。
+            # 曾映射为 "low"（旧 low 池时代的刻意行为，读侧 populate 语义），
+            # T4 单层化后语义漂移——C++ 侧 read_object 原生支持 none bypass，
+            # 直传对齐两侧口径。
+            cpp_cache = cache
             # populate 等级路由：读原语携带 temp 标记（本地 local_idx 判定 /
             # serve META 告知——跨进程读取方本进程查不到 temp 属性）。
             # populate 发生在流式消费成功点，按 stream.is_temp 路由。

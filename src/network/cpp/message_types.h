@@ -1008,29 +1008,10 @@ struct MessageLimitSyncMessage {
 };
 
 // ── 业务 RPC（worker ↔ peer，独立业务端口）──────────────────────
-// PeerChannelGroup 的底层传输：请求-响应式 RPC，payload 是裸 bytes
-// （业务自定义序列化，不经 bitsery/pickle 的 DB 包装）。
-// rpc_id 匹配请求与响应；status 区分正常响应与主动失败通知（notify_failure）。
-struct PeerRpcRequestMessage {
-    MessageHeader header_;
-    uint64_t rpc_id_ = 0;           // 请求 id（PendingRpcMap 匹配响应）
-    uint64_t src_worker_id_ = 0;    // 发送方 worker id（调试/路由用）
-    CMString payload_;              // 裸 bytes（业务序列化）
-
-    static constexpr MessageType msg_type_ = MessageType::PEER_RPC_REQUEST;
-    FLY_SERIALIZE(header_, rpc_id_, src_worker_id_, payload_);
-};
-
-// status_: 0=正常响应, 1=主动失败通知（notify_failure，payload_ 是 reason）
-struct PeerRpcResponseMessage {
-    MessageHeader header_;
-    uint64_t rpc_id_ = 0;
-    uint8_t status_ = 0;            // 0=ok, 1=error(notify_failure)
-    CMString payload_;              // 裸 bytes（业务序列化 / 失败 reason）
-
-    static constexpr MessageType msg_type_ = MessageType::PEER_RPC_RESPONSE;
-    FLY_SERIALIZE(header_, rpc_id_, status_, payload_);
-};
+// PeerChannelGroup 的底层传输。单帧 REQUEST/RESPONSE 已改 PeerRpcServer
+// 专用直拼帧（peer_rpc_server.cpp，c48011e——payload 中间拷贝 6→1），
+// bitsery 结构体随之删除（裁定后全仓无 encode/decode 消费者）；wire 上
+// 的 status 取值语义见 PeerRpcWireStatus（peer_rpc_server.h）。
 
 // ── 业务 RPC 流式大 payload（流插件化 2026-08-31）──
 // payload 以压缩块流（CompressingStreamBuf 管线输出的块记录序列）承载：

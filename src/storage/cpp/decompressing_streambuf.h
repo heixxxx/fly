@@ -57,8 +57,6 @@ protected:
 private:
     bool refill();
     void build_pipeline(CompressionType comp);
-    // 从源精确拉取 n 字节（凑齐语义）。false = EOF/失败。
-    bool pull_exact(char* dst, size_t n);
 
     CMSharedPtr<fly::ChunkSource> source_;
     uint64_t block_area_len_ = 0;   // 块流区域边界（恰耗校验锚点）

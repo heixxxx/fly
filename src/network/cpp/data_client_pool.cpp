@@ -809,7 +809,10 @@ DataClientPool::receive_chunked(int fd, const CMString& object_name,
         }
     }
     // T5（2026-08-31）：serve root_crc_ 发 0 = 未计算——跳过根摘要复核
-    //（L0 块 CRC + trailer 已承担完整性）；非 0（旧 serve）照验。
+    //（L0 块 CRC + trailer 已承担完整性）。非 0 照验：DCP 是远端读取主
+    // 路径，该分支有真实防护价值（fake-serve 注入测试 DigestMismatchIs
+    // Checksum 证明），刻意保留——与 NCS 路径（0529d7b 已删兼容验证）
+    // 的不对称是防御深度差异，非遗漏。
     if (digest.root_crc_ != 0 &&
         data_checksum(buf->data(), buf->size()) != digest.root_crc_) {
         ERR("[DCP-FATAL-DATA-CORRUPTION] chunk stream digest mismatch: obj={}", object_name);

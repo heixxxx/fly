@@ -533,8 +533,9 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
 
         // DIGEST 尾帧（T5 2026-08-31 根摘要双侧消除：root_crc_ 发 0 = 未
         // 计算——L0 块级 CRC + trailer 已承担完整性，整 record 单遍根摘要是
-        // 冗余遍历；client root_crc≠0 才验，兼容旧 serve。帧本身保留：client
-        // 以 DIGEST 帧为流结束标记 + chunk_count 对账）。
+        // 冗余遍历；client 侧对 0 一律跳过复核（0529d7b 裁定无版本差异，
+        // 两 client 路径 NCS/DCP 口径一致）。帧本身保留：client 以 DIGEST
+        // 帧为流结束标记，完整性对账靠字节计数）。
         DataDigestMessage digest;
         digest.root_crc_ = 0;
         digest.chunk_count_ = frames;

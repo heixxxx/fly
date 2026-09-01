@@ -67,16 +67,6 @@ std::streamsize DecompressingStreamBuf::xsgetn(char* s, std::streamsize n) {
     return copied;
 }
 
-bool DecompressingStreamBuf::pull_exact(char* dst, size_t n) {
-    size_t got = 0;
-    while (got < n) {
-        const int64_t r = source_->pull(dst + got, n - got);
-        if (r <= 0) return false;  // 源侧失败 / EOF（不足 n = 截断）
-        got += static_cast<size_t>(r);
-    }
-    return true;
-}
-
 bool DecompressingStreamBuf::refill() {
     if (checksum_failed_) return false;
     if (pull_consumed_ >= block_area_len_) return false;  // 块流恰耗完成

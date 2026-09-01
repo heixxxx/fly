@@ -207,14 +207,15 @@ void PeerRpcServer::server_loop() {
                                     // 外层 8B frame header。
                                     const uint64_t raw_len =
                                         ChunkFrameProtocol::raw_len_from_total(total_len);
-                                    if (buf.size() < 8 + total_len) break;  // 帧不完整，等更多数据
                                     if (raw_len == 0) {
                                         ERR("[PEER-STREAM] DATA_CHUNK zero raw_len");
                                         buf.clear();
                                         break;
                                     }
-                                    // 边收边喂：跨帧块重组 + CRC 验证 + 压缩
-                                    // 态记录入有界队列（解压在消费线程并行）。
+                                    // 边收边喂：跨帧块重组 + 完整块记录入
+                                    // 有界队列（CRC 验证在业务读端
+                                    // ReadPipeline 的 CrcVerifyStage——
+                                    // 消费拉动，与网络接收重叠）。
                                     if (!feed_stream_bytes(*sit->second, buf.data() + 29,
                                                            raw_len)) {
                                         ERR("[PEER-STREAM] stream data error, closing conn");
@@ -745,8 +746,7 @@ bool PeerRpcServer::send_bye(uint64_t conn_id) {
         bye_closed_conns_.insert(conn_id);  // 正常关闭标记（ACK 路径已由 handle_bye 同线程先行标记，此处幂等）
     }
 
-    if (got_ack) {
-    } else {
+    if (!got_ack) {
         WARN("PeerRpcServer BYE timeout (no ACK), force close conn_id={}", conn_id);
     }
     close_connection(conn_id);  // 幂等（服务端可能已 close）

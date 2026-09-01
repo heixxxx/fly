@@ -56,7 +56,8 @@ def member_serve(db, gen):
     import threading
     threading.Thread(target=loop, daemon=True).start()
 
-    pass  # 单 worker 自环：echo 循环由 daemon 线程承担，task 立即返回
+    pass  # echo 循环由 daemon 线程承担，task 立即返回（拓扑：member/check
+          # 分属不同 worker，见 main——单 worker 自环 GIL 争抢数字失真）
 
 
 @as_task(requires=["check"])

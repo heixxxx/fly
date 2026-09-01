@@ -20,7 +20,7 @@
 
 namespace fly {
 
-// 线上协议 status（PeerRpcResponseMessage.status_ 字段的取值）。
+// 线上协议 status（单帧 RESPONSE 直拼帧 status 字节的取值）。
 // 与 WorkerAgent 内部 PeerRpcStatus 分开：BYE 是连接管理信号，在
 // response_handler 层拦截处理，不传到 pending RPC / 调用方。
 enum class PeerRpcWireStatus : uint8_t {
@@ -179,12 +179,15 @@ public:
     // 完整性；连接独占（START 至 END 之间无其他帧）。
     bool send_stream_start(uint64_t conn_id, uint64_t rpc_id, uint8_t direction,
                            uint8_t compression_type);
+    // 原始块流发送（测试/诊断专用——单测构造任意/畸形流用；生产路径经
+    // PeerStreamWriter，直发语义见 transport_send_raw）。
     bool send_stream_data(uint64_t conn_id, const char* data, size_t n);
     bool send_stream_end(uint64_t conn_id, uint64_t rpc_id,
                          uint64_t total_uncompressed, uint32_t chunk_count,
                          uint64_t consumed);
     // 便捷封装：压缩块流经管线（压缩+块格式化）→ 4MB 切帧 → END。
     // 返回统计（total_uncompressed/chunk_count），失败返回 false。
+    // （当前仅单测消费；生产响应路径用 peer_stream_respond_writer。）
     bool send_stream_payload(uint64_t conn_id, uint64_t rpc_id, uint8_t direction,
                              const CMString& payload, CompressionType comp,
                              int level, uint64_t& total_out, uint32_t& chunks_out);
@@ -309,18 +312,19 @@ public:
     // 统计：finish() 返回后读取（压缩线程结束后才稳定）。
     uint64_t total_uncompressed() const { return total_uncompressed_; }
     uint32_t chunk_count() const { return chunk_count_; }
-    bool ok() const { return started_; }       // START 成功（构造即定）
+    bool ok() const { return started_; }       // START 成功（构造即定）；
+                                               // finish 结果用返回值，勿混淆
     uint64_t rpc_id() const { return rpc_id_; }
     // 阶段耗时（纳秒，finish 后读）——并行结构验证打点。
     uint64_t write_wait_ns() const { return write_wait_ns_; }  // 生产端等队列空间（下游慢）
     uint64_t compress_ns() const { return compress_ns_; }      // 压缩线程：出队+压缩+组帧
-    uint64_t send_ns() const { return send_ns_; }
+    uint64_t send_ns() const { return send_ns_; }              // 压缩线程：socket 发送
     // 一次性读取并清零（perf case 分阶段打点用）。
     void take_stage_stats(uint64_t& wait_ns, uint64_t& comp_ns, uint64_t& send_ns) {
         wait_ns = write_wait_ns_.exchange(0);
         comp_ns = compress_ns_.exchange(0);
         send_ns = send_ns_.exchange(0);
-    }              // 压缩线程：socket 发送
+    }
 
 private:
     void compress_loop(CompressionType comp, int level);

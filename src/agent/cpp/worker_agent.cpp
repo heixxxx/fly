@@ -2858,7 +2858,11 @@ void WorkerAgent::ensure_peer_rpc_handlers() {
     peer_rpc_server_->set_response_handler(
         [this](uint64_t conn_id, uint64_t rpc_id, uint8_t status, CMString payload,
                const PeerStreamReaderPtr& reader) {
+            // e26f5d6 曾误删 INFO( 前缀留下孤立逗号表达式（响应到达日志
+            // 丢失、complete 侥幸在表达式末位仍执行）——恢复完整日志语句。
+            DBG("[PEER-RPC] response conn={} rpc={} status={} reader={} "
                 "payload_len={}", conn_id, rpc_id, status, reader != nullptr,
+                payload.size());
             pending_peer_rpcs_.complete(rpc_id, [&](PendingPeerRpc& p) {
                 PeerRpcStatus mapped;
                 switch (static_cast<PeerRpcWireStatus>(status)) {

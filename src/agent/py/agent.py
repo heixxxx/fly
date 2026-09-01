@@ -1682,7 +1682,25 @@ class Worker(FlyAgent):
                       "io_stats": {"read_ms": 0.0, "read_bytes": 0,
                                    "write_ms": 0.0, "items": [],
                                    "mem_peak_rss": 0}}
-        self._agent.finish_task(task, result)
+        try:
+            self._agent.finish_task(task, result)
+        except Exception:
+            # finish 本身的兜底（outstanding 悬挂的最后一环）：result dict
+            # 核心键形态异常时 C++ 侧 cast 抛错——task 已出队而 finish 未
+            # 执行，master 侧 RUNNING 永不归零。以最小合法形态重试一次。
+            import traceback
+            try:
+                self._agent.finish_task(task, {
+                    "task_id": task["task_id"], "status": 1,
+                    "output": "", "error": "finish fallback: "
+                    + traceback.format_exc(), "outputs": [],
+                    "frozen_dbs": [],
+                    "io_stats": {"read_ms": 0.0, "read_bytes": 0,
+                                 "write_ms": 0.0, "items": [],
+                                 "mem_peak_rss": 0}})
+            except Exception:
+                from _fly_log import ERR
+                ERR(f"[POLL] finish_task failed twice, task_id={task['task_id']}")
         return True
 
     def set_worker_property(self, prop):
