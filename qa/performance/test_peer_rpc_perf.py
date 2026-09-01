@@ -1,7 +1,7 @@
 """PeerRpc 性能基准 case：流式大 payload vs 单帧基线。
 
 矩阵：payload（256KB/4MB/16MB/64MB/1GB）× 模式（stream-lz4 / stream-zstd9 /
-stream-none / single-frame 基线 ≤16MB 档）。member echo 服务按请求回传
+stream-none / single-frame 基线全档）。member echo 服务按请求回传
 （响应恒流式）。断言仅数据完整性；性能数字打印供对比（不设紧阈值防 flaky）。
 单帧基线在大 payload 档的内存峰值/失败是旧路径缺陷的现场，原样记录。
 """
@@ -128,15 +128,15 @@ def check_run(db, gen):
             continue
         payload = os.urandom(size)
         tag_mb = f"{size/1024/1024:.0f}MB"
-        if size <= 16 * 1024 * 1024:
-            bench(f"single-frame {tag_mb}", single_roundtrip, payload)
+        bench(f"single-frame {tag_mb}", single_roundtrip, payload)
         stream_bench(payload, "lz4", -1, f"stream-lz4    {tag_mb}")
         stream_bench(payload, "zstd", 9, f"stream-zstd9  {tag_mb}")
         stream_bench(payload, "none", -1, f"stream-none   {tag_mb}")
 
     if full:
-        # 1GB 主档：仅流式（单帧 1GB 触发旧路径内存缺陷，不做对照）。
         big = os.urandom(BIG)
+        # single 512MB 基线已单独测得：写缓冲 drain-leftover 大缓冲排队
+        # （WBUF 现场），此处仅测流式对照。
         stream_bench(big, "lz4", -1, f"stream-lz4  {BIG/1024/1024:.0f}MB")
         stream_bench(big, "none", -1, f"stream-none {BIG/1024/1024:.0f}MB")
         del big
