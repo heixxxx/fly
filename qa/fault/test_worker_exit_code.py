@@ -29,10 +29,13 @@ FLY_BIN = get_fly_binary()
 
 
 def _spawn_worker(worker_id):
+    # stderr 保留到文件：C++ terminate_handler 的 FATAL backtrace 输出在
+    # stderr（_exit(77)）——吞掉会丢失崩溃现场。
+    err = open(os.path.join(LOG_DIR, f"worker{worker_id}.stderr"), "ab")
     return subprocess.Popen(
         [FLY_BIN, "--worker", "--worker-id", str(worker_id),
          "--log-dir", LOG_DIR, "--config-file", CONFIG_PATH],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stdout=subprocess.DEVNULL, stderr=err)
 
 
 # ── 1. 首次注册：worker_id=7 正常上线 ───────────────────────────────

@@ -133,6 +133,10 @@ public:
     ~WorkerAgent();
     
     void start();
+    // 生命周期单发标志：start 语义为进程级一次（REJECTED/abnormal 退出后
+    // running_=false 但 reactor/常驻线程对象仍 joinable——二次 start 的
+    // thread 移动赋值 = std::terminate（FATAL 栈实证）。
+    std::atomic<bool> start_invoked_{false};
     void stop();
     bool is_running() const;
     uint64_t get_worker_id() const;

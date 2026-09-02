@@ -86,6 +86,11 @@ uint64_t WorkerAgent::connect_master_with_retry(ConnectionManager& transport) {
 }
 
 void WorkerAgent::start() {
+    if (start_invoked_.exchange(true)) {
+        ERR("WorkerAgent::start() re-entered after shutdown — worker lifecycle "
+            "is single-shot (per-process); ignoring");
+        return;
+    }
     if (running_) return;
 
     shutdown_triggered_ = false;

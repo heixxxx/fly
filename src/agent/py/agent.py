@@ -1608,6 +1608,11 @@ class Worker(FlyAgent):
         self._role = role
 
     def start(self):
+        # 单发幂等（C++ start_invoked_ 同款语义）：start 语义为进程级一次，
+        # REJECTED/abnormal 退出后二次调用会对 joinable 线程移动赋值。
+        if getattr(self, "_start_invoked", False):
+            return
+        self._start_invoked = True
         # 执行上提（消灭 C++→Python 反调）：不再向 C++ 注入 executor 回调。
         # task 执行体（create_executor 产物）由本进程 Python 主循环的
         # poll_loop 直接调用——C++ 只提供 take_task/finish_task 正向原语。
