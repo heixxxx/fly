@@ -72,7 +72,7 @@ def _register_lazy_modules():
     """
     try:
         from fly.userdoc import register_module
-    except ImportError:
+    except ImportError:  # pragma: no cover（依赖恒存在，防御）
         return
     for name, target in _LAZY_MODULES.items():
         register_module(name, target)
@@ -103,6 +103,6 @@ def get_script_namespace():
         from fly.userdoc import _REGISTERED_MODULES
         for name, target in _REGISTERED_MODULES.items():
             ns[name] = _LazyAttr(target)
-    except ImportError:
+    except ImportError:  # pragma: no cover（同上）
         pass
     return ns

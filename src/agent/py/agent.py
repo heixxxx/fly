@@ -1674,7 +1674,7 @@ class Worker(FlyAgent):
         try:
             result = self._exec_func(task["task_id"], task["task_name"],
                                      task["task_module"], task["args"])
-        except Exception:
+        except Exception:  # pragma: no cover（executor 双重失败防御，见下注）
             # executor 自身异常兜底（正常失败路径 executor 内部已捕获构造
             # status=1 result；此层防御保证 finish 必被调用——outstanding
             # 计数不悬挂，master 侧 RUNNING 必归零）。
@@ -1687,7 +1687,7 @@ class Worker(FlyAgent):
                                    "mem_peak_rss": 0}}
         try:
             self._agent.finish_task(task, result)
-        except Exception:
+        except Exception:  # pragma: no cover（同上，finish 悬挂最后防线）
             # finish 本身的兜底（outstanding 悬挂的最后一环）：result dict
             # 核心键形态异常时 C++ 侧 cast 抛错——task 已出队而 finish 未
             # 执行，master 侧 RUNNING 永不归零。以最小合法形态重试一次。

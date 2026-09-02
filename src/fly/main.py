@@ -34,7 +34,7 @@ def _stop_coverage():
         cov = coverage.Coverage.current()
         if cov is not None:
             cov.stop()
-            cov.save()  # pragma: no cover（采集自反身路径）
+            cov.save()  # pragma: no cover（采集自反身路径：tracer 已停）
     except Exception:  # pragma: no cover
         pass
 
@@ -46,7 +46,7 @@ def _cleanup():
         try:
             from _fly_log import INFO as _INFO
             _INFO("_cleanup stage '{}' took {:.3f}s".format(stage, _ct.monotonic() - _ct0))
-        except Exception:
+        except Exception:  # pragma: no cover（清理解构兜底）
             pass
 
     try:
@@ -55,7 +55,7 @@ def _cleanup():
         if agent is not None:
             reset()
             del agent
-    except Exception:
+    except Exception:  # pragma: no cover（清理解构兜底）
         pass
     _clog("agent_reset")
 
@@ -65,7 +65,7 @@ def _cleanup():
         ds.drain_write_back()
         ds.stop_write_back()
         ds.stop_transfer_server()
-    except Exception:
+    except Exception:  # pragma: no cover（清理解构兜底）
         pass
     _clog("storage_drain")
 
@@ -73,7 +73,7 @@ def _cleanup():
         from _fly_storage import ex_stg_get_storage_manager
         sm = ex_stg_get_storage_manager()
         sm.close_all()
-    except Exception:
+    except Exception:  # pragma: no cover（清理解构兜底）
         pass
     _clog("storage_close")
 
@@ -180,6 +180,7 @@ def _run_master():
             agent.stop()
 
 
+# pragma: no cover（SIGUSR1 转储：os._exit(42) 跳过 atexit，coverage 结构上不可采）
 def _dump_on_signal(sig, frame):
     """SIGUSR1 handler: dump all thread stacks (Python + native) to
     .fly.{pid}.stack then exit.
@@ -246,7 +247,7 @@ def _dump_on_signal(sig, frame):
             except Exception as _e:
                 f.write(f"(failed to read native stacks: {_e})\n")
             f.write(f"\n=== end dump ===\n")
-    except Exception:
+    except Exception:  # pragma: no cover（清理解构兜底）
         pass
     # 直接退出，不跑 atexit（那个可能就是慢的原因）
     os._exit(42)
@@ -260,7 +261,7 @@ def run():
         try:
             from _fly_agent import ex_agent_set_graceful_shutdown
             ex_agent_set_graceful_shutdown()
-        except Exception:
+        except Exception:  # pragma: no cover（清理解构兜底）
             pass
         raise SystemExit(0)
 

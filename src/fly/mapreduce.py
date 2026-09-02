@@ -27,7 +27,7 @@ from uuid import uuid4
 
 try:
     import cloudpickle
-except ImportError:
+except ImportError:  # pragma: no cover（cloudpickle 为硬依赖，恒存在）
     cloudpickle = None
 
 from fly import as_task

@@ -91,14 +91,14 @@ measure_python() {
     # parallel=True in .coveragerc makes each process write
     # $PY_DATA_DIR/.coverage.<host>.<pid>.<rand>; combine merges them into one.
     cd "$FLY_ROOT"
-    coverage combine --data-file="$PY_DATA_DIR/.coverage" "$PY_DATA_DIR" 2>&1 \
+    coverage combine --rcfile="$FLY_ROOT/src/fly/.coveragerc" --data-file="$PY_DATA_DIR/.coverage" "$PY_DATA_DIR" 2>&1 \
         || warn "coverage combine had issues"
 
     # Generate reports
     mkdir -p "$py_dir"
-    coverage report --data-file="$PY_DATA_DIR/.coverage" --show-missing > "$py_dir/report.txt" 2>&1
-    coverage json --data-file="$PY_DATA_DIR/.coverage" -o "$py_dir/coverage.json" 2>&1
-    coverage html --data-file="$PY_DATA_DIR/.coverage" -d "$py_dir/html" 2>&1
+    coverage report --rcfile="$FLY_ROOT/src/fly/.coveragerc" --data-file="$PY_DATA_DIR/.coverage" --show-missing > "$py_dir/report.txt" 2>&1
+    coverage json --rcfile="$FLY_ROOT/src/fly/.coveragerc" --data-file="$PY_DATA_DIR/.coverage" -o "$py_dir/coverage.json" 2>&1
+    coverage html --rcfile="$FLY_ROOT/src/fly/.coveragerc" --data-file="$PY_DATA_DIR/.coverage" -d "$py_dir/html" 2>&1
 
     # Print summary
     echo ""

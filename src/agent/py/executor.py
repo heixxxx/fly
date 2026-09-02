@@ -22,7 +22,7 @@ import traceback
 
 try:
     import cloudpickle
-except ImportError:
+except ImportError:  # pragma: no cover（cloudpickle 为硬依赖，恒存在）
     cloudpickle = None
 
 from task import USER_MODULE, USER_FUNC_PREFIX

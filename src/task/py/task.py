@@ -2,7 +2,7 @@ import pickle
 
 try:
     import cloudpickle
-except ImportError:
+except ImportError:  # pragma: no cover（cloudpickle 为硬依赖，恒存在）
     cloudpickle = None
 
 from _fly_log import DBG
@@ -280,7 +280,7 @@ def _wait_for_objects(deps, poll_interval, timeout=None):
 def _serialize_args(args):
     try:
         import cloudpickle
-    except ImportError:
+    except ImportError:  # pragma: no cover（cloudpickle 为硬依赖）
         cloudpickle = None
     result = []
     for arg in args:

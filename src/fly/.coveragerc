@@ -37,10 +37,25 @@ sigterm = True
 [paths]
 # Map the two on-disk layouts (build/ symlinks vs bazel-bin) to a single
 # logical "fly" source root so combined data isn't split across path variants.
+# 2026-09-02: bazel py_test 的被测模块经 runfiles 路径 import（.../runfiles/
+# _main/src/<mod>/...）——四个包各自需要 runfiles→源树映射，否则 py_test
+# 的数据在 combine 后成孤儿条目（QA 数据与单测数据不合并）。
 source =
     fly
     /root/fly/src/fly
     */src/fly
+storage =
+    storage
+    /root/fly/src/storage
+    */src/storage
+agent =
+    agent
+    /root/fly/src/agent
+    */src/agent
+task =
+    task
+    /root/fly/src/task
+    */src/task
 
 [report]
 # Files matching these patterns are excluded from the report (test helpers,
