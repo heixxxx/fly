@@ -216,11 +216,9 @@ FLY_EXPORT_CLASS(Database, "EXStgDatabase")
         db.put_temp_data(name, buf);
     })
     // ---- Var service ----
-    // All entries accept/return FlyBufferPtr directly (zero-copy in process):
-    //   - Python objects: pickle.dumps → bytes → _set_var_bytes wraps into FlyBuffer
-    //   - C++ exported objects: __getstate_buffer__ returns FlyBufferPtr → _set_var_buffer
-    // get_var returns the FlyBufferPtr so the caller can __setstate_from_buffer__
-    // a C++ object without copying through Python bytes.
+    // All entries accept/return FlyBufferPtr directly (zero-copy in process).
+    // var 是 Python 业务侧轻量对象 API（pickle 协议）；C++ 导出对象不经 var
+    //（2026-09-02 裁定）。type_name 仅作信息性元数据。
 
     // _set_var_bytes(name, pickle_bytes, type_name) -> bool (success).
     // For Python objects serialized via pickle.

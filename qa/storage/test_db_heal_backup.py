@@ -1,10 +1,9 @@
-"""db 链补洞 / backup 副本 / var C++ 导出对象往返 / find_all_dbs 深链。
+"""db 链补洞 / backup 副本 / var Python 对象往返 / find_all_dbs 深链。
 
 覆盖（2026-09 覆盖率批次 14 项之 4）：
   - A→B 链手工删除 A.next → load_db(B) 触发 _heal_next_edges 回填
   - db.backup_object 生成 backup 副本 → read_object(backup=True) 读回一致
-  - set_var/get_var：C++ 导出对象（__getstate_buffer__ 零拷贝路径）与
-    Python 对象（pickle 路径）双分支往返
+  - set_var/get_var：Python 对象（pickle 路径）往返 + miss 语义
   - find_all_dbs 深链（BFS 距离序）+ 按条件过滤
 """
 import os
@@ -81,11 +80,8 @@ healed.backup_object("never_written_obj")
 INFO("[PASS] write_object(backup=True) + backup_object abandon semantics")
 
 # ── 3. var Python 对象分支往返 + miss 语义 ───────────────────────────
-# 注（发现，未修）：var 的 C++ 导出对象分支当前不可用——get_var 按 type_name
-# 在 _fly_storage 反查类后调 __setstate_from_buffer__(buf)，而 _get_var 返回的
-# buf（CMSharedPtr<FlyBuffer>）与 nanobind 绑定签名不匹配 → TypeError；
-# 且 EXTestObject 等注册在 _fly_test 的类不在 _fly_storage，会误走 pickle 分支
-# 必败。本 case 只覆盖可工作的 Python 对象分支。
+# var 是 Python 业务侧轻量对象 API（2026-09-02 裁定）：C++ 导出对象分支
+# 已随裁定删除（原分支按 type_name 反查 _fly_storage 必败，见 fix 记录）。
 db.set_var("py_obj", {"k": [1, 2]})
 assert db.get_var("py_obj") == {"k": [1, 2]}
 db.set_var("py_str", "hello_var")

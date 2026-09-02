@@ -302,12 +302,10 @@ class Database:
     # WriteBackQueue / dependency-graph machinery. Vars are immutable (a second
     # set on the same name is rejected) and are persisted at freeze time.
     #
-    # All values flow through FlyBufferPtr (zero-copy in process):
-    #   - C++ exported objects: __getstate_buffer__ returns a FlyBufferPtr stored
-    #     directly; get_var reconstructs via __setstate_from_buffer__ (no Python
-    #     bytes round-trip).
-    #   - Python objects: pickle.dumps -> bytes -> wrapped into FlyBuffer at the
-    #     C++ boundary; get_var unwraps and pickle.loads.
+    # var 是 Python 业务侧的轻量数据对象 API（用户裁定 2026-09-02）：值一律
+    # pickle → FlyBuffer 存储。C++ 导出对象不进 var——需要 C++ 对象时由
+    # Python get_var 后传入 C++ 导出函数。值经 FlyBufferPtr 全程零拷贝
+    # （pickle.dump 直写 FlyBuffer；get_var 侧 unwrap + pickle.loads）。
     def set_var(self, name: str, value):
         """Store a small object under `name`. Synchronous (waits for master).
 
@@ -315,19 +313,10 @@ class Database:
         Serialized size > 1K logs a warning (use write_object instead).
         """
         type_name = type(value).__name__
-        if hasattr(value, '__getstate_buffer__'):
-            # C++ exported object: zero-copy. __getstate_buffer__ returns a
-            # FlyBufferPtr (FLY_ENCODE_TO_BUFFER, non-streaming) that is stored
-            # directly via shared ownership.
-            buf = value.__getstate_buffer__()
-            ok = self._db._set_var_buffer(name, buf, type_name)
-        else:
-            # Python object: pickle.dump writes directly into a FlyBuffer via the
-            # file protocol — no intermediate Python bytes object.
-            from _fly_storage import FlyBuffer
-            buf = FlyBuffer()
-            pickle.dump(value, buf)
-            ok = self._db._set_var_buffer(name, buf, type_name)
+        from _fly_storage import FlyBuffer
+        buf = FlyBuffer()
+        pickle.dump(value, buf)
+        ok = self._db._set_var_buffer(name, buf, type_name)
         if not ok:
             import _fly_log
             _fly_log.ERR(f"set_var rejected: '{name}' (frozen or already exists)")
@@ -338,23 +327,17 @@ class Database:
         master on local cache miss). Returns None if the var does not exist
         (distinct from a stored value, which is returned as-is).
 
-        Deserialization dispatches by the stored type_name: C++ exported objects
-        are reconstructed via __setstate_from_buffer__ (zero-copy from the shared
-        FlyBufferPtr); Python objects via pickle.loads.
+        Values are Python-side lightweight objects (pickle protocol). C++
+        exported objects do not go through var——Python get_var 后传入 C++
+        导出函数（用户裁定 2026-09-02）。
         """
         success, buf, type_name = self._db._get_var(name)
         if not success or buf is None:
             return None  # var does not exist
-        import _fly_storage
-        cls = getattr(_fly_storage, type_name, None)
-        if cls is not None and hasattr(cls, '_read_from_db'):
-            obj = cls.__new__(cls)
-            obj.__setstate_from_buffer__(buf)  # zero-copy fill
-            return obj
-        # Python object: pickle.load reads from the FlyBuffer via the file
-        # protocol (readinto/read/readline). pickle's C unpickler uses
-        # readinto to fill its own working buffer directly — one
-        # serialization-inherent copy, no intermediate Python bytes object.
+        # pickle.load reads from the FlyBuffer via the file protocol
+        # (readinto/read/readline). pickle's C unpickler uses readinto to fill
+        # its own working buffer directly — one serialization-inherent copy,
+        # no intermediate Python bytes object.
         # seek(0) first: the FlyBufferPtr is shared in the cache, and a prior
         # read may have advanced the cursor (Python GIL makes seek+load atomic).
         buf.seek(0)
