@@ -799,10 +799,6 @@ std::pair<CMString, CMString> DataService::split_full(const CMString& full) {
     return {full.substr(0, pos), full.substr(pos + 1)};
 }
 
-CMString DataService::get_db_path_for_object(const CMString& object_name) const {
-    return split_full(object_name).first;
-}
-
 // ============================================================
 // Private Helpers — Read Operations
 // ============================================================

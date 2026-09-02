@@ -1421,22 +1421,6 @@ void WorkerAgent::begin_task(uint64_t task_id, const CMString& write_context_has
     WorkerAgentContext::set_register_func([this](const CMString& db_path, const CMString& name, int64_t size, bool preliminary) -> std::pair<CMString, TaskErrorType> {
         return register_write_with_master(db_path, name, size, preliminary);
     });
-    WorkerAgentContext::set_notify_removed_func([this](const CMString& db_path, const CMString& name) {
-        CMString full_name = db_path + ":" + name;
-        ObjectRemovedMessage msg;
-        msg.object_name_ = full_name;
-        msg.db_path_ = db_path;
-        // B 类（遗留通知路径，无生产调用者——db.remove_object 实际走
-        // request_object_remove 同步链路）：防御性入队，断连窗口不丢。
-        if (!registered_.load()) {
-            enqueue_master_send([this, msg](uint64_t conn) { reactor_->send(conn, msg); });
-            WARN("ObjectRemoved pending (not registered): {} — replays after "
-                 "registration", full_name);
-            return;
-        }
-        reactor_->send(master_conn_, msg);
-        INFO("ObjectRemoved sent to master: {}", full_name);
-    });
     WorkerAgentContext::set_freeze_func([this](const CMString& db_path) {
         request_database_freeze(db_path);
     });

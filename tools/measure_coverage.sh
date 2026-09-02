@@ -59,6 +59,22 @@ measure_python() {
     # 失败明细在 runqa 输出与 qa/logs/qa.log 中，不掩盖）。
     FLY_PYCOVERAGE=1 bash "$FLY_ROOT/qa/run_qa_tests.sh" -j 2 || warn "QA had failures — combining coverage from passed cases anyway"
 
+    # ── bazel py_test 纳入采集（2026-09-02）──
+    # 仓库有 13 个 py_test target（userdoc/db_meta/executor/callable_args 等），
+    # 此前只跑 QA 时这批已有用例的覆盖被完全漏计（大量假 miss）。py_test 的
+    # coverage 经 COVERAGE_PROCESS_START + sitecustomize 自启；.bazelrc 已全局
+    # test --spawn_strategy=standalone（数据文件写 .coveragerc 钉死的绝对路径
+    # 不被沙箱隔离，parallel 模式各自落文件）。单 target 失败不阻断（诊断语义）。
+    info "Running bazel py_test targets with coverage..."
+    bazel test \
+        --test_env=FLY_PYCOVERAGE=1 \
+        --test_env=COVERAGE_PROCESS_START="$FLY_ROOT/src/fly/.coveragerc" \
+        --test_env=PYTHONPATH="$FLY_ROOT/build/python" \
+        --test_timeout=120 \
+        //src/fly/tests:all //src/storage/tests:all \
+        //src/task/tests:all //src/agent/tests:all \
+        2>&1 | tail -3 || warn "some py_test targets failed — coverage kept"
+
     # Combine all per-process data files from the pinned location.
     # parallel=True in .coveragerc makes each process write
     # $PY_DATA_DIR/.coverage.<host>.<pid>.<rand>; combine merges them into one.

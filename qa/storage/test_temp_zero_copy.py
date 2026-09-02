@@ -1,7 +1,7 @@
 """Verify temp data read/write paths（2026-08-30 去"①形态"改造后的语义）。
 
 temp 存储语义（用户裁定链：写穿落盘 → 内存压缩 record 退役）：
-  write path: compress_buffered_data → put_temp_data → write-through 落盘
+  write path: put_temp_data → write-through 落盘
     （.temp.data_{wid}_{NNN}.dat + .temp.{wid}.idx）——内存不驻压缩 record。
   read path:  恒流式统一盘路径（DiskChunkSource pread / serve_chunked）；
     对象级加速由 Python temp 缓存池承担（缓存双池改造阶段接入）。

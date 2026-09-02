@@ -11,7 +11,6 @@
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/object_cache.h>
 #include <storage/cpp/memory_chunk_source.h>
-#include <storage/cpp/decompress_helper.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/fly_stream.h>
 #include <common/cpp/write_context_hash.h>

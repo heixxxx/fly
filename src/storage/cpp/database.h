@@ -149,13 +149,6 @@ private:
     void ensure_directory_exists(const CMString& path);
     CMString full_name(const CMString& short_name) const;
 
-    struct CompressResult {
-        int64_t original_size_;
-        int32_t chunk_count_;
-    };
-    CompressResult compress_buffered_data(const char* data, int64_t data_size,
-                                           const CMString& py_name, FlyBuffer& target);
-
     // Shared backup write logic: takes ownership of compressed_data and writes it
     // as a backup record for the given object.
     void do_backup_write(const CMString& full, const CMString& object_name, CMString compressed_data, const CMString& source_hash = {});

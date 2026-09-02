@@ -49,9 +49,6 @@ def _cleanup():
         except Exception:
             pass
 
-    _stop_coverage()
-    _clog("coverage_stop")
-
     try:
         from fly.runtime import get_agent, reset
         agent = get_agent()
@@ -83,6 +80,13 @@ def _cleanup():
     import gc
     gc.collect()
     _clog("gc_collect")
+
+    # coverage 停止必须在全部清理动作之后：先 stop 会把其后执行的清理
+    # 代码（agent reset / storage drain / gc）从采集里剔除（覆盖率假缺
+    # 口）。C++ graceful_exit 可能 _exit() 跳过 atexit 的路径仍由
+    # _stop_coverage 的显式 stop+save 兜底——只是时机移到末尾。
+    _stop_coverage()
+    _clog("coverage_stop")
 
 
 def _redirect_worker_io(worker_id, log_dir):

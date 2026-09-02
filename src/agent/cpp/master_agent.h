@@ -761,7 +761,6 @@ private:
     void record_worker_info(const CMString& object_name, const CMString& db_path,
                             uint64_t worker_id, const CMString& writer_id);
     void on_worker_property_update(uint64_t conn_id, const WorkerPropertyUpdateMessage& msg);
-    void on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg);
     void on_remove_request(uint64_t conn_id, const RemoveRequestMessage& msg);
     void on_database_freeze_request(uint64_t conn_id, const DatabaseFreezeNotification& msg);
     void on_idx_load_ack(uint64_t conn_id, const IdxLoadAckMessage& msg);

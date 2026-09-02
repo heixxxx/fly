@@ -15,10 +15,6 @@ public:
         record_write_func_ = std::move(func);
     }
 
-    static void set_notify_removed_func(std::function<void(const CMString& db_path, const CMString& name)> func) {
-        notify_removed_func_ = std::move(func);
-    }
-
     static void set_freeze_func(std::function<void(const CMString& db_path)> func) {
         freeze_func_ = std::move(func);
     }
@@ -30,7 +26,6 @@ public:
     static void clear() {
         record_write_func_ = nullptr;
         register_func_ = nullptr;
-        notify_removed_func_ = nullptr;
         freeze_func_ = nullptr;
         remove_request_func_ = nullptr;
         backup_request_func_ = nullptr;
@@ -75,12 +70,6 @@ public:
 
     static bool is_transaction_mode() {
         return transaction_mode_;
-    }
-
-    static void notify_object_removed(const CMString& db_path, const CMString& object_name) {
-        if (notify_removed_func_) {
-            notify_removed_func_(db_path, object_name);
-        }
     }
 
     static void notify_freeze(const CMString& db_path) {
@@ -209,7 +198,6 @@ public:
 private:
     static inline thread_local std::function<void(const CMString&, const CMString&, int64_t)> record_write_func_;
     static inline thread_local std::function<std::pair<CMString, TaskErrorType>(const CMString&, const CMString&, int64_t, bool)> register_func_;
-    static inline thread_local std::function<void(const CMString&, const CMString&)> notify_removed_func_;
     static inline thread_local std::function<void(const CMString&)> freeze_func_;
     static inline thread_local std::function<void(const CMString&, const CMString&)> remove_request_func_;
     static inline thread_local std::function<void(const CMString&, const CMString&)> backup_request_func_;

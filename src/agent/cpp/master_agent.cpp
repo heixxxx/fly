@@ -228,11 +228,6 @@ void MasterAgent::start() {
             on_worker_property_update(conn_id, msg);
         });
 
-    reactor_->register_handler<ObjectRemovedMessage>(
-        [this](uint64_t conn_id, const ObjectRemovedMessage& msg) {
-            on_object_removed(conn_id, msg);
-        });
-
     reactor_->register_handler<DatabaseFreezeNotification>(
         [this](uint64_t conn_id, const DatabaseFreezeNotification& msg) {
             on_database_freeze_request(conn_id, msg);
@@ -746,11 +741,6 @@ void MasterAgent::do_drain_and_stop() {
         reactor_->stop();
         if (reactor_thread_.joinable()) {
             reactor_thread_.join();
-        }
-        // 与 start() 内 reactor 线程尾部的 drain_handlers 同理：reset 前等 lane
-        // 排空，防止在途 handler 解引用已置空的 reactor_。
-        if (reactor_) {
-            reactor_->drain_handlers();
         }
         reactor_.reset();
     }
@@ -1678,7 +1668,6 @@ const char* task_status_name(TaskStatus s) {
         case TaskStatus::RUNNING:   return "RUNNING";
         case TaskStatus::COMPLETED: return "COMPLETED";
         case TaskStatus::FAILED:    return "FAILED";
-        case TaskStatus::CANCELLED: return "CANCELLED";
     }
     return "UNKNOWN";
 }
@@ -3203,24 +3192,6 @@ void MasterAgent::on_worker_property_update(uint64_t conn_id, const WorkerProper
     // 属性变化后立即触发调度：worker 通过 set_worker_property 获得新属性后，
     // 等待该属性的 task（waiting 中）应立即被调度，无需等到 timeout。
     schedule_tasks();
-}
-
-void MasterAgent::on_object_removed(uint64_t conn_id, const ObjectRemovedMessage& msg) {
-    INFO("ObjectRemoved: object={}, db_path={}", msg.object_name_, msg.db_path_);
-
-    DataService::instance()->remove_remote_index(msg.object_name_);
-    {
-        auto [db_path, short_name] = fly::split_full_name(msg.object_name_);
-        provenance_erase(db_path, short_name);
-    }
-
-    ObjectRemovedMessage broadcast_msg = msg;
-    for (const auto& [wid, worker_conn_id] : snapshot_worker_conns()) {
-        (void)wid;
-        if (worker_conn_id != conn_id) {
-            reactor_->send(worker_conn_id, broadcast_msg);
-        }
-    }
 }
 
 void MasterAgent::broadcast_object_removed(const CMString& db_path, const CMString& object_name) {

@@ -106,50 +106,6 @@ Database::~Database() {
     fly::DataService::instance()->unregister_database(db_path_);
 }
 
-Database::CompressResult Database::compress_buffered_data(
-    const char* data, int64_t data_size,
-    const CMString& py_name, FlyBuffer& target) {
-
-    // trailer 格式（§4.4）：块流纯追加，完成后追加 trailer——占位+memcpy
-    // 回填消失（total_size/chunk_count 写完末块自然已知）。
-    FlyBufferStreamBuf fly_buf(target);
-    CountingStreamBuf counting_buf(fly_buf);
-    std::ostream counting_stream(&counting_buf);
-
-    int64_t total_uncompressed = 0;
-    int32_t chunk_count = 0;
-    uint8_t effective_comp = static_cast<uint8_t>(compression_type_);
-    CMVector<uint32_t> block_lens;  // B' 块表（csbuf 作用域内带出）
-    {
-        auto compressor = compression_type_ != CompressionType::NONE
-            ? CompressorFactory::create(compression_type_, compression_level_) : nullptr;
-        CompressingStreamBuf csbuf(counting_stream, std::move(compressor),
-                                    serialize_chunk_size_, compression_threshold_);
-        std::ostream os(&csbuf);
-        os.write(data, static_cast<std::streamsize>(data_size));
-        os.flush();
-        total_uncompressed = csbuf.total_uncompressed();
-        chunk_count = csbuf.chunk_count();
-        // Small payloads skip compression internally; record the actual format
-        // so the read-side picks the matching (de)compressor path.
-        effective_comp = static_cast<uint8_t>(csbuf.effective_compression_type());
-        block_lens = csbuf.block_comp_lens();
-    }
-    counting_stream.flush();
-
-    ObjectHeader header;
-    header.compression_type_ = effective_comp;
-    header.total_size_ = static_cast<uint64_t>(total_uncompressed);
-    header.chunk_count_ = static_cast<uint32_t>(chunk_count);
-    header.py_name_ = py_name;
-    header.py_name_len_ = static_cast<uint16_t>(py_name.size());
-    header.block_comp_lens_ = std::move(block_lens);  // B' 块表
-    CMString trailer = header.serialize_trailer();
-    target.write(trailer.data(), trailer.size());
-
-    return {total_uncompressed, chunk_count};
-}
-
 // ── L1 大对象流式写（chunked-transfer-design §9.1 + §14.1 C 项）──
 
 FlyStream* Database::open_write_stream(const CMString& object_name,

@@ -379,7 +379,6 @@ private:
     // ============================================================
 
     static std::pair<CMString, CMString> split_full(const CMString& full);
-    CMString get_db_path_for_object(const CMString& object_name) const;
 
     // ============================================================
     // Private Helpers — Read Operations
