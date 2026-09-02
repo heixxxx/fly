@@ -9,6 +9,9 @@
 #include <common/cpp/test_helpers.h>
 #include <core/cpp/process_info.h>       // master/worker 进程语义切换（权威 remote_idx 保护测试）
 #include <core/cpp/config.h>
+#include <storage/cpp/memory_chunk_source.h>
+#include <serialization/cpp/object_header.h>
+#include <common/cpp/data_checksum.h>
 #include <filesystem>
 #include <istream>
 #include <chrono>
@@ -1660,6 +1663,213 @@ TEST_F(DataServiceTest, GetObjectsOfWorkerReverseLookup) {
 
     ds->remove_remote_index(a);
     ds->remove_remote_index(b);
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// P4-4 read_streaming 的 TIER2 副本轮换（fake streaming handler 注入，确定性）
+// ════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// 组装合法 record（MemoryChunkSource 构造时解析 trailer）。
+FlyBufferPtr make_stream_record(const std::string& data) {
+    auto record = CMMakeShared<FlyBuffer>();
+    int32_t sz = static_cast<int32_t>(data.size());
+    uint64_t crc = fly::data_checksum(data.data(), data.size());
+    record->write(reinterpret_cast<const char*>(&sz), 4);
+    record->write(reinterpret_cast<const char*>(&sz), 4);
+    record->write(reinterpret_cast<const char*>(&crc), 8);
+    record->write(data.data(), data.size());
+    ObjectHeader header;
+    header.total_size_ = data.size();
+    header.chunk_count_ = 1;
+    header.py_name_ = "bytes";
+    header.py_name_len_ = 5;
+    header.compression_type_ = 0;
+    header.block_comp_lens_ = {static_cast<uint32_t>(data.size())};
+    CMString trailer = header.serialize_trailer();
+    record->write(trailer.data(), trailer.size());
+    return record;
+}
+
+fly::CMSharedPtr<fly::ChunkSource> memory_source_from(const FlyBufferPtr& record) {
+    return CMMakeShared<fly::MemoryChunkSource>(record->data(), record->size());
+}
+
+}  // namespace
+
+TEST_F(DataServiceTest, StreamingTier2ChecksumRotatesToHealthyReplica) {
+    ProcessInfo::instance()->set_worker_mode(true);  // 踢副本为 worker 自愈行为
+    CMString full = db32("stream_ro") + ":obj";
+    ds_->update_remote_idx(full, 1, "host_a", 8000);
+    ds_->update_remote_idx(full, 2, "host_b", 9000);
+
+    auto good = make_stream_record("stream payload");
+    ds_->set_streaming_read_handler(
+        [&](const CMString& host, int32_t, const CMString&)
+            -> std::tuple<bool, fly::CMSharedPtr<fly::ChunkSource>, uint64_t, fly::ReadError> {
+            if (host == "host_a") {
+                return {false, nullptr, 0, fly::ReadError::CHECKSUM};
+            }
+            return {true, memory_source_from(good), 48, fly::ReadError::NONE};
+        });
+
+    auto out = ds_->read_streaming(full);
+    ASSERT_TRUE(out.success) << out.error;
+    ASSERT_TRUE(out.source);
+    EXPECT_FALSE(out.source->failed());
+
+    // 坏副本被 remove：worker 1 不再持有该对象。
+    auto workers = ds_->get_remote_workers(full);
+    EXPECT_EQ(std::find(workers.begin(), workers.end(), 1u), workers.end());
+    EXPECT_NE(std::find(workers.begin(), workers.end(), 2u), workers.end());
+
+    ds_->set_streaming_read_handler(nullptr);
+    ProcessInfo::instance()->set_worker_mode(false);
+}
+
+TEST_F(DataServiceTest, StreamingTier2ChecksumBudgetExhausted) {
+    ProcessInfo::instance()->set_worker_mode(true);
+    CMString full = db32("stream_budget") + ":obj";
+    ds_->update_remote_idx(full, 1, "host_solo", 8000);
+
+    ds_->set_streaming_read_handler(
+        [](const CMString&, int32_t, const CMString&)
+            -> std::tuple<bool, fly::CMSharedPtr<fly::ChunkSource>, uint64_t, fly::ReadError> {
+            return {false, nullptr, 0, fly::ReadError::CHECKSUM};
+        });
+
+    auto out = ds_->read_streaming(full);
+    EXPECT_FALSE(out.success);
+    EXPECT_EQ(out.rerr, fly::ReadError::CHECKSUM);
+    // 坏副本被移除（预算耗尽时副本序已空）。
+    EXPECT_FALSE(ds_->has_remote_location(full));
+
+    ds_->set_streaming_read_handler(nullptr);
+    ProcessInfo::instance()->set_worker_mode(false);
+}
+
+// 双副本 NOT_FOUND → 全部移除 → TIER3 刷新（handler 里补注册新副本）→
+// 重进 TIER2 → 新副本成功。
+TEST_F(DataServiceTest, StreamingTier2NotFoundThenTier3RefreshSucceeds) {
+    ProcessInfo::instance()->set_worker_mode(true);  // NOT_FOUND 踢副本同上
+    CMString full = db32("stream_t3") + ":obj";
+    ds_->update_remote_idx(full, 1, "host_x", 8000);
+    ds_->update_remote_idx(full, 2, "host_y", 9000);
+
+    auto good = make_stream_record("tier3 refreshed payload");
+    ds_->set_remote_compressed_read_handler(
+        [&](const CMString& obj) -> std::tuple<bool, bool> {
+            EXPECT_EQ(obj, full);
+            ds_->update_remote_idx(obj, 3, "host_z", 7000);
+            return {true, false};
+        });
+    ds_->set_streaming_read_handler(
+        [&](const CMString& host, int32_t, const CMString&)
+            -> std::tuple<bool, fly::CMSharedPtr<fly::ChunkSource>, uint64_t, fly::ReadError> {
+            if (host == "host_z") {
+                return {true, memory_source_from(good), 64, fly::ReadError::NONE};
+            }
+            return {false, nullptr, 0, fly::ReadError::OBJECT_NOT_FOUND};
+        });
+
+    auto out = ds_->read_streaming(full);
+    ASSERT_TRUE(out.success) << out.error;
+    EXPECT_EQ(out.block_area_len, 64u);
+    // 旧副本已被 NOT_FOUND 移除，只剩刷新出的 host_z。
+    auto workers = ds_->get_remote_workers(full);
+    EXPECT_EQ(workers.size(), 1u);
+    EXPECT_EQ(workers[0], 3u);
+
+    ds_->set_streaming_read_handler(nullptr);
+    ds_->set_remote_compressed_read_handler(nullptr);
+    ProcessInfo::instance()->set_worker_mode(false);
+}
+
+// ── 杂项清扫 ────────────────────────────────────────────────────────
+
+// restore_temp_entries 等价去重：同 write_context_hash 的重放 entry 跳过。
+TEST_F(DataServiceTest, RestoreTempEntriesDedupsSameHash) {
+    CMString db_path = db32("temp_dedup");
+    IndexEntry e1;
+    e1.object_name_ = "iter/x";
+    e1.file_name_ = "d1.dat";
+    e1.offset_ = 0;
+    e1.size_ = 10;
+    e1.write_context_hash_ = "hash_same";
+    IndexEntry e2 = e1;
+    e2.file_name_ = "d2.dat";
+
+    ds_->restore_temp_entries(db_path, {e1});
+    ds_->restore_temp_entries(db_path, {e2});  // 同 hash → 去重
+
+    auto entries = ds_->find_local_entries(db_path + ":iter/x");
+    ASSERT_TRUE(entries.has_value());
+    ASSERT_EQ(entries.value().size(), 1u);
+    EXPECT_EQ(entries.value()[0].file_name_, "d1.dat");
+    EXPECT_TRUE(ds_->is_temp_object(db_path + ":iter/x"));
+}
+
+TEST_F(DataServiceTest, GetRemoteSizeUnknownAndSet) {
+    CMString full = db32("rsize") + ":obj";
+    EXPECT_EQ(ds_->get_remote_size(full), 0);  // 未知对象 → 0
+    ds_->update_remote_idx(full, 5, "h", 1000, /*size_bytes=*/12345);
+    EXPECT_EQ(ds_->get_remote_size(full), 12345);
+}
+
+// COMPLETE 但未 flush → try_read_local 拒读（flushed 门）。
+TEST_F(DataServiceTest, TryReadLocalRejectsCompleteButUnflushed) {
+    CMString db_path = db32("unflushed");
+    CMString full = db_path + ":obj";
+    IndexEntry entry;
+    entry.object_name_ = "obj";
+    entry.file_name_ = "no_such_file.dat";
+    entry.offset_ = 0;
+    entry.size_ = 10;
+
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
+    ds_->on_write_started(db_path, full);
+    ds_->on_write_completed(db_path, full, {entry});
+    // COMPLETE 已置但 flushed_=false → 拒读。
+    auto [found0, _] = ds_->try_read_local(full);
+    EXPECT_FALSE(found0);
+
+    ds_->on_flush(db_path);
+    // flushed 后放行（entry 指向不存在的文件 → 盘读失败仍 false——
+    // 以假文件名锚定拒读来自 flushed 门而非文件缺失）。
+    auto [found1, _r] = ds_->try_read_local(full);
+    EXPECT_FALSE(found1);
+}
+
+// cleanup_temp_entries 只清 temp 对象，正式对象不受影响。
+TEST_F(DataServiceTest, CleanupTempEntriesRemovesTempOnly) {
+    CMString db_path = db32("clean_tmp");
+    CMString temp_full = db_path + ":t/obj";
+    CMString real_full = db_path + ":r/obj";
+
+    ds_->register_database(db_path, test_dir_, test_dir_ + "/data");
+    IndexEntry tentry;
+    tentry.object_name_ = "t/obj";
+    tentry.file_name_ = "no_such_temp.dat";
+    tentry.offset_ = 0;
+    tentry.size_ = 8;
+    ds_->on_temp_write_started(db_path, temp_full);
+    ds_->on_temp_write(db_path, temp_full, tentry);
+    IndexEntry rentry;
+    rentry.object_name_ = "r/obj";
+    rentry.file_name_ = "no_such_real.dat";
+    rentry.offset_ = 0;
+    rentry.size_ = 8;
+    ds_->on_write_started(db_path, real_full);
+    ds_->on_write_completed(db_path, real_full, {rentry});
+    ds_->on_flush(db_path);
+
+    EXPECT_TRUE(ds_->is_temp_object(temp_full));
+    ds_->cleanup_temp_entries(db_path);
+
+    EXPECT_FALSE(ds_->has_local_object(temp_full)) << "temp 条目必须被清理";
+    EXPECT_TRUE(ds_->has_local_object(real_full)) << "正式对象不受影响";
 }
 
 }

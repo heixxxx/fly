@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <thread>
 #include <atomic>
+#include <algorithm>
 #include <poll.h>
 
 namespace fly {
@@ -525,6 +526,533 @@ TEST(DataTransferFakeServerTest, ZeroCrcGoodDataSucceeds) {
     ASSERT_TRUE(success) << "error: " << error;
     ASSERT_TRUE(data && data->size() == 48);
     EXPECT_EQ(std::string(data->data() + 16, 16), std::string(16, 'B'));
+}
+
+// ════════════════════════════════════════════════════════════════════
+// P0-1 DCP 错误注入矩阵：request()（整缓冲）与 request_raw_exchange()
+//（META 交换）两条读链路的传输层/帧层故障族 + chunked 流故障族。
+// FakeScriptServer 按剧本发原始字节——对协议实现做黑盒注错，断言
+// ReadError 分类正确（NETWORK=断连/失步 / CHECKSUM=校验域失配）。
+// ════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// 按剧本发送原始字节的 fake server。accept → 读掉 DATA_REQUEST → 按 mode 发。
+// chunked 模式先发合法 chunked META，再按 mode 发块流。
+class FakeScriptServer {
+public:
+    enum class Mode {
+        IMMEDIATE_CLOSE,      // accept 后秒关 → recv header 失败 → NETWORK
+        HEADER_THEN_CLOSE,    // 合法 9B 帧头后关 → sub-header 失败 → NETWORK
+        PARTIAL_SMALL,        // 头 + 子头 + 半 payload 后关 → small payload 失败 → NETWORK
+        GARBAGE_HEADER,       // 9B 垃圾字节 → parse_frame_header 失败 → CHECKSUM
+        SHORT_FRAME,          // total_len=5（合法 check 但 < 6 下界）→ NETWORK
+        DECODE_GARBAGE,       // small_fields_len=8 + 全 0xFF → decode 失败 → NETWORK
+        SUCCESS_NO_RAW,       // success_=true、has_raw=0、非 chunked → NETWORK
+        META_TOTAL_ZERO,      // chunked META 声明 total=0 → NETWORK
+        CHUNK_BAD_SUBLEN,     // DATA_CHUNK 子头 small_len != 16 → 断连 → NETWORK
+        CHUNK_OFFSET_OOB,     // 帧	offset + raw_len > total → 失步 → NETWORK
+        CHUNK_BAD_FRAME_HDR,  // 块流中间垃圾头 → CHECKSUM
+        CHUNK_UNKNOWN_TYPE,   // 块流内未注册帧类型（HEARTBEAT）→ NETWORK
+        DIGEST_TRUNCATED,     // DIGEST payload 截断 → NETWORK
+        COVERAGE_GAP,         // 只发 1/3 字节就 DIGEST → 覆盖洞 → CHECKSUM
+        RECORD_CHUNKED_OK,    // 合法 record 切 3 帧 + DIGEST(root=0) → 成功 + trailer py_name
+    };
+    Mode mode = Mode::IMMEDIATE_CLOSE;
+
+    FakeScriptServer() {
+        listen_fd_ = transport_->create_listen_socket("127.0.0.1", 0);
+        port_ = transport_->get_port(listen_fd_);
+        thread_ = std::thread([this] { serve(); });
+    }
+    ~FakeScriptServer() {
+        transport_->close(listen_fd_);
+        if (thread_.joinable()) thread_.join();
+    }
+    int port() const { return port_; }
+
+private:
+    // 合法帧头 9B（8B header + 1B type）。
+    static CMString frame_prefix(uint64_t total_len, MessageType type) {
+        CMString out;
+        out.resize(9);
+        char* p = out.data();
+        write_be64(p, make_frame_header(total_len));
+        out[8] = static_cast<char>(static_cast<uint8_t>(type));
+        return out;
+    }
+    // chunked META（success + chunked + total + frame_bytes）。
+    CMString chunked_meta(uint64_t total) {
+        DataResponseMessage meta;
+        meta.success_ = true;
+        meta.chunked_ = true;
+        meta.total_compressed_len_ = total;
+        meta.chunk_frame_bytes_ = 16;
+        meta.py_name_ = "bytes";
+        return DataResponseProtocol::encode(meta, nullptr).header_segment;
+    }
+    // NOT_FOUND 整帧响应（完整交换——不触发故障，供 stop-after-meta 类场景）。
+    static CMString not_found_response() {
+        DataResponseMessage resp;
+        resp.success_ = false;
+        resp.status_ = ResponseStatus::NOT_FOUND;
+        return DataResponseProtocol::encode(resp, nullptr).header_segment;
+    }
+
+    void serve() {
+        struct pollfd pfd;
+        pfd.fd = listen_fd_;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        if (::poll(&pfd, 1, 10000) <= 0) return;
+        int fd = transport_->accept_connection(listen_fd_);
+        if (fd < 0) return;
+        transport_->set_recv_timeout(fd, 5000);
+        transport_->set_send_timeout(fd, 5000);
+        auto send = [&](const CMString& bytes) {
+            transport_->send_all(fd, bytes.data(), bytes.size());
+        };
+        auto drain_request = [&]() {
+            char h[9];
+            if (!recv_exact(transport_.get(), fd, h, 9)) return false;
+            uint64_t tl = 0;
+            if (!parse_frame_header(h, tl)) return false;
+            CMString rest(static_cast<size_t>(tl - 1), '\0');
+            return recv_exact(transport_.get(), fd, rest.data(),
+                              static_cast<size_t>(tl - 1));
+        };
+
+        switch (mode) {
+        case Mode::IMMEDIATE_CLOSE:
+            break;
+        case Mode::HEADER_THEN_CLOSE:
+            drain_request();
+            send(frame_prefix(100, MessageType::DATA_RESPONSE));
+            break;
+        case Mode::PARTIAL_SMALL:
+            drain_request();
+            // total = 1(type)+4(len)+1(has_raw)+8(small)=14；small_fields_len=8。
+            send(frame_prefix(14, MessageType::DATA_RESPONSE));
+            {
+                CMString sub;
+                sub.resize(5);
+                write_be32(sub.data(), 8);
+                sub[4] = static_cast<char>(0);
+                send(sub);
+            }
+            send(CMString(3, '\0'));  // 半 payload（8 声明 3 发）→ 关
+            break;
+        case Mode::GARBAGE_HEADER:
+            drain_request();
+            send(CMString(9, '\xA5'));  // check 位失配概率 2^-16，测试域内视为确定
+            break;
+        case Mode::SHORT_FRAME:
+            drain_request();
+            // total_len=5：合法 check、>=1，但低于 6 = 1(type)+4(len)+1(has_raw) 下界。
+            send(frame_prefix(5, MessageType::DATA_RESPONSE));
+            send(CMString(4, '\0'));  // 声明的剩余字节（client 不读也无害）
+            break;
+        case Mode::DECODE_GARBAGE:
+            drain_request();
+            // small_fields_len=8 全 0xFF：bitsery 解码必然失败（throw → false）。
+            send(frame_prefix(14, MessageType::DATA_RESPONSE));
+            {
+                CMString sub;
+                sub.resize(5);
+                write_be32(sub.data(), 8);
+                sub[4] = static_cast<char>(0);
+                send(sub);
+            }
+            send(CMString(8, '\xFF'));
+            break;
+        case Mode::SUCCESS_NO_RAW:
+            drain_request();
+            {
+                DataResponseMessage resp;
+                resp.success_ = true;
+                resp.py_name_ = "bytes";
+                // has_raw=0 且非 chunked → client "Empty response" NETWORK。
+                send(DataResponseProtocol::encode(resp, nullptr).header_segment);
+            }
+            break;
+        case Mode::META_TOTAL_ZERO:
+            drain_request();
+            send(chunked_meta(0));
+            break;
+        case Mode::CHUNK_BAD_SUBLEN:
+            drain_request();
+            send(chunked_meta(48));
+            {
+                // DATA_CHUNK 帧：子头 small_len=15（!= 16）→ 协议失步。
+                CMString f = frame_prefix(1 + 4 + 16 + 16, MessageType::DATA_CHUNK);
+                CMString sub;
+                sub.resize(4);
+                write_be32(sub.data(), 15);
+                send(f);
+                send(sub);
+            }
+            break;
+        case Mode::CHUNK_OFFSET_OOB:
+            drain_request();
+            send(chunked_meta(48));
+            {
+                // offset=40 + raw_len=16 > total=48 → 越界失步。
+                CMString f = ChunkFrameProtocol::encode_header(40, 0, 16);
+                send(f);
+                send(CMString(16, 'A'));
+            }
+            break;
+        case Mode::CHUNK_BAD_FRAME_HDR:
+            drain_request();
+            send(chunked_meta(48));
+            send(CMString(9, '\x5A'));  // 块流中垃圾头 → frame header check failed
+            break;
+        case Mode::CHUNK_UNKNOWN_TYPE:
+            drain_request();
+            send(chunked_meta(48));
+            send(frame_prefix(9, MessageType::HEARTBEAT));  // 未注册的块流帧类型
+            send(CMString(8, '\0'));
+            break;
+        case Mode::DIGEST_TRUNCATED:
+            drain_request();
+            send(chunked_meta(48));
+            {
+                CMString f = frame_prefix(33, MessageType::DATA_DIGEST);  // payload 32B
+                send(f);
+                send(CMString(10, '\0'));  // 只发 10/32 → 断
+            }
+            break;
+        case Mode::COVERAGE_GAP:
+            drain_request();
+            send(chunked_meta(48));
+            send(ChunkFrameProtocol::encode_header(0, 0, 16));
+            send(CMString(16, 'A'));  // 只覆盖 [0,16)
+            {
+                DataDigestMessage digest;
+                digest.root_crc_ = 0;
+                digest.chunk_count_ = 1;
+                send(MessageProtocol::encode(digest));
+            }
+            break;
+        case Mode::RECORD_CHUNKED_OK: {
+            drain_request();
+            // 合法 record（单 raw 块 + trailer "bytes"）切 3 帧发送；DIGEST root=0
+            //（T5 语义：client 跳过根摘要复核）→ 成功 + client 侧 trailer 解析 py_name。
+            auto record = make_simple_record("record-chunked-ok-payload", "bytes");
+            uint64_t total = record->size();
+            send(chunked_meta(total));
+            uint64_t off = 0;
+            const uint64_t slice = (total + 2) / 3;
+            while (off < total) {
+                uint64_t n = std::min<uint64_t>(slice, total - off);
+                send(ChunkFrameProtocol::encode_header(off, 0, n));
+                send(CMString(record->data() + off, n));
+                off += n;
+            }
+            DataDigestMessage digest;
+            digest.root_crc_ = 0;
+            digest.chunk_count_ = 3;
+            send(MessageProtocol::encode(digest));
+            break;
+        }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        transport_->close(fd);
+    }
+
+    CMSharedPtr<Transport> transport_ = create_tcp_transport();
+    int listen_fd_ = -1;
+    int port_ = 0;
+    std::thread thread_;
+};
+
+// 故障注入矩阵：mode → (链路, 期望 ReadError)。IMMEDIATE_CLOSE 在两条链路
+// 都是 NETWORK（recv header 失败）；GARBAGE_HEADER 都是 CHECKSUM（check 位）。
+struct ScriptCase {
+    FakeScriptServer::Mode mode;
+    ReadError want_rerr;
+    const char* name;
+};
+}  // namespace
+
+// helper：聚合初始化内的逗号会被 gtest 宏当参数分隔符，故故障表用普通
+// TEST 循环驱动（每个 case 独立 fake server + pool，互不干扰）。
+namespace {
+std::vector<ScriptCase> fault_matrix() {
+    return {
+        ScriptCase{FakeScriptServer::Mode::IMMEDIATE_CLOSE, ReadError::NETWORK, "immediate_close"},
+        ScriptCase{FakeScriptServer::Mode::HEADER_THEN_CLOSE, ReadError::NETWORK, "header_then_close"},
+        ScriptCase{FakeScriptServer::Mode::PARTIAL_SMALL, ReadError::NETWORK, "partial_small"},
+        ScriptCase{FakeScriptServer::Mode::GARBAGE_HEADER, ReadError::CHECKSUM, "garbage_header"},
+        ScriptCase{FakeScriptServer::Mode::SHORT_FRAME, ReadError::NETWORK, "short_frame"},
+        ScriptCase{FakeScriptServer::Mode::DECODE_GARBAGE, ReadError::NETWORK, "decode_garbage"},
+    };
+}
+}  // namespace
+
+// 参数化驱动两条读链路的同一故障族——分类必须一致（同一错误同一语义）。
+TEST(DataTransferFakeServerTest, DcpFaultMatrixWholeBuffer) {
+    for (const auto& tc : fault_matrix()) {
+        FakeScriptServer server;
+        server.mode = tc.mode;
+
+        DataClientPool pool(1);
+        auto [success, data, py_name, hash, error, rerr] =
+            pool.request("127.0.0.1", server.port(), "/script:obj", 0, 0, 5000);
+        EXPECT_FALSE(success) << tc.name;
+        EXPECT_EQ(rerr, tc.want_rerr) << tc.name << " error=" << error;
+    }
+}
+TEST(DataTransferFakeServerTest, DcpFaultMatrixRawExchange) {
+    for (const auto& tc : fault_matrix()) {
+        FakeScriptServer server;
+        server.mode = tc.mode;
+
+        DataClientPool pool(1);
+        auto ex = pool.request_raw_exchange("127.0.0.1", server.port(), "/script:obj");
+        EXPECT_FALSE(ex.success) << tc.name;
+        EXPECT_EQ(ex.rerr, tc.want_rerr) << tc.name << " error=" << ex.error;
+        EXPECT_EQ(ex.fd, -1) << tc.name << ": failed exchange must not leak a borrowed fd";
+    }
+}
+
+// success_=true 但无 raw 的响应：两条链路语义刻意不同——request() 直接成功
+// 返回空 data（上层 TIER2 对 nullptr 按 no-data 处理，零拷贝契约）；
+// request_raw_exchange 无 fd 可借出，按 "Empty response" NETWORK 收尾。
+TEST(DataTransferFakeServerTest, SuccessNoRawSplitBehavior) {
+    FakeScriptServer server;
+    server.mode = FakeScriptServer::Mode::SUCCESS_NO_RAW;
+
+    {
+        DataClientPool pool(1);
+        auto [success, data, py_name, hash, error, rerr] =
+            pool.request("127.0.0.1", server.port(), "/script:obj", 0, 0, 5000);
+        EXPECT_TRUE(success);  // 成功位透传；data 为空由上层兜底
+        EXPECT_TRUE(!data || data->empty());
+    }
+    {
+        DataClientPool pool(1);
+        auto ex = pool.request_raw_exchange("127.0.0.1", server.port(), "/script:obj");
+        EXPECT_FALSE(ex.success);
+        EXPECT_EQ(ex.rerr, ReadError::NETWORK) << ex.error;
+        EXPECT_EQ(ex.fd, -1);
+    }
+}
+
+// ── chunked 流故障族（META 之后的块流；只喂 request() 整缓冲链路——
+// request_raw_exchange 的块流由 NCS 消费，见 streaming_source_test）──
+
+TEST(DataTransferFakeServerTest, ChunkedMetaTotalZeroIsNetwork) {
+    FakeScriptServer server;
+    server.mode = FakeScriptServer::Mode::META_TOTAL_ZERO;
+    DataClientPool pool(1);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", server.port(), "/script:obj", 0, 0, 5000);
+    EXPECT_FALSE(success);
+    EXPECT_EQ(rerr, ReadError::NETWORK) << error;
+}
+
+TEST(DataTransferFakeServerTest, ChunkBadSubHeaderLenIsNetwork) {
+    FakeScriptServer server;
+    server.mode = FakeScriptServer::Mode::CHUNK_BAD_SUBLEN;
+    DataClientPool pool(1);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", server.port(), "/script:obj", 0, 0, 5000);
+    EXPECT_FALSE(success);
+    EXPECT_EQ(rerr, ReadError::NETWORK) << error;
+}
+
+TEST(DataTransferFakeServerTest, ChunkOffsetOutOfRangeIsNetwork) {
+    FakeScriptServer server;
+    server.mode = FakeScriptServer::Mode::CHUNK_OFFSET_OOB;
+    DataClientPool pool(1);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", server.port(), "/script:obj", 0, 0, 5000);
+    EXPECT_FALSE(success);
+    EXPECT_EQ(rerr, ReadError::NETWORK) << error;
+}
+
+TEST(DataTransferFakeServerTest, ChunkGarbageFrameHeaderIsChecksum) {
+    FakeScriptServer server;
+    server.mode = FakeScriptServer::Mode::CHUNK_BAD_FRAME_HDR;
+    DataClientPool pool(1);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", server.port(), "/script:obj", 0, 0, 5000);
+    EXPECT_FALSE(success);
+    EXPECT_EQ(rerr, ReadError::CHECKSUM) << error;
+}
+
+TEST(DataTransferFakeServerTest, ChunkUnknownFrameTypeIsNetwork) {
+    FakeScriptServer server;
+    server.mode = FakeScriptServer::Mode::CHUNK_UNKNOWN_TYPE;
+    DataClientPool pool(1);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", server.port(), "/script:obj", 0, 0, 5000);
+    EXPECT_FALSE(success);
+    EXPECT_EQ(rerr, ReadError::NETWORK) << error;
+}
+
+TEST(DataTransferFakeServerTest, DigestTruncationIsNetwork) {
+    FakeScriptServer server;
+    server.mode = FakeScriptServer::Mode::DIGEST_TRUNCATED;
+    DataClientPool pool(1);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", server.port(), "/script:obj", 0, 0, 5000);
+    EXPECT_FALSE(success);
+    EXPECT_EQ(rerr, ReadError::NETWORK) << error;
+}
+
+// 覆盖洞（帧字节未铺满 [0,total) 就 DIGEST）→ 阶段 3 区间对账拒绝 → CHECKSUM。
+TEST(DataTransferFakeServerTest, CoverageGapIsChecksum) {
+    FakeScriptServer server;
+    server.mode = FakeScriptServer::Mode::COVERAGE_GAP;
+    DataClientPool pool(1);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", server.port(), "/script:obj", 0, 0, 5000);
+    EXPECT_FALSE(success);
+    EXPECT_EQ(rerr, ReadError::CHECKSUM) << error;
+}
+
+// 正常流 + root_crc=0（T5：client 跳过根摘要复核）→ 成功且 py_name 来自
+// client 侧重组 record 的 trailer 解析（§4.4）。
+TEST(DataTransferFakeServerTest, ChunkedRecordTrailerParsesPyName) {
+    FakeScriptServer server;
+    server.mode = FakeScriptServer::Mode::RECORD_CHUNKED_OK;
+    DataClientPool pool(1);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", server.port(), "/script:obj", 0, 0, 5000);
+    ASSERT_TRUE(success) << error;
+    EXPECT_EQ(py_name, "bytes");
+    ASSERT_TRUE(data && !data->empty());
+    DecompressingStreamBuf dsbuf(data->data(), data->size());
+    std::istream is(&dsbuf);
+    CMString got(25, '\0');
+    is.read(got.data(), 25);
+    EXPECT_EQ(got, CMString("record-chunked-ok-payload"));
+    EXPECT_FALSE(dsbuf.checksum_failed());
+}
+
+// stop 后 request / request_raw_exchange 立即 SHUTDOWN（不碰网络）。
+TEST(DataTransferFakeServerTest, ShutdownPoolRejectsImmediately) {
+    DataClientPool pool(1);
+    pool.stop();
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", 1, "/script:obj", 0, 0, 1000);
+    EXPECT_FALSE(success);
+    EXPECT_EQ(rerr, ReadError::SHUTDOWN);
+    auto ex = pool.request_raw_exchange("127.0.0.1", 1, "/script:obj");
+    EXPECT_FALSE(ex.success);
+    EXPECT_EQ(ex.rerr, ReadError::SHUTDOWN);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// P0-3：真实 DataServer 的协议防御路径（垃圾帧断连 / 损坏 record 拒服务 /
+// 非 chunked 连接上的 CHUNK_RESEND 被拒）。
+// ════════════════════════════════════════════════════════════════════
+
+// 垃圾帧头 → server 判失步断连（EOF），且 server 自身存活（新连接可服务）。
+TEST_F(DataTransferTest, DataServerDropsConnectionOnGarbageFrame) {
+    std::string db_path = "/garbage";
+    std::string full = db_path + ":obj";
+    write_valid_object(ds_.get(), test_dir_, db_path, full, "payload");
+    ds_->start_data_server("127.0.0.1", 0, 2);
+    int port = ds_->get_data_port();
+
+    auto transport = create_tcp_transport();
+    int fd = transport->create_connection("127.0.0.1", port);
+    ASSERT_GE(fd, 0);
+    transport->set_recv_timeout(fd, 5000);
+    CMString garbage(9, '\x3C');
+    ASSERT_TRUE(transport->send_all(fd, garbage.data(), garbage.size()));
+    // server 关闭连接 → recv 得 0（EOF）或错误。
+    char buf[16];
+    ssize_t n = transport->recv(fd, buf, sizeof(buf));
+    EXPECT_LE(n, 0) << "garbage frame must cause the server to drop the connection";
+    transport->close(fd);
+
+    // server 存活：新连接正常服务。
+    DataClientPool pool(1);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", port, full, 0, 0, 5000);
+    EXPECT_TRUE(success) << error;
+}
+
+// 本地 record 损坏（快路径）→ server 拒绝服务坏数据：协议级 ERROR（非
+// 连接错误——fd 可复用，client 归类 NETWORK 由 TIER2 换副本）。
+TEST_F(DataTransferTest, DataServerRefusesCorruptLocalRecord) {
+    std::string db_path = "/corruptsrv";
+    std::string full = db_path + ":obj";
+    write_valid_object(ds_.get(), test_dir_, db_path, full, "honest payload");
+    ds_->start_data_server("127.0.0.1", 0, 2);
+    int port = ds_->get_data_port();
+
+    // 位腐盘上 record 的 trailer 末字节（保持文件大小不变）。
+    std::filesystem::path data_dir(test_dir_ + "/data");
+    for (const auto& entry : std::filesystem::directory_iterator(data_dir)) {
+        if (entry.path().filename().string().rfind("data_xfer", 0) == 0) {
+            std::ifstream in(entry.path(), std::ios::binary);
+            CMString bytes((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+            in.close();
+            ASSERT_GT(bytes.size(), 8u);
+            bytes[bytes.size() - 1] = static_cast<char>(bytes.back() ^ 0x01);
+            std::ofstream out(entry.path(), std::ios::binary | std::ios::trunc);
+            out.write(bytes.data(), bytes.size());
+        }
+    }
+
+    DataClientPool pool(1);
+    auto [success, data, py_name, hash, error, rerr] =
+        pool.request("127.0.0.1", port, full, 0, 0, 5000);
+    EXPECT_FALSE(success);
+    // status=ERROR → 非 NOT_READY/NOT_FOUND → NETWORK 分类（TIER2 换副本语义）。
+    EXPECT_EQ(rerr, ReadError::NETWORK) << error;
+}
+
+// 非 chunked 连接上直发 CHUNK_RESEND：server 拒绝服务但不断连——后续合法
+// DATA_REQUEST 仍正常完成（568-571 防御路径）。
+TEST_F(DataTransferTest, ChunkResendOnNonChunkedConnectionIgnored) {
+    std::string db_path = "/nochunk";
+    std::string full = db_path + ":obj";
+    write_valid_object(ds_.get(), test_dir_, db_path, full, "plain object");
+    ds_->start_data_server("127.0.0.1", 0, 2);
+    int port = ds_->get_data_port();
+
+    auto transport = create_tcp_transport();
+    int fd = transport->create_connection("127.0.0.1", port);
+    ASSERT_GE(fd, 0);
+    transport->set_recv_timeout(fd, 5000);
+    transport->set_send_timeout(fd, 5000);
+
+    // 无 chunked serve 历史 → resend 被拒（无响应字节）。
+    ChunkResendMessage rs;
+    rs.offset_ = 0;
+    rs.length_ = 16;
+    CMString encoded = MessageProtocol::encode(rs);
+    ASSERT_TRUE(transport->send_all(fd, encoded.data(), encoded.size()));
+
+    // 同一连接上的合法请求必须照常服务（连接未被误杀）。
+    DataRequestMessage req;
+    req.object_name_ = full;
+    CMString req_frame = MessageProtocol::encode(req);
+    ASSERT_TRUE(transport->send_all(fd, req_frame.data(), req_frame.size()));
+
+    char hdr[9];
+    ASSERT_TRUE(recv_exact(transport.get(), fd, hdr, 9));
+    uint64_t tl = 0;
+    ASSERT_TRUE(parse_frame_header(hdr, tl));
+    ASSERT_EQ(static_cast<uint8_t>(hdr[8]),
+              static_cast<uint8_t>(MessageType::DATA_RESPONSE));
+    CMString rest(static_cast<size_t>(tl - 1), '\0');
+    ASSERT_TRUE(recv_exact(transport.get(), fd, rest.data(), static_cast<size_t>(tl - 1)));
+    // rest = [4B small_len][1B has_raw][small fields][raw?]。解码只需 small 段。
+    uint32_t small_len = read_be32(rest.data());
+    ASSERT_GT(small_len, 0u);
+    DataResponseMessage resp;
+    ASSERT_TRUE(DataResponseProtocol::decode_small_fields(
+        rest.substr(5, small_len), resp));
+    EXPECT_TRUE(resp.success_);
+    transport->close(fd);
 }
 
 }  // namespace fly

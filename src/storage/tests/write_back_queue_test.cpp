@@ -7,6 +7,7 @@
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
+#include <stdexcept>
 
 namespace {
 
@@ -284,6 +285,53 @@ TEST_F(WriteBackQueueTest, ClearPendingThenEnqueueAgain) {
     EXPECT_TRUE(done.load());
 
     queue.stop();
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// write-back 错误处理（P1-8）：execute_ 失败重试 / 异常隔离 / on_complete_
+// 抛异常不拖垮 worker 线程。
+// ════════════════════════════════════════════════════════════════════
+
+// execute_ 失败两次第三次成功 → 重试机制收尾完成，on_complete_ 恰一次。
+TEST_F(WriteBackQueueTest, ExecuteRetriesThenSucceeds) {
+    fly::WriteBackQueue queue;
+    queue.start();
+
+    std::atomic<int> attempts{0};
+    std::atomic<int> completions{0};
+
+    fly::WriteRequest req;
+    req.execute_ = [&attempts]() -> bool {
+        return attempts.fetch_add(1) + 1 >= 3;  // 前两次失败
+    };
+    req.on_complete_ = [&completions]() { completions.fetch_add(1); };
+    queue.enqueue(std::move(req));
+
+    queue.drain();  // 若重试机制缺失 → graceful_exit / 永挂
+    EXPECT_EQ(attempts.load(), 3);
+    EXPECT_EQ(completions.load(), 1);
+
+    queue.stop();
+}
+
+// 注：execute_ 抛异常的生产语义 = catch 后走 graceful_exit（零容忍退出进程，
+// 非进程内隔离）——该路径无法在进程内测试锚定，不做收录。
+
+// on_complete_ 抛异常 → 捕获隔离（worker 线程存活），drain 完成。
+TEST_F(WriteBackQueueTest, CompleteCallbackThrowIsContained) {
+    fly::WriteBackQueue queue;
+    queue.start();
+
+    std::atomic<bool> executed{false};
+    fly::WriteRequest req;
+    req.execute_ = [&executed]() -> bool { executed = true; return true; };
+    req.on_complete_ = []() { throw std::runtime_error("cb boom"); };
+    queue.enqueue(std::move(req));
+
+    queue.drain();
+    EXPECT_TRUE(executed.load());
+    EXPECT_NO_THROW(queue.stop());
 }
 
 }

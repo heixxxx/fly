@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 #include <agent/cpp/peer_rpc_server.h>
+#include <agent/cpp/worker_agent.h>
 #include <storage/cpp/pipeline.h>
 #include <common/cpp/data_checksum.h>
 #include <algorithm>
@@ -15,6 +16,9 @@
 #include <future>
 #include <mutex>
 #include <thread>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
 
 namespace fly {
 namespace {
@@ -708,6 +712,496 @@ TEST_F(PeerRpcServerTest, ReaderVerifyFailureWakesBlockedFeed) {
     }
     EXPECT_TRUE(woke) << "reader verify failure must notify the blocked feed "
                          "(server_loop freeze otherwise)";
+}
+
+// ── 故障帧族（零容忍语义逐分支覆盖）────────────────────────────────
+// 手法同 MalformedShortTotalLen：裸 ConnectionManager 对在听 server 直发
+// 任意帧。断言统一为「确定性可观察终态」（close 或静默丢弃后的帧同步），
+// 全程不得 crash/terminate。
+
+// 通用帧装配：[8B frame header][type][payload]（total_len = 1 + payload）。
+static CMString make_raw_frame(uint8_t type, const CMString& payload) {
+    CMString frame;
+    frame.resize(9 + payload.size());
+    write_be64(frame.data(), make_frame_header(1 + payload.size()));
+    frame[8] = static_cast<char>(type);
+    if (!payload.empty()) {
+        std::memcpy(frame.data() + 9, payload.data(), payload.size());
+    }
+    return frame;
+}
+
+// DATA_CHUNK 帧：[8B hdr][1B type][4B small_len=16][16B offset+crc][raw]。
+static CMString make_data_chunk_frame(const CMString& raw) {
+    CMString payload;
+    payload.resize(4 + 16, '\0');
+    write_be32(payload.data(), ChunkFrameProtocol::kSmallFieldsLen);
+    // offset/crc 保持 0（接收端不校验帧级 crc——0 = 发送端未计算）。
+    payload.append(raw);
+    return make_raw_frame(static_cast<uint8_t>(MessageType::DATA_CHUNK), payload);
+}
+
+TEST_F(PeerRpcServerTest, CorruptStreamStartClosesConnection) {
+    // START 帧头合法但 payload 截断（bitsery 读越界 → decode 失败）：
+    // 流式零容忍 → 连接 close，进程存活。
+    int port = server->listen("127.0.0.1", 0,
+                              [](uint64_t, uint64_t, uint64_t, const CMString&,
+                                 const PeerStreamReaderPtr&) { return std::nullopt; });
+    ASSERT_GT(port, 0);
+    auto [raw, rc] = connect_raw(port);
+    ASSERT_TRUE(raw != nullptr);
+    CMString garbage(4, '\xFF');   // 远小于 START 的 bitsery 字段需求
+    ASSERT_TRUE(raw->send(rc, make_raw_frame(
+        static_cast<uint8_t>(MessageType::PEER_STREAM_START), garbage)) > 0);
+    EXPECT_TRUE(wait_closed(*raw, rc))
+        << "corrupt START must trigger zero-tolerance close (not crash)";
+    raw->close_all();
+}
+
+TEST_F(PeerRpcServerTest, SecondStartWhileStreamActiveFailsOldStreamAndKeepsConn) {
+    // 同连接旧流未收尾再 START：协议错位判死旧流（reader 置 failed），
+    // 新流照常建立、连接保持——帧失步的旧流不得拖死连接上的新流。
+    std::mutex m;
+    std::condition_variable cv;
+    CMVector<PeerStreamReaderPtr> readers;   // 按 START 到达序
+    uint64_t conn = setup_connected_pair(
+        [&](uint64_t, uint64_t, uint64_t, const CMString& payload,
+            const PeerStreamReaderPtr& reader) -> std::optional<CMString> {
+            if (reader) {
+                std::lock_guard<std::mutex> lk(m);
+                readers.push_back(reader);
+                cv.notify_all();
+                return std::nullopt;
+            }
+            return std::optional<CMString>{"echo:" + payload};
+        });
+    ASSERT_NE(conn, 0u);
+
+    EXPECT_TRUE(client->send_stream_start(conn, /*rpc_id=*/5, /*direction=*/0,
+                                          static_cast<uint8_t>(CompressionType::NONE)));
+    bool got_first = false;
+    for (int i = 0; i < 100 && !got_first; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::lock_guard<std::mutex> lk(m);
+        got_first = readers.size() >= 1;
+    }
+    ASSERT_TRUE(got_first) << "first START must dispatch its reader";
+
+    // 旧流（rpc 5）未收尾直接开新流（rpc 6）：旧 reader 必须被判死。
+    EXPECT_TRUE(client->send_stream_start(conn, /*rpc_id=*/6, /*direction=*/0,
+                                          static_cast<uint8_t>(CompressionType::NONE)));
+    bool got_second = false;
+    for (int i = 0; i < 100 && !got_second; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::lock_guard<std::mutex> lk(m);
+        got_second = readers.size() >= 2;
+    }
+    ASSERT_TRUE(got_second) << "second START must dispatch a fresh reader";
+    PeerStreamReaderPtr first, second;
+    {
+        std::lock_guard<std::mutex> lk(m);
+        first = readers[0];
+        second = readers[1];
+    }
+    ASSERT_TRUE(first != nullptr);
+    ASSERT_TRUE(second != nullptr);
+    EXPECT_TRUE(first->failed())
+        << "the unterminated old stream must be failed by the new START";
+    EXPECT_TRUE(client->is_connected(conn))
+        << "a protocol-misordered START must not kill the connection";
+
+    // 新流照常工作：合法块流 + 如实对账 END → 读端完整收齐。
+    const std::string data = MakePseudoRandomBytes(4096);
+    CMString block_stream;
+    {
+        fly::EmitFn emit = [&](const char* d, size_t n) { block_stream.append(d, n); };
+        fly::WritePipeline wp(
+            fly::make_file_write_pipeline(nullptr, 32 * 1024, emit, 85, -1));
+        wp.write(data.data(), data.size());
+        wp.finish();
+    }
+    EXPECT_TRUE(client->send_stream_data(conn, block_stream.data(), block_stream.size()));
+    EXPECT_TRUE(client->send_stream_end(conn, /*rpc_id=*/6,
+                                        /*total_uncompressed=*/data.size(),
+                                        /*chunk_count=*/1,
+                                        /*consumed=*/block_stream.size()));
+    // read_all 拉至 EOF（END 对账通过才放行）——与 StreamRequestLargePayload
+    // 同款消费语义；失败/失配以异常或 failed() 暴露。
+    const CMString got = second->read_all();
+    EXPECT_EQ(got.size(), data.size()) << "the new stream must deliver intact";
+    EXPECT_FALSE(second->failed()) << "the new stream must stay healthy";
+    EXPECT_TRUE(client->is_connected(conn));
+}
+
+TEST_F(PeerRpcServerTest, CorruptStreamEndClosesConnection) {
+    // 合法 START 后接坏 END（payload 截断 → decode 失败）：零容忍 close。
+    int port = server->listen("127.0.0.1", 0,
+                              [](uint64_t, uint64_t, uint64_t, const CMString&,
+                                 const PeerStreamReaderPtr&) { return std::nullopt; });
+    ASSERT_GT(port, 0);
+    auto [raw, rc] = connect_raw(port);
+    ASSERT_TRUE(raw != nullptr);
+    // START 经裸连接直发（client 封装没有这条连接）。
+    PeerStreamStartMessage start;
+    start.rpc_id_ = 7;
+    start.direction_ = 0;
+    start.compression_type_ = static_cast<uint8_t>(CompressionType::NONE);
+    ASSERT_TRUE(raw->send(rc, MessageProtocol::encode(start)) > 0);
+    CMString garbage(3, '\xFF');
+    ASSERT_TRUE(raw->send(rc, make_raw_frame(
+        static_cast<uint8_t>(MessageType::PEER_STREAM_END), garbage)) > 0);
+    EXPECT_TRUE(wait_closed(*raw, rc))
+        << "corrupt END must trigger zero-tolerance close (not crash)";
+    raw->close_all();
+}
+
+TEST_F(PeerRpcServerTest, EndWithoutActiveStreamClosesConnection) {
+    // 无流上下文的合法 END（decode 通过、streams_ 无条目）：协议错位 → close。
+    int port = server->listen("127.0.0.1", 0,
+                              [](uint64_t, uint64_t, uint64_t, const CMString&,
+                                 const PeerStreamReaderPtr&) { return std::nullopt; });
+    ASSERT_GT(port, 0);
+    auto [raw, rc] = connect_raw(port);
+    ASSERT_TRUE(raw != nullptr);
+    PeerStreamEndMessage end;   // 合法编码（无流上下文才是被测分支）
+    ASSERT_TRUE(raw->send(rc, MessageProtocol::encode(end)) > 0);
+    EXPECT_TRUE(wait_closed(*raw, rc))
+        << "END without an active stream must close the connection (no silent stall)";
+    raw->close_all();
+}
+
+TEST_F(PeerRpcServerTest, DataWithoutActiveStreamDiscardedKeepsFrameSync) {
+    // 无流 DATA_CHUNK：整帧丢弃（WARN）+ 连接保持——丢弃必须保持帧同步，
+    // 后续合法请求照常往返（clear 丢同批好帧是零容忍反例）。
+    int port = server->listen("127.0.0.1", 0,
+                              [](uint64_t, uint64_t, uint64_t, const CMString& payload,
+                                 const PeerStreamReaderPtr&) {
+                                  return std::optional<CMString>{"echo:" + payload};
+                              });
+    ASSERT_GT(port, 0);
+    auto [raw, rc] = connect_raw(port);
+    ASSERT_TRUE(raw != nullptr);
+    ASSERT_TRUE(raw->send(rc, make_data_chunk_frame("orphan-block-bytes")) > 0);
+
+    // 前置：丢弃发生（100ms 足够本机回环；precondition 等待而非结果断言）。
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    ASSERT_TRUE(raw->is_connected(rc))
+        << "orphan DATA must be discarded, not fatal";
+
+    // 帧同步证据：同一连接上的合法 REQUEST 响应原样读回。
+    CMString body;
+    body.resize(16, '\0');
+    write_be64(body.data(), /*rpc_id=*/33);
+    write_be64(body.data() + 8, /*src=*/7);
+    body.append("after-orphan");
+    ASSERT_TRUE(raw->send(rc, make_raw_frame(
+        static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST), body)) > 0);
+    bool got = false;
+    for (int i = 0; i < 150 && !got; ++i) {
+        for (const auto& e : raw->poll(0)) {
+            if (e.type_ == TransportEventType::DATA && e.data_.size() >= 18 &&
+                static_cast<uint8_t>(e.data_[8]) ==
+                    static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE) &&
+                read_be64(e.data_.data() + 9) == 33) {
+                got = true;
+            }
+        }
+        if (!got) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_TRUE(got) << "frame sync must survive an orphan DATA_CHUNK discard";
+    EXPECT_TRUE(raw->is_connected(rc));
+    raw->close_all();
+}
+
+TEST_F(PeerRpcServerTest, DataChunkZeroRawLenOnActiveStreamClearsAndContinues) {
+    // 活跃流上的 DATA_CHUNK zero raw_len（total_len=21 = 头 21B、无 raw）。
+    // 当前实现语义：只清接收缓冲防积压（buf.clear + break），不判流死、
+    // 不判连死——与 corrupt START/END 的零容忍 close 是不同分支。断言：
+    // 不 crash、流上下文存活（后续合法 END 被正常消费而非判死）、连接保持、
+    // 同连接后续请求照常往返（帧同步恢复）。
+    int port = server->listen("127.0.0.1", 0,
+                              [](uint64_t, uint64_t, uint64_t, const CMString& payload,
+                                 const PeerStreamReaderPtr&) -> std::optional<CMString> {
+                                  return std::optional<CMString>{"echo:" + payload};
+                              });
+    ASSERT_GT(port, 0);
+    auto [raw, rc] = connect_raw(port);
+    ASSERT_TRUE(raw != nullptr);
+    // START 经裸连接直发（client 封装没有这条连接）。
+    PeerStreamStartMessage start;
+    start.rpc_id_ = 8;
+    start.direction_ = 0;
+    start.compression_type_ = static_cast<uint8_t>(CompressionType::NONE);
+    ASSERT_TRUE(raw->send(rc, MessageProtocol::encode(start)) > 0);
+    // total_len = 1 + 4 + 16 = 21 → raw_len = 0。
+    CMString empty_small(20, '\0');
+    write_be32(empty_small.data(), ChunkFrameProtocol::kSmallFieldsLen);
+    ASSERT_TRUE(raw->send(rc, make_raw_frame(
+        static_cast<uint8_t>(MessageType::DATA_CHUNK), empty_small)) > 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_TRUE(raw->is_connected(rc))
+        << "zero raw_len must not crash (buffer cleared, conn kept per current contract)";
+
+    // 流上下文存活：合法 END 被当作活跃流的收尾正常消费（不触发
+    // "END without active stream" 判死），连接保持。
+    PeerStreamEndMessage end;
+    end.rpc_id_ = 8;
+    ASSERT_TRUE(raw->send(rc, MessageProtocol::encode(end)) > 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_TRUE(raw->is_connected(rc))
+        << "the active stream must have consumed the legitimate END";
+
+    // 帧同步恢复：缓冲清除后的合法请求照常往返。
+    CMString body;
+    body.resize(16, '\0');
+    write_be64(body.data(), /*rpc_id=*/34);
+    write_be64(body.data() + 8, /*src=*/7);
+    body.append("after-zero-raw");
+    ASSERT_TRUE(raw->send(rc, make_raw_frame(
+        static_cast<uint8_t>(MessageType::PEER_RPC_REQUEST), body)) > 0);
+    bool got = false;
+    for (int i = 0; i < 150 && !got; ++i) {
+        for (const auto& e : raw->poll(0)) {
+            if (e.type_ == TransportEventType::DATA && e.data_.size() >= 18 &&
+                static_cast<uint8_t>(e.data_[8]) ==
+                    static_cast<uint8_t>(MessageType::PEER_RPC_RESPONSE) &&
+                read_be64(e.data_.data() + 9) == 34) {
+                got = true;
+            }
+        }
+        if (!got) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_TRUE(got) << "frame sync must survive the zero raw_len discard";
+    EXPECT_TRUE(raw->is_connected(rc));
+    raw->close_all();
+}
+
+TEST_F(PeerRpcServerTest, BadFrameHeaderClearsBufferNoCrash) {
+    // 非法帧头（total_len=0，header check 失配）：清缓冲防积压但不判死——
+    // 连接保持且后续合法帧照常处理（与 undersized total_len 的判死语义区分：
+    // 那是帧完整到达后的类型级下溢，此处是头都解析不出的垃圾前缀）。
+    int port = server->listen("127.0.0.1", 0,
+                              [](uint64_t, uint64_t, uint64_t, const CMString& payload,
+                                 const PeerStreamReaderPtr&) {
+                                  return std::optional<CMString>{"echo:" + payload};
+                              });
+    ASSERT_GT(port, 0);
+    auto [raw, rc] = connect_raw(port);
+    ASSERT_TRUE(raw != nullptr);
+    CMString zeros(8, '\0');   // len=0 → parse_frame_header 失败 → get_total_size=0
+    ASSERT_TRUE(raw->send(rc, zeros) > 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_TRUE(raw->is_connected(rc))
+        << "unparseable 8B garbage must clear the buffer, not kill the connection";
+
+    // 缓冲已清 + 帧同步：合法请求照常往返。
+    // （裸 conn 无 response 回调——用 PeerRpcServer client 建第二条连接验证
+    // server 存活即可；本连接的往返由下方 raw END 收尾不挂验证。）
+    uint64_t probe = client->connect_peer("127.0.0.1", port);
+    ASSERT_NE(probe, 0u);
+    CallbackLatch latch;
+    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, uint8_t status,
+                                          const CMString& payload,
+                                          const PeerStreamReaderPtr&) {
+        latch.notify(rpc_id, status, payload);
+    });
+    EXPECT_TRUE(client->send_request(probe, /*rpc_id=*/42, 1, "after-garbage"));
+    EXPECT_TRUE(latch.wait()) << "server must keep serving after a bad header";
+    EXPECT_EQ(latch.payload_, "echo:after-garbage");
+    raw->close_all();
+}
+
+TEST_F(PeerRpcServerTest, ListenFailurePaths) {
+    // 已在听重复 listen → 0；端口被占 → 0（均不 crash、原实例不受影响）。
+    int port = server->listen("127.0.0.1", 0,
+                              [](uint64_t, uint64_t, uint64_t, const CMString&,
+                                 const PeerStreamReaderPtr&) { return std::nullopt; });
+    ASSERT_GT(port, 0);
+    EXPECT_EQ(server->listen("127.0.0.1", 0,
+                             [](uint64_t, uint64_t, uint64_t, const CMString&,
+                                const PeerStreamReaderPtr&) { return std::nullopt; }), 0)
+        << "double listen must fail cleanly";
+
+    // 占用端口的裸 listener。
+    int busy = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(busy, 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    ASSERT_EQ(::bind(busy, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
+    ASSERT_EQ(::listen(busy, 4), 0);
+    socklen_t len = sizeof(addr);
+    ASSERT_EQ(::getsockname(busy, reinterpret_cast<sockaddr*>(&addr), &len), 0);
+    uint16_t busy_port = ntohs(addr.sin_port);
+
+    PeerRpcServer other;
+    EXPECT_EQ(other.listen("127.0.0.1", busy_port,
+                           [](uint64_t, uint64_t, uint64_t, const CMString&,
+                              const PeerStreamReaderPtr&) { return std::nullopt; }), 0)
+        << "listen on a busy port must fail cleanly";
+    EXPECT_FALSE(other.is_running());
+    ::close(busy);
+    EXPECT_TRUE(server->is_running()) << "the original listener must be unaffected";
+}
+
+TEST_F(PeerRpcServerTest, InvalidConstructionAndClosedConnNoOps) {
+    // srv 为空 / conn_id=0：invalid 构造（ok=false，不 crash）。
+    CMSharedPtr<PeerRpcServer> null_srv;
+    PeerStreamWriter bad1(null_srv, 1, 1, 0, CompressionType::NONE, -1);
+    EXPECT_FALSE(bad1.ok());
+    auto srv = std::make_shared<PeerRpcServer>();
+    PeerStreamWriter bad2(srv, /*conn_id=*/0, 1, 0, CompressionType::NONE, -1);
+    EXPECT_FALSE(bad2.ok());
+    bad1.write("x", 1);   // write no-op
+    EXPECT_FALSE(bad1.finish());
+
+    // 对已关连接构造：START 发送失败 → write no-op / finish false（不挂）。
+    int port = srv->listen("127.0.0.1", 0,
+                           [](uint64_t, uint64_t, uint64_t, const CMString&,
+                              const PeerStreamReaderPtr&) { return std::nullopt; });
+    ASSERT_GT(port, 0);
+    auto [raw, rc] = connect_raw(port);
+    ASSERT_TRUE(raw != nullptr);
+    raw->close_all();
+    // 前置：server 侧 transport 已感知 FIN（conn 已从其表移除）——START 的
+    // send 失败才有确定性。
+    bool reaped = false;
+    for (int i = 0; i < 250 && !reaped; ++i) {
+        reaped = !srv->is_connected(rc);
+        if (!reaped) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_TRUE(reaped) << "server must observe the closed peer conn";
+    PeerStreamWriter dead(srv, rc, 9, 0, CompressionType::NONE, -1);
+    EXPECT_FALSE(dead.ok()) << "START on a closed conn must fail construction";
+    dead.write("data", 4);   // no-op：不得崩溃/阻塞
+    EXPECT_FALSE(dead.finish());
+
+    // 真实连接上不 finish 直接析构：压缩线程收尾 + END，不得挂死。
+    // （writer 绑定 client 端——conn id 即 client 侧连接 id，按构造正确对应；
+    //   server 端收到 START/数据/END 但无消费者，走 abandoned 弃投递，不 crash。）
+    PeerRpcServer srv2;
+    int port2 = srv2.listen("127.0.0.1", 0,
+                            [](uint64_t, uint64_t, uint64_t, const CMString&,
+                               const PeerStreamReaderPtr&) { return std::nullopt; });
+    ASSERT_GT(port2, 0);
+    uint64_t cc = client->connect_peer("127.0.0.1", port2);
+    ASSERT_NE(cc, 0u);
+    {
+        PeerStreamWriter abandoned(client, cc, 10, 0, CompressionType::NONE, -1);
+        ASSERT_TRUE(abandoned.ok());
+        abandoned.write("no-finish-payload", 17);
+    }   // 析构：close 队列 → 压缩线程排空 + 发尾块 + END → join
+    raw->close_all();
+    srv2.stop();
+}
+
+TEST_F(PeerRpcServerTest, AbandonedReaderDiscardsAndKeepsFrameSync) {
+    // 读端析构（abandoned）后继续到来的 DATA/END：网络线程弃记录但保持帧
+    // 同步至 END——不阻塞、不 crash，连接上后续请求照常往返。
+    std::mutex m;
+    std::condition_variable cv;
+    PeerStreamReaderPtr reader;
+    CallbackLatch latch;
+    client->set_response_handler([&latch](uint64_t, uint64_t rpc_id, uint8_t status,
+                                          const CMString& payload,
+                                          const PeerStreamReaderPtr&) {
+        latch.notify(rpc_id, status, payload);
+    });
+    uint64_t conn = setup_connected_pair(
+        [&](uint64_t, uint64_t, uint64_t, const CMString& payload,
+            const PeerStreamReaderPtr& r) -> std::optional<CMString> {
+            if (r) {
+                std::lock_guard<std::mutex> lk(m);
+                reader = r;
+                cv.notify_all();
+                return std::nullopt;
+            }
+            return std::optional<CMString>{"echo:" + payload};
+        });
+    ASSERT_NE(conn, 0u);
+
+    EXPECT_TRUE(client->send_stream_start(conn, 21, 0,
+                                          static_cast<uint8_t>(CompressionType::NONE)));
+    {
+        std::unique_lock<std::mutex> lk(m);
+        ASSERT_TRUE(cv.wait_for(lk, std::chrono::seconds(5),
+                                [&] { return reader != nullptr; }));
+    }
+    reader.reset();   // 中途废弃：abandoned 置位（网络线程弃投递）
+
+    // 继续发完整流（DATA + 如实 END）：不阻塞不 crash。
+    const std::string data = MakePseudoRandomBytes(8192);
+    CMString block_stream;
+    {
+        fly::EmitFn emit = [&](const char* d, size_t n) { block_stream.append(d, n); };
+        fly::WritePipeline wp(
+            fly::make_file_write_pipeline(nullptr, 32 * 1024, emit, 85, -1));
+        wp.write(data.data(), data.size());
+        wp.finish();
+    }
+    EXPECT_TRUE(client->send_stream_data(conn, block_stream.data(), block_stream.size()));
+    EXPECT_TRUE(client->send_stream_end(conn, 21, data.size(), 1, block_stream.size()));
+
+    // 帧同步保持：同连接后续单帧请求照常往返。
+    EXPECT_TRUE(client->send_request(conn, /*rpc_id=*/22, 1, "after-abandon"));
+    EXPECT_TRUE(latch.wait()) << "connection must keep serving after an abandoned reader";
+    EXPECT_EQ(latch.payload_, "echo:after-abandon");
+    EXPECT_TRUE(client->is_connected(conn));
+}
+
+// ── WorkerAgent 级 NOT_READY / FAILED 全链（PeerChannelGroup 底座语义）──
+// 线上 NOT_READY 是「可恢复未就绪」一等状态：server peer_rpc_respond_not_ready
+// → client peer_rpc_call 收到 NOT_READY（不判死）；对端整体 stop_peer_rpc →
+// pending/新 call 收 FAILED；无应答小 timeout → FAILED("timeout")。
+TEST(WorkerAgentPeerRpcTest, NotReadyFailureAndTimeoutPaths) {
+    WorkerAgent server_w(1, "127.0.0.1", 0);
+    WorkerAgent client_w(2, "127.0.0.1", 0);
+    const int port = server_w.start_peer_rpc_listen("127.0.0.1", 0);
+    ASSERT_GT(port, 0);
+    const uint64_t conn = client_w.peer_rpc_connect("127.0.0.1", port);
+    ASSERT_NE(conn, 0u);
+
+    // ① NOT_READY 全链：server recv_request → respond_not_ready → client 收到。
+    std::thread responder([&] {
+        try {
+            auto req = server_w.peer_rpc_recv_request(5000);
+            if (req.rpc_id_ != 0) {
+                server_w.peer_rpc_respond_not_ready(req.conn_id_, req.rpc_id_,
+                                                    "warming up");
+            }
+        } catch (const std::exception&) {
+        }
+    });
+    {
+        auto [status, payload] = client_w.peer_rpc_call(conn, "ping", 5000);
+        EXPECT_EQ(status, static_cast<uint8_t>(fly::PeerRpcStatus::NOT_READY))
+            << "NOT_READY must be delivered as a first-class recoverable status";
+        EXPECT_EQ(payload, "warming up");
+    }
+    responder.join();
+
+    // ② 对端整体 stop_peer_rpc 后 call：发送失败 / 断连 fail → FAILED。
+    server_w.stop_peer_rpc();
+    {
+        auto [status, payload] = client_w.peer_rpc_call(conn, "after-stop", 2000);
+        EXPECT_EQ(status, static_cast<uint8_t>(fly::PeerRpcStatus::FAILED));
+        EXPECT_FALSE(payload.empty());
+    }
+
+    // ③ 无应答小 timeout：FAILED（timeout 语义）。
+    const int port2 = server_w.start_peer_rpc_listen("127.0.0.1", 0);
+    ASSERT_GT(port2, 0);
+    const uint64_t conn2 = client_w.peer_rpc_connect("127.0.0.1", port2);
+    ASSERT_NE(conn2, 0u);
+    {
+        auto [status, payload] = client_w.peer_rpc_call(conn2, "nobody-home", 300);
+        EXPECT_EQ(status, static_cast<uint8_t>(fly::PeerRpcStatus::FAILED));
+        EXPECT_EQ(payload, "timeout");
+    }
+
+    client_w.stop_peer_rpc();
+    server_w.stop_peer_rpc();
 }
 
 }  // namespace

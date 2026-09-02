@@ -7,6 +7,7 @@
 #include <mutex>
 #include <chrono>
 #include <atomic>
+#include <network/cpp/message_protocol.h>
 
 namespace fly {
 
@@ -431,6 +432,84 @@ TEST(ReactorTest, HandlerThreadPoolExecutesTasks) {
     pool.shutdown();
     // submit after shutdown returns false.
     EXPECT_FALSE(pool.submit([&] {}));
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// dispatch_message 分发健壮性：未注册类型的合法帧被跳过（缓冲推进）；
+// 已注册类型但 payload 畸形的帧被丢弃且不影响后续帧（无 lane 与 lane 两种
+// 模式都锚定——lane 模式的"handler 不消费"ERR 在 lane lambda 内）。
+// ════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// 组一条 type=type、payload=垃圾 的帧（帧头合法、长度声明一致）。
+CMString make_raw_frame(MessageType type, size_t payload_len, char fill) {
+    CMString frame;
+    frame.resize(9 + payload_len);
+    write_be64(frame.data(), make_frame_header(1 + payload_len));
+    frame[8] = static_cast<char>(static_cast<uint8_t>(type));
+    std::memset(frame.data() + 9, fill, payload_len);
+    return frame;
+}
+
+// 驱动：server reactor 注册 Heartbeat handler；client 先发 disturb 帧序列，
+// 再发一条合法 Heartbeat。断言 handler 恰收到 1 条 = 垃圾帧被安全消化。
+void run_dispatch_robustness(size_t lanes) {
+    auto server_cm = create_connection_manager("tcp");
+    server_cm->listen("127.0.0.1", 0);
+    int port = server_cm->get_bound_port();
+
+    Reactor server_reactor(std::move(server_cm), lanes);
+    // client 走裸 ConnectionManager 直发编码帧（扰动帧不是合法消息对象）。
+    TcpConnectionManager client_cm;
+
+    std::atomic<int> heartbeat_count{0};
+    server_reactor.register_handler<HeartbeatMessage>(
+        [&](uint64_t, const HeartbeatMessage&) { heartbeat_count.fetch_add(1); });
+
+    std::thread server_thread([&] { server_reactor.run(); });
+    server_reactor.wait_until_running();
+
+    uint64_t conn = client_cm.connect("127.0.0.1", port);
+    ASSERT_GT(conn, 0u);
+
+    // 序列（合法帧先行——无 lane 模式下畸形帧按保守语义 clear 整个接收
+    // 缓冲，会吞掉同批后续字节，故畸形帧殿后；这本身是被锚定的行为）：
+    //  a) 合法 Heartbeat → handler 必须触发。
+    HeartbeatMessage hb;
+    hb.header_.type_ = MessageType::HEARTBEAT;
+    hb.worker_id_ = 77;
+    ASSERT_TRUE(client_cm.send(conn, MessageProtocol::encode(hb)));
+    //  b) 未注册类型的合法帧（NET_PROBE_REQUEST）→ 跳过该帧继续。
+    NetProbeRequestMessage probe;
+    probe.payload_size_ = 8;
+    probe.probe_seq_ = 1;
+    ASSERT_TRUE(client_cm.send(conn, MessageProtocol::encode(probe)));
+    //  c) 已注册类型但 payload 畸形 → decode 失败 → 帧丢弃（ERR）。
+    ASSERT_TRUE(client_cm.send(conn,
+        make_raw_frame(MessageType::HEARTBEAT, 24, '\x7F')));
+
+    for (int i = 0; i < 300 && heartbeat_count.load() < 1; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_EQ(heartbeat_count.load(), 1) << "合法帧必须触发 handler";
+    // 垃圾帧到达后 server 不崩、连接照常走完生命周期（stop/join 正常返回
+    // 即为断言——死锁/崩溃会在此暴露）。
+    server_reactor.stop();
+    server_thread.join();
+    client_cm.close_all();
+    EXPECT_EQ(heartbeat_count.load(), 1) << "扰动帧不得追加触发 handler";
+    return;
+}
+
+}  // namespace
+
+TEST(ReactorTest, DispatchSkipsUnknownAndMalformedFramesNoLane) {
+    run_dispatch_robustness(0);
+}
+TEST(ReactorTest, DispatchSkipsUnknownAndMalformedFramesWithLanes) {
+    run_dispatch_robustness(2);
 }
 
 }  // namespace fly

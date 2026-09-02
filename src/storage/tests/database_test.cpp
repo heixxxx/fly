@@ -5,6 +5,9 @@
 #include <storage/cpp/data_service.h>
 #include <common/cpp/worker_context.h>
 #include <common/cpp/fly_buffer.h>
+#include <common/cpp/error_types.h>
+#include <common/cpp/data_checksum.h>
+#include <serialization/cpp/object_header.h>
 #include <common/cpp/test_helpers.h>
 #include <filesystem>
 #include <fstream>
@@ -704,6 +707,16 @@ TEST_F(DatabaseVarTest, FreezeRejectsSetVar) {
     EXPECT_FALSE(db_->master_has_var("frozen_key"));
 }
 
+TEST_F(DatabaseVarTest, FreezeRejectsMasterSetVar) {
+    db_->freeze();
+    ASSERT_TRUE(db_->is_frozen());
+
+    auto val = make_var_buf("master_frozen");
+    EXPECT_FALSE(db_->master_set_var("mkey", val, "int"))
+        << "frozen db 的 master_set_var 必须拒绝";
+    EXPECT_FALSE(db_->master_has_var("mkey"));
+}
+
 TEST_F(DatabaseVarTest, FreezePersistsVarsToDisk) {
     auto v1 = make_var_buf("persist1");
     auto v2 = make_var_buf("persist2");
@@ -1020,6 +1033,343 @@ TEST_F(DatabaseTest, TempIdxUnclosedSegmentDropped) {
     temp_index.load();
     EXPECT_EQ(temp_index.get_all_entries().size(), 0u)
         << "未闭合段的 temp 写入必须在 load 时丢弃";
+}
+
+// ════════════════════════════════════════════════════════════════════
+// P4-1 零容忍重取 / backup 写链 / frozen 拒写 / _VARS 容错
+// ════════════════════════════════════════════════════════════════════
+
+// 组装合法新格式 record（单 raw 块 + trailer），供注错与远程副本注入。
+static FlyBufferPtr make_db_test_record(const std::string& data, const CMString& py_name) {
+    auto record = CMMakeShared<FlyBuffer>();
+    int32_t sz = static_cast<int32_t>(data.size());
+    uint64_t crc = fly::data_checksum(data.data(), data.size());
+    record->write(reinterpret_cast<const char*>(&sz), 4);
+    record->write(reinterpret_cast<const char*>(&sz), 4);
+    record->write(reinterpret_cast<const char*>(&crc), 8);
+    record->write(data.data(), data.size());
+    ObjectHeader header;
+    header.total_size_ = data.size();
+    header.chunk_count_ = 1;
+    header.py_name_ = py_name;
+    header.py_name_len_ = static_cast<uint16_t>(py_name.size());
+    header.compression_type_ = 0;
+    header.block_comp_lens_ = {static_cast<uint32_t>(data.size())};
+    CMString trailer = header.serialize_trailer();
+    record->write(trailer.data(), trailer.size());
+    return record;
+}
+
+// 盘上 trailer 位腐（保文件大小，精确命中 trailer 校验）。
+static void corrupt_last_byte(const CMString& dir, const CMString& file_prefix) {
+    for (const auto& entry : std::filesystem::directory_iterator(std::string(dir))) {
+        if (entry.path().filename().string().rfind(file_prefix, 0) == 0) {
+            std::ifstream in(entry.path(), std::ios::binary);
+            CMString bytes((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+            in.close();
+            ASSERT_GT(bytes.size(), 8u);
+            bytes[bytes.size() - 1] = static_cast<char>(bytes.back() ^ 0x01);
+            std::ofstream out(entry.path(), std::ios::binary | std::ios::trunc);
+            out.write(bytes.data(), bytes.size());
+            return;
+        }
+    }
+    ADD_FAILURE() << "no file with prefix " << file_prefix << " under " << dir;
+}
+
+// 盘坏 trailer + 无副本 → FATAL（已有 data_corruption_test 覆盖）；此处锚定
+// 有健康远程副本时 bypass 重取成功恢复的路径（§5：重取唯一可接受结果 =
+// 干净通过校验）。
+TEST_F(DatabaseTest, TrailerCorruptBypassRefetchFromRemoteRecovers) {
+    auto ds = fly::DataService::instance();
+    ds->reset();
+    CMString db_path = test_dir_ + "/refetch";
+    Database db(db_path);
+    ASSERT_EQ(write_raw(db, "obj", "clean re-fetch payload"), fly::WriteErrorType::OK);
+    fly::DataService::instance()->drain_write_back();
+    corrupt_last_byte(db_path, "data_");
+
+    auto good = make_db_test_record("clean re-fetch payload", "bytes");
+    ds->update_remote_idx(db_path + ":obj", 7, "replica_host", 9000);
+    ds->set_direct_compressed_read_handler(
+        [&](const CMString&, int32_t, const CMString&)
+            -> std::tuple<bool, FlyBufferPtr, CMString, CMString, fly::ReadError> {
+            return {true, good, "bytes", {}, fly::ReadError::NONE};
+        });
+
+    auto [comp_data, py_name] = db.read_object_compressed("obj");
+    ASSERT_TRUE(comp_data && !comp_data->empty());
+    EXPECT_EQ(py_name, "bytes");
+
+    ds->set_direct_compressed_read_handler(nullptr);
+}
+
+// TIER2 远程读命中 + backup=true → do_backup_write 把副本落成本地 record
+//（盘写 + entry 登记 + WBQ drain），此后本地可读。
+TEST_F(DatabaseTest, DoBackupWritePersistsRemoteCopy) {
+    auto ds = fly::DataService::instance();
+    ds->reset();
+    CMString db_path = test_dir_ + "/backupw";
+    Database db(db_path);
+
+    CMString full = db_path + ":obj";
+    auto good = make_db_test_record("remote copy payload", "bytes");
+    ds->update_remote_idx(full, 9, "replica_host2", 9001);
+    ds->set_direct_compressed_read_handler(
+        [&](const CMString&, int32_t, const CMString&)
+            -> std::tuple<bool, FlyBufferPtr, CMString, CMString, fly::ReadError> {
+            return {true, good, "bytes", {}, fly::ReadError::NONE};
+        });
+
+    auto [comp_data, py_name] = db.read_object_compressed("obj", /*backup=*/true);
+    ASSERT_TRUE(comp_data && !comp_data->empty());
+
+    // backup 落盘后本地成为持有者（entry 登记 + flush）。
+    EXPECT_TRUE(ds->has_local_object(full));
+    auto [found, result] = ds->try_read_local(full);
+    ASSERT_TRUE(found);
+    CMString data(result.data_buffer_.begin(), result.data_buffer_.end());
+    EXPECT_EQ(data, "remote copy payload");
+
+    ds->set_direct_compressed_read_handler(nullptr);
+}
+
+// backup_object：源数据 trailer 已损坏 → 放弃 backup（不落坏数据）、不抛、
+// on_write_failed 擦除条目（backup 是尽力语义，无错误通道）。
+TEST_F(DatabaseTest, BackupObjectCorruptSourceAbandonsQuietly) {
+    auto ds = fly::DataService::instance();
+    ds->reset();
+    CMString db_path = test_dir_ + "/backupc";
+    Database db(db_path);
+    ASSERT_EQ(write_raw(db, "obj", "soon corrupt"), fly::WriteErrorType::OK);
+    fly::DataService::instance()->drain_write_back();
+    corrupt_last_byte(db_path, "data_");
+
+    CMString full = db_path + ":obj";
+    EXPECT_NO_THROW(db.backup_object("obj"));
+    // on_write_failed 擦除了本地条目（损坏源不得继续伪装成可服务副本）。
+    EXPECT_FALSE(ds->has_local_object(full));
+}
+
+// frozen db 重开（读到 _FROZEN marker → 构造跳过 temp writer）→
+// put_temp_data 走显式失败分支：无条目、无静默内存降级。
+TEST_F(DatabaseTest, PutTempDataOnFrozenDbFailsExplicitly) {
+    auto ds = fly::DataService::instance();
+    ds->reset();
+    CMString db_path = test_dir_ + "/temp_frozen2";
+    {
+        Database db(db_path);
+        db.freeze();
+    }
+    ASSERT_TRUE(std::filesystem::exists(db_path + "/_FROZEN"));
+
+    Database db2(db_path);  // frozen → temp_writer_ 不创建
+    // 纯内存构造已压缩 record（含 ObjectHeader trailer）——不经 DataService
+    //（make_temp_payload 的 static dummy db 会被上面的 reset() 破坏）。
+    FlyStream w(CompressionType::NONE, 4194304, "bytes");
+    w.write("temp_on_frozen", 14);
+    w.flush();
+    FlyBufferPtr buf = w.finish_write();
+    ASSERT_TRUE(buf && !buf->empty());
+    db2.put_temp_data("iters/frozen_0", buf);
+
+    EXPECT_FALSE(ds->has_local_object(db_path + ":iters/frozen_0"));
+}
+
+// _VARS 文件损坏（坏 magic / 负 count）→ 构造期容错跳过，不崩、不加载。
+TEST_F(DatabaseTest, LoadVarsFromDiskToleratesCorruptFile) {
+    CMString db_path = test_dir_ + "/vars_bad";
+
+    // 坏 magic。
+    {
+        std::ofstream ofs(db_path + "/_VARS", std::ios::binary);
+        int64_t magic = 0xDEADBEEF;
+        int64_t count = 1;
+        ofs.write(reinterpret_cast<const char*>(&magic), 8);
+        ofs.write(reinterpret_cast<const char*>(&count), 8);
+    }
+    { Database db(db_path); EXPECT_FALSE(db.master_has_var("anything")); }
+
+    // 合法 magic + 负 count。
+    {
+        std::ofstream ofs(db_path + "/_VARS", std::ios::binary | std::ios::trunc);
+        int64_t magic = 0x53524156;  // 'VARS' LE，与实现一致
+        int64_t count = -3;
+        ofs.write(reinterpret_cast<const char*>(&magic), 8);
+        ofs.write(reinterpret_cast<const char*>(&count), 8);
+    }
+    { Database db(db_path); EXPECT_FALSE(db.master_has_var("anything")); }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// P4-2 commit_write 注册拒绝五分支（write_object<T> 是 commit_write 的
+// 模板入口；register_write 经 WorkerAgentContext 注入，同线程生效）。
+// ════════════════════════════════════════════════════════════════════
+
+struct DbTestPayload {
+    int32_t v = 0;
+    FLY_SERIALIZE(v)
+};
+
+class DatabaseRegisterRejectTest : public ::testing::Test {
+protected:
+    CMString test_dir_;
+    void SetUp() override {
+        test_dir_ = fly::test::qa_tmp_dir("fly_test_db_rej");
+        std::filesystem::create_directories(test_dir_);
+    }
+    void TearDown() override {
+        std::filesystem::remove_all(test_dir_);
+
+        fly::WorkerAgentContext::clear();  // 清 register_func / last_error
+        fly::DataService::instance()->reset();
+    }
+};
+
+// 各拒绝分支：返回码 + last_error_type + 不落盘（无本地条目）。
+TEST_F(DatabaseRegisterRejectTest, DuplicateSkippedBranch) {
+    CMString db_path = test_dir_ + "/rej_dup";
+    Database db(db_path);
+    fly::WorkerAgentContext::set_register_func(
+        [](const CMString&, const CMString&, int64_t, bool)
+            -> std::pair<CMString, fly::TaskErrorType> {
+            return {"dup", fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED};
+        });
+    DbTestPayload obj;
+    EXPECT_EQ(db.write_object("obj", obj, "bytes"),
+              fly::WriteErrorType::DUPLICATE_SKIPPED);
+    EXPECT_EQ(fly::WorkerAgentContext::get_last_error_type(),
+              fly::TaskErrorType::WRITE_DUPLICATE_SKIPPED);
+    EXPECT_FALSE(fly::DataService::instance()->has_local_object(db_path + ":obj"));
+}
+
+TEST_F(DatabaseRegisterRejectTest, ProvenanceMismatchMapsToRegistrationFailed) {
+    CMString db_path = test_dir_ + "/rej_prov";
+    Database db(db_path);
+    fly::WorkerAgentContext::set_register_func(
+        [](const CMString&, const CMString&, int64_t, bool)
+            -> std::pair<CMString, fly::TaskErrorType> {
+            return {"provenance", fly::TaskErrorType::WRITE_PROVENANCE_MISMATCH};
+        });
+    DbTestPayload obj;
+    EXPECT_EQ(db.write_object("obj", obj, "bytes"),
+              fly::WriteErrorType::REGISTRATION_FAILED);
+    // 注：last_error_type 由 worker 侧 register 实现负责（commit_write 的
+    // PROVENANCE_MISMATCH 分支不重复设置，与 DUPLICATE/TIMEOUT 分支不对称）。
+    EXPECT_FALSE(fly::DataService::instance()->has_local_object(db_path + ":obj"));
+}
+
+TEST_F(DatabaseRegisterRejectTest, RegistrationFailedBranch) {
+    CMString db_path = test_dir_ + "/rej_fail";
+    Database db(db_path);
+    fly::WorkerAgentContext::set_register_func(
+        [](const CMString&, const CMString&, int64_t, bool)
+            -> std::pair<CMString, fly::TaskErrorType> {
+            return {"rejected", fly::TaskErrorType::WRITE_REGISTRATION_FAILED};
+        });
+    DbTestPayload obj;
+    EXPECT_EQ(db.write_object("obj", obj, "bytes"),
+              fly::WriteErrorType::REGISTRATION_FAILED);
+    EXPECT_FALSE(fly::DataService::instance()->has_local_object(db_path + ":obj"));
+}
+
+TEST_F(DatabaseRegisterRejectTest, RegistrationTimeoutBranch) {
+    CMString db_path = test_dir_ + "/rej_to";
+    Database db(db_path);
+    fly::WorkerAgentContext::set_register_func(
+        [](const CMString&, const CMString&, int64_t, bool)
+            -> std::pair<CMString, fly::TaskErrorType> {
+            return {"timeout", fly::TaskErrorType::WRITE_REGISTRATION_TIMEOUT};
+        });
+    DbTestPayload obj;
+    EXPECT_EQ(db.write_object("obj", obj, "bytes"),
+              fly::WriteErrorType::REGISTRATION_TIMEOUT);
+    // TIMEOUT 分支同样不回写 last_error_type（由上层 register 实现负责）。
+    EXPECT_FALSE(fly::DataService::instance()->has_local_object(db_path + ":obj"));
+}
+
+TEST_F(DatabaseRegisterRejectTest, FrozenDbBranch) {
+    CMString db_path = test_dir_ + "/rej_frozen";
+    Database db(db_path);
+    fly::WorkerAgentContext::set_register_func(
+        [](const CMString&, const CMString&, int64_t, bool)
+            -> std::pair<CMString, fly::TaskErrorType> {
+            return {"frozen", fly::TaskErrorType::WRITE_TO_FROZEN_DB};
+        });
+    DbTestPayload obj;
+    EXPECT_EQ(db.write_object("obj", obj, "bytes"),
+              fly::WriteErrorType::FROZEN_DB);
+    EXPECT_FALSE(fly::DataService::instance()->has_local_object(db_path + ":obj"));
+}
+
+// 注册成功路径：execute/complete lambda 落盘 + entry 登记 → drain 后本地可读。
+TEST_F(DatabaseRegisterRejectTest, RegisterOkPersistsRecordViaCommitWrite) {
+    CMString db_path = test_dir_ + "/rej_ok";
+    Database db(db_path);
+    fly::WorkerAgentContext::set_register_func(
+        [](const CMString&, const CMString&, int64_t, bool)
+            -> std::pair<CMString, fly::TaskErrorType> {
+            return {"", fly::TaskErrorType::UNKNOWN};
+        });
+    DbTestPayload obj;
+    obj.v = 42;
+    ASSERT_EQ(db.write_object("obj", obj, "bytes"), fly::WriteErrorType::OK);
+    fly::DataService::instance()->drain_write_back();
+
+    CMString full = db_path + ":obj";
+    EXPECT_TRUE(fly::DataService::instance()->has_local_object(full));
+    auto [comp_data, py_name] = db.read_object_compressed("obj");
+    ASSERT_TRUE(comp_data && !comp_data->empty());
+}
+
+// ════════════════════════════════════════════════════════════════════
+// P4-3 _MIGRATED_TO 迁移跟随（旧 db 兼容路径）
+// ════════════════════════════════════════════════════════════════════
+
+TEST_F(DatabaseTest, MigrationMarkerFollowedOnOpen) {
+    auto ds = fly::DataService::instance();
+    ds->reset();
+    CMString a = test_dir_ + "/mig_a";
+    CMString b = test_dir_ + "/mig_b";
+    std::filesystem::create_directories(a);
+    std::filesystem::create_directories(b);
+
+    fly::DataService::write_migration_marker(a, b, b);
+    Database db(a);
+    EXPECT_EQ(db.get_db_path(), b) << "open(A) 必须跟随 marker 到 B";
+    EXPECT_EQ(db.get_data_path(), b) << "data_path 跟随 marker 的 target_data_path";
+}
+
+TEST_F(DatabaseTest, ChainedMigrationFollowsToFinalTarget) {
+    auto ds = fly::DataService::instance();
+    ds->reset();
+    CMString a = test_dir_ + "/chain_a";
+    CMString b = test_dir_ + "/chain_b";
+    CMString c = test_dir_ + "/chain_c";
+    for (const auto& d : {a, b, c}) std::filesystem::create_directories(d);
+
+    fly::DataService::write_migration_marker(a, b, b);
+    fly::DataService::write_migration_marker(b, c, c);
+    Database db(a);
+    EXPECT_EQ(db.get_db_path(), c) << "A→B→C 链式展平";
+    EXPECT_EQ(db.get_data_path(), c);
+}
+
+TEST_F(DatabaseTest, CorruptMigrationMarkerIgnored) {
+    auto ds = fly::DataService::instance();
+    ds->reset();
+    CMString a = test_dir_ + "/mig_bad";
+    std::filesystem::create_directories(a);
+    // size 域合法但 payload 是垃圾 → FLY_DECODE throw → catch → 不跟随。
+    {
+        std::ofstream ofs(a + "/_MIGRATED_TO", std::ios::binary);
+        int64_t size = 64;
+        ofs.write(reinterpret_cast<const char*>(&size), 8);
+        ofs.write(std::string(64, '\x7F').c_str(), 64);
+    }
+    Database db(a);
+    EXPECT_EQ(db.get_db_path(), a) << "损坏 marker 必须被 catch 且不跟随";
 }
 
 }

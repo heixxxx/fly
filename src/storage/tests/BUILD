@@ -234,3 +234,12 @@ py_test(
     deps = ["//src/storage/py:fly_storage_py"],
     imports = ["../py"],
 )
+
+# DbChainRegistry（uid↔db_path 双向映射）纯 Python 测试
+py_test(
+    name = "chain_registry_test",
+    srcs = ["test_chain_registry.py"],
+    main = "test_chain_registry.py",
+    deps = ["//src/storage/py:fly_storage_py"],
+    imports = ["../py"],
+)

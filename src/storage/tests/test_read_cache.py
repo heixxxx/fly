@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', '..', 'src'))
 
-from read_cache import ReadCache
+from read_cache import ReadCache, _CacheEntry
 
 
 # ── 基础语义（双池 + level 标记，2026-08-30 改造后）──────────────────
@@ -217,6 +217,104 @@ def test_oversized_object_still_admitted():
     print("  PASS: test_oversized_object_still_admitted")
 
 
+# ── 补充语义（2026-09 覆盖率批次）：temp 同 key 扣减 / 双池切换 / config 容量 ──
+
+def test_temp_same_key_put_decrements_bytes():
+    # temp 池同 key 重复 put：旧条目出账、新条目入账（不叠加）。
+    rc = ReadCache(max_bytes=1024 * 1024)
+    rc.put("t1", "temp", "obj_v1", size=100)
+    assert rc._temp_bytes == 100
+    rc.put("t1", "temp", "obj_v2", size=60)
+    assert rc._temp_bytes == 60, f"同 key 重复 put 应替换记账，got {rc._temp_bytes}"
+    assert rc.get("t1") == "obj_v2"
+    print("  PASS: test_temp_same_key_put_decrements_bytes")
+
+
+def test_main_put_clears_temp_entry():
+    # 主池 put 同名 key：temp 池条目一并清（等级切换防陈旧）。
+    rc = ReadCache(max_bytes=1024 * 1024)
+    rc.put("k1", "temp", "obj_temp", size=100)
+    assert rc._temp_bytes == 100
+    rc.put("k1", "high", "obj_main", size=70)
+    assert rc._temp_bytes == 0, "主池 put 必须清同名 temp 条目"
+    assert rc._main_bytes == 70
+    assert rc.get("k1") == "obj_main"
+    print("  PASS: test_main_put_clears_temp_entry")
+
+
+def test_zero_max_bytes_reads_config():
+    # ReadCache(0)：容量从 config 'read_cache_size' 读取；config 未设(<=0)
+    # 时回 _DEFAULT_MAX_BYTES（1GB）。
+    import sys as _sys
+    import types as _types
+    cfg_calls = {"read_cache_size": 4096}
+    stub = _types.ModuleType("_fly_core")
+
+    class _Cfg:
+        def get_int(self, key):
+            return cfg_calls.get(key, 0)  # C++ config 未设键返回 0
+
+    stub.ex_core_get_config = lambda: _Cfg()
+    _sys.modules["_fly_core"] = stub
+    try:
+        rc = ReadCache(max_bytes=0)
+        assert rc._max_bytes == 4096, f"应取 config 值 4096，got {rc._max_bytes}"
+        assert rc._temp_max_bytes == 2048, "temp 池容量应为主池一半"
+        assert rc._hard_limit == int(4096 * 1.5)
+        # config 未设（返回 0）→ 默认 1GB
+        cfg_calls.clear()
+        rc2 = ReadCache(max_bytes=0)
+        assert rc2._max_bytes == 1 << 30
+    finally:
+        del _sys.modules["_fly_core"]
+    print("  PASS: test_zero_max_bytes_reads_config")
+
+
+def test_low_score_factor_from_config():
+    # low 等级折扣从 config 'low_score_factor'（百分比整数）读取；
+    # 异常/未设时回默认 0.25。
+    import sys as _sys
+    import types as _types
+    stub = _types.ModuleType("_fly_core")
+
+    class _Cfg:
+        def __init__(self, vals):
+            self._vals = vals
+
+        def get_int(self, key):
+            return self._vals.get(key, 0)  # C++ config 未设键返回 0
+
+    stub.ex_core_get_config = lambda: _Cfg({"low_score_factor": 50})
+    _sys.modules["_fly_core"] = stub
+    try:
+        rc = ReadCache(max_bytes=1024 * 1024)
+        assert abs(rc._low_factor - 0.5) < 1e-9, \
+            f"low_score_factor=50 应解析为 0.5，got {rc._low_factor}"
+    finally:
+        del _sys.modules["_fly_core"]
+
+    stub2 = _types.ModuleType("_fly_core")
+    stub2.ex_core_get_config = lambda: _Cfg({})  # 未设（返回 0，不满足 >0）→ 回默认
+    _sys.modules["_fly_core"] = stub2
+    try:
+        rc2 = ReadCache(max_bytes=1024 * 1024)
+        assert abs(rc2._low_factor - 0.25) < 1e-9
+    finally:
+        del _sys.modules["_fly_core"]
+    print("  PASS: test_low_score_factor_from_config")
+
+
+def test_score_low_discount_applied():
+    # score() 对 low 条目乘 low_factor 折扣（同热度下优先级沉底）。
+    entry_h = _CacheEntry("h", 10, "high")
+    entry_l = _CacheEntry("l", 10, "low")
+    now = time.monotonic()
+    assert entry_h.score(now, 0.25) > entry_l.score(now, 0.25)
+    # 非 low 等级不受折扣影响
+    assert entry_h.score(now, 0.25) == entry_h.score(now, 1.0)
+    print("  PASS: test_score_low_discount_applied")
+
+
 def _run_all():
     tests = [
         test_basic_put_get_high,
@@ -236,6 +334,11 @@ def _run_all():
         test_low_evicted_before_high,
         test_hit_does_not_upgrade_level,
         test_oversized_object_still_admitted,
+        test_temp_same_key_put_decrements_bytes,
+        test_main_put_clears_temp_entry,
+        test_zero_max_bytes_reads_config,
+        test_low_score_factor_from_config,
+        test_score_low_discount_applied,
     ]
 
     passed = 0

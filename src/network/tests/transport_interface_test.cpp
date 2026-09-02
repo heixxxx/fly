@@ -4,6 +4,11 @@
 #include <network/cpp/tcp_socket.h>
 #include <thread>
 #include <chrono>
+#include <atomic>
+#include <future>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <cstring>
 
 namespace fly {
 
@@ -301,6 +306,137 @@ TEST_F(TransportTest, AcceptNonBlocking) {
     EXPECT_EQ(fd, -1);
 
     transport_->close(listen_fd);
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// tcp_socket send_all/sendv 的 EAGAIN→poll→续发路径（阻塞态流控）与
+// 对端关闭返回 false。用 AF_UNIX socketpair + 极小对端 SO_RCVBUF 制造
+// 确定的发送端阻塞（8MB 数据 vs KB 级缓冲）。
+// ════════════════════════════════════════════════════════════════════
+
+TEST_F(TransportTest, SendAllEagainPollsThenResumes) {
+    int sv[2];
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+    int rcv = 4096;
+    ASSERT_EQ(::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv)), 0);
+    transport_->set_nonblocking(sv[0]);
+
+    const size_t total = 8u << 20;  // 8MB：必然耗尽 KB 级对端缓冲 → EAGAIN
+    CMString payload(total, '\0');
+    for (size_t i = 0; i < total; ++i) {
+        payload[static_cast<size_t>(i)] = static_cast<char>((i * 31 + 7) & 0xFF);
+    }
+
+    // 读线程：读满 half 后停住等放行（制造发送端确定阻塞），放行后读完全部。
+    std::atomic<bool> release_reader{false};
+    CMVector<char> got;
+    std::mutex got_mtx;
+    std::thread reader([&] {
+        char tmp[65536];
+        size_t acc = 0;
+        while (acc < total) {
+            ssize_t n = ::recv(sv[1], tmp, sizeof(tmp), 0);
+            if (n <= 0) break;
+            {
+                std::lock_guard<std::mutex> lk(got_mtx);
+                got.insert(got.end(), tmp, tmp + n);
+            }
+            acc += static_cast<size_t>(n);
+            if (acc >= total / 2 && !release_reader.load()) {
+                // 到半程即等主线程放行——此时发送端几乎必然已 EAGAIN。
+                while (!release_reader.load()) std::this_thread::yield();
+            }
+        }
+    });
+
+    auto fut = std::async(std::launch::async, [&] {
+        return transport_->send_all(sv[0], payload.data(), total);
+    });
+    // 给 send_all 一段阻塞期（对端半停 → 必然 EAGAIN → poll 等待），随后放行
+    // reader——poll 必须随对端消费被唤醒并续发完成。
+    (void)fut.wait_for(std::chrono::milliseconds(300));
+    release_reader.store(true);
+    ASSERT_EQ(fut.wait_for(std::chrono::seconds(10)), std::future_status::ready)
+        << "send_all 卡死（poll 未随对端消费推进）";
+    EXPECT_TRUE(fut.get());
+
+    reader.join();
+    std::lock_guard<std::mutex> lk(got_mtx);
+    ASSERT_EQ(got.size(), total);
+    EXPECT_EQ(std::memcmp(got.data(), payload.data(), total), 0)
+        << "EAGAIN 分段续发后字节流必须完整一致";
+    ::close(sv[0]);
+    ::close(sv[1]);
+}
+
+TEST_F(TransportTest, SendvEagainPollsThenResumes) {
+    int sv[2];
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+    int rcv = 4096;
+    ASSERT_EQ(::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv)), 0);
+    transport_->set_nonblocking(sv[0]);
+
+    const size_t half = 4u << 20;
+    CMString a(half, 'A');
+    CMString b(half, 'B');
+    struct iovec iov[2];
+    iov[0].iov_base = a.data();
+    iov[0].iov_len = half;
+    iov[1].iov_base = b.data();
+    iov[1].iov_len = half;
+
+    std::atomic<bool> release_reader{false};
+    CMVector<char> got;
+    std::mutex got_mtx;
+    std::thread reader([&] {
+        char tmp[65536];
+        size_t acc = 0;
+        while (acc < 2 * half) {
+            ssize_t n = ::recv(sv[1], tmp, sizeof(tmp), 0);
+            if (n <= 0) break;
+            {
+                std::lock_guard<std::mutex> lk(got_mtx);
+                got.insert(got.end(), tmp, tmp + n);
+            }
+            acc += static_cast<size_t>(n);
+            if (acc >= half && !release_reader.load()) {
+                while (!release_reader.load()) std::this_thread::yield();
+            }
+        }
+    });
+
+    auto fut = std::async(std::launch::async, [&] {
+        return transport_->sendv(sv[0], iov, 2);
+    });
+    (void)fut.wait_for(std::chrono::milliseconds(300));
+    release_reader.store(true);
+    ASSERT_EQ(fut.wait_for(std::chrono::seconds(10)), std::future_status::ready)
+        << "sendv 卡死";
+    EXPECT_TRUE(fut.get());
+
+    reader.join();
+    std::lock_guard<std::mutex> lk(got_mtx);
+    ASSERT_EQ(got.size(), 2 * half);
+    EXPECT_EQ(std::memcmp(got.data(), a.data(), half), 0);
+    EXPECT_EQ(std::memcmp(got.data() + half, b.data(), half), 0);
+    ::close(sv[0]);
+    ::close(sv[1]);
+}
+
+// 对端关闭后 send_all 必须返回 false（EPIPE，MSG_NOSIGNAL 下不崩溃）。
+// 注：sendv 的对端关闭分支不在本测试触发——sendv 走 ::writev（无
+// MSG_NOSIGNAL），SIGPIPE 会直接杀死进程（已作为生产缺陷上报，见任务报告）。
+TEST_F(TransportTest, SendAllFailsAfterPeerClose) {
+    int sv[2];
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+    transport_->set_nonblocking(sv[0]);
+    ::close(sv[1]);  // 对端立即关闭
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));  // 等关闭就绪
+    CMString blob(1 << 20, 'X');  // 1MB：写满（已关）对端即 EPIPE
+    EXPECT_FALSE(transport_->send_all(sv[0], blob.data(), blob.size()));
+    ::close(sv[0]);
 }
 
 }  // namespace fly

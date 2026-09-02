@@ -78,3 +78,21 @@ py_test(
         "//src/fly:fly_py",
     ],
 )
+
+py_test(
+    name = "bootstrap_test",
+    srcs = ["test_bootstrap.py"],
+    main = "test_bootstrap.py",
+    deps = [
+        "//src/fly:fly_py",
+    ],
+)
+
+py_test(
+    name = "fly_api_test",
+    srcs = ["test_fly_api.py"],
+    main = "test_fly_api.py",
+    deps = [
+        "//src/fly:fly_py",
+    ],
+)

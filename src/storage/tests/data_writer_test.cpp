@@ -583,4 +583,42 @@ TEST_F(DataWriterTest, BeginEndThenAbortNextSegment) {
     EXPECT_FALSE(idx.find_entry("obj/rolledback").has_value());
 }
 
+
+// ════════════════════════════════════════════════════════════════════
+// L1 增量写守卫：未 begin 的 append/finish 是 no-op；closed 后 begin 拒绝。
+// ════════════════════════════════════════════════════════════════════
+
+TEST_F(DataWriterTest, IncrementalGuardsWithoutBegin) {
+    CMString db_path = test_dir_ + "/inc_guard";
+    DataWriter writer(db_path, "", "incg", 1 << 20);
+
+    // 未 begin：append 是 no-op（不崩、不写）。
+    writer.append_incremental("ORPHAN", 6);
+    // 未 begin：finish 是 no-op（无 entry）。
+    writer.finish_incremental("obj/ghost", 6, 1, "");
+
+    writer.flush();
+    EXPECT_FALSE(writer.get_all_entries("obj/ghost").has_value())
+        << "未 begin 的增量写不得产生 entry";
+    EXPECT_EQ(writer.total_bytes_written(), 0);
+
+    // 正常 begin → append → finish 后 entry 出现（守卫不误伤正常路径）。
+    int64_t off = writer.begin_incremental();
+    ASSERT_GE(off, 0);
+    writer.append_incremental("HELLO", 5);
+    writer.finish_incremental("obj/real", 5, 1, "");
+    auto entry = writer.get_last_entry("obj/real");
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(entry->size_, 5);
+}
+
+TEST_F(DataWriterTest, ClosedWriterRejectsIncrementalBegin) {
+    CMString db_path = test_dir_ + "/inc_closed";
+    {
+        DataWriter writer(db_path, "", "incc", 1 << 20);
+        writer.close();
+        EXPECT_EQ(writer.begin_incremental(), -1)
+            << "closed 后 begin_incremental 必须拒绝";
+    }
+}
 }

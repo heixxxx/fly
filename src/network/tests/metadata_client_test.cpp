@@ -258,4 +258,124 @@ TEST(MetadataClientTest, E2ECanStillProducePassthrough) {
     EXPECT_TRUE(r2.can_still_produce_);
 }
 
+
+// ════════════════════════════════════════════════════════════════════
+// 元数据帧故障注入：fake master 按剧本发原始字节，覆盖 client 侧各失败
+// 分支（截断 / 垃圾头 / 超长 total_len / 截断 payload / 解码失败）。
+// ════════════════════════════════════════════════════════════════════
+
+namespace {
+
+class RawMetadataServer {
+public:
+    enum class Mode {
+        TRUNC_HEADER,    // 只发 3B 就断 → recv header 失败
+        GARBAGE_HEADER,  // 9B 垃圾 → parse_frame_header 失败
+        OVERSIZE_TOTAL,  // total_len > 16MB 上界 → frame size 拒绝
+        TRUNC_PAYLOAD,   // 声明 100B payload 只发 10B → recv payload 失败
+        DECODE_GARBAGE,  // 合法帧 + 垃圾 payload → decode 失败
+    };
+    Mode mode = Mode::TRUNC_HEADER;
+
+    RawMetadataServer() {
+        listen_fd_ = transport_->create_listen_socket("127.0.0.1", 0);
+        port_ = transport_->get_port(listen_fd_);
+        thread_ = std::thread([this] { serve(); });
+    }
+    ~RawMetadataServer() {
+        transport_->close(listen_fd_);
+        if (thread_.joinable()) thread_.join();
+    }
+    int port() const { return port_; }
+
+private:
+    void serve() {
+        struct pollfd pfd;
+        pfd.fd = listen_fd_;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        if (::poll(&pfd, 1, 10000) <= 0) return;
+        int fd = transport_->accept_connection(listen_fd_);
+        if (fd < 0) return;
+        transport_->set_recv_timeout(fd, 5000);
+        transport_->set_send_timeout(fd, 5000);
+        auto send = [&](const CMString& b) {
+            transport_->send_all(fd, b.data(), b.size());
+        };
+        // 读掉 client 的 DataQuery 帧。
+        char h[9];
+        if (recv_exact(transport_.get(), fd, h, 9)) {
+            uint64_t tl = 0;
+            if (parse_frame_header(h, tl)) {
+                CMString rest(static_cast<size_t>(tl - 1), '\0');
+                recv_exact(transport_.get(), fd, rest.data(), static_cast<size_t>(tl - 1));
+            }
+        }
+
+        switch (mode) {
+        case Mode::TRUNC_HEADER:
+            send(CMString(3, '\x21'));
+            break;
+        case Mode::GARBAGE_HEADER:
+            send(CMString(9, '\x5C'));
+            break;
+        case Mode::OVERSIZE_TOTAL:
+            send(frame_prefix(17u * 1024 * 1024, MessageType::DATA_LOCATION));
+            break;
+        case Mode::TRUNC_PAYLOAD:
+            send(frame_prefix(100, MessageType::DATA_LOCATION));
+            send(CMString(10, '\x00'));
+            break;
+        case Mode::DECODE_GARBAGE:
+            send(frame_prefix(65, MessageType::DATA_LOCATION));
+            send(CMString(64, '\xFF'));
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        transport_->close(fd);
+    }
+    static CMString frame_prefix(uint64_t total_len, MessageType type) {
+        CMString out;
+        out.resize(9);
+        write_be64(out.data(), make_frame_header(total_len));
+        out[8] = static_cast<char>(static_cast<uint8_t>(type));
+        return out;
+    }
+
+    CMSharedPtr<Transport> transport_ = create_tcp_transport();
+    int listen_fd_ = -1;
+    int port_ = 0;
+    std::thread thread_;
+};
+}  // namespace
+
+void run_raw_metadata_case(RawMetadataServer& server) {
+    MetadataClient client;
+    auto r = client.query_data_location("127.0.0.1", server.port(), "db:obj", 3000);
+    EXPECT_FALSE(r.found_);
+    EXPECT_FALSE(r.error_.empty());
+    EXPECT_TRUE(r.all_locations_.empty());
+}
+
+TEST(MetadataClientTest, RawFaultTruncatedHeader) {
+    RawMetadataServer server;  server.mode = RawMetadataServer::Mode::TRUNC_HEADER;
+    run_raw_metadata_case(server);
+}
+TEST(MetadataClientTest, RawFaultGarbageHeader) {
+    RawMetadataServer server;  server.mode = RawMetadataServer::Mode::GARBAGE_HEADER;
+    run_raw_metadata_case(server);
+}
+TEST(MetadataClientTest, RawFaultOversizeTotalLen) {
+    RawMetadataServer server;  server.mode = RawMetadataServer::Mode::OVERSIZE_TOTAL;
+    run_raw_metadata_case(server);
+}
+TEST(MetadataClientTest, RawFaultTruncatedPayload) {
+    RawMetadataServer server;  server.mode = RawMetadataServer::Mode::TRUNC_PAYLOAD;
+    run_raw_metadata_case(server);
+}
+TEST(MetadataClientTest, RawFaultDecodeGarbage) {
+    RawMetadataServer server;  server.mode = RawMetadataServer::Mode::DECODE_GARBAGE;
+    run_raw_metadata_case(server);
+}
+
 }  // namespace fly

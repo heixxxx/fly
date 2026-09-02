@@ -887,8 +887,108 @@ def test_register_module_help_loader_triggers_import():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 运行入口
+# 2026-09 覆盖率批次补充：容器边界 / keyword 匹配 / detail 渲染分支
 # ═══════════════════════════════════════════════════════════════════════════
+
+def test_container_schema_error_branches_and_str():
+    """Schema.list/dict 非容器输入报错 + callable 自动包装 + __str__ 变体。"""
+    # 裸 callable 元素规则自动包装成 Schema（_wrap_schema callable 分支）
+    ls = Schema.list(lambda v: v > 0)
+    assert ls.validate([1, 2]) == []
+    assert ls.validate([1, -1]) != []          # 元素级 check 生效
+
+    # 非容器输入的专用错误分支
+    assert any("expected dict" in e for e in
+               Schema.dict(required={"a": Schema(int)}).validate("not_a_dict"))
+    assert any("expected list" in e for e in ls.validate("not_a_list"))
+    assert any("expected list" in e for e in ls.validate(123))
+
+    # __str__：无 desc → 类型签名；有 desc → 描述覆盖
+    assert str(Schema.list(Schema(int))) == "list[int]"
+    assert str(Schema.list(Schema(int), desc="nums")) == "nums"
+
+
+def test_add_keyword_element_type_and_matches_keyword():
+    """add_keyword 非字符串元素 TypeError + _matches_keyword 全分支。"""
+    _fresh_registry()
+    doc = UserDoc("solve_it")
+    doc._api_name = "solve_it"   # 身份由 document 装饰器注入；此处手动指定
+    try:
+        doc.add_keyword(["ok", 42])
+        raise AssertionError("non-str keyword must raise TypeError")
+    except TypeError as e:
+        assert "must be str" in str(e)
+
+    class MyOwner:
+        pass
+
+    doc._owner = MyOwner
+    doc.add_keyword(["solverish"])
+    doc.add_param("nsd", Schema(int))
+    # api_name 子串
+    assert doc._matches_keyword("solve") is True
+    # owner 类名子串
+    assert doc._matches_keyword("myowner") is True
+    # keyword 精确匹配（大小写归一）
+    assert doc._matches_keyword("SOLVERISH") is True
+    # 参数名子串
+    assert doc._matches_keyword("ns") is True
+    # 全 miss
+    assert doc._matches_keyword("zzz") is False
+    # keyword 精确语义：部分输入不误匹配
+    assert doc._matches_keyword("solveris") is False
+
+
+def test_format_param_line_and_detail_render_branches():
+    """_format_param_line 三种 tag + desc；_format_detail 的 owner/desc/
+    prototype/Examples/Keywords 分支。"""
+    doc = UserDoc(desc="does everything")
+    doc._api_name = "full_api"
+    doc._owner = type("Widget", (), {})
+    # 真实 Signature 对象（prototype 渲染需要 replace/bind 能力）
+    import inspect
+    doc._signature = inspect.Signature([
+        inspect.Parameter("must", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        inspect.Parameter("opts", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        inspect.Parameter("free", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+    ])
+    doc.add_param("must", Schema(int), required=True, desc="a required one")
+    doc.add_param("opts", Schema(str), required=False,
+                  default="hello", desc="has a default")
+    doc.add_param("free", Schema(float), required=False, desc=None)
+    doc.add_example("basic", "full_api(1)", desc="call it simply")
+    doc.add_example("bare", "full_api(2)")          # 无 desc 的 example
+    doc.add_keyword(["alpha", "beta"])
+
+    line_req = userdoc._format_param_line(doc._params[0])
+    assert "[required]" in line_req and "a required one" in line_req
+    line_def = userdoc._format_param_line(doc._params[1])
+    assert "[default 'hello']" in line_def
+    line_opt = userdoc._format_param_line(doc._params[2])
+    assert "[optional]" in line_opt
+
+    text = userdoc._format_detail(doc, detail=True)
+    assert "full_api — Widget" in text            # owner 标题
+    assert "does everything" in text              # desc 块
+    assert "Prototype:" in text
+    assert "Parameters:" in text
+    assert "[basic]  call it simply" in text      # example 含 desc
+    assert "[bare]" in text                       # example 无 desc
+    assert "    full_api(1)" in text              # code 缩进渲染
+    assert "Keywords: alpha, beta" in text
+
+    # 无 owner 标题、无 desc、无 signature（prototype 省略）、detail=False 提示
+    bare = UserDoc()
+    bare._api_name = "bare_api"
+    bare._signature = None
+    plain = userdoc._format_detail(bare, detail=False)
+    assert "bare_api\n" in plain or plain.strip().startswith("═")
+    assert "bare_api — " not in plain
+    assert "(use detail=True for parameters & examples)" in plain
+    assert "Prototype:" not in plain
+
+
+
 
 if __name__ == "__main__":
     import traceback

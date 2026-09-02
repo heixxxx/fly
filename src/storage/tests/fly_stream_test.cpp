@@ -4,6 +4,7 @@
 #include <serialization/cpp/object_header.h>
 #include <cstring>
 #include <string>
+#include <vector>
 
 class FlyStreamTest : public ::testing::TestWithParam<CompressionType> {};
 TEST_P(FlyStreamTest, WriteReadRoundtrip) {
@@ -71,4 +72,48 @@ TEST(FlyStreamBasicTest, LargePayloadStillCompresses) {
     FlyStream r(buf);
     CMString recovered = r.read(payload.size());
     EXPECT_EQ(std::string(recovered.data(), recovered.size()), payload);
+}
+
+// 读模式 API：FlyStream(FlyBufferPtr) 的 read_all / readline / readinto。
+TEST(FlyStreamBasicTest, ReadModeAllLineReadinto) {
+    std::string payload = "line-one\nline-two\ntail-without-newline";
+    FlyStream w(CompressionType::NONE, 4096, "bytes");
+    w.write(payload.data(), payload.size());
+    w.flush();
+    auto buf = w.finish_write();
+
+    FlyStream r(buf);
+    // readline 含换行符（逐字节 readinto 驱动）。
+    CMString l1 = r.readline();
+    EXPECT_EQ(std::string(l1.data(), l1.size()), "line-one\n");
+    CMString l2 = r.readline();
+    EXPECT_EQ(std::string(l2.data(), l2.size()), "line-two\n");
+
+    // readinto：定长读 4 字节。
+    char tmp[4] = {0};
+    EXPECT_EQ(r.readinto(tmp, sizeof(tmp)), 4u);
+    EXPECT_EQ(std::string(tmp, 4), "tail");
+
+    // read_all：读完剩余。
+    CMString rest = r.read_all();
+    EXPECT_EQ(std::string(rest.data(), rest.size()), "-without-newline");
+
+    // 读空后再 read_all → 空。
+    EXPECT_TRUE(r.read_all().empty());
+}
+
+TEST(FlyStreamBasicTest, ReadAllRoundtripCompressed) {
+    std::string payload(3000, 'z');
+    for (size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<char>('a' + (i % 26));
+    }
+    FlyStream w(CompressionType::LZ4, 1024, "bytes");
+    w.write(payload.data(), payload.size());
+    w.flush();
+    auto buf = w.finish_write();
+
+    FlyStream r(buf);
+    CMString all = r.read_all();
+    EXPECT_EQ(std::string(all.data(), all.size()), payload);
+    EXPECT_EQ(r.py_name(), "bytes");
 }

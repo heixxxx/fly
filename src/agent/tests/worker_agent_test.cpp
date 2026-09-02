@@ -9,6 +9,7 @@
 #include <thread>
 #include <chrono>
 #include <memory>
+#include <algorithm>
 
 using namespace fly::test;
 
@@ -1792,6 +1793,682 @@ TEST(WorkerAgentPeerRpcTest, RecvRequestUnlockBeforeReadAll) {
     ta.join();
     client_w.stop_peer_rpc();
     server_w.stop_peer_rpc();
+}
+
+// ── 终止批量唤醒（initiate_shutdown 的 A 类 pending 批量 fail 真实路径）──
+// 现有用例经 fail_pending_*_for_testing 钩子绕过了 initiate_shutdown 主体；
+// 本用例直接驱动真实退出入口，断言六类「未注册窗口挂起的同步 RPC」在 worker
+// 终止时全部以正确错误语义唤醒（用户确认语义的终态之一：worker 退出 = 等待
+// 者显式失败，而非永久阻塞）。
+TEST(WorkerAgentTest, ShutdownBatchFailsAllInflightSyncRpcs) {
+    WorkerAgent worker(9, "127.0.0.1", 0);  // 不 start：永无注册确认
+    FlyBufferPtr var_val = CMMakeShared<FlyBuffer>();
+    var_val->write("v", 1);
+
+    struct SyncOutcome {
+        std::atomic<bool> done{false};
+        std::atomic<int> err_type{-1};   // -1 = 尚未返回
+        std::atomic<bool> ok{false};
+    };
+    SyncOutcome write_reg, freeze, var_set, var_get, remove_req, db_path;
+
+    auto blocked = [](SyncOutcome& o) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return !o.done.load();
+    };
+    auto wait_done = [](SyncOutcome& o) {
+        for (int i = 0; i < 200 && !o.done.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return o.done.load();
+    };
+
+    std::thread t_write([&] {
+        auto [err, type] = worker.register_write_with_master_for_testing(
+            db32("sd_reg"), "obj", 10);
+        write_reg.ok = err.empty();
+        write_reg.err_type = static_cast<int>(type);
+        write_reg.done = true;
+    });
+    std::thread t_dbpath([&] {
+        db_path.ok = worker.request_db_path(db32("sd_dbpath"));
+        db_path.done = true;
+    });
+    std::thread t_freeze([&] {
+        worker.request_database_freeze(db32("sd_freeze"));
+        // last_error_type 是 TLS：必须在发起线程读（request_database_freeze
+        // 终态分支写入本线程的 context）。
+        freeze.err_type = static_cast<int>(WorkerAgentContext::get_last_error_type());
+        freeze.done = true;
+    });
+    std::thread t_var_set([&] {
+        var_set.ok = worker.set_var_sync(db32("sd_var") + ":v", var_val, "str");
+        var_set.done = true;
+    });
+    std::thread t_var_get([&] {
+        auto [ok, val, type_name] = worker.get_var_sync(db32("sd_var") + ":v");
+        var_get.ok = ok;
+        var_get.done = true;
+    });
+    std::thread t_remove([&] {
+        worker.request_object_remove(db32("sd_rm"), "obj");
+        remove_req.done = true;
+    });
+
+    // 前置：六类调用全部阻塞在未注册窗口（100ms 远大于入队窗口）。
+    EXPECT_TRUE(blocked(write_reg)) << "write register must block while unregistered";
+    EXPECT_TRUE(blocked(db_path)) << "db path request must block while unregistered";
+    EXPECT_TRUE(blocked(freeze)) << "freeze must block while unregistered";
+    EXPECT_TRUE(blocked(var_set)) << "var set must block while unregistered";
+    EXPECT_TRUE(blocked(var_get)) << "var get must block while unregistered";
+    EXPECT_TRUE(blocked(remove_req)) << "object remove must block while unregistered";
+
+    // 真实退出入口（非 for_testing 钩子）：批量 fail 全部六类 pending。
+    worker.initiate_shutdown_for_testing(fly::ExitReason::LOCAL_STOP,
+                                         "shutdown batch-fail test");
+
+    // 先等全部返回再 join：ASSERT 提前返回会让 joinable 线程析构触发
+    // std::terminate（同 WriteRegisterPendingBlocksUntilReconnected 的教训）。
+    const bool w_done = wait_done(write_reg);
+    const bool d_done = wait_done(db_path);
+    const bool f_done = wait_done(freeze);
+    const bool vs_done = wait_done(var_set);
+    const bool vg_done = wait_done(var_get);
+    const bool r_done = wait_done(remove_req);
+    t_write.join();
+    t_dbpath.join();
+    t_freeze.join();
+    t_var_set.join();
+    t_var_get.join();
+    t_remove.join();
+
+    ASSERT_TRUE(w_done) << "pending write register must wake on shutdown";
+    ASSERT_TRUE(d_done) << "pending db path must wake on shutdown";
+    ASSERT_TRUE(f_done) << "pending freeze must wake on shutdown";
+    ASSERT_TRUE(vs_done) << "pending var set must wake on shutdown";
+    ASSERT_TRUE(vg_done) << "pending var get must wake on shutdown";
+    ASSERT_TRUE(r_done) << "pending remove must wake on shutdown";
+
+    // 逐类断言错误语义（initiate_shutdown 批量 fail 的字面分类）。
+    EXPECT_FALSE(write_reg.ok.load());
+    EXPECT_EQ(write_reg.err_type.load(),
+              static_cast<int>(TaskErrorType::WRITE_REGISTRATION_FAILED));
+    EXPECT_FALSE(db_path.ok.load());
+    EXPECT_EQ(freeze.err_type.load(),
+              static_cast<int>(TaskErrorType::WRITE_REGISTRATION_TIMEOUT));
+    EXPECT_FALSE(var_set.ok.load());
+    EXPECT_FALSE(var_get.ok.load());
+    EXPECT_FALSE(worker.is_running());
+    worker.stop();  // 幂等安全（未 start 的 worker 为 no-op）
+}
+
+// ── 断连窗口重放族（A 类同步 RPC 全覆盖）─────────────────────────────
+// 按 WriteRegisterPendingBlocksUntilReconnected 段二模板：真 master+worker →
+// 断连 + park 重连线程 → 五类 A 类调用全部 pending 阻塞 → 放行重连 → 注册
+// 确认后 FIFO 重放 → 各自 Ack/裁决唤醒。含 freeze 变体：重放的 freeze 落在
+// master 已冻结 db 上，验证 DB_ALREADY_FROZEN 拒绝链经断连重放同样可达。
+TEST(WorkerAgentTest, DisconnectWindowReplaysAllSyncCalls) {
+    Config::instance()->set_int("worker_reconnect_timeout", 30);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 50);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // master 侧 db：var 服务与 DbPath 裁决依赖 db_instances_ 条目。
+    CMString db_var = make_temp_dir("replay_var");
+    CMString db_new = make_temp_dir("replay_new");
+    master.register_database(db_var, db_var + "/data");
+    master.register_database(db_new, db_new + "/data");
+
+    // 子任务由本 worker 执行（stub executor）——重放提交的 task 必须收敛，
+    // 否则 master.stop() 的 drain 永等。
+    TaskExecutor exec;
+    exec.set_exec_func([](uint64_t id, const CMString&, const CMString&,
+                          const CMVector<CMString>&) {
+        TaskExecResult r;
+        r.task_id_ = id;
+        r.status_ = TaskExecStatus::SUCCESS;
+        return r;
+    });
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.set_executor(CMMakeShared<TaskExecutor>(std::move(exec)));
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // freeze 拒绝变体前置：db_frozen 在首连窗口已被冻结（stream 模式即时
+    // 确认 → master frozen_dbs_ 有条目）。
+    CMString db_frozen = make_temp_dir("replay_frozen");
+    auto db_frozen_obj = CMMakeShared<Database>(db_frozen, db_frozen + "/data", 0, "", db_frozen);
+    worker.register_database(db_frozen, db_frozen_obj);
+    worker.request_database_freeze(db_frozen);
+    wait_for([&] { return db_frozen_obj->is_frozen(); }, 50, 20);
+    ASSERT_TRUE(db_frozen_obj->is_frozen());
+
+    // var 读取前置：master 侧直接预置 replay_var（set/get 用不同 var 名——
+    // 同窗口并发重放下二者的到达顺序不可假设，get 不依赖 set 的结果）。
+    FlyBufferPtr seed = CMMakeShared<FlyBuffer>();
+    seed->write("replay_value", 12);
+    ASSERT_TRUE(master.get_database(db_var)->master_set_var("replay_var", seed, "str"));
+
+    // park 重连线程：断连窗口确定性地覆盖全部 A 类挂起路径。
+    std::mutex hk_m;
+    std::condition_variable hk_cv;
+    bool release_reconnect = false;
+    worker.reconnect_entry_hook_for_testing_ = [&] {
+        std::unique_lock<std::mutex> lk(hk_m);
+        hk_cv.wait_for(lk, std::chrono::seconds(10), [&] { return release_reconnect; });
+    };
+    worker.simulate_master_disconnect_for_testing();
+    EXPECT_FALSE(worker.is_registered());
+
+    // 断连窗口并发发起五类 A 类同步调用：全部 pending 阻塞、相互独立
+    //（重放各自拿 Ack/裁决，断言不依赖 FIFO 到达顺序）。
+    std::atomic<bool> freeze_done{false};
+    std::atomic<int> freeze_err{-1};
+    std::thread t_freeze([&] {
+        worker.request_database_freeze(db_frozen);   // 重放后 master 已冻结 → 拒绝
+        freeze_err = static_cast<int>(WorkerAgentContext::get_last_error_type());
+        freeze_done = true;
+    });
+    std::atomic<bool> dbpath_ok{false}, dbpath_done{false};
+    std::thread t_dbpath([&] {
+        dbpath_ok = worker.request_db_path(db_new);
+        dbpath_done = true;
+    });
+    FlyBufferPtr val = CMMakeShared<FlyBuffer>();
+    val->write("replay_value", 12);
+    std::atomic<bool> set_ok{false}, set_done{false};
+    std::thread t_set([&] {
+        set_ok = worker.set_var_sync(db_var + ":written_var", val, "str");
+        set_done = true;
+    });
+    std::atomic<bool> get_ok{false}, get_done{false};
+    std::thread t_get([&] {
+        auto [ok, v, type_name] = worker.get_var_sync(db_var + ":replay_var");
+        get_ok = ok && v != nullptr &&
+                 CMString(v->data(), v->size()) == "replay_value";
+        get_done = true;
+    });
+    std::atomic<bool> sub_done{false};
+    std::atomic<uint64_t> sub_id{0};
+    std::thread t_submit([&] {
+        sub_id = worker.submit_task("replay_child", "m", {}, {});
+        sub_done = true;
+    });
+
+    // 前置：全部阻塞在断连窗口（100ms 远大于入队窗口）。
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    EXPECT_FALSE(freeze_done.load());
+    EXPECT_FALSE(dbpath_done.load());
+    EXPECT_FALSE(set_done.load());
+    EXPECT_FALSE(get_done.load());
+    EXPECT_FALSE(sub_done.load());
+
+    // 放行重连：注册确认 → FIFO 重放 → 各自 Ack/裁决唤醒。
+    {
+        std::lock_guard<std::mutex> lk(hk_m);
+        release_reconnect = true;
+    }
+    hk_cv.notify_all();
+    ASSERT_TRUE(wait_until_registered(worker, 300, 10))
+        << "worker must reconnect within grace";
+
+    auto wait_flag = [](std::atomic<bool>& f) {
+        for (int i = 0; i < 300 && !f.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    };
+    wait_flag(freeze_done);
+    wait_flag(dbpath_done);
+    wait_flag(set_done);
+    wait_flag(get_done);
+    wait_flag(sub_done);
+    t_freeze.join();
+    t_dbpath.join();
+    t_set.join();
+    t_get.join();
+    t_submit.join();
+
+    EXPECT_TRUE(freeze_done.load()) << "replayed freeze must be woken by the ack";
+    EXPECT_EQ(freeze_err.load(), static_cast<int>(TaskErrorType::DB_ALREADY_FROZEN))
+        << "replayed freeze on an already-frozen db must be rejected";
+    EXPECT_TRUE(dbpath_done.load());
+    EXPECT_TRUE(dbpath_ok.load()) << "replayed db path request must succeed";
+    EXPECT_NE(worker.get_database(db_new), nullptr);
+    EXPECT_TRUE(set_done.load());
+    EXPECT_TRUE(set_ok.load()) << "replayed var set must succeed";
+    EXPECT_TRUE(get_done.load());
+    EXPECT_TRUE(get_ok.load()) << "replayed var get must round-trip the value";
+    EXPECT_TRUE(sub_done.load());
+    EXPECT_GT(sub_id.load(), 0u) << "replayed task submit must be acked";
+
+    // 重放提交的 task 派回本 worker：消化掉，master RUNNING 归零（drain 前置）。
+    bool child_done = false;
+    for (int i = 0; i < 300 && !child_done; ++i) {
+        worker.poll_task();
+        auto completed = master.get_completed_tasks();
+        child_done = std::find(completed.begin(), completed.end(), sub_id.load())
+                     != completed.end();
+        if (!child_done) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_TRUE(child_done) << "replayed child task must complete before stop";
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
+    std::filesystem::remove_all(db_var);
+    std::filesystem::remove_all(db_new);
+    std::filesystem::remove_all(db_frozen);
+}
+
+// ── 假 master（裸 TCP listener，吞 REGISTER 不回任何字节）────────────
+// 真实 master.stop() 会先广播 Shutdown（worker 走 on_shutdown 优雅退），
+// 覆盖不到「重连宽限耗尽 → MASTER_LOST 终局」分支；假 master 无任何应用层
+// 响应，重连/退出全由 worker 自主决策。
+namespace {
+class SilentFakeMaster {
+public:
+    bool start(uint16_t& port_out) {
+        fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (fd_ < 0) return false;
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;
+        if (::bind(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
+            ::listen(fd_, 8) != 0) {
+            ::close(fd_);
+            fd_ = -1;
+            return false;
+        }
+        socklen_t len = sizeof(addr);
+        if (::getsockname(fd_, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+            ::close(fd_);
+            fd_ = -1;
+            return false;
+        }
+        port_ = ntohs(addr.sin_port);
+        port_out = port_;
+        acceptor_ = std::thread([this] {
+            while (!stop_.load()) {
+                int c = ::accept(fd_, nullptr, nullptr);
+                if (c < 0) break;
+                std::lock_guard<std::mutex> lk(m_);
+                accepted_.push_back(c);   // 吞掉一切：不读不写
+            }
+        });
+        return true;
+    }
+    // 关闭全部已接受连接 + 停止监听。必须先 shutdown(SHUT_WR) 发 FIN 并排空
+    // 在途数据再 close：带 unread data 的 close 会发 RST，worker 侧 transport
+    // 走 ERROR 事件（worker 未注册 on_error，不感知——那是独立的观察项），
+    // 干净 FIN 才产生 DISCONNECT 事件、进入被测的断连重连路径。
+    void cut_all() {
+        stop_ = true;
+        if (fd_ >= 0) {
+            ::close(fd_);   // 停止监听（重连目标消失 → ECONNREFUSED）
+            fd_ = -1;
+        }
+        // 唤醒可能阻塞在 accept 的线程（Linux close 不唤醒已阻塞的 accept）。
+        int wake = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (wake >= 0) {
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            addr.sin_port = htons(port_);
+            ::connect(wake, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+            ::close(wake);
+        }
+        if (acceptor_.joinable()) acceptor_.join();
+        std::lock_guard<std::mutex> lk(m_);
+        for (int c : accepted_) {
+            ::shutdown(c, SHUT_WR);   // FIN 先行
+            char buf[512];
+            while (::read(c, buf, sizeof(buf)) > 0) {}   // 排空：确保 FIN 非 RST
+            ::close(c);
+        }
+        accepted_.clear();
+    }
+    bool has_accepted() {
+        std::lock_guard<std::mutex> lk(m_);
+        return !accepted_.empty();
+    }
+    ~SilentFakeMaster() { cut_all(); }
+private:
+    int fd_ = -1;
+    uint16_t port_ = 0;
+    std::thread acceptor_;
+    std::atomic<bool> stop_{false};
+    std::mutex m_;
+    CMVector<int> accepted_;
+};
+}  // namespace
+
+// 重连宽限耗尽 → 干净退出（MASTER_LOST）。现有 ReconnectTimeoutExhaustedCleanExit
+// 因 master.stop() 先发 Shutdown 绕过了 reconnect_loop 的 deadline 分支；本用例
+// 用假 master 关闭后静默，重连必败，1s 宽限耗尽走 initiate_shutdown(MASTER_LOST)。
+TEST(WorkerAgentTest, FakeMasterGraceExpiryExitsAsMasterLost) {
+    Config::instance()->set_int("worker_reconnect_timeout", 1);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 10);
+
+    SilentFakeMaster fake;
+    uint16_t port = 0;
+    ASSERT_TRUE(fake.start(port)) << "fake master listen failed";
+
+    WorkerAgent worker(3, "127.0.0.1", port);
+    worker.start();
+    ASSERT_TRUE(worker.is_running()) << "worker must start against the silent master";
+    // 前置：worker 已连上假 master（REGISTER 已发出，永远不会被 ack）。
+    bool accepted = false;
+    for (int i = 0; i < 100 && !accepted; ++i) {
+        accepted = fake.has_accepted();
+        if (!accepted) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(accepted) << "worker must have connected to the fake master";
+
+    fake.cut_all();   // 连接断 + 重连目标消失：重连必败
+
+    // 宽限（1s）耗尽 → initiate_shutdown(MASTER_LOST) → 干净退出。
+    bool exited = false;
+    for (int i = 0; i < 300 && !exited; ++i) {
+        exited = !worker.is_running();
+        if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_TRUE(exited) << "worker must exit after reconnect grace expires";
+    EXPECT_EQ(worker.exit_code(), 3) << "MASTER_LOST must map to abnormal exit code 3";
+    EXPECT_FALSE(worker.exit_reason_graceful(worker.exit_reason()));
+    worker.stop();
+
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
+}
+
+// 逃生口（worker_reconnect_timeout=0）：断连即退，不进重连。经 on_disconnect
+// 的 grace<=0 分支（master.stop() 变体走的是 on_shutdown，分支不同）。
+TEST(WorkerAgentTest, GraceZeroDisconnectExitsImmediately) {
+    Config::instance()->set_int("worker_reconnect_timeout", 0);
+
+    SilentFakeMaster fake;
+    uint16_t port = 0;
+    ASSERT_TRUE(fake.start(port));
+
+    WorkerAgent worker(4, "127.0.0.1", port);
+    worker.start();
+    ASSERT_TRUE(worker.is_running());
+    bool accepted = false;
+    for (int i = 0; i < 100 && !accepted; ++i) {
+        accepted = fake.has_accepted();
+        if (!accepted) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(accepted);
+
+    fake.cut_all();
+
+    bool exited = false;
+    for (int i = 0; i < 300 && !exited; ++i) {
+        exited = !worker.is_running();
+        if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_TRUE(exited) << "grace=0 must shut down immediately on disconnect";
+    EXPECT_EQ(worker.exit_code(), 3);
+    worker.stop();
+
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
+}
+
+// 断连窗口 stub executor 跑成功 task：TaskComplete（非 TaskFailed）经
+// send_master_or_buffer 缓冲，重连注册确认后 flush 到 master。
+TEST(WorkerAgentTest, DisconnectWindowTaskCompleteFlushedAfterReconnect) {
+    Config::instance()->set_int("worker_reconnect_timeout", 30);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 50);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    TaskExecutor exec;
+    exec.set_exec_func([](uint64_t id, const CMString&, const CMString&,
+                          const CMVector<CMString>&) {
+        TaskExecResult r;
+        r.task_id_ = id;
+        r.status_ = TaskExecStatus::SUCCESS;
+        r.output_ = "ok";
+        return r;
+    });
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.set_executor(CMMakeShared<TaskExecutor>(std::move(exec)));
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // 派一个普通（非 internal）task：断连窗口内执行产出 TaskComplete。
+    master.submit_task(71, "success_task", "m", {"a"}, {}, {});
+    bool assigned = false;
+    for (int i = 0; i < 100 && !assigned; ++i) {
+        assigned = worker.has_pending_task();
+        if (!assigned) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(assigned) << "task must reach the worker";
+
+    // park 重连线程（断连窗口确定性覆盖 poll_task）。
+    std::mutex hk_m;
+    std::condition_variable hk_cv;
+    bool release_reconnect = false;
+    worker.reconnect_entry_hook_for_testing_ = [&] {
+        std::unique_lock<std::mutex> lk(hk_m);
+        hk_cv.wait_for(lk, std::chrono::seconds(10), [&] { return release_reconnect; });
+    };
+    worker.simulate_master_disconnect_for_testing();
+    EXPECT_FALSE(worker.is_registered());
+
+    worker.poll_task();   // 执行成功 → TaskComplete → 重连中必缓冲
+    EXPECT_TRUE(worker.is_running()) << "worker must stay alive during grace";
+    EXPECT_EQ(worker.pending_report_count_for_testing(), 1u)
+        << "TaskComplete must be buffered while disconnected";
+
+    // 放行重连：注册确认 → 缓冲 flush → master 收到 Complete。
+    {
+        std::lock_guard<std::mutex> lk(hk_m);
+        release_reconnect = true;
+    }
+    hk_cv.notify_all();
+    ASSERT_TRUE(wait_until_registered(worker, 300, 10));
+    wait_for([&] { return worker.pending_report_count_for_testing() == 0u; }, 100, 10);
+    EXPECT_EQ(worker.pending_report_count_for_testing(), 0u)
+        << "buffered TaskComplete must flush on reconnect";
+
+    bool reached = false;
+    wait_for([&] {
+        auto completed = master.get_completed_tasks();
+        reached = std::find(completed.begin(), completed.end(), 71u) != completed.end();
+        return reached;
+    }, 100, 20);
+    EXPECT_TRUE(reached) << "master must observe the buffered TaskComplete";
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("worker_reconnect_timeout", 120);
+    Config::instance()->set_int("worker_connect_retry_initial_ms", 500);
+}
+
+// ── register_write_with_master 本地 entry 预检（provenance 源头语义）──
+// 同对象已有不同 write_context_hash 的本地 entry → WRITE_PROVENANCE_MISMATCH
+// 拒绝；同 hash → WRITE_DUPLICATE_SKIPPED 幂等跳过。两分支都在触碰网络前
+// 返回（未 start 的 worker 即可驱动）。
+TEST(WorkerAgentTest, WriteRegisterLocalPrecheckMismatchAndDuplicate) {
+    WorkerAgent worker(1, "127.0.0.1", 0);  // 不 start：预检分支不依赖网络
+    CMString db_path = make_temp_dir("precheck_db");
+    auto ds = fly::DataService::instance();
+
+    // 伪造本地 entry（既有 hash1）——find_local_entries 的查询源。
+    IndexEntry entry;
+    entry.object_name_ = "obj";
+    entry.file_name_ = "data_0.bin";
+    entry.offset_ = 0;
+    entry.size_ = 10;
+    entry.write_context_hash_ = "hash1";
+    {
+        LocalIndex idx(db_path + "/w0000001.idx");
+        idx.add_entry(entry);
+        idx.save();
+    }
+    ds->register_database(db_path, db_path + "/data");
+    ds->restore_entries(db_path, {entry});
+
+    // 异 hash：拒绝（WRITE_PROVENANCE_MISMATCH），不触碰网络。
+    WorkerAgentContext::set_current_write_hash("hash2");
+    {
+        auto [err, type] = worker.register_write_with_master_for_testing(
+            db_path, "obj", 10);
+        EXPECT_FALSE(err.empty()) << "mismatched provenance must be rejected locally";
+        EXPECT_EQ(type, TaskErrorType::WRITE_PROVENANCE_MISMATCH);
+        EXPECT_EQ(WorkerAgentContext::get_last_error_type(),
+                  TaskErrorType::WRITE_PROVENANCE_MISMATCH);
+    }
+
+    // 同 hash：幂等跳过（DUPLICATE_SKIPPED 语义 = 返回空错误 + UNKNOWN）。
+    WorkerAgentContext::set_current_write_hash("hash1");
+    {
+        auto [err, type] = worker.register_write_with_master_for_testing(
+            db_path, "obj", 10);
+        EXPECT_TRUE(err.empty()) << "same-hash re-register must be skipped idempotently";
+        EXPECT_EQ(type, TaskErrorType::UNKNOWN);
+        EXPECT_EQ(WorkerAgentContext::get_last_error_type(),
+                  TaskErrorType::WRITE_DUPLICATE_SKIPPED);
+    }
+
+    WorkerAgentContext::clear();
+    ds->unregister_database(db_path);
+    ds->remove_local_index(db_path + ":obj");
+    std::filesystem::remove_all(db_path);
+}
+
+// ── on_idx_load_command 恢复语义：未闭合写段（崩溃遗留）的数据丢弃 ──
+// 手写 BEGIN 无 END 的 idx：load 检出 unclosed segment → 该段 entry 全部
+// 丢弃 → 对象不可见、ack 不上报该 writer（不得半交付崩溃遗留的脏数据）。
+TEST_F(IdxLoadTest, WorkerDiscardsUnclosedSegmentIdx) {
+    CMString db_path = test_dir_;
+    CMString full = db_path + ":ghost_obj";
+    {
+        // 追加路径直写文件（BEGIN + ADD，无 END/ABORT）；析构 flush。
+        LocalIndex idx(test_dir_ + "/w0000077.idx");
+        idx.mark_begin();
+        IndexEntry entry;
+        entry.object_name_ = "ghost_obj";
+        entry.file_name_ = "data_0.bin";
+        entry.offset_ = 0;
+        entry.size_ = 64;
+        idx.add_entry(entry);
+    }
+    ds_->register_database(db_path, test_dir_ + "/data");
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    master.send_idx_load_commands(db_path, {"w0000077"});
+    // 有界等待后数据必须不可见（unclosed 段在 load 时丢弃）。
+    wait_for([&] { return ds_->has_local_object(full); }, 30, 20);
+    EXPECT_FALSE(ds_->has_local_object(full))
+        << "unclosed-segment entries must be discarded on load (crash leftover)";
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    ds_->unregister_database(db_path);
+}
+
+// ── execute_merge_object 源损坏：坏 trailer → TaskFailed、零产物 ────
+// 源对象尾部 32B（trailer 定长锚定区）被覆写 → ObjectHeader::deserialize_trailer
+// 失败 → merge internal task 走 TaskFailed（不得落盘坏数据/假成功诱导删源）。
+TEST_F(IdxLoadTest, MergeSourceCorruptedTrailerReportsTaskFailed) {
+    CMString source_base = test_dir_ + "/corrupt_db";
+    CMString source_data = source_base + "/data";
+    std::filesystem::create_directories(source_base);
+    auto source_db = CMMakeShared<Database>(source_base, source_data, 0, "127.0.0.1", source_base);
+    CMString db_path = source_db->get_db_path();
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker1(1, "127.0.0.1", master.get_port());
+    worker1.register_database(db_path, source_db);
+    worker1.start();
+    ASSERT_TRUE(wait_until_registered(worker1));
+
+    const char* payload = "corrupt_payload_424242";
+    write_object_bytes(*source_db, "corrupt_obj", payload, 22);
+    fly::DataService::instance()->drain_write_back();
+
+    // 篡改源 .dat 尾部 32B（fixed 24B + crc 8B 的定长锚定区）→ trailer 解析必败。
+    bool corrupted = false;
+    for (const auto& e : std::filesystem::directory_iterator(source_data)) {
+        CMString fname = e.path().filename().string();
+        if (fname.substr(0, 5) == "data_" &&
+            fname.size() >= 4 && fname.substr(fname.size() - 4) == ".dat") {
+            auto sz = std::filesystem::file_size(e.path());
+            ASSERT_GT(sz, 32u);
+            std::fstream f(e.path(), std::ios::in | std::ios::out | std::ios::binary);
+            f.seekp(static_cast<std::streamoff>(sz) - 32);
+            CMString junk(32, '\xFF');
+            f.write(junk.data(), 32);
+            f.close();
+            corrupted = true;
+        }
+    }
+    ASSERT_TRUE(corrupted) << "source .dat must exist to corrupt";
+
+    CMString target_data_path = test_dir_ + "/corrupt_target";
+    std::filesystem::create_directories(target_data_path);
+    WorkerAgent worker2(2, "127.0.0.1", master.get_port());
+    worker2.start();
+    ASSERT_TRUE(wait_until_registered(worker2));
+
+    std::atomic<bool> poll_running{true};
+    std::thread poll_thread([&] {
+        while (poll_running.load() && worker2.is_running()) {
+            worker2.poll_task_blocking(100);
+        }
+    });
+
+    // 同进程 TIER1 命中本地坏 record → trailer 解析失败 → TaskFailed。
+    uint64_t task_id = master.send_merge_task(2, "corrupt_obj", db_path, db_path,
+                                              target_data_path, "127.0.0.1");
+    CMVector<CMString> completed;
+    CMVector<CMString> failed;
+    bool ok = master.wait_merge_tasks_complete({task_id}, 15, &completed, &failed);
+    EXPECT_FALSE(ok) << "corrupted source must fail the merge task";
+    EXPECT_TRUE(completed.empty());
+    ASSERT_EQ(failed.size(), 1u);
+    EXPECT_NE(failed[0].find("corrupted source object trailer"), CMString::npos)
+        << "failure must cite the corrupted trailer, not a generic error";
+
+    // 零产物：target 无 .dat、master remote_idx 无 worker2 副本。
+    bool has_dat = false;
+    for (const auto& e : std::filesystem::directory_iterator(target_data_path)) {
+        if (e.path().filename().string().substr(0, 5) == "data_") has_dat = true;
+    }
+    EXPECT_FALSE(has_dat) << "failed merge must not write products";
+    for (auto w : fly::DataService::instance()->get_remote_workers(db_path + ":corrupt_obj")) {
+        EXPECT_NE(w, 2u);
+    }
+
+    poll_running.store(false);
+    if (poll_thread.joinable()) poll_thread.join();
+    worker1.stop();
+    worker2.stop();
+    master.stop();
+    wait_for_running(master, false);
+    fly::DataService::instance()->unregister_database(db_path);
+    fly::DataService::instance()->remove_remote_index(db_path + ":corrupt_obj");
 }
 
 }  // namespace fly
