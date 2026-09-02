@@ -978,6 +978,11 @@ void WorkerAgent::finish_task(const PendingTask& task, const TaskExecResult& res
         }
         task_resource_tracker_.end(task.task_id_);
         sample_now_event();  // 事件采样：执行终点
+        // write-rejection / 失败分类的错误类型必须在 end_task 之前快照：
+        // end_task 首行 clear() 会把 last_error_type_ 重置为 UNKNOWN，其后
+        // 读取恒为 UNKNOWN——write 被拒的 task 会被静默上报 TaskComplete
+        // （脏数据假成功），异常失败路径的 error_type 同样恒丢失。
+        const auto write_error_type = WorkerAgentContext::get_last_error_type();
         auto tracked_writes = end_task(task.task_id_);
         // 对象级 IO 明细（尽力而为通道；聚合四元组随 complete/failed 不丢）。
         report_task_io(result);
@@ -989,7 +994,7 @@ void WorkerAgent::finish_task(const PendingTask& task, const TaskExecResult& res
         }
 
         if (result.status_ == TaskExecStatus::SUCCESS) {
-            auto error_type = WorkerAgentContext::get_last_error_type();
+            auto error_type = write_error_type;
             if (error_type != TaskErrorType::UNKNOWN) {
                 // write-rejection 失败：task 逻辑成功，但某次 write 被 master 拒绝。
                 // 撤销本 task 已写入的脏对象。
@@ -1046,7 +1051,7 @@ void WorkerAgent::finish_task(const PendingTask& task, const TaskExecResult& res
             failed.task_id_ = task.task_id_;
             failed.worker_id_ = worker_id_;
             failed.error_message_ = result.error_;
-            failed.error_type_ = WorkerAgentContext::get_last_error_type();
+            failed.error_type_ = write_error_type;
             failed.read_time_ms_ = result.read_time_ms_;
             failed.write_time_ms_ = result.write_time_ms_;
             failed.read_bytes_ = result.read_bytes_;

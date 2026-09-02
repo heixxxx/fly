@@ -1,9 +1,12 @@
-"""E2E test: Worker write silently rejected after freeze broadcast.
+"""E2E test: Worker write rejected after freeze broadcast.
 
 Verifies:
   - Worker A freezes DB during task execution
-  - Worker B attempts write → silently rejected
-  - Task completes but writes nothing
+  - Worker B attempts write → master registration rejects (FROZEN_DB)
+  - Task FAILS with error_type（脏数据假成功曾是覆盖率测试暴露的生产缺陷：
+    end_task 先 clear last_error_type_ 导致 write-rejection 恒不可见——
+    2026-09-02 修复为快照语义，写被拒必须以 TaskFailed 暴露）
+  - Nothing is written
 """
 from _fly_log import INFO
 import time
@@ -35,8 +38,17 @@ def test_freeze_rejects_worker_write():
     freeze_db(db, [])
     assert wait_for(lambda: len(master.completed_tasks) >= 1)
     write_after_freeze(db, "after_freeze_key", "value")
-    assert wait_for(lambda: len(master.completed_tasks) >= 2), "write should complete silently"
-    assert not master.failed_tasks, f"Unexpected failures: {master.failed_tasks}"
+    # 新语义：写被 master 注册拒绝（FROZEN_DB）→ task 必须失败，绝不静默
+    # 假成功；仅 freeze task 一个完成。
+    assert wait_for(lambda: len(master.failed_tasks) >= 1), \
+        "post-freeze write must FAIL (rejected write is no longer silently dropped)"
+    assert len(master.completed_tasks) == 1, \
+        f"only the freeze task completes, got {len(master.completed_tasks)}"
+    try:
+        db.read_object("after_freeze_key")
+        raise AssertionError("rejected write must persist nothing")
+    except KeyError:
+        pass
     INFO("[PASS] test_freeze_rejects_worker_write")
 
 test_freeze_rejects_worker_write()

@@ -560,6 +560,7 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
 void DataServer::handle_chunk_resend(int fd, uint64_t offset, uint64_t length) {
     CMString file;
     uint64_t base_off = 0, total = 0;
+    bool drop_conn = false;
     {
         std::lock_guard<std::mutex> lk(conn_mutex_);
         int idx = find_conn_index(fd);
@@ -570,18 +571,24 @@ void DataServer::handle_chunk_resend(int fd, uint64_t offset, uint64_t length) {
             return;
         }
         // 每区间上限一次（§14.1 A'3）：client 侧块级解析驱动，同一区间
-        // 重复请求 = 协议异常，断开防御。
+        // 重复请求 = 协议异常，断开防御。cleanup_fd 内部同样加锁
+        // （conn_mutex_ 不可重入）——必须在锁外调用，否则 epoll 线程
+        // 自死锁（2026-09-02 覆盖率测试 gdb 抓栈确认）。
         uint64_t key = offset;
         if (c.resent_offsets.count(key)) {
             ERR("[DS-CHUNK] fd={} resend offset={} limit reached, dropping connection",
                 fd, offset);
-            cleanup_fd(fd);
-            return;
+            drop_conn = true;
+        } else {
+            c.resent_offsets.insert(key);
+            file = c.chunk_file;
+            base_off = c.chunk_off;
+            total = c.chunk_size;
         }
-        c.resent_offsets.insert(key);
-        file = c.chunk_file;
-        base_off = c.chunk_off;
-        total = c.chunk_size;
+    }
+    if (drop_conn) {
+        cleanup_fd(fd);   // 锁外：内部会 lock(conn_mutex_)
+        return;
     }
 
     // byte-offset 寻址（A'3）：offset 相对 record 起点，server 零块知识。

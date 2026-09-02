@@ -140,7 +140,13 @@ bool TCPSocketTransport::sendv(int fd, const struct iovec* iov, int iovcnt) {
     int remaining_iovcnt = iovcnt;
 
     while (sent < total) {
-        ssize_t n = ::writev(fd, iov_copy, remaining_iovcnt);
+        // sendmsg + MSG_NOSIGNAL（与 send/send_all 同防护）：writev 无 flags
+        // 参数，对端已关闭时触发 SIGPIPE 直接杀死进程（2026-09-02 覆盖率
+        // 测试复现）。sendmsg 不推进 msg_iov，沿用下方手动推进逻辑。
+        struct msghdr msg{};
+        msg.msg_iov = iov_copy;
+        msg.msg_iovlen = remaining_iovcnt;
+        ssize_t n = ::sendmsg(fd, &msg, MSG_NOSIGNAL);
         if (n > 0) {
             sent += static_cast<size_t>(n);
             NetStats::instance().add_write(static_cast<uint64_t>(n));

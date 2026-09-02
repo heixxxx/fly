@@ -4306,8 +4306,12 @@ uint64_t MasterAgent::send_merge_task(uint64_t target_worker_id,
 
     // 登记初始 pending 状态（wait_merge_tasks_complete 等待此表）。
     // db_path_：失败清理按 db 精确匹配（跨 db 并发 merge 不互扰）。
+    // worker_id_ 必须在发起时记录：settle_pending_for_dead_worker 按
+    // 「!completed_ && worker_id_==死亡worker」联动判死——原实现仅在成功
+    // 完成路径写入（pending 期恒 0），merge worker 判死后 wait 无限挂起。
     auto state = CMMakeShared<MergeTaskState>();
     state->db_path_ = source_db_path;
+    state->worker_id_ = target_worker_id;
     merge_task_states_.emplace(merge_task_id, state);
 
     CMString full_name = source_db_path + ":" + short_name;

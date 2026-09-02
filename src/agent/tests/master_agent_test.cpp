@@ -3345,7 +3345,7 @@ TEST(GracefulShutdownTest, TriggerFastExitsMasterWithoutDrain) {
     ASSERT_TRUE(master.is_running());
 
     // SIGTERM 语义 = 快速退出（fast_exit：跳过 drain，无 task 时同样亚秒完成），
-    // 在独立线程执行（fast_exit 会 join heartbeat 线程，不能在自身上调用）。
+    // 在独立线程执行（fast_exit 会 join 本（heartbeat）线程，不能在自身上调用）。
     master.trigger_graceful_shutdown();
 
     // 幂等：重复触发不再拉起第二个退出线程。
@@ -3353,6 +3353,16 @@ TEST(GracefulShutdownTest, TriggerFastExitsMasterWithoutDrain) {
 
     wait_for_running(master, false, 500, 20);
     EXPECT_FALSE(master.is_running());
+    // detached fast_exit 线程在 is_running()==false 之后仍有收尾段
+    //（RunSummary 落盘 + MetricsDb close，实测 ~100ms）。不等它跑完就返回
+    // 的话，析构里的 stop() 因 draining_ 已置而是 no-op——master 对象在
+    // detached 线程仍在使用时析构（UAF → terminate，单独重跑本套件 7/10
+    // 复现的存量 flake）。可观察的完成信号：MetricsDb 关闭是 stop_impl 中
+    // 最后一个触碰 this 的动作。
+    wait_for([&] {
+        auto* db = master.metrics_db_for_testing();
+        return db == nullptr || !db->opened();
+    }, 500, 20);
     fly::reset_graceful_shutdown();
 }
 
@@ -3522,6 +3532,530 @@ TEST(MasterAgentTest, ExpectWorkerExplicitTimeoutCleans) {
     EXPECT_EQ(master.get_expected_worker_count(), 0u);
     EXPECT_TRUE(master.all_workers_registered());
     Config::instance()->set_int("worker_register_timeout", 0);
+}
+
+// ── internal task 错误分支（execute_internal_task 的三个 TaskFailed 出口）──
+// __backup_object 参数不足 / db_path 不可得、__merge_object 参数不足：经真实
+// 派发 → worker 就地消化 → TaskFailed 收敛（不得崩溃、不得假成功）。
+TEST(MasterAgentTest, InternalTaskFailureBranchesConvergeToTaskFailed) {
+    fly::DataService::instance()->reset();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // worker 的 task 执行依赖主循环 poll（真实环境由 Python 驱动），测试用
+    // poll 线程模拟；internal task 由 take_task 就地消化。
+    std::atomic<bool> poll_running{true};
+    std::thread poll_thread([&] {
+        while (poll_running.load() && worker.is_running()) {
+            worker.poll_task_blocking(100);
+        }
+    });
+
+    struct Case {
+        uint64_t id;
+        const char* name;
+        CMVector<CMString> args;
+        const char* expect_substr;
+    };
+    const Case cases[] = {
+        {5101, "__backup_object", {"only_one_arg"}, "Internal backup: insufficient args"},
+        {5102, "__backup_object", {"obj", "/nonexistent_db_zz"},
+         "Internal backup: db_path request failed"},
+        {5103, "__merge_object", {"a", "b", "c"}, "Internal merge: insufficient args"},
+    };
+    for (const auto& c : cases) {
+        master.submit_task(c.id, c.name, "__fly_internal", c.args, {}, {});
+    }
+    for (const auto& c : cases) {
+        bool reached = false;
+        wait_for([&] {
+            auto failed = master.get_failed_tasks();
+            reached = std::find(failed.begin(), failed.end(), c.id) != failed.end();
+            return reached;
+        }, 300, 20);
+        ASSERT_TRUE(reached) << "internal task " << c.id << " must converge to TaskFailed";
+        EXPECT_NE(master.get_task_error(c.id).find(c.expect_substr), CMString::npos)
+            << "task " << c.id << " error must carry the branch-specific reason";
+    }
+    EXPECT_EQ(master.get_completed_tasks().size(), 0u)
+        << "broken internal tasks must not report success";
+
+    poll_running.store(false);
+    if (poll_thread.joinable()) poll_thread.join();
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// ── merge cleanup 屏障：worker 判死推进计数（settle 第 4 分支）────────
+// 屏障 expected=1（唯一 fake worker）：cleanup_after_merge 阻塞等 ack →
+// 判死把死亡 worker 视为已清理（received++ clamp）→ 等待收敛返回、条目擦除。
+TEST(MasterAgentTest, MergeCleanupBarrierAdvancesOnWorkerDeath) {
+    fly::DataService::instance()->reset();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+    master.register_fake_worker_for_testing(21, 5021);
+
+    TempDir tmpdir;
+    CMString db_path = tmpdir.path() + "/src_db";
+    auto before = master.pending_merge_cleanup_counts_for_testing(db_path);
+    EXPECT_EQ(before.first, 0u);
+    EXPECT_EQ(before.second, 0u);
+
+    std::thread cleaner([&] {
+        master.cleanup_after_merge(db_path, {}, {}, {},
+                                   tmpdir.path() + "/merged_db",
+                                   tmpdir.path() + "/merged_data");
+    });
+
+    // 前置：屏障已登记为 {expected=1, received=0}（等 ack 的稳定态）。
+    bool registered = false;
+    for (int i = 0; i < 200 && !registered; ++i) {
+        auto c = master.pending_merge_cleanup_counts_for_testing(db_path);
+        registered = c.first == 1u && c.second == 0u;
+        if (!registered) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(registered) << "cleanup barrier must be registered as {1,0}";
+
+    // 判死 → settle 把死亡 worker 计为已清理 → 屏障达成 → cleanup 收敛。
+    master.handle_worker_death_for_testing(21);
+    cleaner.join();
+
+    auto after = master.pending_merge_cleanup_counts_for_testing(db_path);
+    EXPECT_EQ(after.first, 0u) << "satisfied barrier entry must be erased";
+    master.unregister_fake_worker_for_testing(21, 5021);
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// ── finish_task 的 write-rejection 联动（task 成功但写被拒）──────────
+// 覆盖测试曾暴露的生产缺陷（已修复，本测试为回归锚）：finish_task 原实现
+// 先调 end_task（其内部 WorkerAgentContext::clear() 把 last_error_type_ 重置
+// 为 UNKNOWN）后才读取——SUCCESS 路径的 write-rejection 分支不可达，写被拒
+// 的 task 被静默上报 TaskComplete（脏数据假成功）；异常失败路径的
+// error_type_ 同理恒 UNKNOWN。修复：end_task 前快照 error_type。
+TEST(MasterAgentTest, FinishTaskWriteRejectionFailsTaskAndAbortsWrites) {
+    fly::DataService::instance()->reset();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    TempDir tmpdir;
+    CMString db_path = tmpdir.path() + "/rej_db";
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    auto db = CMMakeShared<Database>(db_path, db_path + "/data", 0, "", db_path);
+    worker.register_database(db_path, db);
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    // 在 master 元数据注册 task 42（assign 给唯一 worker 1）：TaskFailed
+    // 上报需匹配 assign 记账，否则 on_task_failed 的 stale 防御会丢弃，
+    // get_failed_tasks() 无法验证。assign 消息到达 worker 仅入 pending
+    // 队列（无 poll_loop 消费），不影响本测试的本地 finish 路径。
+    master.submit_task(42, "logical_success", "m", {"a"}, {}, {});
+    bool assigned = false;
+    wait_for([&] {
+        const auto& running = master.get_running_tasks();
+        assigned = std::find(running.begin(), running.end(), 42u) != running.end();
+        return assigned;
+    }, 100, 20);
+    ASSERT_TRUE(assigned) << "task 42 must be assigned to the registered worker";
+
+    // 模拟 executor 生命周期：begin → 记录脏写 → 注入 write-rejection →
+    // SUCCESS 结果收尾。TLS 语义：begin/finish 同线程。
+    worker.begin_task(42, "ctx_hash_rej");
+    worker.record_write(db_path, "dirty_obj", 100);
+    WorkerAgentContext::set_last_error_type(TaskErrorType::WRITE_TO_FROZEN_DB);
+
+    PendingTask task;
+    task.task_id_ = 42;
+    task.task_name_ = "logical_success";
+    task.task_module_ = "m";
+    TaskExecResult result;
+    result.task_id_ = 42;
+    result.status_ = TaskExecStatus::SUCCESS;
+    worker.finish_task(task, result);
+
+    // 修复后语义：TaskFailed（带 error_type 与脏对象清单），绝非 TaskComplete。
+    // TaskFailed 经网络异步到达 master——deadline 轮询等待落账。
+    bool failed_reported = false;
+    wait_for([&] {
+        const auto& failed = master.get_failed_tasks();
+        failed_reported = std::find(failed.begin(), failed.end(), 42u) != failed.end();
+        return failed_reported;
+    }, 100, 20);
+    ASSERT_TRUE(failed_reported)
+        << "rejected write must surface as TaskFailed (not silent TaskComplete)";
+    EXPECT_EQ(master.get_completed_tasks().size(), 0u)
+        << "rejected write must not produce a TaskComplete";
+    // 注：finish_task 内部 end_task 会 clear TLS error_type——修复语义是
+    // 「clear 前快照」，快照不可从外部观测；TaskFailed 落账即端到端证据。
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    WorkerAgentContext::clear();
+    fly::DataService::instance()->unregister_database(db_path);
+}
+
+// ── master 进程内 var 三件套（setup_write_context 3660-3690 区域）────
+// set/get/remove 全链 + 空 db_path（无 ':'）与未知 db 的拒绝。
+TEST(MasterAgentTest, MasterVarServiceSetGetRemoveAndUnknownDb) {
+    WorkerAgentContext::clear();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+    master.setup_write_context();
+
+    TempDir tmpdir;
+    master.register_database(tmpdir.path(), tmpdir.path() + "/data");
+
+    FlyBufferPtr v = CMMakeShared<FlyBuffer>();
+    v->write("hello", 5);
+    const CMString full = tmpdir.path() + ":v1";
+
+    EXPECT_TRUE(WorkerAgentContext::set_var(full, v, "str"));
+    {
+        auto [ok, got, type_name] = WorkerAgentContext::get_var(full);
+        EXPECT_TRUE(ok);
+        ASSERT_NE(got, nullptr);
+        EXPECT_EQ(CMString(got->data(), got->size()), "hello");
+        EXPECT_EQ(type_name, "str");
+    }
+    WorkerAgentContext::remove_var(full);
+    {
+        auto [ok, got, type_name] = WorkerAgentContext::get_var(full);
+        EXPECT_FALSE(ok) << "removed var must be gone";
+        EXPECT_EQ(got, nullptr);
+    }
+
+    // 错误路径：无 ':' 的裸名 / 未知 db → false（get 的值/类型为空）。
+    EXPECT_FALSE(WorkerAgentContext::set_var("no_colon_name", v, "str"));
+    {
+        auto [ok, got, type_name] = WorkerAgentContext::get_var("no_colon_name");
+        EXPECT_FALSE(ok);
+        EXPECT_EQ(got, nullptr);
+    }
+    EXPECT_FALSE(WorkerAgentContext::set_var(db32("no_such_db") + ":v", v, "str"));
+    EXPECT_FALSE(std::get<0>(WorkerAgentContext::get_var(db32("no_such_db") + ":v")));
+
+    WorkerAgentContext::clear();
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// ── var 服务错误路径（经真实网络 ack 链）────────────────────────────
+// 未注册 db 的 set/get → VarAck success=false；frozen db 的 set → "db frozen"；
+// 不可变 var 二次 set → 拒绝 + reject 广播。
+TEST(MasterAgentTest, VarServiceErrorPathsOverNetwork) {
+    fly::DataService::instance()->reset();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    TempDir tmpdir;
+    CMString db_path = tmpdir.path() + "/var_db";
+    master.register_database(db_path, db_path + "/data");
+
+    WorkerAgent worker(1, "127.0.0.1", master.get_port());
+    worker.start();
+    ASSERT_TRUE(wait_until_registered(worker));
+
+    FlyBufferPtr v = CMMakeShared<FlyBuffer>();
+    v->write("val", 3);
+
+    // 未注册 db：set/get 均被 master 拒（db not found on master）。
+    EXPECT_FALSE(worker.set_var_sync(db32("var_missing") + ":v", v, "str"));
+    EXPECT_FALSE(std::get<0>(worker.get_var_sync(db32("var_missing") + ":v")));
+
+    // 正常 set → 不可变：二次 set 拒绝。
+    EXPECT_TRUE(worker.set_var_sync(db_path + ":v", v, "str"));
+    EXPECT_FALSE(worker.set_var_sync(db_path + ":v", v, "str"))
+        << "immutable var must reject the second set";
+
+    // get 未命中。
+    EXPECT_FALSE(std::get<0>(worker.get_var_sync(db_path + ":missing")));
+
+    // frozen db 的 set：master_set_var 拒绝 + ack "db frozen"。
+    master.get_database(db_path)->freeze();
+    wait_for([&] { return master.is_db_frozen(db_path); }, 50, 20);
+    EXPECT_FALSE(worker.set_var_sync(db_path + ":v2", v, "str"))
+        << "set on a frozen db must be rejected";
+
+    worker.stop();
+    master.stop();
+    wait_for_running(master, false);
+    fly::DataService::instance()->unregister_database(db_path);
+}
+
+// ── 重复注册防护：探测发送失败 = 旧 conn 已死 → 当场接受为重连注册 ──
+// （on_worker_register 的 probe-fail 分支：不挂起、不等 15s deadline——handler
+//  lane 并行下 deferred 条目可能孤儿化的根治路径。）
+TEST(MasterAgentTest, DuplicateRegisterProbeFailAcceptedAsReconnect) {
+    fly::DataService::instance()->reset();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // worker_id=5 已有「活跃连接」——fake conn 7001（transport 未知 → send 必败）。
+    master.register_fake_worker_for_testing(5, 7001);
+
+    RegisterMessage reg;
+    reg.worker_id_ = 5;
+    reg.data_server_port_ = 0;   // 跳过 DataService 登记
+    master.inject_worker_register_for_testing(/*conn_id=*/2002, reg);
+
+    // 新注册被当场接受：conn 映射切到 2002、worker 进池为 IDLE。
+    auto connected = master.get_connected_workers();
+    ASSERT_EQ(connected.size(), 1u);
+    EXPECT_EQ(connected[0], 5u);
+    EXPECT_EQ(master.worker_status_for_testing(5), WorkerStatus::IDLE)
+        << "probe-fail must fall through to the normal register path";
+
+    master.unregister_fake_worker_for_testing(5, 7001);
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// 非法 role 上报 → hybrid 回退（进调度候选，不进 storage_only 名单）。
+TEST(MasterAgentTest, UnknownRoleFallsBackToHybrid) {
+    fly::DataService::instance()->reset();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    RegisterMessage reg;
+    reg.worker_id_ = 6;
+    reg.data_server_port_ = 0;
+    reg.role_ = 200;   // 非法值（合法：0=hybrid, 1=storage_only）
+    master.inject_worker_register_for_testing(/*conn_id=*/2003, reg);
+
+    bool idle = false;
+    wait_for([&] {
+        auto idle_workers = master.get_idle_workers();
+        idle = std::find(idle_workers.begin(), idle_workers.end(), 6u) != idle_workers.end();
+        return idle;
+    }, 100, 10);
+    EXPECT_TRUE(idle) << "fallback-to-hybrid worker must be schedulable";
+    auto storage_only = master.get_storage_only_workers();
+    EXPECT_EQ(std::find(storage_only.begin(), storage_only.end(), 6u),
+              storage_only.end())
+        << "illegal role must not be classified as storage_only";
+
+    master.unregister_fake_worker_for_testing(6, 2003);
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// ── 迟到上报防串扰 + 不可恢复失败 message 分支────────────────────────
+// task 从 W1 重排队给 W2 后，W1 的迟到 complete/failed 必须整体丢弃；
+// WRITE_REGISTRATION_TIMEOUT 类失败（W2 上报）走 FATAL 分支正常收敛。
+TEST(MasterAgentTest, StaleReportDroppedAndUnrecoverableFailedEmits) {
+    fly::DataService::instance()->reset();
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    master.register_fake_worker_for_testing(1, 5001);
+    master.submit_task(5201, "migrating_task", "m", {"a"}, {}, {});
+    bool running = false;
+    for (int i = 0; i < 100 && !running; ++i) {
+        auto tasks = master.get_running_tasks();
+        running = std::find(tasks.begin(), tasks.end(), 5201u) != tasks.end();
+        if (!running) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(running) << "task must be assigned to the only worker";
+
+    // W1 判死 → task 重排队 → 立即调度给 W2（判死处理器内同步完成）。
+    master.register_fake_worker_for_testing(2, 5002);
+    master.handle_worker_death_for_testing(1);
+    running = false;
+    for (int i = 0; i < 100 && !running; ++i) {
+        auto tasks = master.get_running_tasks();
+        running = std::find(tasks.begin(), tasks.end(), 5201u) != tasks.end();
+        if (!running) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(running) << "requeued task must be reassigned after death";
+
+    // W1 的迟到上报（complete/failed 同理）：assigned 已是 W2 → 整体丢弃。
+    {
+        TaskCompleteMessage stale;
+        stale.task_id_ = 5201;
+        stale.worker_id_ = 1;
+        master.on_task_complete(0, stale);
+    }
+    {
+        TaskFailedMessage stale;
+        stale.task_id_ = 5201;
+        stale.worker_id_ = 1;
+        stale.error_message_ = "stale failure";
+        master.on_task_failed(0, stale);
+    }
+    EXPECT_EQ(master.get_completed_tasks().size(), 0u)
+        << "stale complete must be dropped";
+    EXPECT_EQ(master.get_failed_tasks().size(), 0u)
+        << "stale failure must be dropped";
+    running = false;
+    for (int i = 0; i < 50 && !running; ++i) {
+        auto tasks = master.get_running_tasks();
+        running = std::find(tasks.begin(), tasks.end(), 5201u) != tasks.end();
+        if (!running) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    EXPECT_TRUE(running) << "task must stay RUNNING on W2 after stale reports";
+
+    // W2 的真失败（不可恢复类型）：正常收敛 + FATAL message 分支。
+    TaskFailedMessage fatal;
+    fatal.task_id_ = 5201;
+    fatal.worker_id_ = 2;
+    fatal.error_message_ = "unrecoverable boom";
+    fatal.error_type_ = TaskErrorType::WRITE_REGISTRATION_TIMEOUT;
+    master.on_task_failed(0, fatal);
+    bool failed = false;
+    wait_for([&] {
+        auto tasks = master.get_failed_tasks();
+        failed = std::find(tasks.begin(), tasks.end(), 5201u) != tasks.end();
+        return failed;
+    }, 100, 10);
+    EXPECT_TRUE(failed);
+    EXPECT_EQ(master.get_task_error(5201), "unrecoverable boom");
+
+    master.unregister_fake_worker_for_testing(1, 5001);
+    master.unregister_fake_worker_for_testing(2, 5002);
+    master.stop();
+    wait_for_running(master, false);
+}
+
+// ── restart_failed_tasks 边界（不存在 / 空 bin / 旧 3 段格式 / 摘除清空删文件）──
+TEST(MasterAgentTest, RestartFailedTasksBoundaryCases) {
+    const CMString prev_log_dir = Config::instance()->get_str("log_dir");
+    TempDir tmpdir;
+    Config::instance()->set_str("log_dir", tmpdir.path());
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // ① bin 不存在 → 0。
+    EXPECT_EQ(master.restart_failed_tasks(tmpdir.path() + "/nope.bin"), 0u);
+
+    // ② 空 bin → 0（文件保留）。
+    {
+        std::ofstream ofs(tmpdir.path() + "/empty.bin", std::ios::binary);
+    }
+    EXPECT_EQ(master.restart_failed_tasks(tmpdir.path() + "/empty.bin"), 0u);
+    EXPECT_TRUE(std::filesystem::exists(tmpdir.path() + "/empty.bin"));
+
+    // ③ 旧 3 段格式（无 uid）→ 文件级拒绝 0（文件保留）。
+    {
+        FailedTaskRecord legacy;
+        legacy.task_id_ = 5301;
+        legacy.submission_.name_ = "legacy_task";
+        legacy.submission_.args_ = {"__fly_db__:/tmp/legacy_db:/tmp/legacy_data"};
+        CMString body;
+        FLY_ENCODE(legacy, body);
+        int64_t body_size = static_cast<int64_t>(body.size());
+        std::ofstream ofs(tmpdir.path() + "/legacy.bin", std::ios::binary | std::ios::app);
+        ofs.write(reinterpret_cast<const char*>(&body_size), sizeof(body_size));
+        ofs.write(body.data(), body.size());
+    }
+    EXPECT_EQ(master.restart_failed_tasks(tmpdir.path() + "/legacy.bin"), 0u)
+        << "legacy no-uid records must reject the whole bin";
+    EXPECT_TRUE(std::filesystem::exists(tmpdir.path() + "/legacy.bin"))
+        << "rejected bin must be preserved";
+
+    // ④ 唯一记录的 task 成功 → failed_tasks.bin 摘空删除。
+    master.register_fake_worker_for_testing(41, 5041);
+    master.submit_task(5302, "persisted_task", "m", {"a"}, {}, {});
+    FailedTaskRecord rec;
+    rec.task_id_ = 5302;
+    rec.submission_.name_ = "persisted_task";
+    master.persist_failed_task_for_testing(rec);
+    const CMString bin = tmpdir.path() + "/failed_tasks.bin";
+    ASSERT_TRUE(std::filesystem::exists(bin));
+    TaskCompleteMessage complete;
+    complete.task_id_ = 5302;
+    complete.worker_id_ = 41;
+    master.on_task_complete(0, complete);
+    EXPECT_FALSE(std::filesystem::exists(bin))
+        << "removing the last record must delete the empty bin";
+
+    master.unregister_fake_worker_for_testing(41, 5041);
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_str("log_dir", prev_log_dir);
+}
+
+// ── 心跳判死 → Shutdown 下发 → 心跳复活（REVIVED）──────────────────
+// heartbeat_timeout=1s + 永不心跳的 fake worker：检查线程（5s 周期）标死；
+// 随后任意心跳到达把终态 worker 复活为 IDLE。
+TEST(MasterAgentTest, HeartbeatTimeoutFlagsDeadThenRevives) {
+    Config::instance()->set_int("heartbeat_timeout", 1);
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+    master.register_fake_worker_for_testing(9, 5009);
+
+    bool dead = false;
+    for (int i = 0; i < 500 && !dead; ++i) {   // 检查线程 5s 一轮，20s 上界
+        dead = master.worker_status_for_testing(9) == WorkerStatus::DEAD;
+        if (!dead) std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    }
+    EXPECT_TRUE(dead) << "silent worker must be flagged dead after heartbeat_timeout";
+
+    HeartbeatMessage hb;
+    hb.worker_id_ = 9;
+    master.on_heartbeat(0, hb);
+    EXPECT_EQ(master.worker_status_for_testing(9), WorkerStatus::IDLE)
+        << "heartbeat after death must revive the worker (REVIVED)";
+
+    master.unregister_fake_worker_for_testing(9, 5009);
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("heartbeat_timeout", 120);
+}
+
+// ── drain 打断：stop() 优雅等待被 fast_exit 打断转快速路径 ───────────
+// 不可完成的 RUNNING task 挂住 drain；并发 fast_exit 置打断标志 → drain
+// 立即转 fast（fail 善后 + 收尾），不再等任务完成。
+TEST(MasterAgentTest, FastExitInterruptsDrainWait) {
+    fly::DataService::instance()->reset();
+    const CMString prev_log_dir = Config::instance()->get_str("log_dir");
+    TempDir tmpdir;
+    Config::instance()->set_str("log_dir", tmpdir.path());
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+    master.register_fake_worker_for_testing(31, 5031);
+
+    master.submit_task(700, "hang_task", "m", {"a"}, {}, {});
+    bool running = false;
+    for (int i = 0; i < 100 && !running; ++i) {
+        auto tasks = master.get_running_tasks();
+        running = std::find(tasks.begin(), tasks.end(), 700u) != tasks.end();
+        if (!running) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_TRUE(running) << "task must be RUNNING to hold the drain";
+
+    std::thread stopper([&] { master.stop(); });
+    // 300ms 后 drain 已在 cv 等待（600s 上限内）；fast_exit 置打断标志。
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    master.fast_exit("interrupt-drain");
+    stopper.join();
+    wait_for_running(master, false);
+
+    auto failed = master.get_failed_tasks();
+    EXPECT_NE(std::find(failed.begin(), failed.end(), 700u), failed.end())
+        << "interrupted drain must fail the hanging task (fast path aftermath)";
+
+    master.unregister_fake_worker_for_testing(31, 5031);
+    Config::instance()->set_str("log_dir", prev_log_dir);
 }
 
 }  // namespace fly

@@ -1,8 +1,10 @@
 """E2E stress test: freeze DB while many writes are queued.
 
 Verifies that when a DB is frozen, all subsequent write registrations
-are rejected. Submits 10 writes, freezes after first batch, then
-submits 10 more writes — all should fail.
+are rejected and the owning tasks FAIL (silently-dropped rejection was a
+production defect exposed by coverage tests, fixed 2026-09-02). Submits
+10 writes, freezes after first batch, then submits 10 more writes — all
+10 must fail.
 """
 from _fly_log import INFO
 import time
@@ -60,10 +62,12 @@ def test_freeze_reject_stress():
     for i in range(post_freeze_count):
         write_after_freeze(db, f"post_{i}", i)
 
-    assert wait_for(lambda: len(master.completed_tasks) >= pre_freeze_count + 1 + post_freeze_count, timeout=30.0), \
-        f"All writes should complete (silently rejected): completed={len(master.completed_tasks)}"
-
-    assert not master.failed_tasks, f"Unexpected failures: {master.failed_tasks}"
+    # 新语义：post-freeze 写被 master 注册拒绝（FROZEN_DB）→ 全部 TaskFailed
+    # （静默假成功曾是覆盖率测试暴露的生产缺陷，2026-09-02 修复）。
+    assert wait_for(lambda: len(master.failed_tasks) >= post_freeze_count, timeout=30.0), \
+        f"All post-freeze writes should FAIL: failed={len(master.failed_tasks)}"
+    assert len(master.completed_tasks) == pre_freeze_count + 1, \
+        f"only pre-freeze writes + freeze task complete, got {len(master.completed_tasks)}"
 
     for i in range(pre_freeze_count):
         val = db.read_object(f"pre_{i}")
