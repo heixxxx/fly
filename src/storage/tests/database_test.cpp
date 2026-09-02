@@ -3,6 +3,9 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/local_index.h>
 #include <storage/cpp/data_service.h>
+#include <storage/cpp/memory_chunk_source.h>
+#include <core/cpp/process_info.h>
+#include <core/cpp/process_info.h>
 #include <common/cpp/worker_context.h>
 #include <common/cpp/fly_buffer.h>
 #include <common/cpp/error_types.h>
@@ -1373,3 +1376,120 @@ TEST_F(DatabaseTest, CorruptMigrationMarkerIgnored) {
 }
 
 }
+
+// ════════════════════════════════════════════════════════════════════
+// 流式 backup stage（用户裁定 2026-09-02）：backup_object 流式拉源 +
+// 字节级 tee 落本地——乐观写、错则 abort 回退位置、全部落盘成功才登记 idx。
+// ════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// 组装合法 record（[16B 块头][data][trailer]；MemoryChunkSource 解析 trailer）。
+fly::CMSharedPtr<fly::ChunkSource> memory_source_from_backup(const FlyBufferPtr& record) {
+    return CMMakeShared<fly::MemoryChunkSource>(record->data(), record->size());
+}
+
+FlyBufferPtr make_backup_record(const std::string& data) {
+    auto record = CMMakeShared<FlyBuffer>();
+    int32_t sz = static_cast<int32_t>(data.size());
+    uint64_t crc = fly::data_checksum(data.data(), data.size());
+    record->write(reinterpret_cast<const char*>(&sz), 4);
+    record->write(reinterpret_cast<const char*>(&sz), 4);
+    record->write(reinterpret_cast<const char*>(&crc), 8);
+    record->write(data.data(), data.size());
+    ObjectHeader header;
+    header.total_size_ = data.size();
+    header.chunk_count_ = 1;
+    header.py_name_ = "bytes";
+    header.py_name_len_ = 5;
+    header.compression_type_ = 0;
+    header.block_comp_lens_ = {static_cast<uint32_t>(data.size())};
+    CMString trailer = header.serialize_trailer();
+    record->write(trailer.data(), trailer.size());
+    return record;
+}
+
+}  // namespace
+
+namespace fly {
+
+TEST_F(DatabaseTest, BackupObjectStreamsSourceToIndexedLocalReplica) {
+    auto ds = fly::DataService::instance();
+    ds->reset();
+    ProcessInfo::instance()->set_worker_mode(true);
+
+    CMString db_path = test_dir_ + "/backup_stream";
+    Database db(db_path, db_path + "/data", 0, "", db_path);
+    CMString full = db_path + ":backed_obj";
+
+    const std::string payload = "streaming backup payload";
+    auto record = make_backup_record(payload);
+    const uint64_t block_area_len = 16 + payload.size();   // [16B 块头][data]
+
+    // 远端副本（TIER2 源）+ 假 streaming handler 返回合法块流。
+    ds->update_remote_idx(full, 7, "host_bak", 8000);
+    ds->set_streaming_read_handler(
+        [&](const CMString&, int32_t, const CMString&)
+            -> std::tuple<bool, fly::CMSharedPtr<fly::ChunkSource>, uint64_t, fly::ReadError> {
+            return {true, memory_source_from_backup(record), block_area_len,
+                    fly::ReadError::NONE};
+        });
+
+    // 前置：本地无该对象。
+    EXPECT_FALSE(ds->has_local_object(full));
+
+    db.backup_object("backed_obj");
+
+    // 判定 1（用户裁定核心）：全部落盘成功后才登记 idx——本地可见。
+    EXPECT_TRUE(ds->has_local_object(full))
+        << "streaming backup must register idx only after full flush";
+    // 判定 2：副本读回与源一致（TIER1 本地命中）。
+    auto [comp, py_name] = db.read_object_compressed("backed_obj");
+    ASSERT_TRUE(comp && !comp->empty());
+    {
+        DecompressingStreamBuf dsbuf(comp->data(), comp->size());
+        std::istream is(&dsbuf);
+        CMString result;
+        CMVector<char> tmp(4096);
+        while (is) {
+            is.read(tmp.data(), static_cast<std::streamsize>(tmp.size()));
+            if (is.gcount() > 0) result.append(tmp.data(), static_cast<size_t>(is.gcount()));
+        }
+        EXPECT_EQ(result, payload);
+    }
+    EXPECT_EQ(py_name, "bytes");
+
+    ds->set_streaming_read_handler(nullptr);
+    ProcessInfo::instance()->set_worker_mode(false);
+}
+
+TEST_F(DatabaseTest, BackupObjectSourceFailureRollsBackIndex) {
+    // 源截断（handler 返回失败源）：乐观写必须 abort——idx 不登记（「全部
+    // 落盘成功才更新 idx」的失败面）。
+    auto ds = fly::DataService::instance();
+    ds->reset();
+    ProcessInfo::instance()->set_worker_mode(true);
+
+    CMString db_path = test_dir_ + "/backup_rollback";
+    Database db(db_path, db_path + "/data", 0, "", db_path);
+    CMString full = db_path + ":trunc_obj";
+
+    ds->update_remote_idx(full, 7, "host_bak", 8000);
+    ds->set_streaming_read_handler(
+        [&](const CMString&, int32_t, const CMString&)
+            -> std::tuple<bool, fly::CMSharedPtr<fly::ChunkSource>, uint64_t, fly::ReadError> {
+            return {false, nullptr, 0, fly::ReadError::CHECKSUM};   // 源校验失败
+        });
+
+    EXPECT_FALSE(ds->has_local_object(full));
+    db.backup_object("trunc_obj");
+
+    // 回滚判定：idx 未登记（乐观写被 abort，脏数据由后续写覆盖）。
+    EXPECT_FALSE(ds->has_local_object(full))
+        << "failed source must not leave an indexed replica";
+
+    ds->set_streaming_read_handler(nullptr);
+    ProcessInfo::instance()->set_worker_mode(false);
+}
+
+}  // namespace fly

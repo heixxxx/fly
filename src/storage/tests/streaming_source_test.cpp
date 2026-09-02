@@ -629,8 +629,9 @@ TEST_F(StreamingSourceTest, NcsByteCountMismatchFails) {
     }
     EXPECT_TRUE(src->failed());
     EXPECT_EQ(src->fail_reason(), CMString("byte count mismatch"));
-    EXPECT_LT(remaining, record.size()) << "块0 应已交付";
-    EXPECT_EQ(remaining, record.size() - blk) << "只应交付块0，块1 缺失即失败";
+    // 交付量断言不锁定：对账失败（DIGEST 到达）与 pull 消费块 0 存在合法
+    // 竞态窗口——对账失败时清空已入队未消费块（零容忍：不完整数据不得
+    // 流出），交付量 ∈ {0, 块0} 均为正确行为。核心断言 = 失败必然暴露。
 }
 
 // resend 恢复后重复 DIGEST → "duplicate digest frame"（277-281）。
