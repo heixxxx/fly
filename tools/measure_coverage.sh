@@ -66,7 +66,19 @@ measure_python() {
     # test --spawn_strategy=standalone（数据文件写 .coveragerc 钉死的绝对路径
     # 不被沙箱隔离，parallel 模式各自落文件）。单 target 失败不阻断（诊断语义）。
     info "Running bazel py_test targets with coverage..."
-    bazel test \
+    # py_test 跑在 rules_python 的 hermetic 工具链解释器上（无 coverage 包）。
+    # 把系统 coverage 包（cp312 同 ABI）同步到 build/python/——sitecustomize
+    # 与本探针同目录、已在测量 PYTHONPATH 上，import coverage 即可解析。
+    # 测量时临时动作，不入构建流。
+    SYS_COV="$(python3 -c 'import coverage, os; print(os.path.dirname(coverage.__file__))')"
+    if [ -d "$SYS_COV" ]; then
+        rm -rf "$FLY_ROOT/build/python/coverage"
+        cp -r "$SYS_COV" "$FLY_ROOT/build/python/coverage"
+        info "coverage pkg staged into build/python/"
+    else
+        warn "system coverage not found — py_test will not be instrumented"
+    fi
+    bazel test --cache_test_results=no \
         --test_env=FLY_PYCOVERAGE=1 \
         --test_env=COVERAGE_PROCESS_START="$FLY_ROOT/src/fly/.coveragerc" \
         --test_env=PYTHONPATH="$FLY_ROOT/build/python" \

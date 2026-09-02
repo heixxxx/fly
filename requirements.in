@@ -25,3 +25,8 @@ scipy>=1.11
 
 # pytest — Python unit test runner (some src/**/tests/test_*.py cases).
 pytest>=7.0
+
+# coverage.py — 测量基础设施（2026-09-02）：覆盖率专项把 bazel py_test 纳入
+# 采集（tools/measure_coverage.sh），sitecustomize 在 py_test 进程内自启
+# coverage 需要本包在 bazel pip hub 中（hermetic 工具链不含系统 site-packages）。
+coverage>=7.6

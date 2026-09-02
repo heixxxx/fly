@@ -121,7 +121,7 @@ class ReadCache:
     @staticmethod
     def _guard_check(key, entry):
         # 哨兵：命中时对象 hash ≠ populate 时 → 读后原地修改污染缓存。
-        if not _GUARD_ENABLED or entry.guard_hash is None:
+        if not _GUARD_ENABLED or entry.guard_hash is None:  # pragma: no cover（哨兵仅 FLY_CACHE_GUARD=1 子进程门控）
             return
         import pickle as _p
         try:

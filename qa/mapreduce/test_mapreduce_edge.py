@@ -8,6 +8,7 @@
 """
 import os
 import shutil
+import time
 
 from _fly_log import INFO
 
@@ -26,17 +27,6 @@ assert master.wait_for_workers(2, timeout=60), "workers must connect"
 
 db = open_db(BASE_PATH)
 
-# ── 1. 坏 partitioner → run() dry-run ValueError ────────────────────
-mr_bad = MapReduceJob(db, output_name="mr_edge_bad")
-mr_bad.set_partitioner(lambda data: None)  # None 无 len → dry-run 失败
-mr_bad.set_processor(lambda p: p)
-mr_bad.set_merger(lambda a, b: a + b)
-try:
-    mr_bad.run([1, 2, 3])
-    raise AssertionError("bad partitioner must raise ValueError in dry-run")
-except ValueError as e:
-    assert "dry-run" in str(e), str(e)
-INFO("[PASS] set_partitioner bad function -> ValueError at run() dry-run")
 
 # ── 2. finalizer 链：merged 10 → finalized 100 ──────────────────────
 mr_fin = MapReduceJob(db, output_name="mr_edge_fin")
@@ -64,3 +54,25 @@ INFO("[PASS] mr.get() without db reference -> RuntimeError")
 
 master.stop()
 INFO("[PASS] test_mapreduce_edge")
+
+# ── 4. 坏 partitioner → run() dry-run ValueError（放最后：失败任务落账会
+mr_bad = MapReduceJob(db, output_name="mr_edge_bad")
+mr_bad.set_partitioner(lambda data: None)  # None 无 len → dry-run 失败
+mr_bad.set_processor(lambda p: p)
+mr_bad.set_merger(lambda a, b: a + b)
+try:
+    mr_bad.run([1, 2, 3])
+    raise AssertionError("bad partitioner must raise ValueError in dry-run")
+except ValueError as e:
+    assert "dry-run" in str(e), str(e)
+INFO("[PASS] set_partitioner bad function -> ValueError at run() dry-run")
+
+# dry-run 校验发生在任务提交之后——坏 partitioner 的任务已在飞并必然失败。
+# 显式消化：wait_tasks 见失败即 raise（预期行为），吞掉并断言落账，
+# 避免其失败串入后续 mr_fin 的 wait_tasks 断言。
+try:
+    wait_tasks(timeout=60)
+except RuntimeError as e:
+    assert "Tasks failed" in str(e), str(e)
+INFO("[PASS] bad partitioner task failure observed")
+

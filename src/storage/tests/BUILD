@@ -4,6 +4,7 @@ package(default_visibility = ["//visibility:public"])
 
 load("@rules_cc//cc:defs.bzl", "cc_test")
 load("@rules_python//python:defs.bzl", "py_test")
+load("@pip//:requirements.bzl", "requirement")
 
 cc_test(
     name = "object_cache_test",
@@ -221,7 +222,9 @@ py_test(
     name = "db_meta_test",
     srcs = ["test_db_meta.py"],
     main = "test_db_meta.py",
-    deps = ["//src/storage/py:fly_storage_py"],
+    deps = [
+        requirement("coverage"),  # 测量自启（sitecustomize→coverage.process_startup）",
+        "//src/storage/py:fly_storage_py"],
     imports = ["../py"],
 )
 
@@ -231,7 +234,9 @@ py_test(
     name = "read_cache_test",
     srcs = ["test_read_cache.py"],
     main = "test_read_cache.py",
-    deps = ["//src/storage/py:fly_storage_py"],
+    deps = [
+        requirement("coverage"),  # 测量自启（sitecustomize→coverage.process_startup）",
+        "//src/storage/py:fly_storage_py"],
     imports = ["../py"],
 )
 
@@ -240,6 +245,8 @@ py_test(
     name = "chain_registry_test",
     srcs = ["test_chain_registry.py"],
     main = "test_chain_registry.py",
-    deps = ["//src/storage/py:fly_storage_py"],
+    deps = [
+        requirement("coverage"),  # 测量自启（sitecustomize→coverage.process_startup）",
+        "//src/storage/py:fly_storage_py"],
     imports = ["../py"],
 )

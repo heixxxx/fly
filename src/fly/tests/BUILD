@@ -17,6 +17,7 @@ py_test(
     srcs = ["test_executor.py"],
     main = "test_executor.py",
     deps = [
+        requirement("coverage"),  # 测量自启（sitecustomize→coverage.process_startup）
         "//src/fly:fly_py",
         "//src/storage/export:_fly_storage.so",
         ":test_executor_tasks",
@@ -38,6 +39,7 @@ py_test(
     srcs = ["test_main.py"],
     main = "test_main.py",
     deps = [
+        requirement("coverage"),  # 测量自启（sitecustomize→coverage.process_startup）
         "//src/fly:fly_py",
     ],
     imports = [
@@ -51,6 +53,7 @@ py_test(
     srcs = ["test_user_task.py"],
     main = "test_user_task.py",
     deps = [
+        requirement("coverage"),  # 测量自启（sitecustomize→coverage.process_startup）
         "//src/fly:fly_py",
         "//src/storage/export:_fly_storage.so",
         "//src/agent/export:_fly_agent.so",
@@ -75,6 +78,7 @@ py_test(
     srcs = ["test_userdoc.py"],
     main = "test_userdoc.py",
     deps = [
+        requirement("coverage"),  # 测量自启（sitecustomize→coverage.process_startup）
         "//src/fly:fly_py",
     ],
 )
@@ -84,6 +88,7 @@ py_test(
     srcs = ["test_bootstrap.py"],
     main = "test_bootstrap.py",
     deps = [
+        requirement("coverage"),  # 测量自启（sitecustomize→coverage.process_startup）
         "//src/fly:fly_py",
     ],
 )
@@ -93,6 +98,7 @@ py_test(
     srcs = ["test_fly_api.py"],
     main = "test_fly_api.py",
     deps = [
+        requirement("coverage"),  # 测量自启（sitecustomize→coverage.process_startup）
         "//src/fly:fly_py",
     ],
 )

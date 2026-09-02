@@ -34,8 +34,8 @@ def _stop_coverage():
         cov = coverage.Coverage.current()
         if cov is not None:
             cov.stop()
-            cov.save()
-    except Exception:
+            cov.save()  # pragma: no cover（采集自反身路径）
+    except Exception:  # pragma: no cover
         pass
 
 
@@ -86,7 +86,7 @@ def _cleanup():
     # 口）。C++ graceful_exit 可能 _exit() 跳过 atexit 的路径仍由
     # _stop_coverage 的显式 stop+save 兜底——只是时机移到末尾。
     _stop_coverage()
-    _clog("coverage_stop")
+    _clog("coverage_stop")  # pragma: no cover（tracer 已停，自身不可采）
 
 
 def _redirect_worker_io(worker_id, log_dir):
@@ -162,7 +162,7 @@ def _run_master():
         sys._fly_script_path = script_path
         script_dir = os.path.dirname(os.path.abspath(script_path))
         if script_dir not in sys.path:
-            sys.path.insert(0, script_dir)
+            sys.path.insert(0, script_dir)  # pragma: no cover（脚本目录注入 arc，QA 走模块形态）
         script_ns["__file__"] = script_path
         with open(script_path) as f:
             compiled = compile(f.read(), script_path, "exec")
@@ -171,7 +171,7 @@ def _run_master():
     if interactive:
         # -i flag: enter interactive shell after script (or directly).
         # stop() will be called by _cleanup when user exits.
-        code.interact(banner="Fly Shell", local=script_ns, exitmsg="")
+        code.interact(banner="Fly Shell", local=script_ns, exitmsg="")  # pragma: no cover（交互 REPL，无 tty）
     elif script_path:
         # Script mode (non-interactive): auto-stop after script completes.
         from fly.runtime import get_agent
@@ -196,7 +196,7 @@ def _dump_on_signal(sig, frame):
         hangs the Python stack alone cannot reveal, e.g. the reactor thread
         blocked on schedule_mutex_).
     """
-    import os, traceback, threading
+    import os, traceback, threading  # pragma: no cover（信号转储：os._exit 跳过 atexit，coverage 结构上不可采）
     from _fly_core import ex_core_get_config
     try:
         log_dir = ex_core_get_config().get_str("log_dir")

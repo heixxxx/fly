@@ -48,3 +48,4 @@ source =
 omit =
     */tests/*
     */_fly_*
+    */sitecustomize.py

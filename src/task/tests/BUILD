@@ -2,6 +2,7 @@
 
 package(default_visibility = ["//visibility:public"])
 
+load("@pip//:requirements.bzl", "requirement")
 load("@rules_python//python:defs.bzl", "py_test")
 
 load("@rules_cc//cc:defs.bzl", "cc_test")
@@ -75,18 +76,19 @@ py_test(
     name = "requires_parsing_test",
     srcs = ["test_requires_parsing.py"],
     main = "test_requires_parsing.py",
-    deps = ["//src/task/py:fly_task_py"],
+    deps = [
+        requirement("coverage"),  # 测量自启（sitecustomize→coverage.process_startup）
+        "//src/task/py:fly_task_py"],
 )
 
 # callable task 参数的 cloudpickle 编解码往返（__fly_cfunc__ 标签；
 # 编排 task 持有用户回调的场景，如 dynamic solver 的 update_rhs）
-load("@pip//:requirements.bzl", "requirement")
-
 py_test(
     name = "callable_args_test",
     srcs = ["test_callable_args.py"],
     main = "test_callable_args.py",
     deps = [
+        requirement("coverage"),  # 测量自启（sitecustomize→coverage.process_startup）
         "//src/task/py:fly_task_py",
         # 仅为 executor.py 源进 runfiles（其 C++ 依赖在测试内全部被 stub 接管）
         "//src/agent/py:fly_agent_py",

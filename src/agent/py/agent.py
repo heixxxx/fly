@@ -215,7 +215,7 @@ class Master(FlyAgent):
                 s.close()
             if _is_usable(ip):
                 return ip
-        except OSError:
+        except OSError:  # pragma: no cover（多网卡探测回退：单环回 QA 环境不可达）
             pass
 
         try:
@@ -225,7 +225,8 @@ class Master(FlyAgent):
         except OSError:
             pass
 
-        WARN(f"master advertise host: no non-loopback address found "
+        WARN(  # pragma: no cover（同上，无外网/全环回环境）
+            f"master advertise host: no non-loopback address found "
              f"(bind={bind!r}) — falling back to 127.0.0.1, only reachable "
              f"on this machine; set config 'master_advertise_host' for "
              f"multi-host deployment")
@@ -553,7 +554,8 @@ class Master(FlyAgent):
             if now - t0 >= timeout:
                 return False
             if now - last_report >= 30.0:
-                INFO(f"wait_workers_registered: still waiting for "
+                INFO(  # pragma: no cover（30s 进度日志：需分钟级等待）
+                    f"wait_workers_registered: still waiting for "
                      f"{self._agent.get_expected_worker_count()} worker(s) to "
                      f"register ({now - t0:.0f}s elapsed)")
                 last_report = now
@@ -808,7 +810,8 @@ class Master(FlyAgent):
                     f"{pending} worker(s) failed to register within "
                     f"{cfg_timeout}s")
             if now - last_report >= 30.0:
-                INFO(f"_wait_spawned_workers: still waiting for "
+                INFO(  # pragma: no cover（30s 进度日志）
+                    f"_wait_spawned_workers: still waiting for "
                      f"{self._agent.get_expected_worker_count()} worker(s) "
                      f"to register ({now - t0:.0f}s elapsed)")
                 last_report = now
