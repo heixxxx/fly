@@ -24,7 +24,7 @@
 | RunSummary 运行摘要 | [run-summary-metrics-design.md](run-summary-metrics-design.md) |
 | 架构决策记录 | [adr/](adr/)（0001 db_meta、0002 db_id 废弃） |
 | 存储链路设计 | [db-chain-design.md](db-chain-design.md)（db 身份/uid/task 参数编码权威）、[db-merge-design.md](db-merge-design.md)（⚠️ 迁移追踪部分已被 db-chain 取代，见其头注） |
-| 大对象分块传输与数据完整性 | [chunked-transfer-design.md](chunked-transfer-design.md)（设计+实施计划合一：L0 帧头/校验/零容忍 → L2 分片 → L3 读流式 → L1 写流式；L0 待批准即开工） |
+| 大对象分块传输与数据完整性 | [chunked-transfer-design.md](chunked-transfer-design.md)（设计+实施记录合一：L0 帧头/校验/零容忍 → L2 分片 → L3 读流式 → L1 写流式，及 v2 统一块模型——已全层落地 2026-08-29/30；L4 块级寻址绑定亿级触发待办） |
 | 消息日志系统 | [message-system.md](message-system.md)（消息类型语义全表权威在 [network/module.md](network/module.md)「消息类型总表」） |
 | PeerRpc 流式大 payload | [rpc-stream-pipeline.md](rpc-stream-pipeline.md)（协议/接口/端到端架构；换机续作交接见 [HANDOFF-peer-stream.md](HANDOFF-peer-stream.md)） |
 | Project 机制 | [project-design.md](project-design.md) |
@@ -61,7 +61,7 @@ agent、common、core、export、log、network、python-api、serialization、st
 ## 问题追踪体系
 
 - [ISSUES.md](ISSUES.md) —— 总表（P0-P3 + X 类，状态/根因/修复记录）
-- [issues/](issues/) —— 单个问题的深度分析（001-009 + check-daemon-shutdown-race）
+- [issues/](issues/) —— 单个问题的深度分析（001-010 + check-daemon-shutdown-race；OPEN 状态以各文档头注为准）
 - [reviews/](reviews/) —— 实施评审记录
 
 ## 文档约定

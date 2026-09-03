@@ -1,8 +1,8 @@
 # 大对象分块传输与数据完整性——设计定稿与实施计划
 
-> 状态：**设计定稿 + 实施计划定稿**。L0（前置层）待批准即开工；L2/L3/L1 依次排队；L4 绑定亿级触发。
+> 状态：**已全层落地**——L0-L3+L1 于 2026-08-29 落地（§13 实现记录）；v2 统一块模型四阶段于 2026-08-30 落地（§14.7）；L4 块级寻址绑定亿级触发（远期待办）。
 > 日期：2026-08-28 调研 / 2026-08-29 定稿（合并原 chunked-transfer-design.md 与 frame-integrity-impl-plan.md）。
-> 关联：[emir-capability-gap.md](emir-capability-gap.md) P0-3（差距条目权威落点）、[remaining-todo.md](remaining-todo.md) F4（⏸ 降级）。
+> 关联：[emir-capability-gap.md](emir-capability-gap.md) P0-3（差距条目权威落点，分片条目已标 ✅）、[remaining-todo.md](remaining-todo.md) F4（✅ 已落地）。
 > 性能依据（实测，Ryzen 7735H）：ISA-L `crc64_ecma_refl` **14.6 GB/s**（比软件 slicing-by-8 快 7×、比硬件 CRC32C 快 1.5×，seed 链式增量已验证）；4MB 块粒度下逐块/链式/组合式校验与整块吞吐 **±2% 等价**——校验粒度是结构选择，不是性能权衡。
 
 ## 1. 背景与定位

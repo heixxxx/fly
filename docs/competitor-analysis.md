@@ -36,6 +36,13 @@
 
 ### 1.3 文档声称"尚未实现"，经源码核实确为空缺 ⏳
 
+> **2026-09-03 状态修正**：下表为 2026-06-25 快照，多数项此后已落地——
+> Locality ✅（早已实现且默认开启）、Worker role ✅（2026-08-15）、
+> Worker 失败恢复 ✅（断连宽限 + task 重入队 + 数据全灭快速失败）、
+> SSH Worker ✅（2026-08-28 `launch_ssh_workers`，跨机实测待环境）。
+> 仍空缺：`launch_custom_workers`（expect_workers 逃生通道可覆盖）、
+> Freeze 后处理（F2 降级）。权威口径见 [remaining-todo.md](remaining-todo.md)。
+
 | 设计功能 | 文档声明 | 源码核实 |
 |----------|----------|----------|
 | **SSH Worker 启动** (`launch_ssh_workers`) | ⏳ 接口设计完成未实现 | `grep launch_ssh_workers src/` → 无任何实现 |

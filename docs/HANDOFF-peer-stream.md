@@ -27,11 +27,15 @@
   `[R-START]/[R-END]`（收到并派发的响应流）与 member 侧
   `[W-START]/[W-END]`（发出的响应流）按 rpc_id 对账——缺失的 R-START 即
   丢帧点；check 的 server_loop 若 epoll 空转则确认帧未到达。
-- 已知连带缺陷（本源修复后理论上不再触发）：check 的收集圈
-  `fut.result()` 超时为 0（无限等），会绕过 30s 收集死线直接挂死——
-  若复现建议给 `peer_stream_response_reader` 传有限超时并走重试圈。
+- ~~已知连带缺陷：check 的收集圈 `fut.result()` 超时为 0（无限等），会绕过
+  30s 收集死线直接挂死~~ ✅ **已修复**（2026-09-02 批次 3：收集圈等待 bounded
+  于 30s deadline，新增 `rasgd_collect_deadline` subcase 实证，见 DOC_CHANGELOG）。
 
 ## 3. 待办：基准复测（流式读端性能未出数）
+
+> 2026-09-03 状态：旧机已补单帧基线全档位（d1062f1：64MB 流式 218 vs 单帧
+> 200 MB/s；512MB 流式稳定完成 41 MB/s，写缓冲压力现场）——旧机内存压力下
+> 数据与本节验收线不可比，**新机（≥16GB）复测仍未做**。
 
 收齐交付版的基准（自环全管线口径）：64MB f64 467 MB/s / 512MB f64
 373 MB/s / 远端 read_object 727-885 MB/s。真流式版（业务拉动）预期 ≥ 远

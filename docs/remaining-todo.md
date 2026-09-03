@@ -12,7 +12,7 @@
 | **F3** | Worker role（storage_only/hybrid） | ✅ | 已实现（2026-08-15）：role 静态身份（注册时设定不可变更），调度候选层过滤 storage_only（get_idle_workers，scheduler 零 role 概念）；仍参与心跳/数据面/internal 数据 task |
 | F1 | SSH / 多机 Worker 启动 | ✅ 已实现（2026-08-28） | `launch_ssh_workers`（nohup 后台化 + 消息管理生命周期）；localhost 自连 QA 验证；跨机实测待环境 |
 | F2 | Freeze 后处理（idx 合并/merged.idx/_META 聚合） | ⏸ 降级 | master 无 IdxRequest handler，database.cpp:440 有 TODO |
-| F4 | 大对象分片传输 + 背压 | ⏸ 降级 | DataResponse 两段式不分片，无 credit 流控 |
+| F4 | 大对象分片传输 + 背压 | ✅ 分片已落地；credit 裁定不做 | chunked L0-L3+L1+v2 统一块模型全层落地（2026-08-29/30，[chunked-transfer-design.md](chunked-transfer-design.md) §13/§14.7：DATA_CHUNK 帧流 + 逐块 CRC + resend byte-offset）；credit 窗口流控 2026-08-28 裁定不做（fly 负载画像无持续速率失衡，见 [emir-capability-gap.md](emir-capability-gap.md) P0-3） |
 | — | 弹性 worker（运行时动态加入/退出） | ❌ | 仅常规 register_worker |
 | F6 | stage checkpoint / 断点续跑 | ⛔ 不做 | db 级 checkpoint 足够（用户决策）|
 | F7 | 协议版本号 | ⛔ 不做 | 早期无需（用户决策）|
@@ -37,8 +37,8 @@
 |---|---|---|
 | HandlerThreadPool 未接线（P1）| ✅ 已做 | handler lane 并行分发（同连接保序/跨连接并行，commit 8a7e8b8）|
 | Reactor send 同步阻塞 | ✅ 已做 | reactor 路径已非阻塞化（write_buffers + EV_WRITE drain）|
-| 背压 / 流控 | ❌ | 无 credit/window |
-| DataResponse 大消息分片（=F4）| ❌ | 无 DATA_CHUNK |
+| 背压 / 流控 | ✅ 结构性已含 / credit 裁定不做 | 每连接单 in-flight + client slot 信号量 + epoll oneshot rearm 构成天然背压；credit 窗口流控 2026-08-28 裁定不做（见 [emir-capability-gap.md](emir-capability-gap.md) P0-3） |
+| DataResponse 大消息分片（=F4）| ✅ 已做 | DATA_CHUNK 帧流（ChunkFrameProtocol v2，byte-offset 寻址 resend）落地（2026-08-29/30，见 [chunked-transfer-design.md](chunked-transfer-design.md) §13/§14.7） |
 | 远程读重试无指数退避 | ✅ 已做 | TIER2（DataService::read_raw_compressed）已有指数退避（10ms×2 上限 500ms + 抖动 + 30s deadline）；request_remote_data 现为 TIER3 纯位置查询不取数不重试 |
 | DataClientPool release 不验 fd | ✅ 已做 | keep-alive 连接池改造（commit a408523）：borrow 时 SO_ERROR 预检 + release healthy 标记 + 60s idle TTL |
 | Config set_int/set_str 无锁 | ✅ 已做 | mutex 保护全部 get/set（commit 6c82ec9），get_str 改 by value |
@@ -138,6 +138,16 @@
 
 ---
 
+## 2026-08-29/30 新增完成（大对象分块传输主线，此前未入清单）
+
+| 项 | 说明 |
+|---|---|
+| chunked L0-L3+L1 全层落地（2026-08-29） | 64 位帧头（48 位长度+check 位折叠）+ 逐块 CRC + DATA_CHUNK 分片 + 读流式消费 + 写流式落盘；单测 73/73 + 全量 QA 165/165×3；详见 [chunked-transfer-design.md](chunked-transfer-design.md) §13 |
+| v2 统一块模型四阶段（2026-08-30） | trailer 块位置表（5ef6743）+ WBQ 逐块后台落盘/注册预许可（22668ef）+ 接收线程块级校验/resend offset 化（17305e6）+ low-tier cache 取消/TIER2 完整流式编排（ef7b8e4/cf7e860）；QA 167/167×2；详见 §14.7 |
+| 帧级 CRC 冗余消除（2026-08-30） | 传输路径 CRC 3 遍→1 遍（发送端发 0/接收端 0 跳过，兼容旧端），全量 QA 每轮 -10s |
+
+---
+
 ## 建议优先级
 
 1. ~~文档同步~~ ✅ 已完成（2026-08-16 批次：ISSUES/roadmap/architecture/DOC_CHANGELOG/本清单）
@@ -145,4 +155,44 @@
 3. ~~死代码清理~~ ✅ 已完成（2026-08-16 批次，见 §六；全量单测 56/56 + QA 162/162）
 4. ~~Solver 全家~~ ✅ 复核完毕（2026-08-16，见 §四：1 清理 + 1 有意保留 + 4 待触发/不做，无遗留代码欠账）
 
-> 以上四项全部完结。剩余真实欠账：throw→error code 残留 9 处（§五）、WRITE_REGISTRATION_FAILED 未启用（§五）、P3-17 并发测试覆盖面（§五）、超长函数重构（§六）、M1/S1-3 内存上限（待触发）、F1/F2/F4（降级待环境）。
+> 以上四项全部完结。原列欠账的后续收口：throw→error code 残留与 WRITE_REGISTRATION_FAILED 已于 2026-08-17 收口（§五表格）、超长函数已于 2026-08-17/18 收口（§六）、F4 分片已落地（2026-08-29/30，见 §一/§三）。**当前真实欠账与优先级总排序见下方「当前优先级（2026-09-03）」**。
+
+---
+
+## 当前优先级（2026-09-03 刷新）
+
+> 口径：**P1** = 当前迭代主动推进；**P2** = 低成本或条件接近；**P3** = 记录在案待触发；**⛔** = 维持不做。
+> 「待治理」= 质量/债务类（非功能空缺）。逐项详情见对应链接文档。
+
+### P1 — 当前迭代主动推进
+
+| # | 项 | 类型 | 说明 |
+|---|---|---|---|
+| 1 | 真流式读端基准复测 | 待办 | 唯一有明确验收线的主动待办：none 压缩 512MB ≥ 700 MB/s（[HANDOFF-peer-stream.md](HANDOFF-peer-stream.md) §3）。旧机（5.8GB）已补单帧全档位基线（d1062f1，512MB 流式 41 MB/s 属写缓冲压力现场），**新机（≥16GB）复测未做**——当前机器仍为小内存 WSL2，需换机或接受方差 |
+| 2 | stop drain 误报「worker dead + 副本全灭」ERROR | 待治理 | 显式 stop() drain 期 worker 断连被误报为判死+数据全灭（2026-08-30 记录）；shutdown_pending 分派机制（6b9ff95）在位仍复现 → 残余竞态窗口。已立项 [issues/010](issues/010-stop-drain-worker-dead-noise.md)，污染 QA/运维错误信号，成本低应尽快 |
+| 3 | storage_test.py 单例跨 open_db corruption | 待治理 | 裸进程 DataService 单例状态累积，全文件跑时 mixed_cpp_python case 报 corruption（单测/双测组合均过，非 gate）——测试基建可信度问题，待专门排查（DOC_CHANGELOG 2026-08-31） |
+
+### P2 — 低成本/条件接近
+
+| # | 项 | 类型 | 说明 |
+|---|---|---|---|
+| 4 | P3-17 并发压力测试覆盖面 | 待治理 | 有 DataService bench + latch 竞态测试，非全结构覆盖（§五） |
+| 5 | db_instances_ 锁内 IO 专项 | 待治理 | §13 锁收敛改造遗留欠账（freeze() 重 IO 已迁出，其余锁内 IO 待专项盘点，见 DEVELOPMENT_GUIDELINES §13） |
+| 6 | sd9 偶发挂起 | 观察 | `test_golden_n50_sd9` 曾 12 轮 1 次 TIMEOUT，修复后 soak 46+ 轮零复现保留观察；诊断打点已在树内，复现即按 rpc_id 对账（[HANDOFF-peer-stream.md](HANDOFF-peer-stream.md) §2） |
+| 7 | launch_custom_workers | 功能空缺 | bsub 等自定义 launcher 集成仍未实现；expect_workers 逃生通道已可覆盖，按成本收益启动（[emir-capability-gap.md](emir-capability-gap.md) P0-1） |
+
+### P3 — 条件触发（记录在案）
+
+| # | 项 | 触发条件 |
+|---|---|---|
+| 8 | F1 跨机实测 | 真实集群环境（TIER2 多副本读/net_probe/共享存储路径约定；localhost 自连已 QA 验证） |
+| 9 | M1/S1-3 索引内存上限（LRU/TTL） | 对象 >100 万或 master 内存 >500MB；EMIR 亿级立项时需提前实施（[emir-capability-gap.md](emir-capability-gap.md) P0-2） |
+| 10 | F2 Freeze 后处理（idx 合并/_META 聚合） | load_db worker 不齐备真实痛点（设计方案见 [db-merge-design.md](db-merge-design.md)） |
+| 11 | 弹性 worker（运行时动态加入/退出） | 出现真实运行时缩扩容需求 |
+| 12 | Solver：PCG / master reduce RPC / Worker 进程复用 | reduce 原语补齐 + 迭代重构收益见顶（[solver/optimization-roadmap.md](solver/optimization-roadmap.md)，§四） |
+| 13 | EMIR 差距 P0-4 非均匀分区 / P1-1~P1-5 / P2 工程化 | 按 [emir-capability-gap.md](emir-capability-gap.md) §4 依赖序整体立项 |
+| 14 | L4 块级寻址 | 部分读（solver 子域切片）/块粒度缓存逐出需求（[chunked-transfer-design.md](chunked-transfer-design.md) §12） |
+
+### ⛔ 维持不做（既有裁定，不再列为欠账）
+
+credit 窗口流控（2026-08-28）、stage checkpoint（db 级足够，F6）、协议版本号（F7）、树形归约（伪 O(log nsd)）、GPU 稀疏直接法/AMG 库/MPI 全家（[solver/rejected-alternatives.md](solver/rejected-alternatives.md)）、去中心化调度等战略边界（[roadmap.md](roadmap.md) §五）。

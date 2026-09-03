@@ -3,6 +3,36 @@
 ---
 ---
 
+## 2026-09-03: 文档对齐批次——chunked 落地状态同步 + 未做项清单刷新 + stop 噪声立项
+
+全库文档-实现状态盘点后的对齐批次（六文件 + 一新 issue，无代码变更）。
+背景：chunked 主线已于 08-29/30 落地，但多处文档仍停留在「待批准/待实施/
+不分片」旧状态；remaining-todo.md 尾注欠账口径亦过时。
+
+- **remaining-todo.md**：F4 分片/背压流控改 ✅（chunked L0-L3+L1+v2 全层
+  落地；credit 裁定不做）；补「2026-08-29/30 新增完成」节；尾注欠账口径
+  更新（throw→error code、WRITE_REGISTRATION_FAILED、超长函数均已收口）；
+  新增「当前优先级（2026-09-03）」总排序（P1-P3 未做事项 + 待治理问题 +
+  ⛔ 维持不做）。
+- **emir-capability-gap.md**：P0-3 标注 ✅（帧长 64 位帧头、分块分片均已
+  落地，原「已裁定待实施/绑定触发缓议」被 2026-08-29 立项取代；credit
+  维持不做）；P2 表「分块流式读」同批 ✅。
+- **chunked-transfer-design.md**：文档头状态行改「已全层落地」（与 §13/§14.7 一致）。
+- **README.md**：文档地图 chunked 条目状态同步；问题追踪 001-010。
+- **HANDOFF-peer-stream.md**：收集圈 `fut.result()` 无限等标注 ✅ 已修复
+  （2026-09-02 批次 3，30s deadline + 实证 subcase）；基准复测节补旧机
+  单帧基线状态（d1062f1，512MB 流式 41 MB/s 属写缓冲压力现场，新机验收线
+  复测仍未做）。
+- **competitor-analysis.md §1.3**：补 2026-09-03 状态修正注（Locality/
+  Worker role/失败恢复/SSH 均已落地；仍空缺 launch_custom_workers/F2）。
+
+**新立 issue 010**：stop() drain 期 worker 断连误报「worker dead + 副本
+全灭」ERROR（2026-08-30「待立 issue」兑现；shutdown_pending 分派机制在位
+仍复现 → 残余竞态窗口，修复方向与回归方案见 issue 文档）。
+
+---
+---
+
 ## 2026-09-02: 全面审查修复——PeerRpc 并发/协议缺陷 + 测试假绿根治 + solver 竞态 + 文档大收口
 
 五路审查（PeerRpc 流式线 / 性能线 / HANDOFF 线 / 文档一致性 / 约束合规）
