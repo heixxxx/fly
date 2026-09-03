@@ -5,6 +5,7 @@
 #include <common/cpp/fly_buffer.h>
 #include <common/cpp/test_helpers.h>
 #include <serialization/cpp/serialization_macros.h>
+#include <latch>
 #include <thread>
 #include <chrono>
 #include <filesystem>
@@ -214,6 +215,40 @@ TEST(ObjectCacheTest, ConcurrentAccessIsSafe) {
     }
     for (auto& th : threads) th.join();
     // No crash/hang = pass.
+    c.clear();
+}
+
+// ---- 并发正确性（P3-17 批 2）：计数器守恒断言（原 ConcurrentAccessIsSafe
+//      仅 "No crash = pass"，无正确性口径）——每线程 put 与 get（自 key 命中
+//      + 他人 key 缺失）计数严格对账，淘汰计数非负且 ≥ 并发超容量期望。 ----
+
+TEST(ObjectCacheTest, ConcurrentAccessStatsConserve) {
+    ObjectCache& c = ObjectCache::instance();
+    c.reset_for_test(1 << 20);   // 1MB：int 4B 不会触发淘汰，计数口径纯净
+    constexpr int kThreads = 4;
+    constexpr int kKeys = 100;
+    std::latch go{kThreads};
+    CMVector<std::thread> threads;
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&c, &go, t] {
+            go.count_down(); go.wait();
+            for (int i = 0; i < kKeys; ++i) {
+                CMString key = "own_" + std::to_string(t) + "_" + std::to_string(i);
+                c.put_high<int>(key, CMMakeShared<int>(i), 4);
+                auto hit = c.get_high<int>(key);           // 必命中
+                ASSERT_NE(hit, nullptr) << "t=" << t << " i=" << i;
+                ASSERT_EQ(*hit, i);
+                auto miss = c.get_high<int>("missing_" + std::to_string(t));
+                (void)miss;                                 // 必缺失
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    const auto& s = c.stats();
+    EXPECT_EQ(s.high_puts.load(), static_cast<uint64_t>(kThreads * kKeys));
+    EXPECT_EQ(s.high_hits.load(), static_cast<uint64_t>(kThreads * kKeys));
+    EXPECT_EQ(s.high_misses.load(), static_cast<uint64_t>(kThreads * kKeys));
     c.clear();
 }
 

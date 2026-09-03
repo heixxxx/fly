@@ -7,6 +7,7 @@
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
+#include <latch>
 #include <stdexcept>
 
 namespace {
@@ -332,6 +333,66 @@ TEST_F(WriteBackQueueTest, CompleteCallbackThrowIsContained) {
     queue.drain();
     EXPECT_TRUE(executed.load());
     EXPECT_NO_THROW(queue.stop());
+}
+
+// ── 并发正确性（P3-17 批 2）：多生产者入队 + drain/stop 竞态——
+//    execute 与 on_complete 一一配对守恒，join 后 pending 归零。 ──
+
+TEST_F(WriteBackQueueTest, MultiProducerEnqueueDrainConserve) {
+    fly::WriteBackQueue queue;   // high_watermark=10：4 生产者必触发背压等待
+    queue.start();
+    constexpr int kProducers = 4;
+    constexpr int kPerProducer = 100;
+    std::atomic<int> executed{0};
+    std::atomic<int> completed{0};
+    std::latch go{kProducers};
+    CMVector<std::thread> threads;
+    for (int t = 0; t < kProducers; ++t) {
+        threads.emplace_back([&, t] {
+            go.count_down(); go.wait();
+            for (int i = 0; i < kPerProducer; ++i) {
+                fly::WriteRequest req;
+                req.execute_ = [&executed]() -> bool {
+                    executed.fetch_add(1);
+                    return true;
+                };
+                req.on_complete_ = [&completed]() { completed.fetch_add(1); };
+                queue.enqueue(std::move(req));
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+    queue.drain();
+    EXPECT_EQ(executed.load(), kProducers * kPerProducer);
+    EXPECT_EQ(completed.load(), kProducers * kPerProducer);
+    EXPECT_EQ(queue.pending_count(), 0u);
+    queue.stop();
+}
+
+TEST_F(WriteBackQueueTest, StopAfterConcurrentProducersExecutesAllAccepted) {
+    fly::WriteBackQueue queue;
+    queue.start();
+    constexpr int kProducers = 3;
+    constexpr int kPerProducer = 60;
+    std::atomic<int> executed{0};
+    std::latch go{kProducers};
+    CMVector<std::thread> threads;
+    for (int t = 0; t < kProducers; ++t) {
+        threads.emplace_back([&, t] {
+            go.count_down(); go.wait();
+            for (int i = 0; i < kPerProducer; ++i) {
+                fly::WriteRequest req;
+                req.execute_ = [&executed]() -> bool {
+                    executed.fetch_add(1);
+                    return true;
+                };
+                queue.enqueue(std::move(req));
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+    queue.stop();   // stop 语义：已入队单元全部执行完再退（StopDrainsRemaining 同款）
+    EXPECT_EQ(executed.load(), kProducers * kPerProducer);
 }
 
 }

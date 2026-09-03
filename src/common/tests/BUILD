@@ -43,3 +43,13 @@ cc_test(
     ],
     copts = ["-std=c++20"],
 )
+
+cc_test(
+    name = "writer_pref_rwlock_test",
+    srcs = ["writer_pref_rwlock_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/common/cpp:fly_common_types",
+    ],
+    copts = ["-std=c++20"],
+)

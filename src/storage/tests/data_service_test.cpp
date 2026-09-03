@@ -14,6 +14,7 @@
 #include <common/cpp/data_checksum.h>
 #include <filesystem>
 #include <istream>
+#include <latch>
 #include <chrono>
 #include <thread>
 #include <atomic>
@@ -1870,6 +1871,98 @@ TEST_F(DataServiceTest, CleanupTempEntriesRemovesTempOnly) {
 
     EXPECT_FALSE(ds_->has_local_object(temp_full)) << "temp 条目必须被清理";
     EXPECT_TRUE(ds_->has_local_object(real_full)) << "正式对象不受影响";
+}
+
+// ── 并发正确性（P3-17 批 2）：S7 五把分片锁的写写/读写交错正确性
+//    （此前仅 concurrency_bench 吞吐口径，无断言）。 ──
+
+TEST_F(DataServiceTest, ConcurrentRemoteIdxWritersReadersConserve) {
+    // 4 写线程各管 50 个 (object, worker) 对；2 读线程 lookup hammer。
+    // join 后每个 object 的副本集合恰为其写线程登记的 worker（remote_idx_
+    // 同 worker 重复 update 幂等覆盖）。
+    constexpr int kWriters = 4;
+    constexpr int kObjectsPerWriter = 50;
+    std::latch go{kWriters + 2};
+    CMVector<std::thread> threads;
+    for (int t = 0; t < kWriters; ++t) {
+        threads.emplace_back([&, t] {
+            go.count_down(); go.wait();
+            for (int i = 0; i < kObjectsPerWriter; ++i) {
+                CMString full = "/rdconcur:obj_" + std::to_string(t) + "_" +
+                                std::to_string(i);
+                ds_->update_remote_idx(full, static_cast<uint64_t>(t + 1),
+                                       "host_" + std::to_string(t), 9000);
+            }
+        });
+    }
+    for (int r = 0; r < 2; ++r) {
+        threads.emplace_back([&] {
+            go.count_down(); go.wait();
+            for (int c = 0; c < 200; ++c) {
+                (void)ds_->lookup_all_remote_idx("/rdconcur:obj_0_0");
+                (void)ds_->lookup_all_remote_idx("/rdconcur:missing");
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    for (int t = 0; t < kWriters; ++t) {
+        for (int i = 0; i < kObjectsPerWriter; ++i) {
+            CMString full = "/rdconcur:obj_" + std::to_string(t) + "_" +
+                            std::to_string(i);
+            auto replicas = ds_->lookup_all_remote_idx(full);
+            ASSERT_EQ(replicas.size(), 1u) << full;
+            EXPECT_EQ(replicas[0].worker_id_, static_cast<uint64_t>(t + 1));
+        }
+    }
+}
+
+TEST_F(DataServiceTest, ConcurrentDbRegisterUnregisterReflectsFinalState) {
+    // 注册/注销交错：join 后未注销的 db has_database==true，已注销的 false，
+    // 注册计数精确（db_paths_ 引用计数口径）。
+    constexpr int kDbs = 20;
+    std::latch go{4};
+    CMVector<std::thread> threads;
+    threads.emplace_back([&] {
+        go.count_down(); go.wait();
+        for (int i = 0; i < kDbs; ++i) {
+            ds_->register_database("/rdbs_" + std::to_string(i),
+                                   test_dir_ + "/data_" + std::to_string(i));
+        }
+    });
+    threads.emplace_back([&] {
+        go.count_down(); go.wait();
+        for (int i = 0; i < kDbs / 2; ++i) {
+            CMString p = "/rdbs_" + std::to_string(i);
+            // 本 key 的注销必须在注册可见之后（register/unregister 跨线程
+            // 对同 key 无顺序保证）；自旋等待保留与其它 key 注册、读者
+            // hammer 的真实并发。
+            int spin = 0;
+            while (!ds_->has_database(p) && spin < 50000) {
+                std::this_thread::yield();
+                ++spin;
+            }
+            ds_->unregister_database(p);
+        }
+    });
+    for (int r = 0; r < 2; ++r) {
+        threads.emplace_back([&] {
+            go.count_down(); go.wait();
+            for (int c = 0; c < 100; ++c) {
+                (void)ds_->has_database("/rdbs_0");
+                (void)ds_->has_database("/rdbs_never");
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    for (int i = 0; i < kDbs / 2; ++i) {
+        EXPECT_FALSE(ds_->has_database("/rdbs_" + std::to_string(i)));
+    }
+    for (int i = kDbs / 2; i < kDbs; ++i) {
+        EXPECT_TRUE(ds_->has_database("/rdbs_" + std::to_string(i)));
+        ds_->unregister_database("/rdbs_" + std::to_string(i));  // 清理
+    }
 }
 
 }
