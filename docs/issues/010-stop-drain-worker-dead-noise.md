@@ -1,6 +1,11 @@
 # 010 — stop() drain 期 worker 断连误报「worker dead + 副本全灭」ERROR
 
-> 状态：**OPEN**（2026-09-03 立项）
+> 状态：**已验证不复现，关闭（2026-09-04）**。回归 case 常驻：
+> `qa/network/test_stop_drain_no_death_error.py`（launch_local_workers 版，
+> 20/20 绿）；原始 ssh 复现源 `test_launch_ssh_workers.py` 5/5 绿。
+> 结论：原窗口随 2026-08-31 stop 重构收口——现行 Phase 2 在发送 SHUTDOWN 前
+> 先 insert `shutdown_pending_workers_`（master_agent.cpp:621-625，insert 先于
+> send 封闭断连竞态），on_disconnect 显式三分派（:2090-2119）正确归类。
 > 来源：DOC_CHANGELOG 2026-08-30 `launch_ssh_workers` QA 验证记录（原文「待立 issue」）。
 > 关联：`src/agent/cpp/master_agent.cpp` `on_disconnect` / `handle_worker_death` / `fail_orphan_data_objects`。
 
@@ -38,6 +43,14 @@
   断连落进分支 ②。
 
 ## 修复方向（待复测确认后展开）
+
+> **2026-09-04 复测结论：不复现，未实施代码修复**（无活体缺陷不做推测性改动，
+> 根因优先原则）。原窗口已被 08-31 stop 重构的「发送前先登记标记」设计封闭。
+> 曾评估并否决的方案存档如下，供未来同类问题参考：
+> - **stop 入口全量打标记——否决**：会拆掉「drain 期 worker 真崩溃」的恢复
+>   通道（RUNNING task 需 requeue 否则 stop 永久悬挂），违反 drain 核心语义。
+> - **Fix-α（drain 期无 RUNNING task 断连按正常退出）——未实施**：仅在有
+>   活体复现时才有收益；当前 Phase 2 先登记设计下窗口已不可达。
 
 1. 当前 HEAD 复测（`launch_local_workers` + 显式 `stop()`），确认是否仍复现；
 2. 若复现：stop() 入口先对全部存活 worker 打 `shutdown_pending` 标记再进入
