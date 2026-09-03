@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include <task/cpp/dependency_graph.h>
+#include <latch>
+#include <thread>
 
 namespace fly {
 
@@ -390,6 +392,81 @@ TEST(DependencyGraphTest, TaskRequirementsPriorityClearedOnRemove) {
     // remove 后返回静态空对象，priority 应为默认值 10
     EXPECT_EQ(reqs.priority_, 10);
     EXPECT_TRUE(reqs.capabilities_.empty());
+}
+
+// ── 并发正确性（P3-17 批 1）：多线程 add/mark/remove/get 全操作.mix——
+//    join 后守恒断言（每 task 恰处于 ready/pending/removed 之一且计数守恒），
+//    并锁 ready 有序不变量（S8-b：{-priority, task_id} 升序 ⇒ 升序遍历）。──
+
+TEST(DependencyGraphTest, ConcurrentMarkReadyRemoveConservesTasks) {
+    constexpr int kTasks = 400;
+    DependencyGraph graph;
+    for (int i = 0; i < kTasks; ++i) {
+        graph.add_task(static_cast<uint64_t>(i), {"input/d0"});
+    }
+    std::latch go{4};
+    std::thread t_ready([&] { go.count_down(); go.wait();
+        graph.mark_data_ready("input/d0"); });
+    std::thread t_rm1([&] { go.count_down(); go.wait();
+        for (int i = 0; i < kTasks / 2; ++i) {
+            graph.remove_task(static_cast<uint64_t>(i));
+        } });
+    std::thread t_rm2([&] { go.count_down(); go.wait();
+        for (int i = kTasks / 2; i < kTasks; ++i) {
+            if (i % 3 == 0) graph.remove_task(static_cast<uint64_t>(i));
+        } });
+    std::thread t_read([&] { go.count_down(); go.wait();
+        for (int i = 0; i < 50; ++i) {
+            (void)graph.get_ready_tasks();
+            (void)graph.get_pending_tasks();
+            (void)graph.is_data_ready("input/d0");
+        } });
+    t_ready.join(); t_rm1.join(); t_rm2.join(); t_read.join();
+
+    // 守恒：ready ∪ pending ∪ removed == 全集（removed 计入 completed_count）。
+    auto ready = graph.get_ready_tasks();
+    auto pending = graph.get_pending_tasks();
+    CMUnorderedSet<uint64_t> seen(ready.begin(), ready.end());
+    for (auto id : pending) seen.insert(id);
+    EXPECT_EQ(static_cast<int>(seen.size() + graph.completed_count()), kTasks);
+}
+
+TEST(DependencyGraphTest, ConcurrentMarkDataMixKeepsReadyOrderInvariant) {
+    constexpr int kTasks = 200;
+    DependencyGraph graph;
+    for (int i = 0; i < kTasks; ++i) {
+        graph.add_task(static_cast<uint64_t>(1000 + i), {"input/x", "input/y"});
+    }
+    std::latch go{3};
+    std::thread t1([&] { go.count_down(); go.wait();
+        graph.mark_data_ready("input/x"); });
+    std::thread t2([&] { go.count_down(); go.wait();
+        graph.mark_data_ready("input/y"); });
+    std::thread t3([&] { go.count_down(); go.wait();
+        for (int i = 0; i < 30; ++i) (void)graph.get_ready_tasks(); });
+    t1.join(); t2.join(); t3.join();
+    // 两依赖齐备后全部 ready，且 ready 有序不变量（{-priority, id} 升序）
+    // 在并发 mark 下不被破坏。
+    auto ready = graph.get_ready_tasks();
+    ASSERT_EQ(ready.size(), static_cast<size_t>(kTasks));
+    for (size_t i = 1; i < ready.size(); ++i) {
+        EXPECT_LT(ready[i - 1], ready[i]) << "ready 集顺序破坏 @" << i;
+    }
+}
+
+TEST(DependencyGraphTest, ConcurrentDataReadyRemovedFlipEndsDeterministic) {
+    DependencyGraph graph;
+    graph.add_task(1, {"input/z"});
+    std::latch go{2};
+    std::thread t_ready([&] { go.count_down(); go.wait();
+        graph.mark_data_ready("input/z"); });
+    std::thread t_removed([&] { go.count_down(); go.wait();
+        graph.mark_data_removed("input/z"); });
+    t_ready.join(); t_removed.join();
+    // 后写者胜出（锁内串行化），get_ready_tasks 与最终数据状态一致。
+    bool data_ready = graph.is_data_ready("input/z");
+    auto ready = graph.get_ready_tasks();
+    EXPECT_EQ(ready.empty(), !data_ready);
 }
 
 }  // namespace fly

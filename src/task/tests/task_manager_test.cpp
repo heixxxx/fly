@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include <task/cpp/task_manager.h>
 #include <serialization/cpp/serialization_macros.h>
+#include <algorithm>
+#include <latch>
+#include <thread>
 
 namespace fly {
 
@@ -573,6 +576,48 @@ TEST(TaskSubmissionSpecTest, DefaultValuesSurviveRoundTrip) {
     EXPECT_FLOAT_EQ(decoded.attribute_timeout_, -1.0f);
     EXPECT_TRUE(decoded.args_.empty());
     EXPECT_TRUE(decoded.vars_.empty());
+}
+
+// ── 并发正确性（P3-17 批 1）：4 线程分段 create + 状态推进，读者 hammer
+//    计数口径——join 后按状态计数守恒（全量 COMPLETE，无丢无重）。 ──
+
+TEST(TaskManagerTest, ConcurrentCreateAdvanceCountsConserve) {
+    constexpr int kThreads = 4;
+    constexpr int kPerThread = 150;
+    TaskManager manager;
+    std::latch go{kThreads + 2};
+    CMVector<std::thread> threads;
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&, t] {
+            go.count_down(); go.wait();
+            for (int i = 0; i < kPerThread; ++i) {
+                uint64_t id = static_cast<uint64_t>(t * kPerThread + i + 1);
+                manager.create_task(id, mk_spec("conc_task"), "");
+                manager.assign_task(id, static_cast<uint64_t>(t + 1));
+                manager.update_task_status(id, TaskStatus::RUNNING);
+                manager.update_task_status(id, TaskStatus::COMPLETED);
+            }
+        });
+    }
+    for (int r = 0; r < 2; ++r) {
+        threads.emplace_back([&] {
+            go.count_down(); go.wait();
+            for (int c = 0; c < 200; ++c) {
+                (void)manager.count_tasks_by_status(TaskStatus::RUNNING);
+                (void)manager.get_task_ids_by_worker(1);
+                (void)manager.get_all_tasks();
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    // 完成上限裁剪不变量（kMaxCompletedTasks=100，并发裁剪下仍精确）：
+    // COMPLETED 计数恰为上限，其余状态清零。
+    EXPECT_EQ(manager.count_tasks_by_status(TaskStatus::COMPLETED),
+              std::min(kThreads * kPerThread, 100));
+    EXPECT_EQ(manager.count_tasks_by_status(TaskStatus::RUNNING), 0);
+    EXPECT_EQ(manager.count_tasks_by_status(TaskStatus::PENDING), 0);
+    EXPECT_EQ(manager.count_tasks_by_status(TaskStatus::FAILED), 0);
 }
 
 }  // namespace fly

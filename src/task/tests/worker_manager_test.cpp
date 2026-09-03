@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include <task/cpp/worker_manager.h>
+#include <latch>
+#include <thread>
 
 namespace fly {
 
@@ -522,6 +524,71 @@ TEST(WorkerManagerTest, GetWorkerCapabilities) {
     ASSERT_EQ(caps.size(), 1u);
     EXPECT_EQ(caps[0], "rasg:u:check");
     EXPECT_TRUE(manager.get_worker_capabilities(99).empty());
+}
+
+// ── 并发正确性（P3-17 批 1）：assign/complete/status/grace 写视角与
+//    idle/all/capability 读视角全交错——join 后每 worker 归位 IDLE
+//    （assign↔complete 配对守恒），读者全程无崩溃。 ──
+
+TEST(WorkerManagerTest, ConcurrentAssignCompleteLeavesAllIdle) {
+    constexpr int kWorkers = 8;
+    constexpr int kCycles = 200;
+    WorkerManager manager;
+    for (int w = 1; w <= kWorkers; ++w) {
+        manager.register_worker(static_cast<uint64_t>(w), "10.0.0.1",
+                                static_cast<uint16_t>(8000 + w), {"cap"});
+    }
+    std::latch go{kWorkers + 2};
+    CMVector<std::thread> threads;
+    // 每线程独占一个 worker 的 assign→complete 生命周期（配对守恒）。
+    for (int w = 1; w <= kWorkers; ++w) {
+        threads.emplace_back([&, w] {
+            go.count_down(); go.wait();
+            auto wid = static_cast<uint64_t>(w);
+            for (int c = 0; c < kCycles; ++c) {
+                manager.assign_task(wid, static_cast<uint64_t>(c));
+                (void)manager.get_idle_workers();
+                manager.complete_task(wid);
+            }
+        });
+    }
+    // 两个纯读者 hammer（get_idle_workers 内部写 shared 状态的口径
+    // get_worker_count/has_worker_with_all_capabilities 一并覆盖）。
+    for (int r = 0; r < 2; ++r) {
+        threads.emplace_back([&] {
+            go.count_down(); go.wait();
+            for (int c = 0; c < 300; ++c) {
+                (void)manager.get_idle_workers();
+                (void)manager.get_worker_count();
+                (void)manager.has_worker_with_all_capabilities({"cap"});
+            }
+        });
+    }
+    for (auto& t : threads) t.join();
+
+    EXPECT_EQ(manager.get_worker_count(), static_cast<size_t>(kWorkers));
+    EXPECT_EQ(manager.get_idle_worker_count(), static_cast<size_t>(kWorkers));
+}
+
+TEST(WorkerManagerTest, ConcurrentReconnectRegisterKeepsSingleEntry) {
+    WorkerManager manager;
+    manager.register_worker(1, "10.0.0.1", 8001, {"cap"});
+    std::latch go{4};
+    CMVector<std::thread> threads;
+    // 重复 register_worker（非 reconnect 路径）+ reconnect 混流：容器不得
+    // 重复登记、不得悬空。
+    threads.emplace_back([&] { go.count_down(); go.wait();
+        manager.register_worker(1, "10.0.0.2", 8002, {"cap"}); });
+    for (int r = 0; r < 3; ++r) {
+        threads.emplace_back([&] { go.count_down(); go.wait();
+            for (int c = 0; c < 50; ++c) {
+                manager.register_worker_reconnect(1, "10.0.0.1", 8001, {"cap"});
+                (void)manager.get_all_workers();
+            } });
+    }
+    for (auto& t : threads) t.join();
+    EXPECT_EQ(manager.get_worker_count(), 1u);
+    EXPECT_EQ(manager.get_idle_worker_count(), 1u);
 }
 
 }  // namespace fly

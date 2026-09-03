@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <task/cpp/task_scheduler.h>
 #include <chrono>
+#include <latch>
 #include <thread>
 
 namespace fly {
@@ -813,5 +814,51 @@ TEST(TaskSchedulerTest, PrioritySkipDoesNotBlockLower) {
 
     ASSERT_EQ(results.size(), 1u);
     EXPECT_EQ(results[0].task_id_, 2);   // task 1 因缺 capability 跳过，task 2 调度
+}
+
+// ── 并发正确性（P3-17 批 1）：调度与 worker 状态变更的真实并发形态。
+//    scheduler 依契约由外部串行化（master schedule_mutex_，本测试单线程
+//    调用），WorkerManager 同时被「reactor 视角」线程 assign/complete 翻转
+//    ——join 无崩溃，调度结果中 worker_id 恒为已注册 worker（score_buf_
+//    重填与 select 在同一调度线程内，外部串行化契约下无共享写）。 ──
+
+TEST(TaskSchedulerTest, ConcurrentManagerMutationDuringScheduling) {
+    DependencyGraph graph;
+    WorkerManager manager;
+    for (int w = 1; w <= 4; ++w) {
+        manager.register_worker(static_cast<uint64_t>(w), "h",
+                                static_cast<uint16_t>(8000 + w), {"cap"});
+    }
+    for (int i = 1; i <= 300; ++i) {
+        graph.add_task(static_cast<uint64_t>(i), {}, caps({"cap"}));
+    }
+    TaskScheduler scheduler(&graph, &manager);
+    std::latch go{3};
+    CMVector<std::thread> threads;
+    for (int t = 0; t < 2; ++t) {
+        threads.emplace_back([&] {
+            go.count_down(); go.wait();
+            for (int c = 0; c < 400; ++c) {
+                for (auto w : manager.get_idle_workers()) {
+                    manager.update_worker_status(w, WorkerStatus::BUSY);
+                    manager.update_worker_status(w, WorkerStatus::IDLE);
+                }
+            }
+        });
+    }
+    threads.emplace_back([&] {
+        go.count_down(); go.wait();
+        for (int c = 0; c < 200; ++c) {
+            for (auto& r : scheduler.schedule_all_available()) {
+                EXPECT_NE(r.worker_id_, 0u);
+                EXPECT_LE(r.worker_id_, 4u);
+            }
+        }
+    });
+    for (auto& t : threads) t.join();
+    // 终态可查（无内部结构损坏）：注册数不变，剩余 ready task 仍能正常
+    // 参与调度判定。
+    EXPECT_EQ(manager.get_worker_count(), 4u);
+    (void)scheduler.schedule_all_available();
 }
 }  // namespace fly
