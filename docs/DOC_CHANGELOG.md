@@ -3,6 +3,45 @@
 ---
 ---
 
+## 2026-09-04: 五项优先级待办执行收口——基准复测/issue 010 关闭/锁内 IO 清零/双根修/并发测试三批
+
+按 2026-09-03 计划逐项落地（六 commit + 文档对齐批次）：
+
+- **f72b686 文档对齐批次**：chunked 落地状态同步（remaining-todo F4 ✅/
+  emir P0-3 ✅/chunked 文档头/README/HANDOFF-peer-stream/competitor §1.3
+  修正注）+ 未做项清单刷新（「当前优先级」总排序）+ issue 010 立项。
+- **67058aa 项 1 基准复测收口**：`test_peer_stream_read_perf` 加 MemTotal
+  探测；`PEER_RPC_PERF_FULL=1` ×3 轮全绿——none 512MB **554 MB/s**（较收齐
+  交付版 373 MB/s +48%）、lz4 541；64MB none 583。数字落 perf-baselines.md；
+  700 MB/s 验收线按 ≥16GB 机器标定，留新机复测裁决。
+- **66941ca 项 2 issue 010 复测收口**：20 轮 launch_local_workers + 5 轮
+  原始 ssh 复现源全绿——stop drain 误报**不复现**（原窗口随 08-31 stop
+  重构「发送前先登记 shutdown_pending」封闭）；回归 case
+  `qa/network/test_stop_drain_no_death_error.py` 常驻；issue 关闭。
+- **dd9f0b4 项 5 锁内 IO 清零**：StorageManager::close_all（锁内 freeze）
+  与 get_or_create_database（factory 锁内构造）快照化；覆盖插入析构边缘
+  6 处（master 3 + worker 3）+ 停机 clear swap 出锁；§13.3 文档漂移修复；
+  新增 3 个 StorageManager 并发测试（winner 语义/close_all 交错守恒）。
+- **2af57a5 项 3 双根修**：① storage_test 全文件 corruption 案发根因 =
+  open_write_stream 的 begin_incremental 在任务线程现场执行，offset 快照
+  踩在先前异步写单元落盘前的文件尺寸上（条目 (0, 全文件) → 读侧取错区间
+  误报 corruption；100 次迭代探针 1-2 次内必现）——BEGIN 改为与块/finish
+  同 FIFO 的同步 WBQ 单元（promise 等待），temp 路径同修；② chunk_source
+  failure_detail 契约（io:/integrity: 前缀）+ database.py FATAL 分流
+  （[FATAL-STREAM-IO] vs [FATAL-DATA-CORRUPTION]）+ reset_state 导出 +
+  storage_test fixture 三步复位；全文件 ×10 绿（修复前 3/3 失败）。
+- **4490aa9 / 64a44f1 / e9815e9 项 4 P3-17 三批**：批 1 task 层四结构并发
+  守恒测试（含 kMaxCompletedTasks 裁剪不变量）；批 2 storage（WBQ 多生产者
+  配对守恒、ObjectCache 计数对账、DataService 分片锁交错、
+  WriterPrefRwLock 本体零到一）；批 3 network 两结构 + TSAN opt-in
+  （.bazelrc build:tsan，不进门禁）。TSAN 首轮实证 3 处真实竞态：
+  ensure_epoll 惰性 epoll 创建已根治（构造期急切）；DataServer::stop/
+  EpollMultiplexerImpl::destroy 预存在竞态立 issues/011 待专项。
+- 验证：全量 QA 183/183；相关单测目标全绿 + 新并发测试 ×5-×10 零 flaky。
+
+---
+---
+
 ## 2026-09-03: 文档对齐批次——chunked 落地状态同步 + 未做项清单刷新 + stop 噪声立项
 
 全库文档-实现状态盘点后的对齐批次（六文件 + 一新 issue，无代码变更）。
