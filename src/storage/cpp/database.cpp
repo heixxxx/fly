@@ -608,115 +608,110 @@ void Database::backup_object(const CMString& object_name) {
     // 本地——乐观写（先假设数据正确，块级 CRC 由最终读出口权威校验，tee 不
     // 解压不验），中途源失败/截断则 rollback（truncate 回段起点，脏数据由
     // 后续写覆盖），全部落盘成功后才登记 idx 并向 master 登记可见性。
+    // 唯一路径（恒流式裁定：不存在非流式 read）。失败 = TIER2 轮换/退避/
+    // TIER3 刷新已尽力的终态（NOT_FOUND=对象不可见 / CHECKSUM=源损坏 /
+    // 其它=网络全败）——尽力语义放弃，不回退整缓冲。
     auto r = ds->read_streaming(full);
-    bool streaming = r.success && r.source && r.block_area_len > 0;
-
-    if (streaming) {
-        // 可见性条目预登记（对齐 commit_write 时序：on_write_started 创建
-        // 条目，on_write_completed 置 COMPLETE——缺前者则完成回调被忽略）。
-        ds->on_write_started(db_path_, full);
-        // 段事务包裹（mark_begin 记 data 文件回滚点）：源失败/截断时
-        // abort_segment truncate 回起点——「后续写覆盖脏数据」的机制载体。
-        writer_->mark_begin();
-        int64_t start_off = writer_->begin_incremental();
-        if (start_off < 0) {
-            writer_->abort_segment();
-            streaming = false;   // writer 已关闭：走整缓冲回退（best-effort）
+    if (!r.success || !r.source) {
+        if (r.rerr == fly::ReadError::OBJECT_NOT_FOUND ||
+            r.rerr == fly::ReadError::DATA_NOT_READY) {
+            ERR("backup_object: source not visible for '{}' ({}) — abandoning",
+                full, static_cast<int>(r.rerr));
         } else {
-            // 块区逐块 tee：块自描述（16B 块头 = 4B unc + 4B comp + 8B crc），
-            // 边拉边解析块表（trailer 构造材料）+ append 压缩字节。
-            ObjectHeader hdr;
-            hdr.py_name_ = r.source->py_name();
-            hdr.total_size_ = r.source->total_uncompressed();
-            hdr.compression_type_ = static_cast<uint8_t>(r.source->compression_type());
-            bool ok = true;
-            uint64_t pulled = 0;
-            char block_hdr[16];
-            while (pulled < r.block_area_len) {
-                // 拉块头（16B）。
-                uint64_t got = 0;
-                while (got < 16 && ok) {
-                    int64_t n = r.source->pull(block_hdr + got, 16 - got);
-                    if (n <= 0) { ok = false; break; }
-                    got += static_cast<uint64_t>(n);
-                }
-                if (!ok) break;
-                uint32_t comp = 0;
-                std::memcpy(&comp, block_hdr + 4, 4);
-                hdr.block_comp_lens_.push_back(comp);
-                writer_->append_incremental(block_hdr, 16);
-                pulled += 16;
-                // 拉块压缩数据。
-                uint64_t remaining = comp;
-                char buf[256 * 1024];
-                while (remaining > 0 && ok) {
-                    int64_t n = r.source->pull(buf, static_cast<size_t>(
-                        std::min<uint64_t>(remaining, sizeof(buf))));
-                    if (n <= 0) { ok = false; break; }
-                    writer_->append_incremental(buf, static_cast<size_t>(n));
-                    pulled += static_cast<uint64_t>(n);
-                    remaining -= static_cast<uint64_t>(n);
-                }
-            }
-            if (ok && pulled == r.block_area_len) {
-                // 块区完整：构造并追加 trailer（块表/py_name/total/crc）。
-                hdr.chunk_count_ = static_cast<uint32_t>(hdr.block_comp_lens_.size());
-                CMString trailer = hdr.serialize_trailer();
-                writer_->append_incremental(trailer.data(), trailer.size());
-                // 全部落盘成功 → 先 master 可见性登记（拒绝则 abort 回滚），
-                // 再提交段 + 登记 idx（「全部落盘成功后才更新 idx」）。
-                auto [reg_error, reg_error_type] =
-                    fly::WorkerAgentContext::register_write(db_path_, object_name,
-                        static_cast<int64_t>(r.block_area_len + trailer.size()));
-                if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
-                    ERR("backup_object: register_write rejected for '{}' ({}) — rollback",
-                        full, reg_error);
-                    writer_->abort_segment();
-                    return;
-                }
-                writer_->mark_end();
-                writer_->finish_incremental(object_name, hdr.total_size_,
-                                            hdr.chunk_count_,
-                                            fly::WorkerAgentContext::get_current_write_hash());
-                writer_->flush();   // append 经缓冲流——读取前置必须落盘
-                auto caller_record_func = fly::WorkerAgentContext::current_record_func();
-                if (caller_record_func) {
-                    caller_record_func(db_path_, object_name,
-                        static_cast<int64_t>(r.block_area_len + trailer.size()));
-                }
-                auto entries = writer_->get_all_entries(object_name);
-                if (entries.has_value()) {
-                    ds->on_write_completed(db_path_, full, entries.value());
-                }
-                ds->on_object_flushed(full);
-                INFO("backup_object: streaming copy of '{}' done "
-                     "({} bytes wire, {} blocks)", full, pulled,
-                     hdr.block_comp_lens_.size());
-                return;
-            }
-            ERR("backup_object: source truncated/failed at {}/{} bytes — rollback",
-                pulled, r.block_area_len);
-            writer_->abort_segment();
-            ds->on_write_failed(db_path_, full, "backup stage: source failed");
-            return;
+            ERR("backup_object: streaming read failed for '{}' ({}) — abandoning",
+                full, static_cast<int>(r.rerr));
+        }
+        return;
+    }
+
+    // 可见性条目预登记（对齐 commit_write 时序：on_write_started 创建条目，
+    // on_write_completed 置 COMPLETE——缺前者则完成回调被忽略）。
+    ds->on_write_started(db_path_, full);
+    // 段事务包裹（mark_begin 记 data 文件回滚点）：源失败/截断时
+    // abort_segment truncate 回起点——「后续写覆盖脏数据」的机制载体。
+    writer_->mark_begin();
+    if (writer_->begin_incremental() < 0) {
+        writer_->abort_segment();
+        ERR("backup_object: writer closed — abandoning");
+        return;
+    }
+
+    // 块区逐块 tee：块自描述（16B 块头 = 4B unc + 4B comp + 8B crc），
+    // 边拉边解析块表（trailer 构造材料）+ append 压缩字节。
+    ObjectHeader hdr;
+    hdr.py_name_ = r.source->py_name();
+    hdr.total_size_ = r.source->total_uncompressed();
+    hdr.compression_type_ = static_cast<uint8_t>(r.source->compression_type());
+    bool ok = true;
+    uint64_t pulled = 0;
+    char block_hdr[16];
+    while (pulled < r.block_area_len && ok) {
+        uint64_t got = 0;
+        while (got < 16 && ok) {
+            int64_t n = r.source->pull(block_hdr + got, 16 - got);
+            if (n <= 0) { ok = false; break; }
+            got += static_cast<uint64_t>(n);
+        }
+        if (!ok) break;
+        uint32_t comp = 0;
+        std::memcpy(&comp, block_hdr + 4, 4);
+        hdr.block_comp_lens_.push_back(comp);
+        writer_->append_incremental(block_hdr, 16);
+        pulled += 16;
+        uint64_t remaining = comp;
+        char buf[256 * 1024];
+        while (remaining > 0 && ok) {
+            int64_t n = r.source->pull(buf, static_cast<size_t>(
+                std::min<uint64_t>(remaining, sizeof(buf))));
+            if (n <= 0) { ok = false; break; }
+            writer_->append_incremental(buf, static_cast<size_t>(n));
+            pulled += static_cast<uint64_t>(n);
+            remaining -= static_cast<uint64_t>(n);
         }
     }
 
-    // 零容忍（§5）：源数据校验预算耗尽 → 放弃 backup（不落坏数据），
-    // ERR 大声暴露；backup 是尽力语义（无错误通道），不抛。
-    // 流式不可用（本地源回退等）时同样走此整缓冲路径。
-    try {
-        auto [found, compressed_data, py_name, source_hash, can_still_produce] = ds->read_raw_compressed(full);
-        if (!found || !compressed_data || compressed_data->empty()) {
-            ERR("backup_object: no data for '{}'", full);
-            return;
-        }
-
-        CMString hash_to_use = source_hash.empty() ? fly::WorkerAgentContext::get_current_write_hash() : source_hash;
-        do_backup_write(full, object_name, CMString(compressed_data->data(), compressed_data->size()), hash_to_use);
-    } catch (const fly::DataCorruptionError& e) {
-        ERR("backup_object: {} — abandoning backup of '{}'", e.what(), full);
+    if (!ok || pulled != r.block_area_len) {
+        ERR("backup_object: source truncated/failed at {}/{} bytes — rollback",
+            pulled, r.block_area_len);
+        writer_->abort_segment();
+        ds->on_write_failed(db_path_, full, "backup stage: source failed");
+        return;
     }
+
+    // 块区完整：追加 trailer（块表/py_name/total/crc）。
+    hdr.chunk_count_ = static_cast<uint32_t>(hdr.block_comp_lens_.size());
+    CMString trailer = hdr.serialize_trailer();
+    writer_->append_incremental(trailer.data(), trailer.size());
+
+    // 全部落盘成功 → 先 master 可见性登记（拒绝则 abort 回滚），再提交段 +
+    // 登记 idx（「全部落盘成功后才更新 idx」）。
+    auto [reg_error, reg_error_type] =
+        fly::WorkerAgentContext::register_write(db_path_, object_name,
+            static_cast<int64_t>(r.block_area_len + trailer.size()));
+    if (reg_error_type != fly::TaskErrorType::UNKNOWN) {
+        ERR("backup_object: register_write rejected for '{}' ({}) — rollback",
+            full, reg_error);
+        writer_->abort_segment();
+        ds->on_write_failed(db_path_, full, reg_error);
+        return;
+    }
+    writer_->mark_end();
+    writer_->finish_incremental(object_name, hdr.total_size_,
+                                hdr.chunk_count_,
+                                fly::WorkerAgentContext::get_current_write_hash());
+    writer_->flush();   // append 经缓冲流——读取前置必须落盘
+    auto caller_record_func = fly::WorkerAgentContext::current_record_func();
+    if (caller_record_func) {
+        caller_record_func(db_path_, object_name,
+            static_cast<int64_t>(r.block_area_len + trailer.size()));
+    }
+    auto entries = writer_->get_all_entries(object_name);
+    if (entries.has_value()) {
+        ds->on_write_completed(db_path_, full, entries.value());
+    }
+    ds->on_object_flushed(full);
+    INFO("backup_object: streaming copy of '{}' done ({} bytes wire, {} blocks)",
+         full, pulled, hdr.block_comp_lens_.size());
 }
 
 void Database::freeze() {

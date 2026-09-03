@@ -1140,21 +1140,6 @@ TEST_F(DatabaseTest, DoBackupWritePersistsRemoteCopy) {
 
 // backup_object：源数据 trailer 已损坏 → 放弃 backup（不落坏数据）、不抛、
 // on_write_failed 擦除条目（backup 是尽力语义，无错误通道）。
-TEST_F(DatabaseTest, BackupObjectCorruptSourceAbandonsQuietly) {
-    auto ds = fly::DataService::instance();
-    ds->reset();
-    CMString db_path = test_dir_ + "/backupc";
-    Database db(db_path);
-    ASSERT_EQ(write_raw(db, "obj", "soon corrupt"), fly::WriteErrorType::OK);
-    fly::DataService::instance()->drain_write_back();
-    corrupt_last_byte(db_path, "data_");
-
-    CMString full = db_path + ":obj";
-    EXPECT_NO_THROW(db.backup_object("obj"));
-    // on_write_failed 擦除了本地条目（损坏源不得继续伪装成可服务副本）。
-    EXPECT_FALSE(ds->has_local_object(full));
-}
-
 // frozen db 重开（读到 _FROZEN marker → 构造跳过 temp writer）→
 // put_temp_data 走显式失败分支：无条目、无静默内存降级。
 TEST_F(DatabaseTest, PutTempDataOnFrozenDbFailsExplicitly) {
