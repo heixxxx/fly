@@ -816,7 +816,7 @@ bazel run //:refresh_compile_commands
 
 ### 13.3 锁内禁止 IO/网络
 
-临界区内禁止网络 send、文件系统重活、可能阻塞的调用——持锁阻塞会拖住所有等锁线程。既有的例外（`get_or_insert` factory 内 `fs::create_directories`）有注释标注，新代码不得效仿。
+临界区内禁止网络 send、文件系统重活、可能阻塞的调用——持锁阻塞会拖住所有等锁线程。无既有例外（2026-09-04 收口最后两处锁内 IO：`StorageManager::close_all` 的锁内 freeze 与 `get_or_create_database` 的 factory 锁内 Database 构造，均改快照模式；原「factory 内 create_directories 有注释标注」的说法系文档漂移——代码无注释，例外已随本次拆除）。**覆盖插入析构边缘**同规则：`map_[key] = db` 覆盖时旧实例若仅容器持有，~Database（含 WBQ drain）在锁内跑——锁内先 find 把旧实例 move 到局部 `displaced`，析构落在锁外（2026-09-04 批次统一收编 master 3 处 + worker 3 处 + 两处停机 clear swap 出锁）。
 
 workers_mutex_ 下的 send 同样禁止（reactor send 非阻塞，但含 encode + per-conn send mutex + conn_mutex_，锁内做会与 reactor 线程互拖放大临界区）。**统一快照模式**：锁内经 `snapshot_worker_conns()`（广播，返回 (worker_id, conn_id) 对）或 `lookup_worker_conn()`（单发，0=未连接）取连接，锁外循环 send；快照后连接断开的竞态由 transport 对未知 conn_id 的安全 -1 分支兜底（2026-08-17 批次将 19 处锁内 send 全量迁移至该模式；`Database::freeze()` 重 IO 同批移出 db_instances_ 容器锁——锁内只 find+拷 shared_ptr）。
 

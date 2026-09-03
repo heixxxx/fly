@@ -745,9 +745,14 @@ void MasterAgent::do_drain_and_stop() {
         reactor_.reset();
     }
 
+    // clear 触发全量 ~Database（WBQ drain + 关文件重活）：swap 出锁外析构
+    //（§13.3；停机路径虽已无并发争用，守规范一致性）。
     {
-        std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-        db_instances_.clear();
+        CMUnorderedMap<CMString, CMSharedPtr<Database>> doomed;
+        {
+            std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+            doomed.swap(db_instances_);
+        }
     }
 
     {
@@ -2832,12 +2837,18 @@ void MasterAgent::register_database(const CMString& db_path, const CMString& dat
     // Database 构造是重 IO（目录/_DB_META/_VARS/DataWriter），在容器锁外执行；
     // 锁内二次检查 + 插入（D4 拆除——防写锁长时间阻塞高频读点）。
     auto db = CMMakeShared<Database>(db_path, data_path, 0, "", db_path);
-    std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-    if (db_instances_.count(db_path) > 0) {
-        WARN("[DB-DUP] register_database: db_path={} already exists — overwriting (possible bug)", db_path);
+    // 覆盖插入时旧实例若仅容器持有，~Database（WBQ drain 重活）会在锁内跑——
+    // displaced 把旧实例带出锁外析构（§13.3）。
+    CMSharedPtr<Database> displaced;
+    {
+        std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+        auto it = db_instances_.find(db_path);
+        if (it != db_instances_.end()) {
+            displaced = std::move(it->second);
+            WARN("[DB-DUP] register_database: db_path={} already exists — overwriting (possible bug)", db_path);
+        }
+        db_instances_[db_path] = db;
     }
-    db_instances_[db_path] = db;
-    db_lk.unlock();
     // RunSummary：master 首见 db（幂等，首见语义不覆盖；merge 路径变更走
     // record_db_paths_changed）。锁外登记（collector 自身锁，快速路径）。
     if (run_metrics_) run_metrics_->record_db_created(db_path, data_path);
@@ -2933,12 +2944,17 @@ CMSharedPtr<Database> MasterAgent::get_or_create_database(const CMString& db_pat
     // 旧 Database 状态。命中此 WARN 说明调用方本该用 get_database 复用却误入了创建路径。
     // 构造重 IO 在容器锁外；锁内二次检查 + 插入（D4 拆除）。
     auto db = CMMakeShared<Database>(db_path, data_path, writer_id);
-    std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-    if (db_instances_.count(db_path) > 0) {
-        WARN("[DB-DUP] get_or_create_database: db_path={} already exists — recreating (possible bug, should reuse)", db_path);
+    // displaced 同 register_database：旧实例带出锁外析构（§13.3）。
+    CMSharedPtr<Database> displaced;
+    {
+        std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+        auto it = db_instances_.find(db_path);
+        if (it != db_instances_.end()) {
+            displaced = std::move(it->second);
+            WARN("[DB-DUP] get_or_create_database: db_path={} already exists — recreating (possible bug, should reuse)", db_path);
+        }
+        db_instances_[db_path] = db;
     }
-    db_instances_[db_path] = db;
-    db_lk.unlock();
     // RunSummary：master 首见 db（幂等；与 register_database 覆盖 load/自写
     // 两类创建入口）。
     if (run_metrics_) run_metrics_->record_db_created(db_path, data_path);
@@ -4724,9 +4740,17 @@ void MasterAgent::cleanup_after_merge(const CMString& db_path,
     } else {
         // merge 产物句柄由 Python 经 ex_stg_create_database_with_id 构造，未进 master
         // db_instances_。这里用源 db_path 重建并登记，保证 master 路径权威源与新路径一致。
+        // displaced：find-miss 与插入之间若有并发插入，旧实例带出锁外析构。
         auto db = CMMakeShared<Database>(merge_db_path, merge_data_path, 0, "", db_path);
-        std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
-        db_instances_[db_path] = db;
+        CMSharedPtr<Database> displaced;
+        {
+            std::unique_lock<std::shared_mutex> db_lk(db_instances_mutex_);
+            auto it = db_instances_.find(db_path);
+            if (it != db_instances_.end()) {
+                displaced = std::move(it->second);
+            }
+            db_instances_[db_path] = db;
+        }
     }
 
     // 6. 清理本批 merge task 状态（wait_merge_tasks_complete 推迟到此处 erase）。

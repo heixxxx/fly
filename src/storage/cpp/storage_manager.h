@@ -23,5 +23,6 @@ public:
     void reset();
 
 private:
+    using DBMap = CMUnorderedMap<CMString, CMSharedPtr<Database>>;
     ConcurrentUnorderedMap<CMString, CMSharedPtr<Database>> databases_;
 };

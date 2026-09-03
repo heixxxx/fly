@@ -475,9 +475,13 @@ void WorkerAgent::do_cleanup() {
     }
     reactor_.reset();
 
+    // clear 触发全量 ~Database（WBQ drain + 关文件重活）：swap 出锁外析构（§13.3）。
     {
-        std::unique_lock<std::shared_mutex> db_lk(databases_mutex_);
-        databases_.clear();
+        CMUnorderedMap<CMString, CMSharedPtr<Database>> doomed;
+        {
+            std::unique_lock<std::shared_mutex> db_lk(databases_mutex_);
+            doomed.swap(databases_);
+        }
     }
 
     DataService::instance()->stop_data_server();
@@ -1616,8 +1620,16 @@ std::tuple<bool, bool> WorkerAgent::request_remote_data(const CMString& object_n
 }
 
 void WorkerAgent::register_database(const CMString& db_path, CMSharedPtr<Database> db) {
-    std::unique_lock<std::shared_mutex> db_lk(databases_mutex_);
-    databases_[db_path] = std::move(db);
+    // displaced：覆盖插入时旧实例若仅容器持有，~Database（WBQ drain）带出锁外析构（§13.3）。
+    CMSharedPtr<Database> displaced;
+    {
+        std::unique_lock<std::shared_mutex> db_lk(databases_mutex_);
+        auto it = databases_.find(db_path);
+        if (it != databases_.end()) {
+            displaced = std::move(it->second);
+        }
+        databases_[db_path] = std::move(db);
+    }
 }
 
 bool WorkerAgent::request_db_path(const CMString& db_path) {
@@ -1650,8 +1662,14 @@ bool WorkerAgent::request_db_path(const CMString& db_path) {
         if (result && result->success_ && !result->db_path_.empty()) {
             auto db = CMMakeShared<Database>(result->db_path_, result->data_path_,
                                              worker_id_, data_server_host_, db_path);
+            // displaced：等待窗口内他人可能已插入同路径，旧实例带出锁外析构。
+            CMSharedPtr<Database> displaced;
             {
                 std::unique_lock<std::shared_mutex> db_lk(databases_mutex_);
+                auto it = databases_.find(db_path);
+                if (it != databases_.end()) {
+                    displaced = std::move(it->second);
+                }
                 databases_[db_path] = db;
             }
             return true;
@@ -1674,8 +1692,14 @@ bool WorkerAgent::request_db_path(const CMString& db_path) {
         // never match the master's remote_idx lookups.
         auto db = CMMakeShared<Database>(result->db_path_, result->data_path_,
                                          worker_id_, data_server_host_, db_path);
+        // displaced：等待窗口内他人可能已插入同路径，旧实例带出锁外析构。
+        CMSharedPtr<Database> displaced;
         {
             std::unique_lock<std::shared_mutex> db_lk(databases_mutex_);
+            auto it = databases_.find(db_path);
+            if (it != databases_.end()) {
+                displaced = std::move(it->second);
+            }
             databases_[db_path] = db;
         }
         return true;
