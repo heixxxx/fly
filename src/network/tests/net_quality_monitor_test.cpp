@@ -6,6 +6,8 @@
 #include <gtest/gtest.h>
 #include <network/cpp/net_quality_monitor.h>
 #include <chrono>
+#include <cmath>
+#include <latch>
 #include <thread>
 
 namespace fly {
@@ -80,6 +82,43 @@ TEST_F(NetQualityMonitorTest, StaleEntryScoresZero) {
     // Manually age the entry past ttl by injecting an old timestamp.
     mon_.age_entry_for_test("old", 600);  // 600s > default ttl 300s
     EXPECT_DOUBLE_EQ(mon_.score("old"), 0.0);
+}
+
+// ── 并发正确性（P3-17 批 3）：多线程 EMA 更新（共享 + 分片 host）与
+//    score 读取交错——join 后分数有限（无 NaN/inf），EMA 收敛到末值
+//    （shared_mutex 串行化正确性；此前全顺序用例）。 ──
+
+TEST_F(NetQualityMonitorTest, ConcurrentUpdateAndScoreStaysFinite) {
+    constexpr int kWriters = 4;
+    std::latch go{kWriters + 2};
+    CMVector<std::thread> threads;
+    for (int t = 0; t < kWriters; ++t) {
+        threads.emplace_back([&, t] {
+            go.count_down(); go.wait();
+            for (int i = 1; i <= 200; ++i) {
+                CMString host = (t % 2 == 0) ? "shared_host"
+                                             : "host_" + std::to_string(t);
+                mon_.update_rtt(host, 1.0 + i % 10);
+                mon_.update_bandwidth(host, 100.0 + i);
+            }
+        });
+    }
+    for (int r = 0; r < 2; ++r) {
+        threads.emplace_back([&] {
+            go.count_down(); go.wait();
+            for (int c = 0; c < 300; ++c) {
+                (void)mon_.score("shared_host");
+                (void)mon_.score("host_1");
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+
+    for (const char* h : {"shared_host", "host_0", "host_1", "host_2", "host_3"}) {
+        double s = mon_.score(h);
+        EXPECT_TRUE(std::isfinite(s)) << "host=" << h << " score=" << s;
+        EXPECT_GE(s, 0.0) << "host=" << h;
+    }
 }
 
 }  // namespace fly

@@ -825,6 +825,8 @@ workers_mutex_ 下的 send 同样禁止（reactor send 非阻塞，但含 encode
 - **确定性优先**：用 `std::latch` + 测试钩子（`FLY_ENABLE_TEST_HOOKS`）强制线程交错，断言终态或耗时上限；先例：`master_agent_test.cpp` Problem1/Problem5、`pending_rpc_map_test.cpp`
 - **禁止 sleep-then-assert**（同 §6.4）；无同步屏障的"多线程并发"测试在高负载下会被 OS 串行化而误报（实例：data_client_pool_test 并发用例曾在 pre-push 高负载下误报，修复 = 加 latch 屏障）
 - 压力型并发测试（insert/take 守恒等）必须 join 后断言总量守恒，不依赖时序
+- **跨线程时序敏感断言需确定序**：对「A 必须发生在 B 后」的终态断言（如同 key unregister-after-register），被依赖方用自旋等待可见性（`has_database(p)` + yield），保留与其它 key/读者的真实并发（data_service_test ConcurrentDbRegisterUnregister 实例）
+- **TSAN（opt-in，2026-09-04）**：`./fly.sh test --config=tsan //path:target`（配置见 .bazelrc `build:tsan`）。3-10x 减速，仅对并发测试目标使用、**不进门禁**。本轮实证：立即抓出 3 处真实竞态（TcpConnectionManager::ensure_epoll 惰性 epoll 创建——已根治；DataServer::stop/EpollMultiplexerImpl::destroy——预存在，见 issues/011）。新并发测试落地时应跑一轮 TSAN。
 
 ---
 

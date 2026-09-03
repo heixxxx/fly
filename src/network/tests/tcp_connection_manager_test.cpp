@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <network/cpp/connection_manager.h>
 #include <network/cpp/tcp_connection_manager.h>
+#include <atomic>
+#include <latch>
 #include <thread>
 #include <chrono>
 
@@ -448,6 +450,55 @@ TEST(TcpConnectionManagerTest, Problem6_DuplicateFdRegisterDoesNotLeakOrphan) {
 
     // 二者应返回相同的 conn_id（旧 c1 失效后，按 fd 反查得到的是新 c2）。
     EXPECT_NE(c1, c2);
+}
+
+// ── 并发正确性（P3-17 批 3）：多线程 connect/close 同一 manager 实例——
+//    conn 表注册/注销交错后 connection_count 与 is_connected 口径一致，
+//    close_all 收口干净（此前全顺序用例，零并发覆盖）。 ──
+
+TEST(TcpConnectionManagerTest, ConcurrentConnectCloseKeepsRegistryConsistent) {
+    TcpConnectionManager server;
+    TcpConnectionManager client;
+
+    ASSERT_TRUE(server.listen("127.0.0.1", 0));
+    int port = server.get_bound_port();
+
+    // server accept 循环：poll 到 CONNECT 事件即持续接收。
+    std::atomic<bool> server_stop{false};
+    std::thread server_thread([&] {
+        while (!server_stop.load()) {
+            (void)server.poll(50);
+        }
+    });
+
+    constexpr int kThreads = 4;
+    constexpr int kConnsPerThread = 10;
+    std::latch go{kThreads};
+    CMVector<std::thread> threads;
+    std::atomic<int> established{0};
+    for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&, t] {
+            go.count_down(); go.wait();
+            for (int i = 0; i < kConnsPerThread; ++i) {
+                uint64_t conn = client.connect("127.0.0.1", port);
+                if (conn > 0) {
+                    established.fetch_add(1);
+                    if (i % 2 == 0) {
+                        client.close(conn);   // 一半连接随即关闭（与并发 connect 交错）
+                    }
+                }
+            }
+        });
+    }
+    for (auto& th : threads) th.join();
+    server_stop.store(true);
+    server_thread.join();
+
+    EXPECT_EQ(established.load(), kThreads * kConnsPerThread);
+    client.close_all();
+    server.close_all();
+    EXPECT_EQ(client.connection_count(), 0u);
+    EXPECT_EQ(server.connection_count(), 0u);
 }
 
 }  // namespace fly

@@ -11,6 +11,14 @@ namespace fly {
 TcpConnectionManager::TcpConnectionManager() {
     transport_ = create_tcp_transport();
     epoll_ = create_epoll_multiplexer();
+    // epoll fd 构造期急切创建（原 ensure_epoll 惰性创建）：connect/listen/
+    // poll 多线程并发首调时，惰性路径对 epoll_fd_ 的「读-判-写」无锁竞争
+    //（TSAN 实证，P3-17 批 3）。失败保持 -1，ensure_epoll 快路径如实返回
+    // false，错误口径不变。
+    epoll_fd_ = epoll_->create();
+    if (epoll_fd_ < 0) {
+        ERR("Failed to create epoll in TcpConnectionManager ctor");
+    }
 }
 
 TcpConnectionManager::~TcpConnectionManager() {
@@ -23,13 +31,8 @@ TcpConnectionManager::~TcpConnectionManager() {
 }
 
 bool TcpConnectionManager::ensure_epoll() {
-    if (epoll_fd_ >= 0) return true;
-    epoll_fd_ = epoll_->create();
-    if (epoll_fd_ < 0) {
-        ERR("Failed to create epoll");
-        return false;
-    }
-    return true;
+    // 构造期已创建（失败为 -1）——只读判断，无并发竞争。
+    return epoll_fd_ >= 0;
 }
 
 bool TcpConnectionManager::listen(const CMString& address, int port) {
