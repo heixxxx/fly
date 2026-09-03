@@ -27,6 +27,17 @@ WARMUP = 1
 ROUNDS = 3
 
 
+def _mem_total_gb():
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) / 1024 / 1024
+    except OSError:
+        pass
+    return 0.0
+
+
 @as_task(requires=["member"])
 def member_serve(db, gen):
     agent = get_agent()
@@ -153,6 +164,10 @@ def check_run(db, gen):
             del arr
 
     full = os.environ.get("PEER_RPC_PERF_FULL") == "1"
+    if full and _mem_total_gb() < 12:
+        print(f"[PERF] WARN: MemTotal={_mem_total_gb():.1f}GB < 12GB — 512MB 档数字受"
+              f"内存带宽/页回收压制（验收线 none 512MB >= 700 MB/s 按 >=16GB 机器标定），"
+              f"本机数字仅作回归对照", flush=True)
     sizes = SIZES + [BIG] if full else SIZES
     for size in sizes:
         tag_mb = f"{size/1024/1024:.0f}MB"

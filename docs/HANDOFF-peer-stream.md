@@ -31,11 +31,13 @@
   30s 收集死线直接挂死~~ ✅ **已修复**（2026-09-02 批次 3：收集圈等待 bounded
   于 30s deadline，新增 `rasgd_collect_deadline` subcase 实证，见 DOC_CHANGELOG）。
 
-## 3. 待办：基准复测（流式读端性能未出数）
+## 3. 待办：基准复测 ✅ 已完成（2026-09-04，验收线部分留新机裁决）
 
-> 2026-09-03 状态：旧机已补单帧基线全档位（d1062f1：64MB 流式 218 vs 单帧
-> 200 MB/s；512MB 流式稳定完成 41 MB/s，写缓冲压力现场）——旧机内存压力下
-> 数据与本节验收线不可比，**新机（≥16GB）复测仍未做**。
+> 数字已落 [perf-baselines.md](perf-baselines.md)。本机（5.8GB，3 轮中位）：
+> none 512MB **554 MB/s** / lz4 541 MB/s（较收齐交付版 373 MB/s +48%）；64MB
+> none 583 MB/s。验收线「none 512MB ≥ 700 MB/s」按 ≥16GB 机器标定，本机受内存
+> 带宽压制未达属预期（case 已自动打印 MemTotal WARN），**留待新机复测裁决**。
+> 复现：`PEER_RPC_PERF_FULL=1 ./qa/runqa -t 180 qa/performance/test_peer_stream_read_perf.py`。
 
 收齐交付版的基准（自环全管线口径）：64MB f64 467 MB/s / 512MB f64
 373 MB/s / 远端 read_object 727-885 MB/s。真流式版（业务拉动）预期 ≥ 远

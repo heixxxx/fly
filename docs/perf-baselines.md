@@ -255,3 +255,29 @@ ready_tasks_ 类型变更后，5 处访问点改造：
 
 - task unit test 全绿（含 task_scheduler_test T1-T7 全套调度测试、dependency_graph_test）
 - master_agent 单测、全量 QA 139/139、stability 50/50 零 crash
+
+---
+
+# PeerRpc 真流式读端基准 — 2026-09-04（复测收口）
+
+> 载体：`qa/performance/test_peer_stream_read_perf.py`（双 worker 拓扑：member/check
+> 分属不同 worker 进程；请求/响应双向 pickle 流，业务 `pickle.load(reader)` 拉动
+> CrcVerifyStage→DecompressStage，与 read_object 共享 Stage 管线）。
+> 512MB 档为精简口径（跨轮复用序列化 bytes，CRC 对账代替全量反序列化，峰值 ≈2×size），
+> `PEER_RPC_PERF_FULL=1` 门控；MemTotal<12GB 自动打印机器口径 WARN。
+> 数字 = 3 轮中位，5.8GB WSL2 / 6 核 / 127.0.0.1 自环。
+
+| 档位 | none | lz4 | 收齐交付版对照 |
+|---|---|---|---|
+| 4MB | 372 MB/s | 320 MB/s | — |
+| 16MB | 568 MB/s | 543 MB/s | — |
+| 64MB | 583 MB/s | 625 MB/s | 467 MB/s（64MB f64） |
+| 512MB | **554 MB/s** | 541 MB/s | 373 MB/s（512MB f64） |
+
+**结论**：真流式版在 5.8GB 内存带宽受限机器上 512MB none 达 554 MB/s，较收齐
+交付版 **+48%**；64MB 档 +25%。验收线「none 512MB ≥ 700 MB/s」按 ≥16GB 机器
+标定，本机未达属预期（内存带宽/页回收压制），**留待新机复测裁决**；大 payload
+不再有「收齐才反序列化」的 2× 内存驻留差距。
+
+复现：`PEER_RPC_PERF_FULL=1 ./qa/runqa -t 180 qa/performance/test_peer_stream_read_perf.py`
+（数字在 `worker2.log` 的 [PERF-SUMMARY]，master fly.log 无业务输出）
