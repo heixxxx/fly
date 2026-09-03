@@ -558,7 +558,7 @@ TEST_F(StreamingSourceTest, NcsNegativeBlockHeaderFails) {
         char buf[64];
         int64_t got = src->pull(buf, sizeof(buf));
         EXPECT_TRUE(src->failed());
-        EXPECT_EQ(src->fail_reason(), CMString("corrupt block header (negative sizes)"));
+        EXPECT_EQ(src->fail_reason(), CMString("integrity: corrupt block header (negative sizes)"));
         EXPECT_TRUE(got <= 0) << "负长度块头后不得交付任何字节";
     }
     // 慢路径：16B 头跨两帧，第二帧补齐后 comp 为负。
@@ -587,7 +587,7 @@ TEST_F(StreamingSourceTest, NcsNegativeBlockHeaderFails) {
         char buf[64];
         (void)src->pull(buf, sizeof(buf));
         EXPECT_TRUE(src->failed());
-        EXPECT_EQ(src->fail_reason(), CMString("corrupt block header (negative sizes)"));
+        EXPECT_EQ(src->fail_reason(), CMString("integrity: corrupt block header (negative sizes)"));
     }
 }
 
@@ -628,7 +628,7 @@ TEST_F(StreamingSourceTest, NcsByteCountMismatchFails) {
         remaining -= static_cast<size_t>(got);
     }
     EXPECT_TRUE(src->failed());
-    EXPECT_EQ(src->fail_reason(), CMString("byte count mismatch"));
+    EXPECT_EQ(src->fail_reason(), CMString("integrity: byte count mismatch"));
     // 交付量断言不锁定：对账失败（DIGEST 到达）与 pull 消费块 0 存在合法
     // 竞态窗口——对账失败时清空已入队未消费块（零容忍：不完整数据不得
     // 流出），交付量 ∈ {0, 块0} 均为正确行为。核心断言 = 失败必然暴露。
@@ -649,7 +649,7 @@ TEST_F(StreamingSourceTest, NcsDuplicateDigestFails) {
 
     auto out = run_block_stream(server, record, tl, record.size());
     EXPECT_TRUE(out.src->failed());
-    EXPECT_EQ(out.src->fail_reason(), CMString("duplicate digest frame"));
+    EXPECT_EQ(out.src->fail_reason(), CMString("integrity: duplicate digest frame"));
     server.finish();
     EXPECT_EQ(server.resend_requests.size(), 1u);
 }
@@ -679,7 +679,7 @@ TEST_F(StreamingSourceTest, NcsLegacyBadFrameNeverDeliversCorruptBytes) {
         EXPECT_EQ(out.pulled, record)
             << "流成功终止时坏帧字节必须已被 resend 替换为好字节";
     } else {
-        EXPECT_EQ(out.src->fail_reason(), CMString("resent block still corrupt"))
+        EXPECT_EQ(out.src->fail_reason(), CMString("integrity: resent block still corrupt"))
             << "坏帧内容喂入解析器导致二次损坏路径";
     }
 }
@@ -740,7 +740,7 @@ TEST_F(StreamingSourceTest, ServerChunkResendAfterDiskCorruptionFailsClosed) {
     }
     // 盘上坏字节无法通过 resend 恢复 → 零容忍失败关闭（不交付坏数据）。
     EXPECT_TRUE(src->failed());
-    EXPECT_EQ(src->fail_reason(), CMString("resent block still corrupt"));
+    EXPECT_EQ(src->fail_reason(), CMString("integrity: resent block still corrupt"));
     // 单块对象：块坏 = 全部坏 → fail-closed 不得交付任何字节。
     EXPECT_EQ(received, 0u);
     Config::instance()->set_int("chunked_transfer_threshold", 4194304);
