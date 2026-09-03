@@ -55,6 +55,13 @@ private:
     std::mutex conn_mutex_;
     CMVector<ConnState> conns_;
 
+    // fd 代际号（conn_mutex_ 保护）：accept 递增分配；cleanup 递增失效——
+    // 滞留发送任务凭入队时代际与当前代际比对，判定 fd 是否已被复用。
+    std::unordered_map<int, uint64_t> fd_generations_;
+    uint64_t fd_gen_counter_ = 0;
+    uint64_t fd_generation_grab(int fd);   // 取当前代际（入队捕获用）
+    void fd_generation_invalidate(int fd); // cleanup 时使旧代际失效
+
     CMVector<std::thread> epoll_threads_;
 
     struct SendTask {
@@ -64,6 +71,10 @@ private:
         // L2 自含分片任务（§7.1 #20）：单个闭包在 send 线程执行 META → CHUNK
         // 流 → DIGEST 的完整发送（避免多任务乱序写同 fd）；raw_data/data 留空。
         std::function<void()> chunked_execute;
+        // fd 代际号（入队时捕获）：连接清理后 fd 数值可能被新连接复用，滞留
+        // 任务若不校验代际会把数据发给错误的连接。发送线程执行前比对，不一致
+        // 即丢弃。
+        uint64_t fd_generation = 0;
     };
     std::queue<SendTask> send_queue_;
     std::mutex send_mutex_;

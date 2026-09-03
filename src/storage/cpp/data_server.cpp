@@ -135,7 +135,20 @@ int DataServer::find_conn_index(int fd) {
     return -1;
 }
 
+uint64_t DataServer::fd_generation_grab(int fd) {
+    std::lock_guard<std::mutex> lk(conn_mutex_);
+    auto& g = fd_generations_[fd];
+    if (g == 0) g = ++fd_gen_counter_;   // 首见 fd 分配代际
+    return g;
+}
+
+void DataServer::fd_generation_invalidate(int fd) {
+    std::lock_guard<std::mutex> lk(conn_mutex_);
+    fd_generations_[fd] = ++fd_gen_counter_;   // 递增使滞留任务全部失效
+}
+
 void DataServer::cleanup_fd(int fd) {
+    fd_generation_invalidate(fd);
     epoll_->del(epoll_fd_, fd);
     {
         std::lock_guard<std::mutex> lk(conn_mutex_);
@@ -171,6 +184,7 @@ void DataServer::epoll_loop() {
                     {
                         std::lock_guard<std::mutex> lk(conn_mutex_);
                         conns_.push_back({cfd, {}});
+                        fd_generations_[cfd] = ++fd_gen_counter_;
                     }
 
                     epoll_->add(epoll_fd_, cfd, EV_READ | EV_ONESHOT);
@@ -262,6 +276,7 @@ void DataServer::on_readable(int fd) {
                 std::lock_guard<std::mutex> slk(send_mutex_);
                 SendTask task;
                 task.fd = fd;
+                task.fd_generation = fd_generation_grab(fd);
                 task.data = std::move(encoded);
                 send_queue_.push(std::move(task));
             }
@@ -352,6 +367,7 @@ void DataServer::on_readable(int fd) {
             std::lock_guard<std::mutex> slk(send_mutex_);
             SendTask task;
             task.fd = fd;
+            task.fd_generation = fd_generation_grab(fd);
             task.data = std::move(seg.header_segment);
             task.raw_data = serve_raw ? raw_data : nullptr;  // keep alive for send thread
             send_queue_.push(std::move(task));
@@ -392,6 +408,19 @@ void DataServer::send_loop() {
         }
 
         // L2 自含分片任务：闭包内完成 META → CHUNK 流 → DIGEST/rearm。
+        {
+            // fd 代际校验：任务入队后连接被清理（fd 可能被新连接复用）则
+            // 丢弃——滞留任务绝不发给错误的连接。
+            std::lock_guard<std::mutex> lk(conn_mutex_);
+            auto it = fd_generations_.find(task.fd);
+            if (it == fd_generations_.end() || it->second != task.fd_generation) {
+                ERR("[DS-SEND] stale send task dropped: fd={} gen={} vs current={}",
+                    task.fd, task.fd_generation,
+                    it == fd_generations_.end() ? 0 : it->second);
+                continue;
+            }
+        }
+
         if (task.chunked_execute) {
             task.chunked_execute();
             continue;
@@ -475,6 +504,7 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
 
     SendTask task;
     task.fd = fd;
+    task.fd_generation = fd_generation_grab(fd);
     task.chunked_execute = [this, fd, object_name, file_path, offset, size,
                             meta_py_name, meta_trailer_len, meta_comp_type,
                             meta_is_temp]() {
@@ -601,6 +631,7 @@ void DataServer::handle_chunk_resend(int fd, uint64_t offset, uint64_t length) {
 
     SendTask task;
     task.fd = fd;
+    task.fd_generation = fd_generation_grab(fd);
     task.chunked_execute = [this, fd, file, start, n = length, offset]() {
         int f = ::open(file.c_str(), O_RDONLY);
         if (f < 0) {
