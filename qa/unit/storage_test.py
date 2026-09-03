@@ -53,7 +53,15 @@ def temp_dir():
     d = tempfile.mkdtemp(prefix='fly_test_storage_')
     yield d
     import gc
+    # 测试间单例复位（issue：全文件跑 corruption 排查，2026-09-04）：
+    # ① gc 收网析构测试局部 Database（drain + unregister）；② StorageManager
+    # 容器清空（其 Database 析构同样走 drain/unregister）；③ DataService
+    # 键控状态全清（local_idx_/migrated_db_paths_ 每测试泄僵尸条目的载体；
+    # WBQ 停止后由下次写入惰性重启）。
     gc.collect()
+    from _fly_storage import ex_stg_get_storage_manager, ex_stg_get_data_service
+    ex_stg_get_storage_manager().reset()
+    ex_stg_get_data_service().reset_state()
     shutil.rmtree(d, ignore_errors=True)
 
 

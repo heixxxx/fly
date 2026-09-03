@@ -180,6 +180,7 @@ class Database:
             # 全量拉取）。Unpickler(FlyStream) 增量消费——内存 R+常数而非
             # C+2R。对象不可见（NOT_FOUND/NOT_READY）由 export 层直接 KeyError。
             # D4（§14.3）：消费中途失败 → 重新调 open（对象级重来）。
+            detail = ""  # 失败分类（chunk_source 契约："io:"/"integrity:" 前缀）
             for _attempt in range(2):
                 try:
                     stream = _fly_storage.ex_stg_open_read_stream(
@@ -195,9 +196,11 @@ class Database:
                 try:
                     obj = pickle.Unpickler(stream).load()
                     corrupt = stream.checksum_failed()
+                    detail = stream.failure_detail() if corrupt else ""
                 except (pickle.UnpicklingError, EOFError, AttributeError,
                         ImportError, IndexError):
                     corrupt = True  # 流截断/源坏——按损坏处理
+                    detail = ""
                 if not corrupt:
                     nbytes = stream.total_uncompressed  # property
                     if rc is not None:
@@ -207,10 +210,16 @@ class Database:
                 stream = None  # 弃流重开（对象级重来）
             # 两轮流式消费均败（read_streaming 内已副本轮换+零容忍预算，
             # 消费端再重开一轮仍败）——#5 裁定禁止整缓冲回退，直接 FATAL
-            #（task 失败通道，§5 零容忍语义）。
+            #（task 失败通道，§5 零容忍语义）。失败分类（2026-09-04）：源侧
+            # IO/网络失败（detail "io:" 前缀）不是数据损坏——独立
+            # [FATAL-STREAM-IO] 文案，不再误报 corruption。
+            if detail.startswith("io:"):
+                raise RuntimeError(
+                    f"[FATAL-STREAM-IO] streaming source I/O failed twice: "
+                    f"{name} ({detail})")
             raise RuntimeError(
                 f"[FATAL-DATA-CORRUPTION] streaming consume failed twice: "
-                f"{name}")
+                f"{name}" + (f" ({detail})" if detail else ""))
         finally:
             record_read(self.get_full_name(name), nbytes,
                         (time.perf_counter() - t0) * 1000.0)

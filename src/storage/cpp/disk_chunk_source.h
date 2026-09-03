@@ -36,6 +36,7 @@ public:
     uint32_t chunk_count() const override { return chunk_count_; }
     int compression_type() const override { return comp_type_; }
     bool failed() const override { return failed_; }
+    CMString failure_detail() const override { return failure_detail_; }
 
 private:
     CMString file_path_;
@@ -49,6 +50,7 @@ private:
     uint32_t chunk_count_ = 0;
     int comp_type_ = -1;
     bool failed_ = false;
+    CMString failure_detail_;   // "io: ..."/"integrity: ..."（失败时非空）
 };
 
 }  // namespace fly

@@ -17,6 +17,7 @@ void MemoryChunkSource::parse_trailer(const char* data, size_t size) {
     ObjectHeader header;
     size_t tl = 0;
     if (!ObjectHeader::deserialize_trailer({data, size}, header, tl)) {
+        failure_detail_ = "integrity: trailer parse failed";
         failed_ = true;
         return;
     }
@@ -31,6 +32,7 @@ void MemoryChunkSource::parse_trailer(const char* data, size_t size) {
     // 块头域（unc/comp 长度）不在块 CRC 覆盖内——篡改块头导致的边界漂移
     // 由本对账确定性捕获（Σ 一致性是逐项对照的推论，已蕴含）。
     if (header.block_comp_lens_.size() != header.chunk_count_) {
+        failure_detail_ = "integrity: block table size mismatch";
         failed_ = true;
         return;
     }
@@ -38,18 +40,21 @@ void MemoryChunkSource::parse_trailer(const char* data, size_t size) {
         size_t pos = 0;
         for (uint32_t i = 0; i < header.chunk_count_; ++i) {
             if (pos + 16 > block_area_len_) {
+                failure_detail_ = "integrity: block header out of range";
                 failed_ = true;
                 return;
             }
             int32_t comp;
             std::memcpy(&comp, data_ + pos + 4, sizeof(int32_t));
             if (comp < 0 || static_cast<uint32_t>(comp) != header.block_comp_lens_[i]) {
+                failure_detail_ = "integrity: block table reconciliation mismatch";
                 failed_ = true;
                 return;
             }
             pos += 16 + static_cast<size_t>(comp);
         }
         if (pos != block_area_len_) {
+            failure_detail_ = "integrity: block area length mismatch";
             failed_ = true;
             return;
         }

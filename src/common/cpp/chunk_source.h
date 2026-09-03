@@ -32,6 +32,13 @@ public:
     // 消费结果不可信（零容忍 §5）。
     virtual bool failed() const = 0;
 
+    // 失败归类（failed()==true 时非空）：前缀 "io:" = 源 IO/网络失败
+    //（open/pread errno、连接断、源停止），"integrity:" = 数据完整性失败
+    //（CRC/截断/trailer 解析）。消费端据此把「IO 读失败」与「数据损坏」
+    // 分开透出——所有 IO 失败曾被折叠成 checksum 语义误报 corruption
+    //（storage_test 全文件跑 corruption 排查的根因之一，2026-09-04）。
+    virtual CMString failure_detail() const { return {}; }
+
     // temp 标记（缓存双池路由 2026-08-30）：网络源由 META 提供（远端
     // local_idx 判定——跨进程读取方本进程查不到 temp 属性）；本地源由
     // 构造点设置。默认非 temp。

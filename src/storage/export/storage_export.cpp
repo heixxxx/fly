@@ -163,6 +163,7 @@ FLY_EXPORT_CLASS(FlyStream, "FlyStream")
     FLY_EXPORT_DEF("writable", [](const FlyStream& s) { return s.is_write_mode(); })
     FLY_EXPORT_DEF("readable", [](const FlyStream& s) { return !s.is_write_mode(); })
     FLY_EXPORT_DEF("checksum_failed", [](const FlyStream& s) { return s.checksum_failed(); })
+    FLY_EXPORT_DEF("failure_detail", [](const FlyStream& s) { return s.failure_detail(); })
     FLY_EXPORT_DEF("finish_and_commit", [](FlyStream& s, bool backup,
                                            bool populate_cache) -> int64_t {
         return s.finish_and_commit(backup, populate_cache);
@@ -299,6 +300,10 @@ FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
     })
     FLY_EXPORT_METHOD("drain_write_back", &fly::DataService::drain_write_back)
     FLY_EXPORT_METHOD("stop_write_back", &fly::DataService::stop_write_back)
+    // 测试间复位（2026-09-04）：清全部键控状态（local/remote idx、db_paths、
+    // 迁移缓存、handler）。WBQ 停止后由下次写入惰性重启（data_service.cpp
+    // start_write_back 懒加载路径）——复位后单例仍可用。
+    FLY_EXPORT_METHOD("reset_state", &fly::DataService::reset)
     FLY_EXPORT_METHOD("has_database", &fly::DataService::has_database);
 
 FLY_EXPORT_FUNCTION("ex_stg_get_data_service", []() { return fly::DataService::instance(); });

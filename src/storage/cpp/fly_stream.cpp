@@ -145,3 +145,7 @@ CMString FlyStream::py_name() const {
 bool FlyStream::checksum_failed() const {
     return decompress_sb_ && decompress_sb_->checksum_failed();
 }
+
+CMString FlyStream::failure_detail() const {
+    return decompress_sb_ ? decompress_sb_->failure_detail() : CMString{};
+}

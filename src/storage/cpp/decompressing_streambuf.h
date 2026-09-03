@@ -47,8 +47,19 @@ public:
     uint32_t chunk_count() const { return source_->chunk_count(); }
 
     // 任一校验失败（trailer/块 CRC/结构越界/解压错误/源侧失败）为 true。
-    // 读过程与读完后均可查询；失败后流进入 EOF（不再产数据）。
+    // 读过程与读完成后均可查询；失败后流进入 EOF（不再产数据）。
     bool checksum_failed() const { return checksum_failed_; }
+
+    // 失败归类（chunk_source.h 契约）：源侧 detail 优先（自带 "io:"/
+    // "integrity:" 前缀）；管线层失败（块 CRC/截断/解压）归类 integrity。
+    CMString failure_detail() const {
+        if (!checksum_failed_) return {};
+        if (source_) {
+            CMString d = source_->failure_detail();
+            if (!d.empty()) return d;
+        }
+        return "integrity: block verify/decompress failure";
+    }
 
 protected:
     int_type underflow() override;

@@ -83,6 +83,7 @@ int64_t NetworkChunkSource::pull(char* dst, size_t n) {
         }
         if (stopping_.load()) {
             stream_failed_ = true;
+            if (fail_reason_.empty()) fail_reason_ = "io: source stopped";
             return -1;
         }
         // 队列空：接收线程的 space 谓词含 queue_.empty()——notify 唤醒
@@ -154,7 +155,7 @@ void NetworkChunkSource::feed_frame(const char* data, size_t n, uint64_t offset)
             std::memcpy(&unc, data, 4);
             std::memcpy(&comp, data + 4, 4);
             if (comp < 0 || unc < 0) {
-                finish_stream(false, "corrupt block header (negative sizes)");
+                finish_stream(false, "integrity: corrupt block header (negative sizes)");
                 return;
             }
             size_t full = 16 + static_cast<size_t>(comp);
@@ -185,7 +186,7 @@ void NetworkChunkSource::feed_frame(const char* data, size_t n, uint64_t offset)
             std::memcpy(&unc, parse_buf_.data(), 4);
             std::memcpy(&comp, parse_buf_.data() + 4, 4);
             if (comp < 0 || unc < 0) {
-                finish_stream(false, "corrupt block header (negative sizes)");
+                finish_stream(false, "integrity: corrupt block header (negative sizes)");
                 return;
             }
             parse_need_ = 16 + static_cast<size_t>(comp);
@@ -213,7 +214,7 @@ bool NetworkChunkSource::consume_block(const char* blk, size_t block_len, uint64
     ERR("[NCS-FATAL-DATA-CORRUPTION] bad block CRC: off={} len={} — resending once",
         offset, block_len);
     if (resent_offsets_.count(offset)) {
-        finish_stream(false, "resent block still corrupt");
+        finish_stream(false, "integrity: resent block still corrupt");
         return false;
     }
     resent_offsets_.insert(offset);
@@ -222,7 +223,7 @@ bool NetworkChunkSource::consume_block(const char* blk, size_t block_len, uint64
     rs.length_ = block_len;
     CMString encoded = MessageProtocol::encode(rs);
     if (!transport_->send_all(fd_, encoded.data(), encoded.size())) {
-        finish_stream(false, "resend request failed");
+        finish_stream(false, "io: resend request failed");
         return false;
     }
     hole_len_[offset] = block_len;  // 等 resend 帧填补
@@ -266,17 +267,17 @@ void NetworkChunkSource::recv_loop() {
 
         int r = read_one_frame();
         if (r < 0) {
-            finish_stream(false, "frame header check failed");
+            finish_stream(false, "integrity: frame header check failed");
             return;
         }
         if (r == 0) {
-            finish_stream(false, "connection lost during chunk stream");
+            finish_stream(false, "io: connection lost during chunk stream");
             return;
         }
 
         if (r == 2) {  // DIGEST
             if (digest_seen) {
-                finish_stream(false, "duplicate digest frame");
+                finish_stream(false, "integrity: duplicate digest frame");
                 return;
             }
             digest_seen = true;
@@ -293,7 +294,7 @@ void NetworkChunkSource::recv_loop() {
     // DIGEST 帧仅作流终止信号；完整性由 L0 块 CRC（写入时刻锚点，覆盖
     // 磁盘→server→网络→client→解压全生命周期）+ trailer CRC 权威承担。
     if (received_ != total_len_) {
-        finish_stream(false, "byte count mismatch");
+        finish_stream(false, "integrity: byte count mismatch");
         return;
     }
     finish_stream(true, nullptr);
@@ -339,7 +340,7 @@ int NetworkChunkSource::read_one_frame() {
             // 帧坏：整帧 resend（offset 寻址）。帧内多块统一按区间重传。
             ERR("[NCS] bad frame CRC: off={} len={} — resending once", foff, raw_len);
             if (resent_offsets_.count(foff)) {
-                finish_stream(false, "resent frame still corrupt");
+                finish_stream(false, "integrity: resent frame still corrupt");
                 return 0;
             }
             resent_offsets_.insert(foff);
@@ -348,7 +349,7 @@ int NetworkChunkSource::read_one_frame() {
             rs.length_ = raw_len;
             CMString encoded = MessageProtocol::encode(rs);
             if (!transport_->send_all(fd_, encoded.data(), encoded.size())) {
-                finish_stream(false, "resend request failed");
+                finish_stream(false, "io: resend request failed");
                 return 0;
             }
             return 1;  // 帧字节不喂解析器（丢弃）——resend 帧会补

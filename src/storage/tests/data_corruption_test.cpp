@@ -12,6 +12,8 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/data_writer.h>
 #include <storage/cpp/decompressing_streambuf.h>
+#include <storage/cpp/disk_chunk_source.h>
+#include <storage/cpp/memory_chunk_source.h>
 #include <serialization/cpp/object_header.h>
 #include <common/cpp/fly_buffer.h>
 #include <common/cpp/data_checksum.h>
@@ -178,6 +180,58 @@ TEST_F(DataCorruptionTest, RemoteChunkCorruptRetryThenFatal) {
         EXPECT_THROW(ds_->read_raw_compressed(full), DataCorruptionError);
         ds_->set_direct_compressed_read_handler(nullptr);
     }
+}
+
+// ── 失败分类（chunk_source.h failure_detail 契约，2026-09-04）──
+// IO 失败（open/pread errno）与完整性失败（截断/CRC/trailer）分流：
+// 消费端据此不再把 IO 读失败误报为 [FATAL-DATA-CORRUPTION]。
+
+TEST_F(DataCorruptionTest, DiskSourceOpenFailureClassifiedAsIo) {
+    CMString missing = test_dir_ + "/no_such_file.dat";
+    DiskChunkSource src(missing, 0, 16, "n", 16, 1, 0);
+    EXPECT_TRUE(src.failed());
+    EXPECT_TRUE(src.failure_detail().rfind("io:", 0) == 0)
+        << "detail=" << src.failure_detail();
+}
+
+TEST_F(DataCorruptionTest, DiskSourceShortReadClassifiedAsIntegrity) {
+    CMString path = test_dir_ + "/short.dat";
+    {
+        std::ofstream f(path, std::ios::binary);
+        f.write("0123456789", 10);
+    }
+    // 声明区间 64B > 实际 10B → pull 短读 = record 截断（完整性，非 IO）。
+    DiskChunkSource src(path, 0, 64, "n", 64, 1, 0);
+    char buf[64];
+    EXPECT_EQ(src.pull(buf, sizeof(buf)), -1);
+    EXPECT_TRUE(src.failed());
+    EXPECT_TRUE(src.failure_detail().rfind("integrity:", 0) == 0)
+        << "detail=" << src.failure_detail();
+}
+
+TEST_F(DataCorruptionTest, StreamBufFailureDetailPassesThrough) {
+    CMString missing = test_dir_ + "/gone.dat";
+    auto src = CMMakeShared<DiskChunkSource>(missing, 0, 16, "n", 16, 1, 0);
+    ASSERT_TRUE(src->failed());
+    DecompressingStreamBuf sb(src, 16);
+    char tmp[8];
+    sb.sgetn(tmp, sizeof(tmp));
+    EXPECT_TRUE(sb.checksum_failed());
+    EXPECT_TRUE(sb.failure_detail().rfind("io:", 0) == 0)
+        << "detail=" << sb.failure_detail();
+}
+
+TEST_F(DataCorruptionTest, MemorySourceTrailerFailureClassifiedAsIntegrity) {
+    CMString bad = "this is not a valid record at all";
+    MemoryChunkSource src(bad.data(), bad.size());
+    EXPECT_TRUE(src.failed());
+    EXPECT_TRUE(src.failure_detail().rfind("integrity:", 0) == 0)
+        << "detail=" << src.failure_detail();
+    // 成功路径 detail 为空。
+    auto good = make_valid_record("ok", "bytes");
+    MemoryChunkSource ok_src(good->data(), good->size());
+    EXPECT_FALSE(ok_src.failed());
+    EXPECT_TRUE(ok_src.failure_detail().empty());
 }
 
 }  // namespace fly

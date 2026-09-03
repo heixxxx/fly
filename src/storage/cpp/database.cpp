@@ -147,19 +147,36 @@ FlyStream* Database::open_write_stream(const CMString& object_name,
             return nullptr;
         }
     }
-    // 段事务标记必须在 begin_incremental 之前（对齐 commit_write 的 execute
-    // 时序）——回滚点 = 对象写入前的文件位置，abort 才能 truncate 掉残块。
-    if (fly::WorkerAgentContext::is_transaction_mode() && !writer_->segment_active()) {
-        writer_->mark_begin();
-    }
-    if (writer_->begin_incremental() < 0) {
-        return nullptr;
-    }
     // sink（§14.1 C）：压缩块逐块入 WBQ 后台落盘——序列化生产与盘写流水
     // 重叠（真并行）；块顺序由 WBQ 单消费线程 FIFO 保证；high_watermark
     // 背压天然节流生产端（队列 ≤10 块 ≈ 40MB）。abort 的 clear_pending 丢弃
     // 未执行块单元（无副作用），已在跑的块自然完成。
     DataWriter* w = writer_.get();
+    // [根修 2026-09-04] BEGIN 必须与块/finish 单元同 FIFO：begin 若在任务
+    // 线程现场执行，先前入队的异步写单元（如紧邻的 commit_write）尚未落盘，
+    // incremental_offset_ 快照踩在陈旧 current_file_size_ 上——finish 再按
+    // FIFO 在那些单元之后执行，条目变成 (0, 全文件尺寸)，读侧取错区间误报
+    // corruption（storage_test 全文件跑 mixed 案发的精确机理）。同步 begin
+    // 单元 + promise 等待：offset 快照与盘写序严格一致；begin<0（writer 已
+    // 关）仍在 open 处显式失败。同 db 并发多流本就受「单活跃增量 record」
+    // 约束（data_writer.h），本修不改变该前提。
+    {
+        auto begin_done = std::make_shared<std::promise<int64_t>>();
+        auto begin_fut = begin_done->get_future();
+        const bool txn = fly::WorkerAgentContext::is_transaction_mode();
+        fly::WriteRequest req;
+        req.execute_ = [w, txn, begin_done]() -> bool {
+            if (txn && !w->segment_active()) {
+                w->mark_begin();
+            }
+            begin_done->set_value(w->begin_incremental());
+            return true;
+        };
+        fly::DataService::instance()->enqueue_write_back(std::move(req));
+        if (begin_fut.get() < 0) {
+            return nullptr;
+        }
+    }
     return new FlyStream(
         compression_type_, serialize_chunk_size_,
         [w](const char* data, size_t n) {
@@ -403,12 +420,24 @@ FlyStream* Database::open_temp_write_stream(const CMString& object_name,
         return nullptr;
     }
     DataWriter* w = temp_writer_.get();
-    // 段事务标记（对齐正式路径）：ABORT 回滚点 = 写入前文件位置。
-    if (fly::WorkerAgentContext::is_transaction_mode() && !w->segment_active()) {
-        w->mark_begin();
-    }
-    if (w->begin_incremental() < 0) {
-        return nullptr;
+    // [根修 2026-09-04] BEGIN 同 FIFO（机理与正式路径同款——open 现场执行
+    // 会让 offset 快照踩在先前异步写单元落盘前的文件尺寸上）。
+    {
+        auto begin_done = std::make_shared<std::promise<int64_t>>();
+        auto begin_fut = begin_done->get_future();
+        const bool txn = fly::WorkerAgentContext::is_transaction_mode();
+        fly::WriteRequest req;
+        req.execute_ = [w, txn, begin_done]() -> bool {
+            if (txn && !w->segment_active()) {
+                w->mark_begin();
+            }
+            begin_done->set_value(w->begin_incremental());
+            return true;
+        };
+        fly::DataService::instance()->enqueue_write_back(std::move(req));
+        if (begin_fut.get() < 0) {
+            return nullptr;
+        }
     }
     // sink：压缩块逐块入 WBQ 后台落盘（与正式路径同款流水；temp_writer_
     // 的 .temp.data_* 文件由 rollover/entry 机制自治）。

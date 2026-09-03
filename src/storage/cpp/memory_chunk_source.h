@@ -20,6 +20,7 @@ public:
     uint32_t chunk_count() const override { return chunk_count_; }
     int compression_type() const override { return compression_type_; }
     bool failed() const override { return failed_; }
+    CMString failure_detail() const override { return failure_detail_; }
 
     // 块流区域长度（trailer 解析结果；解析失败时 0 且 failed_=true）
     uint64_t block_area_len() const { return block_area_len_; }
@@ -37,6 +38,7 @@ protected:
     uint32_t chunk_count_ = 0;
     int compression_type_ = -1;
     bool failed_ = false;
+    CMString failure_detail_;   // "integrity: ..."（解析失败时非空）
 };
 
 // 持有所有权版（FlyBufferPtr 生命周期随源）：TIER1 命中路径用——raw 缓冲

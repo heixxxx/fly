@@ -62,6 +62,14 @@ public:
         return fail_reason_;
     }
 
+    // 失败归类（chunk_source.h 契约）：reason 串自带 "io:"/"integrity:" 前缀；
+    // failed 但 reason 空（理论不可达）按 io 兜底。
+    CMString failure_detail() const override {
+        std::lock_guard<std::mutex> lk(q_mutex_);
+        return stream_failed_ && fail_reason_.empty() ? CMString("io: stream failed")
+                                                      : fail_reason_;
+    }
+
     // 流式元数据（消费端组装 DecompressingStreamBuf 用）
     uint64_t block_area_len() const {
         return meta_trailer_len_ > 0 && meta_trailer_len_ <= total_len_

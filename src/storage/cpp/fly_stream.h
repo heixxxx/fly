@@ -57,6 +57,9 @@ public:
     // 读模式：任一校验失败（trailer/块 CRC/结构越界）为 true——Python 面
     // 读完后必须检查（零容忍语义，§4.4/§5）。
     bool checksum_failed() const;
+    // 失败归类："io: ..."/"integrity: ..."（io = 源 IO/网络失败，非数据损坏；
+    // 未失败为空）。Python 面据此分流 FATAL 文案。
+    CMString failure_detail() const;
     // sink 写模式元数据（finish_sink 后有效；commit_incremental 消费）。
     int64_t sink_total_uncompressed() const { return sink_total_; }
     int32_t sink_chunk_count() const { return sink_chunks_; }
