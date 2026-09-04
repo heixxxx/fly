@@ -69,6 +69,11 @@ public:
         if (fd >= 0) closer_(fd);
     }
 
+    // 弃权：解除与 fd 数字的关联但不关闭（同号已被 OS 复用给新连接的场景
+    // ——TcpConnectionManager 双重注册 Problem 6 用；此时对旧句柄做任何
+    // shutdown/close 都会打错新连接的 socket，唯一正确动作是放弃所有权）。
+    void disown() { fd_.exchange(-1, std::memory_order_acq_rel); }
+
     // 裸 fd 访问：仅限持有 shared_ptr 引用期间；-1 = 已关闭。
     int get() const { return fd_.load(std::memory_order_relaxed); }
 

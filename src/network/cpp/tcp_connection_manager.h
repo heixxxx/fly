@@ -3,6 +3,8 @@
 #include <network/cpp/connection_manager.h>
 #include <network/cpp/epoll_multiplexer.h>
 #include <network/cpp/transport_interface.h>
+#include <common/cpp/fd_handle.h>
+#include <atomic>
 #include <mutex>
 
 namespace fly {
@@ -28,12 +30,15 @@ public:
 private:
     CMSharedPtr<Transport> transport_;
     CMSharedPtr<EpollMultiplexer> epoll_;
-    int epoll_fd_ = -1;
-    int listen_fd_ = -1;
+    std::atomic<int> epoll_fd_{-1};
+    std::atomic<int> listen_fd_{-1};
     uint64_t next_conn_id_ = 1;
 
     mutable std::mutex conn_mutex_;
-    CMUnorderedMap<uint64_t, int> conn_to_fd_;
+    // 连接身份 = FdHandle（指针唯一）：send 路径快照持引用——poll 线程并发
+    // 关闭只 shutdown（决策层），fd 在引用掉光前不复用，在途写得到 EPIPE
+    // 而非写向复用编号的新连接（issue 011 风险 5/6 根修）。
+    CMUnorderedMap<uint64_t, FdHandlePtr> conn_to_handle_;
     CMUnorderedMap<int, uint64_t> fd_to_conn_;
 
     CMUnorderedMap<uint64_t, CMString> write_buffers_;

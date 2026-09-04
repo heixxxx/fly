@@ -122,5 +122,19 @@ TEST(FdHandleTest, CustomCloserRunsOnDestruct) {
     ::close(sv[1]);
 }
 
+TEST(FdHandleTest, DisownReleasesWithoutClosing) {
+    int sv[2];
+    make_socket_pair(sv);
+    int close_count = 0;
+    auto h = FdHandle::adopt(sv[0], [&](int) { ++close_count; });
+    h->disown();                          // 同号被复用场景：弃权不关闭
+    EXPECT_EQ(h->get(), -1);
+    h.reset();
+    EXPECT_EQ(close_count, 0) << "disown 后析构不得触发 closer";
+    EXPECT_TRUE(fd_alive(sv[0])) << "disown 不关闭底层 fd（新属主继续持有）";
+    ::close(sv[0]);
+    ::close(sv[1]);
+}
+
 }  // namespace
 }  // namespace fly

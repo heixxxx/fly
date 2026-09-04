@@ -91,15 +91,15 @@ ssize_t TcpConnectionManager::send(uint64_t conn_id, const CMString& data) {
 }
 
 ssize_t TcpConnectionManager::send(uint64_t conn_id, const char* data, size_t len) {
-    int fd;
+    FdHandlePtr handle;
     {
         std::lock_guard<std::mutex> lock(conn_mutex_);
-        auto it = conn_to_fd_.find(conn_id);
-        if (it == conn_to_fd_.end() || it->second < 0) {
+        auto it = conn_to_handle_.find(conn_id);
+        if (it == conn_to_handle_.end()) {
             DBG("[TCP-SEND] unknown conn_id={}", conn_id);
             return -1;
         }
-        fd = it->second;
+        handle = it->second;
 
         auto wbuf_it = write_buffers_.find(conn_id);
         if (wbuf_it != write_buffers_.end() && !wbuf_it->second.empty()) {
@@ -107,10 +107,15 @@ ssize_t TcpConnectionManager::send(uint64_t conn_id, const char* data, size_t le
             // 防御：确保 EV_WRITE 已注册（drain 清空 buffer 后会移除 EV_WRITE；
             // 若此刻新数据 append 进来而 EV_WRITE 未注册，buffer 永远不会 drain，
             // 导致消息丢失 → master/worker 永远等不到该消息 → 调度/退出卡死）。
-            mod_epoll_events(fd, EV_READ | EV_WRITE);
+            mod_epoll_events(handle->get(), EV_READ | EV_WRITE);
             return static_cast<ssize_t>(len);
         }
     }
+
+    // 引用已在手：即使此刻 poll 线程 shutdown 并摘表，fd 也存活到本函数
+    // 结束——写得到 EPIPE/ECONNRESET，绝不写向复用编号（issue 011 风险 5）。
+    int fd = handle->get();
+    if (fd < 0) return -1;
 
     ssize_t sent = transport_->send(fd, data, len);
 
@@ -211,16 +216,21 @@ CMVector<TransportEvent> TcpConnectionManager::poll(int timeout_ms) {
 
         } else {
             uint64_t conn_id;
+            FdHandlePtr handle;
             {
                 std::lock_guard<std::mutex> lock(conn_mutex_);
                 auto it = fd_to_conn_.find(fd);
                 if (it == fd_to_conn_.end()) {
+                    // 未注册 fd 的过期事件：epoll 摘除即可，不盲目 close——
+                    // 该编号可能已被复用（close 会打错新连接的 socket）。
                     epoll_->del(epoll_fd_, fd);
-                    transport_->close(fd);
                     continue;
                 }
                 conn_id = it->second;
+                auto h = conn_to_handle_.find(conn_id);
+                if (h != conn_to_handle_.end()) handle = h->second;
             }
+            if (!handle) continue;
 
             if (evs[i].error || evs[i].hangup) {
                 int error = 0;
@@ -236,16 +246,18 @@ CMVector<TransportEvent> TcpConnectionManager::poll(int timeout_ms) {
                 DBG("[TCP-CLOSE] EPOLLERR/HUP conn_id={}, fd={}", conn_id, fd);
                 epoll_->del(epoll_fd_, fd);
                 unregister_connection(conn_id);
-                transport_->close(fd);
+                // 决策层 shutdown：并发 send 持引用得到 EPIPE；close 由最后
+                // 引用（本函数局部快照）释放执行（issue 011 风险 6 根修）。
+                handle->shutdown();
                 continue;
             }
 
             if (evs[i].writable) {
-                drain_write_buffer(conn_id, fd);
+                drain_write_buffer(conn_id, handle->get());
             }
 
             if (evs[i].readable) {
-                CMString data = drain_socket(fd, 65536);
+                CMString data = drain_socket(handle->get(), 65536);
 
                 if (data.empty()) {
                     TransportEvent ev;
@@ -256,7 +268,7 @@ CMVector<TransportEvent> TcpConnectionManager::poll(int timeout_ms) {
                     DBG("[TCP-CLOSE] DISCONNECT conn_id={}, fd={}", conn_id, fd);
                     epoll_->del(epoll_fd_, fd);
                     unregister_connection(conn_id);
-                    transport_->close(fd);
+                    handle->shutdown();
                 } else {
                     TransportEvent ev;
                     ev.type_ = TransportEventType::DATA;
@@ -272,45 +284,49 @@ CMVector<TransportEvent> TcpConnectionManager::poll(int timeout_ms) {
 }
 
 void TcpConnectionManager::close(uint64_t conn_id) {
-    int fd;
+    FdHandlePtr handle;
     {
         std::lock_guard<std::mutex> lock(conn_mutex_);
-        auto it = conn_to_fd_.find(conn_id);
-        if (it == conn_to_fd_.end() || it->second < 0) {
+        auto it = conn_to_handle_.find(conn_id);
+        if (it == conn_to_handle_.end()) {
             return;
         }
-        fd = it->second;
-        fd_to_conn_.erase(fd);
-        conn_to_fd_.erase(it);
+        handle = it->second;
+        fd_to_conn_.erase(handle->get());
+        conn_to_handle_.erase(it);
         write_buffers_.erase(conn_id);
     }
-    epoll_->del(epoll_fd_, fd);
-    DBG("[TCP-CLOSE] explicit close conn_id={}, fd={}", conn_id, fd);
-    transport_->close(fd);
+    if (handle->get() < 0) return;
+    epoll_->del(epoll_fd_, handle->get());
+    DBG("[TCP-CLOSE] explicit close conn_id={}, fd={}", conn_id, handle->get());
+    // shutdown + 立即弃权：外部无引用持有（句柄仅内部表所有），弃权后由
+    // 局部快照析构关闭；若有并发 send 恰持引用拷贝，则 fd 存活到其写完
+    //（得到 EPIPE），编号不会被复用（issue 011）。
+    handle->shutdown();
 }
 
 void TcpConnectionManager::close_all() {
     std::lock_guard<std::mutex> lock(conn_mutex_);
-    for (const auto& [conn_id, fd] : conn_to_fd_) {
-        if (fd >= 0) {
-            epoll_->del(epoll_fd_, fd);
-            transport_->close(fd);
+    for (auto& [conn_id, handle] : conn_to_handle_) {
+        if (handle && handle->get() >= 0) {
+            epoll_->del(epoll_fd_, handle->get());
+            handle->shutdown();
         }
     }
-    conn_to_fd_.clear();
+    conn_to_handle_.clear();
     fd_to_conn_.clear();
     write_buffers_.clear();
 }
 
 bool TcpConnectionManager::is_connected(uint64_t conn_id) const {
     std::lock_guard<std::mutex> lock(conn_mutex_);
-    auto it = conn_to_fd_.find(conn_id);
-    return it != conn_to_fd_.end() && it->second >= 0;
+    auto it = conn_to_handle_.find(conn_id);
+    return it != conn_to_handle_.end() && it->second && it->second->get() >= 0;
 }
 
 size_t TcpConnectionManager::connection_count() const {
     std::lock_guard<std::mutex> lock(conn_mutex_);
-    return conn_to_fd_.size();
+    return conn_to_handle_.size();
 }
 
 int TcpConnectionManager::get_bound_port() const {
@@ -319,15 +335,17 @@ int TcpConnectionManager::get_bound_port() const {
 }
 
 CMString TcpConnectionManager::get_peer_info(uint64_t conn_id) const {
-    int fd;
+    FdHandlePtr handle;
     {
         std::lock_guard<std::mutex> lock(conn_mutex_);
-        auto it = conn_to_fd_.find(conn_id);
-        if (it == conn_to_fd_.end() || it->second < 0) {
+        auto it = conn_to_handle_.find(conn_id);
+        if (it == conn_to_handle_.end() || !it->second) {
             return "no-such-conn";
         }
-        fd = it->second;
+        handle = it->second;
     }
+    int fd = handle->get();
+    if (fd < 0) return "no-such-conn";
     return peer_info_by_fd(fd);
 }
 
@@ -345,27 +363,33 @@ CMString TcpConnectionManager::peer_info_by_fd(int fd) const {
 uint64_t TcpConnectionManager::register_connection(int fd) {
     std::lock_guard<std::mutex> lock(conn_mutex_);
     // Problem 6：同 fd 二次注册（双 accept / OS fd 复用）会覆盖 fd_to_conn_[fd]，而旧
-    // conn_id 的 conn_to_fd_ 条目仍残留 → 孤儿（永不被清理，connection_count 虚高，且
-    // 旧 conn_id 的 send 会经 conn_to_fd_ 误投到被复用的新 fd）。覆盖前先清掉旧 conn 条目。
+    // conn_id 的条目仍残留 → 孤儿（永不被清理，connection_count 虚高，且
+    // 旧 conn_id 的 send 会误投到被复用的新 fd）。覆盖前先清掉旧 conn 条目。
     auto existing = fd_to_conn_.find(fd);
     if (existing != fd_to_conn_.end()) {
         WARN("[TCP-DUP] register_connection: fd={} 已注册(旧 conn_id={})，先清理旧条目再重用",
              fd, existing->second);
-        conn_to_fd_.erase(existing->second);
+        // 旧句柄弃权（必须先于 erase）：同 fd 二次注册 = 编号已归属新连接，
+        // 旧句柄任何 shutdown/close 都会打错新连接的 socket——只解除关联。
+        auto old_handle = conn_to_handle_.find(existing->second);
+        if (old_handle != conn_to_handle_.end() && old_handle->second) {
+            old_handle->second->disown();
+        }
+        conn_to_handle_.erase(existing->second);
         write_buffers_.erase(existing->second);  // 同 unregister_connection 语义
     }
     uint64_t conn_id = next_conn_id_++;
-    conn_to_fd_[conn_id] = fd;
+    conn_to_handle_[conn_id] = FdHandle::adopt(fd);
     fd_to_conn_[fd] = conn_id;
     return conn_id;
 }
 
 void TcpConnectionManager::unregister_connection(uint64_t conn_id) {
     std::lock_guard<std::mutex> lock(conn_mutex_);
-    auto it = conn_to_fd_.find(conn_id);
-    if (it != conn_to_fd_.end()) {
-        fd_to_conn_.erase(it->second);
-        conn_to_fd_.erase(it);
+    auto it = conn_to_handle_.find(conn_id);
+    if (it != conn_to_handle_.end()) {
+        fd_to_conn_.erase(it->second ? it->second->get() : -1);
+        conn_to_handle_.erase(it);
     }
     write_buffers_.erase(conn_id);
 }
