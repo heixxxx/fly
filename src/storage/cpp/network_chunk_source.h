@@ -2,6 +2,7 @@
 
 #include <common/cpp/chunk_source.h>
 #include <common/cpp/data_checksum.h>
+#include <common/cpp/fd_handle.h>
 #include <network/cpp/message_types.h>
 #include <common/cpp/common_types.h>
 #include <common/cpp/fly_buffer.h>
@@ -37,7 +38,13 @@ public:
     // 调用方从 config stream_buffer_chunks 计算）。
     using ReleaseFn = std::function<void(bool healthy)>;
 
+    // 裸 fd 构造（测试用）：fd 生命周期由调用方管理。
     NetworkChunkSource(CMSharedPtr<Transport> transport, int fd,
+                       const DataResponseMessage& meta, ReleaseFn release,
+                       uint64_t queue_byte_limit);
+    // 句柄构造（生产路径，issue 011 M4）：接收线程全程持引用——池侧任何
+    // 时刻都不 close 借出 fd（归还走 release_fn_ 池机制），双保险。
+    NetworkChunkSource(CMSharedPtr<Transport> transport, FdHandlePtr handle,
                        const DataResponseMessage& meta, ReleaseFn release,
                        uint64_t queue_byte_limit);
     ~NetworkChunkSource() override;
@@ -91,6 +98,7 @@ private:
 
     // 配置
     CMSharedPtr<Transport> transport_;
+    FdHandlePtr handle_;       // 借出句柄（池借出路径持引用保活，issue 011 M4）
     int fd_;
     uint64_t total_len_;
     uint64_t queue_byte_limit_;

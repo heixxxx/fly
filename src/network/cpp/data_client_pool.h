@@ -2,6 +2,7 @@
 
 #include <common/cpp/common_types.h>
 #include <common/cpp/error_types.h>
+#include <common/cpp/fd_handle.h>
 #include <common/cpp/fly_buffer.h>
 #include <network/cpp/message_types.h>
 #include <cstdint>
@@ -64,7 +65,12 @@ public:
     struct RawExchange {
         bool success = false;
         DataResponseMessage meta;   // chunked_=true 时为分片 META
-        int fd = -1;                // 借出（success 时有效）
+        // 借出句柄（success 且 chunked_=true 时有效）：引用语义——接收线程
+        // 持引用期间 fd 保证存活、编号不复用（issue 011 M4）。closer 为空
+        // （不 close）：归还仍走 release_borrowed_fd 池机制（healthy 判定
+        // 在调用方）；裸 fd 数字经 handle->get() 取用。非 chunked 路径 fd
+        // 即刻归还，handle 为空。
+        FdHandlePtr handle;
         FlyBufferPtr whole_data;    // chunked_=false 时：整帧数据（fd 已归还）
         ReadError rerr = ReadError::NONE;
         CMString error;

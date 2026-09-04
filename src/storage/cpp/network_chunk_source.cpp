@@ -26,6 +26,22 @@ NetworkChunkSource::NetworkChunkSource(CMSharedPtr<Transport> transport, int fd,
                           ? static_cast<int>(meta.chunk_compression_type_) : -1;
 }
 
+NetworkChunkSource::NetworkChunkSource(CMSharedPtr<Transport> transport, FdHandlePtr handle,
+                                       const DataResponseMessage& meta, ReleaseFn release,
+                                       uint64_t queue_byte_limit)
+    : transport_(std::move(transport))
+    , handle_(std::move(handle))
+    , fd_(handle_ ? handle_->get() : -1)
+    , total_len_(meta.total_compressed_len_)
+    , queue_byte_limit_(queue_byte_limit)
+    , meta_trailer_len_(meta.trailer_len_)
+    , meta_py_name_(meta.py_name_)
+    , meta_write_hash_(meta.write_context_hash_)
+    , release_fn_(std::move(release)) {
+    meta_comp_type_ = meta.chunk_compression_type_ != 0
+                          ? static_cast<int>(meta.chunk_compression_type_) : -1;
+}
+
 NetworkChunkSource::~NetworkChunkSource() {
     stopping_.store(true);
     {

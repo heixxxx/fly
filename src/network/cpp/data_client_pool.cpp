@@ -325,9 +325,11 @@ DataClientPool::RawExchange DataClientPool::request_raw_exchange(
     if (response.chunked_) {
         // 分片流：fd 借出（后续帧由调用方的接收线程消费；release_borrowed_fd
         // 归还 fd + slot——slot 归也在那时，保持并发预算"每流占一 slot"）。
+        // 句柄 closer 为空操作：close/归还归池机制（release_borrowed_fd），
+        // 句柄只承担「接收线程持引用保活」语义（issue 011 M4）。
         out.success = true;
         out.meta = response;
-        out.fd = fd;
+        out.handle = FdHandle::adopt(fd, [](int) {});
         return out;
     }
 

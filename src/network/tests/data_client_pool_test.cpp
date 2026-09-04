@@ -537,7 +537,7 @@ TEST_F(DataClientPoolTest, RawExchangeWholeDataReturnsAndReusesFd) {
     // 方式（此处以 NOT_FOUND 验证 raw 链路的协议级失败同样保持 fd 池健康）。
     EXPECT_FALSE(ex.success);
     EXPECT_EQ(ex.rerr, ReadError::OBJECT_NOT_FOUND);
-    EXPECT_EQ(ex.fd, -1);
+    EXPECT_EQ(ex.handle, nullptr);
 
     // fd 池健康：下一请求复用（不新建连接——通过第二次成功交换隐式验证）。
     auto [ok, d, p, h, e, r] =

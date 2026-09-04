@@ -162,7 +162,7 @@ void WorkerAgent::start() {
             if (!ex.meta.chunked_) {
                 // 快路径：整帧数据 → 持有所有权的内存源。
                 if (!ex.whole_data || ex.whole_data->empty()) {
-                    data_client_pool_.release_borrowed_fd(ex.fd, true);
+                    data_client_pool_.release_borrowed_fd(ex.handle->get(), true);
                     return {false, nullptr, 0, ReadError::NETWORK};
                 }
                 auto mem = CMMakeShared<fly::SharedMemoryChunkSource>(
@@ -173,13 +173,14 @@ void WorkerAgent::start() {
                 }
                 return {true, mem, mem->block_area_len(), ReadError::NONE};
             }
-            // 分片流：NetworkChunkSource（fd 借出，析构归还）。
+            // 分片流：NetworkChunkSource（句柄借出，接收线程持引用保活；
+            // 析构归还）。
             int64_t chunks = Config::instance()->get_int("stream_buffer_chunks");
             uint64_t queue_limit = static_cast<uint64_t>(chunks > 0 ? chunks : 16) *
                                    ex.meta.chunk_frame_bytes_;
             auto src = CMMakeShared<fly::NetworkChunkSource>(
-                data_client_pool_.transport(), ex.fd, ex.meta,
-                [pool = &data_client_pool_, fd = ex.fd](bool healthy) {
+                data_client_pool_.transport(), ex.handle, ex.meta,
+                [pool = &data_client_pool_, fd = ex.handle->get()](bool healthy) {
                     pool->release_borrowed_fd(fd, healthy);
                 },
                 queue_limit);

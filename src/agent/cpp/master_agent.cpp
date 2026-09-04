@@ -393,7 +393,7 @@ void MasterAgent::start() {
             }
             if (!ex.meta.chunked_) {
                 if (!ex.whole_data || ex.whole_data->empty()) {
-                    data_client_pool_.release_borrowed_fd(ex.fd, true);
+                    data_client_pool_.release_borrowed_fd(ex.handle->get(), true);
                     return {false, nullptr, 0, ReadError::NETWORK};
                 }
                 auto mem = CMMakeShared<fly::SharedMemoryChunkSource>(
@@ -408,8 +408,8 @@ void MasterAgent::start() {
             uint64_t queue_limit = static_cast<uint64_t>(chunks > 0 ? chunks : 16) *
                                    ex.meta.chunk_frame_bytes_;
             auto src = CMMakeShared<fly::NetworkChunkSource>(
-                data_client_pool_.transport(), ex.fd, ex.meta,
-                [pool = &data_client_pool_, fd = ex.fd](bool healthy) {
+                data_client_pool_.transport(), ex.handle, ex.meta,
+                [pool = &data_client_pool_, fd = ex.handle->get()](bool healthy) {
                     pool->release_borrowed_fd(fd, healthy);
                 },
                 queue_limit);

@@ -812,7 +812,7 @@ TEST(DataTransferFakeServerTest, DcpFaultMatrixRawExchange) {
         auto ex = pool.request_raw_exchange("127.0.0.1", server.port(), "/script:obj");
         EXPECT_FALSE(ex.success) << tc.name;
         EXPECT_EQ(ex.rerr, tc.want_rerr) << tc.name << " error=" << ex.error;
-        EXPECT_EQ(ex.fd, -1) << tc.name << ": failed exchange must not leak a borrowed fd";
+        EXPECT_EQ(ex.handle, nullptr) << tc.name << ": failed exchange must not leak a borrowed fd";
     }
 }
 
@@ -835,7 +835,7 @@ TEST(DataTransferFakeServerTest, SuccessNoRawSplitBehavior) {
         auto ex = pool.request_raw_exchange("127.0.0.1", server.port(), "/script:obj");
         EXPECT_FALSE(ex.success);
         EXPECT_EQ(ex.rerr, ReadError::NETWORK) << ex.error;
-        EXPECT_EQ(ex.fd, -1);
+        EXPECT_EQ(ex.handle, nullptr);
     }
 }
 

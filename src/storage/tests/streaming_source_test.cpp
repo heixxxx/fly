@@ -136,8 +136,8 @@ TEST_F(StreamingSourceTest, NetworkSourceRoundtripAndTrueParallelism) {
 
     uint64_t block_area = ex.meta.total_compressed_len_ - ex.meta.trailer_len_;
     auto src = CMMakeShared<NetworkChunkSource>(
-        pool.transport(), ex.fd, ex.meta,
-        [&pool, fd = ex.fd](bool healthy) { pool.release_borrowed_fd(fd, healthy); },
+        pool.transport(), ex.handle, ex.meta,
+        [&pool, fd = ex.handle->get()](bool healthy) { pool.release_borrowed_fd(fd, healthy); },
         16 * ex.meta.chunk_frame_bytes_);
     src->start();
 
@@ -185,8 +185,8 @@ TEST_F(StreamingSourceTest, BoundedQueueBackpressureConsistency) {
     uint64_t block_area = ex.meta.total_compressed_len_ - ex.meta.trailer_len_;
     // 队列上限压到单片以下（字节级 8）：接收线程必须等消费才能推进。
     auto src = CMMakeShared<NetworkChunkSource>(
-        pool.transport(), ex.fd, ex.meta,
-        [&pool, fd = ex.fd](bool healthy) { pool.release_borrowed_fd(fd, healthy); },
+        pool.transport(), ex.handle, ex.meta,
+        [&pool, fd = ex.handle->get()](bool healthy) { pool.release_borrowed_fd(fd, healthy); },
         /*queue_byte_limit=*/8);
     src->start();
 
@@ -221,8 +221,8 @@ TEST_F(StreamingSourceTest, ResourceReleaseOnEarlyDestruction) {
         auto ex = pool.request_raw_exchange("127.0.0.1", port, "/stream36:obj");
         ASSERT_TRUE(ex.success);
         auto src = CMMakeShared<NetworkChunkSource>(
-            pool.transport(), ex.fd, ex.meta,
-            [&pool, fd = ex.fd](bool healthy) { pool.release_borrowed_fd(fd, healthy); },
+            pool.transport(), ex.handle, ex.meta,
+            [&pool, fd = ex.handle->get()](bool healthy) { pool.release_borrowed_fd(fd, healthy); },
             16 * ex.meta.chunk_frame_bytes_);
         src->start();
         // 消费一小段即弃（模拟 Unpickler 中途异常）。
@@ -725,8 +725,8 @@ TEST_F(StreamingSourceTest, ServerChunkResendAfterDiskCorruptionFailsClosed) {
     ASSERT_TRUE(ex.meta.chunked_);
 
     auto src = CMMakeShared<NetworkChunkSource>(
-        pool.transport(), ex.fd, ex.meta,
-        [&pool, fd = ex.fd](bool healthy) { pool.release_borrowed_fd(fd, healthy); },
+        pool.transport(), ex.handle, ex.meta,
+        [&pool, fd = ex.handle->get()](bool healthy) { pool.release_borrowed_fd(fd, healthy); },
         16 * ex.meta.chunk_frame_bytes_);
     src->start();
 
