@@ -1,11 +1,16 @@
-# 011 — TSAN 首轮扫描发现：DataServer::stop 与内部线程的数据竞争（调研完成，修复方案待评审）
+# 011 — TSAN 首轮扫描发现：DataServer::stop 与内部线程的数据竞争（已根治关闭）
 
-> 状态：**调研完成，方案待评审（2026-09-04）**。本文档 = 双栈取证 + 根因 +
-> 分层修复方案 + fd 所有权改造（shared_ptr 包装）设计评审稿。
+> 状态：**已根治关闭（2026-09-05，M0-M5 六里程碑全部落地）**。
+> 本文档 = 双栈取证 + 根因 + 分层修复方案 + fd 所有权改造设计评审稿 + 实施方案。
 > 来源：P3-17 批 3 TSAN 工具链落地后的首轮扫描。
-> 复现：`./fly.sh test --config=tsan //src/storage/tests:data_service_test`
-> （用例 104/104 全过，2 条 ThreadSanitizer 警告使构建判定失败；非检测构建全绿）。
-> 关联：commit 188d3c7（发送任务 fd 代际校验）、commit e9815e9（TSAN 工具链）。
+> 修复前复现：`./fly.sh test --config=tsan //src/storage/tests:data_service_test`
+> 每轮 2 条 ThreadSanitizer 警告（用例本身 104/104 全过）；修复后 TSAN 全
+> 并发目标零警告。
+> 关联：commit 188d3c7（fd 代际校验，已被 M2 句柄语义替代退役）、
+> e9815e9（TSAN 工具链）。
+> 实施 commit：25e6c47（M0 stop 时序）/ a5025ad（M1 FdHandle 原语）/
+> b12362f（M2 DataServer 迁移）/ 7b4f6a0（M3 TcpConnectionManager 迁移）/
+> f8f3fa6（M4 连接池/网络分块数据源迁移）。
 
 ---
 

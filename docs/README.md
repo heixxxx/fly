@@ -61,7 +61,7 @@ agent、common、core、export、log、network、python-api、serialization、st
 ## 问题追踪体系
 
 - [ISSUES.md](ISSUES.md) —— 总表（P0-P3 + X 类，状态/根因/修复记录）
-- [issues/](issues/) —— 单个问题的深度分析（001-010 + check-daemon-shutdown-race；OPEN 状态以各文档头注为准）
+- [issues/](issues/) —— 单个问题的深度分析（001-011 + check-daemon-shutdown-race；OPEN 状态以各文档头注为准）
 - [reviews/](reviews/) —— 实施评审记录
 
 ## 文档约定

@@ -963,3 +963,14 @@ def solve_like_task(db_up, db, key):
 - **绑定层返回值同理**：Python 对象构造必须在 GIL 持有下完成——阻塞
   调用（等对端数据）的 GIL 释放作用域只包住 C++ 调用段，返回值构造放在
   作用域外（案例：流式读端在 GIL 释放态构造 bytes 返回值 SIGSEGV）。
+- **文件描述符一律经 `FdHandle` 所有权**（2026-09-05，issue 011）：
+  `src/common/cpp/fd_handle.h`——`FdHandle::adopt(fd, closer)` 产出
+  `FdHandlePtr`（shared_ptr），在途使用者持引用保活；两层关闭语义：
+  `shutdown()` 为决策层（幂等，对端立即收 FIN）、析构/closer 为引用
+  计数层（最后一引用释放才 close，池化场景注入归还闭包）。**不变量：
+  裸 fd 数字不跨「无引用」边界；所有 close 必须经句柄**
+  （close_now=属主强关；disown=同号已被复用时弃权不关）。落地范围：
+  DataServer（连接表/SendTask/事件批）、TcpConnectionManager（两张表/
+  send/poll 关闭路径）、DataClientPool ↔ NetworkChunkSource 借出路径。
+  原点状机制（fd 代际校验、per-conn send mutex 保活）已被其统一替代或
+  并存。

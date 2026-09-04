@@ -3,6 +3,36 @@
 ---
 ---
 
+## 2026-09-05: issue 011 根治——fd 所有权原语 FdHandle + 四体系迁移（M0-M5）
+
+TSAN 首轮扫描发现的两处数据竞争（DataServer::stop 与内部线程）根治，
+并按用户提案落地文件描述符所有权改造（shared_ptr 引用计数 + 两层关闭
+语义）。六 commit：
+
+- **25e6c47 M0**：DataServer::stop 改「先 join 后关闭」+ listen_fd_/
+  epoll_fd_ 原子化——消除 TSAN 双栈实证的数据竞争与 epoll 实例描述符
+  close 后编号复用风险；epoll_wait 100ms 超时轮询使调序无需自唤醒。
+- **a5025ad M1**：`src/common/cpp/fd_handle.h` FdHandle 原语——引用计数
+  保活 + 两层关闭（shutdown 决策层对端立即收 FIN / 析构引用计数层）+
+  close_now/disown；八条契约测试（TSAN 绿）。
+- **b12362f M2**：DataServer 全链迁移——连接表/SendTask/事件批持句柄；
+  过期事件按句柄快照拿不到即忽略（风险 4）；发送全程持引用，分块长闭包
+  覆盖缺口结构性消除（风险 2）；cleanup_fd 幂等化，双 close 根修
+  （风险 3）；fd 代际校验机制退役（188d3c7 语义由句柄契约等价钉住）。
+- **7b4f6a0 M3**：TcpConnectionManager 迁移——send 快照持引用（风险 5）、
+  poll 关闭路径 shutdown 化（风险 6）、未注册 fd 过期事件不再盲目 close、
+  Problem-6 同号重复注册旧句柄 disown 弃权；Reactor/PeerRpcServer 经接口
+  零改动（透明性 grep 核实）。
+- **f8f3fa6 M4**：RawExchange 借出路径改携句柄（closer 空操作，池归还
+  机制原样保留）；NetworkChunkSource 新增句柄构造重载；两处接线点更新。
+- **M5 验证**：TSAN 全并发目标（13 target）零警告；全量 QA 183/183；
+  流式读基准对比无回归（none 64MB 563 MB/s，历史波动区间内）。
+- 文档：DEVELOPMENT_GUIDELINES §16 增 FdHandle 所有权条目（裸 fd 不跨
+  无引用边界 + close 必经句柄两大不变量）；issue 011 关闭。
+
+---
+---
+
 ## 2026-09-04: 五项优先级待办执行收口——基准复测/issue 010 关闭/锁内 IO 清零/双根修/并发测试三批
 
 按 2026-09-03 计划逐项落地（六 commit + 文档对齐批次）：
