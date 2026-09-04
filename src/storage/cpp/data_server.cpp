@@ -98,16 +98,13 @@ void DataServer::stop() {
         send_cv_.notify_all();
     }
 
-    if (listen_fd_ >= 0) {
-        transport_->close(listen_fd_);
-        listen_fd_ = -1;
-    }
-
-    if (epoll_fd_ >= 0) {
-        epoll_->destroy(epoll_fd_);
-        epoll_fd_ = -1;
-    }
-
+    // [根修 issue 011 M0] 先 join 后关闭：listen_fd_/epoll_fd_ 的关闭原在本
+    // 处（join 之前）执行——epoll 线程对这些成员的无锁读（epoll_wait 参数/
+    // accept 分支判断）与之构成数据竞争，且 epoll 实例描述符被 close 后编号
+    // 可能被复用，使在飞的 epoll_wait 阻塞在别人的描述符上（TSAN 双栈实证）。
+    // epoll_loop 的 epoll_wait 为 100ms 超时轮询，running_=false 后线程最迟
+    // 100ms 自退出，无需自唤醒机制；send_loop 的退出条件为「停机且队列空」，
+    // 滞留任务在描述符仍存活的窗口内执行完毕——行为比旧序更正确。
     for (auto& t : epoll_threads_) {
         if (t.joinable()) t.join();
     }
@@ -117,6 +114,17 @@ void DataServer::stop() {
         if (t.joinable()) t.join();
     }
     send_threads_.clear();
+
+    // 线程已全部退出，此处关闭无并发读者（成员 atomic<int> 为防回归兜底）。
+    if (listen_fd_ >= 0) {
+        transport_->close(listen_fd_);
+        listen_fd_ = -1;
+    }
+
+    if (epoll_fd_ >= 0) {
+        epoll_->destroy(epoll_fd_);
+        epoll_fd_ = -1;
+    }
 
     std::lock_guard<std::mutex> clkk(conn_mutex_);
     for (auto& c : conns_) {

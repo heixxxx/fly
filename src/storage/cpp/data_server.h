@@ -35,8 +35,11 @@ private:
     CMSharedPtr<EpollMultiplexer> epoll_;
     int thread_count_;
 
-    int listen_fd_ = -1;
-    int epoll_fd_ = -1;
+    // 监听/epoll 实例描述符：跨线程读写（stop 关闭 vs epoll/send 线程在飞
+    // 读），atomic 消除数据竞争；close 时序由 stop()「先 join 线程后关闭」
+    // 保证（issue 011 M0）。
+    std::atomic<int> listen_fd_{-1};
+    std::atomic<int> epoll_fd_{-1};
     int data_port_ = 0;
 
     std::atomic<bool> running_{false};
