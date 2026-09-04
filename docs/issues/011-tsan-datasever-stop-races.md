@@ -183,3 +183,102 @@ NetworkChunkSource 的归还回调——都是本方案的点状前身，FdHandl
 - 第 1 层：2-3 天（FdHandle 原语 + DataServer + TcpConnectionManager +
   DataClientPool/NetworkChunkSource + 测试），建议第 0 层合入并观察一轮
   后单独立项实施。
+
+---
+
+## 五、实施方案（已批准方向，2026-09-04 实施级调研定稿）
+
+### 5.0 实施级调研的三个关键确认
+
+1. **stop() 调序与滞留任务的交互（利好）**：`send_loop` 的退出条件是
+   「停机且队列空」（data_server.cpp:400-407）——停机时滞留任务会先执行
+   完才退出。调序为「先 join 后关闭」后，滞留任务在文件描述符仍然存活的
+   窗口内执行，**行为比现状更正确**（现状下滞留任务在 close 之后执行，
+   全靠代际校验丢弃）。
+2. **188d3c7 代际校验没有专门单测**：其验证面是 data_service_test +
+   database_test + 跨 host 传输 QA + 全量 QA（181/181），回归位缺失。
+   代际机制退役时必须补一个 FdHandle 语义的确定性回归测试（见 M2）。
+3. **DataClientPool 池化描述符的归还语义复杂**（healthy 判定、反倾斜、
+   TTL 收割）：M4 采用最小改法——`RawExchange` 携带 `FdHandle`（默认
+   closer = ::close）仅供接收线程在途保活与 shutdown 传播；**池归还机制
+   （release_borrowed_fd / release_fn_ 回调）原样保留不动**。
+
+### 5.1 里程碑分解（每个里程碑 = 独立 commit + 验证门禁）
+
+**M0 —— 第 0 层 stop 时序修正（0.5 天）**
+- `data_server.cpp stop()`：listen_fd_/epoll_fd_ 的关闭（:101-109）移到
+  两组 join（:111-119）之后；`conns_` 兜底清理保持最后。
+- `data_server.h`：`listen_fd_`/`epoll_fd_` 改 `std::atomic<int>`；读点
+  适配（epoll_loop :167/:177、cleanup_fd :152、发送路径 rearm
+  :393/:444/:580/:665/:682——load 语义不变）。
+- 验证：`--config=tsan` data_service_test ×10 零警告；全量单测；
+  qa/storage + qa/network；全量 QA。
+
+**M1 —— FdHandle 原语（0.5 天）**
+- 新文件 `src/common/cpp/fd_handle.h`（header-only，经 fly_common_types
+  的 hdrs glob 自动可用，无 BUILD 改动；common 是最底层，storage/network
+  均可依赖）。
+- 接口：`FdHandle::adopt(int fd, CloseFn closer = ::close)`（返回
+  shared_ptr）；`bool shutdown()`（幂等，::shutdown(SHUT_RDWR)，非 socket
+  描述符返回 false 无副作用）；`void close_now()`（属主强制提前关闭，
+  原子 exchange -1 防双关闭）；`int get()`；`bool is_shutdown()`；拷贝
+  禁止、shared_ptr 持有；析构 = 未关闭则 closer(fd)。
+- 单测 `src/common/tests/fd_handle_test.cpp`（+ BUILD）：shutdown 幂等 /
+  析构补关闭 / 引用保活期间不关闭 / shutdown 后写得到错误 / close_now
+  后析构不动 / 并发引用掉落恰关一次。
+
+**M2 —— DataServer 迁移（1 天，最大改造面）**
+- `ConnState.fd` → `std::shared_ptr<FdHandle>`；accept（:178-193）、事件
+  批快照（:174-197，每事件持 conn_mutex_ 拷指针）、on_readable 全链、
+  cleanup_fd（改「代际失效 + epoll del + 摘表 + handle->shutdown()」，
+  close 交最后引用——双关闭结构性消失）、5 个发送入队点（:279/:370/
+  :506/:633 等）、send_loop（:397-451）、分块闭包（:505-581/:632-666）、
+  rearm 读点全链改持 handle。
+- `fd_generations_`/`fd_gen_counter_`/grab/invalidate 全套退役
+  （data_server.h:58-63）；代际校验块（:412-423）删除。
+- **新增回归测试**（补 188d3c7 缺失的回归位）：滞留发送任务持 handle +
+  连接 shutdown → 任务写得到错误并被丢弃、绝不写向任何复用编号；健康
+  连接的发送不受 shutdown 影响。
+- 验证：storage 单测全家 + TSAN ×10 + qa/storage + qa/fault + qa/backup
+  + 跨 host 传输 QA + 全量 QA。
+
+**M3 —— TcpConnectionManager 迁移（0.5-1 天）**
+- `conn_to_fd_`/`fd_to_conn_` 值改 handle；register_connection/close/
+  close_all/send（fd 快照改指针快照）/poll（drain_socket 持指针；
+  DISCONNECT 路径 handle->shutdown()）。
+- 影响面确认：Reactor 与 PeerRpcServer 经 ConnectionManager 接口使用，
+  **零改动**（若 peer_rpc_server_test 暴露直接触 fd 的路径，纳入本里程碑）。
+- 验证：tcp_connection_manager_test + reactor_test + peer_rpc_server_test
+  + TSAN ×10 + qa/network + qa/solver（PeerRpc 流式面）。
+
+**M4 —— DataClientPool / NetworkChunkSource 迁移（0.5 天，最小改法）**
+- `RawExchange` 增 `std::shared_ptr<FdHandle> handle`（closer 默认
+  ::close）；`worker_agent.cpp:155-192` / `master_agent.cpp:387-413` 接线
+  改传 handle；NetworkChunkSource 成员 `int fd_` → handle（接收线程经
+  `get()` 使用）；release_fn_ 回调机制**原样保留**（healthy 判定归池语义
+  不动）；连接被池关闭时（TTL 收割/反倾斜/停机），接收线程的后续 IO 得
+  EBADF → 流失败语义已有（零容忍）。
+- 验证：data_client_pool_test + streaming_source_test + qa/storage 流式
+  读 + TSAN ×10。
+
+**M5 —— 收尾（0.5 天）**
+- TSAN 跑全部并发目标一轮；全量 QA；peer_rpc / data_service 基准对比
+  （引用计数为原子操作，预期无损，劣化 >2% 需解释）。
+- 文档：DEVELOPMENT_GUIDELINES §16（所有权）增 FdHandle 条目、§13.4 补
+  记、issue 011 关闭、DOC_CHANGELOG。
+- push（pre-push 全量门禁）。
+
+### 5.2 风险登记
+
+| 风险 | 缓解 |
+|---|---|
+| stop 调序后 join 时长受滞留分块任务影响（分钟级） | 与现状语义相同（现状同样先等任务），不改语义；停机耗时告警已有 |
+| 引用计数原子操作损耗 | 基准对比验证；原子 refcount 在每连接低频拷贝下可忽略 |
+| TCM「透明迁移」假设失效 | M3 第一步先 grep Reactor/PeerRpc 直接触 fd 的位点，命中则纳入 M3 |
+| DCP closer 归还语义复杂 | 已裁定最小改法：handle 仅保活 + shutdown 传播，归还机制不动（5.0-3） |
+| 代际退役后未覆盖路径回归 | M2 回归测试 + 跨 host 传输 QA 双保险；FdHandle shutdown 后写 EPIPE 的失败方向正确 |
+
+### 5.3 待用户确认后启动
+
+默认顺序 M0 → M1 → M2 → M3 → M4 → M5，每个里程碑独立提交、独立验证
+门禁；M0 可先行合入观察。
