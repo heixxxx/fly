@@ -104,6 +104,7 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 ## Language
 
 - **使用中文进行思考和回复** — 所有与用户的交互使用中文
+- **禁止缩写与简写** — 回答用户问题和写文档时，一律使用完整、清晰的名称描述，不使用缩写、简写或自造代号。例：写 ThreadSanitizer（线程竞态检测器）而非 TSAN、写 WriteBackQueue（写回队列）而非 WBQ、写「正常退出处理」而非用裸函数名指代概念。例外：代码引用（文件名、函数名、commit 号）本身是精确定位，可以原样出现；但用代码符号指代概念时，必须附带一句话说明它是什么。
 
 ---
 
