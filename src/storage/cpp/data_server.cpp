@@ -126,11 +126,11 @@ void DataServer::stop() {
         epoll_fd_ = -1;
     }
 
+    // 线程已 join、发送队列已排空（send_loop 退出条件）——属主强制收口。
     std::lock_guard<std::mutex> clkk(conn_mutex_);
     for (auto& c : conns_) {
-        if (c.fd >= 0) {
-            transport_->close(c.fd);
-            c.fd = -1;
+        if (c.handle) {
+            c.handle->close_now();
         }
     }
     conns_.clear();
@@ -138,35 +138,32 @@ void DataServer::stop() {
 
 int DataServer::find_conn_index(int fd) {
     for (int i = 0; i < static_cast<int>(conns_.size()); ++i) {
-        if (conns_[i].fd == fd) return i;
+        if (conns_[i].handle && conns_[i].handle->get() == fd) return i;
     }
     return -1;
 }
 
-uint64_t DataServer::fd_generation_grab(int fd) {
-    std::lock_guard<std::mutex> lk(conn_mutex_);
-    auto& g = fd_generations_[fd];
-    if (g == 0) g = ++fd_gen_counter_;   // 首见 fd 分配代际
-    return g;
-}
-
-void DataServer::fd_generation_invalidate(int fd) {
-    std::lock_guard<std::mutex> lk(conn_mutex_);
-    fd_generations_[fd] = ++fd_gen_counter_;   // 递增使滞留任务全部失效
-}
-
-void DataServer::cleanup_fd(int fd) {
-    fd_generation_invalidate(fd);
+void DataServer::cleanup_fd(const FdHandlePtr& handle) {
+    if (!handle) return;
+    int fd = handle->get();
+    if (fd < 0) return;   // 已被 close_now 关闭（stop 兜底）——无表项可清
+    // epoll 摘除先于摘表（序与旧实现一致）：后续事件不再投递本连接。
+    // 全部步骤幂等——epoll 线程与 send 线程并发触发安全（旧实现此处存在
+    // 双 close 风险，issue 011 风险 3 根修：close 交由最后引用释放）。
     epoll_->del(epoll_fd_, fd);
     {
         std::lock_guard<std::mutex> lk(conn_mutex_);
-        int idx = find_conn_index(fd);
-        if (idx >= 0) {
-            conns_[idx] = std::move(conns_.back());
-            conns_.pop_back();
+        for (int i = 0; i < static_cast<int>(conns_.size()); ++i) {
+            if (conns_[i].handle.get() == handle.get()) {
+                std::swap(conns_[i], conns_.back());
+                conns_.pop_back();
+                break;
+            }
         }
     }
-    transport_->close(fd);
+    // 决策层关闭：对端立即收到 FIN 停止发新请求；close 由最后引用释放
+    // 执行——滞留发送任务持句柄得到 EPIPE 被丢弃，绝不写向复用编号。
+    handle->shutdown();
 }
 
 void DataServer::epoll_loop() {
@@ -189,24 +186,36 @@ void DataServer::epoll_loop() {
 
                     transport_->set_nonblocking(cfd);
 
+                    auto handle = FdHandle::adopt(cfd);
                     {
                         std::lock_guard<std::mutex> lk(conn_mutex_);
-                        conns_.push_back({cfd, {}});
-                        fd_generations_[cfd] = ++fd_gen_counter_;
+                        conns_.push_back({handle, {}});
                     }
 
-                    epoll_->add(epoll_fd_, cfd, EV_READ | EV_ONESHOT);
+                    epoll_->add(epoll_fd_, handle->get(), EV_READ | EV_ONESHOT);
 
                     DBG("[DS-ACCEPT] fd={} total={}", cfd, conns_.size());
                 }
             } else {
-                on_readable(fd);
+                // 事件批内按当前连接表快照句柄——过期事件（连接已清理）拿
+                // 不到句柄即忽略，绝不落到复用编号的新连接（issue 011 风险 4
+                // 根修：连接身份是指针而非数字）。
+                FdHandlePtr handle;
+                {
+                    std::lock_guard<std::mutex> lk(conn_mutex_);
+                    int idx = find_conn_index(fd);
+                    if (idx >= 0) handle = conns_[idx].handle;
+                }
+                if (handle) {
+                    on_readable(handle);
+                }
             }
         }
     }
 }
 
-void DataServer::on_readable(int fd) {
+void DataServer::on_readable(const FdHandlePtr& handle) {
+    int fd = handle->get();
     char tmp[65536];
     CMString new_data;
     bool got_eof = false;
@@ -228,7 +237,7 @@ void DataServer::on_readable(int fd) {
     }
 
     if (got_eof && new_data.empty()) {
-        cleanup_fd(fd);
+        cleanup_fd(handle);
         return;
     }
 
@@ -256,7 +265,7 @@ void DataServer::on_readable(int fd) {
             // check 位失配 = 流失步/垃圾头：连接已不可信，断开（数据面请求
             // 都是 client 主动发起的小帧，残留缓冲不值得抢救）。
             ERR("[DS-FRAME] fd={} frame header check failed, dropping connection", fd);
-            cleanup_fd(fd);
+            cleanup_fd(handle);
             return;
         }
 
@@ -283,8 +292,7 @@ void DataServer::on_readable(int fd) {
             {
                 std::lock_guard<std::mutex> slk(send_mutex_);
                 SendTask task;
-                task.fd = fd;
-                task.fd_generation = fd_generation_grab(fd);
+                task.handle = handle;
                 task.data = std::move(encoded);
                 send_queue_.push(std::move(task));
             }
@@ -302,7 +310,7 @@ void DataServer::on_readable(int fd) {
                 ERR("[DS-DECODE] fd={} chunk-resend decode failed", fd);
                 break;
             }
-            handle_chunk_resend(fd, rs.offset_, rs.length_);
+            handle_chunk_resend(handle, rs.offset_, rs.length_);
             continue;
         }
 
@@ -319,7 +327,7 @@ void DataServer::on_readable(int fd) {
             int64_t threshold = Config::instance()->get_int("chunked_transfer_threshold");
             auto [loc_ok, loc] = data_service_.find_chunked_location(req.object_name_);
             if (loc_ok && loc.size > static_cast<uint64_t>(threshold)) {
-                serve_chunked(fd, req.object_name_, loc.file_path, loc.offset, loc.size);
+                serve_chunked(handle, req.object_name_, loc.file_path, loc.offset, loc.size);
                 pushed_response = true;
                 continue;
             }
@@ -374,8 +382,7 @@ void DataServer::on_readable(int fd) {
         {
             std::lock_guard<std::mutex> slk(send_mutex_);
             SendTask task;
-            task.fd = fd;
-            task.fd_generation = fd_generation_grab(fd);
+            task.handle = handle;
             task.data = std::move(seg.header_segment);
             task.raw_data = serve_raw ? raw_data : nullptr;  // keep alive for send thread
             send_queue_.push(std::move(task));
@@ -396,7 +403,7 @@ void DataServer::on_readable(int fd) {
     if (pushed_response) {
         // send_thread will rearm after send completes
     } else if (got_eof) {
-        cleanup_fd(fd);
+        cleanup_fd(handle);
     } else {
         epoll_->mod(epoll_fd_, fd, EV_READ | EV_ONESHOT);
     }
@@ -415,26 +422,22 @@ void DataServer::send_loop() {
             }
         }
 
-        // L2 自含分片任务：闭包内完成 META → CHUNK 流 → DIGEST/rearm。
-        {
-            // fd 代际校验：任务入队后连接被清理（fd 可能被新连接复用）则
-            // 丢弃——滞留任务绝不发给错误的连接。
-            std::lock_guard<std::mutex> lk(conn_mutex_);
-            auto it = fd_generations_.find(task.fd);
-            if (it == fd_generations_.end() || it->second != task.fd_generation) {
-                ERR("[DS-SEND] stale send task dropped: fd={} gen={} vs current={}",
-                    task.fd, task.fd_generation,
-                    it == fd_generations_.end() ? 0 : it->second);
-                continue;
-            }
+        // [issue 011 M2] 连接身份 = 句柄：任务全程持引用保活。原 fd 代际
+        // 校验（滞留任务比对代际丢弃）由句柄语义结构性替代——连接被清理
+        // 只 shutdown，fd 在所有引用释放前不复用；被 shutdown 的连接写入
+        // 得 EPIPE 走下方失败路径，绝不落到复用编号的新连接。
+        if (!task.handle || task.handle->get() < 0) {
+            DBG("[DS-SEND] task for closed handle dropped");
+            continue;
         }
+        int fd = task.handle->get();
 
         if (task.chunked_execute) {
             task.chunked_execute();
             continue;
         }
 
-        if (task.fd >= 0 && !task.data.empty()) {
+        if (fd >= 0 && !task.data.empty()) {
             bool has_raw = task.raw_data && !task.raw_data->empty();
             if (has_raw) {
                 // Single writev call for header + raw payload (avoids 2x send overhead).
@@ -443,16 +446,16 @@ void DataServer::send_loop() {
                 iov[0].iov_len = task.data.size();
                 iov[1].iov_base = const_cast<char*>(task.raw_data->data());
                 iov[1].iov_len = task.raw_data->size();
-                bool ok = transport_->sendv(task.fd, iov, 2);
+                bool ok = transport_->sendv(fd, iov, 2);
                 if (!ok) {
-                    ERR("[DS-SEND] sendv failed: fd={}", task.fd);
-                    cleanup_fd(task.fd);
+                    ERR("[DS-SEND] sendv failed: fd={}", fd);
+                    cleanup_fd(task.handle);
                 } else {
-                    DBG("[DS-SEND] fd={} complete: {} + {} bytes (sendv)", task.fd, task.data.size(), task.raw_data->size());
-                    epoll_->mod(epoll_fd_, task.fd, EV_READ | EV_ONESHOT);
+                    DBG("[DS-SEND] fd={} complete: {} + {} bytes (sendv)", fd, task.data.size(), task.raw_data->size());
+                    epoll_->mod(epoll_fd_, fd, EV_READ | EV_ONESHOT);
                 }
             } else {
-                do_send(task.fd, task.data);
+                do_send(task.handle, task.data);
             }
         }
     }
@@ -464,8 +467,9 @@ void DataServer::send_loop() {
 // record 字节一致，DecompressingStreamBuf 直接消费）。
 static constexpr uint64_t kChunkFrameBytes = 4ULL << 20;
 
-void DataServer::serve_chunked(int fd, const CMString& object_name,
+void DataServer::serve_chunked(const FdHandlePtr& handle, const CMString& object_name,
                                const CMString& file_path, uint64_t offset, uint64_t size) {
+    int fd = handle->get();
     // conn 状态登记（CHUNK_RESEND 路由需要对象区间 + 重传计数）。
     {
         std::lock_guard<std::mutex> lk(conn_mutex_);
@@ -511,11 +515,14 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
     }
 
     SendTask task;
-    task.fd = fd;
-    task.fd_generation = fd_generation_grab(fd);
-    task.chunked_execute = [this, fd, object_name, file_path, offset, size,
+    task.handle = handle;
+    // 闭包全程持句柄引用：分钟级分片发送期间连接被清理只 shutdown（对端
+    // 立即收 FIN），本闭包的后续 send_all 得 EPIPE 走失败路径——替代原
+    // 代际校验在长闭包上的覆盖缺口（issue 011 风险 2）。
+    task.chunked_execute = [this, handle, fd, object_name, file_path, offset, size,
                             meta_py_name, meta_trailer_len, meta_comp_type,
                             meta_is_temp]() {
+        if (handle->get() < 0) return;   // stop 兜底已强制关闭
         bool ok = true;
 
         // META 先行（复用 DATA_RESPONSE 两段式，无 raw）。
@@ -535,7 +542,7 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
         ok = transport_->send_all(fd, meta_frame.data(), meta_frame.size());
         if (!ok) {
             ERR("[DS-CHUNK] fd={} META send failed", fd);
-            cleanup_fd(fd);
+            cleanup_fd(handle);
             return;
         }
 
@@ -547,7 +554,7 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
         int file = ::open(file_path.c_str(), O_RDONLY);
         if (file < 0) {
             ERR("[DS-CHUNK] fd={} open failed: {}", fd, file_path);
-            cleanup_fd(fd);
+            cleanup_fd(handle);
             return;
         }
         uint64_t off = offset;
@@ -565,7 +572,7 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
         ::close(file);
         if (!ok) {
             ERR("[DS-CHUNK] fd={} chunk stream send failed at frame={}", fd, frames);
-            cleanup_fd(fd);
+            cleanup_fd(handle);
             return;
         }
 
@@ -580,7 +587,7 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
         CMString digest_frame = MessageProtocol::encode(digest);
         if (!transport_->send_all(fd, digest_frame.data(), digest_frame.size())) {
             ERR("[DS-CHUNK] fd={} DIGEST send failed", fd);
-            cleanup_fd(fd);
+            cleanup_fd(handle);
             return;
         }
         DBG("[DS-CHUNK] fd={} obj={} sent {} frames, {} bytes", fd, object_name, frames, size);
@@ -595,7 +602,8 @@ void DataServer::serve_chunked(int fd, const CMString& object_name,
     send_cv_.notify_one();
 }
 
-void DataServer::handle_chunk_resend(int fd, uint64_t offset, uint64_t length) {
+void DataServer::handle_chunk_resend(const FdHandlePtr& handle, uint64_t offset, uint64_t length) {
+    int fd = handle->get();
     CMString file;
     uint64_t base_off = 0, total = 0;
     bool drop_conn = false;
@@ -625,7 +633,7 @@ void DataServer::handle_chunk_resend(int fd, uint64_t offset, uint64_t length) {
         }
     }
     if (drop_conn) {
-        cleanup_fd(fd);   // 锁外：内部会 lock(conn_mutex_)
+        cleanup_fd(handle);   // 锁外：内部会 lock(conn_mutex_)
         return;
     }
 
@@ -638,13 +646,15 @@ void DataServer::handle_chunk_resend(int fd, uint64_t offset, uint64_t length) {
     }
 
     SendTask task;
-    task.fd = fd;
-    task.fd_generation = fd_generation_grab(fd);
-    task.chunked_execute = [this, fd, file, start, n = length, offset]() {
+    task.handle = handle;
+    // 闭包全程持句柄引用：连接被清理只 shutdown，本闭包的 sendv 得 EPIPE
+    // 走失败路径，绝不写向复用编号（替代原代际校验）。
+    task.chunked_execute = [this, handle, fd, file, start, n = length, offset]() {
+        if (handle->get() < 0) return;   // stop 兜底已强制关闭
         int f = ::open(file.c_str(), O_RDONLY);
         if (f < 0) {
             ERR("[DS-CHUNK] fd={} resend open failed: {}", fd, file);
-            cleanup_fd(fd);
+            cleanup_fd(handle);
             return;
         }
         CMVector<char> buf(static_cast<size_t>(n));
@@ -653,7 +663,7 @@ void DataServer::handle_chunk_resend(int fd, uint64_t offset, uint64_t length) {
         ::close(f);
         if (got < 0 || static_cast<uint64_t>(got) != n) {
             ERR("[DS-CHUNK] fd={} resend pread failed", fd);
-            cleanup_fd(fd);
+            cleanup_fd(handle);
             return;
         }
         // 重传帧 = 纯字节区间（不带块语义——client 按字节替换 hole）。
@@ -666,7 +676,7 @@ void DataServer::handle_chunk_resend(int fd, uint64_t offset, uint64_t length) {
         iov[1].iov_len = static_cast<size_t>(n);
         if (!transport_->sendv(fd, iov, 2)) {
             ERR("[DS-CHUNK] fd={} resend send failed offset={}", fd, offset);
-            cleanup_fd(fd);
+            cleanup_fd(handle);
             return;
         }
         DBG("[DS-CHUNK] fd={} resent offset={} ({} bytes)", fd, offset, n);
@@ -679,12 +689,13 @@ void DataServer::handle_chunk_resend(int fd, uint64_t offset, uint64_t length) {
     send_cv_.notify_one();
 }
 
-void DataServer::do_send(int fd, const CMString& data) {
+void DataServer::do_send(const FdHandlePtr& handle, const CMString& data) {
+    int fd = handle->get();
     bool ok = transport_->send_all(fd, data.data(), data.size());
 
     if (!ok) {
         ERR("[DS-SEND] fd={} failed: {}/{} bytes", fd, 0, data.size());
-        cleanup_fd(fd);
+        cleanup_fd(handle);
     } else {
         DBG("[DS-SEND] fd={} complete: {} bytes", fd, data.size());
         epoll_->mod(epoll_fd_, fd, EV_READ | EV_ONESHOT);
