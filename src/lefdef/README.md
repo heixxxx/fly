@@ -44,6 +44,23 @@ cd src/lefdef/def && make -j1
 
 基线已在本仓库开发环境（WSL2，gcc 12，bison 3.5.1，flex 2.6.4）验证编译与烟测通过。
 
+## 性能优化记录（2026-09-06，基于 callgrind 实测热点）
+
+测试口径：Galaxy.def（442MB，91 万 components / 33.7 万 nets / 2.66 万 specialnets，IC Compiler II 写出），全空回调完整解析（defrw_perf），g++ -O3，5 轮平均；正确性回归 = defrw 回显输出逐字节比对（complete.5.8.def / test_escape.def）+ Galaxy 对象计数校验。
+
+| commit | 优化 | 耗时 | 单项收益 |
+|---|---|---|---|
+| （基线） | — | 4.82s | — |
+| c14270b | GETC 内联化（消除词法热路径跨编译单元调用） | 4.36s | +9.5% |
+| 1b45a1e | pv_deftoken 延迟复制（仅 ';' 结尾 token 保存全文） | 4.08s | +6.4% |
+| 52e459b | dumb_mode 关键字识别首字符分派（strcmp 链 30 次→1-2 次/token） | 3.63s | +11% |
+| 7768949 | 连接字符串 arena 池（消除逐连接 malloc/free，约 400 万次） | 3.47s | +4.4% |
+| 36b6572 | 纯整数 token 快速解析（替代 strtol） | 3.40s | +2% |
+
+累计：**4.82s → 3.40s（快 29.5%）**；峰值内存 156MB → 106MB（消除分配器元数据与碎片）；callgrind 总指令数 -24%。外部魔改版的 gperf/section-skip 优化在 dumb_mode 段（COMPONENTS/NETS/SPECIALNETS）不执行、对真实负载无收益（同机对照实测零差异），本组优化针对实测热点故收益显著。
+
+注意事项：上游 Makefile 的 `.cpp.o` 规则无头文件依赖跟踪，**修改 .hpp 后必须 `make clean` 全量重建**，否则新旧对象布局混链会 ODR 违例（实测表现为成员读位错乱段错误）。defiPath 的逐元素 malloc（对象级生命周期，池化需 freelist 复用对象）与 defyyparse 状态机为后续可选优化。
+
 ## 演进路线（魔改三步走，每步可回归验证）
 
 1. **原样接 Bazel**：给 lef 与 def 各建 `cc_library` 目标，bison/flex 生成规则写进 BUILD，基线编译纳入 `./fly.sh` 体系。这一步不改任何源码。
