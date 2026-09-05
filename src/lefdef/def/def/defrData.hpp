@@ -196,8 +196,14 @@ public:
     char*  last; 
     char*  magic; 
     char*  next; 
-    char*  pv_deftoken; 
+    char*  pv_deftoken;
     int    pv_deftoken_capacity;  // capacity of pv_deftoken buffer
+    // pv_deftoken 延迟复制支持：pv_token_semi 记录 deftoken（当前/上一轮 token）
+    // 尾字符是否 ';'（DefGetToken 出口零成本记录）；pv_saved_semi 表示
+    // pv_deftoken 当前持有"以 ';' 结尾的上一轮 token"全文（仅此情形 defError
+    // 才会读取 pv_deftoken，故其余情况免于每 token 一次 strcpy）。
+    int    pv_token_semi;
+    int    pv_saved_semi;
     char*  rowName; // to hold the rowName for message
     char*  shieldName; // to hold the shieldNetName
     char*  shiftBuf; 

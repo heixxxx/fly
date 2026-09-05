@@ -182,6 +182,8 @@ defrData::defrData(const defrCallbacks *pCallbacks,
   uc_token_capacity(TOKEN_SIZE),
   pv_deftoken((char*)malloc(TOKEN_SIZE)),
   pv_deftoken_capacity(TOKEN_SIZE),
+  pv_token_semi(0),
+  pv_saved_semi(0),
   File(0),
   props(new defrProps())
 {

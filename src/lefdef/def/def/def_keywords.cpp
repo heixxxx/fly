@@ -304,10 +304,11 @@ defrData::DefGetToken(char **buf, int *bufferSize)
 
 
     if (ch == '\n') {
-       *s = ch; 
+       *s = ch;
        IncCurPos(&s, buf, bufferSize);
 
        *s = '\0';
+       pv_token_semi = (s[-1] == ';');
        return TRUE;
     }
 
@@ -352,6 +353,7 @@ defrData::DefGetToken(char **buf, int *bufferSize)
        } while (ch != '"');
 
        *s = '\0';
+       pv_token_semi = (s[-1] == ';');
        return TRUE;
     }
 
@@ -410,6 +412,7 @@ defrData::DefGetToken(char **buf, int *bufferSize)
    
     /* If we got this far, the last char was whitespace */
     *s = '\0';
+    pv_token_semi = (s[-1] == ';');
     if (ch != EOF)   /* shouldn't ungetc an EOF */
        UNGETC((char)ch);
     return TRUE;
@@ -477,12 +480,16 @@ defrData::sublex(YYSTYPE *pYylval)
    double numVal;
    char*  outMsg;
 
-   // Optimize: only realloc if capacity is insufficient
-   if (pv_deftoken_capacity < deftokenLength) {
-       pv_deftoken_capacity = deftokenLength * 2;  // exponential growth
-       pv_deftoken = (char*)realloc(pv_deftoken, pv_deftoken_capacity);
+   // pv_deftoken 延迟复制：仅当上一轮 token 以 ';' 结尾时 defError() 才会读取
+   // pv_deftoken 全文，故只在这种情况执行 strcpy（频率为语句数而非 token 数）。
+   if (pv_token_semi) {
+       if (pv_deftoken_capacity < deftokenLength) {
+           pv_deftoken_capacity = deftokenLength * 2;  // exponential growth
+           pv_deftoken = (char*)realloc(pv_deftoken, pv_deftoken_capacity);
+       }
+       strcpy(pv_deftoken, deftoken);
    }
-   strcpy(pv_deftoken, deftoken);
+   pv_saved_semi = pv_token_semi;
 
    for (;;) {
        if (!DefGetToken(&deftoken, &deftokenLength)) {    /* get a raw token */
@@ -904,7 +911,7 @@ defrData::defError(int msgNum, const char *s) {
          str = (char*)malloc((size_t) len + strlen(s) + strlen(session->FileName) + 350);
          sprintf(str, "ERROR (DEFPARS-%d): %s, file %s at line %s\nLast token was <%s>, space is missing before <;>\n",
               msgNum, s, session->FileName, lines2str(nlines), curToken);
-      } else if ((pvLen > 1) && (pv_deftoken[pvLen] == ';')) {
+      } else if (pv_saved_semi && (pvLen > 1) && (pv_deftoken[pvLen] == ';')) {
          str = (char*)malloc((size_t) pvLen + strlen(s) + strlen(session->FileName) + 350);
          sprintf(str, "ERROR (DEFPARS-%d): %s, file %s at line %s\nLast token was <%s>, space is missing before <;>\n",
               msgNum, s, session->FileName, lines2str(nlines-1), pvToken);
@@ -918,7 +925,7 @@ defrData::defError(int msgNum, const char *s) {
          str = (char*)malloc((size_t) len + strlen(s) + strlen(session->FileName) + 350);
          sprintf(str, "ERROR (DEFPARS-%d): %s, file %s at line %s\nLast token was <%s>, space is missing before <;>\n",
               msgNum, s, session->FileName, lines2str(nlines), curToken);
-      } else if ((pvLen > 1) && (pv_deftoken[pvLen] == ';')) {
+      } else if (pv_saved_semi && (pvLen > 1) && (pv_deftoken[pvLen] == ';')) {
          str = (char*)malloc((size_t) pvLen + strlen(s) + strlen(session->FileName) + 350);
          sprintf(str, "ERROR (DEFPARS-%d): %s, file %s at line %s\nLast token was <%s>, space is missing before <;>\n",
               msgNum, s, session->FileName, lines2str(nlines-1), pvToken);
