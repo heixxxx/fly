@@ -639,67 +639,90 @@ defrData::sublex(YYSTYPE *pYylval)
          }   
          return (int)fc;
       }
-      if (by_is_keyword  && ((strcmp(deftoken,"BY") == 0) ||
-          (strcmp(deftoken, "by") == 0))) {
-         return K_BY; /* even in dumb mode, we must see the BY deftoken */
-      }
-      if (do_is_keyword  && ((strcmp(deftoken,"DO") == 0) ||
-          (strcmp(deftoken, "do") == 0))) {
-         return K_DO; /* even in dumb mode, we must see the DO deftoken */
-      }
-      if (new_is_keyword  && ((strcmp(deftoken,"NEW") == 0) ||
-          (strcmp(deftoken, "new") == 0))) {
-         return K_NEW; /* even in dumb mode, we must see the NEW deftoken */
-      }
-      if (nondef_is_keyword && ((strcmp(deftoken, "NONDEFAULTRULE") == 0) ||
-          (strcmp(deftoken, "nondefaultrule") == 0))){
-          return K_NONDEFAULTRULE; /* even in dumb mode, we must see the */
-                                   /* NONDEFAULTRULE deftoken */
-      }
-      if (mustjoin_is_keyword && ((strcmp(deftoken, "MUSTJOIN") == 0) ||
-          (strcmp(deftoken, "mustjoin") == 0))) {
-          return K_MUSTJOIN; /* even in dumb mode, we must see the */
-                             /* MUSTJOIN deftoken */
-      }
-      if (step_is_keyword  && ((strcmp(deftoken,"STEP") == 0) ||
-          (strcmp(deftoken, "step") == 0))) {
-          return K_STEP;/* even in dumb mode, we must see the STEP deftoken */
-      }
-      if (fixed_is_keyword  && ((strcmp(deftoken,"FIXED") == 0) ||
-          (strcmp(deftoken, "fixed") == 0))) {
-         return K_FIXED; /* even in dumb mode, we must see the FIXED deftoken */
-      }  
-      if (cover_is_keyword  && ((strcmp(deftoken,"COVER") == 0) ||
-          (strcmp(deftoken, "cover") == 0))) {
-         return K_COVER; /* even in dumb mode, we must see the COVER deftoken */
-      }
-      if (routed_is_keyword  && ((strcmp(deftoken,"ROUTED") == 0) ||
-          (strcmp(deftoken, "routed") == 0))) {
-         return K_ROUTED; /* even in dumb mode, we must see the */
-                          /* ROUTED deftoken */
-      }
-      
-      if (virtual_is_keyword && ((strcmp(deftoken, "VIRTUAL") == 0 )
-         || (strcmp(deftoken, "virtual") == 0 ))) {
-         return K_VIRTUAL;
-      }
-      
-      if (rect_is_keyword && ((strcmp(deftoken, "RECT") == 0 )
-         || (strcmp(deftoken, "rect") == 0 ))) {
-         return K_RECT;
-      }
-      
-      if (virtual_is_keyword && ((strcmp(deftoken, "MASK") == 0 )
-         || (strcmp(deftoken, "mask") == 0 ))) {
-         return K_MASK;
+      /* 首字符分派：strcmp 全等蕴含首字符相等，故按 fc 分派与原顺序链完全
+       * 等价，仅省去首字符失配的 strcmp；各组内保持原比较顺序与
+       * xxx_is_keyword 标志检查。orient 查表原先对任意 token 执行，此处
+       * 收进 N/W/S/E/F 分支——其余首字符转大写后不可能等于 N/W/S/E/FN/
+       * FW/FS/FE，查表必 miss，语义等价。 */
+      switch (fc) {
+      case 'B':
+         if (by_is_keyword && ((strcmp(deftoken,"BY") == 0) ||
+             (strcmp(deftoken, "by") == 0))) {
+            return K_BY; /* even in dumb mode, we must see the BY deftoken */
+         }
+         break;
+      case 'D':
+         if (do_is_keyword  && ((strcmp(deftoken,"DO") == 0) ||
+             (strcmp(deftoken, "do") == 0))) {
+            return K_DO; /* even in dumb mode, we must see the DO deftoken */
+         }
+         break;
+      case 'N':
+         if (new_is_keyword && ((strcmp(deftoken,"NEW") == 0) ||
+             (strcmp(deftoken, "new") == 0))) {
+            return K_NEW; /* even in dumb mode, we must see the NEW deftoken */
+         }
+         if (nondef_is_keyword && ((strcmp(deftoken, "NONDEFAULTRULE") == 0) ||
+             (strcmp(deftoken, "nondefaultrule") == 0))){
+             return K_NONDEFAULTRULE; /* even in dumb mode, we must see the */
+                                      /* NONDEFAULTRULE deftoken */
+         }
+         break;
+      case 'M':
+         if (mustjoin_is_keyword && ((strcmp(deftoken, "MUSTJOIN") == 0) ||
+             (strcmp(deftoken, "mustjoin") == 0))) {
+             return K_MUSTJOIN; /* even in dumb mode, we must see the */
+                                /* MUSTJOIN deftoken */
+         }
+         if (virtual_is_keyword && ((strcmp(deftoken, "MASK") == 0 )
+            || (strcmp(deftoken, "mask") == 0 ))) {
+            return K_MASK;
+         }
+         break;
+      case 'S':
+         if (step_is_keyword  && ((strcmp(deftoken,"STEP") == 0) ||
+             (strcmp(deftoken, "step") == 0))) {
+             return K_STEP;/* even in dumb mode, we must see the STEP deftoken */
+         }
+         break;
+      case 'F':
+         if (fixed_is_keyword  && ((strcmp(deftoken,"FIXED") == 0) ||
+             (strcmp(deftoken, "fixed") == 0))) {
+            return K_FIXED; /* even in dumb mode, we must see the FIXED deftoken */
+         }
+         break;
+      case 'C':
+         if (cover_is_keyword  && ((strcmp(deftoken,"COVER") == 0) ||
+             (strcmp(deftoken, "cover") == 0))) {
+            return K_COVER; /* even in dumb mode, we must see the COVER deftoken */
+         }
+         break;
+      case 'R':
+         if (routed_is_keyword  && ((strcmp(deftoken,"ROUTED") == 0) ||
+             (strcmp(deftoken, "routed") == 0))) {
+            return K_ROUTED; /* even in dumb mode, we must see the */
+                             /* ROUTED deftoken */
+         }
+         if (rect_is_keyword && ((strcmp(deftoken, "RECT") == 0 )
+            || (strcmp(deftoken, "rect") == 0 ))) {
+            return K_RECT;
+         }
+         break;
+      case 'V':
+         if (virtual_is_keyword && ((strcmp(deftoken, "VIRTUAL") == 0 )
+            || (strcmp(deftoken, "virtual") == 0 ))) {
+            return K_VIRTUAL;
+         }
+         break;
+      case 'W':
+         if (width_is_keyword && ((strcmp(deftoken, "WIDTH") == 0)
+             || (strcmp(deftoken, "width") == 0))) {
+             return K_WIDTH;
+         }
+         break;
       }
 
-      if (width_is_keyword && ((strcmp(deftoken, "WIDTH") == 0)
-          || (strcmp(deftoken, "width") == 0))) {
-          return K_WIDTH;
-      }
-      
-      if (orient_is_keyword) {
+      if (orient_is_keyword && (fc=='N'||fc=='W'||fc=='S'||fc=='E'||fc=='F')) {
          int result;
          uc_array(deftoken, uc_token);
 
