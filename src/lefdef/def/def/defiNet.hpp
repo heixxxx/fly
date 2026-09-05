@@ -31,6 +31,7 @@
 #define defiNet_h
 
 #include <stdio.h>
+#include <stdlib.h>    // defiArena 的 malloc/free
 #include "defiKRDefs.hpp"
 #include "defiPath.hpp"
 #include "defiMisc.hpp"
@@ -50,6 +51,71 @@ class defrData;
     DEF_ORIENT_FS 6
     DEF_ORIENT_FE 7
 */
+
+// 记录级 bump allocator：连接字符串等生命周期严格封闭在单条记录的分配走此池，
+// 消除逐连接 malloc/free（每连接两次，大规模 DEF 下为百万级）。
+// 块按需追加、绝不 realloc（已分配指针保持稳定），reset() 保留块仅回退游标
+// （clear() 调用，与原逐项 free 时机一致），析构释放全部块。
+class defiArena {
+public:
+  defiArena() : base_(0), cur_(0) {}
+  ~defiArena() {
+    Block* b = base_;
+    while (b) {
+      Block* next = b->next;
+      free(b);
+      b = next;
+    }
+  }
+
+  char* alloc(size_t n) {
+    n = (n + 7) & ~(size_t)7;          // 8 字节对齐
+    while (cur_ && cur_->used + n > cur_->cap)
+      cur_ = cur_->next;               // 当前块满，顺链找空闲块
+    if (!cur_) {
+      size_t cap = n > ARENA_BLOCK_SIZE ? n : ARENA_BLOCK_SIZE;
+      Block* b = (Block*)malloc(sizeof(Block) + cap);
+      b->used = 0;
+      b->cap = cap;
+      b->next = 0;
+      if (cur_) {                      // 追加到链尾
+        Block* t = cur_;
+        while (t->next) t = t->next;
+        t->next = b;
+      } else if (base_) {              // 回到链尾追加（reset 后 cur_ 可能为 base_）
+        Block* t = base_;
+        while (t->next) t = t->next;
+        t->next = b;
+      } else {
+        base_ = b;
+      }
+      cur_ = b;
+    }
+    char* p = blockMem(cur_) + cur_->used;
+    cur_->used += n;
+    return p;
+  }
+
+  void reset() {
+    for (Block* b = base_; b; b = b->next)
+      b->used = 0;
+    cur_ = base_;
+  }
+
+private:
+  static const size_t ARENA_BLOCK_SIZE = 65536;
+  struct Block {
+    Block* next;
+    size_t used;
+    size_t cap;
+  };
+  static char* blockMem(Block* b) { return (char*)(b + 1); }
+
+  Block* base_;    // 首块（reset 后从此顺序重用）
+  Block* cur_;     // 当前 bump 块
+};
+
+
 
 class defiWire {
 public:
@@ -159,6 +225,7 @@ protected:
   defiWire** wires_;             // this replace the paths
   char*      nonDefaultRule_;
 
+  defiArena  pinArena_;          // 连接字符串池（生命周期 = 单条记录，clear() 重置）
   defrData *defData;
 };
 
@@ -663,6 +730,8 @@ protected:
   int                       numVias_;
   int                       viasAllocated_;
   defiNetVia                **vias_;
+
+  defiArena                 pinArena_;   // 连接字符串池（生命周期 = 单条记录，clear() 重置）
 
   defrData*                 defData;
 };

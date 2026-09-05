@@ -124,11 +124,11 @@ void defiSubnet::addPin(const char* instance, const char* pin, int syn) {
     bumpPins(pinsAllocated_ * 2);
 
   len = (int) strlen(instance)+ 1;
-  instances_[numPins_] = (char*)malloc(len);
+  instances_[numPins_] = pinArena_.alloc(len);
   strcpy(instances_[numPins_], defData->DEFCASE(instance));
 
   len = (int) strlen(pin)+ 1;
-  pins_[numPins_] = (char*)malloc(len);
+  pins_[numPins_] = pinArena_.alloc(len);
   strcpy(pins_[numPins_], defData->DEFCASE(pin));
 
   musts_[numPins_] = 0;
@@ -331,14 +331,14 @@ void defiSubnet::clear() {
   name_[0] = '\0';
 
   for (i = 0; i < numPins_; i++) {
-    free(instances_[i]);
-    free(pins_[i]);
+    // 连接字符串在 pinArena_ 池内，clear() 统一重置（见循环后），不再逐项 free
     instances_[i] = 0;
     pins_[i] = 0;
     musts_[i] = 0;
     synthesized_[i] = 0;
   }
   numPins_ = 0;
+  pinArena_.reset();
 
   // WMD -- this will be removed by the next release
   if (paths_) {
@@ -1138,11 +1138,11 @@ void defiNet::addPin(const char* instance, const char* pin, int syn) {
     bumpPins(pinsAllocated_ * 2);
 
   len = (int) strlen(instance)+ 1;
-  instances_[numPins_] = (char*)malloc(len);
+  instances_[numPins_] = pinArena_.alloc(len);
   strcpy(instances_[numPins_], defData->DEFCASE(instance));
 
   len = (int) strlen(pin)+ 1;
-  pins_[numPins_] = (char*)malloc(len);
+  pins_[numPins_] = pinArena_.alloc(len);
   strcpy(pins_[numPins_], defData->DEFCASE(pin));
 
   musts_[numPins_] = 0;
@@ -1324,9 +1324,9 @@ void defiNet::changeInstance(const char* instance, int index) {
   }
 
   len = (int) strlen(instance)+ 1;
-  if (instances_[index])
-    free(instances_[index]);
-  instances_[index] = (char*)malloc(len);
+  // 连接字符串在 pinArena_ 池内：重新分配替换槽位指针，旧串由 clear() 的
+  // arena reset 统一回收（不得对池内指针调用 free）
+  instances_[index] = pinArena_.alloc(len);
   strcpy(instances_[index], defData->DEFCASE(instance));
   return;
 }
@@ -1342,9 +1342,8 @@ void defiNet::changePin(const char* pin, int index) {
   }
 
   len = (int) strlen(pin)+ 1;
-  if (pins_[index])
-    free(pins_[index]);
-  pins_[index] = (char*)malloc(len);
+  // 同 changeInstance：池内重新分配，不 free 旧串
+  pins_[index] = pinArena_.alloc(len);
   strcpy(pins_[index], defData->DEFCASE(pin));
   return;
 }
@@ -1786,14 +1785,14 @@ void defiNet::clear() {
   numProps_ = 0;
 
   for (i = 0; i < numPins_; i++) {
-    free(instances_[i]);
-    free(pins_[i]);
+    // 连接字符串在 pinArena_ 池内，clear() 统一重置（见循环后），不再逐项 free
     instances_[i] = 0;
     pins_[i] = 0;
     musts_[i] = 0;
     synthesized_[i] = 0;
   }
   numPins_ = 0;
+  pinArena_.reset();
 
   for (i = 0; i < numSubnets_; i++) {
     delete subnets_[i];
