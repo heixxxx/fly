@@ -570,6 +570,25 @@ defrData::sublex(YYSTYPE *pYylval)
       /* strtod first to handle double number inside PROPERTY.  Only        */
       /* property has real number (large number) */
       if (!real_num) {
+         /* 快速路径：纯十进制整数（坐标等大量出现）手写累加，替代 locale 感知
+          * 的 strtol。任一非数字字符即回落原 strtol/strtod 路径，语义等价：
+          * 全数字且被完整消费与 strtol+*ch=='\0' 判定一致；<=18 位不溢出，
+          * 更长仍走原路径由 lVal/rVal 范围检查兜底。no_num >= 0 表示当前
+          * 语法位置不接受 NUMBER（数字应识别为 T_STRING），须走原路径。 */
+         if (no_num < 0 && fc != '-' && fc != '+') {
+            const char* p = deftoken;
+            long long v = 0;
+            int n = 0;
+            while (*p >= '0' && *p <= '9') {
+               v = v * 10 + (*p - '0');
+               p++;
+               if (++n > 18) break;   // 超长回落 strtol 路径
+            }
+            if (n > 0 && n <= 18 && *p == '\0') {
+               pYylval->dval = (double)v;
+               return NUMBER;
+            }
+         }
          pYylval->dval = strtol(deftoken, &ch, 10); /* try string to long first */
          if (no_num < 0 && *ch == '\0') { /* did we use the whole string? */
             return NUMBER;
