@@ -138,24 +138,11 @@ if (nb <= 0) {
        next = buffer;
        last = buffer + nb - 1;
     }
-}   
-
-int 
-defrData::GETC() {
-    for(;;) {
-       if (next > last)
-          reload_buffer();
-       if(next == NULL)
-          return EOF;
-
-       int ch = *next++;
-
-       if (ch != '\r')
-           return ch;
-    }
 }
 
-void 
+// GETC 已内联至 defrData.hpp（热路径逐字符调用，原跨编译单元定义无法内联）。
+
+void
 defrData::UNGETC(char ch) {
     if (next <= buffer) {
         defError(6111, "UNGETC: buffer access violation.");

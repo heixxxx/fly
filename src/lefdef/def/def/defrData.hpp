@@ -120,8 +120,21 @@ public:
 
     inline int          defGetKeyword(const char* name, int *result);
     inline int          defGetDefine(const std::string &name, std::string &result);
-    void                reload_buffer(); 
-    int                 GETC();
+    void                reload_buffer();
+    // 热路径：词法层逐字符调用，必须类内内联（原为跨编译单元调用）。
+    // 常用路径（缓冲内且非 '\r'）一次判断返回；'\r' 过滤与缓冲重装为冷路径。
+    inline int          GETC() {
+        while (next) {
+            if (next <= last) {
+                int ch = *next++;
+                if (ch != '\r')
+                    return ch;
+                continue;      // CRLF 流：跳过 '\r'
+            }
+            reload_buffer();   // 缓冲耗尽；EOF 时置 next = NULL
+        }
+        return EOF;
+    }
 
     void                UNGETC(char ch);
     char*               ringCopy(const char* string);
