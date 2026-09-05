@@ -1,0 +1,18 @@
+# src/lefdef 本地构建生成物（上游 Makefile 与 bison 产物，勿提交）
+def.tab.cpp
+def.tab.h
+def.tab.hpp
+def.output
+lef.tab.cpp
+lef.tab.h
+lef.tab.hpp
+lef.output
+*.o
+defRWarning.log
+lefRWarning.log
+def/bin/
+def/lib/
+def/include/
+lef/bin/
+lef/lib/
+lef/include/
