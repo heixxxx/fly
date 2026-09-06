@@ -78,3 +78,9 @@ _test_db_id
 qa/var/persistence_db/
 .work/
 qa/unit/storage_test/
+
+# lefdef (Si2 参考解析器) 构建产物（源码与文档签入，产物不入库）
+src/lefdef/**/*.a
+src/lefdef/def/defdiff/defdiff
+src/lefdef/def/defrw/defrw
+src/lefdef/def/defwrite/defwrite

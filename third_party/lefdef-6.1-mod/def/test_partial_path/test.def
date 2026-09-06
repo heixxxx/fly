@@ -1,0 +1,34 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN test_design ;
+UNITS DISTANCE MICRONS 2000 ;
+DIEAREA ( 0 0 ) ( 10000 10000 ) ;
+
+COMPONENTS 2 ;
+- inst1 PAD_IN + PLACED ( 0 0 ) N ;
+- inst2 PAD_OUT + PLACED ( 10000 10000 ) N ;
+END COMPONENTS
+
+NETS 1 ;
+- test_net
+  ( inst1 pin1 ) ( inst2 pin2 )
+  + ROUTED metal1 ( 100 100 ) ( 1100 1100 )
+  NEW metal1 ( 1100 1100 ) ( 1200 1200 )
+  NEW metal1 ( 1200 1200 ) ( 1300 1300 )
+  NEW metal1 ( 1300 1300 ) ( 1400 1400 )
+  NEW metal1 ( 1400 1400 ) ( 1500 1500 )
+  NEW metal1 ( 1500 1500 ) ( 1600 1600 )
+  NEW metal1 ( 1600 1600 ) ( 1700 1700 )
+  NEW metal1 ( 1700 1700 ) ( 1800 1800 )
+  NEW metal1 ( 1800 1800 ) ( 1900 1900 )
+  NEW metal1 ( 1900 1900 ) ( 2000 2000 )
+  NEW metal1 ( 2000 2000 ) ( 2100 2100 )
+  NEW metal1 ( 2100 2100 ) ( 2200 2200 )
+  NEW metal1 ( 2200 2200 ) ( 2300 2300 )
+  NEW metal1 ( 2300 2300 ) ( 2400 2400 )
+  NEW metal1 ( 2400 2400 ) ( 2500 2500 )
+  + USE SIGNAL ;
+END NETS
+
+END DESIGN

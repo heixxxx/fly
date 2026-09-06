@@ -1,0 +1,36 @@
+def/include
+def/lib
+def/bin
+*.o
+*.a
+def/defrw/defrw
+def/defdiff/defdiff
+def/defwrite/defwrite
+
+# Performance test binaries
+def/defrw/defrw_gperf
+def/defrw/defrw_std_map
+def/defrw/defrw_unordered_map
+def/defrw/defrw_perf
+def/defrw/defrw_perf_*
+def/defrw/defrw_skip_test
+def/defrw/defrw_section_test
+def/defrw/defrw_name_test
+def/defrw_perf_opt
+def/defrw_perf_prof
+def/defrw/*_o3
+
+# Test data and temporary files
+def/TEST/Galaxy.def
+def/TEST/Galaxy_large.def
+def/TEST/Galaxy_ori.def
+def/TEST/*.prof
+def/TEST/*.pdf
+def/TEST/*.test
+def/TEST/*.swp
+def/TEST/Galaxy.def.*
+
+# Escape test files
+def/TEST/test_escape*.def
+def/test_escape/
+def/defRWarning.log
