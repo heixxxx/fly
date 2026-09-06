@@ -61,7 +61,7 @@ cd src/lefdef/def && make -j1
 
 ### 12GB 规模验证（2026-09-06）
 
-测试文件：`Galaxy_12GB.def.test`（12.0GB，合法 DEF，由 444MB 修复版全段等比 ×27 合成：2456.8 万 components、909.3 万 nets、68.0 万 specialnets、2644 万连接、8909 万 wire 路径；解析 status=0、七项计数精确 ×27）。四组对照各 2 轮：
+测试文件：`Galaxy_12GB.def.test`（12.0GB，合法 DEF，由 444MB 修复版全段等比 ×27 合成：2456.8 万 components、909.3 万 nets、68.0 万 specialnets、2644 万 connections、8909 万 wire 路径；解析 status=0、七项计数精确 ×27）。四组对照各 2 轮：
 
 | 组合 | 耗时 | 峰值内存 |
 |---|---|---|
@@ -71,6 +71,21 @@ cd src/lefdef/def && make -j1
 | 优化版 + tcmalloc（最速） | **78.6s** | 114.3MB |
 
 结论：本仓库优化使同分配器下快 28.4%（127.1→91.0s）、峰值内存降 32.3%（151.5→102.5MB）；叠加 tcmalloc 后最速 78.6s（累计快 38.2%，吞吐约 153MB/s）。峰值内存与文件体积无关（流式解析，由单个最大记录——VDD/VSS 巨型网决定），原版与优化版在 442MB 与 12GB 文件上峰值一致。
+
+### 三方对照与外部魔改版收益修正（12GB，同机同 -O3）
+
+| 版本 | 耗时 | 峰值内存 |
+|---|---|---|
+| Si2 纯原版（6.0_62-p004） | 128.4s | 151.4MB |
+| 外部魔改版（lefdef-6.1-mod 原样） | 122.8s | 151.8MB |
+| 本仓库当前版（魔改增强 + 五项优化） | 91.0s | 102.5MB |
+| 本仓库当前版 + tcmalloc | 78.6s | 114.3MB |
+
+外部魔改版相对纯原版仅快 4.4%。其宣称的 22.4% 提速为编译等级差异假象（上游 Makefile 在 Linux 下默认无优化标志，即 -O0 基线对 -O3 优化版）。机制根源：魔改版的主力优化 gperf 关键字查找作用于 smart 模式的关键字表查询，而 12GB 文件 99% 的数据量（COMPONENTS/NETS/SPECIALNETS 数据区）解析于 dumb_mode（词法器跳过关键字表、按 strcmp 链机械切分，用于消解数据名与保留字同名的歧义），gperf 路径在真实负载中几乎不执行。其真正有价值的部分是选择性解析 API（section skip / NetNameOnly，"少解析数据"的收益）与 NetPartialPathCbk 流式内存控制，两者已随提交迁移保留。
+
+### 第二轮优化实验（对象生命周期清理，负结果）
+
+针对 12GB 剖析中占比约 20% 的 defiPin/defiComponent 生命周期函数（clear/Destroy），实施了两项实验：defiComponent 连接字符串 arena 化、defiPin props 容器原地清空 + antennaModel 对象池复用。实测 442MB 上 3.40s→3.54s、12GB 上 78.6s→79.9s，**无收益反而退化 2-3%**，已全部回退。原因：tcmalloc/glibc 的线程缓存使这类小对象堆操作接近免费，池的重置管理反而引入开销。解析器本体（词法+语法+分配）在本代码基线上已无低风险收益空间，当前最速组合（优化版 + tcmalloc）即为实际最优状态。
 
 注意事项：上游 Makefile 的 `.cpp.o` 规则无头文件依赖跟踪，**修改 .hpp 后必须 `make clean` 全量重建**，否则新旧对象布局混链会 ODR 违例（实测表现为成员读位错乱段错误）。defiPath 的逐元素 malloc（对象级生命周期，池化需 freelist 复用对象）与 defyyparse 状态机为后续可选优化。
 
