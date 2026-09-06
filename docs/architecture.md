@@ -485,26 +485,32 @@ FIFO），消除「声明晚于断连被读丢」的竞态。活体判定统一�
 ### 4.4 模块依赖关系
 
 ```
-main → agent → task → network → storage → core → common
-              ↓         ↓          ↓
-           serialization        log
+main → agent → task → network → storage → core → common（模块族）
+              ↓         ↓          ↓           types / buffer / concurrent / io /
+           serialization        log         runtime / testing / serialization（子模块）
               ↑
             export → nanobind
+container（容器别名层 + 自定义容器）→ common(types) + common(serialization)
 ```
 
 依赖方向：上层依赖下层，**禁止反向依赖**（BUILD 级无环，是 fly 对外宣称的核心工程优势）。
+common 为模块族：`types`（智能指针别名）/ `buffer`（FlyBuffer + data_checksum）/ `concurrent` /
+`io`（FdHandle + ChunkSource）/ `runtime`（WriterID 等运行期类型）/ `testing` /
+`serialization`（序列化宏 + 对象头）为其子模块；顶层 serialization 模块已并入
+`common/serialization`（2026-09-06）。
 
 | 模块 | 依赖 |
 |------|------|
-| common | 无依赖（纯类型别名 + CMSharedPtr） |
+| common/types | 无依赖（智能指针别名） |
+| container | common(types), common(serialization)——容器别名层（CMVector 等，可整体替换底层实现）+ 自定义容器（CMLookupTable 等） |
 | core | common |
-| serialization | common, bitsery |
+| common/serialization | common(buffer, types), bitsery |
 | export | nanobind |
 | log | fmt |
-| storage | core, serialization, export, common |
-| network | core, serialization, export, common, log |
-| task | network, storage, core, serialization, common |
-| agent | task, network, storage, core, serialization, export, common, log |
+| storage | core, common(serialization), export, common |
+| network | core, common(serialization), export, common, log |
+| task | network, storage, core, common(serialization), common |
+| agent | task, network, storage, core, common(serialization), export, common, log |
 | main | 全部 C++ 模块（链接入口） |
 | fly/ (Python) | 所有 C++ 导出模块 |
 
@@ -591,7 +597,7 @@ Worker A 写入 object_name:
 **写注册协议**：
 - 写入注册统一走 `WriteRegisterMessage` → `do_write_register` 单一入口（**master 自写也走此路径，同步调用**）；携带压缩后 size 用于 locality 调度亲和度打分
 - Config.track_writes 启用时，记录每个任务写入的对象列表
-- WorkerAgentContext 使用 std::function 回调模式（common/cpp/worker_context.h）
+- WorkerAgentContext 使用 std::function 回调模式（common/runtime/cpp/worker_context.h）
 
 ### 5.3 Database Freeze
 

@@ -51,6 +51,7 @@ cc_test(
     name = "network_integration_test",
     srcs = ["network_integration_test.cpp"],
     deps = [
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/network/cpp:fly_network",
     ],
@@ -61,9 +62,10 @@ cc_test(
     name = "reactor_serialized_domain_test",
     srcs = ["reactor_serialized_domain_test.cpp"],
     deps = [
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/network/cpp:fly_network",
-        "//src/common/cpp:fly_common_types",
+        "//src/container/cpp:fly_container_aliases",
     ],
     copts = ["-std=c++20"],
 )
@@ -84,10 +86,13 @@ cc_test(
     name = "data_transfer_test",
     srcs = ["data_transfer_test.cpp"],
     deps = [
+        "//src/common/serialization:fly_serialization",
+        "//src/common/buffer:fly_common_buffer",
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/network/cpp:fly_network",
         "//src/storage/cpp:fly_storage",
-        "//src/common/cpp:data_checksum",
+        "//src/common/buffer:data_checksum",
     ],
     copts = ["-std=c++20"],
 )
@@ -96,10 +101,14 @@ cc_test(
     name = "data_client_pool_test",
     srcs = ["data_client_pool_test.cpp"],
     deps = [
+        "//src/common/serialization:fly_serialization",
+        "//src/common/runtime:fly_common_runtime",
+        "//src/common/buffer:fly_common_buffer",
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/network/cpp:fly_network",
         "//src/storage/cpp:fly_storage",
-        "//src/common/cpp:data_checksum",
+        "//src/common/buffer:data_checksum",
     ],
     copts = ["-std=c++20"],
 )

@@ -32,6 +32,7 @@
 | 内存增长分析（M1 依据） | [memory-growth-analysis.md](memory-growth-analysis.md) |
 | 竞品对比与战略边界 | [competitor-analysis.md](competitor-analysis.md)（2026-06 版本，部分状态以 roadmap 修正为准） |
 | **能力演进与差距分析** | [emir-capability-gap.md](emir-capability-gap.md)（面向分布式 EMIR 工具的框架能力现状 + 差距路线） |
+| **EMIR 业务数据流转流程** | [emir-data-flow.md](emir-data-flow.md)（13 个数据库的职责/依赖/架构裁定——业务层总流程权威） |
 
 ## 性能与测试
 
@@ -56,7 +57,7 @@
 
 ## 模块文档（docs/&lt;module&gt;/module.md）
 
-agent、common、core、export、log、network、python-api、serialization、storage、task、test —— 每模块一份，实现细节与内部约定；模块清单见 architecture.md §七。
+agent、common（模块族）、container、core、export、log、network、python-api、storage、task、test —— 每模块一份，实现细节与内部约定；模块清单见 architecture.md §七。
 
 ## 问题追踪体系
 

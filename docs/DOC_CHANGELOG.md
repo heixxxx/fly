@@ -3,6 +3,101 @@
 ---
 ---
 
+## 2026-09-06: common 模块族重组——serialization 并入 + 按类型组织子模块 + container 模块独立
+
+结构性模块重组（全仓库 130+ 文件 include/deps 机械改写，零残留验证）：
+
+- **common 模块族化**：原平铺 `common/cpp/` 按类型组织为子模块——`types`
+  （智能指针别名）/ `buffer`（FlyBuffer + data_checksum，.so 单一定义点保留）/
+  `concurrent` / `io`（FdHandle + ChunkSource）/ `runtime`（WriterID 等运行期
+  类型）/ `testing`（test_helpers）。
+- **serialization 并入 common**：顶层 serialization 模块退役，整体迁为
+  `common/serialization` 子模块（序列化宏 + object_header + bitsery_ext）；
+  `fly_serialization`/`fly_serialization_so` target 名保留、路径迁移。
+- **container 模块独立**：`container/cpp/container_aliases.h`（CM* 容器别名，
+  可整体替换底层实现的可替换别名层，聚合 common/types 指针别名）+
+  `CMLookupTable`（自定义容器）；`_fly_container.so` 绑定；别名层纯头 target
+  `fly_container_aliases` 为新底座。依赖链：container → common(types) +
+  common(serialization)，common 不再反向依赖任何模块。
+- 拆分语义（用户裁定）：CM* 别名分两类——容器类型别名（CMVector/CMMap/
+  CMString…，归 container）与基础别名（智能指针族，归 common/types）；CMString
+  暂无修改打算，随容器别名放 container。
+- 文档同步：architecture.md §4.4 依赖图与模块表、AGENTS.md（LSP 表/类型规范/
+  Module Map）、CLAUDE.md §类型别名、DEVELOPMENT_GUIDELINES、README 文档地图、
+  emir-data-flow.md 裁定 11。
+- 验证：全仓库 bazel 单测 83/83 通过；qa/emir、qa/mapreduce、qa/solver
+  project、qa/project、qa/storage 回归全过；fly 进程冒烟（_fly_container
+  import + EMIRProject + build_lib_db 解析链）通过。
+
+---
+---
+
+## 2026-09-06: lib 库 db 立项实施——EMIRProject + common 查找表 + build_lib_db
+
+业务层开发首个立项落地（全部测试绿，改动停留工作区待审查）：
+
+- **EMIRProject**（`src/emir/project/`）：EMIR 专属 Project 类型，13 个数据库
+  的创建 API 统一归属（`from emir import EMIRProject`）。
+- **common 查找表**（`src/common/cpp/lookup_table.h`）：框架级公共结构
+  CMLookupTable/CMLookupTableTemplate（模板共享 + N 维多线性插值 +
+  FLY_SERIALIZE 序列化 + `_fly_common.so` 绑定）。序列化框架补嵌套 vector
+  分支（serialization_macros.h container 递归）；导出宏拆出
+  FLY_EXPORT_SERIALIZE_PICKLE（底层模块免 storage 依赖）。
+- **lib 库 db**（`src/emir/lib/` 三段式）：新思 Open Liberty 参考解析器按
+  上游方式编译引入（build_so.sh 产 .a/.so 签入；语法检查套裁剪 + yyparse
+  组栈重置补丁，见 src_local/PATCHES.md）；LIBLibrary/LIBCell C++ 数据结构 +
+  lib_parse_lib_file 适配层；build_lib_db flow（MapReduce 每文件一解析任务 +
+  全量合并 + freeze task，UserDoc header + Schema 调用期校验）。
+- **框架修正**：MapReduceJob 的 db 参数校验改 isinstance 语义（原类名串匹配
+  拒绝一切 Database 子类，角色化 db 无法接入）。
+- 注册链路：main.cpp（_fly_common/_fly_emir_lib）、main BUILD data、
+  fly.sh（common 入模块循环 + emir 模块族嵌套包树小节）。
+- 验证：单测 12 个全绿（lookup_table 10 + emir_project 3 + lib_parser 9 中
+  相关全集）；qa/emir 2 case、qa/mapreduce 全部、qa/solver project flow
+  回归全过；Nangate45 真实库（6.7MB/135 cell/541 pin/4918 功耗表）解析
+  0.25s 断言通过。
+
+---
+---
+
+## 2026-09-06: EMIR 模块简写表定稿（emir-data-flow.md 裁定 12 更新）
+
+- 经全库前缀冲突检测（export 目录 / 导出符号 EX+模块缩写体系
+  EXAgent/EXCore/EXNet/EXPeer/EXSlv/EXStg/EXTask / FLY_ 宏 / fly_* 目标），
+  extraction 简写定为 PEX（EX、EXT 被占用排除）；VCD/PWR/CUR/ANS 采用
+  三字母全义缩写。终表：LIB/TC/DS/PEX/SP/MX/TM/VCD/SW/PWR/CUR/ANS/EM，
+  common 查找表 CM。
+
+---
+---
+
+## 2026-09-06: EMIR 流程修订——design db 依赖 lib db（cell id 体系）+ LIBLibrary 整合 + 裁定沉淀
+
+- design db 前置增加 lib db：lib 阶段以 cell name 区分 cell，design 阶段读入
+  LIBLibrary 校验 cell 齐全并分配独占 cell id（cell/instance/pin/net 全量 id 化）。
+- lib db 多文件分布式解析汇整于单一 C++ 容器 LIBLibrary（顶层产出与下游读取入口）。
+- §4 裁定记录补 9-13（design→lib 依赖与 cell id、LIBLibrary、查找表框架层
+  src/common/、C/C++ 解析器与 emir 命名规范、API 命名与链上获取）；
+  §5 增 EMIRProject API 归属表（13 个 build_<db>_db）。
+
+---
+---
+
+## 2026-09-06: 新增 EMIR 业务数据流转流程权威文档（docs/emir-data-flow.md）
+
+业务层开发启动：经三轮流程确认收敛出 EMIR（电压降 IR + 电迁移 EM）仿真分析
+的 13 个数据库总流程（基础三库 → 左端项/右端项双轨 → 仿真分析汇合）。
+
+- 关键裁定：全局 ID 化（design db 为 name → id 分配源头，下游全 id 引用）；
+  分区从源头天然形成（matrix db 逐分区直接生成 sub matrix + 端点连接性，
+  求解器需专项增强而非简单复用，现有 MatrixDb 为测试性数据库）；首期专注
+  电源网络静态 IR（matrix db 仅依赖 extraction db，current db 为平均电流值）；
+  动态以新 db 叠加实现，不改动已有 db。
+- 登记 docs/README.md「设计与决策」表。
+
+---
+---
+
 ## 2026-09-05: issue 011 根治——fd 所有权原语 FdHandle + 四体系迁移（M0-M5）
 
 TSAN 首轮扫描发现的两处数据竞争（DataServer::stop 与内部线程）根治，

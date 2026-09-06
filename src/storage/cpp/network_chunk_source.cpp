@@ -1,7 +1,7 @@
 #include <storage/cpp/network_chunk_source.h>
 #include <network/cpp/transport_interface.h>
 #include <network/cpp/message_protocol.h>
-#include <common/cpp/data_checksum.h>
+#include <common/buffer/cpp/data_checksum.h>
 #include <log/cpp/logger.h>
 #include <cstring>
 

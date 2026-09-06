@@ -4,8 +4,8 @@
 #include <network/cpp/message_protocol.h>
 #include <network/cpp/message_types.h>
 #include <network/cpp/net_quality_monitor.h>
-#include <common/cpp/data_checksum.h>
-#include <serialization/cpp/object_header.h>
+#include <common/buffer/cpp/data_checksum.h>
+#include <common/serialization/cpp/object_header.h>
 #include <log/cpp/logger.h>
 #include <cstring>
 #include <chrono>

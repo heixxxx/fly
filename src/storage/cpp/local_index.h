@@ -1,7 +1,7 @@
 #pragma once
 
 #include <storage/cpp/index_entry.h>
-#include <common/cpp/common_types.h>
+#include <container/cpp/container_aliases.h>
 #include <cstdint>
 #include <fstream>
 #include <mutex>

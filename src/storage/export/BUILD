@@ -6,10 +6,12 @@ cc_binary(
     name = "_fly_storage.so",
     srcs = ["storage_export.cpp"],
     deps = [
+        "//src/common/buffer:fly_common_buffer",
+        "//src/common/runtime:fly_common_runtime",
         "@nanobind//:nanobind_src",
         "//src/export/cpp:fly_export_macros",
         "//src/storage/cpp:fly_storage",
-        "//src/serialization/cpp:fly_serialization",
+        "//src/common/serialization:fly_serialization",
     ],
     copts = ["-std=c++20"],
     linkshared = True,

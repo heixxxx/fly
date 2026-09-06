@@ -5,7 +5,7 @@
 #include <agent/cpp/task_executor.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/data_service.h>
-#include <common/cpp/test_helpers.h>
+#include <common/testing/cpp/test_helpers.h>
 #include <log/cpp/logger.h>
 #include <thread>
 #include <chrono>

@@ -3,9 +3,9 @@
 #include <storage/cpp/local_index.h>
 #include <storage/cpp/compressing_streambuf.h>
 #include <storage/cpp/fly_buffer_stream.h>
-#include <common/cpp/fly_buffer.h>
-#include <common/cpp/test_helpers.h>
-#include <serialization/cpp/object_header.h>
+#include <common/buffer/cpp/fly_buffer.h>
+#include <common/testing/cpp/test_helpers.h>
+#include <common/serialization/cpp/object_header.h>
 #include <filesystem>
 #include <fstream>
 #include <cstring>

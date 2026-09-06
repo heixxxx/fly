@@ -140,7 +140,7 @@ ops/sec
 
 **场景 B（读写混合）的历史数字（优化后 15786 ops/sec）已失效**：此后
 remote_idx 锁从 `std::shared_mutex` 换为 `fly::WriterPrefRwLock`（写优先，
-根治读者优先饿死写者的 remote_idx 活锁，见 `src/common/cpp/writer_pref_rwlock.h`
+根治读者优先饿死写者的 remote_idx 活锁，见 `src/common/concurrent/cpp/writer_pref_rwlock.h`
 头注）。写优先语义下，bench 中写线程无限循环申请写锁会持续压制新读者，
 7读+1写 当前口径约 **2176 ops/sec**——这是防写饿死的有意语义代价，不是退化。
 真实负载写频率为每对象一次，不构成瓶颈。**勿用旧数字对比本轮之后的测量。**

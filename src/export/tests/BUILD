@@ -18,7 +18,7 @@ cc_test(
     deps = [
         "@googletest//:gtest_main",
         "//src/export/cpp:fly_export_macros",
-        "//src/serialization/cpp:fly_serialization",
+        "//src/common/serialization:fly_serialization",
     ],
     copts = ["-std=c++20"],
 )

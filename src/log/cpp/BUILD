@@ -11,7 +11,7 @@ cc_library(
     copts = ["-std=c++20"],
     linkstatic = False,
     deps = [
-        "//src/common/cpp:fly_common_types",
+        "//src/container/cpp:fly_container_aliases",
         "@fmt//:fmt",
     ],
 )

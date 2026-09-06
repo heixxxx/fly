@@ -153,6 +153,7 @@ static void setup_sys_path() {
         ps += "sys._fly_binary = '" + (build_dir / "bin" / "fly").string() + "'\n";
     } else if (!build_dir.empty()) {
         // bazel-bin/ layout (for Bazel test targets)
+        ps += "sys.path.insert(0, '" + (build_dir / "src" / "container" / "export").string() + "')\n";
         ps += "sys.path.insert(0, '" + (build_dir / "src" / "core" / "export").string() + "')\n";
         ps += "sys.path.insert(0, '" + (build_dir / "src" / "storage" / "export").string() + "')\n";
         ps += "sys.path.insert(0, '" + (build_dir / "src" / "agent" / "export").string() + "')\n";
@@ -162,11 +163,13 @@ static void setup_sys_path() {
         ps += "sys.path.insert(0, '" + (build_dir / "src" / "test" / "export").string() + "')\n";
         ps += "sys.path.insert(0, '" + (build_dir / "src" / "solver" / "export").string() + "')\n";
         ps += "sys.path.insert(0, '" + (build_dir / "src" / "message" / "export").string() + "')\n";
+        ps += "sys.path.insert(0, '" + (build_dir / "src" / "emir" / "lib" / "export").string() + "')\n";
         auto project_root = build_dir.parent_path();
         ps += "sys.path.insert(0, '" + (project_root / "src").string() + "')\n";
         ps += "sys._fly_binary = '" + (build_dir / "src" / "main" / "cpp" / "fly").string() + "'\n";
     }
 
+    ps += "import _fly_container\n";
     ps += "import _fly_core\n";
     ps += "import _fly_log\n";
     ps += "import _fly_storage\n";
@@ -175,6 +178,7 @@ static void setup_sys_path() {
     ps += "import _fly_test\n";
     ps += "import _fly_solver\n";
     ps += "import _fly_message\n";
+    ps += "import _fly_emir_lib\n";
 
     PyRun_SimpleString(ps.c_str());
 }

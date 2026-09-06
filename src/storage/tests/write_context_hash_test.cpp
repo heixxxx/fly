@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/index_entry.h>
 #include <storage/cpp/local_index.h>
-#include <common/cpp/error_types.h>
-#include <common/cpp/write_context_hash.h>
-#include <common/cpp/test_helpers.h>
+#include <common/runtime/cpp/error_types.h>
+#include <common/runtime/cpp/write_context_hash.h>
+#include <common/testing/cpp/test_helpers.h>
 #include <filesystem>
 #include <set>
 #include <string>

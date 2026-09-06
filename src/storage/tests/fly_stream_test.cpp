@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/fly_stream.h>
 #include <storage/cpp/decompressing_streambuf.h>
-#include <serialization/cpp/object_header.h>
+#include <common/serialization/cpp/object_header.h>
 #include <cstring>
 #include <string>
 #include <vector>

@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/storage_manager.h>
 #include <storage/cpp/data_service.h>
-#include <common/cpp/test_helpers.h>
+#include <common/testing/cpp/test_helpers.h>
 #include <atomic>
 #include <chrono>
 #include <filesystem>

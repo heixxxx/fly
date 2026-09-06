@@ -94,7 +94,7 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 
 | LSP Error | Cause |
 |-----------|-------|
-| `common/cpp/writer_id.h file not found` | Virtual includes path |
+| `common/runtime/cpp/writer_id.h file not found` | Virtual includes path |
 | `No template named 'remove_cvref_t' in namespace 'fmt'` | clangd parsing bazel virtual headers |
 | `Import "_fly_*" could not be resolved` | nanobind dynamic .so |
 | `Cannot access attribute "..." for class "FlyAgent"` | Abstract class, concrete methods on subclasses |
@@ -114,7 +114,7 @@ These clangd errors are **not real** — they come from Bazel's virtual include 
 - **TDD**: write test → implement → verify tests pass → commit
 - **Zero tolerance for flaky tests** — no `sleep(); assert()`, no deleting failing tests
 - **No `@ts-ignore`/`as any` equivalents** — fix the root cause
-- **C++20 / gcc12** — use `CMString`, `CMVector`, etc. from `common/cpp/common_types.h`
+- **C++20 / gcc12** — use `CMString`, `CMVector`, etc. from `container/cpp/container_aliases.h`（容器别名，可替换层；智能指针族在 `common/types/cpp/pointer_aliases.h`，前者已聚合后者）
 - **Module-style includes**: `<module/cpp/file.h>` NOT `"../cpp/file.h"`
 - **Macros over raw APIs**: use `FLY_SERIALIZE_*` not bitsery, `FLY_EXPORT_*` not nanobind
 - **Must pass full test suite before committing** — cpp/python unit tests + QA tests must ALL pass, ZERO failures allowed. No exceptions, no "pre-existing" excuses. If a test fails, fix it before committing.
@@ -171,7 +171,8 @@ src/solver/     → Layer 6: Distributed RAS solver (C++ core + Python orchestra
 src/monitor/    → cluster monitor: 采集落盘 (MetricsDb 单写 monitor.db, 与心跳解耦的
                   MONITOR_SAMPLE 通道) + Web GUI (serve.py + ECharts, fly --serve-monitor)
 src/message/    → 消息日志系统: 高价值日志推送/配额/终端唯一透出 (docs/message-system.md)
-src/common/     → CM* type aliases (CMSharedPtr, CMString, CMVector…), FlyBuffer, FlyBufferPtr, WriterID, ErrorTypes
+src/common/     → 模块族: types(指针别名) buffer(FlyBuffer+data_checksum) concurrent io(FdHandle+ChunkSource) runtime(WriterID等) testing serialization(序列化宏+对象头)
+src/container/  → 容器别名层(CMVector/CMMap/CMString…, 可整体替换底层实现) + 自定义容器(CMLookupTable…); EMIR 业务模块族(src/emir: EMIRProject + 各 db 子模块)亦按此模式
 src/log/        → DBG/INFO/WARN/ERR macros, CM_FORMAT_CLASS/ENUM
 src/test/       → TestObject, e2e_tasks.py, test_tasks.py (not public API)
 ```

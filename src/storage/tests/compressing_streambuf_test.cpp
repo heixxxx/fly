@@ -2,7 +2,7 @@
 #include <storage/cpp/compressing_streambuf.h>
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/fly_buffer_stream.h>
-#include <common/cpp/fly_buffer.h>
+#include <common/buffer/cpp/fly_buffer.h>
 #include <sstream>
 #include <string>
 #include <cstring>

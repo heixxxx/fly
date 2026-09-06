@@ -1,8 +1,8 @@
 #pragma once
 
 #include <storage/cpp/database.h>
-#include <common/cpp/common_types.h>
-#include <common/cpp/concurrent_map.h>
+#include <container/cpp/container_aliases.h>
+#include <common/concurrent/cpp/concurrent_map.h>
 #include <memory>
 
 class StorageManager {

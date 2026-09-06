@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/write_back_queue.h>
-#include <common/cpp/common_types.h>
-#include <common/cpp/test_helpers.h>
+#include <container/cpp/container_aliases.h>
+#include <common/testing/cpp/test_helpers.h>
 #include <fstream>
 #include <filesystem>
 #include <atomic>

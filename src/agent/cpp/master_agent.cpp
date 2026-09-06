@@ -12,7 +12,7 @@
 #include <storage/cpp/object_cache.h>
 #include <storage/cpp/network_chunk_source.h>
 #include <storage/cpp/memory_chunk_source.h>
-#include <common/cpp/write_context_hash.h>
+#include <common/runtime/cpp/write_context_hash.h>
 #include <algorithm>
 #include <cmath>
 #include <unordered_set>

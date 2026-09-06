@@ -1,6 +1,6 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/memory_chunk_source.h>
-#include <common/cpp/data_checksum.h>
+#include <common/buffer/cpp/data_checksum.h>
 #include <cstring>
 #include <string_view>
 

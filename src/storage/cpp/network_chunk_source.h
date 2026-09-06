@@ -1,11 +1,11 @@
 #pragma once
 
-#include <common/cpp/chunk_source.h>
-#include <common/cpp/data_checksum.h>
-#include <common/cpp/fd_handle.h>
+#include <common/io/cpp/chunk_source.h>
+#include <common/buffer/cpp/data_checksum.h>
+#include <common/io/cpp/fd_handle.h>
 #include <network/cpp/message_types.h>
-#include <common/cpp/common_types.h>
-#include <common/cpp/fly_buffer.h>
+#include <container/cpp/container_aliases.h>
+#include <common/buffer/cpp/fly_buffer.h>
 #include <cstdint>
 #include <condition_variable>
 #include <deque>

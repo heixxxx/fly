@@ -11,10 +11,10 @@
 #include <storage/cpp/fly_stream.h>
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/object_cache.h>
-#include <serialization/cpp/object_header.h>
+#include <common/serialization/cpp/object_header.h>
 #include <core/cpp/config.h>
-#include <common/cpp/worker_context.h>
-#include <common/cpp/common_types.h>
+#include <common/runtime/cpp/worker_context.h>
+#include <container/cpp/container_aliases.h>
 #include <log/cpp/logger.h>
 #include <memory>
 #include <stdexcept>

@@ -9,11 +9,11 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/db_meta.h>
 #include <storage/cpp/object_cache.h>
-#include <common/cpp/worker_context.h>   // WorkerAgentContext::suggest_backup（maybe_suggest_backup 用）
+#include <common/runtime/cpp/worker_context.h>   // WorkerAgentContext::suggest_backup（maybe_suggest_backup 用）
 #include <core/cpp/process_info.h>       // master 进程豁免 remove_remote_location（权威 remote_idx 保护）
 #include <network/cpp/net_quality_monitor.h>
-#include <serialization/cpp/object_header.h>
-#include <serialization/cpp/serialization_macros.h>
+#include <common/serialization/cpp/object_header.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <core/cpp/config.h>
 #include <log/cpp/logger.h>
 #include <chrono>

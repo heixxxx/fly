@@ -1,6 +1,6 @@
 #pragma once
 
-#include <common/cpp/common_types.h>
+#include <container/cpp/container_aliases.h>
 #include <network/cpp/message_types.h>  // MonitorSample（消息与落盘共用单一定义）
 
 #include <chrono>

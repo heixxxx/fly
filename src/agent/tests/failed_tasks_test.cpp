@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <agent/cpp/master_agent.h>
-#include <common/cpp/test_helpers.h>
+#include <common/testing/cpp/test_helpers.h>
 #include <filesystem>
 #include <fstream>
 #include <sstream>

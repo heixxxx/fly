@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <task/cpp/task_manager.h>
-#include <serialization/cpp/serialization_macros.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <algorithm>
 #include <latch>
 #include <thread>

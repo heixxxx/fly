@@ -1,7 +1,7 @@
 #pragma once
 
-#include <common/cpp/fly_buffer.h>
-#include <common/cpp/common_types.h>
+#include <common/buffer/cpp/fly_buffer.h>
+#include <container/cpp/container_aliases.h>
 #include <streambuf>
 #include <cstdint>
 

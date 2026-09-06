@@ -4,8 +4,8 @@
 #include <storage/cpp/compressing_streambuf.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/fly_buffer_stream.h>
-#include <serialization/cpp/object_header.h>
-#include <common/cpp/test_helpers.h>
+#include <common/serialization/cpp/object_header.h>
+#include <common/testing/cpp/test_helpers.h>
 #include <filesystem>
 
 namespace {

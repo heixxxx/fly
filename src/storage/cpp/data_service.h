@@ -3,11 +3,11 @@
 #include <storage/cpp/index_entry.h>
 #include <storage/cpp/data_reader.h>
 #include <storage/cpp/write_back_queue.h>
-#include <common/cpp/common_types.h>
-#include <common/cpp/chunk_source.h>
-#include <common/cpp/concurrent_map.h>
-#include <common/cpp/error_types.h>
-#include <common/cpp/writer_pref_rwlock.h>
+#include <container/cpp/container_aliases.h>
+#include <common/io/cpp/chunk_source.h>
+#include <common/concurrent/cpp/concurrent_map.h>
+#include <common/runtime/cpp/error_types.h>
+#include <common/concurrent/cpp/writer_pref_rwlock.h>
 #include <cstdint>
 #include <functional>
 #include <mutex>

@@ -18,6 +18,7 @@ cc_test(
     name = "run_metrics_test",
     srcs = ["run_metrics_test.cpp"],
     deps = [
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/agent/cpp:fly_agent",
         "@fmt//:fmt",
@@ -29,6 +30,7 @@ cc_test(
     name = "master_agent_test",
     srcs = ["master_agent_test.cpp", "test_log_isolation.h"],
     deps = [
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/agent/cpp:fly_agent_test_hooks",
         "//third_party/sqlite:sqlite3",
@@ -52,6 +54,7 @@ cc_test(
     name = "worker_agent_test",
     srcs = ["worker_agent_test.cpp", "test_log_isolation.h"],
     deps = [
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/agent/cpp:fly_agent_test_hooks",
     ],
@@ -75,6 +78,7 @@ cc_test(
     deps = [
         "@googletest//:gtest_main",
         "//src/agent/cpp:fly_agent_test_hooks",
+        "//src/common/testing:fly_common_testing",
     ],
     copts = ["-std=c++20"],
 )
@@ -83,6 +87,7 @@ cc_test(
     name = "failed_tasks_test",
     srcs = ["failed_tasks_test.cpp"],
     deps = [
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/agent/cpp:fly_agent",
     ],
@@ -93,6 +98,7 @@ cc_test(
     name = "write_register_network_test",
     srcs = ["write_register_network_test.cpp", "test_log_isolation.h"],
     deps = [
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/agent/cpp:fly_agent",
     ],

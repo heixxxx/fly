@@ -3,10 +3,10 @@
 #include <storage/cpp/database.h>
 #include <storage/cpp/data_writer.h>
 #include <storage/cpp/decompressing_streambuf.h>
-#include <serialization/cpp/object_header.h>
-#include <common/cpp/fly_buffer.h>
-#include <common/cpp/data_checksum.h>
-#include <common/cpp/test_helpers.h>
+#include <common/serialization/cpp/object_header.h>
+#include <common/buffer/cpp/fly_buffer.h>
+#include <common/buffer/cpp/data_checksum.h>
+#include <common/testing/cpp/test_helpers.h>
 #include <core/cpp/config.h>
 #include <network/cpp/data_client_pool.h>
 #include <network/cpp/tcp_socket.h>

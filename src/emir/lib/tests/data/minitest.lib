@@ -1,0 +1,120 @@
+/* 最小 Liberty 测试样例：覆盖库头单位、2D 功耗模板 + 功耗表（模板引用 + 表级
+   索引覆盖）、1D 时序模板、组合单元（引脚电容 + internal_power + timing）、
+   时序单元（ff 组）与注释/未知组跳过。结构对齐 Nangate45 风格。 */
+library (minitest_typ) {
+  time_unit : "1ns";
+  voltage_unit : "1V";
+  current_unit : "1mA";
+  capacitive_load_unit (1, pf);
+  slew_lower_threshold : 0.3;
+  slew_upper_threshold : 0.7;
+  input_threshold : 0.5;
+  output_threshold : 0.5;
+  default_max_transition : 0.5;
+  nom_temperature : 25;
+  nom_voltage : 1.0;
+  nom_process : 1.0;
+
+  lu_table_template (power_2d) {
+    variable_1 : input_net_transition;
+    variable_2 : total_output_net_capacitance;
+    index_1 ("0.01, 0.5, 2.0");
+    index_2 ("0.01, 0.1");
+  }
+
+  lu_table_template (slew_1d) {
+    variable_1 : input_net_transition;
+    index_1 ("0.01, 0.5, 2.0");
+  }
+
+  cell (INV_X1) {
+    area : 2.0;
+    pin (A) {
+      direction : input;
+      capacitance : 1.5;
+    }
+    pin (ZN) {
+      direction : output;
+      capacitance : 0.0;
+      rise_capacitance : 1.2;
+      fall_capacitance : 1.3;
+      function : "A'";
+      internal_power () {
+        related_pin : "A";
+        rise_power (power_2d) {
+          index_1 ("0.01, 0.5, 2.0");
+          index_2 ("0.01, 0.1");
+          values ("1.0, 1.1", \
+                  "2.0, 2.2", \
+                  "3.0, 3.3");
+        }
+        fall_power (power_2d) {
+          values ("0.9, 1.0", \
+                  "1.9, 2.1", \
+                  "2.9, 3.2");
+        }
+      }
+      timing () {
+        related_pin : "A";
+        timing_sense : negative_unate;
+        timing_type : combinational;
+        cell_rise (slew_1d) {
+          values ("0.10, 0.12, 0.15");
+        }
+        cell_fall (slew_1d) {
+          values ("0.11, 0.13, 0.16");
+        }
+        rise_transition (slew_1d) {
+          values ("0.02, 0.20, 0.60");
+        }
+        fall_transition (slew_1d) {
+          values ("0.03, 0.21, 0.61");
+        }
+      }
+    }
+  }
+
+  cell (DFF_X1) {
+    area : 8.5;
+    ff (IQ, IQN) {
+      clocked_on : CK;
+      next_state : D;
+    }
+    pin (CK) {
+      direction : input;
+      capacitance : 2.0;
+      clock : true;
+    }
+    pin (D) {
+      direction : input;
+      capacitance : 1.0;
+    }
+    pin (Q) {
+      direction : output;
+      capacitance : 0.0;
+      function : "IQ";
+      internal_power () {
+        related_pin : "CK";
+        rise_power (power_2d) {
+          values ("5.0, 5.1", \
+                  "6.0, 6.1", \
+                  "7.0, 7.1");
+        }
+      }
+      timing () {
+        related_pin : "CK";
+        timing_type : rising_edge;
+        cell_rise (slew_1d) {
+          values ("0.30, 0.32, 0.35");
+        }
+      }
+    }
+  }
+
+  /* 未识别的组：解析器应跳过并计数 */
+  operating_conditions (typ) {
+    process : 1.0;
+    temperature : 25;
+    voltage : 1.0;
+  }
+}

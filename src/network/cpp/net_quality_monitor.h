@@ -16,7 +16,7 @@
 // Cold start: every unknown host scores 0, so ranking falls back to the
 // existing registration order — behavior is identical to before the feature.
 
-#include <common/cpp/common_types.h>
+#include <container/cpp/container_aliases.h>
 #include <shared_mutex>
 #include <chrono>
 

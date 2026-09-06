@@ -6,15 +6,15 @@
 #include <network/cpp/data_client_pool.h>
 #include <network/cpp/metadata_client.h>
 #include <core/cpp/config.h>
-#include <common/cpp/concurrent_queue.h>
+#include <common/concurrent/cpp/concurrent_queue.h>
 #include <agent/cpp/task_executor.h>
 #include <agent/cpp/pending_rpc_map.h>
 #include <agent/cpp/peer_rpc_server.h>
-#include <common/cpp/worker_context.h>
+#include <common/runtime/cpp/worker_context.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/data_writer.h>
-#include <common/cpp/common_types.h>
-#include <common/cpp/concurrent_map.h>
+#include <container/cpp/container_aliases.h>
+#include <common/concurrent/cpp/concurrent_map.h>
 #include <monitor/cpp/monitor_sampler.h>
 #include <monitor/cpp/task_resource_tracker.h>
 #include <task/cpp/worker_manager.h>   // WorkerRole（worker role 静态身份枚举）

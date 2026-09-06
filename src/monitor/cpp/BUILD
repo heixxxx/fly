@@ -14,7 +14,7 @@ cc_library(
     linkstatic = False,
     linkopts = ["-lpthread"],
     deps = [
-        "//src/common/cpp:fly_common_types",
+        "//src/container/cpp:fly_container_aliases",
         "//src/core/cpp:fly_core",
         "//src/log/cpp:fly_log",
         "//src/network/cpp:fly_network",

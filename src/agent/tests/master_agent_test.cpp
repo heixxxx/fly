@@ -5,11 +5,11 @@
 #include <mutex>
 #include <condition_variable>
 #include <agent/cpp/worker_agent.h>
-#include <common/cpp/test_helpers.h>
+#include <common/testing/cpp/test_helpers.h>
 #include "test_log_isolation.h"
 #include <core/cpp/config.h>
 #include <core/cpp/process_info.h>
-#include <serialization/cpp/serialization_macros.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <thread>
 #include <chrono>
 #include <latch>
@@ -129,7 +129,7 @@ TEST(MasterAgentTest, MultipleStartStop) {
 
 #include <storage/cpp/data_service.h>
 #include <storage/cpp/local_index.h>
-#include <common/cpp/worker_context.h>
+#include <common/runtime/cpp/worker_context.h>
 #include <storage/cpp/db_meta.h>
 #include <log/cpp/logger.h>
 #include <filesystem>

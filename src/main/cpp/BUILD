@@ -9,7 +9,7 @@ cc_binary(
     linkopts = ["-lpthread", "-ldl"],
     deps = [
         "//src/core/cpp:fly_core",
-        "//src/serialization/cpp:fly_serialization",
+        "//src/common/serialization:fly_serialization",
         "//src/log/cpp:fly_log",
         "//src/message/cpp:fly_message",
         "//src/storage/cpp:fly_storage",
@@ -22,7 +22,7 @@ cc_binary(
 
     dynamic_deps = [
         "//src/core/cpp:fly_core_so",
-        "//src/serialization/cpp:fly_serialization_so",
+        "//src/common/serialization:fly_serialization_so",
         "//src/log/cpp:fly_log_so",
         "//src/message/cpp:fly_message_so",
         "//src/storage/cpp:fly_storage_so",
@@ -33,6 +33,7 @@ cc_binary(
         "//src/monitor/cpp:fly_monitor_so",
     ],
     data = [
+        "//src/container/export:_fly_container.so",
         "//src/test/export:_fly_test.so",
         "//src/storage/export:_fly_storage.so",
         "//src/network/export:_fly_network.so",
@@ -42,5 +43,6 @@ cc_binary(
         "//src/task/export:_fly_task.so",
         "//src/solver/export:_fly_solver.so",
         "//src/message/export:_fly_message.so",
+        "//src/emir/lib/export:_fly_emir_lib.so",
     ],
 )

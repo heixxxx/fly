@@ -2,9 +2,9 @@
 #include <storage/cpp/object_cache.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/decompressing_streambuf.h>
-#include <common/cpp/fly_buffer.h>
-#include <common/cpp/test_helpers.h>
-#include <serialization/cpp/serialization_macros.h>
+#include <common/buffer/cpp/fly_buffer.h>
+#include <common/testing/cpp/test_helpers.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <latch>
 #include <thread>
 #include <chrono>

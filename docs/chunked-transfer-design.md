@@ -73,7 +73,7 @@ small_fields_len 保持 uint32（bitsery 小字段，非文件尺寸）
 
 ### 4.3 校验包装层（L0）
 
-`src/common/cpp/data_checksum.h/.cpp`——**稳定函数接口**（用户裁定：后续更优校验方案只改实现、接口零变化）：
+`src/common/buffer/cpp/data_checksum.h/.cpp`——**稳定函数接口**（用户裁定：后续更优校验方案只改实现、接口零变化）：
 
 ```cpp
 namespace fly {
@@ -333,11 +333,11 @@ client                          server
 
 | # | 文件:位置 | 改动 |
 |---|----------|------|
-| 8 | `src/common/cpp/data_checksum.h/.cpp`（新建）+ `third_party/BUILD` | §4.3 包装层 + ISA-L 集成 |
+| 8 | `src/common/buffer/cpp/data_checksum.h/.cpp`（新建）+ `third_party/BUILD` | §4.3 包装层 + ISA-L 集成 |
 | 9 | `src/network/cpp/message_types.h:237` | `DataResponseMessage` 增 `payload_crc_`（字段列表尾部追加） |
 | 10 | `src/storage/cpp/data_server.cpp:282-305` | 整帧快路径响应组装时 `data_checksum(raw)` 填入 |
 | 11 | `src/network/cpp/data_client_pool.cpp`（raw 收满后） | 校验 wire 根：不匹配 → `ReadError::CHECKSUM`；帧头 check 位失败归同一类（连接作废） |
-| 12 | `src/common/cpp/error_types.h:48` | `ReadError::CHECKSUM = 5`（注释：仅一次重取，此后 fatal） |
+| 12 | `src/common/runtime/cpp/error_types.h:48` | `ReadError::CHECKSUM = 5`（注释：仅一次重取，此后 fatal） |
 
 **分 chunk 校验 + trailer 格式（4 处）**
 

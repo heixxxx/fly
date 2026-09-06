@@ -1,9 +1,9 @@
 #pragma once
 
-#include <common/cpp/common_types.h>
-#include <common/cpp/error_types.h>
+#include <container/cpp/container_aliases.h>
+#include <common/runtime/cpp/error_types.h>
 #include <log/cpp/logger.h>  // LogLevel（LogMessage.level_ 用）
-#include <serialization/cpp/serialization_macros.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <cstdint>
 
 namespace fly {

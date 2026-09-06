@@ -15,9 +15,9 @@
 // Thread-safety: all ops guarded by mutex_ (write-back thread puts, reactor/
 // worker threads get/put concurrently).
 
-#include <common/cpp/common_types.h>
+#include <container/cpp/container_aliases.h>
 #include <core/cpp/config.h>
-#include <common/cpp/fly_buffer.h>
+#include <common/buffer/cpp/fly_buffer.h>
 #include <any>
 #include <atomic>
 #include <chrono>

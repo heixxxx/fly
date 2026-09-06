@@ -3,10 +3,10 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/fly_buffer_stream.h>
 #include <storage/cpp/compressor.h>
-#include <common/cpp/fly_buffer.h>
-#include <common/cpp/chunk_source.h>
-#include <serialization/cpp/object_header.h>
-#include <common/cpp/common_types.h>
+#include <common/buffer/cpp/fly_buffer.h>
+#include <common/io/cpp/chunk_source.h>
+#include <common/serialization/cpp/object_header.h>
+#include <container/cpp/container_aliases.h>
 #include <functional>
 #include <ostream>
 #include <istream>

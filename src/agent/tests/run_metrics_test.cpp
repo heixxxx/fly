@@ -11,7 +11,7 @@
 
 #include <fmt/format.h>
 
-#include <common/cpp/test_helpers.h>
+#include <common/testing/cpp/test_helpers.h>
 
 namespace {
 

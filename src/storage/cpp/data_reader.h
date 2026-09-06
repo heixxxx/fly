@@ -1,9 +1,9 @@
 #pragma once
 
 #include <storage/cpp/local_index.h>
-#include <serialization/cpp/object_header.h>
-#include <common/cpp/fly_buffer.h>
-#include <common/cpp/common_types.h>
+#include <common/serialization/cpp/object_header.h>
+#include <common/buffer/cpp/fly_buffer.h>
+#include <container/cpp/container_aliases.h>
 #include <log/cpp/logger.h>
 #include <cstdint>
 #include <fstream>

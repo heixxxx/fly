@@ -2,7 +2,7 @@
 
 #include <network/cpp/connection_manager.h>
 #include <network/cpp/message_types.h>
-#include <common/cpp/fly_buffer.h>
+#include <common/buffer/cpp/fly_buffer.h>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>

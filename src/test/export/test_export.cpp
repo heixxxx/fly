@@ -1,5 +1,5 @@
 #include <export/cpp/export_macros.h>
-#include <serialization/cpp/serialization_macros.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <test/cpp/test_object.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/data_service.h>

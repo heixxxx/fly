@@ -1,5 +1,5 @@
 #include <export/cpp/export_macros.h>
-#include <serialization/cpp/serialization_macros.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <network/cpp/connection_manager.h>
 #include <network/cpp/tcp_connection_manager.h>
 #include <network/cpp/message_types.h>

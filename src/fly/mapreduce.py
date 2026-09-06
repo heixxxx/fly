@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover（cloudpickle 为硬依赖，恒存在�
 
 from fly import as_task
 from fly import UserDoc, Schema, document
+from storage import Database
 
 # ---------------------------------------------------------------------------
 # Serialization helpers
@@ -156,8 +157,10 @@ def _mr_copy_to_output(db, src_key, dst_key):
 # 类装饰器执行时会回填类内方法 doc 的 owner=MapReduceJob。
 
 _mr_class_doc = UserDoc("四阶段 MapReduce 流水线：Partition → Process → Merge → Finalize。")
-_mr_class_doc.add_param("db", schema=Schema("Database"), required=True,
-                        desc="fly.open_db() 创建的数据库实例")
+# Database 及其子类（db chain role 体系，如 LibDb/SolveDb）——isinstance 语义；
+# 原类名串匹配 "Database" 会拒绝一切子类（角色化 db 无法接入 MapReduce）。
+_mr_class_doc.add_param("db", schema=Schema(Database), required=True,
+                        desc="fly.open_db() 创建的数据库实例（含 role 子类）")
 _mr_class_doc.add_param("output_name", schema=Schema(str, check=lambda s: len(s) > 0,
                                                      error="must not be empty"),
                         required=True, desc="最终结果的持久化对象名")
@@ -205,7 +208,7 @@ _mr_run_doc.add_param("input_data", schema=Schema(object),
                       desc="分区输入数据；未调 set_pre_partitioned 时必填")
 
 _mr_get_doc = UserDoc("读取最终结果。master 侧应先 wait_tasks()。")
-_mr_get_doc.add_param("db", schema=Schema("Database"), required=False, default=None,
+_mr_get_doc.add_param("db", schema=Schema(Database), required=False, default=None,
                       none_ok=True,
                       desc="数据库覆盖（worker task 内需显式传入）；None 用构造时的 db")
 

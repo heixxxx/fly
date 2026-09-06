@@ -1,9 +1,9 @@
 #pragma once
 
-#include <common/cpp/common_types.h>
-#include <common/cpp/error_types.h>
-#include <common/cpp/fd_handle.h>
-#include <common/cpp/fly_buffer.h>
+#include <container/cpp/container_aliases.h>
+#include <common/runtime/cpp/error_types.h>
+#include <common/io/cpp/fd_handle.h>
+#include <common/buffer/cpp/fly_buffer.h>
 #include <network/cpp/message_types.h>
 #include <cstdint>
 #include <chrono>

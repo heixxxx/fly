@@ -141,6 +141,7 @@ do_install() {
     rm -rf "$build_dir"
     mkdir -p "$build_dir/bin" "$build_dir/lib"
     mkdir -p "$build_dir/python/fly"
+    mkdir -p "$build_dir/python/container"
     mkdir -p "$build_dir/python/core"
     mkdir -p "$build_dir/python/storage"
     mkdir -p "$build_dir/python/agent"
@@ -181,7 +182,7 @@ WRAPPER
     # Python modules: .so 到模块根（sys.path 包含模块目录让 import _fly_X 可用），
     # .py 到 py/ 子目录（与源码树 src/X/py/ 结构一致，让两种布局的 import 路径统一）。
     # 模块根 __init__.py 从 src/X/__init__.py 软链（让模块成为合法 Python 包）。
-    for mod in core log network task test storage agent solver message monitor; do
+    for mod in container core log network task test storage agent solver message monitor; do
         local so="$bazel_bin/src/$mod/export/_fly_${mod}.so"
         [ -f "$so" ] && ln -sf "$so" "$build_dir/python/$mod/"
         # 模块根 __init__.py（message 无 Python 源码，跳过）
@@ -199,6 +200,30 @@ WRAPPER
                 ln -sfn "$FLY_ROOT/src/$mod/py/static" "$build_dir/python/$mod/py/static"
             fi
         fi
+    done
+
+    # emir 模块族：嵌套包结构（project + 各 db 子模块，每个子包自带 py/）。
+    # 与平铺模块布局不同，单独按包树链接；带 C++ 的子模块的绑定
+    # _fly_emir_<sub>.so 统一链到 python 根（py_dir 整体在 sys.path，
+    # import _fly_emir_<sub> 即可达）。
+    if [ -d "$FLY_ROOT/src/emir" ]; then
+        mkdir -p "$build_dir/python/emir"
+        ln -sf "$FLY_ROOT/src/emir/__init__.py" "$build_dir/python/emir/__init__.py"
+        for sub_dir in "$FLY_ROOT/src/emir/"*/; do
+            sub=$(basename "$sub_dir")
+            [ -f "$sub_dir/__init__.py" ] || continue
+            mkdir -p "$build_dir/python/emir/$sub"
+            ln -sf "$sub_dir/__init__.py" "$build_dir/python/emir/$sub/__init__.py"
+            if [ -d "$sub_dir/py" ]; then
+                mkdir -p "$build_dir/python/emir/$sub/py"
+                for py in "$sub_dir/py/"*.py; do
+                    [ -f "$py" ] && ln -sf "$py" "$build_dir/python/emir/$sub/py/"
+                done
+            fi
+        done
+    fi
+    for so in "$bazel_bin"/src/emir/*/export/_fly_emir_*.so; do
+        [ -f "$so" ] && ln -sf "$so" "$build_dir/python/"
     done
 
     # fly package

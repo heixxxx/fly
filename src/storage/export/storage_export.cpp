@@ -1,7 +1,7 @@
 #include <export/cpp/export_macros.h>
-#include <serialization/cpp/serialization_macros.h>
-#include <common/cpp/fly_buffer.h>
-#include <serialization/cpp/object_header.h>
+#include <common/serialization/cpp/serialization_macros.h>
+#include <common/buffer/cpp/fly_buffer.h>
+#include <common/serialization/cpp/object_header.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/storage_manager.h>
 #include <storage/cpp/data_service.h>
@@ -13,8 +13,8 @@
 #include <storage/cpp/memory_chunk_source.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/fly_stream.h>
-#include <common/cpp/write_context_hash.h>
-#include <common/cpp/error_types.h>
+#include <common/runtime/cpp/write_context_hash.h>
+#include <common/runtime/cpp/error_types.h>
 #include <log/cpp/logger.h>
 #include <nanobind/operators.h>
 #include <nanobind/stl/string.h>

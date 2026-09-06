@@ -441,7 +441,7 @@ MessageRegistry::instance().set_global_limit(20);
 |------|------|
 | `src/network/cpp/message_types.h` | +3 枚举（46/47/48）+ 3 struct（LogMessage/MessageCountRequest/MessageCountReport）+ 上界 45→48 + include logger.h（LogLevel） |
 | `src/network/tests/message_protocol_test.cpp` | +3 往返测试 + is_valid_message_type 上界断言 |
-| `src/common/cpp/worker_context.h` | +push_message context 接口（set_push_message_func/push_message，level 用 uint8_t 避免依赖 log 模块） |
+| `src/common/runtime/cpp/worker_context.h` | +push_message context 接口（set_push_message_func/push_message，level 用 uint8_t 避免依赖 log 模块） |
 | `src/agent/cpp/worker_agent.h/.cpp` | +send_message_to_master（构造 LogMessage 发送）+ begin_task 注册 context + start() set_message_push_func + on_message_count_request（上报计数）+ start() 末尾 FLY::0000 |
 | `src/agent/cpp/master_agent.h/.cpp` | +on_log_message（MessageSink::handle_remote）+ on_message_count_report（累加上报）+ collect_and_print_message_summary（屏障）+ stop() 新 Phase + start() MessageSink::init/set_message_push_func/set_system_sink_func + start() 末尾 FLY::0000 |
 | `src/log/cpp/logger.h` | +format_log 辅助（MSG 宏复用，避免 message 模块直接链接 fmt） |

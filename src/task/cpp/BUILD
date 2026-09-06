@@ -11,9 +11,9 @@ cc_library(
     copts = ["-std=c++20"],
     linkstatic = False,
     deps = [
-        "//src/common/cpp:fly_common_types",
+        "//src/container/cpp:fly_container_aliases",
         "//src/log/cpp:fly_log",
-        "//src/serialization/cpp:fly_serialization",
+        "//src/common/serialization:fly_serialization",
     ],
 )
 
@@ -23,7 +23,7 @@ cc_shared_library(
     deps = [":fly_task"],
     dynamic_deps = [
         "//src/log/cpp:fly_log_so",
-        "//src/serialization/cpp:fly_serialization_so",
+        "//src/common/serialization:fly_serialization_so",
     ],
     visibility = ["//visibility:public"],
 )

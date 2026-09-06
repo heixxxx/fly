@@ -41,6 +41,7 @@ cc_test(
     name = "task_manager_test",
     srcs = ["task_manager_test.cpp"],
     deps = [
+        "//src/common/serialization:fly_serialization",
         "@googletest//:gtest_main",
         "//src/task/cpp:fly_task",
     ],

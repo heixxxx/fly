@@ -1,7 +1,7 @@
 #include <storage/cpp/data_server.h>
 #include <storage/cpp/data_service.h>
 #include <storage/cpp/decompressing_streambuf.h>
-#include <common/cpp/data_checksum.h>
+#include <common/buffer/cpp/data_checksum.h>
 #include <core/cpp/config.h>
 #include <network/cpp/transport_interface.h>
 #include <network/cpp/tcp_socket.h>

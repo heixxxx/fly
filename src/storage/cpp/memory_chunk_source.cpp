@@ -1,5 +1,5 @@
 #include <storage/cpp/memory_chunk_source.h>
-#include <serialization/cpp/object_header.h>
+#include <common/serialization/cpp/object_header.h>
 #include <algorithm>
 #include <cstring>
 

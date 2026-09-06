@@ -8,7 +8,7 @@ cc_binary(
     deps = [
         "@nanobind//:nanobind_src",
         "//src/export/cpp:fly_export_macros",
-        "//src/serialization/cpp:fly_serialization",
+        "//src/common/serialization:fly_serialization",
         "//src/storage/cpp:fly_storage",
         "//src/test/cpp:fly_test_object",
     ],
@@ -16,6 +16,6 @@ cc_binary(
     linkshared = True,
     dynamic_deps = [
         "//src/storage/cpp:fly_storage_so",
-        "//src/serialization/cpp:fly_serialization_so",
+        "//src/common/serialization:fly_serialization_so",
     ],
 )

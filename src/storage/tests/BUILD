@@ -10,6 +10,9 @@ cc_test(
     name = "object_cache_test",
     srcs = ["object_cache_test.cpp"],
     deps = [
+        "//src/common/serialization:fly_serialization",
+        "//src/common/buffer:fly_common_buffer",
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -30,6 +33,7 @@ cc_test(
     name = "storage_basics_test",
     srcs = ["storage_basics_test.cpp"],
     deps = [
+        "//src/common/serialization:fly_serialization",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -40,6 +44,7 @@ cc_test(
     name = "local_index_test",
     srcs = ["local_index_test.cpp"],
     deps = [
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -50,6 +55,9 @@ cc_test(
     name = "data_writer_test",
     srcs = ["data_writer_test.cpp"],
     deps = [
+        "//src/common/serialization:fly_serialization",
+        "//src/common/buffer:fly_common_buffer",
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -60,6 +68,8 @@ cc_test(
     name = "data_reader_test",
     srcs = ["data_reader_test.cpp"],
     deps = [
+        "//src/common/serialization:fly_serialization",
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -70,6 +80,10 @@ cc_test(
     name = "database_test",
     srcs = ["database_test.cpp"],
     deps = [
+        "//src/common/serialization:fly_serialization",
+        "//src/common/runtime:fly_common_runtime",
+        "//src/common/buffer:fly_common_buffer",
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -80,6 +94,7 @@ cc_test(
     name = "storage_manager_test",
     srcs = ["storage_manager_test.cpp"],
     deps = [
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -90,6 +105,10 @@ cc_test(
     name = "data_service_test",
     srcs = ["data_service_test.cpp"],
     deps = [
+        "//src/common/serialization:fly_serialization",
+        "//src/common/runtime:fly_common_runtime",
+        "//src/common/buffer:fly_common_buffer",
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -100,6 +119,8 @@ cc_test(
     name = "write_registration_test",
     srcs = ["write_registration_test.cpp"],
     deps = [
+        "//src/common/runtime:fly_common_runtime",
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -110,6 +131,7 @@ cc_test(
     name = "write_back_queue_test",
     srcs = ["write_back_queue_test.cpp"],
     deps = [
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -120,6 +142,8 @@ cc_test(
     name = "write_context_hash_test",
     srcs = ["write_context_hash_test.cpp"],
     deps = [
+        "//src/common/runtime:fly_common_runtime",
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -130,6 +154,7 @@ cc_test(
     name = "compressing_streambuf_test",
     srcs = ["compressing_streambuf_test.cpp"],
     deps = [
+        "//src/common/buffer:fly_common_buffer",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -150,6 +175,7 @@ cc_test(
     name = "fly_stream_test",
     srcs = ["fly_stream_test.cpp"],
     deps = [
+        "//src/common/serialization:fly_serialization",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -161,9 +187,11 @@ cc_test(
     name = "record_format_test",
     srcs = ["record_format_test.cpp"],
     deps = [
+        "//src/common/serialization:fly_serialization",
+        "//src/common/buffer:fly_common_buffer",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
-        "//src/common/cpp:data_checksum",
+        "//src/common/buffer:data_checksum",
     ],
     copts = ["-std=c++20"],
 )
@@ -173,9 +201,13 @@ cc_test(
     name = "data_corruption_test",
     srcs = ["data_corruption_test.cpp"],
     deps = [
+        "//src/common/serialization:fly_serialization",
+        "//src/common/runtime:fly_common_runtime",
+        "//src/common/buffer:fly_common_buffer",
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
-        "//src/common/cpp:data_checksum",
+        "//src/common/buffer:data_checksum",
     ],
     copts = ["-std=c++20"],
 )
@@ -185,10 +217,13 @@ cc_test(
     name = "streaming_source_test",
     srcs = ["streaming_source_test.cpp"],
     deps = [
+        "//src/common/serialization:fly_serialization",
+        "//src/common/buffer:fly_common_buffer",
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
         "//src/network/cpp:fly_network",
-        "//src/common/cpp:data_checksum",
+        "//src/common/buffer:data_checksum",
     ],
     copts = ["-std=c++20"],
 )
@@ -198,6 +233,8 @@ cc_test(
     name = "preliminary_register_test",
     srcs = ["preliminary_register_test.cpp"],
     deps = [
+        "//src/common/runtime:fly_common_runtime",
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],
@@ -211,6 +248,7 @@ cc_test(
     name = "data_service_concurrency_bench",
     srcs = ["data_service_concurrency_bench.cpp"],
     deps = [
+        "//src/common/testing:fly_common_testing",
         "@googletest//:gtest_main",
         "//src/storage/cpp:fly_storage",
     ],

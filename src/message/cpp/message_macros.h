@@ -1,6 +1,6 @@
 #pragma once
 
-#include <common/cpp/common_types.h>
+#include <container/cpp/container_aliases.h>
 #include <log/cpp/logger.h>
 #include <message/cpp/message_registry.h>
 #include <functional>

@@ -18,10 +18,10 @@
 #include <monitor/cpp/metrics_db.h>
 #include <monitor/cpp/monitor_sampler.h>
 #include <core/cpp/config.h>
-#include <common/cpp/common_types.h>
-#include <common/cpp/concurrent_map.h>
-#include <common/cpp/worker_context.h>
-#include <serialization/cpp/serialization_macros.h>
+#include <container/cpp/container_aliases.h>
+#include <common/concurrent/cpp/concurrent_map.h>
+#include <common/runtime/cpp/worker_context.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <cstdint>
 #include <thread>
 #include <atomic>

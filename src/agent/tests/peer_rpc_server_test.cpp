@@ -7,7 +7,7 @@
 #include <agent/cpp/peer_rpc_server.h>
 #include <agent/cpp/worker_agent.h>
 #include <storage/cpp/pipeline.h>
-#include <common/cpp/data_checksum.h>
+#include <common/buffer/cpp/data_checksum.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>

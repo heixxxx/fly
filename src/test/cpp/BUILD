@@ -8,8 +8,8 @@ cc_library(
     hdrs = ["test_object.h"],
     strip_include_prefix = "/src",
     deps = [
-        "//src/common/cpp:fly_common_types",
-        "//src/serialization/cpp:fly_serialization",
+        "//src/container/cpp:fly_container_aliases",
+        "//src/common/serialization:fly_serialization",
     ],
     copts = ["-std=c++20"],
 )

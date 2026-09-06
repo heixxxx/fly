@@ -14,11 +14,11 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/disk_chunk_source.h>
 #include <storage/cpp/memory_chunk_source.h>
-#include <serialization/cpp/object_header.h>
-#include <common/cpp/fly_buffer.h>
-#include <common/cpp/data_checksum.h>
-#include <common/cpp/error_types.h>
-#include <common/cpp/test_helpers.h>
+#include <common/serialization/cpp/object_header.h>
+#include <common/buffer/cpp/fly_buffer.h>
+#include <common/buffer/cpp/data_checksum.h>
+#include <common/runtime/cpp/error_types.h>
+#include <common/testing/cpp/test_helpers.h>
 #include <log/cpp/logger.h>
 #include <filesystem>
 #include <fstream>

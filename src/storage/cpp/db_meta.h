@@ -1,7 +1,7 @@
 #pragma once
 
-#include <common/cpp/common_types.h>
-#include <serialization/cpp/serialization_macros.h>
+#include <container/cpp/container_aliases.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <cstdint>
 
 // WorkerInfo：db 写者登记条目（_DB_META JSON 的 workers[] 元素）。落盘由

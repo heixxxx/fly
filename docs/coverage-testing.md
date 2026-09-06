@@ -121,7 +121,7 @@ lcov --capture \
   --directory $BAZEL_CACHE/src/task/cpp/_objs \
   --directory $BAZEL_CACHE/src/core/cpp/_objs \
   --directory $BAZEL_CACHE/src/log/cpp/_objs \
-  --directory $BAZEL_CACHE/src/serialization/cpp/_objs \
+  --directory $BAZEL_CACHE/src/common/serialization/cpp/_objs \
   --directory $BAZEL_CACHE/src/main/cpp/_objs \
   --output-file /tmp/coverage_raw.info \
   --rc branch_coverage=1 \

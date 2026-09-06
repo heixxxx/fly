@@ -5,8 +5,8 @@
 #include <network/cpp/message_types.h>
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/pipeline.h>
-#include <common/cpp/common_types.h>
-#include <common/cpp/concurrent_queue.h>
+#include <container/cpp/container_aliases.h>
+#include <common/concurrent/cpp/concurrent_queue.h>
 #include <log/cpp/logger.h>
 #include <atomic>
 #include <condition_variable>

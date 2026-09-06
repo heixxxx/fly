@@ -6,9 +6,9 @@
 #include <gtest/gtest.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/data_service.h>
-#include <common/cpp/worker_context.h>
-#include <common/cpp/error_types.h>
-#include <common/cpp/test_helpers.h>
+#include <common/runtime/cpp/worker_context.h>
+#include <common/runtime/cpp/error_types.h>
+#include <common/testing/cpp/test_helpers.h>
 #include <log/cpp/logger.h>
 #include <filesystem>
 #include <fstream>

@@ -24,7 +24,7 @@ cc_library(
     linkstatic = False,
     deps = [
         "@eigen//:eigen",
-        "//src/common/cpp:fly_common_types",
+        "//src/container/cpp:fly_container_aliases",
     ],
 )
 

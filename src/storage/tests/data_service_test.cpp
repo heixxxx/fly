@@ -4,14 +4,14 @@
 #include <storage/cpp/local_index.h>
 #include <storage/cpp/decompressing_streambuf.h>
 #include <network/cpp/net_quality_monitor.h>
-#include <common/cpp/fly_buffer.h>
-#include <common/cpp/worker_context.h>   // WorkerAgentContext::set_suggest_backup_func
-#include <common/cpp/test_helpers.h>
+#include <common/buffer/cpp/fly_buffer.h>
+#include <common/runtime/cpp/worker_context.h>   // WorkerAgentContext::set_suggest_backup_func
+#include <common/testing/cpp/test_helpers.h>
 #include <core/cpp/process_info.h>       // master/worker 进程语义切换（权威 remote_idx 保护测试）
 #include <core/cpp/config.h>
 #include <storage/cpp/memory_chunk_source.h>
-#include <serialization/cpp/object_header.h>
-#include <common/cpp/data_checksum.h>
+#include <common/serialization/cpp/object_header.h>
+#include <common/buffer/cpp/data_checksum.h>
 #include <filesystem>
 #include <istream>
 #include <latch>

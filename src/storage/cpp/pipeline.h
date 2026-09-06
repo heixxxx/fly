@@ -19,8 +19,8 @@
 //   块记录 = [i32 unc][i32 comp][u64 crc][payload]（LE 内存序）
 //   crc 覆盖 payload；comp == unc 表示 raw 直通块（块级压缩率不达标）。
 
-#include <common/cpp/data_checksum.h>
-#include <common/cpp/common_types.h>
+#include <common/buffer/cpp/data_checksum.h>
+#include <container/cpp/container_aliases.h>
 #include <storage/cpp/compressor.h>
 #include <cstring>
 #include <cstdint>

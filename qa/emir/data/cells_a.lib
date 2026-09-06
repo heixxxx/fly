@@ -1,0 +1,30 @@
+library (minitest_typ) {
+  time_unit : "1ns";
+  voltage_unit : "1V";
+  capacitive_load_unit (1, pf);
+  lu_table_template (power_2d) {
+    variable_1 : input_net_transition;
+    variable_2 : total_output_net_capacitance;
+    index_1 ("0.01, 0.5, 2.0");
+    index_2 ("0.01, 0.1");
+  }
+  cell (INV_X1) {
+    area : 2.0;
+    pin (A) {
+      direction : input;
+      capacitance : 1.5;
+    }
+    pin (ZN) {
+      direction : output;
+      capacitance : 0.0;
+      internal_power () {
+        related_pin : "A";
+        rise_power (power_2d) {
+          values ("1.0, 1.1", \
+                  "2.0, 2.2", \
+                  "3.0, 3.3");
+        }
+      }
+    }
+  }
+}

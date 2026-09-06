@@ -3,7 +3,7 @@
 #include <message/cpp/message_macros.h>
 #include <log/cpp/logger.h>
 
-#include <common/cpp/test_helpers.h>
+#include <common/testing/cpp/test_helpers.h>
 #include <chrono>
 #include <filesystem>
 #include <fstream>

@@ -1,8 +1,8 @@
 #pragma once
 
-#include <common/cpp/chunk_source.h>
-#include <common/cpp/common_types.h>
-#include <common/cpp/fly_buffer.h>
+#include <common/io/cpp/chunk_source.h>
+#include <container/cpp/container_aliases.h>
+#include <common/buffer/cpp/fly_buffer.h>
 #include <cstdint>
 
 namespace fly {

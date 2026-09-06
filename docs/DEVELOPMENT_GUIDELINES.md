@@ -34,7 +34,7 @@ src/<module>/
 |------|------|
 | `src/common/` | 公共类型定义（容器别名等） |
 | `src/core/` | 核心基础模块（Config 等） |
-| `src/serialization/` | 序列化宏和工具 |
+ | `src/common/serialization/`（common 子模块） | 序列化宏和工具 |
 | `src/export/` | 导出宏定义 |
 | `src/storage/` | 存储层（Database, DataService, DataWriter, DataReader） |
 | `src/network/` | 网络层（Reactor, TCP, 消息协议） |
@@ -98,7 +98,7 @@ cc_library(
 
 **使用方式**:
 ```cpp
-#include <common/cpp/common_types.h>
+#include <container/cpp/container_aliases.h>
 
 CMMap<CMString, int64_t> config_values;
 CMVector<std::byte> buffer;
@@ -187,13 +187,13 @@ FLY_EXPORT_FUNCTION("ex_net_create_connection_manager", [](const CMString& type)
 ```cpp
 // 正确：模块式路径
 #include <core/cpp/config.h>
-#include <serialization/cpp/serialization_macros.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <export/cpp/export_macros.h>
-#include <common/cpp/common_types.h>
+#include <container/cpp/container_aliases.h>
 
 // 错误：相对路径
 #include "../cpp/config.h"
-#include "../../serialization/cpp/serialization_macros.h"
+#include "../../common/serialization/cpp/serialization_macros.h"
 ```
 
 ### 3.2 BUILD 文件配置
@@ -383,13 +383,17 @@ FLY_EXPORT_MODULE(_fly_module) {
 | `FLY_EXPORT_PROPERTY("name", getter, setter)` | 计算属性（读写） | `FLY_EXPORT_PROPERTY("count", &List::get_count, &List::set_count)` |
 | `FLY_EXPORT_READONLY_PROPERTY("name", getter)` | 计算属性（只读） | `FLY_EXPORT_READONLY_PROPERTY("size", &Buffer::get_size)` |
 
-**序列化导出**（仅 `FLY_EXPORT_SERIALIZE`，已废弃 `FLY_EXPORT_PICKLE`）：
+**序列化导出**（`FLY_EXPORT_SERIALIZE` 全量形态 + `FLY_EXPORT_SERIALIZE_PICKLE` 纯 pickle 形态；已废弃 `FLY_EXPORT_PICKLE`）：
 
 ```cpp
-FLY_EXPORT_SERIALIZE(IndexEntry)  // 自动添加 __getstate__/__setstate__ + is_cpp 属性
+FLY_EXPORT_SERIALIZE(IndexEntry)         // pickle + _write_to_db/_read_from_db（需完整 Database 类型）
+FLY_EXPORT_SERIALIZE_PICKLE(Cls)         // 仅 pickle（__getstate_buffer__/__setstate_from_buffer__/
+                                         // __getstate__/__setstate__/is_cpp）——底层模块的 export
+                                         // （如 common 的 lookup_table 迁 container 前、现 container）
+                                         // 用此形态：write_object 经 pickle 协议等价落库，免 storage 依赖
 ```
 
-`FLY_EXPORT_SERIALIZE` 展开为：
+`FLY_EXPORT_SERIALIZE` 展开为（= `FLY_EXPORT_SERIALIZE_PICKLE` + 下列两项）：
 - `__getstate__`: 将对象编码为 bytes
 - `__getstate_buffer__`: 编码为 FlyBuffer（shared_ptr 形式）
 - `__setstate__`: 从 bytes 解码恢复对象（自动识别 FLY_OBJECT_MAGIC 头走解压路径）
@@ -728,7 +732,7 @@ bazel run //:refresh_compile_commands
 
 ### 12.2 BUILD 文件中遗漏依赖
 
-**问题**：新增头文件引用（如 `#include <serialization/cpp/object_header.h>`）后，未在 BUILD 文件的 `deps` 中添加对应依赖，导致编译失败。
+**问题**：新增头文件引用（如 `#include <common/serialization/cpp/object_header.h>`）后，未在 BUILD 文件的 `deps` 中添加对应依赖，导致编译失败。
 
 **规范**：
 1. 新增 `#include` 时，同步更新 `deps` 列表
@@ -764,8 +768,8 @@ bazel run //:refresh_compile_commands
 
 | 优先级 | 方案 | 适用场景 | 位置 |
 |--------|------|----------|------|
-| 1 | `ConcurrentMap` / `ConcurrentUnorderedMap` / `ConcurrentUnorderedSet` | 单容器 + 单锁、无跨结构不变式 | `src/common/cpp/concurrent_map.h` |
-| 1b | `ConcurrentQueue` | 队列语义：生产者-消费者 / 有界背压（`CountCapacity`/`BytesCapacity`）/ FIFO 重放缓冲 / 终态 close-fail 唤醒 | `src/common/cpp/concurrent_queue.h` |
+| 1 | `ConcurrentMap` / `ConcurrentUnorderedMap` / `ConcurrentUnorderedSet` | 单容器 + 单锁、无跨结构不变式 | `src/common/concurrent/cpp/concurrent_map.h` |
+| 1b | `ConcurrentQueue` | 队列语义：生产者-消费者 / 有界背压（`CountCapacity`/`BytesCapacity`）/ FIFO 重放缓冲 / 终态 close-fail 唤醒 | `src/common/concurrent/cpp/concurrent_queue.h` |
 | 2 | `PendingRpcMap` | "登记 → 等完成 → 消费" 的 pending 状态机（map+mutex+cv 三合一） | `src/agent/cpp/pending_rpc_map.h` |
 | 3 | 类级封装（私有数据 + 封装访问方法） | 跨多个结构的复合不变式（如 `write_provenance_` 的 check-and-register） | 参照 `MasterAgent::provenance_*` |
 | 4 | 裸 mutex（最后手段） | 仅当锁保护的是跨容器调度不变式（如 `schedule_mutex_`），且数据全部 private、锁只出现在方法内 | `task_manager` / `dependency_graph` |
@@ -964,7 +968,7 @@ def solve_like_task(db_up, db, key):
   调用（等对端数据）的 GIL 释放作用域只包住 C++ 调用段，返回值构造放在
   作用域外（案例：流式读端在 GIL 释放态构造 bytes 返回值 SIGSEGV）。
 - **文件描述符一律经 `FdHandle` 所有权**（2026-09-05，issue 011）：
-  `src/common/cpp/fd_handle.h`——`FdHandle::adopt(fd, closer)` 产出
+  `src/common/io/cpp/fd_handle.h`——`FdHandle::adopt(fd, closer)` 产出
   `FdHandlePtr`（shared_ptr），在途使用者持引用保活；两层关闭语义：
   `shutdown()` 为决策层（幂等，对端立即收 FIN）、析构/closer 为引用
   计数层（最后一引用释放才 close，池化场景注入归还闭包）。**不变量：

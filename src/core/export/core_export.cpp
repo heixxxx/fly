@@ -1,9 +1,9 @@
 #include <export/cpp/export_macros.h>
-#include <serialization/cpp/serialization_macros.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <core/cpp/config.h>
 #include <core/cpp/graceful_exit.h>
 #include <core/cpp/process_info.h>
-#include <common/cpp/error_types.h>
+#include <common/runtime/cpp/error_types.h>
 
 FLY_EXPORT_MODULE(_fly_core) {
 

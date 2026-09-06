@@ -1,6 +1,6 @@
 #include <storage/cpp/local_index.h>
 #include <log/cpp/logger.h>
-#include <serialization/cpp/serialization_macros.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <filesystem>
 
 namespace {

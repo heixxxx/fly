@@ -1,7 +1,7 @@
 #pragma once
 
-#include <common/cpp/common_types.h>
-#include <serialization/cpp/serialization_macros.h>
+#include <container/cpp/container_aliases.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <cstdint>
 
 class TestObject {

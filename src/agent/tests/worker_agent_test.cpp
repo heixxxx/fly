@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include <agent/cpp/worker_agent.h>
 #include <core/cpp/config.h>
-#include <common/cpp/test_helpers.h>
+#include <common/testing/cpp/test_helpers.h>
 #include "test_log_isolation.h"
 #include <sys/socket.h>
 #include <netinet/in.h>

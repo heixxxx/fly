@@ -16,10 +16,10 @@
 #include <network/cpp/message_types.h>
 #include <network/cpp/transport_interface.h>
 #include <network/cpp/tcp_socket.h>
-#include <serialization/cpp/object_header.h>
-#include <common/cpp/fly_buffer.h>
-#include <common/cpp/test_helpers.h>
-#include <common/cpp/data_checksum.h>
+#include <common/serialization/cpp/object_header.h>
+#include <common/buffer/cpp/fly_buffer.h>
+#include <common/testing/cpp/test_helpers.h>
+#include <common/buffer/cpp/data_checksum.h>
 #include <core/cpp/config.h>
 #include <log/cpp/logger.h>
 #include <filesystem>

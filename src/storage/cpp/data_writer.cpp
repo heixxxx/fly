@@ -1,6 +1,6 @@
 #include <storage/cpp/data_writer.h>
 #include <log/cpp/logger.h>
-#include <common/cpp/writer_id.h>
+#include <common/runtime/cpp/writer_id.h>
 #include <filesystem>
 #include <sstream>
 

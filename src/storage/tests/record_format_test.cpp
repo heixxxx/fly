@@ -15,10 +15,10 @@
 #include <storage/cpp/decompressing_streambuf.h>
 #include <storage/cpp/compressor.h>
 #include <storage/cpp/fly_buffer_stream.h>
-#include <serialization/cpp/object_header.h>
+#include <common/serialization/cpp/object_header.h>
 #include <storage/cpp/memory_chunk_source.h>
-#include <common/cpp/fly_buffer.h>
-#include <common/cpp/data_checksum.h>
+#include <common/buffer/cpp/fly_buffer.h>
+#include <common/buffer/cpp/data_checksum.h>
 
 #include <cstring>
 #include <string>

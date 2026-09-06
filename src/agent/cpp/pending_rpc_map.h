@@ -20,7 +20,7 @@
 // not contend with each other (same granularity as the prior hand-written
 // per-type mutexes).
 
-#include <common/cpp/common_types.h>
+#include <container/cpp/container_aliases.h>
 #include <mutex>
 #include <condition_variable>
 #include <chrono>

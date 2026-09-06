@@ -2,7 +2,7 @@
 #include <agent/cpp/master_agent.h>
 #include <agent/cpp/worker_agent.h>
 #include <agent/cpp/task_executor.h>
-#include <common/cpp/test_helpers.h>
+#include <common/testing/cpp/test_helpers.h>
 #include "test_log_isolation.h"
 #include <log/cpp/logger.h>
 #include <thread>

@@ -10,7 +10,7 @@
 #include <core/cpp/process_info.h>
 #include <core/cpp/graceful_exit.h>
 #include <storage/cpp/data_service.h>
-#include <common/cpp/write_context_hash.h>
+#include <common/runtime/cpp/write_context_hash.h>
 #include <network/cpp/data_client_pool.h>
 #include <storage/cpp/network_chunk_source.h>
 #include <storage/cpp/memory_chunk_source.h>

@@ -2,8 +2,8 @@
 #include <storage/cpp/data_service.h>
 #include <storage/cpp/database.h>
 #include <storage/cpp/index_entry.h>
-#include <common/cpp/error_types.h>
-#include <common/cpp/test_helpers.h>
+#include <common/runtime/cpp/error_types.h>
+#include <common/testing/cpp/test_helpers.h>
 #include <thread>
 #include <chrono>
 #include <filesystem>

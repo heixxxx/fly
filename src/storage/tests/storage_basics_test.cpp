@@ -2,8 +2,8 @@
 #include <storage/cpp/object.h>
 #include <storage/cpp/index_entry.h>
 #include <storage/cpp/db_meta.h>
-#include <serialization/cpp/serialization_macros.h>
-#include <common/cpp/common_types.h>
+#include <common/serialization/cpp/serialization_macros.h>
+#include <container/cpp/container_aliases.h>
 
 // --- IndexEntry tests ---
 

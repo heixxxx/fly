@@ -128,10 +128,10 @@ QA 测试按模块分类在 `qa/<category>/` 子目录下（分类全表与运�
 
 ### C++ 类型别名
 
-所有代码使用 `CM*` 前缀的类型别名（定义于 `common/cpp/common_types.h`）：
+所有代码使用 `CM*` 前缀的类型别名（容器别名定义于 `container/cpp/container_aliases.h`，智能指针族于 `common/types/cpp/pointer_aliases.h`）：
 
 ```cpp
-#include <common/cpp/common_types.h>
+#include <container/cpp/container_aliases.h>
 CMString name;           // std::string
 CMVector<int> ids;       // std::vector<int>
 CMMap<K, V> dict;        // std::map<K, V>
@@ -241,12 +241,12 @@ src/storage/
 
 | 路径 | 职责 |
 |------|------|
-| `src/common/cpp/common_types.h` | CM* 类型别名 |
-| `src/common/cpp/writer_context.h` | WorkerAgentContext（回调模式） |
-| `src/common/cpp/writer_id.h` | generate_writer_id()（8-char hex UUID） |
+| `src/container/cpp/container_aliases.h` | CM* 容器别名（智能指针族在 common/types） |
+| `src/common/runtime/cpp/worker_context.h` | WorkerAgentContext（回调模式） |
+| `src/common/runtime/cpp/writer_id.h` | generate_writer_id()（8-char hex UUID） |
 | `src/core/cpp/config.h/cpp` | 配置管理 |
 | `src/core/py/__init__.py` | get_config() + Config 导出（合并了原 config.py） |
-| `src/serialization/cpp/serialization_macros.h` | FLY_SERIALIZE, FLY_ENCODE/DECODE |
+| `src/common/serialization/cpp/serialization_macros.h` | FLY_SERIALIZE, FLY_ENCODE/DECODE |
 | `src/export/cpp/export_macros.h` | FLY_EXPORT_* 宏 |
 | `src/log/cpp/logger.h/cpp` | DBG/INFO/WARN/ERR 日志宏，CM_FORMAT_CLASS/ENUM |
 | `src/message/` | 消息日志系统（`_fly_message` 扩展 + fly.message API 簇），详见 `docs/message-system.md` |
@@ -405,7 +405,7 @@ Task 失败时自动序列化到 `log_dir/failed_tasks.bin`。`restart_failed_ta
 ### LSP 误报
 
 以下 LSP 错误均为 **编译期虚拟路径误报**，`./fly.sh build` 可正常通过，忽略即可：
-- `common/cpp/writer_id.h file not found` — virtual includes 路径
+- `common/runtime/cpp/writer_id.h file not found` — virtual includes 路径
 - `No template named 'remove_cvref_t' in namespace 'fmt'` — clangd 解析 bazel 虚拟头文件
 - `Import "_fly_*" could not be resolved` — nanobind 动态生成的 .so 类型
 

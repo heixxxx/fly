@@ -1,9 +1,9 @@
 #pragma once
 
-#include <common/cpp/common_types.h>
-#include <common/cpp/fd_handle.h>
+#include <container/cpp/container_aliases.h>
+#include <common/io/cpp/fd_handle.h>
 #include <network/cpp/epoll_multiplexer.h>
-#include <common/cpp/fly_buffer.h>
+#include <common/buffer/cpp/fly_buffer.h>
 #include <cstdint>
 #include <functional>
 #include <atomic>

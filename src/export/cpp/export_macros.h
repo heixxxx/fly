@@ -5,10 +5,10 @@
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/map.h>
 #include <nanobind/stl/shared_ptr.h>
-#include <serialization/cpp/serialization_macros.h>
+#include <common/serialization/cpp/serialization_macros.h>
 #include <storage/cpp/decompressing_streambuf.h>
-#include <serialization/cpp/object_header.h>
-#include <common/cpp/common_types.h>
+#include <common/serialization/cpp/object_header.h>
+#include <container/cpp/container_aliases.h>
 #include <memory>
 #include <string>
 #include <cstring>
@@ -46,7 +46,10 @@ namespace fly_export = nanobind;
 
 #define FLY_EXPORT_ENUM_VALUE(export_name, ...) .value(export_name, __VA_ARGS__)
 
-#define FLY_EXPORT_SERIALIZE(Cls) \
+// pickle 绑定（buffer/bytes 两形态）——不依赖 Database，底层模块的
+// export 用此宏即可：write_object 经 pickle 协议（__getstate__/__setstate__）
+// 等价落库。
+#define FLY_EXPORT_SERIALIZE_PICKLE(Cls) \
     .def("__getstate_buffer__", [](const Cls& obj) -> CMSharedPtr<FlyBuffer> { \
         auto buf = CMMakeShared<FlyBuffer>(); \
         auto& fly_buf_ref_ = *buf; \
@@ -74,13 +77,6 @@ namespace fly_export = nanobind;
         } catch (const std::exception& e) { \
             throw fly_export::value_error(e.what()); \
         } \
-    }) \
-    .def("_write_to_db", [](const Cls& obj, Database& db, const CMString& name, \
-                             const CMString& py_name, bool backup) -> int { \
-        return static_cast<int>(db.write_object<Cls>(name, obj, py_name, backup)); \
-    }) \
-    .def_static("_read_from_db", [](Database& db, const CMString& name, const CMString& cache = "low") -> CMSharedPtr<Cls> { \
-        return db.read_object<Cls>(name, cache); \
     }) \
     .def("__getstate__", [](const Cls& obj) -> fly_export::bytes { \
         auto buf = CMMakeShared<FlyBuffer>(); \
@@ -111,3 +107,15 @@ namespace fly_export = nanobind;
         } \
     }) \
     .def_prop_ro("is_cpp", [](const Cls&) { return true; })
+
+// 全量形态：pickle + db 直读写。_write_to_db/_read_from_db 需要
+// 完整 Database 类型（调用方 export 需 include storage/cpp/database.h）。
+#define FLY_EXPORT_SERIALIZE(Cls) \
+    FLY_EXPORT_SERIALIZE_PICKLE(Cls) \
+    .def("_write_to_db", [](const Cls& obj, Database& db, const CMString& name, \
+                             const CMString& py_name, bool backup) -> int { \
+        return static_cast<int>(db.write_object<Cls>(name, obj, py_name, backup)); \
+    }) \
+    .def_static("_read_from_db", [](Database& db, const CMString& name, const CMString& cache = "low") -> CMSharedPtr<Cls> { \
+        return db.read_object<Cls>(name, cache); \
+    })

@@ -31,7 +31,7 @@ src/pipeline/
 
 ```cpp
 #pragma once
-#include <common/cpp/common_types.h>
+#include <container/cpp/container_aliases.h>
 
 namespace fly {
 
@@ -106,7 +106,7 @@ cc_library(
     copts = ["-std=c++20"],
     linkstatic = False,
     deps = [
-        "//src/common/cpp:fly_common_types",
+        "//src/container/cpp:fly_container_aliases",
     ],
 )
 
@@ -131,7 +131,7 @@ cc_library(
     linkstatic = False,
     linkopts = ["-lsystem_lib"],  # 系统库链接
     deps = [
-        "//src/common/cpp:fly_common_types",
+        "//src/container/cpp:fly_container_aliases",
         "//src/storage/cpp:fly_storage",  # 跨模块依赖
     ],
 )
@@ -202,7 +202,7 @@ cc_binary(
   dynamic_deps = [
       "//src/pipeline/cpp:fly_pipeline_so",
       "//src/storage/cpp:fly_storage_so",
-      "//src/serialization/cpp:fly_serialization_so",
+      "//src/common/serialization:fly_serialization_so",
   ],
   ```
 

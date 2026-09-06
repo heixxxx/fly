@@ -7,7 +7,7 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
-#include <common/cpp/test_helpers.h>
+#include <common/testing/cpp/test_helpers.h>
 
 namespace fly {
 using namespace fly::test;
