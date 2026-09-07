@@ -12,8 +12,8 @@ for _subpath in ['core/export', 'log/export']:
     if os.path.exists(_full):
         sys.path.insert(0, _full)
 
-import _fly_log as log
-from _fly_core import ex_core_get_config
+import log
+from core import ex_core_get_config
 
 
 def setup_module():

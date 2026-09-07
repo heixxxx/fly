@@ -9,7 +9,7 @@
 import os
 import shutil
 
-from _fly_log import INFO
+from log import INFO
 
 from fly import get_config, launch_workers
 from fly.runtime import get_agent
@@ -59,17 +59,26 @@ assert abs(pin_a.capacitance - 1.5) < 1e-12, f"cap={pin_a.capacitance}"
 dff = next(c for c in library.cells if c.name == "DFF_X1")
 assert dff.is_sequence_cell, "DFF_X1 should be marked sequential (ff group)"
 
-# 重名 cell 冲突检测（同 cell 出现在两文件 → 库版本混用，应报错）
+# 来源可追溯（裁定 12/13）：cell 记录所属库组名与解析来源文件完整路径
+assert inv.library_name == "minitest_typ", f"library_name={inv.library_name}"
+assert inv.source_file == LIB_A, f"source_file={inv.source_file}"
+assert dff.source_file == LIB_B, f"dff source_file={dff.source_file}"
+
+# 重名 cell 冲突（同 cell 出现在两文件 = 库版本混用）：业务异常场景不抛
+# 异常（用户裁定）——保留当前（首份）、抛弃后续重复 + LIBR::0001 WARN 提醒，
+# 合并正常完成并冻结（语义下沉 C++ EXLIBLibrary.merge）。
 dup_path = os.path.join(LOG_DIR, "dup.lib")
 shutil.copy(LIB_A, dup_path)
-try:
-    proj.build_lib_db(name="lib_dup", lib_paths=[LIB_A, dup_path])
-    proj.wait_frozen("lib_dup", timeout=120)
-    assert not proj.is_db_frozen("lib_dup"), \
-        "duplicate-cell job must not succeed"
-    INFO("[OK] duplicate cell merge rejected as expected")
-except Exception:
-    INFO("[OK] duplicate cell merge rejected as expected")
+dup_db = proj.build_lib_db(name="lib_dup", lib_paths=[LIB_A, dup_path])
+assert proj.wait_frozen("lib_dup", timeout=120), \
+    "duplicate-cell merge must complete (keep-first semantics)"
+dup_lib = dup_db.load_library()
+dup_names = sorted(c.name for c in dup_lib.cells)
+assert dup_names == ["INV_X1"], f"dup cells={dup_names} (keep first, drop rest)"
+dup_inv = dup_lib.cells[0]
+assert dup_inv.source_file == LIB_A, \
+    f"kept cell should be the first occurrence ({LIB_A}), got {dup_inv.source_file}"
+INFO("[OK] duplicate cell merge: keep-first + drop rest, no raise")
 
 assert proj.is_db_frozen("lib"), "main lib db stays frozen"
 

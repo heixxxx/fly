@@ -19,7 +19,7 @@ import os
 import time
 import uuid
 
-from _fly_log import WARN, INFO, DBG
+from log import WARN, INFO, DBG
 
 
 _PROJECT_META = "_PROJECT_META.json"

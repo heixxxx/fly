@@ -1,4 +1,4 @@
-from _fly_test import EXTestObject, ex_test_parallel_read
+from .test_export import EXTestObject, ex_test_parallel_read
 from .qa_tmp import qa_tmp
 from .qa_wait import wait_until
 from .e2e_tasks import *

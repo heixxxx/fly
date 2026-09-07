@@ -1,6 +1,6 @@
 import pickle
 import time
-from _fly_storage import (
+from .storage_export import (
     ex_stg_get_data_service,
     EXStgWriteErrorType,
 )
@@ -40,7 +40,7 @@ class Database:
             agent = get_agent()
             self._db = agent._agent.get_or_create_database(db_path, data_path, writer_id)
         else:
-            from _fly_storage import ex_stg_create_database
+            from .storage_export import ex_stg_create_database
             self._db = ex_stg_create_database(db_path, data_path, writer_id)
 
         # meta 管理器（用于 _DB_META 文件读写）
@@ -150,10 +150,10 @@ class Database:
         t0 = time.perf_counter()
         nbytes = 0
         try:
-            import _fly_storage
+            from . import storage_export
 
             def _cpp_cls(py_name):
-                cls = getattr(_fly_storage, py_name, None)
+                cls = getattr(storage_export, py_name, None)
                 return cls if cls is not None and hasattr(cls, "_read_from_db") else None
 
             rc = None
@@ -183,7 +183,7 @@ class Database:
             detail = ""  # 失败分类（chunk_source 契约："io:"/"integrity:" 前缀）
             for _attempt in range(2):
                 try:
-                    stream = _fly_storage.ex_stg_open_read_stream(
+                    stream = storage_export.ex_stg_open_read_stream(
                         self._db, name, backup)
                 except KeyError:
                     raise  # 对象不可见：全源 miss（TIER3 已在前置轮换覆盖）
@@ -283,7 +283,7 @@ class Database:
     @staticmethod
     def _meta_to_ex(meta_dict):
         """_DB_META JSON dict → EXStgDbMeta（QA/agent 消费兼容层）。"""
-        from _fly_storage import EXStgDbMeta, EXStgWorkerInfo
+        from .storage_export import EXStgDbMeta, EXStgWorkerInfo
         d = meta_dict or {}
         m = EXStgDbMeta(int(d.get("created_at") or 0))
         m.workers = [
@@ -322,13 +322,13 @@ class Database:
         Serialized size > 1K logs a warning (use write_object instead).
         """
         type_name = type(value).__name__
-        from _fly_storage import FlyBuffer
+        from .storage_export import FlyBuffer
         buf = FlyBuffer()
         pickle.dump(value, buf)
         ok = self._db._set_var_buffer(name, buf, type_name)
         if not ok:
-            import _fly_log
-            _fly_log.ERR(f"set_var rejected: '{name}' (frozen or already exists)")
+            from log import ERR
+            ERR(f"set_var rejected: '{name}' (frozen or already exists)")
             raise RuntimeError(f"set_var failed: '{name}' (frozen or already exists)")
 
     def get_var(self, name: str):
@@ -376,7 +376,7 @@ class Database:
             from fly.runtime import get_agent
             instance._db = get_agent()._agent.get_or_create_database(db_path, data_path, 0)
         else:
-            from _fly_storage import ex_stg_create_database
+            from .storage_export import ex_stg_create_database
             instance._db = ex_stg_create_database(db_path, data_path, 0)
 
         instance._meta_file = DbMetaFile(db_path)

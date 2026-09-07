@@ -11,6 +11,7 @@ py_library(
     deps = [
         "//src/fly:fly_py",  # project.py/flows.py: Project base, register_flow
         "//src/solver/export:_fly_solver.so",
+        "//src/log:log_pkg",  # flows.py/ras_graph_dynamic.py: from log import
         requirement("numpy"),  # ras_graph.py: sparse matrix assembly
         requirement("scipy"),  # ras_graph.py: sparse.linalg.splu
     ],

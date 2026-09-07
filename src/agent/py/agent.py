@@ -5,8 +5,8 @@ import threading
 import subprocess
 from abc import ABC, abstractmethod
 
-from _fly_agent import EXAgentMaster, EXAgentWorker
-from _fly_log import DBG, INFO, WARN, ERR
+from .agent_export import EXAgentMaster, EXAgentWorker
+from log import DBG, INFO, WARN, ERR
 
 from storage import Database, DbMetaFile, make_meta
 from storage import get_registry
@@ -186,7 +186,7 @@ class Master(FlyAgent):
         """
         import ipaddress
         import socket
-        from _fly_core import ex_core_get_config
+        from core import ex_core_get_config
 
         cfg = ex_core_get_config()
         override = cfg.get_str("master_advertise_host")
@@ -241,7 +241,7 @@ class Master(FlyAgent):
         Config 在 workers launched 前仍可 set，故每次调用都重写快照——
         「首写完备 + 后续覆盖」都由本方法统一保证。
         """
-        from _fly_core import ex_core_get_config
+        from core import ex_core_get_config
 
         # 端口定稿前提：master 已监听。start 幂等（running 即 no-op），
         # expect_workers 在 get_agent() 后直接调用的场景由这里兜底启动。
@@ -347,7 +347,7 @@ class Master(FlyAgent):
         import shlex
         import subprocess as _sp
         import time
-        from _fly_core import ex_core_get_config
+        from core import ex_core_get_config
 
         if port is not None:
             self._port = port
@@ -541,7 +541,7 @@ class Master(FlyAgent):
         （默认 0 = 无限等待，等待期间每 30s 打 INFO 进度）。
         """
         import time
-        from _fly_core import ex_core_get_config
+        from core import ex_core_get_config
         if timeout is None:
             cfg_timeout = ex_core_get_config().get_int("worker_register_timeout") or 0
             timeout = float(cfg_timeout) if cfg_timeout > 0 else float("inf")
@@ -784,7 +784,7 @@ class Master(FlyAgent):
         RuntimeError，不等 worker_register_timeout（其默认 0=无限：无限
         等待语义仅保留给无本地句柄的外部唤起——bsub/expect_workers）。
         None=无早夭检测（保持既有调用语义）。"""
-        from _fly_core import ex_core_get_config
+        from core import ex_core_get_config
         cfg_timeout = ex_core_get_config().get_int("worker_register_timeout") or 0
         procs = {wid: self._spawned_procs[wid] for wid in (batch_ids or [])
                  if wid in self._spawned_procs}
@@ -1456,7 +1456,7 @@ class Master(FlyAgent):
             # 拒绝分支，用户 load 后重试闭环）。
             if not hasattr(db, 'get_db_path'):
                 try:
-                    from _fly_storage import ex_stg_get_data_service
+                    from storage import ex_stg_get_data_service
                     already = ex_stg_get_data_service().has_database(db_path)
                 except Exception:
                     already = False
@@ -1476,7 +1476,7 @@ class Master(FlyAgent):
 
     def _spawn_process_worker(self, worker_id: int, config: dict = None):
         import time
-        from _fly_core import ex_core_get_config
+        from core import ex_core_get_config
 
         # 先登记占位符再 spawn：若 spawn 后才 expect，worker 注册可能先到达，
         # 转正 erase 落空 → 占位符永久泄漏，wait_workers_registered 永不返回。
@@ -1566,6 +1566,8 @@ class Master(FlyAgent):
         if fly_on_path:
             return fly_on_path
 
+        # 特例：.so 模块对象的路径元数据使用（取 __file__ 推断安装树），
+        # 非符号消费——符号统一经 agent_export 导入点。
         import _fly_agent
         agent_dir = os.path.dirname(os.path.abspath(_fly_agent.__file__))
         # agent_dir = build/python/agent/ or bazel-bin/src/agent/export/
@@ -1707,7 +1709,7 @@ class Worker(FlyAgent):
                                  "write_ms": 0.0, "items": [],
                                  "mem_peak_rss": 0}})
             except Exception:
-                from _fly_log import ERR
+                from log import ERR
                 ERR(f"[POLL] finish_task failed twice, task_id={task['task_id']}")
         return True
 

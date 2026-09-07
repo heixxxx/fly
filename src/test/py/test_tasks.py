@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from fly import as_task
-from _fly_test import EXTestObject, ex_test_parallel_read
+from .test_export import EXTestObject, ex_test_parallel_read
 
 
 @as_task()

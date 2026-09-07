@@ -54,6 +54,12 @@ FLY_EXPORT_CLASS(fly::LIBPin, "EXLIBPin")
 FLY_EXPORT_CLASS(fly::LIBCell, "EXLIBCell")
     FLY_EXPORT_INIT()
     FLY_EXPORT_ATTR("name", &fly::LIBCell::name_)
+    FLY_EXPORT_READONLY_PROPERTY("library_name", [](const fly::LIBCell& c) {
+        return c.library_name_;
+    })
+    FLY_EXPORT_READONLY_PROPERTY("source_file", [](const fly::LIBCell& c) {
+        return c.source_file_;
+    })
     FLY_EXPORT_ATTR("area", &fly::LIBCell::area_)
     FLY_EXPORT_ATTR("is_sequence_cell", &fly::LIBCell::is_sequence_cell_)
     FLY_EXPORT_ATTR("extra_attrs", &fly::LIBCell::extra_attrs_)
@@ -62,7 +68,6 @@ FLY_EXPORT_CLASS(fly::LIBCell, "EXLIBCell")
 
 FLY_EXPORT_CLASS(fly::LIBLibrary, "EXLIBLibrary")
     FLY_EXPORT_INIT()
-    FLY_EXPORT_ATTR("name", &fly::LIBLibrary::name_)
     FLY_EXPORT_ATTR("header_attrs", &fly::LIBLibrary::header_attrs_)
     FLY_EXPORT_ATTR("template_names", &fly::LIBLibrary::template_names_)
     FLY_EXPORT_ATTR("cells", &fly::LIBLibrary::cells_)
@@ -70,6 +75,10 @@ FLY_EXPORT_CLASS(fly::LIBLibrary, "EXLIBLibrary")
     FLY_EXPORT_ATTR("skipped_group_counts", &fly::LIBLibrary::skipped_group_counts_)
     FLY_EXPORT_DEF("build_cell_index", [](fly::LIBLibrary& lib) {
         lib.build_cell_index();
+    })
+    // 多文件整合 merger：把 src 并入 self（冲突保留当前 + LIBR::0001 提醒）。
+    FLY_EXPORT_DEF("merge", [](fly::LIBLibrary& self, const fly::LIBLibrary& src) {
+        self.merge_from(src);
     })
     FLY_EXPORT_SERIALIZE_PICKLE(fly::LIBLibrary);
 

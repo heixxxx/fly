@@ -12,10 +12,8 @@ worker 链式编排（如 dynamic solver 的 controller task 持有用户 update
 import sys
 import types
 
-# stub task.py / executor.py 的 C++ 与包依赖（同 test_requires_parsing.py 模式）
-_fly_storage_stub = types.ModuleType('_fly_storage')
-_fly_storage_stub.ex_stg_compute_write_context_hash = lambda *a, **kw: ""
-
+# stub task.py / executor.py 的包依赖（export 导入层改造后业务代码走包根
+# `from log/storage/agent import`，同 test_requires_parsing.py 模式）
 
 class _FakeDataService:
     """wait_obj 轮询用假 DataService：对象永远不可见、master 无 pending 任务。"""
@@ -30,15 +28,12 @@ class _FakeDataService:
         return (False, None, "", False)  # found, data, py_name, can_still_produce
 
 
-_fly_storage_stub.ex_stg_get_data_service = lambda: _FakeDataService()
-sys.modules['_fly_storage'] = _fly_storage_stub
-
-_fly_log_stub = types.ModuleType('_fly_log')
-_fly_log_stub.DBG = lambda *a, **kw: None
-_fly_log_stub.INFO = lambda *a, **kw: None
-_fly_log_stub.WARN = lambda *a, **kw: None
-_fly_log_stub.ERR = lambda *a, **kw: None
-sys.modules['_fly_log'] = _fly_log_stub
+_log_stub = types.ModuleType('log')
+_log_stub.DBG = lambda *a, **kw: None
+_log_stub.INFO = lambda *a, **kw: None
+_log_stub.WARN = lambda *a, **kw: None
+_log_stub.ERR = lambda *a, **kw: None
+sys.modules['log'] = _log_stub
 
 
 class _FakeAgent:
@@ -68,15 +63,18 @@ _monitor_stub.take_result = lambda *a, **kw: None
 _monitor_stub.add_drain_ms = lambda *a, **kw: None
 sys.modules['monitor'] = _monitor_stub
 
-_fly_agent_stub = types.ModuleType('_fly_agent')
-_fly_agent_stub.EXTaskExecResult = object
-_fly_agent_stub.EXTaskExecStatus = type('EXTaskExecStatus', (), {'OK': 0})
-sys.modules['_fly_agent'] = _fly_agent_stub
+_agent_pkg_stub = types.ModuleType('agent')
+_agent_pkg_stub.EXTaskExecResult = object
+_agent_pkg_stub.EXTaskExecStatus = type('EXTaskExecStatus', (), {'OK': 0})
+sys.modules['agent'] = _agent_pkg_stub
 
 _storage_stub = types.ModuleType('storage')
 _storage_stub.Database = type('Database', (), {'_ROLE_REGISTRY': {}})
 _storage_stub.DbMetaFile = type('DbMetaFile', (), {})
+_storage_stub.make_meta = lambda *a, **kw: {}
 _storage_stub.get_registry = lambda: type('_R', (), {'register': lambda s, u, p: None})()
+_storage_stub.ex_stg_compute_write_context_hash = lambda *a, **kw: ""
+_storage_stub.ex_stg_get_data_service = lambda: _FakeDataService()
 sys.modules['storage'] = _storage_stub
 
 import importlib.util

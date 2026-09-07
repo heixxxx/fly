@@ -65,12 +65,15 @@ public:
 class LIBCell {
 public:
     CMString name_;
+    CMString library_name_;   // 所属 library 组名（来源可追溯）
+    CMString source_file_;    // 解析来源 .lib 文件完整路径（来源可追溯）
     double area_ = 0.0;
     bool is_sequence_cell_ = false;   // 含 ff/latch 组（时序单元）
     CMVector<LIBHeaderAttr> extra_attrs_;
     CMVector<LIBPin> pins_;
 
-    FLY_SERIALIZE(name_, area_, is_sequence_cell_, extra_attrs_, pins_)
+    FLY_SERIALIZE(name_, library_name_, source_file_, area_, is_sequence_cell_,
+                  extra_attrs_, pins_)
 };
 
 // lib db 的顶层整合容器：多文件分布式解析的结果汇整于单一对象
@@ -78,8 +81,6 @@ public:
 // power/current 计算引擎）的统一读取入口。
 class LIBLibrary {
 public:
-    CMString name_;   // 库名（library 组名；多文件时首个文件的库名，重复名 Warn）
-
     // 库头属性全量（time_unit/voltage_unit/capacitive_load_unit/slew_derate_* 等）
     CMVector<LIBHeaderAttr> header_attrs_;
 
@@ -104,7 +105,14 @@ public:
     const CMLookupTableTemplate* find_template(const CMString& name) const;
     void record_skipped_group(const CMString& type_name);
 
-    FLY_SERIALIZE(name_, header_attrs_, template_names_, templates_, cells_,
+    // 把 src 并入本容器（多文件分布式解析的 merger 语义）：
+    // cell 冲突 = 库版本混用——保留当前（首次出现）、抛弃后续重复，不抛
+    // 异常，每次抛弃经 LIBR::0001 WARN 提醒（cell 名 + 两处来源文件路径）；
+    // 模板集并入（重名先入优先）；skipped_group 统计累加；完成后重建 cell
+    // 索引。返回抛弃的重复 cell 数。
+    size_t merge_from(const LIBLibrary& src);
+
+    FLY_SERIALIZE(header_attrs_, template_names_, templates_, cells_,
                   skipped_group_names_, skipped_group_counts_)
 };
 

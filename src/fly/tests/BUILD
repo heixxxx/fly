@@ -43,6 +43,7 @@ py_test(
         "//src/fly:fly_py",
     ],
     imports = [
+        "..",  # import log / import core（包根，export 导入层模式）
         "../core/export",
         "../log/export",
     ],

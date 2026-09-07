@@ -33,7 +33,7 @@ import json
 import os
 import time
 
-from _fly_log import WARN
+from log import WARN
 
 
 _META_FILE = "_DB_META"

@@ -18,7 +18,7 @@ solve_once，master 在 matrix ready 后调度）。用户读结果时用 db.rea
 import os
 
 import numpy as np
-from _fly_log import INFO
+from log import INFO
 
 from fly import register_flow, as_task
 from fly import UserDoc, Schema, document

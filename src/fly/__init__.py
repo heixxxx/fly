@@ -18,8 +18,8 @@ Example::
 
 import os
 
-from _fly_log import WARN, INFO
-import _fly_message as _msg
+from log import WARN, INFO
+from fly.fly_export import _msg
 
 from storage import Database
 from storage import generate_uid, make_edge

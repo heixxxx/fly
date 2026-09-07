@@ -1,5 +1,7 @@
 #include <emir/lib/cpp/lib_parser.h>
 
+#include <message/cpp/message_macros.h>
+
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -340,8 +342,11 @@ void collect_pin(si2drGroupIdT group, LIBLibrary& lib, LIBPin& pin) {
     });
 }
 
-void collect_cell(si2drGroupIdT group, LIBLibrary& lib, LIBCell& cell) {
+void collect_cell(si2drGroupIdT group, LIBLibrary& lib, LIBCell& cell,
+                  const CMString& library_name, const CMString& source_path) {
     cell.name_ = group_first_name(group);
+    cell.library_name_ = library_name;
+    cell.source_file_ = source_path;
     find_float_attr(group, "area", cell.area_);
 
     for_each_group(group, [&](si2drGroupIdT sub, const CMString& type_name) {
@@ -395,8 +400,11 @@ void collect_template(si2drGroupIdT group, LIBLibrary& lib) {
     }
 }
 
-void collect_library(si2drGroupIdT group, LIBLibrary& lib) {
-    lib.name_ = group_first_name(group);
+void collect_library(si2drGroupIdT group, LIBLibrary& lib,
+                     const CMString& source_path) {
+    // 库名不入容器（多库混用是正常现象，无容器级 name 字段）；
+    // 逐 cell 记录 library_name_ 保留来源可追溯性。
+    const CMString library_name = group_first_name(group);
 
     for_each_group(group, [&](si2drGroupIdT sub, const CMString& type_name) {
         if (type_name.find("template") != CMString::npos) {
@@ -404,7 +412,7 @@ void collect_library(si2drGroupIdT group, LIBLibrary& lib) {
         } else if (type_name == "cell" || type_name == "test_cell" ||
                    type_name == "scaled_cell") {
             LIBCell cell;
-            collect_cell(sub, lib, cell);
+            collect_cell(sub, lib, cell, library_name, source_path);
             lib.cells_.push_back(std::move(cell));
         } else {
             // 库级其他子组（operating_conditions/wire_load/type 等）：统计
@@ -465,12 +473,15 @@ LIBLibrary lib_parse_lib_file(const CMString& path) {
     si2drGroupsIdT groups = si2drPIGetGroups(&err);
     si2drGroupIdT group;
     while (!si2drObjectIsNull((group = si2drIterNextGroup(groups, &err)), &err)) {
-        collect_library(group, lib);
+        collect_library(group, lib, path);
     }
     si2drIterQuit(groups, &err);
 
+    // 解析成功但 0 cell：业务异常场景（非语法错误）——LIBR::0002 提醒后
+    // 返回空容器，不抛异常（合并阶段自然无害；由调用方按需观测）。
     if (lib.cells_.empty()) {
-        throw std::runtime_error("lib_parse_lib_file: no cell parsed from: " + path);
+        MSG("LIBR::0002", 0, "no cell parsed from '{}'; returning empty "
+            "library container", path);
     }
     return lib;   // PI 内存库由 PiSessionGuard 析构清理
 }

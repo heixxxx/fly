@@ -8,9 +8,9 @@ py_library(
     srcs = glob(["*.py"]),
     deps = [
         "//src/agent/export:_fly_agent.so",
-        "//src/storage/export:_fly_storage.so",
-        "//src/log/export:_fly_log.so",
-        "//src/core/export:_fly_core.so",
+        "//src/storage:storage_pkg",  # agent.py/executor.py: from storage import
+        "//src/log:log_pkg",  # agent.py/executor.py: from log import
+        "//src/core:core_pkg",  # agent.py: from core import ex_core_get_config
         "//src/monitor:monitor_pkg",  # executor.py: task_io IO 归属
         requirement("cloudpickle"),  # executor.py: user-task deserialization
     ],

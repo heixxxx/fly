@@ -3,6 +3,42 @@
 ---
 ---
 
+## 2026-09-07: lib db 改造与增强 + 全仓库 export 导入层落地（lib-enhancement-plan A+B）
+
+lib db 增强（A）：lib 模块 py 目录七文件重组（export/db/flow/register_msg/
+utils/functions/__init__）；merge 冲突语义下沉 C++（`LIBLibrary::merge_from`
+保留首份抛弃重复 + `LIBR::0001` 提醒，`EXLIBLibrary.merge` 绑定）；
+`LIBCell` 增来源可追溯字段 `library_name_`/`source_file_`；删除冗余
+`LIBLibrary.name_`；解析成功但 0 cell 空库兜底（`LIBR::0002` 返回空容器
+不抛）；emir 聚合加载（`emir/__init__.py` 先 project 后 lib）+ project.py
+尾部迂回移除 + main.cpp 启动 `import emir`（开启即可用）。裁定 15-17 记入
+emir-data-flow.md §4，实施记录见 lib-enhancement-plan.md 文末。
+
+全仓库 export 导入层（B）：每个含 C++ 绑定的 Python 包新建 `<模块>_export.py`
+作为 `.so` 符号唯一导入点（container/core/network/solver/storage/agent/test/log
++ fly 聚合层承载 message），业务文件直连 `.so` 的 import 全部改道（同包相对
+引 export 层、跨模块走包根 `from module import ...`，与既定跨模块 import 规范
+对齐）；log 无 py/ 子包，export 层放模块根。纯 Python 测试的 stub 拦截点同步
+从 `_fly_*` 换为包根模块名。计划外发现：`network/py/__init__.py` 三个死符号
+修正（按真实导出表）；`_fly_network` 加载后退出期 double free 为 HEAD 既有
+缺陷（干净工作树复现实锤），main.cpp 有意不预加载并注释，待专项排查。
+
+---
+---
+
+## 2026-09-07: 新增 EMIR 子模块开发规则（docs/emir/dev-rules.md）
+
+lib 库 db 立项过程中用户逐条确认的开发约束提炼为规则文档，作为后续子模块
+立项的开发参考：三段式模块结构、py 六文件规范（db/flow/register_msg/utils/
+functions/__init__）、Project 归属与 flow 异步 4 步、实现语言边界（解析与业务
+对象构建在 C++，Python 仅编排）、命名规范、消息规范（模块消息前缀 + 全局区
+注册）、异常与健壮性语义（仅文件不可读/语法错误可 raise，其余兜底处理不
+raise）、加载语义（emir 一次性加载 + fly 启动即加载）、职责边界（内部流程
+不外露）。
+
+---
+---
+
 ## 2026-09-06: common 模块族重组——serialization 并入 + 按类型组织子模块 + container 模块独立
 
 结构性模块重组（全仓库 130+ 文件 include/deps 机械改写，零残留验证）：

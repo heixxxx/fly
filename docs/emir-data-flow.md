@@ -103,7 +103,10 @@
 11. **查找表结构属框架层（2026-09-06 补充）**：Liberty 查找表族（模板 + 表）抽象为 fly 全局通用结构，放 `src/container/` 模块（依赖 common(types) 与 common(serialization)；2026-09-06 模块族重组后归属），C++ 实现（算法引擎使用的结构保持语言间零开销传递），经 FLY_SERIALIZE_* 序列化入 db；后续 timing/power/current/switching 各 db 复用。
 12. **C/C++ 解析器与 emir 命名规范（2026-09-06 补充）**：文件解析器一律 C/C++（不使用 Python 解析器），lib 首版采用新思 Open Liberty 参考解析器做流程验证（SYNOPSYS Open Source License v1.0，以独立第三方库方式引入，与 lefdef 同构）；C++ 类名 = 模块简写大写前缀 + 类名（如 LIBCell），独立函数名 = 模块简写小写前缀 + 动词短语（如 lib_parse_lib_file）。模块简写经全库前缀冲突检测（须避开 export 目录、导出符号 EX+模块缩写体系〔EXAgent/EXCore/EXNet/EXPeer/EXSlv/EXStg/EXTask〕、FLY_ 宏、fly_* BUILD 目标）后定为：LIB(lib)、TC(tech)、DS(design)、**PEX(extraction**，寄生提取 parasitic extraction 的行业缩写；EX 撞导出前缀体系、EXT 撞 EXTask*，均排除)、SP(spef)、MX(matrix)、TM(timing)、VCD(vcd)、SW(switching)、PWR(power)、CUR(current)、ANS(analysis)、EM(em)；common 查找表为 CM（CMLookupTable）。
 13. **API 命名与前置获取（2026-09-06 补充）**：建库 API 统一 `build_<db 角色>_db`；直接前驱显式传入（建数据库链），间接前置一律经数据库链 `find_db(role=...)` 获取（如 em db 不显式传 matrix db，经 analysis db 链取）。
-14. **分布式解析与整合采用 MapReduce（2026-09-06 补充）**：lib db 的多文件解析 + LIBLibrary 整合用 MapReduceJob 实施——构造第一参数即数据保存 db（`MapReduceJob(db, output_name)`，中间对象为 temp、freeze 自动清理，最终输出持久化于该 db）；每文件预分区（`set_pre_partitioned`）为独立解析任务，全量合并（merge_type=full）产出 LIBLibrary。
+14. **分布式解析与整合采用 MapReduce（2026-09-06 补充）**：lib db 的多文件解析 + LIBLibrary 整合用 MapReduceJob 实施——构造第一参数即数据保存 db（`MapReduceJob(db, output_name)`，中间对象为 temp、freeze 自动清理，最终输出持久化于该 db）；每文件一分区（`set_partitioner`，独立解析任务），全量合并（merge_type=full）产出 LIBLibrary。
+15. **merge 冲突语义保留首份（2026-09-07 补充）**：多文件整合的 cell 冲突（同 cell 名跨文件出现 = 库版本混用迹象）属业务异常场景——**保留当前（首次出现）、抛弃后续重复，不抛异常**；每次抛弃经 `LIBR::0001` WARN 提醒（cell 名 + 两处来源文件路径）。语义下沉 C++（`LIBLibrary::merge_from`，Python 经 `EXLIBLibrary.merge`），规避 nanobind def_rw 的 vector 拷贝语义。
+16. **cell 来源可追溯（2026-09-07 补充）**：`LIBCell` 增 `library_name_`（所属 library 组名）与 `source_file_`（解析来源 .lib 文件完整路径）随序列化持久化；容器级 `LIBLibrary.name_` 删除（多库混用是正常现象，库名不一致不做提示、不做容器级归属）。
+17. **解析健壮性与 LIBR 消息前缀（2026-09-07 补充）**：lib 模块注册消息前缀 LIBR（`LIBR::0001` merge 抛弃重复 cell / `LIBR::0002` 解析成功但 0 cell 空库兜底——返回空容器不抛）。可 raise 场景仅限文件不可读与语法错误；其余能正常解析的场景一律兜底处理 + user message 提醒，不崩溃不 raise。
 
 ---
 

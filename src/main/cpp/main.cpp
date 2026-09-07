@@ -179,6 +179,13 @@ static void setup_sys_path() {
     ps += "import _fly_solver\n";
     ps += "import _fly_message\n";
     ps += "import _fly_emir_lib\n";
+    // 注意：_fly_network 有意不预加载——加载后进程退出期触发
+    // libfly_core 静态配置表 double free（HEAD 既有缺陷，2026-09-07
+    // HEAD 工作树复现实锤，与 Python 侧加载路径无关，待 C++ 构建层
+    // 专项排查）；network Python 包根当前零消费者，不受影响。
+    // 业务包启动即加载（开启即可用）：emir 聚合初始化完成全部子模块的
+    // flow 注册与 message id 注册（master/worker 两侧一致）。
+    ps += "import emir\n";
 
     PyRun_SimpleString(ps.c_str());
 }

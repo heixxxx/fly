@@ -1,4 +1,4 @@
-from _fly_solver import (
+from .solver_export import (
     EXSlvSubdomainInfo,
     EXSlvSubdomainSolver,
     ex_slv_build_poisson_2d,

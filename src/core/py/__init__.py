@@ -1,6 +1,8 @@
-from _fly_core import EXCoreConfig as Config, ex_core_get_config
-from _fly_core import EXProcessInfo as ProcessInfo, ex_core_get_process_info
-from _fly_core import ex_core_get_work_directory
+from .core_export import (
+    Config, ex_core_get_config,
+    ProcessInfo, ex_core_get_process_info,
+    ex_core_get_work_directory,
+)
 
 
 def get_config():

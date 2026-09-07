@@ -12,7 +12,7 @@ _mode: str = "master"
 
 
 def _config_is_worker_mode():
-    from _fly_core import ex_core_get_process_info
+    from core import ex_core_get_process_info
     return ex_core_get_process_info().worker_mode()
 
 
@@ -37,8 +37,8 @@ def _create_agent() -> "FlyAgent":
     # 延迟导入 agent：避免 fly/__init__.py 初始化期间触发循环导入。
     from agent import Master, Worker
 
-    from _fly_log import DBG
-    from _fly_core import ex_core_get_process_info
+    from log import DBG
+    from core import ex_core_get_process_info
 
     proc = ex_core_get_process_info()
 

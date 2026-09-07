@@ -5,7 +5,7 @@ try:
 except ImportError:  # pragma: no cover（cloudpickle 为硬依赖，恒存在）
     cloudpickle = None
 
-from _fly_log import DBG
+from log import DBG
 
 task_registry = {}
 
@@ -114,7 +114,7 @@ def as_task(inputs=None, requires=None, vars=None, priority=10, owner=None):
 
         def wrapper(*args, **kwargs):
             from fly.runtime import get_agent
-            from _fly_storage import ex_stg_compute_write_context_hash
+            from storage import ex_stg_compute_write_context_hash
             agent = get_agent()
 
             task_inputs = inputs(*args, **kwargs) if inputs else []
@@ -226,7 +226,7 @@ def _wait_for_objects(deps, poll_interval, timeout=None):
         return
 
     import time
-    from _fly_storage import ex_stg_get_data_service
+    from storage import ex_stg_get_data_service
 
     ds = ex_stg_get_data_service()
 

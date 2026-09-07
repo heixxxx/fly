@@ -185,10 +185,11 @@ WRAPPER
     for mod in container core log network task test storage agent solver message monitor; do
         local so="$bazel_bin/src/$mod/export/_fly_${mod}.so"
         [ -f "$so" ] && ln -sf "$so" "$build_dir/python/$mod/"
-        # 模块根 __init__.py（message 无 Python 源码，跳过）
-        if [ -f "$FLY_ROOT/src/$mod/__init__.py" ]; then
-            ln -sf "$FLY_ROOT/src/$mod/__init__.py" "$build_dir/python/$mod/__init__.py"
-        fi
+        # 模块根 .py（message 无 Python 源码，跳过；log 的 export 层
+        # log_export.py 位于模块根——log 无 py/ 子包）
+        for py in "$FLY_ROOT/src/$mod/"*.py; do
+            [ -f "$py" ] && ln -sf "$py" "$build_dir/python/$mod/"
+        done
         # py/ 子包（log/message 无 Python 源码，跳过）
         if [ -d "$FLY_ROOT/src/$mod/py" ]; then
             mkdir -p "$build_dir/python/$mod/py"

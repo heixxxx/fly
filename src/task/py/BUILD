@@ -7,14 +7,11 @@ py_library(
     name = "fly_task_py",
     srcs = glob(["*.py"]),
     deps = [
-        "//src/agent/export:_fly_agent.so",
+        "//src/log:log_pkg",  # task.py: from log import DBG
+        "//src/storage:storage_pkg",  # task.py 函数内: from storage import
         requirement("cloudpickle"),  # task.py: as_task user-script serialization
     ],
     imports = [
-        "../agent/export",
-        "../storage/export",
-        "../log/export",
-        "../core/export",
         "..",
     ],
 )

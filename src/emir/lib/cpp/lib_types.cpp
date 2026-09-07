@@ -1,8 +1,43 @@
 #include <emir/lib/cpp/lib_types.h>
 
-#include <stdexcept>
+#include <message/cpp/message_macros.h>
 
 namespace fly {
+
+size_t LIBLibrary::merge_from(const LIBLibrary& src) {
+    // cell 冲突 = 库版本混用（业务异常场景，非解析错误）：保留当前
+    // （首次出现）、抛弃后续重复，LIBR::0001 逐次提醒并携带两处来源
+    // 路径；header_attrs 保留首个文件的（后续文件不再覆盖）。
+    size_t dropped = 0;
+    for (const auto& cell : src.cells_) {
+        if (find_cell(cell.name_) != nullptr) {
+            ++dropped;
+            const LIBCell* kept = find_cell(cell.name_);
+            MSG("LIBR::0001", 0,
+                "duplicate cell '{}' from '{}' dropped (already defined in "
+                "'{}'); keeping first", cell.name_, cell.source_file_,
+                kept ? kept->source_file_ : "");
+            continue;
+        }
+        cells_.push_back(cell);
+    }
+
+    // 模板集并入（重名先入优先），skipped_group 统计累加。
+    for (size_t i = 0; i < src.template_names_.size(); ++i) {
+        if (find_template(src.template_names_[i]) == nullptr) {
+            template_names_.push_back(src.template_names_[i]);
+            templates_.push_back(src.templates_[i]);
+        }
+    }
+    for (size_t i = 0; i < src.skipped_group_names_.size(); ++i) {
+        for (int j = 0; j < src.skipped_group_counts_[i]; ++j) {
+            record_skipped_group(src.skipped_group_names_[i]);
+        }
+    }
+
+    build_cell_index();
+    return dropped;
+}
 
 void LIBLibrary::build_cell_index() {
     cell_index_.clear();

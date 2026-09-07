@@ -17,14 +17,15 @@ import threading
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'py'))
 
-# stub _fly_log — 测试不依赖真实 C++ log
+# stub log 包 — 测试不依赖真实 C++ log（chain_registry.py 走包根
+# `from log import`，stub 顶替包根模块）
 import types
-_log_mod = types.ModuleType("_fly_log")
+_log_mod = types.ModuleType("log")
 _log_mod.DBG = lambda *a, **kw: None
 _log_mod.INFO = lambda *a, **kw: None
 _log_mod.WARN = lambda *a, **kw: None
 _log_mod.ERR = lambda *a, **kw: None
-sys.modules["_fly_log"] = _log_mod
+sys.modules["log"] = _log_mod
 
 from chain_registry import DbChainRegistry, get_registry
 

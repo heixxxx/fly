@@ -16,7 +16,7 @@ find_db 解析前驱物理位置时查询此注册表。
 
 import threading
 
-from _fly_log import DBG, WARN
+from log import DBG, WARN
 
 
 class DbChainRegistry:

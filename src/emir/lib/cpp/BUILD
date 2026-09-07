@@ -22,6 +22,8 @@ cc_library(
         "//src/container/cpp:fly_container",
         "//src/emir/lib/third_party/liberty:liberty_parser_c",
         "//src/common/serialization:fly_serialization",
+        "//src/log/cpp:fly_log",  # MSG 宏链路的 log_write / logger.h
+        "//src/message/cpp:fly_message",  # lib_parser/lib_types: LIBR::0001/0002
     ],
     visibility = ["//visibility:public"],
 )

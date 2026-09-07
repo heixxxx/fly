@@ -11,17 +11,21 @@ import importlib.util
 _SRC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 _TASK_PY = os.path.join(_SRC_ROOT, 'src', 'task', 'py', 'task.py')
 
-# task.py 依赖 _fly_storage 和 _fly_log，测试只验证解析逻辑，
-# 通过注入 stub 模块绕过这些依赖。
-# Stub _fly_storage.ex_stg_compute_write_context_hash
-_fly_storage_stub = types.ModuleType('_fly_storage')
-_fly_storage_stub.ex_stg_compute_write_context_hash = lambda *a, **kw: ""
-sys.modules['_fly_storage'] = _fly_storage_stub
+# task.py 依赖 log 与 storage 包（export 导入层改造后业务代码不再直连
+# _fly_*.so），测试只验证解析逻辑，通过顶替包根模块绕过这些依赖。
+# Stub storage 包根（task.py 函数内 from storage import ...）
+_storage_stub = types.ModuleType('storage')
+_storage_stub.ex_stg_compute_write_context_hash = lambda *a, **kw: ""
+_storage_stub.ex_stg_get_data_service = lambda: None
+sys.modules['storage'] = _storage_stub
 
-# Stub _fly_log.DBG
-_fly_log_stub = types.ModuleType('_fly_log')
-_fly_log_stub.DBG = lambda *a, **kw: None
-sys.modules['_fly_log'] = _fly_log_stub
+# Stub log 包（task.py 顶层 from log import DBG）
+_log_stub = types.ModuleType('log')
+_log_stub.DBG = lambda *a, **kw: None
+_log_stub.INFO = lambda *a, **kw: None
+_log_stub.WARN = lambda *a, **kw: None
+_log_stub.ERR = lambda *a, **kw: None
+sys.modules['log'] = _log_stub
 
 # Stub fly.runtime（task.py 的 wrapper 内部 from fly.runtime import get_agent）
 _fly_runtime_stub = types.ModuleType('fly.runtime')

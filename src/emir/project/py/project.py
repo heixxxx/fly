@@ -50,8 +50,3 @@ class EMIRProject(Project):
 
     pass
 
-
-# 尾部 import 各 db 子包：触发 @register_flow(EMIRProject) 注册（此时
-# EMIRProject 已定义，与 solver/project.py 尾部 import flows 同构）。
-# 随新 db 立项在此追加。
-from emir.lib import *  # noqa: E402,F401,F403

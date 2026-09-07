@@ -84,8 +84,12 @@ private:
 
 ## Python API
 
+log 为纯 C++ 模块（无业务 Python 源码），Python 绑定符号经 export 导入层
+`log_export.py` 统一导入，包根 re-export——业务代码一律 `from log import ...`，
+不直连 `_fly_log`（全仓库 export 导入层模式，见 lib-enhancement-plan.md §B）：
+
 ```python
-from _fly_log import (
+from log import (
     init_log,       # init_log(base_dir, worker_id=0)
     shutdown_log,   # shutdown_log()
     flush_log,      # flush_log()

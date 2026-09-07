@@ -15,7 +15,7 @@ def _load_low_score_factor():
     # low 等级计分折扣（用户裁定：low 用较低基础分——同等热度下优先级
     # 低于 high，淘汰时沉底）。config 存百分比整数（25 = 0.25），默认 25。
     try:
-        from _fly_core import ex_core_get_config
+        from core import ex_core_get_config
         pct = ex_core_get_config().get_int("low_score_factor")
         if pct > 0:
             return pct / 100.0
@@ -79,7 +79,7 @@ class ReadCache:
 
     def __init__(self, max_bytes: int = 0):
         if max_bytes <= 0:
-            from _fly_core import ex_core_get_config
+            from core import ex_core_get_config
             max_bytes = int(ex_core_get_config().get_int("read_cache_size"))
             if max_bytes <= 0:
                 max_bytes = _DEFAULT_MAX_BYTES

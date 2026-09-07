@@ -30,8 +30,7 @@ from task import USER_MODULE, USER_FUNC_PREFIX
 from monitor import set_current as io_set_current, take_result as io_take_result, \
     add_drain_ms as io_add_drain_ms
 
-from _fly_agent import EXTaskExecResult, EXTaskExecStatus
-from _fly_log import INFO, WARN, ERR
+from log import INFO, WARN, ERR
 
 from storage import Database, DbMetaFile
 from storage import get_registry as get_chain_registry
@@ -89,7 +88,7 @@ def deserialize_args(args: list, worker) -> list:
             if cached_db is not None and db_path and cached_db.get_db_path() != db_path:
                 cached_db = None
             if cached_db is None:
-                from _fly_storage import ex_stg_get_data_service
+                from storage import ex_stg_get_data_service
                 ds = ex_stg_get_data_service()
 
                 # 读 _DB_META 一次（role + chain info + data_path），失败时
@@ -116,7 +115,7 @@ def deserialize_args(args: list, worker) -> list:
                     cls = Database
 
                 if ds.has_database(db_path):
-                    from _fly_storage import ex_stg_create_database_with_path
+                    from storage import ex_stg_create_database_with_path
                     db = cls.__new__(cls)
                     db._db = ex_stg_create_database_with_path(db_path, data_path, worker._worker_id, db_path)
                 else:
@@ -196,7 +195,7 @@ def create_executor(worker):
         except Exception:
             pending_vars = []
         if pending_vars:
-            from _fly_storage import FlyBuffer
+            from storage import FlyBuffer
             for vp in pending_vars:
                 db_path, short_name = _split_full_name(vp.var_name)
                 if db_path is None:
@@ -225,7 +224,7 @@ def create_executor(worker):
         must run only on the success path — on failure, dirty writes are rolled
         back by the C++ cleanup_failed_task_writes, so draining would be wrong.
         """
-        from _fly_storage import ex_stg_get_data_service
+        from storage import ex_stg_get_data_service
         t0 = time.perf_counter()
         ex_stg_get_data_service().drain_write_back()
         # drain 是 write 的 flush 落盘段，计入 task 的 write_time。

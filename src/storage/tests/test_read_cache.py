@@ -248,14 +248,14 @@ def test_zero_max_bytes_reads_config():
     import sys as _sys
     import types as _types
     cfg_calls = {"read_cache_size": 4096}
-    stub = _types.ModuleType("_fly_core")
+    stub = _types.ModuleType("core")
 
     class _Cfg:
         def get_int(self, key):
             return cfg_calls.get(key, 0)  # C++ config 未设键返回 0
 
     stub.ex_core_get_config = lambda: _Cfg()
-    _sys.modules["_fly_core"] = stub
+    _sys.modules["core"] = stub
     try:
         rc = ReadCache(max_bytes=0)
         assert rc._max_bytes == 4096, f"应取 config 值 4096，got {rc._max_bytes}"
@@ -266,7 +266,7 @@ def test_zero_max_bytes_reads_config():
         rc2 = ReadCache(max_bytes=0)
         assert rc2._max_bytes == 1 << 30
     finally:
-        del _sys.modules["_fly_core"]
+        del _sys.modules["core"]
     print("  PASS: test_zero_max_bytes_reads_config")
 
 
@@ -275,7 +275,7 @@ def test_low_score_factor_from_config():
     # 异常/未设时回默认 0.25。
     import sys as _sys
     import types as _types
-    stub = _types.ModuleType("_fly_core")
+    stub = _types.ModuleType("core")
 
     class _Cfg:
         def __init__(self, vals):
@@ -285,22 +285,22 @@ def test_low_score_factor_from_config():
             return self._vals.get(key, 0)  # C++ config 未设键返回 0
 
     stub.ex_core_get_config = lambda: _Cfg({"low_score_factor": 50})
-    _sys.modules["_fly_core"] = stub
+    _sys.modules["core"] = stub
     try:
         rc = ReadCache(max_bytes=1024 * 1024)
         assert abs(rc._low_factor - 0.5) < 1e-9, \
             f"low_score_factor=50 应解析为 0.5，got {rc._low_factor}"
     finally:
-        del _sys.modules["_fly_core"]
+        del _sys.modules["core"]
 
-    stub2 = _types.ModuleType("_fly_core")
+    stub2 = _types.ModuleType("core")
     stub2.ex_core_get_config = lambda: _Cfg({})  # 未设（返回 0，不满足 >0）→ 回默认
-    _sys.modules["_fly_core"] = stub2
+    _sys.modules["core"] = stub2
     try:
         rc2 = ReadCache(max_bytes=1024 * 1024)
         assert abs(rc2._low_factor - 0.25) < 1e-9
     finally:
-        del _sys.modules["_fly_core"]
+        del _sys.modules["core"]
     print("  PASS: test_low_score_factor_from_config")
 
 

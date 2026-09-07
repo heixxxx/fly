@@ -35,7 +35,6 @@ protected:
 };
 
 TEST_F(LibParserTest, LibraryBasics) {
-    EXPECT_EQ(lib_.name_, "minitest_typ");
     ASSERT_EQ(lib_.cells_.size(), 2u);   // INV_X1 + DFF_X1
 
     // 库头属性全量（含单位与阈值类 simple 属性）
@@ -46,6 +45,15 @@ TEST_F(LibParserTest, LibraryBasics) {
         }
     }
     EXPECT_TRUE(found_time_unit) << "time_unit attr should be captured verbatim";
+}
+
+TEST_F(LibParserTest, CellProvenanceFields) {
+    // 来源可追溯（裁定 12/13）：逐 cell 记录所属 library 组名与解析来源
+    // 文件完整路径；容器级 name 字段已删除（多库混用是正常现象）。
+    for (const auto& cell : lib_.cells_) {
+        EXPECT_EQ(cell.library_name_, "minitest_typ");
+        EXPECT_EQ(cell.source_file_, sample_path().string());
+    }
 }
 
 TEST_F(LibParserTest, TemplatesCollected) {
@@ -183,14 +191,15 @@ TEST_F(LibParserTest, SerializeRoundTrip) {
     LIBLibrary back;
     FLY_DECODE(blob, LIBLibrary, back);
 
-    EXPECT_EQ(back.name_, "minitest_typ");
     ASSERT_EQ(back.cells_.size(), 2u);
     EXPECT_EQ(back.templates_.size(), lib_.templates_.size());
-    // 反序列化后结构完好（抽查时序单元标记）
+    // 反序列化后结构完好（抽查时序单元标记 + 来源字段随序列化保留）
     const LIBCell* dff = back.find_cell("DFF_X1");
     // find_cell 惰性建索引
     ASSERT_NE(dff, nullptr);
     EXPECT_TRUE(dff->is_sequence_cell_);
+    EXPECT_EQ(dff->library_name_, "minitest_typ");
+    EXPECT_EQ(dff->source_file_, sample_path().string());
 }
 
 TEST(LibParserDeathTest, ParseErrors) {
@@ -204,6 +213,83 @@ TEST(LibParserDeathTest, ParseErrors) {
     }
     EXPECT_THROW(lib_parse_lib_file(bad.string()), std::runtime_error);
     fs::remove(bad);
+}
+
+TEST(LibParseRobustnessTest, EmptyLibraryNoThrow) {
+    // 解析成功但 0 cell：业务异常场景——LIBR::0002 提醒后返回空容器，
+    // 不抛异常（用户裁定：仅文件不可读/语法错误可 raise）。
+    fs::path empty = fs::temp_directory_path() / "emir_empty.lib";
+    {
+        std::ofstream f(empty);
+        f << "library (empty_typ) { time_unit : \"1ns\"; }\n";
+    }
+    LIBLibrary lib;
+    EXPECT_NO_THROW(lib = lib_parse_lib_file(empty.string()));
+    EXPECT_TRUE(lib.cells_.empty());
+    fs::remove(empty);
+}
+
+TEST(LibMergeTest, KeepFirstDropDuplicates) {
+    // merge 语义（裁定 13）：cell 冲突保留当前（首次出现）、抛弃后续
+    // 重复（LIBR::0001 提醒，副作用不崩）；模板集并入；统计累加。
+    LIBLibrary a;
+    LIBCell inv;
+    inv.name_ = "INV_X1";
+    inv.library_name_ = "lib_a";
+    inv.source_file_ = "/libs/a.lib";
+    a.cells_.push_back(inv);
+
+    LIBLibrary b;
+    LIBCell inv2 = inv;
+    inv2.library_name_ = "lib_b";
+    inv2.source_file_ = "/libs/b.lib";
+    LIBCell dff;
+    dff.name_ = "DFF_X1";
+    dff.library_name_ = "lib_b";
+    dff.source_file_ = "/libs/b.lib";
+    b.cells_.push_back(inv2);
+    b.cells_.push_back(dff);
+
+    b.build_cell_index();
+    a.build_cell_index();
+
+    const size_t dropped = a.merge_from(b);
+    EXPECT_EQ(dropped, 1u);                       // INV_X1 重复被抛弃
+    ASSERT_EQ(a.cells_.size(), 2u);               // INV_X1（首份）+ DFF_X1
+    EXPECT_EQ(a.cells_[0].source_file_, "/libs/a.lib");   // 保留当前版本
+    ASSERT_NE(a.find_cell("DFF_X1"), nullptr);    // 抛弃不影响新 cell 并入
+    EXPECT_EQ(a.find_cell("DFF_X1")->library_name_, "lib_b");
+}
+
+TEST(LibMergeTest, TemplateMergeFirstWins) {
+    LIBLibrary a;
+    a.template_names_.push_back("power_2d");
+    a.templates_.push_back(CMLookupTableTemplate{});
+    a.templates_[0].variable_names_.push_back("v1");
+    a.skipped_group_names_.push_back("operating_conditions");
+    a.skipped_group_counts_.push_back(1);
+
+    LIBLibrary b;
+    b.template_names_.push_back("power_2d");    // 重名 → a 的先入优先
+    b.templates_.push_back(CMLookupTableTemplate{});
+    b.template_names_.push_back("slew_1d");     // 新名 → 并入
+    b.templates_.push_back(CMLookupTableTemplate{});
+    b.skipped_group_names_.push_back("operating_conditions");
+    b.skipped_group_counts_.push_back(2);
+
+    a.merge_from(b);
+    ASSERT_EQ(a.template_names_.size(), 2u);      // power_2d（保留 a 版）+ slew_1d
+    EXPECT_EQ(a.template_names_[0], "power_2d");
+    ASSERT_EQ(a.templates_.size(), 2u);
+    // 统计累加：1 + 2 = 3
+    bool found_stat = false;
+    for (size_t i = 0; i < a.skipped_group_names_.size(); ++i) {
+        if (a.skipped_group_names_[i] == "operating_conditions") {
+            EXPECT_EQ(a.skipped_group_counts_[i], 3);
+            found_stat = true;
+        }
+    }
+    EXPECT_TRUE(found_stat);
 }
 
 }  // namespace

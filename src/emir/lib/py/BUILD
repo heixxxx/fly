@@ -11,6 +11,7 @@ py_library(
         "//src/emir/lib/export:_fly_emir_lib.so",
         "//src/emir/project:project_pkg",
         "//src/fly:fly_py",
+        "//src/log:log_pkg",  # lib_db.py: from log import INFO
         "//src/storage:storage_pkg",
     ],
 )

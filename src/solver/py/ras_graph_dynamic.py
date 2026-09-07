@@ -75,7 +75,7 @@ import pickle
 import uuid
 import numpy as np
 
-from _fly_log import DBG, INFO, WARN, ERR
+from log import DBG, INFO, WARN, ERR
 from fly import as_task, wait_obj
 from agent import serialize_array, deserialize_array
 
@@ -238,7 +238,7 @@ def setup_compute_task(db, matrix_ref, nsd, sd, gen):
 
     失败的任何一步都导致 addr 缺失 → setup_check inputs 依赖不可解 →
     fail_unscheduleable_tasks 连锁失败（整组进 bin，可 restart）。"""
-    from _fly_solver import EXSlvSubdomainSolver
+    from .solver_export import EXSlvSubdomainSolver
     from fly import put_cache, has_cache
     from fly.runtime import get_agent
     from core import get_config as _get_config
@@ -299,7 +299,7 @@ def _serve_loop(agent, solver_key, shared_key, sd):
     中的当前步参数本地 solve → 回贡献。done=本步结束信号（ack 后继续候下
     一步）。存活期 = 整个动态链；异常退出仅发生在关机/server 强关时。"""
     import numpy as np
-    from _fly_solver import ex_slv_ras_bupdated_solve
+    from .solver_export import ex_slv_ras_bupdated_solve
     from fly import get_cache, has_cache
 
     while has_cache(shared_key) and not get_cache(shared_key)["stop"]:

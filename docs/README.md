@@ -57,7 +57,7 @@
 
 ## 模块文档（docs/&lt;module&gt;/module.md）
 
-agent、common（模块族）、container、core、export、log、network、python-api、storage、task、test —— 每模块一份，实现细节与内部约定；模块清单见 architecture.md §七。
+agent、common（模块族）、container、core、emir（含子模块开发规则 dev-rules.md）、export、log、network、python-api、storage、task、test —— 每模块一份，实现细节与内部约定；模块清单见 architecture.md §七。
 
 ## 问题追踪体系
 

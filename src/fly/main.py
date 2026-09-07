@@ -2,10 +2,10 @@ import os
 import sys
 import code
 import signal
-from _fly_log import DBG, ERR, INFO, WARN
+from log import DBG, ERR, INFO, WARN
 
 def init():
-    from _fly_core import ex_core_get_process_info
+    from core import ex_core_get_process_info
     from fly.runtime import get_agent, configure_master, configure_worker
     
     proc = ex_core_get_process_info()
@@ -44,7 +44,7 @@ def _cleanup():
     _ct0 = _ct.monotonic()
     def _clog(stage):
         try:
-            from _fly_log import INFO as _INFO
+            from log import INFO as _INFO
             _INFO("_cleanup stage '{}' took {:.3f}s".format(stage, _ct.monotonic() - _ct0))
         except Exception:  # pragma: no cover（清理解构兜底）
             pass
@@ -60,7 +60,7 @@ def _cleanup():
     _clog("agent_reset")
 
     try:
-        from _fly_storage import ex_stg_get_data_service
+        from storage import ex_stg_get_data_service
         ds = ex_stg_get_data_service()
         ds.drain_write_back()
         ds.stop_write_back()
@@ -70,7 +70,7 @@ def _cleanup():
     _clog("storage_drain")
 
     try:
-        from _fly_storage import ex_stg_get_storage_manager
+        from storage import ex_stg_get_storage_manager
         sm = ex_stg_get_storage_manager()
         sm.close_all()
     except Exception:  # pragma: no cover（清理解构兜底）
@@ -99,7 +99,7 @@ def _redirect_worker_io(worker_id, log_dir):
 
 def _run_worker():
     import time
-    from _fly_core import ex_core_get_process_info, ex_core_get_config
+    from core import ex_core_get_process_info, ex_core_get_config
     from fly.runtime import get_agent
 
     proc = ex_core_get_process_info()
@@ -114,7 +114,7 @@ def _run_worker():
     init()
 
     from fly.runtime import get_agent
-    from _fly_log import INFO
+    from log import INFO
     INFO("Worker process starting: id=" + str(proc.worker_id()))
 
     agent = get_agent()
@@ -139,7 +139,7 @@ def _run_worker():
 
 
 def _run_master():
-    from _fly_core import ex_core_get_process_info
+    from core import ex_core_get_process_info
     from fly.bootstrap import get_script_namespace
 
     # Coverage is now started at interpreter boot via sitecustomize.py
@@ -198,7 +198,7 @@ def _dump_on_signal(sig, frame):
         blocked on schedule_mutex_).
     """
     import os, traceback, threading  # pragma: no cover（信号转储：os._exit 跳过 atexit，coverage 结构上不可采）
-    from _fly_core import ex_core_get_config
+    from core import ex_core_get_config
     try:
         log_dir = ex_core_get_config().get_str("log_dir")
     except Exception:
@@ -259,7 +259,7 @@ def run():
         # heartbeat drain 线程由此观察到 SIGTERM（Python handler 只在主线程
         # 字节码边界执行，若主线程阻塞在 C 调用中，仅剩信号灯通道生效）。
         try:
-            from _fly_agent import ex_agent_set_graceful_shutdown
+            from agent import ex_agent_set_graceful_shutdown
             ex_agent_set_graceful_shutdown()
         except Exception:  # pragma: no cover（清理解构兜底）
             pass
