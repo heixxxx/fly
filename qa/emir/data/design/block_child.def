@@ -1,0 +1,44 @@
+VERSION 5.8 ;
+DESIGN block_child ;
+UNITS DISTANCE MICRONS 1000 ;
+DIEAREA ( -500 -250 ) ( -500 1000 ) ( 750 1000 ) ( 750 -250 ) ;
+
+VIAS 2 ;
+    - VIA12
+      + RECT M1 ( -100 -100 ) ( 100 100 )
+      + RECT VIA1 ( -40 -40 ) ( 40 40 )
+      + RECT M2 ( -150 -150 ) ( 150 150 ) ;
+    - VIA12G
+      + VIARULE VIAGEN12
+      + CUTSIZE 60 60
+      + LAYERS M1 VIA1 M2
+      + CUTSPACING 40 40
+      + ENCLOSURE 20 20 25 25 ;
+END VIAS
+
+COMPONENTS 1 ;
+    - u1 INV_X1 + PLACED ( 100 200 ) N ;
+END COMPONENTS
+
+PINS 2 ;
+    - PIN_IN + NET n1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER M1 ( -5 -10 ) ( 15 20 )
+        + FIXED ( 5 10 ) N ;
+    - PIN_OUT + NET n2
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER M2 ( 400 450 ) ( 500 550 )
+        + PLACED ( 450 500 ) N ;
+END PINS
+
+NETS 2 ;
+    - n1 ( u1 A ) ( PIN PIN_IN )
+      + ROUTED M1 ( 100 200 ) VIA12 ( 500 200 ) ;
+    - n2 ( u1 ZN ) ( PIN PIN_OUT ) ;
+END NETS
+
+END DESIGN

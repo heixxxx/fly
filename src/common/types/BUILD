@@ -1,4 +1,4 @@
-# common/types —— 基础别名（指针族）：永久稳定层，零依赖
+# common/types —— 基础别名（指针族）+ 公共工具宏：永久稳定层，零依赖
 
 package(default_visibility = ["//visibility:public"])
 

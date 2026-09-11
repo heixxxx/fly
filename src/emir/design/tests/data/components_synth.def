@@ -1,0 +1,22 @@
+VERSION 5.8 ;
+DESIGN block_b ;
+UNITS DISTANCE MICRONS 1000 ;
+DIEAREA ( 0 0 ) ( 1000 1000 ) ;
+
+COMPONENTS 4 ;
+    - u1 INV_X1 + PLACED ( 100 100 ) N + WEIGHT 3 ;
+    - u2 INV_X1 + FIXED ( 200 100 ) FS ;
+    - u3 GHOST_CELL + UNPLACED ;
+    - u4 GHOST_CELL + COVER ( 300 300 ) S ;
+END COMPONENTS
+
+NETS 2 ;
+    - n1 ( u1 A ) ;
+    - n1 ( u2 Z ) ;
+END NETS
+
+SPECIALNETS 1 ;
+    - VDD ( u1 VDD ) ;
+END SPECIALNETS
+
+END DESIGN

@@ -1,10 +1,9 @@
-# src/lefdef 本地构建生成物（上游 Makefile 与 bison 产物，勿提交）
-def.tab.cpp
-def.tab.h
+# src/lefdef 本地构建生成物（上游 Makefile 产物，勿提交）。
+# 例外：bison 生成物 def.tab.cpp/def.tab.h/lef.tab.cpp/lef.tab.h 随 .y
+# 变更手动再生成并签入 git（Bazel 直接编译源码，见 docs/emir/
+# design-db-s1-s4b-implementation-plan.md §1 P0-3），不再忽略。
 def.tab.hpp
 def.output
-lef.tab.cpp
-lef.tab.h
 lef.tab.hpp
 lef.output
 *.o

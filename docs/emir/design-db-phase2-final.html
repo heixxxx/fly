@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>design db 第二阶段方案 · 裁定总览与本期实现范围</title>
+<style>
+:root{
+  --ink:#24292f; --muted:#57606a; --faint:#8b949e;
+  --line:#d8dee4; --line-soft:#e8ecf0;
+  --bg:#f6f8fa; --card:#ffffff;
+  --blue:#2563a8; --blue-deep:#1a4e86; --blue-soft:#eaf2fb; --blue-mid:#c9ddf2;
+  --orange:#c9661a; --orange-soft:#fdf1e2; --orange-mid:#f3d9b8;
+  --green:#2f7d4f; --green-soft:#e6f4ec; --green-mid:#bfe2cd;
+  --purple:#7a4ea3; --purple-soft:#f3ecfa; --purple-mid:#d9c8ea;
+  --red:#b22222;
+  --mono:ui-monospace,"SF Mono","Cascadia Mono","JetBrains Mono",Consolas,"Courier New",monospace;
+}
+*{box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.75 -apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  -webkit-font-smoothing:antialiased;}
+.wrap{max-width:1180px;margin:0 auto;padding:0 20px 90px;}
+code{font-family:var(--mono);background:#eef2f6;border:1px solid var(--line-soft);border-radius:3px;padding:0 5px;font-size:.92em;}
+
+/* ---- 页头 ---- */
+header.hero{background:linear-gradient(180deg,#ffffff 0%,#f2f6fa 100%);border-bottom:1px solid var(--line);}
+.hero-inner{max-width:1180px;margin:0 auto;padding:34px 20px 22px;}
+.hero h1{font-size:24px;margin:0 0 8px;letter-spacing:.5px;}
+.hero h1 .no{color:var(--blue);}
+.hero .sub{color:var(--muted);font-size:13.5px;margin:0 0 12px;max-width:940px;}
+.status-row{display:flex;flex-wrap:wrap;gap:10px;margin:6px 0 10px;}
+.st-badge{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:700;
+  border-radius:999px;padding:5px 16px;border:1px solid;}
+.st-badge .dot{width:9px;height:9px;border-radius:50%;flex:none;}
+.st-done{background:var(--green-soft);color:var(--green);border-color:var(--green-mid);}
+.st-done .dot{background:var(--green);}
+.st-wait{background:var(--orange-soft);color:var(--orange);border-color:var(--orange-mid);}
+.st-wait .dot{background:var(--orange);animation:pulse 1.6s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+.hero .meta{margin-top:8px;font-size:12.5px;color:var(--faint);}
+.hero .meta code{font-family:var(--mono);background:#eef2f6;border:1px solid var(--line-soft);border-radius:3px;padding:1px 6px;}
+
+/* ---- 锚点导航 ---- */
+nav.topnav{position:sticky;top:0;z-index:60;background:rgba(255,255,255,.96);border-bottom:1px solid var(--line);backdrop-filter:blur(4px);}
+.topnav-inner{max-width:1180px;margin:0 auto;padding:0 12px;display:flex;flex-wrap:wrap;gap:2px;}
+.topnav a{display:block;padding:9px 13px;font-size:13px;color:var(--muted);text-decoration:none;border-bottom:2px solid transparent;white-space:nowrap;}
+.topnav a:hover{color:var(--blue-deep);background:var(--blue-soft);}
+.topnav a .n{font-family:var(--mono);color:var(--blue);margin-right:4px;font-weight:700;}
+
+/* ---- 章节 ---- */
+section{background:var(--card);border:1px solid var(--line);border-radius:8px;
+  padding:26px 30px 30px;margin-top:30px;scroll-margin-top:56px;}
+.sec-no{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:1px;margin-bottom:4px;}
+section h2{font-size:19px;margin:0 0 6px;padding-left:12px;border-left:4px solid var(--blue);line-height:1.4;}
+.sec-src{font-size:12.5px;color:var(--muted);margin:6px 0 2px;}
+.sec-src .sec-ref{font-family:var(--mono);color:var(--blue-deep);}
+.hint{font-size:12.5px;color:var(--green);background:var(--green-soft);border:1px solid #cde8d8;
+  border-radius:4px;padding:5px 12px;display:inline-block;margin:8px 0 4px;}
+.note{font-size:12.5px;color:var(--muted);margin:8px 0 0;}
+.note b{color:var(--ink);}
+
+/* ---- 折叠面板（裁定总览） ---- */
+details.vgroup{border:1px solid var(--line);border-radius:6px;margin-top:14px;background:#fff;overflow:hidden;}
+details.vgroup summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:10px;
+  padding:12px 18px;background:#fbfcfd;font-size:14.5px;font-weight:700;color:var(--blue-deep);
+  border-bottom:1px solid transparent;user-select:none;}
+details.vgroup summary::-webkit-details-marker{display:none;}
+details.vgroup summary .tri{transition:transform .15s;font-size:11px;color:var(--faint);}
+details.vgroup[open] summary .tri{transform:rotate(90deg);}
+details.vgroup[open] summary{border-bottom-color:var(--line);}
+details.vgroup summary .cnt{font-family:var(--mono);font-size:11.5px;font-weight:400;color:var(--faint);margin-left:auto;}
+.vlist{padding:10px 18px 16px;}
+.vitem{display:flex;gap:12px;align-items:flex-start;padding:8px 4px;border-bottom:1px dashed var(--line-soft);font-size:13.5px;line-height:1.75;}
+.vitem:last-child{border-bottom:none;}
+.vno{flex:none;width:30px;height:30px;border-radius:50%;background:var(--blue-soft);border:1px solid var(--blue-mid);
+  color:var(--blue-deep);font-weight:700;font-size:14px;display:flex;align-items:center;justify-content:center;margin-top:3px;}
+.vitem.p-item .vno{background:var(--purple-soft);border-color:var(--purple-mid);color:var(--purple);}
+.vitem.revoked{background:#fffaf5;}
+.vtag{display:inline-block;font-size:11px;font-family:var(--mono);border-radius:3px;padding:0 6px;margin:0 4px;vertical-align:1px;border:1px solid;}
+.vtag.warn{background:var(--orange-soft);color:var(--orange);border-color:var(--orange-mid);}
+.vtag.ok{background:var(--green-soft);color:var(--green);border-color:var(--green-mid);}
+.vtag.ref{background:var(--blue-soft);color:var(--blue-deep);border-color:var(--blue-mid);}
+.enumrow{font-family:var(--mono);font-size:12px;background:#f6f8fa;border:1px solid var(--line-soft);border-radius:4px;
+  padding:4px 10px;display:inline-block;margin-top:4px;}
+
+/* ---- 核心结构 ---- */
+.core-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px;margin-top:14px;align-items:start;}
+.core-card{border:1px solid var(--line);border-radius:6px;background:#fff;padding:16px 18px;}
+.core-card h3{font-size:14.5px;margin:0 0 8px;color:var(--blue-deep);border-bottom:1px dashed var(--line);padding-bottom:7px;}
+.core-card h3 .idx{display:inline-flex;width:22px;height:22px;border-radius:50%;background:var(--blue);color:#fff;
+  font-size:12px;align-items:center;justify-content:center;margin-right:8px;vertical-align:-4px;font-family:var(--mono);}
+.kv{font-family:var(--mono);font-size:12.3px;background:#f6f8fa;border:1px solid var(--line-soft);border-radius:4px;
+  padding:8px 10px;margin:6px 0;white-space:pre-wrap;line-height:1.7;overflow-x:auto;}
+.formula{font-family:var(--mono);font-size:13px;background:var(--blue-soft);border:1px solid var(--blue-mid);
+  color:var(--blue-deep);border-radius:4px;padding:7px 12px;margin:8px 0;font-weight:700;}
+.core-card ul{margin:4px 0 8px;padding-left:18px;font-size:12.8px;line-height:1.72;}
+.core-card li{margin:2px 0;}
+.cmp-table{width:100%;border-collapse:collapse;font-size:12.6px;margin:8px 0;}
+.cmp-table th,.cmp-table td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top;line-height:1.6;}
+.cmp-table th{background:var(--blue-soft);color:var(--blue-deep);white-space:nowrap;}
+.cmp-table td:first-child{background:#fbfcfd;font-weight:700;white-space:nowrap;}
+.cmp-table code{white-space:nowrap;}
+.pin-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:10px 0 4px;}
+.pin-col{border:1px solid var(--line);border-radius:6px;padding:10px 12px;font-size:12.6px;background:#fbfcfd;}
+.pin-col h4{margin:0 0 6px;font-size:12.8px;color:var(--blue-deep);}
+.pin-col .tag{font-family:var(--mono);font-size:11px;border-radius:3px;padding:0 6px;border:1px solid;}
+.tag.pub{background:var(--blue-soft);color:var(--blue-deep);border-color:var(--blue-mid);}
+.tag.lib{background:var(--orange-soft);color:var(--orange);border-color:var(--orange-mid);}
+.tag.lef{background:var(--purple-soft);color:var(--purple);border-color:var(--purple-mid);}
+.compose-mini{margin-top:10px;border:1px solid var(--line-soft);border-radius:6px;background:#fdfefe;padding:6px;}
+.compose-mini svg{width:100%;height:auto;display:block;}
+
+/* ---- 本期实现范围 ---- */
+.legend{display:flex;flex-wrap:wrap;gap:10px 22px;font-size:12px;color:var(--muted);margin-top:10px;}
+.legend .sw{display:inline-block;width:13px;height:13px;border-radius:3px;vertical-align:-2px;margin-right:5px;border:1px solid rgba(0,0,0,.12);}
+.fig{border:1px solid var(--line-soft);border-radius:6px;background:#fdfefe;padding:8px;margin-top:14px;}
+.fig svg{width:100%;height:auto;display:block;}
+#dep-svg .dep-node{cursor:pointer;}
+#dep-svg .dep-node rect.box{stroke-width:1.3;transition:stroke-width .12s,filter .12s;}
+#dep-svg .dep-node:hover rect.box{stroke-width:2.4;}
+#dep-svg .dep-node.sel rect.box{stroke-width:2.8;filter:drop-shadow(0 1px 4px rgba(37,99,168,.4));}
+#dep-svg .dep-edge{transition:stroke .15s,stroke-width .15s;}
+#dep-svg .dep-edge.hl{stroke:var(--orange) !important;stroke-width:2.8;}
+svg text{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;}
+svg text.mono{font-family:var(--mono);}
+.batch-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:16px;}
+.batch-card{border:1px solid var(--line);border-radius:6px;background:#fff;padding:13px 16px;cursor:pointer;
+  transition:box-shadow .12s,border-color .12s;border-left-width:4px;}
+.batch-card:hover{box-shadow:0 2px 8px rgba(0,0,0,.08);}
+.batch-card.sel{border-color:var(--blue);box-shadow:0 2px 10px rgba(37,99,168,.25);}
+.batch-card.k-base{border-left-color:var(--blue);}
+.batch-card.k-stage{border-left-color:var(--purple);}
+.batch-card.k-release{border-left-color:var(--green);cursor:default;}
+.batch-card h4{margin:0 0 5px;font-size:13.5px;color:var(--ink);}
+.batch-card h4 .bid{font-family:var(--mono);color:var(--blue-deep);margin-right:6px;}
+.batch-card.k-stage h4 .bid{color:var(--purple);}
+.batch-card.k-release h4 .bid{color:var(--green);}
+.batch-card p{margin:0;font-size:12.6px;color:var(--muted);line-height:1.7;}
+.batch-card .deps{margin-top:7px;font-size:11.5px;font-family:var(--mono);}
+.batch-card .deps .dep-lb{color:var(--faint);}
+.batch-card .deps .dep-v{background:#f6f8fa;border:1px solid var(--line-soft);border-radius:3px;padding:0 6px;margin-right:4px;display:inline-block;}
+.detail{margin-top:16px;border:1px solid var(--line);border-radius:6px;background:#fff;padding:16px 20px;min-height:60px;}
+.detail h3{margin:0 0 4px;font-size:16px;color:var(--blue-deep);}
+.detail .dep-badge{font-size:12px;color:var(--muted);margin-bottom:8px;}
+.detail ul{margin:2px 0 6px;padding-left:18px;font-size:13px;line-height:1.75;}
+.detail li{margin:3px 0;}
+
+/* ---- 配图标签页 + 灯箱 ---- */
+.tabs{margin-top:14px;}
+.tab-bar{display:flex;flex-wrap:wrap;gap:4px;border-bottom:2px solid var(--line);}
+.tab-btn{appearance:none;background:none;border:1px solid var(--line);border-bottom:none;border-radius:6px 6px 0 0;
+  padding:9px 18px;font-size:13.5px;color:var(--muted);cursor:pointer;font-family:inherit;}
+.tab-btn:hover{background:var(--blue-soft);color:var(--blue-deep);}
+.tab-btn.active{background:#fff;color:var(--blue-deep);font-weight:700;border-color:var(--line);
+  border-bottom:2px solid #fff;margin-bottom:-2px;position:relative;}
+.tab-panel{display:none;border:1px solid var(--line);border-top:none;border-radius:0 0 6px 6px;background:#fff;padding:14px;}
+.tab-panel.active{display:block;}
+.tab-panel img{display:block;width:100%;height:auto;border:1px solid var(--line-soft);border-radius:4px;cursor:zoom-in;background:#fff;}
+.fig-cap{font-size:12.5px;color:var(--muted);margin-top:10px;line-height:1.8;}
+.fig-cap b{color:var(--ink);}
+.fig-cap .sw{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:-1px;margin:0 4px 0 10px;border:1.5px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.25);}
+#lightbox{position:fixed;inset:0;z-index:200;background:rgba(20,26,32,.88);display:none;
+  align-items:center;justify-content:center;padding:24px;cursor:zoom-out;}
+#lightbox.open{display:flex;}
+#lightbox img{max-width:96vw;max-height:92vh;width:auto;height:auto;border-radius:4px;box-shadow:0 8px 40px rgba(0,0,0,.5);background:#fff;}
+#lightbox .lb-tip{position:fixed;top:14px;right:22px;color:#dbe4ec;font-size:13px;}
+
+footer{margin-top:44px;font-size:12px;color:var(--faint);border-top:1px solid var(--line);padding-top:16px;line-height:1.9;}
+footer code{font-family:var(--mono);}
+
+@media (max-width:760px){
+  section{padding:20px 16px 24px;}
+  .hero h1{font-size:20px;}
+  .vitem{font-size:13px;}
+  .cmp-table{display:block;overflow-x:auto;}
+}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <h1><span class="no">design db（设计数据库）</span>第二阶段方案 · 裁定总览与本期实现范围</h1>
+    <p class="sub">审阅反馈 ㉔–㉟ 与裁定点 P1–P8 逐条总览 · GEOTransform / cell 统一模型 / DSCell pin 三字段三大核心结构 · 本期实现批次 R1–R6 与解析阶段 S5a / S5b / S6 的依赖关系与发布策略。本页为裁定后总览与实现范围确认的附属可视化材料，裁定语义以下方逐条文本为准。</p>
+    <div class="status-row">
+      <span class="st-badge st-done"><span class="dot"></span>全部裁定完成 2026-09-10</span>
+      <span class="st-badge st-done"><span class="dot"></span>实现范围已确认 2026-09-10：R1-R6 + S5a/S5b + S6</span>
+    </div>
+    <p class="meta">方案文档：<code>docs/emir/design-db-phase2-plan.md</code>　·　配图：<code>design-nested-def-placement.png</code> / <code>design-lef-origin-placement.png</code>（同目录，见板块 4）</p>
+  </div>
+</header>
+
+<nav class="topnav"><div class="topnav-inner">
+  <a href="#sec-verdict"><span class="n">1</span>裁定总览</a>
+  <a href="#sec-core"><span class="n">2</span>核心结构</a>
+  <a href="#sec-scope"><span class="n">3</span>本期实现范围</a>
+  <a href="#sec-figs"><span class="n">4</span>八方向放置语义配图</a>
+</div></nav>
+
+<div class="wrap">
+
+<!-- ============ 板块 1：裁定总览 ============ -->
+<section id="sec-verdict">
+  <div class="sec-no">板块 1 / 4</div>
+  <h2>裁定总览：审阅反馈 ㉔–㉟ 与裁定点 P1–P8</h2>
+  <p class="sec-src">内容口径：<span class="sec-ref">第二阶段方案裁定记录（2026-09-10 全部裁定完成）</span>，逐条原文语义，不做改写</p>
+  <span class="hint">点击分组标题可折叠 / 展开；编号圆标 = 裁定条目编号；「已被撤销 / 收编」条目保留原文并标注去向。</span>
+
+  <details class="vgroup" open>
+    <summary><span class="tri">▶</span>A · 审阅反馈裁定（编号 ㉔–㉟）<span class="cnt">逐条一句话</span></summary>
+    <div class="vlist">
+      <div class="vitem"><span class="vno">㉔</span><div><b>geometry 独立顶层模块</b> <code>src/geometry</code>。</div></div>
+      <div class="vitem"><span class="vno">㉕</span><div><b>业务几何结构（DSShapeRef）留 design</b>，不进公共模块。</div></div>
+      <div class="vitem"><span class="vno">㉖</span><div><b>layer 显式 id 持久化</b> + 按 id 查找。</div></div>
+      <div class="vitem"><span class="vno">㉗</span><div><b>CM_FLAGS 按位 bool 宏</b>（common/types）。</div></div>
+      <div class="vitem revoked"><span class="vno">㉘</span><div><b>类型全库统一</b>——<span class="vtag warn">已被 P1 部分撤销</span>保持现有结构。</div></div>
+      <div class="vitem"><span class="vno">㉙</span><div><b>port 复用 DSPin、block 复用 DSCell</b>（flags 判别）。</div></div>
+      <div class="vitem"><span class="vno">㉚</span><div><b>VIARULE 不单独保存</b>、按描述展开为具体 via cell。</div></div>
+      <div class="vitem"><span class="vno">㉛</span><div><b>DEF 解析处理采用责任链 / 处理链</b>。</div></div>
+      <div class="vitem"><span class="vno">㉜</span><div><b>transform</b>——<span class="vtag ref">最终形态见下</span>核心结构 ① 与裁定点 P5。</div></div>
+      <div class="vitem"><span class="vno">㉝</span><div><b>全局 DBU 统一 1000</b>（各文件按声明换算）。</div></div>
+      <div class="vitem"><span class="vno">㉞</span><div><b>DIEAREA polygon 双存</b>（<code>polygon_</code> + <code>is_polygon</code> flag + bbox 直接 CMRect 存储含左下角坐标，尺寸由 bbox 派生）。</div></div>
+      <div class="vitem"><span class="vno">㉟</span><div><b>嵌套 DEF 放置语义调研完成</b>（官方 + OpenDB 双源，八 orient 矢量级核对；成果见板块 4 配图）。</div></div>
+    </div>
+  </details>
+
+  <details class="vgroup" open>
+    <summary><span class="tri">▶</span>B · 裁定点 P1–P8<span class="cnt">8 条 · 全部已裁定</span></summary>
+    <div class="vlist">
+      <div class="vitem p-item"><span class="vno">P1</span><div><b>保持现有结构</b>（lib / design 类型不合并）+ <b>DSCell pin 三字段按 pin 维度组织</b>。</div></div>
+      <div class="vitem p-item"><span class="vno">P2</span><div><b>= A</b>：表数据维持独立对象，不序列化进 cell。</div></div>
+      <div class="vitem p-item"><span class="vno">P3</span><div><b>= A</b>：DSPin 增 <code>placement_status_</code> 字段。</div></div>
+      <div class="vitem p-item"><span class="vno">P4</span><div><b>=</b> <code>fake_cell_ids_</code> 保留。</div></div>
+      <div class="vitem p-item"><span class="vno">P5</span><div><b>transform 下沉 geometry</b>：<code>CMTransform{point+rotation}</code>，枚举值严格对齐 Si2 <code>DEF_ORIENT_*</code>（defin 回调整型直转）。
+        <div class="enumrow">N=0 · W=1 · S=2 · E=3 · FN=4 · FW=5 · FS=6 · FE=7</div></div></div>
+      <div class="vitem p-item"><span class="vno">P6</span><div><b>需要重构、一次提交</b>（含工作区 T1–T6 一并入库）。</div></div>
+      <div class="vitem p-item"><span class="vno">P7</span><div><b>block cell 与 LEF cell 同构统一</b>（不归一化、<code>origin_ = −diearea 左下角</code>、<code>box = [−origin_, −origin_+(W,H)]</code>）。</div></div>
+      <div class="vitem p-item"><span class="vno">P8</span><div><b>= A 官方语义</b>（placement 对齐放置边界 = SIZE−ORIGIN 变换后左下角）。</div></div>
+    </div>
+  </details>
+</section>
+
+<!-- ============ 板块 2：核心结构 ============ -->
+<section id="sec-core">
+  <div class="sec-no">板块 2 / 4</div>
+  <h2>核心结构：CMTransform · cell 统一模型 · DSCell pin 三字段</h2>
+  <p class="sec-src">对应裁定：<span class="sec-ref">㉔ / ㉜ / P5（GEOTransform）</span> · <span class="sec-ref">P7 / P8（cell 统一模型）</span> · <span class="sec-ref">P1 / P2 / P3（pin 三字段）</span></p>
+  <span class="hint">前缀规范：前缀 = 所属模块的标识、一律全大写——common = CM、design = DS、lib = LIB、geometry = GEO（规范：DEVELOPMENT_GUIDELINES.md Section 2.2）。</span>
+
+  <div class="core-grid">
+    <!-- ① CMTransform -->
+    <div class="core-card">
+      <h3><span class="idx">①</span>GEOTransform（geometry 模块）</h3>
+      <div class="kv">template &lt;typename T&gt;    // T ∈ int32 / int64 / double
+class GEOTransform {         // 模板类型：适配不同 geometry 坐标类型
+  GEOPoint&lt;T&gt;     offset;    // 平移分量
+  GEOOrientation  orient;    // 旋转 / 翻转姿态
+}</div>
+      <div class="formula">apply(m) = R(orient) · m + offset</div>
+      <ul>
+        <li><b>compose 链式复合</b>——嵌套逐级复合，零修正项；</li>
+        <li><b>transform_box / transform_polygon</b>——包围盒与多边形整体变换；</li>
+        <li><b>apply_polygon</b>——多边形逐顶点变换；</li>
+        <li><b>FLY_SERIALIZE</b>——随序列化宏族持久化。</li>
+      </ul>
+      <p class="note" style="margin-top:2px;"><b>业务侧仅 t→pos 一行换算</b>（P8 官方语义：placement 对齐放置边界）：</p>
+      <div class="formula">pos = t − transform_box(orient, box).ll()</div>
+      <div class="compose-mini">
+        <svg viewBox="0 0 520 96" role="img" aria-label="compose 链式复合示意">
+          <defs><marker id="cm-arr" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 z" fill="#8a97a5"/></marker></defs>
+          <rect x="8" y="28" width="118" height="40" rx="6" fill="#f3ecfa" stroke="#a884c9" stroke-width="1.2"/>
+          <text x="67" y="52" text-anchor="middle" font-size="12" fill="#4a2f66">子 DEF 局部坐标</text>
+          <path d="M126,48 L178,48" fill="none" stroke="#8a97a5" stroke-width="1.6" marker-end="url(#cm-arr)"/>
+          <text x="152" y="38" text-anchor="middle" font-size="10.5" fill="#8b6a3f" class="mono">T_o</text>
+          <rect x="180" y="28" width="128" height="40" rx="6" fill="#eaf2fb" stroke="#7ba3cf" stroke-width="1.2"/>
+          <text x="244" y="52" text-anchor="middle" font-size="12" fill="#1a4e86">主 DEF 坐标</text>
+          <path d="M308,48 L360,48" fill="none" stroke="#8a97a5" stroke-width="1.6" marker-end="url(#cm-arr)"/>
+          <text x="334" y="38" text-anchor="middle" font-size="10.5" fill="#8b6a3f" class="mono">compose 逐级</text>
+          <rect x="362" y="28" width="150" height="40" rx="6" fill="#e6f4ec" stroke="#8fc7a5" stroke-width="1.2"/>
+          <text x="437" y="52" text-anchor="middle" font-size="12" fill="#2f7d4f">全局坐标（零修正项）</text>
+          <text x="260" y="90" text-anchor="middle" font-size="10.5" fill="#8b949e">嵌套展开逐级 compose：t_global = t_child ∘ t_parent ∘ …</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- ② cell 统一模型表 -->
+    <div class="core-card">
+      <h3><span class="idx">②</span>cell 统一模型表（P7 同构统一）</h3>
+      <table class="cmp-table">
+        <tr><th style="width:88px;">字段</th><th>LEF cell</th><th>block cell</th></tr>
+        <tr><td>origin_</td><td><code>ORIGIN</code> 语句值</td><td><code>−diearea 左下角</code></td></tr>
+        <tr><td>几何</td><td>LEF 宏原坐标</td><td>子 DEF 原坐标</td></tr>
+        <tr><td>参考点</td><td><code>−ORIGIN</code></td><td><code>diearea 左下角</code></td></tr>
+      </table>
+      <ul>
+        <li>两类 cell <b>同构统一、不归一化</b>；box 同一公式（P7）：</li>
+      </ul>
+      <div class="formula">box = [ −origin_ , −origin_ + (W, H) ]</div>
+      <ul>
+        <li><b>instance 存 pos</b>（原坐标系 (0,0) 的全局位）<b>+ orient</b>；</li>
+        <li><b>嵌套展开逐级 compose</b>（见左侧链式示意）。</li>
+      </ul>
+    </div>
+
+    <!-- ③ DSCell pin 三字段 -->
+    <div class="core-card">
+      <h3><span class="idx">③</span>DSCell pin 三字段（P1 按 pin 维度组织）</h3>
+      <div class="pin-cols">
+        <div class="pin-col">
+          <h4><span class="tag pub">① pins_</span> 基础公共</h4>
+          基础公共 pin 集<br>+ 全局 <code>pin_id</code><br>+ <code>placement_status_</code>（P3）
+        </div>
+        <div class="pin-col">
+          <h4><span class="tag lib">② lib 侧含表</span></h4>
+          <code>DSPinTables</code> 键 = <code>pin_id</code><br>internal_power / timing 表<br><span style="color:#8b949e;">（P2：独立对象，不序列化进 cell）</span>
+        </div>
+        <div class="pin-col">
+          <h4><span class="tag lef">③ lef 侧含图形</span></h4>
+          <code>DSPinGeometry</code> 键 = <code>pin_id</code><br>DSShapeRef 集<br><span style="color:#8b949e;">（㉕：业务几何结构留 design）</span>
+        </div>
+      </div>
+      <p class="note" style="margin-top:6px;"><b>检索接口</b>（按 pin 维度，键不再挂 cell_id）：</p>
+      <div class="formula">tables_of(pin_id)　·　geometry_of(pin_id)</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 板块 3：本期实现范围 ============ -->
+<section id="sec-scope">
+  <div class="sec-no">板块 3 / 4</div>
+  <h2>本期实现范围：批次 R1–R6 + S5a / S5b / S6 依赖关系</h2>
+  <p class="sec-src">范围口径：<span class="sec-ref">裁定后实现计划（2026-09-10）</span> · 发布口径 <span class="sec-ref">P6（一次提交，含工作区 T1–T6）</span></p>
+  <span class="hint">点击依赖图节点或下方批次卡片：该批次高亮、依赖边点亮，下方面板展示范围明细。</span>
+
+  <div class="legend">
+    <span><span class="sw" style="background:#eaf2fb;"></span>重构 / 基础批次 R1–R6</span>
+    <span><span class="sw" style="background:#f3ecfa;"></span>解析阶段批次 S5a / S5b / S6</span>
+    <span><span class="sw" style="background:#e6f4ec;"></span>发布策略（P6）</span>
+    <span><span class="sw" style="background:#fff;border-color:#c9661a;"></span>依赖边（点击节点点亮）</span>
+  </div>
+
+  <div class="fig">
+    <svg id="dep-svg" viewBox="0 0 980 710" role="img" aria-label="本期实现批次依赖关系图"></svg>
+  </div>
+
+  <div class="batch-grid" id="batch-grid"></div>
+
+  <div class="detail" id="batch-detail">
+    <h3>批次明细</h3>
+    <p class="dep-badge">尚未选择批次——点击上方依赖图节点或批次卡片查看明细。</p>
+  </div>
+</section>
+
+<!-- ============ 板块 4：八方向配图 ============ -->
+<section id="sec-figs">
+  <div class="sec-no">板块 4 / 4</div>
+  <h2>八方向放置语义配图（裁定 ㉟ / P5 / P7 / P8 调研成果）</h2>
+  <p class="sec-src">图片：<span class="sec-ref">同目录相对路径</span> <code>design-nested-def-placement.png</code> · <code>design-lef-origin-placement.png</code>（点击图片可放大）</p>
+
+  <div class="tabs" id="fig-tabs">
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="tab-nested">图一 · 嵌套 DEF（无 LEF 中介）八方向</button>
+      <button class="tab-btn" data-tab="tab-leforigin">图二 · LEF cell ORIGIN≠(0,0) 八方向</button>
+    </div>
+    <div class="tab-panel active" id="tab-nested">
+      <img src="design-nested-def-placement.png" alt="嵌套 DEF 放置八方向示意：子 DEF diearea 归一化为 block cell 后，N/W/S/E/FN/FS/FW/FE 八朝向的红点（pos）、绿三角（实例化坐标）与蓝框（最终图形）位置" loading="lazy">
+      <div class="fig-cap">
+        <b>图注</b>：<span class="sw" style="background:#d62728;"></span>红点 = instance 存储的 <b>pos</b>（原坐标系 (0,0) 的全局位）·
+        <span class="sw" style="background:#2ca02c;"></span>绿三角 = <b>实例化坐标</b>（COMPONENTS 给定，恒 (1000,600)，恰贴实例外框左下角）·
+        <span class="sw" style="background:#7fa8e0;"></span>蓝框 = <b>最终图形</b>（子 DEF diearea 放置后）·
+        红 / 紫箭头 = 子坐标系 x′ / y′ 轴 · 橙虚线 = 归一化偏移 (−100,−200) 经 T<sub>o</sub> 旋转后的向量。
+      </div>
+    </div>
+    <div class="tab-panel" id="tab-leforigin">
+      <img src="design-lef-origin-placement.png" alt="LEF cell ORIGIN≠(0,0) 放置八方向示意：SIZE 800×400、ORIGIN (200,0)，八朝向的红点（pos）、绿三角（实例化坐标）、绿框（最终图形）与蓝虚框（放置边界）位置" loading="lazy">
+      <div class="fig-cap">
+        <b>图注</b>：<span class="sw" style="background:#d62728;"></span>红点 = instance 存储的 <b>pos</b>（LEF 宏 (0,0) 的全局位，恰贴绿框一角）·
+        <span class="sw" style="background:#2ca02c;"></span>绿三角 = <b>实例化坐标</b>（恒 (1000,600)，贴放置边界左下角）·
+        <span class="sw" style="background:#5aa469;"></span>绿框 = <b>最终图形</b>（SIZE 框＝最终 instance 图形，放置后）·
+        蓝虚框 = 放置边界（SIZE−ORIGIN，P8 官方语义对齐目标）· 橙虚线 = ORIGIN (200,0) 经 T<sub>o</sub> 旋转。
+      </div>
+    </div>
+  </div>
+  <p class="note">两图为 R1（单测锚定八方向图数值）与 R6（可视化定稿）的数值基准：八 orient 姿态箭头与红点坐标即 P5 枚举（N=0 … FE=7）在各朝向下的矢量级核对结果（裁定 ㉟：官方 + OpenDB 双源）。</p>
+</section>
+
+<footer>
+  <p>本页为 <code>docs/emir/design-db-phase2-plan.md</code>（第二阶段方案）裁定后的总览与本期实现范围确认附属可视化，单文件、零外部依赖，浏览器直接打开；附属可视化与文档内容须同步修改。图片以同目录相对路径引用：<code>design-nested-def-placement.png</code> / <code>design-lef-origin-placement.png</code>。</p>
+  <p>术语对照：DBU = Database Unit（数据库单位，本阶段裁定全局统一 1000）；orient = 放置朝向（N / W / S / E / FN / FS / FW / FE 八种，FN = 翻转 N，依此类推）；LEF/DEF 放置语义以 Si2 LEF/DEF Reference 官方定义为准（P8）。</p>
+</footer>
+
+</div><!-- /wrap -->
+
+<div id="lightbox" role="dialog" aria-label="图片放大查看"><span class="lb-tip">点击任意处关闭</span><img id="lightbox-img" src="" alt="放大查看"></div>
+
+<script>
+'use strict';
+function qs(s){return document.querySelector(s);}
+function qsa(s){return Array.prototype.slice.call(document.querySelectorAll(s));}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+/* ===================== 配图标签页 ===================== */
+qsa('.tab-btn').forEach(function(btn){
+  btn.addEventListener('click',function(){
+    qsa('.tab-btn').forEach(function(b){b.classList.toggle('active',b===btn);});
+    qsa('.tab-panel').forEach(function(p){p.classList.toggle('active',p.id===btn.getAttribute('data-tab'));});
+  });
+});
+
+/* ===================== 灯箱放大 ===================== */
+var lb=qs('#lightbox'), lbImg=qs('#lightbox-img');
+qsa('.tab-panel img').forEach(function(img){
+  img.addEventListener('click',function(){ lbImg.src=img.src; lb.classList.add('open'); });
+});
+lb.addEventListener('click',function(){ lb.classList.remove('open'); lbImg.src=''; });
+document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'&&lb.classList.contains('open')){lb.classList.remove('open');lbImg.src='';} });
+
+/* ===================== 板块 3：批次依赖图 ===================== */
+var DEP_NODES=[
+ {id:'R1', x:60, y:36,  w:220, h:78, kind:'base',  title:'R1 · geometry 独立模块',
+  sub:'CMPoint/CMRect/CMPolygon 迁移 + 新增', sub2:'GEOOrientation / GEOTransform + 单测锚定八方向图数值', dep:'无依赖',
+  pts:['CMPoint / CMRect / CMPolygon 自原结构迁移至独立顶层模块 src/geometry（裁定 ㉔）','新增 GEOOrientation / GEOTransform&lt;T&gt; 模板（T ∈ int32 / int64 / double；P5：枚举严格对齐 Si2 DEF_ORIENT_*）','单测锚定八方向图数值（板块 4 两张配图的坐标即数值基准）']},
+ {id:'R2', x:40, y:186, w:200, h:72, kind:'base',  title:'R2 · layer id 化',
+  sub:'layer 显式 id 持久化 + 按 id 查找', dep:'R1',
+  pts:['layer 显式 id 持久化 + 按 id 查找（裁定 ㉖）']},
+ {id:'R6', x:286,y:186, w:236, h:72, kind:'base',  title:'R6 · transform 业务接入',
+  sub:'orient 整型直转 + t→pos 换算', sub2:'+ instance 字段 + 可视化定稿', dep:'R1',
+  pts:['defin 回调整型直转（P5 枚举 N=0 … FE=7）','业务侧 t→pos 一行换算：pos = t − transform_box(orient, box).ll()（P8）','instance 字段（存 pos + orient）','可视化定稿（板块 4 配图）']},
+ {id:'R3', x:700,y:36,  w:220, h:78, kind:'base',  title:'R3 · CM_FLAGS 宏',
+  sub:'按位 bool 宏（common/types）', dep:'无依赖',
+  pts:['CM_FLAGS 按位 bool 宏，落 common/types（裁定 ㉗）；port / block 复用判别（㉙）与 fake cell 标记等 flags 场景的前置']},
+ {id:'R4', x:700,y:186, w:230, h:72, kind:'base',  title:'R4 · pin 三字段按 pin 维度',
+  sub:'DSPin 增 pin_id；DSPinTables / DSPinGeometry', sub2:'键 cell_id → pin_id', dep:'R3',
+  pts:['DSCell pin 三字段按 pin 维度组织（P1）：① pins_ 基础公共（+ 全局 pin_id + placement_status_）② DSPinTables（internal_power / timing 表）③ DSPinGeometry（DSShapeRef 集）','DSPin 增 placement_status_ 字段（P3）；表数据维持独立对象不序列化进 cell（P2）','检索接口：tables_of(pin_id) / geometry_of(pin_id)']},
+ {id:'R5', x:700,y:326, w:230, h:72, kind:'base',  title:'R5 · port/block 复用 + VIARULE 删除',
+  sub:'port 复用 DSPin · block 复用 DSCell', sub2:'（flags 判别）· VIARULE 展开为 via cell', dep:'R3 / R4',
+  pts:['port 复用 DSPin、block 复用 DSCell（flags 判别，裁定 ㉙）','VIARULE 不单独保存、按描述展开为具体 via cell（裁定 ㉚）']},
+ {id:'S5a',x:300,y:470, w:330, h:88, kind:'stage', title:'S5a · COMPONENTS 责任链 ∥ 网名扫描',
+  sub:'CellResolve / InstanceBuild / Density / Stats', sub2:'+ fake cell · 与网名扫描并行', dep:'R2–R6',
+  pts:['DEF 解析处理采用责任链 / 处理链（裁定 ㉛）：CellResolve / InstanceBuild / Density / Stats 四环节 + fake cell 兜底（P4：fake_cell_ids_ 保留）','与网名扫描并行（沿用一期 S5a 每 DEF 两任务形态）','依赖 R2–R6 全部就绪后启动']},
+ {id:'S6', x:40, y:620, w:290, h:74, kind:'stage', title:'S6 · 层级树构建 + 起始编号分配',
+  sub:'block instance 树 + 编号区间表 + 四接口', sub2:'global id = local id + 起始编号 · local 0 = 自身占位', dep:'S5a',
+  pts:['层级树以 block instance 为节点 + 编号区间表（每 block instance 一段 id 区间，保存在树结构中）','四类接口：① id 区间反查（id 所属 block instance）② id 范围查 ③ parent-children 查询 ④ 以 name 打印树','global id = local id + 起始编号；local 0 = block 自身占位','依赖 S5a、与 S5b 并行']},
+ {id:'S5b',x:380,y:620, w:226, h:66, kind:'stage', title:'S5b · 网内容责任链',
+  sub:'分批多阶段', dep:'S5a',
+  pts:['网内容责任链（裁定 ㉛），分批多阶段控内存峰值']}
+];
+var RELEASE={
+ id:'RELEASE', title:'发布策略（P6）',
+ pts:['每批 TDD + ./fly.sh 验证，不 commit','全部完成 + 全量回归（单测 + QA + 真实数据烟测）后一次提交（含工作区 T1–T6 一并入库）']};
+var DEP_EDGES=[
+ {from:'R1', to:'R2',  d:'M150,114 L140,186'},
+ {from:'R1', to:'R6',  d:'M240,114 L390,186'},
+ {from:'R3', to:'R4',  d:'M815,114 L815,186'},
+ {from:'R3', to:'R5',  d:'M700,75 L660,75 L660,296 L736,322'},
+ {from:'R4', to:'R5',  d:'M815,258 L815,326'},
+ {from:'R2', to:'S5a', d:'M140,258 L330,470'},
+ {from:'R6', to:'S5a', d:'M400,258 L420,470'},
+ {from:'R4', to:'S5a', d:'M700,244 L648,244 L648,442 L565,470'},
+ {from:'R5', to:'S5a', d:'M815,398 L815,432 L600,470'},
+ {from:'S5a',to:'S6',  d:'M330,558 L185,620'},
+ {from:'S5a',to:'S5b', d:'M480,558 L490,620'},
+ {from:'S5b',to:'RELEASE', d:'M606,653 L820,653 L820,614', ghost:true}
+];
+var EDGE_LABELS=[
+ {x:352,y:455,t:'S5a 依赖 R2–R6 全部就绪',anchor:'middle'},
+ {x:420,y:582,t:'S6 ∥ S5b',anchor:'middle'},
+ {x:420,y:598,t:'（均仅依赖 S5a）',anchor:'middle'}
+];
+function nodeById(id){
+  for(var i=0;i<DEP_NODES.length;i++) if(DEP_NODES[i].id===id) return DEP_NODES[i];
+  return null;
+}
+function buildDepGraph(){
+  var s='';
+  s+='<defs><marker id="dp-arr" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 z" fill="#8a97a5"/></marker>';
+  s+='<marker id="dp-arr-g" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 z" fill="#8fc7a5"/></marker></defs>';
+  /* 发布策略虚线框 */
+  s+='<rect x="660" y="460" width="280" height="154" rx="8" fill="#f2fbf5" stroke="#2f7d4f" stroke-width="1.3" stroke-dasharray="7 5"/>';
+  s+='<text x="800" y="492" text-anchor="middle" font-size="13.5" font-weight="700" fill="#2f7d4f">发布策略（P6）</text>';
+  s+='<text x="800" y="518" text-anchor="middle" font-size="11" fill="#3d7a55">每批 TDD + ./fly.sh 验证，不 commit</text>';
+  s+='<text x="800" y="538" text-anchor="middle" font-size="11" fill="#3d7a55">全部完成 + 全量回归</text>';
+  s+='<text x="800" y="556" text-anchor="middle" font-size="11" fill="#3d7a55">（单测 + QA + 真实数据烟测）</text>';
+  s+='<text x="800" y="578" text-anchor="middle" font-size="11" font-weight="700" fill="#2f7d4f">→ 一次提交（含工作区 T1–T6）</text>';
+  /* 依赖边 */
+  DEP_EDGES.forEach(function(e,idx){
+    if(e.ghost){
+      s+='<path class="dep-edge" data-idx="'+idx+'" d="'+e.d+'" fill="none" stroke="#8fc7a5" stroke-width="1.6" stroke-dasharray="7 5" marker-end="url(#dp-arr-g)"/>';
+    }else{
+      s+='<path class="dep-edge" data-idx="'+idx+'" data-from="'+e.from+'" data-to="'+e.to+'" d="'+e.d+'" fill="none" stroke="#8a97a5" stroke-width="1.6" marker-end="url(#dp-arr)"/>';
+    }
+  });
+  EDGE_LABELS.forEach(function(l){
+    s+='<text x="'+l.x+'" y="'+l.y+'" text-anchor="'+l.anchor+'" font-size="10.5" fill="#8b6a3f">'+esc(l.t)+'</text>';
+  });
+  /* 无依赖起点角标 */
+  DEP_NODES.forEach(function(n){
+    var fill=n.kind==='stage'?'#f3ecfa':'#eaf2fb';
+    var stroke=n.kind==='stage'?'#a884c9':'#7ba3cf';
+    s+='<g class="dep-node" data-id="'+n.id+'">';
+    s+='<rect class="box" x="'+n.x+'" y="'+n.y+'" width="'+n.w+'" height="'+n.h+'" rx="6" fill="'+fill+'" stroke="'+stroke+'"/>';
+    var cx=n.x+n.w/2, hasSub2=!!n.sub2;
+    s+='<text x="'+cx+'" y="'+(n.y+(hasSub2?24:28))+'" text-anchor="middle" font-size="12.5" font-weight="700" fill="#24292f">'+esc(n.title)+'</text>';
+    s+='<text x="'+cx+'" y="'+(n.y+(hasSub2?43:49))+'" text-anchor="middle" font-size="10" fill="'+(n.kind==='stage'?'#7a4ea3':'#3c6ca8')+'">'+esc(n.sub)+'</text>';
+    if(hasSub2) s+='<text x="'+cx+'" y="'+(n.y+60)+'" text-anchor="middle" font-size="10" fill="'+(n.kind==='stage'?'#7a4ea3':'#3c6ca8')+'">'+esc(n.sub2)+'</text>';
+    if(n.dep==='无依赖'){
+      s+='<rect x="'+(n.x+n.w-58)+'" y="'+(n.y-9)+'" width="58" height="18" rx="9" fill="#e6f4ec" stroke="#2f7d4f" stroke-width="1"/>';
+      s+='<text x="'+(n.x+n.w-29)+'" y="'+(n.y+4)+'" text-anchor="middle" font-size="9.5" fill="#2f7d4f" font-weight="700">无依赖</text>';
+    }
+    s+='</g>';
+  });
+  qs('#dep-svg').innerHTML=s;
+  qsa('#dep-svg .dep-node').forEach(function(g){
+    g.addEventListener('click',function(){ selectBatch(g.getAttribute('data-id')); });
+  });
+}
+function buildBatchCards(){
+  var grid=qs('#batch-grid'), h='';
+  DEP_NODES.forEach(function(n){
+    h+='<div class="batch-card k-'+n.kind+'" data-id="'+n.id+'">';
+    h+='<h4><span class="bid">'+esc(n.id)+'</span>'+esc(n.title.replace(/^[^·]+· /,''))+'</h4>';
+    h+='<p>'+esc(n.sub)+(n.sub2?' '+esc(n.sub2):'')+'</p>';
+    h+='<div class="deps"><span class="dep-lb">依赖：</span><span class="dep-v">'+esc(n.dep)+'</span></div>';
+    h+='</div>';
+  });
+  h+='<div class="batch-card k-release" data-id="RELEASE">';
+  h+='<h4><span class="bid">发布</span>策略（P6）</h4>';
+  h+='<p>每批 TDD + ./fly.sh 验证不 commit；全部完成 + 全量回归（单测 + QA + 真实数据烟测）后一次提交，含工作区 T1–T6 一并入库。</p>';
+  h+='<div class="deps"><span class="dep-lb">前置：</span><span class="dep-v">S6 + S5b 完成</span></div>';
+  h+='</div>';
+  grid.innerHTML=h;
+  qsa('.batch-card').forEach(function(c){
+    c.addEventListener('click',function(){ selectBatch(c.getAttribute('data-id')); });
+  });
+}
+function selectBatch(id){
+  var n=nodeById(id), isRelease=(id==='RELEASE');
+  qsa('#dep-svg .dep-node').forEach(function(g){ g.classList.toggle('sel',g.getAttribute('data-id')===id); });
+  qsa('.batch-card').forEach(function(c){ c.classList.toggle('sel',c.getAttribute('data-id')===id); });
+  /* 点亮相关依赖边：入边（to=id）与出边（from=id） */
+  qsa('#dep-svg .dep-edge').forEach(function(p){
+    var f=p.getAttribute('data-from'), t=p.getAttribute('data-to');
+    p.classList.toggle('hl', !!(f&&t&&(f===id||t===id)));
+  });
+  var h='';
+  if(isRelease){
+    h+='<h3>'+esc(RELEASE.title)+'</h3><div class="dep-badge">前置：<b>S6 + S5b 完成</b></div><ul>';
+    RELEASE.pts.forEach(function(p){h+='<li>'+p+'</li>';});
+    h+='</ul>';
+  }else if(n){
+    h+='<h3>'+esc(n.title)+'</h3><div class="dep-badge">依赖：<b>'+esc(n.dep)+'</b></div><ul>';
+    n.pts.forEach(function(p){h+='<li>'+p+'</li>';});
+    h+='</ul>';
+  }
+  qs('#batch-detail').innerHTML=h;
+}
+buildDepGraph();
+buildBatchCards();
+selectBatch('R1');
+</script>
+
+</body>
+</html>

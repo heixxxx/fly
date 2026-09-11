@@ -79,7 +79,37 @@ cc_library(
 )
 ```
 
-### 2.2 C++ 容器别名命名
+### 2.2 模块类型前缀规范
+
+**自定义公共类型必须使用模块级前缀，且前缀必须全大写**（2026-09-10 裁定）：
+
+| 前缀 | 归属模块 | 示例 |
+|------|---------|------|
+| `CM` | common（公共结构，CM = Common） | `CMVector`、`CMString`、`CMLookupTable` |
+| `DS` | design 模块（`src/emir/design`，design db 结构） | `DSCell`、`DSPin`、`DSShapeRef` |
+| `LIB` | lib 模块（`src/emir/lib`，lib db 结构） | `LIBLibrary`、`LIBCell`、`LIBPin` |
+| `GEO` | geometry 独立模块（`src/geometry`，纯几何，无业务语义） | `GEOPoint`、`GEORect`、`GEOPolygon`、`GEOOrientation`、`GEOTransform` |
+| `EX` | Python 导出面（见 2.5） | `EXStgCompressionType` |
+| `FLY` | 宏（见 2.4） | `FLY_SERIALIZE` |
+
+- 前缀全大写、后接 PascalCase 词根：`GEOPoint` ✓、`GeoPoint` ✗；
+- **前缀 = 所属模块的标识**（DS 因在 design 模块、LIB 因在 lib 模块、GEO 因在 geometry 模块）；
+  类型迁移到其他模块时前缀随之更换（如 CMGeometryRef 迁入 design 模块即更名 DSShapeRef）；
+  新模块启用新前缀时在本表登记。
+- **模板类与实例化别名命名规则**（2026-09-10 裁定）：
+  1. C++ 类模板命名以 **T 结尾**（如 `GEOTransformT<T>`）——T 后缀标识模板性；
+  2. 存在「业务通用默认实例化」的模板类必须提供**无后缀别名**（`using GEOTransform = GEOTransformT<int32_t>;`），
+     业务代码一律使用无后缀名，**禁止在使用点显式书写模板参数**；多实例化能力验证的测试例外
+     （用显式 `GEOTransformT<int64_t>` 形式）；
+  3. 别名**禁带类型标识**（`I32`/`F64` 之类禁用——明确类型标识在将来切换位宽时造成误导）；
+     位宽/类型变更只改别名定义一处、使用点零改动；
+  4. 适用边界：本规则针对**业务数据模板类**（有业务通用默认实例化语义，当前仅 geometry 四类
+     `GEOPointT`/`GEORectT`/`GEOPolygonT`/`GEOTransformT`）；基础设施泛型容器（`ConcurrentMap<K,V>`/
+     `ConcurrentQueue<T>` 等，参数因使用点而异）不适用——显式模板参数是其正确用法；
+     `CMLookupTableTemplate` 的 "Template" 是 liberty 规范 lu_table_template 的**业务术语**、该类并非
+     C++ 模板，不适用、不改名。
+
+### 2.3 C++ 容器别名命名
 
 **格式**: `CM<ContainerType>` (CM = Common)
 
@@ -104,7 +134,7 @@ CMMap<CMString, int64_t> config_values;
 CMVector<std::byte> buffer;
 ```
 
-### 2.3 宏命名规范
+### 2.4 宏命名规范
 
 **格式**: `FLY_<CATEGORY>_<ACTION>`
 
@@ -116,7 +146,7 @@ CMVector<std::byte> buffer;
 | 导出类 | `FLY_EXPORT_CLASS` | `FLY_EXPORT_CLASS(Type, "EXStgType")` |
 | 导出方法 | `FLY_EXPORT_METHOD` | `FLY_EXPORT_METHOD("name", func)` |
 
-### 2.4 导出类型命名规范
+### 2.5 导出类型命名规范
 
 **所有导出到 Python 的 C++ 类型必须使用前缀命名**：
 
@@ -143,7 +173,7 @@ FLY_EXPORT_CLASS(IndexEntry, "EXStgIndexEntry")
     FLY_EXPORT_SERIALIZE(IndexEntry);
 ```
 
-### 2.5 导出函数命名规范
+### 2.6 导出函数命名规范
 
 **所有导出到 Python 的 C++ 函数必须使用前缀命名**：
 
@@ -175,6 +205,39 @@ FLY_EXPORT_FUNCTION("ex_net_create_connection_manager", [](const CMString& type)
     return create_connection_manager(type);
 });
 ```
+
+### 2.7 业务代码命名禁用计划阶段编号
+
+> 2026-09-11 用户裁定：函数/API/类型/变量/任务名/用户消息文案一律禁用设计文档的
+> **计划阶段编号**（S1-S10、R1-R9 等内部编号）——命名必须体现**业务流程语义**
+> （解析什么数据、做什么转换），不得体现「这是计划第几步」。计划阶段编号只存在于
+> 设计文档与 commit 说明中；后续维护者不应需要读方案文档才能理解符号含义。
+
+**反例与正例**：
+
+| 违规（计划编号入名） | 合规（业务语义命名） |
+|--------------------|--------------------|
+| `ds_parse_def_s5a`（s5a 是计划阶段号，维护者无从知晓） | `ds_parse_def_components`（COMPONENTS 解析） |
+| `ds_parse_def_s5b` | `ds_parse_def_nets`（网内容解析） |
+| `_s6_hier_task` | `_hier_task`（层级树构建） |
+| 消息文案「S5a 汇总」 | 「COMPONENTS 解析汇总」 |
+
+注释中标注「对应方案的 S5a 阶段」属合理交叉引用，允许保留；**代码符号与用户可见文案**严格禁止。
+
+### 2.8 导出函数参数形态（nanobind caster 兼容性，2026-09-11 源码核验）
+
+nanobind 2.12.0 的 type caster（`nanobind/stl/shared_ptr.h`）对实例持有形态与参数形态**全兼容**：
+
+- `const T&` 参数：接受任何持有形态（值 / shared_ptr / unique_ptr holder），零拷贝绑定；
+- `CMSharedPtr<T>` / `CMSharedPtr<const T>` 参数：同样接受任何持有形态——**值持有实例零拷贝**
+  （py_deleter 别名构造：shared_ptr 指向原对象、deleter 持 Python 引用计数，共享 Python
+  对象生命周期；非 pybind11 的拷贝构造行为）；const 形态模板天然覆盖（decay + static_pointer_cast）。
+
+**规范**（2026-09-11 用户裁定强化）：导出函数参数默认 `const T&`（只读零拷贝）；**共享所有权场景必须
+使用 `CMSharedPtr`（含 `CMSharedPtr<const T>`）传入 cpp 侧**——禁止以值/copy 方式传递需共享的对象；
+read_object 的形态屏蔽契约：**无论 write_object 写出的是 shared_ptr 字段还是值对象，read_object
+一律返回 `CMSharedPtr<T>`**（现网签名即此），使用侧永不感知写出侧形态。前提：T 走 FLY_EXPORT_CLASS
+常规绑定（caster static_assert 要求）。
 
 ---
 
@@ -226,6 +289,12 @@ cc_library(
 ### 4.2 序列化宏
 
 所有序列化操作必须通过 FLY_* 宏实现，不得直接调用 bitsery 原始 API。这样可以确保未来切换序列化后端（如 cereal）时无需修改业务代码。
+
+**第三方类型外接序列化同样必须宏包装**（2026-09-12 用户裁定）：为不可加成员的第三方库类型
+提供序列化时，一律经 `FLY_SERIALIZE_EXTERNAL` 宏（字段版 `FLY_SERIALIZE_EXTERNAL(Type,
+fields...)` / 自定义体版 `FLY_SERIALIZE_EXTERNAL_BEGIN(Type)...FLY_SERIALIZE_EXTERNAL_END`，
+底层为 bitsery SelectSerializeFnc 的 ADL 自由函数路由）——**禁止裸写 ADL serialize 函数**；
+禁与类型自身成员 serialize 并存（bitsery static_assert）。
 
 #### 4.2.1 serialize() 声明
 
@@ -844,6 +913,12 @@ workers_mutex_ 下的 send 同样禁止（reactor send 非阻塞，但含 encode
 - 2026-05-15: 修正序列化宏签名：`FLY_FIELD(field)` 替代 `FLY_FIELD(s, o, field)`，移除重复 Section 4.2.2
 - 2026-08-26: 新增 Section 15 Task db 归属规则（task 第一参数=归属 db 强制规范 + owner 显式覆盖 + failed_tasks.bin 按归属落盘 + restart_failed_tasks db list 语义），源于 task 归属追踪机制落地
 - 2026-08-26: Section 15 增补——_DB_META/_DB_CHAIN 合并为 JSON version 2（data_path 元信息 + __fly_db2__ 编码 + WorkerInfo 队列 flush）；restart 按 uid 解析路径快照（文件级原子，遗留缺口关闭）
+- 2026-09-10: 新增 Section 2.2 模块类型前缀规范（前缀**全大写**裁定 + CM/DS/GEO/EX/FLY 归属表 + 独立模块独立前缀），原 2.2-2.5 顺延为 2.3-2.6；geometry 独立模块前缀 = GEO
+- 2026-09-10: Section 2.2 增补**模板类与实例化别名命名规则**：C++ 类模板命名以 T 结尾（`GEOTransformT<T>`）+ 无后缀业务别名（`GEOTransform = GEOTransformT<int32_t>`，使用点禁显式模板参数，多实例化测试例外）+ 别名禁带类型标识（I32 等不用，位宽切换只改别名定义一处）+ 适用边界（业务数据模板类适用；基础设施泛型容器与业务术语命名的非模板类不适用）
+- 2026-09-11: 新增 Section 17 业务 API 依赖声明与 wait_obj 包装规范（read_object 类 API 必须 wait_obj 包装 + task 调用方 inputs 传播 api.deps(db) + 函数体 run_direct 剥离直跑省冗余网络 IO；框架 deps/run_direct 由 design db R9 批次提供）
+- 2026-09-11: 新增 Section 2.7 业务代码命名禁用计划阶段编号（S/R 编号只存在于设计文档与 commit 说明，代码符号与用户文案一律业务语义命名——如 ds_parse_def_s5a → ds_parse_def_components）；同日记录：WSL 内存约束下后台子 agent 同一时间仅允许一个（会话工作规则）
+- 2026-09-11: 新增 Section 2.8 导出函数参数形态（nanobind caster 兼容性源码核验：const T& 与 CMSharedPtr[const T] 参数对任何持有形态实例全兼容且零拷贝——py_deleter 别名构造；默认 const T&、共享所有权才 CMSharedPtr）
+- 2026-09-12: Section 4.2 补第三方类型外接序列化规则（FLY_SERIALIZE_EXTERNAL 宏字段版/自定义体版，禁裸 ADL serialize 函数——bitsery SelectSerializeFnc ADL 路由的宏包装，随 R8b htrie 桥接落地）
 
 ## 14. 数据规模相关等待禁设超时
 
@@ -958,6 +1033,11 @@ def solve_like_task(db_up, db, key):
   场景——① 非拥有观察（调用栈内短生命周期借用，被引对象由调用方保证
   存活）；② Python 绑定边界的所有权转移（nanobind 接管 `new` 产物，
   析构路径须自证安全，如 dtor-join 线程）。
+- **业务层全禁裸指针**（2026-09-11 用户裁定，design db R7 注入语义）：
+  业务代码（emir 等业务模块）即使「非拥有观察」也不使用裸指针——一律
+  `CMSharedPtr`（含 `CMSharedPtr<const T>` 共享只读视图，拷贝即注入、
+  零 move 零所有权转移、生命周期自动保证）；场景①②仅适用于公共基础
+  设施层与绑定边界。
 - **判据**：一个 `reset()`/析构能让另一处持有的指针悬垂，即属"必须
   场景"，必须改共享/独占所有权（案例：`PeerStreamWriter::srv_` 裸指针 +
   `stop_peer_rpc()` 内 `peer_rpc_server_.reset()`——任务失败清理销毁
@@ -978,3 +1058,39 @@ def solve_like_task(db_up, db, key):
   send/poll 关闭路径）、DataClientPool ↔ NetworkChunkSource 借出路径。
   原点状机制（fd 代际校验、per-conn send mutex 保活）已被其统一替代或
   并存。
+
+## 17. 业务 API 依赖声明与 wait_obj 包装规范
+
+> 2026-09-11 用户裁定，业务代码编写规范。
+
+**问题**：内部 `read_object` 的业务 API 若不做依赖等待——调用方是 task 且漏在
+`as_task` 声明相应依赖、数据尚未就绪时，read_object 直接读取失败，整个流程失败。
+
+**规范条文**：
+
+1. 内部 read_object 的业务 API **必须 wait_obj 包装**（声明自身数据依赖）；
+2. 调用方是 task 时**必须**在 as_task 的 inputs 中包含相应数据依赖；
+3. 依赖**必须用 lambda 声明**并支持传播（防止依赖在开发过程中漂移）：被包装
+   API 提供 `deps(*args)` 返回解析后的依赖列表，上层 task 的 inputs lambda 以
+   `api.deps(db) + [自身其他依赖]` 组合；
+4. task 函数体内调用这类 API 一律用 **`run_direct`**——剥离 wait_obj 注解直接
+   运行原函数（上层已声明依赖、数据必然就绪，避免走一次 wait_obj 轮询与
+   master 查询的冗余网络 IO）。
+
+**标准形态**：
+
+```python
+@wait_obj(inputs=lambda db: [db.get_full_name(DesignDb.DESIGN_OBJ)])
+def load_design(db):
+    return db.read_object(DesignDb.DESIGN_OBJ)
+
+@as_task(inputs=lambda db: load_design.deps(db) + [db.get_full_name('some_other_data')])
+def some_task(db):
+    design = run_direct(load_design, db)   # 剥离注解直跑，不走 wait_obj 等待
+```
+
+- `api.deps(*args)`：返回此 API 所需的依赖列表（wait_obj inputs lambda 的解析结果）；
+- `run_direct(func, *args, **kwargs)`：经 `_fly_original_func` 直调原函数；仅适用
+  wait_obj 包装的本地 API（as_task 任务函数不适用——那会绕过任务提交语义）；
+- 框架支撑（wait_obj wrapper 的 `deps` 方法与 `run_direct` 公共 API）由 design db
+  R9 批次提供（含单测：deps 解析正确、run_direct 零等待调用）。

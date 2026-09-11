@@ -1,0 +1,41 @@
+VERSION 5.8 ;
+UNITS
+   DATABASE MICRONS 2000 ;
+END UNITS
+
+MACRO INV_X1
+   CLASS CORE ;
+   SIZE 0.7 BY 0.7 ;
+   SITE site1 ;
+   PIN A
+      DIRECTION INPUT ;
+      USE SIGNAL ;
+      PORT
+         LAYER M1 ;
+            RECT 0.0 0.0 0.1 0.1 ;
+      END
+   END A
+   PIN ZN
+      DIRECTION OUTPUT ;
+      USE SIGNAL ;
+      PORT
+         LAYER M2 ;
+            RECT 0.3 0.3 0.5 0.5 ;
+      END
+   END ZN
+   PIN VDD
+      DIRECTION INOUT ;
+      USE POWER ;
+      PORT
+         LAYER M1 ;
+            RECT 0.0 0.6 0.7 0.7 ;
+      END
+   END VDD
+END INV_X1
+
+MACRO FILLER01
+   CLASS CORE SPACER ;
+   SIZE 0.2 BY 0.7 ;
+END FILLER01
+
+END LIBRARY

@@ -18,7 +18,8 @@ lib 立项过程确认的约束提炼（结构/命名/语言边界/异常语义/
 |--------|------|------|
 | `project/` | ✅ | EMIRProject（`from emir import EMIRProject`）：13 个数据库创建 API 的归属载体（@register_flow 注册，load_project 按 meta class 动态还原） |
 | `lib/` | ✅ | lib 库 db：Liberty 单元库解析入库。`build_lib_db(name, lib_paths)` flow（MapReduce 每文件一解析任务 + 全量合并 LIBLibrary 容器；cell 冲突保留首份 + `LIBR::0001` 提醒，语义下沉 `LIBLibrary::merge_from`）；`LibDb`（role="lib"）；py 目录七文件（lib_export/lib_db/lib_flow/lib_register_msg/lib_utils/lib_functions/`__init__`，见 dev-rules.md）；C++ 侧 `LIBLibrary`/`LIBCell`（含来源字段 `library_name_`/`source_file_`）+ `lib_parse_lib_file` 适配层（新思 Open Liberty 参考解析器，见 `third_party/liberty/`，上游方式编译引入，补丁记录 `third_party/liberty/src_local/PATCHES.md`） |
-| 其余 11 个 db | 规划 | tech/design/extraction/spef/matrix/timing/vcd/switching/power/current/analysis/em，随立项逐个建立（子模块命名 = 角色名，模块简写见 emir-data-flow.md 裁定 12） |
+| `design/` | ✅ | design db（S1-S6 + R1-R9 全部落地）：`build_design_db(name, def_paths, lef_paths, lib_db, settings, alpha)` flow——S1 lib 入库→S2 cell lef 并行→S3 lib↔lef merge→S4/S4b DEF 头扫描（block cell/port/DEF via）→S5a COMPONENTS 责任链（fake cell/密度/网名扫描）→S5b 网内容责任链（via instance/逐层密度，批处理控峰值）→S6 层级树+三类编号区间→freeze。C++ 侧 `DSDesign` 容器（cell/via cell/lib 关联/层级树/hash 查询）+ `DSBlockBuildData`（per-DEF instances/density/stats）+ `DSBlockNames`（伴生对象，instance/net hasher 按需加载）+ `DSNameHasherT`（六实体 hasher：32 位组 Hash backend、64 位组 Hatrie backend——hat-trie 压缩 1.8x/双段制序列化直载 12.5x 提速/LCP 后缀共享 alpha `lcp_name_arena`）+ `DSNameMapperT`（全局组装轻壳：分派索引最长前缀匹配 1.1-1.5µs 与规模解耦）；`load_design`/`load_design_stack`/`load_design_with`/`load_block_names`/`load_name_mapper` 统一加载 API（⑰/⑱ 按需加载）。方案与裁定全量见 [design-db-plan.md](design-db-plan.md)（十阶段）+ [design-db-phase2-plan.md](design-db-phase2-plan.md)（R1-R9 重构与 name 体系终局 ㊱-55）；业务知识见 [design-knowledge.md](design-knowledge.md) |
+| 其余 10 个 db | 规划 | tech/extraction/spef/matrix/timing/vcd/switching/power/current/analysis/em，随立项逐个建立（子模块命名 = 角色名，模块简写见 emir-data-flow.md 裁定 12） |
 
 ## 使用方式
 

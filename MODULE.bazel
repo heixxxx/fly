@@ -64,6 +64,18 @@ http_archive(
     build_file = "//third_party:robin_map.BUILD",
 )
 
+# hat-trie - header-only hat-trie string-keyed map, used by the design db
+# name hasher backend (DSHasherBackendHatrie, R8b 裁定 52). Pinned to the
+# master commit f1380d7 (2026-09-11 snapshot — the exact version
+# benchmarked in R8a, .work/bench_name_mapper/REPORT.md).
+http_archive(
+    name = "hat_trie",
+    strip_prefix = "hat-trie-f1380d704eccf753db5f9df175789fff8ff353e0",
+    urls = ["https://github.com/Tessil/hat-trie/archive/f1380d704eccf753db5f9df175789fff8ff353e0.tar.gz"],
+    sha256 = "20392d7640f47eaf91c0cc3966a058ed2fa5863f1e1c0d0f7a2ee19456bb936a",
+    build_file = "//third_party:hat_trie.BUILD",
+)
+
 # Eigen - header-only C++ linear algebra library
 http_archive(
     name = "eigen",

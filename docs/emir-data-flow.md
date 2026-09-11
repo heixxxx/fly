@@ -107,6 +107,7 @@
 15. **merge 冲突语义保留首份（2026-09-07 补充）**：多文件整合的 cell 冲突（同 cell 名跨文件出现 = 库版本混用迹象）属业务异常场景——**保留当前（首次出现）、抛弃后续重复，不抛异常**；每次抛弃经 `LIBR::0001` WARN 提醒（cell 名 + 两处来源文件路径）。语义下沉 C++（`LIBLibrary::merge_from`，Python 经 `EXLIBLibrary.merge`），规避 nanobind def_rw 的 vector 拷贝语义。
 16. **cell 来源可追溯（2026-09-07 补充）**：`LIBCell` 增 `library_name_`（所属 library 组名）与 `source_file_`（解析来源 .lib 文件完整路径）随序列化持久化；容器级 `LIBLibrary.name_` 删除（多库混用是正常现象，库名不一致不做提示、不做容器级归属）。
 17. **解析健壮性与 LIBR 消息前缀（2026-09-07 补充）**：lib 模块注册消息前缀 LIBR（`LIBR::0001` merge 抛弃重复 cell / `LIBR::0002` 解析成功但 0 cell 空库兜底——返回空容器不抛）。可 raise 场景仅限文件不可读与语法错误；其余能正常解析的场景一律兜底处理 + user message 提醒，不崩溃不 raise。
+18. **建库 API 配置参数标准（2026-09-09 补充）**：全部 `build_<db 角色>_db` 统一追加 `settings` 与 `alpha` 两个 dict 参数——`settings` 收纳**稳定**的创建流程配置项（不同 key = 不同特殊设置，令用户对创建流程具有一定控制权）；`alpha` 收纳**未稳定**（尚未完全开发完毕）的配置项，成熟后迁入 `settings`（例：design db 的逐层密度权重首版经 alpha 传入）。用户面配置统一经这两个参数表达。规则细节与子模块键表要求见 [dev-rules.md](emir/dev-rules.md) §3。
 
 ---
 
@@ -118,8 +119,7 @@
 
   | db | API | 显式参数 | 链上获取（find_db） |
   |----|-----|---------|-------------------|
-  | ① lib | `build_lib_db` | name, lib_paths（list，每文件一独立解析任务） | — |
-  | ② tech | `build_tech_db` | name, tech_path | — |
+  | ① lib | `build_lib_db` | name, lib_paths（list，每文件一独立解析任务） | — |  | ② tech | `build_tech_db` | name, tech_path | — |
   | ③ design | `build_design_db` | name, def_path, lef_paths, **lib_db** | — |
   | ④ extraction | `build_extraction_db` | name, design_db, tech_db | — |
   | ⑤ spef | `build_spef_db` | name, spef_path, design_db | — |
@@ -131,6 +131,8 @@
   | ⑪ current | `build_current_db` | name, power_db | 负载电容来源（spef net load、lib 引脚电容）经 power db 链取 |
   | ⑫ analysis | `build_analysis_db` | name, matrix_db, current_db | design db（注入点映射）经 matrix db 链取 |
   | ⑬ em | `build_em_db` | name, analysis_db | matrix db、tech db 经 analysis db 链取 |
+
+  上表「显式参数」均不含配置参数：全部 API 统一追加 `settings`（稳定配置）与 `alpha`（未稳定配置）两个 dict 参数，见裁定 18。
 
 ---
 

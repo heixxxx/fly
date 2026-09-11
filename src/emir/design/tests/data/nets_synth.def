@@ -1,0 +1,43 @@
+VERSION 5.8 ;
+DESIGN nets_blk ;
+UNITS DISTANCE MICRONS 1000 ;
+DIEAREA ( 0 0 ) ( 2000 1000 ) ;
+
+VIAS 1 ;
+    - VIADEF1
+      + RECT M1 ( -100 -100 ) ( 100 100 )
+      + RECT VIA1 ( -40 -40 ) ( 40 40 )
+      + RECT M2 ( -150 -150 ) ( 150 150 ) ;
+END VIAS
+
+COMPONENTS 1 ;
+    - u1 INV_X1 + PLACED ( 100 100 ) N ;
+END COMPONENTS
+
+PINS 1 ;
+    - POUT + NET n2
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER M2 ( 900 400 ) ( 1000 500 )
+        + PLACED ( 950 450 ) N ;
+END PINS
+
+NETS 3 ;
+    - n1 ( u1 A ) ( PIN PIN_A )
+      + ROUTED M1 ( 100 100 ) ( 500 100 )
+        NEW M1 ( 500 100 ) VIA12 ( 500 300 ) ;
+    - n2 ( u1 ZN ) ( PIN POUT ) ;
+    - n3 ( u1 VDD ) ;
+END NETS
+
+SPECIALNETS 1 ;
+    - VDD ( u1 VDD )
+      + ROUTED M1 200 ( 0 0 ) ( 800 0 )
+        NEW M2 200 ( 0 100 ) ( 800 100 )
+      + RECT M2 ( -280 -160 ) ( 2120 160 )
+      + VIA GHOST_VIA ( 100 900 )
+      + VIA VIADEF1 ( 400 800 ) ;
+END SPECIALNETS
+
+END DESIGN

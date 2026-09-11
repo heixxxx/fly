@@ -1,0 +1,46 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+DESIGN block_a ;
+UNITS DISTANCE MICRONS 1000 ;
+DIEAREA ( -1000 -500 ) ( -1000 2000 ) ( 1500 2000 ) ( 1500 -500 ) ;
+
+VIAS 2 ;
+    - VIA12
+      + RECT M1 ( -150 -150 ) ( 150 150 )
+      + RECT VIA1 ( -50 -50 ) ( 50 50 )
+      + RECT M2 ( -200 -200 ) ( 200 200 ) ;
+    - VIAGEN_M1M2
+      + VIARULE VIAGEN12
+      + CUTSIZE 100 100
+      + LAYERS M1 VIA1 M2
+      + CUTSPACING 80 80
+      + ENCLOSURE 30 30 40 40 ;
+END VIAS
+
+COMPONENTS 2 ;
+    - inst1 INV_X1 + PLACED ( 100 200 ) N ;
+    - inst2 DFF_X1 + PLACED ( 300 400 ) FS ;
+END COMPONENTS
+
+PINS 2 ;
+    - PIN_A + NET n1
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER M1 ( -10 -20 ) ( 30 40 )
+        + FIXED ( 10 20 ) N ;
+    - PIN_OUT + NET n2
+      + DIRECTION OUTPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER M2 ( 800 900 ) ( 1000 1100 )
+        + PLACED ( 900 1000 ) N ;
+END PINS
+
+NETS 2 ;
+    - n1 ( inst1 A ) ( PIN_A ) ;
+    - n2 ( inst2 Q ) ( PIN_OUT ) ;
+END NETS
+
+END DESIGN

@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSTransform 坐标变换结构 · 可视化效果图</title>
+<style>
+:root{
+  --bg:#f4f6f9; --card:#ffffff; --bd:#d6dce4; --bd2:#e6eaf0;
+  --tx:#1f2430; --tx2:#5a6472; --tx3:#8a93a0;
+  --brand:#1a5fb4; --brand-bg:#eaf2fc;
+  --warn:#b45309; --warn-bg:#fef3c7; --warn-bd:#f5d98a;
+  --err:#dc2626; --err-bg:#fef2f2; --err-bd:#f3c1c1;
+  --ok:#15803d; --ok-bg:#f0fdf4; --ok-bd:#bbe7c9;
+  --mono:ui-monospace,'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  --sans:system-ui,-apple-system,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.7 var(--sans)}
+.wrap{max-width:1240px;margin:0 auto;padding:0 20px 60px}
+code{font-family:var(--mono);font-size:.92em;background:#eef1f5;border:1px solid var(--bd2);border-radius:4px;padding:1px 6px;white-space:nowrap}
+
+/* ---------- 头部 ---------- */
+.hero{background:var(--card);border-bottom:1px solid var(--bd);margin-bottom:18px}
+.hero .bar{height:4px;background:linear-gradient(90deg,var(--brand),#7aa7dd)}
+.hero .inner{max-width:1240px;margin:0 auto;padding:26px 20px 18px}
+.hero h1{margin:0 0 6px;font-size:25px;letter-spacing:.5px}
+.hero .sub{margin:0;color:var(--tx2);font-size:13.5px}
+.chips{margin-top:12px;display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-size:12px;color:var(--tx2);background:#f2f5f9;border:1px solid var(--bd2);border-radius:20px;padding:3px 12px}
+.chip.warn{color:var(--warn);background:var(--warn-bg);border-color:var(--warn-bd)}
+.fbar{max-width:1240px;margin:14px auto 0;padding:0 20px 20px;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
+.fitem{background:var(--card);border:1px solid var(--bd);border-left:3px solid var(--brand);border-radius:6px;padding:9px 14px}
+.fitem span{display:block;font-size:11.5px;color:var(--tx3);margin-bottom:2px}
+.fitem code{background:none;border:none;padding:0;font-size:12.5px;white-space:normal}
+
+/* ---------- 目录 ---------- */
+nav.toc{position:sticky;top:0;z-index:50;background:rgba(244,246,249,.94);backdrop-filter:blur(4px);border-bottom:1px solid var(--bd2);margin-bottom:22px}
+nav.toc .inner{max-width:1240px;margin:0 auto;padding:8px 20px;display:flex;gap:6px;flex-wrap:wrap}
+nav.toc a{color:var(--brand);text-decoration:none;font-size:13px;border:1px solid transparent;border-radius:6px;padding:3px 10px}
+nav.toc a:hover{background:var(--brand-bg);border-color:#bcd4f2}
+
+/* ---------- 板块卡片 ---------- */
+section.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:22px 24px 24px;margin-bottom:26px;box-shadow:0 1px 3px rgba(30,40,60,.04)}
+section.card>h2{margin:0 0 8px;font-size:19px;display:flex;align-items:center;gap:10px}
+section.card>h2 .no{flex:none;width:28px;height:28px;border-radius:50%;background:var(--brand);color:#fff;font-size:14px;display:inline-flex;align-items:center;justify-content:center}
+.lead{color:var(--tx2);margin:0 0 12px;font-size:13.5px}
+.spec{background:#f7f9fb;border:1px dashed #c8d2dd;border-radius:6px;padding:8px 14px;font-size:12.5px;color:var(--tx2);margin-bottom:16px}
+.spec b{color:var(--tx)}
+.legend{display:flex;flex-wrap:wrap;gap:16px;margin:0 0 14px;font-size:12px;color:var(--tx2);align-items:center}
+.lg{display:inline-flex;align-items:center;gap:6px}
+.lg .k{width:22px;height:0;border-top:2px dashed #9aa4b1}
+.lg .k.solid{border-top:3px solid #2563eb}
+.lg .k.target{width:12px;height:12px;border:2px solid #47525f;border-radius:50%;position:relative}
+.lg .k.dotk{width:9px;height:9px;border-radius:50%;background:#2563eb}
+h3.exh{margin:0 0 4px;font-size:16px}
+h4{margin:14px 0 6px;font-size:13.5px}
+
+/* ---------- 板块 1：orient 网格 ---------- */
+.ogrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(238px,1fr));gap:14px}
+.ocard{border:1px solid var(--bd);border-radius:8px;background:#fdfdfe;cursor:pointer;transition:box-shadow .2s,transform .2s,border-color .2s;outline:none}
+.ocard:hover,.ocard:focus{transform:translateY(-2px);box-shadow:0 4px 14px rgba(30,50,80,.10)}
+.ocard.sel{border-color:var(--brand);box-shadow:0 0 0 2px #cfe0f5}
+.ochead{display:flex;align-items:center;gap:7px;padding:8px 10px 4px;flex-wrap:wrap}
+.ochip{color:#fff;font-family:var(--mono);font-weight:700;font-size:12px;border-radius:4px;padding:1px 7px}
+.ocdesc{font-size:12px;color:var(--tx2)}
+.tag-swap,.tag-draft{font-size:10.5px;border-radius:3px;padding:1px 6px;margin-left:auto}
+.tag-swap{color:#7c3aed;background:#f3eefe;border:1px solid #ddcaf8}
+.tag-draft{color:var(--warn);background:var(--warn-bg);border:1px solid var(--warn-bd)}
+.ocsvg{display:flex;justify-content:center}
+.ocsvg svg{max-width:100%;height:auto}
+.ocmeta{padding:4px 11px 10px;font-size:11.5px;color:var(--tx2);font-family:var(--mono)}
+.ocmeta div{display:flex;gap:6px;align-items:baseline;line-height:1.55}
+.ocmeta i{font-style:normal;color:var(--tx3);flex:none;width:58px;font-family:var(--sans)}
+.ocmeta b{font-weight:600;color:var(--tx)}
+.ocmeta em{font-style:normal;color:#7c3aed;font-family:var(--sans);font-size:10.5px}
+
+/* ---------- 详情面板 ---------- */
+.odetail{margin-top:16px;border:1px solid var(--bd);border-radius:8px;background:#fbfcfe;padding:16px 18px}
+.odetail h3{margin:0 0 4px;font-size:16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.odetail .dmap{color:var(--tx2);font-size:13px;margin:2px 0 10px}
+.steps3{display:flex;gap:6px;align-items:stretch;flex-wrap:wrap;margin:6px 0 12px}
+.scol{border:1px solid var(--bd2);border-radius:6px;background:#fff;padding:6px 8px 4px;text-align:center}
+.scol h5{margin:0 0 4px;font-size:11.5px;color:var(--tx2);font-weight:600}
+.scol svg{max-width:100%;height:auto}
+.sarrow{align-self:center;color:var(--tx3);font-size:18px;padding:0 2px}
+table.stable{border-collapse:collapse;width:100%;font-size:12.5px;margin:6px 0}
+table.stable th{background:#f2f5f9;color:var(--tx2);font-weight:600}
+table.stable th,table.stable td{border:1px solid var(--bd2);padding:5px 10px;text-align:left}
+table.stable td.mono{font-family:var(--mono);font-size:12px}
+.note-ok{color:var(--ok);background:var(--ok-bg);border:1px solid var(--ok-bd);border-radius:6px;padding:7px 12px;font-size:12.5px;margin-top:8px}
+.draftbox{margin-top:12px;border:1px solid var(--warn-bd);background:#fffdf3;border-radius:8px;padding:12px 14px}
+.draftbox h4{margin:0 0 6px;color:var(--warn);font-size:13.5px}
+.draftbox p{font-size:12.5px;color:var(--tx2);margin:8px 0 0}
+.dotA,.dotB{display:inline-block;width:10px;height:10px;border-radius:3px;vertical-align:-1px;margin-right:4px}
+.dotA{background:#a16207}
+.dotB{border:2px dashed #a16207;background:none}
+
+/* ---------- SVG 通用 ---------- */
+svg text{font-family:var(--sans)}
+.gline{stroke:#e7ebf0;stroke-width:1}
+.gtxt{font:9.5px var(--mono);fill:#9aa3af}
+.ref-macro{fill:rgba(154,164,177,.05);stroke:#9aa4b1;stroke-width:1.3;stroke-dasharray:5 4}
+.ref-pin{fill:rgba(154,164,177,.10);stroke:#9aa4b1;stroke-width:1;stroke-dasharray:3 3}
+.omacro{stroke-width:2;stroke-linejoin:round}
+.opin{stroke:#2b3138;stroke-width:1.1}
+.alt-macro{fill:none;stroke:#a16207;stroke-width:1.6;stroke-dasharray:6 4;stroke-linejoin:round}
+.alt-pin{fill:rgba(161,98,7,.30);stroke:#a16207;stroke-width:1.1;stroke-dasharray:3 2}
+.ptx{font:600 10px var(--mono);fill:#333b45}
+.rtx{font:600 10.5px var(--mono)}
+.stx{font:10.5px var(--mono);fill:#4a5462}
+.stxb{font:600 11px var(--mono);fill:#2b3138}
+.ax-cross{stroke:#47525f;stroke-width:1.4}
+.base-macro{fill:#dbe6f3;stroke:#8fb0d8;stroke-width:1.4;stroke-linejoin:round}
+.step-pin{stroke:#2b3138;stroke-width:1.1}
+.bad-macro{fill:rgba(220,38,38,.14);stroke:var(--err);stroke-width:2;stroke-linejoin:round}
+.bad-pin{fill:var(--err);stroke:#7f1d1d;stroke-width:1}
+.ok-macro{fill:rgba(21,128,61,.14);stroke:var(--ok);stroke-width:2;stroke-linejoin:round}
+.ok-pin{fill:var(--ok);stroke:#14532d;stroke-width:1}
+.err-tx{font:600 11px var(--sans);fill:var(--err)}
+.ok-tx{font:600 11px var(--sans);fill:var(--ok)}
+.plabel{font:600 12px var(--mono);fill:#1f2430}
+.s3-el{opacity:0;transition:opacity .5s}
+.s3-el.on{opacity:1}
+.pulse{transform-box:fill-box;transform-origin:center;animation:pulse 1.7s ease-out infinite}
+@keyframes pulse{0%{transform:scale(.45);opacity:.95}75%{transform:scale(1.7);opacity:0}100%{transform:scale(1.7);opacity:0}}
+
+/* ---------- 板块 2 ---------- */
+.s2wrap{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}
+.s2fig{border:1px solid var(--bd);border-radius:8px;padding:10px 12px 12px;background:#fdfdfe}
+.s2fig h4{margin:0 0 6px;font-size:13.5px}
+.s2fig.bad h4{color:var(--err)}
+.s2fig.good h4{color:var(--ok)}
+.s2fig svg{max-width:100%;height:auto;display:block;margin:0 auto}
+.s2sub{font:11px var(--mono);color:var(--tx2);text-align:center;margin-top:4px}
+.cmpbox{margin-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px}
+.cmp{border:1px solid var(--bd2);border-radius:6px;padding:9px 13px;font-size:12.5px}
+.cmp .t{font-size:11.5px;color:var(--tx3);margin-bottom:2px}
+.cmp.err{border-left:3px solid var(--err);background:var(--err-bg)}
+.cmp.ok{border-left:3px solid var(--ok);background:var(--ok-bg)}
+.cmp code{background:none;border:none;padding:0;white-space:normal}
+.keypoints{margin:14px 0 0;padding:0 0 0 0;list-style:none}
+.keypoints li{position:relative;padding:4px 0 4px 24px;font-size:13px;color:var(--tx2)}
+.keypoints li::before{content:"";position:absolute;left:4px;top:12px;width:8px;height:8px;border-radius:50%;background:var(--brand)}
+
+/* ---------- 板块 3 ---------- */
+.s3layout{display:grid;grid-template-columns:minmax(0,1.9fr) minmax(280px,1fr);gap:18px}
+@media (max-width:980px){.s3layout{grid-template-columns:1fr}}
+.s3main svg{max-width:100%;height:auto}
+.stepbtns{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+.stepbtns button{font:13px var(--sans);color:var(--tx);background:#fff;border:1px solid var(--bd);border-radius:6px;padding:5px 14px;cursor:pointer;transition:all .15s}
+.stepbtns button:hover:not(:disabled){border-color:var(--brand);color:var(--brand);background:var(--brand-bg)}
+.stepbtns button:disabled{opacity:.4;cursor:default}
+.dots{display:flex;gap:6px;margin-left:8px}
+.dots .dot{width:9px;height:9px;border-radius:50%;background:#d4dae2;transition:all .25s}
+.dots .dot.on{background:var(--brand);transform:scale(1.25)}
+.steptitle{font-size:13px;color:var(--tx2);margin-left:6px}
+.minibox{border:1px solid var(--bd2);border-radius:8px;background:#fbfcfe;padding:10px 12px;margin-bottom:12px}
+.minibox h4{margin:0 0 4px;font-size:12.5px;color:var(--tx2)}
+.minibox svg{max-width:100%;height:auto}
+.steppane{display:none;border:1px solid var(--bd2);border-radius:8px;background:#fbfcfe;padding:11px 14px;animation:fadein .4s}
+.steppane.on{display:block}
+@keyframes fadein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.steppane h4{margin:0 0 6px;font-size:13.5px;color:var(--brand)}
+.steppane p{font-size:12.5px;color:var(--tx2);margin:6px 0}
+pre.formula{font-family:var(--mono);font-size:12px;background:#0d2239;color:#d7e6f7;border-radius:6px;padding:9px 12px;overflow-x:auto;line-height:1.75;margin:6px 0}
+pre.formula .hl{color:#ffd479;font-weight:700}
+table.ctable{border-collapse:collapse;font-size:10.5px;font-family:var(--mono);margin:8px auto}
+table.ctable th,table.ctable td{border:1px solid var(--bd2);padding:2.5px 6px;text-align:center}
+table.ctable th{background:#f2f5f9;font-weight:700}
+table.ctable td.hl{outline:2.5px solid var(--brand);outline-offset:-2px;background:var(--brand-bg);font-weight:700;border-radius:2px}
+table.ctable .cap{font-size:10.5px;color:var(--tx3);font-family:var(--sans);text-align:center;margin-top:2px}
+
+/* ---------- 板块 4 ---------- */
+.excard{border:1px solid var(--bd);border-radius:8px;background:#fdfdfe;padding:14px 16px 16px;margin-bottom:16px}
+.excard .lang{font:12px var(--mono);background:#0d2239;color:#c9dcf2;border-radius:6px;padding:8px 12px;overflow-x:auto;margin:6px 0 12px;line-height:1.7}
+.exlayout{display:grid;grid-template-columns:minmax(260px,1.15fr) minmax(300px,1fr);gap:16px;align-items:start}
+@media (max-width:900px){.exlayout{grid-template-columns:1fr}}
+.exfigs{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap}
+.exfig{border:1px solid var(--bd2);border-radius:6px;background:#fff;padding:6px 8px 2px;text-align:center}
+.exfig h5{margin:0;font-size:11px;color:var(--tx2);font-weight:600;padding-bottom:2px}
+.exfig svg{max-width:100%;height:auto}
+.gel{transition:opacity .25s}
+.extable[data-g] .erow{opacity:.18}
+.extable[data-g="1"] .erow.g1{opacity:1}
+.extable[data-g="2"] .erow.g2{opacity:1}
+.extable[data-g="3"] .erow.g3{opacity:1}
+.extable[data-g="4"] .erow.g4{opacity:1}
+.extable[data-g="5"] .erow.g5{opacity:1}
+.extable[data-h] .erow{opacity:.18}
+.extable[data-h="1"] .erow.h1{opacity:1}
+.extable[data-h="2"] .erow.h2{opacity:1}
+.extable[data-h="3"] .erow.h3{opacity:1}
+.extable[data-h="4"] .erow.h4{opacity:1}
+.extable table.stable{cursor:default}
+.extable tbody tr.erow:hover{background:var(--brand-bg)}
+.extable td{vertical-align:top}
+.extable .stepno{font-family:var(--mono);color:var(--brand);font-weight:700;white-space:nowrap}
+.hint{font-size:11.5px;color:var(--tx3);margin:4px 0 6px}
+.tcard{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin:8px 0 12px}
+.tcard .tc{border:1px solid var(--bd2);border-left:3px solid var(--brand);border-radius:6px;padding:7px 11px;font:12px var(--mono);background:#fff}
+.tcard .tc b{color:var(--brand);font-family:var(--sans);font-size:11px;display:block;margin-bottom:2px}
+
+/* ---------- 自检横幅 / 页脚 ---------- */
+#ckbanner{margin:0 0 18px;border:1px solid var(--err-bd);background:var(--err-bg);color:var(--err);border-radius:8px;padding:10px 16px;font-size:13px;font-family:var(--mono)}
+footer{color:var(--tx3);font-size:12px;border-top:1px solid var(--bd2);padding-top:14px;line-height:1.9}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="bar"></div>
+  <div class="inner">
+    <h1>DSTransform 坐标变换结构 · 可视化效果图</h1>
+    <p class="sub">design db 第二阶段方案 <code>docs/emir/design-db-phase2-plan.md</code> §3（裁定 ㉜ / 批次 R6）配套附件 · 2026-09-10</p>
+    <div class="chips">
+      <span class="chip">坐标 y 向上（右手系），绕宏 ORIGIN 点旋转</span>
+      <span class="chip">单文件 · 零外部依赖 · 浏览器直接打开</span>
+      <span class="chip">页面全部数值由内置公式实时计算，可人工复算</span>
+      <span class="chip warn">FW / FE 与复合表为草案，以 LEF/DEF Reference Manual 5.8「Placement Transform」官方核对为准</span>
+    </div>
+  </div>
+</header>
+
+<div class="fbar">
+  <div class="fitem"><span>单点变换（宏内绝对坐标 m → 全局）</span><code>全局 = R(O) · (m − ORIGIN) + (px, py)</code></div>
+  <div class="fitem"><span>instance 存储坐标（anchor，永久不变式）</span><code>anchor = 「经过旋转的 ORIGIN 点」 = DEF 放置点 (px, py)</code></div>
+  <div class="fitem"><span>变换链叠加（flatten）</span><code>orient子 = compose(O父, O子)；anchor子 = R(O父) · (pt子 − ORIGIN父) + anchor父</code></div>
+</div>
+
+<nav class="toc"><div class="inner">
+  <a href="#sec1">① 8 种 orient 变换总览</a>
+  <a href="#sec2">② origin 修正对比</a>
+  <a href="#sec3">③ 两层 block 变换链叠加</a>
+  <a href="#sec4">④ 使用示例卡</a>
+</div></nav>
+
+<div class="wrap">
+
+<div id="ckbanner" hidden></div>
+
+<!-- ============ 板块 1 ============ -->
+<section class="card" id="sec1">
+  <h2><span class="no">①</span>8 种 orient（朝向）变换总览</h2>
+  <p class="lead">同一个非对称 L 形宏按 8 种 orient 放置到同一点 (10, 8)。灰色虚线为 N（正放）参考轮廓；彩色实心为该 orient 的变换结果——ORIGIN 点恒精确对齐放置点（这也是 instance 存储坐标的几何含义）。</p>
+  <div class="spec">
+    宏：<b>L 形，宽 5 × 高 4</b>（顶点 (0,0)(5,0)(5,2)(2,2)(2,4)(0,4)）· <b>ORIGIN 点 (1, 0)</b>（非零，演示修正项）·
+    内部 <b>pin 矩形 (0.5, 0.5) - (1.5, 1.5)</b>（非对称，避免对称歧义）· 统一放置点 <b>(px, py) = (10, 8)</b>
+  </div>
+  <div class="legend">
+    <span class="lg"><span class="k"></span>N 参考轮廓（虚线）</span>
+    <span class="lg"><span class="k solid"></span>变换后宏（实心）</span>
+    <span class="lg"><span class="k target"></span>放置点 (10, 8)（靶心）</span>
+    <span class="lg"><span class="k dotk"></span>变换后 ORIGIN 落点</span>
+    <span class="lg">点击 / 悬停卡片查看「减 ORIGIN → 旋转 → 平移」分步演示</span>
+  </div>
+  <div id="ogrid" class="ogrid"></div>
+  <div id="odetail" class="odetail"></div>
+</section>
+
+<!-- ============ 板块 2 ============ -->
+<section class="card" id="sec2">
+  <h2><span class="no">②</span>origin 修正对比：为什么 instance 必须存「经过旋转的 ORIGIN 点」</h2>
+  <p class="lead">同一宏（ORIGIN (1, 0)）、同一 orient W、同一放置点 (10, 8)。左图跳过「减 ORIGIN」步骤（错误做法），右图为正确结果。DEF COMPONENTS 给出的 (px, py) 语义是「宏 ORIGIN 的落点」，不是宏左下角 (0, 0) 的落点。</p>
+  <div class="s2wrap">
+    <div class="s2fig bad">
+      <h4>✗ 错误：忽略 ORIGIN 修正（直接 R(W)·m + (10,8)）</h4>
+      <div id="s2bad"></div>
+      <div class="s2sub" id="s2badsub"></div>
+    </div>
+    <div class="s2fig good">
+      <h4>✓ 正确：先减 ORIGIN 再变换（R(W)·(m−(1,0)) + (10,8)）</h4>
+      <div id="s2ok"></div>
+      <div class="s2sub" id="s2oksub"></div>
+    </div>
+  </div>
+  <div class="cmpbox">
+    <div class="cmp err"><div class="t">错误式展开（把宏左下角 (0,0) 当锚点）</div><code>R(W)·m + (10,8) = [R(W)·(m−ORIGIN) + (10,8)] + R(W)·ORIGIN = 正确结果 + (0, +1)</code></div>
+    <div class="cmp ok"><div class="t">ORIGIN 点自身的全局位置（与 orient 无关的恒等式）</div><code>R(O)·(ORIGIN − ORIGIN) + (px,py) = (0,0) + (px,py) = (px,py) ≡ 放置点</code></div>
+  </div>
+  <ul class="keypoints">
+    <li>DEF 的 (px, py) 是宏 ORIGIN 的落点：正确结果中 ORIGIN 点与放置点 (10, 8) 精确重合，与 orient 取值无关（上式右）。</li>
+    <li>忽略 ORIGIN 修正时，整个宏多偏移 R(W)·ORIGIN = (0, +1)：放置点处悬空，ORIGIN 落点被错误推到 (10, 9)（上式左）。</li>
+    <li>因此 instance（std cell 与 block cell）坐标统一存储「经过旋转的 ORIGIN 点」= (px, py) 本身，配 orient 字段即构成完整 DSTransform：不依赖宏内部 ORIGIN 数值即可精确对齐；内部结构（pin 图形 / 子 instance）坐标一律先减 ORIGIN 再入 transform，与链式叠加规则自洽。</li>
+  </ul>
+</section>
+
+<!-- ============ 板块 3 ============ -->
+<section class="card" id="sec3">
+  <h2><span class="no">③</span>两层 block 变换链叠加（flatten）</h2>
+  <p class="lead">top 层 → block A（正放）→ 子 instance B 在 A 内 (3, 2) 以 FN 放置 → B 内 pin 矩形。子全局 transform 由 compose 一次算出：累计 orient 与全局 anchor。点击「下一步」逐步演示，每步高亮参与运算的坐标与公式。</p>
+  <div class="spec">
+    A 宏：矩形 (0,0)-(10,6)，<b>ORIGIN_A (0,0)</b>，anchor_A (0,0)，orient N ·
+    B 宏：<b>L 形 4×3</b>（顶点 (0,0)(4,0)(4,2)(2,2)(2,3)(0,3)，非对称），<b>ORIGIN_B (0,3) 非零</b>，pin (2.5,0.5)-(3.5,1.5) ·
+    B 的放置：(pt, orient) = ((3,2), FN)
+  </div>
+  <div class="s3layout">
+    <div class="s3main">
+      <div id="s3svg"></div>
+      <div class="stepbtns">
+        <button id="s3prev">◀ 上一步</button>
+        <button id="s3next">下一步 ▶</button>
+        <button id="s3reset">重置</button>
+        <span class="dots" id="s3dots"></span>
+        <span class="steptitle" id="s3title"></span>
+      </div>
+    </div>
+    <div class="s3side">
+      <div class="minibox"><h4>B 宏局部坐标系（放置前）</h4><div id="s3mini"></div></div>
+      <div id="s3panes"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 板块 4 ============ -->
+<section class="card" id="sec4">
+  <h2><span class="no">④</span>使用示例卡（对应 plan §3.3，坐标已换算为整数 DBU）</h2>
+  <p class="lead">文档示例的两段 C++ 用法配数值图解：悬停 / 点击右侧计算表的行，左侧图形联动高亮参与该步的元素。单位换算：本组示例 1 微米 = 2000 DBU。</p>
+
+  <div class="excard">
+    <h3 class="exh">示例 1 · std cell 以 orient W 放置：pin 全局坐标逐步计算</h3>
+<pre class="lang">// std cell INV（SIZE 0.8×0.4 µm → 1600×800 DBU，ORIGIN (0.1,0) → (200,0)）
+// pin Z 图形相对宏左下角 (0.6,0.1)-(0.7,0.3) → (1200,200)-(1400,600) DBU
+// DEF：- inst1 INV + ( 100 200 ) W  →  (100×1000, 200×1000) = (100000, 200000) DBU
+DSTransform t({100000, 200000}, DSOrientation::W);   // instance 存储坐标 = ORIGIN 落点
+// pin Z 全局 = t.apply(pin − ORIGIN)：R(W)=(x,y)→(-y,x)</pre>
+    <div class="exlayout">
+      <div class="exfigs" id="ex1figs">
+        <div class="exfig"><h5>宏局部坐标（原点 = ORIGIN）</h5><div id="ex1local"></div></div>
+        <div class="exfig"><h5>全局（W 放置于 (100000, 200000)）</h5><div id="ex1global"></div></div>
+      </div>
+      <div class="extable" id="ex1table">
+        <div class="hint">悬停 / 点击计算行，左侧图形联动高亮：</div>
+        <table class="stable">
+          <tbody>
+          <tr class="erow g1"><td class="stepno">1</td><td><b>换算 DBU</b>（2000 DBU/µm）</td><td class="mono">SIZE→1600×800；ORIGIN→(200, 0)；pin→(1200,200)-(1400,600)；放置→(100000,200000)</td></tr>
+          <tr class="erow g2"><td class="stepno">2</td><td><b>减 ORIGIN</b>：pin − (200, 0)</td><td class="mono">(1000, 200) - (1200, 600)</td></tr>
+          <tr class="erow g3"><td class="stepno">3</td><td><b>旋转</b> R(W)：(x,y)→(-y,x)</td><td class="mono">(-200, 1000) 与 (-600, 1200)</td></tr>
+          <tr class="erow g4"><td class="stepno">4</td><td><b>平移</b>：+ (100000, 200000)</td><td class="mono">(99800, 201000) 与 (99400, 201200)</td></tr>
+          <tr class="erow g5"><td class="stepno">5</td><td><b>pin Z 全局</b>（取包围盒）</td><td class="mono"><b>(99400, 201000) - (99800, 201200)</b></td></tr>
+          </tbody>
+        </table>
+        <div class="note-ok">宏包围盒 1600×800 → 全局 800×1600（W 宽高换轴）：(99200, 199800) - (100000, 201400)，ORIGIN 落点 = 放置点 ✓</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="excard">
+    <h3 class="exh">示例 2 · block 链式 compose：A（正放）→ B（FN）→ C（W）</h3>
+<pre class="lang">DSTransform tA = {{0, 0}, DSOrientation::N};               // A 正放于 top 原点（ORIGIN_A = (0,0)，无修正项）
+DSTransform tB = tA.compose({4000, 2000}, DSOrientation::FN);   // B 在 A 内 (4000,2000) FN 放置
+DSTransform tC = tB.compose({4000, 800},  DSOrientation::W);    // C 在 B 内 (4000,800) W 放置
+// C 内 pin 全局 = tC.apply(pin − ORIGIN_C)，orient 与 anchor 由 compose 一次算出</pre>
+    <div class="tcard">
+      <div class="tc"><b>tA</b>{ anchor (0, 0), orient N }</div>
+      <div class="tc"><b>tB = tA.compose({4000,2000}, FN)</b>{ anchor (4000, 2000), orient FN }</div>
+      <div class="tc"><b>tC = tB.compose({4000,800}, W)</b>{ anchor (8000, 4200), orient FW（草案）}</div>
+    </div>
+    <div class="exlayout">
+      <div class="exfigs" id="ex2figs">
+        <div class="exfig"><h5>全局视图（A 10000×6000 · B 宏 5000×3000 ORIGIN_B (0,3000) · C 宏 600×800）</h5><div id="ex2global"></div></div>
+      </div>
+      <div class="extable" id="ex2table">
+        <div class="hint">悬停 / 点击计算行，左侧图形联动高亮：</div>
+        <table class="stable">
+          <tbody>
+          <tr class="erow h1"><td class="stepno">1</td><td><b>tA</b>：A 正放 top 原点</td><td class="mono">anchor_A = (0, 0)，orient_A = N</td></tr>
+          <tr class="erow h2"><td class="stepno">2</td><td><b>tB</b>：anchor_B = R(N)·((4000,2000) − ORIGIN_A) + anchor_A = (4000,2000)；orient_B = compose(N, FN)</td><td class="mono">tB = { (4000, 2000), FN }</td></tr>
+          <tr class="erow h3"><td class="stepno">3</td><td><b>tC</b>：ORIGIN_B = (0,3000) 非零先修正 → R(FN)·((4000,800)−(0,3000)) + anchor_B = (4000,2200) + (4000,2000)；orient_C = compose(FN, W)</td><td class="mono">tC = { (8000, 4200), FW }（FW 为草案）</td></tr>
+          <tr class="erow h4"><td class="stepno">4</td><td><b>pin 全局</b>：pin (200,300)-(500,700) − ORIGIN_C(0,0) → R(FW)：(-y,-x) → + (8000,4200)</td><td class="mono">(7700, 4000) 与 (7300, 3700) → <b>(7300, 3700) - (7700, 4000)</b></td></tr>
+          </tbody>
+        </table>
+        <div class="note-ok">C 宏包围盒 600×800 → 全局 800×600（FW 宽高换轴）：(7200, 3400) - (8000, 4200)，完全落在 B 的实心区域内 ✓</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  口径与声明：本图所有坐标数值由页面内置的 2×2 整数矩阵 + 平移公式实时计算，与 plan §3 草案一致，可逐项人工复算；y 轴向上为正。
+  orient N/W/S/E 与 FN/FS 的映射为常规定义；FW/FE 及 8×8 复合表基于草案复合次序（先旋转后镜像），与「先镜像后旋转」候选的结果恰好互换，
+  实施首步以 LEF/DEF Reference Manual 5.8「Placement Transform」官方定义核对（R6 验收项），核对结论落地后同步更新本图。
+  配套文档：<code>docs/emir/design-db-phase2-plan.md</code> §3 / 裁定 ㉜。
+</footer>
+
+</div>
+
+<script>
+'use strict';
+/* ==================== 计算核心 ==================== */
+/* orient → 2×2 矩阵 [a,b,c,d]：(x,y) → (a·x + b·y, c·x + d·y)。草案，FW/FE 待官方核对 */
+const LIN = {
+  N :[1,0,0,1],   W :[0,-1,1,0],  S :[-1,0,0,-1], E :[0,1,-1,0],
+  FN:[1,0,0,-1],  FS:[-1,0,0,1],  FW:[0,-1,-1,0], FE:[0,1,1,0]
+};
+const ORIENTS = ['N','W','S','E','FN','FS','FW','FE'];
+const ORIENT_INFO = {
+  N :{desc:'正放（0°）',              map:'(x, y) → (x, y)',       swap:false},
+  W :{desc:'逆时针旋转 90°',          map:'(x, y) → (-y, x)',      swap:true},
+  S :{desc:'旋转 180°',               map:'(x, y) → (-x, -y)',     swap:false},
+  E :{desc:'逆时针旋转 270°',         map:'(x, y) → (y, -x)',      swap:true},
+  FN:{desc:'沿 y 镜像（上下翻转）',   map:'(x, y) → (x, -y)',      swap:false},
+  FS:{desc:'沿 x 镜像（左右翻转）',   map:'(x, y) → (-x, y)',      swap:false},
+  FW:{desc:'镜像 + 旋转复合（草案）', map:'(x, y) → (-y, -x)（草案）', swap:true},
+  FE:{desc:'镜像 + 旋转复合（草案）', map:'(x, y) → (y, x)（草案）',   swap:true}
+};
+const ORIENT_COLOR = {N:'#2563eb',W:'#ea580c',S:'#16a34a',E:'#9333ea',FN:'#0891b2',FS:'#db2777',FW:'#a16207',FE:'#64748b'};
+
+function lin(o,p){const m=LIN[o];return [m[0]*p[0]+m[1]*p[1], m[2]*p[0]+m[3]*p[1]];}
+function add(p,t){return [p[0]+t[0], p[1]+t[1]];}
+function sub(p,t){return [p[0]-t[0], p[1]-t[1]];}
+/* 群复合：compose(a, b) = 先 b 后 a 的累计 orient（矩阵积 M(a)·M(b) 反查） */
+function composeO(a,b){
+  const A=LIN[a],B=LIN[b];
+  const M=[A[0]*B[0]+A[1]*B[2], A[0]*B[1]+A[1]*B[3], A[2]*B[0]+A[3]*B[2], A[2]*B[1]+A[3]*B[3]];
+  for(const k of ORIENTS){const m=LIN[k];if(m[0]===M[0]&&m[1]===M[1]&&m[2]===M[2]&&m[3]===M[3])return k;}
+  return '?';
+}
+function tf(pts,o,t){return pts.map(p=>add(lin(o,p),t));}          // 直接线性+平移（不修正）
+function tfRect(r,o,t){                                            // 矩形 [x1,y1,x2,y2] 两角变换后包围盒
+  const p1=add(lin(o,[r[0],r[1]]),t), p2=add(lin(o,[r[2],r[3]]),t);
+  return [Math.min(p1[0],p2[0]),Math.min(p1[1],p2[1]),Math.max(p1[0],p2[0]),Math.max(p1[1],p2[1])];
+}
+function bbox(pts){
+  const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
+  return [Math.min(...xs),Math.min(...ys),Math.max(...xs),Math.max(...ys)];
+}
+function fmt(n){if(Object.is(n,-0))n=0;return Number.isInteger(n)?String(n):(Math.round(n*10)/10).toString();}
+function fp(p){return '('+fmt(p[0])+', '+fmt(p[1])+')';}
+function fr(r){return fp([r[0],r[1]])+' - '+fp([r[2],r[3]]);}
+
+/* ==================== SVG 绘图辅助 ==================== */
+function V(x0,y0,x1,y1,w,h,pad){
+  const s=Math.min((w-2*pad)/(x1-x0),(h-2*pad)/(y1-y0));
+  const ox=(w-(x1-x0)*s)/2, oy=(h-(y1-y0)*s)/2;
+  return {x0,y0,x1,y1,w,h,s,X:x=>ox+(x-x0)*s,Y:y=>h-oy-(y-y0)*s};
+}
+function sg(v,inner){return '<svg viewBox="0 0 '+v.w+' '+v.h+'" width="'+v.w+'" height="'+v.h+'">'+inner+'</svg>';}
+function grid(v,step){
+  let s='';
+  for(let i=Math.ceil(v.x0/step);i*step<=v.x1+1e-9;i++){const x=i*step;s+='<line x1="'+v.X(x)+'" y1="0" x2="'+v.X(x)+'" y2="'+v.h+'" class="gline"/>';}
+  for(let i=Math.ceil(v.y0/step);i*step<=v.y1+1e-9;i++){const y=i*step;s+='<line x1="0" y1="'+v.Y(y)+'" x2="'+v.w+'" y2="'+v.Y(y)+'" class="gline"/>';}
+  return s;
+}
+function ticks(v,step){
+  let s='';
+  for(let i=Math.ceil(v.x0/step);i*step<=v.x1+1e-9;i++){const x=i*step;s+='<text x="'+v.X(x)+'" y="'+(v.h-3)+'" class="gtxt" text-anchor="middle">'+fmt(x)+'</text>';}
+  for(let i=Math.ceil(v.y0/step);i*step<=v.y1+1e-9;i++){const y=i*step;s+='<text x="3" y="'+(v.Y(y)-3)+'" class="gtxt">'+fmt(y)+'</text>';}
+  return s;
+}
+function pg(v,pts,cls,extra){return '<polygon points="'+pts.map(p=>v.X(p[0])+','+v.Y(p[1])).join(' ')+'" class="'+cls+'" '+(extra||'')+'/>';}
+function rc(v,r,cls,extra){
+  return '<rect x="'+v.X(r[0])+'" y="'+v.Y(r[3])+'" width="'+(v.X(r[2])-v.X(r[0]))+'" height="'+(v.Y(r[1])-v.Y(r[3]))+'" class="'+cls+'" '+(extra||'')+'/>';
+}
+function crossPx(v,p,rpx,cls){
+  const x=v.X(p[0]),y=v.Y(p[1]);
+  return '<line x1="'+(x-rpx)+'" y1="'+y+'" x2="'+(x+rpx)+'" y2="'+y+'" class="'+cls+'"/>'+'<line x1="'+x+'" y1="'+(y-rpx)+'" x2="'+x+'" y2="'+(y+rpx)+'" class="'+cls+'"/>';
+}
+function target(v,p,color){
+  const x=v.X(p[0]),y=v.Y(p[1]);
+  return '<circle cx="'+x+'" cy="'+y+'" r="9" fill="none" stroke="'+color+'" stroke-width="1.4"/>'+
+         '<circle cx="'+x+'" cy="'+y+'" r="4.5" fill="none" stroke="'+color+'" stroke-width="1.4"/>'+
+         '<circle cx="'+x+'" cy="'+y+'" r="1.5" fill="'+color+'"/>';
+}
+function dotPx(v,p,rpx,fill){return '<circle cx="'+v.X(p[0])+'" cy="'+v.Y(p[1])+'" r="'+rpx+'" fill="'+fill+'"/>';}
+function arrowWorld(v,p1,p2,color){
+  const x1=v.X(p1[0]),y1=v.Y(p1[1]),x2=v.X(p2[0]),y2=v.Y(p2[1]);
+  return arrowPx(x1,y1,x2,y2,color);
+}
+function arrowPx(x1,y1,x2,y2,color){
+  const ang=Math.atan2(y2-y1,x2-x1),L=9;
+  const bx=x2-L*Math.cos(ang),by=y2-L*Math.sin(ang);
+  const nx=-Math.sin(ang),ny=Math.cos(ang);
+  return '<line x1="'+x1+'" y1="'+y1+'" x2="'+bx+'" y2="'+by+'" stroke="'+color+'" stroke-width="2"/>'+
+         '<polygon points="'+x2+','+y2+' '+(bx+nx*3.4)+','+(by+ny*3.4)+' '+(bx-nx*3.4)+','+(by-ny*3.4)+'" fill="'+color+'"/>';
+}
+function arcArrow(cx,cy,r,a1,a2,color){
+  const P=a=>[cx+r*Math.cos(a*Math.PI/180), cy-r*Math.sin(a*Math.PI/180)];
+  const p1=P(a1),p2=P(a2);
+  const large=(a2-a1)>180?1:0;
+  let s='<path d="M '+p1[0]+' '+p1[1]+' A '+r+' '+r+' 0 '+large+' 0 '+p2[0]+' '+p2[1]+'" fill="none" stroke="'+color+'" stroke-width="1.6"/>';
+  const t1=P(a2-5),t2=P(a2-0.01);
+  let tx=t2[0]-t1[0],ty=t2[1]-t1[1];const L=Math.hypot(tx,ty)||1;tx/=L;ty/=L;
+  const bx=t2[0]-tx*6,by=t2[1]-ty*6,nx=-ty,ny=tx;
+  s+='<polygon points="'+t2[0]+','+t2[1]+' '+(bx+nx*3.2)+','+(by+ny*3.2)+' '+(bx-nx*3.2)+','+(by-ny*3.2)+'" fill="'+color+'"/>';
+  return s;
+}
+function rotMark(v,o,c){
+  const cx=v.X(0),cy=v.Y(0),r=Math.min(v.w,v.h)*0.17;
+  if(o==='FN') return '<line x1="'+(cx-r*1.9)+'" y1="'+cy+'" x2="'+(cx+r*1.9)+'" y2="'+cy+'" stroke="#b45309" stroke-dasharray="5 4" stroke-width="1.3"/>'+
+    '<text x="'+(cx+r*1.9)+'" y="'+(cy-4)+'" class="rtx" text-anchor="end" fill="#b45309">镜像轴 x（y 翻转）</text>';
+  if(o==='FS') return '<line x1="'+cx+'" y1="'+(cy-r*1.5)+'" x2="'+cx+'" y2="'+(cy+r*1.5)+'" stroke="#b45309" stroke-dasharray="5 4" stroke-width="1.3"/>'+
+    '<text x="'+(cx+3)+'" y="'+(cy-r*1.5-3)+'" class="rtx" fill="#b45309">镜像轴 y（x 翻转）</text>';
+  let s='';
+  if(o!=='N'){
+    const span={W:[8,82],S:[8,172],E:[8,262],FW:[8,82],FE:[8,82]}[o];
+    s+=arcArrow(cx,cy,r,span[0],span[1],c);
+    const mid=(span[0]+span[1])/2, deg=o==='S'?'180°':o==='E'?'270°':'90°';
+    s+='<text x="'+(cx+(r+11)*Math.cos(mid*Math.PI/180))+'" y="'+(cy-(r+11)*Math.sin(mid*Math.PI/180)+4)+'" class="rtx" text-anchor="middle" fill="'+c+'">'+deg+'</text>';
+  }
+  if(o==='FW'||o==='FE'){
+    s+='<line x1="'+(cx-r*1.7)+'" y1="'+cy+'" x2="'+(cx+r*1.7)+'" y2="'+cy+'" stroke="#b45309" stroke-dasharray="5 4" stroke-width="1.2"/>'+
+       '<text x="'+(cx-r*1.7)+'" y="'+(cy+12)+'" class="rtx" fill="#b45309">再镜像（草案：先旋转后镜像）</text>';
+  }
+  return s;
+}
+
+/* ==================== 板块 1 数据 ==================== */
+const S1={ORIGIN:[1,0],PLACE:[10,8],POLY:[[0,0],[5,0],[5,2],[2,2],[2,4],[0,4]],PIN:[0.5,0.5,1.5,1.5]};
+function corrected(o,pts){return pts.map(p=>add(lin(o,sub(p,S1.ORIGIN)),S1.PLACE));} // 正确做法：先减 ORIGIN
+function pinOf(o){                                                                   // pin 正确放置（先减 ORIGIN）
+  const a=add(lin(o,sub([S1.PIN[0],S1.PIN[1]],S1.ORIGIN)),S1.PLACE);
+  const b=add(lin(o,sub([S1.PIN[2],S1.PIN[3]],S1.ORIGIN)),S1.PLACE);
+  return [Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.max(a[0],b[0]),Math.max(a[1],b[1])];
+}
+function macroOf(o){return corrected(o,S1.POLY);}
+const REF=corrected('N',S1.POLY);          // N 参考轮廓（ORIGIN 已对齐放置点）
+const REF_PIN=pinOf('N');
+
+/* ==================== 板块 1 渲染 ==================== */
+const V1CARD=V(4.6,3.4,15.4,13.4,258,244,8);
+function cardSvg(o){
+  const c=ORIENT_COLOR[o];
+  let s=grid(V1CARD,1);
+  s+=target(V1CARD,S1.PLACE,'#47525f');
+  s+='<text x="'+(V1CARD.X(10)+12)+'" y="'+(V1CARD.Y(8)-8)+'" class="gtxt">(10, 8)</text>';
+  s+=pg(V1CARD,REF,'ref-macro')+rc(V1CARD,REF_PIN,'ref-pin');
+  s+=pg(V1CARD,macroOf(o),'omacro','fill="'+c+'" fill-opacity=".27" stroke="'+c+'"');
+  s+=rc(V1CARD,pinOf(o),'opin','fill="'+c+'"');
+  const pin=pinOf(o);
+  s+='<text x="'+V1CARD.X((pin[0]+pin[2])/2)+'" y="'+(V1CARD.Y((pin[1]+pin[3])/2)-4)+'" class="ptx" text-anchor="middle">pin</text>';
+  if(o==='FW'||o==='FE'){
+    const alt=o==='FW'?'FE':'FW';
+    s+=pg(V1CARD,macroOf(alt),'alt-macro')+rc(V1CARD,pinOf(alt),'alt-pin');
+  }
+  s+=dotPx(V1CARD,S1.PLACE,2.8,c);
+  return sg(V1CARD,s);
+}
+function renderS1(){
+  const host=document.getElementById('ogrid');
+  let html='';
+  for(const o of ORIENTS){
+    const info=ORIENT_INFO[o],c=ORIENT_COLOR[o],mb=bbox(macroOf(o));
+    html+='<div class="ocard" data-o="'+o+'" tabindex="0" role="button" aria-label="orient '+o+'">'
+      +'<div class="ochead"><span class="ochip" style="background:'+c+'">'+o+'</span>'
+      +'<span class="ocdesc">'+info.desc+'</span>'
+      +(info.swap?'<span class="tag-swap">宽高换轴</span>':'')
+      +((o==='FW'||o==='FE')?'<span class="tag-draft">草案</span>':'')
+      +'</div><div class="ocsvg">'+cardSvg(o)+'</div>'
+      +'<div class="ocmeta"><div><i>pin 全局</i><b>'+fr(pinOf(o))+'</b></div>'
+      +'<div><i>宏包围盒</i><b>'+fr(mb)+'</b><em>'+(mb[2]-mb[0])+'×'+(mb[3]-mb[1])+(info.swap?'（换轴）':'')+'</em></div>'
+      +((o==='FW'||o==='FE')?'<div><i>候选 B pin</i><b>'+fr(pinOf(o==='FW'?'FE':'FW'))+'</b></div>':'')
+      +'</div></div>';
+  }
+  host.innerHTML=html;
+  const cards=Array.prototype.slice.call(host.querySelectorAll('.ocard'));
+  const detail=document.getElementById('odetail');
+  let selected='N';
+  function show(o){detail.innerHTML=detailHTML(o);markSel(o);}
+  function markSel(o){cards.forEach(cd=>cd.classList.toggle('sel',cd.dataset.o===o));}
+  cards.forEach(cd=>{
+    cd.addEventListener('click',()=>{selected=cd.dataset.o;show(selected);});
+    cd.addEventListener('mouseenter',()=>show(cd.dataset.o));
+    cd.addEventListener('mouseleave',()=>show(selected));
+    cd.addEventListener('focus',()=>show(cd.dataset.o));
+  });
+  show(selected);
+}
+
+/* ---------- 板块 1 详情面板 ---------- */
+function detailHTML(o){
+  const info=ORIENT_INFO[o],c=ORIENT_COLOR[o];
+  const d1=sub([S1.PIN[0],S1.PIN[1]],S1.ORIGIN), d2=sub([S1.PIN[2],S1.PIN[3]],S1.ORIGIN);
+  const r1=lin(o,d1), r2=lin(o,d2);
+  const g1=add(r1,S1.PLACE), g2=add(r2,S1.PLACE);
+  const mb=bbox(macroOf(o));
+  let h='<h3><span class="ochip" style="background:'+c+'">'+o+'</span>'+info.desc
+    +(ORIENT_INFO[o].swap?'<span class="tag-swap">宽高换轴</span>':'')
+    +((o==='FW'||o==='FE')?'<span class="tag-draft">草案 · 待官方核对</span>':'')+'</h3>';
+  h+='<div class="dmap">映射式 <code>'+info.map+'</code> · 公式 <code>全局 = R('+o+') · (m − ORIGIN) + (px,py)</code>，代入 ORIGIN (1, 0)、放置点 (10, 8)</div>';
+  h+='<div class="steps3">'+stepPanels(o)+'</div>';
+  h+='<table class="stable"><tr><th>步骤</th><th>公式</th><th>pin 角 A (0.5, 0.5)</th><th>pin 角 B (1.5, 1.5)</th></tr>'
+    +'<tr><td>① 减 ORIGIN</td><td class="mono">d = m − (1, 0)</td><td class="mono">'+fp(d1)+'</td><td class="mono">'+fp(d2)+'</td></tr>'
+    +'<tr><td>② 旋转 R('+o+')</td><td class="mono">'+info.map+'</td><td class="mono">'+fp(r1)+'</td><td class="mono">'+fp(r2)+'</td></tr>'
+    +'<tr><td>③ 平移 +(px, py)</td><td class="mono">d\' + (10, 8)</td><td class="mono">'+fp(g1)+'</td><td class="mono">'+fp(g2)+'</td></tr>'
+    +'</table>';
+  h+='<div class="note-ok">ORIGIN 对齐验证：R('+o+')·((1,0) − (1,0)) + (10,8) = (10, 8) ✓ 与放置点精确重合 · 宏包围盒 '+fr(mb)+'（'+(mb[2]-mb[0])+'×'+(mb[3]-mb[1])+(info.swap?'，宽高换轴':'')+'）· pin 全局 '+fr(pinOf(o))+'</div>';
+  if(o==='FW'||o==='FE') h+=draftCompare(o);
+  return h;
+}
+function stepPanels(o){
+  const c=ORIENT_COLOR[o];
+  /* 列 1：以 ORIGIN 为原点 */
+  const v1=V(-2.4,-2.4,5.2,5.2,188,188,10);
+  const local=S1.POLY.map(p=>sub(p,S1.ORIGIN));
+  const dpin=[S1.PIN[0]-1,S1.PIN[1]-0,S1.PIN[2]-1,S1.PIN[3]-0];
+  let s1=grid(v1,1)+pg(v1,local,'base-macro')+rc(v1,dpin,'step-pin','fill="'+c+'"')+crossPx(v1,[0,0],5,'ax-cross');
+  s1+='<text x="'+(v1.X(dpin[2])+5)+'" y="'+(v1.Y(dpin[3])-4)+'" class="ptx">d = m − ORIGIN</text>';
+  /* 列 2：旋转后（仍以 ORIGIN 为原点） */
+  const v2=V(-5.8,-5.8,5.8,5.8,188,188,10);
+  const rot=local.map(p=>lin(o,p));
+  const rpin=tfRect(dpin,o,[0,0]);
+  let s2=grid(v2,1)+pg(v2,rot,'base-macro')+rc(v2,rpin,'step-pin','fill="'+c+'"')+crossPx(v2,[0,0],5,'ax-cross')+rotMark(v2,o,c);
+  s2+='<text x="'+(v2.X(rpin[2])+5)+'" y="'+(v2.Y(rpin[3])-4)+'" class="ptx">R('+o+')·d</text>';
+  /* 列 3：平移到全局 */
+  const v3=V(4.6,3.4,15.4,13.4,188,188,10);
+  let s3=grid(v3,1)+target(v3,S1.PLACE,'#47525f')+pg(v3,macroOf(o),'omacro','fill="'+c+'" fill-opacity=".27" stroke="'+c+'"')
+        +rc(v3,pinOf(o),'opin','fill="'+c+'"')+crossPx(v3,S1.PLACE,5,'ax-cross');
+  s3+='<text x="'+(v3.X(10)+11)+'" y="'+(v3.Y(8)-9)+'" class="gtxt">+(10, 8)</text>';
+  return '<div class="scol"><h5>① 减 ORIGIN（以 ORIGIN 为原点）</h5>'+sg(v1,s1)+'</div>'
+    +'<div class="sarrow">→</div>'
+    +'<div class="scol"><h5>② 旋转 R('+o+')（绕 ORIGIN）</h5>'+sg(v2,s2)+'</div>'
+    +'<div class="sarrow">→</div>'
+    +'<div class="scol"><h5>③ 平移 +(10, 8)（全局）</h5>'+sg(v3,s3)+'</div>';
+}
+function draftCompare(o){
+  const alt=o==='FW'?'FE':'FW';
+  const rotName=o==='FW'?'W':'E';
+  const mbA=bbox(macroOf(o)), mbB=bbox(macroOf(alt));
+  return '<div class="draftbox"><h4>复合次序候选对比（两种草案结果恰好互换，以官方核对为准）</h4>'
+    +'<table class="stable"><tr><th>候选</th><th>复合次序</th><th>映射</th><th>pin 全局</th><th>宏包围盒</th></tr>'
+    +'<tr><td><span class="dotA"></span>草案 A（图中实心）</td><td>先旋转后镜像：R(FN)·R('+rotName+')</td><td class="mono">'+ORIENT_INFO[o].map+'</td><td class="mono">'+fr(pinOf(o))+'</td><td class="mono">'+fr(mbA)+'</td></tr>'
+    +'<tr><td><span class="dotB"></span>候选 B（图中虚线）</td><td>先镜像后旋转：R('+rotName+')·R(FN)</td><td class="mono">'+ORIENT_INFO[alt].map+'</td><td class="mono">'+fr(pinOf(alt))+'</td><td class="mono">'+fr(mbB)+'</td></tr>'
+    +'</table>'
+    +'<p>候选 B 的 '+o+' 结果 = 草案 A 的 '+alt+' 结果。实施首步以 LEF/DEF Reference Manual 5.8「Placement Transform」官方定义逐项核对（plan §3.2 R6 验收项），核对后更新映射与复合表。</p></div>';
+}
+
+/* ==================== 板块 2 渲染 ==================== */
+function renderS2(){
+  const badPoly=tf(S1.POLY,'W',S1.PLACE);            // 未减 ORIGIN（错误）
+  const badPin=tfRect(S1.PIN,'W',S1.PLACE);
+  const okPts=corrected('W',S1.POLY);                // 先减 ORIGIN（正确）
+  const okCorner=corrected('W',[[S1.PIN[0],S1.PIN[1]],[S1.PIN[2],S1.PIN[3]]]);
+  const okPin=[Math.min(okCorner[0][0],okCorner[1][0]),Math.min(okCorner[0][1],okCorner[1][1]),
+               Math.max(okCorner[0][0],okCorner[1][0]),Math.max(okCorner[0][1],okCorner[1][1])];
+  const v=V(4.7,5.3,11.7,14.1,340,404,10);
+  /* 左：错误 */
+  let sb=grid(v,1)+ticks(v,1);
+  sb+=target(v,S1.PLACE,'#8a93a0');
+  sb+=pg(v,badPoly,'bad-macro')+rc(v,badPin,'bad-pin');
+  sb+='<text x="'+(v.X(10)-8)+'" y="'+(v.Y(8)+14)+'" class="err-tx" text-anchor="end">宏 (0,0) 角落在放置点上（锚点用错）</text>';
+  sb+=arrowWorld(v,[10.18,8.15],[10.18,8.85],'#dc2626');
+  sb+='<text x="'+(v.X(10.18)+7)+'" y="'+(v.Y(8.5))+'" class="err-tx">错位 (0, +1)</text>';
+  sb+=dotPx(v,[10,9],3,'#dc2626');
+  sb+='<text x="'+(v.X(10)+8)+'" y="'+(v.Y(9)+4)+'" class="err-tx">ORIGIN 落点被推到 (10, 9)</text>';
+  document.getElementById('s2bad').innerHTML=sg(v,sb);
+  document.getElementById('s2badsub').textContent='pin '+fr(badPin)+' · 包围盒 '+fr(bbox(badPoly));
+  /* 右：正确 */
+  let so=grid(v,1)+ticks(v,1);
+  so+=target(v,S1.PLACE,'#15803d');
+  so+=pg(v,okPts,'ok-macro')+rc(v,okPin,'ok-pin');
+  so+=dotPx(v,S1.PLACE,3,'#15803d');
+  so+='<text x="'+(v.X(10)+8)+'" y="'+(v.Y(8)-10)+'" class="ok-tx">ORIGIN 落点 = (10, 8) ✓</text>';
+  so+='<text x="'+(v.X(10)-9)+'" y="'+(v.Y(12.6))+'" class="ok-tx" text-anchor="end">W：逆时针 90°，宽高换轴 5×4 → 4×5</text>';
+  document.getElementById('s2ok').innerHTML=sg(v,so);
+  document.getElementById('s2oksub').textContent='pin '+fr(okPin)+' · 包围盒 '+fr(bbox(okPts));
+}
+
+/* ==================== 板块 3 ==================== */
+const S3={
+  A:{poly:[[0,0],[10,0],[10,6],[0,6]],origin:[0,0],anchor:[0,0],orient:'N'},
+  B:{poly:[[0,0],[4,0],[4,2],[2,2],[2,3],[0,3]],origin:[0,3],pin:[2.5,0.5,3.5,1.5],place:[3,2],orient:'FN'}
+};
+const S3_anchorB=lin(S3.A.orient,sub(S3.B.place,S3.A.origin)).map((x,i)=>x+S3.A.anchor[i]); // R(N)·((3,2)-(0,0))+(0,0)
+const S3_orientB=composeO(S3.A.orient,S3.B.orient);                                          // compose(N,FN)=FN
+const S3_g=p=>add(lin(S3_orientB,sub(p,S3.B.origin)),S3_anchorB);                            // 子宏点 → 全局
+const S3_bPts=S3.B.poly.map(S3_g);
+const S3_bPinC=[S3_g([S3.B.pin[0],S3.B.pin[1]]),S3_g([S3.B.pin[2],S3.B.pin[3]])];
+const S3_bPin=[Math.min(S3_bPinC[0][0],S3_bPinC[1][0]),Math.min(S3_bPinC[0][1],S3_bPinC[1][1]),
+               Math.max(S3_bPinC[0][0],S3_bPinC[1][0]),Math.max(S3_bPinC[0][1],S3_bPinC[1][1])];
+const S3_STEPS=[
+  {t:'步骤 0 · 场景',title:'场景',pane:
+    '<h4>步骤 0 · 场景</h4><p>top 层中 block A 正放：anchor_A = (0, 0)、orient N、ORIGIN_A = (0, 0)。'
+    +'子 instance B 以 orient <b>FN</b> 放置于 A 内 <b>(3, 2)</b>。B 宏为非对称 L 形 4×3，ORIGIN_B = (0, 3) 非零（见右侧局部图）。</p>'
+    +'<pre class="formula">tA = { anchor (0, 0), orient N }      （A 已放置）\nB 放置 = { pt (3, 2), orient FN }    （A 坐标系内）</pre>'},
+  {t:'步骤 1 · B 的全局 anchor',title:'B 的全局 anchor',pane:
+    '<h4>步骤 1 · B 的全局 anchor（ORIGIN 落点）</h4>'
+    +'<pre class="formula">anchor_B = R(N) · ((3, 2) − ORIGIN_A) + anchor_A\n         = <span class="hl">(3, 2)</span> − (0, 0) + (0, 0) = <span class="hl">(3, 2)</span></pre>'
+    +'<p>R(N) 为恒等；ORIGIN_A = (0, 0) 时修正项为 0（非零时先减 ORIGIN）。anchor_B 即 B 的 ORIGIN 点全局落点——图中高亮该点，B 宏将以此为变换中心。</p>'},
+  {t:'步骤 2 · 累计 orient（compose）',title:'累计 orient',pane:
+    '<h4>步骤 2 · 累计 orient（D4 群复合）</h4>'
+    +'<pre class="formula">orient_B = compose(N, FN) = <span class="hl">FN</span>     （N 为恒等元，累计即 FN）</pre>'
+    +'<p>B 宏相对其 ORIGIN 落点 (3, 2) 做 y 镜像（上下翻转）。8×8 复合表闭包（高亮 N 行 × FN 列）：</p>'
+    +'<div id="s3table"></div>'},
+  {t:'步骤 3 · B 内 pin 全局坐标',title:'pin 全局坐标',pane:
+    '<h4>步骤 3 · B 内 pin 全局坐标</h4>'
+    +'<pre class="formula">全局 = R(FN) · (pin − ORIGIN_B) + anchor_B\n角A (2.5, 0.5) → −(0,3) → (2.5, −2.5) → R(FN) → (2.5, 2.5) → +(3,2) → <span class="hl">(5.5, 4.5)</span>\n角B (3.5, 1.5) → −(0,3) → (3.5, −1.5) → R(FN) → (3.5, 1.5) → +(3,2) → <span class="hl">(6.5, 3.5)</span>\npin 全局 = <span class="hl">(5.5, 3.5) - (6.5, 4.5)</span></pre>'
+    +'<p>内部结构坐标一律先减 ORIGIN 再入 transform——与单点公式、链式叠加规则完全一致。</p>'}
+];
+function compTable(hlA,hlB){
+  let h='<table class="ctable"><tr><th>compose</th>'+ORIENTS.map(o=>'<th style="color:'+ORIENT_COLOR[o]+'">'+o+'</th>').join('')+'</tr>';
+  for(const a of ORIENTS){
+    h+='<tr><th style="color:'+ORIENT_COLOR[a]+'">'+a+'</th>';
+    for(const b of ORIENTS){
+      const r=composeO(a,b);
+      h+='<td'+(a===hlA&&b===hlB?' class="hl"':'')+' style="color:'+ORIENT_COLOR[r]+'">'+r+'</td>';
+    }
+    h+='</tr>';
+  }
+  return h+'</table><div class="cap">基于草案矩阵；FW/FE 两列待官方核对后更新</div>';
+}
+function renderS3(){
+  const v=V(-1.4,-1.6,11.5,7.4,660,452,12);
+  let s=grid(v,1)+ticks(v,1);
+  /* A 宏（恒显） */
+  s+='<g class="s3-el on">'+pg(v,S3.A.poly,'omacro','fill="#1a5fb4" fill-opacity=".10" stroke="#1a5fb4"')
+    +'<text x="'+v.X(0.4)+'" y="'+(v.Y(5.5))+'" class="plabel" fill="#1a5fb4">block A（正放 N）</text></g>';
+  /* B 放置点 marker（步 0 显） */
+  s+='<g class="s3-el" data-s="0">'+target(v,S3.B.place,'#0891b2')
+    +'<text x="'+(v.X(3)+11)+'" y="'+(v.Y(2)+15)+'" class="stx">B 放置 (3, 2) FN</text></g>';
+  /* anchor 强调（步 1 显） */
+  s+='<g class="s3-el" data-s="1">'+dotPx(v,S3_anchorB,4,'#0891b2')
+    +'<circle cx="'+v.X(S3_anchorB[0])+'" cy="'+v.Y(S3_anchorB[1])+'" r="9" fill="none" stroke="#0891b2" stroke-width="1.6" class="pulse"/>'
+    +'<text x="'+(v.X(3)+12)+'" y="'+(v.Y(2)-9)+'" class="stxb" fill="#0e7490">anchor_B = (3, 2)（ORIGIN_B 落点）</text></g>';
+  /* B 轮廓（步 2 显） */
+  s+='<g class="s3-el" data-s="2">'+pg(v,S3_bPts,'omacro','fill="#0891b2" fill-opacity=".22" stroke="#0891b2"')
+    +'<text x="'+v.X(4.2)+'" y="'+(v.Y(4.6))+'" class="plabel" fill="#0e7490">B（累计 orient FN）</text>'
+    +dotPx(v,S3_anchorB,3,'#0891b2')+'</g>';
+  /* pin（步 3 显） */
+  s+='<g class="s3-el" data-s="3">'+rc(v,S3_bPin,'opin','fill="#0e7490"')
+    +'<text x="'+(v.X(S3_bPin[2])+6)+'" y="'+(v.Y((S3_bPin[1]+S3_bPin[3])/2)+4)+'" class="stxb">pin (5.5, 3.5)-(6.5, 4.5)</text></g>';
+  document.getElementById('s3svg').innerHTML=sg(v,s);
+  /* B 局部小图 */
+  const vm=V(-0.7,-0.7,4.7,3.7,264,210,10);
+  let sm=grid(vm,1)+pg(vm,S3.B.poly,'base-macro')+rc(vm,S3.B.pin,'step-pin','fill="#0891b2"')
+    +crossPx(vm,S3.B.origin,5,'ax-cross');
+  sm+='<text x="'+(vm.X(0)+7)+'" y="'+(vm.Y(3)-6)+'" class="stx">ORIGIN_B (0, 3)</text>';
+  sm+='<text x="'+(vm.X(2.5))+'" y="'+(vm.Y(0.9))+'" class="ptx" text-anchor="middle">pin (2.5, 0.5)-(3.5, 1.5)</text>';
+  document.getElementById('s3mini').innerHTML=sg(vm,sm);
+  /* 步骤面板（s3table 容器在面板 2 的字符串内，须先注入再填表） */
+  document.getElementById('s3panes').innerHTML=S3_STEPS.map((st,i)=>'<div class="steppane" data-i="'+i+'">'+st.pane+'</div>').join('');
+  document.getElementById('s3table').innerHTML=compTable('N','FN');
+  /* dots */
+  document.getElementById('s3dots').innerHTML=S3_STEPS.map((_,i)=>'<span class="dot" data-i="'+i+'"></span>').join('');
+  let cur=0;
+  function apply(i){
+    cur=i;
+    document.querySelectorAll('#s3svg [data-s]').forEach(el=>el.classList.toggle('on',+el.dataset.s<=i));
+    document.querySelectorAll('#s3panes .steppane').forEach(p=>p.classList.toggle('on',+p.dataset.i===i));
+    document.querySelectorAll('#s3dots .dot').forEach(d=>d.classList.toggle('on',+d.dataset.i<=i));
+    document.getElementById('s3title').textContent=S3_STEPS[i].t+' / '+(S3_STEPS.length-1);
+    document.getElementById('s3prev').disabled=(i===0);
+    document.getElementById('s3next').disabled=(i===S3_STEPS.length-1);
+  }
+  document.getElementById('s3prev').addEventListener('click',()=>apply(Math.max(0,cur-1)));
+  document.getElementById('s3next').addEventListener('click',()=>apply(Math.min(S3_STEPS.length-1,cur+1)));
+  document.getElementById('s3reset').addEventListener('click',()=>apply(0));
+  apply(0);
+}
+
+/* ==================== 板块 4 ==================== */
+const DBU=2000;
+const EX1={size:[1600,800],origin:[200,0],pin:[1200,200,1400,600],place:[100000,200000],orient:'W'};
+const EX1_d1=sub([EX1.pin[0],EX1.pin[1]],EX1.origin), EX1_d2=sub([EX1.pin[2],EX1.pin[3]],EX1.origin);
+const EX1_r1=lin(EX1.orient,EX1_d1), EX1_r2=lin(EX1.orient,EX1_d2);
+const EX1_g1=add(EX1_r1,EX1.place), EX1_g2=add(EX1_r2,EX1.place);
+const EX1_pinG=[Math.min(EX1_g1[0],EX1_g2[0]),Math.min(EX1_g1[1],EX1_g2[1]),Math.max(EX1_g1[0],EX1_g2[0]),Math.max(EX1_g1[1],EX1_g2[1])];
+const EX1_macroG=(function(){
+  const cs=[[0,0],[EX1.size[0],0],[EX1.size[0],EX1.size[1]],[0,EX1.size[1]]].map(p=>add(lin(EX1.orient,sub(p,EX1.origin)),EX1.place));
+  return bbox(cs);
+})();
+/* 例 2：A 正放 → B (4000,2000) FN（ORIGIN_B (0,3000)）→ C (4000,800) W（ORIGIN_C (0,0)） */
+const EX2={
+  tA_anchor:[0,0], tA_orient:'N',
+  B:{poly:[[0,0],[5000,0],[5000,2500],[2500,2500],[2500,3000],[0,3000]],origin:[0,3000],place:[4000,2000],orient:'FN'},
+  C:{size:[600,800],origin:[0,0],pin:[200,300,500,700],place:[4000,800],orient:'W'},
+  Arect:[0,0,10000,6000]
+};
+const EX2_tB_anchor=add(lin(EX2.tA_orient,sub(EX2.B.place,EX2.tA_anchor)),EX2.tA_anchor); // (4000,2000)
+const EX2_tB_orient=composeO(EX2.tA_orient,EX2.B.orient);                                  // FN
+const EX2_tC_anchor=add(lin(EX2_tB_orient,sub(EX2.C.place,EX2.B.origin)),EX2_tB_anchor);   // R(FN)((4000,800)-(0,3000))+(4000,2000)=(8000,4200)
+const EX2_tC_orient=composeO(EX2_tB_orient,EX2.C.orient);                                  // compose(FN,W)=FW（草案）
+const EX2_gC=p=>add(lin(EX2_tC_orient,sub(p,EX2.C.origin)),EX2_tC_anchor);
+const EX2_Cpts=[[0,0],[EX2.C.size[0],0],[EX2.C.size[0],EX2.C.size[1]],[0,EX2.C.size[1]]].map(EX2_gC);
+const EX2_CpinC=[EX2_gC([EX2.C.pin[0],EX2.C.pin[1]]),EX2_gC([EX2.C.pin[2],EX2.C.pin[3]])];
+const EX2_Cpin=[Math.min(EX2_CpinC[0][0],EX2_CpinC[1][0]),Math.min(EX2_CpinC[0][1],EX2_CpinC[1][1]),
+                Math.max(EX2_CpinC[0][0],EX2_CpinC[1][0]),Math.max(EX2_CpinC[0][1],EX2_CpinC[1][1])];
+const EX2_gB=p=>add(lin(EX2_tB_orient,sub(p,EX2.B.origin)),EX2_tB_anchor);
+const EX2_Bpts=EX2.B.poly.map(EX2_gB);
+
+function linkRows(containerId,figsId,attr){
+  const tb=document.getElementById(containerId), figs=document.getElementById(figsId);
+  tb.querySelectorAll('tr.erow').forEach(tr=>{
+    const stepOf=()=>Array.from(tr.classList).find(c=>/^g\d+$|^h\d+$/.test(c)).replace(/\D/g,'');
+    tr.addEventListener('mouseenter',()=>{figs.setAttribute(attr,stepOf());});
+    tr.addEventListener('mouseleave',()=>{figs.removeAttribute(attr);});
+    tr.addEventListener('click',()=>{figs.setAttribute(attr,stepOf());});
+  });
+}
+function renderS4(){
+  /* ---- 例 1 ---- */
+  const vl=V(-360,-160,1560,960,330,206,8);
+  const lmacro=[[0-EX1.origin[0],0],[EX1.size[0]-EX1.origin[0],0],[EX1.size[0]-EX1.origin[0],EX1.size[1]],[0-EX1.origin[0],EX1.size[1]]];
+  let sl=grid(vl,500)+pg(vl,lmacro,'base-macro')+rc(vl,[EX1_d1[0],EX1_d1[1],EX1_d2[0],EX1_d2[1]],'step-pin gel g2 g3','fill="#ea580c"')
+    +crossPx(vl,[0,0],5,'ax-cross gel g2');
+  sl+='<text x="'+(vl.X(0)-4)+'" y="'+(vl.Y(0)+14)+'" class="stx gel g2">ORIGIN (0,0)</text>';
+  sl+='<text x="'+(vl.X(400))+'" y="'+(vl.Y(870))+'" class="stx gel g1">宏局部 (−200, 0)-(1400, 800)</text>';
+  sl+='<text x="'+(vl.X(1100))+'" y="'+(vl.Y(150)-6)+'" class="ptx gel g3">d (1000, 200)-(1200, 600)</text>';
+  document.getElementById('ex1local').innerHTML=sg(vl,sl);
+  const vg=V(99130,199720,100070,201500,300,548,10);
+  let sgr=grid(vg,400)+ticks(vg,400);
+  sgr+=target(vg,EX1.place,'#15803d');
+  sgr+='<rect x="'+vg.X(EX1_macroG[0])+'" y="'+vg.Y(EX1_macroG[3])+'" width="'+(vg.X(EX1_macroG[2])-vg.X(EX1_macroG[0]))+'" height="'+(vg.Y(EX1_macroG[1])-vg.Y(EX1_macroG[3]))+'" class="omacro gel g1" fill="#1a5fb4" fill-opacity=".12" stroke="#1a5fb4"/>';
+  sgr+=rc(vg,EX1_pinG,'opin gel g3 g4 g5','fill="#ea580c"');
+  sgr+='<text x="'+(vg.X(EX1_pinG[0])-6)+'" y="'+(vg.Y((EX1_pinG[1]+EX1_pinG[3])/2))+'" class="ptx gel g5" text-anchor="end">pin Z</text>';
+  sgr+='<text x="'+(vg.X(EX1.place[0])+9)+'" y="'+(vg.Y(EX1.place[1])+16)+'" class="stx gel g4">(100000, 200000)</text>';
+  sgr+='<text x="'+(vg.X(99190))+'" y="'+(vg.Y(201460))+'" class="stx gel g1">宏 800×1600（换轴）</text>';
+  document.getElementById('ex1global').innerHTML=sg(vg,sgr);
+  linkRows('ex1table','ex1figs','data-g');
+  /* ---- 例 2 ---- */
+  const v2=V(-620,-720,10620,6720,640,442,12);
+  let s2=grid(v2,2000)+ticks(v2,2000);
+  s2+='<rect x="'+v2.X(EX2.Arect[0])+'" y="'+v2.Y(EX2.Arect[3])+'" width="'+(v2.X(EX2.Arect[2])-v2.X(EX2.Arect[0]))+'" height="'+(v2.Y(EX2.Arect[1])-v2.Y(EX2.Arect[3]))+'" class="omacro gel h1" fill="#1a5fb4" fill-opacity=".08" stroke="#1a5fb4"/>';
+  s2+='<text x="'+(v2.X(300))+'" y="'+(v2.Y(5700))+'" class="plabel gel h1" fill="#1a5fb4">block A（N 正放，anchor (0, 0)）</text>';
+  s2+=dotPx(v2,EX2.tA_anchor,3.5,'#1a5fb4');
+  s2+=pg(v2,EX2_Bpts,'omacro gel h2','fill="#0891b2" fill-opacity=".20" stroke="#0891b2"');
+  s2+='<text x="'+(v2.X(4300))+'" y="'+(v2.Y(2200)+16)+'" class="plabel gel h2" fill="#0e7490">B（FN，anchor (4000, 2000)）</text>';
+  s2+=dotPx(v2,EX2_tB_anchor,3.5,'#0891b2');
+  s2+=pg(v2,EX2_Cpts,'omacro gel h3 h4','fill="#ea580c" fill-opacity=".22" stroke="#ea580c"');
+  s2+=rc(v2,EX2_Cpin,'opin gel h4','fill="#c2410c"');
+  s2+=dotPx(v2,EX2_tC_anchor,3.5,'#ea580c');
+  s2+='<text x="'+(v2.X(EX2_tC_anchor[0])-8)+'" y="'+(v2.Y(EX2_tC_anchor[1])-8)+'" class="stxb gel h3" text-anchor="end" fill="#c2410c">C（FW 草案，anchor (8000, 4200)）</text>';
+  s2+='<text x="'+(v2.X(EX2_Cpin[0])-5)+'" y="'+(v2.Y((EX2_Cpin[1]+EX2_Cpin[3])/2))+'" class="ptx gel h4" text-anchor="end">pin</text>';
+  s2+='<text x="'+(v2.X(7350))+'" y="'+(v2.Y(1600))+'" class="stx gel h4">pin 全局 (7300, 3700)-(7700, 4000)</text>';
+  document.getElementById('ex2global').innerHTML=sg(v2,s2);
+  linkRows('ex2table','ex2figs','data-h');
+}
+
+/* ==================== 自检（数值断言，页面加载时执行） ==================== */
+function selfCheck(){
+  const A=[
+    ['N pin',  fr(pinOf('N')), '(9.5, 8.5) - (10.5, 9.5)'],
+    ['W pin',  fr(pinOf('W')), '(8.5, 7.5) - (9.5, 8.5)'],
+    ['S pin',  fr(pinOf('S')), '(9.5, 6.5) - (10.5, 7.5)'],
+    ['E pin',  fr(pinOf('E')), '(10.5, 7.5) - (11.5, 8.5)'],
+    ['FN pin', fr(pinOf('FN')),'(9.5, 6.5) - (10.5, 7.5)'],
+    ['FS pin', fr(pinOf('FS')),'(9.5, 8.5) - (10.5, 9.5)'],
+    ['FW pin（草案）', fr(pinOf('FW')),'(8.5, 7.5) - (9.5, 8.5)'],
+    ['FE pin（草案）', fr(pinOf('FE')),'(10.5, 7.5) - (11.5, 8.5)'],
+    ['N 宏包围盒', fr(bbox(macroOf('N'))), '(9, 8) - (14, 12)'],
+    ['W 宏包围盒', fr(bbox(macroOf('W'))), '(6, 7) - (10, 12)'],
+    ['compose(N,FN)', composeO('N','FN'), 'FN'],
+    ['compose(W,W)',  composeO('W','W'),  'S'],
+    ['compose(FN,W)', composeO('FN','W'), 'FW'],
+    ['origin 修正错位（W）', fp(sub(tf(S1.POLY,'W',S1.PLACE)[0],corrected('W',S1.POLY)[0])), '(0, 1)'],
+    ['板块3 anchor_B', fp(S3_anchorB), '(3, 2)'],
+    ['板块3 orient_B', S3_orientB, 'FN'],
+    ['板块3 pin 全局', fr(S3_bPin), '(5.5, 3.5) - (6.5, 4.5)'],
+    ['例1 pin Z 全局', fr(EX1_pinG), '(99400, 201000) - (99800, 201200)'],
+    ['例1 宏全局包围盒', fr(EX1_macroG), '(99200, 199800) - (100000, 201400)'],
+    ['例2 anchor_B', fp(EX2_tB_anchor), '(4000, 2000)'],
+    ['例2 orient_B', EX2_tB_orient, 'FN'],
+    ['例2 anchor_C', fp(EX2_tC_anchor), '(8000, 4200)'],
+    ['例2 orient_C', EX2_tC_orient, 'FW'],
+    ['例2 pin 全局', fr(EX2_Cpin), '(7300, 3700) - (7700, 4000)']
+  ];
+  const fails=A.filter(a=>a[1]!==a[2]);
+  if(fails.length){
+    const b=document.getElementById('ckbanner');
+    b.hidden=false;
+    b.textContent='数值自检失败 '+fails.length+' 项：'+fails.map(f=>f[0]+' 期望 '+f[2]+' 实得 '+f[1]).join('；');
+    fails.forEach(f=>console.error('[self-check]',f[0],'expect',f[2],'got',f[1]));
+  }
+}
+
+/* ==================== 启动 ==================== */
+renderS1();
+renderS2();
+renderS3();
+renderS4();
+selfCheck();
+</script>
+</body>
+</html>

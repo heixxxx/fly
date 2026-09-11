@@ -172,7 +172,8 @@ src/monitor/    → cluster monitor: 采集落盘 (MetricsDb 单写 monitor.db, 
                   MONITOR_SAMPLE 通道) + Web GUI (serve.py + ECharts, fly --serve-monitor)
 src/message/    → 消息日志系统: 高价值日志推送/配额/终端唯一透出 (docs/message-system.md)
 src/common/     → 模块族: types(指针别名) buffer(FlyBuffer+data_checksum) concurrent io(FdHandle+ChunkSource) runtime(WriterID等) testing serialization(序列化宏+对象头)
-src/container/  → 容器别名层(CMVector/CMMap/CMString…, 可整体替换底层实现) + 自定义容器(CMLookupTable…); EMIR 业务模块族(src/emir: EMIRProject + 各 db 子模块)亦按此模式
+src/container/  → 容器别名层(CMVector/CMMap/CMString…, 可整体替换底层实现) + 自定义容器(CMLookupTable…); EMIR 业务模块族(src/emir: EMIRProject + lib/design 等 db 子模块)亦按此模式
+src/geometry/   → 顶层独立模块: 纯几何结构(GEOPointT/GEORectT/GEOPolygonT 模板+无后缀 int32 别名) + GEOOrientation/GEOTransformT(放置变换 D4 八方向, 枚举值=Si2 DEF_ORIENT_*; design db 坐标 int32 裁定)
 src/log/        → DBG/INFO/WARN/ERR macros, CM_FORMAT_CLASS/ENUM
 src/test/       → TestObject, e2e_tasks.py, test_tasks.py (not public API)
 ```

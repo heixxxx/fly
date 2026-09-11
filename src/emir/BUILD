@@ -6,6 +6,7 @@ py_library(
     name = "emir_pkg",
     srcs = ["__init__.py"],
     deps = [
+        "//src/emir/design:design_pkg",
         "//src/emir/lib:lib_pkg",
         "//src/emir/project:project_pkg",
     ],

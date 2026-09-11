@@ -1,0 +1,25 @@
+VERSION 5.8 ;
+DESIGN block_parent ;
+UNITS DISTANCE MICRONS 2000 ;
+DIEAREA ( 0 0 ) ( 3000 2000 ) ;
+
+COMPONENTS 3 ;
+    - top1 INV_X1 + PLACED ( 500 500 ) N ;
+    - top2 WRAP_CELL + UNPLACED ;
+    - top3 block_child + PLACED ( 1500 500 ) N ;
+END COMPONENTS
+
+PINS 1 ;
+    - TOP_IN + NET n_top
+      + DIRECTION INPUT
+      + USE SIGNAL
+      + PORT
+        + LAYER M2 ( 100 100 ) ( 200 200 )
+        + FIXED ( 150 150 ) N ;
+END PINS
+
+NETS 1 ;
+    - n_top ( top1 A ) ( PIN TOP_IN ) ;
+END NETS
+
+END DESIGN

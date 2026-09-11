@@ -4,3 +4,4 @@
 # 注册 + 消息注册）。随新 db 子模块在此追加。
 from emir.project import *  # noqa: F401,F403
 from emir.lib import *  # noqa: F401,F403
+from emir.design import *  # noqa: F401,F403

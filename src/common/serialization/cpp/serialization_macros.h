@@ -90,6 +90,7 @@ using FlyInputStreamAdapter = bitsery::InputStreamAdapter;
     FLY_SERIALIZE_END
 
 // Apply FLY_FIELD to each argument via Boost.PP (eliminates 16 numbered macros)
+#include <bitsery/ext/std_smart_ptr.h>
 #include <boost/preprocessor/variadic/to_seq.hpp>
 #include <boost/preprocessor/seq/for_each.hpp>
 
@@ -120,6 +121,59 @@ using FlyInputStreamAdapter = bitsery::InputStreamAdapter;
         FLY_DECODE_FROM_STREAM(fly_ss_is_, FlySelfType_, *this); \
     }
 
+// =============================================================================
+// External serialization macros — third-party type serialization (out-of-line)
+//
+// Third-party types that cannot have member functions added (such as
+// third_party header-only libraries) are serialized via ADL free functions:
+// bitsery's SelectSerializeFnc routing (details/serialization_common.h) finds
+// the free function via unqualified `serialize(s, v)` lookup (ADL) —
+// HasSerializeFunction decltype detection holds equally for template
+// overloads; free function takes priority, member function takes priority
+// when a member exists (both coexisting is a static_assert error).
+//
+// **Out-of-line serialization for third-party types must always go through
+// this macro family (field version / custom-body version) — bare ADL
+// serialize free functions are forbidden scattered around** (to ensure a
+// single system with FLY_SERIALIZE, unified comments and inline semantics).
+// Note: must not coexist with member serialize (bitsery selectSerializeFnc
+// ambiguity static_assert); must be placed in the same namespace as the type
+// (visible via ADL).
+//
+// 1. Field version (field-by-field, reusing FLY_EACH/FLY_FIELD; the object
+//    parameter name is fixed as o):
+//   FLY_SERIALIZE_EXTERNAL(SomeThirdPartyType, x, y)
+// 2. Custom-body version (free body, for non-field-by-field scenarios like
+//   native bridging; symmetrical with FLY_SERIALIZE_BEGIN/END; the second
+//   variadic group is the template parameter list of the type itself, used
+//   when templated):
+//   FLY_SERIALIZE_EXTERNAL_BEGIN(SomeThirdPartyType)
+//       fly_ser::text(s, o.blob_);
+//   FLY_SERIALIZE_EXTERNAL_END
+//   FLY_SERIALIZE_EXTERNAL_BEGIN(tsl::htrie_map<char, T>, typename T)
+//       ...
+//   FLY_SERIALIZE_EXTERNAL_END
+// =============================================================================
+
+// Field version: field-by-field out-of-line serialization (object parameter
+// name fixed as o — FLY_FIELD dispatches with hardcoded o.field)
+#define FLY_SERIALIZE_EXTERNAL(Type, ...) \
+    template<typename S> \
+    inline void serialize(S& s, Type& o) { \
+        FLY_EACH(__VA_ARGS__) \
+    }
+
+// Custom-body version: free body out-of-line serialization. Variadic args =
+// the type's own template parameter list (e.g. typename IdT), expanded via
+// __VA_OPT__ concatenation into the function template header; omitted when
+// non-templated.
+#define FLY_SERIALIZE_EXTERNAL_BEGIN(Type, ...) \
+    template<typename S __VA_OPT__(, ) __VA_ARGS__> \
+    inline void serialize(S& s, Type& o) {
+
+#define FLY_SERIALIZE_EXTERNAL_END \
+    }
+
 // Field macros — simplified (recommended)
 // These macros use sizeof-based deduction — no element size needed.
 // Usage: FLY_VAL(s, o, value)  →  auto-deduces 4b for int32_t, 8b for double, etc.
@@ -141,7 +195,9 @@ using FlyInputStreamAdapter = bitsery::InputStreamAdapter;
     do { \
         auto& fly_v_ = o.field; \
         using fly_T_ = std::decay_t<decltype(fly_v_)>; \
-        if constexpr (fly_ser::is_map_v<fly_T_>) { \
+        if constexpr (fly_ser::is_shared_ptr_v<fly_T_>) { \
+            s.ext(fly_v_, bitsery::ext::StdSmartPtr{}); \
+        } else if constexpr (fly_ser::is_map_v<fly_T_>) { \
             s.ext(fly_v_, bitsery::ext::StdMap{FLY_MAX_SIZE}, [](auto& s, auto& key, auto& val) { \
                 fly_ser::map_elem(s, key); \
                 fly_ser::map_elem(s, val); \
@@ -164,6 +220,17 @@ namespace fly_ser {
 
 // --- Type traits for dispatch ---
 
+// shared_ptr 成员（CMSharedPtr = std::shared_ptr 别名，自动覆盖）：接
+// bitsery 原生 ext::StdSmartPtr（SharedOwner 共享所有权语义、空指针原
+// 生处理；语义以 bitsery 文档为准）。编解码宏会话挂 PointerLinking
+// Context——同会话内共享拓扑保留（多字段指同一对象恢复后仍同对象），
+// 跨会话（分别 FLY_ENCODE 的两个对象）各自独立——与流式落盘语义一致。
+// 容器内 shared_ptr（vector/map 元素级）本版不做——map_elem/container_
+// elem 的元素分派留作扩展点。
+template<typename T> struct is_shared_ptr_impl : std::false_type {};
+template<typename T> struct is_shared_ptr_impl<std::shared_ptr<T>> : std::true_type {};
+template<typename T> constexpr bool is_shared_ptr_v = is_shared_ptr_impl<std::decay_t<T>>::value;
+
 template<typename T> struct is_map_impl : std::false_type {};
 template<typename... A> struct is_map_impl<std::map<A...>> : std::true_type {};
 template<typename... A> struct is_map_impl<std::multimap<A...>> : std::true_type {};
@@ -181,6 +248,17 @@ constexpr bool is_vector_v = is_vector_impl<std::decay_t<T>>::value;
 
 template<typename T>
 constexpr bool is_string_v = std::is_same_v<std::decay_t<T>, std::string>;
+
+// 反序列化侧判定：serialize(S& s) 在保存/加载两侧共用（bitsery 同一
+// 序列化函数双向复用），S 在加载侧为 bitsery::Deserializer 实例化
+// （FLY_DECODE / FLY_DECODE_FROM_STREAM 同构）——序列化体需按方向分支
+// 时（backend 原生段直载/重建钩子等）以此编译期判定。
+template<typename S>
+struct is_deserializer_impl : std::false_type {};
+template<typename A, typename C>
+struct is_deserializer_impl<bitsery::Deserializer<A, C>> : std::true_type {};
+template<typename S>
+constexpr bool is_deserializer_v = is_deserializer_impl<std::decay_t<S>>::value;
 
 // --- Value helpers ---
 
@@ -249,11 +327,15 @@ void map_elem(S& s, T& v) {
 // Encode/Decode macros — bitsery implementation
 // =============================================================================
 
-// FLY_ENCODE: Serialize msg to output (CMString)
+// FLY_ENCODE: Serialize msg to output (CMString)。
+// 会话挂 PointerLinkingContextSerialization（StdSmartPtr 共享所有权记账
+// 需要；同会话内共享拓扑保留，跨会话各自独立——与流式落盘语义一致）
 #define FLY_ENCODE(msg, output) \
     do { \
         FlySerBuf fly_enc_buf_; \
-        auto fly_enc_size_ = bitsery::quickSerialization<FlyOutputAdapter>(fly_enc_buf_, msg); \
+        bitsery::ext::pointer_utils::PointerLinkingContextSerialization fly_enc_ctx_; \
+        auto fly_enc_size_ = bitsery::quickSerialization( \
+            fly_enc_ctx_, FlyOutputAdapter(fly_enc_buf_), msg); \
         fly_enc_buf_.resize(fly_enc_size_); \
         output = fly_enc_buf_.release(); \
     } while(0)
@@ -264,8 +346,12 @@ void map_elem(S& s, T& v) {
         FlySerBuf fly_dec_buf_; \
         fly_dec_buf_.take(CMString(input)); \
         msg_type fly_dec_msg_; \
-        auto fly_dec_result_ = bitsery::quickDeserialization<FlyInputAdapter>( \
-            {fly_dec_buf_.begin(), static_cast<size_t>(input.size())}, fly_dec_msg_); \
+        bitsery::ext::pointer_utils::PointerLinkingContextDeserialization fly_dec_ctx_; \
+        auto fly_dec_result_ = bitsery::quickDeserialization( \
+            fly_dec_ctx_, \
+            FlyInputAdapter{fly_dec_buf_.begin(), \
+                            static_cast<size_t>(input.size())}, \
+            fly_dec_msg_); \
         if (fly_dec_result_.first != bitsery::ReaderError::NoError || !fly_dec_result_.second) { \
             throw std::runtime_error("FLY_DECODE: deserialization failed"); \
         } \
@@ -275,7 +361,10 @@ void map_elem(S& s, T& v) {
 // FLY_ENCODE_TO_BUFFER: Serialize msg to output (FlyBuffer)
 #define FLY_ENCODE_TO_BUFFER(msg, output) \
     do { \
-        auto fly_enc_size_ = bitsery::quickSerialization<FlyOutputAdapter>(output, msg); \
+        bitsery::ext::pointer_utils::PointerLinkingContextSerialization fly_enc_ctx_; \
+        auto fly_enc_size_ = \
+            bitsery::quickSerialization(fly_enc_ctx_, \
+                                        FlyOutputAdapter(output), msg); \
         output.resize(fly_enc_size_); \
     } while(0)
 
@@ -283,8 +372,10 @@ void map_elem(S& s, T& v) {
 #define FLY_DECODE_FROM_BUFFER(input, msg_type, output) \
     do { \
         msg_type fly_dec_msg_; \
-        auto fly_dec_result_ = bitsery::quickDeserialization<FlyInputAdapter>( \
-            {input.begin(), input.size()}, fly_dec_msg_); \
+        bitsery::ext::pointer_utils::PointerLinkingContextDeserialization fly_dec_ctx_; \
+        auto fly_dec_result_ = bitsery::quickDeserialization( \
+            fly_dec_ctx_, \
+            FlyInputAdapter{input.begin(), input.size()}, fly_dec_msg_); \
         if (fly_dec_result_.first != bitsery::ReaderError::NoError || !fly_dec_result_.second) { \
             throw std::runtime_error("FLY_DECODE_FROM_BUFFER: deserialization failed"); \
         } \
@@ -300,7 +391,9 @@ void map_elem(S& s, T& v) {
     do { \
         FlyInputStreamAdapter fly_is_adapter_(istream_ref); \
         msg_type fly_dec_msg_; \
-        auto fly_dec_result_ = bitsery::quickDeserialization(std::move(fly_is_adapter_), fly_dec_msg_); \
+        bitsery::ext::pointer_utils::PointerLinkingContextDeserialization fly_dec_ctx_; \
+        auto fly_dec_result_ = bitsery::quickDeserialization( \
+            fly_dec_ctx_, std::move(fly_is_adapter_), fly_dec_msg_); \
         if (fly_dec_result_.first != bitsery::ReaderError::NoError || !fly_dec_result_.second) { \
             throw std::runtime_error("FLY_DECODE_FROM_STREAM: deserialization failed"); \
         } \
@@ -315,7 +408,10 @@ void map_elem(S& s, T& v) {
 #define FLY_ENCODE_TO_STREAM(ostream_ref, msg) \
     do { \
         FlyOutputStreamAdapter fly_os_adapter_(ostream_ref); \
-        bitsery::Serializer<FlyOutputStreamAdapter> fly_ser_(std::move(fly_os_adapter_)); \
+        bitsery::ext::pointer_utils::PointerLinkingContextSerialization fly_ser_ctx_; \
+        bitsery::Serializer<FlyOutputStreamAdapter, \
+                            bitsery::ext::pointer_utils::PointerLinkingContextSerialization> \
+            fly_ser_(fly_ser_ctx_, std::move(fly_os_adapter_)); \
         fly_ser_.object(msg); \
         fly_ser_.adapter().flush(); \
     } while(0)

@@ -96,3 +96,16 @@ py_test(
         requirement("cloudpickle"),
     ],
 )
+
+# wait_obj 依赖传播体系（R9 批次，裁定 ㊼）：wrapper.deps 依赖解析透传 +
+# run_direct 剥离包装直调（monkeypatch _wait_for_objects 断言零等待）+
+# wait_obj 轮询等待/无法产出兜底语义本体
+py_test(
+    name = "wait_obj_deps_test",
+    srcs = ["test_wait_obj_deps.py"],
+    main = "test_wait_obj_deps.py",
+    deps = [
+        requirement("coverage"),  # 测量自启（sitecustomize→coverage.process_startup）
+        "//src/task/py:fly_task_py",
+    ],
+)

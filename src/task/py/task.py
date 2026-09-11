@@ -195,16 +195,48 @@ def wait_obj(inputs=None, poll_interval=0.1, timeout=None):
         import functools
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            deps = inputs(*args, **kwargs) if inputs else []
+            resolved_deps = inputs(*args, **kwargs) if inputs else []
             # 装饰时固定 timeout 作为默认，允许调用方通过 kwargs["timeout"] 覆盖。
             effective_timeout = kwargs.get("timeout", timeout)
-            _wait_for_objects(deps, poll_interval, effective_timeout)
+            _wait_for_objects(resolved_deps, poll_interval, effective_timeout)
             return func(*args, **kwargs)
 
+        def deps(*args, **kwargs):
+            """返回此 API 的依赖对象全名列表（inputs lambda 的解析结果）。
+
+            供上层 as_task 的 inputs lambda 传播依赖（防依赖漂移）：
+                @as_task(inputs=lambda db: api.deps(db) + [其他依赖])
+            见 DEVELOPMENT_GUIDELINES「业务 API 依赖声明与 wait_obj 包装规范」。
+            """
+            return inputs(*args, **kwargs) if inputs else []
+
         wrapper._fly_original_func = func
+        wrapper.deps = deps
         return wrapper
 
     return decorator
+
+
+def run_direct(func, *args, **kwargs):
+    """剥离包装直接调用原函数（不经 wait_obj 等待/as_task 提交）。
+
+    func 有 ``_fly_original_func``（wait_obj/as_task 装饰器挂在 wrapper 上的
+    原函数引用）则直调原函数，否则把 func 本身当作普通函数直调。
+
+    仅适用 wait_obj 包装的本地 API：task 函数体内上层已在 as_task inputs
+    声明了相应数据依赖（经 api.deps(db) 传播），数据必然就绪，走 run_direct
+    剥离本地等待可避免 wait_obj 轮询/master 查询的冗余网络 IO。
+    as_task 任务函数不适用——那会绕过任务提交语义（本地直跑而非分发）。
+
+    Usage::
+
+        @as_task(inputs=lambda db: load_design.deps(db))
+        def my_task(db):
+            design = run_direct(load_design, db)   # 直跑原函数，无等待轮询
+    """
+    original = getattr(func, "_fly_original_func", None)
+    target = original if original is not None else func
+    return target(*args, **kwargs)
 
 
 def _wait_for_objects(deps, poll_interval, timeout=None):

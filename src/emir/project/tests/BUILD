@@ -6,9 +6,10 @@ py_test(
     name = "emir_project_test",
     srcs = ["test_emir_project.py"],
     main = "test_emir_project.py",
-    imports = ["../../lib/export"],
+    imports = ["../../lib/export", "../../design/export"],
     deps = [
         "//src/emir:emir_pkg",
+        "//src/emir/design/export:_fly_emir_design.so",
         "//src/emir/lib/export:_fly_emir_lib.so",
         "//src/fly:fly_py",
     ],

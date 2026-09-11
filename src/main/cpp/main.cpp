@@ -179,6 +179,8 @@ static void setup_sys_path() {
     ps += "import _fly_solver\n";
     ps += "import _fly_message\n";
     ps += "import _fly_emir_lib\n";
+    // design 依赖 _fly_emir_lib（merge_lib 消费 LIBLibrary），lib 须在前
+    ps += "import _fly_emir_design\n";
     // 注意：_fly_network 有意不预加载——加载后进程退出期触发
     // libfly_core 静态配置表 double free（HEAD 既有缺陷，2026-09-07
     // HEAD 工作树复现实锤，与 Python 侧加载路径无关，待 C++ 构建层

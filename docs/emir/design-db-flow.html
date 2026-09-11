@@ -1,0 +1,1045 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>design db（设计数据库）立项评审 · 交互式流程总览</title>
+<style>
+:root{
+  --ink:#24292f; --muted:#57606a; --faint:#8b949e;
+  --line:#d8dee4; --line-soft:#e8ecf0;
+  --bg:#f6f8fa; --card:#ffffff;
+  --blue:#2563a8; --blue-deep:#1a4e86; --blue-soft:#eaf2fb; --blue-mid:#c9ddf2;
+  --orange:#c9661a; --orange-soft:#fdf1e2; --orange-mid:#f3d9b8;
+  --green:#2f7d4f; --green-soft:#e6f4ec;
+  --purple:#7a4ea3; --purple-soft:#f3ecfa;
+  --mono:ui-monospace,"SF Mono","Cascadia Mono","JetBrains Mono",Consolas,"Courier New",monospace;
+}
+*{box-sizing:border-box;}
+html{scroll-behavior:smooth;}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.75 -apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  -webkit-font-smoothing:antialiased;}
+.wrap{max-width:1180px;margin:0 auto;padding:0 20px 90px;}
+
+/* ---- 页头 ---- */
+header.hero{background:linear-gradient(180deg,#ffffff 0%,#f2f6fa 100%);border-bottom:1px solid var(--line);}
+.hero-inner{max-width:1180px;margin:0 auto;padding:34px 20px 22px;}
+.hero h1{font-size:24px;margin:0 0 8px;letter-spacing:.5px;}
+.hero h1 .no{color:var(--blue);}
+.hero .sub{color:var(--muted);font-size:13.5px;margin:0;max-width:900px;}
+.hero .meta{margin-top:10px;font-size:12.5px;color:var(--faint);}
+.hero .meta code{font-family:var(--mono);background:#eef2f6;border:1px solid var(--line-soft);border-radius:3px;padding:1px 6px;}
+
+/* ---- 锚点导航 ---- */
+nav.topnav{position:sticky;top:0;z-index:60;background:rgba(255,255,255,.96);border-bottom:1px solid var(--line);backdrop-filter:blur(4px);}
+.topnav-inner{max-width:1180px;margin:0 auto;padding:0 12px;display:flex;flex-wrap:wrap;gap:2px;}
+.topnav a{display:block;padding:9px 13px;font-size:13px;color:var(--muted);text-decoration:none;border-bottom:2px solid transparent;white-space:nowrap;}
+.topnav a:hover{color:var(--blue-deep);background:var(--blue-soft);}
+.topnav a .n{font-family:var(--mono);color:var(--blue);margin-right:4px;font-weight:700;}
+
+/* ---- 章节 ---- */
+section{background:var(--card);border:1px solid var(--line);border-radius:8px;
+  padding:26px 30px 30px;margin-top:30px;scroll-margin-top:56px;}
+.sec-no{font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:1px;margin-bottom:4px;}
+section h2{font-size:19px;margin:0 0 6px;padding-left:12px;border-left:4px solid var(--blue);line-height:1.4;}
+.sec-src{font-size:12.5px;color:var(--muted);margin:6px 0 2px;}
+.sec-src .sec-ref{font-family:var(--mono);color:var(--blue-deep);}
+.hint{font-size:12.5px;color:var(--green);background:var(--green-soft);border:1px solid #cde8d8;
+  border-radius:4px;padding:5px 12px;display:inline-block;margin:8px 0 4px;}
+.note{font-size:12.5px;color:var(--muted);margin:8px 0 0;}
+.note b{color:var(--ink);}
+
+.fig{border:1px solid var(--line-soft);border-radius:6px;background:#fdfefe;padding:8px;margin-top:14px;}
+.fig svg{width:100%;height:auto;display:block;}
+.legend{display:flex;flex-wrap:wrap;gap:10px 22px;font-size:12px;color:var(--muted);margin-top:10px;}
+.legend .sw{display:inline-block;width:13px;height:13px;border-radius:3px;vertical-align:-2px;margin-right:5px;border:1px solid rgba(0,0,0,.12);}
+
+/* ---- 双栏 ---- */
+.duo{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px;margin-top:14px;align-items:start;}
+@media (max-width:960px){.duo{grid-template-columns:1fr;}}
+.panel{border:1px solid var(--line);border-radius:6px;background:#fff;padding:14px 16px;}
+.panel h3{font-size:14px;margin:0 0 10px;color:var(--blue-deep);border-bottom:1px dashed var(--line);padding-bottom:7px;}
+.panel h4{font-size:12.5px;margin:12px 0 4px;color:var(--ink);}
+.panel ul{margin:4px 0 8px;padding-left:18px;font-size:12.8px;line-height:1.72;}
+.panel li{margin:2px 0;}
+.mono{font-family:var(--mono);}
+.kv{font-family:var(--mono);font-size:12.3px;background:#f6f8fa;border:1px solid var(--line-soft);border-radius:4px;padding:8px 10px;margin:6px 0;white-space:pre-wrap;line-height:1.7;}
+.badge{display:inline-block;font-size:11px;font-family:var(--mono);border-radius:3px;padding:1px 7px;margin-left:6px;vertical-align:1px;}
+.badge.star-orig{background:var(--blue-soft);color:var(--blue-deep);border:1px solid var(--blue-mid);}
+.badge.star-add{background:var(--orange-soft);color:var(--orange);border:1px solid var(--orange-mid);}
+
+/* ---- 流水线 ---- */
+#pipeline-svg .stage{cursor:pointer;}
+#pipeline-svg .stage rect.box{stroke-width:1.2;transition:stroke-width .12s;}
+#pipeline-svg .stage:hover rect.box{stroke-width:2;}
+#pipeline-svg .stage.sel rect.box{stroke-width:2.4;filter:drop-shadow(0 1px 3px rgba(37,99,168,.35));}
+#pipeline-svg text{user-select:none;}
+.detail{margin-top:14px;border:1px solid var(--line);border-radius:6px;background:#fff;padding:16px 20px;min-height:120px;}
+.detail h3{margin:0 0 4px;font-size:16px;color:var(--blue-deep);}
+.detail .dep-badge{font-size:12px;color:var(--muted);margin-bottom:10px;}
+.detail .cols{display:grid;grid-template-columns:1fr 1fr;gap:4px 26px;}
+@media (max-width:760px){.detail .cols{grid-template-columns:1fr;}}
+.detail h4{font-size:13px;margin:10px 0 4px;color:var(--blue-deep);}
+.detail ul{margin:2px 0 6px;padding-left:18px;font-size:13px;line-height:1.7;}
+.detail li{margin:3px 0;}
+
+/* ---- 层级树 ---- */
+#hier-svg .hnode rect.box{transition:stroke-width .12s;}
+#hier-svg .hnode:hover rect.box{stroke-width:2.2;}
+#hier-svg .hnode.lit rect.box{stroke-width:2.6;}
+.segbar{display:flex;height:34px;border:1px solid var(--line);border-radius:5px;overflow:hidden;margin:6px 0 2px;}
+.segbar .seg{display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;
+  border-right:1px solid rgba(255,255,255,.7);cursor:pointer;transition:filter .12s;overflow:hidden;white-space:nowrap;}
+.segbar .seg:last-child{border-right:none;}
+.segbar .seg:hover,.segbar .seg.lit{filter:brightness(.92) saturate(1.3);}
+.seg-cap{font-size:12px;color:var(--muted);margin:10px 0 2px;}
+.seg-cap .mono{color:var(--ink);}
+
+/* ---- 密度图 ---- */
+.slider-row{display:flex;align-items:center;gap:10px;margin:9px 0;}
+.slider-row label{font-size:12.5px;width:118px;flex:none;color:var(--ink);}
+.slider-row input[type=range]{flex:1;accent-color:var(--blue);}
+.slider-row .val{font-family:var(--mono);font-size:12.5px;width:30px;text-align:right;color:var(--blue-deep);font-weight:700;}
+.btn{display:inline-block;background:var(--blue);border:1px solid var(--blue-deep);color:#fff;font-size:12.5px;
+  border-radius:4px;padding:6px 14px;cursor:pointer;margin:4px 6px 4px 0;}
+.btn:hover{background:var(--blue-deep);}
+.btn.ghost{background:#fff;color:var(--blue-deep);}
+.btn.ghost:hover{background:var(--blue-soft);}
+.btn:disabled{opacity:.45;cursor:default;}
+#den-figure{position:relative;}
+#den-tip{position:absolute;display:none;pointer-events:none;background:rgba(255,255,255,.97);border:1px solid var(--line);
+  border-radius:4px;box-shadow:0 2px 8px rgba(0,0,0,.12);font-family:var(--mono);font-size:11.5px;line-height:1.6;
+  padding:6px 9px;z-index:20;white-space:nowrap;}
+.heat-scale{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted);margin-top:8px;}
+.heat-scale .bar{flex:1;height:10px;border-radius:5px;border:1px solid var(--line);}
+.segbar.tall{height:26px;}
+.segbar .seg .lb{padding:0 6px;color:#3b2f23;}
+.pct-grid{display:grid;grid-template-columns:1fr 1fr 1fr;font-family:var(--mono);font-size:11.5px;color:var(--muted);margin:2px 0 8px;}
+.pct-grid span{text-align:center;}
+
+/* ---- 主分区 ---- */
+#anchor-svg .shape{cursor:pointer;}
+#anchor-svg .shape:hover rect.body{stroke-width:2.4;}
+#anchor-svg .part.rect-hl{fill:rgba(47,125,79,.16);}
+#anchor-svg .part.dim{fill:#f2f5f7;}
+
+/* ---- 并查集 ---- */
+#uf-svg .uf-node{cursor:pointer;}
+#uf-svg .uf-node rect.box{transition:stroke-width .12s, filter .12s;}
+#uf-svg .uf-node:hover rect.box{stroke-width:2.2;}
+#uf-svg .uf-node.hl rect.box{stroke-width:2.6;filter:drop-shadow(0 1px 3px rgba(201,102,26,.4));}
+#uf-svg .uf-node.root-hl rect.box{stroke-width:3;}
+#uf-svg .uf-edge{transition:stroke .15s;}
+#uf-svg .uf-edge.hl{stroke:var(--orange);stroke-width:3;}
+#uf-svg .uf-edge.compress{stroke-dasharray:7 5;}
+
+/* ---- 实体图 ---- */
+#entity-svg .ent{cursor:default;}
+#entity-svg .ent rect.box{stroke-width:1.3;transition:stroke-width .12s;}
+#entity-svg .ent:hover rect.box{stroke-width:2.4;}
+#entity-svg .rel{transition:stroke .12s, stroke-width .12s;}
+#entity-svg .rel.on{stroke:var(--orange);stroke-width:2.6;}
+svg text{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;}
+svg text.mono, svg .mono{font-family:var(--mono);}
+
+footer{margin-top:44px;font-size:12px;color:var(--faint);border-top:1px solid var(--line);padding-top:16px;line-height:1.9;}
+footer code{font-family:var(--mono);}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <h1><span class="no">design db（设计数据库）</span>立项评审 · 交互式流程总览</h1>
+    <p class="sub">十阶段流水线 · 层级树与全局编号 · 密度图与分区切分 · 主分区判定规则 · 并查集跨块归并 · 数据实体关系总览。本页为评审辅助可视化材料，术语与设计决策以评审稿文档为权威来源；图中数值为自洽编造的示意数值。</p>
+    <p class="meta">权威内容来源：<code>docs/emir/design-db-plan.md</code>（评审稿，创建于 2026-09-09，等待审查；裁定通过后条目回迁 <code>docs/emir-data-flow.md</code> §4）</p>
+  </div>
+</header>
+
+<nav class="topnav"><div class="topnav-inner">
+  <a href="#sec-pipeline"><span class="n">1</span>十阶段流水线</a>
+  <a href="#sec-hier"><span class="n">2</span>层级树与全局编号</a>
+  <a href="#sec-density"><span class="n">3</span>密度图与分区切分</a>
+  <a href="#sec-anchor"><span class="n">4</span>主分区判定规则</a>
+  <a href="#sec-union"><span class="n">5</span>并查集跨块归并</a>
+  <a href="#sec-entity"><span class="n">6</span>数据实体关系总览</a>
+</div></nav>
+
+<div class="wrap">
+
+<!-- ============ 板块 1：十阶段流水线 ============ -->
+<section id="sec-pipeline">
+  <div class="sec-no">板块 1 / 6</div>
+  <h2>十阶段流水线：S1 → S10 依赖关系与并行轨</h2>
+  <p class="sec-src">对应章节：<span class="sec-ref">§3「建库流程：十阶段」</span>（§3.1 流程总图 · §3.2 阶段明细 · §3.3 并行机会汇总）</p>
+  <span class="hint">点击任一阶段节点，在下方展开该阶段的输入、处理、产出、并行度与依赖明细。</span>
+  <div class="fig">
+    <svg id="pipeline-svg" viewBox="0 0 980 988" role="img" aria-label="十阶段流水线依赖图"></svg>
+  </div>
+  <div class="legend">
+    <span><span class="sw" style="background:#eaf2fb;"></span>并行任务（无业务合并）：S2 / S4（每文件一任务 + 秒级全局汇总）、S5a（每 DEF 两任务）、S5b（每 DEF 一任务，内部分批）</span>
+    <span><span class="sw" style="background:#f3ecfa;"></span>两级任务（展开 scatter → 每分区 merge）：S9——展开任务按 block 定义切分（小 DEF 按阈值聚合，裁定 D26），每分区一合并任务将不同来源分片 merge 为最终分区对象（分区侧存在真实合并语义，裁定 ⑤）</span>
+    <span><span class="sw" style="background:#f4f6f8;"></span>串行或全局元数据级决策：S1 / S6 / S8 / S10</span>
+    <span><span class="sw" style="background:#f2fbf5;"></span>按块分组并行 + 全局路径压缩：S7</span>
+    <span><span class="sw" style="background:rgba(37,99,168,.05);border:1px dashed rgba(37,99,168,.4);"></span>并行轨背景带：S3 ∥ S4 ∥ S4b 并行推进，S5a 等 S2 / S3 / S4 / S4b 全部完成后启动；S7 ∥ S8（都只依赖 S6 + S5b）</span>
+    <span><b>任务形态裁定（2026-09-09）</b>：解析类阶段（S2 / S4 / S5a / S5b）均无业务合并语义，不采用 MapReduceJob（其面向「多输入汇整为单一容器」的场景，如 lib 库 db 的 LIBLibrary 合并）——并行形态 = 独立并行任务产出各自对象 + 轻量全局汇总任务（id 分配 / namemap 构建 / 计数上报，均为秒级元数据操作）；<b>S9 例外：分区侧存在真实合并语义</b>（多个 block 定义的展开分片落到同一分区需 merge），MapReduceJob 是否直接适配其多分区多类型输出，实施期按框架能力定。</span>
+  </div>
+  <div id="stage-detail" class="detail">
+    <h3>阶段明细</h3>
+    <p class="dep-badge">尚未选择阶段——点击上方流程图中的任一阶段节点查看明细。</p>
+  </div>
+</section>
+
+<!-- ============ 板块 2：层级树与全局编号 ============ -->
+<section id="sec-hier">
+  <div class="sec-no">板块 2 / 6</div>
+  <h2>层级树与全局编号：起始编号段分配</h2>
+  <p class="sec-src">对应章节：<span class="sec-ref">§2.2「编号（id）体系」</span> 与 <span class="sec-ref">§2.5「层级模型：block 与 block instance」</span></p>
+  <span class="hint">鼠标悬停树上任一 block instance 节点（或下方编号段条的分段），对应编号段互相高亮。</span>
+
+  <div class="fig">
+    <svg id="hier-svg" viewBox="0 0 940 520" role="img" aria-label="层级树与起始编号段示意"></svg>
+  </div>
+
+  <div class="duo">
+    <div class="panel">
+      <h3>编号区间表（保存在 hierarchy tree 结构中，裁定 ⑮；示意数值，四段连续相接、无空洞）</h3>
+      <div class="seg-cap">instance 编号空间，总覆盖 <span class="mono">[0, 1300)</span>（深度优先序分配）</div>
+      <div class="segbar" id="bar-inst"></div>
+      <div class="seg-cap">net 编号空间，总覆盖 <span class="mono">[0, 117)</span>（深度优先序分配）</div>
+      <div class="segbar" id="bar-net"></div>
+      <h4 style="margin:12px 0 4px;">hierarchy tree 四类接口（裁定 ⑮）</h4>
+      <div class="kv">① 查询某个 instance/net id 所属的 block instance（区间反查）
+② 查询某个 block instance 的 instance/net id 范围
+③ 查询某个 block instance 的 parent id 与直系 child id 列表
+④ 打印 hierarchy tree（以 name 表示——node 同时存 name 与 id）</div>
+      <p class="note">每个 block instance 一段连续区间，区间长度 = 该 block 定义的 instance / net / via instance 计数。计数由 S5a 的两并行任务产生（任务一实例侧 / 任务二网名扫描侧），起始编号在层级树构建（S6，<b>与 S5b 并行——均仅依赖 S5a，裁定 ⑨</b>）时分配——两阶段解耦，local id 无需跨任务协调；S5b 产物为 <b>local net id</b>（per-DEF 解析尚未 flatten，无法得全局 id），instance / net / via instance 三类 global id <b>统一在 S9 flatten 展开时</b>按 local id + 起始编号换算。<b>编号保留语义（裁定 ⑧）</b>：leaf instance 的 local id 从 1 起，local 0 = 当前 block 自身占位（展开时映射为该 block instance 的 global id）；global id 0 = top block instance（树根）。S10 校验项：<b>global id 无空洞重复</b>。</p>
+    </div>
+    <div class="panel">
+      <h3>global id 换算示例</h3>
+      <div class="kv">global id = 所属 block instance 起始编号
+          + block 内 local id</div>
+      <h4>示例 1 · 同一定义、不同实例 → 编号段复制</h4>
+      <div class="kv">block instance A 内 local instance id = 250
+  global = 100（A 起始） + 250 = 350
+block instance B 内 local instance id = 250
+  global = 800（B 起始） + 250 = 1050
+  （A 与 B 引用同一 block 定义 D1，
+    存储单份，编号段复制两份）</div>
+      <h4>示例 2 · 跨层网编号（衔接板块 5 的并查集示例）</h4>
+      <div class="kv">top 内网 VDD：local net id 5
+  global net id = 0 + 5 = 5
+block instance A 内网 VDD：local 0
+  global net id = 12 + 0 = 12
+block instance A1 内网 VDD：local 0
+  global net id = 52 + 0 = 52</div>
+      <h4>示例 3 · 编号保留语义（裁定 ⑧）</h4>
+      <div class="kv">block instance A 内 local instance id 0（自身占位）
+  global = 100 + 0 = 100 = A 的 global id
+top 的 local 0 → global id 0
+  = top block instance（树根）
+leaf instance 的 local id 从 1 起</div>
+    </div>
+  </div>
+  <p class="note"><b>关键澄清</b>：block（定义）层面是有向无环图（同一 block 定义被多处引用是设计常态，如一个接口单元 block 放置上百次）；block instance（实例）层面才是树——每个实例恰有一个父。原始数据绝不按实例复制存储，多实例只体现在编号空间与分区切分产物中。</p>
+</section>
+
+<!-- ============ 板块 3：密度图与分区切分 ============ -->
+<section id="sec-density">
+  <div class="sec-no">板块 3 / 6</div>
+  <h2>密度图与分区切分：多通道比重滑杆 + 前缀和切线</h2>
+  <p class="sec-src">对应章节：<span class="sec-ref">§4「密度图与空间分区」</span>（§4.1 多通道密度图 · §4.2 分区决策）</p>
+  <span class="hint">拖动右侧四个建库配置输入（三个密度通道比重 + 逐层密度系数递增强度），页面即时重演该配置下的合成负载热力图与横向、纵向切线——切线由行 / 列负载前缀和一维等分决定，分区负载始终逼近均衡；层系数强度为 0（全 1）时等价不区分层的第一版行为。真实流程中权重为<b>建库时一次性配置</b>（freeze 后不可变）：调整权重即重新建库（新 db），不存在运行时动态调权。</span>
+
+  <div class="duo">
+    <div class="fig" id="den-figure" style="margin-top:0;">
+      <svg id="den-svg" viewBox="0 0 800 552" role="img" aria-label="密度 bin 热力图与分区切线"></svg>
+      <div id="den-tip"></div>
+      <div class="heat-scale">
+        <span>低负载</span>
+        <span class="bar" id="heat-bar"></span>
+        <span>高负载</span>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>建库配置：通道比重与逐层系数（裁定 D25）</h3>
+      <div class="kv" style="margin-bottom:12px;">合成负载 = Σ_layer k_layer × w_metal × 该层金属图形数
+        + w_inst × 实例数
+        + Σ_cutlayer k_cutlayer × w_via × 该层通孔数
+  （w_* 与 k_layer 为建库时的一次性配置输入，
+    加权折叠只在 S8 分区决策时做一次；
+    示意图按 10 层金属分列，通孔随其切割层取同系数）</div>
+      <div class="slider-row"><label>金属图形 w_metal</label><input type="range" id="w-metal" min="0" max="100" value="60"><span class="val" id="w-metal-v">60</span></div>
+      <div class="slider-row"><label>实例数 w_inst</label><input type="range" id="w-inst" min="0" max="100" value="30"><span class="val" id="w-inst-v">30</span></div>
+      <div class="slider-row"><label>通孔数量 w_via</label><input type="range" id="w-via" min="0" max="100" value="10"><span class="val" id="w-via-v">10</span></div>
+      <div class="slider-row"><label>层系数递增强度</label><input type="range" id="w-layer" min="0" max="300" value="0" step="5"><span class="val" id="w-layer-v">0</span></div>
+      <div class="kv" id="layer-info">k_layer（顶层 → 底层）：全部取 1（第一版行为，等价不区分层）</div>
+      <p class="note" style="margin:2px 0 8px;">层系数经 <span class="mono">build_design_db</span> 的 <span class="mono">alpha</span> 参数传入（键 <span class="mono">layer_density_weights</span>，逐层系数表 layer 名 → 系数，默认全 1；配置键表见文档 §6，裁定 D25 / ⑦）。</p>
+      <button class="btn ghost" id="den-reset">恢复默认 (60, 30, 10，层系数全 1)</button>
+      <p class="note" style="margin:10px 0 0;"><b>EMIR 建库 API 配置参数标准（裁定 ⑦ / 总流程裁定 18）</b>：建库 API 统一追加 <span class="mono">settings</span>（稳定配置 dict）与 <span class="mono">alpha</span>（未稳定配置 dict，成熟后迁移）两个参数——design db 首版全部配置项均未稳定、进 alpha。</p>
+      <h3 style="margin-top:16px;">切线（前缀和一维等分，裁定 D11 建议方案）</h3>
+      <div class="kv" id="cut-info">计算中……</div>
+      <div class="seg-cap">竖向三分区（xp）负载占比</div>
+      <div class="segbar tall" id="col-seg"></div>
+      <div class="pct-grid" id="col-pct"></div>
+      <div class="seg-cap">横向三分区（yp）负载占比</div>
+      <div class="segbar tall" id="row-seg"></div>
+      <div class="pct-grid" id="row-pct"></div>
+      <p class="note">示意图为 12 × 9 个采样格子（bin），金属图形 / 通孔通道按 <b>10 层金属分列</b>（§4.1，2026-09-09 裁定 ⑥；真实规模 30 mm × 30 mm、10 µm 格 → 900 万格 ×（金属 / 通孔 × 层数列 + 实例列）× 4 字节 ≈ 1.5 GB 级，可控）。高密度簇模拟<b>电源条带列</b>（第 2、8 列，金属图形与通孔密集、集中在<b>高层</b>金属）与两簇<b>宏阵列</b>（实例密集、普通布线偏低层）；示意背景布线的层使用偏好自左（偏低层）向右（偏高层）渐变——层系数递增强度加大时，低层图形密集区（左半与宏阵列区）的负载权重上升、高层条带与右侧权重相对下降，竖切线随之跨过等分点移动。<b>逐层密度系数（k_layer）业务依据</b>：低层 layer 电阻更高 / 线更细 / 图形数量更多，对 ④ 电阻提取负载影响更大，系数自高层向低层逐层递增；第一版全部取 1，代码接口保留系数表输入，取值策略实施期按 ④ 实测负载标定（裁定 D25）。<b>统计口径（2026-09-09 裁定，取代原 D9）</b>：固定采样格子上做<b>图形计数</b>——与格子交叠出现过的图形即计入该格（一个图形跨多格则在多个格子各计一次），每个图形叠加的数值按其所属层的系数加权；分区归属口径与统计口径分离：一律左下角定位点（§5.1）。<b>分类分层保存是数据组织与可观测性要求</b>（任一层、任一通道的分布独立可查），<b>不是为了运行时调权</b>：design db 创建流程固定，freeze 后不可修改，<b>不存在动态调整权重的需求</b>——权重（通道比重与逐层系数）属建库时的一次性配置输入，调整权重即重新建库（新 db）；本页滑杆演示的正是不同建库配置对分区结果的影响。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 板块 4：主分区判定规则 ============ -->
+<section id="sec-anchor">
+  <div class="sec-no">板块 4 / 6</div>
+  <h2>主分区判定规则：左下角定位点 + 半开区间</h2>
+  <p class="sec-src">对应章节：<span class="sec-ref">§5.1「归属判定：左下角定位点 + 主分区」</span>（各类数据的切分规则见 §5.2；图形不裁剪见裁定 D8）</p>
+  <span class="hint">鼠标悬停或点击三个图形中的任一个：其主分区高亮，下方面板展示定位点坐标与半开区间判定过程。</span>
+
+  <div class="duo">
+    <div class="fig" style="margin-top:0;">
+      <svg id="anchor-svg" viewBox="0 0 860 438" role="img" aria-label="主分区判定演示"></svg>
+    </div>
+    <div class="panel">
+      <h3>判定过程</h3>
+      <div id="anchor-detail">
+        <p class="note" style="margin-top:2px;">将鼠标移到左侧任一图形上（或点击），这里将显示其定位点坐标与逐步判定。</p>
+      </div>
+      <h3 style="margin-top:18px;">统一判定语义</h3>
+      <div class="kv">每个分区为半开区间
+  [x_min, x_max) × [y_min, y_max)
+定位点 px ∈ [x_min, x_max) 即归属
+
+图形左下角所在分区 = 该数据的主分区
+图形实体（不裁剪，裁定 D8）同时登记到
+所有与其交叠的分区 = 普通分区</div>
+      <p class="note"><b>半开区间</b>保证边界点恰有唯一归属：位于分区切线上的左下角归右侧分区；位于 die 外边界线（首分区的 low-left 边界线）上的左下角归首分区——与原始需求第 9 条末段「位于 low-left 边界线上归该分区」的规则一致化（§8.2 易踩坑清单第 6 条：避免边界双归属 / 零归属）。</p>
+    </div>
+  </div>
+  <p class="note"><b>叶实例</b>：逻辑归属（连接、cell 引用、电源引脚坐标）归锚点分区 = 实例左下角主分区；实例图形按各自定位点散布到交叠分区（裁定 D7）。<b>块实例</b>本身不作为切分单位——大 block 的内部数据天然跨分区，正合原始需求「block1 横跨两分区」的场景。</p>
+</section>
+
+<!-- ============ 板块 5：并查集跨块归并 ============ -->
+<section id="sec-union">
+  <div class="sec-no">板块 5 / 6</div>
+  <h2>并查集跨块归并：union 与 find</h2>
+  <p class="sec-src">对应章节：<span class="sec-ref">§2.6「跨块连接归并（并查集）」</span>（产出与并行方式见 §3.2 阶段 S7）</p>
+  <span class="hint">点击「执行 find」观看路径动画（可点击图中任一 net 节点对其执行 find）；点击「root → 成员枚举」高亮一个物理网的全部成员（☆补充的反向索引）。示例 net id 与板块 2 的编号区间表一致。</span>
+
+  <div class="fig">
+    <svg id="uf-svg" viewBox="0 0 950 428" role="img" aria-label="并查集跨块归并示意"></svg>
+  </div>
+  <div style="margin-top:10px;">
+    <button class="btn" id="uf-find52">执行 find(52)——A1 层 VDD</button>
+    <button class="btn" id="uf-find14">执行 find(14)——A 层 CLK_A</button>
+    <button class="btn ghost" id="uf-enum5">root → 成员枚举：VDD（root id 5）</button>
+    <button class="btn ghost" id="uf-enum9">root → 成员枚举：CLK（root id 9）</button>
+    <button class="btn ghost" id="uf-reset">重置</button>
+  </div>
+  <div class="duo" style="margin-top:12px;">
+    <div class="panel">
+      <h3>并查集状态（父表与查询结果）</h3>
+      <div class="kv" id="uf-panel">parent 表（路径压缩后）：
+  parent[12] = 5    parent[13] = 5
+  parent[52] = 12   parent[14] = 9
+
+点击上方按钮执行 find 或成员枚举。</div>
+    </div>
+    <div class="panel">
+      <h3>union 依据与补充说明</h3>
+      <ul style="font-size:12.8px;">
+        <li><b>union 依据完全来自已有连接数据</b>：父网 connection（网侧连接条目）中的条目（块实例 id, port pin id, 父网 net id）+ 子网条目（连接该 port 的子网 local net id），两侧经 port pin id 对接。</li>
+        <li>同一子网连接多个 port、且这些 port 在父层连到不同父网 → 两父网亦被 union（电气等价，合法形态）。</li>
+        <li><b>☆ root → 成员索引（本文补充）</b>：原始需求只有正向 find；物理网（如 VDD）的全部成员枚举是 ④⑤⑥ 按「物理网」聚合消费的前提——由父表按 root 分组导出并持久化。</li>
+        <li>顶层引脚连接（DEF 中 <span class="mono">( PIN portName )</span> 语法）：顶层网直接挂顶层 port，作为 root 候选；悬空 port（未连接任何父网）计数提醒，不 raise。</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 板块 6：数据实体关系总览 ============ -->
+<section id="sec-entity">
+  <div class="sec-no">板块 6 / 6</div>
+  <h2>数据实体关系总览</h2>
+  <p class="sec-src">对应章节：<span class="sec-ref">§2「数据模型」</span>（实体总表 §2.1 · 编号体系 §2.2 · connection 双索引 §2.3 · geometry 模板 §2.4）</p>
+  <span class="hint">鼠标悬停任一实体框，与其相连的关系线高亮。蓝框 ★ = 原始需求已含；橙框 ☆ = 本文补充。</span>
+  <div class="legend">
+    <span><span class="sw" style="background:#fff;border-color:#2563a8;"></span>★ 原始需求已含（layer / cell / pin / via cell / instance / net / connection / geometry）</span>
+    <span><span class="sw" style="background:#fff;border-color:#c9661a;"></span>☆ 本文补充（block / block instance / via instance；另有密度图、并查集表、单位与坐标换算表三项补充实体见 §2.1，未画入本图）</span>
+  </div>
+  <div class="fig">
+    <svg id="entity-svg" viewBox="0 0 960 746" role="img" aria-label="数据实体关系图"></svg>
+  </div>
+  <div class="panel" style="margin-top:16px;">
+    <h3>实现期约束与前置工具（裁定 ㉒/㉓）</h3>
+    <ul style="font-size:12.8px;">
+      <li><b>geometry 独立通用子模块（裁定 ㉑）</b>：Point / Rect / Polygon 模板及几何配套（变换 / 面积 / 交叠运算）不属 design 模块内部结构，独立成通用子模块供下游多业务复用（design db、④ 提取、几何分析等）；归属路径与命名前缀见裁定 D28（建议 <span class="mono">src/container/geometry/</span> + CM 前缀，与 CMLookupTable 同体系）。</li>
+      <li><b>存储形态逐字段决策（裁定 ㉒）</b>：实现时对每个结构、每个字段分析 ptr 还是直接存对象——目标是<b>减少 copy</b> 与<b>防止不期望的连锁修改</b>（ptr 共享则一处修改处处可见）；直接存对象更快更省内存时（小对象 / 拷贝便宜 / 无共享需求）就直接存对象，否则按数据使用与搬移情况用 ptr；<b>禁止使用裸指针</b>（拥有关系用 CMSharedPtr / CMUniquePtr，观察传参用引用）。</li>
+      <li><b>CM_PROPERTY 宏（裁定 ㉓）——<span style="color:#c9661a;">待本文档批准后实施（全仓库当前不存在该宏）</span></b>：属公共工具宏（<b>非 container 模块</b>），拟放置 <span class="mono">src/common/types/cpp/property_macro.h</span>（公共宏归 common 模块族，同 FLY_SERIALIZE_* 宏族先例；纯头仅依赖 &lt;utility&gt;，随 fly_common_types 轻量库；不放 container——container_aliases.h 聚合全部容器头与指针别名，仅为一个宏引入过重的头文件依赖）。用法 <span class="mono">CM_PROPERTY(attr_name);</span> 自动生成 get_attr_name / get_ref_attr_name / get_cref_attr_name / set_attr_name / set_attr_name_move 五个接口；要求成员变量以 <span class="mono">_</span> 结尾。</li>
+    </ul>
+  </div>
+
+  <p class="note"><b>connection（连接）双索引组织</b>（§2.3）：connection 本体是三元组（instance id, pin id, net id），按两种主键各建一份索引——<span class="mono">InstConnection</span>（instance id 主键，实例侧聚集：⑩⑪ 逐实例电流；跨块 port 连接三元组的 instance 端用 local 0 = block 自身占位，裁定 ⑧）与 <span class="mono">NetConnection</span>（net id 主键，网侧聚集：④ 网几何归属、⑫ 注入点）。<b>独立编号空间（§2.2，裁定 ⑩）</b>：layer id、cell id（含 block cell id）、pin id（含 port id）、via cell id（<b>独立类型，非 cell 特例</b>；DEF 来源登记名带 design 名:: 前缀，全集集中保存为单一权威表，裁定 ⑫）、instance id、net id、via instance id（<b>专用独立空间，非 instance、无 name 不入 namemap</b>）——layer / cell / pin / via cell 为全局一次分配，instance / net / via instance 为 block 内 local id → global id（S9 展开时换算）。<b>DSDesign 容器（裁定 ⑬）</b>：全局且相对轻量的数据（cell 单一结构 / 简化 pin / via cell 权威表 / lib 关联 / 层级树含编号区间表 / 轻量 namemap）统一入容器，后续功能（查询、索引、派生数据）经增强该类完成；<b>layer 例外为独立 Stack 类型（裁定 ⑭）</b>——层堆栈结构跨 design db / tech db 复用；instance/net 的 name 映射、块内原始数据、并查集、分区产物、密度图为独立对象，不进容器。<b>pin 存储简化（裁定 ⑰/⑱）</b>：DSDesign 序列化内容仅含<b>简化 pin</b>（类型 / 方向等基础属性）；pin 表数据与 pin 几何数据为两个独立对象（cell 的两个<b>不序列化字段</b>），业务方按需经<b>统一加载 API</b>（load + set 封装）注入，下游一律经 <b>get_cell</b> 按指针零拷贝获取；<b>fake cell（裁定 ⑲/⑳）</b>以单独字段保存，区别于正常 cell。</p>
+</section>
+
+<footer>
+  <p>本页为 <code>docs/emir/design-db-plan.md</code>（评审稿）的附属可视化（§12），单文件、零外部依赖，浏览器直接打开；附属可视化与文档内容须同步修改（§13 维护约定）。</p>
+  <p>图中全部数值为自洽编造的示意数值（编号段连续无空洞、分区负载逼近均衡），非真实设计数据。术语对照：DBU = Database Unit（数据库单位）；macro = LEF 中描述的单元版图抽象；并查集 = 不相交集集合（union-find），支持合并（union）与查代表（find）。</p>
+</footer>
+
+</div><!-- /wrap -->
+
+<script>
+'use strict';
+function qs(s){return document.querySelector(s);}
+function qsa(s){return Array.prototype.slice.call(document.querySelectorAll(s));}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+/* =====================================================
+   板块 1：十阶段流水线
+   ===================================================== */
+var P_NODES=[
+ {id:'S1', x:80, y:24,  title:'S1 tech lef 解析',          sub:'串行 · Stack 独立类型 + via',        kind:'serial'},
+ {id:'S2', x:80, y:136, title:'S2 cell lef 解析',          sub:'并行任务 + 汇总 · 每文件一任务',      kind:'par'},
+ {id:'S3', x:360,y:136, title:'S3 lib cell ↔ lef cell merge', sub:'并行轨 · S5a 前置（merge 检测）',  kind:'par'},
+ {id:'S4', x:680,y:136, title:'S4 DEF 头部轻量扫描',        sub:'并行任务 + 汇总 · 独立可更早',        kind:'par'},
+ {id:'S4b',x:680,y:264, title:'S4b DEF via 定义解析',       sub:'每 DEF 一任务 · via cell 权威表',     kind:'par'},
+ {id:'S5a',x:480,y:392, title:'S5a DEF 第一段解析',         sub:'每 DEF 两任务并行 · 实例 ∥ 网名',    kind:'par'},
+ {id:'S6', x:200,y:520, title:'S6 层级树构建与起始编号分配', sub:'串行 · 与 S5b 并行 · 均仅依赖 S5a',  kind:'serial'},
+ {id:'S5b',x:560,y:520, title:'S5b DEF 第二段解析',         sub:'每 DEF 一任务 · 依赖 S5a + S4b',     kind:'par'},
+ {id:'S7', x:170,y:680, title:'S7 跨块连接归并（并查集）',   sub:'按块分组并行 + 全局路径压缩',         kind:'group'},
+ {id:'S8', x:610,y:680, title:'S8 全局密度图合并与分区决策', sub:'串行决策 · 全局信息 · 量小',          kind:'serial'},
+ {id:'S9', x:390,y:808, title:'S9 flatten 展平 + 分区保存', sub:'展开 scatter → 每分区 merge',        kind:'merge'},
+ {id:'S10',x:390,y:920, title:'S10 汇总校验 + 冻结',        sub:'串行 · freeze 收尾',                 kind:'serial'}
+];
+var P_EDGES=[
+ 'M180,88 L180,136','M280,168 L360,168','M280,56 L780,56 L780,136','M780,200 L780,264',
+ 'M180,200 L180,424 L480,424','M460,200 L460,372 L580,372 L580,392','M680,296 L340,296 L340,424 L480,424','M780,328 L920,328 L920,552 L760,552',
+ 'M580,456 L580,488 L300,488 L300,520','M580,488 L660,488 L660,520',
+ 'M300,584 L300,616 L490,616','M660,584 L660,616 L490,616',
+ 'M490,616 L490,632 L270,632 L270,680','M490,632 L710,632 L710,680',
+ 'M270,744 L270,840 L390,840','M710,744 L710,840 L590,840','M490,872 L490,920'
+];
+var P_EDGE_LABELS=[
+ {x:318,y:159,t:'只依赖 S2 汇总'},{x:520,y:47,t:'独立，可更早'},{x:280,y:416,t:'依赖 S2 汇总'},
+ {x:468,y:310,t:'依赖 S3（merge 检测就位）',anchor:'start'},
+ {x:789,y:240,t:'头部区轻量段，可同遍回调',anchor:'start'},
+ {x:915,y:448,t:'via cell 数据就绪',anchor:'end'},
+ {x:490,y:478,t:'S6 ∥ S5b（均仅依赖 S5a，可并行）'},
+ {x:490,y:608,t:'都只依赖 S6 + S5b'}
+];
+var STAGES={
+ S1:{full:'S1 tech lef 解析 → Stack（层表，独立类型）+ tech 级通孔定义',badge:'串行 · 单任务（层表小，层数 < 100）',
+  input:['tech lef（单文件，或多文件取首份）'],
+  proc:['布线层与切割层统一编号；层的上下邻接关系（stack 顺序）入层表——通孔连层判定用','<b>保存为独立 Stack 类型（裁定 ⑭）</b>：层堆栈结构（自底向上堆叠顺序 / 邻接关系 / 几何属性），不进 DSDesign 容器——后续 fab 提供的 tech file 解析与 tech db 流程复用该结构（design db 首个落地）','tech 级 VIA / VIARULE 定义进 via cell 空间<b>首批条目</b>（裁定 ⑪：via 可定义于 tech lef / cell lef / DEF 三处，统一入独立 via cell 编号空间）','在此确立<b>全局 DBU 基准</b>：所有 cell lef 的 DBU 必须与之一致，不一致属格式错误，raise（裁定 D15）'],
+  out:['layer id 分配 + Stack 类型（自底向上堆叠顺序 / 邻接关系 / 方向 / 默认线宽 / 间距 / pitch / 最小面积 / 类型）','tech 级 VIA / VIARULE 定义（via cell 空间首批条目）+ 全局 DBU 基准 + 制造网格'],
+  par:'串行、单任务——层表小（层数 < 100），并行无收益。',
+  dep:'无（流程起点）。下游 S2 / S4 / S5a 均消费层表；Stack 结构后续 tech db 复用。'},
+ S2:{full:'S2 cell lef 解析 → 单元结构',badge:'每文件一并行任务 + 全局汇总（无业务合并，不套 MapReduceJob）',
+  input:['cell lef 文件集 + S1 层表（DBU 基准）'],
+  proc:['每文件一并行任务：解析 macro（尺寸 / origin / class / site / 引脚 / 禁布区）与 VIA、VIARULE 定义，产出以 name 为键的独立中间结构','随后一次<b>全局汇总任务</b>：统一分配 cell id / pin id / via cell id + 构建双向 namemap（map + vector，2026-09-09 裁定）','跨文件重复 macro 在汇总时暴露：保留首份、抛弃后续 + 消息提醒（总流程裁定 15 语义）','引脚按（方向、用途、逐层几何）全量收录；<b>用途（USE）属性必须保留</b>——电源 / 地引脚是 ⑫ 注入点与电源网筛选依据；非默认规则（NONDEFAULTRULE）逐层线宽表入库（裁定 D20）'],
+  out:['cell id / pin id / via cell id 分配 + 双向 namemap（map + vector）','非默认规则线宽表'],
+  par:'每文件一并行任务（无业务合并）+ 秒级全局汇总任务（id 分配 / namemap 构建）。',
+  dep:'依赖 S1（DBU 基准）。S3 只依赖本阶段汇总；S4 独立可更早；S5a 依赖本阶段汇总 + S4 汇总。'},
+ S3:{full:'S3 lib cell ↔ lef cell 结构 merge（S5a 前置）',badge:'并行轨——与 S4 / S4b 并行；S5a 等待本阶段完成后才启动（裁定 ⑯）',
+  input:['lib db 的 LIBLibrary 整合容器（显式传入）+ S2 汇量产出的 lef cell 结构'],
+  proc:['<b>在正式解析 COMPONENTS（S5a）之前完成 merge 并检测</b>：lib cell 与 lef cell 有时不能完全 1:1 对应（一侧独有 cell、pin 集合不一致等），提早检测，发生时及时经 user message 提醒用户，<b>不可造成 crash</b>（开发规则 §7 兜底模式：提醒不拦截）','<b>cell 结构始终只有一种</b>：lib 阶段填写 lib 字段（引脚电容 / 功耗·时序模型引用 / 电源引脚关联等），lef 阶段填写 lef 字段（尺寸 / origin / class / site / 禁布区等），merge 将两侧整合进<b>同一 cell 记录</b>——DSDesign 容器的 cell 表在此成型','<b>pin 存储简化（裁定 ⑰/⑱，细化 ⑯ 的双视图）</b>：merge 后每个 cell 的序列化内容仅含<b>简化 pin</b>（基础属性：类型 signal / 电源地、方向 input / output 等）；pin 表数据（lib 功耗 / 时序表）与 pin 几何数据（lef 逐层几何）分别汇入<b>两个独立对象</b>持久化——读取后业务方按需经 design 模块统一加载 API 注入容器专用字段，下游经 <b>get_cell</b> 以<b>指针</b>注入 cell 的两个<b>不序列化字段</b>（零拷贝；专用字段一律不序列化，write_object 不写出）','非对应场景兜底：lef 有 lib 无（EMIR 无电流模型，提醒）/ lib 有 lef 无（未被本次设计文件集覆盖，跳过计数）/ pin 名不对应（逐项提醒）——一律不 crash（关联语义细节见裁定 D2）'],
+  out:['单一 cell 结构（lib + lef 字段整合 + 简化 pin）——入 DSDesign 容器；pin 表数据 / pin 几何数据为两个独立对象（不序列化，业务方按需经统一加载 API 注入）'],
+  par:'并行轨任务：对 cell 记录做字段级整合（结构 merge），非任务产物合并；与 S4 / S4b 相互独立。',
+  dep:'依赖 S2 汇总 + lib db；与 S4 / S4b 并行；<b>S5a 等待本阶段完成后才启动</b>（正式解析 components 前 merge 检测就位，裁定 ⑯）。'},
+ S4:{full:'S4 DEF 头部轻量扫描 → block cell / port',badge:'每文件一并行任务 + 全局汇总（无业务合并）；独立可更早',
+  input:['DEF 文件集头部段：DIEAREA、PINS、UNITS、DESIGN 名'],
+  proc:['轻量解析头部段：DIEAREA（→ block 尺寸）、PINS 段（→ port 集：名 / 用途 / 方向 / 逐层几何 / 放置状态）、UNITS（→ DBU 换算系数）、DESIGN 名（→ block 名）','<b>跳过 COMPONENTS / NETS / SPECIALNETS 大段</b>只留头部（lefdef 的 section skip 能力，如 defrSetSkipComponents）；轻量扫描仍需流过全文件字节（I/O 约束），但跳过大段对象构建，开销大幅降低','全局汇总任务：分配 block cell id（block 名进 cell namemap）+ port id（进 pin namemap）+ block 定义记录（文件路径 / 尺寸 / port 集）','<b>block cell 与 lef macro 同编号空间</b>，冲突同保留首份语义——此后 S5a 解析父 DEF 时即可对块实例的 master 统一编号'],
+  out:['block cell id + port id（进 namemap）+ block 定义记录 + DBU 换算系数'],
+  par:'每文件一并行任务（无业务合并）+ 秒级全局汇总；不依赖 S2，可早于 S3 / S5a 推进。',
+  dep:'依赖 S1。DEF 的 via 定义不在本阶段（S4b 专门解析，见下）。来源备选：block 抽象 LEF（裁定 D3）。'},
+ S4b:{full:'S4b DEF via 定义解析 → via cell 权威表',badge:'每 DEF 一任务（无业务合并）+ 全局汇总——2026-09-09 裁定 ⑪/⑫',
+  input:['DEF 文件集 VIAS 段——via 可定义于 tech lef / cell lef / DEF 三处，本阶段补齐 DEF 来源'],
+  proc:['解析各 DEF 的 VIAS 段，经全局汇总并入<b>独立 via cell 编号空间</b> + namemap——<b>确保 S5b 正式解析网几何前 via cell 数据全集已就绪</b>（网几何中的通孔引用需可解析）','<b>登记名带来源前缀（裁定 ⑫）</b>：DEF 来源的 via 登记名 = <b>DESIGN 名::VIAS 段内原名</b>——不同 DEF 定义同名 via 而实际形状不同时，各自成为独立 via cell（独立 id、独立几何），不因同名被合并污染；同一 DEF 内重名（非法重复定义）保留首份抛弃后续 + 消息提醒','tech lef / cell lef 来源的 via 名保持原名（库级全局定义，共享合理；跨 lef 文件同名冲突保留首份 + 消息提醒，同总流程裁定 15 语义）','<b>via cell 全集集中保存（裁定 ⑫）</b>：全部来源（tech lef + cell lef + 各 DEF）汇入<b>单一权威表对象</b>（不分散在各 block 解析产物中），S5b 引用解析、S9 展开时几何实例化、④ 层间电阻始终从该表取完整数据','实现上可与 S4 合并为同一遍选择性回调（均为头部区轻量段）或独立并行任务——实施期定，语义不变（S5b 前就绪）'],
+  out:['via cell 权威表（DEF 来源登记名带 design 名:: 前缀，独立编号空间）','via cell id 分配 + namemap 更新'],
+  par:'每 DEF 一并行任务（无业务合并）+ 全局汇总；可与 S4 同遍回调或独立并行。',
+  dep:'tech lef / cell lef 来源的 via 在 S1 / S2 已入表；<b>S5b 依赖本阶段</b>（via cell 数据全集就绪）。'},
+ S5a:{full:'S5a DEF 第一段：实例全量解析 ∥ 网名扫描',badge:'每 DEF 两任务并行（无业务合并）——启动前提：S2 / S3 / S4 / S4b 全部完成',
+  input:['DEF 文件集 + S2 / S4 汇总产物（cell id / pin id / via cell id / block cell id 就绪）'],
+  proc:['<b>任务一（COMPONENTS 全量）</b>：解析实例清单——master cell id 引用 + 放置状态 + 位置 + 朝向 + 权重；local instance id 按文件内顺序<b>从 1 起</b>分配（<b>local 0 = block 自身占位</b>，裁定 ⑧；无需跨任务协调）；跳过 NETS / SPECIALNETS 段；<b>实例计数密度通道在此统计</b>（图形计数口径，§4.1）；实例表对象即产即落盘','<b>任务二（网名扫描）</b>：NETS / SPECIALNETS <b>仅提取网名</b>——lefdef 已吸收的 NetNameOnly 选择性解析正为此设计（跳过路径细节，亦跳过 COMPONENTS 段）；产出网名集合 → local net id 分配 + 网计数上报 → 全局汇总并入 net namemap（map + vector）','跨 block 重名（每块都有 VDD 网名）是正常现象：namemap 键带 block 归属维度（§2.2 / §8.2），不视为冲突','两任务各读文件一遍（流式 + 选择性回调，内存峰值低）；实例侧与网侧数据正交、无业务合并','引用完整性（裁定 ⑲/⑳，取代原 D15 raise 方案）：master cell 名未在 S2 / S4 表中 → <b>动态创建 fake cell 兜底</b>——名称 = <b>block_cell_name::cell_name</b>（引用发生的 block 名前缀，同 via 的 design 名:: 命名模式）；id = <b>max_cell_id + 简易算法唯一值</b>（正常 cell 此时已全部创建、id 已固定，并行解析不同 DEF 不会重复；产生概率小，冲突率不必严格）；标记 <b>fake 属性</b>、默认无 pin、图形为<b>长宽 1 全局最小单位的矩形</b>；该条 COMPONENTS 记录<b>原地创建 instance</b>、cell id 指向 fake cell id——不 raise 不跳过 + user message 提醒，实例清单保持完整；<b>DSDesign 以单独字段保存 fake cell 集合</b>，区别于正常 cell；UNPLACED 实例兜底跳过计数（裁定 D14）'],
+  out:['实例表（local instance id，即产即落盘）+ 实例计数密度通道','net namemap（local net id 分配 + 网计数，经全局汇总并入双向映射）'],
+  par:'每 DEF 两任务并行（COMPONENTS 全量 ∥ 网名扫描，实例侧与网侧数据正交，无业务合并）。',
+  dep:'依赖 S2 / S3 / S4 / S4b 全部完成——正式解析 components 前 merge 检测（裁定 ⑯）与 via cell 数据（裁定 ⑪）均已就绪。产出计数供 S6 使用——S6 与 S5b 均只依赖 S5a（并行，裁定 ⑨）。'},
+ S6:{full:'S6 层级树构建 + 起始编号分配',badge:'串行——元数据级操作，便宜（秒级）；与 S5b 并行（均仅依赖 S5a，裁定 ⑨）',
+  input:['各 block 的 instance / net / via instance 计数与放置信息（S5a 已全部齐备）'],
+  proc:['构层级树（§2.5）：以 block instance 为节点，根 = 顶层 DEF 对应 block instance（<b>global id 0</b>，裁定 ⑧）；多根 / 零根 → 格式错误 raise；环（A 引用 B、B 引用 A）检测 raise（裁定 D22）','放置变换链复合预计算（朝向 8 种旋转翻转矩阵 + 平移；int64 中间量防溢出）','<b>深度优先序分配</b>每 block instance 的 instance / net / via instance 三类起始编号'],
+  out:['hierarchy tree + 编号区间表（block instance id → [start, start+count)，<b>保存在树结构中</b>，非独立对象，裁定 ⑮），三类起始编号就绪'],
+  par:'串行——需 S5a 全局计数汇总，元数据级操作量小。',
+  dep:'依赖 S5a 全部完成，<b>与 S5b 并行</b>（均仅依赖 S5a，裁定 ⑨——S6 前移无收益亦无必要）。instance / net / via instance 三类 global id 统一在 S9 flatten 展开时换算（local id + 起始编号）；并行任务间无需编号协调（local id 先行、起始编号后置）。'},
+ S5b:{full:'S5b DEF 第二段：网内容全量分批解析',badge:'每 DEF 一任务，内部分批多阶段；依赖 S5a + S4b——裁定 ③/⑨/⑪',
+  input:['DEF 文件集 + S5a 的 net namemap（local net id 已分配）+ S4b 的 via cell 权威表（via cell 数据全集就绪）'],
+  proc:['NETS / SPECIALNETS 全量解析：连接列表、布线路径展开（矩形串 + <b>拓扑连接性</b>，线宽来源优先级见 §2.4）、<b>通孔实例（via instance id + via cell id + 位置，连层关系经 via cell 定义获得，裁定 ⑩）</b>、金属图形 / 通孔计数密度通道统计（<b>逐层分列</b>，图形计数口径 §4.1）','<b>分批多阶段控内存峰值</b>：解析器本身流式（峰值与文件体积无关），内存峰值主体是网业务对象的全量积累——按数据量阈值分批（裁定 D24），批内「解析回调积累 → 转换为领域对象 → 写对象入 db → 清缓冲」，单遍流式读取，批界落盘释放','<b>产物为 local net id（裁定 ⑨）</b>：per-DEF 解析阶段尚未 flatten，无法得到全局 net id——S6 前移无收益亦无必要；net 的 global id = local id + 起始编号，与 instance / via instance 一致，<b>统一在 S9 flatten 展开时换算</b>','统计：图形计数（网几何 / 通孔实例）与密度计数总量（S10 守恒校验用）'],
+  out:['网数据（连接 / 几何含拓扑 / 通孔实例，以 local net id 为键）+ 金属 / 通孔计数通道（逐层分列）+ 统计'],
+  par:'每 DEF 一任务（内部分批多阶段，批界落盘释放）；批间并行（需多遍读取）列为优化项。',
+  dep:'依赖 S5a + S4b（via cell 数据全集就绪），<b>不依赖 S6——与 S6 并行</b>（均仅依赖 S5a，裁定 ⑨）。跨块 port 连接信息在本阶段产出——S7 因此依赖 S5b。'},
+ S7:{full:'S7 跨块连接归并（并查集）',badge:'按块分组并行 union + 全局路径压缩一遍',
+  input:['S6 的 net 起始编号区间（配合 S5b 的 local net id 换算）+ S5b 产出的连接数据（跨块 port 连接信息在父块网数据内，S5b 才产出）'],
+  proc:['union 依据完全来自已有连接数据：父网条目（块实例 id, port pin id, 父网 id）与子网条目经 port pin id 对接（见板块 5）','同一子网连接多个 port 且父层连到不同父网 → 两父网亦被 union（电气等价）','随后全局路径压缩一遍完成'],
+  out:['父表（压缩后）+ root 表 + <b>root → 成员索引</b>（☆补充，物理网聚合消费前提）','悬空 port（未连接任何父网）计数提醒'],
+  par:'可按块分组并行 union（每父块独立合并其子 port），收尾一次全局路径压缩。',
+  dep:'依赖 S6 与 S5b。与 S8 互相独立，可并行。'},
+ S8:{full:'S8 全局密度图合并 + 分区决策',badge:'串行决策——全局信息，量小、秒级',
+  input:['local 密度图（S5a 实例计数通道 + S5b 金属 / 通孔计数通道，逐层分列）+ 块实例位置与层级树（S6）+ 建库配置权重（通道比重 w_metal / w_inst / w_via 与逐层密度系数 k_layer）'],
+  proc:['密度合并自底向上（树的后续遍历）：块实例的全局密度 = 其子块实例密度图按放置变换平移叠加（格值分摊，裁定 D10）+ 自身 local 密度图；多层嵌套逐级进行','分区决策（§4.2）：行 / 列负载前缀和一维等分求切线 → (xp, yp) 规则分区网格；<b>合成负载 = 通道比重与逐层密度系数加权折叠</b>（§4.1，裁定 ⑥）——两者均为<b>建库时的一次性配置输入</b>（建库前调参以影响分区负载均衡；db freeze 后定型，原始需求「自由调整比重」即此建库配置手段）'],
+  out:['全局密度图（分类分层持久化，合成负载一次性折叠）+ 分区矩形表 + 切分元数据（含权重 provenance；<b>分区表设计为可替换产物</b>：将来支持用户预分区注入，不改 S9 之后消费链路）'],
+  par:'串行决策（全局信息），量小。',
+  dep:'依赖 S5a（实例计数通道）+ S5b（金属 / 通孔计数通道，逐层分列）+ S6（树与位置）。与 S7 互相独立，可并行。'},
+ S9:{full:'S9 flatten 展平 + 分区保存（两级任务）',badge:'展开任务按 block 定义切分 + 每分区一合并任务——2026-09-09 裁定 ⑤；设计库最大的单次数据搬移',
+  input:['解析阶段每 DEF 单份数据（S5a 实例表 + S5b 网数据）+ 层级树与变换链、起始编号段（S6）+ 分区矩形表（S8）+ 并查集 root 归属（S7）'],
+  proc:['<b>解析阶段每 DEF 数据保存单份</b>；block cell 实例化为多个 block instance 的问题<b>只在本阶段处理</b>','<b>展开任务以 block 定义（DEF 数据）为单位，不按分区发任务</b>——若按分区发任务，一个超大规模 block cell（仅实例化一次但横跨非常多分区）会导致多个任务重复读同一份超大数据；按 block 定义发任务则每份 DEF 数据只读一次，更节省 I/O','展开任务内容：读取该 DEF 的单份解析数据 → 收集该 block 定义在层级树上的<b>全部出现位置</b>（每个出现位置 = 一个 block instance，携带自根累计变换链与起始编号段，S6 已备）→ 对每个出现位置做 flatten 展开：<b>instance / net / via instance 三类的 local id + 起始编号 = global id</b>（<b>local 0 = block 自身占位 → 该 block instance 的 global id</b>，裁定 ⑧；通孔实例几何按 via cell 权威表实例化，裁定 ⑫），local 坐标 × 复合变换 = 全局坐标 → 按分区矩形<b>分流产出各分区的分片</b>（§5 归属规则）；子 block 的数据由子 block 定义的任务展开','<b>每分区一合并任务</b>：将来自不同展开任务的同分区分片 merge 为最终分区对象（按类型分对象，§5.3）——<b>分区侧存在真实合并语义</b>，与解析类阶段的「无业务合并」不同（裁定 ①/⑤）','<b>小 DEF 聚合优化</b>：数据量小且实例化次数少的 DEF 合并到同一展开任务处理（flatten + 分区一体）以减少任务数；以 DEF 数据大小 × 实例化次数预估展开数据规模，设阈值决定聚合（裁定 D26）','叶实例电源引脚坐标在展开时预计算（☆，裁定 D18，⑫ 注入点直接可用）；网数据携带并查集 root 归属（S7 结果）'],
+  out:['PART_{xp}_{yp} 逐类型分区对象（合并后即下游消费形态，无需读时合并）——下游 ④⑤⑥ 逐分区分布式消费的分布式单元'],
+  par:'两级任务：展开（scatter，按 block 定义切分；小 DEF 按阈值聚合，任务数 = 聚合后的 block 定义组数）→ 每分区合并（merge，任务数 = 分区数）；MapReduceJob 是否直接适配其多分区多类型输出，实施期按框架能力定。',
+  dep:'依赖 S7 与 S8 汇合（外加 S6 变换链与起始编号段、S5a / S5b 单份数据）。'},
+ S10:{full:'S10 汇总校验 + 冻结（freeze）',badge:'串行——提交冻结任务收尾（flow 异步四步范式，开发规则 §3）',
+  input:['S9 合并后的分区对象 + 各阶段元数据'],
+  proc:['全局统计：实例 / 网 / 连接 / 图形计数、分区分布、跨分区网数、密度总量','完整性校验：<b>global id 无空洞重复</b>；并查集连通性自洽；分区网格无缝覆盖 DIEAREA 包围盒；<b>密度守恒</b>（合并前后 / 切分前后总量一致）；namemap 双向一致'],
+  out:['校验报告 + 提交冻结任务（freeze task）——design db 产物对下游可见'],
+  par:'串行。',
+  dep:'依赖 S9 全部完成。'}
+};
+function buildPipeline(){
+  var s='';
+  s+='<defs><marker id="parr" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 z" fill="#8a97a5"/></marker>';
+  s+='<marker id="parr-hl" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 z" fill="#c9661a"/></marker></defs>';
+  s+='<rect x="340" y="126" width="560" height="84" rx="8" fill="rgba(37,99,168,.05)" stroke="rgba(37,99,168,.35)" stroke-dasharray="6 5"/>';
+  s+='<rect x="460" y="382" width="240" height="84" rx="8" fill="rgba(37,99,168,.05)" stroke="rgba(37,99,168,.35)" stroke-dasharray="6 5"/>';
+  s+='<text x="620" y="118" text-anchor="middle" font-size="12" fill="#2563a8" font-weight="700">并行轨：S3 ∥ S4 ∥ S4b 并行推进（S4 独立可更早）；S5a 等 S2 / S3 / S4 / S4b 全部完成后启动</text>';
+  s+='<text x="490" y="656" text-anchor="middle" font-size="13" fill="#c9661a" font-weight="700">S7 ∥ S8</text>';
+  s+='<text x="490" y="673" text-anchor="middle" font-size="10.5" fill="#8b6a3f">互相独立，可并行</text>';
+  P_EDGES.forEach(function(d){s+='<path class="pedge" d="'+d+'" fill="none" stroke="#8a97a5" stroke-width="1.6" marker-end="url(#parr)"/>';});
+  P_EDGE_LABELS.forEach(function(l){s+='<text x="'+l.x+'" y="'+l.y+'" text-anchor="'+(l.anchor||'middle')+'" font-size="10" fill="#8b6a3f">'+esc(l.t)+'</text>';});
+  P_NODES.forEach(function(n){
+    var fill=n.kind==='par'?'#eaf2fb':(n.kind==='merge'?'#f3ecfa':(n.kind==='group'?'#f2fbf5':'#f4f6f8'));
+    var stroke=n.kind==='par'?'#7ba3cf':(n.kind==='merge'?'#a884c9':(n.kind==='group'?'#8fc7a5':'#b9c2cc'));
+    s+='<g class="stage" data-id="'+n.id+'">';
+    s+='<rect class="box" x="'+n.x+'" y="'+n.y+'" width="200" height="64" rx="6" fill="'+fill+'" stroke="'+stroke+'"/>';
+    s+='<text x="'+(n.x+100)+'" y="'+(n.y+27)+'" text-anchor="middle" font-size="12.5" font-weight="700" fill="#24292f">'+esc(n.title)+'</text>';
+    s+='<text x="'+(n.x+100)+'" y="'+(n.y+47)+'" text-anchor="middle" font-size="10" fill="'+(n.kind==='par'?'#3c6ca8':(n.kind==='merge'?'#7a4ea3':(n.kind==='group'?'#3d7a55':'#6b7682')))+'">'+esc(n.sub)+'</text>';
+    s+='<rect class="hit" x="'+n.x+'" y="'+n.y+'" width="200" height="64" rx="6" fill="transparent"/>';
+    s+='</g>';
+  });
+  qs('#pipeline-svg').innerHTML=s;
+  qsa('#pipeline-svg .stage').forEach(function(g){
+    g.addEventListener('click',function(){showStage(g.getAttribute('data-id'));});
+  });
+}
+function showStage(id){
+  var st=STAGES[id]; if(!st) return;
+  qsa('#pipeline-svg .stage').forEach(function(g){g.classList.toggle('sel',g.getAttribute('data-id')===id);});
+  var h='<h3>'+esc(st.full)+'</h3><div class="dep-badge">并行度概要：<b>'+st.badge+'</b></div><div class="cols">';
+  h+='<div><h4>输入</h4><ul>'+st.input.map(function(i){return '<li>'+i+'</li>';}).join('')+'</ul>';
+  h+='<h4>处理</h4><ul>'+st.proc.map(function(i){return '<li>'+i+'</li>';}).join('')+'</ul></div>';
+  h+='<div><h4>产出</h4><ul>'+st.out.map(function(i){return '<li>'+i+'</li>';}).join('')+'</ul>';
+  h+='<h4>并行度</h4><ul><li>'+st.par+'</li></ul>';
+  h+='<h4>依赖</h4><ul><li>'+st.dep+'</li></ul></div></div>';
+  qs('#stage-detail').innerHTML=h;
+}
+buildPipeline();
+showStage('S5a');
+
+/* =====================================================
+   板块 2：层级树与全局编号
+   ===================================================== */
+var HIER=[
+ {seg:'top', x:350,y:20, w:250,h:112, no:'①', title:'top block instance（根 · global id 0）',
+  l2:'block 定义 TOP（inst 计数 100 · net 计数 12）', l3:'inst 起始 0 → [0, 100)', l4:'net 起始 0 → [0, 12)'},
+ {seg:'a', x:110,y:200, w:250,h:112, no:'②', title:'block instance A',
+  l2:'引用 block 定义 D1（inst 计数 500 · net 计数 40）', l3:'inst 起始 100 → [100, 600)', l4:'net 起始 12 → [12, 52)'},
+ {seg:'b', x:620,y:200, w:250,h:112, no:'④', title:'block instance B',
+  l2:'引用同一 block 定义 D1 · 存储单份', l3:'inst 起始 800 → [800, 1300)', l4:'net 起始 77 → [77, 117)'},
+ {seg:'a1',x:110,y:372, w:250,h:112, no:'③', title:'block instance A1',
+  l2:'引用 block 定义 D2（inst 计数 200 · net 计数 25）', l3:'inst 起始 600 → [600, 800)', l4:'net 起始 52 → [52, 77)'}
+];
+var HIER_SEGS=[
+ {seg:'top', name:'top',        i0:0,  i1:100,  n0:0, n1:12,  color:'#dbe9f8'},
+ {seg:'a',   name:'A',          i0:100,i1:600,  n0:12,n1:52,  color:'#fdebd7'},
+ {seg:'a1',  name:'A1',         i0:600,i1:800,  n0:52,n1:77,  color:'#ddf2e3'},
+ {seg:'b',   name:'B',          i0:800,i1:1300, n0:77,n1:117, color:'#f3e3f7'}
+];
+function buildHierarchy(){
+  var s='';
+  s+='<defs><marker id="harr" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 z" fill="#8a97a5"/></marker>';
+  s+='<marker id="darr" markerWidth="9" markerHeight="8" refX="1" refY="4" orient="auto"><path d="M9,0 L0,4 L9,8 z" fill="#c9661a"/></marker>';
+  s+='<marker id="darr2" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 z" fill="#c9661a"/></marker></defs>';
+  s+='<text x="928" y="14" text-anchor="end" font-size="10.5" fill="#8b949e">圆圈序号 = 起始编号的深度优先分配顺序（自根向下）</text>';
+  s+='<text x="928" y="30" text-anchor="end" font-size="10.5" fill="#8b949e">tree node 同时保存 block instance / cell 的 name 与 id——支持以 name 打印树（裁定 ⑮）</text>';
+  s+='<path d="M475,132 L475,164 L235,164 L235,200" fill="none" stroke="#8a97a5" stroke-width="1.6" marker-end="url(#harr)"/>';
+  s+='<path d="M475,164 L745,164 L745,200" fill="none" stroke="#8a97a5" stroke-width="1.6" marker-end="url(#harr)"/>';
+  s+='<path d="M235,312 L235,372" fill="none" stroke="#8a97a5" stroke-width="1.6" marker-end="url(#harr)"/>';
+  s+='<path d="M360,256 L620,256" fill="none" stroke="#c9661a" stroke-width="1.5" stroke-dasharray="7 5" marker-start="url(#darr)" marker-end="url(#darr2)"/>';
+  s+='<text x="490" y="246" text-anchor="middle" font-size="11.5" fill="#c9661a" font-weight="700">引用同一 block 定义 D1</text>';
+  s+='<text x="490" y="276" text-anchor="middle" font-size="10.5" fill="#a0642f">存储单份 · 编号段复制两份（原始数据绝不按实例复制）</text>';
+  HIER.forEach(function(n){
+    s+='<g class="hnode" data-seg="'+n.seg+'">';
+    s+='<rect class="box" x="'+n.x+'" y="'+n.y+'" width="'+n.w+'" height="'+n.h+'" rx="6" fill="#ffffff" stroke="#2563a8" stroke-width="1.3"/>';
+    s+='<text x="'+(n.x+14)+'" y="'+(n.y+24)+'" font-size="12.5" font-weight="700" fill="#1a4e86">'+esc(n.title)+'</text>';
+    s+='<text x="'+(n.x+14)+'" y="'+(n.y+46)+'" font-size="10.5" fill="#57606a">'+esc(n.l2)+'</text>';
+    s+='<text class="mono" x="'+(n.x+14)+'" y="'+(n.y+70)+'" font-size="11" fill="#24292f">'+esc(n.l3)+'</text>';
+    s+='<text class="mono" x="'+(n.x+14)+'" y="'+(n.y+92)+'" font-size="11" fill="#24292f">'+esc(n.l4)+'</text>';
+    s+='<circle cx="'+(n.x+2)+'" cy="'+(n.y+2)+'" r="0" fill="none"/>';
+    s+='<g><circle cx="'+(n.x-11)+'" cy="'+(n.y+14)+'" r="9" fill="#eaf2fb" stroke="#2563a8"/><text x="'+(n.x-11)+'" y="'+(n.y+18)+'" text-anchor="middle" font-size="10.5" fill="#1a4e86">'+n.no+'</text></g>';
+    s+='</g>';
+  });
+  s+='<rect x="430" y="380" width="260" height="96" rx="6" fill="#fbfcfd" stroke="#8a97a5" stroke-dasharray="5 4"/>';
+  s+='<path d="M360,428 L430,428" fill="none" stroke="#8a97a5" stroke-dasharray="5 4"/>';
+  s+='<text x="444" y="406" font-size="12" font-weight="700" fill="#57606a">叶实例（标准单元 / 宏）</text>';
+  s+='<text class="mono" x="444" y="428" font-size="10.8" fill="#24292f">global id = 所在块实例</text>';
+  s+='<text class="mono" x="444" y="446" font-size="10.8" fill="#24292f">起始编号 + local id</text>';
+  s+='<text x="444" y="466" font-size="10" fill="#8b949e">leaf local id 从 1 起 · local 0 = 自身占位（裁定 ⑧）</text>';
+  qs('#hier-svg').innerHTML=s;
+  qsa('#hier-svg .hnode').forEach(function(g){
+    g.addEventListener('mouseenter',function(){litSeg(g.getAttribute('data-seg'),true);});
+    g.addEventListener('mouseleave',function(){litSeg(g.getAttribute('data-seg'),false);});
+  });
+  var bi=qs('#bar-inst'), bn=qs('#bar-net');
+  HIER_SEGS.forEach(function(sg){
+    var wi=(sg.i1-sg.i0)/1300*100, wn=(sg.n1-sg.n0)/117*100;
+    var si=document.createElement('div'); si.className='seg'; si.setAttribute('data-seg',sg.seg);
+    si.style.cssText='width:'+wi+'%;background:'+sg.color+';';
+    si.textContent=wi>14?('inst ['+sg.i0+','+sg.i1+')'):sg.name;
+    si.title=sg.name+'：inst ['+sg.i0+', '+sg.i1+')，net ['+sg.n0+', '+sg.n1+')';
+    bi.appendChild(si);
+    var sn=document.createElement('div'); sn.className='seg'; sn.setAttribute('data-seg',sg.seg);
+    sn.style.cssText='width:'+wn+'%;background:'+sg.color+';';
+    sn.textContent=wn>14?('net ['+sg.n0+','+sg.n1+')'):sg.name;
+    sn.title=sg.name+'：inst ['+sg.i0+', '+sg.i1+')，net ['+sg.n0+', '+sg.n1+')';
+    bn.appendChild(sn);
+  });
+  qsa('.segbar .seg').forEach(function(el){
+    el.addEventListener('mouseenter',function(){litSeg(el.getAttribute('data-seg'),true);});
+    el.addEventListener('mouseleave',function(){litSeg(el.getAttribute('data-seg'),false);});
+  });
+}
+function litSeg(seg,on){
+  qsa('#hier-svg .hnode').forEach(function(g){g.classList.toggle('lit',on&&g.getAttribute('data-seg')===seg);});
+  qsa('.segbar .seg').forEach(function(el){el.classList.toggle('lit',on&&el.getAttribute('data-seg')===seg);});
+}
+buildHierarchy();
+
+/* =====================================================
+   板块 3：密度图与分区切分
+   ===================================================== */
+var DCOLS=12, DROWS=9, GX=70, GY=40, CW=56, CH=52, NLAYERS=10;
+function pr(i,j,k){var v=Math.sin(i*127.1+j*311.7+k*74.7)*43758.5453;return v-Math.floor(v);}
+var dM=[],dI=[],dV=[],gW=[],gAvg=[];
+(function(){
+  for(var l0=0;l0<NLAYERS;l0++)gAvg.push(0);
+  for(var y=0;y<DROWS;y++){dM.push([]);dI.push([]);dV.push([]);gW.push([]);
+    for(var x=0;x<DCOLS;x++){
+      var m=6+10*pr(x,y,1), it=10+14*pr(x,y,2), v=pr(x,y,3)*2;
+      if(x===2||x===8){m=88+8*pr(x,y,4);v=6+3*pr(x,y,5);it=pr(x,y,6)*3;}
+      if(x>=4&&x<=6&&y>=5&&y<=7){it=78+14*pr(x,y,7);m=16+10*pr(x,y,8);v=pr(x,y,9);}
+      if(x>=9&&x<=10&&y<=2){it=74+14*pr(x,y,10);m=14+8*pr(x,y,11);v=pr(x,y,12);}
+      dM[y].push(m);dI[y].push(it);dV[y].push(v);
+      /* 逐层密度分列（裁定 ⑥）：hi 为高层倾向（1 = 集中顶层，0 = 集中底层）；
+         电源条带集中在高层金属；示意中背景布线的层使用偏好自左（偏低层）向右（偏高层）渐变；
+         宏阵列区普通布线密集、偏低层（低层图形更多） */
+      var hi=0.2+0.4*(x/(DCOLS-1))+0.1*pr(x,y,13);
+      if(x===2||x===8)hi=0.85;
+      if(x>=4&&x<=6&&y>=5&&y<=7)hi=0.2;
+      var p=(1-hi)*(NLAYERS-1), wsum=0, wl=[];
+      for(var l=0;l<NLAYERS;l++){var wv=Math.exp(-Math.pow(l-p,2)/(2*2.2*2.2));wl.push(wv);wsum+=wv;}
+      for(l=0;l<NLAYERS;l++){wl[l]/=wsum;gAvg[l]+=wl[l];}
+      gW[y].push(wl);
+    }
+  }
+  for(var l2=0;l2<NLAYERS;l2++)gAvg[l2]/=(DCOLS*DROWS);
+})();
+var L0BASE=62; /* 颜色归一基准（默认权重、层系数全 1 时最高合成负载量级） */
+function mix3(a,b,u){return [Math.round(a[0]+(b[0]-a[0])*u),Math.round(a[1]+(b[1]-a[1])*u),Math.round(a[2]+(b[2]-a[2])*u)];}
+function heat(t){
+  t=Math.max(0,Math.min(1,t));
+  var c=t<0.5?mix3([255,255,255],[255,214,160],t/0.5):mix3([255,214,160],[216,72,18],(t-0.5)/0.5);
+  return 'rgb('+c[0]+','+c[1]+','+c[2]+')';
+}
+function cuts1d(arr,n){
+  var tot=arr.reduce(function(a,b){return a+b;},0),res=[];
+  for(var k=1;k<n;k++){
+    var tg=tot*k/n,bj=1,bd=Infinity,cu=0;
+    for(var j=1;j<arr.length;j++){cu+=arr[j-1];var d=Math.abs(cu-tg);if(d<bd){bd=d;bj=j;}}
+    res.push(bj);
+  }
+  return res;
+}
+var denCellEls=[],denCutV=[],denCutH=[],denLabs=[];
+function buildDensity(){
+  var s='';
+  for(var x=0;x<DCOLS;x++) s+='<text class="mono" x="'+(GX+x*CW+CW/2)+'" y="'+(GY+DROWS*CH+20)+'" text-anchor="middle" font-size="10" fill="#8b949e">'+x+'</text>';
+  for(var y=0;y<DROWS;y++) s+='<text class="mono" x="'+(GX-10)+'" y="'+(GY+y*CH+CH/2+4)+'" text-anchor="end" font-size="10" fill="#8b949e">'+y+'</text>';
+  s+='<text x="'+(GX+DCOLS*CW/2)+'" y="'+(GY+DROWS*CH+38)+'" text-anchor="middle" font-size="10.5" fill="#8b949e">bin 列索引（示意 die 宽度方向）</text>';
+  for(var yy=0;yy<DROWS;yy++)for(var xx=0;xx<DCOLS;xx++){
+    s+='<rect class="hcell" data-x="'+xx+'" data-y="'+yy+'" x="'+(GX+xx*CW)+'" y="'+(GY+yy*CH)+'" width="'+(CW-2)+'" height="'+(CH-2)+'" rx="2.5" fill="#ffffff" stroke="rgba(0,0,0,.05)"/>';
+  }
+  for(var i=0;i<2;i++){
+    s+='<line class="den-cutv" x1="0" y1="'+(GY-8)+'" x2="0" y2="'+(GY+DROWS*CH+8)+'" stroke="#1a5fa8" stroke-width="3" stroke-dasharray="9 6"/>';
+    s+='<line class="den-cuth" x1="'+(GX-8)+'" y1="0" x2="'+(GX+DCOLS*CW+8)+'" y2="0" stroke="#1a5fa8" stroke-width="3" stroke-dasharray="9 6"/>';
+  }
+  for(var q=0;q<3;q++)for(var p=0;p<3;p++){
+    s+='<g class="den-lab"><rect x="0" y="0" width="52" height="20" rx="10" fill="rgba(255,255,255,.88)" stroke="#2563a8" stroke-width="1"/>';
+    s+='<text class="mono" x="26" y="14.5" text-anchor="middle" font-size="10.5" font-weight="700" fill="#1a4e86">('+p+', '+q+')</text></g>';
+  }
+  s+='<text x="'+(GX-46)+'" y="'+(GY-14)+'" font-size="10.5" fill="#57606a">行 y ↑</text>';
+  s+='<text x="'+(GX+DCOLS*CW+10)+'" y="'+(GY-14)+'" font-size="10.5" fill="#57606a">列 x →</text>';
+  qs('#den-svg').innerHTML=s;
+  denCellEls=qsa('#den-svg .hcell');
+  denCutV=qsa('#den-svg .den-cutv'); denCutH=qsa('#den-svg .den-cuth');
+  denLabs=qsa('#den-svg .den-lab');
+  var gb=qs('#heat-bar'); var stops='';
+  for(var t=0;t<=20;t++){stops+=heat(t/20)+' '+(t*5)+'%,';}
+  gb.style.background='linear-gradient(90deg,'+stops.slice(0,-1)+')';
+  qsa('#den-svg .hcell').forEach(function(c){
+    c.addEventListener('mouseenter',function(ev){showDenTip(c,ev);});
+    c.addEventListener('mousemove',function(ev){moveDenTip(ev);});
+    c.addEventListener('mouseleave',function(){qs('#den-tip').style.display='none';});
+  });
+  ['#w-metal','#w-inst','#w-via','#w-layer'].forEach(function(id){
+    qs(id).addEventListener('input',recalcDensity);
+  });
+  qs('#den-reset').addEventListener('click',function(){
+    qs('#w-metal').value=60;qs('#w-inst').value=30;qs('#w-via').value=10;qs('#w-layer').value=0;recalcDensity();
+  });
+  recalcDensity();
+}
+function curLayerK(){
+  var s=+qs('#w-layer').value/100, k=[];
+  for(var l=0;l<NLAYERS;l++)k.push(1+s*l/(NLAYERS-1)); /* 自高层(l=0)向底层(l=N-1)线性递增 */
+  return k;
+}
+function layerMix(x,y,k){
+  var km=0;
+  for(var l=0;l<NLAYERS;l++)km+=k[l]*gW[y][x][l];
+  return km;
+}
+function showDenTip(c,ev){
+  var x=+c.getAttribute('data-x'),y=+c.getAttribute('data-y');
+  var w=curW(), k=curLayerK(), km=layerMix(x,y,k);
+  var L=(w[0]*dM[y][x]*km+w[1]*dI[y][x]+w[2]*dV[y][x]*km)/100;
+  qs('#den-tip').innerHTML='bin (x='+x+', y='+y+')<br>金属图形 '+dM[y][x].toFixed(1)+' · 实例 '+dI[y][x].toFixed(1)+' · 通孔 '+dV[y][x].toFixed(1)+'<br>层加权 k_mix = ×'+km.toFixed(2)+'<br>合成负载 '+L.toFixed(1);
+  qs('#den-tip').style.display='block';
+  moveDenTip(ev);
+}
+function moveDenTip(ev){
+  var fig=qs('#den-figure'),r=fig.getBoundingClientRect();
+  var tx=ev.clientX-r.left+14, ty=ev.clientY-r.top+14;
+  if(tx>r.width-170)tx=ev.clientX-r.left-170;
+  if(ty>r.height-70)ty=ev.clientY-r.top-70;
+  qs('#den-tip').style.left=tx+'px'; qs('#den-tip').style.top=ty+'px';
+}
+function curW(){return [+qs('#w-metal').value,+qs('#w-inst').value,+qs('#w-via').value];}
+function segBar(container,pct,name){
+  container.innerHTML='';
+  pct.forEach(function(p,i){
+    var d=document.createElement('div'); d.className='seg';
+    d.style.cssText='width:'+p+'%;background:'+(i%2?'#dbe9f8':'#eef4fa')+';';
+    d.textContent=(p>=11?(name[i]+' '):'')+p.toFixed(1)+'%';
+    container.appendChild(d);
+  });
+}
+function recalcDensity(){
+  var w=curW(), k=curLayerK(), kAvg=0, l;
+  for(l=0;l<NLAYERS;l++)kAvg+=k[l]*gAvg[l];
+  var L0=L0BASE*kAvg; /* 色标基准随层系数均值放大，避免整体饱和 */
+  qs('#w-metal-v').textContent=w[0]; qs('#w-inst-v').textContent=w[1]; qs('#w-via-v').textContent=w[2];
+  var sv=+qs('#w-layer').value;
+  qs('#w-layer-v').textContent=sv;
+  qs('#layer-info').textContent=sv===0
+    ?'k_layer（顶层 → 底层）：全部取 1（第一版行为，等价不区分层）'
+    :'k_layer（顶层 → 底层）：1.00 → '+(1+sv/100).toFixed(2)+'（自高层向低层线性递增示意；取值策略实施期按 ④ 实测负载标定，裁定 D25）';
+  var ld=[],colL=[],rowL=[];
+  for(var y=0;y<DROWS;y++){ld.push([]);
+    for(var x=0;x<DCOLS;x++){
+      var km=layerMix(x,y,k);
+      ld[y].push((w[0]*dM[y][x]*km+w[1]*dI[y][x]+w[2]*dV[y][x]*km)/100);
+    }
+  }
+  for(var x2=0;x2<DCOLS;x2++){var s=0;for(var y2=0;y2<DROWS;y2++)s+=ld[y2][x2];colL.push(s);}
+  for(var y3=0;y3<DROWS;y3++)rowL.push(ld[y3].reduce(function(a,b){return a+b;},0));
+  denCellEls.forEach(function(c){
+    var x=+c.getAttribute('data-x'),y=+c.getAttribute('data-y');
+    c.setAttribute('fill',heat(ld[y][x]/L0));
+  });
+  var vx=cuts1d(colL,3), hy=cuts1d(rowL,3);
+  denCutV.forEach(function(ln,i){var j=vx[i];ln.setAttribute('x1',GX+j*CW-1);ln.setAttribute('x2',GX+j*CW-1);});
+  denCutH.forEach(function(ln,i){var j=hy[i];ln.setAttribute('y1',GY+j*CH-1);ln.setAttribute('y2',GY+j*CH-1);});
+  var xs=[0].concat(vx,[DCOLS]), ys=[0].concat(hy,[DROWS]);  var li=0;
+  for(var q=0;q<3;q++)for(var p=0;p<3;p++){
+    var g=denLabs[li++];
+    var cx=GX+(xs[p]+xs[p+1])*CW/2, cy=GY+(ys[q]+ys[q+1])*CH/2;
+    g.setAttribute('transform','translate('+(cx-26)+','+(cy-10)+')');
+  }
+  var colTot=colL.reduce(function(a,b){return a+b;},0);
+  var rowTot=rowL.reduce(function(a,b){return a+b;},0);
+  var cp=[0,1,2].map(function(p){var t=0;for(var xx=xs[p];xx<xs[p+1];xx++)t+=colL[xx];return t/colTot*100;});
+  var rp=[0,1,2].map(function(q2){var t=0;for(var yy2=ys[q2];yy2<ys[q2+1];yy2++)t+=rowL[yy2];return t/rowTot*100;});
+  segBar(qs('#col-seg'),cp,['xp=0','xp=1','xp=2']);
+  segBar(qs('#row-seg'),rp,['yp=0','yp=1','yp=2']);
+  qs('#col-pct').innerHTML='<span>xp=0<br>'+cp[0].toFixed(1)+'%</span><span>xp=1<br>'+cp[1].toFixed(1)+'%</span><span>xp=2<br>'+cp[2].toFixed(1)+'%</span>';
+  qs('#row-pct').innerHTML='<span>yp=0<br>'+rp[0].toFixed(1)+'%</span><span>yp=1<br>'+rp[1].toFixed(1)+'%</span><span>yp=2<br>'+rp[2].toFixed(1)+'%</span>';
+  qs('#cut-info').textContent='竖切线（列边界）j = '+vx.join(' , ')+'；横切线（行边界）i = '+hy.join(' , ')+'   （bin 索引边界，随比重移动）';
+}
+buildDensity();
+
+/* =====================================================
+   板块 4：主分区判定规则
+   ===================================================== */
+var AX=40, AY=60, AW=780, AH=320, ASCALE=AW/800; /* die DBU [0,800)×[0,320)，X0=400 */
+function ax(x){return AX+x*ASCALE;}
+function ay(y){return AY+AH-y;} /* DBU y 向上，SVG y 向下 */
+var ANCHOR_SHAPES=[
+ {id:'A',x1:200,y1:80,w:320,h:120,label:'图形 A'},
+ {id:'B',x1:400,y1:170,w:200,h:80,label:'图形 B'},
+ {id:'C',x1:0,y1:20,w:180,h:70,label:'图形 C'}
+];
+var ANCHOR_INFO={
+ A:{part:'(0, 0)',rows:[
+   '定位点（左下角）= (200, 80)（示意 DBU 坐标）',
+   '判定：200 ∈ [0, 400) 且 80 ∈ [0, 320)',
+   '→ 主分区 = (0, 0)',
+   '图形与分区 (1, 0) 交叠 → 同时登记为普通分区',
+   '（图形不裁剪，裁定 D8——保拓扑完整）']},
+ B:{part:'(1, 0)',rows:[
+   '定位点（左下角）= (400, 170)（示意 DBU 坐标）',
+   '判定：400 ∈ [400, 800)——半开区间左闭，',
+   '恰在分区切线 x = 400 上的左下角归右分区',
+   '→ 主分区 = (1, 0)',
+   '图形与分区 (0, 0) 交叠 → 同时登记为普通分区']},
+ C:{part:'(0, 0)',rows:[
+   '定位点（左下角）= (0, 20)（示意 DBU 坐标）',
+   '判定：0 ∈ [0, 400)——位于 die 外边界线',
+   '（首分区的 low-left 边界线）上的点归首分区',
+   '→ 主分区 = (0, 0)',
+   '与「位于 low-left 边界线上归该分区」规则一致']}
+};
+function buildAnchor(){
+  var s='';
+  s+='<rect class="part" id="part-0" x="'+ax(0)+'" y="'+ay(320)+'" width="'+(ax(400)-ax(0))+'" height="'+AH+'" fill="#f2f5f7" stroke="#b9c2cc"/>';
+  s+='<rect class="part" id="part-1" x="'+ax(400)+'" y="'+ay(320)+'" width="'+(ax(800)-ax(400))+'" height="'+AH+'" fill="#f2f5f7" stroke="#b9c2cc"/>';
+  s+='<text class="mono" x="'+(ax(200))+'" y="'+(ay(320)+22)+'" text-anchor="middle" font-size="12" font-weight="700" fill="#8b949e">分区 (0, 0)   [0, 400) × [0, 320)</text>';
+  s+='<text class="mono" x="'+(ax(600))+'" y="'+(ay(320)+22)+'" text-anchor="middle" font-size="12" font-weight="700" fill="#8b949e">分区 (1, 0)   [400, 800) × [0, 320)</text>';
+  s+='<line x1="'+ax(0)+'" y1="'+(ay(320)-14)+'" x2="'+ax(0)+'" y2="'+(ay(0)+14)+'" stroke="#c9661a" stroke-width="4"/>';
+  s+='<text x="'+(ax(0)+8)+'" y="'+(ay(320)-22)+'" font-size="11" font-weight="700" fill="#c9661a">die 外边界线 x = 0（low-left 线）</text>';
+  s+='<line x1="'+ax(400)+'" y1="'+(ay(320)-14)+'" x2="'+ax(400)+'" y2="'+(ay(0)+14)+'" stroke="#1a5fa8" stroke-width="2.5" stroke-dasharray="9 6"/>';
+  s+='<text x="'+(ax(400)+7)+'" y="'+(ay(320)-22)+'" font-size="11" font-weight="700" fill="#1a5fa8">分区切线 x = X0 = 400</text>';
+  ANCHOR_SHAPES.forEach(function(sh){
+    var px=ax(sh.x1), py=ay(sh.y1);
+    var pw=sh.w*ASCALE, ph=sh.h*ASCALE;
+    s+='<g class="shape" data-id="'+sh.id+'">';
+    s+='<rect class="body" x="'+px+'" y="'+(py-ph)+'" width="'+pw+'" height="'+ph+'" rx="2" fill="rgba(201,102,26,.14)" stroke="#c9661a" stroke-width="1.6"/>';
+    s+='<text x="'+(px+pw/2)+'" y="'+(py-ph/2-8)+'" text-anchor="middle" font-size="11.5" font-weight="700" fill="#a05515">'+esc(sh.label)+'</text>';
+    s+='<circle cx="'+px+'" cy="'+py+'" r="5" fill="#c9661a" stroke="#fff" stroke-width="1.5"/>';
+    s+='<rect class="hit" x="'+px+'" y="'+(py-ph)+'" width="'+pw+'" height="'+ph+'" fill="transparent"/>';
+    s+='</g>';
+  });
+  s+='<text x="'+(AX+AW/2)+'" y="'+(ay(0)+34)+'" text-anchor="middle" font-size="10.5" fill="#8b949e">示意 DBU 坐标：die = [0, 800) × [0, 320)，切线由 S8 分区决策给出（本例 nx = 2）</text>';
+  qs('#anchor-svg').innerHTML=s;
+  var defaultHtml=qs('#anchor-detail').innerHTML;
+  function pick(id){
+    qsa('#anchor-svg .part').forEach(function(r){r.classList.remove('rect-hl');r.classList.add('dim');});
+    var info=ANCHOR_INFO[id];
+    var pi=id==='B'?'part-1':'part-0';
+    qs('#'+pi).classList.add('rect-hl'); qs('#'+pi).classList.remove('dim');
+    var h='<div class="kv" style="margin-top:0;">'+info.rows.map(esc).join('\n')+'</div>';
+    h+='<p class="note">主分区 = <b class="mono">'+info.part+'</b>；其余交叠分区登记普通分区。逐分区消费时局部视野完整，数据不重复裁剪。</p>';
+    qs('#anchor-detail').innerHTML=h;
+  }
+  function unpick(){
+    qsa('#anchor-svg .part').forEach(function(r){r.classList.remove('rect-hl','dim');});
+    qs('#anchor-detail').innerHTML=defaultHtml;
+  }
+  qsa('#anchor-svg .shape').forEach(function(g){
+    var id=g.getAttribute('data-id');
+    g.addEventListener('mouseenter',function(){pick(id);});
+    g.addEventListener('mouseleave',unpick);
+    g.addEventListener('click',function(){pick(id);});
+  });
+}
+buildAnchor();
+
+/* =====================================================
+   板块 5：并查集跨块归并
+   ===================================================== */
+var UF={12:5,13:5,52:12,14:9};
+var UF_NODES=[
+ {id:5,  x:150,y:26, l1:'top · VDD',        l2:'global net id 5（top 起始 0 + local 5）'},
+ {id:9,  x:610,y:26, l1:'top · CLK',        l2:'global net id 9（top 起始 0 + local 9）'},
+ {id:12, x:60, y:176,l1:'block A · VDD',    l2:'global net id 12（A 起始 12 + local 0）'},
+ {id:13, x:300,y:176,l1:'block A · VDD_A',  l2:'global net id 13（A 起始 12 + local 1）'},
+ {id:14, x:610,y:176,l1:'block A · CLK_A',  l2:'global net id 14（A 起始 12 + local 2）'},
+ {id:52, x:180,y:316,l1:'block A1 · VDD',   l2:'global net id 52（A1 起始 52 + local 0）'}
+];
+var UF_EDGES=[
+ {a:12,b:5,mx:158,my:122},
+ {a:13,b:5,mx:330,my:122},
+ {a:14,b:9,mx:712,my:126},
+ {a:52,b:12,mx:230,my:270}
+];
+function ufChain(id){var c=[id],cur=id;while(UF[cur]!==undefined){cur=UF[cur];c.push(cur);}return c;}
+function ufMembers(root){
+  var m=[root];
+  Object.keys(UF).forEach(function(k){k=+k;if(ufChain(k)[ufChain(k).length-1]===root&&m.indexOf(k)<0)m.push(k);});
+  return m.sort(function(a,b){return a-b;});
+}
+var ufTimers=[];
+function buildUnion(){
+  var s='';
+  s+='<rect x="36" y="14" width="880" height="90" rx="6" fill="rgba(37,99,168,.04)" stroke="rgba(37,99,168,.2)"/>';
+  s+='<rect x="36" y="164" width="880" height="90" rx="6" fill="rgba(47,125,79,.04)" stroke="rgba(47,125,79,.2)"/>';
+  s+='<rect x="36" y="304" width="880" height="90" rx="6" fill="rgba(201,102,26,.045)" stroke="rgba(201,102,26,.25)"/>';
+  s+='<text x="48" y="32" font-size="11" fill="#2563a8" font-weight="700">top block 层</text>';
+  s+='<text x="48" y="182" font-size="11" fill="#2f7d4f" font-weight="700">block A 层（引用定义 D1）</text>';
+  s+='<text x="48" y="322" font-size="11" fill="#c9661a" font-weight="700">block A1 层（引用定义 D2，A 的子块）</text>';
+  s+='<defs><marker id="uarr" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L9,4 L0,8 z" fill="#8a97a5"/></marker></defs>';
+  s+='<line class="uf-edge compress" id="ufe-compress" x1="262" y1="316" x2="238" y2="92" stroke="#c9661a" stroke-width="2" stroke-dasharray="7 5" visibility="hidden"/>';
+  UF_EDGES.forEach(function(e){
+    var na=UF_NODES.filter(function(n){return n.id===e.a;})[0], nb=UF_NODES.filter(function(n){return n.id===e.b;})[0];
+    var x1=na.x+90,y1=na.y,x2=nb.x+90,y2=nb.y+64;
+    s+='<line class="uf-edge" data-a="'+e.a+'" data-b="'+e.b+'" x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'" stroke="#8a97a5" stroke-width="2" marker-end="url(#uarr)"/>';
+    s+='<rect x="'+(e.mx-24)+'" y="'+(e.my-11)+'" width="48" height="17" rx="8" fill="#fff" stroke="#d8dee4"/><text class="mono" x="'+e.mx+'" y="'+(e.my+1)+'" text-anchor="middle" font-size="9.5" fill="#57606a">union</text>';
+  });
+  UF_NODES.forEach(function(n){
+    s+='<g class="uf-node" data-id="'+n.id+'">';
+    s+='<rect class="box" x="'+n.x+'" y="'+n.y+'" width="180" height="64" rx="6" fill="#fff" stroke="#2563a8" stroke-width="1.3"/>';
+    s+='<text x="'+(n.x+90)+'" y="'+(n.y+26)+'" text-anchor="middle" font-size="12" font-weight="700" fill="#1a4e86">'+esc(n.l1)+'</text>';
+    s+='<text class="mono" x="'+(n.x+90)+'" y="'+(n.y+47)+'" text-anchor="middle" font-size="9.8" fill="#57606a">'+esc(n.l2)+'</text>';
+    s+='</g>';
+  });
+  s+='<text x="475" y="418" text-anchor="middle" font-size="10.5" fill="#8b949e">union 方向：子块网 → 父网（union 依据 = port 两侧的 connection 条目对接，见下方说明）</text>';
+  qs('#uf-svg').innerHTML=s;
+  qsa('#uf-svg .uf-node').forEach(function(g){
+    g.addEventListener('click',function(){runFind(+g.getAttribute('data-id'));});
+  });
+  qs('#uf-find52').addEventListener('click',function(){runFind(52);});
+  qs('#uf-find14').addEventListener('click',function(){runFind(14);});
+  qs('#uf-enum5').addEventListener('click',function(){enumRoot(5);});
+  qs('#uf-enum9').addEventListener('click',function(){enumRoot(9);});
+  qs('#uf-reset').addEventListener('click',resetUF);
+}
+function ufNodeEl(id){return qs('#uf-svg .uf-node[data-id="'+id+'"]');}
+function ufEdgeEl(a,b){
+  return qsa('#uf-svg .uf-edge').filter(function(e){
+    var x=+e.getAttribute('data-a'),y=+e.getAttribute('data-b');
+    return (x===a&&y===b)||(x===b&&y===a);
+  })[0];
+}
+function resetUF(){
+  ufTimers.forEach(clearTimeout); ufTimers=[];
+  qsa('#uf-svg .uf-node').forEach(function(g){g.classList.remove('hl','root-hl');});
+  qsa('#uf-svg .uf-edge').forEach(function(e){e.classList.remove('hl');});
+  qs('#ufe-compress').setAttribute('visibility','hidden');
+  qs('#uf-panel').textContent='parent 表（路径压缩后）：\n  parent[12] = 5    parent[13] = 5\n  parent[52] = 12   parent[14] = 9\n\n点击上方按钮执行 find 或成员枚举。';
+}
+function runFind(target){
+  resetUF();
+  var chain=ufChain(target), root=chain[chain.length-1];
+  chain.forEach(function(id,i){
+    ufTimers.push(setTimeout(function(){
+      var n=ufNodeEl(id); if(n)n.classList.add('hl');
+      if(i>0){var e=ufEdgeEl(chain[i-1],chain[i]); if(e)e.classList.add('hl');}
+    },i*560));
+  });
+  ufTimers.push(setTimeout(function(){
+    var rn=ufNodeEl(root); if(rn)rn.classList.add('root-hl');
+    var txt='parent 表（路径压缩后）：\n  parent[12] = 5    parent[13] = 5\n  parent[52] = 12   parent[14] = 9\n\n';
+    txt+='find('+target+') = '+root+'\n路径：'+chain.join(' → ')+'   （root = '+root+'）';
+    if(chain.length>2){
+      qs('#ufe-compress').setAttribute('visibility','visible');
+      txt+='\n路径压缩：parent['+target+'] ← '+root+'（只改跳转捷径，成员关系不变）';
+    }
+    txt+='\n\n反向查询：root '+root+' 的成员 = { '+ufMembers(root).join(', ')+' }';
+    qs('#uf-panel').textContent=txt;
+  },chain.length*560));
+}
+function enumRoot(root){
+  resetUF();
+  var mem=ufMembers(root);
+  mem.forEach(function(id){var n=ufNodeEl(id); if(n)n.classList.add(id===root?'root-hl':'hl');});
+  var other=root===5?9:5;
+  qs('#uf-panel').textContent='parent 表（路径压缩后）：\n  parent[12] = 5    parent[13] = 5\n  parent[52] = 12   parent[14] = 9\n\n'
+    +'root → 成员枚举（☆补充的反向索引）\n'
+    +'root '+root+'（'+(root===5?'VDD':'CLK')+'）成员 = { '+mem.join(', ')+' }\n'
+    +'root '+other+'（'+(other===5?'VDD':'CLK')+'）成员 = { '+ufMembers(other).join(', ')+' }\n\n'
+    +'任一成员 find 后都回到同一 root——④⑤⑥ 由此按「物理网」聚合消费，⑫ 由此取电源网整体。';
+}
+buildUnion();
+
+/* =====================================================
+   板块 6：数据实体关系总览
+   ===================================================== */
+var ENT_NODES=[
+ {id:'layer',   x:70, y:50, star:'orig', title:'layer ★',        sub:'独立 Stack 类型 · tech db 复用（⑭）'},
+ {id:'geometry',x:360,y:50, star:'orig', title:'geometry ★',     sub:'独立通用子模块（㉑）· Point/Rect/Polygon'},
+ {id:'net',     x:680,y:50, star:'orig', title:'net ★',          sub:'用途：电源 / 地 / 信号（筛选依据）'},
+ {id:'cell',    x:70, y:210,star:'orig', title:'cell ★',         sub:'单一结构 + 简化 pin · fake cell（⑰⑳）'},
+ {id:'pin',     x:360,y:210,star:'orig', title:'pin ★',          sub:'简化 pin（⑰）· 类型 / 方向 · 含 port'},
+ {id:'connection',x:680,y:210,star:'orig',title:'connection ★', sub:'(instance id, pin id, net id)'},
+ {id:'viacell', x:70, y:370,star:'orig', title:'via cell ★',     sub:'独立类型 · 独立编号空间（⑩）'},
+ {id:'instance',x:360,y:370,star:'orig', title:'instance ★',     sub:'local id → global id'},
+ {id:'blockinst',x:680,y:370,star:'add', title:'block instance ☆',sub:'树节点 · 起始编号段'},
+ {id:'viainst', x:360,y:530,star:'add', title:'via instance ☆',  sub:'无 name · 不入 namemap（⑩）'},
+ {id:'block',   x:680,y:530,star:'add', title:'block ☆',         sub:'块定义 · DEF 路径 / DIEAREA'}
+];
+var ENT_EDGES=[
+ {a:'layer',b:'geometry',x1:240,y1:82,x2:360,y2:82,l1:'1 : n',l2:'图形携带 layer id',lx:300,ly:70},
+ {a:'net',b:'geometry',x1:680,y1:82,x2:530,y2:82,l1:'1 : n',l2:'网几何',lx:605,ly:70},
+ {a:'net',b:'connection',x1:765,y1:114,x2:765,y2:210,l1:'1 : n',l2:'',lx:775,ly:166},
+ {a:'pin',b:'connection',x1:530,y1:226,x2:680,y2:226,l1:'n : 1',l2:'',lx:605,ly:216},
+ {a:'cell',b:'pin',x1:240,y1:242,x2:360,y2:242,l1:'1 : n',l2:'引脚集',lx:300,ly:230},
+ {a:'viacell',b:'viainst',x1:155,y1:434,x2:155,y2:370,l1:'',l2:'',poly:'M155,434 L155,498 L445,498 L445,530',lab:[300,490,'n : 1（via cell id + 位置）']},
+ {a:'instance',b:'viainst',x1:445,y1:434,x2:445,y2:530,l1:'',l2:'',dash:1,lab:[560,486,'独立 id 空间（非 instance，⑩）']},
+ {a:'cell',b:'instance',x1:190,y1:274,x2:190,y2:402,l1:'',l2:'',lx:0,ly:0,poly:'M190,274 L190,402 L360,402',lab:[258,342,'1 : n（所属 cell id）']},
+ {a:'instance',b:'connection',x1:445,y1:370,x2:445,y2:330,l1:'',l2:'',poly:'M445,370 L445,330 L740,330 L740,274',lab:[565,322,'1 : n（三元组）']},
+ {a:'blockinst',b:'instance',x1:680,y1:402,x2:530,y2:402,l1:'1 : n',l2:'所属 block instance',lx:605,ly:390},
+ {a:'block',b:'blockinst',x1:765,y1:530,x2:765,y2:434,l1:'1 : n',l2:'',lx:776,ly:486,poly:'',lab2:[756,486,'同一定义可多次实例化', 'end']}
+];
+function buildEntity(){
+  var s='';
+  ENT_EDGES.forEach(function(e,i){
+    var d=e.poly||('M'+e.x1+','+e.y1+' L'+e.x2+','+e.y2);
+    s+='<path class="rel" data-i="'+i+'" data-a="'+e.a+'" data-b="'+e.b+'" d="'+d+'" fill="none" stroke="#9aa6b1" stroke-width="1.6"'+(e.dash?' stroke-dasharray="6 4"':'')+'/>';
+  });
+  ENT_EDGES.forEach(function(e,i){
+    if(e.l1){s+='<text class="mono rel-lab" data-i="'+i+'" x="'+e.lx+'" y="'+e.ly+'" text-anchor="middle" font-size="10" font-weight="700" fill="#3c6ca8" style="paint-order:stroke;stroke:#fff;stroke-width:3px;">'+e.l1+'</text>';}
+    if(e.l2){s+='<text class="rel-lab" data-i="'+i+'" x="'+e.lx+'" y="'+(e.ly+13)+'" text-anchor="middle" font-size="9.5" fill="#8b6a3f" style="paint-order:stroke;stroke:#fff;stroke-width:3px;">'+esc(e.l2)+'</text>';}
+    if(e.lab){s+='<text class="rel-lab" data-i="'+i+'" x="'+e.lab[0]+'" y="'+e.lab[1]+'" text-anchor="middle" font-size="9.5" fill="#8b6a3f" style="paint-order:stroke;stroke:#fff;stroke-width:3px;">'+esc(e.lab[2])+'</text>';}
+    if(e.lab2){s+='<text class="rel-lab" data-i="'+i+'" x="'+e.lab2[0]+'" y="'+e.lab2[1]+'" text-anchor="'+e.lab2[3]+'" font-size="9.5" fill="#8b6a3f" style="paint-order:stroke;stroke:#fff;stroke-width:3px;">'+esc(e.lab2[2])+'</text>';}
+  });
+  ENT_NODES.forEach(function(n){
+    var stroke=n.star==='add'?'#c9661a':'#2563a8';
+    var tfill=n.star==='add'?'#a05515':'#1a4e86';
+    s+='<g class="ent" data-id="'+n.id+'">';
+    s+='<rect class="box" x="'+n.x+'" y="'+n.y+'" width="170" height="64" rx="6" fill="#fff" stroke="'+stroke+'"/>';
+    s+='<text x="'+(n.x+85)+'" y="'+(n.y+26)+'" text-anchor="middle" font-size="12.5" font-weight="700" fill="'+tfill+'">'+esc(n.title)+'</text>';
+    s+='<text x="'+(n.x+85)+'" y="'+(n.y+46)+'" text-anchor="middle" font-size="9.6" fill="#57606a">'+esc(n.sub)+'</text>';
+    s+='</g>';
+  });
+  s+='<text x="680" y="622" font-size="10.5" fill="#8b6a3f">block 的 port 集：port id 进 pin id 空间（本质是 block cell 的引脚）</text>';
+  s+='<text x="70" y="622" font-size="10.5" fill="#57606a">geometry 实例化类型集合：int32（DBU 首选）/ int64（防溢出中间量）/ double（裁定 D12）</text>';
+  s+='<text x="70" y="606" font-size="10.5" fill="#3c6ca8">Point / Rect / Polygon 模板及几何配套属独立 geometry 通用子模块（裁定 ㉑，不属 design 模块；归属路径与命名前缀见 D28）</text>';
+  s+='<text x="360" y="642" font-size="10.5" fill="#8b6a3f">via cell 全集集中保存为单一权威表：tech lef + cell lef + 各 DEF 三来源汇入（DEF 来源登记名带 design 名:: 前缀，裁定 ⑫）</text>';
+  s+='<text x="70" y="664" font-size="10.5" fill="#3c6ca8">DSDesign 容器（裁定 ⑬）：cell（单一结构 + 简化 pin）/ via cell / lib 关联 / 层级树（含编号区间表，⑮）/ 轻量 namemap 入容器；fake cell 单独字段（⑳）</text>';
+  s+='<text x="70" y="682" font-size="10.5" fill="#3c6ca8">layer 例外 = 独立 Stack 类型（裁定 ⑭，tech db 复用）；instance/net 的 name 映射 / 块内原始数据 / 并查集 / 分区产物 / 密度图为独立对象，不进容器</text>';
+  s+='<text x="70" y="706" font-size="10.5" fill="#8b6a3f">get_cell 为下游获取 cell 的统一入口（指针注入零拷贝，裁定 ⑰）；pin 表 / 几何专用字段一律不序列化（裁定 ⑱）——design 模块提供统一加载 API（封装 load + set）</text>';
+  s+='<text x="70" y="726" font-size="10.5" fill="#8b6a3f">fake cell（裁定 ⑲/⑳）：名称 block_cell_name::cell_name · id = max_cell_id + 简易算法唯一值 · 无 pin · 图形 1×1 全局最小单位矩形 · DSDesign 单独字段保存</text>';
+  qs('#entity-svg').innerHTML=s;
+  function hi(id){
+    qsa('#entity-svg .rel').forEach(function(p){
+      p.classList.toggle('on',p.getAttribute('data-a')===id||p.getAttribute('data-b')===id);
+    });
+  }
+  function unhi(){qsa('#entity-svg .rel').forEach(function(p){p.classList.remove('on');});}
+  qsa('#entity-svg .ent').forEach(function(g){
+    g.addEventListener('mouseenter',function(){hi(g.getAttribute('data-id'));});
+    g.addEventListener('mouseleave',unhi);
+  });
+}
+buildEntity();
+</script>
+</body>
+</html>

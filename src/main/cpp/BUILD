@@ -44,5 +44,6 @@ cc_binary(
         "//src/solver/export:_fly_solver.so",
         "//src/message/export:_fly_message.so",
         "//src/emir/lib/export:_fly_emir_lib.so",
+        "//src/emir/design/export:_fly_emir_design.so",
     ],
 )
