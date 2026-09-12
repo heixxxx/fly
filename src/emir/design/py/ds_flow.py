@@ -91,17 +91,24 @@ def _tech_lef_task(db, path, stack_key, vias_key):
     db.write_object(vias_key, tech_vias, save_to_db=False)
 
 
-# ── 每 cell lef 一 task（局部 id 中间产物）──────────────────────────
+# ── 每 cell lef 一 task（局部 id 中间产物 + 失败标记）─────────────────
 
-@as_task(inputs=lambda db, path, stack_key, design_key, geoms_key, vias_key: [
+@as_task(inputs=lambda db, path, stack_key, design_key, geoms_key, vias_key,
+         failed_key: [
     db.get_full_name(stack_key)
 ])
-def _cell_lef_task(db, path, stack_key, design_key, geoms_key, vias_key):
+def _cell_lef_task(db, path, stack_key, design_key, geoms_key, vias_key,
+                   failed_key):
     stack = db.read_object(stack_key)
-    part_design, part_geoms, part_vias = ds_parse_cell_one(path, stack)
+    part_design, part_geoms, part_vias, stats = ds_parse_cell_one(path, stack)
     db.write_object(design_key, part_design, save_to_db=False)
     db.write_object(geoms_key, part_geoms, save_to_db=False)
     db.write_object(vias_key, part_vias, save_to_db=False)
+    # 失败标记随产物传递（流程错误处理范式 2026-09-13：单文件语法错误不
+    # FAILED，产物已被 adapter 清空；汇总层据此发 DSGN::0014 / fatal 0015）
+    db.write_object(failed_key,
+                    [path] if stats.parse_failed_count else [],
+                    save_to_db=False)
 
 
 # ── cell lef 汇总：统一 cell id 分配 + pin hasher 重挂 + via/几何合入 ─
@@ -116,10 +123,12 @@ def _cell_lef_merge_task(db, part_tuples, stack_key, tech_vias_key,
     global_geoms = EXDSPinGeometry()
 
     conflicts = 0
-    for design_key_i, geoms_key_i, vias_key_i in part_tuples:
+    failed_paths = []
+    for design_key_i, geoms_key_i, vias_key_i, failed_key_i in part_tuples:
         part_design = db.read_object(design_key_i)
         part_geoms = db.read_object(geoms_key_i)
         part_vias = db.read_object(vias_key_i)
+        failed_paths.extend(db.read_object(failed_key_i))
         for via in part_vias:
             part_design.add_via_cell(via)  # 局部 via 并入 part design
         conflicts += ds_merge_cell_lef(global_design, part_design,
@@ -131,6 +140,26 @@ def _cell_lef_merge_task(db, part_tuples, stack_key, tech_vias_key,
         from log import INFO
         INFO(f"cell lef merge: {conflicts} duplicate macro/via dropped "
              f"(keep first)")
+
+    # 流程错误处理范式（2026-09-13 裁定）：部分文件失败 → DSGN::0014
+    # （ERROR，列文件；cell 缺失由 fake cell 承接引用，DSGN::0007）+ 空产
+    # 物照常汇总（依赖链满足）；全部失败 → DSGN::0015 fatal（与 lib 全败
+    # 同口径，码 80 退出 + master 联动）。
+    if failed_paths:
+        total = len(part_tuples)
+        if len(failed_paths) >= total:
+            from fly import fatal_message
+            fatal_message("DSGN::0015", 0,
+                          f"all {total} cell lef file(s) failed to parse, "
+                          f"downstream data cannot be produced: "
+                          f"{', '.join(failed_paths)}")
+            # fatal_message 不返回（_exit(80)）——下方 DSGN::0014 仅部分
+            # 失败路径可达（review 2026-09-13：显式化防误读）
+        from fly import message
+        message("DSGN::0014", 0,
+                f"{len(failed_paths)}/{total} cell lef file(s) failed to "
+                f"parse (skipped, undefined references become fake cells): "
+                f"{', '.join(failed_paths)}")
 
     db.write_object(merged_key, global_design, save_to_db=False)
     # macro pin 几何中间产物（临时对象——正式 DSPinGeometry 由 DEF 头汇
@@ -506,12 +535,13 @@ def run_design_flow(db, lef_paths, def_paths, lib_db, alpha=None):
     # tech lef（lef_paths[0]，约定见模块 docstring）
     _tech_lef_task(db, lef_paths[0], stack_key, tech_vias_key)
 
-    # 每 cell lef 一 task
+    # 每 cell lef 一 task（产物四元组：design/geoms/vias + 失败标记）
     part_tuples = []
     for i, path in enumerate(lef_paths[1:]):
         keys = (_tmp_key(uid, f"cell_lef_{i}_design"),
                 _tmp_key(uid, f"cell_lef_{i}_geoms"),
-                _tmp_key(uid, f"cell_lef_{i}_vias"))
+                _tmp_key(uid, f"cell_lef_{i}_vias"),
+                _tmp_key(uid, f"cell_lef_{i}_failed"))
         temp_keys.extend(keys)
         part_tuples.append(keys)
         _cell_lef_task(db, path, stack_key, *keys)

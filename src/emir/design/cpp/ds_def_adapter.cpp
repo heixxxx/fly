@@ -1,6 +1,7 @@
 #include <emir/design/cpp/ds_def_adapter.h>
 
 #include <lefdef/def/def/defrReader.hpp>
+#include <message/cpp/message_macros.h>  // MSG_FATAL_EXIT（DSGN::0016 DEF 语法错误 fatal）
 
 #include <emir/design/cpp/ds_instance_pipeline.h>
 #include <emir/design/cpp/ds_net_pipeline.h>
@@ -573,9 +574,11 @@ void ds_parse_def_components(const CMString& path, const DSStack& stack,
     std::fclose(f);
     defrClear();
     if (status != 0) {
-        throw std::runtime_error("ds_def_adapter: DEF parse failed with "
-                                 "syntax/format error, file '" +
-                                 path + "'");
+        // 范式 (a)（2026-09-13 裁定）：DEF 语法错误 = design db 数据不完整
+        // 无意义，兜底会把缺实例/缺网的坏数据带进下游——fatal 结束整个 run。
+        MSG_FATAL_EXIT("DSGN::0016", 1, 80,
+                       "DEF parse failed with syntax/format error (S5a "
+                       "components), file '{}'", path);
     }
 }
 
@@ -873,9 +876,11 @@ void ds_parse_def_nets(const CMString& path, const DSStack& stack,
     std::fclose(f);
     defrClear();
     if (status != 0) {
-        throw std::runtime_error("ds_def_adapter: DEF parse failed with "
-                                 "syntax/format error, file '" +
-                                 path + "'");
+        // 范式 (a)（2026-09-13 裁定）：DEF 语法错误 fatal（同 S5a，DSGN::0016；
+        // source 区分触发阶段）。
+        MSG_FATAL_EXIT("DSGN::0016", 2, 80,
+                       "DEF parse failed with syntax/format error (S5b "
+                       "nets), file '{}'", path);
     }
 
     // 尾批冲刷 + 统计镜像（DSDefNetsStats = 产物内 DSNetStats + 批次数）
@@ -943,9 +948,11 @@ void ds_parse_def_header(const CMString& path, const DSStack& stack,
     std::fclose(f);
     defrClear();
     if (status != 0) {
-        throw std::runtime_error("ds_def_adapter: DEF parse failed with "
-                                 "syntax/format error, file '" +
-                                 path + "'");
+        // 范式 (a)（2026-09-13 裁定）：DEF 语法错误 fatal（同 S5a/S5b，
+        // DSGN::0016；source 区分触发阶段）。
+        MSG_FATAL_EXIT("DSGN::0016", 0, 80,
+                       "DEF parse failed with syntax/format error (S4 "
+                       "header), file '{}'", path);
     }
     // R7 ㊱：port pin 名随产物交出（与 block_cells_[0].pins_ 下标对齐；
     // 每 DEF 至多 1 个 block cell）

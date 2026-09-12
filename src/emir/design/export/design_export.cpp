@@ -698,7 +698,9 @@ FLY_EXPORT_CLASS(fly::DSLefParseStats, "EXDSLefParseStats")
     FLY_EXPORT_READONLY_ATTR("viarule_count",
                              &fly::DSLefParseStats::viarule_count)
     FLY_EXPORT_READONLY_ATTR("skipped_geometry_count",
-                             &fly::DSLefParseStats::skipped_geometry_count);
+                             &fly::DSLefParseStats::skipped_geometry_count)
+    FLY_EXPORT_READONLY_ATTR("parse_failed_count",
+                             &fly::DSLefParseStats::parse_failed_count);
 
 FLY_EXPORT_CLASS(fly::DSDefParseStats, "EXDSDefParseStats")
     FLY_EXPORT_INIT()

@@ -3,6 +3,7 @@
 package(default_visibility = ["//visibility:public"])
 
 load("@rules_cc//cc:defs.bzl", "cc_test")
+load("@rules_python//python:defs.bzl", "py_test")
 
 cc_test(
     name = "ds_types_test",
@@ -36,6 +37,7 @@ cc_test(
     ],
     deps = [
         "@googletest//:gtest_main",
+        "//src/common/testing:fly_common_testing",
         "//src/emir/design/cpp:fly_emir_design_ds_types",
     ],
     linkstatic = True,
@@ -153,8 +155,27 @@ cc_test(
     ],
     deps = [
         "@googletest//:gtest_main",
+        "//src/common/testing:fly_common_testing",
         "//src/emir/design/cpp:fly_emir_design_ds_types",
     ],
     linkstatic = True,
     copts = ["-std=c++20"],
+)
+
+# design flow 错误处理单测（流程错误处理范式 2026-09-13，dev-rules §7.2）
+py_test(
+    name = "ds_flow_error_test",
+    srcs = ["test_ds_flow_error.py"],
+    main = "test_ds_flow_error.py",
+    data = [
+        "data/cells_synth.lef",
+        "data/tech_synth.lef",
+    ],
+    imports = ["../../..", "../export", "../../lib/export"],
+    deps = [
+        "//src/emir:emir_pkg",
+        "//src/emir/design/export:_fly_emir_design.so",
+        "//src/fly:fly_py",
+        "//src/log/export:_fly_log.so",
+    ],
 )

@@ -35,12 +35,13 @@
 // 前两点兼容赋值不可信）：>2 点 = 多边形（polygon 全点集 + is_polygon
 // 置位）、2 点 = 矩形（polygon 空）；bbox 恒存（㉞ 双存）。
 //
-// 异常语义（dev-rules §7 仅两类可 raise）：文件不可读 / 语法错误
-// （defrRead 非 0）→ std::runtime_error。层引用未定义不再 raise——经
-// ds_resolve_layer_id 发 DSGN::0010 提醒后条目级丢弃（rect 丢弃该矩形、
-// via 整条放弃、wire 段/rect 项丢弃）并计入 skipped_layer_ref_count。
-// 重名 port / 重名 via / 重名网保留首份并计数（DSGN::0005/0006 的数据
-// 源，T6 接线）。
+// 异常语义（dev-rules §7.2 流程错误处理范式，2026-09-13 裁定）：文件不可
+// 读 → std::runtime_error（§7 第一类）；DEF 语法/格式错误（defrRead 非 0）
+// → fatal message DSGN::0016（design db 数据不完整无意义，范式 (a) 结束
+// 整个 run）。层引用未定义不再 raise——经 ds_resolve_layer_id 发
+// DSGN::0010 提醒后条目级丢弃（rect 丢弃该矩形、via 整条放弃、wire 段/
+// rect 项丢弃）并计入 skipped_layer_ref_count。重名 port / 重名 via /
+// 重名网保留首份并计数（DSGN::0005/0006 的数据源，T6 接线）。
 // =============================================================================
 
 #include <container/cpp/container_aliases.h>

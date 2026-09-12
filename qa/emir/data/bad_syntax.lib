@@ -1,0 +1,5 @@
+library (broken_typ) {
+  time_unit : "1ns";
+  cell (BROKEN) {
+    pin (A) {
+      direction : input;

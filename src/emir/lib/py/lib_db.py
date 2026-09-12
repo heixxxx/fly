@@ -74,10 +74,12 @@ def build_lib_db(self, name: str, lib_paths: list):
     """
     import os
 
-    # ── Step 1: 检查输入（文件存在性，schema 无法覆盖）──
+    # ── Step 1: 检查输入（文件存在性 + liberty 形态嗅探，schema 无法覆盖）──
+    from .lib_utils import sniff_liberty_header
     for p in lib_paths:
         if not os.path.isfile(p):
             raise FileNotFoundError(f"build_lib_db: lib file not found: {p}")
+        sniff_liberty_header(p)
 
     # ── Step 2: 建库（LibDb，role="lib"）──
     db = self._create_db(name, db_cls=LibDb)

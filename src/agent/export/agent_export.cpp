@@ -354,6 +354,16 @@ FLY_EXPORT_CLASS(fly::MasterAgent, "EXAgentMaster")
         self.register_database(db_path, data_path);
     })
     FLY_EXPORT_METHOD("is_db_frozen", &fly::MasterAgent::is_db_frozen)
+    FLY_EXPORT_METHOD("get_db_failure", [](fly::MasterAgent& self,
+                                           const fly::CMString& db_path) {
+        // db 失败信号查询（wait_frozen 轮询）：std::tuple 的 nanobind 转换
+        // 需额外注册，用 make_tuple 返回 Python tuple（见本文件 482 行注释）。
+        // 注意：导出宏按逗号切参数，体内禁用结构化绑定（同 375 行注释）。
+        const auto signal = self.get_db_failure(db_path);
+        return fly_export::make_tuple(std::get<0>(signal),
+                                      std::get<1>(signal),
+                                      std::get<2>(signal));
+    })
     FLY_EXPORT_METHOD("get_or_create_database", [](fly::MasterAgent& self,
                                                       const fly::CMString& db_path,
                                                       const fly::CMString& data_path,

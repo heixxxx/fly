@@ -25,6 +25,16 @@ import 本模块完成注册。仅注册过的 id 才会被 MSG 打印/发送，
 - DSGN::0013: S8 分区决策 alpha 非法值（target_partitions 形如 '{x}x{y}'
   解析失败 / partition_target_density 非正值）——提醒后回退下一级或默
   认值，不 raise（dev-rules §7）
+- DSGN::0014: 部分 cell lef 文件解析失败（兜底跳过该文件 + 失败清单，
+  空产物照常汇总、cell 缺失由 fake cell 承接——流程错误处理范式
+  2026-09-13，dev-rules §7.2）
+- DSGN::0015: 全部 cell lef 文件解析失败（下游无法产出正确数据，fatal
+  message 结束整个 run——与 lib 全败同口径）
+- DSGN::0016: DEF 文件语法/格式错误（design db 数据不完整无意义，fatal
+  message 结束整个 run；source 区分触发阶段 0=S4 头扫描 1=S5a 实例
+  2=S5b 网内容）
+- DSGN::0017: tech lef 文件语法/格式错误（层表来源损坏无法兜底，fatal
+  message 结束整个 run）
 """
 
 from fly import register_message_id
@@ -42,3 +52,7 @@ register_message_id("DSGN::0010", "WARN")
 register_message_id("DSGN::0011", "FATAL")
 register_message_id("DSGN::0012", "FATAL")
 register_message_id("DSGN::0013", "WARN")
+register_message_id("DSGN::0014", "ERROR")
+register_message_id("DSGN::0015", "FATAL")
+register_message_id("DSGN::0016", "FATAL")
+register_message_id("DSGN::0017", "FATAL")

@@ -1,6 +1,7 @@
 #include <emir/design/cpp/ds_lef_adapter.h>
 
 #include <lefdef/lef/lef/lefrReader.hpp>
+#include <message/cpp/message_macros.h>  // MSG_FATAL_EXIT（DSGN::0017 tech lef 语法错误 fatal）
 
 #include <cmath>
 #include <cstdio>
@@ -463,16 +464,19 @@ int cell_viarule_cbk(lefrCallbackType_e, lefiViaRule* vr, lefiUserData ud) {
 // init 的 Set 调用会被拒绝（实测报 "Attempt to call configuration
 // function ... before lefrInit()"，T2 baseline 的 init→register→read
 // 顺序即正确形态），故经 register_cbs 在会话建立后注册。
-// lefrRead 非 0 = 语法/格式错误（raise，dev-rules §7 两类可 raise 场景
-// 之一）；层引用未定义等业务异常已在回调内兜底（条目级丢弃 + 计数），
-// 不再穿越读取器。
+// 文件不可读仍 raise（dev-rules §7 第一类）；回调内异常穿越读取器清理
+// 后重抛（编程错误守卫不转 fatal）。语法/格式错误不在此 raise——经
+// syntax_failed 出参交调用方按范式处置（2026-09-13：tech lef fatal
+// DSGN::0017 / cell lef 兜底空产物，见 dev-rules §7.2）。
 void run_lefr(const CMString& path, void* context,
-              const std::function<void()>& register_cbs) {
+              const std::function<void()>& register_cbs,
+              bool* syntax_failed) {
     FILE* f = std::fopen(path.c_str(), "r");
     if (f == nullptr) {
         throw std::runtime_error("ds_lef_adapter: cannot open file '" +
                                  path + "'");
     }
+    *syntax_failed = false;
     lefrInitSession();
     lefrSetRegisterUnusedCallbacks();
     register_cbs();
@@ -488,9 +492,7 @@ void run_lefr(const CMString& path, void* context,
     std::fclose(f);
     lefrClear();
     if (status != 0) {
-        throw std::runtime_error("ds_lef_adapter: LEF parse failed with "
-                                 "syntax/format error, file '" +
-                                 path + "'");
+        *syntax_failed = true;
     }
 }
 
@@ -504,6 +506,7 @@ DSLefParseStats ds_parse_tech_lef(const CMString& path, DSStack& stack,
     ctx.vias = &tech_vias;
     ctx.stats = &stats;
 
+    bool syntax_failed = false;
     run_lefr(path, &ctx, [&] {
         lefrSetLayerCbk(tech_layer_cbk);
         lefrSetViaCbk(tech_via_cbk);
@@ -511,7 +514,14 @@ DSLefParseStats ds_parse_tech_lef(const CMString& path, DSStack& stack,
         lefrSetManufacturingCbk(tech_manufacturing_cbk);
         // UNITS 不注册（裁定 ㉝）：DATABASE MICRONS 声明不写 stack、不
         // 参与换算——dbu_per_micron_ 恒 kGlobalDbuPerMicron = 1000
-    });
+    }, &syntax_failed);
+    if (syntax_failed) {
+        // 范式 (a)（2026-09-13 裁定）：层表来源损坏无法兜底——下游一切
+        // 层引用/几何换算都失真，fatal 结束整个 run（码 80 + master 联动）。
+        MSG_FATAL_EXIT("DSGN::0017", 0, 80,
+                       "tech lef parse failed with syntax/format error, "
+                       "file '{}'", path);
+    }
     return stats;
 }
 
@@ -527,6 +537,7 @@ DSLefParseStats ds_parse_cell_lef(const CMString& path, const DSStack& stack,
     ctx.vias = &vias;
     ctx.stats = &stats;
 
+    bool syntax_failed = false;
     run_lefr(path, &ctx, [&] {
         lefrSetMacroBeginCbk(cell_macro_begin_cbk);
         lefrSetPinCbk(cell_pin_cbk);
@@ -536,7 +547,20 @@ DSLefParseStats ds_parse_cell_lef(const CMString& path, const DSStack& stack,
         lefrSetViaRuleCbk(cell_viarule_cbk);
         // UNITS 不注册（裁定 ㉝）：cell lef 声明与 tech lef 不一致不再
         // 校验（dbu_error 标记与尾部 raise 已删除）
-    });
+    }, &syntax_failed);
+    if (syntax_failed) {
+        // 范式 (b)（2026-09-13 裁定）：单 cell lef 语法错误兜底——语法错
+        // 误后回调产物不可信，清空本文件全部产物（空 DSDesign + pin 几何
+        // 空 + via 空）交汇总照常合并（cell 缺失由 fake cell 承接引用，
+        // DSGN::0007）；失败标记随 stats 出参上交，DSGN::0014 由 flow 汇总
+        // 层发（部分失败）/ DSGN::0015 fatal（全部失败）。任务不 FAILED、
+        // 依赖链保持满足。
+        design_out = DSDesign();
+        pin_geometry_out = DSPinGeometry();
+        vias.clear();
+        stats = DSLefParseStats();
+        stats.parse_failed_count = 1;
+    }
     return stats;
 }
 

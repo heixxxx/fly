@@ -239,12 +239,40 @@ class Project:
         db_path = self._meta["dbs"][actual]["db_path"]
         return get_agent()._agent.is_db_frozen(db_path)
 
+    def _db_failure_signal(self, db_path: str):
+        """内部 helper：查询 master 的 db 失败信号（判死登记，不主动清除）。
+
+        返回 (task_id, error) 或 None。master 进程内直调 C++（与 is_db_frozen
+        同模式）；信号仅影响未冻结等待——wait_frozen 检查顺序 frozen 优先。
+        """
+        from fly.runtime import get_agent
+        has_signal, task_id, error = get_agent()._agent.get_db_failure(db_path)
+        return (task_id, error) if has_signal else None
+
+    def db_failure_reason(self, name: str, latest: bool = False):
+        """查询 db 的失败信号（判死登记）：返回 (task_id, error) 或 None。
+
+        上游 task 失败导致本 db 的 freeze task 被判死（依赖不可解/属性死锁）
+        时，master 登记失败信号——本方法让等待方（用户脚本）拿到失败原因，
+        而非 wait_frozen 傻等满超时（流程错误处理闭环，2026-09-13 裁定）。
+
+        信号不主动清除；frozen 成功的 db 请忽略信号（可能来自同 db 早前
+        独立提交的残留）。master-only（与 is_db_frozen 同口径）。
+        """
+        actual = self._resolve_actual_name(name, latest=latest)
+        if actual is None:
+            return None
+        return self._db_failure_signal(self._meta["dbs"][actual]["db_path"])
+
     def wait_frozen(self, name: str, timeout: float = 3600.0, interval: float = 0.5,
                     latest: bool = False):
         """阻塞等待某 db 的异步 freeze task 完成（轮询 master 状态）。
 
         flow 提交 freeze task 后，freeze 由 master 调度在依赖数据写完后执行。
         本方法轮询 db 句柄本进程 frozen 标志（master 已 commit 并广播后置位）。
+
+        失败感知：每轮同时查询 master 的 db 失败信号——上游 task 判死导致
+        freeze 永远不会被调度时，立即返回 False（不等满 timeout）。
 
         Args:
             name: actual_name（默认）或 logical_name（latest=True 时）。
@@ -253,7 +281,8 @@ class Project:
             latest: 若 True，按 logical_name 取最新版。
 
         Returns:
-            True 若 confirmed frozen；False 若超时。
+            True 若 confirmed frozen；False 若超时或 db 已带失败信号
+            （原因经 :meth:`db_failure_reason` 查询）。
         """
         import time as _t
         t0 = _t.time()
@@ -261,9 +290,16 @@ class Project:
         if actual is None:
             return False
         db = self.get_db(name, latest=latest)
+        db_path = self._meta["dbs"][actual]["db_path"]
         while _t.time() - t0 < timeout:
+            # frozen 优先：frozen=True 时即使有残留信号也算成功。
             if db.is_frozen():
                 return True
+            # 失败感知：信号存在 → freeze 永远不会被调度，立即返回。
+            if self._db_failure_signal(db_path) is not None:
+                WARN(f"wait_frozen: db '{name}' carries a failure signal "
+                     f"(query via db_failure_reason); stop waiting")
+                return False
             _t.sleep(interval)
         return False
 

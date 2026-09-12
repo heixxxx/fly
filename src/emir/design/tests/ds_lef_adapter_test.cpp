@@ -10,6 +10,7 @@
 // data/tech_synth_dbu4000.lef（4000 声明变体）、data/bad_syntax.lef
 // （自制精简样例；期望值按恒基准 µm×1000 人工核定写死）。
 #include <emir/design/cpp/ds_lef_adapter.h>
+#include <common/testing/cpp/test_helpers.h>
 
 #include <gtest/gtest.h>
 
@@ -322,17 +323,46 @@ TEST(DsLefNegativeTest, UndefinedLayerReferenceDroppedAndCounted) {
     EXPECT_EQ(design.cells_[0].obs_count(), 0u);   // OBS rect 丢弃
 }
 
-TEST(DsLefNegativeTest, UnreadableAndSyntaxErrorRaise) {
+TEST(DsLefNegativeTest, UnreadableFileRaises) {
     DSStack stack;
     CMVector<DSViaCell> vias;
-    // 文件不可读（dev-rules §7 第一类）
+    // 文件不可读（dev-rules §7 第一类，保持 raise）
     EXPECT_THROW(ds_parse_tech_lef("/nonexistent/no.lef", stack, vias),
                  std::runtime_error);
-    // 语法错误（缺分号 → lefrRead 非 0）
+}
+
+TEST(DsLefNegativeTest, TechLefSyntaxErrorFatalsWithCode80) {
+    // 范式 (a)（2026-09-13 裁定，dev-rules §7.2）：tech lef 语法错误 = 层表
+    // 来源损坏无法兜底 → fatal message DSGN::0017（码 80 退出）。
     DSStack s2;
-    EXPECT_THROW(ds_parse_tech_lef(test_data("bad_syntax.lef").string(), s2,
-                                   vias),
-                 std::runtime_error);
+    CMVector<DSViaCell> vias;
+    fly::test::expect_fatal_exit_code(
+        [&] { (void)ds_parse_tech_lef(test_data("bad_syntax.lef").string(),
+                                      s2, vias); },
+        80);
+}
+
+TEST(DsLefNegativeTest, CellLefSyntaxErrorFallsBackToEmptyProducts) {
+    // 范式 (b)（2026-09-13 裁定，dev-rules §7.2）：单 cell lef 语法错误
+    // 兜底——任务不 FAILED，产物清空 + parse_failed_count=1（DSGN::0014/
+    // 0015 由 flow 汇总层处置），引用由 fake cell 承接。
+    DSStack stack;
+    CMVector<DSViaCell> vias;
+    // 先解析 tech 建层表，再解析坏 cell lef
+    ds_parse_tech_lef(test_data("tech_synth.lef").string(), stack, vias);
+
+    DSDesign design;
+    DSPinGeometry pin_geoms;
+    CMVector<DSViaCell> cell_vias;
+    DSLefParseStats stats;
+    EXPECT_NO_THROW(stats = ds_parse_cell_lef(
+                        test_data("bad_syntax.lef").string(), stack, design,
+                        pin_geoms, cell_vias));
+    EXPECT_EQ(stats.parse_failed_count, 1);  // 失败标记置位
+    EXPECT_EQ(stats.macro_count, 0);         // stats 清零（部分产物不残留）
+    EXPECT_TRUE(design.cells_.empty());      // 产物清空（空 DSDesign）
+    EXPECT_TRUE(pin_geoms.pin_geometry_.empty());  // pin 几何空
+    EXPECT_TRUE(cell_vias.empty());          // via 空
 }
 
 TEST(DsLefRoundTripTest, ProductsSerializeRoundTrip) {

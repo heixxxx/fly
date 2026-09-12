@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <agent/cpp/worker_agent.h>
 #include <common/testing/cpp/test_helpers.h>
+#include <message/cpp/message_macros.h>  // set_message_push_func（TASK::0002 透出捕获）
 #include "test_log_isolation.h"
 #include <core/cpp/config.h>
 #include <core/cpp/process_info.h>
@@ -1160,6 +1161,63 @@ TEST(MasterAgentTest, DeadlockedPendingTasksAreDetectedAndFailed) {
     EXPECT_GE(failed.size(), 1u)
         << "deadlocked pending task should be detected and failed";
 
+    master.stop();
+    wait_for_running(master, false);
+    Config::instance()->set_int("fail_unscheduleable_tasks", 0);
+}
+
+// 流程错误处理闭环（2026-09-13 裁定范式）：判死透出 + db 失败信号。
+// 属性死锁判死后：(1) TASK::0002（ERROR 级）message 经 push func 透出
+// ——内容含判死类型 + 任务明细；(2) 归属 db 登记失败信号，get_db_failure
+// 查询返回 (true, task_id, error)；无信号 db 返回 false。信号不主动清除
+// （wait_frozen frozen 优先，仅影响未冻结等待）。
+TEST(MasterAgentTest, DeadlockPublishesTaskMessageAndDbFailureSignal) {
+    Config::instance()->set_int("fail_unscheduleable_tasks", 1);
+
+    MasterAgent master("127.0.0.1", 0);
+    master.start();
+    wait_for_running(master, true);
+
+    // TASK::0002 捕获：master start() 绑定的 MessageSink 在单测进程未
+    // 初始化，注入捕获 lambda 观测透出（测试后复位 nullptr）。捕获经
+    // shared_ptr——断言中途失败 early-return 时 push func 若仍挂着，
+    // 悬垂引用会让后续任何 MSG 段错误掩盖真实失败原因（review 2026-09-13）
+    auto pushed = std::make_shared<CMVector<std::string>>();
+    fly::set_message_push_func(
+        [pushed](fly::LogLevel, const CMString& id, int32_t, const CMString& msg) {
+            if (id == "TASK::0002") pushed->push_back(msg);
+        });
+
+    const CMString owner_db = "/test/db_failure_signal_db";
+    // Ready task 要求无 worker 具备的能力 + 归属 db——判死后信号登记该 db。
+    master.submit_task(400, "signal_task", "mod", {}, {}, {}, {"gpu"},
+                       -1.0f, "", {}, 10, owner_db);
+
+    bool failed = false;
+    for (int i = 0; i < 200 && !failed; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        auto f = master.get_failed_tasks();
+        failed = std::find(f.begin(), f.end(), 400u) != f.end();
+    }
+    ASSERT_TRUE(failed) << "deadlocked task should be detected and failed";
+
+    // db 失败信号：归属 db 有信号（task_id + error 明细）。
+    auto signal = master.get_db_failure(owner_db);
+    EXPECT_TRUE(std::get<0>(signal));
+    EXPECT_EQ(std::get<1>(signal), 400u);
+    EXPECT_NE(std::get<2>(signal).find("No worker with required capabilities"),
+              std::string::npos);
+
+    // 判死透出 message：TASK::0002 恰一条，含判死类型与任务标识。
+    ASSERT_EQ(pushed->size(), 1u);
+    EXPECT_NE((*pushed)[0].find("Capability deadlock"), std::string::npos);
+    EXPECT_NE((*pushed)[0].find("400"), std::string::npos);
+
+    // 无信号 db 查询返回 false。
+    auto none = master.get_db_failure("/test/no_such_db");
+    EXPECT_FALSE(std::get<0>(none));
+
+    fly::set_message_push_func(nullptr);
     master.stop();
     wait_for_running(master, false);
     Config::instance()->set_int("fail_unscheduleable_tasks", 0);

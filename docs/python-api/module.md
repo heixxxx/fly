@@ -856,7 +856,8 @@ fly.Project                                 # 基类（供继承）
 | `_freeze_task_deps(db, depends_on)` | protected | 构造 freeze task 的 inputs（依赖对象 full_name） |
 | `get_db(name, latest=False)` | public | 取 db：默认 actual_name 精确匹配；latest=True 取同名最新版 |
 | `is_db_frozen(name, latest=False)` | public | 懒查询 master frozen 状态（master-only） |
-| `wait_frozen(name, timeout, latest=False)` | public | 阻塞等异步 freeze 完成 |
+| `wait_frozen(name, timeout, latest=False)` | public | 阻塞等异步 freeze 完成；轮询中查询 db 失败信号——上游判死时立即返回 False（不等满超时） |
+| `db_failure_reason(name, latest=False)` | public | 查询 db 失败信号（判死登记）：返回 `(task_id, error)` 或 None（master-only；DEVELOPMENT_GUIDELINES §18 判死闭环） |
 | `freeze_db(name)` / `freeze_all()` | public | 同步冻结（非 flow 路径） |
 | `list_dbs()` / `list_flows()` | public | 内省（list_dbs 返回 actual_name） |
 | `load(path)` | classmethod | 读 meta + 还原子类 + 全量 load_db（master-only） |

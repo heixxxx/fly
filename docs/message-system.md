@@ -242,13 +242,24 @@ worker 是独立子进程，用户在 master 脚本里调 `set_message_*_limit` 
 | `AGENT::0001` | INFO | worker 注册上线 | `master_agent.cpp` `on_worker_register` 回 ack 后 | 1 | 集群扩容里程碑 |
 | `AGENT::0002` | WARN | worker 断开 | `master_agent.cpp` `on_disconnect`（非 drain 期） | 1 | drain 期不打（避免刷屏） |
 | `TASK::0001` | ERROR | task 不可恢复失败 | `master_agent.cpp` `on_task_failed` FATAL 分支 | 1 | 仅 WRITE_REGISTRATION_TIMEOUT / EXECUTION_ERROR |
+| `TASK::0002` | ERROR | task 判死透出（依赖不可解/属性死锁） | `master_agent.cpp` `fail_and_persist_tasks` | 1 | 流程错误处理闭环（DEVELOPMENT_GUIDELINES §18）；内容 = 判死类型 + 任务数 + 首个任务明细；同批登记 db 失败信号（`get_db_failure`） |
 | `STOR::0001` | INFO | 数据库 freeze 完成 | `master_agent.cpp` `commit_pending_frozen` / `on_master_freeze` 广播后 | 1=task提交 / 2=master直接 | 不可逆里程碑 |
 | `STOR::0002` | INFO | merge_db 完成 | `agent.py` `merge_db` 末尾 | 1 | 跨机数据集中里程碑 |
 | `STOR::0003` | INFO | load_db 恢复完成 | `agent.py` `load_db` 返回前 | 1 | 系统就绪里程碑 |
 | `STOR::0004` | ERROR | merge_db 删源失败（重试后） | `agent.py` merge 清理路径 | 2 | 提醒手动删除残留源 .dat |
 | `STOR::0005` | FATAL | 存储数据损坏（校验预算耗尽） | `data_service.cpp` tier2 / `database.cpp` trailer | 0 | fatal：码 80 退出 + master 联动（§14） |
+| `LIBR::0001` | WARN | merge 抛弃重复 cell（保留首份） | `lib_parser.py` merge 路径 | 0 | 库版本混用迹象 |
+| `LIBR::0002` | WARN | 解析成功但 0 cell（空库兜底） | `lib_parser.py` 收尾 | 0 | 返回空容器 + 提醒 |
+| `LIBR::0003` | ERROR | 部分 lib 文件解析失败（兜底跳过） | `lib_flow.py` `_make_finalize` | 0 | 流程错误处理范式 §18：成功部分照常产出 LIBLibrary |
+| `LIBR::0004` | FATAL | 全部 lib 文件解析失败 | `lib_flow.py` `_make_finalize` | 0 | fatal：码 80 退出 + master 联动（范式 (a)） |
+| `DSGN::0010` | WARN | 层引用未定义（条目级丢弃） | `ds_resolve_layer_id`（adapter/pipeline 各调用点） | 0 | throw 治理 2026-09-12：rect/wire 逐条、via 整条 + 计数 |
 | `DSGN::0011` | FATAL | 层级树构建失败（多根/零根/环/不对齐） | `ds_merge.cpp` `ds_build_hier_tree` | 0 | fatal（§14；D22 2026-09-12 改 fatal） |
 | `DSGN::0012` | FATAL | name hasher 权威段损坏 | `ds_name_hasher.h` 反序列化校验 | 0 | fatal（§14） |
+| `DSGN::0013` | WARN | S8 分区决策 alpha 非法值回退 | `ds_partition.cpp` / `ds_flow.py` 边界 | 0 | target_partitions 解析失败/非正目标密度等 |
+| `DSGN::0014` | ERROR | 部分 cell lef 文件解析失败（兜底跳过） | `ds_flow.py` `_cell_lef_merge_task` | 0 | 范式 (b)：空产物照常汇总，cell 缺失由 fake cell 承接（DSGN::0007） |
+| `DSGN::0015` | FATAL | 全部 cell lef 文件解析失败 | `ds_flow.py` `_cell_lef_merge_task` | 0 | fatal：与 lib 全败同口径（范式 (a)） |
+| `DSGN::0016` | FATAL | DEF 文件语法/格式错误 | `ds_def_adapter.cpp` S4/S5a/S5b | 0=S4 头 / 1=S5a / 2=S5b | fatal：design db 数据不完整无意义（范式 (a)） |
+| `DSGN::0017` | FATAL | tech lef 文件语法/格式错误 | `ds_lef_adapter.cpp` `ds_parse_tech_lef` | 0 | fatal：层表来源损坏无法兜底（范式 (a)） |
 | `SOLVER::0001` | INFO | RAS 求解进度 | `ras_graph.py` `ras_graph_check` | 2=每10轮 / 1=收敛 | 迭代收敛观察 |
 
 **注册位置**：C++ 侧 id 在 `MasterAgent::start()` 注册（`MessageRegistry::instance().register_id`）；Python 侧在模块顶层注册（`fly.register_message_id`，agent.py / ras_graph.py）。

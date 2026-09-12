@@ -29,6 +29,7 @@
 #include <signal.h>
 #include <memory>
 #include <functional>
+#include <tuple>
 #include <utility>
 
 namespace fly {
@@ -47,6 +48,16 @@ struct FailedTaskRecord {
 struct FailedTaskFile {
     CMVector<FailedTaskRecord> records_;
     FLY_SERIALIZE(records_);
+};
+
+// db 失败信号（流程错误处理闭环，2026-09-13 裁定范式）：task 判死时按归属
+// db 登记，wait_frozen 轮询查询——下游等待方立即感知失败而非傻等满超时。
+// 信号不主动清除：wait_frozen 检查顺序 frozen=True 优先，信号仅影响未冻结
+// 等待（frozen 成功的 db 信号无意义——可能来自同 db 早期独立 run 的残留）。
+struct DbFailureSignal {
+    uint64_t task_id_ = 0;
+    CMString error_;   // 判死原因（依赖/属性明细）
+    CMString kind_;    // 判死类型（依赖不可解 / 属性死锁）
 };
 
 class MasterAgent {
@@ -114,6 +125,9 @@ public:
     CMVector<uint64_t> get_completed_tasks() const;
     CMVector<uint64_t> get_failed_tasks() const;
     CMString get_task_error(uint64_t task_id) const;
+    // db 失败信号查询（Python wait_frozen 轮询 + 测试直调）：返回
+    // (has_signal, task_id, error)。信号不主动清除（见 DbFailureSignal 注释）。
+    std::tuple<bool, uint64_t, CMString> get_db_failure(const CMString& db_path) const;
 
     CMVector<uint64_t> get_idle_workers() const;
 
@@ -623,6 +637,10 @@ private:
     // frozen_dbs_ + 广播，task 失败/崩溃按 task_id 回滚清除（防永久死锁）。
     CMUnorderedMap<CMString, uint64_t> pending_frozen_dbs_;
     mutable std::mutex frozen_dbs_mutex_;
+    // db 失败信号表（判死 → Python wait_frozen 感知，见 DbFailureSignal）。
+    // 并发封装（DEVELOPMENT_GUIDELINES §13）；写入点 fail_and_persist_tasks
+    //（schedule_mutex_ 区内）与 reactor 线程读（get_db_failure）并发。
+    ConcurrentUnorderedMap<CMString, DbFailureSignal> db_failure_signals_;
     static std::atomic<uint64_t> remote_task_counter_;
 
     // ── Merge task 跟踪（fly.merge_db）──────────────────────────────────
@@ -693,10 +711,16 @@ private:
 
     // schedule_tasks 的 locality 预计算段（锁外执行，见 cpp 注释）。
     void compute_locality_hints(bool locality_on);
-    // 统一「判死 → 持久化」收尾：依赖不可解 / 属性死锁两处同构
-    //（组 error 由 make_error 回调产生）。
+    // 统一「判死 → 持久化 → 透出」收尾：依赖不可解 / 属性死锁两处同构
+    //（组 error 由 make_error 回调产生）。kind = 判死类型名（进 TASK::0002
+    // message 与 db 失败信号）。
     void fail_and_persist_tasks(const CMVector<uint64_t>& task_ids,
-                                const std::function<CMString(uint64_t)>& make_error);
+                                const std::function<CMString(uint64_t)>& make_error,
+                                const CMString& kind);
+    // db 失败信号登记（判死 task 归属 db 非空时；首个信号保留——同 db 多
+    // task 判死以首个为诊断代表）。
+    void register_db_failure(const CMString& db_path, uint64_t task_id,
+                             const CMString& error, const CMString& kind);
     void assign_task_to_worker(uint64_t task_id, uint64_t worker_id);
     void update_dependency_location_cache(const CMString& object_name, uint64_t worker_id, const CMString& host, int32_t port);
     void heartbeat_check_loop();

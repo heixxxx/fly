@@ -104,6 +104,18 @@ src/emir/<子模块>/
 - **编程错误守卫不适用本类**：如 `DSNameHasherT::check_not_sealed` 等接口
   契约违反（`std::logic_error`）保留 throw——那是代码缺陷，不是数据损坏。
 
+### 7.2 流程级错误处理：二元处置范式（2026-09-13）
+
+§7.1 覆盖「不可恢复数据损坏」；对**流程任务**（建库 flow 的解析/汇总任务）
+的运行期错误，另按二元处置范式执行——(a) 错误导致后续流程完全无法推进 →
+fatal message（码 80）结束整个 run；(b) 可继续 → 任务内兜底、**仍产出下游
+依赖的数据对象**（依赖链保持满足）+ error message 提醒。**禁止第三态**
+（任务失败且不产出数据、下游依赖断裂的失败悬挂）。判定标准、emir 各场景
+处置实例（lib/cell lef 单文件失败兜底、全败/DEF/tech lef fatal）与判死
+闭环说明见 [docs/DEVELOPMENT_GUIDELINES.md](../DEVELOPMENT_GUIDELINES.md)
+§18「流程级错误处理」。文件不可读 / 类型不匹配仍属本节第一类 raise 场景：
+入口校验同步抛异常拦截（不建库、不起任务）。
+
 ## 8. 加载语义
 
 - **emir 一次性加载全部子模块**：`import emir` 后全部功能可用；新子模块立项即在 `emir/__init__.py` 追加聚合；

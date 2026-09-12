@@ -1094,3 +1094,44 @@ def some_task(db):
   wait_obj 包装的本地 API（as_task 任务函数不适用——那会绕过任务提交语义）；
 - 框架支撑（wait_obj wrapper 的 `deps` 方法与 `run_direct` 公共 API）由 design db
   R9 批次提供（含单测：deps 解析正确、run_direct 零等待调用）。
+
+## 18. 流程级错误处理（二元处置范式）
+
+> 2026-09-13 用户裁定范式，源于真实故障（.lef 误传 build_lib_db → 解析任务
+> FAILED → freeze task 被判死 → 无 ERROR 透出、db 无失败信号、等待方傻等满
+> 自设超时）。
+
+**范式原文**：流程任务出现错误时的二元处置——(a) 若错误导致后续流程完全无
+法推进：发 fatal message（`MSG_FATAL_EXIT`，码 80）结束整个 run；(b) 若可
+继续：任务内部兜底处理，**仍须产出后续流程依赖的数据对象**（保持依赖链满
+足），并发 error message 让用户感知。**禁止第三态**（失败悬挂：任务失败且
+不产出数据、下游依赖断裂）。
+
+### 18.1 二元判定标准
+
+| 判定 | 处置 | 机制 |
+|------|------|------|
+| (a) 下游完全无法推进（数据不完整无意义 / 来源数据损坏） | fatal message 结束整个 run | C++ `MSG_FATAL_EXIT("<ID>", source, 80, ...)`；Python `fly.fatal_message("<ID>", source, ...)`——worker 触发时 master 联动 fast_exit，双侧同码 80 |
+| (b) 可继续（单条目/单文件问题，成功部分仍有价值） | 任务内兜底：跳过 + 空产物照常产出 + error message | 任务**不得 FAILED**（不抛异常）；产物形态保持下游依赖链满足；`MSG("<ID>", ...)`（ERROR 级）列出跳过内容与原因 |
+
+已裁定的场景处置实例（emir）：单个 lib 文件语法错误 → (b) 跳过该文件 +
+LIBR::0003 + 其余文件照常产出；lib 全部文件失败 → (a) LIBR::0004；单个
+cell lef 语法错误 → (b) 跳过 + DSGN::0014（引用由 fake cell 承接）；
+cell lef 全部失败 → (a) DSGN::0015；DEF 文件语法错误 → (a) DSGN::0016
+（design db 数据不完整无意义）；tech lef 语法错误 → (a) DSGN::0017（层表
+来源损坏）。文件不可读 / 类型不匹配仍属 dev-rules §7 第一类：入口同步抛
+异常拦截（不建库、不起任务）。
+
+### 18.2 判死闭环（安全网，非正常路径）
+
+框架对上游数据永久缺失的依赖任务有判死检测（依赖不可解 / 属性死锁，见
+`MasterAgent::schedule_tasks`）：判死时发 `TASK::0002`（ERROR 级）透出
+判死类型 + 任务数 + 首个任务明细，并按任务归属 db 登记失败信号（
+`get_db_failure` 查询）；Python `Project.wait_frozen` 每轮轮询该信号——
+有信号立即返回 `False`（不等满超时），`Project.db_failure_reason(name)`
+返回 `(task_id, error)`。
+
+**判死仅作安全网**：正常流程应在任务级完成 18.1 的二元处置；判死触发即
+代表流程实现违反范式（某个本应兜底的任务抛了异常，或依赖对象永不产出）。
+信号不主动清除——`wait_frozen` 检查顺序 frozen 优先，信号仅影响未冻结
+等待（frozen 成功的 db 请忽略可能的历史残留信号）。

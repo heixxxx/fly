@@ -143,13 +143,17 @@ def build_design_db(self, name: str, def_paths: list, lef_paths: list,
     """
     import os
 
-    # ── Step 1: 检查输入（文件存在性，schema 无法覆盖；master 侧前置）──
+    # ── Step 1: 检查输入（文件存在性 + LEF/DEF 形态嗅探，schema 无法覆盖；
+    #    master 侧前置）──
+    from .ds_utils import sniff_def_header, sniff_lef_header
     for p in lef_paths:
         if not os.path.isfile(p):
             raise FileNotFoundError(f"build_design_db: lef file not found: {p}")
+        sniff_lef_header(p)
     for p in def_paths:
         if not os.path.isfile(p):
             raise FileNotFoundError(f"build_design_db: def file not found: {p}")
+        sniff_def_header(p)
 
     # ── Step 2: 建库（DesignDb，role="design"）──
     db = self._create_db(name, db_cls=DesignDb)

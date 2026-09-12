@@ -9,6 +9,7 @@
 #include <emir/design/cpp/ds_def_adapter.h>
 #include <emir/design/cpp/ds_lef_adapter.h>
 #include <emir/design/cpp/ds_merge.h>
+#include <common/testing/cpp/test_helpers.h>
 
 #include <gtest/gtest.h>
 
@@ -186,7 +187,7 @@ TEST(DsDefHeaderTest, DuplicatePortKeepsFirst) {
     EXPECT_NE(p.port_names[0], p.port_names[1]);
 }
 
-TEST(DsDefNegativeTest, UnreadableAndSyntaxErrorRaise) {
+TEST(DsDefNegativeTest, UnreadableFileRaises) {
     DSStack stack = make_stack_from_tech_lef();
     CMVector<DSCell> block_cells;
     CMVector<CMString> port_names;
@@ -194,16 +195,28 @@ TEST(DsDefNegativeTest, UnreadableAndSyntaxErrorRaise) {
     CMVector<DSViaCell> def_vias;
     DSDefParseStats stats;
 
-    // 文件不可读（dev-rules §7 第一类）
+    // 文件不可读（dev-rules §7 第一类，保持 raise）
     EXPECT_THROW(ds_parse_def_header("/nonexistent/no.def", stack,
                                      block_cells, port_names, port_geoms,
                                      def_vias, stats),
                  std::runtime_error);
-    // 语法错误：TECH lef 文件当 DEF 解析（LEF 语法非 DEF 语法）
-    EXPECT_THROW(ds_parse_def_header(test_data("tech_synth.lef").string(),
-                                     stack, block_cells, port_names,
-                                     port_geoms, def_vias, stats),
-                 std::runtime_error);
+}
+
+TEST(DsDefNegativeTest, SyntaxErrorFatalsWithCode80) {
+    // 范式 (a)（2026-09-13 裁定，dev-rules §7.2）：DEF 语法错误 = design db
+    // 数据不完整无意义 → fatal message DSGN::0016（码 80 退出）。场景：
+    // TECH lef 文件当 DEF 解析（LEF 语法非 DEF 语法，defrRead 非 0）。
+    DSStack stack = make_stack_from_tech_lef();
+    CMVector<DSCell> block_cells;
+    CMVector<CMString> port_names;
+    DSPinGeometry port_geoms;
+    CMVector<DSViaCell> def_vias;
+    DSDefParseStats stats;
+    fly::test::expect_fatal_exit_code(
+        [&] { ds_parse_def_header(test_data("tech_synth.lef").string(),
+                                  stack, block_cells, port_names,
+                                  port_geoms, def_vias, stats); },
+        80);
 }
 
 TEST(DsDefRoundTripTest, ProductsIntoDesignRoundTrip) {

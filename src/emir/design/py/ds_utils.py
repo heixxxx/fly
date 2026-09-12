@@ -22,6 +22,38 @@ def _check_readable(path: str) -> None:
         raise FileNotFoundError(f"design parse: input file missing: {path}")
 
 
+def _sniff_lefdef_header(path: str, required_keywords: list, what: str) -> None:
+    """入口防呆嗅探（秒级）：读文件前 1KB 剥注释/空白，校验 LEF/DEF 头部
+    关键字（不区分大小写）。
+
+    仅做类型判定、不做完整语法检查（2026-09-13 裁定）——非 LEF/DEF 文件
+    误传 build_design_db 在此秒级拦截 ValueError（含路径与实际读到的头部
+    字符，dev-rules §7 第一类变体），不建库、不起解析任务。
+    """
+    import re
+    with open(path, "r", errors="replace") as f:
+        head = f.read(1024)
+    # 剥 LEF/DEF 行注释（# 到行尾）
+    stripped = re.sub(r"#[^\n]*", " ", head)
+    tokens = [t.upper() for t in stripped.split()]
+    missing = [k for k in required_keywords if k not in tokens]
+    if missing:
+        raise ValueError(
+            f"build_design_db: '{path}' does not look like a {what} file "
+            f"— expected keyword(s) {'/'.join(required_keywords)} in "
+            f"header; got: {stripped.strip()[:80]!r}")
+
+
+def sniff_lef_header(path: str) -> None:
+    """lef 防呆嗅探：头部须含 VERSION 关键字。"""
+    _sniff_lefdef_header(path, ["VERSION"], "lef")
+
+
+def sniff_def_header(path: str) -> None:
+    """def 防呆嗅探：头部须含 VERSION + DESIGN 关键字（design section）。"""
+    _sniff_lefdef_header(path, ["VERSION", "DESIGN"], "def")
+
+
 def ds_parse_tech_one(path: str, stack):
     """S1：解析 tech lef → 填充 stack，返回 via 集合（含 VIARULE 展开的
     模板 via cell，㉚；stats 留在导出面，不进 task 数据通道）。"""
@@ -30,9 +62,12 @@ def ds_parse_tech_one(path: str, stack):
 
 
 def ds_parse_cell_one(path: str, stack):
-    """S2：解析 cell lef → (临时 design, pin 几何, via 集合)。"""
+    """S2：解析 cell lef → (临时 design, pin 几何, via 集合, stats)。
+
+    stats.parse_failed_count=1 = 语法错误兜底（adapter 已清空产物，范式
+    2026-09-13——任务不 FAILED，失败标记随产物交 flow 汇总层处置）。"""
     _check_readable(path)
-    return ds_parse_cell_lef(path, stack)[:3]
+    return ds_parse_cell_lef(path, stack)
 
 
 def ds_parse_def_one(path: str, stack):

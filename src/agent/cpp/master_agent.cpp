@@ -110,9 +110,11 @@ void MasterAgent::start() {
 
     // 注册 master 侧用到的流程性 message id（白名单 + 级别绑定）。
     // STOR::0001: 数据库 freeze 完成；TASK::0001: task 不可恢复失败；
+    // TASK::0002: task 判死透出（依赖不可解/属性死锁，流程错误处理闭环）；
     // AGENT::0001: worker 注册；AGENT::0002: worker 断开；FLY::0001: master drain 完成。
     fly::MessageRegistry::instance().register_id("STOR::0001", fly::LogLevel::INFO);
     fly::MessageRegistry::instance().register_id("TASK::0001", fly::LogLevel::ERROR);
+    fly::MessageRegistry::instance().register_id("TASK::0002", fly::LogLevel::ERROR);
     fly::MessageRegistry::instance().register_id("AGENT::0001", fly::LogLevel::INFO);
     fly::MessageRegistry::instance().register_id("AGENT::0002", fly::LogLevel::WARN);
     // AGENT::0003: worker 判死导致数据全灭（依赖 task 已快速失败，ERROR 级提醒用户）。
@@ -1009,19 +1011,49 @@ void MasterAgent::compute_locality_hints(bool locality_on) {
     }
 }
 
-// 统一的「判死 → 持久化」收尾（依赖不可解 / 属性死锁两处同构）：
-// 组 error → make_failed_record → graph 摘除 → metadata 记失败 → 持久化。
+// 统一的「判死 → 持久化 → 透出」收尾（依赖不可解 / 属性死锁两处同构）：
+// 组 error → make_failed_record → graph 摘除 → metadata 记失败 → 持久化
+// → db 失败信号登记 + TASK::0002 判死透出（用户终端立即可见——此前只有
+// ERR 调试日志，用户脚本无感知傻等，2026-09-13 流程错误处理闭环裁定）。
 void MasterAgent::fail_and_persist_tasks(
         const CMVector<uint64_t>& task_ids,
-        const std::function<CMString(uint64_t)>& make_error) {
+        const std::function<CMString(uint64_t)>& make_error,
+        const CMString& kind) {
+    CMString first_error;
     for (uint64_t task_id : task_ids) {
         CMString error_msg = make_error(task_id);
+        if (first_error.empty()) first_error = error_msg;
         FailedTaskRecord record = make_failed_record(task_id, error_msg);
         graph_->remove_task(task_id);
         metadata_->fail_task(task_id, error_msg);
         persist_failed_task(record);
+        register_db_failure(record.submission_.owner_db_path_, task_id,
+                            error_msg, kind);
         ERR("Task {} failed: {}", task_id, error_msg);
     }
+    if (!task_ids.empty()) {
+        MSG("TASK::0002", 1, "{}: {} task(s) failed permanently (first "
+            "task {}: {})", kind, task_ids.size(), task_ids[0], first_error);
+    }
+}
+
+void MasterAgent::register_db_failure(const CMString& db_path, uint64_t task_id,
+                                      const CMString& error, const CMString& kind) {
+    if (db_path.empty()) return;   // 无归属 task（internal 等）不登记
+    DbFailureSignal signal;
+    signal.task_id_ = task_id;
+    signal.error_ = error;
+    signal.kind_ = kind;
+    // 首个信号保留（诊断代表）；信号不主动清除——wait_frozen frozen 优先，
+    // 信号仅影响未冻结等待（DbFailureSignal 注释）。
+    db_failure_signals_.insert(db_path, std::move(signal));
+}
+
+std::tuple<bool, uint64_t, CMString> MasterAgent::get_db_failure(
+        const CMString& db_path) const {
+    auto found = db_failure_signals_.find(db_path);
+    if (!found) return {false, 0, CMString()};
+    return {true, found->task_id_, found->error_};
 }
 
 void MasterAgent::schedule_tasks() {
@@ -1104,7 +1136,7 @@ void MasterAgent::schedule_tasks() {
                             dep_list += deps[i];
                         }
                         return "Unresolvable data dependencies: [" + dep_list + "]";
-                    });
+                    }, "Unresolvable data dependencies");
                 }
             }
         }
@@ -1135,7 +1167,7 @@ void MasterAgent::schedule_tasks() {
                     cap_list += requirements.capabilities_[i];
                 }
                 return "No worker with required capabilities: [" + cap_list + "]";
-            });
+            }, "Capability deadlock");
         }
     }
 }
