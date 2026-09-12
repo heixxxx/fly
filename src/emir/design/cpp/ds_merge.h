@@ -53,15 +53,17 @@ int ds_merge_block_build(DSDesign& dst, DSBlockBuildData& block_data);
 // 引用关系 + S5b 的 via instance 统计计数——via 区间为四接口之区间反查
 // 与 S9 global via id 换算的输入，故树构建时点在 S5b 之后）。blocks 与
 // nets 按 def_paths 序一一对齐（指针借用、不拷贝大体量产物；数量不一
-// 致 = 调用方契约错误 raise）；主 DEF 判定 = 唯一「无父者」（其 block
-// cell 不被任何其他 DEF 的实例引用；多根/零根 → 格式错误 raise，D22——
-// 两表皆空时返回空树，兼容无 DEF 建库）。自根 DFS 展开：block 定义的
-// 每次引用 = 一个 block instance 节点（定义 DAG 共享、实例层面为树），
-// 深度优先序连续分配 instance/net/via 三类区间（instance 长度 =
-// instance_total 含 local 0 占位槽；net/via 长度 = 定义净计数，local id
-// 从 1 起）。环检测：DFS 入环 → 格式错误 raise。block 定义的 local 0
-//（自身占位）→ 该 block instance 的 global id（⑧，存节点
-// self_global_id_）。
+// 致 = 调用方契约错误，fatal 退出）；主 DEF 判定 = 唯一「无父者」（其
+// block cell 不被任何其他 DEF 的实例引用；多根/零根 → 不可恢复结构错误
+// fatal，D22/DSGN::0011——两表皆空时返回空树，兼容无 DEF 建库）。自根
+// DFS 展开：block 定义的每次引用 = 一个 block instance 节点（定义 DAG
+// 共享、实例层面为树），深度优先序连续分配 instance/net/via 三类区间
+// （instance 长度 = instance_total 含 local 0 占位槽；net/via 长度 =
+// 定义净计数，local id 从 1 起）。环检测：DFS 入环 → fatal（DSGN::0011）。
+// fatal = MSG_FATAL_EXIT：进程以码 80 退出 + master 联动（2026-09-12
+// 裁定，原 raise 改 fatal message；见 docs/message-system.md fatal 章节）。
+// block 定义的 local 0（自身占位）→ 该 block instance 的 global id
+//（⑧，存节点 self_global_id_）。
 DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
                               const CMVector<const DSNetBuildData*>& nets,
                               const DSDesign& design);

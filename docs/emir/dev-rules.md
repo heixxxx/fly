@@ -87,6 +87,23 @@ src/emir/<子模块>/
 - 无意义的字段/中间产物**直接删除**，不以"保留以防万一"为由留存；
 - 领域对象记录自身**来源可追溯信息**（如来源库名、来源文件完整路径），多源合并后仍可回答"来自哪里"。
 
+### 7.1 第三类处置：不可恢复数据/结构错误 → fatal message（2026-09-12）
+
+上述两类 raise 之外，还存在第三类场景——**不可恢复的数据/结构损坏**（层级树
+多根/环、name hasher 权威段损坏、存储校验预算耗尽等）：数据完整性已破坏，
+兜底放行只会把坏数据带进下游，此时进程应以 fatal message 退出：
+
+- 处置方式：`MSG_FATAL_EXIT("DSGN::0011", 0, 80, ...)`（C++）/ 
+  `fly.fatal_message("DSGN::0011", 0, "...")`（Python）——本地落盘（FATAL 级
+  别、立即 flush、豁免配额）后进程以码 80 退出，worker 触发时 master 联动
+  fast_exit（失败在途任务 + StopNow 停全部 worker）并同码退出。
+- 机制详情见 [docs/message-system.md](../message-system.md) §14「fatal message」；
+  退出码 80 保留原因（避开 77=std::terminate / 78=signal）同文 §14.6。
+- 已按此处置的场景：DSGN::0011（层级树构建失败，原 raise 改 fatal）、
+  DSGN::0012（hasher 权威段损坏）、STOR::0005（存储数据损坏）。
+- **编程错误守卫不适用本类**：如 `DSNameHasherT::check_not_sealed` 等接口
+  契约违反（`std::logic_error`）保留 throw——那是代码缺陷，不是数据损坏。
+
 ## 8. 加载语义
 
 - **emir 一次性加载全部子模块**：`import emir` 后全部功能可用；新子模块立项即在 `emir/__init__.py` 追加聚合；

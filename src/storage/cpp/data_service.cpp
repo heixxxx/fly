@@ -16,6 +16,7 @@
 #include <common/serialization/cpp/serialization_macros.h>
 #include <core/cpp/config.h>
 #include <log/cpp/logger.h>
+#include <message/cpp/message_macros.h>  // MSG_FATAL_EXIT（STOR::0005 数据损坏 fatal）
 #include <chrono>
 #include <algorithm>
 #include <filesystem>
@@ -1299,9 +1300,12 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::try_tier2_
         auto replicas = lookup_all_remote_idx(object_name);
         if (replicas.empty()) {
             if (corruption_refetch_mode) {
-                throw DataCorruptionError(
-                    "[FATAL-DATA-CORRUPTION] object '" + object_name +
-                    "': checksum failure persisted, no healthy replica left after one re-fetch");
+                // 零容忍（§5）→ fatal（STOR::0005，码 80 退出 + master 联动；
+                // 2026-09-12 裁定：原 DataCorruptionError 上抛改 fatal message，
+                // 重取唯一可接受结果 = 干净通过全部校验，不存在降级消费路径）。
+                MSG_FATAL_EXIT("STOR::0005", 0, 80,
+                    "[FATAL-DATA-CORRUPTION] object '{}': checksum failure persisted, "
+                    "no healthy replica left after one re-fetch", object_name);
             }
             return {false, nullptr, {}, {}, false};  // no local replicas → need TIER3
         }
@@ -1328,9 +1332,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::try_tier2_
                     corruption_refetch_mode = true;  // 消耗唯一一次重取预算
                     continue;  // 立即换下一副本（无退避）
                 }
-                throw DataCorruptionError(
-                    "[FATAL-DATA-CORRUPTION] object '" + object_name +
-                    "': checksum failure persisted after one re-fetch");
+                MSG_FATAL_EXIT("STOR::0005", 0, 80,
+                    "[FATAL-DATA-CORRUPTION] object '{}': checksum failure persisted after one re-fetch",
+                    object_name);
             }
             if (cb_rerr == ReadError::OBJECT_NOT_FOUND) {
                 remove_remote_location(object_name, loc.worker_id_);
@@ -1343,9 +1347,9 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::try_tier2_
 
             // 重取模式中任何非校验失败同样不可接受（§5：CHECKSUM→断连=fatal）。
             if (corruption_refetch_mode) {
-                throw DataCorruptionError(
-                    "[FATAL-DATA-CORRUPTION] object '" + object_name +
-                    "': re-fetch after checksum failure failed (replica error)");
+                MSG_FATAL_EXIT("STOR::0005", 0, 80,
+                    "[FATAL-DATA-CORRUPTION] object '{}': re-fetch after checksum failure failed (replica error)",
+                    object_name);
             }
         }
 
@@ -1353,10 +1357,10 @@ std::tuple<bool, FlyBufferPtr, CMString, CMString, bool> DataService::try_tier2_
         // the network deadline.
         if (corruption_refetch_mode) {
             // 走到这里 = 重取轮全失败（如全 NETWORK 被上面跳过？NETWORK 会
-            // 即时 throw，NOT_FOUND 已 remove——此分支兜底：重取模式不进退避循环）。
-            throw DataCorruptionError(
-                "[FATAL-DATA-CORRUPTION] object '" + object_name +
-                "': re-fetch round exhausted after checksum failure");
+            // 即时 fatal，NOT_FOUND 已 remove——此分支兜底：重取模式不进退避循环）。
+            MSG_FATAL_EXIT("STOR::0005", 0, 80,
+                "[FATAL-DATA-CORRUPTION] object '{}': re-fetch round exhausted after checksum failure",
+                object_name);
         }
         if (!saw_not_ready &&
             std::chrono::steady_clock::now() - net_start >= kNetworkDeadline) {

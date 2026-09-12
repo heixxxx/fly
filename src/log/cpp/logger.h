@@ -18,6 +18,10 @@ enum class LogLevel : uint8_t {
     INFO = 1,
     WARN = 2,
     ERROR = 3,
+    // fatal message 专用（MSG_FATAL_EXIT 本地落盘级别）：与 ERROR 同为立即
+    // flush（log() 的 level >= WARN 判定覆盖），区别在语义——该行写出后进程
+    // 将以错误码 _exit（见 message 模块 fatal_exit）。不作为常规日志级别使用。
+    FATAL = 4,
 };
 
 class Logger {

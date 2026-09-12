@@ -89,6 +89,7 @@ cc_test(
     srcs = ["ds_hier_test.cpp"],
     deps = [
         "@googletest//:gtest_main",
+        "//src/common/testing:fly_common_testing",
         "//src/emir/design/cpp:fly_emir_design_ds_types",
     ],
     linkstatic = True,
@@ -137,6 +138,7 @@ cc_test(
         "data/bad_syntax.lef",
         "data/cells_synth.lef",
         "data/tech_synth.lef",
+        "data/tech_synth_dbu4000.lef",
     ],
     deps = [
         "@googletest//:gtest_main",

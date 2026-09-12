@@ -17,11 +17,12 @@
 //                             引用判别（defi instance() = "PIN"）；
 //   DSNetGeometryExpandNode   路由几何展开：wire 段（layer id + 宽度——
 //                             special 显式 / 普通 net 回填 stack 层缺省
-//                             宽）与 rect 项；via 命名引用解析（⑪ via
-//                             cell 权威表：⑫ design:: 前缀名优先 →
-//                             plain 名回退；未定义跳过 + 计数，DSGN::
-//                             0008 数据源）；VIADATA 阵列展开为多个
-//                             via instance（⑩ 专用 id 空间从 1 起、
+//                             宽）与 rect 项（层引用未定义 → 条目级丢弃
+//                             + 计数，DSGN::0010）；via 命名引用解析
+//                             （⑪ via cell 权威表：⑫ design:: 前缀名
+//                             优先 → plain 名回退；未定义跳过 + 计数，
+//                             DSGN::0008 数据源）；VIADATA 阵列展开为
+//                             多个 via instance（⑩ 专用 id 空间从 1 起、
 //                             无 name）；
 //   DSNetDensityNode          金属/通孔计数进 DSDensityGrid 逐层分列通
 //                             道（⑥ 分类分层保存）：wire 段按宽度展开

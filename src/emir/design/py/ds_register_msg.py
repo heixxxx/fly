@@ -14,6 +14,14 @@ import 本模块完成注册。仅注册过的 id 才会被 MSG 打印/发送，
 - DSGN::0008: 网内容解析引用未定义 via cell（跳过该 via instance +
   计数提醒，不 raise 不拦截）
 - DSGN::0009: 网内容解析统计汇总（网数/连接/几何/via instance 数）
+- DSGN::0010: 层引用未定义（层名不在 stack 层表）：条目级丢弃（rect/
+  via/wire/obs 等按条目类型）+ skipped_layer_ref_count 计数，不 raise
+  （dev-rules §7 兜底）
+- DSGN::0011: 层级树构建失败（多根/零根、nets/blocks 不对齐、环）——
+  不可恢复结构错误，fatal message（进程码 80 退出 + master 联动，
+  dev-rules §7 第三类处置）
+- DSGN::0012: name hasher 权威段损坏（反序列化重建后计数/秩域仍不符）——
+  不可恢复数据错误，fatal message（同 DSGN::0011）
 """
 
 from fly import register_message_id
@@ -27,3 +35,6 @@ register_message_id("DSGN::0006", "WARN")
 register_message_id("DSGN::0007", "WARN")
 register_message_id("DSGN::0008", "WARN")
 register_message_id("DSGN::0009", "INFO")
+register_message_id("DSGN::0010", "WARN")
+register_message_id("DSGN::0011", "FATAL")
+register_message_id("DSGN::0012", "FATAL")

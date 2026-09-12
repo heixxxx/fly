@@ -26,7 +26,7 @@ Python API 层将 C++ 底层 API 包装为用户友好的高层接口，提供�
 | 失败恢复 | `restart_failed_tasks` |
 | Project | `open_project`, `load_project`, `migrate_project`, `Project`, `register_flow` |
 | Agent 缓存 | `put_cache`, `get_cache`, `has_cache`, `remove_cache`, `clear_cache` |
-| 消息日志 | `message`, `register_message_id`, `set_message_global_limit`, `set_message_id_limit`, `set_message_domain_limit`（详见 [message-system.md](message-system.md)） |
+| 消息日志 | `message`, `fatal_message`（不可恢复错误：进程码 80 退出 + master 联动，见 [message-system.md](message-system.md) §14）, `register_message_id`, `set_message_global_limit`, `set_message_id_limit`, `set_message_domain_limit`（详见 [message-system.md](message-system.md)） |
 | MapReduce | `MapReduceJob` |
 | UserDoc | `UserDoc`, `Schema`, `document`, `help`, `register_module`（详见 [userdoc.md](userdoc.md)） |
 | Monitor | `launch_monitor_gui` |

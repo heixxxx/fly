@@ -7,6 +7,10 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace fly {
 
@@ -288,6 +292,52 @@ TEST_F(MessageRegistryTest, ExtractDomain) {
     EXPECT_EQ(MessageRegistry::extract_domain("SOLVER::0047"), "SOLVER");
     EXPECT_EQ(MessageRegistry::extract_domain("SYS::0001"), "SYS");
     EXPECT_EQ(MessageRegistry::extract_domain("NOSEPARATOR"), "NOSEPARATOR");
+}
+
+// ---- fatal 路径（MSG_FATAL_EXIT / fly::fatal_exit）----
+
+// fatal 宏核心行为（fork 隔离——宏以 _exit 结束，子进程内断言无法回传）：
+//   1. 豁免配额：per-id limit=0（完全禁止）下仍输出并调用分发函数；
+//   2. 记 trigger 计数（写回文件供父进程断言）；
+//   3. 分发后 _exit(80)。
+TEST_F(MessageRegistryTest, FatalExitExemptsQuotaAndExits80) {
+    CMString dir = fly::test::qa_tmp_dir("fly_msg_fatal_test");
+    std::filesystem::create_directories(dir);
+    const CMString dispatch_marker = dir + "/dispatch_marker.txt";
+
+    // 子进程体：配额 0（fatal 必须豁免）；分发写标记文件（含 trigger 快照）。
+    const auto child = [&]() {
+        reg.reset_for_testing();
+        reg.register_id("TEST_FATAL::0001", LogLevel::FATAL);
+        reg.set_id_limit("TEST_FATAL::0001", 0);
+        set_fatal_dispatch_func([&](const CMString& domain_id, int32_t source,
+                                    int32_t exit_code, const CMString& msg) {
+            std::ofstream ofs(dispatch_marker);
+            ofs << domain_id << "|" << source << "|" << exit_code << "|" << msg
+                << "|trigger=" << reg.trigger_id_counts_snapshot()["TEST_FATAL::0001"]
+                << "\n";
+        });
+        MSG_FATAL_EXIT("TEST_FATAL::0001", 7, 80, "fatal text {}", 42);
+    };
+    fly::test::expect_fatal_exit_code(child, 80);
+
+    // 分发被调用（配额 0 豁免），参数原样透传，trigger 计数仍 +1。
+    std::ifstream ifs(dispatch_marker);
+    CMString line;
+    ASSERT_TRUE(std::getline(ifs, line));
+    EXPECT_EQ(line, "TEST_FATAL::0001|7|80|fatal text 42|trigger=1");
+    std::filesystem::remove_all(dir);
+}
+
+// 未注册 id 走 fatal：WARN 提示后仍 _exit(80)（不因注册缺失改变退出语义）。
+TEST_F(MessageRegistryTest, FatalExitUnregisteredIdStillExits80) {
+    const auto child = [&]() {
+        reg.reset_for_testing();
+        // 未注册仍走分发（fatal 豁免注册校验——退出语义不因注册缺失改变）。
+        set_fatal_dispatch_func([](const CMString&, int32_t, int32_t, const CMString&) {});
+        MSG_FATAL_EXIT("TEST_FATAL_UNREG::0001", 0, 80, "not registered");
+    };
+    fly::test::expect_fatal_exit_code(child, 80);
 }
 
 }  // namespace fly

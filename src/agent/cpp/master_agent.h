@@ -472,6 +472,10 @@ private:
     std::atomic<bool> draining_{false};
     std::atomic<bool> shutdown_requested_{false};
     std::atomic<bool> graceful_stop_started_{false};
+    // fatal 停机线程已拉起标志（幂等：worker fatal 到达 / master 自身 fatal
+    // 分发共用——只拉起一次 detached fast_exit 线程，与 graceful_stop_started_
+    // 独立：fatal 路径完成后必须 _exit(80)，优雅路径则交还 Python 主流程）。
+    std::atomic<bool> fatal_exit_started_{false};
     // fast_exit 请求标志：打断 stop() 的 drain 等待（SIGTERM/致命错误到达时，
     // 正在优雅等待的 drain 转快速路径——先 fail 善后再走 StopNow 广播）。
     std::atomic<bool> fast_exit_requested_{false};
@@ -770,6 +774,14 @@ private:
     // Message 日志系统 handlers。
     void on_log_message(uint64_t conn_id, const LogMessage& msg);
     void on_message_count_report(uint64_t conn_id, const MessageCountReportMessage& msg);
+    // worker fatal message 到达（FATAL_MESSAGE）：sink 落盘 terminal（豁免配额）
+    // 后 fast_exit 停机并以同码退出。详见 docs/message-system.md fatal 章节。
+    void on_fatal_message(uint64_t conn_id, const FatalMessage& msg);
+    // 拉起 fatal 停机线程（幂等，fatal_exit_started_ 防重）：detached 线程执行
+    // fast_exit(reason) → _exit(exit_code)。严禁在 reactor/handler/heartbeat
+    // 线程直接 fast_exit（stop_impl 会 join 该类线程 → join 自身死锁）——
+    // 复刻 SIGTERM 处理（trigger_graceful_shutdown）的独立线程先例。
+    void start_fatal_exit_thread(int32_t exit_code, const CMString& reason);
     // 进程结束前收集各 worker 的 message 计数并打印 summary（stop Phase 内调用）。
     void collect_and_print_message_summary();
 

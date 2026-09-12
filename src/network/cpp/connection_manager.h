@@ -62,6 +62,14 @@ public:
     virtual CMString get_peer_info(uint64_t conn_id) const {
         return "unsupported";
     }
+
+    // 该连接用户态写缓冲的未排空字节数（send 遇 EAGAIN 部分写时积压在
+    // manager 内、由 poll 线程 drain 的数据）。连接不存在 / 已排空返回 0。
+    // fatal message 送达保证（发送 + 排空等待）与退出前缓冲观测用。
+    virtual size_t pending_send_bytes(uint64_t conn_id) const {
+        (void)conn_id;
+        return 0;
+    }
 };
 
 CMUniquePtr<ConnectionManager> create_connection_manager(const CMString& type);

@@ -154,6 +154,7 @@ CMString Logger::level_str(LogLevel level) const {
         case LogLevel::INFO:  return "INFO";
         case LogLevel::WARN:  return "WARN";
         case LogLevel::ERROR: return "ERROR";
+        case LogLevel::FATAL: return "FATAL";
         default: return "UNKNOWN";
     }
 }

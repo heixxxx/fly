@@ -98,10 +98,14 @@ enum class MessageType : uint8_t {
                                  //   连接独占至 END。
     PEER_STREAM_END = 67,        // worker → peer (业务RPC流式)：流结束对账（rpc_id +
                                  //   total_uncompressed + 块数 + 消费字节数）——payload 就绪。
+    FATAL_MESSAGE = 68,          // worker → master: fatal message 上报（worker 侧不可恢复
+                                 //   错误，发送后等写缓冲排空再 _exit）。master 收到即
+                                 //   fast_exit（失败在途任务 + StopNow 杀全部 worker）→
+                                 //   master _exit(同码)。见 docs/message-system.md fatal 章节。
 };
 
 inline bool is_valid_message_type(uint8_t raw) {
-    return raw >= 1 && raw <= 67;
+    return raw >= 1 && raw <= 68;
 }
 
 struct MessageHeader {
@@ -973,6 +977,25 @@ struct LogMessage {
 
     static constexpr MessageType msg_type_ = MessageType::LOG_MESSAGE;
     FLY_SERIALIZE(header_, worker_id_, level_, domain_id_, source_, msg_);
+};
+
+// worker → master: fatal message 上报（MSG_FATAL_EXIT / fly.fatal_message 的
+// worker 侧送达通道）。与 LogMessage 字段同构，语义差异：
+//   - 豁免 master 打印配额（必然落 message.log + terminal，FATAL 级别行）。
+//   - master 收到即 fast_exit（失败在途任务 + StopNow 杀全部 worker）→
+//     master _exit(exit_code_)，与 worker 同码退出（fly 全局统一 80）。
+//   - worker 发送后轮询 pending_send_bytes 等用户态写缓冲排空（有界超时），
+//     超时/断连仅 WARN 后照常退出——本地 debug log 的 FATAL 行已落盘。
+struct FatalMessage {
+    MessageHeader header_;
+    uint64_t worker_id_ = 0;
+    CMString domain_id_;   // "DOMAIN::NNNN"
+    int32_t source_ = 0;   // 触发位置标识（业务自定义，仅打印标注）
+    int32_t exit_code_ = 80;  // master 联动退出码（worker _exit 同码）
+    CMString msg_;
+
+    static constexpr MessageType msg_type_ = MessageType::FATAL_MESSAGE;
+    FLY_SERIALIZE(header_, worker_id_, domain_id_, source_, exit_code_, msg_);
 };
 
 // master → worker (broadcast): 请求 worker 上报本地 message 触发次数（summary 屏障）。

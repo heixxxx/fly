@@ -65,6 +65,12 @@ static void resource_monitor_loop() {
 
 static void terminate_handler() {
     fprintf(stderr, "\n=== FATAL: std::terminate ===\n");
+    // 可控退出路径退出前刷新 log（未落盘的 DEBUG/INFO 缓冲至多 64KB/1s，
+    // WARN/ERROR 写时已立即 flush）——本 handler 为正常线程上下文（异常
+    // 机制触发），flush 持锁安全；sig_handler 的 SIGABRT/SIGSEGV 崩溃
+    // 上下文则不可加（Logger mutex 可能正被崩溃线程持有，flush 死锁比
+    // 丢缓冲更糟）
+    fly::Logger::instance()->flush();
     auto ex = std::current_exception();
     if (ex) {
         try {

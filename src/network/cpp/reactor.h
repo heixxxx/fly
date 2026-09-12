@@ -106,6 +106,12 @@ public:
     // 前后判断其存活性」等决策使用。
     bool is_connected(uint64_t conn_id) const { return transport_->is_connected(conn_id); }
 
+    // conn 用户态写缓冲未排空字节数（转发 transport；连接不存在返回 0）。
+    // fatal message 送达保证：send 成功后轮询本值 == 0 再退出。
+    size_t pending_send_bytes(uint64_t conn_id) const {
+        return transport_->pending_send_bytes(conn_id);
+    }
+
     template<typename T>
     bool send(uint64_t conn_id, const T& msg);
 

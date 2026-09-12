@@ -287,16 +287,15 @@ FLY_EXPORT_CLASS(fly::DataService, "EXStgDataService")
         return ds.get_remote_workers(name);
     })
     FLY_EXPORT_DEF("try_read_remote", [](fly::DataService& ds, const CMString& name) -> fly_export::tuple {
-        try {
-            auto [found, result] = ds.try_read_remote(name);
-            return fly_export::make_tuple(
-                found,
-                fly_export::bytes(result.data_buffer_.data(), result.data_buffer_.size()),
-                result.py_name_,
-                result.can_still_produce_);
-        } catch (const fly::DataCorruptionError& e) {
-            throw_fatal_corruption(name, e.what());
-        }
+        // 零容忍 §5：数据损坏路径 2026-09-12 起在 C++ 侧 fatal（STOR::0005，
+        // MSG_FATAL_EXIT 码 80 退出 + master 联动），不再以 DataCorruptionError
+        // 上抛——原 catch 转 Python RuntimeError 的路径已不可达，随之删除。
+        auto [found, result] = ds.try_read_remote(name);
+        return fly_export::make_tuple(
+            found,
+            fly_export::bytes(result.data_buffer_.data(), result.data_buffer_.size()),
+            result.py_name_,
+            result.can_still_produce_);
     })
     FLY_EXPORT_METHOD("drain_write_back", &fly::DataService::drain_write_back)
     FLY_EXPORT_METHOD("stop_write_back", &fly::DataService::stop_write_back)

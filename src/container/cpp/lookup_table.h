@@ -57,15 +57,20 @@ public:
     CMVector<double> values_;
 
     // 用模板展开为可插值状态：补齐 variable_names_ 与未覆盖轴的 index_sets_。
-    // values_.size() 与展开后轴长度乘积不符时抛 std::invalid_argument。
-    void resolve_template(const CMLookupTableTemplate& tmpl);
+    // 返回 false = 补全失败（表数据与模板不一致：轴数不符 / 轴为空 / values
+    // 数量与展开后轴长乘积不符）——调用方应抛弃该表并经 message 提醒（上游
+    // 数据入口防线，不抛异常、不打日志，判定原因见调用方）。失败时本表内容
+    // 可能已被部分改写（variable_names_/index_sets_），调用方必须整体抛弃。
+    bool resolve_template(const CMLookupTableTemplate& tmpl);
 
     // 已就绪（dim 匹配、各轴索引非空升序、values 数量匹配）。
     bool is_ready() const;
 
     // N 维多线性插值。coords 顺序 = values_ 各轴顺序（index_1 最慢）。
-    // 坐标超界 clamp 到端点；维度/数据不匹配抛 std::invalid_argument。
-    double interpolate(const CMVector<double>& coords) const;
+    // 坐标超界 clamp 到端点。返回 false = 插值前置条件不满足（表未就绪 /
+    // coords 数量与维度不符）——最后防线，正常流程不触达（is_ready 通过后
+    // 才插值），不打日志；result 不写，调用方兜底处理。
+    bool interpolate(const CMVector<double>& coords, double& result) const;
 
     FLY_SERIALIZE(name_, dim_, template_name_, variable_names_, index_sets_, values_)
 };

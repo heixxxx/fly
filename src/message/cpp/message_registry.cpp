@@ -68,6 +68,13 @@ bool MessageRegistry::try_emit(const CMString& domain_id) {
     return true;
 }
 
+void MessageRegistry::record_trigger_only(const CMString& domain_id) {
+    CMString domain = extract_domain(domain_id);
+    std::lock_guard<std::mutex> lock(mutex_);
+    trigger_id_counts_[domain_id]++;
+    trigger_domain_counts_[domain]++;
+}
+
 CMUnorderedMap<CMString, uint64_t> MessageRegistry::trigger_id_counts_snapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return trigger_id_counts_;

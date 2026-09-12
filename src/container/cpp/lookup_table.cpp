@@ -1,9 +1,10 @@
 #include <container/cpp/lookup_table.h>
 
+#include <log/cpp/logger.h>
+
 #include <algorithm>
 #include <cmath>
 #include <numeric>
-#include <stdexcept>
 
 namespace fly {
 
@@ -21,19 +22,19 @@ size_t row_major_offset(const CMVector<size_t>& axis_sizes,
 
 }  // namespace
 
-void CMLookupTable::resolve_template(const CMLookupTableTemplate& tmpl) {
+bool CMLookupTable::resolve_template(const CMLookupTableTemplate& tmpl) {
+    // 错误处理语义（2026-09-12 裁定，原 invalid_argument 改 bool）：补全失败
+    // = 表格数据与模板不一致（上游数据入口防线）——WARN 一条（带表名与原因，
+    // 防刷屏不逐轴打），调用方应抛弃该表并经 message 提醒。
     if (tmpl.variable_names_.size() != tmpl.index_sets_.size()) {
-        throw std::invalid_argument(
-            "CMLookupTable::resolve_template: template '" + name_ +
-            "' axis count mismatch (names=" +
-            std::to_string(tmpl.variable_names_.size()) + ", indexes=" +
-            std::to_string(tmpl.index_sets_.size()) + ")");
+        WARN("CMLookupTable::resolve_template: template '{}' axis count mismatch (names={}, indexes={})",
+             name_, tmpl.variable_names_.size(), tmpl.index_sets_.size());
+        return false;
     }
     if (static_cast<size_t>(dim_) != tmpl.variable_names_.size()) {
-        throw std::invalid_argument(
-            "CMLookupTable::resolve_template: table '" + name_ + "' dim " +
-            std::to_string(dim_) + " != template dim " +
-            std::to_string(tmpl.variable_names_.size()));
+        WARN("CMLookupTable::resolve_template: table '{}' dim {} != template dim {}",
+             name_, dim_, tmpl.variable_names_.size());
+        return false;
     }
 
     variable_names_ = tmpl.variable_names_;
@@ -46,19 +47,19 @@ void CMLookupTable::resolve_template(const CMLookupTableTemplate& tmpl) {
             index_sets_[d] = tmpl.index_sets_[d];
         }
         if (index_sets_[d].empty()) {
-            throw std::invalid_argument(
-                "CMLookupTable::resolve_template: table '" + name_ +
-                "' axis " + std::to_string(d) + " empty after resolve");
+            WARN("CMLookupTable::resolve_template: table '{}' axis {} empty after resolve",
+                 name_, d);
+            return false;
         }
         expected *= index_sets_[d].size();
     }
 
     if (values_.size() != expected) {
-        throw std::invalid_argument(
-            "CMLookupTable::resolve_template: table '" + name_ +
-            "' values size " + std::to_string(values_.size()) +
-            " != expected " + std::to_string(expected));
+        WARN("CMLookupTable::resolve_template: table '{}' values size {} != expected {}",
+             name_, values_.size(), expected);
+        return false;
     }
+    return true;
 }
 
 bool CMLookupTable::is_ready() const {
@@ -79,16 +80,14 @@ bool CMLookupTable::is_ready() const {
     return values_.size() == expected;
 }
 
-double CMLookupTable::interpolate(const CMVector<double>& coords) const {
+bool CMLookupTable::interpolate(const CMVector<double>& coords, double& result) const {
+    // 最后防线，正常流程不触达（is_ready 通过后才插值）：前置条件不满足直接
+    // return false（不打日志），result 不写，调用方兜底处理。
     if (!is_ready()) {
-        throw std::invalid_argument(
-            "CMLookupTable::interpolate: table '" + name_ + "' not ready");
+        return false;
     }
     if (coords.size() != static_cast<size_t>(dim_)) {
-        throw std::invalid_argument(
-            "CMLookupTable::interpolate: table '" + name_ + "' expects " +
-            std::to_string(dim_) + " coords, got " +
-            std::to_string(coords.size()));
+        return false;
     }
 
     // 每轴：clamp 坐标 → 相邻格点对 (i, i+1) + 归一化权重 t。
@@ -116,7 +115,7 @@ double CMLookupTable::interpolate(const CMVector<double>& coords) const {
 
     // 2^dim 角点加权（dim ≤ 3 → 最多 8 角点）
     const size_t n_corners = size_t{1} << dim_;
-    double result = 0.0;
+    result = 0.0;
     CMVector<size_t> axis_pos(dim_);
     for (size_t corner = 0; corner < n_corners; ++corner) {
         double w = 1.0;
@@ -135,7 +134,7 @@ double CMLookupTable::interpolate(const CMVector<double>& coords) const {
         }
         result += w * values_[row_major_offset(axis_sizes, axis_pos)];
     }
-    return result;
+    return true;
 }
 
 }  // namespace fly

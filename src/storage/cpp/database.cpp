@@ -8,6 +8,7 @@
 #include <log/cpp/logger.h>
 #include <common/runtime/cpp/writer_id.h>
 #include <common/runtime/cpp/worker_context.h>
+#include <message/cpp/message_macros.h>  // MSG_FATAL_EXIT（STOR::0005 数据损坏 fatal）
 #include <future>
 #include <common/runtime/cpp/write_context_hash.h>
 #include <filesystem>
@@ -528,7 +529,8 @@ std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMStrin
     // ── 零容忍 trailer 校验（chunked-transfer-design §5）──
     // 取回的 record 必须解析出合法 trailer（块 CRC 的验证发生在解压出口）。
     // 失败 = 缓存/本地盘/传输损坏 → 失效缓存 + 一次 bypass 重取（远程副本
-    // 优先；无副本即败）→ 仍败 → DataCorruptionError（FATAL，上层转 task 失败）。
+    // 优先；无副本即败）→ 仍败 → fatal（STOR::0005，码 80 退出 + master 联动；
+    // 2026-09-12 裁定：原 DataCorruptionError 上抛改 fatal message）。
     {
         ObjectHeader hdr;
         size_t trailer_len = 0;
@@ -544,9 +546,9 @@ std::pair<FlyBufferPtr, CMString> Database::read_object_compressed(const CMStrin
                 comp_py_name = py2;
                 comp_hash = h2;
             } else {
-                throw fly::DataCorruptionError(
-                    "[FATAL-DATA-CORRUPTION] object '" + full +
-                    "': trailer verify failed after one re-fetch");
+                MSG_FATAL_EXIT("STOR::0005", 0, 80,
+                    "[FATAL-DATA-CORRUPTION] object '{}': trailer verify failed after one re-fetch",
+                    full);
             }
         }
     }

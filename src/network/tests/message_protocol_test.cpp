@@ -698,8 +698,32 @@ TEST(MessageProtocolTest, IsValidMessageTypeCoversVarTypes) {
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::DATA_DIGEST)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::PEER_STREAM_START)));
     EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::PEER_STREAM_END)));
-    EXPECT_FALSE(is_valid_message_type(68));  // upper bound is 67
+    EXPECT_TRUE(is_valid_message_type(static_cast<uint8_t>(MessageType::FATAL_MESSAGE)));
+    EXPECT_FALSE(is_valid_message_type(69));  // upper bound is 68
     EXPECT_FALSE(is_valid_message_type(0));
+}
+
+// FatalMessage: worker → master fatal 上报（豁免配额 + master 联动退出）。
+TEST(MessageProtocolTest, FatalMessageRoundTrip) {
+    FatalMessage msg;
+    msg.header_.type_ = MessageType::FATAL_MESSAGE;
+    msg.worker_id_ = 7;
+    msg.domain_id_ = "STOR::0005";
+    msg.source_ = 0;
+    msg.exit_code_ = 80;
+    msg.msg_ = "object '/db:obj': checksum failure persisted after one re-fetch";
+
+    CMString encoded = MessageProtocol::encode(msg);
+    CMString buffer = encoded;
+
+    FatalMessage decoded;
+    ASSERT_TRUE(MessageProtocol::decode(buffer, decoded));
+    EXPECT_EQ(decoded.worker_id_, 7u);
+    EXPECT_EQ(decoded.domain_id_, "STOR::0005");
+    EXPECT_EQ(decoded.source_, 0);
+    EXPECT_EQ(decoded.exit_code_, 80);
+    EXPECT_EQ(decoded.msg_, "object '/db:obj': checksum failure persisted after one re-fetch");
+    EXPECT_TRUE(buffer.empty());
 }
 
 // MonitorSampleMessage: worker → master 成组负载采样（epoch 升序、成组补发）。

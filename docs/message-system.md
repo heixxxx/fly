@@ -245,6 +245,10 @@ worker 是独立子进程，用户在 master 脚本里调 `set_message_*_limit` 
 | `STOR::0001` | INFO | 数据库 freeze 完成 | `master_agent.cpp` `commit_pending_frozen` / `on_master_freeze` 广播后 | 1=task提交 / 2=master直接 | 不可逆里程碑 |
 | `STOR::0002` | INFO | merge_db 完成 | `agent.py` `merge_db` 末尾 | 1 | 跨机数据集中里程碑 |
 | `STOR::0003` | INFO | load_db 恢复完成 | `agent.py` `load_db` 返回前 | 1 | 系统就绪里程碑 |
+| `STOR::0004` | ERROR | merge_db 删源失败（重试后） | `agent.py` merge 清理路径 | 2 | 提醒手动删除残留源 .dat |
+| `STOR::0005` | FATAL | 存储数据损坏（校验预算耗尽） | `data_service.cpp` tier2 / `database.cpp` trailer | 0 | fatal：码 80 退出 + master 联动（§14） |
+| `DSGN::0011` | FATAL | 层级树构建失败（多根/零根/环/不对齐） | `ds_merge.cpp` `ds_build_hier_tree` | 0 | fatal（§14；D22 2026-09-12 改 fatal） |
+| `DSGN::0012` | FATAL | name hasher 权威段损坏 | `ds_name_hasher.h` 反序列化校验 | 0 | fatal（§14） |
 | `SOLVER::0001` | INFO | RAS 求解进度 | `ras_graph.py` `ras_graph_check` | 2=每10轮 / 1=收敛 | 迭代收敛观察 |
 
 **注册位置**：C++ 侧 id 在 `MasterAgent::start()` 注册（`MessageRegistry::instance().register_id`）；Python 侧在模块顶层注册（`fly.register_message_id`，agent.py / ras_graph.py）。
@@ -599,3 +603,103 @@ bazel sandbox 里 genrule 无法访问 `.git`。`local = True` 禁用 sandbox，
 - QA：`test_message_limit_sync.py`（worker 不设配额，验证 master 设的同步生效）；
   `test_message_dynamic_quota.py`（动态改大改小，验证两套计数解耦）。
 - 全量 message QA + 全量 QA 不回归。
+
+---
+
+## 14. fatal message — 不可恢复错误的进程退出通道（2026-09-12）
+
+### 14.1 FATAL 级别语义
+
+`LogLevel` 新增 `FATAL = 4`（DEBUG=0/INFO=1/WARN=2/ERROR=3 之后），nanobind 侧
+`EXLogLevel` 同步导出。与常规级别的区别：
+
+- **豁免配额**：fatal 不受 worker 三层发送配额与 master 打印配额限制——必然输出
+  （本地 debug log + message.log + terminal）；触发次数仍经 `record_trigger_only`
+  记入 trigger 计数（summary 可见），但不判定、不动 emit 计数。
+- **立即 flush**：与 WARN/ERROR 同走写时立即 flush 路径（`level >= WARN` 判定覆盖），
+  且退出前显式 `Logger::flush()` 双保险——`_exit` 跳过静态析构也不丢日志。
+- **进程退出**：FATAL 级别日志写出后进程随即以错误码退出（见 14.2），因此
+  FATAL 不是常规日志级别，仅由 fatal 路径使用。
+
+### 14.2 MSG_FATAL_EXIT 宏流程
+
+```cpp
+// 用法（不返回；调用点后续代码不可达）
+MSG_FATAL_EXIT("STOR::0005", 0, 80, "object '{}' corrupt: {}", name, detail);
+```
+
+流程（顺序即红线：**落盘 → 分发 → 退出**），实现在 `fly::fatal_exit`
+（`message_dispatch.cpp`），Python `fly.fatal_message` 共用同一实现：
+
+1. id 未注册 → WARN 提示（与 `MSG` 宏一致；未注册是编程错误，必须可见）后
+   跳过级别查表——**仍退出**。
+2. 豁免 emit 配额（`MessageRegistry::record_trigger_only`：仅记 trigger 计数）。
+3. `Logger::log(FATAL)` 写本地 debug log（带 `[DOMAIN::NNNN] <source>` 前缀，
+   立即 flush）+ 显式 `Logger::flush()`。
+4. fatal 分发：调用 `set_fatal_dispatch_func` 注入的函数（与
+   `set_message_push_func` 完全同构的指针注入——message 模块不依赖
+   network/agent）；未绑定（单测 / 非 agent 进程）则跳过。
+5. `_exit(exit_code)`：跳过静态析构（日志与 sink 已显式 flush，数据安全）。
+
+### 14.3 worker 送达保证（发送 + 写缓冲排空等待）
+
+worker 进程的 fatal 分发绑定为 `WorkerAgent::send_fatal_to_master`：
+
+1. `reactor_->send(master_conn_, FatalMessage{...})`（同步写出语义：进内核
+   缓冲或用户态写缓冲）。
+2. send 成功后轮询 `pending_send_bytes(master_conn_) == 0`（新接口，转发
+   `TcpConnectionManager::write_buffers_`，持 `conn_mutex_` 只读），间隔 10ms，
+   上限 `kFatalDeliveryTimeoutMs = 2000`ms。
+3. 发送失败 / 超时 → `WARN("fatal message delivery to master unconfirmed ...")`
+   后返回，**不阻塞退出**——本地 debug log 的 FATAL 行已落盘，master 侧还有
+   断连判死兜底。
+4. 线程安全：可在任意 task 线程调用（reactor send 持 per-conn 锁；
+   `pending_send_bytes` 只读）。
+
+网络消息 `FATAL_MESSAGE = 68`（worker → master），字段与 `LogMessage` 同构：
+`worker_id_ / domain_id_ / source_ / exit_code_ / msg_`。
+
+### 14.4 master 联动（on_fatal_message → 独立线程 fast_exit → _exit 同码）
+
+master 收到 `FATAL_MESSAGE` → `MasterAgent::on_fatal_message`：
+
+1. `MessageSink::handle_remote(..., honor_quota=false)`：写 message.log +
+   terminal（FATAL 级别、带 `[workerN]` 标注，**豁免打印配额**）。
+2. **不得在 handler lane / reactor 线程直接 fast_exit**（`stop_impl` 会 join
+   heartbeat 等线程，join 自身族死锁）——复刻 SIGTERM 处理
+   （`trigger_graceful_shutdown`）的独立线程先例：detached 线程执行
+   `fast_exit("fatal message from worker N: ...")`（跳过 drain、失败在途
+   任务、`StopNow` 广播杀全部 worker），完成后 `_exit(msg.exit_code_)`。
+   `fatal_exit_started_` 原子标志保证只拉起一次。
+3. **与优雅停机的竞态收口**：fatal 到达时若 Python 侧 `agent.stop()` 优雅
+   停机已先占 `draining_`（常见链路：worker fatal → task 判死 → master
+   任务侧触发 stop），`fast_exit` 仅置 `fast_exit_requested_` 打断标志 +
+   持锁 notify 后返回，实际善后（failed record、StopNow 广播、日志
+   flush）由占用方沿快速路径完成。fatal 线程随后有界等待 `running_`
+   归零（10ms 轮询、**上限 30s 兜底强退**——保证退出码 80 的确定性、
+   进程不悬挂），归零后 `Logger::flush()` 收口再 `_exit(exit_code)`。
+   外部观测方（等 master 退出的脚本/QA）以退出码 80 为准，最坏等待
+   30s 量级。
+
+master 自身 fatal：分发函数绑定 = `MessageSink::handle_local(FATAL, ...,
+honor_quota=false)`（本地落盘）+ 同样的 detached 线程 `fast_exit` →
+`_exit(exit_code)`。
+
+### 14.5 Python API
+
+```python
+fly.fatal_message("STOR::0005", 0, "object '/db:obj' corrupt", exit_code=80)
+```
+
+薄包装（`src/fly/__init__.py`）→ `_fly_message` 底层 `fatal_message` → C++
+`fly::fatal_exit` 同路径（含 `_exit`），**不返回**。
+
+### 14.6 适用范围与退出码
+
+- **适用**：不可恢复的数据/结构损坏——层级树多根/环（DSGN::0011）、name
+  hasher 权威段损坏（DSGN::0012）、存储校验预算耗尽（STOR::0005）。编程
+  错误守卫（如 `check_not_sealed` 等 `logic_error`）**保留 throw**，不适用
+  fatal；EMIR raise 白名单之外的新处置类型见 `docs/emir/dev-rules.md` §7。
+- **退出码 80**：避开已占用的 77（`std::terminate`）与 78（signal 崩溃捕获，
+  见 `main.cpp`）；worker 异常退出另有 3（REGISTRATION_REJECTED 等）。
+  master 联动退出同码，外部观测方按 `rc == 80` 判定 fatal message 退出。

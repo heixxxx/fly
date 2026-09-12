@@ -1,5 +1,7 @@
 #include <emir/design/cpp/ds_types.h>
 
+#include <message/cpp/message_macros.h>
+
 #include <algorithm>
 #include <cassert>
 #include <functional>
@@ -24,6 +26,17 @@ uint32_t DSStack::add_layer(DSLayer&& layer) {
 uint32_t DSStack::find_layer(const CMString& name) const {
     // R7 ㊸：直查序列化 hasher（原 layer_index_ 惰性重建已删除）
     return layer_names_.get_id(name);
+}
+
+uint32_t ds_resolve_layer_id(const CMString& name, const DSStack& stack) {
+    const uint32_t id = stack.find_layer(name);
+    if (id == DSStack::kNoLayer) {
+        // 层引用未定义兜底（dev-rules §7：不 raise）：DSGN::0010 提醒 +
+        // 返回哨兵，条目级丢弃决策与计数由调用方按条目类型执行
+        MSG("DSGN::0010", 0,
+            "undefined layer reference '{}' — entry dropped", name);
+    }
+    return id;
 }
 
 uint32_t DSStack::find_or_add_layer(DSLayer&& layer) {

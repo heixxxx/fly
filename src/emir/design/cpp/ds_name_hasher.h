@@ -66,6 +66,7 @@
 #include <common/serialization/cpp/serialization_macros.h>
 #include <common/types/cpp/property_macro.h>
 #include <container/cpp/container_aliases.h>
+#include <message/cpp/message_macros.h>  // MSG_FATAL_EXIT（DSGN::0012 权威段损坏）
 
 #include <algorithm>
 #include <cassert>
@@ -602,14 +603,17 @@ public:
             if (fly_count_ != o.backend_.size()) {
                 o.rebuild_backend();
                 if (fly_count_ != o.backend_.size()) {
-                    throw std::runtime_error(
+                    // 权威段损坏（重建兜底后仍不符）= 不可恢复数据错误：
+                    // fatal message（DSGN::0012，码 80 退出 + master 联动；
+                    // 2026-09-12 裁定，原 FLY_DECODE 同类异常改 fatal）。
+                    MSG_FATAL_EXIT("DSGN::0012", 0, 80,
                         "DSNameHasherT: registered name count mismatch "
                         "after backend rebuild (corrupt data)");
                 }
             }
             if (o.lcp_form_ != 0 &&
                 o.id_to_rank_.size() < o.backend_.size()) {
-                throw std::runtime_error(
+                MSG_FATAL_EXIT("DSGN::0012", 0, 80,
                     "DSNameHasherT: LCP rank domain smaller than "
                     "registered name count (corrupt data)");
             }

@@ -4,14 +4,16 @@
 #include <log/cpp/logger.h>
 #include <stdexcept>
 
-// 字符串级别 → LogLevel。仅 INFO/WARN/ERROR 合法（DEBUG 不支持 message）。
+// 字符串级别 → LogLevel。仅 INFO/WARN/ERROR/FATAL 合法（DEBUG 不支持 message）。
+// FATAL 仅供 fatal message id 注册（MSG_FATAL_EXIT / fly.fatal_message 路径）。
 // 非法级别字符串直接抛错，避免静默降级导致注册了错误类型（review §4.2）。
 static fly::LogLevel parse_level(const fly::CMString& s) {
     if (s == "INFO") return fly::LogLevel::INFO;
     if (s == "WARN") return fly::LogLevel::WARN;
     if (s == "ERROR") return fly::LogLevel::ERROR;
+    if (s == "FATAL") return fly::LogLevel::FATAL;
     throw std::invalid_argument(
-        "invalid message level '" + s + "': must be INFO / WARN / ERROR");
+        "invalid message level '" + s + "': must be INFO / WARN / ERROR / FATAL");
 }
 
 // Python 层 MSG 等价逻辑：查 id 绑定级别（未注册丢弃）+ 配额 + 写本地 debug log + push_message。
@@ -60,6 +62,14 @@ FLY_EXPORT_FUNCTION("set_domain_limit", [](const fly::CMString& domain, int32_t 
 // source 为触发位置标识（int，仅打印标注）。
 FLY_EXPORT_FUNCTION("send_message", [](const fly::CMString& domain_id, int32_t source, const fly::CMString& msg) {
     py_message(domain_id, source, msg);
+});
+
+// Python 侧 fatal message 入口（fly.fatal_message 薄包装的底层）：与 C++
+// MSG_FATAL_EXIT 宏完全同路径（本地落盘 → fatal 分发 → _exit），不返回。
+// exit_code：进程退出码（fly 全局统一 80，避开 77=std::terminate / 78=signal）。
+FLY_EXPORT_FUNCTION("fatal_message", [](const fly::CMString& domain_id, int32_t source,
+                                        const fly::CMString& msg, int32_t exit_code) {
+    fly::fatal_exit(domain_id, source, exit_code, msg);
 });
 
 // master 模式：把 MSG 宏的 push 绑定为 MessageSink 本进程直写。

@@ -267,6 +267,9 @@ CMSharedPtr<T> Database::read_object(const CMString& object_name, const CMString
     // cache="none": bypass all cache tiers, read directly from source.
     if (cache == "none") {
         FlyBufferPtr comp_data;
+        // 防御深度（2026-09-12 起 C++ 侧数据损坏已改 fatal STOR::0005，本
+        // catch 当前不可达）：一旦未来新增 DataCorruptionError throw 点，
+        // C++ read_object 仍不外抛（消费方是测试/内部对象）。
         try {
             auto [cd, pn] = read_object_compressed(object_name, false, true);
             comp_data = cd;
@@ -296,8 +299,8 @@ CMSharedPtr<T> Database::read_object(const CMString& object_name, const CMString
     }
 
     // Miss → read compressed data (low-tier cache transparent in read_object_compressed).
-    // 零容忍（§5）：DataCorruptionError（校验预算耗尽）→ C++ 路径不抛
-    //（消费方是测试/内部对象），转 nullptr + ERR。
+    // 零容忍（§5）→ fatal（STOR::0005，2026-09-12 起在 read 路径直接退出进程）。
+    // 下方 catch 为防御深度保留（当前不可达）：C++ read_object 语义仍是不外抛。
     FlyBufferPtr comp_data;
     try {
         auto [cd, pn] = read_object_compressed(object_name, false, false);

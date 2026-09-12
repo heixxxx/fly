@@ -32,6 +32,15 @@
 
 extern char** environ;
 
+namespace {
+
+// fatal message 送达保证的有界等待（send + 写缓冲排空轮询）：上限 2s，
+// 轮询间隔 10ms。超时/断连仅 WARN，不阻塞进程退出（用户裁定 2026-09-12）。
+constexpr int64_t kFatalDeliveryTimeoutMs = 2000;
+constexpr int64_t kFatalDeliveryPollIntervalMs = 10;
+
+}  // namespace
+
 namespace fly {
 
 WorkerAgent::WorkerAgent(uint64_t worker_id, const CMString& master_host, uint16_t master_port,
@@ -125,6 +134,14 @@ void WorkerAgent::start() {
     // 非 task 上下文 context func 为 null → push no-op（符合需求）。
     fly::set_message_push_func([](fly::LogLevel level, const fly::CMString& domain_id, int32_t source, const fly::CMString& msg) {
         fly::WorkerAgentContext::push_message(static_cast<uint8_t>(level), domain_id, source, msg);
+    });
+
+    // fatal 分发（MSG_FATAL_EXIT / fly.fatal_message → _exit 前的最后动作）：
+    // 发送 FatalMessage 给 master 并等写缓冲排空（有界超时）。详见
+    // send_fatal_to_master 与 docs/message-system.md fatal 章节。
+    fly::set_fatal_dispatch_func([this](const fly::CMString& domain_id, int32_t source,
+                                        int32_t exit_code, const fly::CMString& msg) {
+        send_fatal_to_master(domain_id, source, exit_code, msg);
     });
 
     data_server_host_ = ProcessInfo::instance()->data_server_host();
@@ -1128,7 +1145,10 @@ void WorkerAgent::on_stop_now(const StopNowMessage& msg) {
 #endif
     // 进程级自杀：SIGKILL 不可捕获不可拦截，内核收尸（fd 全关、地址空间消失，
     // 无半开锁/半事务中间态）。master 侧 fast_exit 已对 RUNNING task 做 fail 善后，
-    // 本侧无需也无法再上报；coverage/WBQ flush 丢失是该快速通道接受的代价。
+    // 本侧无需也无法再上报；coverage/WBQ flush 丢失是该快速通道接受的代价，
+    // 但 Logger debug log 缓冲必须先显式 flush 落盘（正常线程上下文，无死锁
+    // 风险）再自杀——退出路径零丢日志裁定（2026-09-12）。
+    Logger::instance()->flush();
     kill(getpid(), SIGKILL);
 }
 
@@ -1943,6 +1963,48 @@ void WorkerAgent::send_message_to_master(LogLevel level, const CMString& domain_
     reactor_->send(master_conn_, m);
 }
 
+void WorkerAgent::send_fatal_to_master(const CMString& domain_id, int32_t source,
+                                       int32_t exit_code, const CMString& msg) {
+    // 未注册 / 无连接：无法送达——仅 WARN（本地 debug log 的 FATAL 行已在
+    // fatal_exit 落盘），返回后调用方照常 _exit。
+    if (!registered_.load() || master_conn_.load() == 0) {
+        WARN("fatal message delivery skipped (not registered / no master connection): id={}",
+             domain_id);
+        return;
+    }
+    const uint64_t conn = master_conn_.load();
+    FatalMessage m;
+    m.worker_id_ = worker_id_;
+    m.domain_id_ = domain_id;
+    m.source_ = source;
+    m.exit_code_ = exit_code;
+    m.msg_ = msg;
+    if (!reactor_->send(conn, m)) {
+        // send 失败 = 连接已断（同步写出语义失败）。
+        WARN("fatal message delivery to master unconfirmed (conn broken or buffer pending)");
+        return;
+    }
+    // 送达保证 = 发送 + 用户态写缓冲排空：EAGAIN 积压在 write_buffers_ 的
+    // 字节由 poll 线程 drain，轮询其清空（间隔 10ms，上限 kFatalDeliveryTimeoutMs）。
+    // 排空中途连接断开必须显式判出——pending_send_bytes 对已关闭连接恒返回 0
+    //（write_buffers_ 条目随连接清除），单看它会误判「已排空」，故每轮先查
+    // is_connected（master 侧由断连判死兜底）。超时不重试不阻塞——fatal 语义
+    // 下退出优先。
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(kFatalDeliveryTimeoutMs);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!reactor_->is_connected(conn)) {
+            WARN("fatal message delivery to master unconfirmed (connection lost during drain)");
+            return;
+        }
+        if (reactor_->pending_send_bytes(conn) == 0) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(kFatalDeliveryPollIntervalMs));
+    }
+    WARN("fatal message delivery to master unconfirmed (conn broken or buffer pending)");
+}
+
 void WorkerAgent::on_message_count_request(uint64_t conn_id, const MessageCountRequestMessage& /*msg*/) {
     // summary 屏障：把本地 message 触发计数（id 级 + domain 级两套）上报给 master。
     MessageCountReportMessage report;
@@ -2582,8 +2644,9 @@ void WorkerAgent::execute_merge_object(uint64_t task_id, const CMString& short_n
     auto ds = DataService::instance();
 
     // 1. 跨机拉源对象压缩字节（用 source_full 查源命名空间的 remote_idx/local_idx）。
-    //    零容忍（§5）：DataCorruptionError（校验重取预算耗尽）→ TaskFailed 结束
-    //    本 task，不落盘坏数据、不崩溃 worker。
+    //    零容忍（§5）→ 2026-09-12 起损坏路径在 C++ read 路径直接 fatal（STOR::0005，
+    //    码 80 退出 + master 联动）。下方 catch 为防御深度保留（当前不可达）：
+    //    若未来新增 throw 点，merge task 仍以 TaskFailed 收场、不落盘坏数据。
     CMSharedPtr<FlyBuffer> comp_data;
     CMString py_name;
     CMString source_hash;

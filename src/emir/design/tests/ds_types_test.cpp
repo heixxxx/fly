@@ -26,11 +26,12 @@ CMLookupTable make_table(const char* name, double v0, double v1) {
     return t;
 }
 
-// 构造标准层堆叠：M1(routing/H) → V1(cut) → M2(routing/V)，DBU 2000
+// 构造标准层堆叠：M1(routing/H) → V1(cut) → M2(routing/V)。
+// dbu_per_micron_ 用恒基准默认 1000（裁定 ㉝：DSStack 基准恒 1000，
+// 不再构造非 1000 值）
 DSStack make_stack() {
     DSStack stack;
     stack.dbu_basis_ = "test_dbu";
-    stack.dbu_per_micron_ = 2000;
     stack.manufacturing_grid_ = 5;
 
     DSLayer m1;
@@ -141,7 +142,7 @@ TEST(DSStackTest, SerializeRoundTripAndFindLayer) {
     FLY_DECODE(blob, DSStack, back);
 
     EXPECT_EQ(back.get_dbu_basis(), "test_dbu");
-    EXPECT_EQ(back.get_dbu_per_micron(), 2000);
+    EXPECT_EQ(back.get_dbu_per_micron(), 1000);
     EXPECT_EQ(back.get_manufacturing_grid(), 5);
     ASSERT_EQ(back.layer_count(), 3u);
 
@@ -220,6 +221,28 @@ TEST(DSStackTest, LayerIdWithDuplicateNames) {
     EXPECT_EQ(stack.layer_by_id(0).get_id(), 0u);
     EXPECT_EQ(stack.layer_by_id(1).get_id(), 1u);
     EXPECT_EQ(stack.find_layer("M1"), 0u);  // 重名保留首个
+}
+
+TEST(DSStackTest, GlobalDbuBaselineConstant) {
+    // 裁定 ㉝：全局 DBU 基准恒 1000（不再跟随 tech lef 声明值）——
+    // DSStack 默认构造即恒基准；kGlobalDbuPerMicron 为单一权威来源
+    DSStack stack;
+    EXPECT_EQ(stack.get_dbu_per_micron(), 1000);
+    EXPECT_EQ(stack.get_dbu_per_micron(), DSStack::kGlobalDbuPerMicron);
+    static_assert(DSStack::kGlobalDbuPerMicron == 1000,
+                  "global DBU baseline is fixed at 1000 (裁定 ㉝)");
+}
+
+TEST(DSStackTest, ResolveLayerIdHitAndMiss) {
+    // ds_resolve_layer_id（dev-rules §7 兜底共享入口）：命中返回层 id；
+    // 未命中返回 kNoLayer 并发 DSGN::0010 提醒（条目级丢弃决策由调用方
+    // 执行；单测进程未注册 message id 时 MSG 仅打本地 WARN 日志）
+    DSStack stack = make_stack();
+
+    EXPECT_EQ(ds_resolve_layer_id("M1", stack), 0u);
+    EXPECT_EQ(ds_resolve_layer_id("V1", stack), 1u);
+    EXPECT_EQ(ds_resolve_layer_id("M2", stack), 2u);
+    EXPECT_EQ(ds_resolve_layer_id("GHOST_LAYER", stack), DSStack::kNoLayer);
 }
 
 TEST(DSDesignTest, SerializeRoundTripAllFields) {

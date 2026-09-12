@@ -116,8 +116,13 @@ class DSStack {
 public:
     // DBU 基准说明（换算系数 dbu_per_micron_）
     CMString dbu_basis_;
-    // 1 µm = N DBU
-    int32_t dbu_per_micron_ = 0;
+    // 1 µm = N DBU。裁定 ㉝：全局基准恒 1000（不再跟随 tech lef 的
+    // DATABASE MICRONS 声明值）；各 lef/def 的几何值按各自单位换算到
+    // 本基准后入库，换算一律取 kGlobalDbuPerMicron 单一权威来源
+    int32_t dbu_per_micron_ = kGlobalDbuPerMicron;
+    // 全局 DBU 基准（㉝ 恒定值；LEF 几何为 µm 浮点恒乘此值，DEF 坐标按
+    // v × 本值 / def_units 换算；lef 间 DBU 声明不一致不再校验不 raise）
+    static constexpr int32_t kGlobalDbuPerMicron = 1000;
     // 制造网格
     int32_t manufacturing_grid_ = 0;
     // 自底向上层表
@@ -158,6 +163,12 @@ public:
     FLY_SERIALIZE(dbu_basis_, dbu_per_micron_, manufacturing_grid_, layers_,
                   layer_names_)
 };
+
+// 层名解析共享入口（dev-rules §7 兜底）：命中返回层 id；未命中发
+// DSGN::0010 提醒（配额限流由 MessageRegistry try_emit 天然保证）并
+// 返回 DSStack::kNoLayer——条目级丢弃决策与计数由调用方按条目类型执行
+//（S1/S2/S4/S5b 全部层引用点经此解析，模块内不再有层引用 raise 路径）。
+uint32_t ds_resolve_layer_id(const CMString& name, const DSStack& stack);
 
 // —— 几何引用（design 业务结构）——
 
@@ -617,11 +628,14 @@ public:
     uint64_t via_instance_count = 0; // via instance 总数（VIADATA 展开后）
     // 未定义 via 引用跳过数（权威表 plain + ⑫ 前缀双未命中；DSGN::0008）
     uint64_t skipped_via_count = 0;
+    // 未定义层引用丢弃条目数（wire 段 / rect 项条目级丢弃；DSGN::0010）
+    uint64_t skipped_layer_ref_count = 0;
     // 网名不在 S5a local namemap 的防御兜底计数
     uint64_t skipped_net_count = 0;
 
     FLY_SERIALIZE(net_count, connection_count, wire_count, rect_count,
-                  via_instance_count, skipped_via_count, skipped_net_count)
+                  via_instance_count, skipped_via_count,
+                  skipped_layer_ref_count, skipped_net_count)
 };
 
 // per-DEF 网内容产物（③ 分批解析落批追加；⑬ 独立对象）：连接表 + 几何表

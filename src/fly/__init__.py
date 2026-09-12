@@ -439,8 +439,8 @@ def clear_cache():
 # Message 日志系统 — 高价值信息的远程推送与集中收集。
 # =============================================================================
 #
-# message 的级别由 id 决定：注册时绑定级别（INFO/WARN/ERROR），发送时不传级别。
-# 见 register_message_id / message。
+# message 的级别由 id 决定：注册时绑定级别（INFO/WARN/ERROR/FATAL），发送时不传级别。
+# 见 register_message_id / message / fatal_message。
 
 
 def message(domain_id: str, source: int, msg: str):
@@ -463,6 +463,30 @@ def message(domain_id: str, source: int, msg: str):
         msg: message 文本。
     """
     _msg.send_message(domain_id, source, msg)
+
+
+def fatal_message(domain_id: str, source: int, msg: str, exit_code: int = 80):
+    """发出 fatal message 后以 ``exit_code`` 退出进程（**不返回**）。
+
+    适用于**不可恢复的**数据/结构损坏（层级树多根/环、权威段损坏、存储校验
+    损坏等）——进程级 fatal 语义，非编程错误守卫（后者仍用 raise）。
+
+    与 :func:`message` 的区别：
+
+      - **豁免配额**：必然输出（本地 debug log + worker 推送 master /
+        master 直写 message.log + terminal），不受三层配额限制；触发次数仍进 summary。
+      - **进程退出**：本地落盘立即 flush 后，worker 发送 FatalMessage 给 master
+        并等待写缓冲排空（有界 2s，超时不阻塞退出），随后进程以 ``exit_code``
+        退出（默认 80，避开 77=std::terminate / 78=signal）；master 收到后
+        fast_exit（失败在途任务 + 立即停全部 worker）并以同一退出码退出。
+
+    Args:
+        domain_id: message id，如 ``"STOR::0005"``。未注册时打 WARN 提示后仍退出。
+        source: 触发位置标识（int，业务自定义，仅打印标注）。
+        msg: fatal 说明文本（损坏对象、位置、诊断信息）。
+        exit_code: 进程退出码，默认 80（fly 全局 fatal 统一码）。
+    """
+    _msg.fatal_message(domain_id, source, msg, exit_code)
 
 
 def register_message_id(domain_id: str, level: str = "INFO"):

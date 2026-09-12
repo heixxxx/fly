@@ -24,6 +24,15 @@
 
 namespace fly {
 
+namespace {
+
+// fatal 退出线程等待停机善后完成的上限：drain 被打断转快速路径后，fail task /
+// STOP_NOW / persist / reactor 停机在秒级完成；超时只是兜底（无论如何进程必须
+// 以 fatal 码退出，不悬挂）。
+constexpr int64_t kFatalExitJoinTimeoutS = 30;
+
+}  // namespace
+
 std::atomic<uint64_t> MasterAgent::remote_task_counter_{100000};
 
 MasterAgent::MasterAgent(const CMString& host, uint16_t port)
@@ -82,6 +91,16 @@ void MasterAgent::start() {
     MessageSink::instance()->init(Config::instance()->get_str("log_dir"));
     fly::set_message_push_func([](fly::LogLevel level, const fly::CMString& domain_id, int32_t source, const fly::CMString& msg) {
         MessageSink::instance()->handle_local(level, domain_id, source, msg);
+    });
+    // fatal 分发（master 自身 MSG_FATAL_EXIT / fly.fatal_message）：MessageSink
+    // 写 message.log + terminal（FATAL 级别、豁免配额），随后 detached 线程
+    // fast_exit（失败在途任务 + StopNow 杀全部 worker）→ _exit(同码)。
+    // 详见 docs/message-system.md fatal 章节。
+    fly::set_fatal_dispatch_func([this](const fly::CMString& domain_id, int32_t source,
+                                        int32_t exit_code, const fly::CMString& msg) {
+        MessageSink::instance()->handle_local(fly::LogLevel::FATAL, domain_id, source, msg,
+                                              /*honor_quota=*/false);
+        start_fatal_exit_thread(exit_code, "fatal: " + msg);
     });
     // system sink（FLY::0000 等）：master 绑定为 MessageSink，使系统 message 进 message.log + terminal。
     // 豁免 master 打印配额（honor_quota=false）—— FLY::0000 是基础信息，必须输出。
@@ -281,6 +300,11 @@ void MasterAgent::start() {
     reactor_->register_handler<LogMessage>(
         [this](uint64_t conn_id, const LogMessage& msg) {
             on_log_message(conn_id, msg);
+        });
+
+    reactor_->register_handler<FatalMessage>(
+        [this](uint64_t conn_id, const FatalMessage& msg) {
+            on_fatal_message(conn_id, msg);
         });
 
     reactor_->register_handler<MessageCountReportMessage>(
@@ -4798,6 +4822,51 @@ void MasterAgent::on_log_message(uint64_t conn_id, const LogMessage& msg) {
     // 触发发生在 worker，已由 worker 的 MessageRegistry 记录，避免 summary 双算。
     (void)conn_id;
     MessageSink::instance()->handle_remote(msg.worker_id_, msg.level_, msg.domain_id_, msg.source_, msg.msg_);
+}
+
+void MasterAgent::on_fatal_message(uint64_t conn_id, const FatalMessage& msg) {
+    // worker fatal message 到达：sink 落盘 message.log + terminal（FATAL 级别、
+    // 带 [workerN] 标注、豁免打印配额——fatal 必然输出），随后 fast_exit 停机
+    // （失败在途任务 + StopNow 杀全部 worker）→ master _exit(与 worker 同码)。
+    (void)conn_id;
+    MessageSink::instance()->handle_remote(msg.worker_id_, fly::LogLevel::FATAL, msg.domain_id_,
+                                           msg.source_, msg.msg_, /*honor_quota=*/false);
+    // 本 handler 跑在 handler lane 线程：严禁在此直接 fast_exit（stop_impl 会
+    // join heartbeat/reactor 等线程，跨线程 join 自身族死锁）——复刻 SIGTERM
+    // 处理先例，detached 线程执行。
+    start_fatal_exit_thread(
+        msg.exit_code_,
+        "fatal message from worker " + std::to_string(msg.worker_id_) + ": " + msg.msg_);
+}
+
+void MasterAgent::start_fatal_exit_thread(int32_t exit_code, const CMString& reason) {
+    // 幂等：只拉起一次（worker fatal 与 master 自身 fatal 分发共用）。
+    if (fatal_exit_started_.exchange(true)) return;
+    std::thread([this, exit_code, reason]() {
+        // 本线程自己的 WARN 记录（立即 flush）：fast_exit 若因 draining_ 已被
+        // 优雅 stop 占用而防重入 return，reason 不会经 stop_impl 的 WARN 落盘
+        // ——master debug log 必须留 fatal 事件现场。
+        WARN("MasterAgent fatal exit requested: {} (exit code {})", reason, exit_code);
+        fast_exit(reason);
+        // fast_exit 可能因 draining_ 已被占用（Python 侧 agent.stop() 优雅停机
+        // 已在跑——worker fatal → task 判死 → 脚本返回 → stop 的竞态）而仅置
+        // fast_exit_requested_ 打断标志后返回，实际善后由占用方沿快速路径完成。
+        // 此处必须等停机完成（running_ 归零，do_drain_and_stop 尾部置位）再退出：
+        // 立即 _exit 会截断善后（failed record 持久化 / StopNow 广播 / 日志 flush）。
+        // 有界等待兜底：无论如何退出码必须是 fatal 码（用户裁定：master 联动同码）。
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::seconds(kFatalExitJoinTimeoutS);
+        while (running_.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        // 停机善后（fail task / StopNow 广播 / persist）过程产生大量 WARN/INFO，
+        // DEBUG/INFO 走自动 flush 阈值判定、可能仍留在用户态缓冲——_exit 跳过
+        // 静态析构前显式收口，保证 debug log 零丢失。
+        Logger::instance()->flush();
+        // fast_exit（stop_impl）完成 = 停机善后完成，进程以 fatal 码退出
+        //（跳过静态析构；日志/message.log 各路径已显式 flush）。
+        ::_exit(exit_code);
+    }).detach();
 }
 
 void MasterAgent::on_message_count_report(uint64_t conn_id, const MessageCountReportMessage& msg) {

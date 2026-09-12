@@ -37,9 +37,12 @@ public:
 
     // worker 推送来的 message（带来源 worker_id 标注）。
     // 配额检查用 master 独立的 print_counts_（不记触发次数，避免与 worker 双算）。
-    // 返回 true=通过配额已打印，false=超限丢弃。
+    // honor_quota=true（默认）受 master 打印配额控制；false 豁免（worker fatal
+    // message 等必须输出的场景用）。返回 true=通过配额已打印，false=超限丢弃
+    //（豁免路径恒 true）。
     bool handle_remote(uint64_t worker_id, LogLevel level,
-                       const CMString& domain_id, int32_t source, const CMString& msg);
+                       const CMString& domain_id, int32_t source, const CMString& msg,
+                       bool honor_quota = true);
 
     // 进程结束前调用：合并 master 自身 + 各 worker 的两套计数，打印 summary。
     // reports: 各 worker (worker_id → counts) 的上报；master 自己的 counts 单独传。

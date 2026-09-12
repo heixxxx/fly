@@ -4,8 +4,8 @@
 // 登记名前缀 design_name::、生成式 via 展开（D13）、大段（COMPONENTS/
 // NETS）真跳过零产出、重名保留首份、错误路径 raise、产物接入 DSDesign
 // 后整体序列化往返。
-// 数据：data/block_synth.def（自制，DEF UNITS=1000、stack DBU=2000，
-// 换算系数 ×2；期望值人工核定写死）。
+// 数据：data/block_synth.def（自制，DEF UNITS=1000、stack 恒基准
+// DBU=1000，换算系数 ×1；期望值人工核定写死）。
 #include <emir/design/cpp/ds_def_adapter.h>
 #include <emir/design/cpp/ds_lef_adapter.h>
 #include <emir/design/cpp/ds_merge.h>
@@ -31,8 +31,8 @@ fs::path test_data(const char* name) {
     return fs::path("data") / name;
 }
 
-// 公共前提：tech lef 建 stack（M1=0/VIA1=1/M2=2，DBU=2000），
-// 与 block_synth.def 的 UNITS=1000 形成 ×2 换算场景
+// 公共前提：tech lef 建 stack（M1=0/VIA1=1/M2=2，裁定 ㉝ 恒基准 DBU=1000，
+// 与 block_synth.def 的 UNITS=1000 形成 ×1 换算场景）
 DSStack make_stack_from_tech_lef() {
     DSStack stack;
     CMVector<DSViaCell> tech_vias;
@@ -71,6 +71,7 @@ TEST(DsDefHeaderTest, ParseBlockPinsAndPrefixedVias) {
     EXPECT_EQ(stats.viarule_via_count, 1);
     EXPECT_EQ(stats.via_conflict_count, 0);
     EXPECT_EQ(stats.die_area_count, 1);
+    EXPECT_EQ(stats.skipped_layer_ref_count, 0);
 
     // block cell（㉙：DSCell 承载；DIEAREA 4 点双存 / UNITS 换算系数）
     ASSERT_EQ(p.block_cells.size(), 1u);
@@ -81,25 +82,25 @@ TEST(DsDefHeaderTest, ParseBlockPinsAndPrefixedVias) {
     EXPECT_EQ(blk.get_def_units_per_micron(), 1000);
     EXPECT_NE(blk.get_def_path().find("block_synth.def"),
               CMString::npos);  // def_path 已填（绝对路径随 runfile 环境）
-    // DIEAREA 4 点（含负坐标）聚合：def (-1000,-500)-(1500,2000) × 2
-    EXPECT_EQ(blk.get_bbox().get_x_low(), -2000);
-    EXPECT_EQ(blk.get_bbox().get_y_low(), -1000);
-    EXPECT_EQ(blk.get_bbox().get_x_high(), 3000);
-    EXPECT_EQ(blk.get_bbox().get_y_high(), 4000);
-    EXPECT_EQ(blk.width(), 5000);
-    EXPECT_EQ(blk.height(), 5000);
+    // DIEAREA 4 点（含负坐标）聚合：def (-1000,-500)-(1500,2000) × 1
+    EXPECT_EQ(blk.get_bbox().get_x_low(), -1000);
+    EXPECT_EQ(blk.get_bbox().get_y_low(), -500);
+    EXPECT_EQ(blk.get_bbox().get_x_high(), 1500);
+    EXPECT_EQ(blk.get_bbox().get_y_high(), 2000);
+    EXPECT_EQ(blk.width(), 2500);
+    EXPECT_EQ(blk.height(), 2500);
     // ㉞：>2 点 DIEAREA → polygon 全点集（换算后 4 点）+ is_polygon 置位
     EXPECT_TRUE(blk.is_polygon());
     ASSERT_EQ(blk.get_polygon().points_.size(), 4u);
-    EXPECT_EQ(blk.get_polygon().points_[0].get_x(), -2000);
-    EXPECT_EQ(blk.get_polygon().points_[0].get_y(), -1000);
-    EXPECT_EQ(blk.get_polygon().points_[2].get_x(), 3000);
-    EXPECT_EQ(blk.get_polygon().points_[3].get_y(), -1000);
+    EXPECT_EQ(blk.get_polygon().points_[0].get_x(), -1000);
+    EXPECT_EQ(blk.get_polygon().points_[0].get_y(), -500);
+    EXPECT_EQ(blk.get_polygon().points_[2].get_x(), 1500);
+    EXPECT_EQ(blk.get_polygon().points_[3].get_y(), -500);
     // P7：origin = −diearea 左下角
-    EXPECT_EQ(blk.get_origin_x(), 2000);
-    EXPECT_EQ(blk.get_origin_y(), 1000);
+    EXPECT_EQ(blk.get_origin_x(), 1000);
+    EXPECT_EQ(blk.get_origin_y(), 500);
 
-    // port 集（㉙：port 位 DSPin；类型/方向/状态/几何换算 ×2）。
+    // port 集（㉙：port 位 DSPin；类型/方向/状态/几何换算 ×1）。
     // R7 ㊱：DSPin 无 name——port 名经 port_names 通道按下标对齐
     ASSERT_EQ(blk.pin_count(), 2u);
     ASSERT_EQ(p.port_names.size(), 2u);
@@ -113,8 +114,8 @@ TEST(DsDefHeaderTest, ParseBlockPinsAndPrefixedVias) {
               static_cast<uint8_t>(DSPinPlacementStatus::FIXED));
     ASSERT_EQ(p.port_geoms.geometry_of(0)->size(), 1u);  // 局部 pin 下标 0
     EXPECT_EQ((*p.port_geoms.geometry_of(0))[0].get_layer_id(), 0u);  // M1
-    EXPECT_EQ((*p.port_geoms.geometry_of(0))[0].get_rect().get_x_low(), -20);
-    EXPECT_EQ((*p.port_geoms.geometry_of(0))[0].get_rect().get_y_high(), 80);
+    EXPECT_EQ((*p.port_geoms.geometry_of(0))[0].get_rect().get_x_low(), -10);
+    EXPECT_EQ((*p.port_geoms.geometry_of(0))[0].get_rect().get_y_high(), 40);
 
     EXPECT_EQ(p.port_names[1], "PIN_OUT");
     const DSPin& po = blk.pin_at(1);
@@ -125,22 +126,22 @@ TEST(DsDefHeaderTest, ParseBlockPinsAndPrefixedVias) {
               static_cast<uint8_t>(DSPinPlacementStatus::PLACED));
     ASSERT_EQ(p.port_geoms.geometry_of(1)->size(), 1u);
     EXPECT_EQ((*p.port_geoms.geometry_of(1))[0].get_layer_id(), 2u);  // M2
-    EXPECT_EQ((*p.port_geoms.geometry_of(1))[0].get_rect().get_x_low(), 1600);
-    EXPECT_EQ((*p.port_geoms.geometry_of(1))[0].get_rect().get_y_high(), 2200);
+    EXPECT_EQ((*p.port_geoms.geometry_of(1))[0].get_rect().get_x_low(), 800);
+    EXPECT_EQ((*p.port_geoms.geometry_of(1))[0].get_rect().get_y_high(), 1100);
 
     // S4b 通道：via 登记名带 ⑫ 前缀
     ASSERT_EQ(p.def_vias.size(), 2u);
 
-    // 预定义（矩形型）：cut/bottom/top 按 stack 层型归属，坐标 ×2
+    // 预定义（矩形型）：cut/bottom/top 按 stack 层型归属，坐标 ×1
     EXPECT_EQ(p.def_vias[0].get_name(), "block_a::VIA12");
     EXPECT_EQ(p.def_vias[0].get_bottom_layer_id(), 0u);  // M1
     EXPECT_EQ(p.def_vias[0].get_top_layer_id(), 2u);     // M2
     ASSERT_EQ(p.def_vias[0].cut_rect_count(), 1u);
-    EXPECT_EQ(p.def_vias[0].cut_rect_at(0).get_x_high(), 100);
+    EXPECT_EQ(p.def_vias[0].cut_rect_at(0).get_x_high(), 50);
     ASSERT_EQ(p.def_vias[0].bottom_enclosure_count(), 1u);
-    EXPECT_EQ(p.def_vias[0].bottom_enclosure_at(0).get_x_low(), -300);
+    EXPECT_EQ(p.def_vias[0].bottom_enclosure_at(0).get_x_low(), -150);
     ASSERT_EQ(p.def_vias[0].top_enclosure_count(), 1u);
-    EXPECT_EQ(p.def_vias[0].top_enclosure_at(0).get_x_high(), 400);
+    EXPECT_EQ(p.def_vias[0].top_enclosure_at(0).get_x_high(), 200);
 
     // 生成式（VIARULE 语句，D13 展开）：CUTSIZE 中心对齐 cut，
     // ENCLOSURE 为 cut 四边外扩
@@ -148,17 +149,17 @@ TEST(DsDefHeaderTest, ParseBlockPinsAndPrefixedVias) {
     EXPECT_EQ(p.def_vias[1].get_bottom_layer_id(), 0u);
     EXPECT_EQ(p.def_vias[1].get_top_layer_id(), 2u);
     ASSERT_EQ(p.def_vias[1].cut_rect_count(), 1u);
-    // CUTSIZE 100 100（def）→ ±50 ×2 = ±100 全局
-    EXPECT_EQ(p.def_vias[1].cut_rect_at(0).get_x_low(), -100);
-    EXPECT_EQ(p.def_vias[1].cut_rect_at(0).get_y_high(), 100);
+    // CUTSIZE 100 100（def）→ ±50 ×1 = ±50 全局
+    EXPECT_EQ(p.def_vias[1].cut_rect_at(0).get_x_low(), -50);
+    EXPECT_EQ(p.def_vias[1].cut_rect_at(0).get_y_high(), 50);
     ASSERT_EQ(p.def_vias[1].bottom_enclosure_count(), 1u);
-    // ENCLOSURE 30 30（def）→ cut ±100 外扩 60 → ±160
-    EXPECT_EQ(p.def_vias[1].bottom_enclosure_at(0).get_x_low(), -160);
-    EXPECT_EQ(p.def_vias[1].bottom_enclosure_at(0).get_y_high(), 160);
+    // ENCLOSURE 30 30（def）→ cut ±50 外扩 30 → ±80
+    EXPECT_EQ(p.def_vias[1].bottom_enclosure_at(0).get_x_low(), -80);
+    EXPECT_EQ(p.def_vias[1].bottom_enclosure_at(0).get_y_high(), 80);
     ASSERT_EQ(p.def_vias[1].top_enclosure_count(), 1u);
-    // ENCLOSURE 40 40（def）→ 外扩 80 → ±180
-    EXPECT_EQ(p.def_vias[1].top_enclosure_at(0).get_x_low(), -180);
-    EXPECT_EQ(p.def_vias[1].top_enclosure_at(0).get_x_high(), 180);
+    // ENCLOSURE 40 40（def）→ 外扩 40 → ±90
+    EXPECT_EQ(p.def_vias[1].top_enclosure_at(0).get_x_low(), -90);
+    EXPECT_EQ(p.def_vias[1].top_enclosure_at(0).get_x_high(), 90);
 }
 
 TEST(DsDefHeaderTest, SkippedSectionsProduceNothing) {
@@ -224,8 +225,8 @@ TEST(DsDefRoundTripTest, ProductsIntoDesignRoundTrip) {
     const DSCell* blk = back.find_cell("block_a");
     ASSERT_NE(blk, nullptr);
     EXPECT_TRUE(blk->is_block_cell());
-    EXPECT_EQ(blk->get_bbox().get_x_low(), -2000);
-    EXPECT_EQ(blk->get_bbox().get_y_high(), 4000);
+    EXPECT_EQ(blk->get_bbox().get_x_low(), -1000);
+    EXPECT_EQ(blk->get_bbox().get_y_high(), 2000);
     ASSERT_EQ(blk->pin_count(), 2u);
     // R7 ㊱：pin 名经容器 pin hasher 组合键反查
     EXPECT_EQ(back.pin_name_of(blk->pin_at(0).get_pin_id()), "PIN_A");
@@ -239,7 +240,7 @@ TEST(DsDefRoundTripTest, ProductsIntoDesignRoundTrip) {
     ASSERT_NE(global_geoms.geometry_of(pin_out_id), nullptr);
     EXPECT_EQ((*global_geoms.geometry_of(pin_out_id))[0].get_rect()
                   .get_x_low(),
-              1600);
+              800);
 
     CMString geom_blob;
     FLY_ENCODE(global_geoms, geom_blob);
@@ -252,10 +253,10 @@ TEST(DsDefRoundTripTest, ProductsIntoDesignRoundTrip) {
     ASSERT_EQ(back.via_cells_.size(), 2u);
     const DSViaCell* via12 = back.find_via_cell("block_a::VIA12");
     ASSERT_NE(via12, nullptr);
-    EXPECT_EQ(via12->cut_rect_at(0).get_x_high(), 100);
+    EXPECT_EQ(via12->cut_rect_at(0).get_x_high(), 50);
     const DSViaCell* gen = back.find_via_cell("block_a::VIAGEN_M1M2");
     ASSERT_NE(gen, nullptr);
-    EXPECT_EQ(gen->top_enclosure_at(0).get_x_low(), -180);
+    EXPECT_EQ(gen->top_enclosure_at(0).get_x_low(), -90);
 
     // namemap 双向（block cell id ↔ 名，同一 cell 空间）
     EXPECT_EQ(back.cell_names_.get_id("block_a"), 0u);

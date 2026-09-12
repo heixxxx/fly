@@ -501,7 +501,7 @@ build_design_db(name, def_path, lef_paths, lib_db, settings: dict, alpha: dict)
 
 ### 8.2 不可忽略的实现细节（易踩坑清单）
 
-1. **DEF 与 LEF 的 DBU 可能不同**（DEF 的 UNITS DIST MICRONS 独立声明）：换算系数按 block 记录，坐标统一到全局 DBU；不同 cell lef 间 DBU 不一致 → 格式错误 raise（D15）。
+1. **DEF 与 LEF 的 DBU 可能不同**（DEF 的 UNITS DIST MICRONS 独立声明）：坐标统一到全局 DBU——裁定 ㉝ 后全局基准恒 1000 DBU/µm（`DSStack::kGlobalDbuPerMicron`），各文件按自身声明换算入库；lef 间 DBU 声明不一致不再 raise（D15 该子项已由 ㉝ 撤销）。
 2. **宏 origin 的放置换算**：DEF 放置坐标是 origin 落点，宏左下角 = 放置点经 origin 与朝向换算；忽略 origin 会导致全部引脚偏移错位。
 3. **朝向 8 种的变换矩阵表**（含翻转时以宏宽/高取镜像：x' = W − x）与多级嵌套复合（int64 中间量防溢出）。
 4. **转义名（escaped names）与分隔符**：层级引脚引用语法 `实例名/引脚名` 依赖 DIVIDERCHAR；总线位选依赖 BUSBITCHARS；lefdef 已有转义回归测试（test_escape.def），适配层须保留语义。
@@ -547,14 +547,14 @@ build_design_db(name, def_path, lef_paths, lib_db, settings: dict, alpha: dict)
 | D12 | id 位宽与坐标类型 | A. 各 id 空间独立 uint32（instance/net 各自 42.9 亿上限，够用）+ 坐标 int32（DBU，±21 亿 DBU ≈ ±1000 mm@2000 DBU/µm，足够）+ 中间量/面积 int64；B. 统一 uint64/int64（宽裕但对象膨胀）。**建议 A**；geometry 模板实例化集合 {int32, int64, double} |
 | D13 | 生成式通孔规则（VIARULE）支持 | A. 首期支持按参数展开（DEF 引用 VIARULE 名 + CutSize 等参数现场生成几何）；B. 首期仅支持预定义 VIA，VIARULE 引用计数提醒。**建议 A**（电源网大量使用生成式通孔） |
 | D14 | UNPLACED 实例兜底 | A. 跳过 + 计数 + 消息提醒（无坐标无法入分区）；B. raise。**建议 A**（设计未完成是业务异常，非格式错误） |
-| D15 | ~~引用缺失语义~~ **已裁定（2026-09-09，裁定 ⑲/⑳）**：fake cell 兜底（非 raise） | master cell 未定义 → 动态创建 fake cell（名称 `block_cell_name::cell_name`、id = max_cell_id + 唯一值、无 pin、1×1 矩形、DSDesign 单独字段保存），instance 原地创建指向 fake cell id；user message 提醒不 crash；lef 间 DBU 不一致仍属格式错误 raise |
+| D15 | ~~引用缺失语义~~ **已裁定（2026-09-09，裁定 ⑲/⑳）**：fake cell 兜底（非 raise） | master cell 未定义 → 动态创建 fake cell（名称 `block_cell_name::cell_name`、id = max_cell_id + 唯一值、无 pin、1×1 矩形、DSDesign 单独字段保存），instance 原地创建指向 fake cell id；user message 提醒不 crash。「lef 间 DBU 不一致 raise」子项**已由裁定 ㉝ 撤销**（恒基准 1000，各自换算）；「层引用未定义 raise」子项已改为条目级丢弃兜底（DSGN::0010 + skipped_layer_ref_count，dev-rules §7） |
 | D16 | LEF 层收录范围 | A. 布线层 + 切割层（编号与几何属性；建议）；B. 含 implant/特殊层（掩模分析才需要）。**建议 A** |
 | D17 | DEF 附属段收录（ROW/TRACK/BLOCKAGE/REGION/GROUP/SITE） | A. 首期全部不建库（SITE 名随 macro 引用保留字符串）；BLOCKAGE 仅入密度通道（可选）；B. 全量入库。**建议 A + BLOCKAGE 密度通道可选项后补** |
 | D18 | 实例电源引脚坐标展开时机 | A. S9 切分时预展开进分区（⑫ 直接消费，建议）；B. ⑫ 消费时现算（每轮重复变换）。**建议 A** |
 | D19 | 宏禁布区（OBS）几何入库范围 | A. 入库（密度通道/后续分析可用，宏定义层量小）；B. 首期不收。**建议 A** |
 | D20 | 布线语句深度处理（TAPER/TAPERRULE/STYLE/mask/SHIELDNET/NOSHIELD） | A. 首期忽略（几何宽度按线宽优先级规则），未识别属性计数；B. 全量收录。**建议 A**（EMIR 几何精度不受影响） |
 | D21 | design 模块消息前缀 | 建议 **DSGN**（避开 LIBR 等已注册前缀；注册遵循开发规则 §6） |
-| D22 | 层级环 / 多根零根检测语义 | **建议 raise**（层级非法属格式错误类，无法解析） |
+| D22 | 层级环 / 多根零根检测语义 | **建议 raise**（层级非法属格式错误类，无法解析）；**2026-09-12 补注：已从 raise 改为 fatal message**（DSGN::0011，`MSG_FATAL_EXIT` 码 80 退出 + master 联动 fast_exit——机制见 docs/message-system.md §14，处置规则见 dev-rules §7.1） |
 | D23 | 通孔实例存储粒度 | A. 紧凑定长数组（via instance id + via cell id + 位置，连层经 via cell 定义查得；建议）；B. 对象化逐实例。**建议 A**（亿级量级下对象开销不可接受；via instance 无 name，天然适合无分支定长记录） |
 | D24 | S5b 分批粒度 | 批界按累计对象数/字节数阈值切（如每批 10 万 net 或 512 MB 业务数据）；首版单任务内分批（单遍流式读取 + 批界落盘释放），批间并行（需多遍读取，代价明确）列为优化项。**实施期按实测细化** |
 | D25 | 逐层密度系数取值策略（2026-09-09 裁定方向） | 自高层向低层逐层递增已裁定；第一版全部取 1、系数表作为**建库时一次性配置输入**保留接口（db freeze 后不可变，非运行时可调）。具体递增策略（线性/指数/逐层手配表）**实施期按 ④ 提取实测负载标定** |

@@ -26,6 +26,7 @@ public:
     size_t connection_count() const override;
     int get_bound_port() const override;
     CMString get_peer_info(uint64_t conn_id) const override;
+    size_t pending_send_bytes(uint64_t conn_id) const override;
 
 private:
     CMSharedPtr<Transport> transport_;

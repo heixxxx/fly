@@ -23,6 +23,10 @@ register_message_id("STOR::0002", "INFO")
 register_message_id("STOR::0003", "INFO")
 # STOR::0004: merge_db 删源失败（重试后）——提醒用户手动删除残留源 .dat。
 register_message_id("STOR::0004", "ERROR")
+# STOR::0005: 存储数据损坏（校验预算耗尽，零容忍 §5）——fatal message：
+# 进程以码 80 退出 + master 联动 fast_exit（master/worker 两侧模块加载时注册，
+# C++ 侧 MSG_FATAL_EXIT("STOR::0005") 消费）。
+register_message_id("STOR::0005", "FATAL")
 
 
 class FlyAgent(ABC):

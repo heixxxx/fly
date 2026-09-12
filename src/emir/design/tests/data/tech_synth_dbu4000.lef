@@ -1,0 +1,44 @@
+VERSION 5.8 ;
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+UNITS
+   DATABASE MICRONS 4000 ;
+END UNITS
+MANUFACTURINGGRID 0.0025 ;
+
+# tech_synth.lef 的 DBU 4000 声明变体（几何 µm 值完全相同）：裁定 ㉝
+# 恒基准 1000 DBU/µm 下，声明值不影响任何换算——本文件与
+# tech_synth.lef 的解析产物（全局 DBU）必须逐字段一致。
+
+LAYER M1
+   TYPE ROUTING ;
+   DIRECTION HORIZONTAL ;
+   PITCH 0.19 ;
+   WIDTH 0.07 ;
+   SPACING 0.07 ;
+   SPACING 0.09 ;
+END M1
+
+LAYER VIA1
+   TYPE CUT ;
+END VIA1
+
+LAYER M2
+   TYPE ROUTING ;
+   DIRECTION VERTICAL ;
+   PITCH 0.21 ;
+   WIDTH 0.08 ;
+   SPACING 0.08 ;
+   AREA 0.05 ;
+END M2
+
+VIA VIA12
+   LAYER M1 ;
+      RECT -0.10 -0.10 0.10 0.10 ;
+   LAYER VIA1 ;
+      RECT -0.05 -0.05 0.05 0.05 ;
+   LAYER M2 ;
+      RECT -0.12 -0.12 0.12 0.12 ;
+END VIA12
+
+END LIBRARY

@@ -26,6 +26,7 @@ cc_library(
     deps = [
         "//src/common/serialization:fly_serialization",
         "//src/container/cpp:fly_container_aliases",
+        "//src/log/cpp:fly_log",  # resolve_template 失败 WARN（bool 化错误处理）
     ],
     visibility = ["//visibility:public"],
 )

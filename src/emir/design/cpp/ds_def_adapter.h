@@ -29,15 +29,18 @@
 // 的 register_cbs）。
 //
 // 坐标换算：DEF 坐标（DBU_def，DEF UNITS DIST MICRONS N）→ 全局 DBU：
-// v × stack.dbu_per_micron / def_units，int64 四舍五入（与 T4 一致）。
+// v × stack.dbu_per_micron / def_units（裁定 ㉝：stack 基准恒 1000，
+// 见 DSStack::kGlobalDbuPerMicron），int64 四舍五入（与 T4 一致）。
 // DIEAREA 经 defiBox::getPoint() 取完整点集（T2 红线：xl/yl/xh/yh 是
 // 前两点兼容赋值不可信）：>2 点 = 多边形（polygon 全点集 + is_polygon
 // 置位）、2 点 = 矩形（polygon 空）；bbox 恒存（㉞ 双存）。
 //
-// 异常语义（dev-rules §7 仅两类可 raise + D15）：文件不可读 / 语法
-// 错误（defrRead 非 0）/ 层引用未定义 → std::runtime_error。重名
-// port / 重名 via / 重名网保留首份并计数（DSGN::0005/0006 的数据源，
-// T6 接线）。
+// 异常语义（dev-rules §7 仅两类可 raise）：文件不可读 / 语法错误
+// （defrRead 非 0）→ std::runtime_error。层引用未定义不再 raise——经
+// ds_resolve_layer_id 发 DSGN::0010 提醒后条目级丢弃（rect 丢弃该矩形、
+// via 整条放弃、wire 段/rect 项丢弃）并计入 skipped_layer_ref_count。
+// 重名 port / 重名 via / 重名网保留首份并计数（DSGN::0005/0006 的数据
+// 源，T6 接线）。
 // =============================================================================
 
 #include <container/cpp/container_aliases.h>
@@ -54,6 +57,8 @@ struct DSDefParseStats {
     int viarule_via_count = 0;   // 生成式 via（VIARULE 语句）展开收录数
     int via_conflict_count = 0;  // 前缀化登记名冲突（保留首份，DSGN::0005）
     int die_area_count = 0;      // DIEAREA 触发次数
+    int skipped_layer_ref_count = 0;  // 未定义层引用丢弃条目数（rect/via；
+                                      // DSGN::0010）
 };
 
 // S4+S4b：DEF 头部一遍读取 → block cell + port pin 名序列 + port 几何 +
@@ -100,6 +105,8 @@ struct DSDefNetsStats {
     int rect_count = 0;          // rect 项总数
     int via_instance_count = 0;  // via instance 总数（VIADATA 展开后）
     int skipped_via_count = 0;   // 未定义 via 引用跳过（DSGN::0008）
+    int skipped_layer_ref_count = 0;  // 未定义层引用丢弃条目数（wire 段/
+                                      // rect 项；DSGN::0010）
     int skipped_net_count = 0;   // 网名不在 S5a namemap 的防御兜底计数
     int batch_count = 0;         // 分批批次数（③ 分批落批可观测）
 };

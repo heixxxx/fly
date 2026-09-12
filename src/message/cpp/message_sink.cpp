@@ -58,6 +58,7 @@ CMString MessageSink::level_str(LogLevel level) const {
         case LogLevel::INFO:  return "INFO";
         case LogLevel::WARN:  return "WARN";
         case LogLevel::ERROR: return "ERROR";
+        case LogLevel::FATAL: return "FATAL";
         default: return "UNKNOWN";
     }
 }
@@ -125,10 +126,12 @@ bool MessageSink::print_within_limit(const CMString& domain_id) {
 }
 
 bool MessageSink::handle_remote(uint64_t worker_id, LogLevel level,
-                                const CMString& domain_id, int32_t source, const CMString& msg) {
+                                const CMString& domain_id, int32_t source, const CMString& msg,
+                                bool honor_quota) {
     // master 打印配额：控制 worker 推送来的 message 是否在 master 侧打印。
     // 不记触发次数（触发发生在 worker，已由 worker 的 MessageRegistry 记录）。
-    if (!print_within_limit(domain_id)) {
+    // honor_quota=false：豁免（worker fatal message 等必须输出的场景）。
+    if (honor_quota && !print_within_limit(domain_id)) {
         return false;  // 超限丢弃
     }
     CMString line = "[" + timestamp() + "] [" + level_str(level) +

@@ -121,15 +121,39 @@ TEST_F(LibParserTest, CombinationalCellPinsAndPowerTables) {
     // 模板 resolve 后可插值：rise_power 在 (0.5, 0.05)：
     // slew=0.5 恰为格点（行 {2.0, 2.2}）；cap=0.05 在 [0.01,0.1] 的 4/9 处
     // → 2.0 + (4/9)*0.2 = 2.0888...
-    rise_m->resolve_template(*lib_.find_template("power_2d"));
+    // （resolve/interpolate 均为 bool 返回——2026-09-12 裁定错误处理 bool 化）
+    ASSERT_TRUE(rise_m->resolve_template(*lib_.find_template("power_2d")));
     ASSERT_TRUE(rise_m->is_ready());
-    EXPECT_NEAR(rise_m->interpolate({0.5, 0.05}), 2.0 + (4.0 / 9.0) * 0.2, 1e-12);
+    double rise_val = 0.0;
+    ASSERT_TRUE(rise_m->interpolate({0.5, 0.05}, rise_val));
+    EXPECT_NEAR(rise_val, 2.0 + (4.0 / 9.0) * 0.2, 1e-12);
 
     // fall_power 无表级 index_1（只带 values）→ resolve 用模板轴补齐
     EXPECT_EQ(fall_m->name_, "fall_power");
-    fall_m->resolve_template(*lib_.find_template("power_2d"));
+    ASSERT_TRUE(fall_m->resolve_template(*lib_.find_template("power_2d")));
     ASSERT_TRUE(fall_m->is_ready());
-    EXPECT_NEAR(fall_m->interpolate({0.5, 0.05}), 1.9 + (4.0 / 9.0) * 0.2, 1e-12);
+    double fall_val = 0.0;
+    ASSERT_TRUE(fall_m->interpolate({0.5, 0.05}, fall_val));
+    EXPECT_NEAR(fall_val, 1.9 + (4.0 / 9.0) * 0.2, 1e-12);
+
+    // 失败路径（bool 化）：values 数量与模板展开不符 → resolve false；
+    // 未 resolve 的模板引用表 → interpolate false（零 fatal，调用方兜底）。
+    {
+        CMLookupTable bad;
+        bad.name_ = "bad_table";
+        bad.dim_ = 2;
+        bad.template_name_ = "power_2d";
+        bad.values_ = {1.0, 2.0, 3.0};  // 期望 3x2=6
+        EXPECT_FALSE(bad.resolve_template(*lib_.find_template("power_2d")));
+
+        CMLookupTable unresolved;
+        unresolved.name_ = "unresolved";
+        unresolved.dim_ = 2;
+        unresolved.template_name_ = "power_2d";
+        unresolved.values_ = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+        double r = 0.0;
+        EXPECT_FALSE(unresolved.interpolate({0.5, 0.05}, r));
+    }
 }
 
 TEST_F(LibParserTest, TimingArcs) {

@@ -210,6 +210,15 @@ public:
     // 由 WorkerAgentContext::push_message（begin_task 绑定）触发，发送 LogMessage。
     void send_message_to_master(LogLevel level, const CMString& domain_id, int32_t source, const CMString& msg);
 
+    // fatal message 送达（MSG_FATAL_EXIT / fly.fatal_message 的 worker 侧分发）：
+    // 发送 FatalMessage 给 master（同步写出语义），随后轮询写缓冲排空（有界
+    // kFatalDeliveryTimeoutMs，间隔 10ms）作为送达保证。发送失败/超时仅 WARN
+    // 后返回——不阻塞调用方的 _exit（本地 debug log 的 FATAL 行已落盘）。
+    // 线程安全：可在任意 task 线程调用（reactor send 内部持 per-conn 锁；
+    // pending_send_bytes 只读）。
+    void send_fatal_to_master(const CMString& domain_id, int32_t source,
+                              int32_t exit_code, const CMString& msg);
+
     // 收到 master 的 MSG_COUNT_REQUEST：把本地 message 触发计数上报（summary 屏障）。
     void on_message_count_request(uint64_t conn_id, const MessageCountRequestMessage& msg);
 

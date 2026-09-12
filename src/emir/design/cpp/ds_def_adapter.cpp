@@ -17,7 +17,8 @@ namespace fly {
 
 namespace {
 
-// DEF 坐标（DBU_def）→ 全局 DBU：v × stack.dbu_per_micron / def_units，
+// DEF 坐标（DBU_def）→ 全局 DBU：v × stack.dbu_per_micron / def_units
+// （裁定 ㉝：stack 基准恒 1000，见 DSStack::kGlobalDbuPerMicron），
 // 四舍五入（与 T4 换算规则一致）
 int64_t def_to_dbu(int64_t v, int32_t stack_dbu, int64_t def_units) {
     return static_cast<int64_t>(std::llround(
@@ -32,17 +33,6 @@ GEORect def_rect_to_dbu(int64_t xl, int64_t yl, int64_t xh, int64_t yh,
         static_cast<int32_t>(def_to_dbu(yl, stack_dbu, def_units)),
         static_cast<int32_t>(def_to_dbu(xh, stack_dbu, def_units)),
         static_cast<int32_t>(def_to_dbu(yh, stack_dbu, def_units)));
-}
-
-uint32_t require_layer_id(const char* name, const DSStack& stack) {
-    const uint32_t id = stack.find_layer(name);
-    if (id == DSStack::kNoLayer) {
-        // 层引用未定义属格式错误（D15）——raise
-        throw std::runtime_error(std::string("ds_def_adapter: undefined "
-                                             "layer reference '") +
-                                 name + "'");
-    }
-    return id;
 }
 
 uint8_t map_port_use(const char* use) {
@@ -219,8 +209,15 @@ int def_pin_cbk(defrCallbackType_e, defiPin* p, defiUserData ud) {
     CMVector<DSShapeRef> pin_geoms;
     const auto collect_rect = [&](const char* layer, int xl, int yl, int xh,
                                   int yh) {
+        // 层引用未定义 → 该 rect 条目级丢弃 + 计数（DSGN::0010 提醒在
+        // ds_resolve_layer_id 内；dev-rules §7 不 raise）
+        const uint32_t layer_id = ds_resolve_layer_id(layer, *ctx->stack);
+        if (layer_id == DSStack::kNoLayer) {
+            ++ctx->stats->skipped_layer_ref_count;
+            return;
+        }
         DSShapeRef ref;
-        ref.layer_id_ = require_layer_id(layer, *ctx->stack);
+        ref.layer_id_ = layer_id;
         ref.set_rect(def_rect_to_dbu(xl, yl, xh, yh,
                                      ctx->stack->get_dbu_per_micron(),
                                      ctx->def_units));
@@ -286,10 +283,20 @@ int def_via_cbk(defrCallbackType_e, defiVia* v, defiUserData ud) {
         v->viaRule(&rule_name, &x_size, &y_size, &bot, &cut, &top, &x_cs,
                    &y_cs, &x_be, &y_be, &x_te, &y_te);
 
-        cell.set_bottom_layer_id(require_layer_id(bot, *ctx->stack));
-        cell.set_top_layer_id(require_layer_id(top, *ctx->stack));
+        // 先逐层解析（层引用未定义 → 整个 via 不构建不入 vias：层归属
+        // 残缺无法展开；DSGN::0010 提醒 + 条目级计数，dev-rules §7）
+        const uint32_t bot_id = ds_resolve_layer_id(bot, *ctx->stack);
+        const uint32_t top_id = ds_resolve_layer_id(top, *ctx->stack);
+        const uint32_t cut_id = ds_resolve_layer_id(cut, *ctx->stack);
+        if (bot_id == DSStack::kNoLayer || top_id == DSStack::kNoLayer ||
+            cut_id == DSStack::kNoLayer) {
+            ++ctx->stats->skipped_layer_ref_count;
+            return 0;
+        }
+        cell.set_bottom_layer_id(bot_id);
+        cell.set_top_layer_id(top_id);
         // ⑥ 通孔密度通道分层键：cut 层 id（DEF 参数权威）
-        cell.set_cut_layer_id(require_layer_id(cut, *ctx->stack));
+        cell.set_cut_layer_id(cut_id);
 
         const int64_t half_x = x_size / 2;
         const int64_t half_y = y_size / 2;
@@ -309,17 +316,25 @@ int def_via_cbk(defrCallbackType_e, defiVia* v, defiUserData ud) {
         cell.add_top_enclosure(expand(x_te, y_te));
         ++ctx->stats->viarule_via_count;
     } else {
-        // 预定义（矩形型）
-        uint32_t bottom = UINT32_MAX;
-        uint32_t top = UINT32_MAX;
-        uint32_t cut = UINT32_MAX;
+        // 预定义（矩形型）：第一遍逐层解析层 id，任一层未定义即放弃整个
+        // via（条目级丢弃 + 计数；两遍循环都不执行 rect 归属）
         CMVector<uint32_t> layer_ids;
         for (int k = 0; k < v->numLayers(); ++k) {
             char* layer_name = nullptr;
             int xl = 0, yl = 0, xh = 0, yh = 0;
             v->layer(k, &layer_name, &xl, &yl, &xh, &yh);
-            const uint32_t id = require_layer_id(layer_name, *ctx->stack);
+            const uint32_t id = ds_resolve_layer_id(layer_name, *ctx->stack);
+            if (id == DSStack::kNoLayer) {
+                ++ctx->stats->skipped_layer_ref_count;
+                return 0;
+            }
             layer_ids.push_back(id);
+        }
+        uint32_t bottom = UINT32_MAX;
+        uint32_t top = UINT32_MAX;
+        uint32_t cut = UINT32_MAX;
+        for (int k = 0; k < v->numLayers(); ++k) {
+            const uint32_t id = layer_ids[k];
             const bool is_cut =
                 ctx->stack->layer_by_id(id).get_type() ==
                 static_cast<uint8_t>(DSLayerType::CUT);
@@ -873,6 +888,8 @@ void ds_parse_def_nets(const CMString& path, const DSStack& stack,
         static_cast<int>(net_data.stats_.via_instance_count);
     stats.skipped_via_count =
         static_cast<int>(net_data.stats_.skipped_via_count);
+    stats.skipped_layer_ref_count =
+        static_cast<int>(net_data.stats_.skipped_layer_ref_count);
     stats.skipped_net_count =
         static_cast<int>(net_data.stats_.skipped_net_count);
 }
@@ -918,7 +935,7 @@ void ds_parse_def_header(const CMString& path, const DSStack& stack,
     try {
         status = defrRead(f, path.c_str(), &ctx, 1);
     } catch (...) {
-        // 回调内异常（层引用缺失等）穿越读取器：清理文件句柄与会话后重抛
+        // 回调内异常穿越读取器：清理文件句柄与会话后重抛
         std::fclose(f);
         defrClear();
         throw;

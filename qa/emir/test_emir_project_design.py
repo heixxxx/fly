@@ -86,14 +86,14 @@ INFO("[WAIT] design db frozen — full pipeline done")
 # ── S1 产物：DSStack（层堆叠/DBU 基准/制造网格，人工核定值）──
 stack = design_db.load_stack()
 assert stack.layer_count == 3, f"layers={stack.layer_count}"  # implant 跳过
-assert stack.dbu_per_micron == 2000, f"dbu={stack.dbu_per_micron}"
-assert stack.manufacturing_grid == 5, f"grid={stack.manufacturing_grid}"
+assert stack.dbu_per_micron == 1000, f"dbu={stack.dbu_per_micron}"
+assert stack.manufacturing_grid == 3, f"grid={stack.manufacturing_grid}"
 assert stack.layer_at(0).name == "M1"
 assert stack.layer_at(1).name == "VIA1"
 assert stack.layer_at(2).name == "M2"
 assert stack.find_layer("M2") == 2
 assert stack.find_layer("IMPLANT1") is None, "implant layer must be skipped"
-INFO("[OK] S1 stack: 3 layers (M1/VIA1/M2), DBU=2000, grid=5")
+INFO("[OK] S1 stack: 3 layers (M1/VIA1/M2), DBU=1000 (裁定 ㉝ 恒基准，tech lef 声明 2000 仅参考), grid=3 (0.0025µm×1000 四舍五入)")
 
 # ── 容器：cells / lib merge / block cells ──
 design = design_db.load_design()
@@ -140,28 +140,29 @@ via_tech = design.find_via_cell("VIA12")             # tech lef 首份保留
 assert via_tech is not None, "tech VIA12 must survive (keep first)"
 via_prefixed = design.find_via_cell("block_child::VIA12")
 assert via_prefixed is not None, "⑫ prefixed DEF via missing"
-assert via_prefixed.cut_rect_at(0)[2] == 80         # def 40 ×2
-assert via_prefixed.bottom_enclosure_at(0)[0] == -200
+assert via_prefixed.cut_rect_at(0)[2] == 40         # def 40 ×1（基准 1000）
+assert via_prefixed.bottom_enclosure_at(0)[0] == -100
 via_gen = design.find_via_cell("block_child::VIA12G")
 assert via_gen is not None, "generated via missing"
-assert via_gen.cut_rect_at(0)[0] == -60             # CUTSIZE 60 ±30 ×2
-assert via_gen.bottom_enclosure_at(0)[0] == -100    # cut ±60 + ENCLOSURE 20×2
-assert via_gen.top_enclosure_at(0)[2] == 110        # cut ±60 + ENCLOSURE 25×2
+assert via_gen.cut_rect_at(0)[0] == -30             # CUTSIZE 60 ±30 ×1
+assert via_gen.bottom_enclosure_at(0)[0] == -50     # cut ±30 + ENCLOSURE 20
+assert via_gen.top_enclosure_at(0)[2] == 55         # cut ±30 + ENCLOSURE 25
 INFO("[OK] S4b via table: 3 (tech VIA12 + block_child::VIA12 + ::VIA12G)")
 
 # ── S4：block cell（㉙ = DSCell + block_cell 位）与 port pin ──
 assert child.is_block_cell is True, "block_child must be a block cell"
 assert child.name == "block_child"
-# DIEAREA 4 点双存（含负坐标）×2：bbox + polygon 全点集（㉞）
-assert child.bbox == (-1000, -500, 1500, 2000), f"bbox={child.bbox}"
+# DIEAREA 4 点双存（含负坐标）×2：bbox + polygon 全点集（㉞）。
+# 恒基准 1000：def 值 ×1（UNITS 1000）
+assert child.bbox == (-500, -250, 750, 1000), f"bbox={child.bbox}"
 assert child.is_polygon is True, "4-point DIEAREA must set is_polygon"
 assert len(child.polygon) == 4, f"polygon points={len(child.polygon)}"
-assert child.polygon[0] == (-1000, -500)
-assert child.polygon[3] == (1500, -500)
+assert child.polygon[0] == (-500, -250)
+assert child.polygon[3] == (750, -250)
 assert child.def_units_per_micron == 1000
 assert child.def_path.endswith("block_child.def"), f"def_path={child.def_path}"
 # P7：origin = −diearea 左下角
-assert child.origin_x == 1000 and child.origin_y == 500, \
+assert child.origin_x == 500 and child.origin_y == 250, \
     f"origin=({child.origin_x},{child.origin_y})"
 # port = pins_ 的 port 位 DSPin（㉙）；port 名经 pin hasher 反查（R7 ㊱）
 assert child.pin_count == 2, f"child pins={child.pin_count}"
@@ -176,8 +177,8 @@ assert design.pin_name_of(pin_out.pin_id) == "PIN_OUT"
 parent = design.find_cell("block_parent")
 assert parent is not None
 assert parent.is_block_cell is True
-# DIEAREA 2 点矩形：bbox 直存（units 2000 = stack，×1）、polygon 空
-assert parent.bbox == (0, 0, 3000, 2000), f"bbox={parent.bbox}"
+# DIEAREA 2 点矩形：bbox 直存（units 2000，恒基准 1000 → ×0.5）、polygon 空
+assert parent.bbox == (0, 0, 1500, 1000), f"bbox={parent.bbox}"
 assert parent.is_polygon is False, "2-point DIEAREA must not set is_polygon"
 assert len(parent.polygon) == 0
 assert parent.pin_count == 1
@@ -202,14 +203,14 @@ assert names0.net_id_by_name("n1") == 1 and names0.net_id_by_name("n2") == 2
 assert names0.net_name_by_id(2) == "n2"
 # 注入临时产物后经 find_instance_by_name 查名取实例（R7 ㊱）
 block0.attach_names(names0)
-# R6：u1 INV_X1 + PLACED (100,200) N，UNITS 1000→2000 ×2 → pos=(200,400)
+# R6：u1 INV_X1 + PLACED (100,200) N，UNITS 1000 = 基准 1000 ×1 → pos=(100,200)
 u1 = block0.find_instance_by_name("u1")
 assert u1 is not None and u1.cell_id == design.cell_id_by_name("INV_X1")
-assert (u1.pos_x, u1.pos_y) == (200, 400) and u1.orient == 0
+assert (u1.pos_x, u1.pos_y) == (100, 200) and u1.orient == 0
 assert u1.placement_status == 3  # PLACED（DSPlacementStatus）
 assert block0.net_count == 2
-# 密度（实例面积通道）：bin = alpha density_bin_size 10µm × 2000 = 20000
-# DBU → child DIEAREA ×2 = 5000×5000 → 1×1 格；INV footprint 交叠 1 格
+# 密度（实例面积通道）：bin = alpha density_bin_size 10µm × 1000 = 10000
+# DBU → child DIEAREA ×1 = 1250×1250 → 1×1 格；INV footprint 交叠 1 格
 assert block0.density.cols == 1 and block0.density.rows == 1
 assert block0.density.total_count == 1
 
@@ -230,8 +231,8 @@ assert block1.net_count == 1 and block1.net_id_by_name("n_top") == 1
 assert block1.density.total_count == 2
 
 # ── S5b：per-DEF 网内容产物（③ 分批责任链 + ⑨ local id 对齐 + ⑩⑫）──
-# block_child n1：连接 2 项 + 1 wire（M1 缺省宽 0.07µm×2000=140 回填）+
-# 1 via（VIA12 → ⑫ block_child::VIA12 前缀名解析）@ (1000,400)
+# block_child n1：连接 2 项 + 1 wire（M1 缺省宽 0.07µm×1000=70 回填）+
+# 1 via（VIA12 → ⑫ block_child::VIA12 前缀名解析）@ (500,200)
 net0 = design_db.read_object(design_db.net_obj_name(0))
 assert net0.block_name == "block_child"
 assert net0.stats.net_count == 2
@@ -243,14 +244,14 @@ assert net0.connections_of(1) == [("u1", "A"), ("PIN", "PIN_IN")]
 assert net0.connections_of(2) == [("u1", "ZN"), ("PIN", "PIN_OUT")]
 wires = net0.wires_of(1)
 assert len(wires) == 1, f"n1 wires={wires}"
-assert wires[0][0] == 0 and wires[0][1] == 140  # M1 + 缺省宽回填
-assert wires[0][2] == [(200, 400), (1000, 400)]
+assert wires[0][0] == 0 and wires[0][1] == 70  # M1 + 缺省宽回填
+assert wires[0][2] == [(100, 200), (500, 200)]
 assert len(net0.wires_of(2)) == 0, "n2 has no wiring"
 # ⑩ via instance：专用 id 空间从 1 起、无 name，仅 via cell id + 位置
 assert net0.via_instance_total == 1
 via12_id = design.via_cell_id_by_name("block_child::VIA12")
 assert via12_id is not None
-assert net0.via_instance_at(1) == (via12_id, 1000, 400)
+assert net0.via_instance_at(1) == (via12_id, 500, 200)
 # ⑥ 网侧密度逐层分列通道：M1 金属 1 格 + VIA1 通孔 1 格（bin 10000）
 assert net0.density.metal_total == 1, f"metal={net0.density.metal_total}"
 assert net0.density.via_total == 1, f"via={net0.density.via_total}"
@@ -385,7 +386,7 @@ pin_in_id = loaded.pin_id_by_name("block_child", "PIN_IN")
 assert pin_in_id is not None
 port_geoms = loaded.get_pin_geometry().geometry_of(pin_in_id)
 assert len(port_geoms) == 1, f"PIN_IN geoms={port_geoms}"
-assert port_geoms[0] == (0, (-10, -20, 30, 40)), f"PIN_IN geom={port_geoms[0]}"
+assert port_geoms[0] == (0, (-5, -10, 15, 20)), f"PIN_IN geom={port_geoms[0]}"
 INFO("[OK] port geometry retrievable by global pin id (R4/R5)")
 
 # ── R9 ㊼：wait_obj 依赖传播体系（deps 传播 + run_direct 直跑 + 等待

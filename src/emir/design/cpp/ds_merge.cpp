@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
-#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -329,17 +328,17 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
     DSHierTree tree;
     if (blocks.empty()) {
         if (!nets.empty()) {
-            throw std::runtime_error(
+            // 不可恢复结构错误（DSGN::0011）：builder 输入不对齐，进程码 80 退出
+            //（dev-rules §7 第三类处置，2026-09-12 裁定——原 raise 改 fatal message）。
+            MSG_FATAL_EXIT("DSGN::0011", 0, 80,
                 "ds_merge: nets without blocks — misaligned builder inputs");
         }
-        return tree;  // 无 DEF 建库：空树（不触发 D22 零根 raise）
+        return tree;  // 无 DEF 建库：空树（不触发 D22 零根 fatal）
     }
     if (nets.size() != blocks.size()) {
-        throw std::runtime_error(
-            "ds_merge: nets/blocks size mismatch (" +
-            std::to_string(nets.size()) + " vs " +
-            std::to_string(blocks.size()) +
-            ") — per-DEF inputs must align by def_paths order");
+        MSG_FATAL_EXIT("DSGN::0011", 0, 80,
+            "ds_merge: nets/blocks size mismatch ({} vs {}) — per-DEF inputs must align by def_paths order",
+            nets.size(), blocks.size());
     }
 
     // 1) block cell 名 → def 序号（重名保留首份，与 S4 汇总语义一致）
@@ -373,7 +372,7 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
         return refs;
     };
 
-    // 3) 主 DEF = 唯一无父者（多根/零根 → 格式错误 raise，D22）
+    // 3) 主 DEF = 唯一无父者（多根/零根 → 不可恢复结构错误，D22/DSGN::0011）
     CMVector<uint32_t> in_degree(blocks.size(), 0);
     for (uint32_t i = 0; i < blocks.size(); ++i) {
         for (const auto& [local_id, child] : block_refs_of(i)) {
@@ -388,15 +387,15 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
         }
     }
     if (roots.size() != 1) {
-        throw std::runtime_error("ds_merge: hierarchy roots are not unique (" +
-                                 std::to_string(roots.size()) +
-                                 " parentless defs) — invalid design");
+        MSG_FATAL_EXIT("DSGN::0011", 0, 80,
+            "ds_merge: hierarchy roots are not unique ({} parentless defs) — invalid design",
+            roots.size());
     }
 
     // 4) 自根 DFS：深度优先序连续分配三类起始编号（区间长度 = 该 block
     //    定义的计数，⑨）；定义层面的每次引用各建一个节点（实例层面为
-    //    树）；当前路径重访同一 def = 环 → raise。递归深度 = 层级深度。
-    //    R7 ㊳：三类区间与 self_global_id 64 位。
+    //    树）；当前路径重访同一 def = 环 → fatal（DSGN::0011，码 80 退出）。
+    //    递归深度 = 层级深度。R7 ㊳：三类区间与 self_global_id 64 位。
     uint64_t inst_start = 0;
     uint64_t net_start = 0;
     uint64_t via_start = 0;
@@ -406,10 +405,9 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
         visit = [&](uint32_t def_idx, const CMString& instance_name,
                     uint32_t parent_id, uint64_t self_global_id) {
             if (on_path[def_idx] != 0) {
-                throw std::runtime_error("ds_merge: block hierarchy cycle "
-                                         "detected at '" +
-                                         blocks[def_idx]->get_block_name() +
-                                         "'");
+                MSG_FATAL_EXIT("DSGN::0011", 0, 80,
+                    "ds_merge: block hierarchy cycle detected at '{}'",
+                    blocks[def_idx]->get_block_name());
             }
             on_path[def_idx] = 1;
 

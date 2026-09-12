@@ -1,8 +1,13 @@
 #pragma once
 
 #include <container/cpp/container_aliases.h>
+#include <gtest/gtest.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -62,6 +67,39 @@ struct ScopedTempDir {
     }
     ScopedTempDir(const ScopedTempDir&) = delete;
     ScopedTempDir& operator=(const ScopedTempDir&) = delete;
+};
+
+// fatal 终局断言（MSG_FATAL_EXIT 不返回语义的统一断言设施）：fork 子进程
+// 执行 trigger（内部走 fatal_exit → _exit(expected_code)），父进程有界
+// waitpid 断言子进程正常退出且退出码正确。子进程内禁用 gtest 断言（fork
+// 后 gtest 状态不回传）：trigger 未生效 → 以 0 退出 → 父侧断言失败；
+// 意外死锁（fork 只复制调用线程，子进程可能卡在被其他线程持有的锁上）
+// → 30s deadline 后 SIGKILL 收尸（零容忍：测试本身不允许挂死）。
+inline void expect_fatal_exit_code(const std::function<void()>& trigger,
+                                   int expected_code) {
+    pid_t pid = fork();
+    ASSERT_GE(pid, 0) << "fork failed";
+    if (pid == 0) {
+        trigger();
+        _exit(0);  // 触发未生效（未退出）→ 0 → 父侧断言失败
+    }
+    int status = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    pid_t done = 0;
+    while ((done = waitpid(pid, &status, WNOHANG)) == 0) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            FAIL() << "fatal child process hung (killed after 30s)";
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_GT(done, 0) << "waitpid failed";
+    ASSERT_TRUE(WIFEXITED(status)) << "child did not exit normally (signal "
+                                   << (WIFSIGNALED(status) ? WTERMSIG(status) : 0) << ")";
+    ASSERT_EQ(WEXITSTATUS(status), expected_code)
+        << "fatal path must _exit(" << expected_code << ")";
 };
 
 }  // namespace test

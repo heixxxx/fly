@@ -41,8 +41,9 @@ fs::path test_data(const char* name) {
     return fs::path("data") / name;
 }
 
-// 标准环境：tech lef 层表（M1=0/VIA1=1/M2=2，M1 缺省宽 0.07µm×2000=140）
-// + INV_X1 cell + tech VIA12（plain 名权威表条目）+ block 前缀 via。
+// 标准环境：tech lef 层表（M1=0/VIA1=1/M2=2，恒基准 M1 缺省宽
+// 0.07µm×1000=70）+ INV_X1 cell + tech VIA12（plain 名权威表条目）+
+// block 前缀 via。
 struct TestEnv {
     DSStack stack;
     DSDesign design;
@@ -186,7 +187,7 @@ TEST(DSNetGeometryExpandNodeTest, ExpandsWireWithDefaultWidthFallback) {
     DSBlockBuildData block_data = env.make_block_data();
     DSNetBuildData net_data;
 
-    // 普通 net 无显式宽度（width_dbu = 0）→ 回填 M1 层缺省宽 140
+    // 普通 net 无显式宽度（width_dbu = 0）→ 回填 M1 层缺省宽 70
     DSNetContext ctx = make_ctx(env, block_data, net_data, "n1");
     ctx.wires.push_back({"M1", 0, {GEOPoint(200, 200),
                                    GEOPoint(1000, 200)}});
@@ -199,11 +200,40 @@ TEST(DSNetGeometryExpandNodeTest, ExpandsWireWithDefaultWidthFallback) {
     ASSERT_EQ(net_data.wires_.at(1).size(), 1u);
     const DSNetWire& wire = net_data.wires_.at(1)[0];
     EXPECT_EQ(wire.layer_id_, 0u);  // M1
-    EXPECT_EQ(wire.width_, 140);    // 0.07 µm × 2000 DBU/µm（tech 缺省宽）
+    EXPECT_EQ(wire.width_, 70);     // 0.07 µm × 1000 DBU/µm（tech 缺省宽）
     ASSERT_EQ(wire.points_.size(), 2u);
     EXPECT_EQ(wire.points_[0].get_x(), 200);
     EXPECT_EQ(wire.points_[1].get_y(), 200);
     EXPECT_EQ(net_data.stats_.wire_count, 1u);
+}
+
+TEST(DSNetGeometryExpandNodeTest, WireAndRectUndefinedLayerDropped) {
+    // 层引用未定义 → 条目级丢弃兜底（dev-rules §7：不 raise + DSGN::0010
+    // 提醒）：未定义层的 wire 段 / rect 项各自丢弃 + 计数，合法条目照常
+    // 收录
+    TestEnv env;
+    DSBlockBuildData block_data = env.make_block_data();
+    DSNetBuildData net_data;
+
+    DSNetContext ctx = make_ctx(env, block_data, net_data, "n1");
+    ctx.wires.push_back({"M1", 0, {GEOPoint(0, 0), GEOPoint(100, 100)}});
+    ctx.wires.push_back({"GHOST_LAYER", 0, {GEOPoint(0, 0)}});
+    ctx.rects.push_back({"M2", GEORect(0, 0, 100, 100)});
+    ctx.rects.push_back({"GHOST_LAYER", GEORect(0, 0, 100, 100)});
+
+    DSNetConnectionParseNode conn;
+    DSNetGeometryExpandNode geo;
+    conn.handle(ctx);
+    geo.handle(ctx);
+
+    EXPECT_FALSE(ctx.error);  // 兜底计数不拦截
+    ASSERT_EQ(net_data.wires_.at(1).size(), 1u);   // 合法 wire 保留
+    EXPECT_EQ(net_data.wires_.at(1)[0].layer_id_, 0u);
+    ASSERT_EQ(net_data.rects_.at(1).size(), 1u);   // 合法 rect 保留
+    EXPECT_EQ(net_data.rects_.at(1)[0].layer_id_, 2u);
+    EXPECT_EQ(net_data.stats_.wire_count, 1u);
+    EXPECT_EQ(net_data.stats_.rect_count, 1u);
+    EXPECT_EQ(net_data.stats_.skipped_layer_ref_count, 2u);
 }
 
 TEST(DSNetGeometryExpandNodeTest, KeepsExplicitWidthAndRect) {
@@ -369,11 +399,11 @@ TEST(DSNetBuildDataTest, SerializeRoundTrip) {
 
 // ── 6. 适配层全链：真 DEF 网内容（分批 2 强制多批落批）───────────────
 
-// nets_synth.def（UNITS 1000 / stack 2000 = ×2）：
-//   n1  : 2 连接 + 2 wire（M1 缺省宽 140）+ 1 via（tech VIA12 plain 名）
+// nets_synth.def（UNITS 1000 / 恒基准 1000 = ×1）：
+//   n1  : 2 连接 + 2 wire（M1 缺省宽 70）+ 1 via（tech VIA12 plain 名）
 //   n2  : 2 连接（无几何）
 //   n3  : 1 连接（无几何）
-//   VDD : 1 连接 + 2 special wire（显式宽 400）+ 1 RECT + 1 via
+//   VDD : 1 连接 + 2 special wire（显式宽 200）+ 1 RECT + 1 via
 //         （⑫ nets_blk::VIADEF1 前缀回退解析）+ 1 未定义 via 兜底跳过
 TEST(DsDefNetsTest, ParsesNetContentInBatches) {
     TestEnv env;
@@ -396,36 +426,38 @@ TEST(DsDefNetsTest, ParsesNetContentInBatches) {
     EXPECT_EQ(stats.via_instance_count, 2);
     EXPECT_EQ(stats.skipped_via_count, 1);
     EXPECT_EQ(stats.skipped_net_count, 0);
+    EXPECT_EQ(stats.skipped_layer_ref_count, 0);
 
     // n1：连接 + wire（缺省宽回填）+ via instance
     ASSERT_EQ(net_data.connections_.at(1).size(), 2u);
     ASSERT_EQ(net_data.wires_.at(1).size(), 2u);
     EXPECT_EQ(net_data.wires_.at(1)[0].layer_id_, 0u);
-    EXPECT_EQ(net_data.wires_.at(1)[0].width_, 140);
-    EXPECT_EQ(net_data.wires_.at(1)[0].points_[0].get_x(), 200);
-    EXPECT_EQ(net_data.wires_.at(1)[1].points_[1].get_y(), 600);
+    EXPECT_EQ(net_data.wires_.at(1)[0].width_, 70);
+    EXPECT_EQ(net_data.wires_.at(1)[0].points_[0].get_x(), 100);
+    EXPECT_EQ(net_data.wires_.at(1)[1].points_[1].get_y(), 300);
     ASSERT_EQ(net_data.via_instances_.size(), 2u);
-    EXPECT_EQ(net_data.via_instances_.at(1).pos_.get_x(), 1000);
-    EXPECT_EQ(net_data.via_instances_.at(1).pos_.get_y(), 600);
+    EXPECT_EQ(net_data.via_instances_.at(1).pos_.get_x(), 500);
+    EXPECT_EQ(net_data.via_instances_.at(1).pos_.get_y(), 300);
 
     // VDD（special）：显式宽度 + RECT + 前缀 via + 未定义 via 跳过
     const uint32_t vdd_id = block_data.net_names_->get_id("VDD");
     ASSERT_EQ(net_data.wires_.at(vdd_id).size(), 2u);
-    EXPECT_EQ(net_data.wires_.at(vdd_id)[0].width_, 400);
+    EXPECT_EQ(net_data.wires_.at(vdd_id)[0].width_, 200);
     ASSERT_EQ(net_data.rects_.at(vdd_id).size(), 1u);
-    EXPECT_EQ(net_data.rects_.at(vdd_id)[0].rect_.get_x_high(), 4240);
+    EXPECT_EQ(net_data.rects_.at(vdd_id)[0].rect_.get_x_high(), 2120);
     EXPECT_EQ(net_data.via_instances_.at(2).via_cell_id_,
               env.design.via_cell_names_.get_id("nets_blk::VIADEF1"));
 
-    // 网侧密度（⑥）：格网由 DIEAREA 配置 (0,0)-(4000,2000) bin 1000 → 4×2
-    // 金属：n1 两段各跨 col 边界（6）+ VDD 两 wire（4）+ RECT（4）→ M1 6
-    // + M2 6 = 12；通孔：VIA12 cut 跨 col 边界（2）+ VIADEF1（1）= 3
-    EXPECT_EQ(net_data.density_.get_cols(), 4u);
-    EXPECT_EQ(net_data.density_.get_rows(), 2u);
-    EXPECT_EQ(net_data.density_.layer_total(0, false), 6);  // M1 金属
-    EXPECT_EQ(net_data.density_.layer_total(2, false), 6);  // M2 金属
-    EXPECT_EQ(net_data.density_.metal_total(), 12);
-    EXPECT_EQ(net_data.density_.via_total(), 3);
+    // 网侧密度（⑥）：格网由 DIEAREA 配置 (0,0)-(2000,1000) bin 1000 → 2×1
+    // 金属：n1 两段 wire 各 1 格 + VDD M1 wire 1 格（M1 3）+ VDD M2 wire
+    // 1 格 + RECT 跨 col 边界 2 格（M2 3）→ M1 3 + M2 3 = 6；通孔：
+    // VIA12（1）+ VIADEF1（1）= 2
+    EXPECT_EQ(net_data.density_.get_cols(), 2u);
+    EXPECT_EQ(net_data.density_.get_rows(), 1u);
+    EXPECT_EQ(net_data.density_.layer_total(0, false), 3);  // M1 金属
+    EXPECT_EQ(net_data.density_.layer_total(2, false), 3);  // M2 金属
+    EXPECT_EQ(net_data.density_.metal_total(), 6);
+    EXPECT_EQ(net_data.density_.via_total(), 2);
 }
 
 TEST(DsDefNetsTest, UnreadableFileRaises) {

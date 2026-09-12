@@ -3,7 +3,6 @@
 #include <message/cpp/message_macros.h>
 
 #include <algorithm>
-#include <stdexcept>
 #include <utility>
 
 namespace fly {
@@ -90,14 +89,15 @@ void DSNetGeometryExpandNode::handle(DSNetContext& ctx) {
     }
     const uint32_t net_id = ctx.local_net_id;
 
-    // wire 段：layer id 解析（未定义层 → 格式错误 raise，D15 同 S4/S5a
-    // 口径）+ 宽度（special 显式保留 / 普通 net 回填 stack 层缺省宽）
+    // wire 段：layer id 解析（层引用未定义 → 该 wire 段条目级丢弃 +
+    // DSGN::0010 提醒 + 计数，dev-rules §7 不 raise）+ 宽度（special
+    // 显式保留 / 普通 net 回填 stack 层缺省宽）
     for (DSNetRawWire& raw : ctx.wires) {
-        const uint32_t layer_id = ctx.stack->find_layer(raw.layer_name);
+        const uint32_t layer_id =
+            ds_resolve_layer_id(raw.layer_name, *ctx.stack);
         if (layer_id == DSStack::kNoLayer) {
-            throw std::runtime_error("ds_net_pipeline: undefined layer "
-                                     "reference '" +
-                                     raw.layer_name + "'");
+            ++ctx.net_data->stats_.skipped_layer_ref_count;
+            continue;
         }
         DSNetWire wire;
         wire.layer_id_ = layer_id;
@@ -108,13 +108,14 @@ void DSNetGeometryExpandNode::handle(DSNetContext& ctx) {
         ctx.net_data->add_wire(net_id, std::move(wire));
     }
 
-    // rect 项：layer id 解析 + 原样收录
+    // rect 项：layer id 解析（未定义层 → 条目级丢弃 + 计数，同 wire 段
+    // 口径）+ 原样收录
     for (DSNetRawRect& raw : ctx.rects) {
-        const uint32_t layer_id = ctx.stack->find_layer(raw.layer_name);
+        const uint32_t layer_id =
+            ds_resolve_layer_id(raw.layer_name, *ctx.stack);
         if (layer_id == DSStack::kNoLayer) {
-            throw std::runtime_error("ds_net_pipeline: undefined layer "
-                                     "reference '" +
-                                     raw.layer_name + "'");
+            ++ctx.net_data->stats_.skipped_layer_ref_count;
+            continue;
         }
         DSNetRect rect;
         rect.layer_id_ = layer_id;

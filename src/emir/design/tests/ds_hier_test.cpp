@@ -2,7 +2,8 @@
 // S6 节 + design-knowledge.md §5）：
 //   1. 构建：从 S5a per-DEF 数据自根 DFS 展开——block 定义的每次引用 =
 //      一个 block instance 节点（定义 DAG 共享、实例层面为树）；主 DEF
-//      判定 = 唯一无父者（多根/零根 → 格式错误 raise，D22）+ 环检测；
+//      判定 = 唯一无父者（多根/零根 → fatal DSGN::0011 码 80 退出，D22
+//      2026-09-12 裁定改 fatal message）+ 环检测；
 //   2. 起始编号：深度优先序连续分配、区间连续不重叠；区间长度 = 该
 //      block 定义的 instance/net/via instance 三类计数（instance 含
 //      local 0 占位槽；net/via local id 从 1 起；via 计数 = S5b 产物
@@ -19,11 +20,18 @@
 #include <emir/design/cpp/ds_merge.h>
 #include <emir/design/cpp/ds_types.h>
 
+#include <common/testing/cpp/test_helpers.h>
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdint>
-#include <stdexcept>
+#include <functional>
+#include <thread>
 #include <vector>
+
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace {
 
@@ -346,9 +354,13 @@ TEST(DSHierTreeTest, SerializeRoundTrip) {
     EXPECT_EQ(design_back.get_hier_tree().block_of_via_instance(1), 0u);
 }
 
-// ── 7. 主 DEF 判定：多根 / 零根 → raise（D22）；环 → raise；入参对齐 ─
+// ── 7. 主 DEF 判定：多根 / 零根 / 环 / 入参不对齐 → fatal（D22/DSGN::0011）──
+// 2026-09-12 裁定：DSGN::0011 场景由 raise 改 MSG_FATAL_EXIT（进程码 80 退出
+// + master 联动）——断言方式同步从 EXPECT_THROW 改为 fork 子进程退出码 80
+//（共享断言设施 fly::test::expect_fatal_exit_code；单测进程未绑定 fatal
+// 分发 → 仅本地落盘后 _exit）。
 
-TEST(DSHierTreeTest, MultiRootRaises) {
+TEST(DSHierTreeTest, MultiRootFatalsWithCode80) {
     HierEnv env;
     env.blocks.clear();
     env.nets.clear();
@@ -358,11 +370,11 @@ TEST(DSHierTreeTest, MultiRootRaises) {
     env.nets.push_back(make_net(0));
 
     HierPtrs ptrs(env);
-    EXPECT_THROW(ds_build_hier_tree(ptrs.blocks, ptrs.nets, env.design),
-                 std::runtime_error);
+    fly::test::expect_fatal_exit_code(
+        [&] { (void)ds_build_hier_tree(ptrs.blocks, ptrs.nets, env.design); }, 80);
 }
 
-TEST(DSHierTreeTest, CycleRaises) {
+TEST(DSHierTreeTest, CycleFatalsWithCode80) {
     HierEnv env;
     env.blocks.clear();
     env.nets.clear();
@@ -378,7 +390,7 @@ TEST(DSHierTreeTest, CycleRaises) {
 
     const uint32_t loopa_id = env.design.cell_names_.get_id("LOOPA");
     const uint32_t loopb_id = env.design.cell_names_.get_id("LOOPB");
-    // root → A → B → A（A 被引用两次仍唯一根 root；DFS 入环 → raise）
+    // root → A → B → A（A 被引用两次仍唯一根 root；DFS 入环 → fatal）
     env.blocks.push_back(make_block("root", {loopa_id}, 1));
     env.blocks.push_back(make_block("LOOPA", {loopb_id}, 1));
     env.blocks.push_back(make_block("LOOPB", {loopa_id}, 1));
@@ -387,16 +399,16 @@ TEST(DSHierTreeTest, CycleRaises) {
     env.nets.push_back(make_net(0));
 
     HierPtrs ptrs(env);
-    EXPECT_THROW(ds_build_hier_tree(ptrs.blocks, ptrs.nets, env.design),
-                 std::runtime_error);
+    fly::test::expect_fatal_exit_code(
+        [&] { (void)ds_build_hier_tree(ptrs.blocks, ptrs.nets, env.design); }, 80);
 }
 
-TEST(DSHierTreeTest, MismatchedNetCountsRaise) {
+TEST(DSHierTreeTest, MismatchedNetCountsFatalsWithCode80) {
     HierEnv env;
     HierPtrs ptrs(env);
     ptrs.nets.pop_back();  // nets 与 blocks 数量不一致 = 调用方契约错误
-    EXPECT_THROW(ds_build_hier_tree(ptrs.blocks, ptrs.nets, env.design),
-                 std::runtime_error);
+    fly::test::expect_fatal_exit_code(
+        [&] { (void)ds_build_hier_tree(ptrs.blocks, ptrs.nets, env.design); }, 80);
 }
 
 TEST(DSHierTreeTest, EmptyDefsYieldEmptyTree) {

@@ -324,6 +324,15 @@ bool TcpConnectionManager::is_connected(uint64_t conn_id) const {
     return it != conn_to_handle_.end() && it->second && it->second->get() >= 0;
 }
 
+size_t TcpConnectionManager::pending_send_bytes(uint64_t conn_id) const {
+    // 只读查找（与 send/drain_write_buffer 共用 conn_mutex_）：连接已关闭/
+    // 排空 → 条目不存在或为空 → 0。fatal 送达等待以此判定「发送已进内核」。
+    std::lock_guard<std::mutex> lock(conn_mutex_);
+    auto it = write_buffers_.find(conn_id);
+    if (it == write_buffers_.end()) return 0;
+    return it->second.size();
+}
+
 size_t TcpConnectionManager::connection_count() const {
     std::lock_guard<std::mutex> lock(conn_mutex_);
     return conn_to_handle_.size();

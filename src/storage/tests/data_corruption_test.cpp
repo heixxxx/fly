@@ -4,8 +4,10 @@
 //   校验类错误（帧头 check / wire 根 CRC / 磁盘块 CRC / trailer）→
 //   [FATAL-DATA-CORRUPTION] ERR → 失效缓存 → 【一次】对象级重取（远程换副本
 //   优先 / 仅本地则绕过缓存重读盘）→ 仍败（任何方式：仍校验失败/断连/超时/
-//   无数据）→ DataCorruptionError 上抛（Python 面转 RuntimeError FATAL →
-//   TaskFailed；worker 不崩溃）。
+//   无数据）→ fatal message（STOR::0005，MSG_FATAL_EXIT）→ 进程 _exit(80)
+//   （2026-09-12 裁定：原 DataCorruptionError 上抛改进程级 fatal + master 联动；
+//   单测进程未绑定 fatal 分发 → 仅本地落盘后 _exit）。因此本文件的损坏终局
+//   断言采用 fork 子进程 + waitpid 退出码 80 模式（子进程内不做 gtest 断言）。
 //   不做静默重试循环——持续校验失败 = 内存/硬件/代码缺陷，必须大声暴露。
 #include <gtest/gtest.h>
 #include <storage/cpp/data_service.h>
@@ -20,10 +22,16 @@
 #include <common/runtime/cpp/error_types.h>
 #include <common/testing/cpp/test_helpers.h>
 #include <log/cpp/logger.h>
+#include <csignal>
+#include <chrono>
+#include <functional>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <thread>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace fly {
 namespace {
@@ -48,6 +56,9 @@ FlyBufferPtr make_valid_record(const std::string& data, const CMString& py_name)
     record->write(trailer.data(), trailer.size());
     return record;
 }
+
+// fatal 终局断言：共享断言设施 fly::test::expect_fatal_exit_code（见
+// common/testing/cpp/test_helpers.h），下述 case 直接调用。
 
 }  // namespace
 
@@ -87,7 +98,7 @@ protected:
 // "读可命中 low-tier 缓存条目"随 §4.7 读恒走数据源 + low_ 池删除不复存在；
 // 盘上/远程损坏路径由下方 LocalDiskCorruptFatal / RemoteChunkCorruptRetryThenFatal 覆盖。
 
-// 测试 11：盘上损坏且无远程副本 → 重读仍败 → DataCorruptionError（FATAL）。
+// 测试 11：盘上损坏且无远程副本 → 重读仍败 → fatal（STOR::0005，退出码 80）。
 TEST_F(DataCorruptionTest, LocalDiskCorruptFatal) {
     CMString db_path = "/dcbad";
     CMString full = db_path + ":obj";
@@ -111,15 +122,8 @@ TEST_F(DataCorruptionTest, LocalDiskCorruptFatal) {
     }
 
     Database db(db_path, test_dir_ + "/data");
-    // 盘坏 → 重取（无远程副本 → 必败）→ FATAL 异常。
-    EXPECT_THROW({
-        try {
-            db.read_object_compressed("obj", false);
-        } catch (const DataCorruptionError& e) {
-            EXPECT_NE(std::string(e.what()).find("[FATAL-DATA-CORRUPTION]"), std::string::npos);
-            throw;
-        }
-    }, DataCorruptionError);
+    // 盘坏 → 重取（无远程副本 → 必败）→ fatal message（码 80 退出）。
+    fly::test::expect_fatal_exit_code([&] { db.read_object_compressed("obj", false); }, 80);
 }
 
 // 测试 12：远程校验失败的一次重取编排（cb 注入，确定性）。
@@ -146,7 +150,7 @@ TEST_F(DataCorruptionTest, RemoteChunkCorruptRetryThenFatal) {
         ds_->set_direct_compressed_read_handler(nullptr);
     }
 
-    // 场景 A：CHECKSUM → CHECKSUM = fatal（预算耗尽）。
+    // 场景 A：CHECKSUM → CHECKSUM = fatal（预算耗尽，退出码 80）。
     {
         CMString full = "/dc12b:obj";
         ds_->update_remote_idx(full, 1, "host_a", 8000);
@@ -158,7 +162,7 @@ TEST_F(DataCorruptionTest, RemoteChunkCorruptRetryThenFatal) {
                 return {false, nullptr, {}, {}, ReadError::CHECKSUM};
             });
 
-        EXPECT_THROW(ds_->read_raw_compressed(full), DataCorruptionError);
+        fly::test::expect_fatal_exit_code([&] { (void)ds_->read_raw_compressed(full); }, 80);
         ds_->set_direct_compressed_read_handler(nullptr);
     }
 
@@ -177,7 +181,7 @@ TEST_F(DataCorruptionTest, RemoteChunkCorruptRetryThenFatal) {
                 return {false, nullptr, {}, {}, ReadError::NETWORK};
             });
 
-        EXPECT_THROW(ds_->read_raw_compressed(full), DataCorruptionError);
+        fly::test::expect_fatal_exit_code([&] { (void)ds_->read_raw_compressed(full); }, 80);
         ds_->set_direct_compressed_read_handler(nullptr);
     }
 }

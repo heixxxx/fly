@@ -61,10 +61,15 @@ enum class ReadError {
 };
 
 // 数据校验失败且一次重取预算耗尽（零容忍语义，chunked-transfer-design §5）。
-// 抛出点：DataService 读路径（tier2 校验预算耗尽）/ Database::read_object_compressed
-// （trailer 校验重取后仍败）/ Python 解压出口（块 CRC 重取后仍败）。
-// 捕获方必须终止当前 task（TaskFailed / RuntimeError("[FATAL-DATA-CORRUPTION] ...")），
-// 不存在降级消费路径。what() 以 [FATAL-DATA-CORRUPTION] 开头。
+// 【2026-09-12 裁定】C++ throw 点（DataService tier2 校验预算耗尽 /
+// Database::read_object_compressed trailer 校验重取后仍败）已全部改为
+// MSG_FATAL_EXIT("STOR::0005")——进程码 80 退出 + master 联动 fast_exit，
+// 不再以异常上抛。本类保留：Python 解压出口（块 CRC 重取后仍败，database.py）
+// 与 storage_export.cpp 流式读本地源校验（try_read_local_stream 校验失败，
+// 2026-09-12 review 裁定边界：同归 Python 侧出口、留待后续批次统一改 fatal）
+// 仍以同前缀 RuntimeError 上抛；C++ 侧剩余 catch（Database::read_object<T> /
+// worker task 执行路径）作防御深度保留，当前不可达。
+// what() 以 [FATAL-DATA-CORRUPTION] 开头。
 class DataCorruptionError : public std::runtime_error {
 public:
     explicit DataCorruptionError(const std::string& what)

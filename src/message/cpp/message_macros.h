@@ -41,6 +41,30 @@ using LimitChangeCallback = std::function<void()>;
 void set_limit_change_callback(LimitChangeCallback cb);
 void notify_limit_changed();
 
+// ---- fatal message 分发（MSG_FATAL_EXIT 的第 4 步，进程退出前最后动作）----
+// 与 push_message / set_message_push_func 完全同构的指针注入（message 模块
+// 不依赖 network/agent——分发目标由各进程启动时绑定）：
+//   - worker：绑定为 WorkerAgent::send_fatal_to_master（发送 master + 等写
+//     缓冲排空，有界超时；本地 debug log 已落盘，超时不阻塞退出）。
+//   - master：绑定为 MessageSink 写行（message.log + terminal，豁免配额）+
+//     detached 线程 fast_exit → _exit(同码)。
+//   - 单测 / 非 agent 进程：默认 nullptr（仅本地 debug log，随后 _exit）。
+using FatalDispatchFunc = std::function<void(const CMString& domain_id, int32_t source,
+                                             int32_t exit_code, const CMString& msg)>;
+void set_fatal_dispatch_func(FatalDispatchFunc func);
+
+// fatal message 退出路径（[[noreturn]]，MSG_FATAL_EXIT 宏与 Python
+// fly.fatal_message 共用的唯一实现）。流程（顺序即红线：落盘 → 分发 → 退出）：
+//   1. id 未注册 → WARN 提示（与 MSG 一致）后跳过配额/级别查表（仍退出）。
+//   2. 豁免 emit 配额（record_trigger_only：仍记 trigger 计数进 summary）。
+//   3. Logger::log(FATAL) 写本地 debug log（FATAL 与 WARN/ERROR 同走立即
+//      flush 路径）+ 显式 Logger::flush() 双保险。
+//   4. fatal 分发（set_fatal_dispatch_func 注入；未绑定则跳过）。
+//   5. _exit(exit_code)：跳过静态析构——日志与 sink 已在前面显式 flush，
+//      数据安全；静态析构期的 WBQ/网络线程拆除不在 fatal 语义内。
+[[noreturn]] void fatal_exit(const CMString& domain_id, int32_t source,
+                             int32_t exit_code, const CMString& msg);
+
 }  // namespace fly
 
 // --- MSG 宏 ---
@@ -78,5 +102,24 @@ void notify_limit_changed();
                 "[MSG] unregistered message id '" + _msg_domain + \
                 "' dropped — register it via MessageRegistry::register_id before use"); \
         } \
+    } while (0)
+
+// 发出 fatal message 后以错误码退出程序（不返回）。适用于**不可恢复的**
+// 数据/结构损坏（层级树多根/环、权威段损坏、存储校验损坏等）——进程级
+// fatal 语义，非编程错误守卫（后者仍用 throw / assert）。
+//
+// 用法：MSG_FATAL_EXIT("STOR::0005", 0, 80, "object '{}' corrupt: {}", name, detail);
+//   - domain_id: message id（"DOMAIN::NNNN"，注册级别应为 FATAL）。
+//   - source: 触发位置标识（业务自定义，仅打印标注）。
+//   - exit_code: 进程退出码（fly 全局统一 80，避开 77=std::terminate / 78=signal）。
+//   - master 侧联动：worker 的 fatal 经 FATAL_MESSAGE 送达 master → master
+//     fast_exit（失败在途任务 + StopNow 杀全部 worker）→ master _exit(同码)。
+//
+// 流程详见 fly::fatal_exit 注释（未注册 WARN 后仍退出 / 豁免配额记 trigger /
+// 本地落盘立即 flush / 分发 / _exit）。宏不返回，调用点后续代码不可达。
+#define MSG_FATAL_EXIT(domain_id, source, exit_code, fmt_str, ...) \
+    do { \
+        ::fly::fatal_exit((domain_id), (source), (exit_code), \
+            ::fly::format_log(FMT_STRING(fmt_str), ##__VA_ARGS__)); \
     } while (0)
 

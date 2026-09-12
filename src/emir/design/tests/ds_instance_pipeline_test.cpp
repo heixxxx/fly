@@ -13,7 +13,7 @@
 //      顺延 + instance 引用重映射；
 //   8. 适配层 ds_parse_def_components：真 DEF 全链（COMPONENTS 回调 + 网名
 //      扫描同遍读取）。
-// 数据：data/block_synth.def（复用，UNITS=1000/stack DBU=2000 ×2 换算）、
+// 数据：data/block_synth.def（复用，UNITS=1000/恒基准 DBU=1000 ×1 换算）、
 //       data/components_synth.def（UNPLACED/WEIGHT/重名网兜底）。
 #include <emir/design/cpp/ds_def_adapter.h>
 #include <emir/design/cpp/ds_instance_pipeline.h>
@@ -43,7 +43,7 @@ fs::path test_data(const char* name) {
     return fs::path("data") / name;
 }
 
-// 标准测试 design：INV_X1（@2000 DBU = 0.7 µm SIZE → bbox 1400×1400）
+// 标准测试 design：INV_X1（手工构造 bbox 1400×1400，不涉文件换算）
 DSDesign make_design() {
     DSDesign design;
     DSCell inv;
@@ -487,7 +487,7 @@ TEST(DSDesignAddCellAtTest, SparsePlacementKeepsIdSemantics) {
 
 // ── 8. 适配层全链（COMPONENTS 回调 ∥ 网名扫描，同一遍读取）──────────
 
-// block_synth.def：UNITS=1000、stack DBU=2000（×2）；INV_X1 已定义
+// block_synth.def：UNITS=1000、恒基准 DBU=1000（×1）；INV_X1 已定义
 //（bbox (0,0,1400,1400)），DFF_X1 故意不定义 → fake。
 TEST(DsDefComponentsTest, ParsesComponentsAndNetNamesOnePass) {
     DSStack stack;
@@ -508,28 +508,28 @@ TEST(DsDefComponentsTest, ParsesComponentsAndNetNamesOnePass) {
     EXPECT_EQ(block_data.get_block_name(), "block_a");
     EXPECT_TRUE(block_data.instances_.contains(0));
 
-    // inst1 INV_X1 + PLACED (100,200) N：t=(200,400)（×2）→ pos=(200,400)
+    // inst1 INV_X1 + PLACED (100,200) N：t=(100,200)（×1）→ pos=(100,200)
     // R7 ㊱：实例名经双向 instance hasher 查回
     const DSInstance& i1 = block_data.instances_.at(1);
     EXPECT_EQ(block_data.instance_names_->get_name(1), "inst1");
     EXPECT_EQ(block_data.instance_names_->get_id("inst1"), 1u);
     EXPECT_EQ(i1.get_cell_id(), 0u);
-    EXPECT_EQ(i1.get_transform().get_offset().get_x(), 200);
-    EXPECT_EQ(i1.get_transform().get_offset().get_y(), 400);
+    EXPECT_EQ(i1.get_transform().get_offset().get_x(), 100);
+    EXPECT_EQ(i1.get_transform().get_offset().get_y(), 200);
     EXPECT_EQ(i1.get_placement_status(),
               static_cast<uint8_t>(DSPlacementStatus::PLACED));
     EXPECT_DOUBLE_EQ(i1.get_weight(), 0.0);
 
-    // inst2 DFF_X1 + PLACED (300,400) FS：未定义 → fake；t=(600,800)，
-    // fake 1×1 box 经 R_FS ll=(0,−1) → pos=(600,801)
+    // inst2 DFF_X1 + PLACED (300,400) FS：未定义 → fake；t=(300,400)，
+    // fake 1×1 box 经 R_FS ll=(0,−1) → pos=(300,401)
     const DSInstance& i2 = block_data.instances_.at(2);
     EXPECT_EQ(block_data.instance_names_->get_name(2), "inst2");
     ASSERT_EQ(block_data.fake_cells_.size(), 1u);
     EXPECT_EQ(block_data.fake_cells_[0].get_name(), "block_a::DFF_X1");
     EXPECT_EQ(i2.get_cell_id(), block_data.fake_name_to_id_.at(
                                     "block_a::DFF_X1"));
-    EXPECT_EQ(i2.get_transform().get_offset().get_x(), 600);
-    EXPECT_EQ(i2.get_transform().get_offset().get_y(), 801);
+    EXPECT_EQ(i2.get_transform().get_offset().get_x(), 300);
+    EXPECT_EQ(i2.get_transform().get_offset().get_y(), 401);
     EXPECT_EQ(i2.get_transform().get_orient(), GEOOrientation::FS);
 
     // 网名扫描（③ NetNameOnly）：local net id 从 1 起
@@ -540,11 +540,11 @@ TEST(DsDefComponentsTest, ParsesComponentsAndNetNamesOnePass) {
     // 统计
     EXPECT_EQ(block_data.stats_.instance_count, 2u);
     EXPECT_EQ(block_data.stats_.fake_cell_count, 1u);
-    // 密度格：DIEAREA ×2 = (−2000,−1000)-(3000,4000)，bin 1000 → 5×5；
-    // inst1 footprint (200,400)-(1600,1800) → 跨格 2×2 = 4；inst2 1×1 → 1
-    EXPECT_EQ(block_data.density_.get_cols(), 5u);
-    EXPECT_EQ(block_data.density_.get_rows(), 5u);
-    EXPECT_EQ(block_data.density_.total_count(), 5);
+    // 密度格：DIEAREA ×1 = (−1000,−500)-(1500,2000)，bin 1000 → 3×3；
+    // inst1 footprint (100,200)-(1500,1600) → 跨格 2×3 = 6；inst2 1×1 → 1
+    EXPECT_EQ(block_data.density_.get_cols(), 3u);
+    EXPECT_EQ(block_data.density_.get_rows(), 3u);
+    EXPECT_EQ(block_data.density_.total_count(), 7);
 }
 
 // components_synth.def：UNPLACED（无坐标）/ WEIGHT / FIXED / COVER / NETS 重名
@@ -565,21 +565,21 @@ TEST(DsDefComponentsTest, HandlesUnplacedWeightDuplicateNets) {
     EXPECT_EQ(block_data.stats_.unplaced_count, 1u);
     EXPECT_EQ(block_data.stats_.fake_cell_count, 1u);  // GHOST_CELL
 
-    // u1：WEIGHT 3 + PLACED N；t=(200,200) → pos=(200,200)
+    // u1：WEIGHT 3 + PLACED N；t=(100,100) → pos=(100,100)
     const DSInstance& u1 = block_data.instances_.at(1);
     EXPECT_DOUBLE_EQ(u1.get_weight(), 3.0);
     EXPECT_EQ(u1.get_placement_status(),
               static_cast<uint8_t>(DSPlacementStatus::PLACED));
-    EXPECT_EQ(u1.get_transform().get_offset().get_x(), 200);
-    EXPECT_EQ(u1.get_transform().get_offset().get_y(), 200);
+    EXPECT_EQ(u1.get_transform().get_offset().get_x(), 100);
+    EXPECT_EQ(u1.get_transform().get_offset().get_y(), 100);
 
-    // u2：FIXED FS；t=(400,200)、INV box 1400×1400 → R_FS ll=(0,−1400)
-    // → pos=(400,1600)
+    // u2：FIXED FS；t=(200,100)、INV box 1400×1400 → R_FS ll=(0,−1400)
+    // → pos=(200,1500)
     const DSInstance& u2 = block_data.instances_.at(2);
     EXPECT_EQ(u2.get_placement_status(),
               static_cast<uint8_t>(DSPlacementStatus::FIXED));
-    EXPECT_EQ(u2.get_transform().get_offset().get_x(), 400);
-    EXPECT_EQ(u2.get_transform().get_offset().get_y(), 1600);
+    EXPECT_EQ(u2.get_transform().get_offset().get_x(), 200);
+    EXPECT_EQ(u2.get_transform().get_offset().get_y(), 1500);
 
     // u3：UNPLACED（defi 置坐标 (−1,−1) orient −1）→ 钳制 N、照收入表
     const DSInstance& u3 = block_data.instances_.at(3);
@@ -587,13 +587,13 @@ TEST(DsDefComponentsTest, HandlesUnplacedWeightDuplicateNets) {
               static_cast<uint8_t>(DSPlacementStatus::UNPLACED));
     EXPECT_EQ(u3.get_transform().get_orient(), GEOOrientation::N);
 
-    // u4：COVER S（GHOST fake 1×1）：t=(600,600) → R_S box ll=(−1,−1)
-    // → pos=(601,601)
+    // u4：COVER S（GHOST fake 1×1）：t=(300,300) → R_S box ll=(−1,−1)
+    // → pos=(301,301)
     const DSInstance& u4 = block_data.instances_.at(4);
     EXPECT_EQ(u4.get_placement_status(),
               static_cast<uint8_t>(DSPlacementStatus::COVER));
-    EXPECT_EQ(u4.get_transform().get_offset().get_x(), 601);
-    EXPECT_EQ(u4.get_transform().get_offset().get_y(), 601);
+    EXPECT_EQ(u4.get_transform().get_offset().get_x(), 301);
+    EXPECT_EQ(u4.get_transform().get_offset().get_y(), 301);
 
     // 网名：NETS n1 重名保留首份 + SPECIALNETS VDD；id 从 1 连续分配
     EXPECT_EQ(stats.net_count, 2);
@@ -602,9 +602,11 @@ TEST(DsDefComponentsTest, HandlesUnplacedWeightDuplicateNets) {
     EXPECT_EQ(block_data.net_names_->get_id("n1"), 1u);
     EXPECT_EQ(block_data.net_names_->get_id("VDD"), 2u);
 
-    // UNPLACED 不入密度；u1/u2 footprint 各跨 4 格（1400² @1000 bin）、
-    // u4 fake 1×1 → 1 格（2×2 网格内 clamp）
-    EXPECT_EQ(block_data.density_.total_count(), 9);
+    // UNPLACED 不入密度；格网 DIEAREA ×1 = (0,0)-(1000,1000) bin 1000
+    // → 1×1：u1/u2/u4 footprint 各 clamp 进唯一格 → 3
+    EXPECT_EQ(block_data.density_.get_cols(), 1u);
+    EXPECT_EQ(block_data.density_.get_rows(), 1u);
+    EXPECT_EQ(block_data.density_.total_count(), 3);
 }
 
 TEST(DsDefComponentsTest, UnreadableFileRaises) {

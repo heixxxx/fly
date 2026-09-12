@@ -60,6 +60,10 @@ public:
     // 注意：未注册的 id 由调用方在调本方法前用 is_registered 检查（未注册不计次数）。
     bool try_emit(const CMString& domain_id);
 
+    // fatal message 专用：只记 trigger 计数，不做配额判定、不动 emit_count
+    //（fatal 豁免配额——必然输出，但触发次数仍进 summary）。try_emit 的豁免对偶。
+    void record_trigger_only(const CMString& domain_id);
+
     // ---- 计数快照（summary 上报用）----
     // trigger 计数（触发次数，进 summary）。
     CMUnorderedMap<CMString, uint64_t> trigger_id_counts_snapshot() const;

@@ -7,7 +7,8 @@ FLY_EXPORT_ENUM(fly::LogLevel, "EXLogLevel")
     FLY_EXPORT_ENUM_VALUE("DEBUG", fly::LogLevel::DEBUG)
     FLY_EXPORT_ENUM_VALUE("INFO", fly::LogLevel::INFO)
     FLY_EXPORT_ENUM_VALUE("WARN", fly::LogLevel::WARN)
-    FLY_EXPORT_ENUM_VALUE("ERROR", fly::LogLevel::ERROR);
+    FLY_EXPORT_ENUM_VALUE("ERROR", fly::LogLevel::ERROR)
+    FLY_EXPORT_ENUM_VALUE("FATAL", fly::LogLevel::FATAL);
 
 FLY_EXPORT_FUNCTION("DBG", [](const fly::CMString& msg) {
     fly::Logger::instance()->log(fly::LogLevel::DEBUG, msg);
