@@ -37,9 +37,10 @@
   → S8 task（全局密度合并 + 分区决策，2026-09-12/13 裁定：层级树自底
     向上 + 格值面积比例分摊 D10 A → global_density 独立对象；行列前缀
     和切分 → DSDesign 补 partitions_ 重写。依赖 S6 树 + 全部 per-DEF
-    正式产物 + stack——S7 未实施不预留挂点。alpha 四键：target_partitions/
-    partition_count/partition_target_density/density_channel_weights，
-    非法值 WARN 回退不 raise）
+    正式产物 + stack + alpha_settings 对象——S7 未实施不预留挂点。alpha
+    四键 target_partitions/partition_count/partition_target_density/
+    density_channel_weights 任务内 read_object 读回（2026-09-13 裁定：
+    声明式 DSAlphaSettings，非法值 WARN 回退不 raise））
   → freeze task（依赖 DSDesign/DSStack/DSPinTables/DSPinGeometry/
     DSBlock_*/DSBlockNames_*/DSNet_*/global_density 对象写完 + 中间对象
     清理）
@@ -393,29 +394,39 @@ def _nets_summary_task(db, stats_keys):
 # ── S8：全局密度合并 + 分区决策（core/extend 双区域，2026-09-12/13 裁定）─
 
 @as_task(inputs=lambda db, stack_key, hier_key, block_keys, net_keys,
-         design_key, density_key, w_inst, w_metal, w_via, target_partitions,
-         partition_count, target_density: [
+         design_key, density_key, settings_key: [
     db.get_full_name(stack_key),
     db.get_full_name(hier_key),
     db.get_full_name(design_key),
+    db.get_full_name(settings_key),
 ] + [db.get_full_name(k) for k in block_keys] +
     [db.get_full_name(k) for k in net_keys])
 def _partition_task(db, stack_key, hier_key, block_keys, net_keys, design_key,
-                    density_key, w_inst, w_metal, w_via, target_partitions,
-                    partition_count, target_density):
+                    density_key, settings_key):
     from log import INFO
     # 依赖 S6 树（临时产物）+ 全部 per-DEF 正式产物（S5a 实例密度 +
-    # S5b 网侧逐层密度）+ stack（w_eff 判定）。S7 未实施、不预留挂点
-    # （红线：S8 只依赖 S6+S5b 产物）。
+    # S5b 网侧逐层密度）+ stack（w_eff 判定）+ alpha_settings 对象（建库
+    # 时写定）。S7 未实施、不预留挂点（红线：S8 只依赖 S6+S5b 产物）。
     stack = db.read_object(stack_key)
     tree = db.read_object(hier_key)
     blocks = [db.read_object(k) for k in block_keys]
     nets = [db.read_object(k) for k in net_keys]
     design = db.read_object(design_key)
+    # alpha 四键（2026-09-13 裁定：任务侧统一读回，inputs 声明依赖，与
+    # wait_obj/判死语义一致；normalize 兜底旧对象缺键/未知属性）。C++
+    # ds_decide_partitions 签名不变——任务内解析后散参传入；'{x}x{y}'
+    # 解析失败 / 非正 target_density 仍由 C++ 侧 DSGN::0013 提醒回退
+    settings = db.read_object(settings_key)
+    settings.normalize()
+    weights = settings.density_channel_weights
+    target_partitions = settings.target_partitions or ""  # None/空串 = 未设置
+    partition_count = settings.partition_count
+    target_density = settings.partition_target_density
 
     global_density = ds_merge_global_density(tree, blocks, nets)
-    partitions = ds_decide_partitions(global_density, stack, w_inst, w_metal,
-                                      w_via, target_partitions,
+    partitions = ds_decide_partitions(global_density, stack,
+                                      weights["instance"], weights["metal"],
+                                      weights["via"], target_partitions,
                                       partition_count, target_density)
     design.set_partitions(partitions)
     # DSDesign 补分区字段重写（S8 按方案重写落盘）：正式对象已在汇总任务
@@ -444,76 +455,23 @@ def _freeze_design_task(db, final_keys, temp_keys):
     db.freeze()
 
 
-def _parse_channel_weights(raw):
-    """alpha density_channel_weights 解析（dict；非法值 WARN 回退该键默
-    认，不 raise——dev-rules §7）。默认 6/2/2（2026-09-12 裁定 3）。"""
-    from log import WARN
-    weights = {"instance": 6.0, "metal": 2.0, "via": 2.0}
-    if raw is None:
-        return weights
-    if not isinstance(raw, dict):
-        WARN(f"alpha density_channel_weights must be a dict, got "
-             f"{type(raw).__name__} — falling back to defaults {weights}")
-        return weights
-    for key in weights:
-        if key not in raw:
-            continue
-        value = raw[key]
-        # NaN/inf 一并拒绝（review 2026-09-13）：NaN 比较恒 False 会放行，
-        # 使合成负载全 NaN、切线全失效
-        if not isinstance(value, (int, float)) or isinstance(value, bool) \
-                or value != value or value in (float("inf"), float("-inf")) \
-                or value < 0:
-            WARN(f"alpha density_channel_weights['{key}'] must be a "
-                 f"non-negative finite number, got {value!r} — falling "
-                 f"back to default {weights[key]}")
-            continue
-        weights[key] = float(value)
-    return weights
-
-
-def run_design_flow(db, lef_paths, def_paths, lib_db, alpha=None):
-    """提交全部阶段任务（非阻塞）。alpha 提供建库未稳定配置（⑦）：本
-    阶段消费 density_bin_size（µm，缺省 10）、net_batch_size（网内容批
-    界网数，缺省 1000，裁定 ③）、lcp_name_arena（R8d 裁定 55：名字伴生
-    对象 id→name 侧 LCP 后缀压缩封口，缺省 False 形态一零变化）+ S8 四键
-    （2026-09-12/13 裁定）：target_partitions（'{x}x{y}' 直切，缺省未设
-    置）、partition_count（总分区数，缺省未设置）、partition_target_density
-    （目标合成负载，缺省 150000）、density_channel_weights（通道比重 dict，
-    缺省 6/2/2）。非法值一律 WARN 提醒后回退，不 raise。"""
-    from uuid import uuid4 as _uuid4
-
-    alpha = alpha or {}
-    bin_um = int(alpha.get("density_bin_size", 10))
-    net_batch = int(alpha.get("net_batch_size", 1000))
-    lcp_name_arena = bool(alpha.get("lcp_name_arena", False))
-    # S8 分区决策键（四键；类型检查在 flow 边界，语义解析在 C++——
-    # '{x}x{y}' 解析失败 / 非正 target_density 由 DSGN::0013 提醒回退）
-    target_partitions_raw = alpha.get("target_partitions", "")
-    # None 与非 str 一并 WARN 回退（review 2026-09-13：原 `is not None` 前置
-    # 使显式 None 穿透类型检查，C++ 边界 TypeError raise，违背不 raise 裁定）
-    if not isinstance(target_partitions_raw, str):
-        from log import WARN
-        WARN(f"alpha target_partitions must be a str like '4x3', got "
-             f"{type(target_partitions_raw).__name__} — ignoring")
-        target_partitions_raw = ""
-    partition_count_raw = alpha.get("partition_count", 0)
-    if not isinstance(partition_count_raw, int) or \
-            isinstance(partition_count_raw, bool):
-        from log import WARN
-        WARN(f"alpha partition_count must be an int, got "
-             f"{type(partition_count_raw).__name__} — ignoring")
-        partition_count_raw = 0
-    target_density_raw = alpha.get("partition_target_density", 150000)
-    if not isinstance(target_density_raw, int) or \
-            isinstance(target_density_raw, bool):
-        from log import WARN
-        WARN(f"alpha partition_target_density must be an int, got "
-             f"{type(target_density_raw).__name__} — ignoring")
-        target_density_raw = 150000
-    channel_weights = _parse_channel_weights(alpha.get(
-        "density_channel_weights"))
-    uid = _uuid4().hex[:8]
+def run_design_flow(db, lef_paths, def_paths, lib_db):
+    """提交全部阶段任务（非阻塞）。alpha 提供建库未稳定配置（⑦）：七键
+    经 DSAlphaSettings 声明式定义（2026-09-13 裁定，src/emir/design/py/
+    alpha_settings.py；校验与 DSGN::0013 汇总在 build_design_db 接线处），
+    settings 对象以对象名 "alpha_settings" 随建库写入 db——本函数从 db
+    读回（normalize 兜底：旧对象缺键补默认、未知属性丢弃）取提交侧三键：
+    density_bin_size（µm，缺省 10）、net_batch_size（网内容批界网数，缺
+    省 1000，裁定 ③）、lcp_name_arena（R8d 裁定 55，缺省 False 形态一零
+    变化）；S8 四键（target_partitions/partition_count/
+    partition_target_density/density_channel_weights）由 _partition_task
+    任务内读回（inputs 声明依赖）。"""
+    settings = db.read_object(DesignDb.ALPHA_SETTINGS_OBJ)
+    settings.normalize()
+    bin_um = settings.density_bin_size
+    net_batch = settings.net_batch_size
+    lcp_name_arena = settings.lcp_name_arena
+    uid = uuid4().hex[:8]
     stack_key = DesignDb.STACK_OBJ
     design_key = DesignDb.DESIGN_OBJ
     geoms_key = DesignDb.PIN_GEOMETRY_OBJ
@@ -625,14 +583,13 @@ def run_design_flow(db, lef_paths, def_paths, lib_db, alpha=None):
                            formal_block_keys, design_key, hier_key)
 
     # S8：全局密度合并 + 分区决策（依赖 S6 树 + 全部 per-DEF 正式产物 +
-    # stack；DSDesign 补 partitions_ 重写 + global_density 独立对象写定。
-    # S7 未实施——依赖只挂 S6+S5b 产物，不预留 S7 挂点）
+    # stack + alpha_settings 对象；DSDesign 补 partitions_ 重写 + global_
+    # density 独立对象写定。S7 未实施——依赖只挂 S6+S5b 产物，不预留 S7
+    # 挂点。alpha 四键任务内读回，2026-09-13 裁定）
     global_density_key = DesignDb.GLOBAL_DENSITY_OBJ
     _partition_task(db, stack_key, hier_key, formal_block_keys,
                     formal_net_keys, design_key, global_density_key,
-                    channel_weights["instance"], channel_weights["metal"],
-                    channel_weights["via"], target_partitions_raw,
-                    partition_count_raw, target_density_raw)
+                    DesignDb.ALPHA_SETTINGS_OBJ)
 
     # freeze：依赖正式对象集（含 per-DEF 实例/名字/网产物 + S8 全局密度
     # 图——后写，使 freeze 排在 S8 重写 DSDesign 之后）；中间对象清理

@@ -206,7 +206,8 @@ WRAPPER
     # emir 模块族：嵌套包结构（project + 各 db 子模块，每个子包自带 py/）。
     # 与平铺模块布局不同，单独按包树链接；带 C++ 的子模块的绑定
     # _fly_emir_<sub>.so 统一链到 python 根（py_dir 整体在 sys.path，
-    # import _fly_emir_<sub> 即可达）。
+    # import _fly_emir_<sub> 即可达）。纯 Python 子包（无 py/ 子层，如
+    # common 基座）顶层 *.py 直接链接。
     if [ -d "$FLY_ROOT/src/emir" ]; then
         mkdir -p "$build_dir/python/emir"
         ln -sf "$FLY_ROOT/src/emir/__init__.py" "$build_dir/python/emir/__init__.py"
@@ -215,6 +216,9 @@ WRAPPER
             [ -f "$sub_dir/__init__.py" ] || continue
             mkdir -p "$build_dir/python/emir/$sub"
             ln -sf "$sub_dir/__init__.py" "$build_dir/python/emir/$sub/__init__.py"
+            for py in "$sub_dir/"*.py; do
+                [ -f "$py" ] && ln -sf "$py" "$build_dir/python/emir/$sub/"
+            done
             if [ -d "$sub_dir/py" ]; then
                 mkdir -p "$build_dir/python/emir/$sub/py"
                 for py in "$sub_dir/py/"*.py; do

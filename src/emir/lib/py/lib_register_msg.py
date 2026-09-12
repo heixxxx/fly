@@ -9,6 +9,8 @@ import 本模块完成注册。仅注册过的 id 才会被 MSG 打印/发送，
   照常产出 LIBLibrary——流程错误处理范式 2026-09-13，dev-rules §7.2）
 - LIBR::0004: 全部 lib 文件解析失败（下游无法产出正确数据，fatal message
   结束整个 run——码 80 退出 + master 联动）
+- LIBR::0005: lib alpha 设置问题（非法值 + 未知键，一次汇总提醒后回退默
+  认/忽略，不 raise——alpha settings 体系化 2026-09-13 裁定）
 """
 
 from fly import register_message_id
@@ -17,3 +19,4 @@ register_message_id("LIBR::0001", "WARN")
 register_message_id("LIBR::0002", "WARN")
 register_message_id("LIBR::0003", "ERROR")
 register_message_id("LIBR::0004", "FATAL")
+register_message_id("LIBR::0005", "WARN")

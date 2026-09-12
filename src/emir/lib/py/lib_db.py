@@ -24,8 +24,11 @@ class LibDb(Database):
 
     role = "lib"
 
-    # LIBLibrary 容器对象名（唯一正式对象）
+    # LIBLibrary 容器对象名（唯一正式数据对象）
     LIBRARY_OBJ = "LIBLibrary"
+    # 建库 alpha 设置对象（LIBAlphaSettings，声明式五要素 2026-09-13 裁
+    # 定；master 侧随建库写入，消费点 read_object 读回 + normalize 兜底）
+    ALPHA_SETTINGS_OBJ = "alpha_settings"
 
     def load_library(self):
         """读取 LIBLibrary 整合容器（EXLIBLibrary 对象）。"""
@@ -46,6 +49,11 @@ build_lib_db_doc.add_param("lib_paths",
         isinstance(p, str) and p for p in ps),
         error="must be a non-empty list of non-empty file paths"),
     required=True, desc=".lib 文件路径列表（每文件一独立解析任务，天然分布式）")
+build_lib_db_doc.add_param("alpha",
+    schema=Schema(dict), required=False, default=None, none_ok=True,
+    desc="未稳定配置项（dict）；键经 LIBAlphaSettings 声明式定义（五要素"
+         "：src/emir/lib/py/alpha_settings.py，2026-09-13 裁定）——lib 首"
+         "版无激活键，未知键 LIBR::0005 一次汇总提醒后忽略，不 raise")
 build_lib_db_doc.add_example("构建单元库",
     code='''lib_db = proj.build_lib_db(name="lib", lib_paths=["nangate45_typ.lib"])
 proj.wait_frozen("lib", timeout=600)
@@ -56,18 +64,21 @@ build_lib_db_doc.add_keyword(["lib", "liberty", "cell", "power", "timing", "emir
 
 @register_flow(EMIRProject)
 @document(build_lib_db_doc)
-def build_lib_db(self, name: str, lib_paths: list):
+def build_lib_db(self, name: str, lib_paths: list, alpha: dict = None):
     """构建 lib 库 db：分布式解析多份 .lib 并整合为 LIBLibrary。
 
     异步 4 步：检查输入 → 建库（LibDb，role="lib"）→ MapReduce 提交
     （每文件一解析任务 + 全量合并，语义见 lib_flow.run_lib_flow）→ freeze
     task（依赖 LIBLibrary 写完）。cell 重复 = 库版本混用：保留当前、抛弃
-    后续重复 + LIBR::0001 提醒（不抛异常）。
+    后续重复 + LIBR::0001 提醒（不抛异常）。alpha 设置经 LIBAlphaSettings
+    声明式校验后随建库写入（问题一次汇总 LIBR::0005，不 raise）。
 
     Args:
         self: 自动绑定的 EMIRProject 实例。
         name: db 子目录名 + Project 内部 key。
         lib_paths: .lib 文件路径列表。
+        alpha: 未稳定配置项（lib 首版无激活键；未知键 LIBR::0005 提醒忽
+            略）。
 
     Returns:
         ``LibDb`` 句柄（freeze 异步进行中，可用 wait_frozen 等待）。
@@ -83,6 +94,18 @@ def build_lib_db(self, name: str, lib_paths: list):
 
     # ── Step 2: 建库（LibDb，role="lib"）──
     db = self._create_db(name, db_cls=LibDb)
+
+    # ── Step 2.5: alpha 设置（声明式五要素，2026-09-13 裁定）：逐键校验
+    #    覆盖 → 问题一次汇总 LIBR::0005（user warn，不 raise）→ settings
+    #    对象随建库写入 db（消费点 read_object 读回 + normalize 兜底）──
+    from .alpha_settings import get_default_alpha_settings
+    alpha_settings = get_default_alpha_settings()
+    apply_result = alpha_settings.apply(alpha)
+    detail = alpha_settings.format_apply_result(apply_result)
+    if detail:
+        from fly import message
+        message("LIBR::0005", 0, f"invalid lib alpha settings — {detail}")
+    db.write_object(LibDb.ALPHA_SETTINGS_OBJ, alpha_settings)
 
     # ── Step 3 + 4: MapReduce 分布式解析整合 + freeze 提交 ──
     from .lib_flow import run_lib_flow

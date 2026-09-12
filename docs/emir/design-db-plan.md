@@ -318,6 +318,7 @@ S2 cell lef 解析（每文件一并行任务，无业务合并）
 **S7 跨块连接归并（并查集）** —— ⬜ 待实施
 - 依赖 S6 与 S5b（跨块 port 连接信息在父块网数据内，S5b 才产出）。可按块分组并行 union（每父块独立合并其子 port），随后全局路径压缩一遍完成。
 - 产出：父表（压缩后）+ root 表 + root → 成员索引（§2.6）；悬空 port（未连接任何父网）计数提醒。
+- **2026-09-13 裁定补记（实施定稿）**：①**id 域 = global net id**（local + S6 起始编号换算参与 union——同一 block 定义多次实例化的网天然是不同 global id，语义正确）；②**仅 port 相连网参与 union，internal net 不入**（与高层网络无逻辑连接）——规模从全量网降至 port 级（数千级），**单对象存储不分块**（撤销区间分块预案）；③**union 树最终两层**：root = 顶层网 global id、叶子 = 成员网 global id（全路径压缩后 find 恒一步）；root 规范 = 等价类中层级最高（最接近树根）的网、同级取最小 global id——物理网身份锚在 top 层，root 网名即该物理网展示名；④**S9 分区产物不换算 root**——net id 保持 local + offset 形式，后续流程需要最顶层 global id 时自行加载 union 查询换算；⑤悬空 port（root = 自身）照常入表。
 
 **S8 全局密度图合并 + 分区决策** —— ✅ 已完成（2026-09-13 落地；2026-09-12/13 用户裁定定稿）
 - 依赖 S5a（实例计数通道）+ S5b（金属/通孔计数通道，逐层分列）+ S6（块实例位置与树）。合并自底向上（树的后续遍历）：块实例的全局密度 = 其子块实例密度图按放置变换平移叠加（格值分摊，裁定 D10）+ 自身 local 密度图；多层嵌套逐级进行。
@@ -331,12 +332,13 @@ S2 cell lef 解析（每文件一并行任务，无业务合并）
 - 展开任务内容：读取该 DEF 的单份解析数据（实例表/网数据/几何/密度统计）→ 收集该 block 定义在层级树上的**全部出现位置**（每个出现位置 = 一个 block instance，携带自根的累计变换链与起始编号段，S6 已备）→ 对每个出现位置做 flatten 展开：**instance/net/via instance 三类的 local id + 起始编号 = global id**（local 0 = block 自身占位 → 该 block instance 的 global id，裁定 ⑧），local 坐标 × 复合变换 = 全局坐标 → 按分区矩形分流产出各分区的**分片**。子 block 的数据由子 block 定义的任务展开（各任务只处理自己 block 的 local 数据）。
 - **每分区一合并任务**：将来自不同展开任务的同分区分片 merge 为最终分区对象（按类型分对象，§5.3）——分区侧存在真实合并语义，与解析类阶段的「无业务合并」不同（裁定 ①/⑤）。
 - **小 DEF 聚合优化**：数据量小且实例化次数少的 DEF，合并到同一展开任务处理（flatten + 分区一体），以减少任务数量；以 DEF 数据大小预估展开数据规模（数据大小 × 实例化次数），设阈值决定聚合（裁定 D26）。
-- 叶实例的电源引脚坐标在展开时预计算☆（裁定 D18，⑫ 注入点直接可用）；网数据携带并查集 root 归属（S7 结果）。
-- 切分语义（图形不裁剪、跨分区网主/普通分区、实例跨分区）见 §5 与裁定 D7/D8。
+- 叶实例的电源引脚坐标在展开时预计算☆（裁定 D18，⑫ 注入点直接可用）。
+- **2026-09-13 裁定补记（S9 归属与产物组织定稿）**：①**instance/via instance 分区归属** = 放置点（pos）判定——在 core_rect 内 → 该分区 primary=true；不在 core 但在 extend_rect 内 → 副本入区 primary=false（所属权归放置点所在 core 的相邻分区；每个对象恰有一个 primary 副本，core 判定半开区间）；结构增 `CM_FLAGS(int8_t, primary)`（位宽静态检查已内置宏中）。**本口径全面取代 D7 的「bbox 左下角锚点」**（连接与电源引脚坐标一律归 primary 分区，语义单一）。②**分区数据四类**（取代 §5.3 五类草案与 via 独立对象）：`PART_{xp}_{yp}/GEOMETRY`（**以 net id 组织**：net 的 wire/rect 几何 + **via instance 图形**；DEF 中的 OBS 结构 → **net id = 0 + OBS flag** 一并放入；net id 保持 local + offset 形式**不换算 root**——下游需要顶层 global id 时自行加载 union 查询）、`/INSTANCES`（含 primary 位 + 电源引脚预展开坐标）、`/INST_CONNECTIONS`（instance connection 跟随 instance 副本）、`/NET_CONNECTIONS`（net connection 跟随 net 副本，**非 pg net 补全全量 connection**——跨分区连接也保存，本分区自足；pg 网不补全，靠 union + instance 维度拼装——全量复制代价不可接受；pg 判定 = special net / POWER-GROUND use）。③**cell 级 pin/OBS 几何不保存**——下游经 instance + transform 从 cell 数据复现全部 pin 与 macro OBS（撤销「实例图形随副本走」预案）；解析侧前置补充：**DEF obstruction（BLOCKAGE）收录**（net 0 + OBS flag 进分区 geometry——D17「仅密度通道」处置随之修订）。④net 几何（wire/rect）按与 extend_rect 交叠判定副本（无 primary 概念）；跨分区网副本带 is_crossing 标记（S10 统计口径）；撤销「主分区 = 最小分区 id」概念（非 pg 全量补全后无需主分区锚）。⑤首版分区对象不做 id 区间二次分块（每分区约 10-20 万 instance，体量可控）。
 
 **S10 汇总校验 + 冻结** —— ⬜ 待实施
 - 全局统计（实例/网/连接/图形计数、分区分布、跨分区网数、密度总量）。
 - 完整性校验：global id 无空洞重复；并查集连通性自洽；分区网格无缝覆盖 DIEAREA 包围盒；密度守恒（合并前后/切分前后总量一致）；namemap 双向一致。
+- **2026-09-13 裁定补记（校验分级定稿）**：**损坏类 → fatal message**（并查集不自洽 / 分区不无缝覆盖 / namemap 双向不一致——结构破坏，db 不能带病冻结）；**观测类 → user warn message**（id 连续性——空洞/重复可能丢数据但业务数据本身没有问题；密度守恒——仅影响分区结果，不损业务数据）。密度守恒按 **primary 口径**校验（Σ 各分区 primary 计数 = 树展开总数；副本不计——副本语义下分区总和必然大于全局）。任务组织：每分区一校验任务（并行读单分区产物）+ 全局汇总校验任务（id 连续性/覆盖/总量/namemap）。
 - 提交冻结任务（freeze task，flow 异步四步范式收尾，开发规则 §3）。
 
 ### 3.3 并行机会汇总
@@ -438,13 +440,15 @@ build_design_db(name, def_path, lef_paths, lib_db, settings: dict, alpha: dict)
 # alpha：未稳定配置项（首版全部配置在此，成熟后迁 settings）
 ```
 
-**design db 配置键表（首版草案，键名实施期可调；模式遵循 dev-rules.md §3）**：
+**design db 配置键表（首版草案，键名实施期可调；模式遵循 dev-rules.md §3。2026-09-13 起全部已实施 alpha 键经 `DSAlphaSettings` 声明式定义（五要素，[src/emir/design/py/alpha_settings.py](../src/emir/design/py/alpha_settings.py)）：validator 校验非法值回退默认、未知键忽略，DSGN::0013 一次汇总提醒；settings 对象以固定对象名 `"alpha_settings"` 随建库写入 db，消费点 `read_object` 读回 + `normalize()` 兜底）**：
 
 | 参数 | 键 | 语义 | 默认 | 关联裁定 |
 |------|----|------|------|---------|
 | alpha | `layer_density_weights` | 逐层密度系数表（layer 名 → 系数），自高层向低层递增。**未实施**（S8 裁定 ⑥ 本期不暴露 alpha 键，`DSDensityWeights.layer_factors_` 接口已留——设置此键当前静默无效） | 全 1 | D25 / 裁定 ⑥ |
 | alpha | `density_channel_weights` | 密度通道比重（instance/metal/via dict） | {instance: 6, metal: 2, via: 2}（2026-09-12 裁定；逐层系数接口保留、本期不暴露） | 裁定 ⑥ |
 | alpha | `density_bin_size` | 采样格子边长（µm） | 10 | §4.1 |
+| alpha | `net_batch_size` | S5b 网内容解析的批界网数（分批控内存峰值） | 1000 | 裁定 ③ |
+| alpha | `lcp_name_arena` | 名字伴生对象 id→name 侧 LCP 后缀压缩封口（容量换内存） | False | R8d 裁定 55 |
 | alpha | `target_partitions` | 直切分区数 '{x}x{y}'（跳过分区数计算与行列分布推导，切线仍按前缀和） | 未设置 | 2026-09-12 裁定 4 |
 | alpha | `partition_count` | 总分区数 N（行列分布按负载自适应） | 未设置 | 2026-09-12 裁定 4 |
 | alpha | `partition_target_density` | 目标每分区合成负载（N = ceil(总负载/目标)） | 150000 | 2026-09-12 裁定 4 |
@@ -544,7 +548,7 @@ build_design_db(name, def_path, lef_paths, lib_db, settings: dict, alpha: dict)
 | D4 | ~~DEF 两遍解析策略~~ **已裁定（2026-09-09）**：轻量头扫描（S4）+ 完整解析两段式（S5a 并行两任务 / S5b 分批多阶段） | 文件被多遍流式读取（S4 一遍 + S5a 两遍 + S5b 一遍，每遍选择性回调、峰值低）；「减少读取遍数的回调合并」列为后续优化项 |
 | D5 | 信号网几何存储范围 | A. 首期仅电源网几何（SPECIALNETS + USE POWER），连接关系（网表）全量（建议，对齐总流程裁定 4 首期专注电源）；B. 全网几何入库（存储与解析成本显著增加）。**建议 A，扩展见 §8.3** |
 | D6 | ~~instance name ↔ id 映射存储~~ **已裁定（2026-09-09）**：全实体双向映射直接建好 | 所有实体（layer/cell/pin/via/net/instance/block/port）name ↔ id 全量持久化；首版 map（name → id）+ vector（id → name），分块/压缩/按需加载作为后续持续优化项（§10 规模预估）；instance/net 键带 block instance 维度（§2.2） |
-| D7 | 实例跨分区语义 | A. 逻辑归属唯一（锚点 = 左下角主分区，连接/电源引脚坐标归锚点分区），图形按定位点散布（建议——下游无重复处理，无双重计数）；B. 实例整体多分区冗余（每分区完整副本）。**建议 A**（原始需求「inst 划分至两个分区」在 A 语义下 = 其图形分布两区 + 逻辑归锚点区） |
+| D7 | 实例跨分区语义（**2026-09-13 修订**：锚点口径由「bbox 左下角」改为 **primary = 放置点 pos 在 core_rect 内**，连接/电源引脚坐标归 primary 分区——见 S9 裁定补记①） | A. 逻辑归属唯一（锚点 = 左下角主分区，连接/电源引脚坐标归锚点分区），图形按定位点散布（建议——下游无重复处理，无双重计数）；B. 实例整体多分区冗余（每分区完整副本）。**建议 A**（原始需求「inst 划分至两个分区」在 A 语义下 = 其图形分布两区 + 逻辑归锚点区） |
 | D8 | 跨分区图形是否裁剪 | A. 不裁剪，完整图形登记到交叠分区（主分区 = 定位点区；建议——保拓扑完整，④ 打断建节点自定位）；B. 按分区矩形裁剪成片（几何更紧凑但拓扑割裂，需补片间粘合）。**建议 A** |
 | D9 | ~~密度图统计口径~~ **已裁定（2026-09-09）**：固定采样格子图形计数加权叠加 | 与格交叠出现过的图形即计入（跨多格则多格各计一次），逐图形按所属层系数加权；取代「交叠面积分摊」方案 |
 | D10 | 层级密度合并的格子对齐 | 块放置位置一般不对齐格子边界。A. 格值分摊叠加（块局部格子的计数值按与全局格子的交叠面积比例撒入，建议）；B. 强制块放置格子对齐（约束输入，不现实）。**建议 A** |
@@ -554,7 +558,7 @@ build_design_db(name, def_path, lef_paths, lib_db, settings: dict, alpha: dict)
 | D14 | UNPLACED 实例兜底 | A. 跳过 + 计数 + 消息提醒（无坐标无法入分区）；B. raise。**建议 A**（设计未完成是业务异常，非格式错误） |
 | D15 | ~~引用缺失语义~~ **已裁定（2026-09-09，裁定 ⑲/⑳）**：fake cell 兜底（非 raise） | master cell 未定义 → 动态创建 fake cell（名称 `block_cell_name::cell_name`、id = max_cell_id + 唯一值、无 pin、1×1 矩形、DSDesign 单独字段保存），instance 原地创建指向 fake cell id；user message 提醒不 crash。「lef 间 DBU 不一致 raise」子项**已由裁定 ㉝ 撤销**（恒基准 1000，各自换算）；「层引用未定义 raise」子项已改为条目级丢弃兜底（DSGN::0010 + skipped_layer_ref_count，dev-rules §7） |
 | D16 | LEF 层收录范围 | A. 布线层 + 切割层（编号与几何属性；建议）；B. 含 implant/特殊层（掩模分析才需要）。**建议 A** |
-| D17 | DEF 附属段收录（ROW/TRACK/BLOCKAGE/REGION/GROUP/SITE） | A. 首期全部不建库（SITE 名随 macro 引用保留字符串）；BLOCKAGE 仅入密度通道（可选）；B. 全量入库。**建议 A + BLOCKAGE 密度通道可选项后补** |
+| D17 | DEF 附属段收录（**2026-09-13 修订**：DEF obstruction（BLOCKAGE）改为收录进分区 geometry——net id 0 + OBS flag，见 S9 裁定补记③）（ROW/TRACK/BLOCKAGE/REGION/GROUP/SITE） | A. 首期全部不建库（SITE 名随 macro 引用保留字符串）；BLOCKAGE 仅入密度通道（可选）；B. 全量入库。**建议 A + BLOCKAGE 密度通道可选项后补** |
 | D18 | 实例电源引脚坐标展开时机 | A. S9 切分时预展开进分区（⑫ 直接消费，建议）；B. ⑫ 消费时现算（每轮重复变换）。**建议 A** |
 | D19 | 宏禁布区（OBS）几何入库范围 | A. 入库（密度通道/后续分析可用，宏定义层量小）；B. 首期不收。**建议 A** |
 | D20 | 布线语句深度处理（TAPER/TAPERRULE/STYLE/mask/SHIELDNET/NOSHIELD） | A. 首期忽略（几何宽度按线宽优先级规则），未识别属性计数；B. 全量收录。**建议 A**（EMIR 几何精度不受影响） |

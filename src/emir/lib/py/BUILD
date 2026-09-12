@@ -8,6 +8,7 @@ py_library(
     name = "fly_emir_lib_py",
     srcs = glob(["*.py"]),
     deps = [
+        "//src/emir/common:fly_emir_common_py",  # alpha_settings.py 基座
         "//src/emir/lib/export:_fly_emir_lib.so",
         "//src/emir/project:project_pkg",
         "//src/fly:fly_py",

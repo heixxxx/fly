@@ -65,7 +65,7 @@ assert inv.source_file == LIB_A, f"source_file={inv.source_file}"
 assert dff.source_file == LIB_B, f"dff source_file={dff.source_file}"
 
 # 重名 cell 冲突（同 cell 出现在两文件 = 库版本混用）：业务异常场景不抛
-# 异常（用户裁定）——保留当前（首份）、抛弃后续重复 + LIBR::0001 WARN 提醒，
+# 异常（用户裁定）——保留当前（首份）、抛弃后续重复重复 + LIBR::0001 WARN 提醒，
 # 合并正常完成并冻结（语义下沉 C++ EXLIBLibrary.merge）。
 dup_path = os.path.join(LOG_DIR, "dup.lib")
 shutil.copy(LIB_A, dup_path)
@@ -75,6 +75,26 @@ assert proj.wait_frozen("lib_dup", timeout=120), \
 dup_lib = dup_db.load_library()
 dup_names = sorted(c.name for c in dup_lib.cells)
 assert dup_names == ["INV_X1"], f"dup cells={dup_names} (keep first, drop rest)"
+
+# alpha settings 体系（2026-09-13 裁定）：未知键 → LIBR::0005 user warn
+# 提醒后忽略（不 raise），settings 对象落库可读回（normalize 兜底）。
+alpha_db = proj.build_lib_db(name="lib_alpha", lib_paths=[LIB_A],
+                             alpha={"nonexistent_key": 42})
+assert proj.wait_frozen("lib_alpha", timeout=120), \
+    "unknown alpha key must not block freeze"
+settings = alpha_db.read_object("alpha_settings")
+assert settings is not None, "alpha_settings object must persist"
+msgs = ""
+for root, _dirs, files in os.walk(LOG_DIR):
+    for fn in files:
+        if fn == "message.log":
+            try:
+                with open(os.path.join(root, fn), errors="ignore") as fh:
+                    msgs += fh.read()
+            except OSError:
+                pass
+assert "LIBR::0005" in msgs, "unknown alpha key must emit LIBR::0005"
+INFO("[OK] alpha settings: unknown key -> LIBR::0005 + object persisted")
 dup_inv = dup_lib.cells[0]
 assert dup_inv.source_file == LIB_A, \
     f"kept cell should be the first occurrence ({LIB_A}), got {dup_inv.source_file}"

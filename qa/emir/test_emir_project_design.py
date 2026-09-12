@@ -436,13 +436,15 @@ INFO("[OK] R9 wait_obj bottom line: absent dependency raises "
 # 第二个 design db（同一 lef/def 输入）开启 alpha → COMPONENTS 解析任务
 # 在 DSBlockNames_<i> 落盘前封口两 hasher（instance/net）为 LCP 形态；
 # 读回按标记位自识别。验证 alpha 传递链（build_design_db → 封口点）与
-# 封口形态的查询面/层级树组装/全局 mapper 与形态一全同。
+# 封口形态的查询面/层级树组装/全局 mapper 与形态一全同。alpha 另含未知
+# 键（nonexistent_key）——声明式校验 DSGN::0013 一次汇总后忽略（2026-09-13
+# 裁定，断言见下方消息 walk）。
 lcp_db = proj.build_design_db(
     name="design_lcp",
     def_paths=[BLOCK_CHILD, BLOCK_PARENT],
     lef_paths=[TECH_LEF, CELLS_MAIN, CELLS_EXTRA],
     lib_db=lib_db,
-    alpha={"lcp_name_arena": True},
+    alpha={"lcp_name_arena": True, "nonexistent_key": 123},
 )
 assert proj.wait_frozen("design_lcp", timeout=180), "lcp design db should freeze"
 INFO("[WAIT] LCP design db frozen")
@@ -478,6 +480,38 @@ assert mapper_lcp_n.get_global_id("block_parent/top3/n2") == 2
 assert mapper_lcp_n.get_full_name(2) == "block_parent/top3/n2"
 INFO("[OK] R8d LCP name arena: hier tree + global mapper closed-loop over "
      "LCP rank backtrack")
+
+# ── alpha settings 对象（2026-09-13 裁定：声明式五要素 + 固定对象名
+# "alpha_settings" 随建库写入 db + 消费点读回 normalize 兜底）──
+alpha_obj = lcp_db.read_object(lcp_db.ALPHA_SETTINGS_OBJ)
+assert alpha_obj.lcp_name_arena is True, "applied alpha key must persist"
+assert alpha_obj.density_bin_size == 10, "unset keys must keep defaults"
+assert alpha_obj.target_partitions is None, "None-default key intact"
+# 读回兜底（旧对象向前兼容）：缺键补默认、未知属性丢弃——白盒构造偏差
+del alpha_obj._values["lcp_name_arena"]
+alpha_obj._values["ghost_key"] = 1
+alpha_obj.normalize()
+assert alpha_obj.lcp_name_arena is False, "normalize must refill defaults"
+assert "ghost_key" not in alpha_obj._values, "normalize must drop unknowns"
+# 未传 alpha 的 design db 同样落了全默认 settings 对象
+assert design_db.read_object(
+    design_db.ALPHA_SETTINGS_OBJ).net_batch_size == 1000
+INFO("[OK] alpha_settings object: persisted per db, applied values + "
+     "normalize fallback (missing key -> default, unknown dropped)")
+
+# DSGN::0013（alpha 未知键一次汇总，lcp_db 构建触发——master 侧 message）
+msgs_0013 = ""
+for root, _dirs, files in os.walk(LOG_DIR):
+    for fn in files:
+        if fn.endswith(".log"):
+            try:
+                with open(os.path.join(root, fn), errors="ignore") as fh:
+                    msgs_0013 += fh.read()
+            except OSError:
+                pass
+assert "DSGN::0013" in msgs_0013, \
+    "message DSGN::0013 should be emitted (unknown alpha key summary)"
+INFO("[OK] DSGN::0013 emitted (design alpha unknown-key summary)")
 
 # ── S8：全局密度合并 + 分区决策（2026-09-12/13 裁定：core/extend 双区
 # 域 + 6:2:2 通道比重 + 默认目标密度 15 万）──

@@ -48,6 +48,10 @@ from .ds_export import (  # noqa: F401
 # 消息 id 注册（全局区直书，导入即生效）
 from . import ds_register_msg  # noqa: F401
 
+# alpha 设置（声明式五要素，2026-09-13 裁定；对象名 "alpha_settings" 随
+# 建库写入 db）
+from .alpha_settings import DSAlphaSettings, get_default_alpha_settings
+
 # 容器 + flow 入口 + 对外函数
 from .ds_db import DesignDb, build_design_db
 from .ds_functions import (

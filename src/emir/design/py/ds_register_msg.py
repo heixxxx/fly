@@ -22,9 +22,11 @@ import 本模块完成注册。仅注册过的 id 才会被 MSG 打印/发送，
   dev-rules §7 第三类处置）
 - DSGN::0012: name hasher 权威段损坏（反序列化重建后计数/秩域仍不符）——
   不可恢复数据错误，fatal message（同 DSGN::0011）
-- DSGN::0013: S8 分区决策 alpha 非法值（target_partitions 形如 '{x}x{y}'
-  解析失败 / partition_target_density 非正值）——提醒后回退下一级或默
-  认值，不 raise（dev-rules §7）
+- DSGN::0013: design alpha 设置问题（2026-09-13 裁定语义扩展：声明式
+  validator 非法值 + 未知键，build_design_db 接线处一次汇总提醒后回退
+  默认/忽略；S8 侧 '{x}x{y}' 解析失败 / partition_target_density 非正值
+  仍由 C++ ds_decide_partitions 逐处提醒回退）——均不 raise（dev-rules
+  §7）
 - DSGN::0014: 部分 cell lef 文件解析失败（兜底跳过该文件 + 失败清单，
   空产物照常汇总、cell 缺失由 fake cell 承接——流程错误处理范式
   2026-09-13，dev-rules §7.2）

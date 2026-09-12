@@ -45,6 +45,7 @@ src/emir/<子模块>/
 - flow 遵循**异步 4 步范式**：①检查输入 ②`_create_db` 建库 ③提交入口 task（MapReduce/计算任务链）④提交 freeze task（依赖产物对象写完）；提交后立即返回 db。
 - **校验前置**：文件等资源问题必须在校验器阶段（Step 1，master 侧）抛异常拦截，不得进入解析/执行 task 后才发现。
 - **建库 API 配置参数标准（2026-09-09 裁定）**：全部 `build_<角色>_db` 统一追加两个 dict 参数——`settings` 收纳**稳定**的创建流程配置项（不同 key = 不同特殊设置，令用户对创建流程具有一定控制权）；`alpha` 收纳**未稳定**（尚未完全开发完毕）的配置项，成熟后迁入 `settings`。用户面配置一律经这两个参数表达，不再为单个配置项增加独立关键字参数；各子模块在立项方案中定义自己的 settings/alpha 键表、默认值与迁移状态。已实施子模块随后补齐这两个参数（默认空 dict，向后兼容）。
+- **alpha 项声明式定义（2026-09-13 裁定）**：每个 alpha 项包含**五要素**——setting 名 / 默认值 / 值类型及约束介绍 / 值校验器（validator）/ setting 介绍。基座在 `src/emir/common/`（`AlphaSetting` 单项描述符 + `AlphaSettings` 基类，纯 Python 包）；各子模块建自己的 `alpha_settings.py` 定义子类（如 design 的 `DSAlphaSettings` 七键）+ 模块级 `get_default_alpha_settings()` 工厂（deepcopy 语义——多次创建同种 db 互不污染默认值，dict 型默认值关键）。建库入口接线：默认实例 `apply(alpha)` 逐键校验覆盖（apply 为**纯逻辑**，返回 `{"rejected": {键: 原因}, "unknown": [键]}`，不直接发消息）→ 问题按模块前缀一次汇总 message 提醒（design 复用 DSGN::0013、lib 用 LIBR::0005）→ settings 对象以固定对象名 `"alpha_settings"` 写入 db → 消费点 `read_object` 读回后 `normalize()` 兜底（旧对象缺键补默认、未知属性丢弃，向前兼容）。校验语义（§7 兜底，不 raise）：validator 拒绝 → user warn message + 保留默认值继续；未知键 → user warn message + 忽略；None 默认值项业务使用点自行判断值与处理。
 
 ## 4. 实现语言边界
 
