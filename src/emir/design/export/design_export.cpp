@@ -433,6 +433,20 @@ FLY_EXPORT_CLASS(fly::DSDensityGrid, "EXDSDensityGrid")
     })
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSDensityGrid);
 
+// S8 分区描述（core/extend 双区域只读面；core/extend 以四元组透出——
+// 骨架期几何约定同上）；随 DSDesign.partitions_ 序列化持久化
+FLY_EXPORT_CLASS(fly::DSSubPartition, "EXDSSubPartition")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("partition_id", &fly::DSSubPartition::partition_id_)
+    FLY_EXPORT_READONLY_PROPERTY("core_rect", [](const fly::DSSubPartition& p) {
+        return rect_to_tuple(p.core_rect_);
+    })
+    FLY_EXPORT_READONLY_PROPERTY("extend_rect",
+                                 [](const fly::DSSubPartition& p) {
+        return rect_to_tuple(p.extend_rect_);
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSSubPartition);
+
 FLY_EXPORT_CLASS(fly::DSInstanceStats, "EXDSInstanceStats")
     FLY_EXPORT_INIT()
     FLY_EXPORT_READONLY_ATTR("instance_count",
@@ -763,6 +777,18 @@ FLY_EXPORT_CLASS(fly::DSDesign, "EXDSDesign")
                                        const fly::DSHierTree& t) {
         d.set_hier_tree(t);
     })
+    // S8 分区矩形表（core/extend 双区域；S8 任务写定）
+    FLY_EXPORT_READONLY_PROPERTY("partition_count", [](const fly::DSDesign& d) {
+        return static_cast<int>(d.partition_count());
+    })
+    FLY_EXPORT_DEF("partition_at", [](const fly::DSDesign& d, size_t i)
+                       -> const fly::DSSubPartition& {
+        return d.partition_at(i);
+    }, nb::rv_policy::reference_internal)
+    FLY_EXPORT_DEF("set_partitions", [](fly::DSDesign& d,
+                                        CMVector<fly::DSSubPartition> parts) {
+        d.set_partitions(std::move(parts));
+    })
     // name ↔ id 查询（R7 ㊲：经 hasher 双向底座；未命中 None / 空洞
     // 返回 None——不透出 kInvalidId 哨兵到 Python 面）
     FLY_EXPORT_DEF("cell_id_by_name",
@@ -952,6 +978,41 @@ FLY_EXPORT_FUNCTION("ds_merge_block_build",
                     [](fly::DSDesign& dst,
                        fly::DSBlockBuildData& block_data) {
     return fly::ds_merge_block_build(dst, block_data);
+});
+
+// S8 密度合并：层级树 + per-DEF 产物（blocks/nets 借指针列表）→ 全局
+// 密度图（格值分摊 D10 A + 三通道独立分列）
+FLY_EXPORT_FUNCTION("ds_merge_global_density",
+                    [](const fly::DSHierTree& tree, nb::list blocks,
+                       nb::list nets) {
+    fly::CMVector<const fly::DSBlockBuildData*> block_ptrs;
+    for (nb::handle item : blocks) {
+        block_ptrs.push_back(&nb::cast<const fly::DSBlockBuildData&>(item));
+    }
+    fly::CMVector<const fly::DSNetBuildData*> net_ptrs;
+    for (nb::handle item : nets) {
+        net_ptrs.push_back(&nb::cast<const fly::DSNetBuildData&>(item));
+    }
+    return nb::cast(fly::ds_merge_global_density(tree, block_ptrs, net_ptrs));
+});
+
+// S8 分区决策：合成负载（通道比重散参构造 DSDensityWeights，逐层系数
+// 本期不暴露——裁定 ⑥ 接口保留在 C++ 结构）+ 三键优先级
+// target_partitions > partition_count > partition_target_density →
+// 分区表
+FLY_EXPORT_FUNCTION("ds_decide_partitions",
+                    [](const fly::DSDensityGrid& global,
+                       const fly::DSStack& stack, double w_instance,
+                       double w_metal, double w_via,
+                       const CMString& target_partitions,
+                       int partition_count, int64_t target_density) {
+    fly::DSDensityWeights weights;
+    weights.instance_ = w_instance;
+    weights.metal_ = w_metal;
+    weights.via_ = w_via;
+    return nb::cast(fly::ds_decide_partitions(
+        global, stack, weights, target_partitions, partition_count,
+        target_density));
 });
 
 // ── R7 全局 name 组装（㊻ 注入式轻壳 + ㊵② 统一组装工厂）────────────

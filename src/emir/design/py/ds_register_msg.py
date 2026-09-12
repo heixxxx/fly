@@ -22,6 +22,9 @@ import 本模块完成注册。仅注册过的 id 才会被 MSG 打印/发送，
   dev-rules §7 第三类处置）
 - DSGN::0012: name hasher 权威段损坏（反序列化重建后计数/秩域仍不符）——
   不可恢复数据错误，fatal message（同 DSGN::0011）
+- DSGN::0013: S8 分区决策 alpha 非法值（target_partitions 形如 '{x}x{y}'
+  解析失败 / partition_target_density 非正值）——提醒后回退下一级或默
+  认值，不 raise（dev-rules §7）
 """
 
 from fly import register_message_id
@@ -38,3 +41,4 @@ register_message_id("DSGN::0009", "INFO")
 register_message_id("DSGN::0010", "WARN")
 register_message_id("DSGN::0011", "FATAL")
 register_message_id("DSGN::0012", "FATAL")
+register_message_id("DSGN::0013", "WARN")

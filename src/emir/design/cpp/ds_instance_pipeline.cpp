@@ -125,6 +125,14 @@ void DSDensityNode::handle(DSInstanceContext& ctx) {
         static_cast<uint8_t>(DSPlacementStatus::UNPLACED)) {
         return;
     }
+    // block instance 自身 bbox 不计（2026-09-12 裁定 5，S8 前置修正）：
+    // block 的密度贡献 = S8 合并时子块实例/网密度图按放置平移撒入，此处
+    // 再计 block footprint 会双计。判定 = cell 的 block_cell 位（cell 查
+    // 表经 design.cells_；fake cell 不在表内 → 恒非 block）
+    if (ctx.design != nullptr && ctx.cell_id < ctx.design->cells_.size() &&
+        ctx.design->cells_[ctx.cell_id].is_block_cell()) {
+        return;
+    }
     const DSInstance* inst = ctx.block_data->find_instance(ctx.instance_id);
     if (inst == nullptr) {
         ctx.error = true;

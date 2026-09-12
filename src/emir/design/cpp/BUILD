@@ -15,6 +15,7 @@ cc_library(
         "ds_merge.cpp",
         "ds_name_mapper.cpp",
         "ds_net_pipeline.cpp",
+        "ds_partition.cpp",
         "ds_types.cpp",
     ],
     hdrs = [
@@ -25,6 +26,7 @@ cc_library(
         "ds_name_hasher.h",
         "ds_name_mapper.h",
         "ds_net_pipeline.h",
+        "ds_partition.h",
         "ds_transform_util.h",
         "ds_types.h",
     ],

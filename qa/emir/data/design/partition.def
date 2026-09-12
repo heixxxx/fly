@@ -1,0 +1,17 @@
+VERSION 5.8 ;
+DESIGN partition_demo ;
+UNITS DISTANCE MICRONS 1000 ;
+DIEAREA ( 0 0 ) ( 4000 2000 ) ;
+
+COMPONENTS 3 ;
+    - inv1 INV_X1 + PLACED ( 100 100 ) N ;
+    - inv2 INV_X1 + PLACED ( 100 1100 ) N ;
+    - inv3 INV_X1 + PLACED ( 2100 100 ) N ;
+END COMPONENTS
+
+NETS 1 ;
+    - n1 ( inv1 A )
+      + ROUTED M1 ( 0 1000 ) ( 4000 1000 ) ;
+END NETS
+
+END DESIGN

@@ -227,8 +227,10 @@ top2 = block1.get_instance(2)
 assert top2.placement_status == 0  # UNPLACED
 assert top2.orient == 0, "defi UNPLACED orient −1 must clamp to N"
 assert block1.net_count == 1 and block1.net_id_by_name("n_top") == 1
-# UNPLACED 不计密度：top1 + top3（block_child footprint）各交叠 1 格
-assert block1.density.total_count == 2
+# UNPLACED 不计密度（D14）；block instance footprint 不计（2026-09-12
+# 裁定 5，S8 前置修正——top3 为 block instance，其密度贡献 = S8 子树叠
+# 加，此处再计会双计）→ 仅 top1 交叠 1 格
+assert block1.density.total_count == 1
 
 # ── S5b：per-DEF 网内容产物（③ 分批责任链 + ⑨ local id 对齐 + ⑩⑫）──
 # block_child n1：连接 2 项 + 1 wire（M1 缺省宽 0.07µm×1000=70 回填）+
@@ -476,6 +478,35 @@ assert mapper_lcp_n.get_global_id("block_parent/top3/n2") == 2
 assert mapper_lcp_n.get_full_name(2) == "block_parent/top3/n2"
 INFO("[OK] R8d LCP name arena: hier tree + global mapper closed-loop over "
      "LCP rank backtrack")
+
+# ── S8：全局密度合并 + 分区决策（2026-09-12/13 裁定：core/extend 双区
+# 域 + 6:2:2 通道比重 + 默认目标密度 15 万）──
+# 全局密度（层级树合并：root top1 + 子块 u1 经 top3 放置平移撒入，S5a 已
+# 排除 top3 自身 footprint）：
+#   inst 通道 = 2（top1 + u1）、metal = 1（child n1 的 M1 wire）、
+#   via = 1（VIA12 cut @ VIA1）→ 总合成 = 6×2 + 2×1 + 2×1 = 16
+from emir.design import load_global_density
+gd = load_global_density(design_db)
+assert gd.cols == 1 and gd.rows == 1, f"grid={gd.cols}x{gd.rows}"
+assert gd.total_count == 2, f"inst={gd.total_count}"
+assert gd.metal_total == 1 and gd.via_total == 1, \
+    f"metal={gd.metal_total} via={gd.via_total}"
+assert gd.cell_count(0, 0) == 2
+INFO("[OK] S8 global density: 3 channels merged across hierarchy "
+     "(inst=2/metal=1/via=1)")
+
+# 分区决策（默认 alpha）：N = ceil(16/150000) = 1 → 单分区
+# core = 根 DIEAREA 格网覆盖域（bin 10000 → (0,0)-(10000,10000)）、
+# extend 全向 int32 极值（单分区四向均为最外围，不截断）
+design_s8 = design_db.load_design()  # S8 重写后的 DSDesign（含分区表）
+assert design_s8.partition_count == 1, f"parts={design_s8.partition_count}"
+p = design_s8.partition_at(0)
+assert p.partition_id == 0
+assert p.core_rect == (0, 0, 10000, 10000), f"core={p.core_rect}"
+assert p.extend_rect == (-2147483648, -2147483648, 2147483647, 2147483647), \
+    f"extend={p.extend_rect}"
+INFO("[OK] S8 partitions: default alpha -> single partition, core = root "
+     "DIEAREA grid coverage, extend = int32 extremes")
 
 # ── load_project 动态还原 ──
 import fly

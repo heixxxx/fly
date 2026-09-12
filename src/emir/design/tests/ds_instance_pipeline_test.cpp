@@ -281,6 +281,52 @@ TEST(DSDensityGridTest, ClampsNegativeFootprint) {
     EXPECT_EQ(grid.cell_count(2, 0), 0);
 }
 
+// S8 前置修正（2026-09-12 裁定 5）：block instance 自身 bbox 不计密度——
+// block 的密度贡献 = S8 子树叠加（子块实例/网密度按放置平移撒入），此处
+// 再计 block footprint 会双计。判定 = cell 的 block_cell 位。
+TEST(DSDensityNodeTest, SkipsBlockInstanceFootprint) {
+    DSDesign design = make_design();
+    DSCell blk_cell;
+    blk_cell.set_name("sub_blk");
+    blk_cell.set_block_cell();
+    blk_cell.set_bbox(GEORect(0, 0, 5000, 5000));
+    design.add_cell(std::move(blk_cell));
+    DSBlockBuildData block_data;
+    block_data.init_placeholder("blk", DSDesign::kInvalidId);
+    block_data.density_.configure(0, 0, 1000, 1000, 4, 4);
+    DSInstancePipeline pipeline;
+    pipeline.add(std::make_unique<DSCellResolveNode>());
+    pipeline.add(std::make_unique<DSInstanceBuildNode>());
+    pipeline.add(std::make_unique<DSDensityNode>());
+    pipeline.add(std::make_unique<DSStatsNode>());
+
+    // block instance（sub_blk）照常入表/统计，但不入密度通道
+    DSInstanceContext ctx;
+    ctx.design = &design;
+    ctx.block_data = &block_data;
+    ctx.block_name = "blk";
+    ctx.instance_name = "b1";
+    ctx.master_name = "sub_blk";
+    ctx.placement = GEOPoint(0, 0);
+    ctx.orient = GEOOrientation::N;
+    ctx.placement_status = static_cast<uint8_t>(DSPlacementStatus::PLACED);
+    pipeline.run(ctx);
+
+    EXPECT_FALSE(ctx.error);
+    EXPECT_EQ(ctx.instance_id, 1u);
+    EXPECT_EQ(block_data.stats_.instance_count, 1u);
+    EXPECT_EQ(block_data.density_.total_count(), 0);
+
+    // 同一 pipeline 上 leaf instance 仍正常计入（对照）
+    DSInstanceContext ctx2 = ctx;
+    ctx2.instance_name = "i1";
+    ctx2.master_name = "INV_X1";
+    ctx2.placement = GEOPoint(2000, 2000);
+    pipeline.run(ctx2);
+    // INV footprint (2000,2000)-(3400,3400) → 跨格 2×2 = 4
+    EXPECT_EQ(block_data.density_.total_count(), 4);
+}
+
 TEST(DSDensityNodeTest, CountsPlacedFootprintSkipsUnplaced) {
     DSDesign design = make_design();
     DSBlockBuildData block_data;

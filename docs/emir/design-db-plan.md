@@ -319,10 +319,11 @@ S2 cell lef 解析（每文件一并行任务，无业务合并）
 - 依赖 S6 与 S5b（跨块 port 连接信息在父块网数据内，S5b 才产出）。可按块分组并行 union（每父块独立合并其子 port），随后全局路径压缩一遍完成。
 - 产出：父表（压缩后）+ root 表 + root → 成员索引（§2.6）；悬空 port（未连接任何父网）计数提醒。
 
-**S8 全局密度图合并 + 分区决策** —— ⬜ 待实施
+**S8 全局密度图合并 + 分区决策** —— ✅ 已完成（2026-09-13 落地；2026-09-12/13 用户裁定定稿）
 - 依赖 S5a（实例计数通道）+ S5b（金属/通孔计数通道，逐层分列）+ S6（块实例位置与树）。合并自底向上（树的后续遍历）：块实例的全局密度 = 其子块实例密度图按放置变换平移叠加（格值分摊，裁定 D10）+ 自身 local 密度图；多层嵌套逐级进行。
 - 分区决策（§4）：目标分区数（裁定 D11）下按行/列负载前缀和求切线 → (xp, yp) 分区网格；合成负载 = 通道比重与逐层密度系数加权折叠（§4.1，2026-09-09 裁定 ⑥）——两者均为**建库时的一次性配置输入**（建库前调参以影响分区负载均衡；db freeze 后定型，原始需求「自由调整比重」即此建库配置手段）。
 - 产出：全局密度图 + 分区矩形表 + 切分元数据。串行决策（全局信息），量小。
+- **2026-09-12/13 裁定补记（实施定稿）**：①**分区形态** = 横平竖直矩形网格切分整个 design；每分区 **core_rect**（密度网格切分直接产出）+ **extend_rect**（电阻提取拿完整图形：非边缘方向 core 边界向外扩 **2 × w_eff**，**最外围方向不截断且直接开到 int32 极值**，相邻分区 extend 允许重叠）；w_eff = **最高有效层**（全局合并后金属格值总量 > 0 的 ROUTING 层中，自底向上层表序内位置最高者——即物理最高有效层，非层表登记序的首个有效层）的 default_width，无任何有效层时 w_eff = 0。②**通道比重默认 instance=6 / metal=2 / via=2**；逐层系数接口保留（`DSDensityWeights.layer_factors_`，本期不暴露 alpha 键）。③**alpha 键优先级** target_partitions（'{x}x{y}' 直切）> partition_count > partition_target_density（默认 150000——每分区约 10-20 万 leaf instance）；非法值一律 DSGN::0013 提醒后回退，不 raise。④**block instance 自身 bbox 不计密度**（S5a 前置修正，DSDensityNode 按 cell block_cell 位排除——其密度贡献 = S8 子树叠加，避免双计）。⑤**格值分摊（D10 A）**：块局部格计数值按与全局格交叠面积比例撒入（交叠面积中间量 int64 + 最大余数法保证总量守恒），三通道独立分列叠加。⑥全局格网原点 = 根 DIEAREA 左下角、bin 同 local（alpha density_bin_size）、ceil 覆盖根 DIEAREA bbox。⑦合并实现取后序逐级合并的**线性等价形式**（每 def 局部图按其到根复合变换撒入一次——变换复合结合律保证等价），内存峰值 = 全局图单份。⑧flow 侧 S8 任务依赖只挂 S6 + S5b 产物（S7 未实施不预留挂点）；DSDesign 补 `partitions_` 重写落盘（先 remove 规避 DUPLICATE_SKIPPED），global_density 为独立正式对象（freeze 依赖其就绪，保证重写先于冻结）。
 
 **S9 flatten 展平 + 分区保存（展开任务按 block 定义切分 + 每分区合并任务；2026-09-09 裁定）** —— ⬜ 待实施
 - **解析阶段每 DEF 数据保存单份**；block cell 实例化为多个 block instance 的问题**只在本阶段处理**。
@@ -441,12 +442,16 @@ build_design_db(name, def_path, lef_paths, lib_db, settings: dict, alpha: dict)
 
 | 参数 | 键 | 语义 | 默认 | 关联裁定 |
 |------|----|------|------|---------|
-| alpha | `layer_density_weights` | 逐层密度系数表（layer 名 → 系数），自高层向低层递增 | 全 1 | D25 / 裁定 ⑥ |
-| alpha | `density_channel_weights` | 密度通道比重（金属图形/实例/通孔） | 全 1 | 裁定 ⑥ |
+| alpha | `layer_density_weights` | 逐层密度系数表（layer 名 → 系数），自高层向低层递增。**未实施**（S8 裁定 ⑥ 本期不暴露 alpha 键，`DSDensityWeights.layer_factors_` 接口已留——设置此键当前静默无效） | 全 1 | D25 / 裁定 ⑥ |
+| alpha | `density_channel_weights` | 密度通道比重（instance/metal/via dict） | {instance: 6, metal: 2, via: 2}（2026-09-12 裁定；逐层系数接口保留、本期不暴露） | 裁定 ⑥ |
 | alpha | `density_bin_size` | 采样格子边长（µm） | 10 | §4.1 |
-| alpha | `partition_grid` | 分区数 (nx, ny) | 按负载自动 / 必填 | D11 |
+| alpha | `target_partitions` | 直切分区数 '{x}x{y}'（跳过分区数计算与行列分布推导，切线仍按前缀和） | 未设置 | 2026-09-12 裁定 4 |
+| alpha | `partition_count` | 总分区数 N（行列分布按负载自适应） | 未设置 | 2026-09-12 裁定 4 |
+| alpha | `partition_target_density` | 目标每分区合成负载（N = ceil(总负载/目标)） | 150000 | 2026-09-12 裁定 4 |
 | alpha | `s5b_batch_threshold` | S5b 分批数据量阈值 | 512 MB | D24 |
 | alpha | `s9_def_aggregate_threshold` | S9 小 DEF 聚合阈值（预估展开数据规模） | 实施期标定 | D26 |
+
+（S8 键优先级 target_partitions > partition_count > partition_target_density；非法值 DSGN::0013 提醒后回退，不 raise。原草案键 `partition_grid` 由 `target_partitions` 取代。）
 
 **读库 API 草案**（2026-09-09 裁定 ⑬：全局轻量数据以 **DSDesign 容器**为统一入口——细粒度表访问作为容器方法或便捷封装，后续功能向容器增强）：
 

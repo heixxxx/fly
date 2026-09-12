@@ -36,6 +36,7 @@
 #include <container/cpp/container_aliases.h>
 #include <container/cpp/lookup_table.h>
 #include <emir/design/cpp/ds_name_hasher.h>
+#include <emir/design/cpp/ds_partition.h>
 #include <geometry/cpp/geometry_types.h>
 #include <geometry/cpp/transform.h>
 
@@ -949,6 +950,9 @@ public:
     DSViaCellNameHasher via_cell_names_;
     // 层级树（S6；⑮ 编号区间表为树的组成部分，随容器序列化持久化）
     DSHierTree hier_tree_;
+    // S8 分区矩形表（core/extend 双区域，2026-09-12/13 裁定；S8 任务
+    // 写定——结构定义见 ds_partition.h，密度图本体为独立对象不进容器）
+    CMVector<DSSubPartition> partitions_;
 
     // —— 运行时专用字段（⑰/⑱，不序列化）——
     CMSharedPtr<DSPinTables> pin_tables_;
@@ -1006,12 +1010,23 @@ public:
     void set_hier_tree(const DSHierTree& tree) { hier_tree_ = tree; }
     void set_hier_tree(DSHierTree&& tree) { hier_tree_ = std::move(tree); }
 
+    // S8 分区表（容器字段走专门接口，规避大容器 set 拷贝——㉒ 同例）
+    size_t partition_count() const { return partitions_.size(); }
+    // 越界为调用方契约错误（debug 断言）
+    const DSSubPartition& partition_at(size_t i) const {
+        assert(i < partitions_.size());
+        return partitions_[i];
+    }
+    void set_partitions(CMVector<DSSubPartition>&& parts) {
+        partitions_ = std::move(parts);
+    }
+
     CM_PROPERTY(pin_tables)
     CM_PROPERTY(pin_geometry)
 
     // 字段表显式排除 pin_tables_/pin_geometry_（⑱）
     FLY_SERIALIZE(cells_, fake_cell_ids_, via_cells_, lib_link_, cell_names_,
-                  pin_names_, via_cell_names_, hier_tree_)
+                  pin_names_, via_cell_names_, hier_tree_, partitions_)
 };
 
 }  // namespace fly

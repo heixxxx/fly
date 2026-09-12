@@ -18,6 +18,9 @@ EXDSDefNetsStats + ds_parse_def_nets（网内容链 DSNetPipeline 同上不上
 Python）。
 层级树：EXDSHierNode/EXDSHierTree（层级树只读面，⑮ 四接口 + ⑨ 换算）+
 ds_build_hier_tree（构建在 C++，多根/零根/环 raise D22）。
+S8 分区：EXDSSubPartition（core/extend 双区域，core/extend 四元组）+
+ds_merge_global_density（全局密度合并）/ ds_decide_partitions（分区决策，
+通道比重散参传入）。
 """
 
 from _fly_emir_design import (
@@ -41,13 +44,16 @@ from _fly_emir_design import (
     EXDSPin,
     EXDSPinGeometry,
     EXDSPinTables,
+    EXDSSubPartition,
     EXDSStack,
     EXDSViaCell,
     ds_build_hier_tree,
+    ds_decide_partitions,
     ds_make_name_mapper,
     ds_merge_block_build,
     ds_merge_cell_lef,
     ds_merge_def_header,
+    ds_merge_global_density,
     ds_parse_cell_lef,
     ds_parse_def_components,
     ds_parse_def_header,

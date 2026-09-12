@@ -39,6 +39,16 @@ def load_design_stack(db):
     return db.read_object(DesignDb.STACK_OBJ)
 
 
+@wait_obj(inputs=lambda db: [db.get_full_name(DesignDb.GLOBAL_DENSITY_OBJ)])
+def load_global_density(db):
+    """读取 S8 全局密度图（EXDSDensityGrid 对象：三通道 + 合并后格网）。
+
+    调用规范见模块 docstring：task 内调用须 `load_global_density.deps(db)`
+    传播依赖 + `run_direct(load_global_density, db)` 直跑。
+    """
+    return db.read_object(DesignDb.GLOBAL_DENSITY_OBJ)
+
+
 @wait_obj(inputs=lambda db, pin_tables=False, pin_geometries=False: (
     [db.get_full_name(DesignDb.DESIGN_OBJ)]
     + ([db.get_full_name(DesignDb.PIN_TABLES_OBJ)] if pin_tables else [])

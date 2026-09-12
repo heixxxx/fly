@@ -132,6 +132,17 @@ cc_test(
 )
 
 cc_test(
+    name = "ds_partition_test",
+    srcs = ["ds_partition_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/emir/design/cpp:fly_emir_design_ds_types",
+    ],
+    linkstatic = True,
+    copts = ["-std=c++20"],
+)
+
+cc_test(
     name = "ds_lef_adapter_test",
     srcs = ["ds_lef_adapter_test.cpp"],
     data = [
