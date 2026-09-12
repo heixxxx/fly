@@ -205,6 +205,21 @@ DEVELOPMENT_GUIDELINES Section 17）。方案与裁定全量见
 [design-db-phase2-plan.md](design-db-phase2-plan.md)（㊱-㊿-55）。
 见 [design-db-phase2-plan.md](design-db-phase2-plan.md) §5。
 
+**throw 全仓治理（R10，2026-09-12，commit 3d65020）**——解析健壮性语义三条：
+
+- **层引用未定义 = 业务异常兜底**（非格式错误）：几何 rect/wire 段条目级丢弃、
+  via 整条放弃 + `skipped_layer_ref_count` 计数 + DSGN::0010 提醒——层表来自
+  tech lef（先读已定），引用缺失无后到补全路径，但单条数据错误不作废整个
+  建库（与 fake cell DSGN::0007、未定义 via 跳过 DSGN::0008 同族）。
+- **DBU 恒基准**（裁定 ㉝）：全局基准恒 1000 DBU/µm（`DSStack::kGlobalDbuPerMicron`），
+  不再跟随 tech lef 声明值；LEF 几何为 µm 浮点恒乘基准（与文件 UNITS 声明无关，
+  声明仅供工具一致性参考），DEF 坐标按 v × 1000 / def_units 换算。
+- **不可恢复结构错误 = fatal message**（dev-rules §7.1 第三类处置）：层级树
+  多根/零根/环/产物对齐（DSGN::0011）与 name hasher 权威段损坏（DSGN::0012）
+  经 MSG_FATAL_EXIT 以退出码 80 退出 + master 联动 fast_exit——层级树是全部
+  全局 id 分配的骨架，其损坏下任何兜底产物不可信；机制详见
+  [message-system.md](../message-system.md) §14。
+
 ## 8. 外部参考（语义裁决的权威源）
 
 | 资料 | 位置 | 用途 |
