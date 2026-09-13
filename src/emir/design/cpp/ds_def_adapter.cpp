@@ -62,6 +62,9 @@ struct DefContext {
     CMVector<DSCell>* block_cells;
     DSPinGeometry* port_geoms;
     CMVector<DSViaCell>* vias;
+    // BLOCKAGES 段收录（2026-09-13 D17 修订：S9 前置——分区 geometry
+    // net 0 + OBS 位的解析侧来源）
+    CMVector<DSShapeRef>* obstructions;
     DSDefParseStats* stats;
     // UNITS 回调（DEF 单行式，DISTANCE MICRONS N）。DEF 规范 UNITS 语句
     // 可选、缺省 100 database units per micron——初始即缺省值，防无 UNITS
@@ -370,6 +373,37 @@ int def_via_cbk(defrCallbackType_e, defiVia* v, defiUserData ud) {
     }
 
     add_via_unique(*ctx->vias, std::move(cell), *ctx->stats);
+    return 0;
+}
+
+// BLOCKAGES 段（2026-09-13 D17 修订收录）：LAYER 型 obstruction 逐矩形
+// 收录（block 局部坐标 → 全局 DBU 基准）；未定义层引用条目级丢弃 + 计数
+// （DSGN::0010 同族兜底）；多边形 BLOCKAGE 首版不收录（仅矩形几何）+
+// 计数；PLACEMENT 型（无层）无布线几何语义，跳过不计。
+int def_blockage_cbk(defrCallbackType_e, defiBlockage* b, defiUserData ud) {
+    auto* ctx = static_cast<DefContext*>(ud);
+    if (!b->hasLayer()) {
+        return 0;  // PLACEMENT 型：无逐层几何，不收录
+    }
+    if (b->numPolygons() > 0) {
+        ctx->stats->skipped_polygon_obstruction_count +=
+            b->numPolygons();
+    }
+    const uint32_t layer_id =
+        ds_resolve_layer_id(b->layerName(), *ctx->stack);
+    if (layer_id == DSStack::kNoLayer) {
+        ctx->stats->skipped_layer_ref_count += b->numRectangles();
+        return 0;
+    }
+    const int32_t stack_dbu = ctx->stack->get_dbu_per_micron();
+    for (int k = 0; k < b->numRectangles(); ++k) {
+        DSShapeRef ref;
+        ref.layer_id_ = layer_id;
+        ref.set_rect(def_rect_to_dbu(b->xl(k), b->yl(k), b->xh(k), b->yh(k),
+                                     stack_dbu, ctx->def_units));
+        ctx->obstructions->push_back(std::move(ref));
+        ++ctx->stats->obstruction_count;
+    }
     return 0;
 }
 
@@ -709,11 +743,15 @@ void traverse_nets_path(const defiPath* path, DefNetsContext* ctx,
 }
 
 // defiNet → 单网原解析上下文（连接项 + wire/rect/via 原数据，坐标换算
-// 全局 DBU），入批并按批界冲刷
+// 全局 DBU），入批并按批界冲刷。pg 判定（S9 连接补全口径）：special net
+// 或 USE POWER/GROUND。
 void extract_nets_net(defiNet* net, bool is_special, DefNetsContext* ctx) {
     DSNetContext nctx;
     nctx.net_name = net->name();
     nctx.is_special = is_special;
+    nctx.is_pg = is_special || (net->hasUse() &&
+                                (std::strcmp(net->use(), "POWER") == 0 ||
+                                 std::strcmp(net->use(), "GROUND") == 0));
     nctx.stack = ctx->stack;
     nctx.design = ctx->design;
     nctx.block_data = ctx->block_data;
@@ -906,12 +944,14 @@ void ds_parse_def_header(const CMString& path, const DSStack& stack,
                          CMVector<CMString>& port_names_out,
                          DSPinGeometry& port_geoms_out,
                          CMVector<DSViaCell>& def_vias_out,
+                         CMVector<DSShapeRef>& obstructions_out,
                          DSDefParseStats& stats) {
     DefContext ctx;
     ctx.stack = &stack;
     ctx.block_cells = &block_cells_out;
     ctx.port_geoms = &port_geoms_out;
     ctx.vias = &def_vias_out;
+    ctx.obstructions = &obstructions_out;
     ctx.stats = &stats;
     ctx.def_path = path;
 
@@ -935,6 +975,7 @@ void ds_parse_def_header(const CMString& path, const DSStack& stack,
     defrSetDieAreaCbk(def_die_area_cbk);
     defrSetPinCbk(def_pin_cbk);
     defrSetViaCbk(def_via_cbk);
+    defrSetBlockageCbk(def_blockage_cbk);
 
     int status;
     try {

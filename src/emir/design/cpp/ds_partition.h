@@ -53,6 +53,9 @@ class DSNetBuildData;
 struct DSSubPartition {
     // 行主序分区号（(xp, yp) → yp*nx + xp，产出序）
     uint32_t partition_id_ = 0;
+    // 分区网格坐标（S9 分区对象命名 PART_{xp}_{yp}/ 用；产出时回填）
+    uint32_t xp_ = 0;
+    uint32_t yp_ = 0;
     // 密度网格切分直接产出（全局 DBU，格边界吸附）
     GEORect core_rect_;
     // 电阻提取完整图形扩展域（全局 DBU；最外围方向 = int32 极值，单分区
@@ -64,7 +67,7 @@ struct DSSubPartition {
     // 一律在需要时经 int64 域自算。
     GEORect extend_rect_;
 
-    FLY_SERIALIZE(partition_id_, core_rect_, extend_rect_)
+    FLY_SERIALIZE(partition_id_, xp_, yp_, core_rect_, extend_rect_)
 };
 
 // 通道比重（合成负载 = w_inst×inst + w_metal×Σ层 metal_l + w_via×Σ层

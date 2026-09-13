@@ -41,13 +41,15 @@ DSStack make_stack_from_tech_lef() {
     return stack;
 }
 
-// S4 解析产物承载（block cell + port pin 名序列 + port 几何 + via 集合；
-// R7 ㊱：port 名与 block_cells[0].pins_ 下标对齐、独立通道传递）
+// S4 解析产物承载（block cell + port pin 名序列 + port 几何 + via 集合 +
+// obstruction 集合；R7 ㊱：port 名与 block_cells[0].pins_ 下标对齐、独立
+// 通道传递）
 struct DefProducts {
     CMVector<DSCell> block_cells;
     CMVector<CMString> port_names;
     DSPinGeometry port_geoms;
     CMVector<DSViaCell> def_vias;
+    CMVector<DSShapeRef> obstructions;
     DSDefParseStats stats;
 };
 
@@ -55,7 +57,7 @@ DefProducts parse_block_synth(const DSStack& stack) {
     DefProducts p;
     ds_parse_def_header(test_data("block_synth.def").string(), stack,
                         p.block_cells, p.port_names, p.port_geoms,
-                        p.def_vias, p.stats);
+                        p.def_vias, p.obstructions, p.stats);
     return p;
 }
 
@@ -72,7 +74,18 @@ TEST(DsDefHeaderTest, ParseBlockPinsAndPrefixedVias) {
     EXPECT_EQ(stats.viarule_via_count, 1);
     EXPECT_EQ(stats.via_conflict_count, 0);
     EXPECT_EQ(stats.die_area_count, 1);
-    EXPECT_EQ(stats.skipped_layer_ref_count, 0);
+    // BLOCKAGES（2026-09-13 D17 修订收录）：M1 矩形收录 1 条；
+    // GHOSTLAYER 未定义层 → 条目级丢弃计数（DSGN::0010 同族兜底）
+    EXPECT_EQ(stats.obstruction_count, 1);
+    EXPECT_EQ(stats.skipped_polygon_obstruction_count, 0);
+    EXPECT_EQ(stats.skipped_layer_ref_count, 1);
+    ASSERT_EQ(p.obstructions.size(), 1u);
+    EXPECT_EQ(p.obstructions[0].layer_id_,
+              stack.find_layer("M1"));
+    EXPECT_EQ(p.obstructions[0].rect_.get_x_low(), 100);
+    EXPECT_EQ(p.obstructions[0].rect_.get_y_low(), 150);
+    EXPECT_EQ(p.obstructions[0].rect_.get_x_high(), 400);
+    EXPECT_EQ(p.obstructions[0].rect_.get_y_high(), 250);
 
     // block cell（㉙：DSCell 承载；DIEAREA 4 点双存 / UNITS 换算系数）
     ASSERT_EQ(p.block_cells.size(), 1u);
@@ -193,12 +206,13 @@ TEST(DsDefNegativeTest, UnreadableFileRaises) {
     CMVector<CMString> port_names;
     DSPinGeometry port_geoms;
     CMVector<DSViaCell> def_vias;
+    CMVector<DSShapeRef> obstructions;
     DSDefParseStats stats;
 
     // 文件不可读（dev-rules §7 第一类，保持 raise）
     EXPECT_THROW(ds_parse_def_header("/nonexistent/no.def", stack,
                                      block_cells, port_names, port_geoms,
-                                     def_vias, stats),
+                                     def_vias, obstructions, stats),
                  std::runtime_error);
 }
 
@@ -211,11 +225,13 @@ TEST(DsDefNegativeTest, SyntaxErrorFatalsWithCode80) {
     CMVector<CMString> port_names;
     DSPinGeometry port_geoms;
     CMVector<DSViaCell> def_vias;
+    CMVector<DSShapeRef> obstructions;
     DSDefParseStats stats;
     fly::test::expect_fatal_exit_code(
         [&] { ds_parse_def_header(test_data("tech_synth.lef").string(),
                                   stack, block_cells, port_names,
-                                  port_geoms, def_vias, stats); },
+                                  port_geoms, def_vias, obstructions,
+                                  stats); },
         80);
 }
 

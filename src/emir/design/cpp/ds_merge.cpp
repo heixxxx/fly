@@ -401,9 +401,11 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
     uint64_t via_start = 0;
     CMVector<uint8_t> on_path(blocks.size(), 0);
 
-    const std::function<void(uint32_t, const CMString&, uint32_t, uint64_t)>
+    const std::function<void(uint32_t, const CMString&, uint32_t, uint64_t,
+                             const GEOTransform&)>
         visit = [&](uint32_t def_idx, const CMString& instance_name,
-                    uint32_t parent_id, uint64_t self_global_id) {
+                    uint32_t parent_id, uint64_t self_global_id,
+                    const GEOTransform& composite) {
             if (on_path[def_idx] != 0) {
                 MSG_FATAL_EXIT("DSGN::0011", 0, 80,
                     "ds_merge: block hierarchy cycle detected at '{}'",
@@ -422,6 +424,9 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
             node.block_cell_id_ =
                 design.cell_names_.get_id(block.get_block_name());
             node.self_global_id_ = self_global_id;
+            // 自根复合放置变换（S9 展开的坐标基准；root 恒等，随 DFS
+            // 递推：子复合 = 父复合 ∘ 父块实例表中本实例的放置 transform）
+            node.composite_transform_ = composite;
             node.instance_start_ = inst_start;
             node.instance_count_ =
                 static_cast<uint64_t>(block.instance_total());
@@ -443,14 +448,23 @@ DSHierTree ds_build_hier_tree(const CMVector<const DSBlockBuildData*>& blocks,
 
             for (const auto& [local_id, child_def] : block_refs_of(def_idx)) {
                 // R7 ㊱：子 block instance 的实例名经双向 instance hasher
-                // 反查（DSInstance 不存 name）
+                // 反查（DSInstance 不存 name）。子复合变换 = 本复合 ∘ 本
+                // 块实例表中该实例的放置 transform（实例缺失防御恒等——
+                // 树与实例表同源不应发生，S8 scatter 同口径）
+                const auto iit = block.instances_.find(local_id);
+                const GEOTransform child_composite =
+                    iit != block.instances_.end()
+                        ? composite.compose(iit->second.get_transform())
+                        : composite;
                 visit(child_def,
                       block.instance_names_->get_name(local_id),
-                      node_id, node.instance_start_ + local_id);
+                      node_id, node.instance_start_ + local_id,
+                      child_composite);
             }
             on_path[def_idx] = 0;
         };
-    visit(roots[0], blocks[roots[0]]->get_block_name(), 0, 0);
+    visit(roots[0], blocks[roots[0]]->get_block_name(), 0, 0,
+          GEOTransform());
 
     tree.design_name_ = blocks[roots[0]]->get_block_name();
     return tree;

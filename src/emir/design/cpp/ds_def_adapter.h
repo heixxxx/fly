@@ -60,20 +60,28 @@ struct DSDefParseStats {
     int die_area_count = 0;      // DIEAREA 触发次数
     int skipped_layer_ref_count = 0;  // 未定义层引用丢弃条目数（rect/via；
                                       // DSGN::0010）
+    int obstruction_count = 0;        // 收录 BLOCKAGE 矩形数（S9 前置收录，
+                                      // D17 修订：入分区 geometry net 0）
+    int skipped_polygon_obstruction_count = 0;  // 多边形 BLOCKAGE 未收录数
+                                                //（首版仅矩形几何）
 };
 
 // S4+S4b：DEF 头部一遍读取 → block cell + port pin 名序列 + port 几何 +
-// via 定义集（前缀化登记名）。生成式 via（VIARULE 语句）按 DEF 自带参数
-// 展开（D13）：CUTSIZE 为 cut（中心对齐）、LAYER 三层序、ENCLOSURE 为 cut
-// 外扩量——lef 侧展开（㉚，同参数语义）产物不参与本入口，DEF 生成式
-// 语法自带全部展开参数。R7 ㊱：DSPin 不存 name——port_names_out 与
-// block_cells_out[0].pins_ 下标对齐（每 DEF 至多 1 个 block cell），由
-// 汇总 ds_merge_def_header 传进全局 pin hasher。
+// via 定义集（前缀化登记名）+ obstruction 集（BLOCKAGES 段，2026-09-13
+// D17 修订收录：block 局部坐标换全局 DBU 基准，flow 侧转入
+// DSBlockBuildData.obstructions_ 供 S9 入分区 geometry net 0 + OBS 位；
+// 未定义层引用条目级丢弃 + 计数同族兜底）。生成式 via（VIARULE 语句）
+// 按 DEF 自带参数展开（D13）：CUTSIZE 为 cut（中心对齐）、LAYER 三层序、
+// ENCLOSURE 为 cut 外扩量——lef 侧展开（㉚，同参数语义）产物不参与本入
+// 口，DEF 生成式语法自带全部展开参数。R7 ㊱：DSPin 不存 name——
+// port_names_out 与 block_cells_out[0].pins_ 下标对齐（每 DEF 至多 1 个
+// block cell），由汇总 ds_merge_def_header 传进全局 pin hasher。
 void ds_parse_def_header(const CMString& path, const DSStack& stack,
                          CMVector<DSCell>& block_cells_out,
                          CMVector<CMString>& port_names_out,
                          DSPinGeometry& port_geoms_out,
                          CMVector<DSViaCell>& def_vias_out,
+                         CMVector<DSShapeRef>& obstructions_out,
                          DSDefParseStats& stats);
 
 // S5a 统计（网名扫描侧；实例/密度/统计在 DSBlockBuildData 内）

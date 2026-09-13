@@ -174,6 +174,18 @@ cc_test(
     copts = ["-std=c++20"],
 )
 
+# S9 flatten 展平 + 分区保存（合成树 + 分区表，同 ds_partition_test 模式）
+cc_test(
+    name = "ds_flatten_test",
+    srcs = ["ds_flatten_test.cpp"],
+    deps = [
+        "@googletest//:gtest_main",
+        "//src/emir/design/cpp:fly_emir_design_ds_types",
+    ],
+    linkstatic = True,
+    copts = ["-std=c++20"],
+)
+
 # design flow 错误处理单测（流程错误处理范式 2026-09-13，dev-rules §7.2）
 py_test(
     name = "ds_flow_error_test",

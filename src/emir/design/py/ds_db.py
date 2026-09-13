@@ -48,6 +48,17 @@ class DesignDb(Database):
     # 定；master 侧随建库写入，消费点 read_object 读回 + normalize 兜底）
     ALPHA_SETTINGS_OBJ = "alpha_settings"
 
+    # S9 分区四类正式对象 kind（partition_obj_name 的 kind 入参；
+    # 2026-09-13 裁定补记②）
+    PARTITION_KINDS = ("GEOMETRY", "INSTANCES", "INST_CONNECTIONS",
+                       "NET_CONNECTIONS")
+
+    @staticmethod
+    def partition_obj_name(xp: int, yp: int, kind: str) -> str:
+        """S9 分区正式对象名（PART_{xp}_{yp}/{kind}；kind ∈
+        PARTITION_KINDS，每分区一合并任务唯一写定）。"""
+        return f"PART_{xp}_{yp}/{kind}"
+
     @staticmethod
     def block_obj_name(index: int) -> str:
         """per-DEF 实例产物对象名（DSBlockBuildData，按 def_paths 序号；
@@ -111,7 +122,10 @@ build_design_db_doc.add_param("alpha",
          "None=未设置）、partition_count（总分区数，0=未设置）、"
          "partition_target_density（目标合成负载，缺省 150000——N = "
          "ceil(总负载/目标)）、density_channel_weights（通道比重 dict "
-         "{'instance': 6, 'metal': 2, 'via': 2}，缺 key 用默认）；优先级 "
+         "{'instance': 6, 'metal': 2, 'via': 2}，缺 key 用默认）；"
+         "S9 小 DEF 聚合阈值 def_aggregate_threshold（字节，≥1，缺省 "
+         "64 MiB——预估展开数据规模 = DEF 文件大小 × 实例化次数，低于阈值"
+         "的多个小 block 定义聚合到同一展开任务）；优先级 "
          "target_partitions > partition_count > partition_target_density；"
          "非法值/未知键 DSGN::0013 一次汇总提醒后回退默认/忽略，不 raise")
 build_design_db_doc.add_example("构建 design db",
@@ -143,7 +157,7 @@ def build_design_db(self, name: str, def_paths: list, lef_paths: list,
         lef_paths: lef 文件路径列表（首元素 tech lef，其余 cell lef）。
         lib_db: LibDb 实例（S3 merge 的直接前驱）。
         settings: 稳定配置项（首版无激活键）。
-        alpha: 未稳定配置项（七键经 DSAlphaSettings 声明式定义，见
+        alpha: 未稳定配置项（八键经 DSAlphaSettings 声明式定义，见
             UserDoc；非法值/未知键 DSGN::0013 提醒后回退/忽略）。
 
     Returns:

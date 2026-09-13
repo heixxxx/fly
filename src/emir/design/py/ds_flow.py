@@ -47,9 +47,20 @@
     任务定位子定义网产物用）→ per-DEF slice 任务并行收集局部 (父网, 子
     网) 边（对接键 = 同一块实例 + 同名 port）→ 汇总任务（两层化 + root
     规范化 → net_union 正式对象 + slice 清理 + 悬空 port DSGN::0018）
+  → S9 任务组（flatten 展平 + 分区保存，两级任务 + 小 DEF 聚合，2026-09-13
+    裁定补记①-⑤ + D26；依赖 S8 分区表 + S6 树 + 全部 per-DEF 产物 +
+    DSDesign + pin 几何 + 伴生名）：plan 任务（分组编排：预估 = DEF 文件
+    大小 × 树上实例化次数，≥ alpha def_aggregate_threshold 独占任务、低
+    于阈值贪心聚合；重名定义保留首份；worker 上动态提交下游任务——同
+    solver kickoff 先例）→ per-组展开任务并行（每组只读本组 def 产物——
+    每份 DEF 数据只读一次；ds_flatten_block 全位置展开 + 分区分流，每
+    任务对全部分区各写一份分片临时对象）→ 每分区一合并任务（真实合并语
+    义：merge 全部相关分片 → 四类正式对象 PART_{xp}_{yp}/{GEOMETRY,
+    INSTANCES,INST_CONNECTIONS,NET_CONNECTIONS} 唯一写定）→ freeze 任务
+    （依赖静态正式对象 + 全部分区对象；分片临时对象清理）
   → freeze task（依赖 DSDesign/DSStack/DSPinTables/DSPinGeometry/
-    DSBlock_*/DSBlockNames_*/DSNet_*/global_density/net_union 对象写完 +
-    中间对象清理）
+    DSBlock_*/DSBlockNames_*/DSNet_*/global_density/net_union/全部分区对
+    象写完 + 中间对象清理——由 S9 plan 任务动态提交）
 
 流程入口 build_design_db 在 ds_db.py（UserDoc + Schema + @register_flow）。
 约定（择简，UserDoc 同步注明）：lef_paths[0] 为 tech lef（确立 DBU 基准
@@ -67,11 +78,13 @@ from .ds_export import (
     EXDSHierTree,
     EXDSNetBuildData,
     EXDSNetUnionSlice,
+    EXDSPartitionProduct,
     EXDSPinGeometry,
     ds_build_hier_tree,
     ds_build_net_union,
     ds_collect_net_union_slice,
     ds_decide_partitions,
+    ds_flatten_block,
     ds_merge_block_build,
     ds_merge_cell_lef,
     ds_merge_def_header,
@@ -196,15 +209,21 @@ def _merge_lib_task(db, merged_key, lib_obj_name, tables_key, s3_key):
 
 # ── DEF 头扫描：每 DEF 一 task（头部扫描，大段真跳过）────────────────
 
-@as_task(inputs=lambda db, path, stack_key, cells_key, geoms_key, vias_key: [
+@as_task(inputs=lambda db, path, stack_key, cells_key, geoms_key, vias_key,
+         obs_key: [
     db.get_full_name(stack_key)
 ])
-def _def_header_task(db, path, stack_key, cells_key, geoms_key, vias_key):
+def _def_header_task(db, path, stack_key, cells_key, geoms_key, vias_key,
+                     obs_key):
     stack = db.read_object(stack_key)
-    block_cells, port_names, port_geoms, vias = ds_parse_def_one(path, stack)
+    block_cells, port_names, port_geoms, vias, obstructions = \
+        ds_parse_def_one(path, stack)
     db.write_object(cells_key, (block_cells, port_names), save_to_db=False)
     db.write_object(geoms_key, port_geoms, save_to_db=False)
     db.write_object(vias_key, vias, save_to_db=False)
+    # obstruction 元组列表（S4 收录，2026-09-13 D17 修订）——S5a 任务回填
+    # per-DEF 产物（正式对象随实例解析汇总唯一写定，本产物为临时）
+    db.write_object(obs_key, obstructions, save_to_db=False)
 
 
 # ── DEF 头汇总：block cell / port pin id / via 权威表 → cell 全集快照 ─
@@ -218,7 +237,8 @@ def _def_header_merge_task(db, s3_key, part_keys, snapshot_key, geoms_key,
                            macro_geoms_key):
     design = db.read_object(s3_key)
     global_geoms = db.read_object(macro_geoms_key)  # cell lef 汇总的 pin 几何
-    for (cells_key, geoms_key_i, vias_key) in part_keys:
+    for part_keys_i in part_keys:
+        cells_key, geoms_key_i, vias_key = part_keys_i[:3]
         block_cells, port_names = db.read_object(cells_key)
         port_geoms = db.read_object(geoms_key_i)
         vias = db.read_object(vias_key)
@@ -236,15 +256,19 @@ def _def_header_merge_task(db, s3_key, part_keys, snapshot_key, geoms_key,
 # ── COMPONENTS 解析：每 DEF 一 task（实例责任链 ∥ 网名扫描，同一遍读取）─
 
 @as_task(inputs=lambda db, path, stack_key, snapshot_key, block_key,
-         names_key, bin_dbu, lcp_name_arena: [
+         names_key, obs_key, bin_dbu, lcp_name_arena: [
     db.get_full_name(stack_key),
     db.get_full_name(snapshot_key),
+    db.get_full_name(obs_key),
 ])
 def _components_def_task(db, path, stack_key, snapshot_key, block_key,
-                         names_key, bin_dbu, lcp_name_arena):
+                         names_key, obs_key, bin_dbu, lcp_name_arena):
     stack = db.read_object(stack_key)
     design = db.read_object(snapshot_key)
     block_data = EXDSBlockBuildData()
+    # S4 收录的 obstruction 回填（2026-09-13 D17 修订；inputs 声明依赖
+    # 保证头扫描产物先行）
+    block_data.set_obstructions(db.read_object(obs_key))
     stats = ds_parse_def_components_one(path, stack, design, block_data,
                                         bin_dbu)
     # R8d 落盘封口（裁定 55：alpha 键 lcp_name_arena——解析完成后、名字
@@ -522,7 +546,168 @@ def _net_union_summary_task(db, hier_key, slice_keys, union_key):
                 f"by any parent net (root = itself)")
 
 
-# ── freeze：依赖正式对象写完 + 中间对象清理 ──────────────────────────
+# ── S9：flatten 展平 + 分区保存（两级任务 + 小 DEF 聚合；2026-09-13 裁
+# 定补记①-⑤ + D26）──────────────────────────────────────────────────
+
+@as_task(inputs=lambda db, design_key, global_density_key, hier_key,
+         block_names_key, alpha_key, geoms_key, block_keys, net_keys,
+         names_keys, def_paths, slice_prefix, formal_keys, temp_keys: [
+    db.get_full_name(design_key), db.get_full_name(global_density_key),
+    db.get_full_name(hier_key), db.get_full_name(block_names_key),
+    db.get_full_name(alpha_key),
+])
+def _s9_plan_task(db, design_key, global_density_key, hier_key,
+                  block_names_key, alpha_key, geoms_key, block_keys,
+                  net_keys, names_keys, def_paths, slice_prefix, formal_keys,
+                  temp_keys):
+    """S9 编排计划（依赖 S8 分区表 + S6 树 + block 名清单 + alpha 设置；
+    worker 上动态提交展开/合并/freeze 链——同 solver kickoff 动态提交先
+    例；分组信息依赖树运行时数据，无法静态提交）。
+
+    分组（D26）：预估 = DEF 文件大小 × 树上实例化次数；≥ 阈值独占任务，
+    < 阈值按 def_paths 序贪心聚合（累计预估不超阈值）；重名定义保留首份
+    （S6/S7 同语义——非首份序号不展开，其产物被首份遮蔽）。分区数来自
+    S8 写定的 DSDesign.partitions_（含 (xp, yp) 网格坐标）；每展开任务对
+    全部分区各写一份分片临时对象（未触达分区写空产物——合并任务依赖恒
+    可解），合并任务按 pid 汇聚本分区的全部分片。
+
+    S8 完成锚点 = global_density（_partition_task 末尾写定）：DSDesign
+    首写（实例解析汇总）先于 S8 补分区重写，仅依赖 DSDesign 会在重写前
+    被满足而读到无分区表的旧版本（竞态，2026-09-13 QA 实证）——依赖
+    global_density 保证读到的是补齐 partitions_ 之后的 DSDesign。
+    """
+    import os
+    design = db.read_object(design_key)
+    tree = db.read_object(hier_key)
+    block_names = db.read_object(block_names_key)
+    settings = db.read_object(alpha_key)
+    settings.normalize()
+    threshold = settings.def_aggregate_threshold
+
+    # 树上实例化计数（block cell 名 → 出现次数；root 含其定义自身）
+    inst_count = {}
+    for i in range(tree.node_count):
+        name = tree.node(i).block_cell_name
+        inst_count[name] = inst_count.get(name, 0) + 1
+
+    # 展开分组：重名定义跳过（保留首份）；大定义独占、小定义贪心聚合
+    groups = []
+    current = []
+    acc = 0
+    for i, path in enumerate(def_paths):
+        if block_names.index(block_names[i]) != i:
+            continue
+        estimate = os.path.getsize(path) * inst_count.get(block_names[i], 0)
+        if estimate >= threshold:
+            groups.append([i])
+            continue
+        if current and acc + estimate > threshold:
+            groups.append(current)
+            current = []
+            acc = 0
+        current.append(i)
+        acc += estimate
+    if current:
+        groups.append(current)
+
+    partitions = [(design.partition_at(i).partition_id,
+                   design.partition_at(i).xp, design.partition_at(i).yp)
+                  for i in range(design.partition_count)]
+
+    from log import INFO
+    INFO(f"s9 plan: {len(groups)} expand task(s) over {len(def_paths)} "
+         f"def(s), {len(partitions)} partition(s), threshold={threshold}")
+
+    # 展开任务（每组一任务，只读本组 def 产物——每份 DEF 数据只读一次）
+    for g, group in enumerate(groups):
+        _s9_expand_task(db, design_key, geoms_key, hier_key, block_names_key,
+                        group, [block_keys[i] for i in group],
+                        [net_keys[i] for i in group],
+                        [names_keys[i] for i in group],
+                        f"{slice_prefix}{g}_", len(partitions))
+    # 每分区一合并任务（真实合并语义）：merge 全部相关分片 → 四类正式
+    # 对象唯一写定
+    for pid, xp, yp in partitions:
+        _s9_partition_merge_task(db, slice_prefix, len(groups), pid, xp, yp)
+    # freeze：正式对象集（静态 + 全部分区对象）+ 中间对象清理（分片）
+    partition_keys = [DesignDb.partition_obj_name(xp, yp, kind)
+                      for _, xp, yp in partitions
+                      for kind in DesignDb.PARTITION_KINDS]
+    slice_keys = [f"{slice_prefix}{g}_{pid}"
+                  for g in range(len(groups))
+                  for pid, _, _ in partitions]
+    _freeze_design_task(db, formal_keys + partition_keys,
+                        temp_keys + slice_keys)
+
+
+@as_task(inputs=lambda db, design_key, geoms_key, hier_key, block_names_key,
+         group, block_keys, net_keys, names_keys, slice_prefix, n_parts: (
+    [db.get_full_name(k) for k in (design_key, geoms_key, hier_key,
+                                   block_names_key)]
+    + [db.get_full_name(k) for k in block_keys]
+    + [db.get_full_name(k) for k in net_keys]
+    + [db.get_full_name(k) for k in names_keys]))
+def _s9_expand_task(db, design_key, geoms_key, hier_key, block_names_key,
+                    group, block_keys, net_keys, names_keys, slice_prefix,
+                    n_parts):
+    """per-组展开任务：读本组各 def 的单份解析产物（实例表/网内容/伴生
+    名）→ ds_flatten_block 全部出现位置展开（复合变换取树节点、三类 id
+    换算、放置点归属、几何副本、连接补全、电源引脚预展开）→ 按分区累积
+    分片，对全部分区各写一份（未触达分区写空产物）。"""
+    design = db.read_object(design_key)
+    design.set_pin_geometry(db.read_object(geoms_key))
+    tree = db.read_object(hier_key)
+    block_names = db.read_object(block_names_key)
+    products = {}
+    for i, block_key, net_key, names_key in zip(group, block_keys, net_keys,
+                                                names_keys):
+        if block_names.index(block_names[i]) != i:
+            continue  # 重名保留首份（plan 分组已排除，防御再判）
+        block = db.read_object(block_key)
+        names = db.read_object(names_key)
+        # ㊵② 名字伴生对象共享注入（flatten 经 instance hasher 查名换
+        # global id）
+        block.attach_names(names)
+        nets = db.read_object(net_key)
+        for pid, product in ds_flatten_block(tree, block, nets, names,
+                                             design,
+                                             design.get_pin_geometry()):
+            if pid in products:
+                products[pid].merge_from(product)
+            else:
+                products[pid] = product
+    for pid in range(n_parts):
+        db.write_object(f"{slice_prefix}{pid}",
+                        products.get(pid, EXDSPartitionProduct()),
+                        save_to_db=False)
+
+
+@as_task(inputs=lambda db, slice_prefix, n_groups, pid, xp, yp: [
+    db.get_full_name(f"{slice_prefix}{g}_{pid}") for g in range(n_groups)
+])
+def _s9_partition_merge_task(db, slice_prefix, n_groups, pid, xp, yp):
+    """每分区一合并任务（分区侧真实合并语义，裁定 ⑤）：merge 来自不同
+    展开任务的同分区分片 → 四类正式对象
+    PART_{xp}_{yp}/{GEOMETRY,INSTANCES,INST_CONNECTIONS,NET_CONNECTIONS}
+    唯一写定。"""
+    from log import INFO
+    product = EXDSPartitionProduct()
+    for g in range(n_groups):
+        product.merge_from(db.read_object(f"{slice_prefix}{g}_{pid}"))
+    db.write_object(DesignDb.partition_obj_name(xp, yp, "GEOMETRY"),
+                    product.geometry(), save_to_db=True)
+    db.write_object(DesignDb.partition_obj_name(xp, yp, "INSTANCES"),
+                    product.instances(), save_to_db=True)
+    db.write_object(DesignDb.partition_obj_name(xp, yp, "INST_CONNECTIONS"),
+                    product.inst_connections(), save_to_db=True)
+    db.write_object(DesignDb.partition_obj_name(xp, yp, "NET_CONNECTIONS"),
+                    product.net_connections(), save_to_db=True)
+    INFO(f"s9 partition ({xp},{yp}): {product.instance_count} instances, "
+         f"{product.geometry_net_count} net geometry bucket(s)")
+
+
+# ── freeze：依赖正式对象写完 + 中间对象清理（由 S9 plan 任务动态提交，
+#    使 final_keys 能携带运行时确定的全部分区对象名）────────────────────
 
 @as_task(inputs=lambda db, final_keys, temp_keys: [
     db.get_full_name(k) for k in final_keys
@@ -537,7 +722,7 @@ def _freeze_design_task(db, final_keys, temp_keys):
 
 
 def run_design_flow(db, lef_paths, def_paths, lib_db):
-    """提交全部阶段任务（非阻塞）。alpha 提供建库未稳定配置（⑦）：七键
+    """提交全部阶段任务（非阻塞）。alpha 提供建库未稳定配置（⑦）：八键
     经 DSAlphaSettings 声明式定义（2026-09-13 裁定，src/emir/design/py/
     alpha_settings.py；校验与 DSGN::0013 汇总在 build_design_db 接线处），
     settings 对象以对象名 "alpha_settings" 随建库写入 db——本函数从 db
@@ -545,8 +730,8 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     density_bin_size（µm，缺省 10）、net_batch_size（网内容批界网数，缺
     省 1000，裁定 ③）、lcp_name_arena（R8d 裁定 55，缺省 False 形态一零
     变化）；S8 四键（target_partitions/partition_count/
-    partition_target_density/density_channel_weights）由 _partition_task
-    任务内读回（inputs 声明依赖）。"""
+    partition_target_density/density_channel_weights）与 S9 聚合阈值
+    def_aggregate_threshold 由消费任务内读回（inputs 声明依赖）。"""
     settings = db.read_object(DesignDb.ALPHA_SETTINGS_OBJ)
     settings.normalize()
     bin_um = settings.density_bin_size
@@ -602,7 +787,8 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     for i, path in enumerate(def_paths):
         keys = (_tmp_key(uid, f"header_{i}_cells"),
                 _tmp_key(uid, f"header_{i}_geoms"),
-                _tmp_key(uid, f"header_{i}_vias"))
+                _tmp_key(uid, f"header_{i}_vias"),
+                _tmp_key(uid, f"header_{i}_obs"))
         temp_keys.extend(keys)
         header_part_keys.append(keys)
         _def_header_task(db, path, stack_key, *keys)
@@ -623,11 +809,13 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
     for i, path in enumerate(def_paths):
         block_key = _tmp_key(uid, f"components_{i}_block")
         names_key = DesignDb.names_obj_name(i)
+        obs_key = header_part_keys[i][3]  # S4 obstruction 临时对象
         temp_keys.append(block_key)
         temp_block_keys.append(block_key)
         names_keys.append(names_key)
         _components_def_task(db, path, stack_key, snapshot_key, block_key,
-                             names_key, bin_um * 1000,  # µm → DBU（全局基准 ㉝）
+                             names_key, obs_key,
+                             bin_um * 1000,  # µm → DBU（全局基准 ㉝）
                              lcp_name_arena)
 
     # 网内容解析：每 DEF 一 task（分批解析；⑨ local net id 经名字伴生对
@@ -687,11 +875,15 @@ def run_design_flow(db, lef_paths, def_paths, lib_db):
                               formal_net_keys, i, union_slice_keys[i])
     _net_union_summary_task(db, hier_key, union_slice_keys, net_union_key)
 
-    # freeze：依赖正式对象集（含 per-DEF 实例/名字/网产物 + S8 全局密度
-    # 图——后写，使 freeze 排在 S8 重写 DSDesign 之后 + S7 net_union 归并
-    # 结果）；中间对象清理
-    _freeze_design_task(
-        db,
+    # S9：flatten 展平 + 分区保存（依赖 S8 分区表 + S6 树 + 全部 per-DEF
+    # 产物 + 伴生名；两级任务 + 小 DEF 聚合，plan 任务在 worker 上动态
+    # 提交展开/合并任务并收尾 freeze——final_keys 需携带运行时确定的全
+    # 部分区对象名，故 freeze 由 plan 动态提交而非本函数静态提交）
+    slice_prefix = _tmp_key(uid, "s9_slice_")
+    _s9_plan_task(
+        db, design_key, global_density_key, hier_key, block_names_key,
+        DesignDb.ALPHA_SETTINGS_OBJ, geoms_key, formal_block_keys,
+        formal_net_keys, names_keys, def_paths, slice_prefix,
         [design_key, stack_key, tables_key, geoms_key] + formal_block_keys +
         names_keys + formal_net_keys + [global_density_key, net_union_key],
         temp_keys)

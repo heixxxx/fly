@@ -82,6 +82,9 @@ struct DSNetContext {
     // —— 输入（单网原解析数据）——
     CMString net_name;
     bool is_special = false;
+    // pg 判定（S9 连接补全口径，2026-09-13 裁定补记②）= special net 或
+    // USE POWER/GROUND；适配层 extract_nets_net 判定，节点 1 记入产物
+    bool is_pg = false;
     CMVector<DSNetRawConnection> connections;
     CMVector<DSNetRawWire> wires;
     CMVector<DSNetRawRect> rects;

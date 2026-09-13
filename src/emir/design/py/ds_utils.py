@@ -72,10 +72,13 @@ def ds_parse_cell_one(path: str, stack):
 
 def ds_parse_def_one(path: str, stack):
     """S4+S4b：DEF 头扫描 → (block cell 集合, port pin 名序列, port 几何,
-    via 集合)。port 名与 block cell 的 pins_ 下标对齐（R7 ㊱ DSPin 不存
-    name——经汇总传进全局 pin hasher）。"""
+    via 集合, obstruction 集)。port 名与 block cell 的 pins_ 下标对齐
+    （R7 ㊱ DSPin 不存 name——经汇总传进全局 pin hasher）。obstruction 集
+    为 (layer_id, (xl, yl, xh, yh)) 元组列表（DSShapeRef 不上 Python 面；
+    2026-09-13 D17 修订收录，经 EXDSBlockBuildData.set_obstructions 回填
+    per-DEF 产物供 S9 入分区 geometry）。"""
     _check_readable(path)
-    return ds_parse_def_header(path, stack)[:4]
+    return ds_parse_def_header(path, stack)[:5]
 
 
 def ds_parse_def_components_one(path: str, stack, design, block_data,

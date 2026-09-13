@@ -38,6 +38,13 @@ PINS 2 ;
         + PLACED ( 900 1000 ) N ;
 END PINS
 
+BLOCKAGES 2 ;
+    - LAYER M1
+      RECT ( 100 150 ) ( 400 250 ) ;
+    - LAYER GHOSTLAYER
+      RECT ( 0 0 ) ( 10 10 ) ;
+END BLOCKAGES
+
 NETS 2 ;
     - n1 ( inst1 A ) ( PIN_A ) ;
     - n2 ( inst2 Q ) ( PIN_OUT ) ;

@@ -22,4 +22,9 @@ NETS 1 ;
     - n_top ( top1 A ) ( top3 PIN_IN ) ( PIN TOP_IN ) ;
 END NETS
 
+BLOCKAGES 1 ;
+    - LAYER M2
+      RECT ( 100 100 ) ( 300 400 ) ;
+END BLOCKAGES
+
 END DESIGN

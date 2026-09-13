@@ -325,6 +325,21 @@ public:
 
 // —— 2.3 instance（R6：transform 业务接入；S5a COMPONENTS 产物）——
 
+// 电源引脚预展开坐标（D18：S9 flatten 切分时预计算，⑫ 注入点直接可用
+// ——下游无需再加载 cell pin 几何并重放变换）。解析产物（S5a）中恒空；
+// 仅 S9 分区 INSTANCES 副本填充。
+class DSPowerPin {
+public:
+    // 全局平铺 pin id（D1；经容器 pin hasher 反查 pin 名）
+    uint32_t pin_id_ = 0;
+    // 引脚锚点全局坐标（DBU）。锚点口径 = 该 pin 全部几何矩形的聚合
+    // 包围盒中心（多点 pin 取整体中心比「首 rect」对输入序不敏感；
+    // int64 中点防大坐标加法溢出）。局部锚点 ×（复合 ∘ 实例放置）变换。
+    GEOPoint pos_;
+
+    FLY_SERIALIZE(pin_id_, pos_)
+};
+
 // instance（cell 在设计中的实例化放置，⑧）：引用 cell id + pos/orient
 // transform + 放置状态 + 权重。transform_.offset_ = pos（cell 原始坐标
 // 系 (0,0) 点的全局位置，㉜ 最终形态——「经过旋转的 origin 点」的精确
@@ -335,6 +350,8 @@ public:
 // DSBlockNames_<i> 伴生对象落盘 ㊵②），内部业务全程以 local id 为键。
 // local instance id 分配语义（⑧：从 1 起、local 0 = block 自身占位）
 // 在 S5a per-DEF 产物 DSBlockBuildData（ds_types.h 下方 S5a 节）。
+// S9 扩展（2026-09-13 裁定补记①）：primary 位 + 电源引脚预展开坐标仅
+// 在分区副本上有意义（解析产物恒复位/恒空；早期无兼容负担，直接加）。
 class DSInstance {
 public:
     DSInstance() = default;
@@ -349,13 +366,29 @@ public:
         static_cast<uint8_t>(DSPlacementStatus::UNPLACED);
     // OPTIONAL weight（DEF COMPONENTS + WEIGHT），缺省 0 = 未给
     double weight_ = 0.0;
+    // 分区归属标记（S9 裁定补记①）：放置点在 core_rect 内的副本
+    // primary 置位（每对象恰一个 primary）；extend 副本复位
+    CM_FLAGS(int8_t, primary)
+    // 电源引脚预展开坐标（D18；见 DSPowerPin 注释；解析产物恒空）
+    CMVector<DSPowerPin> power_pins_;
 
     CM_PROPERTY(cell_id)
     CM_PROPERTY(transform)
     CM_PROPERTY(placement_status)
     CM_PROPERTY(weight)
 
-    FLY_SERIALIZE(cell_id_, transform_, placement_status_, weight_)
+    // 容器接口（power_pins_ 走专门 add/count/at，规避大容器 set 拷贝 ㉒）
+    void add_power_pin(DSPowerPin&& pp) {
+        power_pins_.push_back(std::move(pp));
+    }
+    size_t power_pin_count() const { return power_pins_.size(); }
+    const DSPowerPin& power_pin_at(size_t i) const {
+        assert(i < power_pins_.size());
+        return power_pins_[i];
+    }
+
+    FLY_SERIALIZE(cell_id_, transform_, placement_status_, weight_, flags_,
+                  power_pins_)
 };
 
 // —— 2.4 S5a per-DEF 产物（⑬ 大体量独立对象，不进 DSDesign）——
@@ -481,6 +514,12 @@ public:
     // DSDesign cell hasher）——保留原样（R7 ㊲ 注释裁定）。
     CMUnorderedMap<CMString, uint32_t> fake_name_to_id_;
     CMVector<DSCell> fake_cells_;
+    // DEF obstruction（BLOCKAGES 段，2026-09-13 D17 修订：收录进分区
+    // geometry——S9 展开时换全局坐标入 net id 0 + OBS 位条目）。block
+    // 局部坐标、全局 DBU 基准；由 S4 头扫描收录（与 block cell/port 同
+    // 遍回调），flow 侧经临时对象转入本产物。cell 级 pin/macro OBS 几何
+    // 绝不入此表（复现原则，S9 裁定补记③）。
+    CMVector<DSShapeRef> obstructions_;
     // per-DEF 计数器（InstanceBuildNode / 网名扫描分配用；㊳ 64 位）
     uint64_t next_instance_id_ = 1;
     uint64_t next_net_id_ = 1;
@@ -548,8 +587,8 @@ public:
 
     // 字段表排除两 hasher（㊵②：随 DSBlockNames 伴生对象独立落盘）
     FLY_SERIALIZE(block_name_, instances_, density_, stats_,
-                  fake_name_to_id_, fake_cells_, next_instance_id_,
-                  next_net_id_)
+                  fake_name_to_id_, fake_cells_, obstructions_,
+                  next_instance_id_, next_net_id_)
 };
 
 // —— 2.4b S5b 网内容（③ 分批解析产物；⑨ local net id；⑩ via instance）——
@@ -656,6 +695,12 @@ public:
     // via instance id 列表）
     CMUnorderedMap<uint64_t, DSViaInstance> via_instances_;
     CMUnorderedMap<uint64_t, CMVector<uint64_t>> net_via_ids_;
+    // pg 网判定（S9 连接补全口径，2026-09-13 裁定补记②：pg 判定 =
+    // special net 或 USE POWER/GROUND；pg 网的分区 NET_CONNECTIONS 不做
+    // 全量补全——靠 union + instance 维度拼装）。键 = local net id、值
+    // 恒 1（序列化框架无 set 容器支持，map 充当 set——bitsery 适配面仅
+    // map/vector/string）；S5b 连接解析节点记录。
+    CMUnorderedMap<uint64_t, uint8_t> pg_nets_;
     // 网侧密度（金属/通孔逐层分列通道，⑥；格网参数与实例面积通道一致，
     // 由 DIEAREA 配置）
     DSDensityGrid density_;
@@ -680,8 +725,17 @@ public:
     const CMVector<uint64_t>* via_ids_of(uint64_t net_id) const;
     const DSViaInstance* via_instance_at(uint64_t via_id) const;
 
+    // pg 网判定（S9 消费；local id 语义）
+    bool is_pg_net(uint64_t local_net_id) const {
+        return pg_nets_.contains(local_net_id);
+    }
+    void mark_pg_net(uint64_t local_net_id) {
+        pg_nets_.emplace(local_net_id, 1);
+    }
+
     FLY_SERIALIZE(block_name_, connections_, wires_, rects_, via_instances_,
-                  net_via_ids_, density_, stats_, next_via_instance_id_)
+                  net_via_ids_, pg_nets_, density_, stats_,
+                  next_via_instance_id_)
 };
 
 // —— 2.5 via cell（裁定 ⑩/⑫）——
@@ -831,6 +885,11 @@ public:
     // root = 0，非 root = 父块 instance_start_ + 在父块内的 local id；
     // ㊳ 64 位）
     uint64_t self_global_id_ = 0;
+    // 自根复合放置变换（S9 展开/分区判定的坐标基准；S6 树构建时随 DFS
+    // 递推回填——root 恒等，非 root = 父复合 ∘ 父块实例表中本实例的放置
+    // transform。存于节点使 S9 展开任务只读单一 def 产物即可拿到任意
+    // 位置的复合变换，无需父块产物）
+    GEOTransform composite_transform_;
     // 三类编号区间（[start, start + count)；㊳ 64 位）
     uint64_t instance_start_ = 0;
     uint64_t instance_count_ = 0;
@@ -845,6 +904,7 @@ public:
     CM_PROPERTY(instance_name)
     CM_PROPERTY(block_cell_id)
     CM_PROPERTY(self_global_id)
+    CM_PROPERTY(composite_transform)
     CM_PROPERTY(instance_start)
     CM_PROPERTY(instance_count)
     CM_PROPERTY(net_start)
@@ -860,6 +920,7 @@ public:
 
     FLY_SERIALIZE(id_, parent_id_, children_ids_, block_cell_name_,
                   instance_name_, block_cell_id_, self_global_id_,
+                  composite_transform_,
                   instance_start_, instance_count_, net_start_, net_count_,
                   via_start_, via_count_)
 };

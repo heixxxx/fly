@@ -61,6 +61,50 @@ def load_design_net_union(db):
     return db.read_object(DesignDb.NET_UNION_OBJ)
 
 
+# S9 分区四类正式对象 kind 序（load_partition 返回元组序与之对齐；
+# 2026-09-13 裁定补记②）
+_PARTITION_KINDS = ("GEOMETRY", "INSTANCES", "INST_CONNECTIONS",
+                    "NET_CONNECTIONS")
+
+
+@wait_obj(inputs=lambda db: [db.get_full_name(DesignDb.DESIGN_OBJ),
+                             db.get_full_name(DesignDb.GLOBAL_DENSITY_OBJ)])
+def iter_design_partition(db):
+    """枚举全部分区的 (xp, yp) 网格坐标（读 DSDesign.partitions_ 分区表，
+    行主序产出序；S9 分区对象名/读库 API 的坐标来源）。依赖含
+    GLOBAL_DENSITY_OBJ = S8 完成锚点（design 的 partitions_ 由 S8 任务
+    重写填充——只等 DESIGN_OBJ 会在 S5a 首写后读到空分区表，review
+    2026-09-13 修正，与 _s9_plan_task 同口径）。
+
+    调用规范见模块 docstring：task 内调用须
+    `iter_design_partition.deps(db)` 传播依赖 +
+    `run_direct(iter_design_partition, db)` 直跑。
+    """
+    design = db.read_object(DesignDb.DESIGN_OBJ)
+    return [(design.partition_at(i).xp, design.partition_at(i).yp)
+            for i in range(design.partition_count)]
+
+
+@wait_obj(inputs=lambda db, xp, yp: (
+    [db.get_full_name(DesignDb.DESIGN_OBJ)]
+    + [db.get_full_name(DesignDb.partition_obj_name(xp, yp, kind))
+       for kind in _PARTITION_KINDS]))
+def load_partition(db, xp: int, yp: int):
+    """读取 S9 一个分区的四类正式对象（R9 wait_obj 形态），返回四元组
+    (geometry, instances, inst_connections, net_connections)——
+    GEOMETRY（以 net global id 组织的几何条目集 + 跨分区网集合）、
+    INSTANCES（instance global id → 副本：全局 transform + primary 位 +
+    电源引脚预展开坐标）、INST_CONNECTIONS / NET_CONNECTIONS（连接项列表，
+    跟随 instance/net 副本）。
+
+    调用规范见模块 docstring：task 内调用须
+    `load_partition.deps(db, xp, yp)` 传播依赖 +
+    `run_direct(load_partition, db, xp, yp)` 直跑。
+    """
+    return tuple(db.read_object(DesignDb.partition_obj_name(xp, yp, kind))
+                 for kind in _PARTITION_KINDS)
+
+
 @wait_obj(inputs=lambda db, pin_tables=False, pin_geometries=False: (
     [db.get_full_name(DesignDb.DESIGN_OBJ)]
     + ([db.get_full_name(DesignDb.PIN_TABLES_OBJ)] if pin_tables else [])

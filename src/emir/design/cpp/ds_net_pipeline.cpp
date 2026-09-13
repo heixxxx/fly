@@ -66,6 +66,10 @@ void DSNetConnectionParseNode::handle(DSNetContext& ctx) {
     }
     ctx.local_net_id = local_id;
     ++ctx.net_data->stats_.net_count;
+    // pg 判定记录（S9 连接补全口径：pg 网 NET_CONNECTIONS 不全量补全）
+    if (ctx.is_pg) {
+        ctx.net_data->mark_pg_net(local_id);
+    }
 
     // 连接表保留（local 拓扑，S7 并查集输入）；port 引用判别在
     // DSNetConnection::is_port_ref（instance_name_ == "PIN"）

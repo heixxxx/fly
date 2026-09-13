@@ -536,6 +536,8 @@ CMVector<DSSubPartition> ds_decide_partitions(
             }
             DSSubPartition p;
             p.partition_id_ = static_cast<uint32_t>(out.size());
+            p.xp_ = xp;
+            p.yp_ = yp;
             // 格边界换算（int64 中间量；格网覆盖域内不溢出 int32）
             const int32_t x_low = static_cast<int32_t>(ox + c0 * bw);
             const int32_t y_low = static_cast<int32_t>(oy + r0 * bh);

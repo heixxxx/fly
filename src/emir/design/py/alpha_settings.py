@@ -1,6 +1,6 @@
 """DSAlphaSettings — design db alpha 设置的声明式定义（2026-09-13 裁定）。
 
-七键迁移自 ds_flow.run_design_flow 边界的手工解析（``alpha.get`` +
+前七键迁移自 ds_flow.run_design_flow 边界的手工解析（``alpha.get`` +
 isinstance 系列，已删除）：校验规则逐条保留、迁入各键 validator——拒绝
 一律 user warn message（DSGN::0013 一次汇总，build_design_db 接线处发）
 后保留默认值继续，不 raise。
@@ -8,7 +8,8 @@ isinstance 系列，已删除）：校验规则逐条保留、迁入各键 valid
 键表（语义与默认值见各键 description；权威口径 docs/emir/design-db-plan.md
 §6 alpha 键表）：
   density_bin_size / net_batch_size / lcp_name_arena / target_partitions /
-  partition_count / partition_target_density / density_channel_weights
+  partition_count / partition_target_density / density_channel_weights /
+  def_aggregate_threshold
 
 target_partitions 的 '{x}x{y}' 解析细节仍留 C++ S8 路径（解析失败由
 ds_decide_partitions 内发 DSGN::0013 回退）——Python validator 只做
@@ -52,7 +53,7 @@ def _is_channel_weight(value):
 
 
 class DSAlphaSettings(AlphaSettings):
-    """design db 建库 alpha 设置（七键声明式，对象名 "alpha_settings" 写
+    """design db 建库 alpha 设置（八键声明式，对象名 "alpha_settings" 写
     入 db，消费点 read_object 读回后 normalize 兜底）。"""
 
     density_bin_size = AlphaSetting(
@@ -99,6 +100,17 @@ class DSAlphaSettings(AlphaSettings):
                     "通道默认（6/2/2，2026-09-12 裁定 3），非法子键逐个回退"
                     "该子键默认并 DSGN::0013 提醒，未知子键提醒忽略（"
                     "review 2026-09-13：恢复旧逐 key 语义）")
+    def_aggregate_threshold = AlphaSetting(
+        default=67108864, value_type="int", constraint=">= 1",
+        validator=_is_positive_int,
+        description="S9 小 DEF 聚合阈值（字节，D26）：预估展开数据规模 = "
+                    "DEF 文件大小 × 树上实例化次数，≥ 阈值的定义独占一个展"
+                    "开任务，< 阈值的多个小定义按 def_paths 序贪心聚合到同"
+                    "一任务（累计预估不超阈值）以减少任务数。缺省 64 MiB "
+                    "保守标定：单任务内存峰值 = 估算数据的数倍（读取 + 展开"
+                    "变换 + 分片缓冲），64 MiB 下可控于数百 MB；而常见秒级"
+                    "任务调度开销（依赖解析 + 读写注册）相对 64 MiB I/O 可"
+                    "忽略——再大的阈值聚合收益递减、内存风险线性上升")
 
 
 def get_default_alpha_settings():

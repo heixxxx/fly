@@ -18,6 +18,7 @@ from .ds_export import (  # noqa: F401
     EXDSHierNode,
     EXDSHierTree,
     EXDSDensityGrid,
+    EXDSGeomEntry,
     EXDSInstance,
     EXDSInstanceStats,
     EXDSLayer,
@@ -25,9 +26,16 @@ from .ds_export import (  # noqa: F401
     EXDSNameMapper,
     EXDSNetBuildData,
     EXDSNetStats,
+    EXDSPartConnection,
+    EXDSPartInstConnections,
+    EXDSPartInstances,
+    EXDSPartNetConnections,
+    EXDSPartitionGeometry,
+    EXDSPartitionProduct,
     EXDSPin,
     EXDSPinGeometry,
     EXDSPinTables,
+    EXDSPowerPin,
     EXDSSubPartition,
     EXDSStack,
     EXDSNetUnion,
@@ -37,6 +45,7 @@ from .ds_export import (  # noqa: F401
     ds_build_net_union,
     ds_collect_net_union_slice,
     ds_decide_partitions,
+    ds_flatten_block,
     ds_make_name_mapper,
     ds_merge_block_build,
     ds_merge_cell_lef,
@@ -60,6 +69,7 @@ from .alpha_settings import DSAlphaSettings, get_default_alpha_settings
 # 容器 + flow 入口 + 对外函数
 from .ds_db import DesignDb, build_design_db
 from .ds_functions import (
+    iter_design_partition,
     load_block_names,
     load_design,
     load_design_net_union,
@@ -67,4 +77,5 @@ from .ds_functions import (
     load_design_stack,
     load_design_with,
     load_global_density,
+    load_partition,
 )

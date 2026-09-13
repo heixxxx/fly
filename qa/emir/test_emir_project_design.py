@@ -30,6 +30,9 @@ name——pin 名经容器 pin hasher、实例/网名经 DSBlockNames_<i> 伴生
     两层树、单对象）：per-DEF slice (父网, 子网) 边收集（对接键 = 同一
     块实例 + 同名 port）+ 单任务两层化 + root 规范化（层级最高/同级最
     小 global id）→ net_union 正式对象 + 悬空 port DSGN::0018；
+  - S9 任务组（flatten 展平 + 分区保存，2026-09-13 裁定补记①-⑤：两级
+    任务 plan→展开→每分区合并→freeze；单分区场景全 primary + BLOCKAGE
+    入 net 0 桶 + 电源引脚预展开 + 连接补全）；
   - ⑱ load_design_with 统一加载注入 + load_project 动态还原。
 """
 import os
@@ -576,6 +579,84 @@ assert p.extend_rect == (-2147483648, -2147483648, 2147483647, 2147483647), \
     f"extend={p.extend_rect}"
 INFO("[OK] S8 partitions: default alpha -> single partition, core = root "
      "DIEAREA grid coverage, extend = int32 extremes")
+
+# ── S9：flatten 展平 + 分区保存（两级任务；单分区 → extend 全域全
+# primary；2026-09-13 裁定补记①-⑤ 手算锁定）──
+# 层级：root block_parent（inst [0,4) net [0,1)）→ child top3（block_child，
+# inst [4,6) net [1,3)）。block_parent UNITS 2000 → 坐标 ×0.5：top1 放置
+# (500,500) → pos (250,250)（N 向 pos = t）；top3 放置 (1500,500) →
+# t (750,250)、P7 origin 修正 → pos (1250,500)；child 复合变换 =
+# translate(1250,500)，u1 local (100,200)（child UNITS 1000 ×1）→ 全局
+# (1350,700)；top2 UNPLACED 不入分区。
+from emir.design import iter_design_partition, load_partition
+assert iter_design_partition(design_db) == [(0, 0)]
+geo_p, inst_p, iconn_p, nconn_p = load_partition(design_db, 0, 0)
+assert inst_p.size == 3, f"instances={inst_p.size} (top2 UNPLACED excluded)"
+top1_i = inst_p.get(1)
+assert top1_i.is_primary and (top1_i.pos_x, top1_i.pos_y) == (250, 250)
+top3_i = inst_p.get(3)
+assert top3_i.is_primary and (top3_i.pos_x, top3_i.pos_y) == (1250, 500), \
+    f"top3 pos=({top3_i.pos_x},{top3_i.pos_y})"
+u1_i = inst_p.get(5)
+assert u1_i.is_primary and (u1_i.pos_x, u1_i.pos_y) == (1350, 700)
+assert 2 not in inst_p.ids(), "UNPLACED top2 (global 2) must be excluded"
+# 电源引脚预展开（D18）：INV_X1 VDD pin 几何 (0,600)-(700,700)（µm ×1000）
+# 中心 (350,650) × 放置；block port 全 SIGNAL → top3 无电源引脚
+vdd_pin = design.pin_id_by_name("INV_X1", "VDD")
+assert top1_i.power_pin_count == 1
+assert top1_i.power_pin_at(0)[0] == vdd_pin  # (pin_id, x, y)
+assert top1_i.power_pin_at(0)[1:] == (600, 900)
+assert u1_i.power_pin_at(0)[1:] == (1700, 1350)
+assert top3_i.power_pin_count == 0
+INFO("[OK] S9 instances: composite-transformed global pos (top3 pos = "
+     "place_from_def (2000,750)), UNPLACED excluded, power pins preexpanded")
+
+# /GEOMETRY：net 0 桶 = OBS（block_parent BLOCKAGE M2 (100,100)-(300,400)
+# units 2000 ×0.5 → (50,50,150,200)；n_top 无几何不产出条目）；child n1
+# （global 1）wire 段 + via 三组图形（复合 ×，via 挂 cell id + primary）
+obs_entries = [e for e in geo_p.entries_of(0) if e.is_obs]
+assert len(obs_entries) == 1
+assert obs_entries[0].layer_id == 2
+assert obs_entries[0].rect == (50, 50, 150, 200)
+n1_entries = geo_p.entries_of(1)
+assert n1_entries is not None and len(n1_entries) == 4
+wire_e = [e for e in n1_entries if not e.is_via]
+assert len(wire_e) == 1 and wire_e[0].layer_id == 0
+assert wire_e[0].rect == (1315, 665, 1785, 735), f"wire={wire_e[0].rect}"
+via12 = design.via_cell_id_by_name("block_child::VIA12")
+via_e = [e for e in n1_entries if e.is_via]
+assert all(e.via_cell_id == via12 and e.is_primary for e in via_e)
+assert sorted((e.layer_id, e.rect) for e in via_e) == [
+    (0, (1650, 600, 1850, 800)),    # bottom ±100 @ M1
+    (1, (1710, 660, 1790, 740)),    # cut ±40 @ VIA1
+    (2, (1600, 550, 1900, 850)),    # top ±150 @ M2
+]
+assert not geo_p.is_crossing(1), "single partition must not mark crossing"
+INFO("[OK] S9 geometry: BLOCKAGE -> net 0 + obs flag, child n1 wire + via "
+     "graphics expanded by composite transform (via cell id + primary)")
+
+# /NET_CONNECTIONS：仅 child n1（有几何、非 pg）全量补全两条；n_top/n2
+# 无几何 → 不产条目（跟随 net 副本）
+assert nconn_p.size == 1
+assert [(c.instance_global_id, c.pin_name, c.is_port)
+        for c in nconn_p.connections_of(1)] == [
+    (5, "A", False), (3, "PIN_IN", True)]
+# /INST_CONNECTIONS：跟随 instance 副本（含 pg 网 n2 的 instance 维度端点
+# ——下游 union 拼装口径）
+assert [(c.net_global_id, c.pin_name)
+        for c in iconn_p.connections_of(1)] == [(0, "A")]
+t3c = iconn_p.connections_of(3)
+assert len(t3c) == 3
+t3_pairs = [(c.net_global_id, c.pin_name) for c in t3c]
+assert (0, "PIN_IN") in t3_pairs, "parent-side endpoint on n_top"
+assert sorted((c.net_global_id, c.pin_name) for c in t3c if c.is_port) == \
+    [(1, "PIN_IN"), (2, "PIN_OUT")]
+u1c = iconn_p.connections_of(5)
+assert sorted((c.net_global_id, c.pin_name) for c in u1c) == \
+    [(1, "A"), (2, "ZN")]
+INFO("[OK] S9 connections: non-pg net completion follows net copies, "
+     "inst connections follow instance copies (pg n2 reachable via "
+     "instance dimension)")
 
 # ── load_project 动态还原 ──
 import fly

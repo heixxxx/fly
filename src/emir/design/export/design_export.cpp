@@ -21,6 +21,7 @@
 // 解析入口内部消费。
 #include <export/cpp/export_macros.h>
 #include <emir/design/cpp/ds_def_adapter.h>
+#include <emir/design/cpp/ds_flatten.h>
 #include <emir/design/cpp/ds_instance_pipeline.h>
 #include <emir/design/cpp/ds_lef_adapter.h>
 #include <emir/design/cpp/ds_merge.h>
@@ -207,7 +208,29 @@ FLY_EXPORT_CLASS(fly::DSInstance, "EXDSInstance")
     FLY_EXPORT_READONLY_ATTR("placement_status",
                              &fly::DSInstance::placement_status_)
     FLY_EXPORT_READONLY_ATTR("weight", &fly::DSInstance::weight_)
+    // S9：分区归属 primary 位（解析产物恒复位；分区副本置位）
+    FLY_EXPORT_READONLY_PROPERTY("is_primary", [](const fly::DSInstance& i) {
+        return i.is_primary();
+    })
+    // S9：电源引脚预展开坐标（D18；解析产物恒空）
+    FLY_EXPORT_READONLY_PROPERTY("power_pin_count",
+                                 [](const fly::DSInstance& i) {
+        return static_cast<int>(i.power_pin_count());
+    })
+    FLY_EXPORT_DEF("power_pin_at", [](const fly::DSInstance& i, size_t k) {
+        const fly::DSPowerPin& pp = i.power_pin_at(k);
+        return nb::make_tuple(pp.pin_id_, pp.pos_.get_x(), pp.pos_.get_y());
+    })
     FLY_EXPORT_SERIALIZE_PICKLE(fly::DSInstance);
+
+// 电源引脚预展开坐标（S9 分区副本；D18）
+FLY_EXPORT_CLASS(fly::DSPowerPin, "EXDSPowerPin")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("pin_id", &fly::DSPowerPin::pin_id_)
+    FLY_EXPORT_READONLY_PROPERTY("pos", [](const fly::DSPowerPin& pp) {
+        return nb::make_tuple(pp.pos_.get_x(), pp.pos_.get_y());
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPowerPin);
 
 // S5b 网内容只读面（最小暴露：统计 + 按 net/via id 检索；连接项以
 // 二元组、wire 以 (layer, width, 点列) 透出，不下沉 Python 几何类型）
@@ -439,6 +462,9 @@ FLY_EXPORT_CLASS(fly::DSDensityGrid, "EXDSDensityGrid")
 FLY_EXPORT_CLASS(fly::DSSubPartition, "EXDSSubPartition")
     FLY_EXPORT_INIT()
     FLY_EXPORT_READONLY_ATTR("partition_id", &fly::DSSubPartition::partition_id_)
+    // 分区网格坐标（S9 分区对象命名 PART_{xp}_{yp}/ 用）
+    FLY_EXPORT_READONLY_ATTR("xp", &fly::DSSubPartition::xp_)
+    FLY_EXPORT_READONLY_ATTR("yp", &fly::DSSubPartition::yp_)
     FLY_EXPORT_READONLY_PROPERTY("core_rect", [](const fly::DSSubPartition& p) {
         return rect_to_tuple(p.core_rect_);
     })
@@ -534,6 +560,23 @@ FLY_EXPORT_CLASS(fly::DSBlockBuildData, "EXDSBlockBuildData")
     FLY_EXPORT_DEF("finalize_names_for_save",
                    [](fly::DSBlockBuildData& b, bool lcp_enabled) {
         b.finalize_names_for_save(lcp_enabled);
+    })
+    // S4 obstruction 回填（2026-09-13 D17 修订：S4 头扫描以
+    // (layer_id, (xl, yl, xh, yh)) 元组透出，flow 转入 per-DEF 产物供
+    // S9 入分区 geometry net 0 + OBS 位）
+    FLY_EXPORT_DEF("set_obstructions", [](fly::DSBlockBuildData& b,
+                                          nb::list obs) {
+        for (nb::handle item : obs) {
+            const nb::tuple tup = nb::cast<nb::tuple>(item);
+            const nb::tuple rect = nb::cast<nb::tuple>(tup[1]);
+            fly::DSShapeRef ref;
+            ref.layer_id_ = nb::cast<uint32_t>(tup[0]);
+            ref.set_rect(GEORect(nb::cast<int32_t>(rect[0]),
+                                 nb::cast<int32_t>(rect[1]),
+                                 nb::cast<int32_t>(rect[2]),
+                                 nb::cast<int32_t>(rect[3])));
+            b.obstructions_.push_back(std::move(ref));
+        }
     })
     FLY_EXPORT_READONLY_PROPERTY("fake_cell_count",
                                  [](const fly::DSBlockBuildData& b) {
@@ -715,7 +758,12 @@ FLY_EXPORT_CLASS(fly::DSDefParseStats, "EXDSDefParseStats")
     FLY_EXPORT_READONLY_ATTR("via_conflict_count",
                              &fly::DSDefParseStats::via_conflict_count)
     FLY_EXPORT_READONLY_ATTR("die_area_count",
-                             &fly::DSDefParseStats::die_area_count);
+                             &fly::DSDefParseStats::die_area_count)
+    FLY_EXPORT_READONLY_ATTR("obstruction_count",
+                             &fly::DSDefParseStats::obstruction_count)
+    FLY_EXPORT_READONLY_ATTR("skipped_polygon_obstruction_count",
+                             &fly::DSDefParseStats::
+                                 skipped_polygon_obstruction_count);
 
 FLY_EXPORT_CLASS(fly::DSDefComponentsStats, "EXDSDefComponentsStats")
     FLY_EXPORT_INIT()
@@ -893,21 +941,30 @@ FLY_EXPORT_FUNCTION("ds_parse_cell_lef", [](const CMString& path,
 });
 
 // S4+S4b：DEF 头扫描 → (block cell 集合, port pin 名序列, port 几何,
-// via 集合, stats)。R7 ㊱：DSPin 不存 name——port 名按下标与
-// block_cells[0].pins_ 对齐由汇总传进全局 pin hasher。
+// via 集合, obstruction 集合, stats)。R7 ㊱：DSPin 不存 name——port 名按
+// 下标与 block_cells[0].pins_ 对齐由汇总传进全局 pin hasher。obstruction
+// 以 (layer_id, (xl, yl, xh, yh)) 元组透出（DSShapeRef 不上 Python 面，
+// 骨架期几何约定同 DSCell.obs_at；回填经 EXDSBlockBuildData 的
+// set_obstructions）
 FLY_EXPORT_FUNCTION("ds_parse_def_header",
                     [](const CMString& path, const fly::DSStack& stack) {
     CMVector<fly::DSCell> block_cells;
     CMVector<CMString> port_names;
     fly::DSPinGeometry port_geoms;
     CMVector<fly::DSViaCell> vias;
+    CMVector<fly::DSShapeRef> obstructions;
     fly::DSDefParseStats stats;
     fly::ds_parse_def_header(path, stack, block_cells, port_names,
-                             port_geoms, vias, stats);
+                             port_geoms, vias, obstructions, stats);
+    nb::list obs_out;
+    for (const auto& obs : obstructions) {
+        obs_out.append(geometry_ref_to_tuple(obs));
+    }
     return nb::make_tuple(nb::cast(std::move(block_cells)),
                           nb::cast(std::move(port_names)),
                           nb::cast(std::move(port_geoms)),
-                          nb::cast(std::move(vias)), nb::cast(stats));
+                          nb::cast(std::move(vias)), obs_out,
+                          nb::cast(stats));
 });
 
 // S2 汇总：返回抛弃的重名 macro 数
@@ -1094,6 +1151,173 @@ FLY_EXPORT_FUNCTION("ds_net_union_child_indexes",
     }
     return nb::cast(fly::ds_net_union_child_indexes(
         tree, names, static_cast<uint32_t>(index)));
+});
+
+// ── S9 flatten 展平 + 分区保存（2026-09-13 裁定补记①-⑤；分片中间形态
+// 与四类正式对象共用数据结构）────────────────────────────────────────
+
+// 分区连接项（INST_CONNECTIONS / NET_CONNECTIONS 共用条目形态；只读面）
+FLY_EXPORT_CLASS(fly::DSPartConnection, "EXDSPartConnection")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("instance_global_id",
+                             &fly::DSPartConnection::instance_global_id_)
+    FLY_EXPORT_READONLY_ATTR("net_global_id",
+                             &fly::DSPartConnection::net_global_id_)
+    FLY_EXPORT_READONLY_ATTR("pin_name", &fly::DSPartConnection::pin_name_)
+    FLY_EXPORT_READONLY_PROPERTY("is_port", [](const fly::DSPartConnection& c) {
+        return c.is_port();
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartConnection);
+
+// 分区几何条目（net wire/rect 图形 + via 展开图形 + DEF obstruction）
+FLY_EXPORT_CLASS(fly::DSGeomEntry, "EXDSGeomEntry")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_ATTR("layer_id", &fly::DSGeomEntry::layer_id_)
+    FLY_EXPORT_READONLY_PROPERTY("rect", [](const fly::DSGeomEntry& e) {
+        return rect_to_tuple(e.rect_);
+    })
+    FLY_EXPORT_READONLY_ATTR("via_cell_id", &fly::DSGeomEntry::via_cell_id_)
+    FLY_EXPORT_READONLY_PROPERTY("is_via", [](const fly::DSGeomEntry& e) {
+        return e.is_via();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_obs", [](const fly::DSGeomEntry& e) {
+        return e.is_obs();
+    })
+    FLY_EXPORT_READONLY_PROPERTY("is_primary", [](const fly::DSGeomEntry& e) {
+        return e.is_primary();
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSGeomEntry);
+
+// /GEOMETRY：net global id → 条目集 + 跨分区网集合（net 0 = OBS 桶）
+FLY_EXPORT_CLASS(fly::DSPartitionGeometry, "EXDSPartitionGeometry")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_PROPERTY("net_count",
+                                 [](const fly::DSPartitionGeometry& g) {
+        return static_cast<int>(g.nets_.size());
+    })
+    FLY_EXPORT_DEF("entries_of", [](const fly::DSPartitionGeometry& g,
+                                    uint64_t net_global_id) {
+        nb::list out;
+        const auto* entries = g.entries_of(net_global_id);
+        if (entries != nullptr) {
+            for (const auto& e : *entries) out.append(e);
+        }
+        return out;
+    }, nb::rv_policy::reference_internal)
+    FLY_EXPORT_DEF("is_crossing", [](const fly::DSPartitionGeometry& g,
+                                     uint64_t net_global_id) {
+        return g.is_crossing(net_global_id);
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartitionGeometry);
+
+// /INSTANCES：instance global id → DSInstance 副本
+FLY_EXPORT_CLASS(fly::DSPartInstances, "EXDSPartInstances")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_PROPERTY("size", [](const fly::DSPartInstances& p) {
+        return static_cast<int>(p.size());
+    })
+    FLY_EXPORT_DEF("get", [](const fly::DSPartInstances& p,
+                             uint64_t global_id)
+                       -> const fly::DSInstance& {
+        return p.items_.at(global_id);
+    }, nb::rv_policy::reference_internal)
+    FLY_EXPORT_DEF("ids", [](const fly::DSPartInstances& p) {
+        nb::list out;
+        for (const auto& [gid, _] : p.items_) out.append(gid);
+        return out;
+    })
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartInstances);
+
+// /INST_CONNECTIONS：instance global id → 连接项列表（跟随 instance 副本）
+FLY_EXPORT_CLASS(fly::DSPartInstConnections, "EXDSPartInstConnections")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_PROPERTY("size",
+                                 [](const fly::DSPartInstConnections& p) {
+        return static_cast<int>(p.size());
+    })
+    FLY_EXPORT_DEF("connections_of", [](const fly::DSPartInstConnections& p,
+                                        uint64_t global_id) {
+        nb::list out;
+        auto it = p.items_.find(global_id);
+        if (it != p.items_.end()) {
+            for (const auto& c : it->second) out.append(c);
+        }
+        return out;
+    }, nb::rv_policy::reference_internal)
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartInstConnections);
+
+// /NET_CONNECTIONS：net global id → 连接项列表（跟随 net 副本）
+FLY_EXPORT_CLASS(fly::DSPartNetConnections, "EXDSPartNetConnections")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_PROPERTY("size",
+                                 [](const fly::DSPartNetConnections& p) {
+        return static_cast<int>(p.size());
+    })
+    FLY_EXPORT_DEF("connections_of", [](const fly::DSPartNetConnections& p,
+                                        uint64_t net_global_id) {
+        nb::list out;
+        auto it = p.items_.find(net_global_id);
+        if (it != p.items_.end()) {
+            for (const auto& c : it->second) out.append(c);
+        }
+        return out;
+    }, nb::rv_policy::reference_internal)
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartNetConnections);
+
+// 四类聚合容器（分片中间形态 + 合并工作形态；Python 面 = 规模观测 +
+// 编排侧分片合并）
+FLY_EXPORT_CLASS(fly::DSPartitionProduct, "EXDSPartitionProduct")
+    FLY_EXPORT_INIT()
+    FLY_EXPORT_READONLY_PROPERTY("instance_count",
+                                 [](const fly::DSPartitionProduct& p) {
+        return static_cast<int>(p.instances_.size());
+    })
+    FLY_EXPORT_READONLY_PROPERTY("geometry_net_count",
+                                 [](const fly::DSPartitionProduct& p) {
+        return static_cast<int>(p.geometry_.nets_.size());
+    })
+    FLY_EXPORT_DEF("merge_from", [](fly::DSPartitionProduct& p,
+                                    const fly::DSPartitionProduct& src) {
+        p.merge_from(src);
+    })
+    // 四类成员只读访问（merge 任务按类拆写四类正式对象；引用零拷贝）
+    FLY_EXPORT_DEF("geometry", [](const fly::DSPartitionProduct& p)
+                               -> const fly::DSPartitionGeometry& {
+        return p.geometry_;
+    }, nb::rv_policy::reference_internal)
+    FLY_EXPORT_DEF("instances", [](const fly::DSPartitionProduct& p)
+                                -> const fly::DSPartInstances& {
+        return p.instances_;
+    }, nb::rv_policy::reference_internal)
+    FLY_EXPORT_DEF("inst_connections", [](const fly::DSPartitionProduct& p)
+                                       -> const fly::DSPartInstConnections& {
+        return p.inst_connections_;
+    }, nb::rv_policy::reference_internal)
+    FLY_EXPORT_DEF("net_connections", [](const fly::DSPartitionProduct& p)
+                                      -> const fly::DSPartNetConnections& {
+        return p.net_connections_;
+    }, nb::rv_policy::reference_internal)
+    FLY_EXPORT_SERIALIZE_PICKLE(fly::DSPartitionProduct);
+
+// S9 展开算法（每 block 定义一调用；分片列表 [(partition_id, product)]。
+// 分区表取自 design 容器（S8 写定 partitions_）；pin_geoms = None 时不做
+// 电源引脚预展开）。SliceList 别名行置于宏外——模板实参逗号会拆分宏形参。
+using DSSliceList = CMVector<std::pair<uint32_t, fly::DSPartitionProduct>>;
+FLY_EXPORT_FUNCTION("ds_flatten_block",
+                    [](const fly::DSHierTree& tree,
+                       const fly::DSBlockBuildData& block,
+                       const fly::DSNetBuildData& nets,
+                       const fly::DSBlockNames& names,
+                       const fly::DSDesign& design,
+                       const fly::DSPinGeometry* pin_geoms) {
+    DSSliceList slices = fly::ds_flatten_block(tree, block, nets, names,
+                                               design, pin_geoms,
+                                               design.partitions_);
+    nb::list out;
+    for (auto& [pid, product] : slices) {
+        out.append(nb::make_tuple(pid, nb::cast(std::move(product))));
+    }
+    return out;
 });
 
 // ── R7 全局 name 组装（㊻ 注入式轻壳 + ㊵② 统一组装工厂）────────────

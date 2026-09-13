@@ -192,7 +192,7 @@ EMIR（Electro-Migration 与 IR-Drop 分析）工具链的输入是芯片版图�
 | S6 | 层级树构建 + 起始编号分配 | ✅ |
 | S7 | 并查集 port 连接归并（仅 port 相连网、两层树、root = 层级最高/同级最小 global id、悬空 port root=自身 + DSGN::0018 计数；`ds_union.h/.cpp` + `load_design_net_union`） | ✅ |
 | S8 | 密度图合并 + 分区决策（core/extend 双区域，非边缘扩 2×最高有效层宽、最外围 int32 极值；通道比重 6:2:2；三键优先级 target_partitions > partition_count > partition_target_density 默认 15 万；block instance bbox 不计局部密度） | ✅ |
-| S9 | flatten 展平 + 分区保存 | 后续 |
+| S9 | flatten 展平 + 分区保存（展开任务按 block 定义切分 + 小 DEF 按阈值聚合 + 每分区一合并任务；归属 = 放置点 core 半开区间 primary 恰一 + extend 副本；四类对象 PART_{xp}_{yp}/{GEOMETRY,INSTANCES,INST_CONNECTIONS,NET_CONNECTIONS}——geometry 以 net id 组织（不换算 root）、OBS 入 net 0 + obs 位、非 pg 连接全量补全 / pg 靠 instance 维度拼装；电源引脚预展开 D18；复合变换存树节点使每份 DEF 数据只读一次；`ds_flatten.h/.cpp` + `load_partition`/`iter_design_partition`） | ✅ |
 | S10 | 校验 + DSDesign 冻结持久化 | 后续 |
 
 第二阶段重构批次 R1-R9 全部完成（2026-09-12）：R1 geometry 独立模块+GEOTransform、

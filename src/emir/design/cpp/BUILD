@@ -10,6 +10,7 @@ cc_library(
     name = "fly_emir_design_ds_types",
     srcs = [
         "ds_def_adapter.cpp",
+        "ds_flatten.cpp",
         "ds_instance_pipeline.cpp",
         "ds_lef_adapter.cpp",
         "ds_merge.cpp",
@@ -21,6 +22,7 @@ cc_library(
     ],
     hdrs = [
         "ds_def_adapter.h",
+        "ds_flatten.h",
         "ds_instance_pipeline.h",
         "ds_lef_adapter.h",
         "ds_merge.h",
